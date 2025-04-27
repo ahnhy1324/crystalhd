@@ -41,6 +41,25 @@
 
 #define OFFSETOF(_s_, _m_) ((size_t)(unsigned long)&(((_s_ *)0)->_m_))
 
+void crystalhd_flea_core_reset(struct crystalhd_hw *hw);
+void crystalhd_flea_disable_interrupts(struct crystalhd_hw *hw);
+void crystalhd_flea_enable_interrupts(struct crystalhd_hw *hw);
+void crystalhd_flea_clear_interrupts(struct crystalhd_hw *hw);
+bool crystalhd_flea_detect_ddr3(struct crystalhd_hw *hw);
+void crystalhd_flea_init_dram(struct crystalhd_hw *hw);
+void crystalhd_flea_init_dram(struct crystalhd_hw *hw);
+bool crystalhd_flea_detect_fw_alive(struct crystalhd_hw *hw);
+void crystalhd_flea_handle_PicQSts_intr(struct crystalhd_hw *hw);
+void crystalhd_flea_update_tx_buff_info(struct crystalhd_hw *hw);
+void crystalhd_flea_init_temperature_measure (struct crystalhd_hw *hw, bool bTurnOn);
+void crystalhd_flea_update_temperature(struct crystalhd_hw *hw);
+bool crystalhd_flea_wake_up_hw(struct crystalhd_hw *hw);
+BC_STATUS crystalhd_flea_fw_cmd_post_proc(struct crystalhd_hw *hw, BC_FW_CMD *fw_cmd);
+void crystalhd_flea_clear_rx_errs_intrs(struct crystalhd_hw *hw);
+uint32_t flea_GetRptDropParam(struct crystalhd_hw *hw, void* pRxDMAReq);
+BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
+	struct crystalhd_rx_dma_pkt *rx_pkt);
+
 void crystalhd_flea_core_reset(struct crystalhd_hw *hw)
 {
 	unsigned int pollCnt=0,regVal=0;
@@ -512,9 +531,11 @@ void crystalhd_flea_runtime_power_up(struct crystalhd_hw *hw)
 #endif
 
 	/*printk("RT Power Up Flea Complete\n"); */
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
+	currTick = rdtsc_ordered();
+#else
 	rdtscll(currTick);
-
+#endif
 	hw->TickSpentInPD += (currTick - hw->TickStartInPD);
 
 	temp_64 = (hw->TickSpentInPD)>>24;
@@ -735,8 +756,11 @@ void crystalhd_flea_runtime_power_dn(struct crystalhd_hw *hw)
 	/*printk("RT Power Down Flea Complete\n"); */
 
 	/* Measure how much time we spend in idle */
-	rdtscll(hw->TickStartInPD);
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
+	hw->TickStartInPD = rdtsc_ordered();
+#else
+	rdtscll(currTick);
+#endif
 	return;
 }
 
@@ -2874,7 +2898,11 @@ bool flea_GetPictureInfo(struct crystalhd_hw *hw, struct crystalhd_rx_dma_pkt * 
 		hw->PDRatio = 0; /* NAREN - reset PD ratio to start measuring for new clip */
 		hw->PauseThreshold = hw->DefaultPauseThreshold;
 		hw->TickSpentInPD = 0;
-		rdtscll(hw->TickCntDecodePU);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
+		hw->TickCntDecodePU =rdtsc_ordered();
+#else
+		rdtscll(currTick);
+#endif
 
 		dev_dbg(dev, "[FMT CH] DoneSz:0x%x, PIB:%x %x %x %x %x %x %x %x %x %x\n",
 			rx_pkt->dio_req->uinfo.y_done_sz * 4,

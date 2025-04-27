@@ -23,7 +23,12 @@ static struct class *crystalhd_class;
 
 static struct crystalhd_adp *g_adp_info;
 
+crystalhd_ioctl_data *chd_dec_alloc_iodata(struct crystalhd_adp *adp, bool isr);
+void chd_dec_free_iodata(struct crystalhd_adp *adp, crystalhd_ioctl_data *iodata,bool isr);
 extern int bc_get_userhandle_count(struct crystalhd_cmd *ctx);
+int chd_dec_pci_suspend(struct pci_dev *pdev, pm_message_t state);
+int chd_dec_pci_resume(struct pci_dev *pdev);
+
 
 struct device *chddev(void)
 {
@@ -117,8 +122,7 @@ crystalhd_ioctl_data *chd_dec_alloc_iodata(struct crystalhd_adp *adp, bool isr)
 	return temp;
 }
 
-void chd_dec_free_iodata(struct crystalhd_adp *adp, crystalhd_ioctl_data *iodata,
-			 bool isr)
+void chd_dec_free_iodata(struct crystalhd_adp *adp, crystalhd_ioctl_data *iodata, bool isr)
 {
 	unsigned long flags = 0;
 
@@ -450,7 +454,7 @@ static int __init chd_dec_init_chdev(struct crystalhd_adp *adp)
 	}
 
 	/* register crystalhd class */
-	crystalhd_class = class_create(THIS_MODULE, "crystalhd");
+	crystalhd_class = class_create("crystalhd");
 	if (IS_ERR(crystalhd_class)) {
 		dev_err(xdev, "failed to create class\n");
 		goto fail;
@@ -667,11 +671,11 @@ static int __init chd_dec_pci_probe(struct pci_dev *pdev,
 	}
 
 	/* Set dma mask... */
-	if (!pci_set_dma_mask(pdev, DMA_BIT_MASK(64))) {
-		pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64));
+	if (!dma_set_mask(&pdev->dev, DMA_BIT_MASK(64))) {
+		dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
 		pinfo->dmabits = 64;
-	} else if (!pci_set_dma_mask(pdev, DMA_BIT_MASK(32))) {
-		pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(32));
+	} else if (!dma_set_mask(&pdev->dev, DMA_BIT_MASK(32))) {
+		dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
 		pinfo->dmabits = 32;
 	} else {
 		dev_err(dev, "%s: Unabled to setup DMA %d\n", __func__, rc);

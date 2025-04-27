@@ -31,7 +31,8 @@
 
 #include "crystalhd_lnx.h"
 #include "crystalhd_hw.h"
-
+int bc_get_userhandle_count(struct crystalhd_cmd *ctx);
+BC_STATUS bc_cproc_release_user(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *idata);
 static struct crystalhd_user *bc_cproc_get_uid(struct crystalhd_cmd *ctx)
 {
 	struct crystalhd_user *user = NULL;

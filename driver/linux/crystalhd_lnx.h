@@ -83,7 +83,7 @@ struct crystalhd_adp {
 	struct crystalhd_cmd	cmds;
 
 	struct crystalhd_dio_req	*ua_map_free_head;
-	struct pci_pool		*fill_byte_pool;
+	struct dma_pool		*fill_byte_pool;
 };
 
 

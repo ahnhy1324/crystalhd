@@ -655,7 +655,11 @@ BC_STATUS crystalhd_rx_pkt_done(struct crystalhd_hw *hw,
 					hw->PauseThreshold--;
 				}
 				else {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
+					currTick = rdtsc_ordered();
+#else
 					rdtscll(currTick);
+#endif
 
 					temp_64 = (hw->TickSpentInPD)>>24;
 					TickSpentInPD_Hi = (uint32_t)(temp_64);
