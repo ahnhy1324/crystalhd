@@ -8,6 +8,9 @@
 #include <iostream>
 #include <fstream>
 #include <sys/shm.h>
+#include <time.h>
+#include <pthread.h>
+#include <libcrystalhd/bc_dts_defs.h>
 
 #define TRY_CALL_1(func, p1, errmsg) \
   if (BC_STS_SUCCESS != func(p1)) \
@@ -27,14 +30,109 @@
 
 #define OUTPUT_PROC_TIMEOUT 2000
 
-int main()
+// Function to sleep in milliseconds
+void msleep(int milliseconds) {
+    struct timespec ts;
+    ts.tv_sec = milliseconds / 1000;
+    ts.tv_nsec = (milliseconds % 1000) * 1000000;
+    nanosleep(&ts, NULL);
+}
+
+int main(int argc, char* argv[])
 {
   BC_STATUS ret;
-  HANDLE device = 0;
+  HANDLE device = NULL;
   std::fstream inFile;
   try
   {
-    printf("starting up\n");
+    printf("CrystalHD Test Program\n");
+    
+    // Open the device
+    ret = DtsDeviceOpen(&device, DTS_PLAYBACK_MODE);
+    if (ret != BC_STS_SUCCESS) {
+        printf("Failed to open device. Error code: %d\n", ret);
+        return -1;
+    }
+    printf("Successfully opened CrystalHD device\n");
+    
+    // Get driver version
+    uint32_t drvMainVersion = 0;
+    uint32_t drvDilVersion = 0;
+    ret = DtsGetVersion(device, &drvMainVersion, &drvDilVersion);
+    if (ret == BC_STS_SUCCESS) {
+        printf("\nDriver Versions:\n");
+        printf("Main Version: %d.%d.%d\n",
+               (drvMainVersion >> 24) & 0xFF,
+               (drvMainVersion >> 16) & 0xFF,
+               drvMainVersion & 0xFFFF);
+        printf("DIL Version: %d.%d.%d\n",
+               (drvDilVersion >> 24) & 0xFF,
+               (drvDilVersion >> 16) & 0xFF,
+               drvDilVersion & 0xFFFF);
+    } else {
+        printf("Failed to get version info. Error: %d\n", ret);
+    }
+    
+    // Get driver status
+    BC_DTS_STATUS status;
+    ret = DtsGetDriverStatus(device, &status);
+    if (ret == BC_STS_SUCCESS) {
+        printf("\nDriver Status:\n");
+        printf("Free List Count: %d\n", status.FreeListCount);
+        printf("Ready List Count: %d\n", status.ReadyListCount);
+        printf("Frames Captured: %d\n", status.FramesCaptured);
+        printf("Frames Dropped: %d\n", status.FramesDropped);
+        printf("Input Count: %d\n", status.InputCount);
+        printf("Input Busy Count: %d\n", status.InputBusyCount);
+        printf("PIB Miss Count: %d\n", status.PIBMissCount);
+        printf("Total Input Size: %llu\n", status.InputTotalSize);
+    } else {
+        printf("Failed to get driver status. Error: %d\n", ret);
+    }
+    
+    // Try to open decoder
+    printf("\nTrying to open decoder...\n");
+    ret = DtsOpenDecoder(device, BC_STREAM_TYPE_ES);
+    if (ret == BC_STS_SUCCESS) {
+        printf("Decoder opened successfully\n");
+        
+        // Set video parameters (try H.264)
+        ret = DtsSetVideoParams(device, BC_VID_ALGO_H264, FALSE, FALSE, TRUE, 0);
+        if (ret == BC_STS_SUCCESS) {
+            printf("Video parameters set successfully\n");
+        } else {
+            printf("Failed to set video parameters. Error: %d\n", ret);
+        }
+        
+        // Close decoder
+        DtsCloseDecoder(device);
+        printf("Decoder closed\n");
+    } else {
+        printf("Failed to open decoder. Error: %d\n", ret);
+    }
+    
+    // Monitor device for a few seconds
+    printf("\nMonitoring device status for 5 seconds...\n");
+    for (int i = 0; i < 5; i++) {
+        ret = DtsGetDriverStatus(device, &status);
+        if (ret == BC_STS_SUCCESS) {
+            printf(".");
+            fflush(stdout);
+        }
+        msleep(1000);  // Sleep for 1 second
+    }
+    printf("\nMonitoring complete\n");
+    
+    // Close the device
+    if (device) {
+        ret = DtsDeviceClose(device);
+        if (ret != BC_STS_SUCCESS) {
+            printf("Error closing device\n");
+        } else {
+            printf("Device closed successfully\n");
+        }
+    }
+
     // Initialize the Link and Decoder devices
     uint32_t mode = DTS_PLAYBACK_MODE | DTS_LOAD_FILE_PLAY_FW | DTS_SKIP_TX_CHK_CPB | DTS_DFLT_RESOLUTION(vdecRESOLUTION_720p29_97);
     ret = DtsDeviceOpen(&device, mode);
@@ -147,7 +245,7 @@ int main()
         }
         else
           printf("DtsProcInput returned %d\n", ret);
-        usleep(1000);
+        msleep(1);
         needData = (ret == BC_STS_SUCCESS); // Only need more data if the send succeeded
       }
 
