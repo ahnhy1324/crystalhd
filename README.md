@@ -17,7 +17,7 @@ _The original repo source is available at git://git.linuxtv.org/jarod/crystalhd.
     
 **3. Compile driver, install libraries, and load driver**
 
-Use make command to compile driver. If you have multiple core processor then use the “-j2″ or “-j4″ option (2 or 4 is the number of cores). This will speed up the make process.
+Use make command to compile driver. If you have multiple core processor then use the "-j2" or "-j4" option (2 or 4 is the number of cores). This will speed up the make process.
 
     cd crystalhd/driver/linux
     autoconf
@@ -70,6 +70,61 @@ Btw this instructions referred to http://knowledge.evot.biz/documentation/how-to
 
 So, the sources on this repository are updated with the fixes and patches in order to make your life easier.
 
+## Recent Updates (2024)
+
+### Compilation Fixes by [Assistant]
+
+Fixed several compilation and linking issues to support modern systems:
+
+1. **Sleep Function Fix**
+   - Issue: `usleep` undefined in examples/hellobcm.cpp
+   - Solution: Replaced with existing `msleep(1)` function
+   - Affected file: examples/hellobcm.cpp
+
+2. **Library Linking Order**
+   - Issue: Undefined references to DtsDeviceOpen and other library functions
+   - Original command:
+     ```bash
+     g++ -I../include/ -I../linux_lib/libcrystalhd/ -D__LINUX_USER__ -lcrystalhd -lpthread -o hellobcm hellobcm.cpp
+     ```
+   - Fixed command:
+     ```bash
+     g++ -I../include/ -I../linux_lib/libcrystalhd/ -D__LINUX_USER__ hellobcm.cpp -o hellobcm -lcrystalhd -lpthread
+     ```
+   - Note: Library flags must come after source files for proper linking
+
+### Testing
+- Tested on Ubuntu with kernel 6.8.0-58
+- Successfully compiled example code
+- Verified basic device initialization and status checking
+
 ## History
 
 See [HISTORY.md](HISTORY.md) for a rough history of the various versions of this driver floating around the web.
+
+## Troubleshooting Common Issues
+
+### Compilation Fixes
+
+1. **usleep undefined error**
+   - Solution: Replace `usleep(1000)` with `msleep(1)` using the existing msleep function
+   - File modified: examples/hellobcm.cpp
+
+2. **Undefined reference to DtsDeviceOpen and other library functions**
+   - Problem: Library linking order issue
+   - Original command:
+     ```bash
+     g++ -I../include/ -I../linux_lib/libcrystalhd/ -D__LINUX_USER__ -lcrystalhd -lpthread -o hellobcm hellobcm.cpp
+     ```
+   - Fixed command:
+     ```bash
+     g++ -I../include/ -I../linux_lib/libcrystalhd/ -D__LINUX_USER__ hellobcm.cpp -o hellobcm -lcrystalhd -lpthread
+     ```
+   - Note: Library flags (-l) must come after the source file
+
+These changes allow successful compilation of the example code on modern systems.
+
+## Contributing
+If you find issues or have improvements, please feel free to submit a pull request or open an issue.
+
+Last updated: [Current Date]
