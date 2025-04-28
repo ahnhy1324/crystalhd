@@ -27,12 +27,17 @@ jobs:
         make -j2
         sudo make install
 
-    - name: Compile libraries with specific gcc command
+    - name: Compile libraries and example program
       run: |
         cd linux_lib/libcrystalhd/
         make -j2
         sudo make install
-        g++ -I../include/ -I../linux_lib/libcrystalhd/ -D__LINUX_USER__ hellobcm.cpp -o hellobcm -lcrystalhd -lpthread
+        if [ -f ../../examples/hellobcm.cpp ]; then
+          g++ -I../include/ -I../linux_lib/libcrystalhd/ -D__LINUX_USER__ ../../examples/hellobcm.cpp -o hellobcm -lcrystalhd -lpthread
+        else
+          echo "Error: hellobcm.cpp not found!"
+          exit 1
+        fi
 
     - name: Test driver loading
       run: |
