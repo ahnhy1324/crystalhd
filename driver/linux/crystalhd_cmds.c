@@ -82,7 +82,7 @@ static BC_STATUS bc_cproc_notify_mode(struct crystalhd_cmd *ctx,
 	int rc = 0, i = 0;
 
 	if (!ctx || !idata) {
-		dev_err(dev, "%s: Invalid Arg\n", __func__);
+		dev_err(dev, "%s: Invalid argument passed to function\n", __func__);
 		return BC_STS_INV_ARG;
 	}
 
@@ -130,7 +130,7 @@ static BC_STATUS bc_cproc_get_version(struct crystalhd_cmd *ctx,
 				      crystalhd_ioctl_data *idata)
 {
 	if (!ctx || !idata) {
-		dev_err(chddev(), "%s: Invalid Arg\n", __func__);
+		dev_err(chddev(), "%s: Invalid argument passed to function\n", __func__);
 		return BC_STS_INV_ARG;
 	}
 	idata->udata.u.VerInfo.DriverMajor = crystalhd_kmod_major;
@@ -143,7 +143,7 @@ static BC_STATUS bc_cproc_get_version(struct crystalhd_cmd *ctx,
 static BC_STATUS bc_cproc_get_hwtype(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *idata)
 {
 	if (!ctx || !idata) {
-		dev_err(chddev(), "%s: Invalid Arg\n", __func__);
+		dev_err(chddev(), "%s: Invalid argument passed to function\n", __func__);
 		return BC_STS_INV_ARG;
 	}
 
@@ -314,7 +314,7 @@ static BC_STATUS bc_cproc_download_fw(struct crystalhd_cmd *ctx,
 	dev_dbg(chddev(), "Downloading FW\n");
 
 	if (!ctx || !idata || !idata->add_cdata || !idata->add_cdata_sz) {
-		dev_err(chddev(), "%s: Invalid Arg\n", __func__);
+		dev_err(chddev(), "%s: Invalid argument passed to function\n", __func__);
 		return BC_STS_INV_ARG;
 	}
 
@@ -397,7 +397,7 @@ static void bc_proc_in_completion(struct crystalhd_dio_req *dio_hnd,
 				  wait_queue_head_t *event, BC_STATUS sts)
 {
 	if (!dio_hnd || !event) {
-		dev_err(chddev(), "%s: Invalid Arg\n", __func__);
+		dev_err(chddev(), "%s: Invalid argument passed to function\n", __func__);
 		return;
 	}
 	if (sts == BC_STS_IO_USER_ABORT || sts == BC_STS_PWR_MGMT)
@@ -439,7 +439,7 @@ static BC_STATUS bc_cproc_hw_txdma(struct crystalhd_cmd *ctx,
 	int rc = 0;
 
 	if (!ctx || !idata || !dio) {
-		dev_err(dev, "%s: Invalid Arg\n", __func__);
+		dev_err(dev, "%s: Invalid argument passed to function\n", __func__);
 		return BC_STS_INV_ARG;
 	}
 
@@ -537,7 +537,7 @@ static BC_STATUS bc_cproc_proc_input(struct crystalhd_cmd *ctx, crystalhd_ioctl_
 	BC_STATUS sts = BC_STS_SUCCESS;
 
 	if (!ctx || !idata) {
-		dev_err(dev, "%s: Invalid Arg\n", __func__);
+		dev_err(dev, "%s: Invalid argument passed to function\n", __func__);
 		return BC_STS_INV_ARG;
 	}
 
@@ -580,7 +580,7 @@ static BC_STATUS bc_cproc_add_cap_buff(struct crystalhd_cmd *ctx,
 	BC_STATUS sts = BC_STS_SUCCESS;
 
 	if (!ctx || !idata) {
-		dev_err(dev, "%s: Invalid Arg\n", __func__);
+		dev_err(dev, "%s: Invalid argument passed to function\n", __func__);
 		return BC_STS_INV_ARG;
 	}
 
@@ -638,7 +638,7 @@ static BC_STATUS bc_cproc_fetch_frame(struct crystalhd_cmd *ctx,
 	BC_DEC_OUT_BUFF *frame;
 
 	if (!ctx || !idata) {
-		dev_err(dev, "%s: Invalid Arg\n", __func__);
+		dev_err(dev, "%s: Invalid argument passed to function\n", __func__);
 		return BC_STS_INV_ARG;
 	}
 
@@ -712,7 +712,7 @@ static BC_STATUS bc_cproc_flush_cap_buffs(struct crystalhd_cmd *ctx,
 	struct crystalhd_rx_dma_pkt *rpkt;
 
 	if (!ctx || !idata) {
-		dev_err(dev, "%s: Invalid Arg\n", __func__);
+		dev_err(dev, "%s: Invalid argument passed to function\n", __func__);
 		return BC_STS_INV_ARG;
 	}
 
@@ -752,7 +752,7 @@ static BC_STATUS bc_cproc_get_stats(struct crystalhd_cmd *ctx,
 	unsigned long irqflags;
 
 	if (!ctx || !idata) {
-		dev_err(chddev(), "%s: Invalid Arg\n", __func__);
+		dev_err(chddev(), "%s: Invalid argument passed to function\n", __func__);
 		return BC_STS_INV_ARG;
 	}
 
@@ -863,7 +863,7 @@ BC_STATUS bc_cproc_release_user(struct crystalhd_cmd *ctx, crystalhd_ioctl_data 
 	uint32_t mode;
 
 	if (!ctx || !idata) {
-		dev_err(dev, "%s: Invalid Arg\n", __func__);
+		dev_err(dev, "%s: Invalid argument passed to function\n", __func__);
 		return BC_STS_INV_ARG;
 	}
 
@@ -1106,7 +1106,7 @@ BC_STATUS __init crystalhd_setup_cmd_context(struct crystalhd_cmd *ctx,
 	int i = 0;
 
 	if (!ctx || !adp) {
-		dev_err(dev, "%s: Invalid arg\n", __func__);
+		dev_err(dev, "%s: Invalid argument passed to function\n", __func__);
 		return BC_STS_INV_ARG;
 	}
 
@@ -1210,7 +1210,7 @@ crystalhd_cmd_proc crystalhd_get_cmd_proc(struct crystalhd_cmd *ctx, uint32_t cm
 bool crystalhd_cmd_interrupt(struct crystalhd_cmd *ctx)
 {
 	if (!ctx) {
-		printk(KERN_ERR "%s: Invalid arg..\n", __func__);
+		printk(KERN_ERR "%s: Invalid argument passed to function\n", __func__);
 		return false;
 	}
 
