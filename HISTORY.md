@@ -25,4 +25,17 @@ Here are the ones I've found, roughly in order of most obsolete/broken to newest
 
 **Only the last version can be built and used without error on a modern kernel.** ([**@dlenski**](http://github.com/dlenski) is using it with kernel 4.4.0 and BCM70015.)
 
+## Updates (April 2025)
+
+- Added a GitHub Actions workflow (`.github/workflows/main.yml`) to automate the build and testing process for the CrystalHD driver and libraries.
+  - Installs required dependencies for building the driver and libraries.
+  - Compiles the CrystalHD driver and example program.
+  - Tests the driver loading using `modprobe` and verifies with `lsmod` and `dmesg`.
+  - Ensures compatibility with modern CI pipelines using Ubuntu.
+- Fixed a bug in the driver compilation process to ensure compatibility with newer kernels.
+- Updated the example program to improve stability and performance.
+- Enhanced documentation for building and testing the CrystalHD driver.
+
+This update improves the maintainability and testing of the project by integrating continuous integration.
+
 
