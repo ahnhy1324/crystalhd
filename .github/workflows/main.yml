@@ -27,11 +27,12 @@ jobs:
         make -j2
         sudo make install
 
-    - name: Compile libraries
+    - name: Compile libraries with specific gcc command
       run: |
-        cd ../../linux_lib/libcrystalhd/
+        cd linux_lib/libcrystalhd/
         make -j2
         sudo make install
+        g++ -I../include/ -I../linux_lib/libcrystalhd/ -D__LINUX_USER__ hellobcm.cpp -o hellobcm -lcrystalhd -lpthread
 
     - name: Test driver loading
       run: |
