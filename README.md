@@ -1,4 +1,4 @@
-# Crystal HD Hardware Decoder Driver on Ubuntu 13.04 Linux kernel 6.8.0-58
+# Crystal HD Hardware Decoder Driver on Ubuntu 24.04 Linux kernel 6.8.0-58
 ## Broadcom BCM70012 & BCM70015
 
 After a lot a retries to get the rigth experience with the Crystal HD on Ubuntu, 
@@ -22,7 +22,7 @@ Use make command to compile driver. If you have multiple core processor then use
     cd crystalhd/driver/linux
     autoconf
     ./configure
-    make -j2
+    sudo make -j2
     sudo make install
     
 **4. Install the libraries.**
@@ -38,7 +38,7 @@ Use make command to compile driver. If you have multiple core processor then use
 **6. Reboot your system** , then check if 'crystalhd' is listed in the output of the following commands.
 
     lsmod
-    dmesg | grep crystalhd
+    sudo dmesg | grep crystalhd
     
  Then you should see something like this:
  
