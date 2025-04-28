@@ -32,12 +32,8 @@ jobs:
         cd linux_lib/libcrystalhd/
         make -j2
         sudo make install
-        if [ -f ../../examples/hellobcm.cpp ]; then
-          g++ -I../include/ -I../linux_lib/libcrystalhd/ -D__LINUX_USER__ -I../../driver/linux ../../examples/hellobcm.cpp -o hellobcm -lcrystalhd -lpthread
-        else
-          echo "Error: hellobcm.cpp not found!"
-          exit 1
-        fi
+        cd ../../examples/
+        g++ -I../include/ -I../linux_lib/libcrystalhd/ -D__LINUX_USER__ hellobcm.cpp -o hellobcm -lcrystalhd -lpthread
 
     - name: Test driver loading
       run: |
