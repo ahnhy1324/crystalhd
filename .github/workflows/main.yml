@@ -38,5 +38,5 @@ jobs:
     - name: Test driver loading
       run: |
         sudo modprobe crystalhd
-        lsmod | grep crystalhd
-        dmesg | grep crystalhd
+        sudo lsmod | grep crystalhd
+        sudo dmesg | grep crystalhd
