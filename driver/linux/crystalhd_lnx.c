@@ -65,11 +65,11 @@ static int chd_dec_enable_int(struct crystalhd_adp *adp)
 		return -EINVAL;
 	}
 
-	rc = pci_alloc_irq_vectors(adp->pdev, 1, 1, PCI_IRQ_MSI);
-	if (rc < 0) {
-		dev_err(&adp->pdev->dev, "Failed to allocate MSI vectors\n");
-		return rc;
-	}
+	rc = pci_enable_msi(adp->pdev);
+	if(rc != 0)
+		dev_err(&adp->pdev->dev, "MSI request failed..\n");
+	else
+		adp->msi = 1;
 
 	rc = request_irq(adp->pdev->irq, chd_dec_isr, IRQF_SHARED,
 			 adp->name, (void *)adp);
