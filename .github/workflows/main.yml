@@ -1,0 +1,40 @@
+name: CrystalHD CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y checkinstall git-core autoconf build-essential subversion dpkg-dev fakeroot pbuilder dh-make debhelper devscripts patchutils quilt git-buildpackage pristine-tar
+
+    - name: Compile driver
+      run: |
+        cd driver/linux
+        autoconf
+        ./configure
+        make -j2
+        sudo make install
+
+    - name: Compile libraries
+      run: |
+        cd ../../linux_lib/libcrystalhd/
+        make -j2
+        sudo make install
+
+    - name: Test driver loading
+      run: |
+        sudo modprobe crystalhd
+        lsmod | grep crystalhd
+        dmesg | grep crystalhd
