@@ -474,7 +474,7 @@ bool crystalhd_link_start_device(struct crystalhd_hw *hw)
 	struct device *dev;
 
 	if (!hw)
-		return -EINVAL;
+		return false;
 
 	dev = &hw->adp->pdev->dev;
 

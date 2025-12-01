@@ -759,7 +759,7 @@ void crystalhd_flea_runtime_power_dn(struct crystalhd_hw *hw)
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
 	hw->TickStartInPD = rdtsc_ordered();
 #else
-	rdtscll(currTick);
+	rdtscll(hw->TickStartInPD);
 #endif
 	return;
 }
@@ -2901,7 +2901,7 @@ bool flea_GetPictureInfo(struct crystalhd_hw *hw, struct crystalhd_rx_dma_pkt * 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
 		hw->TickCntDecodePU =rdtsc_ordered();
 #else
-		rdtscll(currTick);
+		rdtscll(hw->TickCntDecodePU);
 #endif
 
 		dev_dbg(dev, "[FMT CH] DoneSz:0x%x, PIB:%x %x %x %x %x %x %x %x %x %x\n",
