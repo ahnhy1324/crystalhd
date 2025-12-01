@@ -1120,9 +1120,11 @@ BC_STATUS __init crystalhd_setup_cmd_context(struct crystalhd_cmd *ctx,
 		ctx->user[i].mode = DTS_MODE_INV;
 	}
 
-	ctx->hw_ctx = (struct crystalhd_hw*)kmalloc(sizeof(struct crystalhd_hw), GFP_KERNEL);
-
-	memset(ctx->hw_ctx, 0, sizeof(struct crystalhd_hw));
+	ctx->hw_ctx = kzalloc(sizeof(struct crystalhd_hw), GFP_KERNEL);
+	if (!ctx->hw_ctx) {
+		dev_err(dev, "%s: Failed to allocate hw context\n", __func__);
+		return BC_STS_ERROR;
+	}
 
 	/*Open and Close the Hardware to put it in to sleep state*/
 	crystalhd_hw_open(ctx->hw_ctx, ctx->adp);
