@@ -421,4 +421,3 @@ BC_STATUS DtsUpdateVidParams(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut);
 #endif
 
 #endif
-

@@ -1,12 +1,13 @@
-CPP := g++
-CPPFLAGS += -D__LINUX_USER__
-LDFLAGS += -lcrystalhd -lpthread
-INCLUDES += -I../include/ -I../linux_lib/libcrystalhd/
+CXX ?= g++
+CPPFLAGS += -D__LINUX_USER__ -I../include -I../linux_lib/libcrystalhd
+LDFLAGS += -L../linux_lib/libcrystalhd
+LDLIBS += -lcrystalhd -lpthread
 
 % : %.cpp
-	$(CPP) $(INCLUDES) $(CPPFLAGS) $(LDFLAGS) -o $@ $<
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
 
+.PHONY: all clean
 all: hellobcm mpeg2test
 
 clean:
-	rm hellobcm mpeg2test
+	rm -f hellobcm mpeg2test

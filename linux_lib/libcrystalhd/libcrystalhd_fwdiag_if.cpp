@@ -143,14 +143,15 @@ DtsDownloadFWDIAGToLINK(HANDLE hDevice,char *FwBinFile)
 {
 	BC_STATUS status = BC_STS_ERROR;
 	uint32_t byesDnld=0;
-	//char *fwfile=NULL;
 	char fwfile[MAX_PATH+1];
+	char fwdir[MAX_PATH+1];
 	DTS_LIB_CONTEXT		*Ctx = NULL;
 	uint32_t	RegVal =0;
 
 	BC_FWDIAG_RES_BLOCK_ST blMsg;
 
-		DebugLog_Trace(LDIL_DBG,"0. fwfile is %s\n",FwBinFile);
+	DebugLog_Trace(LDIL_DBG,"Requested firmware file is %s\n",
+		FwBinFile ? FwBinFile : "(default)");
 	/* Clear Host Message Area */
 	status = DtsClearFWDiagCommBlock(hDevice);
 	if(status != BC_STS_SUCCESS) {
@@ -162,19 +163,24 @@ DtsDownloadFWDIAGToLINK(HANDLE hDevice,char *FwBinFile)
 	DTS_GET_CTX(hDevice,Ctx);
 
 	/* Get the firmware file to download */
-	status = DtsGetDILPath(hDevice, fwfile, sizeof(fwfile));
+	status = DtsGetDILPath(hDevice, fwdir, sizeof(fwdir));
 	if(status != BC_STS_SUCCESS){
 		return status;
 	}
 
-	if(FwBinFile!=NULL){
-		strncat(fwfile,(const char*)FwBinFile,sizeof(fwfile));
-		DebugLog_Trace(LDIL_DBG,"1. fwfile is %s\n",FwBinFile);
-	}else{
-		strncat(fwfile,"/",sizeof(fwfile));
-		strncat(fwfile,"bcmFWDiag.bin",sizeof(fwfile));
-		DebugLog_Trace(LDIL_DBG,"2. fwfile is %s\n",fwfile);
+	const char *fwname = FwBinFile ? FwBinFile : "bcmFWDiag.bin";
+	size_t fwdir_len = strlen(fwdir);
+	const char *separator = fwdir_len && fwdir[fwdir_len - 1] != '/' &&
+		fwname[0] != '/' ? "/" : "";
+
+	int path_length = snprintf(fwfile, sizeof(fwfile), "%s%s%s", fwdir,
+		separator, fwname);
+	if (path_length < 0 || path_length >= (int)sizeof(fwfile)) {
+		DebugLog_Trace(LDIL_DBG,
+			"DtsDownloadFWDIAGToLINK: firmware path is too long\n");
+		return BC_STS_INV_ARG;
 	}
+	DebugLog_Trace(LDIL_DBG,"Firmware file is %s\n",fwfile);
 
 	//Read OTP_CMD registers to see if Keys are already programmed in OTP
 	RegVal =0;
@@ -274,8 +280,6 @@ DtsDownloadFWDIAGToLINK(HANDLE hDevice,char *FwBinFile)
 
 	return BC_STS_SUCCESS;
 }
-
-
 
 
 

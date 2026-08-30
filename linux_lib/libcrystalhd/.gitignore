@@ -1,2 +1,3 @@
 # generated/compiled files
 *.so.*
+libcrystalhd.pc

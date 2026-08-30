@@ -451,7 +451,7 @@ DtsDeviceOpen(
 	if (mode == DTS_HWINIT_MODE)
 		DtsSetHwInitSts(BC_DIL_HWINIT_IN_PROGRESS);
 
-	drvHandle =open(CRYSTALHD_API_DEV_NAME, O_RDWR);
+	drvHandle = open(CRYSTALHD_API_DEV_NAME, O_RDWR);
 	if(drvHandle < 0)
 	{
 		DebugLog_Trace(LDIL_ERR,"DtsDeviceOpen: Create File Failed\n");
@@ -701,25 +701,23 @@ DtsGetFWVersionFromFile(
 	uint32_t sizeRead=0;
 	uint32_t err=0;
 	FILE *fhnd =NULL;
+	char fwdir[MAX_PATH+1];
 	char fwfile[MAX_PATH+1];
 
 	DTS_LIB_CONTEXT		*Ctx = NULL;
 
 	DTS_GET_CTX(hDevice,Ctx);
 
-	sts = DtsGetDILPath(hDevice, fwfile, sizeof(fwfile));
+	sts = DtsGetDILPath(hDevice, fwdir, sizeof(fwdir));
 	if(sts != BC_STS_SUCCESS){
 		return sts;
 	}
 
-	if(fname){
-		strncat(fwfile,(const char*)fname,sizeof(fwfile));
-	}else{
-        if(Ctx->DevId == BC_PCI_DEVID_FLEA)
-            strncat(fwfile,FWBINFILE_70015,sizeof(FWBINFILE_70015));
-        else
-            strncat(fwfile,FWBINFILE_70012,sizeof(FWBINFILE_70012));
-	}
+	const char *fwname = fname ? fname :
+		(Ctx->DevId == BC_PCI_DEVID_FLEA ? FWBINFILE_70015 : FWBINFILE_70012);
+	if (snprintf(fwfile, sizeof(fwfile), "%s%s", fwdir, fwname) >=
+		(int)sizeof(fwfile))
+		return BC_STS_INV_ARG;
 
 	if(!StreamVer){
 		DebugLog_Trace(LDIL_DBG,"\nDtsGetFWVersionFromFile: Null Pointer argument");
@@ -2798,7 +2796,7 @@ DtsGetDILPath(
 	uint32_t *ptemp=NULL;
 	DTS_GET_CTX(hDevice,Ctx);
 
-	if(!DilPath || (size < sizeof(Ctx->DilPath)) ){
+	if(!DilPath || !size){
 		return BC_STS_INV_ARG;
 	}
 
@@ -2810,7 +2808,8 @@ DtsGetDILPath(
 	if(!(*ptemp))
 		DtsGetFirmwareFiles(Ctx);
 
-	strncpy(DilPath, Ctx->DilPath, sizeof(Ctx->DilPath));
+	if (snprintf(DilPath, size, "%s", Ctx->DilPath) >= (int)size)
+		return BC_STS_INV_ARG;
 
 
 	return BC_STS_SUCCESS;
@@ -2858,8 +2857,11 @@ DtsGetDriverStatus( HANDLE  hDevice,
 
 	DTS_LIB_CONTEXT			*Ctx = NULL;
 	DTS_GET_CTX(hDevice,Ctx);
+	if (!pStatus)
+		return BC_STS_INV_ARG;
 
-	temp.DrvNextMDataPLD = Ctx->HWOutPicWidth | (0x1 << 31);
+	memset(&temp, 0, sizeof(temp));
+	temp.DrvNextMDataPLD = Ctx->HWOutPicWidth | (0x1U << 31);
 
 	// If bit 31 of the input cpbEmptySize is set, then report the real HW size
 	// Else report the buffered size
@@ -2870,11 +2872,11 @@ DtsGetDriverStatus( HANDLE  hDevice,
 		realHWCPBSize = true;
 	if((pStatus->cpbEmptySize >> 30) & 0x1) {
 		readTXinfoOnly = true;
-		temp.DrvcpbEmptySize |= (1 << 30);
+		temp.DrvcpbEmptySize |= (1U << 30);
 	}
 
 	if(Ctx->VidParams.VideoAlgo == BC_VID_ALGO_VC1MP)
-		temp.DrvcpbEmptySize |= (1 << 29);
+		temp.DrvcpbEmptySize |= (1U << 29);
 
 	ret = DtsGetDrvStat(hDevice, &temp);
 

@@ -27,6 +27,8 @@
  *******************************************************************/
 
 #include <link.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <semaphore.h>
 #include <pthread.h>
@@ -34,6 +36,7 @@
 #include <sys/types.h>
 #include <sys/ipc.h>
 #include <sys/ioctl.h>
+#include <unistd.h>
 #include "7411d.h"
 #include "libcrystalhd_if.h"
 #include "libcrystalhd_int_if.h"
@@ -1143,6 +1146,27 @@ BC_IOCTL_DATA *DtsAllocIoctlData(DTS_LIB_CONTEXT *Ctx)
 
     return temp;
 }
+
+static uint32_t DtsFreeIoctlDataPool(DTS_LIB_CONTEXT *Ctx)
+{
+	BC_IOCTL_DATA *current;
+	uint32_t count = 0;
+
+	DtsLock(Ctx);
+	current = Ctx->pIoDataFreeHd;
+	Ctx->pIoDataFreeHd = NULL;
+	DtsUnLock(Ctx);
+
+	while (current) {
+		BC_IOCTL_DATA *next = current->next;
+
+		free(current);
+		current = next;
+		count++;
+	}
+
+	return count;
+}
 //------------------------------------------------------------------------
 // Name: DtsAllocMemPools
 // Description: Allocate memory for application specific configs and RxBuffs
@@ -1275,11 +1299,8 @@ void DtsReleaseMemPools(DTS_LIB_CONTEXT *Ctx)
 		free(Ctx->Mpools);
 	}
 
-	/* Release IOCTL_DATA pool */
-    while((pIoData=DtsAllocIoctlData(Ctx))!=NULL){
-		free(pIoData);
-		cnt++;
-	}
+	/* Release IOCTL_DATA pool without treating normal exhaustion as an error. */
+	cnt = DtsFreeIoctlDataPool(Ctx);
 
 	if(cnt != BC_IOCTL_DATA_POOL_SIZE){
 		DebugLog_Trace(LDIL_DBG,"DtsReleaseMemPools: pIoData MemPool Leak: %d..\n",cnt);
@@ -1299,18 +1320,14 @@ void DtsReleaseMemPools(DTS_LIB_CONTEXT *Ctx)
 void DtsReleaseMemPools_dbg(DTS_LIB_CONTEXT *Ctx)
 {
 	uint32_t	cnt=0;
-	BC_IOCTL_DATA *pIoData = NULL;
 
 
 	if(!Ctx || !Ctx->Mpools){
 		return;
 	}
 
-	/* Release IOCTL_DATA pool */
-    while((pIoData=DtsAllocIoctlData(Ctx))!=NULL){
-		free(pIoData);
-		cnt++;
-	}
+	/* Release IOCTL_DATA pool without treating normal exhaustion as an error. */
+	cnt = DtsFreeIoctlDataPool(Ctx);
 
 	if(cnt != BC_IOCTL_DATA_POOL_SIZE){
 		DebugLog_Trace(LDIL_DBG,"DtsReleaseMemPools: pIoData MemPool Leak: %d..\n",cnt);
@@ -1758,32 +1775,22 @@ int dtscallback(struct dl_phdr_info *info, size_t size, void *data)
 //------------------------------------------------------------------------
 BC_STATUS DtsGetFirmwareFiles(DTS_LIB_CONTEXT *Ctx)
 {
-    int fwfile_len;
-	char fwfile[MAX_PATH + 1];
-	char fwfilepath[MAX_PATH + 1];
+	const char *fwfile;
 #ifndef __APPLE__
 	const char fwdir[] = "/lib/firmware/";
 #else
 	const char fwdir[] = "/usr/lib/";
 #endif
 
-	if(Ctx->DevId == BC_PCI_DEVID_FLEA) {
-        fwfile_len = strlen(FWBINFILE_70015);
-        strncpy(fwfile, FWBINFILE_70015, fwfile_len);
-    } else {
-        fwfile_len = strlen(FWBINFILE_70012);
-        strncpy(fwfile, FWBINFILE_70012, fwfile_len);
-    }
+	fwfile = Ctx->DevId == BC_PCI_DEVID_FLEA ?
+		FWBINFILE_70015 : FWBINFILE_70012;
 
-	if ((strlen(fwdir) + fwfile_len) > (MAX_PATH + 1)) {
+	if (snprintf(Ctx->FwBinFile, sizeof(Ctx->FwBinFile), "%s%s",
+		fwdir, fwfile) >= (int)sizeof(Ctx->FwBinFile)) {
 		DebugLog_Trace(LDIL_DATA,"DtsGetFirmwareFiles:Path is too large ....");
 		return BC_STS_ERROR;
 	}
-
-	strncpy(fwfilepath, fwdir, strlen(fwdir) + 1);
-    strncat(fwfilepath, fwfile, fwfile_len);
-    fwfilepath[strlen(fwdir) + fwfile_len] = '\0';
-    strncpy(Ctx->FwBinFile, fwfilepath, strlen(fwdir) + fwfile_len);
+	snprintf(Ctx->DilPath, sizeof(Ctx->DilPath), "%s", fwdir);
 
 	return BC_STS_SUCCESS;
 
@@ -2114,30 +2121,28 @@ BC_STATUS DtsPrepareMdata(DTS_LIB_CONTEXT *Ctx, uint64_t timeStamp, DTS_INPUT_MD
 //------------------------------------------------------------------------
 BC_STATUS DtsPrepareMdataASFHdr(DTS_LIB_CONTEXT *Ctx, DTS_INPUT_MDATA *mData, uint8_t* buf)
 {
+	if(buf==NULL)
+		return BC_STS_INSUFF_RES;
 
-
-		if(buf==NULL)
-			return BC_STS_INSUFF_RES;
-
-			buf[0]=0;
-			buf[1] = 0;
-			buf[2] = 01;
-			buf[3] = 0xE0;
-			buf[4] = 0x0;
-			buf[5]=35;
-			buf[6] =0x80;
-			buf[7]=0;
-			buf[8]= 0;
-			buf[9]=0x5a;buf[10]=0x5a;buf[11]=0x5a;buf[12]=0x5a;
-			buf[13]=0x0; buf[14]=0x0;buf[15]=0x0;buf[16]=0x20;
-			buf[17]=0x0; buf[18]=0x0;buf[19]=0x0;buf[20]=0x9;
-			buf[21]=0x5a; buf[22]=0x5a;buf[23]=0x5a;buf[24]=0x5a;
-			buf[25]=0xBD;
-			buf[26]=0x40;
-			buf[27]=mData->Spes.SeqNum[0];buf[28]=mData->Spes.SeqNum[1];
-			buf[29]=mData->Spes.Command;
-			buf[30]=buf[31]=buf[32]=buf[33]=buf[34]=buf[35]=buf[36]=buf[37]=buf[38]=buf[39]=buf[40]=0x0;
-			return BC_STS_SUCCESS;
+	buf[0]=0;
+	buf[1] = 0;
+	buf[2] = 01;
+	buf[3] = 0xE0;
+	buf[4] = 0x0;
+	buf[5]=35;
+	buf[6] =0x80;
+	buf[7]=0;
+	buf[8]= 0;
+	buf[9]=0x5a;buf[10]=0x5a;buf[11]=0x5a;buf[12]=0x5a;
+	buf[13]=0x0; buf[14]=0x0;buf[15]=0x0;buf[16]=0x20;
+	buf[17]=0x0; buf[18]=0x0;buf[19]=0x0;buf[20]=0x9;
+	buf[21]=0x5a; buf[22]=0x5a;buf[23]=0x5a;buf[24]=0x5a;
+	buf[25]=0xBD;
+	buf[26]=0x40;
+	buf[27]=mData->Spes.SeqNum[0];buf[28]=mData->Spes.SeqNum[1];
+	buf[29]=mData->Spes.Command;
+	buf[30]=buf[31]=buf[32]=buf[33]=buf[34]=buf[35]=buf[36]=buf[37]=buf[38]=buf[39]=buf[40]=0x0;
+	return BC_STS_SUCCESS;
 }
 
 void DtsUpdateInStats(DTS_LIB_CONTEXT	*Ctx, uint32_t	size)
@@ -2487,7 +2492,7 @@ void * txThreadProc(void *ctx)
 	uint32_t dramOff;
 	uint8_t encrypted = 0;
 	HANDLE hDevice = (HANDLE)Ctx;
-	BC_DTS_STATUS pStat;
+	BC_DTS_STATUS pStat = {};
 	int ret = 0;
 	uint32_t waitForPictCount = 0;
 	uint32_t numPicCaptured = 0;
@@ -2500,7 +2505,7 @@ void * txThreadProc(void *ctx)
 	{
 		// First check the status of the HW
 		// Get the real HW free size and also mark as we want TX information only
-		pStat.cpbEmptySize = (0x3 << 31);
+		pStat.cpbEmptySize = (0x3U << 30);
 
 		sts = DtsGetDriverStatus(hDevice, &pStat);
 		if(sts != BC_STS_SUCCESS)
@@ -2643,7 +2648,7 @@ DRVIFLIB_INT_API BC_STATUS DtsGetHWFeatures(uint32_t *pciids)
 
 	memset(&pIo, 0, sizeof(BC_IOCTL_DATA));
 
-	drvHandle =open(CRYSTALHD_API_DEV_NAME, O_RDWR);
+	drvHandle = open(CRYSTALHD_API_DEV_NAME, O_RDWR);
 	if(drvHandle < 0)
 	{
 		DebugLog_Trace(LDIL_ERR,"DtsGetHWFeatures: Create File Failed\n");

@@ -6,10 +6,10 @@
 #include <iostream>
 #include <fstream>
 #include <sys/shm.h>
+#include <unistd.h>
 
-#include <libcrystalhd/bc_dts_defs.h>
-#include <libcrystalhd/bc_dts_types.h>
-#include <libcrystalhd/libcrystalhd_if.h>
+#include "bc_dts_types.h"
+#include "libcrystalhd_if.h"
 
 #define TRY_CALL_1(func, p1, errmsg) \
   if (BC_STS_SUCCESS != func(p1)) \
@@ -183,14 +183,15 @@ int main()
           /*BC_DTS_STATUS stat;
           if (BC_STS_SUCCESS == DtsGetDriverStatus(device, &stat))
           {
-            printf("Driver Status\n-------------------\n", stat.ReadyListCount);
+            printf("Driver Status\n-------------------\n");
             printf("ReadyListCount: %u\n", stat.ReadyListCount);
             printf("FreeListCount: %u\n", stat.FreeListCount);
             printf("FramesDropped: %u\n", stat.FramesDropped);
             printf("FramesCaptured: %u\n", stat.FramesCaptured);
             printf("FramesRepeated: %u\n", stat.FramesRepeated);
             printf("InputCount: %u (ChunksSent: %u)\n", stat.ReadyListCount, chunksSent);
-            printf("InputTotalSize: %llu (BytesSent: %u)\n", stat.InputTotalSize, bytesSent);
+            printf("InputTotalSize: %llu (BytesSent: %u)\n",
+                   (unsigned long long)stat.InputTotalSize, bytesSent);
             printf("InputBusyCount: %u\n", stat.InputBusyCount);
             printf("PIBMissCount: %u\n", stat.PIBMissCount);
           }*/
@@ -216,7 +217,8 @@ int main()
         {
           // Read format data from driver
           printf("New Format\n----------------------------------\n");
-          printf("\tTimeStamp: %llu\n", output.PicInfo.timeStamp);
+          printf("\tTimeStamp: %llu\n",
+                 (unsigned long long)output.PicInfo.timeStamp);
           printf("\tPicture Number: %u\n", output.PicInfo.picture_number);
           printf("\tWidth: %u\n", output.PicInfo.width);
           printf("\tHeight: %u\n", output.PicInfo.height);
@@ -273,5 +275,3 @@ int main()
   DtsDeviceClose(device);
   return 0;
 }
-
-

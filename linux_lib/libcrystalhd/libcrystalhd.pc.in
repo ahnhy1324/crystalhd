@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+prefix=@prefix@
+exec_prefix=${prefix}
+libdir=@libdir@
+includedir=@includedir@
+
+Name: libcrystalhd
+Description: Broadcom Crystal HD userspace decoder interface
+Version: 3.22.0
+Libs: -L${libdir} -lcrystalhd
+Cflags: -I${includedir}/libcrystalhd

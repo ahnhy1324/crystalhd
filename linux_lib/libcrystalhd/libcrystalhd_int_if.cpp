@@ -738,7 +738,7 @@ DtsDevMemRd(
     )
 {
 	uint8_t					*pXferBuff;
-	uint32_t					IOcCode,size_in_dword;
+	uint32_t					size_in_dword;
 	BC_IOCTL_DATA		*pIoctlData;
 	BC_CMD_DEV_MEM		*pMemAccessRd;
 	uint32_t					BytesReturned,AllocSz;
@@ -782,7 +782,6 @@ DtsDevMemRd(
 	memset(pXferBuff,'a',BuffSz);
 	/* The size is passed in Bytes*/
 	pMemAccessRd->NumDwords = size_in_dword;
-	IOcCode = BCM_IOC_MEM_RD;
 	if(!DtsDrvIoctl(hDevice,
 					BCM_IOC_MEM_RD,
 					pIoctlData,
@@ -793,19 +792,22 @@ DtsDevMemRd(
 					0))
 	{
 		DebugLog_Trace(LDIL_DBG,"DtsDevMemRd: DeviceIoControl Failed\n");
+		free(pIoctlData);
 		return BC_STS_ERROR;
 	}
 
 	if(BC_STS_ERROR == pIoctlData->RetSts)
 	{
+		BC_STATUS status = pIoctlData->RetSts;
+
 		DebugLog_Trace(LDIL_DBG,"DtsDevMemRd: IOCTL Cmd Failed By Driver\n");
-		return pIoctlData->RetSts;
+		free(pIoctlData);
+		return status;
 	}
 
 	memcpy(Buffer,pXferBuff,BuffSz);
 
-	if(pIoctlData)
-		free(pIoctlData);
+	free(pIoctlData);
 
 	return BC_STS_SUCCESS;
 }
@@ -821,7 +823,7 @@ DtsDevMemWr(
     )
 {
 	uint8_t					*pXferBuff;
-	uint32_t					IOcCode,size_in_dword;
+	uint32_t					size_in_dword;
 	BC_IOCTL_DATA		*pIoctlData;
 	BC_CMD_DEV_MEM		*pMemAccessRd;
 	uint32_t					BytesReturned,AllocSz;
@@ -868,7 +870,6 @@ DtsDevMemWr(
 	memcpy(pXferBuff,Buffer,BuffSz);
 	/* The size is passed in Bytes*/
 	pMemAccessRd->NumDwords = size_in_dword;
-	IOcCode = BCM_IOC_MEM_WR;
 	if(!DtsDrvIoctl(hDevice,
 					BCM_IOC_MEM_WR,
 					pIoctlData,
@@ -876,20 +877,23 @@ DtsDevMemWr(
 					pIoctlData,
 					AllocSz,
 					(LPDWORD)&BytesReturned,
-					NULL))
+					FALSE))
 	{
 		DebugLog_Trace(LDIL_DBG,"DtsDevMemWr: DeviceIoControl Failed\n");
+		free(pIoctlData);
 		return BC_STS_ERROR;
 	}
 
 	if(BC_STS_ERROR == pIoctlData->RetSts)
 	{
+		BC_STATUS status = pIoctlData->RetSts;
+
 		DebugLog_Trace(LDIL_DBG,"DtsDevMemWr: IOCTL Cmd Failed By Driver\n");
-		return pIoctlData->RetSts;
+		free(pIoctlData);
+		return status;
 	}
 
-	if(pIoctlData)
-		free(pIoctlData);
+	free(pIoctlData);
 
 	return BC_STS_SUCCESS;
 
@@ -1178,12 +1182,15 @@ DtsGetFWFiles(
 	BC_STATUS	sts = BC_STS_SUCCESS;
 
 	DTS_GET_CTX(hDevice,Ctx);
+	if (!StreamFName || !VDecOuter || !VDecInner)
+		return BC_STS_INV_ARG;
 
 	sts = DtsGetFirmwareFiles(Ctx);
 	if(sts == BC_STS_SUCCESS){
-		strncpy(StreamFName,  Ctx->StreamFile, MAX_PATH);
-		strncpy(VDecOuter,  Ctx->VidOuter, MAX_PATH);
-		strncpy(VDecInner, Ctx->VidInner, MAX_PATH );
+		if (snprintf(StreamFName, MAX_PATH, "%s", Ctx->StreamFile) >= MAX_PATH ||
+			snprintf(VDecOuter, MAX_PATH, "%s", Ctx->VidOuter) >= MAX_PATH ||
+			snprintf(VDecInner, MAX_PATH, "%s", Ctx->VidInner) >= MAX_PATH)
+			return BC_STS_ERROR;
 	}else{
 		return sts;
 	}
@@ -1215,7 +1222,7 @@ DtsCopyRawDataToOutBuff(DTS_LIB_CONTEXT	*Ctx,
 	uint32_t	y,lDestStride=0;
 	uint8_t	*pSrc = NULL, *pDest=NULL;
 	uint32_t	dstWidthInPixels, dstHeightInPixels;
-	uint32_t srcWidthInPixels = 0, srcHeightInPixels;
+	uint32_t srcWidthInPixels = 0;
 	BC_STATUS	Sts = BC_STS_SUCCESS;
 
 	if ( (Sts = DtsChkYUVSizes(Ctx,Vout,Vin)) != BC_STS_SUCCESS)
@@ -1240,7 +1247,6 @@ DtsCopyRawDataToOutBuff(DTS_LIB_CONTEXT	*Ctx,
 		}
 #endif
 		srcWidthInPixels = Ctx->HWOutPicWidth;
-		srcHeightInPixels = dstHeightInPixels;
 	} else {
 		dstWidthInPixels = Vin->PicInfo.width;
 		dstHeightInPixels = Vin->PicInfo.height;
@@ -1280,7 +1286,7 @@ BC_STATUS DtsCopyNV12ToYV12(DTS_LIB_CONTEXT	*Ctx, BC_DTS_PROC_OUT *Vout, BC_DTS_
 	uint32_t	x,y,lDestStrideY=0, lDestStrideUV=0;
 	uint8_t	*pSrc = NULL, *pDest=NULL;
 	uint32_t	dstWidthInPixels, dstHeightInPixels;
-	uint32_t srcWidthInPixels, srcHeightInPixels;
+	uint32_t srcWidthInPixels;
 
 
 	if ( (Sts = DtsChkYUVSizes(Ctx,Vout,Vin)) != BC_STS_SUCCESS)
@@ -1308,7 +1314,6 @@ BC_STATUS DtsCopyNV12ToYV12(DTS_LIB_CONTEXT	*Ctx, BC_DTS_PROC_OUT *Vout, BC_DTS_
 			return BC_STS_IO_XFR_ERROR;
 		}
 		srcWidthInPixels = Ctx->HWOutPicWidth;
-		srcHeightInPixels = dstHeightInPixels;
 
 		//copy luma
 		pDest = Vout->Ybuff;
@@ -1363,7 +1368,7 @@ BC_STATUS DtsCopyNV12(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *Vout, BC_DTS_PROC_O
 	uint32_t y,lDestStrideY=0,lDestStrideUV=0;
 	uint8_t	*pSrc = NULL, *pDest=NULL;
 	uint32_t dstWidthInPixels, dstHeightInPixels;
-	uint32_t srcWidthInPixels=0, srcHeightInPixels;
+	uint32_t srcWidthInPixels=0;
 
 	BC_STATUS	Sts = BC_STS_SUCCESS;
 
@@ -1387,7 +1392,6 @@ BC_STATUS DtsCopyNV12(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *Vout, BC_DTS_PROC_O
 			(Vout->UVBuffDoneSz < (dstWidthInPixels * dstHeightInPixels/2 / 4)))
 			return BC_STS_IO_XFR_ERROR;
 		srcWidthInPixels = Ctx->HWOutPicWidth;
-		srcHeightInPixels = dstHeightInPixels;
 	} else {
 		dstWidthInPixels = Vin->PicInfo.width;
 		dstHeightInPixels = Vin->PicInfo.height;
@@ -1465,16 +1469,6 @@ static void fast_memcpy(uint8_t *dst, const uint8_t *src, uint32_t count)
 
 	while (count --)
 		*dst++ = *src++;
-}
-
-// this is not good.
-// if we have 3 buffers, we cannot assume V is after U
-static BC_STATUS DtsCopy422ToYV12(uint8_t *dstY, uint8_t *dstUV, const uint8_t *srcY, uint32_t srcWidth, uint32_t dstWidth, uint32_t height, uint32_t strideY, uint32_t strideUV)
-{ // copy YUY2 to YV12
-	// TODO
-	// NOTE: if we want to support this porperly, we will need to add a Vbuffer pointer
-	// if we have 3 destination buffers, there's no guarantee that V buffer is derivable from UV pointer.
-	return BC_STS_INV_ARG;
 }
 
 // this is just a memcpy
@@ -1669,15 +1663,6 @@ static BC_STATUS DtsCopy422ToNV12(uint8_t *dstY, uint8_t *dstUV, const uint8_t *
 	return BC_STS_SUCCESS;
 }
 
-
-// this is not good.
-// if we have 3 textures, we cannot assume V is after U
-static BC_STATUS DtsCopy420ToYV12(uint8_t *dstY, uint8_t *dstUV, const uint8_t *srcY, const uint8_t *srcUV, uint32_t srcWidth, uint32_t dstWidth, uint32_t height, uint32_t strideY, uint32_t strideUV)
-{
-	// TODO
-	// NOTE: if we want to support this porperly, we will need to add a Vbuffer pointer
-	return BC_STS_INV_ARG;
-}
 
 static BC_STATUS DtsCopy420ToYUY2(uint8_t *dstY, uint8_t *dstUV, const uint8_t *srcY, const uint8_t *srcUV, uint32_t srcWidth, uint32_t dstWidth, uint32_t height, uint32_t strideY, uint32_t strideUV)
 {
@@ -2238,4 +2223,3 @@ void DumpInputSampleToFile(uint8_t *buff, uint32_t buffsize)
 
 	fflush(pOutputFile);
 }
-
