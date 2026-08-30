@@ -188,7 +188,6 @@ void crystalhd_flea_init_dram(struct crystalhd_hw *hw)
 {
 	int32_t ddr2_speed_grade[2];
 	uint32_t sd_0_col_size, sd_0_bank_size, sd_0_row_size;
-	uint32_t sd_1_col_size, sd_1_bank_size, sd_1_row_size;
 	uint32_t ddr3_mode[2];
 	uint32_t regVal;
 	bool bDDR3Detected=false; /*Should be filled in using the detection logic. Default to DDR2 */
@@ -202,9 +201,6 @@ void crystalhd_flea_init_dram(struct crystalhd_hw *hw)
 	sd_0_bank_size = BANK_SIZE_8;
 	sd_0_row_size = ROW_SIZE_8K; /* DDR2 */
 	/*	sd_0_row_size = ROW_SIZE_16K; // DDR3 */
-	sd_1_col_size = COL_BITS_10;
-	sd_1_bank_size = BANK_SIZE_8;
-	sd_1_row_size = ROW_SIZE_8K;
 	ddr3_mode[0] = 0;
 	ddr3_mode[1] = 0;
 
@@ -213,8 +209,6 @@ void crystalhd_flea_init_dram(struct crystalhd_hw *hw)
 	{
 		ddr3_mode[0] = 1;
 		sd_0_row_size = ROW_SIZE_16K; /* DDR3 */
-		sd_1_row_size = ROW_SIZE_16K; /* DDR3 */
-
 	}
 
 	/* Step 1. PLL Init */
@@ -261,6 +255,7 @@ void crystalhd_flea_init_dram(struct crystalhd_hw *hw)
 uint32_t crystalhd_flea_reg_rd(struct crystalhd_adp *adp, uint32_t reg_off)
 {
 	uint32_t baseAddr = reg_off >> 16;
+	uint32_t direct_off = reg_off & 0x0000FFFF;
 	void	*regAddr;
 
 	if (!adp) {
@@ -270,12 +265,13 @@ uint32_t crystalhd_flea_reg_rd(struct crystalhd_adp *adp, uint32_t reg_off)
 
 	if(baseAddr == 0 || baseAddr == FLEA_GISB_DIRECT_BASE) /* Direct Mapped Region */
 	{
-		regAddr = adp->i2o_addr + (reg_off & 0x0000FFFF);
-		if(regAddr > (adp->i2o_addr + adp->pci_i2o_len)) {
+		if (adp->pci_i2o_len < sizeof(uint32_t) ||
+		    direct_off > adp->pci_i2o_len - sizeof(uint32_t)) {
 			dev_err(&adp->pdev->dev, "%s: reg_off out of range: 0x%08x\n",
 					__func__, reg_off);
 			return 0;
 		}
+		regAddr = adp->i2o_addr + direct_off;
 		return readl(regAddr);
 	}
 	else /* non directly mapped region */
@@ -294,6 +290,7 @@ uint32_t crystalhd_flea_reg_rd(struct crystalhd_adp *adp, uint32_t reg_off)
 void crystalhd_flea_reg_wr(struct crystalhd_adp *adp, uint32_t reg_off, uint32_t val)
 {
 	uint32_t baseAddr = reg_off >> 16;
+	uint32_t direct_off = reg_off & 0x0000FFFF;
 	void	*regAddr;
 
 	if (!adp) {
@@ -303,12 +300,13 @@ void crystalhd_flea_reg_wr(struct crystalhd_adp *adp, uint32_t reg_off, uint32_t
 
 	if(baseAddr == 0 || baseAddr == FLEA_GISB_DIRECT_BASE) /* Direct Mapped Region */
 	{
-		regAddr = adp->i2o_addr + (reg_off & 0x0000FFFF);
-		if(regAddr > (adp->i2o_addr + adp->pci_i2o_len)) {
+		if (adp->pci_i2o_len < sizeof(uint32_t) ||
+		    direct_off > adp->pci_i2o_len - sizeof(uint32_t)) {
 			dev_err(&adp->pdev->dev, "%s: reg_off out of range: 0x%08x\n",
 					__func__, reg_off);
 					return ;
 		}
+		regAddr = adp->i2o_addr + direct_off;
 		writel(val, regAddr);
 	}
 	else /* non directly mapped region */
@@ -326,7 +324,7 @@ void crystalhd_flea_reg_wr(struct crystalhd_adp *adp, uint32_t reg_off, uint32_t
 
 /**
 * crystalhd_flea_mem_rd - Read data from DRAM area.
-* @adp: Adapter instance
+* @hw: Hardware context.
 * @start_off: Start offset.
 * @dw_cnt: Count in dwords.
 * @rd_buff: Buffer to copy the data from dram.
@@ -352,7 +350,7 @@ BC_STATUS crystalhd_flea_mem_rd(struct crystalhd_hw *hw, uint32_t start_off,
 		return BC_STS_BUSY;
 	}
 
-	if((start_off + dw_cnt * 4) > FLEA_TOTAL_DRAM_SIZE) {
+	if (!crystalhd_valid_dram_range(start_off, dw_cnt)) {
 		printk(KERN_ERR "Access beyond DRAM limit at Addr 0x%x and size 0x%x words\n", start_off, dw_cnt);
 		return BC_STS_ERROR;
 	}
@@ -376,7 +374,7 @@ BC_STATUS crystalhd_flea_mem_rd(struct crystalhd_hw *hw, uint32_t start_off,
 
 /**
 * crystalhd_flea_mem_wr - Write data to DRAM area.
-* @adp: Adapter instance
+* @hw: Hardware context.
 * @start_off: Start offset.
 * @dw_cnt: Count in dwords.
 * @wr_buff: Data Buffer to be written.
@@ -403,7 +401,7 @@ BC_STATUS crystalhd_flea_mem_wr(struct crystalhd_hw *hw, uint32_t start_off,
 		return BC_STS_BUSY;
 	}
 
-	if((start_off + dw_cnt * 4) > FLEA_TOTAL_DRAM_SIZE) {
+	if (!crystalhd_valid_dram_range(start_off, dw_cnt)) {
 		printk("Access beyond DRAM limit at Addr 0x%x and size 0x%x words\n", start_off, dw_cnt);
 		return BC_STS_ERROR;
 	}
@@ -863,7 +861,6 @@ bool crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
 	bool StChangeSuccess=false;
 	uint32_t tempFLL = 0;
 	uint32_t freeListLen = 0;
-	BC_STATUS sts;
 	struct crystalhd_rx_dma_pkt *rx_pkt = NULL;
 
 	freeListLen = crystalhd_dioq_count(hw->rx_freeq);
@@ -886,8 +883,9 @@ bool crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
 				if(hw->PicQSts != 0)
 				{
 					rx_pkt = crystalhd_dioq_fetch(hw->rx_freeq);
-					if (rx_pkt)
-						sts = hw->pfnPostRxSideBuff(hw, rx_pkt);
+					if (rx_pkt && hw->pfnPostRxSideBuff(hw, rx_pkt) !=
+						      BC_STS_SUCCESS)
+						dev_err(chddev(), "failed to repost RX buffer\n");
 				}
 				/*printk(" Success\n"); */
 
@@ -910,8 +908,9 @@ bool crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
 				if(hw->PicQSts != 0)
 				{
 					rx_pkt = crystalhd_dioq_fetch(hw->rx_freeq);
-					if (rx_pkt)
-						sts = hw->pfnPostRxSideBuff(hw, rx_pkt);
+					if (rx_pkt && hw->pfnPostRxSideBuff(hw, rx_pkt) !=
+						      BC_STS_SUCCESS)
+						dev_err(chddev(), "failed to repost RX buffer\n");
 				}
 				if (hw->PwrDwnTxIntr)
 				{
@@ -1132,7 +1131,7 @@ void crystalhd_flea_update_temperature(struct crystalhd_hw *hw)
 
 /**
 * crystalhd_flea_download_fw - Write data to DRAM area.
-* @adp: Adapter instance
+* @hw: Hardware context.
 * @pBuffer: Buffer pointer for the FW data.
 * @buffSz: data size in bytes.
 *

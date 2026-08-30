@@ -16,6 +16,10 @@
 ***************************************************************************/
 
 #include "crystalhd_lnx.h"
+#include "crystalhd_compat_ioctl.h"
+
+#include <linux/capability.h>
+#include <linux/overflow.h>
 
 static struct class *crystalhd_class;
 
@@ -122,7 +126,8 @@ void chd_dec_free_iodata(struct crystalhd_adp *adp, crystalhd_ioctl_data *iodata
 	spin_unlock_irqrestore(&adp->lock, flags);
 }
 
-static inline int crystalhd_user_data(unsigned long ud, void *dr, int size, int set)
+static inline int crystalhd_user_data(unsigned long ud, void *dr, size_t size,
+				      bool set)
 {
 	int rc;
 
@@ -144,10 +149,190 @@ static inline int crystalhd_user_data(unsigned long ud, void *dr, int size, int 
 	return rc;
 }
 
-static int chd_dec_fetch_cdata(struct crystalhd_adp *adp, crystalhd_ioctl_data *io,
-			       uint32_t m_sz, unsigned long ua)
+#ifdef CONFIG_COMPAT
+static void crystalhd_ppb_to_compat(struct crystalhd_ppb32 *dst,
+				    const struct PPB *src)
 {
-	unsigned long ua_off;
+	enum {
+		CRYSTALHD_PROTOCOL_H264 = 0,
+		CRYSTALHD_PROTOCOL_MPEG2 = 1,
+		CRYSTALHD_PROTOCOL_VC1 = 4,
+		CRYSTALHD_PROTOCOL_MPEG1 = 5,
+		CRYSTALHD_PROTOCOL_MPEG2_DTV = 6,
+		CRYSTALHD_PROTOCOL_VC1_ASF = 7,
+	};
+
+	memcpy(dst->common, src, sizeof(dst->common));
+
+	switch (src->protocol) {
+	case CRYSTALHD_PROTOCOL_H264:
+		memcpy(&dst->other.h264, &src->other.h264,
+		       offsetof(struct PPB_H264, user_data));
+		dst->other.h264.user_data =
+			ptr_to_compat(src->other.h264.user_data);
+		dst->other.h264.fgt = ptr_to_compat(src->other.h264.pfgt);
+		break;
+	case CRYSTALHD_PROTOCOL_MPEG1:
+	case CRYSTALHD_PROTOCOL_MPEG2:
+	case CRYSTALHD_PROTOCOL_MPEG2_DTV:
+		memcpy(&dst->other.mpeg, &src->other.mpeg,
+		       offsetof(struct PPB_MPEG, userData));
+		dst->other.mpeg.user_data =
+			ptr_to_compat(src->other.mpeg.userData);
+		break;
+	case CRYSTALHD_PROTOCOL_VC1:
+	case CRYSTALHD_PROTOCOL_VC1_ASF:
+		memcpy(&dst->other.vc1, &src->other.vc1,
+		       offsetof(struct PPB_VC1, userData));
+		dst->other.vc1.user_data =
+			ptr_to_compat(src->other.vc1.userData);
+		break;
+	default:
+		memset(&dst->other, 0, sizeof(dst->other));
+		break;
+	}
+}
+
+static void crystalhd_dec_out_to_compat(struct crystalhd_dec_out32 *dst,
+					const BC_DEC_OUT_BUFF *src)
+{
+	memset(dst, 0, sizeof(*dst));
+	dst->output.b422_mode = src->OutPutBuffs.b422Mode;
+	dst->output.yuv_buf = ptr_to_compat(src->OutPutBuffs.YuvBuff);
+	dst->output.yuv_buf_size = src->OutPutBuffs.YuvBuffSz;
+	dst->output.uv_buf_offset = src->OutPutBuffs.UVbuffOffset;
+	dst->output.y_done_size = src->OutPutBuffs.YBuffDoneSz;
+	dst->output.uv_done_size = src->OutPutBuffs.UVBuffDoneSz;
+	dst->output.ref_count = src->OutPutBuffs.RefCnt;
+
+	memcpy(&dst->pib, &src->PibInfo,
+	       offsetof(struct C011_PIB, ppb));
+	crystalhd_ppb_to_compat(&dst->pib.ppb, &src->PibInfo.ppb);
+	dst->flags = src->Flags;
+	dst->bad_frame_count = src->BadFrCnt;
+}
+
+static int crystalhd_compat_user_data(unsigned long ua, BC_IOCTL_DATA *native,
+				      u32 cmd, bool set)
+{
+	struct crystalhd_ioctl_data32 compat;
+	int rc;
+
+	if (set) {
+		memset(&compat, 0, sizeof(compat));
+		compat.ret_status = native->RetSts;
+		compat.ioctl_data_size = native->IoctlDataSz;
+		compat.timeout = native->Timeout;
+		memcpy(compat.u.raw, &native->u, sizeof(compat.u.raw));
+		compat.next = ptr_to_compat(native->next);
+
+		switch (cmd) {
+		case BCM_IOC_PROC_INPUT:
+			memset(&compat.u.proc_input, 0,
+			       sizeof(compat.u.proc_input));
+			compat.u.proc_input.dma_buf =
+				ptr_to_compat(native->u.ProcInput.pDmaBuff);
+			compat.u.proc_input.buffer_size =
+				native->u.ProcInput.BuffSz;
+			compat.u.proc_input.mapped = native->u.ProcInput.Mapped;
+			compat.u.proc_input.encrypted =
+				native->u.ProcInput.Encrypted;
+			memcpy(compat.u.proc_input.reserved,
+			       native->u.ProcInput.Rsrd,
+			       sizeof(compat.u.proc_input.reserved));
+			compat.u.proc_input.dram_offset =
+				native->u.ProcInput.DramOffset;
+			break;
+		case BCM_IOC_ADD_RXBUFFS:
+			memset(&compat.u.rx_bufs, 0, sizeof(compat.u.rx_bufs));
+			compat.u.rx_bufs.b422_mode = native->u.RxBuffs.b422Mode;
+			compat.u.rx_bufs.yuv_buf =
+				ptr_to_compat(native->u.RxBuffs.YuvBuff);
+			compat.u.rx_bufs.yuv_buf_size =
+				native->u.RxBuffs.YuvBuffSz;
+			compat.u.rx_bufs.uv_buf_offset =
+				native->u.RxBuffs.UVbuffOffset;
+			compat.u.rx_bufs.y_done_size =
+				native->u.RxBuffs.YBuffDoneSz;
+			compat.u.rx_bufs.uv_done_size =
+				native->u.RxBuffs.UVBuffDoneSz;
+			compat.u.rx_bufs.ref_count = native->u.RxBuffs.RefCnt;
+			break;
+		case BCM_IOC_FETCH_RXBUFF:
+			crystalhd_dec_out_to_compat(&compat.u.dec_out,
+						    &native->u.DecOutData);
+			break;
+		default:
+			break;
+		}
+
+		rc = copy_to_user(compat_ptr(ua), &compat, sizeof(compat));
+	} else {
+		rc = copy_from_user(&compat, compat_ptr(ua), sizeof(compat));
+		if (rc)
+			return -EFAULT;
+
+		memset(native, 0, sizeof(*native));
+		native->RetSts = compat.ret_status;
+		native->IoctlDataSz = compat.ioctl_data_size;
+		native->Timeout = compat.timeout;
+		memcpy(&native->u, compat.u.raw, sizeof(compat.u.raw));
+		native->next = compat_ptr(compat.next);
+
+		switch (cmd) {
+		case BCM_IOC_PROC_INPUT:
+			memset(&native->u.ProcInput, 0,
+			       sizeof(native->u.ProcInput));
+			native->u.ProcInput.pDmaBuff =
+				compat_ptr(compat.u.proc_input.dma_buf);
+			native->u.ProcInput.BuffSz =
+				compat.u.proc_input.buffer_size;
+			native->u.ProcInput.Mapped =
+				compat.u.proc_input.mapped;
+			native->u.ProcInput.Encrypted =
+				compat.u.proc_input.encrypted;
+			memcpy(native->u.ProcInput.Rsrd,
+			       compat.u.proc_input.reserved,
+			       sizeof(native->u.ProcInput.Rsrd));
+			native->u.ProcInput.DramOffset =
+				compat.u.proc_input.dram_offset;
+			break;
+		case BCM_IOC_ADD_RXBUFFS:
+			memset(&native->u.RxBuffs, 0,
+			       sizeof(native->u.RxBuffs));
+			native->u.RxBuffs.b422Mode =
+				compat.u.rx_bufs.b422_mode;
+			native->u.RxBuffs.YuvBuff =
+				compat_ptr(compat.u.rx_bufs.yuv_buf);
+			native->u.RxBuffs.YuvBuffSz =
+				compat.u.rx_bufs.yuv_buf_size;
+			native->u.RxBuffs.UVbuffOffset =
+				compat.u.rx_bufs.uv_buf_offset;
+			native->u.RxBuffs.YBuffDoneSz =
+				compat.u.rx_bufs.y_done_size;
+			native->u.RxBuffs.UVBuffDoneSz =
+				compat.u.rx_bufs.uv_done_size;
+			native->u.RxBuffs.RefCnt =
+				compat.u.rx_bufs.ref_count;
+			break;
+		case BCM_IOC_FETCH_RXBUFF:
+			memset(&native->u.DecOutData, 0,
+			       sizeof(native->u.DecOutData));
+			break;
+		default:
+			break;
+		}
+	}
+
+	return rc ? -EFAULT : 0;
+}
+#endif
+
+static int chd_dec_fetch_cdata(struct crystalhd_adp *adp, crystalhd_ioctl_data *io,
+			       uint32_t m_sz, unsigned long ua,
+			       size_t udata_size)
+{
+	unsigned long ua_off = 0;
 	int rc = 0;
 
 	if (!adp || !io || !ua || !m_sz) {
@@ -163,13 +348,17 @@ static int chd_dec_fetch_cdata(struct crystalhd_adp *adp, crystalhd_ioctl_data *
 	}
 
 	io->add_cdata_sz = m_sz;
-	ua_off = ua + sizeof(io->udata);
+	if (check_add_overflow(ua, udata_size, &ua_off)) {
+		vfree(io->add_cdata);
+		io->add_cdata = NULL;
+		return -EFAULT;
+	}
 	rc = crystalhd_user_data(ua_off, io->add_cdata, io->add_cdata_sz, 0);
 	if (rc) {
 		dev_err(chddev(), "failed to pull add_cdata sz:%x "
 			"ua_off:%x\n", io->add_cdata_sz,
 			(unsigned int)ua_off);
-		kfree(io->add_cdata);
+		vfree(io->add_cdata);
 		io->add_cdata = NULL;
 		return -ENODATA;
 	}
@@ -178,10 +367,11 @@ static int chd_dec_fetch_cdata(struct crystalhd_adp *adp, crystalhd_ioctl_data *
 }
 
 static int chd_dec_release_cdata(struct crystalhd_adp *adp,
-				 crystalhd_ioctl_data *io, unsigned long ua)
+				 crystalhd_ioctl_data *io, unsigned long ua,
+				 size_t udata_size)
 {
-	unsigned long ua_off;
-	int rc;
+	unsigned long ua_off = 0;
+	int rc = 0;
 
 	if (!adp || !io || !ua) {
 		dev_err(chddev(), "Invalid Arg!!\n");
@@ -189,14 +379,17 @@ static int chd_dec_release_cdata(struct crystalhd_adp *adp,
 	}
 
 	if (io->cmd != BCM_IOC_FW_DOWNLOAD) {
-		ua_off = ua + sizeof(io->udata);
-		rc = crystalhd_user_data(ua_off, io->add_cdata,
-					io->add_cdata_sz, 1);
+		if (check_add_overflow(ua, udata_size, &ua_off)) {
+			rc = -EFAULT;
+		} else {
+			rc = crystalhd_user_data(ua_off, io->add_cdata,
+						io->add_cdata_sz, 1);
+		}
 		if (rc) {
 			dev_err(chddev(), "failed to push add_cdata sz:%x "
 				"ua_off:%x\n", io->add_cdata_sz,
 				(unsigned int)ua_off);
-			return -ENODATA;
+			rc = -ENODATA;
 		}
 	}
 
@@ -205,15 +398,20 @@ static int chd_dec_release_cdata(struct crystalhd_adp *adp,
 		io->add_cdata = NULL;
 	}
 
-	return 0;
+	return rc;
 }
 
 static int chd_dec_proc_user_data(struct crystalhd_adp *adp,
 				  crystalhd_ioctl_data *io,
-				  unsigned long ua, int set)
+				  unsigned long ua, bool set, bool compat)
 {
 	int rc;
 	uint32_t m_sz = 0;
+	size_t udata_size = sizeof(io->udata);
+
+#ifndef CONFIG_COMPAT
+	(void)compat;
+#endif
 
 	if (!adp || !io || !ua) {
 		dev_err(chddev(), "proc_user_data: Invalid Arg!! adp=%d io=%d ua=%d\n",
@@ -221,7 +419,16 @@ static int chd_dec_proc_user_data(struct crystalhd_adp *adp,
 		return -EINVAL;
 	}
 
-	rc = crystalhd_user_data(ua, &io->udata, sizeof(io->udata), set);
+#ifdef CONFIG_COMPAT
+	if (compat) {
+		udata_size = sizeof(struct crystalhd_ioctl_data32);
+		rc = crystalhd_compat_user_data(ua, &io->udata, io->cmd, set);
+	} else
+#endif
+	{
+		rc = crystalhd_user_data(ua, &io->udata,
+					 sizeof(io->udata), set);
+	}
 	if (rc) {
 		dev_err(chddev(), "failed to %s iodata\n",
 			(set ? "set" : "get"));
@@ -239,13 +446,17 @@ static int chd_dec_proc_user_data(struct crystalhd_adp *adp,
 	case BCM_IOC_MEM_RD:
 	case BCM_IOC_MEM_WR:
 	case BCM_IOC_FW_DOWNLOAD:
-		m_sz = io->udata.u.devMem.NumDwords * 4;
+		if (!crystalhd_ioctl_transfer_size(
+				io->udata.u.devMem.NumDwords, &m_sz))
+			return -E2BIG;
 		dev_dbg(chddev(), "additional data: size=%u ua=0x%lx\n",
 			m_sz, ua);
 		if (set)
-			rc = chd_dec_release_cdata(adp, io, ua);
+			rc = chd_dec_release_cdata(adp, io, ua,
+						   udata_size);
 		else
-			rc = chd_dec_fetch_cdata(adp, io, m_sz, ua);
+			rc = chd_dec_fetch_cdata(adp, io, m_sz, ua,
+						 udata_size);
 		break;
 	default:
 		break;
@@ -255,7 +466,8 @@ static int chd_dec_proc_user_data(struct crystalhd_adp *adp,
 }
 
 static int chd_dec_api_cmd(struct crystalhd_adp *adp, unsigned long ua,
-			   uint32_t uid, uint32_t cmd, crystalhd_cmd_proc func)
+			   uint32_t uid, uint32_t cmd, crystalhd_cmd_proc func,
+			   bool compat)
 {
 	int rc;
 	crystalhd_ioctl_data *temp;
@@ -270,7 +482,7 @@ static int chd_dec_api_cmd(struct crystalhd_adp *adp, unsigned long ua,
 	temp->u_id = uid;
 	temp->cmd  = cmd;
 
-	rc = chd_dec_proc_user_data(adp, temp, ua, 0);
+	rc = chd_dec_proc_user_data(adp, temp, ua, false, compat);
 	if (!rc) {
 		if(func == NULL)
 			sts = BC_STS_PWR_MGMT; /* Can only happen when we are in suspend state */
@@ -279,10 +491,14 @@ static int chd_dec_api_cmd(struct crystalhd_adp *adp, unsigned long ua,
 		if (sts == BC_STS_PENDING)
 			sts = BC_STS_NOT_IMPL;
 		temp->udata.RetSts = sts;
-		rc = chd_dec_proc_user_data(adp, temp, ua, 1);
+		rc = chd_dec_proc_user_data(adp, temp, ua, true, compat);
 	}
 
 	if (temp) {
+		if (temp->add_cdata) {
+			vfree(temp->add_cdata);
+			temp->add_cdata = NULL;
+		}
 		chd_dec_free_iodata(adp, temp, 0);
 		temp = NULL;
 	}
@@ -291,8 +507,25 @@ static int chd_dec_api_cmd(struct crystalhd_adp *adp, unsigned long ua,
 }
 
 /* API interfaces */
-static long chd_dec_ioctl(struct file *fd,
-			  unsigned int cmd, unsigned long ua)
+static bool crystalhd_rawio_command(unsigned int cmd)
+{
+	switch (cmd) {
+	case BCM_IOC_REG_RD:
+	case BCM_IOC_REG_WR:
+	case BCM_IOC_FPGA_RD:
+	case BCM_IOC_FPGA_WR:
+	case BCM_IOC_MEM_RD:
+	case BCM_IOC_MEM_WR:
+	case BCM_IOC_RD_PCI_CFG:
+	case BCM_IOC_WR_PCI_CFG:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static long chd_dec_ioctl_common(struct file *fd, unsigned int cmd,
+				 unsigned long ua, bool compat)
 {
 	struct crystalhd_adp *adp = chd_get_adp();
 	struct device *dev;
@@ -320,15 +553,19 @@ static long chd_dec_ioctl(struct file *fd,
 		rc = -ENODATA;
 		goto unlock;
 	}
+	if (crystalhd_rawio_command(cmd) && !capable(CAP_SYS_RAWIO)) {
+		rc = -EPERM;
+		goto unlock;
+	}
 
 	cproc = crystalhd_get_cmd_proc(&adp->cmds, cmd, uc);
 	if (!cproc && !(adp->cmds.state & BC_LINK_SUSPEND)) {
 		dev_err(chddev(), "Unhandled command: %d\n", cmd);
-		rc = -EINVAL;
+		rc = -ENOTTY;
 		goto unlock;
 	}
 
-	rc = chd_dec_api_cmd(adp, ua, uc->uid, cmd, cproc);
+	rc = chd_dec_api_cmd(adp, ua, uc->uid, cmd, cproc, compat);
 	if (cmd == BCM_IOC_RELEASE && !uc->in_use)
 		fd->private_data = NULL;
 
@@ -339,6 +576,30 @@ unlock:
 		up_read(&adp->user_lock);
 	return rc;
 }
+
+static long chd_dec_ioctl(struct file *fd, unsigned int cmd, unsigned long ua)
+{
+	return chd_dec_ioctl_common(fd, cmd, ua, false);
+}
+
+#ifdef CONFIG_COMPAT
+static long chd_dec_compat_ioctl(struct file *fd, unsigned int cmd,
+				 unsigned long ua)
+{
+	unsigned int native_cmd;
+
+	if (_IOC_TYPE(cmd) != BC_IOC_BASE ||
+	    _IOC_DIR(cmd) != (_IOC_READ | _IOC_WRITE) ||
+	    _IOC_SIZE(cmd) != sizeof(struct crystalhd_ioctl_data32) ||
+	    _IOC_NR(cmd) >= DRV_CMD_END)
+		return -ENOTTY;
+
+	native_cmd = _IOC(_IOC_READ | _IOC_WRITE, BC_IOC_BASE, _IOC_NR(cmd),
+			  sizeof(BC_IOCTL_DATA));
+	return chd_dec_ioctl_common(fd, native_cmd,
+				    (unsigned long)compat_ptr(ua), true);
+}
+#endif
 
 static int chd_dec_open(struct inode *in, struct file *fd)
 {
@@ -448,6 +709,9 @@ unlock:
 static const struct file_operations chd_dec_fops = {
 	.owner		= THIS_MODULE,
 	.unlocked_ioctl	= chd_dec_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl	= chd_dec_compat_ioctl,
+#endif
 	.open		= chd_dec_open,
 	.release	= chd_dec_close,
 	.llseek		= noop_llseek,

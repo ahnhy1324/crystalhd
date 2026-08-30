@@ -29,6 +29,12 @@ example, a live firmware heartbeat does not prove that the input stream is
 valid, and accepted input does not prove that the requested output format is
 supported.
 
+The installed udev rule gives the active desktop user access and grants the
+`video` group read/write permission. A headless test account must be a member
+of `video`. Normal playback does not need elevated capabilities; the legacy
+register, FPGA, DRAM, and PCI configuration diagnostics require root or
+`CAP_SYS_RAWIO`.
+
 ## Known-good BCM70015 userspace sequence
 
 The maintained GStreamer and VA-API frontends use this initialization order:

@@ -246,6 +246,9 @@ static BC_STATUS bc_cproc_cfg_rd(struct crystalhd_cmd *ctx,
 
 	if (!ctx || !idata)
 		return BC_STS_INV_ARG;
+	if (!crystalhd_valid_pci_cfg(idata->udata.u.pciCfg.Size,
+				     idata->udata.u.pciCfg.Offset))
+		return BC_STS_INV_ARG;
 
 	temp = (uint32_t *) idata->udata.u.pciCfg.pci_cfg_space;
 	off = idata->udata.u.pciCfg.Offset;
@@ -279,6 +282,9 @@ static BC_STATUS bc_cproc_cfg_wr(struct crystalhd_cmd *ctx,
 	uint32_t *temp;
 
 	if (!ctx || !idata)
+		return BC_STS_INV_ARG;
+	if (!crystalhd_valid_pci_cfg(idata->udata.u.pciCfg.Size,
+				     idata->udata.u.pciCfg.Offset))
 		return BC_STS_INV_ARG;
 
 	temp = (uint32_t *) idata->udata.u.pciCfg.pci_cfg_space;
@@ -840,13 +846,12 @@ static BC_STATUS bc_cproc_reset_stats(struct crystalhd_cmd *ctx,
 }
 
 /**
- *
  * bc_cproc_release_user - Close Application Handle
  *
  * Used to be crystalhd_user_close
  *
  * @ctx: Command layer contextx.
- * @uc: User ID context.
+ * @idata: IOCTL data containing the user ID.
  *
  * Return:
  *	status

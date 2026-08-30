@@ -49,6 +49,7 @@
 #include <linux/uaccess.h>
 
 #include "crystalhd_compat.h"
+#include "crystalhd_ioctl_limits.h"
 #include "crystalhd_cmds.h"
 
 #define CRYSTAL_HD_NAME "Broadcom Crystal HD Decoder Driver"

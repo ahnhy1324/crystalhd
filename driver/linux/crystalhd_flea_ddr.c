@@ -318,12 +318,6 @@ void crystalhd_flea_ddr_ctrl_init(struct crystalhd_hw *hw,
 	uint8_t DIS_ODT = 0;
 	uint8_t EN_2T_TIMING = 0;
 	uint8_t CWL = 0;
-	uint8_t DQ_WIDTH = 0;
-
-	uint8_t DM_IDLE_MODE = 0;
-	uint8_t CTL_IDLE_MODE = 0;
-	uint8_t DQ_IDLE_MODE = 0;
-
 	uint8_t DIS_LATENCY_CTRL = 0;
 
 	uint8_t PSPLIT = 0;
@@ -452,23 +446,17 @@ void crystalhd_flea_ddr_ctrl_init(struct crystalhd_hw *hw,
 		USE_CHR_HGT = 0;
 		DIS_ODT = 0;
 
-		/*Power Saving Controls */
-		DM_IDLE_MODE = 0;
-		CTL_IDLE_MODE = 0;
-		DQ_IDLE_MODE = 0;
-
 		/*Latency Control Setting */
 		DIS_LATENCY_CTRL = 0;
 
 		/* ****** Start of Grain/Flea specific fixed settings ***** */
 		CS0_ONLY = 1 ;      /* 16-bit mode only */
 		INTLV_DISABLE = 1 ; /* Interleave is always disabled */
-		DQ_WIDTH = 16 ;
 		/* ****** End of Grain specific fixed settings ***** */
 
 #if 0
-		printk("* DDR23 Config: CAS: %d, tRFC: %d, INTLV: %d, WIDTH: %d\n",
-				tCAS,tRFC,INTLV_BYTES,DQ_WIDTH);
+		printk("* DDR23 Config: CAS: %d, tRFC: %d, INTLV: %d, WIDTH: 16\n",
+				tCAS,tRFC,INTLV_BYTES);
 		printk("******************************************************\n");
 #endif
 		/*Disable refresh */

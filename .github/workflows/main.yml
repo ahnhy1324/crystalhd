@@ -18,7 +18,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential autoconf linux-headers-generic \
+            build-essential autoconf gcc-multilib g++-multilib \
+            linux-headers-generic \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-tools libva-dev libdrm-dev libgbm-dev \
             libswscale-dev
@@ -31,8 +32,11 @@ jobs:
           echo "KDIR=$KDIR" >> "$GITHUB_ENV"
           echo "KVER=${KDIR##*/linux-headers-}" >> "$GITHUB_ENV"
 
+      - name: Build 32-bit userspace ABI
+        run: make userspace32-check
+
       - name: Build and test
-        run: make -j2 check KDIR="$KDIR" KVER="$KVER"
+        run: make -j2 W=1 check KDIR="$KDIR" KVER="$KVER"
 
   upstream-kernel-api:
     name: Kernel API (${{ matrix.track }})
@@ -98,4 +102,4 @@ jobs:
         run: |
           make -C "$KERNEL_DIR" \
             M="$GITHUB_WORKSPACE/driver/linux" \
-            KDIR="$KERNEL_DIR" crystalhd.o
+            KDIR="$KERNEL_DIR" W=1 crystalhd.o

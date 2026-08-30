@@ -56,6 +56,7 @@ extern "C" {
 
 namespace {
 
+#ifndef CRYSTALHD_H264_TEST_BUILD
 constexpr unsigned int kMaxWidth = 1920;
 constexpr unsigned int kMaxHeight = 1088;
 constexpr uint64_t kTimestampStep = 100000;
@@ -96,6 +97,7 @@ static void DebugBytes(const char *label, const std::vector<uint8_t> &bytes) {
 static unsigned int Align(unsigned int value, unsigned int alignment) {
   return (value + alignment - 1) / alignment * alignment;
 }
+#endif
 
 class BitWriter {
  public:
@@ -266,6 +268,9 @@ static bool BuildPps(const VAPictureParameterBufferH264 &picture,
   return true;
 }
 
+#ifdef CRYSTALHD_H264_TEST_BUILD
+}  // namespace
+#else
 struct Config {
   VAProfile profile = VAProfileNone;
   VAEntrypoint entrypoint = VAEntrypointVLD;
@@ -3096,3 +3101,4 @@ extern "C" VAStatus CRYSTALHD_EXPORT __vaDriverInit_1_20(
   return InitializeDriver(context, 20);
 }
 #endif
+#endif  // CRYSTALHD_H264_TEST_BUILD

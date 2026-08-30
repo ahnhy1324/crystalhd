@@ -52,7 +52,8 @@ uint32_t link_dec_reg_rd(struct crystalhd_adp *adp, uint32_t reg_off)
 		return 0;
 	}
 
-	if (reg_off > adp->pci_mem_len) {
+	if (adp->pci_mem_len < sizeof(uint32_t) ||
+	    reg_off > adp->pci_mem_len - sizeof(uint32_t)) {
 		dev_err(&adp->pdev->dev, "%s: reg_off out of range: 0x%08x\n",
 			__func__, reg_off);
 		return 0;
@@ -81,7 +82,8 @@ void link_dec_reg_wr(struct crystalhd_adp *adp, uint32_t reg_off, uint32_t val)
 		return;
 	}
 
-	if (reg_off > adp->pci_mem_len) {
+	if (adp->pci_mem_len < sizeof(uint32_t) ||
+	    reg_off > adp->pci_mem_len - sizeof(uint32_t)) {
 		dev_err(&adp->pdev->dev, "%s: reg_off out of range: 0x%08x\n",
 			__func__, reg_off);
 		return;
@@ -94,7 +96,7 @@ void link_dec_reg_wr(struct crystalhd_adp *adp, uint32_t reg_off, uint32_t val)
 }
 
 /**
-* crystalhd_reg_rd - Read 70012's device register.
+* crystalhd_link_reg_rd - Read 70012's device register.
 * @adp: Adapter instance
 * @reg_off: Register offset.
 *
@@ -113,7 +115,8 @@ uint32_t crystalhd_link_reg_rd(struct crystalhd_adp *adp, uint32_t reg_off)
 		return 0;
 	}
 
-	if (reg_off > adp->pci_i2o_len) {
+	if (adp->pci_i2o_len < sizeof(uint32_t) ||
+	    reg_off > adp->pci_i2o_len - sizeof(uint32_t)) {
 		dev_err(&adp->pdev->dev, "%s: reg_off out of range: 0x%08x\n",
 			__func__, reg_off);
 		return 0;
@@ -123,7 +126,7 @@ uint32_t crystalhd_link_reg_rd(struct crystalhd_adp *adp, uint32_t reg_off)
 }
 
 /**
-* crystalhd_reg_wr - Write 70012's device register
+* crystalhd_link_reg_wr - Write 70012's device register
 * @adp: Adapter instance
 * @reg_off: Register offset.
 * @val: Dword value to be written.
@@ -143,7 +146,8 @@ void crystalhd_link_reg_wr(struct crystalhd_adp *adp, uint32_t reg_off, uint32_t
 		return;
 	}
 
-	if (reg_off > adp->pci_i2o_len) {
+	if (adp->pci_i2o_len < sizeof(uint32_t) ||
+	    reg_off > adp->pci_i2o_len - sizeof(uint32_t)) {
 		dev_err(&adp->pdev->dev, "%s: reg_off out of range: 0x%08x\n",
 				__func__, reg_off);
 				return;
@@ -166,7 +170,7 @@ inline void crystalhd_link_dram_wr(struct crystalhd_hw *hw, uint32_t mem_off, ui
 
 /**
 * crystalhd_link_mem_rd - Read data from DRAM area.
-* @adp: Adapter instance
+* @hw: Hardware context.
 * @start_off: Start offset.
 * @dw_cnt: Count in dwords.
 * @rd_buff: Buffer to copy the data from dram.
@@ -185,6 +189,8 @@ BC_STATUS crystalhd_link_mem_rd(struct crystalhd_hw *hw, uint32_t start_off,
 		printk(KERN_ERR "%s: Invalid arg\n", __func__);
 		return BC_STS_INV_ARG;
 	}
+	if (!crystalhd_valid_dram_range(start_off, dw_cnt))
+		return BC_STS_INV_ARG;
 	for (ix = 0; ix < dw_cnt; ix++)
 		rd_buff[ix] = crystalhd_link_dram_rd(hw, (start_off + (ix * 4)));
 
@@ -193,7 +199,7 @@ BC_STATUS crystalhd_link_mem_rd(struct crystalhd_hw *hw, uint32_t start_off,
 
 /**
 * crystalhd_link_mem_wr - Write data to DRAM area.
-* @adp: Adapter instance
+* @hw: Hardware context.
 * @start_off: Start offset.
 * @dw_cnt: Count in dwords.
 * @wr_buff: Data Buffer to be written.
@@ -212,6 +218,8 @@ BC_STATUS crystalhd_link_mem_wr(struct crystalhd_hw *hw, uint32_t start_off,
 		printk(KERN_ERR "%s: Invalid arg\n", __func__);
 		return BC_STS_INV_ARG;
 	}
+	if (!crystalhd_valid_dram_range(start_off, dw_cnt))
+		return BC_STS_INV_ARG;
 
 	for (ix = 0; ix < dw_cnt; ix++)
 		crystalhd_link_dram_wr(hw, (start_off + (ix * 4)), wr_buff[ix]);

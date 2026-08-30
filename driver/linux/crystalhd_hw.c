@@ -716,7 +716,6 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw, struct crystalhd_dio_req
 {
 	struct device *dev;
 	struct tx_dma_pkt *tx_dma_packet = NULL;
-	uint32_t low_addr, high_addr;
 	addr_64 desc_addr;
 	BC_STATUS sts, add_sts;
 	uint32_t dummy_index = 0;
@@ -772,8 +771,6 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw, struct crystalhd_dio_req
 	}
 
 	desc_addr.full_addr = tx_dma_packet->desc_mem.phy_addr;
-	low_addr = desc_addr.low_part;
-	high_addr = desc_addr.high_part;
 
 	tx_dma_packet->call_back = call_back;
 	tx_dma_packet->cb_event  = cb_event;

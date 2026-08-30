@@ -16,7 +16,7 @@ The kernel and userspace pieces have different levels of validation:
 | Component | Current status |
 | --- | --- |
 | Kernel module | Maintained for Linux 6.1 and newer; hardware-tested on BCM70015 with Ubuntu 6.17.0-41-generic. BCM70012 support is retained but has not been tested recently. |
-| `libcrystalhd` | Legacy compatibility API. It builds in CI and is exercised indirectly by the tested frontends, but it has no comprehensive API test suite. |
+| `libcrystalhd` | Legacy compatibility API. CI freezes its 32-bit and 64-bit ioctl layouts, builds the complete library as 32-bit code, and exercises it through the tested frontends; it still has no comprehensive device-API test suite. |
 | GStreamer 1.x | Experimental. H.264 decode has been exercised on BCM70015. MPEG-2, VC-1, WMV3, interlaced output, seeking, and mid-stream format changes are not covered by current hardware tests. |
 | VA-API | Experimental client-oriented subset, not a general or conformance-tested VA-API driver. Progressive H.264 decode through FFmpeg has been exercised on BCM70015. |
 | Chromium | Developer experiment only. The safe default uses Chrome's software decoder; hardware decode is opt-in and has a known post-seek frame-identity failure. It also requires disabling the GPU-process sandbox. |
@@ -24,8 +24,9 @@ The kernel and userspace pieces have different levels of validation:
 
 CI compiles the module against the latest 6.1, 6.6, 6.12, and 6.18 long-term
 kernels plus upstream stable and mainline. It also builds the userspace
-components and runs discovery and installation smoke tests. Those jobs
-validate build and API compatibility but do not replace hardware testing.
+components, checks both x86 userspace ABIs, and runs discovery, H.264
+parameter-set, and installation smoke tests. Those jobs validate build and
+API compatibility but do not replace hardware testing.
 
 For the known-good BCM70015 initialization sequence, validation milestones,
 and failure isolation order, see [BRINGUP.md](BRINGUP.md).
@@ -65,6 +66,7 @@ On Ubuntu:
 
 ```sh
 sudo apt install build-essential autoconf dkms pkg-config \
+  gcc-multilib g++-multilib \
   linux-headers-$(uname -r) \
   curl desktop-file-utils xdg-utils \
   libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
@@ -89,10 +91,18 @@ make -j$(nproc)
 make check
 ```
 
-`make check` builds every component, validates GStreamer and VA-API discovery,
-checks the browser scripts and assets, tests DRM PRIME NV12 surface import when
-a render node is available, and checks a staged installation without changing
-the host system. It does not decode a stream on CrystalHD hardware.
+`make check` builds every component, freezes the 32-bit and 64-bit public ioctl
+layouts, validates GStreamer and VA-API discovery, checks VA-API H.264 SPS/PPS
+generation, checks the browser scripts and assets, tests DRM PRIME NV12 surface
+import when a render node is available, and checks a staged installation
+without changing the host system. It does not decode a stream on CrystalHD
+hardware.
+
+The CI-only `make userspace32-check` target builds and links the complete
+`libcrystalhd` library with `-m32`, then removes those temporary 32-bit build
+products. A 32-bit process on a 64-bit kernel requires `CONFIG_COMPAT`; the
+driver translates the pointer-bearing playback ioctls rather than treating a
+32-bit request as a native structure.
 
 To exercise the actual decoder hardware with an H.264 MP4:
 
@@ -141,6 +151,23 @@ Installation places:
 - `crystalhd_drv_video.so` in libva's detected driver directory
 - `crystalhd-chromium`, `setup-crystalhd-chrome-default`, the bundled H.264
   preference extension, and a desktop launcher
+
+### Device access and diagnostics
+
+The installed udev rule creates `/dev/crystalhd` as `root:video` with mode
+`0660` and asks systemd-logind to grant the active desktop user an ACL. On a
+headless system, add the playback account to the `video` group and log in
+again:
+
+```sh
+sudo usermod -aG video "$USER"
+```
+
+Ordinary firmware loading and decode remain available through that device
+permission. Direct register, FPGA, device-DRAM, and PCI configuration ioctls
+are diagnostic interfaces and additionally require `CAP_SYS_RAWIO`; run legacy
+diagnostic tools as root when those commands are needed. The rule no longer
+makes the raw hardware interface world-writable.
 
 To stage a package instead of changing the host:
 

@@ -24,8 +24,10 @@ $(PLUGIN): gstcrystalhd.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
 
 check: $(PLUGIN)
-	GST_PLUGIN_PATH=$(CURDIR) \
-	LD_LIBRARY_PATH=$(abspath $(ROOTDIR)/linux_lib/libcrystalhd) \
+	@registry=$$(mktemp); \
+	trap 'rm -f "$$registry"' EXIT HUP INT TERM; \
+	GST_REGISTRY="$$registry" GST_PLUGIN_PATH=$(CURDIR) \
+	LD_LIBRARY_PATH=$(abspath $(ROOTDIR)/linux_lib/libcrystalhd):$(LD_LIBRARY_PATH) \
 		gst-inspect-1.0 crystalhddec >/dev/null
 
 install: $(PLUGIN)

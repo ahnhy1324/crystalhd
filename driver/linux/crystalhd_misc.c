@@ -139,6 +139,8 @@ BC_STATUS crystalhd_pci_cfg_rd(struct crystalhd_adp *adp, uint32_t off,
 		printk(KERN_ERR "%s: Invalid arg\n", __func__);
 		return BC_STS_INV_ARG;
 	}
+	if (off >= PCI_CFG_SPACE_SIZE || len > PCI_CFG_SPACE_SIZE - off)
+		return BC_STS_INV_ARG;
 
 	switch (len) {
 	case 1:
@@ -180,10 +182,12 @@ BC_STATUS crystalhd_pci_cfg_wr(struct crystalhd_adp *adp, uint32_t off,
 	BC_STATUS sts = BC_STS_SUCCESS;
 	int rc = 0;
 
-	if (!adp || !val) {
+	if (!adp) {
 		printk(KERN_ERR "%s: Invalid arg\n", __func__);
 		return BC_STS_INV_ARG;
 	}
+	if (off >= PCI_CFG_SPACE_SIZE || len > PCI_CFG_SPACE_SIZE - off)
+		return BC_STS_INV_ARG;
 
 	switch (len) {
 	case 1:
@@ -332,7 +336,7 @@ void crystalhd_delete_dioq(struct crystalhd_adp *adp, struct crystalhd_dioq *dio
 /**
  * crystalhd_dioq_add - Add new DIO request element.
  * @ioq: DIO queue instance
- * @t: DIO request to be added.
+ * @data: DIO request to be added.
  * @wake: True - Wake up suspended process.
  * @tag: Special tag to assign - For search and get.
  *
@@ -461,8 +465,9 @@ void *crystalhd_dioq_find_and_fetch(struct crystalhd_dioq *ioq, uint32_t tag)
 
 /**
  * crystalhd_dioq_fetch_wait - Fetch element from Head.
- * @ioq: DIO queue instance
+ * @hw: Hardware context containing the ready queue.
  * @to_secs: Wait timeout in seconds..
+ * @sig_pend: Set when a signal interrupts the wait.
  *
  * Return:
  *	element from the head..
@@ -712,7 +717,7 @@ dio->uinfo.dir_tx    = dir_tx;
 return BC_STS_SUCCESS;
 }
 /**
- * crystalhd_unmap_sgl - Release mapped resources
+ * crystalhd_unmap_dio - Release mapped resources
  * @adp: Adapter instance
  * @dio: DIO request instance
  *

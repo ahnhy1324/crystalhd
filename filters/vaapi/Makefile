@@ -7,6 +7,7 @@ DESTDIR ?=
 ROOTDIR := ../..
 DRIVER := crystalhd_drv_video.so
 IMPORT_TEST := vaapi-import-test
+H264_TEST := vaapi-h264-test
 DRIVERDIR ?= $(shell $(PKG_CONFIG) --variable=libdir libva)/dri
 VAAPI_DRM_DEVICE ?= /dev/dri/renderD128
 
@@ -33,12 +34,16 @@ $(IMPORT_TEST): $(ROOTDIR)/tests/vaapi-import.cpp
 		$(shell $(PKG_CONFIG) --cflags libva libva-drm) $< -o $@ \
 		$(shell $(PKG_CONFIG) --libs libva libva-drm)
 
-check: $(DRIVER) $(IMPORT_TEST)
+$(H264_TEST): $(ROOTDIR)/tests/vaapi-h264.cpp crystalhd_drv_video.cpp
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o $@
+
+check: $(DRIVER) $(IMPORT_TEST) $(H264_TEST)
 	readelf -Ws $(DRIVER) | grep -q '__vaDriverInit_'
 	readelf -Ws $(DRIVER) | grep -q '__vaDriverInit_1_20'
+	./$(H264_TEST)
 	@if test -e $(VAAPI_DRM_DEVICE); then \
 		LIBVA_DRIVER_NAME=crystalhd LIBVA_DRIVERS_PATH=$(CURDIR) \
-		LD_LIBRARY_PATH=$(abspath $(ROOTDIR)/linux_lib/libcrystalhd) \
+		LD_LIBRARY_PATH=$(abspath $(ROOTDIR)/linux_lib/libcrystalhd):$(LD_LIBRARY_PATH) \
 		./$(IMPORT_TEST) $(VAAPI_DRM_DEVICE); \
 	else \
 		echo "VA-API import smoke test skipped: $(VAAPI_DRM_DEVICE) not found"; \
@@ -48,4 +53,4 @@ install: $(DRIVER)
 	install -D -m 0755 $(DRIVER) $(DESTDIR)$(DRIVERDIR)/$(DRIVER)
 
 clean:
-	rm -f $(DRIVER) $(IMPORT_TEST)
+	rm -f $(DRIVER) $(IMPORT_TEST) $(H264_TEST)

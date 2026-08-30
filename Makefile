@@ -8,7 +8,7 @@ KDIR ?= /lib/modules/$(KVER)/build
 DRIVER_ARGS := KVER=$(KVER) KDIR=$(KDIR) DESTDIR=$(DESTDIR)
 USER_ARGS := PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 
-.PHONY: all driver library gstreamer vaapi examples browser check install clean
+.PHONY: all driver library gstreamer vaapi examples browser uapi-check userspace32-check check install clean
 
 all: driver library gstreamer vaapi examples browser
 
@@ -30,7 +30,15 @@ examples: library
 browser:
 	$(MAKE) -C browser
 
-check: all
+uapi-check:
+	sh ./tests/uapi-abi.sh
+
+userspace32-check:
+	$(MAKE) -C linux_lib/libcrystalhd clean
+	$(MAKE) -C linux_lib/libcrystalhd CXX="$(CXX) -m32"
+	$(MAKE) -C linux_lib/libcrystalhd clean
+
+check: uapi-check all
 	$(MAKE) -C filters/gst/gst-plugin-1.0 check
 	$(MAKE) -C filters/vaapi check
 	$(MAKE) -C browser check
