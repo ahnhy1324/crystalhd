@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+[Desktop Entry]
+Type=Application
+Name=Google Chrome with CrystalHD
+GenericName=Web Browser
+Comment=Hardware H.264 decoding through CrystalHD (GPU sandbox disabled)
+Exec=crystalhd-chromium %U
+Icon=google-chrome
+Terminal=false
+Categories=Network;WebBrowser;
+StartupNotify=true
+StartupWMClass=Google-chrome
+MimeType=text/html;x-scheme-handler/http;x-scheme-handler/https;
+Keywords=web;browser;H.264;VA-API;CrystalHD;

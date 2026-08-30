@@ -1,0 +1,180 @@
+#!/bin/sh
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+set -eu
+
+# Configure one persistent Chrome profile that always starts through the
+# CrystalHD VA-API launcher.  Run this as the desktop user; sudo is used only
+# for package, driver, and Chrome policy installation.
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repo_dir=$(CDPATH= cd -- "$script_dir/.." 2>/dev/null && pwd)
+config_root=${XDG_CONFIG_HOME:-"$HOME/.config"}
+data_root=${XDG_DATA_HOME:-"$HOME/.local/share"}
+config_dir="$config_root/crystalhd"
+profile_dir="$config_dir/chrome-profile"
+config_file="$config_dir/chromium.conf"
+desktop_dir="$data_root/applications"
+desktop_file=crystalhd-chromium.desktop
+h264ify_id=aleakchihdccplidncghkekgioiakgal
+h264ify_update=https://clients2.google.com/service/update2/crx
+policy_file=/etc/opt/chrome/policies/managed/crystalhd-h264.json
+seek_gate_key="$config_dir/crystalhd-seek-gate.pem"
+seek_gate_crx=/usr/share/crystalhd/crystalhd-seek-gate.crx
+external_extension_dir=/opt/google/chrome/extensions
+download_dir=
+extension_build_dir=
+
+cleanup() {
+    if [ -n "$download_dir" ] && [ -d "$download_dir" ]; then
+        rm -rf -- "$download_dir"
+    fi
+    if [ -n "$extension_build_dir" ] && [ -d "$extension_build_dir" ]; then
+        rm -rf -- "$extension_build_dir"
+    fi
+}
+trap cleanup EXIT HUP INT TERM
+
+for command_name in cp curl cut install make mktemp od openssl sed sudo tr \
+    xdg-mime xdg-settings; do
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+        echo "setup-crystalhd-chrome-default: missing command: $command_name" >&2
+        exit 127
+    fi
+done
+
+if [ "$(id -u)" -eq 0 ]; then
+    echo "Run this script as the desktop user, not as root." >&2
+    exit 1
+fi
+
+browser=
+for candidate in google-chrome-stable google-chrome; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+        browser=$(command -v "$candidate")
+        break
+    fi
+done
+
+if [ -z "$browser" ]; then
+    if ! command -v apt-get >/dev/null 2>&1; then
+        echo "setup-crystalhd-chrome-default: apt-get is required to install Chrome" >&2
+        exit 127
+    fi
+    download_dir=$(mktemp -d /tmp/crystalhd-chrome-install.XXXXXX)
+    chrome_deb="$download_dir/google-chrome-stable_current_amd64.deb"
+    echo "Downloading non-Snap Google Chrome..."
+    curl --fail --location --retry 2 --output "$chrome_deb" \
+        https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+    echo "Installing Google Chrome..."
+    sudo apt-get install -y "$chrome_deb"
+    browser=$(command -v google-chrome-stable)
+fi
+
+case "$browser" in
+    /snap/*|/snap/bin/*)
+        echo "The Chromium snap cannot access /dev/crystalhd." >&2
+        exit 1
+        ;;
+esac
+
+echo "Building and installing CrystalHD..."
+make -C "$repo_dir" -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
+sudo make -C "$repo_dir" install
+sudo depmod -a
+
+mkdir -p "$config_dir" "$profile_dir" "$desktop_dir"
+chmod 700 "$config_dir" "$profile_dir"
+
+# Stable Chrome no longer loads unpacked extensions from --load-extension.
+# Package the bundled H.264/seek presentation extension with a persistent key
+# and register its signed CRX through Chrome's supported Linux external-
+# extension mechanism. Keeping the key makes the extension ID stable and lets
+# a later setup run replace the installed package with a newer version.
+extension_build_dir=$(mktemp -d /tmp/crystalhd-extension.XXXXXX)
+cp -a "$repo_dir/browser/h264-only" "$extension_build_dir/extension"
+seek_gate_version=$(sed -n \
+    's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+    "$repo_dir/browser/h264-only/manifest.json")
+if [ -z "$seek_gate_version" ]; then
+    echo "Could not read the bundled extension version." >&2
+    exit 1
+fi
+if [ -f "$seek_gate_key" ]; then
+    "$browser" --pack-extension="$extension_build_dir/extension" \
+        --pack-extension-key="$seek_gate_key" --no-message-box
+else
+    "$browser" --pack-extension="$extension_build_dir/extension" \
+        --no-message-box
+    install -m 0600 "$extension_build_dir/extension.pem" "$seek_gate_key"
+fi
+seek_gate_id=$(
+    openssl rsa -in "$seek_gate_key" -pubout -outform DER 2>/dev/null |
+        openssl dgst -sha256 -binary |
+        od -An -v -tx1 |
+        tr -d ' \n' |
+        cut -c1-32 |
+        tr 0123456789abcdef abcdefghijklmnop
+)
+case "$seek_gate_id" in
+    ????????????????????????????????) ;;
+    *)
+        echo "Could not derive the bundled extension ID." >&2
+        exit 1
+        ;;
+esac
+sudo install -D -m 0644 "$extension_build_dir/extension.crx" "$seek_gate_crx"
+external_extension_tmp=$(mktemp "$config_dir/external-extension.XXXXXX")
+printf '{\n  "external_crx": "%s",\n  "external_version": "%s"\n}\n' \
+    "$seek_gate_crx" "$seek_gate_version" >"$external_extension_tmp"
+sudo install -D -m 0644 "$external_extension_tmp" \
+    "$external_extension_dir/$seek_gate_id.json"
+rm -f -- "$external_extension_tmp"
+
+quote_shell() {
+    printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+{
+    printf 'CRYSTALHD_CHROMIUM='
+    quote_shell "$browser"
+    printf '\nCRYSTALHD_CHROMIUM_DISABLE_GPU_SANDBOX=1\n'
+    printf 'CRYSTALHD_CHROMIUM_PROFILE_DIR='
+    quote_shell "$profile_dir"
+    printf '\n'
+    printf 'CRYSTALHD_CHROMIUM_PASSWORD_STORE=basic\n'
+    printf 'CRYSTALHD_CHROMIUM_H264_POLICY=1\n'
+} >"$config_file"
+chmod 600 "$config_file"
+
+# Google Chrome does not honor --load-extension for an unpacked extension.
+# Force-install the Chrome Web Store h264ify extension so YouTube selects H.264
+# instead of VP9/AV1. This machine policy applies to every Chrome profile.
+policy_tmp=$(mktemp "$config_dir/chrome-policy.XXXXXX")
+printf '{\n  "CommandLineFlagSecurityWarningsEnabled": false,\n  "DefaultBrowserSettingEnabled": false,\n  "ExtensionInstallForcelist": [\n    "%s;%s"\n  ]\n}\n' \
+    "$h264ify_id" "$h264ify_update" >"$policy_tmp"
+sudo install -D -m 0644 "$policy_tmp" "$policy_file"
+rm -f -- "$policy_tmp"
+
+install -m 0644 "$repo_dir/browser/crystalhd-chromium.desktop" \
+    "$desktop_dir/$desktop_file"
+# Shadow Google Chrome's normal desktop entry for this user so the regular
+# Chrome icon also enters through the CrystalHD launcher.
+install -m 0644 "$repo_dir/browser/crystalhd-chromium.desktop" \
+    "$desktop_dir/google-chrome.desktop"
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$desktop_dir"
+fi
+
+xdg-mime default "$desktop_file" text/html
+xdg-mime default "$desktop_file" x-scheme-handler/http
+xdg-mime default "$desktop_file" x-scheme-handler/https
+xdg-settings set default-web-browser "$desktop_file"
+
+echo
+echo "CrystalHD Chrome is now the default browser."
+echo "Launch it from the application menu or run: crystalhd-chromium"
+echo "Persistent profile: $profile_dir"
+echo "Chrome policy: $policy_file"
+echo "Bundled extension: $seek_gate_id"
+echo "Browser: $browser"

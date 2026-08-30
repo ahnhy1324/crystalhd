@@ -1,0 +1,118 @@
+#!/bin/sh
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repo_dir=$(CDPATH= cd -- "$script_dir/.." 2>/dev/null && pwd || true)
+config_file=${CRYSTALHD_CHROMIUM_CONFIG:-${XDG_CONFIG_HOME:-"$HOME/.config"}/crystalhd/chromium.conf}
+
+if [ -r "$config_file" ]; then
+    # This is a per-user shell configuration created by
+    # setup-crystalhd-chrome-default.  It is never read with elevated
+    # privileges.
+    # shellcheck disable=SC1090
+    . "$config_file"
+fi
+
+extension_dir="$script_dir/../share/crystalhd/h264-only"
+driver_dir=
+library_dir=
+if [ -n "$repo_dir" ] && [ -f "$repo_dir/browser/h264-only/manifest.json" ]; then
+    extension_dir="$repo_dir/browser/h264-only"
+    if [ -f "$repo_dir/filters/vaapi/crystalhd_drv_video.so" ]; then
+        driver_dir="$repo_dir/filters/vaapi"
+        library_dir="$repo_dir/linux_lib/libcrystalhd"
+    fi
+fi
+
+browser=${CRYSTALHD_CHROMIUM:-}
+drm_device=${CRYSTALHD_DRM_DEVICE:-/dev/dri/renderD128}
+password_store=${CRYSTALHD_CHROMIUM_PASSWORD_STORE-basic}
+if [ -z "$browser" ]; then
+    for candidate in google-chrome-stable google-chrome chromium chromium-browser; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+            browser=$(command -v "$candidate")
+            break
+        fi
+    done
+fi
+if [ -z "$browser" ] || [ ! -x "$browser" ]; then
+    echo "crystalhd-chromium: Chrome or Chromium was not found" >&2
+    echo "Set CRYSTALHD_CHROMIUM=/path/to/browser to select it explicitly." >&2
+    exit 127
+fi
+if [ ! -f "$extension_dir/manifest.json" ]; then
+    echo "crystalhd-chromium: H.264 preference extension not found: $extension_dir" >&2
+    exit 1
+fi
+browser_version=$("$browser" --version 2>/dev/null || true)
+is_chromium_snap=false
+case "$browser $browser_version" in
+    /snap/bin/*|*" snap"*) is_chromium_snap=true ;;
+esac
+
+if [ "$is_chromium_snap" = true ]; then
+    echo "crystalhd-chromium: the Chromium snap is not supported." >&2
+    echo "Its strict confinement denies access to /dev/crystalhd." >&2
+    echo "Install a non-Snap Chrome/Chromium build, then set" >&2
+    echo "CRYSTALHD_CHROMIUM=/path/to/browser if it is not found automatically." >&2
+    exit 1
+fi
+
+if [ "${CRYSTALHD_CHROMIUM_DISABLE_GPU_SANDBOX:-0}" != 1 ]; then
+    echo "crystalhd-chromium: CrystalHD requires access to /dev/crystalhd," >&2
+    echo "which Chromium's GPU sandbox does not permit." >&2
+    echo "Set CRYSTALHD_CHROMIUM_DISABLE_GPU_SANDBOX=1 to acknowledge" >&2
+    echo "that the browser's GPU process will run without its sandbox." >&2
+    exit 1
+fi
+
+case "$browser_version" in
+    *Google\ Chrome*)
+        if [ "${CRYSTALHD_CHROMIUM_H264_POLICY:-0}" != 1 ]; then
+            echo "crystalhd-chromium: Google Chrome ignores the bundled unpacked" >&2
+            echo "H.264 preference extension; H.264 pages still use CrystalHD," >&2
+            echo "but sites such as YouTube may select VP9 or AV1 instead." >&2
+        fi
+        ;;
+esac
+
+export LIBVA_DRIVER_NAME=crystalhd
+if [ "${CRYSTALHD_CHROMIUM_NATIVE_GL:-0}" != 1 ]; then
+    export LIBGL_ALWAYS_SOFTWARE=1
+    export GALLIUM_DRIVER=llvmpipe
+fi
+if [ -n "$driver_dir" ]; then
+    export LIBVA_DRIVERS_PATH="$driver_dir${LIBVA_DRIVERS_PATH:+:$LIBVA_DRIVERS_PATH}"
+fi
+if [ -n "$library_dir" ]; then
+    export LD_LIBRARY_PATH="$library_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+
+if [ -n "${CRYSTALHD_CHROMIUM_PROFILE_DIR:-}" ]; then
+    mkdir -p "$CRYSTALHD_CHROMIUM_PROFILE_DIR"
+    set -- --user-data-dir="$CRYSTALHD_CHROMIUM_PROFILE_DIR" "$@"
+fi
+if [ -n "$password_store" ]; then
+    set -- --password-store="$password_store" "$@"
+fi
+# Chrome's asynchronous VA-API image processor can recycle an output buffer
+# before legacy CrystalHD firmware has emitted the reordered source picture.
+# No userspace fence can correct the resulting frame identity mismatch after a
+# seek. Keep the browser-correct FFmpeg decoder as the default; developers can
+# still exercise the VA-API bridge explicitly while working on that path.
+if [ "${CRYSTALHD_CHROMIUM_EXPERIMENTAL_HW_DECODE:-0}" != 1 ]; then
+    set -- --disable-accelerated-video-decode "$@"
+fi
+exec "$browser" \
+    --use-gl=angle \
+    --use-angle=gl \
+    --disable-gpu-sandbox \
+    --hardware-video-device-path="$drm_device" \
+    --enable-features=AcceleratedVideoDecodeLinuxGL \
+    --ignore-gpu-blocklist \
+    --no-first-run \
+    --no-default-browser-check \
+    --load-extension="$extension_dir" \
+    "$@"
