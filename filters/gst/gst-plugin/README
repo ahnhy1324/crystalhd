@@ -1,1 +1,7 @@
-Please refer to the release notes for all comments and instructions.
+This directory contains the retired GStreamer 0.10 plugin sources. GStreamer
+0.10 is obsolete and this plugin is not built or installed by the top-level
+Makefile.
+
+Use the maintained GStreamer 1.x plugin in `../gst-plugin-1.0` instead. Its
+build and playback instructions are in `../gst-plugin-1.0/README.md` and the
+repository-level `README.md`.
