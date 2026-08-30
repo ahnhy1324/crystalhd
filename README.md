@@ -1,75 +1,345 @@
-# Crystal HD Hardware Decoder Driver on Ubuntu 13.04 Linux kernel 3.8.0-25
-## Broadcom BCM70012 & BCM70015
+# Broadcom Crystal HD for current Linux systems
 
-After a lot a retries to get the rigth experience with the Crystal HD on Ubuntu, 
+This maintenance fork brings the Broadcom BCM70012 and BCM70015 Crystal HD
+video decoders forward to current Linux kernels. It contains the kernel
+module, firmware, the legacy `libcrystalhd` API, and experimental GStreamer
+1.x, VA-API, and Chromium integrations.
 
-**1. Install required files**
+The kernel module supports Linux 6.1 and newer. Older compatibility branches
+were removed because they were not covered by build or hardware tests.
 
-    sudo apt-get install checkinstall git-core autoconf build-essential subversion dpkg-dev fakeroot pbuilder build-essential dh-make debhelper devscripts patchutils quilt git-buildpackage pristine-tar git yasm zlib1g-dev zlib-bin libzip-dev libx11-dev libx11-dev libxv-dev vstream-client-dev libgtk2.0-dev libpulse-dev libxxf86dga-dev x11proto-xf86dga-dev git libgstreamermm-0.10-dev libgstreamer0.10-dev automake libtool python-appindicator 
-    
-**2. Ge the source**
+## Project status
 
-Get the driver source code from the git repository.
+This is a hardware-revival project, not a production-ready multimedia stack.
+The kernel and userspace pieces have different levels of validation:
 
-    git clone https://github.com/dbason/crystalhd.git
+| Component | Current status |
+| --- | --- |
+| Kernel module | Maintained for Linux 6.1 and newer; hardware-tested on BCM70015 with Ubuntu 6.17.0-41-generic. BCM70012 support is retained but has not been tested recently. |
+| `libcrystalhd` | Legacy compatibility API. It builds in CI and is exercised indirectly by the tested frontends, but it has no comprehensive API test suite. |
+| GStreamer 1.x | Experimental. H.264 decode has been exercised on BCM70015. MPEG-2, VC-1, WMV3, interlaced output, seeking, and mid-stream format changes are not covered by current hardware tests. |
+| VA-API | Experimental client-oriented subset, not a general or conformance-tested VA-API driver. Progressive H.264 decode through FFmpeg has been exercised on BCM70015. |
+| Chromium | Developer experiment only. The safe default uses Chrome's software decoder; hardware decode is opt-in and has a known post-seek frame-identity failure. It also requires disabling the GPU-process sandbox. |
+| Examples | Legacy diagnostic programs. CI verifies that they compile, not that their hard-coded sample streams decode correctly. |
 
-_The original repo source is available at git://git.linuxtv.org/jarod/crystalhd.git_
-    
-**3. Compile driver, install libraries, and load driver**
+CI compiles the module against the latest 6.1, 6.6, 6.12, and 6.18 long-term
+kernels plus upstream stable and mainline. It also builds the userspace
+components and runs discovery and installation smoke tests. Those jobs
+validate build and API compatibility but do not replace hardware testing.
 
-Use make command to compile driver. If you have multiple core processor then use the “-j2″ or “-j4″ option (2 or 4 is the number of cores). This will speed up the make process.
+## Userspace components
 
-    cd crystalhd/driver/linux
-    autoconf
-    ./configure
-    make -j2
-    sudo make install
-    
-**4. Install the libraries.**
+The interfaces below describe what each frontend currently exposes. Unless a
+path is identified as hardware-tested in the status table, it should be
+treated as unverified.
 
-    cd ../../linux_lib/libcrystalhd/
-    make -j2
-    sudo make install 
-    
-**5. Load the driver.**
+The `crystalhddec` GStreamer 1.x element advertises parsed H.264 Annex-B,
+MPEG-2, VC-1, and WMV3 input and produces standard YUY2 raw video. Current
+hardware validation covers only progressive H.264.
 
-    sudo modprobe crystalhd
-    
-**6. Reboot your system** , then check if 'crystalhd' is listed in the output of the following commands.
+The `crystalhd_drv_video.so` VA-API backend exposes progressive H.264
+Constrained Baseline, Main, and High decoding. It supports NV12 output for
+FFmpeg/GStreamer and exported ARGB surfaces for Chromium's compositor, and
+accepts imported DRM PRIME NV12 surfaces.
 
-    lsmod
-    dmesg | grep crystalhd
-    
- Then you should see something like this:
- 
-    [    4.349765] Loading crystalhd v3.10.0
-    [    4.349823] crystalhd 0000:02:00.0: Starting Device:0x1615
-    [    4.351848] crystalhd 0000:02:00.0: irq 43 for MSI/MSI-X
-    [  108.512135] crystalhd 0000:02:00.0: Opening new user[0] handle
-    [  258.976583] crystalhd 0000:02:00.0: Closing user[0] handle via ioctl with mode 10200
+The card and firmware support one playback session at a time. A second
+simultaneous VA-API client receives `VA_STATUS_ERROR_HW_BUSY`; close the first
+player before starting another hardware decode.
 
-Now is time to enjoy our FullHD content. 
+FFmpeg deprecated its CrystalHD decoders in version 6.0, and current packaged
+FFmpeg and VLC builds no longer expose CrystalHD decoding. Installing this
+kernel module alone therefore does not make current VLC use the card. Programs
+can instead use the GStreamer element or the standard VA-API backend.
 
-I'm using XMBC , VLC (2.1.0), Mplayer2, GStreamer because they are using (they should) the Crystal HD decoder libraries.
+CrystalHD does not decode VP8, VP9, or AV1. YouTube normally prefers those
+newer codecs. The optional Chrome setup installs an H.264 preference policy,
+but browser hardware decode remains disabled by default because the
+experimental VA-API path is not seek-correct.
 
-For example , lets try VLC :
+## Dependencies
 
-    vlc --codec=crystalhd ourgreatfullhdmedia.mkv
-    
-Now runs smoothly rigth ?
+On Ubuntu:
 
-# After kernel update
+```sh
+sudo apt install build-essential autoconf dkms pkg-config \
+  linux-headers-$(uname -r) \
+  curl desktop-file-utils xdg-utils \
+  libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+  gstreamer1.0-tools gstreamer1.0-plugins-base \
+  gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+  libva-dev libdrm-dev libgbm-dev libswscale-dev vainfo
+```
 
-Reinstall the driver.
+The optional hardware-stress and browser probes also use:
 
-    cd crystalhd/driver/linux
-    sudo make install
+```sh
+sudo apt install ffmpeg nodejs node-ws
+```
 
+## Build and test
 
-Btw this instructions referred to http://knowledge.evot.biz/documentation/how-to-compile-and-install-the-broadcom-crystal-hd-hardware-decoder-bcm70012-70015-driver-on-ubuntu and fixed some issues appeared using a patch from M25 user at https://bbs.archlinux.org/viewtopic.php?pid=1253622#p1253622
+Build the kernel module, userspace library, examples, and experimental
+GStreamer and VA-API frontends:
 
-So, the sources on this repository are updated with the fixes and patches in order to make your life easier.
+```sh
+make -j$(nproc)
+make check
+```
 
-## History
+`make check` builds every component, validates GStreamer and VA-API discovery,
+checks the browser scripts and assets, tests DRM PRIME NV12 surface import when
+a render node is available, and checks a staged installation without changing
+the host system. It does not decode a stream on CrystalHD hardware.
 
-See [HISTORY.md](HISTORY.md) for a rough history of the various versions of this driver floating around the web.
+To exercise the actual decoder hardware with an H.264 MP4:
+
+```sh
+./tests/gstreamer-hardware.sh /path/to/video.mp4
+```
+
+To exercise the same hardware through VA-API and FFmpeg:
+
+```sh
+LIBVA_DRIVER_NAME=crystalhd \
+LIBVA_DRIVERS_PATH=$PWD/filters/vaapi \
+LD_LIBRARY_PATH=$PWD/linux_lib/libcrystalhd \
+ffmpeg -hwaccel vaapi -hwaccel_device /dev/dri/renderD128 \
+  -hwaccel_output_format vaapi -i /path/to/video.mp4 \
+  -vf hwdownload,format=nv12 -f null -
+```
+
+To repeat the decode, verify that every frame reaches an NV12 surface, and
+scan the new kernel log entries for driver failures:
+
+```sh
+./tests/vaapi-hardware-stress.sh /path/to/video.mp4 10
+```
+
+The hardware tests load the locally built module only when necessary and
+unload it afterward if the script loaded it. They refuse to run when an
+already-loaded module has a different source version, preventing an old DKMS
+build from being mistaken for the code under test.
+
+## Install
+
+```sh
+sudo make install
+sudo modprobe crystalhd
+gst-inspect-1.0 crystalhddec
+```
+
+Installation places:
+
+- `crystalhd.ko` under `/lib/modules/$(uname -r)/updates`
+- firmware under `/lib/firmware`
+- the udev rule under `/lib/udev/rules.d`
+- `libcrystalhd`, public headers, and `libcrystalhd.pc` under `/usr`
+- `libgstcrystalhd.so` in GStreamer's detected plugin directory
+- `crystalhd_drv_video.so` in libva's detected driver directory
+- `crystalhd-chromium`, `setup-crystalhd-chrome-default`, the bundled H.264
+  preference extension, and a desktop launcher
+
+To stage a package instead of changing the host:
+
+```sh
+make DESTDIR=/tmp/crystalhd-package install
+```
+
+## GStreamer playback
+
+For an H.264 MP4 file:
+
+```sh
+gst-launch-1.0 filesrc location=video.mp4 ! qtdemux ! h264parse ! \
+  crystalhddec ! videoconvert ! autovideosink
+```
+
+For a build that has not been installed:
+
+```sh
+GST_PLUGIN_PATH=$PWD/filters/gst/gst-plugin-1.0 \
+LD_LIBRARY_PATH=$PWD/linux_lib/libcrystalhd \
+gst-launch-1.0 filesrc location=video.mp4 ! qtdemux ! h264parse ! \
+  crystalhddec ! fakesink sync=false
+```
+
+## Chrome and YouTube
+
+### Persistent one-time setup
+
+Run the setup from a normal desktop login, not a root shell:
+
+```sh
+./scripts/setup-crystalhd-chrome-default
+```
+
+The script is idempotent and performs the complete desktop setup:
+
+- installs the current non-Snap Google Chrome package when it is absent; the
+  package can also configure Google's APT repository for browser updates
+- builds and installs the CrystalHD kernel/userspace stack and launcher
+- saves launcher settings in `~/.config/crystalhd/chromium.conf`
+- creates the persistent profile `~/.config/crystalhd/chrome-profile`
+- uses Chrome's local basic password store for that profile, avoiding desktop
+  keyring unlock prompts
+- writes the system-wide
+  [`ExtensionInstallForcelist`](https://chromeenterprise.google/policies/extension-install-forcelist/)
+  policy `/etc/opt/chrome/policies/managed/crystalhd-h264.json`, which
+  force-installs the third-party Chrome Web Store
+  [`h264ify`](https://chromewebstore.google.com/detail/h264ify/aleakchihdccplidncghkekgioiakgal)
+  extension so YouTube selects H.264 rather than VP9 or AV1
+- registers `crystalhd-chromium.desktop` for HTTP, HTTPS, and HTML
+- shadows the ordinary Google Chrome application entry for the current user,
+  so the normal Chrome icon also starts the CrystalHD launcher
+
+After setup, open the normal **Google Chrome with CrystalHD** application or
+click any web link. No environment variables are required. The launcher uses
+the dedicated profile so an already-running standard Chrome profile cannot
+silently absorb the launch and discard the CrystalHD settings.
+
+The managed extension policy applies to every Google Chrome profile on the
+machine, not only the dedicated CrystalHD profile. Chrome shows the browser as
+managed while this policy is installed.
+
+Canonical's Chromium snap is not supported. Snap confinement denies access to
+`/dev/crystalhd`; copying the VA-API driver into the snap does not grant that
+device access. The setup therefore installs Google's non-Snap Debian package.
+
+### Decoder, display GPU, and compositor
+
+The launcher defaults to Chrome's `FFmpegVideoDecoder`. Repeated X11 pixel
+captures showed that current Chrome recycles VA-API output buffers before the
+legacy CrystalHD firmware resolves reordered pictures; after a seek this can
+present pre-seek frames under new media timestamps. DMA-BUF fencing prevents
+partial writes but cannot repair that frame-identity mismatch. Correct seeks
+therefore take priority over browser hardware decoding.
+
+Set `CRYSTALHD_CHROMIUM_EXPERIMENTAL_HW_DECODE=1` only to test the unresolved
+VA-API browser path. CrystalHD remains available to FFmpeg, GStreamer, and
+direct VA-API clients. `/dev/dri/renderD128` belongs to the display GPU and is
+used for allocating/displaying surfaces. On the tested Intel 965GM system,
+the launcher uses Mesa llvmpipe for composition.
+
+Set `CRYSTALHD_CHROMIUM_NATIVE_GL=1` in
+`~/.config/crystalhd/chromium.conf` only when the display GPU supports current
+Chrome. Set `CRYSTALHD_DRM_DEVICE` there if the active render node is not
+`/dev/dri/renderD128`.
+
+### Security boundary
+
+Chrome's GPU sandbox does not broker `/dev/crystalhd` or this out-of-tree
+VA-API driver. The launcher therefore uses `--disable-gpu-sandbox`. Renderer,
+network, and other browser-process sandboxes remain enabled, but graphics and
+video parsing in the GPU process are unsandboxed. Because the persistent setup
+makes this browser the desktop default, use it only for sites you trust.
+
+The setup disables Chrome's command-line security-warning banner through the
+managed `CommandLineFlagSecurityWarningsEnabled` policy. This only hides the
+repeated `--disable-gpu-sandbox` warning; it does not restore the GPU sandbox.
+The policy is browser-wide, so Chrome also hides warnings for other dangerous
+command-line flags while the policy remains installed.
+
+The basic password backend does not protect saved passwords with the desktop
+keyring. Avoid saving passwords in the dedicated profile, or set
+`CRYSTALHD_CHROMIUM_PASSWORD_STORE=gnome-libsecret` in `chromium.conf` to use
+the keyring and accept its unlock prompt.
+
+Chrome may print `Created TensorFlow Lite XNNPACK delegate for CPU` when its
+Safe Browsing client-side phishing model starts. This is an informational
+message unrelated to CrystalHD, VA-API, or GPU acceleration; the launcher does
+not disable that browser security feature.
+
+Without the persistent configuration, the launcher refuses to disable the GPU
+sandbox until `CRYSTALHD_CHROMIUM_DISABLE_GPU_SANDBOX=1` is explicitly set.
+
+### Verify browser playback
+
+YouTube's **Stats for nerds** should show an `avc1` codec. In
+`chrome://media-internals`, the active player should report
+`FFmpegVideoDecoder` and platform decoding `false`. This is the safe browser
+default.
+
+To inspect the experimental hardware path, add
+`CRYSTALHD_CHROMIUM_EXPERIMENTAL_HW_DECODE=1` to `chromium.conf`. While it is
+active, the GPU process should own the device:
+
+```sh
+sudo fuser -v /dev/crystalhd
+```
+
+For an automated check after persistent setup, start the installed launcher:
+
+```sh
+CRYSTALHD_CHROMIUM_EXPERIMENTAL_HW_DECODE=1 \
+  crystalhd-chromium --remote-debugging-port=9223 \
+  --remote-allow-origins=http://localhost about:blank
+```
+
+Then run the probe in a second terminal. The managed H.264 policy means no
+diagnostic codec injection is necessary:
+
+```sh
+./tests/chromium-youtube.js --port 9223 \
+  --expect-hardware 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+```
+
+The experimental check expects an `avc1` codec and
+`Chrome decoder: VaapiVideoDecoder (platform=true)`. The probe exits
+unsuccessfully unless playback advances through the hardware path without a
+media-timeline regression or Chrome media error. Use `--seconds 60` for a
+sustained check that covers YouTube's adaptive quality changes.
+Add `--seek-at 20 --seek-to 120` to perform a real timeline jump and fail if a
+pre-seek frame is presented again after the new timeline has settled.
+Use `--force-h264` only as a diagnostic fallback on a profile where the
+managed extension is not installed.
+
+Omit both the experimental environment variable and `--expect-hardware` to
+verify the safe `FFmpegVideoDecoder` path.
+
+### Persistent files and removal
+
+The setup changes these persistent locations:
+
+- `~/.config/crystalhd/chromium.conf`
+- `~/.config/crystalhd/chrome-profile`
+- `~/.local/share/applications/crystalhd-chromium.desktop`
+- `~/.local/share/applications/google-chrome.desktop`
+- `/etc/opt/chrome/policies/managed/crystalhd-h264.json`
+
+To stop using CrystalHD as the desktop default, select another browser in the
+desktop settings and remove the two per-user desktop entries. Removing the
+managed policy stops force-installing `h264ify`; removing the dedicated
+profile deletes only this launcher's browsing data. Re-run the setup after a
+launcher update to reinstall the latest files.
+
+See [`filters/vaapi/README.md`](filters/vaapi/README.md) for backend details and
+limitations.
+
+## DKMS
+
+The regular install above places a module only under the currently selected
+kernel. To rebuild it automatically after kernel upgrades, register the source
+with DKMS:
+
+```sh
+sudo ln -sfn "$PWD" /usr/src/crystalhd-3.10.0
+sudo dkms add -m crystalhd -v 3.10.0
+sudo dkms build -m crystalhd -v 3.10.0
+sudo dkms install -m crystalhd -v 3.10.0
+```
+
+Verify that the module is installed for the running kernel and that its PCI
+alias can be loaded automatically at boot:
+
+```sh
+dkms status
+modinfo crystalhd
+sudo modprobe crystalhd
+```
+
+See [HISTORY.md](HISTORY.md) for the history of the original driver releases.
+
+## Licensing
+
+This is a mixed-license codebase. Existing file notices remain authoritative;
+new maintenance-fork material is identified in [LICENSES.md](LICENSES.md).

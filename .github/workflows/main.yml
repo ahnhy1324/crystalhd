@@ -1,0 +1,101 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+name: CrystalHD CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential autoconf linux-headers-generic \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-tools libva-dev libdrm-dev libgbm-dev \
+            libswscale-dev
+
+      - name: Select packaged kernel headers
+        run: |
+          KDIR=$(find /usr/src -maxdepth 1 -type d \
+            -name 'linux-headers-*-generic' | sort -V | tail -1)
+          test -n "$KDIR"
+          echo "KDIR=$KDIR" >> "$GITHUB_ENV"
+          echo "KVER=${KDIR##*/linux-headers-}" >> "$GITHUB_ENV"
+
+      - name: Build and test
+        run: make -j2 check KDIR="$KDIR" KVER="$KVER"
+
+  upstream-kernel-api:
+    name: Kernel API (${{ matrix.track }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        track:
+          - lts-6.1
+          - lts-6.6
+          - lts-6.12
+          - lts-6.18
+          - stable
+          - mainline
+
+    steps:
+      - name: Checkout CrystalHD
+        uses: actions/checkout@v7
+
+      - name: Install kernel build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential curl flex git libelf-dev libssl-dev
+
+      - name: Resolve current upstream kernel
+        run: |
+          banner=$(curl -fsSL https://www.kernel.org/finger_banner)
+          case "${{ matrix.track }}" in
+            stable)
+              version=$(printf '%s\n' "$banner" | sed -n \
+                's/^The latest stable version of the Linux kernel is:[[:space:]]*//p')
+              repository=https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+              ;;
+            mainline)
+              version=$(printf '%s\n' "$banner" | sed -n \
+                's/^The latest mainline version of the Linux kernel is:[[:space:]]*//p')
+              repository=https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git
+              ;;
+            lts-*)
+              series=${{ matrix.track }}
+              series=${series#lts-}
+              version=$(printf '%s\n' "$banner" | awk -v series="$series" \
+                'index($0, "longterm " series " version") {
+                   sub(/^.*:[[:space:]]*/, ""); print
+                 }')
+              repository=https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+              ;;
+          esac
+          test -n "$version"
+          echo "KERNEL_VERSION=$version" >> "$GITHUB_ENV"
+          echo "KERNEL_DIR=$RUNNER_TEMP/linux-$version" >> "$GITHUB_ENV"
+          echo "KERNEL_REPOSITORY=$repository" >> "$GITHUB_ENV"
+
+      - name: Prepare upstream kernel headers
+        run: |
+          git clone --quiet --depth 1 --branch "v$KERNEL_VERSION" \
+            "$KERNEL_REPOSITORY" "$KERNEL_DIR"
+          make -s -C "$KERNEL_DIR" defconfig
+          make -s -j2 -C "$KERNEL_DIR" modules_prepare
+
+      - name: Compile CrystalHD kernel API
+        run: |
+          make -C "$KERNEL_DIR" \
+            M="$GITHUB_WORKSPACE/driver/linux" \
+            KDIR="$KERNEL_DIR" crystalhd.o

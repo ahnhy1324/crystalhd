@@ -15,6 +15,7 @@
 *.a
 *.s
 *.ko
+*.mod
 *.so
 *.so.dbg
 *.mod.c
@@ -41,7 +42,12 @@ System.map
 Module.markers
 Module.symvers
 !.gitignore
+!.gitattributes
 !.mailmap
+!.github/
+!.github/**
+!firmware/fwbin/
+!firmware/fwbin/**
 
 #
 # Generated include files

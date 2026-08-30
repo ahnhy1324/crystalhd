@@ -1,0 +1,6 @@
+*.sh text eol=lf
+*.js text eol=lf
+*.yml text eol=lf
+Makefile text eol=lf
+**/Makefile text eol=lf
+scripts/* text eol=lf
