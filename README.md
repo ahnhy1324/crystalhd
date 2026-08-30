@@ -27,6 +27,9 @@ kernels plus upstream stable and mainline. It also builds the userspace
 components and runs discovery and installation smoke tests. Those jobs
 validate build and API compatibility but do not replace hardware testing.
 
+For the known-good BCM70015 initialization sequence, validation milestones,
+and failure isolation order, see [BRINGUP.md](BRINGUP.md).
+
 ## Userspace components
 
 The interfaces below describe what each frontend currently exposes. Unless a
