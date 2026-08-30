@@ -1,8 +1,9 @@
 FIRMWARE  = fwbin/70015/bcm70015fw.bin \
             fwbin/70012/bcm70012fw.bin
+FIRMWAREDIR ?= /lib/firmware
+DESTDIR ?=
 
+.PHONY: install
 install:
-	if [ ! -d /lib/firmware ] ; \
-		then install -d /lib/firmware ; \
-	fi
-	install -t /lib/firmware $(FIRMWARE)
+	install -d $(DESTDIR)$(FIRMWAREDIR)
+	install -m 0644 $(FIRMWARE) $(DESTDIR)$(FIRMWAREDIR)

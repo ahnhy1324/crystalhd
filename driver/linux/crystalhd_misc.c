@@ -25,10 +25,7 @@
  **********************************************************************/
 
 #include <linux/device.h>
-#include <linux/version.h>
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,11,0)
 #include <linux/sched/signal.h>
-#endif
 
 #include "crystalhd_lnx.h"
 #include "crystalhd_misc.h"
@@ -108,13 +105,7 @@ static void crystalhd_free_elem(struct crystalhd_adp *adp, struct crystalhd_elem
 static inline void crystalhd_set_sg(struct scatterlist *sg, struct page *page,
 				  unsigned int len, unsigned int offset)
 {
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 23)
 	sg_set_page(sg, page, len, offset);
-#else
-	sg->page       = page;
-	sg->offset     = offset;
-	sg->length     = len;
-#endif
 #ifdef CONFIG_X86_64
 	sg->dma_length = len;
 #endif
@@ -122,10 +113,7 @@ static inline void crystalhd_set_sg(struct scatterlist *sg, struct page *page,
 
 static inline void crystalhd_init_sg(struct scatterlist *sg, unsigned int entries)
 {
-	/* http://lkml.org/lkml/2007/11/27/68 */
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 23)
 	sg_init_table(sg, entries);
-#endif
 }
 
 /*========================== Extern ========================================*/
@@ -242,7 +230,7 @@ void *bc_kern_dma_alloc(struct crystalhd_adp *adp, uint32_t sz,
 		return temp;
 	}
 
-	temp = pci_alloc_consistent(adp->pdev, sz, phy_addr);
+	temp = dma_alloc_coherent(&adp->pdev->dev, sz, phy_addr,GFP_KERNEL);
 	if (temp)
 		memset(temp, 0, sz);
 
@@ -268,7 +256,7 @@ void bc_kern_dma_free(struct crystalhd_adp *adp, uint32_t sz, void *ka,
 		return;
 	}
 
-	pci_free_consistent(adp->pdev, sz, ka, phy_addr);
+	dma_free_coherent(&adp->pdev->dev, sz, ka, phy_addr);
 }
 
 /**
@@ -582,161 +570,147 @@ sem_rel_return:
  * This routine maps user address and lock pages for DMA.
  *
  */
-BC_STATUS crystalhd_map_dio(struct crystalhd_adp *adp, void *ubuff,
-			  uint32_t ubuff_sz, uint32_t uv_offset,
-			  bool en_422mode, bool dir_tx,
-			  struct crystalhd_dio_req **dio_hnd)
+ BC_STATUS crystalhd_map_dio(struct crystalhd_adp *adp, void *ubuff,
+	uint32_t ubuff_sz, uint32_t uv_offset,
+	bool en_422mode, bool dir_tx,
+	struct crystalhd_dio_req **dio_hnd)
 {
-	struct device *dev;
-	struct crystalhd_dio_req	*dio;
-	uint32_t start = 0, end = 0, count = 0;
-	uint32_t spsz = 0;
-	unsigned long uaddr = 0, uv_start = 0;
-	int i = 0, rw = 0, res = 0, nr_pages = 0, skip_fb_sg = 0;
+struct device *dev;
+struct crystalhd_dio_req	*dio;
+uint32_t start = 0, end = 0, count = 0;
+uint32_t spsz = 0;
+unsigned long uaddr = 0, uv_start = 0;
+int i = 0, rw = 0, res = 0, nr_pages = 0, skip_fb_sg = 0;
 
-	if (!adp || !ubuff || !ubuff_sz || !dio_hnd) {
-		printk(KERN_ERR "%s: Invalid arg\n", __func__);
-		return BC_STS_INV_ARG;
-	}
-
-	dev = &adp->pdev->dev;
-
-	/* Compute pages */
-	uaddr = (unsigned long)ubuff;
-	count = ubuff_sz;
-	end = (uaddr + count + PAGE_SIZE - 1) >> PAGE_SHIFT;
-	start = uaddr >> PAGE_SHIFT;
-	nr_pages = end - start;
-
-	if (!count || ((uaddr + count) < uaddr)) {
-		dev_err(dev, "User addr overflow!!\n");
-		return BC_STS_INV_ARG;
-	}
-
-	dio = crystalhd_alloc_dio(adp);
-	if (!dio) {
-		dev_err(dev, "dio pool empty..\n");
-		return BC_STS_INSUFF_RES;
-	}
-
-	if (dir_tx) {
-		rw = WRITE;
-		dio->direction = DMA_TO_DEVICE;
-	} else {
-		rw = READ;
-		dio->direction = DMA_FROM_DEVICE;
-	}
-
-	if (nr_pages > dio->max_pages) {
-		dev_err(dev, "max_pages(%d) exceeded(%d)!!\n",
-			dio->max_pages, nr_pages);
-		crystalhd_unmap_dio(adp, dio);
-		return BC_STS_INSUFF_RES;
-	}
-
-	if (uv_offset) {
-		uv_start = (uaddr + uv_offset)  >> PAGE_SHIFT;
-		dio->uinfo.uv_sg_ix = uv_start - start;
-		dio->uinfo.uv_sg_off = ((uaddr + uv_offset) & ~PAGE_MASK);
-	}
-
-	dio->fb_size = ubuff_sz & 0x03;
-	if (dio->fb_size) {
-		res = copy_from_user(dio->fb_va,
-				     (void *)(uaddr + count - dio->fb_size),
-				     dio->fb_size);
-		if (res) {
-			dev_err(dev, "failed %d to copy %u fill bytes from %p\n",
-				res, dio->fb_size,
-				(void *)(uaddr + count-dio->fb_size));
-			crystalhd_unmap_dio(adp, dio);
-			return BC_STS_INSUFF_RES;
-		}
-	}
-
-	down_read(&current->mm->mmap_sem);
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,9,0)
-	res = get_user_pages(uaddr, nr_pages, rw == READ ? FOLL_WRITE : 0,
-			     dio->pages, NULL);
-#elif LINUX_VERSION_CODE >= KERNEL_VERSION(4,6,0)
-	res = get_user_pages_remote(current, current->mm, uaddr, nr_pages, rw == READ,
-			     0, dio->pages, NULL);
-#else
-	res = get_user_pages(current, current->mm, uaddr, nr_pages, rw == READ,
-			     0, dio->pages, NULL);
-#endif
-
-	up_read(&current->mm->mmap_sem);
-
-	/* Save for release..*/
-	dio->sig = crystalhd_dio_locked;
-	if (res < nr_pages) {
-		dev_err(dev, "get pages failed: %d-%d\n", nr_pages, res);
-		dio->page_cnt = res;
-		crystalhd_unmap_dio(adp, dio);
-		return BC_STS_ERROR;
-	}
-
-	dio->page_cnt = nr_pages;
-	/* Get scatter/gather */
-	crystalhd_init_sg(dio->sg, dio->page_cnt);
-	crystalhd_set_sg(&dio->sg[0], dio->pages[0], 0, uaddr & ~PAGE_MASK);
-	if (nr_pages > 1) {
-		dio->sg[0].length = PAGE_SIZE - dio->sg[0].offset;
-
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 23)
-#ifdef CONFIG_X86_64
-		dio->sg[0].dma_length = dio->sg[0].length;
-#endif
-#endif
-		count -= dio->sg[0].length;
-		for (i = 1; i < nr_pages; i++) {
-			if (count < 4) {
-				spsz = count;
-				skip_fb_sg = 1;
-			} else {
-				spsz = (count < PAGE_SIZE) ?
-					(count & ~0x03) : PAGE_SIZE;
-			}
-			crystalhd_set_sg(&dio->sg[i], dio->pages[i], spsz, 0);
-			count -= spsz;
-		}
-	} else {
-		if (count < 4) {
-			dio->sg[0].length = count;
-			skip_fb_sg = 1;
-		} else {
-			dio->sg[0].length = count - dio->fb_size;
-		}
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 23)
-#ifdef CONFIG_X86_64
-		dio->sg[0].dma_length = dio->sg[0].length;
-#endif
-#endif
-	}
-	dio->sg_cnt = pci_map_sg(adp->pdev, dio->sg,
-				 dio->page_cnt, dio->direction);
-	if (dio->sg_cnt <= 0) {
-		dev_err(dev, "sg map %d-%d\n", dio->sg_cnt, dio->page_cnt);
-		crystalhd_unmap_dio(adp, dio);
-		return BC_STS_ERROR;
-	}
-	if (dio->sg_cnt && skip_fb_sg)
-		dio->sg_cnt -= 1;
-	dio->sig = crystalhd_dio_sg_mapped;
-	/* Fill in User info.. */
-	dio->uinfo.xfr_len   = ubuff_sz;
-	dio->uinfo.xfr_buff  = ubuff;
-	dio->uinfo.uv_offset = uv_offset;
-	dio->uinfo.b422mode  = en_422mode;
-	dio->uinfo.dir_tx    = dir_tx;
-
-	*dio_hnd = dio;
-
-	return BC_STS_SUCCESS;
+if (!adp || !ubuff || !ubuff_sz || !dio_hnd) {
+printk(KERN_ERR "%s: Invalid arg\n", __func__);
+return BC_STS_INV_ARG;
 }
 
+dev = &adp->pdev->dev;
+
+/* Compute pages */
+uaddr = (unsigned long)ubuff;
+count = ubuff_sz;
+end = (uaddr + count + PAGE_SIZE - 1) >> PAGE_SHIFT;
+start = uaddr >> PAGE_SHIFT;
+nr_pages = end - start;
+
+if (!count || ((uaddr + count) < uaddr)) {
+dev_err(dev, "User addr overflow!!\n");
+return BC_STS_INV_ARG;
+}
+
+dio = crystalhd_alloc_dio(adp);
+if (!dio) {
+dev_err(dev, "dio pool empty..\n");
+return BC_STS_INSUFF_RES;
+}
+
+if (dir_tx) {
+rw = WRITE;
+dio->direction = DMA_TO_DEVICE;
+} else {
+rw = READ;
+dio->direction = DMA_FROM_DEVICE;
+}
+
+if (nr_pages > dio->max_pages) {
+dev_err(dev, "max_pages(%d) exceeded(%d)!!\n",
+  dio->max_pages, nr_pages);
+crystalhd_unmap_dio(adp, dio);
+return BC_STS_INSUFF_RES;
+}
+
+if (uv_offset) {
+uv_start = (uaddr + uv_offset)  >> PAGE_SHIFT;
+dio->uinfo.uv_sg_ix = uv_start - start;
+dio->uinfo.uv_sg_off = ((uaddr + uv_offset) & ~PAGE_MASK);
+}
+
+dio->fb_size = ubuff_sz & 0x03;
+if (dio->fb_size) {
+res = copy_from_user(dio->fb_va,
+		   (void *)(uaddr + count - dio->fb_size),
+		   dio->fb_size);
+if (res) {
+  dev_err(dev, "failed %d to copy %u fill bytes from %p\n",
+	  res, dio->fb_size,
+	  (void *)(uaddr + count-dio->fb_size));
+  crystalhd_unmap_dio(adp, dio);
+  return BC_STS_INSUFF_RES;
+}
+}
+mmap_read_lock(current->mm);
+
+res = crystalhd_get_user_pages_remote(current->mm, uaddr, nr_pages,
+				      rw == READ ? FOLL_WRITE : 0,
+				      dio->pages);
+
+mmap_read_unlock(current->mm);
+/* Save for release..*/
+dio->sig = crystalhd_dio_locked;
+if (res < nr_pages) {
+dev_err(dev, "get pages failed: %d-%d\n", nr_pages, res);
+dio->page_cnt = res;
+crystalhd_unmap_dio(adp, dio);
+return BC_STS_ERROR;
+}
+
+dio->page_cnt = nr_pages;
+/* Get scatter/gather */
+crystalhd_init_sg(dio->sg, dio->page_cnt);
+crystalhd_set_sg(&dio->sg[0], dio->pages[0], 0, uaddr & ~PAGE_MASK);
+if (nr_pages > 1) {
+dio->sg[0].length = PAGE_SIZE - dio->sg[0].offset;
+
+#ifdef CONFIG_X86_64
+dio->sg[0].dma_length = dio->sg[0].length;
+#endif
+count -= dio->sg[0].length;
+for (i = 1; i < nr_pages; i++) {
+  if (count < 4) {
+	  spsz = count;
+	  skip_fb_sg = 1;
+  } else {
+	  spsz = (count < PAGE_SIZE) ?
+		  (count & ~0x03) : PAGE_SIZE;
+  }
+  crystalhd_set_sg(&dio->sg[i], dio->pages[i], spsz, 0);
+  count -= spsz;
+}
+} else {
+if (count < 4) {
+  dio->sg[0].length = count;
+  skip_fb_sg = 1;
+} else {
+  dio->sg[0].length = count - dio->fb_size;
+}
+#ifdef CONFIG_X86_64
+dio->sg[0].dma_length = dio->sg[0].length;
+#endif
+}
+dio->sg_cnt = dma_map_sg(&adp->pdev->dev, dio->sg,
+	   dio->page_cnt, dio->direction);
+if (dio->sg_cnt <= 0) {
+dev_err(dev, "sg map %d-%d\n", dio->sg_cnt, dio->page_cnt);
+crystalhd_unmap_dio(adp, dio);
+return BC_STS_ERROR;
+}
+if (dio->sg_cnt && skip_fb_sg)
+dio->sg_cnt -= 1;
+dio->sig = crystalhd_dio_sg_mapped;
+/* Fill in User info.. */
+dio->uinfo.xfr_len   = ubuff_sz;
+dio->uinfo.xfr_buff  = ubuff;
+dio->uinfo.uv_offset = uv_offset;
+dio->uinfo.b422mode  = en_422mode;
+dio->uinfo.dir_tx    = dir_tx;
+
+*dio_hnd = dio;
+
+return BC_STS_SUCCESS;
+}
 /**
  * crystalhd_unmap_sgl - Release mapped resources
  * @adp: Adapter instance
@@ -765,16 +739,12 @@ BC_STATUS crystalhd_unmap_dio(struct crystalhd_adp *adp, struct crystalhd_dio_re
 				    (dio->direction == DMA_FROM_DEVICE))
 					SetPageDirty(page);
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,6,0)
 				put_page(page);
-#else
-				page_cache_release(page);
-#endif
 			}
 		}
 	}
 	if (dio->sig == crystalhd_dio_sg_mapped)
-		pci_unmap_sg(adp->pdev, dio->sg, dio->page_cnt, dio->direction);
+		dma_unmap_sg(&adp->pdev->dev, dio->sg, dio->page_cnt, dio->direction);
 
 	crystalhd_free_dio(adp, dio);
 
@@ -807,8 +777,7 @@ int crystalhd_create_dio_pool(struct crystalhd_adp *adp, uint32_t max_pages)
 	dev = &adp->pdev->dev;
 
 	/* Get dma memory for fill byte handling..*/
-	adp->fill_byte_pool = pci_pool_create("crystalhd_fbyte",
-					      adp->pdev, 8, 8, 0);
+	adp->fill_byte_pool = dma_pool_create("crystalhd_fbyte", &adp->pdev->dev, 8, 8, 0);
 	if (!adp->fill_byte_pool) {
 		dev_err(dev, "failed to create fill byte pool\n");
 		return -ENOMEM;
@@ -834,7 +803,7 @@ int crystalhd_create_dio_pool(struct crystalhd_adp *adp, uint32_t max_pages)
 		temp += (sizeof(*dio->pages) * max_pages);
 		dio->sg = (struct scatterlist *)temp;
 		dio->max_pages = max_pages;
-		dio->fb_va = pci_pool_alloc(adp->fill_byte_pool, GFP_KERNEL,
+		dio->fb_va = dma_pool_alloc(adp->fill_byte_pool, GFP_KERNEL,
 					    &dio->fb_pa);
 		if (!dio->fb_va) {
 			dev_err(dev, "fill byte alloc failed.\n");
@@ -870,7 +839,7 @@ void crystalhd_destroy_dio_pool(struct crystalhd_adp *adp)
 		dio = crystalhd_alloc_dio(adp);
 		if (dio) {
 			if (dio->fb_va)
-				pci_pool_free(adp->fill_byte_pool,
+				dma_pool_free(adp->fill_byte_pool,
 					      dio->fb_va, dio->fb_pa);
 			count++;
 			kfree(dio);
@@ -878,7 +847,7 @@ void crystalhd_destroy_dio_pool(struct crystalhd_adp *adp)
 	} while (dio);
 
 	if (adp->fill_byte_pool) {
-		pci_pool_destroy(adp->fill_byte_pool);
+		dma_pool_destroy(adp->fill_byte_pool);
 		adp->fill_byte_pool = NULL;
 	}
 

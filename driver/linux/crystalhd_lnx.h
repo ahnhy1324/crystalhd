@@ -39,6 +39,7 @@
 #include <linux/pci.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
+#include <linux/rwsem.h>
 #include <linux/pagemap.h>
 #include <linux/vmalloc.h>
 
@@ -47,6 +48,7 @@
 #include <asm/pgtable.h>
 #include <linux/uaccess.h>
 
+#include "crystalhd_compat.h"
 #include "crystalhd_cmds.h"
 
 #define CRYSTAL_HD_NAME "Broadcom Crystal HD Decoder Driver"
@@ -72,6 +74,7 @@ struct crystalhd_adp {
 	unsigned int		msi;
 
 	spinlock_t		lock;
+	struct rw_semaphore	user_lock;
 
 	/* API Related */
 	int			chd_dec_major;
@@ -83,7 +86,7 @@ struct crystalhd_adp {
 	struct crystalhd_cmd	cmds;
 
 	struct crystalhd_dio_req	*ua_map_free_head;
-	struct pci_pool		*fill_byte_pool;
+	struct dma_pool		*fill_byte_pool;
 };
 
 

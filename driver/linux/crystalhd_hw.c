@@ -655,7 +655,7 @@ BC_STATUS crystalhd_rx_pkt_done(struct crystalhd_hw *hw,
 					hw->PauseThreshold--;
 				}
 				else {
-					rdtscll(currTick);
+					currTick = rdtsc_ordered();
 
 					temp_64 = (hw->TickSpentInPD)>>24;
 					TickSpentInPD_Hi = (uint32_t)(temp_64);

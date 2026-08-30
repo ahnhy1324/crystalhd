@@ -2,7 +2,12 @@
 #  Broadcom Crystal HD (BCM970012) controller Makefile.
 #
 #
-KDIR = @KERN_DIR@
+KVER ?= $(shell uname -r)
+KDIR ?= /lib/modules/$(KVER)/build
+DESTDIR ?=
+MODULEDIR ?= /lib/modules/$(KVER)/updates
+UDEVDIR ?= /lib/udev/rules.d
+FIRMWAREDIR ?= /lib/firmware
 
 
 INCLUDES  = -I$(KDIR)/include
@@ -13,8 +18,8 @@ INCLUDES += -I$(src)/../../include/flea
 FIRMWARE  = ../../firmware/fwbin/70015/bcm70015fw.bin
 FIRMWARE += ../../firmware/fwbin/70012/bcm70012fw.bin
 
-EXTRA_CFLAGS   = -D__KERNEL__ -DMODULE $(INCLUDES) $(INC)
-EXTRA_CFLAGS  += -Wall -Wstrict-prototypes -Wno-trigraphs -Werror -O2
+ccflags-y   = -D__KERNEL__ -DMODULE $(INCLUDES) $(INC)
+ccflags-y  += -Wall -Wstrict-prototypes -Wno-trigraphs -Werror -O2
 
 OBJ :=	crystalhd_lnx.o \
 	crystalhd_misc.o \
@@ -24,28 +29,32 @@ OBJ :=	crystalhd_lnx.o \
 	crystalhd_fleafuncs.o \
 	crystalhd_flea_ddr.o
 
-PWD = $(shell pwd)
+PWD := $(CURDIR)
 
 obj-m := crystalhd.o
-	crystalhd-objs := $(OBJ)
+crystalhd-objs := $(OBJ)
+
+.PHONY: all install install-module install-udev install-firmware clean distclean
 
 all:
-	$(MAKE) -C $(KDIR) SUBDIRS=$(PWD) modules
+	$(MAKE) -C $(KDIR) M=$(PWD) modules
 
-install:
-	if [ -e "/lib/udev/rules.d" ] ; then cp -f 20-crystalhd.rules /lib/udev/rules.d/ ; fi
-	if [ -e "/etc/udev/rules.d" ] ; then cp -f 20-crystalhd.rules /etc/udev/rules.d/ ; fi
-	if [ -d "/lib/modules/$(shell uname -r)/kernel/drivers/staging/crystalhd" ] ; \
-		then install -m 0644 crystalhd.ko /lib/modules/$(shell uname -r)/kernel/drivers/staging/crystalhd/ ; \
-	else \
-		install -d /lib/modules/$(shell uname -r)/kernel/drivers/video/broadcom ; \
-		install -m 0644 crystalhd.ko /lib/modules/$(shell uname -r)/kernel/drivers/video/broadcom ; \
+install: install-module install-udev install-firmware
+
+install-module: crystalhd.ko
+	install -D -m 0644 crystalhd.ko $(DESTDIR)$(MODULEDIR)/crystalhd.ko
+	@if [ -z "$(DESTDIR)" ] && command -v depmod >/dev/null 2>&1; then \
+		depmod -a $(KVER); \
 	fi
-	if [ ! -d /lib/firmware ] ; \
-		then install -d /lib/firmware ; \
-	fi
-	install -t /lib/firmware $(FIRMWARE)
-	/sbin/depmod -a
+
+install-udev:
+	install -D -m 0644 20-crystalhd.rules $(DESTDIR)$(UDEVDIR)/20-crystalhd.rules
+
+install-firmware:
+	install -D -m 0644 ../../firmware/fwbin/70015/bcm70015fw.bin \
+		$(DESTDIR)$(FIRMWAREDIR)/bcm70015fw.bin
+	install -D -m 0644 ../../firmware/fwbin/70012/bcm70012fw.bin \
+		$(DESTDIR)$(FIRMWAREDIR)/bcm70012fw.bin
 
 clean:
 	rm -f *.map *.list *.o *.ko crystalhd.mod.c $(OBJ)

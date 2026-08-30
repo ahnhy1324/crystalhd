@@ -26,15 +26,9 @@
 
 #ifndef _CRYSTALHD_HW_H_
 #define _CRYSTALHD_HW_H_
-#define DEBUG 1
 
 #include <linux/device.h>
-#include <linux/version.h>
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 24)
 #include <linux/semaphore.h>
-#else
-#include <asm/semaphore.h>
-#endif
 #include "crystalhd_fw_if.h"
 #include "crystalhd_misc.h"
 #include "DriverFwShare.h"

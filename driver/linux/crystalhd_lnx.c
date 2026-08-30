@@ -15,33 +15,25 @@
   along with this driver.  If not, see <http://www.gnu.org/licenses/>.
 ***************************************************************************/
 
-#include <linux/version.h>
-
 #include "crystalhd_lnx.h"
 
 static struct class *crystalhd_class;
 
 static struct crystalhd_adp *g_adp_info;
 
+crystalhd_ioctl_data *chd_dec_alloc_iodata(struct crystalhd_adp *adp, bool isr);
+void chd_dec_free_iodata(struct crystalhd_adp *adp, crystalhd_ioctl_data *iodata,bool isr);
 extern int bc_get_userhandle_count(struct crystalhd_cmd *ctx);
+int chd_dec_pci_suspend(struct pci_dev *pdev, pm_message_t state);
+int chd_dec_pci_resume(struct pci_dev *pdev);
+
 
 struct device *chddev(void)
 {
 	return &g_adp_info->pdev->dev;
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 35)
-loff_t noop_llseek(struct file *file, loff_t offset, int origin)
-{
-	return file->f_pos;
-}
-#endif
-
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 18)
 static irqreturn_t chd_dec_isr(int irq, void *arg)
-#else
-static irqreturn_t chd_dec_isr(int irq, void *arg, struct pt_regs *r)
-#endif
 {
 	struct crystalhd_adp *adp = (struct crystalhd_adp *) arg;
 	int rc = 0;
@@ -117,8 +109,7 @@ crystalhd_ioctl_data *chd_dec_alloc_iodata(struct crystalhd_adp *adp, bool isr)
 	return temp;
 }
 
-void chd_dec_free_iodata(struct crystalhd_adp *adp, crystalhd_ioctl_data *iodata,
-			 bool isr)
+void chd_dec_free_iodata(struct crystalhd_adp *adp, crystalhd_ioctl_data *iodata, bool isr)
 {
 	unsigned long flags = 0;
 
@@ -160,7 +151,8 @@ static int chd_dec_fetch_cdata(struct crystalhd_adp *adp, crystalhd_ioctl_data *
 	int rc = 0;
 
 	if (!adp || !io || !ua || !m_sz) {
-		dev_err(chddev(), "Invalid Arg!!\n");
+		dev_err(chddev(), "Invalid Arg!! adp=%d io=%d ua=%d m_sz=%u\n",
+			!!adp, !!io, !!ua, m_sz);
 		return -EINVAL;
 	}
 
@@ -224,7 +216,8 @@ static int chd_dec_proc_user_data(struct crystalhd_adp *adp,
 	uint32_t m_sz = 0;
 
 	if (!adp || !io || !ua) {
-		dev_err(chddev(), "Invalid Arg!!\n");
+		dev_err(chddev(), "proc_user_data: Invalid Arg!! adp=%d io=%d ua=%d\n",
+			!!adp, !!io, !!ua);
 		return -EINVAL;
 	}
 
@@ -235,11 +228,20 @@ static int chd_dec_proc_user_data(struct crystalhd_adp *adp,
 		return rc;
 	}
 
+	dev_dbg(chddev(), "proc_user_data: cmd=0x%08x set=%d NumDwords=%u\n",
+		 io->cmd, set, io->udata.u.devMem.NumDwords);
+	if (!set) {
+		uint8_t *p = (uint8_t *)&io->udata;
+		dev_dbg(chddev(), "udata[0..23]: %*ph\n", 24, p);
+	}
+
 	switch (io->cmd) {
 	case BCM_IOC_MEM_RD:
 	case BCM_IOC_MEM_WR:
 	case BCM_IOC_FW_DOWNLOAD:
 		m_sz = io->udata.u.devMem.NumDwords * 4;
+		dev_dbg(chddev(), "additional data: size=%u ua=0x%lx\n",
+			m_sz, ua);
 		if (set)
 			rc = chd_dec_release_cdata(adp, io, ua);
 		else
@@ -289,58 +291,75 @@ static int chd_dec_api_cmd(struct crystalhd_adp *adp, unsigned long ua,
 }
 
 /* API interfaces */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 35)
-static int chd_dec_ioctl(struct inode *in, struct file *fd,
-			 unsigned int cmd, unsigned long ua)
-#else
 static long chd_dec_ioctl(struct file *fd,
 			  unsigned int cmd, unsigned long ua)
-#endif
 {
 	struct crystalhd_adp *adp = chd_get_adp();
-	struct device *dev = &adp->pdev->dev;
+	struct device *dev;
 	crystalhd_cmd_proc cproc;
 	struct crystalhd_user *uc;
-
-	dev_dbg(dev, "Entering %s\n", __func__);
+	bool exclusive;
+	long rc;
 
 	if (!adp || !fd) {
 		dev_err(chddev(), "Invalid adp\n");
 		return -EINVAL;
 	}
+	dev = &adp->pdev->dev;
+	dev_dbg(dev, "Entering %s\n", __func__);
+
+	exclusive = cmd == BCM_IOC_NOTIFY_MODE || cmd == BCM_IOC_RELEASE;
+	if (exclusive)
+		down_write(&adp->user_lock);
+	else
+		down_read(&adp->user_lock);
 
 	uc = fd->private_data;
 	if (!uc) {
 		dev_err(chddev(), "Failed to get uc\n");
-		return -ENODATA;
+		rc = -ENODATA;
+		goto unlock;
 	}
 
 	cproc = crystalhd_get_cmd_proc(&adp->cmds, cmd, uc);
 	if (!cproc && !(adp->cmds.state & BC_LINK_SUSPEND)) {
 		dev_err(chddev(), "Unhandled command: %d\n", cmd);
-		return -EINVAL;
+		rc = -EINVAL;
+		goto unlock;
 	}
 
-	return chd_dec_api_cmd(adp, ua, uc->uid, cmd, cproc);
+	rc = chd_dec_api_cmd(adp, ua, uc->uid, cmd, cproc);
+	if (cmd == BCM_IOC_RELEASE && !uc->in_use)
+		fd->private_data = NULL;
+
+unlock:
+	if (exclusive)
+		up_write(&adp->user_lock);
+	else
+		up_read(&adp->user_lock);
+	return rc;
 }
 
 static int chd_dec_open(struct inode *in, struct file *fd)
 {
 	struct crystalhd_adp *adp = chd_get_adp();
-	struct device *dev = &adp->pdev->dev;
+	struct device *dev;
 	int rc = 0;
 	BC_STATUS sts = BC_STS_SUCCESS;
 	struct crystalhd_user *uc = NULL;
 
-	dev_dbg(dev, "Entering %s\n", __func__);
 	if (!adp) {
-		dev_err(dev, "Invalid adp\n");
+		dev_err(chddev(), "Invalid adp\n");
 		return -EINVAL;
 	}
+	dev = &adp->pdev->dev;
+	dev_dbg(dev, "Entering %s\n", __func__);
+	down_write(&adp->user_lock);
 
 	if (adp->cfg_users >= BC_LINK_MAX_OPENS) {
 		dev_info(dev, "Already in use.%d\n", adp->cfg_users);
-		return -EBUSY;
+		rc = -EBUSY;
+		goto unlock;
 	}
 
 	sts = crystalhd_user_open(&adp->cmds, &uc);
@@ -353,27 +372,32 @@ static int chd_dec_open(struct inode *in, struct file *fd)
 		fd->private_data = uc;
 	}
 
+unlock:
+	up_write(&adp->user_lock);
 	return rc;
 }
 
 static int chd_dec_close(struct inode *in, struct file *fd)
 {
 	struct crystalhd_adp *adp = chd_get_adp();
-	struct device *dev = &adp->pdev->dev;
-	struct crystalhd_cmd *ctx = &adp->cmds;
+	struct device *dev;
+	struct crystalhd_cmd *ctx;
 	struct crystalhd_user *uc;
 	uint32_t mode;
+	int rc = 0;
 
-	dev_dbg(dev, "Entering %s\n", __func__);
 	if (!adp) {
-		dev_err(dev, "Invalid adp\n");
+		dev_err(chddev(), "Invalid adp\n");
 		return -EINVAL;
 	}
+	dev = &adp->pdev->dev;
+	ctx = &adp->cmds;
+	dev_dbg(dev, "Entering %s\n", __func__);
+	down_write(&adp->user_lock);
 
 	uc = fd->private_data;
 	if (!uc) {
-		dev_err(dev, "Failed to get uc\n");
-		return -ENODATA;
+		goto unlock;
 	}
 
 	/* Check and close only if we have not flush/closed before */
@@ -416,16 +440,14 @@ static int chd_dec_close(struct inode *in, struct file *fd)
 			adp->cfg_users--;
 	}
 
-	return 0;
+unlock:
+	up_write(&adp->user_lock);
+	return rc;
 }
 
 static const struct file_operations chd_dec_fops = {
 	.owner		= THIS_MODULE,
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 35)
-	.ioctl		= chd_dec_ioctl,
-#else
 	.unlocked_ioctl	= chd_dec_ioctl,
-#endif
 	.open		= chd_dec_open,
 	.release	= chd_dec_close,
 	.llseek		= noop_llseek,
@@ -450,19 +472,14 @@ static int __init chd_dec_init_chdev(struct crystalhd_adp *adp)
 	}
 
 	/* register crystalhd class */
-	crystalhd_class = class_create(THIS_MODULE, "crystalhd");
+	crystalhd_class = crystalhd_class_create("crystalhd");
 	if (IS_ERR(crystalhd_class)) {
 		dev_err(xdev, "failed to create class\n");
 		goto fail;
 	}
 
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 25)
 	dev = device_create(crystalhd_class, NULL, MKDEV(adp->chd_dec_major, 0),
 			    NULL, "crystalhd");
-#else
-	dev = device_create(crystalhd_class, NULL, MKDEV(adp->chd_dec_major, 0),
-			    "crystalhd");
-#endif
 	if (IS_ERR(dev)) {
 		dev_err(xdev, "failed to create device\n");
 		goto device_create_fail;
@@ -654,6 +671,7 @@ static int __init chd_dec_pci_probe(struct pci_dev *pdev,
 
 	/* Setup adapter level lock.. */
 	spin_lock_init(&pinfo->lock);
+	init_rwsem(&pinfo->user_lock);
 
 	/* setup api stuff.. */
 	rc = chd_dec_init_chdev(pinfo);
@@ -667,11 +685,11 @@ static int __init chd_dec_pci_probe(struct pci_dev *pdev,
 	}
 
 	/* Set dma mask... */
-	if (!pci_set_dma_mask(pdev, DMA_BIT_MASK(64))) {
-		pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64));
+	if (!dma_set_mask(&pdev->dev, DMA_BIT_MASK(64))) {
+		dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
 		pinfo->dmabits = 64;
-	} else if (!pci_set_dma_mask(pdev, DMA_BIT_MASK(32))) {
-		pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(32));
+	} else if (!dma_set_mask(&pdev->dev, DMA_BIT_MASK(32))) {
+		dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
 		pinfo->dmabits = 32;
 	} else {
 		dev_err(dev, "%s: Unabled to setup DMA %d\n", __func__, rc);
@@ -784,20 +802,11 @@ int chd_dec_pci_resume(struct pci_dev *pdev)
 	return 0;
 }
 
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 24)
 static struct pci_device_id chd_dec_pci_id_table[] = {
 	{ PCI_VDEVICE(BROADCOM, 0x1612), 8 },
 	{ PCI_VDEVICE(BROADCOM, 0x1615), 8 },
 	{ 0, },
 };
-#else
-static struct pci_device_id chd_dec_pci_id_table[] = {
-/*	vendor, device, subvendor, subdevice, class, classmask, driver_data */
-	{ 0x14e4, 0x1612, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 8 },
-	{ 0x14e4, 0x1615, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 8 },
-	{ 0, },
-};
-#endif
 MODULE_DEVICE_TABLE(pci, chd_dec_pci_id_table);
 
 static struct pci_driver bc_chd_driver __refdata = {

@@ -24,14 +24,12 @@
  * along with this driver.  If not, see <http://www.gnu.org/licenses/>.
  **********************************************************************/
 
-#include <linux/version.h>
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,9,0)
 #include <linux/sched/signal.h>
-#endif
 
 #include "crystalhd_lnx.h"
 #include "crystalhd_hw.h"
-
+int bc_get_userhandle_count(struct crystalhd_cmd *ctx);
+BC_STATUS bc_cproc_release_user(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *idata);
 static struct crystalhd_user *bc_cproc_get_uid(struct crystalhd_cmd *ctx)
 {
 	struct crystalhd_user *user = NULL;
@@ -750,7 +748,7 @@ static BC_STATUS bc_cproc_get_stats(struct crystalhd_cmd *ctx,
 	bool readTxOnly = false;
 	unsigned long irqflags;
 
-	if (!ctx || !idata) {
+	if (!ctx || !idata || !ctx->hw_ctx) {
 		dev_err(chddev(), "%s: Invalid Arg\n", __func__);
 		return BC_STS_INV_ARG;
 	}
@@ -833,6 +831,9 @@ get_out:
 static BC_STATUS bc_cproc_reset_stats(struct crystalhd_cmd *ctx,
 				      crystalhd_ioctl_data *idata)
 {
+	if (!ctx || !ctx->hw_ctx)
+		return BC_STS_INV_ARG;
+
 	crystalhd_hw_stats(ctx->hw_ctx, NULL);
 
 	return BC_STS_SUCCESS;
@@ -1119,9 +1120,11 @@ BC_STATUS __init crystalhd_setup_cmd_context(struct crystalhd_cmd *ctx,
 		ctx->user[i].mode = DTS_MODE_INV;
 	}
 
-	ctx->hw_ctx = (struct crystalhd_hw*)kmalloc(sizeof(struct crystalhd_hw), GFP_KERNEL);
-
-	memset(ctx->hw_ctx, 0, sizeof(struct crystalhd_hw));
+	ctx->hw_ctx = kzalloc(sizeof(struct crystalhd_hw), GFP_KERNEL);
+	if (!ctx->hw_ctx) {
+		dev_err(dev, "%s: Failed to allocate hw context\n", __func__);
+		return BC_STS_ERROR;
+	}
 
 	/*Open and Close the Hardware to put it in to sleep state*/
 	crystalhd_hw_open(ctx->hw_ctx, ctx->adp);

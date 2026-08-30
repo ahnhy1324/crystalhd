@@ -25,10 +25,7 @@
 #include <linux/pci.h>
 #include <linux/delay.h>
 #include <linux/device.h>
-#include <linux/version.h>
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,11,0)
 #include <linux/sched/signal.h>
-#endif
 #include <asm/tsc.h>
 #include "crystalhd_hw.h"
 #include "crystalhd_lnx.h"
@@ -474,7 +471,7 @@ bool crystalhd_link_start_device(struct crystalhd_hw *hw)
 	struct device *dev;
 
 	if (!hw)
-		return -EINVAL;
+		return false;
 
 	dev = &hw->adp->pdev->dev;
 

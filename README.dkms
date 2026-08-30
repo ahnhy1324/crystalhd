@@ -1,25 +1,49 @@
-DKMS is a program/framework that enables generating Linux kernel modules
-whose sources generally reside outside the kernel source tree.  The concept
-is to have DKMS modules automatically rebuilt when a new kernel is
-installed.
+# DKMS installation
 
-source: https://en.wikipedia.org/wiki/Dynamic_Kernel_Module_Support
+DKMS rebuilds out-of-tree kernel modules when a new kernel is installed.
 
-How to configure the crystalhd module for DKMS:
+This driver supports Linux 6.1 and newer.
 
-- Install DKMS
+Install DKMS and the headers for the running kernel:
 
-- Copy or link this source to the directory /usr/src/crystalhd-0.1/, e.g. as root:
+```sh
+sudo apt install dkms linux-headers-$(uname -r)
+```
 
-    $ ln -s $PWD /usr/src/crystalhd-0.1
+Register this checkout as `crystalhd/3.10.0`. The `dkms add` command is needed
+only once; omit it when `dkms status` already lists that version.
 
-- Run (as root):
+```sh
+sudo ln -sfn "$PWD" /usr/src/crystalhd-3.10.0
+dkms status
+sudo dkms add -m crystalhd -v 3.10.0
+sudo dkms build -m crystalhd -v 3.10.0 -k "$(uname -r)"
+sudo dkms install -m crystalhd -v 3.10.0 -k "$(uname -r)"
+```
 
-    $ dkms add -m crystalhd -v 0.1
+Use `--force` on `dkms build` and `dkms install` only when intentionally
+replacing an existing build of the same version. Verify the result:
 
-- Test a build:
+```sh
+dkms status
+modinfo -n crystalhd
+modinfo -F srcversion crystalhd
+modinfo -F srcversion ./driver/linux/crystalhd.ko
+```
 
-    $ dkms build -m crystalhd -v 0.1
+The installed and checkout source versions should match. If an older module is
+already loaded, first make sure no process owns the device, then reload it
+without force:
 
-From now on this driver should be automatically build and installed for
-newly-installed kernels.
+```sh
+sudo fuser -v /dev/crystalhd || true
+sudo rmmod crystalhd
+sudo modprobe crystalhd
+```
+
+Never force-unload an active CrystalHD module. Reboot instead if a normal
+`rmmod` reports that the module is busy.
+
+Once registered, DKMS automatically builds the module for newly installed
+kernels. Firmware, userspace libraries, VA-API, GStreamer, and browser files
+are installed separately by `sudo make install`.
