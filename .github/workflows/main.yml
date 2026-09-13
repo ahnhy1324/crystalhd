@@ -45,6 +45,8 @@ jobs:
           sh tests/generate-h264-samples.sh "$RUNNER_TEMP/h264-samples"
           make -C filters/vaapi seek-test
           filters/vaapi/vaapi-seek-test "$RUNNER_TEMP/h264-samples/high.mp4" --software
+          filters/vaapi/vaapi-seek-test "$RUNNER_TEMP/h264-samples/high.mp4" --software --lookahead 8
+          filters/vaapi/vaapi-seek-test "$RUNNER_TEMP/h264-samples/high.mp4" --software --retain-old-frames
 
   upstream-kernel-api:
     name: Kernel API (${{ matrix.track }}, ${{ matrix.arch }})

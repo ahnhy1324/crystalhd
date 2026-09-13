@@ -53,10 +53,16 @@ extern "C" {
 #include <bc_dts_defs.h>
 #include <bc_dts_types.h>
 #include <libcrystalhd_if.h>
+#include "crystalhd-decode-replay.h"
 
 namespace {
 
 constexpr uint64_t kDecodeTimeoutNs = 10ULL * 1000 * 1000 * 1000;
+constexpr uint64_t kDecodeBatchGraceNs = 100ULL * 1000 * 1000;
+
+static bool DecodeBatchGraceExpired(uint64_t elapsed_ns) {
+  return elapsed_ns >= kDecodeBatchGraceNs;
+}
 
 static VAStatus DecodeWaitStatus(uint64_t timeout_ns, uint64_t elapsed_ns) {
   if (timeout_ns == VA_TIMEOUT_INFINITE)
@@ -70,7 +76,6 @@ static VAStatus DecodeWaitStatus(uint64_t timeout_ns, uint64_t elapsed_ns) {
 constexpr unsigned int kMaxWidth = 1920;
 constexpr unsigned int kMaxHeight = 1088;
 constexpr uint64_t kTimestampStep = 100000;
-constexpr uint32_t kInputRetries = 1000;
 constexpr char kSwSyncPath[] = "/sys/kernel/debug/sync/sw_sync";
 
 struct SwSyncCreateFenceData {
@@ -167,13 +172,12 @@ static void AppendNal(std::vector<uint8_t> *output, uint8_t type,
   }
 }
 
-static void FinishAccessUnit(std::vector<uint8_t> *output) {
-  // VA-API submits complete pictures, but CrystalHD consumes an Annex-B byte
-  // stream. Delimit the last slice even if no more input is submitted. This
-  // does not drain firmware's remaining buffered pictures. An AUD starts the
-  // next access unit without ending the coded video sequence or
-  // flushing reference pictures. primary_pic_type=7 permits all slice types;
-  // the remaining bit is rbsp_stop_one_bit followed by alignment zeros.
+static void BeginAccessUnit(std::vector<uint8_t> *output) {
+  // H.264 7.4.1.2.3 puts AUD first in its access unit. Keep that boundary in
+  // the same timestamped input packet as its picture: a trailing AUD starts
+  // the NEXT picture inside the previous packet and misassociates firmware
+  // PTS. A subsequent AU or explicit sealed-batch EOS delimits the last slice.
+  // primary_pic_type=7 permits all slice types, followed by rbsp_stop_one_bit.
   AppendNal(output, 9, 0, {0xf0});
 }
 
@@ -624,14 +628,19 @@ struct Surface {
   }
 
   bool BeginCpuWrite() const {
-    bool success = true;
-    for (int fd : object_fds) {
+    for (size_t object = 0; object < object_fds.size(); ++object) {
       dma_buf_sync sync = {};
       sync.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE;
-      if (ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync) != 0)
-        success = false;
+      if (ioctl(object_fds[object], DMA_BUF_IOCTL_SYNC, &sync) != 0) {
+        // START ownership is per object. Release only the successfully
+        // acquired prefix before reporting a failed, all-or-nothing write.
+        sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE;
+        while (object != 0)
+          ioctl(object_fds[--object], DMA_BUF_IOCTL_SYNC, &sync);
+        return false;
+      }
     }
-    return success;
+    return true;
   }
 
   bool EndCpuWrite() const {
@@ -670,6 +679,8 @@ struct Surface {
   }
 };
 
+static void EndFencedWrite(Surface *surface, int timeline);
+
 // Begin CPU access before publishing the fence: vaEndPicture has not returned,
 // so Chromium cannot yet enqueue a new read of this target. The imported
 // unsignaled write fence then protects the whole asynchronous interval.
@@ -704,10 +715,10 @@ static int BeginFencedWrite(Surface *surface) {
   }
   close(create.fence);
   if (!imported) {
-    surface->EndCpuWrite();
-    const uint32_t increment = 1;
-    ioctl(timeline, SW_SYNC_IOC_INC, &increment);
-    close(timeline);
+    // An earlier object may already carry our unsignaled fence. END can
+    // wait on that same fence, so signal it before releasing CPU ownership,
+    // exactly as for a completed asynchronous write.
+    EndFencedWrite(surface, timeline);
     return -1;
   }
   return timeline;
@@ -861,19 +872,25 @@ static VAStatus ProcessVpp(SwsContext **scaler,
       source->EndCpuRead();
       return VA_STATUS_ERROR_OPERATION_FAILED;
     }
-    if (!destination_write_started)
-      destination->BeginCpuWrite();
+    if (!destination_write_started && !destination->BeginCpuWrite()) {
+      source->EndCpuRead();
+      return VA_STATUS_ERROR_OPERATION_FAILED;
+    }
     for (unsigned int row = 0; row < destination->height; ++row) {
       memcpy(destination->planes[0] +
                  static_cast<size_t>(row) * destination->pitch[0],
              argb_staging->data() + static_cast<size_t>(row) * staging_pitch,
              staging_pitch);
     }
-    if (!destination_write_started)
-      destination->EndCpuWrite();
+    if (!destination_write_started && !destination->EndCpuWrite()) {
+      source->EndCpuRead();
+      return VA_STATUS_ERROR_OPERATION_FAILED;
+    }
   } else {
-    if (!destination_write_started)
-      destination->BeginCpuWrite();
+    if (!destination_write_started && !destination->BeginCpuWrite()) {
+      source->EndCpuRead();
+      return VA_STATUS_ERROR_OPERATION_FAILED;
+    }
     for (unsigned int row = 0; row < destination->height; ++row)
       memset(destination->planes[0] +
                  static_cast<size_t>(row) * destination->pitch[0],
@@ -918,8 +935,10 @@ static VAStatus ProcessVpp(SwsContext **scaler,
         destination_uv[column + 1] = source->planes[1][source_offset + 1];
       }
     }
-    if (!destination_write_started)
-      destination->EndCpuWrite();
+    if (!destination_write_started && !destination->EndCpuWrite()) {
+      source->EndCpuRead();
+      return VA_STATUS_ERROR_OPERATION_FAILED;
+    }
   }
   source->EndCpuRead();
   destination->ready = true;
@@ -933,7 +952,7 @@ struct Image {
   VAImage va = {};
 };
 
-static void CopyYuy2ToSurface(Surface *surface,
+static bool CopyYuy2ToSurface(Surface *surface,
                               const BC_DTS_PROC_OUT &output, bool is_70012);
 
 struct DecodeContext {
@@ -943,6 +962,9 @@ struct DecodeContext {
   bool video_process = false;
   VASurfaceID target = VA_INVALID_SURFACE;
   VASurfaceID vpp_source = VA_INVALID_SURFACE;
+  std::shared_ptr<Surface> vpp_frame;
+  std::shared_ptr<DecodeContext> vpp_decoder;
+  uint64_t vpp_generation = 0;
   VARectangle vpp_source_region = {};
   VARectangle vpp_output_region = {};
   bool have_vpp_parameters = false;
@@ -956,32 +978,48 @@ struct DecodeContext {
   bool decoder_started = false;
   bool is_70012 = false;
   bool sent_parameter_sets = false;
+  bool closing = false;
   bool retired = false;
   uint64_t generation = 1;
   uint64_t next_timestamp = kTimestampStep;
   std::unordered_map<uint64_t, VASurfaceID> pending;
   std::unordered_map<uint64_t, std::shared_ptr<Surface>> decoded_frames;
   std::unordered_map<Surface *, uint64_t> surface_timestamps;
+  CrystalHDDecodeReplay replay;
 
   ~DecodeContext() { Close(); }
 
-  void Close() {
+  BC_STATUS CloseHardware() {
+    BC_STATUS result = BC_STS_SUCCESS;
     if (decoder_started) {
-      DtsStopDecoder(device);
+      result = DtsStopDecoder(device);
       decoder_started = false;
     }
     if (decoder_open) {
-      DtsCloseDecoder(device);
+      const BC_STATUS status = DtsCloseDecoder(device);
+      if (result == BC_STS_SUCCESS)
+        result = status;
       decoder_open = false;
     }
     if (device != nullptr) {
-      DtsDeviceClose(device);
+      const BC_STATUS status = DtsDeviceClose(device);
+      if (result == BC_STS_SUCCESS)
+        result = status;
       device = nullptr;
     }
+    return result;
+  }
+
+  BC_STATUS Close() {
+    const BC_STATUS status = CloseHardware();
     pending.clear();
     decoded_frames.clear();
     surface_timestamps.clear();
+    replay = CrystalHDDecodeReplay();
+    vpp_frame.reset();
+    vpp_decoder.reset();
     sent_parameter_sets = false;
+    return status;
   }
 
   void Reset() {
@@ -1020,8 +1058,6 @@ struct Driver {
   std::unordered_map<VAConfigID, Config> configs;
   std::unordered_map<VASurfaceID, std::shared_ptr<Surface>> surfaces;
   std::unordered_map<VAContextID, std::shared_ptr<DecodeContext>> contexts;
-  std::unordered_set<VAContextID> retired_contexts;
-  std::deque<VAContextID> retired_context_order;
   std::unordered_map<VABufferID, Buffer> buffers;
   std::unordered_map<VAImageID, Image> images;
   std::unordered_map<BackingIdentity, VASurfaceID, BackingIdentityHash>
@@ -1029,10 +1065,6 @@ struct Driver {
   std::deque<PendingVpp> pending_vpp;
   SwsContext *vpp_scaler = nullptr;
   std::vector<uint8_t> vpp_argb_staging;
-  std::vector<uint8_t> vpp_fallback;
-  unsigned int vpp_fallback_width = 0;
-  unsigned int vpp_fallback_height = 0;
-  uint64_t vpp_fallback_sequence = 0;
   bool stopping = false;
   std::thread vpp_worker;
   gbm_device *gbm = nullptr;
@@ -1156,25 +1188,35 @@ static VAStatus OpenDecoder(DecodeContext *decode) {
   return VA_STATUS_SUCCESS;
 
 fail:
-  decode->Close();
+  decode->CloseHardware();
   return VA_STATUS_ERROR_OPERATION_FAILED;
 }
 
-static void CopyYuy2ToSurface(Surface *surface, const BC_DTS_PROC_OUT &output,
+static bool CopyYuy2ToSurface(Surface *surface, const BC_DTS_PROC_OUT &output,
                               bool is_70012) {
   const unsigned int width = std::min<unsigned int>(output.PicInfo.width,
                                                      surface->width);
   const unsigned int height = std::min<unsigned int>(output.PicInfo.height,
                                                       surface->height);
-  unsigned int source_pitch = width * 2;
+  unsigned int source_pitch = output.PicInfo.width * 2;
   if (is_70012) {
     const unsigned int padded_width =
-        width <= 720 ? 720 : (width <= 1280 ? 1280 : 1920);
+        output.PicInfo.width <= 720
+            ? 720
+            : (output.PicInfo.width <= 1280 ? 1280 : 1920);
     source_pitch = padded_width * 2;
   }
 
-  surface->BeginCpuWrite();
+  if (!surface->BeginCpuWrite())
+    return false;
   if (surface->fourcc == VA_FOURCC_ARGB) {
+    // The decoded rectangle is coded geometry. Larger client allocations are
+    // allowed, but their unused logical region must not retain older pixels.
+    for (unsigned int y = 0; y < surface->height; ++y) {
+      uint8_t *line = surface->planes[0] + static_cast<size_t>(y) * surface->pitch[0];
+      for (unsigned int x = 0; x < surface->width; ++x)
+        StoreArgb(line + static_cast<size_t>(x) * 4, 16, 128, 128);
+    }
     for (unsigned int y = 0; y < height; ++y) {
       const uint8_t *source = output.Ybuff +
                               static_cast<size_t>(y) * source_pitch;
@@ -1187,11 +1229,32 @@ static void CopyYuy2ToSurface(Surface *surface, const BC_DTS_PROC_OUT &output,
                   source[x * 2 + 2], source[x * 2 + 1], source[x * 2 + 3]);
       }
     }
-    surface->EndCpuWrite();
+    if (!surface->EndCpuWrite())
+      return false;
     surface->ready = true;
     surface->frame_timestamp = output.PicInfo.timeStamp;
-    return;
+    return true;
   }
+  // Clear only neutral padding; the copied rectangle is fully overwritten.
+  if (width < surface->width)
+    for (unsigned int y = 0; y < height; ++y)
+      memset(surface->planes[0] + static_cast<size_t>(y) * surface->pitch[0] + width,
+             16, surface->width - width);
+  for (unsigned int y = height; y < surface->height; ++y)
+    memset(surface->planes[0] + static_cast<size_t>(y) * surface->pitch[0],
+           16, surface->width);
+  const unsigned int chroma_rows = (height + 1) / 2;
+  const unsigned int chroma_width = Align(surface->width, 2);
+  // Conversion writes complete UV pairs only, including for odd widths.
+  const unsigned int copied_chroma_width = width & ~1U;
+  if (copied_chroma_width < chroma_width)
+    for (unsigned int y = 0; y < chroma_rows; ++y)
+      memset(surface->planes[1] + static_cast<size_t>(y) * surface->pitch[1] +
+                 copied_chroma_width,
+             128, chroma_width - copied_chroma_width);
+  for (unsigned int y = chroma_rows; y < (surface->height + 1) / 2; ++y)
+    memset(surface->planes[1] + static_cast<size_t>(y) * surface->pitch[1],
+           128, chroma_width);
   for (unsigned int y = 0; y < height; ++y) {
     const uint8_t *source = output.Ybuff +
                             static_cast<size_t>(y) * source_pitch;
@@ -1217,19 +1280,41 @@ static void CopyYuy2ToSurface(Surface *surface, const BC_DTS_PROC_OUT &output,
           2);
     }
   }
-  surface->EndCpuWrite();
+  if (!surface->EndCpuWrite())
+    return false;
   surface->ready = true;
   surface->frame_timestamp = output.PicInfo.timeStamp;
+  return true;
 }
 
-static void CopyNv12Surface(const Surface &source, Surface *destination) {
+static bool CopyNv12Surface(const Surface &source, Surface *destination) {
   if (destination == nullptr || source.fourcc != VA_FOURCC_NV12 ||
       destination->fourcc != VA_FOURCC_NV12)
-    return;
+    return false;
   const unsigned int width = std::min(source.width, destination->width);
   const unsigned int height = std::min(source.height, destination->height);
   source.BeginCpuRead();
-  destination->BeginCpuWrite();
+  if (!destination->BeginCpuWrite()) {
+    source.EndCpuRead();
+    return false;
+  }
+  if (width < destination->width)
+    for (unsigned int row = 0; row < height; ++row)
+      memset(destination->planes[0] + static_cast<size_t>(row) * destination->pitch[0] + width,
+             16, destination->width - width);
+  for (unsigned int row = height; row < destination->height; ++row)
+    memset(destination->planes[0] + static_cast<size_t>(row) * destination->pitch[0],
+           16, destination->width);
+  const unsigned int chroma_rows = (height + 1) / 2;
+  const unsigned int chroma_width = Align(destination->width, 2);
+  // Unlike YUY2 conversion, the NV12 memcpy below writes exactly width bytes.
+  if (width < chroma_width)
+    for (unsigned int row = 0; row < chroma_rows; ++row)
+      memset(destination->planes[1] + static_cast<size_t>(row) * destination->pitch[1] + width,
+             128, chroma_width - width);
+  for (unsigned int row = chroma_rows; row < (destination->height + 1) / 2; ++row)
+    memset(destination->planes[1] + static_cast<size_t>(row) * destination->pitch[1],
+           128, chroma_width);
   for (unsigned int row = 0; row < height; ++row) {
     memcpy(destination->planes[0] +
                static_cast<size_t>(row) * destination->pitch[0],
@@ -1242,35 +1327,43 @@ static void CopyNv12Surface(const Surface &source, Surface *destination) {
            source.planes[1] + static_cast<size_t>(row) * source.pitch[1],
            width);
   }
-  destination->EndCpuWrite();
+  const bool committed = destination->EndCpuWrite();
   source.EndCpuRead();
+  if (!committed)
+    return false;
   destination->ready = true;
   destination->failed = false;
   destination->frame_timestamp = source.frame_timestamp;
+  return true;
 }
 
-static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
-                           unsigned int timeout_ms, bool *activity) {
-  BC_DTS_PROC_OUT output = {};
-  output.PicInfo.width = decode->width;
-  output.PicInfo.height = decode->height;
-  *activity = false;
-
-  BC_STATUS status = DtsProcOutputNoCopy(decode->device, timeout_ms, &output);
-  Debug("DtsProcOutputNoCopy: status=%d flags=%#x ts=%llu", status,
-        output.PoutFlags,
-        static_cast<unsigned long long>(output.PicInfo.timeStamp));
-  if (status == BC_STS_FMT_CHANGE) {
-    *activity = true;
-    return VA_STATUS_SUCCESS;
+static VAStatus FailDecode(Driver *driver, DecodeContext *decode,
+                            const char *reason) {
+  decode->replay.Fail(reason);
+  Debug("sealed-batch decoding failed: %s", reason);
+  for (const auto &pending : decode->pending) {
+    auto picture = decode->decoded_frames.find(pending.first);
+    if (picture != decode->decoded_frames.end() && !picture->second->ready)
+      picture->second->failed = true;
+    auto surface = driver->surfaces.find(pending.second);
+    if (surface != driver->surfaces.end() &&
+        surface->second->expected_timestamp == pending.first)
+      surface->second->failed = true;
   }
-  if (status == BC_STS_NO_DATA || status == BC_STS_BUSY ||
-      status == BC_STS_TIMEOUT)
-    return VA_STATUS_SUCCESS;
-  if (status != BC_STS_SUCCESS)
-    return VA_STATUS_ERROR_DECODING_ERROR;
+  driver->condition.notify_all();
+  return VA_STATUS_ERROR_DECODING_ERROR;
+}
 
-  *activity = true;
+// No hardware calls: tests exercise the same exact-once/immutable-picture
+// processing used for both normal decoding and IDR-prefix replay.
+static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
+                                      const BC_DTS_PROC_OUT &output) {
+  const auto disposition = decode->replay.Observe(output.PicInfo.timeStamp);
+  if (disposition == CrystalHDDecodeReplay::Output::Invalid)
+    return FailDecode(driver, decode, decode->replay.failure());
+  if (disposition != CrystalHDDecodeReplay::Output::New)
+    return VA_STATUS_SUCCESS;
+
   VASurfaceID surface_id = VA_INVALID_SURFACE;
   auto pending = decode->pending.find(output.PicInfo.timeStamp);
   if (pending != decode->pending.end()) {
@@ -1288,36 +1381,95 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
           : output_width;
   const uint64_t required_bytes =
       static_cast<uint64_t>(padded_width) * 2 * output_height;
+  auto decoded = decode->decoded_frames.find(output.PicInfo.timeStamp);
+  auto surface = driver->surfaces.find(surface_id);
+  const bool current_picture =
+      surface != driver->surfaces.end() &&
+      surface->second->expected_timestamp == output.PicInfo.timeStamp;
+  const auto fits = [&](const Surface &target) {
+    return target.width >= output_width && target.height >= output_height;
+  };
   const bool valid_frame =
       (output.PoutFlags & BC_POUT_FLAGS_PIB_VALID) != 0 &&
       output.Ybuff != nullptr && output_width != 0 && output_height != 0 &&
+      output_width == decode->width && output_height == decode->height &&
+      ((output_width | output_height) & 1U) == 0 &&
+      (decoded == decode->decoded_frames.end() || fits(*decoded->second)) &&
+      (!current_picture || fits(*surface->second)) &&
       static_cast<uint64_t>(output.YBuffDoneSz) * 4 >= required_bytes &&
       (output.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) == 0;
-  auto decoded = decode->decoded_frames.find(output.PicInfo.timeStamp);
+  bool complete = valid_frame;
   if (decoded != decode->decoded_frames.end()) {
-    if (!valid_frame)
+    if (complete)
+      complete = CopyYuy2ToSurface(decoded->second.get(), output, decode->is_70012);
+    if (!complete)
       decoded->second->failed = true;
-    else
-      CopyYuy2ToSurface(decoded->second.get(), output, decode->is_70012);
   }
-  auto surface = driver->surfaces.find(surface_id);
-  if (surface != driver->surfaces.end() &&
-      surface->second->expected_timestamp == output.PicInfo.timeStamp) {
-    if (!valid_frame)
+  if (current_picture) {
+    if (complete) {
+      complete = decoded != decode->decoded_frames.end()
+          ? CopyNv12Surface(*decoded->second, surface->second.get())
+          : CopyYuy2ToSurface(surface->second.get(), output, decode->is_70012);
+    }
+    if (!complete)
       surface->second->failed = true;
-    else if (decoded != decode->decoded_frames.end())
-      CopyNv12Surface(*decoded->second, surface->second.get());
-    else
-      CopyYuy2ToSurface(surface->second.get(), output, decode->is_70012);
   }
+  // A public surface can be reused before old hardware output arrives. Once
+  // that old output is complete, only captured/queued VPP references need to
+  // retain it; otherwise dropped frames would accumulate for the whole stream.
+  if (!current_picture && decoded != decode->decoded_frames.end())
+    decode->decoded_frames.erase(decoded);
   driver->condition.notify_all();
+  return complete ? VA_STATUS_SUCCESS
+                  : FailDecode(driver, decode, "invalid picture geometry/data or failed CPU write");
+}
 
+static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
+                           unsigned int timeout_ms, bool *activity) {
+  BC_DTS_PROC_OUT output = {};
+  output.PicInfo.width = decode->width;
+  output.PicInfo.height = decode->height;
+  *activity = false;
+
+  BC_STATUS status = DtsProcOutputNoCopy(decode->device, timeout_ms, &output);
+  Debug("DtsProcOutputNoCopy: status=%d flags=%#x ts=%llu ordinal=%u session=%u output=%ux%u context=%ux%u", status,
+        output.PoutFlags,
+        static_cast<unsigned long long>(output.PicInfo.timeStamp),
+        output.PicInfo.picture_number, output.PicInfo.sess_num,
+        output.PicInfo.width, output.PicInfo.height, decode->width, decode->height);
+  if ((output.PicInfo.flags & VDEC_FLAG_EOS) != 0) {
+    // Only the actual firmware marker ends a sealed batch. Library idle/EOS
+    // counters are not evidence that every submitted picture was produced.
+    *activity = true;
+    if (status == BC_STS_SUCCESS &&
+        DtsReleaseOutputBuffs(decode->device, nullptr, FALSE) != BC_STS_SUCCESS)
+      return FailDecode(driver, decode, "EOS output release failed");
+    if (!decode->replay.EndOfSequence())
+      return FailDecode(driver, decode, decode->replay.failure());
+    Debug("sealed batch EOS: every submitted timestamp completed");
+    return VA_STATUS_SUCCESS;
+  }
+  if (status == BC_STS_FMT_CHANGE) {
+    *activity = true;
+    return VA_STATUS_SUCCESS;
+  }
+  if (status == BC_STS_NO_DATA || status == BC_STS_BUSY ||
+      status == BC_STS_TIMEOUT)
+    return VA_STATUS_SUCCESS;
+  if (status != BC_STS_SUCCESS)
+    return FailDecode(driver, decode, "hardware output failed");
+
+  *activity = true;
+  const VAStatus result = ProcessDecodedOutput(driver, decode, output);
   status = DtsReleaseOutputBuffs(decode->device, nullptr, FALSE);
-  return status == BC_STS_SUCCESS ? VA_STATUS_SUCCESS
-                                  : VA_STATUS_ERROR_DECODING_ERROR;
+  if (status != BC_STS_SUCCESS)
+    return FailDecode(driver, decode, "hardware output release failed");
+  return result;
 }
 
 static VAStatus ReceiveAvailable(Driver *driver, DecodeContext *decode) {
+  if (decode->replay.failed())
+    return VA_STATUS_ERROR_DECODING_ERROR;
   for (unsigned int attempt = 0; attempt < 64; ++attempt) {
     BC_DTS_STATUS decoder_status = {};
     BC_STATUS status = DtsGetDriverStatus(decode->device, &decoder_status);
@@ -1336,6 +1488,112 @@ static VAStatus ReceiveAvailable(Driver *driver, DecodeContext *decode) {
   return VA_STATUS_SUCCESS;
 }
 
+static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode) {
+  if (decode->replay.failed())
+    return VA_STATUS_ERROR_DECODING_ERROR;
+  if (decode->replay.NeedsRestart()) {
+    // EOS terminates reference state. The legacy channel-only flush leaves
+    // library/firmware state behind after repeated drains; reopen the complete
+    // device before replaying the original actual IDR. Public immutable frames,
+    // client generation and compressed input ownership stay untouched.
+    Debug("restart sealed decoder; replay %zu cached access units",
+          decode->replay.cached_pictures());
+    const BC_STATUS status = decode->CloseHardware();
+    if (status != BC_STS_SUCCESS)
+      return FailDecode(driver, decode, "hardware close for replay failed");
+    if (OpenDecoder(decode) != VA_STATUS_SUCCESS || !decode->replay.Restarted())
+      return FailDecode(driver, decode, "hardware reopen for replay failed");
+  }
+
+  // Do not wait while holding the VA driver mutex. The library TX ring is
+  // 1 MiB; each accepted AU is limited to 512 KiB. Reserve conservative PES
+  // header/marker overhead before calling its otherwise-blocking input API.
+  for (unsigned int attempt = 0; attempt < 32; ++attempt) {
+    const auto *unit = decode->replay.NextInput();
+    if (unit == nullptr)
+      break;
+    const size_t reserve = unit->bytes.size() +
+                           (unit->bytes.size() / 60000 + 1) * 32 + 1024;
+    if (DtsTxFreeSize(decode->device) < reserve)
+      break;
+    const BC_STATUS status = DtsProcInput(
+        decode->device, const_cast<uint8_t *>(unit->bytes.data()),
+        static_cast<uint32_t>(unit->bytes.size()), unit->timestamp, FALSE);
+    if (status == BC_STS_BUSY)
+      break;
+    if (status != BC_STS_SUCCESS || !decode->replay.InputSent())
+      return FailDecode(driver, decode, "compressed input submission failed");
+  }
+  if (decode->replay.failed())
+    return FailDecode(driver, decode, decode->replay.failure());
+  return VA_STATUS_SUCCESS;
+}
+
+static VAStatus SealDecodeBatch(Driver *driver, DecodeContext *decode) {
+  // The exact EOS marker path below is implemented for BCM70015. Keep
+  // BCM70012 on its existing bounded-wait path until separately validated.
+  if (decode->is_70012)
+    return VA_STATUS_SUCCESS;
+  if (!decode->replay.CanSeal() || DtsTxFreeSize(decode->device) < 1024)
+    return VA_STATUS_SUCCESS;
+  Debug("seal batch on sync demand: %zu hardware timestamps outstanding",
+        decode->replay.outstanding());
+  if (!decode->replay.Seal() || DtsFlushInput(decode->device, 0) != BC_STS_SUCCESS)
+    return FailDecode(driver, decode, "could not seal decoder batch");
+  return VA_STATUS_SUCCESS;
+}
+
+static bool HasLivePendingPictures(const Driver *driver,
+                                   const DecodeContext &decode) {
+  for (const auto &pending : decode.pending) {
+    auto surface = driver->surfaces.find(pending.second);
+    if (surface != driver->surfaces.end() && !surface->second->destroyed &&
+        surface->second->expected_timestamp == pending.first)
+      return true;
+  }
+  return false;
+}
+
+// A submitted VA surface can outlive its decoder context: FFmpeg may destroy
+// the decoder while a separate filter thread still holds undownloaded frames.
+// Stop accepting input, but finish their actual pixels before releasing the
+// only hardware session. This is context teardown, never an EndPicture wait.
+static VAStatus DrainClosingContext(
+    Driver *driver, const std::shared_ptr<DecodeContext> &decode,
+    std::unique_lock<std::mutex> *driver_lock,
+    uint64_t timeout_ns = kDecodeTimeoutNs) {
+  if (driver_lock == nullptr || !driver_lock->owns_lock() || !decode->closing)
+    return VA_STATUS_ERROR_INVALID_PARAMETER;
+  const uint64_t generation = decode->generation;
+  const auto start = std::chrono::steady_clock::now();
+  while (HasLivePendingPictures(driver, *decode) || decode->replay.sealed()) {
+    if (decode->retired || decode->generation != generation)
+      return VA_STATUS_ERROR_INVALID_CONTEXT;
+    if (driver->stopping)
+      return FailDecode(driver, decode.get(), "context drain canceled");
+    const uint64_t elapsed =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - start).count();
+    if (elapsed >= timeout_ns)
+      return FailDecode(driver, decode.get(), "context drain timed out");
+    if (!decode->decoder_started)
+      return FailDecode(driver, decode.get(), "context has no running decoder");
+    VAStatus status = ReceiveAvailable(driver, decode.get());
+    if (status == VA_STATUS_SUCCESS)
+      status = PumpDecodeInput(driver, decode.get());
+    if (status == VA_STATUS_SUCCESS)
+      status = SealDecodeBatch(driver, decode.get());
+    if (status != VA_STATUS_SUCCESS)
+      return FailDecode(driver, decode.get(), "context drain failed");
+    if (!HasLivePendingPictures(driver, *decode) && !decode->replay.sealed())
+      break;
+    driver_lock->unlock();
+    usleep(1000);
+    driver_lock->lock();
+  }
+  return VA_STATUS_SUCCESS;
+}
+
 static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
                               VAProfile profile) {
   if (!decode->have_picture || decode->slices.empty() ||
@@ -1345,8 +1603,19 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
   auto surface = driver->surfaces.find(decode->target);
   if (surface == driver->surfaces.end())
     return VA_STATUS_ERROR_INVALID_SURFACE;
+  // VA contexts and H.264 picture dimensions are coded sizes, not the visible
+  // crop. This backend emits an uncropped SPS and does not support in-context
+  // coded-geometry changes; later submissions must not change output policy
+  // for pictures already pending on the hardware.
+  if ((decode->picture.picture_width_in_mbs_minus1 + 1U) * 16U != decode->width ||
+      (decode->picture.picture_height_in_mbs_minus1 + 1U) * 16U != decode->height)
+    return VA_STATUS_ERROR_INVALID_PARAMETER;
+  if (surface->second->width < decode->width ||
+      surface->second->height < decode->height)
+    return VA_STATUS_ERROR_INVALID_SURFACE;
 
   std::vector<uint8_t> bitstream;
+  BeginAccessUnit(&bitstream);
   const bool idr = !decode->slice_data.front().empty() &&
                    (decode->slice_data.front().front() & 0x1f) == 5;
   // An ordinary GOP can start with an IDR while earlier output is still
@@ -1367,7 +1636,6 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
     bitstream.insert(bitstream.end(), std::begin(start_code), std::end(start_code));
     bitstream.insert(bitstream.end(), slice.begin(), slice.end());
   }
-  FinishAccessUnit(&bitstream);
   Debug("submit surface=%u bytes=%zu slices=%zu", decode->target,
         bitstream.size(), decode->slice_data.size());
   if (decode->next_timestamp == kTimestampStep) {
@@ -1387,12 +1655,14 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
   }
 
   const uint64_t timestamp = decode->next_timestamp;
-  decode->next_timestamp += kTimestampStep;
   auto decoded_frame = std::make_shared<Surface>();
   if (!decoded_frame->AllocateInternal(nullptr, -1, surface->second->width,
                                        surface->second->height,
                                        VA_FOURCC_NV12))
     return VA_STATUS_ERROR_ALLOCATION_FAILED;
+  if (!decode->replay.Append(timestamp, idr, std::move(bitstream)))
+    return FailDecode(driver, decode, decode->replay.failure());
+  decode->next_timestamp += kTimestampStep;
   decoded_frame->rt_format = VA_RT_FORMAT_YUV420;
   decoded_frame->expected_timestamp = timestamp;
   auto previous_timestamp = decode->surface_timestamps.find(surface->second.get());
@@ -1410,25 +1680,47 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
   surface->second->expected_timestamp = timestamp;
   surface->second->frame_timestamp = 0;
 
-  BC_STATUS input_status = BC_STS_BUSY;
-  for (unsigned int attempt = 0; attempt < kInputRetries; ++attempt) {
-    input_status = DtsProcInput(decode->device, bitstream.data(), bitstream.size(),
-                                timestamp, FALSE);
-    if (input_status != BC_STS_BUSY)
-      break;
-    VAStatus status = ReceiveAvailable(driver, decode);
-    if (status != VA_STATUS_SUCCESS)
-      return status;
-    usleep(1000);
-  }
-  if (input_status != BC_STS_SUCCESS) {
-    decode->pending.erase(timestamp);
-    decode->decoded_frames.erase(timestamp);
-    surface->second->failed = true;
+  decode->sent_parameter_sets = true;
+  VAStatus status = ReceiveAvailable(driver, decode);
+  if (status == VA_STATUS_SUCCESS)
+    status = PumpDecodeInput(driver, decode);
+  return status;
+}
+
+static VAStatus DecodeSurfaceState(Surface *surface) {
+  if (surface->destroyed)
+    return VA_STATUS_ERROR_INVALID_SURFACE;
+  if (surface->failed)
+    return VA_STATUS_ERROR_DECODING_ERROR;
+  if (!surface->ready)
+    return VA_STATUS_ERROR_HW_BUSY;
+  if (surface->expected_timestamp != 0 &&
+      surface->frame_timestamp != surface->expected_timestamp) {
+    Debug("frame identity mismatch expected=%llu produced=%llu",
+          static_cast<unsigned long long>(surface->expected_timestamp),
+          static_cast<unsigned long long>(surface->frame_timestamp));
+    surface->failed = true;
     return VA_STATUS_ERROR_DECODING_ERROR;
   }
-  decode->sent_parameter_sets = true;
-  return ReceiveAvailable(driver, decode);
+  return VA_STATUS_SUCCESS;
+}
+
+// Cancellation and surface identity take precedence even when pixels are
+// ready. Decoder retirement alone cannot revoke an exact completed public
+// picture that another thread finished while this sync released the mutex.
+static VAStatus DecodeWaitState(const DecodeContext &decode, Surface *surface,
+                                uint64_t generation, uint64_t timestamp,
+                                const std::function<bool()> &canceled) {
+  if (canceled && canceled())
+    return VA_STATUS_ERROR_OPERATION_FAILED;
+  if (surface->destroyed || surface->expected_timestamp != timestamp)
+    return VA_STATUS_ERROR_INVALID_SURFACE;
+  const VAStatus state = DecodeSurfaceState(surface);
+  if (state != VA_STATUS_ERROR_HW_BUSY)
+    return state;
+  if (decode.retired || decode.generation != generation)
+    return VA_STATUS_ERROR_INVALID_CONTEXT;
+  return VA_STATUS_ERROR_HW_BUSY;
 }
 
 static VAStatus SyncDecodeSurface(
@@ -1437,18 +1729,11 @@ static VAStatus SyncDecodeSurface(
     const std::function<bool()> &canceled = {}) {
   if (driver_lock == nullptr || !driver_lock->owns_lock())
     return VA_STATUS_ERROR_INVALID_PARAMETER;
-  if (surface->ready) {
-    if (surface->expected_timestamp == 0 ||
-        surface->frame_timestamp == surface->expected_timestamp)
-      return VA_STATUS_SUCCESS;
-    Debug("frame identity mismatch expected=%llu produced=%llu",
-          static_cast<unsigned long long>(surface->expected_timestamp),
-          static_cast<unsigned long long>(surface->frame_timestamp));
-    surface->failed = true;
-    return VA_STATUS_ERROR_DECODING_ERROR;
-  }
-  if (surface->failed)
-    return VA_STATUS_ERROR_DECODING_ERROR;
+  if (canceled && canceled())
+    return VA_STATUS_ERROR_OPERATION_FAILED;
+  const VAStatus initial_state = DecodeSurfaceState(surface.get());
+  if (initial_state != VA_STATUS_ERROR_HW_BUSY)
+    return initial_state;
 
   std::shared_ptr<DecodeContext> decode;
   for (auto &entry : driver->contexts) {
@@ -1475,20 +1760,28 @@ static VAStatus SyncDecodeSurface(
   }
   if (!decode)
     return VA_STATUS_ERROR_INVALID_CONTEXT;
+  const uint64_t generation = decode->generation;
+  const uint64_t expected_timestamp = surface->expected_timestamp;
 
   Debug("sync surface ready=%d failed=%d timeout=%llu", surface->ready,
         surface->failed, static_cast<unsigned long long>(timeout_ns));
 
   const auto start = std::chrono::steady_clock::now();
-  while (!surface->ready && !surface->failed) {
+  while ((!surface->ready || decode->replay.sealed()) && !surface->failed) {
+    const VAStatus state = DecodeWaitState(*decode, surface.get(), generation,
+                                           expected_timestamp, canceled);
+    if (state != VA_STATUS_ERROR_HW_BUSY &&
+        (state != VA_STATUS_SUCCESS || decode->retired ||
+         decode->generation != generation))
+      return state;
     if (driver->stopping)
       return VA_STATUS_ERROR_OPERATION_FAILED;
-    if (canceled && canceled())
-      return VA_STATUS_ERROR_OPERATION_FAILED;
     VAStatus status = ReceiveAvailable(driver, decode.get());
+    if (status == VA_STATUS_SUCCESS)
+      status = PumpDecodeInput(driver, decode.get());
     if (status != VA_STATUS_SUCCESS)
       return status;
-    if (surface->ready || surface->failed)
+    if ((surface->ready && !decode->replay.sealed()) || surface->failed)
       break;
     uint64_t elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
                            std::chrono::steady_clock::now() - start)
@@ -1497,34 +1790,31 @@ static VAStatus SyncDecodeSurface(
     if (wait_status == VA_STATUS_ERROR_DECODING_ERROR) {
       Debug("firmware did not complete timestamp=%llu within 10 seconds",
             static_cast<unsigned long long>(surface->expected_timestamp));
-      surface->failed = true;
-      driver->condition.notify_all();
-      return VA_STATUS_ERROR_DECODING_ERROR;
+      return FailDecode(driver, decode.get(), "sealed-batch sync timed out");
     }
     if (wait_status != VA_STATUS_SUCCESS)
       return wait_status;
-    // CrystalHD may require later compressed pictures before it emits this
-    // exact timestamp. Let the decoder submission thread enter the driver;
-    // holding the global lock here would deadlock input behind VPP output.
+    // This is batching grace, not an EOF detector: after it expires we seal a
+    // finite sequence and preserve future references through actual-IDR replay.
+    // Ordinary output can satisfy the sync meanwhile, avoiding needless resets.
+    if (!surface->ready && DecodeBatchGraceExpired(elapsed)) {
+      status = SealDecodeBatch(driver, decode.get());
+      if (status != VA_STATUS_SUCCESS)
+        return status;
+    }
+    // Let submission threads queue subsequent input while this finite batch
+    // drains, and let destruction cancel this wait without touching new state.
     driver_lock->unlock();
     usleep(1000);
     driver_lock->lock();
-    if (canceled && canceled())
-      return VA_STATUS_ERROR_OPERATION_FAILED;
-    if (decode->retired)
-      return VA_STATUS_ERROR_INVALID_CONTEXT;
+    const VAStatus resumed = DecodeWaitState(*decode, surface.get(), generation,
+                                             expected_timestamp, canceled);
+    if (resumed != VA_STATUS_ERROR_HW_BUSY &&
+        (resumed != VA_STATUS_SUCCESS || decode->retired ||
+         decode->generation != generation))
+      return resumed;
   }
-  if (!surface->ready)
-    return VA_STATUS_ERROR_DECODING_ERROR;
-  if (surface->expected_timestamp != 0 &&
-      surface->frame_timestamp != surface->expected_timestamp) {
-    Debug("frame identity mismatch expected=%llu produced=%llu",
-          static_cast<unsigned long long>(surface->expected_timestamp),
-          static_cast<unsigned long long>(surface->frame_timestamp));
-    surface->failed = true;
-    return VA_STATUS_ERROR_DECODING_ERROR;
-  }
-  return VA_STATUS_SUCCESS;
+  return DecodeSurfaceState(surface.get());
 }
 
 static bool PendingVppCanceled(const PendingVpp &operation) {
@@ -1536,60 +1826,10 @@ static bool PendingVppCanceled(const PendingVpp &operation) {
            operation.decoder->generation != operation.decoder_generation));
 }
 
-static void RecordVppFallback(Driver *driver, const Surface *target,
-                              uint64_t sequence, VAStatus status) {
-  if (driver == nullptr || target == nullptr || status != VA_STATUS_SUCCESS ||
-      target->fourcc != VA_FOURCC_ARGB ||
-      sequence <= driver->vpp_fallback_sequence)
-    return;
-  const size_t required =
-      static_cast<size_t>(target->width) * target->height * 4;
-  if (driver->vpp_argb_staging.size() != required)
-    return;
-  driver->vpp_fallback = driver->vpp_argb_staging;
-  driver->vpp_fallback_width = target->width;
-  driver->vpp_fallback_height = target->height;
-  driver->vpp_fallback_sequence = sequence;
-}
-
-static void WriteVppFallback(Driver *driver, Surface *target) {
-  if (driver == nullptr || target == nullptr)
-    return;
-  if (target->fourcc == VA_FOURCC_ARGB) {
-    const size_t row_bytes = static_cast<size_t>(target->width) * 4;
-    const bool have_frame =
-        driver->vpp_fallback_width == target->width &&
-        driver->vpp_fallback_height == target->height &&
-        driver->vpp_fallback.size() == row_bytes * target->height;
-    for (unsigned int row = 0; row < target->height; ++row) {
-      uint8_t *destination = target->planes[0] +
-          static_cast<size_t>(row) * target->pitch[0];
-      if (have_frame) {
-        memcpy(destination,
-               driver->vpp_fallback.data() +
-                   static_cast<size_t>(row) * row_bytes,
-               row_bytes);
-      } else {
-        memset(destination, 0, row_bytes);
-        for (unsigned int column = 0; column < target->width; ++column)
-          destination[column * 4 + 3] = 255;
-      }
-    }
-    return;
-  }
-  if (target->fourcc == VA_FOURCC_NV12) {
-    for (unsigned int row = 0; row < target->height; ++row)
-      memset(target->planes[0] + static_cast<size_t>(row) * target->pitch[0],
-             16, target->width);
-    for (unsigned int row = 0; row < (target->height + 1) / 2; ++row)
-      memset(target->planes[1] + static_cast<size_t>(row) * target->pitch[1],
-             128, target->width);
-  }
-}
-
 // Release bookkeeping for one queued conversion. The caller holds the driver
-// mutex. A superseded operation still receives a complete fallback image
-// before its fence is signaled; exposing untouched pool memory is never safe.
+// mutex. Cancellation must not substitute pixels from another picture. The
+// timeline API cannot attach an error to a fence, so callers must also check
+// VA surface status; fence completion alone is not proof of a decoded frame.
 static void ReleasePendingVpp(Driver *driver, uint64_t sequence,
                               VAStatus status, bool committed) {
   auto found = std::find_if(
@@ -1598,30 +1838,21 @@ static void ReleasePendingVpp(Driver *driver, uint64_t sequence,
   if (found == driver->pending_vpp.end())
     return;
   const PendingVpp operation = *found;
-  if (!committed && !operation.target->destroyed &&
-      !operation.target_owner->destroyed) {
-    WriteVppFallback(driver, operation.target.get());
-  }
   // Flush CPU caches before signaling the fence imported into Chromium's
   // DMA-BUF. Every implicit GPU reader remains blocked until this point.
   EndFencedWrite(operation.target.get(), operation.write_timeline);
   if (operation.source->vpp_readers != 0)
     --operation.source->vpp_readers;
-  if (operation.decoder) {
-    auto decoded = operation.decoder->decoded_frames.find(
-        operation.source_timestamp);
-    if (decoded != operation.decoder->decoded_frames.end() &&
-        decoded->second == operation.source &&
-        operation.source->vpp_readers == 0) {
-      operation.decoder->decoded_frames.erase(decoded);
-    }
-  }
+  // Keep the current picture available for another VPP of the same still-live
+  // decode surface. SubmitPicture reclaims it when that surface is reused;
+  // queued/captured VPP operations retain their own immutable shared_ptr.
   if (operation.target_owner->vpp_writers != 0)
     --operation.target_owner->vpp_writers;
-  if (committed && operation.target_owner->vpp_writers == 0) {
+  if (operation.target_owner->latest_vpp_sequence == operation.sequence &&
+      operation.target_owner->vpp_writers == 0) {
     SetSurfaceState(driver, operation.target.get(),
-                    status == VA_STATUS_SUCCESS,
-                    status != VA_STATUS_SUCCESS);
+                    committed && status == VA_STATUS_SUCCESS,
+                    !committed || status != VA_STATUS_SUCCESS);
   }
   Debug("%s VPP sequence=%llu source_timestamp=%llu target=%p status=%d",
         committed ? "committed" : "discarded",
@@ -1696,8 +1927,6 @@ static void RunVppWorker(Driver *driver) {
                           operation.source.get(), operation.target.get(),
                           operation.source_region, operation.output_region,
                           true);
-      RecordVppFallback(driver, operation.target.get(), operation.sequence,
-                        status);
     }
     ReleasePendingVpp(driver, operation.sequence, status, true);
   }
@@ -1924,15 +2153,26 @@ static VAStatus CreateSurfaces(VADriverContextP context, int width, int height,
 
 static VAStatus DestroySurfaces(VADriverContextP context,
                                 VASurfaceID *surface_ids, int count) {
+  if (count < 0 || (count != 0 && surface_ids == nullptr))
+    return VA_STATUS_ERROR_INVALID_PARAMETER;
   Driver *driver = GetDriver(context);
   std::lock_guard<std::mutex> lock(driver->mutex);
+  if (static_cast<size_t>(count) > driver->surfaces.size())
+    return VA_STATUS_ERROR_INVALID_SURFACE;
+  // Validate the entire request before poisoning or removing any surface.
+  // A late invalid/duplicate ID must not skip the decoder-generation reset
+  // after partially destroying the decode pool.
+  std::unordered_set<VASurfaceID> requested;
+  for (int i = 0; i < count; ++i) {
+    if (driver->surfaces.find(surface_ids[i]) == driver->surfaces.end() ||
+        !requested.insert(surface_ids[i]).second)
+      return VA_STATUS_ERROR_INVALID_SURFACE;
+  }
   std::unordered_set<DecodeContext *> reset_decoders;
   for (int i = 0; i < count; ++i) {
     auto surface = driver->surfaces.find(surface_ids[i]);
-    if (surface == driver->surfaces.end())
-      return VA_STATUS_ERROR_INVALID_SURFACE;
     for (const auto &entry : driver->contexts) {
-      if (entry.second->video_process)
+      if (entry.second->video_process || entry.second->closing)
         continue;
       if (entry.second->surface_timestamps.find(surface->second.get()) !=
           entry.second->surface_timestamps.end()) {
@@ -1961,12 +2201,6 @@ static VAStatus DestroySurfaces(VADriverContextP context,
     Debug("reset decoder generation=%llu after decode-surface teardown",
           static_cast<unsigned long long>(decode->generation));
     decode->Reset();
-  }
-  if (!reset_decoders.empty()) {
-    driver->vpp_fallback.clear();
-    driver->vpp_fallback_width = 0;
-    driver->vpp_fallback_height = 0;
-    driver->vpp_fallback_sequence = 0;
   }
   driver->condition.notify_all();
   return VA_STATUS_SUCCESS;
@@ -2142,24 +2376,24 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
 static VAStatus DestroyContext(VADriverContextP context,
                                VAContextID context_id) {
   Driver *driver = GetDriver(context);
-  std::lock_guard<std::mutex> lock(driver->mutex);
+  std::unique_lock<std::mutex> lock(driver->mutex);
   auto found = driver->contexts.find(context_id);
-  if (found == driver->contexts.end())
+  if (found == driver->contexts.end() || found->second->closing)
     return VA_STATUS_ERROR_INVALID_CONTEXT;
-  found->second->retired = true;
-  found->second->Close();
-  driver->contexts.erase(found);
-  // Chrome's asynchronous image processor can race context teardown with one
-  // already-dispatched vaEndPicture call. Keep only the retired ID so that
-  // completion can be acknowledged without retaining a decoder or device.
-  driver->retired_contexts.insert(context_id);
-  driver->retired_context_order.push_back(context_id);
-  if (driver->retired_context_order.size() > 64) {
-    driver->retired_contexts.erase(driver->retired_context_order.front());
-    driver->retired_context_order.pop_front();
-  }
+  const std::shared_ptr<DecodeContext> decode = found->second;
+  decode->closing = true;
+  VAStatus status = VA_STATUS_SUCCESS;
+  if (!decode->video_process)
+    status = DrainClosingContext(driver, decode, &lock);
+  decode->retired = true;
+  const BC_STATUS closed = decode->Close();
+  if (status == VA_STATUS_SUCCESS && closed != BC_STS_SUCCESS)
+    status = VA_STATUS_ERROR_OPERATION_FAILED;
+  // The drain releases the lock. Another context insertion may rehash the
+  // map, so never retain its iterator across that interval.
+  driver->contexts.erase(context_id);
   driver->condition.notify_all();
-  return VA_STATUS_SUCCESS;
+  return status;
 }
 
 static VAStatus CreateBuffer(VADriverContextP context, VAContextID context_id,
@@ -2168,9 +2402,11 @@ static VAStatus CreateBuffer(VADriverContextP context, VAContextID context_id,
                              VABufferID *buffer_id) {
   Driver *driver = GetDriver(context);
   std::lock_guard<std::mutex> lock(driver->mutex);
-  if (context_id != VA_INVALID_ID &&
-      driver->contexts.find(context_id) == driver->contexts.end())
-    return VA_STATUS_ERROR_INVALID_CONTEXT;
+  if (context_id != VA_INVALID_ID) {
+    auto context = driver->contexts.find(context_id);
+    if (context == driver->contexts.end() || context->second->closing)
+      return VA_STATUS_ERROR_INVALID_CONTEXT;
+  }
   if (buffer_id == nullptr || element_size == 0 || elements == 0)
     return VA_STATUS_ERROR_INVALID_PARAMETER;
   Buffer buffer;
@@ -2256,25 +2492,30 @@ static VAStatus BeginPicture(VADriverContextP context, VAContextID context_id,
   Driver *driver = GetDriver(context);
   std::unique_lock<std::mutex> lock(driver->mutex);
   auto decode = driver->contexts.find(context_id);
-  if (decode == driver->contexts.end())
+  if (decode == driver->contexts.end() || decode->second->closing)
     return VA_STATUS_ERROR_INVALID_CONTEXT;
   auto target_surface = driver->surfaces.find(target);
   if (target_surface == driver->surfaces.end())
     return VA_STATUS_ERROR_INVALID_SURFACE;
-  decode->second->target = target;
   if (decode->second->video_process) {
+    Surface *target_owner = BackingOwner(driver, target_surface->second.get());
+    if (target_owner->vpp_writers != 0)
+      return VA_STATUS_ERROR_HW_BUSY;
+    decode->second->target = target;
     // Chromium renders into an imported alias of an exported ARGB surface.
     // Track readiness on both aliases until VPP commits the exact frame.
     target_surface->second->expected_timestamp = 0;
     target_surface->second->frame_timestamp = 0;
-    Surface *target_owner = BackingOwner(driver, target_surface->second.get());
     target_owner->expected_timestamp = 0;
     target_owner->frame_timestamp = 0;
     SetSurfaceState(driver, target_surface->second.get(), false, false);
     decode->second->vpp_source = VA_INVALID_SURFACE;
+    decode->second->vpp_frame.reset();
+    decode->second->vpp_decoder.reset();
     decode->second->have_vpp_parameters = false;
     return VA_STATUS_SUCCESS;
   }
+  decode->second->target = target;
   decode->second->have_picture = false;
   decode->second->slices.clear();
   decode->second->slice_data.clear();
@@ -2286,7 +2527,7 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
   Driver *driver = GetDriver(context);
   std::lock_guard<std::mutex> lock(driver->mutex);
   auto decode = driver->contexts.find(context_id);
-  if (decode == driver->contexts.end())
+  if (decode == driver->contexts.end() || decode->second->closing)
     return VA_STATUS_ERROR_INVALID_CONTEXT;
   if (decode->second->video_process) {
     if (count != 1 || buffer_ids == nullptr)
@@ -2309,7 +2550,49 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
         (parameters->filter_flags & ~supported_filter_flags) != 0 ||
         parameters->rotation_state != VA_ROTATION_NONE)
       return VA_STATUS_ERROR_UNSUPPORTED_FILTER;
+
+    // Capture the exact picture when its parameters are submitted, not later
+    // in EndPicture: a different thread may reuse the public decode surface
+    // between those calls. The private picture remains immutable on reuse.
+    std::shared_ptr<Surface> source_owner = source->second;
+    if (source_owner->backing_owner != VA_INVALID_SURFACE) {
+      auto owner = driver->surfaces.find(source_owner->backing_owner);
+      if (owner != driver->surfaces.end())
+        source_owner = owner->second;
+    }
+    std::shared_ptr<Surface> frame;
+    std::shared_ptr<DecodeContext> source_decoder;
+    const uint64_t timestamp = source_owner->expected_timestamp;
+    for (const auto &candidate : driver->contexts) {
+      if (candidate.second->video_process)
+        continue;
+      auto source_timestamp =
+          candidate.second->surface_timestamps.find(source_owner.get());
+      if (source_timestamp == candidate.second->surface_timestamps.end() ||
+          source_timestamp->second != timestamp)
+        continue;
+      auto decoded = candidate.second->decoded_frames.find(timestamp);
+      if (decoded != candidate.second->decoded_frames.end()) {
+        source_decoder = candidate.second;
+        frame = decoded->second;
+        break;
+      }
+    }
+    if (!frame) {
+      // A timestamped source without its picture belongs to a retired decode
+      // epoch. Never acknowledge it by painting a different or neutral frame.
+      if (timestamp != 0)
+        return VA_STATUS_ERROR_DECODING_ERROR;
+      if (!source_owner->ready || source_owner->failed)
+        return VA_STATUS_ERROR_INVALID_SURFACE;
+      frame = source_owner;
+    }
     decode->second->vpp_source = parameters->surface;
+    decode->second->vpp_frame = std::move(frame);
+    decode->second->vpp_decoder = source_decoder;
+    decode->second->vpp_generation = source_decoder
+                                        ? source_decoder->generation
+                                        : 0;
     decode->second->vpp_source_region = parameters->surface_region != nullptr
         ? *parameters->surface_region
         : VARectangle{0, 0, static_cast<uint16_t>(source->second->width),
@@ -2356,23 +2639,21 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
   Driver *driver = GetDriver(context);
   std::unique_lock<std::mutex> lock(driver->mutex);
   auto decode = driver->contexts.find(context_id);
-  if (decode == driver->contexts.end() &&
-      driver->retired_contexts.erase(context_id) != 0) {
-    Debug("ignoring late end for retired context=%u", context_id);
-    return VA_STATUS_SUCCESS;
-  }
-  if (decode == driver->contexts.end())
+  if (decode == driver->contexts.end() || decode->second->closing)
     return VA_STATUS_ERROR_INVALID_CONTEXT;
   const std::shared_ptr<DecodeContext> decode_context = decode->second;
   if (decode_context->video_process) {
     auto finish_vpp = [&](VAStatus status) {
       if (status != VA_STATUS_SUCCESS) {
         auto destination = driver->surfaces.find(decode_context->target);
-        if (destination != driver->surfaces.end())
+        if (destination != driver->surfaces.end() &&
+            BackingOwner(driver, destination->second.get())->vpp_writers == 0)
           SetSurfaceState(driver, destination->second.get(), false, true);
       }
       decode_context->target = VA_INVALID_SURFACE;
       decode_context->vpp_source = VA_INVALID_SURFACE;
+      decode_context->vpp_frame.reset();
+      decode_context->vpp_decoder.reset();
       decode_context->have_vpp_parameters = false;
       return status;
     };
@@ -2382,12 +2663,6 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
     auto target = driver->surfaces.find(decode_context->target);
     if (source == driver->surfaces.end() || target == driver->surfaces.end())
       return finish_vpp(VA_STATUS_ERROR_INVALID_SURFACE);
-    std::shared_ptr<Surface> synchronized_source = source->second;
-    if (source->second->backing_owner != VA_INVALID_SURFACE) {
-      auto owner = driver->surfaces.find(source->second->backing_owner);
-      if (owner != driver->surfaces.end())
-        synchronized_source = owner->second;
-    }
     const std::shared_ptr<Surface> target_surface = target->second;
     std::shared_ptr<Surface> target_owner = target_surface;
     if (target_surface->backing_owner != VA_INVALID_SURFACE) {
@@ -2395,75 +2670,23 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
       if (owner != driver->surfaces.end())
         target_owner = owner->second;
     }
-    const uint64_t timestamp = synchronized_source->expected_timestamp;
-    std::shared_ptr<DecodeContext> source_decoder;
-    std::shared_ptr<Surface> decoded_source;
-    for (const auto &candidate : driver->contexts) {
-      if (candidate.second->video_process)
-        continue;
-      auto source_timestamp =
-          candidate.second->surface_timestamps.find(synchronized_source.get());
-      if (source_timestamp == candidate.second->surface_timestamps.end() ||
-          source_timestamp->second != timestamp)
-        continue;
-      auto frame = candidate.second->decoded_frames.find(timestamp);
-      if (frame != candidate.second->decoded_frames.end()) {
-        source_decoder = candidate.second;
-        decoded_source = frame->second;
-        break;
-      }
-    }
-    if (!source_decoder || !decoded_source) {
-      if (timestamp != 0) {
-        // A discontinuity reset can retire this decode epoch while Chromium
-        // still dispatches its already-planned VPP calls. Complete those
-        // calls with a full fallback image; returning success without touching
-        // the target exposes whatever stale pool frame it previously held.
-        const uint64_t fallback_sequence = driver->next_vpp_sequence++;
-        target_owner->latest_vpp_sequence = fallback_sequence;
-        for (;;) {
-          auto older = std::find_if(
-              driver->pending_vpp.begin(), driver->pending_vpp.end(),
-              [&](const PendingVpp &pending) {
-                return pending.target_owner == target_owner;
-              });
-          if (older == driver->pending_vpp.end())
-            break;
-          ReleasePendingVpp(driver, older->sequence, VA_STATUS_SUCCESS,
-                            false);
-        }
-        target_surface->BeginCpuWrite();
-        WriteVppFallback(driver, target_surface.get());
-        target_surface->EndCpuWrite();
-        SetSurfaceState(driver, target_surface.get(), true, false);
-        Debug("completed late VPP fallback sequence=%llu timestamp=%llu",
-              static_cast<unsigned long long>(fallback_sequence),
-              static_cast<unsigned long long>(timestamp));
-        return finish_vpp(VA_STATUS_SUCCESS);
-      }
-      if (!synchronized_source->ready)
-        return finish_vpp(VA_STATUS_ERROR_INVALID_SURFACE);
-      decoded_source = synchronized_source;
-    }
+    const std::shared_ptr<DecodeContext> source_decoder =
+        decode_context->vpp_decoder;
+    const std::shared_ptr<Surface> decoded_source = decode_context->vpp_frame;
+    if (!decoded_source || decoded_source->destroyed ||
+        (source_decoder &&
+         (source_decoder->retired ||
+          source_decoder->generation != decode_context->vpp_generation)))
+      return finish_vpp(VA_STATUS_ERROR_DECODING_ERROR);
+    const uint64_t timestamp = decoded_source->expected_timestamp;
+
+    // The output is still owned by its previous operation. Replacing it or
+    // signaling its fence with unrelated fallback pixels breaks identity.
+    if (target_owner->vpp_writers != 0)
+      return finish_vpp(VA_STATUS_ERROR_HW_BUSY);
 
     const uint64_t sequence = driver->next_vpp_sequence++;
     target_owner->latest_vpp_sequence = sequence;
-
-    // Chromium may recycle an output-pool buffer before CrystalHD has emitted
-    // the source for its previous use. Supersede that operation, but let
-    // ReleasePendingVpp atomically replace the buffer with the latest complete
-    // frame (or post-reset black) before signaling its old fence.
-    for (;;) {
-      auto older = std::find_if(
-          driver->pending_vpp.begin(), driver->pending_vpp.end(),
-          [&](const PendingVpp &pending) {
-            return pending.target_owner == target_owner &&
-                   pending.sequence != sequence;
-          });
-      if (older == driver->pending_vpp.end())
-        break;
-      ReleasePendingVpp(driver, older->sequence, VA_STATUS_SUCCESS, false);
-    }
 
     // If CrystalHD already emitted the immutable source, complete the copy
     // while vaEndPicture still owns the destination. No asynchronous fence is
@@ -2480,14 +2703,6 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
       SetSurfaceState(driver, target_surface.get(),
                       status == VA_STATUS_SUCCESS,
                       status != VA_STATUS_SUCCESS);
-      RecordVppFallback(driver, target_surface.get(), sequence, status);
-      if (source_decoder && decoded_source->vpp_readers == 0) {
-        auto decoded = source_decoder->decoded_frames.find(timestamp);
-        if (decoded != source_decoder->decoded_frames.end() &&
-            decoded->second == decoded_source) {
-          source_decoder->decoded_frames.erase(decoded);
-        }
-      }
       Debug("completed immediate VPP sequence=%llu source_timestamp=%llu "
             "target=%p status=%d",
             static_cast<unsigned long long>(sequence),
@@ -2621,7 +2836,12 @@ static VAStatus QuerySurfaceStatus(VADriverContextP context,
   auto surface = driver->surfaces.find(surface_id);
   if (surface == driver->surfaces.end())
     return VA_STATUS_ERROR_INVALID_SURFACE;
-  *status = surface->second->ready ? VASurfaceReady : VASurfaceRendering;
+  if (status == nullptr)
+    return VA_STATUS_ERROR_INVALID_PARAMETER;
+  Surface *owner = BackingOwner(driver, surface->second.get());
+  if (owner->failed)
+    return VA_STATUS_ERROR_DECODING_ERROR;
+  *status = owner->ready ? VASurfaceReady : VASurfaceRendering;
   return VA_STATUS_SUCCESS;
 }
 

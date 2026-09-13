@@ -13,12 +13,16 @@ all:
 check:
 	sh -n $(ROOTDIR)/scripts/crystalhd-chromium
 	sh -n $(ROOTDIR)/scripts/setup-crystalhd-chrome-default
+	sh -n $(ROOTDIR)/tests/generate-browser-sample.sh
 	test -s h264-only/manifest.json
 	test -s h264-only/prefer-h264.js
 	test -s crystalhd-chromium.desktop
 	@if command -v node >/dev/null 2>&1; then \
 		node --check h264-only/prefer-h264.js && \
-		node --check $(ROOTDIR)/tests/chromium-youtube.js || exit 1; \
+		node --check $(ROOTDIR)/tests/chromium-youtube.js && \
+		node --check $(ROOTDIR)/tests/chromium-local-playback.js && \
+		node --test $(ROOTDIR)/tests/chromium-launcher.test.js \
+			$(ROOTDIR)/tests/chromium-local-audit.test.js || exit 1; \
 		if node -e 'require("ws")' >/dev/null 2>&1; then \
 			node --test $(ROOTDIR)/tests/chromium-probe.test.js; \
 		else \

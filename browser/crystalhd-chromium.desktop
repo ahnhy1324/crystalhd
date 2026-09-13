@@ -4,7 +4,7 @@
 Type=Application
 Name=Google Chrome with CrystalHD
 GenericName=Web Browser
-Comment=Hardware H.264 decoding through CrystalHD (GPU sandbox disabled)
+Comment=H.264 playback with optional experimental CrystalHD acceleration
 Exec=crystalhd-chromium %U
 Icon=google-chrome
 Terminal=false

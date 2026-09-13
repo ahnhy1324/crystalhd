@@ -14,6 +14,14 @@ iterations=${2:-10}
 loaded_here=false
 timeout_seconds=${CRYSTALHD_TEST_TIMEOUT:-120}
 drm_device=${CRYSTALHD_DRM_DEVICE:-/dev/dri/renderD128}
+input_loops=${CRYSTALHD_TEST_INPUT_LOOPS:-1}
+
+# Reopen/decode iterations are distinct from demuxer looping within a single
+# FFmpeg process: the latter retains filter-queue surfaces across teardown.
+case "$input_loops" in
+    [1-9]|[1-9][0-9]|100) ;;
+    *) echo "CRYSTALHD_TEST_INPUT_LOOPS must be an integer from 1 to 100" >&2; exit 2 ;;
+esac
 
 case "$timeout_seconds" in
     ''|*[!0-9]*|0) echo "CRYSTALHD_TEST_TIMEOUT must be a positive integer" >&2; exit 2 ;;
@@ -83,6 +91,7 @@ case "$expected_frames" in
         exit 1
         ;;
 esac
+expected_frames=$((expected_frames * input_loops))
 
 started_at=$(date '+%Y-%m-%d %H:%M:%S.%6N')
 iteration=1
@@ -93,6 +102,7 @@ while [ "$iteration" -le "$iterations" ]; do
     LD_LIBRARY_PATH="$repo_dir/linux_lib/libcrystalhd" \
     timeout --foreground --kill-after=10 "$timeout_seconds" \
     ffmpeg -nostdin -hide_banner -loglevel error -xerror \
+        -stream_loop "$((input_loops - 1))" \
         -hwaccel vaapi -hwaccel_device "$drm_device" \
         -hwaccel_output_format vaapi -i "$video" \
         -map 0:v:0 -vf hwdownload,format=nv12 -fps_mode passthrough \
@@ -105,7 +115,7 @@ while [ "$iteration" -le "$iterations" ]; do
         echo "iteration $iteration decoded $decoded_frames/$expected_frames frames" >&2
         exit 1
     fi
-    echo "iteration $iteration/$iterations decoded ${decoded_frames:-unknown} frames"
+    echo "iteration $iteration/$iterations decoded ${decoded_frames:-unknown} frames ($input_loops input loops)"
     iteration=$((iteration + 1))
 done
 

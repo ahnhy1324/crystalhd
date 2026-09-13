@@ -12,7 +12,9 @@ extern "C" {
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <map>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -41,14 +43,30 @@ struct Picture {
   }
 };
 
+struct FreeFrame {
+  void operator()(AVFrame *frame) const { av_frame_free(&frame); }
+};
+using OwnedFrame = std::unique_ptr<AVFrame, FreeFrame>;
+
+struct HeldPicture {
+  OwnedFrame frame;
+  int64_t pts;
+  Picture expected;
+};
+
 struct Probe {
   AVFormatContext *input = nullptr;
   AVCodecContext *decoder = nullptr;
   AVPacket *packet = av_packet_alloc();
   AVFrame *frame = av_frame_alloc();
   AVFrame *download = av_frame_alloc();
+  const AVCodec *codec = nullptr;
+  std::string device_path;
   int stream = -1;
   bool software = false;
+  bool retain_old_frames = false;
+  size_t lookahead = 0;
+  size_t deferred_at_limit = 0;
   std::map<int64_t, Picture> reference;
 
   ~Probe() {
@@ -64,13 +82,19 @@ struct Probe {
       throw std::runtime_error("allocate probe buffers");
     Check(avformat_open_input(&input, path, nullptr, nullptr), "open input");
     Check(avformat_find_stream_info(input, nullptr), "read stream info");
-    const AVCodec *codec = nullptr;
     stream = av_find_best_stream(input, AVMEDIA_TYPE_VIDEO, -1, -1, &codec, 0);
     Check(stream, "find video");
     if (codec->id != AV_CODEC_ID_H264)
       throw std::runtime_error("this probe requires a seekable H.264 container");
     if (input->streams[stream]->nb_frames <= 0)
       throw std::runtime_error("container must declare a reliable frame count; use the generated MP4 samples");
+    device_path = device;
+    OpenDecoder();
+  }
+
+  void OpenDecoder() {
+    if (decoder)
+      throw std::runtime_error("decoder already open");
     decoder = avcodec_alloc_context3(codec);
     if (!decoder)
       throw std::runtime_error("allocate decoder");
@@ -81,19 +105,21 @@ struct Probe {
     decoder->err_recognition = AV_EF_EXPLODE;
     if (!software) {
       decoder->get_format = ChooseHardware;
+      if (lookahead != 0)
+        decoder->extra_hw_frames = static_cast<int>(lookahead);
       Check(av_hwdevice_ctx_create(&decoder->hw_device_ctx, AV_HWDEVICE_TYPE_VAAPI,
-                                   device, nullptr, 0), "create VA-API device");
+                                   device_path.c_str(), nullptr, 0), "create VA-API device");
     }
     Check(avcodec_open2(decoder, codec, nullptr), "open decoder");
   }
 
-  Picture Fingerprint() {
-    AVFrame *pixels = frame;
+  Picture Fingerprint(const AVFrame *picture_frame) {
+    const AVFrame *pixels = picture_frame;
     if (!software) {
-      if (frame->format != AV_PIX_FMT_VAAPI)
+      if (picture_frame->format != AV_PIX_FMT_VAAPI)
         throw std::runtime_error("decoder returned a software frame");
       av_frame_unref(download);
-      Check(av_hwframe_transfer_data(download, frame, 0), "download VA-API frame");
+      Check(av_hwframe_transfer_data(download, picture_frame, 0), "download VA-API frame");
       if (download->format != AV_PIX_FMT_NV12)
         throw std::runtime_error("expected NV12 download");
       pixels = download;
@@ -118,10 +144,49 @@ struct Probe {
 
   // Limit output on seek passes to leave reordered frames pending before the
   // next flush. The reference pass must reach EOF and drain completely.
-  size_t Decode(bool record, int64_t target, size_t limit) {
+  size_t Decode(bool record, int64_t target, size_t limit,
+                std::vector<HeldPicture> *held = nullptr) {
+    if (held && (record || !held->empty()))
+      throw std::runtime_error("retained output requires an empty seek-pass owner");
     size_t count = 0;
     bool draining = false;
+    deferred_at_limit = 0;
+    std::deque<OwnedFrame> deferred;
     auto expected = reference.lower_bound(target);
+    auto consume_oldest = [&] {
+      OwnedFrame picture_frame = std::move(deferred.front());
+      deferred.pop_front();
+      const int64_t pts = picture_frame->best_effort_timestamp;
+      Picture picture = Fingerprint(picture_frame.get());
+      if (record) {
+        if (!reference.emplace(pts, picture).second)
+          throw std::runtime_error("duplicate reference timestamp");
+      } else {
+        if (expected == reference.end() || expected->first != pts ||
+            !(expected->second == picture))
+          throw std::runtime_error("post-seek pixels differ at PTS " +
+                                   std::to_string(pts));
+        ++expected;
+      }
+      ++count;
+    };
+    auto finish_limited_pass = [&] {
+      deferred_at_limit = deferred.size();
+      if (held) {
+        while (!deferred.empty()) {
+          const int64_t pts = deferred.front()->best_effort_timestamp;
+          if (expected == reference.end() || expected->first != pts)
+            throw std::runtime_error("retained frame sequence differs at PTS " +
+                                     std::to_string(pts));
+          // Capture this frame's original identity and reference pixels before
+          // the lifecycle operation. Do not download the held suffix yet.
+          held->push_back({std::move(deferred.front()), pts, expected->second});
+          deferred.pop_front();
+          ++expected;
+        }
+      }
+      return count;
+    };
     for (;;) {
       int result = avcodec_receive_frame(decoder, frame);
       if (result == AVERROR_EOF)
@@ -132,22 +197,22 @@ struct Probe {
         if (pts == AV_NOPTS_VALUE)
           throw std::runtime_error("input has no frame timestamps");
         if (record || pts >= target) {
-          Picture picture = Fingerprint();
-          if (record) {
-            if (!reference.emplace(pts, picture).second)
-              throw std::runtime_error("duplicate reference timestamp");
-          } else {
-            if (expected == reference.end() || expected->first != pts ||
-                !(expected->second == picture))
-              throw std::runtime_error("post-seek pixels differ at PTS " +
-                                       std::to_string(pts));
-            ++expected;
-          }
-          ++count;
+          OwnedFrame retained(av_frame_clone(frame));
+          if (!retained)
+            throw std::runtime_error("retain lookahead frame");
+          deferred.push_back(std::move(retained));
         }
         av_frame_unref(frame);
-        if (limit && count == limit)
-          return count;
+        // Feed a bounded number of future pictures before downloading the
+        // oldest one. Each clone retains its own surface, PTS and pixel owner;
+        // neither identities nor hashes come from the latest decoder frame.
+        if (deferred.size() > lookahead)
+          consume_oldest();
+        if (limit && count == limit) {
+          // Normally release the suffix without downloading it. The optional
+          // lifecycle regression instead transfers ownership to the caller.
+          return finish_limited_pass();
+        }
         continue;
       }
       if (draining)
@@ -164,44 +229,124 @@ struct Probe {
         Check(avcodec_send_packet(decoder, packet), "send packet");
       }
     }
+    // Input EOF is not validation EOF: download and count every retained tail
+    // picture before checking the container's declared reference frame count.
+    while (!deferred.empty()) {
+      consume_oldest();
+      if (limit && count == limit)
+        return finish_limited_pass();
+    }
     if (!record && count != limit)
       throw std::runtime_error("seek drained before the expected frame count");
     return count;
   }
 
+  void Seek(int64_t target) {
+    Check(av_seek_frame(input, stream, target, AVSEEK_FLAG_BACKWARD), "seek");
+    if (!decoder)
+      OpenDecoder();
+    avcodec_flush_buffers(decoder);
+    av_packet_unref(packet);
+  }
+
+  void VerifyHeld(const std::vector<HeldPicture> &held, const char *operation) {
+    if (held.size() != lookahead)
+      throw std::runtime_error("lifecycle pass did not retain the full lookahead");
+    for (const auto &picture : held) {
+      if (picture.frame->best_effort_timestamp != picture.pts ||
+          !(Fingerprint(picture.frame.get()) == picture.expected))
+        throw std::runtime_error(std::string("old frame differs after ") +
+                                 operation + " at PTS " +
+                                 std::to_string(picture.pts));
+    }
+    std::printf("%s: %zu retained old-frame PTS/SHA-256 digests match\n",
+                operation, held.size());
+  }
+
   void Run() {
+    std::printf("download lookahead: %zu frames (0 is synchronous)\n", lookahead);
     const size_t count = Decode(true, 0, 0);
     if (count < 60)
       throw std::runtime_error("use an input with at least 60 frames");
+    if (retain_old_frames && count < 80)
+      throw std::runtime_error("retained-frame regression requires at least 80 frames");
     const int64_t declared = input->streams[stream]->nb_frames;
     if (declared > 0 && count != static_cast<size_t>(declared))
       throw std::runtime_error("reference did not drain the declared frame count");
     std::printf("reference: %zu %s frames drained\n", count,
                 software ? "software" : "VA-API");
     const size_t indices[] = {count / 2, count / 4, count * 3 / 4, 0};
+    size_t pass = 0;
     for (size_t index : indices) {
       auto position = reference.begin();
       std::advance(position, index);
       const int64_t target = position->first;
-      Check(av_seek_frame(input, stream, target, AVSEEK_FLAG_BACKWARD), "seek");
-      avcodec_flush_buffers(decoder);
-      av_packet_unref(packet);
-      const size_t compared = Decode(false, target, 12);
+      Seek(target);
+      std::vector<HeldPicture> held;
+      const size_t compared = Decode(false, target, 12,
+                                     retain_old_frames ? &held : nullptr);
       std::printf("seek PTS %lld: %zu frame SHA-256 digests match\n",
                   static_cast<long long>(target), compared);
+      if (lookahead != 0)
+        std::printf("seek left %zu queued pictures undownloaded\n", deferred_at_limit);
+      if (retain_old_frames) {
+        if (pass % 2 == 0) {
+          auto next = reference.begin();
+          std::advance(next, indices[(pass + 1) % 4]);
+          Seek(next->first);
+          // FFmpeg can defer VA context recreation until post-flush input.
+          // Keep all old owners alive while a new timeline actually decodes.
+          const size_t new_count = Decode(false, next->first, 1);
+          std::printf("post-flush new timeline: %zu frame SHA-256 digest matches\n",
+                      new_count);
+          VerifyHeld(held, "flush and new input");
+        } else {
+          // Unlike a flush-only probe, this necessarily destroys the codec
+          // context before any held picture is downloaded. Its AVFrame owns
+          // the hardware frame/device references needed for that download.
+          avcodec_free_context(&decoder);
+          VerifyHeld(held, "decoder context teardown");
+        }
+      }
+      ++pass;
     }
   }
 };
 
 int main(int argc, char **argv) {
-  if (argc < 2 || argc > 3) {
-    std::fprintf(stderr, "usage: %s VIDEO.mp4 [DRM_DEVICE|--software]\n", argv[0]);
+  if (argc < 2 || argc > 6) {
+    std::fprintf(stderr, "usage: %s VIDEO.mp4 [DRM_DEVICE|--software] [--lookahead 8] [--retain-old-frames]\n", argv[0]);
     return 2;
   }
   try {
     Probe probe;
-    probe.software = argc == 3 && std::strcmp(argv[2], "--software") == 0;
-    probe.Open(argv[1], argc == 3 && !probe.software ? argv[2] : "/dev/dri/renderD128");
+    const char *device = "/dev/dri/renderD128";
+    bool mode_selected = false;
+    for (int argument = 2; argument < argc; ++argument) {
+      if (std::strcmp(argv[argument], "--retain-old-frames") == 0) {
+        if (probe.retain_old_frames)
+          throw std::runtime_error("--retain-old-frames must be specified once");
+        probe.retain_old_frames = true;
+      } else if (std::strcmp(argv[argument], "--lookahead") == 0) {
+        if (probe.lookahead != 0 || argument + 1 == argc ||
+            std::strcmp(argv[++argument], "8") != 0)
+          throw std::runtime_error("lookahead must be specified once as --lookahead 8");
+        probe.lookahead = 8;
+      } else {
+        if (mode_selected)
+          throw std::runtime_error("choose only one DRM device or --software");
+        mode_selected = true;
+        probe.software = std::strcmp(argv[argument], "--software") == 0;
+        if (!probe.software) {
+          if (argv[argument][0] == '-')
+            throw std::runtime_error("unknown probe option");
+          device = argv[argument];
+        }
+      }
+    }
+    if (probe.retain_old_frames)
+      probe.lookahead = 8;
+    probe.Open(argv[1], device);
     probe.Run();
     return 0;
   } catch (const std::exception &error) {

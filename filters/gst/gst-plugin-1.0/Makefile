@@ -7,6 +7,10 @@ DESTDIR ?=
 ROOTDIR := ../../..
 PLUGIN := libgstcrystalhd.so
 PLAYBACK_TEST := gstreamer-playback-test
+CODECS_TEST := gst-codecs-test
+CODEC_PLAYBACK_PACKAGES := gstreamer-app-1.0 gstreamer-video-1.0 \
+	libavformat libavcodec libavutil
+HAVE_CODEC_PLAYBACK := $(shell $(PKG_CONFIG) --exists $(CODEC_PLAYBACK_PACKAGES) && echo yes)
 PLUGINDIR ?= $(shell $(PKG_CONFIG) --variable=pluginsdir gstreamer-1.0)
 
 GST_PACKAGES := gstreamer-1.0 gstreamer-video-1.0
@@ -17,27 +21,52 @@ CFLAGS += -Wall -Wextra -Werror -fPIC $(shell $(PKG_CONFIG) --cflags $(GST_PACKA
 LDFLAGS += -shared -L$(ROOTDIR)/linux_lib/libcrystalhd
 LDLIBS += $(shell $(PKG_CONFIG) --libs $(GST_PACKAGES)) -lcrystalhd
 
-.PHONY: all clean install check
+.PHONY: all clean install check codec-playback-test check-codec-playback
 
 all: $(PLUGIN)
 
-$(PLUGIN): gstcrystalhd.c
+# Optional hardware fixture probe; libavformat supplies complete VC-1/WMV3
+# packets. FFmpeg development packages are not needed for the plugin itself.
+codec-playback-test: gstreamer-codec-playback-test
+
+gstreamer-codec-playback-test: $(ROOTDIR)/tests/gstreamer-codec-playback.cpp
+	$(CXX) -std=c++17 -O2 -Wall -Wextra -Werror $< -o $@ \
+		$(shell $(PKG_CONFIG) --cflags --libs $(CODEC_PLAYBACK_PACKAGES))
+
+ifneq ($(HAVE_CODEC_PLAYBACK),)
+check-codec-playback: gstreamer-codec-playback-test
+	./gstreamer-codec-playback-test --self-test
+else
+check-codec-playback:
+	@echo "Skipping optional codec probe self-test (FFmpeg/GStreamer app development packages unavailable)"
+endif
+
+$(PLUGIN): gstcrystalhd.c gstcrystalhd-codecs.h gstcrystalhd-timing.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
 
 $(PLAYBACK_TEST): $(ROOTDIR)/tests/gstreamer-playback.c
 	$(CC) -Wall -Wextra -Werror $(CFLAGS) $< -o $@ \
 		$(shell $(PKG_CONFIG) --libs $(GST_PACKAGES))
 
-check: $(PLUGIN) $(PLAYBACK_TEST)
+$(CODECS_TEST): $(ROOTDIR)/tests/gst-codecs.c gstcrystalhd-codecs.h gstcrystalhd-timing.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I. $< -o $@ \
+		$(shell $(PKG_CONFIG) --libs $(GST_PACKAGES))
+
+check: $(PLUGIN) $(PLAYBACK_TEST) $(CODECS_TEST) check-codec-playback
 	@registry=$$(mktemp); \
 	trap 'rm -f "$$registry"' EXIT HUP INT TERM; \
 	GST_REGISTRY="$$registry" GST_PLUGIN_PATH=$(CURDIR) \
 	LD_LIBRARY_PATH=$(abspath $(ROOTDIR)/linux_lib/libcrystalhd):$(LD_LIBRARY_PATH) \
 		gst-inspect-1.0 crystalhddec >/dev/null
 	./$(PLAYBACK_TEST) --self-test
+	@registry=$$(mktemp); \
+	trap 'rm -f "$$registry"' EXIT HUP INT TERM; \
+	GST_REGISTRY="$$registry" GST_PLUGIN_PATH=$(CURDIR) \
+	LD_LIBRARY_PATH=$(abspath $(ROOTDIR)/linux_lib/libcrystalhd):$(LD_LIBRARY_PATH) \
+		./$(CODECS_TEST)
 
 install: $(PLUGIN)
 	install -D -m 0755 $(PLUGIN) $(DESTDIR)$(PLUGINDIR)/$(PLUGIN)
 
 clean:
-	rm -f $(PLUGIN) $(PLAYBACK_TEST)
+	rm -f $(PLUGIN) $(PLAYBACK_TEST) $(CODECS_TEST) gstreamer-codec-playback-test

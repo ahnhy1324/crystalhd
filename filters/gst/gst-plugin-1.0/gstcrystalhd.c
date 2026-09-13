@@ -8,12 +8,15 @@
 #include <string.h>
 
 #include <gst/gst.h>
+#include <gst/base/gstadapter.h>
 #include <gst/video/gstvideodecoder.h>
 #include <gst/video/video.h>
 
 #include <bc_dts_defs.h>
 #include <bc_dts_types.h>
 #include <libcrystalhd_if.h>
+#include "gstcrystalhd-codecs.h"
+#include "gstcrystalhd-timing.h"
 
 #define GST_TYPE_CRYSTALHD_DEC (gst_crystalhd_dec_get_type())
 #define GST_CRYSTALHD_DEC(obj) \
@@ -21,7 +24,6 @@
 
 #define CRYSTALHD_TIMESTAMP_STEP 100000ULL
 #define CRYSTALHD_INPUT_RETRIES 1000U
-#define CRYSTALHD_DRAIN_RETRIES 500U
 
 typedef struct {
   guint64 hardware_timestamp;
@@ -37,6 +39,7 @@ typedef struct _GstCrystalHdDec {
   gboolean is_70012;
   gboolean output_configured;
   gboolean need_second_field;
+  CrystalHdCodec codec;
   guint32 field_frame_number;
   guint width;
   guint height;
@@ -63,13 +66,67 @@ static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE(
         "video/mpeg, mpegversion=(int)2, systemstream=(boolean)false, "
         "parsed=(boolean)true; "
         "video/x-vc1, parsed=(boolean)true; "
-        "video/x-wmv, wmvversion=(int)3"));
+        "video/x-wmv, wmvversion=(int)3, format=(string)WVC1, "
+        "stream-format=(string){bdu,bdu-frame}, header-format=(string)none; "
+        "video/x-wmv, wmvversion=(int)3, format=(string)WVC1, "
+        "stream-format=(string)asf, header-format=(string)asf; "
+        "video/x-wmv, wmvversion=(int)3, format=(string)WMV3, "
+        "stream-format=(string){frame-layer,asf}, header-format=(string)asf"));
 
 static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE(
     "src", GST_PAD_SRC, GST_PAD_ALWAYS,
     GST_STATIC_CAPS("video/x-raw, format=(string)YUY2, "
                     "width=(int)[1,1920], height=(int)[1,1088], "
                     "framerate=(fraction)[0/1,MAX]"));
+
+static gboolean
+gst_crystalhd_sink_query(GstVideoDecoder *decoder, GstQuery *query)
+{
+  GstVideoDecoderClass *parent =
+      GST_VIDEO_DECODER_CLASS(gst_crystalhd_dec_parent_class);
+
+  if (GST_QUERY_TYPE(query) == GST_QUERY_ACCEPT_CAPS) {
+    GstCaps *caps;
+    gst_query_parse_accept_caps(query, &caps);
+    if (gst_caps_is_fixed(caps) &&
+        gst_structure_has_name(gst_caps_get_structure(caps, 0), "video/x-wmv")) {
+      CrystalHdCodec codec;
+      GstCaps *normalized;
+      GstStructure *s;
+      GstQuery *check;
+      gboolean accepted = FALSE;
+      gboolean result;
+
+      if (!gst_crystalhd_codec_from_caps(caps, &codec)) {
+        gst_query_set_accept_caps_result(query, FALSE);
+        return TRUE;
+      }
+      /* asfdemux omits stream-format/header-format (and older producers
+       * also omit format). Those caps still describe ASF packets. Normalize
+       * only this query, retaining strict advertised parser framing and the
+       * original caps/codec_data for set_format.
+       */
+      normalized = gst_caps_copy(caps);
+      s = gst_caps_get_structure(normalized, 0);
+      if (!gst_structure_has_field(s, "format"))
+        gst_structure_set(s, "format", G_TYPE_STRING, "WMV3", NULL);
+      if (!gst_structure_has_field(s, "stream-format"))
+        gst_structure_set(s, "stream-format", G_TYPE_STRING, "asf", NULL);
+      if (!gst_structure_has_field(s, "header-format"))
+        gst_structure_set(s, "header-format", G_TYPE_STRING,
+                          codec.vc1_bdu ? "none" : "asf", NULL);
+      check = gst_query_new_accept_caps(normalized);
+      result = parent->sink_query(decoder, check);
+      if (result)
+        gst_query_parse_accept_caps_result(check, &accepted);
+      gst_query_set_accept_caps_result(query, accepted);
+      gst_query_unref(check);
+      gst_caps_unref(normalized);
+      return result;
+    }
+  }
+  return parent->sink_query(decoder, query);
+}
 
 static const gchar *
 gst_crystalhd_status_hint(BC_STATUS status)
@@ -124,24 +181,6 @@ gst_crystalhd_close_device(GstCrystalHdDec *self)
   self->output_configured = FALSE;
   self->need_second_field = FALSE;
   gst_crystalhd_clear_timestamps(self);
-}
-
-static BC_MEDIA_SUBTYPE
-gst_crystalhd_subtype_from_caps(GstCaps *caps)
-{
-  const GstStructure *structure = gst_caps_get_structure(caps, 0);
-  const gchar *name = gst_structure_get_name(structure);
-
-  if (g_str_equal(name, "video/x-h264"))
-    return BC_MSUBTYPE_H264;
-  if (g_str_equal(name, "video/mpeg"))
-    return BC_MSUBTYPE_MPEG2VIDEO;
-  if (g_str_equal(name, "video/x-vc1"))
-    return BC_MSUBTYPE_VC1;
-  if (g_str_equal(name, "video/x-wmv"))
-    return BC_MSUBTYPE_WMV3;
-
-  return BC_MSUBTYPE_INVALID;
 }
 
 static CrystalHdTimestamp *
@@ -421,13 +460,14 @@ gst_crystalhd_set_format(GstVideoDecoder *decoder, GstVideoCodecState *state)
   g_clear_pointer(&self->input_state, gst_video_codec_state_unref);
   self->input_state = gst_video_codec_state_ref(state);
 
-  subtype = gst_crystalhd_subtype_from_caps(state->caps);
-  if (subtype == BC_MSUBTYPE_INVALID) {
+  if (!gst_crystalhd_codec_from_caps(state->caps, &self->codec)) {
     GST_ELEMENT_ERROR(self, STREAM, FORMAT,
                       ("Unsupported CrystalHD input codec"),
                       ("Caps: %" GST_PTR_FORMAT, state->caps));
     return FALSE;
   }
+  subtype = self->codec.subtype;
+  gst_video_decoder_set_packetized(decoder, !self->codec.vc1_bdu);
 
   memset(&input_format, 0, sizeof(input_format));
   input_format.FGTEnable = FALSE;
@@ -440,14 +480,34 @@ gst_crystalhd_set_format(GstVideoDecoder *decoder, GstVideoCodecState *state)
     input_format.startCodeSz = 4;
 
   codec_data_value = gst_structure_get_value(structure, "codec_data");
-  if (codec_data_value != NULL) {
+  if (codec_data_value != NULL && GST_VALUE_HOLDS_BUFFER(codec_data_value)) {
     GstBuffer *codec_data = gst_value_get_buffer(codec_data_value);
     if (codec_data != NULL &&
         gst_buffer_map(codec_data, &codec_data_map, GST_MAP_READ)) {
+      codec_data_mapped = TRUE;
+      if (codec_data_map.size > G_MAXUINT32) {
+        GST_ELEMENT_ERROR(self, STREAM, FORMAT,
+                          ("Codec data exceeds the input limit"), (NULL));
+        goto fail;
+      }
       input_format.pMetaData = codec_data_map.data;
       input_format.metaDataSz = codec_data_map.size;
-      codec_data_mapped = TRUE;
     }
+  }
+
+  {
+    const guint8 *metadata = input_format.pMetaData;
+    gsize metadata_size = input_format.metaDataSz;
+    if (!gst_crystalhd_codec_metadata(&self->codec, &metadata, &metadata_size) ||
+        (subtype == BC_MSUBTYPE_WMV3 &&
+         (!input_format.width || !input_format.height))) {
+      GST_ELEMENT_ERROR(self, STREAM, FORMAT,
+                        ("Missing or invalid VC-1/WMV3 codec data or dimensions"),
+                        ("Use vc1parse with a supported stream/header format"));
+      goto fail;
+    }
+    input_format.pMetaData = (guint8 *)metadata;
+    input_format.metaDataSz = metadata_size;
   }
 
   mode = DTS_PLAYBACK_MODE | DTS_LOAD_FILE_PLAY_FW | DTS_SKIP_TX_CHK_CPB |
@@ -516,6 +576,34 @@ fail:
 }
 
 static GstFlowReturn
+gst_crystalhd_parse(GstVideoDecoder *decoder, GstVideoCodecFrame *frame,
+                    GstAdapter *adapter, gboolean at_eos)
+{
+  gsize available = gst_adapter_available(adapter);
+  const guint8 *data;
+  gsize size;
+
+  (void)frame;
+  if (available == 0)
+    return GST_VIDEO_DECODER_FLOW_NEED_DATA;
+  if (available > 16 * 1024 * 1024) {
+    GST_ELEMENT_ERROR(decoder, STREAM, DECODE,
+                      ("VC-1 picture exceeds the input limit"), (NULL));
+    return GST_FLOW_ERROR;
+  }
+  data = gst_adapter_map(adapter, available);
+  size = gst_crystalhd_vc1_frame_size(data, available, at_eos);
+  gst_adapter_unmap(adapter);
+  if (size != 0) {
+    gst_video_decoder_add_to_frame(decoder, size);
+    return gst_video_decoder_have_frame(decoder);
+  }
+  if (at_eos)
+    gst_adapter_flush(adapter, available); /* trailing headers, no picture */
+  return GST_VIDEO_DECODER_FLOW_NEED_DATA;
+}
+
+static GstFlowReturn
 gst_crystalhd_handle_frame(GstVideoDecoder *decoder,
                            GstVideoCodecFrame *frame)
 {
@@ -525,12 +613,34 @@ gst_crystalhd_handle_frame(GstVideoDecoder *decoder,
   BC_STATUS status = BC_STS_ERROR;
   GstFlowReturn flow;
   guint attempt;
+  const guint8 *data;
+  gsize size;
+  guint8 *padded = NULL;
 
   if (!self->decoder_started || frame->input_buffer == NULL)
     return gst_video_decoder_drop_frame(decoder, frame);
 
   if (!gst_buffer_map(frame->input_buffer, &map, GST_MAP_READ))
     return gst_video_decoder_drop_frame(decoder, frame);
+
+  data = map.data;
+  size = map.size;
+  if (!gst_crystalhd_codec_payload(&self->codec, &data, &size)) {
+    gst_buffer_unmap(frame->input_buffer, &map);
+    GST_ELEMENT_ERROR(self, STREAM, DECODE,
+                      ("Invalid compressed picture framing"), (NULL));
+    gst_video_decoder_drop_frame(decoder, frame);
+    return GST_FLOW_ERROR;
+  }
+  if (self->codec.subtype == BC_MSUBTYPE_WMV3 ||
+      self->codec.subtype == BC_MSUBTYPE_WVC1) {
+    /* The library probes a four-byte startcode even for valid sub-word
+     * ASF pictures. Supply readable padding without submitting extra data.
+     */
+    padded = g_malloc0(size + 4);
+    memcpy(padded, data, size);
+    data = padded;
+  }
 
   entry = g_new0(CrystalHdTimestamp, 1);
   entry->hardware_timestamp = self->next_hardware_timestamp;
@@ -539,18 +649,20 @@ gst_crystalhd_handle_frame(GstVideoDecoder *decoder,
   g_queue_push_tail(&self->timestamps, entry);
 
   for (attempt = 0; attempt < CRYSTALHD_INPUT_RETRIES; attempt++) {
-    status = DtsProcInput(self->device, map.data, map.size,
+    status = DtsProcInput(self->device, (guint8 *)data, size,
                           entry->hardware_timestamp, 0);
     if (status != BC_STS_BUSY)
       break;
 
     flow = gst_crystalhd_receive_available(self);
     if (flow != GST_FLOW_OK) {
+      g_free(padded);
       gst_buffer_unmap(frame->input_buffer, &map);
       return flow;
     }
     g_usleep(1000);
   }
+  g_free(padded);
   gst_buffer_unmap(frame->input_buffer, &map);
 
   if (status != BC_STS_SUCCESS) {
@@ -594,12 +706,15 @@ static GstFlowReturn
 gst_crystalhd_drain(GstVideoDecoder *decoder)
 {
   GstCrystalHdDec *self = GST_CRYSTALHD_DEC(decoder);
-  guint attempt;
+  gint64 started;
+  gint64 deadline;
   BC_STATUS status;
 
   if (!self->decoder_started)
     return GST_FLOW_OK;
 
+  started = g_get_monotonic_time();
+  deadline = started + GST_CRYSTALHD_DRAIN_TIMEOUT_US;
   status = DtsFlushInput(self->device, 0);
   if (status != BC_STS_SUCCESS) {
     GST_ELEMENT_ERROR(self, STREAM, DECODE,
@@ -609,7 +724,7 @@ gst_crystalhd_drain(GstVideoDecoder *decoder)
     return GST_FLOW_ERROR;
   }
 
-  for (attempt = 0; attempt < CRYSTALHD_DRAIN_RETRIES; attempt++) {
+  while (gst_crystalhd_drain_remaining_us(deadline, g_get_monotonic_time()) > 0) {
     BC_DTS_STATUS decoder_status;
     gboolean activity;
     gboolean eos = FALSE;
@@ -635,15 +750,20 @@ gst_crystalhd_drain(GstVideoDecoder *decoder)
       break;
     if (!activity && self->timestamps.length == 0)
       break;
-    if (!activity)
-      g_usleep(10000);
+    if (!activity) {
+      gint64 remaining =
+          gst_crystalhd_drain_remaining_us(deadline, g_get_monotonic_time());
+      g_usleep((gulong)MIN(remaining, (gint64)10000));
+    }
   }
 
   if (!g_queue_is_empty(&self->timestamps) || self->need_second_field) {
     GST_ELEMENT_ERROR(self, STREAM, DECODE,
                       ("CrystalHD drain ended before all input pictures were decoded"),
-                      ("%u input timestamps remain after %u drain attempts",
-                       self->timestamps.length, attempt));
+                      ("%u input timestamps remain after %" G_GINT64_FORMAT
+                       " ms (drain deadline: 10000 ms)",
+                       self->timestamps.length,
+                       (g_get_monotonic_time() - started) / 1000));
     return GST_FLOW_ERROR;
   }
   return GST_FLOW_OK;
@@ -665,6 +785,8 @@ gst_crystalhd_dec_class_init(GstCrystalHdDecClass *klass)
   decoder_class->start = gst_crystalhd_start;
   decoder_class->stop = gst_crystalhd_stop;
   decoder_class->set_format = gst_crystalhd_set_format;
+  decoder_class->parse = gst_crystalhd_parse;
+  decoder_class->sink_query = gst_crystalhd_sink_query;
   decoder_class->handle_frame = gst_crystalhd_handle_frame;
   decoder_class->flush = gst_crystalhd_flush;
   decoder_class->finish = gst_crystalhd_drain;

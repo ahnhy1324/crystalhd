@@ -8,31 +8,49 @@ Measured results are recorded in [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md
 
 ## Driver and ABI
 
-- [ ] [#5: ioctl safety and device permissions](https://github.com/ahnhy1324/crystalhd/issues/5):
+- [x] [#5: ioctl safety and device permissions](https://github.com/ahnhy1324/crystalhd/issues/5):
   validate native and compat request headers, transfer limits, PCI alignment,
   permissions, legacy identification, and failed copies; preserve playback.
-- [ ] [#6: 32-bit compatibility](https://github.com/ahnhy1324/crystalhd/issues/6):
+- [x] [#6: 32-bit compatibility](https://github.com/ahnhy1324/crystalhd/issues/6):
   freeze both ABIs, compile library/examples and native i386 module in CI,
   and execute both runtime probes on the x86-64 driver.
-- [ ] [#9: DMA pins](https://github.com/ahnhy1324/crystalhd/issues/9):
+- [x] [#9: DMA pins](https://github.com/ahnhy1324/crystalhd/issues/9):
   pair long-term DMA pins with unpin helpers, unmap before release, exercise
   partial failures and merged SG descriptors, and validate sustained playback
   and unload/reload without outstanding pins.
 
 ## Playback validation
 
-- [ ] [#7: reproducible playback paths](https://github.com/ahnhy1324/crystalhd/issues/7):
+- [x] [#7: reproducible playback paths](https://github.com/ahnhy1324/crystalhd/issues/7):
   verify source and staged/installed discovery, complete drain, exact frame
   counts, and repeated GStreamer and secondary VA-API playback.
 - [ ] [#8: hardware matrix](https://github.com/ahnhy1324/crystalhd/issues/8):
   finish the remaining card/codec/lifecycle coverage below.
 - [x] Record BCM70015 H.264 Constrained Baseline, Main, and High samples
   separately with exact commands, frame counts, and sample/pixel checksums.
-- [ ] VA-API complete-file drain: strict validation still misses the final
-  frames. Access-unit delimiters and firmware decode-order requests did not
-  resolve it; do not replace missing pixels with a success/blank frame.
-- [ ] VA-API forward/backward seek and flush: compare downloaded pixels with
-  an uninterrupted reference decode using `tests/vaapi-seek.cpp`.
+- [x] VA-API complete-file drain: all three H.264 profiles pass 180/180 with
+  independent software pixel comparisons. Timestamped access units begin
+  with their delimiter; finite batches use bounded actual-IDR replay after
+  full device reopen. Missing output is never a success/blank frame.
+- [x] VA-API High forward/backward seek and flush: a complete 180-frame
+  reference plus four seeks with 12 exact PTS/pixel matches each, using
+  `tests/vaapi-seek.cpp` in its default synchronous mode.
+- [x] VA-API Baseline/Main/High pipelined seek/flush: the same exact checks
+  with `--lookahead 8`, leaving eight client pictures undownloaded before each seek.
+- [ ] Broader VA-API stream coverage and synchronous-client performance;
+  one-at-a-time clients can repeatedly reopen the device and replay references.
+- [x] BCM70015 Full HD H.264 Baseline/Main/High complete-file VA-API decode:
+  1920×1080, 30 fps, 180/180 frames per fixture, independent pixel comparisons.
+- [x] Full HD GStreamer drain and exact EOS replay for all three profiles;
+  Full HD High VA-API four-seek lookahead pixel comparisons.
+- [x] Retain original output frames across flush/new input and decoder-context
+  destruction; exact old-frame PTS/pixels checked after each transition.
+- [x] Asynchronous FFmpeg input looping: High at 640×360 and 1920×1080
+  passes five complete loops (900 frames); all 900 smaller-frame pixel hashes
+  match the reference. Held-frame regressions also pass all three profiles
+  at 640×360 and High at 1920×1080.
+- [ ] Full HD real-time display playback; measured decode/download throughput
+  and correctness are separate from compositor/display integration.
 - [x] GStreamer flushing seek to zero after EOS: all three H.264 profiles,
   complete frame counts and identical replay pixels. Arbitrary in-flight
   seeks still need separate coverage.
@@ -45,11 +63,17 @@ Measured results are recorded in [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md
 
 - [ ] BCM70012 on a current LTS and recent stable kernel.
 - [x] BCM70015 progressive MPEG-2 Main: 180/180 YUY2 frames and complete drain.
-- [ ] VC-1, WMV3, interlaced output, and mid-stream resolution changes.
+- [x] BCM70015 VC-1 Advanced: 15/15 frames through raw BDU and demuxed
+  packet paths, identical hardware pixel hashes.
+- [x] BCM70015 WMV3 Main: 25/25 frames through ASF and demuxed packet
+  paths, identical hardware pixel hashes.
+- [ ] Broader VC-1/WMV3 samples, interlaced output, and mid-stream resolution changes.
 - [ ] Suspend/resume with an idle device and around an active/recent session.
   This interrupts the desktop and is not part of unattended `make check`.
 - [ ] Chromium hardware frame identity after seeking, and GPU sandbox support.
   Browser hardware decoding remains opt-in; the default is software decoding.
+- [ ] Complete VA-API synchronization error coverage outside the tested
+  decode/VPP write paths, including CPU reads, `vaPutImage`, and fence-signal failures.
 
 Do not close the hardware-matrix issue on the strength of compilation or a
 BCM70015 H.264-only run. Record exact commands, profiles, checksums, source
