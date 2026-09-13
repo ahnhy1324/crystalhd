@@ -535,7 +535,7 @@ bool crystalhd_link_stop_device(struct crystalhd_hw *hw)
 	sts = crystalhd_link_put_ddr2sleep(hw);
 	if (sts != BC_STS_SUCCESS) {
 		dev_err(&hw->adp->pdev->dev, "Failed to Put DDR To Sleep!!\n");
-		return BC_STS_ERROR;
+		return false;
 	}
 
 	/* Clear and disable interrupts */
@@ -654,6 +654,7 @@ bool link_GetPictureInfo(struct crystalhd_hw *hw, uint32_t picHeight, uint32_t p
 
 	if (!dio || !picWidth)
 		goto getpictureinfo_err_nosem;
+	crystalhd_dio_to_cpu(hw->adp, dio);
 
 /*	if(down_interruptible(&hw->fetch_sem)) */
 /*		goto getpictureinfo_err_nosem; */
@@ -1354,6 +1355,8 @@ void crystalhd_link_stop_rx_dma_engine(struct crystalhd_hw *hw)
 
 	dev_dbg(dev, "Capture Stop: %d List0:Sts:%x List1:Sts:%x\n",
 		count, hw->rx_list_sts[0], hw->rx_list_sts[1]);
+	if (l0y || l0uv || l1y || l1uv)
+		crystalhd_hw_dma_fatal_stop(hw);
 }
 
 BC_STATUS crystalhd_link_hw_prog_rxdma(struct crystalhd_hw *hw,
@@ -1364,6 +1367,7 @@ BC_STATUS crystalhd_link_hw_prog_rxdma(struct crystalhd_hw *hw,
 	uint32_t uv_low_addr_reg, uv_high_addr_reg;
 	addr_64 desc_addr;
 	unsigned long flags;
+	BC_STATUS sts;
 
 	if (!hw || !rx_pkt) {
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
@@ -1376,6 +1380,8 @@ BC_STATUS crystalhd_link_hw_prog_rxdma(struct crystalhd_hw *hw,
 		dev_err(dev, "List Out Of bounds %x\n", hw->rx_list_post_index);
 		return BC_STS_INV_ARG;
 	}
+	if (READ_ONCE(hw->dma_fault))
+		return BC_STS_IO_ERROR;
 
 	spin_lock_irqsave(&hw->rx_lock, flags);
 	if (hw->rx_list_sts[hw->rx_list_post_index]) {
@@ -1395,13 +1401,17 @@ BC_STATUS crystalhd_link_hw_prog_rxdma(struct crystalhd_hw *hw,
 		uv_high_addr_reg = MISC1_UV_RX_FIRST_DESC_U_ADDR_LIST1;
 	}
 	rx_pkt->pkt_tag = hw->rx_pkt_tag_seed + hw->rx_list_post_index;
+	sts = crystalhd_dioq_add(hw->rx_actq, rx_pkt, false, rx_pkt->pkt_tag);
+	if (sts != BC_STS_SUCCESS) {
+		spin_unlock_irqrestore(&hw->rx_lock, flags);
+		return sts;
+	}
 	hw->rx_list_sts[hw->rx_list_post_index] |= rx_waiting_y_intr;
 	if (rx_pkt->uv_phy_addr)
 		hw->rx_list_sts[hw->rx_list_post_index] |= rx_waiting_uv_intr;
 	hw->rx_list_post_index = (hw->rx_list_post_index + 1) % DMA_ENGINE_CNT;
 
-	crystalhd_dioq_add(hw->rx_actq, (void *)rx_pkt, false, rx_pkt->pkt_tag);
-
+	crystalhd_dio_to_device(hw->adp, rx_pkt->dio_req);
 	crystalhd_link_start_rx_dma_engine(hw);
 	/* Program the Y descriptor */
 	desc_addr.full_addr = rx_pkt->desc_mem.phy_addr;
@@ -1425,9 +1435,12 @@ BC_STATUS crystalhd_link_hw_post_cap_buff(struct crystalhd_hw *hw,
 {
 	BC_STATUS sts = crystalhd_link_hw_prog_rxdma(hw, rx_pkt);
 
-	if (sts == BC_STS_BUSY)
-		crystalhd_dioq_add(hw->rx_freeq, (void *)rx_pkt,
-				 false, rx_pkt->pkt_tag);
+	if (sts == BC_STS_BUSY) {
+		BC_STATUS queued = crystalhd_dioq_add(hw->rx_freeq, rx_pkt,
+						false, rx_pkt->pkt_tag);
+		if (queued != BC_STS_SUCCESS)
+			return queued;
+	}
 
 	return sts;
 }

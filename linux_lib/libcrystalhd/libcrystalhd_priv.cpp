@@ -2646,6 +2646,9 @@ DRVIFLIB_INT_API BC_STATUS DtsGetHWFeatures(uint32_t *pciids)
 	BC_IOCTL_DATA pIo;
 	int rc;
 
+	if (!pciids)
+		return BC_STS_INV_ARG;
+
 	memset(&pIo, 0, sizeof(BC_IOCTL_DATA));
 
 	drvHandle = open(CRYSTALHD_API_DEV_NAME, O_RDWR);
@@ -2655,10 +2658,9 @@ DRVIFLIB_INT_API BC_STATUS DtsGetHWFeatures(uint32_t *pciids)
 		return BC_STS_ERROR;
 	}
 
-	pIo.u.pciCfg.Offset = 0;
-	pIo.u.pciCfg.Size = 4;
-
-	rc = ioctl(drvHandle, BCM_IOC_RD_PCI_CFG, &pIo);
+	/* Device identification is available to playback users. Raw PCI config
+	 * access is a privileged diagnostic interface in the maintained driver. */
+	rc = ioctl(drvHandle, BCM_IOC_GET_HWTYPE, &pIo);
 	if(rc < 0){
 		DebugLog_Trace(LDIL_ERR,"ioctl to get HW features failed\n");
 		close(drvHandle);
@@ -2666,11 +2668,8 @@ DRVIFLIB_INT_API BC_STATUS DtsGetHWFeatures(uint32_t *pciids)
 	}
 
 	if(pIo.RetSts == BC_STS_SUCCESS) {
-		*pciids = pIo.u.pciCfg.pci_cfg_space[0] |
-					(pIo.u.pciCfg.pci_cfg_space[1] << 8) |
-					(pIo.u.pciCfg.pci_cfg_space[2] << 16) |
-					(pIo.u.pciCfg.pci_cfg_space[3] << 24);
-		//*pciids = *(uint32_t*)pIo.u.pciCfg.pci_cfg_space;
+		*pciids = ((uint32_t)pIo.u.hwType.PciDevId << 16) |
+			pIo.u.hwType.PciVenId;
 		close(drvHandle);
 		return BC_STS_SUCCESS;
 	}

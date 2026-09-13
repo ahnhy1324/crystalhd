@@ -8,6 +8,7 @@ ROOTDIR := ../..
 DRIVER := crystalhd_drv_video.so
 IMPORT_TEST := vaapi-import-test
 H264_TEST := vaapi-h264-test
+SEEK_TEST := vaapi-seek-test
 DRIVERDIR ?= $(shell $(PKG_CONFIG) --variable=libdir libva)/dri
 VAAPI_DRM_DEVICE ?= /dev/dri/renderD128
 
@@ -22,7 +23,7 @@ LDLIBS += $(shell $(PKG_CONFIG) --libs libva libva-drm libdrm gbm \
 	libswscale) \
 	-lcrystalhd -pthread
 
-.PHONY: all clean check install
+.PHONY: all clean check install seek-test
 
 all: $(DRIVER)
 
@@ -36,6 +37,15 @@ $(IMPORT_TEST): $(ROOTDIR)/tests/vaapi-import.cpp
 
 $(H264_TEST): $(ROOTDIR)/tests/vaapi-h264.cpp crystalhd_drv_video.cpp
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o $@
+
+# Optional hardware lifecycle probe; keep FFmpeg development dependencies out
+# of the normal driver build.
+seek-test: $(SEEK_TEST)
+
+$(SEEK_TEST): $(ROOTDIR)/tests/vaapi-seek.cpp
+	$(CXX) -std=c++17 -O2 -Wall -Wextra -Werror \
+		$(shell $(PKG_CONFIG) --cflags libavcodec libavformat libavutil) $< -o $@ \
+		$(shell $(PKG_CONFIG) --libs libavcodec libavformat libavutil)
 
 check: $(DRIVER) $(IMPORT_TEST) $(H264_TEST)
 	readelf -Ws $(DRIVER) | grep -q '__vaDriverInit_'
@@ -53,4 +63,4 @@ install: $(DRIVER)
 	install -D -m 0755 $(DRIVER) $(DESTDIR)$(DRIVERDIR)/$(DRIVER)
 
 clean:
-	rm -f $(DRIVER) $(IMPORT_TEST) $(H264_TEST)
+	rm -f $(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(SEEK_TEST)

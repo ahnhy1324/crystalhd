@@ -35,6 +35,11 @@ of `video`. Normal playback does not need elevated capabilities; the legacy
 register, FPGA, DRAM, and PCI configuration diagnostics require root or
 `CAP_SYS_RAWIO`.
 
+The vendor/device identity DWORD remains readable by older libraries without
+that capability. The runtime ABI probes in `tests/ioctl-smoke.sh` and
+`tests/userspace32.sh --hardware` verify this boundary and both userspace
+word sizes on an idle device.
+
 ## Known-good BCM70015 userspace sequence
 
 The maintained GStreamer and VA-API frontends use this initialization order:
@@ -54,8 +59,10 @@ receive frames with `DtsProcOutputNoCopy()`, and call
 `DtsReleaseOutputBuffs()` after every successful output before reusing or
 destroying the associated state.
 
-The card and firmware support one playback session. A second process is not a
-valid concurrency test; close the first client before opening another.
+The card and firmware support one playback session. A second playback client
+must be rejected without disturbing the first; this checks safe rejection,
+not concurrent decode support. Close the first client before testing another
+complete decode.
 
 ## BCM70015 output-format trap
 

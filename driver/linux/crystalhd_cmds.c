@@ -369,8 +369,11 @@ static BC_STATUS bc_cproc_do_fw_cmd(struct crystalhd_cmd *ctx, crystalhd_ioctl_d
 	/* Pre-Process */
 	if (cmd[0] == eCMD_C011_DEC_CHAN_PAUSE) {
 		if (!cmd[3]) {
+			if (down_interruptible(&ctx->hw_ctx->fetch_sem))
+				return BC_STS_IO_USER_ABORT;
 			ctx->state &= ~BC_LINK_PAUSED;
 			ctx->hw_ctx->pfnIssuePause(ctx->hw_ctx, false);
+			up(&ctx->hw_ctx->fetch_sem);
 		}
 	} else if (cmd[0] == eCMD_C011_DEC_CHAN_FLUSH) {
 		dev_dbg(dev, "Flush issued\n");
@@ -388,8 +391,13 @@ static BC_STATUS bc_cproc_do_fw_cmd(struct crystalhd_cmd *ctx, crystalhd_ioctl_d
 	/* Post-Process */
 	if (cmd[0] == eCMD_C011_DEC_CHAN_PAUSE) {
 		if (cmd[3]) {
+			/* Firmware has already accepted pause; finish the matching
+			 * capture transition even if the caller receives a signal.
+			 */
+			down(&ctx->hw_ctx->fetch_sem);
 			ctx->state |= BC_LINK_PAUSED;
 			ctx->hw_ctx->pfnIssuePause(ctx->hw_ctx, true);
+			up(&ctx->hw_ctx->fetch_sem);
 		}
 	}
 
@@ -416,6 +424,11 @@ static BC_STATUS bc_cproc_codein_sleep(struct crystalhd_cmd *ctx)
 	wait_queue_head_t sleep_ev;
 	int rc = 0;
 
+	/* Removal must cancel every waiter, even after another thread consumes
+	 * the one-shot flush/close cancellation flag.
+	 */
+	if (!READ_ONCE(ctx->adp->present))
+		return BC_STS_CMD_CANCELLED;
 	if (ctx->state & BC_LINK_SUSPEND)
 		return BC_STS_PWR_MGMT;
 
@@ -478,6 +491,10 @@ static BC_STATUS bc_cproc_hw_txdma(struct crystalhd_cmd *ctx,
 	crystalhd_wait_on_event(&event, (dio->uinfo.ev_sts), 3000, rc, false);
 	ctx->tx_list_id = 0;
 	if (!rc) {
+		/* The wakeup occurs inside the ISR callback. Wait until it has
+		 * stopped using both the request and this stack's waitqueue.
+		 */
+		synchronize_irq(ctx->adp->pdev->irq);
 		return dio->uinfo.comp_sts;
 	} else if (rc == -EBUSY) {
 		dev_dbg(dev, "_tx_post() T/O \n");
@@ -607,7 +624,15 @@ static BC_STATUS bc_cproc_add_cap_buff(struct crystalhd_cmd *ctx,
 	if (!dio_hnd)
 		return BC_STS_ERROR;
 
+	/* Pinning is private to this ioctl; only queue/post mutations need the
+	 * capture semaphore shared with fetch/peek and stop/flush.
+	 */
+	if (down_interruptible(&ctx->hw_ctx->fetch_sem)) {
+		crystalhd_unmap_dio(ctx->adp, dio_hnd);
+		return BC_STS_IO_USER_ABORT;
+	}
 	sts = crystalhd_hw_add_cap_buffer(ctx->hw_ctx, dio_hnd, (ctx->state == BC_LINK_READY));
+	up(&ctx->hw_ctx->fetch_sem);
 	if ((sts != BC_STS_SUCCESS) && (sts != BC_STS_BUSY)) {
 		crystalhd_unmap_dio(ctx->adp, dio_hnd);
 		return sts;
@@ -621,15 +646,23 @@ static BC_STATUS bc_cproc_fmt_change(struct crystalhd_cmd *ctx,
 {
 	BC_STATUS sts = BC_STS_SUCCESS;
 
+	if (down_interruptible(&ctx->hw_ctx->fetch_sem)) {
+		crystalhd_unmap_dio(ctx->adp, dio);
+		return BC_STS_IO_USER_ABORT;
+	}
 	sts = crystalhd_hw_add_cap_buffer(ctx->hw_ctx, dio, 0);
-	if (sts != BC_STS_SUCCESS)
+	if (sts != BC_STS_SUCCESS) {
+		up(&ctx->hw_ctx->fetch_sem);
+		crystalhd_unmap_dio(ctx->adp, dio);
 		return sts;
+	}
 
 	ctx->state |= BC_LINK_FMT_CHG;
 	if (ctx->state == BC_LINK_READY)
 		sts = crystalhd_hw_start_capture(ctx->hw_ctx);
+	up(&ctx->hw_ctx->fetch_sem);
 
-	return sts;
+	return sts == BC_STS_NO_DATA ? BC_STS_SUCCESS : sts;
 }
 
 static BC_STATUS bc_cproc_fetch_frame(struct crystalhd_cmd *ctx,
@@ -682,7 +715,10 @@ static BC_STATUS bc_cproc_fetch_frame(struct crystalhd_cmd *ctx,
 static BC_STATUS bc_cproc_start_capture(struct crystalhd_cmd *ctx,
 					crystalhd_ioctl_data *idata)
 {
-	ctx->state |= BC_LINK_CAP_EN;
+	BC_STATUS sts = BC_STS_SUCCESS;
+
+	if (down_interruptible(&ctx->hw_ctx->fetch_sem))
+		return BC_STS_IO_USER_ABORT;
 
 	if( idata->udata.u.RxCap.PauseThsh )
 		ctx->hw_ctx->PauseThreshold = idata->udata.u.RxCap.PauseThsh;
@@ -700,48 +736,57 @@ static BC_STATUS bc_cproc_start_capture(struct crystalhd_cmd *ctx,
 
 	ctx->hw_ctx->DefaultPauseThreshold = ctx->hw_ctx->PauseThreshold; /* used to restore on FMTCH */
 
-	ctx->hw_ctx->pfnNotifyHardware(ctx->hw_ctx, BC_EVENT_START_CAPTURE);
-
-	if (ctx->state == BC_LINK_READY)
-		return crystalhd_hw_start_capture(ctx->hw_ctx);
-
-	return BC_STS_SUCCESS;
+	if (!ctx->hw_ctx->pfnNotifyHardware(ctx->hw_ctx, BC_EVENT_START_CAPTURE)) {
+		sts = BC_STS_IO_ERROR;
+	} else {
+		ctx->state |= BC_LINK_CAP_EN;
+		if (ctx->state == BC_LINK_READY)
+			sts = crystalhd_hw_start_capture(ctx->hw_ctx);
+	}
+	up(&ctx->hw_ctx->fetch_sem);
+	return sts == BC_STS_NO_DATA ? BC_STS_SUCCESS : sts;
 }
 
 static BC_STATUS bc_cproc_flush_cap_buffs(struct crystalhd_cmd *ctx,
 					  crystalhd_ioctl_data *idata)
 {
 	struct device *dev = chddev();
-	struct crystalhd_rx_dma_pkt *rpkt;
+	BC_STATUS sts;
 
 	if (!ctx || !idata) {
 		dev_err(dev, "%s: Invalid Arg\n", __func__);
 		return BC_STS_INV_ARG;
 	}
 
-	if (!(ctx->state & BC_LINK_CAP_EN))
-		return BC_STS_ERR_USAGE;
-
-	/* We should ack flush even when we are in paused/suspend state */
-/*	if (!(ctx->state & BC_LINK_READY)) */
-/*		return crystalhd_hw_stop_capture(&ctx->hw_ctx); */
+	if (down_interruptible(&ctx->hw_ctx->fetch_sem))
+		return BC_STS_IO_USER_ABORT;
+	if (!(ctx->state & BC_LINK_CAP_EN)) {
+		sts = BC_STS_ERR_USAGE;
+		goto out;
+	}
 
 	dev_dbg(dev, "number of rx success %u and failure %u\n", ctx->hw_ctx->stats.rx_success, ctx->hw_ctx->stats.rx_errors);
 	if(idata->udata.u.FlushRxCap.bDiscardOnly) {
 		/* just flush without unmapping and then resume */
-		crystalhd_hw_stop_capture(ctx->hw_ctx, false);
-		while((rpkt = crystalhd_dioq_fetch(ctx->hw_ctx->rx_actq)) != NULL)
-			crystalhd_dioq_add(ctx->hw_ctx->rx_freeq, rpkt, false, rpkt->pkt_tag);
-
-		while((rpkt = crystalhd_dioq_fetch(ctx->hw_ctx->rx_rdyq)) != NULL)
-			crystalhd_dioq_add(ctx->hw_ctx->rx_freeq, rpkt, false, rpkt->pkt_tag);
-		crystalhd_hw_start_capture(ctx->hw_ctx);
+		sts = crystalhd_hw_stop_capture_locked(ctx->hw_ctx, false);
+		if (sts != BC_STS_SUCCESS)
+			goto out;
+		if (!ctx->hw_ctx->pfnNotifyHardware(ctx->hw_ctx,
+						 BC_EVENT_START_CAPTURE)) {
+			sts = BC_STS_IO_ERROR;
+			goto out;
+		}
+		sts = crystalhd_hw_start_capture(ctx->hw_ctx);
+		/* An empty free queue is valid; later ADD_RXBUFFS resumes it. */
+		if (sts == BC_STS_NO_DATA)
+			sts = BC_STS_SUCCESS;
 	} else {
 		ctx->state &= ~(BC_LINK_CAP_EN|BC_LINK_FMT_CHG);
-		crystalhd_hw_stop_capture(ctx->hw_ctx, true);
+		sts = crystalhd_hw_stop_capture_locked(ctx->hw_ctx, true);
 	}
-
-	return BC_STS_SUCCESS;
+out:
+	up(&ctx->hw_ctx->fetch_sem);
+	return sts;
 }
 
 static BC_STATUS bc_cproc_get_stats(struct crystalhd_cmd *ctx,
@@ -890,6 +935,7 @@ BC_STATUS bc_cproc_release_user(struct crystalhd_cmd *ctx, crystalhd_ioctl_data 
 		ctx->cin_wait_exit = 1;
 		/* Stop the HW Capture just in case flush did not get called before stop */
 		ctx->pwr_state_change = BC_HW_RUNNING;
+		disable_irq(ctx->adp->pdev->irq);
 		crystalhd_hw_stop_capture(ctx->hw_ctx, true);
 		crystalhd_hw_free_dma_rings(ctx->hw_ctx);
 		crystalhd_destroy_dio_pool(ctx->adp);
@@ -898,6 +944,7 @@ BC_STATUS bc_cproc_release_user(struct crystalhd_cmd *ctx, crystalhd_ioctl_data 
 		crystalhd_hw_close(ctx->hw_ctx, ctx->adp);
 		kfree(ctx->hw_ctx);
 		ctx->hw_ctx = NULL;
+		enable_irq(ctx->adp->pdev->irq);
 	}
 
 	if(ctx->adp->cfg_users > 0)
@@ -957,7 +1004,6 @@ BC_STATUS crystalhd_suspend(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *ida
 {
 	struct device *dev = chddev();
 	BC_STATUS sts = BC_STS_SUCCESS;
-	struct crystalhd_rx_dma_pkt *rpkt = NULL;
 
 	if (!ctx || !idata) {
 		dev_err(dev, "Invalid Parameters\n");
@@ -978,12 +1024,9 @@ BC_STATUS crystalhd_suspend(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *ida
 
 	if (ctx->state & BC_LINK_CAP_EN) {
 		// Clean any pending RX
-		crystalhd_hw_stop_capture(ctx->hw_ctx, false);
-		while((rpkt = crystalhd_dioq_fetch(ctx->hw_ctx->rx_actq)) != NULL)
-			crystalhd_dioq_add(ctx->hw_ctx->rx_freeq, rpkt, false, rpkt->pkt_tag);
-
-		while((rpkt = crystalhd_dioq_fetch(ctx->hw_ctx->rx_rdyq)) != NULL)
-			crystalhd_dioq_add(ctx->hw_ctx->rx_freeq, rpkt, false, rpkt->pkt_tag);
+		sts = crystalhd_hw_stop_capture(ctx->hw_ctx, false);
+		if (sts != BC_STS_SUCCESS)
+			return sts;
 	}
 
 	if (ctx->tx_list_id) {
@@ -1058,6 +1101,7 @@ BC_STATUS crystalhd_user_open(struct crystalhd_cmd *ctx,
 {
 	struct device *dev = chddev();
 	struct crystalhd_user *uc;
+	BC_STATUS sts;
 
 	if (!ctx || !user_ctx) {
 		dev_err(dev, "Invalid arg..\n");
@@ -1076,13 +1120,23 @@ BC_STATUS crystalhd_user_open(struct crystalhd_cmd *ctx,
 	uc->in_use = 0;
 
 	if(ctx->hw_ctx == NULL) {
+		disable_irq(ctx->adp->pdev->irq);
 		ctx->hw_ctx = (struct crystalhd_hw*)kmalloc(sizeof(struct crystalhd_hw), GFP_KERNEL);
 		if(ctx->hw_ctx != NULL)
 			memset(ctx->hw_ctx, 0, sizeof(struct crystalhd_hw));
-		else
+		else {
+			enable_irq(ctx->adp->pdev->irq);
 			return BC_STS_ERROR;
+		}
 
-		crystalhd_hw_open(ctx->hw_ctx, ctx->adp);
+		sts = crystalhd_hw_open(ctx->hw_ctx, ctx->adp);
+		if (sts != BC_STS_SUCCESS) {
+			kfree(ctx->hw_ctx);
+			ctx->hw_ctx = NULL;
+			enable_irq(ctx->adp->pdev->irq);
+			return sts;
+		}
+		enable_irq(ctx->adp->pdev->irq);
 	}
 
 	uc->in_use = 1;
@@ -1104,11 +1158,12 @@ BC_STATUS crystalhd_user_open(struct crystalhd_cmd *ctx,
  *
  * Called at the time of driver load.
  */
-BC_STATUS __init crystalhd_setup_cmd_context(struct crystalhd_cmd *ctx,
+BC_STATUS crystalhd_setup_cmd_context(struct crystalhd_cmd *ctx,
 				    struct crystalhd_adp *adp)
 {
 	struct device *dev = &adp->pdev->dev;
 	int i = 0;
+	BC_STATUS sts;
 
 	if (!ctx || !adp) {
 		dev_err(dev, "%s: Invalid arg\n", __func__);
@@ -1132,12 +1187,15 @@ BC_STATUS __init crystalhd_setup_cmd_context(struct crystalhd_cmd *ctx,
 	}
 
 	/*Open and Close the Hardware to put it in to sleep state*/
-	crystalhd_hw_open(ctx->hw_ctx, ctx->adp);
-	crystalhd_hw_close(ctx->hw_ctx, ctx->adp);
+	disable_irq(ctx->adp->pdev->irq);
+	sts = crystalhd_hw_open(ctx->hw_ctx, ctx->adp);
+	if (sts == BC_STS_SUCCESS)
+		crystalhd_hw_close(ctx->hw_ctx, ctx->adp);
 	kfree(ctx->hw_ctx);
 	ctx->hw_ctx = NULL;
+	enable_irq(ctx->adp->pdev->irq);
 
-	return BC_STS_SUCCESS;
+	return sts;
 }
 
 /**
@@ -1149,10 +1207,23 @@ BC_STATUS __init crystalhd_setup_cmd_context(struct crystalhd_cmd *ctx,
  *
  * Called at the time of driver un-load.
  */
-BC_STATUS __exit crystalhd_delete_cmd_context(struct crystalhd_cmd *ctx)
+BC_STATUS crystalhd_delete_cmd_context(struct crystalhd_cmd *ctx)
 {
 	dev_dbg(chddev(), "Deleting Command context..\n");
 
+	/* PCI removal has excluded all ioctls, disabled bus mastering and
+	 * released the IRQ before entry. No hardware or IRQ callbacks here.
+	 */
+	if (ctx->hw_ctx) {
+		crystalhd_hw_free_dma_rings(ctx->hw_ctx);
+		kfree(ctx->hw_ctx);
+		ctx->hw_ctx = NULL;
+	}
+	if (ctx->adp->fill_byte_pool)
+		crystalhd_destroy_dio_pool(ctx->adp);
+	if (ctx->adp->elem_pool_head)
+		crystalhd_delete_elem_pool(ctx->adp);
+	ctx->state = BC_LINK_INVALID;
 	ctx->adp = NULL;
 
 	return BC_STS_SUCCESS;

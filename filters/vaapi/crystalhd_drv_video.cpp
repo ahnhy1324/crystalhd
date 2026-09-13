@@ -56,6 +56,16 @@ extern "C" {
 
 namespace {
 
+constexpr uint64_t kDecodeTimeoutNs = 10ULL * 1000 * 1000 * 1000;
+
+static VAStatus DecodeWaitStatus(uint64_t timeout_ns, uint64_t elapsed_ns) {
+  if (timeout_ns == VA_TIMEOUT_INFINITE)
+    return elapsed_ns >= kDecodeTimeoutNs ? VA_STATUS_ERROR_DECODING_ERROR
+                                         : VA_STATUS_SUCCESS;
+  return elapsed_ns >= timeout_ns ? VA_STATUS_ERROR_TIMEDOUT
+                                  : VA_STATUS_SUCCESS;
+}
+
 #ifndef CRYSTALHD_H264_TEST_BUILD
 constexpr unsigned int kMaxWidth = 1920;
 constexpr unsigned int kMaxHeight = 1088;
@@ -155,6 +165,16 @@ static void AppendNal(std::vector<uint8_t> *output, uint8_t type,
     output->push_back(byte);
     zero_count = byte == 0 ? zero_count + 1 : 0;
   }
+}
+
+static void FinishAccessUnit(std::vector<uint8_t> *output) {
+  // VA-API submits complete pictures, but CrystalHD consumes an Annex-B byte
+  // stream. Delimit the last slice even if no more input is submitted. This
+  // does not drain firmware's remaining buffered pictures. An AUD starts the
+  // next access unit without ending the coded video sequence or
+  // flushing reference pictures. primary_pic_type=7 permits all slice types;
+  // the remaining bit is rbsp_stop_one_bit followed by alignment zeros.
+  AppendNal(output, 9, 0, {0xf0});
 }
 
 static bool BuildSps(const VAPictureParameterBufferH264 &picture,
@@ -969,17 +989,6 @@ struct DecodeContext {
     Close();
   }
 
-  BC_STATUS FlushDiscontinuity() {
-    ++generation;
-    BC_STATUS status = decoder_started
-                           ? DtsFlushInput(device, 4)
-                           : BC_STS_SUCCESS;
-    pending.clear();
-    decoded_frames.clear();
-    surface_timestamps.clear();
-    sent_parameter_sets = false;
-    return status;
-  }
 };
 
 struct PendingVpp {
@@ -1340,34 +1349,9 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
   std::vector<uint8_t> bitstream;
   const bool idr = !decode->slice_data.front().empty() &&
                    (decode->slice_data.front().front() & 0x1f) == 5;
-  if (idr && decode->decoder_started && !decode->pending.empty()) {
-    Debug("reset decoder generation=%llu at discontinuous IDR with %zu "
-          "pending pictures",
-          static_cast<unsigned long long>(decode->generation),
-          decode->pending.size());
-    // Complete old VA surfaces as neutral placeholders. Chromium may still
-    // synchronize them while it retires the pre-seek pipeline; returning a
-    // decode error here makes the player restore the old media time.
-    for (const auto &pending : decode->pending) {
-      auto old_surface = driver->surfaces.find(pending.second);
-      if (old_surface == driver->surfaces.end())
-        continue;
-      old_surface->second->ready = true;
-      old_surface->second->failed = false;
-      old_surface->second->frame_timestamp =
-          old_surface->second->expected_timestamp;
-    }
-    const BC_STATUS flush_status = decode->FlushDiscontinuity();
-    if (flush_status != BC_STS_SUCCESS) {
-      Debug("DtsFlushInput mode 4 failed: %d", flush_status);
-      decode->Reset();
-    }
-    driver->vpp_fallback.clear();
-    driver->vpp_fallback_width = 0;
-    driver->vpp_fallback_height = 0;
-    driver->vpp_fallback_sequence = 0;
-    driver->condition.notify_all();
-  }
+  // An ordinary GOP can start with an IDR while earlier output is still
+  // pending. Let the bitstream's IDR semantics handle reference pictures;
+  // discarding pending output here loses real frames during normal playback.
   if (!decode->sent_parameter_sets || idr) {
     if (!BuildSps(decode->picture, profile, &bitstream))
       return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
@@ -1383,6 +1367,7 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
     bitstream.insert(bitstream.end(), std::begin(start_code), std::end(start_code));
     bitstream.insert(bitstream.end(), slice.begin(), slice.end());
   }
+  FinishAccessUnit(&bitstream);
   Debug("submit surface=%u bytes=%zu slices=%zu", decode->target,
         bitstream.size(), decode->slice_data.size());
   if (decode->next_timestamp == kTimestampStep) {
@@ -1410,6 +1395,13 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
     return VA_STATUS_ERROR_ALLOCATION_FAILED;
   decoded_frame->rt_format = VA_RT_FORMAT_YUV420;
   decoded_frame->expected_timestamp = timestamp;
+  auto previous_timestamp = decode->surface_timestamps.find(surface->second.get());
+  if (previous_timestamp != decode->surface_timestamps.end()) {
+    auto previous = decode->decoded_frames.find(previous_timestamp->second);
+    if (previous != decode->decoded_frames.end() &&
+        (previous->second->ready || previous->second->failed))
+      decode->decoded_frames.erase(previous);
+  }
   decode->decoded_frames[timestamp] = decoded_frame;
   decode->surface_timestamps[surface->second.get()] = timestamp;
   decode->pending[timestamp] = decode->target;
@@ -1488,7 +1480,6 @@ static VAStatus SyncDecodeSurface(
         surface->failed, static_cast<unsigned long long>(timeout_ns));
 
   const auto start = std::chrono::steady_clock::now();
-  const bool infinite = timeout_ns == VA_TIMEOUT_INFINITE;
   while (!surface->ready && !surface->failed) {
     if (driver->stopping)
       return VA_STATUS_ERROR_OPERATION_FAILED;
@@ -1502,10 +1493,16 @@ static VAStatus SyncDecodeSurface(
     uint64_t elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
                            std::chrono::steady_clock::now() - start)
                            .count();
-    if (!infinite) {
-      if (elapsed >= timeout_ns)
-        return VA_STATUS_ERROR_TIMEDOUT;
+    const VAStatus wait_status = DecodeWaitStatus(timeout_ns, elapsed);
+    if (wait_status == VA_STATUS_ERROR_DECODING_ERROR) {
+      Debug("firmware did not complete timestamp=%llu within 10 seconds",
+            static_cast<unsigned long long>(surface->expected_timestamp));
+      surface->failed = true;
+      driver->condition.notify_all();
+      return VA_STATUS_ERROR_DECODING_ERROR;
     }
+    if (wait_status != VA_STATUS_SUCCESS)
+      return wait_status;
     // CrystalHD may require later compressed pictures before it emits this
     // exact timestamp. Let the decoder submission thread enter the driver;
     // holding the global lock here would deadlock input behind VPP output.

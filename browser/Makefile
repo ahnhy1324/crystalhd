@@ -16,6 +16,17 @@ check:
 	test -s h264-only/manifest.json
 	test -s h264-only/prefer-h264.js
 	test -s crystalhd-chromium.desktop
+	@if command -v node >/dev/null 2>&1; then \
+		node --check h264-only/prefer-h264.js && \
+		node --check $(ROOTDIR)/tests/chromium-youtube.js || exit 1; \
+		if node -e 'require("ws")' >/dev/null 2>&1; then \
+			node --test $(ROOTDIR)/tests/chromium-probe.test.js; \
+		else \
+			echo "Browser probe regression tests skipped: install node-ws"; \
+		fi; \
+	else \
+		echo "Browser JavaScript checks skipped: install nodejs and node-ws"; \
+	fi
 
 install:
 	install -D -m 0755 $(ROOTDIR)/scripts/crystalhd-chromium \

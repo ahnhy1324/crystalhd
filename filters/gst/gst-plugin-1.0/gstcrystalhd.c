@@ -71,6 +71,32 @@ static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE(
                     "width=(int)[1,1920], height=(int)[1,1088], "
                     "framerate=(fraction)[0/1,MAX]"));
 
+static const gchar *
+gst_crystalhd_status_hint(BC_STATUS status)
+{
+  switch (status) {
+    case BC_STS_BUSY:
+    case BC_STS_DEC_EXIST_OPEN:
+      return "CrystalHD supports one playback session; close other hardware players";
+    case BC_STS_NO_ACCESS:
+      return "check /dev/crystalhd permissions and video-group or desktop udev access";
+    case BC_STS_FWHEX_NOT_FOUND:
+      return "install the matching bcm70012fw.bin or bcm70015fw.bin in /lib/firmware";
+    case BC_STS_FW_AUTH_FAILED:
+    case BC_STS_BOOTLOADER_FAILED:
+    case BC_STS_CERT_VERIFY_ERROR:
+    case BC_STS_FW_CMD_ERR:
+      return "firmware startup or command failed; check the firmware and kernel log";
+    case BC_STS_INV_ARG:
+    case BC_STS_NOT_IMPL:
+      return "check the input codec/framing and supported output format (BCM70015 uses YUY2)";
+    case BC_STS_TIMEOUT:
+      return "decoder timed out; check Annex-B input, YUY2 output selection and the kernel log";
+    default:
+      return "check module binding, /dev/crystalhd access, firmware and other playback clients";
+  }
+}
+
 static void
 gst_crystalhd_clear_timestamps(GstCrystalHdDec *self)
 {
@@ -389,14 +415,19 @@ gst_crystalhd_set_format(GstVideoDecoder *decoder, GstVideoCodecState *state)
   const GValue *codec_data_value;
   GstMapInfo codec_data_map;
   gboolean codec_data_mapped = FALSE;
+  const gchar *operation = "DtsDeviceOpen";
 
   gst_crystalhd_close_device(self);
   g_clear_pointer(&self->input_state, gst_video_codec_state_unref);
   self->input_state = gst_video_codec_state_ref(state);
 
   subtype = gst_crystalhd_subtype_from_caps(state->caps);
-  if (subtype == BC_MSUBTYPE_INVALID)
+  if (subtype == BC_MSUBTYPE_INVALID) {
+    GST_ELEMENT_ERROR(self, STREAM, FORMAT,
+                      ("Unsupported CrystalHD input codec"),
+                      ("Caps: %" GST_PTR_FORMAT, state->caps));
     return FALSE;
+  }
 
   memset(&input_format, 0, sizeof(input_format));
   input_format.FGTEnable = FALSE;
@@ -425,35 +456,42 @@ gst_crystalhd_set_format(GstVideoDecoder *decoder, GstVideoCodecState *state)
   status = DtsDeviceOpen(&self->device, mode);
   if (status != BC_STS_SUCCESS) {
     GST_ELEMENT_ERROR(self, RESOURCE, OPEN_READ,
-                      ("Could not open /dev/crystalhd"),
+                      ("Could not open /dev/crystalhd: %s",
+                       gst_crystalhd_status_hint(status)),
                       ("DtsDeviceOpen returned %d", status));
     goto fail;
   }
 
   memset(&version, 0, sizeof(version));
+  operation = "DtsCrystalHDVersion";
   status = DtsCrystalHDVersion(self->device, &version);
   if (status != BC_STS_SUCCESS)
     goto fail_status;
   self->is_70012 = version.device == 0;
 
+  operation = "DtsSetInputFormat";
   status = DtsSetInputFormat(self->device, &input_format);
   if (status != BC_STS_SUCCESS)
     goto fail_status;
 
+  operation = "DtsOpenDecoder";
   status = DtsOpenDecoder(self->device, BC_STREAM_TYPE_ES);
   if (status != BC_STS_SUCCESS)
     goto fail_status;
   self->decoder_open = TRUE;
 
+  operation = "DtsSetColorSpace(YUY2)";
   status = DtsSetColorSpace(self->device, OUTPUT_MODE422_YUY2);
   if (status != BC_STS_SUCCESS)
     goto fail_status;
 
+  operation = "DtsStartDecoder";
   status = DtsStartDecoder(self->device);
   if (status != BC_STS_SUCCESS)
     goto fail_status;
   self->decoder_started = TRUE;
 
+  operation = "DtsStartCapture";
   status = DtsStartCapture(self->device);
   if (status != BC_STS_SUCCESS)
     goto fail_status;
@@ -467,8 +505,9 @@ gst_crystalhd_set_format(GstVideoDecoder *decoder, GstVideoCodecState *state)
 
 fail_status:
   GST_ELEMENT_ERROR(self, LIBRARY, INIT,
-                    ("Could not initialize CrystalHD decoder"),
-                    ("libcrystalhd returned %d", status));
+                    ("Could not initialize CrystalHD decoder: %s",
+                     gst_crystalhd_status_hint(status)),
+                    ("%s returned %d", operation, status));
 fail:
   if (codec_data_mapped)
     gst_buffer_unmap(gst_value_get_buffer(codec_data_value), &codec_data_map);
@@ -520,8 +559,12 @@ gst_crystalhd_handle_frame(GstVideoDecoder *decoder,
       g_free(entry);
       g_queue_delete_link(&self->timestamps, tail);
     }
-    GST_ERROR_OBJECT(self, "DtsProcInput failed: %d", status);
-    return gst_video_decoder_drop_frame(decoder, frame);
+    GST_ELEMENT_ERROR(self, STREAM, DECODE,
+                      ("CrystalHD rejected compressed input: %s",
+                       gst_crystalhd_status_hint(status)),
+                      ("DtsProcInput returned %d", status));
+    gst_video_decoder_drop_frame(decoder, frame);
+    return GST_FLOW_ERROR;
   }
 
   return gst_crystalhd_receive_available(self);
@@ -532,8 +575,16 @@ gst_crystalhd_flush(GstVideoDecoder *decoder)
 {
   GstCrystalHdDec *self = GST_CRYSTALHD_DEC(decoder);
 
-  if (self->device != NULL)
-    DtsFlushInput(self->device, 4);
+  if (self->device != NULL) {
+    BC_STATUS status = DtsFlushInput(self->device, 4);
+    if (status != BC_STS_SUCCESS) {
+      GST_ELEMENT_ERROR(self, STREAM, DECODE,
+                        ("Could not flush CrystalHD decoder: %s",
+                         gst_crystalhd_status_hint(status)),
+                        ("DtsFlushInput returned %d", status));
+      return FALSE;
+    }
+  }
   gst_crystalhd_clear_timestamps(self);
   self->need_second_field = FALSE;
   return TRUE;
@@ -544,23 +595,33 @@ gst_crystalhd_drain(GstVideoDecoder *decoder)
 {
   GstCrystalHdDec *self = GST_CRYSTALHD_DEC(decoder);
   guint attempt;
+  BC_STATUS status;
 
   if (!self->decoder_started)
     return GST_FLOW_OK;
 
-  if (DtsFlushInput(self->device, 0) != BC_STS_SUCCESS)
+  status = DtsFlushInput(self->device, 0);
+  if (status != BC_STS_SUCCESS) {
+    GST_ELEMENT_ERROR(self, STREAM, DECODE,
+                      ("Could not drain CrystalHD decoder: %s",
+                       gst_crystalhd_status_hint(status)),
+                      ("DtsFlushInput returned %d", status));
     return GST_FLOW_ERROR;
+  }
 
   for (attempt = 0; attempt < CRYSTALHD_DRAIN_RETRIES; attempt++) {
     BC_DTS_STATUS decoder_status;
-    BC_STATUS status;
     gboolean activity;
     gboolean eos = FALSE;
 
     memset(&decoder_status, 0, sizeof(decoder_status));
     status = DtsGetDriverStatus(self->device, &decoder_status);
-    if (status != BC_STS_SUCCESS)
+    if (status != BC_STS_SUCCESS) {
+      GST_ELEMENT_ERROR(self, STREAM, DECODE,
+                        ("Could not read CrystalHD drain status"),
+                        ("DtsGetDriverStatus returned %d", status));
       return GST_FLOW_ERROR;
+    }
 
     if (decoder_status.ReadyListCount > 0) {
       GstFlowReturn flow = gst_crystalhd_receive_one(self, 0, &activity);
@@ -578,6 +639,13 @@ gst_crystalhd_drain(GstVideoDecoder *decoder)
       g_usleep(10000);
   }
 
+  if (!g_queue_is_empty(&self->timestamps) || self->need_second_field) {
+    GST_ELEMENT_ERROR(self, STREAM, DECODE,
+                      ("CrystalHD drain ended before all input pictures were decoded"),
+                      ("%u input timestamps remain after %u drain attempts",
+                       self->timestamps.length, attempt));
+    return GST_FLOW_ERROR;
+  }
   return GST_FLOW_OK;
 }
 

@@ -25,6 +25,15 @@ static struct class *crystalhd_class;
 
 static struct crystalhd_adp *g_adp_info;
 
+/* Keep adapter lookup and use atomic with respect to PCI removal. */
+static DECLARE_RWSEM(chd_device_lock);
+static u64 chd_device_generation;
+
+struct crystalhd_file {
+	struct crystalhd_user *user;
+	u64 generation;
+};
+
 crystalhd_ioctl_data *chd_dec_alloc_iodata(struct crystalhd_adp *adp, bool isr);
 void chd_dec_free_iodata(struct crystalhd_adp *adp, crystalhd_ioctl_data *iodata,bool isr);
 extern int bc_get_userhandle_count(struct crystalhd_cmd *ctx);
@@ -133,7 +142,7 @@ static inline int crystalhd_user_data(unsigned long ud, void *dr, size_t size,
 
 	if (!ud || !dr) {
 		dev_err(chddev(), "%s: Invalid arg\n", __func__);
-		return -EINVAL;
+		return -EFAULT;
 	}
 
 	if (set)
@@ -360,7 +369,7 @@ static int chd_dec_fetch_cdata(struct crystalhd_adp *adp, crystalhd_ioctl_data *
 			(unsigned int)ua_off);
 		vfree(io->add_cdata);
 		io->add_cdata = NULL;
-		return -ENODATA;
+		return rc;
 	}
 
 	return rc;
@@ -389,7 +398,6 @@ static int chd_dec_release_cdata(struct crystalhd_adp *adp,
 			dev_err(chddev(), "failed to push add_cdata sz:%x "
 				"ua_off:%x\n", io->add_cdata_sz,
 				(unsigned int)ua_off);
-			rc = -ENODATA;
 		}
 	}
 
@@ -413,11 +421,13 @@ static int chd_dec_proc_user_data(struct crystalhd_adp *adp,
 	(void)compat;
 #endif
 
-	if (!adp || !io || !ua) {
+	if (!adp || !io) {
 		dev_err(chddev(), "proc_user_data: Invalid Arg!! adp=%d io=%d ua=%d\n",
 			!!adp, !!io, !!ua);
 		return -EINVAL;
 	}
+	if (!ua)
+		return -EFAULT;
 
 #ifdef CONFIG_COMPAT
 	if (compat) {
@@ -434,6 +444,11 @@ static int chd_dec_proc_user_data(struct crystalhd_adp *adp,
 			(set ? "set" : "get"));
 		return rc;
 	}
+
+	/* Legacy libcrystalhd leaves this field zero for most commands. */
+	if (!set && io->udata.IoctlDataSz &&
+	    io->udata.IoctlDataSz != udata_size)
+		return -EINVAL;
 
 	dev_dbg(chddev(), "proc_user_data: cmd=0x%08x set=%d NumDwords=%u\n",
 		 io->cmd, set, io->udata.u.devMem.NumDwords);
@@ -465,6 +480,39 @@ static int chd_dec_proc_user_data(struct crystalhd_adp *adp,
 	return rc;
 }
 
+static bool crystalhd_legacy_color_command(struct crystalhd_adp *adp,
+					   u32 uid, u32 cmd)
+{
+	return adp->pdev->device == BC_PCI_DEVID_FLEA &&
+	       (adp->cmds.user[uid].mode & 0xff) == DTS_PLAYBACK_MODE &&
+	       (cmd == BCM_IOC_REG_RD || cmd == BCM_IOC_REG_WR);
+}
+
+static BC_STATUS crystalhd_legacy_color_access(struct crystalhd_cmd *ctx,
+					      crystalhd_ioctl_data *io)
+{
+	struct crystalhd_hw *hw = ctx->hw_ctx;
+	unsigned long flags;
+	u32 control;
+
+	if (!hw)
+		return BC_STS_ERR_USAGE;
+
+	/* Old libraries use a raw register RMW to select YUY2/UYVY. Limit
+	 * this compatibility path to the color bits, including stale writes.
+	 */
+	spin_lock_irqsave(&hw->lock, flags);
+	control = hw->pfnReadDevRegister(ctx->adp,
+					CRYSTALHD_FLEA_COLOR_REGISTER);
+	if (io->cmd == BCM_IOC_REG_WR)
+		hw->pfnWriteDevRegister(ctx->adp, CRYSTALHD_FLEA_COLOR_REGISTER,
+			crystalhd_flea_color_control(control, io->udata.u.regAcc.Value));
+	else
+		io->udata.u.regAcc.Value = control;
+	spin_unlock_irqrestore(&hw->lock, flags);
+	return BC_STS_SUCCESS;
+}
+
 static int chd_dec_api_cmd(struct crystalhd_adp *adp, unsigned long ua,
 			   uint32_t uid, uint32_t cmd, crystalhd_cmd_proc func,
 			   bool compat)
@@ -483,6 +531,18 @@ static int chd_dec_api_cmd(struct crystalhd_adp *adp, unsigned long ua,
 	temp->cmd  = cmd;
 
 	rc = chd_dec_proc_user_data(adp, temp, ua, false, compat);
+	/* Old libraries discover the PCI identity before opening a session. */
+	if (!rc && cmd == BCM_IOC_RD_PCI_CFG && !capable(CAP_SYS_RAWIO) &&
+	    (temp->udata.u.pciCfg.Offset != 0 ||
+	     temp->udata.u.pciCfg.Size != sizeof(u32)))
+		rc = -EPERM;
+	if (!rc && !capable(CAP_SYS_RAWIO) &&
+	    crystalhd_legacy_color_command(adp, uid, cmd)) {
+		if (temp->udata.u.regAcc.Offset != CRYSTALHD_FLEA_COLOR_REGISTER)
+			rc = -EPERM;
+		else if (func)
+			func = crystalhd_legacy_color_access;
+	}
 	if (!rc) {
 		if(func == NULL)
 			sts = BC_STS_PWR_MGMT; /* Can only happen when we are in suspend state */
@@ -516,7 +576,6 @@ static bool crystalhd_rawio_command(unsigned int cmd)
 	case BCM_IOC_FPGA_WR:
 	case BCM_IOC_MEM_RD:
 	case BCM_IOC_MEM_WR:
-	case BCM_IOC_RD_PCI_CFG:
 	case BCM_IOC_WR_PCI_CFG:
 		return true;
 	default:
@@ -530,14 +589,21 @@ static long chd_dec_ioctl_common(struct file *fd, unsigned int cmd,
 	struct crystalhd_adp *adp = chd_get_adp();
 	struct device *dev;
 	crystalhd_cmd_proc cproc;
+	struct crystalhd_file *binding = fd->private_data;
 	struct crystalhd_user *uc;
 	bool exclusive;
+	bool tx_locked = false;
 	long rc;
 
-	if (!adp || !fd) {
-		dev_err(chddev(), "Invalid adp\n");
-		return -EINVAL;
-	}
+	/* Reject malformed native commands even while the device is suspended. */
+	if (_IOC_TYPE(cmd) != BC_IOC_BASE ||
+	    _IOC_DIR(cmd) != (_IOC_READ | _IOC_WRITE) ||
+	    _IOC_SIZE(cmd) != sizeof(BC_IOCTL_DATA) ||
+	    _IOC_NR(cmd) >= DRV_CMD_END)
+		return -ENOTTY;
+
+	if (!adp || !binding || binding->generation != chd_device_generation)
+		return -ENODEV;
 	dev = &adp->pdev->dev;
 	dev_dbg(dev, "Entering %s\n", __func__);
 
@@ -547,13 +613,14 @@ static long chd_dec_ioctl_common(struct file *fd, unsigned int cmd,
 	else
 		down_read(&adp->user_lock);
 
-	uc = fd->private_data;
+	uc = binding->user;
 	if (!uc) {
 		dev_err(chddev(), "Failed to get uc\n");
 		rc = -ENODATA;
 		goto unlock;
 	}
-	if (crystalhd_rawio_command(cmd) && !capable(CAP_SYS_RAWIO)) {
+	if (crystalhd_rawio_command(cmd) && !capable(CAP_SYS_RAWIO) &&
+	    !crystalhd_legacy_color_command(adp, uc->uid, cmd)) {
 		rc = -EPERM;
 		goto unlock;
 	}
@@ -564,12 +631,28 @@ static long chd_dec_ioctl_common(struct file *fd, unsigned int cmd,
 		rc = -ENOTTY;
 		goto unlock;
 	}
+	/* Cancellation stops both TX lists. Exclude another input caller
+	 * posting a new list while allowing receive ioctls to make progress.
+	 */
+	if (cmd == BCM_IOC_PROC_INPUT) {
+		if (mutex_lock_interruptible(&adp->tx_lock)) {
+			rc = -ERESTARTSYS;
+			goto unlock;
+		}
+		tx_locked = true;
+		if (!READ_ONCE(adp->present)) {
+			rc = -ENODEV;
+			goto unlock;
+		}
+	}
 
 	rc = chd_dec_api_cmd(adp, ua, uc->uid, cmd, cproc, compat);
 	if (cmd == BCM_IOC_RELEASE && !uc->in_use)
-		fd->private_data = NULL;
+		binding->user = NULL;
 
 unlock:
+	if (tx_locked)
+		mutex_unlock(&adp->tx_lock);
 	if (exclusive)
 		up_write(&adp->user_lock);
 	else
@@ -579,7 +662,12 @@ unlock:
 
 static long chd_dec_ioctl(struct file *fd, unsigned int cmd, unsigned long ua)
 {
-	return chd_dec_ioctl_common(fd, cmd, ua, false);
+	long rc;
+
+	down_read(&chd_device_lock);
+	rc = chd_dec_ioctl_common(fd, cmd, ua, false);
+	up_read(&chd_device_lock);
+	return rc;
 }
 
 #ifdef CONFIG_COMPAT
@@ -587,6 +675,7 @@ static long chd_dec_compat_ioctl(struct file *fd, unsigned int cmd,
 				 unsigned long ua)
 {
 	unsigned int native_cmd;
+	long rc;
 
 	if (_IOC_TYPE(cmd) != BC_IOC_BASE ||
 	    _IOC_DIR(cmd) != (_IOC_READ | _IOC_WRITE) ||
@@ -596,23 +685,28 @@ static long chd_dec_compat_ioctl(struct file *fd, unsigned int cmd,
 
 	native_cmd = _IOC(_IOC_READ | _IOC_WRITE, BC_IOC_BASE, _IOC_NR(cmd),
 			  sizeof(BC_IOCTL_DATA));
-	return chd_dec_ioctl_common(fd, native_cmd,
-				    (unsigned long)compat_ptr(ua), true);
+	down_read(&chd_device_lock);
+	rc = chd_dec_ioctl_common(fd, native_cmd,
+				  (unsigned long)compat_ptr(ua), true);
+	up_read(&chd_device_lock);
+	return rc;
 }
 #endif
 
-static int chd_dec_open(struct inode *in, struct file *fd)
+static int chd_dec_open_locked(struct inode *in, struct file *fd)
 {
 	struct crystalhd_adp *adp = chd_get_adp();
 	struct device *dev;
 	int rc = 0;
 	BC_STATUS sts = BC_STS_SUCCESS;
 	struct crystalhd_user *uc = NULL;
+	struct crystalhd_file *binding;
 
-	if (!adp) {
-		dev_err(chddev(), "Invalid adp\n");
-		return -EINVAL;
-	}
+	if (!adp)
+		return -ENODEV;
+	binding = kzalloc(sizeof(*binding), GFP_KERNEL);
+	if (!binding)
+		return -ENOMEM;
 	dev = &adp->pdev->dev;
 	dev_dbg(dev, "Entering %s\n", __func__);
 	down_write(&adp->user_lock);
@@ -630,33 +724,46 @@ static int chd_dec_open(struct inode *in, struct file *fd)
 	}
 	else {
 		adp->cfg_users++;
-		fd->private_data = uc;
+		binding->user = uc;
+		binding->generation = chd_device_generation;
+		fd->private_data = binding;
 	}
 
 unlock:
 	up_write(&adp->user_lock);
+	if (rc)
+		kfree(binding);
 	return rc;
 }
 
-static int chd_dec_close(struct inode *in, struct file *fd)
+static int chd_dec_open(struct inode *in, struct file *fd)
+{
+	int rc;
+
+	down_read(&chd_device_lock);
+	rc = chd_dec_open_locked(in, fd);
+	up_read(&chd_device_lock);
+	return rc;
+}
+
+static int chd_dec_close_locked(struct inode *in, struct file *fd)
 {
 	struct crystalhd_adp *adp = chd_get_adp();
 	struct device *dev;
 	struct crystalhd_cmd *ctx;
+	struct crystalhd_file *binding = fd->private_data;
 	struct crystalhd_user *uc;
 	uint32_t mode;
 	int rc = 0;
 
-	if (!adp) {
-		dev_err(chddev(), "Invalid adp\n");
-		return -EINVAL;
-	}
+	if (!adp || !binding || binding->generation != chd_device_generation)
+		return 0;
 	dev = &adp->pdev->dev;
 	ctx = &adp->cmds;
 	dev_dbg(dev, "Entering %s\n", __func__);
 	down_write(&adp->user_lock);
 
-	uc = fd->private_data;
+	uc = binding->user;
 	if (!uc) {
 		goto unlock;
 	}
@@ -677,6 +784,7 @@ static int chd_dec_close(struct inode *in, struct file *fd)
 		if (((mode & 0xFF) == DTS_DIAG_MODE) ||
 			((mode & 0xFF) == DTS_PLAYBACK_MODE) ||
 			((bc_get_userhandle_count(ctx) == 0) && (ctx->hw_ctx != NULL))) {
+			disable_irq(adp->pdev->irq);
 			ctx->cin_wait_exit = 1;
 			ctx->pwr_state_change = BC_HW_RUNNING;
 			/* Stop the HW Capture just in case flush did not get called before stop */
@@ -693,6 +801,7 @@ static int chd_dec_close(struct inode *in, struct file *fd)
 			crystalhd_hw_close(ctx->hw_ctx, ctx->adp);
 			kfree(ctx->hw_ctx);
 			ctx->hw_ctx = NULL;
+			enable_irq(adp->pdev->irq);
 		}
 
 		uc->in_use = 0;
@@ -703,6 +812,18 @@ static int chd_dec_close(struct inode *in, struct file *fd)
 
 unlock:
 	up_write(&adp->user_lock);
+	return rc;
+}
+
+static int chd_dec_close(struct inode *in, struct file *fd)
+{
+	int rc;
+
+	down_read(&chd_device_lock);
+	rc = chd_dec_close_locked(in, fd);
+	up_read(&chd_device_lock);
+	kfree(fd->private_data);
+	fd->private_data = NULL;
 	return rc;
 }
 
@@ -717,7 +838,7 @@ static const struct file_operations chd_dec_fops = {
 	.llseek		= noop_llseek,
 };
 
-static int __init chd_dec_init_chdev(struct crystalhd_adp *adp)
+static int chd_dec_init_chdev(struct crystalhd_adp *adp)
 {
 	struct device *xdev = &adp->pdev->dev;
 	struct device *dev;
@@ -739,13 +860,15 @@ static int __init chd_dec_init_chdev(struct crystalhd_adp *adp)
 	crystalhd_class = crystalhd_class_create("crystalhd");
 	if (IS_ERR(crystalhd_class)) {
 		dev_err(xdev, "failed to create class\n");
-		goto fail;
+		rc = PTR_ERR(crystalhd_class);
+		goto unregister_chrdev;
 	}
 
 	dev = device_create(crystalhd_class, NULL, MKDEV(adp->chd_dec_major, 0),
 			    NULL, "crystalhd");
 	if (IS_ERR(dev)) {
 		dev_err(xdev, "failed to create device\n");
+		rc = PTR_ERR(dev);
 		goto device_create_fail;
 	}
 
@@ -770,11 +893,14 @@ static int __init chd_dec_init_chdev(struct crystalhd_adp *adp)
 	return 0;
 
 kzalloc_fail:
-	/*crystalhd_delete_elem_pool(adp); */
-/*elem_pool_fail: */
+	while ((temp = chd_dec_alloc_iodata(adp, false)) != NULL)
+		kfree(temp);
 	device_destroy(crystalhd_class, MKDEV(adp->chd_dec_major, 0));
 device_create_fail:
 	class_destroy(crystalhd_class);
+unregister_chrdev:
+	unregister_chrdev(adp->chd_dec_major, CRYSTALHD_API_NAME);
+	adp->chd_dec_major = 0;
 fail:
 	return rc;
 }
@@ -804,7 +930,7 @@ static void chd_dec_release_chdev(struct crystalhd_adp *adp)
 	/*crystalhd_delete_elem_pool(adp); */
 }
 
-static int __init chd_pci_reserve_mem(struct crystalhd_adp *pinfo)
+static int chd_pci_reserve_mem(struct crystalhd_adp *pinfo)
 {
 	struct device *dev = &pinfo->pdev->dev;
 	int rc;
@@ -836,19 +962,24 @@ static int __init chd_pci_reserve_mem(struct crystalhd_adp *pinfo)
 	pinfo->i2o_addr = pci_ioremap_bar(pinfo->pdev, 0);
 	if (!pinfo->i2o_addr) {
 		printk(KERN_ERR "Failed to remap i2o region...\n");
-		return -ENOMEM;
+		goto release_regions;
 	}
 	
 	pinfo->mem_addr = pci_ioremap_bar(pinfo->pdev, 2);
 	if (!pinfo->mem_addr) {
 		printk(KERN_ERR "Failed to remap mem region...\n");
-		return -ENOMEM;
+		iounmap(pinfo->i2o_addr);
+		pinfo->i2o_addr = NULL;
+		goto release_regions;
 	}
 
 	dev_dbg(dev, "i2o_addr:0x%08lx   Mapped addr:0x%08lx  \n",
 	        (unsigned long)pinfo->i2o_addr, (unsigned long)pinfo->mem_addr);
 
 	return 0;
+release_regions:
+	pci_release_regions(pinfo->pdev);
+	return -ENOMEM;
 }
 
 static void chd_pci_release_mem(struct crystalhd_adp *pinfo)
@@ -866,18 +997,26 @@ static void chd_pci_release_mem(struct crystalhd_adp *pinfo)
 }
 
 
-static void __exit chd_dec_pci_remove(struct pci_dev *pdev)
+static void chd_dec_pci_remove(struct pci_dev *pdev)
 {
 	struct crystalhd_adp *pinfo;
 	BC_STATUS sts = BC_STS_SUCCESS;
 
-	dev_dbg(chddev(), "Entering %s\n", __func__);
-
 	pinfo = (struct crystalhd_adp *) pci_get_drvdata(pdev);
-	if (!pinfo) {
-		dev_err(chddev(), "could not get adp\n");
-		return;
+	/* Let FIFO waiters finish before waiting for all file operations. */
+	if (pinfo) {
+		WRITE_ONCE(pinfo->present, 0);
+		WRITE_ONCE(pinfo->cmds.cin_wait_exit, 1);
 	}
+	down_write(&chd_device_lock);
+	if (!pinfo) {
+		dev_err(&pdev->dev, "could not get adp\n");
+		goto unlock;
+	}
+	pci_clear_master(pdev);
+	if (!pci_wait_for_pending_transaction(pdev))
+		dev_warn(&pdev->dev, "PCI transactions pending during removal\n");
+	chd_dec_disable_int(pinfo);
 
 	sts = crystalhd_delete_cmd_context(&pinfo->cmds);
 	if (sts != BC_STS_SUCCESS)
@@ -885,16 +1024,17 @@ static void __exit chd_dec_pci_remove(struct pci_dev *pdev)
 
 	chd_dec_release_chdev(pinfo);
 
-	chd_dec_disable_int(pinfo);
-
 	chd_pci_release_mem(pinfo);
 	pci_disable_device(pinfo->pdev);
 
-	kfree(pinfo);
+	pci_set_drvdata(pdev, NULL);
 	g_adp_info = NULL;
+	kfree(pinfo);
+unlock:
+	up_write(&chd_device_lock);
 }
 
-static int __init chd_dec_pci_probe(struct pci_dev *pdev,
+static int chd_dec_pci_probe(struct pci_dev *pdev,
 			     const struct pci_device_id *entry)
 {
 	struct device *dev = &pdev->dev;
@@ -902,6 +1042,11 @@ static int __init chd_dec_pci_probe(struct pci_dev *pdev,
 	int rc;
 	BC_STATUS sts = BC_STS_SUCCESS;
 
+	down_write(&chd_device_lock);
+	if (g_adp_info) {
+		rc = -EBUSY;
+		goto out;
+	}
 	dev_info(dev, "Starting Device:0x%04x\n", pdev->device);
 
 	pinfo = kzalloc(sizeof(struct crystalhd_adp), GFP_KERNEL);
@@ -912,6 +1057,7 @@ static int __init chd_dec_pci_probe(struct pci_dev *pdev,
 	}
 
 	pinfo->pdev = pdev;
+	g_adp_info = pinfo;
 
 	rc = pci_enable_device(pdev);
 	if (rc) {
@@ -936,6 +1082,7 @@ static int __init chd_dec_pci_probe(struct pci_dev *pdev,
 	/* Setup adapter level lock.. */
 	spin_lock_init(&pinfo->lock);
 	init_rwsem(&pinfo->user_lock);
+	mutex_init(&pinfo->tx_lock);
 
 	/* setup api stuff.. */
 	rc = chd_dec_init_chdev(pinfo);
@@ -972,9 +1119,10 @@ static int __init chd_dec_pci_probe(struct pci_dev *pdev,
 
 	pci_set_drvdata(pdev, pinfo);
 
-	g_adp_info = pinfo;
+	chd_device_generation++;
 
 out:
+	up_write(&chd_device_lock);
 	return rc;
 cleanup_int:
 	chd_dec_disable_int(pinfo);
@@ -985,7 +1133,8 @@ release_mem:
 disable_device:
 	pci_disable_device(pdev);
 free_priv:
-	kfree(pdev);
+	g_adp_info = NULL;
+	kfree(pinfo);
 	goto out;
 }
 
@@ -1047,7 +1196,8 @@ int chd_dec_pci_resume(struct pci_dev *pdev)
 		return 1;
 	}
 
-	pci_set_master(pdev);
+	if (!adp->cmds.hw_ctx || !READ_ONCE(adp->cmds.hw_ctx->dma_fault))
+		pci_set_master(pdev);
 
 	rc = chd_dec_enable_int(adp);
 	if (rc) {
@@ -1073,10 +1223,10 @@ static struct pci_device_id chd_dec_pci_id_table[] = {
 };
 MODULE_DEVICE_TABLE(pci, chd_dec_pci_id_table);
 
-static struct pci_driver bc_chd_driver __refdata = {
+static struct pci_driver bc_chd_driver = {
 	.name     = "crystalhd",
 	.probe    = chd_dec_pci_probe,
-	.remove   = __exit_p(chd_dec_pci_remove),
+	.remove   = chd_dec_pci_remove,
 	.id_table = chd_dec_pci_id_table,
 	.suspend  = chd_dec_pci_suspend,
 	.resume   = chd_dec_pci_resume

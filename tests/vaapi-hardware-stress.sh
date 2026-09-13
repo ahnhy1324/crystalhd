@@ -12,6 +12,16 @@ repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 video=$1
 iterations=${2:-10}
 loaded_here=false
+timeout_seconds=${CRYSTALHD_TEST_TIMEOUT:-120}
+drm_device=${CRYSTALHD_DRM_DEVICE:-/dev/dri/renderD128}
+
+case "$timeout_seconds" in
+    ''|*[!0-9]*|0) echo "CRYSTALHD_TEST_TIMEOUT must be a positive integer" >&2; exit 2 ;;
+esac
+if [ "$timeout_seconds" -eq 0 ]; then
+    echo "CRYSTALHD_TEST_TIMEOUT must be a positive integer" >&2
+    exit 2
+fi
 
 case "$iterations" in
     ''|*[!0-9]*)
@@ -38,6 +48,13 @@ trap cleanup EXIT HUP INT TERM
 test -r "$video"
 command -v ffmpeg >/dev/null
 command -v ffprobe >/dev/null
+command -v timeout >/dev/null
+codec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name \
+    -of default=nw=1:nk=1 "$video")
+if [ "$codec" != h264 ]; then
+    echo "CrystalHD VA-API validation requires H.264 input (found: $codec)" >&2
+    exit 2
+fi
 make -C "$repo_dir" all
 
 if lsmod | grep -q '^crystalhd '; then
@@ -56,25 +73,30 @@ else
     udevadm settle --timeout=10
 fi
 test -r /dev/crystalhd
-test -r /dev/dri/renderD128
+test -r "$drm_device"
 
 expected_frames=$(ffprobe -v error -select_streams v:0 -count_frames \
     -show_entries stream=nb_read_frames -of default=nw=1:nk=1 "$video")
 case "$expected_frames" in
-    ''|N/A|*[!0-9]*) expected_frames= ;;
+    ''|N/A|*[!0-9]*|0)
+        echo "could not establish a positive reference frame count" >&2
+        exit 1
+        ;;
 esac
 
-started_at=$(date --iso-8601=seconds)
+started_at=$(date '+%Y-%m-%d %H:%M:%S.%6N')
 iteration=1
 while [ "$iteration" -le "$iterations" ]; do
     : > "$progress_file"
     LIBVA_DRIVER_NAME=crystalhd \
     LIBVA_DRIVERS_PATH="$repo_dir/filters/vaapi" \
     LD_LIBRARY_PATH="$repo_dir/linux_lib/libcrystalhd" \
-    ffmpeg -nostdin -hide_banner -loglevel error \
-        -hwaccel vaapi -hwaccel_device /dev/dri/renderD128 \
+    timeout --foreground --kill-after=10 "$timeout_seconds" \
+    ffmpeg -nostdin -hide_banner -loglevel error -xerror \
+        -hwaccel vaapi -hwaccel_device "$drm_device" \
         -hwaccel_output_format vaapi -i "$video" \
-        -vf hwdownload,format=nv12 -an -progress "$progress_file" \
+        -map 0:v:0 -vf hwdownload,format=nv12 -fps_mode passthrough \
+        -an -progress "$progress_file" \
         -f null -
 
     decoded_frames=$(awk -F= '$1 == "frame" { value=$2 } END { print value }' \
@@ -87,14 +109,6 @@ while [ "$iteration" -le "$iterations" ]; do
     iteration=$((iteration + 1))
 done
 
-if command -v journalctl >/dev/null 2>&1; then
-    kernel_findings=$(journalctl -k --since "$started_at" --no-pager 2>/dev/null | \
-        grep -Ei 'BUG:|Oops:|general protection|Call Trace|hung task|crystalhd.*(error|fail|timeout|invalid arguments)' || true)
-    if [ -n "$kernel_findings" ]; then
-        echo "$kernel_findings" >&2
-        echo "CrystalHD kernel errors occurred during the stress test" >&2
-        exit 1
-    fi
-fi
+sh "$repo_dir/tests/kernel-log-check.sh" "$started_at"
 
 echo "CrystalHD VA-API stress test passed: $iterations iterations"
