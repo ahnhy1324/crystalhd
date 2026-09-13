@@ -2414,8 +2414,11 @@ BC_STATUS txBufPop(pTXBUFFER txBuf, uint8_t* bufToPop, uint32_t sizeToPop)
 
 	pthread_mutex_lock(&txBuf->flushLock);
 
-	if(sizeToPop > txBuf->busySize)
+	if(sizeToPop > txBuf->busySize) {
+		// A flush can invalidate the size sampled by the TX worker.
+		pthread_mutex_unlock(&txBuf->flushLock);
 		return BC_STS_INV_ARG;
+	}
 
 	sizeTop = (uint32_t)(txBuf->endPointer - (txBuf->basePointer + txBuf->readPointer) + 1);
 	if(sizeToPop <= sizeTop)
