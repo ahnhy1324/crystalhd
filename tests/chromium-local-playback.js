@@ -10,12 +10,17 @@ const os = require('node:os');
 const path = require('node:path');
 const {spawn} = require('node:child_process');
 const WebSocket = require('ws');
-const {createFrameAuditor, validateBrowserAudit} = require('./chromium-local-audit');
+const {createFrameAuditor, createPlaybackControlAuditor,
+  validateBrowserAudit} = require('./chromium-local-audit');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const args = process.argv.slice(2);
-const hardware = args[1] === '--expect-hardware';
-if (args.length < 1 || args.length > 2 || (args[1] && !hardware)) {
-  console.error('usage: chromium-local-playback.js BARCODE.mp4 [--expect-hardware]');
+const options = args.slice(1);
+const hardware = options.includes('--expect-hardware');
+const controls = options.includes('--controls');
+if (args.length < 1 || args[0].startsWith('--') ||
+    new Set(options).size !== options.length ||
+    options.some(option => option !== '--expect-hardware' && option !== '--controls')) {
+  console.error('usage: chromium-local-playback.js BARCODE.mp4 [--expect-hardware] [--controls]');
   process.exit(2);
 }
 if (hardware && process.env.CRYSTALHD_CHROMIUM_DISABLE_GPU_SANDBOX !== '1') {
@@ -25,7 +30,7 @@ if (hardware && process.env.CRYSTALHD_CHROMIUM_DISABLE_GPU_SANDBOX !== '1') {
 const videoPath = path.resolve(args[0]);
 const videoSize = fs.statSync(videoPath).size;
 
-function pageAudit(createAuditor) {
+function pageAudit(createAuditor, createControlAuditor, controls) {
   const video = document.querySelector('video');
   const canvas = document.createElement('canvas');
   canvas.width = 288;
@@ -33,6 +38,8 @@ function pageAudit(createAuditor) {
   const ctx = canvas.getContext('2d', {willReadFrequently: true});
   const auditor = createAuditor();
   const audit = window.audit = auditor.audit;
+  const controller = controls ? createControlAuditor() : null;
+  if (controller) audit.controls = controller.audit;
   video.addEventListener('error', () => audit.errors.push(String(video.error?.message)));
   function snapshot(callbackTime) {
     // Retain pixels and their own timestamp until the entire CPU readback is
@@ -46,20 +53,38 @@ function pageAudit(createAuditor) {
       for (let bit = 0; bit < 9; ++bit)
         if (luma(16 + 24 * bit) > 128) identity |= 1 << bit;
       return {frameTime: frame.timestamp / 1000000, callbackTime, identity,
-        white: luma(248), black: luma(272), seeking: video.seeking};
+        white: luma(248), black: luma(272), seeking: video.seeking,
+        wallTime: performance.now(), currentTime: video.currentTime,
+        playbackRate: video.playbackRate, paused: video.paused, ended: video.ended};
     } finally { frame.close(); }
   }
   video.addEventListener('ended', () => {
     try { auditor.end(snapshot(null), video.duration); }
     catch (error) { audit.errors.push(String(error)); }
   });
-  const observe = (_, metadata) => {
+  let timer;
+  function observeSnapshot(callbackTime) {
     try {
       if (!video.seeking) {
-        const target = auditor.observe(snapshot(metadata.mediaTime));
-        if (target !== undefined) video.currentTime = target;
+        const sample = snapshot(callbackTime);
+        const action = controller?.observe(sample);
+        if (controller?.audit.errors.length) {
+          if (!audit.errors.length) audit.errors.push(controller.audit.errors[0]);
+          clearInterval(timer);
+          return;
+        }
+        const target = auditor.observe(sample, !controller || controller.audit.done);
+        if (action) {
+          video.playbackRate = action.rate;
+          if (action.type === 'pause') video.pause();
+          else video.play().catch(error => audit.errors.push(String(error)));
+        } else if (target !== undefined) video.currentTime = target;
+        if (controller?.audit.done) clearInterval(timer);
       }
     } catch (error) { audit.errors.push(String(error)); }
+  }
+  const observe = (_, metadata) => {
+    observeSnapshot(metadata.mediaTime);
     video.requestVideoFrameCallback(observe);
   };
   if (!video.requestVideoFrameCallback || typeof VideoFrame === 'undefined') {
@@ -67,11 +92,18 @@ function pageAudit(createAuditor) {
     return;
   }
   video.requestVideoFrameCallback(observe);
+  // Pause does not produce rVFC callbacks. Independent timer samples prove
+  // stability while paused and prevent a stalled playing phase from waiting
+  // forever without another observation. Timer samples also read real pixels.
+  if (controller) timer = setInterval(() => {
+    if (video.readyState >= 2 && !video.ended) observeSnapshot(null);
+  }, 100);
   video.play().catch(error => audit.errors.push(String(error)));
 }
 
 const html = `<!doctype html><video muted width="640" height="360" src="/sample.mp4"></video>
-<script>(${pageAudit.toString()})(${createFrameAuditor.toString()})</script>`;
+<script>(${pageAudit.toString()})(${createFrameAuditor.toString()},
+  ${createPlaybackControlAuditor.toString()}, ${controls})</script>`;
 const server = http.createServer((request, response) => {
   if (request.url !== '/sample.mp4') {
     response.writeHead(200, {'Content-Type': 'text/html'}).end(html);
@@ -176,10 +208,11 @@ async function main() {
     if ((elapsed + 1) % 10 === 0)
       console.log(`Browser audit ${elapsed + 1}s: ${audit?.frames || 0} frames, ${audit?.segments.length || 0} segments`);
   }
-  const result = {hardware, decoders, platformDecoders, mediaErrors, audit};
+  const result = {hardware, controls, decoders, platformDecoders, mediaErrors, audit};
   console.log(JSON.stringify(result, null, 2));
   validateBrowserAudit(result);
-  console.log('Browser pixel identity and forward/backward seek audit passed');
+  console.log(`Browser pixel identity and forward/backward seek audit passed${
+    controls ? '; pause/resume and 0.5x/1.5x/2x/1x controls also passed' : ''}`);
 }
 let cleanupPromise;
 function cleanup() {
