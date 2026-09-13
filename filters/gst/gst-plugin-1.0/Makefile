@@ -6,6 +6,7 @@ PREFIX ?= /usr
 DESTDIR ?=
 ROOTDIR := ../../..
 PLUGIN := libgstcrystalhd.so
+PLAYBACK_TEST := gstreamer-playback-test
 PLUGINDIR ?= $(shell $(PKG_CONFIG) --variable=pluginsdir gstreamer-1.0)
 
 GST_PACKAGES := gstreamer-1.0 gstreamer-video-1.0
@@ -23,15 +24,20 @@ all: $(PLUGIN)
 $(PLUGIN): gstcrystalhd.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
 
-check: $(PLUGIN)
+$(PLAYBACK_TEST): $(ROOTDIR)/tests/gstreamer-playback.c
+	$(CC) -Wall -Wextra -Werror $(CFLAGS) $< -o $@ \
+		$(shell $(PKG_CONFIG) --libs $(GST_PACKAGES))
+
+check: $(PLUGIN) $(PLAYBACK_TEST)
 	@registry=$$(mktemp); \
 	trap 'rm -f "$$registry"' EXIT HUP INT TERM; \
 	GST_REGISTRY="$$registry" GST_PLUGIN_PATH=$(CURDIR) \
 	LD_LIBRARY_PATH=$(abspath $(ROOTDIR)/linux_lib/libcrystalhd):$(LD_LIBRARY_PATH) \
 		gst-inspect-1.0 crystalhddec >/dev/null
+	./$(PLAYBACK_TEST) --self-test
 
 install: $(PLUGIN)
 	install -D -m 0755 $(PLUGIN) $(DESTDIR)$(PLUGINDIR)/$(PLUGIN)
 
 clean:
-	rm -f $(PLUGIN)
+	rm -f $(PLUGIN) $(PLAYBACK_TEST)

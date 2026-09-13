@@ -18,6 +18,8 @@ for bits in 32 64; do
 		-o "$tmp_dir/uapi-abi-$bits.o"
 done
 
+sh "$repo_dir/tests/ioctl-smoke.sh" --build-only
+
 # shellcheck disable=SC2086
 "$cc" ${CPPFLAGS:-} ${CFLAGS:-} $common_flags \
 	-I"$repo_dir/include" "$repo_dir/tests/ioctl-limits.c" \

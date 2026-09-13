@@ -17,8 +17,8 @@ The kernel and userspace pieces have different levels of validation:
 | --- | --- |
 | Kernel module | Maintained for Linux 6.1 and newer; hardware-tested on BCM70015 with Ubuntu 6.17.0-41-generic. BCM70012 support is retained but has not been tested recently. |
 | `libcrystalhd` | Legacy compatibility API. CI freezes its 32-bit and 64-bit ioctl layouts, builds the complete library as 32-bit code, and exercises it through the tested frontends; it still has no comprehensive device-API test suite. |
-| GStreamer 1.x | Experimental. H.264 decode has been exercised on BCM70015. MPEG-2, VC-1, WMV3, interlaced output, seeking, and mid-stream format changes are not covered by current hardware tests. |
-| VA-API | Experimental client-oriented subset, not a general or conformance-tested VA-API driver. Progressive H.264 decode through FFmpeg has been exercised on BCM70015. |
+| GStreamer 1.x | Primary validation path on BCM70015: progressive H.264 Baseline/Main/High, complete-file drain, and flushing replay with identical pixels. One progressive MPEG-2 sample also drains completely. VC-1, WMV3, interlaced output, arbitrary in-flight seeks, and mid-stream format changes remain unverified. |
+| VA-API | Experimental client-oriented subset. Strict BCM70015 H.264 tests expose incomplete end-of-file drain; missing output returns an error, never a fabricated successful frame. Not a general or conformance-tested VA-API driver. |
 | Chromium | Developer experiment only. The safe default uses Chrome's software decoder; hardware decode is opt-in and has a known post-seek frame-identity failure. It also requires disabling the GPU-process sandbox. |
 | Examples | Legacy diagnostic programs. CI verifies that they compile, not that their hard-coded sample streams decode correctly. |
 
@@ -30,6 +30,8 @@ API compatibility but do not replace hardware testing.
 
 For the known-good BCM70015 initialization sequence, validation milestones,
 and failure isolation order, see [BRINGUP.md](BRINGUP.md).
+See the [2026-09-13 hardware report](HARDWARE-2026-09-13.md) for exact samples,
+commands, successful tests, and failures still under investigation.
 
 ## Userspace components
 
@@ -37,9 +39,18 @@ The interfaces below describe what each frontend currently exposes. Unless a
 path is identified as hardware-tested in the status table, it should be
 treated as unverified.
 
+For the reproducible playback baseline, use **GStreamer 1.x on BCM70015**
+with progressive H.264 Annex-B input and YUY2 output. The secondary,
+**experimental** path is **FFmpeg through VA-API**, decoding progressive
+H.264 to NV12. It does not yet reliably drain every frame at EOF, so use
+GStreamer for complete-file playback. The commands below also allow testing
+that failure explicitly. Other codecs, BCM70012, and
+Chromium hardware decoding remain experimental; see [TODO.md](TODO.md) for
+the open validation work and linked GitHub issues.
+
 The `crystalhddec` GStreamer 1.x element advertises parsed H.264 Annex-B,
 MPEG-2, VC-1, and WMV3 input and produces standard YUY2 raw video. Current
-hardware validation covers only progressive H.264.
+hardware validation covers progressive H.264 and one progressive MPEG-2 sample.
 
 The `crystalhd_drv_video.so` VA-API backend exposes progressive H.264
 Constrained Baseline, Main, and High decoding. It supports NV12 output for
@@ -98,16 +109,23 @@ import when a render node is available, and checks a staged installation
 without changing the host system. It does not decode a stream on CrystalHD
 hardware.
 
-The CI-only `make userspace32-check` target builds and links the complete
-`libcrystalhd` library with `-m32`, then removes those temporary 32-bit build
-products. A 32-bit process on a 64-bit kernel requires `CONFIG_COMPAT`; the
+The `make userspace32-check` target builds and links the complete
+`libcrystalhd` library, examples, and API probe with `-m32` in an isolated
+temporary directory, preserving existing native build products. CI also
+compiles the kernel module for native i386. A 32-bit process on a 64-bit kernel requires `CONFIG_COMPAT`; the
 driver translates the pointer-bearing playback ioctls rather than treating a
 32-bit request as a native structure.
+
+With the freshly built driver loaded and the device idle, run
+`sh tests/ioctl-smoke.sh` to exercise native/compat ioctl validation, then
+`sh tests/userspace32.sh --hardware` to verify firmware open, capabilities,
+version, and close through both 32-bit and 64-bit libraries. The latter is an
+explicit hardware test and does not run as part of `make check`.
 
 To exercise the actual decoder hardware with an H.264 MP4:
 
 ```sh
-./tests/gstreamer-hardware.sh /path/to/video.mp4
+./tests/gstreamer-hardware.sh /path/to/video.mp4 2
 ```
 
 To exercise the same hardware through VA-API and FFmpeg:
@@ -127,6 +145,38 @@ scan the new kernel log entries for driver failures:
 ```sh
 ./tests/vaapi-hardware-stress.sh /path/to/video.mp4 10
 ```
+
+Generate three small, reproducible profile samples for a hardware report:
+
+```sh
+sh tests/generate-h264-samples.sh /tmp/crystalhd-samples
+```
+
+The generator refuses to overwrite existing samples and prints each profile,
+frame count, and SHA-256 checksum. Run both hardware scripts for each of the
+three MP4 files. `CRYSTALHD_TEST_TIMEOUT` bounds each decode (120 seconds by
+default); a timeout or missing frame fails validation.
+
+Set `CRYSTALHD_TEST_SEEK=1` on the GStreamer hardware command to replay the
+file after a flushing seek to zero in the same pipeline. Both passes must
+drain every frame and produce the same pixel SHA-256. This checks replay
+after end-of-stream; arbitrary seeks during playback need separate coverage.
+
+For VA-API seek/flush validation outside Chromium, install `libavcodec-dev`,
+`libavformat-dev`, and `libavutil-dev`, then run:
+
+```sh
+make -C filters/vaapi seek-test
+LIBVA_DRIVER_NAME=crystalhd LIBVA_DRIVERS_PATH=$PWD/filters/vaapi \
+LD_LIBRARY_PATH=$PWD/linux_lib/libcrystalhd \
+timeout --kill-after=10 120s ./filters/vaapi/vaapi-seek-test /tmp/crystalhd-samples/high.mp4
+```
+
+This probe requires hardware frames, drains a complete reference decode, then
+compares the SHA-256 hashes of downloaded NV12 pixels after forward and
+backward seeks and decoder flushes. It also flushes with reordered frames
+still pending. `--software` is an explicitly labelled self-check of the
+probe; it does not validate CrystalHD.
 
 The hardware tests load the locally built module only when necessary and
 unload it afterward if the script loaded it. They refuse to run when an
@@ -168,6 +218,28 @@ permission. Direct register, FPGA, device-DRAM, and PCI configuration ioctls
 are diagnostic interfaces and additionally require `CAP_SYS_RAWIO`; run legacy
 diagnostic tools as root when those commands are needed. The rule no longer
 makes the raw hardware interface world-writable.
+
+The read-only PCI vendor/device-ID DWORD (offset 0, size 4) remains available
+for older libraries that use it to identify the card before opening firmware.
+New builds use the unprivileged hardware-type query instead.
+
+BCM70015 playback sessions also retain the legacy color-register operation:
+the kernel permits YUY2/UYVY selection while preserving unrelated register
+bits. Adjacent registers and access outside playback remain privileged.
+BCM70012's legacy reset, clock, and FPGA initialization need separate hardware
+verification under this permission policy.
+
+For a legacy installation that deliberately needs all local accounts to open
+the device, create `/etc/udev/rules.d/99-crystalhd-local.rules` containing:
+
+```udev
+KERNEL=="crystalhd", MODE="0666"
+```
+
+Reload the rules with `sudo udevadm control --reload-rules`; they take effect
+when the device is recreated. Removing that local file restores the default
+access policy on the next rule reload and device creation. This override
+does not grant the capability required by raw diagnostic ioctls.
 
 To stage a package instead of changing the host:
 

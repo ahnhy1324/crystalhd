@@ -40,6 +40,7 @@
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/rwsem.h>
+#include <linux/mutex.h>
 #include <linux/pagemap.h>
 #include <linux/vmalloc.h>
 
@@ -76,6 +77,7 @@ struct crystalhd_adp {
 
 	spinlock_t		lock;
 	struct rw_semaphore	user_lock;
+	struct mutex		tx_lock;
 
 	/* API Related */
 	int			chd_dec_major;

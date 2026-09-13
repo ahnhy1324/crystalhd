@@ -177,6 +177,7 @@ DtsSetFleaIn422Mode(HANDLE hDevice)
 	uint32_t			Val = 0;
 	DTS_LIB_CONTEXT		*Ctx;
 	uint32_t			ModeSelect;
+	BC_STATUS		sts;
 
 	DTS_GET_CTX(hDevice,Ctx);
 	ModeSelect = Ctx->b422Mode;
@@ -185,7 +186,9 @@ DtsSetFleaIn422Mode(HANDLE hDevice)
 	if( ModeSelect != OUTPUT_MODE422_UYVY && ModeSelect != OUTPUT_MODE422_YUY2 )
 		return BC_STS_INV_ARG;
 
-	DtsDevRegisterRead(hDevice,BCHP_MISC2_GLOBAL_CTRL,&Val);
+	sts = DtsDevRegisterRead(hDevice, BCHP_MISC2_GLOBAL_CTRL, &Val);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
 
 	Val &= 0x0000007c;
 	if( ModeSelect == OUTPUT_MODE422_YUY2 )
@@ -193,8 +196,7 @@ DtsSetFleaIn422Mode(HANDLE hDevice)
 		Val |= BC_BIT(1);  // bit_1  0-> UYVY, 1-> YUY2
 	}
 
-	DtsDevRegisterWr(hDevice,BCHP_MISC2_GLOBAL_CTRL,Val);
-	return BC_STS_SUCCESS;
+	return DtsDevRegisterWr(hDevice, BCHP_MISC2_GLOBAL_CTRL, Val);
 }
 
 DRVIFLIB_INT_API BC_STATUS

@@ -338,6 +338,7 @@ struct crystalhd_hw {
 	uint32_t		rx_pkt_tag_seed;
 
 	bool			dev_started;
+	bool			dma_fault; /* bus mastering disabled after a stop timeout */
 	struct crystalhd_adp	*adp;
 
 	wait_queue_head_t	*pfw_cmd_event;
@@ -515,9 +516,14 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw, struct crystalhd_dio_req
 				uint8_t data_flags);
 BC_STATUS crystalhd_hw_cancel_tx(struct crystalhd_hw *hw, uint32_t list_id);
 BC_STATUS crystalhd_hw_add_cap_buffer(struct crystalhd_hw *hw,struct crystalhd_dio_req *ioreq, bool en_post);
+BC_STATUS crystalhd_hw_repost_cap_buffer(struct crystalhd_hw *hw,
+					 struct crystalhd_rx_dma_pkt *pkt);
 BC_STATUS crystalhd_hw_get_cap_buffer(struct crystalhd_hw *hw,struct C011_PIB *pib,struct crystalhd_dio_req **ioreq);
 BC_STATUS crystalhd_hw_start_capture(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_stop_capture(struct crystalhd_hw *hw, bool unmap);
+/* Process callers must hold fetch_sem before calling the locked variant. */
+BC_STATUS crystalhd_hw_stop_capture_locked(struct crystalhd_hw *hw, bool unmap);
+void crystalhd_hw_dma_fatal_stop(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_suspend(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_resume(struct crystalhd_hw *hw);
 void crystalhd_hw_stats(struct crystalhd_hw *hw, struct crystalhd_hw_stats *stats);

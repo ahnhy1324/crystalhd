@@ -883,7 +883,7 @@ bool crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
 				if(hw->PicQSts != 0)
 				{
 					rx_pkt = crystalhd_dioq_fetch(hw->rx_freeq);
-					if (rx_pkt && hw->pfnPostRxSideBuff(hw, rx_pkt) !=
+					if (rx_pkt && crystalhd_hw_repost_cap_buffer(hw, rx_pkt) !=
 						      BC_STS_SUCCESS)
 						dev_err(chddev(), "failed to repost RX buffer\n");
 				}
@@ -908,7 +908,7 @@ bool crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
 				if(hw->PicQSts != 0)
 				{
 					rx_pkt = crystalhd_dioq_fetch(hw->rx_freeq);
-					if (rx_pkt && hw->pfnPostRxSideBuff(hw, rx_pkt) !=
+					if (rx_pkt && crystalhd_hw_repost_cap_buffer(hw, rx_pkt) !=
 						      BC_STS_SUCCESS)
 						dev_err(chddev(), "failed to repost RX buffer\n");
 				}
@@ -1362,7 +1362,6 @@ BCHP_SCRUB_CTRL_BI_CMAC_127_96		0x000f6018			CMAC Bits[127:96]
 bool crystalhd_flea_start_device(struct crystalhd_hw *hw)
 {
 	uint32_t	regVal	= 0;
-	bool		bRetVal = false;
 
 	/*
 	-- Issue Core reset to bring in the default values in place
@@ -1448,7 +1447,7 @@ bool crystalhd_flea_start_device(struct crystalhd_hw *hw)
 
 	msleep_interruptible(1);
 
-	return bRetVal;
+	return true;
 }
 
 
@@ -2009,12 +2008,14 @@ void crystalhd_flea_stop_rx_dma_engine(struct crystalhd_hw *hw)
 	union FLEA_INTR_BITS_COMMON	IntrStsValue;
 	bool failedL0 = true, failedL1 = true;
 	uint32_t pollCnt = 0;
+	unsigned long flags;
 
 	hw->RxCaptureState = 2;
 
 	if((hw->rx_list_sts[0] == sts_free) && (hw->rx_list_sts[1] == sts_free)) {
 		hw->RxCaptureState = 0;
 		hw->RxSeqNum = 0;
+		hw->rx_list_post_index = 0;
 		return; /* Nothing to be done */
 	}
 
@@ -2028,8 +2029,10 @@ void crystalhd_flea_stop_rx_dma_engine(struct crystalhd_hw *hw)
 		IntrStsValue.WholeReg = hw->pfnReadDevRegister(hw->adp, BCHP_INTR_INTR_STATUS);
 
 		if(hw->rx_list_sts[0] != sts_free) {
-			if( (IntrStsValue.L0YRxDMADone)  || (IntrStsValue.L0YRxDMAErr) ||
-				(IntrStsValue.L0UVRxDMADone) || (IntrStsValue.L0UVRxDMAErr) )
+			if ((!(hw->rx_list_sts[0] & rx_waiting_y_intr) ||
+			     IntrStsValue.L0YRxDMADone || IntrStsValue.L0YRxDMAErr) &&
+			    (!(hw->rx_list_sts[0] & rx_waiting_uv_intr) ||
+			     IntrStsValue.L0UVRxDMADone || IntrStsValue.L0UVRxDMAErr))
 			{
 				failedL0 = false;
 			}
@@ -2038,8 +2041,10 @@ void crystalhd_flea_stop_rx_dma_engine(struct crystalhd_hw *hw)
 			failedL0 = false;
 
 		if(hw->rx_list_sts[1] != sts_free) {
-			if( (IntrStsValue.L1YRxDMADone)  || (IntrStsValue.L1YRxDMAErr) ||
-				(IntrStsValue.L1UVRxDMADone) || (IntrStsValue.L1UVRxDMAErr) )
+			if ((!(hw->rx_list_sts[1] & rx_waiting_y_intr) ||
+			     IntrStsValue.L1YRxDMADone || IntrStsValue.L1YRxDMAErr) &&
+			    (!(hw->rx_list_sts[1] & rx_waiting_uv_intr) ||
+			     IntrStsValue.L1UVRxDMADone || IntrStsValue.L1UVRxDMAErr))
 			{
 				failedL1 = false;
 			}
@@ -2059,12 +2064,22 @@ void crystalhd_flea_stop_rx_dma_engine(struct crystalhd_hw *hw)
 	}
 
 	if(failedL0 || failedL1)
-		printk("Failed to stop RX DMA\n");
+		crystalhd_hw_dma_fatal_stop(hw);
 
 	hw->RxCaptureState = 0;
 	hw->RxSeqNum = 0;
 
 	crystalhd_flea_clear_rx_errs_intrs(hw);
+	/* Stop runs with IRQ delivery disabled. Its polling consumed the
+	 * completions, so the ISR can no longer clear the software busy bits.
+	 */
+	if (!failedL0 && !failedL1) {
+		spin_lock_irqsave(&hw->rx_lock, flags);
+		hw->rx_list_sts[0] = sts_free;
+		hw->rx_list_sts[1] = sts_free;
+		hw->rx_list_post_index = 0;
+		spin_unlock_irqrestore(&hw->rx_lock, flags);
+	}
 }
 
 BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
@@ -2075,6 +2090,7 @@ BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
 	unsigned long flags;
 	PIC_DELIVERY_HOST_INFO	PicDeliInfo;
 	uint32_t BuffSzInDwords;
+	BC_STATUS sts;
 
 	if (!hw || !rx_pkt) {
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
@@ -2087,6 +2103,8 @@ BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
 		dev_err(dev, "List Out Of bounds %x\n", hw->rx_list_post_index);
 		return BC_STS_INV_ARG;
 	}
+	if (READ_ONCE(hw->dma_fault))
+		return BC_STS_IO_ERROR;
 
 	if(hw->RxCaptureState != 1) {
 		dev_err(dev, "Capture not enabled\n");
@@ -2124,14 +2142,18 @@ BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
 	}
 
 	rx_pkt->pkt_tag = hw->rx_pkt_tag_seed + hw->rx_list_post_index;
+	sts = crystalhd_dioq_add(hw->rx_actq, rx_pkt, false, rx_pkt->pkt_tag);
+	if (sts != BC_STS_SUCCESS) {
+		SET_BIT(hw->PicQSts, hw->channelNum);
+		spin_unlock_irqrestore(&hw->rx_lock, flags);
+		return sts;
+	}
 	hw->rx_list_sts[hw->rx_list_post_index] |= rx_waiting_y_intr;
 	if (rx_pkt->uv_phy_addr)
 		hw->rx_list_sts[hw->rx_list_post_index] |= rx_waiting_uv_intr;
 	hw->rx_list_post_index = (hw->rx_list_post_index + 1) % DMA_ENGINE_CNT;
 
 	spin_unlock_irqrestore(&hw->rx_lock, flags);
-
-	crystalhd_dioq_add(hw->rx_actq, (void *)rx_pkt, false, rx_pkt->pkt_tag);
 
 	BuffSzInDwords = (sizeof (PicDeliInfo) - sizeof(PicDeliInfo.Reserved))/4;
 
@@ -2140,6 +2162,7 @@ BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
 	*/
 	spin_lock_irqsave(&hw->lock, flags);
 	hw->pfnDevDRAMWrite(hw, hw->FleaRxPicDelAddr, BuffSzInDwords, (uint32_t*)&PicDeliInfo);
+	crystalhd_dio_to_device(hw->adp, rx_pkt->dio_req);
 	hw->pfnWriteDevRegister(hw->adp, RX_POST_MAILBOX, hw->channelNum);
 	spin_unlock_irqrestore(&hw->lock, flags);
 
@@ -2152,8 +2175,15 @@ BC_STATUS crystalhd_flea_hw_post_cap_buff(struct crystalhd_hw *hw, struct crysta
 {
 	BC_STATUS sts = crystalhd_flea_hw_fire_rxdma(hw, rx_pkt);
 
-	if (sts != BC_STS_SUCCESS)
-		crystalhd_dioq_add(hw->rx_freeq, (void *)rx_pkt, false, rx_pkt->pkt_tag);
+	/* BUSY transfers ownership to the free queue; other errors leave the
+	 * packet with the caller, just as on BCM70012.
+	 */
+	if (sts == BC_STS_BUSY) {
+		BC_STATUS queued = crystalhd_dioq_add(hw->rx_freeq, rx_pkt,
+						false, rx_pkt->pkt_tag);
+		if (queued != BC_STS_SUCCESS)
+			return queued;
+	}
 
 	hw->pfnNotifyFLLChange(hw, false);
 
@@ -2737,7 +2767,7 @@ bool crystalhd_flea_hw_interrupt_handle(struct crystalhd_adp *adp, struct crysta
 	if(bPostRxBuff) {
 		rx_pkt = crystalhd_dioq_fetch(hw->rx_freeq);
 		if (rx_pkt)
-			hw->pfnPostRxSideBuff(hw, rx_pkt);
+			crystalhd_hw_repost_cap_buffer(hw, rx_pkt);
 	}
 
 	if( (hw->FleaPowerState == FLEA_PS_LP_PENDING) && (bSomeCmdDone))
@@ -2778,6 +2808,7 @@ bool flea_GetPictureInfo(struct crystalhd_hw *hw, struct crystalhd_rx_dma_pkt * 
 
 	if (!dio)
 		goto getpictureinfo_err_nosem;
+	crystalhd_dio_to_cpu(hw->adp, dio);
 
 /*	if(down_interruptible(&hw->fetch_sem)) */
 /*		goto getpictureinfo_err_nosem; */

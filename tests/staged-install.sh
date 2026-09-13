@@ -38,6 +38,15 @@ test -f "$stage_dir/usr/include/libcrystalhd/libcrystalhd_if.h"
 
 plugin_dir=$(pkg-config --variable=pluginsdir gstreamer-1.0)
 test -f "$stage_dir$plugin_dir/libgstcrystalhd.so"
+plugin_details=$(GST_REGISTRY="$stage_dir/gstreamer-registry.bin" \
+    GST_PLUGIN_SYSTEM_PATH= GST_PLUGIN_PATH="$stage_dir$plugin_dir" \
+    LD_LIBRARY_PATH="$stage_dir/usr/lib" gst-inspect-1.0 crystalhddec)
+discovered_plugin=$(printf '%s\n' "$plugin_details" | awk '$1 == "Filename" { print $2 }')
+test "$discovered_plugin" = "$stage_dir$plugin_dir/libgstcrystalhd.so"
+discovered_library=$(LD_LIBRARY_PATH="$stage_dir/usr/lib" \
+    ldd "$discovered_plugin" | awk '$1 == "libcrystalhd.so.3" { print $3 }')
+test "$discovered_library" = "$stage_dir/usr/lib/libcrystalhd.so.3"
+echo "staged GStreamer plugin and libcrystalhd discovery passed"
 va_driver_dir=$(pkg-config --variable=libdir libva)/dri
 test -f "$stage_dir$va_driver_dir/crystalhd_drv_video.so"
 test -x "$stage_dir/usr/bin/crystalhd-chromium"
