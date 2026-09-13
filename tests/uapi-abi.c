@@ -23,6 +23,11 @@ typedef struct C011_PIB C011_PIB;
 #define EXPECT_PPB_SIZE 240U
 #define EXPECT_PIB_SIZE 272U
 #define EXPECT_IOCTL_BASE 0xc2206200U
+#define EXPECT_PROC_SIZE_OFFSET 8U
+#define EXPECT_PROC_DRAM_OFFSET 16U
+#define EXPECT_YUV_PTR_OFFSET 8U
+#define EXPECT_DEC_PIB_OFFSET 40U
+#define EXPECT_DEC_FLAGS_OFFSET 312U
 #elif UINTPTR_MAX == UINT32_MAX
 #define EXPECT_IOCTL_DATA_SIZE 536U
 #define EXPECT_IOCTL_UNION_OFFSET 12U
@@ -34,6 +39,11 @@ typedef struct C011_PIB C011_PIB;
 #define EXPECT_PPB_SIZE 232U
 #define EXPECT_PIB_SIZE 264U
 #define EXPECT_IOCTL_BASE 0xc2186200U
+#define EXPECT_PROC_SIZE_OFFSET 4U
+#define EXPECT_PROC_DRAM_OFFSET 12U
+#define EXPECT_YUV_PTR_OFFSET 4U
+#define EXPECT_DEC_PIB_OFFSET 28U
+#define EXPECT_DEC_FLAGS_OFFSET 292U
 #else
 #error Unsupported pointer size
 #endif
@@ -46,10 +56,20 @@ _Static_assert(offsetof(BC_IOCTL_DATA, next) == EXPECT_IOCTL_NEXT_OFFSET,
 	       "BC_IOCTL_DATA next offset changed");
 _Static_assert(sizeof(BC_PROC_INPUT) == EXPECT_PROC_INPUT_SIZE,
 	       "BC_PROC_INPUT ABI changed");
+_Static_assert(offsetof(BC_PROC_INPUT, BuffSz) == EXPECT_PROC_SIZE_OFFSET,
+	       "BC_PROC_INPUT pointer layout changed");
+_Static_assert(offsetof(BC_PROC_INPUT, DramOffset) == EXPECT_PROC_DRAM_OFFSET,
+	       "BC_PROC_INPUT trailing fields changed");
 _Static_assert(sizeof(BC_DEC_YUV_BUFFS) == EXPECT_YUV_BUFFS_SIZE,
 	       "BC_DEC_YUV_BUFFS ABI changed");
+_Static_assert(offsetof(BC_DEC_YUV_BUFFS, YuvBuff) == EXPECT_YUV_PTR_OFFSET,
+	       "BC_DEC_YUV_BUFFS pointer layout changed");
 _Static_assert(sizeof(BC_DEC_OUT_BUFF) == EXPECT_DEC_OUT_SIZE,
 	       "BC_DEC_OUT_BUFF ABI changed");
+_Static_assert(offsetof(BC_DEC_OUT_BUFF, PibInfo) == EXPECT_DEC_PIB_OFFSET,
+	       "BC_DEC_OUT_BUFF PIB layout changed");
+_Static_assert(offsetof(BC_DEC_OUT_BUFF, Flags) == EXPECT_DEC_FLAGS_OFFSET,
+	       "BC_DEC_OUT_BUFF trailing fields changed");
 _Static_assert(sizeof(BC_DTS_STATS) == EXPECT_DTS_STATS_SIZE,
 	       "BC_DTS_STATS ABI changed");
 _Static_assert(sizeof(PPB) == EXPECT_PPB_SIZE, "PPB ABI changed");
@@ -64,6 +84,10 @@ _Static_assert(offsetof(PPB_VC1, userData) == 88U,
 	       "PPB_VC1 pointer offset changed");
 _Static_assert(offsetof(BC_DTS_STATS, DrvNextMDataPLD) == 80U,
 	       "BC_DTS_STATS 64-bit field offset changed");
+_Static_assert(offsetof(BC_DTS_STATS, ipTotalSize) == 16U,
+	       "BC_DTS_STATS first 64-bit field offset changed");
+_Static_assert(offsetof(BC_DTS_STATS, res1) == 104U,
+	       "BC_DTS_STATS trailing fields changed");
 _Static_assert(sizeof(BC_FW_CMD) == 520U, "BC_FW_CMD ABI changed");
 _Static_assert(sizeof(BC_PCI_CFG) == 264U, "BC_PCI_CFG ABI changed");
 _Static_assert(_IOC_TYPE(BCM_IOC_GET_VERSION) == BC_IOC_BASE,

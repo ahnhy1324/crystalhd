@@ -62,6 +62,9 @@ static void crystalhd_free_dio(struct crystalhd_adp *adp, struct crystalhd_dio_r
 	spin_lock_irqsave(&adp->lock, flags);
 	dio->sig = crystalhd_dio_inv;
 	dio->page_cnt = 0;
+	dio->sg_cnt = 0;
+	dio->sg_nents = 0;
+	dio->cpu_owned = false;
 	dio->fb_size = 0;
 	memset(&dio->uinfo, 0, sizeof(dio->uinfo));
 	dio->next = adp->ua_map_free_head;
@@ -508,6 +511,14 @@ void *crystalhd_dioq_fetch_wait(struct crystalhd_hw *hw, uint32_t to_secs, uint3
 			if(down_interruptible(&hw->fetch_sem))
 				goto sem_error;
 			r_pkt = crystalhd_dioq_fetch(ioq);
+			/* Another fetcher or flush may have consumed the packet
+			 * after the wakeup and before we acquired fetch_sem.
+			 */
+			if (!r_pkt) {
+				up(&hw->fetch_sem);
+				spin_lock_irqsave(&ioq->lock, flags);
+				continue;
+			}
 			/* If format change packet, then return with out checking anything */
 			if (r_pkt->flags & (COMP_FLAG_PIB_VALID | COMP_FLAG_FMT_CHANGE))
 				goto sem_rel_return;
@@ -575,146 +586,131 @@ sem_rel_return:
  * This routine maps user address and lock pages for DMA.
  *
  */
- BC_STATUS crystalhd_map_dio(struct crystalhd_adp *adp, void *ubuff,
+BC_STATUS crystalhd_map_dio(struct crystalhd_adp *adp, void *ubuff,
 	uint32_t ubuff_sz, uint32_t uv_offset,
 	bool en_422mode, bool dir_tx,
 	struct crystalhd_dio_req **dio_hnd)
 {
-struct device *dev;
-struct crystalhd_dio_req	*dio;
-uint32_t start = 0, end = 0, count = 0;
-uint32_t spsz = 0;
-unsigned long uaddr = 0, uv_start = 0;
-int i = 0, rw = 0, res = 0, nr_pages = 0, skip_fb_sg = 0;
+	struct device *dev;
+	struct crystalhd_dio_req *dio;
+	unsigned long uaddr = (unsigned long)ubuff;
+	unsigned long nr_pages;
+	unsigned int gup_flags = FOLL_LONGTERM;
+	uint32_t count, offset, len;
+	long pinned;
+	int i;
 
-if (!adp || !ubuff || !ubuff_sz || !dio_hnd) {
-printk(KERN_ERR "%s: Invalid arg\n", __func__);
-return BC_STS_INV_ARG;
+	if (dio_hnd)
+		*dio_hnd = NULL;
+	if (!adp || !ubuff || !ubuff_sz || !dio_hnd ||
+	    ubuff_sz > ULONG_MAX - uaddr || (uaddr & 3) ||
+	    (!dir_tx && ((ubuff_sz | uv_offset) & 3)) ||
+	    uv_offset >= ubuff_sz)
+		return BC_STS_INV_ARG;
+
+	dev = &adp->pdev->dev;
+	/* Subtract before rounding to avoid wrapping near ULONG_MAX. */
+	nr_pages = ((uaddr + ubuff_sz - 1) >> PAGE_SHIFT) -
+		   (uaddr >> PAGE_SHIFT) + 1;
+	dio = crystalhd_alloc_dio(adp);
+	if (!dio)
+		return BC_STS_INSUFF_RES;
+	if (nr_pages > dio->max_pages) {
+		crystalhd_free_dio(adp, dio);
+		return BC_STS_INSUFF_RES;
+	}
+
+	/* The capture metadata parser also updates words in the Y buffer. */
+	dio->direction = dir_tx ? DMA_TO_DEVICE : DMA_BIDIRECTIONAL;
+	/* Input is owned until its synchronous ioctl completes, including an
+	 * unbounded wait for firmware FIFO space before the timed DMA transfer.
+	 * Capture registration survives ioctls, discard flush and suspend until
+	 * fetch/full flush/close/remove. Neither path has MMU notifiers, so both
+	 * require long-term pins. The MM rejects unsupported mappings (e.g. DAX).
+	 */
+	if (!dir_tx)
+		gup_flags |= FOLL_WRITE;
+	pinned = pin_user_pages_fast(uaddr, nr_pages, gup_flags, dio->pages);
+	dio->page_cnt = pinned > 0 ? pinned : 0;
+	dio->sig = crystalhd_dio_locked;
+	if (pinned != nr_pages) {
+		dev_dbg(dev, "pin pages failed: %lu-%ld\n", nr_pages, pinned);
+		goto fail;
+	}
+
+	/* The device reads the final 1..3 input bytes from a coherent word.
+	 * Exclude those bytes from the streaming SG list before mapping it;
+	 * removing a DMA segment afterwards is wrong when the mapper merges it.
+	 */
+	dio->fb_size = dir_tx ? ubuff_sz & 3 : 0;
+	count = ubuff_sz - dio->fb_size;
+	if (dio->fb_size) {
+		memset(dio->fb_va, 0, 4);
+		if (copy_from_user(dio->fb_va, (void __user *)(uaddr + count),
+				   dio->fb_size))
+			goto fail;
+	}
+	if (count) {
+		offset = offset_in_page(uaddr);
+		dio->sg_nents = DIV_ROUND_UP(offset + count, PAGE_SIZE);
+		crystalhd_init_sg(dio->sg, dio->sg_nents);
+		for (i = 0; i < dio->sg_nents; i++) {
+			len = min_t(uint32_t, count, PAGE_SIZE - offset);
+			crystalhd_set_sg(&dio->sg[i], dio->pages[i], len, offset);
+			count -= len;
+			offset = 0;
+		}
+		dio->sg_cnt = dma_map_sg(dev, dio->sg, dio->sg_nents,
+					 dio->direction);
+		if (!dio->sg_cnt)
+			goto fail;
+		dio->sig = crystalhd_dio_sg_mapped;
+	}
+
+	/* Plane offsets refer to mapped DMA segments, which may combine pages. */
+	if (uv_offset) {
+		offset = uv_offset;
+		for (i = 0; i < dio->sg_cnt; i++) {
+			if (offset < sg_dma_len(&dio->sg[i]))
+				break;
+			offset -= sg_dma_len(&dio->sg[i]);
+		}
+		if (i == dio->sg_cnt)
+			goto fail;
+		dio->uinfo.uv_sg_ix = i;
+		dio->uinfo.uv_sg_off = offset;
+	}
+	dio->uinfo.xfr_len = ubuff_sz;
+	dio->uinfo.xfr_buff = ubuff;
+	dio->uinfo.uv_offset = uv_offset;
+	dio->uinfo.b422mode = en_422mode;
+	dio->uinfo.dir_tx = dir_tx;
+	*dio_hnd = dio;
+	return BC_STS_SUCCESS;
+
+fail:
+	crystalhd_unmap_dio(adp, dio);
+	return BC_STS_ERROR;
 }
 
-dev = &adp->pdev->dev;
-
-/* Compute pages */
-uaddr = (unsigned long)ubuff;
-count = ubuff_sz;
-end = (uaddr + count + PAGE_SIZE - 1) >> PAGE_SHIFT;
-start = uaddr >> PAGE_SHIFT;
-nr_pages = end - start;
-
-if (!count || ((uaddr + count) < uaddr)) {
-dev_err(dev, "User addr overflow!!\n");
-return BC_STS_INV_ARG;
+void crystalhd_dio_to_cpu(struct crystalhd_adp *adp,
+			  struct crystalhd_dio_req *dio)
+{
+	if (dio->sig == crystalhd_dio_sg_mapped && !dio->cpu_owned) {
+		dma_sync_sg_for_cpu(&adp->pdev->dev, dio->sg, dio->sg_nents,
+				    dio->direction);
+		dio->cpu_owned = true;
+	}
 }
 
-dio = crystalhd_alloc_dio(adp);
-if (!dio) {
-dev_err(dev, "dio pool empty..\n");
-return BC_STS_INSUFF_RES;
-}
-
-if (dir_tx) {
-rw = WRITE;
-dio->direction = DMA_TO_DEVICE;
-} else {
-rw = READ;
-dio->direction = DMA_FROM_DEVICE;
-}
-
-if (nr_pages > dio->max_pages) {
-dev_err(dev, "max_pages(%d) exceeded(%d)!!\n",
-  dio->max_pages, nr_pages);
-crystalhd_unmap_dio(adp, dio);
-return BC_STS_INSUFF_RES;
-}
-
-if (uv_offset) {
-uv_start = (uaddr + uv_offset)  >> PAGE_SHIFT;
-dio->uinfo.uv_sg_ix = uv_start - start;
-dio->uinfo.uv_sg_off = ((uaddr + uv_offset) & ~PAGE_MASK);
-}
-
-dio->fb_size = ubuff_sz & 0x03;
-if (dio->fb_size) {
-res = copy_from_user(dio->fb_va,
-		   (void *)(uaddr + count - dio->fb_size),
-		   dio->fb_size);
-if (res) {
-  dev_err(dev, "failed %d to copy %u fill bytes from %p\n",
-	  res, dio->fb_size,
-	  (void *)(uaddr + count-dio->fb_size));
-  crystalhd_unmap_dio(adp, dio);
-  return BC_STS_INSUFF_RES;
-}
-}
-mmap_read_lock(current->mm);
-
-res = crystalhd_get_user_pages_remote(current->mm, uaddr, nr_pages,
-				      rw == READ ? FOLL_WRITE : 0,
-				      dio->pages);
-
-mmap_read_unlock(current->mm);
-/* Save for release..*/
-dio->sig = crystalhd_dio_locked;
-if (res < nr_pages) {
-dev_err(dev, "get pages failed: %d-%d\n", nr_pages, res);
-dio->page_cnt = res;
-crystalhd_unmap_dio(adp, dio);
-return BC_STS_ERROR;
-}
-
-dio->page_cnt = nr_pages;
-/* Get scatter/gather */
-crystalhd_init_sg(dio->sg, dio->page_cnt);
-crystalhd_set_sg(&dio->sg[0], dio->pages[0], 0, uaddr & ~PAGE_MASK);
-if (nr_pages > 1) {
-dio->sg[0].length = PAGE_SIZE - dio->sg[0].offset;
-
-#ifdef CONFIG_X86_64
-dio->sg[0].dma_length = dio->sg[0].length;
-#endif
-count -= dio->sg[0].length;
-for (i = 1; i < nr_pages; i++) {
-  if (count < 4) {
-	  spsz = count;
-	  skip_fb_sg = 1;
-  } else {
-	  spsz = (count < PAGE_SIZE) ?
-		  (count & ~0x03) : PAGE_SIZE;
-  }
-  crystalhd_set_sg(&dio->sg[i], dio->pages[i], spsz, 0);
-  count -= spsz;
-}
-} else {
-if (count < 4) {
-  dio->sg[0].length = count;
-  skip_fb_sg = 1;
-} else {
-  dio->sg[0].length = count - dio->fb_size;
-}
-#ifdef CONFIG_X86_64
-dio->sg[0].dma_length = dio->sg[0].length;
-#endif
-}
-dio->sg_cnt = dma_map_sg(&adp->pdev->dev, dio->sg,
-	   dio->page_cnt, dio->direction);
-if (dio->sg_cnt <= 0) {
-dev_err(dev, "sg map %d-%d\n", dio->sg_cnt, dio->page_cnt);
-crystalhd_unmap_dio(adp, dio);
-return BC_STS_ERROR;
-}
-if (dio->sg_cnt && skip_fb_sg)
-dio->sg_cnt -= 1;
-dio->sig = crystalhd_dio_sg_mapped;
-/* Fill in User info.. */
-dio->uinfo.xfr_len   = ubuff_sz;
-dio->uinfo.xfr_buff  = ubuff;
-dio->uinfo.uv_offset = uv_offset;
-dio->uinfo.b422mode  = en_422mode;
-dio->uinfo.dir_tx    = dir_tx;
-
-*dio_hnd = dio;
-
-return BC_STS_SUCCESS;
+void crystalhd_dio_to_device(struct crystalhd_adp *adp,
+			     struct crystalhd_dio_req *dio)
+{
+	if (dio->sig == crystalhd_dio_sg_mapped && dio->cpu_owned) {
+		dma_sync_sg_for_device(&adp->pdev->dev, dio->sg, dio->sg_nents,
+				       dio->direction);
+		dio->cpu_owned = false;
+	}
 }
 /**
  * crystalhd_unmap_dio - Release mapped resources
@@ -728,28 +724,26 @@ return BC_STS_SUCCESS;
  */
 BC_STATUS crystalhd_unmap_dio(struct crystalhd_adp *adp, struct crystalhd_dio_req *dio)
 {
-	struct page *page = NULL;
-	int j = 0;
+	bool mapped;
 
 	if (!adp || !dio) {
 		printk(KERN_ERR "%s: Invalid arg\n", __func__);
 		return BC_STS_INV_ARG;
 	}
 
-	if ((dio->page_cnt > 0) && (dio->sig != crystalhd_dio_inv)) {
-		for (j = 0; j < dio->page_cnt; j++) {
-			page = dio->pages[j];
-			if (page) {
-				if (!PageReserved(page) &&
-				    (dio->direction == DMA_FROM_DEVICE))
-					SetPageDirty(page);
-
-				put_page(page);
-			}
-		}
+	/* DMA must be stopped before entry. Unmap while the pages are pinned:
+	 * SWIOTLB may copy capture data back during dma_unmap_sg().
+	 */
+	mapped = dio->sig == crystalhd_dio_sg_mapped;
+	if (mapped) {
+		/* Preserve CPU metadata edits across SWIOTLB's final copy-back. */
+		crystalhd_dio_to_device(adp, dio);
+		dma_unmap_sg(&adp->pdev->dev, dio->sg, dio->sg_nents,
+			     dio->direction);
 	}
-	if (dio->sig == crystalhd_dio_sg_mapped)
-		dma_unmap_sg(&adp->pdev->dev, dio->sg, dio->page_cnt, dio->direction);
+	if (dio->page_cnt > 0)
+		unpin_user_pages_dirty_lock(dio->pages, dio->page_cnt,
+			mapped && dio->direction != DMA_TO_DEVICE);
 
 	crystalhd_free_dio(adp, dio);
 
@@ -799,6 +793,7 @@ int crystalhd_create_dio_pool(struct crystalhd_adp *adp, uint32_t max_pages)
 		temp = kzalloc(asz, GFP_KERNEL);
 		if ((temp) == NULL) {
 			dev_err(dev, "Failed to alloc %d mem\n", asz);
+			crystalhd_destroy_dio_pool(adp);
 			return -ENOMEM;
 		}
 
@@ -812,6 +807,8 @@ int crystalhd_create_dio_pool(struct crystalhd_adp *adp, uint32_t max_pages)
 					    &dio->fb_pa);
 		if (!dio->fb_va) {
 			dev_err(dev, "fill byte alloc failed.\n");
+			kfree(dio);
+			crystalhd_destroy_dio_pool(adp);
 			return -ENOMEM;
 		}
 

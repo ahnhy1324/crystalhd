@@ -4,6 +4,7 @@
 'use strict';
 
 const http = require('http');
+let activeSocket = null;
 
 let WebSocket;
 try {
@@ -54,7 +55,7 @@ if (!Number.isInteger(port) || port < 1 || port > 65535 ||
       !Number.isInteger(seek.at) || seek.at < 1 || seek.at >= seconds ||
       !Number.isFinite(seek.target) || seek.target < 0 ||
       (index !== 0 && seek.at <= seekSchedule[index - 1].at))) {
-  console.error('chromium-youtube: invalid --port or --seconds value');
+  console.error('chromium-youtube: invalid port, duration or paired seek schedule');
   process.exit(2);
 }
 
@@ -72,6 +73,7 @@ function getJson(path) {
         }
       });
     });
+    request.setTimeout(10000, () => request.destroy(new Error('DevTools HTTP request timed out')));
     request.on('error', reject);
   });
 }
@@ -95,6 +97,7 @@ async function main() {
   const target = await findPageTarget();
   const socket = new WebSocket(target.webSocketDebuggerUrl,
                                {origin: 'http://localhost'});
+  activeSocket = socket;
   await new Promise((resolve, reject) => {
     socket.once('open', resolve);
     socket.once('error', reject);
@@ -106,6 +109,8 @@ async function main() {
   let snapshot = null;
   let previousPlayableTime = null;
   let firstPlayingTime = null;
+  let playbackAdvancement = 0;
+  let previousSampleAt = null;
   let maximumTime = 0;
   const regressions = [];
   const presentedRegressions = new Map();
@@ -119,7 +124,13 @@ async function main() {
   function call(method, params = {}) {
     const id = nextId++;
     socket.send(JSON.stringify({id, method, params}));
-    return new Promise((resolve, reject) => replies.set(id, {resolve, reject}));
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        replies.delete(id);
+        reject(new Error(`DevTools ${method} timed out`));
+      }, 15000);
+      replies.set(id, {resolve, reject, timer});
+    });
   }
 
   socket.on('message', (data) => {
@@ -129,6 +140,7 @@ async function main() {
       if (!reply)
         return;
       replies.delete(message.id);
+      clearTimeout(reply.timer);
       if (message.error)
         reply.reject(new Error(JSON.stringify(message.error)));
       else
@@ -327,6 +339,15 @@ async function main() {
       regressions.push({elapsed: elapsed + 1, from: previousPlayableTime,
                         to: snapshot.currentTime});
     }
+    const sampledAt = Date.now();
+    if (snapshot.readyState >= 2 && previousPlayableTime !== null &&
+        previousSampleAt !== null) {
+      const delta = snapshot.currentTime - previousPlayableTime;
+      // A timeline jump is not evidence that frames continued playing.
+      if (delta > 0 && delta <= (sampledAt - previousSampleAt) / 1000 + 0.5)
+        playbackAdvancement += delta;
+    }
+    previousSampleAt = sampledAt;
     if (snapshot.readyState >= 2)
       previousPlayableTime = snapshot.currentTime;
     if ((elapsed + 1) % 5 === 0) {
@@ -345,7 +366,6 @@ async function main() {
   const decoder = properties.kVideoDecoderName || 'unknown';
   const platform = properties.kIsPlatformVideoDecoder || 'unknown';
   const tracks = properties.kVideoTracks || 'unknown';
-  const advancement = firstPlayingTime === null ? 0 : maximumTime - firstPlayingTime;
 
   console.log(`YouTube codec: ${snapshot ? snapshot.youtubeCodecs : 'unknown'}`);
   console.log(`YouTube resolution: ${snapshot ? snapshot.youtubeResolution : 'unknown'} ` +
@@ -388,10 +408,18 @@ async function main() {
        snapshot.seekGateCompleted < seekSchedule.length)) {
     throw new Error('seek presentation gate did not cover and complete every seek');
   }
+  const h264 = /(?:avc1|h264)/i.test(
+      `${snapshot ? snapshot.youtubeCodecs : ''} ${tracks}`);
+  const mediaErrors = videoPlayers.flatMap((candidate) => candidate.errors);
+  if (!h264 || !snapshot || firstPlayingTime === null || maximumTime < 5 ||
+      playbackAdvancement < 5 || regressions.length || presentedRegressions.size ||
+      maximumPresentedFrames === 0 || mediaErrors.length ||
+      (seekSchedule.length !== 0 &&
+       (nextSeek !== seekSchedule.length || settledSeeks.size !== seekSchedule.length ||
+        seekViolations.size))) {
+    throw new Error('YouTube did not sustain H.264 playback with complete, ordered seeks');
+  }
   if (expectHardware) {
-    const h264 = /(?:avc1|h264)/i.test(
-        `${snapshot ? snapshot.youtubeCodecs : ''} ${tracks}`);
-    const mediaErrors = videoPlayers.flatMap((candidate) => candidate.errors);
     const h264Players = videoPlayers.filter((candidate) =>
         /(?:avc1|h264)/i.test(candidate.properties.kVideoTracks || ''));
     const hardwareContinuity = h264Players.length > 0 &&
@@ -399,20 +427,17 @@ async function main() {
             candidate.decoderHistory.length > 0 &&
             candidate.decoderHistory.every((name) => name === 'VaapiVideoDecoder') &&
             candidate.properties.kIsPlatformVideoDecoder === 'true');
-    if (!h264 || decoder !== 'VaapiVideoDecoder' || platform !== 'true' ||
-        !snapshot || maximumTime < 5 || advancement < 5 || regressions.length ||
-        presentedRegressions.size || maximumPresentedFrames === 0 ||
+    if (decoder !== 'VaapiVideoDecoder' || platform !== 'true' ||
         maximumYoutubeFps > 30 || maximumYoutubeWidth > 854 ||
-        (seekSchedule.length !== 0 &&
-         (nextSeek !== seekSchedule.length ||
-          settledSeeks.size !== seekSchedule.length || seekViolations.size)) ||
-        mediaErrors.length || !hardwareContinuity) {
+        !hardwareContinuity) {
       throw new Error('YouTube did not sustain H.264 playback through VA-API');
     }
   }
 }
 
 main().catch((error) => {
+  if (activeSocket)
+    activeSocket.terminate();
   console.error(`chromium-youtube: ${error.message}`);
   process.exitCode = 1;
 });

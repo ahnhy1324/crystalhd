@@ -21,8 +21,10 @@ jobs:
             build-essential autoconf gcc-multilib g++-multilib \
             linux-headers-generic \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            gstreamer1.0-tools libva-dev libdrm-dev libgbm-dev \
-            libswscale-dev
+            gstreamer1.0-tools gstreamer1.0-plugins-base \
+            libva-dev libdrm-dev libgbm-dev \
+            libswscale-dev ffmpeg libavcodec-dev libavformat-dev libavutil-dev \
+            nodejs node-ws
 
       - name: Select packaged kernel headers
         run: |
@@ -38,8 +40,14 @@ jobs:
       - name: Build and test
         run: make -j2 W=1 check KDIR="$KDIR" KVER="$KVER"
 
+      - name: Verify seek regression test against software decoding
+        run: |
+          sh tests/generate-h264-samples.sh "$RUNNER_TEMP/h264-samples"
+          make -C filters/vaapi seek-test
+          filters/vaapi/vaapi-seek-test "$RUNNER_TEMP/h264-samples/high.mp4" --software
+
   upstream-kernel-api:
-    name: Kernel API (${{ matrix.track }})
+    name: Kernel API (${{ matrix.track }}, ${{ matrix.arch }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -51,6 +59,13 @@ jobs:
           - lts-6.18
           - stable
           - mainline
+        arch:
+          - x86_64
+        include:
+          - track: lts-6.1
+            arch: i386
+          - track: stable
+            arch: i386
 
     steps:
       - name: Checkout CrystalHD
@@ -60,7 +75,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            bc bison build-essential curl flex git libelf-dev libssl-dev
+            bc bison build-essential curl flex gcc-multilib git libelf-dev libssl-dev
 
       - name: Resolve current upstream kernel
         run: |
@@ -95,11 +110,12 @@ jobs:
         run: |
           git clone --quiet --depth 1 --branch "v$KERNEL_VERSION" \
             "$KERNEL_REPOSITORY" "$KERNEL_DIR"
-          make -s -C "$KERNEL_DIR" defconfig
-          make -s -j2 -C "$KERNEL_DIR" modules_prepare
+          make -s -C "$KERNEL_DIR" ARCH="${{ matrix.arch }}" defconfig
+          make -s -j2 -C "$KERNEL_DIR" ARCH="${{ matrix.arch }}" modules_prepare
 
       - name: Compile CrystalHD kernel API
         run: |
           make -C "$KERNEL_DIR" \
+            ARCH="${{ matrix.arch }}" \
             M="$GITHUB_WORKSPACE/driver/linux" \
             KDIR="$KERNEL_DIR" W=1 crystalhd.o

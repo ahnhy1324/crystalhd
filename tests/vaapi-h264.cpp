@@ -69,5 +69,31 @@ int main()
 	assert(!BuildSps(picture, VAProfileH264High, &rejected));
 	assert(rejected.empty());
 
+	// Even the final slice must have a following Annex-B NAL boundary.
+	std::vector<uint8_t> access_unit = {0, 0, 0, 1, 0x65, 0x88, 0x84};
+	const auto slice_bytes = access_unit;
+	FinishAccessUnit(&access_unit);
+	assert(std::equal(slice_bytes.begin(), slice_bytes.end(), access_unit.begin()));
+	std::vector<uint8_t> delimiter(access_unit.begin() + slice_bytes.size(),
+	                               access_unit.end());
+	assert(delimiter.size() == 6);
+	assert(delimiter[0] == 0 && delimiter[1] == 0 &&
+	       delimiter[2] == 0 && delimiter[3] == 1);
+	assert(delimiter[4] == 9); // nal_ref_idc=0, access_unit_delimiter
+	assert((delimiter[5] >> 5) == 7); // I/P/B/SP/SI slices permitted
+	assert((delimiter[5] & 0x1f) == 0x10); // valid RBSP termination
+
+	// A stalled infinite sync fails truthfully; finite client timeouts retain
+	// their distinct timeout status and are not converted into decode errors.
+	assert(DecodeWaitStatus(VA_TIMEOUT_INFINITE, kDecodeTimeoutNs - 1) ==
+	       VA_STATUS_SUCCESS);
+	assert(DecodeWaitStatus(VA_TIMEOUT_INFINITE, kDecodeTimeoutNs) ==
+	       VA_STATUS_ERROR_DECODING_ERROR);
+	assert(DecodeWaitStatus(0, 0) == VA_STATUS_ERROR_TIMEDOUT);
+	assert(DecodeWaitStatus(500, 499) == VA_STATUS_SUCCESS);
+	assert(DecodeWaitStatus(500, 500) == VA_STATUS_ERROR_TIMEDOUT);
+	assert(DecodeWaitStatus(kDecodeTimeoutNs + 1, kDecodeTimeoutNs) ==
+	       VA_STATUS_SUCCESS);
+
 	return 0;
 }

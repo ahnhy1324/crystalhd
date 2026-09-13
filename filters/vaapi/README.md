@@ -7,10 +7,14 @@ also allocates and exports ARGB DRM PRIME surfaces for Chromium-class clients
 whose compositor cannot render NV12 directly.
 
 This is an experimental, client-oriented VA-API subset rather than a complete
-VA-API implementation. Current hardware validation covers progressive H.264
-decode to NV12 through FFmpeg on BCM70015. The DRM PRIME import/export and VPP
-smoke test does not itself exercise CrystalHD hardware, and no libva
-conformance suite is run.
+VA-API implementation. Complete progressive H.264 decode to NV12 through
+FFmpeg on BCM70015 currently fails validation: a 180-frame Baseline sample
+produced only 178 frames because firmware retained the final two pictures.
+An infinite `vaSyncSurface` request now reports a decode error after 10 seconds
+without that picture, instead of hanging or substituting another frame.
+Use the [GStreamer path](../gst/gst-plugin-1.0/README.md) for validated complete
+playback. The DRM PRIME import/export and VPP smoke test does not itself
+exercise CrystalHD hardware, and no libva conformance suite is run.
 
 Chromium may export a VA surface and then reimport the same DMA-BUF under a
 different surface ID for video processing. The driver links those aliases to
@@ -37,6 +41,10 @@ before their VA IDs are released.
 
 Current limitations:
 
+- complete end-of-stream drain and VA-API seek/flush pixel identity are not
+  validated; VA-API supplies no explicit end-of-stream callback, and sending
+  the library's H.264 end-of-sequence marker during ordinary surface sync
+  would invalidate ongoing reference-picture decoding
 - only the decode, image, DRM PRIME, and minimal video-processing operations
   needed by the documented clients are implemented; `vaPutSurface`,
   subpictures, palettes, and detailed surface-error reporting are unavailable

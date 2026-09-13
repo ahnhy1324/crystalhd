@@ -1,2 +1,4 @@
 /crystalhd_drv_video.so
 /vaapi-import-test
+/vaapi-h264-test
+/vaapi-seek-test

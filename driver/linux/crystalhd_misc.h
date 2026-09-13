@@ -82,8 +82,10 @@ struct crystalhd_dio_req {
 	struct page						**pages;
 	struct scatterlist				*sg;
 	int								sg_cnt;
+	int								sg_nents; /* original count passed to DMA mapping */
 	int								page_cnt;
 	int								direction;
+	bool							cpu_owned;
 	struct crystalhd_dio_user_info	uinfo;
 	void							*fb_va;
 	uint32_t						fb_size;
@@ -160,6 +162,8 @@ extern BC_STATUS crystalhd_map_dio(struct crystalhd_adp *, void *, uint32_t,
 				   uint32_t, bool, bool, struct crystalhd_dio_req**);
 
 extern BC_STATUS crystalhd_unmap_dio(struct crystalhd_adp *, struct crystalhd_dio_req*);
+void crystalhd_dio_to_cpu(struct crystalhd_adp *, struct crystalhd_dio_req *);
+void crystalhd_dio_to_device(struct crystalhd_adp *, struct crystalhd_dio_req *);
 #define crystalhd_get_sgle_paddr(_dio, _ix) (cpu_to_le64(sg_dma_address(&_dio->sg[_ix])))
 #define crystalhd_get_sgle_len(_dio, _ix) (cpu_to_le32(sg_dma_len(&_dio->sg[_ix])))
 
