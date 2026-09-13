@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include <cerrno>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 
 #include <fcntl.h>
 #include <libdrm/drm_fourcc.h>
@@ -66,6 +68,89 @@ bool ContainsFormat(const uint32_t *formats, uint32_t count, uint32_t format) {
       return true;
   }
   return false;
+}
+
+// Use the public libva entry points and real DRM-backed storage. The fault
+// injection suite covers failed ownership; this verifies successful CPU
+// upload/readback through two VA IDs referring to the same DMA-BUF.
+bool ImagePattern(VADisplay display, const VAImage &image, uint8_t seed,
+                  bool verify) {
+  if (image.format.fourcc != VA_FOURCC_NV12 || image.num_planes != 2 ||
+      image.width == 0 || image.height == 0)
+    return false;
+  for (unsigned int plane = 0; plane < 2; ++plane) {
+    const size_t rows = plane == 0 ? image.height : (image.height + 1) / 2;
+    const size_t columns = plane == 0 ? image.width : (image.width + 1) & ~1U;
+    if (image.pitches[plane] < columns ||
+        static_cast<size_t>(image.offsets[plane]) +
+                (rows - 1) * image.pitches[plane] + columns > image.data_size)
+      return false;
+  }
+  void *mapped = nullptr;
+  if (!Check(vaMapBuffer(display, image.buf, &mapped), "vaMapBuffer(image)"))
+    return false;
+  bool success = mapped != nullptr;
+  auto *bytes = static_cast<uint8_t *>(mapped);
+  for (unsigned int plane = 0; success && plane < 2; ++plane) {
+    const unsigned int rows = plane == 0 ? image.height : (image.height + 1) / 2;
+    const unsigned int columns = plane == 0 ? image.width : (image.width + 1) & ~1U;
+    for (unsigned int row = 0; success && row < rows; ++row) {
+      for (unsigned int column = 0; column < columns; ++column) {
+        uint8_t &pixel = bytes[image.offsets[plane] +
+                               static_cast<size_t>(row) * image.pitches[plane] +
+                               column];
+        const uint8_t expected = static_cast<uint8_t>(
+            seed + plane * 71 + row * 13 + column * 37);
+        if (!verify)
+          pixel = expected;
+        else if (pixel != expected) {
+          fprintf(stderr, "image readback mismatch at plane %u row %u column %u\n",
+                  plane, row, column);
+          success = false;
+          break;
+        }
+      }
+    }
+  }
+  return Check(vaUnmapBuffer(display, image.buf), "vaUnmapBuffer(image)") && success;
+}
+
+bool ImageRoundTrip(VADisplay display, VASurfaceID writer, VASurfaceID reader,
+                    unsigned int width, unsigned int height, uint8_t seed) {
+  VAImageFormat format = {};
+  format.fourcc = VA_FOURCC_NV12;
+  format.byte_order = VA_LSB_FIRST;
+  format.bits_per_pixel = 12;
+  VAImage input = {}, output = {}, derived = {};
+  input.image_id = output.image_id = derived.image_id = VA_INVALID_ID;
+  bool success = Check(vaCreateImage(display, &format, width, height, &input),
+                       "vaCreateImage(upload)");
+  if (success)
+    success = ImagePattern(display, input, seed, false);
+  if (success)
+    success = Check(vaPutImage(display, writer, input.image_id, 0, 0, width,
+                               height, 0, 0, width, height), "vaPutImage(NV12)");
+  if (success)
+    success = Check(vaSyncSurface(display, reader), "vaSyncSurface(image alias)");
+  if (success)
+    success = Check(vaCreateImage(display, &format, width, height, &output),
+                     "vaCreateImage(readback)");
+  if (success)
+    success = Check(vaGetImage(display, reader, 0, 0, width, height,
+                               output.image_id), "vaGetImage(NV12 alias)");
+  if (success)
+    success = ImagePattern(display, output, seed, true);
+  if (success)
+    success = Check(vaDeriveImage(display, reader, &derived),
+                     "vaDeriveImage(NV12 snapshot)");
+  if (success)
+    success = ImagePattern(display, derived, seed, true);
+  for (VAImage *image : {&derived, &output, &input}) {
+    if (image->image_id != VA_INVALID_ID)
+      success = Check(vaDestroyImage(display, image->image_id),
+                       "vaDestroyImage(roundtrip)") && success;
+  }
+  return success;
 }
 
 }  // namespace
@@ -191,6 +276,12 @@ int main(int argc, char **argv) {
   }
   if (nv12_export_success)
     CloseDescriptor(&nv12_exported);
+  if (vpp_success)
+    vpp_success = ImageRoundTrip(display, nv12_surface, nv12_alias,
+                                 width, height, 17);
+  if (vpp_success)
+    vpp_success = ImageRoundTrip(display, nv12_alias, nv12_surface,
+                                 width, height, 29);
 
   VASurfaceID argb_surface = VA_INVALID_SURFACE;
   if (vpp_success) {
@@ -349,7 +440,7 @@ int main(int argc, char **argv) {
   close(drm_fd);
   if (!success)
     return 1;
-  printf("VA-API NV12 import/export and video processing passed (%s, API %d.%d)\n",
+  printf("VA-API NV12 import/export, image readback, and video processing passed (%s, API %d.%d)\n",
          is_dma_buf ? "dma-buf" : "memfd fallback", major, minor);
   return 0;
 }

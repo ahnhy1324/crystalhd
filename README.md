@@ -201,11 +201,16 @@ For a local browser pixel/seek audit, run these from a graphical session:
 ```sh
 sh tests/generate-browser-sample.sh /tmp/crystalhd-browser-barcode.mp4
 node tests/chromium-local-playback.js /tmp/crystalhd-browser-barcode.mp4
+node tests/chromium-local-playback.js /tmp/crystalhd-browser-barcode.mp4 --controls
 ```
 
 This uses a temporary profile and Chrome's software default with its GPU
 sandbox enabled. It checks numbered pixels against retained video-frame
 timestamps through four seeks and requires the actual final frame at EOS.
+The optional `--controls` run first checks pause/resume and 0.5x, 1.5x, 2x,
+then restored 1x playback. It compares actual numbered frame timestamps and
+media time with elapsed time, and samples the paused picture independently
+of frame callbacks. This local-file test does not validate YouTube controls.
 It does not measure full-rate presentation or establish hardware decoding.
 The explicit `--expect-hardware` mode rejects any software fallback and
 requires the launcher's experimental GPU-sandbox opt-out acknowledgement.

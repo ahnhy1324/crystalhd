@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cerrno>
 #include <climits>
 #include <condition_variable>
 #include <cstdarg>
@@ -308,6 +309,51 @@ struct Buffer {
   std::vector<uint8_t> data;
 };
 
+static bool SyncDmaBuf(int fd, uint64_t flags) {
+  dma_buf_sync sync = {};
+  sync.flags = flags;
+  int result;
+  do {
+    result = ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
+  } while (result != 0 && (errno == EINTR || errno == EAGAIN));
+  return result == 0;
+}
+
+struct BackingIdentity {
+  dev_t device = 0;
+  ino_t inode = 0;
+
+  bool operator==(const BackingIdentity &other) const {
+    return device == other.device && inode == other.inode;
+  }
+};
+
+struct SurfaceLayout {
+  struct Plane {
+    BackingIdentity backing;
+    uint32_t offset = 0;
+    uint32_t pitch = 0;
+    uint64_t modifier = DRM_FORMAT_MOD_LINEAR;
+    bool operator==(const Plane &other) const {
+      return backing == other.backing && offset == other.offset &&
+             pitch == other.pitch && modifier == other.modifier;
+    }
+  };
+  bool valid = false;
+  uint32_t fourcc = 0;
+  unsigned int width = 0;
+  unsigned int height = 0;
+  unsigned int num_planes = 0;
+  std::vector<BackingIdentity> objects;
+  std::array<Plane, 2> planes = {};
+  bool operator==(const SurfaceLayout &other) const {
+    return valid && other.valid && fourcc == other.fourcc &&
+           width == other.width && height == other.height &&
+           num_planes == other.num_planes && objects == other.objects &&
+           planes == other.planes;
+  }
+};
+
 struct Surface {
   unsigned int width = 0;
   unsigned int height = 0;
@@ -324,6 +370,7 @@ struct Surface {
   uint64_t expected_timestamp = 0;
   uint64_t frame_timestamp = 0;
   uint64_t latest_vpp_sequence = 0;
+  SurfaceLayout layout;
 
   std::vector<uint8_t> storage;
   gbm_bo *bo = nullptr;
@@ -611,48 +658,32 @@ struct Surface {
     return true;
   }
 
-  void BeginCpuRead() const {
-    for (int fd : object_fds) {
-      dma_buf_sync sync = {};
-      sync.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ;
-      ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
-    }
-  }
-
-  void EndCpuRead() const {
-    for (int fd : object_fds) {
-      dma_buf_sync sync = {};
-      sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
-      ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
-    }
-  }
-
-  bool BeginCpuWrite() const {
+  bool BeginCpuAccess(uint64_t direction) const {
     for (size_t object = 0; object < object_fds.size(); ++object) {
-      dma_buf_sync sync = {};
-      sync.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE;
-      if (ioctl(object_fds[object], DMA_BUF_IOCTL_SYNC, &sync) != 0) {
+      if (!SyncDmaBuf(object_fds[object], DMA_BUF_SYNC_START | direction)) {
         // START ownership is per object. Release only the successfully
-        // acquired prefix before reporting a failed, all-or-nothing write.
-        sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE;
+        // acquired prefix before reporting a failed, all-or-nothing access.
         while (object != 0)
-          ioctl(object_fds[--object], DMA_BUF_IOCTL_SYNC, &sync);
+          SyncDmaBuf(object_fds[--object], DMA_BUF_SYNC_END | direction);
         return false;
       }
     }
     return true;
   }
 
-  bool EndCpuWrite() const {
+  bool EndCpuAccess(uint64_t direction) const {
     bool success = true;
     for (int fd : object_fds) {
-      dma_buf_sync sync = {};
-      sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE;
-      if (ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync) != 0)
+      if (!SyncDmaBuf(fd, DMA_BUF_SYNC_END | direction))
         success = false;
     }
     return success;
   }
+
+  bool BeginCpuRead() const { return BeginCpuAccess(DMA_BUF_SYNC_READ); }
+  bool EndCpuRead() const { return EndCpuAccess(DMA_BUF_SYNC_READ); }
+  bool BeginCpuWrite() const { return BeginCpuAccess(DMA_BUF_SYNC_WRITE); }
+  bool EndCpuWrite() const { return EndCpuAccess(DMA_BUF_SYNC_WRITE); }
 
   // The asynchronous path cannot call DMA_BUF_IOCTL_SYNC END while its own
   // unsignaled write fence is installed: i915 waits on that fence. Flush every
@@ -679,7 +710,7 @@ struct Surface {
   }
 };
 
-static void EndFencedWrite(Surface *surface, int timeline);
+static bool EndFencedWrite(Surface *surface, int timeline);
 
 // Begin CPU access before publishing the fence: vaEndPicture has not returned,
 // so Chromium cannot yet enqueue a new read of this target. The imported
@@ -724,29 +755,28 @@ static int BeginFencedWrite(Surface *surface) {
   return timeline;
 }
 
-static void EndFencedWrite(Surface *surface, int timeline) {
+static bool EndFencedWrite(Surface *surface, int timeline) {
   if (timeline < 0)
-    return;
+    return true;
   if (surface != nullptr)
     surface->FlushCpuWrites();
   const uint32_t increment = 1;
-  ioctl(timeline, SW_SYNC_IOC_INC, &increment);
+  if (ioctl(timeline, SW_SYNC_IOC_INC, &increment) != 0) {
+    // Closing our sole timeline fd signals pending sw_sync fences with
+    // -ENOENT (Linux 6.1+). Do this before END, which can otherwise wait on
+    // the unsignaled fence forever. Never retry close on a recycled fd.
+    close(timeline);
+    if (surface != nullptr)
+      surface->EndCpuWrite();
+    return false;
+  }
   // Once the data is cache-visible it is safe to release CPU ownership. This
   // may briefly wait for the just-released reader, but cannot deadlock on our
   // fence because it has already been signaled.
-  if (surface != nullptr)
-    surface->EndCpuWrite();
+  const bool released = surface == nullptr || surface->EndCpuWrite();
   close(timeline);
+  return released;
 }
-
-struct BackingIdentity {
-  dev_t device = 0;
-  ino_t inode = 0;
-
-  bool operator==(const BackingIdentity &other) const {
-    return device == other.device && inode == other.inode;
-  }
-};
 
 struct BackingIdentityHash {
   size_t operator()(const BackingIdentity &identity) const {
@@ -762,6 +792,79 @@ static bool GetBackingIdentity(int fd, BackingIdentity *identity) {
     return false;
   identity->device = info.st_dev;
   identity->inode = info.st_ino;
+  return true;
+}
+
+static bool GetPrimeLayout(const VADRMPRIMESurfaceDescriptor &desc,
+                           SurfaceLayout *layout) {
+  *layout = {};
+  layout->fourcc = desc.fourcc == VA_FOURCC_BGRA ? VA_FOURCC_ARGB : desc.fourcc;
+  if ((layout->fourcc != VA_FOURCC_NV12 && layout->fourcc != VA_FOURCC_ARGB) ||
+      desc.num_objects == 0 || desc.num_objects > 4 ||
+      desc.num_layers == 0 || desc.num_layers > 4)
+    return false;
+  layout->width = desc.width;
+  layout->height = desc.height;
+  for (unsigned int object = 0; object < desc.num_objects; ++object) {
+    BackingIdentity identity;
+    if (!GetBackingIdentity(desc.objects[object].fd, &identity))
+      return false;
+    layout->objects.push_back(identity);
+  }
+  std::sort(layout->objects.begin(), layout->objects.end(),
+            [](const BackingIdentity &a, const BackingIdentity &b) {
+              return a.device < b.device || (a.device == b.device && a.inode < b.inode);
+            });
+  layout->objects.erase(std::unique(layout->objects.begin(), layout->objects.end()),
+                        layout->objects.end());
+  const unsigned int expected = layout->fourcc == VA_FOURCC_NV12 ? 2 : 1;
+  for (unsigned int layer = 0; layer < desc.num_layers; ++layer) {
+    if (desc.layers[layer].num_planes > 4)
+      return false;
+    for (unsigned int plane = 0; plane < desc.layers[layer].num_planes; ++plane) {
+      const unsigned int object = desc.layers[layer].object_index[plane];
+      if (layout->num_planes >= expected || object >= desc.num_objects)
+        return false;
+      auto &view = layout->planes[layout->num_planes++];
+      if (!GetBackingIdentity(desc.objects[object].fd, &view.backing))
+        return false;
+      view.offset = desc.layers[layer].offset[plane];
+      view.pitch = desc.layers[layer].pitch[plane];
+      view.modifier = desc.objects[object].drm_format_modifier;
+      if (view.modifier == DRM_FORMAT_MOD_INVALID)
+        view.modifier = DRM_FORMAT_MOD_LINEAR;
+    }
+  }
+  layout->valid = layout->num_planes == expected;
+  return layout->valid;
+}
+
+static bool GetLegacyLayout(const VASurfaceAttribExternalBuffers &desc,
+                            SurfaceLayout *layout) {
+  *layout = {};
+  layout->fourcc = desc.pixel_format == VA_FOURCC_BGRA ? VA_FOURCC_ARGB
+                                                     : desc.pixel_format;
+  if ((layout->fourcc != VA_FOURCC_NV12 && layout->fourcc != VA_FOURCC_ARGB) ||
+      desc.num_buffers != 1 || desc.buffers == nullptr ||
+      desc.buffers[0] > static_cast<uintptr_t>(INT_MAX))
+    return false;
+  layout->width = desc.width;
+  layout->height = desc.height;
+  BackingIdentity identity;
+  if (!GetBackingIdentity(static_cast<int>(desc.buffers[0]), &identity))
+    return false;
+  layout->objects.push_back(identity);
+  layout->num_planes = layout->fourcc == VA_FOURCC_NV12 ? 2 : 1;
+  if (desc.num_planes != layout->num_planes)
+    return false;
+  for (unsigned int plane = 0; plane < layout->num_planes; ++plane) {
+    auto &view = layout->planes[plane];
+    if (!GetBackingIdentity(static_cast<int>(desc.buffers[0]), &view.backing))
+      return false;
+    view.offset = desc.offsets[plane];
+    view.pitch = desc.pitches[plane];
+  }
+  layout->valid = true;
   return true;
 }
 
@@ -815,7 +918,8 @@ static VAStatus ProcessVpp(SwsContext **scaler,
     return VA_STATUS_ERROR_DECODING_ERROR;
   }
 
-  source->BeginCpuRead();
+  if (!source->BeginCpuRead())
+    return VA_STATUS_ERROR_OPERATION_FAILED;
   if (destination->fourcc == VA_FOURCC_ARGB) {
     // libswscale used to write scanlines straight into Chromium's imported
     // DMA-BUF. vaEndPicture is asynchronous, so the compositor could sample
@@ -940,7 +1044,8 @@ static VAStatus ProcessVpp(SwsContext **scaler,
       return VA_STATUS_ERROR_OPERATION_FAILED;
     }
   }
-  source->EndCpuRead();
+  if (!source->EndCpuRead())
+    return VA_STATUS_ERROR_OPERATION_FAILED;
   destination->ready = true;
   destination->failed = false;
   destination->expected_timestamp = source->expected_timestamp;
@@ -1100,6 +1205,37 @@ static Surface *BackingOwner(Driver *driver, Surface *surface) {
     return surface;
   auto owner = driver->surfaces.find(surface->backing_owner);
   return owner != driver->surfaces.end() ? owner->second.get() : surface;
+}
+
+static bool HasLiveBackingOwner(const Driver *driver, const Surface *surface) {
+  if (surface == nullptr || surface->destroyed)
+    return false;
+  if (surface->backing_owner == VA_INVALID_SURFACE)
+    return true;
+  const auto owner = driver->surfaces.find(surface->backing_owner);
+  // A queued operation can retain the removed owner's unsignaled fence.
+  // Falling back to an alias's cached readiness would both misreport status
+  // and let CPU access wait on that fence while holding the worker's mutex.
+  return owner != driver->surfaces.end() && !owner->second->destroyed;
+}
+
+static bool RegisterExportedLayout(Driver *driver, Surface *surface,
+                                   VASurfaceID id, const SurfaceLayout &layout) {
+  Surface *owner = BackingOwner(driver, surface);
+  const VASurfaceID owner_id = surface->backing_owner == VA_INVALID_SURFACE
+                                   ? id : surface->backing_owner;
+  if (owner->layout.valid && !(owner->layout == layout))
+    return false;
+  for (const BackingIdentity &identity : layout.objects) {
+    const auto known = driver->backing_owners.find(identity);
+    if (known != driver->backing_owners.end() && known->second != owner_id)
+      return false;
+  }
+  for (const BackingIdentity &identity : layout.objects)
+    driver->backing_owners[identity] = owner_id;
+  surface->layout = layout;
+  owner->layout = layout;
+  return true;
 }
 
 static void SetSurfaceState(Driver *driver, Surface *surface, bool ready,
@@ -1293,7 +1429,8 @@ static bool CopyNv12Surface(const Surface &source, Surface *destination) {
     return false;
   const unsigned int width = std::min(source.width, destination->width);
   const unsigned int height = std::min(source.height, destination->height);
-  source.BeginCpuRead();
+  if (!source.BeginCpuRead())
+    return false;
   if (!destination->BeginCpuWrite()) {
     source.EndCpuRead();
     return false;
@@ -1328,8 +1465,8 @@ static bool CopyNv12Surface(const Surface &source, Surface *destination) {
            width);
   }
   const bool committed = destination->EndCpuWrite();
-  source.EndCpuRead();
-  if (!committed)
+  const bool released = source.EndCpuRead();
+  if (!committed || !released)
     return false;
   destination->ready = true;
   destination->failed = false;
@@ -1601,8 +1738,12 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
     return VA_STATUS_ERROR_INVALID_PARAMETER;
 
   auto surface = driver->surfaces.find(decode->target);
-  if (surface == driver->surfaces.end())
+  if (surface == driver->surfaces.end() ||
+      !HasLiveBackingOwner(driver, surface->second.get()) ||
+      surface->second->backing_owner != VA_INVALID_SURFACE)
     return VA_STATUS_ERROR_INVALID_SURFACE;
+  if (surface->second->vpp_writers != 0 || surface->second->vpp_readers != 0)
+    return VA_STATUS_ERROR_HW_BUSY;
   // VA contexts and H.264 picture dimensions are coded sizes, not the visible
   // crop. This backend emits an uncropped SPS and does not support in-context
   // coded-geometry changes; later submissions must not change output policy
@@ -1828,8 +1969,9 @@ static bool PendingVppCanceled(const PendingVpp &operation) {
 
 // Release bookkeeping for one queued conversion. The caller holds the driver
 // mutex. Cancellation must not substitute pixels from another picture. The
-// timeline API cannot attach an error to a fence, so callers must also check
-// VA surface status; fence completion alone is not proof of a decoded frame.
+// timeline increment cannot encode an arbitrary operation error, so callers
+// must also check VA surface status; completion alone is not a decoded frame.
+// Closing an unsignaled timeline does release its fences with fixed -ENOENT.
 static void ReleasePendingVpp(Driver *driver, uint64_t sequence,
                               VAStatus status, bool committed) {
   auto found = std::find_if(
@@ -1840,7 +1982,10 @@ static void ReleasePendingVpp(Driver *driver, uint64_t sequence,
   const PendingVpp operation = *found;
   // Flush CPU caches before signaling the fence imported into Chromium's
   // DMA-BUF. Every implicit GPU reader remains blocked until this point.
-  EndFencedWrite(operation.target.get(), operation.write_timeline);
+  if (!EndFencedWrite(operation.target.get(), operation.write_timeline)) {
+    status = VA_STATUS_ERROR_OPERATION_FAILED;
+    committed = false;
+  }
   if (operation.source->vpp_readers != 0)
     --operation.source->vpp_readers;
   // Keep the current picture available for another VPP of the same still-live
@@ -2080,13 +2225,86 @@ static VAStatus CreateSurfaces2(VADriverContextP context, unsigned int format,
     return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
   Driver *driver = GetDriver(context);
   std::lock_guard<std::mutex> lock(driver->mutex);
+  const auto pending_backing = [&](int fd) {
+    BackingIdentity candidate;
+    if (!GetBackingIdentity(fd, &candidate))
+      return false;
+    for (const PendingVpp &pending : driver->pending_vpp) {
+      for (int object_fd : pending.target->object_fds) {
+        BackingIdentity existing;
+        if (GetBackingIdentity(object_fd, &existing) && existing == candidate)
+          return true;
+      }
+    }
+    return false;
+  };
+  // Preflight every imported object before ImportPrime/Legacy can map it.
+  // The old VA owner may already have been removed from backing_owners, but
+  // queued VPP still retains its fds and unsignaled fence. Even GBM mapping
+  // can wait on that fence, so detecting it after import is too late.
+  for (unsigned int i = 0; i < surface_count; ++i) {
+    if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 && descriptor != nullptr) {
+      const auto &desc = static_cast<const VADRMPRIMESurfaceDescriptor *>(descriptor)[i];
+      if (desc.num_objects == 0 || desc.num_objects > 4)
+        return VA_STATUS_ERROR_ALLOCATION_FAILED;
+      for (unsigned int object = 0; object < desc.num_objects; ++object)
+        if (pending_backing(desc.objects[object].fd))
+          return VA_STATUS_ERROR_SURFACE_BUSY;
+    } else if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME && descriptor != nullptr) {
+      const auto &desc = static_cast<const VASurfaceAttribExternalBuffers *>(descriptor)[i];
+      if (desc.num_buffers != 1 || desc.buffers == nullptr ||
+          desc.buffers[0] > static_cast<uintptr_t>(INT_MAX))
+        return VA_STATUS_ERROR_ALLOCATION_FAILED;
+      if (pending_backing(static_cast<int>(desc.buffers[0])))
+        return VA_STATUS_ERROR_SURFACE_BUSY;
+    }
+  }
   std::vector<VASurfaceID> created;
+  std::vector<BackingIdentity> registered;
+  const auto rollback = [&](VAStatus status) {
+    for (const BackingIdentity &identity : registered)
+      driver->backing_owners.erase(identity);
+    for (VASurfaceID id : created)
+      driver->surfaces.erase(id);
+    return status;
+  };
   for (unsigned int i = 0; i < surface_count; ++i) {
     auto surface = std::make_shared<Surface>();
     surface->width = width;
     surface->height = height;
     surface->rt_format = format;
     surface->fourcc = pixel_format;
+    SurfaceLayout layout;
+    if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 && descriptor != nullptr) {
+      const auto &desc = static_cast<const VADRMPRIMESurfaceDescriptor *>(descriptor)[i];
+      if (!GetPrimeLayout(desc, &layout))
+        return rollback(VA_STATUS_ERROR_ALLOCATION_FAILED);
+    } else if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME && descriptor != nullptr) {
+      const auto &desc = static_cast<const VASurfaceAttribExternalBuffers *>(descriptor)[i];
+      if (!GetLegacyLayout(desc, &layout))
+        return rollback(VA_STATUS_ERROR_ALLOCATION_FAILED);
+    }
+    for (const BackingIdentity &identity : layout.objects) {
+      const auto known = driver->backing_owners.find(identity);
+      if (known != driver->backing_owners.end()) {
+        const auto owner = driver->surfaces.find(known->second);
+        if (owner == driver->surfaces.end() || !HasLiveBackingOwner(driver, owner->second.get()))
+          return rollback(VA_STATUS_ERROR_INVALID_SURFACE);
+        // Same backing does not necessarily mean the same pixels. Refuse
+        // nonidentical views before mapping instead of selecting another
+        // surface's immutable decoded picture for different plane geometry.
+        if (!(owner->second->layout == layout))
+          return rollback(VA_STATUS_ERROR_INVALID_PARAMETER);
+        if (surface->backing_owner != VA_INVALID_SURFACE &&
+            surface->backing_owner != known->second)
+          return rollback(VA_STATUS_ERROR_INVALID_PARAMETER);
+        surface->backing_owner = known->second;
+        surface->ready = owner->second->ready;
+        surface->failed = owner->second->failed;
+        surface->expected_timestamp = owner->second->expected_timestamp;
+        surface->frame_timestamp = owner->second->frame_timestamp;
+      }
+    }
     bool ok = false;
     if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_VA) {
       ok = surface->AllocateInternal(driver->gbm, driver->drm_fd, width, height,
@@ -2102,41 +2320,18 @@ static VAStatus CreateSurfaces2(VADriverContextP context, unsigned int format,
           static_cast<const VASurfaceAttribExternalBuffers *>(descriptor);
       ok = surface->ImportLegacy(descriptors[i]);
     }
-    if (!ok) {
-      for (VASurfaceID id : created)
-        driver->surfaces.erase(id);
-      return VA_STATUS_ERROR_ALLOCATION_FAILED;
-    }
-    int backing_fd = -1;
-    if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 &&
-        descriptor != nullptr) {
-      const auto *descriptors =
-          static_cast<const VADRMPRIMESurfaceDescriptor *>(descriptor);
-      backing_fd = descriptors[i].objects[0].fd;
-    } else if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME &&
-               descriptor != nullptr) {
-      const auto *descriptors =
-          static_cast<const VASurfaceAttribExternalBuffers *>(descriptor);
-      backing_fd = static_cast<int>(descriptors[i].buffers[0]);
-    }
-    BackingIdentity identity;
-    if (GetBackingIdentity(backing_fd, &identity)) {
-      auto owner = driver->backing_owners.find(identity);
-      if (owner != driver->backing_owners.end()) {
-        surface->backing_owner = owner->second;
-        auto owner_surface = driver->surfaces.find(owner->second);
-        if (owner_surface != driver->surfaces.end()) {
-          surface->ready = owner_surface->second->ready;
-          surface->failed = owner_surface->second->failed;
-          surface->expected_timestamp =
-              owner_surface->second->expected_timestamp;
-          surface->frame_timestamp = owner_surface->second->frame_timestamp;
-        }
-      }
-    }
+    if (!ok)
+      return rollback(VA_STATUS_ERROR_ALLOCATION_FAILED);
+    surface->layout = layout;
     if (surface->backing_owner == VA_INVALID_SURFACE)
       surface->ready = true;
     VASurfaceID id = driver->next_surface++;
+    for (const BackingIdentity &identity : layout.objects) {
+      const VASurfaceID owner = surface->backing_owner == VA_INVALID_SURFACE
+                                   ? id : surface->backing_owner;
+      if (driver->backing_owners.emplace(identity, owner).second)
+        registered.push_back(identity);
+    }
     driver->surfaces[id] = std::move(surface);
     surface_ids[i] = id;
     created.push_back(id);
@@ -2495,7 +2690,8 @@ static VAStatus BeginPicture(VADriverContextP context, VAContextID context_id,
   if (decode == driver->contexts.end() || decode->second->closing)
     return VA_STATUS_ERROR_INVALID_CONTEXT;
   auto target_surface = driver->surfaces.find(target);
-  if (target_surface == driver->surfaces.end())
+  if (target_surface == driver->surfaces.end() ||
+      !HasLiveBackingOwner(driver, target_surface->second.get()))
     return VA_STATUS_ERROR_INVALID_SURFACE;
   if (decode->second->video_process) {
     Surface *target_owner = BackingOwner(driver, target_surface->second.get());
@@ -2515,6 +2711,13 @@ static VAStatus BeginPicture(VADriverContextP context, VAContextID context_id,
     decode->second->have_vpp_parameters = false;
     return VA_STATUS_SUCCESS;
   }
+  // Replay/timestamp ownership is keyed by the canonical decode target.
+  // Imported aliases remain supported for image/VPP access, not VLD targets.
+  if (target_surface->second->backing_owner != VA_INVALID_SURFACE)
+    return VA_STATUS_ERROR_INVALID_SURFACE;
+  if (target_surface->second->vpp_writers != 0 ||
+      target_surface->second->vpp_readers != 0)
+    return VA_STATUS_ERROR_HW_BUSY;
   decode->second->target = target;
   decode->second->have_picture = false;
   decode->second->slices.clear();
@@ -2542,7 +2745,9 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
             buffer->second.data.data());
     auto source = driver->surfaces.find(parameters->surface);
     auto target = driver->surfaces.find(decode->second->target);
-    if (source == driver->surfaces.end() || target == driver->surfaces.end())
+    if (source == driver->surfaces.end() || target == driver->surfaces.end() ||
+        !HasLiveBackingOwner(driver, source->second.get()) ||
+        !HasLiveBackingOwner(driver, target->second.get()))
       return VA_STATUS_ERROR_INVALID_SURFACE;
     constexpr uint32_t supported_filter_flags =
         VA_FILTER_SCALING_DEFAULT | VA_FILTER_INTERPOLATION_NEAREST_NEIGHBOR;
@@ -2661,7 +2866,9 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
       return finish_vpp(VA_STATUS_ERROR_INVALID_PARAMETER);
     auto source = driver->surfaces.find(decode_context->vpp_source);
     auto target = driver->surfaces.find(decode_context->target);
-    if (source == driver->surfaces.end() || target == driver->surfaces.end())
+    if (source == driver->surfaces.end() || target == driver->surfaces.end() ||
+        !HasLiveBackingOwner(driver, source->second.get()) ||
+        !HasLiveBackingOwner(driver, target->second.get()))
       return finish_vpp(VA_STATUS_ERROR_INVALID_SURFACE);
     const std::shared_ptr<Surface> target_surface = target->second;
     std::shared_ptr<Surface> target_owner = target_surface;
@@ -2761,7 +2968,8 @@ static VAStatus SyncSurface2(VADriverContextP context, VASurfaceID surface_id,
   Driver *driver = GetDriver(context);
   std::unique_lock<std::mutex> lock(driver->mutex);
   auto surface = driver->surfaces.find(surface_id);
-  if (surface == driver->surfaces.end())
+  if (surface == driver->surfaces.end() ||
+      !HasLiveBackingOwner(driver, surface->second.get()))
     return VA_STATUS_ERROR_INVALID_SURFACE;
   std::shared_ptr<Surface> synchronized_surface = surface->second;
   if (surface->second->backing_owner != VA_INVALID_SURFACE) {
@@ -2834,7 +3042,8 @@ static VAStatus QuerySurfaceStatus(VADriverContextP context,
   Driver *driver = GetDriver(context);
   std::lock_guard<std::mutex> lock(driver->mutex);
   auto surface = driver->surfaces.find(surface_id);
-  if (surface == driver->surfaces.end())
+  if (surface == driver->surfaces.end() ||
+      !HasLiveBackingOwner(driver, surface->second.get()))
     return VA_STATUS_ERROR_INVALID_SURFACE;
   if (status == nullptr)
     return VA_STATUS_ERROR_INVALID_PARAMETER;
@@ -2860,14 +3069,21 @@ static VAStatus QueryImageFormats(VADriverContextP, VAImageFormat *formats,
 static VAStatus CreateImageLocked(Driver *driver, const VAImageFormat &format,
                                   int width, int height, VAImage *va_image) {
   if (format.fourcc != VA_FOURCC_NV12 || width <= 0 || height <= 0 ||
+      static_cast<unsigned int>(width) > kMaxWidth ||
+      static_cast<unsigned int>(height) > kMaxHeight ||
       va_image == nullptr)
     return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
 
+  // NV12 stores a complete interleaved UV pair for every two luma columns,
+  // and a chroma row for an odd final luma row as well.
+  const unsigned int uv_pitch = Align(width, 2);
+  const unsigned int uv_offset = static_cast<unsigned int>(width) * height;
+  const unsigned int data_size = uv_offset + uv_pitch * ((height + 1) / 2);
   Buffer buffer;
   buffer.context = VA_INVALID_ID;
   buffer.type = VAImageBufferType;
   buffer.element_size = 1;
-  buffer.elements = static_cast<unsigned int>(width * height * 3 / 2);
+  buffer.elements = data_size;
   buffer.data.resize(buffer.elements);
   VABufferID buffer_id = driver->next_buffer++;
   driver->buffers[buffer_id] = std::move(buffer);
@@ -2878,12 +3094,12 @@ static VAStatus CreateImageLocked(Driver *driver, const VAImageFormat &format,
   image.va.buf = buffer_id;
   image.va.width = width;
   image.va.height = height;
-  image.va.data_size = width * height * 3 / 2;
+  image.va.data_size = data_size;
   image.va.num_planes = 2;
   image.va.pitches[0] = width;
-  image.va.pitches[1] = width;
+  image.va.pitches[1] = uv_pitch;
   image.va.offsets[0] = 0;
-  image.va.offsets[1] = width * height;
+  image.va.offsets[1] = uv_offset;
   *va_image = image.va;
   driver->images[image.va.image_id] = image;
   return VA_STATUS_SUCCESS;
@@ -2909,19 +3125,54 @@ static VAStatus DestroyImage(VADriverContextP context, VAImageID image_id) {
   return VA_STATUS_SUCCESS;
 }
 
+static bool ImageBufferFits(const Image &image, const Buffer &buffer) {
+  if (image.va.format.fourcc != VA_FOURCC_NV12 || image.va.num_planes != 2 ||
+      image.va.width == 0 || image.va.height == 0)
+    return false;
+  for (unsigned int plane = 0; plane < 2; ++plane) {
+    const size_t rows = plane == 0 ? image.va.height : (image.va.height + 1) / 2;
+    const size_t row_bytes = plane == 0 ? image.va.width : Align(image.va.width, 2);
+    const size_t offset = image.va.offsets[plane];
+    const size_t pitch = image.va.pitches[plane];
+    // Buffers are separately public objects and may have been resized after
+    // image creation. Check their actual size without overflowing arithmetic.
+    if (pitch < row_bytes || offset > buffer.data.size() ||
+        row_bytes > buffer.data.size() - offset ||
+        rows - 1 > (buffer.data.size() - offset - row_bytes) / pitch)
+      return false;
+  }
+  return true;
+}
+
+static bool ImageRectangleFits(const Surface &surface, const Image &image,
+                               unsigned int width, unsigned int height) {
+  return width != 0 && height != 0 && width <= surface.width &&
+         height <= surface.height && width <= image.va.width &&
+         height <= image.va.height;
+}
+
 static VAStatus CopySurfaceToImage(Driver *driver, Surface *surface,
                                    Image *image, unsigned int width,
                                    unsigned int height) {
+  if (!HasLiveBackingOwner(driver, surface))
+    return VA_STATUS_ERROR_INVALID_SURFACE;
   if (surface->fourcc != VA_FOURCC_NV12)
     return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
   auto buffer = driver->buffers.find(image->va.buf);
   if (buffer == driver->buffers.end())
     return VA_STATUS_ERROR_INVALID_BUFFER;
-  width = std::min<unsigned int>(
-      width, std::min<unsigned int>(surface->width, image->va.width));
-  height = std::min<unsigned int>(height,
-                                  std::min<unsigned int>(surface->height,
-                                                         image->va.height));
+  if (!ImageRectangleFits(*surface, *image, width, height))
+    return VA_STATUS_ERROR_INVALID_PARAMETER;
+  if (!ImageBufferFits(*image, buffer->second))
+    return VA_STATUS_ERROR_INVALID_BUFFER;
+  Surface *owner = BackingOwner(driver, surface);
+  if (owner->failed)
+    return VA_STATUS_ERROR_DECODING_ERROR;
+  // Never wait under the driver lock on our own queued asynchronous fence.
+  if (!owner->ready || owner->vpp_writers != 0)
+    return VA_STATUS_ERROR_SURFACE_BUSY;
+  if (!surface->BeginCpuRead())
+    return VA_STATUS_ERROR_OPERATION_FAILED;
   uint8_t *destination_y = buffer->second.data.data() + image->va.offsets[0];
   uint8_t *destination_uv = buffer->second.data.data() + image->va.offsets[1];
   for (unsigned int y = 0; y < height; ++y) {
@@ -2932,29 +3183,41 @@ static VAStatus CopySurfaceToImage(Driver *driver, Surface *surface,
   for (unsigned int y = 0; y < (height + 1) / 2; ++y) {
     memcpy(destination_uv + static_cast<size_t>(y) * image->va.pitches[1],
            surface->planes[1] + static_cast<size_t>(y) * surface->pitch[1],
-           width);
+           Align(width, 2));
   }
-  return VA_STATUS_SUCCESS;
+  return surface->EndCpuRead() ? VA_STATUS_SUCCESS
+                               : VA_STATUS_ERROR_OPERATION_FAILED;
 }
 
 static VAStatus DeriveImage(VADriverContextP context, VASurfaceID surface_id,
                             VAImage *va_image) {
+  if (va_image == nullptr)
+    return VA_STATUS_ERROR_INVALID_PARAMETER;
   Driver *driver = GetDriver(context);
   std::lock_guard<std::mutex> lock(driver->mutex);
   auto surface = driver->surfaces.find(surface_id);
-  if (surface == driver->surfaces.end())
+  if (surface == driver->surfaces.end() ||
+      !HasLiveBackingOwner(driver, surface->second.get()))
     return VA_STATUS_ERROR_INVALID_SURFACE;
   VAImageFormat format = {};
   format.fourcc = VA_FOURCC_NV12;
   format.byte_order = VA_LSB_FIRST;
   format.bits_per_pixel = 12;
+  VAImage snapshot = {};
   VAStatus status = CreateImageLocked(driver, format, surface->second->width,
-                                      surface->second->height, va_image);
+                                      surface->second->height, &snapshot);
   if (status != VA_STATUS_SUCCESS)
     return status;
-  return CopySurfaceToImage(driver, surface->second.get(),
-                            &driver->images.at(va_image->image_id),
-                            surface->second->width, surface->second->height);
+  status = CopySurfaceToImage(driver, surface->second.get(),
+                              &driver->images.at(snapshot.image_id),
+                              surface->second->width, surface->second->height);
+  if (status != VA_STATUS_SUCCESS) {
+    driver->buffers.erase(snapshot.buf);
+    driver->images.erase(snapshot.image_id);
+    return status;
+  }
+  *va_image = snapshot;
+  return VA_STATUS_SUCCESS;
 }
 
 static VAStatus GetImage(VADriverContextP context, VASurfaceID surface_id,
@@ -2988,7 +3251,8 @@ static VAStatus PutImage(VADriverContextP context, VASurfaceID surface_id,
   std::lock_guard<std::mutex> lock(driver->mutex);
   auto surface = driver->surfaces.find(surface_id);
   auto image = driver->images.find(image_id);
-  if (surface == driver->surfaces.end())
+  if (surface == driver->surfaces.end() ||
+      !HasLiveBackingOwner(driver, surface->second.get()))
     return VA_STATUS_ERROR_INVALID_SURFACE;
   if (image == driver->images.end())
     return VA_STATUS_ERROR_INVALID_IMAGE;
@@ -2997,11 +3261,33 @@ static VAStatus PutImage(VADriverContextP context, VASurfaceID surface_id,
   auto buffer = driver->buffers.find(image->second.va.buf);
   if (buffer == driver->buffers.end())
     return VA_STATUS_ERROR_INVALID_BUFFER;
+  if (!ImageRectangleFits(*surface->second, image->second,
+                          source_width, source_height))
+    return VA_STATUS_ERROR_INVALID_PARAMETER;
+  if (!ImageBufferFits(image->second, buffer->second))
+    return VA_STATUS_ERROR_INVALID_BUFFER;
+  Surface *owner = BackingOwner(driver, surface->second.get());
+  if (owner->vpp_writers != 0 || owner->vpp_readers != 0 ||
+      (!owner->ready && !owner->failed))
+    return VA_STATUS_ERROR_SURFACE_BUSY;
+  for (const auto &entry : driver->contexts) {
+    const auto &timestamps = entry.second->surface_timestamps;
+    for (const auto &candidate : driver->surfaces) {
+      if (BackingOwner(driver, candidate.second.get()) == owner &&
+          timestamps.count(candidate.second.get()) != 0)
+        // Overwriting a retained decode picture through any live alias would
+        // disagree with the immutable frame selected by later VPP lookup.
+        return VA_STATUS_ERROR_SURFACE_BUSY;
+    }
+  }
   const uint8_t *source_y_plane = buffer->second.data.data() +
                                   image->second.va.offsets[0];
   const uint8_t *source_uv_plane = buffer->second.data.data() +
                                    image->second.va.offsets[1];
-  surface->second->BeginCpuWrite();
+  if (!surface->second->BeginCpuWrite()) {
+    SetSurfaceState(driver, surface->second.get(), false, true);
+    return VA_STATUS_ERROR_OPERATION_FAILED;
+  }
   for (unsigned int row = 0; row < source_height; ++row) {
     memcpy(surface->second->planes[0] +
                static_cast<size_t>(row) * surface->second->pitch[0],
@@ -3014,10 +3300,17 @@ static VAStatus PutImage(VADriverContextP context, VASurfaceID surface_id,
                static_cast<size_t>(row) * surface->second->pitch[1],
            source_uv_plane +
                static_cast<size_t>(row) * image->second.va.pitches[1],
-           source_width);
+           Align(source_width, 2));
   }
-  surface->second->EndCpuWrite();
-  surface->second->ready = true;
+  if (!surface->second->EndCpuWrite()) {
+    SetSurfaceState(driver, surface->second.get(), false, true);
+    return VA_STATUS_ERROR_OPERATION_FAILED;
+  }
+  surface->second->expected_timestamp = 0;
+  surface->second->frame_timestamp = 0;
+  owner->expected_timestamp = 0;
+  owner->frame_timestamp = 0;
+  SetSurfaceState(driver, surface->second.get(), true, false);
   return VA_STATUS_SUCCESS;
 }
 
@@ -3030,7 +3323,8 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
   Driver *driver = GetDriver(context);
   std::lock_guard<std::mutex> lock(driver->mutex);
   auto surface = driver->surfaces.find(surface_id);
-  if (surface == driver->surfaces.end())
+  if (surface == driver->surfaces.end() ||
+      !HasLiveBackingOwner(driver, surface->second.get()))
     return VA_STATUS_ERROR_INVALID_SURFACE;
   if (surface->second->bo == nullptr && surface->second->object_fds.empty())
     return VA_STATUS_ERROR_UNIMPLEMENTED;
@@ -3066,12 +3360,12 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
                                      ? gbm_bo_get_offset(surface->second->bo, 0)
                                      : 0;
     prime->layers[0].pitch[0] = surface->second->pitch[0];
-    BackingIdentity identity;
-    if (GetBackingIdentity(fd, &identity)) {
-      driver->backing_owners[identity] =
-          surface->second->backing_owner != VA_INVALID_SURFACE
-              ? surface->second->backing_owner
-              : surface_id;
+    SurfaceLayout layout;
+    if (!GetPrimeLayout(*prime, &layout) ||
+        !RegisterExportedLayout(driver, surface->second.get(), surface_id, layout)) {
+      close(fd);
+      prime->num_objects = 0;
+      return VA_STATUS_ERROR_OPERATION_FAILED;
     }
     return VA_STATUS_SUCCESS;
   }
@@ -3100,13 +3394,6 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
         gbm_backed ? gbm_bo_get_modifier(surface->second->bo)
                    : DRM_FORMAT_MOD_LINEAR;
   }
-  BackingIdentity identity;
-  if (GetBackingIdentity(prime->objects[0].fd, &identity)) {
-    driver->backing_owners[identity] =
-        surface->second->backing_owner != VA_INVALID_SURFACE
-            ? surface->second->backing_owner
-            : surface_id;
-  }
   if ((flags & VA_EXPORT_SURFACE_SEPARATE_LAYERS) != 0) {
     prime->num_layers = 2;
     prime->layers[0].drm_format = DRM_FORMAT_R8;
@@ -3132,6 +3419,14 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
                                   surface->second->height);
       prime->layers[0].pitch[plane] = surface->second->pitch[plane];
     }
+  }
+  SurfaceLayout layout;
+  if (!GetPrimeLayout(*prime, &layout) ||
+      !RegisterExportedLayout(driver, surface->second.get(), surface_id, layout)) {
+    for (unsigned int object = 0; object < prime->num_objects; ++object)
+      close(prime->objects[object].fd);
+    prime->num_objects = 0;
+    return VA_STATUS_ERROR_OPERATION_FAILED;
   }
   return VA_STATUS_SUCCESS;
 }

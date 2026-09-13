@@ -7,6 +7,8 @@
 #include <stdexcept>
 #include <string>
 
+extern "C" int __real_close(int fd);
+
 namespace {
 
 // Only the current test thread's descriptor calls are mocked. Other VPP
@@ -18,6 +20,11 @@ struct FenceIoMock {
   int fail_start_fd = -1;
   int fail_end_fd = -1;
   int fail_import_fd = -1;
+  int fail_read_start_fd = -1;
+  int fail_read_end_fd = -1;
+  bool fail_signal = false;
+  uint64_t transient_flags = UINT64_MAX;
+  std::deque<int> transient_errors;
   bool fail_open = false;
   bool fail_create = false;
   bool signaled = false;
@@ -25,8 +32,10 @@ struct FenceIoMock {
   bool invalid = false;
   std::vector<std::string> events;
   std::unordered_set<int> started;
+  std::unordered_set<int> read_started;
   std::unordered_set<int> imported;
   std::unordered_set<int> handles;
+  std::unordered_set<int> real_files;
 
   int Error() {
     errno = EIO;
@@ -46,6 +55,12 @@ struct FenceIoMock {
   int Ioctl(int fd, unsigned long request, void *argument) {
     if (request == DMA_BUF_IOCTL_SYNC) {
       const auto *sync = static_cast<dma_buf_sync *>(argument);
+      if (sync->flags == transient_flags && !transient_errors.empty()) {
+        events.push_back("retry:" + std::to_string(fd));
+        errno = transient_errors.front();
+        transient_errors.pop_front();
+        return -1;
+      }
       if (sync->flags == (DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE)) {
         events.push_back("start:" + std::to_string(fd));
         if (fd == fail_start_fd)
@@ -58,6 +73,17 @@ struct FenceIoMock {
         self_wait |= imported.count(fd) != 0 && !signaled;
         invalid |= started.erase(fd) != 1;
         if (fd == fail_end_fd)
+          return Error();
+      } else if (sync->flags == (DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ)) {
+        events.push_back("read-start:" + std::to_string(fd));
+        self_wait |= imported.count(fd) != 0 && !signaled;
+        if (fd == fail_read_start_fd)
+          return Error();
+        invalid |= !read_started.insert(fd).second;
+      } else if (sync->flags == (DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ)) {
+        events.push_back("read-end:" + std::to_string(fd));
+        invalid |= read_started.erase(fd) != 1;
+        if (fd == fail_read_end_fd)
           return Error();
       } else {
         invalid = true;
@@ -90,6 +116,8 @@ struct FenceIoMock {
       events.push_back("signal");
       invalid |= fd != timeline || handles.count(timeline) != 1 ||
                  *static_cast<uint32_t *>(argument) != 1 || signaled;
+      if (fail_signal)
+        return Error();
       signaled = true;
       return 0;
     }
@@ -99,10 +127,19 @@ struct FenceIoMock {
 
   int Close(int fd) {
     events.push_back("close:" + std::to_string(fd));
-    if (fd == timeline || fd == fence)
+    if (real_files.erase(fd) != 0) {
+      invalid |= started.count(fd) != 0 || read_started.count(fd) != 0;
+      return __real_close(fd);
+    }
+    if (fd == timeline || fd == fence) {
       invalid |= handles.erase(fd) != 1;
-    else
-      invalid |= fd < 101 || fd > 103 || started.count(fd) != 0;
+      // Linux sw_sync release signals all pending fences with -ENOENT.
+      if (fd == timeline && !imported.empty())
+        signaled = true;
+    } else {
+      invalid |= fd < 101 || fd > 103 || started.count(fd) != 0 ||
+                 read_started.count(fd) != 0;
+    }
     return 0;
   }
 };
@@ -185,6 +222,7 @@ struct Fixture {
     driver.contexts[2] = processor;
     driver.surfaces[1] = source;
     driver.surfaces[2] = target;
+    driver.next_surface = 3;
     decoder->surface_timestamps[source.get()] = kTimestampStep;
     decoder->decoded_frames[kTimestampStep] = Picture(kTimestampStep, 40);
     VAProcPipelineParameterBuffer pipeline = {};
@@ -475,6 +513,686 @@ void VppCpuOwnershipFailuresAreNotSuccessfulFrames() {
   }
 }
 
+void CpuReadStartUnwindsAcquiredPrefix() {
+  FenceIoMock mock;
+  MockFenceScope scope(mock);
+  Surface surface;
+  surface.object_fds = {101, 102, 103};
+  mock.fail_read_start_fd = 102;
+  surface.BeginCpuRead();
+  Require(mock.events == std::vector<std::string>{
+              "read-start:101", "read-start:102", "read-end:101"},
+          "failed READ START must unwind only the acquired prefix");
+  Require(mock.read_started.empty() && !mock.invalid,
+          "failed READ acquisition cannot retain ownership");
+}
+
+void CpuSyncRetriesInterruptedAccess() {
+  for (uint64_t direction : {uint64_t(DMA_BUF_SYNC_READ),
+                             uint64_t(DMA_BUF_SYNC_WRITE)}) {
+    for (uint64_t boundary : {uint64_t(DMA_BUF_SYNC_START),
+                              uint64_t(DMA_BUF_SYNC_END)}) {
+      FenceIoMock mock;
+      MockFenceScope scope(mock);
+      Surface surface;
+      surface.object_fds = {101};
+      mock.transient_flags = direction | boundary;
+      mock.transient_errors = {EINTR, EAGAIN};
+      if (direction == DMA_BUF_SYNC_READ) {
+        surface.BeginCpuRead();
+        surface.EndCpuRead();
+      } else {
+        Require(surface.BeginCpuWrite() && surface.EndCpuWrite(),
+                "transient WRITE synchronization errors must be retried");
+      }
+      Require(mock.transient_errors.empty() && mock.started.empty() &&
+                  mock.read_started.empty() && !mock.invalid,
+              "READ/WRITE START/END must retry EINTR and EAGAIN");
+    }
+  }
+}
+
+void CpuReadFailuresCannotCompleteCopies() {
+  for (bool fail_start : {true, false}) {
+    for (int operation : {0, 1, 2}) {
+      FenceIoMock mock;
+      MockFenceScope scope(mock);
+      Fixture fixture;
+      auto source = fixture.decoder->decoded_frames.at(kTimestampStep);
+      source->object_fds = {101, 102, 103};
+      mock.fail_read_start_fd = fail_start ? 102 : -1;
+      mock.fail_read_end_fd = fail_start ? -1 : 102;
+      if (operation == 2) {
+        fixture.target->fourcc = VA_FOURCC_ARGB;
+        fixture.target->pitch[0] = fixture.target->width * 4;
+        fixture.target->storage.assign(
+            fixture.target->pitch[0] * fixture.target->height, 99);
+        fixture.target->planes[0] = fixture.target->storage.data();
+        fixture.target->planes[1] = nullptr;
+      }
+      const auto previous = fixture.target->storage;
+      if (operation != 0) {
+        fixture.SubmitParameters();
+        Require(EndPicture(&fixture.context, 2) == VA_STATUS_ERROR_OPERATION_FAILED &&
+                    fixture.target->failed && !fixture.target->ready,
+                "READ failure must fail VPP output status");
+      } else {
+        fixture.target->ready = false;
+        Require(!CopyNv12Surface(*source, fixture.target.get()) &&
+                    !fixture.target->ready,
+                "READ failure must not complete an NV12 copy");
+      }
+      if (fail_start)
+        Require(previous == fixture.target->storage,
+                "failed READ START must not write destination pixels");
+      Require(mock.read_started.empty() && !mock.invalid,
+              "all acquired READ objects must receive END on failure");
+    }
+  }
+}
+
+VAImage MakeImage(Fixture *fixture, int width = 16, int height = 16) {
+  VAImageFormat format = {};
+  format.fourcc = VA_FOURCC_NV12;
+  VAImage image = {};
+  Require(CreateImage(&fixture->context, &format, width, height, &image) ==
+              VA_STATUS_SUCCESS,
+          "create private NV12 image");
+  return image;
+}
+
+void ImageReadFailuresAndDerivedRollback() {
+  for (bool derive : {false, true}) {
+    for (bool fail_start : {false, true}) {
+      FenceIoMock mock;
+      MockFenceScope scope(mock);
+      Fixture fixture;
+      fixture.source->object_fds = {101, 102, 103};
+      mock.fail_read_start_fd = fail_start ? 102 : -1;
+      mock.fail_read_end_fd = fail_start ? -1 : 102;
+      VAImage image = derive ? VAImage{} : MakeImage(&fixture);
+      const size_t images = fixture.driver.images.size();
+      const size_t buffers = fixture.driver.buffers.size();
+      const VAStatus status = derive
+          ? DeriveImage(&fixture.context, 1, &image)
+          : GetImage(&fixture.context, 1, 0, 0, 16, 16, image.image_id);
+      Require(status == VA_STATUS_ERROR_OPERATION_FAILED,
+              "GetImage/DeriveImage must report READ START/END errors");
+      Require(fixture.driver.images.size() == images &&
+                  fixture.driver.buffers.size() == buffers,
+              "failed DeriveImage must roll back its image and buffer");
+      Require(mock.read_started.empty() && !mock.invalid,
+              "failed image read must release acquired READ objects");
+      if (!derive && fail_start) {
+        const auto &bytes = fixture.driver.buffers.at(image.buf).data;
+        Require(std::all_of(bytes.begin(), bytes.end(),
+                            [](uint8_t byte) { return byte == 0; }),
+                "failed image READ START cannot expose source pixels");
+      }
+    }
+  }
+}
+
+void ImageGeometryAndOddNv12Roundtrip() {
+  for (unsigned int width : {1U, 2U, 3U, 16U}) {
+    for (unsigned int height : {1U, 2U, 3U, 16U}) {
+      Fixture fixture;
+      const VAImage image = MakeImage(&fixture, width, height);
+      const unsigned int uv_width = (width + 1) & ~1U;
+      Require(image.pitches[0] >= width && image.pitches[1] >= uv_width &&
+                  image.data_size >= image.offsets[1] +
+                      image.pitches[1] * ((height + 1) / 2),
+              "odd NV12 images need complete UV pairs and ceil chroma rows");
+      for (unsigned int row = 0; row < (height + 1) / 2; ++row)
+        for (unsigned int column = 0; column < uv_width; ++column)
+          fixture.source->planes[1][row * fixture.source->pitch[1] + column] =
+              static_cast<uint8_t>(70 + column);
+      Require(GetImage(&fixture.context, 1, 0, 0, width, height, image.image_id) ==
+                  VA_STATUS_SUCCESS &&
+                  PutImage(&fixture.context, 2, image.image_id, 0, 0, width, height,
+                           0, 0, width, height) == VA_STATUS_SUCCESS,
+              "odd NV12 image roundtrip must succeed");
+      for (unsigned int row = 0; row < (height + 1) / 2; ++row)
+        for (unsigned int column = 0; column < uv_width; ++column)
+          Require(fixture.target->planes[1][row * fixture.target->pitch[1] + column] ==
+                      static_cast<uint8_t>(70 + column),
+                  "image copy must preserve the last full UV pair");
+    }
+  }
+  Fixture fixture;
+  VAImageFormat format = {};
+  format.fourcc = VA_FOURCC_NV12;
+  VAImage image = {};
+  for (const auto &size : {std::pair<int, int>{0, 16}, {-1, 16},
+                          {INT_MAX, 16}, {16, INT_MAX}})
+    Require(CreateImage(&fixture.context, &format, size.first, size.second, &image) !=
+                VA_STATUS_SUCCESS,
+            "invalid or overflow image dimensions must fail before allocation");
+}
+
+void ImageCopiesRejectInvalidAndBusyRectangles() {
+  Fixture fixture;
+  VAImage image = MakeImage(&fixture);
+  // Extra private capacity keeps the pre-fix oversized-width reproduction
+  // memory-safe: only the declared 16x16 image/surface rectangle is invalid.
+  fixture.driver.buffers.at(image.buf).data.resize(2048);
+  for (unsigned int width : {0U, 17U}) {
+    const auto before = fixture.target->storage;
+    Require(PutImage(&fixture.context, 2, image.image_id, 0, 0, width, 16,
+                     0, 0, width, 16) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                fixture.target->storage == before,
+            "PutImage must reject empty/oversized rectangles before writing");
+    Require(GetImage(&fixture.context, 1, 0, 0, width, 16, image.image_id) ==
+                VA_STATUS_ERROR_INVALID_PARAMETER,
+            "GetImage must reject empty/oversized rectangles instead of clipping");
+  }
+  fixture.target->vpp_writers = 1;
+  fixture.target->ready = false;
+  const auto before = fixture.target->storage;
+  Require(PutImage(&fixture.context, 2, image.image_id, 0, 0, 16, 16,
+                   0, 0, 16, 16) == VA_STATUS_ERROR_SURFACE_BUSY &&
+              fixture.target->storage == before,
+          "PutImage must not wait on or overwrite a queued VPP target");
+  Require(GetImage(&fixture.context, 2, 0, 0, 16, 16, image.image_id) ==
+              VA_STATUS_ERROR_SURFACE_BUSY,
+          "GetImage must not read a queued VPP target");
+  fixture.target->vpp_writers = 0;
+  fixture.target->ready = true;
+  fixture.driver.buffers.at(image.buf).data.resize(1);
+  Require(PutImage(&fixture.context, 2, image.image_id, 0, 0, 16, 16,
+                   0, 0, 16, 16) == VA_STATUS_ERROR_INVALID_BUFFER &&
+              GetImage(&fixture.context, 1, 0, 0, 16, 16, image.image_id) ==
+                  VA_STATUS_ERROR_INVALID_BUFFER,
+          "resized image storage must be checked before CPU access");
+  Require(DestroyBuffer(&fixture.context, image.buf) == VA_STATUS_SUCCESS &&
+              PutImage(&fixture.context, 2, image.image_id, 0, 0, 16, 16,
+                       0, 0, 16, 16) == VA_STATUS_ERROR_INVALID_BUFFER &&
+              GetImage(&fixture.context, 1, 0, 0, 16, 16, image.image_id) ==
+                  VA_STATUS_ERROR_INVALID_BUFFER,
+          "destroyed image storage cannot be accessed through a live image ID");
+}
+
+void PutImageCannotOverwriteRetainedDecodeIdentity() {
+  Fixture fixture;
+  const VAImage image = MakeImage(&fixture);
+  const auto before = fixture.source->storage;
+  auto alias = Picture(kTimestampStep, 99);
+  alias->backing_owner = 1;
+  fixture.driver.surfaces[3] = alias;
+  for (VASurfaceID id : {1U, 3U})
+    Require(PutImage(&fixture.context, id, image.image_id, 0, 0, 16, 16,
+                     0, 0, 16, 16) == VA_STATUS_ERROR_SURFACE_BUSY,
+            "retained decode pictures and aliases cannot be overwritten by PutImage");
+  Require(fixture.source->storage == before &&
+              fixture.decoder->surface_timestamps.at(fixture.source.get()) ==
+                  kTimestampStep &&
+              fixture.decoder->decoded_frames.at(kTimestampStep)->planes[0][0] == 40,
+          "rejected upload must preserve public/private decoded-frame identity");
+  // A decoder may also have submitted an alias rather than its canonical
+  // owner. Uploading through the owner must still find that retained picture.
+  fixture.decoder->surface_timestamps.erase(fixture.source.get());
+  fixture.decoder->surface_timestamps[alias.get()] = kTimestampStep;
+  Require(PutImage(&fixture.context, 1, image.image_id, 0, 0, 16, 16,
+                   0, 0, 16, 16) == VA_STATUS_ERROR_SURFACE_BUSY,
+          "PutImage must find decode identity stored under another live alias");
+}
+
+void OrphanedAliasesCannotWaitOnPendingFence() {
+  FenceIoMock mock;
+  MockFenceScope scope(mock);
+  Fixture fixture;
+  // Keep a real queued production VPP operation deterministic without a
+  // background thread accessing mocked descriptors outside this test thread.
+  {
+    std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+    fixture.driver.stopping = true;
+  }
+  fixture.driver.condition.notify_all();
+  fixture.driver.vpp_worker.join();
+  auto writer = Picture(0, 99);
+  auto reader = Picture(0, 99);
+  for (const auto &alias : {writer, reader}) {
+    alias->backing_owner = 2;
+    alias->object_fds = {101, 102, 103};
+  }
+  fixture.driver.surfaces[3] = writer;
+  fixture.driver.surfaces[4] = reader;
+  fixture.decoder->decoded_frames.at(kTimestampStep)->ready = false;
+  Require(BeginPicture(&fixture.context, 2, 3) == VA_STATUS_SUCCESS &&
+              RenderPicture(&fixture.context, 2, &fixture.parameters, 1) ==
+                  VA_STATUS_SUCCESS &&
+              EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS &&
+              fixture.driver.pending_vpp.size() == 1 && !mock.signaled,
+          "queue a production fenced VPP targeting one alias");
+  VASurfaceID owner = 2;
+  Require(DestroySurfaces(&fixture.context, &owner, 1) == VA_STATUS_SUCCESS &&
+              fixture.driver.surfaces.count(2) == 0 &&
+              fixture.driver.pending_vpp.front().target_owner->destroyed,
+          "destroy original owner while queued VPP retains its fence");
+  const VAImage image = MakeImage(&fixture);
+  const auto events = mock.events;
+  const size_t images = fixture.driver.images.size();
+  const size_t buffers = fixture.driver.buffers.size();
+  VAImage derived = {};
+  Require(GetImage(&fixture.context, 4, 0, 0, 16, 16, image.image_id) ==
+              VA_STATUS_ERROR_INVALID_SURFACE &&
+              PutImage(&fixture.context, 4, image.image_id, 0, 0, 16, 16,
+                       0, 0, 16, 16) == VA_STATUS_ERROR_INVALID_SURFACE &&
+              DeriveImage(&fixture.context, 4, &derived) ==
+                  VA_STATUS_ERROR_INVALID_SURFACE,
+          "orphaned alias image access must fail before waiting on our fence");
+  Require(mock.events == events && !mock.self_wait &&
+              fixture.driver.images.size() == images &&
+              fixture.driver.buffers.size() == buffers,
+          "orphaned aliases cannot issue CPU sync ioctls or leak snapshots");
+  VASurfaceStatus surface_status = VASurfaceReady;
+  Require(QuerySurfaceStatus(&fixture.context, 4, &surface_status) ==
+              VA_STATUS_ERROR_INVALID_SURFACE &&
+              SyncSurface2(&fixture.context, 4, 0) == VA_STATUS_ERROR_INVALID_SURFACE &&
+              BeginPicture(&fixture.context, 2, 4) == VA_STATUS_ERROR_INVALID_SURFACE &&
+              mock.events == events,
+          "orphaned aliases cannot report ready or become a new VPP target");
+  VADRMPRIMESurfaceDescriptor exported = {};
+  Require(ExportSurfaceHandle(&fixture.context, 4,
+                              VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                              VA_EXPORT_SURFACE_READ_ONLY, &exported) ==
+              VA_STATUS_ERROR_INVALID_SURFACE,
+          "exporting an orphan cannot restore a stale backing owner mapping");
+}
+
+void VppRechecksOwnersBetweenPublicCalls() {
+  for (bool remove_source : {true, false}) {
+    for (bool after_render : {true, false}) {
+      Fixture fixture;
+      auto source_alias = Picture(kTimestampStep, 40);
+      auto target_alias = Picture(0, 99);
+      source_alias->backing_owner = 1;
+      target_alias->backing_owner = 2;
+      fixture.driver.surfaces[3] = source_alias;
+      fixture.driver.surfaces[4] = target_alias;
+      VAProcPipelineParameterBuffer pipeline = {};
+      pipeline.surface = 3;
+      VABufferID parameters;
+      Require(CreateBuffer(&fixture.context, 2, VAProcPipelineParameterBufferType,
+                           sizeof(pipeline), 1, &pipeline, &parameters) ==
+                  VA_STATUS_SUCCESS &&
+                  BeginPicture(&fixture.context, 2, 4) == VA_STATUS_SUCCESS,
+              "begin VPP through live source and target aliases");
+      if (after_render)
+        Require(RenderPicture(&fixture.context, 2, &parameters, 1) == VA_STATUS_SUCCESS,
+                "capture a VPP picture before original owner destruction");
+      VASurfaceID owner = remove_source ? 1 : 2;
+      Require(DestroySurfaces(&fixture.context, &owner, 1) == VA_STATUS_SUCCESS,
+              "destroy source or target owner between public VPP calls");
+      const auto before = target_alias->storage;
+      const VAStatus result = after_render
+          ? EndPicture(&fixture.context, 2)
+          : RenderPicture(&fixture.context, 2, &parameters, 1);
+      Require(result == VA_STATUS_ERROR_INVALID_SURFACE &&
+                  target_alias->storage == before,
+              "Render/EndPicture must recheck both original alias owners");
+    }
+  }
+}
+
+void PendingBackingReimportIsRejectedBeforeMapping() {
+  for (bool legacy : {false, true}) {
+    FenceIoMock mock;
+    MockFenceScope scope(mock);
+    Fixture fixture;
+    {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      fixture.driver.stopping = true;
+    }
+    fixture.driver.condition.notify_all();
+    fixture.driver.vpp_worker.join();
+    const int fd = memfd_create("crystalhd-private-pending-import", MFD_CLOEXEC);
+    Require(fd >= 0, "allocate private backing identity for import test");
+    mock.real_files.insert(fd);
+    Require(ftruncate(fd, fixture.target->storage.size()) == 0,
+            "size private imported memory");
+    fixture.target->object_fds = {fd};
+    fixture.target->object_sizes = {fixture.target->storage.size()};
+    VADRMPRIMESurfaceDescriptor prime = {};
+    Require(ExportSurfaceHandle(&fixture.context, 2,
+                                VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                                VA_EXPORT_SURFACE_READ_ONLY, &prime) == VA_STATUS_SUCCESS,
+            "export private backing before original surface destruction");
+    mock.real_files.insert(prime.objects[0].fd);
+    fixture.decoder->decoded_frames.at(kTimestampStep)->ready = false;
+    fixture.SubmitParameters();
+    Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS,
+            "queue fenced VPP on exported backing");
+    VASurfaceID owner = 2;
+    Require(DestroySurfaces(&fixture.context, &owner, 1) == VA_STATUS_SUCCESS,
+            "retire original owner with pending fence");
+    unsigned long handle = prime.objects[0].fd;
+    VASurfaceAttribExternalBuffers external = {};
+    external.pixel_format = VA_FOURCC_NV12;
+    external.width = 16;
+    external.height = 16;
+    external.data_size = prime.objects[0].size;
+    external.num_planes = 2;
+    external.num_buffers = 1;
+    external.buffers = &handle;
+    for (unsigned int plane = 0; plane < 2; ++plane) {
+      external.pitches[plane] = prime.layers[0].pitch[plane];
+      external.offsets[plane] = prime.layers[0].offset[plane];
+    }
+    VASurfaceAttrib attributes[2] = {};
+    attributes[0].type = VASurfaceAttribMemoryType;
+    attributes[0].value.type = VAGenericValueTypeInteger;
+    attributes[0].value.value.i = legacy ? VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME
+                                       : VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2;
+    attributes[1].type = VASurfaceAttribExternalBufferDescriptor;
+    attributes[1].value.type = VAGenericValueTypePointer;
+    attributes[1].value.value.p = legacy ? static_cast<void *>(&external)
+                                       : static_cast<void *>(&prime);
+    // With no GBM device, this non-linear PRIME import cannot be mapped at
+    // all. BUSY must win before ImportPrime can attempt that mapping path.
+    if (!legacy)
+      prime.objects[0].drm_format_modifier = I915_FORMAT_MOD_X_TILED;
+    VASurfaceID imported = VA_INVALID_SURFACE;
+    const size_t count = fixture.driver.surfaces.size();
+    const VAStatus result = CreateSurfaces2(
+        &fixture.context, VA_RT_FORMAT_YUV420, 16, 16, &imported, 1, attributes, 2);
+    // Ensure even a pre-fix successful import's duplicate is cleaned up by
+    // the mock, so the failing regression itself never leaks test fds.
+    if (fixture.driver.surfaces.count(imported) != 0)
+      for (int object : fixture.driver.surfaces.at(imported)->object_fds)
+        mock.real_files.insert(object);
+    Require(result == VA_STATUS_ERROR_SURFACE_BUSY &&
+                imported == VA_INVALID_SURFACE && fixture.driver.surfaces.size() == count &&
+                !mock.signaled,
+            "pending exported backing must be rejected before PRIME/legacy import");
+    {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      ReleasePendingVpp(&fixture.driver, fixture.driver.pending_vpp.front().sequence,
+                        VA_STATUS_ERROR_OPERATION_FAILED, false);
+    }
+    prime.objects[0].drm_format_modifier = DRM_FORMAT_MOD_LINEAR;
+    Require(CreateSurfaces2(&fixture.context, VA_RT_FORMAT_YUV420, 16, 16,
+                            &imported, 1, attributes, 2) == VA_STATUS_SUCCESS,
+            "released pending fence must not permanently block future imports");
+    for (int object : fixture.driver.surfaces.at(imported)->object_fds)
+      mock.real_files.insert(object);
+    Require(!mock.self_wait && !mock.invalid, "import lifecycle keeps ownership balanced");
+    close(prime.objects[0].fd);
+  }
+}
+
+void FirstExternalImportOwnsAliasesAndRollsBackAtomically() {
+  for (bool legacy : {false, true}) {
+    FenceIoMock mock;
+    MockFenceScope scope(mock);
+    Fixture fixture;
+    {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      fixture.driver.stopping = true;
+    }
+    fixture.driver.condition.notify_all();
+    fixture.driver.vpp_worker.join();
+    Surface backing_file;
+    const int fd = memfd_create("crystalhd-private-first-import", MFD_CLOEXEC);
+    Require(fd >= 0, "allocate private external import backing");
+    backing_file.object_fds = {fd};
+    mock.real_files.insert(fd);
+    Require(ftruncate(fd, 512) == 0, "size private 16x16 NV12 import");
+    VADRMPRIMESurfaceDescriptor prime[2] = {};
+    VASurfaceAttribExternalBuffers external[2] = {};
+    unsigned long handle = fd;
+    for (unsigned int i = 0; i < 2; ++i) {
+      prime[i].fourcc = VA_FOURCC_NV12;
+      prime[i].width = 16;
+      prime[i].height = 16;
+      prime[i].num_objects = 1;
+      prime[i].objects[0].fd = fd;
+      prime[i].objects[0].size = 512;
+      prime[i].objects[0].drm_format_modifier = DRM_FORMAT_MOD_LINEAR;
+      prime[i].num_layers = 1;
+      prime[i].layers[0].drm_format = DRM_FORMAT_NV12;
+      prime[i].layers[0].num_planes = 2;
+      prime[i].layers[0].pitch[0] = 16;
+      prime[i].layers[0].pitch[1] = 16;
+      prime[i].layers[0].offset[1] = 256;
+      external[i].pixel_format = VA_FOURCC_NV12;
+      external[i].width = 16;
+      external[i].height = 16;
+      external[i].data_size = 512;
+      external[i].num_planes = 2;
+      external[i].pitches[0] = 16;
+      external[i].pitches[1] = 16;
+      external[i].offsets[1] = 256;
+      external[i].num_buffers = 1;
+      external[i].buffers = &handle;
+    }
+    VASurfaceAttrib attributes[2] = {};
+    attributes[0].type = VASurfaceAttribMemoryType;
+    attributes[0].value.type = VAGenericValueTypeInteger;
+    attributes[0].value.value.i = legacy ? VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME
+                                       : VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2;
+    attributes[1].type = VASurfaceAttribExternalBufferDescriptor;
+    attributes[1].value.type = VAGenericValueTypePointer;
+    attributes[1].value.value.p = legacy ? static_cast<void *>(external)
+                                       : static_cast<void *>(prime);
+    VASurfaceID surfaces[2] = {VA_INVALID_SURFACE, VA_INVALID_SURFACE};
+    auto create = [&] {
+      // Import uses ordinary private memfd dup/mmap/close, not mocked DMA
+      // ownership. Let rollback close duplicates we never receive publicly.
+      fence_io_mock = nullptr;
+      const VAStatus status = CreateSurfaces2(&fixture.context, VA_RT_FORMAT_YUV420,
+                                              16, 16, surfaces, 2, attributes, 2);
+      fence_io_mock = &mock;
+      if (status == VA_STATUS_SUCCESS)
+        for (VASurfaceID surface : surfaces)
+          for (int object : fixture.driver.surfaces.at(surface)->object_fds)
+            mock.real_files.insert(object);
+      return status;
+    };
+    // The second descriptor passes fd preflight but fails layout import,
+    // after the first descriptor has already created its canonical owner.
+    prime[1].objects[0].size = 0;
+    external[1].data_size = 0;
+    Require(create() == VA_STATUS_ERROR_ALLOCATION_FAILED &&
+                fixture.driver.surfaces.size() == 2 &&
+                fixture.driver.backing_owners.empty(),
+            "failed import batch must roll back surfaces and new backing identities");
+    prime[1].objects[0].size = 512;
+    external[1].data_size = 512;
+    Require(create() == VA_STATUS_SUCCESS,
+            "import the same external backing twice without exporting it first");
+    const auto first = fixture.driver.surfaces.at(surfaces[0]);
+    const auto alias = fixture.driver.surfaces.at(surfaces[1]);
+    Require(first->backing_owner == VA_INVALID_SURFACE &&
+                alias->backing_owner == surfaces[0],
+            "the first external import must own every later same-backing alias");
+    Require(BeginPicture(&fixture.context, 1, surfaces[0]) == VA_STATUS_SUCCESS,
+            "canonical external imports remain accepted as decode targets");
+    prime[0].layers[0].offset[0] = external[0].offsets[0] = 16;
+    prime[0].layers[0].offset[1] = external[0].offsets[1] = 272;
+    VASurfaceID incompatible = VA_INVALID_SURFACE;
+    const size_t count = fixture.driver.surfaces.size();
+    Require(CreateSurfaces2(&fixture.context, VA_RT_FORMAT_YUV420, 16, 16,
+                            &incompatible, 1, attributes, 2) ==
+                VA_STATUS_ERROR_INVALID_PARAMETER &&
+                incompatible == VA_INVALID_SURFACE &&
+                fixture.driver.surfaces.size() == count,
+            "same-fd nonidentical valid plane views must not share picture identity");
+    prime[0].layers[0].offset[0] = external[0].offsets[0] = 0;
+    prime[0].layers[0].offset[1] = external[0].offsets[1] = 256;
+    fixture.decoder->decoded_frames.at(kTimestampStep)->ready = false;
+    Require(BeginPicture(&fixture.context, 2, surfaces[0]) == VA_STATUS_SUCCESS &&
+                RenderPicture(&fixture.context, 2, &fixture.parameters, 1) ==
+                    VA_STATUS_SUCCESS && EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS,
+            "queue a fenced write to the first external import");
+    VASurfaceStatus state = VASurfaceReady;
+    const VAImage image = MakeImage(&fixture);
+    const auto events = mock.events;
+    Require(QuerySurfaceStatus(&fixture.context, surfaces[1], &state) == VA_STATUS_SUCCESS &&
+                state == VASurfaceRendering &&
+                SyncSurface2(&fixture.context, surfaces[1], 0) != VA_STATUS_SUCCESS &&
+                GetImage(&fixture.context, surfaces[1], 0, 0, 16, 16, image.image_id) ==
+                    VA_STATUS_ERROR_SURFACE_BUSY &&
+                PutImage(&fixture.context, surfaces[1], image.image_id, 0, 0, 16, 16,
+                         0, 0, 16, 16) == VA_STATUS_ERROR_SURFACE_BUSY &&
+                BeginPicture(&fixture.context, 2, surfaces[1]) == VA_STATUS_ERROR_HW_BUSY &&
+                mock.events == events,
+            "pre-existing aliases must share pending status and reject CPU/VPP access");
+  }
+}
+
+void DifferentLumaObjectsCannotAliasSharedChroma() {
+  FenceIoMock mock;
+  MockFenceScope scope(mock);
+  Fixture fixture;
+  Surface files;
+  for (unsigned int object = 0; object < 3; ++object) {
+    const int fd = memfd_create("crystalhd-private-multiplane", MFD_CLOEXEC);
+    Require(fd >= 0, "allocate private multiplane import backing");
+    files.object_fds.push_back(fd);
+    mock.real_files.insert(fd);
+    Require(ftruncate(fd, 512) == 0, "size private multiplane backing");
+  }
+  VADRMPRIMESurfaceDescriptor prime = {};
+  prime.fourcc = VA_FOURCC_NV12;
+  prime.width = 16;
+  prime.height = 16;
+  prime.num_objects = 2;
+  prime.objects[0].fd = files.object_fds[0];
+  prime.objects[1].fd = files.object_fds[2];
+  for (unsigned int object = 0; object < 2; ++object) {
+    prime.objects[object].size = 512;
+    prime.objects[object].drm_format_modifier = DRM_FORMAT_MOD_LINEAR;
+  }
+  prime.num_layers = 1;
+  prime.layers[0].drm_format = DRM_FORMAT_NV12;
+  prime.layers[0].num_planes = 2;
+  prime.layers[0].object_index[1] = 1;
+  prime.layers[0].pitch[0] = 16;
+  prime.layers[0].pitch[1] = 16;
+  VASurfaceAttrib attributes[2] = {};
+  attributes[0].type = VASurfaceAttribMemoryType;
+  attributes[0].value.type = VAGenericValueTypeInteger;
+  attributes[0].value.value.i = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2;
+  attributes[1].type = VASurfaceAttribExternalBufferDescriptor;
+  attributes[1].value.type = VAGenericValueTypePointer;
+  attributes[1].value.value.p = &prime;
+  auto create = [&](VASurfaceID *id) {
+    const VAStatus status = CreateSurfaces2(&fixture.context, VA_RT_FORMAT_YUV420,
+                                            16, 16, id, 1, attributes, 2);
+    if (status == VA_STATUS_SUCCESS)
+      for (int fd : fixture.driver.surfaces.at(*id)->object_fds)
+        mock.real_files.insert(fd);
+    return status;
+  };
+  VASurfaceID first = VA_INVALID_SURFACE;
+  Require(create(&first) == VA_STATUS_SUCCESS, "import independent luma and chroma objects");
+  BackingIdentity chroma;
+  Require(GetBackingIdentity(files.object_fds[2], &chroma) &&
+              fixture.driver.backing_owners.count(chroma) == 1 &&
+              fixture.driver.backing_owners.at(chroma) == first,
+          "every imported plane object needs canonical ownership, not just luma");
+  prime.objects[0].fd = files.object_fds[1];
+  VASurfaceID second = VA_INVALID_SURFACE;
+  Require(create(&second) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+              second == VA_INVALID_SURFACE && fixture.driver.surfaces.size() == 3,
+          "different luma with shared chroma must reject incompatible overlapping views");
+  Require(DestroySurfaces(&fixture.context, &first, 1) == VA_STATUS_SUCCESS &&
+              fixture.driver.backing_owners.empty(),
+          "canonical teardown must remove every object identity");
+}
+
+void DecodeTargetsRejectAliasesAndBusyWriters() {
+  Fixture fixture;
+  auto alias = Picture(kTimestampStep, 40);
+  alias->backing_owner = 1;
+  fixture.driver.surfaces[3] = alias;
+  Require(BeginPicture(&fixture.context, 1, 1) == VA_STATUS_SUCCESS,
+          "canonical internal surfaces remain accepted as decode targets");
+  Require(BeginPicture(&fixture.context, 1, 3) == VA_STATUS_ERROR_INVALID_SURFACE &&
+              fixture.decoder->target == 1,
+          "alias VLD targets must fail before changing decode-picture state");
+  // Check the submission boundary independently, with a deliberately wrong
+  // coded width guaranteeing even the pre-fix path cannot open hardware.
+  fixture.decoder->target = 3;
+  fixture.decoder->have_picture = true;
+  fixture.decoder->slices.resize(1);
+  fixture.decoder->slice_data = {{0x65}};
+  fixture.decoder->width = 32;
+  fixture.decoder->height = 16;
+  Require(SubmitPicture(&fixture.driver, fixture.decoder.get(), VAProfileH264High) ==
+              VA_STATUS_ERROR_INVALID_SURFACE,
+          "submission must independently reject aliases before decoder work");
+  fixture.source->vpp_writers = 1;
+  Require(BeginPicture(&fixture.context, 1, 1) == VA_STATUS_ERROR_HW_BUSY,
+          "canonical decode targets cannot overwrite a pending VPP writer");
+  fixture.decoder->target = 1;
+  Require(SubmitPicture(&fixture.driver, fixture.decoder.get(), VAProfileH264High) ==
+              VA_STATUS_ERROR_HW_BUSY,
+          "submission must recheck pending writer ownership");
+}
+
+void PutImageOwnershipFailuresCannotComplete() {
+  for (bool fail_start : {true, false}) {
+    FenceIoMock mock;
+    MockFenceScope scope(mock);
+    Fixture fixture;
+    const VAImage image = MakeImage(&fixture);
+    fixture.target->object_fds = {101, 102, 103};
+    mock.fail_start_fd = fail_start ? 102 : -1;
+    mock.fail_end_fd = fail_start ? -1 : 102;
+    const auto before = fixture.target->storage;
+    Require(PutImage(&fixture.context, 2, image.image_id, 0, 0, 16, 16,
+                     0, 0, 16, 16) == VA_STATUS_ERROR_OPERATION_FAILED &&
+                fixture.target->failed && !fixture.target->ready,
+            "PutImage START/END failure cannot complete a surface");
+    if (fail_start)
+      Require(fixture.target->storage == before,
+              "failed PutImage START cannot change destination pixels");
+    Require(mock.started.empty() && !mock.invalid,
+            "failed PutImage must END only acquired objects");
+  }
+}
+
+void FenceCompletionFailuresFailWithoutSelfWait() {
+  for (bool fail_signal : {true, false}) {
+    FenceIoMock mock;
+    MockFenceScope scope(mock);
+    Fixture fixture;
+    std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+    fixture.target->object_fds = {101, 102, 103};
+    PendingVpp pending;
+    pending.source = fixture.source;
+    pending.target = fixture.target;
+    pending.target_owner = fixture.target;
+    pending.sequence = 1;
+    pending.write_timeline = BeginFencedWrite(fixture.target.get());
+    Require(pending.write_timeline >= 0, "establish mocked pending VPP fence");
+    fixture.source->vpp_readers = 1;
+    fixture.target->vpp_writers = 1;
+    fixture.target->latest_vpp_sequence = 1;
+    fixture.driver.pending_vpp.push_back(pending);
+    mock.fail_signal = fail_signal;
+    mock.fail_end_fd = fail_signal ? -1 : 102;
+    ReleasePendingVpp(&fixture.driver, 1, VA_STATUS_SUCCESS, true);
+    Require(fixture.target->failed && !fixture.target->ready,
+            "fence signal or CPU END failure must fail the published surface");
+    Require(mock.started.empty() && mock.handles.empty() && !mock.self_wait &&
+                !mock.invalid && fixture.driver.pending_vpp.empty(),
+            "fence failure cleanup must release timeline before CPU self-wait");
+  }
+  FenceIoMock mock;
+  MockFenceScope scope(mock);
+  Surface surface;
+  surface.object_fds = {101, 102, 103};
+  mock.fail_import_fd = 102;
+  mock.fail_signal = true;
+  Require(BeginFencedWrite(&surface) == -1 && mock.signaled &&
+              mock.started.empty() && mock.handles.empty() && !mock.self_wait &&
+              !mock.invalid,
+          "partial import plus failed signal must close the timeline before END");
+}
+
 }  // namespace
 
 int main() {
@@ -494,10 +1212,25 @@ int main() {
     PartialFenceImportSignalsBeforeCpuEnd();
     CompletedFenceSignalsBeforeCpuEnd();
     VppCpuOwnershipFailuresAreNotSuccessfulFrames();
+    CpuReadStartUnwindsAcquiredPrefix();
+    CpuSyncRetriesInterruptedAccess();
+    CpuReadFailuresCannotCompleteCopies();
+    ImageReadFailuresAndDerivedRollback();
+    ImageGeometryAndOddNv12Roundtrip();
+    ImageCopiesRejectInvalidAndBusyRectangles();
+    PutImageCannotOverwriteRetainedDecodeIdentity();
+    PutImageOwnershipFailuresCannotComplete();
+    FenceCompletionFailuresFailWithoutSelfWait();
+    OrphanedAliasesCannotWaitOnPendingFence();
+    VppRechecksOwnersBetweenPublicCalls();
+    PendingBackingReimportIsRejectedBeforeMapping();
+    FirstExternalImportOwnsAliasesAndRollsBackAtomically();
+    DifferentLumaObjectsCannotAliasSharedChroma();
+    DecodeTargetsRejectAliasesAndBusyWriters();
   } catch (const std::exception &error) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP identity/lifecycle/fences: 15 hardware-free regressions passed");
+  puts("VA-API VPP identity/lifecycle/fences/images: 30 hardware-free regressions passed");
   return 0;
 }

@@ -25,6 +25,11 @@ Measured results are recorded in [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md
   replace the legacy quality/seek overrides with codec-only preference,
   reject late player failures in the probe, and validate a normal YouTube
   session and playback controls without bypassing service verification.
+  The user confirms normal software playback beyond one minute with 1.6.0;
+  live seeking, pause/resume, quality selection, and playback rates remain open.
+- [x] Local Chrome software playback controls: exact sampled pixel identities
+  through pause/resume, 0.5x/1.5x/2x/restored 1x, four forward/backward seeks,
+  and final frame 359. This does not establish live YouTube or hardware controls.
 - [x] [#7: reproducible playback paths](https://github.com/ahnhy1324/crystalhd/issues/7):
   verify source and staged/installed discovery, complete drain, exact frame
   counts, and repeated GStreamer and secondary VA-API playback.
@@ -76,8 +81,11 @@ Measured results are recorded in [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md
   This interrupts the desktop and is not part of unattended `make check`.
 - [ ] Chromium hardware frame identity after seeking, and GPU sandbox support.
   Browser hardware decoding remains opt-in; the default is software decoding.
-- [ ] Complete VA-API synchronization error coverage outside the tested
-  decode/VPP write paths, including CPU reads, `vaPutImage`, and fence-signal failures.
+- [x] [#14: VA-API image and synchronization errors](https://github.com/ahnhy1324/crystalhd/issues/14):
+  validate image bounds/layout, CPU reads, `vaPutImage`, and fence-signal failures.
+  Hardware-free failure/alias regressions, sanitizers, real DRM image readback,
+  and the High retained-frame hardware regression pass; this is not general
+  GBM/compositor synchronization or Chrome hardware validation.
 
 Do not close the hardware-matrix issue on the strength of compilation or a
 BCM70015 H.264-only run. Record exact commands, profiles, checksums, source

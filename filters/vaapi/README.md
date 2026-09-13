@@ -69,9 +69,10 @@ rejects reuse as busy. ARGB is first rendered into private memory and only then
 copied into the shared DMA-BUF under the write fence. Missing or
 canceled pictures report errors; they are never replaced by unrelated fallback
 pixels. Destroyed surface objects are permanently made non-writable before
-their VA IDs are released. The legacy software-fence interface cannot encode a
-cancellation error: clients must check VA surface status, not treat fence
-signaling alone as proof of valid pixels. Hardware-free production-state tests
+their VA IDs are released. Timeline increments cannot encode arbitrary operation
+errors; closing an unsignaled timeline releases its fences with `-ENOENT`.
+Clients must check VA surface status, not treat fence signaling alone as proof
+of valid pixels. Hardware-free production-state tests
 cover repeated VPP, source reuse between parameter submission and completion,
 decoder retirement, busy targets, and cancellation. These fix and verify driver
 lifecycle bugs, not end-to-end browser playback: the FFmpeg drain and seek
@@ -86,6 +87,16 @@ Current limitations:
   subpictures, palettes, and detailed surface-error reporting are unavailable
 - progressive H.264 Constrained Baseline, Main, and High profiles only
 - maximum coded size 1920x1088
+- NV12 images are limited to 1920x1088; odd dimensions retain complete UV pairs.
+  Image copies reject busy surfaces and invalid rectangles. `vaPutImage` also
+  rejects retained decode pictures and their aliases instead of invalidating
+  decoder reference identity. `vaDeriveImage` remains a readback snapshot, not a
+  writable direct alias; use `vaCreateImage`/`vaPutImage` for ordinary uploads.
+- imports sharing any known backing object must describe identical format,
+  dimensions, and plane views. Nonidentical views are rejected; surviving aliases
+  of a destroyed owner are invalid, and reimport is busy until pending writes end.
+  H.264 decode targets must be canonical surfaces, not imported aliases; aliases
+  remain usable for the supported image and VPP operations.
 - one CrystalHD playback session at a time; another client receives hardware
   busy until the active decoder closes
 - video processing is limited to unfiltered NV12 scaling and NV12-to-ARGB
