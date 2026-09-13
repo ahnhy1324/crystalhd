@@ -17,9 +17,9 @@ The kernel and userspace pieces have different levels of validation:
 | --- | --- |
 | Kernel module | Maintained for Linux 6.1 and newer; hardware-tested on BCM70015 with Ubuntu 6.17.0-41-generic. BCM70012 support is retained but has not been tested recently. |
 | `libcrystalhd` | Legacy compatibility API. CI freezes its 32-bit and 64-bit ioctl layouts, builds the complete library as 32-bit code, and exercises it through the tested frontends; it still has no comprehensive device-API test suite. |
-| GStreamer 1.x | Primary validation path on BCM70015: progressive H.264 Baseline/Main/High, complete-file drain, and flushing replay with identical pixels. One progressive MPEG-2 sample also drains completely. VC-1, WMV3, interlaced output, arbitrary in-flight seeks, and mid-stream format changes remain unverified. |
-| VA-API | Experimental client-oriented subset. Strict BCM70015 H.264 tests expose incomplete end-of-file drain; missing output returns an error, never a fabricated successful frame. Not a general or conformance-tested VA-API driver. |
-| Chromium | Developer experiment only. The safe default uses Chrome's software decoder; hardware decode is opt-in and has a known post-seek frame-identity failure. It also requires disabling the GPU-process sandbox. |
+| GStreamer 1.x | Primary validation path on BCM70015: progressive H.264 Baseline/Main/High, complete-file drain, and flushing replay with identical pixels. MPEG-2, VC-1 Advanced, and WMV3 Main each have a small complete-drain hardware fixture. Interlaced output, arbitrary in-flight seeks, and mid-stream format changes remain unverified. |
+| VA-API | Experimental client-oriented subset. BCM70015 H.264 Baseline/Main/High complete-file decode and pipelined seek checks pass with verified pixels; High also passes the synchronous seek probe. Bounded IDR replay handles firmware drain but can be expensive for synchronous clients. Not a general or conformance-tested VA-API driver. |
+| Chromium | Developer experiment only. The safe default uses Chrome's software decoder with the GPU sandbox enabled. Hardware decode is opt-in, has unresolved post-seek correctness, and requires disabling the GPU-process sandbox. |
 | Examples | Legacy diagnostic programs. CI verifies that they compile, not that their hard-coded sample streams decode correctly. |
 
 CI compiles the module against the latest 6.1, 6.6, 6.12, and 6.18 long-term
@@ -42,15 +42,19 @@ treated as unverified.
 For the reproducible playback baseline, use **GStreamer 1.x on BCM70015**
 with progressive H.264 Annex-B input and YUY2 output. The secondary,
 **experimental** path is **FFmpeg through VA-API**, decoding progressive
-H.264 to NV12. It does not yet reliably drain every frame at EOF, so use
-GStreamer for complete-file playback. The commands below also allow testing
-that failure explicitly. Other codecs, BCM70012, and
+H.264 to NV12. The tested BCM70015 files now drain completely; clients that
+synchronize every frame without feeding ahead can incur substantial decoder
+restart/replay overhead. GStreamer remains the primary playback path.
+Broader codec coverage, BCM70012, and
 Chromium hardware decoding remain experimental; see [TODO.md](TODO.md) for
 the open validation work and linked GitHub issues.
 
 The `crystalhddec` GStreamer 1.x element advertises parsed H.264 Annex-B,
 MPEG-2, VC-1, and WMV3 input and produces standard YUY2 raw video. Current
-hardware validation covers progressive H.264 and one progressive MPEG-2 sample.
+hardware validation covers progressive H.264 plus small MPEG-2, VC-1 Advanced,
+and WMV3 Main fixtures. VC-1 and WMV3 use distinct firmware subtypes and
+framing; ASF demuxer output is accepted directly, while raw VC-1 BDUs are
+assembled into pictures. See the hardware report for exact caps and commands.
 
 The `crystalhd_drv_video.so` VA-API backend exposes progressive H.264
 Constrained Baseline, Main, and High decoding. It supports NV12 output for
@@ -144,12 +148,16 @@ scan the new kernel log entries for driver failures:
 
 ```sh
 ./tests/vaapi-hardware-stress.sh /path/to/video.mp4 10
+# Exercise decoder teardown within one FFmpeg process (five input loops):
+CRYSTALHD_TEST_INPUT_LOOPS=5 ./tests/vaapi-hardware-stress.sh /path/to/video.mp4 1
 ```
 
 Generate three small, reproducible profile samples for a hardware report:
 
 ```sh
 sh tests/generate-h264-samples.sh /tmp/crystalhd-samples
+# Separate optional Full HD fixtures (1920x1080, 30 fps, 180 frames each):
+sh tests/generate-h264-samples.sh /tmp/crystalhd-fhd-samples 1920x1080
 ```
 
 The generator refuses to overwrite existing samples and prints each profile,
@@ -177,6 +185,30 @@ compares the SHA-256 hashes of downloaded NV12 pixels after forward and
 backward seeks and decoder flushes. It also flushes with reordered frames
 still pending. `--software` is an explicitly labelled self-check of the
 probe; it does not validate CrystalHD.
+
+Append `--lookahead 8` for a bounded pipelined-client test. It retains eight
+future output frames before downloading the oldest and leaves an undownloaded
+suffix at each seek. This is separately reported coverage; the default remains
+synchronous and can be much slower on firmware that requires future input.
+
+Use `--retain-old-frames` to retain eight original frame owners across flush
+and new input, or actual decoder-context destruction, before downloading and
+checking their original PTS/pixel hashes. This implies eight-frame lookahead;
+unlike `--lookahead 8` alone, it tests old-frame lifetime after teardown.
+
+For a local browser pixel/seek audit, run these from a graphical session:
+
+```sh
+sh tests/generate-browser-sample.sh /tmp/crystalhd-browser-barcode.mp4
+node tests/chromium-local-playback.js /tmp/crystalhd-browser-barcode.mp4
+```
+
+This uses a temporary profile and Chrome's software default with its GPU
+sandbox enabled. It checks numbered pixels against retained video-frame
+timestamps through four seeks and requires the actual final frame at EOS.
+It does not measure full-rate presentation or establish hardware decoding.
+The explicit `--expect-hardware` mode rejects any software fallback and
+requires the launcher's experimental GPU-sandbox opt-out acknowledgement.
 
 The hardware tests load the locally built module only when necessary and
 unload it afterward if the script loaded it. They refuse to run when an
@@ -309,12 +341,15 @@ device access. The setup therefore installs Google's non-Snap Debian package.
 
 ### Decoder, display GPU, and compositor
 
-The launcher defaults to Chrome's `FFmpegVideoDecoder`. Repeated X11 pixel
-captures showed that current Chrome recycles VA-API output buffers before the
-legacy CrystalHD firmware resolves reordered pictures; after a seek this can
-present pre-seek frames under new media timestamps. DMA-BUF fencing prevents
-partial writes but cannot repair that frame-identity mismatch. Correct seeks
-therefore take priority over browser hardware decoding.
+The launcher defaults to Chrome's `FFmpegVideoDecoder`. Earlier X11 pixel
+captures showed incorrect post-seek pictures in the hardware path. Two driver
+lifecycle bugs have since been fixed and regression-tested: repeated video
+processing retains the correct decoded picture, and surface reuse between
+parameter submission and completion cannot select a different picture.
+Missing or retired pictures now report errors instead of unrelated fallback
+pixels. These tests do not establish complete hardware drain or actual browser
+seek correctness; both still require end-to-end validation. Software decoding
+remains the browser default until that validation passes.
 
 Set `CRYSTALHD_CHROMIUM_EXPERIMENTAL_HW_DECODE=1` only to test the unresolved
 VA-API browser path. CrystalHD remains available to FFmpeg, GStreamer, and
@@ -329,11 +364,14 @@ Chrome. Set `CRYSTALHD_DRM_DEVICE` there if the active render node is not
 
 ### Security boundary
 
-Chrome's GPU sandbox does not broker `/dev/crystalhd` or this out-of-tree
-VA-API driver. The launcher therefore uses `--disable-gpu-sandbox`. Renderer,
-network, and other browser-process sandboxes remain enabled, but graphics and
-video parsing in the GPU process are unsandboxed. Because the persistent setup
-makes this browser the desktop default, use it only for sites you trust.
+The default software-decoding path keeps Chrome's GPU sandbox enabled and does
+not force the CrystalHD VA-API driver, even if an older persistent configuration
+contains the sandbox acknowledgement. Chrome's GPU sandbox does not broker
+`/dev/crystalhd` or this out-of-tree VA-API driver. Only experimental hardware
+decoding uses `--disable-gpu-sandbox`, and it requires
+`CRYSTALHD_CHROMIUM_DISABLE_GPU_SANDBOX=1`. Renderer, network, and other
+browser-process sandboxes remain enabled, but graphics and video parsing in
+the experimental GPU process are unsandboxed.
 
 The setup disables Chrome's command-line security-warning banner through the
 managed `CommandLineFlagSecurityWarningsEnabled` policy. This only hides the
@@ -351,8 +389,8 @@ Safe Browsing client-side phishing model starts. This is an informational
 message unrelated to CrystalHD, VA-API, or GPU acceleration; the launcher does
 not disable that browser security feature.
 
-Without the persistent configuration, the launcher refuses to disable the GPU
-sandbox until `CRYSTALHD_CHROMIUM_DISABLE_GPU_SANDBOX=1` is explicitly set.
+Software playback needs no sandbox acknowledgement. Experimental hardware
+playback is refused until `CRYSTALHD_CHROMIUM_DISABLE_GPU_SANDBOX=1` is set.
 
 ### Verify browser playback
 

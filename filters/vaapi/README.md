@@ -7,14 +7,45 @@ also allocates and exports ARGB DRM PRIME surfaces for Chromium-class clients
 whose compositor cannot render NV12 directly.
 
 This is an experimental, client-oriented VA-API subset rather than a complete
-VA-API implementation. Complete progressive H.264 decode to NV12 through
-FFmpeg on BCM70015 currently fails validation: a 180-frame Baseline sample
-produced only 178 frames because firmware retained the final two pictures.
-An infinite `vaSyncSurface` request now reports a decode error after 10 seconds
-without that picture, instead of hanging or substituting another frame.
-Use the [GStreamer path](../gst/gst-plugin-1.0/README.md) for validated complete
-playback. The DRM PRIME import/export and VPP smoke test does not itself
+VA-API implementation. Complete progressive H.264 Baseline/Main/High decode
+to NV12 through FFmpeg on BCM70015 passes the tested 180-frame fixtures,
+including independent software pixel comparisons. High also passes a complete
+reference decode and four forward/backward seek/flush pixel comparisons in
+synchronous mode; all three profiles pass the separate eight-frame lookahead
+variant with eight queued client pictures left undownloaded before each flush.
+The separate `--retain-old-frames` variant keeps those frame owners across
+flush/new input or context destruction and then verifies their original pixels.
+An infinite `vaSyncSurface` request reports a decode error after 10 seconds
+without its picture, instead of hanging or substituting another frame.
+The [GStreamer path](../gst/gst-plugin-1.0/README.md) remains the primary
+playback baseline. DRM PRIME import/export and VPP smoke tests do not themselves
 exercise CrystalHD hardware, and no libva conformance suite is run.
+
+BCM70015 firmware retains output until later compressed pictures or a real
+end-of-sequence marker arrive. After 100 ms of synchronization grace, the
+backend may seal the exact submitted batch with EOS. New input is queued until
+all real output timestamps and the firmware EOS marker are received. If input
+continues, the complete device is reopened and original access units from the
+last retained actual IDR rebuild reference state. Replayed completed pictures
+are discarded before touching immutable client pixels. Access-unit delimiters
+are first in their own timestamped packet; trailing delimiters shifted firmware
+timestamp association. Decoder-only resets were tested and rejected after a
+firmware stall; full device reopen passed the validated sequence.
+
+The replay cache allows at most 512 KiB per access unit, 32 MiB / 512 access
+units total, and 8192 replayed units before a completed older IDR prefix is
+pruned. Missing IDR history or exceeded limits produces an error. This is not
+free: a client that downloads each picture before submitting the next may
+reopen and replay for nearly every picture. The 100 ms grace helps clients
+with concurrent input; it cannot manufacture lookahead for synchronous ones.
+BCM70012 does not use the unvalidated sealed-batch path.
+
+Decoder-context destruction stops new submissions and drains already-accepted
+live pictures before closing the device, so queued FFmpeg output frames retain
+their actual pixels. The drain has a ten-second polling budget; individual
+firmware calls and cleanup can extend wall time, so hardware tests also use
+an external timeout. Completed plain decode surfaces survive context removal;
+destroyed/reused surfaces and canceled VPP epochs still report errors.
 
 Chromium may export a VA surface and then reimport the same DMA-BUF under a
 different surface ID for video processing. The driver links those aliases to
@@ -29,22 +60,27 @@ it emits some reordered output. Each submission therefore gets immutable,
 timestamped NV12 storage independent of Chromium's reusable VA surface. A VPP
 worker waits for hardware pictures that are still reordered, allowing Chromium
 to keep submitting input while output is pending. Pictures already emitted by
-CrystalHD are converted directly before `vaEndPicture` returns. Reused display
-targets carry a generation number that is checked again after every hardware
-wait, so an older queued conversion cannot overwrite a newer frame. ARGB is
-first rendered into private memory and only then copied into the shared DMA-BUF,
-preventing Chromium from sampling a half-converted scanline image. Superseded
-asynchronous targets receive the latest complete frame (or neutral black after
-a discontinuity) before their DMA-BUF fence is signaled; unchanged pool memory
-is never exposed. Destroyed surface objects are permanently made non-writable
-before their VA IDs are released.
+CrystalHD are converted directly before `vaEndPicture` returns. VPP sources
+are captured when `vaRenderPicture` supplies the parameters, and remain
+available for repeated VPP until the decode surface is reused or destroyed.
+Decoder generations are checked after every hardware wait, so retired pictures
+cannot become successful new-epoch output. A target with an outstanding writer
+rejects reuse as busy. ARGB is first rendered into private memory and only then
+copied into the shared DMA-BUF under the write fence. Missing or
+canceled pictures report errors; they are never replaced by unrelated fallback
+pixels. Destroyed surface objects are permanently made non-writable before
+their VA IDs are released. The legacy software-fence interface cannot encode a
+cancellation error: clients must check VA surface status, not treat fence
+signaling alone as proof of valid pixels. Hardware-free production-state tests
+cover repeated VPP, source reuse between parameter submission and completion,
+decoder retirement, busy targets, and cancellation. These fix and verify driver
+lifecycle bugs, not end-to-end browser playback: the FFmpeg drain and seek
+results above do not establish browser hardware seek correctness.
 
 Current limitations:
 
-- complete end-of-stream drain and VA-API seek/flush pixel identity are not
-  validated; VA-API supplies no explicit end-of-stream callback, and sending
-  the library's H.264 end-of-sequence marker during ordinary surface sync
-  would invalidate ongoing reference-picture decoding
+- VA-API supplies no explicit end-of-stream callback; bounded batch replay
+  covers the tested BCM70015 files, not arbitrary streams or BCM70012
 - only the decode, image, DRM PRIME, and minimal video-processing operations
   needed by the documented clients are implemented; `vaPutSurface`,
   subpictures, palettes, and detailed surface-error reporting are unavailable
@@ -58,10 +94,19 @@ Current limitations:
 - direct rendering requires writable NV12 DRM PRIME buffers
 - the VA-API backend is not a general display driver; it uses an existing DRM
   render node for surface allocation while CrystalHD performs H.264 decoding
-- current Chrome's asynchronous output-pool reuse does not preserve frame
-  identity across CrystalHD's reordered output after timeline seeks; the
-  `crystalhd-chromium` launcher therefore defaults to `FFmpegVideoDecoder` and
+- earlier browser hardware tests showed incorrect post-seek pixels; driver
+  lifecycle fixes now pass regressions, but browser hardware seek correctness
+  still needs validation. The `crystalhd-chromium` launcher therefore defaults
+  to `FFmpegVideoDecoder` and
   requires `CRYSTALHD_CHROMIUM_EXPERIMENTAL_HW_DECODE=1` for browser VA-API
+- browser hardware access has two distinct unresolved integration barriers:
+  Chromium's GPU sandbox does not broker the CrystalHD device and firmware
+  files, while asynchronous VPP additionally needs the debugfs `sw_sync`
+  timeline to fence compositor reads. Disabling the GPU sandbox alone does
+  not grant that timeline's filesystem permissions. The driver reports an
+  error if it cannot fence pending VPP; it does not change permissions or
+  substitute a synchronous decode wait inside `vaEndPicture`. Default browser
+  software decoding keeps the GPU sandbox enabled.
 
 Build and inspect the driver:
 

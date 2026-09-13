@@ -69,13 +69,13 @@ int main()
 	assert(!BuildSps(picture, VAProfileH264High, &rejected));
 	assert(rejected.empty());
 
-	// Even the final slice must have a following Annex-B NAL boundary.
-	std::vector<uint8_t> access_unit = {0, 0, 0, 1, 0x65, 0x88, 0x84};
-	const auto slice_bytes = access_unit;
-	FinishAccessUnit(&access_unit);
-	assert(std::equal(slice_bytes.begin(), slice_bytes.end(), access_unit.begin()));
-	std::vector<uint8_t> delimiter(access_unit.begin() + slice_bytes.size(),
-	                               access_unit.end());
+	// The timestamped packet must begin at its own AU, never the next AU.
+	std::vector<uint8_t> access_unit;
+	BeginAccessUnit(&access_unit);
+	const std::vector<uint8_t> slice_bytes = {0, 0, 0, 1, 0x65, 0x88, 0x84};
+	access_unit.insert(access_unit.end(), slice_bytes.begin(), slice_bytes.end());
+	std::vector<uint8_t> delimiter(access_unit.begin(), access_unit.begin() + 6);
+	assert(std::equal(slice_bytes.begin(), slice_bytes.end(), access_unit.begin() + 6));
 	assert(delimiter.size() == 6);
 	assert(delimiter[0] == 0 && delimiter[1] == 0 &&
 	       delimiter[2] == 0 && delimiter[3] == 1);
@@ -85,6 +85,8 @@ int main()
 
 	// A stalled infinite sync fails truthfully; finite client timeouts retain
 	// their distinct timeout status and are not converted into decode errors.
+	assert(!DecodeBatchGraceExpired(kDecodeBatchGraceNs - 1));
+	assert(DecodeBatchGraceExpired(kDecodeBatchGraceNs));
 	assert(DecodeWaitStatus(VA_TIMEOUT_INFINITE, kDecodeTimeoutNs - 1) ==
 	       VA_STATUS_SUCCESS);
 	assert(DecodeWaitStatus(VA_TIMEOUT_INFINITE, kDecodeTimeoutNs) ==

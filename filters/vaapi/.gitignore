@@ -2,3 +2,5 @@
 /vaapi-import-test
 /vaapi-h264-test
 /vaapi-seek-test
+/vaapi-vpp-test
+/vaapi-replay-test

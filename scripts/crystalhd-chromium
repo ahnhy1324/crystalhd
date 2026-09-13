@@ -60,7 +60,9 @@ if [ "$is_chromium_snap" = true ]; then
     exit 1
 fi
 
-if [ "${CRYSTALHD_CHROMIUM_DISABLE_GPU_SANDBOX:-0}" != 1 ]; then
+experimental_hw=${CRYSTALHD_CHROMIUM_EXPERIMENTAL_HW_DECODE:-0}
+if [ "$experimental_hw" = 1 ] &&
+    [ "${CRYSTALHD_CHROMIUM_DISABLE_GPU_SANDBOX:-0}" != 1 ]; then
     echo "crystalhd-chromium: CrystalHD requires access to /dev/crystalhd," >&2
     echo "which Chromium's GPU sandbox does not permit." >&2
     echo "Set CRYSTALHD_CHROMIUM_DISABLE_GPU_SANDBOX=1 to acknowledge" >&2
@@ -72,22 +74,15 @@ case "$browser_version" in
     *Google\ Chrome*)
         if [ "${CRYSTALHD_CHROMIUM_H264_POLICY:-0}" != 1 ]; then
             echo "crystalhd-chromium: Google Chrome ignores the bundled unpacked" >&2
-            echo "H.264 preference extension; H.264 pages still use CrystalHD," >&2
-            echo "but sites such as YouTube may select VP9 or AV1 instead." >&2
+            echo "H.264 preference extension; sites such as YouTube may select" >&2
+            echo "VP9 or AV1 instead." >&2
         fi
         ;;
 esac
 
-export LIBVA_DRIVER_NAME=crystalhd
 if [ "${CRYSTALHD_CHROMIUM_NATIVE_GL:-0}" != 1 ]; then
     export LIBGL_ALWAYS_SOFTWARE=1
     export GALLIUM_DRIVER=llvmpipe
-fi
-if [ -n "$driver_dir" ]; then
-    export LIBVA_DRIVERS_PATH="$driver_dir${LIBVA_DRIVERS_PATH:+:$LIBVA_DRIVERS_PATH}"
-fi
-if [ -n "$library_dir" ]; then
-    export LD_LIBRARY_PATH="$library_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
 
 if [ -n "${CRYSTALHD_CHROMIUM_PROFILE_DIR:-}" ]; then
@@ -97,20 +92,27 @@ fi
 if [ -n "$password_store" ]; then
     set -- --password-store="$password_store" "$@"
 fi
-# Chrome's asynchronous VA-API image processor can recycle an output buffer
-# before legacy CrystalHD firmware has emitted the reordered source picture.
-# No userspace fence can correct the resulting frame identity mismatch after a
-# seek. Keep the browser-correct FFmpeg decoder as the default; developers can
-# still exercise the VA-API bridge explicitly while working on that path.
-if [ "${CRYSTALHD_CHROMIUM_EXPERIMENTAL_HW_DECODE:-0}" != 1 ]; then
+# Driver regressions now cover picture identity through repeated VPP and
+# surface reuse, but browser hardware drain and seek correctness still need
+# end-to-end validation. Keep FFmpeg decoding as the default;
+# developers can explicitly exercise the experimental VA-API bridge.
+if [ "$experimental_hw" != 1 ]; then
     set -- --disable-accelerated-video-decode "$@"
+else
+    export LIBVA_DRIVER_NAME=crystalhd
+    if [ -n "$driver_dir" ]; then
+        export LIBVA_DRIVERS_PATH="$driver_dir${LIBVA_DRIVERS_PATH:+:$LIBVA_DRIVERS_PATH}"
+    fi
+    if [ -n "$library_dir" ]; then
+        export LD_LIBRARY_PATH="$library_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    fi
+    set -- --disable-gpu-sandbox \
+        --hardware-video-device-path="$drm_device" \
+        --enable-features=AcceleratedVideoDecodeLinuxGL "$@"
 fi
 exec "$browser" \
     --use-gl=angle \
     --use-angle=gl \
-    --disable-gpu-sandbox \
-    --hardware-video-device-path="$drm_device" \
-    --enable-features=AcceleratedVideoDecodeLinuxGL \
     --ignore-gpu-blocklist \
     --no-first-run \
     --no-default-browser-check \
