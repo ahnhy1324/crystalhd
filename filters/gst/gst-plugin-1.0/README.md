@@ -11,9 +11,11 @@ FFprobe's decoded frame count, requires EOS, checks output buffer sizes and
 monotonic timestamps, and opens a fresh playback session for each repetition.
 Separate BCM70015 tests also cover one progressive MPEG-2 fixture, two small
 VC-1/WMV3 fixtures, and H.264 flushing replay after EOS. BCM70012, interlaced
-output, arbitrary in-flight seeks, and mid-stream format changes remain
-unvalidated. CI checks plugin discovery, caps/framing helpers, and synthetic
-YUY2 playback; it does not decode through CrystalHD. See the
+output and mid-stream format changes remain unvalidated. In-flight seeking
+currently fails on BCM70015, and audio/video startup is timing-dependent;
+see [issue #16](https://github.com/ahnhy1324/crystalhd/issues/16).
+CI checks discovery, framing/lifecycle helpers, synthetic YUY2 playback and
+software audio/video controls; it does not decode through CrystalHD. See the
 [hardware report](../../../HARDWARE-2026-09-13.md) for fixture counts, hashes,
 software-output comparisons, and precise coverage boundaries.
 
@@ -71,9 +73,13 @@ are the accepted `video/x-wmv,wmvversion=3` framing combinations:
 
 Ordinary `asfdemux` output omits `stream-format` and `header-format`; these
 missing fields mean ASF packets. Missing `format` retains the legacy WMV3
-interpretation. Explicit unsupported framing is rejected. Each VC-1/WMV3
-compressed picture is limited to 16 MiB. Raw BDU input also has a 16 MiB
-buffered-input guard; do not push an entire larger file in one buffer.
+interpretation. Explicit unsupported framing is rejected. Raw BDU assembly
+has a 16 MiB buffered-input guard; do not push an entire larger file in one
+buffer. All codecs additionally require each complete compressed picture,
+injected metadata and conservative packet-header allowance to fit the
+library's 1 MiB transmit ring. Oversized pictures are rejected before
+submission, so the usable payload limit is slightly below 1 MiB and depends
+on framing/metadata.
 Sequence-layer/RCV container framing is not accepted directly. The optional
 FFmpeg-demuxed probe below can read RCV and supply its complete picture packets.
 
@@ -179,3 +185,35 @@ visible YUY2 pixels on replay. This covers replay after EOS, not arbitrary
 mid-playback seeks or a change of resolution. Pixel hashes validate replay
 identity against the first hardware decode; they are not a comparison against
 a software decoder. Record this result separately from ordinary playback.
+
+## Local player and in-flight controls
+
+`scripts/crystalhd-play` provides explicit hardware/software local-file
+playback; see the [top-level usage and known failures](../../../README.md#gstreamer-playback).
+Hardware mode never silently falls back to software.
+
+The separate controls probe verifies barcode pixels and timestamps while
+pausing, resuming, seeking forward/backward and changing rate to 0.5x/2x/1x:
+
+```sh
+sh tests/generate-browser-sample.sh /tmp/crystalhd-controls.mp4 --av-360p
+timeout --kill-after=10 90 \
+  filters/gst/gst-plugin-1.0/gstreamer-controls-test \
+  /tmp/crystalhd-controls.mp4 --software --audio --timeout 75
+```
+
+Omit `--software` only for an isolated hardware diagnostic with the in-tree
+plugin/library paths set as above. This hardware control sequence currently
+fails; it is not a supported-playback demonstration. Input admission pumps
+pending output while waiting for complete-call transmit capacity, with a
+10-second budget. Library/device calls can still block beyond that budget,
+so retain the external timeout.
+
+`--sustain SECONDS` selects continuous 1x playback instead of controls. It
+requires a matching fixture duration (a multiple of 12 seconds), exact
+30-fps timestamps, the repeated 360-frame barcode sequence and complete EOS.
+The optional audio check verifies clock bounds and overlap with the final
+video-frame interval, not sample-exact audio duration. Both modes use clocked
+test sinks: neither proves visible presentation or audible output. The
+repeating fixture also cannot distinguish identical prior-cycle pixels
+that have been assigned the correct current timestamp.

@@ -47,6 +47,9 @@ discovered_library=$(LD_LIBRARY_PATH="$stage_dir/usr/lib" \
     ldd "$discovered_plugin" | awk '$1 == "libcrystalhd.so.3" { print $3 }')
 test "$discovered_library" = "$stage_dir/usr/lib/libcrystalhd.so.3"
 echo "staged GStreamer plugin and libcrystalhd discovery passed"
+test -x "$stage_dir/usr/bin/crystalhd-play"
+test -f "$stage_dir/usr/share/crystalhd/player.py"
+"$stage_dir/usr/bin/crystalhd-play" --help >/dev/null
 va_driver_dir=$(pkg-config --variable=libdir libva)/dri
 test -f "$stage_dir$va_driver_dir/crystalhd_drv_video.so"
 test -x "$stage_dir/usr/bin/crystalhd-chromium"

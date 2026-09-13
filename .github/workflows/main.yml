@@ -22,6 +22,8 @@ jobs:
             linux-headers-generic \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-tools gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav \
+            python3-gi gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 \
             libva-dev libdrm-dev libgbm-dev \
             libswscale-dev ffmpeg libavcodec-dev libavformat-dev libavutil-dev \
             nodejs node-ws
@@ -47,6 +49,12 @@ jobs:
           filters/vaapi/vaapi-seek-test "$RUNNER_TEMP/h264-samples/high.mp4" --software
           filters/vaapi/vaapi-seek-test "$RUNNER_TEMP/h264-samples/high.mp4" --software --lookahead 8
           filters/vaapi/vaapi-seek-test "$RUNNER_TEMP/h264-samples/high.mp4" --software --retain-old-frames
+
+      - name: Verify local audio/video controls against software decoding
+        run: |
+          sh tests/generate-browser-sample.sh "$RUNNER_TEMP/av360.mp4" --av-360p
+          timeout --kill-after=5 90 filters/gst/gst-plugin-1.0/gstreamer-controls-test \
+            "$RUNNER_TEMP/av360.mp4" --software --audio --timeout 75
 
   upstream-kernel-api:
     name: Kernel API (${{ matrix.track }}, ${{ matrix.arch }})

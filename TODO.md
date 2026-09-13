@@ -21,6 +21,15 @@ Measured results are recorded in [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md
 
 ## Playback validation
 
+- [ ] [#16: everyday GStreamer playback](https://github.com/ahnhy1324/crystalhd/issues/16):
+  provide explicit hardware/software local playback, validate in-flight
+  controls and audio/video timing, and measure sustained 720p operation.
+  Keep clocked test sinks distinct from visible/audible presentation and
+  diagnose input/output starvation before claiming real-time performance.
+  Current blocker: BCM70015 can emit only one new picture after an in-flight
+  seek, then fail drain with pending inputs. Recheck full-device versus
+  decoder-only reset before sustained hardware playback; startup with audio
+  is also timing-dependent. Software controls are not hardware proof.
 - [ ] [#12: YouTube integration](https://github.com/ahnhy1324/crystalhd/issues/12):
   replace the legacy quality/seek overrides with codec-only preference,
   reject late player failures in the probe, and validate a normal YouTube

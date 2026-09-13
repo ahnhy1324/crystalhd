@@ -1,3 +1,5 @@
 gstreamer-playback-test
+gstreamer-controls-test
+gst-lifecycle-test
 gstreamer-codec-playback-test
 gst-codecs-test

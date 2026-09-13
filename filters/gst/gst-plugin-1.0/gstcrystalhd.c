@@ -16,6 +16,7 @@
 #include <bc_dts_types.h>
 #include <libcrystalhd_if.h>
 #include "gstcrystalhd-codecs.h"
+#include "gstcrystalhd-input.h"
 #include "gstcrystalhd-timing.h"
 
 #define GST_TYPE_CRYSTALHD_DEC (gst_crystalhd_dec_get_type())
@@ -23,7 +24,6 @@
   (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_CRYSTALHD_DEC, GstCrystalHdDec))
 
 #define CRYSTALHD_TIMESTAMP_STEP 100000ULL
-#define CRYSTALHD_INPUT_RETRIES 1000U
 
 typedef struct {
   guint64 hardware_timestamp;
@@ -36,10 +36,12 @@ typedef struct _GstCrystalHdDec {
   HANDLE device;
   gboolean decoder_open;
   gboolean decoder_started;
+  gboolean input_flushed;
   gboolean is_70012;
   gboolean output_configured;
   gboolean need_second_field;
   CrystalHdCodec codec;
+  gsize input_metadata_size;
   guint32 field_frame_number;
   guint width;
   guint height;
@@ -179,6 +181,8 @@ gst_crystalhd_close_device(GstCrystalHdDec *self)
   }
 
   self->output_configured = FALSE;
+  self->input_flushed = FALSE;
+  self->input_metadata_size = 0;
   self->need_second_field = FALSE;
   gst_crystalhd_clear_timestamps(self);
 }
@@ -198,10 +202,9 @@ gst_crystalhd_find_timestamp(GstCrystalHdDec *self, guint64 timestamp,
     }
   }
 
-  link = self->timestamps.head;
   if (link_out != NULL)
-    *link_out = link;
-  return link != NULL ? link->data : NULL;
+    *link_out = NULL;
+  return NULL;
 }
 
 static gboolean
@@ -263,24 +266,35 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output)
   interlaced = (output->PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) != 0;
   bottom_field = (output->PicInfo.flags & VDEC_FLAG_BOTTOMFIELD) != 0;
 
-  if (!gst_crystalhd_configure_output(self, width, height, interlaced))
-    return GST_FLOW_NOT_NEGOTIATED;
-
   entry = gst_crystalhd_find_timestamp(self, output->PicInfo.timeStamp,
                                        &timestamp_link);
-  if (self->need_second_field) {
-    frame_number = self->field_frame_number;
-  } else if (entry != NULL) {
-    frame_number = entry->frame_number;
-  } else {
-    frame = gst_video_decoder_get_oldest_frame(decoder);
-    if (frame == NULL) {
-      GST_WARNING_OBJECT(self, "decoded picture has no queued input frame");
-      return GST_FLOW_OK;
+  if (entry == NULL) {
+    /* Flush/retry can expose a late or duplicate hardware picture. Never
+     * attach its pixels to an unrelated (possibly not yet submitted) frame.
+     * Field pairing without a matching token is not a supported contract.
+     */
+    if (interlaced || self->need_second_field) {
+      GST_ELEMENT_ERROR(self, STREAM, DECODE,
+                        ("CrystalHD field has no matching input timestamp"),
+                        ("Hardware timestamp: %" G_GUINT64_FORMAT,
+                         (guint64)output->PicInfo.timeStamp));
+      return GST_FLOW_ERROR;
     }
-    frame_number = frame->system_frame_number;
-    gst_video_codec_frame_unref(frame);
+    GST_DEBUG_OBJECT(self, "ignoring unmatched hardware timestamp %"
+                     G_GUINT64_FORMAT, (guint64)output->PicInfo.timeStamp);
+    return GST_FLOW_OK;
   }
+  frame_number = entry->frame_number;
+  if (self->need_second_field &&
+      (!interlaced || frame_number != self->field_frame_number)) {
+    GST_ELEMENT_ERROR(self, STREAM, DECODE,
+                      ("CrystalHD fields belong to different input frames"),
+                      (NULL));
+    return GST_FLOW_ERROR;
+  }
+
+  if (!gst_crystalhd_configure_output(self, width, height, interlaced))
+    return GST_FLOW_NOT_NEGOTIATED;
 
   frame = gst_video_decoder_get_frame(decoder, frame_number);
   if (frame == NULL) {
@@ -421,6 +435,50 @@ gst_crystalhd_receive_available(GstCrystalHdDec *self)
 }
 
 static gboolean
+gst_crystalhd_is_flushing(GstCrystalHdDec *self)
+{
+  GstVideoDecoder *decoder = GST_VIDEO_DECODER(self);
+  return GST_PAD_IS_FLUSHING(GST_VIDEO_DECODER_SINK_PAD(decoder)) ||
+         GST_PAD_IS_FLUSHING(GST_VIDEO_DECODER_SRC_PAD(decoder));
+}
+
+static GstFlowReturn
+gst_crystalhd_wait_input_space(GstCrystalHdDec *self, gsize reservation,
+                               gint64 deadline)
+{
+  for (;;) {
+    gint64 remaining;
+    GstFlowReturn flow;
+
+    if (gst_crystalhd_is_flushing(self))
+      return GST_FLOW_FLUSHING;
+    remaining = gst_crystalhd_drain_remaining_us(deadline, g_get_monotonic_time());
+    if (remaining == 0) {
+      GST_ELEMENT_ERROR(self, STREAM, DECODE,
+                        ("Timed out waiting for CrystalHD input capacity"),
+                        ("Whole-call reservation: %" G_GSIZE_FORMAT " bytes",
+                         reservation));
+      return GST_FLOW_ERROR;
+    }
+    if (DtsTxFreeSize(self->device) >= reservation)
+      return GST_FLOW_OK;
+
+    /* Waiting inside DtsProcInput prevents this sole streaming thread from
+     * receiving output, which in turn can stop the hardware consuming input.
+     * Pump RX before retrying admission; no part of the new input is sent.
+     */
+    flow = gst_crystalhd_receive_available(self);
+    if (flow != GST_FLOW_OK)
+      return flow;
+    if (gst_crystalhd_is_flushing(self))
+      return GST_FLOW_FLUSHING;
+    remaining = gst_crystalhd_drain_remaining_us(deadline, g_get_monotonic_time());
+    if (remaining != 0 && DtsTxFreeSize(self->device) < reservation)
+      g_usleep((gulong)MIN(remaining, (gint64)1000));
+  }
+}
+
+static gboolean
 gst_crystalhd_start(GstVideoDecoder *decoder)
 {
   GstCrystalHdDec *self = GST_CRYSTALHD_DEC(decoder);
@@ -498,6 +556,7 @@ gst_crystalhd_set_format(GstVideoDecoder *decoder, GstVideoCodecState *state)
   {
     const guint8 *metadata = input_format.pMetaData;
     gsize metadata_size = input_format.metaDataSz;
+    gsize minimum_reservation;
     if (!gst_crystalhd_codec_metadata(&self->codec, &metadata, &metadata_size) ||
         (subtype == BC_MSUBTYPE_WMV3 &&
          (!input_format.width || !input_format.height))) {
@@ -506,6 +565,14 @@ gst_crystalhd_set_format(GstVideoDecoder *decoder, GstVideoCodecState *state)
                         ("Use vc1parse with a supported stream/header format"));
       goto fail;
     }
+    if (!gst_crystalhd_input_reservation(subtype, 1, metadata_size,
+                                         &minimum_reservation)) {
+      GST_ELEMENT_ERROR(self, STREAM, FORMAT,
+                        ("Codec metadata exceeds CrystalHD input ring capacity"),
+                        (NULL));
+      goto fail;
+    }
+    self->input_metadata_size = metadata_size;
     input_format.pMetaData = (guint8 *)metadata;
     input_format.metaDataSz = metadata_size;
   }
@@ -612,9 +679,11 @@ gst_crystalhd_handle_frame(GstVideoDecoder *decoder,
   GstMapInfo map;
   BC_STATUS status = BC_STS_ERROR;
   GstFlowReturn flow;
-  guint attempt;
+  gint64 deadline;
+  guint64 hardware_timestamp;
   const guint8 *data;
   gsize size;
+  gsize reservation;
   guint8 *padded = NULL;
 
   if (!self->decoder_started || frame->input_buffer == NULL)
@@ -632,6 +701,17 @@ gst_crystalhd_handle_frame(GstVideoDecoder *decoder,
     gst_video_decoder_drop_frame(decoder, frame);
     return GST_FLOW_ERROR;
   }
+  if (!gst_crystalhd_input_reservation(self->codec.subtype, size,
+                                      self->input_metadata_size, &reservation)) {
+    gst_buffer_unmap(frame->input_buffer, &map);
+    GST_ELEMENT_ERROR(self, STREAM, DECODE,
+                      ("Compressed picture exceeds CrystalHD input ring capacity"),
+                      ("Picture: %" G_GSIZE_FORMAT " bytes; metadata: %"
+                       G_GSIZE_FORMAT " bytes; ring: 1048576 bytes",
+                       size, self->input_metadata_size));
+    gst_video_decoder_drop_frame(decoder, frame);
+    return GST_FLOW_ERROR;
+  }
   if (self->codec.subtype == BC_MSUBTYPE_WMV3 ||
       self->codec.subtype == BC_MSUBTYPE_WVC1) {
     /* The library probes a four-byte startcode even for valid sub-word
@@ -642,35 +722,34 @@ gst_crystalhd_handle_frame(GstVideoDecoder *decoder,
     data = padded;
   }
 
-  entry = g_new0(CrystalHdTimestamp, 1);
-  entry->hardware_timestamp = self->next_hardware_timestamp;
-  entry->frame_number = frame->system_frame_number;
+  hardware_timestamp = self->next_hardware_timestamp;
   self->next_hardware_timestamp += CRYSTALHD_TIMESTAMP_STEP;
-  g_queue_push_tail(&self->timestamps, entry);
+  deadline = g_get_monotonic_time() + GST_CRYSTALHD_INPUT_TIMEOUT_US;
 
-  for (attempt = 0; attempt < CRYSTALHD_INPUT_RETRIES; attempt++) {
+  for (;;) {
+    flow = gst_crystalhd_wait_input_space(self, reservation, deadline);
+    if (flow != GST_FLOW_OK)
+      goto input_flow_error;
+    /* DtsFlushInput(4) closes the library decoder; its next ProcInput lazily
+     * reopens it, even if that attempt eventually reports BUSY or an error.
+     * Admission itself never changes that decoder state.
+     */
+    self->input_flushed = FALSE;
     status = DtsProcInput(self->device, (guint8 *)data, size,
-                          entry->hardware_timestamp, 0);
+                          hardware_timestamp, 0);
     if (status != BC_STS_BUSY)
       break;
 
     flow = gst_crystalhd_receive_available(self);
-    if (flow != GST_FLOW_OK) {
-      g_free(padded);
-      gst_buffer_unmap(frame->input_buffer, &map);
-      return flow;
-    }
-    g_usleep(1000);
+    if (flow != GST_FLOW_OK)
+      goto input_flow_error;
+    g_usleep((gulong)MIN((gint64)1000,
+        gst_crystalhd_drain_remaining_us(deadline, g_get_monotonic_time())));
   }
   g_free(padded);
   gst_buffer_unmap(frame->input_buffer, &map);
 
   if (status != BC_STS_SUCCESS) {
-    GList *tail = self->timestamps.tail;
-    if (tail != NULL && tail->data == entry) {
-      g_free(entry);
-      g_queue_delete_link(&self->timestamps, tail);
-    }
     GST_ELEMENT_ERROR(self, STREAM, DECODE,
                       ("CrystalHD rejected compressed input: %s",
                        gst_crystalhd_status_hint(status)),
@@ -679,7 +758,24 @@ gst_crystalhd_handle_frame(GstVideoDecoder *decoder,
     return GST_FLOW_ERROR;
   }
 
+  /* Only accepted input owns a token. Output polling during BUSY must not
+   * consume a provisional mapping or finish the current unaccepted frame.
+   */
+  entry = g_new0(CrystalHdTimestamp, 1);
+  entry->hardware_timestamp = hardware_timestamp;
+  entry->frame_number = frame->system_frame_number;
+  g_queue_push_tail(&self->timestamps, entry);
+  /* GstVideoDecoder keeps its own queued reference; get_frame() supplies the
+   * reference consumed by finish_frame() when this picture is received.
+   */
+  gst_video_codec_frame_unref(frame);
   return gst_crystalhd_receive_available(self);
+
+input_flow_error:
+  g_free(padded);
+  gst_buffer_unmap(frame->input_buffer, &map);
+  gst_video_decoder_drop_frame(decoder, frame);
+  return flow;
 }
 
 static gboolean
@@ -687,7 +783,7 @@ gst_crystalhd_flush(GstVideoDecoder *decoder)
 {
   GstCrystalHdDec *self = GST_CRYSTALHD_DEC(decoder);
 
-  if (self->device != NULL) {
+  if (self->device != NULL && !self->input_flushed) {
     BC_STATUS status = DtsFlushInput(self->device, 4);
     if (status != BC_STS_SUCCESS) {
       GST_ELEMENT_ERROR(self, STREAM, DECODE,
@@ -696,6 +792,7 @@ gst_crystalhd_flush(GstVideoDecoder *decoder)
                         ("DtsFlushInput returned %d", status));
       return FALSE;
     }
+    self->input_flushed = TRUE;
   }
   gst_crystalhd_clear_timestamps(self);
   self->need_second_field = FALSE;
@@ -709,12 +806,17 @@ gst_crystalhd_drain(GstVideoDecoder *decoder)
   gint64 started;
   gint64 deadline;
   BC_STATUS status;
+  GstFlowReturn flow;
 
-  if (!self->decoder_started)
+  if (!self->decoder_started || self->input_flushed)
     return GST_FLOW_OK;
 
   started = g_get_monotonic_time();
   deadline = started + GST_CRYSTALHD_DRAIN_TIMEOUT_US;
+  flow = gst_crystalhd_wait_input_space(self, GST_CRYSTALHD_EOS_RESERVATION,
+                                       deadline);
+  if (flow != GST_FLOW_OK)
+    return flow;
   status = DtsFlushInput(self->device, 0);
   if (status != BC_STS_SUCCESS) {
     GST_ELEMENT_ERROR(self, STREAM, DECODE,
@@ -728,6 +830,9 @@ gst_crystalhd_drain(GstVideoDecoder *decoder)
     BC_DTS_STATUS decoder_status;
     gboolean activity;
     gboolean eos = FALSE;
+
+    if (gst_crystalhd_is_flushing(self))
+      return GST_FLOW_FLUSHING;
 
     memset(&decoder_status, 0, sizeof(decoder_status));
     status = DtsGetDriverStatus(self->device, &decoder_status);
@@ -746,7 +851,11 @@ gst_crystalhd_drain(GstVideoDecoder *decoder)
       activity = FALSE;
     }
 
-    if (DtsIsEndOfStream(self->device, (guint8 *)&eos) == BC_STS_SUCCESS && eos)
+    /* The library can signal EOS while decoded pictures remain in RLL.
+     * Consume all available output before interpreting that indication.
+     */
+    if (!activity &&
+        DtsIsEndOfStream(self->device, (guint8 *)&eos) == BC_STS_SUCCESS && eos)
       break;
     if (!activity && self->timestamps.length == 0)
       break;

@@ -87,6 +87,7 @@ sudo apt install build-essential autoconf dkms pkg-config \
   libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
   gstreamer1.0-tools gstreamer1.0-plugins-base \
   gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+  python3-gi gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 \
   libva-dev libdrm-dev libgbm-dev libswscale-dev vainfo
 ```
 
@@ -285,6 +286,29 @@ make DESTDIR=/tmp/crystalhd-package install
 ```
 
 ## GStreamer playback
+
+The experimental local-file controller uses GStreamer's `playbin` for the
+video window, audio, and optional external subtitles:
+
+```sh
+./scripts/crystalhd-play --hardware video.mp4
+./scripts/crystalhd-play --software --subtitles captions.srt video.mp4
+```
+
+After installation, use `crystalhd-play` without the source-tree prefix.
+Keep its launching terminal open: Space pauses/resumes, Left/Right or `j`/`l`
+seek ten seconds, `1`/`2`/`3` select 0.5x/1x/2x, and `q` quits. Hardware mode
+is the default and confirms the decoder only after actual raw video output.
+Unsupported input, a busy card, or decoder errors do not silently select
+software; retry explicitly with `--software`. Software codec availability
+depends on installed GStreamer plugins; `gstreamer1.0-libav` adds FFmpeg
+decoders. Rank changes are local to the player process, not system defaults.
+This controller is not yet a guarantee of smooth Full HD or arbitrary-stream
+playback. Hardware in-flight seeking currently fails on BCM70015; initial
+audio/video startup is also not yet reliable. Use explicit software mode for
+everyday controls while [issue #16](https://github.com/ahnhy1324/crystalhd/issues/16)
+remains open. Its output watchdog is cooperative: a blocked library call can
+still require an external timeout during testing.
 
 For an H.264 MP4 file:
 

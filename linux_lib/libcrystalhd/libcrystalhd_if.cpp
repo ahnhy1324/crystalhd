@@ -30,6 +30,7 @@
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <stdlib.h>
+#include <pthread.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 #include "7411d.h"
@@ -1787,7 +1788,14 @@ DtsTxFreeSize( HANDLE hDevice )
 
 	DTS_GET_CTX(hDevice,Ctx);
 
-	return Ctx->circBuf.freeSize;
+	// Match txBufPop's lock order: reset uses flushLock, while byte
+	// accounting in push/pop uses pushpopLock.
+	pthread_mutex_lock(&Ctx->circBuf.flushLock);
+	pthread_mutex_lock(&Ctx->circBuf.pushpopLock);
+	uint32_t freeSize = Ctx->circBuf.freeSize;
+	pthread_mutex_unlock(&Ctx->circBuf.pushpopLock);
+	pthread_mutex_unlock(&Ctx->circBuf.flushLock);
+	return freeSize;
 }
 
 DRVIFLIB_API BC_STATUS
