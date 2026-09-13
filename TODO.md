@@ -21,6 +21,10 @@ Measured results are recorded in [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md
 
 ## Playback validation
 
+- [ ] [#12: YouTube integration](https://github.com/ahnhy1324/crystalhd/issues/12):
+  replace the legacy quality/seek overrides with codec-only preference,
+  reject late player failures in the probe, and validate a normal YouTube
+  session and playback controls without bypassing service verification.
 - [x] [#7: reproducible playback paths](https://github.com/ahnhy1324/crystalhd/issues/7):
   verify source and staged/installed discovery, complete drain, exact frame
   counts, and repeated GStreamer and secondary VA-API playback.

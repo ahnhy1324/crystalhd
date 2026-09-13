@@ -87,10 +87,11 @@ mkdir -p "$config_dir" "$profile_dir" "$desktop_dir"
 chmod 700 "$config_dir" "$profile_dir"
 
 # Stable Chrome no longer loads unpacked extensions from --load-extension.
-# Package the bundled H.264/seek presentation extension with a persistent key
+# Package the bundled codec-only H.264 preference extension with a persistent key
 # and register its signed CRX through Chrome's supported Linux external-
 # extension mechanism. Keeping the key makes the extension ID stable and lets
 # a later setup run replace the installed package with a newer version.
+# Keep the historical key/package names to preserve the installed extension ID.
 extension_build_dir=$(mktemp -d /tmp/crystalhd-extension.XXXXXX)
 cp -a "$repo_dir/browser/h264-only" "$extension_build_dir/extension"
 seek_gate_version=$(sed -n \

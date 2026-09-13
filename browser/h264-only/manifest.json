@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "CrystalHD H.264 preference",
-  "version": "1.5.0",
-  "description": "Prefer H.264 on YouTube and gate presentation during seeks.",
+  "version": "1.6.0",
+  "description": "Prefer CrystalHD-compatible H.264 on YouTube without changing quality or presentation.",
   "content_scripts": [
     {
       "matches": ["*://*.youtube.com/*"],
