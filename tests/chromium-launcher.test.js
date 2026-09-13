@@ -73,8 +73,10 @@ test('acknowledged hardware selects CrystalHD and only disables GPU sandbox', ()
 test('Google Chrome warning does not claim software playback uses CrystalHD', () => {
   const result = launch({}, 'Google Chrome 999.0');
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stderr, /H\.264 preference extension; sites such as YouTube may select/);
-  assert.match(result.stderr, /VP9 or AV1 instead/);
+  assert.match(result.stderr, /Google Chrome may ignore --load-extension/);
+  assert.match(result.stderr, /external\/policy extensions still apply/);
+  assert.match(result.stderr, /including in fresh profiles/);
+  assert.match(result.stderr, /YouTube may select VP9 or AV1/);
   assert.doesNotMatch(result.stderr, /pages still use CrystalHD/);
   const invocation = JSON.parse(result.stdout);
   assert.ok(invocation.args.includes('--disable-accelerated-video-decode'));

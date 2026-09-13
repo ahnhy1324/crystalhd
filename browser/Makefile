@@ -22,6 +22,7 @@ check:
 		node --check $(ROOTDIR)/tests/chromium-youtube.js && \
 		node --check $(ROOTDIR)/tests/chromium-local-playback.js && \
 		node --test $(ROOTDIR)/tests/chromium-launcher.test.js \
+			$(ROOTDIR)/tests/chromium-extension.test.js \
 			$(ROOTDIR)/tests/chromium-local-audit.test.js || exit 1; \
 		if node -e 'require("ws")' >/dev/null 2>&1; then \
 			node --test $(ROOTDIR)/tests/chromium-probe.test.js; \

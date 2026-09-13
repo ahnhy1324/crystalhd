@@ -73,9 +73,10 @@ fi
 case "$browser_version" in
     *Google\ Chrome*)
         if [ "${CRYSTALHD_CHROMIUM_H264_POLICY:-0}" != 1 ]; then
-            echo "crystalhd-chromium: Google Chrome ignores the bundled unpacked" >&2
-            echo "H.264 preference extension; sites such as YouTube may select" >&2
-            echo "VP9 or AV1 instead." >&2
+            echo "crystalhd-chromium: Google Chrome may ignore --load-extension." >&2
+            echo "Separately installed external/policy extensions still apply," >&2
+            echo "including in fresh profiles. Verify the actual video codec;" >&2
+            echo "without H.264 preference, YouTube may select VP9 or AV1." >&2
         fi
         ;;
 esac

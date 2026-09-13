@@ -322,6 +322,8 @@ The script is idempotent and performs the complete desktop setup:
   force-installs the third-party Chrome Web Store
   [`h264ify`](https://chromewebstore.google.com/detail/h264ify/aleakchihdccplidncghkekgioiakgal)
   extension so YouTube selects H.264 rather than VP9 or AV1
+- packages and registers the bundled codec-preference extension as a local
+  Chrome extension, preserving its signing key and extension ID on updates
 - registers `crystalhd-chromium.desktop` for HTTP, HTTPS, and HTML
 - shadows the ordinary Google Chrome application entry for the current user,
   so the normal Chrome icon also starts the CrystalHD launcher
@@ -334,6 +336,21 @@ silently absorb the launch and discard the CrystalHD settings.
 The managed extension policy applies to every Google Chrome profile on the
 machine, not only the dedicated CrystalHD profile. Chrome shows the browser as
 managed while this policy is installed.
+
+The bundled extension is also installed through Chrome's
+[Linux external-extension mechanism](https://developer.chrome.com/docs/extensions/how-to/distribute/install-extensions#linux),
+which can load it in fresh profiles even when `--load-extension` is ignored.
+Version 1.6.0 filters codec capability queries only: it does not force 480p,
+change player quality, hide posters, or mask video during seeks. Version
+1.5.0 had those presentation overrides and should be updated. Unsupported
+video codecs and frame rates above 30 fps are still reported as unsupported;
+that can affect which representations the site offers without overriding the
+user's selection among compatible ones.
+For a local CRX update, both the signed package and the external registration's
+version must change; updating repository files or running `make install` alone
+does not replace an already packaged extension. The full desktop setup above
+also changes system/browser defaults, so do not use it merely to update an
+extension unless those broader changes are intended.
 
 Canonical's Chromium snap is not supported. Snap confinement denies access to
 `/dev/crystalhd`; copying the VA-API driver into the snap does not grant that
@@ -426,15 +443,27 @@ diagnostic codec injection is necessary:
 The experimental check expects an `avc1` codec and
 `Chrome decoder: VaapiVideoDecoder (platform=true)`. The probe exits
 unsuccessfully unless playback advances through the hardware path without a
-media-timeline regression or Chrome media error. Use `--seconds 60` for a
-sustained check that covers YouTube's adaptive quality changes.
+media-timeline regression, player error, or Chrome media error. The default
+observation window is 90 seconds; success also requires healthy video and
+recent frame/time progress at the end, not just a few seconds of earlier output.
 Add `--seek-at 20 --seek-to 120` to perform a real timeline jump and fail if a
-pre-seek frame is presented again after the new timeline has settled.
+pre-seek frame timestamp is reported again after the new timeline has settled.
+This callback-timestamp check does not independently establish visible pixel
+identity; use the local barcode probe for exact pixels and their own timestamps.
 Use `--force-h264` only as a diagnostic fallback on a profile where the
 managed extension is not installed.
 
 Omit both the experimental environment variable and `--expect-hardware` to
 verify the safe `FFmpegVideoDecoder` path.
+
+The live YouTube failure tracked in
+[#12](https://github.com/ahnhy1324/crystalhd/issues/12) reports
+`ump.spsrejectfailure` / `HTML5_SPS_UMP_STATUS_REJECTED`, including with
+extensions disabled and software decoding. HTTP 200 segment responses and a
+clean decoder error log do not make this service/player rejection a pass.
+Do not hide automation indicators or bypass service verification to make the
+probe green. A normal browser-session check and service-side troubleshooting
+are separate from validating the CrystalHD decoder.
 
 ### Persistent files and removal
 
