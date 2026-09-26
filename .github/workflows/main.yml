@@ -128,4 +128,4 @@ jobs:
           make -C "$KERNEL_DIR" \
             ARCH="${{ matrix.arch }}" \
             M="$GITHUB_WORKSPACE/driver/linux" \
-            KDIR="$KERNEL_DIR" W=1 crystalhd.o
+            W=1 crystalhd.o

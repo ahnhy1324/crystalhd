@@ -10,8 +10,7 @@ UDEVDIR ?= /lib/udev/rules.d
 FIRMWAREDIR ?= /lib/firmware
 
 
-INCLUDES  = -I$(KDIR)/include
-INCLUDES += -I$(src)/../../include
+INCLUDES  = -I$(src)/../../include
 INCLUDES += -I$(src)/../../include/link
 INCLUDES += -I$(src)/../../include/flea
 
