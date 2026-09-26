@@ -1511,7 +1511,12 @@ DtsProcOutput(
 		{
 			if(sts == BC_STS_TIMEOUT)
 			{
-				if (Ctx->bEOSCheck == true && Ctx->bEOS == false)
+				/* BCM70015 sends a firmware timing marker on explicit drain.
+				 * A timeout can occur before queued input or DMA completes;
+				 * it must not manufacture EOS. Retain the BCM70012 fallback.
+				 */
+				if (Ctx->DevId == BC_PCI_DEVID_LINK &&
+					Ctx->bEOSCheck == true && Ctx->bEOS == false)
 				{
 					if(milliSecWait)
 						Ctx->EOSCnt = BC_EOS_PIC_COUNT;
@@ -2219,6 +2224,7 @@ DtsSendEOS( HANDLE  hDevice, uint32_t Op
 	uint8_t	*pEOS;
 	uint32_t nEOSLen;
 	uint32_t	nTag;
+	const bool softRave = Ctx->PESConvParams.m_bSoftRave;
 
 	if (Ctx->State == BC_DEC_STATE_CLOSE)
 	{
@@ -2235,6 +2241,14 @@ DtsSendEOS( HANDLE  hDevice, uint32_t Op
 	 */
 	if (Op == 0)
 		Ctx->bEOSCheck = false;
+
+	/* EOS control packets are not ordinary zero-PTS SoftRave pictures.
+	 * The original BCM70015 implementation (813af6d) suppressed PTS with
+	 * m_bSoftRaveEOS; 4f5f6f0 removed that exception while adding persistent
+	 * SoftRave input handling. Restore the EOS-only framing, retaining the
+	 * existing ordinary-input setting on every cleanup path, including Op 5.
+	 */
+	Ctx->PESConvParams.m_bSoftRave = false;
 
 	Ctx->PESConvParams.m_bPESExtField = false;
 	Ctx->PESConvParams.m_bPESPrivData = false;
@@ -2327,6 +2341,7 @@ DtsSendEOS( HANDLE  hDevice, uint32_t Op
 
 eos_cleanup:
 	/* Do not carry partial timing-marker metadata into later input. */
+	Ctx->PESConvParams.m_bSoftRave = softRave;
 	Ctx->PESConvParams.m_bPESExtField = false;
 	Ctx->PESConvParams.m_pPESExtField = NULL;
 	Ctx->PESConvParams.m_bPESPrivData = false;

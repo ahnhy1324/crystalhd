@@ -40,14 +40,19 @@ typedef struct _GstCrystalHdDec {
   gboolean is_70012;
   gboolean output_configured;
   gboolean need_second_field;
+  gboolean field_bottom;
   CrystalHdCodec codec;
   gsize input_metadata_size;
   guint32 field_frame_number;
+  guint field_width;
+  guint field_height;
   guint width;
   guint height;
   guint64 next_hardware_timestamp;
   GQueue timestamps;
   GstVideoCodecState *input_state;
+  GstAdapter *parse_adapter;
+  gboolean parse_pending;
   GstVideoInfo output_info;
 
   /* The decoder stream lock protects the device, timestamps and flow state.
@@ -240,6 +245,8 @@ gst_crystalhd_configure_output(GstCrystalHdDec *self, guint width, guint height,
 {
   GstVideoDecoder *decoder = GST_VIDEO_DECODER(self);
   GstVideoCodecState *state;
+  GstVideoInterlaceMode mode = interlaced ? GST_VIDEO_INTERLACE_MODE_MIXED
+                                          : GST_VIDEO_INTERLACE_MODE_PROGRESSIVE;
 
   if (width == 0 || height == 0 || width > 1920 || height > 1088) {
     GST_ERROR_OBJECT(self, "invalid output dimensions %ux%u", width, height);
@@ -247,7 +254,8 @@ gst_crystalhd_configure_output(GstCrystalHdDec *self, guint width, guint height,
   }
 
   if (self->output_configured && self->width == width &&
-      self->height == height)
+      self->height == height &&
+      GST_VIDEO_INFO_INTERLACE_MODE(&self->output_info) == mode)
     return TRUE;
 
   state = gst_video_decoder_set_output_state(
@@ -255,8 +263,7 @@ gst_crystalhd_configure_output(GstCrystalHdDec *self, guint width, guint height,
   if (state == NULL)
     return FALSE;
 
-  state->info.interlace_mode = interlaced ? GST_VIDEO_INTERLACE_MODE_MIXED
-                                          : GST_VIDEO_INTERLACE_MODE_PROGRESSIVE;
+  state->info.interlace_mode = mode;
   self->output_info = state->info;
   gst_video_codec_state_unref(state);
 
@@ -294,7 +301,19 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
   *completed = NULL;
 
   interlaced = (output->PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) != 0;
-  bottom_field = (output->PicInfo.flags & VDEC_FLAG_BOTTOMFIELD) != 0;
+  /* These are values in a two-bit picture-type field, not independent bits:
+   * TOPFIELD=0x10 shares a bit with BOTTOMFIELD=0x18; FIELDPAIR is 0x08. */
+  bottom_field = (output->PicInfo.flags & VDEC_FLAG_BOTTOMFIELD) ==
+                 VDEC_FLAG_BOTTOMFIELD;
+  if (interlaced &&
+      (output->PicInfo.flags & VDEC_FLAG_BOTTOMFIELD) != VDEC_FLAG_TOPFIELD &&
+      !bottom_field) {
+    GST_ELEMENT_ERROR(self, STREAM, DECODE,
+                      ("Unsupported CrystalHD interlaced output picture type"),
+                      ("Expected separate TOPFIELD/BOTTOMFIELD buffers, flags=0x%08x",
+                       output->PicInfo.flags));
+    return GST_FLOW_ERROR;
+  }
 
   entry = gst_crystalhd_find_timestamp(self, output->PicInfo.timeStamp,
                                        &timestamp_link);
@@ -320,6 +339,22 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
     GST_ELEMENT_ERROR(self, STREAM, DECODE,
                       ("CrystalHD fields belong to different input frames"),
                       (NULL));
+    return GST_FLOW_ERROR;
+  }
+  if (self->need_second_field &&
+      (bottom_field == self->field_bottom || width != self->field_width ||
+       height != self->field_height)) {
+    /* Both fields share one output allocation and must fill complementary
+     * rows using exactly the same layout. A repeated parity or changed
+     * geometry would otherwise finish partially unwritten/corrupt pixels. */
+    GST_ELEMENT_ERROR(self, STREAM, DECODE,
+                      ("CrystalHD fields have repeated parity or different geometry"),
+                      ("First field: bottom=%d %ux%u; next: bottom=%d %ux%u "
+                       "flags=0x%08x token=%" G_GUINT64_FORMAT " picture=%u",
+                       self->field_bottom, self->field_width, self->field_height,
+                       bottom_field, width, height, output->PicInfo.flags,
+                       (guint64)output->PicInfo.timeStamp,
+                       output->PicInfo.picture_number));
     return GST_FLOW_ERROR;
   }
 
@@ -383,10 +418,21 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
   if (interlaced && !self->need_second_field) {
     self->need_second_field = TRUE;
     self->field_frame_number = frame_number;
+    self->field_bottom = bottom_field;
+    self->field_width = width;
+    self->field_height = height;
     gst_video_codec_frame_unref(frame);
     return GST_FLOW_OK;
   }
 
+  /* Mixed caps alone do not mark an individual buffer as interlaced.
+   * The completed weave contains both fields; their temporal order is the
+   * first accepted field, not the parity of this second hardware output. */
+  if (interlaced) {
+    GST_BUFFER_FLAG_SET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_INTERLACED);
+    if (!self->field_bottom)
+      GST_BUFFER_FLAG_SET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_TFF);
+  }
   self->need_second_field = FALSE;
   if (timestamp_link != NULL) {
     g_free(timestamp_link->data);
@@ -414,6 +460,12 @@ gst_crystalhd_receive_one(GstCrystalHdDec *self, guint timeout_ms,
   *completed = NULL;
 
   status = DtsProcOutputNoCopy(self->device, timeout_ms, &output);
+  if (status == BC_STS_SUCCESS || status == BC_STS_FMT_CHANGE)
+    GST_LOG_OBJECT(self, "received PIB: status=%d flags=0x%08x output-flags=0x%08x "
+        "token=%" G_GUINT64_FORMAT " picture=%u %ux%u Y-dwords=%u",
+        status, output.PicInfo.flags, output.PoutFlags,
+        (guint64)output.PicInfo.timeStamp, output.PicInfo.picture_number,
+        output.PicInfo.width, output.PicInfo.height, output.YBuffDoneSz);
   if (status == BC_STS_FMT_CHANGE) {
     *activity = TRUE;
     if (!gst_crystalhd_configure_output(
@@ -735,6 +787,8 @@ gst_crystalhd_stop(GstVideoDecoder *decoder)
   self->generation++;
   status = gst_crystalhd_close_device(self);
   g_clear_pointer(&self->input_state, gst_video_codec_state_unref);
+  g_clear_object(&self->parse_adapter);
+  self->parse_pending = FALSE;
   GST_VIDEO_DECODER_STREAM_UNLOCK(decoder);
   if (status != BC_STS_SUCCESS)
     GST_ELEMENT_ERROR(self, LIBRARY, SHUTDOWN,
@@ -744,7 +798,8 @@ gst_crystalhd_stop(GstVideoDecoder *decoder)
 }
 
 static gboolean
-gst_crystalhd_set_format(GstVideoDecoder *decoder, GstVideoCodecState *state)
+gst_crystalhd_reopen_format(GstVideoDecoder *decoder, GstVideoCodecState *state,
+                            gboolean discard)
 {
   GstCrystalHdDec *self = GST_CRYSTALHD_DEC(decoder);
   GstStructure *structure = gst_caps_get_structure(state->caps, 0);
@@ -758,8 +813,11 @@ gst_crystalhd_set_format(GstVideoDecoder *decoder, GstVideoCodecState *state)
   gboolean codec_data_mapped = FALSE;
   const gchar *operation = "DtsDeviceOpen";
   GstVideoCodecState *retained_state = gst_video_codec_state_ref(state);
+  guint64 generation = self->generation;
 
-  if (!gst_crystalhd_quiesce_output(self, TRUE)) {
+  if (!gst_crystalhd_quiesce_output(self, TRUE) ||
+      generation != self->generation ||
+      (!discard && gst_crystalhd_is_flushing(self))) {
     gst_video_codec_state_unref(retained_state);
     return FALSE;
   }
@@ -768,6 +826,8 @@ gst_crystalhd_set_format(GstVideoDecoder *decoder, GstVideoCodecState *state)
   self->draining = FALSE;
   self->output_eos = FALSE;
   self->last_delivery_us = 0;
+  g_clear_object(&self->parse_adapter);
+  self->parse_pending = FALSE;
   status = gst_crystalhd_close_device(self);
   if (status != BC_STS_SUCCESS) {
     gst_video_codec_state_unref(retained_state);
@@ -904,15 +964,76 @@ fail:
   return FALSE;
 }
 
+static GstFlowReturn gst_crystalhd_drain(GstVideoDecoder *decoder);
+static GstFlowReturn gst_crystalhd_parse(GstVideoDecoder *decoder,
+    GstVideoCodecFrame *frame, GstAdapter *adapter, gboolean at_eos);
+
+static gboolean
+gst_crystalhd_set_format(GstVideoDecoder *decoder, GstVideoCodecState *state)
+{
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(decoder);
+  GstVideoCodecState *retained_state = gst_video_codec_state_ref(state);
+  guint64 generation = self->generation;
+  gboolean active, result = FALSE;
+
+  /* GstVideoDecoder does not drain before set_format. Keep the old state
+   * installed until every accepted old picture has reached downstream,
+   * including a copied frame whose token retired before finish_frame returns.
+   * Retain state first: the flush/reopen caller may alias input_state. */
+  if (self->output_flow != GST_FLOW_OK || gst_crystalhd_is_flushing(self))
+    goto done;
+  if (self->codec.vc1_bdu && self->parse_adapter != NULL &&
+      gst_adapter_available(self->parse_adapter) != 0) {
+    GstFlowReturn flow;
+    /* parse_available leaves a current frame allocated when our parser
+     * requests more data. All complete boundaries were already consumed:
+     * the unchanged adapter contains at most one undelimited picture (or
+     * trailing headers). Finalize it through the same public parser API
+     * used at EOS, while the OLD codec/state and timestamps still apply.
+     * Never access the base class's private current_frame or adapters. */
+    if (!self->parse_pending || decoder->input_segment.rate < 0.0 ||
+        gst_video_decoder_get_pending_frame_size(decoder) != 0) {
+      GST_ELEMENT_ERROR(self, STREAM, DECODE,
+                        ("Cannot finalize pending VC-1 input at a format change"),
+                        ("A successful forward parser boundary is required"));
+      goto done;
+    }
+    flow = gst_crystalhd_parse(decoder, NULL, self->parse_adapter, TRUE);
+    if ((flow != GST_FLOW_OK && flow != GST_VIDEO_DECODER_FLOW_NEED_DATA) ||
+        generation != self->generation || gst_crystalhd_is_flushing(self))
+      goto done;
+    if (gst_adapter_available(self->parse_adapter) != 0)
+      goto done;
+  }
+  g_mutex_lock(&self->output_lock);
+  active = self->output_active;
+  g_mutex_unlock(&self->output_lock);
+  if (self->decoder_started &&
+      (!g_queue_is_empty(&self->timestamps) || self->need_second_field || active)) {
+    if (gst_crystalhd_drain(decoder) != GST_FLOW_OK)
+      goto done;
+  }
+  if (generation != self->generation || gst_crystalhd_is_flushing(self) ||
+      self->output_flow != GST_FLOW_OK)
+    goto done;
+  result = gst_crystalhd_reopen_format(decoder, retained_state, FALSE);
+done:
+  gst_video_codec_state_unref(retained_state);
+  return result;
+}
+
 static GstFlowReturn
 gst_crystalhd_parse(GstVideoDecoder *decoder, GstVideoCodecFrame *frame,
                     GstAdapter *adapter, gboolean at_eos)
 {
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(decoder);
   gsize available = gst_adapter_available(adapter);
   const guint8 *data;
   gsize size;
 
   (void)frame;
+  g_set_object(&self->parse_adapter, adapter);
+  self->parse_pending = FALSE;
   if (available == 0)
     return GST_VIDEO_DECODER_FLOW_NEED_DATA;
   if (available > 16 * 1024 * 1024) {
@@ -924,7 +1045,6 @@ gst_crystalhd_parse(GstVideoDecoder *decoder, GstVideoCodecFrame *frame,
   size = gst_crystalhd_vc1_frame_size(data, available, at_eos);
   gst_adapter_unmap(adapter);
   if (size != 0) {
-    GstCrystalHdDec *self = GST_CRYSTALHD_DEC(decoder);
     GstFlowReturn flow;
     gst_video_decoder_add_to_frame(decoder, size);
     /* have_frame adds one recursive lock around handle_frame. Preserve
@@ -936,6 +1056,8 @@ gst_crystalhd_parse(GstVideoDecoder *decoder, GstVideoCodecFrame *frame,
   }
   if (at_eos)
     gst_adapter_flush(adapter, available); /* trailing headers, no picture */
+  else
+    self->parse_pending = TRUE;
   return GST_VIDEO_DECODER_FLOW_NEED_DATA;
 }
 
@@ -1067,14 +1189,18 @@ gst_crystalhd_flush(GstVideoDecoder *decoder)
   self->draining = FALSE;
   self->output_eos = FALSE;
   self->last_delivery_us = 0;
+  g_clear_object(&self->parse_adapter);
+  self->parse_pending = FALSE;
   if (self->device != NULL && !self->input_flushed) {
     /* Decoder-only flush can leave BCM70015's old firmware session unable
      * to output after an in-flight seek. Recreate the device from retained
      * caps/metadata. Keep token numbering monotonic across this boundary.
-     * set_format retains its argument before releasing input_state.
+     * reopen_format retains its argument before releasing input_state.
+     * This is intentional discard, not a natural caps change: never drain
+     * old pictures after the flushing seek has canceled their delivery.
      */
     if (self->input_state == NULL ||
-        !gst_crystalhd_set_format(decoder, self->input_state))
+        !gst_crystalhd_reopen_format(decoder, self->input_state, TRUE))
       return FALSE;
     self->input_flushed = TRUE;
   }

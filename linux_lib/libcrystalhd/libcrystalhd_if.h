@@ -1464,6 +1464,9 @@ Function name:
 Description:
 
     This command returns whether the end of stream(EOS) is reaching.
+    BCM70015 uses the firmware EOS indication, not an input/output timeout.
+    This does not imply that all queued output has been delivered: callers
+    must also receive remaining pictures. BCM70012 retains its legacy fallback.
 Parameters:
 
     hDevice     Handle to device. This is obtained via a prior call to
