@@ -25,8 +25,11 @@ Measured results are recorded in [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md
   the unmodified Linux 2.1.0 release loads our library without rebuilding,
   but the numbered 360-frame fixture still misses four tail pictures.
   Correct AVC1 header detection restores the previously missing first picture
-  without changing the caller's timestamps. Investigate inconsistent in-flight
-  seeks/close timeouts and 0.5x
+  without changing the caller's timestamps. TX ownership now spans ring pop
+  through DMA completion; destructive flush/stop wait before final reset and
+  discard old queued input, with enqueue serialized against that reset.
+  Three fresh sessions pass the short forward/backward-seek sequence with
+  clean close; broader seek/recovery coverage remains open. Investigate 0.5x
   progress; one settled 2x smoke pass is not general control validation.
   Keep frontend drain behavior distinct from library cancellation fixes.
 - [x] [#16: everyday GStreamer playback](https://github.com/ahnhy1324/crystalhd/issues/16):
