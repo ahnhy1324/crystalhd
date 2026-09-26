@@ -5,8 +5,10 @@
 #include <string.h>
 
 #define MAX_EPOCHS 8U
+typedef enum { FIELD_ANY, FIELD_PROGRESSIVE, FIELD_TFF, FIELD_BFF } FieldOrder;
 typedef struct {
   guint width, height, frames;
+  FieldOrder field_order;
 } GeometryEpoch;
 
 typedef struct {
@@ -18,6 +20,24 @@ typedef struct {
   const GeometryEpoch *epochs;
   guint epoch_count, epoch_index, epoch_frames;
 } PlaybackAudit;
+
+static gboolean
+field_order_matches(FieldOrder expected, GstVideoInterlaceMode mode, guint flags)
+{
+  gboolean interlaced = (flags & GST_VIDEO_BUFFER_FLAG_INTERLACED) != 0;
+  gboolean tff = (flags & GST_VIDEO_BUFFER_FLAG_TFF) != 0;
+  if (expected == FIELD_ANY)
+    return TRUE;
+  if (flags & GST_VIDEO_BUFFER_FLAG_ONEFIELD)
+    return FALSE; /* The probe counts full pictures, not individual fields. */
+  if (expected == FIELD_PROGRESSIVE)
+    return !interlaced && !tff &&
+        (mode == GST_VIDEO_INTERLACE_MODE_PROGRESSIVE ||
+         mode == GST_VIDEO_INTERLACE_MODE_MIXED);
+  return tff == (expected == FIELD_TFF) &&
+      (mode == GST_VIDEO_INTERLACE_MODE_INTERLEAVED ||
+       (mode == GST_VIDEO_INTERLACE_MODE_MIXED && interlaced));
+}
 
 static void
 observe_geometry(PlaybackAudit *audit, guint width, guint height)
@@ -64,6 +84,20 @@ count_frame(GstElement *sink, GstBuffer *buffer, GstPad *pad, gpointer data)
     audit->invalid_output = TRUE;
   else {
     guint row;
+    /* Check field metadata against the same epoch BEFORE its frame count
+     * advances. Equal-size TFF/BFF transitions need no CAPS event. */
+    if (audit->epoch_index < audit->epoch_count &&
+        !field_order_matches(audit->epochs[audit->epoch_index].field_order,
+            GST_VIDEO_INFO_INTERLACE_MODE(&info), GST_BUFFER_FLAGS(buffer))) {
+      if (!audit->invalid_output)
+        g_printerr("Field-order mismatch at frame %u, epoch %u: expected %s, caps %s, flags 0x%x\n",
+            audit->frames, audit->epoch_index,
+            audit->epochs[audit->epoch_index].field_order == FIELD_TFF ? "tff" :
+            audit->epochs[audit->epoch_index].field_order == FIELD_BFF ? "bff" : "p",
+            gst_video_interlace_mode_to_string(GST_VIDEO_INFO_INTERLACE_MODE(&info)),
+            GST_BUFFER_FLAGS(buffer));
+      audit->invalid_output = TRUE;
+    }
     observe_geometry(audit, GST_VIDEO_INFO_WIDTH(&info), GST_VIDEO_INFO_HEIGHT(&info));
     for (row = 0; row < (guint)GST_VIDEO_INFO_HEIGHT(&info); row++)
       g_checksum_update(audit->checksum,
@@ -181,7 +215,7 @@ run_pipeline(const gchar *description, const gchar *filename, guint expected,
                pass != 0 ? " seek replay" : "", audit.frames, expected,
                eos ? "yes" : "no", hash);
       if (audit.invalid_output)
-        g_printerr("Output contained invalid YUY2 buffers, regressing timestamps or unexpected geometry\n");
+        g_printerr("Output contained invalid YUY2 buffers, regressing timestamps or unexpected geometry/field order\n");
       if (epoch_count != 0)
         g_print("Geometry epochs: %u/%u complete\n", audit.epoch_index, epoch_count);
     }
@@ -229,12 +263,24 @@ parse_epochs(const gchar *text, guint expected, GeometryEpoch *epochs, guint *co
   for (guint index = 0; valid && index < length; ++index) {
     gchar **dimensions = g_strsplit(parts[index], "x", 3);
     gchar **tail = g_strv_length(dimensions) == 2 ?
-        g_strsplit(dimensions[1], ":", 3) : NULL;
-    valid = tail != NULL && g_strv_length(tail) == 2 &&
+        g_strsplit(dimensions[1], ":", 4) : NULL;
+    guint tail_count = tail != NULL ? g_strv_length(tail) : 0;
+    epochs[index].field_order = FIELD_ANY;
+    valid = tail != NULL && (tail_count == 2 || tail_count == 3) &&
         positive_number(dimensions[0], &epochs[index].width) &&
         positive_number(tail[0], &epochs[index].height) &&
         positive_number(tail[1], &epochs[index].frames) &&
         epochs[index].width <= 1920 && epochs[index].height <= 1088;
+    if (valid && tail_count == 3) {
+      if (g_str_equal(tail[2], "p"))
+        epochs[index].field_order = FIELD_PROGRESSIVE;
+      else if (g_str_equal(tail[2], "tff"))
+        epochs[index].field_order = FIELD_TFF;
+      else if (g_str_equal(tail[2], "bff"))
+        epochs[index].field_order = FIELD_BFF;
+      else
+        valid = FALSE;
+    }
     if (valid)
       total += epochs[index].frames;
     g_strfreev(tail);
@@ -259,6 +305,8 @@ geometry_self_test(void)
       parse_epochs("1921x240:1", 1, epochs, &count) ||
       parse_epochs("320x240:1,", 1, epochs, &count) ||
       parse_epochs("320x240:1:2", 1, epochs, &count) ||
+      parse_epochs("320x240:1:", 1, epochs, &count) ||
+      parse_epochs("320x240:1:tff:extra", 1, epochs, &count) ||
       parse_epochs("320:240x1", 1, epochs, &count) ||
       parse_epochs("320:240:1", 1, epochs, &count) ||
       !parse_epochs("320x240:2,640x360:2", 4, epochs, &count))
@@ -281,6 +329,33 @@ geometry_self_test(void)
   observe_geometry(&audit, 320, 240);
   observe_geometry(&audit, 640, 360);
   return audit.invalid_output; /* New caps cannot hide a missing old tail. */
+}
+
+static gboolean
+field_self_test(void)
+{
+  GeometryEpoch epochs[MAX_EPOCHS];
+  guint count = 0;
+  const guint fields = GST_VIDEO_BUFFER_FLAG_INTERLACED;
+  const guint top = fields | GST_VIDEO_BUFFER_FLAG_TFF;
+  const GstVideoInterlaceMode mixed = GST_VIDEO_INTERLACE_MODE_MIXED;
+  if (!parse_epochs("320x240:1:tff,320x240:1:bff,320x240:1:p", 3, epochs, &count) ||
+      count != 3 || epochs[0].field_order != FIELD_TFF ||
+      epochs[1].field_order != FIELD_BFF || epochs[2].field_order != FIELD_PROGRESSIVE)
+    return FALSE;
+  return field_order_matches(FIELD_TFF, mixed, top) &&
+      field_order_matches(FIELD_BFF, mixed, fields) &&
+      field_order_matches(FIELD_TFF, GST_VIDEO_INTERLACE_MODE_INTERLEAVED,
+                          GST_VIDEO_BUFFER_FLAG_TFF) &&
+      field_order_matches(FIELD_BFF, GST_VIDEO_INTERLACE_MODE_INTERLEAVED, 0) &&
+      field_order_matches(FIELD_PROGRESSIVE, mixed, 0) &&
+      !field_order_matches(FIELD_TFF, mixed, fields) &&
+      !field_order_matches(FIELD_BFF, mixed, top) &&
+      !field_order_matches(FIELD_TFF, mixed, GST_VIDEO_BUFFER_FLAG_TFF) &&
+      !field_order_matches(FIELD_TFF, GST_VIDEO_INTERLACE_MODE_PROGRESSIVE, top) &&
+      !field_order_matches(FIELD_TFF, mixed, top | GST_VIDEO_BUFFER_FLAG_ONEFIELD) &&
+      !field_order_matches(FIELD_PROGRESSIVE, mixed, fields) &&
+      !field_order_matches(FIELD_PROGRESSIVE, GST_VIDEO_INTERLACE_MODE_INTERLEAVED, 0);
 }
 
 int
@@ -308,11 +383,14 @@ main(int argc, char **argv)
 
   gst_init(&argc, &argv);
   if (argc == 2 && g_str_equal(argv[1], "--self-test")) {
-    const GeometryEpoch correct = {320, 240, 12}, wrong = {640, 360, 12};
-    if (!geometry_self_test() ||
+    const GeometryEpoch correct = {320, 240, 12, FIELD_PROGRESSIVE};
+    const GeometryEpoch wrong = {640, 360, 12, FIELD_ANY};
+    const GeometryEpoch wrong_fields = {320, 240, 12, FIELD_TFF};
+    if (!geometry_self_test() || !field_self_test() ||
         !run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, TRUE, NULL, 0) ||
         !run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, TRUE, &correct, 1) ||
         run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, FALSE, &wrong, 1) ||
+        run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, FALSE, &wrong_fields, 1) ||
         run_pipeline(test_pipeline, NULL, 13, 5 * GST_SECOND, FALSE, FALSE, NULL, 0) ||
         run_pipeline("fakesrc num-buffers=1 ! "
                      "identity sleep-time=100000 ! fakesink name=sink",
@@ -343,6 +421,6 @@ main(int argc, char **argv)
                        seek_replay, TRUE, epochs, epoch_count) ? 0 : 1;
 usage:
   g_printerr("usage: %s VIDEO EXPECTED_FRAMES mp4|h264|mpeg2 "
-             "[TIMEOUT_SECONDS [--seek] [--epochs WIDTHxHEIGHT:FRAMES,...]]\n", argv[0]);
+             "[TIMEOUT_SECONDS [--seek] [--epochs WIDTHxHEIGHT:FRAMES[:p|tff|bff],...]]\n", argv[0]);
   return 2;
 }

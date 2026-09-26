@@ -41,6 +41,7 @@ typedef struct _GstCrystalHdDec {
   gboolean output_configured;
   gboolean need_second_field;
   gboolean field_bottom;
+  gboolean field_bottom_first;
   CrystalHdCodec codec;
   gsize input_metadata_size;
   guint32 field_frame_number;
@@ -297,6 +298,7 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
   guint destination_row = 0;
   gboolean interlaced;
   gboolean bottom_field;
+  gboolean bottom_first;
 
   *completed = NULL;
 
@@ -305,6 +307,7 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
    * TOPFIELD=0x10 shares a bit with BOTTOMFIELD=0x18; FIELDPAIR is 0x08. */
   bottom_field = (output->PicInfo.flags & VDEC_FLAG_BOTTOMFIELD) ==
                  VDEC_FLAG_BOTTOMFIELD;
+  bottom_first = (output->PicInfo.flags & VDEC_FLAG_BOTTOM_FIRST) != 0;
   if (interlaced &&
       (output->PicInfo.flags & VDEC_FLAG_BOTTOMFIELD) != VDEC_FLAG_TOPFIELD &&
       !bottom_field) {
@@ -353,6 +356,16 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
                        "flags=0x%08x token=%" G_GUINT64_FORMAT " picture=%u",
                        self->field_bottom, self->field_width, self->field_height,
                        bottom_field, width, height, output->PicInfo.flags,
+                       (guint64)output->PicInfo.timeStamp,
+                       output->PicInfo.picture_number));
+    return GST_FLOW_ERROR;
+  }
+  if (self->need_second_field && bottom_first != self->field_bottom_first) {
+    GST_ELEMENT_ERROR(self, STREAM, DECODE,
+                      ("CrystalHD fields have different presentation order"),
+                      ("First bottom-first=%d; next bottom-first=%d "
+                       "flags=0x%08x token=%" G_GUINT64_FORMAT " picture=%u",
+                       self->field_bottom_first, bottom_first, output->PicInfo.flags,
                        (guint64)output->PicInfo.timeStamp,
                        output->PicInfo.picture_number));
     return GST_FLOW_ERROR;
@@ -419,18 +432,24 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
     self->need_second_field = TRUE;
     self->field_frame_number = frame_number;
     self->field_bottom = bottom_field;
+    self->field_bottom_first = bottom_first;
     self->field_width = width;
     self->field_height = height;
     gst_video_codec_frame_unref(frame);
     return GST_FLOW_OK;
   }
 
-  /* Mixed caps alone do not mark an individual buffer as interlaced.
-   * The completed weave contains both fields; their temporal order is the
-   * first accepted field, not the parity of this second hardware output. */
+  /* Mixed caps alone do not mark an individual buffer as interlaced. The
+   * complete weave's presentation order is explicit BOTTOM_FIRST metadata:
+   * capture can still return the top field first during a BFF transition.
+   * Clear stale flags even when an existing output allocation is reused. */
+  GST_BUFFER_FLAG_UNSET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_INTERLACED);
+  GST_BUFFER_FLAG_UNSET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_TFF);
+  GST_BUFFER_FLAG_UNSET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_ONEFIELD);
+  GST_BUFFER_FLAG_UNSET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_RFF);
   if (interlaced) {
     GST_BUFFER_FLAG_SET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_INTERLACED);
-    if (!self->field_bottom)
+    if (!self->field_bottom_first)
       GST_BUFFER_FLAG_SET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_TFF);
   }
   self->need_second_field = FALSE;

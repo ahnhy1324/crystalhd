@@ -981,7 +981,7 @@ DRVIFLIB_INT_API BC_STATUS DtsChkYUVSizes(
 	BC_DTS_PROC_OUT *Vout,
 	BC_DTS_PROC_OUT *Vin)
 {
-	if (!Vout || !Vout->Ybuff || !Vin || !Vin->Ybuff){
+	if (!Ctx || !Vout || !Vout->Ybuff || !Vin || !Vin->Ybuff){
 		return BC_STS_INV_ARG;
 	}
 	if((!Ctx->b422Mode) && (!Vout->UVbuff || !Vin->UVbuff)){
@@ -1216,64 +1216,63 @@ DtsDownloadFWBin(HANDLE	hDevice, uint8_t *binBuff, uint32_t buffsize, uint32_t d
 	return rstatus;
 }
 
+/* Check the last byte actually touched, not unused padding after the final
+ * row. Division avoids overflow even for malformed 32-bit dimensions/stride;
+ * SIZE_MAX also prevents unrepresentable pointer arithmetic on i386. */
+static bool DtsRawCopyFits(uint64_t available, uint64_t rowBytes,
+						uint64_t pitch, uint32_t rows)
+{
+	if (available > SIZE_MAX)
+		available = SIZE_MAX;
+	return rows != 0 && rowBytes != 0 && pitch >= rowBytes &&
+		pitch <= SIZE_MAX && available >= rowBytes &&
+		(uint64_t)(rows - 1) <= (available - rowBytes) / pitch;
+}
+
 BC_STATUS
-DtsCopyRawDataToOutBuff(DTS_LIB_CONTEXT	*Ctx,
+DtsCopyRawDataToOutBuff(DTS_LIB_CONTEXT *Ctx,
 						BC_DTS_PROC_OUT *Vout,
 						BC_DTS_PROC_OUT *Vin)
 {
-	uint32_t	y,lDestStride=0;
-	uint8_t	*pSrc = NULL, *pDest=NULL;
-	uint32_t	dstWidthInPixels, dstHeightInPixels;
-	uint32_t srcWidthInPixels = 0;
-	BC_STATUS	Sts = BC_STS_SUCCESS;
+	BC_STATUS status = DtsChkYUVSizes(Ctx, Vout, Vin);
+	if (status != BC_STS_SUCCESS)
+		return status;
 
-	if ( (Sts = DtsChkYUVSizes(Ctx,Vout,Vin)) != BC_STS_SUCCESS)
-		return Sts;
+	/* DtsChkYUVSizes preserves transfer metadata but does not validate a
+	 * copy layout. YbuffSz/YBuffDoneSz are DWORD counts; StrideSz is extra
+	 * destination pixels. The source pitch always comes from hardware, even
+	 * when SIZE is absent (zero pitch used to repeat the first source row). */
+	const bool field = !Ctx->VidParams.Progressive;
+	if (Vin->PicInfo.width == 0 || Vin->PicInfo.height == 0 ||
+		(Vin->PicInfo.width & 1) || Ctx->HWOutPicWidth < Vin->PicInfo.width ||
+		(field && (Vin->PicInfo.height & 1)))
+		return BC_STS_IO_XFR_ERROR;
 
-	if(Vout->PoutFlags & BC_POUT_FLAGS_STRIDE)
-		lDestStride = Vout->StrideSz;
+	const uint32_t width = (Vout->PoutFlags & BC_POUT_FLAGS_SIZE)
+		? Vout->PicInfo.width : Vin->PicInfo.width;
+	const uint32_t height = (Vout->PoutFlags & BC_POUT_FLAGS_SIZE)
+		? Vout->PicInfo.height : Vin->PicInfo.height;
+	if (width == 0 || height == 0 || (width & 1) ||
+		width > Vin->PicInfo.width || height > Vin->PicInfo.height ||
+		(field && (height & 1)))
+		return BC_STS_INV_ARG;
 
-	if(Vout->PoutFlags & BC_POUT_FLAGS_SIZE) {
-		// Use DShow provided size for now
-		dstWidthInPixels = Vout->PicInfo.width;
-		if(!Ctx->VidParams.Progressive)
-			dstHeightInPixels = Vout->PicInfo.height/2;
-		else
-			dstHeightInPixels = Vout->PicInfo.height;
-		/* Check for Valid data based on the filter information */
-/* interlaced frames currently don't get delivered from the library if this check is in place */
-#if 0
-		if(Vout->YBuffDoneSz < (dstWidthInPixels * dstHeightInPixels / 2)) {
-			DebugLog_Trace(LDIL_DBG,"DtsCopy422: XFER ERROR dnsz %u, w %u, h %u\n", Vout->YBuffDoneSz, dstWidthInPixels, dstHeightInPixels);
-			return BC_STS_IO_XFR_ERROR;
-		}
-#endif
-		srcWidthInPixels = Ctx->HWOutPicWidth;
-	} else {
-		dstWidthInPixels = Vin->PicInfo.width;
-		dstHeightInPixels = Vin->PicInfo.height;
-	}
+	/* Both SIZE and no-SIZE paths copy one field, not a full frame, when
+	 * the current hardware picture is interlaced. A caller weaves fields by
+	 * offsetting Ybuff and supplying padding for the other field's row. */
+	const uint32_t rows = field ? height / 2 : height;
+	const uint64_t rowBytes = (uint64_t)width * 2;
+	const uint64_t sourcePitch = (uint64_t)Ctx->HWOutPicWidth * 2;
+	const uint64_t padding = (Vout->PoutFlags & BC_POUT_FLAGS_STRIDE)
+		? Vout->StrideSz : 0;
+	const uint64_t destinationPitch = ((uint64_t)width + padding) * 2;
+	if (!DtsRawCopyFits((uint64_t)Vin->YBuffDoneSz * 4, rowBytes, sourcePitch, rows) ||
+		!DtsRawCopyFits((uint64_t)Vout->YbuffSz * 4, rowBytes, destinationPitch, rows))
+		return BC_STS_IO_XFR_ERROR;
 
-	lDestStride = lDestStride*2;
-	dstWidthInPixels = dstWidthInPixels*2;
-	srcWidthInPixels = srcWidthInPixels*2;
-	// Do a strided copy only if the stride is non-zero
-	if( (lDestStride != 0)|| (srcWidthInPixels != dstWidthInPixels) ) {
-		// Y plane
-		pDest = Vout->Ybuff;
-		pSrc = Vin->Ybuff;
-		for (y = 0; y < dstHeightInPixels; y++){
-			memcpy(pDest,pSrc,dstWidthInPixels);
-			//memcpy_fast(pDest,pSrc,dstWidthInPixels*2);
-			pDest += dstWidthInPixels + lDestStride;
-			pSrc += (srcWidthInPixels);
-		}
-	} else {
-		// Y Plane
-		memcpy(Vout->Ybuff, Vin->Ybuff, dstHeightInPixels * dstWidthInPixels);
-		//memcpy_fast(Vout->Ybuff, Vin->Ybuff, dstHeightInPixels * dstWidthInPixels * 2);
-	}
-
+	for (uint32_t y = 0; y < rows; ++y)
+		memcpy(Vout->Ybuff + (size_t)y * (size_t)destinationPitch,
+			Vin->Ybuff + (size_t)y * (size_t)sourcePitch, (size_t)rowBytes);
 	return BC_STS_SUCCESS;
 }
 /***/

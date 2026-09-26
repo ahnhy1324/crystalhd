@@ -69,10 +69,13 @@ rejects reuse as busy. ARGB is first rendered into private memory and only then
 copied into the shared DMA-BUF under the write fence. Missing or
 canceled pictures report errors; they are never replaced by unrelated fallback
 pixels. Destroyed surface objects are permanently made non-writable before
-their VA IDs are released. Timeline increments cannot encode arbitrary operation
-errors; closing an unsignaled timeline releases its fences with `-ENOENT`.
-Clients must check VA surface status, not treat fence signaling alone as proof
-of valid pixels. Hardware-free production-state tests
+their VA IDs are released. Canceled or failed pending writes close their
+unsignaled timeline, releasing its fences with `-ENOENT` instead of falsely
+signaling success. Successful writes flush pixel caches before incrementing the
+timeline; a later CPU-access cleanup error is reported through VA status but
+cannot undo an already-signaled fence. Clients must therefore check VA surface
+status, not treat fence signaling alone as proof of valid pixels.
+Hardware-free production-state tests
 cover repeated VPP, source reuse between parameter submission and completion,
 decoder retirement, busy targets, and cancellation. These fix and verify driver
 lifecycle bugs, not end-to-end browser playback: the FFmpeg drain and seek

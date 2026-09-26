@@ -1192,6 +1192,10 @@ test_field_pair_policy(void)
       g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
       queue_field(mock.accepted[0], 0x11, bottom_first);
       queue_field(mock.accepted[0], 0x22, fault == 1 ? bottom_first : !bottom_first);
+      if (bottom_first) {
+        ((MockPicture *)g_queue_peek_head(&mock.pictures))->flags |= VDEC_FLAG_BOTTOM_FIRST;
+        ((MockPicture *)g_queue_peek_tail(&mock.pictures))->flags |= VDEC_FLAG_BOTTOM_FIRST;
+      }
       second = g_queue_peek_tail(&mock.pictures);
       /* Smaller geometry still fits the already allocated full-size output.
        * It must not complete a frame with unwritten/mis-strided rows. */
@@ -1225,6 +1229,100 @@ test_field_pair_policy(void)
       gst_harness_teardown(harness);
       g_assert_cmpuint(mock.destroyed_inputs, ==, 1);
     }
+  }
+}
+
+static void
+test_field_presentation_order(void)
+{
+  guint capture_bottom;
+  for (capture_bottom = 0; capture_bottom < 2; ++capture_bottom) {
+    GstHarness *harness = new_decoder();
+    guint phase;
+    mock.auto_output = FALSE;
+    for (phase = 0; phase < 3; ++phase) {
+      const gboolean present_bottom = phase == 1;
+      GstBuffer *output;
+      GstVideoCodecFrame *frame;
+      guint8 pixels[sizeof(mock.pixels)];
+      guint byte;
+      g_assert_cmpint(gst_harness_push(harness, new_input(phase * 40 * GST_MSECOND)),
+                      ==, GST_FLOW_OK);
+      frame = gst_video_decoder_get_frame(GST_VIDEO_DECODER(harness->element), phase);
+      g_assert_nonnull(frame);
+      g_assert_null(frame->output_buffer);
+      frame->output_buffer = gst_buffer_new_allocate(NULL, sizeof(mock.pixels), NULL);
+      GST_BUFFER_FLAG_SET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_INTERLACED);
+      GST_BUFFER_FLAG_SET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_TFF);
+      GST_BUFFER_FLAG_SET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_ONEFIELD);
+      GST_BUFFER_FLAG_SET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_RFF);
+      gst_video_codec_frame_unref(frame);
+      queue_field(mock.accepted[phase], capture_bottom ? 0x22 : 0x11, capture_bottom);
+      queue_field(mock.accepted[phase], capture_bottom ? 0x11 : 0x22, !capture_bottom);
+      if (present_bottom) {
+        ((MockPicture *)g_queue_peek_head(&mock.pictures))->flags |= VDEC_FLAG_BOTTOM_FIRST;
+        ((MockPicture *)g_queue_peek_tail(&mock.pictures))->flags |= VDEC_FLAG_BOTTOM_FIRST;
+      }
+      /* Same caps, same capture order: the presentation order changes
+       * TFF -> BFF -> TFF independently of which field arrives first. */
+      g_assert_cmpint(gst_crystalhd_receive_available(GST_CRYSTALHD_DEC(harness->element)),
+                      ==, GST_FLOW_OK);
+      output = gst_harness_try_pull(harness);
+      g_assert_nonnull(output);
+      g_assert_cmpuint(GST_BUFFER_PTS(output), ==, phase * 40 * GST_MSECOND);
+      g_assert_true(GST_BUFFER_FLAG_IS_SET(output, GST_VIDEO_BUFFER_FLAG_INTERLACED));
+      g_assert_cmpint(GST_BUFFER_FLAG_IS_SET(output, GST_VIDEO_BUFFER_FLAG_TFF),
+                      ==, !present_bottom);
+      g_assert_false(GST_BUFFER_FLAG_IS_SET(output, GST_VIDEO_BUFFER_FLAG_ONEFIELD));
+      g_assert_false(GST_BUFFER_FLAG_IS_SET(output, GST_VIDEO_BUFFER_FLAG_RFF));
+      g_assert_cmpuint(gst_buffer_extract(output, 0, pixels, sizeof(pixels)),
+                       ==, sizeof(pixels));
+      for (byte = 0; byte < sizeof(pixels); ++byte)
+        g_assert_cmpuint(pixels[byte], ==, (byte / 32) % 2 ? 0x22 : 0x11);
+      gst_buffer_unref(output);
+    }
+    g_assert_cmpuint(mock.successful_opens, ==, 1);
+    g_assert_cmpuint(mock.release_calls, ==, 6);
+    {
+      GstVideoCodecFrame *frame;
+      GstBuffer *output;
+      g_assert_cmpint(gst_harness_push(harness, new_input(120 * GST_MSECOND)),
+                      ==, GST_FLOW_OK);
+      frame = gst_video_decoder_get_frame(GST_VIDEO_DECODER(harness->element), 3);
+      g_assert_nonnull(frame);
+      frame->output_buffer = gst_buffer_new_allocate(NULL, sizeof(mock.pixels), NULL);
+      GST_BUFFER_FLAG_SET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_INTERLACED);
+      GST_BUFFER_FLAG_SET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_TFF);
+      GST_BUFFER_FLAG_SET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_ONEFIELD);
+      GST_BUFFER_FLAG_SET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_RFF);
+      gst_video_codec_frame_unref(frame);
+      queue_picture(mock.accepted[3], 0x33);
+      g_assert_cmpint(gst_crystalhd_receive_available(GST_CRYSTALHD_DEC(harness->element)),
+                      ==, GST_FLOW_OK);
+      output = gst_harness_try_pull(harness);
+      g_assert_nonnull(output);
+      check_output(output, 120 * GST_MSECOND, 0x33);
+      g_assert_false(GST_BUFFER_FLAG_IS_SET(output, GST_VIDEO_BUFFER_FLAG_INTERLACED));
+      g_assert_false(GST_BUFFER_FLAG_IS_SET(output, GST_VIDEO_BUFFER_FLAG_TFF));
+      g_assert_false(GST_BUFFER_FLAG_IS_SET(output, GST_VIDEO_BUFFER_FLAG_ONEFIELD));
+      g_assert_false(GST_BUFFER_FLAG_IS_SET(output, GST_VIDEO_BUFFER_FLAG_RFF));
+      gst_buffer_unref(output);
+    }
+    gst_harness_teardown(harness);
+  }
+  {
+    GstHarness *harness = new_decoder();
+    GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+    mock.auto_output = FALSE;
+    g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+    queue_field(mock.accepted[0], 0x11, FALSE);
+    queue_field(mock.accepted[0], 0x22, TRUE);
+    ((MockPicture *)g_queue_peek_tail(&mock.pictures))->flags |= VDEC_FLAG_BOTTOM_FIRST;
+    g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_ERROR);
+    g_assert_cmpuint(gst_harness_buffers_in_queue(harness), ==, 0);
+    g_assert_cmpuint(self->timestamps.length, ==, 1);
+    g_assert_cmpuint(mock.release_calls, ==, 2);
+    gst_harness_teardown(harness);
   }
 }
 
@@ -1771,6 +1869,7 @@ main(int argc, char **argv)
   g_test_add_func("/crystalhd/lifecycle/eos-with-ready-output", test_eos_with_ready_output);
   g_test_add_func("/crystalhd/lifecycle/field-identity", test_field_identity);
   g_test_add_func("/crystalhd/lifecycle/field-pair-policy", test_field_pair_policy);
+  g_test_add_func("/crystalhd/lifecycle/field-presentation-order", test_field_presentation_order);
   g_test_add_func("/crystalhd/lifecycle/output-interlace-mode-changes", test_output_interlace_mode_changes);
   g_test_add_func("/crystalhd/lifecycle/interlaced-picture-types", test_interlaced_picture_types);
   g_test_add_func("/crystalhd/lifecycle/input-admission", test_input_admission);

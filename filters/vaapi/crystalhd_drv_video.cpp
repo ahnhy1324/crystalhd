@@ -712,6 +712,20 @@ struct Surface {
 
 static bool EndFencedWrite(Surface *surface, int timeline);
 
+static bool AbortFencedWrite(Surface *surface, int timeline) {
+  if (timeline < 0)
+    return true;
+  if (surface != nullptr)
+    surface->FlushCpuWrites();
+  // No valid picture was committed. Linux sw_sync marks every unsignaled
+  // fence -ENOENT when its sole timeline fd closes. Publish that error before
+  // CPU END, which may otherwise wait forever on our own imported fence.
+  // Never retry close: even on EINTR the fd may already have been recycled.
+  const bool closed = close(timeline) == 0;
+  const bool released = surface == nullptr || surface->EndCpuWrite();
+  return closed && released;
+}
+
 // Begin CPU access before publishing the fence: vaEndPicture has not returned,
 // so Chromium cannot yet enqueue a new read of this target. The imported
 // unsignaled write fence then protects the whole asynchronous interval.
@@ -746,10 +760,9 @@ static int BeginFencedWrite(Surface *surface) {
   }
   close(create.fence);
   if (!imported) {
-    // An earlier object may already carry our unsignaled fence. END can
-    // wait on that same fence, so signal it before releasing CPU ownership,
-    // exactly as for a completed asynchronous write.
-    EndFencedWrite(surface, timeline);
+    // An earlier object may already carry the unsignaled fence. Abort it
+    // before END can wait on itself; no conversion succeeded here.
+    AbortFencedWrite(surface, timeline);
     return -1;
   }
   return timeline;
@@ -762,12 +775,7 @@ static bool EndFencedWrite(Surface *surface, int timeline) {
     surface->FlushCpuWrites();
   const uint32_t increment = 1;
   if (ioctl(timeline, SW_SYNC_IOC_INC, &increment) != 0) {
-    // Closing our sole timeline fd signals pending sw_sync fences with
-    // -ENOENT (Linux 6.1+). Do this before END, which can otherwise wait on
-    // the unsignaled fence forever. Never retry close on a recycled fd.
-    close(timeline);
-    if (surface != nullptr)
-      surface->EndCpuWrite();
+    AbortFencedWrite(surface, timeline);
     return false;
   }
   // Once the data is cache-visible it is safe to release CPU ownership. This
@@ -1189,7 +1197,7 @@ struct Driver {
     if (vpp_worker.joinable())
       vpp_worker.join();
     for (const PendingVpp &pending : pending_vpp)
-      EndFencedWrite(pending.target.get(), pending.write_timeline);
+      AbortFencedWrite(pending.target.get(), pending.write_timeline);
     if (vpp_scaler != nullptr)
       sws_freeContext(vpp_scaler);
     contexts.clear();
@@ -1968,10 +1976,9 @@ static bool PendingVppCanceled(const PendingVpp &operation) {
 }
 
 // Release bookkeeping for one queued conversion. The caller holds the driver
-// mutex. Cancellation must not substitute pixels from another picture. The
-// timeline increment cannot encode an arbitrary operation error, so callers
-// must also check VA surface status; completion alone is not a decoded frame.
-// Closing an unsignaled timeline does release its fences with fixed -ENOENT.
+// mutex. Cancellation must neither substitute pixels from another picture nor
+// signal a successful fence for uncommitted output. An aborted timeline reports
+// -ENOENT; VA surface status retains the failure independently of fence waits.
 static void ReleasePendingVpp(Driver *driver, uint64_t sequence,
                               VAStatus status, bool committed) {
   auto found = std::find_if(
@@ -1982,7 +1989,11 @@ static void ReleasePendingVpp(Driver *driver, uint64_t sequence,
   const PendingVpp operation = *found;
   // Flush CPU caches before signaling the fence imported into Chromium's
   // DMA-BUF. Every implicit GPU reader remains blocked until this point.
-  if (!EndFencedWrite(operation.target.get(), operation.write_timeline)) {
+  const bool completed = committed && status == VA_STATUS_SUCCESS;
+  const bool released = completed
+      ? EndFencedWrite(operation.target.get(), operation.write_timeline)
+      : AbortFencedWrite(operation.target.get(), operation.write_timeline);
+  if (!released) {
     status = VA_STATUS_ERROR_OPERATION_FAILED;
     committed = false;
   }
