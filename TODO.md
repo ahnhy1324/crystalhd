@@ -121,6 +121,11 @@ Measured results are recorded in [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md
   packet paths, identical hardware pixel hashes.
 - [x] BCM70015 WMV3 Main: 25/25 frames through ASF and demuxed packet
   paths, identical hardware pixel hashes.
+- [x] Short progressive VC-1 Advanced 1920x1080 and WMV3 Main 1440x1080
+  fixtures: each returns 60/60 pictures through ordinary GStreamer and demuxed
+  packet paths with identical hardware pixels and independent software
+  comparisons. Direct-library probes also require actual firmware EOS and
+  clean teardown. This is not 1920-wide WMV3 or real-time display validation.
 - [x] Direct-library firmware EOS: H.264 (30 pictures), MPEG-2 (180), raw
   VC-1 Advanced (15) and ASF WMV3 Main (25) return every picture, a genuine
   output EOS marker and an empty ready queue with clean teardown. WMV3 needs
