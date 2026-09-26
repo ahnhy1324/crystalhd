@@ -1032,6 +1032,14 @@ DtsGetDrvStat(
 	if(!(pIocData = DtsAllocIoctlData(Ctx)))
 		return BC_STS_INSUFF_RES;
 
+	/* Forward the public API's TX-only request, not buffer-size data or its
+	 * local hardware/software-size selection (bit31). Keep legacy bit29
+	 * behavior unchanged: older drivers lose their stats-only flag when
+	 * selecting the VC1 FIFO, so that fix requires a coordinated change.
+	 */
+	pIocData->u.drvStat.DrvcpbEmptySize =
+		pDrvStat->DrvcpbEmptySize & (1U << 30);
+
 	if(Ctx->SingleThreadedAppMode)
 		pIocData->u.drvStat.DrvNextMDataPLD = pDrvStat->DrvNextMDataPLD;
 

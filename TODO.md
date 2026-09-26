@@ -32,6 +32,8 @@ Measured results are recorded in [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md
   clean close; broader seek/recovery coverage remains open. Investigate 0.5x
   progress; one settled 2x smoke pass is not general control validation.
   Keep frontend drain behavior distinct from library cancellation fixes.
+  PowerVLC application-source changes were explicitly declined; changes
+  remain limited to our library and drivers.
 - [x] [#16: everyday GStreamer playback](https://github.com/ahnhy1324/crystalhd/issues/16):
   provide explicit hardware/software local playback, validate in-flight
   controls and audio/video timing, and measure sustained 720p operation.
@@ -47,8 +49,11 @@ Measured results are recorded in [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md
   replace the legacy quality/seek overrides with codec-only preference,
   reject late player failures in the probe, and validate a normal YouTube
   session and playback controls without bypassing service verification.
-  The user confirms normal software playback beyond one minute with 1.6.0;
-  live seeking, pause/resume, quality selection, and playback rates remain open.
+  The user confirms software playback beyond one minute with 1.6.0, but
+  reports A/V desynchronization at 1x; lead/lag and cause are unknown.
+  Further investigation is deferred while existing Full HD work takes priority.
+  Live seeking, pause/resume, quality selection, rates and synchronized
+  playback remain open.
 - [x] Local Chrome software playback controls: exact sampled pixel identities
   through pause/resume, 0.5x/1.5x/2x/restored 1x, four forward/backward seeks,
   and final frame 359. This does not establish live YouTube or hardware controls.
