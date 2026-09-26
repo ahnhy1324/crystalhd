@@ -27,7 +27,7 @@ library-check:
 		test_extra=; \
 		case $$lib_test in \
 			tx-ring) test_wrap=-Wl,--wrap=pthread_mutex_lock ;; \
-			flush) test_wrap=-Wl,--wrap=ioctl,--wrap=usleep ;; \
+			flush) test_wrap=-Wl,--wrap=ioctl,--wrap=usleep,--wrap=pthread_mutex_lock ;; \
 			eos) test_wrap=-Wl,--wrap=ioctl,--wrap=txBufPush; \
 				test_extra=linux_lib/libcrystalhd/libcrystalhd_parser.cpp ;; \
 		esac; \

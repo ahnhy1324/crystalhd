@@ -975,11 +975,13 @@ DtsCloseDecoder(
 
 	if (Ctx->State != BC_DEC_STATE_STOP)
 	{
-		DtsStopDecoder(hDevice);
+		sts = DtsStopDecoder(hDevice);
 	}
 
 
-	sts = DtsFWCloseChannel(hDevice,Ctx->OpenRsp.channelId);
+	BC_STATUS close_sts = DtsFWCloseChannel(hDevice,Ctx->OpenRsp.channelId);
+	if (sts == BC_STS_SUCCESS)
+		sts = close_sts;
 
 	/*if(sts != BC_STS_SUCCESS )
 	{
@@ -1183,21 +1185,35 @@ DtsStopDecoder(
 	if (!DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
 
+	DtsLock(Ctx);
 	if (Ctx->State == BC_DEC_STATE_CLOSE || Ctx->State == BC_DEC_STATE_STOP)
 	{
+		DtsUnLock(Ctx);
 		return BC_STS_SUCCESS;
 	}
+	/* Close admission before checking for pending output. Keep the mutex
+	 * available while cancellation waits for the admitted owner to retire.
+	 * FLUSH is also accepted by the firmware stop command below.
+	 */
+	Ctx->State = BC_DEC_STATE_FLUSH;
+	DtsUnLock(Ctx);
 
 	// On LINK if the decoder is paused due to the RLL being full, un pause it before flush
 	if(Ctx->DevId == BC_PCI_DEVID_LINK && Ctx->hw_paused) {
-		DtsFWPauseVideo(hDevice,eC011_PAUSE_MODE_OFF);
+		sts = DtsFWPauseVideo(hDevice,eC011_PAUSE_MODE_OFF);
 		Ctx->hw_paused = false;
 	}
-	DtsCancelFetchOutInt(Ctx);
+	BC_STATUS cleanup_sts = DtsCancelFetchOutInt(Ctx);
+	if (sts == BC_STS_SUCCESS)
+		sts = cleanup_sts;
 
-	sts = DtsFWStopVideo(hDevice,Ctx->OpenRsp.channelId, FALSE);
+	cleanup_sts = DtsFWStopVideo(hDevice,Ctx->OpenRsp.channelId, FALSE);
+	if (sts == BC_STS_SUCCESS)
+		sts = cleanup_sts;
 
-	sts = DtsFlushRxCapture(hDevice, false);
+	cleanup_sts = DtsFlushRxCapture(hDevice, false);
+	if (sts == BC_STS_SUCCESS)
+		sts = cleanup_sts;
 
 	Ctx->State = BC_DEC_STATE_STOP;
 
@@ -1467,16 +1483,6 @@ DtsProcOutput(
 
 	DTS_GET_CTX(hDevice,Ctx);
 
-	if (Ctx->State == BC_DEC_STATE_CLOSE)
-	{
-		return BC_STS_DEC_NOT_OPEN;
-	}
-
-	if (Ctx->State == BC_DEC_STATE_STOP || Ctx->State == BC_DEC_STATE_FLUSH)
-	{
-		return BC_STS_DEC_NOT_STARTED;
-	}
-
 	if (!DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
 
@@ -1527,7 +1533,9 @@ DtsProcOutput(
 			// In case of Flea the EOS picture has no data and hence the status will be STS_NO_DATA
 			if(OutBuffs.PicInfo.flags & VDEC_FLAG_EOS)
 				pOut->PicInfo.flags |= (VDEC_FLAG_EOS|VDEC_FLAG_LAST_PICTURE);
-			DtsRelRxBuff(Ctx,&Ctx->pOutData->u.RxBuffs,TRUE);
+			/* Fetch handles its own admission on failure. A BUSY
+			 * or stopped caller never owned the shared output buffer.
+			 */
 			return sts;
 		}
 
@@ -1677,16 +1685,6 @@ DtsProcOutputNoCopy(
 	if (!DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
 
-	if (Ctx->State == BC_DEC_STATE_CLOSE)
-	{
-		return BC_STS_DEC_NOT_OPEN;
-	}
-
-	if (Ctx->State == BC_DEC_STATE_STOP || Ctx->State == BC_DEC_STATE_FLUSH)
-	{
-		return BC_STS_DEC_NOT_STARTED;
-	}
-
 	if(!pOut){
 		return BC_STS_INV_ARG;
 	}
@@ -1698,15 +1696,18 @@ DtsProcOutputNoCopy(
 	}
 	pOut->b422Mode = Ctx->b422Mode;
 
-	while(Ctx->State == BC_DEC_STATE_START || Ctx->State == BC_DEC_STATE_PAUSE){
+	for (;;) {
 
 		if( (sts = DtsFetchOutInterruptible(Ctx,pOut,milliSecWait)) != BC_STS_SUCCESS){
 			DebugLog_Trace(LDIL_DBG,"DtsProcOutput: No Active Channels\n");
 				/* In case of a peek..*/
 			if((sts == BC_STS_TIMEOUT) && !(milliSecWait) ){
 				sts = BC_STS_NO_DATA;
-				break;
 			}
+			/* No output ownership on failure: do not update statistics or
+			 * satisfy DropFrames by releasing another caller's buffer.
+			 */
+			return sts;
 		}
 
 		/*
@@ -2362,7 +2363,9 @@ DtsFlushInput( HANDLE  hDevice ,
 	else
 	{
 		Ctx->PESConvParams.m_bAddSpsPps = true;
+		DtsLock(Ctx);
 		Ctx->State = BC_DEC_STATE_FLUSH;
+		DtsUnLock(Ctx);
 		txBufFlush(&Ctx->circBuf);
 		Ctx->bEOSCheck = false;
 		bc_sleep_ms(30); // For the cancel to take place in case we are looping
@@ -2376,14 +2379,17 @@ DtsFlushInput( HANDLE  hDevice ,
 
 	// On LINK if the decoder is paused due to the RLL being full, un pause it before flush
 	if(Ctx->DevId == BC_PCI_DEVID_LINK && Ctx->hw_paused) {
-		DtsFWPauseVideo(hDevice,eC011_PAUSE_MODE_OFF);
+		sts = DtsFWPauseVideo(hDevice,eC011_PAUSE_MODE_OFF);
 		Ctx->hw_paused = false;
 	}
 
+	BC_STATUS cleanup_sts = BC_STS_SUCCESS;
 	if(Op == 4)
-		sts = DtsFWDecFlushChannel(hDevice,2);
+		cleanup_sts = DtsFWDecFlushChannel(hDevice,2);
 	else if (Op != 0 && Op != 5)
-		sts = DtsFWDecFlushChannel(hDevice,Op);
+		cleanup_sts = DtsFWDecFlushChannel(hDevice,Op);
+	if (sts == BC_STS_SUCCESS)
+		sts = cleanup_sts;
 
 	if(Op != 0 && Op != 5)
 	{
@@ -2393,8 +2399,12 @@ DtsFlushInput( HANDLE  hDevice ,
 			 * needs thLock in DtsDecPend, so do not hold it across that
 			 * wait. Stop/Close lock their shared structures internally.
 			 */
-			sts = DtsStopDecoder(hDevice);
-			sts	= DtsCloseDecoder(hDevice);
+			cleanup_sts = DtsStopDecoder(hDevice);
+			if (sts == BC_STS_SUCCESS)
+				sts = cleanup_sts;
+			cleanup_sts = DtsCloseDecoder(hDevice);
+			if (sts == BC_STS_SUCCESS)
+				sts = cleanup_sts;
 		}
 	}
 
@@ -2407,7 +2417,10 @@ DtsFlushInput( HANDLE  hDevice ,
 
 	Ctx->PESConvParams.m_lStartCodeDataSize = 0;
 
-	return BC_STS_SUCCESS;
+	/* Cleanup must still run after an error, but its later success must not
+	 * tell the caller that the failed firmware operation completed.
+	 */
+	return sts;
 }
 
 DRVIFLIB_API BC_STATUS
