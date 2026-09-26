@@ -1,0 +1,28 @@
+#!/bin/sh
+# SPDX-License-Identifier: LGPL-2.1-or-later
+set -eu
+
+player_script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+player_python=${CRYSTALHD_PLAYER_PYTHON:-/usr/bin/python3}
+player_controller="$player_script_dir/../share/crystalhd/player.py"
+if [ -r "$player_script_dir/crystalhd-player.py" ]; then
+    player_controller="$player_script_dir/crystalhd-player.py"
+    player_repo_dir=$(CDPATH= cd -- "$player_script_dir/.." && pwd)
+    if [ -f "$player_repo_dir/filters/gst/gst-plugin-1.0/libgstcrystalhd.so" ]; then
+        player_previous_plugins=${GST_PLUGIN_PATH_1_0:-${GST_PLUGIN_PATH:-}}
+        GST_PLUGIN_PATH="$player_repo_dir/filters/gst/gst-plugin-1.0${player_previous_plugins:+:$player_previous_plugins}"
+        GST_PLUGIN_PATH_1_0=$GST_PLUGIN_PATH
+        LD_LIBRARY_PATH="$player_repo_dir/linux_lib/libcrystalhd${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        export GST_PLUGIN_PATH GST_PLUGIN_PATH_1_0 LD_LIBRARY_PATH
+    fi
+fi
+if [ ! -r "$player_controller" ]; then
+    echo "crystalhd-play: player controller not found: $player_controller" >&2
+    exit 1
+fi
+if [ ! -x "$player_python" ]; then
+    echo "crystalhd-play: Python interpreter not found: $player_python" >&2
+    exit 127
+fi
+export PYTHONDONTWRITEBYTECODE=1
+exec "$player_python" "$player_controller" "$@"

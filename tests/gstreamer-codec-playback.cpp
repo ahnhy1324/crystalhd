@@ -306,7 +306,10 @@ int main(int argc, char **argv) {
   } else if (!message) {
     std::fprintf(stderr, "Probe failed or exceeded its 25-second feed/EOS deadline\n");
   }
-  gst_element_set_state(pipeline, GST_STATE_NULL);
+  if (gst_element_set_state(pipeline, GST_STATE_NULL) == GST_STATE_CHANGE_FAILURE) {
+    std::fprintf(stderr, "Decoder teardown failed\n");
+    ok = false;
+  }
   std::printf("%s: %u packets; %u/%lu YUY2 frames; EOS=%s; SHA256=%s\n",
       vc1 ? "VC-1" : "WMV3", packets, audit.frames, expected, eos ? "yes" : "no",
       g_checksum_get_string(audit.checksum));

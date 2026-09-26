@@ -17,7 +17,7 @@ The kernel and userspace pieces have different levels of validation:
 | --- | --- |
 | Kernel module | Maintained for Linux 6.1 and newer; hardware-tested on BCM70015 with Ubuntu 6.17.0-41-generic. BCM70012 support is retained but has not been tested recently. |
 | `libcrystalhd` | Legacy compatibility API. CI freezes its 32-bit and 64-bit ioctl layouts, builds the complete library as 32-bit code, and exercises it through the tested frontends; it still has no comprehensive device-API test suite. |
-| GStreamer 1.x | Primary validation path on BCM70015: progressive H.264 Baseline/Main/High, complete-file drain, and flushing replay with identical pixels. MPEG-2, VC-1 Advanced, and WMV3 Main each have a small complete-drain hardware fixture. Interlaced output, arbitrary in-flight seeks, and mid-stream format changes remain unverified. |
+| GStreamer 1.x | Primary validation path on BCM70015: progressive H.264 Baseline/Main/High, complete-file drain, and flushing replay with identical pixels. Numbered 360p/720p H.264 + AAC fixtures pass in-flight seeks, pause/resume, and 0.5x/1x/2x clocked playback. MPEG-2, VC-1 Advanced, and WMV3 Main each have a small complete-drain hardware fixture. Broader streams, interlaced output, and mid-stream format changes remain unverified. |
 | VA-API | Experimental client-oriented subset. BCM70015 H.264 Baseline/Main/High complete-file decode and pipelined seek checks pass with verified pixels; High also passes the synchronous seek probe. Bounded IDR replay handles firmware drain but can be expensive for synchronous clients. Not a general or conformance-tested VA-API driver. |
 | Chromium | Developer experiment only. The safe default uses Chrome's software decoder with the GPU sandbox enabled. Hardware decode is opt-in, has unresolved post-seek correctness, and requires disabling the GPU-process sandbox. |
 | Examples | Legacy diagnostic programs. CI verifies that they compile, not that their hard-coded sample streams decode correctly. |
@@ -65,10 +65,12 @@ The card and firmware support one playback session at a time. A second
 simultaneous VA-API client receives `VA_STATUS_ERROR_HW_BUSY`; close the first
 player before starting another hardware decode.
 
-FFmpeg deprecated its CrystalHD decoders in version 6.0, and current packaged
-FFmpeg and VLC builds no longer expose CrystalHD decoding. Installing this
-kernel module alone therefore does not make current VLC use the card. Programs
-can instead use the GStreamer element or the standard VA-API backend.
+FFmpeg deprecated its CrystalHD decoders in version 6.0. The distribution
+VLC 3.0.21 build tested here also disables its native CrystalHD module;
+installing this kernel module alone does not enable it. This is not true of
+every VLC fork: PowerVLC's Linux release includes a native decoder, with the
+experimental results and limitations described below. Programs can also use
+the GStreamer element or the standard VA-API backend.
 
 CrystalHD does not decode VP8, VP9, or AV1. YouTube normally prefers those
 newer codecs. The optional Chrome setup installs an H.264 preference policy,
@@ -87,6 +89,7 @@ sudo apt install build-essential autoconf dkms pkg-config \
   libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
   gstreamer1.0-tools gstreamer1.0-plugins-base \
   gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+  python3-gi gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 \
   libva-dev libdrm-dev libgbm-dev libswscale-dev vainfo
 ```
 
@@ -107,8 +110,10 @@ make check
 ```
 
 `make check` builds every component, freezes the 32-bit and 64-bit public ioctl
-layouts, validates GStreamer and VA-API discovery, checks VA-API H.264 SPS/PPS
-generation, checks the browser scripts and assets, tests DRM PRIME NV12 surface
+layouts, exercises the real library's TX ring, flush/output cancellation and
+EOS error paths without hardware, validates GStreamer and VA-API discovery,
+checks VA-API H.264 SPS/PPS generation, checks the browser scripts and assets,
+tests DRM PRIME NV12 surface
 import when a render node is available, and checks a staged installation
 without changing the host system. It does not decode a stream on CrystalHD
 hardware.
@@ -168,7 +173,8 @@ default); a timeout or missing frame fails validation.
 Set `CRYSTALHD_TEST_SEEK=1` on the GStreamer hardware command to replay the
 file after a flushing seek to zero in the same pipeline. Both passes must
 drain every frame and produce the same pixel SHA-256. This checks replay
-after end-of-stream; arbitrary seeks during playback need separate coverage.
+after end-of-stream, separately from the numbered in-flight control checks
+described under [GStreamer playback](#gstreamer-playback).
 
 For VA-API seek/flush validation outside Chromium, install `libavcodec-dev`,
 `libavformat-dev`, and `libavutil-dev`, then run:
@@ -284,7 +290,125 @@ To stage a package instead of changing the host:
 make DESTDIR=/tmp/crystalhd-package install
 ```
 
+## PowerVLC native playback (experimental)
+
+[PowerVLC](https://github.com/Olsro/powervlc) is a separate VLC fork. The
+[2.1.0 Linux x86_64 release](https://github.com/Olsro/powervlc/releases/tag/powervlc-2.1.0)
+includes `libcrystalhd_plugin.so`, despite its README advertising CrystalHD
+primarily for macOS. On BCM70015, the native module was verified to decode
+H.264 using this repository's library and kernel module, with actual picture
+checks and no main-video software fallback. Its Qt/X11 window also displayed
+video while AAC audio was sent through PulseAudio. This is limited integration
+evidence, not a general playback or audio-synchronization certification.
+
+**Known failure:** the 12-second, 360-frame High-profile test returned only
+355 unique numbered pictures (1–355), missing picture 0 and the final 356–359.
+Output stopped advancing at picture 355 and repeated it. The same file returned
+all 360 frames through the GStreamer counted test. PowerVLC returning success
+or reaching the end of its timeline is therefore not proof of complete decode.
+Its native end-of-stream handling needs work before this can be recommended
+for reliable everyday playback. Seek checks are inconsistent; one failed
+backward seek caused firmware-command timeouts during close before the driver
+disabled DMA and released the session. A separate settled 2x-rate smoke test
+passed, but 0.5x did not. PowerVLC-specific Full HD, other codecs, subtitles
+and robust controls are not established. Track this in
+[#18](https://github.com/ahnhy1324/crystalhd/issues/18).
+
+For a diagnostic run, extract the downloaded AppImage in its own directory
+with `./PowerVLC-2.1.0-x86_64.AppImage --appimage-extract`. No installer or
+system VLC replacement is needed. From the root of this driver repository:
+
+```sh
+make library
+LD_PRELOAD="$PWD/linux_lib/libcrystalhd/libcrystalhd.so.3" \
+  /path/to/squashfs-root/AppRun \
+  --ignore-config --no-one-instance --no-qt-privacy-ask \
+  --no-metadata-network-access --no-disable-screensaver \
+  --crystalhd --codec=crystalhd,avcodec,none --avcodec-hw=none \
+  --video-cache-mb=0 --no-spu --text-renderer=tdummy --vout=xcb_x11 \
+  /path/to/video.mp4
+```
+
+PowerVLC does not need rebuilding to use this ABI-compatible library. The
+preload selects our library instead of the older one bundled by the
+AppImage; `LD_LIBRARY_PATH` alone is insufficient because `AppRun` prepends
+its bundled directories. The diagnostic options disable look-ahead caching
+and subtitles, and avoid the bundled font-renderer startup stall observed
+locally. Verify the loaded kernel module matches the source build as described
+in [BRINGUP.md](BRINGUP.md), and close other CrystalHD clients first.
+
+For evidence, add `VLC_CHD_TRACE=1` to the environment and `-vvv` to the
+arguments. Require the main video decoder to be `crystalhd` and actual native
+output; a menu setting or library load alone is not enough. `avcodec` is normal
+for audio and seek thumbnails, but main-video fallback is not a hardware pass.
+Trace output counts are not presentation counts, and the tail failure above
+still applies to this example.
+
+The opt-in offscreen regression below requires the extracted release's SDK,
+a C compiler and GNU `timeout`. It checks the selected library's actual path
+before playback and validates numbered pixels, not just player statistics:
+
+```sh
+sh tests/generate-browser-sample.sh /tmp/crystalhd-powervlc.mp4 --av-360p
+sh tests/powervlc-playback.sh /path/to/squashfs-root \
+  "$PWD/linux_lib/libcrystalhd" /tmp/crystalhd-powervlc.mp4
+```
+
+Append `--software` for the reference decoder, `--controls` for pause/resume
+and seek/rate smoke checks, or `--half` / `--double` for independent rate
+checks after a settling interval. The default requires every picture through
+the final frame and currently fails on the native path. These tests do not
+open a GUI, test audio or certify smooth display cadence. They use temporary
+configuration and do not install or rebuild PowerVLC.
+
 ## GStreamer playback
+
+The experimental local-file controller uses GStreamer's `playbin` for the
+video window, audio, and optional external subtitles:
+
+```sh
+./scripts/crystalhd-play --hardware video.mp4
+./scripts/crystalhd-play --software --subtitles captions.srt video.mp4
+```
+
+After installation, use `crystalhd-play` without the source-tree prefix.
+Keep its launching terminal open: Space pauses/resumes, Left/Right or `j`/`l`
+seek ten seconds, `1`/`2`/`3` select 0.5x/1x/2x, and `q` quits. Hardware mode
+is the default and confirms the decoder only after actual raw video output.
+Unsupported input, a busy card, or decoder errors do not silently select
+software; retry explicitly with `--software`. Software codec availability
+depends on installed GStreamer plugins; `gstreamer1.0-libav` adds FFmpeg
+decoders. Rank changes are local to the player process, not system defaults.
+BCM70015 hardware tests pass pause/resume, forward/backward flushing seeks,
+and 0.5x/1x/2x playback on numbered 360p and 720p H.264 + AAC fixtures,
+including complete 360-frame replay. Flushing seeks now reopen the full
+device; an independent output worker prevents audio preroll from starving
+video output. A 30-minute 720p30 H.264 + AAC run also passes all 54,000 video
+frames and EOS, with maximum measured A/V interval skew of 4ms and about 12%
+process CPU use. These checks use clocked test sinks, not a window or speakers,
+and do not guarantee speaker/display lip-sync, smooth Full HD or arbitrary
+streams. The controller's output watchdog is cooperative: a blocked library
+call can still require an external timeout during testing.
+
+To reproduce the numbered 720p hardware control check after building (needs
+FFmpeg with libx264/AAC encoding and GStreamer H.264/AAC plugins):
+
+```sh
+make -C filters/gst/gst-plugin-1.0 gstreamer-controls-test
+crystalhd_sample_dir=$(mktemp -d)
+sh tests/generate-browser-sample.sh "$crystalhd_sample_dir/av720.mp4" --av-720p
+GST_PLUGIN_PATH="$PWD/filters/gst/gst-plugin-1.0" \
+LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
+GST_REGISTRY="$crystalhd_sample_dir/registry.bin" \
+timeout --kill-after=10 120 \
+  filters/gst/gst-plugin-1.0/gstreamer-controls-test \
+  "$crystalhd_sample_dir/av720.mp4" --audio --timeout 90
+```
+
+This fails on missing/out-of-order identities, incorrect seek/rate progress,
+video lateness above 250ms or sampled A/V interval skew above 100ms. It does
+not open a GUI or measure speaker/display lip-sync. The sample and temporary
+GStreamer registry remain in the generated directory for inspection.
 
 For an H.264 MP4 file:
 

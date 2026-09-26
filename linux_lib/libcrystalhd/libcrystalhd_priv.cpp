@@ -305,11 +305,26 @@ void DtsUnLock(DTS_LIB_CONTEXT	*Ctx)
 	pthread_mutex_unlock(&Ctx->thLock);
 }
 
-static void DtsIncPend(DTS_LIB_CONTEXT	*Ctx)
+static BC_STATUS DtsAcquireOutput(DTS_LIB_CONTEXT *Ctx)
 {
+	BC_STATUS sts = BC_STS_SUCCESS;
+	/* Admission and the flush/stop barrier use the same lock. A caller
+	 * delayed before this point must not start a fetch after cancellation
+	 * observed an empty pending count. There is one shared pOutData buffer.
+	 */
 	DtsLock(Ctx);
-	Ctx->ProcOutPending++;
+	if (Ctx->State == BC_DEC_STATE_CLOSE)
+		sts = BC_STS_DEC_NOT_OPEN;
+	else if (Ctx->State != BC_DEC_STATE_START && Ctx->State != BC_DEC_STATE_PAUSE)
+		sts = BC_STS_DEC_NOT_STARTED;
+	else if (Ctx->CancelWaiting)
+		sts = BC_STS_IO_USER_ABORT;
+	else if (Ctx->ProcOutPending)
+		sts = BC_STS_BUSY;
+	else
+		Ctx->ProcOutPending = 1;
 	DtsUnLock(Ctx);
+	return sts;
 }
 static void DtsDecPend(DTS_LIB_CONTEXT	*Ctx)
 {
@@ -1412,6 +1427,10 @@ BC_STATUS DtsRelRxBuff(DTS_LIB_CONTEXT *Ctx, BC_DEC_YUV_BUFFS *buff, BOOL SkipAd
 // Description: Get uncompressed video data from hardware.
 //              This function is interruptable procOut for
 //              multi-threaded scenerios ONLY..
+//              SUCCESS transfers one pending output to the caller. Every
+//              failure leaves no caller-owned buffer. A failed cancellation
+//              repost retains the pending count for teardown, not for a
+//              rejected caller to release or a new fetch to reuse.
 //------------------------------------------------------------------------
 BC_STATUS DtsFetchOutInterruptible(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, uint32_t dwTimeout)
 {
@@ -1420,12 +1439,9 @@ BC_STATUS DtsFetchOutInterruptible(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, 
 	if(!Ctx ||  !pOut)
 		return BC_STS_INV_ARG;
 
-	if(DtsIsPend(Ctx)){
-		DebugLog_Trace(LDIL_DBG,"DtsFetchOutInterruptible: ProcOutput Pending.. \n");
-		return BC_STS_BUSY;
-	}
-
-	DtsIncPend(Ctx);
+	sts = DtsAcquireOutput(Ctx);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
 
 	memset(Ctx->pOutData,0,sizeof(*Ctx->pOutData));
 
@@ -1445,7 +1461,10 @@ BC_STATUS DtsFetchOutInterruptible(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, 
 		DtsDecPend(Ctx);
 	}
 
-	if(!Ctx->CancelWaiting)
+	DtsLock(Ctx);
+	const bool cancel = Ctx->CancelWaiting;
+	DtsUnLock(Ctx);
+	if(!cancel)
 		return sts;
 
 	/* Cancel request waiting.. Release Buffer back
@@ -1467,11 +1486,14 @@ BC_STATUS DtsCancelFetchOutInt(DTS_LIB_CONTEXT *Ctx)
 	bool pend = false;
 	uint32_t cnt;
 
-	if(!(DtsIsPend(Ctx))){
+	DtsLock(Ctx);
+	if (!Ctx->ProcOutPending) {
+		DtsUnLock(Ctx);
 		return BC_STS_SUCCESS;
 	}
 
 	Ctx->CancelWaiting = 1;
+	DtsUnLock(Ctx);
 
 	/* Worst case scenerio the timeout should happen.. */
 	cnt = BC_PROC_OUTPUT_TIMEOUT / 100;
@@ -1483,11 +1505,15 @@ BC_STATUS DtsCancelFetchOutInt(DTS_LIB_CONTEXT *Ctx)
 
 	if(pend){
 		DebugLog_Trace(LDIL_DBG,"DtsCancelFetchOutInt: TimeOut\n");
+		DtsLock(Ctx);
 		Ctx->CancelWaiting = 0;
+		DtsUnLock(Ctx);
 		return BC_STS_TIMEOUT;
 	}
 
+	DtsLock(Ctx);
 	Ctx->CancelWaiting = 0;
+	DtsUnLock(Ctx);
 
 	return BC_STS_SUCCESS;
 }
@@ -2414,8 +2440,11 @@ BC_STATUS txBufPop(pTXBUFFER txBuf, uint8_t* bufToPop, uint32_t sizeToPop)
 
 	pthread_mutex_lock(&txBuf->flushLock);
 
-	if(sizeToPop > txBuf->busySize)
+	if(sizeToPop > txBuf->busySize) {
+		// A flush can invalidate the size sampled by the TX worker.
+		pthread_mutex_unlock(&txBuf->flushLock);
 		return BC_STS_INV_ARG;
+	}
 
 	sizeTop = (uint32_t)(txBuf->endPointer - (txBuf->basePointer + txBuf->readPointer) + 1);
 	if(sizeToPop <= sizeTop)

@@ -98,6 +98,27 @@ function readPlayerDiagnostics(player) {
   return {playerErrorCode, playerDebugStatus};
 }
 
+// Serialized into the page. Crossing the midpoint is not evidence that a
+// requested seek reached its destination: ordinary playback can do that too.
+function observeSeekFrame(seek, mediaTime, now) {
+  if (!seek || seek.failure)
+    return;
+  if (!seek.settled && now > seek.deadline) {
+    seek.failure = 'requested seek did not complete with a near-target frame before its deadline';
+    return;
+  }
+  if (!Number.isFinite(mediaTime))
+    return;
+  if (!seek.settled) {
+    if (seek.seeked && Math.abs(mediaTime - seek.target) <= 0.25)
+      seek.settled = true;
+  } else {
+    const onNewSide = seek.forward ? mediaTime >= seek.cutoff : mediaTime <= seek.cutoff;
+    if (!onNewSide && now <= seek.deadline)
+      seek.violations.push({mediaTime, cutoff: seek.cutoff});
+  }
+}
+
 // This checks live rVFC timestamps, NOT the identity of the displayed pixels.
 // Keep the policy independent of CDP so late failures can be tested without a
 // browser or real-time sleeps. `now` is monotonic milliseconds from the caller.
@@ -164,6 +185,8 @@ class PlaybackHealth {
       this.fail('visible YouTube player error');
     if (snapshot?.mediaError)
       this.fail(`video element error (code ${Number(snapshot.mediaError) || 'unknown'})`);
+    if (snapshot?.seekFailure)
+      this.fail('requested seek did not complete with a near-target frame before its deadline');
     if (snapshot?.videoPresent && Number.isInteger(snapshot.videoId) && snapshot.videoId > 0) {
       if (this.videoId !== null && this.videoId !== snapshot.videoId) {
         // A replacement may initially have no rVFC sample at all. Earlier
@@ -409,9 +432,16 @@ async function main() {
             cutoff: (from + target) / 2,
             forward: target >= from,
             settled: false,
+            seeked: false,
+            failure: null,
             deadline: performance.now() + 5000,
             violations: [],
           };
+          const request = audit.seek;
+          video.addEventListener('seeked', () => {
+            if (audit.seek === request)
+              request.seeked = true;
+          }, {once: true});
           audit.lastMediaTime = null;
           audit.regressions = [];
           video.currentTime = target;
@@ -445,6 +475,7 @@ async function main() {
         } catch (_) { /* This watch-page diagnostic is not a public API. */ }
         const {playerErrorCode, playerDebugStatus} =
             (${readPlayerDiagnostics.toString()})(player);
+        const updateSeek = (${observeSeekFrame.toString()});
         const visible = element => {
           if (!element || !element.textContent.trim()) return false;
           if (typeof element.checkVisibility === 'function')
@@ -470,23 +501,13 @@ async function main() {
             }
             audit.lastMediaTime = metadata.mediaTime;
             ++audit.frames;
-            if (audit.seek) {
-              const onNewSide = audit.seek.forward
-                  ? metadata.mediaTime >= audit.seek.cutoff
-                  : metadata.mediaTime <= audit.seek.cutoff;
-              if (!audit.seek.settled && onNewSide)
-                audit.seek.settled = true;
-              else if (audit.seek.settled && !onNewSide &&
-                       performance.now() <= audit.seek.deadline) {
-                audit.seek.violations.push({mediaTime: metadata.mediaTime,
-                                            cutoff: audit.seek.cutoff});
-              }
-            }
+            updateSeek(audit.seek, metadata.mediaTime, performance.now());
             video.requestVideoFrameCallback(observe);
           };
           video.requestVideoFrameCallback(observe);
         }
         const frameAudit = video ? video.__crystalHdAudit : null;
+        updateSeek(frameAudit?.seek, null, performance.now());
         return {
           videoPresent: Boolean(video),
           videoId: frameAudit ? frameAudit.videoId : null,
@@ -513,6 +534,8 @@ async function main() {
               ? frameAudit.seek.settled : false,
           seekId: frameAudit && frameAudit.seek
               ? frameAudit.seek.id : null,
+          seekFailure: frameAudit && frameAudit.seek
+              ? frameAudit.seek.failure : null,
           seekViolations: frameAudit && frameAudit.seek
               ? frameAudit.seek.violations : [],
         };
@@ -636,7 +659,7 @@ async function main() {
 }
 
 module.exports = {PlaybackHealth, hardwareContinuity, safeDiagnostic,
-                  readPlayerDiagnostics, DEFAULT_SECONDS};
+                  readPlayerDiagnostics, observeSeekFrame, DEFAULT_SECONDS};
 
 if (require.main === module) main().catch((error) => {
   if (activeSocket)

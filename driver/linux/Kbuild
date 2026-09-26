@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-INCLUDES := -I$(KDIR)/include
-INCLUDES += -I$(src)/../../include
+# Kbuild supplies the selected kernel's include paths. KDIR belongs to the
+# outer wrapper and is not defined for a direct external-module build.
+INCLUDES := -I$(src)/../../include
 INCLUDES += -I$(src)/../../include/link
 INCLUDES += -I$(src)/../../include/flea
 

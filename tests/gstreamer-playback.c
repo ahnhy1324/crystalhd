@@ -158,7 +158,10 @@ run_pipeline(const gchar *description, const gchar *filename, guint expected,
       break;
   }
 
-  gst_element_set_state(pipeline, GST_STATE_NULL);
+  if (gst_element_set_state(pipeline, GST_STATE_NULL) == GST_STATE_CHANGE_FAILURE) {
+    g_printerr("Decoder teardown failed\n");
+    success = FALSE;
+  }
   gst_object_unref(bus);
   gst_object_unref(pipeline);
   g_checksum_free(audit.checksum);
