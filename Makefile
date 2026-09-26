@@ -23,9 +23,11 @@ library:
 library-check:
 	@set -eu; lib_test_dir=$$(mktemp -d /tmp/crystalhd-library-check.XXXXXX); \
 	trap 'rm -f "$$lib_test_dir/check"; rmdir "$$lib_test_dir"' EXIT HUP INT TERM; \
-	for lib_test in tx-ring flush eos; do \
+	for lib_test in tx-ring flush eos copy; do \
 		test_extra=; \
+		test_sources="linux_lib/libcrystalhd/libcrystalhd_priv.cpp linux_lib/libcrystalhd/libcrystalhd_if.cpp"; \
 		case $$lib_test in \
+			copy) test_wrap=; test_sources=linux_lib/libcrystalhd/libcrystalhd_int_if.cpp ;; \
 			tx-ring) test_wrap=-Wl,--wrap=pthread_mutex_lock ;; \
 			flush) test_wrap=-Wl,--wrap=ioctl,--wrap=usleep,--wrap=pthread_mutex_lock ;; \
 			eos) test_wrap=-Wl,--wrap=ioctl,--wrap=txBufPush,--wrap=usleep; \
@@ -36,8 +38,7 @@ library-check:
 		$(CXX) -std=c++11 -O1 -g -Wall -Werror \
 		-ffunction-sections -fdata-sections -D__LINUX_USER__ \
 		-Ilinux_lib/libcrystalhd -Iinclude -Iinclude/link \
-		tests/library-$$lib_test.cpp linux_lib/libcrystalhd/libcrystalhd_priv.cpp \
-		linux_lib/libcrystalhd/libcrystalhd_if.cpp $$test_extra \
+		tests/library-$$lib_test.cpp $$test_sources $$test_extra \
 		-Wl,--gc-sections $$test_wrap -pthread \
 		-o "$$lib_test_dir/check"; "$$lib_test_dir/check"; \
 	done

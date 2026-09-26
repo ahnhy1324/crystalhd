@@ -39,6 +39,17 @@ for bits in $build_bits; do
         "$repo_dir/tests/uapi-library-smoke.cpp" \
         -L"$build_dir/linux_lib/libcrystalhd" -lcrystalhd -pthread \
         -o "$build_dir/library-smoke"
+    # Execute the raw-copy bounds/stride regressions on the target ABI.
+    # No device, firmware, or shared library is used by this section test.
+    # shellcheck disable=SC2086
+    $cxx ${CPPFLAGS:-} ${CXXFLAGS:-} -m"$bits" -msse2 -std=c++11 \
+        -O1 -g -Wall -Werror -ffunction-sections -fdata-sections \
+        -D__LINUX_USER__ -I"$build_dir/include" -I"$build_dir/include/link" \
+        -I"$build_dir/linux_lib/libcrystalhd" \
+        "$repo_dir/tests/library-copy.cpp" \
+        "$build_dir/linux_lib/libcrystalhd/libcrystalhd_int_if.cpp" \
+        -Wl,--gc-sections -o "$build_dir/library-copy"
+    "$build_dir/library-copy"
     printf '%s-bit library, examples and library probe linked successfully\n' "$bits"
 done
 

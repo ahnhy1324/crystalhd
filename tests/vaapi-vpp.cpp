@@ -4,6 +4,7 @@
 #include "../filters/vaapi/crystalhd_drv_video.cpp"
 
 #include <cerrno>
+#include <linux/sync_file.h>
 #include <stdexcept>
 #include <string>
 
@@ -28,6 +29,8 @@ struct FenceIoMock {
   bool fail_open = false;
   bool fail_create = false;
   bool signaled = false;
+  bool fence_created = false;
+  int fence_status = 0;  // sync_file: zero pending, one success, negative error
   bool self_wait = false;
   bool invalid = false;
   std::vector<std::string> events;
@@ -99,6 +102,7 @@ struct FenceIoMock {
       if (fail_create)
         return Error();
       create->fence = fence;
+      fence_created = true;
       handles.insert(fence);
       return 0;
     }
@@ -119,6 +123,7 @@ struct FenceIoMock {
       if (fail_signal)
         return Error();
       signaled = true;
+      fence_status = 1;
       return 0;
     }
     invalid = true;
@@ -134,8 +139,10 @@ struct FenceIoMock {
     if (fd == timeline || fd == fence) {
       invalid |= handles.erase(fd) != 1;
       // Linux sw_sync release signals all pending fences with -ENOENT.
-      if (fd == timeline && !imported.empty())
+      if (fd == timeline && fence_created && !signaled) {
         signaled = true;
+        fence_status = -ENOENT;
+      }
     } else {
       invalid |= fd < 101 || fd > 103 || started.count(fd) != 0 ||
                  read_started.count(fd) != 0;
@@ -445,7 +452,7 @@ void FenceCreationFailureReleasesOwnership() {
   }
 }
 
-void PartialFenceImportSignalsBeforeCpuEnd() {
+void PartialFenceImportAbortsBeforeCpuEnd() {
   for (int fail_fd : {101, 102, 103}) {
     FenceIoMock mock;
     MockFenceScope scope(mock);
@@ -454,11 +461,13 @@ void PartialFenceImportSignalsBeforeCpuEnd() {
     mock.fail_import_fd = fail_fd;
     Require(BeginFencedWrite(&surface) == -1,
             "partial fence import must not acknowledge an async writer");
-    const auto signal = std::find(mock.events.begin(), mock.events.end(),
-                                  "signal");
+    const auto abort = std::find(mock.events.begin(), mock.events.end(),
+                                 "close:" + std::to_string(FenceIoMock::timeline));
     const auto end = std::find(mock.events.begin(), mock.events.end(), "end:101");
-    Require(signal != mock.events.end() && signal < end,
-            "partially imported fence must signal before any CPU END");
+    Require(abort != mock.events.end() && abort < end &&
+                std::find(mock.events.begin(), mock.events.end(), "signal") ==
+                    mock.events.end() && mock.fence_status < 0,
+            "partially imported fence must abort, never succeed, before any CPU END");
     Require(mock.started.empty() && mock.handles.empty() && mock.signaled &&
                 !mock.self_wait && !mock.invalid,
             "partial import must not leak ownership or wait on its own fence");
@@ -477,7 +486,7 @@ void CompletedFenceSignalsBeforeCpuEnd() {
           "successful fence creation must retain CPU ownership until completion");
   EndFencedWrite(&surface, timeline);
   Require(mock.started.empty() && mock.handles.empty() && mock.signaled &&
-              !mock.self_wait && !mock.invalid,
+              mock.fence_status == 1 && !mock.self_wait && !mock.invalid,
           "normal completion must release its fence before CPU ownership");
 }
 
@@ -1177,6 +1186,8 @@ void FenceCompletionFailuresFailWithoutSelfWait() {
     ReleasePendingVpp(&fixture.driver, 1, VA_STATUS_SUCCESS, true);
     Require(fixture.target->failed && !fixture.target->ready,
             "fence signal or CPU END failure must fail the published surface");
+    Require(mock.fence_status == (fail_signal ? -ENOENT : 1),
+            "failed signal aborts; a later CPU END error cannot retract an already signaled fence");
     Require(mock.started.empty() && mock.handles.empty() && !mock.self_wait &&
                 !mock.invalid && fixture.driver.pending_vpp.empty(),
             "fence failure cleanup must release timeline before CPU self-wait");
@@ -1189,14 +1200,141 @@ void FenceCompletionFailuresFailWithoutSelfWait() {
   mock.fail_signal = true;
   Require(BeginFencedWrite(&surface) == -1 && mock.signaled &&
               mock.started.empty() && mock.handles.empty() && !mock.self_wait &&
-              !mock.invalid,
-          "partial import plus failed signal must close the timeline before END");
+              !mock.invalid &&
+              std::find(mock.events.begin(), mock.events.end(), "signal") ==
+                  mock.events.end(),
+          "partial import abort must not depend on a successful increment ioctl");
+}
+
+void AbortPathsPublishErrorFences() {
+  unsigned failures = 0;
+  for (unsigned mode = 0; mode < 6; ++mode) {
+    FenceIoMock mock;
+    MockFenceScope scope(mock);
+    auto fixture = std::make_unique<Fixture>();
+    const auto target = fixture->target;
+    const auto source = fixture->source;
+    const auto pixels = target->storage;
+    {
+      std::unique_lock<std::mutex> lock(fixture->driver.mutex);
+      target->object_fds = {101, 102, 103};
+      if (mode == 4) {
+        mock.fail_import_fd = 102;
+        Require(BeginFencedWrite(target.get()) == -1, "reject partial import");
+      } else {
+        PendingVpp pending;
+        pending.source = source;
+        pending.target = target;
+        pending.target_owner = target;
+        pending.sequence = 1;
+        pending.write_timeline = BeginFencedWrite(target.get());
+        Require(pending.write_timeline >= 0, "establish an actual production fenced write");
+        source->vpp_readers = 1;
+        target->vpp_writers = 1;
+        target->latest_vpp_sequence = 1;
+        fixture->driver.pending_vpp.push_back(pending);
+        if (mode == 3) {
+          // Prevent scheduling this queued item: the real Driver destructor
+          // must abort it after joining its worker, not report a completed copy.
+          fixture->driver.stopping = true;
+        } else {
+          VAStatus status = VA_STATUS_SUCCESS;
+          if (mode == 1) {
+            const VARectangle valid = {0, 0, 16, 16};
+            const VARectangle invalid = {0, 0, 17, 16};
+            status = ProcessVpp(&fixture->driver.vpp_scaler,
+                &fixture->driver.vpp_argb_staging, source.get(), target.get(),
+                valid, invalid, true);
+            Require(status == VA_STATUS_ERROR_INVALID_PARAMETER,
+                    "exercise production conversion rejection");
+          } else if (mode == 2) {
+            source->failed = true;
+            status = SyncDecodeSurface(&fixture->driver, source, &lock, 0);
+            Require(status == VA_STATUS_ERROR_DECODING_ERROR,
+                    "exercise production decoder failure without hardware");
+          } else if (mode == 5) {
+            mock.fail_end_fd = 102;
+          }
+          ReleasePendingVpp(&fixture->driver, 1, status, mode == 1 || mode == 2);
+          Require(target->failed && !target->ready && source->vpp_readers == 0 &&
+                      target->vpp_writers == 0 && fixture->driver.pending_vpp.empty(),
+                  "aborted operation releases bookkeeping and fails the surface");
+        }
+      }
+    }
+    fixture.reset();
+    Require(target->storage == pixels && mock.started.empty() && mock.handles.empty() &&
+                !mock.self_wait && !mock.invalid,
+            "abort must preserve pixels and release all ownership without self-wait");
+    const auto closed = std::find(mock.events.begin(), mock.events.end(),
+                                  "close:" + std::to_string(FenceIoMock::timeline));
+    const auto end = std::find(mock.events.begin(), mock.events.end(), "end:101");
+    if (mock.fence_status >= 0 || closed >= end ||
+        std::find(mock.events.begin(), mock.events.end(), "signal") != mock.events.end()) {
+      fprintf(stderr, "Abort fence mode %u reported status %d (expected error before CPU END)\n",
+              mode, mock.fence_status);
+      ++failures;
+    }
+  }
+  Require(failures == 0,
+          "cancel, conversion/decode failures, destruction and partial import must not signal success");
+}
+
+// Opt-in kernel contract check. This needs access to the existing debugfs
+// sw_sync node but opens no DRM/CrystalHD device and changes no permissions.
+// Default checks above remain entirely hardware/privilege independent.
+void GenuineSwSyncCompletionStatuses() {
+  struct Handles {
+    int timeline = -1;
+    int fence = -1;
+    ~Handles() {
+      if (timeline >= 0) close(timeline);
+      if (fence >= 0) close(fence);
+    }
+  };
+  for (bool completed : {false, true}) {
+    Handles handles;
+    handles.timeline = open(kSwSyncPath, O_RDWR | O_CLOEXEC);
+    if (handles.timeline < 0)
+      throw std::runtime_error(std::string("open existing sw_sync: ") + strerror(errno));
+    SwSyncCreateFenceData create = {};
+    create.value = 1;
+    create.fence = -1;
+    snprintf(create.name, sizeof(create.name), "crystalhd-status-test");
+    Require(ioctl(handles.timeline, SW_SYNC_IOC_CREATE_FENCE, &create) == 0,
+            "create genuine sw_sync fence");
+    handles.fence = create.fence;
+    sync_file_info before = {};
+    Require(ioctl(handles.fence, SYNC_IOC_FILE_INFO, &before) == 0 &&
+                before.status == 0,
+            "new genuine fence must be pending");
+    const int timeline = handles.timeline;
+    handles.timeline = -1;  // the production helper consumes this descriptor
+    Require(completed ? EndFencedWrite(nullptr, timeline)
+                      : AbortFencedWrite(nullptr, timeline),
+            "finish genuine timeline through production helper");
+    sync_file_info after = {};
+    Require(ioctl(handles.fence, SYNC_IOC_FILE_INFO, &after) == 0 &&
+                after.status == (completed ? 1 : -ENOENT),
+            "genuine fence must distinguish committed success from abort error");
+    printf("Genuine sw_sync %s: status %d -> %d PASS\n",
+            completed ? "completion" : "abort", before.status, after.status);
+  }
 }
 
 }  // namespace
 
-int main() {
+int main(int argc, char **argv) {
+  if (argc > 2 || (argc == 2 && strcmp(argv[1], "--sw-sync") != 0)) {
+    fprintf(stderr, "usage: %s [--sw-sync]\n", argv[0]);
+    return 2;
+  }
   try {
+    if (argc == 2) {
+      GenuineSwSyncCompletionStatuses();
+      return 0;
+    }
+    AbortPathsPublishErrorFences();
     RepeatedVppRetainsPicture();
     ReuseBetweenRenderAndEndKeepsCapturedPicture();
     ResetRejectsCapturedOldEpoch();
@@ -1209,7 +1347,7 @@ int main() {
     CpuWriteStartUnwindsAcquiredPrefix();
     FencedWriteStartFailureDoesNotOpenTimeline();
     FenceCreationFailureReleasesOwnership();
-    PartialFenceImportSignalsBeforeCpuEnd();
+    PartialFenceImportAbortsBeforeCpuEnd();
     CompletedFenceSignalsBeforeCpuEnd();
     VppCpuOwnershipFailuresAreNotSuccessfulFrames();
     CpuReadStartUnwindsAcquiredPrefix();
@@ -1231,6 +1369,6 @@ int main() {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP identity/lifecycle/fences/images: 30 hardware-free regressions passed");
+  puts("VA-API VPP identity/lifecycle/fences/images: 31 hardware-free regressions passed");
   return 0;
 }
