@@ -512,13 +512,70 @@ BOOL DtsChkAVCSps(HANDLE hDevice, uint8_t *pBuffer, uint32_t ulSize)
 }
 
 
+/* DtsProcInput asks this before DtsAddStartCode converts AVC1 length-prefixed
+ * NALs to Annex B. Checking those bytes with the Annex-B-only parser misses
+ * an in-band SPS and sends a second, untimestamped copy of the parameter
+ * sets. Detect only; do not consume the converter's pending NAL state.
+ */
+static BOOL DtsAVC1HasSps(const DTS_LIB_CONTEXT *Ctx,
+						const uint8_t *pBuffer, uint32_t ulSize)
+{
+	const uint32_t lengthSize = Ctx->VidParams.StartCodeSz;
+	if (!pBuffer || !ulSize || lengthSize == 0 || lengthSize > 4 ||
+		Ctx->PESConvParams.m_lStartCodeDataSize != 0)
+		return FALSE;
+
+	/* Match DtsAddH264SCode's format decision: conversion is disabled once
+	 * its configured length field reads 1 (the existing Annex-B marker).
+	 * Do not mistake a length such as 0x00000107 for a three-byte start code.
+	 */
+	uint32_t initialSize = 0;
+	if (lengthSize <= ulSize)
+		for (uint32_t i = 0; i < lengthSize; ++i)
+			initialSize = (initialSize << 8) | pBuffer[i];
+	const bool annexB = !Ctx->PESConvParams.m_bIsAdd_SCode_CodeIn || initialSize == 1;
+	/* Use a bounded Annex-B scan: the legacy DtsChkAVCSps parser can read
+	 * past a no-SPS AU. Leading zero bytes remain accepted in this mode.
+	 */
+	uint32_t first = 0;
+	while (first < ulSize && pBuffer[first] == 0)
+		++first;
+	if (annexB)
+	{
+		if (ulSize < 4 || first < 2 || first >= ulSize || pBuffer[first] != 1)
+			return FALSE;
+		for (uint32_t i = 0; i < ulSize - 3; ++i)
+			if (pBuffer[i] == 0 && pBuffer[i + 1] == 0 &&
+				pBuffer[i + 2] == 1 && (pBuffer[i + 3] & 0x1f) == NALU_TYPE_SPS)
+				return TRUE;
+		return FALSE;
+	}
+	uint32_t pos = 0;
+	while (pos < ulSize)
+	{
+		if (lengthSize > ulSize - pos)
+			return FALSE;
+		uint32_t nalSize = 0;
+		for (uint32_t i = 0; i < lengthSize; ++i)
+			nalSize = (nalSize << 8) | pBuffer[pos + i];
+		pos += lengthSize;
+		if (!nalSize || nalSize > ulSize - pos)
+			return FALSE;
+		if ((pBuffer[pos] & 0x1f) == NALU_TYPE_SPS)
+			return TRUE;
+		pos += nalSize;
+	}
+	return FALSE;
+}
+
 BOOL DtsCheckSpsPps(HANDLE hDevice, uint8_t *pBuffer, uint32_t ulSize)
 {
 	DTS_LIB_CONTEXT *Ctx = NULL;
 	DTS_GET_CTX(hDevice,Ctx);
+	if (Ctx->VidParams.MediaSubType == BC_MSUBTYPE_AVC1)
+		return DtsAVC1HasSps(Ctx, pBuffer, ulSize);
 
 	if((Ctx->VidParams.MediaSubType == BC_MSUBTYPE_H264) ||
-	   (Ctx->VidParams.MediaSubType == BC_MSUBTYPE_AVC1) ||
 	   (Ctx->VidParams.MediaSubType == BC_MSUBTYPE_DIVX) ||
 	   (Ctx->VidParams.MediaSubType == BC_MSUBTYPE_DIVX311))
 		return DtsChkAVCSps(hDevice, pBuffer, ulSize);

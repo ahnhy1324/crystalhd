@@ -39,17 +39,28 @@ for bits in $build_bits; do
         "$repo_dir/tests/uapi-library-smoke.cpp" \
         -L"$build_dir/linux_lib/libcrystalhd" -lcrystalhd -pthread \
         -o "$build_dir/library-smoke"
-    # Execute the raw-copy bounds/stride regressions on the target ABI.
-    # No device, firmware, or shared library is used by this section test.
-    # shellcheck disable=SC2086
-    $cxx ${CPPFLAGS:-} ${CXXFLAGS:-} -m"$bits" -msse2 -std=c++11 \
-        -O1 -g -Wall -Werror -ffunction-sections -fdata-sections \
-        -D__LINUX_USER__ -I"$build_dir/include" -I"$build_dir/include/link" \
-        -I"$build_dir/linux_lib/libcrystalhd" \
-        "$repo_dir/tests/library-copy.cpp" \
-        "$build_dir/linux_lib/libcrystalhd/libcrystalhd_int_if.cpp" \
-        -Wl,--gc-sections -o "$build_dir/library-copy"
-    "$build_dir/library-copy"
+    # Execute raw-copy and input-framing regressions on the target ABI.
+    # Neither test opens hardware or loads a shared library.
+    for section in copy input; do
+        section_wrap=
+        case "$section" in
+            copy) set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_int_if.cpp" ;;
+            input)
+                set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_if.cpp" \
+                    "$build_dir/linux_lib/libcrystalhd/libcrystalhd_priv.cpp" \
+                    "$build_dir/linux_lib/libcrystalhd/libcrystalhd_parser.cpp"
+                section_wrap=-Wl,--wrap=ioctl,--wrap=txBufPush,--wrap=usleep ;;
+        esac
+        # Compiler and user flags are intentionally expanded into arguments.
+        # shellcheck disable=SC2086
+        $cxx ${CPPFLAGS:-} ${CXXFLAGS:-} -m"$bits" -msse2 -std=c++11 \
+            -O1 -g -Wall -Werror -ffunction-sections -fdata-sections \
+            -D__LINUX_USER__ -I"$build_dir/include" -I"$build_dir/include/link" \
+            -I"$build_dir/linux_lib/libcrystalhd" \
+            "$repo_dir/tests/library-$section.cpp" "$@" \
+            -Wl,--gc-sections $section_wrap -pthread -o "$build_dir/library-$section"
+        "$build_dir/library-$section"
+    done
     printf '%s-bit library, examples and library probe linked successfully\n' "$bits"
 done
 
