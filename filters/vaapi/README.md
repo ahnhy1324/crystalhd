@@ -47,6 +47,24 @@ firmware calls and cleanup can extend wall time, so hardware tests also use
 an external timeout. Completed plain decode surfaces survive context removal;
 destroyed/reused surfaces and canceled VPP epochs still report errors.
 
+NV12 image buffers support `vaAcquireBufferHandle`/`vaReleaseBufferHandle`
+with a DRM PRIME DMA-BUF (also selected when no memory-type hint is supplied).
+This is an independent, linear snapshot with the image's original pitches and
+offsets, not a zero-copy alias of the decoded surface. Mapping, resizing,
+copying or destroying the image/buffer is rejected while externally borrowed.
+Release waits for external DMA-BUF work and copies external writes back into
+the image only; synchronization failure invalidates that image's contents.
+Allocation requires a compatible linear GBM byte buffer. CPU-only image access
+continues to work when such an export cannot be allocated.
+
+NV12 PRIME2 surface exports default to separate R8/GR88 layers; explicitly
+request `VA_EXPORT_SURFACE_COMPOSED_LAYERS` for one two-plane NV12 layer.
+Read/default exports and derived snapshots wait for the selected picture's
+completion. A concurrent cancellation or identity change reports an error;
+write-only exports remain nonblocking for target allocation. These operations
+cover specific VLC compatibility requirements, not a complete VLC/Chromium
+playback or display-conformance claim.
+
 Chromium may export a VA surface and then reimport the same DMA-BUF under a
 different surface ID for video processing. The driver links those aliases to
 the original decode or display owner so input completion and output readiness
@@ -143,6 +161,23 @@ ffmpeg -hwaccel vaapi -hwaccel_device /dev/dri/renderD128 \
   -hwaccel_output_format vaapi -i video.mp4 \
   -vf hwdownload,format=nv12 -f null -
 ```
+
+To check the exported-pixel consumer path without opening a GUI, use a generated
+H.264 MP4 with a declared frame count:
+
+```sh
+make -C filters/vaapi seek-test
+LIBVA_DRIVER_NAME=crystalhd LIBVA_DRIVERS_PATH="$PWD/filters/vaapi" \
+LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
+timeout --kill-after=5s 210s filters/vaapi/vaapi-seek-test video.mp4 \
+  --export-prime --retain-old-frames
+```
+
+The probe first records synchronized downloads, then compares complete-file
+and sought/retained exported pixels and PTS without a prior `vaSyncSurface`.
+It requires genuine linear DMA-BUFs and never accepts software fallback.
+This checks the backend's export-read contract, not VLC's GUI, EGL compositor,
+audio clock, subtitles or playback-rate handling.
 
 After `sudo make install`, libva discovers the driver from the system DRI
 directory, so only the driver selection and render device are required:

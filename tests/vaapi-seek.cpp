@@ -5,11 +5,13 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/hwcontext.h>
+#include <libavutil/hwcontext_vaapi.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/sha.h>
 }
 
 #include <array>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -18,6 +20,13 @@ extern "C" {
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include <libdrm/drm_fourcc.h>
+#include <linux/dma-buf.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <va/va_drmcommon.h>
 
 static void Check(int result, const char *operation) {
   if (result >= 0)
@@ -48,6 +57,114 @@ struct FreeFrame {
 };
 using OwnedFrame = std::unique_ptr<AVFrame, FreeFrame>;
 
+struct PrimeDescriptor {
+  VADRMPRIMESurfaceDescriptor value = {};
+  PrimeDescriptor() {
+    for (auto &object : value.objects)
+      object.fd = -1;
+  }
+  ~PrimeDescriptor() {
+    for (size_t index = 0; index < value.num_objects &&
+         index < sizeof(value.objects) / sizeof(value.objects[0]); ++index)
+      if (value.objects[index].fd >= 0)
+        close(value.objects[index].fd);
+  }
+};
+
+static bool DmaReadSync(int fd, uint64_t phase) {
+  dma_buf_sync sync = {};
+  sync.flags = phase | DMA_BUF_SYNC_READ;
+  int result;
+  do { result = ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync); }
+  while (result < 0 && (errno == EINTR || errno == EAGAIN));
+  return result == 0;
+}
+
+struct PrimeRead {
+  int fd = -1;
+  size_t size = 0;
+  void *data = MAP_FAILED;
+  bool started = false;
+  ~PrimeRead() {
+    if (started)
+      DmaReadSync(fd, DMA_BUF_SYNC_END);
+    if (data != MAP_FAILED)
+      munmap(data, size);
+  }
+  void Finish() {
+    const bool ended = DmaReadSync(fd, DMA_BUF_SYNC_END);
+    started = false;
+    const bool unmapped = munmap(data, size) == 0;
+    data = MAP_FAILED;
+    if (!ended || !unmapped)
+      throw std::runtime_error("exported DMA-BUF read cleanup failed");
+  }
+};
+
+// Deliberately no vaSyncSurface or hwdownload before export, matching VLC's
+// modern PRIME2 consumer. DMA_BUF_SYNC must operate on a real DMA-BUF; a plain
+// memfd is not accepted as evidence of synchronized exported pixels.
+static std::vector<uint8_t> ReadPrime(const AVFrame *frame) {
+  if (frame->width <= 0 || frame->height <= 0 || !frame->hw_frames_ctx)
+    throw std::runtime_error("invalid exported frame geometry/context");
+  auto *frames = reinterpret_cast<AVHWFramesContext *>(frame->hw_frames_ctx->data);
+  if (!frames->device_ctx || frames->device_ctx->type != AV_HWDEVICE_TYPE_VAAPI)
+    throw std::runtime_error("exported frame has no VA-API device");
+  auto *device = static_cast<AVVAAPIDeviceContext *>(frames->device_ctx->hwctx);
+  if (!device || !device->display)
+    throw std::runtime_error("exported frame has no VA display");
+  PrimeDescriptor exported;
+  auto &desc = exported.value;
+  const VAStatus status = vaExportSurfaceHandle(device->display,
+      static_cast<VASurfaceID>(reinterpret_cast<uintptr_t>(frame->data[3])),
+      VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2, 0, &desc);
+  if (status != VA_STATUS_SUCCESS)
+    throw std::runtime_error(std::string("export PRIME2 frame: ") + vaErrorStr(status));
+  if (desc.fourcc != VA_FOURCC_NV12 || desc.num_layers != 2 ||
+      desc.num_objects == 0 || desc.num_objects > 4 ||
+      desc.width < static_cast<unsigned int>(frame->width) ||
+      desc.height < static_cast<unsigned int>(frame->height))
+    throw std::runtime_error("expected default separate NV12 export layers");
+  const int size = av_image_get_buffer_size(AV_PIX_FMT_NV12,
+                                           frame->width, frame->height, 1);
+  Check(size, "size exported pixels");
+  std::vector<uint8_t> packed(size);
+  size_t destination = 0;
+  for (unsigned int plane = 0; plane < 2; ++plane) {
+    const auto &layer = desc.layers[plane];
+    const uint32_t columns = plane == 0 ? frame->width :
+        (static_cast<uint32_t>(frame->width) + 1U) & ~1U;
+    const uint32_t rows = plane == 0 ? frame->height :
+        (static_cast<uint32_t>(frame->height) + 1U) / 2U;
+    if (layer.num_planes != 1 || layer.object_index[0] >= desc.num_objects ||
+        layer.drm_format != (plane == 0 ? DRM_FORMAT_R8 : DRM_FORMAT_GR88) ||
+        layer.pitch[0] < columns)
+      throw std::runtime_error("invalid exported NV12 plane layout");
+    const auto &object = desc.objects[layer.object_index[0]];
+    const uint64_t end = layer.offset[0] +
+        static_cast<uint64_t>(rows - 1) * layer.pitch[0] + columns;
+    if (object.fd < 0 || object.drm_format_modifier != DRM_FORMAT_MOD_LINEAR ||
+        end > object.size || static_cast<uint64_t>(rows) * columns > packed.size() - destination)
+      throw std::runtime_error("exported NV12 plane exceeds linear backing");
+    PrimeRead map;
+    map.fd = object.fd;
+    map.size = object.size;
+    map.data = mmap(nullptr, map.size, PROT_READ, MAP_SHARED, map.fd, 0);
+    if (map.data == MAP_FAILED || !(map.started = DmaReadSync(map.fd, DMA_BUF_SYNC_START)))
+      throw std::runtime_error("exported DMA-BUF mapping/read ownership failed");
+    for (uint32_t row = 0; row < rows; ++row) {
+      memcpy(packed.data() + destination,
+             static_cast<const uint8_t *>(map.data) + layer.offset[0] +
+                 static_cast<size_t>(row) * layer.pitch[0], columns);
+      destination += columns;
+    }
+    map.Finish();
+  }
+  if (destination != packed.size())
+    throw std::runtime_error("exported NV12 visible pixel size differs");
+  return packed;
+}
+
 struct HeldPicture {
   OwnedFrame frame;
   int64_t pts;
@@ -64,6 +181,7 @@ struct Probe {
   std::string device_path;
   int stream = -1;
   bool software = false;
+  bool export_prime = false;
   bool retain_old_frames = false;
   size_t lookahead = 0;
   size_t deferred_at_limit = 0;
@@ -113,25 +231,33 @@ struct Probe {
     Check(avcodec_open2(decoder, codec, nullptr), "open decoder");
   }
 
-  Picture Fingerprint(const AVFrame *picture_frame) {
+  Picture Fingerprint(const AVFrame *picture_frame, bool allow_export = true) {
     const AVFrame *pixels = picture_frame;
+    const bool exported = export_prime && allow_export;
+    std::vector<uint8_t> packed;
     if (!software) {
       if (picture_frame->format != AV_PIX_FMT_VAAPI)
         throw std::runtime_error("decoder returned a software frame");
-      av_frame_unref(download);
-      Check(av_hwframe_transfer_data(download, picture_frame, 0), "download VA-API frame");
-      if (download->format != AV_PIX_FMT_NV12)
-        throw std::runtime_error("expected NV12 download");
-      pixels = download;
+      if (exported) {
+        packed = ReadPrime(picture_frame);
+      } else {
+        av_frame_unref(download);
+        Check(av_hwframe_transfer_data(download, picture_frame, 0), "download VA-API frame");
+        if (download->format != AV_PIX_FMT_NV12)
+          throw std::runtime_error("expected NV12 download");
+        pixels = download;
+      }
     }
-    const auto format = static_cast<AVPixelFormat>(pixels->format);
-    int size = av_image_get_buffer_size(format, pixels->width, pixels->height, 1);
-    Check(size, "size pixels");
-    std::vector<uint8_t> packed(size);
-    Check(av_image_copy_to_buffer(packed.data(), size, pixels->data,
-                                 pixels->linesize, format, pixels->width,
-                                 pixels->height, 1), "pack pixels");
-    Picture picture{pixels->width, pixels->height, pixels->format, {}};
+    const auto format = exported ? AV_PIX_FMT_NV12 : static_cast<AVPixelFormat>(pixels->format);
+    if (!exported) {
+      int size = av_image_get_buffer_size(format, pixels->width, pixels->height, 1);
+      Check(size, "size pixels");
+      packed.resize(size);
+      Check(av_image_copy_to_buffer(packed.data(), size, pixels->data,
+                                   pixels->linesize, format, pixels->width,
+                                   pixels->height, 1), "pack pixels");
+    }
+    Picture picture{pixels->width, pixels->height, format, {}};
     AVSHA *sha = av_sha_alloc();
     if (!sha)
       throw std::runtime_error("allocate SHA-256");
@@ -145,7 +271,8 @@ struct Probe {
   // Limit output on seek passes to leave reordered frames pending before the
   // next flush. The reference pass must reach EOF and drain completely.
   size_t Decode(bool record, int64_t target, size_t limit,
-                std::vector<HeldPicture> *held = nullptr) {
+                std::vector<HeldPicture> *held = nullptr,
+                bool complete = false) {
     if (held && (record || !held->empty()))
       throw std::runtime_error("retained output requires an empty seek-pass owner");
     size_t count = 0;
@@ -157,7 +284,7 @@ struct Probe {
       OwnedFrame picture_frame = std::move(deferred.front());
       deferred.pop_front();
       const int64_t pts = picture_frame->best_effort_timestamp;
-      Picture picture = Fingerprint(picture_frame.get());
+      Picture picture = Fingerprint(picture_frame.get(), !record);
       if (record) {
         if (!reference.emplace(pts, picture).second)
           throw std::runtime_error("duplicate reference timestamp");
@@ -208,7 +335,7 @@ struct Probe {
         // neither identities nor hashes come from the latest decoder frame.
         if (deferred.size() > lookahead)
           consume_oldest();
-        if (limit && count == limit) {
+        if (limit && count == limit && !complete) {
           // Normally release the suffix without downloading it. The optional
           // lifecycle regression instead transfers ownership to the caller.
           return finish_limited_pass();
@@ -233,7 +360,7 @@ struct Probe {
     // picture before checking the container's declared reference frame count.
     while (!deferred.empty()) {
       consume_oldest();
-      if (limit && count == limit)
+      if (limit && count == limit && !complete)
         return finish_limited_pass();
     }
     if (!record && count != limit)
@@ -275,6 +402,15 @@ struct Probe {
       throw std::runtime_error("reference did not drain the declared frame count");
     std::printf("reference: %zu %s frames drained\n", count,
                 software ? "software" : "VA-API");
+    if (export_prime) {
+      // Never let stale exported pixels become their own reference. The first
+      // pass above uses synchronized downloads; this pass exports fresh frames.
+      const int64_t first = reference.begin()->first;
+      Seek(first);
+      const size_t compared = Decode(false, first, count, nullptr, true);
+      std::printf("PRIME2 without prior vaSyncSurface: %zu complete-file PTS/SHA-256 digests match\n",
+                  compared);
+    }
     const size_t indices[] = {count / 2, count / 4, count * 3 / 4, 0};
     size_t pass = 0;
     for (size_t index : indices) {
@@ -314,8 +450,8 @@ struct Probe {
 };
 
 int main(int argc, char **argv) {
-  if (argc < 2 || argc > 6) {
-    std::fprintf(stderr, "usage: %s VIDEO.mp4 [DRM_DEVICE|--software] [--lookahead 8] [--retain-old-frames]\n", argv[0]);
+  if (argc < 2 || argc > 7) {
+    std::fprintf(stderr, "usage: %s VIDEO.mp4 [DRM_DEVICE|--software] [--lookahead 8] [--retain-old-frames] [--export-prime]\n", argv[0]);
     return 2;
   }
   try {
@@ -323,7 +459,11 @@ int main(int argc, char **argv) {
     const char *device = "/dev/dri/renderD128";
     bool mode_selected = false;
     for (int argument = 2; argument < argc; ++argument) {
-      if (std::strcmp(argv[argument], "--retain-old-frames") == 0) {
+      if (std::strcmp(argv[argument], "--export-prime") == 0) {
+        if (probe.export_prime)
+          throw std::runtime_error("--export-prime must be specified once");
+        probe.export_prime = true;
+      } else if (std::strcmp(argv[argument], "--retain-old-frames") == 0) {
         if (probe.retain_old_frames)
           throw std::runtime_error("--retain-old-frames must be specified once");
         probe.retain_old_frames = true;
@@ -344,6 +484,8 @@ int main(int argc, char **argv) {
         }
       }
     }
+    if (probe.export_prime && probe.software)
+      throw std::runtime_error("--export-prime requires hardware mode");
     if (probe.retain_old_frames)
       probe.lookahead = 8;
     probe.Open(argv[1], device);

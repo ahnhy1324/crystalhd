@@ -35,6 +35,7 @@
 #include <libdrm/drm_fourcc.h>
 #include <libdrm/drm_mode.h>
 #include <linux/dma-buf.h>
+#include <poll.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -301,13 +302,39 @@ struct Config {
   VAEntrypoint entrypoint = VAEntrypointVLD;
 };
 
+// A VAImage is an independent CPU snapshot in this backend. Its optional
+// external backing never aliases a decode surface or a decoder reference.
+struct ImageExportBacking {
+  gbm_bo *bo = nullptr;
+  int fd = -1;
+  void *mapping = MAP_FAILED;
+  size_t size = 0;
+
+  ~ImageExportBacking() {
+    if (mapping != MAP_FAILED)
+      munmap(mapping, size);
+    if (fd >= 0)
+      close(fd);
+    if (bo != nullptr)
+      gbm_bo_destroy(bo);
+  }
+};
+
 struct Buffer {
   VAContextID context = VA_INVALID_ID;
   VABufferType type = VAPictureParameterBufferType;
   unsigned int element_size = 0;
   unsigned int elements = 0;
   std::vector<uint8_t> data;
+  unsigned int map_count = 0;
+  bool export_busy = false;
+  bool data_failed = false;
+  std::shared_ptr<ImageExportBacking> exported;
 };
+
+static bool BufferBorrowed(const Buffer &buffer) {
+  return buffer.export_busy || buffer.exported != nullptr;
+}
 
 static bool SyncDmaBuf(int fd, uint64_t flags) {
   dma_buf_sync sync = {};
@@ -366,6 +393,7 @@ struct Surface {
   bool destroyed = false;
   unsigned int vpp_readers = 0;
   unsigned int vpp_writers = 0;
+  unsigned int export_waiters = 0;
   VASurfaceID backing_owner = VA_INVALID_SURFACE;
   uint64_t expected_timestamp = 0;
   uint64_t frame_timestamp = 0;
@@ -1203,6 +1231,9 @@ struct Driver {
     contexts.clear();
     pending_vpp.clear();
     surfaces.clear();
+    // Image exports may own GBM objects too; destroy them before their device.
+    images.clear();
+    buffers.clear();
     if (gbm != nullptr)
       gbm_device_destroy(gbm);
   }
@@ -1750,7 +1781,8 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
       !HasLiveBackingOwner(driver, surface->second.get()) ||
       surface->second->backing_owner != VA_INVALID_SURFACE)
     return VA_STATUS_ERROR_INVALID_SURFACE;
-  if (surface->second->vpp_writers != 0 || surface->second->vpp_readers != 0)
+  if (surface->second->vpp_writers != 0 || surface->second->vpp_readers != 0 ||
+      surface->second->export_waiters != 0)
     return VA_STATUS_ERROR_HW_BUSY;
   // VA contexts and H.264 picture dimensions are coded sizes, not the visible
   // crop. This backend emits an uncropped SPS and does not support in-context
@@ -2636,6 +2668,10 @@ static VAStatus BufferSetNumElements(VADriverContextP context,
   auto buffer = driver->buffers.find(buffer_id);
   if (buffer == driver->buffers.end())
     return VA_STATUS_ERROR_INVALID_BUFFER;
+  if (BufferBorrowed(buffer->second) || buffer->second.map_count != 0)
+    return VA_STATUS_ERROR_SURFACE_BUSY;
+  if (buffer->second.data_failed)
+    return VA_STATUS_ERROR_INVALID_BUFFER;
   buffer->second.data.resize(static_cast<size_t>(buffer->second.element_size) *
                              elements);
   buffer->second.elements = elements;
@@ -2649,6 +2685,11 @@ static VAStatus MapBuffer(VADriverContextP context, VABufferID buffer_id,
   auto buffer = driver->buffers.find(buffer_id);
   if (buffer == driver->buffers.end() || data == nullptr)
     return VA_STATUS_ERROR_INVALID_BUFFER;
+  if (BufferBorrowed(buffer->second))
+    return VA_STATUS_ERROR_SURFACE_BUSY;
+  if (buffer->second.data_failed || buffer->second.map_count == UINT_MAX)
+    return VA_STATUS_ERROR_INVALID_BUFFER;
+  ++buffer->second.map_count;
   *data = buffer->second.data.data();
   return VA_STATUS_SUCCESS;
 }
@@ -2663,17 +2704,23 @@ static VAStatus MapBuffer2(VADriverContextP context, VABufferID buffer_id,
 static VAStatus UnmapBuffer(VADriverContextP context, VABufferID buffer_id) {
   Driver *driver = GetDriver(context);
   std::lock_guard<std::mutex> lock(driver->mutex);
-  return driver->buffers.find(buffer_id) != driver->buffers.end()
-             ? VA_STATUS_SUCCESS
-             : VA_STATUS_ERROR_INVALID_BUFFER;
+  auto buffer = driver->buffers.find(buffer_id);
+  if (buffer == driver->buffers.end() || buffer->second.map_count == 0)
+    return VA_STATUS_ERROR_INVALID_BUFFER;
+  --buffer->second.map_count;
+  return VA_STATUS_SUCCESS;
 }
 
 static VAStatus DestroyBuffer(VADriverContextP context, VABufferID buffer_id) {
   Driver *driver = GetDriver(context);
   std::lock_guard<std::mutex> lock(driver->mutex);
-  return driver->buffers.erase(buffer_id) != 0
-             ? VA_STATUS_SUCCESS
-             : VA_STATUS_ERROR_INVALID_BUFFER;
+  auto buffer = driver->buffers.find(buffer_id);
+  if (buffer == driver->buffers.end())
+    return VA_STATUS_ERROR_INVALID_BUFFER;
+  if (BufferBorrowed(buffer->second) || buffer->second.map_count != 0)
+    return VA_STATUS_ERROR_SURFACE_BUSY;
+  driver->buffers.erase(buffer);
+  return VA_STATUS_SUCCESS;
 }
 
 static VAStatus BufferInfo(VADriverContextP context, VABufferID buffer_id,
@@ -2706,7 +2753,7 @@ static VAStatus BeginPicture(VADriverContextP context, VAContextID context_id,
     return VA_STATUS_ERROR_INVALID_SURFACE;
   if (decode->second->video_process) {
     Surface *target_owner = BackingOwner(driver, target_surface->second.get());
-    if (target_owner->vpp_writers != 0)
+    if (target_owner->vpp_writers != 0 || target_owner->export_waiters != 0)
       return VA_STATUS_ERROR_HW_BUSY;
     decode->second->target = target;
     // Chromium renders into an imported alias of an exported ARGB surface.
@@ -2727,7 +2774,8 @@ static VAStatus BeginPicture(VADriverContextP context, VAContextID context_id,
   if (target_surface->second->backing_owner != VA_INVALID_SURFACE)
     return VA_STATUS_ERROR_INVALID_SURFACE;
   if (target_surface->second->vpp_writers != 0 ||
-      target_surface->second->vpp_readers != 0)
+      target_surface->second->vpp_readers != 0 ||
+      target_surface->second->export_waiters != 0)
     return VA_STATUS_ERROR_HW_BUSY;
   decode->second->target = target;
   decode->second->have_picture = false;
@@ -2863,7 +2911,8 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
       if (status != VA_STATUS_SUCCESS) {
         auto destination = driver->surfaces.find(decode_context->target);
         if (destination != driver->surfaces.end() &&
-            BackingOwner(driver, destination->second.get())->vpp_writers == 0)
+            BackingOwner(driver, destination->second.get())->vpp_writers == 0 &&
+            BackingOwner(driver, destination->second.get())->export_waiters == 0)
           SetSurfaceState(driver, destination->second.get(), false, true);
       }
       decode_context->target = VA_INVALID_SURFACE;
@@ -2900,7 +2949,7 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
 
     // The output is still owned by its previous operation. Replacing it or
     // signaling its fence with unrelated fallback pixels breaks identity.
-    if (target_owner->vpp_writers != 0)
+    if (target_owner->vpp_writers != 0 || target_owner->export_waiters != 0)
       return finish_vpp(VA_STATUS_ERROR_HW_BUSY);
 
     const uint64_t sequence = driver->next_vpp_sequence++;
@@ -3047,6 +3096,56 @@ static VAStatus SyncSurface(VADriverContextP context, VASurfaceID surface_id) {
   return SyncSurface2(context, surface_id, VA_TIMEOUT_INFINITE);
 }
 
+// VLC's export path does not call vaSyncSurface before using the descriptor.
+// Unlike a GPU decoder, our CPU copy has no implicit fence on a plain decode
+// surface. Complete the selected picture before read/default export rather
+// than hand out an fd containing the preceding picture. Write-only export is
+// deliberately not routed here, so clients can still allocate VPP targets.
+static VAStatus SynchronizeExportRead(
+    VADriverContextP context, VASurfaceID surface_id,
+    std::unique_lock<std::mutex> *lock) {
+  Driver *driver = GetDriver(context);
+  auto found = driver->surfaces.find(surface_id);
+  if (found == driver->surfaces.end() ||
+      !HasLiveBackingOwner(driver, found->second.get()))
+    return VA_STATUS_ERROR_INVALID_SURFACE;
+  const std::shared_ptr<Surface> surface = found->second;
+  const std::shared_ptr<Surface> owner =
+      surface->backing_owner == VA_INVALID_SURFACE
+          ? surface : driver->surfaces.at(surface->backing_owner);
+  if (owner->failed)
+    return VA_STATUS_ERROR_DECODING_ERROR;
+  if (owner->ready && owner->vpp_writers == 0)
+    return VA_STATUS_SUCCESS;
+  if (owner->export_waiters == UINT_MAX)
+    return VA_STATUS_ERROR_SURFACE_BUSY;
+  const uint64_t timestamp = owner->expected_timestamp;
+  const uint64_t sequence = owner->latest_vpp_sequence;
+  // A queued VPP assigns its result timestamp only when the copy finishes.
+  // Its already-assigned operation sequence identifies that pending picture.
+  const bool pending_vpp = owner->vpp_writers != 0;
+  ++owner->export_waiters;
+  lock->unlock();
+  const VAStatus status = SyncSurface2(context, surface_id, kDecodeTimeoutNs);
+  lock->lock();
+  --owner->export_waiters;
+  // Never retain unordered_map iterators across a synchronization wait.
+  found = driver->surfaces.find(surface_id);
+  if (found == driver->surfaces.end() || found->second != surface ||
+      !HasLiveBackingOwner(driver, surface.get()) ||
+      BackingOwner(driver, surface.get()) != owner.get())
+    return VA_STATUS_ERROR_INVALID_SURFACE;
+  if ((!pending_vpp && owner->expected_timestamp != timestamp) ||
+      owner->latest_vpp_sequence != sequence)
+    return VA_STATUS_ERROR_OPERATION_FAILED;
+  if (status != VA_STATUS_SUCCESS)
+    return status;
+  if (owner->failed)
+    return VA_STATUS_ERROR_DECODING_ERROR;
+  return owner->ready && owner->vpp_writers == 0
+             ? VA_STATUS_SUCCESS : VA_STATUS_ERROR_SURFACE_BUSY;
+}
+
 static VAStatus QuerySurfaceStatus(VADriverContextP context,
                                    VASurfaceID surface_id,
                                    VASurfaceStatus *status) {
@@ -3131,13 +3230,18 @@ static VAStatus DestroyImage(VADriverContextP context, VAImageID image_id) {
   auto image = driver->images.find(image_id);
   if (image == driver->images.end())
     return VA_STATUS_ERROR_INVALID_IMAGE;
+  auto buffer = driver->buffers.find(image->second.va.buf);
+  if (buffer != driver->buffers.end() &&
+      (BufferBorrowed(buffer->second) || buffer->second.map_count != 0))
+    return VA_STATUS_ERROR_SURFACE_BUSY;
   driver->buffers.erase(image->second.va.buf);
   driver->images.erase(image);
   return VA_STATUS_SUCCESS;
 }
 
 static bool ImageBufferFits(const Image &image, const Buffer &buffer) {
-  if (image.va.format.fourcc != VA_FOURCC_NV12 || image.va.num_planes != 2 ||
+  if (buffer.data_failed || image.va.format.fourcc != VA_FOURCC_NV12 ||
+      image.va.num_planes != 2 ||
       image.va.width == 0 || image.va.height == 0)
     return false;
   for (unsigned int plane = 0; plane < 2; ++plane) {
@@ -3172,6 +3276,8 @@ static VAStatus CopySurfaceToImage(Driver *driver, Surface *surface,
   auto buffer = driver->buffers.find(image->va.buf);
   if (buffer == driver->buffers.end())
     return VA_STATUS_ERROR_INVALID_BUFFER;
+  if (BufferBorrowed(buffer->second) || buffer->second.map_count != 0)
+    return VA_STATUS_ERROR_SURFACE_BUSY;
   if (!ImageRectangleFits(*surface, *image, width, height))
     return VA_STATUS_ERROR_INVALID_PARAMETER;
   if (!ImageBufferFits(*image, buffer->second))
@@ -3205,7 +3311,10 @@ static VAStatus DeriveImage(VADriverContextP context, VASurfaceID surface_id,
   if (va_image == nullptr)
     return VA_STATUS_ERROR_INVALID_PARAMETER;
   Driver *driver = GetDriver(context);
-  std::lock_guard<std::mutex> lock(driver->mutex);
+  std::unique_lock<std::mutex> lock(driver->mutex);
+  const VAStatus synchronized = SynchronizeExportRead(context, surface_id, &lock);
+  if (synchronized != VA_STATUS_SUCCESS)
+    return synchronized;
   auto surface = driver->surfaces.find(surface_id);
   if (surface == driver->surfaces.end() ||
       !HasLiveBackingOwner(driver, surface->second.get()))
@@ -3272,6 +3381,8 @@ static VAStatus PutImage(VADriverContextP context, VASurfaceID surface_id,
   auto buffer = driver->buffers.find(image->second.va.buf);
   if (buffer == driver->buffers.end())
     return VA_STATUS_ERROR_INVALID_BUFFER;
+  if (BufferBorrowed(buffer->second) || buffer->second.map_count != 0)
+    return VA_STATUS_ERROR_SURFACE_BUSY;
   if (!ImageRectangleFits(*surface->second, image->second,
                           source_width, source_height))
     return VA_STATUS_ERROR_INVALID_PARAMETER;
@@ -3279,6 +3390,7 @@ static VAStatus PutImage(VADriverContextP context, VASurfaceID surface_id,
     return VA_STATUS_ERROR_INVALID_BUFFER;
   Surface *owner = BackingOwner(driver, surface->second.get());
   if (owner->vpp_writers != 0 || owner->vpp_readers != 0 ||
+      owner->export_waiters != 0 ||
       (!owner->ready && !owner->failed))
     return VA_STATUS_ERROR_SURFACE_BUSY;
   for (const auto &entry : driver->contexts) {
@@ -3325,14 +3437,163 @@ static VAStatus PutImage(VADriverContextP context, VASurfaceID surface_id,
   return VA_STATUS_SUCCESS;
 }
 
+static std::shared_ptr<ImageExportBacking> AllocateImageExportBacking(
+    Driver *driver, size_t bytes) {
+  constexpr size_t maximum_image_bytes =
+      static_cast<size_t>(kMaxWidth) * kMaxHeight * 3 / 2;
+  if (driver->gbm == nullptr || bytes == 0 || bytes > maximum_image_bytes)
+    return {};
+  std::shared_ptr<ImageExportBacking> backing(new (std::nothrow) ImageExportBacking);
+  if (!backing)
+    return {};
+  // Treat this allocation as a linear byte store, not as NV12 GBM planes.
+  // In particular, do not change the VAImage pitches already given to the
+  // caller to match GBM's allocation pitch, or write into a GBM map shadow.
+  const uint32_t width = static_cast<uint32_t>(std::min<size_t>(bytes, 4096));
+  const uint32_t height = static_cast<uint32_t>((bytes + width - 1) / width);
+  backing->bo = gbm_bo_create(driver->gbm, width, height, GBM_FORMAT_R8,
+                              GBM_BO_USE_LINEAR);
+  if (backing->bo == nullptr || gbm_bo_get_plane_count(backing->bo) != 1 ||
+      gbm_bo_get_modifier(backing->bo) != DRM_FORMAT_MOD_LINEAR ||
+      gbm_bo_get_offset(backing->bo, 0) != 0)
+    return {};
+  backing->fd = gbm_bo_get_fd(backing->bo);
+  if (backing->fd < 0 || fcntl(backing->fd, F_SETFD, FD_CLOEXEC) != 0)
+    return {};
+  const off_t size = lseek(backing->fd, 0, SEEK_END);
+  if (size < 0 || static_cast<uint64_t>(size) < bytes ||
+      static_cast<uint64_t>(size) > maximum_image_bytes * 4 ||
+      static_cast<uint64_t>(size) > SIZE_MAX)
+    return {};
+  backing->size = static_cast<size_t>(size);
+  backing->mapping = mmap(nullptr, backing->size, PROT_READ | PROT_WRITE,
+                           MAP_SHARED, backing->fd, 0);
+  if (backing->mapping == MAP_FAILED)
+    return {};
+  return backing;
+}
+
+static VAStatus AcquireBufferHandle(VADriverContextP context,
+                                    VABufferID buffer_id, VABufferInfo *info) {
+  if (info == nullptr)
+    return VA_STATUS_ERROR_INVALID_PARAMETER;
+  Driver *driver = GetDriver(context);
+  std::lock_guard<std::mutex> lock(driver->mutex);
+  auto found = driver->buffers.find(buffer_id);
+  if (found == driver->buffers.end())
+    return VA_STATUS_ERROR_INVALID_BUFFER;
+  Buffer &buffer = found->second;
+  if (buffer.type != VAImageBufferType || buffer.context != VA_INVALID_ID)
+    return VA_STATUS_ERROR_UNSUPPORTED_BUFFERTYPE;
+  if (info->mem_type != 0 &&
+      (info->mem_type & VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME) == 0)
+    return VA_STATUS_ERROR_UNSUPPORTED_MEMORY_TYPE;
+  if (BufferBorrowed(buffer) || buffer.map_count != 0)
+    return VA_STATUS_ERROR_SURFACE_BUSY;
+  const auto image = std::find_if(driver->images.begin(), driver->images.end(),
+                                 [&](const auto &entry) {
+                                   return entry.second.va.buf == buffer_id;
+                                 });
+  if (image == driver->images.end() || !ImageBufferFits(image->second, buffer))
+    return VA_STATUS_ERROR_INVALID_BUFFER;
+  const std::shared_ptr<ImageExportBacking> backing =
+      AllocateImageExportBacking(driver, buffer.data.size());
+  if (!backing)
+    return VA_STATUS_ERROR_ALLOCATION_FAILED;
+  if (!SyncDmaBuf(backing->fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE))
+    return VA_STATUS_ERROR_OPERATION_FAILED;
+  // Never export uninitialized GBM padding along with the image bytes.
+  memset(backing->mapping, 0, backing->size);
+  memcpy(backing->mapping, buffer.data.data(), buffer.data.size());
+  if (!SyncDmaBuf(backing->fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE))
+    return VA_STATUS_ERROR_OPERATION_FAILED;
+  buffer.exported = backing;
+  *info = {};
+  info->handle = static_cast<uintptr_t>(backing->fd);
+  info->type = VAImageBufferType;
+  info->mem_type = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME;
+  info->mem_size = backing->size;
+  return VA_STATUS_SUCCESS;
+}
+
+static bool WaitImageExportIdle(int fd) {
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::nanoseconds(kDecodeTimeoutNs);
+  for (;;) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline)
+      return false;
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               deadline - now).count();
+    // POLLOUT on a DMA-BUF waits for both its reader and writer fences.
+    pollfd descriptor = {fd, POLLOUT, 0};
+    const int result = poll(&descriptor, 1, static_cast<int>(remaining + 1));
+    if (result > 0)
+      return (descriptor.revents & POLLOUT) != 0 &&
+             (descriptor.revents & (POLLERR | POLLNVAL | POLLHUP)) == 0;
+    if (result == 0 || errno != EINTR)
+      return false;
+  }
+}
+
+static VAStatus ReleaseBufferHandle(VADriverContextP context,
+                                    VABufferID buffer_id) {
+  Driver *driver = GetDriver(context);
+  std::unique_lock<std::mutex> lock(driver->mutex);
+  auto found = driver->buffers.find(buffer_id);
+  if (found == driver->buffers.end() || !found->second.exported)
+    return VA_STATUS_ERROR_INVALID_BUFFER;
+  if (found->second.export_busy)
+    return VA_STATUS_ERROR_SURFACE_BUSY;
+  const std::shared_ptr<ImageExportBacking> backing = found->second.exported;
+  std::vector<uint8_t> updated(found->second.data.size());
+  found->second.export_busy = true;
+  // External graphics work must not hold up the decode worker's global lock.
+  // Busy guards keep this buffer intact while other maps may be rehashed.
+  lock.unlock();
+  bool success = WaitImageExportIdle(backing->fd);
+  if (success)
+    success = SyncDmaBuf(backing->fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ);
+  if (success) {
+    memcpy(updated.data(), backing->mapping, updated.size());
+    success = SyncDmaBuf(backing->fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ);
+  }
+  lock.lock();
+  found = driver->buffers.find(buffer_id);
+  if (found == driver->buffers.end() || found->second.exported != backing)
+    return VA_STATUS_ERROR_INVALID_BUFFER;
+  Buffer &buffer = found->second;
+  buffer.exported.reset();
+  buffer.export_busy = false;
+  if (!success) {
+    // Do not later report the pre-export CPU bytes as successful output from
+    // an external writer whose completion/cache synchronization failed.
+    buffer.data_failed = true;
+    return VA_STATUS_ERROR_OPERATION_FAILED;
+  }
+  buffer.data.swap(updated);
+  return VA_STATUS_SUCCESS;
+}
+
 static VAStatus ExportSurfaceHandle(VADriverContextP context,
                                     VASurfaceID surface_id, uint32_t memory_type,
                                     uint32_t flags, void *descriptor) {
   if (memory_type != VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 ||
       descriptor == nullptr)
     return VA_STATUS_ERROR_UNSUPPORTED_MEMORY_TYPE;
+  constexpr uint32_t known_flags = VA_EXPORT_SURFACE_READ_WRITE |
+      VA_EXPORT_SURFACE_SEPARATE_LAYERS | VA_EXPORT_SURFACE_COMPOSED_LAYERS;
+  if ((flags & ~known_flags) != 0 ||
+      ((flags & VA_EXPORT_SURFACE_SEPARATE_LAYERS) != 0 &&
+       (flags & VA_EXPORT_SURFACE_COMPOSED_LAYERS) != 0))
+    return VA_STATUS_ERROR_INVALID_PARAMETER;
   Driver *driver = GetDriver(context);
-  std::lock_guard<std::mutex> lock(driver->mutex);
+  std::unique_lock<std::mutex> lock(driver->mutex);
+  if ((flags & VA_EXPORT_SURFACE_READ_WRITE) != VA_EXPORT_SURFACE_WRITE_ONLY) {
+    const VAStatus status = SynchronizeExportRead(context, surface_id, &lock);
+    if (status != VA_STATUS_SUCCESS)
+      return status;
+  }
   auto surface = driver->surfaces.find(surface_id);
   if (surface == driver->surfaces.end() ||
       !HasLiveBackingOwner(driver, surface->second.get()))
@@ -3405,7 +3666,7 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
         gbm_backed ? gbm_bo_get_modifier(surface->second->bo)
                    : DRM_FORMAT_MOD_LINEAR;
   }
-  if ((flags & VA_EXPORT_SURFACE_SEPARATE_LAYERS) != 0) {
+  if ((flags & VA_EXPORT_SURFACE_COMPOSED_LAYERS) == 0) {
     prime->num_layers = 2;
     prime->layers[0].drm_format = DRM_FORMAT_R8;
     prime->layers[1].drm_format = DRM_FORMAT_GR88;
@@ -3571,6 +3832,8 @@ static VAStatus InitializeDriver(VADriverContextP context,
   vtable->vaCreateImage = CreateImage;
   vtable->vaDeriveImage = DeriveImage;
   vtable->vaDestroyImage = DestroyImage;
+  vtable->vaAcquireBufferHandle = AcquireBufferHandle;
+  vtable->vaReleaseBufferHandle = ReleaseBufferHandle;
   vtable->vaSetImagePalette = SetImagePalette;
   vtable->vaGetImage = GetImage;
   vtable->vaPutImage = PutImage;

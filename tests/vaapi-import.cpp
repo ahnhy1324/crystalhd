@@ -8,6 +8,7 @@
 
 #include <fcntl.h>
 #include <libdrm/drm_fourcc.h>
+#include <linux/dma-buf.h>
 #include <linux/memfd.h>
 #include <linux/udmabuf.h>
 #include <sys/ioctl.h>
@@ -55,7 +56,8 @@ bool Check(VAStatus status, const char *operation) {
 }
 
 void CloseDescriptor(VADRMPRIMESurfaceDescriptor *descriptor) {
-  for (uint32_t object = 0; object < descriptor->num_objects; ++object) {
+  const uint32_t capacity = sizeof(descriptor->objects) / sizeof(descriptor->objects[0]);
+  for (uint32_t object = 0; object < descriptor->num_objects && object < capacity; ++object) {
     if (descriptor->objects[object].fd >= 0)
       close(descriptor->objects[object].fd);
   }
@@ -68,6 +70,23 @@ bool ContainsFormat(const uint32_t *formats, uint32_t count, uint32_t format) {
       return true;
   }
   return false;
+}
+
+bool ColdImageHandle(VADisplay display, VASurfaceID surface) {
+  VAImage image = {};
+  if (!Check(vaDeriveImage(display, surface, &image),
+             "vaDeriveImage(VLC cold surface probe)"))
+    return false;
+  VABufferInfo info = {};
+  info.mem_type = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME;
+  const bool acquired = Check(vaAcquireBufferHandle(display, image.buf, &info),
+                             "vaAcquireBufferHandle(VLC cold surface probe)");
+  bool success = acquired;
+  if (acquired)
+    success = Check(vaReleaseBufferHandle(display, image.buf),
+                    "vaReleaseBufferHandle(VLC cold surface probe)");
+  return Check(vaDestroyImage(display, image.image_id),
+               "vaDestroyImage(VLC cold surface probe)") && success;
 }
 
 // Use the public libva entry points and real DRM-backed storage. The fault
@@ -115,6 +134,154 @@ bool ImagePattern(VADisplay display, const VAImage &image, uint8_t seed,
   return Check(vaUnmapBuffer(display, image.buf), "vaUnmapBuffer(image)") && success;
 }
 
+// Exercise VLC's public DeriveImage/AcquireBufferHandle path with an actual
+// DMA-BUF, including external writes. A derived snapshot must never write back
+// into its original decoded surface when the external handle is released.
+bool ImageHandleRoundTrip(VADisplay display, VASurfaceID surface,
+                          const VAImage &image, uint8_t seed) {
+  VABufferInfo info = {};
+  info.mem_type = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME;
+  if (!Check(vaAcquireBufferHandle(display, image.buf, &info),
+             "vaAcquireBufferHandle(NV12 snapshot)"))
+    return false;
+  const int fd = static_cast<int>(info.handle);
+  bool success = info.mem_type == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME &&
+                 info.type == VAImageBufferType &&
+                 info.mem_size >= image.data_size && fd >= 0 &&
+                 (fcntl(fd, F_GETFD) & FD_CLOEXEC) != 0;
+  void *map = MAP_FAILED;
+  bool started = false;
+  if (success) {
+    map = mmap(nullptr, info.mem_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    dma_buf_sync sync = {};
+    sync.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_RW;
+    started = map != MAP_FAILED && ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync) == 0;
+    success = started;
+  }
+  if (success) {
+    auto *bytes = static_cast<uint8_t *>(map);
+    for (unsigned int plane = 0; plane < image.num_planes; ++plane) {
+      const unsigned int rows = plane == 0 ? image.height : (image.height + 1) / 2;
+      const unsigned int columns = plane == 0 ? image.width : (image.width + 1) & ~1U;
+      for (unsigned int row = 0; row < rows; ++row) {
+        for (unsigned int column = 0; column < columns; ++column) {
+          uint8_t &pixel = bytes[image.offsets[plane] +
+              static_cast<size_t>(row) * image.pitches[plane] + column];
+          const uint8_t expected = static_cast<uint8_t>(
+              seed + plane * 71 + row * 13 + column * 37);
+          success = (pixel == expected) && success;
+          pixel = static_cast<uint8_t>(expected + 1);
+        }
+      }
+    }
+    void *forbidden = nullptr;
+    success = vaMapBuffer(display, image.buf, &forbidden) ==
+                  VA_STATUS_ERROR_SURFACE_BUSY && success;
+    success = vaBufferSetNumElements(display, image.buf, 1) ==
+                  VA_STATUS_ERROR_SURFACE_BUSY && success;
+    success = vaGetImage(display, surface, 0, 0, image.width, image.height,
+                        image.image_id) == VA_STATUS_ERROR_SURFACE_BUSY && success;
+    success = vaDestroyBuffer(display, image.buf) ==
+                  VA_STATUS_ERROR_SURFACE_BUSY && success;
+    success = vaDestroyImage(display, image.image_id) ==
+                  VA_STATUS_ERROR_SURFACE_BUSY && success;
+  }
+  if (started) {
+    dma_buf_sync sync = {};
+    sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_RW;
+    success = ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync) == 0 && success;
+  }
+  if (map != MAP_FAILED)
+    success = munmap(map, info.mem_size) == 0 && success;
+  success = Check(vaReleaseBufferHandle(display, image.buf),
+                  "vaReleaseBufferHandle(NV12 snapshot)") && success;
+  errno = 0;
+  success = fcntl(fd, F_GETFD) == -1 && errno == EBADF && success;
+  if (success)
+    success = ImagePattern(display, image, static_cast<uint8_t>(seed + 1), true);
+  VAImage original = {};
+  original.image_id = VA_INVALID_ID;
+  if (success)
+    success = Check(vaDeriveImage(display, surface, &original),
+                    "vaDeriveImage(original after external snapshot write)");
+  if (success)
+    success = ImagePattern(display, original, seed, true);
+  if (original.image_id != VA_INVALID_ID)
+    success = Check(vaDestroyImage(display, original.image_id),
+                    "vaDestroyImage(original snapshot)") && success;
+  if (!success)
+    fprintf(stderr, "DMA-BUF snapshot bytes, exclusivity or lifetime check failed\n");
+  else
+    printf("NV12 DMA-BUF snapshot read/write and lifetime passed (%ux%u)\n",
+           image.width, image.height);
+  return success;
+}
+
+bool SurfaceExportLayers(VADisplay display, VASurfaceID surface,
+                         unsigned int width, unsigned int height, uint8_t seed) {
+  for (uint32_t flags : {0U, static_cast<uint32_t>(VA_EXPORT_SURFACE_COMPOSED_LAYERS)}) {
+    VADRMPRIMESurfaceDescriptor desc = {};
+    if (!Check(vaExportSurfaceHandle(display, surface,
+                                    VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                                    flags, &desc), "vaExportSurfaceHandle(layer layout)"))
+      return false;
+    const bool composed = flags != 0;
+    bool success = desc.fourcc == VA_FOURCC_NV12 && desc.width == width &&
+                   desc.height == height && desc.num_objects > 0 &&
+                   desc.num_objects <= 2 && desc.num_layers == (composed ? 1U : 2U);
+    for (unsigned int plane = 0; success && plane < 2; ++plane) {
+      const unsigned int layer = composed ? 0 : plane;
+      const unsigned int index = composed ? plane : 0;
+      const auto &layout = desc.layers[layer];
+      const unsigned int object = layout.object_index[index];
+      const unsigned int rows = plane == 0 ? height : (height + 1) / 2;
+      const unsigned int columns = plane == 0 ? width : (width + 1) & ~1U;
+      const uint32_t format = composed ? DRM_FORMAT_NV12 :
+          (plane == 0 ? DRM_FORMAT_R8 : DRM_FORMAT_GR88);
+      success = layout.drm_format == format &&
+                layout.num_planes == (composed ? 2U : 1U) &&
+                object < desc.num_objects && layout.pitch[index] >= columns;
+      if (!success)
+        break;
+      const auto &backing = desc.objects[object];
+      const size_t end = static_cast<size_t>(layout.offset[index]) +
+          static_cast<size_t>(rows - 1) * layout.pitch[index] + columns;
+      success = backing.fd >= 0 && end <= backing.size &&
+                backing.drm_format_modifier == DRM_FORMAT_MOD_LINEAR;
+      if (!success)
+        break;
+      void *map = mmap(nullptr, backing.size, PROT_READ, MAP_SHARED, backing.fd, 0);
+      dma_buf_sync sync = {};
+      sync.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ;
+      const bool started = map != MAP_FAILED &&
+          ioctl(backing.fd, DMA_BUF_IOCTL_SYNC, &sync) == 0;
+      success = started;
+      if (started) {
+        const auto *bytes = static_cast<const uint8_t *>(map);
+        for (unsigned int row = 0; row < rows; ++row) {
+          for (unsigned int column = 0; column < columns; ++column) {
+            const uint8_t expected = static_cast<uint8_t>(
+                seed + plane * 71 + row * 13 + column * 37);
+            success = bytes[layout.offset[index] +
+                static_cast<size_t>(row) * layout.pitch[index] + column] == expected && success;
+          }
+        }
+        sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
+        success = ioctl(backing.fd, DMA_BUF_IOCTL_SYNC, &sync) == 0 && success;
+      }
+      if (map != MAP_FAILED)
+        success = munmap(map, backing.size) == 0 && success;
+    }
+    CloseDescriptor(&desc);
+    if (!success) {
+      fprintf(stderr, "NV12 default/composed export layout or pixels failed\n");
+      return false;
+    }
+  }
+  puts("NV12 default separate/composed PRIME2 plane pixels passed");
+  return true;
+}
+
 bool ImageRoundTrip(VADisplay display, VASurfaceID writer, VASurfaceID reader,
                     unsigned int width, unsigned int height, uint8_t seed) {
   VAImageFormat format = {};
@@ -145,6 +312,8 @@ bool ImageRoundTrip(VADisplay display, VASurfaceID writer, VASurfaceID reader,
                      "vaDeriveImage(NV12 snapshot)");
   if (success)
     success = ImagePattern(display, derived, seed, true);
+  if (success)
+    success = ImageHandleRoundTrip(display, reader, derived, seed);
   for (VAImage *image : {&derived, &output, &input}) {
     if (image->image_id != VA_INVALID_ID)
       success = Check(vaDestroyImage(display, image->image_id),
@@ -229,6 +398,8 @@ int main(int argc, char **argv) {
       vaCreateSurfaces(display, VA_RT_FORMAT_YUV420, width, height,
                        &nv12_surface, 1, nullptr, 0),
       "vaCreateSurfaces(internal NV12)");
+  if (vpp_success)
+    vpp_success = ColdImageHandle(display, nv12_surface);
   if (vpp_success) {
     nv12_export_success = Check(
         vaExportSurfaceHandle(display, nv12_surface,
@@ -282,6 +453,20 @@ int main(int argc, char **argv) {
   if (vpp_success)
     vpp_success = ImageRoundTrip(display, nv12_alias, nv12_surface,
                                  width, height, 29);
+  if (vpp_success)
+    vpp_success = SurfaceExportLayers(display, nv12_surface, width, height, 29);
+  // Tight VAImage pitches differ from DRM allocation strides, especially
+  // for odd sizes. The exported byte store must preserve those public offsets.
+  VASurfaceID odd_surface = VA_INVALID_SURFACE;
+  if (vpp_success)
+    vpp_success = Check(vaCreateSurfaces(display, VA_RT_FORMAT_YUV420, 17, 17,
+                                       &odd_surface, 1, nullptr, 0),
+                        "vaCreateSurfaces(odd snapshot)");
+  if (vpp_success)
+    vpp_success = ImageRoundTrip(display, odd_surface, odd_surface, 17, 17, 43);
+  if (odd_surface != VA_INVALID_SURFACE)
+    vpp_success = Check(vaDestroySurfaces(display, &odd_surface, 1),
+                        "vaDestroySurfaces(odd snapshot)") && vpp_success;
 
   VASurfaceID argb_surface = VA_INVALID_SURFACE;
   if (vpp_success) {
