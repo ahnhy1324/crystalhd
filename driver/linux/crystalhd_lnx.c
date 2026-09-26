@@ -25,6 +25,12 @@ static struct class *crystalhd_class;
 
 static struct crystalhd_adp *g_adp_info;
 
+static bool force_l0s_off;
+module_param(force_l0s_off, bool, 0444);
+MODULE_PARM_DESC(force_l0s_off,
+	"Opt in to disabling L0s on a dedicated BCM70015 PCIe link; "
+	"PCI-core policy may persist after unload, raw fallback is restored");
+
 /* Keep adapter lookup and use atomic with respect to PCI removal. */
 static DECLARE_RWSEM(chd_device_lock);
 static u64 chd_device_generation;
@@ -80,7 +86,8 @@ static int chd_dec_enable_int(struct crystalhd_adp *adp)
 			pci_disable_msi(adp->pdev);
 			adp->msi = 0;
 		}
-	}
+	} else
+		adp->irq_registered = true;
 
 	return rc;
 }
@@ -92,7 +99,10 @@ static int chd_dec_disable_int(struct crystalhd_adp *adp)
 		return -EINVAL;
 	}
 
-	free_irq(adp->pdev->irq, adp);
+	if (adp->irq_registered) {
+		free_irq(adp->pdev->irq, adp);
+		adp->irq_registered = false;
+	}
 
 	if (adp->msi) {
 		pci_disable_msi(adp->pdev);
@@ -602,7 +612,8 @@ static long chd_dec_ioctl_common(struct file *fd, unsigned int cmd,
 	    _IOC_NR(cmd) >= DRV_CMD_END)
 		return -ENOTTY;
 
-	if (!adp || !binding || binding->generation != chd_device_generation)
+	if (!adp || !READ_ONCE(adp->present) || !binding ||
+	    binding->generation != chd_device_generation)
 		return -ENODEV;
 	dev = &adp->pdev->dev;
 	dev_dbg(dev, "Entering %s\n", __func__);
@@ -702,7 +713,7 @@ static int chd_dec_open_locked(struct inode *in, struct file *fd)
 	struct crystalhd_user *uc = NULL;
 	struct crystalhd_file *binding;
 
-	if (!adp)
+	if (!adp || !READ_ONCE(adp->present))
 		return -ENODEV;
 	binding = kzalloc(sizeof(*binding), GFP_KERNEL);
 	if (!binding)
@@ -765,6 +776,19 @@ static int chd_dec_close_locked(struct inode *in, struct file *fd)
 
 	uc = binding->user;
 	if (!uc) {
+		goto unlock;
+	}
+	/* Failed PM leaves DMA disabled and may have no registered IRQ. Keep
+	 * the hardware context and registrations for remove's quiesced cleanup;
+	 * a file close must not restart or touch that hardware.
+	 */
+	if (!READ_ONCE(adp->present)) {
+		if (uc->in_use) {
+			uc->mode = DTS_MODE_INV;
+			uc->in_use = 0;
+			if (adp->cfg_users > 0)
+				adp->cfg_users--;
+		}
 		goto unlock;
 	}
 
@@ -996,6 +1020,46 @@ static void chd_pci_release_mem(struct crystalhd_adp *pinfo)
 	pci_release_regions(pinfo->pdev);
 }
 
+static int chd_restore_l0s(struct crystalhd_adp *adp)
+{
+	int rc = crystalhd_l0s_restore(adp->pdev, &adp->l0s);
+
+	if (rc)
+		dev_err(&adp->pdev->dev,
+			"L0s restoration failed (%d); link configuration needs inspection\n",
+			rc);
+	return rc;
+}
+
+static void chd_release_l0s(struct crystalhd_adp *adp)
+{
+	int rc = crystalhd_l0s_release(adp->pdev, &adp->l0s);
+
+	if (rc)
+		dev_err(&adp->pdev->dev,
+			"L0s restoration failed on release (%d); original state not guaranteed\n",
+			rc);
+}
+
+static void chd_dec_fail_closed(struct crystalhd_adp *adp, int error)
+{
+	/* Publish cancellation before waiting for an input ioctl holding the
+	 * file-operation read lock. No new open/ioctl can enter after this.
+	 */
+	WRITE_ONCE(adp->present, 0);
+	WRITE_ONCE(adp->cmds.cin_wait_exit, 1);
+	down_write(&chd_device_lock);
+	pci_clear_master(adp->pdev);
+	if (!pci_wait_for_pending_transaction(adp->pdev))
+		dev_warn(&adp->pdev->dev,
+			 "PCI transactions pending after failed power transition\n");
+	chd_dec_disable_int(adp);
+	up_write(&chd_device_lock);
+	dev_err(&adp->pdev->dev,
+		"power transition failed (%d); device unavailable until driver reload\n",
+		error);
+}
+
 
 static void chd_dec_pci_remove(struct pci_dev *pdev)
 {
@@ -1024,6 +1088,10 @@ static void chd_dec_pci_remove(struct pci_dev *pdev)
 
 	chd_dec_release_chdev(pinfo);
 
+	/* IRQs and DMA are quiesced; the parent is still referenced and both
+	 * devices remain accessible before PCI disable/remove.
+	 */
+	chd_release_l0s(pinfo);
 	chd_pci_release_mem(pinfo);
 	pci_disable_device(pinfo->pdev);
 
@@ -1115,6 +1183,24 @@ static int chd_dec_pci_probe(struct pci_dev *pdev,
 		goto cleanup_int;
 	}
 
+	/* Last fallible setup, while file operations are still excluded. The
+	 * temporary context was freed without allocating or posting DMA, but
+	 * its hardware-open path enabled mastering. Disable it for the opt-in
+	 * link change before exposing any playback session.
+	 */
+	if (force_l0s_off)
+		pci_clear_master(pdev);
+	rc = crystalhd_l0s_init(pdev, &pinfo->l0s, force_l0s_off);
+	if (rc) {
+		dev_err(dev, "requested L0s workaround failed: %d%s\n", rc,
+			pinfo->l0s.core_owned ? "; PCI-core disable policy remains" : "");
+		goto cleanup_l0s;
+	}
+	if (pinfo->l0s.core_owned)
+		dev_info(dev, "L0s disabled by PCI core; policy may persist after driver removal\n");
+	else if (pinfo->l0s.raw_active)
+		dev_warn(dev, "opt-in L0s override bypasses unavailable PCI-core ASPM control; original bits saved for restoration\n");
+
 	pci_set_master(pdev);
 
 	pci_set_drvdata(pdev, pinfo);
@@ -1124,6 +1210,9 @@ static int chd_dec_pci_probe(struct pci_dev *pdev,
 out:
 	up_write(&chd_device_lock);
 	return rc;
+cleanup_l0s:
+	pci_clear_master(pdev);
+	chd_release_l0s(pinfo);
 cleanup_int:
 	chd_dec_disable_int(pinfo);
 cleanup_chdev:
@@ -1144,9 +1233,10 @@ int chd_dec_pci_suspend(struct pci_dev *pdev, pm_message_t state)
 	struct device *dev = &pdev->dev;
 	crystalhd_ioctl_data *temp;
 	BC_STATUS sts = BC_STS_SUCCESS;
+	int rc;
 
 	adp = (struct crystalhd_adp *)pci_get_drvdata(pdev);
-	if (!adp) {
+	if (!adp || !READ_ONCE(adp->present)) {
 		dev_err(dev, "%s: could not get adp\n", __func__);
 		return -ENODEV;
 	}
@@ -1165,6 +1255,15 @@ int chd_dec_pci_suspend(struct pci_dev *pdev, pm_message_t state)
 	}
 
 	chd_dec_free_iodata(adp, temp, false);
+	/* Do not save an opt-in raw override as the platform's original state.
+	 * The decoder has stopped before restoring the dedicated link.
+	 */
+	rc = chd_restore_l0s(adp);
+	if (rc) {
+		dev_err(dev, "suspend aborted with decoder quiesced after L0s restore failure\n");
+		chd_dec_fail_closed(adp, rc);
+		return rc;
+	}
 	chd_dec_disable_int(adp);
 	pci_save_state(pdev);
 
@@ -1182,38 +1281,58 @@ int chd_dec_pci_resume(struct pci_dev *pdev)
 	int rc;
 
 	adp = (struct crystalhd_adp *)pci_get_drvdata(pdev);
-	if (!adp) {
+	if (!adp || !READ_ONCE(adp->present)) {
 		dev_err(dev, "%s: could not get adp\n", __func__);
 		return -ENODEV;
 	}
 
 	pci_set_power_state(pdev, PCI_D0);
 	pci_restore_state(pdev);
+	/* The saved PCI command may itself contain MASTER. Keep DMA disabled
+	 * until the link workaround and IRQ registration have both succeeded.
+	 */
+	pci_clear_master(pdev);
 
 	/* device's irq possibly is changed, driver should take care */
-	if (pci_enable_device(pdev)) {
+	rc = pci_enable_device(pdev);
+	if (rc) {
 		dev_err(dev, "Failed to enable PCI device\n");
-		return 1;
+		chd_restore_l0s(adp);
+		chd_dec_fail_closed(adp, rc);
+		return rc;
 	}
 
-	if (!adp->cmds.hw_ctx || !READ_ONCE(adp->cmds.hw_ctx->dma_fault))
-		pci_set_master(pdev);
+	/* Parent resume and PCI config restoration precede this callback.
+	 * Reapply before any decoder DMA or interrupts can resume.
+	 */
+	rc = crystalhd_l0s_apply(pdev, &adp->l0s);
+	if (rc) {
+		dev_err(dev, "L0s workaround could not be reapplied: %d\n", rc);
+		goto disable_device;
+	}
 
 	rc = chd_dec_enable_int(adp);
 	if (rc) {
 		dev_err(dev, "_enable_int err:%d\n", rc);
-		pci_disable_device(pdev);
-		return -ENODEV;
+		goto disable_device;
 	}
+	if (!adp->cmds.hw_ctx || !READ_ONCE(adp->cmds.hw_ctx->dma_fault))
+		pci_set_master(pdev);
 
 	sts = crystalhd_resume(&adp->cmds);
 	if (sts != BC_STS_SUCCESS) {
 		dev_err(dev, "Crystal HD Resume %d\n", sts);
-		pci_disable_device(pdev);
-		return -ENODEV;
+		rc = -ENODEV;
+		goto disable_device;
 	}
 
 	return 0;
+
+disable_device:
+	chd_dec_fail_closed(adp, rc);
+	chd_restore_l0s(adp);
+	pci_disable_device(pdev);
+	return rc;
 }
 
 static struct pci_device_id chd_dec_pci_id_table[] = {

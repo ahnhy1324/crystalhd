@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 set -eu
 if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
-    echo "usage: $0 OUTPUT.mp4 [--av-360p|--av-720p]" >&2
+    echo "usage: $0 OUTPUT.mp4 [--av-360p|--av-720p|--av-1080p]" >&2
     exit 2
 fi
 sample_size=640x360
@@ -11,6 +11,7 @@ case "${2:-}" in
     '') ;;
     --av-360p) sample_audio=true ;;
     --av-720p) sample_size=1280x720; sample_audio=true ;;
+    --av-1080p) sample_size=1920x1080; sample_audio=true ;;
     *) echo "unsupported fixture option: $2" >&2; exit 2 ;;
 esac
 output_file=$1

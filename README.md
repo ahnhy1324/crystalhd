@@ -310,6 +310,47 @@ when the device is recreated. Removing that local file restores the default
 access policy on the next rule reload and device creation. This override
 does not grant the capability required by raw diagnostic ioctls.
 
+### Optional BCM70015 Full HD workaround
+
+On one BCM70015/ICH8 system, PCIe L0s power saving limited Full HD output:
+disabling **L0s only** improved the same 900-frame H.264 High VA-API decode
+from 27.26 to 41.55 fps, with no dropped/duplicate frames and identical
+180-frame output hashes. Disabling L1 alone did not help. This is measured
+decode/download throughput, not a display or lip-sync certification; see
+[the hardware report](HARDWARE-2026-09-13.md#pcie-l0s-isolation-2026-09-27).
+The opt-in driver reproduces 41.20 fps and passes a 120-second 1080p30
+H.264/AAC clocked-sink run with all 3,600 frames and EOS. This does not
+certify physical speaker/display sync or Full HD 2x playback.
+
+The driver keeps its existing default. For an affected system, the explicit
+`force_l0s_off=1` module option disables L0s on the card's dedicated PCIe
+link; it leaves L1, link speed/width, payload sizes and other devices alone.
+Close all CrystalHD players before unloading a module. To test a local build
+without installing it:
+
+```sh
+make driver
+sudo modprobe -r crystalhd
+sudo insmod ./driver/linux/crystalhd.ko force_l0s_off=1
+```
+
+This can increase power consumption and is not a blanket recommendation for
+untested hardware. It is restricted to BCM70015 on a dedicated root-port
+link. It first asks the kernel's PCI subsystem to disable L0s. If kernel ASPM
+control is unavailable (an ownership denial or ASPM support built out), the
+explicit option permits a checked, bit-preserving override on that link.
+No firmware or application rebuild is required.
+
+Restoration differs by ownership: the BIOS-owned fallback saves the original
+L0s bits and checks their restoration on driver removal; PCI-core-managed
+policy remains disabled until separately reset or rebooted, even after
+unloading the module.
+Reloading without the option is therefore not a universal policy reset.
+Do not use global `pcie_aspm=force` or change link speed/MPS to reproduce this
+workaround. Failed restoration is reported in the kernel log; a failed power
+transition leaves the adapter unavailable until driver reload. Suspend/resume
+behavior still requires separate hardware testing.
+
 To stage a package instead of changing the host:
 
 ```sh
