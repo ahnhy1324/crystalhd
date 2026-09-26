@@ -40,7 +40,12 @@ jobs:
         run: make userspace32-check
 
       - name: Build and test
-        run: make -j2 W=1 check KDIR="$KDIR" KVER="$KVER"
+        env:
+          # Hosted Node must also find Ubuntu's apt-installed node-ws.
+          NODE_PATH: /usr/share/nodejs
+        run: |
+          node -e 'require("ws")'
+          make -j2 W=1 check KDIR="$KDIR" KVER="$KVER"
 
       - name: Verify seek regression test against software decoding
         run: |
