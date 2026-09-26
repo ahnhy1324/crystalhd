@@ -150,7 +150,13 @@ static void observe_video(Audit *audit, guint identity, GstClockTime pts,
     return;
   }
   if (clock + 5 * GST_MSECOND < running || clock > running + MAX_CLOCK_LATE) {
-    fail(audit, "Video did not reach the clocked sink within the scheduling bound");
+    gchar reason[256];
+    g_snprintf(reason, sizeof(reason), "Video did not reach the clocked sink within the scheduling bound: "
+        "frame=%u PTS=%.6fs running=%.6fs clock=%.6fs lateness=%.3fms",
+        audit->next_identity, (gdouble)pts / GST_SECOND,
+        (gdouble)running / GST_SECOND, (gdouble)clock / GST_SECOND,
+        ((gdouble)clock - (gdouble)running) / GST_MSECOND);
+    fail(audit, reason);
     return;
   }
   if (GST_CLOCK_TIME_IS_VALID(audit->last_clock) && clock < audit->last_clock) {
@@ -595,7 +601,10 @@ static int run(const gchar *filename, const gchar *decoder, const gchar *audio_d
     }
   }
   /* Stop streaming before reading final evidence or releasing callback data. */
-  gst_element_set_state(audit.pipeline, GST_STATE_NULL);
+  if (gst_element_set_state(audit.pipeline, GST_STATE_NULL) == GST_STATE_CHANGE_FAILURE) {
+    g_printerr("Decoder teardown failed\n");
+    success = FALSE;
+  }
   gst_clear_buffer(&paused_buffer);
   g_mutex_lock(&audit.mutex);
   success = success && eos && (sustain_seconds != 0 ? sustain_complete(&audit) : final_complete(&audit));

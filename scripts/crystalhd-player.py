@@ -338,7 +338,9 @@ class Player:
             if self.GLib.MainContext.default().find_source_by_id(source):
                 self.GLib.source_remove(source)
         self.bus.remove_signal_watch()
-        self.pipeline.set_state(self.Gst.State.NULL)
+        if self.pipeline.set_state(self.Gst.State.NULL) == self.Gst.StateChangeReturn.FAILURE:
+            print("crystalhd-play: decoder teardown failed", file=sys.stderr)
+            self.exit_code = max(self.exit_code, 1)
 
     def run(self):
         try:

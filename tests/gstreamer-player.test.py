@@ -173,6 +173,30 @@ class PolicyAndControlTests(unittest.TestCase):
         control.stop.assert_called_with(1)
 
 
+class CleanupTests(unittest.TestCase):
+    def test_teardown_failure_is_nonzero_and_cleanup_remains_idempotent(self):
+        for failed, previous_code in ((False, 0), (True, 0), (True, 143)):
+            with self.subTest(failed=failed, previous_code=previous_code):
+                control = player.Player.__new__(player.Player)
+                control.closed = False
+                control.terminal_state = None
+                control.sources = []
+                control.exit_code = previous_code
+                control.Gst = SimpleNamespace(State=SimpleNamespace(NULL=0),
+                    StateChangeReturn=SimpleNamespace(FAILURE=-1))
+                control.bus = mock.Mock()
+                control.pipeline = mock.Mock()
+                control.pipeline.set_state.return_value = -1 if failed else 1
+                output = io.StringIO()
+                with contextlib.redirect_stderr(output):
+                    control.close()
+                    control.close()
+                self.assertEqual(control.exit_code, max(previous_code, int(failed)))
+                control.pipeline.set_state.assert_called_once_with(0)
+                control.bus.remove_signal_watch.assert_called_once_with()
+                self.assertEqual("teardown failed" in output.getvalue(), failed)
+
+
 class ArgumentTests(unittest.TestCase):
     def test_local_paths_and_subtitles_are_safely_encoded(self):
         with tempfile.TemporaryDirectory() as directory:
