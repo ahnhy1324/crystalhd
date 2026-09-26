@@ -1627,16 +1627,24 @@ BC_STATUS DtsInitInterface(int hDevice, HANDLE *RetCtx, uint32_t mode)
 // Name: DtsReleaseInterface
 // Description: Do application specific Release and other initialization.
 //------------------------------------------------------------------------
+void DtsJoinTxThread(DTS_LIB_CONTEXT *Ctx)
+{
+	DtsLock(Ctx);
+	Ctx->txThreadExit = true;
+	DtsUnLock(Ctx);
+	if (Ctx->htxThread)
+		pthread_join(Ctx->htxThread, NULL);
+	Ctx->htxThread = 0;
+}
+
 BC_STATUS DtsReleaseInterface(DTS_LIB_CONTEXT *Ctx)
 {
 
 	if(!Ctx)
 		return BC_STS_INV_ARG;
 
-	// Exit TX thread
-	Ctx->txThreadExit = true;
-	// wait to make sure the thread exited
-	pthread_join(Ctx->htxThread, NULL);
+	DtsJoinTxThread(Ctx);
+	DtsReleasePESConverter((HANDLE)Ctx);
 	// de-Allocate circular buffer
 	txBufFree(&Ctx->circBuf);
 	Ctx->htxThread = 0;
@@ -2530,8 +2538,13 @@ void * txThreadProc(void *ctx)
 	if(ret)
 		return FALSE;
 
-	while(!Ctx->txThreadExit)
+	for (;;)
 	{
+		DtsLock(Ctx);
+		const bool exiting = Ctx->txThreadExit;
+		DtsUnLock(Ctx);
+		if (exiting)
+			break;
 		// First check the status of the HW
 		// Get the real HW free size and also mark as we want TX information only
 		pStat.cpbEmptySize = (0x3U << 30);
@@ -2643,11 +2656,29 @@ void * txThreadProc(void *ctx)
 				continue;
 			}
 
+			/* Own the complete pop-to-DMA interval before dropping thLock.
+			 * Flush closes admission with this same mutex and then waits
+			 * without it, so pooled ioctl/output completion remains live.
+			 */
+			DtsLock(Ctx);
+			const bool admitted = !Ctx->txQuiescing &&
+				(Ctx->State == BC_DEC_STATE_START || Ctx->State == BC_DEC_STATE_PAUSE);
+			if (admitted)
+				Ctx->txPending = true;
+			DtsUnLock(Ctx);
+			if (!admitted) {
+				usleep(5 * 1000);
+				continue;
+			}
+
 			if(Ctx->circBuf.busySize < pStat.cpbEmptySize)
 				szDataToSend = Ctx->circBuf.busySize;
 			else
 				szDataToSend = pStat.cpbEmptySize;
 			if(BC_STS_SUCCESS != txBufPop(&Ctx->circBuf, localBuffer, szDataToSend)) {
+				DtsLock(Ctx);
+				Ctx->txPending = false;
+				DtsUnLock(Ctx);
 				usleep(5 * 1000);
 				continue;
 			}
@@ -2661,6 +2692,9 @@ void * txThreadProc(void *ctx)
 				// signal error to the next procinput
 				DebugLog_Trace(LDIL_ERR,"txThreadProc: Got status %d from TxDmaText\n", sts);
 			}
+			DtsLock(Ctx);
+			Ctx->txPending = false;
+			DtsUnLock(Ctx);
 		} else
 			usleep(5 * 1000);
 	}

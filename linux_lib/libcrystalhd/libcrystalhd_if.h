@@ -164,6 +164,9 @@ Description:
     Close the handle to the decoder device.
 
     Must be called once when the application closes the decoder after use.
+    For a valid handle owned by this process, waits for the TX worker before
+    consuming the handle, even if a teardown error is returned. Do not retry
+    that consumed handle. An unresponsive driver can delay this call.
 
 Parameters:
 
@@ -591,6 +594,8 @@ Description:
     This function will clean up any pending operations and stop the decoder.
     Internal state is still maintained and the decoder can be restarted.
     Any pending pictures will be dropped.
+    Failed TX quiescence leaves input/start/resume blocked. Retry Stop or a
+    destructive Flush, or use DeviceClose to join TX and consume the handle.
 
 Parameters:
 
@@ -1020,7 +1025,8 @@ Parameters:
                         input will be decoded.
                     2   Flushes all the decoder buffers, input, decoded and
                         to be decoded.
-                    3   Cancels the pending TX Request from the DIL/driver
+                    3   Waits for owned TX and discards queued input without
+                        flushing firmware. Returns an error if TX does not retire.
 					4	Flushes all the decoder buffers, input, decoded and
 						to be decoded data. Also flushes the drivers buffers
 
