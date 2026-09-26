@@ -6,11 +6,12 @@ const {spawn, spawnSync} = require('node:child_process');
 const http = require('node:http');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 const {WebSocketServer} = require('ws');
 const {PlaybackHealth, hardwareContinuity, safeDiagnostic,
-       readPlayerDiagnostics, DEFAULT_SECONDS} = require('./chromium-youtube');
+       readPlayerDiagnostics, observeSeekFrame, DEFAULT_SECONDS} = require('./chromium-youtube');
 
-async function runProbe(mode, seconds) {
+async function runProbe(mode, seconds, extraArguments = []) {
   const url = 'https://example.invalid/crystalhd-probe-test';
   const server = http.createServer((request, response) => {
     response.setHeader('Content-Type', 'application/json');
@@ -22,6 +23,39 @@ async function runProbe(mode, seconds) {
   const sockets = new WebSocketServer({server});
   sockets.on('connection', (socket) => {
     let sample = 0;
+    let mediaTime = 0;
+    let pendingSeek = false;
+    let frameCallbacks = [];
+    const seekedListeners = [];
+    const video = {
+      readyState: 4, duration: 600, paused: false, ended: false, seeking: false,
+      videoWidth: 640, videoHeight: 360, error: null,
+      get currentTime() { return mediaTime; },
+      set currentTime(value) {
+        if (mode !== 'ignored-seek') {
+          mediaTime = value;
+          pendingSeek = true;
+          this.seeking = true;
+        }
+      },
+      play: () => Promise.resolve(),
+      getVideoPlaybackQuality: () => ({totalVideoFrames: sample * 30, droppedVideoFrames: 0}),
+      requestVideoFrameCallback: (callback) => frameCallbacks.push(callback),
+      addEventListener: (name, callback) => {
+        assert.equal(name, 'seeked');
+        seekedListeners.push(callback);
+      },
+    };
+    const page = vm.createContext({
+      document: {
+        querySelector: () => video,
+        querySelectorAll: () => [],
+        getElementById: () => ({getStatsForNerds: () => ({
+          codecs: 'avc1.64001e', resolution: '640x360@30',
+        })}),
+      },
+      performance: {now: () => sample * 1000},
+    });
     socket.on('message', (data) => {
       const command = JSON.parse(data);
       let result = {};
@@ -37,6 +71,26 @@ async function runProbe(mode, seconds) {
         }));
       }
       if (command.method === 'Runtime.evaluate') {
+        if (mode === 'ignored-seek' || mode === 'working-seek') {
+          // Execute the real serialized page code, not a fabricated settled
+          // result. A failed seek setter lets ordinary playback continue.
+          if (!command.params.expression.includes('audit.seek = {')) {
+            ++sample;
+            if (pendingSeek) {
+              pendingSeek = false;
+              video.seeking = false;
+              for (const callback of seekedListeners.splice(0))
+                callback();
+            } else {
+              ++mediaTime;
+            }
+            const callbacks = frameCallbacks;
+            frameCallbacks = [];
+            for (const callback of callbacks)
+              callback(sample * 1000, {mediaTime});
+          }
+          result = {result: {value: vm.runInContext(command.params.expression, page)}};
+        } else {
         ++sample;
         result = {result: {value: mode === 'absent' ? null : {
           videoPresent: true, videoId: 1, appError: false, mediaError: null,
@@ -47,6 +101,7 @@ async function runProbe(mode, seconds) {
           presentedFrames: sample * 30, presentedMediaTime: sample,
           presentedRegressions: [], seekSettled: false, seekViolations: [],
         }}};
+        }
       }
       socket.send(JSON.stringify({id: command.id, result}));
     });
@@ -55,7 +110,7 @@ async function runProbe(mode, seconds) {
   try {
     const child = spawn(process.execPath, [
       path.join(__dirname, 'chromium-youtube.js'),
-      '--port', String(server.address().port), '--seconds', String(seconds), url,
+      '--port', String(server.address().port), '--seconds', String(seconds), ...extraArguments, url,
     ], {stdio: ['ignore', 'pipe', 'pipe']});
     let stdout = '';
     let stderr = '';
@@ -78,6 +133,56 @@ test('software playback must advance and present frames', {timeout: 15000}, asyn
   const result = await runProbe('playing', 7);
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stdout, /FFmpegVideoDecoder \(platform=false\)/);
+});
+
+test('ignored forward seek cannot pass by naturally crossing its midpoint', {timeout: 15000}, async () => {
+  const result = await runProbe('ignored-seek', 8, ['--seek-at', '2', '--seek-to', '6']);
+  assert.equal(result.code, 1, result.stdout);
+  assert.match(result.stderr, /seek/i);
+});
+
+test('completed forward seek passes the real injected event/frame callback path', {timeout: 15000}, async () => {
+  const result = await runProbe('working-seek', 8, ['--seek-at', '2', '--seek-to', '30']);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /Seek: 1\.00s -> 30\.00s/);
+});
+
+function seekState(from = 20, target = 120) {
+  return {target, cutoff: (from + target) / 2, forward: target >= from,
+    settled: false, seeked: false, failure: null, deadline: 5000, violations: []};
+}
+
+test('seek settlement needs a seeked event and an actual near-target timestamp', () => {
+  const seek = seekState();
+  observeSeekFrame(seek, 120, 1000);
+  assert.equal(seek.settled, false, 'timestamp alone cannot validate an ignored seek');
+  seek.seeked = true;
+  observeSeekFrame(seek, 75, 1100);
+  assert.equal(seek.settled, false, 'crossing midpoint is not target arrival');
+  observeSeekFrame(seek, 120.033, 1200);
+  assert.equal(seek.settled, true);
+  observeSeekFrame(seek, 21, 1300);
+  assert.deepEqual(seek.violations, [{mediaTime: 21, cutoff: 70}]);
+});
+
+test('backward seek requires the requested target rather than merely the new side', () => {
+  const seek = seekState(120, 20);
+  seek.seeked = true;
+  observeSeekFrame(seek, 65, 1000);
+  assert.equal(seek.settled, false);
+  observeSeekFrame(seek, 20, 1100);
+  assert.equal(seek.settled, true);
+});
+
+test('expired seek cannot settle late or be hidden by ordinary playback', () => {
+  const seek = seekState();
+  seek.seeked = true;
+  observeSeekFrame(seek, null, 5001);
+  assert.match(seek.failure, /deadline/);
+  observeSeekFrame(seek, 120, 5002);
+  assert.equal(seek.settled, false);
+  assert.throws(() => established().observe(picture(9, {seekFailure: seek.failure}), 9000),
+                /requested seek.*deadline/);
 });
 
 test('missing video fails even without --expect-hardware', {timeout: 10000}, async () => {
