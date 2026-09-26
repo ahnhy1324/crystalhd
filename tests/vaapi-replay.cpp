@@ -524,12 +524,15 @@ static void ReferenceFullNv12Clear(Surface *surface) {
            128, Align(surface->width, 2));
 }
 
-static void PaddingOnlyCopiesMatchFullClear(unsigned int source_width,
-                                            unsigned int source_height,
-                                            unsigned int target_width,
-                                            unsigned int target_height,
-                                            bool is_70012) {
-  const unsigned int offset = (source_width + source_height) % 4;
+static unsigned int PaddingOnlyCopiesMatchFullClear(unsigned int source_width,
+                                                    unsigned int source_height,
+                                                    unsigned int target_width,
+                                                    unsigned int target_height,
+                                                    bool is_70012,
+                                                    unsigned int offset = UINT_MAX,
+                                                    bool exact_source = false) {
+  if (offset == UINT_MAX)
+    offset = (source_width + source_height) % 4;
   Surface expected, actual, source;
   InitializeCopyTestSurface(&expected, target_width, target_height, offset);
   InitializeCopyTestSurface(&actual, target_width, target_height, offset);
@@ -538,7 +541,14 @@ static void PaddingOnlyCopiesMatchFullClear(unsigned int source_width,
   const unsigned int source_pitch = is_70012
       ? (source_width <= 720 ? 720 : source_width <= 1280 ? 1280 : 1920) * 2
       : source_width * 2;
-  std::vector<uint8_t> yuy2(static_cast<size_t>(source_pitch) * source_height + 64);
+  // An odd final pixel consumes only its luma byte. Leave no readable suffix
+  // after the last byte the scalar oracle needs, even with a padded Link pitch.
+  // ASan can then detect a vector load crossing the actual source allocation.
+  const size_t source_bytes = exact_source
+      ? offset + static_cast<size_t>(source_pitch) * (source_height - 1) +
+            source_width * 2 - (source_width & 1U)
+      : static_cast<size_t>(source_pitch) * source_height + 64;
+  std::vector<uint8_t> yuy2(source_bytes);
   FillCopyTestBytes(&yuy2);
   const auto original_yuy2 = yuy2;
   BC_DTS_PROC_OUT output = {};
@@ -589,6 +599,7 @@ static void PaddingOnlyCopiesMatchFullClear(unsigned int source_width,
               actual.frame_timestamp == source.frame_timestamp &&
               actual.storage == expected.storage && source.storage == original_source,
           "production NV12 copy must match full-clear bytes and guards");
+  return reinterpret_cast<uintptr_t>(output.Ybuff) & 15U;
 }
 
 static void PaddingOnlyCopyByteEquivalence() {
@@ -607,6 +618,39 @@ static void PaddingOnlyCopyByteEquivalence() {
   PaddingOnlyCopiesMatchFullClear(1920, 1088, 1928, 1091, false);
   PaddingOnlyCopiesMatchFullClear(1920, 1088, 1919, 1087, false);
   PaddingOnlyCopiesMatchFullClear(1920, 1088, 1920, 1088, true);
+}
+
+static void ExactBoundaryConversionByteEquivalence() {
+  unsigned int source_alignments = 0;
+  unsigned int cases = 0;
+  for (unsigned int width : {1U, 2U, 3U, 15U, 16U, 17U, 31U, 32U,
+                             33U, 63U, 64U, 65U}) {
+    for (unsigned int height : {1U, 2U, 3U}) {
+      for (bool link : {false, true}) {
+        for (unsigned int offset = 0; offset < 16; ++offset) {
+          source_alignments |= 1U << PaddingOnlyCopiesMatchFullClear(
+              width, height, width, height, link, offset, true);
+          ++cases;
+        }
+      }
+    }
+  }
+  Require(source_alignments == 0xffffU,
+          "exact-boundary conversion exercises all 16 actual source alignments");
+  // Cover each BCM70012 pitch transition without multiplying full-HD-sized
+  // allocations through the alignment matrix above. Existing destination
+  // guards, unequal pitches and the unchanged scalar oracle remain in use.
+  for (unsigned int width : {719U, 720U, 721U, 1279U, 1280U, 1281U, 1919U, 1920U}) {
+    for (unsigned int offset : {0U, 15U}) {
+      PaddingOnlyCopiesMatchFullClear(width, 3, width, 3, true, offset, true);
+      ++cases;
+    }
+  }
+  PaddingOnlyCopiesMatchFullClear(1920, 1088, 1920, 1088, false, 0, true);
+  PaddingOnlyCopiesMatchFullClear(1920, 1088, 1920, 1088, true, 15, true);
+  cases += 2;
+  std::printf("%u exact-boundary/alignment conversion cases match scalar pixels and guards\n",
+              cases);
 }
 
 struct TeardownFixture {
@@ -811,6 +855,7 @@ int main() {
     RejectIncompleteGeometryAndInitializeAllocationPadding();
     FailedCpuOwnershipNeverCompletesDecode();
     PaddingOnlyCopyByteEquivalence();
+    ExactBoundaryConversionByteEquivalence();
     ContextTeardownDrainsAcceptedTailBeforeClose();
     ContextDrainRejectsMutationAndSurvivesSurfaceRelease();
     WaitingSyncKeepsCompletedRetiredPicture();

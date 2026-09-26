@@ -1430,29 +1430,66 @@ static bool CopyYuy2ToSurface(Surface *surface, const BC_DTS_PROC_OUT &output,
   for (unsigned int y = chroma_rows; y < (surface->height + 1) / 2; ++y)
     memset(surface->planes[1] + static_cast<size_t>(y) * surface->pitch[1],
            128, chroma_width);
-  for (unsigned int y = 0; y < height; ++y) {
-    const uint8_t *source = output.Ybuff +
-                            static_cast<size_t>(y) * source_pitch;
-    uint8_t *destination = surface->planes[0] + static_cast<size_t>(y) *
-                                                   surface->pitch[0];
-    for (unsigned int x = 0; x < width; ++x)
-      destination[x] = source[x * 2];
-  }
-
+  // Consume each pair of packed rows once. SSE2 keeps the scalar conversion's
+  // exact rounded chroma average; it does not change colorspace or filtering.
+#if defined(__SSE2__)
+  const __m128i luma_mask = _mm_set1_epi16(0x00ff);
+#endif
   for (unsigned int y = 0; y < height; y += 2) {
     const uint8_t *top = output.Ybuff + static_cast<size_t>(y) * source_pitch;
     const uint8_t *bottom = output.Ybuff +
                             static_cast<size_t>(std::min(y + 1, height - 1)) *
                                 source_pitch;
+    uint8_t *top_luma = surface->planes[0] +
+                       static_cast<size_t>(y) * surface->pitch[0];
+    const bool has_bottom = y + 1 < height;
+    uint8_t *bottom_luma = has_bottom
+        ? top_luma + surface->pitch[0] : top_luma;
     uint8_t *destination = surface->planes[1] +
                            static_cast<size_t>(y / 2) * surface->pitch[1];
-    for (unsigned int x = 0; x + 1 < width; x += 2) {
+    unsigned int x = 0;
+#if defined(__SSE2__)
+    // Only complete 16-pixel blocks: neither load crosses the logical row,
+    // and unaligned loads/stores support imported pitches and small surfaces.
+    for (; width - x >= 16; x += 16) {
+      const __m128i top0 = _mm_loadu_si128(
+          reinterpret_cast<const __m128i *>(top + x * 2));
+      const __m128i top1 = _mm_loadu_si128(
+          reinterpret_cast<const __m128i *>(top + x * 2 + 16));
+      const __m128i bottom0 = _mm_loadu_si128(
+          reinterpret_cast<const __m128i *>(bottom + x * 2));
+      const __m128i bottom1 = _mm_loadu_si128(
+          reinterpret_cast<const __m128i *>(bottom + x * 2 + 16));
+      _mm_storeu_si128(reinterpret_cast<__m128i *>(top_luma + x),
+          _mm_packus_epi16(_mm_and_si128(top0, luma_mask),
+                           _mm_and_si128(top1, luma_mask)));
+      if (has_bottom)
+        _mm_storeu_si128(reinterpret_cast<__m128i *>(bottom_luma + x),
+            _mm_packus_epi16(_mm_and_si128(bottom0, luma_mask),
+                             _mm_and_si128(bottom1, luma_mask)));
+      _mm_storeu_si128(reinterpret_cast<__m128i *>(destination + x),
+          _mm_packus_epi16(_mm_srli_epi16(_mm_avg_epu8(top0, bottom0), 8),
+                           _mm_srli_epi16(_mm_avg_epu8(top1, bottom1), 8)));
+    }
+#endif
+    for (; x + 1 < width; x += 2) {
+      top_luma[x] = top[x * 2];
+      top_luma[x + 1] = top[x * 2 + 2];
+      if (has_bottom) {
+        bottom_luma[x] = bottom[x * 2];
+        bottom_luma[x + 1] = bottom[x * 2 + 2];
+      }
       destination[x] = static_cast<uint8_t>(
           (static_cast<unsigned int>(top[x * 2 + 1]) + bottom[x * 2 + 1] + 1) /
           2);
       destination[x + 1] = static_cast<uint8_t>(
           (static_cast<unsigned int>(top[x * 2 + 3]) + bottom[x * 2 + 3] + 1) /
           2);
+    }
+    if (x < width) {
+      top_luma[x] = top[x * 2];
+      if (has_bottom)
+        bottom_luma[x] = bottom[x * 2];
     }
   }
   if (!surface->EndCpuWrite())
