@@ -18,18 +18,27 @@ driver:
 library:
 	$(MAKE) -C linux_lib/libcrystalhd
 
-# Link only the tested production ring/accessor sections. No device, ioctl,
-# firmware or shared-memory startup is reachable from this regression.
+# Test production library sections without hardware. Firmware calls are
+# stubbed and unexpected ioctls abort the flush/EOS regressions.
 library-check:
-	@set -eu; tx_test_dir=$$(mktemp -d /tmp/crystalhd-tx-ring-check.XXXXXX); \
-	trap 'rm -f "$$tx_test_dir/check"; rmdir "$$tx_test_dir"' EXIT HUP INT TERM; \
-	$(CXX) -std=c++11 -O1 -g -Wall -Werror \
+	@set -eu; lib_test_dir=$$(mktemp -d /tmp/crystalhd-library-check.XXXXXX); \
+	trap 'rm -f "$$lib_test_dir/check"; rmdir "$$lib_test_dir"' EXIT HUP INT TERM; \
+	for lib_test in tx-ring flush eos; do \
+		test_extra=; \
+		case $$lib_test in \
+			tx-ring) test_wrap=-Wl,--wrap=pthread_mutex_lock ;; \
+			flush) test_wrap=-Wl,--wrap=ioctl,--wrap=usleep ;; \
+			eos) test_wrap=-Wl,--wrap=ioctl,--wrap=txBufPush; \
+				test_extra=linux_lib/libcrystalhd/libcrystalhd_parser.cpp ;; \
+		esac; \
+		$(CXX) -std=c++11 -O1 -g -Wall -Werror \
 		-ffunction-sections -fdata-sections -D__LINUX_USER__ \
 		-Ilinux_lib/libcrystalhd -Iinclude -Iinclude/link \
-		tests/library-tx-ring.cpp linux_lib/libcrystalhd/libcrystalhd_priv.cpp \
-		linux_lib/libcrystalhd/libcrystalhd_if.cpp \
-		-Wl,--gc-sections -Wl,--wrap=pthread_mutex_lock -pthread \
-		-o "$$tx_test_dir/check"; "$$tx_test_dir/check"
+		tests/library-$$lib_test.cpp linux_lib/libcrystalhd/libcrystalhd_priv.cpp \
+		linux_lib/libcrystalhd/libcrystalhd_if.cpp $$test_extra \
+		-Wl,--gc-sections $$test_wrap -pthread \
+		-o "$$lib_test_dir/check"; "$$lib_test_dir/check"; \
+	done
 
 gstreamer: library
 	$(MAKE) -C filters/gst/gst-plugin-1.0

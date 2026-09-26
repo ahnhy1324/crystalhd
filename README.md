@@ -65,10 +65,12 @@ The card and firmware support one playback session at a time. A second
 simultaneous VA-API client receives `VA_STATUS_ERROR_HW_BUSY`; close the first
 player before starting another hardware decode.
 
-FFmpeg deprecated its CrystalHD decoders in version 6.0, and current packaged
-FFmpeg and VLC builds no longer expose CrystalHD decoding. Installing this
-kernel module alone therefore does not make current VLC use the card. Programs
-can instead use the GStreamer element or the standard VA-API backend.
+FFmpeg deprecated its CrystalHD decoders in version 6.0. The distribution
+VLC 3.0.21 build tested here also disables its native CrystalHD module;
+installing this kernel module alone does not enable it. This is not true of
+every VLC fork: PowerVLC's Linux release includes a native decoder, with the
+experimental results and limitations described below. Programs can also use
+the GStreamer element or the standard VA-API backend.
 
 CrystalHD does not decode VP8, VP9, or AV1. YouTube normally prefers those
 newer codecs. The optional Chrome setup installs an H.264 preference policy,
@@ -108,8 +110,10 @@ make check
 ```
 
 `make check` builds every component, freezes the 32-bit and 64-bit public ioctl
-layouts, validates GStreamer and VA-API discovery, checks VA-API H.264 SPS/PPS
-generation, checks the browser scripts and assets, tests DRM PRIME NV12 surface
+layouts, exercises the real library's TX ring, flush/output cancellation and
+EOS error paths without hardware, validates GStreamer and VA-API discovery,
+checks VA-API H.264 SPS/PPS generation, checks the browser scripts and assets,
+tests DRM PRIME NV12 surface
 import when a render node is available, and checks a staged installation
 without changing the host system. It does not decode a stream on CrystalHD
 hardware.
@@ -284,6 +288,77 @@ To stage a package instead of changing the host:
 ```sh
 make DESTDIR=/tmp/crystalhd-package install
 ```
+
+## PowerVLC native playback (experimental)
+
+[PowerVLC](https://github.com/Olsro/powervlc) is a separate VLC fork. The
+[2.1.0 Linux x86_64 release](https://github.com/Olsro/powervlc/releases/tag/powervlc-2.1.0)
+includes `libcrystalhd_plugin.so`, despite its README advertising CrystalHD
+primarily for macOS. On BCM70015, the native module was verified to decode
+H.264 using this repository's library and kernel module, with actual picture
+checks and no main-video software fallback. Its Qt/X11 window also displayed
+video while AAC audio was sent through PulseAudio. This is limited integration
+evidence, not a general playback or audio-synchronization certification.
+
+**Known failure:** the 12-second, 360-frame High-profile test returned only
+355 unique numbered pictures (1–355), missing picture 0 and the final 356–359.
+Output stopped advancing at picture 355 and repeated it. The same file returned
+all 360 frames through the GStreamer counted test. PowerVLC returning success
+or reaching the end of its timeline is therefore not proof of complete decode.
+Its native end-of-stream handling needs work before this can be recommended
+for reliable everyday playback. Seek checks are inconsistent; one failed
+backward seek caused firmware-command timeouts during close before the driver
+disabled DMA and released the session. A separate settled 2x-rate smoke test
+passed, but 0.5x did not. PowerVLC-specific Full HD, other codecs, subtitles
+and robust controls are not established. Track this in
+[#18](https://github.com/ahnhy1324/crystalhd/issues/18).
+
+For a diagnostic run, extract the downloaded AppImage in its own directory
+with `./PowerVLC-2.1.0-x86_64.AppImage --appimage-extract`. No installer or
+system VLC replacement is needed. From the root of this driver repository:
+
+```sh
+make library
+LD_PRELOAD="$PWD/linux_lib/libcrystalhd/libcrystalhd.so.3" \
+  /path/to/squashfs-root/AppRun \
+  --ignore-config --no-one-instance --no-qt-privacy-ask \
+  --no-metadata-network-access --no-disable-screensaver \
+  --crystalhd --codec=crystalhd,avcodec,none --avcodec-hw=none \
+  --video-cache-mb=0 --no-spu --text-renderer=tdummy --vout=xcb_x11 \
+  /path/to/video.mp4
+```
+
+PowerVLC does not need rebuilding to use this ABI-compatible library. The
+preload selects our library instead of the older one bundled by the
+AppImage; `LD_LIBRARY_PATH` alone is insufficient because `AppRun` prepends
+its bundled directories. The diagnostic options disable look-ahead caching
+and subtitles, and avoid the bundled font-renderer startup stall observed
+locally. Verify the loaded kernel module matches the source build as described
+in [BRINGUP.md](BRINGUP.md), and close other CrystalHD clients first.
+
+For evidence, add `VLC_CHD_TRACE=1` to the environment and `-vvv` to the
+arguments. Require the main video decoder to be `crystalhd` and actual native
+output; a menu setting or library load alone is not enough. `avcodec` is normal
+for audio and seek thumbnails, but main-video fallback is not a hardware pass.
+Trace output counts are not presentation counts, and the tail failure above
+still applies to this example.
+
+The opt-in offscreen regression below requires the extracted release's SDK,
+a C compiler and GNU `timeout`. It checks the selected library's actual path
+before playback and validates numbered pixels, not just player statistics:
+
+```sh
+sh tests/generate-browser-sample.sh /tmp/crystalhd-powervlc.mp4 --av-360p
+sh tests/powervlc-playback.sh /path/to/squashfs-root \
+  "$PWD/linux_lib/libcrystalhd" /tmp/crystalhd-powervlc.mp4
+```
+
+Append `--software` for the reference decoder, `--controls` for pause/resume
+and seek/rate smoke checks, or `--half` / `--double` for independent rate
+checks after a settling interval. The default requires every picture through
+the final frame and currently fails on the native path. These tests do not
+open a GUI, test audio or certify smooth display cadence. They use temporary
+configuration and do not install or rebuild PowerVLC.
 
 ## GStreamer playback
 

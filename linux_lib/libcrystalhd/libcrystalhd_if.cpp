@@ -2066,13 +2066,18 @@ DtsAlignSendData( HANDLE  hDevice ,
 			}
 			else if(sts == BC_STS_IO_USER_ABORT)
 			{
-				sts = BC_STS_SUCCESS;
+				/* Unsent/canceled bytes were not accepted by the ring. */
 				break;
 			} else
 				break; // On any other error condition
 		}
 	}
 
+	/* A concurrent stop/flush can end the loop before all bytes are queued,
+	 * including before its first iteration. Do not report that as accepted.
+	 */
+	if (sts == BC_STS_SUCCESS && ulRestBytes != 0)
+		sts = BC_STS_IO_USER_ABORT;
 	return sts;
 }
 
@@ -2224,6 +2229,12 @@ DtsSendEOS( HANDLE  hDevice, uint32_t Op
 		return BC_STS_DEC_NOT_STARTED;
 	}
 
+	/* A new drain attempt is armed only after every EOS fragment is queued.
+	 * Mode 5 retains its existing behavior of not changing EOS checking.
+	 */
+	if (Op == 0)
+		Ctx->bEOSCheck = false;
+
 	Ctx->PESConvParams.m_bPESExtField = false;
 	Ctx->PESConvParams.m_bPESPrivData = false;
 
@@ -2266,6 +2277,8 @@ DtsSendEOS( HANDLE  hDevice, uint32_t Op
 	}
 
 	sts = DtsAlignSendData(hDevice, pEOS, nEOSLen, 0, 0);
+	if (sts != BC_STS_SUCCESS)
+		goto eos_cleanup;
 
 	/* Only send timing marker if this is FLEA */
 	/* LINK Support LAST_PICTURE and does not need timing marker */
@@ -2294,18 +2307,25 @@ DtsSendEOS( HANDLE  hDevice, uint32_t Op
 			btp_video_done_es[16]   = nTag & 0xff;
 
 			sts = DtsAlignSendData(hDevice, btp_video_done_es, sizeof(btp_video_done_es), 0, 0);
+			if (sts != BC_STS_SUCCESS)
+				goto eos_cleanup;
 			Ctx->PESConvParams.m_bPESPrivData = false;
 			Ctx->PESConvParams.m_pPESPrivData = NULL;
 			Ctx->PESConvParams.m_bStuffing = false;
 			Ctx->PESConvParams.m_nStuffingBytes = 0;
 
 			sts = DtsAlignSendData(hDevice, pEOS, nEOSLen, 0, 0);
+			if (sts != BC_STS_SUCCESS)
+				goto eos_cleanup;
 			sts = DtsAlignSendData(hDevice, pEOS, nEOSLen, 0, 0);
+			if (sts != BC_STS_SUCCESS)
+				goto eos_cleanup;
 		}
 		Ctx->bEOSCheck = true;
 	}
 
-	//Reset
+eos_cleanup:
+	/* Do not carry partial timing-marker metadata into later input. */
 	Ctx->PESConvParams.m_bPESExtField = false;
 	Ctx->PESConvParams.m_pPESExtField = NULL;
 	Ctx->PESConvParams.m_bPESPrivData = false;
@@ -2337,8 +2357,7 @@ DtsFlushInput( HANDLE  hDevice ,
 
 	if(Op == 0 || Op == 5) // DRAIN
 	{
-		DtsSendEOS(hDevice, Op);
-		return BC_STS_SUCCESS;
+		return DtsSendEOS(hDevice, Op);
 	}
 	else
 	{
@@ -2370,10 +2389,12 @@ DtsFlushInput( HANDLE  hDevice ,
 	{
 		if (Ctx->State != BC_DEC_STATE_CLOSE)
 		{
-			DtsLock(Ctx);
+			/* Stop waits for pending output to retire. The output thread
+			 * needs thLock in DtsDecPend, so do not hold it across that
+			 * wait. Stop/Close lock their shared structures internally.
+			 */
 			sts = DtsStopDecoder(hDevice);
 			sts	= DtsCloseDecoder(hDevice);
-			DtsUnLock(Ctx);
 		}
 	}
 

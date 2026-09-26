@@ -17,7 +17,7 @@ DESTDIR ?=
 ROOTDIR := ../..
 CPPFLAGS += -D__LINUX_USER__ -I. -I$(ROOTDIR)/include -I$(ROOTDIR)/include/link
 CXXFLAGS ?= -O2
-CXXFLAGS += -Wall -fPIC -fstrict-aliasing -msse2
+CXXFLAGS += -Wall -Werror -fPIC -fstrict-aliasing -msse2
 LDFLAGS += -shared -Wl,-soname,$(BCLIB_SONAME)
 LDLIBS += -pthread
 

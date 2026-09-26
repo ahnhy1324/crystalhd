@@ -21,6 +21,12 @@ Measured results are recorded in [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md
 
 ## Playback validation
 
+- [ ] [#18: PowerVLC native integration](https://github.com/ahnhy1324/crystalhd/issues/18):
+  the unmodified Linux 2.1.0 release loads our library without rebuilding,
+  but the numbered 360-frame fixture misses the first picture and four tail
+  pictures. Investigate inconsistent in-flight seeks/close timeouts and 0.5x
+  progress; one settled 2x smoke pass is not general control validation.
+  Keep frontend drain behavior distinct from library cancellation fixes.
 - [ ] [#16: everyday GStreamer playback](https://github.com/ahnhy1324/crystalhd/issues/16):
   provide explicit hardware/software local playback, validate in-flight
   controls and audio/video timing, and measure sustained 720p operation.
