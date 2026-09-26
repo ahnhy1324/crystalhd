@@ -9,11 +9,25 @@ This plugin is experimental. The hardware harness targets progressive H.264
 Baseline, Main and High on BCM70015. It counts YUY2 output buffers against
 FFprobe's decoded frame count, requires EOS, checks output buffer sizes and
 monotonic timestamps, and opens a fresh playback session for each repetition.
-Separate BCM70015 tests also cover one progressive MPEG-2 fixture, two small
-VC-1/WMV3 fixtures, and H.264 flushing replay after EOS. BCM70012, interlaced
-output and mid-stream format changes remain unvalidated. In-flight seeking
-currently fails on BCM70015, and audio/video startup is timing-dependent;
-see [issue #16](https://github.com/ahnhy1324/crystalhd/issues/16).
+Separate BCM70015 tests cover small VC-1/WMV3 fixtures, progressive MPEG-2
+(including 60 Full HD pictures), and H.264 flushing replay after EOS. MPEG-2
+TFF/BFF files each produce 50 paired pictures from 100 fields with field-aware
+software pixel comparisons. Presentation order comes from explicit firmware
+metadata, not capture order. Same-size TFF→BFF→TFF passes 150 pictures, and
+640x360 TFF→1920x1080 progressive→640x360 BFF passes all 160 pictures;
+both checks verify field flags and unchanged standalone-reference pixels.
+One H.264 640x360→1280x720→640x360 stream preserves all
+90 pictures and matches concatenated standalone hardware decodes. These are
+fixture-specific results, not general interlaced or dynamic-format support.
+
+Full-device reopen fixes the tested seek stall, and independent output polling
+fixes the tested audio-preroll starvation. Numbered 360p/720p H.264 + AAC files
+pass pause/resume, forward/backward seeks, 0.5x/1x/2x and complete replay.
+A 30-minute 720p30 + AAC run passes 54000/54000 pictures and EOS with 4ms
+maximum measured A/V interval skew. These clocked-sink checks underpin closed
+[issue #16](https://github.com/ahnhy1324/crystalhd/issues/16); they do not prove
+visible cadence or speaker/display lip-sync. BCM70012 and broader streams
+remain unvalidated.
 CI checks discovery, framing/lifecycle helpers, synthetic YUY2 playback and
 software audio/video controls; it does not decode through CrystalHD. See the
 [hardware report](../../../HARDWARE-2026-09-13.md) for fixture counts, hashes,
@@ -168,8 +182,9 @@ gst-launch-1.0 -q filesrc location=video.mp4 ! qtdemux ! h264parse ! \
 Plugin errors identify the failing library call and suggest checks for device
 ownership, permissions, firmware, framing and output selection. A successful
 launch alone does not prove that every frame drained: use the counted harness
-for that claim. Final drain uses a 10-second monotonic budget, not a fixed
-number of output polls; missing pictures still produce an error. See
+for that claim. Final drain uses a 10-second monotonic no-progress watchdog,
+renewed by successful frame delivery and suspended while stably paused, not
+a fixed number of output polls; missing pictures still produce an error. See
 [the bring-up guide](../../../BRINGUP.md) for the canonical
 device/firmware/input/output diagnosis order and required test-report details.
 
@@ -202,12 +217,13 @@ timeout --kill-after=10 90 \
   /tmp/crystalhd-controls.mp4 --software --audio --timeout 75
 ```
 
-Omit `--software` only for an isolated hardware diagnostic with the in-tree
-plugin/library paths set as above. This hardware control sequence currently
-fails; it is not a supported-playback demonstration. Input admission pumps
-pending output while waiting for complete-call transmit capacity, with a
-10-second budget. Library/device calls can still block beyond that budget,
-so retain the external timeout.
+Omit `--software` for an isolated hardware check with the in-tree plugin/library
+paths set as above. The numbered 360p and 720p H.264 + AAC fixtures pass this
+sequence and a complete 360-picture replay on BCM70015. Output runs on an
+independent worker, including while input admission waits for complete-call
+transmit capacity; flushing seeks recreate the full device. Library/device
+calls can still block beyond the in-process watchdog, so retain the external
+timeout. This does not establish arbitrary streams or PowerVLC controls.
 
 `--sustain SECONDS` selects continuous 1x playback instead of controls. It
 requires a matching fixture duration (a multiple of 12 seconds), exact
@@ -216,4 +232,6 @@ The optional audio check verifies clock bounds and overlap with the final
 video-frame interval, not sample-exact audio duration. Both modes use clocked
 test sinks: neither proves visible presentation or audible output. The
 repeating fixture also cannot distinguish identical prior-cycle pixels
-that have been assigned the correct current timestamp.
+that have been assigned the correct current timestamp. See the hardware report
+for the passed 30-minute run's continuous-audio fixture, exact command, resource
+measurements and limitations; a short file cannot stand in for that test.

@@ -326,8 +326,10 @@ checks and no main-video software fallback. Its Qt/X11 window also displayed
 video while AAC audio was sent through PulseAudio. This is limited integration
 evidence, not a general playback or audio-synchronization certification.
 
-**Known failure:** the 12-second, 360-frame High-profile test returned only
-355 unique numbered pictures (1–355), missing picture 0 and the final 356–359.
+**Known failure:** the 12-second, 360-frame High-profile test returns only
+356 unique numbered pictures (0–355), missing the final 356–359.
+The library's AVC1 duplicate-header fix restores picture 0, which previously
+returned timestamp zero and was discarded by PowerVLC; coverage was then 355 pictures.
 Output stopped advancing at picture 355 and repeated it. The same file returned
 all 360 frames through the GStreamer counted test. PowerVLC returning success
 or reaching the end of its timeline is therefore not proof of complete decode.

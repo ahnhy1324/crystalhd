@@ -23,8 +23,10 @@ Measured results are recorded in [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md
 
 - [ ] [#18: PowerVLC native integration](https://github.com/ahnhy1324/crystalhd/issues/18):
   the unmodified Linux 2.1.0 release loads our library without rebuilding,
-  but the numbered 360-frame fixture misses the first picture and four tail
-  pictures. Investigate inconsistent in-flight seeks/close timeouts and 0.5x
+  but the numbered 360-frame fixture still misses four tail pictures.
+  Correct AVC1 header detection restores the previously missing first picture
+  without changing the caller's timestamps. Investigate inconsistent in-flight
+  seeks/close timeouts and 0.5x
   progress; one settled 2x smoke pass is not general control validation.
   Keep frontend drain behavior distinct from library cancellation fixes.
 - [x] [#16: everyday GStreamer playback](https://github.com/ahnhy1324/crystalhd/issues/16):
@@ -73,6 +75,10 @@ Measured results are recorded in [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md
   each at 640x360, 1280x720 and 640x360, with all 90 outputs in the expected
   geometry epochs and raw pixels matching concatenated independent decodes.
   This does not establish arbitrary codec/profile/interlace transitions.
+- [x] MPEG-2 presentation-order transitions: same-size TFF→BFF→TFF
+  passes 150/150 pictures; 640x360 TFF→1920x1080 progressive→640x360 BFF
+  passes 160/160. Exact geometry, field flags and concatenated standalone
+  pixel hashes agree. Hardware capture parity is not presentation order.
 - [x] Retain original output frames across flush/new input and decoder-context
   destruction; exact old-frame PTS/pixels checked after each transition.
 - [x] Asynchronous FFmpeg input looping: High at 640×360 and 1920×1080
@@ -110,7 +116,7 @@ Measured results are recorded in [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md
   output EOS marker and an empty ready queue with clean teardown. WMV3 needs
   corrected EOS control-packet framing; silence alone is not BCM70015 EOS.
 - [ ] Broader VC-1/WMV3 samples, other interlaced layouts, and broader mid-stream
-  resolution/format changes beyond the single H.264 case above.
+  resolution/format changes beyond the H.264/MPEG-2 cases above.
 - [ ] Suspend/resume with an idle device and around an active/recent session.
   This interrupts the desktop and is not part of unattended `make check`.
 - [ ] Chromium hardware frame identity after seeking, and GPU sandbox support.
@@ -120,6 +126,13 @@ Measured results are recorded in [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md
   Hardware-free failure/alias regressions, sanitizers, real DRM image readback,
   and the High retained-frame hardware regression pass; this is not general
   GBM/compositor synchronization or Chrome hardware validation.
+- [x] Pending VPP cancellation, conversion/decode failure and partial fence
+  import abort their fences with an error, not a success increment. Mocked
+  lifecycle regressions and a genuine kernel sw_sync status check pass;
+  late CPU-access cleanup failures still require checking VA surface status.
+- [x] Raw YUY2 library copies: no-SIZE row identity, cropped/strided output,
+  field rows and source/destination bounds, with 67 native/i386 regressions
+  and sanitizer checks. Other legacy conversion helpers are separate coverage.
 
 Do not close the hardware-matrix issue on the strength of compilation or a
 BCM70015 H.264-only run. Record exact commands, profiles, checksums, source
