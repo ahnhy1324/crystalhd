@@ -865,7 +865,9 @@ void PendingBackingReimportIsRejectedBeforeMapping() {
     VADRMPRIMESurfaceDescriptor prime = {};
     Require(ExportSurfaceHandle(&fixture.context, 2,
                                 VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
-                                VA_EXPORT_SURFACE_READ_ONLY, &prime) == VA_STATUS_SUCCESS,
+                                VA_EXPORT_SURFACE_READ_ONLY |
+                                    VA_EXPORT_SURFACE_COMPOSED_LAYERS,
+                                &prime) == VA_STATUS_SUCCESS,
             "export private backing before original surface destruction");
     mock.real_files.insert(prime.objects[0].fd);
     fixture.decoder->decoded_frames.at(kTimestampStep)->ready = false;

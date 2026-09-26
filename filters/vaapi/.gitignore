@@ -4,3 +4,4 @@
 /vaapi-seek-test
 /vaapi-vpp-test
 /vaapi-replay-test
+/vaapi-buffer-handles-test

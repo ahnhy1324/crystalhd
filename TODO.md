@@ -70,13 +70,20 @@ Measured results are recorded in [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md
   with `--lookahead 8`, leaving eight client pictures undownloaded before each seek.
 - [ ] Broader VA-API stream coverage and synchronous-client performance;
   one-at-a-time clients can repeatedly reopen the device and replay references.
+- [x] VA-API image-buffer handles and default separate-plane exports: real DRM
+  snapshot read/write/ownership checks and failure regressions pass. Hardware
+  PRIME2 reads without prior surface sync match synchronized references at
+  360p and Full HD, including seeking and retained old frames. This addresses
+  specific VLC backend compatibility gaps, not actual VLC/EGL presentation.
 - [x] BCM70015 Full HD H.264 Baseline/Main/High complete-file VA-API decode:
   1920×1080, 30 fps, 180/180 frames per fixture, independent pixel comparisons.
 - [x] Full HD GStreamer drain and exact EOS replay for all three profiles;
   Full HD High VA-API four-seek lookahead pixel comparisons.
 - [x] One progressive H.264 natural-resolution-change stream: 30 pictures
   each at 640x360, 1280x720 and 640x360, with all 90 outputs in the expected
-  geometry epochs and raw pixels matching concatenated independent decodes.
+  geometry epochs in GStreamer and VA-API. GStreamer raw pixels and VA-API
+  per-frame plane checksums match concatenated independent hardware decodes;
+  VA-API output timestamps also match the software decoder's sequence.
   This does not establish arbitrary codec/profile/interlace transitions.
 - [x] MPEG-2 presentation-order transitions: same-size TFF→BFF→TFF
   passes 150/150 pictures; 640x360 TFF→1920x1080 progressive→640x360 BFF
