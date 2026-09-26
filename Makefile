@@ -8,7 +8,7 @@ KDIR ?= /lib/modules/$(KVER)/build
 DRIVER_ARGS := KVER=$(KVER) KDIR=$(KDIR) DESTDIR=$(DESTDIR)
 USER_ARGS := PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 
-.PHONY: all driver library library-check gstreamer vaapi examples browser uapi-check dma-check userspace32-check check install clean
+.PHONY: all driver library library-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check userspace32-check check install clean
 
 all: driver library gstreamer vaapi examples browser
 
@@ -28,7 +28,9 @@ library-check:
 		case $$lib_test in \
 			tx-ring) test_wrap=-Wl,--wrap=pthread_mutex_lock ;; \
 			flush) test_wrap=-Wl,--wrap=ioctl,--wrap=usleep,--wrap=pthread_mutex_lock ;; \
-			eos) test_wrap=-Wl,--wrap=ioctl,--wrap=txBufPush; \
+			eos) test_wrap=-Wl,--wrap=ioctl,--wrap=txBufPush,--wrap=usleep; \
+				test_wrap="$$test_wrap -Wl,--wrap=DtsSetupHardware,--wrap=DtsOpenDecoder"; \
+				test_wrap="$$test_wrap -Wl,--wrap=DtsStartDecoder,--wrap=DtsStartCapture"; \
 				test_extra=linux_lib/libcrystalhd/libcrystalhd_parser.cpp ;; \
 		esac; \
 		$(CXX) -std=c++11 -O1 -g -Wall -Werror \
@@ -42,6 +44,14 @@ library-check:
 
 gstreamer: library
 	$(MAKE) -C filters/gst/gst-plugin-1.0
+
+# Optional direct-library hardware probe. Building never opens the device;
+# running requires explicit --hardware (or device-free --preflight).
+library-drain-test: library
+	$(CXX) -std=c++11 -O2 -g -Wall -Wextra -Werror -D__LINUX_USER__ \
+		-Iinclude -Ilinux_lib/libcrystalhd tests/library-drain.cpp \
+		$$(pkg-config --cflags --libs libavformat libavcodec libavutil glib-2.0) \
+		-Llinux_lib/libcrystalhd -lcrystalhd -o tests/library-drain-test
 
 vaapi: library
 	$(MAKE) -C filters/vaapi
@@ -75,6 +85,7 @@ install: all
 	$(MAKE) -C browser $(USER_ARGS) install
 
 clean:
+	rm -f tests/library-drain-test
 	$(MAKE) -C driver/linux -f Makefile.in KVER=$(KVER) KDIR=$(KDIR) clean
 	$(MAKE) -C linux_lib/libcrystalhd clean
 	$(MAKE) -C filters/gst/gst-plugin-1.0 clean

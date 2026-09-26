@@ -9,29 +9,36 @@ static void lifecycle_sleep(gulong usecs);
 static GThread *lifecycle_thread_new(const gchar *name, GThreadFunc function,
                                     gpointer data);
 static gpointer lifecycle_thread_join(GThread *thread);
+static void lifecycle_stream_unlock(GRecMutex *mutex);
 #define g_get_monotonic_time lifecycle_time
 #define g_usleep lifecycle_sleep
 #define g_thread_new lifecycle_thread_new
 #define g_thread_join lifecycle_thread_join
+#define g_rec_mutex_unlock lifecycle_stream_unlock
 #include "../filters/gst/gst-plugin-1.0/gstcrystalhd.c"
 #undef g_get_monotonic_time
 #undef g_usleep
 #undef g_thread_new
 #undef g_thread_join
+#undef g_rec_mutex_unlock
 
 static gint64 lifecycle_now;
 static GstHarness *flush_during_wait;
 static GstHarness *seek_during_wait;
+static GstHarness *flush_during_quiesce;
 static GstCrystalHdDec *iteration_decoder;
 static gboolean real_workers;
 static guint8 fake_thread;
 G_LOCK_DEFINE_STATIC(mock_queue);
 static GstBuffer *new_input(GstClockTime pts);
+static gboolean change_h264_caps(GstHarness *harness);
 
 typedef struct {
   guint64 timestamp;
   guint8 pixel;
   guint flags;
+  guint width;
+  guint height;
 } MockPicture;
 
 typedef enum {
@@ -49,6 +56,7 @@ static struct {
   gboolean busy_stale;
   gboolean fail_input;
   gboolean fail_status;
+  gboolean fail_drain;
   gboolean early_eos;
   guint input_calls;
   guint flush_calls;
@@ -80,6 +88,22 @@ static BC_STATUS
 operation_status(MockOperation operation)
 {
   return (mock.fail_operations & (1U << operation)) ? BC_STS_ERROR : BC_STS_SUCCESS;
+}
+
+static void
+lifecycle_stream_unlock(GRecMutex *mutex)
+{
+  g_rec_mutex_unlock(mutex);
+  if (flush_during_quiesce != NULL) {
+    GstHarness *harness = flush_during_quiesce;
+    GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+    if (mutex == &GST_VIDEO_DECODER(self)->stream_lock && self->output_paused) {
+      /* Precisely the reopen helper's unlock AFTER draining, before it
+       * re-acquires the core lock and commits destructive device changes. */
+      flush_during_quiesce = NULL;
+      g_assert_true(gst_harness_push_event(harness, gst_event_new_flush_start()));
+    }
+  }
 }
 
 static gint64
@@ -141,6 +165,8 @@ queue_picture(guint64 timestamp, guint8 pixel)
   MockPicture *picture = g_new0(MockPicture, 1);
   picture->timestamp = timestamp;
   picture->pixel = pixel;
+  picture->width = 16;
+  picture->height = 16;
   G_LOCK(mock_queue);
   g_queue_push_tail(&mock.pictures, picture);
   G_UNLOCK(mock_queue);
@@ -309,8 +335,8 @@ BC_STATUS DtsProcOutputNoCopy(HANDLE device, uint32_t timeout,
   memset(mock.pixels, picture->pixel, sizeof(mock.pixels));
   memset(output, 0, sizeof(*output));
   output->PoutFlags = BC_POUT_FLAGS_PIB_VALID;
-  output->PicInfo.width = 16;
-  output->PicInfo.height = 16;
+  output->PicInfo.width = picture->width;
+  output->PicInfo.height = picture->height;
   output->PicInfo.timeStamp = picture->timestamp;
   output->PicInfo.flags = picture->flags;
   output->Ybuff = mock.pixels;
@@ -342,7 +368,7 @@ BC_STATUS DtsFlushInput(HANDLE device, uint32_t operation)
       return BC_STS_ERROR;
     }
     mock.drain_calls++;
-    return BC_STS_SUCCESS;
+    return mock.fail_drain ? BC_STS_ERROR : BC_STS_SUCCESS;
   }
   g_assert_cmpuint(operation, ==, 4);
   mock.flush_calls++;
@@ -373,6 +399,7 @@ new_decoder(void)
   lifecycle_now = 1;
   flush_during_wait = NULL;
   seek_during_wait = NULL;
+  flush_during_quiesce = NULL;
   g_queue_init(&mock.pictures);
   mock.auto_output = TRUE;
   mock.free_bytes = 1024 * 1024;
@@ -482,6 +509,8 @@ check_output(GstBuffer *buffer, GstClockTime pts, guint8 pixel)
   guint i;
   g_assert_nonnull(buffer);
   g_assert_cmpuint(GST_BUFFER_PTS(buffer), ==, pts);
+  g_assert_false(GST_BUFFER_FLAG_IS_SET(buffer, GST_VIDEO_BUFFER_FLAG_INTERLACED));
+  g_assert_false(GST_BUFFER_FLAG_IS_SET(buffer, GST_VIDEO_BUFFER_FLAG_TFF));
   g_assert_cmpuint(gst_buffer_extract(buffer, 0, bytes, sizeof(bytes)), ==,
                    sizeof(bytes));
   for (i = 0; i < sizeof(bytes); i++)
@@ -1097,7 +1126,7 @@ queue_field(guint64 timestamp, guint8 pixel, gboolean bottom)
   queue_picture(timestamp, pixel);
   picture = g_queue_peek_tail(&mock.pictures);
   picture->flags = VDEC_FLAG_INTERLACED_SRC |
-                   (bottom ? VDEC_FLAG_BOTTOMFIELD : 0);
+                   (bottom ? VDEC_FLAG_BOTTOMFIELD : VDEC_FLAG_TOPFIELD);
 }
 
 static void
@@ -1148,6 +1177,110 @@ test_field_identity(void)
   g_assert_cmpuint(mock.release_calls, ==, 1);
   gst_harness_teardown(harness);
   g_assert_cmpuint(mock.destroyed_inputs, ==, 1);
+}
+
+static void
+test_field_pair_policy(void)
+{
+  guint bottom_first, fault;
+  for (bottom_first = 0; bottom_first < 2; ++bottom_first) {
+    for (fault = 0; fault < 4; ++fault) {
+      GstHarness *harness = new_decoder();
+      MockPicture *second;
+      GstFlowReturn flow;
+      mock.auto_output = FALSE;
+      g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+      queue_field(mock.accepted[0], 0x11, bottom_first);
+      queue_field(mock.accepted[0], 0x22, fault == 1 ? bottom_first : !bottom_first);
+      second = g_queue_peek_tail(&mock.pictures);
+      /* Smaller geometry still fits the already allocated full-size output.
+       * It must not complete a frame with unwritten/mis-strided rows. */
+      if (fault == 2) second->width = 8;
+      if (fault == 3) second->height = 8;
+      flow = gst_crystalhd_receive_available(GST_CRYSTALHD_DEC(harness->element));
+      if (fault != 0) {
+        g_assert_cmpint(flow, ==, GST_FLOW_ERROR);
+        g_assert_cmpuint(gst_harness_buffers_in_queue(harness), ==, 0);
+        g_assert_cmpuint(GST_CRYSTALHD_DEC(harness->element)->timestamps.length, ==, 1);
+      } else {
+        GstBuffer *output = gst_harness_try_pull(harness);
+        guint8 pixels[sizeof(mock.pixels)];
+        guint i;
+        g_assert_cmpint(flow, ==, GST_FLOW_OK);
+        g_assert_nonnull(output);
+        g_assert_cmpuint(GST_BUFFER_PTS(output), ==, 0);
+        g_assert_true(GST_BUFFER_FLAG_IS_SET(output, GST_VIDEO_BUFFER_FLAG_INTERLACED));
+        g_assert_cmpint(GST_BUFFER_FLAG_IS_SET(output, GST_VIDEO_BUFFER_FLAG_TFF),
+                        ==, !bottom_first);
+        g_assert_false(GST_BUFFER_FLAG_IS_SET(output, GST_VIDEO_BUFFER_FLAG_ONEFIELD));
+        g_assert_cmpuint(gst_buffer_extract(output, 0, pixels, sizeof(pixels)),
+                         ==, sizeof(pixels));
+        for (i = 0; i < sizeof(pixels); ++i) {
+          gboolean bottom_row = (i / 32) % 2;
+          g_assert_cmpuint(pixels[i], ==, bottom_row == (gboolean)bottom_first ? 0x11 : 0x22);
+        }
+        gst_buffer_unref(output);
+      }
+      g_assert_cmpuint(mock.release_calls, ==, 2);
+      gst_harness_teardown(harness);
+      g_assert_cmpuint(mock.destroyed_inputs, ==, 1);
+    }
+  }
+}
+
+static void
+test_output_interlace_mode_changes(void)
+{
+  GstHarness *harness = new_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  guint phase;
+  GST_VIDEO_DECODER_STREAM_LOCK(self);
+  for (phase = 0; phase < 3; ++phase) {
+    gboolean interlaced = phase == 1;
+    GstVideoInterlaceMode mode = interlaced ? GST_VIDEO_INTERLACE_MODE_MIXED :
+                                             GST_VIDEO_INTERLACE_MODE_PROGRESSIVE;
+    GstCaps *caps;
+    GstVideoInfo info;
+    g_assert_true(gst_crystalhd_configure_output(self, 16, 16, interlaced));
+    g_assert_cmpint(GST_VIDEO_INFO_INTERLACE_MODE(&self->output_info), ==, mode);
+    caps = gst_pad_get_current_caps(GST_VIDEO_DECODER_SRC_PAD(self));
+    g_assert_nonnull(caps);
+    g_assert_true(gst_video_info_from_caps(&info, caps));
+    g_assert_cmpint(GST_VIDEO_INFO_INTERLACE_MODE(&info), ==, mode);
+    gst_caps_unref(caps);
+  }
+  GST_VIDEO_DECODER_STREAM_UNLOCK(self);
+  gst_harness_teardown(harness);
+}
+
+static void
+test_interlaced_picture_types(void)
+{
+  static const guint types[] = { VDEC_FLAG_FRAME, VDEC_FLAG_FIELDPAIR };
+  guint i;
+  for (i = 0; i < G_N_ELEMENTS(types); ++i) {
+    GstHarness *harness = new_decoder();
+    GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+    GstVideoCodecFrame *frame;
+    MockPicture *picture;
+    mock.auto_output = FALSE;
+    g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+    queue_picture(mock.accepted[0], 0x55);
+    picture = g_queue_peek_tail(&mock.pictures);
+    picture->flags = VDEC_FLAG_INTERLACED_SRC | types[i];
+    /* A full-frame/FIELDPAIR layout must not be mistaken for either half
+     * of a separate-field buffer and then woven with unrelated pixels. */
+    g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_ERROR);
+    g_assert_cmpuint(gst_harness_buffers_in_queue(harness), ==, 0);
+    g_assert_cmpuint(self->timestamps.length, ==, 1);
+    g_assert_false(self->need_second_field);
+    g_assert_cmpuint(mock.release_calls, ==, 1);
+    frame = gst_video_decoder_get_frame(GST_VIDEO_DECODER(self), 0);
+    g_assert_nonnull(frame);
+    g_assert_null(frame->output_buffer);
+    gst_video_codec_frame_unref(frame);
+    gst_harness_teardown(harness);
+  }
 }
 
 static GstBuffer *
@@ -1253,6 +1386,7 @@ typedef struct {
   gboolean operation_done;
   gboolean drain;
   gboolean flush;
+  gboolean caps;
   GstFlowReturn operation_flow;
 } DeliveryGate;
 
@@ -1300,6 +1434,8 @@ delivery_operation(gpointer data)
     gboolean started = gst_harness_push_event(gate->harness, gst_event_new_flush_start());
     gboolean stopped = gst_harness_push_event(gate->harness, gst_event_new_flush_stop(TRUE));
     flow = started && stopped ? GST_FLOW_OK : GST_FLOW_ERROR;
+  } else if (gate->caps) {
+    flow = change_h264_caps(gate->harness) ? GST_FLOW_OK : GST_FLOW_ERROR;
   } else {
     flow = gate->drain ?
         gst_crystalhd_drain(GST_VIDEO_DECODER(gate->harness->element)) :
@@ -1325,6 +1461,7 @@ test_blocked_delivery(gconstpointer data)
   real_workers = TRUE;
   gate.drain = GPOINTER_TO_INT(data) == 1;
   gate.flush = GPOINTER_TO_INT(data) == 2;
+  gate.caps = GPOINTER_TO_INT(data) == 3;
   g_mutex_init(&gate.lock);
   g_cond_init(&gate.changed);
   gate.harness = new_decoder();
@@ -1351,7 +1488,7 @@ test_blocked_delivery(gconstpointer data)
     ;
   g_assert_true(gate.operation_entered);
   deadline = g_get_monotonic_time() +
-      (gate.drain || gate.flush ? 100000 : G_USEC_PER_SEC);
+      (gate.drain || gate.flush || gate.caps ? 100000 : G_USEC_PER_SEC);
   while (!gate.operation_done &&
          g_cond_wait_until(&gate.changed, &gate.lock, deadline))
     ;
@@ -1398,15 +1535,215 @@ test_blocked_delivery(gconstpointer data)
   gst_harness_teardown(gate.harness);
   g_assert_false(gate.timed_out);
   g_assert_cmpint(gate.operation_flow, ==, GST_FLOW_OK);
-  if (gate.drain || gate.flush)
+  if (gate.drain || gate.flush || gate.caps)
     g_assert_false(completed_while_blocked);
   else
     g_assert_true(completed_while_blocked);
   g_assert_cmpuint(mock.release_calls, ==, gate.flush ? 3 : 1);
-  g_assert_cmpuint(mock.destroyed_inputs, ==, gate.drain ? 1 : 2);
+  g_assert_cmpuint(mock.destroyed_inputs, ==, gate.drain || gate.caps ? 1 : 2);
+  if (gate.caps) {
+    g_assert_cmpuint(mock.drain_calls, ==, 1);
+    g_assert_cmpuint(mock.successful_opens, ==, 2);
+  }
   g_cond_clear(&gate.changed);
   g_mutex_clear(&gate.lock);
   real_workers = FALSE;
+}
+
+static gboolean
+change_h264_caps(GstHarness *harness)
+{
+  GstCaps *caps = gst_caps_from_string(
+      "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+      "width=16,height=16,framerate=30/1");
+  gboolean result = gst_harness_push_event(harness, gst_event_new_caps(caps));
+  gst_caps_unref(caps);
+  return result;
+}
+
+static void
+test_natural_caps_tail(void)
+{
+  GstHarness *harness = new_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  GstBuffer *old[2], *output;
+  guint i;
+  mock.auto_output = FALSE;
+  for (i = 0; i < 2; ++i)
+    g_assert_cmpint(gst_harness_push(harness, new_input(i * 40 * GST_MSECOND)),
+                    ==, GST_FLOW_OK);
+  for (i = 0; i < 2; ++i)
+    queue_picture(mock.accepted[i], 0x71 + i);
+  g_assert_true(change_h264_caps(harness));
+  g_assert_cmpuint(mock.drain_calls, ==, 1);
+  g_assert_cmpuint(mock.close_calls, ==, 1);
+  g_assert_cmpuint(mock.successful_opens, ==, 2);
+  g_assert_cmpuint(self->timestamps.length, ==, 0);
+  g_assert_cmpuint(GST_VIDEO_INFO_FPS_N(&self->input_state->info), ==, 30);
+  for (i = 0; i < 2; ++i) {
+    old[i] = gst_harness_try_pull(harness);
+    g_assert_nonnull(old[i]);
+    check_output(old[i], i * 40 * GST_MSECOND, 0x71 + i);
+  }
+  mock.auto_output = TRUE;
+  g_assert_cmpint(gst_harness_push(harness, new_input(80 * GST_MSECOND)),
+                  ==, GST_FLOW_OK);
+  output = gst_harness_pull(harness);
+  check_output(output, 80 * GST_MSECOND, 3);
+  gst_buffer_unref(output);
+  g_assert_cmpuint(mock.accepted[2], >, mock.accepted[1]);
+  gst_harness_teardown(harness);
+  for (i = 0; i < 2; ++i) {
+    check_output(old[i], i * 40 * GST_MSECOND, 0x71 + i);
+    gst_buffer_unref(old[i]);
+  }
+}
+
+static void
+test_natural_caps_errors(void)
+{
+  guint mode;
+  for (mode = 0; mode < 4; ++mode) {
+    GstHarness *harness = new_decoder();
+    GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+    GstVideoCodecState *old_state = self->input_state;
+    guint64 generation = self->generation;
+    mock.auto_output = FALSE;
+    g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+    if (mode == 0)
+      mock.fail_drain = TRUE;
+    else if (mode == 1)
+      mock.early_eos = TRUE;
+    else if (mode == 2) {
+      mock.free_bytes = 0;
+      flush_during_wait = harness;
+    } else {
+      queue_picture(mock.accepted[0], 0x74);
+      flush_during_quiesce = harness;
+    }
+    /* An aliased input state must remain owned and usable on failure. */
+    g_assert_false(gst_crystalhd_set_format(GST_VIDEO_DECODER(self), old_state));
+    g_assert_true(self->input_state == old_state);
+    g_assert_cmpuint(self->generation, ==, generation);
+    g_assert_cmpuint(self->timestamps.length, ==, mode == 3 ? 0 : 1);
+    g_assert_cmpuint(mock.close_calls, ==, 0);
+    g_assert_cmpuint(mock.successful_opens, ==, 1);
+    mock.fail_drain = FALSE;
+    mock.free_bytes = 1024 * 1024;
+    if (mode >= 2)
+      g_assert_true(gst_harness_push_event(harness, gst_event_new_flush_stop(TRUE)));
+    gst_harness_teardown(harness);
+  }
+}
+
+static void
+test_natural_caps_raw_boundaries(void)
+{
+  guint mode;
+  for (mode = 0; mode < 4; ++mode) {
+    guint8 bytes[] = { 0, 0, 1, 0x0d, 0x11, 0x22, 0x33, 0x44 };
+    GstHarness *harness = new_decoder();
+    GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+    GstBuffer *input, *output;
+    GstCaps *caps;
+    gst_harness_set_src_caps_str(harness,
+        "video/x-vc1,parsed=true,width=16,height=16,framerate=25/1");
+    if (mode == 0)
+      bytes[3] = 0x0f; /* headers only: no picture may be manufactured */
+    input = gst_buffer_new_allocate(NULL, sizeof(bytes), NULL);
+    gst_buffer_fill(input, 0, bytes, sizeof(bytes));
+    GST_BUFFER_PTS(input) = 0;
+    g_assert_cmpint(gst_harness_push(harness, input), ==, GST_FLOW_OK);
+    g_assert_cmpuint(mock.accepted_count, ==, 0);
+    if (mode == 1) {
+      flush_decoder(harness);
+      g_assert_cmpuint(mock.drain_calls, ==, 0);
+      g_assert_null(self->parse_adapter);
+    }
+    if (mode == 3) {
+      GstVideoCodecState *old = self->input_state;
+      guint64 generation = self->generation;
+      guint closes = mock.close_calls;
+      mock.fail_drain = TRUE;
+      g_assert_false(gst_crystalhd_set_format(GST_VIDEO_DECODER(self), old));
+      g_assert_true(self->input_state == old);
+      g_assert_cmpuint(self->generation, ==, generation);
+      g_assert_cmpuint(mock.close_calls, ==, closes);
+      g_assert_cmpuint(self->timestamps.length, ==, 1);
+      g_assert_cmpuint(mock.accepted_count, ==, 1);
+      mock.fail_drain = FALSE;
+    }
+    caps = gst_caps_from_string(
+        "video/x-vc1,parsed=true,width=16,height=16,framerate=30/1");
+    g_assert_true(gst_harness_push_event(harness, gst_event_new_caps(caps)));
+    gst_caps_unref(caps);
+    g_assert_cmpuint(mock.accepted_count, ==, mode >= 2 ? 1 : 0);
+    if (mode >= 2) {
+      output = gst_harness_try_pull(harness);
+      g_assert_nonnull(output);
+      check_output(output, 0, 1);
+      gst_buffer_unref(output);
+    }
+    /* A new raw tail must be parsed with the new base current frame and
+     * buffer offsets, including after header-only and flush transitions. */
+    if (mode == 1) {
+      GstSegment segment;
+      gst_segment_init(&segment, GST_FORMAT_TIME);
+      g_assert_true(gst_harness_push_event(harness, gst_event_new_segment(&segment)));
+    }
+    bytes[3] = 0x0d;
+    input = gst_buffer_new_allocate(NULL, sizeof(bytes), NULL);
+    gst_buffer_fill(input, 0, bytes, sizeof(bytes));
+    GST_BUFFER_PTS(input) = GST_SECOND;
+    g_assert_cmpint(gst_harness_push(harness, input), ==, GST_FLOW_OK);
+    g_assert_true(gst_harness_push_event(harness, gst_event_new_eos()));
+    output = gst_harness_try_pull(harness);
+    g_assert_nonnull(output);
+    check_output(output, GST_SECOND, mode >= 2 ? 2 : 1);
+    gst_buffer_unref(output);
+    g_assert_cmpuint(gst_harness_buffers_in_queue(harness), ==, 0);
+    gst_harness_teardown(harness);
+  }
+}
+
+static void
+test_natural_caps_raw_tail(void)
+{
+  static const guint8 picture[] = { 0, 0, 1, 0x0d, 0x11, 0x22, 0x33, 0x44 };
+  GstHarness *harness = new_decoder();
+  GstBuffer *input, *output;
+  guint i;
+  gst_harness_set_src_caps_str(harness,
+      "video/x-vc1,parsed=true,width=16,height=16,framerate=25/1");
+  mock.auto_output = FALSE;
+  for (i = 0; i < 2; ++i) {
+    input = gst_buffer_new_allocate(NULL, sizeof(picture), NULL);
+    gst_buffer_fill(input, 0, picture, sizeof(picture));
+    GST_BUFFER_PTS(input) = i * 40 * GST_MSECOND;
+    g_assert_cmpint(gst_harness_push(harness, input), ==, GST_FLOW_OK);
+  }
+  /* The final old AU has no following start code: it is still in the real
+   * base-class parser adapter, not in our hardware timestamp queue. */
+  g_assert_cmpuint(mock.accepted_count, ==, 1);
+  queue_picture(mock.accepted[0], 0x73);
+  mock.auto_output = TRUE;
+  g_assert_true(change_h264_caps(harness));
+  g_assert_cmpuint(mock.accepted_count, ==, 2);
+  g_assert_cmpuint(mock.drain_calls, ==, 1);
+  output = gst_harness_try_pull(harness);
+  g_assert_nonnull(output);
+  check_output(output, 0, 0x73);
+  gst_buffer_unref(output);
+  output = gst_harness_try_pull(harness);
+  g_assert_nonnull(output);
+  check_output(output, 40 * GST_MSECOND, 2);
+  gst_buffer_unref(output);
+  g_assert_cmpint(gst_harness_push(harness, new_input(80 * GST_MSECOND)),
+                  ==, GST_FLOW_OK);
+  output = gst_harness_pull(harness);
+  check_output(output, 80 * GST_MSECOND, 3);
+  gst_buffer_unref(output);
+  gst_harness_teardown(harness);
 }
 
 int
@@ -1418,6 +1755,10 @@ main(int argc, char **argv)
   GST_DEBUG_CATEGORY_INIT(gst_crystalhd_debug, "crystalhd", 0,
                           "CrystalHD lifecycle test");
   g_test_add_func("/crystalhd/lifecycle/frame-references", test_frame_references);
+  g_test_add_func("/crystalhd/lifecycle/natural-caps-tail", test_natural_caps_tail);
+  g_test_add_func("/crystalhd/lifecycle/natural-caps-errors", test_natural_caps_errors);
+  g_test_add_func("/crystalhd/lifecycle/natural-caps-raw-tail", test_natural_caps_raw_tail);
+  g_test_add_func("/crystalhd/lifecycle/natural-caps-raw-boundaries", test_natural_caps_raw_boundaries);
   g_test_add_func("/crystalhd/lifecycle/busy-stale-output", test_busy_stale_output);
   g_test_add_func("/crystalhd/lifecycle/flush-stale-output", test_flush_stale_output);
   g_test_add_func("/crystalhd/lifecycle/flush-reopen-errors", test_flush_reopen_errors);
@@ -1429,6 +1770,9 @@ main(int argc, char **argv)
   g_test_add_func("/crystalhd/lifecycle/incomplete-drain", test_incomplete_drain);
   g_test_add_func("/crystalhd/lifecycle/eos-with-ready-output", test_eos_with_ready_output);
   g_test_add_func("/crystalhd/lifecycle/field-identity", test_field_identity);
+  g_test_add_func("/crystalhd/lifecycle/field-pair-policy", test_field_pair_policy);
+  g_test_add_func("/crystalhd/lifecycle/output-interlace-mode-changes", test_output_interlace_mode_changes);
+  g_test_add_func("/crystalhd/lifecycle/interlaced-picture-types", test_interlaced_picture_types);
   g_test_add_func("/crystalhd/lifecycle/input-admission", test_input_admission);
   g_test_add_func("/crystalhd/lifecycle/input-admission-timeout", test_input_admission_timeout);
   g_test_add_func("/crystalhd/lifecycle/input-admission-flush", test_input_admission_flush);
@@ -1444,6 +1788,8 @@ main(int argc, char **argv)
   g_test_add_data_func("/crystalhd/lifecycle/blocked-delivery-drain", GINT_TO_POINTER(TRUE),
                        test_blocked_delivery);
   g_test_add_data_func("/crystalhd/lifecycle/blocked-delivery-flush", GINT_TO_POINTER(2),
+                       test_blocked_delivery);
+  g_test_add_data_func("/crystalhd/lifecycle/blocked-delivery-caps", GINT_TO_POINTER(3),
                        test_blocked_delivery);
   result = g_test_run();
   gst_deinit();

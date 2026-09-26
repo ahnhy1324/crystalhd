@@ -54,6 +54,16 @@ jobs:
           filters/vaapi/vaapi-seek-test "$RUNNER_TEMP/h264-samples/high.mp4" --software
           filters/vaapi/vaapi-seek-test "$RUNNER_TEMP/h264-samples/high.mp4" --software --lookahead 8
           filters/vaapi/vaapi-seek-test "$RUNNER_TEMP/h264-samples/high.mp4" --software --retain-old-frames
+          make library-drain-test
+          ffmpeg -nostdin -hide_banner -loglevel error -n \
+            -i "$RUNNER_TEMP/h264-samples/high.mp4" -map 0:v:0 -c:v copy \
+            -bsf:v h264_mp4toannexb -f h264 "$RUNNER_TEMP/drain.h264"
+          LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" tests/library-drain-test \
+            --preflight "$RUNNER_TEMP/drain.h264" 180
+          probe_status=0
+          LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" tests/library-drain-test \
+            --preflight "$RUNNER_TEMP/drain.h264" 179 || probe_status=$?
+          test "$probe_status" -eq 2
 
       - name: Verify local audio/video controls against software decoding
         run: |

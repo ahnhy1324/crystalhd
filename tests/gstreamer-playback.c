@@ -4,13 +4,44 @@
 #include <gst/video/video.h>
 #include <string.h>
 
+#define MAX_EPOCHS 8U
+typedef struct {
+  guint width, height, frames;
+} GeometryEpoch;
+
 typedef struct {
   guint frames;
   gboolean invalid_output;
   GstClockTime previous_pts;
   gboolean require_timestamps;
   GChecksum *checksum;
+  const GeometryEpoch *epochs;
+  guint epoch_count, epoch_index, epoch_frames;
 } PlaybackAudit;
+
+static void
+observe_geometry(PlaybackAudit *audit, guint width, guint height)
+{
+  if (audit->epoch_count == 0)
+    return;
+  if (audit->epoch_index >= audit->epoch_count ||
+      width != audit->epochs[audit->epoch_index].width ||
+      height != audit->epochs[audit->epoch_index].height) {
+    audit->invalid_output = TRUE;
+    return;
+  }
+  if (++audit->epoch_frames == audit->epochs[audit->epoch_index].frames) {
+    audit->epoch_frames = 0;
+    ++audit->epoch_index;
+  }
+}
+
+static gboolean
+geometry_complete(const PlaybackAudit *audit)
+{
+  return !audit->invalid_output && audit->epoch_index == audit->epoch_count &&
+      audit->epoch_frames == 0;
+}
 
 static void
 count_frame(GstElement *sink, GstBuffer *buffer, GstPad *pad, gpointer data)
@@ -33,6 +64,7 @@ count_frame(GstElement *sink, GstBuffer *buffer, GstPad *pad, gpointer data)
     audit->invalid_output = TRUE;
   else {
     guint row;
+    observe_geometry(audit, GST_VIDEO_INFO_WIDTH(&info), GST_VIDEO_INFO_HEIGHT(&info));
     for (row = 0; row < (guint)GST_VIDEO_INFO_HEIGHT(&info); row++)
       g_checksum_update(audit->checksum,
           (const guchar *)GST_VIDEO_FRAME_PLANE_DATA(&frame, 0) +
@@ -48,12 +80,11 @@ count_frame(GstElement *sink, GstBuffer *buffer, GstPad *pad, gpointer data)
 
 static gboolean
 run_pipeline(const gchar *description, const gchar *filename, guint expected,
-             GstClockTime timeout, gboolean seek_replay, gboolean report)
+             GstClockTime timeout, gboolean seek_replay, gboolean report,
+             const GeometryEpoch *epochs, guint epoch_count)
 {
   GError *error = NULL;
-  PlaybackAudit audit = {0, FALSE, GST_CLOCK_TIME_NONE,
-                        filename == NULL || strstr(description, "qtdemux") != NULL,
-                        NULL};
+  PlaybackAudit audit = {0};
   GstElement *pipeline = gst_parse_launch(description, &error);
   GstElement *source;
   GstElement *sink;
@@ -63,6 +94,10 @@ run_pipeline(const gchar *description, const gchar *filename, guint expected,
   gchar *reference_hash = NULL;
   guint pass;
 
+  audit.previous_pts = GST_CLOCK_TIME_NONE;
+  audit.require_timestamps = filename == NULL || strstr(description, "qtdemux") != NULL;
+  audit.epochs = epochs;
+  audit.epoch_count = epoch_count;
   if (error != NULL || pipeline == NULL) {
     g_printerr("Cannot construct playback pipeline: %s\n",
                error != NULL ? error->message : "unknown error");
@@ -100,6 +135,7 @@ run_pipeline(const gchar *description, const gchar *filename, guint expected,
       audit.frames = 0;
       audit.invalid_output = FALSE;
       audit.previous_pts = GST_CLOCK_TIME_NONE;
+      audit.epoch_index = audit.epoch_frames = 0;
       g_checksum_reset(audit.checksum);
       if (!gst_element_seek_simple(pipeline, GST_FORMAT_TIME,
                                     GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE, 0)) {
@@ -145,9 +181,11 @@ run_pipeline(const gchar *description, const gchar *filename, guint expected,
                pass != 0 ? " seek replay" : "", audit.frames, expected,
                eos ? "yes" : "no", hash);
       if (audit.invalid_output)
-        g_printerr("Output contained invalid YUY2 buffers or regressing timestamps\n");
+        g_printerr("Output contained invalid YUY2 buffers, regressing timestamps or unexpected geometry\n");
+      if (epoch_count != 0)
+        g_print("Geometry epochs: %u/%u complete\n", audit.epoch_index, epoch_count);
     }
-    success = eos && audit.frames == expected && !audit.invalid_output;
+    success = eos && audit.frames == expected && geometry_complete(&audit);
     if (pass == 0)
       reference_hash = g_strdup(hash);
     else if (g_strcmp0(hash, reference_hash) != 0) {
@@ -181,6 +219,70 @@ positive_number(const gchar *value, guint *number)
   return TRUE;
 }
 
+static gboolean
+parse_epochs(const gchar *text, guint expected, GeometryEpoch *epochs, guint *count)
+{
+  gchar **parts = g_strsplit(text, ",", MAX_EPOCHS + 1);
+  guint length = g_strv_length(parts);
+  guint64 total = 0;
+  gboolean valid = length > 0 && length <= MAX_EPOCHS;
+  for (guint index = 0; valid && index < length; ++index) {
+    gchar **dimensions = g_strsplit(parts[index], "x", 3);
+    gchar **tail = g_strv_length(dimensions) == 2 ?
+        g_strsplit(dimensions[1], ":", 3) : NULL;
+    valid = tail != NULL && g_strv_length(tail) == 2 &&
+        positive_number(dimensions[0], &epochs[index].width) &&
+        positive_number(tail[0], &epochs[index].height) &&
+        positive_number(tail[1], &epochs[index].frames) &&
+        epochs[index].width <= 1920 && epochs[index].height <= 1088;
+    if (valid)
+      total += epochs[index].frames;
+    g_strfreev(tail);
+    g_strfreev(dimensions);
+  }
+  g_strfreev(parts);
+  if (!valid || total != expected)
+    return FALSE;
+  *count = length;
+  return TRUE;
+}
+
+static gboolean
+geometry_self_test(void)
+{
+  GeometryEpoch epochs[MAX_EPOCHS];
+  guint count = 0;
+  PlaybackAudit audit = {0};
+  if (!parse_epochs("320x240:2,640x360:2", 4, epochs, &count) || count != 2 ||
+      parse_epochs("320x240:3", 4, epochs, &count) ||
+      parse_epochs("320x240:0", 0, epochs, &count) ||
+      parse_epochs("1921x240:1", 1, epochs, &count) ||
+      parse_epochs("320x240:1,", 1, epochs, &count) ||
+      parse_epochs("320x240:1:2", 1, epochs, &count) ||
+      parse_epochs("320:240x1", 1, epochs, &count) ||
+      parse_epochs("320:240:1", 1, epochs, &count) ||
+      !parse_epochs("320x240:2,640x360:2", 4, epochs, &count))
+    return FALSE;
+  audit.epochs = epochs;
+  audit.epoch_count = count;
+  observe_geometry(&audit, 320, 240);
+  observe_geometry(&audit, 320, 240);
+  observe_geometry(&audit, 640, 360);
+  if (geometry_complete(&audit))
+    return FALSE; /* Missing final new-geometry picture. */
+  observe_geometry(&audit, 640, 360);
+  if (!geometry_complete(&audit))
+    return FALSE;
+  observe_geometry(&audit, 640, 360);
+  if (!audit.invalid_output)
+    return FALSE; /* Extra picture after the final epoch. */
+  audit.epoch_index = audit.epoch_frames = 0;
+  audit.invalid_output = FALSE;
+  observe_geometry(&audit, 320, 240);
+  observe_geometry(&audit, 640, 360);
+  return audit.invalid_output; /* New caps cannot hide a missing old tail. */
+}
+
 int
 main(int argc, char **argv)
 {
@@ -194,33 +296,53 @@ main(int argc, char **argv)
       "video/x-h264,stream-format=byte-stream,alignment=au ! "
       "crystalhddec ! fakesink name=sink";
   const gchar *test_pipeline =
-      "videotestsrc num-buffers=12 ! video/x-raw,format=YUY2 ! "
+      "videotestsrc num-buffers=12 ! video/x-raw,format=YUY2,width=320,height=240 ! "
       "fakesink name=sink";
+  const gchar *mpeg2_pipeline =
+      "filesrc name=source ! mpegvideoparse ! crystalhddec ! fakesink name=sink";
+  GeometryEpoch epochs[MAX_EPOCHS];
+  guint epoch_count = 0;
+  gboolean seek_replay = FALSE;
   guint expected;
   guint timeout = 120;
 
   gst_init(&argc, &argv);
   if (argc == 2 && g_str_equal(argv[1], "--self-test")) {
-    if (!run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, TRUE) ||
-        run_pipeline(test_pipeline, NULL, 13, 5 * GST_SECOND, FALSE, FALSE) ||
+    const GeometryEpoch correct = {320, 240, 12}, wrong = {640, 360, 12};
+    if (!geometry_self_test() ||
+        !run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, TRUE, NULL, 0) ||
+        !run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, TRUE, &correct, 1) ||
+        run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, FALSE, &wrong, 1) ||
+        run_pipeline(test_pipeline, NULL, 13, 5 * GST_SECOND, FALSE, FALSE, NULL, 0) ||
         run_pipeline("fakesrc num-buffers=1 ! "
                      "identity sleep-time=100000 ! fakesink name=sink",
-                     NULL, 1, GST_MSECOND, FALSE, FALSE)) {
+                     NULL, 1, GST_MSECOND, FALSE, FALSE, NULL, 0)) {
       g_printerr("GStreamer frame-count/EOS self-test failed\n");
       return 1;
     }
     g_print("GStreamer frame-count/EOS self-test passed\n");
     return 0;
   }
-  if ((argc < 4 || argc > 6) || !positive_number(argv[2], &expected) ||
+  if ((argc < 4 || argc > 8) || !positive_number(argv[2], &expected) ||
       (argc >= 5 && !positive_number(argv[4], &timeout)) ||
-      (argc == 6 && !g_str_equal(argv[5], "--seek")) ||
-      (!g_str_equal(argv[3], "mp4") && !g_str_equal(argv[3], "h264"))) {
-    g_printerr("usage: %s VIDEO EXPECTED_FRAMES mp4|h264 [TIMEOUT_SECONDS [--seek]]\n",
-               argv[0]);
-    return 2;
+      (!g_str_equal(argv[3], "mp4") && !g_str_equal(argv[3], "h264") &&
+       !g_str_equal(argv[3], "mpeg2")))
+    goto usage;
+  for (gint arg = 5; arg < argc; ++arg) {
+    if (g_str_equal(argv[arg], "--seek") && !seek_replay)
+      seek_replay = TRUE;
+    else if (g_str_equal(argv[arg], "--epochs") && epoch_count == 0 && arg + 1 < argc) {
+      if (!parse_epochs(argv[++arg], expected, epochs, &epoch_count))
+        goto usage;
+    } else
+      goto usage;
   }
-  return run_pipeline(g_str_equal(argv[3], "mp4") ? mp4_pipeline : annex_b_pipeline,
+  return run_pipeline(g_str_equal(argv[3], "mp4") ? mp4_pipeline :
+                       g_str_equal(argv[3], "h264") ? annex_b_pipeline : mpeg2_pipeline,
                        argv[1], expected, (GstClockTime)timeout * GST_SECOND,
-                       argc == 6, TRUE) ? 0 : 1;
+                       seek_replay, TRUE, epochs, epoch_count) ? 0 : 1;
+usage:
+  g_printerr("usage: %s VIDEO EXPECTED_FRAMES mp4|h264|mpeg2 "
+             "[TIMEOUT_SECONDS [--seek] [--epochs WIDTHxHEIGHT:FRAMES,...]]\n", argv[0]);
+  return 2;
 }

@@ -69,6 +69,10 @@ Measured results are recorded in [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md
   1920×1080, 30 fps, 180/180 frames per fixture, independent pixel comparisons.
 - [x] Full HD GStreamer drain and exact EOS replay for all three profiles;
   Full HD High VA-API four-seek lookahead pixel comparisons.
+- [x] One progressive H.264 natural-resolution-change stream: 30 pictures
+  each at 640x360, 1280x720 and 640x360, with all 90 outputs in the expected
+  geometry epochs and raw pixels matching concatenated independent decodes.
+  This does not establish arbitrary codec/profile/interlace transitions.
 - [x] Retain original output frames across flush/new input and decoder-context
   destruction; exact old-frame PTS/pixels checked after each transition.
 - [x] Asynchronous FFmpeg input looping: High at 640×360 and 1920×1080
@@ -91,11 +95,22 @@ Measured results are recorded in [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md
 
 - [ ] BCM70012 on a current LTS and recent stable kernel.
 - [x] BCM70015 progressive MPEG-2 Main: 180/180 YUY2 frames and complete drain.
+- [x] Short Full HD MPEG-2 Main fixture: 1920x1080 progressive, 60/60 YUY2
+  pictures and EOS, with an independent software pixel comparison.
+- [x] MPEG-2 Main interlaced TFF and BFF fixtures at 640x360: each returns
+  50/50 paired pictures from 100 captured fields and genuine firmware EOS.
+  Field-aware software comparisons are recorded; other codecs and interlaced layouts
+  are not established by these samples.
 - [x] BCM70015 VC-1 Advanced: 15/15 frames through raw BDU and demuxed
   packet paths, identical hardware pixel hashes.
 - [x] BCM70015 WMV3 Main: 25/25 frames through ASF and demuxed packet
   paths, identical hardware pixel hashes.
-- [ ] Broader VC-1/WMV3 samples, interlaced output, and mid-stream resolution changes.
+- [x] Direct-library firmware EOS: H.264 (30 pictures), MPEG-2 (180), raw
+  VC-1 Advanced (15) and ASF WMV3 Main (25) return every picture, a genuine
+  output EOS marker and an empty ready queue with clean teardown. WMV3 needs
+  corrected EOS control-packet framing; silence alone is not BCM70015 EOS.
+- [ ] Broader VC-1/WMV3 samples, other interlaced layouts, and broader mid-stream
+  resolution/format changes beyond the single H.264 case above.
 - [ ] Suspend/resume with an idle device and around an active/recent session.
   This interrupts the desktop and is not part of unattended `make check`.
 - [ ] Chromium hardware frame identity after seeking, and GPU sandbox support.

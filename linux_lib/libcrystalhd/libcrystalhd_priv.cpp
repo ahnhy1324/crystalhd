@@ -2554,10 +2554,11 @@ void * txThreadProc(void *ctx)
 			continue;
 		}
 
-		// hack for indicating EOS when the HW does not signal one
-		// We will check if the HW does not produce a picture for 1s and does not signal EOS either
-		// This way exit maximum in 1s
-		if(Ctx->bEOSCheck)
+		/* Retain BCM70012's legacy no-progress fallback. BCM70015 has an
+		 * explicit firmware timing marker: capture silence is not EOS,
+		 * even with an empty ring (bytes leave it before DMA completes).
+		 */
+		if(Ctx->DevId == BC_PCI_DEVID_LINK && Ctx->bEOSCheck)
 		{
 			if(numPicCaptured == pStat.FramesCaptured)
 				waitForPictCount++;
