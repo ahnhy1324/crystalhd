@@ -51,8 +51,9 @@ the open validation work and linked GitHub issues.
 
 The `crystalhddec` GStreamer 1.x element advertises parsed H.264 Annex-B,
 MPEG-2, VC-1, and WMV3 input and produces standard YUY2 raw video. Current
-hardware validation covers progressive H.264 plus small MPEG-2, VC-1 Advanced,
-and WMV3 Main fixtures. MPEG-2 includes 640x360 interlaced top/bottom-field-first
+hardware validation covers progressive H.264 plus short MPEG-2 and VC-1 Advanced
+fixtures up to 1920x1080, and WMV3 Main up to 1440x1080 (anamorphic, not
+1920-wide WMV3). MPEG-2 includes 640x360 interlaced top/bottom-field-first
 samples; this is not general interlaced codec support. VC-1 and WMV3 use
 distinct firmware subtypes and framing; ASF demuxer output is accepted directly, while raw VC-1 BDUs are
 assembled into pictures. See the hardware report for exact caps and commands.
