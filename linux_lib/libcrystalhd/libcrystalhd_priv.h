@@ -299,6 +299,11 @@ typedef struct _DTS_LIB_CONTEXT{
 
 	TXBUFFER		circBuf;
 	bool			txThreadExit; // Handle to event to indicate to the tx thread to exit
+	/* Protected by thLock. Ownership starts before pop, not at DMA entry.
+	 * A timed-out quiesce stays blocked until stop/flush is retried.
+	 */
+	bool			txPending;
+	bool			txQuiescing;
 	pthread_t		htxThread; // Handle to TX thread
 	uint8_t			*alignBuf;
 
@@ -345,6 +350,7 @@ BC_STATUS DtsMapYUVBuffs(DTS_LIB_CONTEXT *Ctx);
 BC_STATUS DtsInitInterface(int hDevice,HANDLE *RetCtx, uint32_t mode);
 BC_STATUS DtsSetupConfig(DTS_LIB_CONTEXT *Ctx, uint32_t did, uint32_t rid, uint32_t FixFlags);
 BC_STATUS DtsReleaseInterface(DTS_LIB_CONTEXT *Ctx);
+void DtsJoinTxThread(DTS_LIB_CONTEXT *Ctx);
 BC_STATUS DtsGetBCRegConfig(DTS_LIB_CONTEXT	*Ctx);
 BC_STATUS DtsGetFirmwareFiles(DTS_LIB_CONTEXT	*Ctx);
 DTS_INPUT_MDATA	*DtsAllocMdata(DTS_LIB_CONTEXT *Ctx);

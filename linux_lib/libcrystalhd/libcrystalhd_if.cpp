@@ -42,6 +42,43 @@
 #include "libcrystalhd_fwcmds.h"
 #include "libcrystalhd_fwload_if.h"
 
+static bool DtsTxIsQuiescing(DTS_LIB_CONTEXT *Ctx)
+{
+	DtsLock(Ctx);
+	const bool blocked = Ctx->txQuiescing;
+	DtsUnLock(Ctx);
+	return blocked;
+}
+
+static bool DtsBeginTxQuiesce(DTS_LIB_CONTEXT *Ctx)
+{
+	DtsLock(Ctx);
+	Ctx->State = BC_DEC_STATE_FLUSH;
+	Ctx->txQuiescing = true;
+	const bool pending = Ctx->txPending;
+	DtsUnLock(Ctx);
+	return pending;
+}
+
+static BC_STATUS DtsWaitForTx(DTS_LIB_CONTEXT *Ctx)
+{
+	/* The driver can wait for CPB space before its timed DMA starts.
+	 * Destructive flush callers first issue the firmware cancellation.
+	 * Never hold thLock here: DMA completion returns pooled ioctl data
+	 * through that mutex. A timeout does not relinquish the TX buffer.
+	 */
+	for (unsigned int polls = 0; ; ++polls) {
+		DtsLock(Ctx);
+		const bool pending = Ctx->txPending;
+		DtsUnLock(Ctx);
+		if (!pending)
+			return BC_STS_SUCCESS;
+		if (polls == 500)
+			return BC_STS_TIMEOUT;
+		bc_sleep_ms(10);
+	}
+}
+
 #if (!__STDC_WANT_SECURE_LIB__)
 inline bool memcpy_s(void *dest, size_t sizeInBytes, void *src, size_t count)
 {
@@ -611,6 +648,7 @@ DtsDeviceClose(
 {
 	DTS_LIB_CONTEXT		*Ctx;
 	uint32_t globMode = 0;
+	BC_STATUS sts = BC_STS_SUCCESS;
 
 	if(hDevice == NULL)
 		return BC_STS_SUCCESS;
@@ -621,7 +659,16 @@ DtsDeviceClose(
 		return BC_STS_ERROR;
 
 	if(Ctx->State != BC_DEC_STATE_CLOSE){
-		DtsCloseDecoder(hDevice);
+		sts = DtsCloseDecoder(hDevice);
+		if (DtsTxIsQuiescing(Ctx)) {
+			/* DeviceClose has always joined TX before consuming the handle.
+			 * Do not return a live worker to existing callers that unload
+			 * the library on close. Join before retrying firmware teardown;
+			 * this can still wait on an unresponsive driver, as before.
+			 */
+			DtsJoinTxThread(Ctx);
+			DtsCloseDecoder(hDevice);
+		}
 	}
 
 	DtsCancelFetchOutInt(Ctx);
@@ -646,9 +693,8 @@ DtsDeviceClose(
 		globMode = 0;
 	}
 	DtsSetOPMode(globMode);
-	DtsReleasePESConverter(hDevice);
-
-	return DtsReleaseInterface(Ctx);
+	const BC_STATUS release_sts = DtsReleaseInterface(Ctx);
+	return sts == BC_STS_SUCCESS ? release_sts : sts;
 
 }
 
@@ -911,6 +957,8 @@ DtsStartDecoder(
 
 	if (!DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
+	if (DtsTxIsQuiescing(Ctx))
+		return BC_STS_BUSY;
 
 	if (Ctx->State == BC_DEC_STATE_CLOSE) {
 		DebugLog_Trace(LDIL_DBG,"DtsStartDecoder: Decoder is not opened\n");
@@ -976,6 +1024,8 @@ DtsCloseDecoder(
 	if (Ctx->State != BC_DEC_STATE_STOP)
 	{
 		sts = DtsStopDecoder(hDevice);
+		if (DtsTxIsQuiescing(Ctx))
+			return sts;
 	}
 
 
@@ -1195,15 +1245,30 @@ DtsStopDecoder(
 	 * available while cancellation waits for the admitted owner to retire.
 	 * FLUSH is also accepted by the firmware stop command below.
 	 */
-	Ctx->State = BC_DEC_STATE_FLUSH;
 	DtsUnLock(Ctx);
+	const bool pending_tx = DtsBeginTxQuiesce(Ctx);
 
 	// On LINK if the decoder is paused due to the RLL being full, un pause it before flush
 	if(Ctx->DevId == BC_PCI_DEVID_LINK && Ctx->hw_paused) {
 		sts = DtsFWPauseVideo(hDevice,eC011_PAUSE_MODE_OFF);
 		Ctx->hw_paused = false;
 	}
-	BC_STATUS cleanup_sts = DtsCancelFetchOutInt(Ctx);
+	/* A nonzero firmware flush also cancels the driver's CPB-space wait.
+	 * Stop must not overtake an already-popped or active DMA transfer.
+	 */
+	if (pending_tx) {
+		const BC_STATUS cancel_sts = DtsFWDecFlushChannel(hDevice, 2);
+		if (sts == BC_STS_SUCCESS)
+			sts = cancel_sts;
+	}
+	BC_STATUS cleanup_sts = DtsWaitForTx(Ctx);
+	if (cleanup_sts != BC_STS_SUCCESS)
+		return sts == BC_STS_SUCCESS ? cleanup_sts : sts;
+	/* Stop drops pending input as well as pictures. Otherwise a later
+	 * Start would admit bytes that were queued in the old session.
+	 */
+	txBufFlush(&Ctx->circBuf);
+	cleanup_sts = DtsCancelFetchOutInt(Ctx);
 	if (sts == BC_STS_SUCCESS)
 		sts = cleanup_sts;
 
@@ -1215,7 +1280,10 @@ DtsStopDecoder(
 	if (sts == BC_STS_SUCCESS)
 		sts = cleanup_sts;
 
+	DtsLock(Ctx);
 	Ctx->State = BC_DEC_STATE_STOP;
+	Ctx->txQuiescing = false;
+	DtsUnLock(Ctx);
 
 	return sts;
 }
@@ -1231,6 +1299,8 @@ DRVIFLIB_API BC_STATUS
 
 	if (!DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
+	if (DtsTxIsQuiescing(Ctx))
+		return BC_STS_BUSY;
 
 	if (Ctx->State == BC_DEC_STATE_CLOSE)
 	{
@@ -1273,6 +1343,8 @@ DRVIFLIB_API BC_STATUS
 
 	if (!DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
+	if (DtsTxIsQuiescing(Ctx))
+		return BC_STS_BUSY;
 
 	if (Ctx->State == BC_DEC_STATE_CLOSE)
 	{
@@ -1465,7 +1537,9 @@ DtsCancelTxRequest(
 	HANDLE	hDevice,
 	uint32_t Operation)
 {
-	return BC_STS_SUCCESS; // Since we always check before TX, there can never be a TX holding   in the Driver. FIXME
+	DTS_LIB_CONTEXT *Ctx = NULL;
+	DTS_GET_CTX(hDevice,Ctx);
+	return DtsWaitForTx(Ctx);
 }
 
 
@@ -1778,13 +1852,26 @@ DtsSendData( HANDLE  hDevice ,
 
 	DTS_GET_CTX(hDevice,Ctx);
 
-	// for now check the sizes here and wait if there is not enough space
-	while(ulSizeInBytes > Ctx->circBuf.freeSize) {
-		usleep(5 * 1000);
-		if (Ctx->State !=  BC_DEC_STATE_START && Ctx->State != BC_DEC_STATE_PAUSE)
+	for (;;) {
+		/* Serialize the final enqueue with Stop/Flush admission closure.
+		 * A packet prepared before FLUSH must not refill the reset ring.
+		 * Lock order is thLock -> ring flushLock -> ring pushpopLock;
+		 * no wait or DMA ioctl runs while thLock is held.
+		 */
+		DtsLock(Ctx);
+		if (Ctx->txQuiescing ||
+		    (Ctx->State != BC_DEC_STATE_START && Ctx->State != BC_DEC_STATE_PAUSE)) {
+			DtsUnLock(Ctx);
 			return BC_STS_IO_USER_ABORT;
+		}
+		if (ulSizeInBytes <= DtsTxFreeSize(hDevice)) {
+			const BC_STATUS sts = txBufPush(&Ctx->circBuf, pUserData, ulSizeInBytes);
+			DtsUnLock(Ctx);
+			return sts;
+		}
+		DtsUnLock(Ctx);
+		usleep(5 * 1000);
 	}
-	return txBufPush(&Ctx->circBuf, pUserData, ulSizeInBytes);
 }
 
 DRVIFLIB_API uint32_t
@@ -2105,14 +2192,22 @@ DtsProcInput( HANDLE  hDevice ,
 	if (!DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
 
+	DtsLock(Ctx);
+	if (Ctx->txQuiescing) {
+		DtsUnLock(Ctx);
+		return BC_STS_BUSY;
+	}
 	if (Ctx->State == BC_DEC_STATE_FLUSH)
 		Ctx->State = BC_DEC_STATE_START;
+	DtsUnLock(Ctx);
 
 	if (Ctx->State != BC_DEC_STATE_START)
 	{
 		if (!DtsIsDecOpened(0))
 		{
-			DtsLock(Ctx);
+			/* Lifecycle calls wait for TX/output owners, which need thLock
+			 * to retire. The input/control owner serializes this sequence.
+			 */
 			sts = DtsOpenDecoder(hDevice, Ctx->VidParams.StreamType);
 			if (sts == BC_STS_SUCCESS)
 			{
@@ -2120,7 +2215,6 @@ DtsProcInput( HANDLE  hDevice ,
 				if (sts == BC_STS_SUCCESS)
 					sts = DtsStartCapture(hDevice);
 			}
-			DtsUnLock(Ctx);
 			if (sts != BC_STS_SUCCESS)
 				return sts;
 		}
@@ -2378,15 +2472,29 @@ DtsFlushInput( HANDLE  hDevice ,
 	else
 	{
 		Ctx->PESConvParams.m_bAddSpsPps = true;
-		DtsLock(Ctx);
-		Ctx->State = BC_DEC_STATE_FLUSH;
-		DtsUnLock(Ctx);
-		txBufFlush(&Ctx->circBuf);
+		const bool pending_tx = DtsBeginTxQuiesce(Ctx);
 		Ctx->bEOSCheck = false;
-		bc_sleep_ms(30); // For the cancel to take place in case we are looping
-		sts = DtsCancelTxRequest(hDevice, Op);
-		if((Op == 3) || (sts != BC_STS_SUCCESS))
-		{
+		if (Op != 3 && pending_tx) {
+			if(Ctx->DevId == BC_PCI_DEVID_LINK && Ctx->hw_paused) {
+				sts = DtsFWPauseVideo(hDevice,eC011_PAUSE_MODE_OFF);
+				Ctx->hw_paused = false;
+			}
+			/* This first flush cancels a driver waiting for CPB space.
+			 * Bytes already popped may still enter DMA after it. Wait for
+			 * that owner, then establish the final firmware flush below.
+			 */
+			const BC_STATUS cancel_sts = DtsFWDecFlushChannel(hDevice, Op == 4 ? 2 : Op);
+			if (sts == BC_STS_SUCCESS)
+				sts = cancel_sts;
+		}
+		const BC_STATUS wait_sts = DtsCancelTxRequest(hDevice, Op);
+		if (wait_sts != BC_STS_SUCCESS)
+			return sts == BC_STS_SUCCESS ? wait_sts : sts;
+		txBufFlush(&Ctx->circBuf);
+		if (Op == 3) {
+			DtsLock(Ctx);
+			Ctx->txQuiescing = false;
+			DtsUnLock(Ctx);
 			return sts;
 		}
 		DtsClrPendMdataList(Ctx);
