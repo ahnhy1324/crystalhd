@@ -17,7 +17,7 @@ The kernel and userspace pieces have different levels of validation:
 | --- | --- |
 | Kernel module | Maintained for Linux 6.1 and newer; hardware-tested on BCM70015 with Ubuntu 6.17.0-41-generic. BCM70012 support is retained but has not been tested recently. |
 | `libcrystalhd` | Legacy compatibility API. CI freezes its 32-bit and 64-bit ioctl layouts, builds the complete library as 32-bit code, and exercises it through the tested frontends; it still has no comprehensive device-API test suite. |
-| GStreamer 1.x | Primary validation path on BCM70015: progressive H.264 Baseline/Main/High, complete-file drain, and flushing replay with identical pixels. Numbered 360p/720p H.264 + AAC fixtures pass in-flight seeks, pause/resume, and 0.5x/1x/2x clocked playback. MPEG-2, VC-1 Advanced, and WMV3 Main each have a small complete-drain hardware fixture. Broader streams, interlaced output, and mid-stream format changes remain unverified. |
+| GStreamer 1.x | Primary validation path on BCM70015: progressive H.264 Baseline/Main/High, complete-file drain, and flushing replay with identical pixels. Numbered 360p/720p H.264 + AAC fixtures pass in-flight seeks, pause/resume, and 0.5x/1x/2x clocked playback. One H.264 360p→720p→360p stream preserves every frame and the independently decoded segment pixels. MPEG-2 (short progressive Full HD and 360p top/bottom-field-first fixtures), VC-1 Advanced and WMV3 Main have complete-drain fixtures. Broader streams, other interlaced layouts, and other mid-stream format changes remain unverified. |
 | VA-API | Experimental client-oriented subset. BCM70015 H.264 Baseline/Main/High complete-file decode and pipelined seek checks pass with verified pixels; High also passes the synchronous seek probe. Bounded IDR replay handles firmware drain but can be expensive for synchronous clients. Not a general or conformance-tested VA-API driver. |
 | Chromium | Developer experiment only. The safe default uses Chrome's software decoder with the GPU sandbox enabled. Hardware decode is opt-in, has unresolved post-seek correctness, and requires disabling the GPU-process sandbox. |
 | Examples | Legacy diagnostic programs. CI verifies that they compile, not that their hard-coded sample streams decode correctly. |
@@ -52,8 +52,9 @@ the open validation work and linked GitHub issues.
 The `crystalhddec` GStreamer 1.x element advertises parsed H.264 Annex-B,
 MPEG-2, VC-1, and WMV3 input and produces standard YUY2 raw video. Current
 hardware validation covers progressive H.264 plus small MPEG-2, VC-1 Advanced,
-and WMV3 Main fixtures. VC-1 and WMV3 use distinct firmware subtypes and
-framing; ASF demuxer output is accepted directly, while raw VC-1 BDUs are
+and WMV3 Main fixtures. MPEG-2 includes 640x360 interlaced top/bottom-field-first
+samples; this is not general interlaced codec support. VC-1 and WMV3 use
+distinct firmware subtypes and framing; ASF demuxer output is accepted directly, while raw VC-1 BDUs are
 assembled into pictures. See the hardware report for exact caps and commands.
 
 The `crystalhd_drv_video.so` VA-API backend exposes progressive H.264
@@ -136,6 +137,30 @@ To exercise the actual decoder hardware with an H.264 MP4:
 ```sh
 ./tests/gstreamer-hardware.sh /path/to/video.mp4 2
 ```
+
+The optional direct-library drain probe bypasses GStreamer/VA-API. Build it
+with FFmpeg development libraries installed, then use a small progressive
+fixture with a known frame count:
+
+```sh
+make library-drain-test
+LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
+  tests/library-drain-test --preflight /path/to/video.h264 30
+LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
+  timeout --kill-after=10s 60s \
+  tests/library-drain-test --hardware /path/to/video.h264 30 35
+```
+
+It accepts raw Annex-B H.264, MPEG-2 elementary streams, raw VC-1 Advanced
+and WMV3 in ASF; known interlaced input is rejected. `--preflight` checks
+framing/counts without opening the device. `--hardware` requires an idle
+BCM70015, every expected timestamped picture, the actual firmware EOS output
+marker, an empty ready queue and
+successful cleanup. This opt-in target is not part of `make check`. Keep the
+external timeout: the probe's deadline cannot itself interrupt a blocked
+ioctl/close. It does not verify pixel quality. Small fixtures for all four
+formats pass the complete-count and
+firmware-EOS checks; this is not broad codec conformance coverage.
 
 To exercise the same hardware through VA-API and FFmpeg:
 
