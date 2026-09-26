@@ -27,15 +27,17 @@ Measured results are recorded in [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md
   pictures. Investigate inconsistent in-flight seeks/close timeouts and 0.5x
   progress; one settled 2x smoke pass is not general control validation.
   Keep frontend drain behavior distinct from library cancellation fixes.
-- [ ] [#16: everyday GStreamer playback](https://github.com/ahnhy1324/crystalhd/issues/16):
+- [x] [#16: everyday GStreamer playback](https://github.com/ahnhy1324/crystalhd/issues/16):
   provide explicit hardware/software local playback, validate in-flight
   controls and audio/video timing, and measure sustained 720p operation.
   Keep clocked test sinks distinct from visible/audible presentation and
   diagnose input/output starvation before claiming real-time performance.
-  Current blocker: BCM70015 can emit only one new picture after an in-flight
-  seek, then fail drain with pending inputs. Recheck full-device versus
-  decoder-only reset before sustained hardware playback; startup with audio
-  is also timing-dependent. Software controls are not hardware proof.
+  Full-device reopen fixes the one-picture seek stall; independent output
+  polling fixes audio-preroll starvation. Numbered 360p/720p H.264 + AAC
+  fixtures pass hardware controls and complete 360-frame replay. A 30-minute
+  720p30 + AAC run passes 54000/54000 frames and EOS, with 4ms maximum measured
+  A/V interval skew and no new card/link errors. Clocked sinks are not
+  visible/audible proof. Warning checks and fork CI gate merging.
 - [ ] [#12: YouTube integration](https://github.com/ahnhy1324/crystalhd/issues/12):
   replace the legacy quality/seek overrides with codec-only preference,
   reject late player failures in the probe, and validate a normal YouTube
@@ -76,8 +78,10 @@ Measured results are recorded in [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md
 - [ ] Full HD real-time display playback; measured decode/download throughput
   and correctness are separate from compositor/display integration.
 - [x] GStreamer flushing seek to zero after EOS: all three H.264 profiles,
-  complete frame counts and identical replay pixels. Arbitrary in-flight
-  seeks still need separate coverage.
+  complete frame counts and identical replay pixels. Separate numbered
+  360p/720p H.264 + AAC fixtures pass forward/backward in-flight seeks,
+  pause/resume and 0.5x/1x/2x with frame-number barcode identities and timestamps;
+  broader streams and visible/audible presentation remain unverified.
 - [x] Module unload/reload followed by complete decode and seek replay on
   all three H.264 profiles, with balanced pins and zero final module references.
 - [x] Reject a second playback client safely while the first keeps decoding;

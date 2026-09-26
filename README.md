@@ -17,7 +17,7 @@ The kernel and userspace pieces have different levels of validation:
 | --- | --- |
 | Kernel module | Maintained for Linux 6.1 and newer; hardware-tested on BCM70015 with Ubuntu 6.17.0-41-generic. BCM70012 support is retained but has not been tested recently. |
 | `libcrystalhd` | Legacy compatibility API. CI freezes its 32-bit and 64-bit ioctl layouts, builds the complete library as 32-bit code, and exercises it through the tested frontends; it still has no comprehensive device-API test suite. |
-| GStreamer 1.x | Primary validation path on BCM70015: progressive H.264 Baseline/Main/High, complete-file drain, and flushing replay with identical pixels. MPEG-2, VC-1 Advanced, and WMV3 Main each have a small complete-drain hardware fixture. Interlaced output, arbitrary in-flight seeks, and mid-stream format changes remain unverified. |
+| GStreamer 1.x | Primary validation path on BCM70015: progressive H.264 Baseline/Main/High, complete-file drain, and flushing replay with identical pixels. Numbered 360p/720p H.264 + AAC fixtures pass in-flight seeks, pause/resume, and 0.5x/1x/2x clocked playback. MPEG-2, VC-1 Advanced, and WMV3 Main each have a small complete-drain hardware fixture. Broader streams, interlaced output, and mid-stream format changes remain unverified. |
 | VA-API | Experimental client-oriented subset. BCM70015 H.264 Baseline/Main/High complete-file decode and pipelined seek checks pass with verified pixels; High also passes the synchronous seek probe. Bounded IDR replay handles firmware drain but can be expensive for synchronous clients. Not a general or conformance-tested VA-API driver. |
 | Chromium | Developer experiment only. The safe default uses Chrome's software decoder with the GPU sandbox enabled. Hardware decode is opt-in, has unresolved post-seek correctness, and requires disabling the GPU-process sandbox. |
 | Examples | Legacy diagnostic programs. CI verifies that they compile, not that their hard-coded sample streams decode correctly. |
@@ -173,7 +173,8 @@ default); a timeout or missing frame fails validation.
 Set `CRYSTALHD_TEST_SEEK=1` on the GStreamer hardware command to replay the
 file after a flushing seek to zero in the same pipeline. Both passes must
 drain every frame and produce the same pixel SHA-256. This checks replay
-after end-of-stream; arbitrary seeks during playback need separate coverage.
+after end-of-stream, separately from the numbered in-flight control checks
+described under [GStreamer playback](#gstreamer-playback).
 
 For VA-API seek/flush validation outside Chromium, install `libavcodec-dev`,
 `libavformat-dev`, and `libavutil-dev`, then run:
@@ -378,12 +379,36 @@ Unsupported input, a busy card, or decoder errors do not silently select
 software; retry explicitly with `--software`. Software codec availability
 depends on installed GStreamer plugins; `gstreamer1.0-libav` adds FFmpeg
 decoders. Rank changes are local to the player process, not system defaults.
-This controller is not yet a guarantee of smooth Full HD or arbitrary-stream
-playback. Hardware in-flight seeking currently fails on BCM70015; initial
-audio/video startup is also not yet reliable. Use explicit software mode for
-everyday controls while [issue #16](https://github.com/ahnhy1324/crystalhd/issues/16)
-remains open. Its output watchdog is cooperative: a blocked library call can
-still require an external timeout during testing.
+BCM70015 hardware tests pass pause/resume, forward/backward flushing seeks,
+and 0.5x/1x/2x playback on numbered 360p and 720p H.264 + AAC fixtures,
+including complete 360-frame replay. Flushing seeks now reopen the full
+device; an independent output worker prevents audio preroll from starving
+video output. A 30-minute 720p30 H.264 + AAC run also passes all 54,000 video
+frames and EOS, with maximum measured A/V interval skew of 4ms and about 12%
+process CPU use. These checks use clocked test sinks, not a window or speakers,
+and do not guarantee speaker/display lip-sync, smooth Full HD or arbitrary
+streams. The controller's output watchdog is cooperative: a blocked library
+call can still require an external timeout during testing.
+
+To reproduce the numbered 720p hardware control check after building (needs
+FFmpeg with libx264/AAC encoding and GStreamer H.264/AAC plugins):
+
+```sh
+make -C filters/gst/gst-plugin-1.0 gstreamer-controls-test
+crystalhd_sample_dir=$(mktemp -d)
+sh tests/generate-browser-sample.sh "$crystalhd_sample_dir/av720.mp4" --av-720p
+GST_PLUGIN_PATH="$PWD/filters/gst/gst-plugin-1.0" \
+LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
+GST_REGISTRY="$crystalhd_sample_dir/registry.bin" \
+timeout --kill-after=10 120 \
+  filters/gst/gst-plugin-1.0/gstreamer-controls-test \
+  "$crystalhd_sample_dir/av720.mp4" --audio --timeout 90
+```
+
+This fails on missing/out-of-order identities, incorrect seek/rate progress,
+video lateness above 250ms or sampled A/V interval skew above 100ms. It does
+not open a GUI or measure speaker/display lip-sync. The sample and temporary
+GStreamer registry remain in the generated directory for inspection.
 
 For an H.264 MP4 file:
 
