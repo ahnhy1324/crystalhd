@@ -327,14 +327,22 @@ static BC_STATUS bc_cproc_download_fw(struct crystalhd_cmd *ctx,
 
 	dev_dbg(chddev(), "Downloading FW\n");
 
-	if (!ctx || !idata || !idata->add_cdata || !idata->add_cdata_sz) {
+	if (!ctx || !ctx->hw_ctx || !idata || !idata->add_cdata ||
+	    !idata->add_cdata_sz) {
 		dev_err(chddev(), "%s: Invalid Arg\n", __func__);
 		return BC_STS_INV_ARG;
 	}
+	/* A verified firmware download is the recovery path for a quarantined
+	 * mailbox, so it takes transaction serialization without normal admission.
+	 */
+	sts = crystalhd_hw_fw_cmd_recovery_enter(ctx->hw_ctx);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
 
 	if ((ctx->state != BC_LINK_INVALID) && (ctx->state != BC_LINK_RESUME)) {
 		dev_dbg(chddev(), "Link invalid state download fw %x \n", ctx->state);
-		return BC_STS_ERR_USAGE;
+		sts = BC_STS_ERR_USAGE;
+		goto done;
 	}
 
 	sts = ctx->hw_ctx->pfnFWDwnld(ctx->hw_ctx, (uint8_t *)idata->add_cdata,
@@ -342,12 +350,18 @@ static BC_STATUS bc_cproc_download_fw(struct crystalhd_cmd *ctx,
 
 	if (sts != BC_STS_SUCCESS) {
 		dev_info(chddev(), "Firmware Download Failure!! - %d\n", sts);
-	} else
+	} else {
 		ctx->state |= BC_LINK_INIT;
+		/* A successful image download is the verified firmware reset that
+		 * reconciles any earlier timed-out mailbox command.
+		 */
+		crystalhd_hw_fw_cmd_reset_locked(ctx->hw_ctx);
+	}
 
 	ctx->pwr_state_change = BC_HW_RUNNING;
 
-	ctx->hw_ctx->FwCmdCnt = 0;
+done:
+	crystalhd_hw_fw_cmd_leave(ctx->hw_ctx);
 	return sts;
 }
 
@@ -367,12 +381,18 @@ static BC_STATUS bc_cproc_download_fw(struct crystalhd_cmd *ctx,
 static BC_STATUS bc_cproc_do_fw_cmd(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *idata)
 {
 	struct device *dev = chddev();
-	BC_STATUS sts;
+	BC_STATUS rollback_sts, sts;
 	uint32_t *cmd;
+	bool resume_prepared = false, was_paused = false;
+
+	sts = crystalhd_hw_fw_cmd_enter(ctx->hw_ctx);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
 
 	if (!(ctx->state & BC_LINK_INIT)) {
 		dev_dbg(dev, "Link invalid state do fw cmd %x \n", ctx->state);
-		return BC_STS_ERR_USAGE;
+		sts = BC_STS_ERR_USAGE;
+		goto done;
 	}
 
 	cmd = idata->udata.u.fwCmd.cmd;
@@ -380,11 +400,30 @@ static BC_STATUS bc_cproc_do_fw_cmd(struct crystalhd_cmd *ctx, crystalhd_ioctl_d
 	/* Pre-Process */
 	if (cmd[0] == eCMD_C011_DEC_CHAN_PAUSE) {
 		if (!cmd[3]) {
-			if (down_interruptible(&ctx->hw_ctx->fetch_sem))
-				return BC_STS_IO_USER_ABORT;
-			ctx->state &= ~BC_LINK_PAUSED;
-			ctx->hw_ctx->pfnIssuePause(ctx->hw_ctx, false);
+			was_paused = (ctx->state & BC_LINK_PAUSED) != 0;
+			if (down_interruptible(&ctx->hw_ctx->fetch_sem)) {
+				sts = BC_STS_IO_USER_ABORT;
+				goto done;
+			}
+			sts = ctx->hw_ctx->pfnIssuePause(ctx->hw_ctx, false);
+			/* Link has already cleared its pause mailbox when capture has no
+			 * queued RX buffer. Match the other start-capture call sites and let
+			 * firmware resume complete; NO_DATA is not a transition failure.
+			 */
+			if (sts == BC_STS_NO_DATA)
+				sts = BC_STS_SUCCESS;
+			if (sts == BC_STS_SUCCESS) {
+				ctx->state &= ~BC_LINK_PAUSED;
+				resume_prepared = was_paused;
+			} else if (was_paused) {
+				ctx->state |= BC_LINK_PAUSED;
+				ctx->hw_ctx->pfnIssuePause(ctx->hw_ctx, true);
+			} else {
+				ctx->state &= ~BC_LINK_PAUSED;
+			}
 			up(&ctx->hw_ctx->fetch_sem);
+			if (sts != BC_STS_SUCCESS)
+				goto done;
 		}
 	} else if (cmd[0] == eCMD_C011_DEC_CHAN_FLUSH) {
 		dev_dbg(dev, "Flush issued\n");
@@ -395,8 +434,20 @@ static BC_STATUS bc_cproc_do_fw_cmd(struct crystalhd_cmd *ctx, crystalhd_ioctl_d
 	sts = ctx->hw_ctx->pfnDoFirmwareCmd(ctx->hw_ctx, &idata->udata.u.fwCmd);
 
 	if (sts != BC_STS_SUCCESS) {
+		if (resume_prepared) {
+			/* Local capture resumes before firmware. Restore the previous
+			 * fail-closed state when firmware rejects or times out.
+			 */
+			down(&ctx->hw_ctx->fetch_sem);
+			ctx->state |= BC_LINK_PAUSED;
+			rollback_sts = ctx->hw_ctx->pfnIssuePause(ctx->hw_ctx, true);
+			up(&ctx->hw_ctx->fetch_sem);
+			if (rollback_sts != BC_STS_SUCCESS)
+				dev_err(dev, "failed to restore capture pause: %d\n",
+					rollback_sts);
+		}
 		dev_dbg(dev, "fw cmd %x failed\n", cmd[0]);
-		return sts;
+		goto done;
 	}
 
 	/* Post-Process */
@@ -412,6 +463,8 @@ static BC_STATUS bc_cproc_do_fw_cmd(struct crystalhd_cmd *ctx, crystalhd_ioctl_d
 		}
 	}
 
+done:
+	crystalhd_hw_fw_cmd_leave(ctx->hw_ctx);
 	return sts;
 }
 

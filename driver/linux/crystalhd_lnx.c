@@ -623,6 +623,13 @@ static long chd_dec_ioctl_common(struct file *fd, unsigned int cmd,
 		down_write(&adp->user_lock);
 	else
 		down_read(&adp->user_lock);
+	/* A PM failure can be published while this file operation waits behind
+	 * the user barrier. Revalidate after admission before touching hardware.
+	 */
+	if (!READ_ONCE(adp->present)) {
+		rc = -ENODEV;
+		goto unlock;
+	}
 
 	uc = binding->user;
 	if (!uc) {
@@ -721,6 +728,10 @@ static int chd_dec_open_locked(struct inode *in, struct file *fd)
 	dev = &adp->pdev->dev;
 	dev_dbg(dev, "Entering %s\n", __func__);
 	down_write(&adp->user_lock);
+	if (!READ_ONCE(adp->present)) {
+		rc = -ENODEV;
+		goto unlock;
+	}
 
 	if (adp->cfg_users >= BC_LINK_MAX_OPENS) {
 		dev_info(dev, "Already in use.%d\n", adp->cfg_users);
@@ -1240,18 +1251,21 @@ int chd_dec_pci_suspend(struct pci_dev *pdev, pm_message_t state)
 		dev_err(dev, "%s: could not get adp\n", __func__);
 		return -ENODEV;
 	}
+	down_write(&adp->user_lock);
 
 	temp = chd_dec_alloc_iodata(adp, false);
 	if (!temp) {
 		dev_err(dev, "could not get ioctl data\n");
-		return -ENODEV;
+		rc = -ENODEV;
+		goto unlock;
 	}
 
 	sts = crystalhd_suspend(&adp->cmds, temp);
 	if (sts != BC_STS_SUCCESS) {
 		dev_err(dev, "Crystal HD Suspend %d\n", sts);
 		chd_dec_free_iodata(adp, temp, false);
-		return -ENODEV;
+		rc = -ENODEV;
+		goto fail_closed;
 	}
 
 	chd_dec_free_iodata(adp, temp, false);
@@ -1261,8 +1275,7 @@ int chd_dec_pci_suspend(struct pci_dev *pdev, pm_message_t state)
 	rc = chd_restore_l0s(adp);
 	if (rc) {
 		dev_err(dev, "suspend aborted with decoder quiesced after L0s restore failure\n");
-		chd_dec_fail_closed(adp, rc);
-		return rc;
+		goto fail_closed;
 	}
 	chd_dec_disable_int(adp);
 	pci_save_state(pdev);
@@ -1270,7 +1283,23 @@ int chd_dec_pci_suspend(struct pci_dev *pdev, pm_message_t state)
 	/* Disable IO/bus master/irq router */
 	pci_disable_device(pdev);
 	pci_set_power_state(pdev, pci_choose_state(pdev, state));
+	up_write(&adp->user_lock);
 	return 0;
+
+fail_closed:
+	/* Publish cancellation before dropping the ioctl barrier. fail_closed
+	 * must acquire chd_device_lock after user_lock is released to preserve
+	 * the file-operation lock order.
+	 */
+	WRITE_ONCE(adp->present, 0);
+	WRITE_ONCE(adp->cmds.cin_wait_exit, 1);
+	up_write(&adp->user_lock);
+	chd_dec_fail_closed(adp, rc);
+	return rc;
+
+unlock:
+	up_write(&adp->user_lock);
+	return rc;
 }
 
 int chd_dec_pci_resume(struct pci_dev *pdev)
@@ -1285,6 +1314,7 @@ int chd_dec_pci_resume(struct pci_dev *pdev)
 		dev_err(dev, "%s: could not get adp\n", __func__);
 		return -ENODEV;
 	}
+	down_write(&adp->user_lock);
 
 	pci_set_power_state(pdev, PCI_D0);
 	pci_restore_state(pdev);
@@ -1298,8 +1328,7 @@ int chd_dec_pci_resume(struct pci_dev *pdev)
 	if (rc) {
 		dev_err(dev, "Failed to enable PCI device\n");
 		chd_restore_l0s(adp);
-		chd_dec_fail_closed(adp, rc);
-		return rc;
+		goto fail_closed;
 	}
 
 	/* Parent resume and PCI config restoration precede this callback.
@@ -1326,12 +1355,26 @@ int chd_dec_pci_resume(struct pci_dev *pdev)
 		goto disable_device;
 	}
 
+	up_write(&adp->user_lock);
 	return 0;
 
 disable_device:
+	/* Prevent a new file operation from entering the failed device between
+	 * releasing user_lock and fail_closed acquiring chd_device_lock.
+	 */
+	WRITE_ONCE(adp->present, 0);
+	WRITE_ONCE(adp->cmds.cin_wait_exit, 1);
+	up_write(&adp->user_lock);
 	chd_dec_fail_closed(adp, rc);
 	chd_restore_l0s(adp);
 	pci_disable_device(pdev);
+	return rc;
+
+fail_closed:
+	WRITE_ONCE(adp->present, 0);
+	WRITE_ONCE(adp->cmds.cin_wait_exit, 1);
+	up_write(&adp->user_lock);
+	chd_dec_fail_closed(adp, rc);
 	return rc;
 }
 

@@ -28,6 +28,7 @@
 #define _CRYSTALHD_HW_H_
 
 #include <linux/device.h>
+#include <linux/mutex.h>
 #include <linux/semaphore.h>
 #include "crystalhd_fw_if.h"
 #include "crystalhd_misc.h"
@@ -341,7 +342,11 @@ struct crystalhd_hw {
 	bool			dma_fault; /* bus mastering disabled after a stop timeout */
 	struct crystalhd_adp	*adp;
 
-	wait_queue_head_t	*pfw_cmd_event;
+	struct mutex		fwcmd_trans_mutex;
+	struct mutex		fwcmd_mutex;
+	wait_queue_head_t	fwcmd_event;
+	bool			fwcmd_pending;
+	bool			fwcmd_poisoned;
 	int			fwcmd_evt_sts;
 
 	uint32_t		pib_del_Q_addr;
@@ -494,6 +499,16 @@ void crystalhd_hw_delete_ioqs(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_create_ioqs(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_open(struct crystalhd_hw *hw, struct crystalhd_adp *adp);
 BC_STATUS crystalhd_hw_close(struct crystalhd_hw *hw, struct crystalhd_adp *adp);
+BC_STATUS crystalhd_hw_fw_cmd_enter(struct crystalhd_hw *hw);
+BC_STATUS crystalhd_hw_fw_cmd_recovery_enter(struct crystalhd_hw *hw);
+void crystalhd_hw_fw_cmd_leave(struct crystalhd_hw *hw);
+BC_STATUS crystalhd_hw_fw_cmd_begin(struct crystalhd_hw *hw);
+BC_STATUS crystalhd_hw_fw_cmd_wait(struct crystalhd_hw *hw);
+void crystalhd_hw_fw_cmd_end(struct crystalhd_hw *hw);
+void crystalhd_hw_fw_cmd_complete(struct crystalhd_hw *hw);
+/* Caller must hold fwcmd_trans_mutex. */
+void crystalhd_hw_fw_cmd_reset_locked(struct crystalhd_hw *hw);
+void crystalhd_hw_fw_cmd_reset(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_setup_dma_rings(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_free_dma_rings(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_tx_req_complete(struct crystalhd_hw *hw, uint32_t list_id, BC_STATUS cs);

@@ -35,6 +35,182 @@
 
 #define OFFSETOF(_s_, _m_) ((size_t)(unsigned long)&(((_s_ *)0)->_m_))
 
+BC_STATUS crystalhd_hw_fw_cmd_enter(struct crystalhd_hw *hw)
+{
+	unsigned long flags;
+	BC_STATUS sts = BC_STS_SUCCESS;
+
+	if (!hw)
+		return BC_STS_INV_ARG;
+	if (mutex_lock_interruptible(&hw->fwcmd_trans_mutex))
+		return BC_STS_IO_USER_ABORT;
+
+	/* Reject quarantined or externally posted mailbox work before command-layer
+	 * preprocessing can mutate capture/flush state. The low-level begin check is
+	 * retained as a defensive backstop for callers outside this transaction.
+	 */
+	spin_lock_irqsave(&hw->lock, flags);
+	if (hw->fwcmd_poisoned || hw->fwcmd_pending)
+		sts = BC_STS_BUSY;
+	spin_unlock_irqrestore(&hw->lock, flags);
+	if (sts != BC_STS_SUCCESS)
+		mutex_unlock(&hw->fwcmd_trans_mutex);
+	return sts;
+}
+
+BC_STATUS crystalhd_hw_fw_cmd_recovery_enter(struct crystalhd_hw *hw)
+{
+	unsigned long flags;
+	BC_STATUS sts = BC_STS_SUCCESS;
+
+	if (!hw)
+		return BC_STS_INV_ARG;
+	if (mutex_lock_interruptible(&hw->fwcmd_trans_mutex))
+		return BC_STS_IO_USER_ABORT;
+	/* Recovery may clear quarantine, but must not reset over active work from
+	 * a defensive/direct low-level caller that bypassed transaction locking.
+	 */
+	spin_lock_irqsave(&hw->lock, flags);
+	if (hw->fwcmd_pending)
+		sts = BC_STS_BUSY;
+	spin_unlock_irqrestore(&hw->lock, flags);
+	if (sts != BC_STS_SUCCESS)
+		mutex_unlock(&hw->fwcmd_trans_mutex);
+	return sts;
+}
+
+void crystalhd_hw_fw_cmd_leave(struct crystalhd_hw *hw)
+{
+	if (hw)
+		mutex_unlock(&hw->fwcmd_trans_mutex);
+}
+
+BC_STATUS crystalhd_hw_fw_cmd_begin(struct crystalhd_hw *hw)
+{
+	unsigned long flags;
+	BC_STATUS sts = BC_STS_SUCCESS;
+
+	if (!hw)
+		return BC_STS_INV_ARG;
+	if (mutex_lock_interruptible(&hw->fwcmd_mutex))
+		return BC_STS_IO_USER_ABORT;
+
+	spin_lock_irqsave(&hw->lock, flags);
+	if (hw->fwcmd_poisoned || hw->fwcmd_pending) {
+		sts = BC_STS_BUSY;
+	} else {
+		hw->fwcmd_evt_sts = 0;
+		hw->fwcmd_pending = true;
+		hw->FwCmdCnt++;
+	}
+	spin_unlock_irqrestore(&hw->lock, flags);
+
+	if (sts != BC_STS_SUCCESS)
+		mutex_unlock(&hw->fwcmd_mutex);
+	return sts;
+}
+
+BC_STATUS crystalhd_hw_fw_cmd_wait(struct crystalhd_hw *hw)
+{
+	unsigned long flags;
+	BC_STATUS sts;
+	int rc = 0;
+
+	if (!hw)
+		return BC_STS_INV_ARG;
+
+	crystalhd_wait_on_event(&hw->fwcmd_event,
+				READ_ONCE(hw->fwcmd_evt_sts), 20000, rc, true);
+
+	spin_lock_irqsave(&hw->lock, flags);
+	if (hw->fwcmd_evt_sts) {
+		sts = BC_STS_SUCCESS;
+	} else {
+		/* The response interrupt can still arrive after this caller leaves.
+		 * Quarantine the mailbox and keep the command counted until that late
+		 * interrupt is consumed or the hardware is reset. Flea power management
+		 * must not sleep the firmware while its response is outstanding.
+		 */
+		if (hw->fwcmd_pending) {
+			hw->fwcmd_pending = false;
+			hw->fwcmd_poisoned = true;
+		}
+		if (rc == -EBUSY)
+			sts = BC_STS_TIMEOUT;
+		else if (rc == -EINTR)
+			sts = BC_STS_IO_USER_ABORT;
+		else
+			sts = BC_STS_IO_ERROR;
+	}
+	spin_unlock_irqrestore(&hw->lock, flags);
+
+	return sts;
+}
+
+void crystalhd_hw_fw_cmd_end(struct crystalhd_hw *hw)
+{
+	if (hw)
+		mutex_unlock(&hw->fwcmd_mutex);
+}
+
+void crystalhd_hw_fw_cmd_complete(struct crystalhd_hw *hw)
+{
+	unsigned long flags;
+	bool wake = false;
+
+	if (!hw)
+		return;
+
+	spin_lock_irqsave(&hw->lock, flags);
+	if (hw->fwcmd_pending) {
+		hw->fwcmd_pending = false;
+		hw->fwcmd_evt_sts = 1;
+		if (hw->FwCmdCnt)
+			hw->FwCmdCnt--;
+		wake = true;
+	} else if (hw->fwcmd_poisoned) {
+		/* Retire the timed-out command's power-management count, but keep the
+		 * mailbox poisoned. The firmware may have committed a state-changing
+		 * command even though the caller timed out, and the response/post-process
+		 * path is no longer available to reconcile host state. Only a verified
+		 * firmware/device reset may admit another command.
+		 */
+		if (hw->FwCmdCnt) {
+			hw->FwCmdCnt--;
+			wake = true;
+		}
+	}
+	spin_unlock_irqrestore(&hw->lock, flags);
+
+	if (wake)
+		crystalhd_set_event(&hw->fwcmd_event);
+}
+
+void crystalhd_hw_fw_cmd_reset_locked(struct crystalhd_hw *hw)
+{
+	unsigned long flags;
+
+	if (!hw)
+		return;
+	mutex_lock(&hw->fwcmd_mutex);
+	spin_lock_irqsave(&hw->lock, flags);
+	hw->fwcmd_pending = false;
+	hw->fwcmd_poisoned = false;
+	hw->fwcmd_evt_sts = 0;
+	hw->FwCmdCnt = 0;
+	spin_unlock_irqrestore(&hw->lock, flags);
+	mutex_unlock(&hw->fwcmd_mutex);
+}
+
+void crystalhd_hw_fw_cmd_reset(struct crystalhd_hw *hw)
+{
+	if (!hw)
+		return;
+	mutex_lock(&hw->fwcmd_trans_mutex);
+	crystalhd_hw_fw_cmd_reset_locked(hw);
+	mutex_unlock(&hw->fwcmd_trans_mutex);
+}
+
 BC_STATUS crystalhd_hw_open(struct crystalhd_hw *hw, struct crystalhd_adp *adp)
 {
 	struct device *dev;
@@ -104,6 +280,10 @@ BC_STATUS crystalhd_hw_open(struct crystalhd_hw *hw, struct crystalhd_adp *adp)
 	spin_lock_init(&hw->lock);
 	spin_lock_init(&hw->rx_lock);
 	sema_init(&hw->fetch_sem, 1);
+	mutex_init(&hw->fwcmd_trans_mutex);
+	mutex_init(&hw->fwcmd_mutex);
+	crystalhd_create_event(&hw->fwcmd_event);
+	crystalhd_hw_fw_cmd_reset(hw);
 
 	/* Seed for error checking and debugging. Random numbers */
 	hw->tx_ioq_tag_seed = 0x70023070;
@@ -1116,17 +1296,24 @@ BC_STATUS crystalhd_hw_stop_capture(struct crystalhd_hw *hw, bool unmap)
 
 BC_STATUS crystalhd_hw_suspend(struct crystalhd_hw *hw)
 {
+	BC_STATUS sts = BC_STS_SUCCESS;
+
 	if (!hw) {
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
 		return BC_STS_INV_ARG;
 	}
 
+	/* Exclude command pre/post processing as well as the mailbox wait before
+	 * resetting the device. This also protects non-PCI-PM stop callers.
+	 */
+	mutex_lock(&hw->fwcmd_trans_mutex);
 	if (!hw->pfnStopDevice(hw)) {
 		dev_info(&hw->adp->pdev->dev, "Failed to Stop Device!!\n");
-		return BC_STS_ERROR;
+		sts = BC_STS_ERROR;
 	}
+	mutex_unlock(&hw->fwcmd_trans_mutex);
 
-	return BC_STS_SUCCESS;
+	return sts;
 }
 
 BC_STATUS crystalhd_hw_resume(struct crystalhd_hw *hw)
@@ -1138,6 +1325,7 @@ BC_STATUS crystalhd_hw_resume(struct crystalhd_hw *hw)
 	if (READ_ONCE(hw->dma_fault))
 		return BC_STS_IO_ERROR;
 
+	mutex_lock(&hw->fwcmd_trans_mutex);
 	// Reset list state
 	hw->rx_list_sts[0] = sts_free;
 	hw->rx_list_sts[1] = sts_free;
@@ -1148,8 +1336,11 @@ BC_STATUS crystalhd_hw_resume(struct crystalhd_hw *hw)
 
 	if (!hw->pfnStartDevice(hw)) {
 		dev_info(&hw->adp->pdev->dev, "Failed to Start Device!!\n");
+		mutex_unlock(&hw->fwcmd_trans_mutex);
 		return BC_STS_ERROR;
 	}
+	crystalhd_hw_fw_cmd_reset_locked(hw);
+	mutex_unlock(&hw->fwcmd_trans_mutex);
 
 	return BC_STS_SUCCESS;
 }

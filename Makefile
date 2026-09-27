@@ -9,7 +9,7 @@ KDIR ?= /lib/modules/$(KVER)/build
 DRIVER_ARGS := KVER=$(KVER) KDIR=$(KDIR) DESTDIR=$(DESTDIR)
 USER_ARGS := PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 
-.PHONY: all driver library library-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check l0s-check command-pm-check pib-check userspace32-check legacy-cpu-check check install install-module install-runtime install-browser install-check uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check clean
+.PHONY: all driver library library-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check l0s-check command-pm-check fw-command-check pib-check userspace32-check legacy-cpu-check check install install-module install-runtime install-browser install-check uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check clean
 
 all: driver library gstreamer vaapi examples
 
@@ -92,6 +92,9 @@ l0s-check:
 command-pm-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/command-pm.sh
 
+fw-command-check:
+	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/fw-command.sh
+
 pib-check:
 	CC="$(CC)" sh ./tests/flea-pib.sh
 
@@ -101,7 +104,7 @@ userspace32-check:
 legacy-cpu-check:
 	CXX="$(CXX)" sh ./tests/userspace32.sh --legacy
 
-check: uapi-check dma-check l0s-check command-pm-check pib-check library-check all
+check: uapi-check dma-check l0s-check command-pm-check fw-command-check pib-check library-check all
 	$(MAKE) -C filters/gst/gst-plugin-1.0 check
 	$(MAKE) -C filters/vaapi check
 	$(MAKE) -C browser check

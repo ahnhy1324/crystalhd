@@ -38,11 +38,12 @@ awk '
     /^static void bc_cproc_mark_pwr_state\(/ ||
     /^static BC_STATUS bc_cproc_notify_mode\(/ ||
     /^static BC_STATUS bc_cproc_download_fw\(/ ||
+    /^static BC_STATUS bc_cproc_do_fw_cmd\(/ ||
     (/^BC_STATUS bc_cproc_release_user\(/ && !/;[[:space:]]*$/) ||
     /^BC_STATUS crystalhd_(suspend|resume|user_open)\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 9 || copying) exit 1 }
+    END { if (found != 10 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" > "$pm_test_dir/command-pm-functions.h"
 
 for pm_sanitize in no yes; do
@@ -54,7 +55,7 @@ for pm_sanitize in no yes; do
     # The existing notify-mode code compares unsigned mode to its -1 sentinel.
     "${CC:-cc}" ${CFLAGS:-} -std=c11 -O1 -g -Wall -Wextra -Werror -Wno-sign-compare \
         $pm_extra -I"$repo_dir/include" -I"$pm_test_dir" \
-        "$repo_dir/tests/command-pm.c" -o "$pm_test_dir/check"
+        "$repo_dir/tests/command-pm.c" -pthread -o "$pm_test_dir/check"
     printf 'Command PM: sanitizers=%s\n' "$pm_sanitize"
     ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
         UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 "$pm_test_dir/check"
