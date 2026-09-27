@@ -23,7 +23,8 @@ WMV3_TEST := vaapi-wmv3-test
 VC1_REPLAY_TEST := vaapi-vc1-replay-test
 VC1_SUBMIT_TEST := vaapi-vc1-submit-test
 SEEK_TEST := vaapi-seek-test
-DRIVERDIR ?= $(shell $(PKG_CONFIG) --variable=libdir libva)/dri
+VA_LIBDIR := $(shell $(PKG_CONFIG) --variable=libdir libva)
+DRIVERDIR ?= $(if $(strip $(VA_LIBDIR)),$(VA_LIBDIR)/dri)
 VAAPI_DRM_DEVICE ?= /dev/dri/renderD128
 
 CPPFLAGS += -D__LINUX_USER__ -I$(ROOTDIR)/linux_lib/libcrystalhd \
@@ -37,7 +38,7 @@ LDLIBS += $(shell $(PKG_CONFIG) --libs libva libva-drm libdrm gbm \
 	libswscale) \
 	-lcrystalhd -pthread
 
-.PHONY: all clean check install seek-test
+.PHONY: all clean check install uninstall seek-test
 
 all: $(DRIVER)
 
@@ -162,7 +163,16 @@ check: $(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER
 	fi
 
 install: $(DRIVER)
+	@case "$(DRIVERDIR)" in /*) ;; *) \
+		echo "ERROR: VA driver directory is unavailable; install libva pkg-config metadata or pass an absolute DRIVERDIR" >&2; \
+		exit 1;; esac
 	install -D -m 0755 $(DRIVER) $(DESTDIR)$(DRIVERDIR)/$(DRIVER)
+
+uninstall:
+	@case "$(DRIVERDIR)" in /*) ;; *) \
+		echo "ERROR: VA driver directory is unavailable; install libva pkg-config metadata or pass an absolute DRIVERDIR" >&2; \
+		exit 1;; esac
+	rm -f -- "$(DESTDIR)$(DRIVERDIR)/$(DRIVER)"
 
 clean:
 	rm -f $(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(SEEK_TEST) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST) $(CACHE_TEST) $(SCALING_TEST) $(MPEG2_TEST) $(MPEG2_REPLAY_TEST) $(MPEG2_SUBMIT_TEST) $(MPEG4_TEST) $(MPEG4_SUBMIT_TEST) $(VC1_TEST) $(WMV3_TEST) $(VC1_REPLAY_TEST) $(VC1_SUBMIT_TEST) $(CRYSTALHD_CPU_STAMP) $(CRYSTALHD_CPU_STAMP).tmp

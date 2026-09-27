@@ -10,6 +10,8 @@
 /vaapi-mpeg2-test
 /vaapi-mpeg2-replay-test
 /vaapi-mpeg2-submit-test
+/vaapi-mpeg4-test
+/vaapi-mpeg4-submit-test
 /vaapi-vc1-test
 /vaapi-wmv3-test
 /vaapi-vc1-replay-test

@@ -2,15 +2,16 @@
 
 PREFIX ?= /usr
 DESTDIR ?=
+BINDIR ?= $(PREFIX)/bin
 KVER ?= $(shell uname -r)
 KDIR ?= /lib/modules/$(KVER)/build
 
 DRIVER_ARGS := KVER=$(KVER) KDIR=$(KDIR) DESTDIR=$(DESTDIR)
 USER_ARGS := PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 
-.PHONY: all driver library library-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check l0s-check command-pm-check pib-check userspace32-check legacy-cpu-check check install clean
+.PHONY: all driver library library-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check l0s-check command-pm-check pib-check userspace32-check legacy-cpu-check check install install-module install-runtime install-browser install-check uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check clean
 
-all: driver library gstreamer vaapi examples browser
+all: driver library gstreamer vaapi examples
 
 driver:
 	$(MAKE) -C driver/linux -f Makefile.in $(DRIVER_ARGS)
@@ -100,14 +101,49 @@ check: uapi-check dma-check l0s-check command-pm-check pib-check library-check a
 	$(MAKE) -C filters/gst/gst-plugin-1.0 check
 	$(MAKE) -C filters/vaapi check
 	$(MAKE) -C browser check
+	sh -n scripts/crystalhd-check
+	./tests/crystalhd-check.sh
 	KVER=$(KVER) KDIR=$(KDIR) ./tests/staged-install.sh
 
-install: all
-	$(MAKE) -C driver/linux -f Makefile.in $(DRIVER_ARGS) install
+install: install-module install-runtime
+
+install-module: driver
+	$(MAKE) -C driver/linux -f Makefile.in $(DRIVER_ARGS) install-module
+
+install-runtime: library gstreamer vaapi
+	$(MAKE) -C driver/linux -f Makefile.in $(DRIVER_ARGS) install-udev
+	$(MAKE) -C firmware DESTDIR=$(DESTDIR) install
 	$(MAKE) -C linux_lib/libcrystalhd $(USER_ARGS) install
 	$(MAKE) -C filters/gst/gst-plugin-1.0 $(USER_ARGS) install
 	$(MAKE) -C filters/vaapi $(USER_ARGS) install
+	$(MAKE) install-check
+
+install-browser: browser
 	$(MAKE) -C browser $(USER_ARGS) install
+
+install-check:
+	install -D -m 0755 scripts/crystalhd-check "$(DESTDIR)$(BINDIR)/crystalhd-check"
+
+uninstall:
+	$(MAKE) uninstall-runtime
+	$(MAKE) uninstall-module
+
+uninstall-module:
+	$(MAKE) -C driver/linux -f Makefile.in $(DRIVER_ARGS) uninstall-module
+
+uninstall-runtime:
+	$(MAKE) uninstall-check
+	$(MAKE) -C filters/vaapi $(USER_ARGS) uninstall
+	$(MAKE) -C filters/gst/gst-plugin-1.0 $(USER_ARGS) uninstall
+	$(MAKE) -C linux_lib/libcrystalhd $(USER_ARGS) uninstall
+	$(MAKE) -C firmware DESTDIR=$(DESTDIR) uninstall
+	$(MAKE) -C driver/linux -f Makefile.in $(DRIVER_ARGS) uninstall-udev
+
+uninstall-browser:
+	$(MAKE) -C browser $(USER_ARGS) uninstall
+
+uninstall-check:
+	rm -f -- "$(DESTDIR)$(BINDIR)/crystalhd-check"
 
 clean:
 	rm -f tests/library-drain-test

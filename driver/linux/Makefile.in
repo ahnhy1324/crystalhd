@@ -33,7 +33,7 @@ PWD := $(CURDIR)
 obj-m := crystalhd.o
 crystalhd-objs := $(OBJ)
 
-.PHONY: all install install-module install-udev install-firmware clean distclean
+.PHONY: all install install-module install-udev install-firmware uninstall uninstall-module uninstall-udev uninstall-firmware clean distclean
 
 all:
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
@@ -48,12 +48,39 @@ install-module: crystalhd.ko
 
 install-udev:
 	install -D -m 0644 20-crystalhd.rules $(DESTDIR)$(UDEVDIR)/20-crystalhd.rules
+	@if [ -z "$(DESTDIR)" ] && command -v udevadm >/dev/null 2>&1; then \
+		udevadm control --reload-rules || \
+			echo "WARN: udev rules installed, but the daemon did not reload them" >&2; \
+	fi
 
 install-firmware:
 	install -D -m 0644 ../../firmware/fwbin/70015/bcm70015fw.bin \
 		$(DESTDIR)$(FIRMWAREDIR)/bcm70015fw.bin
 	install -D -m 0644 ../../firmware/fwbin/70012/bcm70012fw.bin \
 		$(DESTDIR)$(FIRMWAREDIR)/bcm70012fw.bin
+
+uninstall: uninstall-module uninstall-udev uninstall-firmware
+
+uninstall-module:
+	@if [ -z "$(DESTDIR)" ] && [ "$(KVER)" = "$$(uname -r)" ] && \
+		[ -d /sys/module/crystalhd ]; then \
+		echo "INFO: crystalhd is loaded and will not be force-unloaded."; \
+	fi
+	rm -f -- "$(DESTDIR)$(MODULEDIR)/crystalhd.ko"
+	@if [ -z "$(DESTDIR)" ] && command -v depmod >/dev/null 2>&1; then \
+		depmod -a $(KVER); \
+	fi
+
+uninstall-udev:
+	rm -f -- "$(DESTDIR)$(UDEVDIR)/20-crystalhd.rules"
+	@if [ -z "$(DESTDIR)" ] && command -v udevadm >/dev/null 2>&1; then \
+		udevadm control --reload-rules || \
+			echo "WARN: udev rule removed, but the daemon did not reload rules" >&2; \
+	fi
+
+uninstall-firmware:
+	rm -f -- "$(DESTDIR)$(FIRMWAREDIR)/bcm70015fw.bin"
+	rm -f -- "$(DESTDIR)$(FIRMWAREDIR)/bcm70012fw.bin"
 
 clean:
 	rm -f *.map *.list *.o *.ko crystalhd.mod.c $(OBJ)

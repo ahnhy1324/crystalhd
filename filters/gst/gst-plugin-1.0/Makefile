@@ -26,7 +26,7 @@ CFLAGS += -Wall -Wextra -Werror -fPIC $(shell $(PKG_CONFIG) --cflags $(GST_PACKA
 LDFLAGS += -shared -L$(ROOTDIR)/linux_lib/libcrystalhd
 LDLIBS += $(shell $(PKG_CONFIG) --libs $(GST_PACKAGES)) -lcrystalhd
 
-.PHONY: all clean install check codec-playback-test check-codec-playback check-player
+.PHONY: all clean install uninstall check codec-playback-test check-codec-playback check-player
 
 all: $(PLUGIN)
 
@@ -90,10 +90,22 @@ check: $(PLUGIN) $(PLAYBACK_TEST) $(CONTROLS_TEST) $(LIFECYCLE_TEST) $(CODECS_TE
 		./$(CODECS_TEST)
 
 install: $(PLUGIN)
+	@case "$(PLUGINDIR)" in /*) ;; *) \
+		echo "ERROR: GStreamer plugin directory is unavailable; install its pkg-config metadata or pass an absolute PLUGINDIR" >&2; \
+		exit 1;; esac
 	install -D -m 0755 $(PLUGIN) $(DESTDIR)$(PLUGINDIR)/$(PLUGIN)
 	install -D -m 0755 $(ROOTDIR)/scripts/crystalhd-play $(DESTDIR)$(BINDIR)/crystalhd-play
 	install -D -m 0644 $(ROOTDIR)/scripts/crystalhd-player.py \
 		$(DESTDIR)$(DATADIR)/crystalhd/player.py
+
+uninstall:
+	@case "$(PLUGINDIR)" in /*) ;; *) \
+		echo "ERROR: GStreamer plugin directory is unavailable; install its pkg-config metadata or pass an absolute PLUGINDIR" >&2; \
+		exit 1;; esac
+	rm -f -- "$(DESTDIR)$(PLUGINDIR)/$(PLUGIN)"
+	rm -f -- "$(DESTDIR)$(BINDIR)/crystalhd-play"
+	rm -f -- "$(DESTDIR)$(DATADIR)/crystalhd/player.py"
+	@rmdir -- "$(DESTDIR)$(DATADIR)/crystalhd" 2>/dev/null || true
 
 clean:
 	rm -f $(PLUGIN) $(PLAYBACK_TEST) $(CONTROLS_TEST) $(LIFECYCLE_TEST) $(CODECS_TEST) gstreamer-codec-playback-test $(CRYSTALHD_CPU_STAMP) $(CRYSTALHD_CPU_STAMP).tmp
