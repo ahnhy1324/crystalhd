@@ -197,6 +197,14 @@ for bits in $build_bits; do
             "$repo_dir/tests/vaapi-mpeg2-replay.cpp" $cpu_flags \
             -o "$build_dir/vaapi-mpeg2-replay"
         run_test "$build_dir/vaapi-mpeg2-replay"
+        # VC-1/WMV3 assembly and reference replay stay scalar-safe too.
+        for codec_test in vc1 wmv3 vc1-replay; do
+            # shellcheck disable=SC2086
+            $cxx -std=c++17 -O2 -Wall -Wextra -Werror \
+                $(pkg-config --cflags libva) "$repo_dir/tests/vaapi-$codec_test.cpp" \
+                $cpu_flags -o "$build_dir/vaapi-$codec_test"
+            run_test "$build_dir/vaapi-$codec_test"
+        done
         # The full submission/replay test also stubs external operations, so
         # it can execute here without 32-bit graphics or decoder libraries.
         # shellcheck disable=SC2086
@@ -216,6 +224,15 @@ for bits in $build_bits; do
             "$repo_dir/tests/vaapi-mpeg2-submit.cpp" -Wl,--gc-sections -pthread \
             $cpu_flags -o "$build_dir/vaapi-mpeg2-submit"
         run_test "$build_dir/vaapi-mpeg2-submit"
+        # VC-1/WMV3 metadata, owned buffers, references and full EOS reopen.
+        # shellcheck disable=SC2086
+        $cxx -std=c++17 -O2 -Wall -Wextra -Werror -fno-tree-slp-vectorize \
+            -ffunction-sections -fdata-sections -D__LINUX_USER__ \
+            -I"$repo_dir/include" -I"$repo_dir/linux_lib/libcrystalhd" \
+            $(pkg-config --cflags libva libva-drm libdrm gbm libswscale) \
+            "$repo_dir/tests/vaapi-vc1-submit.cpp" -Wl,--gc-sections -pthread \
+            $cpu_flags -o "$build_dir/vaapi-vc1-submit"
+        run_test "$build_dir/vaapi-vc1-submit"
         before_noop=$(stat -c '%y' "$library_file" "$library_dir/libcrystalhd_int_if.o")
         make -C "$library_dir" LEGACY_CPU=1 CXX="$cxx -m32"
         after_noop=$(stat -c '%y' "$library_file" "$library_dir/libcrystalhd_int_if.o")

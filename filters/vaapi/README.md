@@ -1,9 +1,10 @@
 # CrystalHD VA-API driver
 
 This backend exposes H.264 decoding through the standard VA-API VLD interface,
-with progressive MPEG-2 Simple/Main support on BCM70015. BCM70012
-retains its H.264 path but is not recently hardware-validated; MPEG-2 is rejected
-on that device. The backend accepts VA-allocated NV12 surfaces and imported
+with progressive MPEG-2 Simple/Main, standard WMV3 Simple/Main and VC-1 Advanced
+support on BCM70015. BCM70012 retains its H.264 path but is not recently
+hardware-validated; MPEG-2 and VC-1/WMV3 are rejected on that device.
+The backend accepts VA-allocated NV12 surfaces and imported
 linear or GBM-mappable DRM PRIME NV12 surfaces for FFmpeg-style clients. It
 also allocates and exports ARGB DRM PRIME surfaces for Chromium-class clients
 whose compositor cannot render NV12 directly.
@@ -49,6 +50,28 @@ tests also pass; see
 [issue #36](https://github.com/ahnhy1324/crystalhd/issues/36) for the exact matrix
 and remaining acceptance checks.
 
+VC-1 Advanced reconstruction preserves compressed macroblock bits and rebuilds
+complete progressive headers and bitplanes. It accepts whole frames,
+headerless continuation slices and identical repeated picture headers, not
+changed per-slice headers. Fixed-geometry I pictures can introduce a new
+sequence/entry-point configuration; their own headers remain in replay.
+Interlaced/field pictures, pan-scan, range mapping and separate in-loop output
+are unsupported. VA omits original display timing; reconstruction does not
+establish presentation cadence or A/V synchronization.
+
+WMV3 preserves complete frame packets and reconstructs standard Simple/Main
+STRUCT_C metadata (X8 off, FASTTX and RTM set). VA omits these original reserved
+bits, so older variants cannot reliably be identified or reconstructed here.
+An early RTM0 WMV9 sample demonstrably differs with standard RTM1 metadata.
+GStreamer retains the original metadata; older variants still need per-file
+hardware validation.
+Multi-resolution and nonstandard/sprite variants are outside this VA subset.
+Selected standard Simple/Main and Advanced SD/FHD, I/P/B/BI/skipped-P and
+multi-slice fixtures match original-stream hardware pixels with complete output
+and firmware EOS. Selected Main/Advanced seek and retained-frame tests pass;
+see [issue #40](https://github.com/ahnhy1324/crystalhd/issues/40) for coverage and
+remaining limits, not a general conformance or daily-use claim.
+
 BCM70015 firmware retains output until later compressed pictures or a real
 end-of-sequence marker arrive. After 100 ms of synchronization grace, the
 backend may seal the exact submitted batch with EOS. New input is queued until
@@ -57,7 +80,9 @@ continues, the complete device is reopened and retained original access units
 rebuild reference state. H.264 starts from the last retained actual IDR. MPEG-2
 retains the causal I-picture history needed by the last two I/P anchors and
 pending or outstanding pictures; an I picture is not assumed to close an open
-GOP. Its references are captured as immutable accepted-picture tokens, not
+GOP. VC-1 also retains BI and skipped-P state; BI is not a reference anchor but
+can change subsequent WMV3 rounding. References are captured as immutable
+accepted-picture tokens, not
 re-resolved from reusable surface IDs during replay. Unknown, stale or
 out-of-window references are rejected. Replayed completed pictures are discarded
 before touching immutable client pixels. H.264 access-unit delimiters are first
@@ -68,8 +93,9 @@ stall; full device reopen passed the validated H.264 sequence.
 The replay cache allows at most 512 KiB per access unit, 32 MiB / 512 access
 units total, and 8192 replayed units before an obsolete reference prefix is
 pruned. Missing IDR/I-root history or exceeded limits produces an error. MPEG-2
-can omit completed, non-outstanding B pictures from replay, but cannot discard
-reference history still needed by an open GOP. This is not
+and VC-1 can omit completed, non-outstanding ordinary B pictures from replay,
+but retain stateful BI and reference history still needed by an open GOP.
+This never drops a picture's initial decode or requested output. Replay is not
 free: a client that downloads each picture before submitting the next may
 reopen and replay for nearly every picture. The 100 ms grace helps clients
 with concurrent input; it cannot manufacture lookahead for synchronous ones.
@@ -141,8 +167,9 @@ seek results do not establish browser hardware seek correctness.
 - only the decode, image, DRM PRIME, and minimal video-processing operations
   needed by the documented clients are implemented; `vaPutSurface`,
   subpictures, palettes, and detailed surface-error reporting are unavailable
-- progressive H.264 Constrained Baseline, Main, and High; MPEG-2
-  Simple/Main on BCM70015 only, with the picture restrictions above
+- progressive H.264 Constrained Baseline, Main, and High; MPEG-2 Simple/Main
+  and standard WMV3 Simple/Main / VC-1 Advanced on BCM70015 only, with the
+  picture and legacy-variant restrictions above
 - maximum coded size 1920x1088; MPEG-2 Simple is limited to 720x576
 - NV12 images are limited to 1920x1088; odd dimensions retain complete UV pairs.
   Image copies reject busy surfaces and invalid rectangles. `vaPutImage` also
@@ -223,8 +250,9 @@ assuming an installed module is the one in use.
 
 ## Seek, flush and retained frames
 
-The probe also accepts progressive MPEG-2 Simple/Main in a seekable container
-with a declared frame count; its checks are tracked in
+The probe also accepts progressive MPEG-2 Simple/Main and VC-1/WMV3 in seekable
+containers with reliable declared frame counts and distinct picture timestamps.
+The MPEG-2 checks are tracked in
 [issue #36](https://github.com/ahnhy1324/crystalhd/issues/36). Open-GOP seeking
 requires the client to supply earlier reference pictures: a demuxer seek to a
 later I picture can skip leading B pictures even in software decoding. These
