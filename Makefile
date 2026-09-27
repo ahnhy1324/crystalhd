@@ -42,7 +42,7 @@ library-check:
 				test_wrap="$$test_wrap -Wl,--wrap=DtsStartDecoder,--wrap=DtsStartCapture"; \
 				test_wrap="$$test_wrap -Wl,--wrap=DtsReleaseInterface,--wrap=pthread_join,--wrap=_Z9WORD_SWAPt"; \
 				test_extra=linux_lib/libcrystalhd/libcrystalhd_parser.cpp ;; \
-			eos) test_wrap=-Wl,--wrap=ioctl,--wrap=txBufPush,--wrap=usleep; \
+			eos) test_wrap=-Wl,--wrap=ioctl,--wrap=txBufPush,--wrap=usleep,--wrap=clock_gettime; \
 				test_wrap="$$test_wrap -Wl,--wrap=DtsSetupHardware,--wrap=DtsOpenDecoder"; \
 				test_wrap="$$test_wrap -Wl,--wrap=DtsStartDecoder,--wrap=DtsStartCapture"; \
 				test_extra=linux_lib/libcrystalhd/libcrystalhd_parser.cpp ;; \
@@ -51,7 +51,7 @@ library-check:
 		-ffunction-sections -fdata-sections -D__LINUX_USER__ \
 		-Ilinux_lib/libcrystalhd -Iinclude -Iinclude/link \
 		tests/library-$$lib_test.cpp $$test_sources $$test_extra \
-		-Wl,--gc-sections $$test_wrap -pthread \
+		-Wl,--gc-sections $$test_wrap -pthread -lrt \
 		$(CRYSTALHD_CPU_FLAGS) -o "$$lib_test_dir/check"; "$$lib_test_dir/check"; \
 	done
 

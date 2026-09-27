@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <pthread.h>
+#include <time.h>
 #include <vector>
 #include <unistd.h>
 #include "7411d.h"
@@ -22,15 +23,17 @@ extern bc_dil_glob_s *bc_dil_glob_ptr;
 /* Existing exported packetizer helper; not declared in the public API. */
 BC_STATUS DtsAlignSendData(HANDLE, uint8_t *, uint32_t, uint64_t, BOOL);
 static unsigned checks, failures, fail_at, calls;
-static unsigned stop_after;
+static unsigned stop_after, generation_after;
 static DTS_LIB_CONTEXT *observed_context;
 static BC_STATUS injected_error = BC_STS_IO_ERROR;
 static std::vector<std::vector<uint8_t> > packets;
 static struct {
     bool allow_status, allow_output, marker, run_tx, timeout_during_dma;
-    bool dma_in_progress;
+    bool dma_in_progress, progress_each_status;
     unsigned status_calls, status_limit, fetch_calls, dma_calls, sleeps;
-    unsigned dma_bytes;
+    unsigned status_error_call, suspend_call, dma_bytes;
+    uint32_t clock_step_ms;
+    uint64_t clock_ms;
     BC_STATUS fetch_status, dma_status;
     BC_DTS_STATS status;
     uint32_t marker_data[1 + (sizeof(BC_PIC_INFO_BLOCK) + 3) / 4];
@@ -57,6 +60,11 @@ extern "C" BC_STATUS __wrap_txBufPush(pTXBUFFER ring, uint8_t *bytes, uint32_t s
      */
     if (calls == stop_after)
         observed_context->State = BC_DEC_STATE_STOP;
+    if (status == BC_STS_SUCCESS && calls == generation_after) {
+        DtsLock(observed_context);
+        observed_context->eosDrainGeneration++;
+        DtsUnLock(observed_context);
+    }
     return status;
 }
 
@@ -90,14 +98,37 @@ extern "C" int __wrap_usleep(useconds_t)
     return 0;
 }
 
+extern "C" int __wrap_clock_gettime(clockid_t clock_id, struct timespec *value)
+{
+    if (!detection.run_tx || clock_id != CLOCK_MONOTONIC || !value)
+        std::abort();
+    detection.clock_ms += detection.clock_step_ms;
+    value->tv_sec = detection.clock_ms / 1000;
+    value->tv_nsec = (detection.clock_ms % 1000) * 1000000;
+    return 0;
+}
+
 BC_STATUS DtsGetDrvStat(HANDLE device, BC_DTS_STATS *status)
 {
     if (!detection.allow_status || device != observed_context ||
         ++detection.status_calls > detection.status_limit)
         std::abort();
     *status = detection.status;
+    if (detection.progress_each_status) {
+        DtsLock(observed_context);
+        observed_context->outputProgress++;
+        DtsUnLock(observed_context);
+    }
+    if (detection.suspend_call == detection.status_calls) {
+        status->pwr_state_change = BC_HW_SUSPEND;
+        detection.clock_ms += 2000;
+    }
     if (detection.run_tx && detection.status_calls == detection.status_limit)
         observed_context->txThreadExit = true;
+    if (detection.status_error_call == detection.status_calls) {
+        detection.clock_ms += 2000;
+        return BC_STS_IO_ERROR;
+    }
     return BC_STS_SUCCESS;
 }
 
@@ -135,6 +166,17 @@ extern "C" BC_STATUS __wrap_DtsOpenDecoder(HANDLE, uint32_t) { std::abort(); }
 extern "C" BC_STATUS __wrap_DtsStartDecoder(HANDLE) { std::abort(); }
 extern "C" BC_STATUS __wrap_DtsStartCapture(HANDLE) { std::abort(); }
 BC_STATUS DtsSetCoreClock(HANDLE, uint32_t) { std::abort(); }
+BC_STATUS DtsPushFwToFlea(HANDLE, char *) { std::abort(); }
+BC_STATUS DtsPushAuthFwToLink(HANDLE, char *) { std::abort(); }
+BC_STATUS DtsFWInitialize(HANDLE, uint32_t) { std::abort(); }
+BC_STATUS DtsFWActivateDecoder(HANDLE) { std::abort(); }
+BC_STATUS DtsFWStartVideo(HANDLE, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t)
+{ std::abort(); }
+BC_STATUS DtsFWOpenChannel(HANDLE, uint32_t, uint32_t) { std::abort(); }
+BC_STATUS DtsFWSetVideoInput(HANDLE) { std::abort(); }
+BC_STATUS DtsSetProgressive(HANDLE, uint32_t) { std::abort(); }
+BC_STATUS DtsSetVideoClock(HANDLE, uint32_t) { std::abort(); }
+BC_STATUS DtsSetTSMode(HANDLE, uint32_t) { std::abort(); }
 BC_STATUS DtsCopyRawDataToOutBuff(DTS_LIB_CONTEXT *, BC_DTS_PROC_OUT *, BC_DTS_PROC_OUT *)
 { std::abort(); }
 BC_STATUS DtsCopyNV12ToYV12(DTS_LIB_CONTEXT *, BC_DTS_PROC_OUT *, BC_DTS_PROC_OUT *)
@@ -161,6 +203,7 @@ struct Fixture {
         std::memset(&detection, 0, sizeof(detection));
         detection.fetch_status = BC_STS_TIMEOUT;
         detection.dma_status = BC_STS_SUCCESS;
+        detection.status.drvFLL = BC_RX_LIST_CNT;
         bc_dil_glob_ptr = &globals;
         observed_context = &context;
         context.Sig = LIB_CTX_SIG;
@@ -169,6 +212,7 @@ struct Fixture {
         context.DevId = device;
         context.DevHandle = 99; // Only the rejecting/mocked ioctl wrapper sees it.
         context.FixFlags = DTS_LOAD_FILE_PLAY_FW;
+        context.MpoolCnt = BC_RX_LIST_CNT;
         context.pOutData = &output_data;
         context.VidParams.MediaSubType = static_cast<BC_MEDIA_SUBTYPE>(subtype);
         context.VidParams.StreamType = BC_STREAM_TYPE_PES;
@@ -182,6 +226,7 @@ struct Fixture {
             txBufInit(&context.circBuf, CIRC_TX_BUF_SIZE) != BC_STS_SUCCESS)
             std::abort();
         calls = 0;
+        generation_after = 0;
         packets.clear();
     }
     ~Fixture()
@@ -302,11 +347,43 @@ static void test_mode5_preserves_prior_check()
             fail_at = fail ? 1 : 0;
             Fixture fixture(BC_PCI_DEVID_FLEA, BC_MSUBTYPE_WVC1);
             fixture.context.bEOSCheck = true;
+            fixture.context.eosTxComplete = true;
+            const uint64_t generation = fixture.context.eosDrainGeneration;
             check(send(fixture, 5, public_api) == (fail ? injected_error : BC_STS_SUCCESS),
                   "mode5 preserves submission status with a prior completion check");
             check(fixture.context.bEOSCheck && !fixture.context.bEOS,
                   "mode5 does not change the existing EOS-check state");
+            check(!fixture.context.eosTxComplete &&
+                      fixture.context.eosDrainGeneration == generation + 1,
+                  "mode5 extends the TX fence and invalidates stale completion");
             check(clean_metadata(fixture.context), "mode5 always clears temporary PES metadata");
+        }
+    }
+}
+
+static void configure_softrave(Fixture &fixture, uint32_t subtype);
+
+static void test_drain_generation_change()
+{
+    for (unsigned mode : {0U, 5U}) {
+        for (bool public_api : {false, true}) {
+            fail_at = stop_after = 0;
+            Fixture fixture(BC_PCI_DEVID_FLEA, BC_MSUBTYPE_DIVX);
+            configure_softrave(fixture, BC_MSUBTYPE_DIVX);
+            fixture.context.bEOSCheck = mode == 5;
+            fixture.context.eosTxComplete = true;
+            const uint64_t generation = fixture.context.eosDrainGeneration;
+            generation_after = 1;
+            check(send(fixture, mode, public_api) == BC_STS_IO_USER_ABORT,
+                  "an EOS drain cannot commit across a newer TX generation");
+            check(fixture.context.eosDrainGeneration == generation + 2,
+                  "generation change remains owned by the newer TX epoch");
+            check(!fixture.context.eosTxComplete && !fixture.context.bEOS,
+                  "a stale drain cannot certify or claim EOS completion");
+            check(fixture.context.bEOSCheck == (mode == 5),
+                  "generation abort preserves mode5 and leaves mode0 disarmed");
+            check(clean_metadata(fixture.context),
+                  "generation-aborted EOS clears temporary PES metadata");
         }
     }
 }
@@ -600,6 +677,93 @@ static void test_idle_detection(uint32_t device, unsigned scenario)
         check(eos, "LINK retains its existing marker-less idle EOS fallback");
 }
 
+static void test_flea_mpeg4_idle_fallback(unsigned scenario)
+{
+    fail_at = stop_after = 0;
+    Fixture fixture(BC_PCI_DEVID_FLEA, BC_MSUBTYPE_DIVX);
+    configure_softrave(fixture, BC_MSUBTYPE_DIVX);
+    check(send(fixture, 0, true) == BC_STS_SUCCESS,
+          "MPEG-4 fallback fixture submits the complete production drain");
+    const uint64_t fence = fixture.context.eosTxFence;
+    detection.allow_status = detection.run_tx = true;
+    detection.status.DrvcpbEmptySize = CIRC_TX_BUF_SIZE;
+    detection.clock_step_ms = 100;
+    detection.status_limit = 20;
+    // 0: eligible; 1: RLL; 2: active RX/FLL short; 3: leased output;
+    // 4: failed TX DMA; 5: output progress; 6: under one second;
+    // 7: status-error gap; 8: suspend gap; 9: in-flight output timeout.
+    switch (scenario) {
+    case 1:
+        detection.status.drvRLL = 1;
+        break;
+    case 2:
+        detection.status.drvFLL = BC_RX_LIST_CNT - 1;
+        break;
+    case 3:
+        fixture.context.ProcOutPending = 1;
+        break;
+    case 4:
+        detection.dma_status = BC_STS_IO_ERROR;
+        break;
+    case 5:
+        detection.progress_each_status = true;
+        break;
+    case 6:
+        detection.status_limit = 8;
+        break;
+    case 7:
+        detection.status_error_call = 5;
+        detection.status_limit = 10;
+        break;
+    case 8:
+        detection.suspend_call = 5;
+        detection.status_limit = 10;
+        break;
+    case 9:
+        detection.allow_output = true;
+        detection.timeout_during_dma = true;
+        break;
+    default:
+        break;
+    }
+    txThreadProc(&fixture.context);
+    detection.run_tx = false;
+    const bool eos = query_eos(fixture) != 0;
+    const bool expected = scenario == 0 || scenario == 9;
+    std::printf("FLEA-MPEG4 scenario=%u polls=%u DMA=%u/%u retired=%llu fence=%llu EOS=%d\n",
+                scenario, detection.status_calls, detection.dma_calls, detection.dma_bytes,
+                static_cast<unsigned long long>(fixture.context.txBytesRetired),
+                static_cast<unsigned long long>(fence), eos);
+    check(detection.status_calls == detection.status_limit && detection.dma_calls == 1,
+          "MPEG-4 fallback fixture runs one complete fenced TX DMA");
+    check(fixture.context.txBytesRetired >= fence,
+          "MPEG-4 fallback observes retirement through the captured fence");
+    check(eos == expected,
+          expected ? "only a fully idle MPEG-4 fence completes fallback EOS"
+                   : "unsafe MPEG-4 state cannot complete fallback EOS");
+    if (scenario == 4)
+        check(fixture.context.txDmaFault && !fixture.context.eosTxComplete,
+              "failed DMA poisons the session and invalidates fence completion");
+}
+
+static void test_new_input_disarms_flea_fallback()
+{
+    fail_at = stop_after = 0;
+    Fixture fixture(BC_PCI_DEVID_FLEA, BC_MSUBTYPE_DIVX);
+    configure_softrave(fixture, BC_MSUBTYPE_DIVX);
+    check(send(fixture, 0, true) == BC_STS_SUCCESS,
+          "new-input fixture starts from an armed MPEG-4 drain");
+    fixture.context.eosTxComplete = true;
+    const uint64_t generation = fixture.context.eosDrainGeneration;
+    uint8_t picture[] = {0, 0, 1, 0xb6, 0};
+    check(DtsProcInput(&fixture.context, picture, sizeof(picture), 10000, FALSE) ==
+              BC_STS_SUCCESS,
+          "ordinary MPEG-4 input is accepted after a drain request");
+    check(!fixture.context.bEOSCheck && !fixture.context.eosTxComplete &&
+              fixture.context.eosDrainGeneration == generation + 1,
+          "new input disarms the old EOS fence and advances its generation");
+}
+
 static void test_timeout_detection(uint32_t device, bool no_copy, uint32_t timeout)
 {
     fail_at = stop_after = 0;
@@ -702,6 +866,7 @@ int main()
     }
     test_invalid_state();
     test_mode5_preserves_prior_check();
+    test_drain_generation_change();
     test_configured_softrave_eos(BC_MSUBTYPE_WMV3);
     for (BC_STATUS error : {BC_STS_IO_ERROR, BC_STS_INSUFF_RES, BC_STS_IO_USER_ABORT}) {
         injected_error = error;
@@ -713,6 +878,9 @@ int main()
     for (unsigned scenario = 0; scenario < 5; ++scenario)
         test_idle_detection(BC_PCI_DEVID_FLEA, scenario);
     test_idle_detection(BC_PCI_DEVID_LINK, 2);
+    for (unsigned scenario = 0; scenario < 10; ++scenario)
+        test_flea_mpeg4_idle_fallback(scenario);
+    test_new_input_disarms_flea_fallback();
     for (uint32_t device : {BC_PCI_DEVID_FLEA, BC_PCI_DEVID_LINK})
         for (bool no_copy : {false, true})
             for (uint32_t timeout : {0U, 1U})

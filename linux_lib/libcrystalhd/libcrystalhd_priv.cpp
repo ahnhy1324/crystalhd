@@ -36,6 +36,7 @@
 #include <sys/types.h>
 #include <sys/ipc.h>
 #include <sys/ioctl.h>
+#include <time.h>
 #include <unistd.h>
 #include "7411d.h"
 #include "libcrystalhd_if.h"
@@ -2200,6 +2201,9 @@ void DtsUpdateOutStats(DTS_LIB_CONTEXT	*Ctx, BC_DTS_PROC_OUT *pOut)
 	BOOL	rptFrmCheck = TRUE;
 
 	BC_DTS_STATS *pDtsStat = DtsGetgStats( );
+	DtsLock(Ctx);
+	Ctx->outputProgress++;
+	DtsUnLock(Ctx);
 
 	if(pOut->PicInfo.flags & VDEC_FLAG_LAST_PICTURE)
 	{
@@ -2519,6 +2523,54 @@ BC_STATUS txBufFree(pTXBUFFER txBuf)
 	return BC_STS_SUCCESS;
 }
 
+static uint64_t DtsMonotonicMs()
+{
+	struct timespec now;
+	if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+		return 0;
+	return (uint64_t)now.tv_sec * 1000 + (uint64_t)now.tv_nsec / 1000000;
+}
+
+static bool DtsFleaMpeg4EosReady(DTS_LIB_CONTEXT *Ctx,
+	uint64_t *fence, uint64_t *generation, uint64_t *progress,
+	uint32_t *outputBuffers)
+{
+	DtsLock(Ctx);
+	const bool ready = Ctx->DevId == BC_PCI_DEVID_FLEA &&
+		(Ctx->VidParams.MediaSubType == BC_MSUBTYPE_DIVX ||
+		 Ctx->VidParams.MediaSubType == BC_MSUBTYPE_DIVX311) &&
+		Ctx->State == BC_DEC_STATE_START && Ctx->bEOSCheck && !Ctx->bEOS &&
+		Ctx->eosTxComplete && !Ctx->txDmaFault && !Ctx->txPending &&
+		!Ctx->ProcOutPending && Ctx->txBytesRetired >= Ctx->eosTxFence &&
+		DtsTxFreeSize((HANDLE)Ctx) == Ctx->circBuf.totalSize;
+	*fence = Ctx->eosTxFence;
+	*generation = Ctx->eosDrainGeneration;
+	*progress = Ctx->outputProgress;
+	*outputBuffers = Ctx->MpoolCnt;
+	DtsUnLock(Ctx);
+	return ready;
+}
+
+static bool DtsCompleteFleaMpeg4Eos(DTS_LIB_CONTEXT *Ctx,
+	uint64_t fence, uint64_t generation, uint64_t progress)
+{
+	DtsLock(Ctx);
+	const bool ready = Ctx->DevId == BC_PCI_DEVID_FLEA &&
+		(Ctx->VidParams.MediaSubType == BC_MSUBTYPE_DIVX ||
+		 Ctx->VidParams.MediaSubType == BC_MSUBTYPE_DIVX311) &&
+		Ctx->State == BC_DEC_STATE_START && Ctx->bEOSCheck && !Ctx->bEOS &&
+		Ctx->eosTxComplete && !Ctx->txDmaFault && !Ctx->txPending &&
+		!Ctx->ProcOutPending && Ctx->eosTxFence == fence &&
+		Ctx->eosDrainGeneration == generation &&
+		Ctx->outputProgress == progress &&
+		Ctx->txBytesRetired >= Ctx->eosTxFence &&
+		DtsTxFreeSize((HANDLE)Ctx) == Ctx->circBuf.totalSize;
+	if (ready)
+		Ctx->bEOS = true;
+	DtsUnLock(Ctx);
+	return ready;
+}
+
 // TX Thread
 // This thread has dual purpose. First is to send TX data. Second is to detect if we have restarted from any suspend/hibernate action
 // and to restore the HW state
@@ -2535,6 +2587,11 @@ void * txThreadProc(void *ctx)
 	int ret = 0;
 	uint32_t waitForPictCount = 0;
 	uint32_t numPicCaptured = 0;
+	uint64_t fleaIdleSince = 0;
+	uint64_t fleaIdleFence = 0;
+	uint64_t fleaIdleGeneration = 0;
+	uint64_t fleaIdleProgress = 0;
+	bool fleaIdleTiming = false;
 
 	ret = posix_memalign((void**)&localBuffer, 128, CIRC_TX_BUF_SIZE);
 	if(ret)
@@ -2555,6 +2612,7 @@ void * txThreadProc(void *ctx)
 		if(sts != BC_STS_SUCCESS)
 		{
 			pStat.cpbEmptySize = 0;
+			fleaIdleTiming = false;
 			DebugLog_Trace(LDIL_ERR,"txThreadProc: Got status %d from GetDriverStatus\n", sts);
 			usleep(2 * 1000);
 			continue;
@@ -2565,14 +2623,12 @@ void * txThreadProc(void *ctx)
 		if(pStat.PowerStateChange == BC_HW_SUSPEND)
 		{
 			// HW is in suspend mode, sleep 30 ms and then try again
+			fleaIdleTiming = false;
 			usleep(30 * 1000);
 			continue;
 		}
 
-		/* Retain BCM70012's legacy no-progress fallback. BCM70015 has an
-		 * explicit firmware timing marker: capture silence is not EOS,
-		 * even with an empty ring (bytes leave it before DMA completes).
-		 */
+		/* Retain BCM70012's legacy no-progress fallback. */
 		if(Ctx->DevId == BC_PCI_DEVID_LINK && Ctx->bEOSCheck)
 		{
 			if(numPicCaptured == pStat.FramesCaptured)
@@ -2585,6 +2641,60 @@ void * txThreadProc(void *ctx)
 		}
 		else
 			waitForPictCount = 0;
+
+		/* BCM70015 firmware occasionally consumes a complete MPEG-4 drain
+		 * sequence without returning its EOS buffer. Only recover after the
+		 * fenced TX DMA completed and every output buffer is back on the free
+		 * list for a continuous monotonic second. Other codecs still require
+		 * their real firmware EOS marker.
+		 */
+		uint64_t currentFence = 0;
+		uint64_t currentGeneration = 0;
+		uint64_t currentProgress = 0;
+		uint32_t outputBuffers = 0;
+		const bool fleaReady = DtsFleaMpeg4EosReady(Ctx,
+			&currentFence, &currentGeneration, &currentProgress, &outputBuffers);
+		const bool fleaQueuesIdle = pStat.PowerStateChange == BC_HW_RUNNING &&
+			outputBuffers != 0 && pStat.ReadyListCount == 0 &&
+			pStat.FreeListCount == outputBuffers;
+		if (fleaReady && fleaQueuesIdle)
+		{
+			const uint64_t now = DtsMonotonicMs();
+			if (!now)
+			{
+				fleaIdleTiming = false;
+			}
+			else if (!fleaIdleTiming || currentFence != fleaIdleFence ||
+				currentGeneration != fleaIdleGeneration ||
+				currentProgress != fleaIdleProgress)
+			{
+				fleaIdleSince = now;
+				fleaIdleFence = currentFence;
+				fleaIdleGeneration = currentGeneration;
+				fleaIdleProgress = currentProgress;
+				fleaIdleTiming = true;
+			}
+			else if (now - fleaIdleSince >= BC_FLEA_EOS_IDLE_MS)
+			{
+				BC_DTS_STATUS confirm = {};
+				confirm.cpbEmptySize = (0x3U << 30);
+				const BC_STATUS confirmSts = DtsGetDriverStatus(hDevice, &confirm);
+				const bool queuesStillIdle = confirmSts == BC_STS_SUCCESS &&
+					confirm.PowerStateChange == BC_HW_RUNNING &&
+					confirm.ReadyListCount == 0 &&
+					confirm.FreeListCount == outputBuffers;
+				if (queuesStillIdle && DtsCompleteFleaMpeg4Eos(Ctx,
+					fleaIdleFence, fleaIdleGeneration, fleaIdleProgress))
+				{
+					DebugLog_Trace(LDIL_INFO,
+						"FLEA MPEG-4 EOS marker missing; completed after idle fence\n");
+				}
+				fleaIdleTiming = false;
+			}
+			usleep(30 * 1000);
+		}
+		else
+			fleaIdleTiming = false;
 
 		if(numPicCaptured != pStat.FramesCaptured)
 		{
@@ -2614,6 +2724,13 @@ void * txThreadProc(void *ctx)
 				usleep(1000 * 1000);
 				continue; // Try again and pray for the best
 			}
+			/* Open leaves input admission closed in STOP. Discard pre-resume
+			 * bytes before Start so no input or multi-packet drain can straddle
+			 * the ring reset and the freshly rebased TX serials.
+			 */
+			DtsLock(Ctx);
+			txBufFlush(&Ctx->circBuf);
+			DtsUnLock(Ctx);
 			sts = DtsStartDecoder(hDevice);
 			if(sts != BC_STS_SUCCESS)
 			{
@@ -2640,8 +2757,6 @@ void * txThreadProc(void *ctx)
 			Ctx->PESConvParams.m_lStartCodeDataSize = 0;
 
 			Ctx->PESConvParams.m_bAddSpsPps = true;
-			// Throw away any potential partial data, since we need a complete picture to start decoding
-			txBufFlush(&Ctx->circBuf);
 			// But in case we were already in the mode to be hunting for EOS
 			// and did not send it to HW, resend it so the playback can end gracefully
 			if(Ctx->bEOSCheck)
@@ -2695,6 +2810,18 @@ void * txThreadProc(void *ctx)
 				DebugLog_Trace(LDIL_ERR,"txThreadProc: Got status %d from TxDmaText\n", sts);
 			}
 			DtsLock(Ctx);
+			Ctx->txBytesRetired += szDataToSend;
+			if(sts != BC_STS_SUCCESS)
+			{
+				Ctx->txDmaFault = true;
+				Ctx->eosTxComplete = false;
+			}
+			else if(Ctx->bEOSCheck && !Ctx->txDmaFault &&
+				Ctx->eosTxFence > Ctx->eosTxStart &&
+				Ctx->txBytesRetired >= Ctx->eosTxFence)
+			{
+				Ctx->eosTxComplete = true;
+			}
 			Ctx->txPending = false;
 			DtsUnLock(Ctx);
 		} else

@@ -20,7 +20,7 @@ CXXFLAGS ?= -O2
 override CXXFLAGS += -Wall -Werror -fPIC -fstrict-aliasing
 CRYSTALHD_NORMAL_CPU_FLAGS := -msse2
 LDFLAGS += -shared -Wl,-soname,$(BCLIB_SONAME)
-LDLIBS += -pthread
+LDLIBS += -pthread -lrt
 
 SRCFILES := libcrystalhd_if.cpp \
 	libcrystalhd_int_if.cpp \

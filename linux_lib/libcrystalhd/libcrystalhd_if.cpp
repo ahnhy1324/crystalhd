@@ -55,6 +55,11 @@ static bool DtsBeginTxQuiesce(DTS_LIB_CONTEXT *Ctx)
 	DtsLock(Ctx);
 	Ctx->State = BC_DEC_STATE_FLUSH;
 	Ctx->txQuiescing = true;
+	Ctx->bEOSCheck = false;
+	Ctx->eosTxStart = Ctx->txBytesEnqueued;
+	Ctx->eosTxFence = Ctx->txBytesEnqueued;
+	Ctx->eosDrainGeneration++;
+	Ctx->eosTxComplete = false;
 	const bool pending = Ctx->txPending;
 	DtsUnLock(Ctx);
 	return pending;
@@ -77,6 +82,23 @@ static BC_STATUS DtsWaitForTx(DTS_LIB_CONTEXT *Ctx)
 			return BC_STS_TIMEOUT;
 		bc_sleep_ms(10);
 	}
+}
+
+/* Call only after TX admission is closed and any popped DMA has retired. */
+static void DtsResetTxTracking(DTS_LIB_CONTEXT *Ctx, bool clearFault)
+{
+	DtsLock(Ctx);
+	Ctx->txBytesEnqueued = 0;
+	Ctx->txBytesRetired = 0;
+	Ctx->eosTxStart = 0;
+	Ctx->eosTxFence = 0;
+	Ctx->eosDrainGeneration++;
+	Ctx->outputProgress = 0;
+	Ctx->bEOSCheck = false;
+	Ctx->eosTxComplete = false;
+	if (clearFault)
+		Ctx->txDmaFault = false;
+	DtsUnLock(Ctx);
 }
 
 #if (!__STDC_WANT_SECURE_LIB__)
@@ -898,6 +920,7 @@ DtsOpenDecoder(
 	Ctx->DrvStatusEOSCnt = 0;
 	Ctx->bEOSCheck = false;
 	Ctx->bEOS = false;
+	DtsResetTxTracking(Ctx, true);
 	Ctx->CapState = 0;
 	Ctx->hw_paused = false;
 	Ctx->fw_cmd_issued = false;
@@ -1049,6 +1072,7 @@ DtsCloseDecoder(
 	Ctx->DrvStatusEOSCnt = 0;
 	Ctx->bEOSCheck = false;
 	Ctx->bEOS = false;
+	DtsResetTxTracking(Ctx, true);
 
 //	Ctx->InSampleCount = 0;
 
@@ -1301,6 +1325,7 @@ DtsStopDecoder(
 	if (sts == BC_STS_SUCCESS)
 		sts = cleanup_sts;
 
+	DtsResetTxTracking(Ctx, sts == BC_STS_SUCCESS);
 	DtsLock(Ctx);
 	Ctx->State = BC_DEC_STATE_STOP;
 	Ctx->txQuiescing = false;
@@ -1887,6 +1912,8 @@ DtsSendData( HANDLE  hDevice ,
 		}
 		if (ulSizeInBytes <= DtsTxFreeSize(hDevice)) {
 			const BC_STATUS sts = txBufPush(&Ctx->circBuf, pUserData, ulSizeInBytes);
+			if (sts == BC_STS_SUCCESS)
+				Ctx->txBytesEnqueued += ulSizeInBytes;
 			DtsUnLock(Ctx);
 			return sts;
 		}
@@ -2241,8 +2268,14 @@ DtsProcInput( HANDLE  hDevice ,
 		}
 	}
 
+	DtsLock(Ctx);
 	Ctx->bEOSCheck = false;
 	Ctx->bEOS = false;
+	Ctx->eosTxStart = Ctx->txBytesEnqueued;
+	Ctx->eosTxFence = Ctx->txBytesEnqueued;
+	Ctx->eosDrainGeneration++;
+	Ctx->eosTxComplete = false;
+	DtsUnLock(Ctx);
 
 	// According to ASF spec special timestamps can be 0x1FFFFFFFF or 0x1FFFFFFFE
 	// NAREN - FIXME - should we add support for these pre-roll timestamps
@@ -2339,6 +2372,7 @@ DtsSendEOS( HANDLE  hDevice, uint32_t Op
 	uint8_t	*pEOS;
 	uint32_t nEOSLen;
 	uint32_t	nTag;
+	uint64_t drainGeneration = 0;
 	const bool softRave = Ctx->PESConvParams.m_bSoftRave;
 	const bool divxTailBoundary = softRave && Ctx->DevId == BC_PCI_DEVID_FLEA &&
 		Ctx->VidParams.MediaSubType == BC_MSUBTYPE_DIVX;
@@ -2356,8 +2390,18 @@ DtsSendEOS( HANDLE  hDevice, uint32_t Op
 	/* A new drain attempt is armed only after every EOS fragment is queued.
 	 * Mode 5 retains its existing behavior of not changing EOS checking.
 	 */
-	if (Op == 0)
-		Ctx->bEOSCheck = false;
+	if (Op == 0 || Op == 5)
+	{
+		DtsLock(Ctx);
+		if (Op == 0)
+			Ctx->bEOSCheck = false;
+		Ctx->eosTxStart = Ctx->txBytesEnqueued;
+		Ctx->eosTxFence = Ctx->txBytesEnqueued;
+		Ctx->eosDrainGeneration++;
+		drainGeneration = Ctx->eosDrainGeneration;
+		Ctx->eosTxComplete = false;
+		DtsUnLock(Ctx);
+	}
 
 	/* The first MPEG-4 sequence end needs a zero PTS to commit the final VOP.
 	 * The timing marker and repeated sequence ends remain control-only PES.
@@ -2452,7 +2496,23 @@ DtsSendEOS( HANDLE  hDevice, uint32_t Op
 			if (sts != BC_STS_SUCCESS)
 				goto eos_cleanup;
 		}
-		Ctx->bEOSCheck = true;
+	}
+	if (Op == 0 || Op == 5)
+	{
+		DtsLock(Ctx);
+		if (Ctx->eosDrainGeneration != drainGeneration)
+		{
+			DtsUnLock(Ctx);
+			sts = BC_STS_IO_USER_ABORT;
+			goto eos_cleanup;
+		}
+		Ctx->eosTxFence = Ctx->txBytesEnqueued;
+		if (Op == 0)
+			Ctx->bEOSCheck = true;
+		Ctx->eosTxComplete = Ctx->bEOSCheck && !Ctx->txDmaFault &&
+			Ctx->eosTxFence > Ctx->eosTxStart &&
+			Ctx->txBytesRetired >= Ctx->eosTxFence;
+		DtsUnLock(Ctx);
 	}
 
 eos_cleanup:
@@ -2495,7 +2555,6 @@ DtsFlushInput( HANDLE  hDevice ,
 	{
 		Ctx->PESConvParams.m_bAddSpsPps = true;
 		const bool pending_tx = DtsBeginTxQuiesce(Ctx);
-		Ctx->bEOSCheck = false;
 		if (Op != 3 && pending_tx) {
 			if(Ctx->DevId == BC_PCI_DEVID_LINK && Ctx->hw_paused) {
 				sts = DtsFWPauseVideo(hDevice,eC011_PAUSE_MODE_OFF);
@@ -2513,6 +2572,7 @@ DtsFlushInput( HANDLE  hDevice ,
 		if (wait_sts != BC_STS_SUCCESS)
 			return sts == BC_STS_SUCCESS ? wait_sts : sts;
 		txBufFlush(&Ctx->circBuf);
+		DtsResetTxTracking(Ctx, false);
 		if (Op == 3) {
 			DtsLock(Ctx);
 			Ctx->txQuiescing = false;
