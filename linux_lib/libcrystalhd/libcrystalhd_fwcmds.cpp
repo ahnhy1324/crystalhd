@@ -333,7 +333,8 @@ DtsFWHwSelfTest(
 	stest->testId = (eC011_TEST_ID)testID;
 	if(Ctx->DevId==BC_PCI_DEVID_FLEA)
 	{
-		if (testID>3 || testID<6){
+		if (testID >= (uint32_t)eC011_TEST_LONG_REGISTER &&
+		    testID <= (uint32_t)eC011_TEST_DECODE_LOOPBACK) {
 			stest->mode = testID;
 			stest->height = Ctx->HWOutPicHeight;
 			stest->width = Ctx->HWOutPicWidth;

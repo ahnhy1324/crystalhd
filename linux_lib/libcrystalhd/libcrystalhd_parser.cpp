@@ -1178,7 +1178,7 @@ BC_STATUS DtsFindIDR(HANDLE hDevice, uint8_t* pInputBuffer, uint32_t ulSizeInByt
 
 	DtsParseAVC(hDevice, pInputBuffer, ulSizeInBytes, &ulPos, true, &nNalType);
 
-	if( (nNalType == NALU_TYPE_SLICE) | (nNalType == NALU_TYPE_IDR))
+	if( (nNalType == NALU_TYPE_SLICE) || (nNalType == NALU_TYPE_IDR))
 	{
 		*pOffset = ulPos;
 		return BC_STS_SUCCESS;
@@ -1225,7 +1225,7 @@ BC_STATUS DtsFindStartCode(HANDLE hDevice, uint8_t* pInputBuffer, uint32_t ulSiz
 			*pOffset = ulPos;
 			return BC_STS_SUCCESS;
 		}
-		else if( (nNalType == NALU_TYPE_SLICE) | (nNalType == NALU_TYPE_IDR))
+		else if( (nNalType == NALU_TYPE_SLICE) || (nNalType == NALU_TYPE_IDR))
 		{
 			*pOffset = 0;
 			return BC_STS_SUCCESS;

@@ -445,7 +445,7 @@ DtsRstVidClkDLL(
 	while(Cnt)
 	{
 		DtsFPGARegisterRead(hDevice,PCI_INT_STS_REG,&RegVal);
-		if(!(RegVal | 0x04) )
+		if (!(RegVal & 0x04))
 		{
 			break;
 
