@@ -215,15 +215,28 @@ seek results do not establish browser hardware seek correctness.
 
 ## Build and basic decode
 
-Run these commands from the repository root. Build and inspect the driver:
+For an installed build, choose one of the render nodes reported by
+`crystalhd-check`, then verify driver discovery without source-tree paths:
 
 ```sh
+drm_node=/dev/dri/renderDXXX
+LIBVA_DRIVER_NAME=crystalhd \
+vainfo --display drm --device "$drm_node"
+```
+
+This proves libva discovery and initialization, not compressed-stream decode.
+If the machine has multiple render nodes, select the display GPU explicitly.
+
+For a source-tree test, build and inspect the driver from the repository root:
+
+```sh
+drm_node=/dev/dri/renderDXXX
 make -C linux_lib/libcrystalhd
 make -C filters/vaapi check
 LIBVA_DRIVER_NAME=crystalhd \
 LIBVA_DRIVERS_PATH=$PWD/filters/vaapi \
 LD_LIBRARY_PATH=$PWD/linux_lib/libcrystalhd \
-vainfo --display drm --device /dev/dri/renderD128
+vainfo --display drm --device "$drm_node"
 ```
 
 Hardware-decode a file with FFmpeg:
@@ -232,7 +245,7 @@ Hardware-decode a file with FFmpeg:
 LIBVA_DRIVER_NAME=crystalhd \
 LIBVA_DRIVERS_PATH=$PWD/filters/vaapi \
 LD_LIBRARY_PATH=$PWD/linux_lib/libcrystalhd \
-ffmpeg -hwaccel vaapi -hwaccel_device /dev/dri/renderD128 \
+ffmpeg -hwaccel vaapi -hwaccel_device "$drm_node" \
   -hwaccel_output_format vaapi -i video.mp4 \
   -vf hwdownload,format=nv12 -f null -
 ```

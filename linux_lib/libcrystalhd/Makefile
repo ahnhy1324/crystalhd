@@ -11,7 +11,6 @@ PREFIX ?= /usr
 LIBDIR ?= $(PREFIX)/lib
 INCLUDEDIR ?= $(PREFIX)/include
 PKGCONFIGDIR ?= $(LIBDIR)/pkgconfig
-FIRMWAREDIR ?= /lib/firmware
 DESTDIR ?=
 
 ROOTDIR := ../..
@@ -34,10 +33,7 @@ PUBLIC_HEADERS := libcrystalhd_if.h \
 	$(ROOTDIR)/include/bc_dts_defs.h \
 	$(ROOTDIR)/include/bc_dts_types.h \
 	$(ROOTDIR)/include/libcrystalhd_version.h
-FIRMWARE := $(ROOTDIR)/firmware/fwbin/70012/bcm70012fw.bin \
-	$(ROOTDIR)/firmware/fwbin/70015/bcm70015fw.bin
-
-.PHONY: all clean install
+.PHONY: all clean install uninstall
 
 all: $(BCLIB) $(BCLIB_NAME) $(BCLIB_SONAME) libcrystalhd.pc
 
@@ -65,8 +61,24 @@ install: all
 	install -d $(DESTDIR)$(INCLUDEDIR)/libcrystalhd
 	install -m 0644 $(PUBLIC_HEADERS) $(DESTDIR)$(INCLUDEDIR)/libcrystalhd
 	install -D -m 0644 libcrystalhd.pc $(DESTDIR)$(PKGCONFIGDIR)/libcrystalhd.pc
-	install -d $(DESTDIR)$(FIRMWAREDIR)
-	install -m 0644 $(FIRMWARE) $(DESTDIR)$(FIRMWAREDIR)
+	@if [ -z "$(DESTDIR)" ]; then \
+		if command -v ldconfig >/dev/null 2>&1; then ldconfig; \
+		elif [ -x /sbin/ldconfig ]; then /sbin/ldconfig; fi; \
+	fi
+
+uninstall:
+	rm -f -- "$(DESTDIR)$(LIBDIR)/$(BCLIB_NAME)"
+	rm -f -- "$(DESTDIR)$(LIBDIR)/$(BCLIB_SONAME)"
+	rm -f -- "$(DESTDIR)$(LIBDIR)/$(BCLIB)"
+	rm -f -- "$(DESTDIR)$(PKGCONFIGDIR)/libcrystalhd.pc"
+	@set -eu; for header in $(notdir $(PUBLIC_HEADERS)); do \
+		rm -f -- "$(DESTDIR)$(INCLUDEDIR)/libcrystalhd/$$header"; \
+	done
+	@rmdir -- "$(DESTDIR)$(INCLUDEDIR)/libcrystalhd" 2>/dev/null || true
+	@if [ -z "$(DESTDIR)" ]; then \
+		if command -v ldconfig >/dev/null 2>&1; then ldconfig; \
+		elif [ -x /sbin/ldconfig ]; then /sbin/ldconfig; fi; \
+	fi
 
 include $(ROOTDIR)/cpu.mk
 $(OBJFILES) $(BCLIB): $(CRYSTALHD_BUILD_DEPS)

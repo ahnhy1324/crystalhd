@@ -1,14 +1,20 @@
-# CrystalHD bring-up and troubleshooting notes
+# CrystalHD bring-up and troubleshooting
 
 This document records the shortest known-good path from PCI detection to a
 decoded frame. It is intended to keep kernel, firmware, library, and frontend
 failures separate during hardware bring-up.
 
-The current hardware-tested baseline is a BCM70015 (`14e4:1615`) decoding
-progressive H.264 on Ubuntu kernel `6.17.0-41-generic`. The module is compiled
-in CI against Linux 6.1, 6.6, 6.12, and 6.18 LTS releases plus stable and
-mainline, but compilation is not a substitute for a hardware test. BCM70012
-support is retained and is not recently hardware-tested.
+Start with the installed, read-only preflight:
+
+```sh
+crystalhd-check
+```
+
+It checks the common PCI, module identity, DKMS conflict, firmware, device,
+library and frontend failures without raw-register access. The detailed
+[hardware report](HARDWARE-2026-09-13.md) records tested kernels, fixtures and
+limits. CI kernel compilation is not a substitute for a hardware test, and
+BCM70012 has not been recently hardware-tested.
 
 ## Bring-up order
 
@@ -39,8 +45,9 @@ headless system, add the playback account to `video` and log in again:
 sudo usermod -aG video "$USER"
 ```
 
-Before a hardware test, compare the installed module, the checkout's build,
-and the module actually loaded into the kernel. From the repository root:
+`crystalhd-check --source-tree "$PWD"` compares the installed components with
+a built checkout and reports obvious device owners. For a deeper manual module
+check, run from the repository root:
 
 ```sh
 modinfo -F filename crystalhd

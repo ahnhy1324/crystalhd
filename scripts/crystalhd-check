@@ -1,0 +1,607 @@
+#!/bin/sh
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+set -u
+
+program=${0##*/}
+drm_device=
+selected_module=
+selected_module_explicit=0
+source_tree=
+root_prefix=${CRYSTALHD_CHECK_ROOT:-}
+ok_count=0
+warn_count=0
+fail_count=0
+info_count=0
+temporary_registry=
+
+usage()
+{
+    cat <<EOF
+Usage: $program [OPTIONS]
+
+Read-only CrystalHD installation and device preflight.
+
+  --drm-device PATH  explicitly select a DRM render node for VA discovery
+  --module PATH      compare the loaded driver with this module file
+  --source-tree DIR  compare installed components with a built checkout
+  -h, --help         show this help
+
+The command does not load or unload modules, open a decoder session, change
+PCIe settings, or write system configuration. It exits nonzero when a required
+component fails its check.
+EOF
+}
+
+emit()
+{
+    level=$1
+    shift
+    printf '%s: %s\n' "$level" "$*"
+    case "$level" in
+        OK) ok_count=$((ok_count + 1)) ;;
+        WARN) warn_count=$((warn_count + 1)) ;;
+        FAIL) fail_count=$((fail_count + 1)) ;;
+        INFO) info_count=$((info_count + 1)) ;;
+    esac
+}
+
+cleanup()
+{
+    if [ -n "$temporary_registry" ]; then
+        rm -f -- "$temporary_registry"
+    fi
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --drm-device)
+            [ "$#" -ge 2 ] || { echo "$program: --drm-device needs a path" >&2; exit 2; }
+            drm_device=$2
+            shift 2
+            ;;
+        --module)
+            [ "$#" -ge 2 ] || { echo "$program: --module needs a path" >&2; exit 2; }
+            selected_module=$2
+            selected_module_explicit=1
+            shift 2
+            ;;
+        --source-tree)
+            [ "$#" -ge 2 ] || { echo "$program: --source-tree needs a directory" >&2; exit 2; }
+            source_tree=$2
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --)
+            shift
+            break
+            ;;
+        *)
+            echo "$program: unknown option: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+if [ "$#" -ne 0 ]; then
+    echo "$program: unexpected argument: $1" >&2
+    exit 2
+fi
+
+case "$root_prefix" in
+    "") ;;
+    /*) emit INFO "Inspecting alternate root: $root_prefix" ;;
+    *) echo "$program: CRYSTALHD_CHECK_ROOT must be an absolute path" >&2; exit 2 ;;
+esac
+
+if [ -n "$source_tree" ]; then
+    if [ ! -d "$source_tree" ]; then
+        echo "$program: source tree not found: $source_tree" >&2
+        exit 2
+    fi
+    source_tree=$(CDPATH= cd -- "$source_tree" 2>/dev/null && pwd) || exit 2
+fi
+if [ -n "$selected_module" ] && [ ! -r "$selected_module" ]; then
+    echo "$program: module file is not readable: $selected_module" >&2
+    exit 2
+fi
+
+kernel_release=$(uname -r 2>/dev/null || printf unknown)
+kernel_arch=$(uname -m 2>/dev/null || printf unknown)
+userspace_bits=$(getconf LONG_BIT 2>/dev/null || printf unknown)
+case "$kernel_arch:$userspace_bits" in
+    x86_64:64) abi_description="native 64-bit" ;;
+    x86_64:32) abi_description="mixed ABI: 32-bit userspace on a 64-bit kernel" ;;
+    i?86:32) abi_description="native 32-bit/i686" ;;
+    *) abi_description="kernel $kernel_arch, userspace $userspace_bits-bit" ;;
+esac
+emit INFO "Architecture: $abi_description; kernel $kernel_release"
+
+pci_root=$root_prefix/sys/bus/pci/devices
+have_70012=0
+have_70015=0
+pci_count=0
+if [ -d "$pci_root" ]; then
+    for pci_dir in "$pci_root"/*; do
+        [ -d "$pci_dir" ] || continue
+        [ -r "$pci_dir/vendor" ] || continue
+        [ -r "$pci_dir/device" ] || continue
+        pci_vendor=$(cat "$pci_dir/vendor" 2>/dev/null || true)
+        pci_device=$(cat "$pci_dir/device" 2>/dev/null || true)
+        [ "$pci_vendor" = 0x14e4 ] || continue
+        case "$pci_device" in
+            0x1612) pci_model=BCM70012; have_70012=1 ;;
+            0x1615) pci_model=BCM70015; have_70015=1 ;;
+            *) continue ;;
+        esac
+        pci_count=$((pci_count + 1))
+        pci_address=${pci_dir##*/}
+        if [ -L "$pci_dir/driver" ]; then
+            pci_driver=$(basename "$(readlink "$pci_dir/driver" 2>/dev/null || true)")
+        else
+            pci_driver=
+        fi
+        if [ "$pci_driver" = crystalhd ]; then
+            emit OK "PCI $pci_address: Broadcom $pci_model (14e4:${pci_device#0x}), bound to crystalhd"
+        elif [ -n "$pci_driver" ]; then
+            emit FAIL "PCI $pci_address: Broadcom $pci_model is bound to $pci_driver, not crystalhd"
+        else
+            emit FAIL "PCI $pci_address: Broadcom $pci_model has no bound driver"
+        fi
+    done
+fi
+if [ "$pci_count" -eq 0 ]; then
+    emit FAIL "PCI: no supported Broadcom 14e4:1612 or 14e4:1615 device found"
+fi
+
+module_sys=$root_prefix/sys/module/crystalhd
+loaded_srcversion=
+if [ -d "$module_sys" ]; then
+    if [ -r "$module_sys/srcversion" ]; then
+        loaded_srcversion=$(cat "$module_sys/srcversion" 2>/dev/null || true)
+    fi
+    if [ -n "$loaded_srcversion" ]; then
+        emit OK "Module: loaded, srcversion $loaded_srcversion"
+    else
+        emit WARN "Module: loaded, but srcversion is unavailable"
+    fi
+else
+    emit FAIL "Module: crystalhd is not loaded"
+fi
+
+module_root=$root_prefix/lib/modules/$kernel_release
+module_candidates=
+if [ -d "$module_root" ]; then
+    module_candidates=$(
+        find "$module_root" \( -type f -o -type l \) \
+            \( -name 'crystalhd.ko' -o -name 'crystalhd.ko.gz' -o \
+                -name 'crystalhd.ko.xz' -o -name 'crystalhd.ko.zst' \) \
+            -print 2>/dev/null |
+        while IFS= read -r module_path; do
+            readlink -f -- "$module_path" 2>/dev/null || printf '%s\n' "$module_path"
+        done | sort -u
+    )
+fi
+module_candidate_count=$(printf '%s\n' "$module_candidates" | awk 'NF { count++ } END { print count + 0 }')
+if [ "$module_candidate_count" -gt 1 ]; then
+    emit WARN "Module: $module_candidate_count installed candidates can conflict (direct and/or DKMS)"
+elif [ "$module_candidate_count" -eq 1 ]; then
+    emit INFO "Module: one installed candidate found"
+else
+    emit WARN "Module: no crystalhd.ko file found below /lib/modules/$kernel_release"
+fi
+
+old_ifs=$IFS
+IFS='
+'
+for module_candidate in $module_candidates; do
+    [ -n "$module_candidate" ] || continue
+    candidate_srcversion=
+    if command -v modinfo >/dev/null 2>&1; then
+        candidate_srcversion=$(modinfo -F srcversion "$module_candidate" 2>/dev/null || true)
+    fi
+    candidate_display=$module_candidate
+    if [ -n "$root_prefix" ]; then
+        candidate_display=${candidate_display#"$root_prefix"}
+    fi
+    emit INFO "Module candidate: $candidate_display${candidate_srcversion:+; srcversion $candidate_srcversion}"
+done
+IFS=$old_ifs
+
+installed_module=
+installed_srcversion=
+installed_module_name=
+if [ -n "$selected_module" ]; then
+    installed_module=$selected_module
+elif [ -z "$root_prefix" ] && command -v modinfo >/dev/null 2>&1; then
+    installed_module=$(modinfo -n crystalhd 2>/dev/null || true)
+elif [ "$module_candidate_count" -eq 1 ]; then
+    installed_module=$module_candidates
+fi
+if [ -n "$installed_module" ] && command -v modinfo >/dev/null 2>&1; then
+    installed_module_name=$(modinfo -F name "$installed_module" 2>/dev/null || true)
+    installed_srcversion=$(modinfo -F srcversion "$installed_module" 2>/dev/null || true)
+fi
+if [ -n "$installed_module" ]; then
+    emit INFO "Module selected for the next load: $installed_module${installed_srcversion:+; srcversion $installed_srcversion}"
+    if [ "$selected_module_explicit" -eq 1 ]; then
+        if ! command -v modinfo >/dev/null 2>&1; then
+            emit FAIL "Selected module: modinfo is unavailable, so $installed_module cannot be validated"
+        elif [ "$installed_module_name" != crystalhd ]; then
+            emit FAIL "Selected module: $installed_module is not a valid crystalhd kernel module"
+        elif [ -z "$installed_srcversion" ]; then
+            emit FAIL "Selected module: $installed_module has no readable srcversion"
+        fi
+    elif [ -n "$loaded_srcversion" ] && [ -z "$installed_srcversion" ]; then
+        emit WARN "Module identity: selected module srcversion is unavailable"
+    fi
+    if [ -n "$loaded_srcversion" ] && [ -n "$installed_srcversion" ]; then
+        if [ "$loaded_srcversion" = "$installed_srcversion" ]; then
+            emit OK "Module identity: loaded and selected srcversions match"
+        else
+            emit FAIL "Module identity: loaded $loaded_srcversion differs from selected $installed_srcversion"
+        fi
+    fi
+fi
+
+if command -v dkms >/dev/null 2>&1; then
+    dkms_status=$(dkms status -m crystalhd -k "$kernel_release" 2>/dev/null || true)
+    if [ -n "$dkms_status" ]; then
+        emit INFO "DKMS: $(printf '%s' "$dkms_status" | tr '\n' ';' | sed 's/;*$//')"
+        case "$dkms_status" in
+            *"Original modules exist"*) emit WARN "DKMS: a direct/original module shadows or coexists with DKMS" ;;
+        esac
+        dkms_lines=$(printf '%s\n' "$dkms_status" | awk 'NF { count++ } END { print count + 0 }')
+        [ "$dkms_lines" -le 1 ] || emit WARN "DKMS: multiple CrystalHD registrations match the running kernel"
+        case "$dkms_status" in
+            *installed*) ;;
+            *) emit WARN "DKMS: registration is not in installed state for $kernel_release" ;;
+        esac
+    else
+        emit INFO "DKMS: no CrystalHD registration for $kernel_release"
+    fi
+else
+    emit INFO "DKMS: command not installed"
+fi
+
+if [ -n "$source_tree" ]; then
+    source_module=$source_tree/driver/linux/crystalhd.ko
+    if [ ! -r "$source_module" ]; then
+        emit WARN "Source module is not built: $source_module"
+    elif ! command -v modinfo >/dev/null 2>&1; then
+        emit WARN "Source module exists, but modinfo is unavailable: $source_module"
+    else
+        source_module_name=$(modinfo -F name "$source_module" 2>/dev/null || true)
+        source_srcversion=$(modinfo -F srcversion "$source_module" 2>/dev/null || true)
+        if [ "$source_module_name" != crystalhd ] || [ -z "$source_srcversion" ]; then
+            emit WARN "Source module exists, but modinfo could not validate it: $source_module"
+        else
+            emit INFO "Source module: $source_module; srcversion $source_srcversion"
+            if [ -n "$loaded_srcversion" ] &&
+                [ "$loaded_srcversion" != "$source_srcversion" ]; then
+                emit WARN "Source module differs from the module currently loaded"
+            fi
+        fi
+    fi
+fi
+
+firmware_status()
+{
+    firmware_name=$1
+    firmware_required=$2
+    firmware_path=
+    for firmware_suffix in '' .xz .zst; do
+        if [ -r "$root_prefix/lib/firmware/$firmware_name$firmware_suffix" ]; then
+            firmware_path=/lib/firmware/$firmware_name$firmware_suffix
+            break
+        fi
+    done
+    if [ -n "$firmware_path" ]; then
+        emit OK "Firmware: $firmware_path"
+    elif [ "$firmware_required" -eq 1 ]; then
+        emit FAIL "Firmware: required /lib/firmware/$firmware_name is missing"
+    else
+        emit WARN "Firmware: /lib/firmware/$firmware_name is not installed"
+    fi
+}
+firmware_status bcm70012fw.bin "$have_70012"
+firmware_status bcm70015fw.bin "$have_70015"
+
+device_path=$root_prefix/dev/crystalhd
+if [ -c "$device_path" ]; then
+    if [ -r "$device_path" ] && [ -w "$device_path" ]; then
+        emit OK "Device: /dev/crystalhd is a character device and is readable/writable by uid $(id -u)"
+    else
+        emit FAIL "Device: /dev/crystalhd exists but uid $(id -u) lacks read/write access"
+    fi
+    if command -v stat >/dev/null 2>&1; then
+        device_mode=$(stat -c '%a' "$device_path" 2>/dev/null || true)
+        device_owner=$(stat -c '%U:%G' "$device_path" 2>/dev/null || true)
+        emit INFO "Device permissions: ${device_owner:-unknown} ${device_mode:-unknown}"
+        if [ "$device_owner" != root:video ] || [ "$device_mode" != 660 ]; then
+            emit WARN "Device ownership/mode differs from the installed root:video 0660 baseline"
+        fi
+    fi
+elif [ -e "$device_path" ]; then
+    emit FAIL "Device: /dev/crystalhd exists but is not a character device"
+else
+    emit FAIL "Device: /dev/crystalhd is missing"
+fi
+
+if [ -e "$device_path" ] && command -v fuser >/dev/null 2>&1; then
+    device_owners=$(fuser "$device_path" 2>/dev/null)
+    fuser_status=$?
+    if [ -n "$device_owners" ]; then
+        owner_details=
+        for owner_pid in $device_owners; do
+            owner_command=$(ps -p "$owner_pid" -o comm= 2>/dev/null || true)
+            owner_details="$owner_details ${owner_pid}${owner_command:+($owner_command)}"
+        done
+        emit WARN "Session: /dev/crystalhd owner(s):${owner_details}; each card supports one playback session"
+    elif [ "$fuser_status" -eq 0 ]; then
+        emit INFO "Session: fuser reported no visible owner; this does not prove that the card is idle"
+    else
+        emit INFO "Session: fuser could not confirm an owner (status $fuser_status); no visible owner does not prove that the card is idle"
+    fi
+elif ! command -v fuser >/dev/null 2>&1; then
+    emit INFO "Session: install fuser to identify an obvious current device owner"
+fi
+
+library_candidates=
+ldconfig_command=
+if command -v ldconfig >/dev/null 2>&1; then
+    ldconfig_command=$(command -v ldconfig)
+elif [ -x /sbin/ldconfig ]; then
+    ldconfig_command=/sbin/ldconfig
+fi
+if [ -z "$root_prefix" ] && [ -n "$ldconfig_command" ]; then
+    library_candidates=$($ldconfig_command -p 2>/dev/null |
+        awk '$1 == "libcrystalhd.so.3" { print $NF }')
+fi
+if [ -n "$root_prefix" ]; then
+    for library_glob in \
+        "$root_prefix"/lib/libcrystalhd.so.3 \
+        "$root_prefix"/usr/lib/libcrystalhd.so.3 \
+        "$root_prefix"/lib/*-linux-gnu/libcrystalhd.so.3 \
+        "$root_prefix"/usr/lib/*-linux-gnu/libcrystalhd.so.3; do
+        [ -e "$library_glob" ] || continue
+        library_candidates="$library_candidates${library_candidates:+
+}$library_glob"
+    done
+fi
+
+selected_library=
+selected_library_bits=
+IFS='
+'
+for library_candidate in $library_candidates; do
+    [ -e "$library_candidate" ] || continue
+    library_description=$(file -Lb "$library_candidate" 2>/dev/null || true)
+    case "$library_description" in
+        *"ELF 64-bit"*) library_bits=64 ;;
+        *"ELF 32-bit"*) library_bits=32 ;;
+        *) library_bits=unknown ;;
+    esac
+    emit INFO "Library candidate: $library_candidate ($library_bits-bit)"
+    if [ -z "$selected_library" ] && [ "$library_bits" = "$userspace_bits" ]; then
+        selected_library=$library_candidate
+        selected_library_bits=$library_bits
+    fi
+done
+IFS=$old_ifs
+if [ -n "$selected_library" ]; then
+    if [ -z "$root_prefix" ]; then
+        emit OK "Library: loader finds ABI-compatible libcrystalhd.so.3 at $selected_library"
+    else
+        emit OK "Library: staged ABI-compatible libcrystalhd.so.3 found at $selected_library"
+    fi
+else
+    emit FAIL "Library: loader has no $userspace_bits-bit libcrystalhd.so.3; a 32-bit library cannot load in a 64-bit process or vice versa"
+fi
+
+if [ -n "$source_tree" ]; then
+    source_library=$source_tree/linux_lib/libcrystalhd/libcrystalhd.so.3
+    if [ -e "$source_library" ]; then
+        if [ -n "$selected_library" ] && cmp -s "$source_library" "$selected_library"; then
+            emit OK "Source library matches the loader-selected library"
+        elif [ -n "$selected_library" ]; then
+            emit WARN "Source library differs from the loader-selected library"
+        fi
+    else
+        emit WARN "Source library is not built: $source_library"
+    fi
+fi
+
+for override_name in \
+    GST_PLUGIN_PATH GST_PLUGIN_PATH_1_0 \
+    GST_PLUGIN_SYSTEM_PATH GST_PLUGIN_SYSTEM_PATH_1_0 \
+    LD_LIBRARY_PATH; do
+    eval "override_set=\${$override_name+x}"
+    if [ "$override_set" = x ]; then
+        emit WARN "$override_name is set; installed GStreamer discovery ignores it for this check"
+    fi
+done
+for override_name in PKG_CONFIG_PATH PKG_CONFIG_LIBDIR; do
+    eval "override_set=\${$override_name+x}"
+    if [ "$override_set" = x ]; then
+        emit WARN "$override_name is set; installed plugin-directory discovery ignores it for this check"
+    fi
+done
+if [ "${LIBVA_DRIVERS_PATH+x}" = x ]; then
+    emit WARN "LIBVA_DRIVERS_PATH is set; installed VA-API discovery ignores it for this check"
+fi
+
+gst_plugin=
+gst_expected=
+if command -v gst-inspect-1.0 >/dev/null 2>&1; then
+    temporary_registry=$(mktemp "${TMPDIR:-/tmp}/crystalhd-gst-registry.XXXXXX" 2>/dev/null || true)
+    if [ -n "$temporary_registry" ]; then
+        gst_output=$(
+            unset GST_PLUGIN_PATH GST_PLUGIN_PATH_1_0
+            unset GST_PLUGIN_SYSTEM_PATH GST_PLUGIN_SYSTEM_PATH_1_0
+            unset LD_LIBRARY_PATH
+            GST_REGISTRY="$temporary_registry" gst-inspect-1.0 crystalhddec 2>&1
+        )
+        gst_status=$?
+    else
+        gst_output=
+        gst_status=1
+    fi
+    if [ "$gst_status" -eq 0 ]; then
+        gst_plugin=$(printf '%s\n' "$gst_output" |
+            sed -n 's/^[[:space:]]*Filename[[:space:]]*//p' | sed -n '1p')
+        if [ -n "$gst_plugin" ]; then
+            emit OK "GStreamer: crystalhddec discovered at $gst_plugin"
+        else
+            emit WARN "GStreamer: crystalhddec loaded but its filename was not reported"
+        fi
+    else
+        emit FAIL "GStreamer: gst-inspect-1.0 could not discover crystalhddec"
+    fi
+else
+    emit FAIL "GStreamer: gst-inspect-1.0 is not installed"
+fi
+if command -v pkg-config >/dev/null 2>&1 &&
+    (unset PKG_CONFIG_PATH PKG_CONFIG_LIBDIR; pkg-config --exists gstreamer-1.0 2>/dev/null); then
+    gst_plugin_dir=$(unset PKG_CONFIG_PATH PKG_CONFIG_LIBDIR
+        pkg-config --variable=pluginsdir gstreamer-1.0 2>/dev/null || true)
+    [ -n "$gst_plugin_dir" ] && gst_expected=$root_prefix$gst_plugin_dir/libgstcrystalhd.so
+fi
+if [ -n "$gst_plugin" ] && [ -n "$gst_expected" ]; then
+    if [ ! -e "$gst_expected" ]; then
+        emit WARN "GStreamer: expected installed plugin is missing at $gst_expected; discovered $gst_plugin"
+    else
+        gst_actual_real=$(readlink -f "$gst_plugin" 2>/dev/null || printf '%s' "$gst_plugin")
+        gst_expected_real=$(readlink -f "$gst_expected" 2>/dev/null || printf '%s' "$gst_expected")
+        if [ "$gst_actual_real" = "$gst_expected_real" ]; then
+            emit OK "GStreamer: system plugin directory and discovered filename agree"
+        else
+            emit WARN "GStreamer: discovered $gst_plugin instead of installed $gst_expected"
+        fi
+    fi
+fi
+case "$gst_plugin" in
+    */filters/gst/gst-plugin-1.0/*) emit WARN "GStreamer: a source-tree plugin is active, not the normal installed plugin" ;;
+esac
+if [ -n "$gst_plugin" ] && command -v ldd >/dev/null 2>&1; then
+    gst_ldd_output=$(unset LD_LIBRARY_PATH; ldd "$gst_plugin" 2>/dev/null || true)
+    case "$gst_ldd_output" in
+        *"libcrystalhd.so.3 => not found"*)
+            gst_library=
+            emit FAIL "GStreamer: libcrystalhd.so.3 is not resolved for $gst_plugin"
+            ;;
+        *)
+            gst_library=$(printf '%s\n' "$gst_ldd_output" |
+                awk '$1 == "libcrystalhd.so.3" && $2 == "=>" { print $3; exit }')
+            ;;
+    esac
+    if [ -n "$gst_library" ]; then
+        emit INFO "GStreamer library dependency: $gst_library"
+        if [ -n "$selected_library" ]; then
+            gst_library_real=$(readlink -f "$gst_library" 2>/dev/null || printf '%s' "$gst_library")
+            selected_library_real=$(readlink -f "$selected_library" 2>/dev/null || printf '%s' "$selected_library")
+            [ "$gst_library_real" = "$selected_library_real" ] ||
+                emit WARN "GStreamer resolves a different libcrystalhd.so.3 than the loader candidate above"
+        fi
+    elif ! printf '%s\n' "$gst_ldd_output" | grep -F 'libcrystalhd.so.3 => not found' >/dev/null; then
+        emit FAIL "GStreamer: libcrystalhd.so.3 is not resolved for $gst_plugin"
+    fi
+fi
+if [ -n "$source_tree" ]; then
+    source_plugin=$source_tree/filters/gst/gst-plugin-1.0/libgstcrystalhd.so
+    if [ -e "$source_plugin" ] && [ -n "$gst_plugin" ]; then
+        if cmp -s "$source_plugin" "$gst_plugin"; then
+            emit OK "Source GStreamer plugin matches the discovered plugin"
+        else
+            emit WARN "Source GStreamer plugin differs from the discovered installed plugin"
+        fi
+    elif [ ! -e "$source_plugin" ]; then
+        emit WARN "Source GStreamer plugin is not built: $source_plugin"
+    fi
+fi
+
+render_nodes=
+render_count=0
+for render_node in "$root_prefix"/dev/dri/renderD*; do
+    [ -e "$render_node" ] || continue
+    render_count=$((render_count + 1))
+    render_display=$render_node
+    [ -z "$root_prefix" ] || render_display=${render_display#"$root_prefix"}
+    render_nodes="$render_nodes${render_nodes:+ }$render_display"
+done
+if [ "$render_count" -gt 0 ]; then
+    emit INFO "DRM render nodes:$render_nodes"
+else
+    emit WARN "DRM: no render node found"
+fi
+if [ -z "$drm_device" ] && [ "$render_count" -eq 1 ]; then
+    drm_device=$render_nodes
+    emit INFO "VA-API: using the only available render node, $drm_device"
+elif [ -z "$drm_device" ] && [ "$render_count" -gt 1 ]; then
+    emit WARN "VA-API: multiple render nodes found; rerun with --drm-device PATH"
+fi
+
+va_driver=
+if command -v pkg-config >/dev/null 2>&1 &&
+    (unset PKG_CONFIG_PATH PKG_CONFIG_LIBDIR; pkg-config --exists libva 2>/dev/null); then
+    va_libdir=$(unset PKG_CONFIG_PATH PKG_CONFIG_LIBDIR
+        pkg-config --variable=libdir libva 2>/dev/null || true)
+    [ -n "$va_libdir" ] && va_driver=$root_prefix$va_libdir/dri/crystalhd_drv_video.so
+fi
+if [ -n "$va_driver" ] && [ -r "$va_driver" ]; then
+    emit OK "VA-API driver file: $va_driver"
+else
+    emit WARN "VA-API: installed crystalhd_drv_video.so was not found in libva's driver directory"
+fi
+
+if [ -n "$drm_device" ]; then
+    checked_drm=$root_prefix$drm_device
+    if [ ! -c "$checked_drm" ]; then
+        emit FAIL "VA-API: selected render node is not a character device: $drm_device"
+    elif command -v vainfo >/dev/null 2>&1; then
+        va_output=$(
+            unset LIBVA_DRIVERS_PATH LD_LIBRARY_PATH
+            LIBVA_DRIVER_NAME=crystalhd vainfo --display drm --device "$drm_device" 2>&1
+        )
+        va_status=$?
+        if [ "$va_status" -eq 0 ]; then
+            va_opened=$(printf '%s\n' "$va_output" |
+                sed -n "s/.*Trying to open \(.*crystalhd_drv_video\.so\).*/\1/p" | sed -n '1p')
+            emit OK "VA-API: libva initialized CrystalHD on $drm_device${va_opened:+ using $va_opened}"
+            if [ -n "$va_opened" ] && [ -n "$va_driver" ] && [ -e "$va_driver" ]; then
+                va_opened_real=$(readlink -f "$va_opened" 2>/dev/null || printf '%s' "$va_opened")
+                va_driver_real=$(readlink -f "$va_driver" 2>/dev/null || printf '%s' "$va_driver")
+                [ "$va_opened_real" = "$va_driver_real" ] ||
+                    emit WARN "VA-API: libva opened $va_opened instead of installed $va_driver"
+            fi
+            emit INFO "VA-API discovery does not prove that a compressed stream decoded on CrystalHD hardware"
+        else
+            emit WARN "VA-API: CrystalHD driver discovery failed on $drm_device"
+        fi
+    else
+        emit WARN "VA-API: vainfo is not installed"
+    fi
+fi
+
+if [ "$have_70015" -eq 1 ]; then
+    l0s_parameter=$module_sys/parameters/force_l0s_off
+    if [ -r "$l0s_parameter" ]; then
+        l0s_value=$(cat "$l0s_parameter" 2>/dev/null || true)
+        case "$l0s_value" in
+            Y|1) emit WARN "BCM70015 force_l0s_off is enabled; it can increase power use" ;;
+            *) emit INFO "BCM70015 force_l0s_off is disabled (default)" ;;
+        esac
+    fi
+    emit INFO "force_l0s_off=1 is an opt-in diagnostic only for the documented BCM70015 Full HD throughput case"
+fi
+
+printf 'SUMMARY: %d OK, %d WARN, %d FAIL, %d INFO\n' \
+    "$ok_count" "$warn_count" "$fail_count" "$info_count"
+[ "$fail_count" -eq 0 ]

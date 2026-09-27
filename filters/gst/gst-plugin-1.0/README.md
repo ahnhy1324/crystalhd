@@ -13,9 +13,18 @@ counts, hashes, software comparisons and known failures. CI checks discovery,
 framing/lifecycle helpers, synthetic YUY2 playback and software audio/video
 controls; it does not decode through CrystalHD.
 
-Run the following commands from the repository root.
+For an installed build, inspect the system plugin first:
 
-Build the driver and `libcrystalhd` first, then build and inspect the plugin:
+```sh
+gst-inspect-1.0 crystalhddec
+```
+
+Check `Filename` under `Plugin Details`; it must name the system plugin rather
+than a checkout. `crystalhd-check` reports that filename and the resolved
+`libcrystalhd.so.3` together.
+
+For a source-tree test, run the following commands from the repository root.
+Build `libcrystalhd` and the plugin, then run its device-free checks:
 
 ```sh
 make -C linux_lib/libcrystalhd
@@ -23,15 +32,7 @@ make -C filters/gst/gst-plugin-1.0
 make -C filters/gst/gst-plugin-1.0 check
 ```
 
-After `sudo make install`, inspect the system plugin with:
-
-```sh
-gst-inspect-1.0 crystalhddec
-```
-
-Check the `Filename` under `Plugin Details`: an installed test should show the
-system plugin directory; a source-tree test should show this directory. To
-verify the source-tree library as well:
+To verify the source-tree library as well:
 
 ```sh
 LD_LIBRARY_PATH=$PWD/linux_lib/libcrystalhd \
@@ -232,7 +233,7 @@ a software decoder. Record this result separately from ordinary playback.
 ## Local player and in-flight controls
 
 `scripts/crystalhd-play` provides explicit hardware/software local-file
-playback; see the [top-level usage and known failures](../../../README.md#gstreamer-playback).
+playback; see the [top-level usage](../../../README.md#play-a-local-file).
 Hardware mode never silently falls back to software.
 
 The separate controls probe verifies barcode pixels and timestamps while

@@ -6,7 +6,7 @@ ROOTDIR := ..
 BINDIR ?= $(PREFIX)/bin
 DATADIR ?= $(PREFIX)/share
 
-.PHONY: all check install
+.PHONY: all check install uninstall
 
 all:
 
@@ -36,11 +36,26 @@ check:
 install:
 	install -D -m 0755 $(ROOTDIR)/scripts/crystalhd-chromium \
 		$(DESTDIR)$(BINDIR)/crystalhd-chromium
-	install -D -m 0755 $(ROOTDIR)/scripts/setup-crystalhd-chrome-default \
-		$(DESTDIR)$(BINDIR)/setup-crystalhd-chrome-default
 	install -D -m 0644 h264-only/manifest.json \
 		$(DESTDIR)$(DATADIR)/crystalhd/h264-only/manifest.json
 	install -D -m 0644 h264-only/prefer-h264.js \
 		$(DESTDIR)$(DATADIR)/crystalhd/h264-only/prefer-h264.js
 	install -D -m 0644 crystalhd-chromium.desktop \
 		$(DESTDIR)$(DATADIR)/applications/crystalhd-chromium.desktop
+	@if [ -z "$(DESTDIR)" ] && command -v update-desktop-database >/dev/null 2>&1; then \
+		update-desktop-database $(DATADIR)/applications || \
+			echo "WARN: browser files installed, but the desktop cache was not updated" >&2; \
+	fi
+
+uninstall:
+	rm -f -- "$(DESTDIR)$(BINDIR)/crystalhd-chromium"
+	rm -f -- "$(DESTDIR)$(BINDIR)/setup-crystalhd-chrome-default"
+	rm -f -- "$(DESTDIR)$(DATADIR)/crystalhd/h264-only/manifest.json"
+	rm -f -- "$(DESTDIR)$(DATADIR)/crystalhd/h264-only/prefer-h264.js"
+	rm -f -- "$(DESTDIR)$(DATADIR)/applications/crystalhd-chromium.desktop"
+	@rmdir -- "$(DESTDIR)$(DATADIR)/crystalhd/h264-only" 2>/dev/null || true
+	@rmdir -- "$(DESTDIR)$(DATADIR)/crystalhd" 2>/dev/null || true
+	@if [ -z "$(DESTDIR)" ] && command -v update-desktop-database >/dev/null 2>&1; then \
+		update-desktop-database $(DATADIR)/applications || \
+			echo "WARN: browser files removed, but the desktop cache was not updated" >&2; \
+	fi
