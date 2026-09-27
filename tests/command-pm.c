@@ -16,14 +16,15 @@ struct _BC_DTS_PROC_OUT;
 #include "command-pm-types.h"
 
 #define KERN_ERR ""
+#define GFP_KERNEL 0
 #define READ_ONCE(value) (value)
 #define printk(...) ((void)0)
 #define dev_err(dev, ...) ((void)(dev))
 #define dev_info(dev, ...) ((void)(dev))
 #define dev_dbg(dev, ...) ((void)(dev))
 struct device { int unused; };
-struct pci_dev { struct device dev; };
-struct crystalhd_adp { struct pci_dev *pdev; };
+struct pci_dev { struct device dev; int irq; };
+struct crystalhd_adp { struct pci_dev *pdev; unsigned cfg_users; };
 struct crystalhd_hw {
     struct crystalhd_adp *adp;
     bool dma_fault;
@@ -52,14 +53,23 @@ typedef struct {
 } crystalhd_ioctl_data;
 
 static unsigned checks, failures, starts, stops, tx_stops, cancels, captures, pools, rings;
+static unsigned elem_deletes, dio_destroys, ring_frees, hardware_opens, hardware_closes;
+static unsigned irq_depth, irq_disables, irq_enables, capture_unmaps;
 static unsigned downloads;
 static bool start_ok, stop_ok;
+static bool elem_live, dio_live, rings_live, hardware_allocated;
+static int elem_error, dio_error;
+static BC_STATUS ring_status, hardware_open_status;
 static BC_STATUS capture_status, cancel_status;
 static char events[32];
-static struct pci_dev endpoint;
-static struct crystalhd_adp adapter = { &endpoint };
+static struct pci_dev endpoint = { .irq = 19 };
+static struct crystalhd_adp adapter = { .pdev = &endpoint };
 static struct crystalhd_hw hardware;
 static struct crystalhd_cmd context;
+static bool Start(struct crystalhd_hw *hw);
+static bool Stop(struct crystalhd_hw *hw);
+static BC_STATUS StopTx(struct crystalhd_hw *hw);
+static BC_STATUS Download(struct crystalhd_hw *hw, uint8_t *data, uint32_t size);
 static void Check(bool ok, const char *why)
 {
     checks++;
@@ -72,6 +82,55 @@ static void Event(char event)
     events[n] = event; events[n + 1] = '\0';
 }
 static struct device *chddev(void) { return &endpoint.dev; }
+static void ConfigureHardware(struct crystalhd_hw *hw)
+{
+    *hw = (struct crystalhd_hw){ .adp = &adapter, .pfnStartDevice = Start,
+        .pfnStopDevice = Stop, .pfnStopTxDMA = StopTx, .pfnFWDwnld = Download,
+        .FwCmdCnt = 64,
+        .rx_list_sts = {rx_sts_waiting, rx_sts_waiting},
+        .TxList0Sts = TxListWaitingForIntr, .TxList1Sts = TxListWaitingForIntr,
+        .rx_list_post_index = 1, .tx_list_post_index = 1 };
+}
+static void *kmalloc(size_t size, int flags)
+{
+    Check(size == sizeof(hardware) && flags == GFP_KERNEL && !hardware_allocated,
+          "user open allocates one fresh hardware context");
+    hardware_allocated = true;
+    return &hardware;
+}
+static void kfree(void *memory)
+{
+    Check(memory == &hardware && hardware_allocated,
+          "session teardown frees its hardware context exactly once");
+    hardware_allocated = false;
+}
+static void disable_irq(int irq)
+{
+    Check(irq == endpoint.irq && !irq_depth, "session transition disables the device IRQ");
+    irq_depth++; irq_disables++;
+}
+static void enable_irq(int irq)
+{
+    Check(irq == endpoint.irq && irq_depth == 1, "session transition reenables the device IRQ");
+    irq_depth--; irq_enables++;
+}
+static BC_STATUS crystalhd_hw_open(struct crystalhd_hw *hw, struct crystalhd_adp *adp)
+{
+    Check(hw == &hardware && adp == &adapter,
+          "user open initializes the allocated hardware context");
+    hardware_opens++;
+    if (hardware_open_status != BC_STS_SUCCESS)
+        return hardware_open_status;
+    ConfigureHardware(hw);
+    return BC_STS_SUCCESS;
+}
+static BC_STATUS crystalhd_hw_close(struct crystalhd_hw *hw, struct crystalhd_adp *adp)
+{
+    Check(hw == &hardware && adp == &adapter,
+          "session release closes the owned hardware context");
+    hardware_closes++;
+    return BC_STS_SUCCESS;
+}
 static bool Start(struct crystalhd_hw *hw)
 {
     Check(hw == &hardware, "start receives the owned hardware context");
@@ -95,8 +154,13 @@ static BC_STATUS Download(struct crystalhd_hw *hw, uint8_t *data, uint32_t size)
 }
 static BC_STATUS crystalhd_hw_stop_capture(struct crystalhd_hw *hw, bool unmap)
 {
-    Check(hw == &hardware && !unmap, "suspend retains registered capture buffers");
-    captures++; Event('C'); return capture_status;
+    Check(hw == &hardware, "capture stop receives the owned hardware context");
+    captures++;
+    if (unmap)
+        capture_unmaps++;
+    else
+        Event('C');
+    return capture_status;
 }
 static BC_STATUS crystalhd_hw_cancel_tx(struct crystalhd_hw *hw, uint32_t tag)
 {
@@ -107,17 +171,38 @@ static BC_STATUS crystalhd_hw_cancel_tx(struct crystalhd_hw *hw, uint32_t tag)
 static int crystalhd_create_elem_pool(struct crystalhd_adp *adp, unsigned size)
 {
     Check(adp == &adapter && size == BC_LINK_ELEM_POOL_SZ, "notify allocates element pool");
-    pools++; return 0;
+    pools++; elem_live = true; return elem_error;
+}
+static void crystalhd_delete_elem_pool(struct crystalhd_adp *adp)
+{
+    Check(adp == &adapter, "element-pool teardown receives the adapter");
+    elem_deletes++; elem_live = false;
 }
 static int crystalhd_create_dio_pool(struct crystalhd_adp *adp, unsigned size)
 {
     Check(adp == &adapter && size == BC_LINK_MAX_SGLS, "notify allocates DMA pool");
-    pools++; return 0;
+    pools++;
+    if (dio_error) return dio_error;
+    dio_live = true;
+    return 0;
+}
+static void crystalhd_destroy_dio_pool(struct crystalhd_adp *adp)
+{
+    Check(adp == &adapter, "DMA-pool teardown receives the adapter");
+    dio_destroys++; dio_live = false;
 }
 static BC_STATUS crystalhd_hw_setup_dma_rings(struct crystalhd_hw *hw)
 {
     Check(hw == &hardware, "notify uses the initialized hardware context");
-    rings++; return BC_STS_SUCCESS;
+    rings++;
+    rings_live = ring_status == BC_STS_SUCCESS;
+    return ring_status;
+}
+static BC_STATUS crystalhd_hw_free_dma_rings(struct crystalhd_hw *hw)
+{
+    Check(hw == &hardware, "DMA-ring teardown receives the hardware context");
+    ring_frees++; rings_live = false;
+    return BC_STS_SUCCESS;
 }
 #include "command-pm-hardware.h"
 #include "command-pm-functions.h"
@@ -126,21 +211,178 @@ static void Reset(uint32_t state, bool with_hardware)
 {
     unsigned n;
     starts = stops = tx_stops = cancels = captures = pools = rings = 0;
+    elem_deletes = dio_destroys = ring_frees = hardware_opens = hardware_closes = 0;
+    irq_depth = irq_disables = irq_enables = capture_unmaps = 0;
     downloads = 0;
     events[0] = '\0'; start_ok = stop_ok = true;
+    elem_live = dio_live = rings_live = hardware_allocated = false;
+    elem_error = dio_error = 0;
+    ring_status = hardware_open_status = BC_STS_SUCCESS;
     capture_status = cancel_status = BC_STS_SUCCESS;
-    hardware = (struct crystalhd_hw){ .adp = &adapter, .pfnStartDevice = Start,
-        .pfnStopDevice = Stop, .pfnStopTxDMA = StopTx, .pfnFWDwnld = Download,
-        .FwCmdCnt = 64,
-        .rx_list_sts = {rx_sts_waiting, rx_sts_waiting},
-        .TxList0Sts = TxListWaitingForIntr, .TxList1Sts = TxListWaitingForIntr,
-        .rx_list_post_index = 1, .tx_list_post_index = 1 };
+    adapter.cfg_users = 0;
+    ConfigureHardware(&hardware);
     context = (struct crystalhd_cmd){ .state = state, .adp = &adapter,
         .hw_ctx = with_hardware ? &hardware : NULL, .cin_wait_exit = 1 };
     for (n = 0; n < BC_LINK_MAX_OPENS; n++) {
         context.user[n].uid = n;
         context.user[n].mode = DTS_MODE_INV;
     }
+}
+static void SessionOwnership(void)
+{
+    struct crystalhd_user *owner = NULL, *contender = NULL, *reopened = NULL;
+    crystalhd_ioctl_data owner_data = {0}, contender_data = {0};
+    unsigned pools_before, rings_before;
+
+    Reset(BC_LINK_INVALID, false);
+    Check(crystalhd_user_open(&context, &owner) == BC_STS_SUCCESS,
+          "the first user opens a hardware-backed session handle");
+    adapter.cfg_users++;
+    Check(owner == &context.user[0] && owner->in_use && owner->mode == (uint32_t)DTS_MODE_INV &&
+          context.hw_ctx == &hardware && hardware_allocated && hardware_opens == 1 &&
+          !irq_depth && irq_disables == 1 && irq_enables == 1,
+          "first open publishes one unconfigured user and balanced IRQ transition");
+
+    owner_data.u_id = owner->uid;
+    owner_data.udata.u.NotifyMode.Mode = DTS_PLAYBACK_MODE;
+    Check(bc_cproc_notify_mode(&context, &owner_data) == BC_STS_SUCCESS,
+          "the first playback claimant acquires the active session");
+    Check(owner->mode == DTS_PLAYBACK_MODE && elem_live && dio_live && rings_live,
+          "successful acquisition owns every session resource");
+
+    Check(crystalhd_user_open(&context, &contender) == BC_STS_SUCCESS,
+          "a second harmless unconfigured handle may open");
+    adapter.cfg_users++;
+    Check(contender == &context.user[1] && contender->in_use && hardware_opens == 1,
+          "the second open shares the existing hardware context");
+    contender_data.u_id = contender->uid;
+    pools_before = pools; rings_before = rings;
+    contender_data.udata.u.NotifyMode.Mode = DTS_PLAYBACK_MODE;
+    Check(bc_cproc_notify_mode(&context, &contender_data) == BC_STS_ERR_USAGE,
+          "a second playback claimant is rejected as busy");
+    contender_data.udata.u.NotifyMode.Mode = DTS_DIAG_MODE;
+    Check(bc_cproc_notify_mode(&context, &contender_data) == BC_STS_ERR_USAGE,
+          "a diagnostic claimant cannot bypass the active playback owner");
+    Check(contender->mode == (uint32_t)DTS_MODE_INV && pools == pools_before &&
+          rings == rings_before && elem_live && dio_live && rings_live,
+          "busy rejection neither claims ownership nor mutates live resources");
+
+    contender_data.udata.u.NotifyMode.Mode = DTS_MONITOR_MODE;
+    Check(bc_cproc_notify_mode(&context, &contender_data) == BC_STS_SUCCESS,
+          "the losing handle may remain a non-owning monitor");
+    Check(bc_cproc_release_user(&context, &contender_data) == BC_STS_SUCCESS,
+          "releasing the monitor leaves the active playback session intact");
+    Check(adapter.cfg_users == 1 && owner->in_use && context.hw_ctx == &hardware &&
+          hardware_allocated && !ring_frees && !hardware_closes && elem_live &&
+          dio_live && rings_live,
+          "non-owner release does not tear down the active owner's resources");
+
+    Check(bc_cproc_release_user(&context, &owner_data) == BC_STS_SUCCESS,
+          "the active owner releases its session");
+    Check(!adapter.cfg_users && !owner->in_use && owner->mode == (uint32_t)DTS_MODE_INV &&
+          context.hw_ctx == NULL && !hardware_allocated && !elem_live && !dio_live &&
+          !rings_live && ring_frees == 1 && hardware_closes == 1 && capture_unmaps == 1 &&
+          !irq_depth && irq_disables == 2 && irq_enables == 2,
+          "owner release retires each resource once and balances the user/IRQ state");
+
+    Check(crystalhd_user_open(&context, &reopened) == BC_STS_SUCCESS,
+          "a fresh handle reopens after owner release");
+    adapter.cfg_users++;
+    owner_data.u_id = reopened->uid;
+    owner_data.udata.u.NotifyMode.Mode = DTS_PLAYBACK_MODE;
+    Check(bc_cproc_notify_mode(&context, &owner_data) == BC_STS_SUCCESS,
+          "the reopened handle reacquires playback ownership");
+    Check(reopened == &context.user[0] && hardware_opens == 2 && reopened->in_use &&
+          reopened->mode == DTS_PLAYBACK_MODE && elem_live && dio_live && rings_live,
+          "reopen reuses the released slot with a fresh complete session");
+    Check(bc_cproc_release_user(&context, &owner_data) == BC_STS_SUCCESS,
+          "the reopened owner releases cleanly");
+    Check(!adapter.cfg_users && context.hw_ctx == NULL && !hardware_allocated &&
+          hardware_opens == 2 && hardware_closes == 2 && ring_frees == 2 &&
+          elem_deletes == 2 && dio_destroys == 2 && capture_unmaps == 2 && !irq_depth,
+          "the complete open/busy/release/reopen cycle leaves no owner or allocation");
+}
+static void MonitorOnlyRelease(void)
+{
+    struct crystalhd_user *monitor = NULL;
+    crystalhd_ioctl_data data = {0};
+
+    Reset(BC_LINK_INVALID, false);
+    Check(crystalhd_user_open(&context, &monitor) == BC_STS_SUCCESS,
+          "a monitor opens a hardware-backed handle");
+    adapter.cfg_users++;
+    data.u_id = monitor->uid;
+    data.udata.u.NotifyMode.Mode = DTS_MONITOR_MODE;
+    Check(bc_cproc_notify_mode(&context, &data) == BC_STS_SUCCESS,
+          "the only handle enters monitor mode without session allocations");
+    Check(!elem_live && !dio_live && !rings_live && !pools && !rings,
+          "monitor admission creates no playback resources");
+
+    Check(bc_cproc_release_user(&context, &data) == BC_STS_SUCCESS,
+          "the final monitor handle releases cleanly");
+    Check(!adapter.cfg_users && !monitor->in_use &&
+          monitor->mode == (uint32_t)DTS_MODE_INV && context.hw_ctx == NULL &&
+          !hardware_allocated && !elem_live && !dio_live && !rings_live,
+          "final monitor release leaves no handle, hardware context, or allocation");
+    Check(hardware_opens == 1 && hardware_closes == 1 && capture_unmaps == 1 &&
+          ring_frees == 1 && dio_destroys == 1 && elem_deletes == 1 &&
+          irq_disables == 2 && irq_enables == 2 && !irq_depth,
+          "final monitor release performs each safe empty teardown exactly once");
+}
+static void OwnerBeforeMonitor(void)
+{
+    struct crystalhd_user *owner = NULL, *monitor = NULL, *reopened = NULL;
+    crystalhd_ioctl_data owner_data = {0}, monitor_data = {0};
+
+    Reset(BC_LINK_INVALID, false);
+    Check(crystalhd_user_open(&context, &owner) == BC_STS_SUCCESS,
+          "the playback owner opens first");
+    adapter.cfg_users++;
+    owner_data.u_id = owner->uid;
+    owner_data.udata.u.NotifyMode.Mode = DTS_PLAYBACK_MODE;
+    Check(bc_cproc_notify_mode(&context, &owner_data) == BC_STS_SUCCESS,
+          "the first handle acquires playback resources");
+
+    Check(crystalhd_user_open(&context, &monitor) == BC_STS_SUCCESS,
+          "a monitor opens beside the playback owner");
+    adapter.cfg_users++;
+    monitor_data.u_id = monitor->uid;
+    monitor_data.udata.u.NotifyMode.Mode = DTS_MONITOR_MODE;
+    Check(bc_cproc_notify_mode(&context, &monitor_data) == BC_STS_SUCCESS,
+          "the second handle becomes a non-owning monitor");
+
+    Check(bc_cproc_release_user(&context, &owner_data) == BC_STS_SUCCESS,
+          "the playback owner may close before its monitor");
+    Check(adapter.cfg_users == 1 && monitor->in_use &&
+          monitor->mode == DTS_MONITOR_MODE && context.hw_ctx == NULL &&
+          !hardware_allocated && !elem_live && !dio_live && !rings_live,
+          "owner-first release retains only the monitor handle");
+    Check(hardware_closes == 1 && ring_frees == 1 && dio_destroys == 1 &&
+          elem_deletes == 1 && capture_unmaps == 1,
+          "owner-first release retires each playback resource exactly once");
+
+    Check(crystalhd_user_open(&context, &reopened) == BC_STS_SUCCESS,
+          "a fresh handle opens while the monitor remains");
+    adapter.cfg_users++;
+    owner_data.u_id = reopened->uid;
+    owner_data.udata.u.NotifyMode.Mode = DTS_PLAYBACK_MODE;
+    Check(bc_cproc_notify_mode(&context, &owner_data) == BC_STS_SUCCESS,
+          "the fresh handle reacquires playback beside the existing monitor");
+    Check(reopened == &context.user[0] && adapter.cfg_users == 2 &&
+          monitor->in_use && monitor->mode == DTS_MONITOR_MODE &&
+          reopened->mode == DTS_PLAYBACK_MODE && elem_live && dio_live && rings_live,
+          "reacquisition restores one complete playback owner without changing the monitor");
+
+    Check(bc_cproc_release_user(&context, &owner_data) == BC_STS_SUCCESS,
+          "the replacement playback owner releases first");
+    Check(bc_cproc_release_user(&context, &monitor_data) == BC_STS_SUCCESS,
+          "the remaining monitor releases after playback teardown");
+    Check(!adapter.cfg_users && context.hw_ctx == NULL && !hardware_allocated &&
+          !owner->in_use && !monitor->in_use && hardware_opens == 2 &&
+          hardware_closes == 2 && ring_frees == 2 && dio_destroys == 2 &&
+          elem_deletes == 2 && capture_unmaps == 2 && irq_disables == 4 &&
+          irq_enables == 4 && !irq_depth,
+          "owner-first close, reacquire, and final close preserve exact teardown counts");
 }
 static void CheckNotify(void)
 {
@@ -153,7 +395,40 @@ static void CheckNotify(void)
           "actual notify-mode admits the next playback after idle resume");
     Check(context.user[1].mode == DTS_PLAYBACK_MODE && !context.cin_wait_exit,
           "notify-mode commits the new playback owner");
-    Check(pools == 2 && rings == 1, "notify-mode reaches real allocation/ring call sequence");
+    Check(pools == 2 && rings == 1 && elem_live && dio_live && rings_live,
+          "notify-mode reaches real allocation/ring call sequence");
+}
+static void NotifyFailures(void)
+{
+    crystalhd_ioctl_data data = { .u_id = 1 };
+    unsigned which;
+
+    data.udata.u.NotifyMode.Mode = DTS_PLAYBACK_MODE;
+    for (which = 0; which < 3; which++) {
+        BC_STATUS expected = which == 2 ? BC_STS_INSUFF_RES : BC_STS_ERROR;
+
+        Reset(BC_LINK_INVALID, true);
+        context.user[1].in_use = 1;
+        if (which == 0) elem_error = -1;
+        if (which == 1) dio_error = -1;
+        if (which == 2) ring_status = BC_STS_INSUFF_RES;
+        Check(bc_cproc_notify_mode(&context, &data) == expected,
+              "notify-mode propagates each session setup failure");
+        Check(context.user[1].mode == DTS_MODE_INV && context.cin_wait_exit == 1,
+              "failed setup does not publish playback ownership");
+        Check(!elem_live && !dio_live && !rings_live,
+              "failed setup leaves no session allocation live");
+        Check(elem_deletes == 1 && dio_destroys == (which == 2) && !ring_frees,
+              "failed setup releases every successfully created pool");
+
+        elem_error = dio_error = 0;
+        ring_status = BC_STS_SUCCESS;
+        Check(bc_cproc_notify_mode(&context, &data) == BC_STS_SUCCESS,
+              "the same handle can retry session setup after failure");
+        Check(context.user[1].mode == DTS_PLAYBACK_MODE && !context.cin_wait_exit &&
+              elem_live && dio_live && rings_live,
+              "successful retry commits one complete playback session");
+    }
 }
 static void Idle(void)
 {
@@ -318,6 +593,10 @@ int main(void)
         {"monitor-only resume and actual playback admission", IdleMonitor},
         {"unconfigured handle and actual playback admission", Unconfigured},
         {"playback before firmware and actual firmware admission", BeforeFirmware},
+        {"playback session setup failure rollback and retry", NotifyFailures},
+        {"active session open, busy, release and reopen", SessionOwnership},
+        {"last monitor releases empty session resources", MonitorOnlyRelease},
+        {"playback owner closes before monitor and reacquires", OwnerBeforeMonitor},
         {"NULL resume argument", NullResume}, {"invalid suspend arguments", InvalidSuspend},
         {"inconsistent non-idle NULL hardware", MissingHardware},
         {"active playback/diagnostic suspend and resume", Active},
