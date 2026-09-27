@@ -30,8 +30,10 @@ and [DMA.md](DMA.md) for DMA ownership and failure boundaries.
   mid-stream resolution/profile/format transitions beyond the recorded cases.
   Include sustained playback and controls, not only short complete-file drain.
 - [ ] [#47: MPEG-4 Part 2 APIs](https://github.com/ahnhy1324/crystalhd/issues/47):
-  validate native BCM70015 decoding, then add the missing GStreamer/VA-API
-  paths. A native capability flag alone is not working frontend support.
+  broaden native BCM70015 Simple/Advanced Simple coverage, including DIVX311,
+  sprites/GMC, interlace and more resolutions, then add the missing
+  GStreamer/VA-API paths. Repeated complete drains do not establish
+  pixel-exact conformance or frontend support.
 - [ ] Expand VA-API stream coverage and improve synchronous-client performance;
   one-picture-at-a-time clients can repeatedly reopen and replay references.
 - [ ] Validate actual VLC/EGL/GBM compositor presentation and synchronization;

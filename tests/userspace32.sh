@@ -116,7 +116,7 @@ for bits in $build_bits; do
                 set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_if.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_priv.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_parser.cpp"
-                section_wrap=-Wl,--wrap=ioctl,--wrap=txBufPush,--wrap=usleep
+                section_wrap=-Wl,--wrap=ioctl,--wrap=txBufPush,--wrap=usleep,--wrap=clock_gettime
                 section_wrap="$section_wrap -Wl,--wrap=DtsSetupHardware,--wrap=DtsOpenDecoder"
                 section_wrap="$section_wrap -Wl,--wrap=DtsStartDecoder,--wrap=DtsStartCapture" ;;
         esac
@@ -127,7 +127,7 @@ for bits in $build_bits; do
             -D__LINUX_USER__ -I"$build_dir/include" -I"$build_dir/include/link" \
             -I"$build_dir/linux_lib/libcrystalhd" \
             "$repo_dir/tests/library-$section.cpp" "$@" \
-            -Wl,--gc-sections $section_wrap -pthread $cpu_flags -o "$build_dir/library-$section"
+            -Wl,--gc-sections $section_wrap -pthread -lrt $cpu_flags -o "$build_dir/library-$section"
         run_test "$build_dir/library-$section"
         if [ "$legacy" -eq 1 ]; then
             case "$section" in

@@ -50,7 +50,11 @@ It is not itself a software decode or proof of error-free media.
 [device access and module identity](../../BRINGUP.md#device-access-and-module-identity).
 It submits EOS explicitly with `DtsFlushInput(0)`, then requires every expected
 timestamped picture, the actual EOS output marker, `DtsIsEndOfStream`, an empty
-ready queue and successful stop/close. Inactivity alone never counts as EOS.
+ready queue and successful stop/close. This probe does not accept MPEG-4. The
+separately validated BCM70015 MPEG-4 path may complete `DtsIsEndOfStream`
+without a firmware marker only after the explicit drain TX retires and all
+output buffers and queues remain free and idle for one second. Input inactivity
+alone never counts as EOS.
 
 Supported input is raw Annex-B H.264, MPEG-2 elementary stream, raw VC-1
 Advanced, or WMV3 in ASF with four-byte sequence metadata (a fifth trailing byte

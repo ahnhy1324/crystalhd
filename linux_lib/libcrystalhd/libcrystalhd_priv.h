@@ -58,6 +58,7 @@ enum _bc_ldil_log_level{
  */
 enum _crystalhd_ldil_globals {
 	BC_EOS_PIC_COUNT	= 16,			/* EOS check counter..*/
+	BC_FLEA_EOS_IDLE_MS	= 1000,			/* Safe MPEG-4 fallback grace period */
 	BC_INPUT_MDATA_POOL_SZ  = 1024,			/* Input Meta Data Pool size */
 	BC_INPUT_MDATA_POOL_SZ_COLLECT  = 256,		/* Input Meta Data Pool size for collector */
 	BC_MAX_SW_VOUT_BUFFS    = BC_RX_LIST_CNT,	/* MAX - pre allocated buffers..*/
@@ -304,6 +305,18 @@ typedef struct _DTS_LIB_CONTEXT{
 	 */
 	bool			txPending;
 	bool			txQuiescing;
+	/* TX byte serials make the FLEA EOS fallback wait for the DMA that
+	 * contains the complete drain sequence, not merely an empty SW ring.
+	 * All fields below are protected by thLock.
+	 */
+	uint64_t		txBytesEnqueued;
+	uint64_t		txBytesRetired;
+	uint64_t		eosTxStart;
+	uint64_t		eosTxFence;
+	uint64_t		eosDrainGeneration;
+	uint64_t		outputProgress;
+	bool			eosTxComplete;
+	bool			txDmaFault;
 	pthread_t		htxThread; // Handle to TX thread
 	uint8_t			*alignBuf;
 
