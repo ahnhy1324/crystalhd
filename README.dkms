@@ -1,49 +1,113 @@
 # DKMS installation
 
-DKMS rebuilds out-of-tree kernel modules when a new kernel is installed.
+DKMS manages only `crystalhd.ko`. Install firmware, the udev rule and native
+userspace separately with `sudo make install-runtime`. The DKMS configuration
+does not run a post-install firmware hook.
 
-This driver supports Linux 6.1 and newer.
-
-Install DKMS and the headers for the running kernel:
+Install DKMS and headers for the running kernel:
 
 ```sh
 sudo apt install dkms linux-headers-$(uname -r)
 ```
 
-Register this checkout as `crystalhd/3.10.0`. The `dkms add` command is needed
-only once; omit it when `dkms status` already lists that version.
+## First registration
+
+From the repository root, first check whether this version already has a
+registered source directory:
 
 ```sh
-sudo ln -sfn "$PWD" /usr/src/crystalhd-3.10.0
-dkms status
+dkms status -m crystalhd
+readlink -f /usr/src/crystalhd-3.10.0 2>/dev/null || true
+```
+
+Only when `/usr/src/crystalhd-3.10.0` does not exist, register this checkout:
+
+```sh
+sudo ln -s "$PWD" /usr/src/crystalhd-3.10.0
 sudo dkms add -m crystalhd -v 3.10.0
-sudo dkms build -m crystalhd -v 3.10.0 -k "$(uname -r)"
-sudo dkms install -m crystalhd -v 3.10.0 -k "$(uname -r)"
 ```
 
-Use `--force` on `dkms build` and `dkms install` only when intentionally
-replacing an existing build of the same version. Verify the result:
+Do not overwrite an existing link blindly. If it resolves to another checkout,
+either keep using that tree or deliberately remove its DKMS registration before
+registering this one.
+
+Build and install for the selected kernel, then install the non-module runtime:
 
 ```sh
-dkms status
-modinfo -n crystalhd
-modinfo -F srcversion crystalhd
-modinfo -F srcversion ./driver/linux/crystalhd.ko
+kernel_release=$(uname -r)
+sudo dkms build -m crystalhd -v 3.10.0 -k "$kernel_release"
+sudo dkms install -m crystalhd -v 3.10.0 -k "$kernel_release"
+make -j"$(nproc)" library gstreamer vaapi
+sudo make install-runtime
 ```
 
-The installed and checkout source versions should match. If an older module is
-already loaded, first make sure no process owns the device, then reload it
-without force:
+If a direct install previously created
+`/lib/modules/$kernel_release/updates/crystalhd.ko`, it can shadow the DKMS
+copy. Remove only that configured direct file with:
 
 ```sh
-sudo fuser -v /dev/crystalhd || true
-sudo rmmod crystalhd
+sudo make uninstall-module KVER="$kernel_release"
+```
+
+This does not unload the running module or remove
+`updates/dkms/crystalhd.ko*`.
+
+## Updating the same DKMS version
+
+When the registered `/usr/src/crystalhd-3.10.0` link already resolves to this
+checkout, rebuild the selected kernel explicitly:
+
+```sh
+kernel_release=$(uname -r)
+sudo dkms build --force -m crystalhd -v 3.10.0 -k "$kernel_release"
+sudo dkms install --force -m crystalhd -v 3.10.0 -k "$kernel_release"
+make -j"$(nproc)" library gstreamer vaapi
+sudo make install-runtime
+crystalhd-check --source-tree "$PWD"
+```
+
+`--force` is appropriate here only because replacing the same registered
+version is intentional. The preflight lists all direct and DKMS candidates,
+the module selected for the next load and the module already in memory.
+
+If the loaded source version is stale, close all clients and confirm that the
+device is idle before a normal reload:
+
+```sh
+sudo fuser -v /dev/crystalhd
+sudo modprobe -r crystalhd
 sudo modprobe crystalhd
+crystalhd-check
 ```
 
-Never force-unload an active CrystalHD module. Reboot instead if a normal
-`rmmod` reports that the module is busy.
+Proceed only when `fuser` shows no owner. Never force-unload an active module;
+reboot instead if a normal unload reports that the module is busy.
 
-Once registered, DKMS automatically builds the module for newly installed
-kernels. Firmware, userspace libraries, VA-API, GStreamer, and browser files
-are installed separately by `sudo make install`.
+## Removal
+
+Remove the DKMS-owned modules independently from the runtime files:
+
+```sh
+sudo dkms remove -m crystalhd -v 3.10.0 --all
+sudo make uninstall-runtime
+```
+
+The first command does not unload a module already in memory. The second
+removes firmware, the udev rule, library, headers and frontends; it does not
+touch DKMS or browser profiles.
+
+Remove `/usr/src/crystalhd-3.10.0` only after confirming that it is the link
+you created for this checkout:
+
+```sh
+registered_source=$(readlink -f /usr/src/crystalhd-3.10.0)
+checkout_source=$(pwd -P)
+if [ "$registered_source" = "$checkout_source" ]; then
+  sudo rm -- /usr/src/crystalhd-3.10.0
+else
+  echo "Refusing to remove a different registered source" >&2
+fi
+```
+
+If the equality check fails, stop and inspect the existing registration rather
+than deleting another source tree's link.

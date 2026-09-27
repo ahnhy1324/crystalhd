@@ -69,8 +69,8 @@ For actual codec fixtures, counts and results, use the
 
 ## Raw YUY2 copy contract
 
-For 32-bit i686 CPUs without SSE/SSE2, build with `LEGACY_CPU=1` (see the
-[CPU build options](../../README.md#legacy-cpus-without-sse)). This keeps the
+For 32-bit i686 CPUs without SSE/SSE2, build with `LEGACY_CPU=1` (see
+[32-bit and legacy CPUs](../../README.md#32-bit-and-legacy-cpus)). This keeps the
 library ABI but selects scalar conversions; it does not bypass the player's
 own CPU or dependency requirements. The dedicated legacy check runs both
 production sections and the built shared library under a verified no-SSE CPU
@@ -112,6 +112,6 @@ already changed by a demuxer.
 
 The production input/PES/ring regression in `make library-check` verifies
 length widths 1/2/4, retained metadata injection, existing Annex-B compatibility
-and bounded detection, including i386 execution. See the
-[PowerVLC guide](../../README.md#powervlc-native-playback-experimental) and
-hardware report for frontend results and remaining drain limitations.
+and bounded detection, including i386 execution. See
+[issue #18](https://github.com/ahnhy1324/crystalhd/issues/18) and the hardware
+report for frontend results and remaining drain limitations.
