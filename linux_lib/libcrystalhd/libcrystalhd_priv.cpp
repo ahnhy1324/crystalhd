@@ -2270,7 +2270,9 @@ void DtsUpdateOutStats(DTS_LIB_CONTEXT	*Ctx, BC_DTS_PROC_OUT *pOut)
 		return;
 	}
 
-	if((!pOut->UVBuffDoneSz && !pOut->b422Mode) || (!pOut->YBuffDoneSz)) {
+	/* Done sizes describe the hardware transfer even when MODE converts to
+	 * a different application format. Test the source layout, not the target. */
+	if((!pOut->UVBuffDoneSz && !Ctx->b422Mode) || (!pOut->YBuffDoneSz)) {
 		pDtsStat->opFrameDropped++;
 	}else{
 		pDtsStat->opFrameCaptured++;
