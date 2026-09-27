@@ -59,6 +59,8 @@ extern "C" {
 #include <bc_dts_types.h>
 #include <libcrystalhd_if.h>
 #include "crystalhd-decode-replay.h"
+#include "crystalhd-mpeg2.h"
+#include "crystalhd-mpeg2-replay.h"
 
 namespace {
 
@@ -1241,8 +1243,11 @@ static bool CopyYuy2ToSurface(Surface *surface,
 
 struct DecodeContext {
   VAConfigID config = VA_INVALID_ID;
+  VAProfile profile = VAProfileH264Main;
   unsigned int width = 0;
   unsigned int height = 0;
+  unsigned int stream_width = 0;
+  unsigned int stream_height = 0;
   bool video_process = false;
   VASurfaceID target = VA_INVALID_SURFACE;
   VASurfaceID vpp_source = VA_INVALID_SURFACE;
@@ -1258,6 +1263,20 @@ struct DecodeContext {
   bool iq_matrix_valid = true;
   std::vector<VASliceParameterBufferH264> slices;
   std::vector<std::vector<uint8_t>> slice_data;
+  struct Mpeg2Picture {
+    VAPictureParameterBufferMPEG2 picture = {};
+    VAIQMatrixBufferMPEG2 iq = {};
+    bool have_picture = false;
+    bool have_iq = false;
+    bool invalid = false;
+    uint64_t forward = 0;
+    uint64_t backward = 0;
+    size_t bytes = 0;
+    std::vector<std::vector<VASliceParameterBufferMPEG2>> parameters;
+    std::vector<std::vector<uint8_t>> data;
+  } mpeg2_picture;
+  crystalhd_mpeg2::QuantMatrices mpeg2_matrices =
+      crystalhd_mpeg2::DefaultQuantMatrices();
 
   HANDLE device = nullptr;
   bool decoder_open = false;
@@ -1272,6 +1291,26 @@ struct DecodeContext {
   std::unordered_map<uint64_t, std::shared_ptr<Surface>> decoded_frames;
   std::unordered_map<Surface *, uint64_t> surface_timestamps;
   CrystalHDDecodeReplay replay;
+  CrystalHDMpeg2Replay mpeg2_replay;
+
+  bool IsMpeg2() const {
+    return profile == VAProfileMPEG2Simple || profile == VAProfileMPEG2Main;
+  }
+  unsigned int StreamWidth() const { return IsMpeg2() ? stream_width : width; }
+  unsigned int StreamHeight() const { return IsMpeg2() ? stream_height : height; }
+  template<class Function> auto WithReplay(Function function) {
+    if (IsMpeg2()) return function(mpeg2_replay);
+    return function(replay);
+  }
+  bool ReplaySealed() const {
+    return IsMpeg2() ? mpeg2_replay.sealed() : replay.sealed();
+  }
+  bool ReplayFailed() const {
+    return IsMpeg2() ? mpeg2_replay.failed() : replay.failed();
+  }
+  const char *ReplayFailure() const {
+    return IsMpeg2() ? mpeg2_replay.failure() : replay.failure();
+  }
 
   ~DecodeContext() { Close(); }
 
@@ -1302,6 +1341,10 @@ struct DecodeContext {
     decoded_frames.clear();
     surface_timestamps.clear();
     replay = CrystalHDDecodeReplay();
+    mpeg2_replay = CrystalHDMpeg2Replay();
+    mpeg2_picture = Mpeg2Picture();
+    mpeg2_matrices = crystalhd_mpeg2::DefaultQuantMatrices();
+    stream_width = stream_height = 0;
     vpp_frame.reset();
     vpp_decoder.reset();
     sent_parameter_sets = false;
@@ -1451,12 +1494,21 @@ static bool IsH264Profile(VAProfile profile) {
          profile == VAProfileH264Main || profile == VAProfileH264High;
 }
 
+static bool IsMpeg2Profile(VAProfile profile) {
+  return profile == VAProfileMPEG2Simple || profile == VAProfileMPEG2Main;
+}
+
+static bool IsDecodeProfile(VAProfile profile) {
+  return IsH264Profile(profile) || IsMpeg2Profile(profile);
+}
+
 static bool IsValidConfig(VAProfile profile, VAEntrypoint entrypoint) {
-  return (IsH264Profile(profile) && entrypoint == VAEntrypointVLD) ||
+  return (IsDecodeProfile(profile) && entrypoint == VAEntrypointVLD) ||
          (profile == VAProfileNone && entrypoint == VAEntrypointVideoProc);
 }
 
-static VAStatus OpenDecoder(DecodeContext *decode) {
+static VAStatus OpenDecoder(DecodeContext *decode, unsigned int width = 0,
+                            unsigned int height = 0) {
   BC_INPUT_FORMAT input = {};
   BC_INFO_CRYSTAL version = {};
   uint32_t mode = DTS_PLAYBACK_MODE | DTS_LOAD_FILE_PLAY_FW |
@@ -1476,6 +1528,9 @@ static VAStatus OpenDecoder(DecodeContext *decode) {
   if (status != BC_STS_SUCCESS)
     goto fail;
   decode->is_70012 = version.device == 0;
+  // MPEG-2 finite-batch replay has only been validated on BCM70015.
+  if (decode->IsMpeg2() && decode->is_70012)
+    goto fail;
 
   input.FGTEnable = FALSE;
   input.Progressive = TRUE;
@@ -1483,9 +1538,9 @@ static VAStatus OpenDecoder(DecodeContext *decode) {
   // maximum cadence even for a 30 fps stream, creating frames Chromium must
   // discard. The reconstructed SPS VUI and this fallback now both say 30 fps.
   input.OptFlags = 0x80000000U | vdecFrameRate30;
-  input.mSubtype = BC_MSUBTYPE_H264;
-  input.width = decode->width;
-  input.height = decode->height;
+  input.mSubtype = decode->IsMpeg2() ? BC_MSUBTYPE_MPEG2VIDEO : BC_MSUBTYPE_H264;
+  input.width = width != 0 ? width : decode->StreamWidth();
+  input.height = height != 0 ? height : decode->StreamHeight();
   input.startCodeSz = 4;
 
   status = DtsSetInputFormat(decode->device, &input);
@@ -1697,7 +1752,7 @@ static bool CopyNv12Surface(const Surface &source, Surface *destination) {
 
 static VAStatus FailDecode(Driver *driver, DecodeContext *decode,
                             const char *reason) {
-  decode->replay.Fail(reason);
+  decode->WithReplay([&](auto &replay) { return replay.Fail(reason); });
   Debug("sealed-batch decoding failed: %s", reason);
   for (const auto &pending : decode->pending) {
     auto picture = decode->decoded_frames.find(pending.first);
@@ -1716,9 +1771,11 @@ static VAStatus FailDecode(Driver *driver, DecodeContext *decode,
 // processing used for both normal decoding and IDR-prefix replay.
 static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
                                       const BC_DTS_PROC_OUT &output) {
-  const auto disposition = decode->replay.Observe(output.PicInfo.timeStamp);
+  const auto disposition = decode->WithReplay([&](auto &replay) {
+    return replay.Observe(output.PicInfo.timeStamp);
+  });
   if (disposition == CrystalHDDecodeReplay::Output::Invalid)
-    return FailDecode(driver, decode, decode->replay.failure());
+    return FailDecode(driver, decode, decode->ReplayFailure());
   if (disposition != CrystalHDDecodeReplay::Output::New)
     return VA_STATUS_SUCCESS;
 
@@ -1750,7 +1807,7 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
   const bool valid_frame =
       (output.PoutFlags & BC_POUT_FLAGS_PIB_VALID) != 0 &&
       output.Ybuff != nullptr && output_width != 0 && output_height != 0 &&
-      output_width == decode->width && output_height == decode->height &&
+      output_width == decode->StreamWidth() && output_height == decode->StreamHeight() &&
       ((output_width | output_height) & 1U) == 0 &&
       (decoded == decode->decoded_frames.end() || fits(*decoded->second)) &&
       (!current_picture || fits(*surface->second)) &&
@@ -1785,8 +1842,8 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
 static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
                            unsigned int timeout_ms, bool *activity) {
   BC_DTS_PROC_OUT output = {};
-  output.PicInfo.width = decode->width;
-  output.PicInfo.height = decode->height;
+  output.PicInfo.width = decode->StreamWidth();
+  output.PicInfo.height = decode->StreamHeight();
   *activity = false;
 
   BC_STATUS status = DtsProcOutputNoCopy(decode->device, timeout_ms, &output);
@@ -1802,8 +1859,8 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
     if (status == BC_STS_SUCCESS &&
         DtsReleaseOutputBuffs(decode->device, nullptr, FALSE) != BC_STS_SUCCESS)
       return FailDecode(driver, decode, "EOS output release failed");
-    if (!decode->replay.EndOfSequence())
-      return FailDecode(driver, decode, decode->replay.failure());
+    if (!decode->WithReplay([](auto &replay) { return replay.EndOfSequence(); }))
+      return FailDecode(driver, decode, decode->ReplayFailure());
     Debug("sealed batch EOS: every submitted timestamp completed");
     return VA_STATUS_SUCCESS;
   }
@@ -1826,7 +1883,7 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
 }
 
 static VAStatus ReceiveAvailable(Driver *driver, DecodeContext *decode) {
-  if (decode->replay.failed())
+  if (decode->ReplayFailed())
     return VA_STATUS_ERROR_DECODING_ERROR;
   for (unsigned int attempt = 0; attempt < 64; ++attempt) {
     BC_DTS_STATUS decoder_status = {};
@@ -1847,44 +1904,46 @@ static VAStatus ReceiveAvailable(Driver *driver, DecodeContext *decode) {
 }
 
 static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode) {
-  if (decode->replay.failed())
-    return VA_STATUS_ERROR_DECODING_ERROR;
-  if (decode->replay.NeedsRestart()) {
-    // EOS terminates reference state. The legacy channel-only flush leaves
-    // library/firmware state behind after repeated drains; reopen the complete
-    // device before replaying the original actual IDR. Public immutable frames,
-    // client generation and compressed input ownership stay untouched.
-    Debug("restart sealed decoder; replay %zu cached access units",
-          decode->replay.cached_pictures());
-    const BC_STATUS status = decode->CloseHardware();
-    if (status != BC_STS_SUCCESS)
-      return FailDecode(driver, decode, "hardware close for replay failed");
-    if (OpenDecoder(decode) != VA_STATUS_SUCCESS || !decode->replay.Restarted())
-      return FailDecode(driver, decode, "hardware reopen for replay failed");
-  }
+  return decode->WithReplay([&](auto &replay) -> VAStatus {
+    if (replay.failed())
+      return VA_STATUS_ERROR_DECODING_ERROR;
+    if (replay.NeedsRestart()) {
+      // EOS terminates reference state. The legacy channel-only flush leaves
+      // library/firmware state behind after repeated drains; reopen the complete
+      // device before replaying the retained reference prefix. Immutable frames,
+      // client generation and compressed input ownership stay untouched.
+      Debug("restart sealed decoder; replay %zu cached access units",
+            replay.cached_pictures());
+      const BC_STATUS status = decode->CloseHardware();
+      if (status != BC_STS_SUCCESS)
+        return FailDecode(driver, decode, "hardware close for replay failed");
+      if (OpenDecoder(decode) != VA_STATUS_SUCCESS || !replay.Restarted())
+        return FailDecode(driver, decode, "hardware reopen for replay failed");
+    }
 
-  // Do not wait while holding the VA driver mutex. The library TX ring is
-  // 1 MiB; each accepted AU is limited to 512 KiB. Reserve conservative PES
-  // header/marker overhead before calling its otherwise-blocking input API.
-  for (unsigned int attempt = 0; attempt < 32; ++attempt) {
-    const auto *unit = decode->replay.NextInput();
-    if (unit == nullptr)
-      break;
-    const size_t reserve = unit->bytes.size() +
-                           (unit->bytes.size() / 60000 + 1) * 32 + 1024;
-    if (DtsTxFreeSize(decode->device) < reserve)
-      break;
-    const BC_STATUS status = DtsProcInput(
-        decode->device, const_cast<uint8_t *>(unit->bytes.data()),
-        static_cast<uint32_t>(unit->bytes.size()), unit->timestamp, FALSE);
-    if (status == BC_STS_BUSY)
-      break;
-    if (status != BC_STS_SUCCESS || !decode->replay.InputSent())
-      return FailDecode(driver, decode, "compressed input submission failed");
-  }
-  if (decode->replay.failed())
-    return FailDecode(driver, decode, decode->replay.failure());
-  return VA_STATUS_SUCCESS;
+    // Do not wait while holding the VA driver mutex. The library TX ring is
+    // 1 MiB; each accepted AU is limited to 512 KiB. Reserve conservative PES
+    // header/marker overhead before calling its otherwise-blocking input API.
+    for (unsigned int attempt = 0; attempt < 32; ++attempt) {
+      const auto *unit = replay.NextInput();
+      if (unit == nullptr)
+        break;
+      const size_t reserve = unit->bytes.size() +
+                             (unit->bytes.size() / 60000 + 1) * 32 + 1024;
+      if (DtsTxFreeSize(decode->device) < reserve)
+        break;
+      const BC_STATUS status = DtsProcInput(
+          decode->device, const_cast<uint8_t *>(unit->bytes.data()),
+          static_cast<uint32_t>(unit->bytes.size()), unit->timestamp, FALSE);
+      if (status == BC_STS_BUSY)
+        break;
+      if (status != BC_STS_SUCCESS || !replay.InputSent())
+        return FailDecode(driver, decode, "compressed input submission failed");
+    }
+    if (replay.failed())
+      return FailDecode(driver, decode, replay.failure());
+    return VA_STATUS_SUCCESS;
+  });
 }
 
 static VAStatus SealDecodeBatch(Driver *driver, DecodeContext *decode) {
@@ -1892,13 +1951,15 @@ static VAStatus SealDecodeBatch(Driver *driver, DecodeContext *decode) {
   // BCM70012 on its existing bounded-wait path until separately validated.
   if (decode->is_70012)
     return VA_STATUS_SUCCESS;
-  if (!decode->replay.CanSeal() || DtsTxFreeSize(decode->device) < 1024)
+  return decode->WithReplay([&](auto &replay) -> VAStatus {
+    if (!replay.CanSeal() || DtsTxFreeSize(decode->device) < 1024)
+      return VA_STATUS_SUCCESS;
+    Debug("seal batch on sync demand: %zu hardware timestamps outstanding",
+          replay.outstanding());
+    if (!replay.Seal() || DtsFlushInput(decode->device, 0) != BC_STS_SUCCESS)
+      return FailDecode(driver, decode, "could not seal decoder batch");
     return VA_STATUS_SUCCESS;
-  Debug("seal batch on sync demand: %zu hardware timestamps outstanding",
-        decode->replay.outstanding());
-  if (!decode->replay.Seal() || DtsFlushInput(decode->device, 0) != BC_STS_SUCCESS)
-    return FailDecode(driver, decode, "could not seal decoder batch");
-  return VA_STATUS_SUCCESS;
+  });
 }
 
 static bool HasLivePendingPictures(const Driver *driver,
@@ -1924,7 +1985,7 @@ static VAStatus DrainClosingContext(
     return VA_STATUS_ERROR_INVALID_PARAMETER;
   const uint64_t generation = decode->generation;
   const auto start = std::chrono::steady_clock::now();
-  while (HasLivePendingPictures(driver, *decode) || decode->replay.sealed()) {
+  while (HasLivePendingPictures(driver, *decode) || decode->ReplaySealed()) {
     if (decode->retired || decode->generation != generation)
       return VA_STATUS_ERROR_INVALID_CONTEXT;
     if (driver->stopping)
@@ -1943,7 +2004,7 @@ static VAStatus DrainClosingContext(
       status = SealDecodeBatch(driver, decode.get());
     if (status != VA_STATUS_SUCCESS)
       return FailDecode(driver, decode.get(), "context drain failed");
-    if (!HasLivePendingPictures(driver, *decode) && !decode->replay.sealed())
+    if (!HasLivePendingPictures(driver, *decode) && !decode->ReplaySealed())
       break;
     driver_lock->unlock();
     usleep(1000);
@@ -1954,10 +2015,10 @@ static VAStatus DrainClosingContext(
 
 static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
                               VAProfile profile) {
-  if (!decode->have_picture || decode->slices.empty() ||
+  if (!decode->IsMpeg2() && (!decode->have_picture || decode->slices.empty() ||
       decode->slice_data.empty() || decode->target == VA_INVALID_SURFACE ||
       !decode->iq_matrix_valid ||
-      !ValidateH264IqMatrix(decode->picture, profile, decode->iq_matrix))
+      !ValidateH264IqMatrix(decode->picture, profile, decode->iq_matrix)))
     return VA_STATUS_ERROR_INVALID_PARAMETER;
 
   auto surface = driver->surfaces.find(decode->target);
@@ -1968,56 +2029,96 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
   if (surface->second->vpp_writers != 0 || surface->second->vpp_readers != 0 ||
       surface->second->export_waiters != 0)
     return VA_STATUS_ERROR_HW_BUSY;
-  // VA contexts and H.264 picture dimensions are coded sizes, not the visible
-  // crop. This backend emits an uncropped SPS and does not support in-context
-  // coded-geometry changes; later submissions must not change output policy
-  // for pictures already pending on the hardware.
-  if ((decode->picture.picture_width_in_mbs_minus1 + 1U) * 16U != decode->width ||
-      (decode->picture.picture_height_in_mbs_minus1 + 1U) * 16U != decode->height)
-    return VA_STATUS_ERROR_INVALID_PARAMETER;
-  if (surface->second->width < decode->width ||
-      surface->second->height < decode->height)
-    return VA_STATUS_ERROR_INVALID_SURFACE;
-
   std::vector<uint8_t> bitstream;
-  BeginAccessUnit(&bitstream);
-  const bool idr = !decode->slice_data.front().empty() &&
-                   (decode->slice_data.front().front() & 0x1f) == 5;
-  // An ordinary GOP can start with an IDR while earlier output is still
-  // pending. Let the bitstream's IDR semantics handle reference pictures;
-  // discarding pending output here loses real frames during normal playback.
-  if (!decode->sent_parameter_sets || idr) {
-    if (!BuildSps(decode->picture, profile, &bitstream))
+  bool idr = false;
+  crystalhd_mpeg2::QuantMatrices next_matrices;
+  unsigned int stream_width = decode->width;
+  unsigned int stream_height = decode->height;
+  if (decode->IsMpeg2()) {
+    const auto &pending = decode->mpeg2_picture;
+    const auto &picture = pending.picture;
+    if (pending.invalid || !pending.have_picture || pending.parameters.empty() ||
+        pending.parameters.size() != pending.data.size())
+      return VA_STATUS_ERROR_INVALID_PARAMETER;
+    stream_width = picture.horizontal_size;
+    stream_height = picture.vertical_size;
+    if (((stream_width + 15U) & ~15U) != ((decode->width + 15U) & ~15U) ||
+        ((stream_height + 15U) & ~15U) != ((decode->height + 15U) & ~15U) ||
+        (decode->stream_width != 0 &&
+         (stream_width != decode->stream_width || stream_height != decode->stream_height)))
+      return VA_STATUS_ERROR_INVALID_PARAMETER;
+    if (surface->second->width < stream_width || surface->second->height < stream_height)
+      return VA_STATUS_ERROR_INVALID_SURFACE;
+    if ((picture.picture_coding_type == 2 &&
+         pending.forward != decode->mpeg2_replay.newest_anchor()) ||
+        (picture.picture_coding_type == 3 &&
+         (pending.forward != decode->mpeg2_replay.previous_anchor() ||
+          pending.backward != decode->mpeg2_replay.newest_anchor())))
+      return VA_STATUS_ERROR_INVALID_PARAMETER;
+    std::vector<crystalhd_mpeg2::Slice> slices;
+    for (size_t group = 0; group < pending.parameters.size(); ++group)
+      for (const auto &parameters : pending.parameters[group])
+        slices.push_back({parameters, pending.data[group].data(), pending.data[group].size()});
+    const crystalhd_mpeg2::SequenceOptions sequence = {
+        profile, profile == VAProfileMPEG2Simple ? 8U : 4U, true, false,
+        1, 5, 0, 0, 0x3ffff, 112};
+    // VA provides neither original temporal_reference nor frame rate/GOP
+    // headers. Firmware picture identity comes from the exact input timestamp;
+    // its I/P/B ordering is reference-driven. Keep reconstructed timing stable
+    // over EOS replay, without inferring a closed GOP from an I picture.
+    const crystalhd_mpeg2::PictureOptions options = {0, picture.picture_coding_type == 1};
+    if (!crystalhd_mpeg2::Assemble(picture, pending.have_iq ? &pending.iq : nullptr,
+        decode->mpeg2_matrices, slices, sequence, options, &bitstream, &next_matrices)) {
+      Debug("MPEG-2 assembly rejected type=%d flags=%#x f_code=%#x size=%ux%u slices=%zu",
+            picture.picture_coding_type, picture.picture_coding_extension.value,
+            picture.f_code, stream_width, stream_height, slices.size());
+      return VA_STATUS_ERROR_INVALID_PARAMETER;
+    }
+  } else {
+    // VA contexts and H.264 picture dimensions are coded sizes, not the visible
+    // crop. This backend emits an uncropped SPS and does not support in-context
+    // coded-geometry changes; later submissions must not change output policy
+    // for pictures already pending on the hardware.
+    if ((decode->picture.picture_width_in_mbs_minus1 + 1U) * 16U != decode->width ||
+        (decode->picture.picture_height_in_mbs_minus1 + 1U) * 16U != decode->height)
+      return VA_STATUS_ERROR_INVALID_PARAMETER;
+    if (surface->second->width < decode->width ||
+        surface->second->height < decode->height)
+      return VA_STATUS_ERROR_INVALID_SURFACE;
+
+    BeginAccessUnit(&bitstream);
+    idr = !decode->slice_data.front().empty() &&
+          (decode->slice_data.front().front() & 0x1f) == 5;
+    // An ordinary GOP can start with an IDR while earlier output is still
+    // pending. Let the bitstream's IDR semantics handle reference pictures;
+    // discarding pending output here loses real frames during normal playback.
+    if (!decode->sent_parameter_sets || idr) {
+      if (!BuildSps(decode->picture, profile, &bitstream))
+        return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
+    }
+    // VA-API exposes the active reference counts on each slice rather than the
+    // original PPS defaults. Redefine PPS id 0 before every access unit so a
+    // slice without num_ref_idx_active_override_flag is parsed consistently.
+    if (!BuildPps(decode->picture, decode->slices.front(), profile,
+                  decode->iq_matrix, &bitstream))
       return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
-  }
-  // VA-API exposes the active reference counts on each slice rather than the
-  // original PPS defaults. Redefine PPS id 0 before every access unit so a
-  // slice without num_ref_idx_active_override_flag is parsed consistently.
-  if (!BuildPps(decode->picture, decode->slices.front(), profile,
-                decode->iq_matrix, &bitstream))
-    return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
 
-  static constexpr uint8_t start_code[] = {0, 0, 0, 1};
-  for (const std::vector<uint8_t> &slice : decode->slice_data) {
-    bitstream.insert(bitstream.end(), std::begin(start_code), std::end(start_code));
-    bitstream.insert(bitstream.end(), slice.begin(), slice.end());
-  }
-  Debug("submit surface=%u bytes=%zu slices=%zu", decode->target,
-        bitstream.size(), decode->slice_data.size());
-  if (decode->next_timestamp == kTimestampStep) {
-    Debug("picture profile=%d poc_type=%u refs=%u size_mbs=%ux%u entropy=%u",
-          profile, decode->picture.seq_fields.bits.pic_order_cnt_type,
-          decode->picture.num_ref_frames,
-          decode->picture.picture_width_in_mbs_minus1 + 1,
-          decode->picture.picture_height_in_mbs_minus1 + 1,
-          decode->picture.pic_fields.bits.entropy_coding_mode_flag);
-    DebugBytes("access-unit", bitstream);
-  }
-
-  if (!decode->decoder_started) {
-    VAStatus status = OpenDecoder(decode);
-    if (status != VA_STATUS_SUCCESS)
-      return status;
+    static constexpr uint8_t start_code[] = {0, 0, 0, 1};
+    for (const std::vector<uint8_t> &slice : decode->slice_data) {
+      bitstream.insert(bitstream.end(), std::begin(start_code), std::end(start_code));
+      bitstream.insert(bitstream.end(), slice.begin(), slice.end());
+    }
+    Debug("submit surface=%u bytes=%zu slices=%zu", decode->target,
+          bitstream.size(), decode->slice_data.size());
+    if (decode->next_timestamp == kTimestampStep) {
+      Debug("picture profile=%d poc_type=%u refs=%u size_mbs=%ux%u entropy=%u",
+            profile, decode->picture.seq_fields.bits.pic_order_cnt_type,
+            decode->picture.num_ref_frames,
+            decode->picture.picture_width_in_mbs_minus1 + 1,
+            decode->picture.picture_height_in_mbs_minus1 + 1,
+            decode->picture.pic_fields.bits.entropy_coding_mode_flag);
+      DebugBytes("access-unit", bitstream);
+    }
   }
 
   const uint64_t timestamp = decode->next_timestamp;
@@ -2026,8 +2127,25 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
                                        surface->second->height,
                                        VA_FOURCC_NV12))
     return VA_STATUS_ERROR_ALLOCATION_FAILED;
-  if (!decode->replay.Append(timestamp, idr, std::move(bitstream)))
+  if (!decode->decoder_started) {
+    VAStatus status = OpenDecoder(decode, stream_width, stream_height);
+    if (status != VA_STATUS_SUCCESS)
+      return status;
+  }
+  if (decode->IsMpeg2()) {
+    const auto &pending = decode->mpeg2_picture;
+    const auto kind = pending.picture.picture_coding_type == 1
+        ? CrystalHDMpeg2Replay::Kind::I : pending.picture.picture_coding_type == 2
+        ? CrystalHDMpeg2Replay::Kind::P : CrystalHDMpeg2Replay::Kind::B;
+    if (!decode->mpeg2_replay.Append(timestamp, kind, pending.forward,
+                                   pending.backward, std::move(bitstream)))
+      return FailDecode(driver, decode, decode->mpeg2_replay.failure());
+    decode->mpeg2_matrices = next_matrices;
+    decode->stream_width = stream_width;
+    decode->stream_height = stream_height;
+  } else if (!decode->replay.Append(timestamp, idr, std::move(bitstream))) {
     return FailDecode(driver, decode, decode->replay.failure());
+  }
   decode->next_timestamp += kTimestampStep;
   decoded_frame->rt_format = VA_RT_FORMAT_YUV420;
   decoded_frame->expected_timestamp = timestamp;
@@ -2133,7 +2251,7 @@ static VAStatus SyncDecodeSurface(
         surface->failed, static_cast<unsigned long long>(timeout_ns));
 
   const auto start = std::chrono::steady_clock::now();
-  while ((!surface->ready || decode->replay.sealed()) && !surface->failed) {
+  while ((!surface->ready || decode->ReplaySealed()) && !surface->failed) {
     const VAStatus state = DecodeWaitState(*decode, surface.get(), generation,
                                            expected_timestamp, canceled);
     if (state != VA_STATUS_ERROR_HW_BUSY &&
@@ -2147,7 +2265,7 @@ static VAStatus SyncDecodeSurface(
       status = PumpDecodeInput(driver, decode.get());
     if (status != VA_STATUS_SUCCESS)
       return status;
-    if ((surface->ready && !decode->replay.sealed()) || surface->failed)
+    if ((surface->ready && !decode->ReplaySealed()) || surface->failed)
       break;
     uint64_t elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
                            std::chrono::steady_clock::now() - start)
@@ -2161,7 +2279,7 @@ static VAStatus SyncDecodeSurface(
     if (wait_status != VA_STATUS_SUCCESS)
       return wait_status;
     // This is batching grace, not an EOF detector: after it expires we seal a
-    // finite sequence and preserve future references through actual-IDR replay.
+    // finite sequence and preserve future references through codec-aware replay.
     // Ordinary output can satisfy the sync meanwhile, avoiding needless resets.
     if (!surface->ready && DecodeBatchGraceExpired(elapsed)) {
       status = SealDecodeBatch(driver, decode.get());
@@ -2319,13 +2437,15 @@ static VAStatus QueryConfigProfiles(VADriverContextP, VAProfile *profiles,
   profiles[1] = VAProfileH264Main;
   profiles[2] = VAProfileH264High;
   profiles[3] = VAProfileNone;
-  *count = 4;
+  profiles[4] = VAProfileMPEG2Simple;
+  profiles[5] = VAProfileMPEG2Main;
+  *count = 6;
   return VA_STATUS_SUCCESS;
 }
 
 static VAStatus QueryConfigEntrypoints(VADriverContextP, VAProfile profile,
                                        VAEntrypoint *entrypoints, int *count) {
-  if (profile != VAProfileNone && !IsH264Profile(profile))
+  if (profile != VAProfileNone && !IsDecodeProfile(profile))
     return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
   if (entrypoints == nullptr || count == nullptr)
     return VA_STATUS_ERROR_INVALID_PARAMETER;
@@ -2338,27 +2458,27 @@ static VAStatus QueryConfigEntrypoints(VADriverContextP, VAProfile profile,
 static VAStatus GetConfigAttributes(VADriverContextP, VAProfile profile,
                                     VAEntrypoint entrypoint,
                                     VAConfigAttrib *attributes, int count) {
-  if (profile != VAProfileNone && !IsH264Profile(profile))
+  if (profile != VAProfileNone && !IsDecodeProfile(profile))
     return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
   if (!IsValidConfig(profile, entrypoint))
     return VA_STATUS_ERROR_UNSUPPORTED_ENTRYPOINT;
   for (int i = 0; i < count; ++i) {
     switch (attributes[i].type) {
       case VAConfigAttribRTFormat:
-        attributes[i].value = IsH264Profile(profile)
+        attributes[i].value = IsDecodeProfile(profile)
                                   ? VA_RT_FORMAT_YUV420
                                   : VA_RT_FORMAT_YUV420 | VA_RT_FORMAT_RGB32;
         break;
       case VAConfigAttribDecSliceMode:
-        attributes[i].value = IsH264Profile(profile)
+        attributes[i].value = IsDecodeProfile(profile)
                                   ? VA_DEC_SLICE_MODE_NORMAL
                                   : VA_ATTRIB_NOT_SUPPORTED;
         break;
       case VAConfigAttribMaxPictureWidth:
-        attributes[i].value = kMaxWidth;
+        attributes[i].value = profile == VAProfileMPEG2Simple ? 720 : kMaxWidth;
         break;
       case VAConfigAttribMaxPictureHeight:
-        attributes[i].value = kMaxHeight;
+        attributes[i].value = profile == VAProfileMPEG2Simple ? 576 : kMaxHeight;
         break;
       default:
         attributes[i].value = VA_ATTRIB_NOT_SUPPORTED;
@@ -2371,7 +2491,7 @@ static VAStatus GetConfigAttributes(VADriverContextP, VAProfile profile,
 static VAStatus CreateConfig(VADriverContextP context, VAProfile profile,
                              VAEntrypoint entrypoint, VAConfigAttrib *, int,
                              VAConfigID *config_id) {
-  if (profile != VAProfileNone && !IsH264Profile(profile))
+  if (profile != VAProfileNone && !IsDecodeProfile(profile))
     return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
   if (!IsValidConfig(profile, entrypoint))
     return VA_STATUS_ERROR_UNSUPPORTED_ENTRYPOINT;
@@ -2402,7 +2522,7 @@ static VAStatus QueryConfigAttributes(VADriverContextP context,
   *entrypoint = config->second.entrypoint;
   if (attributes != nullptr) {
     attributes[0].type = VAConfigAttribRTFormat;
-    attributes[0].value = IsH264Profile(config->second.profile)
+    attributes[0].value = IsDecodeProfile(config->second.profile)
                               ? VA_RT_FORMAT_YUV420
                               : VA_RT_FORMAT_YUV420 | VA_RT_FORMAT_RGB32;
   }
@@ -2674,12 +2794,14 @@ static VAStatus QuerySurfaceAttributes(VADriverContextP context,
                                           VA_SURFACE_ATTRIB_GETTABLE, 16);
   attributes[index++] = integer_attribute(VASurfaceAttribMaxWidth,
                                           VA_SURFACE_ATTRIB_GETTABLE,
-                                          kMaxWidth);
+                                          config->second.profile == VAProfileMPEG2Simple
+                                              ? 720 : kMaxWidth);
   attributes[index++] = integer_attribute(VASurfaceAttribMinHeight,
                                           VA_SURFACE_ATTRIB_GETTABLE, 16);
   attributes[index++] = integer_attribute(VASurfaceAttribMaxHeight,
                                           VA_SURFACE_ATTRIB_GETTABLE,
-                                          kMaxHeight);
+                                          config->second.profile == VAProfileMPEG2Simple
+                                              ? 576 : kMaxHeight);
   attributes[index] = integer_attribute(
       VASurfaceAttribMemoryType,
       VA_SURFACE_ATTRIB_GETTABLE | VA_SURFACE_ATTRIB_SETTABLE,
@@ -2780,7 +2902,9 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
   if (!video_process &&
       (width <= 0 || height <= 0 ||
        static_cast<unsigned int>(width) > kMaxWidth ||
-       static_cast<unsigned int>(height) > kMaxHeight))
+       static_cast<unsigned int>(height) > kMaxHeight ||
+       (config->second.profile == VAProfileMPEG2Simple &&
+        (width > 720 || height > 576))))
     return VA_STATUS_ERROR_INVALID_PARAMETER;
   for (int i = 0; i < target_count; ++i) {
     if (driver->surfaces.find(targets[i]) == driver->surfaces.end())
@@ -2788,6 +2912,7 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
   }
   auto decode = std::make_shared<DecodeContext>();
   decode->config = config_id;
+  decode->profile = config->second.profile;
   decode->width = std::max(width, 0);
   decode->height = std::max(height, 0);
   decode->video_process = video_process;
@@ -2964,12 +3089,97 @@ static VAStatus BeginPicture(VADriverContextP context, VAContextID context_id,
     return VA_STATUS_ERROR_HW_BUSY;
   decode->second->target = target;
   decode->second->have_picture = false;
+  decode->second->mpeg2_picture = DecodeContext::Mpeg2Picture();
   // Like i965, an omitted per-picture IQ buffer means flat matrices, not the
   // previous picture's custom matrices or the bitstream's JVT default lists.
   decode->second->iq_matrix = FlatH264IqMatrix();
   decode->second->iq_matrix_valid = true;
   decode->second->slices.clear();
   decode->second->slice_data.clear();
+  return VA_STATUS_SUCCESS;
+}
+
+static VAStatus RenderMpeg2Picture(Driver *driver, DecodeContext *decode,
+                                   VAContextID context_id,
+                                   VABufferID *buffer_ids, int count) {
+  auto &pending = decode->mpeg2_picture;
+  const auto fail = [&](VAStatus status) {
+    Debug("MPEG-2 RenderPicture rejected status=%d target=%u type=%d bytes=%zu",
+          status, decode->target, pending.picture.picture_coding_type, pending.bytes);
+    pending.invalid = true;
+    return status;
+  };
+  if (pending.invalid || decode->target == VA_INVALID_SURFACE || count < 0 ||
+      (count != 0 && buffer_ids == nullptr))
+    return fail(VA_STATUS_ERROR_INVALID_PARAMETER);
+  const auto reference = [&](VASurfaceID id, uint64_t *timestamp) {
+    if (id == VA_INVALID_SURFACE || id == decode->target) return false;
+    auto surface = driver->surfaces.find(id);
+    if (surface == driver->surfaces.end() ||
+        !HasLiveBackingOwner(driver, surface->second.get()) ||
+        surface->second->backing_owner != VA_INVALID_SURFACE) return false;
+    auto token = decode->surface_timestamps.find(surface->second.get());
+    if (token == decode->surface_timestamps.end() || token->second == 0 ||
+        token->second != surface->second->expected_timestamp) return false;
+    const auto *unit = decode->mpeg2_replay.Find(token->second);
+    if (unit == nullptr || unit->kind == CrystalHDMpeg2Replay::Kind::B) return false;
+    *timestamp = token->second;
+    return true;
+  };
+  for (int index = 0; index < count; ++index) {
+    auto found = driver->buffers.find(buffer_ids[index]);
+    if (found == driver->buffers.end()) return fail(VA_STATUS_ERROR_INVALID_BUFFER);
+    const Buffer &buffer = found->second;
+    if (buffer.context != context_id || buffer.data_failed || BufferBorrowed(buffer) ||
+        buffer.data.empty() || buffer.elements == 0 ||
+        static_cast<uint64_t>(buffer.element_size) * buffer.elements != buffer.data.size() ||
+        buffer.data.size() > crystalhd_mpeg2::kMaxAccessUnitBytes - pending.bytes)
+      return fail(VA_STATUS_ERROR_INVALID_BUFFER);
+    pending.bytes += buffer.data.size();
+    switch (buffer.type) {
+      case VAPictureParameterBufferType: {
+        if (pending.have_picture || buffer.elements != 1 ||
+            buffer.element_size != sizeof(pending.picture))
+          return fail(VA_STATUS_ERROR_INVALID_BUFFER);
+        memcpy(&pending.picture, buffer.data.data(), sizeof(pending.picture));
+        const auto &picture = pending.picture;
+        if (picture.picture_coding_type < 1 || picture.picture_coding_type > 3 ||
+            (picture.picture_coding_type == 1 &&
+             (picture.forward_reference_picture != VA_INVALID_SURFACE ||
+              picture.backward_reference_picture != VA_INVALID_SURFACE)) ||
+            (picture.picture_coding_type != 3 &&
+             picture.backward_reference_picture != VA_INVALID_SURFACE))
+          return fail(VA_STATUS_ERROR_INVALID_PARAMETER);
+        if ((picture.picture_coding_type != 1 &&
+             !reference(picture.forward_reference_picture, &pending.forward)) ||
+            (picture.picture_coding_type == 3 &&
+             !reference(picture.backward_reference_picture, &pending.backward)))
+          return fail(VA_STATUS_ERROR_INVALID_SURFACE);
+        pending.have_picture = true;
+        break;
+      }
+      case VAIQMatrixBufferType:
+        if (pending.have_iq || buffer.elements != 1 ||
+            buffer.element_size != sizeof(pending.iq))
+          return fail(VA_STATUS_ERROR_INVALID_BUFFER);
+        memcpy(&pending.iq, buffer.data.data(), sizeof(pending.iq));
+        pending.have_iq = true;
+        break;
+      case VASliceParameterBufferType: {
+        if (buffer.element_size != sizeof(VASliceParameterBufferMPEG2))
+          return fail(VA_STATUS_ERROR_INVALID_BUFFER);
+        std::vector<VASliceParameterBufferMPEG2> group(buffer.elements);
+        memcpy(group.data(), buffer.data.data(), buffer.data.size());
+        pending.parameters.push_back(std::move(group));
+        break;
+      }
+      case VASliceDataBufferType:
+        pending.data.push_back(buffer.data);
+        break;
+      default:
+        return fail(VA_STATUS_ERROR_UNSUPPORTED_BUFFERTYPE);
+    }
+  }
   return VA_STATUS_SUCCESS;
 }
 
@@ -3057,6 +3267,8 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
     decode->second->have_vpp_parameters = true;
     return VA_STATUS_SUCCESS;
   }
+  if (decode->second->IsMpeg2())
+    return RenderMpeg2Picture(driver, decode->second.get(), context_id, buffer_ids, count);
   for (int i = 0; i < count; ++i) {
     auto buffer = driver->buffers.find(buffer_ids[i]);
     if (buffer == driver->buffers.end())
@@ -3218,10 +3430,14 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
     return VA_STATUS_ERROR_INVALID_CONFIG;
   VAStatus status = SubmitPicture(driver, decode_context.get(),
                                   config->second.profile);
+  if (status != VA_STATUS_SUCCESS)
+    Debug("EndPicture rejected status=%d profile=%d target=%u", status,
+          config->second.profile, decode_context->target);
   decode_context->target = VA_INVALID_SURFACE;
   decode_context->have_picture = false;
   decode_context->slices.clear();
   decode_context->slice_data.clear();
+  decode_context->mpeg2_picture = DecodeContext::Mpeg2Picture();
   return status;
 }
 
@@ -3998,7 +4214,7 @@ static VAStatus InitializeDriver(VADriverContextP context,
   context->version_major = VA_MAJOR_VERSION;
   context->version_minor = api_minor_version;
   context->str_vendor = "Broadcom CrystalHD VA-API driver 0.1";
-  context->max_profiles = 4;
+  context->max_profiles = 6;
   context->max_entrypoints = 1;
   context->max_attributes = 16;
   context->max_image_formats = 1;

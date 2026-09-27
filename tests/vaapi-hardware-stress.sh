@@ -4,7 +4,7 @@
 set -eu
 
 if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
-    echo "usage: $0 VIDEO.mp4 [ITERATIONS]" >&2
+    echo "usage: $0 VIDEO_CONTAINER [ITERATIONS]" >&2
     exit 2
 fi
 
@@ -59,10 +59,27 @@ command -v ffprobe >/dev/null
 command -v timeout >/dev/null
 codec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name \
     -of default=nw=1:nk=1 "$video")
-if [ "$codec" != h264 ]; then
-    echo "CrystalHD VA-API validation requires H.264 input (found: $codec)" >&2
-    exit 2
-fi
+case "$codec" in
+    h264) ;;
+    mpeg2video)
+        profile=$(ffprobe -v error -select_streams v:0 -show_entries stream=profile \
+            -of default=nw=1:nk=1 "$video")
+        case "$profile" in
+            Simple|Main) ;;
+            *) echo "MPEG-2 validation requires Simple or Main profile (found: $profile)" >&2; exit 2 ;;
+        esac
+        field_order=$(ffprobe -v error -select_streams v:0 -show_entries stream=field_order \
+            -of default=nw=1:nk=1 "$video")
+        if [ "$field_order" != progressive ]; then
+            echo "MPEG-2 validation requires a declared progressive stream (found: $field_order)" >&2
+            exit 2
+        fi
+        ;;
+    *)
+        echo "CrystalHD VA-API validation requires H.264 or progressive MPEG-2 input (found: $codec)" >&2
+        exit 2
+        ;;
+esac
 make -C "$repo_dir" all
 
 if lsmod | grep -q '^crystalhd '; then

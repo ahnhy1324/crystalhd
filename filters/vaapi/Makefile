@@ -13,6 +13,9 @@ REPLAY_TEST := vaapi-replay-test
 BUFFER_TEST := vaapi-buffer-handles-test
 CACHE_TEST := vaapi-cache-test
 SCALING_TEST := vaapi-scaling-test
+MPEG2_TEST := vaapi-mpeg2-test
+MPEG2_REPLAY_TEST := vaapi-mpeg2-replay-test
+MPEG2_SUBMIT_TEST := vaapi-mpeg2-submit-test
 SEEK_TEST := vaapi-seek-test
 DRIVERDIR ?= $(shell $(PKG_CONFIG) --variable=libdir libva)/dri
 VAAPI_DRM_DEVICE ?= /dev/dri/renderD128
@@ -32,7 +35,9 @@ LDLIBS += $(shell $(PKG_CONFIG) --libs libva libva-drm libdrm gbm \
 
 all: $(DRIVER)
 
-$(DRIVER): crystalhd_drv_video.cpp crystalhd-decode-replay.h
+BACKEND_HEADERS := crystalhd-decode-replay.h crystalhd-mpeg2.h crystalhd-mpeg2-replay.h
+
+$(DRIVER): crystalhd_drv_video.cpp $(BACKEND_HEADERS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS) $(CRYSTALHD_CPU_FLAGS)
 
 $(IMPORT_TEST): $(ROOTDIR)/tests/vaapi-import.cpp
@@ -40,15 +45,21 @@ $(IMPORT_TEST): $(ROOTDIR)/tests/vaapi-import.cpp
 		$(shell $(PKG_CONFIG) --cflags libva libva-drm) $< -o $@ \
 		$(shell $(PKG_CONFIG) --libs libva libva-drm) $(CRYSTALHD_CPU_FLAGS)
 
-$(H264_TEST): $(ROOTDIR)/tests/vaapi-h264.cpp crystalhd_drv_video.cpp crystalhd-decode-replay.h
+$(H264_TEST): $(ROOTDIR)/tests/vaapi-h264.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CRYSTALHD_CPU_FLAGS) $< -o $@
 
-$(VPP_TEST): $(ROOTDIR)/tests/vaapi-vpp.cpp crystalhd_drv_video.cpp crystalhd-decode-replay.h
+$(MPEG2_TEST): $(ROOTDIR)/tests/vaapi-mpeg2.cpp crystalhd-mpeg2.h
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CRYSTALHD_CPU_FLAGS) $< -o $@
+
+$(MPEG2_REPLAY_TEST): $(ROOTDIR)/tests/vaapi-mpeg2-replay.cpp $(BACKEND_HEADERS)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CRYSTALHD_CPU_FLAGS) $< -o $@
+
+$(VPP_TEST): $(ROOTDIR)/tests/vaapi-vpp.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o $@ \
 		-L$(ROOTDIR)/linux_lib/libcrystalhd $(LDLIBS) \
 		-Wl,--wrap=open,--wrap=ioctl,--wrap=close $(CRYSTALHD_CPU_FLAGS)
 
-$(REPLAY_TEST): $(ROOTDIR)/tests/vaapi-replay.cpp crystalhd_drv_video.cpp crystalhd-decode-replay.h
+$(REPLAY_TEST): $(ROOTDIR)/tests/vaapi-replay.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o $@ \
 		-L$(ROOTDIR)/linux_lib/libcrystalhd -Wl,--wrap=ioctl,--wrap=usleep \
 		-Wl,--wrap=DtsDeviceOpen,--wrap=DtsDeviceClose,--wrap=DtsStopDecoder \
@@ -56,7 +67,7 @@ $(REPLAY_TEST): $(ROOTDIR)/tests/vaapi-replay.cpp crystalhd_drv_video.cpp crysta
 		-Wl,--wrap=DtsProcInput,--wrap=DtsFlushInput,--wrap=DtsProcOutputNoCopy \
 		-Wl,--wrap=DtsReleaseOutputBuffs $(LDLIBS) $(CRYSTALHD_CPU_FLAGS)
 
-$(BUFFER_TEST): $(ROOTDIR)/tests/vaapi-buffer-handles.cpp crystalhd_drv_video.cpp crystalhd-decode-replay.h
+$(BUFFER_TEST): $(ROOTDIR)/tests/vaapi-buffer-handles.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o $@ \
 		-L$(ROOTDIR)/linux_lib/libcrystalhd $(LDLIBS) \
 		-Wl,--wrap=gbm_create_device,--wrap=gbm_device_destroy \
@@ -68,14 +79,19 @@ $(BUFFER_TEST): $(ROOTDIR)/tests/vaapi-buffer-handles.cpp crystalhd_drv_video.cp
 
 # Production cache/fence sections, with unrelated frontend functions discarded.
 # Disable test-only SLP constant pooling so GC can separate their vtables.
-$(CACHE_TEST): $(ROOTDIR)/tests/vaapi-cache.cpp crystalhd_drv_video.cpp crystalhd-decode-replay.h
+$(CACHE_TEST): $(ROOTDIR)/tests/vaapi-cache.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -fno-tree-slp-vectorize \
 		-ffunction-sections -fdata-sections $< -o $@ \
 		-Wl,--gc-sections,--wrap=open,--wrap=ioctl,--wrap=close \
 		-pthread $(CRYSTALHD_CPU_FLAGS)
 
 # Real H.264 submission/replay with decoder and graphics operations mocked.
-$(SCALING_TEST): $(ROOTDIR)/tests/vaapi-scaling.cpp crystalhd_drv_video.cpp crystalhd-decode-replay.h
+$(SCALING_TEST): $(ROOTDIR)/tests/vaapi-scaling.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -fno-tree-slp-vectorize \
+		-ffunction-sections -fdata-sections $< -o $@ \
+		-Wl,--gc-sections -pthread $(CRYSTALHD_CPU_FLAGS)
+
+$(MPEG2_SUBMIT_TEST): $(ROOTDIR)/tests/vaapi-mpeg2-submit.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -fno-tree-slp-vectorize \
 		-ffunction-sections -fdata-sections $< -o $@ \
 		-Wl,--gc-sections -pthread $(CRYSTALHD_CPU_FLAGS)
@@ -89,10 +105,13 @@ $(SEEK_TEST): $(ROOTDIR)/tests/vaapi-seek.cpp
 		$(shell $(PKG_CONFIG) --cflags libavcodec libavformat libavutil libva) $< -o $@ \
 		$(shell $(PKG_CONFIG) --libs libavcodec libavformat libavutil libva) $(CRYSTALHD_CPU_FLAGS)
 
-check: $(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST) $(CACHE_TEST) $(SCALING_TEST)
+check: $(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST) $(CACHE_TEST) $(SCALING_TEST) $(MPEG2_TEST) $(MPEG2_REPLAY_TEST) $(MPEG2_SUBMIT_TEST)
 	readelf -Ws $(DRIVER) | grep -q '__vaDriverInit_'
 	readelf -Ws $(DRIVER) | grep -q '__vaDriverInit_1_20'
 	./$(H264_TEST)
+	./$(MPEG2_TEST)
+	./$(MPEG2_REPLAY_TEST)
+	./$(MPEG2_SUBMIT_TEST)
 	./$(CACHE_TEST)
 	./$(SCALING_TEST)
 	LD_LIBRARY_PATH=$(abspath $(ROOTDIR)/linux_lib/libcrystalhd):$(LD_LIBRARY_PATH) ./$(VPP_TEST)
@@ -110,8 +129,8 @@ install: $(DRIVER)
 	install -D -m 0755 $(DRIVER) $(DESTDIR)$(DRIVERDIR)/$(DRIVER)
 
 clean:
-	rm -f $(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(SEEK_TEST) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST) $(CACHE_TEST) $(SCALING_TEST) $(CRYSTALHD_CPU_STAMP) $(CRYSTALHD_CPU_STAMP).tmp
+	rm -f $(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(SEEK_TEST) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST) $(CACHE_TEST) $(SCALING_TEST) $(MPEG2_TEST) $(MPEG2_REPLAY_TEST) $(MPEG2_SUBMIT_TEST) $(CRYSTALHD_CPU_STAMP) $(CRYSTALHD_CPU_STAMP).tmp
 
 include $(ROOTDIR)/cpu.mk
-$(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(SEEK_TEST) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST) $(CACHE_TEST) $(SCALING_TEST): $(CRYSTALHD_BUILD_DEPS)
+$(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(SEEK_TEST) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST) $(CACHE_TEST) $(SCALING_TEST) $(MPEG2_TEST) $(MPEG2_REPLAY_TEST) $(MPEG2_SUBMIT_TEST): $(CRYSTALHD_BUILD_DEPS)
 $(DRIVER) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST): $(ROOTDIR)/linux_lib/libcrystalhd/libcrystalhd.so
