@@ -469,25 +469,26 @@ BC_STATUS DtsCheckProfile(HANDLE hDevice)
 	return BC_STS_SUCCESS;
 }
 
-BOOL DtsChkAVCSps(HANDLE hDevice, uint8_t *pBuffer, uint32_t ulSize)
+static BOOL DtsHasStartCodeHeader(const uint8_t *data, uint32_t size,
+	uint8_t mask, uint8_t type)
 {
-	NALU_t Nalu;
-	int ret = 0;
-	uint32_t Pos = 0;
-
-	while (1)
-	{
-		ret=DtsGetNaluType(hDevice, pBuffer + Pos,ulSize - Pos,&Nalu, false);
-		if (ret <= 0)
-		{
-			return FALSE;
-		}
-		Pos += ret;
-
-		if (Nalu.NalUnitType == NALU_TYPE_SPS)
+	if (!data || size < 4)
+		return FALSE;
+	uint32_t first = 0;
+	while (first < size && data[first] == 0)
+		++first;
+	if (first < 2 || first >= size || data[first] != 1)
+		return FALSE;
+	for (uint32_t i = 0; i < size - 3; ++i)
+		if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 &&
+			(data[i + 3] & mask) == type)
 			return TRUE;
-	}
 	return FALSE;
+}
+
+BOOL DtsChkAVCSps(HANDLE /*hDevice*/, uint8_t *pBuffer, uint32_t ulSize)
+{
+	return DtsHasStartCodeHeader(pBuffer, ulSize, 0x1f, NALU_TYPE_SPS);
 }
 
 
@@ -513,22 +514,8 @@ static BOOL DtsAVC1HasSps(const DTS_LIB_CONTEXT *Ctx,
 		for (uint32_t i = 0; i < lengthSize; ++i)
 			initialSize = (initialSize << 8) | pBuffer[i];
 	const bool annexB = !Ctx->PESConvParams.m_bIsAdd_SCode_CodeIn || initialSize == 1;
-	/* Use a bounded Annex-B scan: the legacy DtsChkAVCSps parser can read
-	 * past a no-SPS AU. Leading zero bytes remain accepted in this mode.
-	 */
-	uint32_t first = 0;
-	while (first < ulSize && pBuffer[first] == 0)
-		++first;
 	if (annexB)
-	{
-		if (ulSize < 4 || first < 2 || first >= ulSize || pBuffer[first] != 1)
-			return FALSE;
-		for (uint32_t i = 0; i < ulSize - 3; ++i)
-			if (pBuffer[i] == 0 && pBuffer[i + 1] == 0 &&
-				pBuffer[i + 2] == 1 && (pBuffer[i + 3] & 0x1f) == NALU_TYPE_SPS)
-				return TRUE;
-		return FALSE;
-	}
+		return DtsHasStartCodeHeader(pBuffer, ulSize, 0x1f, NALU_TYPE_SPS);
 	uint32_t pos = 0;
 	while (pos < ulSize)
 	{
@@ -553,9 +540,11 @@ BOOL DtsCheckSpsPps(HANDLE hDevice, uint8_t *pBuffer, uint32_t ulSize)
 	DTS_GET_CTX(hDevice,Ctx);
 	if (Ctx->VidParams.MediaSubType == BC_MSUBTYPE_AVC1)
 		return DtsAVC1HasSps(Ctx, pBuffer, ulSize);
+	if (Ctx->VidParams.MediaSubType == BC_MSUBTYPE_DIVX)
+		// MPEG-4 VOL codes are 0x20..0x2f, not AVC NAL unit types.
+		return DtsHasStartCodeHeader(pBuffer, ulSize, 0xf0, 0x20);
 
 	if((Ctx->VidParams.MediaSubType == BC_MSUBTYPE_H264) ||
-	   (Ctx->VidParams.MediaSubType == BC_MSUBTYPE_DIVX) ||
 	   (Ctx->VidParams.MediaSubType == BC_MSUBTYPE_DIVX311))
 		return DtsChkAVCSps(hDevice, pBuffer, ulSize);
 	else

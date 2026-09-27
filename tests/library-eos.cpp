@@ -21,7 +21,7 @@
 extern bc_dil_glob_s *bc_dil_glob_ptr;
 /* Existing exported packetizer helper; not declared in the public API. */
 BC_STATUS DtsAlignSendData(HANDLE, uint8_t *, uint32_t, uint64_t, BOOL);
-static unsigned failures, fail_at, calls;
+static unsigned checks, failures, fail_at, calls;
 static unsigned stop_after;
 static DTS_LIB_CONTEXT *observed_context;
 static BC_STATUS injected_error = BC_STS_IO_ERROR;
@@ -38,6 +38,7 @@ static struct {
 
 static void check(bool condition, const char *message)
 {
+    ++checks;
     if (!condition) {
         std::fprintf(stderr, "FAIL: %s\n", message);
         ++failures;
@@ -310,7 +311,45 @@ static void test_mode5_preserves_prior_check()
     }
 }
 
-static void test_configured_wmv3_eos()
+static void configure_softrave(Fixture &fixture, uint32_t subtype)
+{
+    std::vector<uint8_t> metadata(4, 0);
+    if (subtype == BC_MSUBTYPE_DIVX)
+        metadata = {0,0,1,0xb0,5,0,0,1,0xb5,0x89,0x13,0,0,1,0,
+            0,0,1,0x20,0,0xc4,0x8d,0x88,0,0xf5,0x14,4,0x2d,0x14,0x63,
+            0,0,1,0xb2,'L','a','v','c','6','1','.','1','9','.','1','0','1'};
+    BC_INPUT_FORMAT format = {};
+    format.mSubtype = static_cast<BC_MEDIA_SUBTYPE>(subtype);
+    format.width = subtype == BC_MSUBTYPE_DIVX ? 640 : 720;
+    format.height = subtype == BC_MSUBTYPE_DIVX ? 360 : 576;
+    format.Progressive = TRUE;
+    format.OptFlags = 0x80000000U | vdecFrameRate59_94 | 0x40U;
+    format.pMetaData = metadata.data(); format.metaDataSz = metadata.size();
+    check(DtsSetInputFormat(&fixture.context, &format) == BC_STS_SUCCESS &&
+              fixture.context.PESConvParams.m_bSoftRave &&
+              fixture.context.VidParams.StreamType == BC_STREAM_TYPE_PES,
+          "public FLEA input setup enables SoftRave PES framing");
+}
+
+static std::vector<std::vector<uint8_t> > divx_eos_packets(unsigned mode)
+{
+    const std::vector<uint8_t> end = {
+        0,0,1,0xe0,0,11,0x81,0,0, 0,0,1,0xb1,0,0,1,0xb1};
+    if (mode == 5) return {end};
+    // Independent PES/private-data oracle: 155-byte timing marker, 20 optional
+    // header bytes (private-data flag, BRCM+12 zeros, 3 stuffing bytes), no PTS.
+    std::vector<uint8_t> marker(184, 0xff);
+    const uint8_t header[] = {0,0,1,0xe0,0,178,0x81,1,20,0x80,'B','R','C','M'};
+    std::memcpy(marker.data(), header, sizeof(header));
+    std::memset(marker.data()+14, 0, 12);
+    uint8_t *body = marker.data()+29;
+    std::memset(body, 0, 13); body[4] = 0x0c;
+    body[13] = body[14] = 0xff; body[15] = 0; body[16] = 1;
+    std::memset(body+29, 0, 7); body[36] = 0xbc;
+    return {end, marker, end, end};
+}
+
+static void test_configured_softrave_eos(uint32_t subtype)
 {
     // The original BCM70015 import (813af6d) explicitly omitted PTS during
     // SoftRave EOS. Unlike a zeroed synthetic context, real WMV3 setup enables
@@ -321,26 +360,15 @@ static void test_configured_wmv3_eos()
         const unsigned count = mode == 0 ? 4 : 1;
         for (bool public_api : {false, true}) {
             for (unsigned failure = 0; failure <= count + 1; ++failure) {
-                Fixture fixture(BC_PCI_DEVID_FLEA, BC_MSUBTYPE_WMV3);
-                BC_INPUT_FORMAT format = {};
-                uint8_t metadata[4] = {};
-                format.mSubtype = BC_MSUBTYPE_WMV3;
-                format.width = 720;
-                format.height = 576;
-                format.Progressive = TRUE;
-                format.OptFlags = 0x80000000U | vdecFrameRate59_94 | 0x40U;
-                format.pMetaData = metadata;
-                format.metaDataSz = sizeof(metadata);
-                check(DtsSetInputFormat(&fixture.context, &format) == BC_STS_SUCCESS &&
-                          fixture.context.PESConvParams.m_bSoftRave &&
-                          fixture.context.VidParams.StreamType == BC_STREAM_TYPE_PES,
-                      "actual FLEA WMV3 format setup enables SoftRave PES input");
+                Fixture fixture(BC_PCI_DEVID_FLEA, subtype);
+                configure_softrave(fixture, subtype);
+                const auto expected_divx = divx_eos_packets(mode);
 
                 fail_at = stop_after = 0;
-                uint8_t picture[4] = {0, 0, 1, 0x0d};
+                uint8_t picture[4] = {0, 0, 1, static_cast<uint8_t>(subtype == BC_MSUBTYPE_DIVX ? 0xb6 : 0x0d)};
                 check(DtsAlignSendData(&fixture.context, picture, sizeof(picture), 0, FALSE) ==
                           BC_STS_SUCCESS && packets.size() == 1 && (packets[0][7] & 0x80),
-                      "ordinary WMV3 timestamp zero retains its required PTS field");
+                      "ordinary SoftRave timestamp zero retains its required PTS field");
                 const std::vector<uint8_t> ordinary = packets[0];
                 check(txBufFlush(&fixture.context.circBuf) == BC_STS_SUCCESS,
                       "configured fixture empties only its own ordinary packet");
@@ -354,13 +382,14 @@ static void test_configured_wmv3_eos()
                 const BC_STATUS result = send(fixture, mode, public_api);
                 const BC_STATUS expected = canceled && count > 1 ? BC_STS_IO_USER_ABORT
                     : !canceled && failure ? injected_error : BC_STS_SUCCESS;
-                check(result == expected, "configured WMV3 EOS preserves enqueue/cancellation status");
+                check(result == expected, "configured SoftRave EOS preserves enqueue/cancellation status");
                 check(calls == (canceled ? 1 : failure ? failure : count),
-                      "configured WMV3 EOS stops at the first incomplete fragment");
+                      "configured SoftRave EOS stops at the first incomplete fragment");
                 check(fixture.context.PESConvParams.m_bSoftRave && clean_metadata(fixture.context),
                       "EOS always restores ordinary SoftRave state and clears temporary metadata");
                 check(fixture.context.bEOSCheck == (mode == 5 || result == BC_STS_SUCCESS),
-                      "configured WMV3 preserves mode5 and successful-only mode0 arming");
+                      "configured SoftRave preserves mode5 and successful-only mode0 arming");
+                check(!fixture.context.bEOS, "EOS submission never manufactures firmware completion");
                 uint64_t signature = UINT64_C(14695981039346656037);
                 size_t bytes = 0;
                 for (const auto &packet : packets) {
@@ -371,12 +400,35 @@ static void test_configured_wmv3_eos()
                     bytes += packet.size();
                 }
                 if (failure == 0) {
-                    check(signature == (mode == 0 ? UINT64_C(0xc24508523c5b493b)
+                    check(subtype == BC_MSUBTYPE_DIVX ? packets == expected_divx :
+                          signature == (mode == 0 ? UINT64_C(0xc24508523c5b493b)
                                                    : UINT64_C(0x24352af17dc9a696)),
-                          "configured WMV3 EOS matches the historical no-PTS marker bytes");
-                    check(bytes < 1024, "configured WMV3 EOS fits the whole-call reserve");
-                    std::printf("SOFTRAVE mode=%u public=%d bytes=%zu signature=%016llx\n",
-                                mode, public_api, bytes, static_cast<unsigned long long>(signature));
+                          "configured EOS matches the codec's independent no-PTS packet oracle");
+                    check(bytes < 1024, "configured SoftRave EOS fits the whole-call reserve");
+                    std::printf("SOFTRAVE subtype=%u mode=%u public=%d bytes=%zu signature=%016llx\n",
+                                subtype, mode, public_api, bytes, static_cast<unsigned long long>(signature));
+                }
+                if (subtype == BC_MSUBTYPE_DIVX) {
+                    size_t accepted = 0, complete = 0;
+                    for (size_t n = 0; n < expected_divx.size(); ++n) {
+                        complete += expected_divx[n].size();
+                        if (n < packets.size()) {
+                            check(packets[n] == expected_divx[n], "partial DIVX EOS retains exact attempted packet bytes");
+                            if (canceled || !failure || n + 1 < failure)
+                                accepted += packets[n].size();
+                        }
+                    }
+                    check(fixture.context.circBuf.busySize == accepted,
+                          "partial DIVX EOS retains only genuinely accepted ring bytes");
+                    fixture.context.State = BC_DEC_STATE_START;
+                    fail_at = stop_after = calls = 0; packets.clear();
+                    check(send(fixture, mode, public_api) == BC_STS_SUCCESS && packets == expected_divx,
+                          "DIVX EOS retry submits the full original control sequence");
+                    check(fixture.context.circBuf.busySize == accepted + complete,
+                          "DIVX retry preserves the accepted prefix and appends exactly one full sequence");
+                    check(fixture.context.PESConvParams.m_bSoftRave && clean_metadata(fixture.context) &&
+                          fixture.context.bEOSCheck && !fixture.context.bEOS,
+                          "DIVX retry restores packetizer state without claiming completed EOS");
                 }
 
                 // A failed or canceled drain must not alter subsequent input.
@@ -582,12 +634,13 @@ static void test_timeout_detection(uint32_t device, bool no_copy, uint32_t timeo
     }
 }
 
-static void test_firmware_eos()
+static void test_firmware_eos(uint32_t subtype = BC_MSUBTYPE_H264)
 {
     for (bool armed : {false, true}) {
         for (bool no_copy : {false, true}) {
             fail_at = stop_after = 0;
-            Fixture fixture(BC_PCI_DEVID_FLEA, BC_MSUBTYPE_H264);
+            Fixture fixture(BC_PCI_DEVID_FLEA, subtype);
+            if (subtype == BC_MSUBTYPE_DIVX) configure_softrave(fixture, subtype);
             fixture.context.bEOSCheck = armed;
             detection.allow_output = detection.marker = true;
             BC_PIC_INFO_BLOCK picture = {};
@@ -604,7 +657,8 @@ static void test_firmware_eos()
             check(detection.fetch_calls == 1,
                   "firmware marker is consumed once without a replacement-buffer ioctl");
         }
-        Fixture fixture(BC_PCI_DEVID_FLEA, BC_MSUBTYPE_H264);
+        Fixture fixture(BC_PCI_DEVID_FLEA, subtype);
+        if (subtype == BC_MSUBTYPE_DIVX) configure_softrave(fixture, subtype);
         fixture.context.bEOSCheck = armed;
         detection.allow_status = true;
         detection.status_limit = 1;
@@ -646,7 +700,11 @@ int main()
     }
     test_invalid_state();
     test_mode5_preserves_prior_check();
-    test_configured_wmv3_eos();
+    test_configured_softrave_eos(BC_MSUBTYPE_WMV3);
+    for (BC_STATUS error : {BC_STS_IO_ERROR, BC_STS_INSUFF_RES, BC_STS_IO_USER_ABORT}) {
+        injected_error = error;
+        test_configured_softrave_eos(BC_MSUBTYPE_DIVX);
+    }
     test_canceled_packet();
     test_stop_between_fragments();
     test_packetizer_boundaries();
@@ -658,11 +716,12 @@ int main()
             for (uint32_t timeout : {0U, 1U})
                 test_timeout_detection(device, no_copy, timeout);
     test_firmware_eos();
+    test_firmware_eos(BC_MSUBTYPE_DIVX);
     test_link_repeat_compatibility();
     if (failures) {
         std::fprintf(stderr, "%u EOS checks failed\n", failures);
         return 1;
     }
-    std::puts("PASS: production EOS submission/detection, firmware markers and LINK compatibility");
+    std::printf("PASS: %u production EOS submission/detection checks, firmware markers and LINK compatibility\n", checks);
     return 0;
 }
