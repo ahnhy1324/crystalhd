@@ -54,6 +54,9 @@ bool crystalhd_flea_wake_up_hw(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_flea_fw_cmd_post_proc(struct crystalhd_hw *hw, BC_FW_CMD *fw_cmd);
 void crystalhd_flea_clear_rx_errs_intrs(struct crystalhd_hw *hw);
 uint32_t flea_GetRptDropParam(struct crystalhd_hw *hw, void* pRxDMAReq);
+static bool flea_get_picture_info(struct crystalhd_hw *hw,
+	struct crystalhd_rx_dma_pkt *rx_pkt, uint32_t *pic_number,
+	uint64_t *metadata, bool prepare_output);
 BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
 	struct crystalhd_rx_dma_pkt *rx_pkt);
 
@@ -1956,7 +1959,11 @@ bool crystalhd_flea_peek_next_decoded_frame(struct crystalhd_hw *hw, uint64_t *m
 		spin_unlock_irqrestore(&ioq->lock, flags);
 		rpkt = (struct crystalhd_rx_dma_pkt *)tmp->data;
 		if (rpkt) {
-			flea_GetPictureInfo(hw, rpkt, picNumFlags, meta_payload);
+			/* Status may inspect the same ready picture repeatedly. Saving
+			 * the first pixels for userspace belongs to the actual dequeue,
+			 * otherwise a second peek saves our line-number marker as pixels.
+			 */
+			flea_get_picture_info(hw, rpkt, picNumFlags, meta_payload, false);
 			/*printk("%s: flea_GetPictureInfo Pic#:%d\n", __func__, PicNumber); */
 		}
 		return true;
@@ -2790,8 +2797,9 @@ bool crystalhd_flea_hw_interrupt_handle(struct crystalhd_adp *adp, struct crysta
 }
 
 /* This function cannot be called from ISR context since it uses APIs that can sleep */
-bool flea_GetPictureInfo(struct crystalhd_hw *hw, struct crystalhd_rx_dma_pkt * rx_pkt,
-							uint32_t *PicNumber, uint64_t *PicMetaData)
+static bool flea_get_picture_info(struct crystalhd_hw *hw,
+	struct crystalhd_rx_dma_pkt *rx_pkt, uint32_t *PicNumber,
+	uint64_t *PicMetaData, bool prepare_output)
 {
 	struct device *dev = &hw->adp->pdev->dev;
 	uint32_t PicInfoLineNum = 0, offset = 0, size = 0;
@@ -2808,6 +2816,7 @@ bool flea_GetPictureInfo(struct crystalhd_hw *hw, struct crystalhd_rx_dma_pkt * 
 
 	if (!dio)
 		goto getpictureinfo_err_nosem;
+	dio->pib_va = NULL;
 	crystalhd_dio_to_cpu(hw->adp, dio);
 
 /*	if(down_interruptible(&hw->fetch_sem)) */
@@ -2864,10 +2873,12 @@ bool flea_GetPictureInfo(struct crystalhd_hw *hw, struct crystalhd_rx_dma_pkt * 
 	{
 		dev_dbg(dev, "Got EOS flag.\n");
 		hw->DrvEosDetected = 1;
-		*(uint32_t *)(dio->pib_va) = 0xFFFFFFFF;
-		res = copy_to_user((void *)(dio->uinfo.xfr_buff), dio->pib_va, 4);
-		if (res != 0)
-			goto getpictureinfo_err;
+		if (prepare_output) {
+			*(uint32_t *)(dio->pib_va) = 0xFFFFFFFF;
+			res = copy_to_user((void *)(dio->uinfo.xfr_buff), dio->pib_va, 4);
+			if (res != 0)
+				goto getpictureinfo_err;
+		}
 	}
 	else
 	{
@@ -2881,14 +2892,16 @@ bool flea_GetPictureInfo(struct crystalhd_hw *hw, struct crystalhd_rx_dma_pkt * 
 
 		tmpYBuffData = *(uint32_t *)(dio->pib_va);
 		pPicInfoLine->ycom = tmpYBuffData;
-		res = copy_to_user((void *)(dio->uinfo.xfr_buff+offset), tmpPicInfo, size);
-		if (res != 0)
-			goto getpictureinfo_err;
+		if (prepare_output) {
+			res = copy_to_user((void *)(dio->uinfo.xfr_buff+offset), tmpPicInfo, size);
+			if (res != 0)
+				goto getpictureinfo_err;
 
-		*(uint32_t *)(dio->pib_va) = PicInfoLineNum;
-		res = copy_to_user((void *)(dio->uinfo.xfr_buff), dio->pib_va, 4);
-		if (res != 0)
-			goto getpictureinfo_err;
+			*(uint32_t *)(dio->pib_va) = PicInfoLineNum;
+			res = copy_to_user((void *)(dio->uinfo.xfr_buff), dio->pib_va, 4);
+			if (res != 0)
+				goto getpictureinfo_err;
+		}
 	}
 
 	if(widthField & PIB_FORMAT_CHANGE_BIT)
@@ -2949,10 +2962,18 @@ bool flea_GetPictureInfo(struct crystalhd_hw *hw, struct crystalhd_rx_dma_pkt * 
 			goto getpictureinfo_err;
 
 		*PicNumber = *(uint32_t *)(dio->pib_va);
+		/* The legacy EOS preparation replaces word zero before this read.
+		 * Preserve that status value without editing the queued picture.
+		 */
+		if (!prepare_output && (widthField & PIB_EOS_DETECTED_BIT) &&
+		    PicInfoLineNum == 0)
+			*PicNumber = 0xFFFFFFFF;
 	}
 
-	if(dio->pib_va)
+	if(dio->pib_va) {
 		kfree(dio->pib_va);
+		dio->pib_va = NULL;
+	}
 	if(tmpPicInfo)
 		kfree(tmpPicInfo);
 
@@ -2964,8 +2985,10 @@ getpictureinfo_err:
 /*	up(&hw->fetch_sem); */
 
 getpictureinfo_err_nosem:
-	if(dio->pib_va)
+	if(dio && dio->pib_va) {
 		kfree(dio->pib_va);
+		dio->pib_va = NULL;
+	}
 	if(tmpPicInfo)
 		kfree(tmpPicInfo);
 
@@ -2973,6 +2996,13 @@ getpictureinfo_err_nosem:
 	*PicMetaData = 0;
 
 	return false;
+}
+
+bool flea_GetPictureInfo(struct crystalhd_hw *hw,
+	struct crystalhd_rx_dma_pkt *rx_pkt, uint32_t *pic_number,
+	uint64_t *metadata)
+{
+	return flea_get_picture_info(hw, rx_pkt, pic_number, metadata, true);
 }
 
 uint32_t flea_GetRptDropParam(struct crystalhd_hw *hw, void* pRxDMAReq)
