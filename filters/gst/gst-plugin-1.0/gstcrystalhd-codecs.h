@@ -73,9 +73,15 @@ static gboolean
 gst_crystalhd_codec_metadata(const CrystalHdCodec *codec,
                              const guint8 **data, gsize *size)
 {
+  if (codec == NULL || data == NULL || size == NULL || *size > G_MAXUINT32)
+    return FALSE;
   if (codec->subtype == BC_MSUBTYPE_WMV3) {
-    /* DtsSetVC1SH reads exactly four STRUCT_C bytes for Simple/Main. */
-    if (*data == NULL || (*size != 4 && *size != 5))
+    /* DtsSetVC1SH copies only the first four STRUCT_C bytes for Simple/Main.
+     * AVI/ASF codec_data may append encoder bytes (WMV9 VCM uses six bytes).
+     * Keep the original header, including legacy reserved bits, unchanged;
+     * this normalizes container metadata, not unsupported coding tools.
+     */
+    if (*data == NULL || *size < 4)
       return FALSE;
     *size = 4;
   } else if (codec->subtype == BC_MSUBTYPE_WVC1) {

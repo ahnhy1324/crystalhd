@@ -123,6 +123,85 @@ test_metadata(void)
 }
 
 static void
+test_wmv_metadata(void)
+{
+  /* Original WMV9 VCM Simple codec_data, including the encoder's suffix.
+   * Normalization must not replace STRUCT_C with reconstructed VA metadata.
+   */
+  const guint8 actual[] = { 0x0f, 0xf1, 0x8a, 0x01, 0x40, 0x0f };
+  const guint8 legacy[] = { 0x05, 0xf1, 0x88, 0x00, 0x40, 0x0f };
+  guint8 larger[64];
+  guint8 saved[sizeof(larger)];
+  CrystalHdCodec codec = { .subtype = BC_MSUBTYPE_WMV3 };
+  const guint8 *data;
+  gsize size, length;
+
+  for (length = 4; length <= sizeof(actual); length++) {
+    data = actual;
+    size = length;
+    g_assert_true(gst_crystalhd_codec_metadata(&codec, &data, &size));
+    g_assert_true(data == actual);
+    g_assert_cmpuint(size, ==, 4);
+    g_assert_cmpmem(data, size, actual, 4);
+  }
+  data = legacy;
+  size = sizeof(legacy);
+  g_assert_true(gst_crystalhd_codec_metadata(&codec, &data, &size));
+  g_assert_true(data == legacy);
+  g_assert_cmpuint(size, ==, 4);
+  g_assert_cmpmem(data, size, legacy, 4); /* Preserve RTM0, not a decode claim. */
+
+  memset(larger, 0xa5, sizeof(larger));
+  memcpy(larger, actual, sizeof(actual));
+  memcpy(saved, larger, sizeof(saved));
+  data = larger;
+  size = sizeof(larger);
+  g_assert_true(gst_crystalhd_codec_metadata(&codec, &data, &size));
+  g_assert_true(data == larger);
+  g_assert_cmpuint(size, ==, 4);
+  g_assert_cmpmem(larger, sizeof(larger), saved, sizeof(saved));
+
+  for (length = 0; length < 4; length++) {
+    data = actual;
+    size = length;
+    g_assert_false(gst_crystalhd_codec_metadata(&codec, &data, &size));
+    g_assert_true(data == actual);
+    g_assert_cmpuint(size, ==, length);
+  }
+  for (length = 0; length <= sizeof(actual); length++) {
+    data = NULL;
+    size = length;
+    g_assert_false(gst_crystalhd_codec_metadata(&codec, &data, &size));
+    g_assert_null(data);
+    g_assert_cmpuint(size, ==, length);
+  }
+  data = actual;
+  size = sizeof(actual);
+  g_assert_false(gst_crystalhd_codec_metadata(NULL, &data, &size));
+  g_assert_false(gst_crystalhd_codec_metadata(&codec, NULL, &size));
+  g_assert_false(gst_crystalhd_codec_metadata(&codec, &data, NULL));
+  g_assert_true(data == actual);
+  g_assert_cmpuint(size, ==, sizeof(actual));
+
+  /* No payload bytes are read here. Synthetic lengths check that truncating
+   * to four cannot bypass the library's original 32-bit metadata bound.
+   */
+  size = G_MAXUINT32;
+  g_assert_true(gst_crystalhd_codec_metadata(&codec, &data, &size));
+  g_assert_true(data == actual);
+  g_assert_cmpuint(size, ==, 4);
+#if GLIB_SIZEOF_SIZE_T > 4
+  size = (gsize)G_MAXUINT32 + 1;
+  g_assert_false(gst_crystalhd_codec_metadata(&codec, &data, &size));
+  g_assert_true(data == actual);
+  g_assert_cmpuint(size, ==, (gsize)G_MAXUINT32 + 1);
+  size = G_MAXSIZE;
+  g_assert_false(gst_crystalhd_codec_metadata(&codec, &data, &size));
+  g_assert_cmpuint(size, ==, G_MAXSIZE);
+#endif
+}
+
+static void
 test_frame_layer(void)
 {
   const guint8 frame[] = { 3, 0, 0, 0x80, 0x28, 0, 0, 0, 0xa1, 0xb2, 0xc3 };
@@ -235,6 +314,7 @@ int main(int argc, char **argv)
   g_test_add_func("/crystalhd/codecs/caps", test_caps);
   g_test_add_func("/crystalhd/codecs/pad-caps", test_pad_caps);
   g_test_add_func("/crystalhd/codecs/metadata", test_metadata);
+  g_test_add_func("/crystalhd/codecs/wmv-metadata", test_wmv_metadata);
   g_test_add_func("/crystalhd/codecs/frame-layer", test_frame_layer);
   g_test_add_func("/crystalhd/codecs/picture-size", test_picture_size);
   g_test_add_func("/crystalhd/codecs/drain-deadline", test_drain_deadline);
