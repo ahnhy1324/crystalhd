@@ -76,6 +76,7 @@ static BC_STATUS bc_cproc_notify_mode(struct crystalhd_cmd *ctx,
 				      crystalhd_ioctl_data *idata)
 {
 	struct device *dev = chddev();
+	BC_STATUS sts;
 	int rc = 0, i = 0;
 
 	if (!ctx || !idata) {
@@ -107,20 +108,30 @@ static BC_STATUS bc_cproc_notify_mode(struct crystalhd_cmd *ctx,
 			return BC_STS_ERR_USAGE;
 		}
 	}
-	ctx->cin_wait_exit = 0;
-
-	ctx->user[idata->u_id].mode = idata->udata.u.NotifyMode.Mode;
 	/* Create list pools */
 	rc = crystalhd_create_elem_pool(ctx->adp, BC_LINK_ELEM_POOL_SZ);
-	if (rc)
+	if (rc) {
+		crystalhd_delete_elem_pool(ctx->adp);
 		return BC_STS_ERROR;
+	}
 	/* Setup mmap pool for uaddr sgl mapping..*/
 	rc = crystalhd_create_dio_pool(ctx->adp, BC_LINK_MAX_SGLS);
-	if (rc)
+	if (rc) {
+		crystalhd_delete_elem_pool(ctx->adp);
 		return BC_STS_ERROR;
+	}
 
 	/* Setup Hardware DMA rings */
-	return crystalhd_hw_setup_dma_rings(ctx->hw_ctx);
+	sts = crystalhd_hw_setup_dma_rings(ctx->hw_ctx);
+	if (sts != BC_STS_SUCCESS) {
+		crystalhd_destroy_dio_pool(ctx->adp);
+		crystalhd_delete_elem_pool(ctx->adp);
+		return sts;
+	}
+
+	ctx->cin_wait_exit = 0;
+	ctx->user[idata->u_id].mode = idata->udata.u.NotifyMode.Mode;
+	return BC_STS_SUCCESS;
 }
 
 static BC_STATUS bc_cproc_get_version(struct crystalhd_cmd *ctx,

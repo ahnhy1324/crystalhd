@@ -338,6 +338,7 @@ BC_STATUS crystalhd_hw_setup_dma_rings(struct crystalhd_hw *hw)
 			memset(mem, 0, mem_len);
 		} else {
 			dev_err(dev, "Insufficient Memory For RX\n");
+			kfree(rpkt);
 			crystalhd_hw_free_dma_rings(hw);
 			return BC_STS_INSUFF_RES;
 		}
