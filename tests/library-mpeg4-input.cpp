@@ -9,6 +9,7 @@
 #include <cstring>
 #include <pthread.h>
 #include <vector>
+#include <sys/mman.h>
 #include <unistd.h>
 #include "7411d.h"
 #include "libcrystalhd_if.h"
@@ -113,7 +114,7 @@ struct Fixture {
     bool send(Bytes input, uint64_t timestamp)
     {
         const uint32_t size = input.size();
-        input.resize(size + 16, 0);
+        input.shrink_to_fit();
         const bool accepted = DtsProcInput(&context, input.data(), size, timestamp, false) == BC_STS_SUCCESS;
         check(accepted, "actual DtsProcInput accepts bounded VOP data");
         std::fill(input.begin(), input.end(), 0xdd); // Ring must own its copy.
@@ -260,6 +261,57 @@ static void Fragmented()
     check(parse(f.drain(), &parsed) && parsed.size() == 1 && parsed[0].has_pts && parsed[0].pts == 290,
           "following access unit starts a new nonzero PTS after prior continuation fragments");
 }
+static void InBandHeaders()
+{
+    ++groups;
+    for (unsigned code = 0; code < 256; ++code) {
+        Fixture f(true);
+        if (!f.configured) return;
+        Bytes input = {0,0,1,static_cast<uint8_t>(code),0x80};
+        const Bytes picture = vop(0,128);
+        input.insert(input.end(),picture.begin(),picture.end());
+        if (!f.send(input,100000)) return;
+        std::vector<Pes> parsed;
+        check(parse(f.drain(),&parsed),"in-band header decision retains valid PES framing");
+        const bool vol = code >= 0x20 && code <= 0x2f;
+        check(parsed.size() == (vol ? 1U : 2U),"only a MPEG4 VOL suppresses stored metadata injection");
+        if (parsed.size() != (vol ? 1U : 2U)) continue;
+        check(parsed.back().has_pts && parsed.back().pts == 10 && parsed.back().payload == input,
+              "in-band header and picture bytes keep their original timestamp");
+        if (!vol) check(parsed.front().payload == metadata,"missing VOL retains exact stored metadata");
+    }
+}
+static void HeaderBounds()
+{
+    ++groups;
+    const size_t page = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+    auto *mapping = static_cast<uint8_t *>(mmap(nullptr,page*2,PROT_READ|PROT_WRITE,
+                                               MAP_PRIVATE|MAP_ANONYMOUS,-1,0));
+    if (mapping == MAP_FAILED || mprotect(mapping+page,page,PROT_NONE)) std::abort();
+    Fixture f(true);
+    if (!f.configured) { munmap(mapping,page*2); return; }
+    for (BC_MEDIA_SUBTYPE codec : {BC_MSUBTYPE_H264,BC_MSUBTYPE_AVC1,BC_MSUBTYPE_DIVX,BC_MSUBTYPE_DIVX311}) {
+        f.context.VidParams.MediaSubType = codec;
+        f.context.PESConvParams.m_bIsAdd_SCode_CodeIn = false;
+        for (const Bytes &input : {Bytes{},Bytes{0},Bytes{0,0},Bytes{0,0,0},Bytes{0,0,1},
+                Bytes{0,0,0,1},Bytes{0,0,1,0xb6},Bytes{0,0,1,0xb6,0,0,0},
+                Bytes{0,0,1,0x20},Bytes{0,0,1,0x67},
+                Bytes{0,0,0,0,1,0xb6,0,0,1,0x2f}}) {
+            uint8_t *data = mapping+page-input.size();
+            if (!input.empty()) std::memcpy(data,input.data(),input.size());
+            const PES_CONVERT_PARAMS before = f.context.PESConvParams;
+            const bool expected = codec == BC_MSUBTYPE_DIVX ?
+                (input.size() == 4 && input.back() == 0x20) || input.size() == 10 :
+                input.size() == 4 && input.back() == 0x67;
+            check(!!DtsCheckSpsPps(&f.context,data,input.size()) == expected,
+                  "header detection stays within the exact mapped boundary and codec");
+            check(!std::memcmp(&before,&f.context.PESConvParams,sizeof before),
+                  "header detection does not consume parser state");
+        }
+        check(!DtsCheckSpsPps(&f.context,nullptr,17),"null header input is not read");
+    }
+    munmap(mapping,page*2);
+}
 int main(int argc, char **argv)
 {
     if (argc > 2 || (argc == 2 && std::strcmp(argv[1], "--pes-only"))) return 2;
@@ -269,7 +321,10 @@ int main(int argc, char **argv)
     Sequence(false, true);
     ReorderedAndZero();
     Fragmented();
-    if (argc == 1) { Sequence(true, false); Sequence(true, true); }
+    if (argc == 1) {
+        Sequence(true, false); Sequence(true, true);
+        InBandHeaders(); HeaderBounds();
+    }
     std::printf("MPEG4 input: %u groups, %u checks, %u failures (host framing only; no device)\n",
                 groups, checks, failures);
     return failures ? 1 : 0;
