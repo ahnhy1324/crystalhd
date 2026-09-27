@@ -1021,7 +1021,7 @@ void crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
 					(!hw->SingleThreadAppFIFOEmpty) && /*for single threaded apps*/
 					(!(hw->rx_list_sts[0] && rx_waiting_y_intr)) &&
 					(!(hw->rx_list_sts[1] && rx_waiting_y_intr)) &&
-					(!hw->FwCmdCnt))
+					(!READ_ONCE(hw->FwCmdCnt)))
 				{
 					NextPS = FLEA_PS_LP_COMPLETE;
 				}else{
@@ -1055,7 +1055,7 @@ void crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
 					(!hw->SingleThreadAppFIFOEmpty) && /*for single threaded apps*/
 					(!(hw->rx_list_sts[0] && rx_waiting_y_intr)) &&
 					(!(hw->rx_list_sts[1] && rx_waiting_y_intr)) &&
-					(!hw->FwCmdCnt))
+					(!READ_ONCE(hw->FwCmdCnt)))
 				{
 					NextPS = FLEA_PS_LP_COMPLETE;
 				}
@@ -1824,12 +1824,8 @@ BC_STATUS crystalhd_flea_do_fw_cmd(struct crystalhd_hw *hw, BC_FW_CMD *fw_cmd)
 	struct device *dev;
 	uint32_t cnt = 0, cmd_res_addr;
 	uint32_t *cmd_buff, *res_buff;
-	wait_queue_head_t fw_cmd_event;
-	int rc = 0;
 	BC_STATUS sts;
 	unsigned long flags;
-
-	crystalhd_create_event(&fw_cmd_event);
 
 	if (!hw || !fw_cmd) {
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
@@ -1848,9 +1844,9 @@ BC_STATUS crystalhd_flea_do_fw_cmd(struct crystalhd_hw *hw, BC_FW_CMD *fw_cmd)
 		return BC_STS_INV_ARG;
 	}
 
-	hw->fwcmd_evt_sts = 0;
-	hw->pfw_cmd_event = &fw_cmd_event;
-	hw->FwCmdCnt++;
+	sts = crystalhd_hw_fw_cmd_begin(hw);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
 
 	if(hw->FleaPowerState != FLEA_PS_ACTIVE)
 	{
@@ -1872,26 +1868,19 @@ BC_STATUS crystalhd_flea_do_fw_cmd(struct crystalhd_hw *hw, BC_FW_CMD *fw_cmd)
 
 	msleep_interruptible(50);
 
-	/* FW commands should complete even if we got a signal from the upper layer */
-	crystalhd_wait_on_event(&fw_cmd_event, hw->fwcmd_evt_sts,
-							20000, rc, true);
-
-	if (!rc) {
-		sts = BC_STS_SUCCESS;
-	} else if (rc == -EBUSY) {
+	/* FW commands should complete even if we got a signal from the upper layer. */
+	sts = crystalhd_hw_fw_cmd_wait(hw);
+	if (sts == BC_STS_TIMEOUT) {
 		dev_err(dev, "Firmware command T/O\n");
-		sts = BC_STS_TIMEOUT;
-	} else if (rc == -EINTR) {
+	} else if (sts == BC_STS_IO_USER_ABORT) {
 		dev_info(dev, "FwCmd Wait Signal - Can Never Happen\n");
-		sts = BC_STS_IO_USER_ABORT;
-	} else {
+	} else if (sts != BC_STS_SUCCESS) {
 		dev_err(dev, "FwCmd IO Error.\n");
-		sts = BC_STS_IO_ERROR;
 	}
 
 	if (sts != BC_STS_SUCCESS) {
 		dev_err(dev, "FwCmd Failed.\n");
-		return sts;
+		goto done;
 	}
 
 	spin_lock_irqsave(&hw->lock, flags);
@@ -1906,13 +1895,16 @@ BC_STATUS crystalhd_flea_do_fw_cmd(struct crystalhd_hw *hw, BC_FW_CMD *fw_cmd)
 
 	if (res_buff[2] != 0) {
 		dev_err(dev, "res_buff[2] != C011_RET_SUCCESS\n");
-		return BC_STS_FW_CMD_ERR;
+		sts = BC_STS_FW_CMD_ERR;
+		goto done;
 	}
 
 	sts = crystalhd_flea_fw_cmd_post_proc(hw, fw_cmd);
 	if (sts != BC_STS_SUCCESS)
 		dev_err(dev, "crystalhd_fw_cmd_post_proc Failed.\n");
 
+done:
+	crystalhd_hw_fw_cmd_end(hw);
 	return sts;
 
 }
@@ -2711,14 +2703,8 @@ bool crystalhd_flea_hw_interrupt_handle(struct crystalhd_adp *adp, struct crysta
 	if(IntrStsValue.ArmMbox0Int)
 	{
 		/*HWFWCmdComplete(pHWExt,IntrBmp); */
-		/*Set the Event and the status flag*/
-		if (hw->pfw_cmd_event) {
-			hw->fwcmd_evt_sts = 1;
-			crystalhd_set_event(hw->pfw_cmd_event);
-		}
 		bIntFound = true;
 		bSomeCmdDone = true;
-		hw->FwCmdCnt--;
 	}
 
 	/* Rx interrupts */
@@ -2769,6 +2755,11 @@ bool crystalhd_flea_hw_interrupt_handle(struct crystalhd_adp *adp, struct crysta
 		hw->pfnWriteDevRegister(hw->adp, BCHP_INTR_INTR_CLR_REG, IntrStsValue.WholeReg);
 		hw->pfnWriteDevRegister(hw->adp, BCHP_INTR_EOI_CTRL, 1);
 	}
+	/* Publish completion only after acknowledging the device. A late response
+	 * retires its power count, but quarantine remains until verified reset.
+	 */
+	if (IntrStsValue.ArmMbox0Int)
+		crystalhd_hw_fw_cmd_complete(hw);
 
 	/* Try to post RX Capture buffer from ISR context */
 	if(bPostRxBuff) {

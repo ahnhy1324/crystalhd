@@ -4,6 +4,7 @@
  */
 #include <stdbool.h>
 #include <stdint.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,9 +23,17 @@ struct _BC_DTS_PROC_OUT;
 #define dev_err(dev, ...) ((void)(dev))
 #define dev_info(dev, ...) ((void)(dev))
 #define dev_dbg(dev, ...) ((void)(dev))
+#define eCMD_C011_CMD_BASE 0x73763000U
+#define eCMD_C011_DEC_CHAN_FLUSH (eCMD_C011_CMD_BASE + 0x104U)
+#define eCMD_C011_DEC_CHAN_PAUSE (eCMD_C011_CMD_BASE + 0x11dU)
 struct device { int unused; };
 struct pci_dev { struct device dev; int irq; };
 struct crystalhd_adp { struct pci_dev *pdev; unsigned cfg_users; };
+typedef struct {
+    uint32_t cmd[64];
+    uint32_t rsp[64];
+    uint32_t flags, add_data;
+} BC_FW_CMD;
 struct crystalhd_hw {
     struct crystalhd_adp *adp;
     bool dma_fault;
@@ -35,6 +44,11 @@ struct crystalhd_hw {
     bool (*pfnStopDevice)(struct crystalhd_hw *);
     BC_STATUS (*pfnStopTxDMA)(struct crystalhd_hw *);
     BC_STATUS (*pfnFWDwnld)(struct crystalhd_hw *, uint8_t *, uint32_t);
+    BC_STATUS (*pfnIssuePause)(struct crystalhd_hw *, bool);
+    BC_STATUS (*pfnDoFirmwareCmd)(struct crystalhd_hw *, BC_FW_CMD *);
+    int fwcmd_trans_mutex;
+    bool fwcmd_pending, fwcmd_poisoned;
+    int fetch_sem;
     uint32_t FwCmdCnt;
 };
 struct crystalhd_user { uint32_t uid, in_use, mode; };
@@ -47,7 +61,10 @@ struct crystalhd_cmd {
 };
 typedef struct {
     uint32_t u_id;
-    struct { union { struct { uint32_t Mode; } NotifyMode; } u; } udata;
+    struct { union {
+        struct { uint32_t Mode; } NotifyMode;
+        BC_FW_CMD fwCmd;
+    } u; } udata;
     void *add_cdata;
     uint32_t add_cdata_sz;
 } crystalhd_ioctl_data;
@@ -61,6 +78,16 @@ static bool elem_live, dio_live, rings_live, hardware_allocated;
 static int elem_error, dio_error;
 static BC_STATUS ring_status, hardware_open_status;
 static BC_STATUS capture_status, cancel_status;
+static BC_STATUS pause_status, firmware_status;
+static unsigned pause_calls, firmware_calls;
+static bool pause_states[4];
+static pthread_mutex_t transaction_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t transaction_audit = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t transaction_changed = PTHREAD_COND_INITIALIZER;
+static bool transaction_mode, block_first_firmware;
+static bool first_firmware_waiting, release_first_firmware;
+static bool block_download_reset, download_reset_waiting, release_download_reset;
+static unsigned transaction_attempts;
 static char events[32];
 static struct pci_dev endpoint = { .irq = 19 };
 static struct crystalhd_adp adapter = { .pdev = &endpoint };
@@ -70,6 +97,8 @@ static bool Start(struct crystalhd_hw *hw);
 static bool Stop(struct crystalhd_hw *hw);
 static BC_STATUS StopTx(struct crystalhd_hw *hw);
 static BC_STATUS Download(struct crystalhd_hw *hw, uint8_t *data, uint32_t size);
+static BC_STATUS IssuePause(struct crystalhd_hw *hw, bool state);
+static BC_STATUS FirmwareCommand(struct crystalhd_hw *hw, BC_FW_CMD *command);
 static void Check(bool ok, const char *why)
 {
     checks++;
@@ -81,11 +110,31 @@ static void Event(char event)
     if (n + 1 >= sizeof(events)) abort();
     events[n] = event; events[n + 1] = '\0';
 }
+static void TransactionLock(int *lock)
+{
+    if (lock != &hardware.fwcmd_trans_mutex) abort();
+    if (transaction_mode) {
+        if (pthread_mutex_lock(&transaction_audit)) abort();
+        transaction_attempts++;
+        pthread_cond_broadcast(&transaction_changed);
+        if (pthread_mutex_unlock(&transaction_audit)) abort();
+    }
+    if (pthread_mutex_lock(&transaction_mutex)) abort();
+}
+static void TransactionUnlock(int *lock)
+{
+    if (lock != &hardware.fwcmd_trans_mutex ||
+        pthread_mutex_unlock(&transaction_mutex)) abort();
+}
+#define mutex_lock(lock) TransactionLock(lock)
+#define mutex_unlock(lock) TransactionUnlock(lock)
 static struct device *chddev(void) { return &endpoint.dev; }
 static void ConfigureHardware(struct crystalhd_hw *hw)
 {
     *hw = (struct crystalhd_hw){ .adp = &adapter, .pfnStartDevice = Start,
         .pfnStopDevice = Stop, .pfnStopTxDMA = StopTx, .pfnFWDwnld = Download,
+        .pfnIssuePause = IssuePause, .pfnDoFirmwareCmd = FirmwareCommand,
+        .fetch_sem = 1,
         .FwCmdCnt = 64,
         .rx_list_sts = {rx_sts_waiting, rx_sts_waiting},
         .TxList0Sts = TxListWaitingForIntr, .TxList1Sts = TxListWaitingForIntr,
@@ -152,6 +201,50 @@ static BC_STATUS Download(struct crystalhd_hw *hw, uint8_t *data, uint32_t size)
           "firmware admission reaches the expected hardware callback");
     downloads++; return BC_STS_SUCCESS;
 }
+static int down_interruptible(int *sem)
+{
+    Check(sem == &hardware.fetch_sem && *sem == 1, "pause transition acquires fetch serialization");
+    *sem = 0;
+    return 0;
+}
+static void down(int *sem)
+{
+    Check(!down_interruptible(sem), "rollback acquires fetch serialization");
+}
+static void up(int *sem)
+{
+    Check(sem == &hardware.fetch_sem && *sem == 0, "pause transition releases fetch serialization");
+    *sem = 1;
+}
+static BC_STATUS IssuePause(struct crystalhd_hw *hw, bool state)
+{
+    Check(hw == &hardware && pause_calls < sizeof(pause_states) / sizeof(pause_states[0]),
+          "pause callback receives the active hardware context");
+    pause_states[pause_calls++] = state;
+    return pause_status;
+}
+static BC_STATUS FirmwareCommand(struct crystalhd_hw *hw, BC_FW_CMD *command)
+{
+    unsigned ordinal;
+
+    Check(hw == &hardware && command != NULL,
+          "firmware callback receives the active command");
+    if (block_first_firmware) {
+        if (pthread_mutex_lock(&transaction_audit)) abort();
+        ordinal = firmware_calls++;
+        if (!ordinal) {
+            first_firmware_waiting = true;
+            pthread_cond_broadcast(&transaction_changed);
+            while (!release_first_firmware)
+                if (pthread_cond_wait(&transaction_changed,
+                                      &transaction_audit)) abort();
+        }
+        if (pthread_mutex_unlock(&transaction_audit)) abort();
+        return ordinal ? BC_STS_SUCCESS : BC_STS_TIMEOUT;
+    }
+    firmware_calls++;
+    return firmware_status;
+}
 static BC_STATUS crystalhd_hw_stop_capture(struct crystalhd_hw *hw, bool unmap)
 {
     Check(hw == &hardware, "capture stop receives the owned hardware context");
@@ -204,6 +297,46 @@ static BC_STATUS crystalhd_hw_free_dma_rings(struct crystalhd_hw *hw)
     ring_frees++; rings_live = false;
     return BC_STS_SUCCESS;
 }
+static void crystalhd_hw_fw_cmd_reset_locked(struct crystalhd_hw *hw)
+{
+    Check(hw == &hardware, "hardware reset clears firmware-command accounting");
+    hw->fwcmd_pending = hw->fwcmd_poisoned = false;
+    hw->FwCmdCnt = 0;
+    if (block_download_reset) {
+        if (pthread_mutex_lock(&transaction_audit)) abort();
+        download_reset_waiting = true;
+        pthread_cond_broadcast(&transaction_changed);
+        while (!release_download_reset)
+            if (pthread_cond_wait(&transaction_changed,
+                                  &transaction_audit)) abort();
+        if (pthread_mutex_unlock(&transaction_audit)) abort();
+    }
+}
+static BC_STATUS crystalhd_hw_fw_cmd_enter(struct crystalhd_hw *hw)
+{
+    if (hw != &hardware) return BC_STS_INV_ARG;
+    TransactionLock(&hw->fwcmd_trans_mutex);
+    if (hw->fwcmd_poisoned || hw->fwcmd_pending) {
+        TransactionUnlock(&hw->fwcmd_trans_mutex);
+        return BC_STS_BUSY;
+    }
+    return BC_STS_SUCCESS;
+}
+static BC_STATUS crystalhd_hw_fw_cmd_recovery_enter(struct crystalhd_hw *hw)
+{
+    if (hw != &hardware) return BC_STS_INV_ARG;
+    TransactionLock(&hw->fwcmd_trans_mutex);
+    if (hw->fwcmd_pending) {
+        TransactionUnlock(&hw->fwcmd_trans_mutex);
+        return BC_STS_BUSY;
+    }
+    return BC_STS_SUCCESS;
+}
+static void crystalhd_hw_fw_cmd_leave(struct crystalhd_hw *hw)
+{
+    if (hw != &hardware) abort();
+    TransactionUnlock(&hw->fwcmd_trans_mutex);
+}
 #include "command-pm-hardware.h"
 #include "command-pm-functions.h"
 
@@ -219,6 +352,13 @@ static void Reset(uint32_t state, bool with_hardware)
     elem_error = dio_error = 0;
     ring_status = hardware_open_status = BC_STS_SUCCESS;
     capture_status = cancel_status = BC_STS_SUCCESS;
+    pause_status = firmware_status = BC_STS_SUCCESS;
+    pause_calls = firmware_calls = 0;
+    memset(pause_states, 0, sizeof(pause_states));
+    transaction_mode = block_first_firmware = false;
+    first_firmware_waiting = release_first_firmware = false;
+    block_download_reset = download_reset_waiting = release_download_reset = false;
+    transaction_attempts = 0;
     adapter.cfg_users = 0;
     ConfigureHardware(&hardware);
     context = (struct crystalhd_cmd){ .state = state, .adp = &adapter,
@@ -228,6 +368,267 @@ static void Reset(uint32_t state, bool with_hardware)
         context.user[n].mode = DTS_MODE_INV;
     }
 }
+static void FirmwarePauseRollback(void)
+{
+    crystalhd_ioctl_data data = {0};
+
+    Reset(BC_LINK_INIT | BC_LINK_PAUSED, true);
+    hardware.fwcmd_poisoned = true;
+    data.udata.u.fwCmd.cmd[0] = eCMD_C011_DEC_CHAN_PAUSE;
+    data.udata.u.fwCmd.cmd[3] = 0;
+    Check(bc_cproc_do_fw_cmd(&context, &data) == BC_STS_BUSY,
+          "poisoned firmware resume is rejected before preprocessing");
+    Check((context.state & BC_LINK_PAUSED) && !pause_calls &&
+          !firmware_calls && hardware.fetch_sem == 1,
+          "poisoned resume cannot mutate local capture state");
+
+    Reset(BC_LINK_INIT, true);
+    context.cin_wait_exit = 0;
+    hardware.fwcmd_poisoned = true;
+    data.udata.u.fwCmd.cmd[0] = eCMD_C011_DEC_CHAN_FLUSH;
+    data.udata.u.fwCmd.cmd[3] = 1;
+    Check(bc_cproc_do_fw_cmd(&context, &data) == BC_STS_BUSY,
+          "poisoned firmware flush is rejected before preprocessing");
+    Check(!context.cin_wait_exit && !pause_calls && !firmware_calls,
+          "poisoned flush cannot publish local cancellation state");
+
+    Reset(BC_LINK_INIT | BC_LINK_PAUSED, true);
+    data.udata.u.fwCmd.cmd[0] = eCMD_C011_DEC_CHAN_PAUSE;
+    data.udata.u.fwCmd.cmd[3] = 0;
+    firmware_status = BC_STS_TIMEOUT;
+    Check(bc_cproc_do_fw_cmd(&context, &data) == BC_STS_TIMEOUT,
+          "failed firmware resume preserves its original error");
+    Check((context.state & BC_LINK_PAUSED) && pause_calls == 2 &&
+          !pause_states[0] && pause_states[1] && firmware_calls == 1 &&
+          hardware.fetch_sem == 1,
+          "failed firmware resume restores the local paused capture state");
+
+    Reset(BC_LINK_INIT, true);
+    data.udata.u.fwCmd.cmd[0] = eCMD_C011_DEC_CHAN_PAUSE;
+    data.udata.u.fwCmd.cmd[3] = 0;
+    firmware_status = BC_STS_TIMEOUT;
+    Check(bc_cproc_do_fw_cmd(&context, &data) == BC_STS_TIMEOUT,
+          "a redundant resume preserves its firmware failure");
+    Check(!(context.state & BC_LINK_PAUSED) && pause_calls == 1 &&
+          !pause_states[0] && firmware_calls == 1 && hardware.fetch_sem == 1,
+          "failed redundant resume preserves the original running state");
+
+    Reset(BC_LINK_INIT | BC_LINK_PAUSED, true);
+    data.udata.u.fwCmd.cmd[0] = eCMD_C011_DEC_CHAN_PAUSE;
+    data.udata.u.fwCmd.cmd[3] = 0;
+    pause_status = BC_STS_IO_ERROR;
+    Check(bc_cproc_do_fw_cmd(&context, &data) == BC_STS_IO_ERROR,
+          "failed local resume is returned before posting firmware work");
+    Check((context.state & BC_LINK_PAUSED) && pause_calls == 2 &&
+          !pause_states[0] && pause_states[1] && !firmware_calls &&
+          hardware.fetch_sem == 1,
+          "partial local resume is re-paused without changing command state");
+
+    Reset(BC_LINK_INIT | BC_LINK_PAUSED, true);
+    data.udata.u.fwCmd.cmd[0] = eCMD_C011_DEC_CHAN_PAUSE;
+    data.udata.u.fwCmd.cmd[3] = 0;
+    Check(bc_cproc_do_fw_cmd(&context, &data) == BC_STS_SUCCESS,
+          "successful resume reaches firmware");
+    Check(!(context.state & BC_LINK_PAUSED) && pause_calls == 1 &&
+          !pause_states[0] && firmware_calls == 1 && hardware.fetch_sem == 1,
+          "successful resume commits the local running state once");
+
+    Reset(BC_LINK_INIT | BC_LINK_PAUSED, true);
+    data.udata.u.fwCmd.cmd[0] = eCMD_C011_DEC_CHAN_PAUSE;
+    data.udata.u.fwCmd.cmd[3] = 0;
+    pause_status = BC_STS_NO_DATA;
+    Check(bc_cproc_do_fw_cmd(&context, &data) == BC_STS_SUCCESS,
+          "resume with no queued capture buffer still reaches firmware");
+    Check(!(context.state & BC_LINK_PAUSED) && pause_calls == 1 &&
+          !pause_states[0] && firmware_calls == 1 && hardware.fetch_sem == 1,
+          "NO_DATA preserves the legacy successful resume transition");
+
+    Reset(BC_LINK_INIT, true);
+    data.udata.u.fwCmd.cmd[0] = eCMD_C011_DEC_CHAN_PAUSE;
+    data.udata.u.fwCmd.cmd[3] = 1;
+    firmware_status = BC_STS_FW_CMD_ERR;
+    Check(bc_cproc_do_fw_cmd(&context, &data) == BC_STS_FW_CMD_ERR,
+          "failed firmware pause leaves capture running");
+    Check(!(context.state & BC_LINK_PAUSED) && !pause_calls && firmware_calls == 1,
+          "failed firmware pause publishes no local pause");
+}
+
+struct firmware_thread {
+    crystalhd_ioctl_data data;
+    BC_STATUS status;
+};
+
+static void *RunFirmwareTransaction(void *argument)
+{
+    struct firmware_thread *thread = argument;
+
+    thread->status = bc_cproc_do_fw_cmd(&context, &thread->data);
+    return NULL;
+}
+
+static void WaitForFirstFirmware(void)
+{
+    if (pthread_mutex_lock(&transaction_audit)) abort();
+    while (!first_firmware_waiting)
+        if (pthread_cond_wait(&transaction_changed, &transaction_audit)) abort();
+    if (pthread_mutex_unlock(&transaction_audit)) abort();
+}
+
+static void ReleaseFirstFirmware(void)
+{
+    if (pthread_mutex_lock(&transaction_audit)) abort();
+    release_first_firmware = true;
+    pthread_cond_broadcast(&transaction_changed);
+    if (pthread_mutex_unlock(&transaction_audit)) abort();
+}
+
+static void WaitForTransactionAttempts(unsigned wanted)
+{
+    if (pthread_mutex_lock(&transaction_audit)) abort();
+    while (transaction_attempts < wanted)
+        if (pthread_cond_wait(&transaction_changed, &transaction_audit)) abort();
+    if (pthread_mutex_unlock(&transaction_audit)) abort();
+}
+
+struct download_thread {
+    crystalhd_ioctl_data data;
+    BC_STATUS status;
+};
+
+static void *RunFirmwareDownload(void *argument)
+{
+    struct download_thread *thread = argument;
+
+    thread->status = bc_cproc_download_fw(&context, &thread->data);
+    return NULL;
+}
+
+static void WaitForDownloadReset(void)
+{
+    if (pthread_mutex_lock(&transaction_audit)) abort();
+    while (!download_reset_waiting)
+        if (pthread_cond_wait(&transaction_changed, &transaction_audit)) abort();
+    if (pthread_mutex_unlock(&transaction_audit)) abort();
+}
+
+static void ReleaseDownloadReset(void)
+{
+    if (pthread_mutex_lock(&transaction_audit)) abort();
+    release_download_reset = true;
+    pthread_cond_broadcast(&transaction_changed);
+    if (pthread_mutex_unlock(&transaction_audit)) abort();
+}
+
+static void FirmwareDownloadSerialization(void)
+{
+    uint8_t firmware = 0x5a;
+    struct download_thread download = {0};
+    struct firmware_thread command = {0};
+    pthread_t download_tid, command_tid;
+
+    Reset(BC_LINK_INVALID, true);
+    transaction_mode = true;
+    block_download_reset = true;
+    download.data.add_cdata = &firmware;
+    download.data.add_cdata_sz = 1;
+    command.data.udata.u.fwCmd.cmd[0] = 0x12345678;
+
+    if (pthread_create(&download_tid, NULL, RunFirmwareDownload,
+                       &download)) abort();
+    WaitForDownloadReset();
+    Check((context.state & BC_LINK_INIT) && downloads == 1,
+          "firmware download publishes initialized state only inside its transaction");
+    if (pthread_create(&command_tid, NULL, RunFirmwareTransaction,
+                       &command)) abort();
+    WaitForTransactionAttempts(2);
+    Check(!firmware_calls,
+          "a firmware command cannot enter while download reset is unfinished");
+
+    ReleaseDownloadReset();
+    if (pthread_join(download_tid, NULL) ||
+        pthread_join(command_tid, NULL)) abort();
+    Check(download.status == BC_STS_SUCCESS &&
+          command.status == BC_STS_SUCCESS && firmware_calls == 1,
+          "the command starts after the successful download transaction leaves");
+    transaction_mode = false;
+}
+
+static void FirmwareTransactionSerialization(void)
+{
+    struct firmware_thread first = {0}, second = {0};
+    pthread_t first_thread, second_thread;
+
+    Reset(BC_LINK_INIT | BC_LINK_PAUSED, true);
+    transaction_mode = true;
+    block_first_firmware = true;
+    first.data.udata.u.fwCmd.cmd[0] = eCMD_C011_DEC_CHAN_PAUSE;
+    first.data.udata.u.fwCmd.cmd[3] = 0;
+    second.data = first.data;
+
+    if (pthread_create(&first_thread, NULL, RunFirmwareTransaction, &first)) abort();
+    WaitForFirstFirmware();
+    if (pthread_create(&second_thread, NULL, RunFirmwareTransaction, &second)) abort();
+    WaitForTransactionAttempts(2);
+    Check(pause_calls == 1 && !pause_states[0] && firmware_calls == 1 &&
+          !(context.state & BC_LINK_PAUSED),
+          "a second resume cannot preprocess while the first firmware transaction waits");
+
+    ReleaseFirstFirmware();
+    if (pthread_join(first_thread, NULL) ||
+        pthread_join(second_thread, NULL)) abort();
+    Check(first.status == BC_STS_TIMEOUT && second.status == BC_STS_SUCCESS,
+          "serialized resume callers retain their own firmware result");
+    Check(pause_calls == 3 && !pause_states[0] && pause_states[1] &&
+          !pause_states[2] && firmware_calls == 2 &&
+          !(context.state & BC_LINK_PAUSED) && hardware.fetch_sem == 1,
+          "timeout rollback finishes before the next resume commits local state");
+    transaction_mode = false;
+}
+
+struct suspend_thread {
+    BC_STATUS status;
+};
+
+static void *RunHardwareSuspend(void *argument)
+{
+    struct suspend_thread *thread = argument;
+
+    thread->status = crystalhd_hw_suspend(&hardware);
+    return NULL;
+}
+
+static void FirmwareSuspendSerialization(void)
+{
+    struct firmware_thread command = {0};
+    struct suspend_thread suspend = {0};
+    pthread_t command_thread, suspend_thread;
+
+    Reset(BC_LINK_INIT | BC_LINK_PAUSED, true);
+    transaction_mode = true;
+    block_first_firmware = true;
+    command.data.udata.u.fwCmd.cmd[0] = eCMD_C011_DEC_CHAN_PAUSE;
+    command.data.udata.u.fwCmd.cmd[3] = 0;
+
+    if (pthread_create(&command_thread, NULL, RunFirmwareTransaction,
+                       &command)) abort();
+    WaitForFirstFirmware();
+    if (pthread_create(&suspend_thread, NULL, RunHardwareSuspend,
+                       &suspend)) abort();
+    WaitForTransactionAttempts(2);
+    Check(!stops, "hardware suspend waits for the whole firmware transaction");
+
+    ReleaseFirstFirmware();
+    if (pthread_join(command_thread, NULL) ||
+        pthread_join(suspend_thread, NULL)) abort();
+    Check(command.status == BC_STS_TIMEOUT && suspend.status == BC_STS_SUCCESS &&
+          stops == 1,
+          "hardware stops only after firmware timeout recovery releases serialization");
+    Check((context.state & BC_LINK_PAUSED) && pause_calls == 2 &&
+          !pause_states[0] && pause_states[1] && hardware.fetch_sem == 1,
+          "suspend observes the command layer after its local rollback is complete");
+    transaction_mode = false;
+}
+
 static void SessionOwnership(void)
 {
     struct crystalhd_user *owner = NULL, *contender = NULL, *reopened = NULL;
@@ -594,6 +995,10 @@ int main(void)
         {"unconfigured handle and actual playback admission", Unconfigured},
         {"playback before firmware and actual firmware admission", BeforeFirmware},
         {"playback session setup failure rollback and retry", NotifyFailures},
+        {"firmware pause/resume rollback", FirmwarePauseRollback},
+        {"firmware download serialization", FirmwareDownloadSerialization},
+        {"firmware transaction serialization", FirmwareTransactionSerialization},
+        {"firmware command versus hardware suspend", FirmwareSuspendSerialization},
         {"active session open, busy, release and reopen", SessionOwnership},
         {"last monitor releases empty session resources", MonitorOnlyRelease},
         {"playback owner closes before monitor and reacquires", OwnerBeforeMonitor},
