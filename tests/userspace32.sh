@@ -76,7 +76,7 @@ for bits in $build_bits; do
         $cpu_flags -o "$build_dir/library-smoke"
     # Execute production library regressions on the target ABI and CPU.
     # These tests neither open hardware nor load a shared library.
-    for section in copy planar format input input-format tx-ring flush tx-flush eos status color; do
+    for section in copy planar format input mpeg4-input input-format tx-ring flush tx-flush eos status color; do
         section_wrap=
         case "$section" in
             copy|planar) set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_int_if.cpp" ;;
@@ -88,7 +88,7 @@ for bits in $build_bits; do
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_priv.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_int_if.cpp"
                 section_wrap=-Wl,--wrap=ioctl ;;
-            input)
+            input|mpeg4-input)
                 set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_if.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_priv.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_parser.cpp"

@@ -23,7 +23,7 @@ library:
 library-check:
 	@set -eu; lib_test_dir=$$(mktemp -d /tmp/crystalhd-library-check.XXXXXX); \
 	trap 'rm -f "$$lib_test_dir/check"; rmdir "$$lib_test_dir"' EXIT HUP INT TERM; \
-	for lib_test in tx-ring flush tx-flush eos copy planar format input input-format status color; do \
+	for lib_test in tx-ring flush tx-flush eos copy planar format input mpeg4-input input-format status color; do \
 		test_extra=; \
 		test_sources="linux_lib/libcrystalhd/libcrystalhd_priv.cpp linux_lib/libcrystalhd/libcrystalhd_if.cpp"; \
 		case $$lib_test in \
@@ -31,7 +31,7 @@ library-check:
 			format) test_wrap=; test_sources="linux_lib/libcrystalhd/libcrystalhd_int_if.cpp linux_lib/libcrystalhd/libcrystalhd_priv.cpp" ;; \
 			status|color) test_wrap=-Wl,--wrap=ioctl; \
 				test_extra=linux_lib/libcrystalhd/libcrystalhd_int_if.cpp ;; \
-			input) test_wrap=-Wl,--wrap=ioctl,--wrap=txBufPush,--wrap=usleep; \
+			input|mpeg4-input) test_wrap=-Wl,--wrap=ioctl,--wrap=txBufPush,--wrap=usleep; \
 				test_extra=linux_lib/libcrystalhd/libcrystalhd_parser.cpp ;; \
 			input-format) test_wrap=-Wl,--wrap=ioctl,--wrap=malloc,--wrap=free,--wrap=posix_memalign; \
 				test_extra=linux_lib/libcrystalhd/libcrystalhd_parser.cpp ;; \

@@ -70,6 +70,11 @@ extern "C" int __wrap_ioctl(int, unsigned long, ...) { std::abort(); }
 static const Bytes wmv = {0x4b, 0xf1, 0x0a, 0x93};
 static const Bytes avc = {0,0,0,1,0x67,0x64,0x20, 0,0,0,1,0x68,0xee};
 static const Bytes advanced = {0,0,1,0x0f,0xca,0xfe,0,0,1,0x0e,0x12,0x34};
+// FFmpeg MPEG-4 Simple Profile level 5 global headers, including object code 0.
+static const Bytes mpeg4 = {
+    0,0,1,0xb0,0x05,0,0,1,0xb5,0x89,0x13,0,0,1,0,0,
+    0,1,0x20,0,0xc4,0x8d,0x88,0,0xf5,0x14,0x04,0x2d,0x14,0x63,0,0,
+    1,0xb2,0x4c,0x61,0x76,0x63,0x36,0x31,0x2e,0x31,0x39,0x2e,0x31,0x30,0x31};
 static BC_INPUT_FORMAT Format(uint32_t subtype, const Bytes &bytes) {
     BC_INPUT_FORMAT f = {};
     f.mSubtype = static_cast<BC_MEDIA_SUBTYPE>(subtype);
@@ -163,9 +168,10 @@ static void ShortWmv() {
     }
 }
 static void AllocationFailure(bool aligned) {
-    for (uint32_t subtype : {BC_MSUBTYPE_WMV3, BC_MSUBTYPE_AVC1, BC_MSUBTYPE_WVC1}) {
+    for (uint32_t subtype : {BC_MSUBTYPE_WMV3, BC_MSUBTYPE_AVC1, BC_MSUBTYPE_WVC1, BC_MSUBTYPE_DIVX}) {
         Fixture f; f.Valid(); const Snapshot before(f);
-        const Bytes &bytes = subtype == BC_MSUBTYPE_WMV3 ? wmv : subtype == BC_MSUBTYPE_AVC1 ? avc : advanced;
+        const Bytes &bytes = subtype == BC_MSUBTYPE_WMV3 ? wmv : subtype == BC_MSUBTYPE_AVC1 ? avc :
+            subtype == BC_MSUBTYPE_DIVX ? mpeg4 : advanced;
         auto next = Format(subtype,bytes); next.width=1280; next.height=720; next.OptFlags=0x80;
         const BC_INPUT_FORMAT caller = next;
         failed_allocations=0; fail_malloc=aligned?0:1; fail_aligned=aligned?1:0;
@@ -179,7 +185,7 @@ static void AllocationFailure(bool aligned) {
 static void MallocFailure() { AllocationFailure(false); }
 static void AlignedFailure() { AllocationFailure(true); }
 static void ZeroMetadata() {
-    for (uint32_t subtype : {BC_MSUBTYPE_H264,BC_MSUBTYPE_AVC1,BC_MSUBTYPE_MPEG2VIDEO,BC_MSUBTYPE_VC1}) {
+    for (uint32_t subtype : {BC_MSUBTYPE_H264,BC_MSUBTYPE_AVC1,BC_MSUBTYPE_MPEG2VIDEO,BC_MSUBTYPE_VC1,BC_MSUBTYPE_DIVX}) {
         Fixture f; f.Valid(); auto next=Format(subtype,{});
         Check(f.Set(&next)==BC_STS_SUCCESS,"in-band codec permits zero metadata");
         Check(!f.context.VidParams.pMetaData && !f.context.VidParams.MetaDataSz,"zero metadata clears old owned metadata");
@@ -298,14 +304,114 @@ static void HeaderEncodings() {
     }
     Fixture f;
     const Bytes divx={0,0,1,0xb0,0x12,0,0,1,0xb5,0x34};
-    const Bytes divx_expected={0,0,0,1,0xb0,0x12,0,0,0,1,0xb5,0x34};
     auto next=Format(BC_MSUBTYPE_DIVX,divx);
     Check(f.Set(&next)==BC_STS_SUCCESS,"legacy DivX metadata framing remains accepted");
     const auto &p=f.context.PESConvParams;
     Check(f.context.VidParams.VideoAlgo==BC_VID_ALGO_DIVX &&
-          p.m_iSpsPpsLen==divx_expected.size() && p.m_pSpsPpsBuf &&
-          !std::memcmp(p.m_pSpsPpsBuf,divx_expected.data(),divx_expected.size()),
-          "DivX preserves every metadata unit, without AVC filtering");
+          p.m_iSpsPpsLen==divx.size() && p.m_pSpsPpsBuf &&
+          !std::memcmp(p.m_pSpsPpsBuf,divx.data(),divx.size()),
+          "startcoded DivX preserves every original byte, without AVC filtering or normalization");
+}
+static void CheckDivx(const Bytes &input, const Bytes &expected) {
+    for(uint32_t device:{BC_PCI_DEVID_LINK,BC_PCI_DEVID_FLEA}) {
+        {
+            Fixture f(device); auto next=Format(BC_MSUBTYPE_DIVX,input);
+            Check(f.Set(&next)==BC_STS_SUCCESS,"bounded MPEG4 metadata is accepted");
+            Check(f.context.VidParams.VideoAlgo==BC_VID_ALGO_DIVX,
+                  "MPEG4 retains its existing native decoder algorithm");
+            const auto &p=f.context.PESConvParams;
+            Check(p.m_iSpsPpsLen==expected.size() && p.m_pSpsPpsBuf &&
+                  !std::memcmp(p.m_pSpsPpsBuf,expected.data(),expected.size()),
+                  "MPEG4 preserves exact code values, payload and padding bytes");
+            Check(f.context.VidParams.MetaDataSz==input.size() &&
+                  f.context.VidParams.pMetaData!=input.data() &&
+                  !std::memcmp(f.context.VidParams.pMetaData,input.data(),input.size()),
+                  "MPEG4 configuration owns unchanged caller metadata");
+        }
+        Check(Live()==0,"MPEG4 configuration releases its metadata and converter");
+        if(Live()) std::abort();
+        allocation_count=0;
+    }
+}
+static void DivxRealHeaders() {
+    Check(mpeg4.size()==47,"real MPEG4 global header fixture has its original size");
+    CheckDivx(mpeg4,mpeg4);
+    for(const Bytes &input:{Bytes{0,0,0,1,0,0,0,1,0x20,0xaa},
+        Bytes{0,0,0,1,0xb0,0x05,0,0,1,0,0,0,1,0x20,0xaa},
+        Bytes{0,0,0,1,0xb5,0x93,0,0,0,1,0x20,0xaa},
+        Bytes{0,0,0,0,0,1,0,0,0,1,0x20,0xaa}})
+        CheckDivx(input,input);
+}
+static void DivxUnit(Bytes &output, unsigned width, const Bytes &payload) {
+    if(width==2) {
+        output.push_back(payload.size()>>8);
+        output.push_back(payload.size());
+    } else {
+        output.insert(output.end(),width-1,0);
+        output.push_back(1);
+    }
+    output.insert(output.end(),payload.begin(),payload.end());
+}
+static void DivxFraming() {
+    for(unsigned width:{2U,3U,4U}) for(unsigned code=0;code<256;++code) {
+        Bytes input,expected;
+        const Bytes units[]={{0xb0,0x05},{static_cast<uint8_t>(code)},
+                             {0xb5,0x93,0},{0x20,0xaa}};
+        for(const Bytes &unit:units) {
+            DivxUnit(input,width,unit); DivxUnit(expected,4,unit);
+        }
+        CheckDivx(input,width==2?expected:input);
+    }
+}
+static void DivxMalformed() {
+    for(const Bytes &input:{Bytes{0},Bytes{0,0},Bytes{0,0,1},Bytes{0,0,0,1},
+        Bytes{0,0,1,0xb0,0,0,1},Bytes{0,0,0,1,0xb0,0,0,0,1},
+        Bytes{0,3,0x20},Bytes{0,1,0x20,0}}) {
+        auto next=Format(BC_MSUBTYPE_DIVX,input); Rejected(&next);
+    }
+    auto next=Format(BC_MSUBTYPE_DIVX,{}); next.metaDataSz=47; Rejected(&next);
+}
+static void DivxAliases() {
+    for(bool converter:{false,true}) {
+        Fixture f; auto initial=Format(BC_MSUBTYPE_DIVX,mpeg4);
+        Check(f.Set(&initial)==BC_STS_SUCCESS,"initial MPEG4 configuration accepts real headers");
+        auto next=Format(BC_MSUBTYPE_DIVX,mpeg4);
+        next.pMetaData=converter?f.context.PESConvParams.m_pSpsPpsBuf:f.context.VidParams.pMetaData;
+        Check(f.Set(&next)==BC_STS_SUCCESS,"MPEG4 replacement accepts existing metadata or converter storage");
+        const auto &p=f.context.PESConvParams;
+        Check(p.m_iSpsPpsLen==mpeg4.size() && p.m_pSpsPpsBuf &&
+              !std::memcmp(p.m_pSpsPpsBuf,mpeg4.data(),mpeg4.size()),
+              "aliased MPEG4 replacement preserves converter bytes before releasing old storage");
+        Check(f.context.VidParams.MetaDataSz==mpeg4.size() && f.context.VidParams.pMetaData &&
+              !std::memcmp(f.context.VidParams.pMetaData,mpeg4.data(),mpeg4.size()),
+              "aliased MPEG4 replacement owns an exact copy of its source");
+        Check(Live()==2,"aliased MPEG4 replacement retires both previous allocations");
+    }
+}
+static void GuardedDivx() {
+    const size_t page=static_cast<size_t>(sysconf(_SC_PAGESIZE));
+    for(const Bytes &input:{Bytes{0},Bytes{0,0},Bytes{0,0,1},Bytes{0,0,0,1},
+        Bytes{0,0,1,0},Bytes{0,0,1,0,0,0},Bytes{0,0,1,0xb0,0,0,1},mpeg4}) {
+        auto *mapping=static_cast<uint8_t *>(mmap(nullptr,page*2,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0));
+        if(mapping==MAP_FAILED || mprotect(mapping+page,page,PROT_NONE)) std::abort();
+        uint8_t *data=mapping+page-input.size(); std::memcpy(data,input.data(),input.size());
+        {
+            Fixture f; f.context.VidParams.MediaSubType=BC_MSUBTYPE_DIVX;
+            f.context.VidParams.pMetaData=data; f.context.VidParams.MetaDataSz=input.size();
+            record_allocations=true; const BC_STATUS result=DtsSetPESConverter(&f.context);
+            record_allocations=false;
+            f.context.VidParams.pMetaData=nullptr; f.context.VidParams.MetaDataSz=0;
+            const bool valid=input.size()==47 || (input.size()>=4 && input[2]==1 && input[3]==0);
+            Check(result==(valid?BC_STS_SUCCESS:BC_STS_INV_ARG),"MPEG4 initial framing respects the exact mapped boundary");
+            if(valid) {
+                const auto &p=f.context.PESConvParams;
+                Check(p.m_iSpsPpsLen==input.size() && p.m_pSpsPpsBuf &&
+                      !std::memcmp(p.m_pSpsPpsBuf,input.data(),input.size()),
+                      "guarded MPEG4 converter preserves the mandatory code byte and trailing zeros");
+            }
+        }
+        munmap(mapping,page*2);
+    }
 }
 static void GuardedConverter() {
     const size_t page=static_cast<size_t>(sysconf(_SC_PAGESIZE));
@@ -380,6 +486,9 @@ int main() {
         {"direct converter failure and retry",DirectConverterRetry},
         {"valid codec preservation",ValidCodecs},{"malformed AVC framing",MalformedAvc},
         {"more than forty NALs",ManyNals},{"metadata framing/filtering",HeaderEncodings},
+        {"real MPEG4 global headers and padding",DivxRealHeaders},{"MPEG4 code/framing matrix",DivxFraming},
+        {"malformed MPEG4 framing",DivxMalformed},{"guarded MPEG4 initial converter",GuardedDivx},
+        {"aliased MPEG4 configuration",DivxAliases},
         {"guarded initial converter",GuardedConverter},{"WMV3 trailing encoder metadata",WmvEncoderSuffix},
         {"exact-boundary and unaligned WMV3 metadata",GuardedWmv}};
     unsigned failed_cases=0;
