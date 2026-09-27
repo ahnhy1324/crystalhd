@@ -1481,679 +1481,169 @@ BC_STATUS DtsCopyNV12(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *Vout, BC_DTS_PROC_O
 	return BC_STS_SUCCESS;
 }
 
-// TODO: add sse2 detection
-static bool gSSE2 = true; // most of the platforms will have it anyway:
-// 64 bits: no test necessary
-// mac: no test necessary
-// linux/windows: we might have to do the test.
-
-static void fast_memcpy(uint8_t *dst, const uint8_t *src, uint32_t count)
+/* MODE conversions use byte padding, unlike the raw packed-copy API.
+ * Keep vector loads within the visible row and use ordinary stores so the
+ * caller can consume the completed picture without a streaming-store fence.
+ */
+static void DtsSwapPackedRow(uint8_t *dst, const uint8_t *src, size_t bytes)
 {
-	// tested
-	if (gSSE2)
-	{
-		if (((((uintptr_t) dst) & 0xf) == 0) && ((((uintptr_t) src) & 0xf) == 0))
-		{
-			while (count >= (16*4))
-			{
-				_mm_stream_si128((__m128i *) (dst+ 0*16),  _mm_load_si128((__m128i *) (src+ 0*16)));
-				_mm_stream_si128((__m128i *) (dst+ 1*16),  _mm_load_si128((__m128i *) (src+ 1*16)));
-				_mm_stream_si128((__m128i *) (dst+ 2*16),  _mm_load_si128((__m128i *) (src+ 2*16)));
-				_mm_stream_si128((__m128i *) (dst+ 3*16),  _mm_load_si128((__m128i *) (src+ 3*16)));
-				count -= 16*4;
-				src += 16*4;
-				dst += 16*4;
-			}
-		}
-		else
-		{
-			while (count >= (16*4))
-			{
-				_mm_storeu_si128((__m128i *) (dst+ 0*16),  _mm_loadu_si128((__m128i *) (src+ 0*16)));
-				_mm_storeu_si128((__m128i *) (dst+ 1*16),  _mm_loadu_si128((__m128i *) (src+ 1*16)));
-				_mm_storeu_si128((__m128i *) (dst+ 2*16),  _mm_loadu_si128((__m128i *) (src+ 2*16)));
-				_mm_storeu_si128((__m128i *) (dst+ 3*16),  _mm_loadu_si128((__m128i *) (src+ 3*16)));
-				count -= 16*4;
-				src += 16*4;
-				dst += 16*4;
-			}
-		}
+	size_t x = 0;
+#if defined(__SSE2__)
+	for (; bytes - x >= 16; x += 16) {
+		const __m128i value = _mm_loadu_si128((const __m128i *)(src + x));
+		_mm_storeu_si128((__m128i *)(dst + x),
+			_mm_or_si128(_mm_srli_epi16(value, 8), _mm_slli_epi16(value, 8)));
 	}
-
-	while (count --)
-		*dst++ = *src++;
+#endif
+	for (; x < bytes; x += 2) {
+		dst[x] = src[x + 1];
+		dst[x + 1] = src[x];
+	}
 }
 
-// this is just a memcpy
-static BC_STATUS DtsCopy422ToYUY2(uint8_t *dstY, uint8_t *dstUV, const uint8_t *srcY, uint32_t srcWidth, uint32_t dstWidth, uint32_t height, uint32_t strideY, uint32_t strideUV)
-{ // copy YUY2 to YUY2
-	uint32_t y;
-
-	// TODO: test this
-	strideY += dstWidth*2;
-
-	for (y = 0; y < height; y++)
-	{
-		fast_memcpy(dstY, srcY, srcWidth*2);
-		srcY += srcWidth*2;
-		dstY += strideY;
-	}
-	return BC_STS_SUCCESS;
-}
-
-// almost a memcpy, we just need to shuffle YUV's around
-static BC_STATUS DtsCopy422ToUYVY(uint8_t *dstY, uint8_t *dstUV, const uint8_t *srcY, uint32_t srcWidth, uint32_t dstWidth, uint32_t height, uint32_t strideY, uint32_t strideUV)
+static void DtsPackedToNV12Row(uint8_t *dstY, uint8_t *dstUV,
+							const uint8_t *src, uint32_t width, bool uyvy)
 {
-	// TODO, test this
-	uint32_t x = 0, __y;
-
-	strideY += dstWidth*2;
-
-	for (__y = 0; __y < height; __y++)
-	{
-		if (gSSE2)
-		{
-			if (((((uintptr_t) dstY) & 0xf) == 0) && ((((uintptr_t) srcY) & 0xf) == 0))
-			{
-				while (x < srcWidth-7)
-				{
-					__m128i v = _mm_load_si128((__m128i *)(srcY+x*2));
-					__m128i v1 = _mm_srli_epi16(v, 8);
-					__m128i v2 = _mm_slli_epi16(v, 8);
-					_mm_stream_si128((__m128i *)(dstY+x*2), _mm_or_si128(v1, v2));
-					x += 8;
-				}
-			}
-			else
-			{
-				while (x < srcWidth-7)
-				{
-					__m128i v = _mm_loadu_si128((__m128i *)(srcY+x*2));
-					__m128i v1 = _mm_srli_epi16(v, 8);
-					__m128i v2 = _mm_slli_epi16(v, 8);
-					_mm_storeu_si128((__m128i *)(dstY+x*2), _mm_or_si128(v1, v2));
-					x += 8;
-				}
-			}
-		}
-
-		while (x < srcWidth-1)
-		{
-			dstY[x*2+0] = srcY[x+1];
-			dstY[x*2+1] = srcY[x+0];
-			dstY[x*2+2] = srcY[x+3];
-			dstY[x*2+3] = srcY[x+2];
-			x += 2;
-		}
-
-		srcY += srcWidth*2;
-		dstY += strideY;
+	uint32_t x = 0;
+#if defined(__SSE2__)
+	const __m128i mask = _mm_set1_epi16(0x00ff);
+	for (; width - x >= 16; x += 16) {
+		const __m128i a = _mm_loadu_si128((const __m128i *)(src + (size_t)x * 2));
+		const __m128i b = _mm_loadu_si128((const __m128i *)(src + (size_t)x * 2 + 16));
+		const __m128i low = _mm_packus_epi16(_mm_and_si128(a, mask), _mm_and_si128(b, mask));
+		const __m128i high = _mm_packus_epi16(_mm_srli_epi16(a, 8), _mm_srli_epi16(b, 8));
+		_mm_storeu_si128((__m128i *)(dstY + x), uyvy ? high : low);
+		if (dstUV)
+			_mm_storeu_si128((__m128i *)(dstUV + x), uyvy ? low : high);
 	}
-	return BC_STS_SUCCESS;
+#endif
+	const unsigned yOffset = uyvy ? 1 : 0;
+	for (; x < width; ++x) {
+		dstY[x] = src[(size_t)x * 2 + yOffset];
+		if (dstUV)
+			dstUV[x] = src[(size_t)x * 2 + (yOffset ^ 1)];
+	}
 }
 
-// convert to NV12
-static BC_STATUS DtsCopy422ToNV12(uint8_t *dstY, uint8_t *dstUV, const uint8_t *srcY, uint32_t srcWidth, uint32_t dstWidth, uint32_t height, uint32_t strideY, uint32_t strideUV)
+static void DtsNV12ToPackedRow(uint8_t *dst, const uint8_t *srcY,
+							const uint8_t *srcUV, const uint8_t *nextUV,
+							uint32_t width, bool uyvy)
 {
-	// tested
-	uint32_t x, __y;
-
-	strideY += dstWidth;
-	strideUV += dstWidth;
-
-	static __m128i mask = _mm_set_epi16(0x00ff, 0x00ff, 0x00ff, 0x00ff, 0x00ff, 0x00ff, 0x00ff, 0x00ff);
-
-	for (__y = 0; __y < height; __y += 2)
-	{
-		x = 0;
-
-		// first line: Y and UV extraction
-
-		if (gSSE2)
-		{
-			if (((((uintptr_t) dstY) & 0xf) == 0) && ((((uintptr_t) srcY) & 0xf) == 0) && ((((uintptr_t) dstUV) & 0xf) == 0))
-			{
-				while (x < srcWidth-15)
-				{
-					__m128i s1 = _mm_load_si128((__m128i *) (srcY+x*2+ 0)); // load 8 pixels
-					__m128i s2 = _mm_load_si128((__m128i *) (srcY+x*2+16)); // load 8 more
-
-					__m128i y1 = _mm_and_si128(s1, mask); // mask out uvs
-					__m128i y2 = _mm_and_si128(s2, mask); // mask out uvs
-					__m128i y = _mm_packus_epi16 (y1, y2); // get the y together
-					_mm_stream_si128((__m128i *) (dstY+x), y); // store 16 Y
-
-					s1 = _mm_srli_epi16(s1, 8); // get rid of Y
-					s2 = _mm_srli_epi16(s2, 8); // get rid of Y
-					__m128i uv = _mm_packus_epi16 (s1, s2); // get the uv together
-					_mm_stream_si128((__m128i *) (dstUV+x), uv); // store 8 UV pairs
-
-					x += 16;
-				}
-			}
-			else
-			{
-				while (x < srcWidth-15)
-				{
-					__m128i s1 = _mm_loadu_si128((__m128i *) (srcY+x*2+ 0)); // load 8 pixels
-					__m128i s2 = _mm_loadu_si128((__m128i *) (srcY+x*2+16)); // load 8 more
-
-					__m128i y1 = _mm_and_si128(s1, mask); // mask out uvs
-					__m128i y2 = _mm_and_si128(s2, mask); // mask out uvs
-					__m128i y = _mm_packus_epi16 (y1, y2); // get the y together
-					_mm_storeu_si128((__m128i *) (dstY+x), y); // store 16 Y
-
-					s1 = _mm_srli_epi16(s1, 8); // get rid of Y
-					s2 = _mm_srli_epi16(s2, 8); // get rid of Y
-					__m128i uv = _mm_packus_epi16 (s1, s2); // get the uv together
-					_mm_storeu_si128((__m128i *) (dstUV+x), uv); // store 8 UV pairs
-
-					x += 16;
-				}
-			}
-		}
-
-
-		while (x < srcWidth-1)
-		{
-			dstY [x+0] = srcY[x*2+0]; // Y
-			dstUV[x+0] = srcY[x*2+1]; // U
-			dstY [x+1] = srcY[x*2+2]; // Y
-			dstUV[x+1] = srcY[x*2+3]; // V
-			x += 2;
-		}
-
-		srcY += srcWidth*2;
-		dstY += strideY;
-		dstUV += strideUV;
-
-		// second line: just Y
-		x = 0;
-		if (gSSE2)
-		{
-			if (((((uintptr_t) dstY) & 0xf) == 0) && ((((uintptr_t) srcY) & 0xf) == 0))
-			{
-				while (x < srcWidth-15)
-				{
-					__m128i s1 = _mm_load_si128((__m128i *) (srcY+x*2+ 0)); // load 8 pixels
-					__m128i s2 = _mm_load_si128((__m128i *) (srcY+x*2+16)); // load 8 more
-
-					__m128i y1 = _mm_and_si128(s1, mask); // mask out uvs
-					__m128i y2 = _mm_and_si128(s2, mask); // mask out uvs
-					__m128i y = _mm_packus_epi16 (y1, y2); // get the y
-					_mm_stream_si128((__m128i *) (dstY+x), y); // store 16 Y
-
-					x += 16;
-				}
-			}
-			else
-			{
-				while (x < srcWidth-15)
-				{
-					__m128i s1 = _mm_loadu_si128((__m128i *) (srcY+x*2+ 0)); // load 8 pixels
-					__m128i s2 = _mm_loadu_si128((__m128i *) (srcY+x*2+16)); // load 8 more
-
-					__m128i y1 = _mm_and_si128(s1, mask); // mask out uvs
-					__m128i y2 = _mm_and_si128(s2, mask); // mask out uvs
-					__m128i y = _mm_packus_epi16 (y1, y2); // get the y
-					_mm_storeu_si128((__m128i *) (dstY+x), y); // store 16 Y
-
-					x += 16;
-				}
-			}
-		}
-
-		while (x < srcWidth-1)
-		{
-			dstY [x+0] = srcY[x*2+0]; // Y
-			dstY [x+1] = srcY[x*2+2]; // Y
-			x += 2;
-		}
-
-		srcY += srcWidth*2;
-		dstY += strideY;
+	uint32_t x = 0;
+#if defined(__SSE2__)
+	for (; width - x >= 16; x += 16) {
+		const __m128i y = _mm_loadu_si128((const __m128i *)(srcY + x));
+		__m128i uv = _mm_loadu_si128((const __m128i *)(srcUV + x));
+		if (nextUV != srcUV)
+			uv = _mm_avg_epu8(uv, _mm_loadu_si128((const __m128i *)(nextUV + x)));
+		_mm_storeu_si128((__m128i *)(dst + (size_t)x * 2),
+			uyvy ? _mm_unpacklo_epi8(uv, y) : _mm_unpacklo_epi8(y, uv));
+		_mm_storeu_si128((__m128i *)(dst + (size_t)x * 2 + 16),
+			uyvy ? _mm_unpackhi_epi8(uv, y) : _mm_unpackhi_epi8(y, uv));
 	}
-	return BC_STS_SUCCESS;
+#endif
+	const unsigned yOffset = uyvy ? 1 : 0;
+	for (; x < width; ++x) {
+		dst[(size_t)x * 2 + yOffset] = srcY[x];
+		/* Match SSE2's rounded average, including scalar tail pixels. */
+		dst[(size_t)x * 2 + (yOffset ^ 1)] =
+			(uint8_t)(((unsigned)srcUV[x] + nextUV[x] + 1) / 2);
+	}
 }
 
-
-static BC_STATUS DtsCopy420ToYUY2(uint8_t *dstY, uint8_t *dstUV, const uint8_t *srcY, const uint8_t *srcUV, uint32_t srcWidth, uint32_t dstWidth, uint32_t height, uint32_t strideY, uint32_t strideUV)
+BC_STATUS DtsCopyFormat(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *Vout,
+						BC_DTS_PROC_OUT *Vin)
 {
-	// TODO, test this
-	uint32_t x, __y;
-
-	strideY += dstWidth*2;
-
-	__y = 0;
-	while (__y < height-2)
-	{
-		// first line
-		x = 0;
-
-		if (gSSE2)
-		{
-			if (((((uintptr_t) dstY) & 0xf) == 0) && ((((uintptr_t) srcY) & 0xf) == 0))
-			{
-				while (x < srcWidth-15)
-				{
-					__m128i y = _mm_load_si128((__m128i *) (srcY+x)); // load 16 Y pixels
-					__m128i uv = _mm_load_si128((__m128i *) (srcUV+x)); // load 8 UV
-					_mm_stream_si128((__m128i *) (dstY+x*2+ 0), _mm_unpacklo_epi8(y, uv)); // store 8 pixels
-					_mm_stream_si128((__m128i *) (dstY+x*2+16), _mm_unpackhi_epi8(y, uv)); // store 8 pixels
-
-					x += 16;
-				}
-			}
-			else
-			{
-				while (x < srcWidth-15)
-				{
-					__m128i y = _mm_loadu_si128((__m128i *) (srcY+x)); // load 16 Y pixels
-					__m128i uv = _mm_loadu_si128((__m128i *) (srcUV+x)); // load 8 UV
-					_mm_storeu_si128((__m128i *) (dstY+x*2+ 0), _mm_unpacklo_epi8(y, uv)); // store 8 pixels
-					_mm_storeu_si128((__m128i *) (dstY+x*2+16), _mm_unpackhi_epi8(y, uv)); // store 8 pixels
-
-					x += 16;
-				}
-			}
-		}
-
-		while (x < srcWidth-1)
-		{
-			dstY[x*2+0] = srcY [x+0];
-			dstY[x*2+1] = srcUV[x+0];
-			dstY[x*2+2] = srcY [x+1];
-			dstY[x*2+3] = srcUV[x+1];
-
-			x += 2;
-		}
-
-		srcY += srcWidth;
-		dstY += strideY;
-
-		// second line
-
-		x = 0;
-
-		if (gSSE2)
-		{
-			if (((((uintptr_t) dstY) & 0xf) == 0) && ((((uintptr_t) srcY) & 0xf) == 0))
-			{
-				while (x < srcWidth-15)
-				{
-					__m128i y = _mm_load_si128((__m128i *) (srcY+x)); // load 16 Y pixels
-					__m128i uv1 = _mm_load_si128((__m128i *) (srcUV+x)); // load 8 UV
-					__m128i uv2 = _mm_load_si128((__m128i *) (srcUV+x+srcWidth)); // load 8 UV
-					__m128i uv = _mm_avg_epu8(uv1, uv2);
-					_mm_stream_si128((__m128i *) (dstY+x*2+ 0), _mm_unpacklo_epi8(y, uv)); // store 8 pixels
-					_mm_stream_si128((__m128i *) (dstY+x*2+16), _mm_unpackhi_epi8(y, uv)); // store 8 pixels
-
-					x += 16;
-				}
-			}
-			else
-			{
-				while (x < srcWidth-15)
-				{
-					__m128i y = _mm_loadu_si128((__m128i *) (srcY+x)); // load 16 Y pixels
-					__m128i uv1 = _mm_loadu_si128((__m128i *) (srcUV+x)); // load 8 UV
-					__m128i uv2 = _mm_loadu_si128((__m128i *) (srcUV+x+srcWidth)); // load 8 UV
-					__m128i uv = _mm_avg_epu8(uv1, uv2);
-					_mm_storeu_si128((__m128i *) (dstY+x*2+ 0), _mm_unpacklo_epi8(y, uv)); // store 8 pixels
-					_mm_storeu_si128((__m128i *) (dstY+x*2+16), _mm_unpackhi_epi8(y, uv)); // store 8 pixels
-
-					x += 16;
-				}
-			}
-		}
-
-		while (x < srcWidth-1)
-		{
-			dstY[x*2+0] = srcY [x+0];
-			dstY[x*2+1] = (srcUV[x+0] + srcUV[x+0+srcWidth])/2;
-			dstY[x*2+2] = srcY [x+1];
-			dstY[x*2+3] = (srcUV[x+1] + srcUV[x+1+srcWidth])/2;
-
-			x += 2;
-		}
-
-		srcY += srcWidth;
-		srcUV += srcWidth;
-		dstY += strideY;
-
-		__y += 2;
-	}
-
-	// last 2 lines
-	while (__y < height)
-	{
-		x = 0;
-
-		if (gSSE2)
-		{
-			if (((((uintptr_t) dstY) & 0xf) == 0) && ((((uintptr_t) srcY) & 0xf) == 0))
-			{
-				while (x < srcWidth-15)
-				{
-					__m128i y = _mm_load_si128((__m128i *) (srcY+x)); // load 16 Y pixels
-					__m128i uv = _mm_load_si128((__m128i *) (srcUV+x)); // load 8 UV
-					_mm_stream_si128((__m128i *) (dstY+x*2+ 0), _mm_unpacklo_epi8(y, uv)); // store 8 pixels
-					_mm_stream_si128((__m128i *) (dstY+x*2+16), _mm_unpackhi_epi8(y, uv)); // store 8 pixels
-
-					x += 16;
-				}
-			}
-			else
-			{
-				while (x < srcWidth-15)
-				{
-					__m128i y = _mm_loadu_si128((__m128i *) (srcY+x)); // load 16 Y pixels
-					__m128i uv = _mm_loadu_si128((__m128i *) (srcUV+x)); // load 8 UV
-					_mm_storeu_si128((__m128i *) (dstY+x*2+ 0), _mm_unpacklo_epi8(y, uv)); // store 8 pixels
-					_mm_storeu_si128((__m128i *) (dstY+x*2+16), _mm_unpackhi_epi8(y, uv)); // store 8 pixels
-
-					x += 16;
-				}
-			}
-		}
-
-		while (x < srcWidth-1)
-		{
-			dstY[x*2+0] = srcY [x+0];
-			dstY[x*2+1] = srcUV[x+0];
-			dstY[x*2+2] = srcY [x+1];
-			dstY[x*2+3] = srcUV[x+1];
-
-			x += 2;
-		}
-
-		srcY += srcWidth;
-		dstY += strideY;
-
-		__y++;
-	}
-
-	return BC_STS_SUCCESS;
-}
-
-static BC_STATUS DtsCopy420ToUYVY(uint8_t *dstY, uint8_t *dstUV, const uint8_t *srcY, const uint8_t *srcUV, uint32_t srcWidth, uint32_t dstWidth, uint32_t height, uint32_t strideY, uint32_t strideUV)
-{
-	// TODO, test this
-	uint32_t x, __y;
-
-	strideY += dstWidth*2;
-
-	__y = 0;
-	while (__y < height-2)
-	{
-		// first line
-		x = 0;
-
-		if (gSSE2)
-		{
-			if (((((uintptr_t) dstY) & 0xf) == 0) && ((((uintptr_t) srcY) & 0xf) == 0))
-			{
-				while (x < srcWidth-15)
-				{
-					__m128i y = _mm_load_si128((__m128i *) (srcY+x)); // load 16 Y pixels
-					__m128i uv = _mm_load_si128((__m128i *) (srcUV+x)); // load 8 UV
-					_mm_stream_si128((__m128i *) (dstY+x*2+ 0), _mm_unpacklo_epi8(uv, y)); // store 8 pixels
-					_mm_stream_si128((__m128i *) (dstY+x*2+16), _mm_unpackhi_epi8(uv, y)); // store 8 pixels
-
-					x += 16;
-				}
-			}
-			else
-			{
-				while (x < srcWidth-15)
-				{
-					__m128i y = _mm_loadu_si128((__m128i *) (srcY+x)); // load 16 Y pixels
-					__m128i uv = _mm_loadu_si128((__m128i *) (srcUV+x)); // load 8 UV
-					_mm_storeu_si128((__m128i *) (dstY+x*2+ 0), _mm_unpacklo_epi8(uv, y)); // store 8 pixels
-					_mm_storeu_si128((__m128i *) (dstY+x*2+16), _mm_unpackhi_epi8(uv, y)); // store 8 pixels
-
-					x += 16;
-				}
-			}
-		}
-
-		while (x < srcWidth-1)
-		{
-			dstY[x*2+1] = srcY [x+0];
-			dstY[x*2+0] = srcUV[x+0];
-			dstY[x*2+3] = srcY [x+1];
-			dstY[x*2+2] = srcUV[x+1];
-
-			x += 2;
-		}
-
-		srcY += srcWidth;
-		dstY += strideY;
-
-		// second line
-
-		x = 0;
-
-		if (gSSE2)
-		{
-			if (((((uintptr_t) dstY) & 0xf) == 0) && ((((uintptr_t) srcY) & 0xf) == 0))
-			{
-				while (x < srcWidth-15)
-				{
-					__m128i y = _mm_load_si128((__m128i *) (srcY+x)); // load 16 Y pixels
-					__m128i uv1 = _mm_load_si128((__m128i *) (srcUV+x)); // load 8 UV
-					__m128i uv2 = _mm_load_si128((__m128i *) (srcUV+x+srcWidth)); // load 8 UV
-					__m128i uv = _mm_avg_epu8(uv1, uv2);
-					_mm_stream_si128((__m128i *) (dstY+x*2+ 0), _mm_unpacklo_epi8(uv, y)); // store 8 pixels
-					_mm_stream_si128((__m128i *) (dstY+x*2+16), _mm_unpackhi_epi8(uv, y)); // store 8 pixels
-
-					x += 16;
-				}
-			}
-			else
-			{
-				while (x < srcWidth-15)
-				{
-					__m128i y = _mm_loadu_si128((__m128i *) (srcY+x)); // load 16 Y pixels
-					__m128i uv1 = _mm_loadu_si128((__m128i *) (srcUV+x)); // load 8 UV
-					__m128i uv2 = _mm_loadu_si128((__m128i *) (srcUV+x+srcWidth)); // load 8 UV
-					__m128i uv = _mm_avg_epu8(uv1, uv2);
-					_mm_storeu_si128((__m128i *) (dstY+x*2+ 0), _mm_unpacklo_epi8(uv, y)); // store 8 pixels
-					_mm_storeu_si128((__m128i *) (dstY+x*2+16), _mm_unpackhi_epi8(uv, y)); // store 8 pixels
-
-					x += 16;
-				}
-			}
-		}
-
-		while (x < srcWidth-1)
-		{
-			dstY[x*2+1] = srcY [x+0];
-			dstY[x*2+0] = (srcUV[x+0] + srcUV[x+0+srcWidth])/2;
-			dstY[x*2+3] = srcY [x+1];
-			dstY[x*2+2] = (srcUV[x+1] + srcUV[x+1+srcWidth])/2;
-
-			x += 2;
-		}
-
-		srcY += srcWidth;
-		srcUV += srcWidth;
-		dstY += strideY;
-	}
-
-	// last 2 lines
-	while (__y < height)
-	{
-		x = 0;
-
-		if (gSSE2)
-		{
-			if (((((uintptr_t) dstY) & 0xf) == 0) && ((((uintptr_t) srcY) & 0xf) == 0))
-			{
-				while (x < srcWidth-15)
-				{
-					__m128i y = _mm_load_si128((__m128i *) (srcY+x)); // load 16 Y pixels
-					__m128i uv = _mm_load_si128((__m128i *) (srcUV+x)); // load 8 UV
-					_mm_stream_si128((__m128i *) (dstY+x*2+ 0), _mm_unpacklo_epi8(uv, y)); // store 8 pixels
-					_mm_stream_si128((__m128i *) (dstY+x*2+16), _mm_unpackhi_epi8(uv, y)); // store 8 pixels
-
-					x += 16;
-				}
-			}
-			else
-			{
-				while (x < srcWidth-15)
-				{
-					__m128i y = _mm_loadu_si128((__m128i *) (srcY+x)); // load 16 Y pixels
-					__m128i uv = _mm_loadu_si128((__m128i *) (srcUV+x)); // load 8 UV
-					_mm_storeu_si128((__m128i *) (dstY+x*2+ 0), _mm_unpacklo_epi8(uv, y)); // store 8 pixels
-					_mm_storeu_si128((__m128i *) (dstY+x*2+16), _mm_unpackhi_epi8(uv, y)); // store 8 pixels
-
-					x += 16;
-				}
-			}
-		}
-
-		while (x < srcWidth-1)
-		{
-			dstY[x*2+1] = srcY [x+0];
-			dstY[x*2+0] = srcUV[x+0];
-			dstY[x*2+3] = srcY [x+1];
-			dstY[x*2+2] = srcUV[x+1];
-
-			x += 2;
-		}
-
-		srcY += srcWidth;
-		dstY += strideY;
-
-		__y++;
-	}
-
-	return BC_STS_SUCCESS;
-}
-
-static BC_STATUS DtsCopy420ToNV12(uint8_t *dstY, uint8_t *dstUV, const uint8_t *srcY, const uint8_t *srcUV, uint32_t srcWidth, uint32_t dstWidth, uint32_t height, uint32_t strideY, uint32_t strideUV)
-{ // tested
-	uint32_t __y;
-
-	strideY += dstWidth;
-	strideUV += dstWidth;
-
-	// first copy Y
-	for (__y = 0; __y < height; __y++)
-	{
-		fast_memcpy(dstY, srcY, srcWidth);
-		dstY += strideY;
-		srcY += srcWidth;
-	}
-
-	// now copy uvs
-	height /= 2;
-	for (__y = 0; __y < height; __y++)
-	{
-		fast_memcpy(dstUV, srcUV, srcWidth);
-		srcUV += srcWidth;
-		dstUV += strideUV;
-
-	}
-	return BC_STS_SUCCESS;
-}
-
-
-// copy 422/420 ( device format to format specified in Vout)
-BC_STATUS DtsCopyFormat(DTS_LIB_CONTEXT	*Ctx, BC_DTS_PROC_OUT *Vout, BC_DTS_PROC_OUT *Vin)
-{
-	uint32_t lDestStrideY=0, lDestStrideUV=0;
-	uint32_t dstHeightInPixels;
-
-	BC_STATUS	Sts = BC_STS_SUCCESS;
-
-	if ( (Sts = DtsChkYUVSizes(Ctx,Vout,Vin)) != BC_STS_SUCCESS)
-		return Sts;
-
-	if(Vout->PoutFlags & BC_POUT_FLAGS_STRIDE)
-		lDestStrideUV = lDestStrideY = Vout->StrideSz;
-	if(Vout->PoutFlags & BC_POUT_FLAGS_STRIDE_UV)
-		lDestStrideUV = Vout->StrideSzUV;
-
-	if(Vout->PoutFlags & BC_POUT_FLAGS_SIZE) {
-		// Use application provided size for now
-		if(!Ctx->VidParams.Progressive)
-			dstHeightInPixels = Vout->PicInfo.height/2;
-		else
-			dstHeightInPixels = Vout->PicInfo.height;
-		/* Check for Valid data based on the application information */
-		// we cannot do that any more.size may vary, we have to suppose them
-		// ok
-	//	if((Vout->YBuffDoneSz < (dstWidthInPixels * dstHeightInPixels / 4)) ||
-	//		(Vout->UVBuffDoneSz < (dstWidthInPixels * dstHeightInPixels/2 / 4)))
-	//		return BC_STS_IO_XFR_ERROR;
-	} else {
-		dstHeightInPixels = Vin->PicInfo.height;
-	}
-
-	// check that we can do the copy properly
-	if (Ctx->HWOutPicWidth > Vin->PicInfo.width)
+	if (!Ctx || !Vout || !Vin || !Vout->Ybuff || !Vin->Ybuff)
+		return BC_STS_INV_ARG;
+
+	/* Preserve the legacy hardware-transfer metadata in DWORD units. */
+	Vout->YBuffDoneSz = Vin->YBuffDoneSz;
+	Vout->UVBuffDoneSz = Vin->UVBuffDoneSz;
+	const BC_OUTPUT_FORMAT source = Ctx->b422Mode;
+	const unsigned target = Vout->b422Mode;
+	if ((source != OUTPUT_MODE420_NV12 && source != OUTPUT_MODE422_YUY2 &&
+		 source != OUTPUT_MODE422_UYVY) ||
+		(target != OUTPUT_MODE420_NV12 && target != OUTPUT_MODE422_YUY2 &&
+		 target != OUTPUT_MODE422_UYVY))
+		return BC_STS_INV_ARG;
+
+	const bool sourcePlanar = source == OUTPUT_MODE420_NV12;
+	const bool targetPlanar = target == OUTPUT_MODE420_NV12;
+	if ((sourcePlanar && !Vin->UVbuff) || (targetPlanar && !Vout->UVbuff))
+		return BC_STS_INV_ARG;
+
+	const bool field = !Ctx->VidParams.Progressive;
+	if (!Vin->PicInfo.width || !Vin->PicInfo.height ||
+		(Vin->PicInfo.width & 1) || Ctx->HWOutPicWidth < Vin->PicInfo.width ||
+		(field && (Vin->PicInfo.height & 1)))
 		return BC_STS_IO_XFR_ERROR;
 
-	//DebugLog_Trace(LDIL_DBG,"Copying from %d to %d\n", Ctx->b422Mode, Vout->b422Mode);
+	const uint32_t width = (Vout->PoutFlags & BC_POUT_FLAGS_SIZE)
+		? Vout->PicInfo.width : Vin->PicInfo.width;
+	const uint32_t height = (Vout->PoutFlags & BC_POUT_FLAGS_SIZE)
+		? Vout->PicInfo.height : Vin->PicInfo.height;
+	if (!width || !height || (width & 1) ||
+		width > Vin->PicInfo.width || height > Vin->PicInfo.height ||
+		(field && (height & 1)))
+		return BC_STS_INV_ARG;
 
-	if (Ctx->b422Mode) {
-		// input is 422 (YUY2)
-		switch (Vout->b422Mode) {
-			case OUTPUT_MODE422_YUY2:
-				Sts = DtsCopy422ToYUY2(
-					Vout->Ybuff, Vout->UVbuff, Vin->Ybuff,
-					Ctx->HWOutPicWidth, Vin->PicInfo.width,  dstHeightInPixels, lDestStrideY, lDestStrideUV
-				);
-				break;
-			case OUTPUT_MODE422_UYVY:
-				Sts = DtsCopy422ToUYVY(
-					Vout->Ybuff, Vout->UVbuff, Vin->Ybuff,
-					Ctx->HWOutPicWidth, Vin->PicInfo.width, dstHeightInPixels, lDestStrideY, lDestStrideUV
-				);
-				break;
-			case OUTPUT_MODE420_NV12:
-				Sts = DtsCopy422ToNV12(
-					Vout->Ybuff, Vout->UVbuff, Vin->Ybuff,
-					Ctx->HWOutPicWidth, Vin->PicInfo.width, dstHeightInPixels, lDestStrideY, lDestStrideUV
-				);
-				break;
-			default:
-				Sts = BC_STS_INV_ARG;
-				break;
-		}
-	}else{
-		// input is 420 (NV12)
-		switch (Vout->b422Mode) {
-			case OUTPUT_MODE422_YUY2:
-				Sts = DtsCopy420ToYUY2(
-					Vout->Ybuff, Vout->UVbuff, Vin->Ybuff, Vin->UVbuff,
-					Ctx->HWOutPicWidth, Vin->PicInfo.width, dstHeightInPixels, lDestStrideY, lDestStrideUV
-				);
-				break;
-			case OUTPUT_MODE422_UYVY:
-				Sts = DtsCopy420ToUYVY(
-					Vout->Ybuff, Vout->UVbuff, Vin->Ybuff, Vin->UVbuff,
-					Ctx->HWOutPicWidth, Vin->PicInfo.width, dstHeightInPixels, lDestStrideY, lDestStrideUV
-				);
-				break;
-			case OUTPUT_MODE420_NV12:
-				Sts = DtsCopy420ToNV12(
-					Vout->Ybuff, Vout->UVbuff, Vin->Ybuff, Vin->UVbuff,
-					Ctx->HWOutPicWidth, Vin->PicInfo.width, dstHeightInPixels, lDestStrideY, lDestStrideUV
-				);
-				break;
-			default:
-				Sts = BC_STS_INV_ARG;
-				break;
+	const uint32_t rows = field ? height / 2 : height;
+	const uint32_t uvRows = (uint32_t)(((uint64_t)rows + 1) / 2);
+	const uint64_t sourceBytes = (uint64_t)width * (sourcePlanar ? 1 : 2);
+	const uint64_t sourcePitch = (uint64_t)Ctx->HWOutPicWidth * (sourcePlanar ? 1 : 2);
+	const uint64_t targetBytes = (uint64_t)width * (targetPlanar ? 1 : 2);
+	const uint64_t paddingY = (Vout->PoutFlags & BC_POUT_FLAGS_STRIDE)
+		? Vout->StrideSz : 0;
+	const uint64_t paddingUV = (Vout->PoutFlags & BC_POUT_FLAGS_STRIDE_UV)
+		? Vout->StrideSzUV : paddingY;
+	const uint64_t targetPitch = targetBytes + paddingY;
+	const uint64_t targetUVPitch = (uint64_t)width + paddingUV;
+
+	/* Validate every touched plane before writing even the first pixel.
+	 * The final row need not contain unused trailing padding. */
+	if (!DtsRawCopyFits((uint64_t)Vin->YBuffDoneSz * 4,
+			sourceBytes, sourcePitch, rows) ||
+		!DtsRawCopyFits((uint64_t)Vout->YbuffSz * 4,
+			targetBytes, targetPitch, rows) ||
+		(sourcePlanar && !DtsRawCopyFits((uint64_t)Vin->UVBuffDoneSz * 4,
+			width, Ctx->HWOutPicWidth, uvRows)) ||
+		(targetPlanar && !DtsRawCopyFits((uint64_t)Vout->UVbuffSz * 4,
+			width, targetUVPitch, uvRows)))
+		return BC_STS_IO_XFR_ERROR;
+
+	for (uint32_t y = 0; y < rows; ++y) {
+		const uint8_t *srcY = Vin->Ybuff + (size_t)y * (size_t)sourcePitch;
+		uint8_t *dstY = Vout->Ybuff + (size_t)y * (size_t)targetPitch;
+		if (!sourcePlanar && !targetPlanar) {
+			if ((unsigned)source == target)
+				memcpy(dstY, srcY, (size_t)targetBytes);
+			else
+				DtsSwapPackedRow(dstY, srcY, (size_t)targetBytes);
+		} else if (!sourcePlanar) {
+			/* Retain the legacy even-row chroma decimation. */
+			uint8_t *dstUV = (y & 1) ? NULL :
+				Vout->UVbuff + (size_t)(y / 2) * (size_t)targetUVPitch;
+			DtsPackedToNV12Row(dstY, dstUV, srcY, width,
+				source == OUTPUT_MODE422_UYVY);
+		} else if (!targetPlanar) {
+			const uint8_t *srcUV = Vin->UVbuff + (size_t)(y / 2) * Ctx->HWOutPicWidth;
+			const uint8_t *nextUV = srcUV;
+			/* Interpolate odd lines within this output/crop, replicating
+			 * the final chroma row instead of reading beyond it. */
+			if ((y & 1) && y / 2 + 1 < uvRows)
+				nextUV += Ctx->HWOutPicWidth;
+			DtsNV12ToPackedRow(dstY, srcY, srcUV, nextUV, width,
+				target == OUTPUT_MODE422_UYVY);
+		} else {
+			memcpy(dstY, srcY, width);
+			if (!(y & 1))
+				memcpy(Vout->UVbuff + (size_t)(y / 2) * (size_t)targetUVPitch,
+					Vin->UVbuff + (size_t)(y / 2) * Ctx->HWOutPicWidth, width);
 		}
 	}
-
-	return Sts;
+	return BC_STS_SUCCESS;
 }
-
 
 
 
