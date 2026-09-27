@@ -8,7 +8,7 @@ const {createFrameAuditor, createPlaybackControlAuditor,
 
 function sample(identity, overrides = {}) {
   return {identity, frameTime: identity / 30, callbackTime: identity / 30,
-    white: 255, black: 0, seeking: false, ...overrides};
+    white: 255, black: 0, topWhite: 255, seeking: false, ...overrides};
 }
 
 function completed(hardware = false, transform = value => value) {
@@ -55,6 +55,12 @@ test('blank or corrupt barcode reference pixels fail', () => {
   assert.throws(() => validateBrowserAudit(result), /correct frame identities/);
 });
 
+test('black top rows fail even when the barcode row is intact', () => {
+  const result = completed(false, value => value.identity === 60
+    ? {...value, topWhite: 16} : value);
+  assert.throws(() => validateBrowserAudit(result), /correct frame identities/);
+});
+
 test('advancing callbacks with a stalled actual picture do not count as playback', () => {
   const auditor = createFrameAuditor();
   for (let count = 0; count < 100; ++count)
@@ -91,6 +97,9 @@ test('fixture duration and final snapshot are mandatory', () => {
   const missingSnapshot = completed();
   missingSnapshot.audit.finalFrame = null;
   assert.throws(() => validateBrowserAudit(missingSnapshot), /actual final frame/);
+  const blackTop = completed();
+  blackTop.audit.finalFrame.topWhite = 16;
+  assert.throws(() => validateBrowserAudit(blackTop), /actual final frame/);
 });
 
 test('hardware-to-software fallback fails even if all displayed pixels are correct', () => {
@@ -227,6 +236,13 @@ test('pause must be confirmed and remain stable, not merely requested', () => {
 test('rate metadata alone cannot pass if actual playback remains at 1x', () => {
   const {audit} = runControls({actualRate: () => 1});
   assert.match(audit.errors[0], /did not match 0.5x/);
+});
+
+test('control phases reject black top rows', () => {
+  const {audit} = runControls({transform: (value, {step}) => step === 5
+    ? {...value, topWhite: 16} : value});
+  assert.match(audit.errors[0], /Invalid actual-frame sample/);
+  assert.throws(() => validatePlaybackControls(audit), /did not complete/);
 });
 
 test('every requested speed and the final 1x restoration are independently mandatory', () => {

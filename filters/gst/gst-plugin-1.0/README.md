@@ -241,6 +241,13 @@ out-of-order identities, incorrect seek/rate progress, video lateness above
 device. Retain the external timeout because a library or driver call can block
 beyond the in-process watchdog.
 
+`--expect-geometry WIDTHxHEIGHT` requires that exact decoded size on every
+picture. `--skip-2x` runs pause/resume, both seeks, 0.5x and restored 1x, then
+prints `2x=skipped`; it is useful for recording those controls separately but
+is not a 2x or complete all-rate pass. The generated fixture also carries a
+white marker through its top rows, so the probe rejects a full-width black-row
+decode defect in rows 0 through 7.
+
 `--sustain SECONDS` selects continuous 1x playback. It requires a fixture whose
 duration is a multiple of 12 seconds, exact 30-fps timestamps, the repeated
 360-frame barcode sequence and complete EOS. The optional audio check verifies

@@ -20,7 +20,8 @@ function createFrameAuditor() {
     const valid = Number.isFinite(sample.frameTime) &&
       Number.isInteger(sample.identity) && expected >= 0 && expected <= lastIdentity &&
       sample.identity === expected && Number.isFinite(sample.white) &&
-      Number.isFinite(sample.black) && sample.white >= 200 && sample.black <= 50;
+      Number.isFinite(sample.black) && sample.white >= 200 && sample.black <= 50 &&
+      Number.isFinite(sample.topWhite) && sample.topWhite >= 180;
     if (!valid && audit.mismatches.length < 30)
       audit.mismatches.push({...sample, expected});
     return valid;
@@ -109,6 +110,7 @@ function createPlaybackControlAuditor() {
         sample.identity !== Math.round(sample.frameTime * 30) ||
         !Number.isFinite(sample.white) || sample.white < 200 ||
         !Number.isFinite(sample.black) || sample.black > 50 ||
+        !Number.isFinite(sample.topWhite) || sample.topWhite < 180 ||
         typeof sample.paused !== 'boolean' || !Number.isFinite(sample.playbackRate)) {
       fail(`Invalid actual-frame sample during ${phase.name}`);
       return undefined;
@@ -254,7 +256,8 @@ function validateBrowserAudit(result) {
       !final || final.identity !== 359 || !Number.isFinite(final.frameTime) ||
       Math.abs(final.frameTime - 359 / 30) > 1 / 60 ||
       !Number.isFinite(final.white) || final.white < 200 ||
-      !Number.isFinite(final.black) || final.black > 50)
+      !Number.isFinite(final.black) || final.black > 50 ||
+      !Number.isFinite(final.topWhite) || final.topWhite < 180)
     throw new Error('Playback did not reach actual final frame 359 of the 12-second fixture');
   const expectedDecoder = hardware ? 'VaapiVideoDecoder' : 'FFmpegVideoDecoder';
   if (!Array.isArray(decoders) || !decoders.length ||
