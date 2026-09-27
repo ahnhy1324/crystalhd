@@ -333,9 +333,12 @@ static void configure_softrave(Fixture &fixture, uint32_t subtype)
 
 static std::vector<std::vector<uint8_t> > divx_eos_packets(unsigned mode)
 {
-    const std::vector<uint8_t> end = {
+    const std::vector<uint8_t> timestamped_end = {
+        0,0,1,0xe0,0,16,0x81,0x80,5, 0x21,0,1,0,1,
+        0,0,1,0xb1,0,0,1,0xb1};
+    const std::vector<uint8_t> plain_end = {
         0,0,1,0xe0,0,11,0x81,0,0, 0,0,1,0xb1,0,0,1,0xb1};
-    if (mode == 5) return {end};
+    if (mode == 5) return {timestamped_end};
     // Independent PES/private-data oracle: 155-byte timing marker, 20 optional
     // header bytes (private-data flag, BRCM+12 zeros, 3 stuffing bytes), no PTS.
     std::vector<uint8_t> marker(184, 0xff);
@@ -346,16 +349,12 @@ static std::vector<std::vector<uint8_t> > divx_eos_packets(unsigned mode)
     std::memset(body, 0, 13); body[4] = 0x0c;
     body[13] = body[14] = 0xff; body[15] = 0; body[16] = 1;
     std::memset(body+29, 0, 7); body[36] = 0xbc;
-    return {end, marker, end, end};
+    return {timestamped_end, marker, plain_end, plain_end};
 }
 
 static void test_configured_softrave_eos(uint32_t subtype)
 {
-    // The original BCM70015 import (813af6d) explicitly omitted PTS during
-    // SoftRave EOS. Unlike a zeroed synthetic context, real WMV3 setup enables
-    // SoftRave and adds PTS even for ordinary input timestamp zero. Exercise
-    // the actual setup, packetizer and public drain together; firmware marker
-    // recognition still requires the optional hardware drain probe.
+    // Exercise the configured packetizer and public drain together.
     for (unsigned mode : {0U, 5U}) {
         const unsigned count = mode == 0 ? 4 : 1;
         for (bool public_api : {false, true}) {
@@ -392,9 +391,12 @@ static void test_configured_softrave_eos(uint32_t subtype)
                 check(!fixture.context.bEOS, "EOS submission never manufactures firmware completion");
                 uint64_t signature = UINT64_C(14695981039346656037);
                 size_t bytes = 0;
-                for (const auto &packet : packets) {
-                    check(packet.size() >= 9 && (packet[7] & 0xc0) == 0,
-                          "SoftRave EOS control packets omit ordinary-picture PTS/DTS");
+                for (size_t n = 0; n < packets.size(); ++n) {
+                    const auto &packet = packets[n];
+                    const bool tail_boundary = subtype == BC_MSUBTYPE_DIVX && n == 0;
+                    check(packet.size() >= 9 && (packet[7] & 0xc0) ==
+                              (tail_boundary ? 0x80 : 0),
+                          "only the first DIVX sequence end carries the tail PTS");
                     for (uint8_t byte : packet)
                         signature = (signature ^ byte) * UINT64_C(1099511628211);
                     bytes += packet.size();
@@ -403,7 +405,7 @@ static void test_configured_softrave_eos(uint32_t subtype)
                     check(subtype == BC_MSUBTYPE_DIVX ? packets == expected_divx :
                           signature == (mode == 0 ? UINT64_C(0xc24508523c5b493b)
                                                    : UINT64_C(0x24352af17dc9a696)),
-                          "configured EOS matches the codec's independent no-PTS packet oracle");
+                          "configured EOS matches the codec packet oracle");
                     check(bytes < 1024, "configured SoftRave EOS fits the whole-call reserve");
                     std::printf("SOFTRAVE subtype=%u mode=%u public=%d bytes=%zu signature=%016llx\n",
                                 subtype, mode, public_api, bytes, static_cast<unsigned long long>(signature));
