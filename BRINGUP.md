@@ -29,16 +29,71 @@ example, a live firmware heartbeat does not prove that the input stream is
 valid, and accepted input does not prove that the requested output format is
 supported.
 
-The installed udev rule gives the active desktop user access and grants the
-`video` group read/write permission. A headless test account must be a member
-of `video`. Normal playback does not need elevated capabilities; the legacy
-register, FPGA, DRAM, and PCI configuration diagnostics require root or
-`CAP_SYS_RAWIO`.
+## Device access and module identity
 
-The vendor/device identity DWORD remains readable by older libraries without
-that capability. The runtime ABI probes in `tests/ioctl-smoke.sh` and
-`tests/userspace32.sh --hardware` verify this boundary and both userspace
-word sizes on an idle device.
+The installed udev rule creates `/dev/crystalhd` as `root:video` with mode
+`0660` and asks systemd-logind to grant the active desktop user an ACL. On a
+headless system, add the playback account to `video` and log in again:
+
+```sh
+sudo usermod -aG video "$USER"
+```
+
+Before a hardware test, compare the installed module, the checkout's build,
+and the module actually loaded into the kernel. From the repository root:
+
+```sh
+modinfo -F filename crystalhd
+modinfo -F srcversion crystalhd
+modinfo -F srcversion ./driver/linux/crystalhd.ko
+cat /sys/module/crystalhd/srcversion
+sudo fuser -v /dev/crystalhd
+```
+
+The sysfs file exists only while the module is loaded. Matching source versions
+are a useful consistency check, not proof of hardware correctness; record the
+source commit and build as well. `modinfo crystalhd` describes the installed
+file, not necessarily the running module. `modprobe crystalhd` does not replace
+an already-loaded module. If versions differ, close all players, confirm the
+device is idle and unload normally before explicitly loading the intended
+build. Never force-unload a module with active users or DMA. Hardware harnesses
+reject an already-loaded module whose source version differs from their build.
+
+With the intended module loaded and idle, `sh tests/ioctl-smoke.sh` checks
+native/compat ioctl validation. `sh tests/userspace32.sh --hardware` builds
+isolated 32/64-bit libraries and verifies firmware open, capabilities, version
+and close through both ABIs. These are explicit hardware tests, not part of
+`make check`; 32-bit clients on a 64-bit kernel require `CONFIG_COMPAT`.
+
+### Diagnostic permissions and legacy compatibility
+
+Normal firmware loading and playback use the device permission above. Direct
+register, FPGA, device-DRAM and PCI configuration diagnostics additionally
+require `CAP_SYS_RAWIO`; run legacy tools as root only when those diagnostics
+are needed. The default rule does not expose raw hardware access to every user.
+
+The read-only vendor/device-ID DWORD (PCI offset 0, size 4) remains available
+without that capability for older libraries identifying the card before
+firmware startup. New builds use the unprivileged hardware-type query.
+BCM70015 playback sessions also retain the legacy color-register operation:
+the kernel permits YUY2/UYVY selection while preserving unrelated bits.
+Adjacent registers and access outside playback remain privileged. BCM70012's
+legacy reset, clock and FPGA initialization require separate hardware
+verification under this permission policy.
+
+For a legacy installation that deliberately permits **all local accounts** to
+open the device, an optional `/etc/udev/rules.d/99-crystalhd-local.rules` can
+contain:
+
+```udev
+KERNEL=="crystalhd", MODE="0666"
+```
+
+This broadens device access and is not needed for ordinary desktop playback.
+Reload rules with `sudo udevadm control --reload-rules`; the override takes
+effect when the device is recreated. Removing that local file restores the
+default policy on the next rule reload and device creation. It does not grant
+the capability required by raw diagnostic ioctls.
 
 ## Known-good BCM70015 userspace sequence
 

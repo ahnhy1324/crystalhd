@@ -1,83 +1,38 @@
 # Broadcom Crystal HD for current Linux systems
 
-This maintenance fork brings the Broadcom BCM70012 and BCM70015 Crystal HD
-video decoders forward to current Linux kernels. It contains the kernel
-module, firmware, the legacy `libcrystalhd` API, and experimental GStreamer
-1.x, VA-API, and Chromium integrations.
+This fork maintains the BCM70012/BCM70015 kernel driver, firmware and legacy
+`libcrystalhd` API for Linux 6.1 and newer. Start with **GStreamer on BCM70015**
+for local playback. This is a hardware-revival project, not a production-ready
+multimedia stack.
 
-The kernel module supports Linux 6.1 and newer. Older compatibility branches
-were removed because they were not covered by build or hardware tests.
+[Install](#install) · [Local playback](#gstreamer-playback) ·
+[Full HD option](#optional-bcm70015-full-hd-workaround) ·
+[Remaining work](TODO.md) · [Troubleshooting](BRINGUP.md)
 
 ## Project status
 
-This is a hardware-revival project, not a production-ready multimedia stack.
-The kernel and userspace pieces have different levels of validation:
-
-| Component | Current status |
+| Component | Supported path and limits |
 | --- | --- |
-| Kernel module | Maintained for Linux 6.1 and newer; hardware-tested on BCM70015 with Ubuntu 6.17.0-41-generic. BCM70012 support is retained but has not been tested recently. |
-| `libcrystalhd` | Legacy compatibility API. CI freezes its 32-bit and 64-bit ioctl layouts, builds the complete library as 32-bit code, and exercises it through the tested frontends; it still has no comprehensive device-API test suite. |
-| GStreamer 1.x | Primary validation path on BCM70015: progressive H.264 Baseline/Main/High, complete-file drain, and flushing replay with identical pixels. Numbered 360p/720p H.264 + AAC fixtures pass in-flight seeks, pause/resume, and 0.5x/1x/2x clocked playback. One H.264 360p→720p→360p stream preserves every frame and the independently decoded segment pixels. MPEG-2 (short progressive Full HD and 360p top/bottom-field-first fixtures), VC-1 Advanced and WMV3 Main have complete-drain fixtures. Broader streams, other interlaced layouts, and other mid-stream format changes remain unverified. |
-| VA-API | Experimental client-oriented subset. BCM70015 H.264 Baseline/Main/High complete-file decode and pipelined seek checks pass with verified pixels; High also passes the synchronous seek probe. Bounded IDR replay handles firmware drain but can be expensive for synchronous clients. Not a general or conformance-tested VA-API driver. |
-| Chromium | Developer experiment only. The safe default uses Chrome's software decoder with the GPU sandbox enabled. Hardware decode is opt-in, has unresolved post-seek correctness, and requires disabling the GPU-process sandbox. |
-| Examples | Legacy diagnostic programs. CI verifies that they compile, not that their hard-coded sample streams decode correctly. |
+| Kernel / library | BCM70015 hardware-tested; BCM70012 retained but not recently tested. Native and 32-bit compatibility checks are not comprehensive device-API conformance. |
+| GStreamer | Primary playback path. Selected H.264, MPEG-2, VC-1 and WMV3 fixtures pass; broader streams and physical display/audio validation remain open. |
+| VA-API / FFmpeg | Experimental progressive H.264 Baseline/Main/High decoding. Synchronous clients can incur restart/replay overhead; not a general VA-API implementation. |
+| PowerVLC | Its native plugin loads our library without rebuilding. Missing final frames and rate-transition problems prevent a daily-use recommendation. |
+| Chrome / YouTube | Software decoding with the GPU sandbox enabled is the default. Hardware decoding and live YouTube A/V synchronization remain unresolved. |
 
-CI compiles the module against the latest 6.1, 6.6, 6.12, and 6.18 long-term
-kernels plus upstream stable and mainline. It also builds the userspace
-components, checks both x86 userspace ABIs, and runs discovery, H.264
-parameter-set, and installation smoke tests. Those jobs validate build and
-API compatibility but do not replace hardware testing.
-
-For the known-good BCM70015 initialization sequence, validation milestones,
-and failure isolation order, see [BRINGUP.md](BRINGUP.md).
-See the [2026-09-13 hardware report](HARDWARE-2026-09-13.md) for exact samples,
-commands, successful tests, and failures still under investigation.
+Exact fixtures, measurements and historical failures are in the
+[hardware report](HARDWARE-2026-09-13.md); open acceptance criteria are in
+[TODO.md](TODO.md). Clocked test sinks do not certify physical lip-sync.
 
 ## Userspace components
 
-The interfaces below describe what each frontend currently exposes. Unless a
-path is identified as hardware-tested in the status table, it should be
-treated as unverified.
-
-For the reproducible playback baseline, use **GStreamer 1.x on BCM70015**
-with progressive H.264 Annex-B input and YUY2 output. The secondary,
-**experimental** path is **FFmpeg through VA-API**, decoding progressive
-H.264 to NV12. The tested BCM70015 files now drain completely; clients that
-synchronize every frame without feeding ahead can incur substantial decoder
-restart/replay overhead. GStreamer remains the primary playback path.
-Broader codec coverage, BCM70012, and
-Chromium hardware decoding remain experimental; see [TODO.md](TODO.md) for
-the open validation work and linked GitHub issues.
-
-The `crystalhddec` GStreamer 1.x element advertises parsed H.264 Annex-B,
-MPEG-2, VC-1, and WMV3 input and produces standard YUY2 raw video. Current
-hardware validation covers progressive H.264 plus short MPEG-2 and VC-1 Advanced
-fixtures up to 1920x1080, and WMV3 Main up to 1440x1080 (anamorphic, not
-1920-wide WMV3). MPEG-2 includes 640x360 interlaced top/bottom-field-first
-samples; this is not general interlaced codec support. VC-1 and WMV3 use
-distinct firmware subtypes and framing; ASF demuxer output is accepted directly, while raw VC-1 BDUs are
-assembled into pictures. See the hardware report for exact caps and commands.
-
-The `crystalhd_drv_video.so` VA-API backend exposes progressive H.264
-Constrained Baseline, Main, and High decoding. It supports NV12 output for
-FFmpeg/GStreamer and exported ARGB surfaces for Chromium's compositor, and
-accepts imported DRM PRIME NV12 surfaces.
-
-The card and firmware support one playback session at a time. A second
-simultaneous VA-API client receives `VA_STATUS_ERROR_HW_BUSY`; close the first
-player before starting another hardware decode.
-
-FFmpeg deprecated its CrystalHD decoders in version 6.0. The distribution
-VLC 3.0.21 build tested here also disables its native CrystalHD module;
-installing this kernel module alone does not enable it. This is not true of
-every VLC fork: PowerVLC's Linux release includes a native decoder, with the
-experimental results and limitations described below. Programs can also use
-the GStreamer element or the standard VA-API backend.
-
-CrystalHD does not decode VP8, VP9, or AV1. YouTube normally prefers those
-newer codecs. The optional Chrome setup installs an H.264 preference policy,
-but browser hardware decode remains disabled by default because the
-experimental VA-API path is not seek-correct.
+The card supports **one playback session at a time**. Close other CrystalHD
+players before a hardware test or module unload. GStreamer produces YUY2;
+VA-API provides NV12 downloads and experimental DRM PRIME/VPP integration.
+Neither adds VP8, VP9 or AV1 support to the card. Distribution VLC builds may
+omit their native CrystalHD plugin; installing this driver does not enable it.
+See the [GStreamer](filters/gst/gst-plugin-1.0/README.md),
+[VA-API](filters/vaapi/README.md) and
+[library](linux_lib/libcrystalhd/README.md) guides for format/API contracts.
 
 ## Dependencies
 
@@ -85,8 +40,7 @@ On Ubuntu:
 
 ```sh
 sudo apt install build-essential autoconf dkms pkg-config \
-  gcc-multilib g++-multilib \
-  linux-headers-$(uname -r) \
+  gcc-multilib g++-multilib linux-headers-$(uname -r) \
   curl desktop-file-utils xdg-utils \
   libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
   gstreamer1.0-tools gstreamer1.0-plugins-base \
@@ -95,162 +49,33 @@ sudo apt install build-essential autoconf dkms pkg-config \
   libva-dev libdrm-dev libgbm-dev libswscale-dev vainfo
 ```
 
-The optional hardware-stress and browser probes also use:
-
-```sh
-sudo apt install ffmpeg nodejs node-ws
-```
+Optional hardware/browser probes need `ffmpeg`, `nodejs` and `node-ws`.
+Direct-library and VA-API seek probes also need `libavcodec-dev`,
+`libavformat-dev` and `libavutil-dev`. Software playback may need
+`gstreamer1.0-libav`.
 
 ## Build and test
-
-Build the kernel module, userspace library, examples, and experimental
-GStreamer and VA-API frontends:
 
 ```sh
 make -j$(nproc)
 make check
+make userspace32-check
 ```
 
-`make check` builds every component, freezes the 32-bit and 64-bit public ioctl
-layouts, exercises the real library's TX ring, flush/output cancellation and
-EOS error paths without hardware, validates GStreamer and VA-API discovery,
-checks VA-API H.264 SPS/PPS generation, checks the browser scripts and assets,
-tests DRM PRIME NV12 surface
-import when a render node is available, and checks a staged installation
-without changing the host system. It does not decode a stream on CrystalHD
-hardware.
+The kernel build treats warnings as errors. `make check` builds the components
+and runs ABI, library, frontend, browser and staged-install checks, plus DRM
+smoke tests when a render node is available. It does not decode video on the
+CrystalHD card. The 32-bit check uses an isolated build directory; a 32-bit
+process on a 64-bit kernel needs `CONFIG_COMPAT`.
+CI also compiles Linux LTS, stable and mainline kernel APIs.
 
-The `make userspace32-check` target builds and links the complete
-`libcrystalhd` library, examples, and API probe with `-m32` in an isolated
-temporary directory, preserving existing native build products. CI also
-compiles the kernel module for native i386. A 32-bit process on a 64-bit kernel requires `CONFIG_COMPAT`; the
-driver translates the pointer-bearing playback ioctls rather than treating a
-32-bit request as a native structure.
-
-With the freshly built driver loaded and the device idle, run
-`sh tests/ioctl-smoke.sh` to exercise native/compat ioctl validation, then
-`sh tests/userspace32.sh --hardware` to verify firmware open, capabilities,
-version, and close through both 32-bit and 64-bit libraries. The latter is an
-explicit hardware test and does not run as part of `make check`.
-
-To exercise the actual decoder hardware with an H.264 MP4:
-
-```sh
-./tests/gstreamer-hardware.sh /path/to/video.mp4 2
-```
-
-The optional direct-library drain probe bypasses GStreamer/VA-API. Build it
-with FFmpeg development libraries installed, then use a small progressive
-fixture with a known frame count:
-
-```sh
-make library-drain-test
-LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
-  tests/library-drain-test --preflight /path/to/video.h264 30
-LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
-  timeout --kill-after=10s 60s \
-  tests/library-drain-test --hardware /path/to/video.h264 30 35
-```
-
-It accepts raw Annex-B H.264, MPEG-2 elementary streams, raw VC-1 Advanced
-and WMV3 in ASF; known interlaced input is rejected. `--preflight` checks
-framing/counts without opening the device. `--hardware` requires an idle
-BCM70015, every expected timestamped picture, the actual firmware EOS output
-marker, an empty ready queue and
-successful cleanup. This opt-in target is not part of `make check`. Keep the
-external timeout: the probe's deadline cannot itself interrupt a blocked
-ioctl/close. It does not verify pixel quality. Small fixtures for all four
-formats pass the complete-count and
-firmware-EOS checks; this is not broad codec conformance coverage.
-
-To exercise the same hardware through VA-API and FFmpeg:
-
-```sh
-LIBVA_DRIVER_NAME=crystalhd \
-LIBVA_DRIVERS_PATH=$PWD/filters/vaapi \
-LD_LIBRARY_PATH=$PWD/linux_lib/libcrystalhd \
-ffmpeg -hwaccel vaapi -hwaccel_device /dev/dri/renderD128 \
-  -hwaccel_output_format vaapi -i /path/to/video.mp4 \
-  -vf hwdownload,format=nv12 -f null -
-```
-
-To repeat the decode, verify that every frame reaches an NV12 surface, and
-scan the new kernel log entries for driver failures:
-
-```sh
-./tests/vaapi-hardware-stress.sh /path/to/video.mp4 10
-# Exercise decoder teardown within one FFmpeg process (five input loops):
-CRYSTALHD_TEST_INPUT_LOOPS=5 ./tests/vaapi-hardware-stress.sh /path/to/video.mp4 1
-```
-
-Generate three small, reproducible profile samples for a hardware report:
-
-```sh
-sh tests/generate-h264-samples.sh /tmp/crystalhd-samples
-# Separate optional Full HD fixtures (1920x1080, 30 fps, 180 frames each):
-sh tests/generate-h264-samples.sh /tmp/crystalhd-fhd-samples 1920x1080
-```
-
-The generator refuses to overwrite existing samples and prints each profile,
-frame count, and SHA-256 checksum. Run both hardware scripts for each of the
-three MP4 files. `CRYSTALHD_TEST_TIMEOUT` bounds each decode (120 seconds by
-default); a timeout or missing frame fails validation.
-
-Set `CRYSTALHD_TEST_SEEK=1` on the GStreamer hardware command to replay the
-file after a flushing seek to zero in the same pipeline. Both passes must
-drain every frame and produce the same pixel SHA-256. This checks replay
-after end-of-stream, separately from the numbered in-flight control checks
-described under [GStreamer playback](#gstreamer-playback).
-
-For VA-API seek/flush validation outside Chromium, install `libavcodec-dev`,
-`libavformat-dev`, and `libavutil-dev`, then run:
-
-```sh
-make -C filters/vaapi seek-test
-LIBVA_DRIVER_NAME=crystalhd LIBVA_DRIVERS_PATH=$PWD/filters/vaapi \
-LD_LIBRARY_PATH=$PWD/linux_lib/libcrystalhd \
-timeout --kill-after=10 120s ./filters/vaapi/vaapi-seek-test /tmp/crystalhd-samples/high.mp4
-```
-
-This probe requires hardware frames, drains a complete reference decode, then
-compares the SHA-256 hashes of downloaded NV12 pixels after forward and
-backward seeks and decoder flushes. It also flushes with reordered frames
-still pending. `--software` is an explicitly labelled self-check of the
-probe; it does not validate CrystalHD.
-
-Append `--lookahead 8` for a bounded pipelined-client test. It retains eight
-future output frames before downloading the oldest and leaves an undownloaded
-suffix at each seek. This is separately reported coverage; the default remains
-synchronous and can be much slower on firmware that requires future input.
-
-Use `--retain-old-frames` to retain eight original frame owners across flush
-and new input, or actual decoder-context destruction, before downloading and
-checking their original PTS/pixel hashes. This implies eight-frame lookahead;
-unlike `--lookahead 8` alone, it tests old-frame lifetime after teardown.
-
-For a local browser pixel/seek audit, run these from a graphical session:
-
-```sh
-sh tests/generate-browser-sample.sh /tmp/crystalhd-browser-barcode.mp4
-node tests/chromium-local-playback.js /tmp/crystalhd-browser-barcode.mp4
-node tests/chromium-local-playback.js /tmp/crystalhd-browser-barcode.mp4 --controls
-```
-
-This uses a temporary profile and Chrome's software default with its GPU
-sandbox enabled. It checks numbered pixels against retained video-frame
-timestamps through four seeks and requires the actual final frame at EOS.
-The optional `--controls` run first checks pause/resume and 0.5x, 1.5x, 2x,
-then restored 1x playback. It compares actual numbered frame timestamps and
-media time with elapsed time, and samples the paused picture independently
-of frame callbacks. This local-file test does not validate YouTube controls.
-It does not measure full-rate presentation or establish hardware decoding.
-The explicit `--expect-hardware` mode rejects any software fallback and
-requires the launcher's experimental GPU-sandbox opt-out acknowledgement.
-
-The hardware tests load the locally built module only when necessary and
-unload it afterward if the script loaded it. They refuse to run when an
-already-loaded module has a different source version, preventing an old DKMS
-build from being mistaken for the code under test.
+Hardware validation requires an idle card and matching loaded module. Follow
+[module/ABI checks](BRINGUP.md#device-access-and-module-identity),
+[GStreamer counts/replay](filters/gst/gst-plugin-1.0/README.md#counted-h264-playback-and-replay),
+[VA-API stress/seeks](filters/vaapi/README.md#hardware-stress), or
+[direct-library drain](linux_lib/libcrystalhd/README.md#direct-library-drain-validation).
+Legacy [examples](examples/README.md) are diagnostic programs, not playback
+validation.
 
 ## Install
 
@@ -260,73 +85,38 @@ sudo modprobe crystalhd
 gst-inspect-1.0 crystalhddec
 ```
 
-Installation places:
+This installs the module for the selected kernel, firmware, device rule,
+library/headers, GStreamer/VA-API plugins and launcher files. It does **not**
+replace an already-loaded module or make Chrome the default browser. Verify
+[loaded module identity](BRINGUP.md#device-access-and-module-identity) before
+testing a new build; never force-unload an active card.
 
-- `crystalhd.ko` under `/lib/modules/$(uname -r)/updates`
-- firmware under `/lib/firmware`
-- the udev rule under `/lib/udev/rules.d`
-- `libcrystalhd`, public headers, and `libcrystalhd.pc` under `/usr`
-- `libgstcrystalhd.so` in GStreamer's detected plugin directory
-- `crystalhd_drv_video.so` in libva's detected driver directory
-- `crystalhd-chromium`, `setup-crystalhd-chrome-default`, the bundled H.264
-  preference extension, and a desktop launcher
+For automatic rebuilding after kernel upgrades, follow [DKMS](README.dkms).
+To inspect an installation without changing the host:
+
+```sh
+crystalhd_stage=$(mktemp -d)
+make DESTDIR="$crystalhd_stage" install
+```
 
 ### Device access and diagnostics
 
-The installed udev rule creates `/dev/crystalhd` as `root:video` with mode
-`0660` and asks systemd-logind to grant the active desktop user an ACL. On a
-headless system, add the playback account to the `video` group and log in
-again:
+The udev rule uses `root:video`, mode `0660`, with an ACL for the active desktop
+user. On a headless system, add the playback account to `video` and log in again:
 
 ```sh
 sudo usermod -aG video "$USER"
 ```
 
-Ordinary firmware loading and decode remain available through that device
-permission. Direct register, FPGA, device-DRAM, and PCI configuration ioctls
-are diagnostic interfaces and additionally require `CAP_SYS_RAWIO`; run legacy
-diagnostic tools as root when those commands are needed. The rule no longer
-makes the raw hardware interface world-writable.
-
-The read-only PCI vendor/device-ID DWORD (offset 0, size 4) remains available
-for older libraries that use it to identify the card before opening firmware.
-New builds use the unprivileged hardware-type query instead.
-
-BCM70015 playback sessions also retain the legacy color-register operation:
-the kernel permits YUY2/UYVY selection while preserving unrelated register
-bits. Adjacent registers and access outside playback remain privileged.
-BCM70012's legacy reset, clock, and FPGA initialization need separate hardware
-verification under this permission policy.
-
-For a legacy installation that deliberately needs all local accounts to open
-the device, create `/etc/udev/rules.d/99-crystalhd-local.rules` containing:
-
-```udev
-KERNEL=="crystalhd", MODE="0666"
-```
-
-Reload the rules with `sudo udevadm control --reload-rules`; they take effect
-when the device is recreated. Removing that local file restores the default
-access policy on the next rule reload and device creation. This override
-does not grant the capability required by raw diagnostic ioctls.
+Playback needs device access, not root. Raw register/DRAM/PCI diagnostics also
+require `CAP_SYS_RAWIO`; legacy exceptions and local access overrides are in
+[bring-up](BRINGUP.md#device-access-and-module-identity).
 
 ### Optional BCM70015 Full HD workaround
 
-On one BCM70015/ICH8 system, PCIe L0s power saving limited Full HD output:
-disabling **L0s only** improved the same 900-frame H.264 High VA-API decode
-from 27.26 to 41.55 fps, with no dropped/duplicate frames and identical
-180-frame output hashes. Disabling L1 alone did not help. This is measured
-decode/download throughput, not a display or lip-sync certification; see
-[the hardware report](HARDWARE-2026-09-13.md#pcie-l0s-isolation-2026-09-27).
-The opt-in driver reproduces 41.20 fps and passes a 120-second 1080p30
-H.264/AAC clocked-sink run with all 3,600 frames and EOS. This does not
-certify physical speaker/display sync or Full HD 2x playback.
-
-The driver keeps its existing default. For an affected system, the explicit
-`force_l0s_off=1` module option disables L0s on the card's dedicated PCIe
-link; it leaves L1, link speed/width, payload sizes and other devices alone.
-Close all CrystalHD players before unloading a module. To test a local build
-without installing it:
+On the tested BCM70015/ICH8 link, disabling PCIe **L0s only** removes the
+observed FHD throughput bottleneck. The default remains unchanged. For an
+affected system, close all CrystalHD players and test a local build with:
 
 ```sh
 make driver
@@ -334,58 +124,70 @@ sudo modprobe -r crystalhd
 sudo insmod ./driver/linux/crystalhd.ko force_l0s_off=1
 ```
 
-This can increase power consumption and is not a blanket recommendation for
-untested hardware. It is restricted to BCM70015 on a dedicated root-port
-link. It first asks the kernel's PCI subsystem to disable L0s. If kernel ASPM
-control is unavailable (an ownership denial or ASPM support built out), the
-explicit option permits a checked, bit-preserving override on that link.
-No firmware or application rebuild is required.
+This option is limited to BCM70015 on a dedicated root-port link. It preserves
+L1, link speed/width, payload sizes and other devices, and can increase power
+consumption. It first requests PCI-core control; an ownership denial or
+compiled-out ASPM support permits the checked, bit-preserving fallback.
+No firmware or application rebuild is needed.
 
-Restoration differs by ownership: the BIOS-owned fallback saves the original
-L0s bits and checks their restoration on driver removal; PCI-core-managed
-policy remains disabled until separately reset or rebooted, even after
-unloading the module.
-Reloading without the option is therefore not a universal policy reset.
-Do not use global `pcie_aspm=force` or change link speed/MPS to reproduce this
-workaround. Failed restoration is reported in the kernel log; a failed power
-transition leaves the adapter unavailable until driver reload. Suspend/resume
-behavior still requires separate hardware testing.
+Raw-owned original L0s bits are restored and checked on driver removal.
+**PCI-core-managed policy can remain disabled after unload**, until separately
+reset or rebooted: reloading without the option is not a universal reset.
+Restoration failures are logged; a failed power transition leaves the adapter
+unavailable until reload. Do not use global `pcie_aspm=force` or change link
+speed/MPS. Physical lip-sync, FHD 2x controls and actual suspend/resume are not
+certified by this result. See the
+[measurements and reproduction](HARDWARE-2026-09-13.md#pcie-l0s-isolation-2026-09-27).
 
-To stage a package instead of changing the host:
+## GStreamer playback
+
+From a build tree, the local-file controller provides video, audio and optional
+external subtitles:
 
 ```sh
-make DESTDIR=/tmp/crystalhd-package install
+./scripts/crystalhd-play --hardware video.mp4
+./scripts/crystalhd-play --software --subtitles captions.srt video.mp4
 ```
+
+After installation, use `crystalhd-play` without the source-tree prefix. Keep
+the launching terminal open: Space pauses/resumes; Left/Right or `j`/`l` seek
+ten seconds; `1`/`2`/`3` select 0.5x/1x/2x; `q` quits. Hardware mode is the
+default and confirms actual decoded output. Unsupported input, a busy card
+or decoder failure does not silently select software; retry with `--software`.
+Ranks apply only to this process, not system defaults.
+
+See the [GStreamer guide](filters/gst/gst-plugin-1.0/README.md) for pipelines,
+codec framing and control tests. Available controls do not guarantee real-time
+playback at every resolution/rate. Tests need external timeouts because a
+blocked library call can outlive the cooperative player watchdog.
+
+## FFmpeg through VA-API
+
+For an installed build and supported H.264 file:
+
+```sh
+LIBVA_DRIVER_NAME=crystalhd \
+ffmpeg -hwaccel vaapi -hwaccel_device /dev/dri/renderD128 \
+  -hwaccel_output_format vaapi -i video.mp4 \
+  -vf hwdownload,format=nv12 -f null -
+```
+
+This decodes/downloads frames, not visible playback. The render node belongs
+to the display GPU; CrystalHD performs H.264 decoding. Select your system's
+node. Uninstalled-build paths, export requirements and tests are in the
+[VA-API guide](filters/vaapi/README.md).
 
 ## PowerVLC native playback (experimental)
 
-[PowerVLC](https://github.com/Olsro/powervlc) is a separate VLC fork. The
-[2.1.0 Linux x86_64 release](https://github.com/Olsro/powervlc/releases/tag/powervlc-2.1.0)
-includes `libcrystalhd_plugin.so`, despite its README advertising CrystalHD
-primarily for macOS. On BCM70015, the native module was verified to decode
-H.264 using this repository's library and kernel module, with actual picture
-checks and no main-video software fallback. Its Qt/X11 window also displayed
-video while AAC audio was sent through PulseAudio. This is limited integration
-evidence, not a general playback or audio-synchronization certification.
+The [PowerVLC 2.1.0 Linux x86_64 release](https://github.com/Olsro/powervlc/releases/tag/powervlc-2.1.0)
+includes a native CrystalHD plugin and uses our ABI-compatible library without
+rebuilding. It still misses four final pictures in the numbered test;
+0.5x transition and broader controls/A/V reliability remain unresolved in
+[#18](https://github.com/ahnhy1324/crystalhd/issues/18). It is not yet recommended
+for reliable daily use. No PowerVLC application patches are supplied here.
 
-**Known failure:** the 12-second, 360-frame High-profile test returns only
-356 unique numbered pictures (0–355), missing the final 356–359.
-The library's AVC1 duplicate-header fix restores picture 0, which previously
-returned timestamp zero and was discarded by PowerVLC; coverage was then 355 pictures.
-Output stopped advancing at picture 355 and repeated it. The same file returned
-all 360 frames through the GStreamer counted test. PowerVLC returning success
-or reaching the end of its timeline is therefore not proof of complete decode.
-Its native end-of-stream handling needs work before this can be recommended
-for reliable everyday playback. Seek checks are inconsistent; one failed
-backward seek caused firmware-command timeouts during close before the driver
-disabled DMA and released the session. A separate settled 2x-rate smoke test
-passed, but 0.5x did not. PowerVLC-specific Full HD, other codecs, subtitles
-and robust controls are not established. Track this in
-[#18](https://github.com/ahnhy1324/crystalhd/issues/18).
-
-For a diagnostic run, extract the downloaded AppImage in its own directory
-with `./PowerVLC-2.1.0-x86_64.AppImage --appimage-extract`. No installer or
-system VLC replacement is needed. From the root of this driver repository:
+Extract the downloaded AppImage in its own directory with
+`./PowerVLC-2.1.0-x86_64.AppImage --appimage-extract`. From this repository root:
 
 ```sh
 make library
@@ -398,315 +200,175 @@ LD_PRELOAD="$PWD/linux_lib/libcrystalhd/libcrystalhd.so.3" \
   /path/to/video.mp4
 ```
 
-PowerVLC does not need rebuilding to use this ABI-compatible library. The
-preload selects our library instead of the older one bundled by the
-AppImage; `LD_LIBRARY_PATH` alone is insufficient because `AppRun` prepends
-its bundled directories. The diagnostic options disable look-ahead caching
-and subtitles, and avoid the bundled font-renderer startup stall observed
-locally. Verify the loaded kernel module matches the source build as described
-in [BRINGUP.md](BRINGUP.md), and close other CrystalHD clients first.
+`LD_PRELOAD` selects our library; `LD_LIBRARY_PATH` alone loses to AppRun's
+bundled paths. These diagnostic options disable look-ahead caching/subtitles
+and avoid an observed bundled font-renderer stall. They do not replace system
+VLC. Add `VLC_CHD_TRACE=1` and `-vvv` for diagnostics; require the **main video**
+decoder to remain `crystalhd` with actual output. Audio/thumbnail `avcodec`
+activity is not main-video fallback, and decode logs are not presentation proof.
 
-For evidence, add `VLC_CHD_TRACE=1` to the environment and `-vvv` to the
-arguments. Require the main video decoder to be `crystalhd` and actual native
-output; a menu setting or library load alone is not enough. `avcodec` is normal
-for audio and seek thumbnails, but main-video fallback is not a hardware pass.
-Trace output counts are not presentation counts, and the tail failure above
-still applies to this example.
-
-The opt-in offscreen regression below requires the extracted release's SDK,
-a C compiler and GNU `timeout`. It checks the selected library's actual path
-before playback and validates numbered pixels, not just player statistics:
+The strict offscreen pixel regression requires the extracted SDK, a C compiler
+and GNU `timeout`:
 
 ```sh
-sh tests/generate-browser-sample.sh /tmp/crystalhd-powervlc.mp4 --av-360p
-sh tests/powervlc-playback.sh /path/to/squashfs-root \
-  "$PWD/linux_lib/libcrystalhd" /tmp/crystalhd-powervlc.mp4
-```
-
-Append `--software` for the reference decoder, `--controls` for pause/resume
-and seek/rate smoke checks, or `--half` / `--double` for independent rate
-checks after a settling interval. The default requires every picture through
-the final frame and currently fails on the native path. These tests do not
-open a GUI, test audio or certify smooth display cadence. They use temporary
-configuration and do not install or rebuild PowerVLC.
-
-## GStreamer playback
-
-The experimental local-file controller uses GStreamer's `playbin` for the
-video window, audio, and optional external subtitles:
-
-```sh
-./scripts/crystalhd-play --hardware video.mp4
-./scripts/crystalhd-play --software --subtitles captions.srt video.mp4
-```
-
-After installation, use `crystalhd-play` without the source-tree prefix.
-Keep its launching terminal open: Space pauses/resumes, Left/Right or `j`/`l`
-seek ten seconds, `1`/`2`/`3` select 0.5x/1x/2x, and `q` quits. Hardware mode
-is the default and confirms the decoder only after actual raw video output.
-Unsupported input, a busy card, or decoder errors do not silently select
-software; retry explicitly with `--software`. Software codec availability
-depends on installed GStreamer plugins; `gstreamer1.0-libav` adds FFmpeg
-decoders. Rank changes are local to the player process, not system defaults.
-BCM70015 hardware tests pass pause/resume, forward/backward flushing seeks,
-and 0.5x/1x/2x playback on numbered 360p and 720p H.264 + AAC fixtures,
-including complete 360-frame replay. Flushing seeks now reopen the full
-device; an independent output worker prevents audio preroll from starving
-video output. A 30-minute 720p30 H.264 + AAC run also passes all 54,000 video
-frames and EOS, with maximum measured A/V interval skew of 4ms and about 12%
-process CPU use. These checks use clocked test sinks, not a window or speakers,
-and do not guarantee speaker/display lip-sync, smooth Full HD or arbitrary
-streams. The controller's output watchdog is cooperative: a blocked library
-call can still require an external timeout during testing.
-
-To reproduce the numbered 720p hardware control check after building (needs
-FFmpeg with libx264/AAC encoding and GStreamer H.264/AAC plugins):
-
-```sh
-make -C filters/gst/gst-plugin-1.0 gstreamer-controls-test
 crystalhd_sample_dir=$(mktemp -d)
-sh tests/generate-browser-sample.sh "$crystalhd_sample_dir/av720.mp4" --av-720p
-GST_PLUGIN_PATH="$PWD/filters/gst/gst-plugin-1.0" \
-LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
-GST_REGISTRY="$crystalhd_sample_dir/registry.bin" \
-timeout --kill-after=10 120 \
-  filters/gst/gst-plugin-1.0/gstreamer-controls-test \
-  "$crystalhd_sample_dir/av720.mp4" --audio --timeout 90
+sh tests/generate-browser-sample.sh "$crystalhd_sample_dir/av360.mp4" --av-360p
+sh tests/powervlc-playback.sh /path/to/squashfs-root \
+  "$PWD/linux_lib/libcrystalhd" "$crystalhd_sample_dir/av360.mp4"
 ```
 
-This fails on missing/out-of-order identities, incorrect seek/rate progress,
-video lateness above 250ms or sampled A/V interval skew above 100ms. It does
-not open a GUI or measure speaker/display lip-sync. The sample and temporary
-GStreamer registry remain in the generated directory for inspection.
-
-For an H.264 MP4 file:
-
-```sh
-gst-launch-1.0 filesrc location=video.mp4 ! qtdemux ! h264parse ! \
-  crystalhddec ! videoconvert ! autovideosink
-```
-
-For a build that has not been installed:
-
-```sh
-GST_PLUGIN_PATH=$PWD/filters/gst/gst-plugin-1.0 \
-LD_LIBRARY_PATH=$PWD/linux_lib/libcrystalhd \
-gst-launch-1.0 filesrc location=video.mp4 ! qtdemux ! h264parse ! \
-  crystalhddec ! fakesink sync=false
-```
+The default requires every picture through EOF and currently fails natively.
+`--software` selects the reference decoder; `--controls` tests pause/seek/rate
+progress; `--half` / `--double` isolate rate checks after settling. These use
+temporary settings and do not test audible sync or a real window.
 
 ## Chrome and YouTube
 
+Chrome defaults to **software decoding**, not the CrystalHD card. The codec
+preference extension no longer forces 480p or masks seeks; live YouTube A/V
+desynchronization remains open in [#12](https://github.com/ahnhy1324/crystalhd/issues/12).
+Local-file tests do not establish live-session acceptance.
+
 ### Persistent one-time setup
 
-Run the setup from a normal desktop login, not a root shell:
+This optional setup changes system/browser defaults. It is not needed for
+GStreamer or FFmpeg, nor should it be used just to update an extension.
+Re-running it overwrites launcher configuration. Run from a normal desktop
+login, not a root shell:
 
 ```sh
 ./scripts/setup-crystalhd-chrome-default
 ```
 
-The script is idempotent and performs the complete desktop setup:
+The idempotent script installs non-Snap Google Chrome if absent (its package
+may configure Google's update APT repository), builds/installs this stack,
+and performs the following:
 
-- installs the current non-Snap Google Chrome package when it is absent; the
-  package can also configure Google's APT repository for browser updates
-- builds and installs the CrystalHD kernel/userspace stack and launcher
-- saves launcher settings in `~/.config/crystalhd/chromium.conf`
-- creates the persistent profile `~/.config/crystalhd/chrome-profile`
-- uses Chrome's local basic password store for that profile, avoiding desktop
-  keyring unlock prompts
-- writes the system-wide
-  [`ExtensionInstallForcelist`](https://chromeenterprise.google/policies/extension-install-forcelist/)
-  policy `/etc/opt/chrome/policies/managed/crystalhd-h264.json`, which
-  force-installs the third-party Chrome Web Store
-  [`h264ify`](https://chromewebstore.google.com/detail/h264ify/aleakchihdccplidncghkekgioiakgal)
-  extension so YouTube selects H.264 rather than VP9 or AV1
-- packages and registers the bundled codec-preference extension as a local
-  Chrome extension, preserving its signing key and extension ID on updates
-- registers `crystalhd-chromium.desktop` for HTTP, HTTPS, and HTML
-- shadows the ordinary Google Chrome application entry for the current user,
-  so the normal Chrome icon also starts the CrystalHD launcher
+- Rewrites `~/.config/crystalhd/chromium.conf` and uses a dedicated
+  `~/.config/crystalhd/chrome-profile` to prevent an existing Chrome process
+  from silently absorbing launch settings.
+- Uses the **basic password store**, without desktop-keyring protection.
+- Persists `CRYSTALHD_CHROMIUM_DISABLE_GPU_SANDBOX=1`. Software decoding still
+  keeps the sandbox; later enabling experimental hardware disables it without
+  another prompt.
+- Force-installs third-party [h264ify](https://chromewebstore.google.com/detail/h264ify/aleakchihdccplidncghkekgioiakgal)
+  through machine-wide policy, affecting **all Chrome profiles** and marking
+  Chrome as managed.
+- Packages/registers the bundled codec-preference extension with a persistent
+  signing key/ID. Linux external registration can affect fresh profiles even
+  when Chrome ignores `--load-extension`.
+- Registers the launcher for HTTP/HTTPS/HTML and shadows the normal Chrome
+  desktop entry for the current user.
+- Sets a browser-wide policy hiding command-line security warnings. This does
+  **not** restore any disabled sandbox and also hides warnings for other flags.
+  The managed policy also sets `DefaultBrowserSettingEnabled=false`.
 
-After setup, open the normal **Google Chrome with CrystalHD** application or
-click any web link. No environment variables are required. The launcher uses
-the dedicated profile so an already-running standard Chrome profile cannot
-silently absorb the launch and discard the CrystalHD settings.
-
-The managed extension policy applies to every Google Chrome profile on the
-machine, not only the dedicated CrystalHD profile. Chrome shows the browser as
-managed while this policy is installed.
-
-The bundled extension is also installed through Chrome's
-[Linux external-extension mechanism](https://developer.chrome.com/docs/extensions/how-to/distribute/install-extensions#linux),
-which can load it in fresh profiles even when `--load-extension` is ignored.
-Version 1.6.0 filters codec capability queries only: it does not force 480p,
-change player quality, hide posters, or mask video during seeks. Version
-1.5.0 had those presentation overrides and should be updated. Unsupported
-video codecs and frame rates above 30 fps are still reported as unsupported;
-that can affect which representations the site offers without overriding the
-user's selection among compatible ones.
-For a local CRX update, both the signed package and the external registration's
-version must change; updating repository files or running `make install` alone
-does not replace an already packaged extension. The full desktop setup above
-also changes system/browser defaults, so do not use it merely to update an
-extension unless those broader changes are intended.
-
-Canonical's Chromium snap is not supported. Snap confinement denies access to
-`/dev/crystalhd`; copying the VA-API driver into the snap does not grant that
-device access. The setup therefore installs Google's non-Snap Debian package.
+The bundled 1.6.0 extension filters codec capabilities only; update older 1.5.0
+packages that changed quality/visibility. Unsupported codecs and rates above
+30 fps remain filtered. An installed CRX update needs both a newly signed
+package and updated external-registration version; `make install` alone does
+not replace it. Chromium snap is unsupported: its confinement denies card access.
 
 ### Decoder, display GPU, and compositor
 
-The launcher defaults to Chrome's `FFmpegVideoDecoder`. Earlier X11 pixel
-captures showed incorrect post-seek pictures in the hardware path. Two driver
-lifecycle bugs have since been fixed and regression-tested: repeated video
-processing retains the correct decoded picture, and surface reuse between
-parameter submission and completion cannot select a different picture.
-Missing or retired pictures now report errors instead of unrelated fallback
-pixels. These tests do not establish complete hardware drain or actual browser
-seek correctness; both still require end-to-end validation. Software decoding
-remains the browser default until that validation passes.
+The launcher selects `FFmpegVideoDecoder` by default. Hardware decoding remains
+experimental despite driver-level fixes. For developer tests,
+`CRYSTALHD_CHROMIUM_EXPERIMENTAL_HW_DECODE=1` selects VA-API, subject to the
+sandbox acknowledgement below. Asynchronous VPP also needs a usable write
+fence source; disabling the sandbox alone does not provide it.
 
-Set `CRYSTALHD_CHROMIUM_EXPERIMENTAL_HW_DECODE=1` only to test the unresolved
-VA-API browser path. CrystalHD remains available to FFmpeg, GStreamer, and
-direct VA-API clients. `/dev/dri/renderD128` belongs to the display GPU and is
-used for allocating/displaying surfaces. On the tested Intel 965GM system,
-the launcher uses Mesa llvmpipe for composition.
-
-Set `CRYSTALHD_CHROMIUM_NATIVE_GL=1` in
-`~/.config/crystalhd/chromium.conf` only when the display GPU supports current
-Chrome. Set `CRYSTALHD_DRM_DEVICE` there if the active render node is not
-`/dev/dri/renderD128`.
+The display GPU's render node allocates/presents surfaces. In `chromium.conf`,
+use `CRYSTALHD_DRM_DEVICE` for a node other than `/dev/dri/renderD128`, or
+`CRYSTALHD_CHROMIUM_NATIVE_GL=1` only when the display GPU supports current
+Chrome. Composition defaults to Mesa llvmpipe. See [VA-API limitations](filters/vaapi/README.md).
 
 ### Security boundary
 
-The default software-decoding path keeps Chrome's GPU sandbox enabled and does
-not force the CrystalHD VA-API driver, even if an older persistent configuration
-contains the sandbox acknowledgement. Chrome's GPU sandbox does not broker
-`/dev/crystalhd` or this out-of-tree VA-API driver. Only experimental hardware
-decoding uses `--disable-gpu-sandbox`, and it requires
-`CRYSTALHD_CHROMIUM_DISABLE_GPU_SANDBOX=1`. Renderer, network, and other
-browser-process sandboxes remain enabled, but graphics and video parsing in
-the experimental GPU process are unsandboxed.
+Software decoding keeps the GPU sandbox enabled even if an old configuration
+contains the opt-out acknowledgement. Experimental hardware decoding requires
+`CRYSTALHD_CHROMIUM_DISABLE_GPU_SANDBOX=1` and runs graphics/video parsing
+without the GPU-process sandbox. Other browser sandboxes remain enabled.
+The warning-hiding policy does not make this safe.
 
-The setup disables Chrome's command-line security-warning banner through the
-managed `CommandLineFlagSecurityWarningsEnabled` policy. This only hides the
-repeated `--disable-gpu-sandbox` warning; it does not restore the GPU sandbox.
-The policy is browser-wide, so Chrome also hides warnings for other dangerous
-command-line flags while the policy remains installed.
-
-The basic password backend does not protect saved passwords with the desktop
-keyring. Avoid saving passwords in the dedicated profile, or set
-`CRYSTALHD_CHROMIUM_PASSWORD_STORE=gnome-libsecret` in `chromium.conf` to use
-the keyring and accept its unlock prompt.
-
-Chrome may print `Created TensorFlow Lite XNNPACK delegate for CPU` when its
-Safe Browsing client-side phishing model starts. This is an informational
-message unrelated to CrystalHD, VA-API, or GPU acceleration; the launcher does
-not disable that browser security feature.
-
-Software playback needs no sandbox acknowledgement. Experimental hardware
-playback is refused until `CRYSTALHD_CHROMIUM_DISABLE_GPU_SANDBOX=1` is set.
+Avoid saving passwords in the basic-store profile. Set
+`CRYSTALHD_CHROMIUM_PASSWORD_STORE=gnome-libsecret` in `chromium.conf` for
+keyring protection and accept its unlock prompt. The informational XNNPACK
+message may come from Chrome's phishing protection, not hardware decoding;
+the launcher does not disable that security feature.
 
 ### Verify browser playback
 
-YouTube's **Stats for nerds** should show an `avc1` codec. In
-`chrome://media-internals`, the active player should report
-`FFmpegVideoDecoder` and platform decoding `false`. This is the safe browser
-default.
-
-To inspect the experimental hardware path, add
-`CRYSTALHD_CHROMIUM_EXPERIMENTAL_HW_DECODE=1` to `chromium.conf`. While it is
-active, the GPU process should own the device:
+YouTube's Stats for nerds should show `avc1`; `chrome://media-internals` should
+report `FFmpegVideoDecoder`, platform decoding `false`, for the default path.
+For numbered-pixel/seek checks in a temporary profile with the GPU sandbox:
 
 ```sh
-sudo fuser -v /dev/crystalhd
+crystalhd_sample_dir=$(mktemp -d)
+sh tests/generate-browser-sample.sh "$crystalhd_sample_dir/browser.mp4"
+node tests/chromium-local-playback.js "$crystalhd_sample_dir/browser.mp4"
+node tests/chromium-local-playback.js "$crystalhd_sample_dir/browser.mp4" --controls
 ```
 
-For an automated check after persistent setup, start the installed launcher:
+`--controls` adds pause/resume and 0.5x/1.5x/2x/restored 1x checks. This tests
+sampled pixel identity/timestamps, not audible sync or full-rate display.
+`--expect-hardware` rejects software fallback and requires explicit hardware
+and sandbox opt-in.
+
+After persistent setup, a software-default live probe uses two terminals:
 
 ```sh
-CRYSTALHD_CHROMIUM_EXPERIMENTAL_HW_DECODE=1 \
-  crystalhd-chromium --remote-debugging-port=9223 \
+crystalhd-chromium --remote-debugging-port=9223 \
   --remote-allow-origins=http://localhost about:blank
 ```
 
-Then run the probe in a second terminal. The managed H.264 policy means no
-diagnostic codec injection is necessary:
-
 ```sh
-./tests/chromium-youtube.js --port 9223 \
-  --expect-hardware 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+node tests/chromium-youtube.js --port 9223 \
+  'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
 ```
 
-The experimental check expects an `avc1` codec and
-`Chrome decoder: VaapiVideoDecoder (platform=true)`. The probe exits
-unsuccessfully unless playback advances through the hardware path without a
-media-timeline regression, player error, or Chrome media error. The default
-observation window is 90 seconds; success also requires healthy video and
-recent frame/time progress at the end, not just a few seconds of earlier output.
-Add `--seek-at 20 --seek-to 120` to perform a real timeline jump and fail if a
-pre-seek frame timestamp is reported again after the new timeline has settled.
-This callback-timestamp check does not independently establish visible pixel
-identity; use the local barcode probe for exact pixels and their own timestamps.
-Use `--force-h264` only as a diagnostic fallback on a profile where the
-managed extension is not installed.
+For an acknowledged hardware experiment, set
+`CRYSTALHD_CHROMIUM_EXPERIMENTAL_HW_DECODE=1` on the launcher and append
+`--expect-hardware` to the probe. It requires `VaapiVideoDecoder`, platform
+`true`, and output without fallback. Device ownership (`sudo fuser -v /dev/crystalhd`)
+alone does not prove valid pictures. The default window is 90 seconds;
+`--seek-at 20 --seek-to 120` checks a jump and subsequent frame timestamps,
+not independent pixels. `--force-h264` is a diagnostic fallback without the
+managed extension.
 
-Omit both the experimental environment variable and `--expect-hardware` to
-verify the safe `FFmpegVideoDecoder` path.
-
-The live YouTube failure tracked in
-[#12](https://github.com/ahnhy1324/crystalhd/issues/12) reports
-`ump.spsrejectfailure` / `HTML5_SPS_UMP_STATUS_REJECTED`, including with
-extensions disabled and software decoding. HTTP 200 segment responses and a
-clean decoder error log do not make this service/player rejection a pass.
-Do not hide automation indicators or bypass service verification to make the
-probe green. A normal browser-session check and service-side troubleshooting
-are separate from validating the CrystalHD decoder.
+Service/player rejection (`ump.spsrejectfailure` /
+`HTML5_SPS_UMP_STATUS_REJECTED`) has occurred with extensions disabled and
+software decoding. HTTP 200 is not a playback pass. Do not hide automation
+indicators or bypass service verification to make a test pass.
 
 ### Persistent files and removal
 
-The setup changes these persistent locations:
+Setup state includes:
 
-- `~/.config/crystalhd/chromium.conf`
-- `~/.config/crystalhd/chrome-profile`
-- `~/.local/share/applications/crystalhd-chromium.desktop`
-- `~/.local/share/applications/google-chrome.desktop`
-- `/etc/opt/chrome/policies/managed/crystalhd-h264.json`
+- `~/.config/crystalhd/`: launcher config, dedicated profile and extension key.
+- `~/.local/share/applications/crystalhd-chromium.desktop` and
+  `~/.local/share/applications/google-chrome.desktop`.
+- `/etc/opt/chrome/policies/managed/crystalhd-h264.json`: managed extension,
+  default-browser and command-line-warning policy.
+- `/usr/share/crystalhd/crystalhd-seek-gate.crx` and
+  `/opt/google/chrome/extensions/<extension-id>.json`: bundled package and
+  registration; historical names preserve the extension identity.
 
-To stop using CrystalHD as the desktop default, select another browser in the
-desktop settings and remove the two per-user desktop entries. Removing the
-managed policy stops force-installing `h264ify`; removing the dedicated
-profile deletes only this launcher's browsing data. Re-run the setup after a
-launcher update to reinstall the latest files.
-
-See [`filters/vaapi/README.md`](filters/vaapi/README.md) for backend details and
-limitations.
+Select another desktop-default browser and remove the two per-user desktop
+entries to stop redirecting launches. Remove this setup's managed policy to
+stop its browser policies, and its external registration to stop
+installing the bundled extension in new profiles. Leave unrelated policies
+and registrations alone. Deleting the dedicated profile deletes its browsing
+data; retain the signing key for same-ID updates. System driver/library
+installation is separate. Re-running setup reinstalls its files and defaults.
 
 ## DKMS
 
-The regular install above places a module only under the currently selected
-kernel. To rebuild it automatically after kernel upgrades, register the source
-with DKMS:
-
-```sh
-sudo ln -sfn "$PWD" /usr/src/crystalhd-3.10.0
-sudo dkms add -m crystalhd -v 3.10.0
-sudo dkms build -m crystalhd -v 3.10.0
-sudo dkms install -m crystalhd -v 3.10.0
-```
-
-Verify that the module is installed for the running kernel and that its PCI
-alias can be loaded automatically at boot:
-
-```sh
-dkms status
-modinfo crystalhd
-sudo modprobe crystalhd
-```
-
-See [HISTORY.md](HISTORY.md) for the history of the original driver releases.
+Follow [README.dkms](README.dkms) for the maintained procedure, including
+existing-version handling, selected-kernel installation, source-version checks
+and safe reload. DKMS handles the module, not firmware or userspace plugins.
 
 ## Licensing
 
-This is a mixed-license codebase. Existing file notices remain authoritative;
-new maintenance-fork material is identified in [LICENSES.md](LICENSES.md).
+Existing file notices remain authoritative in this mixed-license codebase;
+see [LICENSES.md](LICENSES.md). [HISTORY.md](HISTORY.md) records original driver
+releases, not the current task list.
