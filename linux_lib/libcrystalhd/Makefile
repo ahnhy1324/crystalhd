@@ -17,7 +17,8 @@ DESTDIR ?=
 ROOTDIR := ../..
 CPPFLAGS += -D__LINUX_USER__ -I. -I$(ROOTDIR)/include -I$(ROOTDIR)/include/link
 CXXFLAGS ?= -O2
-CXXFLAGS += -Wall -Werror -fPIC -fstrict-aliasing -msse2
+override CXXFLAGS += -Wall -Werror -fPIC -fstrict-aliasing
+CRYSTALHD_NORMAL_CPU_FLAGS := -msse2
 LDFLAGS += -shared -Wl,-soname,$(BCLIB_SONAME)
 LDLIBS += -pthread
 
@@ -41,7 +42,10 @@ FIRMWARE := $(ROOTDIR)/firmware/fwbin/70012/bcm70012fw.bin \
 all: $(BCLIB) $(BCLIB_NAME) $(BCLIB_SONAME) libcrystalhd.pc
 
 $(BCLIB): $(OBJFILES)
-	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+	$(CXX) $(LDFLAGS) -o $@ $(OBJFILES) $(LDLIBS) $(CRYSTALHD_CPU_FLAGS)
+
+%.o: %.cpp
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CRYSTALHD_CPU_FLAGS) -c $< -o $@
 
 $(BCLIB_NAME) $(BCLIB_SONAME): $(BCLIB)
 	ln -sfn $(BCLIB) $@
@@ -52,7 +56,7 @@ libcrystalhd.pc: libcrystalhd.pc.in
 		-e 's|@includedir@|$(INCLUDEDIR)|g' $< > $@
 
 clean:
-	rm -f $(BCLIB) $(BCLIB_SONAME) $(BCLIB_NAME) $(OBJFILES) libcrystalhd.pc
+	rm -f $(BCLIB) $(BCLIB_SONAME) $(BCLIB_NAME) $(OBJFILES) libcrystalhd.pc $(CRYSTALHD_CPU_STAMP) $(CRYSTALHD_CPU_STAMP).tmp
 
 install: all
 	install -D -m 0755 $(BCLIB) $(DESTDIR)$(LIBDIR)/$(BCLIB)
@@ -63,3 +67,6 @@ install: all
 	install -D -m 0644 libcrystalhd.pc $(DESTDIR)$(PKGCONFIGDIR)/libcrystalhd.pc
 	install -d $(DESTDIR)$(FIRMWAREDIR)
 	install -m 0644 $(FIRMWARE) $(DESTDIR)$(FIRMWAREDIR)
+
+include $(ROOTDIR)/cpu.mk
+$(OBJFILES) $(BCLIB): $(CRYSTALHD_BUILD_DEPS)

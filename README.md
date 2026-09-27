@@ -69,6 +69,28 @@ CrystalHD card. The 32-bit check uses an isolated build directory; a 32-bit
 process on a 64-bit kernel needs `CONFIG_COMPAT`.
 CI also compiles Linux LTS, stable and mainline kernel APIs.
 
+### Legacy CPUs without SSE
+
+`make -C linux_lib/libcrystalhd LEGACY_CPU=1` builds a scalar **32-bit i686**
+library without SSE/SSE2 or MMX. The same option applies to userspace plugins
+and examples; they need matching 32-bit dependencies, pkg-config settings and
+installation directories. It does not make a 32-bit library loadable by a
+64-bit player, change the kernel's CPU requirements, or guarantee old-machine
+playback speed. `LEGACY_CPU=0` restores the ordinary accelerated build; mode
+changes automatically rebuild affected outputs. Contradictory `-m` flags are
+rejected in legacy mode.
+
+With `qemu-user` installed, `make legacy-cpu-check` executes production tests
+and the actual shared library under a no-SSE Pentium II model. `QEMU_I386` may
+select a privately extracted emulator instead. Legacy VA-API builds retain
+synchronous CPU access but reject asynchronous VPP before publishing a fence;
+that path requires supported cache-flush and barrier instructions.
+
+Validation uses Linux i386 userspace (GCC 15.2/glibc 2.42) under emulation,
+plus 180/180 FHD H.264 frames on BCM70015 with the scalar 32-bit library on an
+SSE2-capable host. Physical no-SSE machines and full 32-bit player/plugin
+stacks remain unverified; use an OS and dependencies built for the target CPU.
+
 Hardware validation requires an idle card and matching loaded module. Follow
 [module/ABI checks](BRINGUP.md#device-access-and-module-identity),
 [GStreamer counts/replay](filters/gst/gst-plugin-1.0/README.md#counted-h264-playback-and-replay),

@@ -8,7 +8,7 @@ KDIR ?= /lib/modules/$(KVER)/build
 DRIVER_ARGS := KVER=$(KVER) KDIR=$(KDIR) DESTDIR=$(DESTDIR)
 USER_ARGS := PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 
-.PHONY: all driver library library-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check l0s-check pib-check userspace32-check check install clean
+.PHONY: all driver library library-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check l0s-check pib-check userspace32-check legacy-cpu-check check install clean
 
 all: driver library gstreamer vaapi examples browser
 
@@ -50,7 +50,7 @@ library-check:
 		-Ilinux_lib/libcrystalhd -Iinclude -Iinclude/link \
 		tests/library-$$lib_test.cpp $$test_sources $$test_extra \
 		-Wl,--gc-sections $$test_wrap -pthread \
-		-o "$$lib_test_dir/check"; "$$lib_test_dir/check"; \
+		$(CRYSTALHD_CPU_FLAGS) -o "$$lib_test_dir/check"; "$$lib_test_dir/check"; \
 	done
 
 gstreamer: library
@@ -62,7 +62,7 @@ library-drain-test: library
 	$(CXX) -std=c++11 -O2 -g -Wall -Wextra -Werror -D__LINUX_USER__ \
 		-Iinclude -Ilinux_lib/libcrystalhd tests/library-drain.cpp \
 		$$(pkg-config --cflags --libs libavformat libavcodec libavutil glib-2.0) \
-		-Llinux_lib/libcrystalhd -lcrystalhd -o tests/library-drain-test
+		-Llinux_lib/libcrystalhd -lcrystalhd $(CRYSTALHD_CPU_FLAGS) -o tests/library-drain-test
 
 vaapi: library
 	$(MAKE) -C filters/vaapi
@@ -88,6 +88,9 @@ pib-check:
 userspace32-check:
 	CXX="$(CXX)" sh ./tests/userspace32.sh
 
+legacy-cpu-check:
+	CXX="$(CXX)" sh ./tests/userspace32.sh --legacy
+
 check: uapi-check dma-check l0s-check pib-check library-check all
 	$(MAKE) -C filters/gst/gst-plugin-1.0 check
 	$(MAKE) -C filters/vaapi check
@@ -108,3 +111,5 @@ clean:
 	$(MAKE) -C filters/gst/gst-plugin-1.0 clean
 	$(MAKE) -C filters/vaapi clean
 	$(MAKE) -C examples clean
+
+include cpu.mk
