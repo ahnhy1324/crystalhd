@@ -18,7 +18,8 @@ On Ubuntu, install the ordinary build and playback dependencies:
 sudo apt install build-essential pkg-config linux-headers-$(uname -r) \
   libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
   gstreamer1.0-tools gstreamer1.0-plugins-base \
-  gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav \
+  gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+  gstreamer1.0-plugins-ugly gstreamer1.0-libav ffmpeg \
   python3-gi gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 \
   libva-dev libdrm-dev libgbm-dev libswscale-dev vainfo
 ```
@@ -35,6 +36,8 @@ sudo modprobe crystalhd
 `libcrystalhd`, headers, GStreamer plugin/player, VA-API driver and
 `crystalhd-check`. It does not configure a browser, enable the optional PCIe
 workaround, replace an already loaded module, or install a DKMS registration.
+Optional browser launcher assets use `sudo make install-browser`; hardware
+browser decoding remains experimental and opt-in.
 
 ## Verify
 
@@ -47,10 +50,9 @@ gst-inspect-1.0 crystalhddec
 
 The preflight reports the PCI device, loaded and installed module identities,
 direct/DKMS conflicts, firmware, device access and owner, loader-selected
-library, actual GStreamer plugin filename, VA driver and all DRM render nodes.
-`OK`, `WARN`, `FAIL` and `INFO` lines can be copied into a bug report. It does
-not load or unload a module, open a decoder session, alter PCIe settings or
-require raw-register access.
+library, GStreamer plugin, VA driver and DRM render nodes. It does not load or
+unload a module, open a decoder session, alter PCIe settings or require raw
+register access.
 
 After rebuilding, compare the checkout as well:
 
@@ -58,14 +60,12 @@ After rebuilding, compare the checkout as well:
 crystalhd-check --source-tree "$PWD"
 ```
 
-`modprobe` does not replace a module already in memory. If the loaded and
-selected source versions differ, close every CrystalHD client, verify that
-`/dev/crystalhd` is idle, and reload normally. Never force-unload an active
-device; reboot if a normal unload reports that it is busy.
-
 The card permits one playback session at a time. The installed udev rule gives
 the active desktop user access and otherwise uses `root:video` mode `0660`. On
-a headless system, add the playback account to `video` and log in again.
+a headless system, add the playback account to `video` and log in again. For
+module identity checks and safe reload instructions, see the
+[bring-up guide](BRINGUP.md#device-access-and-module-identity). Never
+force-unload an active device.
 
 ## Play a local file
 
@@ -113,40 +113,35 @@ See its [supported profiles and replay limits](filters/vaapi/README.md).
 
 ## 32-bit and legacy CPUs
 
-On a native 32-bit i686 system with SSE2, use the ordinary build after
-installing matching 32-bit dependencies. On a 64-bit multilib system, the
-compiler, pkg-config paths, dependencies and installation directory must all
-select the same 32-bit ABI. A 32-bit `libcrystalhd` cannot load into a 64-bit
-player, or vice versa; `crystalhd-check` reports the selected library class.
+On a native 32-bit i686 system with SSE2, use the ordinary build with matching
+32-bit dependencies. A multilib compiler, dependencies and installation path
+must all select the same ABI; a 32-bit library cannot load into a 64-bit player.
 
-`LEGACY_CPU=1` is only for 32-bit i686 processors without SSE/SSE2 or MMX. It
-selects a scalar x87 build and requires matching 32-bit dependencies:
+`LEGACY_CPU=1` is for 32-bit i686 processors that lack SSE2. It also disables
+SSE and MMX, selects a scalar x87 build and requires matching 32-bit
+dependencies:
 
 ```sh
 make LEGACY_CPU=1
 ```
 
-Normal builds keep the accelerated SSE2 baseline. Changing `LEGACY_CPU`
-rebuilds affected outputs automatically. `make userspace32-check` and
-`make legacy-cpu-check` exercise isolated native-32 and no-SSE builds; they do
-not make mixed-ABI installation automatic or certify performance on a physical
-legacy processor.
+Normal builds keep the SSE2 baseline. `make userspace32-check` and
+`make legacy-cpu-check` exercise the two build modes, but do not configure a
+mixed-ABI installation or certify performance on a physical legacy processor.
 
 ## DKMS
 
-DKMS owns only the kernel module. Firmware, the udev rule, libraries and
-plugins remain a separate installation:
+DKMS owns only the kernel module. Register and install it with the procedure in
+[README.dkms](README.dkms), then install the separate runtime:
 
 ```sh
 sudo apt install dkms linux-headers-$(uname -r)
-# Register/build/install the module as described in README.dkms, then:
 sudo make install-runtime
 ```
 
-Do not run the direct `install-module` target over a DKMS-managed kernel. After
-an update, use `crystalhd-check` to confirm which module file will load and
-whether its source version matches the loaded module. Registration, safe
-same-version rebuilds and removal are in [README.dkms](README.dkms).
+Do not run the direct `install-module` target over a DKMS-managed kernel. Use
+`crystalhd-check` after updates to detect direct/DKMS conflicts and stale loaded
+modules.
 
 ## Troubleshooting
 
@@ -164,20 +159,11 @@ sudo modprobe -r crystalhd
 sudo modprobe crystalhd force_l0s_off=1
 ```
 
-Proceed only when `fuser` shows no owner; never force the unload. The option
-applies only to a
-BCM70015 on a dedicated root-port link, can increase power use, and does not
-certify display timing or audible lip-sync. Do not use global
-`pcie_aspm=force` or change link speed/payload settings. See the
+Proceed only when `fuser` shows no owner; never force the unload. The option is
+for BCM70015 on a dedicated root-port link, can increase power use, and does
+not certify display timing or audible lip-sync. Do not use global
+`pcie_aspm=force` or change link speed or payload settings. See the
 [recorded measurements](HARDWARE-2026-09-13.md#pcie-l0s-isolation-2026-09-27).
-
-Chrome hardware decoding and PowerVLC integration remain experimental and are
-tracked separately in issues
-[#12](https://github.com/ahnhy1324/crystalhd/issues/12) and
-[#18](https://github.com/ahnhy1324/crystalhd/issues/18). The core install does
-not change browser/player defaults. Optional browser launcher assets use
-`sudo make install-browser`; the checkout-only default-browser setup is not
-installed as a system command.
 
 ## Uninstall
 
@@ -198,13 +184,9 @@ Browser launcher assets are separately scoped:
 sudo make uninstall-browser
 ```
 
-That target removes only the launcher, bundled extension assets and desktop
-file installed by `make install-browser`. It does not delete browser profiles,
-unrelated policies or defaults. Remove a DKMS registration separately with the
-procedure in [README.dkms](README.dkms).
-State created by the checkout-only `setup-crystalhd-chrome-default` script
-(profile/default and managed Chrome registration) is outside this target and
-must be reviewed separately before removing it.
+That target removes only the installed launcher, extension assets and desktop
+file; it does not delete profiles, policies or defaults. Remove a DKMS
+registration separately with the procedure in [README.dkms](README.dkms).
 
 ## Developer and source-tree testing
 
@@ -221,13 +203,6 @@ make legacy-cpu-check
 The kernel and userspace builds use `-Werror`. CI also compiles the driver
 against maintained LTS, stable and mainline kernel APIs. Device-free tests do
 not establish hardware playback.
-
-`tests/staged-install.sh` installs into a temporary `DESTDIR`, verifies the
-complete layout and SONAME links, then exercises idempotent removal without
-touching the host. Source-tree tests may deliberately use `LD_LIBRARY_PATH`,
-`GST_PLUGIN_PATH`, a private GStreamer registry or `LIBVA_DRIVERS_PATH`; an
-installed-path test must not. The component guides keep those development
-commands separate from normal installed discovery.
 
 ## Licensing
 

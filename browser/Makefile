@@ -12,7 +12,6 @@ all:
 
 check:
 	sh -n $(ROOTDIR)/scripts/crystalhd-chromium
-	sh -n $(ROOTDIR)/scripts/setup-crystalhd-chrome-default
 	sh -n $(ROOTDIR)/tests/generate-browser-sample.sh
 	test -s h264-only/manifest.json
 	test -s h264-only/prefer-h264.js

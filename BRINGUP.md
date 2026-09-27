@@ -20,15 +20,16 @@ BCM70012 has not been recently hardware-tested.
 
 Establish one invariant at a time:
 
-1. The PCI function is visible with the expected device ID.
-2. The module binds and creates `/dev/crystalhd`.
-3. `DtsDeviceOpen()` loads the correct firmware and observes its heartbeat.
-4. The decoder accepts an explicitly described elementary stream.
-5. The application selects an output format advertised by the device.
-6. `DtsProcInput()` accepts data and the firmware consumes it.
-7. A picture reaches the host RX path with valid picture information.
-8. The client releases the output buffer before requesting more work.
-9. The frontend preserves frame identity across drain, flush, and seek.
+| Milestone | Positive evidence | Investigate first when it fails |
+| --- | --- | --- |
+| PCI discovery | `14e4:1612` or `14e4:1615` is present | Slot, power, BIOS, PCI enumeration |
+| Driver bind | Module is loaded and `/dev/crystalhd` exists | Kernel log, PCI probe, udev rule |
+| Firmware start | `DtsDeviceOpen()` succeeds without a heartbeat failure | Firmware file, permissions, device ownership, existing client |
+| Decoder setup | Format, open, color, start and capture calls succeed | Call order, input subtype, supported color format |
+| Input acceptance | `DtsProcInput()` succeeds and progress continues | Annex-B framing, metadata, start-code size, buffer alignment |
+| Picture ready | Output has valid picture information | YUY2 selection, bitstream validity, RX path |
+| Continued output | Multiple frames drain without stalling | Released output buffers, single-session ownership, drain loop |
+| Correct display | Frames stay ordered through seek and flush | Timestamps, reorder state, surface lifetime, frontend synchronization |
 
 Do not infer a lower-layer failure from a later missing milestone. For
 example, a live firmware heartbeat does not prove that the input stream is
@@ -63,8 +64,9 @@ source commit and build as well. `modinfo crystalhd` describes the installed
 file, not necessarily the running module. `modprobe crystalhd` does not replace
 an already-loaded module. If versions differ, close all players, confirm the
 device is idle and unload normally before explicitly loading the intended
-build. Never force-unload a module with active users or DMA. Hardware harnesses
-reject an already-loaded module whose source version differs from their build.
+build. Never force-unload a module with active users or DMA; reboot if a normal
+unload reports that it is busy. Hardware harnesses reject an already-loaded
+module whose source version differs from their build.
 
 With the intended module loaded and idle, `sh tests/ioctl-smoke.sh` checks
 native/compat ioctl validation. `sh tests/userspace32.sh --hardware` builds
@@ -79,14 +81,10 @@ register, FPGA, device-DRAM and PCI configuration diagnostics additionally
 require `CAP_SYS_RAWIO`; run legacy tools as root only when those diagnostics
 are needed. The default rule does not expose raw hardware access to every user.
 
-The read-only vendor/device-ID DWORD (PCI offset 0, size 4) remains available
-without that capability for older libraries identifying the card before
-firmware startup. New builds use the unprivileged hardware-type query.
-BCM70015 playback sessions also retain the legacy color-register operation:
-the kernel permits YUY2/UYVY selection while preserving unrelated bits.
-Adjacent registers and access outside playback remain privileged. BCM70012's
-legacy reset, clock and FPGA initialization require separate hardware
-verification under this permission policy.
+Limited device-identification and playback color-selection operations remain
+available to legacy libraries without raw access. Other register access stays
+privileged, and BCM70012 initialization under this policy still needs hardware
+verification.
 
 For a legacy installation that deliberately permits **all local accounts** to
 open the device, an optional `/etc/udev/rules.d/99-crystalhd-local.rules` can
@@ -148,34 +146,6 @@ The current frontends and diagnostics make the selection explicitly:
 
 BCM70012 has different advertised output capabilities. Do not copy the FLEA
 assumption to that device without querying its capabilities.
-
-## Milestones and failure boundaries
-
-| Milestone | Positive evidence | Investigate first when it fails |
-| --- | --- | --- |
-| PCI discovery | `14e4:1612` or `14e4:1615` is present | Slot, power, BIOS, PCI enumeration |
-| Driver bind | Module is loaded and `/dev/crystalhd` exists | Kernel log, PCI probe, udev rule |
-| Firmware start | `DtsDeviceOpen()` succeeds without a heartbeat failure | Firmware file, permissions, device ownership, existing client |
-| Decoder setup | Format, open, color, start, and capture calls succeed | Call order, input subtype, supported color format |
-| Input acceptance | `DtsProcInput()` returns success and progress continues | Annex-B framing, metadata, start-code size, buffer alignment |
-| Picture ready | Output succeeds with valid picture information | YUY2 selection first, then bitstream validity and RX path |
-| Continued output | Multiple frames drain without stalling | `DtsReleaseOutputBuffs()`, single-session ownership, drain loop |
-| Correct display | Frames remain ordered through seek and flush | Timestamps, reorder state, surface lifetime, frontend synchronization |
-
-## Diagnostic shortcuts
-
-- Module compilation proves kernel API compatibility only.
-- A successful firmware heartbeat proves that the device processor is alive,
-  not that a decode channel is correctly configured.
-- A successful `DtsProcInput()` proves API acceptance, not necessarily correct
-  elementary-stream framing.
-- On BCM70015, repeated output timeouts should trigger a YUY2 and call-sequence
-  check before firmware reverse engineering.
-- One frame followed by a stall commonly points to an unreleased output buffer
-  or an incomplete drain loop.
-- Green, black, duplicated, or stale frames after a seek are normally a
-  userspace surface-identity or synchronization problem once the hardware
-  continues to produce valid pictures.
 
 ## Minimum useful test report
 

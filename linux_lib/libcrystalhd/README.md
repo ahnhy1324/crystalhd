@@ -4,13 +4,11 @@
 kernel driver and firmware. This fork preserves its public headers and ABI
 while updating the build and installation layout for current Linux systems.
 
-CI freezes the native/compat ioctl layouts and exercises targeted production
-TX-ring, flush/cancellation, EOS, AVC1 input framing and raw-copy error paths
-without hardware.
-GStreamer, VA-API and an optional direct-library drain probe also exercise
-BCM70015 hardware. These checks are not comprehensive device-API conformance;
-BCM70012 has not been tested recently. New clients should treat the API as a
-compatibility layer rather than a complete modern media framework.
+CI freezes the native/compat ioctl layouts and exercises the TX ring,
+flush/cancellation, EOS, AVC1 framing and raw-copy error paths without
+hardware. These checks are not comprehensive device-API conformance. New
+clients should treat this API as a compatibility layer rather than a complete
+media framework.
 
 Build and stage the library from the repository root:
 
@@ -26,8 +24,8 @@ The install target provides the shared library, public headers, and
 
 This optional probe bypasses GStreamer and VA-API. It checks complete picture
 delivery and genuine firmware EOS, not pixel quality or displayed cadence.
-Install the FFmpeg `libavformat`, `libavcodec`, `libavutil` and GLib development
-packages, then use a local progressive fixture with an independently known
+Install the FFmpeg `libavformat`, `libavcodec`, `libavutil` and GLib
+development packages. Use a progressive fixture with an independently known
 decoded-frame count:
 
 ```sh
@@ -48,23 +46,24 @@ demuxed packet count, assuming one complete progressive picture per packet.
 It is not itself a software decode or proof of error-free media.
 `--hardware` requires an idle BCM70015 and a matching loaded module; see
 [device access and module identity](../../BRINGUP.md#device-access-and-module-identity).
-It submits EOS explicitly with `DtsFlushInput(0)`, then requires every expected
-timestamped picture, the actual EOS output marker, `DtsIsEndOfStream`, an empty
-ready queue and successful stop/close. This probe does not accept MPEG-4. The
-separately validated BCM70015 MPEG-4 path may complete `DtsIsEndOfStream`
-without a firmware marker only after the explicit drain TX retires and all
-output buffers and queues remain free and idle for one second. Input inactivity
-alone never counts as EOS.
+It submits EOS with `DtsFlushInput(0)`, then requires every expected timestamped
+picture, the firmware EOS marker, `DtsIsEndOfStream`, an empty ready queue and
+successful stop/close. Input inactivity alone never counts as EOS.
+
+The probe does not accept MPEG-4. A library client draining MPEG-4 may complete
+`DtsIsEndOfStream` without a firmware marker only after the explicit drain TX
+retires and every output buffer and queue remains free and idle for one second.
+Input inactivity by itself still does not count as EOS.
 
 Supported input is raw Annex-B H.264, MPEG-2 elementary stream, raw VC-1
 Advanced, or WMV3 in ASF with four-byte sequence metadata (a fifth trailing byte
 is tolerated). MP4 H.264, RCV containers and known interlaced input are rejected.
 Fixtures are limited to 64 MiB, 10,000 pictures and 1920x1088; each packet plus
-framing must fit the library's transmit ring. The optional in-process timeout
-defaults to 30 seconds and accepts at most 300. Keep an external timeout:
-blocked ioctls or device close cannot be interrupted by the probe's deadline.
-The probe does not load or replace the module and is not part of `make check`.
-For actual codec fixtures, counts and results, use the
+framing must fit the transmit ring.
+The in-process timeout defaults to 30 seconds and accepts at most 300. Keep an
+external timeout because blocked ioctls or device close cannot be interrupted
+by the probe's deadline. The probe does not load or replace the module and is
+not part of `make check`. For hardware results, use the
 [hardware report](../../HARDWARE-2026-09-13.md).
 
 ## Raw YUY2 copy contract
@@ -99,7 +98,7 @@ successful picture. From the repository root, `make library-check` includes
 identity and rejected-layout canaries against the real implementation.
 Separate planar and MODE regressions cover NV12/YV12 row layout, field
 weaving, independent chroma padding and bounded format conversions. These
-device-free checks do not establish hardware playback or PowerVLC timing.
+device-free checks do not establish hardware playback or frontend timing.
 
 ## AVC1 parameter sets
 
@@ -112,6 +111,5 @@ already changed by a demuxer.
 
 The production input/PES/ring regression in `make library-check` verifies
 length widths 1/2/4, retained metadata injection, existing Annex-B compatibility
-and bounded detection, including i386 execution. See
-[issue #18](https://github.com/ahnhy1324/crystalhd/issues/18) and the hardware
-report for frontend results and remaining drain limitations.
+and bounded detection, including i386 execution. See the
+[hardware report](../../HARDWARE-2026-09-13.md) for frontend results.

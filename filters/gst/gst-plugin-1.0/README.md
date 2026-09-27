@@ -4,14 +4,13 @@
 pipelines. It accepts parsed H.264, MPEG-2 and MPEG-4 Part 2, plus the
 VC-1/WMV3 framing described below, and outputs YUY2 video frames.
 
-This plugin is experimental. BCM70015 validation includes progressive H.264,
-bounded MPEG-2/MPEG-4/VC-1/WMV3 fixtures, and specific interlaced and
-format-transition cases; it does not establish general codec conformance or
-BCM70012 behavior.
-See the [hardware report](../../../HARDWARE-2026-09-13.md) for measured coverage,
-counts, hashes, software comparisons and known failures. CI checks discovery,
-framing/lifecycle helpers, synthetic YUY2 playback and software audio/video
-controls; it does not decode through CrystalHD.
+This plugin is experimental. The validated BCM70015 subset and known failures
+are recorded in the [hardware report](../../../HARDWARE-2026-09-13.md).
+Device-free CI checks discovery, framing/lifecycle helpers, synthetic YUY2
+playback and software audio/video controls; it does not decode through
+CrystalHD or establish BCM70012 behavior.
+
+## Build and basic use
 
 For an installed build, inspect the system plugin first:
 
@@ -23,8 +22,7 @@ Check `Filename` under `Plugin Details`; it must name the system plugin rather
 than a checkout. `crystalhd-check` reports that filename and the resolved
 `libcrystalhd.so.3` together.
 
-For a source-tree test, run the following commands from the repository root.
-Build `libcrystalhd` and the plugin, then run its device-free checks:
+For a source-tree test, run from the repository root:
 
 ```sh
 make -C linux_lib/libcrystalhd
@@ -32,7 +30,7 @@ make -C filters/gst/gst-plugin-1.0
 make -C filters/gst/gst-plugin-1.0 check
 ```
 
-To verify the source-tree library as well:
+Verify that the source plugin resolves the source library:
 
 ```sh
 LD_LIBRARY_PATH=$PWD/linux_lib/libcrystalhd \
@@ -43,7 +41,7 @@ ldd filters/gst/gst-plugin-1.0/libgstcrystalhd.so
 discovery, run `gst-inspect-1.0` without `GST_PLUGIN_PATH` or `LD_LIBRARY_PATH`
 overrides, and check `ldd` on the installed plugin's reported filename.
 
-For an H.264 file in an MP4 container:
+Decode an H.264 file in an MP4 container from the source tree:
 
 ```sh
 GST_PLUGIN_PATH=$PWD/filters/gst/gst-plugin-1.0 \
@@ -113,32 +111,23 @@ timeout --kill-after=5 35 gst-launch-1.0 -q \
   filesrc location=wmv3.wmv ! asfdemux ! crystalhddec ! fakesink sync=false
 ```
 
-For WMV3 in AVI, replace `asfdemux` with `avidemux` and use the AVI filename.
-The six-byte WMV9 VCM metadata case is covered by
-[issue #41](https://github.com/ahnhy1324/crystalhd/issues/41).
+For WMV3 in AVI, replace `asfdemux` with `avidemux`. `asfdemux` is supplied by
+GStreamer's Ugly plugins.
 
-`asfdemux` is supplied by GStreamer's Ugly plugins. The tested WMV3 Main
-fixture was FFmpeg FATE's `SMM0015.rcv`, remuxed without transcoding using
-`ffmpeg -nostdin -n -i SMM0015.rcv -map 0:v:0 -c copy -f asf wmv3.wmv`.
-It produced all 25 frames at 720×576, 25 fps.
-
-For the tested raw VC-1 Advanced fixture, use its actual dimensions and rate:
+For raw VC-1 Advanced, set the caps to the stream's actual dimensions and
+frame rate:
 
 ```sh
 GST_PLUGIN_PATH="$PWD/filters/gst/gst-plugin-1.0" \
 LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
 timeout --kill-after=5 35 gst-launch-1.0 -q \
-  filesrc location=SA00040.vc1 ! \
+  filesrc location=input.vc1 ! \
   'video/x-wmv,wmvversion=3,format=WVC1,stream-format=bdu,header-format=none,width=176,height=144,framerate=25/1' ! \
   crystalhddec ! fakesink sync=false
 ```
 
-This fixture produced all 15 frames. The decoder itself groups raw BDUs;
-`vc1parse` is not needed in this pipeline. The installed GStreamer 1.26.5
-`vc1parse` did not successfully negotiate/parse the two supplied elementary
-fixtures, so it was not part of the passing paths. Do not generalize these
-short progressive results to interlaced streams, arbitrary seeks, format
-changes, or codec conformance. H.264/MPEG-2 parser requirements are unchanged.
+Replace `width`, `height` and `framerate` with the values for the input. The
+decoder groups raw BDUs, so `vc1parse` is not required in this pipeline.
 
 An optional counted probe uses FFmpeg demuxing and GStreamer `appsrc`, checks
 exact frame count, YUY2 dimensions, valid timestamp ordering, and EOS, and
@@ -149,17 +138,16 @@ make -C filters/gst/gst-plugin-1.0 codec-playback-test
 GST_PLUGIN_PATH="$PWD/filters/gst/gst-plugin-1.0" \
 LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
 timeout --kill-after=5 35 \
-  filters/gst/gst-plugin-1.0/gstreamer-codec-playback-test SMM0015.rcv 25
+  filters/gst/gst-plugin-1.0/gstreamer-codec-playback-test \
+  /path/to/input.wmv EXPECTED_FRAMES
 ```
 
-Use `SA00040.vc1 15` for the other fixture. Building this optional probe needs
-the `libavformat`, `libavcodec`, `libavutil`, and GStreamer app development
-packages; they are not dependencies of the plugin build. When pkg-config
-finds them, `make check` also runs the probe's hardware-free `--self-test`.
-Feeding and EOS share a 25-second deadline and a bounded queue; retain the
-outer timeout because userspace cannot bound a blocked driver close. A hash
-alone is not a software-decoder comparison; see the hardware report for the
-separate pixel checks performed on these fixtures.
+Building this optional probe needs the `libavformat`, `libavcodec`, `libavutil`
+and GStreamer app development packages; they are not dependencies of the
+plugin build. When pkg-config finds them, `make check` runs its hardware-free
+`--self-test`. Feeding and EOS share a 25-second deadline and a bounded queue;
+retain the outer timeout because userspace cannot bound a blocked driver
+close. The printed hash is not a software-decoder comparison.
 
 ## Counted H.264 playback and replay
 
@@ -172,32 +160,23 @@ sh tests/generate-h264-samples.sh /tmp/crystalhd-fhd-samples 1920x1080
 ```
 
 The generator refuses to overwrite existing samples and prints each profile,
-frame count and SHA-256. Run the hardware harness below separately for each
-of the three files; generating a fixture is not a hardware test.
+frame count and SHA-256. Run the harness separately for each generated file.
 
-CrystalHD provides one playback session. Stop any VA-API, browser, or other
-GStreamer hardware decode before starting another `crystalhddec` pipeline.
-The hardware test helper compares YUY2 output counts with FFprobe's decoded
-frame count, checks sizes and timestamp ordering, requires EOS and scans new
-kernel messages. It uses a fresh playback session for each repetition, verifies
-module/source-version consistency, builds the source-tree frontend and reports
-its selected plugin filename with a fresh GStreamer registry:
+The harness compares YUY2 output with FFprobe's decoded frame count, checks
+dimensions and timestamp order, requires EOS and scans new kernel messages. It
+also verifies module/source identity and the selected source plugin:
 
 ```sh
 ./tests/gstreamer-hardware.sh /path/to/video.mp4 2
 ```
 
-The same command accepts `.h264` Annex-B elementary streams. MP4 timestamps
-must be present and ordered; elementary streams are also checked for ordering
-when timestamps are available. Set `CRYSTALHD_TEST_TIMEOUT=300` for a long clip;
-the default timeout is 120 seconds per run. `ffprobe` (from the `ffmpeg` package),
-`h264parse` and `qtdemux` are required. The shell harness explicitly rejects
-other codecs/profiles and known interlaced input so a baseline result cannot
-be mistaken for validation of those paths.
-The script loads the source-built module only when necessary and unloads it
-afterward only if it loaded it. A different already-loaded source version is
-rejected; see [module identity](../../../BRINGUP.md#device-access-and-module-identity)
-before replacing any loaded driver.
+The command also accepts Annex-B `.h264` streams. MP4 timestamps must be
+present and ordered; elementary-stream timestamps are checked when available.
+The default timeout is 120 seconds per run and can be changed with
+`CRYSTALHD_TEST_TIMEOUT`. `ffprobe`, `h264parse` and `qtdemux` are required.
+Other codecs/profiles and known interlaced input are rejected by this harness.
+It loads and later unloads the source-built module only when no matching module
+was already loaded; see [module identity](../../../BRINGUP.md#device-access-and-module-identity).
 
 For one nondisplay decode without the frame-count harness:
 
@@ -208,14 +187,10 @@ gst-launch-1.0 -q filesrc location=video.mp4 ! qtdemux ! h264parse ! \
   crystalhddec ! fakesink sync=false
 ```
 
-Plugin errors identify the failing library call and suggest checks for device
-ownership, permissions, firmware, framing and output selection. A successful
-launch alone does not prove that every frame drained: use the counted harness
-for that claim. Final drain uses a 10-second monotonic no-progress watchdog,
-renewed by successful frame delivery and suspended while stably paused, not
-a fixed number of output polls; missing pictures still produce an error. See
-[the bring-up guide](../../../BRINGUP.md) for the canonical
-device/firmware/input/output diagnosis order and required test-report details.
+A successful launch alone does not prove that every frame drained; use the
+counted harness for that claim. Final drain has a 10-second no-progress
+watchdog, renewed by successful delivery and suspended while stably paused.
+See [the bring-up guide](../../../BRINGUP.md) for failure diagnosis.
 
 To exercise GStreamer's flushing seek in the same playback session:
 
@@ -223,12 +198,10 @@ To exercise GStreamer's flushing seek in the same playback session:
 CRYSTALHD_TEST_SEEK=1 ./tests/gstreamer-hardware.sh /path/to/video.mp4 2
 ```
 
-Each iteration first drains the complete file, seeks accurately to zero with
-`GST_SEEK_FLAG_FLUSH`, and requires the same frame count and SHA256 of the
-visible YUY2 pixels on replay. This covers replay after EOS, not arbitrary
-mid-playback seeks or a change of resolution. Pixel hashes validate replay
-identity against the first hardware decode; they are not a comparison against
-a software decoder. Record this result separately from ordinary playback.
+Each iteration drains the file, seeks to zero with `GST_SEEK_FLAG_FLUSH`, and
+requires the same frame count and visible-YUY2 SHA-256 on replay. This covers
+replay after EOS, not arbitrary mid-playback seeks or resolution changes. The
+hash compares two hardware runs, not hardware against a software decoder.
 
 ## Local player and in-flight controls
 
@@ -264,20 +237,13 @@ timeout --kill-after=10 120 \
 
 The check includes a complete 360-picture replay and rejects missing or
 out-of-order identities, incorrect seek/rate progress, video lateness above
-250 ms or sampled A/V interval skew above 100 ms. The sample and temporary
-registry remain for inspection. Output runs on an independent worker, including
-while input admission waits for complete-call transmit capacity; flushing
-seeks recreate the full device. Library/device calls can still block beyond
-the in-process watchdog, so retain the external timeout. This does not
-establish arbitrary streams or PowerVLC controls.
+250 ms or sampled A/V interval skew above 100 ms. Flushing seeks recreate the
+device. Retain the external timeout because a library or driver call can block
+beyond the in-process watchdog.
 
-`--sustain SECONDS` selects continuous 1x playback instead of controls. It
-requires a matching fixture duration (a multiple of 12 seconds), exact
-30-fps timestamps, the repeated 360-frame barcode sequence and complete EOS.
-The optional audio check verifies clock bounds and overlap with the final
-video-frame interval, not sample-exact audio duration. Both modes use clocked
-test sinks: neither proves visible presentation or audible output. The
-repeating fixture also cannot distinguish identical prior-cycle pixels
-that have been assigned the correct current timestamp. See the hardware report
-for the sustained runs' continuous-audio fixtures, exact commands, resource
-measurements and limitations; a short file cannot stand in for that test.
+`--sustain SECONDS` selects continuous 1x playback. It requires a fixture whose
+duration is a multiple of 12 seconds, exact 30-fps timestamps, the repeated
+360-frame barcode sequence and complete EOS. The optional audio check verifies
+clock bounds and overlap with the final video interval, not sample-exact audio
+duration. These tests use clocked test sinks and do not prove visible or
+audible presentation; see the hardware report for measured runs.

@@ -83,7 +83,7 @@ struct Fixture {
         format.mSubtype = wmv_metadata ? BC_MSUBTYPE_WMV3 : BC_MSUBTYPE_AVC1;
         format.width = 640; format.height = 360; format.Progressive = true;
         format.startCodeSz = length_size;
-        format.OptFlags = 0x80000001; // Stock PowerVLC input settings, no single-thread flag.
+        format.OptFlags = 0x80000001; // Legacy client flags, without the single-thread flag.
         format.pMetaData = metadata.data(); format.metaDataSz = metadata.size();
         check(DtsSetInputFormat(&context, &format) == BC_STS_SUCCESS, "configure actual input converter");
         check(context.PESConvParams.m_bAddSpsPps && context.PESConvParams.m_bIsAdd_SCode_CodeIn &&
