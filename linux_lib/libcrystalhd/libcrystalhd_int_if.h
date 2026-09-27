@@ -65,6 +65,9 @@ DRVIFLIB_INT_API BC_STATUS
 DtsSetFleaIn422Mode(HANDLE hDevice);
 
 DRVIFLIB_INT_API BC_STATUS
+DtsSetOutputColorSpace(HANDLE hDevice, BC_OUTPUT_FORMAT mode);
+
+DRVIFLIB_INT_API BC_STATUS
 DtsSoftReset(
     HANDLE hDevice
     );
