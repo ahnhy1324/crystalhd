@@ -20,11 +20,6 @@ and [DMA.md](DMA.md) for DMA ownership and failure boundaries.
   unknown. Validate live seeks, pause/resume, quality selection and rates
   without bypassing service verification. Local-file checks are not live
   YouTube validation; keep Chrome's software-decoding default.
-- [ ] [#18: PowerVLC](https://github.com/ahnhy1324/crystalhd/issues/18):
-  deferred at the owner's request while core driver/library/API work takes
-  priority. Tail-frame, rate and broader playback acceptance remain unresolved;
-  this is not a completed or hardware-validated daily-use path.
-
 <a id="driver-and-abi"></a>
 <a id="requires-additional-hardware-or-a-separate-test-session"></a>
 
