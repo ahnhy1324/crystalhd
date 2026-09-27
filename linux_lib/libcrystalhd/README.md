@@ -85,10 +85,10 @@ before writing, including stride gaps but not unused padding after the last
 row. Undersized or overflowing layouts fail rather than return a partial
 successful picture. From the repository root, `make library-check` includes
 [tests/library-copy.cpp](../../tests/library-copy.cpp): exact row/crop/field
-identity and rejected-layout canaries against the real implementation. These
-checks cover raw YUY2 copying, not the separate legacy NV12, YV12 or
-`BC_POUT_FLAGS_MODE` conversion helpers, hardware playback, or PowerVLC's
-playback timing.
+identity and rejected-layout canaries against the real implementation.
+Separate planar and MODE regressions cover NV12/YV12 row layout, field
+weaving, independent chroma padding and bounded format conversions. These
+device-free checks do not establish hardware playback or PowerVLC timing.
 
 ## AVC1 parameter sets
 

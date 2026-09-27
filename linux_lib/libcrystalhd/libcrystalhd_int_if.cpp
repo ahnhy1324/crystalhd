@@ -1327,158 +1327,115 @@ DtsCopyRawDataToOutBuff(DTS_LIB_CONTEXT *Ctx,
 			Vin->Ybuff + (size_t)y * (size_t)sourcePitch, (size_t)rowBytes);
 	return BC_STS_SUCCESS;
 }
-/***/
-//FIX_ME:: This routine assumes, Y & UV buffs are contiguous..
-BC_STATUS DtsCopyNV12ToYV12(DTS_LIB_CONTEXT	*Ctx, BC_DTS_PROC_OUT *Vout, BC_DTS_PROC_OUT *Vin)
+/* Non-MODE planar copies share NV12 source geometry. YV12 stores V then U
+ * in the single UV buffer; its U plane follows all V rows, including the
+ * final V row's padding. Source transfer metadata remains in DWORD units.
+ */
+struct DtsPlanarCopyLayout {
+	uint32_t width, rows, uvRows;
+	uint64_t sourcePitch, yPitch, uvPitch, uOffset;
+};
+
+static BC_STATUS DtsPlanarCopyCheck(DTS_LIB_CONTEXT *Ctx,
+	BC_DTS_PROC_OUT *Vout, BC_DTS_PROC_OUT *Vin, bool yv12,
+	DtsPlanarCopyLayout *layout)
 {
+	BC_STATUS status = DtsChkYUVSizes(Ctx, Vout, Vin);
+	if (status != BC_STS_SUCCESS)
+		return status;
+	if (Ctx->b422Mode != OUTPUT_MODE420_NV12)
+		return BC_STS_INV_ARG;
 
-	uint8_t	*buff=NULL;
-	uint8_t	*yv12buff = NULL;
-	uint32_t uvbase=0;
-	BC_STATUS	Sts = BC_STS_SUCCESS;
-	uint32_t	x,y,lDestStrideY=0, lDestStrideUV=0;
-	uint8_t	*pSrc = NULL, *pDest=NULL;
-	uint32_t	dstWidthInPixels, dstHeightInPixels;
-	uint32_t srcWidthInPixels;
+	const bool field = !Ctx->VidParams.Progressive;
+	if (!Vin->PicInfo.width || !Vin->PicInfo.height ||
+		(Vin->PicInfo.width & 1) || Ctx->HWOutPicWidth < Vin->PicInfo.width ||
+		(field && (Vin->PicInfo.height & 1)))
+		return BC_STS_IO_XFR_ERROR;
+	const uint32_t width = (Vout->PoutFlags & BC_POUT_FLAGS_SIZE)
+		? Vout->PicInfo.width : Vin->PicInfo.width;
+	const uint32_t height = (Vout->PoutFlags & BC_POUT_FLAGS_SIZE)
+		? Vout->PicInfo.height : Vin->PicInfo.height;
+	if (!width || !height || (width & 1) ||
+		width > Vin->PicInfo.width || height > Vin->PicInfo.height ||
+		(field && (height & 1)))
+		return BC_STS_INV_ARG;
 
+	layout->width = width;
+	layout->rows = field ? height / 2 : height;
+	layout->uvRows = (uint32_t)(((uint64_t)layout->rows + 1) / 2);
+	layout->sourcePitch = Ctx->HWOutPicWidth;
+	const uint64_t paddingY = (Vout->PoutFlags & BC_POUT_FLAGS_STRIDE)
+		? Vout->StrideSz : 0;
+	/* Retain the legacy default: YV12's chroma padding is half Y padding;
+	 * an explicit UV stride overrides it independently of the Y layout. */
+	const uint64_t paddingUV = (Vout->PoutFlags & BC_POUT_FLAGS_STRIDE_UV)
+		? Vout->StrideSzUV : (yv12 ? paddingY / 2 : paddingY);
+	const uint64_t uvBytes = yv12 ? width / 2 : width;
+	layout->yPitch = (uint64_t)width + paddingY;
+	layout->uvPitch = uvBytes + paddingUV;
+	layout->uOffset = 0;
+	uint64_t uvAvailable = (uint64_t)Vout->UVbuffSz * 4;
+	if (uvAvailable > SIZE_MAX)
+		uvAvailable = SIZE_MAX;
 
-	if ( (Sts = DtsChkYUVSizes(Ctx,Vout,Vin)) != BC_STS_SUCCESS)
-		return Sts;
-
-	if(Vout->PoutFlags & BC_POUT_FLAGS_SIZE)// needs to be optimized.
-	{
-		if(Vout->PoutFlags & BC_POUT_FLAGS_STRIDE)
-			lDestStrideUV = (lDestStrideY = Vout->StrideSz)/2;
-		if(Vout->PoutFlags & BC_POUT_FLAGS_STRIDE_UV)
-			lDestStrideUV = Vout->StrideSzUV;
-
-		// Use DShow provided size for now
-		dstWidthInPixels = Vout->PicInfo.width;
-		if(!Ctx->VidParams.Progressive)
-			dstHeightInPixels = Vout->PicInfo.height/2;
-		else
-			dstHeightInPixels = Vout->PicInfo.height;
-
-		/* Check for Valid data based on the filter information */
-		if((Vout->YBuffDoneSz < (dstWidthInPixels * dstHeightInPixels / 4)) ||
-			(Vout->UVBuffDoneSz < (dstWidthInPixels * dstHeightInPixels/2 / 4)))
-		{
-			DebugLog_Trace(LDIL_DBG,"DtsCopyYV12: XFER ERROR\n");
+	/* Validate all source and destination planes before writing any pixels.
+	 * Final U/NV12 padding is unused, but the V-to-U plane gap is required. */
+	if (!DtsRawCopyFits((uint64_t)Vin->YBuffDoneSz * 4,
+			width, layout->sourcePitch, layout->rows) ||
+		!DtsRawCopyFits((uint64_t)Vin->UVBuffDoneSz * 4,
+			width, layout->sourcePitch, layout->uvRows) ||
+		!DtsRawCopyFits((uint64_t)Vout->YbuffSz * 4,
+			width, layout->yPitch, layout->rows) ||
+		!DtsRawCopyFits(uvAvailable, uvBytes, layout->uvPitch, layout->uvRows))
+		return BC_STS_IO_XFR_ERROR;
+	if (yv12) {
+		/* The successful first-plane check bounds this product by the
+		 * available bytes plus one row's padding, including on i386. */
+		layout->uOffset = layout->uvPitch * layout->uvRows;
+		if (layout->uOffset > uvAvailable ||
+			!DtsRawCopyFits(uvAvailable - layout->uOffset,
+				uvBytes, layout->uvPitch, layout->uvRows))
 			return BC_STS_IO_XFR_ERROR;
-		}
-		srcWidthInPixels = Ctx->HWOutPicWidth;
-
-		//copy luma
-		pDest = Vout->Ybuff;
-		pSrc = Vin->Ybuff;
-		for (y = 0; y < dstHeightInPixels; y++)
-		{
-			memcpy(pDest,pSrc,dstWidthInPixels);
-			pDest += dstWidthInPixels + lDestStrideY;
-			pSrc += srcWidthInPixels;
-		}
-		//copy chroma
-		pDest = Vout->UVbuff;
-		pSrc = Vin->UVbuff;
-		uvbase = (dstWidthInPixels + lDestStrideY) * dstHeightInPixels/4 ;//(Vin->UVBuffDoneSz * 4/2);
-		for (y = 0; y < dstHeightInPixels/2; y++)
-		{
-			for(x = 0; x < dstWidthInPixels; x += 2)
-			{
-				pDest[x/2] = pSrc[x+1];
-				pDest[uvbase + x/2] = pSrc[x];
-			}
-			pDest += dstWidthInPixels / 2 + lDestStrideUV;
-			pSrc += srcWidthInPixels;
-		}
 	}
-	else
-	{
-		/* Y-Buff loop */
-		buff = Vin->Ybuff;
-		yv12buff = Vout->Ybuff;
-		for(uint32_t i = 0; i < Vin->YBuffDoneSz*4; i += 2) {
-			yv12buff[i] = buff[i];
-			yv12buff[i+1] = buff[i+1];
-		}
-
-		/* UV-Buff loop */
-		buff = Vin->UVbuff;
-		yv12buff = Vout->UVbuff;
-		uvbase = (Vin->UVBuffDoneSz * 4/2);
-		for(uint32_t i = 0; i < Vin->UVBuffDoneSz*4; i += 2) {
-			yv12buff[i/2] = buff[i+1];
-			yv12buff[uvbase + (i/2)] = buff[i];
-		}
-	}
-
 	return BC_STS_SUCCESS;
 }
 
-
-BC_STATUS DtsCopyNV12(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *Vout, BC_DTS_PROC_OUT *Vin)
+static BC_STATUS DtsCopyPlanar(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *Vout,
+	BC_DTS_PROC_OUT *Vin, bool yv12)
 {
-	uint32_t y,lDestStrideY=0,lDestStrideUV=0;
-	uint8_t	*pSrc = NULL, *pDest=NULL;
-	uint32_t dstWidthInPixels, dstHeightInPixels;
-	uint32_t srcWidthInPixels=0;
-
-	BC_STATUS	Sts = BC_STS_SUCCESS;
-
-	if ( (Sts = DtsChkYUVSizes(Ctx,Vout,Vin)) != BC_STS_SUCCESS)
-		return Sts;
-
-	if(Vout->PoutFlags & BC_POUT_FLAGS_STRIDE)
-		lDestStrideUV = lDestStrideY = Vout->StrideSz;
-	if(Vout->PoutFlags & BC_POUT_FLAGS_STRIDE_UV)
-		lDestStrideUV = Vout->StrideSzUV;
-
-	if(Vout->PoutFlags & BC_POUT_FLAGS_SIZE) {
-		// Use DShow provided size for now
-		dstWidthInPixels = Vout->PicInfo.width;
-		if(!Ctx->VidParams.Progressive)
-			dstHeightInPixels = Vout->PicInfo.height/2;
-		else
-			dstHeightInPixels = Vout->PicInfo.height;
-		/* Check for Valid data based on the filter information */
-		if((Vout->YBuffDoneSz < (dstWidthInPixels * dstHeightInPixels / 4)) ||
-			(Vout->UVBuffDoneSz < (dstWidthInPixels * dstHeightInPixels/2 / 4)))
-			return BC_STS_IO_XFR_ERROR;
-		srcWidthInPixels = Ctx->HWOutPicWidth;
-	} else {
-		dstWidthInPixels = Vin->PicInfo.width;
-		dstHeightInPixels = Vin->PicInfo.height;
-	}
-
-	// NV12 is planar: Y plane, followed by packed U-V plane.
-
-	// Do a strided copy only if the stride is non-zero
-	if((lDestStrideY != 0) || (lDestStrideUV != 0) || (srcWidthInPixels != dstWidthInPixels)) {
-		// Y plane
-		pDest = Vout->Ybuff;
-		pSrc = Vin->Ybuff;
-		for (y = 0; y < dstHeightInPixels; y++){
-			memcpy(pDest,pSrc,dstWidthInPixels);
-			pDest += dstWidthInPixels + lDestStrideY;
-			pSrc += srcWidthInPixels;
+	DtsPlanarCopyLayout layout;
+	BC_STATUS status = DtsPlanarCopyCheck(Ctx, Vout, Vin, yv12, &layout);
+	if (status != BC_STS_SUCCESS)
+		return status;
+	for (uint32_t y = 0; y < layout.rows; ++y)
+		memcpy(Vout->Ybuff + (size_t)y * (size_t)layout.yPitch,
+			Vin->Ybuff + (size_t)y * (size_t)layout.sourcePitch, layout.width);
+	for (uint32_t y = 0; y < layout.uvRows; ++y) {
+		const uint8_t *src = Vin->UVbuff + (size_t)y * (size_t)layout.sourcePitch;
+		uint8_t *dst = Vout->UVbuff + (size_t)y * (size_t)layout.uvPitch;
+		if (yv12) {
+			uint8_t *dstU = dst + (size_t)layout.uOffset;
+			for (uint32_t x = 0; x < layout.width; x += 2) {
+				dst[x / 2] = src[x + 1];
+				dstU[x / 2] = src[x];
+			}
+		} else {
+			memcpy(dst, src, layout.width);
 		}
-	// U-V plane
-		pDest = Vout->UVbuff;
-		pSrc = Vin->UVbuff;
-		for (y = 0; y < dstHeightInPixels/2; y++){
-			memcpy(pDest,pSrc,dstWidthInPixels);
-			pDest += dstWidthInPixels + lDestStrideUV;
-			pSrc += srcWidthInPixels;
-		}
-	} else {
-		// Y Plane
-		memcpy(Vout->Ybuff, Vin->Ybuff, dstHeightInPixels * dstWidthInPixels);
-		// UV Plane
-		memcpy(Vout->UVbuff, Vin->UVbuff, dstHeightInPixels/2 * dstWidthInPixels);
-
 	}
-
 	return BC_STS_SUCCESS;
+}
+
+BC_STATUS DtsCopyNV12ToYV12(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *Vout,
+	BC_DTS_PROC_OUT *Vin)
+{
+	return DtsCopyPlanar(Ctx, Vout, Vin, true);
+}
+
+BC_STATUS DtsCopyNV12(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *Vout,
+	BC_DTS_PROC_OUT *Vin)
+{
+	return DtsCopyPlanar(Ctx, Vout, Vin, false);
 }
 
 /* MODE conversions use byte padding, unlike the raw packed-copy API.
