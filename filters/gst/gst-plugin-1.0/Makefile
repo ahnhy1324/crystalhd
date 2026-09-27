@@ -30,8 +30,8 @@ LDLIBS += $(shell $(PKG_CONFIG) --libs $(GST_PACKAGES)) -lcrystalhd
 
 all: $(PLUGIN)
 
-# Optional hardware fixture probe; libavformat supplies complete VC-1/WMV3
-# packets. FFmpeg development packages are not needed for the plugin itself.
+# Optional hardware fixture probe; libavformat supplies complete codec packets.
+# FFmpeg development packages are not needed for the plugin itself.
 codec-playback-test: gstreamer-codec-playback-test
 
 gstreamer-codec-playback-test: $(ROOTDIR)/tests/gstreamer-codec-playback.cpp

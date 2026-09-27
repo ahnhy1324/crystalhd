@@ -1,13 +1,13 @@
 # CrystalHD GStreamer 1.x decoder
 
 `crystalhddec` exposes BCM70012/BCM70015 decoding to current GStreamer
-pipelines. It accepts parsed H.264 byte-stream and MPEG-2, plus the VC-1/WMV3
-framing described below,
-and outputs YUY2 video frames.
+pipelines. It accepts parsed H.264, MPEG-2 and MPEG-4 Part 2, plus the
+VC-1/WMV3 framing described below, and outputs YUY2 video frames.
 
 This plugin is experimental. BCM70015 validation includes progressive H.264,
-bounded MPEG-2/VC-1/WMV3 fixtures, and specific interlaced and format-transition
-cases; it does not establish general codec conformance or BCM70012 behavior.
+bounded MPEG-2/MPEG-4/VC-1/WMV3 fixtures, and specific interlaced and
+format-transition cases; it does not establish general codec conformance or
+BCM70012 behavior.
 See the [hardware report](../../../HARDWARE-2026-09-13.md) for measured coverage,
 counts, hashes, software comparisons and known failures. CI checks discovery,
 framing/lifecycle helpers, synthetic YUY2 playback and software audio/video
@@ -54,6 +54,30 @@ gst-launch-1.0 filesrc location=video.mp4 ! qtdemux ! h264parse ! \
 The plugin requests access units in Annex-B/byte-stream format from
 `h264parse`, so MP4 AVC length prefixes are converted automatically during
 caps negotiation.
+
+## MPEG-4 Part 2 input
+
+BCM70015 accepts parsed Simple and Advanced Simple levels 3/5. The validated
+subset is progressive rectangular 8-bit 4:2:0 with H.263 quantization and no
+sprites/GMC, quarter-pixel, data partitioning, RVLC or interlace. Advanced
+Simple additionally requires disabled resynchronization markers. Codec data or
+an in-band VOS/VOL must agree with caps and picture dimensions; unsupported or
+ambiguous streams fail negotiation instead of being submitted as another
+codec. BCM70012 is rejected for MPEG-4.
+
+For MPEG-4 in an MP4 container:
+
+```sh
+GST_PLUGIN_PATH=$PWD/filters/gst/gst-plugin-1.0 \
+LD_LIBRARY_PATH=$PWD/linux_lib/libcrystalhd \
+gst-launch-1.0 -q filesrc location=video.mp4 ! qtdemux ! \
+  mpeg4videoparse ! crystalhddec ! videoconvert ! autovideosink
+```
+
+The parser must provide one complete VOP per buffer with `parsed=true` and
+Simple/Advanced Simple profile and level fields. A successful pipeline only
+proves that particular file; use the counted hardware probe for frame-count,
+timestamp and EOS validation.
 
 ## VC-1 and WMV3 input
 

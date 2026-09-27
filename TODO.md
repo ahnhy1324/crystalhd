@@ -26,14 +26,11 @@ and [DMA.md](DMA.md) for DMA ownership and failure boundaries.
 ## Coverage and lifecycle
 
 - [ ] Test BCM70012 on a current LTS and recent stable kernel.
-- [ ] Broaden H.264, MPEG-2, VC-1 and WMV3 samples, interlaced layouts and
-  mid-stream resolution/profile/format transitions beyond the recorded cases.
-  Include sustained playback and controls, not only short complete-file drain.
-- [ ] [#47: MPEG-4 Part 2 APIs](https://github.com/ahnhy1324/crystalhd/issues/47):
-  broaden native BCM70015 Simple/Advanced Simple coverage, including DIVX311,
-  sprites/GMC, interlace and more resolutions, then add the missing
-  GStreamer/VA-API paths. Repeated complete drains do not establish
-  pixel-exact conformance or frontend support.
+- [ ] Broaden H.264, MPEG-2, MPEG-4, VC-1 and WMV3 samples, interlaced layouts
+  and mid-stream resolution/profile/format transitions beyond the recorded
+  cases. MPEG-4 still excludes DIVX311, sprites/GMC, quarter-pixel, data
+  partitioning and interlace. Include sustained playback and controls, not
+  only short complete-file drain.
 - [ ] Expand VA-API stream coverage and improve synchronous-client performance;
   one-picture-at-a-time clients can repeatedly reopen and replay references.
 - [ ] Validate actual VLC/EGL/GBM compositor presentation and synchronization;

@@ -13,9 +13,9 @@ multimedia stack.
 
 | Component | Supported path and limits |
 | --- | --- |
-| Kernel / library | BCM70015 hardware-tested, including bounded native-library MPEG-4 Part 2 Simple/Advanced Simple drains; MPEG-4 frontend support and pixel-exact conformance remain open. BCM70012 is retained but not recently tested. Native and 32-bit checks are not comprehensive device-API conformance. |
-| GStreamer | Primary playback path. Selected H.264, MPEG-2, VC-1 and WMV3 fixtures pass; broader streams and physical display/audio validation remain open. |
-| VA-API / FFmpeg | Experimental progressive H.264, plus BCM70015 MPEG-2 Simple/Main and standard WMV3 Simple/Main / VC-1 Advanced. See the [codec and replay limits](filters/vaapi/README.md), including older WMV3 variants; synchronous clients can incur substantial restart/replay overhead. |
+| Kernel / library | BCM70015 hardware-tested, including bounded native-library MPEG-4 Part 2 Simple/Advanced Simple drains. General codec conformance remains open. BCM70012 is retained but not recently tested. Native and 32-bit checks are not comprehensive device-API conformance. |
+| GStreamer | Primary playback path. Selected H.264, MPEG-2, VC-1, WMV3 and BCM70015 MPEG-4 Simple/Advanced Simple fixtures pass; broader streams and physical display/audio validation remain open. |
+| VA-API / FFmpeg | Experimental progressive H.264, BCM70015 MPEG-2 Simple/Main, MPEG-4 Simple/Advanced Simple, and standard WMV3 Simple/Main / VC-1 Advanced. See the [codec and replay limits](filters/vaapi/README.md); synchronous clients can incur substantial restart/replay overhead. |
 | PowerVLC | Experimental native-plugin integration. Codec, end-of-stream, playback-rate and A/V limitations remain. |
 | Chrome / YouTube | Software decoding with the GPU sandbox enabled is the default. Hardware decoding and live YouTube A/V synchronization remain unresolved. |
 

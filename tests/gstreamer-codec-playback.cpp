@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
-// Optional hardware probe: libavformat supplies complete WMV3/VC-1 packets,
-// avoiding dependence on a particular GStreamer ASF/VC-1 parser version.
+// Optional hardware probe: libavformat supplies complete codec packets,
+// avoiding dependence on a particular demuxer/parser version.
 // Feeding and EOS share a 25-second deadline and a bounded appsrc queue.
 // Still use `timeout -k 5s 35s`: userspace cannot bound a stuck driver close.
 #include <gst/app/gstappsrc.h>
