@@ -15,8 +15,8 @@ case "${2:-}" in
     *) echo "unsupported fixture option: $2" >&2; exit 2 ;;
 esac
 output_file=$1
-# Keep the original browser fixture unchanged. The optional local-player
-# fixture uses the same pixel identity cells with quiet AAC-LC audio.
+# Optional local-player fixtures add quiet AAC-LC audio while sharing the
+# browser fixture's pixel identity cells.
 if [ "$sample_audio" = true ]; then
     set -- -f lavfi -i sine=frequency=440:sample_rate=48000:duration=12 \
         -map 0:v:0 -map 1:a:0 -af volume=0.02 -c:a aac -b:a 96k -t 12
@@ -33,7 +33,7 @@ while [ "$bit" -lt 9 ]; do
     filter="$filter,drawbox=x=$position:y=8:w=16:h=16:color=white:t=fill:enable='eq(mod(floor(n/$divisor),2),1)'"
     bit=$((bit + 1))
 done
-filter="$filter,drawbox=x=240:y=8:w=16:h=16:color=white:t=fill"
+filter="$filter,drawbox=x=240:y=0:w=16:h=32:color=white:t=fill"
 ffmpeg -nostdin -hide_banner -loglevel error -n \
     -f lavfi -i "testsrc2=size=$sample_size:rate=30" "$@" -frames:v 360 \
     -vf "$filter" -c:v libx264 -threads 2 -preset medium -crf 18 \

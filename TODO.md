@@ -9,7 +9,7 @@ and [DMA.md](DMA.md) for DMA ownership and failure boundaries.
 ## Tracked issues
 
 - [ ] [#8: Full HD and hardware matrix][issue-8]:
-  finish physical display/audio, Full HD controls, device and lifecycle coverage.
+  finish physical display/audio, Full HD 2x, device and lifecycle coverage.
 - [ ] [#12: YouTube][issue-12]:
   diagnose live 1x A/V desynchronization and validate playback controls.
 - [ ] [#52: V4L2 stateful M2M roadmap][issue-52]:

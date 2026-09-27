@@ -47,13 +47,23 @@ function pageAudit(createAuditor, createControlAuditor, controls) {
     const frame = new VideoFrame(video);
     try {
       ctx.drawImage(frame, 0, 0);
-      const pixels = ctx.getImageData(0, 16, 288, 1).data;
-      const luma = x => (pixels[x * 4] + pixels[x * 4 + 1] + pixels[x * 4 + 2]) / 3;
+      const pixels = ctx.getImageData(0, 0, 288, 32).data;
+      const luma = (x, y) => {
+        const offset = (y * 288 + x) * 4;
+        return (pixels[offset] + pixels[offset + 1] + pixels[offset + 2]) / 3;
+      };
       let identity = 0;
       for (let bit = 0; bit < 9; ++bit)
-        if (luma(16 + 24 * bit) > 128) identity |= 1 << bit;
+        if (luma(16 + 24 * bit, 16) > 128) identity |= 1 << bit;
+      let topWhite = 255;
+      for (let y = 0; y < 8; ++y) {
+        let sum = 0;
+        for (let x = 244; x < 252; ++x) sum += luma(x, y);
+        topWhite = Math.min(topWhite, sum / 8);
+      }
       return {frameTime: frame.timestamp / 1000000, callbackTime, identity,
-        white: luma(248), black: luma(272), seeking: video.seeking,
+        white: luma(248, 16), black: luma(272, 16), topWhite,
+        seeking: video.seeking,
         wallTime: performance.now(), currentTime: video.currentTime,
         playbackRate: video.playbackRate, paused: video.paused, ended: video.ended};
     } finally { frame.close(); }

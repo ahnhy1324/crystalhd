@@ -50,7 +50,9 @@ typedef struct {
   GMutex mutex;
   GstElement *pipeline;
   gboolean audio_required;
+  gboolean require_double_speed;
   guint sustain_seconds;
+  guint expected_width, expected_height;
   gboolean failed;
   gchar reason[256];
   Stream video, audio;
@@ -102,6 +104,7 @@ static void init_audit(Audit *audit, gboolean audio) {
   init_stream(&audit->video);
   init_stream(&audit->audio);
   audit->audio_required = audio;
+  audit->require_double_speed = TRUE;
   audit->first_pts = audit->last_pts = GST_CLOCK_TIME_NONE;
   audit->first_clock = audit->last_clock = GST_CLOCK_TIME_NONE;
 }
@@ -228,7 +231,8 @@ static gboolean final_complete(Audit *audit) {
     return FALSE;
   }
   for (guint phase = 0; phase < PHASE_COUNT; ++phase)
-    if (!audit->phase_passed[phase]) {
+    if ((phase != DOUBLE_SPEED || audit->require_double_speed) &&
+        !audit->phase_passed[phase]) {
       fail(audit, "EOS arrived without every required playback control phase");
       return FALSE;
     }
@@ -316,22 +320,38 @@ static gboolean barcode_buffer(GstBuffer *buffer, const GstVideoInfo *info, guin
   const gint stride = GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 0);
   gboolean valid = stride >= GST_VIDEO_INFO_WIDTH(info) * 2;
   if (valid) {
-    const guint8 *row = (const guint8 *)GST_VIDEO_FRAME_PLANE_DATA(&frame, 0) + 16 * stride;
+    const guint8 *base = GST_VIDEO_FRAME_PLANE_DATA(&frame, 0);
+    const guint8 *row = base + 16 * stride;
     for (guint bit = 0; bit < 9; ++bit)
       if (row[(16 + 24 * bit) * 2] > 128) *identity |= 1U << bit;
     valid = row[248 * 2] >= 200 && row[272 * 2] <= 50;
+    for (guint y = 0; valid && y < 8; ++y) {
+      guint luma = 0;
+      for (guint x = 244; x < 252; ++x) luma += base[y * stride + x * 2];
+      valid = luma >= 8 * 180;
+    }
   }
   gst_video_frame_unmap(&frame);
   return valid;
+}
+
+static gboolean expected_geometry(const Audit *audit, const GstVideoInfo *info) {
+  const guint width = GST_VIDEO_INFO_WIDTH(info);
+  const guint height = GST_VIDEO_INFO_HEIGHT(info);
+  return audit->expected_width != 0 ?
+      width == audit->expected_width && height == audit->expected_height :
+      width >= 288 && height >= 32;
 }
 
 static void video_handoff(GstElement *sink, GstBuffer *buffer, GstPad *pad, gpointer data) {
   Audit *audit = ((StreamData *)data)->audit;
   GstCaps *caps = gst_pad_get_current_caps(pad);
   GstVideoInfo info;
-  gboolean valid = caps != NULL && gst_video_info_from_caps(&info, caps) &&
+  const gboolean have_info = caps != NULL && gst_video_info_from_caps(&info, caps);
+  const gboolean geometry_valid = have_info && expected_geometry(audit, &info);
+  gboolean valid = have_info &&
       GST_VIDEO_INFO_FORMAT(&info) == GST_VIDEO_FORMAT_YUY2 &&
-      GST_VIDEO_INFO_WIDTH(&info) >= 288 && GST_VIDEO_INFO_HEIGHT(&info) >= 32 &&
+      geometry_valid &&
       GST_VIDEO_INFO_FPS_N(&info) == 30 && GST_VIDEO_INFO_FPS_D(&info) == 1;
   guint identity = 0;
   (void)sink;
@@ -339,7 +359,13 @@ static void video_handoff(GstElement *sink, GstBuffer *buffer, GstPad *pad, gpoi
   if (valid) valid = barcode_buffer(buffer, &info, &identity);
   if (caps != NULL) gst_caps_unref(caps);
   g_mutex_lock(&audit->mutex);
-  if (!valid) fail(audit, "Invalid YUY2 geometry or barcode reference pixels");
+  if (!valid && have_info && audit->expected_width != 0 && !geometry_valid) {
+    gchar reason[256];
+    g_snprintf(reason, sizeof(reason), "Unexpected decoded geometry: got=%ux%u expected=%ux%u",
+        GST_VIDEO_INFO_WIDTH(&info), GST_VIDEO_INFO_HEIGHT(&info),
+        audit->expected_width, audit->expected_height);
+    fail(audit, reason);
+  } else if (!valid) fail(audit, "Invalid YUY2 geometry or barcode reference pixels");
   else {
     GstClockTime pts = GST_BUFFER_PTS(buffer);
     GstClockTime running = gst_segment_to_running_time(&audit->video.segment, GST_FORMAT_TIME, pts);
@@ -448,11 +474,22 @@ static gboolean seek_phase(Audit *audit, Phase phase, guint target) {
   return gst_element_send_event(audit->pipeline, event);
 }
 
+static Phase next_control_phase(const Audit *audit, Phase phase) {
+  if (phase == RESUMED) return SEEK_FORWARD;
+  if (phase == SEEK_FORWARD) return HALF_SPEED;
+  if (phase == HALF_SPEED && audit->require_double_speed) return DOUBLE_SPEED;
+  return RESTORED;
+}
+
 static int run(const gchar *filename, const gchar *decoder, const gchar *audio_decoder,
-               guint timeout_seconds, guint sustain_seconds) {
+               guint timeout_seconds, guint sustain_seconds, guint expected_width,
+               guint expected_height, gboolean skip_double_speed) {
   Audit audit;
   init_audit(&audit, audio_decoder != NULL);
   audit.sustain_seconds = sustain_seconds;
+  audit.expected_width = expected_width;
+  audit.expected_height = expected_height;
+  audit.require_double_speed = !skip_double_speed;
   GError *error = NULL;
   gchar *description = g_strdup_printf(
       "filesrc name=source ! qtdemux name=demux "
@@ -589,8 +626,7 @@ static int run(const gchar *filename, const gchar *decoder, const gchar *audio_d
         g_mutex_unlock(&audit.mutex);
         paused_at = g_get_monotonic_time();
       } else {
-        const Phase next = phase == RESUMED ? SEEK_FORWARD : phase == SEEK_FORWARD ? HALF_SPEED :
-                           phase == HALF_SPEED ? DOUBLE_SPEED : RESTORED;
+        const Phase next = next_control_phase(&audit, phase);
         const guint target = next == SEEK_FORWARD ? 6 : next == HALF_SPEED ? 2 : next == DOUBLE_SPEED ? 8 : 0;
         success = seek_phase(&audit, next, target);
       }
@@ -629,9 +665,10 @@ static int run(const gchar *filename, const gchar *decoder, const gchar *audio_d
           (gdouble)audit.last_pts / GST_SECOND, sustain_seconds);
   } else {
     g_print("Controls decoder=%s audio=%s: video=%" G_GUINT64_FORMAT " audio=%" G_GUINT64_FORMAT
-            " final-replay=%u/360 EOS=%s result=%s\n", decoder,
+            " final-replay=%u/360 2x=%s EOS=%s result=%s\n", decoder,
             audio_decoder != NULL ? audio_decoder : "disabled", audit.total_video,
-            audit.total_audio, audit.epoch_frames, eos ? "yes" : "no", success ? "PASS" : "FAIL");
+            audit.total_audio, audit.epoch_frames, skip_double_speed ? "skipped" : "required",
+            eos ? "yes" : "no", success ? "PASS" : "FAIL");
   }
   g_mutex_unlock(&audit.mutex);
   gst_object_unref(video_pad);
@@ -964,17 +1001,48 @@ static int self_test(void) {
     REQUIRE(missing ? !final_complete(&audit) : final_complete(&audit));
     g_mutex_clear(&audit.mutex);
   }
+  for (guint allow_missing_2x = 0; allow_missing_2x < 2; ++allow_missing_2x) {
+    init_audit(&audit, FALSE);
+    begin_phase(&audit, RESTORED);
+    test_segment(&audit, 0, 1.0);
+    audit.require_double_speed = !allow_missing_2x;
+    for (guint phase = 0; phase < PHASE_COUNT; ++phase) audit.phase_passed[phase] = TRUE;
+    audit.phase_passed[DOUBLE_SPEED] = FALSE;
+    for (guint n = 0; n < FRAME_COUNT; ++n) {
+      GstClockTime pts = gst_util_uint64_scale(n, GST_SECOND, FPS);
+      observe_video(&audit, n, pts, pts, pts);
+    }
+    REQUIRE(allow_missing_2x ? final_complete(&audit) : !final_complete(&audit));
+    g_mutex_clear(&audit.mutex);
+  }
   GstVideoInfo info;
   gst_video_info_set_format(&info, GST_VIDEO_FORMAT_YUY2, 320, 64);
+  REQUIRE(expected_geometry(&audit, &info));
+  audit.expected_width = 320;
+  audit.expected_height = 64;
+  REQUIRE(expected_geometry(&audit, &info));
+  audit.expected_width = 1920;
+  audit.expected_height = 1080;
+  REQUIRE(!expected_geometry(&audit, &info));
   GstBuffer *buffer = gst_buffer_new_allocate(NULL, info.size, NULL);
   GstMapInfo map;
   REQUIRE(gst_buffer_map(buffer, &map, GST_MAP_WRITE));
   memset(map.data, 16, map.size);
   const gsize row = 16 * info.stride[0];
   map.data[row + 16 * 2] = map.data[row + 248 * 2] = 235;
+  for (guint y = 0; y < 8; ++y)
+    for (guint x = 244; x < 252; ++x)
+      map.data[y * info.stride[0] + x * 2] = 235;
   gst_buffer_unmap(buffer, &map);
   guint identity = 0;
   REQUIRE(barcode_buffer(buffer, &info, &identity) && identity == 1);
+  REQUIRE(gst_buffer_map(buffer, &map, GST_MAP_WRITE));
+  for (guint x = 244; x < 252; ++x) map.data[3 * info.stride[0] + x * 2] = 16;
+  gst_buffer_unmap(buffer, &map);
+  REQUIRE(!barcode_buffer(buffer, &info, &identity));
+  REQUIRE(gst_buffer_map(buffer, &map, GST_MAP_WRITE));
+  for (guint x = 244; x < 252; ++x) map.data[3 * info.stride[0] + x * 2] = 235;
+  gst_buffer_unmap(buffer, &map);
   REQUIRE(gst_buffer_map(buffer, &map, GST_MAP_WRITE));
   map.data[row + 16 * 2] = 16;
   gst_buffer_unmap(buffer, &map);
@@ -984,6 +1052,11 @@ static int self_test(void) {
   gst_buffer_unmap(buffer, &map);
   REQUIRE(!barcode_buffer(buffer, &info, &identity));
   gst_buffer_unref(buffer);
+  init_audit(&audit, FALSE);
+  REQUIRE(next_control_phase(&audit, HALF_SPEED) == DOUBLE_SPEED);
+  audit.require_double_speed = FALSE;
+  REQUIRE(next_control_phase(&audit, HALF_SPEED) == RESTORED);
+  g_mutex_clear(&audit.mutex);
   REQUIRE(preroll_queue_test(TRUE));
   REQUIRE(preroll_queue_test(FALSE));
   g_print("GStreamer controls hardware-free self-test: %u checks passed\n", tests);
@@ -994,14 +1067,26 @@ static int self_test(void) {
 int main(int argc, char **argv) {
   gst_init(&argc, &argv);
   if (argc == 2 && g_str_equal(argv[1], "--self-test")) return self_test();
-  gboolean software = FALSE, audio = FALSE;
+  gboolean software = FALSE, audio = FALSE, skip_double_speed = FALSE;
   gboolean have_timeout = FALSE;
   const gchar *decoder = NULL;
-  guint timeout = 90, sustain_seconds = 0;
+  guint timeout = 90, sustain_seconds = 0, expected_width = 0, expected_height = 0;
   if (argc < 2 || argv[1][0] == '-') goto usage;
   for (gint arg = 2; arg < argc; ++arg) {
     if (g_str_equal(argv[arg], "--software") && !software) software = TRUE;
     else if (g_str_equal(argv[arg], "--audio") && !audio) audio = TRUE;
+    else if (g_str_equal(argv[arg], "--skip-2x") && !skip_double_speed)
+      skip_double_speed = TRUE;
+    else if (g_str_equal(argv[arg], "--expect-geometry") && expected_width == 0 && arg + 1 < argc) {
+      gchar *separator, *end;
+      guint64 width = g_ascii_strtoull(argv[++arg], &separator, 10);
+      if (*argv[arg] == '\0' || separator == argv[arg] || *separator != 'x') goto usage;
+      guint64 height = g_ascii_strtoull(separator + 1, &end, 10);
+      if (end == separator + 1 || *end != '\0' || width < 288 || width > G_MAXINT ||
+          height < 32 || height > G_MAXINT) goto usage;
+      expected_width = (guint)width;
+      expected_height = (guint)height;
+    }
     else if (g_str_equal(argv[arg], "--decoder") && decoder == NULL && arg + 1 < argc)
       decoder = argv[++arg];
     else if (g_str_equal(argv[arg], "--timeout") && !have_timeout && arg + 1 < argc) {
@@ -1019,6 +1104,7 @@ int main(int argc, char **argv) {
     } else goto usage;
   }
   if (sustain_seconds == 0 && timeout > 600) goto usage;
+  if (sustain_seconds != 0 && skip_double_speed) goto usage;
   if (sustain_seconds != 0 && !have_timeout) timeout = sustain_seconds + 60;
   if (sustain_seconds != 0 && timeout < sustain_seconds) goto usage;
   if (decoder != NULL && (!software ||
@@ -1031,10 +1117,15 @@ int main(int argc, char **argv) {
     return 2;
   }
   g_print("Testing clocked sinks only: no visible display or audible-output claim\n");
-  return run(argv[1], decoder, audio_decoder, timeout, sustain_seconds);
+  if (expected_width != 0)
+    g_print("Requiring exact decoded geometry: %ux%u\n", expected_width, expected_height);
+  return run(argv[1], decoder, audio_decoder, timeout, sustain_seconds,
+             expected_width, expected_height, skip_double_speed);
 usage:
   g_printerr("usage: %s BARCODE.mp4 [--software [--decoder avdec_h264|openh264dec]] [--audio] "
-      "[--sustain SECONDS] [--timeout SECONDS]\n"
+      "[--expect-geometry WIDTHxHEIGHT] [--skip-2x] [--sustain SECONDS] [--timeout SECONDS]\n"
+      "  --expect-geometry: require this exact decoded width and height\n"
+      "  --skip-2x: certify the other controls without running the 2x phase\n"
       "  --sustain: continuous 12-second barcode repetitions, multiple of12 within12..3540; no controls\n"
       "  --timeout: controls10..600 (default90), sustain duration..3600 (default duration+60)\n", argv[0]);
   return 2;
