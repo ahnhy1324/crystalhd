@@ -2930,24 +2930,7 @@ DtsSetColorSpace(
 	BC_OUTPUT_FORMAT	Mode422
 )
 {
-	BC_STATUS	sts = BC_STS_SUCCESS;
-	//unused uint32_t    Val = 0;
-	DTS_LIB_CONTEXT		*Ctx = NULL;
-
-	DTS_GET_CTX(hDevice,Ctx);
-
-	if(Ctx->DevId == BC_PCI_DEVID_LINK)
-	{
-		Ctx->b422Mode = Mode422;
-		sts = DtsSetLinkIn422Mode(hDevice);
-	}
-	else if (Ctx->DevId == BC_PCI_DEVID_FLEA)
-	{
-		Ctx->b422Mode = Mode422;
-		sts = DtsSetFleaIn422Mode(hDevice);
-	}
-
-	return sts;
+	return DtsSetOutputColorSpace(hDevice, Mode422);
 }
 
 DRVIFLIB_API BC_STATUS

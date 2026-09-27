@@ -137,24 +137,27 @@ DtsSoftReset(
 	return BC_STS_SUCCESS;
 }
 
-DRVIFLIB_INT_API BC_STATUS
-DtsSetLinkIn422Mode(HANDLE hDevice)
+static BC_STATUS
+DtsProgramLinkColorSpace(HANDLE hDevice, BC_OUTPUT_FORMAT ModeSelect)
 {
 	uint32_t					Val = 0;
-	DTS_LIB_CONTEXT		*Ctx;
-	uint32_t					ModeSelect;
+	BC_STATUS sts;
 
-	DTS_GET_CTX(hDevice,Ctx);
-	ModeSelect = Ctx->b422Mode;
+	if (ModeSelect != OUTPUT_MODE420 &&
+	    ModeSelect != OUTPUT_MODE422_YUY2 &&
+	    ModeSelect != OUTPUT_MODE422_UYVY)
+		return BC_STS_INV_ARG;
 
-	DebugLog_Trace(LDIL_DBG,"Setting Color Mode to %u\n", Ctx->b422Mode);
+	DebugLog_Trace(LDIL_DBG,"Setting Color Mode to %u\n", ModeSelect);
 	/*
 	 * EN_WRITE_ALL BIT -Bit 20
 	 * This bit dictates that weather the data will be xferred in
 	 * 1 -  UYVY Mode.
 	 * 0 - YUY2 Mode.
  	 */
-	DtsFPGARegisterRead(hDevice,PCI_GLOBAL_CONTROL,&Val);
+	sts = DtsFPGARegisterRead(hDevice,PCI_GLOBAL_CONTROL,&Val);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
 
 	if (ModeSelect == OUTPUT_MODE420) {
         Val &= 0xffeeffff;
@@ -167,20 +170,14 @@ DtsSetLinkIn422Mode(HANDLE hDevice)
 		}
 	}
 
-	DtsFPGARegisterWr(hDevice,PCI_GLOBAL_CONTROL,Val);
-	return BC_STS_SUCCESS;
+	return DtsFPGARegisterWr(hDevice,PCI_GLOBAL_CONTROL,Val);
 }
 
-DRVIFLIB_INT_API BC_STATUS
-DtsSetFleaIn422Mode(HANDLE hDevice)
+static BC_STATUS
+DtsProgramFleaColorSpace(HANDLE hDevice, BC_OUTPUT_FORMAT ModeSelect)
 {
 	uint32_t			Val = 0;
-	DTS_LIB_CONTEXT		*Ctx;
-	uint32_t			ModeSelect;
 	BC_STATUS		sts;
-
-	DTS_GET_CTX(hDevice,Ctx);
-	ModeSelect = Ctx->b422Mode;
 
 	// Flea HW only support UYVY/YUY2
 	if( ModeSelect != OUTPUT_MODE422_UYVY && ModeSelect != OUTPUT_MODE422_YUY2 )
@@ -197,6 +194,53 @@ DtsSetFleaIn422Mode(HANDLE hDevice)
 	}
 
 	return DtsDevRegisterWr(hDevice, BCHP_MISC2_GLOBAL_CTRL, Val);
+}
+
+DRVIFLIB_INT_API BC_STATUS
+DtsSetOutputColorSpace(HANDLE hDevice, BC_OUTPUT_FORMAT mode)
+{
+	DTS_LIB_CONTEXT *Ctx;
+	BC_STATUS sts;
+
+	DTS_GET_CTX(hDevice, Ctx);
+	/* Keep the previous capture layout visible until programming succeeds.
+	 * thLock is recursive: register helpers also use it for the ioctl pool.
+	 * Callers must still select the format before registering capture buffers.
+	 */
+	DtsLock(Ctx);
+	if (Ctx->DevId == BC_PCI_DEVID_LINK)
+		sts = DtsProgramLinkColorSpace(hDevice, mode);
+	else if (Ctx->DevId == BC_PCI_DEVID_FLEA)
+		sts = DtsProgramFleaColorSpace(hDevice, mode);
+	else
+		sts = BC_STS_NOT_IMPL;
+	if (sts == BC_STS_SUCCESS)
+		Ctx->b422Mode = mode;
+	DtsUnLock(Ctx);
+	return sts;
+}
+
+/* Retain the existing internal entry points for reapplying a cached mode. */
+DRVIFLIB_INT_API BC_STATUS
+DtsSetLinkIn422Mode(HANDLE hDevice)
+{
+	DTS_LIB_CONTEXT *Ctx;
+	DTS_GET_CTX(hDevice, Ctx);
+	DtsLock(Ctx);
+	BC_STATUS sts = DtsProgramLinkColorSpace(hDevice, Ctx->b422Mode);
+	DtsUnLock(Ctx);
+	return sts;
+}
+
+DRVIFLIB_INT_API BC_STATUS
+DtsSetFleaIn422Mode(HANDLE hDevice)
+{
+	DTS_LIB_CONTEXT *Ctx;
+	DTS_GET_CTX(hDevice, Ctx);
+	DtsLock(Ctx);
+	BC_STATUS sts = DtsProgramFleaColorSpace(hDevice, Ctx->b422Mode);
+	DtsUnLock(Ctx);
+	return sts;
 }
 
 DRVIFLIB_INT_API BC_STATUS

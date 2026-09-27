@@ -39,13 +39,13 @@ for bits in $build_bits; do
         "$repo_dir/tests/uapi-library-smoke.cpp" \
         -L"$build_dir/linux_lib/libcrystalhd" -lcrystalhd -pthread \
         -o "$build_dir/library-smoke"
-    # Execute raw-copy, input-framing, TX-flush and status regressions on the target ABI.
+    # Execute copy, framing, TX-flush, status and color regressions on the target ABI.
     # These tests neither open hardware nor load a shared library.
-    for section in copy input tx-flush status; do
+    for section in copy input tx-flush status color; do
         section_wrap=
         case "$section" in
             copy) set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_int_if.cpp" ;;
-            status)
+            status|color)
                 set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_if.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_priv.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_int_if.cpp"
