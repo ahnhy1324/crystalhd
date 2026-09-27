@@ -269,9 +269,68 @@ static bool BuildSps(const VAPictureParameterBufferH264 &picture,
   return true;
 }
 
+static VAIQMatrixBufferH264 FlatH264IqMatrix() {
+  VAIQMatrixBufferH264 matrix = {};
+  memset(matrix.ScalingList4x4, 16, sizeof(matrix.ScalingList4x4));
+  memset(matrix.ScalingList8x8, 16, sizeof(matrix.ScalingList8x8));
+  return matrix;
+}
+
+static bool ValidateH264IqMatrix(const VAPictureParameterBufferH264 &picture,
+                                 VAProfile profile,
+                                 const VAIQMatrixBufferH264 &matrix,
+                                 bool *flat = nullptr) {
+  bool all_flat = true;
+  const auto valid_list = [&all_flat](const uint8_t *list, size_t size) {
+    for (size_t i = 0; i < size; ++i) {
+      // VA supplies effective coefficients, not H.264's delta/default syntax.
+      if (list[i] == 0)
+        return false;
+      all_flat &= list[i] == 16;
+    }
+    return true;
+  };
+  for (const auto &list : matrix.ScalingList4x4) {
+    if (!valid_list(list, sizeof(list)))
+      return false;
+  }
+  if (picture.pic_fields.bits.transform_8x8_mode_flag) {
+    for (const auto &list : matrix.ScalingList8x8) {
+      if (!valid_list(list, sizeof(list)))
+        return false;
+    }
+  }
+  if (profile != VAProfileH264High && !all_flat)
+    return false;
+  if (flat != nullptr)
+    *flat = all_flat;
+  return true;
+}
+
+template <size_t Size>
+static void PutH264ScalingList(BitWriter *bits, const uint8_t (&matrix)[Size],
+                               const uint8_t (&scan)[Size]) {
+  bits->PutBit(true);
+  int last = 8;
+  for (uint8_t position : scan) {
+    const int next = matrix[position];
+    int delta = next - last;
+    if (delta > 127)
+      delta -= 256;
+    else if (delta < -128)
+      delta += 256;
+    bits->PutSE(delta);
+    last = next;
+  }
+}
+
 static bool BuildPps(const VAPictureParameterBufferH264 &picture,
                      const VASliceParameterBufferH264 &slice,
-                     VAProfile profile, std::vector<uint8_t> *output) {
+                     VAProfile profile, const VAIQMatrixBufferH264 &matrix,
+                     std::vector<uint8_t> *output) {
+  bool flat;
+  if (!ValidateH264IqMatrix(picture, profile, matrix, &flat))
+    return false;
   BitWriter bits;
   bits.PutUE(0);
   bits.PutUE(0);
@@ -290,7 +349,26 @@ static bool BuildPps(const VAPictureParameterBufferH264 &picture,
   bits.PutBit(picture.pic_fields.bits.redundant_pic_cnt_present_flag);
   if (profile == VAProfileH264High) {
     bits.PutBit(picture.pic_fields.bits.transform_8x8_mode_flag);
-    bits.PutBit(false);
+    bits.PutBit(!flat);
+    if (!flat) {
+      // VA arrays are raster ordered; H.264 scaling_list() is zigzag ordered.
+      // Clients already resolve SPS/PPS inheritance and JVT defaults. Emit
+      // every active effective list explicitly, including flat ones: omitting
+      // an individual list here would invoke a different fallback rule.
+      static constexpr uint8_t scan4[16] = {
+          0, 1, 4, 8, 5, 2, 3, 6, 9, 12, 13, 10, 7, 11, 14, 15};
+      static constexpr uint8_t scan8[64] = {
+          0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5,
+          12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14, 21, 28,
+          35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51,
+          58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63};
+      for (const auto &list : matrix.ScalingList4x4)
+        PutH264ScalingList(&bits, list, scan4);
+      if (picture.pic_fields.bits.transform_8x8_mode_flag) {
+        for (const auto &list : matrix.ScalingList8x8)
+          PutH264ScalingList(&bits, list, scan8);
+      }
+    }
     bits.PutSE(picture.second_chroma_qp_index_offset);
   }
   AppendNal(output, 8, 3, bits.FinishRbsp());
@@ -1176,6 +1254,8 @@ struct DecodeContext {
   bool have_vpp_parameters = false;
   VAPictureParameterBufferH264 picture = {};
   bool have_picture = false;
+  VAIQMatrixBufferH264 iq_matrix = FlatH264IqMatrix();
+  bool iq_matrix_valid = true;
   std::vector<VASliceParameterBufferH264> slices;
   std::vector<std::vector<uint8_t>> slice_data;
 
@@ -1875,7 +1955,9 @@ static VAStatus DrainClosingContext(
 static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
                               VAProfile profile) {
   if (!decode->have_picture || decode->slices.empty() ||
-      decode->slice_data.empty() || decode->target == VA_INVALID_SURFACE)
+      decode->slice_data.empty() || decode->target == VA_INVALID_SURFACE ||
+      !decode->iq_matrix_valid ||
+      !ValidateH264IqMatrix(decode->picture, profile, decode->iq_matrix))
     return VA_STATUS_ERROR_INVALID_PARAMETER;
 
   auto surface = driver->surfaces.find(decode->target);
@@ -1911,7 +1993,8 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
   // VA-API exposes the active reference counts on each slice rather than the
   // original PPS defaults. Redefine PPS id 0 before every access unit so a
   // slice without num_ref_idx_active_override_flag is parsed consistently.
-  if (!BuildPps(decode->picture, decode->slices.front(), profile, &bitstream))
+  if (!BuildPps(decode->picture, decode->slices.front(), profile,
+                decode->iq_matrix, &bitstream))
     return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
 
   static constexpr uint8_t start_code[] = {0, 0, 0, 1};
@@ -2881,6 +2964,10 @@ static VAStatus BeginPicture(VADriverContextP context, VAContextID context_id,
     return VA_STATUS_ERROR_HW_BUSY;
   decode->second->target = target;
   decode->second->have_picture = false;
+  // Like i965, an omitted per-picture IQ buffer means flat matrices, not the
+  // previous picture's custom matrices or the bitstream's JVT default lists.
+  decode->second->iq_matrix = FlatH264IqMatrix();
+  decode->second->iq_matrix_valid = true;
   decode->second->slices.clear();
   decode->second->slice_data.clear();
   return VA_STATUS_SUCCESS;
@@ -2981,6 +3068,19 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
         memcpy(&decode->second->picture, buffer->second.data.data(),
                sizeof(VAPictureParameterBufferH264));
         decode->second->have_picture = true;
+        break;
+      case VAIQMatrixBufferType:
+        if (buffer->second.data.size() != sizeof(VAIQMatrixBufferH264)) {
+          // Even if a caller ignores this error, EndPicture must not reuse a
+          // previously submitted matrix. A complete valid replacement can
+          // recover; coefficients are checked once picture parameters exist.
+          decode->second->iq_matrix = FlatH264IqMatrix();
+          decode->second->iq_matrix_valid = false;
+          return VA_STATUS_ERROR_INVALID_BUFFER;
+        }
+        memcpy(&decode->second->iq_matrix, buffer->second.data.data(),
+               sizeof(VAIQMatrixBufferH264));
+        decode->second->iq_matrix_valid = true;
         break;
       case VASliceParameterBufferType: {
         size_t slices = buffer->second.data.size() /
