@@ -36,7 +36,7 @@ codec-playback-test: gstreamer-codec-playback-test
 
 gstreamer-codec-playback-test: $(ROOTDIR)/tests/gstreamer-codec-playback.cpp
 	$(CXX) -std=c++17 -O2 -Wall -Wextra -Werror $< -o $@ \
-		$(shell $(PKG_CONFIG) --cflags --libs $(CODEC_PLAYBACK_PACKAGES))
+		$(shell $(PKG_CONFIG) --cflags --libs $(CODEC_PLAYBACK_PACKAGES)) $(CRYSTALHD_CPU_FLAGS)
 
 ifneq ($(HAVE_CODEC_PLAYBACK),)
 check-codec-playback: gstreamer-codec-playback-test
@@ -47,23 +47,23 @@ check-codec-playback:
 endif
 
 $(PLUGIN): gstcrystalhd.c gstcrystalhd-codecs.h gstcrystalhd-timing.h gstcrystalhd-input.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS) $(CRYSTALHD_CPU_FLAGS)
 
 $(PLAYBACK_TEST): $(ROOTDIR)/tests/gstreamer-playback.c
 	$(CC) -Wall -Wextra -Werror $(CFLAGS) $< -o $@ \
-		$(shell $(PKG_CONFIG) --libs $(GST_PACKAGES))
+		$(shell $(PKG_CONFIG) --libs $(GST_PACKAGES)) $(CRYSTALHD_CPU_FLAGS)
 
 $(CONTROLS_TEST): $(ROOTDIR)/tests/gstreamer-controls.c
 	$(CC) -Wall -Wextra -Werror $(CFLAGS) \
 		$(shell $(PKG_CONFIG) --cflags gstreamer-audio-1.0) $< -o $@ \
-		$(shell $(PKG_CONFIG) --libs $(GST_PACKAGES) gstreamer-audio-1.0) -lm
+		$(shell $(PKG_CONFIG) --libs $(GST_PACKAGES) gstreamer-audio-1.0) -lm $(CRYSTALHD_CPU_FLAGS)
 
 # Includes production source but supplies its own Dts mocks. This target must
 # never link libcrystalhd or open the real decoder.
 $(LIFECYCLE_TEST): $(ROOTDIR)/tests/gst-lifecycle.c gstcrystalhd.c \
 		gstcrystalhd-codecs.h gstcrystalhd-timing.h gstcrystalhd-input.h
 	$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror $(CPPFLAGS) $< -o $@ \
-		$(shell $(PKG_CONFIG) --cflags --libs gstreamer-check-1.0 gstreamer-video-1.0)
+		$(shell $(PKG_CONFIG) --cflags --libs gstreamer-check-1.0 gstreamer-video-1.0) $(CRYSTALHD_CPU_FLAGS)
 
 check-player:
 	sh -n $(ROOTDIR)/scripts/crystalhd-play
@@ -71,7 +71,7 @@ check-player:
 
 $(CODECS_TEST): $(ROOTDIR)/tests/gst-codecs.c gstcrystalhd-codecs.h gstcrystalhd-timing.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -I. $< -o $@ \
-		$(shell $(PKG_CONFIG) --libs $(GST_PACKAGES))
+		$(shell $(PKG_CONFIG) --libs $(GST_PACKAGES)) $(CRYSTALHD_CPU_FLAGS)
 
 check: $(PLUGIN) $(PLAYBACK_TEST) $(CONTROLS_TEST) $(LIFECYCLE_TEST) $(CODECS_TEST) \
 		check-codec-playback check-player
@@ -96,4 +96,8 @@ install: $(PLUGIN)
 		$(DESTDIR)$(DATADIR)/crystalhd/player.py
 
 clean:
-	rm -f $(PLUGIN) $(PLAYBACK_TEST) $(CONTROLS_TEST) $(LIFECYCLE_TEST) $(CODECS_TEST) gstreamer-codec-playback-test
+	rm -f $(PLUGIN) $(PLAYBACK_TEST) $(CONTROLS_TEST) $(LIFECYCLE_TEST) $(CODECS_TEST) gstreamer-codec-playback-test $(CRYSTALHD_CPU_STAMP) $(CRYSTALHD_CPU_STAMP).tmp
+
+include $(ROOTDIR)/cpu.mk
+$(PLUGIN) $(PLAYBACK_TEST) $(CONTROLS_TEST) $(LIFECYCLE_TEST) $(CODECS_TEST) gstreamer-codec-playback-test: $(CRYSTALHD_BUILD_DEPS)
+$(PLUGIN): $(ROOTDIR)/linux_lib/libcrystalhd/libcrystalhd.so

@@ -20,7 +20,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#if defined(__SSE2__)
+#include <cpuid.h>
 #include <emmintrin.h>
+#endif
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -344,6 +347,49 @@ static bool SyncDmaBuf(int fd, uint64_t flags) {
     result = ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
   } while (result != 0 && (errno == EINTR || errno == EAGAIN));
   return result == 0;
+}
+
+// CLFLUSH is independent of SSE2. Both it and MFENCE must be available before
+// an asynchronous writer installs a fence that DMA_BUF_SYNC END could wait on.
+// A legacy CPU build contains neither instruction; synchronous CPU access still
+// uses the kernel's DMA_BUF_IOCTL_SYNC protocol without this special path.
+[[maybe_unused]] static size_t CpuCacheLineBytes(unsigned int ebx,
+                                               unsigned int edx) {
+  constexpr unsigned int required = (1U << 19) | (1U << 26);
+  const size_t bytes = ((ebx >> 8) & 0xffU) * 8U;
+  return (edx & required) == required && bytes != 0 &&
+                 (bytes & (bytes - 1)) == 0
+             ? bytes
+             : 0;
+}
+
+struct CpuCacheFlushOps {
+  size_t line_bytes = 0;
+  void (*flush_line)(const void *) = nullptr;
+  void (*barrier)() = nullptr;
+
+  bool Available() const {
+    return line_bytes != 0 && (line_bytes & (line_bytes - 1)) == 0 &&
+           flush_line != nullptr && barrier != nullptr;
+  }
+};
+
+static const CpuCacheFlushOps &CpuCacheFlush() {
+  static const CpuCacheFlushOps operations = [] {
+    CpuCacheFlushOps result;
+#if defined(__SSE2__)
+    unsigned int eax, ebx, ecx, edx;
+    if (__get_cpuid(1, &eax, &ebx, &ecx, &edx)) {
+      result.line_bytes = CpuCacheLineBytes(ebx, edx);
+      if (result.line_bytes != 0) {
+        result.flush_line = [](const void *address) { _mm_clflush(address); };
+        result.barrier = [] { _mm_mfence(); };
+      }
+    }
+#endif
+    return result;
+  }();
+  return operations;
 }
 
 struct BackingIdentity {
@@ -717,8 +763,19 @@ struct Surface {
   // unsignaled write fence is installed: i915 waits on that fence. Flush every
   // mapped cache line explicitly before signaling, so a newly released GPU
   // reader can only observe the fully committed image.
-  void FlushCpuWrites() const {
-    constexpr uintptr_t cache_line_size = 64;
+  bool FlushCpuWrites(const CpuCacheFlushOps &operations = CpuCacheFlush()) const {
+    if (!operations.Available() || object_maps.size() != object_sizes.size())
+      return false;
+    // Validate every extent before flushing any of them. The inclusive last
+    // address and subtraction-based loop also avoid wrapping at UINTPTR_MAX.
+    for (size_t object = 0; object < object_maps.size(); ++object) {
+      if (object_maps[object] != MAP_FAILED && object_maps[object] != nullptr &&
+          object_sizes[object] != 0 &&
+          object_sizes[object] - 1 > UINTPTR_MAX -
+              reinterpret_cast<uintptr_t>(object_maps[object]))
+        return false;
+    }
+    const uintptr_t cache_line_size = operations.line_bytes;
     for (size_t object = 0; object < object_maps.size(); ++object) {
       if (object_maps[object] == MAP_FAILED ||
           object_maps[object] == nullptr || object_sizes[object] == 0)
@@ -728,37 +785,42 @@ struct Surface {
           ~(cache_line_size - 1);
       const uintptr_t last =
           reinterpret_cast<uintptr_t>(object_maps[object]) +
-          object_sizes[object];
-      for (uintptr_t address = first; address < last;
-           address += cache_line_size) {
-        _mm_clflush(reinterpret_cast<const void *>(address));
+          object_sizes[object] - 1;
+      for (uintptr_t address = first;; address += cache_line_size) {
+        operations.flush_line(reinterpret_cast<const void *>(address));
+        if (last - address < cache_line_size)
+          break;
       }
     }
-    _mm_mfence();
+    operations.barrier();
+    return true;
   }
 };
 
-static bool EndFencedWrite(Surface *surface, int timeline);
+static bool EndFencedWrite(Surface *surface, int timeline,
+                          const CpuCacheFlushOps &operations = CpuCacheFlush());
 
-static bool AbortFencedWrite(Surface *surface, int timeline) {
+static bool AbortFencedWrite(Surface *surface, int timeline,
+                            const CpuCacheFlushOps &operations = CpuCacheFlush()) {
   if (timeline < 0)
     return true;
-  if (surface != nullptr)
-    surface->FlushCpuWrites();
+  const bool flushed = surface == nullptr || surface->FlushCpuWrites(operations);
   // No valid picture was committed. Linux sw_sync marks every unsignaled
   // fence -ENOENT when its sole timeline fd closes. Publish that error before
   // CPU END, which may otherwise wait forever on our own imported fence.
   // Never retry close: even on EINTR the fd may already have been recycled.
   const bool closed = close(timeline) == 0;
   const bool released = surface == nullptr || surface->EndCpuWrite();
-  return closed && released;
+  return closed && released && flushed;
 }
 
 // Begin CPU access before publishing the fence: vaEndPicture has not returned,
 // so Chromium cannot yet enqueue a new read of this target. The imported
 // unsignaled write fence then protects the whole asynchronous interval.
-static int BeginFencedWrite(Surface *surface) {
-  if (surface == nullptr || surface->object_fds.empty())
+static int BeginFencedWrite(Surface *surface,
+                            const CpuCacheFlushOps &operations = CpuCacheFlush()) {
+  if (surface == nullptr || surface->object_fds.empty() ||
+      !operations.Available())
     return -1;
   if (!surface->BeginCpuWrite())
     return -1;
@@ -790,20 +852,23 @@ static int BeginFencedWrite(Surface *surface) {
   if (!imported) {
     // An earlier object may already carry the unsignaled fence. Abort it
     // before END can wait on itself; no conversion succeeded here.
-    AbortFencedWrite(surface, timeline);
+    AbortFencedWrite(surface, timeline, operations);
     return -1;
   }
   return timeline;
 }
 
-static bool EndFencedWrite(Surface *surface, int timeline) {
+static bool EndFencedWrite(Surface *surface, int timeline,
+                          const CpuCacheFlushOps &operations) {
   if (timeline < 0)
     return true;
-  if (surface != nullptr)
-    surface->FlushCpuWrites();
+  if (surface != nullptr && !surface->FlushCpuWrites(operations)) {
+    AbortFencedWrite(surface, timeline, operations);
+    return false;
+  }
   const uint32_t increment = 1;
   if (ioctl(timeline, SW_SYNC_IOC_INC, &increment) != 0) {
-    AbortFencedWrite(surface, timeline);
+    AbortFencedWrite(surface, timeline, operations);
     return false;
   }
   // Once the data is cache-visible it is safe to release CPU ownership. This
