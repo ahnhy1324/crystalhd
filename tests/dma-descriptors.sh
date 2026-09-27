@@ -9,10 +9,12 @@ trap 'rm -rf "$dma_test_dir"' EXIT HUP INT TERM
 # Compile the actual descriptor builders and their production data structures
 # against a small DMA-address shim. No device or kernel module is required.
 awk '
+/^enum _BC_DTS_GLOBALS \{/ { copy = 1 }
 /^struct (dma_descriptor|dma_desc_mem|crystalhd_dio_user_info|crystalhd_dio_req) \{/ { copy = 1 }
 copy { print }
 copy && /^};/ { copy = 0 }
-' "$repo_dir/driver/linux/crystalhd_hw.h" \
+' "$repo_dir/include/bc_dts_glob_lnx.h" \
+  "$repo_dir/driver/linux/crystalhd_hw.h" \
   "$repo_dir/driver/linux/crystalhd_misc.h" > "$dma_test_dir/dma-types.h"
 
 awk '
@@ -21,6 +23,13 @@ awk '
 copy { print }
 copy && /^}/ { copy = 0 }
 ' "$repo_dir/driver/linux/crystalhd_hw.c" > "$dma_test_dir/dma-builders.h"
+
+awk '
+/^BC_STATUS crystalhd_hw_setup_dma_rings\(/ { copy = 1; found++ }
+copy { print }
+copy && /^}/ { copy = 0 }
+END { if (found != 1 || copy) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_hw.c" > "$dma_test_dir/dma-setup.h"
 
 "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
   -fsanitize=address,undefined -fno-omit-frame-pointer \
