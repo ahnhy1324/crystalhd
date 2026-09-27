@@ -16,7 +16,7 @@ multimedia stack.
 | Kernel / library | BCM70015 hardware-tested; BCM70012 retained but not recently tested. Native and 32-bit compatibility checks are not comprehensive device-API conformance. |
 | GStreamer | Primary playback path. Selected H.264, MPEG-2, VC-1 and WMV3 fixtures pass; broader streams and physical display/audio validation remain open. |
 | VA-API / FFmpeg | Experimental progressive H.264, plus BCM70015 MPEG-2 Simple/Main and standard WMV3 Simple/Main / VC-1 Advanced. See the [codec and replay limits](filters/vaapi/README.md), including older WMV3 variants; synchronous clients can incur substantial restart/replay overhead. |
-| PowerVLC | Its native plugin loads our library without rebuilding. Multi-file/playlist and A/V validation remain open; tail-frame and playback-rate compatibility limits are tracked. |
+| PowerVLC | Its native plugin loads our library without rebuilding. Selected mixed-codec playlist transitions pass, with software fallback for some inputs; tail-frame, playback-rate and A/V limits remain. |
 | Chrome / YouTube | Software decoding with the GPU sandbox enabled is the default. Hardware decoding and live YouTube A/V synchronization remain unresolved. |
 
 Exact fixtures, measurements and historical failures are in the
@@ -203,10 +203,22 @@ node. Uninstalled-build paths, export requirements and tests are in the
 
 The [PowerVLC 2.1.0 Linux x86_64 release](https://github.com/Olsro/powervlc/releases/tag/powervlc-2.1.0)
 includes a native CrystalHD plugin and uses our ABI-compatible library without
-rebuilding. It still misses four final pictures in the numbered test;
-0.5x transition and broader controls/A/V reliability remain unresolved in
-[#18](https://github.com/ahnhy1324/crystalhd/issues/18). It is not yet recommended
-for reliable daily use. No PowerVLC application patches are supplied here.
+rebuilding. In the tested combination, the numbered H.264 file misses its last
+four pictures (about 0.13 seconds at 30 fps). This can be a noncritical playback
+limitation, but is not complete drain; the strict regression still reports it.
+Half-speed and broader controls/A/V reliability remain unresolved in
+[#18](https://github.com/ahnhy1324/crystalhd/issues/18). No PowerVLC application
+patches are supplied here.
+
+A headless three-file H.264/AAC → MPEG-2 MOV → WMV3/WMA Pro playlist completes
+automatic transitions and exits normally with the input-validation fix in
+[#44](https://github.com/ahnhy1324/crystalhd/issues/44). H.264 uses CrystalHD;
+the latter two files use software fallback. The same MPEG-2 payload in TS
+selects CrystalHD. WMV3 configurations without the required sequence metadata
+are safely rejected by our library, not guessed. These are tested file/container
+compatibility limits, not a claim that every playlist item uses the card.
+Physical display/audio synchronization and longer everyday sessions still need
+validation before a reliable daily-use recommendation.
 
 Extract the downloaded AppImage in its own directory with
 `./PowerVLC-2.1.0-x86_64.AppImage --appimage-extract`. From this repository root:
