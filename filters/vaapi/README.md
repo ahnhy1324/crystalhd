@@ -18,6 +18,13 @@ exercise CrystalHD hardware, and no libva conformance suite is run.
 
 ## Decode and surface contracts
 
+H.264 High reconstruction preserves each picture's effective 4×4 and active
+8×8 IQ scaling lists, including JVT and custom matrices. Omitted IQ buffers
+start from flat-16 defaults for that picture, never a previous picture's
+matrix; malformed buffers and zero active coefficients are rejected before
+decoder submission. See [the scaling-matrix validation](https://github.com/ahnhy1324/crystalhd/issues/34)
+for actual pixel comparisons and remaining codec limits.
+
 BCM70015 firmware retains output until later compressed pictures or a real
 end-of-sequence marker arrive. After 100 ms of synchronization grace, the
 backend may seal the exact submitted batch with EOS. New input is queued until

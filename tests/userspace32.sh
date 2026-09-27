@@ -177,6 +177,24 @@ for bits in $build_bits; do
             -Wl,--gc-sections,--wrap=open,--wrap=ioctl,--wrap=close \
             -pthread $cpu_flags -o "$build_dir/vaapi-cache"
         run_test "$build_dir/vaapi-cache"
+        # Exercise reconstructed H.264 parameter sets on the same strict CPU.
+        # This production-section test needs headers but no graphics libraries.
+        # shellcheck disable=SC2086
+        $cxx -std=c++17 -O2 -Wall -Wextra -Werror -D__LINUX_USER__ \
+            -I"$repo_dir/include" -I"$repo_dir/linux_lib/libcrystalhd" \
+            $(pkg-config --cflags libva libva-drm libdrm gbm libswscale) \
+            "$repo_dir/tests/vaapi-h264.cpp" $cpu_flags -o "$build_dir/vaapi-h264"
+        run_test "$build_dir/vaapi-h264"
+        # The full submission/replay test also stubs external operations, so
+        # it can execute here without 32-bit graphics or decoder libraries.
+        # shellcheck disable=SC2086
+        $cxx -std=c++17 -O2 -Wall -Wextra -Werror -fno-tree-slp-vectorize \
+            -ffunction-sections -fdata-sections -D__LINUX_USER__ \
+            -I"$repo_dir/include" -I"$repo_dir/linux_lib/libcrystalhd" \
+            $(pkg-config --cflags libva libva-drm libdrm gbm libswscale) \
+            "$repo_dir/tests/vaapi-scaling.cpp" -Wl,--gc-sections -pthread \
+            $cpu_flags -o "$build_dir/vaapi-scaling"
+        run_test "$build_dir/vaapi-scaling"
         before_noop=$(stat -c '%y' "$library_file" "$library_dir/libcrystalhd_int_if.o")
         make -C "$library_dir" LEGACY_CPU=1 CXX="$cxx -m32"
         after_noop=$(stat -c '%y' "$library_file" "$library_dir/libcrystalhd_int_if.o")

@@ -6,3 +6,4 @@
 /vaapi-replay-test
 /vaapi-buffer-handles-test
 /vaapi-cache-test
+/vaapi-scaling-test
