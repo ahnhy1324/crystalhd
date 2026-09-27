@@ -66,7 +66,7 @@ static Bytes access_unit(unsigned length_size, bool headers)
 struct Fixture {
     bc_dil_glob_s globals = {};
     DTS_LIB_CONTEXT context = {};
-    Fixture(unsigned length_size)
+    Fixture(unsigned length_size, const Bytes *wmv_metadata = nullptr)
     {
         bc_dil_glob_ptr = &globals;
         context.Sig = LIB_CTX_SIG;
@@ -77,14 +77,15 @@ struct Fixture {
         if (!context.alignBuf || txBufInit(&context.circBuf, CIRC_TX_BUF_SIZE) != BC_STS_SUCCESS)
             std::abort();
         Bytes metadata;
-        append(metadata, sps, 0); append(metadata, pps, 0);
+        if (wmv_metadata) metadata = *wmv_metadata;
+        else { append(metadata, sps, 0); append(metadata, pps, 0); }
         BC_INPUT_FORMAT format = {};
-        format.mSubtype = BC_MSUBTYPE_AVC1;
+        format.mSubtype = wmv_metadata ? BC_MSUBTYPE_WMV3 : BC_MSUBTYPE_AVC1;
         format.width = 640; format.height = 360; format.Progressive = true;
         format.startCodeSz = length_size;
         format.OptFlags = 0x80000001; // Stock PowerVLC input settings, no single-thread flag.
         format.pMetaData = metadata.data(); format.metaDataSz = metadata.size();
-        check(DtsSetInputFormat(&context, &format) == BC_STS_SUCCESS, "configure actual AVC1 converter");
+        check(DtsSetInputFormat(&context, &format) == BC_STS_SUCCESS, "configure actual input converter");
         check(context.PESConvParams.m_bAddSpsPps && context.PESConvParams.m_bIsAdd_SCode_CodeIn &&
               !context.SingleThreadedAppMode && context.VidParams.StreamType == BC_STREAM_TYPE_PES,
               "fixture exercises pending metadata before AVC1 conversion in PES mode");
@@ -199,13 +200,59 @@ static void DetectorBounds()
     }
 }
 
+static void WmvBFrameMetadata()
+{
+    // Canonical four-byte STRUCT_C. MAXBFRAMES is a three-bit count,
+    // not a boolean whose only true representation is seven. The synthetic
+    // picture bodies exercise framing only, not decoder conformance.
+    for (unsigned maximum = 0; maximum < 8; ++maximum) {
+        for (unsigned range = 0; range < 2; ++range) {
+            for (unsigned interpolation = 0; interpolation < 2; ++interpolation) {
+                const Bytes metadata = {0x4b, 0xf1, 0x0a,
+                    static_cast<uint8_t>((range << 7) | (maximum << 4) |
+                                         (interpolation << 1) | 1)};
+                Fixture f(4, &metadata);
+                check(f.context.PESConvParams.m_bMaxbFrames == (maximum != 0),
+                      "every nonzero MAXBFRAMES count enables B-picture syntax");
+                const unsigned first_bit = 7 - (2 + range + interpolation);
+                const Bytes intra = {static_cast<uint8_t>(maximum ? 1U << (first_bit - 1) : 0),
+                                      0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb};
+                const Bytes predicted = {static_cast<uint8_t>(1U << first_bit),
+                                          0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb};
+                const Bytes bidirectional = {0, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb};
+                const Bytes sequence = {0, 0, 1, 0x0f, 2, 0x80, 1, 0x68,
+                                        metadata[0], metadata[1], metadata[2], metadata[3]};
+                auto submit = [&](const Bytes &picture, bool is_intra) {
+                    packets.clear();
+                    check(f.send(picture) == BC_STS_SUCCESS, "WMV3 input is accepted");
+                    check(packets.size() == (is_intra ? 2U : 1U),
+                          "only actual WMV3 I pictures inject sequence metadata");
+                    if (is_intra && packets.size() == 2)
+                        check(payload(packets.front()) == sequence,
+                              "I picture retains exact STRUCT_C and visible dimensions");
+                    Bytes expected = {0, 0, 1, 0x0d};
+                    expected.insert(expected.end(), picture.begin(), picture.end());
+                    check(!packets.empty() && pts(packets.back()) == 66 &&
+                          payload(packets.back()) == expected,
+                          "WMV3 picture bytes and caller timestamp remain unchanged");
+                };
+                submit(intra, true);
+                submit(predicted, false);
+                if (maximum) submit(bidirectional, false);
+                submit(intra, true);
+            }
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 2 || (argc == 2 && std::strcmp(argv[1], "--framing"))) return 2;
     Framing();
+    WmvBFrameMetadata();
     // Baseline proof uses --framing: do not exercise the known unsafe old
     // Annex-B parser on malformed/exact-sized buffers before the fix.
     if (argc == 1) DetectorBounds();
     if (failures) { std::fprintf(stderr, "%u input checks failed\n", failures); return 1; }
-    std::puts("PASS: actual AVC1 input timestamp, metadata, conversion and bounded SPS detection checks");
+    std::puts("PASS: actual AVC1/WMV3 input timestamps, metadata, framing and bounded SPS detection checks");
 }

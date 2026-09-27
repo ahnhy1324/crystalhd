@@ -409,7 +409,9 @@ BC_STATUS DtsSetPESConverter( HANDLE hDevice)
 			{
 				DWORD dwSH = DWORD_SWAP(*(DWORD *)pSeqHeader);
 				Ctx->PESConvParams.m_bRangered = (0x00000080 & dwSH) == 0x00000080;
-				Ctx->PESConvParams.m_bMaxbFrames = (0x00000070 & dwSH) == 0x00000070;
+				// MAXBFRAMES is a count: any nonzero value adds the
+				// second I/B discrimination bit to the picture header.
+				Ctx->PESConvParams.m_bMaxbFrames = (0x00000070 & dwSH) != 0;
 				Ctx->PESConvParams.m_bFinterpFlag = (0x00000002 & dwSH) == 0x00000002;
 			}
 		}
