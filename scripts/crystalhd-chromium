@@ -8,8 +8,7 @@ repo_dir=$(CDPATH= cd -- "$script_dir/.." 2>/dev/null && pwd || true)
 config_file=${CRYSTALHD_CHROMIUM_CONFIG:-${XDG_CONFIG_HOME:-"$HOME/.config"}/crystalhd/chromium.conf}
 
 if [ -r "$config_file" ]; then
-    # This is a per-user shell configuration created by
-    # setup-crystalhd-chrome-default.  It is never read with elevated
+    # This optional per-user shell configuration is never read with elevated
     # privileges.
     # shellcheck disable=SC1090
     . "$config_file"
