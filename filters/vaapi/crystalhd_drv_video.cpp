@@ -59,6 +59,7 @@ extern "C" {
 #include <bc_dts_types.h>
 #include <libcrystalhd_if.h>
 #include "crystalhd-decode-replay.h"
+#include "crystalhd-mpeg4.h"
 #include "crystalhd-mpeg2.h"
 #include "crystalhd-mpeg2-replay.h"
 #include "crystalhd-vc1.h"
@@ -69,6 +70,8 @@ namespace {
 
 constexpr uint64_t kDecodeTimeoutNs = 10ULL * 1000 * 1000 * 1000;
 constexpr uint64_t kDecodeBatchGraceNs = 100ULL * 1000 * 1000;
+constexpr size_t kMpeg4ReplayCacheBytes = 32U * 1024U * 1024U;
+constexpr size_t kMpeg4ReplayPictures = 512;
 
 static bool DecodeBatchGraceExpired(uint64_t elapsed_ns) {
   return elapsed_ns >= kDecodeBatchGraceNs;
@@ -1280,6 +1283,19 @@ struct DecodeContext {
   } mpeg2_picture;
   crystalhd_mpeg2::QuantMatrices mpeg2_matrices =
       crystalhd_mpeg2::DefaultQuantMatrices();
+  struct Mpeg4Picture {
+    VAPictureParameterBufferMPEG4 picture = {};
+    VAIQMatrixBufferMPEG4 iq = {};
+    bool have_picture = false;
+    bool have_iq = false;
+    bool invalid = false;
+    uint64_t forward = 0;
+    uint64_t backward = 0;
+    size_t bytes = 0;
+    std::vector<VASliceParameterBufferMPEG4> parameters;
+    std::vector<std::vector<uint8_t>> data;
+  } mpeg4_picture;
+  crystalhd_mpeg4::TimingState mpeg4_timing;
   struct Vc1Picture {
     VAPictureParameterBufferVC1 picture = {};
     bool have_picture = false;
@@ -1309,36 +1325,66 @@ struct DecodeContext {
   std::unordered_map<Surface *, uint64_t> surface_timestamps;
   CrystalHDDecodeReplay replay;
   CrystalHDMpeg2Replay mpeg2_replay;
+  CrystalHDMpeg4Replay mpeg4_replay;
+  std::deque<CrystalHDMpeg4Replay> mpeg4_draining_epochs;
   CrystalHDVc1Replay vc1_replay;
 
   bool IsMpeg2() const {
     return profile == VAProfileMPEG2Simple || profile == VAProfileMPEG2Main;
+  }
+  bool IsMpeg4() const {
+    return profile == VAProfileMPEG4Simple ||
+           profile == VAProfileMPEG4AdvancedSimple;
   }
   bool IsVc1() const {
     return profile == VAProfileVC1Simple || profile == VAProfileVC1Main ||
            profile == VAProfileVC1Advanced;
   }
   unsigned int StreamWidth() const {
-    return IsMpeg2() || IsVc1() ? stream_width : width;
+    return IsMpeg2() || IsMpeg4() || IsVc1() ? stream_width : width;
   }
   unsigned int StreamHeight() const {
-    return IsMpeg2() || IsVc1() ? stream_height : height;
+    return IsMpeg2() || IsMpeg4() || IsVc1() ? stream_height : height;
   }
   template<class Function> auto WithReplay(Function function) {
     if (IsMpeg2()) return function(mpeg2_replay);
+    if (IsMpeg4()) return function(Mpeg4TransportReplay());
     if (IsVc1()) return function(vc1_replay);
     return function(replay);
   }
+  CrystalHDMpeg4Replay &Mpeg4TransportReplay() {
+    return mpeg4_draining_epochs.empty()
+               ? mpeg4_replay : mpeg4_draining_epochs.front();
+  }
+  const CrystalHDMpeg4Replay &Mpeg4TransportReplay() const {
+    return mpeg4_draining_epochs.empty()
+               ? mpeg4_replay : mpeg4_draining_epochs.front();
+  }
+  size_t Mpeg4CachedPictures() const {
+    size_t result = mpeg4_replay.cached_pictures();
+    for (const auto &epoch : mpeg4_draining_epochs)
+      result += epoch.cached_pictures();
+    return result;
+  }
+  size_t Mpeg4CachedBytes() const {
+    size_t result = mpeg4_replay.cached_bytes();
+    for (const auto &epoch : mpeg4_draining_epochs)
+      result += epoch.cached_bytes();
+    return result;
+  }
   bool ReplaySealed() const {
     if (IsVc1()) return vc1_replay.sealed();
+    if (IsMpeg4()) return Mpeg4TransportReplay().sealed();
     return IsMpeg2() ? mpeg2_replay.sealed() : replay.sealed();
   }
   bool ReplayFailed() const {
     if (IsVc1()) return vc1_replay.failed();
+    if (IsMpeg4()) return Mpeg4TransportReplay().failed();
     return IsMpeg2() ? mpeg2_replay.failed() : replay.failed();
   }
   const char *ReplayFailure() const {
     if (IsVc1()) return vc1_replay.failure();
+    if (IsMpeg4()) return Mpeg4TransportReplay().failure();
     return IsMpeg2() ? mpeg2_replay.failure() : replay.failure();
   }
 
@@ -1374,6 +1420,10 @@ struct DecodeContext {
     mpeg2_replay = CrystalHDMpeg2Replay();
     mpeg2_picture = Mpeg2Picture();
     mpeg2_matrices = crystalhd_mpeg2::DefaultQuantMatrices();
+    mpeg4_replay = CrystalHDMpeg4Replay();
+    mpeg4_draining_epochs.clear();
+    mpeg4_picture = Mpeg4Picture();
+    mpeg4_timing = crystalhd_mpeg4::TimingState();
     vc1_replay = CrystalHDVc1Replay();
     vc1_picture = Vc1Picture();
     vc1_configuration.clear();
@@ -1532,13 +1582,19 @@ static bool IsMpeg2Profile(VAProfile profile) {
   return profile == VAProfileMPEG2Simple || profile == VAProfileMPEG2Main;
 }
 
+static bool IsMpeg4Profile(VAProfile profile) {
+  return profile == VAProfileMPEG4Simple ||
+         profile == VAProfileMPEG4AdvancedSimple;
+}
+
 static bool IsVc1Profile(VAProfile profile) {
   return profile == VAProfileVC1Simple || profile == VAProfileVC1Main ||
          profile == VAProfileVC1Advanced;
 }
 
 static bool IsDecodeProfile(VAProfile profile) {
-  return IsH264Profile(profile) || IsMpeg2Profile(profile) || IsVc1Profile(profile);
+  return IsH264Profile(profile) || IsMpeg2Profile(profile) ||
+         IsMpeg4Profile(profile) || IsVc1Profile(profile);
 }
 
 static bool IsValidConfig(VAProfile profile, VAEntrypoint entrypoint) {
@@ -1568,8 +1624,9 @@ static VAStatus OpenDecoder(DecodeContext *decode, unsigned int width = 0,
   if (status != BC_STS_SUCCESS)
     goto fail;
   decode->is_70012 = version.device == 0;
-  // MPEG-2/VC-1 finite-batch replay has only been validated on BCM70015.
-  if ((decode->IsMpeg2() || decode->IsVc1()) && decode->is_70012)
+  // These finite-batch paths have only been validated on BCM70015.
+  if ((decode->IsMpeg2() || decode->IsMpeg4() || decode->IsVc1()) &&
+      decode->is_70012)
     goto fail;
 
   input.FGTEnable = FALSE;
@@ -1579,6 +1636,8 @@ static VAStatus OpenDecoder(DecodeContext *decode, unsigned int width = 0,
   // discard. The reconstructed SPS VUI and this fallback now both say 30 fps.
   input.OptFlags = 0x80000000U | vdecFrameRate30;
   input.mSubtype = decode->IsMpeg2() ? BC_MSUBTYPE_MPEG2VIDEO : BC_MSUBTYPE_H264;
+  if (decode->IsMpeg4())
+    input.mSubtype = BC_MSUBTYPE_DIVX;
   if (decode->IsVc1()) {
     input.mSubtype = decode->profile == VAProfileVC1Advanced
                          ? BC_MSUBTYPE_VC1 : BC_MSUBTYPE_WMV3;
@@ -1801,10 +1860,7 @@ static bool CopyNv12Surface(const Surface &source, Surface *destination) {
   return true;
 }
 
-static VAStatus FailDecode(Driver *driver, DecodeContext *decode,
-                            const char *reason) {
-  decode->WithReplay([&](auto &replay) { return replay.Fail(reason); });
-  Debug("sealed-batch decoding failed: %s", reason);
+static void MarkPendingPicturesFailed(Driver *driver, DecodeContext *decode) {
   for (const auto &pending : decode->pending) {
     auto picture = decode->decoded_frames.find(pending.first);
     if (picture != decode->decoded_frames.end() && !picture->second->ready)
@@ -1814,6 +1870,19 @@ static VAStatus FailDecode(Driver *driver, DecodeContext *decode,
         surface->second->expected_timestamp == pending.first)
       surface->second->failed = true;
   }
+}
+
+static VAStatus FailDecode(Driver *driver, DecodeContext *decode,
+                            const char *reason) {
+  if (decode->IsMpeg4()) {
+    decode->mpeg4_replay.Fail(reason);
+    for (auto &epoch : decode->mpeg4_draining_epochs)
+      epoch.Fail(reason);
+  } else {
+    decode->WithReplay([&](auto &replay) { return replay.Fail(reason); });
+  }
+  Debug("sealed-batch decoding failed: %s", reason);
+  MarkPendingPicturesFailed(driver, decode);
   driver->condition.notify_all();
   return VA_STATUS_ERROR_DECODING_ERROR;
 }
@@ -1890,6 +1959,9 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
                   : FailDecode(driver, decode, "invalid picture geometry/data or failed CPU write");
 }
 
+static VAStatus CompleteMpeg4EndOfStream(Driver *driver,
+                                         DecodeContext *decode);
+
 static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
                            unsigned int timeout_ms, bool *activity) {
   BC_DTS_PROC_OUT output = {};
@@ -1910,6 +1982,22 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
     if (status == BC_STS_SUCCESS &&
         DtsReleaseOutputBuffs(decode->device, nullptr, FALSE) != BC_STS_SUCCESS)
       return FailDecode(driver, decode, "EOS output release failed");
+    // DIVX firmware can expose its EOS marker before the final reordered
+    // picture becomes ready. Keep the batch sealed and continue polling; once
+    // every accepted timestamp arrives, DtsIsEndOfStream (or a later marker)
+    // provides the completion fence. A genuinely missing picture still hits
+    // the bounded drain timeout instead of being silently discarded.
+    if (decode->IsMpeg4() && !decode->Mpeg4TransportReplay().ended() &&
+        decode->Mpeg4TransportReplay().outstanding() != 0) {
+      Debug("early MPEG-4 EOS marker with %zu timestamps outstanding",
+            decode->Mpeg4TransportReplay().outstanding());
+      return VA_STATUS_SUCCESS;
+    }
+    // The DIVX library fallback can prove EOS without a firmware marker. If a
+    // late marker nevertheless follows, it is only a duplicate completion of
+    // the already-ended MPEG-4 batch.
+    if (decode->IsMpeg4() && decode->Mpeg4TransportReplay().ended())
+      return VA_STATUS_SUCCESS;
     if (!decode->WithReplay([](auto &replay) { return replay.EndOfSequence(); }))
       return FailDecode(driver, decode, decode->ReplayFailure());
     Debug("sealed batch EOS: every submitted timestamp completed");
@@ -1921,7 +2009,7 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
   }
   if (status == BC_STS_NO_DATA || status == BC_STS_BUSY ||
       status == BC_STS_TIMEOUT)
-    return VA_STATUS_SUCCESS;
+    return CompleteMpeg4EndOfStream(driver, decode);
   if (status != BC_STS_SUCCESS)
     return FailDecode(driver, decode, "hardware output failed");
 
@@ -1931,6 +2019,26 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
   if (status != BC_STS_SUCCESS)
     return FailDecode(driver, decode, "hardware output release failed");
   return result;
+}
+
+static VAStatus CompleteMpeg4EndOfStream(Driver *driver,
+                                         DecodeContext *decode) {
+  if (!decode->IsMpeg4())
+    return VA_STATUS_SUCCESS;
+  auto &replay = decode->Mpeg4TransportReplay();
+  if (!replay.sealed() || replay.ended())
+    return VA_STATUS_SUCCESS;
+  if (replay.outstanding() != 0)
+    return VA_STATUS_SUCCESS;
+  uint8_t eos = 0;
+  if (DtsIsEndOfStream(decode->device, &eos) != BC_STS_SUCCESS)
+    return FailDecode(driver, decode, "MPEG-4 EOS state query failed");
+  if (eos != 0) {
+    if (!replay.EndOfSequence())
+      return FailDecode(driver, decode, replay.failure());
+    Debug("sealed MPEG-4 batch EOS: library drain completed without marker");
+  }
+  return VA_STATUS_SUCCESS;
 }
 
 static VAStatus ReceiveAvailable(Driver *driver, DecodeContext *decode) {
@@ -1945,7 +2053,7 @@ static VAStatus ReceiveAvailable(Driver *driver, DecodeContext *decode) {
     if (status != BC_STS_SUCCESS)
       return VA_STATUS_ERROR_DECODING_ERROR;
     if (decoder_status.ReadyListCount == 0)
-      return VA_STATUS_SUCCESS;
+      return CompleteMpeg4EndOfStream(driver, decode);
     bool activity = false;
     VAStatus va_status = ReceiveOne(driver, decode, 0, &activity);
     if (va_status != VA_STATUS_SUCCESS || !activity)
@@ -1954,7 +2062,26 @@ static VAStatus ReceiveAvailable(Driver *driver, DecodeContext *decode) {
   return VA_STATUS_SUCCESS;
 }
 
+static VAStatus AdvanceMpeg4Epoch(Driver *driver, DecodeContext *decode) {
+  if (!decode->IsMpeg4() || decode->mpeg4_draining_epochs.empty() ||
+      !decode->mpeg4_draining_epochs.front().Drained())
+    return VA_STATUS_SUCCESS;
+  Debug("advance MPEG-4 discontinuity; %zu queued epochs remain",
+        decode->mpeg4_draining_epochs.size());
+  if (decode->CloseHardware() != BC_STS_SUCCESS)
+    return FailDecode(driver, decode,
+                      "hardware close for MPEG-4 epoch failed");
+  decode->mpeg4_draining_epochs.pop_front();
+  if (OpenDecoder(decode) != VA_STATUS_SUCCESS)
+    return FailDecode(driver, decode,
+                      "hardware reopen for MPEG-4 epoch failed");
+  return VA_STATUS_SUCCESS;
+}
+
 static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode) {
+  VAStatus advance = AdvanceMpeg4Epoch(driver, decode);
+  if (advance != VA_STATUS_SUCCESS)
+    return advance;
   return decode->WithReplay([&](auto &replay) -> VAStatus {
     if (replay.failed())
       return VA_STATUS_ERROR_DECODING_ERROR;
@@ -2083,23 +2210,30 @@ static std::vector<uint32_t> Vc1Configuration(const VAPictureParameterBufferVC1 
 
 static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
                               VAProfile profile) {
+  if (decode->IsMpeg4() && decode->mpeg4_replay.failed())
+    return VA_STATUS_ERROR_DECODING_ERROR;
   if (IsH264Profile(profile) && (!decode->have_picture || decode->slices.empty() ||
       decode->slice_data.empty() || decode->target == VA_INVALID_SURFACE ||
       !decode->iq_matrix_valid ||
       !ValidateH264IqMatrix(decode->picture, profile, decode->iq_matrix)))
     return VA_STATUS_ERROR_INVALID_PARAMETER;
 
-  auto surface = driver->surfaces.find(decode->target);
+  const VASurfaceID target_id = decode->target;
+  auto surface = driver->surfaces.find(target_id);
   if (surface == driver->surfaces.end() ||
       !HasLiveBackingOwner(driver, surface->second.get()) ||
       surface->second->backing_owner != VA_INVALID_SURFACE)
     return VA_STATUS_ERROR_INVALID_SURFACE;
-  if (surface->second->vpp_writers != 0 || surface->second->vpp_readers != 0 ||
-      surface->second->export_waiters != 0)
+  const std::shared_ptr<Surface> target_surface = surface->second;
+  if (target_surface->vpp_writers != 0 || target_surface->vpp_readers != 0 ||
+      target_surface->export_waiters != 0)
     return VA_STATUS_ERROR_HW_BUSY;
   std::vector<uint8_t> bitstream;
   bool idr = false;
+  bool mpeg4_discontinuity = false;
+  const uint64_t timestamp = decode->next_timestamp;
   crystalhd_mpeg2::QuantMatrices next_matrices;
+  crystalhd_mpeg4::TimingState next_mpeg4_timing = decode->mpeg4_timing;
   std::vector<uint32_t> next_vc1_configuration;
   std::array<uint8_t, 4> next_wmv3_metadata = {};
   unsigned int stream_width = decode->width;
@@ -2117,7 +2251,8 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
         (decode->stream_width != 0 &&
          (stream_width != decode->stream_width || stream_height != decode->stream_height)))
       return VA_STATUS_ERROR_INVALID_PARAMETER;
-    if (surface->second->width < stream_width || surface->second->height < stream_height)
+    if (target_surface->width < stream_width ||
+        target_surface->height < stream_height)
       return VA_STATUS_ERROR_INVALID_SURFACE;
     if ((picture.picture_coding_type == 2 &&
          pending.forward != decode->mpeg2_replay.newest_anchor()) ||
@@ -2144,6 +2279,63 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
             picture.f_code, stream_width, stream_height, slices.size());
       return VA_STATUS_ERROR_INVALID_PARAMETER;
     }
+  } else if (decode->IsMpeg4()) {
+    const auto &pending = decode->mpeg4_picture;
+    const auto &picture = pending.picture;
+    const unsigned type = picture.vop_fields.bits.vop_coding_type;
+    if (pending.invalid || !pending.have_picture || pending.have_iq ||
+        pending.parameters.size() != 1 || pending.data.size() != 1 ||
+        type > 2)
+      return VA_STATUS_ERROR_INVALID_PARAMETER;
+    stream_width = picture.vop_width;
+    stream_height = picture.vop_height;
+    if (((stream_width + 15U) & ~15U) !=
+            ((decode->width + 15U) & ~15U) ||
+        ((stream_height + 15U) & ~15U) !=
+            ((decode->height + 15U) & ~15U) ||
+        (decode->stream_width != 0 &&
+         (stream_width != decode->stream_width ||
+          stream_height != decode->stream_height)))
+      return VA_STATUS_ERROR_INVALID_PARAMETER;
+    if (target_surface->width < stream_width ||
+        target_surface->height < stream_height)
+      return VA_STATUS_ERROR_INVALID_SURFACE;
+    if ((profile == VAProfileMPEG4Simple && type == 2) ||
+        (type == 1 &&
+         pending.forward != decode->mpeg4_replay.newest_anchor()) ||
+        (type == 2 &&
+         (pending.forward != decode->mpeg4_replay.previous_anchor() ||
+          pending.backward != decode->mpeg4_replay.newest_anchor())))
+      return VA_STATUS_ERROR_INVALID_PARAMETER;
+    // FFmpeg reports a negative TRD after a backward seek, and can report zero
+    // on the first Advanced Simple random-access I after a flush. Simple
+    // Profile has no B-VOP interval to preserve, and some clients legitimately
+    // omit TRD for every anchor, so its zero uses the assembler's monotonic
+    // fallback. A real discontinuity starts a new accepting epoch; older
+    // epochs drain in transport order without blocking vaEndPicture.
+    mpeg4_discontinuity =
+        type == 0 && decode->mpeg4_timing.have_newest &&
+        (picture.TRD < 0 ||
+         (profile == VAProfileMPEG4AdvancedSimple && picture.TRD == 0));
+    const crystalhd_mpeg4::Slice slice = {
+        pending.parameters.front(), pending.data.front().data(),
+        pending.data.front().size()};
+    const crystalhd_mpeg4::TimingState empty_timing;
+    const auto &assembly_timing =
+        mpeg4_discontinuity ? empty_timing : decode->mpeg4_timing;
+    if (!crystalhd_mpeg4::Assemble(
+            picture, profile, timestamp, pending.forward, pending.backward,
+            slice, assembly_timing, &bitstream, &next_mpeg4_timing)) {
+      Debug("MPEG-4 assembly rejected profile=%d type=%u flags=%#x/%#x "
+            "TRB=%d TRD=%d refs=%llu/%llu size=%ux%u slice=%zu",
+            profile, type, picture.vol_fields.value,
+            picture.vop_fields.value, picture.TRB, picture.TRD,
+            static_cast<unsigned long long>(pending.forward),
+            static_cast<unsigned long long>(pending.backward),
+            stream_width, stream_height,
+            pending.data.front().size());
+      return VA_STATUS_ERROR_INVALID_PARAMETER;
+    }
   } else if (decode->IsVc1()) {
     const auto &pending = decode->vc1_picture;
     const auto &picture = pending.picture;
@@ -2158,7 +2350,8 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
         (decode->stream_width != 0 &&
          (stream_width != decode->stream_width || stream_height != decode->stream_height)))
       return VA_STATUS_ERROR_INVALID_PARAMETER;
-    if (surface->second->width < stream_width || surface->second->height < stream_height)
+    if (target_surface->width < stream_width ||
+        target_surface->height < stream_height)
       return VA_STATUS_ERROR_INVALID_SURFACE;
     if (((type == 1 || type == 4) &&
          pending.forward != decode->vc1_replay.newest_anchor()) ||
@@ -2206,8 +2399,8 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
     if ((decode->picture.picture_width_in_mbs_minus1 + 1U) * 16U != decode->width ||
         (decode->picture.picture_height_in_mbs_minus1 + 1U) * 16U != decode->height)
       return VA_STATUS_ERROR_INVALID_PARAMETER;
-    if (surface->second->width < decode->width ||
-        surface->second->height < decode->height)
+    if (target_surface->width < decode->width ||
+        target_surface->height < decode->height)
       return VA_STATUS_ERROR_INVALID_SURFACE;
 
     BeginAccessUnit(&bitstream);
@@ -2245,12 +2438,17 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
     }
   }
 
-  const uint64_t timestamp = decode->next_timestamp;
   auto decoded_frame = std::make_shared<Surface>();
-  if (!decoded_frame->AllocateInternal(nullptr, -1, surface->second->width,
-                                       surface->second->height,
+  if (!decoded_frame->AllocateInternal(nullptr, -1, target_surface->width,
+                                       target_surface->height,
                                        VA_FOURCC_NV12))
     return VA_STATUS_ERROR_ALLOCATION_FAILED;
+  if (decode->IsMpeg4() &&
+      (decode->Mpeg4CachedPictures() >= kMpeg4ReplayPictures ||
+       decode->Mpeg4CachedBytes() > kMpeg4ReplayCacheBytes ||
+       bitstream.size() >
+           kMpeg4ReplayCacheBytes - decode->Mpeg4CachedBytes()))
+    return VA_STATUS_ERROR_HW_BUSY;
   if (!decode->decoder_started) {
     VAStatus status = OpenDecoder(decode, stream_width, stream_height,
                                    decode->IsVc1() ? &next_wmv3_metadata : nullptr);
@@ -2266,6 +2464,31 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
                                    pending.backward, std::move(bitstream)))
       return FailDecode(driver, decode, decode->mpeg2_replay.failure());
     decode->mpeg2_matrices = next_matrices;
+    decode->stream_width = stream_width;
+    decode->stream_height = stream_height;
+  } else if (decode->IsMpeg4()) {
+    const auto &pending = decode->mpeg4_picture;
+    const unsigned type = pending.picture.vop_fields.bits.vop_coding_type;
+    const auto kind = type == 0 ? CrystalHDMpeg4Replay::Kind::I
+                               : type == 1 ? CrystalHDMpeg4Replay::Kind::P
+                                           : CrystalHDMpeg4Replay::Kind::B;
+    if (mpeg4_discontinuity) {
+      CrystalHDMpeg4Replay next_epoch;
+      if (!next_epoch.Append(timestamp, kind, pending.forward,
+                            pending.backward, std::move(bitstream)))
+        return FailDecode(driver, decode, next_epoch.failure());
+      Debug("queue MPEG-4 timing epoch profile=%d TRD=%d depth=%zu",
+            profile, pending.picture.TRD,
+            decode->mpeg4_draining_epochs.size() + 1);
+      decode->mpeg4_draining_epochs.push_back(
+          std::move(decode->mpeg4_replay));
+      decode->mpeg4_replay = std::move(next_epoch);
+    } else if (!decode->mpeg4_replay.Append(
+                   timestamp, kind, pending.forward, pending.backward,
+                   std::move(bitstream))) {
+      return FailDecode(driver, decode, decode->mpeg4_replay.failure());
+    }
+    decode->mpeg4_timing = next_mpeg4_timing;
     decode->stream_width = stream_width;
     decode->stream_height = stream_height;
   } else if (decode->IsVc1()) {
@@ -2287,7 +2510,8 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
   decode->next_timestamp += kTimestampStep;
   decoded_frame->rt_format = VA_RT_FORMAT_YUV420;
   decoded_frame->expected_timestamp = timestamp;
-  auto previous_timestamp = decode->surface_timestamps.find(surface->second.get());
+  auto previous_timestamp =
+      decode->surface_timestamps.find(target_surface.get());
   if (previous_timestamp != decode->surface_timestamps.end()) {
     auto previous = decode->decoded_frames.find(previous_timestamp->second);
     if (previous != decode->decoded_frames.end() &&
@@ -2295,17 +2519,34 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
       decode->decoded_frames.erase(previous);
   }
   decode->decoded_frames[timestamp] = decoded_frame;
-  decode->surface_timestamps[surface->second.get()] = timestamp;
-  decode->pending[timestamp] = decode->target;
-  surface->second->ready = false;
-  surface->second->failed = false;
-  surface->second->expected_timestamp = timestamp;
-  surface->second->frame_timestamp = 0;
+  decode->surface_timestamps[target_surface.get()] = timestamp;
+  decode->pending[timestamp] = target_id;
+  target_surface->ready = false;
+  target_surface->failed = false;
+  target_surface->expected_timestamp = timestamp;
+  target_surface->frame_timestamp = 0;
 
   decode->sent_parameter_sets = true;
-  VAStatus status = ReceiveAvailable(driver, decode);
-  if (status == VA_STATUS_SUCCESS)
+  VAStatus status = VA_STATUS_SUCCESS;
+  if (decode->IsMpeg4() && !decode->mpeg4_draining_epochs.empty()) {
+    // Establish the old epoch's EOS fence before consuming a marker that may
+    // already be ready. Each operation is bounded and nonblocking here.
     status = PumpDecodeInput(driver, decode);
+    if (status == VA_STATUS_SUCCESS &&
+        !decode->mpeg4_draining_epochs.empty())
+      status = SealDecodeBatch(driver, decode);
+    if (status == VA_STATUS_SUCCESS)
+      status = ReceiveAvailable(driver, decode);
+    if (status == VA_STATUS_SUCCESS)
+      status = PumpDecodeInput(driver, decode);
+    if (status == VA_STATUS_SUCCESS &&
+        !decode->mpeg4_draining_epochs.empty())
+      status = SealDecodeBatch(driver, decode);
+  } else {
+    status = ReceiveAvailable(driver, decode);
+    if (status == VA_STATUS_SUCCESS)
+      status = PumpDecodeInput(driver, decode);
+  }
   return status;
 }
 
@@ -2580,7 +2821,9 @@ static VAStatus QueryConfigProfiles(VADriverContextP, VAProfile *profiles,
   profiles[6] = VAProfileVC1Simple;
   profiles[7] = VAProfileVC1Main;
   profiles[8] = VAProfileVC1Advanced;
-  *count = 9;
+  profiles[9] = VAProfileMPEG4Simple;
+  profiles[10] = VAProfileMPEG4AdvancedSimple;
+  *count = 11;
   return VA_STATUS_SUCCESS;
 }
 
@@ -2884,6 +3127,7 @@ static VAStatus DestroySurfaces(VADriverContextP context,
   for (DecodeContext *decode : reset_decoders) {
     Debug("reset decoder generation=%llu after decode-surface teardown",
           static_cast<unsigned long long>(decode->generation));
+    MarkPendingPicturesFailed(driver, decode);
     decode->Reset();
   }
   driver->condition.notify_all();
@@ -3231,6 +3475,7 @@ static VAStatus BeginPicture(VADriverContextP context, VAContextID context_id,
   decode->second->target = target;
   decode->second->have_picture = false;
   decode->second->mpeg2_picture = DecodeContext::Mpeg2Picture();
+  decode->second->mpeg4_picture = DecodeContext::Mpeg4Picture();
   decode->second->vc1_picture = DecodeContext::Vc1Picture();
   // Like i965, an omitted per-picture IQ buffer means flat matrices, not the
   // previous picture's custom matrices or the bitstream's JVT default lists.
@@ -3316,6 +3561,100 @@ static VAStatus RenderMpeg2Picture(Driver *driver, DecodeContext *decode,
         break;
       }
       case VASliceDataBufferType:
+        pending.data.push_back(buffer.data);
+        break;
+      default:
+        return fail(VA_STATUS_ERROR_UNSUPPORTED_BUFFERTYPE);
+    }
+  }
+  return VA_STATUS_SUCCESS;
+}
+
+static VAStatus RenderMpeg4Picture(Driver *driver, DecodeContext *decode,
+                                   VAContextID context_id,
+                                   VABufferID *buffer_ids, int count) {
+  auto &pending = decode->mpeg4_picture;
+  const auto fail = [&](VAStatus status) {
+    Debug("MPEG-4 RenderPicture rejected status=%d target=%u type=%u bytes=%zu",
+          status, decode->target,
+          pending.picture.vop_fields.bits.vop_coding_type, pending.bytes);
+    pending.invalid = true;
+    return status;
+  };
+  if (pending.invalid || decode->target == VA_INVALID_SURFACE || count < 0 ||
+      (count != 0 && buffer_ids == nullptr))
+    return fail(VA_STATUS_ERROR_INVALID_PARAMETER);
+  const auto reference = [&](VASurfaceID id, uint64_t *timestamp) {
+    if (id == VA_INVALID_SURFACE || id == decode->target) return false;
+    auto surface = driver->surfaces.find(id);
+    if (surface == driver->surfaces.end() ||
+        !HasLiveBackingOwner(driver, surface->second.get()) ||
+        surface->second->backing_owner != VA_INVALID_SURFACE) return false;
+    auto token = decode->surface_timestamps.find(surface->second.get());
+    if (token == decode->surface_timestamps.end() || token->second == 0 ||
+        token->second != surface->second->expected_timestamp) return false;
+    const auto *unit = decode->mpeg4_replay.Find(token->second);
+    if (unit == nullptr || unit->kind == CrystalHDMpeg4Replay::Kind::B)
+      return false;
+    *timestamp = token->second;
+    return true;
+  };
+  for (int index = 0; index < count; ++index) {
+    auto found = driver->buffers.find(buffer_ids[index]);
+    if (found == driver->buffers.end())
+      return fail(VA_STATUS_ERROR_INVALID_BUFFER);
+    const Buffer &buffer = found->second;
+    if (buffer.context != context_id || buffer.data_failed ||
+        BufferBorrowed(buffer) || buffer.data.empty() || buffer.elements == 0 ||
+        static_cast<uint64_t>(buffer.element_size) * buffer.elements !=
+            buffer.data.size() ||
+        buffer.data.size() >
+            crystalhd_mpeg4::kMaxAccessUnitBytes - pending.bytes)
+      return fail(VA_STATUS_ERROR_INVALID_BUFFER);
+    pending.bytes += buffer.data.size();
+    switch (buffer.type) {
+      case VAPictureParameterBufferType: {
+        if (pending.have_picture || buffer.elements != 1 ||
+            buffer.element_size != sizeof(pending.picture))
+          return fail(VA_STATUS_ERROR_INVALID_BUFFER);
+        memcpy(&pending.picture, buffer.data.data(), sizeof(pending.picture));
+        const auto &picture = pending.picture;
+        const unsigned type = picture.vop_fields.bits.vop_coding_type;
+        if (type > 2 ||
+            (type == 0 &&
+             (picture.forward_reference_picture != VA_INVALID_SURFACE ||
+              picture.backward_reference_picture != VA_INVALID_SURFACE)) ||
+            (type == 1 &&
+             picture.backward_reference_picture != VA_INVALID_SURFACE))
+          return fail(VA_STATUS_ERROR_INVALID_PARAMETER);
+        if ((type != 0 &&
+             !reference(picture.forward_reference_picture,
+                        &pending.forward)) ||
+            (type == 2 &&
+             !reference(picture.backward_reference_picture,
+                        &pending.backward)))
+          return fail(VA_STATUS_ERROR_INVALID_SURFACE);
+        pending.have_picture = true;
+        break;
+      }
+      case VAIQMatrixBufferType:
+        if (pending.have_iq || buffer.elements != 1 ||
+            buffer.element_size != sizeof(pending.iq))
+          return fail(VA_STATUS_ERROR_INVALID_BUFFER);
+        memcpy(&pending.iq, buffer.data.data(), sizeof(pending.iq));
+        pending.have_iq = true;
+        break;
+      case VASliceParameterBufferType:
+        if (!pending.parameters.empty() || buffer.elements != 1 ||
+            buffer.element_size != sizeof(VASliceParameterBufferMPEG4))
+          return fail(VA_STATUS_ERROR_INVALID_BUFFER);
+        pending.parameters.resize(1);
+        memcpy(pending.parameters.data(), buffer.data.data(),
+               sizeof(VASliceParameterBufferMPEG4));
+        break;
+      case VASliceDataBufferType:
+        if (!pending.data.empty())
+          return fail(VA_STATUS_ERROR_INVALID_BUFFER);
         pending.data.push_back(buffer.data);
         break;
       default:
@@ -3499,6 +3838,9 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
   }
   if (decode->second->IsMpeg2())
     return RenderMpeg2Picture(driver, decode->second.get(), context_id, buffer_ids, count);
+  if (decode->second->IsMpeg4())
+    return RenderMpeg4Picture(driver, decode->second.get(), context_id,
+                              buffer_ids, count);
   if (decode->second->IsVc1())
     return RenderVc1Picture(driver, decode->second.get(), context_id, buffer_ids, count);
   for (int i = 0; i < count; ++i) {
@@ -3660,16 +4002,17 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
   auto config = driver->configs.find(decode_context->config);
   if (config == driver->configs.end())
     return VA_STATUS_ERROR_INVALID_CONFIG;
-  VAStatus status = SubmitPicture(driver, decode_context.get(),
-                                  config->second.profile);
+  const VAProfile profile = config->second.profile;
+  VAStatus status = SubmitPicture(driver, decode_context.get(), profile);
   if (status != VA_STATUS_SUCCESS)
     Debug("EndPicture rejected status=%d profile=%d target=%u", status,
-          config->second.profile, decode_context->target);
+          profile, decode_context->target);
   decode_context->target = VA_INVALID_SURFACE;
   decode_context->have_picture = false;
   decode_context->slices.clear();
   decode_context->slice_data.clear();
   decode_context->mpeg2_picture = DecodeContext::Mpeg2Picture();
+  decode_context->mpeg4_picture = DecodeContext::Mpeg4Picture();
   decode_context->vc1_picture = DecodeContext::Vc1Picture();
   return status;
 }
@@ -4447,7 +4790,7 @@ static VAStatus InitializeDriver(VADriverContextP context,
   context->version_major = VA_MAJOR_VERSION;
   context->version_minor = api_minor_version;
   context->str_vendor = "Broadcom CrystalHD VA-API driver 0.1";
-  context->max_profiles = 9;
+  context->max_profiles = 11;
   context->max_entrypoints = 1;
   context->max_attributes = 16;
   context->max_image_formats = 1;

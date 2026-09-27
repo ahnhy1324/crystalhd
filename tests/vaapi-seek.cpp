@@ -186,6 +186,8 @@ struct Probe {
   size_t lookahead = 0;
   size_t deferred_at_limit = 0;
   std::map<int64_t, Picture> reference;
+  std::map<int64_t, AVPictureType> reference_types;
+  std::map<int64_t, bool> reference_keyframes;
 
   ~Probe() {
     av_frame_free(&download);
@@ -203,8 +205,9 @@ struct Probe {
     stream = av_find_best_stream(input, AVMEDIA_TYPE_VIDEO, -1, -1, &codec, 0);
     Check(stream, "find video");
     if (codec->id != AV_CODEC_ID_H264 && codec->id != AV_CODEC_ID_MPEG2VIDEO &&
-        codec->id != AV_CODEC_ID_VC1 && codec->id != AV_CODEC_ID_WMV3)
-      throw std::runtime_error("this probe requires a seekable H.264, MPEG-2, VC-1 or WMV3 container");
+        codec->id != AV_CODEC_ID_MPEG4 && codec->id != AV_CODEC_ID_VC1 &&
+        codec->id != AV_CODEC_ID_WMV3)
+      throw std::runtime_error("this probe requires a seekable H.264, MPEG-2, MPEG-4 Part 2, VC-1 or WMV3 container");
     if (codec->id == AV_CODEC_ID_MPEG2VIDEO) {
       const AVCodecParameters *parameters = input->streams[stream]->codecpar;
       if (parameters->profile != FF_PROFILE_MPEG2_SIMPLE &&
@@ -212,6 +215,17 @@ struct Probe {
         throw std::runtime_error("MPEG-2 validation requires Simple or Main profile");
       if (parameters->field_order != AV_FIELD_PROGRESSIVE)
         throw std::runtime_error("MPEG-2 validation requires a declared progressive stream");
+    }
+    if (codec->id == AV_CODEC_ID_MPEG4) {
+      const AVCodecParameters *parameters = input->streams[stream]->codecpar;
+      if (parameters->profile != FF_PROFILE_MPEG4_SIMPLE &&
+          parameters->profile != FF_PROFILE_MPEG4_ADVANCED_SIMPLE)
+        throw std::runtime_error("MPEG-4 validation requires Simple or Advanced Simple profile");
+      if (parameters->level != 3 && parameters->level != 5)
+        throw std::runtime_error("MPEG-4 validation requires level 3 or 5");
+      if (parameters->field_order != AV_FIELD_PROGRESSIVE &&
+          parameters->field_order != AV_FIELD_UNKNOWN)
+        throw std::runtime_error("MPEG-4 validation requires progressive pictures");
     }
     if (codec->id == AV_CODEC_ID_VC1 || codec->id == AV_CODEC_ID_WMV3) {
       const AVCodecParameters *parameters = input->streams[stream]->codecpar;
@@ -311,6 +325,10 @@ struct Probe {
       if (record) {
         if (!reference.emplace(pts, picture).second)
           throw std::runtime_error("duplicate reference timestamp");
+        if (!reference_types.emplace(pts, picture_frame->pict_type).second ||
+            !reference_keyframes.emplace(
+                pts, (picture_frame->flags & AV_FRAME_FLAG_KEY) != 0).second)
+          throw std::runtime_error("duplicate reference picture metadata");
       } else {
         if (expected == reference.end() || expected->first != pts)
           throw std::runtime_error("post-seek timestamp differs: expected " +
@@ -347,8 +365,8 @@ struct Probe {
         break;
       if (result != AVERROR(EAGAIN)) {
         Check(result, "receive frame");
-        if ((codec->id == AV_CODEC_ID_MPEG2VIDEO || codec->id == AV_CODEC_ID_VC1 ||
-             codec->id == AV_CODEC_ID_WMV3) &&
+        if ((codec->id == AV_CODEC_ID_MPEG2VIDEO || codec->id == AV_CODEC_ID_MPEG4 ||
+             codec->id == AV_CODEC_ID_VC1 || codec->id == AV_CODEC_ID_WMV3) &&
             (frame->flags & AV_FRAME_FLAG_INTERLACED))
           throw std::runtime_error("progressive validation encountered an interlaced picture");
         int64_t pts = frame->best_effort_timestamp;
@@ -407,6 +425,29 @@ struct Probe {
     av_packet_unref(packet);
   }
 
+  std::map<int64_t, Picture>::const_iterator SeekPosition(size_t index) const {
+    auto position = reference.cbegin();
+    std::advance(position, index);
+    if (codec->id != AV_CODEC_ID_MPEG4 ||
+        input->streams[stream]->codecpar->profile !=
+            FF_PROFILE_MPEG4_ADVANCED_SIMPLE ||
+        reference_types.at(position->first) != AV_PICTURE_TYPE_B)
+      return position;
+
+    // Display-order B pictures immediately preceding the next random-access I
+    // need the older anchor too. A container seek can begin at that I, and the
+    // software decoder then omits the same undecodable leading B suffix. Move
+    // only this target to the I so the hardware comparison starts at the first
+    // frame either decoder can produce from the selected seek point.
+    auto next = position;
+    while (next != reference.cend() &&
+           reference_types.at(next->first) == AV_PICTURE_TYPE_B)
+      ++next;
+    if (next != reference.cend() && reference_keyframes.at(next->first))
+      return next;
+    return position;
+  }
+
   void VerifyHeld(const std::vector<HeldPicture> &held, const char *operation) {
     if (held.size() != lookahead)
       throw std::runtime_error("lifecycle pass did not retain the full lookahead");
@@ -445,8 +486,7 @@ struct Probe {
     const size_t indices[] = {count / 2, count / 4, count * 3 / 4, 0};
     size_t pass = 0;
     for (size_t index : indices) {
-      auto position = reference.begin();
-      std::advance(position, index);
+      auto position = SeekPosition(index);
       const int64_t target = position->first;
       Seek(target);
       std::vector<HeldPicture> held;
@@ -458,8 +498,7 @@ struct Probe {
         std::printf("seek left %zu queued pictures undownloaded\n", deferred_at_limit);
       if (retain_old_frames) {
         if (pass % 2 == 0) {
-          auto next = reference.begin();
-          std::advance(next, indices[(pass + 1) % 4]);
+          auto next = SeekPosition(indices[(pass + 1) % 4]);
           Seek(next->first);
           // FFmpeg can defer VA context recreation until post-flush input.
           // Keep all old owners alive while a new timeline actually decodes.

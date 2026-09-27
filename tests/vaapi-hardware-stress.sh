@@ -75,8 +75,24 @@ case "$codec" in
             exit 2
         fi
         ;;
+    mpeg4)
+        profile=$(ffprobe -v error -select_streams v:0 -show_entries stream=profile \
+            -of default=nw=1:nk=1 "$video")
+        level=$(ffprobe -v error -select_streams v:0 -show_entries stream=level \
+            -of default=nw=1:nk=1 "$video")
+        case "$profile:$level" in
+            "Simple Profile:3"|"Simple Profile:5"|"Advanced Simple Profile:3"|"Advanced Simple Profile:5") ;;
+            *) echo "MPEG-4 validation requires Simple/Advanced Simple level 3 or 5 (found: $profile level $level)" >&2; exit 2 ;;
+        esac
+        field_order=$(ffprobe -v error -select_streams v:0 -show_entries stream=field_order \
+            -of default=nw=1:nk=1 "$video")
+        case "$field_order" in
+            progressive|unknown) ;;
+            *) echo "MPEG-4 validation requires progressive pictures (found: $field_order)" >&2; exit 2 ;;
+        esac
+        ;;
     *)
-        echo "CrystalHD VA-API validation requires H.264 or progressive MPEG-2 input (found: $codec)" >&2
+        echo "CrystalHD VA-API validation requires H.264, progressive MPEG-2 or MPEG-4 Part 2 input (found: $codec)" >&2
         exit 2
         ;;
 esac

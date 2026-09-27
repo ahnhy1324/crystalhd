@@ -370,6 +370,10 @@ main(int argc, char **argv)
       "filesrc name=source ! h264parse ! "
       "video/x-h264,stream-format=byte-stream,alignment=au ! "
       "crystalhddec ! fakesink name=sink";
+  const gchar *mpeg4_pipeline =
+      "filesrc name=source ! qtdemux name=demux "
+      "demux.video_0 ! queue ! mpeg4videoparse ! "
+      "crystalhddec ! fakesink name=sink";
   const gchar *test_pipeline =
       "videotestsrc num-buffers=12 ! video/x-raw,format=YUY2,width=320,height=240 ! "
       "fakesink name=sink";
@@ -404,7 +408,7 @@ main(int argc, char **argv)
   if ((argc < 4 || argc > 8) || !positive_number(argv[2], &expected) ||
       (argc >= 5 && !positive_number(argv[4], &timeout)) ||
       (!g_str_equal(argv[3], "mp4") && !g_str_equal(argv[3], "h264") &&
-       !g_str_equal(argv[3], "mpeg2")))
+       !g_str_equal(argv[3], "mpeg2") && !g_str_equal(argv[3], "mpeg4")))
     goto usage;
   for (gint arg = 5; arg < argc; ++arg) {
     if (g_str_equal(argv[arg], "--seek") && !seek_replay)
@@ -416,11 +420,12 @@ main(int argc, char **argv)
       goto usage;
   }
   return run_pipeline(g_str_equal(argv[3], "mp4") ? mp4_pipeline :
-                       g_str_equal(argv[3], "h264") ? annex_b_pipeline : mpeg2_pipeline,
+                       g_str_equal(argv[3], "h264") ? annex_b_pipeline :
+                       g_str_equal(argv[3], "mpeg4") ? mpeg4_pipeline : mpeg2_pipeline,
                        argv[1], expected, (GstClockTime)timeout * GST_SECOND,
                        seek_replay, TRUE, epochs, epoch_count) ? 0 : 1;
 usage:
-  g_printerr("usage: %s VIDEO EXPECTED_FRAMES mp4|h264|mpeg2 "
+  g_printerr("usage: %s VIDEO EXPECTED_FRAMES mp4|h264|mpeg2|mpeg4 "
              "[TIMEOUT_SECONDS [--seek] [--epochs WIDTHxHEIGHT:FRAMES[:p|tff|bff],...]]\n", argv[0]);
   return 2;
 }

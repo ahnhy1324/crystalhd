@@ -10,10 +10,10 @@
 #include <utility>
 #include <vector>
 
-// Progressive, non-droppable MPEG-2 I/P/B pictures only. Each I AU must contain
-// a complete restartable sequence/extension/IQ description. Actual construction
-// and firmware temporal_reference behavior are deliberately outside this model.
-// All calls are serialized by the caller, as with the existing replay helper.
+// Progressive, non-droppable I/P/B pictures only. Each I AU must contain a
+// complete restartable codec configuration. Actual bitstream construction and
+// codec timing are deliberately outside this model. All calls are serialized
+// by the caller, as with the existing replay helper.
 class CrystalHDMpeg2Replay {
  public:
   enum class Kind { I, P, B };
@@ -70,7 +70,7 @@ class CrystalHDMpeg2Replay {
         cache_bytes_ > limits_.cache_bytes ||
         bytes.size() > limits_.cache_bytes - cache_bytes_ ||
         units_.size() >= limits_.pictures)
-      return Fail("bounded MPEG-2 replay cache exhausted");
+      return Fail("bounded I/P/B replay cache exhausted");
     cache_bytes_ += bytes.size();
     units_.push_back({token, kind, forward, backward, root, std::move(bytes), false});
     last_accepted_ = token;
@@ -85,7 +85,7 @@ class CrystalHDMpeg2Replay {
   const AccessUnit *NextInput() {
     if (phase_ != Phase::Running || cursor_ == units_.size()) return nullptr;
     if (units_[cursor_].completed && replay_work_ >= limits_.replay_pictures) {
-      Fail("bounded MPEG-2 replay work exhausted");
+      Fail("bounded I/P/B replay work exhausted");
       return nullptr;
     }
     return &units_[cursor_];
@@ -152,6 +152,12 @@ class CrystalHDMpeg2Replay {
   }
   bool failed() const { return phase_ == Phase::Failed; }
   bool sealed() const { return phase_ == Phase::Sealed; }
+  bool ended() const { return phase_ == Phase::Ended; }
+  bool HasQueuedInput() const { return cursor_ < units_.size(); }
+  bool Drained() const {
+    return !failed() && !HasQueuedInput() && outstanding_.empty() &&
+           !sealed() && !NeedsRestart();
+  }
   const char *failure() const { return failure_; }
   size_t outstanding() const { return outstanding_.size(); }
   size_t cached_pictures() const { return units_.size(); }
@@ -206,4 +212,8 @@ class CrystalHDMpeg2Replay {
   Phase phase_ = Phase::Running;
   const char *failure_ = "none";
 };
+
+// MPEG-2 and MPEG-4 Part 2 use the same bounded anchor/reference replay model;
+// their bitstream assemblers and timing state remain separate.
+using CrystalHDMpeg4Replay = CrystalHDMpeg2Replay;
 #endif

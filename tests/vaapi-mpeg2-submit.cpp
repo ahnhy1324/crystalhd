@@ -72,6 +72,9 @@ extern "C" BC_STATUS DtsDeviceClose(HANDLE device) {
 extern "C" BC_STATUS DtsGetDriverStatus(HANDLE device, BC_DTS_STATUS *status) {
   CheckDevice(device); *status = {}; status->ReadyListCount = active->outputs.size(); return BC_STS_SUCCESS;
 }
+extern "C" BC_STATUS DtsIsEndOfStream(HANDLE device, uint8_t *eos) {
+  CheckDevice(device); Require(eos, "EOS query output"); *eos = 0; return BC_STS_SUCCESS;
+}
 extern "C" uint32_t DtsTxFreeSize(HANDLE device) {
   CheckDevice(device); return active->capacity ? 1024*1024 : 0;
 }
