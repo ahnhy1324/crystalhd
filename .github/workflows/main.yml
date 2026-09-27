@@ -74,6 +74,17 @@ jobs:
           timeout --kill-after=5 90 filters/gst/gst-plugin-1.0/gstreamer-controls-test \
             "$RUNNER_TEMP/av360.mp4" --software --audio --timeout 75
 
+      - name: Verify MPEG-2 seek probe against software decoding
+        run: |
+          ffmpeg -nostdin -hide_banner -loglevel error -xerror -n \
+            -f lavfi -i testsrc2=size=640x360:rate=30 -frames:v 180 \
+            -c:v mpeg2video -threads 1 -profile:v main -level:v 8 \
+            -g 12 -bf 2 -q:v 4 -flags +cgop -sc_threshold 1000000000 \
+            "$RUNNER_TEMP/mpeg2-closed.mov"
+          filters/vaapi/vaapi-seek-test "$RUNNER_TEMP/mpeg2-closed.mov" --software
+          filters/vaapi/vaapi-seek-test "$RUNNER_TEMP/mpeg2-closed.mov" --software --lookahead 8
+          filters/vaapi/vaapi-seek-test "$RUNNER_TEMP/mpeg2-closed.mov" --software --retain-old-frames
+
   upstream-kernel-api:
     name: Kernel API (${{ matrix.track }}, ${{ matrix.arch }})
     runs-on: ubuntu-latest

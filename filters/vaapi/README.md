@@ -1,7 +1,9 @@
 # CrystalHD VA-API driver
 
-This backend exposes BCM70012/BCM70015 H.264 decoding through the standard
-VA-API VLD interface. It accepts VA-allocated NV12 surfaces and imported
+This backend exposes H.264 decoding through the standard VA-API VLD interface,
+with progressive MPEG-2 Simple/Main support on BCM70015. BCM70012
+retains its H.264 path but is not recently hardware-validated; MPEG-2 is rejected
+on that device. The backend accepts VA-allocated NV12 surfaces and imported
 linear or GBM-mappable DRM PRIME NV12 surfaces for FFmpeg-style clients. It
 also allocates and exports ARGB DRM PRIME surfaces for Chromium-class clients
 whose compositor cannot render NV12 directly.
@@ -25,20 +27,49 @@ matrix; malformed buffers and zero active coefficients are rejected before
 decoder submission. See [the scaling-matrix validation](https://github.com/ahnhy1324/crystalhd/issues/34)
 for actual pixel comparisons and remaining codec limits.
 
+MPEG-2 reconstruction preserves picture parameters, effective quantization
+matrices and exact start-coded slice bytes. Matrix updates follow MPEG-2
+inheritance rules rather than H.264's per-picture flat defaults. Simple supports
+I/P pictures up to 720×576; Main adds B pictures up to 1920×1088 coded size,
+including 1920×1080 visible pictures in aligned allocations. The initial subset
+requires progressive 4:2:0 frame pictures with frame-predicted DCT, whole slices,
+and no repeat-first-field or top-field-first presentation flags. A context's
+visible dimensions cannot change after its first accepted picture.
+VA's MPEG-2 decode buffers do not supply the original frame rate or temporal
+reference. Reconstruction uses a 30 fps fallback and stable zero temporal
+references; submitted timestamps identify actual pictures across replay, while
+the client retains its presentation timestamps. This is not an A/V-clock claim.
+
+Selected BCM70015 Simple/Main, open/closed-GOP, FHD, custom-matrix and longer
+streams produced complete NV12 output byte-identical to an independent scalar
+conversion of the original streams' GStreamer YUY2 output. This validates those
+decode fixtures, not general MPEG-2 conformance, physical display/audio timing,
+or parity with the GStreamer path. Selected seek/reopen and retained-frame
+tests also pass; see
+[issue #36](https://github.com/ahnhy1324/crystalhd/issues/36) for the exact matrix
+and remaining acceptance checks.
+
 BCM70015 firmware retains output until later compressed pictures or a real
 end-of-sequence marker arrive. After 100 ms of synchronization grace, the
 backend may seal the exact submitted batch with EOS. New input is queued until
 all real output timestamps and the firmware EOS marker are received. If input
-continues, the complete device is reopened and original access units from the
-last retained actual IDR rebuild reference state. Replayed completed pictures
-are discarded before touching immutable client pixels. Access-unit delimiters
-are first in their own timestamped packet; trailing delimiters shifted firmware
-timestamp association. Decoder-only resets were tested and rejected after a
-firmware stall; full device reopen passed the validated sequence.
+continues, the complete device is reopened and retained original access units
+rebuild reference state. H.264 starts from the last retained actual IDR. MPEG-2
+retains the causal I-picture history needed by the last two I/P anchors and
+pending or outstanding pictures; an I picture is not assumed to close an open
+GOP. Its references are captured as immutable accepted-picture tokens, not
+re-resolved from reusable surface IDs during replay. Unknown, stale or
+out-of-window references are rejected. Replayed completed pictures are discarded
+before touching immutable client pixels. H.264 access-unit delimiters are first
+in their own timestamped packet; trailing delimiters shifted firmware timestamp
+association. Decoder-only resets were tested and rejected after a firmware
+stall; full device reopen passed the validated H.264 sequence.
 
 The replay cache allows at most 512 KiB per access unit, 32 MiB / 512 access
-units total, and 8192 replayed units before a completed older IDR prefix is
-pruned. Missing IDR history or exceeded limits produces an error. This is not
+units total, and 8192 replayed units before an obsolete reference prefix is
+pruned. Missing IDR/I-root history or exceeded limits produces an error. MPEG-2
+can omit completed, non-outstanding B pictures from replay, but cannot discard
+reference history still needed by an open GOP. This is not
 free: a client that downloads each picture before submitting the next may
 reopen and replay for nearly every picture. The 100 ms grace helps clients
 with concurrent input; it cannot manufacture lookahead for synchronous ones.
@@ -110,8 +141,9 @@ seek results do not establish browser hardware seek correctness.
 - only the decode, image, DRM PRIME, and minimal video-processing operations
   needed by the documented clients are implemented; `vaPutSurface`,
   subpictures, palettes, and detailed surface-error reporting are unavailable
-- progressive H.264 Constrained Baseline, Main, and High profiles only
-- maximum coded size 1920x1088
+- progressive H.264 Constrained Baseline, Main, and High; MPEG-2
+  Simple/Main on BCM70015 only, with the picture restrictions above
+- maximum coded size 1920x1088; MPEG-2 Simple is limited to 720x576
 - NV12 images are limited to 1920x1088; odd dimensions retain complete UV pairs.
   Image copies reject busy surfaces and invalid rectangles. `vaPutImage` also
   rejects retained decode pictures and their aliases instead of invalidating
@@ -120,7 +152,7 @@ seek results do not establish browser hardware seek correctness.
 - imports sharing any known backing object must describe identical format,
   dimensions, and plane views. Nonidentical views are rejected; surviving aliases
   of a destroyed owner are invalid, and reimport is busy until pending writes end.
-  H.264 decode targets must be canonical surfaces, not imported aliases; aliases
+  Decode targets must be canonical surfaces, not imported aliases; aliases
   remain usable for the supported image and VPP operations.
 - one CrystalHD playback session at a time; another client receives hardware
   busy until the active decoder closes
@@ -129,7 +161,7 @@ seek results do not establish browser hardware seek correctness.
 - no VP8, VP9, AV1, or protected content
 - direct rendering requires writable NV12 DRM PRIME buffers
 - the VA-API backend is not a general display driver; it uses an existing DRM
-  render node for surface allocation while CrystalHD performs H.264 decoding
+  render node for surface allocation while CrystalHD performs supported decoding
 - earlier browser hardware tests showed incorrect post-seek pixels; driver
   lifecycle fixes now pass regressions, but browser hardware seek correctness
   still needs validation. The `crystalhd-chromium` launcher therefore defaults
@@ -191,6 +223,13 @@ assuming an installed module is the one in use.
 
 ## Seek, flush and retained frames
 
+The probe also accepts progressive MPEG-2 Simple/Main in a seekable container
+with a declared frame count; its checks are tracked in
+[issue #36](https://github.com/ahnhy1324/crystalhd/issues/36). Open-GOP seeking
+requires the client to supply earlier reference pictures: a demuxer seek to a
+later I picture can skip leading B pictures even in software decoding. These
+selected tests do not certify arbitrary files' seek indices or preroll.
+
 Install the `libavcodec`, `libavformat`, `libavutil` and `libva` development
 packages, then build the optional probe:
 
@@ -242,7 +281,7 @@ the source-tree `LIBVA_DRIVERS_PATH` and `LD_LIBRARY_PATH` overrides are no
 longer needed.
 
 The DRM render node normally belongs to the machine's display GPU. That GPU
-allocates and displays surfaces; the BCM70012/BCM70015 still performs the H.264
+allocates and displays surfaces; CrystalHD performs the supported video
 decode. For persistent Chrome integration, including codec preference and
 desktop default-browser registration, see the **Chrome and YouTube** section
 of the top-level [README](../../README.md).

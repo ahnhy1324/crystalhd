@@ -15,7 +15,7 @@ multimedia stack.
 | --- | --- |
 | Kernel / library | BCM70015 hardware-tested; BCM70012 retained but not recently tested. Native and 32-bit compatibility checks are not comprehensive device-API conformance. |
 | GStreamer | Primary playback path. Selected H.264, MPEG-2, VC-1 and WMV3 fixtures pass; broader streams and physical display/audio validation remain open. |
-| VA-API / FFmpeg | Experimental progressive H.264 Baseline/Main/High decoding. Synchronous clients can incur restart/replay overhead; not a general VA-API implementation. |
+| VA-API / FFmpeg | Experimental progressive H.264 Constrained Baseline/Main/High, plus BCM70015 MPEG-2 Simple/Main decoding. See the [codec and replay limits](filters/vaapi/README.md); synchronous clients can incur substantial restart/replay overhead. |
 | PowerVLC | Its native plugin loads our library without rebuilding. Missing final frames and rate-transition problems prevent a daily-use recommendation. |
 | Chrome / YouTube | Software decoding with the GPU sandbox enabled is the default. Hardware decoding and live YouTube A/V synchronization remain unresolved. |
 

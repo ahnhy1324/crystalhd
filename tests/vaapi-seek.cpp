@@ -202,10 +202,18 @@ struct Probe {
     Check(avformat_find_stream_info(input, nullptr), "read stream info");
     stream = av_find_best_stream(input, AVMEDIA_TYPE_VIDEO, -1, -1, &codec, 0);
     Check(stream, "find video");
-    if (codec->id != AV_CODEC_ID_H264)
-      throw std::runtime_error("this probe requires a seekable H.264 container");
+    if (codec->id != AV_CODEC_ID_H264 && codec->id != AV_CODEC_ID_MPEG2VIDEO)
+      throw std::runtime_error("this probe requires a seekable H.264 or progressive MPEG-2 container");
+    if (codec->id == AV_CODEC_ID_MPEG2VIDEO) {
+      const AVCodecParameters *parameters = input->streams[stream]->codecpar;
+      if (parameters->profile != FF_PROFILE_MPEG2_SIMPLE &&
+          parameters->profile != FF_PROFILE_MPEG2_MAIN)
+        throw std::runtime_error("MPEG-2 validation requires Simple or Main profile");
+      if (parameters->field_order != AV_FIELD_PROGRESSIVE)
+        throw std::runtime_error("MPEG-2 validation requires a declared progressive stream");
+    }
     if (input->streams[stream]->nb_frames <= 0)
-      throw std::runtime_error("container must declare a reliable frame count; use the generated MP4 samples");
+      throw std::runtime_error("container must declare a reliable frame count; use generated MP4/MOV samples");
     device_path = device;
     OpenDecoder();
   }
@@ -222,6 +230,10 @@ struct Probe {
     decoder->thread_count = 1;
     decoder->err_recognition = AV_EF_EXPLODE;
     if (!software) {
+      // FFmpeg's MPEG-2 VA path cannot run software error concealment; its
+      // unconsumed error count otherwise makes AV_EF_EXPLODE reject valid input.
+      if (codec->id == AV_CODEC_ID_MPEG2VIDEO)
+        decoder->error_concealment = 0;
       decoder->get_format = ChooseHardware;
       if (lookahead != 0)
         decoder->extra_hw_frames = static_cast<int>(lookahead);
@@ -289,8 +301,12 @@ struct Probe {
         if (!reference.emplace(pts, picture).second)
           throw std::runtime_error("duplicate reference timestamp");
       } else {
-        if (expected == reference.end() || expected->first != pts ||
-            !(expected->second == picture))
+        if (expected == reference.end() || expected->first != pts)
+          throw std::runtime_error("post-seek timestamp differs: expected " +
+              (expected == reference.end() ? std::string("end of reference") :
+               "PTS " + std::to_string(expected->first)) +
+              ", got PTS " + std::to_string(pts));
+        if (!(expected->second == picture))
           throw std::runtime_error("post-seek pixels differ at PTS " +
                                    std::to_string(pts));
         ++expected;
@@ -320,6 +336,9 @@ struct Probe {
         break;
       if (result != AVERROR(EAGAIN)) {
         Check(result, "receive frame");
+        if (codec->id == AV_CODEC_ID_MPEG2VIDEO &&
+            (frame->flags & AV_FRAME_FLAG_INTERLACED))
+          throw std::runtime_error("MPEG-2 validation encountered an interlaced picture");
         int64_t pts = frame->best_effort_timestamp;
         if (pts == AV_NOPTS_VALUE)
           throw std::runtime_error("input has no frame timestamps");
@@ -451,7 +470,7 @@ struct Probe {
 
 int main(int argc, char **argv) {
   if (argc < 2 || argc > 7) {
-    std::fprintf(stderr, "usage: %s VIDEO.mp4 [DRM_DEVICE|--software] [--lookahead 8] [--retain-old-frames] [--export-prime]\n", argv[0]);
+    std::fprintf(stderr, "usage: %s VIDEO_CONTAINER [DRM_DEVICE|--software] [--lookahead 8] [--retain-old-frames] [--export-prime]\n", argv[0]);
     return 2;
   }
   try {

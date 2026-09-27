@@ -185,6 +185,18 @@ for bits in $build_bits; do
             $(pkg-config --cflags libva libva-drm libdrm gbm libswscale) \
             "$repo_dir/tests/vaapi-h264.cpp" $cpu_flags -o "$build_dir/vaapi-h264"
         run_test "$build_dir/vaapi-h264"
+        # MPEG-2 assembly is codec-only and likewise needs no graphics DSO.
+        # shellcheck disable=SC2086
+        $cxx -std=c++17 -O2 -Wall -Wextra -Werror \
+            $(pkg-config --cflags libva) "$repo_dir/tests/vaapi-mpeg2.cpp" \
+            $cpu_flags -o "$build_dir/vaapi-mpeg2"
+        run_test "$build_dir/vaapi-mpeg2"
+        # Reference-aware MPEG-2 replay is likewise pure transport state.
+        # shellcheck disable=SC2086
+        $cxx -std=c++17 -O2 -Wall -Wextra -Werror \
+            "$repo_dir/tests/vaapi-mpeg2-replay.cpp" $cpu_flags \
+            -o "$build_dir/vaapi-mpeg2-replay"
+        run_test "$build_dir/vaapi-mpeg2-replay"
         # The full submission/replay test also stubs external operations, so
         # it can execute here without 32-bit graphics or decoder libraries.
         # shellcheck disable=SC2086
@@ -195,6 +207,15 @@ for bits in $build_bits; do
             "$repo_dir/tests/vaapi-scaling.cpp" -Wl,--gc-sections -pthread \
             $cpu_flags -o "$build_dir/vaapi-scaling"
         run_test "$build_dir/vaapi-scaling"
+        # MPEG-2 uses the same public submission and hardware lifecycle stubs.
+        # shellcheck disable=SC2086
+        $cxx -std=c++17 -O2 -Wall -Wextra -Werror -fno-tree-slp-vectorize \
+            -ffunction-sections -fdata-sections -D__LINUX_USER__ \
+            -I"$repo_dir/include" -I"$repo_dir/linux_lib/libcrystalhd" \
+            $(pkg-config --cflags libva libva-drm libdrm gbm libswscale) \
+            "$repo_dir/tests/vaapi-mpeg2-submit.cpp" -Wl,--gc-sections -pthread \
+            $cpu_flags -o "$build_dir/vaapi-mpeg2-submit"
+        run_test "$build_dir/vaapi-mpeg2-submit"
         before_noop=$(stat -c '%y' "$library_file" "$library_dir/libcrystalhd_int_if.o")
         make -C "$library_dir" LEGACY_CPU=1 CXX="$cxx -m32"
         after_noop=$(stat -c '%y' "$library_file" "$library_dir/libcrystalhd_int_if.o")
