@@ -478,6 +478,12 @@ Description:
     decoder to start processing input data. The device must have been
     previously opened for this call to succeed.
 
+    Metadata is copied on success; the caller retains ownership of its buffer.
+    WMV3 requires at least four sequence-header bytes. A nonzero metadata size
+    requires a readable buffer; zero size clears previous metadata for formats
+    that permit an in-band header. Malformed metadata or allocation failure
+    leaves the previously accepted format and converter unchanged.
+
 Parameters:
     hDevice         Handle to device. This is obtained via a prior call to DtsDeviceOpen.
     pInputFormat Pointer to the BC_INPUT_FORMAT data.
@@ -485,6 +491,8 @@ Parameters:
 Return:
 
     BC_STS_SUCCESS will be returned on successful completion.
+    BC_STS_INV_ARG indicates a null format or malformed/missing metadata.
+    BC_STS_INSUFF_RES indicates metadata/converter allocation failure.
 
 *****************************************************************************/
 DRVIFLIB_API BC_STATUS

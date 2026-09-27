@@ -143,10 +143,12 @@ BC_STATUS DtsReleasePESConverter(HANDLE hDevice)
 	if (Ctx->PESConvParams.m_pSpsPpsBuf)
 		free(Ctx->PESConvParams.m_pSpsPpsBuf);
 	Ctx->PESConvParams.m_pSpsPpsBuf = NULL;
+	Ctx->PESConvParams.m_iSpsPpsLen = 0;
 
 	if (Ctx->PESConvParams.pStartcodePendBuff)
 		free(Ctx->PESConvParams.pStartcodePendBuff);
 	Ctx->PESConvParams.pStartcodePendBuff = NULL;
+	Ctx->PESConvParams.lPendBufferSize = 0;
 
 	return BC_STS_SUCCESS;
 }
@@ -186,237 +188,184 @@ BC_STATUS DtsInitPESConverter(HANDLE hDevice)
 BC_STATUS DtsSetVC1SH(HANDLE hDevice)
 {
 	DTS_LIB_CONTEXT *Ctx = NULL;
-
-	int sts = 0;
-
 	DTS_GET_CTX(hDevice,Ctx);
+	const bool advanced = Ctx->VidParams.MediaSubType == BC_MSUBTYPE_WVC1 ||
+		Ctx->VidParams.MediaSubType == BC_MSUBTYPE_WMVA;
+	if ((!advanced && Ctx->VidParams.MediaSubType != BC_MSUBTYPE_WMV3) ||
+		(Ctx->VidParams.MetaDataSz && !Ctx->VidParams.pMetaData) ||
+		(!advanced && Ctx->VidParams.MetaDataSz < 4))
+		return BC_STS_INV_ARG;
 
-	//Send SPS and PPS
-	//unused uint8_t *pSrc = NULL;
-	//unused uint8_t *pDes = NULL;
-
-	if((Ctx->VidParams.MediaSubType == BC_MSUBTYPE_WVC1) || (Ctx->VidParams.MediaSubType == BC_MSUBTYPE_WMVA))
-	{
-		Ctx->PESConvParams.m_iSpsPpsLen = Ctx->VidParams.MetaDataSz;
-		sts = posix_memalign((void**)&Ctx->PESConvParams.m_pSpsPpsBuf, 8, Ctx->PESConvParams.m_iSpsPpsLen);
-		if(sts)
-			return BC_STS_INSUFF_RES;
-		memcpy(Ctx->PESConvParams.m_pSpsPpsBuf, Ctx->VidParams.pMetaData, Ctx->PESConvParams.m_iSpsPpsLen);
-	}
-	else
-	{
+	uint32_t size = Ctx->VidParams.MetaDataSz;
+	if (!advanced) {
 		if (Ctx->DevId == BC_PCI_DEVID_LINK)
-		{
-			if (Ctx->PESConvParams.m_pSpsPpsBuf)
-				free(Ctx->PESConvParams.m_pSpsPpsBuf);
-			Ctx->PESConvParams.m_iSpsPpsLen = 32;
-			sts = posix_memalign((void**)&Ctx->PESConvParams.m_pSpsPpsBuf, 8, Ctx->PESConvParams.m_iSpsPpsLen);
-			if(sts)
-				return BC_STS_INSUFF_RES;
-			memcpy(Ctx->PESConvParams.m_pSpsPpsBuf, b_asf_vc1_sm_codein_seqhdr, Ctx->PESConvParams.m_iSpsPpsLen);
-			*((uint16_t*)(Ctx->PESConvParams.m_pSpsPpsBuf + 17)) = WORD_SWAP((uint16_t)Ctx->VidParams.WidthInPixels);
-			*((uint16_t*)(Ctx->PESConvParams.m_pSpsPpsBuf + 19)) = WORD_SWAP((uint16_t)Ctx->VidParams.HeightInPixels);
-			memcpy(Ctx->PESConvParams.m_pSpsPpsBuf + 21, Ctx->VidParams.pMetaData, 4);
-		}
+			size = sizeof(b_asf_vc1_sm_codein_seqhdr);
 		else if (Ctx->DevId == BC_PCI_DEVID_FLEA)
-		{
-			if (Ctx->PESConvParams.m_pSpsPpsBuf)
-				free(Ctx->PESConvParams.m_pSpsPpsBuf);
-			Ctx->PESConvParams.m_iSpsPpsLen = 12;
-			sts = posix_memalign((void**)&Ctx->PESConvParams.m_pSpsPpsBuf, 8, Ctx->PESConvParams.m_iSpsPpsLen);
-			if(sts)
-				return BC_STS_INSUFF_RES;
-			memcpy(Ctx->PESConvParams.m_pSpsPpsBuf, b_asf_vc1_sm_seqhdr, Ctx->PESConvParams.m_iSpsPpsLen);
-			*((uint16_t*)(Ctx->PESConvParams.m_pSpsPpsBuf + 4)) = WORD_SWAP((uint16_t)Ctx->VidParams.WidthInPixels);
-			*((uint16_t*)(Ctx->PESConvParams.m_pSpsPpsBuf + 6)) = WORD_SWAP((uint16_t)Ctx->VidParams.HeightInPixels);
-			memcpy(Ctx->PESConvParams.m_pSpsPpsBuf + 8, Ctx->VidParams.pMetaData, 4);
-		}
+			size = sizeof(b_asf_vc1_sm_seqhdr);
+		else
+			return BC_STS_INV_ARG;
 	}
+	uint8_t *header = NULL;
+	if (size && posix_memalign((void **)&header, 8, size))
+		return BC_STS_INSUFF_RES;
+	if (advanced) {
+		if (size)
+			memcpy(header, Ctx->VidParams.pMetaData, size);
+	} else {
+		const bool link = Ctx->DevId == BC_PCI_DEVID_LINK;
+		memcpy(header, link ? b_asf_vc1_sm_codein_seqhdr : b_asf_vc1_sm_seqhdr, size);
+		const unsigned offset = link ? 17 : 4;
+		// Byte stores also cover Link's deliberately unaligned dimensions.
+		header[offset] = (uint8_t)(Ctx->VidParams.WidthInPixels >> 8);
+		header[offset + 1] = (uint8_t)Ctx->VidParams.WidthInPixels;
+		header[offset + 2] = (uint8_t)(Ctx->VidParams.HeightInPixels >> 8);
+		header[offset + 3] = (uint8_t)Ctx->VidParams.HeightInPixels;
+		memcpy(header + offset + 4, Ctx->VidParams.pMetaData, 4);
+	}
+	free(Ctx->PESConvParams.m_pSpsPpsBuf);
+	Ctx->PESConvParams.m_pSpsPpsBuf = header;
+	Ctx->PESConvParams.m_iSpsPpsLen = size;
+	return BC_STS_SUCCESS;
+}
+
+static unsigned DtsSequenceStartCode(const uint8_t *data, uint32_t size)
+{
+	if (size >= 4 && data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 1)
+		return 4;
+	if (size >= 3 && data[0] == 0 && data[1] == 0 && data[2] == 1)
+		return 3;
+	return 0;
+}
+
+// Validate framing and count output before allocation; the second pass copies
+// the same bounded spans. No SPS/RBSP semantics are inferred here. Metadata may
+// use mixed three/four-byte Annex-B startcodes or two-byte big-endian lengths.
+static BC_STATUS DtsConvertSequenceHeaders(const uint8_t *data, uint32_t size,
+	bool divx, uint8_t *output, uint32_t capacity, uint32_t *output_size)
+{
+	const bool annex_b = DtsSequenceStartCode(data, size) != 0;
+	uint32_t position = 0, written = 0;
+	while (position < size) {
+		uint32_t begin, length;
+		if (annex_b) {
+			const unsigned prefix = DtsSequenceStartCode(data + position, size - position);
+			if (!prefix)
+				return BC_STS_INV_ARG;
+			begin = position + prefix;
+			position = begin;
+			while (position < size && !DtsSequenceStartCode(data + position, size - position))
+				++position;
+			length = position - begin;
+		} else {
+			if (size - position < 2)
+				return BC_STS_INV_ARG;
+			length = ((uint32_t)data[position] << 8) | data[position + 1];
+			position += 2;
+			begin = position;
+			if (length > size - position)
+				return BC_STS_INV_ARG;
+			position += length;
+		}
+		if (!length)
+			return BC_STS_INV_ARG;
+		const unsigned type = data[begin] & 0x1f;
+		if (!divx && type != 7 && type != 8)
+			continue;
+		if (written > UINT32_MAX - 4 || length > UINT32_MAX - 4 - written)
+			return BC_STS_INV_ARG;
+		if (output) {
+			if (written > capacity || capacity - written < 4 ||
+				length > capacity - written - 4)
+				return BC_STS_INV_ARG;
+			output[written] = output[written + 1] = output[written + 2] = 0;
+			output[written + 3] = 1;
+			memcpy(output + written + 4, data + begin, length);
+		}
+		written += 4 + length;
+	}
+	*output_size = written;
 	return BC_STS_SUCCESS;
 }
 
 BC_STATUS DtsSetSpsPps(HANDLE hDevice)
 {
 	DTS_LIB_CONTEXT *Ctx = NULL;
-	//Send SPS and PPS
-	uint8_t *pSrc = NULL;
-	uint8_t *pDes = NULL;
-	uint8_t NALtype = 0;
-
-	int iSHStart[40];
-	int iSHStop[40];
-	int iPktIdx = 0;
-	int i = 0;
-	int j = 0;
-	unsigned int iSize = 0;
-
-	int iStartSize = 2;
-
 	DTS_GET_CTX(hDevice,Ctx);
-// 	if ((Ctx->VidParams.MediaSubType != BC_MSUBTYPE_AVC1) &&
-// 		(Ctx->VidParams.MediaSubType != BC_MSUBTYPE_H264) &&
-// 		(Ctx->VidParams.MediaSubType != BC_MSUBTYPE_DIVX) )
-// 		return BC_STS_SUCCESS;
-
-	// MSUBTYPE_H264 does not have codec_type to generate separate SPS/PPS
-	if ((Ctx->VidParams.MediaSubType != BC_MSUBTYPE_AVC1) &&
-		(Ctx->VidParams.MediaSubType != BC_MSUBTYPE_DIVX) )
+	const bool divx = Ctx->VidParams.MediaSubType == BC_MSUBTYPE_DIVX;
+	if (Ctx->VidParams.MediaSubType != BC_MSUBTYPE_AVC1 && !divx)
 		return BC_STS_SUCCESS;
+	if (Ctx->VidParams.MetaDataSz && !Ctx->VidParams.pMetaData)
+		return BC_STS_INV_ARG;
 
-	int iSHSize = Ctx->VidParams.MetaDataSz;
-	pSrc = Ctx->VidParams.pMetaData;
-
-	if((iSHSize > 0) && (pSrc))
-	{
-		if (pSrc[0]==0x00 && pSrc[1]==0x00 && pSrc[2]==0x01)
-		{
-			iStartSize = 3;
-			iSHStart[iPktIdx] = 3;
-			for (i = 3; i < iSHSize; i ++)
-			{
-				if (pSrc[i-2]==0x00 && pSrc[i-1]==0x00 && pSrc[i]==0x01)
-				{
-					iSHStop[iPktIdx] = i - 3;
-
-					if (i < iSHSize)
-					{
-						iPktIdx++;
-						iSHStart[iPktIdx] = i + 1;
-					}
-				}
-
-			}
-			iSHStop[iPktIdx++] = i-1;
-		}
-		else if (pSrc[0]==0x00 && pSrc[1]==0x00 && pSrc[2]==0x00 && pSrc[3]==0x01)
-		{
-			iStartSize = 4;
-			iSHStart[iPktIdx] = 4;
-			for (i = 4; i < iSHSize; i ++)
-			{
-				if (pSrc[i-3] == 0x00 && pSrc[i-2]==0x00 && pSrc[i-1]==0x00 && pSrc[i]==0x01)
-				{
-					iSHStop[iPktIdx] = i - 4;
-
-					if (i < iSHSize)
-					{
-						iPktIdx++;
-						iSHStart[iPktIdx] = i + 1;
-					}
-				}
-
-			}
-			iSHStop[iPktIdx++] = i-1;
-		}
-		else
-		{
-			while (i < iSHSize)
-			{
-				iSize = (pSrc[i] << 8) + pSrc[i+1];
-				iSHStart[iPktIdx] = i + 2;
-				iSHStop[iPktIdx] = iSHStart[iPktIdx] + iSize - 1;
-				iPktIdx++;
-				i += (2 + iSize);
-			}
-		}
-		Ctx->PESConvParams.m_iSpsPpsLen = iSHSize + (BRCM_START_CODE_SIZE - iStartSize) * (iPktIdx);
-		if(Ctx->PESConvParams.m_pSpsPpsBuf)
-			free(Ctx->PESConvParams.m_pSpsPpsBuf);
-		if(!posix_memalign((void**)&Ctx->PESConvParams.m_pSpsPpsBuf, 8, Ctx->PESConvParams.m_iSpsPpsLen))
-		{
-			memset(Ctx->PESConvParams.m_pSpsPpsBuf, 0, Ctx->PESConvParams.m_iSpsPpsLen);
-			pDes = Ctx->PESConvParams.m_pSpsPpsBuf;
-			pSrc = Ctx->VidParams.pMetaData;
-
-			for(i=0;i<iPktIdx;i++)
-			{
-				// NAREN - Add only SPS and PPS from the sequence header to send to the HW
-				// If there is other invalid data in the sequence header do not pass it along
-				// Similarly if there is any other NAL unit type do not pass it along
-				// NAL unit type for SPS is 7 and for PPS is 8 for H.264
-				// NAL unit type is the first byte of the header portion and can be between 0 and 31
-				// For MPEG-4 part 2 In general the demuxers give all of Video Object Layer start codes in the sequence header
-				// Haali for example copies the entire MPEG-4 header up to the first Video Object Plane start
-				// We may need to handle error checking for the MPEG4 part 2 streams, but for now we just copy the entire sequence header
-				// and assume that demuxers do not give us any part of a VOP. Otherwise the same issue will exist for MP4p2
-				NALtype = Ctx->VidParams.pMetaData[iSHStart[i]] & 0x1F;
-				if((((NALtype == 0x7) || (NALtype == 0x8)) && (Ctx->VidParams.MediaSubType != BC_MSUBTYPE_DIVX)) ||
-							(Ctx->VidParams.MediaSubType == BC_MSUBTYPE_DIVX))
-				{
-					//Start Code
-					//Add to Pending Buffer
-					for(j=0; j<BRCM_START_CODE_SIZE - 1;j++)
-					{
-						pDes[j] = 0;
-					}
-
-					pDes[BRCM_START_CODE_SIZE - 1] = 1;
-					//Get Size
-					iSize = iSHStop[i] - iSHStart[i] + 1;
-					pDes = pDes + BRCM_START_CODE_SIZE;
-					pSrc = pSrc + iStartSize;
-					//Copy Sequence Header
-					if(iSize > (Ctx->PESConvParams.m_iSpsPpsLen - (pDes - Ctx->PESConvParams.m_pSpsPpsBuf)))
-						return BC_STS_ERROR;
-					memcpy(pDes, pSrc, iSize);
-					//Update
-					pDes += iSize;
-				}
-				pSrc += iSize;
-			}
-		}
-		else
+	uint32_t size = 0;
+	BC_STATUS status = DtsConvertSequenceHeaders(Ctx->VidParams.pMetaData,
+		Ctx->VidParams.MetaDataSz, divx, NULL, 0, &size);
+	if (status != BC_STS_SUCCESS)
+		return status;
+	uint8_t *headers = NULL;
+	if (size) {
+		if (posix_memalign((void **)&headers, 8, size))
 			return BC_STS_INSUFF_RES;
+		uint32_t copied = 0;
+		status = DtsConvertSequenceHeaders(Ctx->VidParams.pMetaData,
+			Ctx->VidParams.MetaDataSz, divx, headers, size, &copied);
+		if (status != BC_STS_SUCCESS || copied != size) {
+			free(headers);
+			return status != BC_STS_SUCCESS ? status : BC_STS_INV_ARG;
+		}
 	}
+	free(Ctx->PESConvParams.m_pSpsPpsBuf);
+	Ctx->PESConvParams.m_pSpsPpsBuf = headers;
+	Ctx->PESConvParams.m_iSpsPpsLen = size;
 	return BC_STS_SUCCESS;
 }
 
-BC_STATUS DtsSetPESConverter( HANDLE hDevice)
+BC_STATUS DtsSetPESConverter(HANDLE hDevice)
 {
 	DTS_LIB_CONTEXT *Ctx = NULL;
-
 	DTS_GET_CTX(hDevice,Ctx);
+	if ((Ctx->VidParams.MetaDataSz && !Ctx->VidParams.pMetaData) ||
+		(Ctx->VidParams.MediaSubType == BC_MSUBTYPE_WMV3 && Ctx->VidParams.MetaDataSz < 4))
+		return BC_STS_INV_ARG;
 
-	DtsInitPESConverter(hDevice);
+	// Build with no ownership of the previous converter. In particular,
+	// DtsInitPESConverter must not overwrite its still-live allocation pointers.
+	DTS_LIB_CONTEXT candidate = {};
+	candidate.Sig = LIB_CTX_SIG;
+	candidate.DevId = Ctx->DevId;
+	candidate.VidParams = Ctx->VidParams;
+	BC_STATUS status = DtsInitPESConverter(&candidate);
+	if (status != BC_STS_SUCCESS)
+		return status;
+	const BC_MEDIA_SUBTYPE subtype = candidate.VidParams.MediaSubType;
+	candidate.PESConvParams.m_bSoftRave = candidate.DevId == BC_PCI_DEVID_FLEA &&
+		(subtype == BC_MSUBTYPE_WMV3 || subtype == BC_MSUBTYPE_DIVX ||
+		 subtype == BC_MSUBTYPE_DIVX311);
 
-	uint8_t* pSeqHeader = Ctx->VidParams.pMetaData;
-
-	//SoftRave (VC-1 S/M and Divx)
-	if ((Ctx->DevId == BC_PCI_DEVID_FLEA) &&
-		((Ctx->VidParams.MediaSubType == BC_MSUBTYPE_WMV3) ||
-		(Ctx->VidParams.MediaSubType == BC_MSUBTYPE_DIVX) ||
-		(Ctx->VidParams.MediaSubType == BC_MSUBTYPE_DIVX311) ))
-	{
-		Ctx->PESConvParams.m_bSoftRave = true;
+	if (subtype == BC_MSUBTYPE_AVC1 || subtype == BC_MSUBTYPE_H264 || subtype == BC_MSUBTYPE_DIVX) {
+		status = DtsSetSpsPps(&candidate);
+		if (subtype == BC_MSUBTYPE_AVC1)
+			candidate.PESConvParams.m_bIsAdd_SCode_CodeIn = true;
 	}
-	else
-	{
-		Ctx->PESConvParams.m_bSoftRave = false;
-	}
-
-	if ((Ctx->VidParams.MediaSubType == BC_MSUBTYPE_AVC1) || (Ctx->VidParams.MediaSubType == BC_MSUBTYPE_H264) || (Ctx->VidParams.MediaSubType == BC_MSUBTYPE_DIVX))
-	{
-		DtsSetSpsPps(hDevice);
-		if (Ctx->VidParams.MediaSubType == BC_MSUBTYPE_AVC1)
-			Ctx->PESConvParams.m_bIsAdd_SCode_CodeIn = true;
-	}
-	if((Ctx->VidParams.MediaSubType == BC_MSUBTYPE_WVC1) || (Ctx->VidParams.MediaSubType == BC_MSUBTYPE_WMV3) || (Ctx->VidParams.MediaSubType == BC_MSUBTYPE_WMVA))
-	{
-		Ctx->PESConvParams.m_bIsAdd_SCode_CodeIn = true;
-		if (pSeqHeader)
-		{
-			if (Ctx->VidParams.MediaSubType == BC_MSUBTYPE_WMV3)
-			{
-				DWORD dwSH = DWORD_SWAP(*(DWORD *)pSeqHeader);
-				Ctx->PESConvParams.m_bRangered = (0x00000080 & dwSH) == 0x00000080;
-				// MAXBFRAMES is a count: any nonzero value adds the
-				// second I/B discrimination bit to the picture header.
-				Ctx->PESConvParams.m_bMaxbFrames = (0x00000070 & dwSH) != 0;
-				Ctx->PESConvParams.m_bFinterpFlag = (0x00000002 & dwSH) == 0x00000002;
-			}
+	if (subtype == BC_MSUBTYPE_WVC1 || subtype == BC_MSUBTYPE_WMV3 || subtype == BC_MSUBTYPE_WMVA) {
+		candidate.PESConvParams.m_bIsAdd_SCode_CodeIn = true;
+		if (subtype == BC_MSUBTYPE_WMV3) {
+			uint32_t header;
+			memcpy(&header, candidate.VidParams.pMetaData, sizeof(header));
+			header = DWORD_SWAP(header);
+			candidate.PESConvParams.m_bRangered = (header & 0x00000080) != 0;
+			// MAXBFRAMES is a count, not an all-three-bits-set flag.
+			candidate.PESConvParams.m_bMaxbFrames = (header & 0x00000070) != 0;
+			candidate.PESConvParams.m_bFinterpFlag = (header & 0x00000002) != 0;
 		}
-		DtsSetVC1SH(hDevice);
+		status = DtsSetVC1SH(&candidate);
 	}
+	if (status != BC_STS_SUCCESS) {
+		DtsReleasePESConverter(&candidate);
+		return status;
+	}
+	DtsReleasePESConverter(hDevice);
+	Ctx->PESConvParams = candidate.PESConvParams;
 	return BC_STS_SUCCESS;
 }
 
