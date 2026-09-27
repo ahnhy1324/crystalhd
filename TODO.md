@@ -21,11 +21,9 @@ and [DMA.md](DMA.md) for DMA ownership and failure boundaries.
   without bypassing service verification. Local-file checks are not live
   YouTube validation; keep Chrome's software-decoding default.
 - [ ] [#18: PowerVLC](https://github.com/ahnhy1324/crystalhd/issues/18):
-  resolve missing final pictures and investigate the 0.5x transition stall;
-  validate broader seek/recovery, Full HD, other codecs, subtitles and A/V
-  playback. Keep frontend drain/clock behavior distinct from library defects.
-  Changes remain limited to our library and drivers; PowerVLC application
-  source changes are out of scope.
+  deferred at the owner's request while core driver/library/API work takes
+  priority. Tail-frame, rate and broader playback acceptance remain unresolved;
+  this is not a completed or hardware-validated daily-use path.
 
 <a id="driver-and-abi"></a>
 <a id="requires-additional-hardware-or-a-separate-test-session"></a>
@@ -36,6 +34,9 @@ and [DMA.md](DMA.md) for DMA ownership and failure boundaries.
 - [ ] Broaden H.264, MPEG-2, VC-1 and WMV3 samples, interlaced layouts and
   mid-stream resolution/profile/format transitions beyond the recorded cases.
   Include sustained playback and controls, not only short complete-file drain.
+- [ ] [#47: MPEG-4 Part 2 APIs](https://github.com/ahnhy1324/crystalhd/issues/47):
+  validate native BCM70015 decoding, then add the missing GStreamer/VA-API
+  paths. A native capability flag alone is not working frontend support.
 - [ ] Expand VA-API stream coverage and improve synchronous-client performance;
   one-picture-at-a-time clients can repeatedly reopen and replay references.
 - [ ] Validate actual VLC/EGL/GBM compositor presentation and synchronization;
@@ -45,7 +46,9 @@ and [DMA.md](DMA.md) for DMA ownership and failure boundaries.
   decode experimental until those end-to-end checks pass.
 - [ ] Test idle and active/recent-session suspend/resume, including the optional
   L0s workaround and failure recovery. Schedule separately: this interrupts the
-  desktop and is not part of unattended `make check`.
+  desktop and is not part of unattended `make check`. The command-layer idle
+  resume defect and its hardware-free regression are tracked in
+  [#46](https://github.com/ahnhy1324/crystalhd/issues/46).
 - [ ] Extend hardware failure coverage for PCI stop/probe failures and physical
   removal during DMA, preserving the ownership and cleanup rules in [DMA.md](DMA.md).
 - [ ] Cover remaining legacy library conversion helpers and broader device-API
