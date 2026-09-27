@@ -202,8 +202,9 @@ struct Probe {
     Check(avformat_find_stream_info(input, nullptr), "read stream info");
     stream = av_find_best_stream(input, AVMEDIA_TYPE_VIDEO, -1, -1, &codec, 0);
     Check(stream, "find video");
-    if (codec->id != AV_CODEC_ID_H264 && codec->id != AV_CODEC_ID_MPEG2VIDEO)
-      throw std::runtime_error("this probe requires a seekable H.264 or progressive MPEG-2 container");
+    if (codec->id != AV_CODEC_ID_H264 && codec->id != AV_CODEC_ID_MPEG2VIDEO &&
+        codec->id != AV_CODEC_ID_VC1 && codec->id != AV_CODEC_ID_WMV3)
+      throw std::runtime_error("this probe requires a seekable H.264, MPEG-2, VC-1 or WMV3 container");
     if (codec->id == AV_CODEC_ID_MPEG2VIDEO) {
       const AVCodecParameters *parameters = input->streams[stream]->codecpar;
       if (parameters->profile != FF_PROFILE_MPEG2_SIMPLE &&
@@ -211,6 +212,16 @@ struct Probe {
         throw std::runtime_error("MPEG-2 validation requires Simple or Main profile");
       if (parameters->field_order != AV_FIELD_PROGRESSIVE)
         throw std::runtime_error("MPEG-2 validation requires a declared progressive stream");
+    }
+    if (codec->id == AV_CODEC_ID_VC1 || codec->id == AV_CODEC_ID_WMV3) {
+      const AVCodecParameters *parameters = input->streams[stream]->codecpar;
+      if (parameters->profile != FF_PROFILE_VC1_SIMPLE &&
+          parameters->profile != FF_PROFILE_VC1_MAIN &&
+          parameters->profile != FF_PROFILE_VC1_ADVANCED)
+        throw std::runtime_error("VC-1 validation requires Simple, Main or Advanced profile");
+      if (parameters->field_order != AV_FIELD_PROGRESSIVE &&
+          parameters->field_order != AV_FIELD_UNKNOWN)
+        throw std::runtime_error("VC-1 validation requires progressive pictures");
     }
     if (input->streams[stream]->nb_frames <= 0)
       throw std::runtime_error("container must declare a reliable frame count; use generated MP4/MOV samples");
@@ -336,9 +347,10 @@ struct Probe {
         break;
       if (result != AVERROR(EAGAIN)) {
         Check(result, "receive frame");
-        if (codec->id == AV_CODEC_ID_MPEG2VIDEO &&
+        if ((codec->id == AV_CODEC_ID_MPEG2VIDEO || codec->id == AV_CODEC_ID_VC1 ||
+             codec->id == AV_CODEC_ID_WMV3) &&
             (frame->flags & AV_FRAME_FLAG_INTERLACED))
-          throw std::runtime_error("MPEG-2 validation encountered an interlaced picture");
+          throw std::runtime_error("progressive validation encountered an interlaced picture");
         int64_t pts = frame->best_effort_timestamp;
         if (pts == AV_NOPTS_VALUE)
           throw std::runtime_error("input has no frame timestamps");
