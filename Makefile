@@ -8,7 +8,7 @@ KDIR ?= /lib/modules/$(KVER)/build
 DRIVER_ARGS := KVER=$(KVER) KDIR=$(KDIR) DESTDIR=$(DESTDIR)
 USER_ARGS := PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 
-.PHONY: all driver library library-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check l0s-check pib-check userspace32-check legacy-cpu-check check install clean
+.PHONY: all driver library library-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check l0s-check command-pm-check pib-check userspace32-check legacy-cpu-check check install clean
 
 all: driver library gstreamer vaapi examples browser
 
@@ -84,6 +84,9 @@ dma-check:
 l0s-check:
 	CC="$(CC)" sh ./tests/l0s-workaround.sh
 
+command-pm-check:
+	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/command-pm.sh
+
 pib-check:
 	CC="$(CC)" sh ./tests/flea-pib.sh
 
@@ -93,7 +96,7 @@ userspace32-check:
 legacy-cpu-check:
 	CXX="$(CXX)" sh ./tests/userspace32.sh --legacy
 
-check: uapi-check dma-check l0s-check pib-check library-check all
+check: uapi-check dma-check l0s-check command-pm-check pib-check library-check all
 	$(MAKE) -C filters/gst/gst-plugin-1.0 check
 	$(MAKE) -C filters/vaapi check
 	$(MAKE) -C browser check
