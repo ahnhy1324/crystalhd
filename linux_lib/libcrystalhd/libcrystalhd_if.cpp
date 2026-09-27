@@ -2340,6 +2340,8 @@ DtsSendEOS( HANDLE  hDevice, uint32_t Op
 	uint32_t nEOSLen;
 	uint32_t	nTag;
 	const bool softRave = Ctx->PESConvParams.m_bSoftRave;
+	const bool divxTailBoundary = softRave && Ctx->DevId == BC_PCI_DEVID_FLEA &&
+		Ctx->VidParams.MediaSubType == BC_MSUBTYPE_DIVX;
 
 	if (Ctx->State == BC_DEC_STATE_CLOSE)
 	{
@@ -2357,13 +2359,11 @@ DtsSendEOS( HANDLE  hDevice, uint32_t Op
 	if (Op == 0)
 		Ctx->bEOSCheck = false;
 
-	/* EOS control packets are not ordinary zero-PTS SoftRave pictures.
-	 * The original BCM70015 implementation (813af6d) suppressed PTS with
-	 * m_bSoftRaveEOS; 4f5f6f0 removed that exception while adding persistent
-	 * SoftRave input handling. Restore the EOS-only framing, retaining the
-	 * existing ordinary-input setting on every cleanup path, including Op 5.
+	/* The first MPEG-4 sequence end needs a zero PTS to commit the final VOP.
+	 * The timing marker and repeated sequence ends remain control-only PES.
 	 */
-	Ctx->PESConvParams.m_bSoftRave = false;
+	if (!divxTailBoundary)
+		Ctx->PESConvParams.m_bSoftRave = false;
 
 	Ctx->PESConvParams.m_bPESExtField = false;
 	Ctx->PESConvParams.m_bPESPrivData = false;
@@ -2409,6 +2409,7 @@ DtsSendEOS( HANDLE  hDevice, uint32_t Op
 	sts = DtsAlignSendData(hDevice, pEOS, nEOSLen, 0, 0);
 	if (sts != BC_STS_SUCCESS)
 		goto eos_cleanup;
+	Ctx->PESConvParams.m_bSoftRave = false;
 
 	/* Only send timing marker if this is FLEA */
 	/* LINK Support LAST_PICTURE and does not need timing marker */
