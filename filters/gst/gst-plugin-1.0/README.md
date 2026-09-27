@@ -62,7 +62,7 @@ are the accepted `video/x-wmv,wmvversion=3` framing combinations:
 
 | Format | Stream/header format | Input contract |
 | --- | --- | --- |
-| WMV3 | `asf` / `asf` | One complete ASF picture per buffer; four-byte sequence metadata in `codec_data` (a fifth trailing byte is tolerated). |
+| WMV3 | `asf` / `asf` | One complete picture per buffer; original four-byte STRUCT_C metadata in `codec_data`. Trailing encoder bytes, including six-byte AVI metadata, are ignored without changing the header. |
 | WVC1 | `asf` / `asf` | Complete ASF picture packets; sequence/entry-point startcodes in `codec_data`, with or without the ASF binding byte. |
 | WMV3 | `frame-layer` / `asf` | One complete Annex-L frame layer per buffer; its eight-byte wrapper is validated and stripped. |
 | WVC1 | `bdu` or `bdu-frame` / `none` | Startcoded elementary stream with sequence/entry-point headers in-band; fields and slices are grouped with their picture. |
@@ -87,6 +87,10 @@ LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
 timeout --kill-after=5 35 gst-launch-1.0 -q \
   filesrc location=wmv3.wmv ! asfdemux ! crystalhddec ! fakesink sync=false
 ```
+
+For WMV3 in AVI, replace `asfdemux` with `avidemux` and use the AVI filename.
+The six-byte WMV9 VCM metadata case is covered by
+[issue #41](https://github.com/ahnhy1324/crystalhd/issues/41).
 
 `asfdemux` is supplied by GStreamer's Ugly plugins. The tested WMV3 Main
 fixture was FFmpeg FATE's `SMM0015.rcv`, remuxed without transcoding using

@@ -711,6 +711,9 @@ test_flush_codec_state(void)
     { "video/x-wmv,wmvversion=3,format=WMV3,stream-format=frame-layer,"
       "header-format=asf", BC_MSUBTYPE_WMV3,
       { 0x41, 0x42, 0x43, 0x44, 0xff }, 5, 0, 4, TRUE, TRUE },
+    /* Original avidemux codec_data: preserve STRUCT_C across full reopen. */
+    { "video/x-wmv,wmvversion=3,format=WMV3", BC_MSUBTYPE_WMV3,
+      { 0x0f, 0xf1, 0x8a, 0x01, 0x40, 0x0f }, 6, 0, 4, TRUE, FALSE },
     { "video/x-wmv,wmvversion=3,format=WVC1,stream-format=asf,"
       "header-format=asf", BC_MSUBTYPE_WVC1,
       { 0xff, 0, 0, 1, 0x0f, 0x41, 0x42, 0x43, 0x44 }, 9, 1, 8, TRUE, FALSE },
