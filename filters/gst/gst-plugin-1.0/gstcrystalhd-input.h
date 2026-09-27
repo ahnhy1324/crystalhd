@@ -31,6 +31,9 @@ gst_crystalhd_input_reservation(BC_MEDIA_SUBTYPE subtype, gsize payload,
     case BC_MSUBTYPE_MPEG2VIDEO:
     case BC_MSUBTYPE_VC1:
       break;
+    case BC_MSUBTYPE_DIVX:
+      sequence = metadata;
+      break;
     case BC_MSUBTYPE_WVC1:
       extra = 4;
       sequence = metadata;

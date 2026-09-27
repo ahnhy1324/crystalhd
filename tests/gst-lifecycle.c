@@ -74,6 +74,7 @@ static struct {
   guint start_calls;
   guint stop_calls;
   guint format_calls;
+  guint device_version;
   guint fail_operations;
   BC_INPUT_FORMAT last_format;
   guint8 last_metadata[64];
@@ -201,7 +202,7 @@ BC_STATUS DtsDeviceClose(HANDLE device)
 BC_STATUS DtsCrystalHDVersion(HANDLE device, PBC_INFO_CRYSTAL version)
 {
   (void)device;
-  version->device = 1;
+  version->device = mock.device_version;
   return operation_status(MOCK_VERSION);
 }
 
@@ -403,6 +404,7 @@ new_decoder(void)
   g_queue_init(&mock.pictures);
   mock.auto_output = TRUE;
   mock.free_bytes = 1024 * 1024;
+  mock.device_version = 1;
   element = g_object_new(GST_TYPE_CRYSTALHD_DEC, NULL);
   harness = gst_harness_new_with_element(element, "sink", "src");
   gst_object_unref(element); /* the harness takes its own reference */
@@ -701,7 +703,7 @@ test_flush_codec_state(void)
   const struct {
     const gchar *caps;
     BC_MEDIA_SUBTYPE subtype;
-    guint8 metadata[9];
+    guint8 metadata[64];
     guint metadata_size;
     guint skip;
     guint expected_size;
@@ -719,7 +721,13 @@ test_flush_codec_state(void)
       { 0xff, 0, 0, 1, 0x0f, 0x41, 0x42, 0x43, 0x44 }, 9, 1, 8, TRUE, FALSE },
     { "video/x-wmv,wmvversion=3,format=WVC1,stream-format=bdu,"
       "header-format=none", BC_MSUBTYPE_VC1,
-      { 0 }, 0, 0, 0, FALSE, FALSE }
+      { 0 }, 0, 0, 0, FALSE, FALSE },
+    { "video/mpeg,mpegversion=4,systemstream=false,parsed=true,"
+      "profile=simple,level=(string)3,interlace-mode=progressive", BC_MSUBTYPE_DIVX,
+      { 0,0,1,0xb0,3,0,0,1,0xb5,0x89,0x13,0,0,1,0,
+        0,0,1,0x20,0,0xc4,0x8d,0x88,0,0xf5,0x14,4,0x2d,0x14,0x63,
+        0,0,1,0xb2,'L','a','v','c','6','1','.','1','9','.','1','0','1' },
+      47, 0, 47, TRUE, FALSE }
   };
   guint i;
   for (i = 0; i < G_N_ELEMENTS(cases); i++) {
@@ -728,8 +736,11 @@ test_flush_codec_state(void)
     GstVideoCodecState *state = g_new0(GstVideoCodecState, 1);
     GstCaps *expected_caps;
     guint opens;
+    const guint width = cases[i].subtype == BC_MSUBTYPE_DIVX ? 640 : 16;
+    const guint height = cases[i].subtype == BC_MSUBTYPE_DIVX ? 360 : 16;
     state->ref_count = 1;
-    gst_video_info_set_format(&state->info, GST_VIDEO_FORMAT_YUY2, 16, 16);
+    gst_video_info_set_format(&state->info, GST_VIDEO_FORMAT_YUY2,
+                              width, height);
     state->caps = gst_caps_from_string(cases[i].caps);
     if (cases[i].metadata_size != 0) {
       GstBuffer *metadata = gst_buffer_new_allocate(NULL, cases[i].metadata_size, NULL);
@@ -758,9 +769,11 @@ test_flush_codec_state(void)
                     ==, cases[i].packetized);
     g_assert_cmpuint(self->input_metadata_size, ==, cases[i].expected_size);
     g_assert_cmpint(mock.last_format.mSubtype, ==, cases[i].subtype);
-    g_assert_cmpuint(mock.last_format.width, ==, 16);
-    g_assert_cmpuint(mock.last_format.height, ==, 16);
+    g_assert_cmpuint(mock.last_format.width, ==, width);
+    g_assert_cmpuint(mock.last_format.height, ==, height);
     g_assert_cmpuint(mock.last_format.metaDataSz, ==, cases[i].expected_size);
+    if (cases[i].subtype == BC_MSUBTYPE_DIVX)
+      g_assert_cmpuint(mock.last_format.startCodeSz, ==, 4);
     g_assert_cmpmem(mock.last_metadata, cases[i].expected_size,
                     cases[i].metadata + cases[i].skip, cases[i].expected_size);
     g_assert_true(self->input_flushed);
@@ -768,6 +781,44 @@ test_flush_codec_state(void)
     gst_harness_teardown(harness);
     g_assert_cmpuint(mock.successful_opens, ==, mock.close_calls);
   }
+}
+
+static void
+test_mpeg4_device_gate(void)
+{
+  static const guint8 metadata[] = {
+    0,0,1,0xb0,3,0,0,1,0xb5,0x89,0x13,0,0,1,0,
+    0,0,1,0x20,0,0xc4,0x8d,0x88,0,0xf5,0x14,4,0x2d,0x14,0x63,
+    0,0,1,0xb2,'L','a','v','c','6','1','.','1','9','.','1','0','1'
+  };
+  GstHarness *harness = new_decoder();
+  GstVideoCodecState *state = g_new0(GstVideoCodecState, 1);
+  GstBuffer *codec_data = gst_buffer_new_allocate(NULL, sizeof(metadata), NULL);
+  guint formats = mock.format_calls;
+  guint opens = mock.open_calls;
+
+  gst_buffer_fill(codec_data, 0, metadata, sizeof(metadata));
+  state->ref_count = 1;
+  gst_video_info_set_format(&state->info, GST_VIDEO_FORMAT_YUY2, 320, 180);
+  state->caps = gst_caps_from_string("video/mpeg,mpegversion=4,"
+      "systemstream=false,parsed=true,profile=simple,level=(string)3,"
+      "interlace-mode=progressive");
+  gst_caps_set_simple(state->caps, "codec_data", GST_TYPE_BUFFER, codec_data,
+                      NULL);
+  gst_buffer_unref(codec_data);
+  g_assert_false(gst_crystalhd_set_format(
+      GST_VIDEO_DECODER(harness->element), state));
+  g_assert_cmpuint(mock.open_calls, ==, opens);
+  g_assert_cmpuint(mock.format_calls, ==, formats);
+
+  gst_video_info_set_format(&state->info, GST_VIDEO_FORMAT_YUY2, 640, 360);
+  mock.device_version = 0;
+  g_assert_false(gst_crystalhd_set_format(
+      GST_VIDEO_DECODER(harness->element), state));
+  g_assert_cmpuint(mock.format_calls, ==, formats);
+  g_assert_false(mock.device_active);
+  gst_video_codec_state_unref(state);
+  gst_harness_teardown(harness);
 }
 
 static void
@@ -1008,7 +1059,7 @@ test_input_reservation_boundaries(void)
 {
   const BC_MEDIA_SUBTYPE codecs[] = {
     BC_MSUBTYPE_H264, BC_MSUBTYPE_MPEG2VIDEO, BC_MSUBTYPE_VC1,
-    BC_MSUBTYPE_WVC1, BC_MSUBTYPE_WMV3
+    BC_MSUBTYPE_WVC1, BC_MSUBTYPE_WMV3, BC_MSUBTYPE_DIVX
   };
   const gsize sizes[] = { 1, 59999, 60000, 60001, 65512, 65513, 131024,
                           512 * 1024, 1024 * 1024 - 1024 };
@@ -1028,10 +1079,14 @@ test_input_reservation_boundaries(void)
       gsize expanded = sizes[j];
       gsize exact_pes_upper_bound;
       gsize metadata = codecs[i] == BC_MSUBTYPE_WVC1 ? 16 : 0;
+      if (codecs[i] == BC_MSUBTYPE_DIVX)
+        metadata = 47;
       if (codecs[i] == BC_MSUBTYPE_WVC1)
         expanded += 4 + metadata;
       if (codecs[i] == BC_MSUBTYPE_WMV3)
         expanded += 48 + 32;
+      if (codecs[i] == BC_MSUBTYPE_DIVX)
+        expanded += metadata;
       /* Independently use the actual maximum PES header and minimum full
        * payload, plus up to3 call boundaries/SPES headers, not helper constants.
        */
@@ -1056,6 +1111,11 @@ test_input_reservation_boundaries(void)
                                                &reservation));
   g_assert_cmpuint(reservation, >, 800000);
   g_assert_false(gst_crystalhd_input_reservation(BC_MSUBTYPE_WVC1, 600000,
+                                                600000, &reservation));
+  g_assert_true(gst_crystalhd_input_reservation(BC_MSUBTYPE_DIVX, 400000,
+                                               400000, &reservation));
+  g_assert_cmpuint(reservation, >, 800000);
+  g_assert_false(gst_crystalhd_input_reservation(BC_MSUBTYPE_DIVX, 600000,
                                                 600000, &reservation));
   g_assert_false(gst_crystalhd_input_reservation(BC_MSUBTYPE_AVC1, 1, 0,
                                                 &reservation));
@@ -1865,6 +1925,7 @@ main(int argc, char **argv)
   g_test_add_func("/crystalhd/lifecycle/flush-reopen-errors", test_flush_reopen_errors);
   g_test_add_func("/crystalhd/lifecycle/stop-cleanup-errors", test_stop_cleanup_errors);
   g_test_add_func("/crystalhd/lifecycle/flush-codec-state", test_flush_codec_state);
+  g_test_add_func("/crystalhd/lifecycle/mpeg4-device-gate", test_mpeg4_device_gate);
   g_test_add_func("/crystalhd/lifecycle/reordered-duplicate-output", test_reordered_duplicate_output);
   g_test_add_func("/crystalhd/lifecycle/input-errors", test_input_errors);
   g_test_add_func("/crystalhd/lifecycle/repeated-empty-flush", test_repeated_empty_flush);

@@ -83,6 +83,9 @@ extern "C" BC_STATUS DtsDeviceClose(HANDLE device) {
 extern "C" BC_STATUS DtsGetDriverStatus(HANDLE device, BC_DTS_STATUS *status) {
   CheckDevice(device); *status = {}; status->ReadyListCount = active->outputs.size(); return BC_STS_SUCCESS;
 }
+extern "C" BC_STATUS DtsIsEndOfStream(HANDLE device, uint8_t *eos) {
+  CheckDevice(device); Require(eos, "EOS query output"); *eos = 0; return BC_STS_SUCCESS;
+}
 extern "C" uint32_t DtsTxFreeSize(HANDLE device) {
   CheckDevice(device); return active->capacity ? 1024*1024 : 0;
 }
@@ -332,7 +335,7 @@ void NoCommit(const Fixture &f, uint64_t timestamp=kTimestampStep, size_t count=
 void Profiles() {
   for (auto profile : {VAProfileVC1Simple,VAProfileVC1Main,VAProfileVC1Advanced}) {
     Fixture f(profile); VAProfile profiles[16]={}; int count=0;
-    Require(QueryConfigProfiles(&f.context,profiles,&count)==VA_STATUS_SUCCESS && count==9 &&
+    Require(QueryConfigProfiles(&f.context,profiles,&count)==VA_STATUS_SUCCESS && count==11 &&
             std::find(profiles,profiles+count,profile)!=profiles+count,
             "standard Simple, Main and Advanced VC1 profiles advertised");
     VAConfigAttrib caps[]={{VAConfigAttribMaxPictureWidth,0},{VAConfigAttribMaxPictureHeight,0},{VAConfigAttribRTFormat,0}};

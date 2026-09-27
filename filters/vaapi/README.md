@@ -1,9 +1,10 @@
 # CrystalHD VA-API driver
 
 This backend exposes H.264 decoding through the standard VA-API VLD interface,
-with progressive MPEG-2 Simple/Main, standard WMV3 Simple/Main and VC-1 Advanced
-support on BCM70015. BCM70012 retains its H.264 path but is not recently
-hardware-validated; MPEG-2 and VC-1/WMV3 are rejected on that device.
+with progressive MPEG-2 Simple/Main, MPEG-4 Part 2 Simple/Advanced Simple,
+standard WMV3 Simple/Main and VC-1 Advanced support on BCM70015. BCM70012
+retains its H.264 path but is not recently hardware-validated; the other
+codecs are rejected on that device.
 The backend accepts VA-allocated NV12 surfaces and imported
 linear or GBM-mappable DRM PRIME NV12 surfaces for FFmpeg-style clients. It
 also allocates and exports ARGB DRM PRIME surfaces for Chromium-class clients
@@ -49,6 +50,15 @@ or parity with the GStreamer path. Selected seek/reopen and retained-frame
 tests also pass; see
 [issue #36](https://github.com/ahnhy1324/crystalhd/issues/36) for the exact matrix
 and remaining acceptance checks.
+
+MPEG-4 reconstruction consumes the standard VA picture and slice buffers and
+builds the VOS/VOL/GOV/VOP syntax required by CrystalHD. It supports progressive
+rectangular 8-bit 4:2:0 Simple/Advanced Simple levels 3/5, H.263 quantization,
+one whole slice per picture and coded sizes through 1920x1088. Resynchronization
+markers, sprites/GMC, quarter-pixel, MPEG quantization matrices, partitioning,
+RVLC and interlace are rejected. Advanced Simple I/P/B references and timing
+are retained across bounded replay; random-access timing discontinuities drain
+older transport epochs in order without blocking `vaEndPicture`.
 
 VC-1 Advanced reconstruction preserves compressed macroblock bits and rebuilds
 complete progressive headers and bitplanes. It accepts whole frames,
@@ -167,9 +177,9 @@ seek results do not establish browser hardware seek correctness.
 - only the decode, image, DRM PRIME, and minimal video-processing operations
   needed by the documented clients are implemented; `vaPutSurface`,
   subpictures, palettes, and detailed surface-error reporting are unavailable
-- progressive H.264 Constrained Baseline, Main, and High; MPEG-2 Simple/Main
-  and standard WMV3 Simple/Main / VC-1 Advanced on BCM70015 only, with the
-  picture and legacy-variant restrictions above
+- progressive H.264 Constrained Baseline, Main, and High; MPEG-2 Simple/Main,
+  MPEG-4 Simple/Advanced Simple, and standard WMV3 Simple/Main / VC-1 Advanced
+  on BCM70015 only, with the picture and legacy-variant restrictions above
 - maximum coded size 1920x1088; MPEG-2 Simple is limited to 720x576
 - NV12 images are limited to 1920x1088; odd dimensions retain complete UV pairs.
   Image copies reject busy surfaces and invalid rectangles. `vaPutImage` also
@@ -250,8 +260,9 @@ assuming an installed module is the one in use.
 
 ## Seek, flush and retained frames
 
-The probe also accepts progressive MPEG-2 Simple/Main and VC-1/WMV3 in seekable
-containers with reliable declared frame counts and distinct picture timestamps.
+The probe also accepts progressive MPEG-2 Simple/Main, MPEG-4 Simple/Advanced
+Simple and VC-1/WMV3 in seekable containers with reliable declared frame counts
+and distinct picture timestamps.
 The MPEG-2 checks are tracked in
 [issue #36](https://github.com/ahnhy1324/crystalhd/issues/36). Open-GOP seeking
 requires the client to supply earlier reference pictures: a demuxer seek to a

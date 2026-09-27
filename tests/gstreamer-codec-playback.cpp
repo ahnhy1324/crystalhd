@@ -1,18 +1,21 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
-// Optional hardware probe: libavformat supplies complete WMV3/VC-1 packets,
-// avoiding dependence on a particular GStreamer ASF/VC-1 parser version.
+// Optional hardware probe: libavformat supplies complete codec packets,
+// avoiding dependence on a particular demuxer/parser version.
 // Feeding and EOS share a 25-second deadline and a bounded appsrc queue.
 // Still use `timeout -k 5s 35s`: userspace cannot bound a stuck driver close.
 #include <gst/app/gstappsrc.h>
 #include <gst/video/video.h>
 extern "C" {
+#include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 }
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <vector>
 
 static constexpr guint64 kQueueBytes = 4 * 1024 * 1024;
 static constexpr int kMaxPacketBytes = 16 * 1024 * 1024;
@@ -37,6 +40,7 @@ struct Audit {
   int height = 0;
   bool invalid = false;
   GstClockTime previous_pts = GST_CLOCK_TIME_NONE;
+  std::vector<GstClockTime> pts;
   GChecksum *checksum = g_checksum_new(G_CHECKSUM_SHA256);
 };
 
@@ -69,6 +73,7 @@ static void CountFrame(GstElement *, GstBuffer *buffer, GstPad *pad, gpointer da
     gst_caps_unref(caps);
   if (GST_CLOCK_TIME_IS_VALID(pts))
     audit->previous_pts = pts;
+  audit->pts.push_back(pts);
   ++audit->frames;
 }
 
@@ -209,11 +214,18 @@ int main(int argc, char **argv) {
   AVStream *stream = format->streams[index];
   const AVCodecParameters *parameters = stream->codecpar;
   const bool vc1 = parameters->codec_id == AV_CODEC_ID_VC1;
-  if ((!vc1 && parameters->codec_id != AV_CODEC_ID_WMV3) ||
+  const bool mpeg4 = parameters->codec_id == AV_CODEC_ID_MPEG4;
+  const bool mpeg4_simple = parameters->profile == FF_PROFILE_MPEG4_SIMPLE;
+  const bool mpeg4_asp = parameters->profile == FF_PROFILE_MPEG4_ADVANCED_SIMPLE;
+  if ((!vc1 && parameters->codec_id != AV_CODEC_ID_WMV3 && !mpeg4) ||
+      (mpeg4 && ((!mpeg4_simple && !mpeg4_asp) ||
+                 (parameters->level != 3 && parameters->level != 5))) ||
+      (mpeg4 && parameters->field_order != AV_FIELD_UNKNOWN &&
+       parameters->field_order != AV_FIELD_PROGRESSIVE) ||
       parameters->extradata_size <= 0 || parameters->extradata_size > kMaxPacketBytes ||
       !parameters->extradata || parameters->width <= 0 || parameters->width > 1920 ||
       parameters->height <= 0 || parameters->height > 1088) {
-    std::fprintf(stderr, "Probe requires WMV3/VC-1 with codec metadata and dimensions\n");
+    std::fprintf(stderr, "Probe requires WMV3/VC-1 or MPEG-4 Simple/ASP level 3 or 5 with codec metadata and dimensions\n");
     avformat_close_input(&format);
     return 2;
   }
@@ -232,11 +244,22 @@ int main(int argc, char **argv) {
   GstElement *source = gst_bin_get_by_name(GST_BIN(pipeline), "source");
   GstElement *sink = gst_bin_get_by_name(GST_BIN(pipeline), "sink");
   g_object_set(source, "max-bytes", kQueueBytes, "block", FALSE, nullptr);
-  GstCaps *caps = gst_caps_new_simple("video/x-wmv",
-      "wmvversion", G_TYPE_INT, 3, "format", G_TYPE_STRING, vc1 ? "WVC1" : "WMV3",
-      "stream-format", G_TYPE_STRING, "asf", "header-format", G_TYPE_STRING, "asf",
-      "width", G_TYPE_INT, parameters->width, "height", G_TYPE_INT, parameters->height,
-      nullptr);
+  GstCaps *caps;
+  if (mpeg4) {
+    caps = gst_caps_new_simple("video/mpeg", "mpegversion", G_TYPE_INT, 4,
+        "systemstream", G_TYPE_BOOLEAN, FALSE, "parsed", G_TYPE_BOOLEAN, TRUE,
+        "profile", G_TYPE_STRING, mpeg4_simple ? "simple" : "advanced-simple",
+        "level", G_TYPE_STRING, parameters->level == 3 ? "3" : "5",
+        "interlace-mode", G_TYPE_STRING, "progressive",
+        "width", G_TYPE_INT, parameters->width, "height", G_TYPE_INT, parameters->height,
+        nullptr);
+  } else {
+    caps = gst_caps_new_simple("video/x-wmv",
+        "wmvversion", G_TYPE_INT, 3, "format", G_TYPE_STRING, vc1 ? "WVC1" : "WMV3",
+        "stream-format", G_TYPE_STRING, "asf", "header-format", G_TYPE_STRING, "asf",
+        "width", G_TYPE_INT, parameters->width, "height", G_TYPE_INT, parameters->height,
+        nullptr);
+  }
   AVRational rate = av_guess_frame_rate(format, stream, nullptr);
   if (rate.num > 0 && rate.den > 0)
     gst_caps_set_simple(caps, "framerate", GST_TYPE_FRACTION, rate.num, rate.den, nullptr);
@@ -255,6 +278,7 @@ int main(int argc, char **argv) {
   AVPacket *packet = av_packet_alloc();
   int read_result = 0;
   unsigned int packets = 0;
+  std::vector<GstClockTime> expected_pts;
   GstMessage *message = nullptr;
   if (!packet)
     ok = false;
@@ -282,6 +306,15 @@ int main(int argc, char **argv) {
           ? ClockTime(packet->duration, stream->time_base) : GST_CLOCK_TIME_NONE;
       if (!(packet->flags & AV_PKT_FLAG_KEY))
         GST_BUFFER_FLAG_SET(input, GST_BUFFER_FLAG_DELTA_UNIT);
+      if (mpeg4) {
+        if (!GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(input))) {
+          std::fprintf(stderr, "MPEG-4 packet has no presentation timestamp\n");
+          gst_buffer_unref(input);
+          ok = false;
+          break;
+        }
+        expected_pts.push_back(GST_BUFFER_PTS(input));
+      }
       ok = gst_app_src_push_buffer(GST_APP_SRC(source), input) == GST_FLOW_OK;
       if (ok)
         ++packets;
@@ -310,8 +343,17 @@ int main(int argc, char **argv) {
     std::fprintf(stderr, "Decoder teardown failed\n");
     ok = false;
   }
+  if (mpeg4) {
+    std::sort(expected_pts.begin(), expected_pts.end());
+    if (audit.pts != expected_pts) {
+      std::fprintf(stderr, "MPEG-4 output PTS do not match presentation order\n");
+      ok = false;
+    }
+  }
+  const char *codec_name = mpeg4 ? (mpeg4_simple ? "MPEG-4 Simple" : "MPEG-4 ASP")
+                                  : (vc1 ? "VC-1" : "WMV3");
   std::printf("%s: %u packets; %u/%lu YUY2 frames; EOS=%s; SHA256=%s\n",
-      vc1 ? "VC-1" : "WMV3", packets, audit.frames, expected, eos ? "yes" : "no",
+      codec_name, packets, audit.frames, expected, eos ? "yes" : "no",
       g_checksum_get_string(audit.checksum));
   if (audit.invalid)
     std::fprintf(stderr, "Invalid dimensions/YUY2 buffers or regressing output timestamps\n");

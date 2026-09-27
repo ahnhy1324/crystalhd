@@ -19,6 +19,9 @@
 #include "gstcrystalhd-input.h"
 #include "gstcrystalhd-timing.h"
 
+G_STATIC_ASSERT(GST_CRYSTALHD_MPEG4_MAX_INPUT_SIZE ==
+                GST_CRYSTALHD_INPUT_CAPACITY);
+
 #define GST_TYPE_CRYSTALHD_DEC (gst_crystalhd_dec_get_type())
 #define GST_CRYSTALHD_DEC(obj) \
   (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_CRYSTALHD_DEC, GstCrystalHdDec))
@@ -90,6 +93,10 @@ static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE(
         "alignment=(string)au, parsed=(boolean)true; "
         "video/mpeg, mpegversion=(int)2, systemstream=(boolean)false, "
         "parsed=(boolean)true; "
+        "video/mpeg, mpegversion=(int)4, systemstream=(boolean)false, "
+        "parsed=(boolean)true, profile=(string){simple,advanced-simple}, "
+        "level=(string){\"3\",\"5\"}, width=(int)[1,1920], "
+        "height=(int)[1,1088]; "
         "video/x-vc1, parsed=(boolean)true; "
         "video/x-wmv, wmvversion=(int)3, format=(string)WVC1, "
         "stream-format=(string){bdu,bdu-frame}, header-format=(string)none; "
@@ -105,6 +112,30 @@ static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE(
                     "framerate=(fraction)[0/1,MAX]"));
 
 static gboolean
+gst_crystalhd_caps_have_mpeg4_metadata(GstCaps *caps,
+                                       const CrystalHdCodec *codec)
+{
+  const GstStructure *structure = gst_caps_get_structure(caps, 0);
+  const GValue *value = gst_structure_get_value(structure, "codec_data");
+  GstBuffer *buffer;
+  GstMapInfo map;
+  const guint8 *data;
+  gsize size;
+  gboolean valid;
+
+  if (value == NULL || !GST_VALUE_HOLDS_BUFFER(value))
+    return FALSE;
+  buffer = gst_value_get_buffer(value);
+  if (buffer == NULL || !gst_buffer_map(buffer, &map, GST_MAP_READ))
+    return FALSE;
+  data = map.data;
+  size = map.size;
+  valid = gst_crystalhd_codec_metadata(codec, &data, &size);
+  gst_buffer_unmap(buffer, &map);
+  return valid;
+}
+
+static gboolean
 gst_crystalhd_sink_query(GstVideoDecoder *decoder, GstQuery *query)
 {
   GstVideoDecoderClass *parent =
@@ -113,41 +144,49 @@ gst_crystalhd_sink_query(GstVideoDecoder *decoder, GstQuery *query)
   if (GST_QUERY_TYPE(query) == GST_QUERY_ACCEPT_CAPS) {
     GstCaps *caps;
     gst_query_parse_accept_caps(query, &caps);
-    if (gst_caps_is_fixed(caps) &&
-        gst_structure_has_name(gst_caps_get_structure(caps, 0), "video/x-wmv")) {
+    if (gst_caps_is_fixed(caps)) {
       CrystalHdCodec codec;
-      GstCaps *normalized;
-      GstStructure *s;
-      GstQuery *check;
-      gboolean accepted = FALSE;
-      gboolean result;
 
       if (!gst_crystalhd_codec_from_caps(caps, &codec)) {
         gst_query_set_accept_caps_result(query, FALSE);
         return TRUE;
       }
-      /* asfdemux omits stream-format/header-format (and older producers
-       * also omit format). Those caps still describe ASF packets. Normalize
-       * only this query, retaining strict advertised parser framing and the
-       * original caps/codec_data for set_format.
-       */
-      normalized = gst_caps_copy(caps);
-      s = gst_caps_get_structure(normalized, 0);
-      if (!gst_structure_has_field(s, "format"))
-        gst_structure_set(s, "format", G_TYPE_STRING, "WMV3", NULL);
-      if (!gst_structure_has_field(s, "stream-format"))
-        gst_structure_set(s, "stream-format", G_TYPE_STRING, "asf", NULL);
-      if (!gst_structure_has_field(s, "header-format"))
-        gst_structure_set(s, "header-format", G_TYPE_STRING,
-                          codec.vc1_bdu ? "none" : "asf", NULL);
-      check = gst_query_new_accept_caps(normalized);
-      result = parent->sink_query(decoder, check);
-      if (result)
-        gst_query_parse_accept_caps_result(check, &accepted);
-      gst_query_set_accept_caps_result(query, accepted);
-      gst_query_unref(check);
-      gst_caps_unref(normalized);
-      return result;
+      if (codec.subtype == BC_MSUBTYPE_DIVX &&
+          !gst_crystalhd_caps_have_mpeg4_metadata(caps, &codec)) {
+        gst_query_set_accept_caps_result(query, FALSE);
+        return TRUE;
+      }
+      if (gst_structure_has_name(gst_caps_get_structure(caps, 0),
+                                 "video/x-wmv")) {
+        GstCaps *normalized;
+        GstStructure *s;
+        GstQuery *check;
+        gboolean accepted = FALSE;
+        gboolean result;
+
+        /* asfdemux omits stream-format/header-format (and older producers
+         * also omit format). Those caps still describe ASF packets. Normalize
+         * only this query, retaining strict advertised parser framing and the
+         * original caps/codec_data for set_format.
+         */
+        normalized = gst_caps_copy(caps);
+        s = gst_caps_get_structure(normalized, 0);
+        if (!gst_structure_has_field(s, "format"))
+          gst_structure_set(s, "format", G_TYPE_STRING, "WMV3", NULL);
+        if (!gst_structure_has_field(s, "stream-format"))
+          gst_structure_set(s, "stream-format", G_TYPE_STRING, "asf", NULL);
+        if (!gst_structure_has_field(s, "header-format"))
+          gst_structure_set(s, "header-format", G_TYPE_STRING,
+                            codec.vc1_bdu ? "none" : "asf", NULL);
+        check = gst_query_new_accept_caps(normalized);
+        result = parent->sink_query(decoder, check);
+        if (result)
+          gst_query_parse_accept_caps_result(check, &accepted);
+        gst_query_set_accept_caps_result(query, accepted);
+        gst_query_unref(check);
+        gst_caps_unref(normalized);
+        return result;
+      }
     }
   }
   return parent->sink_query(decoder, query);
@@ -874,7 +913,23 @@ gst_crystalhd_reopen_format(GstVideoDecoder *decoder, GstVideoCodecState *state,
   input_format.mSubtype = subtype;
   input_format.width = GST_VIDEO_INFO_WIDTH(&state->info);
   input_format.height = GST_VIDEO_INFO_HEIGHT(&state->info);
-  if (subtype == BC_MSUBTYPE_H264)
+  if (subtype == BC_MSUBTYPE_DIVX) {
+    if (input_format.width == 0 || input_format.width > 1920 ||
+        input_format.height == 0 || input_format.height > 1088 ||
+        (self->codec.mpeg4_width != 0 &&
+         self->codec.mpeg4_width != input_format.width) ||
+        (self->codec.mpeg4_height != 0 &&
+         self->codec.mpeg4_height != input_format.height)) {
+      GST_ELEMENT_ERROR(self, STREAM, FORMAT,
+                        ("Invalid MPEG-4 coded dimensions"),
+                        ("Caps/state dimensions are outside the supported "
+                         "range or disagree"));
+      goto fail;
+    }
+    self->codec.mpeg4_width = input_format.width;
+    self->codec.mpeg4_height = input_format.height;
+  }
+  if (subtype == BC_MSUBTYPE_H264 || subtype == BC_MSUBTYPE_DIVX)
     input_format.startCodeSz = 4;
 
   codec_data_value = gst_structure_get_value(structure, "codec_data");
@@ -901,8 +956,8 @@ gst_crystalhd_reopen_format(GstVideoDecoder *decoder, GstVideoCodecState *state,
         (subtype == BC_MSUBTYPE_WMV3 &&
          (!input_format.width || !input_format.height))) {
       GST_ELEMENT_ERROR(self, STREAM, FORMAT,
-                        ("Missing or invalid VC-1/WMV3 codec data or dimensions"),
-                        ("Use vc1parse with a supported stream/header format"));
+                        ("Missing or invalid codec data or dimensions"),
+                        ("Use a parser with a supported stream/header format"));
       goto fail;
     }
     if (!gst_crystalhd_input_reservation(subtype, 1, metadata_size,
@@ -935,6 +990,12 @@ gst_crystalhd_reopen_format(GstVideoDecoder *decoder, GstVideoCodecState *state,
   if (status != BC_STS_SUCCESS)
     goto fail_status;
   self->is_70012 = version.device == 0;
+  if (subtype == BC_MSUBTYPE_DIVX && self->is_70012) {
+    GST_ELEMENT_ERROR(self, STREAM, FORMAT,
+                      ("MPEG-4 Part 2 requires BCM70015"),
+                      ("BCM70012 does not expose the validated DIVX decoder"));
+    goto fail;
+  }
 
   operation = "DtsSetInputFormat";
   status = DtsSetInputFormat(self->device, &input_format);
