@@ -1010,13 +1010,16 @@ BC_STATUS crystalhd_suspend(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *ida
 		return BC_STS_ERROR;
 	}
 
-	if (ctx->state & BC_LINK_SUSPEND)
-		return BC_STS_SUCCESS;
-
 	if (ctx->state == BC_LINK_INVALID) {
 		dev_dbg(dev, "Nothing To Do Suspend Success\n");
 		return BC_STS_SUCCESS;
 	}
+
+	if (!ctx->hw_ctx)
+		return BC_STS_INV_ARG;
+
+	if (ctx->state & BC_LINK_SUSPEND)
+		return BC_STS_SUCCESS;
 
 	dev_dbg(dev, "State before suspend is %x\n", ctx->state);
 
@@ -1071,9 +1074,20 @@ BC_STATUS crystalhd_resume(struct crystalhd_cmd *ctx)
 {
 	BC_STATUS sts = BC_STS_SUCCESS;
 
+	if (!ctx)
+		return BC_STS_INV_ARG;
+
+	/* No decoder context exists before the first open or after the last close. */
+	if (!ctx->hw_ctx)
+		return ctx->state == BC_LINK_INVALID ? BC_STS_SUCCESS : BC_STS_INV_ARG;
+
 	sts = crystalhd_hw_resume(ctx->hw_ctx);
 	if (sts != BC_STS_SUCCESS)
 		return sts;
+
+	/* An open monitor/unconfigured handle must still admit a playback session. */
+	if (ctx->state == BC_LINK_INVALID)
+		return BC_STS_SUCCESS;
 
 	bc_cproc_mark_pwr_state(ctx, BC_HW_RESUME); /* Starting resume */
 
