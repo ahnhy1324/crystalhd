@@ -1,27 +1,20 @@
-<a id="crystalhd-completion-checklist"></a>
+# Active core work
 
-# Open work
-
-Open tasks are grouped by playback blockers and validation coverage. Detailed
-test evidence is in the [hardware report](HARDWARE-2026-09-13.md) and linked issues.
+This is a compact index of unfinished driver, library and supported frontend
+work. Detailed acceptance criteria belong in the linked issues; test evidence
+belongs in the [hardware report](HARDWARE-2026-09-13.md).
 See [README.md](README.md) for usage, [BRINGUP.md](BRINGUP.md) for diagnosis,
 and [DMA.md](DMA.md) for DMA ownership and failure boundaries.
 
-<a id="playback-validation"></a>
+## Tracked issues
 
-## Playback blockers
-
-- [ ] [#8: Full HD and hardware matrix](https://github.com/ahnhy1324/crystalhd/issues/8):
-  verify real-time display and physical speaker/display sync; exercise Full HD
-  seeking, pause/resume and rate changes, including 2x. Decode/download and
-  clocked-sink results do not establish these presentation guarantees.
-- [ ] [#12: YouTube](https://github.com/ahnhy1324/crystalhd/issues/12):
-  diagnose reported A/V desynchronization at 1x; lead/lag and cause remain
-  unknown. Validate live seeks, pause/resume, quality selection and rates
-  without bypassing service verification. Local-file checks are not live
-  YouTube validation; keep Chrome's software-decoding default.
-<a id="driver-and-abi"></a>
-<a id="requires-additional-hardware-or-a-separate-test-session"></a>
+- [ ] [#8: Full HD and hardware matrix][issue-8]:
+  finish physical display/audio, Full HD controls, device and lifecycle coverage.
+- [ ] [#12: YouTube][issue-12]:
+  diagnose live 1x A/V desynchronization and validate playback controls.
+- [ ] [#52: V4L2 stateful M2M roadmap][issue-52]:
+  freeze the legacy behavioral baseline, then add the V4L2 frontend without
+  breaking the existing ABI or legacy hardware support.
 
 ## Coverage and lifecycle
 
@@ -40,14 +33,16 @@ and [DMA.md](DMA.md) for DMA ownership and failure boundaries.
   decode experimental until those end-to-end checks pass.
 - [ ] Test idle and active/recent-session suspend/resume, including the optional
   L0s workaround and failure recovery. Schedule separately: this interrupts the
-  desktop and is not part of unattended `make check`. The command-layer idle
-  resume defect and its hardware-free regression are tracked in
-  [#46](https://github.com/ahnhy1324/crystalhd/issues/46).
+  desktop and is not part of unattended `make check`.
 - [ ] Extend hardware failure coverage for PCI stop/probe failures and physical
   removal during DMA, preserving the ownership and cleanup rules in [DMA.md](DMA.md).
 - [ ] Cover remaining legacy library conversion helpers and broader device-API
   behavior; targeted ABI, raw YUY2 and cancellation tests are not conformance.
 
 Do not close the hardware matrix on compilation or a BCM70015 H.264-only run.
-Record exact commands, fixtures/profiles, checksums, source revision, loaded
-module source version and new kernel findings in the existing hardware report.
+Keep the report's result matrix and reproducible evidence concise; put full
+logs and investigation history in the relevant issue or CI artifact.
+
+[issue-8]: https://github.com/ahnhy1324/crystalhd/issues/8
+[issue-12]: https://github.com/ahnhy1324/crystalhd/issues/12
+[issue-52]: https://github.com/ahnhy1324/crystalhd/issues/52

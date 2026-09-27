@@ -1,8 +1,7 @@
 # Userspace DMA ownership
 
 The legacy ioctl ABI remains unchanged. This driver pins ordinary userspace
-memory; it does not expose a dma-buf import/export API. Linux 6.1 remains the
-minimum kernel version.
+memory; it does not expose a dma-buf import/export API.
 
 ## Mapping policy
 
@@ -86,8 +85,8 @@ For hardware validation, compare `nr_foll_pin_acquired` and
 `nr_foll_pin_released` in `/proc/vmstat` before and after complete playback and
 close. Capture registrations legitimately keep those counters unequal while
 open. The counters are global, so unrelated pinning activity must be accounted
-for. Existing GStreamer and VA-API hardware tests exercise normal registration,
-fetch, reuse and close.
+for. `tests/gstreamer-hardware.sh` and `tests/vaapi-hardware-stress.sh` exercise
+normal registration, fetch, reuse and close on hardware.
 
 DMA-map fault injection, stop-timeout injection, DAX and
 other file-backed memory variants, concurrent power-management callbacks, and
