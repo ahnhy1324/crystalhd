@@ -12,15 +12,56 @@ BCM70015 hardware. These checks are not comprehensive device-API conformance;
 BCM70012 has not been tested recently. New clients should treat the API as a
 compatibility layer rather than a complete modern media framework.
 
-Build and stage the library with:
+Build and stage the library from the repository root:
 
 ```sh
-make
-make DESTDIR=/tmp/crystalhd-library install
+make library
+make -C linux_lib/libcrystalhd DESTDIR=/tmp/crystalhd-library install
 ```
 
 The install target provides the shared library, public headers, and
 `libcrystalhd.pc` for `pkg-config`.
+
+## Direct-library drain validation
+
+This optional probe bypasses GStreamer and VA-API. It checks complete picture
+delivery and genuine firmware EOS, not pixel quality or displayed cadence.
+Install the FFmpeg `libavformat`, `libavcodec`, `libavutil` and GLib development
+packages, then use a local progressive fixture with an independently known
+decoded-frame count:
+
+```sh
+make library-drain-test
+ffprobe -v error -select_streams v:0 -count_frames \
+  -show_entries stream=codec_name,profile,width,height,field_order,nb_read_frames \
+  /path/to/video.h264
+LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
+  tests/library-drain-test --preflight /path/to/video.h264 30
+LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
+  timeout --kill-after=10s 60s \
+  tests/library-drain-test --hardware /path/to/video.h264 30 35
+```
+
+Replace `30` in both commands with the fixture's expected picture count.
+`--preflight` never opens the card: it validates supported framing and the
+demuxed packet count, assuming one complete progressive picture per packet.
+It is not itself a software decode or proof of error-free media.
+`--hardware` requires an idle BCM70015 and a matching loaded module; see
+[device access and module identity](../../BRINGUP.md#device-access-and-module-identity).
+It submits EOS explicitly with `DtsFlushInput(0)`, then requires every expected
+timestamped picture, the actual EOS output marker, `DtsIsEndOfStream`, an empty
+ready queue and successful stop/close. Inactivity alone never counts as EOS.
+
+Supported input is raw Annex-B H.264, MPEG-2 elementary stream, raw VC-1
+Advanced, or WMV3 in ASF with four-byte sequence metadata (a fifth trailing byte
+is tolerated). MP4 H.264, RCV containers and known interlaced input are rejected.
+Fixtures are limited to 64 MiB, 10,000 pictures and 1920x1088; each packet plus
+framing must fit the library's transmit ring. The optional in-process timeout
+defaults to 30 seconds and accepts at most 300. Keep an external timeout:
+blocked ioctls or device close cannot be interrupted by the probe's deadline.
+The probe does not load or replace the module and is not part of `make check`.
+For actual codec fixtures, counts and results, use the
+[hardware report](../../HARDWARE-2026-09-13.md).
 
 ## Raw YUY2 copy contract
 
@@ -45,8 +86,7 @@ row. Undersized or overflowing layouts fail rather than return a partial
 successful picture. From the repository root, `make library-check` includes
 [tests/library-copy.cpp](../../tests/library-copy.cpp): exact row/crop/field
 identity and rejected-layout canaries against the real implementation. These
-67 checks also pass native and i386 execution and ASan/UBSan with leak
-detection. They cover raw YUY2 copying, not the separate legacy NV12, YV12 or
+checks cover raw YUY2 copying, not the separate legacy NV12, YV12 or
 `BC_POUT_FLAGS_MODE` conversion helpers, hardware playback, or PowerVLC's
 playback timing.
 
@@ -61,6 +101,6 @@ already changed by a demuxer.
 
 The production input/PES/ring regression in `make library-check` verifies
 length widths 1/2/4, retained metadata injection, existing Annex-B compatibility
-and bounded detection. It also executes on i386. On BCM70015, this restores
-the first numbered picture in unmodified PowerVLC 2.1.0; the final four
-pictures remain missing because full-file native drain is unresolved.
+and bounded detection, including i386 execution. See the
+[PowerVLC guide](../../README.md#powervlc-native-playback-experimental) and
+hardware report for frontend results and remaining drain limitations.

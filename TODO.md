@@ -1,169 +1,56 @@
-# CrystalHD completion checklist
+<a id="crystalhd-completion-checklist"></a>
 
-This checklist follows the open issues in
-[ahnhy1324/crystalhd](https://github.com/ahnhy1324/crystalhd/issues).
-Build results and hardware results are separate. See [BRINGUP.md](BRINGUP.md)
-for the bring-up milestones and [DMA.md](DMA.md) for DMA ownership details.
-Measured results are recorded in [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md).
+# Open work
 
-## Driver and ABI
+Open tasks are grouped by playback blockers and validation coverage. Detailed
+test evidence is in the [hardware report](HARDWARE-2026-09-13.md) and linked issues.
+See [README.md](README.md) for usage, [BRINGUP.md](BRINGUP.md) for diagnosis,
+and [DMA.md](DMA.md) for DMA ownership and failure boundaries.
 
-- [x] [#5: ioctl safety and device permissions](https://github.com/ahnhy1324/crystalhd/issues/5):
-  validate native and compat request headers, transfer limits, PCI alignment,
-  permissions, legacy identification, and failed copies; preserve playback.
-- [x] [#6: 32-bit compatibility](https://github.com/ahnhy1324/crystalhd/issues/6):
-  freeze both ABIs, compile library/examples and native i386 module in CI,
-  and execute both runtime probes on the x86-64 driver.
-- [x] [#9: DMA pins](https://github.com/ahnhy1324/crystalhd/issues/9):
-  pair long-term DMA pins with unpin helpers, unmap before release, exercise
-  partial failures and merged SG descriptors, and validate sustained playback
-  and unload/reload without outstanding pins.
+<a id="playback-validation"></a>
 
-## Playback validation
+## Playback blockers
 
-- [ ] [#18: PowerVLC native integration](https://github.com/ahnhy1324/crystalhd/issues/18):
-  the unmodified Linux 2.1.0 release loads our library without rebuilding,
-  but the numbered 360-frame fixture still misses four tail pictures.
-  Correct AVC1 header detection restores the previously missing first picture
-  without changing the caller's timestamps. TX ownership now spans ring pop
-  through DMA completion; destructive flush/stop wait before final reset and
-  discard old queued input, with enqueue serialized against that reset.
-  Three fresh sessions pass the short forward/backward-seek sequence with
-  clean close; broader seek/recovery coverage remains open. Investigate 0.5x
-  progress; one settled 2x smoke pass is not general control validation.
-  Keep frontend drain behavior distinct from library cancellation fixes.
-  PowerVLC application-source changes were explicitly declined; changes
-  remain limited to our library and drivers.
-- [x] [#16: everyday GStreamer playback](https://github.com/ahnhy1324/crystalhd/issues/16):
-  provide explicit hardware/software local playback, validate in-flight
-  controls and audio/video timing, and measure sustained 720p operation.
-  Keep clocked test sinks distinct from visible/audible presentation and
-  diagnose input/output starvation before claiming real-time performance.
-  Full-device reopen fixes the one-picture seek stall; independent output
-  polling fixes audio-preroll starvation. Numbered 360p/720p H.264 + AAC
-  fixtures pass hardware controls and complete 360-frame replay. A 30-minute
-  720p30 + AAC run passes 54000/54000 frames and EOS, with 4ms maximum measured
-  A/V interval skew and no new card/link errors. Clocked sinks are not
-  visible/audible proof. Warning checks and fork CI gate merging.
-- [ ] [#12: YouTube integration](https://github.com/ahnhy1324/crystalhd/issues/12):
-  replace the legacy quality/seek overrides with codec-only preference,
-  reject late player failures in the probe, and validate a normal YouTube
-  session and playback controls without bypassing service verification.
-  The user confirms software playback beyond one minute with 1.6.0, but
-  reports A/V desynchronization at 1x; lead/lag and cause are unknown.
-  Further investigation is deferred while existing Full HD work takes priority.
-  Live seeking, pause/resume, quality selection, rates and synchronized
-  playback remain open.
-- [x] Local Chrome software playback controls: exact sampled pixel identities
-  through pause/resume, 0.5x/1.5x/2x/restored 1x, four forward/backward seeks,
-  and final frame 359. This does not establish live YouTube or hardware controls.
-- [x] [#7: reproducible playback paths](https://github.com/ahnhy1324/crystalhd/issues/7):
-  verify source and staged/installed discovery, complete drain, exact frame
-  counts, and repeated GStreamer and secondary VA-API playback.
-- [ ] [#8: hardware matrix](https://github.com/ahnhy1324/crystalhd/issues/8):
-  finish the remaining card/codec/lifecycle coverage below.
-- [x] Record BCM70015 H.264 Constrained Baseline, Main, and High samples
-  separately with exact commands, frame counts, and sample/pixel checksums.
-- [x] VA-API complete-file drain: all three H.264 profiles pass 180/180 with
-  independent software pixel comparisons. Timestamped access units begin
-  with their delimiter; finite batches use bounded actual-IDR replay after
-  full device reopen. Missing output is never a success/blank frame.
-- [x] VA-API High forward/backward seek and flush: a complete 180-frame
-  reference plus four seeks with 12 exact PTS/pixel matches each, using
-  `tests/vaapi-seek.cpp` in its default synchronous mode.
-- [x] VA-API Baseline/Main/High pipelined seek/flush: the same exact checks
-  with `--lookahead 8`, leaving eight client pictures undownloaded before each seek.
-- [ ] Broader VA-API stream coverage and synchronous-client performance;
-  one-at-a-time clients can repeatedly reopen the device and replay references.
-- [x] VA-API image-buffer handles and default separate-plane exports: real DRM
-  snapshot read/write/ownership checks and failure regressions pass. Hardware
-  PRIME2 reads without prior surface sync match synchronized references at
-  360p and Full HD, including seeking and retained old frames. This addresses
-  specific VLC backend compatibility gaps, not actual VLC/EGL presentation.
-- [x] BCM70015 Full HD H.264 Baseline/Main/High complete-file VA-API decode:
-  1920×1080, 30 fps, 180/180 frames per fixture, independent pixel comparisons.
-- [x] Full HD GStreamer drain and exact EOS replay for all three profiles;
-  Full HD High VA-API four-seek lookahead pixel comparisons.
-- [x] One progressive H.264 natural-resolution-change stream: 30 pictures
-  each at 640x360, 1280x720 and 640x360, with all 90 outputs in the expected
-  geometry epochs in GStreamer and VA-API. GStreamer raw pixels and VA-API
-  per-frame plane checksums match concatenated independent hardware decodes;
-  VA-API output timestamps also match the software decoder's sequence.
-  This does not establish arbitrary codec/profile/interlace transitions.
-- [x] MPEG-2 presentation-order transitions: same-size TFF→BFF→TFF
-  passes 150/150 pictures; 640x360 TFF→1920x1080 progressive→640x360 BFF
-  passes 160/160. Exact geometry, field flags and concatenated standalone
-  pixel hashes agree. Hardware capture parity is not presentation order.
-- [x] Retain original output frames across flush/new input and decoder-context
-  destruction; exact old-frame PTS/pixels checked after each transition.
-- [x] Asynchronous FFmpeg input looping: High at 640×360 and 1920×1080
-  passes five complete loops (900 frames); all 900 smaller-frame pixel hashes
-  match the reference. Held-frame regressions also pass all three profiles
-  at 640×360 and High at 1920×1080.
-- [ ] Full HD real-time display playback; measured decode/download throughput
-  and correctness are separate from compositor/display integration.
-- [x] Isolate the tested BCM70015/ICH8 Full HD throughput limit: temporary
-  L0s-only disabling raises the same 900-frame VA-API run from 27.26 to
-  41.55 fps, with zero drops/duplicates and identical 180-frame pixels.
-  Original settings restore the slowdown; L1-only disabling does not help.
-  This does not establish physical display or A/V synchronization.
-- [x] Add an explicit BCM70015 `force_l0s_off` workaround, with default-off
-  behavior, checked raw-state restoration and PCI-core ownership preserved.
-  Temporary-module testing reproduces 41.20 fps and passes all 3,600 frames
-  in a 120-second 1080p30 H.264/AAC 1x clocked-sink run. Physical lip-sync,
-  FHD 2x controls and actual suspend/resume remain unvalidated.
-- [x] GStreamer flushing seek to zero after EOS: all three H.264 profiles,
-  complete frame counts and identical replay pixels. Separate numbered
-  360p/720p H.264 + AAC fixtures pass forward/backward in-flight seeks,
-  pause/resume and 0.5x/1x/2x with frame-number barcode identities and timestamps;
-  broader streams and visible/audible presentation remain unverified.
-- [x] Module unload/reload followed by complete decode and seek replay on
-  all three H.264 profiles, with balanced pins and zero final module references.
-- [x] Reject a second playback client safely while the first keeps decoding;
-  both the first and subsequent standalone run still drain all 180 frames.
+- [ ] [#8: Full HD and hardware matrix](https://github.com/ahnhy1324/crystalhd/issues/8):
+  verify real-time display and physical speaker/display sync; exercise Full HD
+  seeking, pause/resume and rate changes, including 2x. Decode/download and
+  clocked-sink results do not establish these presentation guarantees.
+- [ ] [#12: YouTube](https://github.com/ahnhy1324/crystalhd/issues/12):
+  diagnose reported A/V desynchronization at 1x; lead/lag and cause remain
+  unknown. Validate live seeks, pause/resume, quality selection and rates
+  without bypassing service verification. Local-file checks are not live
+  YouTube validation; keep Chrome's software-decoding default.
+- [ ] [#18: PowerVLC](https://github.com/ahnhy1324/crystalhd/issues/18):
+  resolve missing final pictures and investigate the 0.5x transition stall;
+  validate broader seek/recovery, Full HD, other codecs, subtitles and A/V
+  playback. Keep frontend drain/clock behavior distinct from library defects.
+  Changes remain limited to our library and drivers; PowerVLC application
+  source changes are out of scope.
 
-## Requires additional hardware or a separate test session
+<a id="driver-and-abi"></a>
+<a id="requires-additional-hardware-or-a-separate-test-session"></a>
 
-- [ ] BCM70012 on a current LTS and recent stable kernel.
-- [x] BCM70015 progressive MPEG-2 Main: 180/180 YUY2 frames and complete drain.
-- [x] Short Full HD MPEG-2 Main fixture: 1920x1080 progressive, 60/60 YUY2
-  pictures and EOS, with an independent software pixel comparison.
-- [x] MPEG-2 Main interlaced TFF and BFF fixtures at 640x360: each returns
-  50/50 paired pictures from 100 captured fields and genuine firmware EOS.
-  Field-aware software comparisons are recorded; other codecs and interlaced layouts
-  are not established by these samples.
-- [x] BCM70015 VC-1 Advanced: 15/15 frames through raw BDU and demuxed
-  packet paths, identical hardware pixel hashes.
-- [x] BCM70015 WMV3 Main: 25/25 frames through ASF and demuxed packet
-  paths, identical hardware pixel hashes.
-- [x] Short progressive VC-1 Advanced 1920x1080 and WMV3 Main 1440x1080
-  fixtures: each returns 60/60 pictures through ordinary GStreamer and demuxed
-  packet paths with identical hardware pixels and independent software
-  comparisons. Direct-library probes also require actual firmware EOS and
-  clean teardown. This is not 1920-wide WMV3 or real-time display validation.
-- [x] Direct-library firmware EOS: H.264 (30 pictures), MPEG-2 (180), raw
-  VC-1 Advanced (15) and ASF WMV3 Main (25) return every picture, a genuine
-  output EOS marker and an empty ready queue with clean teardown. WMV3 needs
-  corrected EOS control-packet framing; silence alone is not BCM70015 EOS.
-- [ ] Broader VC-1/WMV3 samples, other interlaced layouts, and broader mid-stream
-  resolution/format changes beyond the H.264/MPEG-2 cases above.
-- [ ] Suspend/resume with an idle device and around an active/recent session.
-  This interrupts the desktop and is not part of unattended `make check`.
-- [ ] Chromium hardware frame identity after seeking, and GPU sandbox support.
-  Browser hardware decoding remains opt-in; the default is software decoding.
-- [x] [#14: VA-API image and synchronization errors](https://github.com/ahnhy1324/crystalhd/issues/14):
-  validate image bounds/layout, CPU reads, `vaPutImage`, and fence-signal failures.
-  Hardware-free failure/alias regressions, sanitizers, real DRM image readback,
-  and the High retained-frame hardware regression pass; this is not general
-  GBM/compositor synchronization or Chrome hardware validation.
-- [x] Pending VPP cancellation, conversion/decode failure and partial fence
-  import abort their fences with an error, not a success increment. Mocked
-  lifecycle regressions and a genuine kernel sw_sync status check pass;
-  late CPU-access cleanup failures still require checking VA surface status.
-- [x] Raw YUY2 library copies: no-SIZE row identity, cropped/strided output,
-  field rows and source/destination bounds, with 67 native/i386 regressions
-  and sanitizer checks. Other legacy conversion helpers are separate coverage.
+## Coverage and lifecycle
 
-Do not close the hardware-matrix issue on the strength of compilation or a
-BCM70015 H.264-only run. Record exact commands, profiles, checksums, source
-revision, loaded module source version, and new kernel log findings.
+- [ ] Test BCM70012 on a current LTS and recent stable kernel.
+- [ ] Broaden H.264, MPEG-2, VC-1 and WMV3 samples, interlaced layouts and
+  mid-stream resolution/profile/format transitions beyond the recorded cases.
+  Include sustained playback and controls, not only short complete-file drain.
+- [ ] Expand VA-API stream coverage and improve synchronous-client performance;
+  one-picture-at-a-time clients can repeatedly reopen and replay references.
+- [ ] Validate actual VLC/EGL/GBM compositor presentation and synchronization;
+  image-handle and exported-pixel tests alone do not establish display behavior.
+- [ ] Establish Chromium hardware frame identity after seeking and GPU sandbox
+  compatibility, including asynchronous VPP fence/timeline access. Keep hardware
+  decode experimental until those end-to-end checks pass.
+- [ ] Test idle and active/recent-session suspend/resume, including the optional
+  L0s workaround and failure recovery. Schedule separately: this interrupts the
+  desktop and is not part of unattended `make check`.
+- [ ] Extend hardware failure coverage for PCI stop/probe failures and physical
+  removal during DMA, preserving the ownership and cleanup rules in [DMA.md](DMA.md).
+- [ ] Cover remaining legacy library conversion helpers and broader device-API
+  behavior; targeted ABI, raw YUY2 and cancellation tests are not conformance.
+
+Do not close the hardware matrix on compilation or a BCM70015 H.264-only run.
+Record exact commands, fixtures/profiles, checksums, source revision, loaded
+module source version and new kernel findings in the existing hardware report.

@@ -5,33 +5,15 @@ pipelines. It accepts parsed H.264 byte-stream and MPEG-2, plus the VC-1/WMV3
 framing described below,
 and outputs YUY2 video frames.
 
-This plugin is experimental. The hardware harness targets progressive H.264
-Baseline, Main and High on BCM70015. It counts YUY2 output buffers against
-FFprobe's decoded frame count, requires EOS, checks output buffer sizes and
-monotonic timestamps, and opens a fresh playback session for each repetition.
-Separate BCM70015 tests cover small VC-1/WMV3 fixtures, progressive MPEG-2
-(including 60 Full HD pictures), and H.264 flushing replay after EOS. MPEG-2
-TFF/BFF files each produce 50 paired pictures from 100 fields with field-aware
-software pixel comparisons. Presentation order comes from explicit firmware
-metadata, not capture order. Same-size TFF→BFF→TFF passes 150 pictures, and
-640x360 TFF→1920x1080 progressive→640x360 BFF passes all 160 pictures;
-both checks verify field flags and unchanged standalone-reference pixels.
-One H.264 640x360→1280x720→640x360 stream preserves all
-90 pictures and matches concatenated standalone hardware decodes. These are
-fixture-specific results, not general interlaced or dynamic-format support.
+This plugin is experimental. BCM70015 validation includes progressive H.264,
+bounded MPEG-2/VC-1/WMV3 fixtures, and specific interlaced and format-transition
+cases; it does not establish general codec conformance or BCM70012 behavior.
+See the [hardware report](../../../HARDWARE-2026-09-13.md) for measured coverage,
+counts, hashes, software comparisons and known failures. CI checks discovery,
+framing/lifecycle helpers, synthetic YUY2 playback and software audio/video
+controls; it does not decode through CrystalHD.
 
-Full-device reopen fixes the tested seek stall, and independent output polling
-fixes the tested audio-preroll starvation. Numbered 360p/720p H.264 + AAC files
-pass pause/resume, forward/backward seeks, 0.5x/1x/2x and complete replay.
-A 30-minute 720p30 + AAC run passes 54000/54000 pictures and EOS with 4ms
-maximum measured A/V interval skew. These clocked-sink checks underpin closed
-[issue #16](https://github.com/ahnhy1324/crystalhd/issues/16); they do not prove
-visible cadence or speaker/display lip-sync. BCM70012 and broader streams
-remain unvalidated.
-CI checks discovery, framing/lifecycle helpers, synthetic YUY2 playback and
-software audio/video controls; it does not decode through CrystalHD. See the
-[hardware report](../../../HARDWARE-2026-09-13.md) for fixture counts, hashes,
-software-output comparisons, and precise coverage boundaries.
+Run the following commands from the repository root.
 
 Build the driver and `libcrystalhd` first, then build and inspect the plugin:
 
@@ -152,11 +134,25 @@ separate pixel checks performed on these fixtures.
 
 ## Counted H.264 playback and replay
 
+Generate reproducible Baseline/Main/High MP4 fixtures with FFmpeg and libx264:
+
+```sh
+sh tests/generate-h264-samples.sh /tmp/crystalhd-samples
+# Optional Full HD set: 1920x1080, 30 fps, 180 frames per profile.
+sh tests/generate-h264-samples.sh /tmp/crystalhd-fhd-samples 1920x1080
+```
+
+The generator refuses to overwrite existing samples and prints each profile,
+frame count and SHA-256. Run the hardware harness below separately for each
+of the three files; generating a fixture is not a hardware test.
+
 CrystalHD provides one playback session. Stop any VA-API, browser, or other
 GStreamer hardware decode before starting another `crystalhddec` pipeline.
-The hardware test helper verifies module/source-version consistency and two
-complete decodes by default. It builds the source-tree frontend, uses a fresh
-GStreamer registry, and reports the selected plugin filename:
+The hardware test helper compares YUY2 output counts with FFprobe's decoded
+frame count, checks sizes and timestamp ordering, requires EOS and scans new
+kernel messages. It uses a fresh playback session for each repetition, verifies
+module/source-version consistency, builds the source-tree frontend and reports
+its selected plugin filename with a fresh GStreamer registry:
 
 ```sh
 ./tests/gstreamer-hardware.sh /path/to/video.mp4 2
@@ -169,6 +165,10 @@ the default timeout is 120 seconds per run. `ffprobe` (from the `ffmpeg` package
 `h264parse` and `qtdemux` are required. The shell harness explicitly rejects
 other codecs/profiles and known interlaced input so a baseline result cannot
 be mistaken for validation of those paths.
+The script loads the source-built module only when necessary and unloads it
+afterward only if it loaded it. A different already-loaded source version is
+rejected; see [module identity](../../../BRINGUP.md#device-access-and-module-identity)
+before replacing any loaded driver.
 
 For one nondisplay decode without the frame-count harness:
 
@@ -211,19 +211,36 @@ The separate controls probe verifies barcode pixels and timestamps while
 pausing, resuming, seeking forward/backward and changing rate to 0.5x/2x/1x:
 
 ```sh
+make -C filters/gst/gst-plugin-1.0 gstreamer-controls-test
 sh tests/generate-browser-sample.sh /tmp/crystalhd-controls.mp4 --av-360p
 timeout --kill-after=10 90 \
   filters/gst/gst-plugin-1.0/gstreamer-controls-test \
   /tmp/crystalhd-controls.mp4 --software --audio --timeout 75
 ```
 
-Omit `--software` for an isolated hardware check with the in-tree plugin/library
-paths set as above. The numbered 360p and 720p H.264 + AAC fixtures pass this
-sequence and a complete 360-picture replay on BCM70015. Output runs on an
-independent worker, including while input admission waits for complete-call
-transmit capacity; flushing seeks recreate the full device. Library/device
-calls can still block beyond the in-process watchdog, so retain the external
-timeout. This does not establish arbitrary streams or PowerVLC controls.
+For the numbered 720p hardware check, first verify the loaded module and stop
+other CrystalHD clients. This needs FFmpeg with libx264/AAC encoding and
+GStreamer's H.264/AAC plugins:
+
+```sh
+crystalhd_sample_dir=$(mktemp -d)
+sh tests/generate-browser-sample.sh "$crystalhd_sample_dir/av720.mp4" --av-720p
+GST_PLUGIN_PATH="$PWD/filters/gst/gst-plugin-1.0" \
+LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
+GST_REGISTRY="$crystalhd_sample_dir/registry.bin" \
+timeout --kill-after=10 120 \
+  filters/gst/gst-plugin-1.0/gstreamer-controls-test \
+  "$crystalhd_sample_dir/av720.mp4" --audio --timeout 90
+```
+
+The check includes a complete 360-picture replay and rejects missing or
+out-of-order identities, incorrect seek/rate progress, video lateness above
+250 ms or sampled A/V interval skew above 100 ms. The sample and temporary
+registry remain for inspection. Output runs on an independent worker, including
+while input admission waits for complete-call transmit capacity; flushing
+seeks recreate the full device. Library/device calls can still block beyond
+the in-process watchdog, so retain the external timeout. This does not
+establish arbitrary streams or PowerVLC controls.
 
 `--sustain SECONDS` selects continuous 1x playback instead of controls. It
 requires a matching fixture duration (a multiple of 12 seconds), exact
@@ -233,5 +250,5 @@ video-frame interval, not sample-exact audio duration. Both modes use clocked
 test sinks: neither proves visible presentation or audible output. The
 repeating fixture also cannot distinguish identical prior-cycle pixels
 that have been assigned the correct current timestamp. See the hardware report
-for the passed 30-minute run's continuous-audio fixture, exact command, resource
+for the sustained runs' continuous-audio fixtures, exact commands, resource
 measurements and limitations; a short file cannot stand in for that test.

@@ -7,19 +7,16 @@ also allocates and exports ARGB DRM PRIME surfaces for Chromium-class clients
 whose compositor cannot render NV12 directly.
 
 This is an experimental, client-oriented VA-API subset rather than a complete
-VA-API implementation. Complete progressive H.264 Baseline/Main/High decode
-to NV12 through FFmpeg on BCM70015 passes the tested 180-frame fixtures,
-including independent software pixel comparisons. High also passes a complete
-reference decode and four forward/backward seek/flush pixel comparisons in
-synchronous mode; all three profiles pass the separate eight-frame lookahead
-variant with eight queued client pictures left undownloaded before each flush.
-The separate `--retain-old-frames` variant keeps those frame owners across
-flush/new input or context destruction and then verifies their original pixels.
+VA-API implementation. See the [hardware report](../../HARDWARE-2026-09-13.md)
+for tested BCM70015 profiles, resolutions, throughput, pixel comparisons and
+seek/lifetime results; these are not general codec or client conformance claims.
 An infinite `vaSyncSurface` request reports a decode error after 10 seconds
 without its picture, instead of hanging or substituting another frame.
 The [GStreamer path](../gst/gst-plugin-1.0/README.md) remains the primary
 playback baseline. DRM PRIME import/export and VPP smoke tests do not themselves
 exercise CrystalHD hardware, and no libva conformance suite is run.
+
+## Decode and surface contracts
 
 BCM70015 firmware retains output until later compressed pictures or a real
 end-of-sequence marker arrive. After 100 ms of synchronization grace, the
@@ -96,10 +93,10 @@ status, not treat fence signaling alone as proof of valid pixels.
 Hardware-free production-state tests
 cover repeated VPP, source reuse between parameter submission and completion,
 decoder retirement, busy targets, and cancellation. These fix and verify driver
-lifecycle bugs, not end-to-end browser playback: the FFmpeg drain and seek
-results above do not establish browser hardware seek correctness.
+lifecycle bugs, not end-to-end browser playback: published FFmpeg drain and
+seek results do not establish browser hardware seek correctness.
 
-Current limitations:
+## Limitations
 
 - VA-API supplies no explicit end-of-stream callback; bounded batch replay
   covers the tested BCM70015 files, not arbitrary streams or BCM70012
@@ -140,7 +137,9 @@ Current limitations:
   substitute a synchronous decode wait inside `vaEndPicture`. Default browser
   software decoding keeps the GPU sandbox enabled.
 
-Build and inspect the driver:
+## Build and basic decode
+
+Run these commands from the repository root. Build and inspect the driver:
 
 ```sh
 make -C linux_lib/libcrystalhd
@@ -162,6 +161,57 @@ ffmpeg -hwaccel vaapi -hwaccel_device /dev/dri/renderD128 \
   -vf hwdownload,format=nv12 -f null -
 ```
 
+## Hardware stress
+
+Stop all other CrystalHD playback clients first. Generate the three H.264
+profiles using the [fixture recipe](../gst/gst-plugin-1.0/README.md#counted-h264-playback-and-replay),
+then run each file through the hardware harness:
+
+```sh
+./tests/vaapi-hardware-stress.sh /tmp/crystalhd-samples/high.mp4 10
+# Exercise decoder teardown within one FFmpeg process (five input loops).
+CRYSTALHD_TEST_INPUT_LOOPS=5 \
+  ./tests/vaapi-hardware-stress.sh /tmp/crystalhd-samples/high.mp4 1
+```
+
+Each run requires the complete frame count on NV12 hardware surfaces and scans
+new kernel messages. `CRYSTALHD_TEST_TIMEOUT` defaults to 120 seconds per run;
+a timeout or missing frame fails validation. The script checks the source-built
+module's identity, loads it only if needed, and unloads it only if it loaded it.
+It refuses a different already-loaded version. See
+[module identity](../../BRINGUP.md#device-access-and-module-identity) rather than
+assuming an installed module is the one in use.
+
+## Seek, flush and retained frames
+
+Install the `libavcodec`, `libavformat`, `libavutil` and `libva` development
+packages, then build the optional probe:
+
+```sh
+make -C filters/vaapi seek-test
+LIBVA_DRIVER_NAME=crystalhd LIBVA_DRIVERS_PATH="$PWD/filters/vaapi" \
+LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
+timeout --kill-after=10 120s filters/vaapi/vaapi-seek-test \
+  /tmp/crystalhd-samples/high.mp4
+```
+
+The default synchronous test requires hardware frames, drains a complete
+reference decode, then compares NV12 pixel SHA-256 and PTS after forward and
+backward seeks and decoder flushes, including a flush with reordered pictures
+pending. `--software` is an explicitly labelled self-check of the probe, not
+CrystalHD validation. Keep the external timeout because firmware calls and
+cleanup can exceed an in-process polling deadline.
+
+Append `--lookahead 8` for a pipelined-client check: it retains eight future
+output frames before downloading the oldest, leaving an undownloaded suffix at
+each seek. Report this separately from synchronous mode, which can be much
+slower because it feeds no future input while waiting for a picture.
+
+Use `--retain-old-frames` to retain eight original frame owners across flush
+and new input, or actual decoder-context destruction, before checking their
+original PTS/pixel hashes. This implies eight-frame lookahead and tests lifetime
+after teardown, unlike `--lookahead 8` alone.
+
 To check the exported-pixel consumer path without opening a GUI, use a generated
 H.264 MP4 with a declared frame count:
 
@@ -180,14 +230,9 @@ This checks the backend's export-read contract, not VLC's GUI, EGL compositor,
 audio clock, subtitles or playback-rate handling.
 
 After `sudo make install`, libva discovers the driver from the system DRI
-directory, so only the driver selection and render device are required:
-
-```sh
-LIBVA_DRIVER_NAME=crystalhd \
-ffmpeg -hwaccel vaapi -hwaccel_device /dev/dri/renderD128 \
-  -hwaccel_output_format vaapi -i video.mp4 \
-  -vf hwdownload,format=nv12 -f null -
-```
+directory. Keep `LIBVA_DRIVER_NAME=crystalhd` and the render device selection;
+the source-tree `LIBVA_DRIVERS_PATH` and `LD_LIBRARY_PATH` overrides are no
+longer needed.
 
 The DRM render node normally belongs to the machine's display GPU. That GPU
 allocates and displays surfaces; the BCM70012/BCM70015 still performs the H.264
