@@ -102,6 +102,16 @@ Measured results are recorded in [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md
   at 640×360 and High at 1920×1080.
 - [ ] Full HD real-time display playback; measured decode/download throughput
   and correctness are separate from compositor/display integration.
+- [x] Isolate the tested BCM70015/ICH8 Full HD throughput limit: temporary
+  L0s-only disabling raises the same 900-frame VA-API run from 27.26 to
+  41.55 fps, with zero drops/duplicates and identical 180-frame pixels.
+  Original settings restore the slowdown; L1-only disabling does not help.
+  This does not establish physical display or A/V synchronization.
+- [x] Add an explicit BCM70015 `force_l0s_off` workaround, with default-off
+  behavior, checked raw-state restoration and PCI-core ownership preserved.
+  Temporary-module testing reproduces 41.20 fps and passes all 3,600 frames
+  in a 120-second 1080p30 H.264/AAC 1x clocked-sink run. Physical lip-sync,
+  FHD 2x controls and actual suspend/resume remain unvalidated.
 - [x] GStreamer flushing seek to zero after EOS: all three H.264 profiles,
   complete frame counts and identical replay pixels. Separate numbered
   360p/720p H.264 + AAC fixtures pass forward/backward in-flight seeks,

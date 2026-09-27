@@ -8,7 +8,7 @@ KDIR ?= /lib/modules/$(KVER)/build
 DRIVER_ARGS := KVER=$(KVER) KDIR=$(KDIR) DESTDIR=$(DESTDIR)
 USER_ARGS := PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 
-.PHONY: all driver library library-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check userspace32-check check install clean
+.PHONY: all driver library library-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check l0s-check userspace32-check check install clean
 
 all: driver library gstreamer vaapi examples browser
 
@@ -78,10 +78,13 @@ uapi-check:
 dma-check:
 	sh ./tests/dma-descriptors.sh
 
+l0s-check:
+	CC="$(CC)" sh ./tests/l0s-workaround.sh
+
 userspace32-check:
 	CXX="$(CXX)" sh ./tests/userspace32.sh
 
-check: uapi-check dma-check library-check all
+check: uapi-check dma-check l0s-check library-check all
 	$(MAKE) -C filters/gst/gst-plugin-1.0 check
 	$(MAKE) -C filters/vaapi check
 	$(MAKE) -C browser check

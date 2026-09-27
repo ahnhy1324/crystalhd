@@ -52,6 +52,7 @@
 #include "crystalhd_compat.h"
 #include "crystalhd_ioctl_limits.h"
 #include "crystalhd_cmds.h"
+#include "crystalhd_l0s.h"
 
 #define CRYSTAL_HD_NAME "Broadcom Crystal HD Decoder Driver"
 
@@ -60,6 +61,7 @@ struct crystalhd_adp {
 	/* Hardware board/PCI specifics */
 	char			name[32];
 	struct pci_dev		*pdev;
+	struct crystalhd_l0s_state l0s;
 
 	unsigned long		pci_mem_start;
 	uint32_t			pci_mem_len;
@@ -74,6 +76,7 @@ struct crystalhd_adp {
 	unsigned int		registered;
 	unsigned int		present;
 	unsigned int		msi;
+	bool			irq_registered;
 
 	spinlock_t		lock;
 	struct rw_semaphore	user_lock;
