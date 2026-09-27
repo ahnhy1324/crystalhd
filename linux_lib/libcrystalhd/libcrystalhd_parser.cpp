@@ -238,11 +238,39 @@ static unsigned DtsSequenceStartCode(const uint8_t *data, uint32_t size)
 }
 
 // Validate framing and count output before allocation; the second pass copies
-// the same bounded spans. No SPS/RBSP semantics are inferred here. Metadata may
-// use mixed three/four-byte Annex-B startcodes or two-byte big-endian lengths.
+// the same bounded spans. AVC supports mixed Annex-B prefixes; startcoded
+// MPEG-4 is byte-preserved. Both retain legacy two-byte length framing.
 static BC_STATUS DtsConvertSequenceHeaders(const uint8_t *data, uint32_t size,
 	bool divx, uint8_t *output, uint32_t capacity, uint32_t *output_size)
 {
+	if (divx) {
+		uint32_t position = 0;
+		while (position < size && data[position] == 0)
+			++position;
+		if (position >= 2 && position < size && data[position] == 1) {
+			++position;
+			for (;;) {
+				if (position == size)
+					return BC_STS_INV_ARG;
+				// MPEG-4 has a three-byte prefix followed by a code byte,
+				// including code 0. Neither that byte nor padding is AVC framing.
+				++position;
+				while (position < size && !(size - position >= 3 &&
+					data[position] == 0 && data[position + 1] == 0 && data[position + 2] == 1))
+					++position;
+				if (position == size)
+					break;
+				position += 3;
+			}
+			if (output) {
+				if (capacity < size)
+					return BC_STS_INV_ARG;
+				memcpy(output, data, size);
+			}
+			*output_size = size;
+			return BC_STS_SUCCESS;
+		}
+	}
 	const bool annex_b = DtsSequenceStartCode(data, size) != 0;
 	uint32_t position = 0, written = 0;
 	while (position < size) {
