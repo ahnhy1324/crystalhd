@@ -37,6 +37,7 @@ typedef struct {
   guint64 timestamp;
   guint8 pixel;
   guint flags;
+  guint32 picture_number;
   guint width;
   guint height;
 } MockPicture;
@@ -162,16 +163,24 @@ lifecycle_thread_join(GThread *thread)
 }
 
 static void
-queue_picture(guint64 timestamp, guint8 pixel)
+queue_numbered_picture(guint64 timestamp, guint8 pixel,
+                       guint32 picture_number)
 {
   MockPicture *picture = g_new0(MockPicture, 1);
   picture->timestamp = timestamp;
   picture->pixel = pixel;
+  picture->picture_number = picture_number;
   picture->width = 16;
   picture->height = 16;
   G_LOCK(mock_queue);
   g_queue_push_tail(&mock.pictures, picture);
   G_UNLOCK(mock_queue);
+}
+
+static void
+queue_picture(guint64 timestamp, guint8 pixel)
+{
+  queue_numbered_picture(timestamp, pixel, 0);
 }
 
 BC_STATUS DtsDeviceOpen(HANDLE *device, uint32_t mode)
@@ -340,6 +349,7 @@ BC_STATUS DtsProcOutputNoCopy(HANDLE device, uint32_t timeout,
   output->PicInfo.width = picture->width;
   output->PicInfo.height = picture->height;
   output->PicInfo.timeStamp = picture->timestamp;
+  output->PicInfo.picture_number = picture->picture_number;
   output->PicInfo.flags = picture->flags;
   output->Ybuff = mock.pixels;
   output->YBuffDoneSz = sizeof(mock.pixels) / 4;
@@ -510,6 +520,35 @@ new_input(GstClockTime pts)
   GST_BUFFER_PTS(buffer) = pts;
   GST_BUFFER_DURATION(buffer) = 40 * GST_MSECOND;
   return buffer;
+}
+
+static GstBuffer *
+new_mpeg4_vop(GstClockTime pts, guint8 header0, guint8 header1)
+{
+  guint8 picture[] = { 0, 0, 1, 0xb6, header0, header1 };
+  GstBuffer *buffer = gst_buffer_new_allocate(NULL, sizeof(picture), NULL);
+  gst_buffer_fill(buffer, 0, picture, sizeof(picture));
+  GST_BUFFER_PTS(buffer) = pts;
+  GST_BUFFER_DURATION(buffer) = 40 * GST_MSECOND;
+  return buffer;
+}
+
+static GstBuffer *
+new_mpeg4_input(GstClockTime pts)
+{
+  return new_mpeg4_vop(pts, 0x10, 0x60);
+}
+
+static void
+configure_mpeg4_codec(GstCrystalHdDec *self,
+                      CrystalHdMpeg4ObjectType object_type)
+{
+  self->codec.subtype = BC_MSUBTYPE_DIVX;
+  self->codec.mpeg4_object_type = object_type;
+  self->codec.mpeg4_profile_level =
+      object_type == CRYSTALHD_MPEG4_OBJECT_TYPE_SIMPLE ? 0x03 : 0xf3;
+  self->codec.mpeg4_time_increment_resolution = 30;
+  self->codec.mpeg4_time_increment_bits = 5;
 }
 
 static void
@@ -765,12 +804,14 @@ test_flush_codec_state(void)
     g_assert_cmpint(self->input_state->ref_count, ==, 1);
     self->next_hardware_timestamp = 123450000;
     self->need_second_field = TRUE;
+    self->have_simple_picture_number = TRUE;
     opens = mock.open_calls;
     g_assert_true(gst_crystalhd_flush(GST_VIDEO_DECODER(self)));
     g_assert_cmpuint(mock.open_calls, ==, opens + 1);
     g_assert_true(gst_caps_is_equal(self->input_state->caps, expected_caps));
     g_assert_cmpuint(self->next_hardware_timestamp, ==, 123450000);
     g_assert_false(self->need_second_field);
+    g_assert_false(self->have_simple_picture_number);
     g_assert_cmpint(self->codec.subtype, ==, cases[i].subtype);
     g_assert_cmpint(self->codec.frame_layer, ==, cases[i].frame_layer);
     g_assert_cmpint(gst_video_decoder_get_packetized(GST_VIDEO_DECODER(self)),
@@ -780,8 +821,11 @@ test_flush_codec_state(void)
     g_assert_cmpuint(mock.last_format.width, ==, width);
     g_assert_cmpuint(mock.last_format.height, ==, height);
     g_assert_cmpuint(mock.last_format.metaDataSz, ==, cases[i].expected_size);
-    if (cases[i].subtype == BC_MSUBTYPE_DIVX)
+    if (cases[i].subtype == BC_MSUBTYPE_DIVX) {
       g_assert_cmpuint(mock.last_format.startCodeSz, ==, 4);
+      g_assert_cmpuint(self->codec.mpeg4_time_increment_resolution, ==, 30);
+      g_assert_cmpuint(self->codec.mpeg4_time_increment_bits, ==, 5);
+    }
     g_assert_cmpmem(mock.last_metadata, cases[i].expected_size,
                     cases[i].metadata + cases[i].skip, cases[i].expected_size);
     g_assert_true(self->input_flushed);
@@ -939,6 +983,209 @@ test_input_admission(void)
   gst_buffer_unref(output);
   output = gst_harness_try_pull(harness);
   check_output(output, 40 * GST_MSECOND, 2);
+  gst_buffer_unref(output);
+  gst_harness_teardown(harness);
+}
+
+static void
+test_mpeg4_simple_missing_timestamp(void)
+{
+  GstHarness *harness = new_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  GstBuffer *output;
+  guint i;
+
+  configure_mpeg4_codec(self, CRYSTALHD_MPEG4_OBJECT_TYPE_SIMPLE);
+  mock.auto_output = FALSE;
+  for (i = 0; i < 3; ++i)
+    g_assert_cmpint(gst_harness_push(
+        harness, new_mpeg4_input(i * 40 * GST_MSECOND)), ==, GST_FLOW_OK);
+  queue_numbered_picture(mock.accepted[0], 1, 3);
+  queue_numbered_picture(0, 2, 4);
+  queue_numbered_picture(mock.accepted[2], 3, 5);
+  g_assert_true(gst_harness_push_event(harness, gst_event_new_eos()));
+  for (i = 0; i < 3; ++i) {
+    output = gst_harness_try_pull(harness);
+    check_output(output, i * 40 * GST_MSECOND, i + 1);
+    gst_buffer_unref(output);
+  }
+  g_assert_cmpuint(self->timestamps.length, ==, 0);
+  g_assert_cmpuint(gst_harness_buffers_in_queue(harness), ==, 0);
+  gst_harness_teardown(harness);
+}
+
+static void
+test_mpeg4_uncoded_vop(void)
+{
+  const CrystalHdMpeg4ObjectType profiles[] = {
+    CRYSTALHD_MPEG4_OBJECT_TYPE_SIMPLE,
+    CRYSTALHD_MPEG4_OBJECT_TYPE_ADVANCED_SIMPLE
+  };
+  guint i;
+
+  for (i = 0; i < G_N_ELEMENTS(profiles); ++i) {
+    GstHarness *harness = new_decoder();
+    GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+    GstBuffer *output;
+    guint64 next_timestamp;
+
+    configure_mpeg4_codec(self, profiles[i]);
+    mock.auto_output = FALSE;
+    self->have_simple_picture_number = TRUE;
+    self->simple_picture_number = 7;
+    next_timestamp = self->next_hardware_timestamp;
+
+    g_assert_cmpint(gst_harness_push(
+        harness, new_mpeg4_vop(0, 0x10, 0x40)), ==, GST_FLOW_OK);
+    g_assert_cmpuint(mock.input_calls, ==, 1);
+    g_assert_cmpuint(mock.accepted_count, ==, 1);
+    g_assert_cmpuint(mock.accepted[0], ==, next_timestamp);
+    g_assert_cmpuint(self->next_hardware_timestamp, ==,
+                     next_timestamp + CRYSTALHD_TIMESTAMP_STEP);
+    g_assert_cmpuint(self->timestamps.length, ==, 0);
+    g_assert_false(self->have_simple_picture_number);
+
+    g_assert_cmpint(gst_harness_push(
+        harness, new_mpeg4_vop(40 * GST_MSECOND, 0x50, 0x60)), ==,
+        GST_FLOW_OK);
+    g_assert_cmpuint(mock.input_calls, ==, 2);
+    g_assert_cmpuint(mock.accepted_count, ==, 2);
+    g_assert_cmpuint(mock.accepted[1], ==,
+                     next_timestamp + CRYSTALHD_TIMESTAMP_STEP);
+    g_assert_cmpuint(self->next_hardware_timestamp, ==,
+                     next_timestamp + 2 * CRYSTALHD_TIMESTAMP_STEP);
+    g_assert_cmpuint(self->timestamps.length, ==, 1);
+
+    queue_numbered_picture(mock.accepted[1], 2, 1);
+    g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_OK);
+    output = gst_harness_try_pull(harness);
+    check_output(output, 40 * GST_MSECOND, 2);
+    gst_buffer_unref(output);
+    g_assert_cmpuint(self->timestamps.length, ==, 0);
+    gst_harness_teardown(harness);
+  }
+}
+
+static void
+test_mpeg4_simple_invalid_ordinal_baseline(void)
+{
+  const guint32 broken_ordinals[] = { 0, G_MAXUINT32 };
+  guint i;
+
+  for (i = 0; i < G_N_ELEMENTS(broken_ordinals); ++i) {
+    GstHarness *harness = new_decoder();
+    GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+    GstBuffer *output;
+    guint32 candidate = broken_ordinals[i] == 0 ? 4 : 1;
+    guint input;
+
+    configure_mpeg4_codec(self, CRYSTALHD_MPEG4_OBJECT_TYPE_SIMPLE);
+    mock.auto_output = FALSE;
+    for (input = 0; input < 3; ++input)
+      g_assert_cmpint(gst_harness_push(
+          harness, new_mpeg4_input(input * 40 * GST_MSECOND)), ==,
+          GST_FLOW_OK);
+
+    queue_numbered_picture(mock.accepted[0], 1, 3);
+    g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_OK);
+    output = gst_harness_try_pull(harness);
+    check_output(output, 0, 1);
+    gst_buffer_unref(output);
+    g_assert_true(self->have_simple_picture_number);
+
+    queue_numbered_picture(mock.accepted[1], 2, broken_ordinals[i]);
+    g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_OK);
+    output = gst_harness_try_pull(harness);
+    check_output(output, 40 * GST_MSECOND, 2);
+    gst_buffer_unref(output);
+    g_assert_false(self->have_simple_picture_number);
+
+    queue_numbered_picture(0, 0xee, candidate);
+    g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_OK);
+    g_assert_cmpuint(self->timestamps.length, ==, 1);
+    g_assert_cmpuint(gst_harness_buffers_in_queue(harness), ==, 0);
+
+    queue_numbered_picture(mock.accepted[2], 3, candidate);
+    g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_OK);
+    output = gst_harness_try_pull(harness);
+    check_output(output, 80 * GST_MSECOND, 3);
+    gst_buffer_unref(output);
+    gst_harness_teardown(harness);
+  }
+}
+
+static void
+test_mpeg4_simple_order_violation(void)
+{
+  GstHarness *harness = new_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+
+  configure_mpeg4_codec(self, CRYSTALHD_MPEG4_OBJECT_TYPE_SIMPLE);
+  mock.auto_output = FALSE;
+  g_assert_cmpint(gst_harness_push(harness, new_mpeg4_input(0)),
+                  ==, GST_FLOW_OK);
+  g_assert_cmpint(gst_harness_push(
+      harness, new_mpeg4_input(40 * GST_MSECOND)), ==, GST_FLOW_OK);
+  queue_numbered_picture(mock.accepted[1], 2, 4);
+  g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_ERROR);
+  g_assert_cmpuint(self->timestamps.length, ==, 2);
+  g_assert_cmpuint(gst_harness_buffers_in_queue(harness), ==, 0);
+  gst_harness_teardown(harness);
+}
+
+static void
+test_mpeg4_simple_duplicate_zero_timestamp(void)
+{
+  GstHarness *harness = new_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  GstBuffer *output;
+
+  configure_mpeg4_codec(self, CRYSTALHD_MPEG4_OBJECT_TYPE_SIMPLE);
+  mock.auto_output = FALSE;
+  g_assert_cmpint(gst_harness_push(harness, new_mpeg4_input(0)),
+                  ==, GST_FLOW_OK);
+  g_assert_cmpint(gst_harness_push(
+      harness, new_mpeg4_input(40 * GST_MSECOND)), ==, GST_FLOW_OK);
+  queue_numbered_picture(mock.accepted[0], 1, 3);
+  g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_OK);
+  output = gst_harness_try_pull(harness);
+  check_output(output, 0, 1);
+  gst_buffer_unref(output);
+
+  /* A repeated ordinal is not the next Simple picture, even if its missing
+   * timestamp would otherwise resemble the BCM70015 metadata-loss case. */
+  queue_numbered_picture(0, 0xee, 3);
+  g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_OK);
+  g_assert_cmpuint(self->timestamps.length, ==, 1);
+  g_assert_cmpuint(gst_harness_buffers_in_queue(harness), ==, 0);
+  queue_numbered_picture(mock.accepted[1], 2, 4);
+  g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_OK);
+  output = gst_harness_try_pull(harness);
+  check_output(output, 40 * GST_MSECOND, 2);
+  gst_buffer_unref(output);
+  gst_harness_teardown(harness);
+}
+
+static void
+test_mpeg4_unrecoverable_zero_timestamp(void)
+{
+  GstHarness *harness = new_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  GstBuffer *output;
+
+  configure_mpeg4_codec(self,
+                        CRYSTALHD_MPEG4_OBJECT_TYPE_ADVANCED_SIMPLE);
+  mock.auto_output = FALSE;
+  g_assert_cmpint(gst_harness_push(harness, new_mpeg4_input(0)),
+                  ==, GST_FLOW_OK);
+  queue_numbered_picture(0, 0xee, 3);
+  g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_OK);
+  g_assert_cmpuint(self->timestamps.length, ==, 1);
+  g_assert_cmpuint(gst_harness_buffers_in_queue(harness), ==, 0);
+  queue_numbered_picture(mock.accepted[0], 1, 3);
+  g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_OK);
+  output = gst_harness_try_pull(harness);
+  check_output(output, 0, 1);
   gst_buffer_unref(output);
   gst_harness_teardown(harness);
 }
@@ -1987,6 +2234,18 @@ main(int argc, char **argv)
   g_test_add_func("/crystalhd/lifecycle/output-interlace-mode-changes", test_output_interlace_mode_changes);
   g_test_add_func("/crystalhd/lifecycle/interlaced-picture-types", test_interlaced_picture_types);
   g_test_add_func("/crystalhd/lifecycle/input-admission", test_input_admission);
+  g_test_add_func("/crystalhd/lifecycle/mpeg4-simple-missing-timestamp",
+                  test_mpeg4_simple_missing_timestamp);
+  g_test_add_func("/crystalhd/lifecycle/mpeg4-uncoded-vop",
+                  test_mpeg4_uncoded_vop);
+  g_test_add_func("/crystalhd/lifecycle/mpeg4-simple-invalid-ordinal-baseline",
+                  test_mpeg4_simple_invalid_ordinal_baseline);
+  g_test_add_func("/crystalhd/lifecycle/mpeg4-simple-order-violation",
+                  test_mpeg4_simple_order_violation);
+  g_test_add_func("/crystalhd/lifecycle/mpeg4-simple-duplicate-zero-timestamp",
+                  test_mpeg4_simple_duplicate_zero_timestamp);
+  g_test_add_func("/crystalhd/lifecycle/mpeg4-unrecoverable-zero-timestamp",
+                  test_mpeg4_unrecoverable_zero_timestamp);
   g_test_add_func("/crystalhd/lifecycle/input-admission-timeout", test_input_admission_timeout);
   g_test_add_func("/crystalhd/lifecycle/input-admission-flush", test_input_admission_flush);
   g_test_add_func("/crystalhd/lifecycle/input-wait-new-generation", test_input_wait_new_generation);
