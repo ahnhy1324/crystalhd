@@ -58,6 +58,7 @@ static struct {
   gboolean fail_status;
   gboolean fail_drain;
   gboolean early_eos;
+  gboolean publish_after_eos;
   guint input_calls;
   guint flush_calls;
   guint drain_calls;
@@ -383,10 +384,17 @@ BC_STATUS DtsFlushInput(HANDLE device, uint32_t operation)
 
 BC_STATUS DtsIsEndOfStream(HANDLE device, uint8_t *eos)
 {
+  gboolean publish;
   (void)device;
   G_LOCK(mock_queue);
   *eos = mock.early_eos || g_queue_is_empty(&mock.pictures);
+  publish = mock.publish_after_eos;
+  mock.publish_after_eos = FALSE;
   G_UNLOCK(mock_queue);
+  if (publish) {
+    g_assert_cmpuint(mock.accepted_count, >, 0);
+    queue_picture(mock.accepted[0], 1);
+  }
   return BC_STS_SUCCESS;
 }
 
@@ -1169,6 +1177,44 @@ test_eos_with_ready_output(void)
 }
 
 static void
+test_eos_before_late_output(void)
+{
+  GstHarness *harness = new_decoder();
+  GstBuffer *output;
+  mock.auto_output = FALSE;
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  /* Driver EOS status and RLL publication are independent observations.
+   * Make the accepted picture visible only after the first EOS poll.
+   */
+  mock.early_eos = TRUE;
+  mock.publish_after_eos = TRUE;
+  g_assert_cmpint(gst_crystalhd_drain(GST_VIDEO_DECODER(harness->element)),
+                  ==, GST_FLOW_OK);
+  output = gst_harness_try_pull(harness);
+  check_output(output, 0, 1);
+  gst_buffer_unref(output);
+  g_assert_cmpuint(mock.destroyed_inputs, ==, 1);
+  g_assert_cmpuint(mock.release_calls, ==, 1);
+  gst_harness_teardown(harness);
+}
+
+static void
+test_drain_completion_requires_idle(void)
+{
+  GstHarness *harness = new_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  g_assert_true(g_queue_is_empty(&self->timestamps));
+  self->output_eos = TRUE;
+  self->need_second_field = FALSE;
+  self->drain_idle = FALSE;
+  g_assert_false(gst_crystalhd_drain_complete(self, FALSE));
+  self->drain_idle = TRUE;
+  g_assert_true(gst_crystalhd_drain_complete(self, FALSE));
+  g_assert_false(gst_crystalhd_drain_complete(self, TRUE));
+  gst_harness_teardown(harness);
+}
+
+static void
 test_incomplete_drain(void)
 {
   GstHarness *harness = new_decoder();
@@ -1931,6 +1977,10 @@ main(int argc, char **argv)
   g_test_add_func("/crystalhd/lifecycle/repeated-empty-flush", test_repeated_empty_flush);
   g_test_add_func("/crystalhd/lifecycle/incomplete-drain", test_incomplete_drain);
   g_test_add_func("/crystalhd/lifecycle/eos-with-ready-output", test_eos_with_ready_output);
+  g_test_add_func("/crystalhd/lifecycle/eos-before-late-output",
+                  test_eos_before_late_output);
+  g_test_add_func("/crystalhd/lifecycle/drain-completion-requires-idle",
+                  test_drain_completion_requires_idle);
   g_test_add_func("/crystalhd/lifecycle/field-identity", test_field_identity);
   g_test_add_func("/crystalhd/lifecycle/field-pair-policy", test_field_pair_policy);
   g_test_add_func("/crystalhd/lifecycle/field-presentation-order", test_field_presentation_order);

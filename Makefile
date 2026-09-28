@@ -9,7 +9,7 @@ KDIR ?= /lib/modules/$(KVER)/build
 DRIVER_ARGS := KVER=$(KVER) KDIR=$(KDIR) DESTDIR=$(DESTDIR)
 USER_ARGS := PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 
-.PHONY: all driver library library-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check l0s-check command-pm-check fw-command-check pib-check userspace32-check legacy-cpu-check check install install-module install-runtime install-browser install-check uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check clean
+.PHONY: all driver library library-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check l0s-check command-pm-check fw-command-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check clean
 
 all: driver library gstreamer vaapi examples
 
@@ -65,7 +65,7 @@ gstreamer: library
 
 # Optional direct-library hardware probe. Building never opens the device;
 # running requires explicit --hardware (or device-free --preflight).
-library-drain-test: library
+library-drain-test: library tests/phase1-progress.h
 	$(CXX) -std=c++11 -O2 -g -Wall -Wextra -Werror -D__LINUX_USER__ \
 		-Iinclude -Ilinux_lib/libcrystalhd tests/library-drain.cpp \
 		$$(pkg-config --cflags --libs libavformat libavcodec libavutil glib-2.0) \
@@ -104,10 +104,21 @@ userspace32-check:
 legacy-cpu-check:
 	CXX="$(CXX)" sh ./tests/userspace32.sh --legacy
 
+phase1-check: library-drain-test tests/phase1-oracle.tsv
+	sh -n tests/kernel-log-check.sh tests/phase1-release-gate.sh
+	$(CC) -std=c11 -Wall -Wextra -Werror -Itests -include phase1-progress.h \
+		-fsyntax-only -x c /dev/null
+	sh tests/kernel-log-check.sh --self-test
+	LD_LIBRARY_PATH="$(CURDIR)/linux_lib/libcrystalhd" \
+		./tests/library-drain-test --self-test
+	sh tests/phase1-release-gate.sh --self-test
+	sh tests/phase1-release-gate.sh manifest-check tests/phase1-oracle.tsv
+
 check: uapi-check dma-check l0s-check command-pm-check fw-command-check pib-check library-check all
 	$(MAKE) -C filters/gst/gst-plugin-1.0 check
 	$(MAKE) -C filters/vaapi check
 	$(MAKE) -C browser check
+	$(MAKE) phase1-check
 	sh -n scripts/crystalhd-check
 	./tests/crystalhd-check.sh
 	KVER=$(KVER) KDIR=$(KDIR) ./tests/staged-install.sh

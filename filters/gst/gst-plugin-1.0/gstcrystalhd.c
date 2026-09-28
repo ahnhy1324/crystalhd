@@ -1290,6 +1290,13 @@ gst_crystalhd_flush(GstVideoDecoder *decoder)
   return TRUE;
 }
 
+static gboolean
+gst_crystalhd_drain_complete(GstCrystalHdDec *self, gboolean active)
+{
+  return !active && self->drain_idle && self->output_eos &&
+         g_queue_is_empty(&self->timestamps) && !self->need_second_field;
+}
+
 static GstFlowReturn
 gst_crystalhd_drain(GstVideoDecoder *decoder)
 {
@@ -1338,9 +1345,7 @@ gst_crystalhd_drain(GstVideoDecoder *decoder)
     g_mutex_unlock(&self->output_lock);
     /* Tokens retire after copying, not after the clocked downstream push.
      * EOS must wait for both, otherwise the final real picture can vanish. */
-    if (!active && self->drain_idle && (self->output_eos ||
-                    (g_queue_is_empty(&self->timestamps) &&
-                     !self->need_second_field)))
+    if (gst_crystalhd_drain_complete(self, active))
       break;
     /* Asynchronous input may reach EOS long before clocked playback ends.
      * Bound lack of completed delivery, not the entire remaining movie. */
@@ -1357,13 +1362,16 @@ gst_crystalhd_drain(GstVideoDecoder *decoder)
       goto done;
   }
 
-  if (!g_queue_is_empty(&self->timestamps) || self->need_second_field || active) {
+  if (!gst_crystalhd_drain_complete(self, active)) {
     GST_ELEMENT_ERROR(self, STREAM, DECODE,
                       ("CrystalHD drain ended before all input pictures were decoded"),
                       ("%u input timestamps remain after %" G_GINT64_FORMAT
-                       " ms (delivery active: %d; no-progress limit: 10000 ms)",
+                       " ms (delivery active: %d; output idle: %d; "
+                       "firmware EOS: %d; "
+                       "no-progress limit: 10000 ms)",
                        self->timestamps.length,
-                       (g_get_monotonic_time() - started) / 1000, active));
+                       (g_get_monotonic_time() - started) / 1000, active,
+                       self->drain_idle, self->output_eos));
     flow = GST_FLOW_ERROR;
   }
 done:

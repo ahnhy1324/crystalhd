@@ -34,7 +34,8 @@ all: $(PLUGIN)
 # FFmpeg development packages are not needed for the plugin itself.
 codec-playback-test: gstreamer-codec-playback-test
 
-gstreamer-codec-playback-test: $(ROOTDIR)/tests/gstreamer-codec-playback.cpp
+gstreamer-codec-playback-test: $(ROOTDIR)/tests/gstreamer-codec-playback.cpp \
+		$(ROOTDIR)/tests/phase1-progress.h
 	$(CXX) -std=c++17 -O2 -Wall -Wextra -Werror $< -o $@ \
 		$(shell $(PKG_CONFIG) --cflags --libs $(CODEC_PLAYBACK_PACKAGES)) $(CRYSTALHD_CPU_FLAGS)
 
@@ -49,11 +50,13 @@ endif
 $(PLUGIN): gstcrystalhd.c gstcrystalhd-codecs.h gstcrystalhd-timing.h gstcrystalhd-input.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS) $(CRYSTALHD_CPU_FLAGS)
 
-$(PLAYBACK_TEST): $(ROOTDIR)/tests/gstreamer-playback.c
+$(PLAYBACK_TEST): $(ROOTDIR)/tests/gstreamer-playback.c \
+		$(ROOTDIR)/tests/phase1-progress.h
 	$(CC) -Wall -Wextra -Werror $(CFLAGS) $< -o $@ \
 		$(shell $(PKG_CONFIG) --libs $(GST_PACKAGES)) $(CRYSTALHD_CPU_FLAGS)
 
-$(CONTROLS_TEST): $(ROOTDIR)/tests/gstreamer-controls.c
+$(CONTROLS_TEST): $(ROOTDIR)/tests/gstreamer-controls.c \
+		$(ROOTDIR)/tests/phase1-progress.h
 	$(CC) -Wall -Wextra -Werror $(CFLAGS) \
 		$(shell $(PKG_CONFIG) --cflags gstreamer-audio-1.0) $< -o $@ \
 		$(shell $(PKG_CONFIG) --libs $(GST_PACKAGES) gstreamer-audio-1.0) -lm $(CRYSTALHD_CPU_FLAGS)

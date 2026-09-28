@@ -16,10 +16,117 @@ extern "C" {
 #include <cstring>
 #include <limits>
 #include <vector>
+#include "phase1-progress.h"
 
 static constexpr guint64 kQueueBytes = 4 * 1024 * 1024;
 static constexpr int kMaxPacketBytes = 16 * 1024 * 1024;
 static constexpr gint64 kTimeoutUs = 25 * G_USEC_PER_SEC;
+
+enum class ExpectedField { kAny, kProgressive, kTopFirst, kBottomFirst };
+
+static guint32 CanonicalFieldFlags(GstBufferFlags flags) {
+  guint32 result = 0;
+  if (flags & GST_VIDEO_BUFFER_FLAG_INTERLACED)
+    result |= 1U << 0;
+  if (flags & GST_VIDEO_BUFFER_FLAG_TFF)
+    result |= 1U << 1;
+  if (flags & GST_VIDEO_BUFFER_FLAG_RFF)
+    result |= 1U << 2;
+  if (flags & GST_VIDEO_BUFFER_FLAG_ONEFIELD)
+    result |= 1U << 3;
+  return result;
+}
+
+static guint32 CanonicalInterlaceMode(GstVideoInterlaceMode mode) {
+  switch (mode) {
+    case GST_VIDEO_INTERLACE_MODE_PROGRESSIVE:
+      return 0;
+    case GST_VIDEO_INTERLACE_MODE_INTERLEAVED:
+      return 1;
+    case GST_VIDEO_INTERLACE_MODE_MIXED:
+      return 2;
+    case GST_VIDEO_INTERLACE_MODE_FIELDS:
+      return 3;
+    case GST_VIDEO_INTERLACE_MODE_ALTERNATE:
+      return 4;
+    default:
+      return G_MAXUINT32;
+  }
+}
+
+static void ChecksumU32Be(GChecksum *checksum, guint32 value) {
+  const guchar bytes[] = {
+      static_cast<guchar>(value >> 24), static_cast<guchar>(value >> 16),
+      static_cast<guchar>(value >> 8), static_cast<guchar>(value)};
+  g_checksum_update(checksum, bytes, sizeof(bytes));
+}
+
+static void ChecksumU64Be(GChecksum *checksum, guint64 value) {
+  const guchar bytes[] = {
+      static_cast<guchar>(value >> 56), static_cast<guchar>(value >> 48),
+      static_cast<guchar>(value >> 40), static_cast<guchar>(value >> 32),
+      static_cast<guchar>(value >> 24), static_cast<guchar>(value >> 16),
+      static_cast<guchar>(value >> 8), static_cast<guchar>(value)};
+  g_checksum_update(checksum, bytes, sizeof(bytes));
+}
+
+static void ChecksumFrameMetadata(GChecksum *checksum, GstClockTime pts,
+                                  GstClockTime duration,
+                                  const GstVideoInfo &info,
+                                  GstBufferFlags flags) {
+  /* Stable oracle record: version, exact nanosecond PTS/duration (NONE is
+   * UINT64_MAX), geometry, frame rate, canonical interlace mode and field
+   * flags. */
+  static constexpr guchar version[] = {'C', 'H', 'M', 'D', 2};
+  g_checksum_update(checksum, version, sizeof(version));
+  ChecksumU64Be(checksum, pts);
+  ChecksumU64Be(checksum, duration);
+  ChecksumU32Be(checksum, GST_VIDEO_INFO_WIDTH(&info));
+  ChecksumU32Be(checksum, GST_VIDEO_INFO_HEIGHT(&info));
+  ChecksumU32Be(checksum, GST_VIDEO_INFO_FPS_N(&info));
+  ChecksumU32Be(checksum, GST_VIDEO_INFO_FPS_D(&info));
+  ChecksumU32Be(checksum,
+                CanonicalInterlaceMode(GST_VIDEO_INFO_INTERLACE_MODE(&info)));
+  ChecksumU32Be(checksum, CanonicalFieldFlags(flags));
+}
+
+static bool FieldMetadataMatches(ExpectedField expected,
+                                 GstVideoInterlaceMode mode,
+                                 GstBufferFlags flags) {
+  const bool interlaced = (flags & GST_VIDEO_BUFFER_FLAG_INTERLACED) != 0;
+  const bool top_first = (flags & GST_VIDEO_BUFFER_FLAG_TFF) != 0;
+  const bool complete_picture = (flags & GST_VIDEO_BUFFER_FLAG_ONEFIELD) == 0;
+  const bool interlaced_mode = mode == GST_VIDEO_INTERLACE_MODE_INTERLEAVED ||
+                               mode == GST_VIDEO_INTERLACE_MODE_MIXED;
+  const bool progressive_mode = mode == GST_VIDEO_INTERLACE_MODE_PROGRESSIVE ||
+                                mode == GST_VIDEO_INTERLACE_MODE_MIXED;
+
+  if (!complete_picture || (top_first && !interlaced) ||
+      (interlaced && !interlaced_mode) || (!interlaced && !progressive_mode))
+    return false;
+  if (expected == ExpectedField::kAny)
+    return true;
+  if (expected == ExpectedField::kProgressive)
+    return !interlaced;
+  return interlaced &&
+         top_first == (expected == ExpectedField::kTopFirst);
+}
+
+static ExpectedField ExpectedFieldOrder(AVFieldOrder field_order) {
+  switch (field_order) {
+    case AV_FIELD_PROGRESSIVE:
+      return ExpectedField::kProgressive;
+    case AV_FIELD_TT:
+    case AV_FIELD_BT:
+      return ExpectedField::kTopFirst;
+    case AV_FIELD_BB:
+    case AV_FIELD_TB:
+      return ExpectedField::kBottomFirst;
+    case AV_FIELD_UNKNOWN:
+    default:
+      return ExpectedField::kAny;
+  }
+}
 
 struct Deadline {
   gint64 expires = g_get_monotonic_time() + kTimeoutUs;
@@ -39,9 +146,15 @@ struct Audit {
   int width = 0;
   int height = 0;
   bool invalid = false;
+  ExpectedField expected_field = ExpectedField::kAny;
   GstClockTime previous_pts = GST_CLOCK_TIME_NONE;
+  bool have_last_good = false;
+  unsigned int last_good_frame = 0;
+  GstClockTime last_good_pts = GST_CLOCK_TIME_NONE;
   std::vector<GstClockTime> pts;
   GChecksum *checksum = g_checksum_new(G_CHECKSUM_SHA256);
+  GChecksum *metadata_checksum = g_checksum_new(G_CHECKSUM_SHA256);
+  Phase1Progress progress{};
 };
 
 static void CountFrame(GstElement *, GstBuffer *buffer, GstPad *pad, gpointer data) {
@@ -50,17 +163,29 @@ static void CountFrame(GstElement *, GstBuffer *buffer, GstPad *pad, gpointer da
   GstVideoInfo info;
   GstVideoFrame frame;
   const GstClockTime pts = GST_BUFFER_PTS(buffer);
-  if (!caps || !gst_video_info_from_caps(&info, caps) ||
-      GST_VIDEO_INFO_FORMAT(&info) != GST_VIDEO_FORMAT_YUY2 ||
-      GST_VIDEO_INFO_WIDTH(&info) != audit->width ||
-      GST_VIDEO_INFO_HEIGHT(&info) != audit->height ||
-      (GST_CLOCK_TIME_IS_VALID(pts) && GST_CLOCK_TIME_IS_VALID(audit->previous_pts) &&
-       pts < audit->previous_pts) ||
-      !gst_video_frame_map(&frame, &info, buffer, GST_MAP_READ)) {
+  const GstBufferFlags flags =
+      static_cast<GstBufferFlags>(GST_BUFFER_FLAGS(buffer));
+  const bool caps_valid = caps && gst_video_info_from_caps(&info, caps);
+  if (caps_valid)
+    ChecksumFrameMetadata(audit->metadata_checksum, pts,
+                          GST_BUFFER_DURATION(buffer), info, flags);
+  bool frame_valid = caps_valid &&
+      GST_VIDEO_INFO_FORMAT(&info) == GST_VIDEO_FORMAT_YUY2 &&
+      GST_VIDEO_INFO_WIDTH(&info) == audit->width &&
+      GST_VIDEO_INFO_HEIGHT(&info) == audit->height &&
+      (!GST_CLOCK_TIME_IS_VALID(pts) ||
+       !GST_CLOCK_TIME_IS_VALID(audit->previous_pts) || pts >= audit->previous_pts) &&
+      FieldMetadataMatches(audit->expected_field,
+                           GST_VIDEO_INFO_INTERLACE_MODE(&info), flags);
+  bool mapped = false;
+  if (frame_valid)
+    mapped = gst_video_frame_map(&frame, &info, buffer, GST_MAP_READ);
+  if (!frame_valid || !mapped) {
     audit->invalid = true;
   } else {
     if (GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 0) < audit->width * 2) {
       audit->invalid = true;
+      frame_valid = false;
     } else {
       for (int row = 0; row < audit->height; ++row)
         g_checksum_update(audit->checksum,
@@ -68,6 +193,19 @@ static void CountFrame(GstElement *, GstBuffer *buffer, GstPad *pad, gpointer da
                 row * GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 0), audit->width * 2);
     }
     gst_video_frame_unmap(&frame);
+  }
+  if (frame_valid && !audit->invalid) {
+    audit->have_last_good = true;
+    audit->last_good_frame = audit->frames;
+    audit->last_good_pts = pts;
+    if (GST_CLOCK_TIME_IS_VALID(pts))
+      phase1_progress_write(&audit->progress,
+          "probe=gstreamer-codec-playback frame-index=%u pts=%" G_GUINT64_FORMAT "\n",
+          audit->last_good_frame, static_cast<guint64>(pts));
+    else
+      phase1_progress_write(&audit->progress,
+          "probe=gstreamer-codec-playback frame-index=%u pts=NONE\n",
+          audit->last_good_frame);
   }
   if (caps)
     gst_caps_unref(caps);
@@ -126,6 +264,7 @@ static int SelfTest() {
   Audit audit;
   audit.width = 32;
   audit.height = 24;
+  audit.expected_field = ExpectedField::kProgressive;
   g_signal_connect(sink, "handoff", G_CALLBACK(CountFrame), &audit);
   GstBus *bus = gst_element_get_bus(pipeline);
   Deadline deadline;
@@ -164,9 +303,61 @@ static int SelfTest() {
     gst_buffer_unref(buffer);
     gst_object_unref(pad);
     g_checksum_free(bad.checksum);
+    g_checksum_free(bad.metadata_checksum);
   }
   gst_element_set_state(pipeline, GST_STATE_NULL);
-  ok = ok && eos && !audit.invalid && audit.frames == 12;
+  GstVideoInfo expected_info;
+  gst_video_info_init(&expected_info);
+  GChecksum *expected_metadata = g_checksum_new(G_CHECKSUM_SHA256);
+  GChecksum *different_metadata = g_checksum_new(G_CHECKSUM_SHA256);
+  ok = ok && gst_video_info_set_format(&expected_info, GST_VIDEO_FORMAT_YUY2,
+                                        32, 24);
+  GST_VIDEO_INFO_FPS_N(&expected_info) = 25;
+  GST_VIDEO_INFO_FPS_D(&expected_info) = 1;
+  for (unsigned int i = 0; i < 12; ++i) {
+    ChecksumFrameMetadata(expected_metadata, i * GST_SECOND / 25,
+                          GST_SECOND / 25, expected_info,
+                          static_cast<GstBufferFlags>(0));
+    ChecksumFrameMetadata(different_metadata, i * GST_SECOND / 25,
+                          i == 11 ? GST_SECOND / 24 : GST_SECOND / 25,
+                          expected_info, static_cast<GstBufferFlags>(0));
+  }
+  ok = ok && eos && !audit.invalid && audit.frames == 12 &&
+      audit.have_last_good && audit.last_good_frame == 11 &&
+      audit.last_good_pts == 11 * GST_SECOND / 25 &&
+      std::strcmp(g_checksum_get_string(audit.metadata_checksum),
+                  g_checksum_get_string(expected_metadata)) == 0 &&
+      std::strcmp(g_checksum_get_string(expected_metadata),
+                  g_checksum_get_string(different_metadata)) != 0 &&
+      CanonicalInterlaceMode(GST_VIDEO_INTERLACE_MODE_PROGRESSIVE) == 0 &&
+      CanonicalInterlaceMode(GST_VIDEO_INTERLACE_MODE_INTERLEAVED) == 1 &&
+      CanonicalInterlaceMode(GST_VIDEO_INTERLACE_MODE_MIXED) == 2 &&
+      FieldMetadataMatches(ExpectedField::kProgressive,
+                           GST_VIDEO_INTERLACE_MODE_PROGRESSIVE,
+                           static_cast<GstBufferFlags>(0)) &&
+      FieldMetadataMatches(ExpectedField::kTopFirst,
+                           GST_VIDEO_INTERLACE_MODE_MIXED,
+                           static_cast<GstBufferFlags>(
+                               GST_VIDEO_BUFFER_FLAG_INTERLACED |
+                               GST_VIDEO_BUFFER_FLAG_TFF)) &&
+      FieldMetadataMatches(ExpectedField::kTopFirst,
+                           GST_VIDEO_INTERLACE_MODE_MIXED,
+                           static_cast<GstBufferFlags>(
+                               GST_VIDEO_BUFFER_FLAG_INTERLACED |
+                               GST_VIDEO_BUFFER_FLAG_TFF |
+                               GST_VIDEO_BUFFER_FLAG_RFF)) &&
+      FieldMetadataMatches(ExpectedField::kBottomFirst,
+                           GST_VIDEO_INTERLACE_MODE_INTERLEAVED,
+                           static_cast<GstBufferFlags>(
+                               GST_VIDEO_BUFFER_FLAG_INTERLACED)) &&
+      !FieldMetadataMatches(ExpectedField::kProgressive,
+                            GST_VIDEO_INTERLACE_MODE_MIXED,
+                            static_cast<GstBufferFlags>(
+                                GST_VIDEO_BUFFER_FLAG_INTERLACED)) &&
+      !FieldMetadataMatches(ExpectedField::kAny,
+                            GST_VIDEO_INTERLACE_MODE_PROGRESSIVE,
+                            static_cast<GstBufferFlags>(
+                                GST_VIDEO_BUFFER_FLAG_TFF));
   Deadline expired;
   expired.expires = g_get_monotonic_time() - 1;
   ok = ok && DeadlineExpired(&expired) && Remaining(expired) == 0 &&
@@ -175,7 +366,10 @@ static int SelfTest() {
   std::printf("Codec probe hardware-free audit self-test: %s\n", ok ? "passed" : "failed");
   if (message)
     gst_message_unref(message);
+  g_checksum_free(expected_metadata);
+  g_checksum_free(different_metadata);
   g_checksum_free(audit.checksum);
+  g_checksum_free(audit.metadata_checksum);
   gst_object_unref(source);
   gst_object_unref(sink);
   gst_object_unref(bus);
@@ -272,9 +466,15 @@ int main(int argc, char **argv) {
   Audit audit;
   audit.width = parameters->width;
   audit.height = parameters->height;
+  audit.expected_field = mpeg4 ? ExpectedField::kProgressive
+                               : ExpectedFieldOrder(parameters->field_order);
   g_signal_connect(sink, "handoff", G_CALLBACK(CountFrame), &audit);
   GstBus *bus = gst_element_get_bus(pipeline);
-  bool ok = gst_element_set_state(pipeline, GST_STATE_PLAYING) != GST_STATE_CHANGE_FAILURE;
+  bool ok = phase1_progress_open(&audit.progress);
+  if (!ok)
+    std::fprintf(stderr, "Could not open Phase 1 progress record\n");
+  ok = ok && gst_element_set_state(pipeline, GST_STATE_PLAYING) !=
+      GST_STATE_CHANGE_FAILURE;
   AVPacket *packet = av_packet_alloc();
   int read_result = 0;
   unsigned int packets = 0;
@@ -352,15 +552,28 @@ int main(int argc, char **argv) {
   }
   const char *codec_name = mpeg4 ? (mpeg4_simple ? "MPEG-4 Simple" : "MPEG-4 ASP")
                                   : (vc1 ? "VC-1" : "WMV3");
-  std::printf("%s: %u packets; %u/%lu YUY2 frames; EOS=%s; SHA256=%s\n",
+  std::printf("%s: %u packets; %u/%lu YUY2 frames; EOS=%s; "
+              "MetadataSHA256=%s; SHA256=%s\n",
       codec_name, packets, audit.frames, expected, eos ? "yes" : "no",
+      g_checksum_get_string(audit.metadata_checksum),
       g_checksum_get_string(audit.checksum));
+  if (!audit.have_last_good) {
+    std::printf("LastGoodFrameIndex=none; LastGoodPTS=NONE\n");
+  } else if (!GST_CLOCK_TIME_IS_VALID(audit.last_good_pts)) {
+    std::printf("LastGoodFrameIndex=%u; LastGoodPTS=NONE\n",
+                audit.last_good_frame);
+  } else {
+    std::printf("LastGoodFrameIndex=%u; LastGoodPTS=%" G_GUINT64_FORMAT "\n",
+                audit.last_good_frame, static_cast<guint64>(audit.last_good_pts));
+  }
   if (audit.invalid)
-    std::fprintf(stderr, "Invalid dimensions/YUY2 buffers or regressing output timestamps\n");
+    std::fprintf(stderr, "Invalid dimensions/YUY2 buffers, timestamps or field metadata\n");
   ok = ok && eos && !audit.invalid && audit.frames == expected;
   if (message)
     gst_message_unref(message);
   g_checksum_free(audit.checksum);
+  g_checksum_free(audit.metadata_checksum);
+  phase1_progress_close(&audit.progress);
   gst_object_unref(source);
   gst_object_unref(sink);
   gst_object_unref(bus);

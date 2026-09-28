@@ -10,12 +10,16 @@
 #include <math.h>
 #include <string.h>
 #include <sys/resource.h>
+#include "phase1-progress.h"
 
 #define FRAME_COUNT 360U
 #define FPS 30U
 #define PHASE_TIMEOUT (8 * G_USEC_PER_SEC)
 #define MAX_CLOCK_LATE (250 * GST_MSECOND)
 #define MAX_AV_SKEW (100 * GST_MSECOND)
+#define MAX_CONTROLS_TIMEOUT 600U
+#define MAX_SUSTAIN_SECONDS (8U * 60U * 60U)
+#define MAX_SUSTAIN_TIMEOUT (MAX_SUSTAIN_SECONDS + 60U * 60U)
 /* A demuxer pushes both streams from one task. Audio must not fill its
  * preroll queue before a delayed video decoder has received enough input to
  * produce its first picture. Time and byte caps keep this lookahead bounded. */
@@ -62,17 +66,22 @@ typedef struct {
   guint epoch_frames;
   guint64 total_video;
   guint64 total_audio;
+  gboolean have_last_good;
+  guint last_good_identity;
+  GstClockTime last_good_pts;
   guint64 audio_nonzero;
   guint64 phase_audio_start;
   guint64 phase_audio_nonzero_start;
   guint phase_frames;
   GstClockTime first_pts, last_pts;
   GstClockTime first_clock, last_clock;
+  GstClockTime maximum_lateness, phase_maximum_lateness;
   GstClockTime maximum_skew;
   guint av_pairs;
   gboolean phase_passed[PHASE_COUNT];
   GstBuffer *last_buffer;
   GstVideoInfo last_info;
+  Phase1Progress progress;
 } Audit;
 
 typedef struct { Audit *audit; gboolean audio; } StreamData;
@@ -107,6 +116,8 @@ static void init_audit(Audit *audit, gboolean audio) {
   audit->require_double_speed = TRUE;
   audit->first_pts = audit->last_pts = GST_CLOCK_TIME_NONE;
   audit->first_clock = audit->last_clock = GST_CLOCK_TIME_NONE;
+  audit->last_good_pts = GST_CLOCK_TIME_NONE;
+  audit->progress.stream = NULL;
 }
 
 static void begin_phase(Audit *audit, Phase phase) {
@@ -116,6 +127,7 @@ static void begin_phase(Audit *audit, Phase phase) {
   audit->first_clock = audit->last_clock = GST_CLOCK_TIME_NONE;
   audit->phase_audio_start = audit->total_audio;
   audit->phase_audio_nonzero_start = audit->audio_nonzero;
+  audit->phase_maximum_lateness = 0;
   audit->maximum_skew = 0;
   audit->av_pairs = 0;
 }
@@ -152,7 +164,10 @@ static void observe_video(Audit *audit, guint identity, GstClockTime pts,
     fail(audit, "Video segment did not apply the requested playback rate");
     return;
   }
-  if (clock + 5 * GST_MSECOND < running || clock > running + MAX_CLOCK_LATE) {
+  const GstClockTime lateness = clock > running ? clock - running : 0;
+  audit->maximum_lateness = MAX(audit->maximum_lateness, lateness);
+  audit->phase_maximum_lateness = MAX(audit->phase_maximum_lateness, lateness);
+  if (clock + 5 * GST_MSECOND < running || lateness > MAX_CLOCK_LATE) {
     gchar reason[256];
     g_snprintf(reason, sizeof(reason), "Video did not reach the clocked sink within the scheduling bound: "
         "frame=%u PTS=%.6fs running=%.6fs clock=%.6fs lateness=%.3fms",
@@ -199,6 +214,14 @@ static void observe_video(Audit *audit, guint identity, GstClockTime pts,
     audit->maximum_skew = MAX(audit->maximum_skew, skew);
     ++audit->av_pairs;
   }
+  audit->have_last_good = TRUE;
+  audit->last_good_identity = audit->next_identity - 1;
+  audit->last_good_pts = pts;
+  phase1_progress_write(&audit->progress,
+      "probe=gstreamer-controls phase=%s frame-identity=%u barcode=%u pts=%" G_GUINT64_FORMAT
+      " total-video=%" G_GUINT64_FORMAT "\n",
+      phase_names[audit->phase], audit->next_identity - 1, identity,
+      (guint64)pts, audit->total_video);
 }
 
 static gboolean phase_complete(Audit *audit, gboolean final) {
@@ -481,11 +504,24 @@ static Phase next_control_phase(const Audit *audit, Phase phase) {
   return RESTORED;
 }
 
+static gboolean valid_run_limits(guint sustain_seconds, guint timeout_seconds) {
+  if (sustain_seconds == 0) return timeout_seconds <= MAX_CONTROLS_TIMEOUT;
+  return sustain_seconds >= 12 && sustain_seconds <= MAX_SUSTAIN_SECONDS &&
+      sustain_seconds % 12 == 0 && timeout_seconds >= sustain_seconds &&
+      timeout_seconds <= sustain_seconds + 60U * 60U &&
+      timeout_seconds <= MAX_SUSTAIN_TIMEOUT;
+}
+
 static int run(const gchar *filename, const gchar *decoder, const gchar *audio_decoder,
                guint timeout_seconds, guint sustain_seconds, guint expected_width,
                guint expected_height, gboolean skip_double_speed) {
   Audit audit;
   init_audit(&audit, audio_decoder != NULL);
+  if (!phase1_progress_open(&audit.progress)) {
+    g_printerr("Could not open Phase 1 progress record\n");
+    g_mutex_clear(&audit.mutex);
+    return 1;
+  }
   audit.sustain_seconds = sustain_seconds;
   audit.expected_width = expected_width;
   audit.expected_height = expected_height;
@@ -514,6 +550,7 @@ static int run(const gchar *filename, const gchar *decoder, const gchar *audio_d
     g_printerr("Cannot construct controls pipeline: %s\n", error != NULL ? error->message : "unknown");
     g_clear_error(&error);
     if (audit.pipeline != NULL) gst_object_unref(audit.pipeline);
+    phase1_progress_close(&audit.progress);
     g_mutex_clear(&audit.mutex);
     return 1;
   }
@@ -580,8 +617,10 @@ static int run(const gchar *filename, const gchar *decoder, const gchar *audio_d
         const glong maximum_rss = getrusage(RUSAGE_SELF, &usage) == 0 ? usage.ru_maxrss : -1;
         g_mutex_lock(&audit.mutex);
         g_print("Sustain elapsed=%.1fs video=%" G_GUINT64_FORMAT "/%u audio=%" G_GUINT64_FORMAT
-            " A/V max skew=%.3fms maxRSS=%ldKiB\n", (gdouble)(now - started_at) / G_USEC_PER_SEC,
+            " max lateness=%.3fms A/V max skew=%.3fms maxRSS=%ldKiB\n",
+            (gdouble)(now - started_at) / G_USEC_PER_SEC,
             audit.total_video, sustain_seconds * FPS, audit.total_audio,
+            (gdouble)audit.maximum_lateness / GST_MSECOND,
             (gdouble)audit.maximum_skew / GST_MSECOND, maximum_rss);
         g_mutex_unlock(&audit.mutex);
         report_at = now;
@@ -607,10 +646,12 @@ static int run(const gchar *filename, const gchar *decoder, const gchar *audio_d
           paused_identity, (gdouble)(now - paused_at) / G_USEC_PER_SEC);
     } else if (complete && phase != RESTORED) {
       g_mutex_lock(&audit.mutex);
-      g_print("Control %s: %u exact frames, media=%.3fs clock=%.3fs A/V max skew=%.3fms\n",
+      g_print("Control %s: %u exact frames, media=%.3fs clock=%.3fs "
+          "max lateness=%.3fms A/V max skew=%.3fms\n",
           phase_names[phase], audit.phase_frames,
           (gdouble)(audit.last_pts - audit.first_pts) / GST_SECOND,
           (gdouble)(audit.last_clock - audit.first_clock) / GST_SECOND,
+          (gdouble)audit.phase_maximum_lateness / GST_MSECOND,
           (gdouble)audit.maximum_skew / GST_MSECOND);
       g_mutex_unlock(&audit.mutex);
       if (phase == INITIAL) {
@@ -650,10 +691,12 @@ static int run(const gchar *filename, const gchar *decoder, const gchar *audio_d
     struct rusage usage;
     const glong maximum_rss = getrusage(RUSAGE_SELF, &usage) == 0 ? usage.ru_maxrss : -1;
     g_print("Sustain decoder=%s audio=%s: elapsed=%.3fs video=%" G_GUINT64_FORMAT "/%u "
-        "audio=%" G_GUINT64_FORMAT " A/V max skew=%.3fms maxRSS=%ldKiB EOS=%s result=%s\n", decoder,
+        "audio=%" G_GUINT64_FORMAT " max lateness=%.3fms A/V max skew=%.3fms "
+        "maxRSS=%ldKiB EOS=%s result=%s\n", decoder,
         audio_decoder != NULL ? audio_decoder : "disabled",
         (gdouble)(g_get_monotonic_time() - started_at) / G_USEC_PER_SEC,
         audit.total_video, sustain_seconds * FPS, audit.total_audio,
+        (gdouble)audit.maximum_lateness / GST_MSECOND,
         (gdouble)audit.maximum_skew / GST_MSECOND, maximum_rss,
         eos ? "yes" : "no", success ? "PASS" : "FAIL");
     if (audit.audio_required && GST_CLOCK_TIME_IS_VALID(audit.audio.last_pts) &&
@@ -665,11 +708,20 @@ static int run(const gchar *filename, const gchar *decoder, const gchar *audio_d
           (gdouble)audit.last_pts / GST_SECOND, sustain_seconds);
   } else {
     g_print("Controls decoder=%s audio=%s: video=%" G_GUINT64_FORMAT " audio=%" G_GUINT64_FORMAT
-            " final-replay=%u/360 2x=%s EOS=%s result=%s\n", decoder,
+            " final-replay=%u/360 2x=%s max-lateness=%.3fms EOS=%s result=%s\n", decoder,
             audio_decoder != NULL ? audio_decoder : "disabled", audit.total_video,
             audit.total_audio, audit.epoch_frames, skip_double_speed ? "skipped" : "required",
+            (gdouble)audit.maximum_lateness / GST_MSECOND,
             eos ? "yes" : "no", success ? "PASS" : "FAIL");
   }
+  if (!audit.have_last_good)
+    g_print("LastGoodFrameIdentity=none; LastGoodPTS=NONE\n");
+  else if (GST_CLOCK_TIME_IS_VALID(audit.last_good_pts))
+    g_print("LastGoodFrameIdentity=%u; LastGoodPTS=%" G_GUINT64_FORMAT "\n",
+            audit.last_good_identity, (guint64)audit.last_good_pts);
+  else
+    g_print("LastGoodFrameIdentity=%u; LastGoodPTS=NONE\n",
+            audit.last_good_identity);
   g_mutex_unlock(&audit.mutex);
   gst_object_unref(video_pad);
   if (audio_pad != NULL) gst_object_unref(audio_pad);
@@ -678,6 +730,7 @@ static int run(const gchar *filename, const gchar *decoder, const gchar *audio_d
   gst_object_unref(bus);
   gst_object_unref(audit.pipeline);
   gst_clear_buffer(&audit.last_buffer);
+  phase1_progress_close(&audit.progress);
   g_mutex_clear(&audit.mutex);
   return success ? 0 : 1;
 }
@@ -903,9 +956,20 @@ static int self_test(void) {
   test_segment(&audit, 0, 1.0);
   for (guint frame = 0; frame <= 31; ++frame) {
     GstClockTime pts = gst_util_uint64_scale(frame, GST_SECOND, FPS);
-    observe_video(&audit, frame, pts, pts, pts);
+    observe_video(&audit, frame, pts, pts + 40 * GST_MSECOND, pts);
   }
-  REQUIRE(phase_complete(&audit, FALSE) && !audit.failed);
+  REQUIRE(phase_complete(&audit, FALSE) && !audit.failed &&
+      audit.maximum_lateness == 40 * GST_MSECOND &&
+      audit.phase_maximum_lateness == 40 * GST_MSECOND);
+  begin_phase(&audit, RESUMED);
+  REQUIRE(audit.maximum_lateness == 40 * GST_MSECOND &&
+      audit.phase_maximum_lateness == 0);
+  g_mutex_clear(&audit.mutex);
+  init_audit(&audit, FALSE);
+  test_segment(&audit, 0, 1.0);
+  observe_video(&audit, 0, 0, MAX_CLOCK_LATE + GST_MSECOND, 0);
+  REQUIRE(audit.failed && audit.maximum_lateness == MAX_CLOCK_LATE + GST_MSECOND &&
+      audit.phase_maximum_lateness == MAX_CLOCK_LATE + GST_MSECOND);
   g_mutex_clear(&audit.mutex);
   for (guint fault = 0; fault < 5; ++fault) {
     init_audit(&audit, FALSE);
@@ -986,7 +1050,10 @@ static int self_test(void) {
       audit.audio.observed_clock = test == 0 ? pts : 0;
       observe_video(&audit, n, pts, pts, pts);
     }
-    REQUIRE(audit.failed); /* Ahead audio or old/stalled audio cannot pass. */
+    REQUIRE(audit.failed && audit.have_last_good &&
+        audit.last_good_identity == 14 &&
+        audit.last_good_pts == gst_util_uint64_scale(14, GST_SECOND, FPS));
+    /* The frame which detects ahead or old/stalled audio is not last-good. */
     g_mutex_clear(&audit.mutex);
   }
   for (guint missing = 0; missing < 2; ++missing) {
@@ -1057,6 +1124,12 @@ static int self_test(void) {
   audit.require_double_speed = FALSE;
   REQUIRE(next_control_phase(&audit, HALF_SPEED) == RESTORED);
   g_mutex_clear(&audit.mutex);
+  REQUIRE(valid_run_limits(0, MAX_CONTROLS_TIMEOUT));
+  REQUIRE(!valid_run_limits(0, MAX_CONTROLS_TIMEOUT + 1));
+  REQUIRE(valid_run_limits(MAX_SUSTAIN_SECONDS, MAX_SUSTAIN_SECONDS));
+  REQUIRE(valid_run_limits(MAX_SUSTAIN_SECONDS, MAX_SUSTAIN_TIMEOUT));
+  REQUIRE(!valid_run_limits(MAX_SUSTAIN_SECONDS, MAX_SUSTAIN_TIMEOUT + 1));
+  REQUIRE(!valid_run_limits(MAX_SUSTAIN_SECONDS - 1, MAX_SUSTAIN_SECONDS));
   REQUIRE(preroll_queue_test(TRUE));
   REQUIRE(preroll_queue_test(FALSE));
   g_print("GStreamer controls hardware-free self-test: %u checks passed\n", tests);
@@ -1092,21 +1165,21 @@ int main(int argc, char **argv) {
     else if (g_str_equal(argv[arg], "--timeout") && !have_timeout && arg + 1 < argc) {
       gchar *end;
       guint64 parsed = g_ascii_strtoull(argv[++arg], &end, 10);
-      if (*argv[arg] == '\0' || *argv[arg] == '-' || *end != '\0' || parsed < 10 || parsed > 3600) goto usage;
-      timeout = parsed;
+      if (*argv[arg] == '\0' || *argv[arg] == '-' || *end != '\0' ||
+          parsed < 10 || parsed > MAX_SUSTAIN_TIMEOUT) goto usage;
+      timeout = (guint)parsed;
       have_timeout = TRUE;
     } else if (g_str_equal(argv[arg], "--sustain") && sustain_seconds == 0 && arg + 1 < argc) {
       gchar *end;
       guint64 parsed = g_ascii_strtoull(argv[++arg], &end, 10);
       if (*argv[arg] == '\0' || *argv[arg] == '-' || *end != '\0' ||
-          parsed < 12 || parsed > 3540 || parsed % 12 != 0) goto usage;
-      sustain_seconds = parsed;
+          parsed < 12 || parsed > MAX_SUSTAIN_SECONDS || parsed % 12 != 0) goto usage;
+      sustain_seconds = (guint)parsed;
     } else goto usage;
   }
-  if (sustain_seconds == 0 && timeout > 600) goto usage;
   if (sustain_seconds != 0 && skip_double_speed) goto usage;
   if (sustain_seconds != 0 && !have_timeout) timeout = sustain_seconds + 60;
-  if (sustain_seconds != 0 && timeout < sustain_seconds) goto usage;
+  if (!valid_run_limits(sustain_seconds, timeout)) goto usage;
   if (decoder != NULL && (!software ||
       (!g_str_equal(decoder, "avdec_h264") && !g_str_equal(decoder, "openh264dec")))) goto usage;
   if (decoder == NULL) decoder = software ? (has_factory("avdec_h264") ? "avdec_h264" : "openh264dec") : "crystalhddec";
@@ -1126,7 +1199,8 @@ usage:
       "[--expect-geometry WIDTHxHEIGHT] [--skip-2x] [--sustain SECONDS] [--timeout SECONDS]\n"
       "  --expect-geometry: require this exact decoded width and height\n"
       "  --skip-2x: certify the other controls without running the 2x phase\n"
-      "  --sustain: continuous 12-second barcode repetitions, multiple of12 within12..3540; no controls\n"
-      "  --timeout: controls10..600 (default90), sustain duration..3600 (default duration+60)\n", argv[0]);
+      "  --sustain: continuous 12-second barcode repetitions, multiple of12 within12..28800; no controls\n"
+      "  --timeout: controls10..600 (default90), sustain duration..duration+3600 "
+      "(default duration+60)\n", argv[0]);
   return 2;
 }
