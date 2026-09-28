@@ -145,6 +145,15 @@ class CrystalHDMpeg2Replay {
     }
     return Output::Unknown;  // Never satisfies any accepted pending picture.
   }
+  bool IsOutstanding(uint64_t token) const {
+    return token != 0 && outstanding_.count(token) != 0;
+  }
+  uint64_t OldestOutstanding() const {
+    for (const AccessUnit &unit : units_)
+      if (outstanding_.count(unit.timestamp) != 0)
+        return unit.timestamp;
+    return 0;
+  }
   const AccessUnit *Find(uint64_t token) const {
     if (!token) return nullptr;
     for (const AccessUnit &unit : units_) if (unit.timestamp == token) return &unit;

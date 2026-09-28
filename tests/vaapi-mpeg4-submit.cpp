@@ -20,6 +20,9 @@ struct InputRecord {
 struct MockOutput {
   uint64_t timestamp;
   unsigned width, height;
+  uint32_t picture_number;
+  uint32_t picture_flags;
+  uint32_t pout_flags;
   bool eos;
   std::vector<uint8_t> pixels;
 };
@@ -36,12 +39,15 @@ struct DecoderMock {
   std::vector<InputRecord> inputs;
   std::deque<MockOutput> outputs;
 
-  void Queue(uint64_t timestamp, unsigned width, unsigned height) {
-    outputs.push_back({timestamp, width, height, false,
+  void Queue(uint64_t timestamp, unsigned width, unsigned height,
+             uint32_t picture_number = 0, uint32_t picture_flags = 0,
+             uint32_t pout_flags = BC_POUT_FLAGS_PIB_VALID) {
+    outputs.push_back({timestamp, width, height, picture_number,
+                       picture_flags, pout_flags, false,
                        std::vector<uint8_t>(
                            static_cast<size_t>(width) * height * 2, 128)});
   }
-  void EosMarker() { outputs.push_back({0, 0, 0, true, {}}); }
+  void EosMarker() { outputs.push_back({0, 0, 0, 0, 0, 0, true, {}}); }
 };
 
 DecoderMock *active = nullptr;
@@ -155,11 +161,13 @@ extern "C" BC_STATUS DtsProcOutputNoCopy(HANDLE device, uint32_t,
   if (active->outputs.empty()) return BC_STS_NO_DATA;
   auto &next = active->outputs.front();
   *output = {};
-  output->PoutFlags = BC_POUT_FLAGS_PIB_VALID;
+  output->PoutFlags = next.pout_flags;
   output->PicInfo.timeStamp = next.timestamp;
   output->PicInfo.width = next.width;
   output->PicInfo.height = next.height;
-  output->PicInfo.flags = next.eos ? VDEC_FLAG_EOS : 0;
+  output->PicInfo.picture_number = next.picture_number;
+  output->PicInfo.flags = next.picture_flags |
+      (next.eos ? VDEC_FLAG_EOS : 0);
   output->Ybuff = next.pixels.data();
   output->YBuffDoneSz = next.pixels.size() / 4;
   active->leased = true;
@@ -558,6 +566,160 @@ void SimpleZeroTrdAnchors() {
           "zero-TRD Simple anchors stay in one monotonic decoder epoch");
 }
 
+void SimpleOutputIdentity() {
+  {
+    Fixture fixture(VAProfileMPEG4Simple);
+    fixture.I(1);
+    fixture.P(2, 1);
+    fixture.P(3, 2);
+    fixture.mock.Queue(kTimestampStep, 16, 16, 40);
+    fixture.mock.Queue(0, 16, 16, 41);
+    fixture.mock.Queue(3 * kTimestampStep, 16, 16, 42);
+    fixture.Receive();
+    Require(fixture.decode->pending.empty() &&
+                fixture.decode->mpeg4_replay.outstanding() == 0 &&
+                fixture.driver.surfaces.at(1)->ready &&
+                fixture.driver.surfaces.at(2)->ready &&
+                fixture.driver.surfaces.at(3)->ready &&
+                fixture.driver.surfaces.at(2)->frame_timestamp ==
+                    2 * kTimestampStep &&
+                fixture.decode->have_mpeg4_simple_picture_number &&
+                fixture.decode->mpeg4_simple_picture_number == 42,
+            "consecutive Simple ordinal recovers only the oldest token");
+  }
+
+  {
+    Fixture fixture(VAProfileMPEG4Simple);
+    fixture.I(1);
+    fixture.P(2, 1);
+    fixture.mock.Queue(2 * kTimestampStep, 16, 16, 2);
+    Require(ReceiveAvailable(&fixture.driver, fixture.decode.get()) ==
+                    VA_STATUS_ERROR_DECODING_ERROR &&
+                fixture.decode->mpeg4_replay.failed() &&
+                fixture.decode->mpeg4_replay.outstanding() == 2 &&
+                fixture.decode->pending.size() == 2,
+            "nonzero Simple token cannot skip the oldest submitted picture");
+  }
+
+  {
+    Fixture fixture(VAProfileMPEG4Simple);
+    fixture.I(1);
+    fixture.mock.Queue(0, 16, 16, 1);
+    fixture.Receive();
+    Require(fixture.decode->pending.size() == 1 &&
+                !fixture.decode->have_mpeg4_simple_picture_number,
+            "zero token without an ordinal baseline is ignored");
+    fixture.mock.Queue(kTimestampStep, 16, 16, 1);
+    fixture.Receive();
+    Require(fixture.driver.surfaces.at(1)->ready &&
+                fixture.decode->pending.empty(),
+            "exact token remains usable after an unprovable zero token");
+  }
+
+  {
+    Fixture fixture(VAProfileMPEG4Simple);
+    fixture.I(1);
+    fixture.P(2, 1);
+    fixture.mock.Queue(kTimestampStep, 16, 16, 10);
+    fixture.Receive();
+    fixture.mock.Queue(0, 16, 16, 10);
+    fixture.mock.Queue(0, 16, 16, 12);
+    fixture.mock.Queue(0, 16, 16, 11, 0, 0);
+    fixture.mock.Queue(0, 16, 16, 11, VDEC_FLAG_INTERLACED_SRC);
+    fixture.Receive();
+    Require(fixture.decode->pending.size() == 1 &&
+                fixture.decode->mpeg4_replay.outstanding() == 1 &&
+                fixture.decode->mpeg4_simple_picture_number == 10,
+            "repeated, skipped, invalid-PIB and interlaced zero tokens stay unmatched");
+    fixture.mock.Queue(2 * kTimestampStep, 16, 16, 11);
+    fixture.Receive();
+    Require(fixture.driver.surfaces.at(2)->ready &&
+                fixture.decode->pending.empty(),
+            "ignored zero-token noise cannot retire the pending picture");
+  }
+
+  {
+    Fixture fixture(VAProfileMPEG4Simple);
+    fixture.I(1);
+    fixture.P(2, 1);
+    fixture.P(3, 2);
+    fixture.mock.Queue(kTimestampStep, 16, 16, 7);
+    fixture.mock.Queue(2 * kTimestampStep, 16, 16, 0);
+    fixture.mock.Queue(0, 16, 16, 8);
+    fixture.Receive();
+    Require(!fixture.decode->have_mpeg4_simple_picture_number &&
+                fixture.decode->pending.size() == 1,
+            "an expected picture with ordinal zero breaks the recovery baseline");
+    fixture.mock.Queue(3 * kTimestampStep, 16, 16, 8);
+    fixture.Receive();
+    Require(fixture.driver.surfaces.at(3)->ready,
+            "exact token re-establishes identity after a broken baseline");
+  }
+
+  {
+    Fixture fixture(VAProfileMPEG4Simple);
+    fixture.I(1);
+    fixture.P(2, 1);
+    fixture.mock.Queue(kTimestampStep, 16, 16,
+                       std::numeric_limits<uint32_t>::max());
+    fixture.mock.Queue(0, 16, 16, 1);
+    fixture.Receive();
+    Require(fixture.decode->pending.size() == 1 &&
+                fixture.decode->mpeg4_replay.outstanding() == 1,
+            "Simple ordinal rollover is never inferred from a zero token");
+    fixture.mock.Queue(2 * kTimestampStep, 16, 16, 1);
+    fixture.Receive();
+  }
+
+  {
+    Fixture fixture(VAProfileMPEG4AdvancedSimple);
+    fixture.I(1);
+    fixture.P(2, 1);
+    fixture.mock.Queue(0, 16, 16, 1);
+    fixture.mock.Queue(2 * kTimestampStep, 16, 16, 2);
+    fixture.mock.Queue(kTimestampStep, 16, 16, 1);
+    fixture.Receive();
+    Require(fixture.decode->pending.empty() &&
+                fixture.driver.surfaces.at(1)->ready &&
+                fixture.driver.surfaces.at(2)->ready &&
+                !fixture.decode->have_mpeg4_simple_picture_number,
+            "Advanced Simple keeps its reordered output behavior and no zero recovery");
+  }
+}
+
+void SimpleRecoveryAcrossReplay() {
+  Fixture fixture(VAProfileMPEG4Simple);
+  fixture.I(1);
+  fixture.P(2, 1);
+  Require(SealDecodeBatch(&fixture.driver, fixture.decode.get()) ==
+                  VA_STATUS_SUCCESS,
+          "Simple replay fixture seals its first batch");
+  fixture.P(3, 2);
+  fixture.mock.Queue(kTimestampStep, 16, 16, 100);
+  fixture.mock.Queue(2 * kTimestampStep, 16, 16, 101);
+  fixture.mock.EosMarker();
+  fixture.Receive();
+  Require(fixture.decode->mpeg4_replay.NeedsRestart() &&
+              fixture.decode->have_mpeg4_simple_picture_number,
+          "first Simple hardware session establishes an ordinal baseline");
+  Require(PumpDecodeInput(&fixture.driver, fixture.decode.get()) ==
+                  VA_STATUS_SUCCESS &&
+              fixture.mock.opens == 2 && fixture.mock.closes == 1 &&
+              !fixture.decode->have_mpeg4_simple_picture_number,
+          "hardware reopen clears the old Simple ordinal baseline");
+  fixture.mock.Queue(kTimestampStep, 16, 16, 200);
+  fixture.mock.Queue(2 * kTimestampStep, 16, 16, 201);
+  fixture.mock.Queue(0, 16, 16, 202);
+  fixture.Receive();
+  Require(fixture.driver.surfaces.at(3)->ready &&
+              fixture.driver.surfaces.at(3)->frame_timestamp ==
+                  3 * kTimestampStep &&
+              fixture.decode->pending.empty() &&
+              fixture.decode->mpeg4_replay.outstanding() == 0 &&
+              fixture.decode->mpeg4_simple_picture_number == 202,
+          "expected replay duplicates rebuild the baseline for a later zero token");
+}
+
 void BackwardTimingDiscontinuity() {
   for (VAProfile profile : {VAProfileMPEG4Simple,
                             VAProfileMPEG4AdvancedSimple}) {
@@ -606,14 +768,86 @@ void UnsupportedToolsAndConfiguration() {
     fixture.I(1);
   }
 
-  for (VAProfile profile : {VAProfileMPEG4Simple,
-                            VAProfileMPEG4AdvancedSimple}) {
-    Fixture fixture(profile);
+  {
+    const std::vector<uint8_t> i_bytes =
+        {0x1f, 0x00, 0x00, 0xa8, 0x04, 0x7f, 0x55, 0xa5};
+    const std::vector<uint8_t> p_bytes =
+        {0x01, 0x00, 0x00, 0xa8, 0x04, 0x7f, 0x55, 0xa5};
+    Fixture fixture(VAProfileMPEG4Simple, 640, 360);
+    auto picture = Picture(640, 360);
+    picture.vol_fields.bits.resync_marker_disable = 0;
+    auto slice = Slice(0, i_bytes.size(), 3);
+    Require(fixture.SubmitStatus(1, picture, slice, i_bytes) ==
+                    VA_STATUS_SUCCESS &&
+                fixture.mock.inputs.size() == 1 &&
+                fixture.decode->mpeg4_timing.have_newest,
+            "HEC-free resync-enabled Simple input is submitted");
+    const auto first_i = fixture.mock.inputs[0];
+    Require(SealDecodeBatch(&fixture.driver, fixture.decode.get()) ==
+                    VA_STATUS_SUCCESS,
+            "HEC-free Simple batch seals for replay");
+
+    auto p = Picture(640, 360, 1, 1, VA_INVALID_SURFACE, 0, 1);
+    p.vol_fields.bits.resync_marker_disable = 0;
+    slice = Slice(0, p_bytes.size(), 7);
+    Require(fixture.SubmitStatus(2, p, slice, p_bytes) == VA_STATUS_SUCCESS &&
+                fixture.mock.inputs.size() == 1,
+            "post-seal HEC-free Simple P waits behind the first batch");
+    const auto *queued =
+        fixture.decode->mpeg4_replay.Find(2 * kTimestampStep);
+    Require(queued != nullptr,
+            "queued HEC-free Simple P owns an immutable access unit");
+    const auto queued_p = queued->bytes;
+    fixture.mock.Queue(kTimestampStep, 640, 360, 1);
+    fixture.mock.EosMarker();
+    fixture.Receive();
+    Require(PumpDecodeInput(&fixture.driver, fixture.decode.get()) ==
+                    VA_STATUS_SUCCESS &&
+                fixture.mock.inputs.size() == 3 &&
+                fixture.mock.inputs[1].timestamp == kTimestampStep &&
+                fixture.mock.inputs[1].bytes == first_i.bytes &&
+                fixture.mock.inputs[2].timestamp == 2 * kTimestampStep &&
+                fixture.mock.inputs[2].bytes == queued_p,
+            "HEC-free packet headers remain exact across close/reopen replay");
+  }
+
+  {
+    const std::vector<std::vector<uint8_t>> rejected = {
+      {0x1f, 0x00, 0x00, 0xa8, 0x04, 0xff, 0x55, 0xa5},
+      {0x1f, 0x00, 0x00, 0xa8, 0x04},
+      {0x1f, 0x00, 0x00, 0x80, 0x04, 0x7f, 0x55, 0xa5},
+      {0x1f, 0x00, 0x00, 0xf3, 0x04, 0x7f, 0x55, 0xa5},
+      {0x1f, 0x00, 0x00, 0xa8, 0x00, 0x7f, 0x55, 0xa5}
+    };
+    const std::vector<uint8_t> valid =
+        {0x1f, 0x00, 0x00, 0xa8, 0x04, 0x7f, 0x55, 0xa5};
+    for (const auto &bytes : rejected) {
+      Fixture fixture(VAProfileMPEG4Simple, 640, 360);
+      auto picture = Picture(640, 360);
+      picture.vol_fields.bits.resync_marker_disable = 0;
+      auto slice = Slice(0, bytes.size(), 3);
+      Require(fixture.SubmitStatus(1, picture, slice, bytes) !=
+                      VA_STATUS_SUCCESS &&
+                  fixture.mock.inputs.empty() && fixture.mock.opens == 0 &&
+                  fixture.decode->next_timestamp == kTimestampStep &&
+                  !fixture.decode->mpeg4_timing.have_newest &&
+                  fixture.decode->mpeg4_replay.cached_pictures() == 0,
+              "unsafe Simple packet header commits no hardware or replay state");
+      slice = Slice(0, valid.size(), 3);
+      Require(fixture.SubmitStatus(1, picture, slice, valid) ==
+                      VA_STATUS_SUCCESS &&
+                  fixture.mock.inputs.size() == 1,
+              "fresh valid Simple packet recovers after rejected header");
+    }
+  }
+
+  {
+    Fixture fixture(VAProfileMPEG4AdvancedSimple);
     auto picture = Picture();
     picture.vol_fields.bits.resync_marker_disable = 0;
     Require(fixture.SubmitStatus(1, picture) != VA_STATUS_SUCCESS &&
                 fixture.mock.inputs.empty() && fixture.mock.opens == 0,
-            "resync-enabled MPEG-4 fails before hardware submission");
+            "resync-enabled Advanced Simple fails before hardware submission");
   }
 
   {
@@ -1042,12 +1276,13 @@ void QueuedDiscontinuityTargetTeardown() {
 }
 
 void CompletedSurfaceSurvivesTargetTeardown() {
-  Fixture fixture;
+  Fixture fixture(VAProfileMPEG4Simple);
   fixture.I(1);
-  fixture.mock.Queue(kTimestampStep, 16, 16);
+  fixture.mock.Queue(kTimestampStep, 16, 16, 5);
   fixture.Receive();
   Require(fixture.driver.surfaces.at(1)->ready &&
-              !fixture.driver.surfaces.at(1)->failed,
+              !fixture.driver.surfaces.at(1)->failed &&
+              fixture.decode->have_mpeg4_simple_picture_number,
           "first target completes before a later teardown");
 
   fixture.mock.capacity = false;
@@ -1057,7 +1292,8 @@ void CompletedSurfaceSurvivesTargetTeardown() {
               fixture.driver.surfaces.at(1)->ready &&
               !fixture.driver.surfaces.at(1)->failed &&
               fixture.driver.surfaces.at(1)->frame_timestamp ==
-                  kTimestampStep,
+                  kTimestampStep &&
+              !fixture.decode->have_mpeg4_simple_picture_number,
           "teardown reset preserves an already completed held target");
   VASurfaceStatus surface_status = VASurfaceRendering;
   Require(QuerySurfaceStatus(&fixture.context, 1, &surface_status) ==
@@ -1237,6 +1473,8 @@ int main() {
       {"I/P/B timing and open-GOP root propagation",
        ReferencesTimingAndOpenGop},
       {"Simple zero-TRD anchors", SimpleZeroTrdAnchors},
+      {"Simple output identity and zero-token recovery", SimpleOutputIdentity},
+      {"Simple recovery across replay reopen", SimpleRecoveryAcrossReplay},
       {"unsupported MPEG-4 tools and stable configuration",
        UnsupportedToolsAndConfiguration},
       {"malformed slices and IQ rejection", MalformedSlicesAndIq},

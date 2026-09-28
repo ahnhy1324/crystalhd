@@ -254,6 +254,53 @@ static void InvalidTransitionsAndOutput() {
   { Replay r; CHECK(!r.InputSent()); }
 }
 
+static void OutstandingSubmissionOrder() {
+  {
+    Replay r;
+    CHECK(Add(r, 1, Kind::I));
+    CHECK(Add(r, 2, Kind::P, 1));
+    CHECK(Add(r, 3, Kind::I));
+    CHECK(r.OldestOutstanding() == 0 && !r.IsOutstanding(1));
+    REQUIRE(r.NextInput() && r.NextInput()->timestamp == 1);
+    CHECK(r.InputSent());
+    CHECK(r.IsOutstanding(1) && r.OldestOutstanding() == 1);
+    REQUIRE(r.NextInput() && r.NextInput()->timestamp == 2);
+    CHECK(r.InputSent());
+    CHECK(r.IsOutstanding(2) && r.OldestOutstanding() == 1);
+    CHECK(r.Observe(1) == Replay::Output::New);
+    CHECK(!r.IsOutstanding(1) && r.OldestOutstanding() == 2);
+    REQUIRE(r.NextInput() && r.NextInput()->timestamp == 3);
+    CHECK(r.InputSent());
+    CHECK(r.Observe(3) == Replay::Output::New);
+    CHECK(r.OldestOutstanding() == 2);
+    CHECK(r.Observe(2) == Replay::Output::New);
+    CHECK(r.OldestOutstanding() == 0);
+  }
+
+  {
+    Replay r;
+    CHECK(Add(r, 1, Kind::I));
+    CHECK(Add(r, 2, Kind::P, 1));
+    const auto first = Send(r);
+    CHECK(r.Seal());
+    CHECK(Add(r, 3, Kind::P, 2));
+    for (uint64_t token : first)
+      CHECK(r.Observe(token) == Replay::Output::New);
+    CHECK(r.EndOfSequence() && r.Restarted());
+    REQUIRE(r.NextInput() && r.NextInput()->timestamp == 1);
+    CHECK(r.InputSent());
+    CHECK(r.IsOutstanding(1) && r.OldestOutstanding() == 1);
+    REQUIRE(r.NextInput() && r.NextInput()->timestamp == 2);
+    CHECK(r.InputSent());
+    CHECK(r.OldestOutstanding() == 1);
+    REQUIRE(r.NextInput() && r.NextInput()->timestamp == 3);
+    CHECK(r.InputSent());
+    CHECK(r.OldestOutstanding() == 1);
+    CHECK(r.Observe(1) == Replay::Output::Duplicate);
+    CHECK(r.OldestOutstanding() == 2);
+  }
+}
+
 static void CacheBounds() {
   Replay::Limits l;
   l.picture_bytes = 15; { Replay r(l); CHECK(!Add(r, 1, Kind::I)); }
@@ -408,6 +455,7 @@ int main() {
     {"immutable owned original bytes", ImmutableOwnedBytes},
     {"invalid/dummy/stale references", InvalidReferences},
     {"output and lifecycle rejection", InvalidTransitionsAndOutput},
+    {"outstanding tokens follow submission order", OutstandingSubmissionOrder},
     {"cache and AU bounds", CacheBounds},
     {"completed B cannot reset replay budget", ReplayBoundNotResetByBRemoval},
     {"true root advancement resets work", RootAdvanceResetsWork},
