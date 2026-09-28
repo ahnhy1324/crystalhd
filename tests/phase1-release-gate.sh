@@ -812,14 +812,17 @@ monitor_process()
         watchdog_is_live "$watchdog" || break
         sample=$((sample + 1))
         if ! sample_process_tree "$watchdog" "$stage" "$sample"; then
-            # A live watchdog without an auditable process-tree sample makes
-            # the resource record incomplete.  Stop the stage so its success
-            # cannot hide a failed sampler.
-            if watchdog_is_live "$watchdog"; then
-                kill -TERM "$watchdog" 2>/dev/null || true
-                return 1
+            # A child may be between mm/fd teardown and zombie publication.
+            # Retry the same sample once with a fresh process-tree snapshot.
+            sleep 0.1
+            watchdog_is_live "$watchdog" || break
+            if ! sample_process_tree "$watchdog" "$stage" "$sample"; then
+                if watchdog_is_live "$watchdog"; then
+                    kill -TERM "$watchdog" 2>/dev/null || true
+                    return 1
+                fi
+                break
             fi
-            break
         fi
     done
 }
@@ -2636,6 +2639,63 @@ EOF
         error "self-test emitted a partial or zero-process resource row"
         return 1
     }
+
+    sleep 10 &
+    retry_pid=$!
+    mkdir -p "$PROC_ROOT/$retry_pid/fd"
+    printf 'Name:\ttest\nState:\tR (running)\nThreads:\t1\n' \
+        > "$PROC_ROOT/$retry_pid/status"
+    retry_status=0
+    (
+        sleep_calls=0
+        sleep()
+        {
+            sleep_calls=$((sleep_calls + 1))
+            case $sleep_calls in
+                2)
+                    printf 'Name:\ttest\nState:\tS (sleeping)\nVmRSS:\t100 kB\nThreads:\t1\n' \
+                        > "$PROC_ROOT/$retry_pid/status"
+                    ;;
+                3)
+                    printf 'Name:\ttest\nState:\tZ (zombie)\nVmRSS:\t100 kB\nThreads:\t1\n' \
+                        > "$PROC_ROOT/$retry_pid/status"
+                    ;;
+            esac
+        }
+        monitor_process "$retry_pid" transient
+    ) || retry_status=$?
+    kill -TERM "$retry_pid" 2>/dev/null || true
+    wait "$retry_pid" 2>/dev/null || true
+    if [ "$retry_status" -ne 0 ] || \
+        [ "$(awk -F '\t' '
+            $1 == "transient" {
+                count++
+                if ($2 == 2 && $4 == 100 && $5 == 0 && $6 == 1 && $7 == 1)
+                    valid++
+            }
+            END { printf "%d:%d\n", count + 0, valid + 0 }
+        ' "$results/resources.tsv")" != 1:1 ]; then
+        error "self-test did not recover one transient incomplete process sample"
+        return 1
+    fi
+
+    sleep 10 &
+    retry_pid=$!
+    mkdir -p "$PROC_ROOT/$retry_pid/fd"
+    printf 'Name:\ttest\nState:\tR (running)\nThreads:\t1\n' \
+        > "$PROC_ROOT/$retry_pid/status"
+    retry_status=0
+    (
+        sleep() { :; }
+        monitor_process "$retry_pid" persistent
+    ) || retry_status=$?
+    wait "$retry_pid" 2>/dev/null || true
+    if [ "$retry_status" -eq 0 ] || \
+        [ "$(awk -F '\t' '$1 == "persistent" { count++ } END { print count + 0 }' \
+            "$results/resources.tsv")" -ne 0 ]; then
+        error "self-test accepted a persistent incomplete process sample"
+        return 1
+    fi
     PROC_ROOT=$saved_proc_root
     tests=$((tests + 1))
 
