@@ -140,6 +140,7 @@ static uint32_t ReadLink(struct crystalhd_adp *adp, uint32_t offset);
 static void WriteLink(struct crystalhd_adp *adp, uint32_t offset, uint32_t value);
 static BC_STATUS ReadMemory(struct crystalhd_hw *hw, uint32_t offset, uint32_t words, uint32_t *buffer);
 static BC_STATUS WriteMemory(struct crystalhd_hw *hw, uint32_t offset, uint32_t words, uint32_t *buffer);
+static void CheckPendingAdmission(void);
 static void Check(bool ok, const char *why)
 {
     checks++;
@@ -217,6 +218,7 @@ static void ConfigureHardware(struct crystalhd_hw *hw)
 }
 static void *kmalloc(size_t size, int flags)
 {
+    CheckPendingAdmission();
     Check(size == sizeof(hardware) && flags == GFP_KERNEL && !hardware_allocated,
           "user open allocates one fresh hardware context");
     hardware_alloc_attempts++;
@@ -262,8 +264,13 @@ static void enable_irq(int irq)
 }
 static BC_STATUS crystalhd_hw_open(struct crystalhd_hw *hw, struct crystalhd_adp *adp)
 {
+    static const struct crystalhd_hw zero_hardware;
+
+    CheckPendingAdmission();
     Check(hw == &hardware && adp == &adapter,
           "user open initializes the allocated hardware context");
+    Check(!memcmp(hw, &zero_hardware, sizeof(*hw)),
+          "hardware opening receives zeroed allocation before callback initialization");
     if (open_pending)
         Check(!context.user[0].in_use && !adapter.cfg_users &&
               context.pwr_state_change == BC_HW_SUSPEND,
@@ -1077,42 +1084,159 @@ static void ResourceOwnership(void)
               "owner RELEASE and file close cannot retire resources twice");
     }
 }
+static struct file OpenPendingAfterOwnerClose(uint32_t mode)
+{
+    struct file owner, pending;
+
+    Reset(BC_LINK_INVALID, false);
+    owner = OpenResourceFile(mode);
+    pending = OpenFile(DTS_MODE_INV);
+    hardware.dma_fault = hardware.fwcmd_poisoned = true;
+    CloseFile(&owner);
+    Check(!context.session_owner && !context.hw_ctx && context.user[1].in_use &&
+          adapter.cfg_users == 1 && hardware_opens == 1 && hardware_closes == 1,
+          "owner close leaves a pending unconfigured handle without hardware");
+    return pending;
+}
 static void PendingOpenAfterOwnerClose(void)
 {
     unsigned mode;
 
     for (mode = 0; mode < sizeof(resource_modes) / sizeof(resource_modes[0]); mode++) {
-        struct file owner, pending, reopened;
+        struct file pending, reopened;
         struct crystalhd_user *pending_user;
         crystalhd_ioctl_data data = {0};
 
-        Reset(BC_LINK_INVALID, false);
-        owner = OpenResourceFile(resource_modes[mode]);
-        pending = OpenFile(DTS_MODE_INV);
+        pending = OpenPendingAfterOwnerClose(resource_modes[mode]);
         pending_user = ((struct crystalhd_file *)pending.private_data)->user;
-        CloseFile(&owner);
-        Check(!context.session_owner && !context.hw_ctx && pending_user->in_use &&
-              adapter.cfg_users == 1 && hardware_opens == 1 && hardware_closes == 1,
-              "owner close leaves a pending unconfigured handle without hardware");
         data.u_id = pending_user->uid;
-        data.udata.u.NotifyMode.Mode = DTS_PLAYBACK_MODE;
-        Check(bc_cproc_notify_mode(&context, &data) == BC_STS_INV_ARG,
-              "pending handle retains the existing no-hardware setup error");
-        Check(!context.session_owner && !context.hw_ctx &&
-              pending_user->mode == (uint32_t)DTS_MODE_INV && adapter.cfg_users == 1 &&
-              pools == 4 && rings == 2 && !elem_live && !dio_live && !rings_live &&
-              elem_deletes == 2 && dio_destroys == 2 &&
-              hardware_opens == 1 && hardware_allocations == 1,
-              "failed pending acquisition rolls back pools without reopening hardware");
-        reopened = OpenResourceFile(DTS_DIAG_MODE);
-        Check(context.session_owner == &context.user[0] && hardware_opens == 2,
-              "a new open reuses the retired slot with fresh hardware ownership");
+        data.udata.u.NotifyMode.Mode = resource_modes[mode];
+        Check(bc_cproc_notify_mode(&context, &data) == BC_STS_SUCCESS,
+              "pending handle acquires fresh hardware without reopening its file");
+        Check(context.session_owner == pending_user && context.hw_ctx == &hardware &&
+              pending_user->mode == resource_modes[mode] && adapter.cfg_users == 1 &&
+              pools == 4 && rings == 2 && elem_live && dio_live && rings_live &&
+              elem_deletes == 1 && dio_destroys == 1 &&
+              hardware_opens == 2 && hardware_allocations == 2 && !irq_depth &&
+              irq_disables == 3 && irq_enables == 3 &&
+              !hardware.dma_fault && !hardware.fwcmd_poisoned,
+              "pending acquisition recreates one complete session with unchanged file accounting");
+        reopened = OpenFile(DTS_MONITOR_MODE);
+        Check(context.session_owner == pending_user && hardware_opens == 2,
+              "a new monitor reuses the old owner's slot without reopening hardware");
         CloseFile(&pending);
-        Check(context.session_owner == &context.user[0] && context.hw_ctx == &hardware &&
-              adapter.cfg_users == 1 && hardware_closes == 1,
-              "closing the pending non-owner preserves the newly acquired session");
+        Check(!context.session_owner && !context.hw_ctx &&
+              adapter.cfg_users == 1 && hardware_closes == 2,
+              "closing the new owner retires its fresh hardware while the monitor remains");
         CloseFile(&reopened);
         CheckNoSession();
+    }
+}
+static void PendingAcquisitionFailures(void)
+{
+    for (unsigned mode = 0; mode < sizeof(resource_modes) / sizeof(resource_modes[0]); mode++) {
+        for (unsigned which = 0; which < 5; which++) {
+            for (unsigned retry = 0; retry < 2; retry++) {
+                struct file pending = OpenPendingAfterOwnerClose(resource_modes[mode]);
+                struct crystalhd_user *user = ((struct crystalhd_file *)pending.private_data)->user;
+                crystalhd_ioctl_data data = { .u_id = user->uid };
+                BC_STATUS expected = which == 1 ? BC_STS_IO_ERROR :
+                    which == 4 ? BC_STS_INSUFF_RES : BC_STS_ERROR;
+
+                admission_pending = true;
+                admission_uid = user->uid;
+                admission_state = context.state;
+                admission_wait = context.cin_wait_exit;
+                hardware_alloc_fail = which == 0;
+                if (which == 1) hardware_open_status = BC_STS_IO_ERROR;
+                if (which == 2) elem_error = -1;
+                if (which == 3) dio_error = -1;
+                if (which == 4) ring_status = BC_STS_INSUFF_RES;
+                data.udata.u.NotifyMode.Mode = resource_modes[mode];
+                Check(bc_cproc_notify_mode(&context, &data) == expected,
+                      "pending acquisition propagates allocation, hardware-open and setup failures");
+                Check(!context.session_owner && user->mode == (uint32_t)DTS_MODE_INV &&
+                      user->in_use && adapter.cfg_users == 1 &&
+                      context.state == BC_LINK_INVALID && context.cin_wait_exit == 1 &&
+                      context.pwr_state_change == BC_HW_RUNNING &&
+                      !elem_live && !dio_live && !rings_live &&
+                      !irq_depth && irq_disables == 3 && irq_enables == 3,
+                      "failed pending acquisition preserves its handle and rolls back session ownership");
+                Check((context.hw_ctx != NULL) == (which >= 2) &&
+                      hardware_allocated == (which >= 2) && hardware_alloc_attempts == 2 &&
+                      hardware_allocations == 1 + (which != 0) &&
+                      hardware_frees == 1 + (which == 1) &&
+                      hardware_opens == 1 + (which != 0) && hardware_closes == 1,
+                      "failed hardware opening is freed; successful hardware remains available for setup retry");
+                if (which < 2)
+                    Check(pools == 2 && rings == 1,
+                          "hardware creation failure does not enter pool or ring allocation");
+                if (retry) {
+                    hardware_alloc_fail = false;
+                    hardware_open_status = ring_status = BC_STS_SUCCESS;
+                    elem_error = dio_error = 0;
+                    Check(bc_cproc_notify_mode(&context, &data) == BC_STS_SUCCESS,
+                          "the same pending handle can retry every acquisition failure");
+                    Check(context.session_owner == user && user->mode == resource_modes[mode] &&
+                          user->in_use && adapter.cfg_users == 1 && context.hw_ctx == &hardware &&
+                          elem_live && dio_live && rings_live && !context.cin_wait_exit &&
+                          hardware_alloc_attempts == (which < 2 ? 3U : 2U) &&
+                          hardware_opens == (which == 1 ? 3U : 2U) &&
+                          !hardware.dma_fault && !hardware.fwcmd_poisoned &&
+                          !irq_depth && irq_disables == irq_enables,
+                          "retry reuses successfully opened hardware and publishes exactly one owner");
+                }
+                admission_pending = false;
+                CloseFile(&pending);
+                CheckNoSession();
+                Check(hardware_frees == hardware_allocations &&
+                      hardware_closes == (retry || which >= 2 ? 2U : 1U) &&
+                      !irq_depth && irq_disables == irq_enables,
+                      "close after failed or retried acquisition releases all hardware and balances IRQs");
+            }
+        }
+    }
+}
+static void AdmissionWithoutReopeningHardware(void)
+{
+    const uint32_t monitor_modes[] = { DTS_MONITOR_MODE, 0x100 | DTS_MONITOR_MODE,
+        0x81000000 | DTS_MONITOR_MODE };
+
+    for (unsigned n = 0; n < sizeof(monitor_modes) / sizeof(monitor_modes[0]); n++) {
+        struct file pending = OpenPendingAfterOwnerClose(DTS_PLAYBACK_MODE);
+        struct crystalhd_user *user = ((struct crystalhd_file *)pending.private_data)->user;
+        crystalhd_ioctl_data data = { .u_id = user->uid };
+
+        data.udata.u.NotifyMode.Mode = monitor_modes[n];
+        Check(bc_cproc_notify_mode(&context, &data) == BC_STS_SUCCESS &&
+              user->mode == monitor_modes[n] && !context.hw_ctx && !context.session_owner,
+              "pending monitor admission does not recreate retired decoder hardware");
+        data.udata.u.NotifyMode.Mode = DTS_PLAYBACK_MODE;
+        Check(bc_cproc_notify_mode(&context, &data) == BC_STS_ERR_USAGE &&
+              hardware_opens == 1 && hardware_alloc_attempts == 1 &&
+              pools == 2 && rings == 1 && irq_disables == 2 && irq_enables == 2,
+              "monitor reconfiguration rejection does not create hardware or session resources");
+        CloseFile(&pending);
+        CheckNoSession();
+    }
+    for (unsigned which = 0; which < 3; which++) {
+        for (unsigned mode = 0; mode < sizeof(resource_modes) / sizeof(resource_modes[0]); mode++) {
+            crystalhd_ioctl_data data = { .u_id = 1 };
+
+            Reset(BC_LINK_INVALID, false);
+            context.user[1].in_use = 1;
+            adapter.cfg_users = 1;
+            if (which == 0) context.state = BC_LINK_READY;
+            if (which == 1) context.user[0].mode = DTS_PLAYBACK_MODE;
+            if (which == 2) context.session_owner = &context.user[0];
+            data.udata.u.NotifyMode.Mode = resource_modes[mode];
+            Check(bc_cproc_notify_mode(&context, &data) == BC_STS_ERR_USAGE &&
+                  context.user[1].mode == (uint32_t)DTS_MODE_INV &&
+                  context.user[1].in_use && adapter.cfg_users == 1 &&
+                  !context.hw_ctx && !hardware_alloc_attempts && !hardware_opens &&
+                  !pools && !rings && !irq_disables && !irq_enables,
+                  "link-state, legacy-mode and explicit-owner arbitration precedes hardware creation");
+        }
     }
 }
 static BC_STATUS (*const raw_commands[])(struct crystalhd_cmd *, crystalhd_ioctl_data *) = {
@@ -1937,6 +2061,8 @@ int main(void)
         {"HWINIT admission rejects overlapping resource setup", HwInitAdmission},
         {"explicit resource ownership across legacy modes", ResourceOwnership},
         {"pending unconfigured handle after resource owner close", PendingOpenAfterOwnerClose},
+        {"pending acquisition failure rollback, retry and close", PendingAcquisitionFailures},
+        {"monitor and rejected admission avoid hardware recreation", AdmissionWithoutReopeningHardware},
         {"raw command invalid arguments and retired hardware", RawInvalidArguments},
         {"raw device and link register read/write propagation", RawRegisterCommands},
         {"raw memory bounds, read/write propagation and callback errors", RawMemoryCommands},

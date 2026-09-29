@@ -188,6 +188,48 @@ static void hwinit_checks(const char *device)
 	}
 }
 
+static void pending_admission_checks(const char *device)
+{
+	const uint32_t modes[] = {DTS_PLAYBACK_MODE, DTS_DIAG_MODE, DTS_HWINIT_MODE};
+	const uint32_t flags = DTS_SINGLE_THREADED_MODE | DTS_PLAYBACK_DROP_RPT_MODE;
+	BC_IOCTL_DATA data;
+	unsigned int i, direct_close;
+	uint32_t mode;
+	int owner_fd, pending_fd, monitor_fd;
+
+	for (i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
+		for (direct_close = 0; direct_close <= 1; direct_close++) {
+			mode = modes[i] | (direct_close ? flags : 0);
+			owner_fd = mode_open(device, mode);
+			pending_fd = open(device, O_RDWR | O_CLOEXEC);
+			if (pending_fd < 0)
+				fail("pending owner open");
+			monitor_fd = direct_close ? mode_open(device, DTS_MONITOR_MODE) : -1;
+			if (direct_close) {
+				if (close(owner_fd))
+					fail("owner file close before pending admission");
+				checks++;
+			} else {
+				release_close(owner_fd);
+			}
+			/* Reuse the already-open fd only after the old owner is gone. */
+			memset(&data, 0, sizeof(data));
+			data.u.NotifyMode.Mode = mode;
+			command(pending_fd, "pending owner admission", BCM_IOC_NOTIFY_MODE, &data);
+			command_status(pending_fd, "repeated pending owner mode",
+				       BCM_IOC_NOTIFY_MODE, &data, BC_STS_ERR_USAGE);
+			command(pending_fd, "pending owner version", BCM_IOC_GET_VERSION, &data);
+			release_close(pending_fd);
+			if (direct_close) {
+				command(monitor_fd, "surviving monitor version", BCM_IOC_GET_VERSION, &data);
+				release_close(monitor_fd);
+			}
+			owner_fd = mode_open(device, mode);
+			release_close(owner_fd);
+		}
+	}
+}
+
 static void playback_checks(const char *device, int flea, int rawio)
 {
 	BC_IOCTL_DATA data = {0};
@@ -394,6 +436,7 @@ int main(int argc, char **argv)
 	monitor_flag_checks(device);
 	admission_checks(device);
 	hwinit_checks(device);
+	pending_admission_checks(device);
 	playback_checks(device, flea, rawio);
 	printf("%zu-bit: PASS (%u checks)\n", sizeof(void *) * 8, checks);
 	return EXIT_SUCCESS;
