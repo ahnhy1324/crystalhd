@@ -9,7 +9,7 @@ KDIR ?= /lib/modules/$(KVER)/build
 DRIVER_ARGS := KVER=$(KVER) KDIR=$(KDIR) DESTDIR=$(DESTDIR)
 USER_ARGS := PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 
-.PHONY: all driver library library-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check l0s-check command-pm-check fw-command-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check clean
+.PHONY: all driver library library-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check l0s-check command-pm-check fw-command-check tx-admission-check rx-ownership-check device-lifetime-check ioctl-dispatch-check architecture-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check clean
 
 all: driver library gstreamer vaapi examples
 
@@ -95,6 +95,20 @@ command-pm-check:
 fw-command-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/fw-command.sh
 
+tx-admission-check:
+	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/tx-admission.sh
+
+rx-ownership-check:
+	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/rx-ownership.sh
+
+device-lifetime-check:
+	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/device-lifetime.sh
+
+ioctl-dispatch-check:
+	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/ioctl-dispatch.sh
+
+architecture-check: command-pm-check fw-command-check tx-admission-check rx-ownership-check device-lifetime-check ioctl-dispatch-check
+
 pib-check:
 	CC="$(CC)" sh ./tests/flea-pib.sh
 
@@ -114,7 +128,7 @@ phase1-check: library-drain-test tests/phase1-oracle.tsv
 	sh tests/phase1-release-gate.sh --self-test
 	sh tests/phase1-release-gate.sh manifest-check tests/phase1-oracle.tsv
 
-check: uapi-check dma-check l0s-check command-pm-check fw-command-check pib-check library-check all
+check: uapi-check dma-check l0s-check architecture-check pib-check library-check all
 	$(MAKE) -C filters/gst/gst-plugin-1.0 check
 	$(MAKE) -C filters/vaapi check
 	$(MAKE) -C browser check
