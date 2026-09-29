@@ -260,17 +260,29 @@ static bool MonitorBlocked(unsigned number)
 }
 static void Routing(void)
 {
+    const uint32_t modes[] = { DTS_PLAYBACK_MODE, DTS_DIAG_MODE,
+        DTS_HWINIT_MODE, DTS_MONITOR_MODE };
+    const uint32_t flags[] = { 0, 0x100, 0x81000000 };
+
     for (unsigned compat = 0; compat < 2; compat++) {
         for (unsigned number = 0; number < DRV_CMD_END; number++) {
             unsigned command = _IOC(_IOC_READ | _IOC_WRITE, BC_IOC_BASE, number, sizeof(BC_IOCTL_DATA));
-            Reset();
-            Check(Call(command, compat) == 0 && handler_calls == 1 && copies == 2 && frees == 1,
-                  "every native/compat command dispatches and returns its result");
-            Reset();
-            binding.user->mode = DTS_MONITOR_MODE;
-            Check(Call(command, compat) == (MonitorBlocked(number) ? -ENOTTY : 0),
-                  "monitor command whitelist remains compatible");
-            Check(handler_calls == (MonitorBlocked(number) ? 0U : 1U), "blocked monitor command never reaches hardware");
+            for (unsigned m = 0; m < sizeof(modes) / sizeof(modes[0]); m++) {
+                for (unsigned f = 0; f < sizeof(flags) / sizeof(flags[0]); f++) {
+                    bool blocked = modes[m] == DTS_MONITOR_MODE && MonitorBlocked(number);
+                    unsigned calls = blocked ? 0 : 1;
+
+                    Reset();
+                    binding.user->mode = modes[m] | flags[f];
+                    Check(Call(command, compat) == (blocked ? -ENOTTY : 0),
+                          "native/compat monitor whitelist depends on mode, not high flags");
+                    Check(handler_calls == calls && allocations == calls &&
+                          copies == 2 * calls && frees == calls,
+                          "blocked monitor commands reach neither leaf handlers nor user copies");
+                    Check(binding.user->mode == (modes[m] | flags[f]),
+                          "dispatch preserves the complete mode value");
+                }
+            }
             Reset();
             adapter.cmds.state = BC_LINK_SUSPEND;
             Check(Call(command, compat) == 0, "suspended legacy calls return status through the ioctl envelope");
