@@ -21,7 +21,7 @@ struct _BC_DTS_PROC_OUT;
 #define READ_ONCE(value) (value)
 #define printk(...) ((void)0)
 #define dev_err(dev, ...) ((void)(dev))
-#define dev_info(dev, ...) ((void)(dev))
+#define dev_info(dev, ...) do { (void)(dev); if (false) fprintf(stderr, __VA_ARGS__); } while (0)
 #define dev_dbg(dev, ...) ((void)(dev))
 #define eCMD_C011_CMD_BASE 0x73763000U
 #define eCMD_C011_DEC_CHAN_FLUSH (eCMD_C011_CMD_BASE + 0x104U)
@@ -57,6 +57,7 @@ struct crystalhd_cmd {
     uint32_t state;
     struct crystalhd_adp *adp;
     struct crystalhd_user user[BC_LINK_MAX_OPENS];
+    struct crystalhd_user *session_owner;
     uint32_t tx_list_id, cin_wait_exit, pwr_state_change;
     struct crystalhd_hw *hw_ctx;
 };
@@ -345,8 +346,9 @@ static void CheckPendingAdmission(void)
 {
     if (admission_pending)
         Check(context.user[admission_uid].mode == (uint32_t)DTS_MODE_INV &&
-              context.state == admission_state && context.cin_wait_exit == admission_wait,
-              "resource setup does not publish mode or change command state early");
+              !context.session_owner && context.state == admission_state &&
+              context.cin_wait_exit == admission_wait,
+              "resource setup does not publish mode or owner or change command state early");
 }
 static int crystalhd_create_elem_pool(struct crystalhd_adp *adp, unsigned size)
 {
@@ -378,8 +380,10 @@ static void crystalhd_destroy_dio_pool(struct crystalhd_adp *adp)
 static BC_STATUS crystalhd_hw_setup_dma_rings(struct crystalhd_hw *hw)
 {
     CheckPendingAdmission();
-    Check(hw == &hardware, "notify uses the initialized hardware context");
     rings++;
+    if (!hw)
+        return BC_STS_INV_ARG;
+    Check(hw == &hardware, "notify uses the initialized hardware context");
     rings_live = ring_status == BC_STS_SUCCESS;
     hw->rx_freeq = rings_live ? &rings_live : NULL;
     return ring_status;
@@ -924,10 +928,128 @@ static void CloseFile(struct file *file)
 static void CheckNoSession(void)
 {
     Check(!adapter.cfg_users && !bc_get_userhandle_count(&context) &&
-          !context.hw_ctx && !hardware_allocated && !elem_live && !dio_live &&
+          !context.session_owner && !context.hw_ctx && !hardware_allocated && !elem_live && !dio_live &&
           !rings_live && !adapter.fill_byte_pool && !adapter.elem_pool_head &&
           !hardware.rx_freeq,
           "the final close leaves no session user, hardware, or pool allocation");
+}
+static const uint32_t resource_modes[] = { DTS_PLAYBACK_MODE, DTS_DIAG_MODE,
+    DTS_HWINIT_MODE, 0x7f, UINT32_MAX, 0x100 | DTS_PLAYBACK_MODE,
+    0x81000000 | DTS_DIAG_MODE, 0x100 | DTS_HWINIT_MODE, 0x8100007f };
+static struct file OpenResourceFile(uint32_t mode)
+{
+    struct file file = OpenFile(DTS_MODE_INV);
+    struct crystalhd_user *user = ((struct crystalhd_file *)file.private_data)->user;
+    crystalhd_ioctl_data data = { .u_id = user->uid };
+
+    admission_pending = true;
+    admission_uid = user->uid;
+    admission_state = context.state;
+    admission_wait = context.cin_wait_exit;
+    data.udata.u.NotifyMode.Mode = mode;
+    Check(bc_cproc_notify_mode(&context, &data) == BC_STS_SUCCESS,
+          "all legacy non-monitor modes can acquire an idle resource set");
+    admission_pending = false;
+    Check(context.session_owner == user && user->mode == mode &&
+          elem_live && dio_live && rings_live,
+          "successful setup records the allocating user without discarding mode flags");
+    return file;
+}
+static void ResourceOwnership(void)
+{
+    unsigned mode, request;
+
+    for (mode = 0; mode < sizeof(resource_modes) / sizeof(resource_modes[0]); mode++) {
+        struct file owner, contender;
+        struct crystalhd_user *owner_user, *contender_user;
+        crystalhd_ioctl_data data = {0};
+
+        Reset(BC_LINK_INVALID, false);
+        owner = OpenResourceFile(resource_modes[mode]);
+        owner_user = ((struct crystalhd_file *)owner.private_data)->user;
+        contender = OpenFile(DTS_MODE_INV);
+        contender_user = ((struct crystalhd_file *)contender.private_data)->user;
+        for (request = 0; request < sizeof(resource_modes) / sizeof(resource_modes[0]); request++) {
+            data.u_id = contender_user->uid;
+            data.udata.u.NotifyMode.Mode = resource_modes[request];
+            Check(bc_cproc_notify_mode(&context, &data) == BC_STS_ERR_USAGE,
+                  "every resource-owning mode excludes overlapping decoder allocation");
+            data.u_id = owner_user->uid;
+            Check(bc_cproc_notify_mode(&context, &data) == BC_STS_ERR_USAGE,
+                  "the recorded owner cannot reconfigure or allocate its resources again");
+            Check(context.session_owner == owner_user &&
+                  owner_user->mode == resource_modes[mode] &&
+                  contender_user->mode == (uint32_t)DTS_MODE_INV &&
+                  pools == 2 && rings == 1 && adapter.cfg_users == 2 &&
+                  elem_live && dio_live && rings_live,
+                  "rejected ownership requests preserve the complete live resource set");
+        }
+        data.u_id = owner_user->uid;
+        data.udata.u.NotifyMode.Mode = 0x100 | DTS_MONITOR_MODE;
+        Check(bc_cproc_notify_mode(&context, &data) == BC_STS_ERR_USAGE,
+              "even a sentinel-valued owner cannot turn into a monitor");
+        data.u_id = contender_user->uid;
+        Check(bc_cproc_notify_mode(&context, &data) == BC_STS_SUCCESS &&
+              contender_user->mode == (0x100 | DTS_MONITOR_MODE) &&
+              context.session_owner == owner_user && pools == 2 && rings == 1,
+              "a separate flagged monitor can coexist without replacing the resource owner");
+        data.u_id = owner_user->uid;
+        Check(bc_cproc_release_user(&context, &data) ==
+              (resource_modes[mode] == (uint32_t)DTS_MODE_INV ? BC_STS_ERR_USAGE : BC_STS_SUCCESS),
+              "RELEASE preserves its sentinel-mode error and releases other resource owners");
+        if (resource_modes[mode] == (uint32_t)DTS_MODE_INV)
+            Check(context.session_owner == owner_user && owner_user->in_use &&
+                  context.hw_ctx == &hardware && !hardware_closes,
+                  "a rejected sentinel RELEASE leaves resource ownership for file close");
+        else
+            Check(!context.session_owner && !context.hw_ctx && adapter.cfg_users == 1 &&
+                  hardware_closes == 1 && !elem_live && !dio_live && !rings_live,
+                  "owner RELEASE retires resources while its monitor remains open");
+        CloseFile(&owner);
+        CloseFile(&contender);
+        CheckNoSession();
+        Check(hardware_closes == 1 && hardware_frees == 1 && ring_frees == 1 &&
+              elem_deletes == 1 && dio_destroys == 1,
+              "owner RELEASE and file close cannot retire resources twice");
+    }
+}
+static void PendingOpenAfterOwnerClose(void)
+{
+    unsigned mode;
+
+    for (mode = 0; mode < sizeof(resource_modes) / sizeof(resource_modes[0]); mode++) {
+        struct file owner, pending, reopened;
+        struct crystalhd_user *pending_user;
+        crystalhd_ioctl_data data = {0};
+
+        Reset(BC_LINK_INVALID, false);
+        owner = OpenResourceFile(resource_modes[mode]);
+        pending = OpenFile(DTS_MODE_INV);
+        pending_user = ((struct crystalhd_file *)pending.private_data)->user;
+        CloseFile(&owner);
+        Check(!context.session_owner && !context.hw_ctx && pending_user->in_use &&
+              adapter.cfg_users == 1 && hardware_opens == 1 && hardware_closes == 1,
+              "owner close leaves a pending unconfigured handle without hardware");
+        data.u_id = pending_user->uid;
+        data.udata.u.NotifyMode.Mode = DTS_PLAYBACK_MODE;
+        Check(bc_cproc_notify_mode(&context, &data) == BC_STS_INV_ARG,
+              "pending handle retains the existing no-hardware setup error");
+        Check(!context.session_owner && !context.hw_ctx &&
+              pending_user->mode == (uint32_t)DTS_MODE_INV && adapter.cfg_users == 1 &&
+              pools == 4 && rings == 2 && !elem_live && !dio_live && !rings_live &&
+              elem_deletes == 2 && dio_destroys == 2 &&
+              hardware_opens == 1 && hardware_allocations == 1,
+              "failed pending acquisition rolls back pools without reopening hardware");
+        reopened = OpenResourceFile(DTS_DIAG_MODE);
+        Check(context.session_owner == &context.user[0] && hardware_opens == 2,
+              "a new open reuses the retired slot with fresh hardware ownership");
+        CloseFile(&pending);
+        Check(context.session_owner == &context.user[0] && context.hw_ctx == &hardware &&
+              adapter.cfg_users == 1 && hardware_closes == 1,
+              "closing the pending non-owner preserves the newly acquired session");
+        CloseFile(&reopened);
+        CheckNoSession();
+    }
 }
 static void FileCloseModes(void)
 {
@@ -963,44 +1085,50 @@ static void FileCloseModes(void)
 static void FileOwnerBeforeMonitor(void)
 {
     struct file owner, monitor, reopened;
-    struct crystalhd_user *monitor_user;
-    unsigned monitor_first;
+    struct crystalhd_user *owner_user, *monitor_user;
+    unsigned mode, monitor_first;
 
-    for (monitor_first = 0; monitor_first < 2; monitor_first++) {
-        Reset(BC_LINK_INVALID, false);
-        owner = OpenFile(DTS_PLAYBACK_MODE);
-        monitor = OpenFile(DTS_MONITOR_MODE);
-        monitor_user = ((struct crystalhd_file *)monitor.private_data)->user;
-        if (monitor_first) {
-            CloseFile(&monitor);
-            Check(adapter.cfg_users == 1 && context.hw_ctx == &hardware &&
-                  !hardware_closes && !hardware_frees && !ring_frees &&
-                  !captures && elem_live && dio_live && rings_live,
-                  "monitor-first file close preserves every playback resource");
-            CloseFile(&owner);
-        } else {
-            CloseFile(&owner);
-            Check(adapter.cfg_users == 1 && monitor_user->in_use &&
-                  monitor_user->mode == DTS_MONITOR_MODE && !context.hw_ctx &&
-                  hardware_closes == 1 && hardware_frees == 1 &&
-                  last_close_cfg_users == 2 && !elem_live && !dio_live && !rings_live,
-                  "owner-first file close retires hardware while preserving its monitor");
-            reopened = OpenFile(DTS_DIAG_MODE);
-            Check(adapter.cfg_users == 2 && monitor_user->in_use &&
-                  monitor_user->mode == DTS_MONITOR_MODE && hardware_opens == 2 &&
-                  elem_live && dio_live && rings_live,
-                  "a diagnostic owner reacquires fresh hardware beside the existing monitor");
-            CloseFile(&reopened);
-            CloseFile(&monitor);
+    for (mode = 0; mode < sizeof(resource_modes) / sizeof(resource_modes[0]); mode++) {
+        for (monitor_first = 0; monitor_first < 2; monitor_first++) {
+            Reset(BC_LINK_INVALID, false);
+            owner = OpenResourceFile(resource_modes[mode]);
+            owner_user = ((struct crystalhd_file *)owner.private_data)->user;
+            monitor = OpenFile(DTS_MONITOR_MODE);
+            monitor_user = ((struct crystalhd_file *)monitor.private_data)->user;
+            if (monitor_first) {
+                CloseFile(&monitor);
+                Check(adapter.cfg_users == 1 && context.hw_ctx == &hardware &&
+                      context.session_owner == owner_user &&
+                      !hardware_closes && !hardware_frees && !ring_frees &&
+                      !captures && elem_live && dio_live && rings_live,
+                      "monitor-first file close preserves every session resource");
+                CloseFile(&owner);
+            } else {
+                CloseFile(&owner);
+                Check(adapter.cfg_users == 1 && monitor_user->in_use &&
+                      monitor_user->mode == DTS_MONITOR_MODE && !context.hw_ctx &&
+                      !context.session_owner &&
+                      hardware_closes == 1 && hardware_frees == 1 &&
+                      last_close_cfg_users == 2 && !elem_live && !dio_live && !rings_live,
+                      "owner-first file close retires hardware while preserving its monitor");
+                reopened = OpenResourceFile(DTS_DIAG_MODE);
+                Check(adapter.cfg_users == 2 && monitor_user->in_use &&
+                      context.session_owner == owner_user && owner_user->in_use &&
+                      monitor_user->mode == DTS_MONITOR_MODE && hardware_opens == 2 &&
+                      elem_live && dio_live && rings_live,
+                      "a diagnostic owner reacquires fresh hardware beside the existing monitor");
+                CloseFile(&reopened);
+                CloseFile(&monitor);
+            }
+            CheckNoSession();
+            Check(hardware_opens == 2 - monitor_first &&
+                  hardware_closes == hardware_opens && hardware_allocations == hardware_opens &&
+                  hardware_frees == hardware_opens && ring_frees == hardware_opens &&
+                  capture_unmaps == hardware_opens && dio_destroys == hardware_opens &&
+                  elem_deletes == hardware_opens && irq_disables == 2 * hardware_opens &&
+                  irq_enables == irq_disables && binding_frees == 3 - monitor_first,
+                  "both owner/monitor close orders retain exact allocation and teardown counts");
         }
-        CheckNoSession();
-        Check(hardware_opens == 2 - monitor_first &&
-              hardware_closes == hardware_opens && hardware_allocations == hardware_opens &&
-              hardware_frees == hardware_opens && ring_frees == hardware_opens &&
-              capture_unmaps == hardware_opens && dio_destroys == hardware_opens &&
-              elem_deletes == hardware_opens && irq_disables == 2 * hardware_opens &&
-              irq_enables == irq_disables && binding_frees == 3 - monitor_first,
-              "both owner/monitor close orders retain exact allocation and teardown counts");
     }
 }
 static void ReleaseThenFileClose(void)
@@ -1105,6 +1233,7 @@ static void FileCloseUnavailableDevice(void)
         if (which == 2) chd_device_generation++;
         CloseFile(&file);
         Check(context.hw_ctx == &hardware && hardware_allocated && elem_live &&
+              context.session_owner == user &&
               dio_live && rings_live && !captures && !ring_frees &&
               !dio_destroys && !elem_deletes && !hardware_closes && !hardware_frees &&
               irq_disables == 1 && irq_enables == 1 && binding_frees == 1,
@@ -1116,26 +1245,32 @@ static void FileCloseUnavailableDevice(void)
 }
 static void OwnerCloseWithoutHardware(void)
 {
-    const uint32_t modes[] = { DTS_PLAYBACK_MODE, DTS_DIAG_MODE };
-    unsigned n;
+    unsigned n, monitor;
 
-    for (n = 0; n < sizeof(modes) / sizeof(modes[0]); n++) {
-        struct crystalhd_user *user;
+    for (n = 0; n < sizeof(resource_modes) / sizeof(resource_modes[0]); n++) {
+        for (monitor = 0; monitor < 2; monitor++) {
+            struct crystalhd_user *user;
 
-        Reset(BC_LINK_INVALID, false);
-        user = &context.user[0];
-        user->in_use = 1;
-        user->mode = modes[n];
-        adapter.cfg_users = 1;
-        crystalhd_user_close(&context, user);
-        Check(!user->in_use && user->mode == (uint32_t)DTS_MODE_INV && !adapter.cfg_users,
-              "owner close can retire a logical user after hardware is already gone");
-        crystalhd_user_close(&context, user);
-        CheckNoSession();
-        Check(!hardware_allocations && !hardware_frees && !hardware_closes &&
-              !captures && !ring_frees && !dio_destroys && !elem_deletes &&
-              !irq_disables && !irq_enables,
-              "missing-hardware and repeated close perform no device or pool operation");
+            Reset(BC_LINK_INVALID, false);
+            user = &context.user[0];
+            user->in_use = 1;
+            user->mode = resource_modes[n];
+            context.session_owner = user;
+            context.user[1].in_use = monitor;
+            context.user[1].mode = DTS_MONITOR_MODE;
+            adapter.cfg_users = 1 + monitor;
+            crystalhd_user_close(&context, user);
+            Check(!user->in_use && user->mode == (uint32_t)DTS_MODE_INV &&
+                  !context.session_owner && adapter.cfg_users == monitor,
+                  "owner close can retire a logical user after hardware is already gone");
+            crystalhd_user_close(&context, user);
+            crystalhd_user_close(&context, &context.user[1]);
+            CheckNoSession();
+            Check(!hardware_allocations && !hardware_frees && !hardware_closes &&
+                  !captures && !ring_frees && !dio_destroys && !elem_deletes &&
+                  !irq_disables && !irq_enables,
+                  "missing-hardware and repeated close perform no device or pool operation");
+        }
     }
 }
 static void CheckNotify(void)
@@ -1155,37 +1290,41 @@ static void CheckNotify(void)
 static void NotifyFailures(void)
 {
     crystalhd_ioctl_data data = { .u_id = 1 };
-    unsigned which;
+    unsigned mode, which;
 
-    data.udata.u.NotifyMode.Mode = DTS_PLAYBACK_MODE;
-    for (which = 0; which < 3; which++) {
-        BC_STATUS expected = which == 2 ? BC_STS_INSUFF_RES : BC_STS_ERROR;
+    for (mode = 0; mode < sizeof(resource_modes) / sizeof(resource_modes[0]); mode++) {
+        data.udata.u.NotifyMode.Mode = resource_modes[mode];
+        for (which = 0; which < 3; which++) {
+            BC_STATUS expected = which == 2 ? BC_STS_INSUFF_RES : BC_STS_ERROR;
 
-        Reset(BC_LINK_INVALID, true);
-        context.user[1].in_use = 1;
-        admission_pending = true;
-        admission_uid = 1;
-        admission_state = context.state;
-        admission_wait = context.cin_wait_exit;
-        if (which == 0) elem_error = -1;
-        if (which == 1) dio_error = -1;
-        if (which == 2) ring_status = BC_STS_INSUFF_RES;
-        Check(bc_cproc_notify_mode(&context, &data) == expected,
-              "notify-mode propagates each session setup failure");
-        Check(context.user[1].mode == DTS_MODE_INV && context.cin_wait_exit == 1,
-              "failed setup does not publish playback ownership");
-        Check(!elem_live && !dio_live && !rings_live,
-              "failed setup leaves no session allocation live");
-        Check(elem_deletes == 1 && dio_destroys == (which == 2) && !ring_frees,
-              "failed setup releases every successfully created pool");
+            Reset(BC_LINK_INVALID, true);
+            context.user[1].in_use = 1;
+            admission_pending = true;
+            admission_uid = 1;
+            admission_state = context.state;
+            admission_wait = context.cin_wait_exit;
+            if (which == 0) elem_error = -1;
+            if (which == 1) dio_error = -1;
+            if (which == 2) ring_status = BC_STS_INSUFF_RES;
+            Check(bc_cproc_notify_mode(&context, &data) == expected,
+                  "notify-mode propagates each session setup failure");
+            Check(context.user[1].mode == DTS_MODE_INV && !context.session_owner &&
+                  context.cin_wait_exit == 1,
+                  "failed setup does not publish resource ownership");
+            Check(!elem_live && !dio_live && !rings_live,
+                  "failed setup leaves no session allocation live");
+            Check(elem_deletes == 1 && dio_destroys == (which == 2) && !ring_frees,
+                  "failed setup releases every successfully created pool");
 
-        elem_error = dio_error = 0;
-        ring_status = BC_STS_SUCCESS;
-        Check(bc_cproc_notify_mode(&context, &data) == BC_STS_SUCCESS,
-              "the same handle can retry session setup after failure");
-        Check(context.user[1].mode == DTS_PLAYBACK_MODE && !context.cin_wait_exit &&
-              elem_live && dio_live && rings_live,
-              "successful retry commits one complete playback session");
+            elem_error = dio_error = 0;
+            ring_status = BC_STS_SUCCESS;
+            Check(bc_cproc_notify_mode(&context, &data) == BC_STS_SUCCESS,
+                  "the same handle can retry session setup after failure");
+            Check(context.user[1].mode == resource_modes[mode] &&
+                  context.session_owner == &context.user[1] && !context.cin_wait_exit &&
+                  elem_live && dio_live && rings_live,
+                  "successful retry commits one complete session resource owner");
+        }
     }
 }
 static void MonitorAdmission(void)
@@ -1330,22 +1469,22 @@ static void HwInitAdmission(void)
         data.udata.u.NotifyMode.Mode = modes[m];
         Check(bc_cproc_notify_mode(&context, &data) == BC_STS_SUCCESS,
               "legacy HWINIT mode follows decoder resource setup");
-        Check(context.user[0].mode == modes[m] && !context.cin_wait_exit &&
+        Check(context.user[0].mode == modes[m] &&
+              context.session_owner == &context.user[0] && !context.cin_wait_exit &&
               context.state == BC_LINK_INVALID && pools == 2 && rings == 1 &&
               elem_live && dio_live && rings_live,
               "HWINIT keeps its flag bits and publishes only complete setup");
 
-        /* Characterize existing admission, not safe concurrent decoding: unlike
-         * PB/DIAG, HWINIT is not counted as an owner by the legacy scan. */
+        /* HWINIT owns the same allocation set as playback and diagnostic. */
         admission_uid = 1;
         admission_wait = context.cin_wait_exit;
         data.u_id = 1;
         data.udata.u.NotifyMode.Mode = DTS_PLAYBACK_MODE;
-        Check(bc_cproc_notify_mode(&context, &data) == BC_STS_SUCCESS,
-              "legacy owner scan does not classify HWINIT as playback or diagnostic");
+        Check(bc_cproc_notify_mode(&context, &data) == BC_STS_ERR_USAGE,
+              "HWINIT session rejects overlapping playback resource setup");
         Check(context.user[0].mode == modes[m] &&
-              context.user[1].mode == DTS_PLAYBACK_MODE && pools == 4 && rings == 2,
-              "HWINIT owner-scan characterization retains existing callback behavior");
+              context.user[1].mode == (uint32_t)DTS_MODE_INV && pools == 2 && rings == 1,
+              "HWINIT retains its resources without duplicate pool or ring allocation");
     }
 }
 static void OpenFailuresAndRetry(void)
@@ -1608,7 +1747,9 @@ int main(void)
         {"monitor admission during active decoder states and mode flags", MonitorAdmission},
         {"decoder ownership and link-state admission matrix", NotifyAdmissionMatrix},
         {"repeated and changed mode rejection", RepeatedMode},
-        {"legacy HWINIT mode and owner-scan characterization", HwInitAdmission},
+        {"HWINIT admission rejects overlapping resource setup", HwInitAdmission},
+        {"explicit resource ownership across legacy modes", ResourceOwnership},
+        {"pending unconfigured handle after resource owner close", PendingOpenAfterOwnerClose},
         {"user open failure rollback and retry", OpenFailuresAndRetry},
         {"legacy user slot exhaustion", OpenSlotExhaustion},
         {"invalid admission adapter arguments", InvalidAdmissionArguments},

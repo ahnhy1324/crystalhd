@@ -62,6 +62,7 @@ struct crystalhd_cmd {
 	uint32_t		state;
 	struct crystalhd_adp	*adp;
 	struct crystalhd_user	user[BC_LINK_MAX_OPENS];
+	struct crystalhd_user	*session_owner;
 
 	spinlock_t		ctx_lock;
 	uint32_t		tx_list_id;
