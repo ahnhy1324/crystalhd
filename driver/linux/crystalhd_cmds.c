@@ -72,6 +72,31 @@ static void bc_cproc_mark_pwr_state(struct crystalhd_cmd *ctx, uint32_t state)
 	}
 }
 
+/* Caller holds user_lock exclusively on a present, resumed device. */
+static BC_STATUS crystalhd_ensure_hw_context(struct crystalhd_cmd *ctx)
+{
+	BC_STATUS sts;
+
+	if (ctx->hw_ctx)
+		return BC_STS_SUCCESS;
+
+	disable_irq(ctx->adp->pdev->irq);
+	ctx->hw_ctx = kmalloc(sizeof(struct crystalhd_hw), GFP_KERNEL);
+	if (!ctx->hw_ctx) {
+		enable_irq(ctx->adp->pdev->irq);
+		return BC_STS_ERROR;
+	}
+	memset(ctx->hw_ctx, 0, sizeof(struct crystalhd_hw));
+
+	sts = crystalhd_hw_open(ctx->hw_ctx, ctx->adp);
+	if (sts != BC_STS_SUCCESS) {
+		kfree(ctx->hw_ctx);
+		ctx->hw_ctx = NULL;
+	}
+	enable_irq(ctx->adp->pdev->irq);
+	return sts;
+}
+
 static BC_STATUS crystalhd_session_setup(struct crystalhd_cmd *ctx)
 {
 	BC_STATUS sts;
@@ -140,6 +165,10 @@ BC_STATUS crystalhd_user_set_mode(struct crystalhd_cmd *ctx,
 		dev_err(chddev(), "Decoder session is already owned\n");
 		return BC_STS_ERR_USAGE;
 	}
+
+	sts = crystalhd_ensure_hw_context(ctx);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
 
 	sts = crystalhd_session_setup(ctx);
 	if (sts != BC_STS_SUCCESS)
@@ -1224,25 +1253,9 @@ BC_STATUS crystalhd_user_open(struct crystalhd_cmd *ctx,
 	uc->mode = DTS_MODE_INV;
 	uc->in_use = 0;
 
-	if(ctx->hw_ctx == NULL) {
-		disable_irq(ctx->adp->pdev->irq);
-		ctx->hw_ctx = (struct crystalhd_hw*)kmalloc(sizeof(struct crystalhd_hw), GFP_KERNEL);
-		if(ctx->hw_ctx != NULL)
-			memset(ctx->hw_ctx, 0, sizeof(struct crystalhd_hw));
-		else {
-			enable_irq(ctx->adp->pdev->irq);
-			return BC_STS_ERROR;
-		}
-
-		sts = crystalhd_hw_open(ctx->hw_ctx, ctx->adp);
-		if (sts != BC_STS_SUCCESS) {
-			kfree(ctx->hw_ctx);
-			ctx->hw_ctx = NULL;
-			enable_irq(ctx->adp->pdev->irq);
-			return sts;
-		}
-		enable_irq(ctx->adp->pdev->irq);
-	}
+	sts = crystalhd_ensure_hw_context(ctx);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
 
 	uc->in_use = 1;
 
