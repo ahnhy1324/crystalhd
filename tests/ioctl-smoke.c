@@ -36,16 +36,23 @@ static void expect_errno(int fd, const char *name, unsigned long cmd,
 	checks++;
 }
 
-static void command(int fd, const char *name, unsigned long cmd,
-		    BC_IOCTL_DATA *data)
+static void command_status(int fd, const char *name, unsigned long cmd,
+			   BC_IOCTL_DATA *data, BC_STATUS expected)
 {
 	if (ioctl(fd, cmd, data) < 0)
 		fail(name);
-	if (data->RetSts != BC_STS_SUCCESS) {
-		fprintf(stderr, "%s: driver status %d\n", name, data->RetSts);
+	if (data->RetSts != expected) {
+		fprintf(stderr, "%s: expected driver status %d, got %d\n",
+			name, expected, data->RetSts);
 		exit(EXIT_FAILURE);
 	}
 	checks++;
+}
+
+static void command(int fd, const char *name, unsigned long cmd,
+		    BC_IOCTL_DATA *data)
+{
+	command_status(fd, name, cmd, data, BC_STS_SUCCESS);
 }
 
 static int has_rawio(void)
@@ -60,6 +67,78 @@ static int has_rawio(void)
 		fail("capget");
 	return !!(caps[CAP_SYS_RAWIO / 32].effective &
 		  (1U << (CAP_SYS_RAWIO % 32)));
+}
+
+static int mode_open(const char *device, uint32_t mode)
+{
+	BC_IOCTL_DATA data = {0};
+	int fd = open(device, O_RDWR | O_CLOEXEC);
+
+	if (fd < 0)
+		fail("mode open");
+	data.u.NotifyMode.Mode = mode;
+	command(fd, "mode admission", BCM_IOC_NOTIFY_MODE, &data);
+	return fd;
+}
+
+static void release_close(int fd)
+{
+	BC_IOCTL_DATA data = {0};
+
+	command(fd, "mode release", BCM_IOC_RELEASE, &data);
+	expect_errno(fd, "released mode handle", BCM_IOC_GET_VERSION, &data, ENODATA);
+	if (close(fd))
+		fail("mode close");
+}
+
+static void admission_checks(const char *device)
+{
+	const uint32_t modes[] = {DTS_PLAYBACK_MODE, DTS_DIAG_MODE};
+	const uint32_t flags = DTS_SINGLE_THREADED_MODE | DTS_PLAYBACK_DROP_RPT_MODE;
+	BC_IOCTL_DATA data;
+	unsigned int owner, contender, monitor_first;
+	int owner_fd, monitor_fd, contender_fd;
+
+	for (owner = 0; owner < sizeof(modes) / sizeof(modes[0]); owner++) {
+		for (monitor_first = 0; monitor_first <= 1; monitor_first++) {
+			if (monitor_first) {
+				monitor_fd = mode_open(device, DTS_MONITOR_MODE);
+				owner_fd = mode_open(device, modes[owner] | flags);
+			} else {
+				owner_fd = mode_open(device, modes[owner] | flags);
+				monitor_fd = mode_open(device, DTS_MONITOR_MODE);
+			}
+			memset(&data, 0, sizeof(data));
+			data.u.NotifyMode.Mode = modes[owner] | flags;
+			command_status(owner_fd, "repeated owner mode", BCM_IOC_NOTIFY_MODE,
+				       &data, BC_STS_ERR_USAGE);
+			contender_fd = open(device, O_RDWR | O_CLOEXEC);
+			if (contender_fd < 0)
+				fail("contender open");
+			for (contender = 0; contender < sizeof(modes) / sizeof(modes[0]);
+			     contender++) {
+				memset(&data, 0, sizeof(data));
+				data.u.NotifyMode.Mode = modes[contender] | flags;
+				command_status(contender_fd, "competing owner mode",
+					       BCM_IOC_NOTIFY_MODE, &data, BC_STS_ERR_USAGE);
+			}
+			/* Rejected admission must leave this handle unconfigured. */
+			data.u.NotifyMode.Mode = DTS_MONITOR_MODE;
+			command(contender_fd, "monitor after rejected mode", BCM_IOC_NOTIFY_MODE,
+				&data);
+			command_status(contender_fd, "repeated monitor mode", BCM_IOC_NOTIFY_MODE,
+				       &data, BC_STS_ERR_USAGE);
+			release_close(contender_fd);
+			if (!monitor_first)
+				release_close(monitor_fd);
+			release_close(owner_fd);
+			/* Reopen both with and without a surviving monitor. */
+			owner_fd = mode_open(device, modes[owner] | flags);
+			release_close(owner_fd);
+			if (monitor_first)
+				release_close(monitor_fd);
+		}
+	}
 }
 
 static void playback_checks(const char *device, int flea, int rawio)
@@ -148,7 +227,7 @@ int main(int argc, char **argv)
 
 	if (argc == 2 && !strcmp(argv[1], "--help")) {
 		printf("Usage: %s [/dev/crystalhd]\n"
-		       "Checks version, hardware ID, monitor/playback open/release, "
+		       "Checks version, hardware ID, mode admission/open/release, "
 		       "color controls and rejected ioctls/pins.\n"
 		       "No firmware download or decode is performed. "
 		       "Use an idle device with the rebuilt driver loaded.\n", argv[0]);
@@ -265,6 +344,7 @@ int main(int argc, char **argv)
 			fail("reopen/close");
 		checks++;
 	}
+	admission_checks(device);
 	playback_checks(device, flea, rawio);
 	printf("%zu-bit: PASS (%u checks)\n", sizeof(void *) * 8, checks);
 	return EXIT_SUCCESS;

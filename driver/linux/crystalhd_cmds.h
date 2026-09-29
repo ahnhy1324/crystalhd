@@ -84,6 +84,8 @@ BC_STATUS crystalhd_resume(struct crystalhd_cmd *ctx);
 crystalhd_cmd_proc crystalhd_get_cmd_proc(struct crystalhd_cmd *ctx, uint32_t cmd,
 				      struct crystalhd_user *uc);
 BC_STATUS crystalhd_user_open(struct crystalhd_cmd *ctx, struct crystalhd_user **user_ctx);
+BC_STATUS crystalhd_user_set_mode(struct crystalhd_cmd *ctx,
+				 struct crystalhd_user *uc, uint32_t mode);
 void crystalhd_user_close(struct crystalhd_cmd *ctx, struct crystalhd_user *uc);
 BC_STATUS crystalhd_setup_cmd_context(struct crystalhd_cmd *ctx, struct crystalhd_adp *adp);
 BC_STATUS crystalhd_delete_cmd_context(struct crystalhd_cmd *ctx);
