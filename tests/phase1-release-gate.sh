@@ -1683,8 +1683,8 @@ validate_evidence_fingerprint()
             else if ($2 ~ /\/sha256sum$/) tool_sha256sum++
             else if ($2 ~ /\/(gnu)?timeout$/) tool_timeout++
             else if ($2 ~ /\/fuser$/) tool_fuser++
-            else if ($2 ~ /\/objcopy$/) tool_objcopy++
-            else if ($2 ~ /\/zstdcat$/) tool_zstdcat++
+            else if ($2 ~ /\/([^/]+-)?objcopy$/) tool_objcopy++
+            else if ($2 ~ /\/zstd(cat)?$/) tool_zstdcat++
             else bad=1
           } else {
             bad=1
@@ -2922,8 +2922,9 @@ EOF
         printf 'tool\t/usr/bin/sha256sum\t%s\n' "$evidence_hash"
         printf 'tool\t/usr/bin/timeout\t%s\n' "$evidence_hash"
         printf 'tool\t/usr/bin/fuser\t%s\n' "$evidence_hash"
-        printf 'tool\t/usr/bin/objcopy\t%s\n' "$evidence_hash"
-        printf 'tool\t/usr/bin/zstdcat\t%s\n' "$evidence_hash"
+        # resolved_command() follows distro alternatives and helper symlinks.
+        printf 'tool\t/usr/bin/x86_64-linux-gnu-objcopy\t%s\n' "$evidence_hash"
+        printf 'tool\t/usr/bin/zstd\t%s\n' "$evidence_hash"
     } > "$evidence_fingerprint"
 
     mock_evidence_stage()
@@ -3177,6 +3178,24 @@ EOF
     saved_repo_dir=$repo_dir
     repo_dir=$evidence_repo
     check_evidence_set "$evidence_root" >/dev/null
+    tests=$((tests + 1))
+
+    sed 's#/usr/bin/x86_64-linux-gnu-objcopy#/usr/bin/objcopy-wrapper#' \
+        "$evidence_fingerprint" > "$tmp/bad-objcopy-fingerprint"
+    if validate_evidence_fingerprint "$tmp/bad-objcopy-fingerprint" \
+        "$evidence_revision" installed >/dev/null 2>&1; then
+        error "self-test accepted an unrecognized objcopy implementation path"
+        return 1
+    fi
+    tests=$((tests + 1))
+
+    sed 's#/usr/bin/zstd#/usr/bin/zstd-helper#' \
+        "$evidence_fingerprint" > "$tmp/bad-zstdcat-fingerprint"
+    if validate_evidence_fingerprint "$tmp/bad-zstdcat-fingerprint" \
+        "$evidence_revision" installed >/dev/null 2>&1; then
+        error "self-test accepted an unrecognized zstdcat implementation path"
+        return 1
+    fi
     tests=$((tests + 1))
 
     oracle_log=$evidence_root/oracle/stages/0001-oracle-h264-short.log
