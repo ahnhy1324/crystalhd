@@ -53,6 +53,8 @@ typedef struct _GstCrystalHdDec {
   guint width;
   guint height;
   guint64 next_hardware_timestamp;
+  guint32 simple_picture_number;
+  gboolean have_simple_picture_number;
   GQueue timestamps;
   GstVideoCodecState *input_state;
   GstAdapter *parse_adapter;
@@ -122,6 +124,7 @@ gst_crystalhd_caps_have_mpeg4_metadata(GstCaps *caps,
   const guint8 *data;
   gsize size;
   gboolean valid;
+  CrystalHdCodec checked_codec = *codec;
 
   if (value == NULL || !GST_VALUE_HOLDS_BUFFER(value))
     return FALSE;
@@ -130,7 +133,7 @@ gst_crystalhd_caps_have_mpeg4_metadata(GstCaps *caps,
     return FALSE;
   data = map.data;
   size = map.size;
-  valid = gst_crystalhd_codec_metadata(codec, &data, &size);
+  valid = gst_crystalhd_codec_metadata(&checked_codec, &data, &size);
   gst_buffer_unmap(buffer, &map);
   return valid;
 }
@@ -222,6 +225,7 @@ static void
 gst_crystalhd_clear_timestamps(GstCrystalHdDec *self)
 {
   g_queue_clear_full(&self->timestamps, g_free);
+  self->have_simple_picture_number = FALSE;
 }
 
 static BC_STATUS
@@ -338,6 +342,7 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
   gboolean interlaced;
   gboolean bottom_field;
   gboolean bottom_first;
+  gboolean ordered_mpeg4_simple;
 
   *completed = NULL;
 
@@ -347,6 +352,10 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
   bottom_field = (output->PicInfo.flags & VDEC_FLAG_BOTTOMFIELD) ==
                  VDEC_FLAG_BOTTOMFIELD;
   bottom_first = (output->PicInfo.flags & VDEC_FLAG_BOTTOM_FIRST) != 0;
+  ordered_mpeg4_simple =
+      self->codec.subtype == BC_MSUBTYPE_DIVX &&
+      self->codec.mpeg4_object_type == CRYSTALHD_MPEG4_OBJECT_TYPE_SIMPLE &&
+      !interlaced && !self->need_second_field;
   if (interlaced &&
       (output->PicInfo.flags & VDEC_FLAG_BOTTOMFIELD) != VDEC_FLAG_TOPFIELD &&
       !bottom_field) {
@@ -359,6 +368,23 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
 
   entry = gst_crystalhd_find_timestamp(self, output->PicInfo.timeStamp,
                                        &timestamp_link);
+  /* MPEG-4 Simple Profile has no B-VOP reordering. BCM70015 can return a
+   * valid picture with its timestamp metadata cleared; picture zero is not
+   * recoverable because the kernel uses it for invalid/repeated output. */
+  if (entry == NULL && ordered_mpeg4_simple &&
+      output->PicInfo.timeStamp == 0 &&
+      output->PicInfo.picture_number != 0 &&
+      self->have_simple_picture_number &&
+      output->PicInfo.picture_number == self->simple_picture_number + 1 &&
+      self->timestamps.head != NULL) {
+    timestamp_link = self->timestamps.head;
+    entry = timestamp_link->data;
+    GST_WARNING_OBJECT(self,
+        "recovering MPEG-4 Simple picture %u with missing hardware "
+        "timestamp as token=%" G_GUINT64_FORMAT " frame=%u",
+        output->PicInfo.picture_number, entry->hardware_timestamp,
+        entry->frame_number);
+  }
   if (entry == NULL) {
     /* Flush/retry can expose a late or duplicate hardware picture. Never
      * attach its pixels to an unrelated (possibly not yet submitted) frame.
@@ -374,6 +400,17 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
     GST_DEBUG_OBJECT(self, "ignoring unmatched hardware timestamp %"
                      G_GUINT64_FORMAT, (guint64)output->PicInfo.timeStamp);
     return GST_FLOW_OK;
+  }
+  if (ordered_mpeg4_simple && timestamp_link != self->timestamps.head) {
+    CrystalHdTimestamp *head = self->timestamps.head->data;
+    GST_ELEMENT_ERROR(self, STREAM, DECODE,
+                      ("CrystalHD MPEG-4 Simple output skipped a pending picture"),
+                      ("Hardware timestamp: %" G_GUINT64_FORMAT "; "
+                       "oldest pending timestamp: %" G_GUINT64_FORMAT "; "
+                       "picture: %u",
+                       (guint64)output->PicInfo.timeStamp,
+                       head->hardware_timestamp, output->PicInfo.picture_number));
+    return GST_FLOW_ERROR;
   }
   frame_number = entry->frame_number;
   if (self->need_second_field &&
@@ -495,6 +532,15 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
   if (timestamp_link != NULL) {
     g_free(timestamp_link->data);
     g_queue_delete_link(&self->timestamps, timestamp_link);
+  }
+  if (ordered_mpeg4_simple) {
+    if (output->PicInfo.picture_number != 0 &&
+        output->PicInfo.picture_number != G_MAXUINT32) {
+      self->simple_picture_number = output->PicInfo.picture_number;
+      self->have_simple_picture_number = TRUE;
+    } else {
+      self->have_simple_picture_number = FALSE;
+    }
   }
 
   GST_LOG_OBJECT(self, "decoded frame %u (%ux%u), picture %u", frame_number,
@@ -1158,6 +1204,7 @@ gst_crystalhd_handle_frame(GstVideoDecoder *decoder,
   guint8 *padded = NULL;
   guint64 generation = self->generation;
   guint lock_levels = self->parsing_frame ? 2 : 1;
+  CrystalHdPayloadStatus payload;
 
   if (!self->decoder_started || frame->input_buffer == NULL)
     return gst_video_decoder_drop_frame(decoder, frame);
@@ -1167,7 +1214,8 @@ gst_crystalhd_handle_frame(GstVideoDecoder *decoder,
 
   data = map.data;
   size = map.size;
-  if (!gst_crystalhd_codec_payload(&self->codec, &data, &size)) {
+  payload = gst_crystalhd_codec_payload(&self->codec, &data, &size);
+  if (payload == CRYSTALHD_PAYLOAD_INVALID) {
     gst_buffer_unmap(frame->input_buffer, &map);
     GST_ELEMENT_ERROR(self, STREAM, DECODE,
                       ("Invalid compressed picture framing"), (NULL));
@@ -1230,6 +1278,17 @@ gst_crystalhd_handle_frame(GstVideoDecoder *decoder,
     return GST_FLOW_ERROR;
   }
 
+  if (payload == CRYSTALHD_PAYLOAD_NOT_CODED) {
+    /* An uncoded VOP has no output picture, but its header still advances the
+     * decoder's MPEG-4 timing state (including the state used by later B-VOPs).
+     * Give it a unique transport token without creating an expected-output
+     * mapping.  It also breaks the proof needed to infer a missing Simple
+     * timestamp from consecutive output ordinals. */
+    self->have_simple_picture_number = FALSE;
+    gst_crystalhd_wake_output(self);
+    return gst_video_decoder_drop_frame(decoder, frame);
+  }
+
   /* Only accepted input owns a token. Output polling during BUSY must not
    * consume a provisional mapping or finish the current unaccepted frame.
    */
@@ -1290,6 +1349,13 @@ gst_crystalhd_flush(GstVideoDecoder *decoder)
   return TRUE;
 }
 
+static gboolean
+gst_crystalhd_drain_complete(GstCrystalHdDec *self, gboolean active)
+{
+  return !active && self->drain_idle && self->output_eos &&
+         g_queue_is_empty(&self->timestamps) && !self->need_second_field;
+}
+
 static GstFlowReturn
 gst_crystalhd_drain(GstVideoDecoder *decoder)
 {
@@ -1338,9 +1404,7 @@ gst_crystalhd_drain(GstVideoDecoder *decoder)
     g_mutex_unlock(&self->output_lock);
     /* Tokens retire after copying, not after the clocked downstream push.
      * EOS must wait for both, otherwise the final real picture can vanish. */
-    if (!active && self->drain_idle && (self->output_eos ||
-                    (g_queue_is_empty(&self->timestamps) &&
-                     !self->need_second_field)))
+    if (gst_crystalhd_drain_complete(self, active))
       break;
     /* Asynchronous input may reach EOS long before clocked playback ends.
      * Bound lack of completed delivery, not the entire remaining movie. */
@@ -1357,13 +1421,16 @@ gst_crystalhd_drain(GstVideoDecoder *decoder)
       goto done;
   }
 
-  if (!g_queue_is_empty(&self->timestamps) || self->need_second_field || active) {
+  if (!gst_crystalhd_drain_complete(self, active)) {
     GST_ELEMENT_ERROR(self, STREAM, DECODE,
                       ("CrystalHD drain ended before all input pictures were decoded"),
                       ("%u input timestamps remain after %" G_GINT64_FORMAT
-                       " ms (delivery active: %d; no-progress limit: 10000 ms)",
+                       " ms (delivery active: %d; output idle: %d; "
+                       "firmware EOS: %d; "
+                       "no-progress limit: 10000 ms)",
                        self->timestamps.length,
-                       (g_get_monotonic_time() - started) / 1000, active));
+                       (g_get_monotonic_time() - started) / 1000, active,
+                       self->drain_idle, self->output_eos));
     flow = GST_FLOW_ERROR;
   }
 done:

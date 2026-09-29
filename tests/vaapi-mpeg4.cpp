@@ -97,6 +97,51 @@ OwnedSlice MakeSlice(unsigned macroblock_offset = 3) {
   return slice;
 }
 
+struct PacketHeader {
+  unsigned macroblock;
+  unsigned quant;
+  unsigned hec;
+};
+
+void PutTestBits(Bytes *bytes, size_t *position, unsigned count,
+                 uint32_t value) {
+  Check(bytes != nullptr && position != nullptr && count <= 32,
+        "bounded test packet writer");
+  const size_t end = *position + count;
+  if (bytes->size() < (end + 7) / 8) bytes->resize((end + 7) / 8, 0);
+  while (count--) {
+    (*bytes)[*position / 8] |=
+        static_cast<uint8_t>(((value >> count) & 1U)
+                             << (7 - *position % 8));
+    ++*position;
+  }
+}
+
+OwnedSlice MakePacketSlice(unsigned zero_bits, unsigned macroblock_offset,
+                           const std::vector<PacketHeader> &headers) {
+  OwnedSlice slice;
+  Check(macroblock_offset < 8, "test packet offset is within its first byte");
+  slice.data.resize(1, static_cast<uint8_t>((1U << (8 - macroblock_offset)) - 1));
+  size_t position = 8;
+  for (const PacketHeader &header : headers) {
+    PutTestBits(&slice.data, &position, zero_bits, 0);
+    PutTestBits(&slice.data, &position, 1, 1);
+    PutTestBits(&slice.data, &position, 10, header.macroblock);
+    PutTestBits(&slice.data, &position, 5, header.quant);
+    PutTestBits(&slice.data, &position, 1, header.hec);
+    while (position & 7) PutTestBits(&slice.data, &position, 1, 1);
+    PutTestBits(&slice.data, &position, 8, 0x55);
+  }
+  PutTestBits(&slice.data, &position, 8, 0xa5);
+  slice.parameters.slice_data_offset = 0;
+  slice.parameters.slice_data_size = slice.data.size();
+  slice.parameters.slice_data_flag = VA_SLICE_DATA_FLAG_ALL;
+  slice.parameters.macroblock_offset = macroblock_offset;
+  slice.parameters.macroblock_number = 0;
+  slice.parameters.quant_scale = 17;
+  return slice;
+}
+
 VAPictureParameterBufferMPEG4 Picture(mpeg4::Kind kind) {
   VAPictureParameterBufferMPEG4 picture = {};
   picture.vop_width = 640;
@@ -600,6 +645,98 @@ void TimeResolutionEdges() {
   ++groups;
 }
 
+void SimpleResyncMarkers() {
+  Input input;
+  input.profile = VAProfileMPEG4Simple;
+  input.picture.vol_fields.bits.resync_marker_disable = 0;
+  input.picture.vop_time_increment_resolution = 30;
+  input.slice = MakePacketSlice(16, 3,
+                                {{320, 4, 0}, {600, 4, 0}});
+  Check(input.slice.data[1] == 0 && input.slice.data[2] == 0 &&
+            input.slice.data[3] == 0xa8 && input.slice.data[4] == 0x04,
+        "independent I packet header encodes MB 320, q=4 and HEC=0");
+  Bytes output;
+  mpeg4::TimingState next;
+  uint64_t tick = 7;
+  Check(mpeg4::Assemble(input.picture, input.profile, input.token, 0, 0,
+                        input.slice.View(), input.state, &output, &next,
+                        &tick),
+        "resync-enabled Simple picture accepted");
+  Check(!next.resync_marker_disable && tick == 0,
+        "Simple resync policy is retained in timing state");
+  Parse(output, input.picture, input.profile, input.slice,
+        {mpeg4::Kind::I, 0, 0, 17});
+
+  for (unsigned fcode : {1U, 7U}) {
+    Input p = Later(mpeg4::Kind::P);
+    p.profile = VAProfileMPEG4Simple;
+    p.state.profile = VAProfileMPEG4Simple;
+    p.state.resolution = 30;
+    p.state.resync_marker_disable = false;
+    p.picture.vop_time_increment_resolution = 30;
+    p.picture.vol_fields.bits.resync_marker_disable = 0;
+    p.picture.vop_fcode_forward = fcode;
+    p.slice = MakePacketSlice(15 + fcode, 7,
+                              {{320, 4, 0}, {600, 4, 0}});
+    const mpeg4::TimingState before = p.state;
+    Check(mpeg4::Assemble(p.picture, p.profile, p.token, p.forward, p.backward,
+                          p.slice.View(), p.state, &output, &next, &tick),
+          "boundary-length Simple P packet markers accepted");
+    Check(tick == 8 && next.have_previous &&
+              next.previous.token == before.newest.token,
+          "resync-enabled Simple P commits ordinary anchor timing");
+    Parse(output, p.picture, p.profile, p.slice,
+          {mpeg4::Kind::P, 8, 4, 17});
+  }
+
+  {
+    Input x = input;
+    x.slice = MakePacketSlice(16, 3, {{0, 4, 0}});
+    Reject(x, "zero packet macroblock rejected");
+  }
+  {
+    Input x = input;
+    x.slice = MakePacketSlice(16, 3, {{920, 4, 0}});
+    Reject(x, "out-of-range packet macroblock rejected");
+  }
+  {
+    Input x = input;
+    x.slice = MakePacketSlice(16, 3, {{320, 0, 0}});
+    Reject(x, "zero packet quantizer rejected");
+  }
+  {
+    Input x = input;
+    x.slice = MakePacketSlice(16, 3, {{320, 4, 1}});
+    Reject(x, "packet header extension rejected");
+  }
+  {
+    Input x = input;
+    x.slice = MakePacketSlice(16, 3,
+                              {{320, 4, 0}, {320, 4, 0}});
+    Reject(x, "duplicate packet macroblock rejected");
+  }
+  {
+    Input x = input;
+    x.slice = MakePacketSlice(16, 3,
+                              {{600, 4, 0}, {320, 4, 0}});
+    Reject(x, "decreasing packet macroblock rejected");
+  }
+  {
+    Input x = input;
+    x.slice = MakePacketSlice(16, 3, {{320, 4, 0}});
+    x.slice.data.resize(5);
+    x.slice.parameters.slice_data_size = x.slice.data.size();
+    Reject(x, "truncated packet header rejected");
+  }
+  {
+    Input x = input;
+    x.slice = MakePacketSlice(16, 3, {{320, 4, 0}});
+    x.slice.parameters.macroblock_offset = 2;
+    Reject(x, "packet marker output alignment mismatch rejected");
+  }
+  ++groups;
+}
+
 void PictureRejections() {
   { Input x; x.profile = VAProfileMPEG4Main; Reject(x, "MPEG-4 Main rejected"); }
   { Input x; x.picture.vop_width = 0; Reject(x, "zero width rejected"); }
@@ -625,7 +762,6 @@ void PictureRejections() {
   { Input x; x.picture.vol_fields.bits.data_partitioned = 1; Reject(x, "data partitioning rejected"); }
   { Input x; x.picture.vol_fields.bits.reversible_vlc = 1; Reject(x, "reversible VLC rejected"); }
   { Input x; x.picture.vol_fields.bits.resync_marker_disable = 0; Reject(x, "resync-enabled Advanced Simple rejected"); }
-  { Input x; x.profile = VAProfileMPEG4Simple; x.picture.vol_fields.bits.resync_marker_disable = 0; Reject(x, "resync-enabled Simple rejected"); }
   { Input x; x.picture.vop_fields.bits.top_field_first = 1; Reject(x, "field order rejected"); }
   { Input x; x.picture.vop_fields.bits.alternate_vertical_scan_flag = 1; Reject(x, "alternate scan rejected"); }
   { Input x; x.picture.vop_fields.bits.vop_coding_type = 3; Reject(x, "reserved coding type rejected"); }
@@ -733,6 +869,7 @@ int main() {
     SimpleZeroTrdAnchors();
     SecondBoundaryGroupClock();
     TimeResolutionEdges();
+    SimpleResyncMarkers();
     PictureRejections();
     TimingAndReferenceRejections();
     SliceAndBoundRejections();

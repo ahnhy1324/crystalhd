@@ -3,6 +3,7 @@
 #include <gst/gst.h>
 #include <gst/video/video.h>
 #include <string.h>
+#include "phase1-progress.h"
 
 #define MAX_EPOCHS 8U
 typedef enum { FIELD_ANY, FIELD_PROGRESSIVE, FIELD_TFF, FIELD_BFF } FieldOrder;
@@ -17,26 +18,123 @@ typedef struct {
   GstClockTime previous_pts;
   gboolean require_timestamps;
   GChecksum *checksum;
+  GChecksum *metadata_checksum;
+  gboolean have_last_good;
+  guint last_good_frame;
+  GstClockTime last_good_pts;
+  guint pass;
+  Phase1Progress progress;
   const GeometryEpoch *epochs;
   guint epoch_count, epoch_index, epoch_frames;
 } PlaybackAudit;
+
+static guint32
+canonical_field_flags(GstBufferFlags flags)
+{
+  guint32 result = 0;
+
+  if (flags & GST_VIDEO_BUFFER_FLAG_INTERLACED)
+    result |= 1U << 0;
+  if (flags & GST_VIDEO_BUFFER_FLAG_TFF)
+    result |= 1U << 1;
+  if (flags & GST_VIDEO_BUFFER_FLAG_RFF)
+    result |= 1U << 2;
+  if (flags & GST_VIDEO_BUFFER_FLAG_ONEFIELD)
+    result |= 1U << 3;
+  return result;
+}
+
+static guint32
+canonical_interlace_mode(GstVideoInterlaceMode mode)
+{
+  switch (mode) {
+    case GST_VIDEO_INTERLACE_MODE_PROGRESSIVE: return 0;
+    case GST_VIDEO_INTERLACE_MODE_INTERLEAVED: return 1;
+    case GST_VIDEO_INTERLACE_MODE_MIXED: return 2;
+    case GST_VIDEO_INTERLACE_MODE_FIELDS: return 3;
+    case GST_VIDEO_INTERLACE_MODE_ALTERNATE: return 4;
+    default: return G_MAXUINT32;
+  }
+}
+
+static void
+checksum_u32_be(GChecksum *checksum, guint32 value)
+{
+  const guchar bytes[] = {
+    (guchar)(value >> 24), (guchar)(value >> 16),
+    (guchar)(value >> 8), (guchar)value
+  };
+
+  g_checksum_update(checksum, bytes, sizeof(bytes));
+}
+
+static void
+checksum_u64_be(GChecksum *checksum, guint64 value)
+{
+  const guchar bytes[] = {
+    (guchar)(value >> 56), (guchar)(value >> 48),
+    (guchar)(value >> 40), (guchar)(value >> 32),
+    (guchar)(value >> 24), (guchar)(value >> 16),
+    (guchar)(value >> 8), (guchar)value
+  };
+
+  g_checksum_update(checksum, bytes, sizeof(bytes));
+}
+
+static void
+checksum_frame_metadata(GChecksum *checksum, GstClockTime pts,
+                        GstClockTime duration,
+                        const GstVideoInfo *info, GstBufferFlags flags)
+{
+  /* Stable oracle record: version, exact nanosecond PTS/duration (NONE is
+   * UINT64_MAX), geometry, frame rate, canonical interlace mode and field
+   * flags. */
+  static const guchar version[] = {'C', 'H', 'M', 'D', 2};
+
+  g_checksum_update(checksum, version, sizeof(version));
+  checksum_u64_be(checksum, pts);
+  checksum_u64_be(checksum, duration);
+  checksum_u32_be(checksum, GST_VIDEO_INFO_WIDTH(info));
+  checksum_u32_be(checksum, GST_VIDEO_INFO_HEIGHT(info));
+  checksum_u32_be(checksum, GST_VIDEO_INFO_FPS_N(info));
+  checksum_u32_be(checksum, GST_VIDEO_INFO_FPS_D(info));
+  checksum_u32_be(checksum,
+                  canonical_interlace_mode(GST_VIDEO_INFO_INTERLACE_MODE(info)));
+  checksum_u32_be(checksum, canonical_field_flags(flags));
+}
+
+static void
+report_last_good(const PlaybackAudit *audit)
+{
+  if (!audit->have_last_good) {
+    g_print("LastGoodFrameIndex=none; LastGoodPTS=NONE\n");
+  } else if (!GST_CLOCK_TIME_IS_VALID(audit->last_good_pts)) {
+    g_print("LastGoodFrameIndex=%u; LastGoodPTS=NONE\n",
+            audit->last_good_frame);
+  } else {
+    g_print("LastGoodFrameIndex=%u; LastGoodPTS=%" G_GUINT64_FORMAT "\n",
+            audit->last_good_frame, (guint64)audit->last_good_pts);
+  }
+}
 
 static gboolean
 field_order_matches(FieldOrder expected, GstVideoInterlaceMode mode, guint flags)
 {
   gboolean interlaced = (flags & GST_VIDEO_BUFFER_FLAG_INTERLACED) != 0;
   gboolean tff = (flags & GST_VIDEO_BUFFER_FLAG_TFF) != 0;
+  gboolean interlaced_mode = mode == GST_VIDEO_INTERLACE_MODE_INTERLEAVED ||
+      mode == GST_VIDEO_INTERLACE_MODE_MIXED;
+  gboolean progressive_mode = mode == GST_VIDEO_INTERLACE_MODE_PROGRESSIVE ||
+      mode == GST_VIDEO_INTERLACE_MODE_MIXED;
+  if ((flags & GST_VIDEO_BUFFER_FLAG_ONEFIELD) || (tff && !interlaced) ||
+      (interlaced && !interlaced_mode) ||
+      (!interlaced && !progressive_mode))
+    return FALSE; /* The probe counts full pictures, not individual fields. */
   if (expected == FIELD_ANY)
     return TRUE;
-  if (flags & GST_VIDEO_BUFFER_FLAG_ONEFIELD)
-    return FALSE; /* The probe counts full pictures, not individual fields. */
   if (expected == FIELD_PROGRESSIVE)
-    return !interlaced && !tff &&
-        (mode == GST_VIDEO_INTERLACE_MODE_PROGRESSIVE ||
-         mode == GST_VIDEO_INTERLACE_MODE_MIXED);
-  return tff == (expected == FIELD_TFF) &&
-      (mode == GST_VIDEO_INTERLACE_MODE_INTERLEAVED ||
-       (mode == GST_VIDEO_INTERLACE_MODE_MIXED && interlaced));
+    return !interlaced;
+  return interlaced && tff == (expected == FIELD_TFF);
 }
 
 static void
@@ -71,19 +169,40 @@ count_frame(GstElement *sink, GstBuffer *buffer, GstPad *pad, gpointer data)
   GstCaps *caps = gst_pad_get_current_caps(pad);
   GstClockTime pts = GST_BUFFER_PTS(buffer);
   GstVideoFrame frame;
+  gboolean caps_valid;
+  gboolean frame_valid;
 
   (void)sink;
-  if (caps == NULL || !gst_video_info_from_caps(&info, caps) ||
-      GST_VIDEO_INFO_FORMAT(&info) != GST_VIDEO_FORMAT_YUY2 ||
-      gst_buffer_get_size(buffer) < info.size ||
-      (audit->require_timestamps && !GST_CLOCK_TIME_IS_VALID(pts)) ||
-      (GST_CLOCK_TIME_IS_VALID(pts) &&
-       GST_CLOCK_TIME_IS_VALID(audit->previous_pts) && pts < audit->previous_pts))
+  caps_valid = caps != NULL && gst_video_info_from_caps(&info, caps);
+  if (caps_valid)
+    checksum_frame_metadata(audit->metadata_checksum, pts,
+                            GST_BUFFER_DURATION(buffer), &info,
+                            GST_BUFFER_FLAGS(buffer));
+  frame_valid = caps_valid &&
+      GST_VIDEO_INFO_FORMAT(&info) == GST_VIDEO_FORMAT_YUY2 &&
+      gst_buffer_get_size(buffer) >= info.size &&
+      (!audit->require_timestamps || GST_CLOCK_TIME_IS_VALID(pts)) &&
+      (!GST_CLOCK_TIME_IS_VALID(pts) ||
+       !GST_CLOCK_TIME_IS_VALID(audit->previous_pts) || pts >= audit->previous_pts);
+  if (!frame_valid)
     audit->invalid_output = TRUE;
-  else if (!gst_video_frame_map(&frame, &info, buffer, GST_MAP_READ))
+  else if (!gst_video_frame_map(&frame, &info, buffer, GST_MAP_READ)) {
+    frame_valid = FALSE;
     audit->invalid_output = TRUE;
-  else {
+  } else {
     guint row;
+    const guint width = GST_VIDEO_INFO_WIDTH(&info);
+    const guint height = GST_VIDEO_INFO_HEIGHT(&info);
+    const gsize row_bytes = (gsize)width * 2;
+    const gint stride = GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 0);
+    const guint8 *plane = GST_VIDEO_FRAME_PLANE_DATA(&frame, 0);
+
+    if (plane == NULL || stride <= 0 || (gsize)stride < row_bytes) {
+      g_printerr("Invalid YUY2 plane layout: width=%u height=%u stride=%d\n",
+          width, height, stride);
+      audit->invalid_output = TRUE;
+      frame_valid = FALSE;
+    }
     /* Check field metadata against the same epoch BEFORE its frame count
      * advances. Equal-size TFF/BFF transitions need no CAPS event. */
     if (audit->epoch_index < audit->epoch_count &&
@@ -97,13 +216,29 @@ count_frame(GstElement *sink, GstBuffer *buffer, GstPad *pad, gpointer data)
             gst_video_interlace_mode_to_string(GST_VIDEO_INFO_INTERLACE_MODE(&info)),
             GST_BUFFER_FLAGS(buffer));
       audit->invalid_output = TRUE;
+      frame_valid = FALSE;
     }
-    observe_geometry(audit, GST_VIDEO_INFO_WIDTH(&info), GST_VIDEO_INFO_HEIGHT(&info));
-    for (row = 0; row < (guint)GST_VIDEO_INFO_HEIGHT(&info); row++)
-      g_checksum_update(audit->checksum,
-          (const guchar *)GST_VIDEO_FRAME_PLANE_DATA(&frame, 0) +
-          row * GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 0),
-          GST_VIDEO_INFO_WIDTH(&info) * 2);
+    observe_geometry(audit, width, height);
+    if (audit->invalid_output)
+      frame_valid = FALSE;
+    if (frame_valid) {
+      for (row = 0; row < height; row++)
+        g_checksum_update(audit->checksum, plane + (gsize)row * stride,
+            row_bytes);
+    }
+    if (frame_valid) {
+      audit->have_last_good = TRUE;
+      audit->last_good_frame = audit->frames;
+      audit->last_good_pts = pts;
+      if (GST_CLOCK_TIME_IS_VALID(pts))
+        phase1_progress_write(&audit->progress,
+            "probe=gstreamer-playback pass=%u frame-index=%u pts=%" G_GUINT64_FORMAT "\n",
+            audit->pass, audit->last_good_frame, (guint64)pts);
+      else
+        phase1_progress_write(&audit->progress,
+            "probe=gstreamer-playback pass=%u frame-index=%u pts=NONE\n",
+            audit->pass, audit->last_good_frame);
+    }
     gst_video_frame_unmap(&frame);
   }
   if (caps != NULL)
@@ -126,9 +261,18 @@ run_pipeline(const gchar *description, const gchar *filename, guint expected,
   GstMessage *message = NULL;
   gboolean success = TRUE;
   gchar *reference_hash = NULL;
+  gchar *reference_metadata_hash = NULL;
   guint pass;
 
   audit.previous_pts = GST_CLOCK_TIME_NONE;
+  audit.last_good_pts = GST_CLOCK_TIME_NONE;
+  if (!phase1_progress_open(&audit.progress)) {
+    g_printerr("Could not open Phase 1 progress record\n");
+    if (pipeline != NULL)
+      gst_object_unref(pipeline);
+    g_clear_error(&error);
+    return FALSE;
+  }
   audit.require_timestamps = filename == NULL || strstr(description, "qtdemux") != NULL;
   audit.epochs = epochs;
   audit.epoch_count = epoch_count;
@@ -138,6 +282,7 @@ run_pipeline(const gchar *description, const gchar *filename, guint expected,
     g_clear_error(&error);
     if (pipeline != NULL)
       gst_object_unref(pipeline);
+    phase1_progress_close(&audit.progress);
     return FALSE;
   }
   if (filename != NULL) {
@@ -152,10 +297,14 @@ run_pipeline(const gchar *description, const gchar *filename, guint expected,
   gst_object_unref(sink);
 
   audit.checksum = g_checksum_new(G_CHECKSUM_SHA256);
+  audit.metadata_checksum = g_checksum_new(G_CHECKSUM_SHA256);
   bus = gst_element_get_bus(pipeline);
   for (pass = 0; pass < (seek_replay ? 2U : 1U); pass++) {
     gboolean eos = FALSE;
     const gchar *hash;
+    const gchar *metadata_hash;
+
+    audit.pass = pass;
 
     if (pass != 0) {
       /* EOS has stopped output. Pause before resetting the audit so a
@@ -169,8 +318,12 @@ run_pipeline(const gchar *description, const gchar *filename, guint expected,
       audit.frames = 0;
       audit.invalid_output = FALSE;
       audit.previous_pts = GST_CLOCK_TIME_NONE;
+      audit.have_last_good = FALSE;
+      audit.last_good_frame = 0;
+      audit.last_good_pts = GST_CLOCK_TIME_NONE;
       audit.epoch_index = audit.epoch_frames = 0;
       g_checksum_reset(audit.checksum);
+      g_checksum_reset(audit.metadata_checksum);
       if (!gst_element_seek_simple(pipeline, GST_FORMAT_TIME,
                                     GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE, 0)) {
         g_printerr("Pipeline rejected flushing seek to zero\n");
@@ -210,10 +363,13 @@ run_pipeline(const gchar *description, const gchar *filename, guint expected,
     if (!eos)
       gst_element_set_state(pipeline, GST_STATE_NULL);
     hash = g_checksum_get_string(audit.checksum);
+    metadata_hash = g_checksum_get_string(audit.metadata_checksum);
     if (report) {
-      g_print("GStreamer%s decoded %u/%u YUY2 frames; EOS=%s; SHA256=%s\n",
+      g_print("GStreamer%s decoded %u/%u YUY2 frames; EOS=%s; "
+              "MetadataSHA256=%s; SHA256=%s\n",
                pass != 0 ? " seek replay" : "", audit.frames, expected,
-               eos ? "yes" : "no", hash);
+               eos ? "yes" : "no", metadata_hash, hash);
+      report_last_good(&audit);
       if (audit.invalid_output)
         g_printerr("Output contained invalid YUY2 buffers, regressing timestamps or unexpected geometry/field order\n");
       if (epoch_count != 0)
@@ -224,6 +380,12 @@ run_pipeline(const gchar *description, const gchar *filename, guint expected,
       reference_hash = g_strdup(hash);
     else if (g_strcmp0(hash, reference_hash) != 0) {
       g_printerr("Decoded pixels changed after the flushing seek\n");
+      success = FALSE;
+    }
+    if (pass == 0)
+      reference_metadata_hash = g_strdup(metadata_hash);
+    else if (g_strcmp0(metadata_hash, reference_metadata_hash) != 0) {
+      g_printerr("Frame metadata changed after the flushing seek\n");
       success = FALSE;
     }
     if (!success)
@@ -237,7 +399,10 @@ run_pipeline(const gchar *description, const gchar *filename, guint expected,
   gst_object_unref(bus);
   gst_object_unref(pipeline);
   g_checksum_free(audit.checksum);
+  g_checksum_free(audit.metadata_checksum);
   g_free(reference_hash);
+  g_free(reference_metadata_hash);
+  phase1_progress_close(&audit.progress);
   return success;
 }
 
@@ -346,16 +511,82 @@ field_self_test(void)
   return field_order_matches(FIELD_TFF, mixed, top) &&
       field_order_matches(FIELD_BFF, mixed, fields) &&
       field_order_matches(FIELD_TFF, GST_VIDEO_INTERLACE_MODE_INTERLEAVED,
-                          GST_VIDEO_BUFFER_FLAG_TFF) &&
-      field_order_matches(FIELD_BFF, GST_VIDEO_INTERLACE_MODE_INTERLEAVED, 0) &&
+                          top) &&
+      field_order_matches(FIELD_BFF, GST_VIDEO_INTERLACE_MODE_INTERLEAVED,
+                          fields) &&
+      field_order_matches(FIELD_ANY, mixed,
+                          top | GST_VIDEO_BUFFER_FLAG_RFF) &&
       field_order_matches(FIELD_PROGRESSIVE, mixed, 0) &&
       !field_order_matches(FIELD_TFF, mixed, fields) &&
       !field_order_matches(FIELD_BFF, mixed, top) &&
       !field_order_matches(FIELD_TFF, mixed, GST_VIDEO_BUFFER_FLAG_TFF) &&
       !field_order_matches(FIELD_TFF, GST_VIDEO_INTERLACE_MODE_PROGRESSIVE, top) &&
       !field_order_matches(FIELD_TFF, mixed, top | GST_VIDEO_BUFFER_FLAG_ONEFIELD) &&
+      !field_order_matches(FIELD_ANY, mixed,
+                           fields | GST_VIDEO_BUFFER_FLAG_ONEFIELD) &&
       !field_order_matches(FIELD_PROGRESSIVE, mixed, fields) &&
       !field_order_matches(FIELD_PROGRESSIVE, GST_VIDEO_INTERLACE_MODE_INTERLEAVED, 0);
+}
+
+static gboolean
+metadata_self_test(void)
+{
+  GstVideoInfo info;
+  GChecksum *first = g_checksum_new(G_CHECKSUM_SHA256);
+  GChecksum *same = g_checksum_new(G_CHECKSUM_SHA256);
+  GChecksum *different_pts = g_checksum_new(G_CHECKSUM_SHA256);
+  GChecksum *different_duration = g_checksum_new(G_CHECKSUM_SHA256);
+  GChecksum *different_rate = g_checksum_new(G_CHECKSUM_SHA256);
+  GChecksum *different_fields = g_checksum_new(G_CHECKSUM_SHA256);
+  GstVideoInfo different_rate_info;
+  gboolean valid;
+  gboolean success;
+
+  gst_video_info_init(&info);
+  valid = gst_video_info_set_format(&info, GST_VIDEO_FORMAT_YUY2, 320, 240);
+  GST_VIDEO_INFO_FPS_N(&info) = 25;
+  GST_VIDEO_INFO_FPS_D(&info) = 1;
+  different_rate_info = info;
+  GST_VIDEO_INFO_FPS_N(&different_rate_info) = 30;
+  checksum_frame_metadata(first, 0, 40 * GST_MSECOND, &info, 0);
+  checksum_frame_metadata(first, 40 * GST_MSECOND, 40 * GST_MSECOND, &info, 0);
+  checksum_frame_metadata(same, 0, 40 * GST_MSECOND, &info, 0);
+  checksum_frame_metadata(same, 40 * GST_MSECOND, 40 * GST_MSECOND, &info, 0);
+  checksum_frame_metadata(different_pts, 0, 40 * GST_MSECOND, &info, 0);
+  checksum_frame_metadata(different_pts, 41 * GST_MSECOND, 40 * GST_MSECOND,
+                          &info, 0);
+  checksum_frame_metadata(different_duration, 0, 41 * GST_MSECOND, &info, 0);
+  checksum_frame_metadata(different_duration, 40 * GST_MSECOND,
+                          40 * GST_MSECOND, &info, 0);
+  checksum_frame_metadata(different_rate, 0, 40 * GST_MSECOND,
+                          &different_rate_info, 0);
+  checksum_frame_metadata(different_rate, 40 * GST_MSECOND,
+                          40 * GST_MSECOND, &different_rate_info, 0);
+  checksum_frame_metadata(different_fields, 0, 40 * GST_MSECOND, &info, 0);
+  checksum_frame_metadata(different_fields, 40 * GST_MSECOND,
+                          40 * GST_MSECOND, &info,
+                          GST_VIDEO_BUFFER_FLAG_INTERLACED |
+                          GST_VIDEO_BUFFER_FLAG_TFF);
+  success = valid &&
+      g_str_equal(g_checksum_get_string(first), g_checksum_get_string(same)) &&
+      !g_str_equal(g_checksum_get_string(first),
+                   g_checksum_get_string(different_pts)) &&
+      !g_str_equal(g_checksum_get_string(first),
+                   g_checksum_get_string(different_duration)) &&
+      !g_str_equal(g_checksum_get_string(first),
+                   g_checksum_get_string(different_rate)) &&
+      !g_str_equal(g_checksum_get_string(first),
+                   g_checksum_get_string(different_fields)) &&
+      canonical_interlace_mode(GST_VIDEO_INTERLACE_MODE_PROGRESSIVE) == 0 &&
+      canonical_interlace_mode(GST_VIDEO_INTERLACE_MODE_INTERLEAVED) == 1 &&
+      canonical_interlace_mode(GST_VIDEO_INTERLACE_MODE_MIXED) == 2;
+  g_checksum_free(first);
+  g_checksum_free(same);
+  g_checksum_free(different_pts);
+  g_checksum_free(different_duration);
+  g_checksum_free(different_rate);
+  g_checksum_free(different_fields);
+  return success;
 }
 
 int
@@ -390,7 +621,7 @@ main(int argc, char **argv)
     const GeometryEpoch correct = {320, 240, 12, FIELD_PROGRESSIVE};
     const GeometryEpoch wrong = {640, 360, 12, FIELD_ANY};
     const GeometryEpoch wrong_fields = {320, 240, 12, FIELD_TFF};
-    if (!geometry_self_test() || !field_self_test() ||
+    if (!geometry_self_test() || !field_self_test() || !metadata_self_test() ||
         !run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, TRUE, NULL, 0) ||
         !run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, TRUE, &correct, 1) ||
         run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, FALSE, &wrong, 1) ||

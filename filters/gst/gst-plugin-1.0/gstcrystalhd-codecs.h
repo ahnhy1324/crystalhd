@@ -16,6 +16,12 @@ typedef enum {
   CRYSTALHD_MPEG4_OBJECT_TYPE_ADVANCED_SIMPLE = 17
 } CrystalHdMpeg4ObjectType;
 
+typedef enum {
+  CRYSTALHD_PAYLOAD_INVALID = 0,
+  CRYSTALHD_PAYLOAD_CODED,
+  CRYSTALHD_PAYLOAD_NOT_CODED
+} CrystalHdPayloadStatus;
+
 typedef struct {
   BC_MEDIA_SUBTYPE subtype;
   gboolean vc1_bdu;
@@ -24,6 +30,8 @@ typedef struct {
   guint8 mpeg4_profile_level;
   guint mpeg4_width;
   guint mpeg4_height;
+  guint mpeg4_time_increment_resolution;
+  guint mpeg4_time_increment_bits;
 } CrystalHdCodec;
 
 typedef struct {
@@ -70,7 +78,9 @@ gst_crystalhd_mpeg4_marker(CrystalHdMpeg4Bits *bits)
 static gboolean
 gst_crystalhd_mpeg4_vol_supported(const guint8 *data, gsize size,
                                   CrystalHdMpeg4ObjectType object_type,
-                                  guint *width, guint *height)
+                                  guint *width, guint *height,
+                                  guint *time_increment_resolution,
+                                  guint *time_increment_bits)
 {
   CrystalHdMpeg4Bits bits = { data, size, 0 };
   guint value;
@@ -187,6 +197,10 @@ gst_crystalhd_mpeg4_vol_supported(const guint8 *data, gsize size,
     *width = parsed_width;
   if (height != NULL)
     *height = parsed_height;
+  if (time_increment_resolution != NULL)
+    *time_increment_resolution = time_resolution;
+  if (time_increment_bits != NULL)
+    *time_increment_bits = time_bits;
   return TRUE;
 }
 
@@ -194,11 +208,14 @@ static gboolean
 gst_crystalhd_mpeg4_start_codes(const guint8 *data, gsize size,
                                 guint *vos_count, guint8 *profile_level,
                                 guint *vol_count, guint *vop_count,
-                                const guint8 **vol, gsize *vol_size)
+                                const guint8 **vol, gsize *vol_size,
+                                const guint8 **vop, gsize *vop_size)
 {
   gsize i;
   gsize first_vol = 0;
   gsize first_vol_end = 0;
+  gsize first_vop = 0;
+  gsize first_vop_end = 0;
   gsize required_data = 0;
 
   if (data == NULL || size < 4 || size > GST_CRYSTALHD_MPEG4_MAX_INPUT_SIZE ||
@@ -211,6 +228,8 @@ gst_crystalhd_mpeg4_start_codes(const guint8 *data, gsize size,
   *vop_count = 0;
   *vol = NULL;
   *vol_size = 0;
+  *vop = NULL;
+  *vop_size = 0;
   for (i = 0; i <= size - 4; i++) {
     guint8 code;
     if (data[i] != 0 || data[i + 1] != 0 || data[i + 2] != 1)
@@ -220,6 +239,8 @@ gst_crystalhd_mpeg4_start_codes(const guint8 *data, gsize size,
     required_data = 0;
     if (first_vol != 0 && first_vol_end == 0)
       first_vol_end = i;
+    if (first_vop != 0 && first_vop_end == 0)
+      first_vop_end = i;
     code = data[i + 3];
     if (code == 0xb0) {
       if (i + 4 >= size)
@@ -234,6 +255,8 @@ gst_crystalhd_mpeg4_start_codes(const guint8 *data, gsize size,
       (*vol_count)++;
       required_data = i + 4;
     } else if (code == 0xb6) {
+      if (*vop_count == 0)
+        first_vop = i + 4;
       (*vop_count)++;
       required_data = i + 4;
     }
@@ -249,7 +272,51 @@ gst_crystalhd_mpeg4_start_codes(const guint8 *data, gsize size,
     *vol = data + first_vol;
     *vol_size = first_vol_end - first_vol;
   }
+  if (first_vop != 0) {
+    if (first_vop_end == 0)
+      first_vop_end = size;
+    if (first_vop_end <= first_vop)
+      return FALSE;
+    *vop = data + first_vop;
+    *vop_size = first_vop_end - first_vop;
+  }
   return TRUE;
+}
+
+static CrystalHdPayloadStatus
+gst_crystalhd_mpeg4_vop_payload(const CrystalHdCodec *codec,
+                                const guint8 *data, gsize size)
+{
+  CrystalHdMpeg4Bits bits = { data, size, 0 };
+  guint coding_type;
+  guint value;
+
+  if (codec->mpeg4_time_increment_bits == 0 ||
+      codec->mpeg4_time_increment_bits > 16 ||
+      !gst_crystalhd_mpeg4_read_bits(&bits, 2, &coding_type))
+    return CRYSTALHD_PAYLOAD_INVALID;
+  if ((codec->mpeg4_object_type == CRYSTALHD_MPEG4_OBJECT_TYPE_SIMPLE &&
+       coding_type > 1) ||
+      (codec->mpeg4_object_type ==
+           CRYSTALHD_MPEG4_OBJECT_TYPE_ADVANCED_SIMPLE &&
+       coding_type > 2) ||
+      (codec->mpeg4_object_type != CRYSTALHD_MPEG4_OBJECT_TYPE_SIMPLE &&
+       codec->mpeg4_object_type !=
+           CRYSTALHD_MPEG4_OBJECT_TYPE_ADVANCED_SIMPLE))
+    return CRYSTALHD_PAYLOAD_INVALID;
+
+  do {
+    if (!gst_crystalhd_mpeg4_read_bits(&bits, 1, &value))
+      return CRYSTALHD_PAYLOAD_INVALID;
+  } while (value != 0);
+  if (!gst_crystalhd_mpeg4_marker(&bits) ||
+      !gst_crystalhd_mpeg4_skip_bits(&bits,
+                                     codec->mpeg4_time_increment_bits) ||
+      !gst_crystalhd_mpeg4_marker(&bits) ||
+      !gst_crystalhd_mpeg4_read_bits(&bits, 1, &value))
+    return CRYSTALHD_PAYLOAD_INVALID;
+  return value != 0 ? CRYSTALHD_PAYLOAD_CODED
+                    : CRYSTALHD_PAYLOAD_NOT_CODED;
 }
 
 /* vc1parse defines these formats in gst/videoparsers/gstvc1parse.c:
@@ -355,7 +422,7 @@ gst_crystalhd_codec_from_caps(GstCaps *caps, CrystalHdCodec *codec)
 }
 
 static gboolean
-gst_crystalhd_codec_metadata(const CrystalHdCodec *codec,
+gst_crystalhd_codec_metadata(CrystalHdCodec *codec,
                              const guint8 **data, gsize *size)
 {
   if (codec == NULL || data == NULL || size == NULL || *size > G_MAXUINT32)
@@ -387,56 +454,80 @@ gst_crystalhd_codec_metadata(const CrystalHdCodec *codec,
     guint vos_count, vol_count, vop_count;
     guint8 profile_level;
     const guint8 *vol;
+    const guint8 *vop;
     gsize vol_size;
+    gsize vop_size;
     guint width;
     guint height;
+    guint time_resolution;
+    guint time_bits;
     if (!gst_crystalhd_mpeg4_start_codes(*data, *size, &vos_count,
                                          &profile_level, &vol_count,
-                                         &vop_count, &vol, &vol_size) ||
+                                         &vop_count, &vol, &vol_size,
+                                         &vop, &vop_size) ||
         vos_count != 1 || profile_level != codec->mpeg4_profile_level ||
         vol_count != 1 || vop_count != 0 ||
         !gst_crystalhd_mpeg4_vol_supported(vol, vol_size,
                                            codec->mpeg4_object_type,
-                                           &width, &height) ||
+                                           &width, &height, &time_resolution,
+                                           &time_bits) ||
         (codec->mpeg4_width != 0 && codec->mpeg4_width != width) ||
         (codec->mpeg4_height != 0 && codec->mpeg4_height != height))
       return FALSE;
+    codec->mpeg4_time_increment_resolution = time_resolution;
+    codec->mpeg4_time_increment_bits = time_bits;
   }
   return *size <= G_MAXUINT32;
 }
 
-static gboolean
+static CrystalHdPayloadStatus
 gst_crystalhd_codec_payload(const CrystalHdCodec *codec,
                             const guint8 **data, gsize *size)
 {
+  CrystalHdPayloadStatus payload = CRYSTALHD_PAYLOAD_CODED;
+
+  if (codec == NULL || data == NULL || size == NULL || *data == NULL)
+    return CRYSTALHD_PAYLOAD_INVALID;
   if (codec->subtype == BC_MSUBTYPE_DIVX) {
     guint vos_count, vol_count, vop_count;
     guint8 profile_level;
     const guint8 *vol;
+    const guint8 *vop;
     gsize vol_size;
+    gsize vop_size;
     guint width = codec->mpeg4_width;
     guint height = codec->mpeg4_height;
+    guint time_resolution = codec->mpeg4_time_increment_resolution;
+    guint time_bits = codec->mpeg4_time_increment_bits;
     if (!gst_crystalhd_mpeg4_start_codes(*data, *size, &vos_count,
                                          &profile_level, &vol_count,
-                                         &vop_count, &vol, &vol_size) ||
+                                         &vop_count, &vol, &vol_size,
+                                         &vop, &vop_size) ||
         vop_count != 1 || vos_count > 1 || vol_count > 1 ||
         (vos_count == 1 && profile_level != codec->mpeg4_profile_level) ||
         (vol_count == 1 &&
          !gst_crystalhd_mpeg4_vol_supported(vol, vol_size,
                                             codec->mpeg4_object_type,
-                                            &width, &height)) ||
+                                            &width, &height, &time_resolution,
+                                            &time_bits)) ||
         (vol_count == 1 && codec->mpeg4_width != 0 &&
          codec->mpeg4_width != width) ||
         (vol_count == 1 && codec->mpeg4_height != 0 &&
-         codec->mpeg4_height != height))
-      return FALSE;
+         codec->mpeg4_height != height) ||
+        (vol_count == 1 &&
+         (codec->mpeg4_time_increment_resolution != time_resolution ||
+          codec->mpeg4_time_increment_bits != time_bits)))
+      return CRYSTALHD_PAYLOAD_INVALID;
+    payload = gst_crystalhd_mpeg4_vop_payload(codec, vop, vop_size);
+    if (payload == CRYSTALHD_PAYLOAD_INVALID)
+      return payload;
   }
   if (codec->frame_layer) {
     /* SMPTE 421M Annex L: 24-bit little-endian picture length, flags,
      * then a 32-bit timestamp. These bytes are not compressed video.
      */
     if (*size < 8 || GST_READ_UINT24_LE(*data) != *size - 8)
-      return FALSE;
+      return CRYSTALHD_PAYLOAD_INVALID;
     *data += 8;
     *size -= 8;
   }
@@ -448,8 +539,10 @@ gst_crystalhd_codec_payload(const CrystalHdCodec *codec,
        codec->subtype == BC_MSUBTYPE_WVC1 ||
        codec->subtype == BC_MSUBTYPE_WMV3) &&
       *size > GST_CRYSTALHD_VC1_MAX_PICTURE_SIZE)
-    return FALSE;
-  return *size > 0 && *size <= G_MAXUINT32 && *size <= G_MAXSIZE - 4;
+    return CRYSTALHD_PAYLOAD_INVALID;
+  if (*size == 0 || *size > G_MAXUINT32 || *size > G_MAXSIZE - 4)
+    return CRYSTALHD_PAYLOAD_INVALID;
+  return payload;
 }
 
 static gsize

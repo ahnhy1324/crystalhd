@@ -46,9 +46,11 @@ demuxed packet count, assuming one complete progressive picture per packet.
 It is not itself a software decode or proof of error-free media.
 `--hardware` requires an idle BCM70015 and a matching loaded module; see
 [device access and module identity](../../BRINGUP.md#device-access-and-module-identity).
-It submits EOS with `DtsFlushInput(0)`, then requires every expected timestamped
-picture, the firmware EOS marker, `DtsIsEndOfStream`, an empty ready queue and
-successful stop/close. Input inactivity alone never counts as EOS.
+It verifies that EOS was clear immediately before `DtsFlushInput(0)`, then
+requires every expected timestamped picture, firmware-derived
+`DtsIsEndOfStream`, an empty ready queue and successful stop/close. The firmware
+timing marker need not be returned as a separate client-owned output buffer;
+input inactivity alone never counts as EOS.
 
 The probe does not accept MPEG-4. A library client draining MPEG-4 may complete
 `DtsIsEndOfStream` without a firmware marker only after the explicit drain TX

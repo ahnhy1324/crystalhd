@@ -250,32 +250,32 @@ test_mpeg4_framing(void)
     0,0,1,0xb2,'L','a','v','c','6','1','.','1','9','.','1','0','1'
   };
   const guint8 picture[] = {
-    0,0,1,0xb3,0x12,0,0,1,0xb6,0x1a,0x2b,0x3c,0,0,1,0xb1
+    0,0,1,0xb3,0x12,0,0,1,0xb6,0x10,0x60,0x3c,0,0,1,0xb1
   };
   const guint8 with_vol[] = {
     0,0,1,0x20,0,0xc4,0x8d,0x88,0,0xf5,0x14,4,0x2d,0x14,0x63,
-    0,0,1,0xb6,0x1a,0x2b
+    0,0,1,0xb6,0x10,0x60
   };
   const guint8 with_asp_vol[] = {
     0,0,1,0x20,0x08,0xd4,0x8d,0x08,0,0xf5,0x14,4,0x2d,0x14,0x18,0x3f,
-    0,0,1,0xb6,0x1a,0x2b
+    0,0,1,0xb6,0x10,0x60
   };
   const guint8 duplicate_vol[] = {
     0,0,1,0x20,0,0xc4,0x8d,0x88,0,0xf5,0x14,4,0x2d,0x14,0x63,
     0,0,1,0x20,0,0xc4,0x8d,0x88,0,0xf5,0x14,4,0x2d,0x14,0x63
   };
   const guint8 duplicate[] = {
-    0,0,1,0xb6,0x11,0,0,1,0xb6,0x22
+    0,0,1,0xb6,0x10,0x60,0,0,1,0xb6,0x50,0x60
   };
-  const guint8 vop_tail[] = { 0,0,1,0xb6,0x1a,0x2b };
+  const guint8 vop_tail[] = { 0,0,1,0xb6,0x10,0x60 };
   const guint8 matching_vos_picture[] = {
-    0,0,1,0xb0,3,0,0,1,0xb6,0x1a,0x2b
+    0,0,1,0xb0,3,0,0,1,0xb6,0x10,0x60
   };
   const guint8 wrong_vos_picture[] = {
-    0,0,1,0xb0,5,0,0,1,0xb6,0x1a,0x2b
+    0,0,1,0xb0,5,0,0,1,0xb6,0x10,0x60
   };
   const guint8 duplicate_vos_picture[] = {
-    0,0,1,0xb0,3,0,0,1,0xb0,3,0,0,1,0xb6,0x1a,0x2b
+    0,0,1,0xb0,3,0,0,1,0xb0,3,0,0,1,0xb6,0x10,0x60
   };
   const guint8 no_vol[] = { 0,0,1,0xb0,3,0,0,1,0xb5,0x89 };
   const guint8 metadata_vop[] = { 0,0,1,0x20,0xaa,0,0,1,0xb6,0x11 };
@@ -283,6 +283,15 @@ test_mpeg4_framing(void)
   const guint8 bare_vol_four[] = { 0,0,0,1,0x20 };
   const guint8 bare_vop[] = { 0,0,1,0xb6 };
   const guint8 bare_vop_four[] = { 0,0,0,1,0xb6 };
+  const guint8 coded_i[] = { 0,0,1,0xb6,0x10,0x60 };
+  const guint8 coded_p[] = { 0,0,1,0xb6,0x50,0x60 };
+  const guint8 not_coded_i[] = { 0,0,1,0xb6,0x10,0x40 };
+  const guint8 not_coded_p[] = { 0,0,1,0xb6,0x50,0x40 };
+  const guint8 coded_b[] = { 0,0,1,0xb6,0x90,0x60 };
+  const guint8 coded_s[] = { 0,0,1,0xb6,0xd0,0x60 };
+  const guint8 bad_first_marker[] = { 0,0,1,0xb6,0x00,0x60 };
+  const guint8 bad_second_marker[] = { 0,0,1,0xb6,0x10,0x20 };
+  const guint8 truncated_vop[] = { 0,0,1,0xb6,0x10 };
   const struct {
     guint bit;
     gboolean enabled;
@@ -314,6 +323,8 @@ test_mpeg4_framing(void)
   g_assert_true(gst_crystalhd_codec_metadata(&codec, &data, &size));
   g_assert_true(data == metadata);
   g_assert_cmpuint(size, ==, sizeof(metadata));
+  g_assert_cmpuint(codec.mpeg4_time_increment_resolution, ==, 30);
+  g_assert_cmpuint(codec.mpeg4_time_increment_bits, ==, 5);
   modified[0] = 0;
   memcpy(modified + 1, metadata, sizeof(metadata));
   data = modified;
@@ -436,6 +447,12 @@ test_mpeg4_framing(void)
   data = with_vol;
   size = sizeof(with_vol);
   g_assert_true(gst_crystalhd_codec_payload(&codec, &data, &size));
+  memcpy(modified, with_vol, sizeof(with_vol));
+  set_mpeg4_vol_bits(modified, sizeof(with_vol), 4, 29, 16, 31);
+  data = modified;
+  size = sizeof(with_vol);
+  g_assert_cmpint(gst_crystalhd_codec_payload(&codec, &data, &size), ==,
+                  CRYSTALHD_PAYLOAD_INVALID);
   bounded_codec = codec;
   bounded_codec.mpeg4_width = 640;
   bounded_codec.mpeg4_height = 360;
@@ -493,6 +510,51 @@ test_mpeg4_framing(void)
     size = n;
     g_assert_false(gst_crystalhd_codec_payload(&codec, &data, &size));
   }
+
+  data = coded_i;
+  size = sizeof(coded_i);
+  g_assert_cmpint(gst_crystalhd_codec_payload(&codec, &data, &size), ==,
+                  CRYSTALHD_PAYLOAD_CODED);
+  data = coded_p;
+  size = sizeof(coded_p);
+  g_assert_cmpint(gst_crystalhd_codec_payload(&codec, &data, &size), ==,
+                  CRYSTALHD_PAYLOAD_CODED);
+  data = not_coded_i;
+  size = sizeof(not_coded_i);
+  g_assert_cmpint(gst_crystalhd_codec_payload(&codec, &data, &size), ==,
+                  CRYSTALHD_PAYLOAD_NOT_CODED);
+  data = not_coded_p;
+  size = sizeof(not_coded_p);
+  g_assert_cmpint(gst_crystalhd_codec_payload(&codec, &data, &size), ==,
+                  CRYSTALHD_PAYLOAD_NOT_CODED);
+  data = coded_b;
+  size = sizeof(coded_b);
+  g_assert_cmpint(gst_crystalhd_codec_payload(&codec, &data, &size), ==,
+                  CRYSTALHD_PAYLOAD_INVALID);
+  data = coded_b;
+  size = sizeof(coded_b);
+  g_assert_cmpint(gst_crystalhd_codec_payload(&asp_codec, &data, &size), ==,
+                  CRYSTALHD_PAYLOAD_CODED);
+  data = coded_s;
+  size = sizeof(coded_s);
+  g_assert_cmpint(gst_crystalhd_codec_payload(&codec, &data, &size), ==,
+                  CRYSTALHD_PAYLOAD_INVALID);
+  data = coded_s;
+  size = sizeof(coded_s);
+  g_assert_cmpint(gst_crystalhd_codec_payload(&asp_codec, &data, &size), ==,
+                  CRYSTALHD_PAYLOAD_INVALID);
+  data = bad_first_marker;
+  size = sizeof(bad_first_marker);
+  g_assert_cmpint(gst_crystalhd_codec_payload(&codec, &data, &size), ==,
+                  CRYSTALHD_PAYLOAD_INVALID);
+  data = bad_second_marker;
+  size = sizeof(bad_second_marker);
+  g_assert_cmpint(gst_crystalhd_codec_payload(&codec, &data, &size), ==,
+                  CRYSTALHD_PAYLOAD_INVALID);
+  data = truncated_vop;
+  size = sizeof(truncated_vop);
+  g_assert_cmpint(gst_crystalhd_codec_payload(&codec, &data, &size), ==,
+                  CRYSTALHD_PAYLOAD_INVALID);
 }
 
 static void

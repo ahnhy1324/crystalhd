@@ -25,6 +25,7 @@
 #include <emmintrin.h>
 #endif
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -1327,6 +1328,8 @@ struct DecodeContext {
   CrystalHDMpeg2Replay mpeg2_replay;
   CrystalHDMpeg4Replay mpeg4_replay;
   std::deque<CrystalHDMpeg4Replay> mpeg4_draining_epochs;
+  uint32_t mpeg4_simple_picture_number = 0;
+  bool have_mpeg4_simple_picture_number = false;
   CrystalHDVc1Replay vc1_replay;
 
   bool IsMpeg2() const {
@@ -1392,6 +1395,8 @@ struct DecodeContext {
 
   BC_STATUS CloseHardware() {
     BC_STATUS result = BC_STS_SUCCESS;
+    mpeg4_simple_picture_number = 0;
+    have_mpeg4_simple_picture_number = false;
     if (decoder_started) {
       result = DtsStopDecoder(device);
       decoder_started = false;
@@ -1890,12 +1895,53 @@ static VAStatus FailDecode(Driver *driver, DecodeContext *decode,
 // No hardware calls: tests exercise the same exact-once/immutable-picture
 // processing used for both normal decoding and IDR-prefix replay.
 static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
-                                      const BC_DTS_PROC_OUT &output) {
+                                      const BC_DTS_PROC_OUT &reported) {
+  BC_DTS_PROC_OUT output = reported;
+  const bool ordered_mpeg4_simple =
+      decode->profile == VAProfileMPEG4Simple &&
+      (output.PoutFlags & BC_POUT_FLAGS_PIB_VALID) != 0 &&
+      (output.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) == 0;
+  bool expected_mpeg4_simple = false;
+
+  if (ordered_mpeg4_simple) {
+    auto &replay = decode->Mpeg4TransportReplay();
+    if (output.PicInfo.timeStamp == 0 &&
+        output.PicInfo.picture_number != 0 &&
+        decode->have_mpeg4_simple_picture_number &&
+        decode->mpeg4_simple_picture_number !=
+            std::numeric_limits<uint32_t>::max() &&
+        output.PicInfo.picture_number ==
+            decode->mpeg4_simple_picture_number + 1) {
+      const uint64_t oldest = replay.OldestOutstanding();
+      if (oldest != 0) {
+        output.PicInfo.timeStamp = oldest;
+        Debug("recover MPEG-4 Simple ordinal %u as token %llu",
+              output.PicInfo.picture_number,
+              static_cast<unsigned long long>(oldest));
+      }
+    }
+    expected_mpeg4_simple = replay.IsOutstanding(output.PicInfo.timeStamp);
+    if (expected_mpeg4_simple &&
+        output.PicInfo.timeStamp != replay.OldestOutstanding())
+      return FailDecode(driver, decode,
+                        "MPEG-4 Simple output skipped an outstanding picture");
+  }
+
   const auto disposition = decode->WithReplay([&](auto &replay) {
     return replay.Observe(output.PicInfo.timeStamp);
   });
   if (disposition == CrystalHDDecodeReplay::Output::Invalid)
     return FailDecode(driver, decode, decode->ReplayFailure());
+  if (ordered_mpeg4_simple && expected_mpeg4_simple &&
+      (disposition == CrystalHDDecodeReplay::Output::New ||
+       disposition == CrystalHDDecodeReplay::Output::Duplicate)) {
+    if (output.PicInfo.picture_number != 0) {
+      decode->mpeg4_simple_picture_number = output.PicInfo.picture_number;
+      decode->have_mpeg4_simple_picture_number = true;
+    } else {
+      decode->have_mpeg4_simple_picture_number = false;
+    }
+  }
   if (disposition != CrystalHDDecodeReplay::Output::New)
     return VA_STATUS_SUCCESS;
 

@@ -131,6 +131,10 @@ class Bits {
     return true;
   }
 
+  unsigned PositionMod8() const {
+    return static_cast<unsigned>(position_ & 7);
+  }
+
   std::vector<uint8_t> Take() { return std::move(bytes_); }
 
  private:
@@ -155,7 +159,6 @@ inline bool ValidState(const TimingState &state) {
   }
   if (!ValidProfile(state.profile) || state.width == 0 || state.height == 0 ||
       state.resolution == 0 || !state.newest.token ||
-      !state.resync_marker_disable ||
       !IsAnchorKind(state.newest.kind))
     return false;
   if (!state.have_previous)
@@ -191,10 +194,13 @@ inline bool ValidPicture(const VAPictureParameterBufferMPEG4 &picture,
       picture.no_of_sprite_warping_points ||
       vop.top_field_first || vop.alternate_vertical_scan_flag)
     return false;
-  // VA supplies macroblock payload rather than the original complete VOP.
-  // Embedded video-packet headers cannot be reconstructed consistently after
-  // random access, so advertise only the proven resync-disabled subset.
-  if (!vol.resync_marker_disable)
+  // VA supplies the complete macroblock payload, including video-packet
+  // headers.  The assembler below admits resync-enabled Simple only after
+  // validating that every packet omits its optional repeated timing header.
+  // Keep Advanced Simple marker-disabled until reordered B-VOP packets are
+  // separately validated.
+  if (!vol.resync_marker_disable &&
+      profile != VAProfileMPEG4Simple)
     return false;
   for (unsigned i = 0; i < 3; ++i)
     if (picture.sprite_trajectory_du[i] || picture.sprite_trajectory_dv[i])
@@ -296,6 +302,78 @@ inline bool ValidSlice(const Slice &slice) {
       parameters.macroblock_offset >= parameters.slice_data_size * 8U ||
       !ZeroReserved(parameters.va_reserved, VA_PADDING_LOW))
     return false;
+  return true;
+}
+
+inline bool ReadSourceBits(const uint8_t *source, size_t source_bits,
+                           size_t *position, unsigned count,
+                           uint32_t *value) {
+  if (source == nullptr || position == nullptr || value == nullptr ||
+      count > 32 || *position > source_bits ||
+      count > source_bits - *position)
+    return false;
+  uint32_t result = 0;
+  for (unsigned i = 0; i < count; ++i, ++*position)
+    result = (result << 1) |
+        ((source[*position / 8] >> (7 - *position % 8)) & 1U);
+  *value = result;
+  return true;
+}
+
+inline bool MarkerAt(const uint8_t *source, size_t source_bits,
+                     size_t position, unsigned zero_bits) {
+  uint32_t value = 0;
+  return ReadSourceBits(source, source_bits, &position, zero_bits, &value) &&
+         value == 0 &&
+         ReadSourceBits(source, source_bits, &position, 1, &value) &&
+         value == 1;
+}
+
+// VA's complete MPEG-4 slice retains interior byte-aligned video-packet
+// headers.  Reusing an original header_extension_code would repeat its source
+// VOP clock inside the newly generated VOP and can contradict seek/replay
+// timing.  Accept the measured Simple subset only when every exact packet
+// marker has a bounded, increasing macroblock number, a real quantizer and no
+// header extension.  Packet bytes themselves remain immutable.
+inline bool ValidSimpleVideoPackets(
+    const VAPictureParameterBufferMPEG4 &picture, Kind kind,
+    const Slice &slice, bool *have_packets) {
+  if (have_packets == nullptr) return false;
+  *have_packets = false;
+  if (picture.vol_fields.bits.resync_marker_disable) return true;
+  if (kind != Kind::I && kind != Kind::P) return false;
+
+  const uint32_t mb_width = (picture.vop_width + 15U) / 16U;
+  const uint32_t mb_height = (picture.vop_height + 15U) / 16U;
+  const uint32_t mb_count = mb_width * mb_height;
+  unsigned mb_bits = 1;
+  while ((uint32_t{1} << mb_bits) < mb_count) ++mb_bits;
+  const unsigned zero_bits =
+      kind == Kind::I ? 16U : 15U + picture.vop_fcode_forward;
+  const uint8_t *source = slice.data + slice.parameters.slice_data_offset;
+  const size_t source_bits =
+      static_cast<size_t>(slice.parameters.slice_data_size) * 8;
+  size_t position =
+      (static_cast<size_t>(slice.parameters.macroblock_offset) / 8 + 1) * 8;
+  uint32_t previous_mb = 0;
+
+  while (position <= source_bits &&
+         zero_bits + 1U <= source_bits - position) {
+    if (MarkerAt(source, source_bits, position, zero_bits)) {
+      size_t header = position + zero_bits + 1U;
+      uint32_t mb = 0, quant = 0, hec = 0;
+      if (!ReadSourceBits(source, source_bits, &header, mb_bits, &mb) ||
+          !ReadSourceBits(source, source_bits, &header,
+                          picture.quant_precision, &quant) ||
+          !ReadSourceBits(source, source_bits, &header, 1, &hec) ||
+          mb == 0 || mb >= mb_count || mb <= previous_mb || quant == 0 ||
+          hec != 0)
+        return false;
+      previous_mb = mb;
+      *have_packets = true;
+    }
+    position += 8;
+  }
   return true;
 }
 
@@ -408,6 +486,10 @@ inline bool Assemble(const VAPictureParameterBufferMPEG4 &picture,
   if (!detail::ValidPicture(picture, profile, state, token, forward, backward,
                             &kind, &tick, &base, &next))
     return false;
+  bool have_video_packets = false;
+  if (!detail::ValidSimpleVideoPackets(picture, kind, slice,
+                                       &have_video_packets))
+    return false;
 
   detail::Bits bits;
   // Native Simple streams put the current I time in GOV and encode a zero I
@@ -423,6 +505,10 @@ inline bool Assemble(const VAPictureParameterBufferMPEG4 &picture,
       !detail::Vop(&bits, picture, kind,
                    static_cast<unsigned>(slice.parameters.quant_scale),
                    tick, vop_base))
+    return false;
+
+  if (have_video_packets &&
+      bits.PositionMod8() != (slice.parameters.macroblock_offset & 7U))
     return false;
 
   const uint8_t *data = slice.data + slice.parameters.slice_data_offset;
