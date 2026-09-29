@@ -304,7 +304,7 @@ BC_STATUS crystalhd_hw_open(struct crystalhd_hw *hw, struct crystalhd_adp *adp)
 	return BC_STS_SUCCESS;
 }
 
-BC_STATUS crystalhd_hw_close(struct crystalhd_hw *hw, struct crystalhd_adp *adp)
+BC_STATUS crystalhd_hw_close(struct crystalhd_hw *hw)
 {
 	if (!hw) {
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
@@ -314,10 +314,8 @@ BC_STATUS crystalhd_hw_close(struct crystalhd_hw *hw, struct crystalhd_adp *adp)
 	if (!hw->dev_started)
 		return BC_STS_SUCCESS;
 
-	/* Stop and DDR sleep will happen in here */
-	/* Only stop the HW if we are the last user */
-	if(adp->cfg_users == 1)
-		crystalhd_hw_suspend(hw);
+	/* The caller is retiring this context, even if non-owning files remain. */
+	crystalhd_hw_suspend(hw);
 
 	hw->dev_started = false;
 

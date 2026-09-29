@@ -28,10 +28,10 @@ awk '
     "$repo_dir/driver/linux/crystalhd_hw.h" "$repo_dir/driver/linux/crystalhd_misc.h" \
     > "$pm_test_dir/command-pm-types.h"
 awk '
-    /^BC_STATUS crystalhd_hw_(suspend|resume)\(/ { copying = 1; found++ }
+    /^BC_STATUS crystalhd_hw_(close|suspend|resume)\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 2 || copying) exit 1 }
+    END { if (found != 3 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_hw.c" > "$pm_test_dir/command-pm-hardware.h"
 awk '
     /^static struct crystalhd_user \*bc_cproc_get_uid\(/ ||

@@ -1043,7 +1043,7 @@ void crystalhd_user_close(struct crystalhd_cmd *ctx, struct crystalhd_user *uc)
 		crystalhd_destroy_dio_pool(ctx->adp);
 		crystalhd_delete_elem_pool(ctx->adp);
 		ctx->state = BC_LINK_INVALID;
-		crystalhd_hw_close(ctx->hw_ctx, ctx->adp);
+		crystalhd_hw_close(ctx->hw_ctx);
 		kfree(ctx->hw_ctx);
 		ctx->hw_ctx = NULL;
 		enable_irq(ctx->adp->pdev->irq);
@@ -1051,7 +1051,6 @@ void crystalhd_user_close(struct crystalhd_cmd *ctx, struct crystalhd_user *uc)
 	if (release_session)
 		ctx->session_owner = NULL;
 
-	/* Hardware close uses the count before this handle is released. */
 	if (ctx->adp->cfg_users > 0)
 		ctx->adp->cfg_users--;
 }
@@ -1309,7 +1308,7 @@ BC_STATUS crystalhd_setup_cmd_context(struct crystalhd_cmd *ctx,
 	disable_irq(ctx->adp->pdev->irq);
 	sts = crystalhd_hw_open(ctx->hw_ctx, ctx->adp);
 	if (sts == BC_STS_SUCCESS)
-		crystalhd_hw_close(ctx->hw_ctx, ctx->adp);
+		crystalhd_hw_close(ctx->hw_ctx);
 	kfree(ctx->hw_ctx);
 	ctx->hw_ctx = NULL;
 	enable_irq(ctx->adp->pdev->irq);

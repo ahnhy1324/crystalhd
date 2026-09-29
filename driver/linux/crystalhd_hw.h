@@ -498,7 +498,7 @@ void crystalhd_rx_pkt_rel_call_back(void *context, void *data);
 void crystalhd_hw_delete_ioqs(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_create_ioqs(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_open(struct crystalhd_hw *hw, struct crystalhd_adp *adp);
-BC_STATUS crystalhd_hw_close(struct crystalhd_hw *hw, struct crystalhd_adp *adp);
+BC_STATUS crystalhd_hw_close(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_fw_cmd_enter(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_fw_cmd_recovery_enter(struct crystalhd_hw *hw);
 void crystalhd_hw_fw_cmd_leave(struct crystalhd_hw *hw);

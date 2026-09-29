@@ -294,7 +294,7 @@ static void disable_irq(int irq) { abort(); }
 static void enable_irq(int irq) { abort(); }
 static void crystalhd_hw_stop_capture(struct crystalhd_hw *hw, bool discard)
 { abort(); }
-static void crystalhd_hw_close(struct crystalhd_hw *hw, struct crystalhd_adp *adp)
+static BC_STATUS crystalhd_hw_close(struct crystalhd_hw *hw)
 { abort(); }
 #include "lifetime-command.h"
 #include "lifetime-functions.h"

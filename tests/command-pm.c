@@ -37,7 +37,7 @@ typedef struct {
 struct crystalhd_hw {
     struct crystalhd_adp *adp;
     void *rx_freeq;
-    bool dma_fault;
+    bool dma_fault, dev_started;
     enum list_sts rx_list_sts[2];
     enum LIST_STATUS TxList0Sts, TxList1Sts;
     uint32_t rx_list_post_index, tx_list_post_index;
@@ -141,6 +141,8 @@ static void WriteLink(struct crystalhd_adp *adp, uint32_t offset, uint32_t value
 static BC_STATUS ReadMemory(struct crystalhd_hw *hw, uint32_t offset, uint32_t words, uint32_t *buffer);
 static BC_STATUS WriteMemory(struct crystalhd_hw *hw, uint32_t offset, uint32_t words, uint32_t *buffer);
 static void CheckPendingAdmission(void);
+BC_STATUS crystalhd_hw_suspend(struct crystalhd_hw *hw);
+BC_STATUS crystalhd_hw_close_actual(struct crystalhd_hw *hw);
 static void Check(bool ok, const char *why)
 {
     checks++;
@@ -204,7 +206,7 @@ static void up_write(int *lock)
 }
 static void ConfigureHardware(struct crystalhd_hw *hw)
 {
-    *hw = (struct crystalhd_hw){ .adp = &adapter, .pfnStartDevice = Start,
+    *hw = (struct crystalhd_hw){ .adp = &adapter, .dev_started = true, .pfnStartDevice = Start,
         .pfnStopDevice = Stop, .pfnStopTxDMA = StopTx, .pfnFWDwnld = Download,
         .pfnIssuePause = IssuePause, .pfnDoFirmwareCmd = FirmwareCommand,
         .pfnReadDevRegister = ReadDevice, .pfnWriteDevRegister = WriteDevice,
@@ -281,13 +283,20 @@ static BC_STATUS crystalhd_hw_open(struct crystalhd_hw *hw, struct crystalhd_adp
     ConfigureHardware(hw);
     return BC_STS_SUCCESS;
 }
-static BC_STATUS crystalhd_hw_close(struct crystalhd_hw *hw, struct crystalhd_adp *adp)
+static BC_STATUS crystalhd_hw_close(struct crystalhd_hw *hw)
 {
-    Check(hw == &hardware && adp == &adapter,
+    unsigned previous_stops = stops;
+    bool was_started = hw->dev_started;
+    BC_STATUS status;
+
+    Check(hw == &hardware && hw->adp == &adapter,
           "session release closes the owned hardware context");
     hardware_closes++;
-    last_close_cfg_users = adp->cfg_users;
-    return BC_STS_SUCCESS;
+    last_close_cfg_users = adapter.cfg_users;
+    status = crystalhd_hw_close_actual(hw);
+    Check(stops == previous_stops + was_started && !hw->dev_started,
+          "real hardware close stops a started context before its owner frees it");
+    return status;
 }
 static bool Start(struct crystalhd_hw *hw)
 {
@@ -500,7 +509,10 @@ static void crystalhd_hw_fw_cmd_leave(struct crystalhd_hw *hw)
     if (hw != &hardware) abort();
     TransactionUnlock(&hw->fwcmd_trans_mutex);
 }
+/* Keep close accounting while executing its complete production body. */
+#define crystalhd_hw_close crystalhd_hw_close_actual
 #include "command-pm-hardware.h"
+#undef crystalhd_hw_close
 #include "command-pm-functions.h"
 /* The kernel release signature has an unused inode argument. */
 #pragma GCC diagnostic push
@@ -777,37 +789,75 @@ static void *RunHardwareSuspend(void *argument)
     thread->status = crystalhd_hw_suspend(&hardware);
     return NULL;
 }
+static void *RunHardwareClose(void *argument)
+{
+    struct suspend_thread *thread = argument;
+
+    thread->status = crystalhd_hw_close_actual(&hardware);
+    return NULL;
+}
 
 static void FirmwareSuspendSerialization(void)
 {
-    struct firmware_thread command = {0};
-    struct suspend_thread suspend = {0};
-    pthread_t command_thread, suspend_thread;
+    for (unsigned closing = 0; closing < 2; closing++) {
+        struct firmware_thread command = {0};
+        struct suspend_thread suspend = {0};
+        pthread_t command_thread, suspend_thread;
 
-    Reset(BC_LINK_INIT | BC_LINK_PAUSED, true);
-    transaction_mode = true;
-    block_first_firmware = true;
-    command.data.udata.u.fwCmd.cmd[0] = eCMD_C011_DEC_CHAN_PAUSE;
-    command.data.udata.u.fwCmd.cmd[3] = 0;
+        Reset(BC_LINK_INIT | BC_LINK_PAUSED, true);
+        adapter.cfg_users = 2;
+        transaction_mode = true;
+        block_first_firmware = true;
+        command.data.udata.u.fwCmd.cmd[0] = eCMD_C011_DEC_CHAN_PAUSE;
+        command.data.udata.u.fwCmd.cmd[3] = 0;
 
-    if (pthread_create(&command_thread, NULL, RunFirmwareTransaction,
-                       &command)) abort();
-    WaitForFirstFirmware();
-    if (pthread_create(&suspend_thread, NULL, RunHardwareSuspend,
-                       &suspend)) abort();
-    WaitForTransactionAttempts(2);
-    Check(!stops, "hardware suspend waits for the whole firmware transaction");
+        if (pthread_create(&command_thread, NULL, RunFirmwareTransaction,
+                           &command)) abort();
+        WaitForFirstFirmware();
+        if (pthread_create(&suspend_thread, NULL,
+                           closing ? RunHardwareClose : RunHardwareSuspend,
+                           &suspend)) abort();
+        WaitForTransactionAttempts(2);
+        Check(!stops && hardware.dev_started,
+              "hardware suspend and close wait for the whole firmware transaction");
 
-    ReleaseFirstFirmware();
-    if (pthread_join(command_thread, NULL) ||
-        pthread_join(suspend_thread, NULL)) abort();
-    Check(command.status == BC_STS_TIMEOUT && suspend.status == BC_STS_SUCCESS &&
-          stops == 1,
-          "hardware stops only after firmware timeout recovery releases serialization");
-    Check((context.state & BC_LINK_PAUSED) && pause_calls == 2 &&
-          !pause_states[0] && pause_states[1] && hardware.fetch_sem == 1,
-          "suspend observes the command layer after its local rollback is complete");
-    transaction_mode = false;
+        ReleaseFirstFirmware();
+        if (pthread_join(command_thread, NULL) ||
+            pthread_join(suspend_thread, NULL)) abort();
+        Check(command.status == BC_STS_TIMEOUT && suspend.status == BC_STS_SUCCESS &&
+              stops == 1 && (!closing || !hardware.dev_started),
+              "hardware stops only after firmware timeout recovery releases serialization");
+        Check((context.state & BC_LINK_PAUSED) && pause_calls == 2 &&
+              !pause_states[0] && pause_states[1] && hardware.fetch_sem == 1,
+              "device stop observes the command layer after its local rollback is complete");
+        transaction_mode = false;
+    }
+}
+static void HardwareClose(void)
+{
+    const unsigned counts[] = { 0, 1, 2, BC_LINK_MAX_OPENS, UINT32_MAX };
+
+    for (unsigned n = 0; n < sizeof(counts) / sizeof(counts[0]); n++) {
+        for (unsigned started = 0; started < 2; started++) {
+            for (unsigned fail = 0; fail < 2; fail++) {
+                Reset(BC_LINK_INVALID, true);
+                adapter.cfg_users = counts[n];
+                hardware.dev_started = started;
+                stop_ok = !fail;
+                Check(crystalhd_hw_close_actual(&hardware) == BC_STS_SUCCESS,
+                      "hardware close preserves successful retirement even when device stop fails");
+                Check(stops == started && !hardware.dev_started &&
+                      adapter.cfg_users == counts[n] && !starts && !captures && !tx_stops,
+                      "only started hardware is stopped regardless of configuration handle count");
+                Check(crystalhd_hw_close_actual(&hardware) == BC_STS_SUCCESS &&
+                      stops == started,
+                      "repeated hardware close never stops an already retired device twice");
+            }
+        }
+    }
+    Reset(BC_LINK_INVALID, false);
+    Check(crystalhd_hw_close_actual(NULL) == BC_STS_SUCCESS && !stops,
+          "NULL hardware close remains a successful no-op");
 }
 
 static void SessionOwnership(void)
@@ -1545,7 +1595,7 @@ static void FileCloseUnavailableDevice(void)
         CloseFile(&file);
         Check(context.hw_ctx == &hardware && hardware_allocated && elem_live &&
               context.session_owner == user &&
-              dio_live && rings_live && !captures && !ring_frees &&
+              dio_live && rings_live && !captures && !stops && !ring_frees &&
               !dio_destroys && !elem_deletes && !hardware_closes && !hardware_frees &&
               irq_disables == 1 && irq_enables == 1 && binding_frees == 1,
               "failed PM or stale device close leaves hardware for remove's quiesced cleanup");
@@ -2073,7 +2123,8 @@ int main(void)
         {"firmware pause/resume rollback", FirmwarePauseRollback},
         {"firmware download serialization", FirmwareDownloadSerialization},
         {"firmware transaction serialization", FirmwareTransactionSerialization},
-        {"firmware command versus hardware suspend", FirmwareSuspendSerialization},
+        {"firmware command versus hardware suspend and close", FirmwareSuspendSerialization},
+        {"actual hardware close across handle counts and stop failures", HardwareClose},
         {"active session open, busy, release and reopen", SessionOwnership},
         {"last monitor releases empty session resources", MonitorOnlyRelease},
         {"playback owner closes before monitor and reacquires", OwnerBeforeMonitor},
