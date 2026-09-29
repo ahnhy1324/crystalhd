@@ -92,6 +92,7 @@ jobs:
       fail-fast: false
       matrix:
         track:
+          - lts-5.15
           - lts-6.1
           - lts-6.6
           - lts-6.12
@@ -101,6 +102,8 @@ jobs:
         arch:
           - x86_64
         include:
+          - track: lts-5.15
+            arch: i386
           - track: lts-6.1
             arch: i386
           - track: stable
