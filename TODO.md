@@ -13,8 +13,9 @@ and [DMA.md](DMA.md) for DMA ownership and failure boundaries.
 - [ ] [#12: YouTube][issue-12]:
   diagnose live 1x A/V desynchronization and validate playback controls.
 - [ ] [#52: V4L2 stateful M2M roadmap][issue-52]:
-  finish the remaining Phase 1 environment check, then add the V4L2 frontend
-  without breaking the existing ABI or legacy hardware support.
+  add the V4L2 frontend against the frozen legacy reference without breaking
+  the existing ABI or hardware support; track the remaining Ubuntu LTS
+  hardware sanity separately.
 
 ## Coverage and lifecycle
 
