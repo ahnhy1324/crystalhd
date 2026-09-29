@@ -42,7 +42,6 @@ struct crystalhd_file {
 
 crystalhd_ioctl_data *chd_dec_alloc_iodata(struct crystalhd_adp *adp, bool isr);
 void chd_dec_free_iodata(struct crystalhd_adp *adp, crystalhd_ioctl_data *iodata,bool isr);
-extern int bc_get_userhandle_count(struct crystalhd_cmd *ctx);
 int chd_dec_pci_suspend(struct pci_dev *pdev, pm_message_t state);
 int chd_dec_pci_resume(struct pci_dev *pdev);
 
@@ -775,7 +774,6 @@ static int chd_dec_close_locked(struct inode *in, struct file *fd)
 	struct crystalhd_cmd *ctx;
 	struct crystalhd_file *binding = fd->private_data;
 	struct crystalhd_user *uc;
-	uint32_t mode;
 	int rc = 0;
 
 	if (!adp || !binding || binding->generation != chd_device_generation)
@@ -803,47 +801,7 @@ static int chd_dec_close_locked(struct inode *in, struct file *fd)
 		goto unlock;
 	}
 
-	/* Check and close only if we have not flush/closed before */
-	/* This is needed because release is not guarenteed to be called immediately on close,
-	 * if duplicate file handles exist due to fork etc. This causes problems with close and re-open
-	 of the device immediately */
-
-	if(uc->in_use) {
-		mode = uc->mode;
-
-		ctx->user[uc->uid].mode = DTS_MODE_INV;
-		ctx->user[uc->uid].in_use = 0;
-
-		dev_info(chddev(), "Closing user[%x] handle with mode %x\n", uc->uid, mode);
-
-		if (((mode & 0xFF) == DTS_DIAG_MODE) ||
-			((mode & 0xFF) == DTS_PLAYBACK_MODE) ||
-			((bc_get_userhandle_count(ctx) == 0) && (ctx->hw_ctx != NULL))) {
-			disable_irq(adp->pdev->irq);
-			ctx->cin_wait_exit = 1;
-			ctx->pwr_state_change = BC_HW_RUNNING;
-			/* Stop the HW Capture just in case flush did not get called before stop */
-			/* And only if we had actually started it */
-			if(ctx->hw_ctx->rx_freeq != NULL) {
-				crystalhd_hw_stop_capture(ctx->hw_ctx, true);
-				crystalhd_hw_free_dma_rings(ctx->hw_ctx);
-			}
-			if(ctx->adp->fill_byte_pool)
-				crystalhd_destroy_dio_pool(ctx->adp);
-			if(ctx->adp->elem_pool_head)
-				crystalhd_delete_elem_pool(ctx->adp);
-			ctx->state = BC_LINK_INVALID;
-			crystalhd_hw_close(ctx->hw_ctx, ctx->adp);
-			kfree(ctx->hw_ctx);
-			ctx->hw_ctx = NULL;
-			enable_irq(adp->pdev->irq);
-		}
-
-		uc->in_use = 0;
-
-		if(adp->cfg_users > 0)
-			adp->cfg_users--;
-	}
+	crystalhd_user_close(ctx, uc);
 
 unlock:
 	up_write(&adp->user_lock);
