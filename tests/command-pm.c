@@ -47,6 +47,12 @@ struct crystalhd_hw {
     BC_STATUS (*pfnFWDwnld)(struct crystalhd_hw *, uint8_t *, uint32_t);
     BC_STATUS (*pfnIssuePause)(struct crystalhd_hw *, bool);
     BC_STATUS (*pfnDoFirmwareCmd)(struct crystalhd_hw *, BC_FW_CMD *);
+    uint32_t (*pfnReadDevRegister)(struct crystalhd_adp *, uint32_t);
+    void (*pfnWriteDevRegister)(struct crystalhd_adp *, uint32_t, uint32_t);
+    uint32_t (*pfnReadFPGARegister)(struct crystalhd_adp *, uint32_t);
+    void (*pfnWriteFPGARegister)(struct crystalhd_adp *, uint32_t, uint32_t);
+    BC_STATUS (*pfnDevDRAMRead)(struct crystalhd_hw *, uint32_t, uint32_t, uint32_t *);
+    BC_STATUS (*pfnDevDRAMWrite)(struct crystalhd_hw *, uint32_t, uint32_t, uint32_t *);
     int fwcmd_trans_mutex;
     bool fwcmd_pending, fwcmd_poisoned;
     int fetch_sem;
@@ -76,6 +82,8 @@ typedef struct {
     uint32_t u_id;
     struct { union {
         struct { uint32_t Mode; } NotifyMode;
+        struct { uint32_t Offset, Value; } regAcc;
+        struct { uint32_t StartOff, NumDwords; } devMem;
         BC_FW_CMD fwCmd;
     } u; } udata;
     void *add_cdata;
@@ -89,6 +97,10 @@ static unsigned hardware_allocations, hardware_frees, last_close_cfg_users;
 static unsigned hardware_alloc_attempts;
 static unsigned binding_count, binding_frees, device_reads, user_writes;
 static unsigned downloads;
+static unsigned raw_calls[6];
+static uint32_t raw_offset, raw_value, raw_words, raw_memory[2];
+static uint32_t *raw_buffer;
+static BC_STATUS raw_status;
 static bool start_ok, stop_ok;
 static bool elem_live, dio_live, rings_live, hardware_allocated;
 static bool hardware_alloc_fail, admission_pending, open_pending;
@@ -122,6 +134,12 @@ static BC_STATUS StopTx(struct crystalhd_hw *hw);
 static BC_STATUS Download(struct crystalhd_hw *hw, uint8_t *data, uint32_t size);
 static BC_STATUS IssuePause(struct crystalhd_hw *hw, bool state);
 static BC_STATUS FirmwareCommand(struct crystalhd_hw *hw, BC_FW_CMD *command);
+static uint32_t ReadDevice(struct crystalhd_adp *adp, uint32_t offset);
+static void WriteDevice(struct crystalhd_adp *adp, uint32_t offset, uint32_t value);
+static uint32_t ReadLink(struct crystalhd_adp *adp, uint32_t offset);
+static void WriteLink(struct crystalhd_adp *adp, uint32_t offset, uint32_t value);
+static BC_STATUS ReadMemory(struct crystalhd_hw *hw, uint32_t offset, uint32_t words, uint32_t *buffer);
+static BC_STATUS WriteMemory(struct crystalhd_hw *hw, uint32_t offset, uint32_t words, uint32_t *buffer);
 static void Check(bool ok, const char *why)
 {
     checks++;
@@ -188,6 +206,9 @@ static void ConfigureHardware(struct crystalhd_hw *hw)
     *hw = (struct crystalhd_hw){ .adp = &adapter, .pfnStartDevice = Start,
         .pfnStopDevice = Stop, .pfnStopTxDMA = StopTx, .pfnFWDwnld = Download,
         .pfnIssuePause = IssuePause, .pfnDoFirmwareCmd = FirmwareCommand,
+        .pfnReadDevRegister = ReadDevice, .pfnWriteDevRegister = WriteDevice,
+        .pfnReadFPGARegister = ReadLink, .pfnWriteFPGARegister = WriteLink,
+        .pfnDevDRAMRead = ReadMemory, .pfnDevDRAMWrite = WriteMemory,
         .fetch_sem = 1,
         .FwCmdCnt = 64,
         .rx_list_sts = {rx_sts_waiting, rx_sts_waiting},
@@ -342,6 +363,44 @@ static BC_STATUS crystalhd_hw_cancel_tx(struct crystalhd_hw *hw, uint32_t tag)
           "suspend cancels the active TX owner");
     cancels++; Event('X'); return cancel_status;
 }
+static uint32_t RawRegister(struct crystalhd_adp *adp, unsigned operation,
+                            uint32_t offset, uint32_t value)
+{
+    Check(adp == &adapter && operation < 4, "raw register callback receives the adapter");
+    raw_calls[operation]++;
+    raw_offset = offset;
+    if (operation & 1)
+        raw_value = value;
+    return raw_value;
+}
+static uint32_t ReadDevice(struct crystalhd_adp *adp, uint32_t offset)
+{ return RawRegister(adp, 0, offset, 0); }
+static void WriteDevice(struct crystalhd_adp *adp, uint32_t offset, uint32_t value)
+{ (void)RawRegister(adp, 1, offset, value); }
+static uint32_t ReadLink(struct crystalhd_adp *adp, uint32_t offset)
+{ return RawRegister(adp, 2, offset, 0); }
+static void WriteLink(struct crystalhd_adp *adp, uint32_t offset, uint32_t value)
+{ (void)RawRegister(adp, 3, offset, value); }
+static BC_STATUS RawMemory(struct crystalhd_hw *hw, uint32_t offset, uint32_t words,
+                           uint32_t *buffer, bool write)
+{
+    Check(hw == &hardware && buffer == raw_buffer && words <= 2,
+          "raw memory callback receives the owned hardware and bounded buffer");
+    raw_calls[write ? 5 : 4]++;
+    raw_offset = offset;
+    raw_words = words;
+    if (raw_status == BC_STS_SUCCESS) {
+        for (uint32_t n = 0; n < words; n++) {
+            if (write) raw_memory[n] = buffer[n];
+            else buffer[n] = raw_memory[n];
+        }
+    }
+    return raw_status;
+}
+static BC_STATUS ReadMemory(struct crystalhd_hw *hw, uint32_t offset, uint32_t words, uint32_t *buffer)
+{ return RawMemory(hw, offset, words, buffer, false); }
+static BC_STATUS WriteMemory(struct crystalhd_hw *hw, uint32_t offset, uint32_t words, uint32_t *buffer)
+{ return RawMemory(hw, offset, words, buffer, true); }
 static void CheckPendingAdmission(void)
 {
     if (admission_pending)
@@ -457,6 +516,11 @@ static void Reset(uint32_t state, bool with_hardware)
     chd_device_generation = 42;
     adapter_visible = true;
     downloads = 0;
+    memset(raw_calls, 0, sizeof(raw_calls));
+    memset(raw_memory, 0, sizeof(raw_memory));
+    raw_offset = raw_value = raw_words = 0;
+    raw_buffer = NULL;
+    raw_status = BC_STS_SUCCESS;
     events[0] = '\0'; start_ok = stop_ok = true;
     elem_live = dio_live = rings_live = hardware_allocated = false;
     elem_error = dio_error = 0;
@@ -1050,6 +1114,129 @@ static void PendingOpenAfterOwnerClose(void)
         CloseFile(&reopened);
         CheckNoSession();
     }
+}
+static BC_STATUS (*const raw_commands[])(struct crystalhd_cmd *, crystalhd_ioctl_data *) = {
+    bc_cproc_reg_rd, bc_cproc_reg_wr, bc_cproc_link_reg_rd, bc_cproc_link_reg_wr,
+    bc_cproc_mem_rd, bc_cproc_mem_wr
+};
+static unsigned RawCallCount(void)
+{
+    unsigned count = 0;
+    for (unsigned n = 0; n < sizeof(raw_calls) / sizeof(raw_calls[0]); n++)
+        count += raw_calls[n];
+    return count;
+}
+static void RawInvalidArguments(void)
+{
+    for (unsigned op = 0; op < sizeof(raw_commands) / sizeof(raw_commands[0]); op++) {
+        uint32_t buffer[2] = { 0x12345678, 0x87654321 };
+        crystalhd_ioctl_data data = { .add_cdata = buffer, .add_cdata_sz = sizeof(buffer) };
+        crystalhd_ioctl_data before = data;
+
+        Reset(BC_LINK_INVALID, false);
+        Check(raw_commands[op](NULL, &data) == BC_STS_INV_ARG &&
+              raw_commands[op](&context, NULL) == BC_STS_INV_ARG &&
+              raw_commands[op](NULL, NULL) == BC_STS_INV_ARG,
+              "raw register and memory commands reject NULL command arguments");
+        Check(raw_commands[op](&context, &data) == BC_STS_INV_ARG,
+              "raw commands reject a retired hardware context");
+        Check(!RawCallCount() && !memcmp(&data, &before, sizeof(data)) &&
+              buffer[0] == 0x12345678 && buffer[1] == 0x87654321,
+              "invalid raw commands invoke no callback and leave output untouched");
+    }
+}
+static void RawRegisterCommands(void)
+{
+    const uint32_t values[] = { 0, 0x89abcdef, UINT32_MAX };
+
+    for (unsigned op = 0; op < 4; op++) {
+        for (unsigned n = 0; n < sizeof(values) / sizeof(values[0]); n++) {
+            crystalhd_ioctl_data data = {0};
+
+            Reset(BC_LINK_INVALID, true);
+            data.udata.u.regAcc.Offset = values[n];
+            data.udata.u.regAcc.Value = op & 1 ? values[n] : ~values[n];
+            raw_value = op & 1 ? ~values[n] : values[n];
+            Check(raw_commands[op](&context, &data) == BC_STS_SUCCESS,
+                  "valid device and link register commands retain successful status");
+            Check(raw_calls[op] == 1 && RawCallCount() == 1 && raw_offset == values[n] &&
+                  raw_value == values[n] && data.udata.u.regAcc.Value == values[n],
+                  "register commands preserve offset and read or write the exact 32-bit value");
+        }
+    }
+}
+static void RawMemoryCommands(void)
+{
+    const BC_STATUS statuses[] = { BC_STS_SUCCESS, BC_STS_IO_ERROR, BC_STS_TIMEOUT };
+
+    for (unsigned op = 4; op < 6; op++) {
+        for (unsigned s = 0; s < sizeof(statuses) / sizeof(statuses[0]); s++) {
+            for (unsigned words = 0; words <= 2; words++) {
+                uint32_t buffer[2] = { 0x12345678, 0x87654321 };
+                const uint32_t payload[] = { buffer[0], buffer[1] };
+                const uint32_t dram[] = { 0xabcdef01, 0x10fedcba };
+                crystalhd_ioctl_data data = { .add_cdata = buffer, .add_cdata_sz = 4 * words };
+
+                Reset(BC_LINK_INVALID, true);
+                data.udata.u.devMem.StartOff = 0x98765432;
+                data.udata.u.devMem.NumDwords = words;
+                raw_buffer = buffer;
+                raw_status = statuses[s];
+                memcpy(raw_memory, dram, sizeof(dram));
+                Check(raw_commands[op](&context, &data) == statuses[s],
+                      "memory commands propagate success and hardware callback errors");
+                Check(raw_calls[op] == 1 && RawCallCount() == 1 &&
+                      raw_offset == 0x98765432 && raw_words == words,
+                      "memory commands forward exact offset, word count and buffer");
+                for (unsigned n = 0; n < 2; n++) {
+                    bool copied = statuses[s] == BC_STS_SUCCESS && n < words;
+                    Check(buffer[n] == (copied && op == 4 ? dram[n] : payload[n]) &&
+                          raw_memory[n] == (copied && op == 5 ? payload[n] : dram[n]),
+                          "memory reads and writes affect only the requested successful transfer");
+                }
+            }
+        }
+        for (unsigned bad = 0; bad < 4; bad++) {
+            uint32_t buffer[2] = {0};
+            crystalhd_ioctl_data data = { .add_cdata = buffer, .add_cdata_sz = sizeof(buffer) };
+
+            Reset(BC_LINK_INVALID, true);
+            data.udata.u.devMem.NumDwords = 2;
+            if (bad == 0) data.add_cdata = NULL;
+            if (bad == 1) data.add_cdata_sz = 7;
+            if (bad == 2) data.add_cdata_sz = 3;
+            if (bad == 3) {
+                data.add_cdata_sz = UINT32_MAX;
+                data.udata.u.devMem.NumDwords = UINT32_MAX;
+            }
+            Check(raw_commands[op](&context, &data) == BC_STS_INV_ARG && !RawCallCount(),
+                  "missing or undersized memory buffers fail before callbacks without overflow");
+        }
+    }
+}
+static void MonitorRawAfterOwnerClose(void)
+{
+    struct file owner, monitor;
+    struct crystalhd_user *monitor_user;
+    uint32_t buffer[2] = {0};
+    crystalhd_ioctl_data data = { .add_cdata = buffer, .add_cdata_sz = sizeof(buffer) };
+
+    Reset(BC_LINK_INVALID, false);
+    owner = OpenResourceFile(DTS_PLAYBACK_MODE);
+    monitor = OpenFile(0x100 | DTS_MONITOR_MODE);
+    monitor_user = ((struct crystalhd_file *)monitor.private_data)->user;
+    CloseFile(&owner);
+    Check(monitor_user->in_use && !context.hw_ctx && !context.session_owner &&
+          adapter.cfg_users == 1 && hardware_closes == 1,
+          "real owner close leaves the surviving monitor without hardware");
+    data.u_id = monitor_user->uid;
+    for (unsigned op = 0; op < sizeof(raw_commands) / sizeof(raw_commands[0]); op++)
+        Check(raw_commands[op](&context, &data) == BC_STS_INV_ARG,
+              "a surviving monitor cannot dereference retired raw-command hardware");
+    Check(!RawCallCount() && hardware_opens == 1 && hardware_closes == 1,
+          "rejected monitor raw commands neither reach hardware nor recreate it");
+    CloseFile(&monitor);
+    CheckNoSession();
 }
 static void FileCloseModes(void)
 {
@@ -1750,6 +1937,10 @@ int main(void)
         {"HWINIT admission rejects overlapping resource setup", HwInitAdmission},
         {"explicit resource ownership across legacy modes", ResourceOwnership},
         {"pending unconfigured handle after resource owner close", PendingOpenAfterOwnerClose},
+        {"raw command invalid arguments and retired hardware", RawInvalidArguments},
+        {"raw device and link register read/write propagation", RawRegisterCommands},
+        {"raw memory bounds, read/write propagation and callback errors", RawMemoryCommands},
+        {"surviving monitor raw commands after actual owner close", MonitorRawAfterOwnerClose},
         {"user open failure rollback and retry", OpenFailuresAndRetry},
         {"legacy user slot exhaustion", OpenSlotExhaustion},
         {"invalid admission adapter arguments", InvalidAdmissionArguments},
