@@ -33,10 +33,15 @@ The backend supports these progressive BCM70015 inputs:
   preserved. Visible dimensions cannot change within a context.
 - MPEG-4 Part 2 Simple/Advanced Simple levels 3/5, rectangular 8-bit 4:2:0,
   H.263 quantization and one whole slice per picture through 1920x1088.
-  Resynchronization markers, sprites/GMC, quarter-pixel, MPEG quantization
-  matrices, partitioning, RVLC and interlace are rejected. I/P/B references and
-  timing survive bounded replay; a random-access discontinuity drains older
-  transport epochs before starting the new one.
+  Simple-profile I/P video-packet resynchronization is accepted only when the
+  policy remains fixed within a timing epoch and each interior packet header
+  has a nonzero in-range, strictly increasing macroblock number, a nonzero
+  quantizer and no header extension code. Packet payload bit alignment must
+  match the reconstructed VOP. Advanced Simple must disable resynchronization
+  markers. Sprites/GMC, quarter-pixel, MPEG quantization matrices, partitioning,
+  RVLC and interlace are rejected. I/P/B references and timing survive bounded
+  replay; a random-access discontinuity drains older transport epochs before
+  starting the new one.
 - VC-1 Advanced whole frames, headerless continuation slices and identical
   repeated picture headers. Changed per-slice headers, interlaced/field
   pictures, pan-scan, range mapping and separate in-loop output are rejected.
@@ -59,8 +64,9 @@ pictures.
 BCM70015 firmware can retain output until later compressed pictures or a real
 end-of-sequence marker arrive. After 100 ms of synchronization grace, the
 backend may seal the exact submitted batch with EOS. New input waits until all
-real output timestamps and the firmware EOS marker arrive; continued input then
-reopens the device and replays retained original access units.
+real output timestamps retire and drain completes through the firmware EOS
+marker or, for MPEG-4, the library EOS state; continued input then reopens the
+device and replays retained original access units.
 
 H.264 replay starts at the last retained actual IDR. MPEG-2 retains the causal
 I-picture history needed by the last two I/P anchors and pending or outstanding
