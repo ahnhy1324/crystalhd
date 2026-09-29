@@ -91,6 +91,32 @@ static void release_close(int fd)
 		fail("mode close");
 }
 
+static void monitor_flag_checks(const char *device)
+{
+	BC_IOCTL_DATA data;
+	uint32_t flags;
+	unsigned int variant;
+	int fd;
+
+	/* No flags, each upper mode bit, and all upper bits together. */
+	for (variant = 0; variant <= 25; variant++) {
+		flags = variant == 0 ? 0 : variant == 25 ? UINT32_C(0xffffff00) :
+			UINT32_C(1) << (variant + 7);
+		fd = mode_open(device, DTS_MONITOR_MODE | flags);
+		memset(&data, 0, sizeof(data));
+		command(fd, "monitor version", BCM_IOC_GET_VERSION, &data);
+		memset(&data, 0, sizeof(data));
+		command(fd, "monitor hardware type", BCM_IOC_GET_HWTYPE, &data);
+		/* Even an unfixed dispatcher cannot issue firmware commands here:
+		 * this fresh monitor has no initialized decoding session.
+		 */
+		memset(&data, 0, sizeof(data));
+		expect_errno(fd, "monitor firmware command denied", BCM_IOC_FW_CMD,
+			     &data, ENOTTY);
+		release_close(fd);
+	}
+}
+
 static void admission_checks(const char *device)
 {
 	const uint32_t modes[] = {DTS_PLAYBACK_MODE, DTS_DIAG_MODE};
@@ -344,6 +370,7 @@ int main(int argc, char **argv)
 			fail("reopen/close");
 		checks++;
 	}
+	monitor_flag_checks(device);
 	admission_checks(device);
 	playback_checks(device, flea, rawio);
 	printf("%zu-bit: PASS (%u checks)\n", sizeof(void *) * 8, checks);

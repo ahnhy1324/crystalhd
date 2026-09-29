@@ -1356,7 +1356,7 @@ crystalhd_cmd_proc crystalhd_get_cmd_proc(struct crystalhd_cmd *ctx, uint32_t cm
 	tbl_sz = sizeof(g_crystalhd_cproc_tbl) / sizeof(struct crystalhd_cmd_tbl);
 	for (i = 0; i < tbl_sz; i++) {
 		if (g_crystalhd_cproc_tbl[i].cmd_id == cmd) {
-			if ((uc->mode == DTS_MONITOR_MODE) &&
+			if (((uc->mode & 0xFF) == DTS_MONITOR_MODE) &&
 			    (g_crystalhd_cproc_tbl[i].block_mon)) {
 				dev_dbg(dev, "Blocking cmd %d \n", cmd);
 				break;
