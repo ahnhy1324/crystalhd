@@ -208,5 +208,5 @@ device-free tests do not establish hardware playback.
 ## Licensing
 
 Existing file notices remain authoritative in this mixed-license codebase;
-see [LICENSES.md](LICENSES.md). [HISTORY.md](HISTORY.md) records original driver
-releases, not the current task list.
+see [LICENSES.md](LICENSES.md). [HISTORY.md](HISTORY.md) records project lineage
+and maintenance milestones, not the current task list.
