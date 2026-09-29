@@ -13,17 +13,19 @@ and [DMA.md](DMA.md) for DMA ownership and failure boundaries.
 - [ ] [#12: YouTube][issue-12]:
   diagnose live 1x A/V desynchronization and validate playback controls.
 - [ ] [#52: V4L2 stateful M2M roadmap][issue-52]:
-  freeze the legacy behavioral baseline, then add the V4L2 frontend without
-  breaking the existing ABI or legacy hardware support.
+  finish the remaining Phase 1 environment check, then add the V4L2 frontend
+  without breaking the existing ABI or legacy hardware support.
 
 ## Coverage and lifecycle
 
 - [ ] Test BCM70012 on a current LTS and recent stable kernel.
+- [ ] Re-run the frozen BCM70015 Phase 1 baseline on a current Ubuntu LTS
+  system; the completed release gates used Ubuntu 25.10 and kernel 6.17.
 - [ ] Broaden H.264, MPEG-2, MPEG-4, VC-1 and WMV3 samples, interlaced layouts
   and mid-stream resolution/profile/format transitions beyond the recorded
   cases. MPEG-4 still excludes DIVX311, sprites/GMC, quarter-pixel, data
-  partitioning and interlace. Include sustained playback and controls, not
-  only short complete-file drain.
+  partitioning and interlace. Include natural content and concurrent host
+  load, not only deterministic synthetic fixtures.
 - [ ] Expand VA-API stream coverage and improve synchronous-client performance;
   one-picture-at-a-time clients can repeatedly reopen and replay references.
 - [ ] Validate actual VLC/EGL/GBM compositor presentation and synchronization;
