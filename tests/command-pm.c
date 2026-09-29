@@ -28,7 +28,7 @@ struct _BC_DTS_PROC_OUT;
 #define eCMD_C011_DEC_CHAN_PAUSE (eCMD_C011_CMD_BASE + 0x11dU)
 struct device { int unused; };
 struct pci_dev { struct device dev; int irq; };
-struct crystalhd_adp { struct pci_dev *pdev; unsigned cfg_users; };
+struct crystalhd_adp;
 typedef struct {
     uint32_t cmd[64];
     uint32_t rsp[64];
@@ -36,6 +36,7 @@ typedef struct {
 } BC_FW_CMD;
 struct crystalhd_hw {
     struct crystalhd_adp *adp;
+    void *rx_freeq;
     bool dma_fault;
     enum list_sts rx_list_sts[2];
     enum LIST_STATUS TxList0Sts, TxList1Sts;
@@ -59,6 +60,17 @@ struct crystalhd_cmd {
     uint32_t tx_list_id, cin_wait_exit, pwr_state_change;
     struct crystalhd_hw *hw_ctx;
 };
+struct crystalhd_adp {
+    struct pci_dev *pdev;
+    unsigned cfg_users;
+    bool present;
+    void *fill_byte_pool, *elem_pool_head;
+    int user_lock;
+    struct crystalhd_cmd cmds;
+};
+struct crystalhd_file { struct crystalhd_user *user; uint64_t generation; };
+struct file { void *private_data; };
+struct inode { int unused; };
 typedef struct {
     uint32_t u_id;
     struct { union {
@@ -72,6 +84,8 @@ typedef struct {
 static unsigned checks, failures, starts, stops, tx_stops, cancels, captures, pools, rings;
 static unsigned elem_deletes, dio_destroys, ring_frees, hardware_opens, hardware_closes;
 static unsigned irq_depth, irq_disables, irq_enables, capture_unmaps;
+static unsigned hardware_allocations, hardware_frees, last_close_cfg_users;
+static unsigned binding_count, binding_frees, device_reads, user_writes;
 static unsigned downloads;
 static bool start_ok, stop_ok;
 static bool elem_live, dio_live, rings_live, hardware_allocated;
@@ -92,7 +106,11 @@ static char events[32];
 static struct pci_dev endpoint = { .irq = 19 };
 static struct crystalhd_adp adapter = { .pdev = &endpoint };
 static struct crystalhd_hw hardware;
-static struct crystalhd_cmd context;
+#define context adapter.cmds
+static struct crystalhd_file bindings[BC_LINK_MAX_OPENS * 2];
+static bool binding_live[BC_LINK_MAX_OPENS * 2], adapter_visible;
+static uint64_t chd_device_generation;
+static int chd_device_lock;
 static bool Start(struct crystalhd_hw *hw);
 static bool Stop(struct crystalhd_hw *hw);
 static BC_STATUS StopTx(struct crystalhd_hw *hw);
@@ -129,6 +147,37 @@ static void TransactionUnlock(int *lock)
 #define mutex_lock(lock) TransactionLock(lock)
 #define mutex_unlock(lock) TransactionUnlock(lock)
 static struct device *chddev(void) { return &endpoint.dev; }
+static struct crystalhd_adp *chd_get_adp(void)
+{
+    Check(chd_device_lock == 1, "file close holds the device read lock");
+    return adapter_visible ? &adapter : NULL;
+}
+static void down_read(int *lock)
+{
+    Check(lock == &chd_device_lock && !*lock,
+          "file close acquires the device read lock once");
+    *lock = 1;
+    device_reads++;
+}
+static void up_read(int *lock)
+{
+    Check(lock == &chd_device_lock && *lock == 1 && !adapter.user_lock,
+          "file close releases the device lock after the user lock");
+    *lock = 0;
+}
+static void down_write(int *lock)
+{
+    Check(lock == &adapter.user_lock && !*lock && chd_device_lock == 1,
+          "file close serializes users inside the device read lock");
+    *lock = 1;
+    user_writes++;
+}
+static void up_write(int *lock)
+{
+    Check(lock == &adapter.user_lock && *lock == 1,
+          "file close releases the user write lock once");
+    *lock = 0;
+}
 static void ConfigureHardware(struct crystalhd_hw *hw)
 {
     *hw = (struct crystalhd_hw){ .adp = &adapter, .pfnStartDevice = Start,
@@ -145,13 +194,28 @@ static void *kmalloc(size_t size, int flags)
     Check(size == sizeof(hardware) && flags == GFP_KERNEL && !hardware_allocated,
           "user open allocates one fresh hardware context");
     hardware_allocated = true;
+    hardware_allocations++;
     return &hardware;
 }
 static void kfree(void *memory)
 {
+    unsigned n;
+
+    if (!memory)
+        return;
+    for (n = 0; n < binding_count; n++) {
+        if (memory != &bindings[n])
+            continue;
+        Check(binding_live[n] && !chd_device_lock && !adapter.user_lock,
+              "file close frees its binding once after unlocking");
+        binding_live[n] = false;
+        binding_frees++;
+        return;
+    }
     Check(memory == &hardware && hardware_allocated,
           "session teardown frees its hardware context exactly once");
     hardware_allocated = false;
+    hardware_frees++;
 }
 static void disable_irq(int irq)
 {
@@ -178,6 +242,7 @@ static BC_STATUS crystalhd_hw_close(struct crystalhd_hw *hw, struct crystalhd_ad
     Check(hw == &hardware && adp == &adapter,
           "session release closes the owned hardware context");
     hardware_closes++;
+    last_close_cfg_users = adp->cfg_users;
     return BC_STS_SUCCESS;
 }
 static bool Start(struct crystalhd_hw *hw)
@@ -264,12 +329,13 @@ static BC_STATUS crystalhd_hw_cancel_tx(struct crystalhd_hw *hw, uint32_t tag)
 static int crystalhd_create_elem_pool(struct crystalhd_adp *adp, unsigned size)
 {
     Check(adp == &adapter && size == BC_LINK_ELEM_POOL_SZ, "notify allocates element pool");
-    pools++; elem_live = true; return elem_error;
+    pools++; elem_live = true; adp->elem_pool_head = &elem_live;
+    return elem_error;
 }
 static void crystalhd_delete_elem_pool(struct crystalhd_adp *adp)
 {
     Check(adp == &adapter, "element-pool teardown receives the adapter");
-    elem_deletes++; elem_live = false;
+    elem_deletes++; elem_live = false; adp->elem_pool_head = NULL;
 }
 static int crystalhd_create_dio_pool(struct crystalhd_adp *adp, unsigned size)
 {
@@ -277,24 +343,26 @@ static int crystalhd_create_dio_pool(struct crystalhd_adp *adp, unsigned size)
     pools++;
     if (dio_error) return dio_error;
     dio_live = true;
+    adp->fill_byte_pool = &dio_live;
     return 0;
 }
 static void crystalhd_destroy_dio_pool(struct crystalhd_adp *adp)
 {
     Check(adp == &adapter, "DMA-pool teardown receives the adapter");
-    dio_destroys++; dio_live = false;
+    dio_destroys++; dio_live = false; adp->fill_byte_pool = NULL;
 }
 static BC_STATUS crystalhd_hw_setup_dma_rings(struct crystalhd_hw *hw)
 {
     Check(hw == &hardware, "notify uses the initialized hardware context");
     rings++;
     rings_live = ring_status == BC_STS_SUCCESS;
+    hw->rx_freeq = rings_live ? &rings_live : NULL;
     return ring_status;
 }
 static BC_STATUS crystalhd_hw_free_dma_rings(struct crystalhd_hw *hw)
 {
     Check(hw == &hardware, "DMA-ring teardown receives the hardware context");
-    ring_frees++; rings_live = false;
+    ring_frees++; rings_live = false; hw->rx_freeq = NULL;
     return BC_STS_SUCCESS;
 }
 static void crystalhd_hw_fw_cmd_reset_locked(struct crystalhd_hw *hw)
@@ -339,6 +407,11 @@ static void crystalhd_hw_fw_cmd_leave(struct crystalhd_hw *hw)
 }
 #include "command-pm-hardware.h"
 #include "command-pm-functions.h"
+/* The kernel release signature has an unused inode argument. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#include "command-pm-close.h"
+#pragma GCC diagnostic pop
 
 static void Reset(uint32_t state, bool with_hardware)
 {
@@ -346,6 +419,12 @@ static void Reset(uint32_t state, bool with_hardware)
     starts = stops = tx_stops = cancels = captures = pools = rings = 0;
     elem_deletes = dio_destroys = ring_frees = hardware_opens = hardware_closes = 0;
     irq_depth = irq_disables = irq_enables = capture_unmaps = 0;
+    hardware_allocations = hardware_frees = last_close_cfg_users = 0;
+    binding_count = binding_frees = device_reads = user_writes = 0;
+    memset(binding_live, 0, sizeof(binding_live));
+    chd_device_lock = 0;
+    chd_device_generation = 42;
+    adapter_visible = true;
     downloads = 0;
     events[0] = '\0'; start_ok = stop_ok = true;
     elem_live = dio_live = rings_live = hardware_allocated = false;
@@ -359,7 +438,7 @@ static void Reset(uint32_t state, bool with_hardware)
     first_firmware_waiting = release_first_firmware = false;
     block_download_reset = download_reset_waiting = release_download_reset = false;
     transaction_attempts = 0;
-    adapter.cfg_users = 0;
+    adapter = (struct crystalhd_adp){ .pdev = &endpoint, .present = true };
     ConfigureHardware(&hardware);
     context = (struct crystalhd_cmd){ .state = state, .adp = &adapter,
         .hw_ctx = with_hardware ? &hardware : NULL, .cin_wait_exit = 1 };
@@ -785,6 +864,253 @@ static void OwnerBeforeMonitor(void)
           irq_enables == 4 && !irq_depth,
           "owner-first close, reacquire, and final close preserve exact teardown counts");
 }
+static struct file OpenFile(uint32_t mode)
+{
+    struct crystalhd_user *user = NULL;
+    crystalhd_ioctl_data data = {0};
+    struct file file;
+
+    Check(crystalhd_user_open(&context, &user) == BC_STS_SUCCESS,
+          "file setup uses the actual user-open implementation");
+    if (!user || binding_count == sizeof(bindings) / sizeof(bindings[0]))
+        abort();
+    adapter.cfg_users++;
+    bindings[binding_count] = (struct crystalhd_file){
+        .user = user, .generation = chd_device_generation };
+    binding_live[binding_count] = true;
+    file.private_data = &bindings[binding_count++];
+    if (mode != (uint32_t)DTS_MODE_INV) {
+        data.u_id = user->uid;
+        data.udata.u.NotifyMode.Mode = mode;
+        Check(bc_cproc_notify_mode(&context, &data) == BC_STS_SUCCESS,
+              "file setup uses actual notify-mode admission");
+    }
+    return file;
+}
+static void CloseFile(struct file *file)
+{
+    Check(chd_dec_close(NULL, file) == 0,
+          "the actual file-release wrapper preserves successful close status");
+    Check(!file->private_data && !chd_device_lock && !adapter.user_lock && !irq_depth,
+          "file release clears its binding and balances every lock and IRQ");
+}
+static void CheckNoSession(void)
+{
+    Check(!adapter.cfg_users && !bc_get_userhandle_count(&context) &&
+          !context.hw_ctx && !hardware_allocated && !elem_live && !dio_live &&
+          !rings_live && !adapter.fill_byte_pool && !adapter.elem_pool_head &&
+          !hardware.rx_freeq,
+          "the final close leaves no session user, hardware, or pool allocation");
+}
+static void FileCloseModes(void)
+{
+    const uint32_t modes[] = { DTS_MODE_INV, DTS_MONITOR_MODE, DTS_PLAYBACK_MODE,
+        DTS_DIAG_MODE, 0x100 | DTS_PLAYBACK_MODE, 0x100 | DTS_DIAG_MODE };
+    unsigned n;
+
+    for (n = 0; n < sizeof(modes) / sizeof(modes[0]); n++) {
+        struct file file;
+        bool owner = n >= 2;
+
+        Reset(BC_LINK_INVALID, false);
+        file = OpenFile(modes[n]);
+        context.cin_wait_exit = 0;
+        context.pwr_state_change = BC_HW_SUSPEND;
+        CloseFile(&file);
+        CheckNoSession();
+        Check(context.state == BC_LINK_INVALID && context.cin_wait_exit == 1 &&
+              context.pwr_state_change == BC_HW_RUNNING,
+              "normal close resets command cancellation and power state");
+        Check(hardware_allocations == 1 && hardware_frees == 1 &&
+              hardware_opens == 1 && hardware_closes == 1 && last_close_cfg_users == 1,
+              "normal close retires hardware before decrementing the last user");
+        Check(captures == 1 && capture_unmaps == 1 && ring_frees == 1 &&
+              dio_destroys == 1 && elem_deletes == 1 &&
+              pools == (owner ? 2U : 0U) && rings == owner,
+              "common close safely handles empty resources without new allocations");
+        Check(irq_disables == 2 && irq_enables == 2 && device_reads == 1 &&
+              user_writes == 1 && binding_frees == 1,
+              "normal open and file close balance hardware and binding ownership");
+    }
+}
+static void FileOwnerBeforeMonitor(void)
+{
+    struct file owner, monitor, reopened;
+    struct crystalhd_user *monitor_user;
+    unsigned monitor_first;
+
+    for (monitor_first = 0; monitor_first < 2; monitor_first++) {
+        Reset(BC_LINK_INVALID, false);
+        owner = OpenFile(DTS_PLAYBACK_MODE);
+        monitor = OpenFile(DTS_MONITOR_MODE);
+        monitor_user = ((struct crystalhd_file *)monitor.private_data)->user;
+        if (monitor_first) {
+            CloseFile(&monitor);
+            Check(adapter.cfg_users == 1 && context.hw_ctx == &hardware &&
+                  !hardware_closes && !hardware_frees && !ring_frees &&
+                  !captures && elem_live && dio_live && rings_live,
+                  "monitor-first file close preserves every playback resource");
+            CloseFile(&owner);
+        } else {
+            CloseFile(&owner);
+            Check(adapter.cfg_users == 1 && monitor_user->in_use &&
+                  monitor_user->mode == DTS_MONITOR_MODE && !context.hw_ctx &&
+                  hardware_closes == 1 && hardware_frees == 1 &&
+                  last_close_cfg_users == 2 && !elem_live && !dio_live && !rings_live,
+                  "owner-first file close retires hardware while preserving its monitor");
+            reopened = OpenFile(DTS_DIAG_MODE);
+            Check(adapter.cfg_users == 2 && monitor_user->in_use &&
+                  monitor_user->mode == DTS_MONITOR_MODE && hardware_opens == 2 &&
+                  elem_live && dio_live && rings_live,
+                  "a diagnostic owner reacquires fresh hardware beside the existing monitor");
+            CloseFile(&reopened);
+            CloseFile(&monitor);
+        }
+        CheckNoSession();
+        Check(hardware_opens == 2 - monitor_first &&
+              hardware_closes == hardware_opens && hardware_allocations == hardware_opens &&
+              hardware_frees == hardware_opens && ring_frees == hardware_opens &&
+              capture_unmaps == hardware_opens && dio_destroys == hardware_opens &&
+              elem_deletes == hardware_opens && irq_disables == 2 * hardware_opens &&
+              irq_enables == irq_disables && binding_frees == 3 - monitor_first,
+              "both owner/monitor close orders retain exact allocation and teardown counts");
+    }
+}
+static void ReleaseThenFileClose(void)
+{
+    const uint32_t modes[] = { DTS_MODE_INV, DTS_MONITOR_MODE, DTS_PLAYBACK_MODE,
+        DTS_DIAG_MODE };
+    unsigned n;
+
+    for (n = 0; n < sizeof(modes) / sizeof(modes[0]); n++) {
+        struct file file;
+        crystalhd_ioctl_data data = {0};
+        bool configured = n != 0;
+
+        Reset(BC_LINK_INVALID, false);
+        file = OpenFile(modes[n]);
+        data.u_id = ((struct crystalhd_file *)file.private_data)->user->uid;
+        Check(bc_cproc_release_user(&context, &data) ==
+              (configured ? BC_STS_SUCCESS : BC_STS_ERR_USAGE),
+              "RELEASE preserves unconfigured rejection and configured success");
+        if (configured) {
+            CheckNoSession();
+            Check(last_close_cfg_users == 1 && capture_unmaps == 1 && ring_frees == 1 &&
+                  dio_destroys == 1 && elem_deletes == 1,
+                  "RELEASE retains its safe empty teardown calls for the last monitor");
+            Check(bc_cproc_release_user(&context, &data) == BC_STS_ERR_USAGE,
+                  "repeated RELEASE keeps its existing already-closed error");
+        } else {
+            Check(adapter.cfg_users == 1 && hardware_allocated && !hardware_closes,
+                  "rejected unconfigured RELEASE leaves the handle for file close");
+        }
+        CloseFile(&file);
+        CheckNoSession();
+        Check(hardware_closes == 1 && hardware_allocations == 1 && hardware_frees == 1 &&
+              irq_disables == 2 && irq_enables == 2 && binding_frees == 1,
+              "RELEASE followed by file close retires hardware and binding exactly once");
+    }
+}
+static void FileCloseAfterSetupFailure(void)
+{
+    unsigned which;
+
+    for (which = 0; which < 3; which++) {
+        struct file file;
+        crystalhd_ioctl_data data = {0};
+
+        Reset(BC_LINK_INVALID, false);
+        file = OpenFile(DTS_MODE_INV);
+        data.u_id = ((struct crystalhd_file *)file.private_data)->user->uid;
+        data.udata.u.NotifyMode.Mode = DTS_PLAYBACK_MODE;
+        if (which == 0) elem_error = -1;
+        if (which == 1) dio_error = -1;
+        if (which == 2) ring_status = BC_STS_INSUFF_RES;
+        Check(bc_cproc_notify_mode(&context, &data) ==
+              (which == 2 ? BC_STS_INSUFF_RES : BC_STS_ERROR),
+              "session setup failure retains its original status before file close");
+        CloseFile(&file);
+        CheckNoSession();
+        Check(hardware_closes == 1 && hardware_allocations == 1 && hardware_frees == 1 &&
+              last_close_cfg_users == 1 && captures == 1 && ring_frees == 1 &&
+              elem_deletes == 2 && dio_destroys == 1 + (which == 2) &&
+              irq_disables == 2 && irq_enables == 2 && binding_frees == 1,
+              "file close after failed acquisition safely completes empty-resource cleanup");
+    }
+}
+static void CloseCaptureFailure(void)
+{
+    unsigned via_release;
+
+    for (via_release = 0; via_release < 2; via_release++) {
+        struct file file;
+        crystalhd_ioctl_data data = {0};
+
+        Reset(BC_LINK_INVALID, false);
+        file = OpenFile(DTS_PLAYBACK_MODE);
+        capture_status = BC_STS_TIMEOUT;
+        if (via_release) {
+            data.u_id = ((struct crystalhd_file *)file.private_data)->user->uid;
+            Check(bc_cproc_release_user(&context, &data) == BC_STS_SUCCESS,
+                  "RELEASE retains its existing success result after capture-stop failure");
+        }
+        CloseFile(&file);
+        CheckNoSession();
+        Check(captures == 1 && capture_unmaps == 1 && ring_frees == 1 &&
+              dio_destroys == 1 && elem_deletes == 1 && hardware_closes == 1 &&
+              hardware_frees == 1 && last_close_cfg_users == 1 &&
+              irq_disables == 2 && irq_enables == 2 && binding_frees == 1,
+              "both close paths complete existing teardown after capture-stop failure");
+    }
+}
+static void FileCloseUnavailableDevice(void)
+{
+    struct file file;
+    struct crystalhd_user *user;
+    unsigned which;
+
+    for (which = 0; which < 3; which++) {
+        Reset(BC_LINK_INVALID, false);
+        file = OpenFile(DTS_PLAYBACK_MODE);
+        user = ((struct crystalhd_file *)file.private_data)->user;
+        if (which == 0) adapter.present = false;
+        if (which == 1) adapter_visible = false;
+        if (which == 2) chd_device_generation++;
+        CloseFile(&file);
+        Check(context.hw_ctx == &hardware && hardware_allocated && elem_live &&
+              dio_live && rings_live && !captures && !ring_frees &&
+              !dio_destroys && !elem_deletes && !hardware_closes && !hardware_frees &&
+              irq_disables == 1 && irq_enables == 1 && binding_frees == 1,
+              "failed PM or stale device close leaves hardware for remove's quiesced cleanup");
+        Check(user->in_use == (which != 0) && adapter.cfg_users == (which != 0) &&
+              user_writes == (which == 0),
+              "only the matching failed-PM device retires its logical file user");
+    }
+}
+static void OwnerCloseWithoutHardware(void)
+{
+    const uint32_t modes[] = { DTS_PLAYBACK_MODE, DTS_DIAG_MODE };
+    unsigned n;
+
+    for (n = 0; n < sizeof(modes) / sizeof(modes[0]); n++) {
+        struct crystalhd_user *user;
+
+        Reset(BC_LINK_INVALID, false);
+        user = &context.user[0];
+        user->in_use = 1;
+        user->mode = modes[n];
+        adapter.cfg_users = 1;
+        crystalhd_user_close(&context, user);
+        Check(!user->in_use && user->mode == (uint32_t)DTS_MODE_INV && !adapter.cfg_users,
+              "owner close can retire a logical user after hardware is already gone");
+        crystalhd_user_close(&context, user);
+        CheckNoSession();
+        Check(!hardware_allocations && !hardware_frees && !hardware_closes &&
+              !captures && !ring_frees && !dio_destroys && !elem_deletes &&
+              !irq_disables && !irq_enables,
+              "missing-hardware and repeated close perform no device or pool operation");
+    }
+}
 static void CheckNotify(void)
 {
     crystalhd_ioctl_data data = { .u_id = 1 };
@@ -1002,6 +1328,13 @@ int main(void)
         {"active session open, busy, release and reopen", SessionOwnership},
         {"last monitor releases empty session resources", MonitorOnlyRelease},
         {"playback owner closes before monitor and reacquires", OwnerBeforeMonitor},
+        {"actual file close across unconfigured, monitor, playback and diagnostic modes", FileCloseModes},
+        {"actual file close owner/monitor ordering and reacquisition", FileOwnerBeforeMonitor},
+        {"RELEASE then actual file close", ReleaseThenFileClose},
+        {"actual file close after session setup failure", FileCloseAfterSetupFailure},
+        {"existing close behavior after capture-stop failure", CloseCaptureFailure},
+        {"actual file close after failed PM or stale device binding", FileCloseUnavailableDevice},
+        {"owner close without hardware and repeated close", OwnerCloseWithoutHardware},
         {"NULL resume argument", NullResume}, {"invalid suspend arguments", InvalidSuspend},
         {"inconsistent non-idle NULL hardware", MissingHardware},
         {"active playback/diagnostic suspend and resume", Active},

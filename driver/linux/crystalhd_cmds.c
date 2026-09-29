@@ -954,48 +954,25 @@ static BC_STATUS bc_cproc_reset_stats(struct crystalhd_cmd *ctx,
 	return BC_STS_SUCCESS;
 }
 
-/**
- * bc_cproc_release_user - Close Application Handle
- *
- * Used to be crystalhd_user_close
- *
- * @ctx: Command layer contextx.
- * @idata: IOCTL data containing the user ID.
- *
- * Return:
- *	status
- *
- * Closer aplication handle and release app specific
- * resources.
- *
- * Move to IOCTL based implementation called from the RELEASE IOCTL
+/* Caller holds the user write lock on a present device. Failed-PM close and
+ * device removal use accounting-only and quiesced cleanup paths, respectively.
  */
-BC_STATUS bc_cproc_release_user(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *idata)
+void crystalhd_user_close(struct crystalhd_cmd *ctx, struct crystalhd_user *uc)
 {
-
-	struct device *dev = chddev();
 	uint32_t mode;
 
-	if (!ctx || !idata) {
-		dev_err(dev, "%s: Invalid Arg\n", __func__);
-		return BC_STS_INV_ARG;
-	}
+	if (!uc->in_use)
+		return;
 
-	if (ctx->user[idata->u_id].mode == DTS_MODE_INV) {
-		dev_err(dev, "Handle is already closed\n");
-		return BC_STS_ERR_USAGE;
-	}
+	mode = uc->mode;
+	uc->mode = DTS_MODE_INV;
+	uc->in_use = 0;
 
-	mode = ctx->user[idata->u_id].mode;
+	dev_info(chddev(), "Closing user[%x] handle with mode %x\n", uc->uid, mode);
 
-	ctx->user[idata->u_id].mode = DTS_MODE_INV;
-	ctx->user[idata->u_id].in_use = 0;
-
-	dev_info(chddev(), "Closing user[%x] handle via ioctl with mode %x\n", idata->u_id, mode);
-
-	if (((mode & 0xFF) == DTS_DIAG_MODE) ||
-		((mode & 0xFF) == DTS_PLAYBACK_MODE) ||
-		((bc_get_userhandle_count(ctx) == 0) && (ctx->hw_ctx != NULL))) {
+	if (ctx->hw_ctx && ((mode & 0xFF) == DTS_DIAG_MODE ||
+			    (mode & 0xFF) == DTS_PLAYBACK_MODE ||
+			    bc_get_userhandle_count(ctx) == 0)) {
 		ctx->cin_wait_exit = 1;
 		/* Stop the HW Capture just in case flush did not get called before stop */
 		ctx->pwr_state_change = BC_HW_RUNNING;
@@ -1011,8 +988,24 @@ BC_STATUS bc_cproc_release_user(struct crystalhd_cmd *ctx, crystalhd_ioctl_data 
 		enable_irq(ctx->adp->pdev->irq);
 	}
 
-	if(ctx->adp->cfg_users > 0)
+	/* Hardware close uses the count before this handle is released. */
+	if (ctx->adp->cfg_users > 0)
 		ctx->adp->cfg_users--;
+}
+
+BC_STATUS bc_cproc_release_user(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *idata)
+{
+	if (!ctx || !idata) {
+		dev_err(chddev(), "%s: Invalid Arg\n", __func__);
+		return BC_STS_INV_ARG;
+	}
+
+	if (ctx->user[idata->u_id].mode == DTS_MODE_INV) {
+		dev_err(chddev(), "Handle is already closed\n");
+		return BC_STS_ERR_USAGE;
+	}
+
+	crystalhd_user_close(ctx, &ctx->user[idata->u_id]);
 
 	return BC_STS_SUCCESS;
 }

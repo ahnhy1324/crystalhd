@@ -7,7 +7,8 @@ pm_test_dir=$(mktemp -d "${TMPDIR:-/tmp}/crystalhd-command-pm-check.XXXXXX")
 cleanup()
 {
     rm -f "$pm_test_dir/check" "$pm_test_dir/command-pm-types.h" \
-        "$pm_test_dir/command-pm-hardware.h" "$pm_test_dir/command-pm-functions.h"
+        "$pm_test_dir/command-pm-hardware.h" "$pm_test_dir/command-pm-functions.h" \
+        "$pm_test_dir/command-pm-close.h"
     rmdir "$pm_test_dir"
 }
 trap cleanup EXIT
@@ -39,12 +40,19 @@ awk '
     /^static BC_STATUS bc_cproc_notify_mode\(/ ||
     /^static BC_STATUS bc_cproc_download_fw\(/ ||
     /^static BC_STATUS bc_cproc_do_fw_cmd\(/ ||
+    /^void crystalhd_user_close\(/ ||
     (/^BC_STATUS bc_cproc_release_user\(/ && !/;[[:space:]]*$/) ||
     /^BC_STATUS crystalhd_(suspend|resume|user_open)\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 10 || copying) exit 1 }
+    END { if (found != 11 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" > "$pm_test_dir/command-pm-functions.h"
+awk '
+    /^static int chd_dec_close(_locked)?\(/ { copying = 1; found++ }
+    copying { print }
+    copying && /^}/ { copying = 0 }
+    END { if (found != 2 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_lnx.c" > "$pm_test_dir/command-pm-close.h"
 
 for pm_sanitize in no yes; do
     pm_extra=
