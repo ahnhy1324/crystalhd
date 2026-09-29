@@ -41,6 +41,7 @@ struct crystalhd_cmd {
 	struct crystalhd_adp *adp;
 	struct crystalhd_hw *hw_ctx;
 	struct crystalhd_user user[2];
+	struct crystalhd_user *session_owner;
 	uint32_t cin_wait_exit, pwr_state_change, state;
 };
 typedef struct crystalhd_ioctl_data {
@@ -108,10 +109,12 @@ static void kfree(void *ptr)
 		if (allocations[i].ptr == ptr) {
 			enum allocation_kind kind = allocations[i].kind;
 			if (kind == ADAPTER) {
+				struct crystalhd_adp *adp = ptr;
 				assert(chd_device_lock.writers == 1);
 				assert(!g_adp_info && !pci.data && !device_live);
 				assert(!regions_live && !bars_live[0] && !bars_live[1]);
 				assert(!chdev_live && !class_live);
+				assert(!adp->cmds.session_owner);
 			} else if (kind != BINDING) {
 				assert_quiesced();
 			}
@@ -235,6 +238,7 @@ static void device_destroy(void *class_ptr, int device_number)
 	assert_quiesced();
 	assert(class_ptr == crystalhd_class && device_number == MKDEV(240, 0));
 	assert(chdev_live && class_live && !g_adp_info->cmds.adp);
+	assert(!g_adp_info->cmds.session_owner);
 	chdev_live = false;
 }
 static void unregister_chrdev(int major, const char *name)
@@ -317,11 +321,13 @@ static struct crystalhd_adp *attach(bool playback, bool msi)
 		adp->idata_free_head = data;
 	}
 	if (playback) {
+		adp->cmds.session_owner = &adp->cmds.user[0];
 		adp->cmds.hw_ctx = allocate(sizeof(*adp->cmds.hw_ctx), HARDWARE);
 		adp->cmds.hw_ctx->rx_freeq = adp;
 		adp->fill_byte_pool = allocate(1, DIO_POOL);
 		adp->elem_pool_head = allocate(1, ELEM_POOL);
 	}
+	assert(!!adp->cmds.session_owner == playback);
 	chd_device_generation++; /* Successful probe publication, modeled here. */
 	master = irq_live = device_live = regions_live = true;
 	chdev_live = class_live = bars_live[0] = bars_live[1] = true;
@@ -414,12 +420,16 @@ static void test_fail_stop_then_remove(void)
 		assert(!master && !irq_live && !msi_live && irq_frees == 1 && msi_disables == 1);
 		assert(!dma_frees && !l0s_releases && !device_disables);
 		assert(adp->cmds.hw_ctx && adp->fill_byte_pool && adp->elem_pool_head);
+		assert(adp->cmds.session_owner == &adp->cmds.user[0]);
 		assert(chd_dec_close(NULL, &first) == 0 && !first.private_data);
 		assert(adp->cfg_users == 1 && !adp->cmds.user[0].in_use);
 		assert(adp->cmds.user[0].mode == DTS_MODE_INV && adp->cmds.user[1].in_use);
+		/* Accounting-only close leaves resource ownership for quiesced removal. */
+		assert(adp->cmds.session_owner == &adp->cmds.user[0]);
 		assert(chd_dec_close(NULL, &second) == 0 && !second.private_data);
 		assert(!adp->cfg_users && !adp->cmds.user[1].in_use);
 		assert(!dma_frees && !released[HARDWARE] && !released[DIO_POOL]);
+		assert(adp->cmds.session_owner == &adp->cmds.user[0]);
 		chd_dec_pci_remove(&pci);
 		assert(binding_cancellations == 3 && master_clears == 3 && pending_waits == 3);
 		assert(irq_frees == 1 && msi_disables == 1 && dma_frees == 1);
@@ -450,6 +460,7 @@ static void test_stale_close(void)
 		assert(released[BINDING] == 1);
 		if (which) {
 			assert(adp->cfg_users == 1 && adp->cmds.user[0].in_use);
+			assert(!adp->cmds.session_owner);
 			assert(!adp->user_lock.entries && master && irq_live);
 			/* Per-attachment counters used by cleanup assertions. */
 			l0s_releases = 0;

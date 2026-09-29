@@ -111,7 +111,7 @@ BC_STATUS crystalhd_user_set_mode(struct crystalhd_cmd *ctx,
 	if (!ctx || !uc)
 		return BC_STS_INV_ARG;
 
-	if (uc->mode != DTS_MODE_INV) {
+	if (uc->mode != DTS_MODE_INV || ctx->session_owner == uc) {
 		dev_err(chddev(), "Close the handle first..\n");
 		return BC_STS_ERR_USAGE;
 	}
@@ -136,10 +136,16 @@ BC_STATUS crystalhd_user_set_mode(struct crystalhd_cmd *ctx,
 		}
 	}
 
+	if (ctx->session_owner) {
+		dev_err(chddev(), "Decoder session is already owned\n");
+		return BC_STS_ERR_USAGE;
+	}
+
 	sts = crystalhd_session_setup(ctx);
 	if (sts != BC_STS_SUCCESS)
 		return sts;
 
+	ctx->session_owner = uc;
 	ctx->cin_wait_exit = 0;
 	uc->mode = mode;
 	return BC_STS_SUCCESS;
@@ -983,6 +989,7 @@ static BC_STATUS bc_cproc_reset_stats(struct crystalhd_cmd *ctx,
 void crystalhd_user_close(struct crystalhd_cmd *ctx, struct crystalhd_user *uc)
 {
 	uint32_t mode;
+	bool release_session;
 
 	if (!uc->in_use)
 		return;
@@ -993,9 +1000,8 @@ void crystalhd_user_close(struct crystalhd_cmd *ctx, struct crystalhd_user *uc)
 
 	dev_info(chddev(), "Closing user[%x] handle with mode %x\n", uc->uid, mode);
 
-	if (ctx->hw_ctx && ((mode & 0xFF) == DTS_DIAG_MODE ||
-			    (mode & 0xFF) == DTS_PLAYBACK_MODE ||
-			    bc_get_userhandle_count(ctx) == 0)) {
+	release_session = ctx->session_owner == uc || bc_get_userhandle_count(ctx) == 0;
+	if (release_session && ctx->hw_ctx) {
 		ctx->cin_wait_exit = 1;
 		/* Stop the HW Capture just in case flush did not get called before stop */
 		ctx->pwr_state_change = BC_HW_RUNNING;
@@ -1010,6 +1016,8 @@ void crystalhd_user_close(struct crystalhd_cmd *ctx, struct crystalhd_user *uc)
 		ctx->hw_ctx = NULL;
 		enable_irq(ctx->adp->pdev->irq);
 	}
+	if (release_session)
+		ctx->session_owner = NULL;
 
 	/* Hardware close uses the count before this handle is released. */
 	if (ctx->adp->cfg_users > 0)
@@ -1268,6 +1276,7 @@ BC_STATUS crystalhd_setup_cmd_context(struct crystalhd_cmd *ctx,
 		dev_dbg(dev, "Resetting Cmd context delete missing..\n");
 
 	ctx->adp = adp;
+	ctx->session_owner = NULL;
 	for (i = 0; i < BC_LINK_MAX_OPENS; i++) {
 		ctx->user[i].uid = i;
 		ctx->user[i].in_use = 0;
@@ -1318,6 +1327,7 @@ BC_STATUS crystalhd_delete_cmd_context(struct crystalhd_cmd *ctx)
 	if (ctx->adp->elem_pool_head)
 		crystalhd_delete_elem_pool(ctx->adp);
 	ctx->state = BC_LINK_INVALID;
+	ctx->session_owner = NULL;
 	ctx->adp = NULL;
 
 	return BC_STS_SUCCESS;

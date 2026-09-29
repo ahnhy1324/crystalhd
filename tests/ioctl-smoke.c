@@ -167,6 +167,27 @@ static void admission_checks(const char *device)
 	}
 }
 
+static void hwinit_checks(const char *device)
+{
+	const uint32_t modes[] = {DTS_HWINIT_MODE,
+		DTS_HWINIT_MODE | DTS_SINGLE_THREADED_MODE | DTS_PLAYBACK_DROP_RPT_MODE};
+	BC_IOCTL_DATA data;
+	unsigned int i;
+	int owner_fd, monitor_fd;
+
+	for (i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
+		owner_fd = mode_open(device, modes[i]);
+		memset(&data, 0, sizeof(data));
+		command(owner_fd, "HWINIT version", BCM_IOC_GET_VERSION, &data);
+		monitor_fd = mode_open(device, DTS_MONITOR_MODE);
+		release_close(owner_fd);
+		memset(&data, 0, sizeof(data));
+		command(monitor_fd, "monitor after HWINIT release", BCM_IOC_GET_VERSION, &data);
+		/* Fully close this session before admitting another resource owner. */
+		release_close(monitor_fd);
+	}
+}
+
 static void playback_checks(const char *device, int flea, int rawio)
 {
 	BC_IOCTL_DATA data = {0};
@@ -372,6 +393,7 @@ int main(int argc, char **argv)
 	}
 	monitor_flag_checks(device);
 	admission_checks(device);
+	hwinit_checks(device);
 	playback_checks(device, flea, rawio);
 	printf("%zu-bit: PASS (%u checks)\n", sizeof(void *) * 8, checks);
 	return EXIT_SUCCESS;
