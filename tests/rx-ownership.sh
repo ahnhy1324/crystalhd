@@ -39,12 +39,12 @@ awk '
     END { if (found != 10 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_hw.c" > "$rx_test_dir/rx-hardware.h"
 awk '
-    /^static BC_STATUS bc_cproc_(check_inbuffs|add_cap_buff|fmt_change|fetch_frame|flush_cap_buffs)\(/ {
+    /^static BC_STATUS bc_cproc_(check_inbuffs|add_cap_buff|fmt_change|fetch_frame|start_capture|flush_cap_buffs)\(/ {
         copying = 1; found++
     }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 5 || copying) exit 1 }
+    END { if (found != 6 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" > "$rx_test_dir/rx-command.h"
 awk '
     /^BC_STATUS crystalhd_(flea|link)_hw_post_cap_buff\(/ {

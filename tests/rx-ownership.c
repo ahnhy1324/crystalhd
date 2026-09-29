@@ -10,6 +10,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include "bc_dts_types.h"
 struct _BC_DTS_PROC_OUT;
 #include "bc_dts_defs.h"
@@ -46,7 +49,7 @@ struct crystalhd_hw {
     int lock, fetch_sem;
     bool hw_pause_issued, dma_fault;
     uint32_t rx_pkt_tag_seed, DrvTotalFrmCaptured;
-    uint32_t PauseThreshold, ResumeThreshold, PDRatio;
+    uint32_t PauseThreshold, ResumeThreshold, DefaultPauseThreshold, PDRatio;
     uint64_t TickSpentInPD, TickCntDecodePU;
     enum FLEA_POWER_STATES FleaPowerState;
     BC_STATUS (*pfnPostRxSideBuff)(struct crystalhd_hw *, struct crystalhd_rx_dma_pkt *);
@@ -74,6 +77,7 @@ static bool mapped[BC_RX_LIST_CNT];
 static unsigned unmaps[BC_RX_LIST_CNT];
 static unsigned checks, failures, groups, maps, post_calls, stop_calls, irq_depth;
 static unsigned irq_disables, irq_enables, notify_calls, pause_calls;
+static unsigned sem_attempts, hardware_notifications;
 static unsigned fail_post_call;
 static BC_STATUS map_status, translate_status, post_status, queue_status;
 static bool interrupt_lock, wait_signal, stop_fault, notify_ok;
@@ -207,6 +211,7 @@ static BC_STATUS crystalhd_unmap_dio(struct crystalhd_adp *adp, struct crystalhd
 }
 static int down_interruptible(int *sem)
 {
+    sem_attempts++;
     assert(sem == &hardware.fetch_sem && *sem == 1);
     if (interrupt_lock) { interrupt_lock = false; return -1; }
     *sem = 0;
@@ -253,6 +258,7 @@ static void done_size(struct crystalhd_hw *hw, uint32_t index, uint32_t *y, uint
 static bool notify_hardware(struct crystalhd_hw *hw, enum BRCM_EVENT event)
 {
     assert(hw == &hardware && !hw->fetch_sem && event == BC_EVENT_START_CAPTURE);
+    hardware_notifications++;
     return notify_ok;
 }
 static void stop_dma(struct crystalhd_hw *hw)
@@ -324,6 +330,7 @@ static void reset(uint32_t device)
     }
     maps = post_calls = stop_calls = irq_depth = irq_disables = irq_enables = 0;
     notify_calls = pause_calls = fail_post_call = 0;
+    sem_attempts = hardware_notifications = 0;
     map_status = translate_status = post_status = queue_status = BC_STS_SUCCESS;
     interrupt_lock = wait_signal = stop_fault = false;
     notify_ok = true; fail_queue = NULL;
@@ -546,6 +553,113 @@ static void cancellation_cases(uint32_t device)
           "monitor context without RX queues needs no DMA stop");
     inventory(0, 0, 0);
 }
+static void invalid_command_arguments(uint32_t device)
+{
+    BC_STATUS (*commands[])(struct crystalhd_cmd *, crystalhd_ioctl_data *) = {
+        bc_cproc_start_capture, bc_cproc_flush_cap_buffs, bc_cproc_add_cap_buff };
+    for (unsigned c = 0; c < sizeof(commands) / sizeof(commands[0]); c++) {
+        for (unsigned arg = 0; arg < 4; arg++) {
+            crystalhd_ioctl_data data = {0};
+            pid_t child;
+            int status;
+            reset(device);
+            data.udata.u.RxBuffs.YuvBuff = (uint8_t *)buffers[0];
+            data.udata.u.RxBuffs.YuvBuffSz = sizeof(buffers[0]);
+            data.udata.u.RxBuffs.UVbuffOffset = 128;
+            if (arg == 3) context.hw_ctx = NULL;
+            fflush(NULL);
+            child = fork();
+            assert(child >= 0);
+            if (!child) {
+                struct rlimit no_core = {0, 0};
+                assert(setrlimit(RLIMIT_CORE, &no_core) == 0);
+                BC_STATUS result = commands[c](arg == 0 || arg == 2 ? NULL : &context,
+                                               arg == 1 || arg == 2 ? NULL : &data);
+                bool clean = result == BC_STS_INV_ARG && !sem_attempts &&
+                    !hardware_notifications && !maps && !post_calls && !stop_calls &&
+                    !irq_disables && !notify_calls && !pause_calls &&
+                    context.state == BC_LINK_READY && hardware.fetch_sem == 1;
+                if (!clean)
+                    fprintf(stderr, "invalid RX command %u argument %u changed state or callbacks\n", c, arg);
+                _exit(clean ? EXIT_SUCCESS : EXIT_FAILURE);
+            }
+            assert(waitpid(child, &status, 0) == child);
+            if (WIFSIGNALED(status))
+                fprintf(stderr, "invalid RX command %u argument %u raised signal %d\n",
+                        c, arg, WTERMSIG(status));
+            check(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_SUCCESS,
+                  "invalid RX command arguments reject before locking, mapping or hardware callbacks");
+            inventory(0, 0, 0);
+        }
+    }
+}
+static void start_command_cases(uint32_t device)
+{
+    crystalhd_ioctl_data data = {0};
+    const BC_STATUS statuses[] = { BC_STS_SUCCESS, BC_STS_BUSY, BC_STS_IO_ERROR };
+    for (unsigned variant = 0; variant < 4; variant++) {
+        reset(device);
+        context.state = BC_LINK_INIT;
+        hardware.DrvTotalFrmCaptured = 23;
+        data.udata.u.RxCap.PauseThsh = variant & 1 ? 17 : 0;
+        data.udata.u.RxCap.ResumeThsh = variant & 2 ? 9 : 0;
+        check(bc_cproc_start_capture(&context, &data) == BC_STS_SUCCESS,
+              "start capture accepts independent default or explicit thresholds");
+        check(hardware.PauseThreshold == (variant & 1 ? 17U : HW_PAUSE_THRESHOLD) &&
+              hardware.ResumeThreshold == (variant & 2 ? 9U : HW_RESUME_THRESHOLD) &&
+              hardware.DefaultPauseThreshold == hardware.PauseThreshold &&
+              !hardware.DrvTotalFrmCaptured,
+              "start stores thresholds, records the pause default and resets captured count");
+        check(context.state == (BC_LINK_INIT | BC_LINK_CAP_EN) &&
+              hardware_notifications == 1 && sem_attempts == 1 && !post_calls,
+              "start enables capture but waits for format readiness before posting DMA");
+        inventory(0, 0, 0);
+    }
+    reset(device);
+    context.state = BC_LINK_INIT | BC_LINK_FMT_CHG;
+    memset(&data, 0, sizeof(data));
+    check(bc_cproc_start_capture(&context, &data) == BC_STS_SUCCESS &&
+          context.state == BC_LINK_READY && hardware_notifications == 1 && !post_calls,
+          "empty ready capture normalizes NO_DATA to success");
+    inventory(0, 0, 0);
+
+    reset(device);
+    context.state = BC_LINK_INIT;
+    notify_ok = false;
+    check(bc_cproc_start_capture(&context, &data) == BC_STS_IO_ERROR &&
+          context.state == BC_LINK_INIT && hardware_notifications == 1 && !post_calls,
+          "failed start notification does not publish capture state or post DMA");
+    inventory(0, 0, 0);
+
+    reset(device);
+    hardware.DrvTotalFrmCaptured = 23;
+    hardware.DefaultPauseThreshold = 31;
+    interrupt_lock = true;
+    check(bc_cproc_start_capture(&context, &data) == BC_STS_IO_USER_ABORT &&
+          hardware.PauseThreshold == 12 && hardware.ResumeThreshold == 4 &&
+          hardware.DefaultPauseThreshold == 31 && hardware.DrvTotalFrmCaptured == 23 &&
+          context.state == BC_LINK_READY && !hardware_notifications && !post_calls,
+          "interrupted start leaves thresholds, counters and capture state unchanged");
+    inventory(0, 0, 0);
+
+    for (unsigned s = 0; s < sizeof(statuses) / sizeof(statuses[0]); s++) {
+        reset(device);
+        context.state = BC_LINK_INIT;
+        check(add(0) == BC_STS_SUCCESS && add(1) == BC_STS_SUCCESS,
+              "prepare queued buffers for actual start command");
+        context.state |= BC_LINK_FMT_CHG;
+        post_status = statuses[s];
+        check(bc_cproc_start_capture(&context, &data) ==
+              (statuses[s] == BC_STS_IO_ERROR ? BC_STS_IO_ERROR : BC_STS_SUCCESS),
+              "start command preserves hard errors and queues BUSY buffers for retry");
+        check(context.state == BC_LINK_READY && hardware_notifications == 1 &&
+              post_calls == (statuses[s] == BC_STS_SUCCESS ? 2U : 1U),
+              "ready start posts only the admitted DMA engines");
+        inventory(statuses[s] == BC_STS_SUCCESS ? 2 : 0, 0,
+                  statuses[s] == BC_STS_SUCCESS ? 0 : 2);
+        drain();
+    }
+}
 int main(void)
 {
     uint32_t devices[] = { BC_PCI_DEVID_LINK, BC_PCI_DEVID_FLEA };
@@ -555,6 +669,8 @@ int main(void)
         retry_cases(devices[i]);
         for (unsigned failure = 0; failure < 4; failure++) format_case(devices[i], failure);
         cancellation_cases(devices[i]);
+        start_command_cases(devices[i]);
+        invalid_command_arguments(devices[i]);
     }
     printf("RX ownership: %u scenarios, %u checks, %u failures\n", groups, checks, failures);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;

@@ -197,7 +197,7 @@ static BC_STATUS bc_cproc_get_hwtype(struct crystalhd_cmd *ctx, crystalhd_ioctl_
 static BC_STATUS bc_cproc_reg_rd(struct crystalhd_cmd *ctx,
 				 crystalhd_ioctl_data *idata)
 {
-	if (!ctx || !idata)
+	if (!ctx || !ctx->hw_ctx || !idata)
 		return BC_STS_INV_ARG;
 	idata->udata.u.regAcc.Value = ctx->hw_ctx->pfnReadDevRegister(ctx->adp,
 					idata->udata.u.regAcc.Offset);
@@ -207,7 +207,7 @@ static BC_STATUS bc_cproc_reg_rd(struct crystalhd_cmd *ctx,
 static BC_STATUS bc_cproc_reg_wr(struct crystalhd_cmd *ctx,
 				 crystalhd_ioctl_data *idata)
 {
-	if (!ctx || !idata)
+	if (!ctx || !ctx->hw_ctx || !idata)
 		return BC_STS_INV_ARG;
 
 	ctx->hw_ctx->pfnWriteDevRegister(ctx->adp, idata->udata.u.regAcc.Offset,
@@ -219,7 +219,7 @@ static BC_STATUS bc_cproc_reg_wr(struct crystalhd_cmd *ctx,
 static BC_STATUS bc_cproc_link_reg_rd(struct crystalhd_cmd *ctx,
 				      crystalhd_ioctl_data *idata)
 {
-	if (!ctx || !idata)
+	if (!ctx || !ctx->hw_ctx || !idata)
 		return BC_STS_INV_ARG;
 
 	idata->udata.u.regAcc.Value = ctx->hw_ctx->pfnReadFPGARegister(ctx->adp,
@@ -230,7 +230,7 @@ static BC_STATUS bc_cproc_link_reg_rd(struct crystalhd_cmd *ctx,
 static BC_STATUS bc_cproc_link_reg_wr(struct crystalhd_cmd *ctx,
 				      crystalhd_ioctl_data *idata)
 {
-	if (!ctx || !idata)
+	if (!ctx || !ctx->hw_ctx || !idata)
 		return BC_STS_INV_ARG;
 
 	ctx->hw_ctx->pfnWriteFPGARegister(ctx->adp, idata->udata.u.regAcc.Offset,
@@ -244,7 +244,7 @@ static BC_STATUS bc_cproc_mem_rd(struct crystalhd_cmd *ctx,
 {
 	BC_STATUS sts = BC_STS_SUCCESS;
 
-	if (!ctx || !idata || !idata->add_cdata)
+	if (!ctx || !ctx->hw_ctx || !idata || !idata->add_cdata)
 		return BC_STS_INV_ARG;
 
 	if (idata->udata.u.devMem.NumDwords > (idata->add_cdata_sz / 4)) {
@@ -263,7 +263,7 @@ static BC_STATUS bc_cproc_mem_wr(struct crystalhd_cmd *ctx,
 {
 	BC_STATUS sts = BC_STS_SUCCESS;
 
-	if (!ctx || !idata || !idata->add_cdata)
+	if (!ctx || !ctx->hw_ctx || !idata || !idata->add_cdata)
 		return BC_STS_INV_ARG;
 
 	if (idata->udata.u.devMem.NumDwords > (idata->add_cdata_sz / 4)) {
@@ -692,7 +692,7 @@ static BC_STATUS bc_cproc_add_cap_buff(struct crystalhd_cmd *ctx,
 	struct crystalhd_dio_req *dio_hnd = NULL;
 	BC_STATUS sts = BC_STS_SUCCESS;
 
-	if (!ctx || !idata) {
+	if (!ctx || !ctx->hw_ctx || !idata) {
 		dev_err(dev, "%s: Invalid Arg\n", __func__);
 		return BC_STS_INV_ARG;
 	}
@@ -810,6 +810,9 @@ static BC_STATUS bc_cproc_start_capture(struct crystalhd_cmd *ctx,
 {
 	BC_STATUS sts = BC_STS_SUCCESS;
 
+	if (!ctx || !ctx->hw_ctx || !idata)
+		return BC_STS_INV_ARG;
+
 	if (down_interruptible(&ctx->hw_ctx->fetch_sem))
 		return BC_STS_IO_USER_ABORT;
 
@@ -846,7 +849,7 @@ static BC_STATUS bc_cproc_flush_cap_buffs(struct crystalhd_cmd *ctx,
 	struct device *dev = chddev();
 	BC_STATUS sts;
 
-	if (!ctx || !idata) {
+	if (!ctx || !ctx->hw_ctx || !idata) {
 		dev_err(dev, "%s: Invalid Arg\n", __func__);
 		return BC_STS_INV_ARG;
 	}
