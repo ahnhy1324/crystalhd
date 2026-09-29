@@ -85,10 +85,14 @@ static unsigned checks, failures, starts, stops, tx_stops, cancels, captures, po
 static unsigned elem_deletes, dio_destroys, ring_frees, hardware_opens, hardware_closes;
 static unsigned irq_depth, irq_disables, irq_enables, capture_unmaps;
 static unsigned hardware_allocations, hardware_frees, last_close_cfg_users;
+static unsigned hardware_alloc_attempts;
 static unsigned binding_count, binding_frees, device_reads, user_writes;
 static unsigned downloads;
 static bool start_ok, stop_ok;
 static bool elem_live, dio_live, rings_live, hardware_allocated;
+static bool hardware_alloc_fail, admission_pending, open_pending;
+static unsigned admission_uid;
+static uint32_t admission_state, admission_wait;
 static int elem_error, dio_error;
 static BC_STATUS ring_status, hardware_open_status;
 static BC_STATUS capture_status, cancel_status;
@@ -193,6 +197,13 @@ static void *kmalloc(size_t size, int flags)
 {
     Check(size == sizeof(hardware) && flags == GFP_KERNEL && !hardware_allocated,
           "user open allocates one fresh hardware context");
+    hardware_alloc_attempts++;
+    if (open_pending)
+        Check(!context.user[0].in_use && !adapter.cfg_users && !context.hw_ctx &&
+              context.pwr_state_change == BC_HW_SUSPEND,
+              "hardware allocation precedes user and power-state publication");
+    if (hardware_alloc_fail)
+        return NULL;
     hardware_allocated = true;
     hardware_allocations++;
     return &hardware;
@@ -231,6 +242,10 @@ static BC_STATUS crystalhd_hw_open(struct crystalhd_hw *hw, struct crystalhd_adp
 {
     Check(hw == &hardware && adp == &adapter,
           "user open initializes the allocated hardware context");
+    if (open_pending)
+        Check(!context.user[0].in_use && !adapter.cfg_users &&
+              context.pwr_state_change == BC_HW_SUSPEND,
+              "hardware initialization precedes user and power-state publication");
     hardware_opens++;
     if (hardware_open_status != BC_STS_SUCCESS)
         return hardware_open_status;
@@ -326,8 +341,16 @@ static BC_STATUS crystalhd_hw_cancel_tx(struct crystalhd_hw *hw, uint32_t tag)
           "suspend cancels the active TX owner");
     cancels++; Event('X'); return cancel_status;
 }
+static void CheckPendingAdmission(void)
+{
+    if (admission_pending)
+        Check(context.user[admission_uid].mode == (uint32_t)DTS_MODE_INV &&
+              context.state == admission_state && context.cin_wait_exit == admission_wait,
+              "resource setup does not publish mode or change command state early");
+}
 static int crystalhd_create_elem_pool(struct crystalhd_adp *adp, unsigned size)
 {
+    CheckPendingAdmission();
     Check(adp == &adapter && size == BC_LINK_ELEM_POOL_SZ, "notify allocates element pool");
     pools++; elem_live = true; adp->elem_pool_head = &elem_live;
     return elem_error;
@@ -339,6 +362,7 @@ static void crystalhd_delete_elem_pool(struct crystalhd_adp *adp)
 }
 static int crystalhd_create_dio_pool(struct crystalhd_adp *adp, unsigned size)
 {
+    CheckPendingAdmission();
     Check(adp == &adapter && size == BC_LINK_MAX_SGLS, "notify allocates DMA pool");
     pools++;
     if (dio_error) return dio_error;
@@ -353,6 +377,7 @@ static void crystalhd_destroy_dio_pool(struct crystalhd_adp *adp)
 }
 static BC_STATUS crystalhd_hw_setup_dma_rings(struct crystalhd_hw *hw)
 {
+    CheckPendingAdmission();
     Check(hw == &hardware, "notify uses the initialized hardware context");
     rings++;
     rings_live = ring_status == BC_STS_SUCCESS;
@@ -420,6 +445,8 @@ static void Reset(uint32_t state, bool with_hardware)
     elem_deletes = dio_destroys = ring_frees = hardware_opens = hardware_closes = 0;
     irq_depth = irq_disables = irq_enables = capture_unmaps = 0;
     hardware_allocations = hardware_frees = last_close_cfg_users = 0;
+    hardware_alloc_attempts = 0;
+    hardware_alloc_fail = admission_pending = open_pending = false;
     binding_count = binding_frees = device_reads = user_writes = 0;
     memset(binding_live, 0, sizeof(binding_live));
     chd_device_lock = 0;
@@ -1136,6 +1163,10 @@ static void NotifyFailures(void)
 
         Reset(BC_LINK_INVALID, true);
         context.user[1].in_use = 1;
+        admission_pending = true;
+        admission_uid = 1;
+        admission_state = context.state;
+        admission_wait = context.cin_wait_exit;
         if (which == 0) elem_error = -1;
         if (which == 1) dio_error = -1;
         if (which == 2) ring_status = BC_STS_INSUFF_RES;
@@ -1156,6 +1187,259 @@ static void NotifyFailures(void)
               elem_live && dio_live && rings_live,
               "successful retry commits one complete playback session");
     }
+}
+static void MonitorAdmission(void)
+{
+    const uint32_t states[] = { BC_LINK_INVALID, BC_LINK_INIT, BC_LINK_READY,
+        BC_LINK_READY | BC_LINK_PAUSED, BC_LINK_SUSPEND, BC_LINK_RESUME };
+    const uint32_t modes[] = { DTS_MONITOR_MODE, 0x100 | DTS_MONITOR_MODE,
+        0x81000000 | DTS_MONITOR_MODE };
+    unsigned s, m;
+
+    for (s = 0; s < sizeof(states) / sizeof(states[0]); s++) {
+        for (m = 0; m < sizeof(modes) / sizeof(modes[0]); m++) {
+            crystalhd_ioctl_data data = { .u_id = 1 };
+
+            Reset(states[s], true);
+            context.user[0].in_use = context.user[1].in_use = 1;
+            context.user[0].mode = 0x100 | DTS_PLAYBACK_MODE;
+            adapter.cfg_users = 2;
+            data.udata.u.NotifyMode.Mode = modes[m];
+            Check(bc_cproc_notify_mode(&context, &data) == BC_STS_SUCCESS,
+                  "monitor admission bypasses owner and decoder-state exclusion");
+            Check(context.user[1].mode == modes[m] && context.user[1].in_use &&
+                  context.user[0].mode == (0x100 | DTS_PLAYBACK_MODE) &&
+                  context.state == states[s] && context.cin_wait_exit == 1 &&
+                  adapter.cfg_users == 2 && context.hw_ctx == &hardware,
+                  "monitor mode preserves flags and leaves active ownership unchanged");
+            Check(!pools && !rings && !hardware_opens && !hardware_closes &&
+                  !irq_disables && !irq_enables,
+                  "monitor admission performs no allocation or device transition");
+        }
+    }
+}
+static void NotifyAdmissionMatrix(void)
+{
+    const uint32_t owners[] = { DTS_PLAYBACK_MODE, DTS_DIAG_MODE,
+        0x100 | DTS_PLAYBACK_MODE, 0x81000000 | DTS_DIAG_MODE };
+    const uint32_t requests[] = { DTS_PLAYBACK_MODE, DTS_DIAG_MODE,
+        0x100 | DTS_PLAYBACK_MODE, 0x81000000 | DTS_DIAG_MODE, DTS_HWINIT_MODE,
+        0x100 | DTS_HWINIT_MODE };
+    const uint32_t states[] = { BC_LINK_INIT, BC_LINK_READY,
+        BC_LINK_READY | BC_LINK_PAUSED, BC_LINK_SUSPEND, BC_LINK_RESUME };
+    unsigned o, r, s;
+
+    for (o = 0; o < sizeof(owners) / sizeof(owners[0]); o++) {
+        for (r = 0; r < sizeof(requests) / sizeof(requests[0]); r++) {
+            crystalhd_ioctl_data data = { .u_id = 1 };
+
+            Reset(BC_LINK_INVALID, true);
+            context.user[0].in_use = context.user[1].in_use = 1;
+            context.user[0].mode = owners[o];
+            adapter.cfg_users = 2;
+            data.udata.u.NotifyMode.Mode = requests[r];
+            Check(bc_cproc_notify_mode(&context, &data) == BC_STS_ERR_USAGE,
+                  "playback and diagnostic owners reject all decoder-mode contenders");
+            Check(context.user[0].mode == owners[o] &&
+                  context.user[1].mode == (uint32_t)DTS_MODE_INV &&
+                  context.user[1].in_use && adapter.cfg_users == 2 &&
+                  context.state == BC_LINK_INVALID && context.cin_wait_exit == 1 &&
+                  !pools && !rings && !hardware_opens && !irq_disables,
+                  "busy admission preserves owner, unconfigured contender and resources");
+            context.user[0].in_use = 0;
+            Check(bc_cproc_notify_mode(&context, &data) == BC_STS_ERR_USAGE,
+                  "legacy owner scan also blocks a stale playback or diagnostic mode");
+            Check(!context.user[0].in_use && context.user[0].mode == owners[o] &&
+                  context.user[1].mode == (uint32_t)DTS_MODE_INV &&
+                  !pools && !rings,
+                  "owner scan does not silently add an in-use filter during extraction");
+        }
+    }
+    for (s = 0; s < sizeof(states) / sizeof(states[0]); s++) {
+        for (r = 0; r < sizeof(requests) / sizeof(requests[0]); r++) {
+            crystalhd_ioctl_data data = {0};
+
+            Reset(states[s], true);
+            context.user[0].in_use = 1;
+            data.udata.u.NotifyMode.Mode = requests[r];
+            Check(bc_cproc_notify_mode(&context, &data) == BC_STS_ERR_USAGE,
+                  "non-invalid link state rejects decoder-mode admission");
+            Check(context.user[0].mode == (uint32_t)DTS_MODE_INV &&
+                  context.state == states[s] && context.cin_wait_exit == 1 &&
+                  !pools && !rings,
+                  "link-state rejection occurs before ownership or allocation changes");
+        }
+    }
+    for (o = 0; o < sizeof(owners) / sizeof(owners[0]); o++) {
+        crystalhd_ioctl_data data = { .u_id = 1 };
+
+        Reset(BC_LINK_INVALID, true);
+        context.user[1].in_use = 1;
+        admission_pending = true;
+        admission_uid = 1;
+        admission_state = context.state;
+        admission_wait = context.cin_wait_exit;
+        data.udata.u.NotifyMode.Mode = owners[o];
+        Check(bc_cproc_notify_mode(&context, &data) == BC_STS_SUCCESS,
+              "playback and diagnostic modes with flags may acquire an idle session");
+        Check(context.user[1].mode == owners[o] && !context.cin_wait_exit &&
+              context.state == BC_LINK_INVALID && pools == 2 && rings == 1 &&
+              elem_live && dio_live && rings_live,
+              "successful decoder admission preserves the complete mode value");
+    }
+}
+static void RepeatedMode(void)
+{
+    const uint32_t modes[] = { DTS_MONITOR_MODE, DTS_PLAYBACK_MODE, DTS_DIAG_MODE,
+        DTS_HWINIT_MODE, 0x100 | DTS_MONITOR_MODE, 0x81000000 | DTS_PLAYBACK_MODE,
+        0x100 | DTS_DIAG_MODE, 0x81000000 | DTS_HWINIT_MODE };
+    unsigned old, next;
+
+    for (old = 0; old < sizeof(modes) / sizeof(modes[0]); old++) {
+        for (next = 0; next < sizeof(modes) / sizeof(modes[0]); next++) {
+            crystalhd_ioctl_data data = {0};
+
+            Reset(BC_LINK_INVALID, true);
+            context.user[0].in_use = 1;
+            context.user[0].mode = modes[old];
+            data.udata.u.NotifyMode.Mode = modes[next];
+            Check(bc_cproc_notify_mode(&context, &data) == BC_STS_ERR_USAGE,
+                  "configured handles cannot repeat or change their mode");
+            Check(context.user[0].mode == modes[old] && context.user[0].in_use &&
+                  context.state == BC_LINK_INVALID && context.cin_wait_exit == 1 &&
+                  !pools && !rings,
+                  "repeat-mode rejection leaves the original mode and resources unchanged");
+        }
+    }
+}
+static void HwInitAdmission(void)
+{
+    const uint32_t modes[] = { DTS_HWINIT_MODE, 0x100 | DTS_HWINIT_MODE,
+        0x81000000 | DTS_HWINIT_MODE };
+    unsigned m;
+
+    for (m = 0; m < sizeof(modes) / sizeof(modes[0]); m++) {
+        crystalhd_ioctl_data data = {0};
+
+        Reset(BC_LINK_INVALID, true);
+        context.user[0].in_use = context.user[1].in_use = 1;
+        admission_pending = true;
+        admission_uid = 0;
+        admission_state = context.state;
+        admission_wait = context.cin_wait_exit;
+        data.udata.u.NotifyMode.Mode = modes[m];
+        Check(bc_cproc_notify_mode(&context, &data) == BC_STS_SUCCESS,
+              "legacy HWINIT mode follows decoder resource setup");
+        Check(context.user[0].mode == modes[m] && !context.cin_wait_exit &&
+              context.state == BC_LINK_INVALID && pools == 2 && rings == 1 &&
+              elem_live && dio_live && rings_live,
+              "HWINIT keeps its flag bits and publishes only complete setup");
+
+        /* Characterize existing admission, not safe concurrent decoding: unlike
+         * PB/DIAG, HWINIT is not counted as an owner by the legacy scan. */
+        admission_uid = 1;
+        admission_wait = context.cin_wait_exit;
+        data.u_id = 1;
+        data.udata.u.NotifyMode.Mode = DTS_PLAYBACK_MODE;
+        Check(bc_cproc_notify_mode(&context, &data) == BC_STS_SUCCESS,
+              "legacy owner scan does not classify HWINIT as playback or diagnostic");
+        Check(context.user[0].mode == modes[m] &&
+              context.user[1].mode == DTS_PLAYBACK_MODE && pools == 4 && rings == 2,
+              "HWINIT owner-scan characterization retains existing callback behavior");
+    }
+}
+static void OpenFailuresAndRetry(void)
+{
+    unsigned which;
+
+    for (which = 0; which < 2; which++) {
+        struct crystalhd_user sentinel = {0}, *user = &sentinel;
+
+        Reset(BC_LINK_INVALID, false);
+        context.pwr_state_change = BC_HW_SUSPEND;
+        open_pending = true;
+        hardware_alloc_fail = which == 0;
+        hardware_open_status = which == 1 ? BC_STS_IO_ERROR : BC_STS_SUCCESS;
+        Check(crystalhd_user_open(&context, &user) ==
+              (which == 0 ? BC_STS_ERROR : BC_STS_IO_ERROR),
+              "user open preserves allocation and hardware initialization error codes");
+        Check(user == &sentinel && !bc_get_userhandle_count(&context) &&
+              !adapter.cfg_users && !context.hw_ctx && !hardware_allocated &&
+              context.user[0].mode == (uint32_t)DTS_MODE_INV &&
+              context.pwr_state_change == BC_HW_SUSPEND,
+              "failed user open publishes no slot, output handle, or power state");
+        Check(hardware_alloc_attempts == 1 && hardware_allocations == which &&
+              hardware_frees == which && hardware_opens == which &&
+              !hardware_closes && irq_disables == 1 && irq_enables == 1 && !irq_depth,
+              "failed open frees only allocated hardware and balances the IRQ");
+
+        hardware_alloc_fail = false;
+        hardware_open_status = BC_STS_SUCCESS;
+        Check(crystalhd_user_open(&context, &user) == BC_STS_SUCCESS,
+              "the same unclaimed user slot can retry open after failure");
+        open_pending = false;
+        Check(user == &context.user[0] && user->in_use &&
+              user->mode == (uint32_t)DTS_MODE_INV &&
+              context.hw_ctx == &hardware && hardware_allocated &&
+              context.pwr_state_change == BC_HW_RUNNING && !adapter.cfg_users &&
+              hardware_alloc_attempts == 2 && hardware_allocations == which + 1 &&
+              hardware_opens == which + 1 && irq_disables == 2 && irq_enables == 2,
+              "successful retry publishes a fresh user but leaves file accounting to caller");
+        adapter.cfg_users++;
+        crystalhd_user_close(&context, user);
+        CheckNoSession();
+    }
+}
+static void OpenSlotExhaustion(void)
+{
+    struct crystalhd_user sentinel = {0}, *user;
+    unsigned n;
+
+    Reset(BC_LINK_INVALID, false);
+    for (n = 0; n < BC_LINK_MAX_OPENS; n++) {
+        user = NULL;
+        Check(crystalhd_user_open(&context, &user) == BC_STS_SUCCESS,
+              "every available legacy user slot can open");
+        Check(user == &context.user[n] && user->in_use &&
+              user->mode == (uint32_t)DTS_MODE_INV && adapter.cfg_users == n &&
+              hardware_allocations == 1 && hardware_opens == 1,
+              "each open claims a distinct slot without reallocating shared hardware");
+        adapter.cfg_users++;
+    }
+    user = &sentinel;
+    Check(crystalhd_user_open(&context, &user) == BC_STS_BUSY,
+          "exhausted legacy user slots reject another open as busy");
+    Check(user == &sentinel && adapter.cfg_users == BC_LINK_MAX_OPENS &&
+          bc_get_userhandle_count(&context) == BC_LINK_MAX_OPENS &&
+          hardware_allocations == 1 && hardware_opens == 1 && !hardware_frees &&
+          irq_disables == 1 && irq_enables == 1,
+          "slot exhaustion changes no output handle, accounting or hardware state");
+    for (n = 0; n < BC_LINK_MAX_OPENS; n++)
+        crystalhd_user_close(&context, &context.user[n]);
+    CheckNoSession();
+}
+static void InvalidAdmissionArguments(void)
+{
+    crystalhd_ioctl_data data = {0};
+    struct crystalhd_user sentinel = {0}, *user = &sentinel;
+
+    Reset(BC_LINK_INVALID, false);
+    Check(bc_cproc_notify_mode(NULL, &data) == BC_STS_INV_ARG &&
+          bc_cproc_notify_mode(&context, NULL) == BC_STS_INV_ARG &&
+          bc_cproc_notify_mode(NULL, NULL) == BC_STS_INV_ARG,
+          "legacy notify adapter rejects NULL context or ioctl data");
+    Check(crystalhd_user_set_mode(NULL, &context.user[0], DTS_PLAYBACK_MODE) == BC_STS_INV_ARG &&
+          crystalhd_user_set_mode(&context, NULL, DTS_PLAYBACK_MODE) == BC_STS_INV_ARG &&
+          crystalhd_user_set_mode(NULL, NULL, DTS_PLAYBACK_MODE) == BC_STS_INV_ARG,
+          "shared mode admission rejects NULL context or user");
+    Check(crystalhd_user_open(NULL, &user) == BC_STS_INV_ARG &&
+          crystalhd_user_open(&context, NULL) == BC_STS_INV_ARG &&
+          crystalhd_user_open(NULL, NULL) == BC_STS_INV_ARG,
+          "user open rejects NULL context or output pointer");
+    Check(user == &sentinel && !bc_get_userhandle_count(&context) &&
+          !adapter.cfg_users && !context.hw_ctx && !hardware_alloc_attempts &&
+          !pools && !rings && !irq_disables && !irq_enables,
+          "invalid admission arguments do not alter user or device resources");
 }
 static void Idle(void)
 {
@@ -1321,6 +1605,13 @@ int main(void)
         {"unconfigured handle and actual playback admission", Unconfigured},
         {"playback before firmware and actual firmware admission", BeforeFirmware},
         {"playback session setup failure rollback and retry", NotifyFailures},
+        {"monitor admission during active decoder states and mode flags", MonitorAdmission},
+        {"decoder ownership and link-state admission matrix", NotifyAdmissionMatrix},
+        {"repeated and changed mode rejection", RepeatedMode},
+        {"legacy HWINIT mode and owner-scan characterization", HwInitAdmission},
+        {"user open failure rollback and retry", OpenFailuresAndRetry},
+        {"legacy user slot exhaustion", OpenSlotExhaustion},
+        {"invalid admission adapter arguments", InvalidAdmissionArguments},
         {"firmware pause/resume rollback", FirmwarePauseRollback},
         {"firmware download serialization", FirmwareDownloadSerialization},
         {"firmware transaction serialization", FirmwareTransactionSerialization},

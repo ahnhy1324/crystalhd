@@ -72,42 +72,11 @@ static void bc_cproc_mark_pwr_state(struct crystalhd_cmd *ctx, uint32_t state)
 	}
 }
 
-static BC_STATUS bc_cproc_notify_mode(struct crystalhd_cmd *ctx,
-				      crystalhd_ioctl_data *idata)
+static BC_STATUS crystalhd_session_setup(struct crystalhd_cmd *ctx)
 {
-	struct device *dev = chddev();
 	BC_STATUS sts;
-	int rc = 0, i = 0;
+	int rc;
 
-	if (!ctx || !idata) {
-		dev_err(dev, "%s: Invalid Arg\n", __func__);
-		return BC_STS_INV_ARG;
-	}
-
-	if (ctx->user[idata->u_id].mode != DTS_MODE_INV) {
-		dev_err(dev, "Close the handle first..\n");
-		return BC_STS_ERR_USAGE;
-	}
-
-	if ((idata->udata.u.NotifyMode.Mode & 0xFF) == DTS_MONITOR_MODE) {
-		ctx->user[idata->u_id].mode = idata->udata.u.NotifyMode.Mode;
-		return BC_STS_SUCCESS;
-	}
-
-	if (ctx->state != BC_LINK_INVALID) {
-		dev_err(dev, "Link invalid state notify mode %x \n", ctx->state);
-		return BC_STS_ERR_USAGE;
-	}
-
-	/* Check for duplicate playback sessions..*/
-	for (i = 0; i < BC_LINK_MAX_OPENS; i++) {
-		if ((ctx->user[i].mode & 0xFF) == DTS_DIAG_MODE ||
-		    (ctx->user[i].mode & 0xFF) == DTS_PLAYBACK_MODE) {
-			dev_err(dev, "multiple playback sessions are not "
-				"supported..\n");
-			return BC_STS_ERR_USAGE;
-		}
-	}
 	/* Create list pools */
 	rc = crystalhd_create_elem_pool(ctx->adp, BC_LINK_ELEM_POOL_SZ);
 	if (rc) {
@@ -129,9 +98,63 @@ static BC_STATUS bc_cproc_notify_mode(struct crystalhd_cmd *ctx,
 		return sts;
 	}
 
-	ctx->cin_wait_exit = 0;
-	ctx->user[idata->u_id].mode = idata->udata.u.NotifyMode.Mode;
 	return BC_STS_SUCCESS;
+}
+
+/* Caller holds user_lock exclusively for a user on a present device. */
+BC_STATUS crystalhd_user_set_mode(struct crystalhd_cmd *ctx,
+				 struct crystalhd_user *uc, uint32_t mode)
+{
+	BC_STATUS sts;
+	int i;
+
+	if (!ctx || !uc)
+		return BC_STS_INV_ARG;
+
+	if (uc->mode != DTS_MODE_INV) {
+		dev_err(chddev(), "Close the handle first..\n");
+		return BC_STS_ERR_USAGE;
+	}
+
+	if ((mode & 0xFF) == DTS_MONITOR_MODE) {
+		uc->mode = mode;
+		return BC_STS_SUCCESS;
+	}
+
+	if (ctx->state != BC_LINK_INVALID) {
+		dev_err(chddev(), "Link invalid state notify mode %x \n", ctx->state);
+		return BC_STS_ERR_USAGE;
+	}
+
+	/* Check for duplicate playback sessions..*/
+	for (i = 0; i < BC_LINK_MAX_OPENS; i++) {
+		if ((ctx->user[i].mode & 0xFF) == DTS_DIAG_MODE ||
+		    (ctx->user[i].mode & 0xFF) == DTS_PLAYBACK_MODE) {
+			dev_err(chddev(), "multiple playback sessions are not "
+				"supported..\n");
+			return BC_STS_ERR_USAGE;
+		}
+	}
+
+	sts = crystalhd_session_setup(ctx);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
+
+	ctx->cin_wait_exit = 0;
+	uc->mode = mode;
+	return BC_STS_SUCCESS;
+}
+
+static BC_STATUS bc_cproc_notify_mode(struct crystalhd_cmd *ctx,
+				    crystalhd_ioctl_data *idata)
+{
+	if (!ctx || !idata) {
+		dev_err(chddev(), "%s: Invalid Arg\n", __func__);
+		return BC_STS_INV_ARG;
+	}
+
+	return crystalhd_user_set_mode(ctx, &ctx->user[idata->u_id],
+				       idata->udata.u.NotifyMode.Mode);
 }
 
 static BC_STATUS bc_cproc_get_version(struct crystalhd_cmd *ctx,
