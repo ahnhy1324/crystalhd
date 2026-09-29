@@ -7,8 +7,8 @@
 #include <linux/module.h>
 #include <linux/version.h>
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0)
-#error "CrystalHD requires Linux 6.1 or newer"
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 15, 0)
+#error "CrystalHD requires Linux 5.15 or newer"
 #endif
 
 static inline struct class *crystalhd_class_create(const char *name)

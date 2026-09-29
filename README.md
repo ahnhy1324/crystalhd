@@ -1,7 +1,7 @@
 # Broadcom Crystal HD for current Linux systems
 
 This fork maintains the BCM70012/BCM70015 kernel driver, firmware and legacy
-`libcrystalhd` API for Linux 6.1 and newer. GStreamer on BCM70015 is the
+`libcrystalhd` API for Linux 5.15 and newer. GStreamer on BCM70015 is the
 recommended local-playback path. BCM70012 support is retained but has not been
 recently tested on hardware.
 
@@ -201,8 +201,9 @@ make legacy-cpu-check
 ```
 
 The kernel and userspace builds use `-Werror`. CI also compiles the driver
-against maintained LTS, stable and mainline kernel APIs. Device-free tests do
-not establish hardware playback.
+against maintained LTS, stable and mainline kernel APIs. Linux 5.15 coverage
+is an API compilation check, not BCM70012 or BCM70015 hardware certification;
+device-free tests do not establish hardware playback.
 
 ## Licensing
 
