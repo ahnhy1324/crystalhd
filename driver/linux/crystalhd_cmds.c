@@ -715,6 +715,30 @@ static BC_STATUS bc_cproc_proc_input(struct crystalhd_cmd *ctx, crystalhd_ioctl_
 	return sts;
 }
 
+/*
+ * Transfer ownership of a fresh mapped capture registration to the RX queues.
+ * The caller keeps command/device lifetime protection but not fetch_sem. It
+ * keeps registration ownership on every error; hardware BUSY means the request
+ * was queued for retry and is therefore reported as successful admission. On
+ * success the caller must not inspect or release the registration again.
+ */
+BC_STATUS crystalhd_rx_submit(struct crystalhd_cmd *ctx,
+			      struct crystalhd_dio_req *dio)
+{
+	BC_STATUS sts;
+
+	if (!ctx || !ctx->hw_ctx || !dio)
+		return BC_STS_INV_ARG;
+
+	if (down_interruptible(&ctx->hw_ctx->fetch_sem))
+		return BC_STS_IO_USER_ABORT;
+	sts = crystalhd_hw_add_cap_buffer(ctx->hw_ctx, dio,
+					     ctx->state == BC_LINK_READY);
+	up(&ctx->hw_ctx->fetch_sem);
+
+	return sts == BC_STS_BUSY ? BC_STS_SUCCESS : sts;
+}
+
 static BC_STATUS bc_cproc_add_cap_buff(struct crystalhd_cmd *ctx,
 				       crystalhd_ioctl_data *idata)
 {
@@ -750,16 +774,8 @@ static BC_STATUS bc_cproc_add_cap_buff(struct crystalhd_cmd *ctx,
 	if (!dio_hnd)
 		return BC_STS_ERROR;
 
-	/* Pinning is private to this ioctl; only queue/post mutations need the
-	 * capture semaphore shared with fetch/peek and stop/flush.
-	 */
-	if (down_interruptible(&ctx->hw_ctx->fetch_sem)) {
-		crystalhd_unmap_dio(ctx->adp, dio_hnd);
-		return BC_STS_IO_USER_ABORT;
-	}
-	sts = crystalhd_hw_add_cap_buffer(ctx->hw_ctx, dio_hnd, (ctx->state == BC_LINK_READY));
-	up(&ctx->hw_ctx->fetch_sem);
-	if ((sts != BC_STS_SUCCESS) && (sts != BC_STS_BUSY)) {
+	sts = crystalhd_rx_submit(ctx, dio_hnd);
+	if (sts != BC_STS_SUCCESS) {
 		crystalhd_unmap_dio(ctx->adp, dio_hnd);
 		return sts;
 	}

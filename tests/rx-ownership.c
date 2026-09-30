@@ -77,10 +77,10 @@ static bool mapped[BC_RX_LIST_CNT];
 static unsigned unmaps[BC_RX_LIST_CNT];
 static unsigned checks, failures, groups, maps, post_calls, stop_calls, irq_depth;
 static unsigned irq_disables, irq_enables, notify_calls, pause_calls;
-static unsigned sem_attempts, hardware_notifications;
+static unsigned sem_attempts, hardware_notifications, map_attempts, translate_calls;
 static unsigned fail_post_call;
 static BC_STATUS map_status, translate_status, post_status, queue_status;
-static bool interrupt_lock, wait_signal, stop_fault, notify_ok;
+static bool interrupt_lock, wait_signal, stop_fault, notify_ok, checking_admission;
 static struct crystalhd_dioq *fail_queue;
 
 static void check(bool condition, const char *message)
@@ -111,7 +111,8 @@ static unsigned queued_request(const struct crystalhd_dio_req *request)
             count += queues[q]->packets[i]->dio_req == request;
     return count;
 }
-static void inventory(unsigned active_count, unsigned ready_count, unsigned free_count)
+static void inventory_with_private(unsigned active_count, unsigned ready_count,
+                                   unsigned free_count, const struct crystalhd_dio_req *private_request)
 {
     unsigned seen[BC_RX_LIST_CNT] = {0}, pool_count = 0;
     struct crystalhd_dioq *queues[] = { &active, &ready, &available };
@@ -131,14 +132,22 @@ static void inventory(unsigned active_count, unsigned ready_count, unsigned free
     }
     for (size_t i = 0; i < BC_RX_LIST_CNT; i++) {
         check(seen[i] == 1, "each RX packet has exactly one pool or queue owner");
-        check(queued_request(&requests[i]) == (unsigned)mapped[i],
-              "each live mapping has exactly one queued owner");
+        check(queued_request(&requests[i]) ==
+              (unsigned)(mapped[i] && &requests[i] != private_request),
+              "each live mapping is caller-private or has exactly one queued owner");
         check(unmaps[i] <= 1, "a registration is unmapped at most once");
     }
     check(active.count == active_count && ready.count == ready_count &&
           available.count == free_count, "active/ready/free ownership matches transition");
     check(!irq_depth && !hardware.lock && hardware.fetch_sem == 1,
           "transition releases IRQ, pool lock and capture semaphore");
+    if (private_request)
+        check(mapped[request_index(private_request)] && !queued_request(private_request),
+              "rejected or fresh mapped request remains caller-private");
+}
+static void inventory(unsigned active_count, unsigned ready_count, unsigned free_count)
+{
+    inventory_with_private(active_count, ready_count, free_count, NULL);
 }
 static BC_STATUS crystalhd_dioq_add(struct crystalhd_dioq *queue, void *data,
                                    bool wake, uint32_t tag)
@@ -190,7 +199,8 @@ static BC_STATUS crystalhd_map_dio(struct crystalhd_adp *adp, void *buffer,
         uint32_t size, uint32_t uv, bool mode422, bool tx, struct crystalhd_dio_req **result)
 {
     size_t i;
-    assert(adp == &adapter && !tx);
+    assert(adp == &adapter && !tx && hardware.fetch_sem == 1);
+    map_attempts++;
     if (map_status != BC_STS_SUCCESS) return map_status;
     for (i = 0; i < BC_RX_LIST_CNT; i++) if (buffer == buffers[i]) break;
     assert(i < BC_RX_LIST_CNT && !mapped[i] && !unmaps[i]);
@@ -235,6 +245,8 @@ static BC_STATUS crystalhd_xlat_sgl_to_dma_desc(struct crystalhd_dio_req *reques
         struct dma_desc_mem *memory, uint32_t *uv, struct device *dev, uint32_t destination)
 {
     assert(mapped[request_index(request)] && memory && dev == &endpoint.dev && !destination);
+    assert(!hardware.fetch_sem);
+    translate_calls++;
     *uv = request->uinfo.uv_offset ? 1 : 0;
     return translate_status;
 }
@@ -275,6 +287,7 @@ static BC_STATUS program_dma(struct crystalhd_hw *hw, struct crystalhd_rx_dma_pk
     BC_STATUS status;
     unsigned index;
     assert(hw == &hardware && mapped[request_index(packet->dio_req)]);
+    if (checking_admission) assert(!hw->fetch_sem);
     post_calls++;
     status = !fail_post_call || post_calls == fail_post_call ? post_status : BC_STS_SUCCESS;
     if (hw->dma_fault) return BC_STS_IO_ERROR;
@@ -330,11 +343,19 @@ static void reset(uint32_t device)
     }
     maps = post_calls = stop_calls = irq_depth = irq_disables = irq_enables = 0;
     notify_calls = pause_calls = fail_post_call = 0;
-    sem_attempts = hardware_notifications = 0;
+    sem_attempts = hardware_notifications = map_attempts = translate_calls = 0;
     map_status = translate_status = post_status = queue_status = BC_STS_SUCCESS;
-    interrupt_lock = wait_signal = stop_fault = false;
+    interrupt_lock = wait_signal = stop_fault = checking_admission = false;
     notify_ok = true; fail_queue = NULL;
     inventory(0, 0, 0);
+}
+static BC_STATUS add_data(crystalhd_ioctl_data *data)
+{
+    BC_STATUS status;
+    checking_admission = true;
+    status = bc_cproc_add_cap_buff(&context, data);
+    checking_admission = false;
+    return status;
 }
 static BC_STATUS add(unsigned index)
 {
@@ -343,7 +364,7 @@ static BC_STATUS add(unsigned index)
     data.udata.u.RxBuffs.YuvBuff = (uint8_t *)buffers[index];
     data.udata.u.RxBuffs.YuvBuffSz = sizeof(buffers[index]);
     data.udata.u.RxBuffs.UVbuffOffset = 128;
-    return bc_cproc_add_cap_buff(&context, &data);
+    return add_data(&data);
 }
 static void complete(unsigned index)
 {
@@ -387,6 +408,173 @@ static void completion_case(uint32_t device)
     inventory(1, 0, 1);
     drain(); drain();
 }
+static void admission_layout_cases(uint32_t device)
+{
+    for (unsigned variant = 0; variant < 7; variant++) {
+        crystalhd_ioctl_data data = {0};
+        BC_STATUS expected = variant < 5 ? BC_STS_INV_ARG : BC_STS_SUCCESS;
+        reset(device);
+        data.udata.u.RxBuffs.YuvBuff = (uint8_t *)buffers[0];
+        data.udata.u.RxBuffs.YuvBuffSz = 192;
+        data.udata.u.RxBuffs.UVbuffOffset = 64;
+        if (variant == 0) data.udata.u.RxBuffs.YuvBuff = NULL;
+        if (variant == 1) data.udata.u.RxBuffs.YuvBuffSz = 0;
+        if (variant == 2) {
+            data.udata.u.RxBuffs.YuvBuff++;
+            expected = BC_STS_NOT_IMPL;
+        }
+        if (variant == 3 || variant == 6) data.udata.u.RxBuffs.UVbuffOffset = 0;
+        if (variant == 4 || variant == 6) data.udata.u.RxBuffs.b422Mode = true;
+        check(add_data(&data) == expected, "legacy admission preserves layout validation status");
+        if (variant < 5) {
+            check(!map_attempts && !sem_attempts && !post_calls,
+                  "invalid layout is rejected before mapping, locking or posting");
+            inventory(0, 0, 0);
+        } else {
+            check(map_attempts == 1 && sem_attempts == 1 &&
+                  requests[0].uinfo.xfr_buff == buffers[0] &&
+                  requests[0].uinfo.xfr_len == 192 &&
+                  requests[0].uinfo.uv_offset == (variant == 6 ? 0U : 64U) &&
+                  requests[0].uinfo.b422mode == (variant == 6) && !unmaps[0],
+                  "legacy admission preserves mapped 420 and 422 layouts");
+            inventory(1, 0, 0);
+            drain();
+        }
+    }
+}
+static void admission_state_cases(uint32_t device)
+{
+    const uint32_t states[] = { BC_LINK_INIT, BC_LINK_INIT | BC_LINK_CAP_EN,
+        BC_LINK_READY, BC_LINK_READY | BC_LINK_PAUSED,
+        BC_LINK_READY | BC_LINK_SUSPEND, BC_LINK_READY | BC_LINK_RESUME };
+    for (unsigned s = 0; s < sizeof(states) / sizeof(states[0]); s++) {
+        for (unsigned paused = 0; paused < 2; paused++) {
+            for (unsigned fault = 0; fault < 2; fault++) {
+                bool post = states[s] == BC_LINK_READY && !paused;
+                bool rejected = post && fault;
+                reset(device);
+                context.state = states[s];
+                hardware.hw_pause_issued = paused;
+                hardware.dma_fault = fault;
+                check(add(0) == (rejected ? BC_STS_IO_ERROR : BC_STS_SUCCESS),
+                      "only exact READY and unpaused admission attempts DMA, preserving fault policy");
+                check(context.state == states[s] && hardware.hw_pause_issued == (bool)paused &&
+                      hardware.dma_fault == (bool)fault && post_calls == (unsigned)post &&
+                      map_attempts == 1 && sem_attempts == 1 && unmaps[0] == (unsigned)rejected,
+                      "admission preserves state, balances locking and releases only rejected mappings");
+                inventory(post && !fault, 0, !post);
+                /* The DMA boundary now models a quiesced engine for cleanup. */
+                hardware.dma_fault = false;
+                drain();
+            }
+        }
+    }
+}
+static struct crystalhd_dio_req *map_private(bool mode422)
+{
+    struct crystalhd_dio_req *request = NULL;
+    check(crystalhd_map_dio(&adapter, buffers[0], 192, mode422 ? 0 : 64,
+                           mode422, false, &request) == BC_STS_SUCCESS,
+          "frontend prepares a fresh private mapped RX request");
+    inventory_with_private(0, 0, 0, request);
+    return request;
+}
+static BC_STATUS submit(struct crystalhd_cmd *ctx, struct crystalhd_dio_req *request)
+{
+    BC_STATUS status;
+    checking_admission = true;
+    status = crystalhd_rx_submit(ctx, request);
+    checking_admission = false;
+    return status;
+}
+static void mapped_admission_cases(uint32_t device)
+{
+    enum { IMMEDIATE, BUSY, DEFERRED, PAUSED, INTERRUPTED, NO_PACKET,
+           BAD_DESCRIPTOR, POST_ERROR, ACTIVE_ERROR, BUSY_QUEUE_ERROR,
+           FREE_QUEUE_ERROR, DMA_FAULT, NULL_CONTEXT, NULL_HARDWARE, NULL_REQUEST };
+    for (unsigned variant = IMMEDIATE; variant <= NULL_REQUEST; variant++) {
+        struct crystalhd_dio_req *request;
+        struct crystalhd_rx_dma_pkt *pool;
+        struct crystalhd_dio_user_info before;
+        BC_STATUS expected = BC_STS_SUCCESS;
+        uint32_t state;
+        reset(device);
+        request = map_private(false);
+        memcpy(&before, &request->uinfo, sizeof(before));
+        pool = hardware.rx_pkt_pool_head;
+        switch (variant) {
+        case BUSY: post_status = BC_STS_BUSY; break;
+        case DEFERRED: context.state = BC_LINK_INIT; break;
+        case PAUSED: hardware.hw_pause_issued = true; break;
+        case INTERRUPTED: interrupt_lock = true; expected = BC_STS_IO_USER_ABORT; break;
+        case NO_PACKET: hardware.rx_pkt_pool_head = NULL; expected = BC_STS_INSUFF_RES; break;
+        case BAD_DESCRIPTOR: translate_status = expected = BC_STS_INV_ARG; break;
+        case POST_ERROR: post_status = expected = BC_STS_IO_ERROR; break;
+        case ACTIVE_ERROR: fail_queue = &active; queue_status = expected = BC_STS_INSUFF_RES; break;
+        case BUSY_QUEUE_ERROR:
+            post_status = BC_STS_BUSY; fail_queue = &available;
+            queue_status = expected = BC_STS_INSUFF_RES; break;
+        case FREE_QUEUE_ERROR:
+            context.state = BC_LINK_INIT; fail_queue = &available;
+            queue_status = expected = BC_STS_INSUFF_RES; break;
+        case DMA_FAULT: hardware.dma_fault = true; expected = BC_STS_IO_ERROR; break;
+        case NULL_CONTEXT: case NULL_REQUEST: expected = BC_STS_INV_ARG; break;
+        case NULL_HARDWARE: context.hw_ctx = NULL; expected = BC_STS_INV_ARG; break;
+        }
+        state = context.state;
+        check(submit(variant == NULL_CONTEXT ? NULL : &context,
+                     variant == NULL_REQUEST ? NULL : request) == expected,
+              "mapped admission normalizes accepted BUSY and preserves rejection status");
+        if (variant == NO_PACKET) hardware.rx_pkt_pool_head = pool;
+        check(maps == 1 && map_attempts == 1 && !unmaps[0] &&
+              !memcmp(&request->uinfo, &before, sizeof(before)),
+              "mapped admission neither maps, unmaps nor rewrites the borrowed request");
+        check(context.state == state && hardware.fetch_sem == 1 &&
+              sem_attempts == (variant < NULL_CONTEXT ? 1U : 0U) &&
+              !hardware_notifications && !pause_calls && !irq_disables && !stop_calls,
+              "mapped admission balances its lock without unrelated lifecycle work");
+        if (variant == INTERRUPTED || variant == NO_PACKET || variant >= NULL_CONTEXT)
+            check(!translate_calls && !post_calls && !notify_calls,
+                  "early rejection does not translate, post or notify hardware");
+        if (expected == BC_STS_SUCCESS) {
+            inventory(variant == IMMEDIATE, 0, variant != IMMEDIATE);
+        } else {
+            inventory_with_private(0, 0, 0, request);
+            check(crystalhd_unmap_dio(&adapter, request) == BC_STS_SUCCESS,
+                  "caller releases the mapping after failed admission");
+            inventory(0, 0, 0);
+        }
+        /* No accepted DMA remains faulted; cleanup models a quiesced engine. */
+        hardware.dma_fault = false;
+        drain();
+    }
+}
+static void mapped_completion_cases(uint32_t device)
+{
+    for (unsigned mode422 = 0; mode422 < 2; mode422++) {
+        crystalhd_ioctl_data data = {0};
+        struct crystalhd_dio_req *request;
+        reset(device);
+        request = map_private(mode422);
+        check(submit(&context, request) == BC_STS_SUCCESS && maps == 1 && !unmaps[0],
+              "direct admission transfers the mapped registration to capture");
+        inventory(1, 0, 0);
+        complete(0);
+        inventory(0, 1, 0);
+        check(bc_cproc_fetch_frame(&context, &data) == BC_STS_SUCCESS &&
+              data.udata.u.DecOutData.Flags == COMP_FLAG_DATA_VALID &&
+              data.udata.u.DecOutData.OutPutBuffs.YuvBuff == (uint8_t *)buffers[0] &&
+              data.udata.u.DecOutData.OutPutBuffs.YuvBuffSz == 192 &&
+              data.udata.u.DecOutData.OutPutBuffs.UVbuffOffset == (mode422 ? 0U : 64U) &&
+              data.udata.u.DecOutData.OutPutBuffs.b422Mode == mode422 &&
+              data.udata.u.DecOutData.OutPutBuffs.YBuffDoneSz == 128 &&
+              data.udata.u.DecOutData.OutPutBuffs.UVBuffDoneSz == (mode422 ? 0U : 64U) &&
+              map_attempts == 1 && maps == 1 && unmaps[0] == 1,
+              "legacy fetch retires directly submitted 420 and 422 layouts exactly once");
+        inventory(0, 0, 0);
+        drain();
+    }
+}
 static void add_failures(uint32_t device)
 {
     struct crystalhd_dio_req private_request = {0};
@@ -404,6 +592,10 @@ static void add_failures(uint32_t device)
     reset(device); post_status = BC_STS_IO_ERROR;
     check(add(0) == BC_STS_IO_ERROR && unmaps[0] == 1,
           "initial hard post failure releases the private mapping");
+    inventory(0, 0, 0);
+    reset(device); fail_queue = &active; queue_status = BC_STS_INSUFF_RES;
+    check(add(0) == BC_STS_INSUFF_RES && unmaps[0] == 1,
+          "active-queue admission failure returns ownership for cleanup");
     inventory(0, 0, 0);
     reset(device); post_status = BC_STS_BUSY; fail_queue = &available; queue_status = BC_STS_INSUFF_RES;
     check(add(0) == BC_STS_INSUFF_RES && unmaps[0] == 1,
@@ -665,6 +857,10 @@ int main(void)
     uint32_t devices[] = { BC_PCI_DEVID_LINK, BC_PCI_DEVID_FLEA };
     for (size_t i = 0; i < sizeof(devices) / sizeof(devices[0]); i++) {
         completion_case(devices[i]);
+        admission_layout_cases(devices[i]);
+        admission_state_cases(devices[i]);
+        mapped_admission_cases(devices[i]);
+        mapped_completion_cases(devices[i]);
         add_failures(devices[i]);
         retry_cases(devices[i]);
         for (unsigned failure = 0; failure < 4; failure++) format_case(devices[i], failure);
