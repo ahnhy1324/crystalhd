@@ -39,6 +39,8 @@ awk '
     /^static void bc_cproc_mark_pwr_state\(/ ||
     /^static BC_STATUS crystalhd_ensure_hw_context\(/ ||
     /^static BC_STATUS crystalhd_session_setup\(/ ||
+    /^static void crystalhd_retire_hw_context\(/ ||
+    /^BC_STATUS crystalhd_session_(acquire|release)_locked\(/ ||
     /^BC_STATUS crystalhd_user_set_mode\(/ ||
     /^static BC_STATUS bc_cproc_notify_mode\(/ ||
     /^static BC_STATUS bc_cproc_((link_)?reg|mem)_(rd|wr)\(/ ||
@@ -49,7 +51,7 @@ awk '
     /^BC_STATUS crystalhd_(suspend|resume|user_open)\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 20 || copying) exit 1 }
+    END { if (found != 23 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" > "$pm_test_dir/command-pm-functions.h"
 awk '
     /^static int chd_dec_close(_locked)?\(/ { copying = 1; found++ }
