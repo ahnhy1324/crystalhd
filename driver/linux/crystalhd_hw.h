@@ -226,7 +226,7 @@ struct tx_dma_pkt {
 	struct dma_desc_mem		desc_mem;
 	hw_comp_callback	call_back;
 	struct crystalhd_dio_req	*dio_req;
-	wait_queue_head_t	*cb_event;
+	void			*cb_context;
 	uint32_t		list_tag;
 
 };
@@ -529,7 +529,7 @@ BC_STATUS crystalhd_rx_pkt_done(struct crystalhd_hw *hw,
 				BC_STATUS comp_sts);
 BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw, struct crystalhd_dio_req *ioreq,
 				hw_comp_callback call_back,
-				wait_queue_head_t *cb_event, uint32_t *list_id,
+				void *cb_context, uint32_t *list_id,
 				uint8_t data_flags);
 BC_STATUS crystalhd_hw_cancel_tx(struct crystalhd_hw *hw, uint32_t list_id);
 BC_STATUS crystalhd_hw_add_cap_buffer(struct crystalhd_hw *hw,struct crystalhd_dio_req *ioreq, bool en_post);

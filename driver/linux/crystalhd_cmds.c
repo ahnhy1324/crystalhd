@@ -526,19 +526,24 @@ done:
 	return sts;
 }
 
-static void bc_proc_in_completion(struct crystalhd_dio_req *dio_hnd,
-				  wait_queue_head_t *event, BC_STATUS sts)
+struct crystalhd_tx_completion {
+	wait_queue_head_t event;
+	BC_STATUS status;
+	bool done;
+};
+
+static void bc_proc_in_completion(void *context, BC_STATUS sts)
 {
-	if (!dio_hnd || !event) {
+	struct crystalhd_tx_completion *completion = context;
+
+	if (!completion) {
 		dev_err(chddev(), "%s: Invalid Arg\n", __func__);
 		return;
 	}
-	if (sts == BC_STS_IO_USER_ABORT || sts == BC_STS_PWR_MGMT)
-		 return;
 
-	dio_hnd->uinfo.comp_sts = sts;
-	dio_hnd->uinfo.ev_sts = 1;
-	crystalhd_set_event(event);
+	WRITE_ONCE(completion->status, sts);
+	WRITE_ONCE(completion->done, true);
+	crystalhd_set_event(&completion->event);
 }
 
 static BC_STATUS bc_cproc_codein_sleep(struct crystalhd_cmd *ctx)
@@ -576,9 +581,11 @@ BC_STATUS crystalhd_tx_transfer_sync(struct crystalhd_cmd *ctx,
 				     uint8_t data_flags)
 {
 	struct device *dev = chddev();
+	struct crystalhd_tx_completion completion = {
+		.status = BC_STS_SUCCESS,
+	};
 	uint32_t tx_listid = 0;
 	BC_STATUS sts = BC_STS_SUCCESS;
-	wait_queue_head_t event;
 	int rc = 0;
 
 	if (!ctx || !ctx->hw_ctx || !dio) {
@@ -586,12 +593,12 @@ BC_STATUS crystalhd_tx_transfer_sync(struct crystalhd_cmd *ctx,
 		return BC_STS_INV_ARG;
 	}
 
-	crystalhd_create_event(&event);
+	crystalhd_create_event(&completion.event);
 
 	ctx->tx_list_id = 0;
 	/* msleep_interruptible(2000); */
 	sts = crystalhd_hw_post_tx(ctx->hw_ctx, dio, bc_proc_in_completion,
-				 &event, &tx_listid, data_flags);
+				 &completion, &tx_listid, data_flags);
 
 	while (sts == BC_STS_BUSY) {
 		sts = bc_cproc_codein_sleep(ctx);
@@ -599,7 +606,7 @@ BC_STATUS crystalhd_tx_transfer_sync(struct crystalhd_cmd *ctx,
 			break;
 		sts = crystalhd_hw_post_tx(ctx->hw_ctx, dio,
 					 bc_proc_in_completion,
-					 &event, &tx_listid, data_flags);
+					 &completion, &tx_listid, data_flags);
 	}
 	if (sts != BC_STS_SUCCESS) {
 		dev_dbg(dev, "_hw_txdma returning sts:%d\n", sts);
@@ -613,14 +620,15 @@ BC_STATUS crystalhd_tx_transfer_sync(struct crystalhd_cmd *ctx,
 	dev_dbg(dev, "Sending TX\n");
 
 	/* _post() succeeded.. wait for the completion. */
-	crystalhd_wait_on_event(&event, (dio->uinfo.ev_sts), 3000, rc, false);
+	crystalhd_wait_on_event(&completion.event,
+				READ_ONCE(completion.done), 3000, rc, false);
 	ctx->tx_list_id = 0;
 	if (!rc) {
 		/* The wakeup occurs inside the ISR callback. Wait until it has
-		 * stopped using both the request and this stack's waitqueue.
+		 * stopped using both the request and this stack's completion cookie.
 		 */
 		synchronize_irq(ctx->adp->pdev->irq);
-		return dio->uinfo.comp_sts;
+		return READ_ONCE(completion.status);
 	} else if (rc == -EBUSY) {
 		dev_dbg(dev, "_tx_post() T/O \n");
 		sts = BC_STS_TIMEOUT;
