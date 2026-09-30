@@ -68,8 +68,6 @@ struct crystalhd_dio_user_info {
 
 	uint32_t		uv_sg_ix;
 	uint32_t		uv_sg_off;
-	int			comp_sts;
-	int			ev_sts;
 	uint32_t		y_done_sz;
 	uint32_t		uv_done_sz;
 	uint32_t		comp_flags;
@@ -117,8 +115,10 @@ struct crystalhd_dioq {
 	void			*cb_context;
 };
 
-typedef void (*hw_comp_callback)(struct crystalhd_dio_req *,
-				 wait_queue_head_t *event, BC_STATUS sts);
+/* Runs in IRQ or synchronous-cancel context after common TX ownership has
+ * retired. A completion must not sleep or re-enter TX; defer such work.
+ */
+typedef void (*hw_comp_callback)(void *context, BC_STATUS sts);
 
 /*========== PCIe Config access routines.================*/
 BC_STATUS crystalhd_pci_cfg_rd(struct crystalhd_adp *, uint32_t, uint32_t, uint32_t *);

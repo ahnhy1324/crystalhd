@@ -569,9 +569,12 @@ BC_STATUS crystalhd_hw_free_dma_rings(struct crystalhd_hw *hw)
 }
 
 BC_STATUS crystalhd_hw_tx_req_complete(struct crystalhd_hw *hw,
-											  uint32_t list_id, BC_STATUS cs)
+					      uint32_t list_id, BC_STATUS cs)
 {
 	struct tx_dma_pkt *tx_req;
+	hw_comp_callback call_back;
+	void *cb_context;
+	BC_STATUS sts;
 
 	if (!hw || !list_id) {
 		printk(KERN_ERR "%s: Invalid Arg!!\n", __func__);
@@ -585,20 +588,25 @@ BC_STATUS crystalhd_hw_tx_req_complete(struct crystalhd_hw *hw,
 		return BC_STS_NO_DATA;
 	}
 
-	if (tx_req->call_back) {
-		tx_req->call_back(tx_req->dio_req, tx_req->cb_event, cs);
-		tx_req->dio_req   = NULL;
-		tx_req->cb_event  = NULL;
-		tx_req->call_back = NULL;
-	} else {
+	call_back = tx_req->call_back;
+	cb_context = tx_req->cb_context;
+	if (!call_back || !cb_context)
 		dev_dbg(&hw->adp->pdev->dev, "Missing Tx Callback - %X\n",
 		tx_req->list_tag);
-	}
 
-	/* Now put back the tx_list back in FreeQ */
+	/* Retire common DMA ownership before a frontend completion can release its
+	 * backing buffer or its completion context.
+	 */
+	tx_req->dio_req = NULL;
+	tx_req->cb_context = NULL;
+	tx_req->call_back = NULL;
 	tx_req->list_tag = 0;
+	sts = crystalhd_dioq_add(hw->tx_freeq, tx_req, false, 0);
 
-	return crystalhd_dioq_add(hw->tx_freeq, tx_req, false, 0);
+	if (call_back && cb_context)
+		call_back(cb_context, cs);
+
+	return sts;
 }
 
 BC_STATUS crystalhd_hw_fill_desc(struct crystalhd_dio_req *ioreq,
@@ -903,7 +911,7 @@ BC_STATUS crystalhd_rx_pkt_done(struct crystalhd_hw *hw,
 
 BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw, struct crystalhd_dio_req *ioreq,
 			     hw_comp_callback call_back,
-			     wait_queue_head_t *cb_event, uint32_t *list_id,
+			     void *cb_context, uint32_t *list_id,
 			     uint8_t data_flags)
 {
 	struct device *dev;
@@ -917,7 +925,7 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw, struct crystalhd_dio_req
 	bool rc;
 	uint32_t destDRAMaddr = 0;
 
-	if (!hw || !ioreq || !call_back || !cb_event || !list_id) {
+	if (!hw || !ioreq || !call_back || !cb_context || !list_id) {
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
 		return BC_STS_INV_ARG;
 	}
@@ -967,7 +975,7 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw, struct crystalhd_dio_req
 	desc_addr.full_addr = tx_dma_packet->desc_mem.phy_addr;
 
 	tx_dma_packet->call_back = call_back;
-	tx_dma_packet->cb_event  = cb_event;
+	tx_dma_packet->cb_context = cb_context;
 	tx_dma_packet->dio_req   = ioreq;
 
 	spin_lock_irqsave(&hw->lock, flags);
@@ -982,7 +990,7 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw, struct crystalhd_dio_req
 				 tx_dma_packet->list_tag);
 	if (sts != BC_STS_SUCCESS) {
 		tx_dma_packet->dio_req = NULL;
-		tx_dma_packet->cb_event = NULL;
+		tx_dma_packet->cb_context = NULL;
 		tx_dma_packet->call_back = NULL;
 		tx_dma_packet->list_tag = 0;
 		*list_id = 0;
