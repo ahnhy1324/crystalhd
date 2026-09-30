@@ -81,6 +81,14 @@ static unsigned sem_attempts, hardware_notifications, map_attempts, translate_ca
 static unsigned fail_post_call;
 static BC_STATUS map_status, translate_status, post_status, queue_status;
 static bool interrupt_lock, wait_signal, stop_fault, notify_ok, checking_admission;
+static bool checking_start, start_post_observed;
+static unsigned start_notify_observed, start_notify_notifications;
+static uint32_t start_notify_state, start_notify_pause, start_notify_resume;
+static uint32_t start_notify_default, start_notify_frames;
+static int start_notify_sem;
+static unsigned start_post_notifications;
+static uint32_t start_post_state;
+static int start_post_sem;
 static struct crystalhd_dioq *fail_queue;
 
 static void check(bool condition, const char *message)
@@ -270,6 +278,16 @@ static void done_size(struct crystalhd_hw *hw, uint32_t index, uint32_t *y, uint
 static bool notify_hardware(struct crystalhd_hw *hw, enum BRCM_EVENT event)
 {
     assert(hw == &hardware && !hw->fetch_sem && event == BC_EVENT_START_CAPTURE);
+    if (checking_start) {
+        start_notify_observed++;
+        start_notify_notifications = hardware_notifications;
+        start_notify_state = context.state;
+        start_notify_pause = hw->PauseThreshold;
+        start_notify_resume = hw->ResumeThreshold;
+        start_notify_default = hw->DefaultPauseThreshold;
+        start_notify_frames = hw->DrvTotalFrmCaptured;
+        start_notify_sem = hw->fetch_sem;
+    }
     hardware_notifications++;
     return notify_ok;
 }
@@ -288,6 +306,12 @@ static BC_STATUS program_dma(struct crystalhd_hw *hw, struct crystalhd_rx_dma_pk
     unsigned index;
     assert(hw == &hardware && mapped[request_index(packet->dio_req)]);
     if (checking_admission) assert(!hw->fetch_sem);
+    if (checking_start && !start_post_observed) {
+        start_post_observed = true;
+        start_post_notifications = hardware_notifications;
+        start_post_state = context.state;
+        start_post_sem = hw->fetch_sem;
+    }
     post_calls++;
     status = !fail_post_call || post_calls == fail_post_call ? post_status : BC_STS_SUCCESS;
     if (hw->dma_fault) return BC_STS_IO_ERROR;
@@ -346,6 +370,13 @@ static void reset(uint32_t device)
     sem_attempts = hardware_notifications = map_attempts = translate_calls = 0;
     map_status = translate_status = post_status = queue_status = BC_STS_SUCCESS;
     interrupt_lock = wait_signal = stop_fault = checking_admission = false;
+    checking_start = start_post_observed = false;
+    start_notify_observed = start_notify_notifications = 0;
+    start_notify_state = start_notify_pause = start_notify_resume = 0;
+    start_notify_default = start_notify_frames = 0;
+    start_notify_sem = -1;
+    start_post_notifications = start_post_state = 0;
+    start_post_sem = -1;
     notify_ok = true; fail_queue = NULL;
     inventory(0, 0, 0);
 }
@@ -365,6 +396,21 @@ static BC_STATUS add(unsigned index)
     data.udata.u.RxBuffs.YuvBuffSz = sizeof(buffers[index]);
     data.udata.u.RxBuffs.UVbuffOffset = 128;
     return add_data(&data);
+}
+static BC_STATUS start_capture(bool direct, uint32_t pause, uint32_t resume)
+{
+    crystalhd_ioctl_data data = {0};
+    BC_STATUS status;
+
+    data.udata.u.RxCap.PauseThsh = pause;
+    data.udata.u.RxCap.ResumeThsh = resume;
+    checking_start = true;
+    if (direct)
+        status = crystalhd_capture_start(&context, pause, resume);
+    else
+        status = bc_cproc_start_capture(&context, &data);
+    checking_start = false;
+    return status;
 }
 static void complete(unsigned index)
 {
@@ -785,70 +831,183 @@ static void invalid_command_arguments(uint32_t device)
         }
     }
 }
-static void start_command_cases(uint32_t device)
+static void invalid_capture_start_arguments(uint32_t device)
 {
-    crystalhd_ioctl_data data = {0};
-    const BC_STATUS statuses[] = { BC_STS_SUCCESS, BC_STS_BUSY, BC_STS_IO_ERROR };
-    for (unsigned variant = 0; variant < 4; variant++) {
+    for (unsigned arg = 0; arg < 2; arg++) {
+        pid_t child;
+        int status;
+
         reset(device);
-        context.state = BC_LINK_INIT;
-        hardware.DrvTotalFrmCaptured = 23;
-        data.udata.u.RxCap.PauseThsh = variant & 1 ? 17 : 0;
-        data.udata.u.RxCap.ResumeThsh = variant & 2 ? 9 : 0;
-        check(bc_cproc_start_capture(&context, &data) == BC_STS_SUCCESS,
-              "start capture accepts independent default or explicit thresholds");
-        check(hardware.PauseThreshold == (variant & 1 ? 17U : HW_PAUSE_THRESHOLD) &&
-              hardware.ResumeThreshold == (variant & 2 ? 9U : HW_RESUME_THRESHOLD) &&
-              hardware.DefaultPauseThreshold == hardware.PauseThreshold &&
-              !hardware.DrvTotalFrmCaptured,
-              "start stores thresholds, records the pause default and resets captured count");
-        check(context.state == (BC_LINK_INIT | BC_LINK_CAP_EN) &&
-              hardware_notifications == 1 && sem_attempts == 1 && !post_calls,
-              "start enables capture but waits for format readiness before posting DMA");
+        if (arg) context.hw_ctx = NULL;
+        fflush(NULL);
+        child = fork();
+        assert(child >= 0);
+        if (!child) {
+            struct rlimit no_core = {0, 0};
+            assert(setrlimit(RLIMIT_CORE, &no_core) == 0);
+            BC_STATUS result = crystalhd_capture_start(arg ? &context : NULL, 19, 7);
+            bool clean = result == BC_STS_INV_ARG && !sem_attempts &&
+                !hardware_notifications && !post_calls && !stop_calls &&
+                !irq_disables && !notify_calls && !pause_calls &&
+                context.state == BC_LINK_READY && hardware.fetch_sem == 1;
+            if (!clean)
+                fprintf(stderr, "invalid scalar capture-start argument %u changed state or callbacks\n", arg);
+            _exit(clean ? EXIT_SUCCESS : EXIT_FAILURE);
+        }
+        assert(waitpid(child, &status, 0) == child);
+        if (WIFSIGNALED(status))
+            fprintf(stderr, "invalid scalar capture-start argument %u raised signal %d\n",
+                    arg, WTERMSIG(status));
+        check(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_SUCCESS,
+              "scalar capture-start rejects NULL context or hardware before locking or callbacks");
         inventory(0, 0, 0);
     }
-    reset(device);
-    context.state = BC_LINK_INIT | BC_LINK_FMT_CHG;
-    memset(&data, 0, sizeof(data));
-    check(bc_cproc_start_capture(&context, &data) == BC_STS_SUCCESS &&
-          context.state == BC_LINK_READY && hardware_notifications == 1 && !post_calls,
-          "empty ready capture normalizes NO_DATA to success");
-    inventory(0, 0, 0);
+}
+static void start_command_cases(uint32_t device)
+{
+    const uint32_t initial_states[] = { BC_LINK_INVALID, BC_LINK_INIT,
+        BC_LINK_CAP_EN, BC_LINK_FMT_CHG, BC_LINK_INIT | BC_LINK_FMT_CHG,
+        BC_LINK_READY, BC_LINK_READY | BC_LINK_PAUSED,
+        BC_LINK_READY | BC_LINK_SUSPEND, BC_LINK_READY | BC_LINK_RESUME };
+    const BC_STATUS statuses[] = {
+        BC_STS_SUCCESS, BC_STS_BUSY, BC_STS_NO_DATA, BC_STS_IO_ERROR };
+    const unsigned frontend_count = 2;
 
-    reset(device);
-    context.state = BC_LINK_INIT;
-    notify_ok = false;
-    check(bc_cproc_start_capture(&context, &data) == BC_STS_IO_ERROR &&
-          context.state == BC_LINK_INIT && hardware_notifications == 1 && !post_calls,
-          "failed start notification does not publish capture state or post DMA");
-    inventory(0, 0, 0);
+    for (unsigned direct = 0; direct < frontend_count; direct++) {
+        for (unsigned variant = 0; variant < 4; variant++) {
+            uint32_t pause = variant & 1 ? 17 : 0;
+            uint32_t resume = variant & 2 ? 9 : 0;
+            uint32_t expected_pause = pause ? pause : HW_PAUSE_THRESHOLD;
+            uint32_t expected_resume = resume ? resume : HW_RESUME_THRESHOLD;
 
-    reset(device);
-    hardware.DrvTotalFrmCaptured = 23;
-    hardware.DefaultPauseThreshold = 31;
-    interrupt_lock = true;
-    check(bc_cproc_start_capture(&context, &data) == BC_STS_IO_USER_ABORT &&
-          hardware.PauseThreshold == 12 && hardware.ResumeThreshold == 4 &&
-          hardware.DefaultPauseThreshold == 31 && hardware.DrvTotalFrmCaptured == 23 &&
-          context.state == BC_LINK_READY && !hardware_notifications && !post_calls,
-          "interrupted start leaves thresholds, counters and capture state unchanged");
-    inventory(0, 0, 0);
+            reset(device);
+            context.state = BC_LINK_INIT;
+            hardware.DrvTotalFrmCaptured = 23;
+            hardware.DefaultPauseThreshold = 31;
+            check(start_capture(direct, pause, resume) == BC_STS_SUCCESS,
+                  "start accepts independent default or explicit scalar thresholds");
+            check(hardware.PauseThreshold == expected_pause &&
+                  hardware.ResumeThreshold == expected_resume &&
+                  hardware.DefaultPauseThreshold == expected_pause &&
+                  !hardware.DrvTotalFrmCaptured,
+                  "start stores thresholds, records the pause default and resets captured count");
+            check(start_notify_observed == 1 && !start_notify_notifications &&
+                  start_notify_state == BC_LINK_INIT &&
+                  start_notify_pause == expected_pause &&
+                  start_notify_resume == expected_resume &&
+                  start_notify_default == expected_pause && !start_notify_frames &&
+                  !start_notify_sem,
+                  "start commits thresholds and counters under the lock before notifying hardware");
+            check(context.state == (BC_LINK_INIT | BC_LINK_CAP_EN) &&
+                  hardware_notifications == 1 && sem_attempts == 1 &&
+                  !post_calls && !start_post_observed,
+                  "start enables capture after notification but waits for exact format readiness");
+            inventory(0, 0, 0);
+        }
 
-    for (unsigned s = 0; s < sizeof(statuses) / sizeof(statuses[0]); s++) {
+        reset(device);
+        context.state = BC_LINK_INIT | BC_LINK_FMT_CHG;
+        check(start_capture(direct, 0, 0) == BC_STS_SUCCESS &&
+              context.state == BC_LINK_READY && hardware_notifications == 1 &&
+              sem_attempts == 1 && !post_calls && !start_post_observed,
+              "empty ready capture normalizes hardware NO_DATA to success");
+        inventory(0, 0, 0);
+
+        reset(device);
+        context.state = BC_LINK_INIT | BC_LINK_FMT_CHG;
+        hardware.DrvTotalFrmCaptured = 23;
+        hardware.DefaultPauseThreshold = 31;
+        notify_ok = false;
+        check(start_capture(direct, 19, 7) == BC_STS_IO_ERROR &&
+              context.state == (BC_LINK_INIT | BC_LINK_FMT_CHG) &&
+              hardware.PauseThreshold == 19 && hardware.ResumeThreshold == 7 &&
+              hardware.DefaultPauseThreshold == 19 && !hardware.DrvTotalFrmCaptured &&
+              hardware_notifications == 1 && !post_calls,
+              "failed notification keeps state unpublished after committing start parameters");
+        check(start_notify_observed == 1 &&
+              start_notify_state == (BC_LINK_INIT | BC_LINK_FMT_CHG) &&
+              start_notify_pause == 19 && start_notify_resume == 7 &&
+              start_notify_default == 19 && !start_notify_frames &&
+              !start_notify_sem && !start_notify_notifications,
+              "failed notification observes old state and the newly committed scalar parameters");
+        inventory(0, 0, 0);
+
+        reset(device);
+        hardware.DrvTotalFrmCaptured = 23;
+        hardware.DefaultPauseThreshold = 31;
+        interrupt_lock = true;
+        check(start_capture(direct, 19, 7) == BC_STS_IO_USER_ABORT &&
+              hardware.PauseThreshold == 12 && hardware.ResumeThreshold == 4 &&
+              hardware.DefaultPauseThreshold == 31 && hardware.DrvTotalFrmCaptured == 23 &&
+              context.state == BC_LINK_READY && !hardware_notifications && !post_calls &&
+              !start_notify_observed && !start_post_observed && sem_attempts == 1,
+              "interrupted start leaves thresholds, counters and capture state unchanged");
+        inventory(0, 0, 0);
+
+        for (unsigned s = 0; s < sizeof(initial_states) / sizeof(initial_states[0]); s++) {
+            bool starts_dma = (initial_states[s] | BC_LINK_CAP_EN) == BC_LINK_READY;
+
+            reset(device);
+            context.state = BC_LINK_INIT;
+            check(add(0) == BC_STS_SUCCESS,
+                  "prepare one deferred buffer for start-state ordering");
+            context.state = initial_states[s];
+            hardware.DrvTotalFrmCaptured = 23;
+            check(start_capture(direct, 21, 10) == BC_STS_SUCCESS,
+                  "capture start preserves exact state-gated DMA admission and NO_DATA normalization");
+            check(start_notify_observed == 1 && start_notify_state == initial_states[s] &&
+                  start_notify_pause == 21 && start_notify_resume == 10 &&
+                  start_notify_default == 21 && !start_notify_frames &&
+                  !start_notify_sem && !start_notify_notifications,
+                  "hardware notification observes parameters before capture-state publication");
+            check(context.state == (initial_states[s] | BC_LINK_CAP_EN) &&
+                  post_calls == (unsigned)starts_dma &&
+                  start_post_observed == starts_dma,
+                  "only an exact READY state starts queued capture DMA");
+            if (starts_dma)
+                check(start_post_state == BC_LINK_READY &&
+                      start_post_notifications == 1 && !start_post_sem,
+                      "DMA posting observes successful notification and published READY state under lock");
+            inventory(starts_dma, 0, !starts_dma);
+            drain();
+        }
+
+        for (unsigned s = 0; s < sizeof(statuses) / sizeof(statuses[0]); s++) {
+            BC_STATUS expected = statuses[s] == BC_STS_IO_ERROR ?
+                BC_STS_IO_ERROR : BC_STS_SUCCESS;
+
+            reset(device);
+            context.state = BC_LINK_INIT;
+            check(add(0) == BC_STS_SUCCESS && add(1) == BC_STS_SUCCESS,
+                  "prepare queued buffers for capture-start return propagation");
+            context.state |= BC_LINK_FMT_CHG;
+            post_status = statuses[s];
+            check(start_capture(direct, 0, 0) == expected,
+                  "start normalizes NO_DATA, accepts BUSY and preserves hard post errors");
+            check(context.state == BC_LINK_READY && hardware_notifications == 1 &&
+                  sem_attempts == 3 &&
+                  post_calls == (statuses[s] == BC_STS_SUCCESS ? 2U : 1U),
+                  "ready start posts only buffers admitted by the selected device path");
+            check(start_post_observed && start_post_state == BC_LINK_READY &&
+                  start_post_notifications == 1 && !start_post_sem,
+                  "capture start calls the hardware path after publishing READY under the lock");
+            inventory(statuses[s] == BC_STS_SUCCESS ? 2 : 0, 0,
+                      statuses[s] == BC_STS_SUCCESS ? 0 : 2);
+            drain();
+        }
+
         reset(device);
         context.state = BC_LINK_INIT;
         check(add(0) == BC_STS_SUCCESS && add(1) == BC_STS_SUCCESS,
-              "prepare queued buffers for actual start command");
+              "prepare queued buffers for faulted capture start");
         context.state |= BC_LINK_FMT_CHG;
-        post_status = statuses[s];
-        check(bc_cproc_start_capture(&context, &data) ==
-              (statuses[s] == BC_STS_IO_ERROR ? BC_STS_IO_ERROR : BC_STS_SUCCESS),
-              "start command preserves hard errors and queues BUSY buffers for retry");
-        check(context.state == BC_LINK_READY && hardware_notifications == 1 &&
-              post_calls == (statuses[s] == BC_STS_SUCCESS ? 2U : 1U),
-              "ready start posts only the admitted DMA engines");
-        inventory(statuses[s] == BC_STS_SUCCESS ? 2 : 0, 0,
-                  statuses[s] == BC_STS_SUCCESS ? 0 : 2);
+        hardware.dma_fault = true;
+        check(start_capture(direct, 0, 0) == BC_STS_IO_ERROR &&
+              context.state == BC_LINK_READY && hardware_notifications == 1 &&
+              !post_calls && !start_post_observed,
+              "faulted hardware start preserves its error after capture-state publication");
+        inventory(0, 0, 2);
+        hardware.dma_fault = false;
         drain();
     }
 }
@@ -867,6 +1026,7 @@ int main(void)
         cancellation_cases(devices[i]);
         start_command_cases(devices[i]);
         invalid_command_arguments(devices[i]);
+        invalid_capture_start_arguments(devices[i]);
     }
     printf("RX ownership: %u scenarios, %u checks, %u failures\n", groups, checks, failures);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;
