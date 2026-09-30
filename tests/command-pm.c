@@ -378,10 +378,9 @@ static BC_STATUS crystalhd_hw_stop_capture(struct crystalhd_hw *hw, bool unmap)
         Event('C');
     return capture_status;
 }
-static BC_STATUS crystalhd_hw_cancel_tx(struct crystalhd_hw *hw, uint32_t tag)
+static BC_STATUS crystalhd_hw_cancel_all_tx(struct crystalhd_hw *hw)
 {
-    Check(hw == &hardware && tag == context.tx_list_id && tag != 0,
-          "suspend cancels the active TX owner");
+    Check(hw == &hardware, "suspend cancels every TX-list owner");
     cancels++; Event('X'); return cancel_status;
 }
 static uint32_t RawRegister(struct crystalhd_adp *adp, unsigned operation,
@@ -2143,11 +2142,13 @@ static void Active(void)
         context.user[2].in_use = 1;
         context.user[2].mode = 0x100 | (mode ? DTS_DIAG_MODE : DTS_PLAYBACK_MODE);
         Check(crystalhd_suspend(&context, &data) == BC_STS_SUCCESS, "active suspend succeeds");
-        Check(!strcmp(events, active_tx ? "CXS" : "CTS"), "capture and TX stop precede device suspend");
+        Check(!strcmp(events, "CXS"),
+              "capture and engine-wide TX cancellation precede device suspend");
         Check(context.state == BC_LINK_SUSPEND && context.pwr_state_change == BC_HW_SUSPEND,
               "active suspend reports its power state");
         Check(crystalhd_suspend(&context, &data) == BC_STS_SUCCESS, "duplicate suspend is harmless");
-        Check(stops == 1 && captures == 1, "duplicate suspend does not stop hardware twice");
+        Check(stops == 1 && captures == 1 && cancels == 1 && !tx_stops,
+              "duplicate suspend does not stop or cancel hardware twice");
         Check(crystalhd_resume(&context) == BC_STS_SUCCESS, "active resume succeeds");
         Check(context.state == BC_LINK_RESUME && context.pwr_state_change == BC_HW_RESUME,
               "active resume retains the userspace reopen contract");

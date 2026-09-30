@@ -115,6 +115,9 @@ BC_STATUS crystalhd_session_acquire_locked(struct crystalhd_cmd *ctx,
 					   const void *owner);
 BC_STATUS crystalhd_session_release_locked(struct crystalhd_cmd *ctx,
 					   const void *owner);
+/* Caller retains device/session lifetime and serializes TX submission through
+ * return; the legacy ioctl adapter does this with user_lock and tx_lock.
+ */
 BC_STATUS crystalhd_tx_transfer_sync(struct crystalhd_cmd *ctx,
 				     struct crystalhd_dio_req *dio,
 				     uint8_t data_flags);

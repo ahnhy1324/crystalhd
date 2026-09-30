@@ -541,7 +541,12 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw, struct crystalhd_dio_req
 				hw_comp_callback call_back,
 				void *cb_context, uint32_t *list_id,
 				uint8_t data_flags);
-BC_STATUS crystalhd_hw_cancel_tx(struct crystalhd_hw *hw, uint32_t list_id);
+/* Process callers serialize post and cancel for the shared two-list engine.
+ * The legacy ioctl path holds adp->tx_lock; session-exclusive stop paths hold
+ * adp->user_lock for write. The list_id returned by post identifies an IRQ
+ * completion only and never limits engine-wide cancellation.
+ */
+BC_STATUS crystalhd_hw_cancel_all_tx(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_add_cap_buffer(struct crystalhd_hw *hw,struct crystalhd_dio_req *ioreq, bool en_post);
 BC_STATUS crystalhd_hw_repost_cap_buffer(struct crystalhd_hw *hw,
 					 struct crystalhd_rx_dma_pkt *pkt);
