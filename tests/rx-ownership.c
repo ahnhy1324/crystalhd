@@ -22,9 +22,11 @@ typedef struct C011_PIB C011_PIB;
 typedef uint64_t dma_addr_t;
 #include "rx-types.h"
 
+static void discard_log(const char *format, ...) { (void)format; }
+
 #define KERN_ERR ""
 #define printk(...) ((void)0)
-#define dev_err(dev, ...) ((void)(dev))
+#define dev_err(dev, ...) ((void)(dev), discard_log(__VA_ARGS__))
 #define dev_dbg(dev, ...) ((void)(dev))
 #define dev_info(dev, ...) ((void)(dev))
 #define READ_ONCE(value) (value)
@@ -47,9 +49,10 @@ struct crystalhd_hw {
     struct crystalhd_rx_dma_pkt *rx_pkt_pool_head;
     struct crystalhd_dioq *rx_actq, *rx_rdyq, *rx_freeq;
     uint64_t rx_cancel_epoch;
-    int lock, fetch_sem;
+    int lock, rx_lock, fetch_sem;
     bool hw_pause_issued, dma_fault;
-    uint32_t rx_pkt_tag_seed, DrvTotalFrmCaptured;
+    uint32_t rx_pkt_tag_seed, rx_list_post_index, DrvTotalFrmCaptured;
+    uint32_t rx_list_sts[DMA_ENGINE_CNT];
     uint32_t PauseThreshold, ResumeThreshold, DefaultPauseThreshold, PDRatio;
     uint64_t TickSpentInPD, TickCntDecodePU;
     enum FLEA_POWER_STATES FleaPowerState;
@@ -194,8 +197,9 @@ static void inventory_with_private(unsigned active_count, unsigned ready_count,
     }
     check(active.count == active_count && ready.count == ready_count &&
           available.count == free_count, "active/ready/free ownership matches transition");
-    check(!irq_depth && !hardware.lock && hardware.fetch_sem == 1,
-          "transition releases IRQ, pool lock and capture semaphore");
+    check(!irq_depth && !hardware.lock && !hardware.rx_lock &&
+          hardware.fetch_sem == 1,
+          "transition releases IRQ, pool/RX locks and capture semaphore");
     if (private_request)
         check(mapped[request_index(private_request)] && !queued_request(private_request),
               "rejected or fresh mapped request remains caller-private");
@@ -1096,6 +1100,48 @@ static void retry_cases(uint32_t device)
         check(!unmaps[0], "completion retries never unmap in IRQ context");
         inventory(statuses[i] == BC_STS_SUCCESS, 0, statuses[i] != BC_STS_SUCCESS);
         drain();
+    }
+    if (device == BC_PCI_DEVID_FLEA) {
+        for (size_t i = 0; i < sizeof(statuses) / sizeof(statuses[0]); i++) {
+            struct crystalhd_rx_dma_pkt *failed;
+            unsigned long flags;
+
+            reset(device);
+            check(add(0) == BC_STS_SUCCESS && active.count == 1 &&
+                  active.tags[0] == hardware.rx_pkt_tag_seed,
+                  "queue the old Flea list-zero registration");
+            spin_lock_irqsave(&hardware.rx_lock, flags);
+            failed = crystalhd_rx_pkt_detach(&hardware, 0,
+                                              BC_STS_ERROR);
+            spin_unlock_irqrestore(&hardware.rx_lock, flags);
+            check(failed && !active.count,
+                  "detach the failed packet before exposing its hardware list");
+
+            check(add(1) == BC_STS_SUCCESS && active.count == 1 &&
+                  active.tags[0] == hardware.rx_pkt_tag_seed,
+                  "a concurrent submit safely reuses the detached list tag");
+            post_status = statuses[i];
+            check(crystalhd_rx_pkt_complete(&hardware, failed, 0,
+                                             BC_STS_ERROR) == statuses[i],
+                  "deferred completion preserves the selected retry result");
+            check(!unmaps[0] && !unmaps[1],
+                  "deferred IRQ completion keeps both registrations mapped");
+            if (statuses[i] == BC_STS_SUCCESS) {
+                check(active.count == 2 &&
+                      active.tags[0] == hardware.rx_pkt_tag_seed &&
+                      active.tags[1] == hardware.rx_pkt_tag_seed + 1 &&
+                      active.tags[0] != active.tags[1],
+                      "successful retry uses the other list without a duplicate tag");
+                inventory(2, 0, 0);
+            } else {
+                check(active.count == 1 && available.count == 1 &&
+                      active.tags[0] == hardware.rx_pkt_tag_seed &&
+                      available.packets[0] == failed,
+                      "failed or busy retry leaves exactly one owner for each packet");
+                inventory(1, 0, 1);
+            }
+            drain();
+        }
     }
     reset(device); context.state = BC_LINK_INIT | BC_LINK_CAP_EN;
     check(add(0) == BC_STS_SUCCESS && add(1) == BC_STS_SUCCESS, "queue capture start buffers");

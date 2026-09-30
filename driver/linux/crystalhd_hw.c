@@ -790,11 +790,35 @@ BC_STATUS crystalhd_xlat_sgl_to_dma_desc(struct crystalhd_dio_req *ioreq,
 	return sts;
 }
 
-BC_STATUS crystalhd_rx_pkt_done(struct crystalhd_hw *hw,
-									   uint32_t list_index,
-									   BC_STATUS comp_sts)
+struct crystalhd_rx_dma_pkt *crystalhd_rx_pkt_detach(struct crystalhd_hw *hw,
+							     uint32_t list_index,
+							     BC_STATUS comp_sts)
 {
 	struct crystalhd_rx_dma_pkt *rx_pkt = NULL;
+
+	if (!hw || list_index >= DMA_ENGINE_CNT) {
+		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
+		return NULL;
+	}
+
+	rx_pkt = crystalhd_dioq_find_and_fetch(hw->rx_actq,
+		hw->rx_pkt_tag_seed + list_index);
+	if (!rx_pkt) {
+		dev_err(&hw->adp->pdev->dev, "Act-Q: PostIx:%x L0Sts:%x "
+			"L1Sts:%x current L:%x tag:%x comp:%x\n",
+			hw->rx_list_post_index, hw->rx_list_sts[0],
+			hw->rx_list_sts[1], list_index,
+			hw->rx_pkt_tag_seed + list_index, comp_sts);
+	}
+
+	return rx_pkt;
+}
+
+BC_STATUS crystalhd_rx_pkt_complete(struct crystalhd_hw *hw,
+					    struct crystalhd_rx_dma_pkt *rx_pkt,
+					    uint32_t list_index,
+					    BC_STATUS comp_sts)
+{
 	uint32_t y_dw_dnsz, uv_dw_dnsz;
 	BC_STATUS sts = BC_STS_SUCCESS;
 	uint64_t currTick;
@@ -805,20 +829,9 @@ BC_STATUS crystalhd_rx_pkt_done(struct crystalhd_hw *hw,
 	int32_t totalTick_Hi_f;
 	int32_t TickSpentInPD_Hi_f;
 
-	if (!hw || list_index >= DMA_ENGINE_CNT) {
+	if (!hw || !rx_pkt || list_index >= DMA_ENGINE_CNT) {
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
 		return BC_STS_INV_ARG;
-	}
-
-	rx_pkt = crystalhd_dioq_find_and_fetch(hw->rx_actq,
-	hw->rx_pkt_tag_seed + list_index);
-	if (!rx_pkt) {
-		dev_err(&hw->adp->pdev->dev, "Act-Q: PostIx:%x L0Sts:%x "
-		"L1Sts:%x current L:%x tag:%x comp:%x\n",
-				hw->rx_list_post_index, hw->rx_list_sts[0],
-				hw->rx_list_sts[1], list_index,
-				hw->rx_pkt_tag_seed + list_index, comp_sts);
-				return BC_STS_INV_ARG;
 	}
 
 	if (comp_sts == BC_STS_SUCCESS)
@@ -907,6 +920,19 @@ BC_STATUS crystalhd_rx_pkt_done(struct crystalhd_hw *hw,
 	}
 	/* Check if we can post this DIO again. */
 	return crystalhd_hw_repost_cap_buffer(hw, rx_pkt);
+}
+
+BC_STATUS crystalhd_rx_pkt_done(struct crystalhd_hw *hw,
+					uint32_t list_index,
+					BC_STATUS comp_sts)
+{
+	struct crystalhd_rx_dma_pkt *rx_pkt;
+
+	rx_pkt = crystalhd_rx_pkt_detach(hw, list_index, comp_sts);
+	if (!rx_pkt)
+		return BC_STS_INV_ARG;
+
+	return crystalhd_rx_pkt_complete(hw, rx_pkt, list_index, comp_sts);
 }
 
 BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw, struct crystalhd_dio_req *ioreq,
