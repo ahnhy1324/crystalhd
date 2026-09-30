@@ -8,7 +8,7 @@ cleanup()
 {
     rm -f "$pm_test_dir/check" "$pm_test_dir/command-pm-types.h" \
         "$pm_test_dir/command-pm-hardware.h" "$pm_test_dir/command-pm-functions.h" \
-        "$pm_test_dir/command-pm-close.h"
+        "$pm_test_dir/command-pm-request.h" "$pm_test_dir/command-pm-close.h"
     rmdir "$pm_test_dir"
 }
 trap cleanup EXIT
@@ -22,7 +22,7 @@ awk '
     }
     copying { print }
     copying && /^};/ { copying = 0 }
-    /^#define[[:space:]]+(DTS_MODE_INV|BC_LINK_ELEM_POOL_SZ)[[:space:]]/ { print }
+    /^#define[[:space:]]+(DTS_MODE_INV|BC_LINK_ELEM_POOL_SZ|CRYSTALHD_(LINK|FLEA)_FIRMWARE_NAME)[[:space:]]/ { print }
     END { if (found != 5 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.h" "$repo_dir/include/bc_dts_glob_lnx.h" \
     "$repo_dir/driver/linux/crystalhd_hw.h" "$repo_dir/driver/linux/crystalhd_misc.h" \
@@ -46,6 +46,8 @@ awk '
     /^static BC_STATUS bc_cproc_notify_mode\(/ ||
     /^static BC_STATUS bc_cproc_((link_)?reg|mem)_(rd|wr)\(/ ||
     /^BC_STATUS crystalhd_fw_download_locked\(/ ||
+    /^static int crystalhd_fw_status_to_errno\(/ ||
+    /^int crystalhd_request_firmware_locked\(/ ||
     /^static BC_STATUS bc_cproc_download_fw\(/ ||
     /^BC_STATUS crystalhd_fw_exec_locked\(/ ||
     /^static BC_STATUS bc_cproc_do_fw_cmd\(/ ||
@@ -54,8 +56,15 @@ awk '
     /^BC_STATUS crystalhd_(suspend|resume|user_open)\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 26 || copying) exit 1 }
+    END { if (found != 28 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" > "$pm_test_dir/command-pm-functions.h"
+
+awk '
+    /^int crystalhd_request_firmware_locked\(/ { copying = 1; found++ }
+    copying { print }
+    copying && /^}/ { copying = 0 }
+    END { if (found != 1 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_cmds.c" > "$pm_test_dir/command-pm-request.h"
 
 # Every frontend must cross the same owner/state/recovery boundary before a
 # low-level firmware loader can touch hardware.
@@ -68,6 +77,40 @@ if [ "$fw_download_calls" -ne 1 ] ||
     ! grep -Eq 'return crystalhd_fw_download_locked\(ctx,' \
         "$repo_dir/driver/linux/crystalhd_cmds.c"; then
     echo 'firmware download bypasses the shared command layer' >&2
+    exit 1
+fi
+
+# The kernel firmware frontend owns request/release lifetime but delegates all
+# owner, geometry, state and recovery effects to the shared download helper.
+request_calls=$(grep -R -h --include='*.c' -c \
+    'request_firmware[[:space:]]*(' "$repo_dir/driver/linux" | \
+    awk '{ total += $1 } END { print total + 0 }')
+release_calls=$(grep -R -h --include='*.c' -c \
+    'release_firmware[[:space:]]*(' "$repo_dir/driver/linux" | \
+    awk '{ total += $1 } END { print total + 0 }')
+write_lock_assertions=$(grep -F -c \
+    'lockdep_assert_held_write(&ctx->adp->user_lock);' \
+    "$pm_test_dir/command-pm-request.h" || true)
+if [ "$request_calls" -ne 1 ] || [ "$release_calls" -ne 1 ] ||
+    [ "$write_lock_assertions" -ne 1 ] ||
+    [ "$(grep -c 'crystalhd_fw_download_locked(ctx, owner,' \
+        "$pm_test_dir/command-pm-request.h")" -ne 1 ] ||
+    grep -Fq 'lockdep_assert_held(&ctx->adp->user_lock);' \
+        "$pm_test_dir/command-pm-request.h" ||
+    grep -Eq 'pfnFWDwnld[[:space:]]*\(|crystalhd_hw_fw_cmd_(recovery_enter|leave|reset_locked)[[:space:]]*\(' \
+        "$pm_test_dir/command-pm-request.h"; then
+    echo 'kernel firmware frontend bypasses or duplicates shared download ownership' >&2
+    exit 1
+fi
+
+module_firmware_count=$(grep -c '^MODULE_FIRMWARE(' \
+    "$repo_dir/driver/linux/crystalhd_lnx.c" || true)
+if [ "$module_firmware_count" -ne 2 ] ||
+    ! grep -Fxq 'MODULE_FIRMWARE(CRYSTALHD_LINK_FIRMWARE_NAME);' \
+        "$repo_dir/driver/linux/crystalhd_lnx.c" ||
+    ! grep -Fxq 'MODULE_FIRMWARE(CRYSTALHD_FLEA_FIRMWARE_NAME);' \
+        "$repo_dir/driver/linux/crystalhd_lnx.c"; then
+    echo 'kernel firmware metadata is incomplete or duplicated' >&2
     exit 1
 fi
 
