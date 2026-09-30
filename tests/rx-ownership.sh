@@ -17,13 +17,13 @@ trap 'exit 1' HUP INT TERM
 # Keep state values, buffer layouts and ownership functions tied to the driver.
 awk '
     /^enum (_crystalhd_state|FLEA_POWER_STATES|BRCM_EVENT)[[:space:]]*\{/ ||
-    /^struct (dma_descriptor|dma_desc_mem|crystalhd_rx_dma_pkt|crystalhd_dio_user_info)[[:space:]]*\{/ {
-        copying = 1; found++
-    }
+	/^struct (dma_descriptor|dma_desc_mem|crystalhd_rx_dma_pkt|crystalhd_dio_user_info|crystalhd_rx_dequeue_result)[[:space:]]*\{/ {
+		copying = 1; found++
+	}
     copying { print }
     copying && /^};/ { copying = 0 }
     /^#define[[:space:]]+DMA_ENGINE_CNT[[:space:]]/ { print }
-    END { if (found != 7 || copying) exit 1 }
+	END { if (found != 8 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.h" \
     "$repo_dir/driver/linux/FleaDefs.h" "$repo_dir/driver/linux/crystalhd_hw.h" \
     "$repo_dir/driver/linux/crystalhd_misc.h" > "$rx_test_dir/rx-types.h"
@@ -39,13 +39,14 @@ awk '
     END { if (found != 10 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_hw.c" > "$rx_test_dir/rx-hardware.h"
 awk '
-    /^BC_STATUS crystalhd_(rx_submit|capture_start|capture_flush)\(/ ||
-    /^static BC_STATUS bc_cproc_(check_inbuffs|add_cap_buff|fmt_change|fetch_frame|start_capture|flush_cap_buffs)\(/ {
+	/^BC_STATUS crystalhd_(rx_submit|rx_dequeue|capture_start|capture_flush)\(/ ||
+	/^static void bc_cproc_copy_pib\(/ ||
+	/^static BC_STATUS bc_cproc_(check_inbuffs|add_cap_buff|fmt_change|fetch_frame|start_capture|flush_cap_buffs)\(/ {
         copying = 1; found++
     }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 9 || copying) exit 1 }
+	END { if (found != 11 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" > "$rx_test_dir/rx-command.h"
 awk '
     /^BC_STATUS crystalhd_(flea|link)_hw_post_cap_buff\(/ {
