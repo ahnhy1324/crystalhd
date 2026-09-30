@@ -38,9 +38,9 @@ uint32_t crystalhd_flea_reg_rd(struct crystalhd_adp *adp, uint32_t reg_off);				
 void crystalhd_flea_reg_wr(struct crystalhd_adp *adp, uint32_t reg_off, uint32_t val);									/* Done */
 bool crystalhd_flea_check_input_full(struct crystalhd_hw *hw, uint32_t needed_sz, uint32_t *empty_sz, bool b_188_byte_pkts, uint8_t *flags);
 BC_STATUS crystalhd_flea_mem_rd(struct crystalhd_hw *hw, uint32_t start_off, uint32_t dw_cnt, uint32_t *rd_buff);		/* Done */
-BC_STATUS crystalhd_flea_mem_wr(struct crystalhd_hw *hw, uint32_t start_off, uint32_t dw_cnt, uint32_t *wr_buff);		/* Done */
+BC_STATUS crystalhd_flea_mem_wr(struct crystalhd_hw *hw, uint32_t start_off, uint32_t dw_cnt, const uint32_t *wr_buff);		/* Done */
 BC_STATUS crystalhd_flea_do_fw_cmd(struct crystalhd_hw *hw, BC_FW_CMD *fw_cmd);
-BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw* hw, uint8_t* buffer, uint32_t sz);
+BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw* hw, const uint8_t* buffer, uint32_t sz);
 void crystalhd_flea_get_dnsz(struct crystalhd_hw *hw, uint32_t list_index, uint32_t *y_dw_dnsz, uint32_t *uv_dw_dnsz);
 BC_STATUS crystalhd_flea_hw_pause(struct crystalhd_hw *hw, bool state);
 bool crystalhd_flea_peek_next_decoded_frame(struct crystalhd_hw *hw, uint64_t *meta_payload, uint32_t *picNumFlags, uint32_t PicWidth);

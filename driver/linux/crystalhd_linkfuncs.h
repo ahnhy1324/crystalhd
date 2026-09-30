@@ -174,7 +174,7 @@ void crystalhd_link_reg_wr(struct crystalhd_adp *adp, uint32_t reg_off, uint32_t
 uint32_t crystalhd_link_dram_rd(struct crystalhd_hw *hw, uint32_t mem_off);
 void crystalhd_link_dram_wr(struct crystalhd_hw *hw, uint32_t mem_off, uint32_t val);
 BC_STATUS crystalhd_link_mem_rd(struct crystalhd_hw *hw, uint32_t start_off, uint32_t dw_cnt, uint32_t *rd_buff);
-BC_STATUS crystalhd_link_mem_wr(struct crystalhd_hw *hw, uint32_t start_off, uint32_t dw_cnt, uint32_t *wr_buff);
+BC_STATUS crystalhd_link_mem_wr(struct crystalhd_hw *hw, uint32_t start_off, uint32_t dw_cnt, const uint32_t *wr_buff);
 void crystalhd_link_enable_uarts(struct crystalhd_hw *hw);
 void crystalhd_link_start_dram(struct crystalhd_hw *hw);
 bool crystalhd_link_bring_out_of_rst(struct crystalhd_hw *hw);
@@ -220,7 +220,7 @@ void crystalhd_link_rx_isr(struct crystalhd_hw *hw, uint32_t intr_sts);
 BC_STATUS crystalhd_link_hw_pause(struct crystalhd_hw *hw, bool state);
 BC_STATUS crystalhd_link_fw_cmd_post_proc(struct crystalhd_hw *hw, BC_FW_CMD *fw_cmd);
 BC_STATUS crystalhd_link_put_ddr2sleep(struct crystalhd_hw *hw);
-BC_STATUS crystalhd_link_download_fw(struct crystalhd_hw* hw, uint8_t* buffer, uint32_t sz);
+BC_STATUS crystalhd_link_download_fw(struct crystalhd_hw* hw, const uint8_t* buffer, uint32_t sz);
 BC_STATUS crystalhd_link_do_fw_cmd(struct crystalhd_hw *hw, BC_FW_CMD *fw_cmd);
 bool crystalhd_link_hw_interrupt_handle(struct crystalhd_adp *adp, struct crystalhd_hw *hw);
 void crystalhd_link_notify_fll_change(struct crystalhd_hw *hw, bool bCleanupContext);

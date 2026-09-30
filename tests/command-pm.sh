@@ -45,6 +45,7 @@ awk '
     /^BC_STATUS crystalhd_user_set_mode\(/ ||
     /^static BC_STATUS bc_cproc_notify_mode\(/ ||
     /^static BC_STATUS bc_cproc_((link_)?reg|mem)_(rd|wr)\(/ ||
+    /^BC_STATUS crystalhd_fw_download_locked\(/ ||
     /^static BC_STATUS bc_cproc_download_fw\(/ ||
     /^BC_STATUS crystalhd_fw_exec_locked\(/ ||
     /^static BC_STATUS bc_cproc_do_fw_cmd\(/ ||
@@ -53,8 +54,22 @@ awk '
     /^BC_STATUS crystalhd_(suspend|resume|user_open)\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 25 || copying) exit 1 }
+    END { if (found != 26 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" > "$pm_test_dir/command-pm-functions.h"
+
+# Every frontend must cross the same owner/state/recovery boundary before a
+# low-level firmware loader can touch hardware.
+fw_download_calls=$(grep -R -h --include='*.c' -c \
+    'pfnFWDwnld[[:space:]]*(' "$repo_dir/driver/linux" | \
+    awk '{ total += $1 } END { print total + 0 }')
+if [ "$fw_download_calls" -ne 1 ] ||
+    ! grep -Eq 'pfnFWDwnld\(ctx->hw_ctx, image,' \
+        "$repo_dir/driver/linux/crystalhd_cmds.c" ||
+    ! grep -Eq 'return crystalhd_fw_download_locked\(ctx,' \
+        "$repo_dir/driver/linux/crystalhd_cmds.c"; then
+    echo 'firmware download bypasses the shared command layer' >&2
+    exit 1
+fi
 
 # Command-layer frontends must use the shared executor so mailbox admission,
 # timeout quarantine and local rollback cannot be bypassed.

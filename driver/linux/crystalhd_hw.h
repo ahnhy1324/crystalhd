@@ -320,7 +320,7 @@ typedef void		(*HW_WRITE_DEVICE_REG)(struct crystalhd_adp*,uint32_t,uint32_t);
 typedef uint32_t	(*HW_READ_FPGA_REG)(struct crystalhd_adp*,uint32_t);
 typedef void		(*HW_WRITE_FPGA_REG)(struct crystalhd_adp*,uint32_t,uint32_t);
 typedef BC_STATUS	(*HW_READ_DEV_MEM)(struct crystalhd_hw*,uint32_t,uint32_t,uint32_t*);
-typedef BC_STATUS	(*HW_WRITE_DEV_MEM)(struct crystalhd_hw*,uint32_t,uint32_t,uint32_t*);
+typedef BC_STATUS	(*HW_WRITE_DEV_MEM)(struct crystalhd_hw*,uint32_t,uint32_t,const uint32_t*);
 /* typedef bool		(*HW_INIT_DRAM)(struct crystalhd_adp*); */
 /* typedef bool		(*HW_DISABLE_INTR)(struct crystalhd_adp*); */
 /* typedef bool		(*HW_ENABLE_INTR)(struct crystalhd_adp*); */
@@ -340,7 +340,7 @@ typedef BC_STATUS	(*HW_FW_PASSTHRU_CMD)(struct crystalhd_hw*,PBC_FW_CMD);
 /* typedef void*	(*HW_GET_FW_DONE_OS_CMD)(struct crystalhd_adp*); */
 /* typedef PBC_DRV_PIC_INFO	(*SEARCH_FOR_PIB)(struct crystalhd_adp*,bool,uint32_t); */
 /* typedef bool		(*HW_DO_DRAM_PWR_MGMT)(struct crystalhd_adp*); */
-typedef BC_STATUS	(*HW_FW_DOWNLOAD)(struct crystalhd_hw*,uint8_t*,uint32_t);
+typedef BC_STATUS	(*HW_FW_DOWNLOAD)(struct crystalhd_hw*,const uint8_t*,uint32_t);
 typedef BC_STATUS	(*HW_ISSUE_DECO_PAUSE)(struct crystalhd_hw*, bool);
 typedef void		(*HW_STOP_DMA_ENGINES)(struct crystalhd_hw*);
 /*

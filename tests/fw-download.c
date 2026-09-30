@@ -49,7 +49,7 @@ struct crystalhd_hw {
 	uint32_t (*pfnReadFPGARegister)(struct crystalhd_adp *, uint32_t);
 	void (*pfnWriteFPGARegister)(struct crystalhd_adp *, uint32_t, uint32_t);
 	BC_STATUS (*pfnDevDRAMWrite)(struct crystalhd_hw *, uint32_t,
-					 uint32_t, uint32_t *);
+					 uint32_t, const uint32_t *);
 	uint32_t fwcmdPostAddr, fwcmdPostMbox, fwcmdRespMbox;
 	uint32_t FleaRxPicDelAddr, FleaFLLUpdateAddr;
 };
@@ -77,7 +77,7 @@ static uint32_t dram_words, dram_first, dram_last;
 static uint32_t cmac_offsets[4], cmac_values[4];
 static uint32_t link_signature_offsets[8], link_signature_values[8];
 static uint32_t link_payload_first, link_payload_last;
-static uint32_t *expected_image;
+static const uint32_t *expected_image;
 static BC_STATUS dram_status;
 static bool heartbeat_ok;
 static enum link_result link_result;
@@ -132,7 +132,7 @@ static void write_device(struct crystalhd_adp *adp, uint32_t offset,
 }
 
 static BC_STATUS write_dram(struct crystalhd_hw *hw, uint32_t offset,
-			    uint32_t words, uint32_t *buffer)
+			    uint32_t words, const uint32_t *buffer)
 {
 	check(hw == &hardware && offset == FW_DOWNLOAD_START_ADDR &&
 	      buffer == expected_image && words,
@@ -288,7 +288,7 @@ static void helper_boundaries(void)
 	check(!crystalhd_valid_firmware_image(firmware.words,
 	      CRYSTALHD_MAX_FIRMWARE_SIZE + 4U,
 	      CRYSTALHD_LINK_MIN_FIRMWARE_SIZE) &&
-	      !crystalhd_valid_firmware_image((uint8_t *)firmware.words + 1,
+	      !crystalhd_valid_firmware_image((const uint8_t *)firmware.words + 1,
 	      CRYSTALHD_LINK_MIN_FIRMWARE_SIZE,
 	      CRYSTALHD_LINK_MIN_FIRMWARE_SIZE),
 	      "oversized and unaligned images are rejected");
@@ -314,14 +314,14 @@ static void invalid_flea(void)
 	for (uint32_t size = 0; size < CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE; size++) {
 		reset();
 		check(crystalhd_flea_download_fw(&hardware,
-		      (uint8_t *)firmware.words, size) == BC_STS_INV_ARG &&
+		      (const uint8_t *)firmware.words, size) == BC_STS_INV_ARG &&
 		      no_effects() && state_unchanged(),
 		      "every undersized Flea image is effect-free");
 	}
 	for (unsigned n = 0; n < sizeof(extra) / sizeof(extra[0]); n++) {
 		reset();
 		check(crystalhd_flea_download_fw(&hardware,
-		      (uint8_t *)firmware.words, extra[n]) == BC_STS_INV_ARG &&
+		      (const uint8_t *)firmware.words, extra[n]) == BC_STS_INV_ARG &&
 		      no_effects() && state_unchanged(),
 		      "misaligned and oversized Flea images are effect-free");
 	}
@@ -332,23 +332,23 @@ static void invalid_flea(void)
 	      "Flea rejects a missing image before hardware access");
 	reset();
 	check(crystalhd_flea_download_fw(&hardware,
-	      (uint8_t *)firmware.words + 1,
+	      (const uint8_t *)firmware.words + 1,
 	      CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE) == BC_STS_INV_ARG &&
 	      no_effects() && state_unchanged(),
 	      "Flea rejects an unaligned image before hardware access");
 	reset();
-	check(crystalhd_flea_download_fw(NULL, (uint8_t *)firmware.words,
+	check(crystalhd_flea_download_fw(NULL, (const uint8_t *)firmware.words,
 	      CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE) == BC_STS_INV_ARG && no_effects(),
 	      "Flea rejects missing hardware");
 	reset();
 	hardware.adp = NULL;
-	check(crystalhd_flea_download_fw(&hardware, (uint8_t *)firmware.words,
+	check(crystalhd_flea_download_fw(&hardware, (const uint8_t *)firmware.words,
 	      CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE) == BC_STS_INV_ARG &&
 	      no_effects() && state_unchanged(),
 	      "Flea rejects a missing adapter before hardware access");
 	reset();
 	adapter.pdev = NULL;
-	check(crystalhd_flea_download_fw(&hardware, (uint8_t *)firmware.words,
+	check(crystalhd_flea_download_fw(&hardware, (const uint8_t *)firmware.words,
 	      CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE) == BC_STS_INV_ARG &&
 	      no_effects() && state_unchanged(),
 	      "Flea rejects a missing PCI device before hardware access");
@@ -361,7 +361,7 @@ static void invalid_flea(void)
 		else
 			hardware.pfnDevDRAMWrite = NULL;
 		check(crystalhd_flea_download_fw(&hardware,
-		      (uint8_t *)firmware.words,
+		      (const uint8_t *)firmware.words,
 		      CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE) == BC_STS_INV_ARG &&
 		      no_effects() && state_unchanged(),
 		      "Flea rejects missing callbacks before hardware access");
@@ -388,14 +388,14 @@ static void invalid_link(void)
 	for (uint32_t size = 0; size < CRYSTALHD_LINK_MIN_FIRMWARE_SIZE; size++) {
 		reset();
 		check(crystalhd_link_download_fw(&hardware,
-		      (uint8_t *)firmware.words, size) == BC_STS_INV_ARG &&
+		      (const uint8_t *)firmware.words, size) == BC_STS_INV_ARG &&
 		      no_effects() && state_unchanged(),
 		      "every undersized Link image is effect-free");
 	}
 	for (unsigned n = 0; n < sizeof(extra) / sizeof(extra[0]); n++) {
 		reset();
 		check(crystalhd_link_download_fw(&hardware,
-		      (uint8_t *)firmware.words, extra[n]) == BC_STS_INV_ARG &&
+		      (const uint8_t *)firmware.words, extra[n]) == BC_STS_INV_ARG &&
 		      no_effects() && state_unchanged(),
 		      "misaligned and oversized Link images are effect-free");
 	}
@@ -406,23 +406,23 @@ static void invalid_link(void)
 	      "Link rejects a missing image before hardware access");
 	reset();
 	check(crystalhd_link_download_fw(&hardware,
-	      (uint8_t *)firmware.words + 1,
+	      (const uint8_t *)firmware.words + 1,
 	      CRYSTALHD_LINK_MIN_FIRMWARE_SIZE) == BC_STS_INV_ARG &&
 	      no_effects() && state_unchanged(),
 	      "Link rejects an unaligned image before hardware access");
 	reset();
-	check(crystalhd_link_download_fw(NULL, (uint8_t *)firmware.words,
+	check(crystalhd_link_download_fw(NULL, (const uint8_t *)firmware.words,
 	      CRYSTALHD_LINK_MIN_FIRMWARE_SIZE) == BC_STS_INV_ARG && no_effects(),
 	      "Link rejects missing hardware");
 	reset();
 	hardware.adp = NULL;
-	check(crystalhd_link_download_fw(&hardware, (uint8_t *)firmware.words,
+	check(crystalhd_link_download_fw(&hardware, (const uint8_t *)firmware.words,
 	      CRYSTALHD_LINK_MIN_FIRMWARE_SIZE) == BC_STS_INV_ARG &&
 	      no_effects() && state_unchanged(),
 	      "Link rejects a missing adapter before hardware access");
 	reset();
 	adapter.pdev = NULL;
-	check(crystalhd_link_download_fw(&hardware, (uint8_t *)firmware.words,
+	check(crystalhd_link_download_fw(&hardware, (const uint8_t *)firmware.words,
 	      CRYSTALHD_LINK_MIN_FIRMWARE_SIZE) == BC_STS_INV_ARG &&
 	      no_effects() && state_unchanged(),
 	      "Link rejects a missing PCI device before hardware access");
@@ -433,7 +433,7 @@ static void invalid_link(void)
 		else
 			hardware.pfnWriteFPGARegister = NULL;
 		check(crystalhd_link_download_fw(&hardware,
-		      (uint8_t *)firmware.words,
+		      (const uint8_t *)firmware.words,
 		      CRYSTALHD_LINK_MIN_FIRMWARE_SIZE) == BC_STS_INV_ARG &&
 		      no_effects() && state_unchanged(),
 		      "Link rejects missing callbacks before hardware access");
@@ -447,7 +447,7 @@ static void flea_results(void)
 	groups++;
 	reset();
 	check(crystalhd_flea_download_fw(&hardware,
-	      (uint8_t *)firmware.words,
+	      (const uint8_t *)firmware.words,
 	      CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE) == BC_STS_SUCCESS,
 	      "minimum Flea image completes the production path");
 	check(dram_writes == 1 && dram_words == 1 &&
@@ -469,7 +469,7 @@ static void flea_results(void)
 	reset();
 	dram_status = BC_STS_IO_ERROR;
 	check(crystalhd_flea_download_fw(&hardware,
-	      (uint8_t *)firmware.words,
+	      (const uint8_t *)firmware.words,
 	      CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE) == BC_STS_IO_ERROR,
 	      "Flea propagates the exact DRAM write error");
 	check(dram_writes == 1 && !cmac_writes && !arm_run_writes && !heartbeats &&
@@ -482,7 +482,7 @@ static void link_results(void)
 	groups++;
 	reset();
 	check(crystalhd_link_download_fw(&hardware,
-	      (uint8_t *)firmware.words,
+	      (const uint8_t *)firmware.words,
 	      CRYSTALHD_LINK_MIN_FIRMWARE_SIZE) == BC_STS_SUCCESS,
 	      "minimum Link image completes the production path");
 	check(link_payload_writes == 1 &&
@@ -503,7 +503,7 @@ static void link_results(void)
 	reset();
 	link_result = LINK_SIGNATURE_MISMATCH;
 	check(crystalhd_link_download_fw(&hardware,
-	      (uint8_t *)firmware.words,
+	      (const uint8_t *)firmware.words,
 	      CRYSTALHD_LINK_MIN_FIRMWARE_SIZE) == BC_STS_FW_AUTH_FAILED &&
 	      !link_processor_starts && state_unchanged(),
 	      "Link signature mismatch remains an authentication failure");
@@ -511,7 +511,7 @@ static void link_results(void)
 	reset();
 	link_result = LINK_VALIDATION_TIMEOUT;
 	check(crystalhd_link_download_fw(&hardware,
-	      (uint8_t *)firmware.words,
+	      (const uint8_t *)firmware.words,
 	      CRYSTALHD_LINK_MIN_FIRMWARE_SIZE) == BC_STS_TIMEOUT,
 	      "Link validation timeout is no longer reported as success");
 	check(link_status_reads == 1002 && !link_processor_starts && state_unchanged(),
@@ -520,7 +520,7 @@ static void link_results(void)
 	reset();
 	link_result = LINK_READY_TIMEOUT;
 	check(crystalhd_link_download_fw(&hardware,
-	      (uint8_t *)firmware.words,
+	      (const uint8_t *)firmware.words,
 	      CRYSTALHD_LINK_MIN_FIRMWARE_SIZE) == BC_STS_TIMEOUT &&
 	      link_status_reads == 1000 && !link_payload_writes &&
 	      !link_signature_writes && state_unchanged(),
@@ -542,7 +542,7 @@ static void sized_flea(uint32_t size, const char *description)
 
 	reset();
 	expected_image = image;
-	check(crystalhd_flea_download_fw(&hardware, (uint8_t *)image, size) ==
+	check(crystalhd_flea_download_fw(&hardware, (const uint8_t *)image, size) ==
 	      BC_STS_SUCCESS, description);
 	check(dram_writes == 1 && dram_words == payload_words &&
 	      dram_first == image[0] && dram_last == image[payload_words - 1] &&
@@ -570,7 +570,7 @@ static void sized_link(uint32_t size, const char *description)
 
 	reset();
 	expected_image = image;
-	check(crystalhd_link_download_fw(&hardware, (uint8_t *)image, size) ==
+	check(crystalhd_link_download_fw(&hardware, (const uint8_t *)image, size) ==
 	      BC_STS_SUCCESS, description);
 	check(link_payload_writes == payload_words &&
 	      link_payload_first == image[0] &&
