@@ -524,8 +524,8 @@ BC_STATUS crystalhd_xlat_sgl_to_dma_desc(struct crystalhd_dio_req *ioreq,
 					struct dma_desc_mem * pdesc_mem,
 					uint32_t *uv_desc_index,
 					struct device *dev, uint32_t destDRAMaddr);
-/* The Flea error ISR detaches while holding rx_lock, then completes after
- * releasing it so the retry may acquire rx_lock again.
+/* RX error ISRs detach while holding rx_lock, then complete after releasing
+ * it so the retry may acquire rx_lock again.
  */
 struct crystalhd_rx_dma_pkt *crystalhd_rx_pkt_detach(struct crystalhd_hw *hw,
 					uint32_t list_index,

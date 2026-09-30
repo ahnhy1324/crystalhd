@@ -7,7 +7,8 @@ rx_test_dir=$(mktemp -d "${TMPDIR:-/tmp}/crystalhd-rx-ownership.XXXXXX")
 cleanup()
 {
     rm -f "$rx_test_dir/check" "$rx_test_dir/wait-check" \
-        "$rx_test_dir/flea-isr-check" "$rx_test_dir/rx-flea-isr.h" \
+        "$rx_test_dir/flea-isr-check" "$rx_test_dir/link-isr-check" \
+        "$rx_test_dir/rx-flea-isr.h" "$rx_test_dir/rx-link-isr.h" \
         "$rx_test_dir/rx-isr-types.h" \
         "$rx_test_dir/rx-types.h" "$rx_test_dir/rx-fetch-wait-function.h" \
         "$rx_test_dir/rx-hardware.h" "$rx_test_dir/rx-command.h" \
@@ -44,6 +45,13 @@ awk '
     END { if (found != 1 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > \
     "$rx_test_dir/rx-flea-isr.h"
+awk '
+    /^void crystalhd_link_rx_isr\(/ { copying = 1; found++ }
+    copying { print }
+    copying && /^}/ { copying = 0 }
+    END { if (found != 1 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_linkfuncs.c" > \
+    "$rx_test_dir/rx-link-isr.h"
 awk '
     /^struct crystalhd_rx_dma_pkt \*crystalhd_(hw_alloc_rx_pkt|rx_pkt_detach)\(/ ||
     /^void crystalhd_(hw_free_rx_pkt|rx_pkt_rel_call_back)\(/ ||
@@ -99,6 +107,10 @@ for rx_sanitize in no yes; do
         -I"$repo_dir/include/flea" \
         -I"$repo_dir/driver/linux" -I"$rx_test_dir" \
         "$repo_dir/tests/flea-rx-isr.c" -o "$rx_test_dir/flea-isr-check"
+    "${CC:-cc}" ${CFLAGS:-} -std=c11 -O1 -g -Wall -Wextra -Werror \
+        $rx_extra -I"$repo_dir/include" -I"$repo_dir/include/link" \
+        -I"$repo_dir/driver/linux" -I"$rx_test_dir" \
+        "$repo_dir/tests/link-rx-isr.c" -o "$rx_test_dir/link-isr-check"
     printf 'RX ownership: sanitizers=%s\n' "$rx_sanitize"
     ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
         UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 "$rx_test_dir/check"
@@ -108,4 +120,7 @@ for rx_sanitize in no yes; do
     ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
         UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
         "$rx_test_dir/flea-isr-check"
+    ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+        UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+        "$rx_test_dir/link-isr-check"
 done
