@@ -82,6 +82,13 @@ static unsigned fail_post_call;
 static BC_STATUS map_status, translate_status, post_status, queue_status;
 static bool interrupt_lock, wait_signal, stop_fault, notify_ok, checking_admission;
 static bool checking_start, start_post_observed;
+static char lifecycle_events[64];
+static unsigned lifecycle_event_count;
+static uint32_t stop_observed_state, notify_observed_state, post_observed_state;
+static unsigned stop_observed_active, stop_observed_ready, stop_observed_free;
+static unsigned notify_observed_active, notify_observed_ready, notify_observed_free;
+static int stop_observed_sem, notify_observed_sem, post_observed_sem;
+static unsigned stop_observed_irq, notify_observed_irq, post_observed_irq;
 static unsigned start_notify_observed, start_notify_notifications;
 static uint32_t start_notify_state, start_notify_pause, start_notify_resume;
 static uint32_t start_notify_default, start_notify_frames;
@@ -95,6 +102,28 @@ static void check(bool condition, const char *message)
 {
     checks++;
     if (!condition) { failures++; fprintf(stderr, "FAIL: %s\n", message); }
+}
+static void lifecycle_event(char event)
+{
+    assert(lifecycle_event_count < sizeof(lifecycle_events) - 1);
+    lifecycle_events[lifecycle_event_count++] = event;
+    lifecycle_events[lifecycle_event_count] = '\0';
+}
+static void reset_lifecycle_events(void)
+{
+    memset(lifecycle_events, 0, sizeof(lifecycle_events));
+    lifecycle_event_count = 0;
+    stop_observed_state = notify_observed_state = post_observed_state = 0;
+    stop_observed_active = stop_observed_ready = stop_observed_free = 0;
+    notify_observed_active = notify_observed_ready = notify_observed_free = 0;
+    stop_observed_sem = notify_observed_sem = post_observed_sem = -1;
+    stop_observed_irq = notify_observed_irq = post_observed_irq = 0;
+}
+static void reset_flush_observers(void)
+{
+    reset_lifecycle_events();
+    post_calls = stop_calls = irq_disables = irq_enables = 0;
+    sem_attempts = hardware_notifications = 0;
 }
 static size_t request_index(const struct crystalhd_dio_req *request)
 {
@@ -240,12 +269,12 @@ static void up(int *sem) { assert(sem == &hardware.fetch_sem && !*sem); *sem = 1
 static void disable_irq(int irq)
 {
     assert(irq == endpoint.irq && !irq_depth && !hardware.fetch_sem);
-    irq_depth++; irq_disables++;
+    irq_depth++; irq_disables++; lifecycle_event('D');
 }
 static void enable_irq(int irq)
 {
     assert(irq == endpoint.irq && irq_depth == 1);
-    irq_depth--; irq_enables++;
+    irq_depth--; irq_enables++; lifecycle_event('E');
 }
 static struct device *chddev(void) { return &endpoint.dev; }
 static uint64_t rdtsc_ordered(void) { return 1000; }
@@ -278,6 +307,13 @@ static void done_size(struct crystalhd_hw *hw, uint32_t index, uint32_t *y, uint
 static bool notify_hardware(struct crystalhd_hw *hw, enum BRCM_EVENT event)
 {
     assert(hw == &hardware && !hw->fetch_sem && event == BC_EVENT_START_CAPTURE);
+    lifecycle_event('N');
+    notify_observed_state = context.state;
+    notify_observed_active = active.count;
+    notify_observed_ready = ready.count;
+    notify_observed_free = available.count;
+    notify_observed_sem = hw->fetch_sem;
+    notify_observed_irq = irq_depth;
     if (checking_start) {
         start_notify_observed++;
         start_notify_notifications = hardware_notifications;
@@ -294,6 +330,13 @@ static bool notify_hardware(struct crystalhd_hw *hw, enum BRCM_EVENT event)
 static void stop_dma(struct crystalhd_hw *hw)
 {
     assert(hw == &hardware && irq_depth == 1 && !hw->fetch_sem);
+    lifecycle_event('S');
+    stop_observed_state = context.state;
+    stop_observed_active = active.count;
+    stop_observed_ready = ready.count;
+    stop_observed_free = available.count;
+    stop_observed_sem = hw->fetch_sem;
+    stop_observed_irq = irq_depth;
     stop_calls++;
     if (stop_fault) hw->dma_fault = true;
 }
@@ -305,6 +348,10 @@ static BC_STATUS program_dma(struct crystalhd_hw *hw, struct crystalhd_rx_dma_pk
     BC_STATUS status;
     unsigned index;
     assert(hw == &hardware && mapped[request_index(packet->dio_req)]);
+    lifecycle_event('P');
+    post_observed_state = context.state;
+    post_observed_sem = hw->fetch_sem;
+    post_observed_irq = irq_depth;
     if (checking_admission) assert(!hw->fetch_sem);
     if (checking_start && !start_post_observed) {
         start_post_observed = true;
@@ -342,6 +389,7 @@ BC_STATUS crystalhd_hw_repost_cap_buffer(struct crystalhd_hw *, struct crystalhd
 static void reset(uint32_t device)
 {
     groups++;
+    reset_lifecycle_events();
     memset(&active, 0, sizeof(active));
     memset(&ready, 0, sizeof(ready));
     memset(&available, 0, sizeof(available));
@@ -411,6 +459,16 @@ static BC_STATUS start_capture(bool direct, uint32_t pause, uint32_t resume)
         status = bc_cproc_start_capture(&context, &data);
     checking_start = false;
     return status;
+}
+static BC_STATUS flush_capture(struct crystalhd_cmd *ctx, bool direct,
+                               uint32_t discard_only)
+{
+    crystalhd_ioctl_data data = {0};
+
+    if (direct)
+        return crystalhd_capture_flush(ctx, discard_only != 0);
+    data.udata.u.FlushRxCap.bDiscardOnly = discard_only;
+    return bc_cproc_flush_cap_buffs(ctx, &data);
 }
 static void complete(unsigned index)
 {
@@ -791,6 +849,255 @@ static void cancellation_cases(uint32_t device)
           "monitor context without RX queues needs no DMA stop");
     inventory(0, 0, 0);
 }
+static void flush_argument_and_gate_cases(uint32_t device)
+{
+    const uint32_t no_capture_states[] = {
+        BC_LINK_INVALID, BC_LINK_INIT, BC_LINK_FMT_CHG,
+        BC_LINK_SUSPEND, BC_LINK_PAUSED, BC_LINK_RESUME,
+        BC_LINK_INIT | BC_LINK_FMT_CHG | BC_LINK_PAUSED
+    };
+
+    for (unsigned direct = 0; direct < 2; direct++) {
+        for (unsigned discard = 0; discard < 2; discard++) {
+            reset(device);
+            check(flush_capture(NULL, direct, discard) == BC_STS_INV_ARG &&
+                  !sem_attempts && !stop_calls && !irq_disables &&
+                  !hardware_notifications && !post_calls,
+                  "flush rejects a NULL command before locking or hardware callbacks");
+            inventory(0, 0, 0);
+
+            reset(device);
+            context.hw_ctx = NULL;
+            check(flush_capture(&context, direct, discard) == BC_STS_INV_ARG &&
+                  !sem_attempts && !stop_calls && !irq_disables &&
+                  !hardware_notifications && !post_calls,
+                  "flush rejects a NULL hardware context before locking or callbacks");
+            inventory(0, 0, 0);
+
+            reset(device);
+            check(add(0) == BC_STS_SUCCESS && add(1) == BC_STS_SUCCESS &&
+                  add(2) == BC_STS_SUCCESS,
+                  "prepare mixed ownership for interrupted flush");
+            complete(0);
+            reset_flush_observers();
+            interrupt_lock = true;
+            check(flush_capture(&context, direct, discard) == BC_STS_IO_USER_ABORT &&
+                  context.state == BC_LINK_READY && sem_attempts == 1 &&
+                  !stop_calls && !irq_disables && !hardware_notifications &&
+                  !post_calls && !lifecycle_event_count,
+                  "interrupted flush preserves state and skips stop, notify and restart");
+            inventory(1, 1, 1);
+            drain();
+        }
+
+        for (unsigned state_index = 0;
+             state_index < sizeof(no_capture_states) / sizeof(no_capture_states[0]);
+             state_index++) {
+            for (unsigned discard = 0; discard < 2; discard++) {
+                uint32_t state = no_capture_states[state_index];
+
+                reset(device);
+                check(add(0) == BC_STS_SUCCESS && add(1) == BC_STS_SUCCESS &&
+                      add(2) == BC_STS_SUCCESS,
+                      "prepare ownership for capture-enable gate");
+                complete(0);
+                context.state = state;
+                reset_flush_observers();
+                check(flush_capture(&context, direct, discard) == BC_STS_ERR_USAGE &&
+                      context.state == state && sem_attempts == 1 &&
+                      !stop_calls && !irq_disables && !hardware_notifications &&
+                      !post_calls && !lifecycle_event_count,
+                      "flush requires capture-enable without changing state or queues");
+                inventory(1, 1, 1);
+                context.state = BC_LINK_READY;
+                drain();
+            }
+        }
+    }
+
+    reset(device);
+    check(bc_cproc_flush_cap_buffs(&context, NULL) == BC_STS_INV_ARG &&
+          !sem_attempts && !stop_calls && !irq_disables &&
+          !hardware_notifications && !post_calls,
+          "legacy flush rejects NULL ioctl data before locking or callbacks");
+    inventory(0, 0, 0);
+}
+static void discard_flush_cases(uint32_t device)
+{
+    const uint32_t wrapper_values[] = { 1, 2, UINT32_MAX };
+
+    for (unsigned direct = 0; direct < 2; direct++) {
+        unsigned value_count = direct ? 1U :
+            (unsigned)(sizeof(wrapper_values) / sizeof(wrapper_values[0]));
+
+        for (unsigned value_index = 0; value_index < value_count; value_index++) {
+            uint32_t discard = direct ? 1U : wrapper_values[value_index];
+            uint32_t initial_state = BC_LINK_READY | BC_LINK_PAUSED;
+
+            reset(device);
+            check(add(0) == BC_STS_SUCCESS && add(1) == BC_STS_SUCCESS &&
+                  add(2) == BC_STS_SUCCESS,
+                  "prepare active, ready and free registrations for discard");
+            complete(0);
+            context.state = initial_state;
+            reset_flush_observers();
+            check(flush_capture(&context, direct, discard) == BC_STS_SUCCESS,
+                  "every nonzero legacy discard value performs discard and restart");
+            check(!strcmp(lifecycle_events, "DSENPP") &&
+                  stop_calls == 1 && irq_disables == 1 && irq_enables == 1 &&
+                  hardware_notifications == 1 && post_calls == 2,
+                  "discard orders IRQ quiesce, stop, IRQ restore, notify and restart posts");
+            check(stop_observed_state == initial_state &&
+                  stop_observed_active == 1 && stop_observed_ready == 1 &&
+                  stop_observed_free == 1 && !stop_observed_sem &&
+                  stop_observed_irq == 1,
+                  "discard stop observes unchanged state and all queue owners under IRQ exclusion");
+            check(notify_observed_state == initial_state &&
+                  !notify_observed_active && !notify_observed_ready &&
+                  notify_observed_free == 3 && !notify_observed_sem &&
+                  !notify_observed_irq,
+                  "discard notification follows queue recycling with the capture lock held");
+            check(post_observed_state == initial_state && !post_observed_sem &&
+                  !post_observed_irq && context.state == initial_state,
+                  "discard restart posts after notification without changing command state");
+            check(!unmaps[0] && !unmaps[1] && !unmaps[2],
+                  "discard retains every mapped registration");
+            inventory(2, 0, 1);
+            drain();
+        }
+
+        reset(device);
+        reset_flush_observers();
+        check(flush_capture(&context, direct, 1) == BC_STS_SUCCESS &&
+              !strcmp(lifecycle_events, "DSEN") && stop_calls == 1 &&
+              hardware_notifications == 1 && !post_calls,
+              "discard normalizes an empty restart NO_DATA result to success");
+        check(notify_observed_state == BC_LINK_READY &&
+              !notify_observed_active && !notify_observed_ready &&
+              !notify_observed_free && !notify_observed_sem &&
+              !notify_observed_irq,
+              "empty discard still notifies restart after a balanced stop");
+        inventory(0, 0, 0);
+
+        reset(device);
+        check(add(0) == BC_STS_SUCCESS, "prepare BUSY discard restart");
+        post_status = BC_STS_BUSY;
+        reset_flush_observers();
+        check(flush_capture(&context, direct, 1) == BC_STS_SUCCESS &&
+              !strcmp(lifecycle_events, "DSENP") && post_calls == 1,
+              "discard accepts BUSY restart ownership without spinning");
+        check(!unmaps[0], "BUSY discard restart retains the mapped registration");
+        inventory(0, 0, 1);
+        drain();
+
+        reset(device);
+        check(add(0) == BC_STS_SUCCESS, "prepare NO_DATA discard restart");
+        post_status = BC_STS_NO_DATA;
+        reset_flush_observers();
+        check(flush_capture(&context, direct, 1) == BC_STS_SUCCESS &&
+              !strcmp(lifecycle_events, "DSENP") && post_calls == 1,
+              "discard preserves compatibility by normalizing restart NO_DATA");
+        inventory(0, 0, 1);
+        drain();
+
+        reset(device);
+        check(add(0) == BC_STS_SUCCESS && add(1) == BC_STS_SUCCESS &&
+              add(2) == BC_STS_SUCCESS,
+              "prepare partial discard restart");
+        complete(0);
+        fail_post_call = 2;
+        post_status = BC_STS_IO_ERROR;
+        reset_flush_observers();
+        check(flush_capture(&context, direct, 1) == BC_STS_IO_ERROR &&
+              !strcmp(lifecycle_events, "DSENPP") && post_calls == 2,
+              "discard reports a hard error after a partial restart");
+        check(context.state == BC_LINK_READY && !unmaps[0] && !unmaps[1] &&
+              !unmaps[2],
+              "partial restart keeps command state and every registration mapped");
+        inventory(1, 0, 2);
+        drain();
+
+        reset(device);
+        check(add(0) == BC_STS_SUCCESS && add(1) == BC_STS_SUCCESS,
+              "prepare failed discard restart notification");
+        notify_ok = false;
+        reset_flush_observers();
+        check(flush_capture(&context, direct, 1) == BC_STS_IO_ERROR &&
+              !strcmp(lifecycle_events, "DSEN") && !post_calls,
+              "discard reports notification failure without attempting restart DMA");
+        check(context.state == BC_LINK_READY && !unmaps[0] && !unmaps[1],
+              "notification failure retains capture state and mappings for later teardown");
+        inventory(0, 0, 2);
+        drain();
+
+        reset(device);
+        check(add(0) == BC_STS_SUCCESS && add(1) == BC_STS_SUCCESS &&
+              add(2) == BC_STS_SUCCESS,
+              "prepare discard DMA-stop fault");
+        complete(0);
+        stop_fault = true;
+        reset_flush_observers();
+        check(flush_capture(&context, direct, 1) == BC_STS_IO_ERROR &&
+              !strcmp(lifecycle_events, "DSE") && stop_calls == 1 &&
+              !hardware_notifications && !post_calls,
+              "discard stops before notification and restart when DMA quiesce faults");
+        check(context.state == BC_LINK_READY && hardware.dma_fault &&
+              !unmaps[0] && !unmaps[1] && !unmaps[2],
+              "discard stop fault preserves state and all queue ownership");
+        inventory(1, 1, 1);
+        stop_fault = false;
+        hardware.dma_fault = false;
+        drain();
+    }
+}
+static void full_flush_cases(uint32_t device)
+{
+    for (unsigned direct = 0; direct < 2; direct++) {
+        uint32_t initial_state = BC_LINK_READY | BC_LINK_PAUSED | BC_LINK_RESUME;
+        uint32_t stopped_state = initial_state & ~(BC_LINK_CAP_EN | BC_LINK_FMT_CHG);
+
+        reset(device);
+        check(add(0) == BC_STS_SUCCESS && add(1) == BC_STS_SUCCESS &&
+              add(2) == BC_STS_SUCCESS,
+              "prepare active, ready and free registrations for full flush");
+        complete(0);
+        context.state = initial_state;
+        reset_flush_observers();
+        check(flush_capture(&context, direct, 0) == BC_STS_SUCCESS &&
+              !strcmp(lifecycle_events, "DSE") && context.state == stopped_state,
+              "full flush clears capture and format state and does not restart");
+        check(stop_observed_state == stopped_state &&
+              stop_observed_active == 1 && stop_observed_ready == 1 &&
+              stop_observed_free == 1 && !stop_observed_sem &&
+              stop_observed_irq == 1,
+              "full flush publishes stopped state before draining under IRQ exclusion");
+        check(!hardware_notifications && !post_calls &&
+              unmaps[0] == 1 && unmaps[1] == 1 && unmaps[2] == 1,
+              "full flush releases every queue registration exactly once without restart");
+        inventory(0, 0, 0);
+        drain();
+
+        reset(device);
+        check(add(0) == BC_STS_SUCCESS && add(1) == BC_STS_SUCCESS &&
+              add(2) == BC_STS_SUCCESS,
+              "prepare full-flush DMA-stop fault");
+        complete(0);
+        context.state = initial_state;
+        stop_fault = true;
+        reset_flush_observers();
+        check(flush_capture(&context, direct, 0) == BC_STS_IO_ERROR &&
+              !strcmp(lifecycle_events, "DSE") && context.state == stopped_state,
+              "full flush preserves stop failure after clearing capture and format state");
+        check(stop_observed_state == stopped_state && hardware.dma_fault &&
+              !hardware_notifications && !post_calls &&
+              !unmaps[0] && !unmaps[1] && !unmaps[2],
+              "failed full flush keeps every registration reachable without restart");
+        inventory(1, 1, 1);
+        stop_fault = false;
+        hardware.dma_fault = false;
+        drain();
+    }
+}
 static void invalid_command_arguments(uint32_t device)
 {
     BC_STATUS (*commands[])(struct crystalhd_cmd *, crystalhd_ioctl_data *) = {
@@ -1024,6 +1331,9 @@ int main(void)
         retry_cases(devices[i]);
         for (unsigned failure = 0; failure < 4; failure++) format_case(devices[i], failure);
         cancellation_cases(devices[i]);
+        flush_argument_and_gate_cases(devices[i]);
+        discard_flush_cases(devices[i]);
+        full_flush_cases(devices[i]);
         start_command_cases(devices[i]);
         invalid_command_arguments(devices[i]);
         invalid_capture_start_arguments(devices[i]);
