@@ -41,18 +41,32 @@ awk '
     /^static BC_STATUS crystalhd_session_setup\(/ ||
     /^static void crystalhd_retire_hw_context\(/ ||
     /^BC_STATUS crystalhd_session_(acquire|release)_locked\(/ ||
+    /^static BC_STATUS crystalhd_session_require_owner\(/ ||
     /^BC_STATUS crystalhd_user_set_mode\(/ ||
     /^static BC_STATUS bc_cproc_notify_mode\(/ ||
     /^static BC_STATUS bc_cproc_((link_)?reg|mem)_(rd|wr)\(/ ||
     /^static BC_STATUS bc_cproc_download_fw\(/ ||
+    /^BC_STATUS crystalhd_fw_exec_locked\(/ ||
     /^static BC_STATUS bc_cproc_do_fw_cmd\(/ ||
     /^void crystalhd_user_close\(/ ||
     (/^BC_STATUS bc_cproc_release_user\(/ && !/;[[:space:]]*$/) ||
     /^BC_STATUS crystalhd_(suspend|resume|user_open)\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 23 || copying) exit 1 }
+    END { if (found != 25 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" > "$pm_test_dir/command-pm-functions.h"
+
+# Command-layer frontends must use the shared executor so mailbox admission,
+# timeout quarantine and local rollback cannot be bypassed.
+fw_exec_calls=$(grep -R -h --include='*.c' -c \
+    'pfnDoFirmwareCmd[[:space:]]*(' "$repo_dir/driver/linux" | \
+    awk '{ total += $1 } END { print total + 0 }')
+if [ "$fw_exec_calls" -ne 1 ] ||
+    ! grep -Eq 'pfnDoFirmwareCmd\(ctx->hw_ctx, fw_cmd\)' \
+        "$repo_dir/driver/linux/crystalhd_cmds.c"; then
+    echo 'firmware command execution bypasses the shared command layer' >&2
+    exit 1
+fi
 awk '
     /^static int chd_dec_close(_locked)?\(/ { copying = 1; found++ }
     copying { print }

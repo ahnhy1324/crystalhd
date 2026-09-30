@@ -21,6 +21,9 @@ struct _BC_DTS_PROC_OUT;
 #define printk(...) ((void)0)
 #define dev_err(dev, ...) ((void)(dev))
 #define dev_dbg(dev, ...) ((void)(dev))
+#define lockdep_assert_held(lock) \
+    Check((lock) == &adapter.user_lock && *(lock) == 1, \
+          "firmware flush retains shared user admission")
 #define eCMD_C011_CMD_BASE 0x73763000U
 #define eCMD_C011_DEC_CHAN_FLUSH (eCMD_C011_CMD_BASE + 0x104U)
 #define eCMD_C011_DEC_CHAN_PAUSE (eCMD_C011_CMD_BASE + 0x11dU)
@@ -28,7 +31,7 @@ typedef struct { unsigned wakeups; } wait_queue_head_t;
 typedef union { uint64_t full_addr; } addr_64;
 struct device { int unused; };
 struct pci_dev { struct device dev; int irq; };
-struct crystalhd_adp { struct pci_dev *pdev; bool present; };
+struct crystalhd_adp { struct pci_dev *pdev; bool present; int user_lock; };
 struct crystalhd_dio_req {
     struct { uint32_t xfr_len; } uinfo;
 };
@@ -45,6 +48,7 @@ struct crystalhd_dioq {
     struct tx_dma_pkt *packet, *next;
 };
 typedef struct { uint32_t cmd[64]; } BC_FW_CMD;
+struct crystalhd_user { uint32_t uid, in_use, mode; };
 struct crystalhd_hw {
     struct crystalhd_adp *adp;
     bool dma_fault;
@@ -64,9 +68,12 @@ struct crystalhd_hw {
 struct crystalhd_cmd {
     uint32_t state, tx_list_id, cin_wait_exit;
     struct crystalhd_adp *adp;
+    struct crystalhd_user user[BC_LINK_MAX_OPENS];
+    const void *session_owner;
     struct crystalhd_hw *hw_ctx;
 };
 typedef struct {
+    uint32_t u_id;
     struct { union {
         struct { void *pDmaBuff; uint32_t BuffSz; uint8_t Encrypted; } ProcInput;
         BC_FW_CMD fwCmd;
@@ -415,13 +422,18 @@ static void Reset(void)
     freeq = (struct crystalhd_dioq){ .packet = &packet };
     activeq = (struct crystalhd_dioq){0};
     memset(multi_cookie, 0, sizeof(multi_cookie));
-    adapter = (struct crystalhd_adp){ .pdev = &endpoint, .present = true };
+    adapter = (struct crystalhd_adp){
+        .pdev = &endpoint, .present = true, .user_lock = 1 };
     hardware = (struct crystalhd_hw){ .adp = &adapter,
         .tx_freeq = &freeq, .tx_actq = &activeq, .tx_ioq_tag_seed = 0x100,
         .pfnCheckInputFIFO = Fifo, .pfnStartTxDMA = Start, .pfnStopTxDMA = Stop,
         .pfnDoFirmwareCmd = Firmware, .pfnIssuePause = Pause, .fetch_sem = 1,
         .TxFwInputBuffInfo.DramBuffAdd = 0x8000 };
-    context = (struct crystalhd_cmd){ .state = BC_LINK_READY, .adp = &adapter, .hw_ctx = &hardware };
+    context = (struct crystalhd_cmd){ .state = BC_LINK_READY, .adp = &adapter,
+        .hw_ctx = &hardware };
+    context.user[0] = (struct crystalhd_user){
+        .uid = 0, .in_use = 1, .mode = DTS_PLAYBACK_MODE };
+    context.session_owner = &context.user[0];
     input_ioctl = (crystalhd_ioctl_data){ .udata.u.ProcInput = {
         .pDmaBuff = input, .BuffSz = sizeof(input), .Encrypted = 0x80 } };
     run.drain_ok = true;

@@ -16,12 +16,15 @@ trap 'exit 1' HUP INT TERM
 # Retain the driver state values and the exact command/hardware TX paths.
 # The fixture supplies queues, DMA mapping and hardware/IRQ boundaries only.
 awk '
-    /^enum (_crystalhd_state|LIST_STATUS)[[:space:]{]/ { copying = 1; found++ }
+    /^enum (_crystalhd_state|_BC_DTS_GLOBALS|LIST_STATUS)[[:space:]{]/ {
+        copying = 1; found++
+    }
     copying { print }
     copying && /^};/ { copying = 0 }
     /^#define[[:space:]]+DMA_ENGINE_CNT[[:space:]]/ { print }
-    END { if (found != 2 || copying) exit 1 }
-' "$repo_dir/driver/linux/crystalhd_cmds.h" "$repo_dir/driver/linux/crystalhd_hw.h" \
+    END { if (found != 3 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_cmds.h" "$repo_dir/include/bc_dts_glob_lnx.h" \
+    "$repo_dir/driver/linux/crystalhd_hw.h" \
     > "$tx_test_dir/tx-admission-types.h"
 awk '
     /^static BC_STATUS crystalhd_hw_tx_req_retire\(/ ||
@@ -33,12 +36,14 @@ awk '
 ' "$repo_dir/driver/linux/crystalhd_hw.c" > "$tx_test_dir/tx-admission-hardware.h"
 awk '
     /^struct crystalhd_tx_completion[[:space:]]*\{/ ||
+    /^static BC_STATUS crystalhd_session_require_owner\(/ ||
+    /^BC_STATUS crystalhd_fw_exec_locked\(/ ||
     /^static BC_STATUS bc_cproc_(do_fw_cmd|codein_sleep|check_inbuffs|proc_input)\(/ ||
     /^BC_STATUS crystalhd_tx_transfer_sync\(/ ||
     /^static void bc_proc_in_completion\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 7 || copying) exit 1 }
+    END { if (found != 9 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" > "$tx_test_dir/tx-admission-command.h"
 
 for tx_sanitize in no yes; do

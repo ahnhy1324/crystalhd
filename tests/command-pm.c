@@ -23,6 +23,9 @@ struct _BC_DTS_PROC_OUT;
 #define dev_err(dev, ...) ((void)(dev))
 #define dev_info(dev, ...) do { (void)(dev); if (false) fprintf(stderr, __VA_ARGS__); } while (0)
 #define dev_dbg(dev, ...) ((void)(dev))
+#define lockdep_assert_held(lock) \
+    Check((lock) == &adapter.user_lock && *(lock) == 1, \
+          "firmware execution retains shared user admission")
 #define eCMD_C011_CMD_BASE 0x73763000U
 #define eCMD_C011_DEC_CHAN_FLUSH (eCMD_C011_CMD_BASE + 0x104U)
 #define eCMD_C011_DEC_CHAN_PAUSE (eCMD_C011_CMD_BASE + 0x11dU)
@@ -112,6 +115,7 @@ static BC_STATUS ring_status, hardware_open_status;
 static BC_STATUS capture_status, cancel_status;
 static BC_STATUS pause_status, firmware_status;
 static unsigned pause_calls, firmware_calls;
+static BC_FW_CMD *last_firmware_command;
 static bool pause_states[4];
 static pthread_mutex_t transaction_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t transaction_audit = PTHREAD_MUTEX_INITIALIZER;
@@ -352,6 +356,8 @@ static BC_STATUS FirmwareCommand(struct crystalhd_hw *hw, BC_FW_CMD *command)
 
     Check(hw == &hardware && command != NULL,
           "firmware callback receives the active command");
+    if (!transaction_mode)
+        last_firmware_command = command;
     if (block_first_firmware) {
         if (pthread_mutex_lock(&transaction_audit)) abort();
         ordinal = firmware_calls++;
@@ -366,6 +372,8 @@ static BC_STATUS FirmwareCommand(struct crystalhd_hw *hw, BC_FW_CMD *command)
         return ordinal ? BC_STS_SUCCESS : BC_STS_TIMEOUT;
     }
     firmware_calls++;
+    if (firmware_status == BC_STS_SUCCESS)
+        command->rsp[0] = command->cmd[0] ^ 0x5a5a5a5aU;
     return firmware_status;
 }
 static BC_STATUS crystalhd_hw_stop_capture(struct crystalhd_hw *hw, bool unmap)
@@ -552,6 +560,7 @@ static void Reset(uint32_t state, bool with_hardware)
     capture_status = cancel_status = BC_STS_SUCCESS;
     pause_status = firmware_status = BC_STS_SUCCESS;
     pause_calls = firmware_calls = 0;
+    last_firmware_command = NULL;
     memset(pause_states, 0, sizeof(pause_states));
     transaction_mode = block_first_firmware = false;
     first_firmware_waiting = release_first_firmware = false;
@@ -566,11 +575,21 @@ static void Reset(uint32_t state, bool with_hardware)
         context.user[n].mode = DTS_MODE_INV;
     }
 }
+
+static void ResetOwned(uint32_t state, bool with_hardware)
+{
+    Reset(state, with_hardware);
+    adapter.user_lock = 1;
+    context.user[0].in_use = 1;
+    context.user[0].mode = DTS_PLAYBACK_MODE;
+    context.session_owner = &context.user[0];
+}
+
 static void FirmwarePauseRollback(void)
 {
     crystalhd_ioctl_data data = {0};
 
-    Reset(BC_LINK_INIT | BC_LINK_PAUSED, true);
+    ResetOwned(BC_LINK_INIT | BC_LINK_PAUSED, true);
     hardware.fwcmd_poisoned = true;
     data.udata.u.fwCmd.cmd[0] = eCMD_C011_DEC_CHAN_PAUSE;
     data.udata.u.fwCmd.cmd[3] = 0;
@@ -580,7 +599,7 @@ static void FirmwarePauseRollback(void)
           !firmware_calls && hardware.fetch_sem == 1,
           "poisoned resume cannot mutate local capture state");
 
-    Reset(BC_LINK_INIT, true);
+    ResetOwned(BC_LINK_INIT, true);
     context.cin_wait_exit = 0;
     hardware.fwcmd_poisoned = true;
     data.udata.u.fwCmd.cmd[0] = eCMD_C011_DEC_CHAN_FLUSH;
@@ -590,7 +609,7 @@ static void FirmwarePauseRollback(void)
     Check(!context.cin_wait_exit && !pause_calls && !firmware_calls,
           "poisoned flush cannot publish local cancellation state");
 
-    Reset(BC_LINK_INIT | BC_LINK_PAUSED, true);
+    ResetOwned(BC_LINK_INIT | BC_LINK_PAUSED, true);
     data.udata.u.fwCmd.cmd[0] = eCMD_C011_DEC_CHAN_PAUSE;
     data.udata.u.fwCmd.cmd[3] = 0;
     firmware_status = BC_STS_TIMEOUT;
@@ -601,7 +620,7 @@ static void FirmwarePauseRollback(void)
           hardware.fetch_sem == 1,
           "failed firmware resume restores the local paused capture state");
 
-    Reset(BC_LINK_INIT, true);
+    ResetOwned(BC_LINK_INIT, true);
     data.udata.u.fwCmd.cmd[0] = eCMD_C011_DEC_CHAN_PAUSE;
     data.udata.u.fwCmd.cmd[3] = 0;
     firmware_status = BC_STS_TIMEOUT;
@@ -611,7 +630,7 @@ static void FirmwarePauseRollback(void)
           !pause_states[0] && firmware_calls == 1 && hardware.fetch_sem == 1,
           "failed redundant resume preserves the original running state");
 
-    Reset(BC_LINK_INIT | BC_LINK_PAUSED, true);
+    ResetOwned(BC_LINK_INIT | BC_LINK_PAUSED, true);
     data.udata.u.fwCmd.cmd[0] = eCMD_C011_DEC_CHAN_PAUSE;
     data.udata.u.fwCmd.cmd[3] = 0;
     pause_status = BC_STS_IO_ERROR;
@@ -622,7 +641,7 @@ static void FirmwarePauseRollback(void)
           hardware.fetch_sem == 1,
           "partial local resume is re-paused without changing command state");
 
-    Reset(BC_LINK_INIT | BC_LINK_PAUSED, true);
+    ResetOwned(BC_LINK_INIT | BC_LINK_PAUSED, true);
     data.udata.u.fwCmd.cmd[0] = eCMD_C011_DEC_CHAN_PAUSE;
     data.udata.u.fwCmd.cmd[3] = 0;
     Check(bc_cproc_do_fw_cmd(&context, &data) == BC_STS_SUCCESS,
@@ -631,7 +650,7 @@ static void FirmwarePauseRollback(void)
           !pause_states[0] && firmware_calls == 1 && hardware.fetch_sem == 1,
           "successful resume commits the local running state once");
 
-    Reset(BC_LINK_INIT | BC_LINK_PAUSED, true);
+    ResetOwned(BC_LINK_INIT | BC_LINK_PAUSED, true);
     data.udata.u.fwCmd.cmd[0] = eCMD_C011_DEC_CHAN_PAUSE;
     data.udata.u.fwCmd.cmd[3] = 0;
     pause_status = BC_STS_NO_DATA;
@@ -641,7 +660,7 @@ static void FirmwarePauseRollback(void)
           !pause_states[0] && firmware_calls == 1 && hardware.fetch_sem == 1,
           "NO_DATA preserves the legacy successful resume transition");
 
-    Reset(BC_LINK_INIT, true);
+    ResetOwned(BC_LINK_INIT, true);
     data.udata.u.fwCmd.cmd[0] = eCMD_C011_DEC_CHAN_PAUSE;
     data.udata.u.fwCmd.cmd[3] = 1;
     firmware_status = BC_STS_FW_CMD_ERR;
@@ -649,6 +668,128 @@ static void FirmwarePauseRollback(void)
           "failed firmware pause leaves capture running");
     Check(!(context.state & BC_LINK_PAUSED) && !pause_calls && firmware_calls == 1,
           "failed firmware pause publishes no local pause");
+}
+
+static void FirmwareSharedEntry(void)
+{
+    BC_FW_CMD command = {0};
+    crystalhd_ioctl_data data = {0};
+    const void *owner;
+    int frontend_owner, wrong_owner;
+
+    ResetOwned(BC_LINK_INIT, true);
+    Check(crystalhd_fw_exec_locked(NULL, &frontend_owner, &command) == BC_STS_INV_ARG,
+          "shared firmware command rejects a NULL context");
+    Check(crystalhd_fw_exec_locked(&context, NULL, &command) == BC_STS_INV_ARG,
+          "shared firmware command rejects a NULL owner");
+    Check(crystalhd_fw_exec_locked(&context, context.session_owner, NULL) == BC_STS_INV_ARG,
+          "shared firmware command rejects a NULL command");
+    context.hw_ctx = NULL;
+    Check(crystalhd_fw_exec_locked(&context, context.session_owner, &command) == BC_STS_INV_ARG,
+          "shared firmware command rejects retired hardware");
+
+    ResetOwned(BC_LINK_INIT, true);
+    owner = context.session_owner;
+    context.adp = NULL;
+    Check(crystalhd_fw_exec_locked(&context, owner, &command) == BC_STS_INV_ARG,
+          "shared firmware command rejects a missing adapter");
+
+    ResetOwned(BC_LINK_INIT, true);
+    adapter.pdev = NULL;
+    Check(crystalhd_fw_exec_locked(&context, context.session_owner, &command) == BC_STS_INV_ARG,
+          "shared firmware command rejects a missing PCI device");
+
+    ResetOwned(BC_LINK_INIT, true);
+    hardware.pfnDoFirmwareCmd = NULL;
+    Check(crystalhd_fw_exec_locked(&context, context.session_owner, &command) == BC_STS_INV_ARG,
+          "shared firmware command rejects a missing hardware callback");
+    Check(!firmware_calls && !pause_calls,
+          "invalid shared commands have no hardware effects");
+
+    Reset(BC_LINK_INIT, true);
+    adapter.user_lock = 1;
+    Check(crystalhd_fw_exec_locked(&context, &frontend_owner, &command) == BC_STS_ERR_USAGE,
+          "shared firmware command rejects an absent session owner");
+    Check(!firmware_calls && !pause_calls,
+          "owner rejection precedes every firmware and capture effect");
+
+    ResetOwned(BC_LINK_INIT, true);
+    Check(crystalhd_fw_exec_locked(&context, &wrong_owner, &command) == BC_STS_ERR_USAGE,
+          "shared firmware command rejects a different session owner");
+    Check(!firmware_calls && !pause_calls,
+          "foreign owner rejection precedes every firmware and capture effect");
+
+    Reset(BC_LINK_INIT, true);
+    adapter.user_lock = 1;
+    context.session_owner = &frontend_owner;
+    command.cmd[0] = 0x12345678;
+    Check(crystalhd_fw_exec_locked(&context, &frontend_owner, &command) == BC_STS_SUCCESS,
+          "a frontend can execute a command without ioctl data");
+    Check(firmware_calls == 1 && last_firmware_command == &command &&
+          command.rsp[0] == (0x12345678U ^ 0x5a5a5a5aU),
+          "the shared entry returns the response in the frontend command");
+
+    ResetOwned(BC_LINK_INIT, true);
+    data.udata.u.fwCmd.cmd[0] = 0x87654321;
+    Check(bc_cproc_do_fw_cmd(&context, &data) == BC_STS_SUCCESS,
+          "the legacy firmware ioctl adapter still succeeds");
+    Check(firmware_calls == 1 &&
+          last_firmware_command == &data.udata.u.fwCmd &&
+          data.udata.u.fwCmd.rsp[0] == (0x87654321U ^ 0x5a5a5a5aU),
+          "the legacy adapter returns the response through its ABI command");
+    Check(bc_cproc_do_fw_cmd(&context, NULL) == BC_STS_INV_ARG,
+          "the legacy adapter rejects missing ioctl data");
+
+    ResetOwned(BC_LINK_INIT, true);
+    context.user[1].in_use = 1;
+    data.u_id = 1;
+    Check(bc_cproc_do_fw_cmd(&context, &data) == BC_STS_ERR_USAGE &&
+          !firmware_calls && !pause_calls,
+          "an unconfigured secondary legacy handle cannot inject firmware commands");
+    data.u_id = BC_LINK_MAX_OPENS;
+    Check(bc_cproc_do_fw_cmd(&context, &data) == BC_STS_INV_ARG &&
+          !firmware_calls,
+          "the legacy adapter rejects an out-of-range owner index");
+}
+
+static void FirmwareDownloadOwnership(void)
+{
+    uint8_t firmware = 0x5a;
+    crystalhd_ioctl_data data = {
+        .add_cdata = &firmware,
+        .add_cdata_sz = sizeof(firmware),
+    };
+
+    Reset(BC_LINK_INVALID, true);
+    adapter.user_lock = 1;
+    Check(bc_cproc_download_fw(&context, &data) == BC_STS_ERR_USAGE &&
+          !downloads && context.state == BC_LINK_INVALID,
+          "firmware download rejects an absent session owner before hardware");
+
+    ResetOwned(BC_LINK_INVALID, true);
+    context.user[1].in_use = 1;
+    data.u_id = 1;
+    Check(bc_cproc_download_fw(&context, &data) == BC_STS_ERR_USAGE &&
+          !downloads && context.state == BC_LINK_INVALID,
+          "firmware download rejects an unconfigured secondary handle");
+
+    data.u_id = 0;
+    Check(bc_cproc_download_fw(&context, &data) == BC_STS_SUCCESS &&
+          downloads == 1 && context.state == BC_LINK_INIT,
+          "the legacy session owner retains firmware download behavior");
+
+    ResetOwned(BC_LINK_INVALID, true);
+    data.u_id = BC_LINK_MAX_OPENS;
+    Check(bc_cproc_download_fw(&context, &data) == BC_STS_INV_ARG &&
+          !downloads && context.state == BC_LINK_INVALID,
+          "firmware download rejects an out-of-range owner index");
+
+    ResetOwned(BC_LINK_INVALID, true);
+    hardware.pfnFWDwnld = NULL;
+    data.u_id = 0;
+    Check(bc_cproc_download_fw(&context, &data) == BC_STS_INV_ARG &&
+          !downloads && context.state == BC_LINK_INVALID,
+          "firmware download rejects a missing hardware callback");
 }
 
 struct firmware_thread {
@@ -724,7 +865,7 @@ static void FirmwareDownloadSerialization(void)
     struct firmware_thread command = {0};
     pthread_t download_tid, command_tid;
 
-    Reset(BC_LINK_INVALID, true);
+    ResetOwned(BC_LINK_INVALID, true);
     transaction_mode = true;
     block_download_reset = true;
     download.data.add_cdata = &firmware;
@@ -756,7 +897,7 @@ static void FirmwareTransactionSerialization(void)
     struct firmware_thread first = {0}, second = {0};
     pthread_t first_thread, second_thread;
 
-    Reset(BC_LINK_INIT | BC_LINK_PAUSED, true);
+    ResetOwned(BC_LINK_INIT | BC_LINK_PAUSED, true);
     transaction_mode = true;
     block_first_firmware = true;
     first.data.udata.u.fwCmd.cmd[0] = eCMD_C011_DEC_CHAN_PAUSE;
@@ -809,7 +950,7 @@ static void FirmwareSuspendSerialization(void)
         struct suspend_thread suspend = {0};
         pthread_t command_thread, suspend_thread;
 
-        Reset(BC_LINK_INIT | BC_LINK_PAUSED, true);
+        ResetOwned(BC_LINK_INIT | BC_LINK_PAUSED, true);
         adapter.cfg_users = 2;
         transaction_mode = true;
         block_first_firmware = true;
@@ -2093,6 +2234,7 @@ static void BeforeFirmware(void)
               context.pwr_state_change == BC_HW_RUNNING && starts == cycle + 1 && !stops,
               "pre-firmware playback retains its configured owner and idle state");
     }
+    adapter.user_lock = 1;
     Check(bc_cproc_download_fw(&context, &data) == BC_STS_SUCCESS,
           "actual firmware admission accepts resumed pre-firmware playback");
     Check(downloads == 1 && context.state == BC_LINK_INIT && !hardware.FwCmdCnt &&
@@ -2219,6 +2361,8 @@ int main(void)
         {"user open failure rollback and retry", OpenFailuresAndRetry},
         {"legacy user slot exhaustion", OpenSlotExhaustion},
         {"invalid admission adapter arguments", InvalidAdmissionArguments},
+        {"shared and legacy firmware command entry points", FirmwareSharedEntry},
+        {"firmware download ownership", FirmwareDownloadOwnership},
         {"firmware pause/resume rollback", FirmwarePauseRollback},
         {"firmware download serialization", FirmwareDownloadSerialization},
         {"firmware transaction serialization", FirmwareTransactionSerialization},
