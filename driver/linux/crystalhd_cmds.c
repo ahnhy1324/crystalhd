@@ -784,11 +784,23 @@ static BC_STATUS bc_cproc_add_cap_buff(struct crystalhd_cmd *ctx,
 }
 
 static BC_STATUS bc_cproc_fmt_change(struct crystalhd_cmd *ctx,
-				     struct crystalhd_dio_req *dio)
+				     struct crystalhd_rx_dequeue_result *result)
 {
+	struct crystalhd_dio_req *dio;
 	BC_STATUS sts = BC_STS_SUCCESS;
 
+	if (!ctx || !ctx->hw_ctx || !result || !result->dio)
+		return BC_STS_INV_ARG;
+
+	dio = result->dio;
+	result->dio = NULL;
 	if (down_interruptible(&ctx->hw_ctx->fetch_sem)) {
+		crystalhd_unmap_dio(ctx->adp, dio);
+		return BC_STS_IO_USER_ABORT;
+	}
+	if (result->capture_epoch != ctx->hw_ctx->rx_cancel_epoch ||
+	    !(ctx->state & BC_LINK_CAP_EN)) {
+		up(&ctx->hw_ctx->fetch_sem);
 		crystalhd_unmap_dio(ctx->adp, dio);
 		return BC_STS_IO_USER_ABORT;
 	}
@@ -827,13 +839,15 @@ static void bc_cproc_copy_pib(struct C011_PIB *dst,
  * Fetch one completed mapped RX registration using the legacy blocking
  * timeout. The caller keeps command/device lifetime protection but does not
  * hold fetch_sem. Success transfers the detached mapping in result->dio; the
- * caller must either resubmit or unmap it exactly once. This remains a
- * mapped-DIO boundary, not a generic capture-buffer interface.
+ * caller must pass the intact result to an epoch-validating consumer or unmap
+ * it exactly once. This remains a mapped-DIO boundary, not a generic
+ * capture-buffer interface.
  */
 BC_STATUS crystalhd_rx_dequeue(struct crystalhd_cmd *ctx,
 			       struct crystalhd_rx_dequeue_result *result)
 {
 	struct crystalhd_dio_req *dio = NULL;
+	uint64_t expected_epoch;
 	BC_STATUS sts;
 
 	if (!result) {
@@ -853,8 +867,30 @@ BC_STATUS crystalhd_rx_dequeue(struct crystalhd_cmd *ctx,
 		dev_dbg(chddev(), "Capture not enabled..%x\n", ctx->state);
 		return BC_STS_ERR_USAGE;
 	}
+	if (!ctx->hw_ctx) {
+		dev_err(chddev(), "%s: Invalid Arg\n", __func__);
+		return BC_STS_INV_ARG;
+	}
 
-	sts = crystalhd_hw_get_cap_buffer(ctx->hw_ctx, &result->pib, &dio);
+	/* Couple capture admission to the generation passed through the blocking
+	 * wait. A full stop in either wait gap then suppresses stale HW wakeups.
+	 */
+	if (down_interruptible(&ctx->hw_ctx->fetch_sem))
+		return BC_STS_IO_USER_ABORT;
+	if (ctx->state & BC_LINK_SUSPEND) {
+		up(&ctx->hw_ctx->fetch_sem);
+		return BC_STS_PWR_MGMT;
+	}
+	if (!(ctx->state & BC_LINK_CAP_EN)) {
+		up(&ctx->hw_ctx->fetch_sem);
+		return BC_STS_ERR_USAGE;
+	}
+	expected_epoch = ctx->hw_ctx->rx_cancel_epoch;
+	up(&ctx->hw_ctx->fetch_sem);
+
+	sts = crystalhd_hw_get_cap_buffer(ctx->hw_ctx, &result->pib, &dio,
+					     expected_epoch,
+					     &result->capture_epoch);
 	if (sts != BC_STS_SUCCESS)
 		return (ctx->state & BC_LINK_SUSPEND) ? BC_STS_PWR_MGMT : sts;
 
@@ -889,7 +925,7 @@ static BC_STATUS bc_cproc_fetch_frame(struct crystalhd_cmd *ctx,
 		bc_cproc_copy_pib(&frame->PibInfo, &result.pib);
 
 	if (result.flags & COMP_FLAG_FMT_CHANGE)
-		return bc_cproc_fmt_change(ctx, result.dio);
+		return bc_cproc_fmt_change(ctx, &result);
 
 	frame->OutPutBuffs.YuvBuff = result.dio->uinfo.xfr_buff;
 	frame->OutPutBuffs.YuvBuffSz = result.dio->uinfo.xfr_len;

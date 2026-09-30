@@ -46,6 +46,7 @@ struct crystalhd_hw {
     struct crystalhd_adp *adp;
     struct crystalhd_rx_dma_pkt *rx_pkt_pool_head;
     struct crystalhd_dioq *rx_actq, *rx_rdyq, *rx_freeq;
+    uint64_t rx_cancel_epoch;
     int lock, fetch_sem;
     bool hw_pause_issued, dma_fault;
     uint32_t rx_pkt_tag_seed, DrvTotalFrmCaptured;
@@ -79,9 +80,16 @@ static unsigned checks, failures, groups, maps, post_calls, stop_calls, irq_dept
 static unsigned irq_disables, irq_enables, notify_calls, pause_calls;
 static unsigned sem_attempts, hardware_notifications, map_attempts, translate_calls;
 static unsigned fetch_wait_calls;
+static unsigned interrupt_after;
 static unsigned fail_post_call;
 static BC_STATUS map_status, translate_status, post_status, queue_status;
-static bool interrupt_lock, wait_signal, wait_suspend, stop_fault, notify_ok;
+static BC_STATUS wait_flush_status;
+static BC_STATUS wait_restart_start_status, wait_restart_add_status;
+static BC_STATUS wait_restart_ready_status, wait_restart_complete_status;
+static bool interrupt_lock, wait_signal, wait_suspend, wait_full_flush;
+static bool wait_restart_fresh, wait_restart_mode422;
+static enum FLEA_POWER_STATES wait_restart_power;
+static bool stop_fault, notify_ok;
 static bool checking_admission;
 static bool checking_start, start_post_observed;
 static char lifecycle_events[64];
@@ -234,16 +242,25 @@ static void *crystalhd_dioq_find_and_fetch(struct crystalhd_dioq *queue, uint32_
     return NULL;
 }
 static unsigned crystalhd_dioq_count(struct crystalhd_dioq *queue) { return queue->count; }
+static void run_wait_full_flush_hook(void);
+static void run_wait_restart_fresh_hook(void);
 static void *crystalhd_dioq_fetch_wait(struct crystalhd_hw *hw, uint32_t timeout,
                                      uint32_t *signal)
 {
+    struct crystalhd_rx_dma_pkt *packet;
+
     assert(hw == &hardware && timeout == BC_PROC_OUTPUT_TIMEOUT / 1000);
     assert(hardware.fetch_sem == 1);
     fetch_wait_calls++;
     if (wait_suspend)
         context.state |= BC_LINK_SUSPEND;
     *signal = wait_signal;
-    return wait_signal ? NULL : crystalhd_dioq_fetch(hw->rx_rdyq);
+    if (wait_restart_fresh)
+        run_wait_restart_fresh_hook();
+    packet = wait_signal ? NULL : crystalhd_dioq_fetch(hw->rx_rdyq);
+    if (wait_full_flush)
+        run_wait_full_flush_hook();
+    return packet;
 }
 static BC_STATUS crystalhd_map_dio(struct crystalhd_adp *adp, void *buffer,
         uint32_t size, uint32_t uv, bool mode422, bool tx, struct crystalhd_dio_req **result)
@@ -273,7 +290,12 @@ static int down_interruptible(int *sem)
 {
     sem_attempts++;
     assert(sem == &hardware.fetch_sem && *sem == 1);
-    if (interrupt_lock) { interrupt_lock = false; return -1; }
+    if (interrupt_lock && !interrupt_after) {
+        interrupt_lock = false;
+        return -1;
+    }
+    if (interrupt_lock)
+        interrupt_after--;
     *sem = 0;
     return 0;
 }
@@ -399,6 +421,34 @@ BC_STATUS crystalhd_hw_repost_cap_buffer(struct crystalhd_hw *, struct crystalhd
 #include "rx-hardware.h"
 #include "rx-command.h"
 
+static void run_wait_full_flush_hook(void)
+{
+    wait_full_flush = false;
+    wait_flush_status = crystalhd_capture_flush(&context, false);
+}
+
+static void run_wait_restart_fresh_hook(void)
+{
+    crystalhd_ioctl_data data = {0};
+
+    wait_restart_fresh = false;
+    wait_flush_status = crystalhd_capture_flush(&context, false);
+    wait_restart_start_status = crystalhd_capture_start(&context, 0, 0);
+    data.udata.u.RxBuffs.YuvBuff = (uint8_t *)buffers[0];
+    data.udata.u.RxBuffs.YuvBuffSz = sizeof(buffers[0]);
+    data.udata.u.RxBuffs.UVbuffOffset = wait_restart_mode422 ? 0 : 128;
+    data.udata.u.RxBuffs.b422Mode = wait_restart_mode422;
+    wait_restart_add_status = bc_cproc_add_cap_buff(&context, &data);
+    context.state |= BC_LINK_FMT_CHG;
+    wait_restart_ready_status = crystalhd_capture_start(&context, 0, 0);
+    wait_restart_complete_status = crystalhd_rx_pkt_done(&hardware, 0,
+                                                          BC_STS_SUCCESS);
+    if (wait_restart_complete_status == BC_STS_SUCCESS)
+        ready.packets[0]->flags = COMP_FLAG_FMT_CHANGE;
+    hardware.FleaPowerState = wait_restart_power;
+    hardware.hw_pause_issued = true;
+}
+
 static void reset(uint32_t device)
 {
     groups++;
@@ -429,9 +479,15 @@ static void reset(uint32_t device)
     maps = post_calls = stop_calls = irq_depth = irq_disables = irq_enables = 0;
     notify_calls = pause_calls = fail_post_call = 0;
     sem_attempts = hardware_notifications = map_attempts = translate_calls = 0;
-    fetch_wait_calls = 0;
+    fetch_wait_calls = interrupt_after = 0;
     map_status = translate_status = post_status = queue_status = BC_STS_SUCCESS;
-    interrupt_lock = wait_signal = wait_suspend = stop_fault = false;
+    wait_flush_status = BC_STS_ERROR;
+    interrupt_lock = wait_signal = wait_suspend = wait_full_flush = false;
+    wait_restart_fresh = wait_restart_mode422 = false;
+    wait_restart_power = FLEA_PS_ACTIVE;
+    wait_restart_start_status = wait_restart_add_status = BC_STS_ERROR;
+    wait_restart_ready_status = wait_restart_complete_status = BC_STS_ERROR;
+    stop_fault = false;
     checking_admission = false;
     checking_start = start_post_observed = false;
     start_notify_observed = start_notify_notifications = 0;
@@ -577,7 +633,8 @@ static void dequeue_argument_cases(uint32_t device)
 }
 static void dequeue_gate_wait_cases(uint32_t device)
 {
-    enum { SUSPENDED_READY, SUSPENDED_STOPPED, STOPPED, EMPTY,
+    enum { SUSPENDED_READY, SUSPENDED_STOPPED, STOPPED,
+           INTERRUPTED_ADMISSION, EMPTY,
            SIGNALLED, SUSPEND_DURING_WAIT };
 
     for (unsigned direct = 0; direct < 2; direct++) {
@@ -607,6 +664,11 @@ static void dequeue_gate_wait_cases(uint32_t device)
             case STOPPED:
                 context.state = BC_LINK_INIT;
                 expected = BC_STS_ERR_USAGE;
+                expected_wait = 0;
+                break;
+            case INTERRUPTED_ADMISSION:
+                interrupt_lock = true;
+                expected = BC_STS_IO_USER_ABORT;
                 expected_wait = 0;
                 break;
             case EMPTY:
@@ -1067,7 +1129,10 @@ static void format_case(uint32_t device, unsigned failure)
     ready.packets[0]->pib.width = 1280;
     ready.packets[0]->pib.height = 720;
     context.state = BC_LINK_INIT | BC_LINK_CAP_EN;
-    if (failure == 1) interrupt_lock = true;
+    if (failure == 1) {
+        interrupt_lock = true;
+        interrupt_after = 1;
+    }
     if (failure == 2) translate_status = BC_STS_IO_ERROR;
     if (failure == 3) post_status = BC_STS_IO_ERROR;
     BC_STATUS status = bc_cproc_fetch_frame(&context, &data);
@@ -1125,6 +1190,297 @@ static void format_without_pib_case(uint32_t device)
         inventory(1, 0, 0);
         drain();
     }
+}
+static void format_full_flush_race_cases(uint32_t device)
+{
+    for (unsigned restart = 0; restart < 2; restart++) {
+        for (unsigned mode422 = 0; mode422 < 2; mode422++) {
+            struct crystalhd_rx_dequeue_result result;
+            struct crystalhd_dio_req *request;
+            uint32_t expected_state = BC_LINK_INIT;
+            unsigned post_before;
+
+            reset(device);
+            request = map_private(mode422);
+            check(submit(&context, request) == BC_STS_SUCCESS,
+                  "prepare format completion for a concurrent full flush");
+            complete(0);
+            ready.packets[0]->flags = COMP_FLAG_FMT_CHANGE |
+                COMP_FLAG_DATA_VALID | COMP_FLAG_PIB_VALID;
+            fill_ready_pib(ready.packets[0]);
+            context.state = BC_LINK_INIT | BC_LINK_CAP_EN;
+            check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS &&
+                  result.dio == request && !unmaps[0],
+                  "format dequeue detaches the old mapped registration");
+            inventory_with_private(0, 0, 0, result.dio);
+
+            check(flush_capture(&context, true, 0) == BC_STS_SUCCESS &&
+                  context.state == BC_LINK_INIT,
+                  "full flush completes while the old format result is detached");
+            if (restart) {
+                check(start_capture(true, 0, 0) == BC_STS_SUCCESS &&
+                      add(1) == BC_STS_SUCCESS,
+                      "a new capture epoch can start and admit a fresh registration");
+                expected_state |= BC_LINK_CAP_EN;
+            }
+
+            post_before = post_calls;
+            check(bc_cproc_fmt_change(&context, &result) ==
+                      BC_STS_IO_USER_ABORT,
+                  "late format completion is cancelled after a full flush");
+            check(!result.dio && context.state == expected_state &&
+                  unmaps[0] == 1 &&
+                  post_calls == post_before && !mapped[0] &&
+                  (!restart || (mapped[1] && !unmaps[1])),
+                  "cancelled format completion cannot restore state, queue or DMA ownership");
+            check(bc_cproc_fmt_change(&context, &result) == BC_STS_INV_ARG &&
+                  unmaps[0] == 1,
+                  "a cancelled format result cannot be consumed twice");
+            inventory(0, 0, restart ? 1 : 0);
+            drain();
+        }
+    }
+}
+static void format_wait_flush_race_cases(uint32_t device)
+{
+    for (unsigned variant = 0; variant < 4; variant++) {
+        struct crystalhd_rx_dequeue_result result;
+        struct crystalhd_dio_req *request;
+        bool mode422 = variant & 1;
+        unsigned post_before;
+
+        reset(device);
+        request = map_private(mode422);
+        check(submit(&context, request) == BC_STS_SUCCESS,
+              "prepare format completion for the dequeue wait race");
+        complete(0);
+        ready.packets[0]->flags = COMP_FLAG_FMT_CHANGE |
+            (variant & 1 ? COMP_FLAG_DATA_VALID : 0) |
+            (variant & 2 ? COMP_FLAG_PIB_VALID : 0);
+        fill_ready_pib(ready.packets[0]);
+        if (device == BC_PCI_DEVID_FLEA) {
+            hardware.FleaPowerState = variant & 1 ?
+                FLEA_PS_LP_PENDING : FLEA_PS_LP_COMPLETE;
+            hardware.hw_pause_issued = true;
+        }
+        context.state = BC_LINK_INIT | BC_LINK_CAP_EN;
+        wait_full_flush = true;
+        check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS &&
+              wait_flush_status == BC_STS_SUCCESS && !wait_full_flush &&
+              result.dio == request && result.capture_epoch == 0 &&
+              hardware.rx_cancel_epoch == 1 && context.state == BC_LINK_INIT &&
+              (device != BC_PCI_DEVID_FLEA ||
+               (!pause_calls && hardware.hw_pause_issued)),
+              "packet epoch survives a full flush after ready-pop and before dequeue resumes");
+        inventory_with_private(0, 0, 0, result.dio);
+        post_before = post_calls;
+        check(bc_cproc_fmt_change(&context, &result) == BC_STS_IO_USER_ABORT &&
+              !result.dio && unmaps[0] == 1 && !mapped[0] &&
+              context.state == BC_LINK_INIT && post_calls == post_before,
+              "ready-pop race cancels the old format mapping without requeue or state revival");
+        inventory(0, 0, 0);
+        drain();
+    }
+}
+static void empty_wait_flush_race_cases(uint32_t device)
+{
+    if (device != BC_PCI_DEVID_FLEA)
+        return;
+
+    for (unsigned power = 0; power < 2; power++) {
+        for (unsigned signalled = 0; signalled < 2; signalled++) {
+            struct crystalhd_rx_dequeue_result result;
+            BC_STATUS expected = signalled ? BC_STS_IO_USER_ABORT :
+                BC_STS_TIMEOUT;
+
+            reset(device);
+            hardware.FleaPowerState = power ? FLEA_PS_LP_PENDING :
+                FLEA_PS_LP_COMPLETE;
+            hardware.hw_pause_issued = true;
+            wait_signal = signalled;
+            wait_full_flush = true;
+            memset(&result, 0xa5, sizeof(result));
+            check(crystalhd_rx_dequeue(&context, &result) == expected &&
+                  wait_flush_status == BC_STS_SUCCESS && !wait_full_flush &&
+                  memory_is_zero(&result, sizeof(result)) &&
+                  hardware.rx_cancel_epoch == 1 &&
+                  context.state == BC_LINK_INIT && !pause_calls &&
+                  hardware.hw_pause_issued,
+                  "full flush suppresses FLEA wake after an empty or signalled wait");
+            inventory(0, 0, 0);
+            drain();
+        }
+    }
+}
+static void fresh_packet_after_wait_restart_cases(uint32_t device)
+{
+    if (device != BC_PCI_DEVID_FLEA)
+        return;
+
+    for (unsigned power = 0; power < 2; power++) {
+        for (unsigned mode422 = 0; mode422 < 2; mode422++) {
+            struct crystalhd_rx_dequeue_result result;
+
+            reset(device);
+            wait_restart_mode422 = mode422;
+            wait_restart_power = power ? FLEA_PS_LP_PENDING :
+                FLEA_PS_LP_COMPLETE;
+            wait_restart_fresh = true;
+            memset(&result, 0xa5, sizeof(result));
+            check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS &&
+                  wait_flush_status == BC_STS_SUCCESS &&
+                  wait_restart_start_status == BC_STS_SUCCESS &&
+                  wait_restart_add_status == BC_STS_SUCCESS &&
+                  wait_restart_ready_status == BC_STS_SUCCESS &&
+                  wait_restart_complete_status == BC_STS_SUCCESS &&
+                  !wait_restart_fresh,
+                  "an old waiter accepts a fresh packet after full flush and restart");
+            check(result.dio == &requests[0] &&
+                  result.capture_epoch == 1 &&
+                  result.capture_epoch == hardware.rx_cancel_epoch &&
+                  result.flags == COMP_FLAG_FMT_CHANGE &&
+                  context.state == BC_LINK_READY,
+                  "post-restart dequeue returns only the current-epoch registration");
+            check(pause_calls == 1 && !hardware.hw_pause_issued,
+                  "a current-epoch packet resumes FLEA after a cross-epoch wait");
+            inventory_with_private(0, 0, 0, result.dio);
+            check(bc_cproc_fmt_change(&context, &result) == BC_STS_SUCCESS &&
+                  !result.dio && !unmaps[0] &&
+                  context.state == BC_LINK_READY,
+                  "fresh post-restart format ownership remains consumable");
+            inventory(1, 0, 0);
+            drain();
+        }
+    }
+}
+static void format_discard_epoch_cases(uint32_t device)
+{
+    for (unsigned mode422 = 0; mode422 < 2; mode422++) {
+        struct crystalhd_rx_dequeue_result result;
+        struct crystalhd_dio_req *request;
+        uint64_t epoch;
+
+        reset(device);
+        request = map_private(mode422);
+        check(submit(&context, request) == BC_STS_SUCCESS,
+              "prepare format completion for discard control");
+        complete(0);
+        ready.packets[0]->flags = COMP_FLAG_FMT_CHANGE;
+        context.state = BC_LINK_INIT | BC_LINK_CAP_EN;
+        check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS,
+              "discard control dequeues one format registration");
+        epoch = result.capture_epoch;
+        inventory_with_private(0, 0, 0, result.dio);
+        check(flush_capture(&context, true, 1) == BC_STS_SUCCESS &&
+              hardware.rx_cancel_epoch == epoch,
+              "discard preserves the capture epoch for retained registrations");
+        check(bc_cproc_fmt_change(&context, &result) == BC_STS_SUCCESS &&
+              !result.dio && context.state == BC_LINK_READY &&
+              !unmaps[0],
+              "format completion remains valid across non-destructive discard");
+        inventory(1, 0, 0);
+        drain();
+    }
+}
+static void format_failed_stop_epoch_case(uint32_t device)
+{
+    struct crystalhd_rx_dequeue_result result;
+    struct crystalhd_dio_req *request;
+    unsigned post_before;
+
+    reset(device);
+    request = map_private(false);
+    check(submit(&context, request) == BC_STS_SUCCESS,
+          "prepare detached format completion for a failed full stop");
+    complete(0);
+    ready.packets[0]->flags = COMP_FLAG_FMT_CHANGE;
+    context.state = BC_LINK_INIT | BC_LINK_CAP_EN;
+    check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS &&
+          result.capture_epoch == 0,
+          "failed-stop case retains the admission epoch in the dequeue result");
+    inventory_with_private(0, 0, 0, result.dio);
+    stop_fault = true;
+    check(flush_capture(&context, true, 0) == BC_STS_IO_ERROR &&
+          hardware.dma_fault && hardware.rx_cancel_epoch == 1 &&
+          context.state == BC_LINK_INIT,
+          "destructive flush invalidates detached results even when DMA stop fails");
+    post_before = post_calls;
+    check(bc_cproc_fmt_change(&context, &result) == BC_STS_IO_USER_ABORT &&
+          !result.dio && unmaps[0] == 1 && post_calls == post_before,
+          "failed full stop cannot revive its detached format registration");
+    inventory(0, 0, 0);
+    stop_fault = false;
+    hardware.dma_fault = false;
+    drain();
+}
+static void format_fresh_epoch_cases(uint32_t device)
+{
+    for (unsigned mode422 = 0; mode422 < 2; mode422++) {
+        struct crystalhd_rx_dequeue_result result;
+        crystalhd_ioctl_data fresh = {0};
+
+        reset(device);
+        check(add(0) == BC_STS_SUCCESS,
+              "prepare an old registration before a destructive flush");
+        check(flush_capture(&context, true, 0) == BC_STS_SUCCESS &&
+              hardware.rx_cancel_epoch == 1 && context.state == BC_LINK_INIT,
+              "full flush starts a new capture epoch");
+        check(start_capture(true, 0, 0) == BC_STS_SUCCESS,
+              "restart enables capture in the new epoch");
+        fresh.udata.u.RxBuffs.YuvBuff = (uint8_t *)buffers[1];
+        fresh.udata.u.RxBuffs.YuvBuffSz = sizeof(buffers[1]);
+        fresh.udata.u.RxBuffs.UVbuffOffset = mode422 ? 0 : 128;
+        fresh.udata.u.RxBuffs.b422Mode = mode422;
+        check(add_data(&fresh) == BC_STS_SUCCESS && available.count == 1 &&
+              available.packets[0]->capture_epoch ==
+                  hardware.rx_cancel_epoch,
+              "fresh 420 or 422 admission records the current capture epoch");
+
+        context.state |= BC_LINK_FMT_CHG;
+        check(start_capture(true, 0, 0) == BC_STS_SUCCESS,
+              "ready restart posts the fresh registration");
+        inventory(1, 0, 0);
+        complete(0);
+        ready.packets[0]->flags = COMP_FLAG_FMT_CHANGE |
+            COMP_FLAG_PIB_VALID;
+        fill_ready_pib(ready.packets[0]);
+        check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS &&
+              result.dio == &requests[1] && result.capture_epoch == 1 &&
+              result.capture_epoch == hardware.rx_cancel_epoch,
+              "fresh completion carries the nonzero current epoch");
+        inventory_with_private(0, 0, 0, result.dio);
+        check(bc_cproc_fmt_change(&context, &result) == BC_STS_SUCCESS &&
+              !result.dio && !unmaps[1] && context.state == BC_LINK_READY,
+              "current-epoch format completion requeues normally");
+        inventory(1, 0, 0);
+        drain();
+    }
+}
+static void format_capture_gate_case(uint32_t device)
+{
+    struct crystalhd_rx_dequeue_result result;
+    struct crystalhd_dio_req *request;
+    unsigned post_before;
+
+    reset(device);
+    request = map_private(false);
+    check(submit(&context, request) == BC_STS_SUCCESS,
+          "prepare format completion for the capture-state gate");
+    complete(0);
+    ready.packets[0]->flags = COMP_FLAG_FMT_CHANGE;
+    context.state = BC_LINK_INIT | BC_LINK_CAP_EN;
+    check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS &&
+          result.capture_epoch == hardware.rx_cancel_epoch,
+          "capture-state gate starts with an otherwise current result");
+    inventory_with_private(0, 0, 0, result.dio);
+    context.state &= ~BC_LINK_CAP_EN;
+    post_before = post_calls;
+    check(bc_cproc_fmt_change(&context, &result) == BC_STS_IO_USER_ABORT &&
+          !result.dio && unmaps[0] == 1 && post_calls == post_before &&
+          context.state == BC_LINK_INIT,
+          "capture-disabled state rejects an equal-epoch format result");
+    inventory(0, 0, 0);
+    drain();
 }
 static void cancellation_cases(uint32_t device)
 {
@@ -1680,6 +2036,14 @@ int main(void)
         retry_cases(devices[i]);
         for (unsigned failure = 0; failure < 4; failure++) format_case(devices[i], failure);
         format_without_pib_case(devices[i]);
+        format_full_flush_race_cases(devices[i]);
+        format_wait_flush_race_cases(devices[i]);
+        empty_wait_flush_race_cases(devices[i]);
+        fresh_packet_after_wait_restart_cases(devices[i]);
+        format_discard_epoch_cases(devices[i]);
+        format_failed_stop_epoch_case(devices[i]);
+        format_fresh_epoch_cases(devices[i]);
+        format_capture_gate_case(devices[i]);
         cancellation_cases(devices[i]);
         flush_argument_and_gate_cases(devices[i]);
         discard_flush_cases(devices[i]);

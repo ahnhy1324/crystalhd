@@ -1075,6 +1075,7 @@ BC_STATUS crystalhd_hw_add_cap_buffer(struct crystalhd_hw *hw,
 	}
 
 	rpkt->dio_req = ioreq;
+	rpkt->capture_epoch = hw->rx_cancel_epoch;
 	tag = rpkt->pkt_tag;
 
 	sts = crystalhd_xlat_sgl_to_dma_desc(ioreq, &rpkt->desc_mem,
@@ -1107,14 +1108,17 @@ release_packet:
 }
 
 BC_STATUS crystalhd_hw_get_cap_buffer(struct crystalhd_hw *hw,
-										struct C011_PIB *pib,
-										struct crystalhd_dio_req **ioreq)
+				      struct C011_PIB *pib,
+				      struct crystalhd_dio_req **ioreq,
+				      uint64_t expected_epoch,
+				      uint64_t *capture_epoch)
 {
 	struct crystalhd_rx_dma_pkt *rpkt;
 	uint32_t timeout = BC_PROC_OUTPUT_TIMEOUT / 1000;
 	uint32_t sig_pending = 0;
+	bool resume_allowed;
 
-	if (!hw || !ioreq || !pib) {
+	if (!hw || !ioreq || !pib || !capture_epoch) {
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
 		return BC_STS_INV_ARG;
 	}
@@ -1124,8 +1128,14 @@ BC_STATUS crystalhd_hw_get_cap_buffer(struct crystalhd_hw *hw,
 	 * repost against process-context stop and queue recycling.
 	 */
 	down(&hw->fetch_sem);
+	/* A destructive stop may have completed after the ready packet was
+	 * detached. Do not let that stale completion wake capture afterward.
+	 */
+	resume_allowed = rpkt ?
+			 rpkt->capture_epoch == hw->rx_cancel_epoch :
+			 expected_epoch == hw->rx_cancel_epoch;
 
-	if( hw->adp->pdev->device == BC_PCI_DEVID_FLEA)
+	if (resume_allowed && hw->adp->pdev->device == BC_PCI_DEVID_FLEA)
 	{
 		/*printk("pre-PU state %x RLL %x Rtsh %x, currentPS %d,\n", */
 		/*	hw->FleaPowerState, crystalhd_dioq_count(hw->rx_rdyq) , hw->ResumeThreshold, hw->FleaPowerState); */
@@ -1138,7 +1148,7 @@ BC_STATUS crystalhd_hw_get_cap_buffer(struct crystalhd_hw *hw,
 			}
 		}
 	}
-	else if( hw->hw_pause_issued)
+	else if (resume_allowed && hw->hw_pause_issued)
 	{
 #if 0
 		if(crystalhd_dioq_count(hw->rx_rdyq) < hw->PauseThreshold ) /*HW_RESUME_THRESHOLD */
@@ -1177,6 +1187,7 @@ BC_STATUS crystalhd_hw_get_cap_buffer(struct crystalhd_hw *hw,
 	}
 
 	*ioreq = rpkt->dio_req;
+	*capture_epoch = rpkt->capture_epoch;
 
 	crystalhd_hw_free_rx_pkt(hw, rpkt);
 	up(&hw->fetch_sem);
@@ -1240,6 +1251,11 @@ BC_STATUS crystalhd_hw_stop_capture_locked(struct crystalhd_hw *hw, bool unmap)
 	/* A monitor handle never creates capture queues or posts DMA. */
 	if (!hw->rx_actq && !hw->rx_rdyq && !hw->rx_freeq)
 		return BC_STS_SUCCESS;
+	/* A fetch may own a mapped packet outside every queue. Invalidate it
+	 * before a destructive RX stop/cancel attempt so it cannot be requeued.
+	 */
+	if (unmap)
+		hw->rx_cancel_epoch++;
 
 	/* No completion or repost may race with queue draining and unpinning. */
 	disable_irq(hw->adp->pdev->irq);

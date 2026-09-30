@@ -234,6 +234,7 @@ struct tx_dma_pkt {
 struct crystalhd_rx_dma_pkt {
 	struct dma_desc_mem			desc_mem;
 	struct crystalhd_dio_req		*dio_req;
+	uint64_t			capture_epoch;
 	uint32_t			pkt_tag;
 	uint32_t			flags;
 	BC_PIC_INFO_BLOCK		pib;
@@ -363,6 +364,7 @@ struct crystalhd_hw {
 	struct crystalhd_dioq	*rx_rdyq;
 	struct crystalhd_dioq	*rx_freeq;
 	struct crystalhd_dioq	*rx_actq;
+	uint64_t		rx_cancel_epoch;
 	uint32_t		stop_pending;
 
 	uint32_t		hw_pause_issued;
@@ -533,7 +535,11 @@ BC_STATUS crystalhd_hw_cancel_tx(struct crystalhd_hw *hw, uint32_t list_id);
 BC_STATUS crystalhd_hw_add_cap_buffer(struct crystalhd_hw *hw,struct crystalhd_dio_req *ioreq, bool en_post);
 BC_STATUS crystalhd_hw_repost_cap_buffer(struct crystalhd_hw *hw,
 					 struct crystalhd_rx_dma_pkt *pkt);
-BC_STATUS crystalhd_hw_get_cap_buffer(struct crystalhd_hw *hw,struct C011_PIB *pib,struct crystalhd_dio_req **ioreq);
+BC_STATUS crystalhd_hw_get_cap_buffer(struct crystalhd_hw *hw,
+				      struct C011_PIB *pib,
+				      struct crystalhd_dio_req **ioreq,
+				      uint64_t expected_epoch,
+				      uint64_t *capture_epoch);
 BC_STATUS crystalhd_hw_start_capture(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_stop_capture(struct crystalhd_hw *hw, bool unmap);
 /* Process callers must hold fetch_sem before calling the locked variant. */
