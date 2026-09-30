@@ -1637,6 +1637,10 @@ bool crystalhd_link_rx_list1_handler(struct crystalhd_hw *hw,
 
 void crystalhd_link_rx_isr(struct crystalhd_hw *hw, uint32_t intr_sts)
 {
+	struct crystalhd_rx_dma_pkt *completed[DMA_ENGINE_CNT] = { NULL, NULL };
+	BC_STATUS completion_status[DMA_ENGINE_CNT] = {
+		BC_STS_NO_DATA, BC_STS_NO_DATA
+	};
 	unsigned long flags;
 	uint32_t i, list_avail = 0;
 	BC_STATUS comp_sts = BC_STS_NO_DATA;
@@ -1651,12 +1655,13 @@ void crystalhd_link_rx_isr(struct crystalhd_hw *hw, uint32_t intr_sts)
 	if (!(intr_sts & GET_RX_INTR_MASK))
 		return;
 
+	spin_lock_irqsave(&hw->rx_lock, flags);
+
 	y_err_sts = hw->pfnReadFPGARegister(hw->adp, MISC1_Y_RX_ERROR_STATUS);
 	uv_err_sts = hw->pfnReadFPGARegister(hw->adp, MISC1_UV_RX_ERROR_STATUS);
 
 	for (i = 0; i < DMA_ENGINE_CNT; i++) {
 		/* Update States..*/
-		spin_lock_irqsave(&hw->rx_lock, flags);
 		if (i == 0)
 			ret = crystalhd_link_rx_list0_handler(hw, intr_sts, y_err_sts, uv_err_sts);
 		else
@@ -1689,13 +1694,27 @@ void crystalhd_link_rx_isr(struct crystalhd_hw *hw, uint32_t intr_sts)
 				break;
 			}
 		}
-		spin_unlock_irqrestore(&hw->rx_lock, flags);
 
 		/* handle completion...*/
 		if (comp_sts != BC_STS_NO_DATA) {
-			crystalhd_rx_pkt_done(hw, i, comp_sts);
+			if (comp_sts == BC_STS_SUCCESS) {
+				/* Done sizes belong to this list until rx_lock drops. */
+				crystalhd_rx_pkt_done(hw, i, comp_sts);
+			} else {
+				completed[i] = crystalhd_rx_pkt_detach(hw, i,
+								 comp_sts);
+				completion_status[i] = comp_sts;
+			}
 			comp_sts = BC_STS_NO_DATA;
 		}
+	}
+
+	spin_unlock_irqrestore(&hw->rx_lock, flags);
+
+	for (i = 0; i < DMA_ENGINE_CNT; i++) {
+		if (completed[i])
+			crystalhd_rx_pkt_complete(hw, completed[i], i,
+						  completion_status[i]);
 	}
 
 	if (list_avail) {
