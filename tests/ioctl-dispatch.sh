@@ -20,6 +20,7 @@ awk '
     }
     copying { print }
     copying && /^};/ { copying = 0 }
+    /^#define[[:space:]]+DTS_MODE_INV[[:space:]]/ { print }
     END { if (found != 2 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.h" > "$ioctl_test_dir/ioctl-types.h"
 awk '
@@ -38,6 +39,7 @@ awk '
     END { if (found != 1 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" > "$ioctl_test_dir/ioctl-table.h"
 awk '
+    /^static BC_STATUS bc_cproc_session_owner_required\(/ ||
     /^crystalhd_cmd_proc crystalhd_get_cmd_proc\(/ ||
     /^static bool crystalhd_(legacy_color_command|rawio_command)\(/ ||
     /^static int chd_dec_api_cmd\(/ ||
@@ -46,7 +48,7 @@ awk '
     }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 7 || copying) exit 1 }
+    END { if (found != 8 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" \
     "$repo_dir/driver/linux/crystalhd_lnx.c" > "$ioctl_test_dir/ioctl-functions.h"
 

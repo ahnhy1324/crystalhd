@@ -37,6 +37,7 @@ struct test_lock { unsigned readers, writers; };
 struct crystalhd_cmd {
     uint32_t state;
     struct crystalhd_user user[BC_LINK_MAX_OPENS];
+    const void *session_owner;
 };
 struct crystalhd_adp {
     struct pci_dev *pdev;
@@ -50,7 +51,7 @@ typedef BC_STATUS (*crystalhd_cmd_proc)(struct crystalhd_cmd *, crystalhd_ioctl_
 struct crystalhd_cmd_tbl {
     uint32_t cmd_id;
     const crystalhd_cmd_proc cmd_proc;
-    uint32_t block_mon;
+    uint32_t requires_session_owner;
 };
 
 static struct pci_dev pci;
@@ -226,6 +227,7 @@ static void Reset(void)
     pci = (struct pci_dev){ .device = BC_PCI_DEVID_FLEA };
     adapter = (struct crystalhd_adp){ .pdev = &pci, .present = true };
     adapter.cmds.user[1] = (struct crystalhd_user){ .uid = 1, .in_use = 1, .mode = DTS_PLAYBACK_MODE };
+    adapter.cmds.session_owner = &adapter.cmds.user[1];
     current_adapter = &adapter;
     chd_device_generation = 3;
     binding = (struct crystalhd_file){ .user = &adapter.cmds.user[1], .generation = 3 };
@@ -251,7 +253,7 @@ static long Call(unsigned command, bool compat)
     }
     return chd_dec_ioctl(&file, command, expected_address);
 }
-static bool MonitorBlocked(unsigned number)
+static bool SessionRequired(unsigned number)
 {
     return number == DRV_CMD_WR_PCI_CFG || number == DRV_CMD_FW_DOWNLOAD ||
         number == DRV_ISSUE_FW_CMD || number == DRV_CMD_PROC_INPUT ||
@@ -269,11 +271,13 @@ static void Routing(void)
             unsigned command = _IOC(_IOC_READ | _IOC_WRITE, BC_IOC_BASE, number, sizeof(BC_IOCTL_DATA));
             for (unsigned m = 0; m < sizeof(modes) / sizeof(modes[0]); m++) {
                 for (unsigned f = 0; f < sizeof(flags) / sizeof(flags[0]); f++) {
-                    bool blocked = modes[m] == DTS_MONITOR_MODE && MonitorBlocked(number);
+                    bool blocked = modes[m] == DTS_MONITOR_MODE && SessionRequired(number);
                     unsigned calls = blocked ? 0 : 1;
 
                     Reset();
                     binding.user->mode = modes[m] | flags[f];
+                    if (modes[m] == DTS_MONITOR_MODE)
+                        adapter.cmds.session_owner = NULL;
                     Check(Call(command, compat) == (blocked ? -ENOTTY : 0),
                           "native/compat monitor whitelist depends on mode, not high flags");
                     Check(handler_calls == calls && allocations == calls &&
@@ -289,6 +293,30 @@ static void Routing(void)
             Check(caller_data.RetSts == (command == BCM_IOC_GET_DRV_STAT ? BC_STS_SUCCESS : BC_STS_PWR_MGMT),
                   "only statistics dispatches while suspended");
             Check(handler_calls == (command == BCM_IOC_GET_DRV_STAT ? 1U : 0U), "suspended commands avoid leaf handlers");
+        }
+    }
+}
+static void SessionOwnership(void)
+{
+    for (unsigned compat = 0; compat < 2; compat++) {
+        for (unsigned number = 0; number < DRV_CMD_END; number++) {
+            unsigned command;
+
+            if (!SessionRequired(number))
+                continue;
+            command = _IOC(_IOC_READ | _IOC_WRITE, BC_IOC_BASE, number,
+                           sizeof(BC_IOCTL_DATA));
+            for (unsigned foreign = 0; foreign < 2; foreign++) {
+                Reset();
+                binding.user->mode = DTS_MODE_INV;
+                adapter.cmds.session_owner = foreign ?
+                    &adapter.cmds.user[0] : NULL;
+                Check(Call(command, compat) == 0 &&
+                      caller_data.RetSts == BC_STS_ERR_USAGE,
+                      "nonowner session commands return usage status in the ioctl envelope");
+                Check(!handler_calls && allocations == 1 && copies == 2 && frees == 1,
+                      "nonowner session commands reach no stateful leaf handler");
+            }
         }
     }
 }
@@ -395,6 +423,7 @@ static void Permissions(void)
 int main(void)
 {
     Routing();
+    SessionOwnership();
     Admission();
     ResultsAndCleanup();
     Permissions();

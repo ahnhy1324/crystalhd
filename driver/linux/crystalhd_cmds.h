@@ -79,7 +79,7 @@ typedef BC_STATUS (*crystalhd_cmd_proc)(struct crystalhd_cmd *, crystalhd_ioctl_
 struct crystalhd_cmd_tbl {
 	uint32_t		cmd_id;
 	const crystalhd_cmd_proc	cmd_proc;
-	uint32_t		block_mon;
+	uint32_t		requires_session_owner;
 };
 
 
@@ -100,6 +100,13 @@ BC_STATUS crystalhd_session_acquire_locked(struct crystalhd_cmd *ctx,
 					   const void *owner);
 BC_STATUS crystalhd_session_release_locked(struct crystalhd_cmd *ctx,
 					   const void *owner);
+/* The caller excludes device removal, holds adp->user_lock for read or write,
+ * and supplies the token used to acquire the active decoder session.
+ * Firmware-command transaction locking, timeout quarantine and the matching
+ * local pause/flush transitions are handled here for every frontend.
+ */
+BC_STATUS crystalhd_fw_exec_locked(struct crystalhd_cmd *ctx,
+				   const void *owner, BC_FW_CMD *fw_cmd);
 /* Caller retains device/session lifetime and serializes TX submission through
  * return; the legacy ioctl adapter does this with user_lock and tx_lock.
  */

@@ -199,6 +199,20 @@ BC_STATUS crystalhd_session_release_locked(struct crystalhd_cmd *ctx,
 	return BC_STS_SUCCESS;
 }
 
+static BC_STATUS crystalhd_session_require_owner(struct crystalhd_cmd *ctx,
+						 const void *owner)
+{
+	if (!ctx || !ctx->adp || !owner)
+		return BC_STS_INV_ARG;
+	lockdep_assert_held(&ctx->adp->user_lock);
+	if (!ctx->session_owner)
+		return BC_STS_ERR_USAGE;
+	if (ctx->session_owner != owner)
+		return BC_STS_ERR_USAGE;
+
+	return BC_STS_SUCCESS;
+}
+
 /* Caller excludes PCI removal and holds user_lock exclusively on a present device. */
 BC_STATUS crystalhd_user_set_mode(struct crystalhd_cmd *ctx,
 				 struct crystalhd_user *uc, uint32_t mode)
@@ -457,13 +471,17 @@ static BC_STATUS bc_cproc_download_fw(struct crystalhd_cmd *ctx,
 {
 	BC_STATUS sts = BC_STS_SUCCESS;
 
-	dev_dbg(chddev(), "Downloading FW\n");
-
-	if (!ctx || !ctx->hw_ctx || !idata || !idata->add_cdata ||
-	    !idata->add_cdata_sz) {
+	if (!ctx || !ctx->hw_ctx || !ctx->hw_ctx->pfnFWDwnld || !idata ||
+	    !idata->add_cdata ||
+	    !idata->add_cdata_sz || idata->u_id >= BC_LINK_MAX_OPENS) {
 		dev_err(chddev(), "%s: Invalid Arg\n", __func__);
 		return BC_STS_INV_ARG;
 	}
+	sts = crystalhd_session_require_owner(ctx, &ctx->user[idata->u_id]);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
+
+	dev_dbg(chddev(), "Downloading FW\n");
 	/* A verified firmware download is the recovery path for a quarantined
 	 * mailbox, so it takes transaction serialization without normal admission.
 	 */
@@ -510,12 +528,21 @@ done:
  *	Abort pending input transfers and issue decoder flush command.
  *
  */
-static BC_STATUS bc_cproc_do_fw_cmd(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *idata)
+BC_STATUS crystalhd_fw_exec_locked(struct crystalhd_cmd *ctx,
+				   const void *owner, BC_FW_CMD *fw_cmd)
 {
-	struct device *dev = chddev();
+	struct device *dev;
 	BC_STATUS rollback_sts, sts;
 	uint32_t *cmd;
 	bool resume_prepared = false, was_paused = false;
+
+	if (!ctx || !ctx->adp || !ctx->adp->pdev || !ctx->hw_ctx ||
+	    !ctx->hw_ctx->pfnDoFirmwareCmd || !owner || !fw_cmd)
+		return BC_STS_INV_ARG;
+	sts = crystalhd_session_require_owner(ctx, owner);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
+	dev = &ctx->adp->pdev->dev;
 
 	sts = crystalhd_hw_fw_cmd_enter(ctx->hw_ctx);
 	if (sts != BC_STS_SUCCESS)
@@ -527,7 +554,7 @@ static BC_STATUS bc_cproc_do_fw_cmd(struct crystalhd_cmd *ctx, crystalhd_ioctl_d
 		goto done;
 	}
 
-	cmd = idata->udata.u.fwCmd.cmd;
+	cmd = fw_cmd->cmd;
 
 	/* Pre-Process */
 	if (cmd[0] == eCMD_C011_DEC_CHAN_PAUSE) {
@@ -563,7 +590,7 @@ static BC_STATUS bc_cproc_do_fw_cmd(struct crystalhd_cmd *ctx, crystalhd_ioctl_d
 			ctx->cin_wait_exit = 1;
 	}
 
-	sts = ctx->hw_ctx->pfnDoFirmwareCmd(ctx->hw_ctx, &idata->udata.u.fwCmd);
+	sts = ctx->hw_ctx->pfnDoFirmwareCmd(ctx->hw_ctx, fw_cmd);
 
 	if (sts != BC_STS_SUCCESS) {
 		if (resume_prepared) {
@@ -598,6 +625,16 @@ static BC_STATUS bc_cproc_do_fw_cmd(struct crystalhd_cmd *ctx, crystalhd_ioctl_d
 done:
 	crystalhd_hw_fw_cmd_leave(ctx->hw_ctx);
 	return sts;
+}
+
+static BC_STATUS bc_cproc_do_fw_cmd(struct crystalhd_cmd *ctx,
+				     crystalhd_ioctl_data *idata)
+{
+	if (!ctx || !idata || idata->u_id >= BC_LINK_MAX_OPENS)
+		return BC_STS_INV_ARG;
+
+	return crystalhd_fw_exec_locked(ctx, &ctx->user[idata->u_id],
+					&idata->udata.u.fwCmd);
 }
 
 struct crystalhd_tx_completion {
@@ -1310,6 +1347,14 @@ static const struct crystalhd_cmd_tbl	g_crystalhd_cproc_tbl[] = {
 	{ BCM_IOC_END,				NULL},
 };
 
+static BC_STATUS bc_cproc_session_owner_required(struct crystalhd_cmd *ctx,
+						 crystalhd_ioctl_data *idata)
+{
+	(void)ctx;
+	(void)idata;
+	return BC_STS_ERR_USAGE;
+}
+
 /*=============== Cmd Proc Functions.. ===================================*/
 /**
  * crystalhd_suspend - Power management suspend request.
@@ -1589,9 +1634,11 @@ crystalhd_cmd_proc crystalhd_get_cmd_proc(struct crystalhd_cmd *ctx, uint32_t cm
 	tbl_sz = sizeof(g_crystalhd_cproc_tbl) / sizeof(struct crystalhd_cmd_tbl);
 	for (i = 0; i < tbl_sz; i++) {
 		if (g_crystalhd_cproc_tbl[i].cmd_id == cmd) {
-			if (((uc->mode & 0xFF) == DTS_MONITOR_MODE) &&
-			    (g_crystalhd_cproc_tbl[i].block_mon)) {
+			if (g_crystalhd_cproc_tbl[i].requires_session_owner &&
+			    ctx->session_owner != uc) {
 				dev_dbg(dev, "Blocking cmd %d \n", cmd);
+				if ((uc->mode & 0xFF) != DTS_MONITOR_MODE)
+					cproc = bc_cproc_session_owner_required;
 				break;
 			}
 			cproc = g_crystalhd_cproc_tbl[i].cmd_proc;
