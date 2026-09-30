@@ -95,6 +95,7 @@ BC_STATUS crystalhd_rx_submit(struct crystalhd_cmd *ctx,
 BC_STATUS crystalhd_capture_start(struct crystalhd_cmd *ctx,
 				  uint32_t pause_threshold,
 				  uint32_t resume_threshold);
+BC_STATUS crystalhd_capture_flush(struct crystalhd_cmd *ctx, bool discard_only);
 void crystalhd_user_close(struct crystalhd_cmd *ctx, struct crystalhd_user *uc);
 BC_STATUS crystalhd_setup_cmd_context(struct crystalhd_cmd *ctx, struct crystalhd_adp *adp);
 BC_STATUS crystalhd_delete_cmd_context(struct crystalhd_cmd *ctx);

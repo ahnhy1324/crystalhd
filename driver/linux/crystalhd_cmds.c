@@ -907,13 +907,16 @@ static BC_STATUS bc_cproc_start_capture(struct crystalhd_cmd *ctx,
 				       idata->udata.u.RxCap.ResumeThsh);
 }
 
-static BC_STATUS bc_cproc_flush_cap_buffs(struct crystalhd_cmd *ctx,
-					  crystalhd_ioctl_data *idata)
+/*
+ * Flush or discard capture registrations. The caller keeps command/device
+ * lifetime protection; this function acquires fetch_sem itself.
+ */
+BC_STATUS crystalhd_capture_flush(struct crystalhd_cmd *ctx, bool discard_only)
 {
 	struct device *dev = chddev();
 	BC_STATUS sts;
 
-	if (!ctx || !ctx->hw_ctx || !idata) {
+	if (!ctx || !ctx->hw_ctx) {
 		dev_err(dev, "%s: Invalid Arg\n", __func__);
 		return BC_STS_INV_ARG;
 	}
@@ -926,7 +929,7 @@ static BC_STATUS bc_cproc_flush_cap_buffs(struct crystalhd_cmd *ctx,
 	}
 
 	dev_dbg(dev, "number of rx success %u and failure %u\n", ctx->hw_ctx->stats.rx_success, ctx->hw_ctx->stats.rx_errors);
-	if(idata->udata.u.FlushRxCap.bDiscardOnly) {
+	if (discard_only) {
 		/* just flush without unmapping and then resume */
 		sts = crystalhd_hw_stop_capture_locked(ctx->hw_ctx, false);
 		if (sts != BC_STS_SUCCESS)
@@ -947,6 +950,18 @@ static BC_STATUS bc_cproc_flush_cap_buffs(struct crystalhd_cmd *ctx,
 out:
 	up(&ctx->hw_ctx->fetch_sem);
 	return sts;
+}
+
+static BC_STATUS bc_cproc_flush_cap_buffs(struct crystalhd_cmd *ctx,
+					  crystalhd_ioctl_data *idata)
+{
+	if (!idata) {
+		dev_err(chddev(), "%s: Invalid Arg\n", __func__);
+		return BC_STS_INV_ARG;
+	}
+
+	return crystalhd_capture_flush(ctx,
+				       idata->udata.u.FlushRxCap.bDiscardOnly);
 }
 
 static BC_STATUS bc_cproc_get_stats(struct crystalhd_cmd *ctx,

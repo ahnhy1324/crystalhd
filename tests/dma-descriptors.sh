@@ -49,9 +49,11 @@ awk '
 /^void crystalhd_flea_stop_rx_dma_engine\(/ { copy = 1 }
 /^BC_STATUS crystalhd_hw_stop_capture\(/ { copy = 1 }
 /^BC_STATUS crystalhd_hw_stop_capture_locked\(/ { copy = 1 }
-/^static BC_STATUS bc_cproc_flush_cap_buffs\(/ { copy = 1 }
+/^BC_STATUS crystalhd_capture_flush\(/ { copy = 1; command_found++ }
+/^static BC_STATUS bc_cproc_flush_cap_buffs\(/ { copy = 1; command_found++ }
 copy { print }
 copy && /^}/ { copy = 0 }
+END { if (command_found != 2 || copy) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" \
   "$repo_dir/driver/linux/crystalhd_hw.c" \
   "$repo_dir/driver/linux/crystalhd_cmds.c" > "$dma_test_dir/dma-stop-functions.h"

@@ -46,12 +46,20 @@ typedef struct {
 static unsigned int irq_depth, reads, clears, unmaps, stops, notifications, starts;
 static uint32_t interrupt_bits;
 static BC_STATUS start_result;
-static bool notify_result;
+static bool notify_result, interrupt_sem;
 static struct device device;
 
 static struct device *chddev(void) { return &device; }
 static void down(int *sem) { assert(!*sem); *sem = 1; }
-static int down_interruptible(int *sem) { down(sem); return 0; }
+static int down_interruptible(int *sem)
+{
+	if (interrupt_sem) {
+		interrupt_sem = false;
+		return -1;
+	}
+	down(sem);
+	return 0;
+}
 static void up(int *sem) { assert(*sem == 1); *sem = 0; }
 static void disable_irq(int irq) { (void)irq; irq_depth++; }
 static void enable_irq(int irq) { (void)irq; assert(irq_depth); irq_depth--; }
@@ -114,6 +122,120 @@ static void stop_success(struct crystalhd_hw *hw)
 static void stop_failure(struct crystalhd_hw *hw)
 { assert(hw->fetch_sem == 1); hw->dma_fault = true; stops++; }
 #include "dma-stop-functions.h"
+
+static BC_STATUS flush_capture(struct crystalhd_cmd *ctx, bool direct,
+		uint32_t discard_only)
+{
+	crystalhd_ioctl_data data = {0};
+
+	if (direct)
+		return crystalhd_capture_flush(ctx, discard_only != 0);
+	data.udata.u.FlushRxCap.bDiscardOnly = discard_only;
+	return bc_cproc_flush_cap_buffs(ctx, &data);
+}
+
+static void reset_flush_test(struct crystalhd_hw *hw, struct crystalhd_cmd *ctx,
+		struct crystalhd_adp *adp, struct queue *active,
+		struct queue *ready, struct queue *freeq,
+		unsigned int active_count, unsigned int ready_count,
+		unsigned int free_count, unsigned int state)
+{
+	*active = (struct queue){ .count = active_count };
+	*ready = (struct queue){ .count = ready_count };
+	*freeq = (struct queue){ .count = free_count };
+	*hw = (struct crystalhd_hw){
+		.adp = adp,
+		.rx_actq = active,
+		.rx_rdyq = ready,
+		.rx_freeq = freeq,
+		.pfnStopRXDMAEngines = stop_success,
+		.pfnNotifyHardware = notify_hardware,
+	};
+	*ctx = (struct crystalhd_cmd){ .hw_ctx = hw, .state = state };
+	irq_depth = reads = clears = unmaps = stops = notifications = starts = 0;
+	interrupt_sem = false;
+	notify_result = true;
+	start_result = BC_STS_SUCCESS;
+}
+
+static void test_flush_frontend(bool direct)
+{
+	struct pci_dev pci = { .irq = 1 };
+	struct crystalhd_adp adp = { .pdev = &pci };
+	struct crystalhd_hw hw;
+	struct crystalhd_cmd ctx;
+	struct queue active, ready, freeq;
+	const unsigned int running = BC_LINK_CAP_EN | BC_LINK_FMT_CHG | 0x80;
+
+	reset_flush_test(&hw, &ctx, &adp, &active, &ready, &freeq,
+		0, 0, 0, running);
+	assert(flush_capture(NULL, direct, 0) == BC_STS_INV_ARG);
+	ctx.hw_ctx = NULL;
+	assert(flush_capture(&ctx, direct, 1) == BC_STS_INV_ARG);
+	assert(!hw.fetch_sem && !stops && !notifications && !starts);
+
+	reset_flush_test(&hw, &ctx, &adp, &active, &ready, &freeq,
+		1, 1, 1, running);
+	interrupt_sem = true;
+	assert(flush_capture(&ctx, direct, 0) == BC_STS_IO_USER_ABORT);
+	assert(active.count == 1 && ready.count == 1 && freeq.count == 1);
+	assert(ctx.state == running && !hw.fetch_sem && !stops && !unmaps &&
+		!notifications && !starts && !irq_depth);
+
+	reset_flush_test(&hw, &ctx, &adp, &active, &ready, &freeq,
+		1, 1, 1, BC_LINK_FMT_CHG | 0x80);
+	assert(flush_capture(&ctx, direct, 1) == BC_STS_ERR_USAGE);
+	assert(active.count == 1 && ready.count == 1 && freeq.count == 1);
+	assert(ctx.state == (BC_LINK_FMT_CHG | 0x80) && !hw.fetch_sem &&
+		!stops && !unmaps && !notifications && !starts && !irq_depth);
+
+	reset_flush_test(&hw, &ctx, &adp, &active, &ready, &freeq,
+		1, 1, 0, running);
+	start_result = BC_STS_NO_DATA;
+	assert(flush_capture(&ctx, direct, direct ? 1 : UINT32_MAX) == BC_STS_SUCCESS);
+	assert(!active.count && !ready.count && freeq.count == 2);
+	assert(ctx.state == running && !hw.fetch_sem && stops == 1 && !unmaps &&
+		notifications == 1 && starts == 1 && !irq_depth);
+
+	reset_flush_test(&hw, &ctx, &adp, &active, &ready, &freeq,
+		1, 1, 0, running);
+	notify_result = false;
+	assert(flush_capture(&ctx, direct, 1) == BC_STS_IO_ERROR);
+	assert(!active.count && !ready.count && freeq.count == 2);
+	assert(ctx.state == running && !hw.fetch_sem && stops == 1 && !unmaps &&
+		notifications == 1 && !starts && !irq_depth);
+
+	reset_flush_test(&hw, &ctx, &adp, &active, &ready, &freeq,
+		1, 1, 0, running);
+	start_result = BC_STS_IO_ERROR;
+	assert(flush_capture(&ctx, direct, 1) == BC_STS_IO_ERROR);
+	assert(!active.count && !ready.count && freeq.count == 2);
+	assert(ctx.state == running && !hw.fetch_sem && stops == 1 && !unmaps &&
+		notifications == 1 && starts == 1 && !irq_depth);
+
+	reset_flush_test(&hw, &ctx, &adp, &active, &ready, &freeq,
+		1, 1, 1, running);
+	hw.pfnStopRXDMAEngines = stop_failure;
+	assert(flush_capture(&ctx, direct, 1) == BC_STS_IO_ERROR);
+	assert(active.count == 1 && ready.count == 1 && freeq.count == 1);
+	assert(ctx.state == running && hw.dma_fault && !hw.fetch_sem &&
+		stops == 1 && !unmaps && !notifications && !starts && !irq_depth);
+
+	reset_flush_test(&hw, &ctx, &adp, &active, &ready, &freeq,
+		1, 1, 1, running);
+	assert(flush_capture(&ctx, direct, 0) == BC_STS_SUCCESS);
+	assert(!active.count && !ready.count && !freeq.count && unmaps == 3);
+	assert(ctx.state == 0x80 && !hw.fetch_sem && stops == 1 &&
+		!notifications && !starts && !irq_depth);
+
+	reset_flush_test(&hw, &ctx, &adp, &active, &ready, &freeq,
+		1, 1, 1, running);
+	hw.pfnStopRXDMAEngines = stop_failure;
+	assert(flush_capture(&ctx, direct, 0) == BC_STS_IO_ERROR);
+	assert(active.count == 1 && ready.count == 1 && freeq.count == 1 && !unmaps);
+	assert(ctx.state == 0x80 && hw.dma_fault && !hw.fetch_sem && stops == 1 &&
+		!notifications && !starts && !irq_depth);
+}
 
 int main(void)
 {
@@ -181,6 +303,8 @@ int main(void)
 	assert(bc_cproc_flush_cap_buffs(&ctx, &data) == BC_STS_SUCCESS);
 	assert(!active.count && !ready.count && !freeq.count && unmaps == 3);
 	assert(!ctx.state && !hw.fetch_sem && !irq_depth);
+	test_flush_frontend(false);
+	test_flush_frontend(true);
 	puts("DMA stop/restart tests passed (ASan/UBSan)");
 	return 0;
 }
