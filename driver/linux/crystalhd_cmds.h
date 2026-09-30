@@ -100,6 +100,15 @@ BC_STATUS crystalhd_session_acquire_locked(struct crystalhd_cmd *ctx,
 					   const void *owner);
 BC_STATUS crystalhd_session_release_locked(struct crystalhd_cmd *ctx,
 					   const void *owner);
+/* The caller excludes device removal, has verified a present adapter, holds
+ * adp->user_lock exclusively, and keeps the exact session-owner token and image
+ * valid through return. The image is validated for the detected chip before
+ * any firmware transaction or hardware access. A successful download publishes
+ * INIT and resets mailbox quarantine before releasing the transaction.
+ */
+BC_STATUS crystalhd_fw_download_locked(struct crystalhd_cmd *ctx,
+				       const void *owner,
+				       const uint8_t *image, size_t size);
 /* The caller excludes device removal, holds adp->user_lock for read or write,
  * and supplies the token used to acquire the active decoder session.
  * Firmware-command transaction locking, timeout quarantine and the matching

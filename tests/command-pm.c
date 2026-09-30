@@ -48,7 +48,7 @@ struct crystalhd_hw {
     bool (*pfnStartDevice)(struct crystalhd_hw *);
     bool (*pfnStopDevice)(struct crystalhd_hw *);
     BC_STATUS (*pfnStopTxDMA)(struct crystalhd_hw *);
-    BC_STATUS (*pfnFWDwnld)(struct crystalhd_hw *, uint8_t *, uint32_t);
+    BC_STATUS (*pfnFWDwnld)(struct crystalhd_hw *, const uint8_t *, uint32_t);
     BC_STATUS (*pfnIssuePause)(struct crystalhd_hw *, bool);
     BC_STATUS (*pfnDoFirmwareCmd)(struct crystalhd_hw *, BC_FW_CMD *);
     uint32_t (*pfnReadDevRegister)(struct crystalhd_adp *, uint32_t);
@@ -56,7 +56,8 @@ struct crystalhd_hw {
     uint32_t (*pfnReadFPGARegister)(struct crystalhd_adp *, uint32_t);
     void (*pfnWriteFPGARegister)(struct crystalhd_adp *, uint32_t, uint32_t);
     BC_STATUS (*pfnDevDRAMRead)(struct crystalhd_hw *, uint32_t, uint32_t, uint32_t *);
-    BC_STATUS (*pfnDevDRAMWrite)(struct crystalhd_hw *, uint32_t, uint32_t, uint32_t *);
+    BC_STATUS (*pfnDevDRAMWrite)(struct crystalhd_hw *, uint32_t, uint32_t,
+                                 const uint32_t *);
     int fwcmd_trans_mutex;
     bool fwcmd_pending, fwcmd_poisoned;
     int fetch_sem;
@@ -100,7 +101,9 @@ static unsigned irq_depth, irq_disables, irq_enables, capture_unmaps;
 static unsigned hardware_allocations, hardware_frees, last_close_cfg_users;
 static unsigned hardware_alloc_attempts;
 static unsigned binding_count, binding_frees, device_reads, user_writes;
-static unsigned downloads;
+static unsigned downloads, download_resets;
+static const uint8_t *last_download_image;
+static uint32_t last_download_size;
 static unsigned raw_calls[6];
 static uint32_t raw_offset, raw_value, raw_words, raw_memory[2];
 static uint32_t *raw_buffer;
@@ -113,7 +116,7 @@ static unsigned admission_uid;
 static uint32_t admission_state, admission_wait;
 static int elem_error, dio_error;
 static BC_STATUS ring_status, hardware_open_status;
-static BC_STATUS capture_status, cancel_status;
+static BC_STATUS capture_status, cancel_status, download_status;
 static BC_STATUS pause_status, firmware_status;
 static unsigned pause_calls, firmware_calls;
 static BC_FW_CMD *last_firmware_command;
@@ -137,7 +140,8 @@ static int chd_device_lock;
 static bool Start(struct crystalhd_hw *hw);
 static bool Stop(struct crystalhd_hw *hw);
 static BC_STATUS StopTx(struct crystalhd_hw *hw);
-static BC_STATUS Download(struct crystalhd_hw *hw, uint8_t *data, uint32_t size);
+static BC_STATUS Download(struct crystalhd_hw *hw, const uint8_t *data,
+                          uint32_t size);
 static BC_STATUS IssuePause(struct crystalhd_hw *hw, bool state);
 static BC_STATUS FirmwareCommand(struct crystalhd_hw *hw, BC_FW_CMD *command);
 static uint32_t ReadDevice(struct crystalhd_adp *adp, uint32_t offset);
@@ -145,7 +149,8 @@ static void WriteDevice(struct crystalhd_adp *adp, uint32_t offset, uint32_t val
 static uint32_t ReadLink(struct crystalhd_adp *adp, uint32_t offset);
 static void WriteLink(struct crystalhd_adp *adp, uint32_t offset, uint32_t value);
 static BC_STATUS ReadMemory(struct crystalhd_hw *hw, uint32_t offset, uint32_t words, uint32_t *buffer);
-static BC_STATUS WriteMemory(struct crystalhd_hw *hw, uint32_t offset, uint32_t words, uint32_t *buffer);
+static BC_STATUS WriteMemory(struct crystalhd_hw *hw, uint32_t offset,
+                             uint32_t words, const uint32_t *buffer);
 static void CheckPendingAdmission(void);
 BC_STATUS crystalhd_hw_suspend(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_close_actual(struct crystalhd_hw *hw);
@@ -323,15 +328,20 @@ static BC_STATUS StopTx(struct crystalhd_hw *hw)
     Check(hw == &hardware, "TX stop receives the owned hardware context");
     tx_stops++; Event('T'); return BC_STS_SUCCESS;
 }
-static BC_STATUS Download(struct crystalhd_hw *hw, uint8_t *data, uint32_t size)
+static BC_STATUS Download(struct crystalhd_hw *hw, const uint8_t *data,
+                          uint32_t size)
 {
-    uint32_t expected = endpoint.device == BC_PCI_DEVID_FLEA ?
+    uint32_t minimum = endpoint.device == BC_PCI_DEVID_FLEA ?
         CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE : CRYSTALHD_LINK_MIN_FIRMWARE_SIZE;
 
     Check(hw == &hardware && data && !((unsigned long)data & 3U) &&
-          size == expected && data[0] == 0x5a,
+          size >= minimum && size <= CRYSTALHD_MAX_FIRMWARE_SIZE &&
+          !(size & 3U) && data[0] == 0x5a,
           "firmware admission reaches the expected hardware callback");
-    downloads++; return BC_STS_SUCCESS;
+    downloads++;
+    last_download_image = data;
+    last_download_size = size;
+    return download_status;
 }
 static int down_interruptible(int *sem)
 {
@@ -414,26 +424,33 @@ static uint32_t ReadLink(struct crystalhd_adp *adp, uint32_t offset)
 { return RawRegister(adp, 2, offset, 0); }
 static void WriteLink(struct crystalhd_adp *adp, uint32_t offset, uint32_t value)
 { (void)RawRegister(adp, 3, offset, value); }
-static BC_STATUS RawMemory(struct crystalhd_hw *hw, uint32_t offset, uint32_t words,
-                           uint32_t *buffer, bool write)
+static BC_STATUS ReadMemory(struct crystalhd_hw *hw, uint32_t offset,
+                            uint32_t words, uint32_t *buffer)
 {
     Check(hw == &hardware && buffer == raw_buffer && words <= 2,
           "raw memory callback receives the owned hardware and bounded buffer");
-    raw_calls[write ? 5 : 4]++;
+    raw_calls[4]++;
     raw_offset = offset;
     raw_words = words;
-    if (raw_status == BC_STS_SUCCESS) {
+    if (raw_status == BC_STS_SUCCESS)
         for (uint32_t n = 0; n < words; n++) {
-            if (write) raw_memory[n] = buffer[n];
-            else buffer[n] = raw_memory[n];
+            buffer[n] = raw_memory[n];
         }
-    }
     return raw_status;
 }
-static BC_STATUS ReadMemory(struct crystalhd_hw *hw, uint32_t offset, uint32_t words, uint32_t *buffer)
-{ return RawMemory(hw, offset, words, buffer, false); }
-static BC_STATUS WriteMemory(struct crystalhd_hw *hw, uint32_t offset, uint32_t words, uint32_t *buffer)
-{ return RawMemory(hw, offset, words, buffer, true); }
+static BC_STATUS WriteMemory(struct crystalhd_hw *hw, uint32_t offset,
+                             uint32_t words, const uint32_t *buffer)
+{
+    Check(hw == &hardware && buffer == raw_buffer && words <= 2,
+          "raw memory callback receives the owned hardware and bounded buffer");
+    raw_calls[5]++;
+    raw_offset = offset;
+    raw_words = words;
+    if (raw_status == BC_STS_SUCCESS)
+        for (uint32_t n = 0; n < words; n++)
+            raw_memory[n] = buffer[n];
+    return raw_status;
+}
 static void CheckPendingAdmission(void)
 {
     if (admission_pending)
@@ -489,6 +506,7 @@ static BC_STATUS crystalhd_hw_free_dma_rings(struct crystalhd_hw *hw)
 static void crystalhd_hw_fw_cmd_reset_locked(struct crystalhd_hw *hw)
 {
     Check(hw == &hardware, "hardware reset clears firmware-command accounting");
+    download_resets++;
     hw->fwcmd_pending = hw->fwcmd_poisoned = false;
     hw->FwCmdCnt = 0;
     if (block_download_reset) {
@@ -552,7 +570,9 @@ static void Reset(uint32_t state, bool with_hardware)
     chd_device_lock = 0;
     chd_device_generation = 42;
     adapter_visible = true;
-    downloads = 0;
+    downloads = download_resets = 0;
+    last_download_image = NULL;
+    last_download_size = 0;
     memset(raw_calls, 0, sizeof(raw_calls));
     memset(raw_memory, 0, sizeof(raw_memory));
     raw_offset = raw_value = raw_words = 0;
@@ -562,7 +582,7 @@ static void Reset(uint32_t state, bool with_hardware)
     elem_live = dio_live = rings_live = hardware_allocated = false;
     elem_error = dio_error = 0;
     ring_status = hardware_open_status = BC_STS_SUCCESS;
-    capture_status = cancel_status = BC_STS_SUCCESS;
+    capture_status = cancel_status = download_status = BC_STS_SUCCESS;
     pause_status = firmware_status = BC_STS_SUCCESS;
     pause_calls = firmware_calls = 0;
     last_firmware_command = NULL;
@@ -589,6 +609,14 @@ static void ResetOwned(uint32_t state, bool with_hardware)
     context.user[0].in_use = 1;
     context.user[0].mode = DTS_PLAYBACK_MODE;
     context.session_owner = &context.user[0];
+}
+
+static void ResetFrontendOwned(uint32_t state, bool with_hardware,
+                               const void *owner)
+{
+    Reset(state, with_hardware);
+    adapter.user_lock = 1;
+    context.session_owner = owner;
 }
 
 static void FirmwarePauseRollback(void)
@@ -758,23 +786,214 @@ static void FirmwareSharedEntry(void)
           "the legacy adapter rejects an out-of-range owner index");
 }
 
-static void FirmwareDownloadOwnership(void)
+static void FirmwareDownloadSharedEntry(void)
 {
-    uint32_t firmware[CRYSTALHD_LINK_MIN_FIRMWARE_SIZE / 4] = {0};
-    crystalhd_ioctl_data data = {
-        .add_cdata = firmware,
-        .add_cdata_sz = CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE,
-    };
-    const uint32_t bad_sizes[] = {
-        0,
+    _Alignas(uint32_t) uint8_t firmware[CRYSTALHD_LINK_MIN_FIRMWARE_SIZE] = {0};
+    static _Alignas(uint32_t)
+        uint8_t maximum_firmware[CRYSTALHD_MAX_FIRMWARE_SIZE];
+    const size_t bad_sizes[] = {
         CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE - 4,
         CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE - 1,
         CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE + 1,
         CRYSTALHD_MAX_FIRMWARE_SIZE + 4U,
-        UINT32_MAX,
+        SIZE_MAX,
+    };
+    int frontend_owner = 0, foreign_owner = 0;
+    const void *owner;
+
+    firmware[0] = 0x5a;
+    maximum_firmware[0] = 0x5a;
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    Check(crystalhd_fw_download_locked(NULL, &frontend_owner, firmware,
+                                       CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE) ==
+              BC_STS_INV_ARG,
+          "shared firmware download rejects a NULL context");
+    Check(crystalhd_fw_download_locked(&context, NULL, firmware,
+                                       CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE) ==
+              BC_STS_INV_ARG,
+          "shared firmware download rejects a NULL owner");
+    Check(crystalhd_fw_download_locked(&context, &frontend_owner, NULL,
+                                       CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE) ==
+              BC_STS_INV_ARG,
+          "shared firmware download rejects a NULL image");
+    Check(crystalhd_fw_download_locked(&context, &frontend_owner, firmware, 0) ==
+              BC_STS_INV_ARG && !downloads && !download_resets,
+          "invalid shared arguments have no hardware or reset effects");
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    owner = context.session_owner;
+    context.adp = NULL;
+    Check(crystalhd_fw_download_locked(&context, owner, firmware,
+                                       CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE) ==
+              BC_STS_INV_ARG,
+          "shared firmware download rejects a missing adapter");
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    adapter.pdev = NULL;
+    Check(crystalhd_fw_download_locked(&context, &frontend_owner, firmware,
+                                       CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE) ==
+              BC_STS_INV_ARG,
+          "shared firmware download rejects a missing PCI device");
+
+    ResetFrontendOwned(BC_LINK_INVALID, false, &frontend_owner);
+    Check(crystalhd_fw_download_locked(&context, &frontend_owner, firmware,
+                                       CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE) ==
+              BC_STS_INV_ARG,
+          "shared firmware download rejects retired hardware");
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    hardware.pfnFWDwnld = NULL;
+    Check(crystalhd_fw_download_locked(&context, &frontend_owner, firmware,
+                                       CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE) ==
+              BC_STS_INV_ARG && !downloads,
+          "shared firmware download rejects a missing hardware callback");
+
+    Reset(BC_LINK_INVALID, true);
+    adapter.user_lock = 1;
+    endpoint.device = 0xffff;
+    transaction_mode = true;
+    Check(crystalhd_fw_download_locked(&context, &frontend_owner, firmware,
+                                       1) ==
+              BC_STS_ERR_USAGE && !downloads && !transaction_attempts,
+          "shared firmware download rejects an absent owner before geometry or transaction");
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    endpoint.device = 0xffff;
+    transaction_mode = true;
+    Check(crystalhd_fw_download_locked(&context, &foreign_owner,
+                                       firmware + 1, 1) ==
+              BC_STS_ERR_USAGE && !downloads && !transaction_attempts,
+          "shared firmware download rejects a foreign owner before geometry or transaction");
+
+    for (unsigned n = 0; n < sizeof(bad_sizes) / sizeof(bad_sizes[0]); n++) {
+        ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+        transaction_mode = true;
+        Check(crystalhd_fw_download_locked(&context, &frontend_owner, firmware,
+                                           bad_sizes[n]) == BC_STS_INV_ARG &&
+                  !downloads && !transaction_attempts,
+              "shared firmware download rejects malformed Flea geometry before transaction");
+    }
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    transaction_mode = true;
+    Check(crystalhd_fw_download_locked(&context, &frontend_owner,
+                                       firmware + 1,
+                                       CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE) ==
+              BC_STS_INV_ARG && !downloads && !transaction_attempts,
+          "shared firmware download rejects an unaligned image before transaction");
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    endpoint.device = 0xffff;
+    transaction_mode = true;
+    Check(crystalhd_fw_download_locked(&context, &frontend_owner, firmware,
+                                       CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE) ==
+              BC_STS_INV_ARG && !downloads && !transaction_attempts,
+          "shared firmware download rejects an unknown firmware layout");
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    endpoint.device = BC_PCI_DEVID_LINK;
+    transaction_mode = true;
+    Check(crystalhd_fw_download_locked(&context, &frontend_owner, firmware,
+                                       CRYSTALHD_LINK_MIN_FIRMWARE_SIZE - 4) ==
+              BC_STS_INV_ARG && !downloads && !transaction_attempts,
+          "shared firmware download applies the Link minimum before transaction");
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    hardware.fwcmd_poisoned = true;
+    hardware.FwCmdCnt = 17;
+    Check(crystalhd_fw_download_locked(&context, &frontend_owner, firmware,
+                                       CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE) ==
+              BC_STS_SUCCESS && downloads == 1 && download_resets == 1 &&
+              last_download_image == firmware &&
+              last_download_size == CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE &&
+              context.state == BC_LINK_INIT && !hardware.fwcmd_poisoned &&
+              !hardware.FwCmdCnt,
+          "shared Flea download forwards the exact image and resets quarantine on success");
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    Check(crystalhd_fw_download_locked(&context, &frontend_owner,
+                                       maximum_firmware,
+                                       CRYSTALHD_MAX_FIRMWARE_SIZE) ==
+              BC_STS_SUCCESS && downloads == 1 && download_resets == 1 &&
+              last_download_image == maximum_firmware &&
+              last_download_size == CRYSTALHD_MAX_FIRMWARE_SIZE &&
+              context.state == BC_LINK_INIT,
+          "shared firmware download forwards the aligned maximum image size");
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    endpoint.device = BC_PCI_DEVID_LINK;
+    Check(crystalhd_fw_download_locked(&context, &frontend_owner, firmware,
+                                       CRYSTALHD_LINK_MIN_FIRMWARE_SIZE) ==
+              BC_STS_SUCCESS && downloads == 1 && download_resets == 1 &&
+              last_download_image == firmware &&
+              last_download_size == CRYSTALHD_LINK_MIN_FIRMWARE_SIZE &&
+              context.state == BC_LINK_INIT,
+          "shared Link download forwards its distinct valid image geometry");
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    hardware.fwcmd_poisoned = true;
+    hardware.FwCmdCnt = 23;
+    context.pwr_state_change = BC_HW_SUSPEND;
+    download_status = BC_STS_TIMEOUT;
+    transaction_mode = true;
+    Check(crystalhd_fw_download_locked(&context, &frontend_owner, firmware,
+                                       CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE) ==
+              BC_STS_TIMEOUT && downloads == 1 && !download_resets &&
+              context.state == BC_LINK_INVALID && hardware.fwcmd_poisoned &&
+              hardware.FwCmdCnt == 23 &&
+              context.pwr_state_change == BC_HW_RUNNING &&
+              transaction_attempts == 1,
+          "shared firmware download preserves an exact loader failure without publishing INIT");
+    Check(!pthread_mutex_trylock(&transaction_mutex),
+          "failed firmware download releases its transaction");
+    if (pthread_mutex_unlock(&transaction_mutex)) abort();
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    hardware.fwcmd_pending = true;
+    transaction_mode = true;
+    Check(crystalhd_fw_download_locked(&context, &frontend_owner, firmware,
+                                       CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE) ==
+              BC_STS_BUSY && !downloads && !download_resets &&
+              transaction_attempts == 1 && context.state == BC_LINK_INVALID,
+          "shared firmware download cannot replace a pending mailbox command");
+    Check(!pthread_mutex_trylock(&transaction_mutex),
+          "busy firmware recovery admission releases its transaction");
+    if (pthread_mutex_unlock(&transaction_mutex)) abort();
+
+    ResetFrontendOwned(BC_LINK_READY, true, &frontend_owner);
+    transaction_mode = true;
+    Check(crystalhd_fw_download_locked(&context, &frontend_owner, firmware,
+                                       CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE) ==
+              BC_STS_ERR_USAGE && !downloads && !download_resets &&
+              transaction_attempts == 1 && context.state == BC_LINK_READY,
+          "shared firmware download checks active link state inside its transaction");
+    Check(!pthread_mutex_trylock(&transaction_mutex),
+          "invalid-state firmware download releases its transaction");
+    if (pthread_mutex_unlock(&transaction_mutex)) abort();
+
+    ResetFrontendOwned(BC_LINK_RESUME, true, &frontend_owner);
+    Check(crystalhd_fw_download_locked(&context, &frontend_owner, firmware,
+                                       CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE) ==
+              BC_STS_SUCCESS &&
+              context.state == (BC_LINK_RESUME | BC_LINK_INIT),
+          "shared firmware download preserves the resumed recovery state rule");
+}
+
+static void FirmwareDownloadLegacyAdapter(void)
+{
+    _Alignas(uint32_t) uint8_t firmware[CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE] = {0};
+    crystalhd_ioctl_data data = {
+        .add_cdata = firmware,
+        .add_cdata_sz = sizeof(firmware),
     };
 
-    ((uint8_t *)firmware)[0] = 0x5a;
+    firmware[0] = 0x5a;
+
+    ResetOwned(BC_LINK_INVALID, true);
+    Check(bc_cproc_download_fw(&context, NULL) == BC_STS_INV_ARG &&
+          !downloads && !download_resets,
+          "the legacy firmware adapter rejects missing ioctl data");
 
     Reset(BC_LINK_INVALID, true);
     adapter.user_lock = 1;
@@ -791,8 +1010,20 @@ static void FirmwareDownloadOwnership(void)
 
     data.u_id = 0;
     Check(bc_cproc_download_fw(&context, &data) == BC_STS_SUCCESS &&
-          downloads == 1 && context.state == BC_LINK_INIT,
-          "the legacy session owner retains firmware download behavior");
+          downloads == 1 && download_resets == 1 &&
+          last_download_image == firmware &&
+          last_download_size == CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE &&
+          context.state == BC_LINK_INIT,
+          "the legacy adapter forwards its exact owner image and size");
+
+    ResetOwned(BC_LINK_INVALID, true);
+    download_status = BC_STS_TIMEOUT;
+    Check(bc_cproc_download_fw(&context, &data) == BC_STS_TIMEOUT &&
+          downloads == 1 && !download_resets &&
+          last_download_image == firmware &&
+          last_download_size == sizeof(firmware) &&
+          context.state == BC_LINK_INVALID,
+          "the legacy adapter preserves the shared loader status");
 
     ResetOwned(BC_LINK_INVALID, true);
     data.u_id = BC_LINK_MAX_OPENS;
@@ -801,64 +1032,17 @@ static void FirmwareDownloadOwnership(void)
           "firmware download rejects an out-of-range owner index");
 
     ResetOwned(BC_LINK_INVALID, true);
-    hardware.pfnFWDwnld = NULL;
     data.u_id = 0;
+    data.add_cdata = NULL;
     Check(bc_cproc_download_fw(&context, &data) == BC_STS_INV_ARG &&
           !downloads && context.state == BC_LINK_INVALID,
-          "firmware download rejects a missing hardware callback");
+          "the legacy adapter rejects a missing appended image");
 
-    ResetOwned(BC_LINK_INVALID, true);
-    adapter.pdev = NULL;
-    Check(bc_cproc_download_fw(&context, &data) == BC_STS_INV_ARG &&
-          !downloads && context.state == BC_LINK_INVALID,
-          "firmware download rejects a missing PCI device");
-
-    for (unsigned n = 0; n < sizeof(bad_sizes) / sizeof(bad_sizes[0]); n++) {
-        ResetOwned(BC_LINK_INVALID, true);
-        transaction_mode = true;
-        data.add_cdata = firmware;
-        data.add_cdata_sz = bad_sizes[n];
-        Check(bc_cproc_download_fw(&context, &data) == BC_STS_INV_ARG &&
-              !downloads && !transaction_attempts &&
-              context.state == BC_LINK_INVALID,
-              "malformed Flea firmware geometry is rejected before its transaction");
-        transaction_mode = false;
-    }
-
-    ResetOwned(BC_LINK_INVALID, true);
-    transaction_mode = true;
-    data.add_cdata = (uint8_t *)firmware + 1;
-    data.add_cdata_sz = CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE;
-    Check(bc_cproc_download_fw(&context, &data) == BC_STS_INV_ARG &&
-          !downloads && !transaction_attempts,
-          "unaligned firmware is rejected before its transaction");
-    transaction_mode = false;
-
-    ResetOwned(BC_LINK_INVALID, true);
-    transaction_mode = true;
-    endpoint.device = 0xffff;
     data.add_cdata = firmware;
+    data.add_cdata_sz = 0;
     Check(bc_cproc_download_fw(&context, &data) == BC_STS_INV_ARG &&
-          !downloads && !transaction_attempts,
-          "unknown hardware cannot select a firmware layout");
-    transaction_mode = false;
-
-    ResetOwned(BC_LINK_INVALID, true);
-    endpoint.device = BC_PCI_DEVID_LINK;
-    transaction_mode = true;
-    data.add_cdata_sz = CRYSTALHD_LINK_MIN_FIRMWARE_SIZE - 4;
-    Check(bc_cproc_download_fw(&context, &data) == BC_STS_INV_ARG &&
-          !downloads && !transaction_attempts &&
-          context.state == BC_LINK_INVALID,
-          "undersized Link firmware is rejected before its transaction");
-    transaction_mode = false;
-
-    ResetOwned(BC_LINK_INVALID, true);
-    endpoint.device = BC_PCI_DEVID_LINK;
-    data.add_cdata_sz = CRYSTALHD_LINK_MIN_FIRMWARE_SIZE;
-    Check(bc_cproc_download_fw(&context, &data) == BC_STS_SUCCESS &&
-          downloads == 1 && context.state == BC_LINK_INIT,
-          "Link firmware uses its distinct minimum valid layout");
+          !downloads && context.state == BC_LINK_INVALID,
+          "the legacy adapter rejects an empty appended image");
 }
 
 struct firmware_thread {
@@ -900,6 +1084,7 @@ static void WaitForTransactionAttempts(unsigned wanted)
 
 struct download_thread {
     crystalhd_ioctl_data data;
+    const void *owner;
     BC_STATUS status;
 };
 
@@ -907,7 +1092,9 @@ static void *RunFirmwareDownload(void *argument)
 {
     struct download_thread *thread = argument;
 
-    thread->status = bc_cproc_download_fw(&context, &thread->data);
+    thread->status = crystalhd_fw_download_locked(&context, thread->owner,
+                                                   thread->data.add_cdata,
+                                                   thread->data.add_cdata_sz);
     return NULL;
 }
 
@@ -929,17 +1116,18 @@ static void ReleaseDownloadReset(void)
 
 static void FirmwareDownloadSerialization(void)
 {
-    uint32_t firmware[CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE / 4] = {0};
+    _Alignas(uint32_t) uint8_t firmware[CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE] = {0};
     struct download_thread download = {0};
     struct firmware_thread command = {0};
     pthread_t download_tid, command_tid;
 
     ResetOwned(BC_LINK_INVALID, true);
-    ((uint8_t *)firmware)[0] = 0x5a;
+    firmware[0] = 0x5a;
     transaction_mode = true;
     block_download_reset = true;
     download.data.add_cdata = firmware;
     download.data.add_cdata_sz = sizeof(firmware);
+    download.owner = context.session_owner;
     command.data.udata.u.fwCmd.cmd[0] = 0x12345678;
 
     if (pthread_create(&download_tid, NULL, RunFirmwareDownload,
@@ -2437,7 +2625,8 @@ int main(void)
         {"legacy user slot exhaustion", OpenSlotExhaustion},
         {"invalid admission adapter arguments", InvalidAdmissionArguments},
         {"shared and legacy firmware command entry points", FirmwareSharedEntry},
-        {"firmware download ownership", FirmwareDownloadOwnership},
+        {"frontend-neutral firmware download entry point", FirmwareDownloadSharedEntry},
+        {"legacy firmware download adapter", FirmwareDownloadLegacyAdapter},
         {"firmware pause/resume rollback", FirmwarePauseRollback},
         {"firmware download serialization", FirmwareDownloadSerialization},
         {"firmware transaction serialization", FirmwareTransactionSerialization},

@@ -72,7 +72,7 @@ struct crystalhd_hw {
     bool (*pfnNotifyHardware)(struct crystalhd_hw *, enum BRCM_EVENT);
     void (*pfnStopRXDMAEngines)(struct crystalhd_hw *);
     BC_STATUS (*pfnDevDRAMWrite)(struct crystalhd_hw *, uint32_t, uint32_t,
-                                 uint32_t *);
+                                 const uint32_t *);
 };
 struct crystalhd_cmd {
     struct crystalhd_adp *adp;
@@ -519,7 +519,7 @@ static bool crystalhd_flea_detect_fw_alive(struct crystalhd_hw *hw)
     return firmware_alive;
 }
 static BC_STATUS record_dram_write(struct crystalhd_hw *hw, uint32_t address,
-                                   uint32_t dwords, uint32_t *value)
+                                   uint32_t dwords, const uint32_t *value)
 {
     assert(hw == &hardware && hardware.lock == 1 && value);
     dram_write_calls++;

@@ -210,7 +210,7 @@ BC_STATUS crystalhd_link_mem_rd(struct crystalhd_hw *hw, uint32_t start_off,
 * Dram write routine.
 */
 BC_STATUS crystalhd_link_mem_wr(struct crystalhd_hw *hw, uint32_t start_off,
-						uint32_t dw_cnt, uint32_t *wr_buff)
+						uint32_t dw_cnt, const uint32_t *wr_buff)
 {
 	uint32_t ix = 0;
 
@@ -1861,10 +1861,11 @@ BC_STATUS crystalhd_link_put_ddr2sleep(struct crystalhd_hw *hw)
 *************************************************/
 
 BC_STATUS crystalhd_link_download_fw(struct crystalhd_hw *hw,
-				uint8_t *buffer, uint32_t sz)
+				const uint8_t *buffer, uint32_t sz)
 {
 	struct device *dev;
-	uint32_t reg_data, cnt, *temp_buff;
+	uint32_t reg_data, cnt;
+	const uint32_t *temp_buff;
 	uint32_t fw_sig_len = CRYSTALHD_LINK_FIRMWARE_TRAILER_SIZE;
 	uint32_t dram_offset = BC_FWIMG_ST_ADDR, sig_reg;
 
@@ -1907,7 +1908,7 @@ BC_STATUS crystalhd_link_download_fw(struct crystalhd_hw *hw,
 	msleep_interruptible(10);
 	/*  Load the FW to the FW_ADDR field in the DCI_FIRMWARE_ADDR */
 	hw->pfnWriteFPGARegister(hw->adp, DCI_FIRMWARE_ADDR, dram_offset);
-	temp_buff = (uint32_t *)buffer;
+	temp_buff = (const uint32_t *)buffer;
 	for (cnt = 0; cnt < (sz - fw_sig_len); cnt += 4) {
 		hw->pfnWriteFPGARegister(hw->adp, DCI_DRAM_BASE_ADDR, (dram_offset >> 19));
 		hw->pfnWriteFPGARegister(hw->adp, DCI_FIRMWARE_DATA, *temp_buff);

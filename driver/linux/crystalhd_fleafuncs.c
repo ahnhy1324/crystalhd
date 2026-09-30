@@ -388,7 +388,7 @@ BC_STATUS crystalhd_flea_mem_rd(struct crystalhd_hw *hw, uint32_t start_off,
 * Dram write routine.
 */
 BC_STATUS crystalhd_flea_mem_wr(struct crystalhd_hw *hw, uint32_t start_off,
-								uint32_t dw_cnt, uint32_t *wr_buff)
+								uint32_t dw_cnt, const uint32_t *wr_buff)
 {
 	uint32_t ix = 0;
 	uint32_t addr = start_off, base;
@@ -1143,11 +1143,13 @@ void crystalhd_flea_update_temperature(struct crystalhd_hw *hw)
 *
 * Flea firmware download routine.
 */
-BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw, uint8_t *pBuffer, uint32_t buffSz)
+BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+				     const uint8_t *pBuffer, uint32_t buffSz)
 {
 	uint32_t pollCnt=0,regVal=0;
 	uint32_t borchStachAddr=0;
-	uint32_t *pCmacSig=NULL,cmacOffset=0,i=0;
+	const uint32_t *pCmacSig=NULL;
+	uint32_t cmacOffset=0,i=0;
 	BC_STATUS sts;
 	/*uint32_t BuffSz = (BuffSzInDWords * 4); */
 	/*uint32_t HBCnt=0; */
@@ -1258,10 +1260,10 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw, uint8_t *pBuffer, 
 	if(bSecure)
 		sts = hw->pfnDevDRAMWrite(hw, FW_DOWNLOAD_START_ADDR,
 			(buffSz - FLEA_FW_SIG_LEN_IN_BYTES -
-			 LENGTH_FIELD_SIZE) / 4, (uint32_t *)pBuffer);
+			 LENGTH_FIELD_SIZE) / 4, (const uint32_t *)pBuffer);
 	else
 		sts = hw->pfnDevDRAMWrite(hw, FW_DOWNLOAD_START_ADDR,
-			buffSz / 4, (uint32_t *)pBuffer);
+			buffSz / 4, (const uint32_t *)pBuffer);
 	if (sts != BC_STS_SUCCESS) {
 		dev_err(&hw->adp->pdev->dev,
 			"[%s]: firmware DRAM write failed: %d\n", __func__, sts);
@@ -1286,7 +1288,7 @@ BCHP_SCRUB_CTRL_BI_CMAC_127_96		0x000f6018			CMAC Bits[127:96]
 	{
 		dev_dbg(&hw->adp->pdev->dev,"[crystalhd_flea_download_fw]: step 5. Write the signature to CMAC register.\n");
 		cmacOffset = buffSz - FLEA_FW_SIG_LEN_IN_BYTES;
-		pCmacSig = (uint32_t *) &pBuffer[cmacOffset];
+		pCmacSig = (const uint32_t *)&pBuffer[cmacOffset];
 
 		for(i=0;i < FLEA_FW_SIG_LEN_IN_DWORD;i++)
 		{

@@ -466,19 +466,18 @@ static BC_STATUS bc_cproc_cfg_wr(struct crystalhd_cmd *ctx,
 	return sts;
 }
 
-static BC_STATUS bc_cproc_download_fw(struct crystalhd_cmd *ctx,
-				      crystalhd_ioctl_data *idata)
+BC_STATUS crystalhd_fw_download_locked(struct crystalhd_cmd *ctx,
+				       const void *owner,
+				       const uint8_t *image, size_t size)
 {
 	BC_STATUS sts = BC_STS_SUCCESS;
 	uint32_t minimum;
 
 	if (!ctx || !ctx->adp || !ctx->adp->pdev || !ctx->hw_ctx ||
-	    !ctx->hw_ctx->pfnFWDwnld || !idata || !idata->add_cdata ||
-	    !idata->add_cdata_sz || idata->u_id >= BC_LINK_MAX_OPENS) {
-		dev_err(chddev(), "%s: Invalid Arg\n", __func__);
+	    !ctx->hw_ctx->pfnFWDwnld || !owner || !image || !size)
 		return BC_STS_INV_ARG;
-	}
-	sts = crystalhd_session_require_owner(ctx, &ctx->user[idata->u_id]);
+
+	sts = crystalhd_session_require_owner(ctx, owner);
 	if (sts != BC_STS_SUCCESS)
 		return sts;
 
@@ -492,8 +491,8 @@ static BC_STATUS bc_cproc_download_fw(struct crystalhd_cmd *ctx,
 	default:
 		return BC_STS_INV_ARG;
 	}
-	if (!crystalhd_valid_firmware_image(idata->add_cdata,
-					    idata->add_cdata_sz, minimum))
+	if (size > CRYSTALHD_MAX_FIRMWARE_SIZE ||
+	    !crystalhd_valid_firmware_image(image, (uint32_t)size, minimum))
 		return BC_STS_INV_ARG;
 
 	dev_dbg(chddev(), "Downloading FW\n");
@@ -510,8 +509,7 @@ static BC_STATUS bc_cproc_download_fw(struct crystalhd_cmd *ctx,
 		goto done;
 	}
 
-	sts = ctx->hw_ctx->pfnFWDwnld(ctx->hw_ctx, (uint8_t *)idata->add_cdata,
-				  idata->add_cdata_sz);
+	sts = ctx->hw_ctx->pfnFWDwnld(ctx->hw_ctx, image, (uint32_t)size);
 
 	if (sts != BC_STS_SUCCESS) {
 		dev_info(chddev(), "Firmware Download Failure!! - %d\n", sts);
@@ -528,6 +526,20 @@ static BC_STATUS bc_cproc_download_fw(struct crystalhd_cmd *ctx,
 done:
 	crystalhd_hw_fw_cmd_leave(ctx->hw_ctx);
 	return sts;
+}
+
+static BC_STATUS bc_cproc_download_fw(struct crystalhd_cmd *ctx,
+				      crystalhd_ioctl_data *idata)
+{
+	if (!ctx || !idata || !idata->add_cdata || !idata->add_cdata_sz ||
+	    idata->u_id >= BC_LINK_MAX_OPENS) {
+		dev_err(chddev(), "%s: Invalid Arg\n", __func__);
+		return BC_STS_INV_ARG;
+	}
+
+	return crystalhd_fw_download_locked(ctx, &ctx->user[idata->u_id],
+					    idata->add_cdata,
+					    idata->add_cdata_sz);
 }
 
 /*
