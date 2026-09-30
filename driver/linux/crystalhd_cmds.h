@@ -62,7 +62,10 @@ struct crystalhd_cmd {
 	uint32_t		state;
 	struct crystalhd_adp	*adp;
 	struct crystalhd_user	user[BC_LINK_MAX_OPENS];
-	struct crystalhd_user	*session_owner;
+	/* Opaque owner identity; never dereferenced. Device teardown may revoke it
+	 * without a frontend release.
+	 */
+	const void		*session_owner;
 
 	spinlock_t		ctx_lock;
 	uint32_t		tx_list_id;
@@ -102,6 +105,16 @@ crystalhd_cmd_proc crystalhd_get_cmd_proc(struct crystalhd_cmd *ctx, uint32_t cm
 BC_STATUS crystalhd_user_open(struct crystalhd_cmd *ctx, struct crystalhd_user **user_ctx);
 BC_STATUS crystalhd_user_set_mode(struct crystalhd_cmd *ctx,
 				 struct crystalhd_user *uc, uint32_t mode);
+/* Caller excludes PCI removal (normally with chd_device_lock for read), has
+ * verified a present adapter, and holds adp->user_lock exclusively. The owner
+ * token is stable and unique from successful acquisition through release.
+ * Do not call release after the device becomes unavailable; teardown forcibly
+ * revokes the token without dereferencing it.
+ */
+BC_STATUS crystalhd_session_acquire_locked(struct crystalhd_cmd *ctx,
+					   const void *owner);
+BC_STATUS crystalhd_session_release_locked(struct crystalhd_cmd *ctx,
+					   const void *owner);
 BC_STATUS crystalhd_tx_transfer_sync(struct crystalhd_cmd *ctx,
 				     struct crystalhd_dio_req *dio,
 				     uint8_t data_flags);

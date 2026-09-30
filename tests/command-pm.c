@@ -63,7 +63,7 @@ struct crystalhd_cmd {
     uint32_t state;
     struct crystalhd_adp *adp;
     struct crystalhd_user user[BC_LINK_MAX_OPENS];
-    struct crystalhd_user *session_owner;
+    const void *session_owner;
     uint32_t tx_list_id, cin_wait_exit, pwr_state_change;
     struct crystalhd_hw *hw_ctx;
 };
@@ -104,6 +104,7 @@ static BC_STATUS raw_status;
 static bool start_ok, stop_ok;
 static bool elem_live, dio_live, rings_live, hardware_allocated;
 static bool hardware_alloc_fail, admission_pending, open_pending;
+static bool expect_retire_irq;
 static unsigned admission_uid;
 static uint32_t admission_state, admission_wait;
 static int elem_error, dio_error;
@@ -257,6 +258,10 @@ static void kfree(void *memory)
 static void disable_irq(int irq)
 {
     Check(irq == endpoint.irq && !irq_depth, "session transition disables the device IRQ");
+    if (expect_retire_irq)
+        Check(context.cin_wait_exit == 1 &&
+              context.pwr_state_change == BC_HW_RUNNING,
+              "session cancellation is published before IRQ quiescence");
     irq_depth++; irq_disables++;
 }
 static void enable_irq(int irq)
@@ -529,6 +534,7 @@ static void Reset(uint32_t state, bool with_hardware)
     hardware_allocations = hardware_frees = last_close_cfg_users = 0;
     hardware_alloc_attempts = 0;
     hardware_alloc_fail = admission_pending = open_pending = false;
+    expect_retire_irq = false;
     binding_count = binding_frees = device_reads = user_writes = 0;
     memset(binding_live, 0, sizeof(binding_live));
     chd_device_lock = 0;
@@ -1133,6 +1139,97 @@ static void ResourceOwnership(void)
               elem_deletes == 1 && dio_destroys == 1,
               "owner RELEASE and file close cannot retire resources twice");
     }
+}
+static void FrontendNeutralSessionOwner(void)
+{
+    int foreign_owner, wrong_owner;
+    struct file legacy, monitor, contender;
+    struct crystalhd_user *contender_user;
+    crystalhd_ioctl_data data = {0};
+
+    for (unsigned which = 0; which < 3; which++) {
+        BC_STATUS expected = which == 2 ? BC_STS_INSUFF_RES : BC_STS_ERROR;
+
+        Reset(BC_LINK_INVALID, false);
+        if (which == 0) elem_error = -1;
+        if (which == 1) dio_error = -1;
+        if (which == 2) ring_status = BC_STS_INSUFF_RES;
+        Check(crystalhd_session_acquire_locked(&context, &foreign_owner) == expected,
+              "frontend-only acquisition propagates every resource setup failure");
+        Check(!context.session_owner && !context.hw_ctx && !adapter.cfg_users &&
+              !bc_get_userhandle_count(&context) && !hardware_allocated &&
+              !elem_live && !dio_live && !rings_live,
+              "failed frontend-only acquisition leaves no owner or hardware context");
+        Check(hardware_opens == 1 && hardware_closes == 1 &&
+              hardware_allocations == 1 && hardware_frees == 1 &&
+              irq_disables == 2 && irq_enables == 2 && !irq_depth,
+              "failed frontend-only acquisition closes exactly the context it opened");
+    }
+
+    Reset(BC_LINK_INVALID, false);
+    Check(crystalhd_session_acquire_locked(NULL, &foreign_owner) == BC_STS_INV_ARG &&
+          crystalhd_session_acquire_locked(&context, NULL) == BC_STS_INV_ARG,
+          "shared acquisition rejects missing context and owner tokens");
+    Check(crystalhd_session_acquire_locked(&context, &foreign_owner) == BC_STS_SUCCESS &&
+          !adapter.cfg_users && !bc_get_userhandle_count(&context),
+          "a frontend can acquire the decoder without inventing a legacy user");
+    Check(context.session_owner == &foreign_owner && context.hw_ctx == &hardware &&
+          elem_live && dio_live && rings_live,
+          "frontend-only acquisition publishes one complete resource set");
+    Check(crystalhd_session_acquire_locked(&context, &wrong_owner) == BC_STS_BUSY &&
+          crystalhd_session_release_locked(&context, &wrong_owner) == BC_STS_ERR_USAGE,
+          "foreign acquire and release tokens cannot replace the exact owner");
+    context.pwr_state_change = BC_HW_SUSPEND;
+    expect_retire_irq = true;
+    Check(crystalhd_session_release_locked(&context, &foreign_owner) == BC_STS_SUCCESS,
+          "a frontend-only session releases through the shared boundary");
+    expect_retire_irq = false;
+    CheckNoSession();
+
+    legacy = OpenResourceFile(DTS_PLAYBACK_MODE);
+    Check(context.session_owner ==
+          ((struct crystalhd_file *)legacy.private_data)->user,
+          "legacy playback reacquires the same shared boundary after release");
+    CloseFile(&legacy);
+    CheckNoSession();
+
+    Reset(BC_LINK_INVALID, false);
+    monitor = OpenFile(DTS_MONITOR_MODE);
+    Check(crystalhd_session_acquire_locked(&context, &foreign_owner) == BC_STS_SUCCESS,
+          "a non-legacy frontend can acquire the shared decoder session");
+    Check(context.session_owner == &foreign_owner && context.hw_ctx == &hardware &&
+          elem_live && dio_live && rings_live && hardware_opens == 1,
+          "shared acquisition records only the opaque owner and one resource set");
+
+    contender = OpenFile(DTS_MODE_INV);
+    contender_user = ((struct crystalhd_file *)contender.private_data)->user;
+    data.u_id = contender_user->uid;
+    data.udata.u.NotifyMode.Mode = DTS_PLAYBACK_MODE;
+    Check(bc_cproc_notify_mode(&context, &data) == BC_STS_ERR_USAGE &&
+          contender_user->mode == (uint32_t)DTS_MODE_INV &&
+          context.session_owner == &foreign_owner,
+          "legacy admission cannot replace a shared frontend owner");
+    Check(crystalhd_session_acquire_locked(&context, &wrong_owner) == BC_STS_BUSY,
+          "a second shared frontend owner receives a deterministic busy result");
+
+    CloseFile(&contender);
+    CloseFile(&monitor);
+    Check(!adapter.cfg_users && context.session_owner == &foreign_owner &&
+          context.hw_ctx == &hardware && elem_live && dio_live && rings_live &&
+          !hardware_closes && !hardware_frees,
+          "closing the last legacy file cannot retire another frontend's session");
+    Check(crystalhd_session_release_locked(&context, &wrong_owner) == BC_STS_ERR_USAGE &&
+          context.session_owner == &foreign_owner && context.hw_ctx == &hardware,
+          "only the exact opaque owner can release the shared session");
+    Check(crystalhd_session_release_locked(&context, NULL) == BC_STS_INV_ARG &&
+          context.session_owner == &foreign_owner,
+          "a NULL release token cannot alter shared ownership");
+    Check(crystalhd_session_release_locked(&context, &foreign_owner) == BC_STS_SUCCESS,
+          "the exact shared owner can release its decoder session");
+    CheckNoSession();
+    Check(hardware_closes == 1 && hardware_frees == 1 && ring_frees == 1 &&
+          dio_destroys == 1 && elem_deletes == 1 && !irq_depth,
+          "shared release retires every playback resource exactly once");
 }
 static struct file OpenPendingAfterOwnerClose(uint32_t mode)
 {
@@ -2110,6 +2207,7 @@ int main(void)
         {"repeated and changed mode rejection", RepeatedMode},
         {"HWINIT admission rejects overlapping resource setup", HwInitAdmission},
         {"explicit resource ownership across legacy modes", ResourceOwnership},
+        {"frontend-neutral decoder session arbitration", FrontendNeutralSessionOwner},
         {"pending unconfigured handle after resource owner close", PendingOpenAfterOwnerClose},
         {"pending acquisition failure rollback, retry and close", PendingAcquisitionFailures},
         {"monitor and rejected admission avoid hardware recreation", AdmissionWithoutReopeningHardware},

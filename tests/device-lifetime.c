@@ -11,6 +11,8 @@
 typedef uint64_t u64;
 typedef int BC_STATUS;
 #define BC_STS_SUCCESS 0
+#define BC_STS_INV_ARG 1
+#define BC_STS_ERR_USAGE 2
 #define BC_LINK_INVALID 0
 #define BC_HW_RUNNING 0
 #define DTS_MODE_INV UINT32_MAX
@@ -41,7 +43,7 @@ struct crystalhd_cmd {
 	struct crystalhd_adp *adp;
 	struct crystalhd_hw *hw_ctx;
 	struct crystalhd_user user[2];
-	struct crystalhd_user *session_owner;
+	const void *session_owner;
 	uint32_t cin_wait_exit, pwr_state_change, state;
 };
 typedef struct crystalhd_ioctl_data {
@@ -437,6 +439,30 @@ static void test_fail_stop_then_remove(void)
 	}
 }
 
+static void test_external_owner_teardown(void)
+{
+	unsigned int fail_first;
+
+	for (fail_first = 0; fail_first < 2; fail_first++) {
+		struct crystalhd_adp *adp;
+		int external_owner;
+
+		reset();
+		adp = attach(true, true);
+		adp->cmds.session_owner = &external_owner;
+		assert(!adp->cfg_users);
+		if (fail_first) {
+			chd_dec_fail_closed(adp, -EIO);
+			assert(!adp->present &&
+			       adp->cmds.session_owner == &external_owner);
+		}
+		chd_dec_pci_remove(&pci);
+		assert(dma_frees == 1 && released[HARDWARE] == 1 &&
+		       released[DIO_POOL] == 1 && released[ELEM_POOL] == 1);
+		assert_released();
+	}
+}
+
 static void test_stale_close(void)
 {
 	unsigned int which;
@@ -474,6 +500,7 @@ int main(void)
 {
 	test_remove();
 	test_fail_stop_then_remove();
+	test_external_owner_teardown();
 	test_stale_close();
 	printf("Device lifetime: %u scenarios passed\n", scenarios);
 	return 0;

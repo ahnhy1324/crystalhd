@@ -126,7 +126,80 @@ static BC_STATUS crystalhd_session_setup(struct crystalhd_cmd *ctx)
 	return BC_STS_SUCCESS;
 }
 
-/* Caller holds user_lock exclusively for a user on a present device. */
+static void crystalhd_retire_hw_context(struct crystalhd_cmd *ctx,
+					bool retire_session_resources)
+{
+	if (!ctx->hw_ctx)
+		return;
+
+	if (retire_session_resources) {
+		ctx->cin_wait_exit = 1;
+		/* Stop capture in case flush was not called before session release. */
+		ctx->pwr_state_change = BC_HW_RUNNING;
+	}
+	disable_irq(ctx->adp->pdev->irq);
+	if (retire_session_resources) {
+		crystalhd_hw_stop_capture(ctx->hw_ctx, true);
+		crystalhd_hw_free_dma_rings(ctx->hw_ctx);
+		crystalhd_destroy_dio_pool(ctx->adp);
+		crystalhd_delete_elem_pool(ctx->adp);
+	}
+	ctx->state = BC_LINK_INVALID;
+	crystalhd_hw_close(ctx->hw_ctx);
+	kfree(ctx->hw_ctx);
+	ctx->hw_ctx = NULL;
+	enable_irq(ctx->adp->pdev->irq);
+}
+
+BC_STATUS crystalhd_session_acquire_locked(struct crystalhd_cmd *ctx,
+					   const void *owner)
+{
+	BC_STATUS sts;
+	bool opened_context;
+
+	if (!ctx || !ctx->adp || !owner)
+		return BC_STS_INV_ARG;
+	if (ctx->session_owner)
+		return BC_STS_BUSY;
+	if (ctx->state != BC_LINK_INVALID)
+		return BC_STS_ERR_USAGE;
+
+	opened_context = !ctx->hw_ctx;
+	sts = crystalhd_ensure_hw_context(ctx);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
+
+	sts = crystalhd_session_setup(ctx);
+	if (sts != BC_STS_SUCCESS) {
+		/* A standalone frontend has no legacy file close to retire a context
+		 * opened by this attempt. The setup helper already unwound pools and
+		 * rings; retain a context supplied by an existing file lifetime.
+		 */
+		if (opened_context)
+			crystalhd_retire_hw_context(ctx, false);
+		return sts;
+	}
+
+	/* Publish ownership only after the complete resource set exists. */
+	ctx->session_owner = owner;
+	ctx->cin_wait_exit = 0;
+	return BC_STS_SUCCESS;
+}
+
+BC_STATUS crystalhd_session_release_locked(struct crystalhd_cmd *ctx,
+					   const void *owner)
+{
+	if (!ctx || !owner)
+		return BC_STS_INV_ARG;
+	if (ctx->session_owner != owner)
+		return BC_STS_ERR_USAGE;
+
+	crystalhd_retire_hw_context(ctx, true);
+	ctx->session_owner = NULL;
+	return BC_STS_SUCCESS;
+}
+
+/* Caller excludes PCI removal and holds user_lock exclusively on a present device. */
 BC_STATUS crystalhd_user_set_mode(struct crystalhd_cmd *ctx,
 				 struct crystalhd_user *uc, uint32_t mode)
 {
@@ -166,16 +239,17 @@ BC_STATUS crystalhd_user_set_mode(struct crystalhd_cmd *ctx,
 		return BC_STS_ERR_USAGE;
 	}
 
+	/* A legacy file retains its opened hardware context after setup failure
+	 * so the same handle can retry and its normal close can retire it.
+	 */
 	sts = crystalhd_ensure_hw_context(ctx);
 	if (sts != BC_STS_SUCCESS)
 		return sts;
 
-	sts = crystalhd_session_setup(ctx);
+	sts = crystalhd_session_acquire_locked(ctx, uc);
 	if (sts != BC_STS_SUCCESS)
 		return sts;
 
-	ctx->session_owner = uc;
-	ctx->cin_wait_exit = 0;
 	uc->mode = mode;
 	return BC_STS_SUCCESS;
 }
@@ -1165,7 +1239,7 @@ static BC_STATUS bc_cproc_reset_stats(struct crystalhd_cmd *ctx,
 void crystalhd_user_close(struct crystalhd_cmd *ctx, struct crystalhd_user *uc)
 {
 	uint32_t mode;
-	bool release_session;
+	bool owns_session;
 
 	if (!uc->in_use)
 		return;
@@ -1176,24 +1250,11 @@ void crystalhd_user_close(struct crystalhd_cmd *ctx, struct crystalhd_user *uc)
 
 	dev_info(chddev(), "Closing user[%x] handle with mode %x\n", uc->uid, mode);
 
-	release_session = ctx->session_owner == uc || bc_get_userhandle_count(ctx) == 0;
-	if (release_session && ctx->hw_ctx) {
-		ctx->cin_wait_exit = 1;
-		/* Stop the HW Capture just in case flush did not get called before stop */
-		ctx->pwr_state_change = BC_HW_RUNNING;
-		disable_irq(ctx->adp->pdev->irq);
-		crystalhd_hw_stop_capture(ctx->hw_ctx, true);
-		crystalhd_hw_free_dma_rings(ctx->hw_ctx);
-		crystalhd_destroy_dio_pool(ctx->adp);
-		crystalhd_delete_elem_pool(ctx->adp);
-		ctx->state = BC_LINK_INVALID;
-		crystalhd_hw_close(ctx->hw_ctx);
-		kfree(ctx->hw_ctx);
-		ctx->hw_ctx = NULL;
-		enable_irq(ctx->adp->pdev->irq);
-	}
-	if (release_session)
-		ctx->session_owner = NULL;
+	owns_session = ctx->session_owner == uc;
+	if (owns_session)
+		crystalhd_session_release_locked(ctx, uc);
+	else if (!ctx->session_owner && bc_get_userhandle_count(ctx) == 0)
+		crystalhd_retire_hw_context(ctx, true);
 
 	if (ctx->adp->cfg_users > 0)
 		ctx->adp->cfg_users--;
