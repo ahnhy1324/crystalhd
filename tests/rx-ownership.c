@@ -78,9 +78,11 @@ static unsigned unmaps[BC_RX_LIST_CNT];
 static unsigned checks, failures, groups, maps, post_calls, stop_calls, irq_depth;
 static unsigned irq_disables, irq_enables, notify_calls, pause_calls;
 static unsigned sem_attempts, hardware_notifications, map_attempts, translate_calls;
+static unsigned fetch_wait_calls;
 static unsigned fail_post_call;
 static BC_STATUS map_status, translate_status, post_status, queue_status;
-static bool interrupt_lock, wait_signal, stop_fault, notify_ok, checking_admission;
+static bool interrupt_lock, wait_signal, wait_suspend, stop_fault, notify_ok;
+static bool checking_admission;
 static bool checking_start, start_post_observed;
 static char lifecycle_events[64];
 static unsigned lifecycle_event_count;
@@ -102,6 +104,14 @@ static void check(bool condition, const char *message)
 {
     checks++;
     if (!condition) { failures++; fprintf(stderr, "FAIL: %s\n", message); }
+}
+static bool memory_is_zero(const void *memory, size_t size)
+{
+    const uint8_t *bytes = memory;
+
+    for (size_t i = 0; i < size; i++)
+        if (bytes[i]) return false;
+    return true;
 }
 static void lifecycle_event(char event)
 {
@@ -229,6 +239,9 @@ static void *crystalhd_dioq_fetch_wait(struct crystalhd_hw *hw, uint32_t timeout
 {
     assert(hw == &hardware && timeout == BC_PROC_OUTPUT_TIMEOUT / 1000);
     assert(hardware.fetch_sem == 1);
+    fetch_wait_calls++;
+    if (wait_suspend)
+        context.state |= BC_LINK_SUSPEND;
     *signal = wait_signal;
     return wait_signal ? NULL : crystalhd_dioq_fetch(hw->rx_rdyq);
 }
@@ -416,8 +429,10 @@ static void reset(uint32_t device)
     maps = post_calls = stop_calls = irq_depth = irq_disables = irq_enables = 0;
     notify_calls = pause_calls = fail_post_call = 0;
     sem_attempts = hardware_notifications = map_attempts = translate_calls = 0;
+    fetch_wait_calls = 0;
     map_status = translate_status = post_status = queue_status = BC_STS_SUCCESS;
-    interrupt_lock = wait_signal = stop_fault = checking_admission = false;
+    interrupt_lock = wait_signal = wait_suspend = stop_fault = false;
+    checking_admission = false;
     checking_start = start_post_observed = false;
     start_notify_observed = start_notify_notifications = 0;
     start_notify_state = start_notify_pause = start_notify_resume = 0;
@@ -484,6 +499,295 @@ static void drain(void)
     for (unsigned i = 0; i < BC_RX_LIST_CNT; i++) released += unmaps[i];
     check(released == maps, "all successfully mapped registrations are released exactly once");
     check(irq_disables == irq_enables, "capture drain restores IRQ state");
+}
+static void fill_ready_pib(struct crystalhd_rx_dma_pkt *packet)
+{
+    packet->pib.picture_number = 23;
+    packet->pib.width = 1920;
+    packet->pib.height = 1080;
+    packet->pib.chroma_format = 0x420;
+    packet->pib.pulldown = 5;
+    packet->pib.flags = 0x106;
+    packet->pib.sess_num = 17;
+    packet->pib.aspect_ratio = 3;
+    packet->pib.colour_primaries = 7;
+    packet->pib.picture_meta_payload = 0x12345678;
+    packet->pib.frame_rate = 0x1e0001;
+}
+static void apply_expected_pib(struct C011_PIB *pib,
+                               const struct crystalhd_rx_dma_pkt *packet)
+{
+    pib->ppb.picture_number = packet->pib.picture_number;
+    pib->ppb.width = packet->pib.width;
+    pib->ppb.height = packet->pib.height;
+    pib->ppb.chroma_format = packet->pib.chroma_format;
+    pib->ppb.pulldown = packet->pib.pulldown;
+    pib->ppb.flags = packet->pib.flags;
+    pib->ptsStcOffset = packet->pib.sess_num;
+    pib->ppb.aspect_ratio = packet->pib.aspect_ratio;
+    pib->ppb.colour_primaries = packet->pib.colour_primaries;
+    pib->ppb.picture_meta_payload = packet->pib.picture_meta_payload;
+    pib->resolution = packet->pib.frame_rate;
+}
+static struct crystalhd_dio_req *map_private(bool mode422);
+static BC_STATUS submit(struct crystalhd_cmd *ctx,
+                        struct crystalhd_dio_req *request);
+static void dequeue_argument_cases(uint32_t device)
+{
+    struct crystalhd_rx_dequeue_result result;
+
+    reset(device);
+    memset(&result, 0xa5, sizeof(result));
+    check(crystalhd_rx_dequeue(NULL, &result) == BC_STS_INV_ARG &&
+          memory_is_zero(&result, sizeof(result)) && !fetch_wait_calls,
+          "mapped dequeue rejects NULL context and transfers no ownership");
+    inventory(0, 0, 0);
+
+    reset(device);
+    context.hw_ctx = NULL;
+    memset(&result, 0xa5, sizeof(result));
+    check(crystalhd_rx_dequeue(&context, &result) == BC_STS_INV_ARG &&
+          memory_is_zero(&result, sizeof(result)) && fetch_wait_calls == 0,
+          "mapped dequeue rejects missing ready hardware without an owner");
+    inventory(0, 0, 0);
+
+    reset(device);
+    context.hw_ctx = NULL;
+    context.state = BC_LINK_READY | BC_LINK_SUSPEND;
+    memset(&result, 0xa5, sizeof(result));
+    check(crystalhd_rx_dequeue(&context, &result) == BC_STS_PWR_MGMT &&
+          memory_is_zero(&result, sizeof(result)) && !fetch_wait_calls,
+          "suspend gate remains authoritative before missing hardware");
+    inventory(0, 0, 0);
+
+    reset(device);
+    context.hw_ctx = NULL;
+    context.state = BC_LINK_INIT;
+    memset(&result, 0xa5, sizeof(result));
+    check(crystalhd_rx_dequeue(&context, &result) == BC_STS_ERR_USAGE &&
+          memory_is_zero(&result, sizeof(result)) && !fetch_wait_calls,
+          "capture-enable gate remains authoritative before missing hardware");
+    inventory(0, 0, 0);
+
+    reset(device);
+    check(crystalhd_rx_dequeue(&context, NULL) == BC_STS_INV_ARG &&
+          !fetch_wait_calls && !sem_attempts,
+          "mapped dequeue rejects NULL result before waiting or locking");
+    inventory(0, 0, 0);
+}
+static void dequeue_gate_wait_cases(uint32_t device)
+{
+    enum { SUSPENDED_READY, SUSPENDED_STOPPED, STOPPED, EMPTY,
+           SIGNALLED, SUSPEND_DURING_WAIT };
+
+    for (unsigned direct = 0; direct < 2; direct++) {
+        for (unsigned variant = SUSPENDED_READY;
+             variant <= SUSPEND_DURING_WAIT; variant++) {
+            struct crystalhd_rx_dequeue_result result;
+            crystalhd_ioctl_data data;
+            BC_DEC_OUT_BUFF before;
+            BC_STATUS expected;
+            unsigned expected_wait;
+
+            reset(device);
+            memset(&result, 0xa5, sizeof(result));
+            memset(&data, 0xa5, sizeof(data));
+            memcpy(&before, &data.udata.u.DecOutData, sizeof(before));
+            switch (variant) {
+            case SUSPENDED_READY:
+                context.state = BC_LINK_READY | BC_LINK_SUSPEND;
+                expected = BC_STS_PWR_MGMT;
+                expected_wait = 0;
+                break;
+            case SUSPENDED_STOPPED:
+                context.state = BC_LINK_INIT | BC_LINK_SUSPEND;
+                expected = BC_STS_PWR_MGMT;
+                expected_wait = 0;
+                break;
+            case STOPPED:
+                context.state = BC_LINK_INIT;
+                expected = BC_STS_ERR_USAGE;
+                expected_wait = 0;
+                break;
+            case EMPTY:
+                expected = BC_STS_TIMEOUT;
+                expected_wait = 1;
+                break;
+            case SIGNALLED:
+                wait_signal = true;
+                expected = BC_STS_IO_USER_ABORT;
+                expected_wait = 1;
+                break;
+            default:
+                wait_suspend = true;
+                expected = BC_STS_PWR_MGMT;
+                expected_wait = 1;
+                break;
+            }
+            check((direct ? crystalhd_rx_dequeue(&context, &result) :
+                   bc_cproc_fetch_frame(&context, &data)) == expected,
+                  "dequeue preserves suspend, capture gate and wait status ordering");
+            check(fetch_wait_calls == expected_wait && hardware.fetch_sem == 1,
+                  "dequeue waits only after state admission and returns unlocked");
+            if (direct)
+                check(memory_is_zero(&result, sizeof(result)),
+                      "failed mapped dequeue returns an empty result and no owner");
+            else
+                check(!memcmp(&before, &data.udata.u.DecOutData, sizeof(before)),
+                      "failed legacy dequeue leaves caller output byte-for-byte unchanged");
+            inventory(0, 0, 0);
+        }
+    }
+}
+static void mapped_dequeue_cases(uint32_t device)
+{
+    for (unsigned mode422 = 0; mode422 < 2; mode422++) {
+        struct crystalhd_rx_dequeue_result result;
+        struct crystalhd_dio_req *request;
+
+        reset(device);
+        request = map_private(mode422);
+        check(submit(&context, request) == BC_STS_SUCCESS,
+              "prepare directly submitted mapping for raw dequeue");
+        complete(0);
+        memset(&result, 0xa5, sizeof(result));
+        check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS &&
+              result.dio == request && result.flags == COMP_FLAG_DATA_VALID &&
+              result.y_done_sz == 128 &&
+              result.uv_done_sz == (mode422 ? 0U : 64U) &&
+              memory_is_zero(&result.pib, sizeof(result.pib)) &&
+              request->uinfo.comp_flags == result.flags && !unmaps[0],
+              "raw dequeue returns one mapped 420 or 422 completion without retiring it");
+        inventory_with_private(0, 0, 0, result.dio);
+        check(submit(&context, result.dio) == BC_STS_SUCCESS &&
+              maps == 1 && !unmaps[0],
+              "raw dequeue result can return through mapped RX admission without remapping");
+        inventory(1, 0, 0);
+        complete(0);
+        memset(&result, 0xa5, sizeof(result));
+        check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS &&
+              result.dio == request && result.flags == COMP_FLAG_DATA_VALID &&
+              maps == 1 && !unmaps[0],
+              "resubmitted mapping completes and dequeues with the same identity");
+        inventory_with_private(0, 0, 0, result.dio);
+        check(crystalhd_unmap_dio(&adapter, result.dio) == BC_STS_SUCCESS,
+              "raw dequeue caller retires its detached mapping exactly once");
+        inventory(0, 0, 0);
+
+        reset(device);
+        check(add(0) == BC_STS_SUCCESS,
+              "prepare legacy-submitted mapping for raw dequeue");
+        complete(0);
+        memset(&result, 0xa5, sizeof(result));
+        check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS &&
+              result.dio == &requests[0] && result.flags == COMP_FLAG_DATA_VALID &&
+              !unmaps[0],
+              "raw dequeue accepts a legacy-submitted completion without remapping");
+        inventory_with_private(0, 0, 0, result.dio);
+        check(crystalhd_unmap_dio(&adapter, result.dio) == BC_STS_SUCCESS,
+              "legacy-submitted raw result remains caller-owned until release");
+        inventory(0, 0, 0);
+    }
+}
+static void pib_dequeue_cases(uint32_t device)
+{
+    struct crystalhd_rx_dequeue_result result, expected_result;
+    crystalhd_ioctl_data data;
+    BC_DEC_OUT_BUFF expected_frame;
+
+    reset(device);
+    check(add(0) == BC_STS_SUCCESS, "prepare PIB completion for raw dequeue");
+    complete(0);
+    ready.packets[0]->flags = COMP_FLAG_DATA_VALID | COMP_FLAG_PIB_VALID;
+    fill_ready_pib(ready.packets[0]);
+    memset(&result, 0xa5, sizeof(result));
+    memset(&expected_result, 0, sizeof(expected_result));
+    expected_result.dio = &requests[0];
+    expected_result.flags = COMP_FLAG_DATA_VALID | COMP_FLAG_PIB_VALID;
+    expected_result.y_done_sz = 128;
+    expected_result.uv_done_sz = 64;
+    apply_expected_pib(&expected_result.pib, ready.packets[0]);
+    check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS &&
+          !memcmp(&result, &expected_result, sizeof(result)) && !unmaps[0],
+          "raw dequeue snapshots only valid completion metadata and keeps mapping ownership");
+    inventory_with_private(0, 0, 0, result.dio);
+    check(crystalhd_unmap_dio(&adapter, result.dio) == BC_STS_SUCCESS,
+          "raw PIB completion is released exactly once by its caller");
+    inventory(0, 0, 0);
+
+    reset(device);
+    check(add(0) == BC_STS_SUCCESS,
+          "prepare completion without valid PIB for legacy dequeue");
+    complete(0);
+    memset(&data, 0xa5, sizeof(data));
+    memcpy(&expected_frame, &data.udata.u.DecOutData, sizeof(expected_frame));
+    expected_frame.Flags = COMP_FLAG_DATA_VALID;
+    expected_frame.OutPutBuffs.YuvBuff = (uint8_t *)buffers[0];
+    expected_frame.OutPutBuffs.YuvBuffSz = sizeof(buffers[0]);
+    expected_frame.OutPutBuffs.UVbuffOffset = 128;
+    expected_frame.OutPutBuffs.b422Mode = false;
+    expected_frame.OutPutBuffs.YBuffDoneSz = 128;
+    expected_frame.OutPutBuffs.UVBuffDoneSz = 64;
+    check(bc_cproc_fetch_frame(&context, &data) == BC_STS_SUCCESS &&
+          !memcmp(&data.udata.u.DecOutData, &expected_frame, sizeof(expected_frame)) &&
+          unmaps[0] == 1,
+          "legacy dequeue without valid PIB preserves every unrelated output byte");
+    inventory(0, 0, 0);
+
+    reset(device);
+    check(add(0) == BC_STS_SUCCESS, "prepare PIB completion for legacy dequeue");
+    complete(0);
+    ready.packets[0]->flags = COMP_FLAG_DATA_VALID | COMP_FLAG_PIB_VALID;
+    fill_ready_pib(ready.packets[0]);
+    memset(&data, 0xa5, sizeof(data));
+    memcpy(&expected_frame, &data.udata.u.DecOutData, sizeof(expected_frame));
+    expected_frame.Flags = COMP_FLAG_DATA_VALID | COMP_FLAG_PIB_VALID;
+    apply_expected_pib(&expected_frame.PibInfo, ready.packets[0]);
+    expected_frame.OutPutBuffs.YuvBuff = (uint8_t *)buffers[0];
+    expected_frame.OutPutBuffs.YuvBuffSz = sizeof(buffers[0]);
+    expected_frame.OutPutBuffs.UVbuffOffset = 128;
+    expected_frame.OutPutBuffs.b422Mode = false;
+    expected_frame.OutPutBuffs.YBuffDoneSz = 128;
+    expected_frame.OutPutBuffs.UVBuffDoneSz = 64;
+    check(bc_cproc_fetch_frame(&context, &data) == BC_STS_SUCCESS &&
+          !memcmp(&data.udata.u.DecOutData, &expected_frame, sizeof(expected_frame)) &&
+          unmaps[0] == 1,
+          "legacy dequeue changes only Flags, valid PIB fields and six output fields");
+    inventory(0, 0, 0);
+}
+static void direct_format_dequeue_cases(uint32_t device)
+{
+    for (unsigned pib_valid = 0; pib_valid < 2; pib_valid++) {
+        struct crystalhd_rx_dequeue_result result, expected;
+        uint32_t initial_state = BC_LINK_INIT | BC_LINK_CAP_EN;
+        unsigned post_before;
+
+        reset(device);
+        check(add(0) == BC_STS_SUCCESS, "prepare format marker for raw dequeue");
+        complete(0);
+        ready.packets[0]->flags = COMP_FLAG_FMT_CHANGE |
+            (pib_valid ? COMP_FLAG_PIB_VALID : 0);
+        fill_ready_pib(ready.packets[0]);
+        context.state = initial_state;
+        post_before = post_calls;
+        memset(&result, 0xa5, sizeof(result));
+        memset(&expected, 0, sizeof(expected));
+        expected.dio = &requests[0];
+        expected.flags = ready.packets[0]->flags;
+        expected.y_done_sz = 128;
+        expected.uv_done_sz = 64;
+        if (pib_valid)
+            apply_expected_pib(&expected.pib, ready.packets[0]);
+        check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS &&
+              !memcmp(&result, &expected, sizeof(result)) &&
+              context.state == initial_state && !unmaps[0] &&
+              post_calls == post_before,
+              "raw format dequeue transfers a mapping without legacy requeue policy");
+        inventory_with_private(0, 0, 0, result.dio);
+        check(crystalhd_unmap_dio(&adapter, result.dio) == BC_STS_SUCCESS,
+              "raw format result remains caller-owned until explicit release");
+        inventory(0, 0, 0);
+    }
 }
 static void completion_case(uint32_t device)
 {
@@ -747,7 +1051,16 @@ static void retry_cases(uint32_t device)
 static void format_case(uint32_t device, unsigned failure)
 {
     crystalhd_ioctl_data data = {0};
+    BC_DEC_YUV_BUFFS output_before;
+    uint32_t bad_before, channel_before, video_before;
     reset(device);
+    memset(&data.udata.u.DecOutData, 0xa5,
+           sizeof(data.udata.u.DecOutData));
+    memcpy(&output_before, &data.udata.u.DecOutData.OutPutBuffs,
+           sizeof(output_before));
+    bad_before = data.udata.u.DecOutData.BadFrCnt;
+    channel_before = data.udata.u.DecOutData.PibInfo.channelId;
+    video_before = data.udata.u.DecOutData.PibInfo.ppb.video_buffer;
     check(add(0) == BC_STS_SUCCESS, "submit format-change registration");
     complete(0);
     ready.packets[0]->flags = COMP_FLAG_FMT_CHANGE | COMP_FLAG_PIB_VALID;
@@ -763,6 +1076,12 @@ static void format_case(uint32_t device, unsigned failure)
     check(data.udata.u.DecOutData.Flags == (COMP_FLAG_FMT_CHANGE | COMP_FLAG_PIB_VALID) &&
           data.udata.u.DecOutData.PibInfo.ppb.width == 1280,
           "format-change notification preserves format metadata");
+    check(!memcmp(&data.udata.u.DecOutData.OutPutBuffs, &output_before,
+                  sizeof(output_before)) &&
+          data.udata.u.DecOutData.BadFrCnt == bad_before &&
+          data.udata.u.DecOutData.PibInfo.channelId == channel_before &&
+          data.udata.u.DecOutData.PibInfo.ppb.video_buffer == video_before,
+          "format transition changes only Flags and the valid PIB subset");
     if (failure == 1 || failure == 2) {
         check(unmaps[0] == 1 && !(context.state & BC_LINK_FMT_CHG),
               "failed format admission releases its mapping without committing format state");
@@ -782,6 +1101,30 @@ static void format_case(uint32_t device, unsigned failure)
         }
     }
     drain();
+}
+static void format_without_pib_case(uint32_t device)
+{
+    for (unsigned data_valid = 0; data_valid < 2; data_valid++) {
+        crystalhd_ioctl_data data;
+        BC_DEC_OUT_BUFF expected;
+
+        reset(device);
+        check(add(0) == BC_STS_SUCCESS,
+              "submit format-change registration without PIB metadata");
+        complete(0);
+        ready.packets[0]->flags = COMP_FLAG_FMT_CHANGE |
+            (data_valid ? COMP_FLAG_DATA_VALID : 0);
+        context.state = BC_LINK_INIT | BC_LINK_CAP_EN;
+        memset(&data, 0xa5, sizeof(data));
+        memcpy(&expected, &data.udata.u.DecOutData, sizeof(expected));
+        expected.Flags = ready.packets[0]->flags;
+        check(bc_cproc_fetch_frame(&context, &data) == BC_STS_SUCCESS &&
+              !memcmp(&data.udata.u.DecOutData, &expected, sizeof(expected)) &&
+              context.state == BC_LINK_READY && !unmaps[0],
+              "legacy format dequeue changes only Flags and takes priority over data");
+        inventory(1, 0, 0);
+        drain();
+    }
 }
 static void cancellation_cases(uint32_t device)
 {
@@ -1101,7 +1444,8 @@ static void full_flush_cases(uint32_t device)
 static void invalid_command_arguments(uint32_t device)
 {
     BC_STATUS (*commands[])(struct crystalhd_cmd *, crystalhd_ioctl_data *) = {
-        bc_cproc_start_capture, bc_cproc_flush_cap_buffs, bc_cproc_add_cap_buff };
+        bc_cproc_start_capture, bc_cproc_flush_cap_buffs, bc_cproc_add_cap_buff,
+        bc_cproc_fetch_frame };
     for (unsigned c = 0; c < sizeof(commands) / sizeof(commands[0]); c++) {
         for (unsigned arg = 0; arg < 4; arg++) {
             crystalhd_ioctl_data data = {0};
@@ -1322,6 +1666,11 @@ int main(void)
 {
     uint32_t devices[] = { BC_PCI_DEVID_LINK, BC_PCI_DEVID_FLEA };
     for (size_t i = 0; i < sizeof(devices) / sizeof(devices[0]); i++) {
+        dequeue_argument_cases(devices[i]);
+        dequeue_gate_wait_cases(devices[i]);
+        mapped_dequeue_cases(devices[i]);
+        pib_dequeue_cases(devices[i]);
+        direct_format_dequeue_cases(devices[i]);
         completion_case(devices[i]);
         admission_layout_cases(devices[i]);
         admission_state_cases(devices[i]);
@@ -1330,6 +1679,7 @@ int main(void)
         add_failures(devices[i]);
         retry_cases(devices[i]);
         for (unsigned failure = 0; failure < 4; failure++) format_case(devices[i], failure);
+        format_without_pib_case(devices[i]);
         cancellation_cases(devices[i]);
         flush_argument_and_gate_cases(devices[i]);
         discard_flush_cases(devices[i]);

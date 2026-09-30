@@ -807,16 +807,42 @@ static BC_STATUS bc_cproc_fmt_change(struct crystalhd_cmd *ctx,
 	return sts == BC_STS_NO_DATA ? BC_STS_SUCCESS : sts;
 }
 
-static BC_STATUS bc_cproc_fetch_frame(struct crystalhd_cmd *ctx,
-				      crystalhd_ioctl_data *idata)
+static void bc_cproc_copy_pib(struct C011_PIB *dst,
+			      const struct C011_PIB *src)
 {
-	struct device *dev = chddev();
-	struct crystalhd_dio_req *dio = NULL;
-	BC_STATUS sts = BC_STS_SUCCESS;
-	BC_DEC_OUT_BUFF *frame;
+	dst->ppb.picture_number = src->ppb.picture_number;
+	dst->ppb.width = src->ppb.width;
+	dst->ppb.height = src->ppb.height;
+	dst->ppb.chroma_format = src->ppb.chroma_format;
+	dst->ppb.pulldown = src->ppb.pulldown;
+	dst->ppb.flags = src->ppb.flags;
+	dst->ptsStcOffset = src->ptsStcOffset;
+	dst->ppb.aspect_ratio = src->ppb.aspect_ratio;
+	dst->ppb.colour_primaries = src->ppb.colour_primaries;
+	dst->ppb.picture_meta_payload = src->ppb.picture_meta_payload;
+	dst->resolution = src->resolution;
+}
 
-	if (!ctx || !idata) {
-		dev_err(dev, "%s: Invalid Arg\n", __func__);
+/*
+ * Fetch one completed mapped RX registration using the legacy blocking
+ * timeout. The caller keeps command/device lifetime protection but does not
+ * hold fetch_sem. Success transfers the detached mapping in result->dio; the
+ * caller must either resubmit or unmap it exactly once. This remains a
+ * mapped-DIO boundary, not a generic capture-buffer interface.
+ */
+BC_STATUS crystalhd_rx_dequeue(struct crystalhd_cmd *ctx,
+			       struct crystalhd_rx_dequeue_result *result)
+{
+	struct crystalhd_dio_req *dio = NULL;
+	BC_STATUS sts;
+
+	if (!result) {
+		dev_err(chddev(), "%s: Invalid Arg\n", __func__);
+		return BC_STS_INV_ARG;
+	}
+	memset(result, 0, sizeof(*result));
+	if (!ctx) {
+		dev_err(chddev(), "%s: Invalid Arg\n", __func__);
 		return BC_STS_INV_ARG;
 	}
 
@@ -824,32 +850,56 @@ static BC_STATUS bc_cproc_fetch_frame(struct crystalhd_cmd *ctx,
 		return BC_STS_PWR_MGMT;
 
 	if (!(ctx->state & BC_LINK_CAP_EN)) {
-		dev_dbg(dev, "Capture not enabled..%x\n", ctx->state);
+		dev_dbg(chddev(), "Capture not enabled..%x\n", ctx->state);
 		return BC_STS_ERR_USAGE;
 	}
 
-	frame = &idata->udata.u.DecOutData;
-
-	sts = crystalhd_hw_get_cap_buffer(ctx->hw_ctx, &frame->PibInfo, &dio);
+	sts = crystalhd_hw_get_cap_buffer(ctx->hw_ctx, &result->pib, &dio);
 	if (sts != BC_STS_SUCCESS)
 		return (ctx->state & BC_LINK_SUSPEND) ? BC_STS_PWR_MGMT : sts;
 
-	dev_dbg(dev, "Got Picture\n");
+	dev_dbg(chddev(), "Got Picture\n");
+	result->dio = dio;
+	result->flags = dio->uinfo.comp_flags;
+	result->y_done_sz = dio->uinfo.y_done_sz;
+	result->uv_done_sz = dio->uinfo.uv_done_sz;
 
-	frame->Flags = dio->uinfo.comp_flags;
+	return BC_STS_SUCCESS;
+}
 
-	if (frame->Flags & COMP_FLAG_FMT_CHANGE)
-		return bc_cproc_fmt_change(ctx, dio);
+static BC_STATUS bc_cproc_fetch_frame(struct crystalhd_cmd *ctx,
+				      crystalhd_ioctl_data *idata)
+{
+	struct crystalhd_rx_dequeue_result result;
+	BC_DEC_OUT_BUFF *frame;
+	BC_STATUS sts;
 
-	frame->OutPutBuffs.YuvBuff = dio->uinfo.xfr_buff;
-	frame->OutPutBuffs.YuvBuffSz = dio->uinfo.xfr_len;
-	frame->OutPutBuffs.UVbuffOffset = dio->uinfo.uv_offset;
-	frame->OutPutBuffs.b422Mode = dio->uinfo.b422mode;
+	if (!ctx || !idata) {
+		dev_err(chddev(), "%s: Invalid Arg\n", __func__);
+		return BC_STS_INV_ARG;
+	}
 
-	frame->OutPutBuffs.YBuffDoneSz = dio->uinfo.y_done_sz;
-	frame->OutPutBuffs.UVBuffDoneSz = dio->uinfo.uv_done_sz;
+	sts = crystalhd_rx_dequeue(ctx, &result);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
 
-	crystalhd_unmap_dio(ctx->adp, dio);
+	frame = &idata->udata.u.DecOutData;
+	frame->Flags = result.flags;
+	if (result.flags & COMP_FLAG_PIB_VALID)
+		bc_cproc_copy_pib(&frame->PibInfo, &result.pib);
+
+	if (result.flags & COMP_FLAG_FMT_CHANGE)
+		return bc_cproc_fmt_change(ctx, result.dio);
+
+	frame->OutPutBuffs.YuvBuff = result.dio->uinfo.xfr_buff;
+	frame->OutPutBuffs.YuvBuffSz = result.dio->uinfo.xfr_len;
+	frame->OutPutBuffs.UVbuffOffset = result.dio->uinfo.uv_offset;
+	frame->OutPutBuffs.b422Mode = result.dio->uinfo.b422mode;
+
+	frame->OutPutBuffs.YBuffDoneSz = result.y_done_sz;
+	frame->OutPutBuffs.UVBuffDoneSz = result.uv_done_sz;
+
+	crystalhd_unmap_dio(ctx->adp, result.dio);
 
 	return BC_STS_SUCCESS;
 }
