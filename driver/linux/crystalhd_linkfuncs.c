@@ -1865,10 +1865,13 @@ BC_STATUS crystalhd_link_download_fw(struct crystalhd_hw *hw,
 {
 	struct device *dev;
 	uint32_t reg_data, cnt, *temp_buff;
-	uint32_t fw_sig_len = 36;
+	uint32_t fw_sig_len = CRYSTALHD_LINK_FIRMWARE_TRAILER_SIZE;
 	uint32_t dram_offset = BC_FWIMG_ST_ADDR, sig_reg;
 
-	if (!hw || !buffer || !sz) {
+	if (!hw || !hw->adp || !hw->adp->pdev ||
+	    !hw->pfnReadFPGARegister || !hw->pfnWriteFPGARegister ||
+	    !crystalhd_valid_firmware_image(buffer, sz,
+					       CRYSTALHD_LINK_MIN_FIRMWARE_SIZE)) {
 		printk(KERN_ERR "%s: Invalid Params\n", __func__);
 		return BC_STS_INV_ARG;
 	}
@@ -1938,8 +1941,12 @@ BC_STATUS crystalhd_link_download_fw(struct crystalhd_hw *hw,
 		while ((reg_data & BC_BIT(0)) != BC_BIT(0)) {
 			reg_data = hw->pfnReadFPGARegister(hw->adp, DCI_STATUS);
 			reg_data &= BC_BIT(0);
-			if (!(--cnt))
+			if (reg_data & BC_BIT(0))
 				break;
+			if (!(--cnt)) {
+				dev_err(dev, "Firmware validation timeout.\n");
+				return BC_STS_TIMEOUT;
+			}
 			msleep_interruptible(10);
 		}
 		reg_data = 0;

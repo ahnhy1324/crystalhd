@@ -1148,13 +1148,12 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw, uint8_t *pBuffer, 
 	uint32_t pollCnt=0,regVal=0;
 	uint32_t borchStachAddr=0;
 	uint32_t *pCmacSig=NULL,cmacOffset=0,i=0;
+	BC_STATUS sts;
 	/*uint32_t BuffSz = (BuffSzInDWords * 4); */
 	/*uint32_t HBCnt=0; */
 
 	bool bRetVal = true;
 	bool bSecure = true; // Default production cards. Can be false only for internal Broadcom dev cards
-
-	dev_dbg(&hw->adp->pdev->dev, "[%s]: Sz:%d\n", __func__, buffSz);
 
 /*
  *-- Step 1. Enable the SRCUBBING and DRAM SCRAMBLING
@@ -1166,9 +1165,17 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw, uint8_t *pBuffer, 
  *-- Step 7. Poll for BOOT verification done interrupt.
  */
 
-	/* First validate that we got data in the FW buffer */
-	if (buffSz == 0)
-		return BC_STS_ERROR;
+	/* Validate the complete payload/length/signature layout before MMIO or
+	 * any subtraction based on the untrusted image size.
+	 */
+	if (!hw || !hw->adp || !hw->adp->pdev ||
+	    !hw->pfnReadDevRegister || !hw->pfnWriteDevRegister ||
+	    !hw->pfnDevDRAMWrite ||
+	    !crystalhd_valid_firmware_image(pBuffer, buffSz,
+					       CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE))
+		return BC_STS_INV_ARG;
+
+	dev_dbg(&hw->adp->pdev->dev, "[%s]: Sz:%d\n", __func__, buffSz);
 
 /*-- Step 1. Enable the SRCUBBING and DRAM SCRAMBLING. */
 /*   Can we set both the bits at the same time?? Security Arch Doc describes the steps */
@@ -1249,9 +1256,17 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw, uint8_t *pBuffer, 
 			buffSz - FLEA_FW_SIG_LEN_IN_BYTES - LENGTH_FIELD_SIZE);
 
 	if(bSecure)
-		hw->pfnDevDRAMWrite(hw, FW_DOWNLOAD_START_ADDR, (buffSz - FLEA_FW_SIG_LEN_IN_BYTES - LENGTH_FIELD_SIZE)/4, (uint32_t *)pBuffer);
+		sts = hw->pfnDevDRAMWrite(hw, FW_DOWNLOAD_START_ADDR,
+			(buffSz - FLEA_FW_SIG_LEN_IN_BYTES -
+			 LENGTH_FIELD_SIZE) / 4, (uint32_t *)pBuffer);
 	else
-		hw->pfnDevDRAMWrite(hw, FW_DOWNLOAD_START_ADDR, buffSz/4, (uint32_t*)pBuffer);
+		sts = hw->pfnDevDRAMWrite(hw, FW_DOWNLOAD_START_ADDR,
+			buffSz / 4, (uint32_t *)pBuffer);
+	if (sts != BC_STS_SUCCESS) {
+		dev_err(&hw->adp->pdev->dev,
+			"[%s]: firmware DRAM write failed: %d\n", __func__, sts);
+		return sts;
+	}
 
 /* -- Step 5. Write the signature to CMAC register. */
 /*

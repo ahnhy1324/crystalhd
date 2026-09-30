@@ -9,7 +9,7 @@ KDIR ?= /lib/modules/$(KVER)/build
 DRIVER_ARGS := KVER=$(KVER) KDIR=$(KDIR) DESTDIR=$(DESTDIR)
 USER_ARGS := PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 
-.PHONY: all driver library library-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check l0s-check command-pm-check fw-command-check tx-admission-check rx-ownership-check device-lifetime-check ioctl-dispatch-check architecture-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check clean
+.PHONY: all driver library library-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check l0s-check command-pm-check fw-command-check fw-download-check tx-admission-check rx-ownership-check device-lifetime-check ioctl-dispatch-check architecture-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check clean
 
 all: driver library gstreamer vaapi examples
 
@@ -95,6 +95,9 @@ command-pm-check:
 fw-command-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/fw-command.sh
 
+fw-download-check:
+	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/fw-download.sh
+
 tx-admission-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/tx-admission.sh
 
@@ -107,7 +110,7 @@ device-lifetime-check:
 ioctl-dispatch-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/ioctl-dispatch.sh
 
-architecture-check: command-pm-check fw-command-check tx-admission-check rx-ownership-check device-lifetime-check ioctl-dispatch-check
+architecture-check: command-pm-check fw-command-check fw-download-check tx-admission-check rx-ownership-check device-lifetime-check ioctl-dispatch-check
 
 pib-check:
 	CC="$(CC)" sh ./tests/flea-pib.sh

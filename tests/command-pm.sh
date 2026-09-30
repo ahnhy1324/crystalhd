@@ -17,13 +17,13 @@ trap 'exit 1' HUP INT TERM
 # Use the real state constants and the exact command/hardware PM functions.
 # Only device callbacks and allocation primitives are replaced by the test.
 awk '
-    /^enum (_crystalhd_state|_BC_DTS_GLOBALS|list_sts|LIST_STATUS)[[:space:]{]/ {
+    /^enum (_crystalhd_state|_BC_PCI_DEV_IDS|_BC_DTS_GLOBALS|list_sts|LIST_STATUS)[[:space:]{]/ {
         copying = 1; found++
     }
     copying { print }
     copying && /^};/ { copying = 0 }
     /^#define[[:space:]]+(DTS_MODE_INV|BC_LINK_ELEM_POOL_SZ)[[:space:]]/ { print }
-    END { if (found != 4 || copying) exit 1 }
+    END { if (found != 5 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.h" "$repo_dir/include/bc_dts_glob_lnx.h" \
     "$repo_dir/driver/linux/crystalhd_hw.h" "$repo_dir/driver/linux/crystalhd_misc.h" \
     > "$pm_test_dir/command-pm-types.h"

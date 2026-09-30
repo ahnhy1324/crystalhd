@@ -617,7 +617,8 @@ static long chd_dec_ioctl_common(struct file *fd, unsigned int cmd,
 	dev = &adp->pdev->dev;
 	dev_dbg(dev, "Entering %s\n", __func__);
 
-	exclusive = cmd == BCM_IOC_NOTIFY_MODE || cmd == BCM_IOC_RELEASE;
+	exclusive = cmd == BCM_IOC_NOTIFY_MODE || cmd == BCM_IOC_RELEASE ||
+		    cmd == BCM_IOC_FW_DOWNLOAD;
 	if (exclusive)
 		down_write(&adp->user_lock);
 	else

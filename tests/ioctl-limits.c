@@ -2,6 +2,7 @@
 
 #include <assert.h>
 #include <limits.h>
+#include <stddef.h>
 
 #include "crystalhd_ioctl_limits.h"
 
@@ -11,6 +12,7 @@ _Static_assert(UINT_MAX == 0xffffffffU,
 int main(void)
 {
 	unsigned int bytes = 0;
+	unsigned int firmware[CRYSTALHD_LINK_MIN_FIRMWARE_SIZE / 4] = { 0 };
 	unsigned int i;
 
 	/* Requests cannot change any non-color control, even when all those
@@ -31,6 +33,36 @@ int main(void)
 	assert(!crystalhd_ioctl_transfer_size(
 		CRYSTALHD_MAX_IOCTL_TRANSFER / 4 + 1, &bytes));
 	assert(!crystalhd_ioctl_transfer_size(UINT_MAX, &bytes));
+
+	assert(!crystalhd_valid_firmware_image(NULL,
+		CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE,
+		CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE));
+	assert(!crystalhd_valid_firmware_image((unsigned char *)firmware + 1,
+		CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE,
+		CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE));
+	assert(!crystalhd_valid_firmware_image(firmware,
+		CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE - 4,
+		CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE));
+	assert(crystalhd_valid_firmware_image(firmware,
+		CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE,
+		CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE));
+	assert(!crystalhd_valid_firmware_image(firmware,
+		CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE + 1,
+		CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE));
+	assert(!crystalhd_valid_firmware_image(firmware,
+		CRYSTALHD_LINK_MIN_FIRMWARE_SIZE - 4,
+		CRYSTALHD_LINK_MIN_FIRMWARE_SIZE));
+	assert(crystalhd_valid_firmware_image(firmware,
+		CRYSTALHD_LINK_MIN_FIRMWARE_SIZE,
+		CRYSTALHD_LINK_MIN_FIRMWARE_SIZE));
+	assert(crystalhd_valid_firmware_image(firmware,
+		CRYSTALHD_MAX_FIRMWARE_SIZE,
+		CRYSTALHD_LINK_MIN_FIRMWARE_SIZE));
+	assert(!crystalhd_valid_firmware_image(firmware,
+		CRYSTALHD_MAX_FIRMWARE_SIZE + 4U,
+		CRYSTALHD_LINK_MIN_FIRMWARE_SIZE));
+	assert(!crystalhd_valid_firmware_image(firmware, UINT_MAX,
+		CRYSTALHD_LINK_MIN_FIRMWARE_SIZE));
 
 	assert(crystalhd_valid_pci_cfg(1, 0));
 	assert(crystalhd_valid_pci_cfg(1, 255));

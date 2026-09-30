@@ -470,9 +470,10 @@ static BC_STATUS bc_cproc_download_fw(struct crystalhd_cmd *ctx,
 				      crystalhd_ioctl_data *idata)
 {
 	BC_STATUS sts = BC_STS_SUCCESS;
+	uint32_t minimum;
 
-	if (!ctx || !ctx->hw_ctx || !ctx->hw_ctx->pfnFWDwnld || !idata ||
-	    !idata->add_cdata ||
+	if (!ctx || !ctx->adp || !ctx->adp->pdev || !ctx->hw_ctx ||
+	    !ctx->hw_ctx->pfnFWDwnld || !idata || !idata->add_cdata ||
 	    !idata->add_cdata_sz || idata->u_id >= BC_LINK_MAX_OPENS) {
 		dev_err(chddev(), "%s: Invalid Arg\n", __func__);
 		return BC_STS_INV_ARG;
@@ -480,6 +481,20 @@ static BC_STATUS bc_cproc_download_fw(struct crystalhd_cmd *ctx,
 	sts = crystalhd_session_require_owner(ctx, &ctx->user[idata->u_id]);
 	if (sts != BC_STS_SUCCESS)
 		return sts;
+
+	switch (ctx->adp->pdev->device) {
+	case BC_PCI_DEVID_FLEA:
+		minimum = CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE;
+		break;
+	case BC_PCI_DEVID_LINK:
+		minimum = CRYSTALHD_LINK_MIN_FIRMWARE_SIZE;
+		break;
+	default:
+		return BC_STS_INV_ARG;
+	}
+	if (!crystalhd_valid_firmware_image(idata->add_cdata,
+					    idata->add_cdata_sz, minimum))
+		return BC_STS_INV_ARG;
 
 	dev_dbg(chddev(), "Downloading FW\n");
 	/* A verified firmware download is the recovery path for a quarantined

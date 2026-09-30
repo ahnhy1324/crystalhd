@@ -175,7 +175,8 @@ static BC_STATUS Handle(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *io, uns
     Check(ctx == &adapter.cmds && io == &pooled && io->cmd == command &&
           command == expected_cmd, "production command table selects the correct handler");
     Check(chd_device_lock.readers == 1, "handler retains device lifetime protection");
-    if (command == BCM_IOC_RELEASE || command == BCM_IOC_NOTIFY_MODE)
+    if (command == BCM_IOC_RELEASE || command == BCM_IOC_NOTIFY_MODE ||
+        command == BCM_IOC_FW_DOWNLOAD)
         Check(adapter.user_lock.writers == 1, "session mutation has exclusive admission");
     else
         Check(adapter.user_lock.readers == 1, "ordinary ioctl has shared admission");
@@ -316,6 +317,9 @@ static void SessionOwnership(void)
                       "nonowner session commands return usage status in the ioctl envelope");
                 Check(!handler_calls && allocations == 1 && copies == 2 && frees == 1,
                       "nonowner session commands reach no stateful leaf handler");
+                Check(user_writes == (number == DRV_CMD_FW_DOWNLOAD) &&
+                      user_reads == (number != DRV_CMD_FW_DOWNLOAD),
+                      "firmware reset is exclusive even when ownership rejects it");
             }
         }
     }
@@ -353,7 +357,9 @@ static void Admission(void)
         Check(Call(BCM_IOC_PROC_INPUT, false) == -ENODEV && !allocations && !handler_calls,
               "absent, stale and failed admission paths avoid the ioctl pool and hardware");
     }
-    const unsigned non_tx[] = { BCM_IOC_GET_VERSION, BCM_IOC_NOTIFY_MODE };
+    const unsigned non_tx[] = {
+        BCM_IOC_GET_VERSION, BCM_IOC_NOTIFY_MODE, BCM_IOC_FW_DOWNLOAD
+    };
     for (unsigned i = 0; i < sizeof(non_tx) / sizeof(non_tx[0]); i++) {
         Reset(); fail_user_admission = true;
         Check(Call(non_tx[i], false) == -ENODEV && !allocations && !handler_calls && !tx_locks,
