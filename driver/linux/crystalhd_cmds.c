@@ -854,24 +854,29 @@ static BC_STATUS bc_cproc_fetch_frame(struct crystalhd_cmd *ctx,
 	return BC_STS_SUCCESS;
 }
 
-static BC_STATUS bc_cproc_start_capture(struct crystalhd_cmd *ctx,
-					crystalhd_ioctl_data *idata)
+/*
+ * Start capture with scalar thresholds. The caller keeps command/device
+ * lifetime protection; this function acquires fetch_sem itself.
+ */
+BC_STATUS crystalhd_capture_start(struct crystalhd_cmd *ctx,
+				  uint32_t pause_threshold,
+				  uint32_t resume_threshold)
 {
 	BC_STATUS sts = BC_STS_SUCCESS;
 
-	if (!ctx || !ctx->hw_ctx || !idata)
+	if (!ctx || !ctx->hw_ctx)
 		return BC_STS_INV_ARG;
 
 	if (down_interruptible(&ctx->hw_ctx->fetch_sem))
 		return BC_STS_IO_USER_ABORT;
 
-	if( idata->udata.u.RxCap.PauseThsh )
-		ctx->hw_ctx->PauseThreshold = idata->udata.u.RxCap.PauseThsh;
+	if (pause_threshold)
+		ctx->hw_ctx->PauseThreshold = pause_threshold;
 	else
 		ctx->hw_ctx->PauseThreshold = HW_PAUSE_THRESHOLD;
 
-	if( idata->udata.u.RxCap.ResumeThsh )
-		ctx->hw_ctx->ResumeThreshold = idata->udata.u.RxCap.ResumeThsh;
+	if (resume_threshold)
+		ctx->hw_ctx->ResumeThreshold = resume_threshold;
 	else
 		ctx->hw_ctx->ResumeThreshold = HW_RESUME_THRESHOLD;
 
@@ -890,6 +895,16 @@ static BC_STATUS bc_cproc_start_capture(struct crystalhd_cmd *ctx,
 	}
 	up(&ctx->hw_ctx->fetch_sem);
 	return sts == BC_STS_NO_DATA ? BC_STS_SUCCESS : sts;
+}
+
+static BC_STATUS bc_cproc_start_capture(struct crystalhd_cmd *ctx,
+					crystalhd_ioctl_data *idata)
+{
+	if (!idata)
+		return BC_STS_INV_ARG;
+
+	return crystalhd_capture_start(ctx, idata->udata.u.RxCap.PauseThsh,
+				       idata->udata.u.RxCap.ResumeThsh);
 }
 
 static BC_STATUS bc_cproc_flush_cap_buffs(struct crystalhd_cmd *ctx,
