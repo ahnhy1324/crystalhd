@@ -73,11 +73,14 @@ struct crystalhd_cmd {
 
 /*
  * Transitional mapped-RX result. On successful dequeue, dio remains mapped
- * and detached from the RX queues until the caller resubmits or unmaps it.
+ * and detached from the RX queues until the intact result is consumed by an
+ * epoch-validating path or its mapping is released exactly once. capture_epoch
+ * identifies the destructive RX stop/cancel generation that admitted it.
  */
 struct crystalhd_rx_dequeue_result {
 	struct crystalhd_dio_req	*dio;
 	struct C011_PIB		pib;
+	uint64_t		capture_epoch;
 	uint32_t		flags;
 	uint32_t		y_done_sz;
 	uint32_t		uv_done_sz;

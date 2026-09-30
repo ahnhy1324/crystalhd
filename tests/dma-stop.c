@@ -30,6 +30,7 @@ struct crystalhd_rx_dma_pkt { unsigned int pkt_tag; };
 struct crystalhd_hw {
 	struct crystalhd_adp *adp;
 	unsigned int RxCaptureState, RxSeqNum, rx_list_post_index;
+	uint64_t rx_cancel_epoch;
 	enum list_sts rx_list_sts[2];
 	int rx_lock, fetch_sem;
 	bool dma_fault;
@@ -195,7 +196,8 @@ static void test_flush_frontend(bool direct)
 	assert(flush_capture(&ctx, direct, direct ? 1 : UINT32_MAX) == BC_STS_SUCCESS);
 	assert(!active.count && !ready.count && freeq.count == 2);
 	assert(ctx.state == running && !hw.fetch_sem && stops == 1 && !unmaps &&
-		notifications == 1 && starts == 1 && !irq_depth);
+		notifications == 1 && starts == 1 && !irq_depth &&
+		!hw.rx_cancel_epoch);
 
 	reset_flush_test(&hw, &ctx, &adp, &active, &ready, &freeq,
 		1, 1, 0, running);
@@ -226,7 +228,8 @@ static void test_flush_frontend(bool direct)
 	assert(flush_capture(&ctx, direct, 0) == BC_STS_SUCCESS);
 	assert(!active.count && !ready.count && !freeq.count && unmaps == 3);
 	assert(ctx.state == 0x80 && !hw.fetch_sem && stops == 1 &&
-		!notifications && !starts && !irq_depth);
+		!notifications && !starts && !irq_depth &&
+		hw.rx_cancel_epoch == 1);
 
 	reset_flush_test(&hw, &ctx, &adp, &active, &ready, &freeq,
 		1, 1, 1, running);
@@ -234,7 +237,8 @@ static void test_flush_frontend(bool direct)
 	assert(flush_capture(&ctx, direct, 0) == BC_STS_IO_ERROR);
 	assert(active.count == 1 && ready.count == 1 && freeq.count == 1 && !unmaps);
 	assert(ctx.state == 0x80 && hw.dma_fault && !hw.fetch_sem && stops == 1 &&
-		!notifications && !starts && !irq_depth);
+		!notifications && !starts && !irq_depth &&
+		hw.rx_cancel_epoch == 1);
 }
 
 int main(void)
@@ -252,7 +256,7 @@ int main(void)
 
 	/* A monitor-only close must not touch nonexistent DMA queues/IRQs. */
 	assert(crystalhd_hw_stop_capture(&hw, true) == BC_STS_SUCCESS);
-	assert(!irq_depth && !stops && !unmaps);
+	assert(!irq_depth && !stops && !unmaps && !hw.rx_cancel_epoch);
 	irq_depth = 1;
 	hw.rx_list_post_index = 1;
 	crystalhd_flea_stop_rx_dma_engine(&hw);
@@ -292,17 +296,19 @@ int main(void)
 	active.count = 1;
 	assert(bc_cproc_flush_cap_buffs(&ctx, &data) == BC_STS_IO_ERROR);
 	assert(active.count == 1 && freeq.count == 2 && !unmaps && !irq_depth);
-	assert(!hw.fetch_sem);
+	assert(!hw.fetch_sem && !hw.rx_cancel_epoch);
 	data.udata.u.FlushRxCap.bDiscardOnly = 0;
 	assert(bc_cproc_flush_cap_buffs(&ctx, &data) == BC_STS_IO_ERROR);
-	assert(active.count == 1 && freeq.count == 2 && !unmaps && !irq_depth);
+	assert(active.count == 1 && freeq.count == 2 && !unmaps && !irq_depth &&
+		hw.rx_cancel_epoch == 1);
 	/* A later successful teardown releases every retained registration. */
 	hw.dma_fault = false;
 	hw.pfnStopRXDMAEngines = stop_success;
 	ctx.state = BC_LINK_CAP_EN;
 	assert(bc_cproc_flush_cap_buffs(&ctx, &data) == BC_STS_SUCCESS);
 	assert(!active.count && !ready.count && !freeq.count && unmaps == 3);
-	assert(!ctx.state && !hw.fetch_sem && !irq_depth);
+	assert(!ctx.state && !hw.fetch_sem && !irq_depth &&
+		hw.rx_cancel_epoch == 2);
 	test_flush_frontend(false);
 	test_flush_frontend(true);
 	puts("DMA stop/restart tests passed (ASan/UBSan)");
