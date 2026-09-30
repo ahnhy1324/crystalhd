@@ -24,11 +24,12 @@ awk '
 ' "$repo_dir/driver/linux/crystalhd_cmds.h" "$repo_dir/driver/linux/crystalhd_hw.h" \
     > "$tx_test_dir/tx-admission-types.h"
 awk '
-    /^BC_STATUS crystalhd_hw_(post_tx|cancel_tx|tx_req_complete)\(/ ||
+    /^static BC_STATUS crystalhd_hw_tx_req_retire\(/ ||
+    /^BC_STATUS crystalhd_hw_(post_tx|cancel_all_tx|tx_req_complete)\(/ ||
     /^void crystalhd_hw_dma_fatal_stop\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 4 || copying) exit 1 }
+    END { if (found != 5 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_hw.c" > "$tx_test_dir/tx-admission-hardware.h"
 awk '
     /^struct crystalhd_tx_completion[[:space:]]*\{/ ||

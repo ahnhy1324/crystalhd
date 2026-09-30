@@ -568,12 +568,36 @@ BC_STATUS crystalhd_hw_free_dma_rings(struct crystalhd_hw *hw)
 	return BC_STS_SUCCESS;
 }
 
+static BC_STATUS crystalhd_hw_tx_req_retire(struct crystalhd_hw *hw,
+					    struct tx_dma_pkt *tx_req,
+					    hw_comp_callback *call_back,
+					    void **cb_context)
+{
+	if (!hw || !tx_req || !call_back || !cb_context)
+		return BC_STS_INV_ARG;
+
+	*call_back = tx_req->call_back;
+	*cb_context = tx_req->cb_context;
+	if (!*call_back || !*cb_context)
+		dev_dbg(&hw->adp->pdev->dev, "Missing Tx Callback - %X\n",
+		tx_req->list_tag);
+
+	/* Retire common DMA ownership before a frontend completion can release its
+	 * backing buffer or its completion context.
+	 */
+	tx_req->dio_req = NULL;
+	tx_req->cb_context = NULL;
+	tx_req->call_back = NULL;
+	tx_req->list_tag = 0;
+	return crystalhd_dioq_add(hw->tx_freeq, tx_req, false, 0);
+}
+
 BC_STATUS crystalhd_hw_tx_req_complete(struct crystalhd_hw *hw,
 					      uint32_t list_id, BC_STATUS cs)
 {
 	struct tx_dma_pkt *tx_req;
-	hw_comp_callback call_back;
-	void *cb_context;
+	hw_comp_callback call_back = NULL;
+	void *cb_context = NULL;
 	BC_STATUS sts;
 
 	if (!hw || !list_id) {
@@ -588,20 +612,7 @@ BC_STATUS crystalhd_hw_tx_req_complete(struct crystalhd_hw *hw,
 		return BC_STS_NO_DATA;
 	}
 
-	call_back = tx_req->call_back;
-	cb_context = tx_req->cb_context;
-	if (!call_back || !cb_context)
-		dev_dbg(&hw->adp->pdev->dev, "Missing Tx Callback - %X\n",
-		tx_req->list_tag);
-
-	/* Retire common DMA ownership before a frontend completion can release its
-	 * backing buffer or its completion context.
-	 */
-	tx_req->dio_req = NULL;
-	tx_req->cb_context = NULL;
-	tx_req->call_back = NULL;
-	tx_req->list_tag = 0;
-	sts = crystalhd_dioq_add(hw->tx_freeq, tx_req, false, 0);
+	sts = crystalhd_hw_tx_req_retire(hw, tx_req, &call_back, &cb_context);
 
 	if (call_back && cb_context)
 		call_back(cb_context, cs);
@@ -1050,32 +1061,51 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw, struct crystalhd_dio_req
 	return BC_STS_SUCCESS;
 }
 
-/*
- * This is a force cancel and we are racing with ISR.
- *
- * Will try to remove the req from ActQ before ISR gets it.
- * If ISR gets it first then the completion happens in the
- * normal path and we will return _STS_NO_DATA from here.
- *
- * FIX_ME: Not Tested the actual condition..
- */
-BC_STATUS crystalhd_hw_cancel_tx(struct crystalhd_hw *hw, uint32_t list_id)
+/* Stop the shared TX engine and return every list owner exactly once. */
+BC_STATUS crystalhd_hw_cancel_all_tx(struct crystalhd_hw *hw)
 {
-	if (!hw || !list_id) {
+	struct tx_dma_pkt *tx_req;
+	hw_comp_callback call_back[DMA_ENGINE_CNT] = { NULL };
+	void *cb_context[DMA_ENGINE_CNT] = { NULL };
+	BC_STATUS sts = BC_STS_SUCCESS;
+	BC_STATUS retire_sts;
+	unsigned int count;
+	unsigned int i;
+
+	if (!hw) {
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
 		return BC_STS_INV_ARG;
 	}
 
-	/* The stop callbacks sleep. Drain the ISR before it can finish a
-	 * request using the ioctl's stack event, and never sleep under a lock.
+	/* Backend stop callbacks sleep. The caller excludes process submissions;
+	 * drain the ISR before detaching either fixed-list owner.
 	 */
 	disable_irq(hw->adp->pdev->irq);
 	if (hw->pfnStopTxDMA(hw) != BC_STS_SUCCESS)
 		crystalhd_hw_dma_fatal_stop(hw);
-	crystalhd_hw_tx_req_complete(hw, list_id, BC_STS_IO_USER_ABORT);
-	enable_irq(hw->adp->pdev->irq);
 
-	return hw->dma_fault ? BC_STS_IO_ERROR : BC_STS_SUCCESS;
+	for (count = 0; count < DMA_ENGINE_CNT; count++) {
+		tx_req = (struct tx_dma_pkt *)crystalhd_dioq_fetch(hw->tx_actq);
+		if (!tx_req)
+			break;
+		retire_sts = crystalhd_hw_tx_req_retire(hw, tx_req,
+							 &call_back[count],
+							 &cb_context[count]);
+		if (sts == BC_STS_SUCCESS && retire_sts != BC_STS_SUCCESS)
+			sts = retire_sts;
+	}
+
+	for (i = 0; i < count; i++) {
+		if (call_back[i] && cb_context[i])
+			call_back[i](cb_context[i], BC_STS_IO_USER_ABORT);
+	}
+	enable_irq(hw->adp->pdev->irq);
+	/* Drain a completion latched while the engine was stopping before the
+	 * caller releases TX serialization and a fixed list tag can be reused.
+	 */
+	synchronize_irq(hw->adp->pdev->irq);
+
+	return hw->dma_fault ? BC_STS_IO_ERROR : sts;
 }
 
 void crystalhd_hw_dma_fatal_stop(struct crystalhd_hw *hw)

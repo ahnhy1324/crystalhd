@@ -41,7 +41,9 @@ struct tx_dma_pkt {
     void *cb_context;
     uint32_t list_tag;
 };
-struct crystalhd_dioq { struct tx_dma_pkt *packet; };
+struct crystalhd_dioq {
+    struct tx_dma_pkt *packet, *next;
+};
 typedef struct { uint32_t cmd[64]; } BC_FW_CMD;
 struct crystalhd_hw {
     struct crystalhd_adp *adp;
@@ -77,7 +79,8 @@ static struct crystalhd_adp adapter;
 static struct crystalhd_hw hardware;
 static struct crystalhd_cmd context;
 static struct crystalhd_dio_req request;
-static struct tx_dma_pkt packet;
+static struct crystalhd_dio_req request2;
+static struct tx_dma_pkt packet, packet2;
 static struct crystalhd_dioq freeq, activeq;
 static uint32_t input[16];
 static uint32_t opaque_cookie;
@@ -90,7 +93,8 @@ static struct {
     int wait_result, sleep_result;
     bool mapped, immediate_completion, completion_before_cancel, flush_on_busy;
     bool drain_ok, fault_on_sleep;
-    BC_STATUS map_status, descriptor_status, active_add_status, stop_status;
+    unsigned free_add_failures;
+    BC_STATUS map_status, descriptor_status, active_add_status, free_add_status, stop_status;
     BC_STATUS completion_status, firmware_status;
     BC_STATUS seen_callback_status;
     void *seen_callback_context;
@@ -98,10 +102,26 @@ static struct {
     uint32_t seen_destination, transfer_size;
 } run;
 
+struct multi_cookie {
+    unsigned calls;
+    bool mapped;
+    BC_STATUS status;
+};
+static struct multi_cookie multi_cookie[2];
+
 static void Check(bool condition, const char *why)
 {
     checks++;
     if (!condition) { failures++; fprintf(stderr, "FAIL: %s\n", why); }
+}
+static unsigned QueueCount(const struct crystalhd_dioq *queue)
+{
+    return (queue->packet != NULL) + (queue->next != NULL);
+}
+static bool QueueContains(const struct crystalhd_dioq *queue,
+                          const struct tx_dma_pkt *owned)
+{
+    return queue->packet == owned || queue->next == owned;
 }
 static struct device *chddev(void) { return &endpoint.dev; }
 static BC_STATUS bc_cproc_do_fw_cmd(struct crystalhd_cmd *, crystalhd_ioctl_data *);
@@ -166,8 +186,9 @@ static int Wait(wait_queue_head_t *event, int condition, unsigned timeout)
 } while (0)
 static void synchronize_irq(int irq)
 {
-    Check(irq == endpoint.irq && !hardware.lock && !activeq.packet && run.mapped,
-          "successful completion drains the ISR before DMA unmap and stack-event return");
+    Check(irq == endpoint.irq && !hardware.lock && !activeq.packet &&
+          !activeq.next,
+          "IRQ synchronization observes no published TX owner");
     run.syncs++;
 }
 static void disable_irq(int irq)
@@ -178,7 +199,8 @@ static void disable_irq(int irq)
 }
 static void enable_irq(int irq)
 {
-    Check(irq == endpoint.irq && run.irq_depth == 1 && !activeq.packet,
+    Check(irq == endpoint.irq && run.irq_depth == 1 && !activeq.packet &&
+          !activeq.next,
           "cancellation reenables IRQ after request ownership is retired");
     run.irq_depth--; run.irq_enables++;
 }
@@ -197,23 +219,30 @@ static bool pci_wait_for_pending_transaction(struct pci_dev *pdev)
 static void *crystalhd_dioq_fetch(struct crystalhd_dioq *queue)
 {
     struct tx_dma_pkt *owned = queue->packet;
-    Check(queue == &freeq, "submission takes a packet from the free queue");
-    queue->packet = NULL;
+    Check(queue == &freeq || queue == &activeq,
+          "submission or cancellation fetches from a TX ownership queue");
+    queue->packet = queue->next;
+    queue->next = NULL;
     return owned;
 }
 static void *crystalhd_dioq_find_and_fetch(struct crystalhd_dioq *queue, uint32_t tag)
 {
-    struct tx_dma_pkt *owned = queue->packet;
+    struct tx_dma_pkt *owned = NULL;
     Check(queue == &activeq, "completion searches the active ownership queue");
-    if (!owned || owned->list_tag != tag)
-        return NULL;
-    queue->packet = NULL;
+    if (queue->packet && queue->packet->list_tag == tag) {
+        owned = queue->packet;
+        queue->packet = queue->next;
+        queue->next = NULL;
+    } else if (queue->next && queue->next->list_tag == tag) {
+        owned = queue->next;
+        queue->next = NULL;
+    }
     return owned;
 }
 static BC_STATUS crystalhd_dioq_add(struct crystalhd_dioq *queue,
                                   struct tx_dma_pkt *owned, bool wake, uint32_t tag)
 {
-    Check(owned == &packet && !queue->packet && !wake,
+    Check((owned == &packet || owned == &packet2) && !queue->next && !wake,
           "a packet is returned to exactly one queue");
     if (queue == &activeq) {
         Check(hardware.lock && tag == owned->list_tag && tag,
@@ -224,14 +253,23 @@ static BC_STATUS crystalhd_dioq_add(struct crystalhd_dioq *queue,
         Check(queue == &freeq && !tag && !owned->dio_req && !owned->cb_context &&
               !owned->call_back && !owned->list_tag,
               "free packets retain no request, callback, cookie or tag ownership");
+        if (run.free_add_failures) {
+            run.free_add_failures--;
+            return run.free_add_status;
+        }
     }
-    queue->packet = owned;
+    if (queue->packet)
+        queue->next = owned;
+    else
+        queue->packet = owned;
     return BC_STS_SUCCESS;
 }
 static BC_STATUS crystalhd_xlat_sgl_to_dma_desc(struct crystalhd_dio_req *dio,
         struct dma_desc_mem *desc, uint32_t *index, struct device *dev, uint32_t destination)
 {
-    Check(dio == &request && desc == &packet.desc_mem && index && dev == &endpoint.dev,
+    Check(((dio == &request && desc == &packet.desc_mem) ||
+           (dio == &request2 && desc == &packet2.desc_mem)) &&
+          index && dev == &endpoint.dev,
           "TX descriptor construction uses its request and reserved packet");
     run.descriptors++; run.seen_destination = destination;
     return run.descriptor_status;
@@ -270,6 +308,24 @@ static void OpaqueComplete(void *context, BC_STATUS status)
     run.callback_calls++;
     run.seen_callback_context = context;
     run.seen_callback_status = status;
+}
+static void MultiComplete(void *context, BC_STATUS status)
+{
+    struct multi_cookie *cookie = context;
+    unsigned index = (unsigned)(cookie - multi_cookie);
+    struct tx_dma_pkt *owned = index ? &packet2 : &packet;
+
+    Check(index < 2 && cookie->mapped && !hardware.lock &&
+          !QueueContains(&activeq, owned) &&
+          !owned->dio_req && !owned->cb_context && !owned->call_back &&
+          !owned->list_tag,
+          "each TX callback observes its retired packet while its backing remains mapped");
+    if (status == BC_STS_IO_USER_ABORT)
+        Check(!activeq.packet && !activeq.next,
+              "cancel callbacks run only after every stopped TX owner is detached");
+    cookie->calls++;
+    cookie->status = status;
+    run.callback_calls++;
 }
 static BC_STATUS crystalhd_hw_fw_cmd_enter(struct crystalhd_hw *hw)
 {
@@ -316,18 +372,22 @@ static bool Fifo(struct crystalhd_hw *hw, uint32_t size, uint32_t *index,
 }
 static void Start(struct crystalhd_hw *hw, uint8_t index, addr_64 descriptor)
 {
-    Check(hw == &hardware && hardware.lock && activeq.packet == &packet &&
-          packet.dio_req == &request && packet.call_back && packet.cb_context &&
-          packet.cb_context != &request &&
-          packet.list_tag == hardware.tx_ioq_tag_seed + index &&
-          descriptor.full_addr == packet.desc_mem.phy_addr &&
+    struct tx_dma_pkt *owned = descriptor.full_addr == packet.desc_mem.phy_addr ?
+        &packet : &packet2;
+    Check(hw == &hardware && hardware.lock &&
+          QueueContains(&activeq, owned) && owned->dio_req &&
+          owned->call_back && owned->cb_context &&
+          owned->cb_context != owned->dio_req &&
+          owned->list_tag == hardware.tx_ioq_tag_seed + index &&
+          descriptor.full_addr == owned->desc_mem.phy_addr &&
           hw->TxFwInputBuffInfo.HostXferSzInBytes == run.transfer_size,
           "DMA starts only after request, callback, opaque cookie, tag and length publication");
     run.starts++;
 }
 static BC_STATUS Stop(struct crystalhd_hw *hw)
 {
-    Check(hw == &hardware && run.irq_depth && !hardware.lock && run.mapped,
+    Check(hw == &hardware && run.irq_depth && !hardware.lock &&
+          (run.mapped || !QueueCount(&activeq)),
           "cancel stops DMA with IRQ drained, buffer still mapped and no spinlock held");
     run.stops++;
     return run.stop_status;
@@ -351,7 +411,10 @@ static void Reset(void)
     memset(&run, 0, sizeof(run));
     memset(&request, 0, sizeof(request));
     packet = (struct tx_dma_pkt){ .desc_mem.phy_addr = 0x1000 };
-    freeq.packet = &packet; activeq.packet = NULL;
+    packet2 = (struct tx_dma_pkt){ .desc_mem.phy_addr = 0x2000 };
+    freeq = (struct crystalhd_dioq){ .packet = &packet };
+    activeq = (struct crystalhd_dioq){0};
+    memset(multi_cookie, 0, sizeof(multi_cookie));
     adapter = (struct crystalhd_adp){ .pdev = &endpoint, .present = true };
     hardware = (struct crystalhd_hw){ .adp = &adapter,
         .tx_freeq = &freeq, .tx_actq = &activeq, .tx_ioq_tag_seed = 0x100,
@@ -362,13 +425,15 @@ static void Reset(void)
     input_ioctl = (crystalhd_ioctl_data){ .udata.u.ProcInput = {
         .pDmaBuff = input, .BuffSz = sizeof(input), .Encrypted = 0x80 } };
     run.drain_ok = true;
+    run.free_add_status = BC_STS_INSUFF_RES;
     run.transfer_flags = input_ioctl.udata.u.ProcInput.Encrypted;
     run.transfer_size = input_ioctl.udata.u.ProcInput.BuffSz;
 }
 static void Balanced(void)
 {
     Check(!run.mapped && !activeq.packet && freeq.packet == &packet &&
-          !context.tx_list_id && !hardware.lock && !run.irq_depth && !run.firmware_depth &&
+          !activeq.next && !freeq.next && !context.tx_list_id &&
+          !hardware.lock && !run.irq_depth && !run.firmware_depth &&
           !packet.dio_req && !packet.call_back && !packet.cb_context && !packet.list_tag,
           "completed input leaves balanced mapping, packet, locks and callback ownership");
 }
@@ -477,7 +542,7 @@ static void OpaqueCookie(void)
         Check(crystalhd_hw_post_tx(&hardware, &request, OpaqueComplete,
                                    &opaque_cookie, &tag, run.transfer_flags) ==
               BC_STS_SUCCESS &&
-              crystalhd_hw_cancel_tx(&hardware, tag) == BC_STS_SUCCESS &&
+              crystalhd_hw_cancel_all_tx(&hardware) == BC_STS_SUCCESS &&
               run.callback_calls == 1 &&
               run.seen_callback_context == &opaque_cookie &&
               run.seen_callback_status == BC_STS_IO_USER_ABORT,
@@ -488,6 +553,142 @@ static void OpaqueCookie(void)
     }
     run.mapped = false;
     Balanced();
+}
+static void BalancedTwo(void)
+{
+    Check(!run.mapped && !activeq.packet && !activeq.next &&
+          QueueCount(&freeq) == 2 && QueueContains(&freeq, &packet) &&
+          QueueContains(&freeq, &packet2) && !hardware.lock && !run.irq_depth &&
+          !packet.dio_req && !packet.cb_context && !packet.call_back &&
+          !packet.list_tag && !packet2.dio_req && !packet2.cb_context &&
+          !packet2.call_back && !packet2.list_tag,
+          "two-list completion leaves both packets and mappings with one owner");
+}
+static void CancelAllOwners(void)
+{
+    Reset();
+    Check(crystalhd_hw_cancel_all_tx(NULL) == BC_STS_INV_ARG && !run.stops &&
+          crystalhd_hw_cancel_all_tx(&hardware) == BC_STS_SUCCESS &&
+          run.stops == 1 && run.irq_disables == 1 && run.irq_enables == 1 &&
+          run.syncs == 1 && !run.callback_calls,
+          "invalid cancel is inert and empty cancel still resets the shared engine");
+    Balanced();
+
+    for (unsigned stop_failure = 0; stop_failure < 2; stop_failure++) {
+        uint32_t tag[2] = {0, 0};
+
+        Reset();
+        freeq.next = &packet2;
+        request.uinfo.xfr_len = run.transfer_size;
+        request2.uinfo.xfr_len = run.transfer_size;
+        multi_cookie[0].mapped = multi_cookie[1].mapped = true;
+        run.mapped = true;
+        run.stop_status = stop_failure ? BC_STS_IO_ERROR : BC_STS_SUCCESS;
+
+        Check(crystalhd_hw_post_tx(&hardware, &request, MultiComplete,
+                                   &multi_cookie[0], &tag[0], run.transfer_flags) ==
+              BC_STS_SUCCESS &&
+              crystalhd_hw_post_tx(&hardware, &request2, MultiComplete,
+                                   &multi_cookie[1], &tag[1], run.transfer_flags) ==
+              BC_STS_SUCCESS && tag[0] == 0x100 && tag[1] == 0x101 &&
+              QueueCount(&activeq) == 2 && !QueueCount(&freeq),
+              "both hardware TX lists publish independent owners before cancellation");
+        Check(crystalhd_hw_cancel_all_tx(&hardware) ==
+              (stop_failure ? BC_STS_IO_ERROR : BC_STS_SUCCESS),
+              "one engine-wide cancellation reports the stop result");
+        Check(run.stops == 1 && run.irq_disables == 1 &&
+              run.irq_enables == 1 && run.syncs == 1 &&
+              multi_cookie[0].calls == 1 && multi_cookie[1].calls == 1 &&
+              multi_cookie[0].status == BC_STS_IO_USER_ABORT &&
+              multi_cookie[1].status == BC_STS_IO_USER_ABORT,
+              "cancel-all stops once and aborts both cookies exactly once");
+        if (stop_failure)
+            Check(hardware.dma_fault && run.bus_clears == 1 && run.bus_drains == 1,
+                  "a failed shared stop revokes DMA before returning both owners");
+        Check(crystalhd_hw_tx_req_complete(&hardware, tag[0], BC_STS_SUCCESS) ==
+              BC_STS_NO_DATA &&
+              crystalhd_hw_tx_req_complete(&hardware, tag[1], BC_STS_SUCCESS) ==
+              BC_STS_NO_DATA && run.callback_calls == 2,
+              "late IRQs cannot complete either cancelled owner twice");
+        Check(crystalhd_hw_cancel_all_tx(&hardware) ==
+              (stop_failure ? BC_STS_IO_ERROR : BC_STS_SUCCESS) &&
+              run.callback_calls == 2,
+              "repeated cancel-all cannot repeat an owner callback");
+        multi_cookie[0].mapped = multi_cookie[1].mapped = false;
+        run.mapped = false;
+        BalancedTwo();
+    }
+
+    {
+        uint32_t tag[2] = {0, 0};
+
+        Reset();
+        freeq.next = &packet2;
+        request.uinfo.xfr_len = run.transfer_size;
+        request2.uinfo.xfr_len = run.transfer_size;
+        multi_cookie[0].mapped = multi_cookie[1].mapped = true;
+        run.mapped = true;
+        run.free_add_failures = 1;
+        Check(crystalhd_hw_post_tx(&hardware, &request, MultiComplete,
+                                   &multi_cookie[0], &tag[0], run.transfer_flags) ==
+              BC_STS_SUCCESS &&
+              crystalhd_hw_post_tx(&hardware, &request2, MultiComplete,
+                                   &multi_cookie[1], &tag[1], run.transfer_flags) ==
+              BC_STS_SUCCESS,
+              "cleanup-error coverage starts with both TX owners published");
+        Check(crystalhd_hw_cancel_all_tx(&hardware) == BC_STS_INSUFF_RES &&
+              !activeq.packet && !activeq.next && QueueCount(&freeq) == 1 &&
+              multi_cookie[0].calls == 1 && multi_cookie[1].calls == 1 &&
+              multi_cookie[0].status == BC_STS_IO_USER_ABORT &&
+              multi_cookie[1].status == BC_STS_IO_USER_ABORT &&
+              !packet.dio_req && !packet.cb_context && !packet.call_back &&
+              !packet.list_tag && !packet2.dio_req && !packet2.cb_context &&
+              !packet2.call_back && !packet2.list_tag,
+              "a first requeue error is returned without stranding the peer owner");
+        multi_cookie[0].mapped = multi_cookie[1].mapped = false;
+        run.mapped = false;
+        Check(!hardware.lock && !run.irq_depth,
+              "cleanup failure leaves no hardware or IRQ lock held");
+    }
+
+    for (unsigned first_list = 0; first_list < 2; first_list++) {
+        for (unsigned first_failed = 0; first_failed < 2; first_failed++) {
+            uint32_t tag[2] = {0, 0};
+            unsigned remaining = first_list ^ 1U;
+            BC_STATUS first_status = first_failed ? BC_STS_ERROR : BC_STS_SUCCESS;
+
+            Reset();
+            freeq.next = &packet2;
+            request.uinfo.xfr_len = run.transfer_size;
+            request2.uinfo.xfr_len = run.transfer_size;
+            multi_cookie[0].mapped = multi_cookie[1].mapped = true;
+            run.mapped = true;
+            Check(crystalhd_hw_post_tx(&hardware, &request, MultiComplete,
+                                       &multi_cookie[0], &tag[0], run.transfer_flags) ==
+                  BC_STS_SUCCESS &&
+                  crystalhd_hw_post_tx(&hardware, &request2, MultiComplete,
+                                       &multi_cookie[1], &tag[1], run.transfer_flags) ==
+                  BC_STS_SUCCESS,
+                  "mixed completion/cancel starts with two independent owners");
+            Check(crystalhd_hw_tx_req_complete(&hardware, tag[first_list], first_status) ==
+                  BC_STS_SUCCESS && multi_cookie[first_list].calls == 1 &&
+                  multi_cookie[first_list].status == first_status,
+                  "either list may complete successfully or fail before cancellation");
+            Check(crystalhd_hw_cancel_all_tx(&hardware) == BC_STS_SUCCESS &&
+                  multi_cookie[first_list].calls == 1 &&
+                  multi_cookie[remaining].calls == 1 &&
+                  multi_cookie[remaining].status == BC_STS_IO_USER_ABORT,
+                  "cancel-all aborts only the owner that remained after the IRQ");
+            Check(crystalhd_hw_tx_req_complete(&hardware, tag[0], BC_STS_SUCCESS) ==
+                  BC_STS_NO_DATA &&
+                  crystalhd_hw_tx_req_complete(&hardware, tag[1], BC_STS_SUCCESS) ==
+                  BC_STS_NO_DATA && run.callback_calls == 2,
+                  "mixed completion and cancellation still retire each cookie once");
+            multi_cookie[0].mapped = multi_cookie[1].mapped = false;
+            run.mapped = false;
+            BalancedTwo();
+        }
+    }
 }
 static void Completion(void)
 {
@@ -594,7 +795,8 @@ static void BusyAndFlush(void)
         Reset(); run.busy = 1; run.flush_on_busy = true;
         run.firmware_status = rejected ? BC_STS_TIMEOUT : BC_STS_SUCCESS;
         Check(bc_cproc_proc_input(&context, &input_ioctl) == BC_STS_CMD_CANCELLED &&
-              run.firmware_calls == 1 && !run.sleeps && !run.starts && !context.cin_wait_exit,
+              run.firmware_calls == 1 && !run.sleeps && !run.starts &&
+              !run.stops && !run.irq_disables && !context.cin_wait_exit,
               "flush cancels one BUSY input retry even if firmware reports failure");
         Balanced();
         Check(bc_cproc_proc_input(&context, &input_ioctl) == BC_STS_SUCCESS,
@@ -603,13 +805,14 @@ static void BusyAndFlush(void)
     }
     Reset(); run.busy = 1;
     Check(Flush(false) == BC_STS_SUCCESS && !context.cin_wait_exit &&
-          bc_cproc_proc_input(&context, &input_ioctl) == BC_STS_SUCCESS,
+          bc_cproc_proc_input(&context, &input_ioctl) == BC_STS_SUCCESS &&
+          !run.stops && !run.irq_disables,
           "non-cancelling flush preserves normal BUSY retry admission");
     Balanced();
     Reset();
     Check(Flush(true) == BC_STS_SUCCESS && context.cin_wait_exit &&
           bc_cproc_proc_input(&context, &input_ioctl) == BC_STS_SUCCESS &&
-          !context.cin_wait_exit && !run.sleeps,
+          !context.cin_wait_exit && !run.sleeps && !run.stops && !run.irq_disables,
           "a cancelling flush flag applies to BUSY retry, not immediately admissible input");
     Balanced();
     Reset(); context.cin_wait_exit = 1; context.state = BC_LINK_SUSPEND;
@@ -634,7 +837,7 @@ static void Cancellation(void)
                 run.drain_ok = stop_failure != 2;
                 Check(bc_cproc_proc_input(&context, &input_ioctl) == expected[i] &&
                       run.stops == 1 && run.irq_disables == 1 && run.irq_enables == 1 &&
-                      run.wakes == 1 && !run.syncs && run.unmaps == 1,
+                      run.wakes == 1 && run.syncs == 1 && run.unmaps == 1,
                       "wait status wins over racing completion and cancellation errors without double retirement");
                 Balanced();
                 if (stop_failure) {
@@ -701,7 +904,7 @@ static void BorrowedTransfer(void)
 }
 int main(void)
 {
-    Admission(); OpaqueCookie(); Completion(); Rollback(); TransferArguments(); BusyErrors(); BusyAndFlush(); Cancellation();
+    Admission(); OpaqueCookie(); CancelAllOwners(); Completion(); Rollback(); TransferArguments(); BusyErrors(); BusyAndFlush(); Cancellation();
     BorrowedTransfer();
     printf("TX admission: %u checks, %u failures\n", checks, failures);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;

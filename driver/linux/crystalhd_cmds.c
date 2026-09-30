@@ -717,7 +717,7 @@ BC_STATUS crystalhd_tx_transfer_sync(struct crystalhd_cmd *ctx,
 	 * so no need to wait on the event again.. the return itself
 	 * ensures the release of our resources.
 	 */
-	crystalhd_hw_cancel_tx(ctx->hw_ctx, tx_listid);
+	crystalhd_hw_cancel_all_tx(ctx->hw_ctx);
 
 	return sts;
 }
@@ -1356,16 +1356,12 @@ BC_STATUS crystalhd_suspend(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *ida
 			return sts;
 	}
 
-	if (ctx->tx_list_id) {
-		sts = crystalhd_hw_cancel_tx(ctx->hw_ctx, ctx->tx_list_id);
-		if (sts != BC_STS_SUCCESS)
-			return sts;
-	}
-	else
-	{
-		// Even if there is no active TX DMA need to stop and reset TX DMA pointers
-		ctx->hw_ctx->pfnStopTxDMA(ctx->hw_ctx);
-	}
+	/* TX stop is engine-wide. Drain every list owner, including owners that
+	 * are not represented by the legacy synchronous tag.
+	 */
+	sts = crystalhd_hw_cancel_all_tx(ctx->hw_ctx);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
 
 	ctx->state = BC_LINK_SUSPEND;
 
