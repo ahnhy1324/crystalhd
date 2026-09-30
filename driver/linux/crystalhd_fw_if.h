@@ -240,6 +240,37 @@ struct C011_TS_CMD {
 	uint32_t	ulParams[63];
 };
 
+/* Kernel-resident form of the fixed C011 firmware INIT request. */
+struct crystalhd_fw_init_cmd {
+	uint32_t	command;
+	uint32_t	sequence;
+	uint32_t	mem_size_mb;
+	uint32_t	input_clk_hz;
+	uint32_t	uart_baud_rate;
+	uint32_t	init_arcs;
+	uint32_t	interrupt;
+	uint32_t	audio_mem_size;
+	uint32_t	brcm_mode;
+	uint32_t	fgt_enable;
+	uint32_t	dram_log_enable;
+	uint32_t	sid_mem_size;
+	uint32_t	dma_data_xfer_enable;
+	uint32_t	rsa_decrypt;
+	uint32_t	open_mode;
+	uint32_t	reserved[3];
+};
+
+#define CRYSTALHD_FW_INIT_WORDS		18U
+#define CRYSTALHD_FW_INIT_MEM_SIZE_MB	64U
+#define CRYSTALHD_FW_INIT_INPUT_CLK_HZ	200000000U
+#define CRYSTALHD_FW_INIT_UART_BAUD	38400U
+#define CRYSTALHD_FW_INIT_STREAM_ARC	0x00000001U
+#define CRYSTALHD_FW_INIT_VDEC_ARC	0x00000002U
+#define CRYSTALHD_FW_INIT_INT_ENABLE	0x00000001U
+#define CRYSTALHD_FW_INIT_BRCM_ECG_MODE	0x00000002U
+#define CRYSTALHD_FW_INIT_FGT_ENABLE	0x00000001U
+#define CRYSTALHD_FW_INIT_RSA_DECRYPT	0x00000001U
+
 struct DecRspChannelStartVideo {
     uint32_t	command;
     uint32_t	sequence;
