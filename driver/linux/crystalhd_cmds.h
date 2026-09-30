@@ -90,6 +90,8 @@ BC_STATUS crystalhd_user_set_mode(struct crystalhd_cmd *ctx,
 BC_STATUS crystalhd_tx_transfer_sync(struct crystalhd_cmd *ctx,
 				     struct crystalhd_dio_req *dio,
 				     uint8_t data_flags);
+BC_STATUS crystalhd_rx_submit(struct crystalhd_cmd *ctx,
+			      struct crystalhd_dio_req *dio);
 void crystalhd_user_close(struct crystalhd_cmd *ctx, struct crystalhd_user *uc);
 BC_STATUS crystalhd_setup_cmd_context(struct crystalhd_cmd *ctx, struct crystalhd_adp *adp);
 BC_STATUS crystalhd_delete_cmd_context(struct crystalhd_cmd *ctx);
