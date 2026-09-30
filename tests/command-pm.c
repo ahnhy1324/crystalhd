@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <errno.h>
 #include <pthread.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,10 +37,6 @@ struct _BC_DTS_PROC_OUT;
 #define lockdep_assert_held_write(lock) \
     Check((lock) == &adapter.user_lock && *(lock) == 1, \
           "firmware loading retains exclusive user admission")
-#define eCMD_C011_CMD_BASE 0x73763000U
-#define eCMD_C011_INIT (eCMD_C011_CMD_BASE + 0x01U)
-#define eCMD_C011_DEC_CHAN_FLUSH (eCMD_C011_CMD_BASE + 0x104U)
-#define eCMD_C011_DEC_CHAN_PAUSE (eCMD_C011_CMD_BASE + 0x11dU)
 struct device { int unused; };
 struct firmware {
     size_t size;
@@ -83,6 +80,8 @@ struct crystalhd_cmd {
     struct crystalhd_adp *adp;
     struct crystalhd_user user[BC_LINK_MAX_OPENS];
     const void *session_owner;
+    enum crystalhd_decoder_phase decoder_phase;
+    uint32_t fw_sequence, decoder_channel_id;
     uint32_t tx_list_id, cin_wait_exit, pwr_state_change;
     struct crystalhd_hw *hw_ctx;
 };
@@ -147,6 +146,10 @@ static BC_STATUS pause_status, firmware_status;
 static unsigned pause_calls, firmware_calls;
 static BC_FW_CMD *last_firmware_command;
 static BC_FW_CMD firmware_command_snapshot;
+static BC_FW_CMD firmware_command_snapshots[8];
+static unsigned firmware_status_call, remove_during_firmware_call;
+static BC_STATUS firmware_call_status;
+static uint32_t firmware_open_channel;
 static bool remove_during_fw_command, poison_on_firmware_timeout;
 static bool pause_states[4];
 static pthread_mutex_t transaction_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -434,11 +437,16 @@ static BC_STATUS IssuePause(struct crystalhd_hw *hw, bool state)
 static BC_STATUS FirmwareCommand(struct crystalhd_hw *hw, BC_FW_CMD *command)
 {
     unsigned ordinal;
+    BC_STATUS status;
 
     Check(hw == &hardware && command != NULL,
           "firmware callback receives the active command");
     firmware_command_snapshot = *command;
-    if (remove_during_fw_command)
+    if (firmware_calls < sizeof(firmware_command_snapshots) /
+                         sizeof(firmware_command_snapshots[0]))
+        firmware_command_snapshots[firmware_calls] = *command;
+    if (remove_during_fw_command ||
+        remove_during_firmware_call == firmware_calls + 1)
         adapter.present = false;
     if (!transaction_mode)
         last_firmware_command = command;
@@ -455,14 +463,18 @@ static BC_STATUS FirmwareCommand(struct crystalhd_hw *hw, BC_FW_CMD *command)
         if (pthread_mutex_unlock(&transaction_audit)) abort();
         return ordinal ? BC_STS_SUCCESS : BC_STS_TIMEOUT;
     }
+    status = firmware_status_call == firmware_calls + 1 ?
+        firmware_call_status : firmware_status;
     firmware_calls++;
-    if (firmware_status == BC_STS_SUCCESS)
+    if (status == BC_STS_SUCCESS) {
         command->rsp[0] = command->cmd[0] ^ 0x5a5a5a5aU;
-    else if (firmware_status == BC_STS_TIMEOUT && poison_on_firmware_timeout) {
+        if (command->cmd[0] == eCMD_C011_DEC_CHAN_OPEN)
+            command->rsp[3] = firmware_open_channel;
+    } else if (status == BC_STS_TIMEOUT && poison_on_firmware_timeout) {
         hardware.fwcmd_poisoned = true;
         hardware.FwCmdCnt = 1;
     }
-    return firmware_status;
+    return status;
 }
 static BC_STATUS crystalhd_hw_stop_capture(struct crystalhd_hw *hw, bool unmap)
 {
@@ -670,6 +682,10 @@ static void Reset(uint32_t state, bool with_hardware)
     pause_calls = firmware_calls = 0;
     last_firmware_command = NULL;
     memset(&firmware_command_snapshot, 0, sizeof(firmware_command_snapshot));
+    memset(firmware_command_snapshots, 0, sizeof(firmware_command_snapshots));
+    firmware_status_call = remove_during_firmware_call = 0;
+    firmware_call_status = BC_STS_SUCCESS;
+    firmware_open_channel = 0;
     remove_during_fw_command = poison_on_firmware_timeout = false;
     memset(pause_states, 0, sizeof(pause_states));
     transaction_mode = block_first_firmware = false;
@@ -1463,6 +1479,8 @@ static void KernelFirmwareBootstrapPayload(void)
               "kernel bootstrap downloads and initializes either supported chip");
         Check(context.state == BC_LINK_INIT &&
               context.pwr_state_change == BC_HW_RUNNING &&
+              context.decoder_phase == CRYSTALHD_DECODER_BOOTSTRAPPED &&
+              context.fw_sequence == 1 && !context.decoder_channel_id &&
               context.session_owner == &frontend_owner,
               "kernel bootstrap commits one exact initialized owner state");
         Check(kernel_fw_requests == 1 && kernel_fw_releases == 1 &&
@@ -1556,6 +1574,7 @@ static void KernelFirmwareBootstrapFailures(void)
     Check(crystalhd_fw_bootstrap_locked(&context, &frontend_owner) == -ENOENT &&
           kernel_fw_requests == 1 && !kernel_fw_releases && !downloads &&
           !firmware_calls && context.state == BC_LINK_INVALID &&
+          context.decoder_phase == CRYSTALHD_DECODER_COLD &&
           context.pwr_state_change == BC_HW_SUSPEND,
           "kernel bootstrap preserves request errors and entry state");
 
@@ -1566,6 +1585,7 @@ static void KernelFirmwareBootstrapFailures(void)
           kernel_fw_requests == 1 && kernel_fw_releases == 1 &&
           downloads == 1 && !download_resets && !firmware_calls &&
           context.state == BC_LINK_RESUME &&
+          context.decoder_phase == CRYSTALHD_DECODER_COLD &&
           context.pwr_state_change == BC_HW_RESUME,
           "kernel bootstrap rolls back local power state after download failure");
 
@@ -1581,6 +1601,8 @@ static void KernelFirmwareBootstrapFailures(void)
               downloads == 1 && download_resets == 1 &&
               firmware_calls == 1 && transaction_attempts == 2 &&
               context.state == BC_LINK_RESUME &&
+              context.decoder_phase == CRYSTALHD_DECODER_RECOVERY_REQUIRED &&
+              context.fw_sequence == 1 && !context.decoder_channel_id &&
               context.pwr_state_change == BC_HW_RESUME,
               "failed INIT restores the exact resume admission state");
     }
@@ -1592,6 +1614,7 @@ static void KernelFirmwareBootstrapFailures(void)
           kernel_fw_requests == 1 && kernel_fw_releases == 1 &&
           !downloads && !firmware_calls && !adapter.present &&
           context.state == BC_LINK_INVALID &&
+          context.decoder_phase == CRYSTALHD_DECODER_COLD &&
           context.pwr_state_change == BC_HW_SUSPEND,
           "kernel bootstrap stops after removal during firmware request");
 
@@ -1602,6 +1625,8 @@ static void KernelFirmwareBootstrapFailures(void)
           kernel_fw_requests == 1 && kernel_fw_releases == 1 &&
           downloads == 1 && download_resets == 1 && firmware_calls == 1 &&
           !adapter.present && context.state == BC_LINK_INVALID &&
+          context.decoder_phase == CRYSTALHD_DECODER_RECOVERY_REQUIRED &&
+          context.fw_sequence == 1 && !context.decoder_channel_id &&
           context.pwr_state_change == BC_HW_SUSPEND,
           "kernel bootstrap rolls back if the device disappears at INIT completion");
 }
@@ -1620,6 +1645,8 @@ static void KernelFirmwareBootstrapTimeoutRetry(void)
           "timed-out INIT returns its bounded timeout error");
     Check(context.state == BC_LINK_INVALID &&
           context.pwr_state_change == BC_HW_SUSPEND &&
+          context.decoder_phase == CRYSTALHD_DECODER_RECOVERY_REQUIRED &&
+          context.fw_sequence == 1 && !context.decoder_channel_id &&
           hardware.fwcmd_poisoned && hardware.FwCmdCnt == 1 &&
           kernel_fw_requests == 1 && downloads == 1 && firmware_calls == 1,
           "timed-out INIT restores admission but retains mailbox quarantine");
@@ -1630,12 +1657,294 @@ static void KernelFirmwareBootstrapTimeoutRetry(void)
           "bootstrap retry recovers only through another verified download");
     Check(context.state == BC_LINK_INIT &&
           context.pwr_state_change == BC_HW_RUNNING &&
+          context.decoder_phase == CRYSTALHD_DECODER_BOOTSTRAPPED &&
+          context.fw_sequence == 1 && !context.decoder_channel_id &&
           !hardware.fwcmd_poisoned && !hardware.FwCmdCnt &&
           kernel_fw_requests == 2 && kernel_fw_releases == 2 &&
           downloads == 2 && download_resets == 2 && firmware_calls == 2 &&
           transaction_attempts == 4 && !strcmp(events, "QDLQDL"),
           "retry resets quarantine, reinitializes firmware and commits once");
     CheckKernelBootstrapPayload(BC_PCI_DEVID_FLEA);
+}
+
+static void ResetBootstrapped(const void *owner)
+{
+    ResetFrontendOwned(BC_LINK_INIT, true, owner);
+    context.decoder_phase = CRYSTALHD_DECODER_BOOTSTRAPPED;
+    context.fw_sequence = 1;
+    context.decoder_channel_id = 0;
+}
+
+static void CheckKernelChannelPayload(const BC_FW_CMD *command, bool opening,
+                                      uint32_t sequence)
+{
+    uint32_t expected[64] = {0};
+
+    expected[0] = opening ? 0x73763100U : 0x73763108U;
+    expected[1] = sequence;
+    if (opening) {
+        expected[4] = 1U;
+        expected[9] = 0U;
+    } else {
+        expected[2] = 0U;
+        expected[3] = 1U;
+    }
+
+    for (unsigned word = 0; word < 64; word++) {
+        Check(command->cmd[word] == expected[word],
+              "typed channel setup submits the exact zero-filled request");
+        Check(!command->rsp[word],
+              "typed channel setup submits a zero-filled response buffer");
+    }
+    Check(!command->flags && !command->add_data,
+          "typed channel setup leaves passthrough flags and data clear");
+}
+
+static void KernelDecoderChannelOpenPayload(void)
+{
+    const struct crystalhd_decoder_config config = {
+        .codec = CRYSTALHD_DECODER_CODEC_H264,
+    };
+    int frontend_owner = 0;
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    transaction_mode = true;
+    Check(crystalhd_fw_bootstrap_locked(&context, &frontend_owner) == 0,
+          "typed channel setup starts from the shared bootstrap");
+    Check(context.decoder_phase == CRYSTALHD_DECODER_BOOTSTRAPPED &&
+          context.fw_sequence == 1 && !context.decoder_channel_id,
+          "bootstrap publishes exactly one initialized command sequence");
+
+    Check(crystalhd_decoder_channel_open_locked(&context, &frontend_owner,
+                                                &config) == 0,
+          "BCM70015 H.264 channel OPEN and INPUT_PARAMS succeed atomically");
+    Check(context.state == BC_LINK_INIT &&
+          context.decoder_phase == CRYSTALHD_DECODER_CHANNEL_CONFIGURED &&
+          context.fw_sequence == 3 && !context.decoder_channel_id &&
+          context.session_owner == &frontend_owner,
+          "typed channel setup publishes only the complete configured channel");
+    Check(kernel_fw_requests == 1 && kernel_fw_releases == 1 &&
+          downloads == 1 && download_resets == 1 && firmware_calls == 3 &&
+          transaction_attempts == 4 && !strcmp(events, "QDL"),
+          "typed channel setup reuses one download and three serialized commands");
+    CheckKernelChannelPayload(&firmware_command_snapshots[1], true, 2);
+    CheckKernelChannelPayload(&firmware_command_snapshots[2], false, 3);
+}
+
+static void KernelDecoderChannelOpenPreconditions(void)
+{
+    struct crystalhd_decoder_config config = {
+        .codec = CRYSTALHD_DECODER_CODEC_H264,
+    };
+    int frontend_owner = 0, foreign_owner = 0;
+    const void *owner;
+
+    ResetBootstrapped(&frontend_owner);
+    Check(crystalhd_decoder_channel_open_locked(NULL, &frontend_owner,
+                                                &config) == -EINVAL &&
+          crystalhd_decoder_channel_open_locked(&context, NULL,
+                                                &config) == -EINVAL &&
+          crystalhd_decoder_channel_open_locked(&context, &frontend_owner,
+                                                NULL) == -EINVAL,
+          "typed channel setup rejects missing arguments");
+    Check(!firmware_calls && context.fw_sequence == 1 &&
+          context.decoder_phase == CRYSTALHD_DECODER_BOOTSTRAPPED,
+          "missing channel arguments have no command or state effects");
+
+    ResetBootstrapped(&frontend_owner);
+    owner = context.session_owner;
+    context.adp = NULL;
+    Check(crystalhd_decoder_channel_open_locked(&context, owner, &config) ==
+              -ENODEV && !firmware_calls && context.fw_sequence == 1,
+          "typed channel setup rejects a retired adapter before mutation");
+
+    ResetBootstrapped(&frontend_owner);
+    context.hw_ctx = NULL;
+    Check(crystalhd_decoder_channel_open_locked(&context, &frontend_owner,
+                                                &config) == -ENODEV &&
+          !firmware_calls && context.fw_sequence == 1,
+          "typed channel setup rejects a missing hardware context");
+
+    ResetBootstrapped(&frontend_owner);
+    hardware.pfnDoFirmwareCmd = NULL;
+    Check(crystalhd_decoder_channel_open_locked(&context, &frontend_owner,
+                                                &config) == -ENODEV &&
+          !firmware_calls && context.fw_sequence == 1,
+          "typed channel setup rejects a missing command transport");
+
+    ResetBootstrapped(&frontend_owner);
+    adapter.present = false;
+    Check(crystalhd_decoder_channel_open_locked(&context, &frontend_owner,
+                                                &config) == -ENODEV &&
+          !firmware_calls && context.fw_sequence == 1,
+          "typed channel setup rejects removal before command posting");
+
+    ResetBootstrapped(&frontend_owner);
+    context.session_owner = NULL;
+    Check(crystalhd_decoder_channel_open_locked(&context, &frontend_owner,
+                                                &config) == -EINVAL &&
+          !firmware_calls && context.fw_sequence == 1,
+          "typed channel setup requires an active session owner");
+
+    ResetBootstrapped(&frontend_owner);
+    Check(crystalhd_decoder_channel_open_locked(&context, &foreign_owner,
+                                                &config) == -EBUSY &&
+          !firmware_calls && context.fw_sequence == 1,
+          "typed channel setup rejects a foreign session owner");
+
+    ResetBootstrapped(&frontend_owner);
+    endpoint.device = BC_PCI_DEVID_LINK;
+    Check(crystalhd_decoder_channel_open_locked(&context, &frontend_owner,
+                                                &config) == -EOPNOTSUPP &&
+          !firmware_calls && context.fw_sequence == 1,
+          "typed Flea channel setup rejects BCM70012 without posting Flea wire data");
+
+    ResetBootstrapped(&frontend_owner);
+    config.codec = (enum crystalhd_decoder_codec)UINT32_MAX;
+    Check(crystalhd_decoder_channel_open_locked(&context, &frontend_owner,
+                                                &config) == -EINVAL &&
+          !firmware_calls && context.fw_sequence == 1,
+          "typed channel setup rejects an unsupported codec before mutation");
+    config.codec = CRYSTALHD_DECODER_CODEC_H264;
+
+    for (unsigned which = 0; which < 3; which++) {
+        ResetBootstrapped(&frontend_owner);
+        if (which == 0)
+            context.state = BC_LINK_RESUME;
+        else if (which == 1)
+            context.decoder_phase = CRYSTALHD_DECODER_COLD;
+        else
+            context.fw_sequence = 0;
+        Check(crystalhd_decoder_channel_open_locked(&context, &frontend_owner,
+                                                    &config) == -EBUSY &&
+              !firmware_calls,
+              "typed channel setup requires the exact bootstrap publication");
+    }
+}
+
+static void KernelDecoderChannelOpenFailures(void)
+{
+    const struct crystalhd_decoder_config config = {
+        .codec = CRYSTALHD_DECODER_CODEC_H264,
+    };
+    int frontend_owner = 0;
+
+    ResetBootstrapped(&frontend_owner);
+    firmware_status_call = 1;
+    firmware_call_status = BC_STS_FW_CMD_ERR;
+    Check(crystalhd_decoder_channel_open_locked(&context, &frontend_owner,
+                                                &config) == -EIO &&
+          context.decoder_phase == CRYSTALHD_DECODER_BOOTSTRAPPED &&
+          context.fw_sequence == 2 && firmware_calls == 1,
+          "confirmed OPEN firmware rejection retains a retryable bootstrap");
+    firmware_status_call = 0;
+    Check(crystalhd_decoder_channel_open_locked(&context, &frontend_owner,
+                                                &config) == 0 &&
+          context.decoder_phase == CRYSTALHD_DECODER_CHANNEL_CONFIGURED &&
+          context.fw_sequence == 4 && firmware_calls == 3,
+          "retry after confirmed OPEN rejection consumes fresh sequence values");
+    CheckKernelChannelPayload(&firmware_command_snapshots[1], true, 3);
+    CheckKernelChannelPayload(&firmware_command_snapshots[2], false, 4);
+
+    ResetBootstrapped(&frontend_owner);
+    firmware_status = BC_STS_BUSY;
+    Check(crystalhd_decoder_channel_open_locked(&context, &frontend_owner,
+                                                &config) == -EBUSY &&
+          context.decoder_phase == CRYSTALHD_DECODER_RECOVERY_REQUIRED &&
+          context.fw_sequence == 2 && firmware_calls == 1,
+          "ambiguous OPEN admission failure requires verified recovery");
+
+    ResetBootstrapped(&frontend_owner);
+    firmware_status = BC_STS_TIMEOUT;
+    poison_on_firmware_timeout = true;
+    transaction_mode = true;
+    Check(crystalhd_decoder_channel_open_locked(&context, &frontend_owner,
+                                                &config) == -ETIMEDOUT &&
+          context.state == BC_LINK_INIT &&
+          context.decoder_phase == CRYSTALHD_DECODER_RECOVERY_REQUIRED &&
+          context.fw_sequence == 2 && hardware.fwcmd_poisoned &&
+          firmware_calls == 1,
+          "timed-out OPEN preserves active hardware state and requires reset");
+    Check(crystalhd_decoder_channel_open_locked(&context, &frontend_owner,
+                                                &config) == -EBUSY &&
+          firmware_calls == 1,
+          "timed-out OPEN cannot be retried without a fresh bootstrap");
+    firmware_status = BC_STS_SUCCESS;
+    poison_on_firmware_timeout = false;
+    Check(crystalhd_fw_bootstrap_locked(&context, &frontend_owner) == 0 &&
+          context.decoder_phase == CRYSTALHD_DECODER_BOOTSTRAPPED &&
+          context.fw_sequence == 1 && !hardware.fwcmd_poisoned &&
+          kernel_fw_requests == 1 && downloads == 1 && firmware_calls == 2,
+          "verified redownload and INIT recover an ambiguous channel attempt");
+    Check(crystalhd_decoder_channel_open_locked(&context, &frontend_owner,
+                                                &config) == 0 &&
+          context.decoder_phase == CRYSTALHD_DECODER_CHANNEL_CONFIGURED &&
+          context.fw_sequence == 3 && firmware_calls == 4,
+          "recovered channel setup restarts the firmware sequence at one");
+    CheckKernelChannelPayload(&firmware_command_snapshots[2], true, 2);
+    CheckKernelChannelPayload(&firmware_command_snapshots[3], false, 3);
+
+    ResetBootstrapped(&frontend_owner);
+    firmware_open_channel = 7;
+    Check(crystalhd_decoder_channel_open_locked(&context, &frontend_owner,
+                                                &config) == -EIO &&
+          context.decoder_phase == CRYSTALHD_DECODER_RECOVERY_REQUIRED &&
+          context.fw_sequence == 2 && !context.decoder_channel_id &&
+          firmware_calls == 1,
+          "nonzero Flea channel response is rejected as a partial open");
+
+    ResetBootstrapped(&frontend_owner);
+    remove_during_firmware_call = 1;
+    Check(crystalhd_decoder_channel_open_locked(&context, &frontend_owner,
+                                                &config) == -ENODEV &&
+          !adapter.present &&
+          context.decoder_phase == CRYSTALHD_DECODER_RECOVERY_REQUIRED &&
+          context.fw_sequence == 2 && firmware_calls == 1,
+          "removal at OPEN completion prevents INPUT and publication");
+
+    ResetBootstrapped(&frontend_owner);
+    firmware_status_call = 2;
+    firmware_call_status = BC_STS_FW_CMD_ERR;
+    Check(crystalhd_decoder_channel_open_locked(&context, &frontend_owner,
+                                                &config) == -EIO &&
+          context.decoder_phase == CRYSTALHD_DECODER_RECOVERY_REQUIRED &&
+          context.fw_sequence == 3 && !context.decoder_channel_id &&
+          firmware_calls == 2,
+          "INPUT failure never publishes the already-open firmware channel");
+
+    ResetBootstrapped(&frontend_owner);
+    remove_during_firmware_call = 2;
+    Check(crystalhd_decoder_channel_open_locked(&context, &frontend_owner,
+                                                &config) == -ENODEV &&
+          !adapter.present &&
+          context.decoder_phase == CRYSTALHD_DECODER_RECOVERY_REQUIRED &&
+          context.fw_sequence == 3 && firmware_calls == 2,
+          "removal at INPUT completion prevents configured publication");
+}
+
+static void KernelDecoderChannelSuspendRecovery(void)
+{
+    crystalhd_ioctl_data data = {0};
+    int frontend_owner = 0;
+
+    ResetFrontendOwned(BC_LINK_INIT, true, &frontend_owner);
+    context.decoder_phase = CRYSTALHD_DECODER_CHANNEL_CONFIGURED;
+    context.fw_sequence = 3;
+    context.decoder_channel_id = 0;
+    Check(crystalhd_suspend(&context, &data) == BC_STS_SUCCESS &&
+          context.state == BC_LINK_SUSPEND &&
+          context.decoder_phase == CRYSTALHD_DECODER_RECOVERY_REQUIRED &&
+          !context.decoder_channel_id,
+          "suspend invalidates a configured typed firmware channel");
+    Check(crystalhd_resume(&context) == BC_STS_SUCCESS &&
+          context.state == BC_LINK_RESUME &&
+          context.decoder_phase == CRYSTALHD_DECODER_RECOVERY_REQUIRED,
+          "resume retains the fresh-bootstrap requirement");
+    Check(crystalhd_fw_bootstrap_locked(&context, &frontend_owner) == 0 &&
+          context.state == BC_LINK_INIT &&
+          context.decoder_phase == CRYSTALHD_DECODER_BOOTSTRAPPED &&
+          context.fw_sequence == 1,
+          "resumed typed session recovers through verified bootstrap");
 }
 
 struct firmware_thread {
@@ -3228,6 +3537,10 @@ int main(void)
         {"kernel firmware bootstrap INIT payload", KernelFirmwareBootstrapPayload},
         {"kernel firmware bootstrap failure rollback", KernelFirmwareBootstrapFailures},
         {"kernel firmware bootstrap timeout retry", KernelFirmwareBootstrapTimeoutRetry},
+        {"BCM70015 typed channel payload and publication", KernelDecoderChannelOpenPayload},
+        {"BCM70015 typed channel preconditions", KernelDecoderChannelOpenPreconditions},
+        {"BCM70015 typed channel failure and recovery", KernelDecoderChannelOpenFailures},
+        {"BCM70015 typed channel suspend recovery", KernelDecoderChannelSuspendRecovery},
         {"firmware pause/resume rollback", FirmwarePauseRollback},
         {"firmware download serialization", FirmwareDownloadSerialization},
         {"firmware transaction serialization", FirmwareTransactionSerialization},
