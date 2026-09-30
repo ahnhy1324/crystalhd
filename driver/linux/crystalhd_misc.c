@@ -497,6 +497,7 @@ void *crystalhd_dioq_fetch_wait(struct crystalhd_hw *hw, uint32_t to_secs, uint3
 
 	spin_lock_irqsave(&ioq->lock, flags);
 	while (!time_after_eq(jiffies, fetchTimeout)) {
+		rc = 0;
 		if(ioq->count == 0) {
 			spin_unlock_irqrestore(&ioq->lock, flags);
 			crystalhd_wait_on_event(&ioq->event, (ioq->count > 0),
@@ -564,6 +565,7 @@ void *crystalhd_dioq_fetch_wait(struct crystalhd_hw *hw, uint32_t to_secs, uint3
 	spin_unlock_irqrestore(&ioq->lock, flags);
 	return r_pkt;
 sem_error:
+	*sig_pend = 1;
 	return NULL;
 sem_rel_return:
 	up(&hw->fetch_sem);
