@@ -737,6 +737,72 @@ done:
 	return sts;
 }
 
+int crystalhd_fw_bootstrap_locked(struct crystalhd_cmd *ctx,
+				  const void *owner)
+{
+	struct crystalhd_fw_init_cmd *init;
+	BC_FW_CMD fw_cmd = { };
+	uint32_t initial_power_state, initial_state;
+	BC_STATUS sts;
+	int rc;
+
+	if (!ctx || !owner)
+		return -EINVAL;
+	if (!ctx->adp || !ctx->adp->pdev || !ctx->hw_ctx)
+		return -ENODEV;
+
+	lockdep_assert_held_write(&ctx->adp->user_lock);
+	initial_state = ctx->state;
+	initial_power_state = ctx->pwr_state_change;
+
+	rc = crystalhd_request_firmware_locked(ctx, owner);
+	if (rc)
+		goto rollback;
+	if (!READ_ONCE(ctx->adp->present)) {
+		rc = -ENODEV;
+		goto rollback;
+	}
+
+	BUILD_BUG_ON(sizeof(*init) !=
+		     CRYSTALHD_FW_INIT_WORDS * sizeof(uint32_t));
+	BUILD_BUG_ON(sizeof(*init) > sizeof(fw_cmd.cmd));
+	init = (struct crystalhd_fw_init_cmd *)fw_cmd.cmd;
+	init->command = eCMD_C011_INIT;
+	init->sequence = 1;
+	init->mem_size_mb = CRYSTALHD_FW_INIT_MEM_SIZE_MB;
+	init->input_clk_hz = CRYSTALHD_FW_INIT_INPUT_CLK_HZ;
+	init->uart_baud_rate = CRYSTALHD_FW_INIT_UART_BAUD;
+	init->init_arcs = CRYSTALHD_FW_INIT_STREAM_ARC |
+			  CRYSTALHD_FW_INIT_VDEC_ARC;
+	init->interrupt = CRYSTALHD_FW_INIT_INT_ENABLE;
+	init->brcm_mode = CRYSTALHD_FW_INIT_BRCM_ECG_MODE;
+	init->fgt_enable = CRYSTALHD_FW_INIT_FGT_ENABLE;
+	if (ctx->adp->pdev->device == BC_PCI_DEVID_LINK)
+		init->rsa_decrypt = CRYSTALHD_FW_INIT_RSA_DECRYPT;
+
+	sts = crystalhd_fw_exec_locked(ctx, owner, &fw_cmd);
+	rc = crystalhd_fw_status_to_errno(sts);
+	if (rc)
+		goto rollback;
+	if (!READ_ONCE(ctx->adp->present)) {
+		rc = -ENODEV;
+		goto rollback;
+	}
+
+	/* RESUME is only an admission state for reloading firmware. */
+	ctx->state = BC_LINK_INIT;
+	ctx->pwr_state_change = BC_HW_RUNNING;
+	return 0;
+
+rollback:
+	/* A timed-out command may still complete later. Force every retry
+	 * through a fresh download, which is the mailbox recovery boundary.
+	 */
+	ctx->state = initial_state;
+	ctx->pwr_state_change = initial_power_state;
+	return rc;
+}
+
 static BC_STATUS bc_cproc_do_fw_cmd(struct crystalhd_cmd *ctx,
 				     crystalhd_ioctl_data *idata)
 {

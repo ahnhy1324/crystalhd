@@ -20,12 +20,15 @@ awk '
     /^enum (_crystalhd_state|_BC_PCI_DEV_IDS|_BC_DTS_GLOBALS|list_sts|LIST_STATUS)[[:space:]{]/ {
         copying = 1; found++
     }
+    /^struct crystalhd_fw_init_cmd[[:space:]{]/ { copying = 1; found++ }
     copying { print }
     copying && /^};/ { copying = 0 }
     /^#define[[:space:]]+(DTS_MODE_INV|BC_LINK_ELEM_POOL_SZ|CRYSTALHD_(LINK|FLEA)_FIRMWARE_NAME)[[:space:]]/ { print }
-    END { if (found != 5 || copying) exit 1 }
+    /^#define[[:space:]]+CRYSTALHD_FW_INIT_[A-Z_]+[[:space:]]/ { print }
+    END { if (found != 6 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.h" "$repo_dir/include/bc_dts_glob_lnx.h" \
     "$repo_dir/driver/linux/crystalhd_hw.h" "$repo_dir/driver/linux/crystalhd_misc.h" \
+    "$repo_dir/driver/linux/crystalhd_fw_if.h" \
     > "$pm_test_dir/command-pm-types.h"
 awk '
     /^BC_STATUS crystalhd_hw_(close|suspend|resume)\(/ { copying = 1; found++ }
@@ -50,13 +53,14 @@ awk '
     /^int crystalhd_request_firmware_locked\(/ ||
     /^static BC_STATUS bc_cproc_download_fw\(/ ||
     /^BC_STATUS crystalhd_fw_exec_locked\(/ ||
+    /^int crystalhd_fw_bootstrap_locked\(/ ||
     /^static BC_STATUS bc_cproc_do_fw_cmd\(/ ||
     /^void crystalhd_user_close\(/ ||
     (/^BC_STATUS bc_cproc_release_user\(/ && !/;[[:space:]]*$/) ||
     /^BC_STATUS crystalhd_(suspend|resume|user_open)\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 28 || copying) exit 1 }
+    END { if (found != 29 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" > "$pm_test_dir/command-pm-functions.h"
 
 awk '

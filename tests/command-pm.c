@@ -25,6 +25,7 @@ struct _BC_DTS_PROC_OUT;
 #define KERN_ERR ""
 #define GFP_KERNEL 0
 #define READ_ONCE(value) (value)
+#define BUILD_BUG_ON(condition) _Static_assert(!(condition), "BUILD_BUG_ON")
 #define printk(...) ((void)0)
 #define dev_err(dev, ...) ((void)(dev))
 #define dev_info(dev, ...) do { (void)(dev); if (false) fprintf(stderr, __VA_ARGS__); } while (0)
@@ -36,6 +37,7 @@ struct _BC_DTS_PROC_OUT;
     Check((lock) == &adapter.user_lock && *(lock) == 1, \
           "firmware loading retains exclusive user admission")
 #define eCMD_C011_CMD_BASE 0x73763000U
+#define eCMD_C011_INIT (eCMD_C011_CMD_BASE + 0x01U)
 #define eCMD_C011_DEC_CHAN_FLUSH (eCMD_C011_CMD_BASE + 0x104U)
 #define eCMD_C011_DEC_CHAN_PAUSE (eCMD_C011_CMD_BASE + 0x11dU)
 struct device { int unused; };
@@ -144,6 +146,8 @@ static BC_STATUS capture_status, cancel_status, download_status;
 static BC_STATUS pause_status, firmware_status;
 static unsigned pause_calls, firmware_calls;
 static BC_FW_CMD *last_firmware_command;
+static BC_FW_CMD firmware_command_snapshot;
+static bool remove_during_fw_command, poison_on_firmware_timeout;
 static bool pause_states[4];
 static pthread_mutex_t transaction_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t transaction_audit = PTHREAD_MUTEX_INITIALIZER;
@@ -433,6 +437,9 @@ static BC_STATUS FirmwareCommand(struct crystalhd_hw *hw, BC_FW_CMD *command)
 
     Check(hw == &hardware && command != NULL,
           "firmware callback receives the active command");
+    firmware_command_snapshot = *command;
+    if (remove_during_fw_command)
+        adapter.present = false;
     if (!transaction_mode)
         last_firmware_command = command;
     if (block_first_firmware) {
@@ -451,6 +458,10 @@ static BC_STATUS FirmwareCommand(struct crystalhd_hw *hw, BC_FW_CMD *command)
     firmware_calls++;
     if (firmware_status == BC_STS_SUCCESS)
         command->rsp[0] = command->cmd[0] ^ 0x5a5a5a5aU;
+    else if (firmware_status == BC_STS_TIMEOUT && poison_on_firmware_timeout) {
+        hardware.fwcmd_poisoned = true;
+        hardware.FwCmdCnt = 1;
+    }
     return firmware_status;
 }
 static BC_STATUS crystalhd_hw_stop_capture(struct crystalhd_hw *hw, bool unmap)
@@ -658,6 +669,8 @@ static void Reset(uint32_t state, bool with_hardware)
     pause_status = firmware_status = BC_STS_SUCCESS;
     pause_calls = firmware_calls = 0;
     last_firmware_command = NULL;
+    memset(&firmware_command_snapshot, 0, sizeof(firmware_command_snapshot));
+    remove_during_fw_command = poison_on_firmware_timeout = false;
     memset(pause_states, 0, sizeof(pause_states));
     transaction_mode = block_first_firmware = false;
     first_firmware_waiting = release_first_firmware = false;
@@ -1393,6 +1406,236 @@ static void KernelFirmwareStatusTranslation(void)
                   hardware.fwcmd_poisoned && hardware.FwCmdCnt == 37,
                   "translated failure preserves state and quarantine");
     }
+}
+
+static void CheckKernelBootstrapPayload(uint32_t device)
+{
+    uint32_t expected[64] = {0};
+
+    expected[0] = 0x73763001U;
+    expected[1] = 1;
+    expected[2] = 64U;
+    expected[3] = 200000000U;
+    expected[4] = 38400U;
+    expected[5] = 0x1U | 0x2U;
+    expected[6] = 1U;
+    expected[8] = 2U;
+    expected[9] = 1U;
+    if (device == BC_PCI_DEVID_LINK)
+        expected[13] = 1U;
+
+    for (unsigned word = 0; word < 64; word++) {
+        Check(firmware_command_snapshot.cmd[word] == expected[word],
+              "kernel bootstrap submits the exact zero-filled INIT payload");
+        Check(!firmware_command_snapshot.rsp[word],
+              "kernel bootstrap submits a zero-filled response buffer");
+    }
+    Check(!firmware_command_snapshot.flags &&
+          !firmware_command_snapshot.add_data,
+          "kernel bootstrap leaves passthrough flags and data clear");
+}
+
+static void KernelFirmwareBootstrapPayload(void)
+{
+    const struct {
+        uint32_t device;
+        size_t size;
+        uint32_t entry_state;
+        uint32_t entry_power;
+    } cases[] = {
+        { BC_PCI_DEVID_FLEA, CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE,
+          BC_LINK_INVALID, BC_HW_SUSPEND },
+        { BC_PCI_DEVID_LINK, CRYSTALHD_LINK_MIN_FIRMWARE_SIZE,
+          BC_LINK_RESUME, BC_HW_RESUME },
+    };
+    int frontend_owner = 0;
+
+    for (unsigned n = 0; n < sizeof(cases) / sizeof(cases[0]); n++) {
+        ResetFrontendOwned(cases[n].entry_state, true, &frontend_owner);
+        endpoint.device = cases[n].device;
+        kernel_fw_blob.size = cases[n].size;
+        context.pwr_state_change = cases[n].entry_power;
+        hardware.fwcmd_poisoned = true;
+        hardware.FwCmdCnt = 17;
+        transaction_mode = true;
+
+        Check(crystalhd_fw_bootstrap_locked(&context, &frontend_owner) == 0,
+              "kernel bootstrap downloads and initializes either supported chip");
+        Check(context.state == BC_LINK_INIT &&
+              context.pwr_state_change == BC_HW_RUNNING &&
+              context.session_owner == &frontend_owner,
+              "kernel bootstrap commits one exact initialized owner state");
+        Check(kernel_fw_requests == 1 && kernel_fw_releases == 1 &&
+              downloads == 1 && download_resets == 1 &&
+              firmware_calls == 1 && transaction_attempts == 2 &&
+              !strcmp(events, "QDL"),
+              "kernel bootstrap uses one shared download and one shared command transaction");
+        Check(!hardware.fwcmd_poisoned && !hardware.FwCmdCnt,
+              "kernel bootstrap recovers quarantine only through verified download");
+        CheckKernelBootstrapPayload(cases[n].device);
+    }
+}
+
+static void KernelFirmwareBootstrapPreconditions(void)
+{
+    int frontend_owner = 0, foreign_owner = 0;
+    const void *owner;
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    context.pwr_state_change = BC_HW_SUSPEND;
+    Check(crystalhd_fw_bootstrap_locked(NULL, &frontend_owner) == -EINVAL &&
+          crystalhd_fw_bootstrap_locked(&context, NULL) == -EINVAL,
+          "kernel bootstrap rejects missing context and owner tokens");
+    Check(!kernel_fw_requests && !downloads && !firmware_calls &&
+          context.state == BC_LINK_INVALID &&
+          context.pwr_state_change == BC_HW_SUSPEND,
+          "invalid bootstrap arguments have no request or state effects");
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    context.pwr_state_change = BC_HW_SUSPEND;
+    owner = context.session_owner;
+    context.adp = NULL;
+    Check(crystalhd_fw_bootstrap_locked(&context, owner) == -ENODEV &&
+          !kernel_fw_requests && !downloads && !firmware_calls &&
+          context.state == BC_LINK_INVALID &&
+          context.pwr_state_change == BC_HW_SUSPEND,
+          "kernel bootstrap rejects a missing adapter before side effects");
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    context.pwr_state_change = BC_HW_SUSPEND;
+    Check(crystalhd_fw_bootstrap_locked(&context, &foreign_owner) == -EBUSY &&
+          !kernel_fw_requests && !downloads && !firmware_calls &&
+          context.state == BC_LINK_INVALID &&
+          context.pwr_state_change == BC_HW_SUSPEND,
+          "kernel bootstrap preserves foreign-owner rejection and entry state");
+
+    ResetFrontendOwned(BC_LINK_INIT, true, &frontend_owner);
+    context.pwr_state_change = BC_HW_SUSPEND;
+    Check(crystalhd_fw_bootstrap_locked(&context, &frontend_owner) == -EBUSY &&
+          !kernel_fw_requests && !downloads && !firmware_calls &&
+          context.state == BC_LINK_INIT &&
+          context.pwr_state_change == BC_HW_SUSPEND,
+          "kernel bootstrap rejects an already active firmware state");
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    context.pwr_state_change = BC_HW_SUSPEND;
+    hardware.pfnDoFirmwareCmd = NULL;
+    transaction_mode = true;
+    Check(crystalhd_fw_bootstrap_locked(&context, &frontend_owner) == -EINVAL,
+          "kernel bootstrap propagates a missing command transport");
+    Check(kernel_fw_requests == 1 && kernel_fw_releases == 1 &&
+          downloads == 1 && download_resets == 1 && !firmware_calls &&
+          transaction_attempts == 1 && context.state == BC_LINK_INVALID &&
+          context.pwr_state_change == BC_HW_SUSPEND,
+          "post-download admission failure restores the exact entry state");
+}
+
+static void KernelFirmwareBootstrapFailures(void)
+{
+    const struct {
+        BC_STATUS status;
+        int error;
+    } command_errors[] = {
+        { BC_STS_INV_ARG, -EINVAL },
+        { BC_STS_BUSY, -EBUSY },
+        { BC_STS_INSUFF_RES, -ENOMEM },
+        { BC_STS_NO_ACCESS, -EACCES },
+        { BC_STS_TIMEOUT, -ETIMEDOUT },
+        { BC_STS_IO_USER_ABORT, -ERESTARTSYS },
+        { BC_STS_FW_AUTH_FAILED, -EKEYREJECTED },
+        { BC_STS_CERT_VERIFY_ERROR, -EKEYREJECTED },
+        { BC_STS_PWR_MGMT, -EAGAIN },
+        { BC_STS_FW_CMD_ERR, -EIO },
+        { BC_STS_IO_ERROR, -EIO },
+    };
+    int frontend_owner = 0;
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    context.pwr_state_change = BC_HW_SUSPEND;
+    kernel_fw_request_error = -ENOENT;
+    Check(crystalhd_fw_bootstrap_locked(&context, &frontend_owner) == -ENOENT &&
+          kernel_fw_requests == 1 && !kernel_fw_releases && !downloads &&
+          !firmware_calls && context.state == BC_LINK_INVALID &&
+          context.pwr_state_change == BC_HW_SUSPEND,
+          "kernel bootstrap preserves request errors and entry state");
+
+    ResetFrontendOwned(BC_LINK_RESUME, true, &frontend_owner);
+    context.pwr_state_change = BC_HW_RESUME;
+    download_status = BC_STS_IO_ERROR;
+    Check(crystalhd_fw_bootstrap_locked(&context, &frontend_owner) == -EIO &&
+          kernel_fw_requests == 1 && kernel_fw_releases == 1 &&
+          downloads == 1 && !download_resets && !firmware_calls &&
+          context.state == BC_LINK_RESUME &&
+          context.pwr_state_change == BC_HW_RESUME,
+          "kernel bootstrap rolls back local power state after download failure");
+
+    for (unsigned n = 0; n < sizeof(command_errors) / sizeof(command_errors[0]); n++) {
+        ResetFrontendOwned(BC_LINK_RESUME, true, &frontend_owner);
+        context.pwr_state_change = BC_HW_RESUME;
+        firmware_status = command_errors[n].status;
+        transaction_mode = true;
+        Check(crystalhd_fw_bootstrap_locked(&context, &frontend_owner) ==
+                  command_errors[n].error,
+              "kernel bootstrap maps every shared command status to errno");
+        Check(kernel_fw_requests == 1 && kernel_fw_releases == 1 &&
+              downloads == 1 && download_resets == 1 &&
+              firmware_calls == 1 && transaction_attempts == 2 &&
+              context.state == BC_LINK_RESUME &&
+              context.pwr_state_change == BC_HW_RESUME,
+              "failed INIT restores the exact resume admission state");
+    }
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    context.pwr_state_change = BC_HW_SUSPEND;
+    remove_during_fw_request = true;
+    Check(crystalhd_fw_bootstrap_locked(&context, &frontend_owner) == -ENODEV &&
+          kernel_fw_requests == 1 && kernel_fw_releases == 1 &&
+          !downloads && !firmware_calls && !adapter.present &&
+          context.state == BC_LINK_INVALID &&
+          context.pwr_state_change == BC_HW_SUSPEND,
+          "kernel bootstrap stops after removal during firmware request");
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    context.pwr_state_change = BC_HW_SUSPEND;
+    remove_during_fw_command = true;
+    Check(crystalhd_fw_bootstrap_locked(&context, &frontend_owner) == -ENODEV &&
+          kernel_fw_requests == 1 && kernel_fw_releases == 1 &&
+          downloads == 1 && download_resets == 1 && firmware_calls == 1 &&
+          !adapter.present && context.state == BC_LINK_INVALID &&
+          context.pwr_state_change == BC_HW_SUSPEND,
+          "kernel bootstrap rolls back if the device disappears at INIT completion");
+}
+
+static void KernelFirmwareBootstrapTimeoutRetry(void)
+{
+    int frontend_owner = 0;
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    context.pwr_state_change = BC_HW_SUSPEND;
+    firmware_status = BC_STS_TIMEOUT;
+    poison_on_firmware_timeout = true;
+    transaction_mode = true;
+    Check(crystalhd_fw_bootstrap_locked(&context, &frontend_owner) ==
+              -ETIMEDOUT,
+          "timed-out INIT returns its bounded timeout error");
+    Check(context.state == BC_LINK_INVALID &&
+          context.pwr_state_change == BC_HW_SUSPEND &&
+          hardware.fwcmd_poisoned && hardware.FwCmdCnt == 1 &&
+          kernel_fw_requests == 1 && downloads == 1 && firmware_calls == 1,
+          "timed-out INIT restores admission but retains mailbox quarantine");
+
+    firmware_status = BC_STS_SUCCESS;
+    poison_on_firmware_timeout = false;
+    Check(crystalhd_fw_bootstrap_locked(&context, &frontend_owner) == 0,
+          "bootstrap retry recovers only through another verified download");
+    Check(context.state == BC_LINK_INIT &&
+          context.pwr_state_change == BC_HW_RUNNING &&
+          !hardware.fwcmd_poisoned && !hardware.FwCmdCnt &&
+          kernel_fw_requests == 2 && kernel_fw_releases == 2 &&
+          downloads == 2 && download_resets == 2 && firmware_calls == 2 &&
+          transaction_attempts == 4 && !strcmp(events, "QDLQDL"),
+          "retry resets quarantine, reinitializes firmware and commits once");
+    CheckKernelBootstrapPayload(BC_PCI_DEVID_FLEA);
 }
 
 struct firmware_thread {
@@ -2981,6 +3224,10 @@ int main(void)
         {"kernel firmware chip selection and lifetime", KernelFirmwareSelectionAndLifetime},
         {"kernel firmware request and shared admission errors", KernelFirmwareRequestAndAdmissionErrors},
         {"kernel firmware status translation", KernelFirmwareStatusTranslation},
+        {"kernel firmware bootstrap preconditions", KernelFirmwareBootstrapPreconditions},
+        {"kernel firmware bootstrap INIT payload", KernelFirmwareBootstrapPayload},
+        {"kernel firmware bootstrap failure rollback", KernelFirmwareBootstrapFailures},
+        {"kernel firmware bootstrap timeout retry", KernelFirmwareBootstrapTimeoutRetry},
         {"firmware pause/resume rollback", FirmwarePauseRollback},
         {"firmware download serialization", FirmwareDownloadSerialization},
         {"firmware transaction serialization", FirmwareTransactionSerialization},

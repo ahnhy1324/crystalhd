@@ -126,6 +126,15 @@ int crystalhd_request_firmware_locked(struct crystalhd_cmd *ctx,
  */
 BC_STATUS crystalhd_fw_exec_locked(struct crystalhd_cmd *ctx,
 				   const void *owner, BC_FW_CMD *fw_cmd);
+/* Request the chip firmware and issue its fixed C011 INIT command as one
+ * retryable controller transition from BC_LINK_INVALID or BC_LINK_RESUME. The
+ * caller excludes device removal, holds adp->user_lock exclusively, and owns
+ * the active session. On failure, local admission state is restored so the
+ * next attempt must perform a fresh verified firmware download before issuing
+ * another command.
+ */
+int crystalhd_fw_bootstrap_locked(struct crystalhd_cmd *ctx,
+				  const void *owner);
 /* Caller retains device/session lifetime and serializes TX submission through
  * return; the legacy ioctl adapter does this with user_lock and tx_lock.
  */
