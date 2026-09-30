@@ -16,14 +16,21 @@ typedef union {
 	struct { uint32_t low_part, high_part; };
 } addr_64;
 struct device { int unused; };
-struct scatterlist { dma_addr_t address; uint32_t length; };
+struct scatterlist {
+	dma_addr_t dma_address;
+	uint32_t dma_length;
+	struct scatterlist *next;
+};
 #if __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
 #error "This harness exercises the CrystalHD little-endian descriptor format"
 #endif
 #define __LITTLE_ENDIAN_BITFIELD
 #define dev_err(dev, ...) ((void)(dev))
-#define crystalhd_get_sgle_paddr(dio, ix) ((dio)->sg[ix].address)
-#define crystalhd_get_sgle_len(dio, ix) ((dio)->sg[ix].length)
+#define sg_next(sg) ((sg)->next)
+#define sg_dma_address(sg) ((sg)->dma_address)
+#define sg_dma_len(sg) ((sg)->dma_length)
+#define cpu_to_le32(value) ((uint32_t)(value))
+#define cpu_to_le64(value) ((uint64_t)(value))
 #include "dma-types.h"
 #include "dma-builders.h"
 
@@ -124,69 +131,337 @@ static void crystalhd_hw_free_rx_pkt(struct crystalhd_hw *hw,
 
 #include "dma-setup.h"
 
-static void capture_plane_split(bool merged, uint32_t uv_offset)
+enum {
+	RX_SEGMENT_SIZE = 4096,
+	RX_CAPACITY = 3 * RX_SEGMENT_SIZE,
+};
+
+static void init_unmerged_sg(struct scatterlist sg[3])
 {
-	struct scatterlist sg[] = {
-		{ 0x100000, merged ? 12288 : 4096 },
-		{ 0x200000, 4096 }, { 0x300000, 4096 },
+	/* The DMA chain order deliberately differs from the backing array order. */
+	sg[0] = (struct scatterlist) {
+		.dma_address = 0x100000,
+		.dma_length = RX_SEGMENT_SIZE,
+		.next = &sg[2],
 	};
-	struct dma_descriptor desc[5];
-	struct dma_desc_mem mem = { .pdma_desc_start = desc,
-		.phy_addr = 0x400000, .sz = sizeof(desc) };
-	struct crystalhd_dio_req req = { .sg = sg, .sg_cnt = merged ? 1 : 3 };
-	uint32_t uv_index = 99, y_bytes = 0, uv_bytes = 0;
+	sg[1] = (struct scatterlist) {
+		.dma_address = 0x300000,
+		.dma_length = RX_SEGMENT_SIZE,
+		.next = NULL,
+	};
+	sg[2] = (struct scatterlist) {
+		.dma_address = 0x200000,
+		.dma_length = RX_SEGMENT_SIZE,
+		.next = &sg[1],
+	};
+}
+
+static uint64_t desc_buffer_address(const struct dma_descriptor *desc)
+{
+	return ((uint64_t)desc->buff_addr_high << 32) | desc->buff_addr_low;
+}
+
+static void rx_descriptor_parity(bool merged, uint32_t uv_offset)
+{
+	struct scatterlist sg[3];
+	struct dma_descriptor generic_desc[5], legacy_desc[5];
+	struct dma_desc_mem generic_mem = {
+		.pdma_desc_start = generic_desc,
+		.phy_addr = 0x400000,
+		.sz = sizeof(generic_desc),
+	};
+	struct dma_desc_mem legacy_mem = {
+		.pdma_desc_start = legacy_desc,
+		.phy_addr = 0x400000,
+		.sz = sizeof(legacy_desc),
+	};
+	struct crystalhd_rx_buffer buffer;
+	struct crystalhd_dio_req req;
+	uint32_t generic_uv_index = 99, legacy_uv_index = 99;
+	uint32_t y_bytes = 0, uv_bytes = 0;
 	uint32_t expected_index = merged ? 1 : (uv_offset + 4095) / 4096;
-	unsigned int total = req.sg_cnt + (merged || uv_offset % 4096 != 0);
+	uint32_t uv_sg_ix = merged ? 0 : uv_offset / RX_SEGMENT_SIZE;
+	uint32_t uv_sg_off = merged ? uv_offset : uv_offset % RX_SEGMENT_SIZE;
+	unsigned int total = (merged ? 1 : 3) + !!uv_sg_off;
 	unsigned int i;
 
-	req.uinfo.xfr_len = 12288;
-	req.uinfo.uv_offset = uv_offset;
-	req.uinfo.uv_sg_ix = merged ? 0 : uv_offset / 4096;
-	req.uinfo.uv_sg_off = merged ? uv_offset : uv_offset % 4096;
-	assert(crystalhd_xlat_sgl_to_dma_desc(&req, &mem, &uv_index, NULL, 0)
-	       == BC_STS_SUCCESS);
-	assert(uv_index == expected_index);
-	for (i = 0; i < uv_index; i++)
-		y_bytes += desc[i].xfer_size * 4;
-	for (; i < total; i++)
-		uv_bytes += desc[i].xfer_size * 4;
-	assert(y_bytes == uv_offset);
-	assert(uv_bytes == 12288 - uv_offset);
-	assert(desc[uv_index - 1].last_rec_indicator);
-	assert(desc[total - 1].last_rec_indicator);
-	assert(desc[uv_index].buff_addr_low ==
-	       sg[req.uinfo.uv_sg_ix].address + req.uinfo.uv_sg_off);
+	if (merged) {
+		sg[0] = (struct scatterlist) {
+			.dma_address = 0x100000,
+			.dma_length = RX_CAPACITY,
+			.next = NULL,
+		};
+	} else {
+		init_unmerged_sg(sg);
+	}
+	memset(&buffer, 0, sizeof(buffer));
+	buffer.sgl = sg;
+	buffer.dma_nents = merged ? 1 : 3;
+	buffer.capacity = RX_CAPACITY;
+	buffer.uv_offset = uv_offset;
+	buffer.uv_sg_ix = uv_sg_ix;
+	buffer.uv_sg_off = uv_sg_off;
 
-	/* No write past a descriptor ring which cannot fit the extra split. */
-	mem.sz = (total - 1) * sizeof(*desc);
+	memset(&req, 0, sizeof(req));
+	req.sg = sg;
+	req.sg_cnt = buffer.dma_nents;
+	req.uinfo.xfr_len = RX_CAPACITY;
+	req.uinfo.uv_offset = uv_offset;
+	req.uinfo.uv_sg_ix = uv_sg_ix;
+	req.uinfo.uv_sg_off = uv_sg_off;
+
+	memset(generic_desc, 0xa5, sizeof(generic_desc));
+	memset(legacy_desc, 0xa5, sizeof(legacy_desc));
+	assert(crystalhd_xlat_rx_buffer_to_dma_desc(&buffer, &generic_mem,
+						       &generic_uv_index, NULL)
+	       == BC_STS_SUCCESS);
+	assert(crystalhd_xlat_sgl_to_dma_desc(&req, &legacy_mem,
+					     &legacy_uv_index, NULL, 0)
+	       == BC_STS_SUCCESS);
+	assert(generic_uv_index == expected_index);
+	assert(legacy_uv_index == generic_uv_index);
+	assert(!memcmp(generic_desc, legacy_desc, sizeof(generic_desc)));
+
+	for (i = 0; i < generic_uv_index; i++)
+		y_bytes += generic_desc[i].xfer_size * 4;
+	for (; i < total; i++)
+		uv_bytes += generic_desc[i].xfer_size * 4;
+	assert(y_bytes == uv_offset);
+	assert(uv_bytes == RX_CAPACITY - uv_offset);
+	assert(generic_desc[generic_uv_index - 1].last_rec_indicator);
+	assert(generic_desc[total - 1].last_rec_indicator);
+	assert(desc_buffer_address(&generic_desc[generic_uv_index]) ==
+	       (merged ? 0x100000 :
+		(uv_sg_ix == 1 ? 0x200000 : 0x300000)) + uv_sg_off);
+
+	if (!merged) {
+		/* Array indexing would incorrectly visit sg[1] (0x300000) here. */
+		assert(desc_buffer_address(&generic_desc[1]) == 0x200000);
+		assert(desc_buffer_address(&generic_desc[total - 1]) == 0x300000);
+	}
+}
+
+static void insufficient_ring_untouched(bool merged)
+{
+	struct scatterlist sg[3];
+	struct dma_descriptor desc[5], before[5];
+	struct dma_desc_mem mem = {
+		.pdma_desc_start = desc,
+		.phy_addr = 0x400000,
+	};
+	struct crystalhd_rx_buffer buffer = {0};
+	uint32_t uv_index = 99;
+	unsigned int required = merged ? 2 : 4;
+
+	if (merged) {
+		sg[0] = (struct scatterlist) {
+			.dma_address = 0x100000,
+			.dma_length = RX_CAPACITY,
+		};
+	} else {
+		init_unmerged_sg(sg);
+	}
+	buffer.sgl = sg;
+	buffer.dma_nents = merged ? 1 : 3;
+	buffer.capacity = RX_CAPACITY;
+	buffer.uv_offset = 6144;
+	buffer.uv_sg_ix = merged ? 0 : 1;
+	buffer.uv_sg_off = merged ? 6144 : 2048;
+	mem.sz = (required - 1) * sizeof(*desc);
 	memset(desc, 0xa5, sizeof(desc));
-	assert(crystalhd_xlat_sgl_to_dma_desc(&req, &mem, &uv_index, NULL, 0)
+	memcpy(before, desc, sizeof(before));
+
+	assert(crystalhd_xlat_rx_buffer_to_dma_desc(&buffer, &mem, &uv_index,
+						       NULL)
 	       == BC_STS_INSUFF_RES);
-	for (i = 0; i < sizeof(desc); i++)
-		assert(((unsigned char *)desc)[i] == 0xa5);
+	assert(!memcmp(desc, before, sizeof(desc)));
+}
+
+static void assert_invalid_rx_untouched(struct crystalhd_rx_buffer *buffer)
+{
+	struct dma_descriptor desc[5], before[5];
+	struct dma_desc_mem mem = {
+		.pdma_desc_start = desc,
+		.phy_addr = 0x400000,
+		.sz = sizeof(desc),
+	};
+	uint32_t uv_index = 99;
+
+	memset(desc, 0xa5, sizeof(desc));
+	memcpy(before, desc, sizeof(before));
+	assert(crystalhd_xlat_rx_buffer_to_dma_desc(buffer, &mem, &uv_index,
+						       NULL)
+	       == BC_STS_INV_ARG);
+	assert(!memcmp(desc, before, sizeof(desc)));
+}
+
+static void invalid_rx_bounds(void)
+{
+	struct scatterlist sg[3];
+	struct crystalhd_rx_buffer buffer = {0};
+
+	init_unmerged_sg(sg);
+	buffer.sgl = sg;
+	buffer.dma_nents = 3;
+	buffer.capacity = RX_CAPACITY;
+	buffer.uv_offset = 6144;
+	buffer.uv_sg_ix = 1;
+	buffer.uv_sg_off = 2048;
+	buffer.uv_sg_off = 1024;
+	assert_invalid_rx_untouched(&buffer);
+
+	buffer.uv_sg_off = 2050;
+	buffer.uv_offset = 6146;
+	assert_invalid_rx_untouched(&buffer);
+
+	buffer.uv_sg_off = 2048;
+	buffer.uv_offset = 6144;
+	buffer.capacity = RX_CAPACITY - 2;
+	assert_invalid_rx_untouched(&buffer);
+
+	buffer.capacity = RX_CAPACITY;
+	buffer.uv_offset = buffer.capacity;
+	assert_invalid_rx_untouched(&buffer);
+
+	buffer.uv_offset = 6144;
+	buffer.uv_sg_ix = buffer.dma_nents;
+	assert_invalid_rx_untouched(&buffer);
+
+	buffer.uv_offset = RX_SEGMENT_SIZE;
+	buffer.uv_sg_ix = 0;
+	buffer.uv_sg_off = RX_SEGMENT_SIZE;
+	assert_invalid_rx_untouched(&buffer);
+
+	/* The advertised DMA-entry count must not run past the linked chain. */
+	buffer.uv_offset = 0;
+	buffer.uv_sg_ix = 0;
+	buffer.uv_sg_off = 0;
+	buffer.capacity = 2 * RX_SEGMENT_SIZE;
+	sg[2].next = NULL;
+	assert_invalid_rx_untouched(&buffer);
+
+	/* A complete chain still cannot advertise more capacity than it maps. */
+	buffer.dma_nents = 2;
+	buffer.capacity = RX_CAPACITY;
+	assert_invalid_rx_untouched(&buffer);
+}
+
+static void unaligned_rx_sg_untouched(void)
+{
+	struct {
+		uint32_t leading_canary[4];
+		struct dma_descriptor desc[5];
+		uint32_t trailing_canary[4];
+	} ring, before;
+	struct scatterlist sg[3];
+	struct dma_desc_mem mem = {
+		.pdma_desc_start = ring.desc,
+		.phy_addr = 0x400000,
+		.sz = sizeof(ring.desc),
+	};
+	struct crystalhd_rx_buffer buffer = {0};
+	uint32_t uv_index;
+	unsigned int invalid;
+
+	for (invalid = 0; invalid < 2; invalid++) {
+		init_unmerged_sg(sg);
+		buffer.sgl = sg;
+		buffer.dma_nents = 3;
+		buffer.capacity = RX_CAPACITY;
+		buffer.uv_offset = 6144;
+		buffer.uv_sg_ix = 1;
+		buffer.uv_sg_off = 2048;
+		/* Corrupt the final linked entry so two valid entries are scanned
+		 * before the common descriptor preflight rejects the chain. */
+		if (invalid == 0)
+			sg[1].dma_address += 2;
+		else
+			sg[1].dma_length -= 2;
+		memset(&ring, 0xa5, sizeof(ring));
+		memcpy(&before, &ring, sizeof(before));
+		uv_index = 99;
+
+		assert(crystalhd_xlat_rx_buffer_to_dma_desc(&buffer, &mem,
+						       &uv_index, NULL)
+		       == BC_STS_NOT_IMPL);
+		assert(uv_index == 99);
+		assert(!memcmp(&ring, &before, sizeof(ring)));
+	}
+}
+
+static void oversized_rx_backing(void)
+{
+	struct scatterlist sg[3];
+	struct dma_descriptor desc[5], before[5];
+	struct dma_desc_mem mem = {
+		.pdma_desc_start = desc,
+		.phy_addr = 0x400000,
+		.sz = sizeof(desc),
+	};
+	struct crystalhd_rx_buffer buffer = {0};
+	uint32_t uv_index = 99;
+
+	init_unmerged_sg(sg);
+	buffer.sgl = sg;
+	buffer.dma_nents = 3;
+	buffer.capacity = 6144;
+	buffer.uv_offset = 4096;
+	buffer.uv_sg_ix = 1;
+	buffer.uv_sg_off = 0;
+	memset(desc, 0xa5, sizeof(desc));
+	memcpy(before, desc, sizeof(before));
+
+	assert(crystalhd_xlat_rx_buffer_to_dma_desc(&buffer, &mem,
+						       &uv_index, NULL)
+	       == BC_STS_SUCCESS);
+	assert(uv_index == 1);
+	assert(desc[0].xfer_size == 1024 && desc[0].last_rec_indicator);
+	assert(desc[1].xfer_size == 512 && desc[1].last_rec_indicator);
+	assert(desc_buffer_address(&desc[1]) == 0x200000);
+	assert(!memcmp(&desc[2], &before[2], 3 * sizeof(desc[0])));
 }
 
 static void input_tail(unsigned int aligned_bytes, unsigned int tail)
 {
-	struct scatterlist sg = { 0x100000, aligned_bytes };
-	struct dma_descriptor desc[2];
+	const uint32_t dest_dram = 0x123400;
+	struct scatterlist sg = {
+		.dma_address = 0x100000,
+		.dma_length = aligned_bytes,
+	};
+	struct dma_descriptor desc[2], expected[2];
 	struct dma_desc_mem mem = { .pdma_desc_start = desc,
 		.phy_addr = 0x400000, .sz = sizeof(desc) };
 	struct crystalhd_dio_req req = { .sg = &sg, .sg_cnt = !!aligned_bytes,
 		.fb_size = tail, .fb_pa = 0x500000 };
 	uint32_t uv_index = 99;
+	unsigned int tail_index = !!aligned_bytes;
 
 	req.uinfo.dir_tx = true;
 	req.uinfo.xfr_len = aligned_bytes + tail;
-	assert(crystalhd_xlat_sgl_to_dma_desc(&req, &mem, &uv_index, NULL, 0)
+	memset(desc, 0xa5, sizeof(desc));
+	memset(expected, 0, sizeof(expected));
+	if (aligned_bytes) {
+		expected[0].buff_addr_low = sg.dma_address;
+		expected[0].xfer_size = aligned_bytes / 4;
+		expected[0].dma_dir = 1;
+		expected[0].sdram_buff_addr = dest_dram;
+		expected[0].next_desc_addr_low =
+			mem.phy_addr + sizeof(struct dma_descriptor);
+	}
+	expected[tail_index].buff_addr_low = req.fb_pa;
+	expected[tail_index].xfer_size = 1;
+	expected[tail_index].fill_bytes = 4 - tail;
+	expected[tail_index].dma_dir = 1;
+	expected[tail_index].sdram_buff_addr = dest_dram + aligned_bytes;
+	expected[tail_index].last_rec_indicator = 1;
+	expected[tail_index].intr_enable = 1;
+
+	assert(crystalhd_xlat_sgl_to_dma_desc(&req, &mem, &uv_index, NULL,
+					     dest_dram)
 	       == BC_STS_SUCCESS);
 	assert(uv_index == 0);
-	if (aligned_bytes)
-		assert(desc[0].xfer_size * 4 == aligned_bytes);
-	assert(desc[!!aligned_bytes].buff_addr_low == req.fb_pa);
-	assert(desc[!!aligned_bytes].xfer_size == 1);
-	assert(desc[!!aligned_bytes].fill_bytes == 4 - tail);
-	assert(desc[!!aligned_bytes].last_rec_indicator);
+	assert(!memcmp(desc, expected,
+		       (tail_index + 1) * sizeof(struct dma_descriptor)));
 }
 
 static void rx_descriptor_allocation_failure(void)
@@ -208,11 +483,17 @@ int main(void)
 	unsigned int tail;
 
 	_Static_assert(sizeof(struct dma_descriptor) == 32, "descriptor size");
-	capture_plane_split(false, 4096);
-	capture_plane_split(false, 8192);
-	capture_plane_split(false, 6144);
-	capture_plane_split(true, 4096);
-	capture_plane_split(true, 8192);
+	rx_descriptor_parity(false, 4096);
+	rx_descriptor_parity(false, 8192);
+	rx_descriptor_parity(false, 6144);
+	rx_descriptor_parity(true, 4096);
+	rx_descriptor_parity(true, 8192);
+	rx_descriptor_parity(true, 6144);
+	insufficient_ring_untouched(false);
+	insufficient_ring_untouched(true);
+	invalid_rx_bounds();
+	unaligned_rx_sg_untouched();
+	oversized_rx_backing();
 	for (tail = 1; tail <= 3; tail++) {
 		input_tail(0, tail);
 		input_tail(4096, tail);

@@ -841,8 +841,8 @@ void crystalhd_flea_notify_fll_change(struct crystalhd_hw *hw, bool bCleanupCont
 	if(bCleanupContext && (!crystalhd_flea_detect_fw_alive(hw)))
 		return;
 
+	freeListLen = crystalhd_hw_count_free_rx_pkts(hw);
 	spin_lock_irqsave(&hw->lock, flags);
-	freeListLen = crystalhd_dioq_count(hw->rx_freeq);
 	hw->pfnDevDRAMWrite(hw, hw->FleaFLLUpdateAddr, 1, &freeListLen);
 	spin_unlock_irqrestore(&hw->lock, flags);
 
@@ -866,7 +866,7 @@ bool crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
 	uint32_t freeListLen = 0;
 	struct crystalhd_rx_dma_pkt *rx_pkt = NULL;
 
-	freeListLen = crystalhd_dioq_count(hw->rx_freeq);
+	freeListLen = crystalhd_hw_count_free_rx_pkts(hw);
 
 	switch(NewState)
 	{
@@ -885,7 +885,7 @@ bool crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
 				/* We need to check to post here because we may never get a context to post otherwise */
 				if(hw->PicQSts != 0)
 				{
-					rx_pkt = crystalhd_dioq_fetch(hw->rx_freeq);
+					rx_pkt = crystalhd_hw_fetch_free_rx_pkt(hw);
 					if (rx_pkt && crystalhd_hw_repost_cap_buffer(hw, rx_pkt) !=
 						      BC_STS_SUCCESS)
 						dev_err(chddev(), "failed to repost RX buffer\n");
@@ -910,7 +910,7 @@ bool crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
 				/* We need to check to post here because we may never get a context to post otherwise */
 				if(hw->PicQSts != 0)
 				{
-					rx_pkt = crystalhd_dioq_fetch(hw->rx_freeq);
+					rx_pkt = crystalhd_hw_fetch_free_rx_pkt(hw);
 					if (rx_pkt && crystalhd_hw_repost_cap_buffer(hw, rx_pkt) !=
 						      BC_STS_SUCCESS)
 						dev_err(chddev(), "failed to repost RX buffer\n");
@@ -2091,7 +2091,7 @@ BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
 	uint32_t BuffSzInDwords;
 	BC_STATUS sts;
 
-	if (!hw || !rx_pkt) {
+	if (!hw || !rx_pkt || !rx_pkt->buffer) {
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
 		return BC_STS_INV_ARG;
 	}
@@ -2161,7 +2161,7 @@ BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
 	*/
 	spin_lock_irqsave(&hw->lock, flags);
 	hw->pfnDevDRAMWrite(hw, hw->FleaRxPicDelAddr, BuffSzInDwords, (uint32_t*)&PicDeliInfo);
-	crystalhd_dio_to_device(hw->adp, rx_pkt->dio_req);
+	crystalhd_rx_buffer_sync_for_device(hw->adp, rx_pkt->buffer);
 	hw->pfnWriteDevRegister(hw->adp, RX_POST_MAILBOX, hw->channelNum);
 	spin_unlock_irqrestore(&hw->lock, flags);
 
@@ -2780,7 +2780,7 @@ bool crystalhd_flea_hw_interrupt_handle(struct crystalhd_adp *adp, struct crysta
 
 	/* Try to post RX Capture buffer from ISR context */
 	if(bPostRxBuff) {
-		rx_pkt = crystalhd_dioq_fetch(hw->rx_freeq);
+		rx_pkt = crystalhd_hw_fetch_free_rx_pkt(hw);
 		if (rx_pkt)
 			crystalhd_hw_repost_cap_buffer(hw, rx_pkt);
 	}
@@ -2804,118 +2804,154 @@ bool crystalhd_flea_hw_interrupt_handle(struct crystalhd_adp *adp, struct crysta
 	return rc;
 }
 
-/* This function cannot be called from ISR context since it uses APIs that can sleep */
+static BC_STATUS flea_rx_read(struct crystalhd_rx_buffer *buffer,
+			      uint32_t limit, uint32_t offset,
+			      void *dst, size_t size)
+{
+	if (offset > limit || size > limit - offset)
+		return BC_STS_INV_ARG;
+
+	return crystalhd_rx_buffer_read(buffer, offset, dst, size);
+}
+
+static BC_STATUS flea_rx_write(struct crystalhd_rx_buffer *buffer,
+			       uint32_t limit, uint32_t offset,
+			       const void *src, size_t size)
+{
+	if (offset > limit || size > limit - offset)
+		return BC_STS_INV_ARG;
+
+	return crystalhd_rx_buffer_write(buffer, offset, src, size);
+}
+
+/* This function cannot be called from ISR context since buffer I/O may sleep. */
 static bool flea_get_picture_info(struct crystalhd_hw *hw,
 	struct crystalhd_rx_dma_pkt *rx_pkt, uint32_t *PicNumber,
 	uint64_t *PicMetaData, bool prepare_output)
 {
 	struct device *dev = &hw->adp->pdev->dev;
+	struct crystalhd_rx_buffer *buffer;
 	uint32_t PicInfoLineNum = 0, offset = 0, size = 0;
-	PBC_PIC_INFO_BLOCK pPicInfoLine = NULL;
-	uint32_t tmpYBuffData;
-	unsigned long res = 0;
-	uint32_t widthField = 0;
+	uint32_t y_capacity, y_done_bytes, row_width;
+	PBC_PIC_INFO_BLOCK pPicInfoLine;
+	uint32_t scratch_word, widthField = 0;
+	uint64_t offset64;
+	unsigned int pixel_stride;
+	BC_STATUS sts;
 	bool rtVal = true;
+	union {
+		BC_PIC_INFO_BLOCK pib[2];
+		uint8_t bytes[2 * sizeof(BC_PIC_INFO_BLOCK) + 16];
+	} pic_info;
 
-	void *tmpPicInfo = NULL;
-	struct crystalhd_dio_req *dio = rx_pkt->dio_req;
 	*PicNumber = 0;
 	*PicMetaData = 0;
 
-	if (!dio)
-		goto getpictureinfo_err_nosem;
-	dio->pib_va = NULL;
-	crystalhd_dio_to_cpu(hw->adp, dio);
-
-/*	if(down_interruptible(&hw->fetch_sem)) */
-/*		goto getpictureinfo_err_nosem; */
-
-	tmpPicInfo = kmalloc(2 * sizeof(BC_PIC_INFO_BLOCK) + 16, GFP_KERNEL); /* since copy_from_user can sleep anyway */
-	if(tmpPicInfo == NULL)
+	if (!rx_pkt || !rx_pkt->buffer)
 		goto getpictureinfo_err;
-	dio->pib_va = kmalloc(32, GFP_KERNEL); /* temp buffer of 32 bytes for the rest; */
-	if(dio->pib_va == NULL)
+	buffer = rx_pkt->buffer;
+	switch (buffer->output_format) {
+	case MODE420:
+		pixel_stride = 1;
+		break;
+	case MODE422_YUY2:
+	case MODE422_UYVY:
+		pixel_stride = 2;
+		break;
+	default:
 		goto getpictureinfo_err;
+	}
 
-	offset = (rx_pkt->dio_req->uinfo.y_done_sz * 4) - PIC_PIB_DATA_OFFSET_FROM_END;
-	res = copy_from_user(dio->pib_va, (void *)(dio->uinfo.xfr_buff + offset), 4);
-	if (res != 0)
+	if (buffer->uv_offset > buffer->capacity)
 		goto getpictureinfo_err;
-	PicInfoLineNum = *(uint32_t*)(dio->pib_va);
+	y_capacity = buffer->uv_offset ? buffer->uv_offset : buffer->capacity;
+	if (rx_pkt->y_done_sz > y_capacity / 4 || rx_pkt->y_done_sz < 2)
+		goto getpictureinfo_err;
+	y_done_bytes = rx_pkt->y_done_sz * 4;
+	crystalhd_rx_buffer_sync_for_cpu(hw->adp, buffer);
+
+	offset = y_done_bytes - PIC_PIB_DATA_OFFSET_FROM_END;
+	sts = flea_rx_read(buffer, y_done_bytes, offset, &PicInfoLineNum,
+			   sizeof(PicInfoLineNum));
+	if (sts != BC_STS_SUCCESS)
+		goto getpictureinfo_err;
 	if (PicInfoLineNum > 1092) {
 		dev_err(dev, "Invalid Line Number[%x], DoneSz:0x%x Bytes\n",
-			(int)PicInfoLineNum, rx_pkt->dio_req->uinfo.y_done_sz * 4);
+			(int)PicInfoLineNum, y_done_bytes);
 		goto getpictureinfo_err;
 	}
 
-	offset = (rx_pkt->dio_req->uinfo.y_done_sz * 4) - PIC_WIDTH_OFFSET_FROM_END;
-	res = copy_from_user(dio->pib_va, (void *)(dio->uinfo.xfr_buff + offset), 4);
-	if (res != 0)
+	offset = y_done_bytes - PIC_WIDTH_OFFSET_FROM_END;
+	sts = flea_rx_read(buffer, y_done_bytes, offset, &widthField,
+			   sizeof(widthField));
+	if (sts != BC_STS_SUCCESS)
 		goto getpictureinfo_err;
-	widthField = *(uint32_t*)(dio->pib_va);
 
-	hw->PICWidth = widthField & 0x3FFFFFFF; /* bit 31 is FMT Change, bit 30 is EOS */
-	if (hw->PICWidth > 2048) {
-		dev_err(dev, "Invalid width [%d]\n", hw->PICWidth);
+	row_width = widthField & 0x3FFFFFFF;
+	if (!row_width || row_width > 2048) {
+		dev_err(dev, "Invalid width [%d]\n", row_width);
 		goto getpictureinfo_err;
 	}
+	hw->PICWidth = row_width;
 
-	/* calc pic info line offset */
-	if (dio->uinfo.b422mode) {
-		size = 2 * sizeof(BC_PIC_INFO_BLOCK);
-		offset = (PicInfoLineNum * hw->PICWidth * 2) + 4;
-	} else {
-		size = sizeof(BC_PIC_INFO_BLOCK);
-		offset = (PicInfoLineNum * hw->PICWidth) + 4;
-	}
-
-	res = copy_from_user(tmpPicInfo, (void *)(dio->uinfo.xfr_buff+offset), size);
-	if (res != 0)
+	size = pixel_stride * sizeof(BC_PIC_INFO_BLOCK);
+	offset64 = (uint64_t)PicInfoLineNum * row_width * pixel_stride + 4;
+	/* Flea can report completion at the trailer embedded within a packed
+	 * PIB. Require its common fields in completed data, but allow extension
+	 * bytes through the registered Y plane. Planar buffers stop before UV.
+	 */
+	if (offset64 >= y_done_bytes ||
+	    pixel_stride * OFFSETOF(BC_PIC_INFO_BLOCK, other) >
+		    y_done_bytes - offset64)
+		goto getpictureinfo_err;
+	offset = offset64;
+	sts = flea_rx_read(buffer, y_capacity, offset, pic_info.bytes, size);
+	if (sts != BC_STS_SUCCESS)
 		goto getpictureinfo_err;
 
-	pPicInfoLine = (PBC_PIC_INFO_BLOCK)(tmpPicInfo);
-
+	pPicInfoLine = &pic_info.pib[0];
 	*PicMetaData = pPicInfoLine->timeStamp;
+	if ((widthField & PIB_FORMAT_CHANGE_BIT) &&
+	    (!pPicInfoLine->width || pPicInfoLine->width > 2048))
+		goto getpictureinfo_err;
 
-	if(widthField & PIB_EOS_DETECTED_BIT)
-	{
+	if (widthField & PIB_EOS_DETECTED_BIT) {
 		dev_dbg(dev, "Got EOS flag.\n");
 		hw->DrvEosDetected = 1;
 		if (prepare_output) {
-			*(uint32_t *)(dio->pib_va) = 0xFFFFFFFF;
-			res = copy_to_user((void *)(dio->uinfo.xfr_buff), dio->pib_va, 4);
-			if (res != 0)
+			scratch_word = 0xFFFFFFFF;
+			sts = flea_rx_write(buffer, y_done_bytes, 0,
+					    &scratch_word, sizeof(scratch_word));
+			if (sts != BC_STS_SUCCESS)
 				goto getpictureinfo_err;
 		}
-	}
-	else
-	{
-		if( hw->DrvEosDetected == 1 )
+	} else {
+		if (hw->DrvEosDetected == 1)
 			hw->DrvCancelEosFlag = 1;
 
 		hw->DrvEosDetected = 0;
-		res = copy_from_user(dio->pib_va, (void *)(dio->uinfo.xfr_buff), 4);
-		if (res != 0)
+		sts = flea_rx_read(buffer, y_done_bytes, 0, &scratch_word,
+				   sizeof(scratch_word));
+		if (sts != BC_STS_SUCCESS)
 			goto getpictureinfo_err;
 
-		tmpYBuffData = *(uint32_t *)(dio->pib_va);
-		pPicInfoLine->ycom = tmpYBuffData;
+		pPicInfoLine->ycom = scratch_word;
 		if (prepare_output) {
-			res = copy_to_user((void *)(dio->uinfo.xfr_buff+offset), tmpPicInfo, size);
-			if (res != 0)
+			sts = flea_rx_write(buffer, y_capacity, offset,
+					    pic_info.bytes, size);
+			if (sts != BC_STS_SUCCESS)
 				goto getpictureinfo_err;
 
-			*(uint32_t *)(dio->pib_va) = PicInfoLineNum;
-			res = copy_to_user((void *)(dio->uinfo.xfr_buff), dio->pib_va, 4);
-			if (res != 0)
+			scratch_word = PicInfoLineNum;
+			sts = flea_rx_write(buffer, y_done_bytes, 0,
+					    &scratch_word, sizeof(scratch_word));
+			if (sts != BC_STS_SUCCESS)
 				goto getpictureinfo_err;
 		}
 	}
 
-	if(widthField & PIB_FORMAT_CHANGE_BIT)
-	{
-		rx_pkt->flags = 0;
-		rx_pkt->flags |= COMP_FLAG_PIB_VALID | COMP_FLAG_FMT_CHANGE;
+	if (widthField & PIB_FORMAT_CHANGE_BIT) {
+		rx_pkt->flags = COMP_FLAG_PIB_VALID | COMP_FLAG_FMT_CHANGE;
 
 		rx_pkt->pib.picture_number			= pPicInfoLine->picture_number;
 		rx_pkt->pib.width					= pPicInfoLine->width;
@@ -2933,76 +2969,46 @@ static bool flea_get_picture_info(struct crystalhd_hw *hw,
 		rx_pkt->pib.ycom				= pPicInfoLine->ycom;
 		hw->PICHeight = rx_pkt->pib.height;
 		hw->PICWidth = rx_pkt->pib.width;
-		hw->LastPicNo=0;
-		hw->LastTwoPicNo=0;
-		hw->PDRatio = 0; /* NAREN - reset PD ratio to start measuring for new clip */
+		hw->LastPicNo = 0;
+		hw->LastTwoPicNo = 0;
+		hw->PDRatio = 0;
 		hw->PauseThreshold = hw->DefaultPauseThreshold;
 		hw->TickSpentInPD = 0;
-		hw->TickCntDecodePU =rdtsc_ordered();
+		hw->TickCntDecodePU = rdtsc_ordered();
 
 		dev_dbg(dev, "[FMT CH] DoneSz:0x%x, PIB:%x %x %x %x %x %x %x %x %x %x\n",
-			rx_pkt->dio_req->uinfo.y_done_sz * 4,
-				 rx_pkt->pib.picture_number,
-				 rx_pkt->pib.aspect_ratio,
-				 rx_pkt->pib.chroma_format,
-				 rx_pkt->pib.colour_primaries,
-				 rx_pkt->pib.frame_rate,
-				 rx_pkt->pib.height,
-				 rx_pkt->pib.width,
-				 rx_pkt->pib.n_drop,
-				 rx_pkt->pib.pulldown,
-				 rx_pkt->pib.ycom);
+			y_done_bytes, rx_pkt->pib.picture_number,
+			rx_pkt->pib.aspect_ratio, rx_pkt->pib.chroma_format,
+			rx_pkt->pib.colour_primaries, rx_pkt->pib.frame_rate,
+			rx_pkt->pib.height, rx_pkt->pib.width,
+			rx_pkt->pib.n_drop, rx_pkt->pib.pulldown,
+			rx_pkt->pib.ycom);
 		rtVal = false;
 	}
 
-	if(pPicInfoLine->flags & FLEA_DECODE_ERROR_FLAG)
-	{
+	if (pPicInfoLine->flags & FLEA_DECODE_ERROR_FLAG) {
 		*PicNumber = 0;
 	} else {
-		/* get pic number and flags */
-		if (dio->uinfo.b422mode)
-			offset = (PicInfoLineNum * hw->PICWidth * 2);
-		else
-			offset = (PicInfoLineNum * hw->PICWidth);
-
-		res = copy_from_user(dio->pib_va, (void *)(dio->uinfo.xfr_buff+offset), 4);
-		if (res != 0)
+		offset64 = (uint64_t)PicInfoLineNum * row_width * pixel_stride;
+		if (offset64 > y_done_bytes)
+			goto getpictureinfo_err;
+		offset = offset64;
+		sts = flea_rx_read(buffer, y_done_bytes, offset, PicNumber,
+				   sizeof(*PicNumber));
+		if (sts != BC_STS_SUCCESS)
 			goto getpictureinfo_err;
 
-		*PicNumber = *(uint32_t *)(dio->pib_va);
-		/* The legacy EOS preparation replaces word zero before this read.
-		 * Preserve that status value without editing the queued picture.
-		 */
+		/* A status peek must report the sentinel that dequeue would write. */
 		if (!prepare_output && (widthField & PIB_EOS_DETECTED_BIT) &&
 		    PicInfoLineNum == 0)
 			*PicNumber = 0xFFFFFFFF;
 	}
 
-	if(dio->pib_va) {
-		kfree(dio->pib_va);
-		dio->pib_va = NULL;
-	}
-	if(tmpPicInfo)
-		kfree(tmpPicInfo);
-
-/*	up(&hw->fetch_sem); */
-
 	return rtVal;
 
 getpictureinfo_err:
-/*	up(&hw->fetch_sem); */
-
-getpictureinfo_err_nosem:
-	if(dio && dio->pib_va) {
-		kfree(dio->pib_va);
-		dio->pib_va = NULL;
-	}
-	if(tmpPicInfo)
-		kfree(tmpPicInfo);
-
 	*PicNumber = 0;
 	*PicMetaData = 0;
-
 	return false;
 }
 

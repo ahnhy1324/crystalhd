@@ -18,11 +18,15 @@
 #define BC_PCI_DEVID_FLEA UINT32_C(0x1615)
 #define COMP_FLAG_FMT_CHANGE UINT32_C(0x01)
 #define COMP_FLAG_PIB_VALID UINT32_C(0x02)
+#define BC_STS_SUCCESS 0
 
 struct device { int unused; };
 struct pci_dev { struct device dev; uint32_t device; };
 struct crystalhd_adp { struct pci_dev *pdev; };
-struct crystalhd_rx_dma_pkt { uint32_t pkt_tag, flags; };
+struct crystalhd_rx_dma_pkt {
+    uint32_t pkt_tag, flags;
+    struct crystalhd_rx_dma_pkt *next;
+};
 struct crystalhd_dioq {
     uint32_t sig, count;
     int lock, event;
@@ -31,6 +35,7 @@ struct crystalhd_dioq {
 struct crystalhd_hw {
     struct crystalhd_adp *adp;
     struct crystalhd_dioq *rx_rdyq, *rx_freeq;
+    struct crystalhd_rx_dma_pkt *rx_fallback_head;
     int fetch_sem;
     uint32_t PICHeight, PICWidth, LastPicNo, LastTwoPicNo;
 };
@@ -43,8 +48,9 @@ static struct crystalhd_rx_dma_pkt packet;
 static struct device dummy_device;
 static unsigned long jiffies;
 static unsigned checks, failures, scenarios;
-static unsigned wait_calls, down_calls, fetch_calls, add_calls;
-static int wait_result;
+static unsigned wait_calls, down_calls, fetch_calls, add_calls, retain_calls;
+static int wait_result, add_result;
+static uint32_t reported_picture;
 static bool interrupt_lock, inject_packet_after_wait;
 
 static void check(bool condition, const char *message)
@@ -138,9 +144,21 @@ static int crystalhd_dioq_add(struct crystalhd_dioq *queue, void *data,
     (void)wake;
     (void)tag;
     add_calls++;
+    if (add_result)
+        return add_result;
     queue->packet = data;
     queue->count++;
     return 0;
+}
+
+static void crystalhd_hw_retain_rx_pkt(struct crystalhd_hw *hw,
+                                       struct crystalhd_rx_dma_pkt *retained)
+{
+    assert(hw == &hardware && retained == &packet &&
+           !hw->rx_fallback_head && !retained->next);
+    retain_calls++;
+    retained->next = hw->rx_fallback_head;
+    hw->rx_fallback_head = retained;
 }
 
 static uint32_t link_GetRptDropParam(struct crystalhd_hw *hw,
@@ -150,13 +168,13 @@ static uint32_t link_GetRptDropParam(struct crystalhd_hw *hw,
     assert(hw == &hardware && data == &packet);
     (void)height;
     (void)width;
-    return 1;
+    return reported_picture;
 }
 
 static uint32_t flea_GetRptDropParam(struct crystalhd_hw *hw, void *data)
 {
     assert(hw == &hardware && data == &packet);
-    return 1;
+    return reported_picture;
 }
 
 #include "rx-fetch-wait-function.h"
@@ -178,8 +196,10 @@ static void reset(uint32_t device)
         .fetch_sem = 1,
     };
     jiffies = checks ? 17 : 0;
-    wait_calls = down_calls = fetch_calls = add_calls = 0;
+    wait_calls = down_calls = fetch_calls = add_calls = retain_calls = 0;
     wait_result = -EBUSY;
+    add_result = BC_STS_SUCCESS;
+    reported_picture = 1;
     interrupt_lock = inject_packet_after_wait = false;
 }
 
@@ -249,6 +269,31 @@ static void deadline_timeout_case(uint32_t device)
           "deadline polling leaves queue and semaphore balanced");
 }
 
+static void discard_owner_fallback_case(uint32_t device)
+{
+    for (unsigned fail_add = 0; fail_add < 2; fail_add++) {
+        struct crystalhd_rx_dma_pkt *result;
+        uint32_t signal = 0;
+
+        reset(device);
+        packet.flags = 0;
+        ready.packet = &packet;
+        ready.count = 1;
+        reported_picture = 0;
+        add_result = fail_add ? -ENOSPC : BC_STS_SUCCESS;
+        result = crystalhd_dioq_fetch_wait(&hardware, 1, &signal);
+        check(!result && !signal && fetch_calls == 1 && add_calls == 1,
+              "discarded completion transfers ownership exactly once");
+        check((freeq.packet == &packet) == !fail_add &&
+              (hardware.rx_fallback_head == &packet) == fail_add &&
+              retain_calls == fail_add,
+              "discard keeps one free-queue or fallback owner after add failure");
+        check(!ready.packet && !ready.count && hardware.fetch_sem == 1 &&
+              !ready.lock,
+              "discard fallback returns with ready queue and semaphore balanced");
+    }
+}
+
 int main(void)
 {
     const uint32_t devices[] = { BC_PCI_DEVID_LINK, BC_PCI_DEVID_FLEA };
@@ -258,6 +303,7 @@ int main(void)
         slice_timeout_packet_race_case(devices[i]);
         event_interrupt_case(devices[i]);
         deadline_timeout_case(devices[i]);
+        discard_owner_fallback_case(devices[i]);
     }
     printf("RX fetch wait: %u scenarios, %u checks, %u failures\n",
            scenarios, checks, failures);

@@ -14,6 +14,8 @@ typedef enum {
 #define BC_EVENT_START_CAPTURE 6
 #define BC_LINK_CAP_EN 1
 #define BC_LINK_FMT_CHG 2
+#define BC_RX_LIST_CNT 16
+#define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
 #define READ_ONCE(value) (value)
 #define spin_lock_irqsave(lock, flags) ((void)(lock), (flags) = 0)
 #define spin_unlock_irqrestore(lock, flags) ((void)(lock), (void)(flags))
@@ -25,8 +27,20 @@ typedef enum {
 struct device { int unused; };
 struct pci_dev { int irq; };
 struct crystalhd_adp { struct pci_dev *pdev; };
-struct queue { unsigned int count; };
-struct crystalhd_rx_dma_pkt { unsigned int pkt_tag; };
+struct crystalhd_rx_buffer {
+	unsigned int id;
+	bool released;
+};
+struct crystalhd_rx_dma_pkt {
+	unsigned int pkt_tag;
+	struct crystalhd_rx_buffer *buffer;
+	struct crystalhd_rx_dma_pkt *next;
+	bool detached;
+};
+struct crystalhd_dioq {
+	struct crystalhd_rx_dma_pkt *items[BC_RX_LIST_CNT];
+	unsigned int count;
+};
 struct crystalhd_hw {
 	struct crystalhd_adp *adp;
 	unsigned int RxCaptureState, RxSeqNum, rx_list_post_index;
@@ -34,7 +48,8 @@ struct crystalhd_hw {
 	enum list_sts rx_list_sts[2];
 	int rx_lock, fetch_sem;
 	bool dma_fault;
-	struct queue *rx_actq, *rx_rdyq, *rx_freeq;
+	struct crystalhd_dioq *rx_actq, *rx_rdyq, *rx_freeq;
+	struct crystalhd_rx_dma_pkt *rx_fallback_head;
 	uint32_t (*pfnReadDevRegister)(struct crystalhd_adp *, uint32_t);
 	void (*pfnStopRXDMAEngines)(struct crystalhd_hw *);
 	bool (*pfnNotifyHardware)(struct crystalhd_hw *, int);
@@ -44,11 +59,15 @@ typedef struct {
 	struct { union { struct { uint32_t bDiscardOnly; } FlushRxCap; } u; } udata;
 } crystalhd_ioctl_data;
 
-static unsigned int irq_depth, reads, clears, unmaps, stops, notifications, starts;
+static unsigned int irq_depth, reads, clears, releases, detaches;
+static unsigned int attached_owners, stops, notifications, starts;
 static uint32_t interrupt_bits;
 static BC_STATUS start_result;
 static bool notify_result, interrupt_sem;
 static struct device device;
+static struct crystalhd_hw *current_hw;
+static struct crystalhd_rx_buffer buffers[BC_RX_LIST_CNT];
+static struct crystalhd_rx_dma_pkt packets[BC_RX_LIST_CNT];
 
 static struct device *chddev(void) { return &device; }
 static void down(int *sem) { assert(!*sem); *sem = 1; }
@@ -80,28 +99,68 @@ static void crystalhd_hw_dma_fatal_stop(struct crystalhd_hw *hw)
 {
 	hw->dma_fault = true;
 }
-static struct crystalhd_rx_dma_pkt *crystalhd_dioq_fetch(struct queue *queue)
+static struct crystalhd_rx_dma_pkt *
+crystalhd_dioq_fetch(struct crystalhd_dioq *queue)
 {
-	static struct crystalhd_rx_dma_pkt packet;
+	struct crystalhd_rx_dma_pkt *packet;
+
 	assert(queue);
 	if (!queue->count)
 		return NULL;
-	queue->count--;
-	return &packet;
+	packet = queue->items[--queue->count];
+	queue->items[queue->count] = NULL;
+	assert(packet);
+	return packet;
 }
-static BC_STATUS crystalhd_dioq_add(struct queue *queue,
+static BC_STATUS crystalhd_dioq_add(struct crystalhd_dioq *queue,
 		struct crystalhd_rx_dma_pkt *packet, bool wake, unsigned int tag)
 {
-	(void)packet; (void)wake; (void)tag;
-	queue->count++;
+	(void)wake;
+	(void)tag;
+	assert(queue && packet && queue->count < ARRAY_SIZE(queue->items));
+	queue->items[queue->count++] = packet;
 	return BC_STS_SUCCESS;
 }
-static void crystalhd_rx_pkt_rel_call_back(struct crystalhd_hw *hw, void *packet)
+static void crystalhd_hw_free_rx_pkt(struct crystalhd_hw *hw,
+		struct crystalhd_rx_dma_pkt *packet)
 {
-	(void)packet;
+	assert(packet && packet->buffer && !packet->detached);
 	assert(hw->fetch_sem == 1);
 	assert(irq_depth);
-	unmaps++;
+	packet->buffer = NULL;
+	packet->detached = true;
+	assert(attached_owners);
+	attached_owners--;
+	detaches++;
+}
+static void crystalhd_hw_retain_rx_pkt(struct crystalhd_hw *hw,
+		struct crystalhd_rx_dma_pkt *packet)
+{
+	assert(hw && packet);
+	packet->next = hw->rx_fallback_head;
+	hw->rx_fallback_head = packet;
+}
+static struct crystalhd_rx_dma_pkt *
+crystalhd_hw_fetch_retained_rx_pkt(struct crystalhd_hw *hw)
+{
+	struct crystalhd_rx_dma_pkt *packet = hw->rx_fallback_head;
+
+	if (packet) {
+		hw->rx_fallback_head = packet->next;
+		packet->next = NULL;
+	}
+	return packet;
+}
+static void crystalhd_rx_buffer_release(struct crystalhd_adp *adp,
+		struct crystalhd_rx_buffer *buffer)
+{
+	assert(adp && current_hw && current_hw->fetch_sem == 1);
+	assert(irq_depth);
+	/* stop_capture_locked must detach every packet before the first release. */
+	assert(!attached_owners);
+	assert(buffer && !buffer->released);
+	buffer->released = true;
+	releases++;
 }
 static bool notify_hardware(struct crystalhd_hw *hw, int event)
 {
@@ -135,15 +194,40 @@ static BC_STATUS flush_capture(struct crystalhd_cmd *ctx, bool direct,
 	return bc_cproc_flush_cap_buffs(ctx, &data);
 }
 
+static void seed_queue(struct crystalhd_dioq *queue, unsigned int count,
+		unsigned int *next_owner)
+{
+	unsigned int i;
+
+	for (i = 0; i < count; i++) {
+		unsigned int owner = (*next_owner)++;
+
+		assert(owner < BC_RX_LIST_CNT);
+		buffers[owner].id = owner + 1;
+		packets[owner].pkt_tag = 0x100 + owner;
+		packets[owner].buffer = &buffers[owner];
+		queue->items[queue->count++] = &packets[owner];
+		attached_owners++;
+	}
+}
+
 static void reset_flush_test(struct crystalhd_hw *hw, struct crystalhd_cmd *ctx,
-		struct crystalhd_adp *adp, struct queue *active,
-		struct queue *ready, struct queue *freeq,
+		struct crystalhd_adp *adp, struct crystalhd_dioq *active,
+		struct crystalhd_dioq *ready, struct crystalhd_dioq *freeq,
 		unsigned int active_count, unsigned int ready_count,
 		unsigned int free_count, unsigned int state)
 {
-	*active = (struct queue){ .count = active_count };
-	*ready = (struct queue){ .count = ready_count };
-	*freeq = (struct queue){ .count = free_count };
+	unsigned int next_owner = 0;
+
+	memset(buffers, 0, sizeof(buffers));
+	memset(packets, 0, sizeof(packets));
+	*active = (struct crystalhd_dioq){0};
+	*ready = (struct crystalhd_dioq){0};
+	*freeq = (struct crystalhd_dioq){0};
+	attached_owners = 0;
+	seed_queue(active, active_count, &next_owner);
+	seed_queue(ready, ready_count, &next_owner);
+	seed_queue(freeq, free_count, &next_owner);
 	*hw = (struct crystalhd_hw){
 		.adp = adp,
 		.rx_actq = active,
@@ -153,7 +237,9 @@ static void reset_flush_test(struct crystalhd_hw *hw, struct crystalhd_cmd *ctx,
 		.pfnNotifyHardware = notify_hardware,
 	};
 	*ctx = (struct crystalhd_cmd){ .hw_ctx = hw, .state = state };
-	irq_depth = reads = clears = unmaps = stops = notifications = starts = 0;
+	current_hw = hw;
+	irq_depth = reads = clears = releases = detaches = stops = 0;
+	notifications = starts = 0;
 	interrupt_sem = false;
 	notify_result = true;
 	start_result = BC_STS_SUCCESS;
@@ -165,7 +251,7 @@ static void test_flush_frontend(bool direct)
 	struct crystalhd_adp adp = { .pdev = &pci };
 	struct crystalhd_hw hw;
 	struct crystalhd_cmd ctx;
-	struct queue active, ready, freeq;
+	struct crystalhd_dioq active, ready, freeq;
 	const unsigned int running = BC_LINK_CAP_EN | BC_LINK_FMT_CHG | 0x80;
 
 	reset_flush_test(&hw, &ctx, &adp, &active, &ready, &freeq,
@@ -180,7 +266,8 @@ static void test_flush_frontend(bool direct)
 	interrupt_sem = true;
 	assert(flush_capture(&ctx, direct, 0) == BC_STS_IO_USER_ABORT);
 	assert(active.count == 1 && ready.count == 1 && freeq.count == 1);
-	assert(ctx.state == running && !hw.fetch_sem && !stops && !unmaps &&
+	assert(ctx.state == running && !hw.fetch_sem && !stops && !releases &&
+		!detaches && attached_owners == 3 &&
 		!notifications && !starts && !irq_depth);
 
 	reset_flush_test(&hw, &ctx, &adp, &active, &ready, &freeq,
@@ -188,14 +275,16 @@ static void test_flush_frontend(bool direct)
 	assert(flush_capture(&ctx, direct, 1) == BC_STS_ERR_USAGE);
 	assert(active.count == 1 && ready.count == 1 && freeq.count == 1);
 	assert(ctx.state == (BC_LINK_FMT_CHG | 0x80) && !hw.fetch_sem &&
-		!stops && !unmaps && !notifications && !starts && !irq_depth);
+		!stops && !releases && !detaches && attached_owners == 3 &&
+		!notifications && !starts && !irq_depth);
 
 	reset_flush_test(&hw, &ctx, &adp, &active, &ready, &freeq,
 		1, 1, 0, running);
 	start_result = BC_STS_NO_DATA;
 	assert(flush_capture(&ctx, direct, direct ? 1 : UINT32_MAX) == BC_STS_SUCCESS);
 	assert(!active.count && !ready.count && freeq.count == 2);
-	assert(ctx.state == running && !hw.fetch_sem && stops == 1 && !unmaps &&
+	assert(ctx.state == running && !hw.fetch_sem && stops == 1 &&
+		!releases && !detaches && attached_owners == 2 &&
 		notifications == 1 && starts == 1 && !irq_depth &&
 		!hw.rx_cancel_epoch);
 
@@ -204,7 +293,8 @@ static void test_flush_frontend(bool direct)
 	notify_result = false;
 	assert(flush_capture(&ctx, direct, 1) == BC_STS_IO_ERROR);
 	assert(!active.count && !ready.count && freeq.count == 2);
-	assert(ctx.state == running && !hw.fetch_sem && stops == 1 && !unmaps &&
+	assert(ctx.state == running && !hw.fetch_sem && stops == 1 &&
+		!releases && !detaches && attached_owners == 2 &&
 		notifications == 1 && !starts && !irq_depth);
 
 	reset_flush_test(&hw, &ctx, &adp, &active, &ready, &freeq,
@@ -212,7 +302,8 @@ static void test_flush_frontend(bool direct)
 	start_result = BC_STS_IO_ERROR;
 	assert(flush_capture(&ctx, direct, 1) == BC_STS_IO_ERROR);
 	assert(!active.count && !ready.count && freeq.count == 2);
-	assert(ctx.state == running && !hw.fetch_sem && stops == 1 && !unmaps &&
+	assert(ctx.state == running && !hw.fetch_sem && stops == 1 &&
+		!releases && !detaches && attached_owners == 2 &&
 		notifications == 1 && starts == 1 && !irq_depth);
 
 	reset_flush_test(&hw, &ctx, &adp, &active, &ready, &freeq,
@@ -221,12 +312,15 @@ static void test_flush_frontend(bool direct)
 	assert(flush_capture(&ctx, direct, 1) == BC_STS_IO_ERROR);
 	assert(active.count == 1 && ready.count == 1 && freeq.count == 1);
 	assert(ctx.state == running && hw.dma_fault && !hw.fetch_sem &&
-		stops == 1 && !unmaps && !notifications && !starts && !irq_depth);
+		stops == 1 && !releases && !detaches && attached_owners == 3 &&
+		!notifications && !starts && !irq_depth);
 
 	reset_flush_test(&hw, &ctx, &adp, &active, &ready, &freeq,
 		1, 1, 1, running);
 	assert(flush_capture(&ctx, direct, 0) == BC_STS_SUCCESS);
-	assert(!active.count && !ready.count && !freeq.count && unmaps == 3);
+	assert(!active.count && !ready.count && !freeq.count);
+	assert(releases == 3 && detaches == 3 && !attached_owners);
+	assert(buffers[0].released && buffers[1].released && buffers[2].released);
 	assert(ctx.state == 0x80 && !hw.fetch_sem && stops == 1 &&
 		!notifications && !starts && !irq_depth &&
 		hw.rx_cancel_epoch == 1);
@@ -235,7 +329,8 @@ static void test_flush_frontend(bool direct)
 		1, 1, 1, running);
 	hw.pfnStopRXDMAEngines = stop_failure;
 	assert(flush_capture(&ctx, direct, 0) == BC_STS_IO_ERROR);
-	assert(active.count == 1 && ready.count == 1 && freeq.count == 1 && !unmaps);
+	assert(active.count == 1 && ready.count == 1 && freeq.count == 1);
+	assert(!releases && !detaches && attached_owners == 3);
 	assert(ctx.state == 0x80 && hw.dma_fault && !hw.fetch_sem && stops == 1 &&
 		!notifications && !starts && !irq_depth &&
 		hw.rx_cancel_epoch == 1);
@@ -249,14 +344,14 @@ int main(void)
 		.pfnReadDevRegister = read_register,
 		.pfnStopRXDMAEngines = stop_success,
 		.pfnNotifyHardware = notify_hardware };
-	struct queue active = {1}, ready = {1}, freeq = {0};
+	struct crystalhd_dioq active = {0}, ready = {0}, freeq = {0};
 	struct crystalhd_cmd ctx = { .hw_ctx = &hw, .state = BC_LINK_CAP_EN };
 	crystalhd_ioctl_data data = {0};
 	union FLEA_INTR_BITS_COMMON done = { .WholeReg = 0 };
 
 	/* A monitor-only close must not touch nonexistent DMA queues/IRQs. */
 	assert(crystalhd_hw_stop_capture(&hw, true) == BC_STS_SUCCESS);
-	assert(!irq_depth && !stops && !unmaps && !hw.rx_cancel_epoch);
+	assert(!irq_depth && !stops && !releases && !hw.rx_cancel_epoch);
 	irq_depth = 1;
 	hw.rx_list_post_index = 1;
 	crystalhd_flea_stop_rx_dma_engine(&hw);
@@ -278,35 +373,40 @@ int main(void)
 	crystalhd_flea_stop_rx_dma_engine(&hw);
 	assert(hw.dma_fault && hw.rx_list_sts[0] == rx_sts_waiting);
 	irq_depth = 0;
-	hw.dma_fault = false;
-	hw.rx_actq = &active; hw.rx_rdyq = &ready; hw.rx_freeq = &freeq;
+	reset_flush_test(&hw, &ctx, &adp, &active, &ready, &freeq,
+		1, 1, 0, BC_LINK_CAP_EN);
 	data.udata.u.FlushRxCap.bDiscardOnly = 1;
-	notify_result = true;
 	start_result = BC_STS_NO_DATA;
 	assert(bc_cproc_flush_cap_buffs(&ctx, &data) == BC_STS_SUCCESS);
 	assert(!active.count && !ready.count && freeq.count == 2);
-	assert(notifications == 1 && starts == 1 && !unmaps && !irq_depth);
+	assert(notifications == 1 && starts == 1 && !releases && !detaches &&
+		attached_owners == 2 && !irq_depth);
 	start_result = BC_STS_IO_ERROR;
 	assert(bc_cproc_flush_cap_buffs(&ctx, &data) == BC_STS_IO_ERROR);
 	notify_result = false;
 	assert(bc_cproc_flush_cap_buffs(&ctx, &data) == BC_STS_IO_ERROR);
 	assert(starts == 2 && !hw.fetch_sem && !irq_depth);
-	notify_result = true;
+
+	reset_flush_test(&hw, &ctx, &adp, &active, &ready, &freeq,
+		1, 0, 2, BC_LINK_CAP_EN);
 	hw.pfnStopRXDMAEngines = stop_failure;
-	active.count = 1;
 	assert(bc_cproc_flush_cap_buffs(&ctx, &data) == BC_STS_IO_ERROR);
-	assert(active.count == 1 && freeq.count == 2 && !unmaps && !irq_depth);
+	assert(active.count == 1 && !ready.count && freeq.count == 2);
+	assert(!releases && !detaches && attached_owners == 3 && !irq_depth);
 	assert(!hw.fetch_sem && !hw.rx_cancel_epoch);
 	data.udata.u.FlushRxCap.bDiscardOnly = 0;
 	assert(bc_cproc_flush_cap_buffs(&ctx, &data) == BC_STS_IO_ERROR);
-	assert(active.count == 1 && freeq.count == 2 && !unmaps && !irq_depth &&
-		hw.rx_cancel_epoch == 1);
+	assert(active.count == 1 && !ready.count && freeq.count == 2);
+	assert(!releases && !detaches && attached_owners == 3 && !irq_depth &&
+		!hw.fetch_sem && hw.rx_cancel_epoch == 1);
 	/* A later successful teardown releases every retained registration. */
 	hw.dma_fault = false;
 	hw.pfnStopRXDMAEngines = stop_success;
 	ctx.state = BC_LINK_CAP_EN;
 	assert(bc_cproc_flush_cap_buffs(&ctx, &data) == BC_STS_SUCCESS);
-	assert(!active.count && !ready.count && !freeq.count && unmaps == 3);
+	assert(!active.count && !ready.count && !freeq.count);
+	assert(releases == 3 && detaches == 3 && !attached_owners);
+	assert(buffers[0].released && buffers[1].released && buffers[2].released);
 	assert(!ctx.state && !hw.fetch_sem && !irq_depth &&
 		hw.rx_cancel_epoch == 2);
 	test_flush_frontend(false);

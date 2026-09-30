@@ -111,6 +111,7 @@ architecture-check: command-pm-check fw-command-check tx-admission-check rx-owne
 
 pib-check:
 	CC="$(CC)" sh ./tests/flea-pib.sh
+	CC="$(CC)" sh ./tests/link-pib.sh
 
 userspace32-check:
 	CXX="$(CXX)" sh ./tests/userspace32.sh
