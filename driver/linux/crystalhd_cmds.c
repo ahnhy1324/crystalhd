@@ -566,9 +566,14 @@ static BC_STATUS bc_cproc_codein_sleep(struct crystalhd_cmd *ctx)
 	return BC_STS_SUCCESS;
 }
 
-static BC_STATUS bc_cproc_hw_txdma(struct crystalhd_cmd *ctx,
-				   crystalhd_ioctl_data *idata,
-				   struct crystalhd_dio_req *dio)
+/*
+ * Synchronous mapped-input transfer. The caller keeps the command/device
+ * lifetime and TX serialization locks, and owns a fresh mapped request until
+ * this function returns.
+ */
+BC_STATUS crystalhd_tx_transfer_sync(struct crystalhd_cmd *ctx,
+				     struct crystalhd_dio_req *dio,
+				     uint8_t data_flags)
 {
 	struct device *dev = chddev();
 	uint32_t tx_listid = 0;
@@ -576,7 +581,7 @@ static BC_STATUS bc_cproc_hw_txdma(struct crystalhd_cmd *ctx,
 	wait_queue_head_t event;
 	int rc = 0;
 
-	if (!ctx || !idata || !dio) {
+	if (!ctx || !ctx->hw_ctx || !dio) {
 		dev_err(dev, "%s: Invalid Arg\n", __func__);
 		return BC_STS_INV_ARG;
 	}
@@ -586,8 +591,7 @@ static BC_STATUS bc_cproc_hw_txdma(struct crystalhd_cmd *ctx,
 	ctx->tx_list_id = 0;
 	/* msleep_interruptible(2000); */
 	sts = crystalhd_hw_post_tx(ctx->hw_ctx, dio, bc_proc_in_completion,
-				 &event, &tx_listid,
-				 idata->udata.u.ProcInput.Encrypted);
+				 &event, &tx_listid, data_flags);
 
 	while (sts == BC_STS_BUSY) {
 		sts = bc_cproc_codein_sleep(ctx);
@@ -595,8 +599,7 @@ static BC_STATUS bc_cproc_hw_txdma(struct crystalhd_cmd *ctx,
 			break;
 		sts = crystalhd_hw_post_tx(ctx->hw_ctx, dio,
 					 bc_proc_in_completion,
-					 &event, &tx_listid,
-					 idata->udata.u.ProcInput.Encrypted);
+					 &event, &tx_listid, data_flags);
 	}
 	if (sts != BC_STS_SUCCESS) {
 		dev_dbg(dev, "_hw_txdma returning sts:%d\n", sts);
@@ -704,7 +707,8 @@ static BC_STATUS bc_cproc_proc_input(struct crystalhd_cmd *ctx, crystalhd_ioctl_
 	if (!dio_hnd)
 		return BC_STS_ERROR;
 
-	sts = bc_cproc_hw_txdma(ctx, idata, dio_hnd);
+	sts = crystalhd_tx_transfer_sync(ctx, dio_hnd,
+					 idata->udata.u.ProcInput.Encrypted);
 
 	crystalhd_unmap_dio(ctx->adp, dio_hnd);
 

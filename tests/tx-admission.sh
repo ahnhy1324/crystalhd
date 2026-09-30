@@ -31,7 +31,8 @@ awk '
     END { if (found != 4 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_hw.c" > "$tx_test_dir/tx-admission-hardware.h"
 awk '
-    /^static BC_STATUS bc_cproc_(do_fw_cmd|codein_sleep|hw_txdma|check_inbuffs|proc_input)\(/ ||
+    /^static BC_STATUS bc_cproc_(do_fw_cmd|codein_sleep|check_inbuffs|proc_input)\(/ ||
+    /^BC_STATUS crystalhd_tx_transfer_sync\(/ ||
     /^static void bc_proc_in_completion\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }

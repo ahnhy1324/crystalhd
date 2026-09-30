@@ -86,12 +86,12 @@ static struct {
     unsigned wakes, irq_depth, irq_disables, irq_enables, fifo_calls, busy;
     unsigned firmware_calls, firmware_depth, bus_clears, bus_drains;
     int wait_result, sleep_result;
-    bool mapped, immediate_completion, completion_before_timeout, flush_on_busy;
-    bool drain_ok;
+    bool mapped, immediate_completion, completion_before_cancel, flush_on_busy;
+    bool drain_ok, fault_on_sleep;
     BC_STATUS map_status, descriptor_status, active_add_status, stop_status;
     BC_STATUS completion_status, firmware_status;
-    uint8_t seen_flags;
-    uint32_t seen_destination;
+    uint8_t seen_flags, transfer_flags;
+    uint32_t seen_destination, transfer_size;
 } run;
 
 static void Check(bool condition, const char *why)
@@ -138,12 +138,14 @@ static int Wait(wait_queue_head_t *event, int condition, unsigned timeout)
     if (timeout == 100) {
         Check(!condition && !event->wakeups, "FIFO retry uses a separate idle event");
         run.sleeps++;
+        if (run.fault_on_sleep)
+            hardware.dma_fault = true;
         return run.sleep_result;
     }
     Check(timeout == 3000 && context.tx_list_id != 0,
           "submitted TX waits with its published cancellation tag");
     run.waits++;
-    if (run.wait_result && !run.completion_before_timeout)
+    if (run.wait_result && !run.completion_before_cancel)
         return run.wait_result;
     if (!condition)
         Complete();
@@ -229,7 +231,7 @@ static BC_STATUS crystalhd_xlat_sgl_to_dma_desc(struct crystalhd_dio_req *dio,
 static BC_STATUS crystalhd_map_dio(struct crystalhd_adp *adp, void *bytes, uint32_t size,
         uint32_t offset, bool packed, bool tx, struct crystalhd_dio_req **dio)
 {
-    Check(adp == &adapter && bytes == input && size == sizeof(input) && !offset &&
+    Check(adp == &adapter && bytes == input && size == run.transfer_size && !offset &&
           !packed && tx && !run.mapped, "input mapping owns the submitted buffer once");
     run.maps++;
     if (run.map_status != BC_STS_SUCCESS)
@@ -277,7 +279,8 @@ static BC_STATUS Flush(bool cancel)
 static bool Fifo(struct crystalhd_hw *hw, uint32_t size, uint32_t *index,
                  bool update, uint8_t *flags)
 {
-    Check(hw == &hardware && size == sizeof(input) && index && !update,
+    Check(hw == &hardware && size == run.transfer_size && index && !update &&
+          *flags == run.transfer_flags,
           "pre-submit FIFO admission receives the whole mapped input");
     run.fifo_calls++; run.seen_flags = *flags;
     if (run.busy) {
@@ -297,7 +300,7 @@ static void Start(struct crystalhd_hw *hw, uint8_t index, addr_64 descriptor)
           packet.dio_req == &request && packet.call_back && packet.cb_event &&
           packet.list_tag == hardware.tx_ioq_tag_seed + index &&
           descriptor.full_addr == packet.desc_mem.phy_addr &&
-          hw->TxFwInputBuffInfo.HostXferSzInBytes == sizeof(input),
+          hw->TxFwInputBuffInfo.HostXferSzInBytes == run.transfer_size,
           "DMA starts only after request, callback, tag and length publication");
     run.starts++;
 }
@@ -338,6 +341,8 @@ static void Reset(void)
     input_ioctl = (crystalhd_ioctl_data){ .udata.u.ProcInput = {
         .pDmaBuff = input, .BuffSz = sizeof(input), .Encrypted = 0x80 } };
     run.drain_ok = true;
+    run.transfer_flags = input_ioctl.udata.u.ProcInput.Encrypted;
+    run.transfer_size = input_ioctl.udata.u.ProcInput.BuffSz;
 }
 static void Balanced(void)
 {
@@ -383,6 +388,12 @@ static void Admission(void)
     Check(bc_cproc_proc_input(&context, &input_ioctl) == BC_STS_INSUFF_RES &&
           run.maps == 1 && !run.unmaps && !run.fifo_calls,
           "failed mapping is propagated without unmapping an unowned request");
+    Balanced();
+
+    Reset(); context.hw_ctx = NULL;
+    Check(bc_cproc_proc_input(&context, &input_ioctl) == BC_STS_INV_ARG &&
+          run.maps == 1 && run.unmaps == 1 && !run.fifo_calls && !run.starts,
+          "the legacy adapter still releases its mapping when hardware is unavailable");
     Balanced();
 
     Reset(); hardware.dma_fault = true;
@@ -434,6 +445,52 @@ static void Rollback(void)
           "active-queue failure clears callback ownership before returning the packet");
     Balanced();
 }
+static void TransferArguments(void)
+{
+    const uint8_t flags[] = { 0, 1, 0x80, 0xff };
+    const uint32_t sizes[] = { 1, 12, sizeof(input) };
+
+    for (unsigned f = 0; f < sizeof(flags) / sizeof(flags[0]); f++) {
+        for (unsigned n = 0; n < sizeof(sizes) / sizeof(sizes[0]); n++) {
+            for (unsigned busy = 0; busy < 2; busy++) {
+                Reset();
+                run.busy = 2 * busy;
+                run.transfer_flags = input_ioctl.udata.u.ProcInput.Encrypted = flags[f];
+                run.transfer_size = input_ioctl.udata.u.ProcInput.BuffSz = sizes[n];
+                Check(bc_cproc_proc_input(&context, &input_ioctl) == BC_STS_SUCCESS &&
+                      run.seen_flags == flags[f] && run.sleeps == 2 * busy &&
+                      run.seen_destination == ((flags[f] & 0x80) ? 0x8000U : 0U) &&
+                      request.uinfo.xfr_len == sizes[n] && run.maps == 1 && run.unmaps == 1,
+                      "legacy input forwards every flag bit and mapped length through FIFO retries");
+                Balanced();
+            }
+        }
+    }
+}
+static void BusyErrors(void)
+{
+    const int sleep_errors[] = { -EBUSY, -EIO, -EINTR };
+
+    for (unsigned n = 0; n < sizeof(sleep_errors) / sizeof(sleep_errors[0]); n++) {
+        Reset(); run.busy = 1; run.sleep_result = sleep_errors[n];
+        Check(bc_cproc_proc_input(&context, &input_ioctl) ==
+              (sleep_errors[n] == -EINTR ? BC_STS_IO_USER_ABORT : BC_STS_SUCCESS) &&
+              run.sleeps == 1 && run.maps == 1 && run.unmaps == 1,
+              "only interrupted BUSY sleep aborts; other legacy sleep results retry");
+        Balanced();
+    }
+    for (unsigned which = 0; which < 3; which++) {
+        Reset(); run.busy = 1;
+        if (which == 0) run.descriptor_status = BC_STS_NOT_IMPL;
+        if (which == 1) run.active_add_status = BC_STS_INSUFF_RES;
+        if (which == 2) run.fault_on_sleep = true;
+        Check(bc_cproc_proc_input(&context, &input_ioctl) ==
+              (which == 0 ? BC_STS_NOT_IMPL : which == 1 ? BC_STS_INSUFF_RES : BC_STS_IO_ERROR) &&
+              run.sleeps == 1 && run.maps == 1 && run.unmaps == 1 && !run.starts && !run.waits,
+              "hard post errors after BUSY retry preserve status and retire the single mapping");
+        Balanced();
+    }
+}
 static void BusyAndFlush(void)
 {
     Reset(); run.busy = 2;
@@ -482,34 +539,83 @@ static void Cancellation(void)
     const int wait_errors[] = {-EBUSY, -EINTR, -EIO};
     const BC_STATUS expected[] = {BC_STS_TIMEOUT, BC_STS_IO_USER_ABORT, BC_STS_IO_ERROR};
     for (unsigned i = 0; i < sizeof(wait_errors) / sizeof(wait_errors[0]); i++) {
-        Reset(); run.wait_result = wait_errors[i];
-        Check(bc_cproc_proc_input(&context, &input_ioctl) == expected[i] &&
-              run.stops == 1 && run.irq_disables == 1 && run.irq_enables == 1 &&
-              !run.wakes && !run.syncs && run.unmaps == 1,
-              "timeout, signal and wait errors cancel once before returning the mapped input");
-        Balanced();
+        for (unsigned completed = 0; completed < 2; completed++) {
+            for (unsigned stop_failure = 0; stop_failure < 3; stop_failure++) {
+                Reset(); run.wait_result = wait_errors[i];
+                run.completion_before_cancel = completed;
+                run.stop_status = stop_failure ? BC_STS_IO_ERROR : BC_STS_SUCCESS;
+                run.drain_ok = stop_failure != 2;
+                Check(bc_cproc_proc_input(&context, &input_ioctl) == expected[i] &&
+                      run.stops == 1 && run.irq_disables == 1 && run.irq_enables == 1 &&
+                      run.wakes == completed && !run.syncs && run.unmaps == 1,
+                      "wait status wins over racing completion and cancellation errors without double retirement");
+                Balanced();
+                if (stop_failure) {
+                    Check(hardware.dma_fault && run.bus_clears == 1 && run.bus_drains == 1,
+                          "failed stop revokes DMA even when IRQ completion already retired the request");
+                    Check(bc_cproc_proc_input(&context, &input_ioctl) == BC_STS_IO_ERROR &&
+                          run.starts == 1 && run.maps == 2 && run.unmaps == 2,
+                          "fatal stop rejects subsequent DMA admission until session recovery");
+                    Balanced();
+                }
+            }
+        }
     }
-    Reset(); run.wait_result = -EBUSY; run.completion_before_timeout = true;
-    Check(bc_cproc_proc_input(&context, &input_ioctl) == BC_STS_TIMEOUT &&
-          run.wakes == 1 && run.stops == 1 && run.unmaps == 1,
-          "IRQ winning a timeout cancellation still releases request ownership exactly once");
+}
+static void BorrowedTransfer(void)
+{
+    const BC_STATUS expected[] = {
+        BC_STS_SUCCESS, BC_STS_SUCCESS, BC_STS_SUCCESS, BC_STS_TIMEOUT,
+        BC_STS_IO_USER_ABORT, BC_STS_IO_ERROR, BC_STS_NOT_IMPL,
+        BC_STS_CMD_CANCELLED, BC_STS_TIMEOUT, BC_STS_IO_ERROR, BC_STS_INV_ARG
+    };
+
+    Reset();
+    Check(crystalhd_tx_transfer_sync(NULL, &request, 0) == BC_STS_INV_ARG &&
+          crystalhd_tx_transfer_sync(&context, NULL, 0) == BC_STS_INV_ARG,
+          "the ioctl-independent transfer rejects NULL context or request");
+    context.hw_ctx = NULL;
+    context.tx_list_id = 0x1234;
+    context.cin_wait_exit = 1;
+    Check(crystalhd_tx_transfer_sync(&context, &request, 0) == BC_STS_INV_ARG &&
+          context.tx_list_id == 0x1234 && context.cin_wait_exit == 1,
+          "missing hardware is rejected without changing command ownership or cancellation state");
+    Check(!run.maps && !run.unmaps && !run.fifo_calls && !run.starts && !run.waits,
+          "invalid borrowed input has no mapping or hardware effects");
+    context.tx_list_id = 0;
     Balanced();
-    for (unsigned drain = 0; drain < 2; drain++) {
-        Reset(); run.wait_result = -EBUSY; run.stop_status = BC_STS_IO_ERROR;
-        run.drain_ok = drain;
-        Check(bc_cproc_proc_input(&context, &input_ioctl) == BC_STS_TIMEOUT &&
-              hardware.dma_fault && run.bus_clears == 1 && run.bus_drains == 1 &&
-              run.unmaps == 1, "failed stop revokes DMA before returning the original timeout");
-        Balanced();
-        Check(bc_cproc_proc_input(&context, &input_ioctl) == BC_STS_IO_ERROR &&
-              run.starts == 1 && run.maps == 2 && run.unmaps == 2,
-              "fatal stop rejects subsequent DMA admission until session recovery");
+    for (unsigned which = 0; which < sizeof(expected) / sizeof(expected[0]); which++) {
+        Reset();
+        /* The caller lends a freshly mapped request, including clear completion
+         * fields. The transfer must retire DMA, not unmap the caller's request. */
+        run.transfer_size = 7;
+        run.transfer_flags = 0x81;
+        request = (struct crystalhd_dio_req){ .uinfo.xfr_len = run.transfer_size };
+        run.mapped = true;
+        if (which == 1) run.immediate_completion = true;
+        if (which == 2) run.busy = 2;
+        if (which == 3 || which == 8) run.wait_result = -EBUSY;
+        if (which == 4) run.wait_result = -EINTR;
+        if (which == 5) run.wait_result = -EIO;
+        if (which == 6) { run.busy = 1; run.descriptor_status = BC_STS_NOT_IMPL; }
+        if (which == 7) { run.busy = 1; run.flush_on_busy = true; }
+        if (which == 8) run.stop_status = BC_STS_IO_ERROR;
+        if (which == 9) run.completion_status = BC_STS_IO_ERROR;
+        if (which == 10) context.hw_ctx = NULL;
+        Check(crystalhd_tx_transfer_sync(&context, &request, run.transfer_flags) == expected[which],
+              "borrowed transfers preserve success, retry, completion and cancellation statuses");
+        Check(run.mapped && !run.maps && !run.unmaps && !context.tx_list_id &&
+              !activeq.packet && freeq.packet == &packet && !packet.dio_req &&
+              !packet.cb_event && !packet.call_back && !packet.list_tag,
+              "transfer return retires every DMA and callback owner without releasing the borrowed mapping");
+        crystalhd_unmap_dio(&adapter, &request);
         Balanced();
     }
 }
 int main(void)
 {
-    Admission(); Completion(); Rollback(); BusyAndFlush(); Cancellation();
+    Admission(); Completion(); Rollback(); TransferArguments(); BusyErrors(); BusyAndFlush(); Cancellation();
+    BorrowedTransfer();
     printf("TX admission: %u checks, %u failures\n", checks, failures);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }
