@@ -74,21 +74,6 @@ struct crystalhd_cmd {
 	struct crystalhd_hw		*hw_ctx;
 };
 
-/*
- * Transitional mapped-RX result. On successful dequeue, dio remains mapped
- * and detached from the RX queues until the intact result is consumed by an
- * epoch-validating path or its mapping is released exactly once. capture_epoch
- * identifies the destructive RX stop/cancel generation that admitted it.
- */
-struct crystalhd_rx_dequeue_result {
-	struct crystalhd_dio_req	*dio;
-	struct C011_PIB		pib;
-	uint64_t		capture_epoch;
-	uint32_t		flags;
-	uint32_t		y_done_sz;
-	uint32_t		uv_done_sz;
-};
-
 typedef BC_STATUS (*crystalhd_cmd_proc)(struct crystalhd_cmd *, crystalhd_ioctl_data *);
 
 struct crystalhd_cmd_tbl {
@@ -122,9 +107,9 @@ BC_STATUS crystalhd_tx_transfer_sync(struct crystalhd_cmd *ctx,
 				     struct crystalhd_dio_req *dio,
 				     uint8_t data_flags);
 BC_STATUS crystalhd_rx_submit(struct crystalhd_cmd *ctx,
-			      struct crystalhd_dio_req *dio);
+			      struct crystalhd_rx_buffer *buffer);
 BC_STATUS crystalhd_rx_dequeue(struct crystalhd_cmd *ctx,
-			       struct crystalhd_rx_dequeue_result *result);
+			       struct crystalhd_rx_completion *result);
 BC_STATUS crystalhd_capture_start(struct crystalhd_cmd *ctx,
 				  uint32_t pause_threshold,
 				  uint32_t resume_threshold);

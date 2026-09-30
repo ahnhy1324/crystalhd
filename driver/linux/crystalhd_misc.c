@@ -67,6 +67,7 @@ static void crystalhd_free_dio(struct crystalhd_adp *adp, struct crystalhd_dio_r
 	dio->cpu_owned = false;
 	dio->fb_size = 0;
 	memset(&dio->uinfo, 0, sizeof(dio->uinfo));
+	memset(&dio->rx_buffer, 0, sizeof(dio->rx_buffer));
 	dio->next = adp->ua_map_free_head;
 	adp->ua_map_free_head = dio;
 	spin_unlock_irqrestore(&adp->lock, flags);
@@ -118,6 +119,73 @@ static inline void crystalhd_init_sg(struct scatterlist *sg, unsigned int entrie
 {
 	sg_init_table(sg, entries);
 }
+
+static void crystalhd_dio_rx_sync_for_cpu(struct crystalhd_adp *adp,
+					  struct crystalhd_rx_buffer *buffer)
+{
+	struct crystalhd_dio_req *dio;
+
+	dio = container_of(buffer, struct crystalhd_dio_req, rx_buffer);
+	if (buffer->cookie == dio)
+		crystalhd_dio_to_cpu(adp, dio);
+}
+
+static void crystalhd_dio_rx_sync_for_device(struct crystalhd_adp *adp,
+					     struct crystalhd_rx_buffer *buffer)
+{
+	struct crystalhd_dio_req *dio;
+
+	dio = container_of(buffer, struct crystalhd_dio_req, rx_buffer);
+	if (buffer->cookie == dio)
+		crystalhd_dio_to_device(adp, dio);
+}
+
+static BC_STATUS crystalhd_dio_rx_read(struct crystalhd_rx_buffer *buffer,
+				       uint32_t offset, void *dst, size_t size)
+{
+	struct crystalhd_dio_req *dio;
+	void __user *src;
+
+	dio = container_of(buffer, struct crystalhd_dio_req, rx_buffer);
+	if (buffer->cookie != dio || !dio->uinfo.xfr_buff)
+		return BC_STS_INV_ARG;
+
+	src = (uint8_t __user *)dio->uinfo.xfr_buff + offset;
+	return copy_from_user(dst, src, size) ? BC_STS_IO_ERROR : BC_STS_SUCCESS;
+}
+
+static BC_STATUS crystalhd_dio_rx_write(struct crystalhd_rx_buffer *buffer,
+					uint32_t offset, const void *src,
+					size_t size)
+{
+	struct crystalhd_dio_req *dio;
+	void __user *dst;
+
+	dio = container_of(buffer, struct crystalhd_dio_req, rx_buffer);
+	if (buffer->cookie != dio || !dio->uinfo.xfr_buff)
+		return BC_STS_INV_ARG;
+
+	dst = (uint8_t __user *)dio->uinfo.xfr_buff + offset;
+	return copy_to_user(dst, src, size) ? BC_STS_IO_ERROR : BC_STS_SUCCESS;
+}
+
+static void crystalhd_dio_rx_release(struct crystalhd_adp *adp,
+				     struct crystalhd_rx_buffer *buffer)
+{
+	struct crystalhd_dio_req *dio;
+
+	dio = container_of(buffer, struct crystalhd_dio_req, rx_buffer);
+	if (buffer->cookie == dio)
+		crystalhd_unmap_dio(adp, dio);
+}
+
+static const struct crystalhd_rx_buffer_ops crystalhd_dio_rx_buffer_ops = {
+	.sync_for_cpu = crystalhd_dio_rx_sync_for_cpu,
+	.sync_for_device = crystalhd_dio_rx_sync_for_device,
+	.read = crystalhd_dio_rx_read,
+	.write = crystalhd_dio_rx_write,
+	.release = crystalhd_dio_rx_release,
+};
 
 /*========================== Extern ========================================*/
 /**
@@ -542,7 +610,9 @@ void *crystalhd_dioq_fetch_wait(struct crystalhd_hw *hw, uint32_t to_secs, uint3
 					hw->LastTwoPicNo = hw->LastPicNo;
 					hw->LastPicNo = picYcomp;
 				}
-				crystalhd_dioq_add(hw->rx_freeq, r_pkt, false, r_pkt->pkt_tag);
+				if (crystalhd_dioq_add(hw->rx_freeq, r_pkt, false,
+							r_pkt->pkt_tag) != BC_STS_SUCCESS)
+					crystalhd_hw_retain_rx_pkt(hw, r_pkt);
 				r_pkt = NULL;
 				up(&hw->fetch_sem);
 			} else {
@@ -578,7 +648,7 @@ sem_rel_return:
  * @ubuff:	User buffer to map.
  * @ubuff_sz:	User buffer size.
  * @uv_offset:	UV buffer offset.
- * @en_422mode: TRUE:422 FALSE:420 Capture mode.
+ * @output_format: Capture output format. TX mappings use MODE420.
  * @dir_tx:	TRUE for Tx (To device from host)
  * @dio_hnd:	Handle to mapped DIO request.
  *
@@ -590,7 +660,7 @@ sem_rel_return:
  */
 BC_STATUS crystalhd_map_dio(struct crystalhd_adp *adp, void *ubuff,
 	uint32_t ubuff_sz, uint32_t uv_offset,
-	bool en_422mode, bool dir_tx,
+	BC_OUTPUT_FORMAT output_format, bool dir_tx,
 	struct crystalhd_dio_req **dio_hnd)
 {
 	struct device *dev;
@@ -599,6 +669,7 @@ BC_STATUS crystalhd_map_dio(struct crystalhd_adp *adp, void *ubuff,
 	unsigned long nr_pages;
 	unsigned int gup_flags = FOLL_LONGTERM;
 	uint32_t count, offset, len;
+	struct scatterlist *sg;
 	long pinned;
 	int i;
 
@@ -607,7 +678,13 @@ BC_STATUS crystalhd_map_dio(struct crystalhd_adp *adp, void *ubuff,
 	if (!adp || !ubuff || !ubuff_sz || !dio_hnd ||
 	    ubuff_sz > ULONG_MAX - uaddr || (uaddr & 3) ||
 	    (!dir_tx && ((ubuff_sz | uv_offset) & 3)) ||
-	    uv_offset >= ubuff_sz)
+	    uv_offset >= ubuff_sz ||
+	    (dir_tx && output_format != MODE420) ||
+	    (!dir_tx && output_format != MODE420 &&
+	     output_format != MODE422_YUY2 &&
+	     output_format != MODE422_UYVY) ||
+	    (!dir_tx && ((output_format == MODE420 && !uv_offset) ||
+			 (output_format != MODE420 && uv_offset))))
 		return BC_STS_INV_ARG;
 
 	dev = &adp->pdev->dev;
@@ -672,10 +749,13 @@ BC_STATUS crystalhd_map_dio(struct crystalhd_adp *adp, void *ubuff,
 	/* Plane offsets refer to mapped DMA segments, which may combine pages. */
 	if (uv_offset) {
 		offset = uv_offset;
-		for (i = 0; i < dio->sg_cnt; i++) {
-			if (offset < sg_dma_len(&dio->sg[i]))
+		sg = dio->sg;
+		for (i = 0; i < dio->sg_cnt; i++, sg = sg_next(sg)) {
+			if (!sg)
+				goto fail;
+			if (offset < sg_dma_len(sg))
 				break;
-			offset -= sg_dma_len(&dio->sg[i]);
+			offset -= sg_dma_len(sg);
 		}
 		if (i == dio->sg_cnt)
 			goto fail;
@@ -685,8 +765,19 @@ BC_STATUS crystalhd_map_dio(struct crystalhd_adp *adp, void *ubuff,
 	dio->uinfo.xfr_len = ubuff_sz;
 	dio->uinfo.xfr_buff = ubuff;
 	dio->uinfo.uv_offset = uv_offset;
-	dio->uinfo.b422mode = en_422mode;
+	dio->uinfo.b422mode = output_format;
 	dio->uinfo.dir_tx = dir_tx;
+	if (!dir_tx) {
+		dio->rx_buffer.sgl = dio->sg;
+		dio->rx_buffer.dma_nents = dio->sg_cnt;
+		dio->rx_buffer.capacity = ubuff_sz;
+		dio->rx_buffer.uv_offset = uv_offset;
+		dio->rx_buffer.uv_sg_ix = dio->uinfo.uv_sg_ix;
+		dio->rx_buffer.uv_sg_off = dio->uinfo.uv_sg_off;
+		dio->rx_buffer.output_format = output_format;
+		dio->rx_buffer.ops = &crystalhd_dio_rx_buffer_ops;
+		dio->rx_buffer.cookie = dio;
+	}
 	*dio_hnd = dio;
 	return BC_STS_SUCCESS;
 
@@ -713,6 +804,60 @@ void crystalhd_dio_to_device(struct crystalhd_adp *adp,
 				       dio->direction);
 		dio->cpu_owned = false;
 	}
+}
+
+void crystalhd_rx_buffer_sync_for_cpu(struct crystalhd_adp *adp,
+				      struct crystalhd_rx_buffer *buffer)
+{
+	if (adp && buffer && buffer->ops && buffer->ops->sync_for_cpu)
+		buffer->ops->sync_for_cpu(adp, buffer);
+}
+
+void crystalhd_rx_buffer_sync_for_device(struct crystalhd_adp *adp,
+					 struct crystalhd_rx_buffer *buffer)
+{
+	if (adp && buffer && buffer->ops && buffer->ops->sync_for_device)
+		buffer->ops->sync_for_device(adp, buffer);
+}
+
+BC_STATUS crystalhd_rx_buffer_read(struct crystalhd_rx_buffer *buffer,
+				   uint32_t offset, void *dst, size_t size)
+{
+	if (!buffer || !dst || !buffer->ops || !buffer->ops->read ||
+	    offset > buffer->capacity || size > buffer->capacity - offset)
+		return BC_STS_INV_ARG;
+
+	return buffer->ops->read(buffer, offset, dst, size);
+}
+
+BC_STATUS crystalhd_rx_buffer_write(struct crystalhd_rx_buffer *buffer,
+				    uint32_t offset, const void *src,
+				    size_t size)
+{
+	if (!buffer || !src || !buffer->ops || !buffer->ops->write ||
+	    offset > buffer->capacity || size > buffer->capacity - offset)
+		return BC_STS_INV_ARG;
+
+	return buffer->ops->write(buffer, offset, src, size);
+}
+
+void crystalhd_rx_buffer_release(struct crystalhd_adp *adp,
+				 struct crystalhd_rx_buffer *buffer)
+{
+	if (adp && buffer && buffer->ops && buffer->ops->release)
+		buffer->ops->release(adp, buffer);
+}
+
+struct crystalhd_dio_req *
+crystalhd_dio_from_rx_buffer(struct crystalhd_rx_buffer *buffer)
+{
+	struct crystalhd_dio_req *dio;
+
+	if (!buffer || buffer->ops != &crystalhd_dio_rx_buffer_ops)
+		return NULL;
+
+	dio = container_of(buffer, struct crystalhd_dio_req, rx_buffer);
+	return buffer->cookie == dio ? dio : NULL;
 }
 /**
  * crystalhd_unmap_dio - Release mapped resources

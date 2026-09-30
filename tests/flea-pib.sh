@@ -16,6 +16,7 @@ trap 'exit 1' HUP INT TERM
 # The test's public wrapper and ready-queue path therefore execute the same
 # parser; there is no parallel implementation of the metadata transformation.
 awk '
+    /^static BC_STATUS flea_rx_(read|write)\(/ ||
     /^(static )?bool (flea_get_picture_info|flea_GetPictureInfo|crystalhd_flea_peek_next_decoded_frame)\(/ ||
     /^uint32_t flea_GetRptDropParam\(/ { candidate = 1; header = "" }
     candidate {
@@ -26,7 +27,7 @@ awk '
     }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 4 || copying || candidate) exit 1 }
+    END { if (found != 6 || copying || candidate) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$pib_test_dir/flea-pib-functions.h"
 
 for pib_sanitize in no yes; do

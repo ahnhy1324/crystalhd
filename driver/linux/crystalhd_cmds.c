@@ -780,7 +780,8 @@ static BC_STATUS bc_cproc_proc_input(struct crystalhd_cmd *ctx, crystalhd_ioctl_
 	if (sts != BC_STS_SUCCESS)
 		return sts;
 
-	sts = crystalhd_map_dio(ctx->adp, ubuff, ub_sz, 0, 0, 1, &dio_hnd);
+	sts = crystalhd_map_dio(ctx->adp, ubuff, ub_sz, 0, MODE420, true,
+			      &dio_hnd);
 	if (sts != BC_STS_SUCCESS) {
 		dev_err(dev, "dio map - %d \n", sts);
 		return sts;
@@ -798,23 +799,23 @@ static BC_STATUS bc_cproc_proc_input(struct crystalhd_cmd *ctx, crystalhd_ioctl_
 }
 
 /*
- * Transfer ownership of a fresh mapped capture registration to the RX queues.
+ * Transfer ownership of a fresh capture buffer to the RX queues.
  * The caller keeps command/device lifetime protection but not fetch_sem. It
- * keeps registration ownership on every error; hardware BUSY means the request
+ * keeps buffer ownership on every error; hardware BUSY means the buffer
  * was queued for retry and is therefore reported as successful admission. On
- * success the caller must not inspect or release the registration again.
+ * success the caller must not inspect or release the buffer again.
  */
 BC_STATUS crystalhd_rx_submit(struct crystalhd_cmd *ctx,
-			      struct crystalhd_dio_req *dio)
+			      struct crystalhd_rx_buffer *buffer)
 {
 	BC_STATUS sts;
 
-	if (!ctx || !ctx->hw_ctx || !dio)
+	if (!ctx || !ctx->hw_ctx || !buffer)
 		return BC_STS_INV_ARG;
 
 	if (down_interruptible(&ctx->hw_ctx->fetch_sem))
 		return BC_STS_IO_USER_ABORT;
-	sts = crystalhd_hw_add_cap_buffer(ctx->hw_ctx, dio,
+	sts = crystalhd_hw_add_cap_buffer(ctx->hw_ctx, buffer,
 					     ctx->state == BC_LINK_READY);
 	up(&ctx->hw_ctx->fetch_sem);
 
@@ -827,7 +828,7 @@ static BC_STATUS bc_cproc_add_cap_buff(struct crystalhd_cmd *ctx,
 	struct device *dev = chddev();
 	void *ubuff;
 	uint32_t ub_sz, uv_off;
-	bool en_422;
+	BC_OUTPUT_FORMAT output_format;
 	struct crystalhd_dio_req *dio_hnd = NULL;
 	BC_STATUS sts = BC_STS_SUCCESS;
 
@@ -839,15 +840,16 @@ static BC_STATUS bc_cproc_add_cap_buff(struct crystalhd_cmd *ctx,
 	ubuff = idata->udata.u.RxBuffs.YuvBuff;
 	ub_sz = idata->udata.u.RxBuffs.YuvBuffSz;
 	uv_off = idata->udata.u.RxBuffs.UVbuffOffset;
-	en_422 = idata->udata.u.RxBuffs.b422Mode;
+	output_format = idata->udata.u.RxBuffs.b422Mode;
 
-	sts = bc_cproc_check_inbuffs(0, ubuff, ub_sz, uv_off, en_422);
+	sts = bc_cproc_check_inbuffs(false, ubuff, ub_sz, uv_off,
+				     output_format != MODE420);
 
 	if (sts != BC_STS_SUCCESS)
 		return sts;
 
 	sts = crystalhd_map_dio(ctx->adp, ubuff, ub_sz, uv_off,
-			      en_422, 0, &dio_hnd);
+			      output_format, false, &dio_hnd);
 	if (sts != BC_STS_SUCCESS) {
 		dev_err(dev, "dio map - %d \n", sts);
 		return sts;
@@ -856,9 +858,9 @@ static BC_STATUS bc_cproc_add_cap_buff(struct crystalhd_cmd *ctx,
 	if (!dio_hnd)
 		return BC_STS_ERROR;
 
-	sts = crystalhd_rx_submit(ctx, dio_hnd);
+	sts = crystalhd_rx_submit(ctx, &dio_hnd->rx_buffer);
 	if (sts != BC_STS_SUCCESS) {
-		crystalhd_unmap_dio(ctx->adp, dio_hnd);
+		crystalhd_rx_buffer_release(ctx->adp, &dio_hnd->rx_buffer);
 		return sts;
 	}
 
@@ -866,30 +868,38 @@ static BC_STATUS bc_cproc_add_cap_buff(struct crystalhd_cmd *ctx,
 }
 
 static BC_STATUS bc_cproc_fmt_change(struct crystalhd_cmd *ctx,
-				     struct crystalhd_rx_dequeue_result *result)
+				     struct crystalhd_rx_completion *result)
 {
-	struct crystalhd_dio_req *dio;
+	struct crystalhd_rx_buffer *buffer;
+	void *cookie;
 	BC_STATUS sts = BC_STS_SUCCESS;
 
-	if (!ctx || !ctx->hw_ctx || !result || !result->dio)
+	if (!ctx || !ctx->hw_ctx || !result || !result->buffer ||
+	    !result->cookie)
 		return BC_STS_INV_ARG;
 
-	dio = result->dio;
-	result->dio = NULL;
+	buffer = result->buffer;
+	cookie = result->cookie;
+	result->buffer = NULL;
+	result->cookie = NULL;
+	if (buffer->cookie != cookie) {
+		crystalhd_rx_buffer_release(ctx->adp, buffer);
+		return BC_STS_INV_ARG;
+	}
 	if (down_interruptible(&ctx->hw_ctx->fetch_sem)) {
-		crystalhd_unmap_dio(ctx->adp, dio);
+		crystalhd_rx_buffer_release(ctx->adp, buffer);
 		return BC_STS_IO_USER_ABORT;
 	}
 	if (result->capture_epoch != ctx->hw_ctx->rx_cancel_epoch ||
 	    !(ctx->state & BC_LINK_CAP_EN)) {
 		up(&ctx->hw_ctx->fetch_sem);
-		crystalhd_unmap_dio(ctx->adp, dio);
+		crystalhd_rx_buffer_release(ctx->adp, buffer);
 		return BC_STS_IO_USER_ABORT;
 	}
-	sts = crystalhd_hw_add_cap_buffer(ctx->hw_ctx, dio, 0);
+	sts = crystalhd_hw_add_cap_buffer(ctx->hw_ctx, buffer, false);
 	if (sts != BC_STS_SUCCESS) {
 		up(&ctx->hw_ctx->fetch_sem);
-		crystalhd_unmap_dio(ctx->adp, dio);
+		crystalhd_rx_buffer_release(ctx->adp, buffer);
 		return sts;
 	}
 
@@ -918,17 +928,14 @@ static void bc_cproc_copy_pib(struct C011_PIB *dst,
 }
 
 /*
- * Fetch one completed mapped RX registration using the legacy blocking
- * timeout. The caller keeps command/device lifetime protection but does not
- * hold fetch_sem. Success transfers the detached mapping in result->dio; the
- * caller must pass the intact result to an epoch-validating consumer or unmap
- * it exactly once. This remains a mapped-DIO boundary, not a generic
- * capture-buffer interface.
+ * Fetch one completed RX buffer using the legacy blocking timeout. The caller
+ * keeps command/device lifetime protection but does not hold fetch_sem.
+ * Success transfers result->buffer and its opaque cookie to the caller, which
+ * must requeue or release the buffer exactly once.
  */
 BC_STATUS crystalhd_rx_dequeue(struct crystalhd_cmd *ctx,
-			       struct crystalhd_rx_dequeue_result *result)
+			       struct crystalhd_rx_completion *result)
 {
-	struct crystalhd_dio_req *dio = NULL;
 	uint64_t expected_epoch;
 	BC_STATUS sts;
 
@@ -970,25 +977,19 @@ BC_STATUS crystalhd_rx_dequeue(struct crystalhd_cmd *ctx,
 	expected_epoch = ctx->hw_ctx->rx_cancel_epoch;
 	up(&ctx->hw_ctx->fetch_sem);
 
-	sts = crystalhd_hw_get_cap_buffer(ctx->hw_ctx, &result->pib, &dio,
-					     expected_epoch,
-					     &result->capture_epoch);
+	sts = crystalhd_hw_get_cap_buffer(ctx->hw_ctx, result, expected_epoch);
 	if (sts != BC_STS_SUCCESS)
 		return (ctx->state & BC_LINK_SUSPEND) ? BC_STS_PWR_MGMT : sts;
 
 	dev_dbg(chddev(), "Got Picture\n");
-	result->dio = dio;
-	result->flags = dio->uinfo.comp_flags;
-	result->y_done_sz = dio->uinfo.y_done_sz;
-	result->uv_done_sz = dio->uinfo.uv_done_sz;
-
 	return BC_STS_SUCCESS;
 }
 
 static BC_STATUS bc_cproc_fetch_frame(struct crystalhd_cmd *ctx,
 				      crystalhd_ioctl_data *idata)
 {
-	struct crystalhd_rx_dequeue_result result;
+	struct crystalhd_rx_completion result;
+	struct crystalhd_dio_req *dio;
 	BC_DEC_OUT_BUFF *frame;
 	BC_STATUS sts;
 
@@ -1009,15 +1010,21 @@ static BC_STATUS bc_cproc_fetch_frame(struct crystalhd_cmd *ctx,
 	if (result.flags & COMP_FLAG_FMT_CHANGE)
 		return bc_cproc_fmt_change(ctx, &result);
 
-	frame->OutPutBuffs.YuvBuff = result.dio->uinfo.xfr_buff;
-	frame->OutPutBuffs.YuvBuffSz = result.dio->uinfo.xfr_len;
-	frame->OutPutBuffs.UVbuffOffset = result.dio->uinfo.uv_offset;
-	frame->OutPutBuffs.b422Mode = result.dio->uinfo.b422mode;
+	dio = crystalhd_dio_from_rx_buffer(result.buffer);
+	if (!dio || result.cookie != dio) {
+		crystalhd_rx_buffer_release(ctx->adp, result.buffer);
+		return BC_STS_IO_ERROR;
+	}
+
+	frame->OutPutBuffs.YuvBuff = dio->uinfo.xfr_buff;
+	frame->OutPutBuffs.YuvBuffSz = dio->uinfo.xfr_len;
+	frame->OutPutBuffs.UVbuffOffset = dio->uinfo.uv_offset;
+	frame->OutPutBuffs.b422Mode = dio->uinfo.b422mode;
 
 	frame->OutPutBuffs.YBuffDoneSz = result.y_done_sz;
 	frame->OutPutBuffs.UVBuffDoneSz = result.uv_done_sz;
 
-	crystalhd_unmap_dio(ctx->adp, result.dio);
+	crystalhd_rx_buffer_release(ctx->adp, result.buffer);
 
 	return BC_STS_SUCCESS;
 }

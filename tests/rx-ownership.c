@@ -20,6 +20,8 @@ struct _BC_DTS_PROC_OUT;
 typedef struct C011_PIB C011_PIB;
 #include "bc_dts_glob_lnx.h"
 typedef uint64_t dma_addr_t;
+struct crystalhd_adp;
+struct scatterlist;
 #include "rx-types.h"
 
 static void discard_log(const char *format, ...) { (void)format; }
@@ -30,6 +32,7 @@ static void discard_log(const char *format, ...) { (void)format; }
 #define dev_dbg(dev, ...) ((void)(dev))
 #define dev_info(dev, ...) ((void)(dev))
 #define READ_ONCE(value) (value)
+#define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
 #define spin_lock_irqsave(lock, flags) \
     (assert(*(lock) == 0), *(lock) = 1, (flags) = 0)
 #define spin_unlock_irqrestore(lock, flags) \
@@ -38,7 +41,10 @@ static void discard_log(const char *format, ...) { (void)format; }
 struct device { int unused; };
 struct pci_dev { struct device dev; int irq; uint32_t device; };
 struct crystalhd_adp { struct pci_dev *pdev; };
-struct crystalhd_dio_req { struct crystalhd_dio_user_info uinfo; };
+struct crystalhd_dio_req {
+    struct crystalhd_dio_user_info uinfo;
+    struct crystalhd_rx_buffer rx_buffer;
+};
 struct crystalhd_dioq {
     struct crystalhd_rx_dma_pkt *packets[BC_RX_LIST_CNT];
     uint32_t tags[BC_RX_LIST_CNT];
@@ -47,11 +53,14 @@ struct crystalhd_dioq {
 struct crystalhd_hw {
     struct crystalhd_adp *adp;
     struct crystalhd_rx_dma_pkt *rx_pkt_pool_head;
+    struct crystalhd_rx_dma_pkt *rx_fallback_head;
     struct crystalhd_dioq *rx_actq, *rx_rdyq, *rx_freeq;
+    struct crystalhd_hw_stats stats;
     uint64_t rx_cancel_epoch;
     int lock, rx_lock, fetch_sem;
     bool hw_pause_issued, dma_fault;
     uint32_t rx_pkt_tag_seed, rx_list_post_index, DrvTotalFrmCaptured;
+    uint32_t FleaFLLUpdateAddr;
     uint32_t rx_list_sts[DMA_ENGINE_CNT];
     uint32_t PauseThreshold, ResumeThreshold, DefaultPauseThreshold, PDRatio;
     uint64_t TickSpentInPD, TickCntDecodePU;
@@ -62,6 +71,8 @@ struct crystalhd_hw {
     BC_STATUS (*pfnIssuePause)(struct crystalhd_hw *, bool);
     bool (*pfnNotifyHardware)(struct crystalhd_hw *, enum BRCM_EVENT);
     void (*pfnStopRXDMAEngines)(struct crystalhd_hw *);
+    BC_STATUS (*pfnDevDRAMWrite)(struct crystalhd_hw *, uint32_t, uint32_t,
+                                 uint32_t *);
 };
 struct crystalhd_cmd {
     struct crystalhd_adp *adp;
@@ -76,13 +87,19 @@ static struct crystalhd_cmd context;
 static struct crystalhd_dioq active, ready, available;
 static struct crystalhd_rx_dma_pkt packets[BC_RX_LIST_CNT];
 static struct crystalhd_dio_req requests[BC_RX_LIST_CNT];
+static struct crystalhd_rx_buffer direct_buffers[BC_RX_LIST_CNT];
+static uint32_t cookies[BC_RX_LIST_CNT];
 static uint32_t buffers[BC_RX_LIST_CNT][64];
+static struct crystalhd_rx_buffer *registered_buffers[BC_RX_LIST_CNT];
+static void *registered_cookies[BC_RX_LIST_CNT];
 static bool mapped[BC_RX_LIST_CNT];
 static unsigned unmaps[BC_RX_LIST_CNT];
 static unsigned checks, failures, groups, maps, post_calls, stop_calls, irq_depth;
 static unsigned irq_disables, irq_enables, notify_calls, pause_calls;
 static unsigned sem_attempts, hardware_notifications, map_attempts, translate_calls;
 static unsigned fetch_wait_calls;
+static unsigned dram_write_calls, firmware_alive_checks;
+static uint32_t dram_write_address, dram_write_dwords, dram_write_value;
 static unsigned interrupt_after;
 static unsigned fail_post_call;
 static BC_STATUS map_status, translate_status, post_status, queue_status;
@@ -93,6 +110,7 @@ static bool interrupt_lock, wait_signal, wait_suspend, wait_full_flush;
 static bool wait_restart_fresh, wait_restart_mode422;
 static enum FLEA_POWER_STATES wait_restart_power;
 static bool stop_fault, notify_ok;
+static bool firmware_alive;
 static bool checking_admission;
 static bool checking_start, start_post_observed;
 static char lifecycle_events[64];
@@ -110,6 +128,8 @@ static unsigned start_post_notifications;
 static uint32_t start_post_state;
 static int start_post_sem;
 static struct crystalhd_dioq *fail_queue;
+static const struct crystalhd_rx_buffer_ops legacy_buffer_ops;
+static const struct crystalhd_rx_buffer_ops direct_buffer_ops;
 
 static void check(bool condition, const char *message)
 {
@@ -153,6 +173,15 @@ static size_t request_index(const struct crystalhd_dio_req *request)
         if (request == &requests[i]) return i;
     abort();
 }
+static size_t buffer_index(const struct crystalhd_rx_buffer *buffer)
+{
+    size_t i;
+
+    for (i = 0; i < BC_RX_LIST_CNT; i++)
+        if (buffer == &direct_buffers[i] || buffer == &requests[i].rx_buffer)
+            return i;
+    abort();
+}
 static size_t packet_index(const struct crystalhd_rx_dma_pkt *packet)
 {
     size_t i;
@@ -160,17 +189,34 @@ static size_t packet_index(const struct crystalhd_rx_dma_pkt *packet)
         if (packet == &packets[i]) return i;
     abort();
 }
-static unsigned queued_request(const struct crystalhd_dio_req *request)
+static unsigned queued_buffer(const struct crystalhd_rx_buffer *buffer)
 {
     struct crystalhd_dioq *queues[] = { &active, &ready, &available };
+    struct crystalhd_rx_dma_pkt *packet;
     unsigned count = 0;
+
     for (size_t q = 0; q < 3; q++)
         for (unsigned i = 0; i < queues[q]->count; i++)
-            count += queues[q]->packets[i]->dio_req == request;
+            count += queues[q]->packets[i]->buffer == buffer;
+    for (packet = hardware.rx_fallback_head; packet; packet = packet->next)
+        count += packet->buffer == buffer;
+    return count;
+}
+static unsigned fallback_count(void)
+{
+    struct crystalhd_rx_dma_pkt *packet = hardware.rx_fallback_head;
+    unsigned count = 0;
+
+    while (packet) {
+        assert(count < BC_RX_LIST_CNT);
+        count++;
+        packet = packet->next;
+    }
     return count;
 }
 static void inventory_with_private(unsigned active_count, unsigned ready_count,
-                                   unsigned free_count, const struct crystalhd_dio_req *private_request)
+                                   unsigned free_count,
+                                   const struct crystalhd_rx_buffer *private_buffer)
 {
     unsigned seen[BC_RX_LIST_CNT] = {0}, pool_count = 0;
     struct crystalhd_dioq *queues[] = { &active, &ready, &available };
@@ -178,21 +224,39 @@ static void inventory_with_private(unsigned active_count, unsigned ready_count,
     while (packet) {
         assert(pool_count++ < BC_RX_LIST_CNT);
         seen[packet_index(packet)]++;
+        check(!packet->buffer && !packet->cookie,
+              "pooled RX packet is detached from buffer and cookie");
+        packet = packet->next;
+    }
+    packet = hardware.rx_fallback_head;
+    while (packet) {
+        size_t index = buffer_index(packet->buffer);
+
+        assert(pool_count++ < BC_RX_LIST_CNT);
+        seen[packet_index(packet)]++;
+        check(packet->buffer && mapped[index] &&
+              packet->buffer == registered_buffers[index] &&
+              packet->cookie == registered_cookies[index] &&
+              packet->cookie == packet->buffer->cookie,
+              "retained packet preserves the exact live buffer and cookie");
         packet = packet->next;
     }
     for (size_t q = 0; q < 3; q++) {
         for (unsigned i = 0; i < queues[q]->count; i++) {
             packet = queues[q]->packets[i];
             seen[packet_index(packet)]++;
-            check(packet->dio_req && mapped[request_index(packet->dio_req)],
-                  "queued packet retains a live mapping");
+            check(packet->buffer && mapped[buffer_index(packet->buffer)] &&
+                  packet->buffer == registered_buffers[buffer_index(packet->buffer)] &&
+                  packet->cookie == registered_cookies[buffer_index(packet->buffer)] &&
+                  packet->cookie == packet->buffer->cookie,
+                  "queued packet retains the exact live buffer and opaque cookie");
         }
     }
     for (size_t i = 0; i < BC_RX_LIST_CNT; i++) {
         check(seen[i] == 1, "each RX packet has exactly one pool or queue owner");
-        check(queued_request(&requests[i]) ==
-              (unsigned)(mapped[i] && &requests[i] != private_request),
-              "each live mapping is caller-private or has exactly one queued owner");
+        check((registered_buffers[i] ? queued_buffer(registered_buffers[i]) : 0) ==
+              (unsigned)(mapped[i] && registered_buffers[i] != private_buffer),
+              "each live buffer is caller-private or has exactly one queued owner");
         check(unmaps[i] <= 1, "a registration is unmapped at most once");
     }
     check(active.count == active_count && ready.count == ready_count &&
@@ -200,9 +264,9 @@ static void inventory_with_private(unsigned active_count, unsigned ready_count,
     check(!irq_depth && !hardware.lock && !hardware.rx_lock &&
           hardware.fetch_sem == 1,
           "transition releases IRQ, pool/RX locks and capture semaphore");
-    if (private_request)
-        check(mapped[request_index(private_request)] && !queued_request(private_request),
-              "rejected or fresh mapped request remains caller-private");
+    if (private_buffer)
+        check(mapped[buffer_index(private_buffer)] && !queued_buffer(private_buffer),
+              "rejected, dequeued or fresh RX buffer remains caller-private");
 }
 static void inventory(unsigned active_count, unsigned ready_count, unsigned free_count)
 {
@@ -267,7 +331,8 @@ static void *crystalhd_dioq_fetch_wait(struct crystalhd_hw *hw, uint32_t timeout
     return packet;
 }
 static BC_STATUS crystalhd_map_dio(struct crystalhd_adp *adp, void *buffer,
-        uint32_t size, uint32_t uv, bool mode422, bool tx, struct crystalhd_dio_req **result)
+        uint32_t size, uint32_t uv, BC_OUTPUT_FORMAT output_format, bool tx,
+        struct crystalhd_dio_req **result)
 {
     size_t i;
     assert(adp == &adapter && !tx && hardware.fetch_sem == 1);
@@ -276,7 +341,21 @@ static BC_STATUS crystalhd_map_dio(struct crystalhd_adp *adp, void *buffer,
     for (i = 0; i < BC_RX_LIST_CNT; i++) if (buffer == buffers[i]) break;
     assert(i < BC_RX_LIST_CNT && !mapped[i] && !unmaps[i]);
     requests[i].uinfo = (struct crystalhd_dio_user_info){
-        .xfr_buff = buffer, .xfr_len = size, .uv_offset = uv, .b422mode = mode422 };
+        .xfr_buff = buffer, .xfr_len = size, .uv_offset = uv,
+        .b422mode = output_format };
+    requests[i].rx_buffer = (struct crystalhd_rx_buffer){
+        .sgl = (struct scatterlist *)buffer,
+        .dma_nents = 1,
+        .capacity = size,
+        .uv_offset = uv,
+        .uv_sg_ix = 0,
+        .uv_sg_off = uv,
+        .output_format = output_format,
+        .ops = &legacy_buffer_ops,
+        .cookie = &requests[i],
+    };
+    registered_buffers[i] = &requests[i].rx_buffer;
+    registered_cookies[i] = &requests[i];
     mapped[i] = true; maps++;
     *result = &requests[i];
     return BC_STS_SUCCESS;
@@ -285,10 +364,97 @@ static BC_STATUS crystalhd_unmap_dio(struct crystalhd_adp *adp, struct crystalhd
 {
     size_t i = request_index(request);
     assert(adp == &adapter);
-    check(mapped[i] && !unmaps[i] && !queued_request(request),
-          "unmap occurs once after all queue ownership is released");
+    check(mapped[i] && !unmaps[i] &&
+          registered_buffers[i] == &request->rx_buffer &&
+          registered_cookies[i] == request &&
+          request->rx_buffer.cookie == request &&
+          !queued_buffer(&request->rx_buffer),
+          "legacy unmap occurs once after all queue ownership is released");
+    for (size_t p = 0; p < BC_RX_LIST_CNT; p++)
+        check(packets[p].buffer != &request->rx_buffer &&
+              packets[p].cookie != request->rx_buffer.cookie,
+              "legacy release observes a packet detached from buffer and cookie");
     mapped[i] = false; unmaps[i]++;
     return BC_STS_SUCCESS;
+}
+static void direct_release(struct crystalhd_adp *adp,
+                           struct crystalhd_rx_buffer *buffer)
+{
+    size_t i = buffer_index(buffer);
+
+    assert(adp == &adapter && buffer == &direct_buffers[i]);
+    check(mapped[i] && !unmaps[i] && registered_buffers[i] == buffer &&
+          registered_cookies[i] == &cookies[i] &&
+          buffer->cookie == &cookies[i] && !queued_buffer(buffer),
+          "direct release occurs once after all queue ownership is released");
+    for (size_t p = 0; p < BC_RX_LIST_CNT; p++)
+        check(packets[p].buffer != buffer && packets[p].cookie != buffer->cookie,
+              "direct release observes a packet detached from buffer and cookie");
+    mapped[i] = false;
+    unmaps[i]++;
+}
+static void legacy_release(struct crystalhd_adp *adp,
+                           struct crystalhd_rx_buffer *buffer)
+{
+    struct crystalhd_dio_req *request =
+        (struct crystalhd_dio_req *)((char *)buffer -
+            offsetof(struct crystalhd_dio_req, rx_buffer));
+
+    check(request == &requests[buffer_index(buffer)],
+          "legacy release recovers the embedding DIO without using the cookie");
+    crystalhd_unmap_dio(adp, request);
+}
+static void sync_for_cpu(struct crystalhd_adp *adp,
+                         struct crystalhd_rx_buffer *buffer)
+{
+    assert(adp == &adapter && mapped[buffer_index(buffer)]);
+}
+static void sync_for_device(struct crystalhd_adp *adp,
+                            struct crystalhd_rx_buffer *buffer)
+{
+    assert(adp == &adapter && mapped[buffer_index(buffer)]);
+}
+static BC_STATUS unused_read(struct crystalhd_rx_buffer *buffer, uint32_t offset,
+                             void *destination, size_t size)
+{
+    (void)buffer; (void)offset; (void)destination; (void)size;
+    return BC_STS_NOT_IMPL;
+}
+static BC_STATUS unused_write(struct crystalhd_rx_buffer *buffer, uint32_t offset,
+                              const void *source, size_t size)
+{
+    (void)buffer; (void)offset; (void)source; (void)size;
+    return BC_STS_NOT_IMPL;
+}
+static const struct crystalhd_rx_buffer_ops legacy_buffer_ops = {
+    .sync_for_cpu = sync_for_cpu,
+    .sync_for_device = sync_for_device,
+    .read = unused_read,
+    .write = unused_write,
+    .release = legacy_release,
+};
+static const struct crystalhd_rx_buffer_ops direct_buffer_ops = {
+    .sync_for_cpu = sync_for_cpu,
+    .sync_for_device = sync_for_device,
+    .read = unused_read,
+    .write = unused_write,
+    .release = direct_release,
+};
+static struct crystalhd_dio_req *
+crystalhd_dio_from_rx_buffer(struct crystalhd_rx_buffer *buffer)
+{
+    struct crystalhd_dio_req *request;
+
+    if (!buffer || buffer->ops != &legacy_buffer_ops)
+        return NULL;
+    request = (struct crystalhd_dio_req *)((char *)buffer -
+        offsetof(struct crystalhd_dio_req, rx_buffer));
+    return buffer->cookie == request ? request : NULL;
+}
+static void crystalhd_rx_buffer_release(struct crystalhd_adp *adp,
+                                        struct crystalhd_rx_buffer *buffer)
+{
+    buffer->ops->release(adp, buffer);
 }
 static int down_interruptible(int *sem)
 {
@@ -317,19 +483,50 @@ static void enable_irq(int irq)
 }
 static struct device *chddev(void) { return &endpoint.dev; }
 static uint64_t rdtsc_ordered(void) { return 1000; }
-static BC_STATUS crystalhd_xlat_sgl_to_dma_desc(struct crystalhd_dio_req *request,
-        struct dma_desc_mem *memory, uint32_t *uv, struct device *dev, uint32_t destination)
+static BC_STATUS crystalhd_xlat_rx_buffer_to_dma_desc(struct crystalhd_rx_buffer *buffer,
+        struct dma_desc_mem *memory, uint32_t *uv, struct device *dev)
 {
-    assert(mapped[request_index(request)] && memory && dev == &endpoint.dev && !destination);
+    size_t i = buffer_index(buffer);
+
+    assert(mapped[i] && buffer == registered_buffers[i] &&
+           buffer->cookie == registered_cookies[i] && buffer->sgl &&
+           buffer->dma_nents == 1 && buffer->capacity &&
+           memory && dev == &endpoint.dev);
+    assert(buffer->uv_sg_ix == 0 &&
+           buffer->uv_sg_off == buffer->uv_offset &&
+           ((!buffer->uv_offset && buffer->output_format != MODE420) ||
+            (buffer->uv_offset && buffer->output_format == MODE420)));
+    if (buffer->ops == &legacy_buffer_ops)
+        assert(buffer->capacity == requests[i].uinfo.xfr_len &&
+               buffer->uv_offset == requests[i].uinfo.uv_offset &&
+               buffer->output_format == requests[i].uinfo.b422mode);
+    else
+        assert(buffer->capacity == 192);
     assert(!hardware.fetch_sem);
     translate_calls++;
-    *uv = request->uinfo.uv_offset ? 1 : 0;
+    *uv = buffer->uv_offset ? 1 : 0;
     return translate_status;
 }
 static void notify_free(struct crystalhd_hw *hw, bool change)
 {
     assert(hw == &hardware && !change);
     notify_calls++;
+}
+static bool crystalhd_flea_detect_fw_alive(struct crystalhd_hw *hw)
+{
+    assert(hw == &hardware);
+    firmware_alive_checks++;
+    return firmware_alive;
+}
+static BC_STATUS record_dram_write(struct crystalhd_hw *hw, uint32_t address,
+                                   uint32_t dwords, uint32_t *value)
+{
+    assert(hw == &hardware && hardware.lock == 1 && value);
+    dram_write_calls++;
+    dram_write_address = address;
+    dram_write_dwords = dwords;
+    dram_write_value = *value;
+    return BC_STS_SUCCESS;
 }
 static BC_STATUS pause_capture(struct crystalhd_hw *hw, bool pause)
 {
@@ -386,7 +583,11 @@ static BC_STATUS program_dma(struct crystalhd_hw *hw, struct crystalhd_rx_dma_pk
 {
     BC_STATUS status;
     unsigned index;
-    assert(hw == &hardware && mapped[request_index(packet->dio_req)]);
+    assert(hw == &hardware && packet->buffer &&
+           mapped[buffer_index(packet->buffer)] &&
+           packet->buffer == registered_buffers[buffer_index(packet->buffer)] &&
+           packet->cookie == registered_cookies[buffer_index(packet->buffer)] &&
+           packet->cookie == packet->buffer->cookie);
     lifecycle_event('P');
     post_observed_state = context.state;
     post_observed_sem = hw->fetch_sem;
@@ -423,6 +624,7 @@ static BC_STATUS crystalhd_link_hw_prog_rxdma(struct crystalhd_hw *hw, struct cr
 BC_STATUS crystalhd_hw_repost_cap_buffer(struct crystalhd_hw *, struct crystalhd_rx_dma_pkt *);
 #include "rx-post.h"
 #include "rx-hardware.h"
+#include "rx-flea-fll.h"
 #include "rx-command.h"
 
 static void run_wait_full_flush_hook(void)
@@ -462,21 +664,27 @@ static void reset(uint32_t device)
     memset(&available, 0, sizeof(available));
     memset(packets, 0, sizeof(packets));
     memset(requests, 0, sizeof(requests));
+    memset(direct_buffers, 0, sizeof(direct_buffers));
+    memset(registered_buffers, 0, sizeof(registered_buffers));
+    memset(registered_cookies, 0, sizeof(registered_cookies));
     memset(mapped, 0, sizeof(mapped));
     memset(unmaps, 0, sizeof(unmaps));
     endpoint.device = device;
     hardware = (struct crystalhd_hw){ .adp = &adapter, .fetch_sem = 1,
         .rx_actq = &active, .rx_rdyq = &ready, .rx_freeq = &available,
         .rx_pkt_tag_seed = 0x70029070, .PauseThreshold = 12, .ResumeThreshold = 4,
+        .FleaFLLUpdateAddr = 0x5f110000,
         .PDRatio = 60, .FleaPowerState = FLEA_PS_ACTIVE,
         .pfnPostRxSideBuff = device == BC_PCI_DEVID_FLEA ?
             crystalhd_flea_hw_post_cap_buff : crystalhd_link_hw_post_cap_buff,
         .pfnNotifyFLLChange = notify_free, .pfnIssuePause = pause_capture,
         .pfnHWGetDoneSize = done_size, .pfnNotifyHardware = notify_hardware,
-        .pfnStopRXDMAEngines = stop_dma };
+        .pfnStopRXDMAEngines = stop_dma,
+        .pfnDevDRAMWrite = record_dram_write };
     context = (struct crystalhd_cmd){ .adp = &adapter, .hw_ctx = &hardware,
         .state = BC_LINK_READY };
     for (unsigned i = 0; i < BC_RX_LIST_CNT; i++) {
+        cookies[i] = 0xc00c0000U + i;
         packets[i].desc_mem.phy_addr = 0x10000 + i * 4096;
         crystalhd_hw_free_rx_pkt(&hardware, &packets[i]);
     }
@@ -484,6 +692,8 @@ static void reset(uint32_t device)
     notify_calls = pause_calls = fail_post_call = 0;
     sem_attempts = hardware_notifications = map_attempts = translate_calls = 0;
     fetch_wait_calls = interrupt_after = 0;
+    dram_write_calls = firmware_alive_checks = 0;
+    dram_write_address = dram_write_dwords = dram_write_value = 0;
     map_status = translate_status = post_status = queue_status = BC_STS_SUCCESS;
     wait_flush_status = BC_STS_ERROR;
     interrupt_lock = wait_signal = wait_suspend = wait_full_flush = false;
@@ -492,6 +702,7 @@ static void reset(uint32_t device)
     wait_restart_start_status = wait_restart_add_status = BC_STS_ERROR;
     wait_restart_ready_status = wait_restart_complete_status = BC_STS_ERROR;
     stop_fault = false;
+    firmware_alive = true;
     checking_admission = false;
     checking_start = start_post_observed = false;
     start_notify_observed = start_notify_notifications = 0;
@@ -589,12 +800,13 @@ static void apply_expected_pib(struct C011_PIB *pib,
     pib->ppb.picture_meta_payload = packet->pib.picture_meta_payload;
     pib->resolution = packet->pib.frame_rate;
 }
-static struct crystalhd_dio_req *map_private(bool mode422);
+static struct crystalhd_rx_buffer *map_private(bool mode422);
+static struct crystalhd_rx_buffer *map_private_at(unsigned index, bool mode422);
 static BC_STATUS submit(struct crystalhd_cmd *ctx,
-                        struct crystalhd_dio_req *request);
+                        struct crystalhd_rx_buffer *buffer);
 static void dequeue_argument_cases(uint32_t device)
 {
-    struct crystalhd_rx_dequeue_result result;
+    struct crystalhd_rx_completion result;
 
     reset(device);
     memset(&result, 0xa5, sizeof(result));
@@ -644,7 +856,7 @@ static void dequeue_gate_wait_cases(uint32_t device)
     for (unsigned direct = 0; direct < 2; direct++) {
         for (unsigned variant = SUSPENDED_READY;
              variant <= SUSPEND_DURING_WAIT; variant++) {
-            struct crystalhd_rx_dequeue_result result;
+            struct crystalhd_rx_completion result;
             crystalhd_ioctl_data data;
             BC_DEC_OUT_BUFF before;
             BC_STATUS expected;
@@ -708,56 +920,108 @@ static void dequeue_gate_wait_cases(uint32_t device)
 static void mapped_dequeue_cases(uint32_t device)
 {
     for (unsigned mode422 = 0; mode422 < 2; mode422++) {
-        struct crystalhd_rx_dequeue_result result;
-        struct crystalhd_dio_req *request;
+        struct crystalhd_rx_completion result;
+        struct crystalhd_rx_buffer *buffer;
 
         reset(device);
-        request = map_private(mode422);
-        check(submit(&context, request) == BC_STS_SUCCESS,
-              "prepare directly submitted mapping for raw dequeue");
+        buffer = map_private(mode422);
+        check(submit(&context, buffer) == BC_STS_SUCCESS,
+              "prepare directly submitted buffer for raw dequeue");
         complete(0);
         memset(&result, 0xa5, sizeof(result));
         check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS &&
-              result.dio == request && result.flags == COMP_FLAG_DATA_VALID &&
+              result.buffer == buffer && result.cookie == &cookies[0] &&
+              result.flags == COMP_FLAG_DATA_VALID &&
               result.y_done_sz == 128 &&
               result.uv_done_sz == (mode422 ? 0U : 64U) &&
               memory_is_zero(&result.pib, sizeof(result.pib)) &&
-              request->uinfo.comp_flags == result.flags && !unmaps[0],
-              "raw dequeue returns one mapped 420 or 422 completion without retiring it");
-        inventory_with_private(0, 0, 0, result.dio);
-        check(submit(&context, result.dio) == BC_STS_SUCCESS &&
+              !unmaps[0],
+              "raw dequeue returns one 420 or 422 buffer/cookie completion without retiring it");
+        inventory_with_private(0, 0, 0, result.buffer);
+        check(submit(&context, result.buffer) == BC_STS_SUCCESS &&
               maps == 1 && !unmaps[0],
-              "raw dequeue result can return through mapped RX admission without remapping");
+              "raw dequeue buffer can return through RX admission without remapping");
         inventory(1, 0, 0);
         complete(0);
         memset(&result, 0xa5, sizeof(result));
         check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS &&
-              result.dio == request && result.flags == COMP_FLAG_DATA_VALID &&
+              result.buffer == buffer && result.cookie == &cookies[0] &&
+              result.flags == COMP_FLAG_DATA_VALID &&
               maps == 1 && !unmaps[0],
-              "resubmitted mapping completes and dequeues with the same identity");
-        inventory_with_private(0, 0, 0, result.dio);
-        check(crystalhd_unmap_dio(&adapter, result.dio) == BC_STS_SUCCESS,
-              "raw dequeue caller retires its detached mapping exactly once");
+              "resubmitted buffer completes with the same backing and cookie identities");
+        inventory_with_private(0, 0, 0, result.buffer);
+        crystalhd_rx_buffer_release(&adapter, result.buffer);
+        check(unmaps[0] == 1,
+              "raw dequeue caller retires its detached buffer exactly once");
         inventory(0, 0, 0);
 
         reset(device);
         check(add(0) == BC_STS_SUCCESS,
               "prepare legacy-submitted mapping for raw dequeue");
         complete(0);
+        check(ready.packets[0]->flags == COMP_FLAG_DATA_VALID &&
+              ready.packets[0]->y_done_sz == 128 &&
+              ready.packets[0]->uv_done_sz == 64,
+              "IRQ stores all completion data in the RX packet");
         memset(&result, 0xa5, sizeof(result));
         check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS &&
-              result.dio == &requests[0] && result.flags == COMP_FLAG_DATA_VALID &&
+              result.buffer == &requests[0].rx_buffer &&
+              result.cookie == &requests[0] &&
+              result.flags == COMP_FLAG_DATA_VALID &&
+              result.y_done_sz == 128 && result.uv_done_sz == 64 &&
               !unmaps[0],
-              "raw dequeue accepts a legacy-submitted completion without remapping");
-        inventory_with_private(0, 0, 0, result.dio);
-        check(crystalhd_unmap_dio(&adapter, result.dio) == BC_STS_SUCCESS,
+              "completion fields live in the result, not the legacy DIO, while identities survive");
+        inventory_with_private(0, 0, 0, result.buffer);
+        crystalhd_rx_buffer_release(&adapter, result.buffer);
+        check(unmaps[0] == 1,
               "legacy-submitted raw result remains caller-owned until release");
         inventory(0, 0, 0);
     }
 }
+static void reverse_list_completion_case(uint32_t device)
+{
+    struct crystalhd_rx_buffer *first, *second;
+    struct crystalhd_rx_completion result;
+
+    reset(device);
+    first = map_private_at(0, false);
+    inventory_with_private(0, 0, 0, first);
+    check(submit(&context, first) == BC_STS_SUCCESS,
+          "first direct buffer enters RX list zero with its opaque cookie");
+    second = map_private_at(1, true);
+    inventory_with_private(1, 0, 0, second);
+    check(submit(&context, second) == BC_STS_SUCCESS,
+          "second direct buffer enters RX list one with its opaque cookie");
+    inventory(2, 0, 0);
+
+    complete(1);
+    complete(0);
+    inventory(0, 2, 0);
+    memset(&result, 0xa5, sizeof(result));
+    check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS &&
+          result.buffer == second && result.cookie == &cookies[1] &&
+          result.y_done_sz == 128 && result.uv_done_sz == 0,
+          "reverse list completion dequeues list one's exact backing and cookie first");
+    inventory_with_private(0, 1, 0, result.buffer);
+    crystalhd_rx_buffer_release(&adapter, result.buffer);
+    check(unmaps[1] == 1 && !unmaps[0],
+          "reverse completion releases only list one's detached buffer");
+
+    memset(&result, 0xa5, sizeof(result));
+    check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS &&
+          result.buffer == first && result.cookie == &cookies[0] &&
+          result.y_done_sz == 128 && result.uv_done_sz == 64,
+          "reverse list completion then dequeues list zero without identity crossover");
+    inventory_with_private(0, 0, 0, result.buffer);
+    crystalhd_rx_buffer_release(&adapter, result.buffer);
+    check(unmaps[0] == 1,
+          "reverse completion releases list zero after its result is detached");
+    inventory(0, 0, 0);
+    drain();
+}
 static void pib_dequeue_cases(uint32_t device)
 {
-    struct crystalhd_rx_dequeue_result result, expected_result;
+    struct crystalhd_rx_completion result, expected_result;
     crystalhd_ioctl_data data;
     BC_DEC_OUT_BUFF expected_frame;
 
@@ -768,7 +1032,8 @@ static void pib_dequeue_cases(uint32_t device)
     fill_ready_pib(ready.packets[0]);
     memset(&result, 0xa5, sizeof(result));
     memset(&expected_result, 0, sizeof(expected_result));
-    expected_result.dio = &requests[0];
+    expected_result.buffer = &requests[0].rx_buffer;
+    expected_result.cookie = &requests[0];
     expected_result.flags = COMP_FLAG_DATA_VALID | COMP_FLAG_PIB_VALID;
     expected_result.y_done_sz = 128;
     expected_result.uv_done_sz = 64;
@@ -776,8 +1041,9 @@ static void pib_dequeue_cases(uint32_t device)
     check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS &&
           !memcmp(&result, &expected_result, sizeof(result)) && !unmaps[0],
           "raw dequeue snapshots only valid completion metadata and keeps mapping ownership");
-    inventory_with_private(0, 0, 0, result.dio);
-    check(crystalhd_unmap_dio(&adapter, result.dio) == BC_STS_SUCCESS,
+    inventory_with_private(0, 0, 0, result.buffer);
+    crystalhd_rx_buffer_release(&adapter, result.buffer);
+    check(unmaps[0] == 1,
           "raw PIB completion is released exactly once by its caller");
     inventory(0, 0, 0);
 
@@ -797,7 +1063,7 @@ static void pib_dequeue_cases(uint32_t device)
     check(bc_cproc_fetch_frame(&context, &data) == BC_STS_SUCCESS &&
           !memcmp(&data.udata.u.DecOutData, &expected_frame, sizeof(expected_frame)) &&
           unmaps[0] == 1,
-          "legacy dequeue without valid PIB preserves every unrelated output byte");
+          "legacy dequeue copies packet completion fields without storing them in the DIO");
     inventory(0, 0, 0);
 
     reset(device);
@@ -824,7 +1090,7 @@ static void pib_dequeue_cases(uint32_t device)
 static void direct_format_dequeue_cases(uint32_t device)
 {
     for (unsigned pib_valid = 0; pib_valid < 2; pib_valid++) {
-        struct crystalhd_rx_dequeue_result result, expected;
+        struct crystalhd_rx_completion result, expected;
         uint32_t initial_state = BC_LINK_INIT | BC_LINK_CAP_EN;
         unsigned post_before;
 
@@ -838,7 +1104,8 @@ static void direct_format_dequeue_cases(uint32_t device)
         post_before = post_calls;
         memset(&result, 0xa5, sizeof(result));
         memset(&expected, 0, sizeof(expected));
-        expected.dio = &requests[0];
+        expected.buffer = &requests[0].rx_buffer;
+        expected.cookie = &requests[0];
         expected.flags = ready.packets[0]->flags;
         expected.y_done_sz = 128;
         expected.uv_done_sz = 64;
@@ -849,8 +1116,9 @@ static void direct_format_dequeue_cases(uint32_t device)
               context.state == initial_state && !unmaps[0] &&
               post_calls == post_before,
               "raw format dequeue transfers a mapping without legacy requeue policy");
-        inventory_with_private(0, 0, 0, result.dio);
-        check(crystalhd_unmap_dio(&adapter, result.dio) == BC_STS_SUCCESS,
+        inventory_with_private(0, 0, 0, result.buffer);
+        crystalhd_rx_buffer_release(&adapter, result.buffer);
+        check(unmaps[0] == 1,
               "raw format result remains caller-owned until explicit release");
         inventory(0, 0, 0);
     }
@@ -884,7 +1152,7 @@ static void completion_case(uint32_t device)
 }
 static void admission_layout_cases(uint32_t device)
 {
-    for (unsigned variant = 0; variant < 7; variant++) {
+    for (unsigned variant = 0; variant < 8; variant++) {
         crystalhd_ioctl_data data = {0};
         BC_STATUS expected = variant < 5 ? BC_STS_INV_ARG : BC_STS_SUCCESS;
         reset(device);
@@ -899,6 +1167,10 @@ static void admission_layout_cases(uint32_t device)
         }
         if (variant == 3 || variant == 6) data.udata.u.RxBuffs.UVbuffOffset = 0;
         if (variant == 4 || variant == 6) data.udata.u.RxBuffs.b422Mode = true;
+        if (variant == 7) {
+            data.udata.u.RxBuffs.UVbuffOffset = 0;
+            data.udata.u.RxBuffs.b422Mode = MODE422_UYVY;
+        }
         check(add_data(&data) == expected, "legacy admission preserves layout validation status");
         if (variant < 5) {
             check(!map_attempts && !sem_attempts && !post_calls,
@@ -908,9 +1180,18 @@ static void admission_layout_cases(uint32_t device)
             check(map_attempts == 1 && sem_attempts == 1 &&
                   requests[0].uinfo.xfr_buff == buffers[0] &&
                   requests[0].uinfo.xfr_len == 192 &&
-                  requests[0].uinfo.uv_offset == (variant == 6 ? 0U : 64U) &&
-                  requests[0].uinfo.b422mode == (variant == 6) && !unmaps[0],
-                  "legacy admission preserves mapped 420 and 422 layouts");
+                  requests[0].uinfo.uv_offset == (variant >= 6 ? 0U : 64U) &&
+                  requests[0].uinfo.b422mode ==
+                      (variant == 7 ? MODE422_UYVY :
+                       variant == 6 ? MODE422_YUY2 : MODE420) &&
+                  requests[0].rx_buffer.capacity == 192 &&
+                  requests[0].rx_buffer.uv_offset == (variant >= 6 ? 0U : 64U) &&
+                  requests[0].rx_buffer.output_format ==
+                      (variant == 7 ? MODE422_UYVY :
+                       variant == 6 ? MODE422_YUY2 : MODE420) &&
+                  requests[0].rx_buffer.ops == &legacy_buffer_ops &&
+                  requests[0].rx_buffer.cookie == &requests[0] && !unmaps[0],
+                  "legacy admission exposes an embedded generic buffer with DIO cookie");
             inventory(1, 0, 0);
             drain();
         }
@@ -944,20 +1225,44 @@ static void admission_state_cases(uint32_t device)
         }
     }
 }
-static struct crystalhd_dio_req *map_private(bool mode422)
+static struct crystalhd_rx_buffer *map_private_at(unsigned index, bool mode422)
 {
-    struct crystalhd_dio_req *request = NULL;
-    check(crystalhd_map_dio(&adapter, buffers[0], 192, mode422 ? 0 : 64,
-                           mode422, false, &request) == BC_STS_SUCCESS,
-          "frontend prepares a fresh private mapped RX request");
-    inventory_with_private(0, 0, 0, request);
-    return request;
+    struct crystalhd_rx_buffer *buffer;
+
+    assert(index < BC_RX_LIST_CNT && !mapped[index] && !unmaps[index]);
+    buffer = &direct_buffers[index];
+    *buffer = (struct crystalhd_rx_buffer){
+        .sgl = (struct scatterlist *)buffers[index],
+        .dma_nents = 1,
+        .capacity = 192,
+        .uv_offset = mode422 ? 0 : 64,
+        .uv_sg_ix = 0,
+        .uv_sg_off = mode422 ? 0 : 64,
+        .output_format = mode422 ? MODE422_YUY2 : MODE420,
+        .ops = &direct_buffer_ops,
+        .cookie = &cookies[index],
+    };
+    registered_buffers[index] = buffer;
+    registered_cookies[index] = &cookies[index];
+    mapped[index] = true;
+    maps++;
+    check((void *)buffer != buffer->cookie &&
+          buffer->cookie != &requests[index],
+          "direct buffer backing and opaque cookie are distinct objects");
+    return buffer;
 }
-static BC_STATUS submit(struct crystalhd_cmd *ctx, struct crystalhd_dio_req *request)
+static struct crystalhd_rx_buffer *map_private(bool mode422)
+{
+    struct crystalhd_rx_buffer *buffer = map_private_at(0, mode422);
+
+    inventory_with_private(0, 0, 0, buffer);
+    return buffer;
+}
+static BC_STATUS submit(struct crystalhd_cmd *ctx, struct crystalhd_rx_buffer *buffer)
 {
     BC_STATUS status;
     checking_admission = true;
-    status = crystalhd_rx_submit(ctx, request);
+    status = crystalhd_rx_submit(ctx, buffer);
     checking_admission = false;
     return status;
 }
@@ -967,14 +1272,14 @@ static void mapped_admission_cases(uint32_t device)
            BAD_DESCRIPTOR, POST_ERROR, ACTIVE_ERROR, BUSY_QUEUE_ERROR,
            FREE_QUEUE_ERROR, DMA_FAULT, NULL_CONTEXT, NULL_HARDWARE, NULL_REQUEST };
     for (unsigned variant = IMMEDIATE; variant <= NULL_REQUEST; variant++) {
-        struct crystalhd_dio_req *request;
+        struct crystalhd_rx_buffer *buffer;
         struct crystalhd_rx_dma_pkt *pool;
-        struct crystalhd_dio_user_info before;
+        struct crystalhd_rx_buffer before;
         BC_STATUS expected = BC_STS_SUCCESS;
         uint32_t state;
         reset(device);
-        request = map_private(false);
-        memcpy(&before, &request->uinfo, sizeof(before));
+        buffer = map_private(false);
+        memcpy(&before, buffer, sizeof(before));
         pool = hardware.rx_pkt_pool_head;
         switch (variant) {
         case BUSY: post_status = BC_STS_BUSY; break;
@@ -997,12 +1302,12 @@ static void mapped_admission_cases(uint32_t device)
         }
         state = context.state;
         check(submit(variant == NULL_CONTEXT ? NULL : &context,
-                     variant == NULL_REQUEST ? NULL : request) == expected,
-              "mapped admission normalizes accepted BUSY and preserves rejection status");
+                     variant == NULL_REQUEST ? NULL : buffer) == expected,
+              "buffer admission normalizes accepted BUSY and preserves rejection status");
         if (variant == NO_PACKET) hardware.rx_pkt_pool_head = pool;
-        check(maps == 1 && map_attempts == 1 && !unmaps[0] &&
-              !memcmp(&request->uinfo, &before, sizeof(before)),
-              "mapped admission neither maps, unmaps nor rewrites the borrowed request");
+        check(maps == 1 && map_attempts == 0 && !unmaps[0] &&
+              !memcmp(buffer, &before, sizeof(before)),
+              "buffer admission neither maps, releases nor rewrites the borrowed object");
         check(context.state == state && hardware.fetch_sem == 1 &&
               sem_attempts == (variant < NULL_CONTEXT ? 1U : 0U) &&
               !hardware_notifications && !pause_calls && !irq_disables && !stop_calls,
@@ -1013,9 +1318,10 @@ static void mapped_admission_cases(uint32_t device)
         if (expected == BC_STS_SUCCESS) {
             inventory(variant == IMMEDIATE, 0, variant != IMMEDIATE);
         } else {
-            inventory_with_private(0, 0, 0, request);
-            check(crystalhd_unmap_dio(&adapter, request) == BC_STS_SUCCESS,
-                  "caller releases the mapping after failed admission");
+            inventory_with_private(0, 0, 0, buffer);
+            crystalhd_rx_buffer_release(&adapter, buffer);
+            check(unmaps[0] == 1,
+                  "caller releases the buffer after failed admission");
             inventory(0, 0, 0);
         }
         /* No accepted DMA remains faulted; cleanup models a quiesced engine. */
@@ -1026,32 +1332,46 @@ static void mapped_admission_cases(uint32_t device)
 static void mapped_completion_cases(uint32_t device)
 {
     for (unsigned mode422 = 0; mode422 < 2; mode422++) {
-        crystalhd_ioctl_data data = {0};
-        struct crystalhd_dio_req *request;
+        struct crystalhd_rx_completion result;
+        struct crystalhd_rx_buffer *buffer;
         reset(device);
-        request = map_private(mode422);
-        check(submit(&context, request) == BC_STS_SUCCESS && maps == 1 && !unmaps[0],
-              "direct admission transfers the mapped registration to capture");
+        buffer = map_private(mode422);
+        check(submit(&context, buffer) == BC_STS_SUCCESS && maps == 1 && !unmaps[0],
+              "direct admission transfers the RX buffer and cookie to capture");
         inventory(1, 0, 0);
         complete(0);
         inventory(0, 1, 0);
-        check(bc_cproc_fetch_frame(&context, &data) == BC_STS_SUCCESS &&
-              data.udata.u.DecOutData.Flags == COMP_FLAG_DATA_VALID &&
-              data.udata.u.DecOutData.OutPutBuffs.YuvBuff == (uint8_t *)buffers[0] &&
-              data.udata.u.DecOutData.OutPutBuffs.YuvBuffSz == 192 &&
-              data.udata.u.DecOutData.OutPutBuffs.UVbuffOffset == (mode422 ? 0U : 64U) &&
-              data.udata.u.DecOutData.OutPutBuffs.b422Mode == mode422 &&
-              data.udata.u.DecOutData.OutPutBuffs.YBuffDoneSz == 128 &&
-              data.udata.u.DecOutData.OutPutBuffs.UVBuffDoneSz == (mode422 ? 0U : 64U) &&
-              map_attempts == 1 && maps == 1 && unmaps[0] == 1,
-              "legacy fetch retires directly submitted 420 and 422 layouts exactly once");
+        check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS &&
+              result.buffer == buffer && result.cookie == &cookies[0] &&
+              result.y_done_sz == 128 &&
+              result.uv_done_sz == (mode422 ? 0U : 64U) &&
+              buffer->capacity == 192 &&
+              buffer->uv_offset == (mode422 ? 0U : 64U) &&
+              buffer->output_format == (mode422 ? MODE422_YUY2 : MODE420) &&
+              map_attempts == 0 && maps == 1 && !unmaps[0],
+              "generic dequeue preserves direct 420 and 422 layout plus both identities");
+        inventory_with_private(0, 0, 0, result.buffer);
+        crystalhd_rx_buffer_release(&adapter, result.buffer);
+        check(unmaps[0] == 1,
+              "generic caller releases its direct completion exactly once");
         inventory(0, 0, 0);
         drain();
     }
 }
 static void add_failures(uint32_t device)
 {
-    struct crystalhd_dio_req private_request = {0};
+    uint32_t private_cookie = 0xfeedbeef;
+    struct crystalhd_rx_buffer private_buffer = {
+        .sgl = (struct scatterlist *)buffers[0],
+        .dma_nents = 1,
+        .capacity = sizeof(buffers[0]),
+        .uv_offset = 128,
+        .uv_sg_ix = 0,
+        .uv_sg_off = 128,
+        .output_format = MODE420,
+        .ops = &direct_buffer_ops,
+        .cookie = &private_cookie,
+    };
     reset(device); map_status = BC_STS_INSUFF_RES;
     check(add(0) == BC_STS_INSUFF_RES && !maps, "map failure never creates an RX owner");
     inventory(0, 0, 0);
@@ -1083,7 +1403,7 @@ static void add_failures(uint32_t device)
     reset(device); context.state = BC_LINK_INIT | BC_LINK_CAP_EN;
     for (unsigned i = 0; i < BC_RX_LIST_CNT; i++) check(add(i) == BC_STS_SUCCESS, "fill RX pool");
     inventory(0, 0, BC_RX_LIST_CNT);
-    check(crystalhd_hw_add_cap_buffer(&hardware, &private_request, false) == BC_STS_INSUFF_RES,
+    check(crystalhd_hw_add_cap_buffer(&hardware, &private_buffer, false) == BC_STS_INSUFF_RES,
           "packet pool exhaustion leaves all existing registrations reachable");
     inventory(0, 0, BC_RX_LIST_CNT);
     drain();
@@ -1092,12 +1412,19 @@ static void retry_cases(uint32_t device)
 {
     BC_STATUS statuses[] = { BC_STS_SUCCESS, BC_STS_BUSY, BC_STS_IO_ERROR };
     for (size_t i = 0; i < sizeof(statuses) / sizeof(statuses[0]); i++) {
+        struct crystalhd_rx_buffer *buffer;
+
         reset(device);
-        check(add(0) == BC_STS_SUCCESS, "queue registration for completion retry");
+        buffer = map_private(false);
+        check(submit(&context, buffer) == BC_STS_SUCCESS,
+              "queue direct buffer and cookie for completion retry");
         post_status = statuses[i];
         check(crystalhd_rx_pkt_done(&hardware, 0, BC_STS_IO_ERROR) == statuses[i],
               "failed completion propagates repost result");
-        check(!unmaps[0], "completion retries never unmap in IRQ context");
+        check(!unmaps[0] &&
+              (active.count ? active.packets[0] : available.packets[0])->buffer == buffer &&
+              (active.count ? active.packets[0] : available.packets[0])->cookie == &cookies[0],
+              "completion repost preserves direct backing and cookie in IRQ context");
         inventory(statuses[i] == BC_STS_SUCCESS, 0, statuses[i] != BC_STS_SUCCESS);
         drain();
     }
@@ -1153,6 +1480,191 @@ static void retry_cases(uint32_t device)
     check(crystalhd_hw_start_capture(&hardware) == BC_STS_SUCCESS && post_calls == 1,
           "BUSY start queues for later retry without spinning");
     inventory(0, 0, 1); drain();
+}
+static void fallback_ownership_cases(uint32_t device)
+{
+    struct crystalhd_rx_buffer *buffer;
+
+    reset(device);
+    buffer = map_private(false);
+    check(submit(&context, buffer) == BC_STS_SUCCESS,
+          "prepare direct ownership for a ready-queue failure");
+    fail_queue = &ready;
+    queue_status = BC_STS_INSUFF_RES;
+    check(crystalhd_rx_pkt_done(&hardware, 0, BC_STS_SUCCESS) ==
+              BC_STS_INSUFF_RES &&
+          fallback_count() == 1 && hardware.rx_fallback_head->buffer == buffer &&
+          hardware.rx_fallback_head->cookie == &cookies[0] && !unmaps[0],
+          "ready-queue failure retains the exact buffer and cookie off-queue");
+    inventory(0, 0, 0);
+    fail_queue = NULL;
+    queue_status = BC_STS_SUCCESS;
+    check(crystalhd_hw_start_capture(&hardware) == BC_STS_NO_DATA &&
+          !fallback_count() && active.count == 1 &&
+          active.packets[0]->buffer == buffer &&
+          active.packets[0]->cookie == &cookies[0],
+          "capture start reuses a retained packet before reporting no more data");
+    inventory(1, 0, 0);
+    check(crystalhd_hw_stop_capture(&hardware, true) == BC_STS_SUCCESS &&
+          unmaps[0] == 1 && !mapped[0],
+          "full cancellation releases a reused fallback owner exactly once");
+    inventory(0, 0, 0);
+    drain();
+
+    reset(device);
+    buffer = map_private_at(0, true);
+    check(submit(&context, buffer) == BC_STS_SUCCESS,
+          "prepare direct ownership for a repost/free double failure");
+    post_status = BC_STS_IO_ERROR;
+    fail_queue = &available;
+    queue_status = BC_STS_INSUFF_RES;
+    check(crystalhd_rx_pkt_done(&hardware, 0, BC_STS_IO_ERROR) ==
+              BC_STS_IO_ERROR &&
+          fallback_count() == 1 && hardware.rx_fallback_head->buffer == buffer &&
+          hardware.rx_fallback_head->cookie == &cookies[0] && !unmaps[0],
+          "repost plus free-queue failure retains one exact fallback owner");
+    inventory(0, 0, 0);
+    fail_queue = NULL;
+    queue_status = BC_STS_SUCCESS;
+    post_status = BC_STS_SUCCESS;
+    check(crystalhd_hw_stop_capture(&hardware, true) == BC_STS_SUCCESS &&
+          !fallback_count() && unmaps[0] == 1 && !mapped[0],
+          "destructive stop detaches and releases the repost fallback exactly once");
+    inventory(0, 0, 0);
+    drain();
+}
+static void fallback_free_ring_cases(uint32_t device)
+{
+    struct crystalhd_rx_buffer *retired[BC_RX_LIST_CNT] = {0};
+    bool seen[4] = {false};
+    unsigned retired_count;
+
+    reset(device);
+    check(submit(&context, map_private_at(0, false)) == BC_STS_SUCCESS &&
+          submit(&context, map_private_at(1, true)) == BC_STS_SUCCESS,
+          "prepare active owners for destructive fallback detachment");
+    context.state = BC_LINK_INIT | BC_LINK_CAP_EN;
+    check(submit(&context, map_private_at(2, false)) == BC_STS_SUCCESS,
+          "prepare a free-queue owner for destructive fallback detachment");
+    fail_queue = &ready;
+    queue_status = BC_STS_INSUFF_RES;
+    check(crystalhd_rx_pkt_done(&hardware, 0, BC_STS_SUCCESS) ==
+              BC_STS_INSUFF_RES && fallback_count() == 1,
+          "move one completed owner into the fallback list");
+    fail_queue = NULL;
+    queue_status = BC_STS_SUCCESS;
+    context.state = BC_LINK_READY;
+    check(submit(&context, map_private_at(3, false)) == BC_STS_SUCCESS,
+          "reuse the vacant hardware list for a ready-queue owner");
+    complete(0);
+    check(active.count == 1 && ready.count == 1 && available.count == 1 &&
+          fallback_count() == 1,
+          "construct active, ready, free and fallback ownership together");
+    inventory(1, 1, 1);
+
+    retired_count = crystalhd_hw_detach_rx_owners(&hardware, retired);
+    check(retired_count == 4 && !active.count && !ready.count &&
+          !available.count && !fallback_count(),
+          "free-ring detachment gathers every queue and fallback owner");
+    for (unsigned i = 0; i < retired_count; i++) {
+        size_t index = buffer_index(retired[i]);
+
+        check(index < ARRAY_SIZE(seen),
+              "free-ring detachment returns only submitted buffers");
+        if (index >= ARRAY_SIZE(seen))
+            continue;
+        check(!seen[index] && retired[i] == registered_buffers[index] &&
+              retired[i]->cookie == registered_cookies[index],
+              "free-ring detachment returns each exact buffer/cookie pair once");
+        seen[index] = true;
+    }
+    for (unsigned i = 0; i < BC_RX_LIST_CNT; i++)
+        check(!packets[i].buffer && !packets[i].cookie,
+              "free-ring detachment clears packet identities before release");
+    check(!unmaps[0] && !unmaps[1] && !unmaps[2] && !unmaps[3],
+          "free-ring detachment delays all releases until every packet is clean");
+    for (unsigned i = 0; i < retired_count; i++)
+        crystalhd_rx_buffer_release(&adapter, retired[i]);
+    check(unmaps[0] == 1 && unmaps[1] == 1 &&
+          unmaps[2] == 1 && unmaps[3] == 1,
+          "free-ring-style teardown releases all detached buffers exactly once");
+    inventory(0, 0, 0);
+    drain();
+}
+static void legacy_fetch_rejects_generic_case(uint32_t device)
+{
+    crystalhd_ioctl_data data = {0};
+    struct crystalhd_rx_buffer *buffer;
+
+    reset(device);
+    buffer = map_private(false);
+    check(submit(&context, buffer) == BC_STS_SUCCESS,
+          "prepare a generic completion for the legacy fetch adapter");
+    complete(0);
+    check(bc_cproc_fetch_frame(&context, &data) == BC_STS_IO_ERROR &&
+          unmaps[0] == 1 && !mapped[0] && !fallback_count(),
+          "legacy fetch rejects a generic frontend buffer and releases it once");
+    inventory(0, 0, 0);
+    drain();
+}
+static void free_count_consumer_cases(uint32_t device)
+{
+    struct crystalhd_hw_stats stats;
+
+    reset(device);
+    check(crystalhd_hw_count_free_rx_pkts(NULL) == 0,
+          "free RX count rejects a NULL hardware context as empty");
+    context.state = BC_LINK_INIT | BC_LINK_CAP_EN;
+    check(submit(&context, map_private_at(0, false)) == BC_STS_SUCCESS,
+          "prepare one ordinary free-queue owner for combined counting");
+    context.state = BC_LINK_READY;
+    check(submit(&context, map_private_at(1, true)) == BC_STS_SUCCESS,
+          "prepare one active owner for fallback counting");
+    fail_queue = &ready;
+    queue_status = BC_STS_INSUFF_RES;
+    check(crystalhd_rx_pkt_done(&hardware, 0, BC_STS_SUCCESS) ==
+              BC_STS_INSUFF_RES && available.count == 1 &&
+          fallback_count() == 1,
+          "ready failure constructs one free-queue and one fallback owner");
+    check(crystalhd_hw_count_free_rx_pkts(&hardware) == 2 && !hardware.lock,
+          "production free count sums the queue and fallback list under lock");
+    inventory(0, 0, 1);
+
+    hardware.stats.rx_errors = 7;
+    hardware.stats.tx_errors = 11;
+    memset(&stats, 0xa5, sizeof(stats));
+    crystalhd_hw_stats(&hardware, &stats);
+    check(stats.freeq_count == 2 && hardware.stats.freeq_count == 2 &&
+          stats.rdyq_count == 0 && stats.rx_errors == 7 &&
+          stats.tx_errors == 11,
+          "production stats publishes the combined free-owner count");
+
+    if (device == BC_PCI_DEVID_FLEA) {
+        crystalhd_flea_notify_fll_change(&hardware, false);
+        check(dram_write_calls == 1 && !firmware_alive_checks &&
+              dram_write_address == hardware.FleaFLLUpdateAddr &&
+              dram_write_dwords == 1 && dram_write_value == 2 &&
+              !hardware.lock,
+              "Flea FLL update writes the combined queue and fallback count");
+
+        firmware_alive = false;
+        crystalhd_flea_notify_fll_change(&hardware, true);
+        check(dram_write_calls == 1 && firmware_alive_checks == 1,
+              "dead-firmware cleanup suppresses an FLL write");
+        firmware_alive = true;
+        crystalhd_flea_notify_fll_change(&hardware, true);
+        check(dram_write_calls == 2 && firmware_alive_checks == 2 &&
+              dram_write_value == 2 && !hardware.lock,
+              "live-firmware cleanup also writes the combined free count");
+    }
+
+    fail_queue = NULL;
+    queue_status = BC_STS_SUCCESS;
+    check(crystalhd_hw_stop_capture(&hardware, true) == BC_STS_SUCCESS &&
+          unmaps[0] == 1 && unmaps[1] == 1,
+          "combined-count owners remain destructively releasable exactly once");
+    inventory(0, 0, 0);
+    drain();
 }
 static void format_case(uint32_t device, unsigned failure)
 {
@@ -1239,14 +1751,14 @@ static void format_full_flush_race_cases(uint32_t device)
 {
     for (unsigned restart = 0; restart < 2; restart++) {
         for (unsigned mode422 = 0; mode422 < 2; mode422++) {
-            struct crystalhd_rx_dequeue_result result;
-            struct crystalhd_dio_req *request;
+            struct crystalhd_rx_completion result;
+            struct crystalhd_rx_buffer *buffer;
             uint32_t expected_state = BC_LINK_INIT;
             unsigned post_before;
 
             reset(device);
-            request = map_private(mode422);
-            check(submit(&context, request) == BC_STS_SUCCESS,
+            buffer = map_private(mode422);
+            check(submit(&context, buffer) == BC_STS_SUCCESS,
                   "prepare format completion for a concurrent full flush");
             complete(0);
             ready.packets[0]->flags = COMP_FLAG_FMT_CHANGE |
@@ -1254,9 +1766,10 @@ static void format_full_flush_race_cases(uint32_t device)
             fill_ready_pib(ready.packets[0]);
             context.state = BC_LINK_INIT | BC_LINK_CAP_EN;
             check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS &&
-                  result.dio == request && !unmaps[0],
-                  "format dequeue detaches the old mapped registration");
-            inventory_with_private(0, 0, 0, result.dio);
+                  result.buffer == buffer && result.cookie == &cookies[0] &&
+                  !unmaps[0],
+                  "format dequeue detaches the exact old buffer and cookie");
+            inventory_with_private(0, 0, 0, result.buffer);
 
             check(flush_capture(&context, true, 0) == BC_STS_SUCCESS &&
                   context.state == BC_LINK_INIT,
@@ -1272,7 +1785,8 @@ static void format_full_flush_race_cases(uint32_t device)
             check(bc_cproc_fmt_change(&context, &result) ==
                       BC_STS_IO_USER_ABORT,
                   "late format completion is cancelled after a full flush");
-            check(!result.dio && context.state == expected_state &&
+            check(!result.buffer && !result.cookie &&
+                  context.state == expected_state &&
                   unmaps[0] == 1 &&
                   post_calls == post_before && !mapped[0] &&
                   (!restart || (mapped[1] && !unmaps[1])),
@@ -1288,14 +1802,14 @@ static void format_full_flush_race_cases(uint32_t device)
 static void format_wait_flush_race_cases(uint32_t device)
 {
     for (unsigned variant = 0; variant < 4; variant++) {
-        struct crystalhd_rx_dequeue_result result;
-        struct crystalhd_dio_req *request;
+        struct crystalhd_rx_completion result;
+        struct crystalhd_rx_buffer *buffer;
         bool mode422 = variant & 1;
         unsigned post_before;
 
         reset(device);
-        request = map_private(mode422);
-        check(submit(&context, request) == BC_STS_SUCCESS,
+        buffer = map_private(mode422);
+        check(submit(&context, buffer) == BC_STS_SUCCESS,
               "prepare format completion for the dequeue wait race");
         complete(0);
         ready.packets[0]->flags = COMP_FLAG_FMT_CHANGE |
@@ -1311,15 +1825,17 @@ static void format_wait_flush_race_cases(uint32_t device)
         wait_full_flush = true;
         check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS &&
               wait_flush_status == BC_STS_SUCCESS && !wait_full_flush &&
-              result.dio == request && result.capture_epoch == 0 &&
+              result.buffer == buffer && result.cookie == &cookies[0] &&
+              result.capture_epoch == 0 &&
               hardware.rx_cancel_epoch == 1 && context.state == BC_LINK_INIT &&
               (device != BC_PCI_DEVID_FLEA ||
                (!pause_calls && hardware.hw_pause_issued)),
               "packet epoch survives a full flush after ready-pop and before dequeue resumes");
-        inventory_with_private(0, 0, 0, result.dio);
+        inventory_with_private(0, 0, 0, result.buffer);
         post_before = post_calls;
         check(bc_cproc_fmt_change(&context, &result) == BC_STS_IO_USER_ABORT &&
-              !result.dio && unmaps[0] == 1 && !mapped[0] &&
+              !result.buffer && !result.cookie &&
+              unmaps[0] == 1 && !mapped[0] &&
               context.state == BC_LINK_INIT && post_calls == post_before,
               "ready-pop race cancels the old format mapping without requeue or state revival");
         inventory(0, 0, 0);
@@ -1333,7 +1849,7 @@ static void empty_wait_flush_race_cases(uint32_t device)
 
     for (unsigned power = 0; power < 2; power++) {
         for (unsigned signalled = 0; signalled < 2; signalled++) {
-            struct crystalhd_rx_dequeue_result result;
+            struct crystalhd_rx_completion result;
             BC_STATUS expected = signalled ? BC_STS_IO_USER_ABORT :
                 BC_STS_TIMEOUT;
 
@@ -1363,7 +1879,7 @@ static void fresh_packet_after_wait_restart_cases(uint32_t device)
 
     for (unsigned power = 0; power < 2; power++) {
         for (unsigned mode422 = 0; mode422 < 2; mode422++) {
-            struct crystalhd_rx_dequeue_result result;
+            struct crystalhd_rx_completion result;
 
             reset(device);
             wait_restart_mode422 = mode422;
@@ -1379,7 +1895,8 @@ static void fresh_packet_after_wait_restart_cases(uint32_t device)
                   wait_restart_complete_status == BC_STS_SUCCESS &&
                   !wait_restart_fresh,
                   "an old waiter accepts a fresh packet after full flush and restart");
-            check(result.dio == &requests[0] &&
+            check(result.buffer == &requests[0].rx_buffer &&
+                  result.cookie == &requests[0] &&
                   result.capture_epoch == 1 &&
                   result.capture_epoch == hardware.rx_cancel_epoch &&
                   result.flags == COMP_FLAG_FMT_CHANGE &&
@@ -1387,9 +1904,9 @@ static void fresh_packet_after_wait_restart_cases(uint32_t device)
                   "post-restart dequeue returns only the current-epoch registration");
             check(pause_calls == 1 && !hardware.hw_pause_issued,
                   "a current-epoch packet resumes FLEA after a cross-epoch wait");
-            inventory_with_private(0, 0, 0, result.dio);
+            inventory_with_private(0, 0, 0, result.buffer);
             check(bc_cproc_fmt_change(&context, &result) == BC_STS_SUCCESS &&
-                  !result.dio && !unmaps[0] &&
+                  !result.buffer && !result.cookie && !unmaps[0] &&
                   context.state == BC_LINK_READY,
                   "fresh post-restart format ownership remains consumable");
             inventory(1, 0, 0);
@@ -1400,13 +1917,13 @@ static void fresh_packet_after_wait_restart_cases(uint32_t device)
 static void format_discard_epoch_cases(uint32_t device)
 {
     for (unsigned mode422 = 0; mode422 < 2; mode422++) {
-        struct crystalhd_rx_dequeue_result result;
-        struct crystalhd_dio_req *request;
+        struct crystalhd_rx_completion result;
+        struct crystalhd_rx_buffer *buffer;
         uint64_t epoch;
 
         reset(device);
-        request = map_private(mode422);
-        check(submit(&context, request) == BC_STS_SUCCESS,
+        buffer = map_private(mode422);
+        check(submit(&context, buffer) == BC_STS_SUCCESS,
               "prepare format completion for discard control");
         complete(0);
         ready.packets[0]->flags = COMP_FLAG_FMT_CHANGE;
@@ -1414,12 +1931,15 @@ static void format_discard_epoch_cases(uint32_t device)
         check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS,
               "discard control dequeues one format registration");
         epoch = result.capture_epoch;
-        inventory_with_private(0, 0, 0, result.dio);
+        check(result.buffer == buffer && result.cookie == &cookies[0],
+              "discard control preserves both generic completion identities");
+        inventory_with_private(0, 0, 0, result.buffer);
         check(flush_capture(&context, true, 1) == BC_STS_SUCCESS &&
               hardware.rx_cancel_epoch == epoch,
               "discard preserves the capture epoch for retained registrations");
         check(bc_cproc_fmt_change(&context, &result) == BC_STS_SUCCESS &&
-              !result.dio && context.state == BC_LINK_READY &&
+              !result.buffer && !result.cookie &&
+              context.state == BC_LINK_READY &&
               !unmaps[0],
               "format completion remains valid across non-destructive discard");
         inventory(1, 0, 0);
@@ -1428,13 +1948,13 @@ static void format_discard_epoch_cases(uint32_t device)
 }
 static void format_failed_stop_epoch_case(uint32_t device)
 {
-    struct crystalhd_rx_dequeue_result result;
-    struct crystalhd_dio_req *request;
+    struct crystalhd_rx_completion result;
+    struct crystalhd_rx_buffer *buffer;
     unsigned post_before;
 
     reset(device);
-    request = map_private(false);
-    check(submit(&context, request) == BC_STS_SUCCESS,
+    buffer = map_private(false);
+    check(submit(&context, buffer) == BC_STS_SUCCESS,
           "prepare detached format completion for a failed full stop");
     complete(0);
     ready.packets[0]->flags = COMP_FLAG_FMT_CHANGE;
@@ -1442,7 +1962,9 @@ static void format_failed_stop_epoch_case(uint32_t device)
     check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS &&
           result.capture_epoch == 0,
           "failed-stop case retains the admission epoch in the dequeue result");
-    inventory_with_private(0, 0, 0, result.dio);
+    check(result.buffer == buffer && result.cookie == &cookies[0],
+          "failed-stop dequeue preserves both generic completion identities");
+    inventory_with_private(0, 0, 0, result.buffer);
     stop_fault = true;
     check(flush_capture(&context, true, 0) == BC_STS_IO_ERROR &&
           hardware.dma_fault && hardware.rx_cancel_epoch == 1 &&
@@ -1450,7 +1972,8 @@ static void format_failed_stop_epoch_case(uint32_t device)
           "destructive flush invalidates detached results even when DMA stop fails");
     post_before = post_calls;
     check(bc_cproc_fmt_change(&context, &result) == BC_STS_IO_USER_ABORT &&
-          !result.dio && unmaps[0] == 1 && post_calls == post_before,
+          !result.buffer && !result.cookie &&
+          unmaps[0] == 1 && post_calls == post_before,
           "failed full stop cannot revive its detached format registration");
     inventory(0, 0, 0);
     stop_fault = false;
@@ -1460,7 +1983,7 @@ static void format_failed_stop_epoch_case(uint32_t device)
 static void format_fresh_epoch_cases(uint32_t device)
 {
     for (unsigned mode422 = 0; mode422 < 2; mode422++) {
-        struct crystalhd_rx_dequeue_result result;
+        struct crystalhd_rx_completion result;
         crystalhd_ioctl_data fresh = {0};
 
         reset(device);
@@ -1489,12 +2012,14 @@ static void format_fresh_epoch_cases(uint32_t device)
             COMP_FLAG_PIB_VALID;
         fill_ready_pib(ready.packets[0]);
         check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS &&
-              result.dio == &requests[1] && result.capture_epoch == 1 &&
+              result.buffer == &requests[1].rx_buffer &&
+              result.cookie == &requests[1] && result.capture_epoch == 1 &&
               result.capture_epoch == hardware.rx_cancel_epoch,
               "fresh completion carries the nonzero current epoch");
-        inventory_with_private(0, 0, 0, result.dio);
+        inventory_with_private(0, 0, 0, result.buffer);
         check(bc_cproc_fmt_change(&context, &result) == BC_STS_SUCCESS &&
-              !result.dio && !unmaps[1] && context.state == BC_LINK_READY,
+              !result.buffer && !result.cookie && !unmaps[1] &&
+              context.state == BC_LINK_READY,
               "current-epoch format completion requeues normally");
         inventory(1, 0, 0);
         drain();
@@ -1502,13 +2027,13 @@ static void format_fresh_epoch_cases(uint32_t device)
 }
 static void format_capture_gate_case(uint32_t device)
 {
-    struct crystalhd_rx_dequeue_result result;
-    struct crystalhd_dio_req *request;
+    struct crystalhd_rx_completion result;
+    struct crystalhd_rx_buffer *buffer;
     unsigned post_before;
 
     reset(device);
-    request = map_private(false);
-    check(submit(&context, request) == BC_STS_SUCCESS,
+    buffer = map_private(false);
+    check(submit(&context, buffer) == BC_STS_SUCCESS,
           "prepare format completion for the capture-state gate");
     complete(0);
     ready.packets[0]->flags = COMP_FLAG_FMT_CHANGE;
@@ -1516,11 +2041,14 @@ static void format_capture_gate_case(uint32_t device)
     check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS &&
           result.capture_epoch == hardware.rx_cancel_epoch,
           "capture-state gate starts with an otherwise current result");
-    inventory_with_private(0, 0, 0, result.dio);
+    check(result.buffer == buffer && result.cookie == &cookies[0],
+          "capture-state gate begins with exact generic identities");
+    inventory_with_private(0, 0, 0, result.buffer);
     context.state &= ~BC_LINK_CAP_EN;
     post_before = post_calls;
     check(bc_cproc_fmt_change(&context, &result) == BC_STS_IO_USER_ABORT &&
-          !result.dio && unmaps[0] == 1 && post_calls == post_before &&
+          !result.buffer && !result.cookie &&
+          unmaps[0] == 1 && post_calls == post_before &&
           context.state == BC_LINK_INIT,
           "capture-disabled state rejects an equal-epoch format result");
     inventory(0, 0, 0);
@@ -1530,18 +2058,26 @@ static void cancellation_cases(uint32_t device)
 {
     crystalhd_ioctl_data data = {0};
     reset(device);
-    for (unsigned i = 0; i < 3; i++) check(add(i) == BC_STS_SUCCESS, "prepare active/free/ready cancellation");
+    for (unsigned i = 0; i < 3; i++) {
+        struct crystalhd_rx_buffer *buffer = map_private_at(i, i == 2);
+
+        check(submit(&context, buffer) == BC_STS_SUCCESS,
+              "prepare direct buffer/cookie for active/free/ready cancellation");
+    }
     complete(0); inventory(1, 1, 1);
     check(crystalhd_hw_stop_capture(&hardware, false) == BC_STS_SUCCESS,
           "discard moves active and ready registrations back to free");
     inventory(0, 0, 3);
-    check(!unmaps[0] && !unmaps[1] && !unmaps[2], "discard retains all pinned registrations");
+    check(!unmaps[0] && !unmaps[1] && !unmaps[2] &&
+          available.packets[0]->buffer == &direct_buffers[2] &&
+          available.packets[0]->cookie == &cookies[2],
+          "discard retains every direct backing and opaque cookie");
     check(crystalhd_hw_start_capture(&hardware) == BC_STS_SUCCESS, "discarded buffers can restart capture");
     inventory(2, 0, 1);
     data.udata.u.FlushRxCap.bDiscardOnly = 0;
     check(bc_cproc_flush_cap_buffs(&context, &data) == BC_STS_SUCCESS &&
           !(context.state & (BC_LINK_CAP_EN | BC_LINK_FMT_CHG)),
-          "command cancellation clears capture/format state and drains ownership");
+          "full cancellation clears state and releases every direct buffer/cookie owner");
     inventory(0, 0, 0); drain();
 
     reset(device);
@@ -2069,6 +2605,7 @@ int main(void)
         dequeue_argument_cases(devices[i]);
         dequeue_gate_wait_cases(devices[i]);
         mapped_dequeue_cases(devices[i]);
+        reverse_list_completion_case(devices[i]);
         pib_dequeue_cases(devices[i]);
         direct_format_dequeue_cases(devices[i]);
         completion_case(devices[i]);
@@ -2078,6 +2615,10 @@ int main(void)
         mapped_completion_cases(devices[i]);
         add_failures(devices[i]);
         retry_cases(devices[i]);
+        fallback_ownership_cases(devices[i]);
+        fallback_free_ring_cases(devices[i]);
+        legacy_fetch_rejects_generic_case(devices[i]);
+        free_count_consumer_cases(devices[i]);
         for (unsigned failure = 0; failure < 4; failure++) format_case(devices[i], failure);
         format_without_pib_case(devices[i]);
         format_full_flush_race_cases(devices[i]);

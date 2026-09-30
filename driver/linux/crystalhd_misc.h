@@ -36,10 +36,41 @@
 #include <linux/dma-mapping.h>
 #include <linux/sched.h>
 #include "bc_dts_glob_lnx.h"
-#include "crystalhd_hw.h"
 
 /* forward declare */
+struct crystalhd_adp;
 struct crystalhd_hw;
+struct crystalhd_rx_buffer;
+
+/* The buffer, ops and cookie stay immutable while submitted. Device sync can
+ * run from hard IRQ context with a spinlock held and must not sleep. CPU sync,
+ * read, write and release run in process context; release follows full detach.
+ */
+struct crystalhd_rx_buffer_ops {
+	void (*sync_for_cpu)(struct crystalhd_adp *adp,
+			     struct crystalhd_rx_buffer *buffer);
+	void (*sync_for_device)(struct crystalhd_adp *adp,
+				struct crystalhd_rx_buffer *buffer);
+	BC_STATUS (*read)(struct crystalhd_rx_buffer *buffer, uint32_t offset,
+			  void *dst, size_t size);
+	BC_STATUS (*write)(struct crystalhd_rx_buffer *buffer, uint32_t offset,
+			   const void *src, size_t size);
+	void (*release)(struct crystalhd_adp *adp,
+			struct crystalhd_rx_buffer *buffer);
+};
+
+/* Frontend-neutral capture buffer presented to the hardware core. */
+struct crystalhd_rx_buffer {
+	struct scatterlist			*sgl;
+	uint32_t				dma_nents;
+	uint32_t				capacity;
+	uint32_t				uv_offset;
+	uint32_t				uv_sg_ix;
+	uint32_t				uv_sg_off;
+	BC_OUTPUT_FORMAT				output_format;
+	const struct crystalhd_rx_buffer_ops	*ops;
+	void					*cookie;
+};
 
 /* Global element pool for all Queue management.
  * TX: Active = BC_TX_LIST_CNT, Free = BC_TX_LIST_CNT.
@@ -68,9 +99,6 @@ struct crystalhd_dio_user_info {
 
 	uint32_t		uv_sg_ix;
 	uint32_t		uv_sg_off;
-	uint32_t		y_done_sz;
-	uint32_t		uv_done_sz;
-	uint32_t		comp_flags;
 	BC_OUTPUT_FORMAT	b422mode;
 };
 
@@ -85,10 +113,10 @@ struct crystalhd_dio_req {
 	int								direction;
 	bool							cpu_owned;
 	struct crystalhd_dio_user_info	uinfo;
+	struct crystalhd_rx_buffer		rx_buffer;
 	void							*fb_va;
 	uint32_t						fb_size;
 	dma_addr_t						fb_pa;
-	void							*pib_va; /* pointer to temporary buffer to extract metadata */
 	struct crystalhd_dio_req		*next;
 };
 
@@ -159,13 +187,24 @@ do {									\
 extern int crystalhd_create_dio_pool(struct crystalhd_adp *, uint32_t);
 extern void crystalhd_destroy_dio_pool(struct crystalhd_adp *);
 extern BC_STATUS crystalhd_map_dio(struct crystalhd_adp *, void *, uint32_t,
-				   uint32_t, bool, bool, struct crystalhd_dio_req**);
+				   uint32_t, BC_OUTPUT_FORMAT, bool,
+				   struct crystalhd_dio_req **);
 
 extern BC_STATUS crystalhd_unmap_dio(struct crystalhd_adp *, struct crystalhd_dio_req*);
 void crystalhd_dio_to_cpu(struct crystalhd_adp *, struct crystalhd_dio_req *);
 void crystalhd_dio_to_device(struct crystalhd_adp *, struct crystalhd_dio_req *);
-#define crystalhd_get_sgle_paddr(_dio, _ix) (cpu_to_le64(sg_dma_address(&_dio->sg[_ix])))
-#define crystalhd_get_sgle_len(_dio, _ix) (cpu_to_le32(sg_dma_len(&_dio->sg[_ix])))
+void crystalhd_rx_buffer_sync_for_cpu(struct crystalhd_adp *,
+				      struct crystalhd_rx_buffer *);
+void crystalhd_rx_buffer_sync_for_device(struct crystalhd_adp *,
+					 struct crystalhd_rx_buffer *);
+BC_STATUS crystalhd_rx_buffer_read(struct crystalhd_rx_buffer *, uint32_t,
+				   void *, size_t);
+BC_STATUS crystalhd_rx_buffer_write(struct crystalhd_rx_buffer *, uint32_t,
+				    const void *, size_t);
+void crystalhd_rx_buffer_release(struct crystalhd_adp *,
+				 struct crystalhd_rx_buffer *);
+struct crystalhd_dio_req *
+crystalhd_dio_from_rx_buffer(struct crystalhd_rx_buffer *);
 
 /*================ General Purpose Queues ==================*/
 extern BC_STATUS crystalhd_create_dioq(struct crystalhd_adp *, struct crystalhd_dioq **, crystalhd_data_free_cb , void *);

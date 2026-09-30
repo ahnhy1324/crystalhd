@@ -334,9 +334,16 @@ struct crystalhd_rx_dma_pkt *crystalhd_hw_alloc_rx_pkt(struct crystalhd_hw *hw)
 	temp = hw->rx_pkt_pool_head;
 	if (temp) {
 		hw->rx_pkt_pool_head = hw->rx_pkt_pool_head->next;
-		temp->dio_req = NULL;
+		temp->buffer = NULL;
+		temp->cookie = NULL;
+		temp->capture_epoch = 0;
 		temp->pkt_tag = 0;
 		temp->flags = 0;
+		temp->y_done_sz = 0;
+		temp->uv_done_sz = 0;
+		memset(&temp->pib, 0, sizeof(temp->pib));
+		temp->uv_phy_addr = 0;
+		temp->next = NULL;
 	}
 	spin_unlock_irqrestore(&hw->lock, flags);
 
@@ -352,9 +359,80 @@ void crystalhd_hw_free_rx_pkt(struct crystalhd_hw *hw,
 		return;
 
 	spin_lock_irqsave(&hw->lock, flags);
+	pkt->buffer = NULL;
+	pkt->cookie = NULL;
+	pkt->capture_epoch = 0;
+	pkt->pkt_tag = 0;
+	pkt->flags = 0;
+	pkt->y_done_sz = 0;
+	pkt->uv_done_sz = 0;
+	memset(&pkt->pib, 0, sizeof(pkt->pib));
+	pkt->uv_phy_addr = 0;
 	pkt->next = hw->rx_pkt_pool_head;
 	hw->rx_pkt_pool_head = pkt;
 	spin_unlock_irqrestore(&hw->lock, flags);
+}
+
+void crystalhd_hw_retain_rx_pkt(struct crystalhd_hw *hw,
+				struct crystalhd_rx_dma_pkt *pkt)
+{
+	unsigned long flags = 0;
+
+	if (!hw || !pkt)
+		return;
+
+	spin_lock_irqsave(&hw->lock, flags);
+	pkt->next = hw->rx_fallback_head;
+	hw->rx_fallback_head = pkt;
+	spin_unlock_irqrestore(&hw->lock, flags);
+}
+
+static struct crystalhd_rx_dma_pkt *
+crystalhd_hw_fetch_retained_rx_pkt(struct crystalhd_hw *hw)
+{
+	struct crystalhd_rx_dma_pkt *pkt;
+	unsigned long flags = 0;
+
+	if (!hw)
+		return NULL;
+
+	spin_lock_irqsave(&hw->lock, flags);
+	pkt = hw->rx_fallback_head;
+	if (pkt) {
+		hw->rx_fallback_head = pkt->next;
+		pkt->next = NULL;
+	}
+	spin_unlock_irqrestore(&hw->lock, flags);
+
+	return pkt;
+}
+
+struct crystalhd_rx_dma_pkt *
+crystalhd_hw_fetch_free_rx_pkt(struct crystalhd_hw *hw)
+{
+	struct crystalhd_rx_dma_pkt *pkt;
+
+	if (!hw)
+		return NULL;
+	pkt = crystalhd_dioq_fetch(hw->rx_freeq);
+	return pkt ? pkt : crystalhd_hw_fetch_retained_rx_pkt(hw);
+}
+
+uint32_t crystalhd_hw_count_free_rx_pkts(struct crystalhd_hw *hw)
+{
+	struct crystalhd_rx_dma_pkt *pkt;
+	unsigned long flags = 0;
+	uint32_t count;
+
+	if (!hw)
+		return 0;
+	count = hw->rx_freeq ? crystalhd_dioq_count(hw->rx_freeq) : 0;
+	spin_lock_irqsave(&hw->lock, flags);
+	for (pkt = hw->rx_fallback_head; pkt; pkt = pkt->next)
+		count++;
+	spin_unlock_irqrestore(&hw->lock, flags);
+
+	return count;
 }
 
 /*
@@ -381,16 +459,17 @@ void crystalhd_rx_pkt_rel_call_back(void *context, void *data)
 {
 	struct crystalhd_hw *hw = (struct crystalhd_hw *)context;
 	struct crystalhd_rx_dma_pkt *pkt = (struct crystalhd_rx_dma_pkt *)data;
+	struct crystalhd_rx_buffer *buffer;
 
 	if (!pkt || !hw) {
 		printk(KERN_ERR "%s: Invalid arg - %p %p\n", __func__, hw, pkt);
 		return;
 	}
 
-	if (pkt->dio_req)
-		crystalhd_unmap_dio(hw->adp, pkt->dio_req);
-
+	buffer = pkt->buffer;
 	crystalhd_hw_free_rx_pkt(hw, pkt);
+	if (buffer)
+		crystalhd_rx_buffer_release(hw->adp, buffer);
 }
 
 #define crystalhd_hw_delete_ioq(adp, q)		\
@@ -409,6 +488,35 @@ void crystalhd_hw_delete_ioqs(struct crystalhd_hw *hw)
 	crystalhd_hw_delete_ioq(hw->adp, hw->rx_actq);
 	crystalhd_hw_delete_ioq(hw->adp, hw->rx_freeq);
 	crystalhd_hw_delete_ioq(hw->adp, hw->rx_rdyq);
+}
+
+static unsigned int crystalhd_hw_detach_rx_owners(
+				struct crystalhd_hw *hw,
+				struct crystalhd_rx_buffer **retired)
+{
+	struct crystalhd_dioq *queues[] = {
+		hw->rx_actq, hw->rx_rdyq, hw->rx_freeq,
+	};
+	struct crystalhd_rx_dma_pkt *packet;
+	unsigned int retired_count = 0;
+	unsigned int queue_index;
+
+	for (queue_index = 0; queue_index < ARRAY_SIZE(queues); queue_index++) {
+		if (!queues[queue_index])
+			continue;
+		while ((packet = crystalhd_dioq_fetch(queues[queue_index])) != NULL) {
+			if (packet->buffer && retired_count < BC_RX_LIST_CNT)
+				retired[retired_count++] = packet->buffer;
+			crystalhd_hw_free_rx_pkt(hw, packet);
+		}
+	}
+	while ((packet = crystalhd_hw_fetch_retained_rx_pkt(hw)) != NULL) {
+		if (packet->buffer && retired_count < BC_RX_LIST_CNT)
+			retired[retired_count++] = packet->buffer;
+		crystalhd_hw_free_rx_pkt(hw, packet);
+	}
+
+	return retired_count;
 }
 
 #define crystalhd_hw_create_ioq(sts, hw, q, cb)			\
@@ -532,6 +640,8 @@ BC_STATUS crystalhd_hw_setup_dma_rings(struct crystalhd_hw *hw)
 
 BC_STATUS crystalhd_hw_free_dma_rings(struct crystalhd_hw *hw)
 {
+	struct crystalhd_rx_buffer *retired[BC_RX_LIST_CNT];
+	unsigned int retired_count, retired_index;
 	unsigned int i;
 	struct crystalhd_rx_dma_pkt *rpkt = NULL;
 
@@ -540,8 +650,11 @@ BC_STATUS crystalhd_hw_free_dma_rings(struct crystalhd_hw *hw)
 		return BC_STS_INV_ARG;
 	}
 
-	/* Delete all IOQs.. */
+	/* No frontend release runs until every RX packet has been detached. */
+	retired_count = crystalhd_hw_detach_rx_owners(hw, retired);
 	crystalhd_hw_delete_ioqs(hw);
+	for (retired_index = 0; retired_index < retired_count; retired_index++)
+		crystalhd_rx_buffer_release(hw->adp, retired[retired_index]);
 
 	for (i = 0; i < BC_TX_LIST_CNT; i++) {
 		if (hw->tx_pkt_pool[i].desc_mem.pdma_desc_start) {
@@ -620,57 +733,75 @@ BC_STATUS crystalhd_hw_tx_req_complete(struct crystalhd_hw *hw,
 	return sts;
 }
 
-BC_STATUS crystalhd_hw_fill_desc(struct crystalhd_dio_req *ioreq,
-										struct dma_descriptor *desc,
-										dma_addr_t desc_paddr_base,
-										uint32_t sg_cnt, uint32_t sg_st_ix,
-										uint32_t sg_st_off, uint32_t xfr_sz,
-										struct device *dev, uint32_t destDRAMaddr)
+BC_STATUS crystalhd_hw_fill_desc(const struct crystalhd_dma_desc_source *source,
+				 struct dma_descriptor *desc,
+				 dma_addr_t desc_paddr_base,
+				 uint32_t sg_cnt, uint32_t sg_st_ix,
+				 uint32_t sg_st_off, uint32_t xfr_sz,
+				 struct device *dev, uint32_t destDRAMaddr)
 {
-	uint32_t count = 0, ix = 0, sg_ix = 0, len = 0, last_desc_ix = 0;
+	struct scatterlist *sg;
+	uint32_t count = 0, ix = 0, len = 0, last_desc_ix = 0;
+	uint32_t available, sg_xfr_sz;
 	dma_addr_t desc_phy_addr = desc_paddr_base;
 	addr_64 addr_temp;
 	uint32_t curDRAMaddr = destDRAMaddr;
 
-	if (!ioreq || !desc || !desc_paddr_base || !xfr_sz ||
-		(!sg_cnt && !ioreq->uinfo.dir_tx)) {
+	if (!source || !desc || !desc_paddr_base || !xfr_sz ||
+	    (!sg_cnt && !source->fill_size) ||
+	    xfr_sz < source->fill_size ||
+	    (!!sg_cnt != !!(xfr_sz - source->fill_size)) ||
+	    sg_st_ix > source->dma_nents ||
+	    sg_cnt > source->dma_nents - sg_st_ix ||
+	    (source->fill_size &&
+	     (!source->dir_tx || source->fill_size > 3 ||
+	      !source->fill_addr || (source->fill_addr & 3)))) {
 		dev_err(dev, "%s: Invalid Args\n", __func__);
 		return BC_STS_INV_ARG;
 	}
+	sg_xfr_sz = xfr_sz - source->fill_size;
+
+	sg = source->sgl;
+	for (ix = 0; ix < sg_st_ix && sg; ix++)
+		sg = sg_next(sg);
+	if (sg_cnt && !sg)
+		return BC_STS_INV_ARG;
 
 	for (ix = 0; ix < sg_cnt; ix++) {
-
-		/* Setup SGLE index. */
-		sg_ix = ix + sg_st_ix;
-
-		/* Get SGLE length */
-		len = crystalhd_get_sgle_len(ioreq, sg_ix);
-		if (len % 4) {
+		if (!sg)
+			return BC_STS_INV_ARG;
+		available = cpu_to_le32(sg_dma_len(sg));
+		len = available;
+		if ((sg_dma_address(sg) & 3) || (len & 3)) {
 			dev_err(dev, "unsupported len in sg %d %d %d\n",
-			len, sg_ix, sg_cnt);
+				len, ix + sg_st_ix, sg_cnt);
 			return BC_STS_NOT_IMPL;
 		}
 		/* Setup DMA desc with Phy addr & Length at current index. */
-		addr_temp.full_addr = crystalhd_get_sgle_paddr(ioreq, sg_ix);
-		if (sg_ix == sg_st_ix) {
+		addr_temp.full_addr = cpu_to_le64(sg_dma_address(sg));
+		if (!ix) {
+			if (sg_st_off >= len || (sg_st_off & 3))
+				return BC_STS_INV_ARG;
 			addr_temp.full_addr += sg_st_off;
 			len -= sg_st_off;
 		}
 		memset(&desc[ix], 0, sizeof(desc[ix]));
 		desc[ix].buff_addr_low  = addr_temp.low_part;
 		desc[ix].buff_addr_high = addr_temp.high_part;
-		desc[ix].dma_dir        = ioreq->uinfo.dir_tx; /* RX dma_dir = 0, TX dma_dir = 1 */
+		desc[ix].dma_dir        = source->dir_tx;
 
 		/* Chain DMA descriptor.  */
 		addr_temp.full_addr = desc_phy_addr + sizeof(struct dma_descriptor);
 		desc[ix].next_desc_addr_low = addr_temp.low_part;
 		desc[ix].next_desc_addr_high = addr_temp.high_part;
 
-		if ((count + len) > xfr_sz)
-			len = xfr_sz - count;
+		if (count >= sg_xfr_sz)
+			return BC_STS_ERROR;
+		if (len > sg_xfr_sz - count)
+			len = sg_xfr_sz - count;
 
 		/* Debug.. */
-		if ((!len) || (len > crystalhd_get_sgle_len(ioreq, sg_ix))) {
+		if (!len || len > available) {
 			dev_err(dev, "inv-len(%x) Ix(%d) count:%x xfr_sz:%x "
 			"sg_cnt:%d\n", len, ix, count, xfr_sz, sg_cnt);
 			return BC_STS_ERROR;
@@ -680,7 +811,7 @@ BC_STATUS crystalhd_hw_fill_desc(struct crystalhd_dio_req *ioreq,
 
 		count += len;
 		/* If TX fill in the destination DRAM address if needed */
-		if(ioreq->uinfo.dir_tx) {
+		if (source->dir_tx) {
 			desc[ix].sdram_buff_addr = curDRAMaddr;
 			curDRAMaddr = destDRAMaddr + count;
 		}
@@ -688,27 +819,29 @@ BC_STATUS crystalhd_hw_fill_desc(struct crystalhd_dio_req *ioreq,
 			desc[ix].sdram_buff_addr = 0;
 
 		desc_phy_addr += sizeof(struct dma_descriptor);
+		sg = sg_next(sg);
 	}
+	if (count != sg_xfr_sz)
+		return BC_STS_ERROR;
 
-	last_desc_ix = ix - 1;
+	last_desc_ix = ix ? ix - 1 : 0;
 
-	if (ioreq->fb_size) {
+	if (source->fill_size) {
 		memset(&desc[ix], 0, sizeof(desc[ix]));
-		addr_temp.full_addr     = ioreq->fb_pa;
+		addr_temp.full_addr     = source->fill_addr;
 		desc[ix].buff_addr_low  = addr_temp.low_part;
 		desc[ix].buff_addr_high = addr_temp.high_part;
-		desc[ix].dma_dir        = ioreq->uinfo.dir_tx;
+		desc[ix].dma_dir        = source->dir_tx;
 		desc[ix].xfer_size	= 1;
-		desc[ix].fill_bytes	= 4 - ioreq->fb_size;
-		count += ioreq->fb_size;
+		desc[ix].fill_bytes	= 4 - source->fill_size;
+		count += source->fill_size;
 		/* If TX fill in the destination DRAM address if needed */
-		if(ioreq->uinfo.dir_tx) {
+		if (source->dir_tx) {
 			desc[ix].sdram_buff_addr = curDRAMaddr;
-			curDRAMaddr = destDRAMaddr + count;
 		}
 		else
 			desc[ix].sdram_buff_addr = 0;
-		last_desc_ix++;
+		last_desc_ix = ix;
 	}
 
 	/* setup last descriptor..*/
@@ -726,35 +859,72 @@ BC_STATUS crystalhd_hw_fill_desc(struct crystalhd_dio_req *ioreq,
 	return BC_STS_SUCCESS;
 }
 
-BC_STATUS crystalhd_xlat_sgl_to_dma_desc(struct crystalhd_dio_req *ioreq,
-												struct dma_desc_mem * pdesc_mem,
-												uint32_t *uv_desc_index,
-												struct device *dev, uint32_t destDRAMaddr)
+BC_STATUS crystalhd_xlat_dma_to_desc(
+				const struct crystalhd_dma_desc_source *source,
+				uint32_t capacity, uint32_t uv_offset,
+				uint32_t uv_sg_ix, uint32_t uv_sg_off,
+				struct dma_desc_mem *pdesc_mem,
+				uint32_t *uv_desc_index,
+				struct device *dev, uint32_t destDRAMaddr)
 {
 	struct dma_descriptor *desc = NULL;
+	struct scatterlist *sg;
 	dma_addr_t desc_paddr_base = 0;
 	uint32_t sg_cnt = 0, sg_st_ix = 0, sg_st_off = 0;
 	uint32_t xfr_sz = 0;
-	uint32_t desc_count;
+	uint32_t desc_count, mapped_sg_count = 0;
+	uint32_t sg_len;
+	uint32_t i;
+	uint64_t available_bytes, required_sg_bytes, uv_backing_offset = 0;
+	bool uv_location_seen = false;
 	BC_STATUS sts = BC_STS_SUCCESS;
 
-	/* Check params.. */
-	if (!ioreq || !pdesc_mem || !uv_desc_index) {
+	if (!source || !pdesc_mem || !uv_desc_index) {
 		dev_err(dev, "%s: Invalid Args\n", __func__);
 		return BC_STS_INV_ARG;
 	}
 
-	if (!pdesc_mem->sz || !pdesc_mem->pdma_desc_start ||
-		!ioreq->sg || (!ioreq->sg_cnt && !ioreq->uinfo.dir_tx)) {
+	if (!pdesc_mem->sz || !pdesc_mem->pdma_desc_start || !capacity ||
+	    (!source->sgl && source->dma_nents) ||
+	    (!source->dma_nents && !source->fill_size) ||
+	    source->fill_size > capacity ||
+	    (source->fill_size &&
+	     (!source->dir_tx || source->fill_size > 3 ||
+	      source->fill_size != (capacity & 3) || !source->fill_addr ||
+	      (source->fill_addr & 3))) ||
+	    (!source->fill_size && (capacity & 3)) ||
+	    (uv_offset && (source->dir_tx || uv_offset >= capacity ||
+			   uv_sg_ix >= source->dma_nents ||
+			   ((uv_offset | uv_sg_off) & 3))) ||
+	    (!uv_offset && (uv_sg_ix || uv_sg_off))) {
 		dev_err(dev, "%s: Invalid Args\n", __func__);
 		return BC_STS_INV_ARG;
 	}
-
-	if ((ioreq->uinfo.dir_tx) && (ioreq->uinfo.uv_offset)) {
-		dev_err(dev, "%s: UV offset for TX??\n", __func__);
-		return BC_STS_INV_ARG;
-
+	required_sg_bytes = capacity - source->fill_size;
+	available_bytes = 0;
+	sg = source->sgl;
+	for (i = 0; i < source->dma_nents; i++) {
+		if (!sg)
+			return BC_STS_INV_ARG;
+		sg_len = cpu_to_le32(sg_dma_len(sg));
+		if (!sg_len || (sg_len & 3) || (sg_dma_address(sg) & 3))
+			return BC_STS_NOT_IMPL;
+		if (uv_offset && i == uv_sg_ix) {
+			if (uv_sg_off >= sg_len)
+				return BC_STS_INV_ARG;
+			uv_backing_offset = available_bytes + uv_sg_off;
+			uv_location_seen = true;
+		}
+		available_bytes += sg_len;
+		if (!mapped_sg_count && available_bytes >= required_sg_bytes)
+			mapped_sg_count = i + 1;
+		sg = sg_next(sg);
 	}
+	if (available_bytes < required_sg_bytes ||
+	    (required_sg_bytes && !mapped_sg_count) ||
+	    (uv_offset && (!uv_location_seen ||
+			   uv_backing_offset != uv_offset)))
+		return BC_STS_INV_ARG;
 
 	desc = pdesc_mem->pdma_desc_start;
 	desc_paddr_base = pdesc_mem->phy_addr;
@@ -762,23 +932,27 @@ BC_STATUS crystalhd_xlat_sgl_to_dma_desc(struct crystalhd_dio_req *ioreq,
 	/* A split inside a mapped segment needs a second descriptor; a TX
 	 * partial word likewise consumes one coherent fill-byte descriptor.
 	 */
-	desc_count = ioreq->sg_cnt + !!ioreq->fb_size +
-		     !!(ioreq->uinfo.uv_offset && ioreq->uinfo.uv_sg_off);
+	if (uv_offset)
+		desc_count = uv_sg_ix + !!uv_sg_off +
+			     mapped_sg_count - uv_sg_ix;
+	else
+		desc_count = mapped_sg_count + !!source->fill_size;
 	if (desc_count > pdesc_mem->sz / sizeof(*desc))
 		return BC_STS_INSUFF_RES;
 
-	if (ioreq->uinfo.dir_tx || (ioreq->uinfo.uv_offset == 0)) {
-		sg_cnt = ioreq->sg_cnt;
-		xfr_sz = ioreq->uinfo.xfr_len;
+	if (source->dir_tx || !uv_offset) {
+		sg_cnt = mapped_sg_count;
+		xfr_sz = capacity;
 	} else {
-		sg_cnt = ioreq->uinfo.uv_sg_ix + !!ioreq->uinfo.uv_sg_off;
-		xfr_sz = ioreq->uinfo.uv_offset;
+		sg_cnt = uv_sg_ix + !!uv_sg_off;
+		xfr_sz = uv_offset;
 	}
 
-	sts = crystalhd_hw_fill_desc(ioreq, desc, desc_paddr_base, sg_cnt,
-									sg_st_ix, sg_st_off, xfr_sz, dev, destDRAMaddr);
+	sts = crystalhd_hw_fill_desc(source, desc, desc_paddr_base, sg_cnt,
+				     sg_st_ix, sg_st_off, xfr_sz, dev,
+				     destDRAMaddr);
 
-	if ((sts != BC_STS_SUCCESS) || !ioreq->uinfo.uv_offset)
+	if (sts != BC_STS_SUCCESS || !uv_offset)
 		return sts;
 
 	/* Prepare for UV mapping.. */
@@ -788,17 +962,63 @@ BC_STATUS crystalhd_xlat_sgl_to_dma_desc(struct crystalhd_dio_req *ioreq,
 	(sg_cnt * sizeof(struct dma_descriptor));
 
 	/* Done with desc addr.. now update sg stuff.*/
-	sg_cnt    = ioreq->sg_cnt - ioreq->uinfo.uv_sg_ix;
-	xfr_sz    = ioreq->uinfo.xfr_len - ioreq->uinfo.uv_offset;
-	sg_st_ix  = ioreq->uinfo.uv_sg_ix;
-	sg_st_off = ioreq->uinfo.uv_sg_off;
+	sg_cnt    = mapped_sg_count - uv_sg_ix;
+	xfr_sz    = capacity - uv_offset;
+	sg_st_ix  = uv_sg_ix;
+	sg_st_off = uv_sg_off;
 
-	sts = crystalhd_hw_fill_desc(ioreq, desc, desc_paddr_base, sg_cnt,
-								sg_st_ix, sg_st_off, xfr_sz, dev, destDRAMaddr);
-	if (sts != BC_STS_SUCCESS)
-		return sts;
+	return crystalhd_hw_fill_desc(source, desc, desc_paddr_base, sg_cnt,
+				      sg_st_ix, sg_st_off, xfr_sz, dev,
+				      destDRAMaddr);
+}
 
-	return sts;
+BC_STATUS crystalhd_xlat_sgl_to_dma_desc(struct crystalhd_dio_req *ioreq,
+					 struct dma_desc_mem *pdesc_mem,
+					 uint32_t *uv_desc_index,
+					 struct device *dev,
+					 uint32_t destDRAMaddr)
+{
+	struct crystalhd_dma_desc_source source;
+
+	if (!ioreq)
+		return BC_STS_INV_ARG;
+
+	source.sgl = ioreq->sg;
+	source.dma_nents = ioreq->sg_cnt;
+	source.dir_tx = ioreq->uinfo.dir_tx;
+	source.fill_addr = ioreq->fb_pa;
+	source.fill_size = ioreq->fb_size;
+
+	return crystalhd_xlat_dma_to_desc(&source, ioreq->uinfo.xfr_len,
+					  ioreq->uinfo.uv_offset,
+					  ioreq->uinfo.uv_sg_ix,
+					  ioreq->uinfo.uv_sg_off,
+					  pdesc_mem, uv_desc_index, dev,
+					  destDRAMaddr);
+}
+
+BC_STATUS crystalhd_xlat_rx_buffer_to_dma_desc(
+					struct crystalhd_rx_buffer *buffer,
+					struct dma_desc_mem *pdesc_mem,
+					uint32_t *uv_desc_index,
+					struct device *dev)
+{
+	struct crystalhd_dma_desc_source source;
+
+	if (!buffer)
+		return BC_STS_INV_ARG;
+
+	source.sgl = buffer->sgl;
+	source.dma_nents = buffer->dma_nents;
+	source.dir_tx = false;
+	source.fill_addr = 0;
+	source.fill_size = 0;
+
+	return crystalhd_xlat_dma_to_desc(&source, buffer->capacity,
+					  buffer->uv_offset,
+					  buffer->uv_sg_ix,
+					  buffer->uv_sg_off,
+					  pdesc_mem, uv_desc_index, dev, 0);
 }
 
 struct crystalhd_rx_dma_pkt *crystalhd_rx_pkt_detach(struct crystalhd_hw *hw,
@@ -840,7 +1060,8 @@ BC_STATUS crystalhd_rx_pkt_complete(struct crystalhd_hw *hw,
 	int32_t totalTick_Hi_f;
 	int32_t TickSpentInPD_Hi_f;
 
-	if (!hw || !rx_pkt || list_index >= DMA_ENGINE_CNT) {
+	if (!hw || !rx_pkt || !rx_pkt->buffer || !rx_pkt->cookie ||
+	    list_index >= DMA_ENGINE_CNT) {
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
 		return BC_STS_INV_ARG;
 	}
@@ -850,12 +1071,18 @@ BC_STATUS crystalhd_rx_pkt_complete(struct crystalhd_hw *hw,
 		hw->DrvTotalFrmCaptured++;
 
 		hw->pfnHWGetDoneSize(hw, list_index, &y_dw_dnsz, &uv_dw_dnsz);
-		rx_pkt->dio_req->uinfo.y_done_sz = y_dw_dnsz;
+		rx_pkt->y_done_sz = y_dw_dnsz;
+		rx_pkt->uv_done_sz = 0;
 		rx_pkt->flags = COMP_FLAG_DATA_VALID;
 		if (rx_pkt->uv_phy_addr)
-			rx_pkt->dio_req->uinfo.uv_done_sz = uv_dw_dnsz;
-		crystalhd_dioq_add(hw->rx_rdyq, rx_pkt, true,
-							hw->rx_pkt_tag_seed + list_index);
+			rx_pkt->uv_done_sz = uv_dw_dnsz;
+		sts = crystalhd_dioq_add(hw->rx_rdyq, rx_pkt, true,
+					 hw->rx_pkt_tag_seed + list_index);
+		if (sts != BC_STS_SUCCESS) {
+			/* Keep the buffer reachable for process-context cancellation. */
+			crystalhd_hw_retain_rx_pkt(hw, rx_pkt);
+			return sts;
+		}
 
 		if( hw->adp->pdev->device == BC_PCI_DEVID_FLEA)
 		{
@@ -929,7 +1156,7 @@ BC_STATUS crystalhd_rx_pkt_complete(struct crystalhd_hw *hw,
 
 		return sts;
 	}
-	/* Check if we can post this DIO again. */
+	/* Check if we can post this capture buffer again. */
 	return crystalhd_hw_repost_cap_buffer(hw, rx_pkt);
 }
 
@@ -1121,13 +1348,23 @@ void crystalhd_hw_dma_fatal_stop(struct crystalhd_hw *hw)
 }
 
 BC_STATUS crystalhd_hw_add_cap_buffer(struct crystalhd_hw *hw,
-				    struct crystalhd_dio_req *ioreq, bool en_post)
+				    struct crystalhd_rx_buffer *buffer,
+				    bool en_post)
 {
 	struct crystalhd_rx_dma_pkt *rpkt;
 	uint32_t tag, uv_desc_ix = 0;
 	BC_STATUS sts;
 
-	if (!hw || !ioreq) {
+	if (!hw || !buffer || !buffer->sgl || !buffer->dma_nents ||
+	    !buffer->capacity || !buffer->ops || !buffer->cookie ||
+	    (buffer->output_format == MODE420 && !buffer->uv_offset) ||
+	    (buffer->output_format != MODE420 &&
+	     buffer->output_format != MODE422_YUY2 &&
+	     buffer->output_format != MODE422_UYVY) ||
+	    (buffer->output_format != MODE420 && buffer->uv_offset) ||
+	    !buffer->ops->sync_for_cpu || !buffer->ops->sync_for_device ||
+	    !buffer->ops->read || !buffer->ops->write ||
+	    !buffer->ops->release) {
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
 		return BC_STS_INV_ARG;
 	}
@@ -1138,12 +1375,14 @@ BC_STATUS crystalhd_hw_add_cap_buffer(struct crystalhd_hw *hw,
 		return BC_STS_INSUFF_RES;
 	}
 
-	rpkt->dio_req = ioreq;
+	rpkt->buffer = buffer;
+	rpkt->cookie = buffer->cookie;
 	rpkt->capture_epoch = hw->rx_cancel_epoch;
 	tag = rpkt->pkt_tag;
 
-	sts = crystalhd_xlat_sgl_to_dma_desc(ioreq, &rpkt->desc_mem,
-					     &uv_desc_ix, &hw->adp->pdev->dev, 0);
+	sts = crystalhd_xlat_rx_buffer_to_dma_desc(buffer, &rpkt->desc_mem,
+						   &uv_desc_ix,
+						   &hw->adp->pdev->dev);
 	if (sts != BC_STS_SUCCESS)
 		goto release_packet;
 
@@ -1165,24 +1404,26 @@ BC_STATUS crystalhd_hw_add_cap_buffer(struct crystalhd_hw *hw,
 	if (sts == BC_STS_SUCCESS || sts == BC_STS_BUSY)
 		return sts;
 release_packet:
-	/* On errors ownership of the pinned request remains with the caller. */
-	rpkt->dio_req = NULL;
+	/* On errors ownership of the buffer remains with the caller. */
 	crystalhd_hw_free_rx_pkt(hw, rpkt);
 	return sts;
 }
 
 BC_STATUS crystalhd_hw_get_cap_buffer(struct crystalhd_hw *hw,
-				      struct C011_PIB *pib,
-				      struct crystalhd_dio_req **ioreq,
-				      uint64_t expected_epoch,
-				      uint64_t *capture_epoch)
+				      struct crystalhd_rx_completion *result,
+				      uint64_t expected_epoch)
 {
 	struct crystalhd_rx_dma_pkt *rpkt;
 	uint32_t timeout = BC_PROC_OUTPUT_TIMEOUT / 1000;
 	uint32_t sig_pending = 0;
 	bool resume_allowed;
 
-	if (!hw || !ioreq || !pib || !capture_epoch) {
+	if (!result) {
+		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
+		return BC_STS_INV_ARG;
+	}
+	memset(result, 0, sizeof(*result));
+	if (!hw) {
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
 		return BC_STS_INV_ARG;
 	}
@@ -1233,25 +1474,29 @@ BC_STATUS crystalhd_hw_get_cap_buffer(struct crystalhd_hw *hw,
 		}
 	}
 
-	rpkt->dio_req->uinfo.comp_flags = rpkt->flags;
-
 	if (rpkt->flags & COMP_FLAG_PIB_VALID)
 	{
-		pib->ppb.picture_number = rpkt->pib.picture_number;
-		pib->ppb.width = rpkt->pib.width;
-		pib->ppb.height = rpkt->pib.height;
-		pib->ppb.chroma_format = rpkt->pib.chroma_format;
-		pib->ppb.pulldown = rpkt->pib.pulldown;
-		pib->ppb.flags = rpkt->pib.flags;
-		pib->ptsStcOffset = rpkt->pib.sess_num;
-		pib->ppb.aspect_ratio = rpkt->pib.aspect_ratio;
-		pib->ppb.colour_primaries = rpkt->pib.colour_primaries;
-		pib->ppb.picture_meta_payload = rpkt->pib.picture_meta_payload;
-		pib->resolution = rpkt->pib.frame_rate;
+		result->pib.ppb.picture_number = rpkt->pib.picture_number;
+		result->pib.ppb.width = rpkt->pib.width;
+		result->pib.ppb.height = rpkt->pib.height;
+		result->pib.ppb.chroma_format = rpkt->pib.chroma_format;
+		result->pib.ppb.pulldown = rpkt->pib.pulldown;
+		result->pib.ppb.flags = rpkt->pib.flags;
+		result->pib.ptsStcOffset = rpkt->pib.sess_num;
+		result->pib.ppb.aspect_ratio = rpkt->pib.aspect_ratio;
+		result->pib.ppb.colour_primaries =
+			rpkt->pib.colour_primaries;
+		result->pib.ppb.picture_meta_payload =
+			rpkt->pib.picture_meta_payload;
+		result->pib.resolution = rpkt->pib.frame_rate;
 	}
 
-	*ioreq = rpkt->dio_req;
-	*capture_epoch = rpkt->capture_epoch;
+	result->buffer = rpkt->buffer;
+	result->cookie = rpkt->cookie;
+	result->capture_epoch = rpkt->capture_epoch;
+	result->flags = rpkt->flags;
+	result->y_done_sz = rpkt->y_done_sz;
+	result->uv_done_sz = rpkt->uv_done_sz;
 
 	crystalhd_hw_free_rx_pkt(hw, rpkt);
 	up(&hw->fetch_sem);
@@ -1268,8 +1513,10 @@ BC_STATUS crystalhd_hw_repost_cap_buffer(struct crystalhd_hw *hw,
 	 * retain it for process-context flush/close: dirty unpinning can sleep.
 	 * SUCCESS and BUSY have already transferred ownership to a DMA queue.
 	 */
-	if (sts != BC_STS_SUCCESS && sts != BC_STS_BUSY)
-		crystalhd_dioq_add(hw->rx_freeq, pkt, false, pkt->pkt_tag);
+	if (sts != BC_STS_SUCCESS && sts != BC_STS_BUSY &&
+	    crystalhd_dioq_add(hw->rx_freeq, pkt, false,
+				pkt->pkt_tag) != BC_STS_SUCCESS)
+		crystalhd_hw_retain_rx_pkt(hw, pkt);
 	return sts;
 }
 
@@ -1288,7 +1535,7 @@ BC_STATUS crystalhd_hw_start_capture(struct crystalhd_hw *hw)
 
 	/* This is start of capture.. Post to both the lists.. */
 	for (i = 0; i < DMA_ENGINE_CNT; i++) {
-		rx_pkt = crystalhd_dioq_fetch(hw->rx_freeq);
+		rx_pkt = crystalhd_hw_fetch_free_rx_pkt(hw);
 		if (!rx_pkt)
 			return BC_STS_NO_DATA;
 		sts = crystalhd_hw_repost_cap_buffer(hw, rx_pkt);
@@ -1305,7 +1552,9 @@ BC_STATUS crystalhd_hw_start_capture(struct crystalhd_hw *hw)
 /* The caller holds fetch_sem across any state change and restart. */
 BC_STATUS crystalhd_hw_stop_capture_locked(struct crystalhd_hw *hw, bool unmap)
 {
-	void *temp = NULL;
+	struct crystalhd_rx_buffer *retired[BC_RX_LIST_CNT];
+	unsigned int retired_count;
+	unsigned int queue_index;
 	struct crystalhd_rx_dma_pkt *packet;
 
 	if (!hw) {
@@ -1329,31 +1578,22 @@ BC_STATUS crystalhd_hw_stop_capture_locked(struct crystalhd_hw *hw, bool unmap)
 	if (READ_ONCE(hw->dma_fault))
 		goto out;
 	if (!unmap) {
-		while ((packet = crystalhd_dioq_fetch(hw->rx_actq)) != NULL)
-			crystalhd_dioq_add(hw->rx_freeq, packet, false, packet->pkt_tag);
-		while ((packet = crystalhd_dioq_fetch(hw->rx_rdyq)) != NULL)
-			crystalhd_dioq_add(hw->rx_freeq, packet, false, packet->pkt_tag);
+		while ((packet = crystalhd_dioq_fetch(hw->rx_actq)) != NULL) {
+			if (crystalhd_dioq_add(hw->rx_freeq, packet, false,
+						packet->pkt_tag) != BC_STS_SUCCESS)
+				crystalhd_hw_retain_rx_pkt(hw, packet);
+		}
+		while ((packet = crystalhd_dioq_fetch(hw->rx_rdyq)) != NULL) {
+			if (crystalhd_dioq_add(hw->rx_freeq, packet, false,
+						packet->pkt_tag) != BC_STS_SUCCESS)
+				crystalhd_hw_retain_rx_pkt(hw, packet);
+		}
 		goto out;
 	}
 
-	/* Clear up Active, Ready and Free lists one by one and release resources */
-	do {
-		temp = crystalhd_dioq_fetch(hw->rx_actq);
-		if (temp)
-			crystalhd_rx_pkt_rel_call_back(hw, temp);
-	} while (temp);
-
-	do {
-		temp = crystalhd_dioq_fetch(hw->rx_rdyq);
-		if (temp)
-			crystalhd_rx_pkt_rel_call_back(hw, temp);
-	} while (temp);
-
-	do {
-		temp = crystalhd_dioq_fetch(hw->rx_freeq);
-		if (temp)
-			crystalhd_rx_pkt_rel_call_back(hw, temp);
-	} while (temp);
+	retired_count = crystalhd_hw_detach_rx_owners(hw, retired);
+	for (queue_index = 0; queue_index < retired_count; queue_index++)
+		crystalhd_rx_buffer_release(hw->adp, retired[queue_index]);
 
 out:
 	enable_irq(hw->adp->pdev->irq);
@@ -1437,7 +1677,7 @@ void crystalhd_hw_stats(struct crystalhd_hw *hw, struct crystalhd_hw_stats *stat
 		return;
 	}
 
-	hw->stats.freeq_count = crystalhd_dioq_count(hw->rx_freeq);
+	hw->stats.freeq_count = crystalhd_hw_count_free_rx_pkts(hw);
 	hw->stats.rdyq_count  = crystalhd_dioq_count(hw->rx_rdyq);
 	memcpy(stats, &hw->stats, sizeof(*stats));
 }

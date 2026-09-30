@@ -148,6 +148,15 @@ struct dma_desc_mem {
 
 };
 
+/* DMA descriptor input independent of the frontend which owns the buffer. */
+struct crystalhd_dma_desc_source {
+	struct scatterlist	*sgl;
+	uint32_t		dma_nents;
+	bool			dir_tx;
+	dma_addr_t		fill_addr;
+	uint32_t		fill_size;
+};
+
 enum list_sts {
 	sts_free		= 0,
 
@@ -233,13 +242,27 @@ struct tx_dma_pkt {
 
 struct crystalhd_rx_dma_pkt {
 	struct dma_desc_mem			desc_mem;
-	struct crystalhd_dio_req		*dio_req;
+	struct crystalhd_rx_buffer	*buffer;
+	void			*cookie;
 	uint64_t			capture_epoch;
 	uint32_t			pkt_tag;
 	uint32_t			flags;
+	uint32_t			y_done_sz;
+	uint32_t			uv_done_sz;
 	BC_PIC_INFO_BLOCK		pib;
 	dma_addr_t			uv_phy_addr;
 	struct  crystalhd_rx_dma_pkt	*next;
+};
+
+/* Process-context RX completion. The core never dereferences cookie. */
+struct crystalhd_rx_completion {
+	struct crystalhd_rx_buffer	*buffer;
+	void			*cookie;
+	struct C011_PIB		pib;
+	uint64_t		capture_epoch;
+	uint32_t		flags;
+	uint32_t		y_done_sz;
+	uint32_t		uv_done_sz;
 };
 
 struct crystalhd_hw_stats{
@@ -337,6 +360,7 @@ struct crystalhd_hw {
 	uint32_t		tx_list_post_index;
 
 	struct crystalhd_rx_dma_pkt	*rx_pkt_pool_head;
+	struct crystalhd_rx_dma_pkt	*rx_fallback_head;
 	uint32_t		rx_pkt_tag_seed;
 
 	bool			dev_started;
@@ -495,6 +519,11 @@ struct crystalhd_hw {
 
 struct crystalhd_rx_dma_pkt *crystalhd_hw_alloc_rx_pkt(struct crystalhd_hw *hw);
 void crystalhd_hw_free_rx_pkt(struct crystalhd_hw *hw, struct crystalhd_rx_dma_pkt *pkt);
+void crystalhd_hw_retain_rx_pkt(struct crystalhd_hw *hw,
+				struct crystalhd_rx_dma_pkt *pkt);
+struct crystalhd_rx_dma_pkt *
+crystalhd_hw_fetch_free_rx_pkt(struct crystalhd_hw *hw);
+uint32_t crystalhd_hw_count_free_rx_pkts(struct crystalhd_hw *hw);
 void crystalhd_tx_desc_rel_call_back(void *context, void *data);
 void crystalhd_rx_pkt_rel_call_back(void *context, void *data);
 void crystalhd_hw_delete_ioqs(struct crystalhd_hw *hw);
@@ -514,16 +543,29 @@ void crystalhd_hw_fw_cmd_reset(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_setup_dma_rings(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_free_dma_rings(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_tx_req_complete(struct crystalhd_hw *hw, uint32_t list_id, BC_STATUS cs);
-BC_STATUS crystalhd_hw_fill_desc(struct crystalhd_dio_req *ioreq,
+BC_STATUS crystalhd_hw_fill_desc(const struct crystalhd_dma_desc_source *source,
 				struct dma_descriptor *desc,
 				dma_addr_t desc_paddr_base,
 				uint32_t sg_cnt, uint32_t sg_st_ix,
 				uint32_t sg_st_off, uint32_t xfr_sz,
 				struct device *dev, uint32_t destDRAMaddr);
+BC_STATUS crystalhd_xlat_dma_to_desc(
+					const struct crystalhd_dma_desc_source *source,
+					uint32_t capacity, uint32_t uv_offset,
+					uint32_t uv_sg_ix, uint32_t uv_sg_off,
+					struct dma_desc_mem *pdesc_mem,
+					uint32_t *uv_desc_index,
+					struct device *dev,
+					uint32_t destDRAMaddr);
 BC_STATUS crystalhd_xlat_sgl_to_dma_desc(struct crystalhd_dio_req *ioreq,
 					struct dma_desc_mem * pdesc_mem,
 					uint32_t *uv_desc_index,
 					struct device *dev, uint32_t destDRAMaddr);
+BC_STATUS crystalhd_xlat_rx_buffer_to_dma_desc(
+					struct crystalhd_rx_buffer *buffer,
+					struct dma_desc_mem *pdesc_mem,
+					uint32_t *uv_desc_index,
+					struct device *dev);
 /* RX error ISRs detach while holding rx_lock, then complete after releasing
  * it so the retry may acquire rx_lock again.
  */
@@ -547,14 +589,14 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw, struct crystalhd_dio_req
  * completion only and never limits engine-wide cancellation.
  */
 BC_STATUS crystalhd_hw_cancel_all_tx(struct crystalhd_hw *hw);
-BC_STATUS crystalhd_hw_add_cap_buffer(struct crystalhd_hw *hw,struct crystalhd_dio_req *ioreq, bool en_post);
+BC_STATUS crystalhd_hw_add_cap_buffer(struct crystalhd_hw *hw,
+				      struct crystalhd_rx_buffer *buffer,
+				      bool en_post);
 BC_STATUS crystalhd_hw_repost_cap_buffer(struct crystalhd_hw *hw,
 					 struct crystalhd_rx_dma_pkt *pkt);
 BC_STATUS crystalhd_hw_get_cap_buffer(struct crystalhd_hw *hw,
-				      struct C011_PIB *pib,
-				      struct crystalhd_dio_req **ioreq,
-				      uint64_t expected_epoch,
-				      uint64_t *capture_epoch);
+				      struct crystalhd_rx_completion *result,
+				      uint64_t expected_epoch);
 BC_STATUS crystalhd_hw_start_capture(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_stop_capture(struct crystalhd_hw *hw, bool unmap);
 /* Process callers must hold fetch_sem before calling the locked variant. */

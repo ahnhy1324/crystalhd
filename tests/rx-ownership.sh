@@ -6,10 +6,11 @@ repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 rx_test_dir=$(mktemp -d "${TMPDIR:-/tmp}/crystalhd-rx-ownership.XXXXXX")
 cleanup()
 {
-    rm -f "$rx_test_dir/check" "$rx_test_dir/wait-check" \
-        "$rx_test_dir/flea-isr-check" "$rx_test_dir/link-isr-check" \
-        "$rx_test_dir/rx-flea-isr.h" "$rx_test_dir/rx-link-isr.h" \
-        "$rx_test_dir/rx-isr-types.h" \
+	rm -f "$rx_test_dir/check" "$rx_test_dir/wait-check" \
+		"$rx_test_dir/flea-isr-check" "$rx_test_dir/link-isr-check" \
+		"$rx_test_dir/rx-flea-isr.h" "$rx_test_dir/rx-link-isr.h" \
+		"$rx_test_dir/rx-flea-fll.h" \
+		"$rx_test_dir/rx-isr-types.h" \
         "$rx_test_dir/rx-types.h" "$rx_test_dir/rx-fetch-wait-function.h" \
         "$rx_test_dir/rx-hardware.h" "$rx_test_dir/rx-command.h" \
         "$rx_test_dir/rx-post.h"
@@ -18,16 +19,26 @@ cleanup()
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
+# Completion status belongs to packets/results, never the legacy DIO mapping.
+awk '
+    /^struct crystalhd_dio_user_info[[:space:]]*\{/ { copying = 1; found++ }
+    copying && /(^|[^[:alnum:]_])(comp_flags|y_done_sz|uv_done_sz)([^[:alnum:]_]|$)/ {
+        forbidden++
+    }
+    copying && /^};/ { copying = 0 }
+    END { if (found != 1 || copying || forbidden) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_misc.h"
+
 # Keep state values, buffer layouts and ownership functions tied to the driver.
 awk '
     /^enum (_crystalhd_state|FLEA_POWER_STATES|BRCM_EVENT)[[:space:]]*\{/ ||
-	/^struct (dma_descriptor|dma_desc_mem|crystalhd_rx_dma_pkt|crystalhd_dio_user_info|crystalhd_rx_dequeue_result)[[:space:]]*\{/ {
+    /^struct (dma_descriptor|dma_desc_mem|crystalhd_rx_buffer_ops|crystalhd_rx_buffer|crystalhd_rx_dma_pkt|crystalhd_rx_completion|crystalhd_hw_stats|crystalhd_dio_user_info)[[:space:]]*\{/ {
 		copying = 1; found++
 	}
     copying { print }
     copying && /^};/ { copying = 0 }
     /^#define[[:space:]]+DMA_ENGINE_CNT[[:space:]]/ { print }
-	END { if (found != 8 || copying) exit 1 }
+	END { if (found != 11 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.h" \
     "$repo_dir/driver/linux/FleaDefs.h" "$repo_dir/driver/linux/crystalhd_hw.h" \
     "$repo_dir/driver/linux/crystalhd_misc.h" > "$rx_test_dir/rx-types.h"
@@ -53,15 +64,31 @@ awk '
 ' "$repo_dir/driver/linux/crystalhd_linkfuncs.c" > \
     "$rx_test_dir/rx-link-isr.h"
 awk '
+    /^(static )?struct crystalhd_rx_dma_pkt \*[[:space:]]*$/ {
+        split_signature = $0
+        awaiting_name = 1
+        next
+    }
+    awaiting_name {
+        if (/^crystalhd_hw_(fetch_retained_rx_pkt|fetch_free_rx_pkt)\(/) {
+            print split_signature
+            copying = 1
+            found++
+        }
+        awaiting_name = 0
+    }
     /^struct crystalhd_rx_dma_pkt \*crystalhd_(hw_alloc_rx_pkt|rx_pkt_detach)\(/ ||
-    /^void crystalhd_(hw_free_rx_pkt|rx_pkt_rel_call_back)\(/ ||
+    /^void crystalhd_(hw_free_rx_pkt|hw_retain_rx_pkt|rx_pkt_rel_call_back)\(/ ||
+    /^static unsigned int crystalhd_hw_detach_rx_owners\(/ ||
+    /^uint32_t crystalhd_hw_count_free_rx_pkts\(/ ||
+    /^void crystalhd_hw_stats\(/ ||
     /^BC_STATUS crystalhd_rx_pkt_(complete|done)\(/ ||
     /^BC_STATUS crystalhd_hw_(add_cap_buffer|get_cap_buffer|repost_cap_buffer|start_capture|stop_capture_locked|stop_capture)\(/ {
         copying = 1; found++
     }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 12 || copying) exit 1 }
+    END { if (found != 18 || copying || awaiting_name) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_hw.c" > "$rx_test_dir/rx-hardware.h"
 awk '
 	/^BC_STATUS crystalhd_(rx_submit|rx_dequeue|capture_start|capture_flush)\(/ ||
@@ -82,6 +109,13 @@ awk '
     END { if (found != 2 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" \
     "$repo_dir/driver/linux/crystalhd_linkfuncs.c" > "$rx_test_dir/rx-post.h"
+awk '
+    /^void crystalhd_flea_notify_fll_change\(/ { copying = 1; found++ }
+    copying { print }
+    copying && /^}/ { copying = 0 }
+    END { if (found != 1 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > \
+    "$rx_test_dir/rx-flea-fll.h"
 awk '
     /^void \*crystalhd_dioq_fetch_wait\(/ { copying = 1; found++ }
     copying { print }
