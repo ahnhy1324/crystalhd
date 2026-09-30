@@ -7,6 +7,8 @@ rx_test_dir=$(mktemp -d "${TMPDIR:-/tmp}/crystalhd-rx-ownership.XXXXXX")
 cleanup()
 {
     rm -f "$rx_test_dir/check" "$rx_test_dir/wait-check" \
+        "$rx_test_dir/flea-isr-check" "$rx_test_dir/rx-flea-isr.h" \
+        "$rx_test_dir/rx-isr-types.h" \
         "$rx_test_dir/rx-types.h" "$rx_test_dir/rx-fetch-wait-function.h" \
         "$rx_test_dir/rx-hardware.h" "$rx_test_dir/rx-command.h" \
         "$rx_test_dir/rx-post.h"
@@ -29,15 +31,29 @@ awk '
     "$repo_dir/driver/linux/FleaDefs.h" "$repo_dir/driver/linux/crystalhd_hw.h" \
     "$repo_dir/driver/linux/crystalhd_misc.h" > "$rx_test_dir/rx-types.h"
 awk '
-    /^struct crystalhd_rx_dma_pkt \*crystalhd_hw_alloc_rx_pkt\(/ ||
+    /^enum list_sts[[:space:]]*\{/ { copying = 1; found_enum++ }
+    copying { print }
+    copying && /^};/ { copying = 0 }
+    /^#define[[:space:]]+DMA_ENGINE_CNT[[:space:]]/ { print; found_count++ }
+    END { if (found_enum != 1 || found_count != 1 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_hw.h" > "$rx_test_dir/rx-isr-types.h"
+awk '
+    /^void crystalhd_flea_rx_isr\(/ { copying = 1; found++ }
+    copying { print }
+    copying && /^}/ { copying = 0 }
+    END { if (found != 1 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > \
+    "$rx_test_dir/rx-flea-isr.h"
+awk '
+    /^struct crystalhd_rx_dma_pkt \*crystalhd_(hw_alloc_rx_pkt|rx_pkt_detach)\(/ ||
     /^void crystalhd_(hw_free_rx_pkt|rx_pkt_rel_call_back)\(/ ||
-    /^BC_STATUS crystalhd_rx_pkt_done\(/ ||
+    /^BC_STATUS crystalhd_rx_pkt_(complete|done)\(/ ||
     /^BC_STATUS crystalhd_hw_(add_cap_buffer|get_cap_buffer|repost_cap_buffer|start_capture|stop_capture_locked|stop_capture)\(/ {
         copying = 1; found++
     }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 10 || copying) exit 1 }
+    END { if (found != 12 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_hw.c" > "$rx_test_dir/rx-hardware.h"
 awk '
 	/^BC_STATUS crystalhd_(rx_submit|rx_dequeue|capture_start|capture_flush)\(/ ||
@@ -78,10 +94,18 @@ for rx_sanitize in no yes; do
     "${CC:-cc}" ${CFLAGS:-} -std=c11 -O1 -g -Wall -Wextra -Werror \
         $rx_extra -I"$rx_test_dir" "$repo_dir/tests/rx-fetch-wait.c" \
         -o "$rx_test_dir/wait-check"
+    "${CC:-cc}" ${CFLAGS:-} -std=c11 -O1 -g -Wall -Wextra -Werror \
+        $rx_extra -I"$repo_dir/include" -I"$repo_dir/include/link" \
+        -I"$repo_dir/include/flea" \
+        -I"$repo_dir/driver/linux" -I"$rx_test_dir" \
+        "$repo_dir/tests/flea-rx-isr.c" -o "$rx_test_dir/flea-isr-check"
     printf 'RX ownership: sanitizers=%s\n' "$rx_sanitize"
     ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
         UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 "$rx_test_dir/check"
     ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
         UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
         "$rx_test_dir/wait-check"
+    ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+        UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+        "$rx_test_dir/flea-isr-check"
 done

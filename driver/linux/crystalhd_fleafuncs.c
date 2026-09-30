@@ -2573,6 +2573,10 @@ bool crystalhd_flea_rx_list1_handler(struct crystalhd_hw *hw,
 
 void crystalhd_flea_rx_isr(struct crystalhd_hw *hw, union FLEA_INTR_BITS_COMMON intr_sts)
 {
+	struct crystalhd_rx_dma_pkt *completed[DMA_ENGINE_CNT] = { NULL, NULL };
+	BC_STATUS completion_status[DMA_ENGINE_CNT] = {
+		BC_STS_NO_DATA, BC_STS_NO_DATA
+	};
 	unsigned long flags;
 	uint32_t i, list_avail = 0;
 	BC_STATUS comp_sts = BC_STS_NO_DATA;
@@ -2629,12 +2633,25 @@ void crystalhd_flea_rx_isr(struct crystalhd_hw *hw, union FLEA_INTR_BITS_COMMON 
 		}
 		/* handle completion...*/
 		if (comp_sts != BC_STS_NO_DATA) {
-			crystalhd_rx_pkt_done(hw, i, comp_sts);
+			if (comp_sts == BC_STS_SUCCESS) {
+				/* Done sizes belong to this list until rx_lock drops. */
+				crystalhd_rx_pkt_done(hw, i, comp_sts);
+			} else {
+				completed[i] = crystalhd_rx_pkt_detach(hw, i,
+								 comp_sts);
+				completion_status[i] = comp_sts;
+			}
 			comp_sts = BC_STS_NO_DATA;
 		}
 	}
 
 	spin_unlock_irqrestore(&hw->rx_lock, flags);
+
+	for (i = 0; i < DMA_ENGINE_CNT; i++) {
+		if (completed[i])
+			crystalhd_rx_pkt_complete(hw, completed[i], i,
+						  completion_status[i]);
+	}
 
 	if (list_avail)
 		crystalhd_hw_start_capture(hw);
