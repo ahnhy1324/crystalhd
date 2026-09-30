@@ -4,6 +4,7 @@
  */
 #include <stdbool.h>
 #include <stdint.h>
+#include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +18,10 @@ struct _BC_DTS_PROC_OUT;
 #include "command-pm-types.h"
 #include "crystalhd_ioctl_limits.h"
 
+#ifndef ERESTARTSYS
+#define ERESTARTSYS 512
+#endif
+
 #define KERN_ERR ""
 #define GFP_KERNEL 0
 #define READ_ONCE(value) (value)
@@ -27,10 +32,17 @@ struct _BC_DTS_PROC_OUT;
 #define lockdep_assert_held(lock) \
     Check((lock) == &adapter.user_lock && *(lock) == 1, \
           "firmware execution retains shared user admission")
+#define lockdep_assert_held_write(lock) \
+    Check((lock) == &adapter.user_lock && *(lock) == 1, \
+          "firmware loading retains exclusive user admission")
 #define eCMD_C011_CMD_BASE 0x73763000U
 #define eCMD_C011_DEC_CHAN_FLUSH (eCMD_C011_CMD_BASE + 0x104U)
 #define eCMD_C011_DEC_CHAN_PAUSE (eCMD_C011_CMD_BASE + 0x11dU)
 struct device { int unused; };
+struct firmware {
+    size_t size;
+    const uint8_t *data;
+};
 struct pci_dev { struct device dev; int irq; uint32_t device; };
 struct crystalhd_adp;
 typedef struct {
@@ -104,6 +116,18 @@ static unsigned binding_count, binding_frees, device_reads, user_writes;
 static unsigned downloads, download_resets;
 static const uint8_t *last_download_image;
 static uint32_t last_download_size;
+static unsigned kernel_fw_requests, kernel_fw_releases;
+static int kernel_fw_request_error;
+static const char *last_kernel_fw_name;
+static const struct device *last_kernel_fw_device;
+static const struct firmware *last_released_firmware;
+static bool remove_during_fw_request;
+static _Alignas(uint32_t)
+    uint8_t kernel_fw_image[CRYSTALHD_LINK_MIN_FIRMWARE_SIZE];
+static struct firmware kernel_fw_blob = {
+    .size = CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE,
+    .data = kernel_fw_image,
+};
 static unsigned raw_calls[6];
 static uint32_t raw_offset, raw_value, raw_words, raw_memory[2];
 static uint32_t *raw_buffer;
@@ -142,6 +166,9 @@ static bool Stop(struct crystalhd_hw *hw);
 static BC_STATUS StopTx(struct crystalhd_hw *hw);
 static BC_STATUS Download(struct crystalhd_hw *hw, const uint8_t *data,
                           uint32_t size);
+static int request_firmware(const struct firmware **firmware, const char *name,
+                            struct device *device);
+static void release_firmware(const struct firmware *firmware);
 static BC_STATUS IssuePause(struct crystalhd_hw *hw, bool state);
 static BC_STATUS FirmwareCommand(struct crystalhd_hw *hw, BC_FW_CMD *command);
 static uint32_t ReadDevice(struct crystalhd_adp *adp, uint32_t offset);
@@ -341,7 +368,42 @@ static BC_STATUS Download(struct crystalhd_hw *hw, const uint8_t *data,
     downloads++;
     last_download_image = data;
     last_download_size = size;
+    Event('D');
     return download_status;
+}
+static int request_firmware(const struct firmware **firmware, const char *name,
+                            struct device *device)
+{
+    Check(firmware && name && device == &endpoint.dev && adapter.user_lock == 1,
+          "kernel firmware request retains its device and user-lock contract");
+    Check(!strcmp(name, CRYSTALHD_FLEA_FIRMWARE_NAME) ||
+          !strcmp(name, CRYSTALHD_LINK_FIRMWARE_NAME),
+          "kernel firmware request uses a declared CrystalHD basename");
+    kernel_fw_requests++;
+    last_kernel_fw_name = name;
+    last_kernel_fw_device = device;
+    Event('Q');
+    *firmware = NULL;
+    if (kernel_fw_request_error)
+        return kernel_fw_request_error;
+    *firmware = &kernel_fw_blob;
+    if (remove_during_fw_request)
+        adapter.present = false;
+    return 0;
+}
+static void release_firmware(const struct firmware *firmware)
+{
+    int unlocked;
+
+    Check(firmware == &kernel_fw_blob,
+          "kernel firmware release receives the requested object exactly once");
+    unlocked = pthread_mutex_trylock(&transaction_mutex);
+    Check(!unlocked,
+          "kernel firmware is released after the shared download transaction");
+    if (!unlocked && pthread_mutex_unlock(&transaction_mutex)) abort();
+    kernel_fw_releases++;
+    last_released_firmware = firmware;
+    Event('L');
 }
 static int down_interruptible(int *sem)
 {
@@ -573,6 +635,16 @@ static void Reset(uint32_t state, bool with_hardware)
     downloads = download_resets = 0;
     last_download_image = NULL;
     last_download_size = 0;
+    kernel_fw_requests = kernel_fw_releases = 0;
+    kernel_fw_request_error = 0;
+    last_kernel_fw_name = NULL;
+    last_kernel_fw_device = NULL;
+    last_released_firmware = NULL;
+    remove_during_fw_request = false;
+    memset(kernel_fw_image, 0, sizeof(kernel_fw_image));
+    kernel_fw_image[0] = 0x5a;
+    kernel_fw_blob.size = CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE;
+    kernel_fw_blob.data = kernel_fw_image;
     memset(raw_calls, 0, sizeof(raw_calls));
     memset(raw_memory, 0, sizeof(raw_memory));
     raw_offset = raw_value = raw_words = 0;
@@ -1009,12 +1081,14 @@ static void FirmwareDownloadLegacyAdapter(void)
           "firmware download rejects an unconfigured secondary handle");
 
     data.u_id = 0;
+    kernel_fw_request_error = -ENOENT;
     Check(bc_cproc_download_fw(&context, &data) == BC_STS_SUCCESS &&
           downloads == 1 && download_resets == 1 &&
+          !kernel_fw_requests && !kernel_fw_releases &&
           last_download_image == firmware &&
           last_download_size == CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE &&
           context.state == BC_LINK_INIT,
-          "the legacy adapter forwards its exact owner image and size");
+          "the legacy adapter uses its appended image without requesting kernel firmware");
 
     ResetOwned(BC_LINK_INVALID, true);
     download_status = BC_STS_TIMEOUT;
@@ -1043,6 +1117,282 @@ static void FirmwareDownloadLegacyAdapter(void)
     Check(bc_cproc_download_fw(&context, &data) == BC_STS_INV_ARG &&
           !downloads && context.state == BC_LINK_INVALID,
           "the legacy adapter rejects an empty appended image");
+}
+
+static void ArmKernelFirmwareNoEffects(void)
+{
+    transaction_mode = true;
+    context.pwr_state_change = BC_HW_SUSPEND;
+    hardware.fwcmd_poisoned = true;
+    hardware.FwCmdCnt = 41;
+}
+
+static bool NoKernelFirmwareEffects(uint32_t state)
+{
+    return !kernel_fw_requests && !kernel_fw_releases && !downloads &&
+           !download_resets && !transaction_attempts &&
+           context.state == state &&
+           context.pwr_state_change == BC_HW_SUSPEND &&
+           hardware.fwcmd_poisoned && hardware.FwCmdCnt == 41;
+}
+
+static void KernelFirmwarePreconditions(void)
+{
+    const uint32_t active_states[] = {
+        BC_LINK_INIT,
+        BC_LINK_READY,
+        BC_LINK_RESUME | BC_LINK_INIT,
+    };
+    int frontend_owner = 0, foreign_owner = 0;
+    const void *owner;
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    ArmKernelFirmwareNoEffects();
+    Check(crystalhd_request_firmware_locked(NULL, &frontend_owner) == -EINVAL &&
+          NoKernelFirmwareEffects(BC_LINK_INVALID),
+          "kernel firmware rejects a NULL command context");
+    Check(crystalhd_request_firmware_locked(&context, NULL) == -EINVAL &&
+          NoKernelFirmwareEffects(BC_LINK_INVALID),
+          "kernel firmware rejects a NULL owner");
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    ArmKernelFirmwareNoEffects();
+    owner = context.session_owner;
+    context.adp = NULL;
+    Check(crystalhd_request_firmware_locked(&context, owner) == -ENODEV &&
+          NoKernelFirmwareEffects(BC_LINK_INVALID),
+          "kernel firmware rejects a missing adapter before requesting");
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    ArmKernelFirmwareNoEffects();
+    adapter.pdev = NULL;
+    Check(crystalhd_request_firmware_locked(&context, &frontend_owner) ==
+              -ENODEV && NoKernelFirmwareEffects(BC_LINK_INVALID),
+          "kernel firmware rejects a missing PCI device before requesting");
+
+    ResetFrontendOwned(BC_LINK_INVALID, false, &frontend_owner);
+    ArmKernelFirmwareNoEffects();
+    Check(crystalhd_request_firmware_locked(&context, &frontend_owner) ==
+              -ENODEV && NoKernelFirmwareEffects(BC_LINK_INVALID),
+          "kernel firmware rejects retired hardware before requesting");
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    ArmKernelFirmwareNoEffects();
+    hardware.pfnFWDwnld = NULL;
+    Check(crystalhd_request_firmware_locked(&context, &frontend_owner) ==
+              -ENODEV && NoKernelFirmwareEffects(BC_LINK_INVALID),
+          "kernel firmware rejects a missing download callback before requesting");
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    ArmKernelFirmwareNoEffects();
+    adapter.present = false;
+    Check(crystalhd_request_firmware_locked(&context, &frontend_owner) ==
+              -ENODEV && NoKernelFirmwareEffects(BC_LINK_INVALID),
+          "kernel firmware rejects an unavailable device before requesting");
+
+    Reset(BC_LINK_INVALID, true);
+    adapter.user_lock = 1;
+    ArmKernelFirmwareNoEffects();
+    Check(crystalhd_request_firmware_locked(&context, &frontend_owner) ==
+              -EINVAL && NoKernelFirmwareEffects(BC_LINK_INVALID),
+          "kernel firmware requires an acquired session owner");
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    ArmKernelFirmwareNoEffects();
+    Check(crystalhd_request_firmware_locked(&context, &foreign_owner) ==
+              -EBUSY && NoKernelFirmwareEffects(BC_LINK_INVALID),
+          "kernel firmware rejects a foreign session owner");
+
+    ResetFrontendOwned(BC_LINK_SUSPEND, true, &frontend_owner);
+    ArmKernelFirmwareNoEffects();
+    Check(crystalhd_request_firmware_locked(&context, &frontend_owner) ==
+              -EAGAIN && NoKernelFirmwareEffects(BC_LINK_SUSPEND),
+          "kernel firmware does not load while the session is suspended");
+
+    for (unsigned n = 0; n < sizeof(active_states) / sizeof(active_states[0]); n++) {
+        ResetFrontendOwned(active_states[n], true, &frontend_owner);
+        ArmKernelFirmwareNoEffects();
+        Check(crystalhd_request_firmware_locked(&context, &frontend_owner) ==
+                  -EBUSY && NoKernelFirmwareEffects(active_states[n]),
+              "kernel firmware rejects an active or already initialized session");
+    }
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    ArmKernelFirmwareNoEffects();
+    endpoint.device = 0xffff;
+    Check(crystalhd_request_firmware_locked(&context, &frontend_owner) ==
+              -ENODEV && NoKernelFirmwareEffects(BC_LINK_INVALID),
+          "kernel firmware rejects an unknown PCI device before requesting");
+}
+
+static void KernelFirmwareSelectionAndLifetime(void)
+{
+    const struct {
+        uint32_t device;
+        size_t size;
+        uint32_t state;
+        uint32_t final_state;
+        const char *name;
+    } cases[] = {
+        { BC_PCI_DEVID_FLEA, CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE,
+          BC_LINK_INVALID, BC_LINK_INIT, "bcm70015fw.bin" },
+        { BC_PCI_DEVID_LINK, CRYSTALHD_LINK_MIN_FIRMWARE_SIZE,
+          BC_LINK_RESUME, BC_LINK_RESUME | BC_LINK_INIT,
+          "bcm70012fw.bin" },
+    };
+    int frontend_owner = 0;
+
+    for (unsigned n = 0; n < sizeof(cases) / sizeof(cases[0]); n++) {
+        ResetFrontendOwned(cases[n].state, true, &frontend_owner);
+        endpoint.device = cases[n].device;
+        kernel_fw_blob.size = cases[n].size;
+        hardware.fwcmd_poisoned = true;
+        hardware.FwCmdCnt = 29;
+        transaction_mode = true;
+
+        Check(crystalhd_request_firmware_locked(&context, &frontend_owner) == 0,
+              "kernel firmware loads through the shared owner boundary");
+        Check(kernel_fw_requests == 1 && kernel_fw_releases == 1 &&
+              last_kernel_fw_device == &endpoint.dev &&
+              last_released_firmware == &kernel_fw_blob &&
+              !strcmp(last_kernel_fw_name, cases[n].name),
+              "kernel firmware selects and releases the exact chip image");
+        Check(downloads == 1 && last_download_image == kernel_fw_image &&
+              last_download_size == cases[n].size &&
+              transaction_attempts == 1 && !strcmp(events, "QDL"),
+              "kernel firmware forwards exact data and releases it after download");
+        Check(context.state == cases[n].final_state && download_resets == 1 &&
+              !hardware.fwcmd_poisoned && !hardware.FwCmdCnt,
+              "kernel firmware publishes INIT and clears quarantine only on success");
+    }
+}
+
+static void KernelFirmwareRequestAndAdmissionErrors(void)
+{
+    const int request_errors[] = { -ENOENT, -ENOMEM, -EINTR };
+    const struct {
+        uint32_t device;
+        const uint8_t *data;
+        size_t size;
+    } malformed[] = {
+        { BC_PCI_DEVID_FLEA, NULL, CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE },
+        { BC_PCI_DEVID_FLEA, kernel_fw_image, 0 },
+        { BC_PCI_DEVID_LINK, kernel_fw_image,
+          CRYSTALHD_LINK_MIN_FIRMWARE_SIZE - 4 },
+        { BC_PCI_DEVID_FLEA, kernel_fw_image,
+          CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE + 1 },
+        { BC_PCI_DEVID_FLEA, kernel_fw_image,
+          CRYSTALHD_MAX_FIRMWARE_SIZE + 4U },
+        { BC_PCI_DEVID_FLEA, kernel_fw_image, SIZE_MAX },
+#if SIZE_MAX > UINT32_MAX
+        { BC_PCI_DEVID_FLEA, kernel_fw_image,
+          (size_t)UINT32_MAX + 1U + CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE },
+#endif
+        { BC_PCI_DEVID_FLEA, kernel_fw_image + 1,
+          CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE },
+    };
+    int frontend_owner = 0;
+
+    for (unsigned n = 0; n < sizeof(request_errors) / sizeof(request_errors[0]); n++) {
+        ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+        hardware.fwcmd_poisoned = true;
+        hardware.FwCmdCnt = 31;
+        kernel_fw_request_error = request_errors[n];
+        transaction_mode = true;
+        Check(crystalhd_request_firmware_locked(&context, &frontend_owner) ==
+                  request_errors[n],
+              "kernel firmware preserves the exact request_firmware error");
+        Check(kernel_fw_requests == 1 && !kernel_fw_releases &&
+              !downloads && !transaction_attempts && !strcmp(events, "Q") &&
+              context.state == BC_LINK_INVALID && hardware.fwcmd_poisoned &&
+              hardware.FwCmdCnt == 31,
+              "failed firmware requests have no shared or hardware effects");
+    }
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    remove_during_fw_request = true;
+    transaction_mode = true;
+    Check(crystalhd_request_firmware_locked(&context, &frontend_owner) ==
+              -ENODEV,
+          "kernel firmware rechecks device availability after a sleeping request");
+    Check(kernel_fw_requests == 1 && kernel_fw_releases == 1 &&
+          !downloads && !transaction_attempts && !strcmp(events, "QL") &&
+          !adapter.present && context.state == BC_LINK_INVALID,
+          "post-request removal releases the image without touching hardware");
+
+    for (unsigned n = 0; n < sizeof(malformed) / sizeof(malformed[0]); n++) {
+        ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+        endpoint.device = malformed[n].device;
+        kernel_fw_blob.data = malformed[n].data;
+        kernel_fw_blob.size = malformed[n].size;
+        transaction_mode = true;
+        Check(crystalhd_request_firmware_locked(&context, &frontend_owner) ==
+                  -EINVAL,
+              "kernel firmware rejects a malformed requested image");
+        Check(kernel_fw_requests == 1 && kernel_fw_releases == 1 &&
+              !downloads && !transaction_attempts && !strcmp(events, "QL") &&
+              context.state == BC_LINK_INVALID,
+              "malformed requested firmware is released before hardware access");
+    }
+
+    ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+    hardware.fwcmd_pending = true;
+    transaction_mode = true;
+    Check(crystalhd_request_firmware_locked(&context, &frontend_owner) ==
+              -EBUSY,
+          "kernel firmware preserves busy recovery admission");
+    Check(kernel_fw_requests == 1 && kernel_fw_releases == 1 &&
+          !downloads && transaction_attempts == 1 && !strcmp(events, "QL") &&
+          context.state == BC_LINK_INVALID,
+          "busy firmware admission releases the requested image and transaction");
+}
+
+static void KernelFirmwareStatusTranslation(void)
+{
+    const struct {
+        BC_STATUS status;
+        int error;
+    } cases[] = {
+        { BC_STS_SUCCESS, 0 },
+        { BC_STS_INV_ARG, -EINVAL },
+        { BC_STS_BUSY, -EBUSY },
+        { BC_STS_INSUFF_RES, -ENOMEM },
+        { BC_STS_NO_ACCESS, -EACCES },
+        { BC_STS_TIMEOUT, -ETIMEDOUT },
+        { BC_STS_IO_USER_ABORT, -ERESTARTSYS },
+        { BC_STS_FW_AUTH_FAILED, -EKEYREJECTED },
+        { BC_STS_CERT_VERIFY_ERROR, -EKEYREJECTED },
+        { BC_STS_PWR_MGMT, -EAGAIN },
+        { BC_STS_ERR_USAGE, -EIO },
+        { BC_STS_IO_ERROR, -EIO },
+    };
+    int frontend_owner = 0;
+
+    for (unsigned n = 0; n < sizeof(cases) / sizeof(cases[0]); n++) {
+        ResetFrontendOwned(BC_LINK_INVALID, true, &frontend_owner);
+        hardware.fwcmd_poisoned = true;
+        hardware.FwCmdCnt = 37;
+        download_status = cases[n].status;
+        transaction_mode = true;
+
+        Check(crystalhd_request_firmware_locked(&context, &frontend_owner) ==
+                  cases[n].error,
+              "kernel firmware maps the shared download status to Linux errno");
+        Check(kernel_fw_requests == 1 && kernel_fw_releases == 1 &&
+              downloads == 1 && transaction_attempts == 1 &&
+              last_download_image == kernel_fw_image &&
+              last_download_size == CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE &&
+              !strcmp(events, "QDL"),
+              "every requested image is released after the shared transaction");
+        if (cases[n].status == BC_STS_SUCCESS)
+            Check(context.state == BC_LINK_INIT && download_resets == 1 &&
+                  !hardware.fwcmd_poisoned && !hardware.FwCmdCnt,
+                  "translated success publishes INIT and clears quarantine");
+        else
+            Check(context.state == BC_LINK_INVALID && !download_resets &&
+                  hardware.fwcmd_poisoned && hardware.FwCmdCnt == 37,
+                  "translated failure preserves state and quarantine");
+    }
 }
 
 struct firmware_thread {
@@ -2627,6 +2977,10 @@ int main(void)
         {"shared and legacy firmware command entry points", FirmwareSharedEntry},
         {"frontend-neutral firmware download entry point", FirmwareDownloadSharedEntry},
         {"legacy firmware download adapter", FirmwareDownloadLegacyAdapter},
+        {"kernel firmware request preconditions", KernelFirmwarePreconditions},
+        {"kernel firmware chip selection and lifetime", KernelFirmwareSelectionAndLifetime},
+        {"kernel firmware request and shared admission errors", KernelFirmwareRequestAndAdmissionErrors},
+        {"kernel firmware status translation", KernelFirmwareStatusTranslation},
         {"firmware pause/resume rollback", FirmwarePauseRollback},
         {"firmware download serialization", FirmwareDownloadSerialization},
         {"firmware transaction serialization", FirmwareTransactionSerialization},

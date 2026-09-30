@@ -24,6 +24,8 @@
  * along with this driver.  If not, see <http://www.gnu.org/licenses/>.
  **********************************************************************/
 
+#include <linux/errno.h>
+#include <linux/firmware.h>
 #include <linux/sched/signal.h>
 
 #include "crystalhd_lnx.h"
@@ -526,6 +528,87 @@ BC_STATUS crystalhd_fw_download_locked(struct crystalhd_cmd *ctx,
 done:
 	crystalhd_hw_fw_cmd_leave(ctx->hw_ctx);
 	return sts;
+}
+
+static int crystalhd_fw_status_to_errno(BC_STATUS sts)
+{
+	switch (sts) {
+	case BC_STS_SUCCESS:
+		return 0;
+	case BC_STS_INV_ARG:
+		return -EINVAL;
+	case BC_STS_BUSY:
+		return -EBUSY;
+	case BC_STS_INSUFF_RES:
+		return -ENOMEM;
+	case BC_STS_NO_ACCESS:
+		return -EACCES;
+	case BC_STS_TIMEOUT:
+		return -ETIMEDOUT;
+	case BC_STS_IO_USER_ABORT:
+		return -ERESTARTSYS;
+	case BC_STS_FW_AUTH_FAILED:
+	case BC_STS_CERT_VERIFY_ERROR:
+		return -EKEYREJECTED;
+	case BC_STS_PWR_MGMT:
+		return -EAGAIN;
+	default:
+		return -EIO;
+	}
+}
+
+int crystalhd_request_firmware_locked(struct crystalhd_cmd *ctx,
+				      const void *owner)
+{
+	const struct firmware *firmware;
+	const char *name;
+	BC_STATUS sts;
+	int rc;
+
+	if (!ctx || !owner)
+		return -EINVAL;
+	if (!ctx->adp || !ctx->adp->pdev || !ctx->hw_ctx ||
+	    !ctx->hw_ctx->pfnFWDwnld)
+		return -ENODEV;
+
+	lockdep_assert_held_write(&ctx->adp->user_lock);
+	if (!READ_ONCE(ctx->adp->present))
+		return -ENODEV;
+	if (!ctx->session_owner)
+		return -EINVAL;
+	if (ctx->session_owner != owner)
+		return -EBUSY;
+	if (ctx->state & BC_LINK_SUSPEND)
+		return -EAGAIN;
+	if (ctx->state != BC_LINK_INVALID && ctx->state != BC_LINK_RESUME)
+		return -EBUSY;
+
+	switch (ctx->adp->pdev->device) {
+	case BC_PCI_DEVID_FLEA:
+		name = CRYSTALHD_FLEA_FIRMWARE_NAME;
+		break;
+	case BC_PCI_DEVID_LINK:
+		name = CRYSTALHD_LINK_FIRMWARE_NAME;
+		break;
+	default:
+		return -ENODEV;
+	}
+
+	rc = request_firmware(&firmware, name, &ctx->adp->pdev->dev);
+	if (rc)
+		return rc;
+	if (!READ_ONCE(ctx->adp->present)) {
+		rc = -ENODEV;
+		goto release;
+	}
+
+	sts = crystalhd_fw_download_locked(ctx, owner, firmware->data,
+					    firmware->size);
+	rc = crystalhd_fw_status_to_errno(sts);
+
+release:
+	release_firmware(firmware);
+	return rc;
 }
 
 static BC_STATUS bc_cproc_download_fw(struct crystalhd_cmd *ctx,

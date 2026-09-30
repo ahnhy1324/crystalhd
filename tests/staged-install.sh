@@ -30,6 +30,19 @@ test -f "$stage_dir/lib/modules/$KVER/updates/crystalhd.ko"
 test -f "$stage_dir/lib/udev/rules.d/20-crystalhd.rules"
 test -f "$stage_dir/lib/firmware/bcm70012fw.bin"
 test -f "$stage_dir/lib/firmware/bcm70015fw.bin"
+module_firmware=$(modinfo -F firmware \
+    "$stage_dir/lib/modules/$KVER/updates/crystalhd.ko" | LC_ALL=C sort)
+expected_firmware=$(printf '%s\n' bcm70012fw.bin bcm70015fw.bin)
+if [ "$module_firmware" != "$expected_firmware" ]; then
+    echo "Unexpected module firmware metadata:" >&2
+    printf '%s\n' "$module_firmware" >&2
+    exit 1
+fi
+while IFS= read -r firmware_name; do
+    test -f "$stage_dir/lib/firmware/$firmware_name"
+done <<EOF
+$module_firmware
+EOF
 test -f "$stage_dir/usr/lib/libcrystalhd.so.3.6"
 test -L "$stage_dir/usr/lib/libcrystalhd.so.3"
 test -L "$stage_dir/usr/lib/libcrystalhd.so"

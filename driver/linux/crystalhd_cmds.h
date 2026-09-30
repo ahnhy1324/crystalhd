@@ -58,6 +58,9 @@ struct crystalhd_user {
 
 #define DTS_MODE_INV	(-1)
 
+#define CRYSTALHD_LINK_FIRMWARE_NAME "bcm70012fw.bin"
+#define CRYSTALHD_FLEA_FIRMWARE_NAME "bcm70015fw.bin"
+
 struct crystalhd_cmd {
 	uint32_t		state;
 	struct crystalhd_adp	*adp;
@@ -109,6 +112,13 @@ BC_STATUS crystalhd_session_release_locked(struct crystalhd_cmd *ctx,
 BC_STATUS crystalhd_fw_download_locked(struct crystalhd_cmd *ctx,
 				       const void *owner,
 				       const uint8_t *image, size_t size);
+/* Synchronously request the image selected for the adapter and download it
+ * through the shared owner/state/recovery boundary above. The caller excludes
+ * device removal, holds adp->user_lock exclusively, and keeps the exact owner
+ * token live through return. This operation may sleep.
+ */
+int crystalhd_request_firmware_locked(struct crystalhd_cmd *ctx,
+				      const void *owner);
 /* The caller excludes device removal, holds adp->user_lock for read or write,
  * and supplies the token used to acquire the active decoder session.
  * Firmware-command transaction locking, timeout quarantine and the matching
