@@ -6,7 +6,8 @@ repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 rx_test_dir=$(mktemp -d "${TMPDIR:-/tmp}/crystalhd-rx-ownership.XXXXXX")
 cleanup()
 {
-    rm -f "$rx_test_dir/check" "$rx_test_dir/rx-types.h" \
+    rm -f "$rx_test_dir/check" "$rx_test_dir/wait-check" \
+        "$rx_test_dir/rx-types.h" "$rx_test_dir/rx-fetch-wait-function.h" \
         "$rx_test_dir/rx-hardware.h" "$rx_test_dir/rx-command.h" \
         "$rx_test_dir/rx-post.h"
     rmdir "$rx_test_dir"
@@ -57,6 +58,13 @@ awk '
     END { if (found != 2 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" \
     "$repo_dir/driver/linux/crystalhd_linkfuncs.c" > "$rx_test_dir/rx-post.h"
+awk '
+    /^void \*crystalhd_dioq_fetch_wait\(/ { copying = 1; found++ }
+    copying { print }
+    copying && /^}/ { copying = 0 }
+    END { if (found != 1 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_misc.c" > \
+    "$rx_test_dir/rx-fetch-wait-function.h"
 
 for rx_sanitize in no yes; do
     rx_extra=
@@ -67,7 +75,13 @@ for rx_sanitize in no yes; do
     "${CC:-cc}" ${CFLAGS:-} -std=c11 -O1 -g -Wall -Wextra -Werror \
         $rx_extra -I"$repo_dir/include" -I"$repo_dir/include/link" -I"$repo_dir/driver/linux" \
         -I"$rx_test_dir" "$repo_dir/tests/rx-ownership.c" -o "$rx_test_dir/check"
+    "${CC:-cc}" ${CFLAGS:-} -std=c11 -O1 -g -Wall -Wextra -Werror \
+        $rx_extra -I"$rx_test_dir" "$repo_dir/tests/rx-fetch-wait.c" \
+        -o "$rx_test_dir/wait-check"
     printf 'RX ownership: sanitizers=%s\n' "$rx_sanitize"
     ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
         UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 "$rx_test_dir/check"
+    ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+        UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+        "$rx_test_dir/wait-check"
 done
