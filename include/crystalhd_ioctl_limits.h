@@ -9,9 +9,25 @@
 #endif
 
 #define CRYSTALHD_MAX_IOCTL_TRANSFER (4U * 1024U * 1024U)
+#define CRYSTALHD_MAX_FIRMWARE_SIZE CRYSTALHD_MAX_IOCTL_TRANSFER
+#define CRYSTALHD_FLEA_FIRMWARE_TRAILER_SIZE 20U
+#define CRYSTALHD_LINK_FIRMWARE_TRAILER_SIZE 36U
+#define CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE \
+	(CRYSTALHD_FLEA_FIRMWARE_TRAILER_SIZE + 4U)
+#define CRYSTALHD_LINK_MIN_FIRMWARE_SIZE \
+	(CRYSTALHD_LINK_FIRMWARE_TRAILER_SIZE + 4U)
 #define CRYSTALHD_PCI_CONFIG_SIZE 256U
 #define CRYSTALHD_DEVICE_DRAM_SIZE (64U * 1024U * 1024U)
 #define CRYSTALHD_FLEA_COLOR_REGISTER 0x00502100U
+
+static inline bool crystalhd_valid_firmware_image(const void *image,
+						   unsigned int size,
+						   unsigned int minimum)
+{
+	return image && !((unsigned long)image & 3U) &&
+	       size >= minimum && size <= CRYSTALHD_MAX_FIRMWARE_SIZE &&
+	       !(size & 3U);
+}
 
 /* BCM70015 supports packed 422 here: bit 0 must remain clear; bit 1
  * selects YUY2 instead of UYVY. All other controls belong to the driver.

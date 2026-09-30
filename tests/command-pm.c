@@ -15,6 +15,7 @@
 struct _BC_DTS_PROC_OUT;
 #include "bc_dts_defs.h"
 #include "command-pm-types.h"
+#include "crystalhd_ioctl_limits.h"
 
 #define KERN_ERR ""
 #define GFP_KERNEL 0
@@ -30,7 +31,7 @@ struct _BC_DTS_PROC_OUT;
 #define eCMD_C011_DEC_CHAN_FLUSH (eCMD_C011_CMD_BASE + 0x104U)
 #define eCMD_C011_DEC_CHAN_PAUSE (eCMD_C011_CMD_BASE + 0x11dU)
 struct device { int unused; };
-struct pci_dev { struct device dev; int irq; };
+struct pci_dev { struct device dev; int irq; uint32_t device; };
 struct crystalhd_adp;
 typedef struct {
     uint32_t cmd[64];
@@ -125,7 +126,7 @@ static bool first_firmware_waiting, release_first_firmware;
 static bool block_download_reset, download_reset_waiting, release_download_reset;
 static unsigned transaction_attempts;
 static char events[32];
-static struct pci_dev endpoint = { .irq = 19 };
+static struct pci_dev endpoint = { .irq = 19, .device = BC_PCI_DEVID_FLEA };
 static struct crystalhd_adp adapter = { .pdev = &endpoint };
 static struct crystalhd_hw hardware;
 #define context adapter.cmds
@@ -324,7 +325,11 @@ static BC_STATUS StopTx(struct crystalhd_hw *hw)
 }
 static BC_STATUS Download(struct crystalhd_hw *hw, uint8_t *data, uint32_t size)
 {
-    Check(hw == &hardware && data && size == 1 && data[0] == 0x5a,
+    uint32_t expected = endpoint.device == BC_PCI_DEVID_FLEA ?
+        CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE : CRYSTALHD_LINK_MIN_FIRMWARE_SIZE;
+
+    Check(hw == &hardware && data && !((unsigned long)data & 3U) &&
+          size == expected && data[0] == 0x5a,
           "firmware admission reaches the expected hardware callback");
     downloads++; return BC_STS_SUCCESS;
 }
@@ -566,6 +571,7 @@ static void Reset(uint32_t state, bool with_hardware)
     first_firmware_waiting = release_first_firmware = false;
     block_download_reset = download_reset_waiting = release_download_reset = false;
     transaction_attempts = 0;
+    endpoint.device = BC_PCI_DEVID_FLEA;
     adapter = (struct crystalhd_adp){ .pdev = &endpoint, .present = true };
     ConfigureHardware(&hardware);
     context = (struct crystalhd_cmd){ .state = state, .adp = &adapter,
@@ -754,11 +760,21 @@ static void FirmwareSharedEntry(void)
 
 static void FirmwareDownloadOwnership(void)
 {
-    uint8_t firmware = 0x5a;
+    uint32_t firmware[CRYSTALHD_LINK_MIN_FIRMWARE_SIZE / 4] = {0};
     crystalhd_ioctl_data data = {
-        .add_cdata = &firmware,
-        .add_cdata_sz = sizeof(firmware),
+        .add_cdata = firmware,
+        .add_cdata_sz = CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE,
     };
+    const uint32_t bad_sizes[] = {
+        0,
+        CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE - 4,
+        CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE - 1,
+        CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE + 1,
+        CRYSTALHD_MAX_FIRMWARE_SIZE + 4U,
+        UINT32_MAX,
+    };
+
+    ((uint8_t *)firmware)[0] = 0x5a;
 
     Reset(BC_LINK_INVALID, true);
     adapter.user_lock = 1;
@@ -790,6 +806,59 @@ static void FirmwareDownloadOwnership(void)
     Check(bc_cproc_download_fw(&context, &data) == BC_STS_INV_ARG &&
           !downloads && context.state == BC_LINK_INVALID,
           "firmware download rejects a missing hardware callback");
+
+    ResetOwned(BC_LINK_INVALID, true);
+    adapter.pdev = NULL;
+    Check(bc_cproc_download_fw(&context, &data) == BC_STS_INV_ARG &&
+          !downloads && context.state == BC_LINK_INVALID,
+          "firmware download rejects a missing PCI device");
+
+    for (unsigned n = 0; n < sizeof(bad_sizes) / sizeof(bad_sizes[0]); n++) {
+        ResetOwned(BC_LINK_INVALID, true);
+        transaction_mode = true;
+        data.add_cdata = firmware;
+        data.add_cdata_sz = bad_sizes[n];
+        Check(bc_cproc_download_fw(&context, &data) == BC_STS_INV_ARG &&
+              !downloads && !transaction_attempts &&
+              context.state == BC_LINK_INVALID,
+              "malformed Flea firmware geometry is rejected before its transaction");
+        transaction_mode = false;
+    }
+
+    ResetOwned(BC_LINK_INVALID, true);
+    transaction_mode = true;
+    data.add_cdata = (uint8_t *)firmware + 1;
+    data.add_cdata_sz = CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE;
+    Check(bc_cproc_download_fw(&context, &data) == BC_STS_INV_ARG &&
+          !downloads && !transaction_attempts,
+          "unaligned firmware is rejected before its transaction");
+    transaction_mode = false;
+
+    ResetOwned(BC_LINK_INVALID, true);
+    transaction_mode = true;
+    endpoint.device = 0xffff;
+    data.add_cdata = firmware;
+    Check(bc_cproc_download_fw(&context, &data) == BC_STS_INV_ARG &&
+          !downloads && !transaction_attempts,
+          "unknown hardware cannot select a firmware layout");
+    transaction_mode = false;
+
+    ResetOwned(BC_LINK_INVALID, true);
+    endpoint.device = BC_PCI_DEVID_LINK;
+    transaction_mode = true;
+    data.add_cdata_sz = CRYSTALHD_LINK_MIN_FIRMWARE_SIZE - 4;
+    Check(bc_cproc_download_fw(&context, &data) == BC_STS_INV_ARG &&
+          !downloads && !transaction_attempts &&
+          context.state == BC_LINK_INVALID,
+          "undersized Link firmware is rejected before its transaction");
+    transaction_mode = false;
+
+    ResetOwned(BC_LINK_INVALID, true);
+    endpoint.device = BC_PCI_DEVID_LINK;
+    data.add_cdata_sz = CRYSTALHD_LINK_MIN_FIRMWARE_SIZE;
+    Check(bc_cproc_download_fw(&context, &data) == BC_STS_SUCCESS &&
+          downloads == 1 && context.state == BC_LINK_INIT,
+          "Link firmware uses its distinct minimum valid layout");
 }
 
 struct firmware_thread {
@@ -860,16 +929,17 @@ static void ReleaseDownloadReset(void)
 
 static void FirmwareDownloadSerialization(void)
 {
-    uint8_t firmware = 0x5a;
+    uint32_t firmware[CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE / 4] = {0};
     struct download_thread download = {0};
     struct firmware_thread command = {0};
     pthread_t download_tid, command_tid;
 
     ResetOwned(BC_LINK_INVALID, true);
+    ((uint8_t *)firmware)[0] = 0x5a;
     transaction_mode = true;
     block_download_reset = true;
-    download.data.add_cdata = &firmware;
-    download.data.add_cdata_sz = 1;
+    download.data.add_cdata = firmware;
+    download.data.add_cdata_sz = sizeof(firmware);
     command.data.udata.u.fwCmd.cmd[0] = 0x12345678;
 
     if (pthread_create(&download_tid, NULL, RunFirmwareDownload,
@@ -2222,9 +2292,14 @@ static void Unconfigured(void)
 }
 static void BeforeFirmware(void)
 {
-    uint8_t firmware = 0x5a;
-    crystalhd_ioctl_data data = { .u_id = 1, .add_cdata = &firmware, .add_cdata_sz = 1 };
+    uint32_t firmware[CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE / 4] = {0};
+    crystalhd_ioctl_data data = {
+        .u_id = 1,
+        .add_cdata = firmware,
+        .add_cdata_sz = sizeof(firmware),
+    };
     unsigned cycle;
+    ((uint8_t *)firmware)[0] = 0x5a;
     Reset(BC_LINK_INVALID, true);
     CheckNotify();
     for (cycle = 0; cycle < 4; cycle++) {
