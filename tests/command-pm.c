@@ -93,6 +93,8 @@ struct crystalhd_cmd {
     struct crystalhd_adp *adp;
     struct crystalhd_user user[BC_LINK_MAX_OPENS];
     const void *session_owner;
+    const void *session_lifetime_owner;
+    const struct crystalhd_session_owner_ops *session_lifetime_ops;
     bool retain_rx_on_suspend;
     bool session_module_pinned;
     enum crystalhd_decoder_phase decoder_phase;
@@ -146,6 +148,11 @@ static unsigned module_refs, module_get_attempts, module_gets, module_puts;
 static unsigned module_callbacks, module_identity;
 static bool module_get_allowed, checking_module_callbacks;
 static bool module_expect_no_hardware_on_put;
+struct frontend_owner {
+    unsigned refs, gets, retired, puts;
+};
+static struct frontend_owner frontend_owners[2];
+static unsigned frontend_lifetime_step;
 #define THIS_MODULE (&module_identity)
 static int stream_prepare_error;
 static uint8_t stream_cookie;
@@ -246,6 +253,12 @@ static void module_put(const void *module)
           !context.session_module_pinned && !context.session_owner &&
           !context.retain_rx_on_suspend && !elem_live && !dio_live && !rings_live,
           "module put clears pin and ownership only after session resources are retired");
+    if (frontend_lifetime_step) {
+        Check(frontend_lifetime_step == 3 && !context.session_lifetime_owner &&
+              !context.session_lifetime_ops,
+              "module unpin follows owner notification and the last core frontend put");
+        frontend_lifetime_step = 4;
+    }
     if (module_expect_no_hardware_on_put)
         Check(!context.hw_ctx && !hardware_allocated && !context.stream &&
               context.decoder_phase == CRYSTALHD_DECODER_COLD &&
@@ -263,6 +276,64 @@ static void ModuleCallback(void)
           "allocation and cleanup callbacks execute while the session module pin is held");
     module_callbacks++;
 }
+static struct frontend_owner *FrontendOwner(const void *owner)
+{
+    Check(owner == &frontend_owners[0] || owner == &frontend_owners[1],
+          "frontend callbacks use the exact independently owned identity");
+    Check(adapter.user_lock == 1,
+          "frontend callbacks retain the caller's exclusive session barrier");
+    return (struct frontend_owner *)owner;
+}
+static void FrontendGet(const void *owner)
+{
+    struct frontend_owner *frontend = FrontendOwner(owner);
+
+    Check(frontend->refs && !frontend->gets && !frontend->retired &&
+          !frontend->puts && !frontend_lifetime_step &&
+          context.session_module_pinned && module_refs == 1 && !module_puts,
+          "frontend get adopts exactly one reference while the caller and module are live");
+    Check(!context.session_owner || context.session_owner == owner,
+          "frontend adoption covers the exact published owner or retained unpublished setup");
+    frontend->refs++;
+    frontend->gets++;
+    frontend_lifetime_step = 1;
+}
+static void FrontendRetired(const void *owner)
+{
+    struct frontend_owner *frontend = FrontendOwner(owner);
+
+    Check(frontend->refs && frontend->gets == 1 && !frontend->retired &&
+          !frontend->puts && frontend_lifetime_step == 1,
+          "retirement notifies the still-referenced frontend exactly once");
+    Check(!context.session_owner && !context.session_lifetime_owner &&
+          !context.session_lifetime_ops && !context.hw_ctx && !hardware_allocated &&
+          !context.stream && !elem_live && !dio_live && !rings_live &&
+          !retained_tx_lease && !context.retain_rx_on_suspend &&
+          context.state == BC_LINK_INVALID &&
+          context.decoder_phase == CRYSTALHD_DECODER_COLD &&
+          context.decoder_codec == CRYSTALHD_DECODER_CODEC_INVALID,
+          "retirement clears all core owner identities and resources before frontend notification");
+    Check(context.session_module_pinned && module_refs == 1 && !module_puts,
+          "retirement notification still executes under the original module pin");
+    frontend->retired++;
+    frontend_lifetime_step = 2;
+}
+static void FrontendPut(const void *owner)
+{
+    struct frontend_owner *frontend = FrontendOwner(owner);
+
+    Check(frontend->refs && frontend->retired == 1 && !frontend->puts &&
+          frontend_lifetime_step == 2 && context.session_module_pinned &&
+          module_refs == 1 && !module_puts && !context.session_lifetime_owner &&
+          !context.session_lifetime_ops,
+          "frontend put follows cleared-identity retirement before module unpin");
+    frontend->refs--;
+    frontend->puts++;
+    frontend_lifetime_step = 3;
+}
+static const struct crystalhd_session_owner_ops frontend_ops = {
+    .get = FrontendGet, .retired = FrontendRetired, .put = FrontendPut,
+};
 static void Event(char event)
 {
     size_t n = strlen(events);
@@ -860,6 +931,9 @@ static void Reset(uint32_t state, bool with_hardware)
     module_callbacks = 0;
     module_get_allowed = true;
     checking_module_callbacks = module_expect_no_hardware_on_put = false;
+    memset(frontend_owners, 0, sizeof(frontend_owners));
+    frontend_owners[0].refs = frontend_owners[1].refs = 1;
+    frontend_lifetime_step = 0;
     stream_prepare_error = 0;
     last_download_image = NULL;
     last_download_size = 0;
@@ -3836,6 +3910,279 @@ static void ModulePinPowerLifetime(void)
     }
 }
 
+static void ResetReferencedOwner(void)
+{
+    Reset(BC_LINK_INVALID, false);
+    adapter.user_lock = 1;
+}
+
+static void ReferencedOwnerAdmission(void)
+{
+    for (unsigned gate = 0; gate < 8; gate++) {
+        struct crystalhd_session_owner_ops ops = frontend_ops;
+        const struct crystalhd_session_owner_ops *callbacks = &ops;
+        struct crystalhd_cmd *ctx;
+        const void *owner;
+
+        ResetReferencedOwner();
+        ctx = &context;
+        owner = &frontend_owners[0];
+        if (gate == 0) ctx = NULL;
+        if (gate == 1) context.adp = NULL;
+        if (gate == 2) owner = NULL;
+        if (gate == 3) callbacks = NULL;
+        if (gate == 4) ops.get = NULL;
+        if (gate == 5) ops.retired = NULL;
+        if (gate == 6) ops.put = NULL;
+        if (gate == 7) module_get_allowed = false;
+        {
+            struct crystalhd_cmd before = context;
+
+            Check(crystalhd_session_acquire_ref_locked(ctx, owner, callbacks) ==
+                  (gate == 7 ? BC_STS_NO_ACCESS : BC_STS_INV_ARG) &&
+                  !memcmp(&before, &context, sizeof(context)) &&
+                  !frontend_owners[0].gets && !frontend_owners[0].retired &&
+                  !frontend_owners[0].puts && frontend_owners[0].refs == 1 &&
+                  !module_gets && !module_puts && !hardware_alloc_attempts &&
+                  module_get_attempts == (gate == 7),
+                  "invalid reference contract or denied module pin has no owner-reference side effects");
+        }
+    }
+
+    for (unsigned gate = 0; gate < 5; gate++) {
+        ResetReferencedOwner();
+        if (gate == 0) context.session_owner = &frontend_owners[1];
+        if (gate == 1) {
+            context.session_module_pinned = true;
+            module_refs = 1;
+        }
+        if (gate == 2) context.session_lifetime_owner = &frontend_owners[1];
+        if (gate == 3) context.session_lifetime_ops = &frontend_ops;
+        if (gate == 4) context.state = BC_LINK_INIT;
+        {
+            struct crystalhd_cmd before = context;
+            BC_STATUS expected = gate == 4 ? BC_STS_ERR_USAGE : BC_STS_BUSY;
+
+            Check(crystalhd_session_acquire_ref_locked(&context,
+                      &frontend_owners[0], &frontend_ops) == expected &&
+                  !memcmp(&before, &context, sizeof(context)) &&
+                  !frontend_owners[0].gets && !frontend_owners[1].gets &&
+                  !module_get_attempts && !module_puts && !hardware_alloc_attempts,
+                  "busy or invalid-state acquire cannot adopt an existing pin or lifetime identity");
+            Check(crystalhd_session_acquire_locked(&context, &frontend_owners[0]) == expected &&
+                  !memcmp(&before, &context, sizeof(context)) && !module_get_attempts,
+                  "legacy acquisition cannot bypass the reference-backed lifetime gates");
+            if (gate == 2 || gate == 3)
+                Check(crystalhd_setup_cmd_context(&context, &adapter) == BC_STS_BUSY &&
+                      !memcmp(&before, &context, sizeof(context)) && !hardware_alloc_attempts,
+                      "context reinitialization cannot erase either surviving lifetime field");
+        }
+    }
+}
+
+static void ReferencedOwnerSetupRollback(void)
+{
+    for (unsigned existing = 0; existing < 2; existing++) {
+        for (unsigned failure = existing ? 2 : 0; failure < 5; failure++) {
+            BC_STATUS expected = failure == 1 ? BC_STS_IO_ERROR :
+                failure == 4 ? BC_STS_INSUFF_RES : BC_STS_ERROR;
+
+            ResetReferencedOwner();
+            if (existing)
+                Check(crystalhd_ensure_hw_context(&context) == BC_STS_SUCCESS,
+                      "prepare a pre-opened hardware context for safe reference-acquire rollback");
+            if (failure == 0) hardware_alloc_fail = true;
+            if (failure == 1) hardware_open_status = BC_STS_IO_ERROR;
+            if (failure == 2) elem_error = -1;
+            if (failure == 3) dio_error = -1;
+            if (failure == 4) ring_status = BC_STS_INSUFF_RES;
+            checking_module_callbacks = true;
+            Check(crystalhd_session_acquire_ref_locked(&context,
+                      &frontend_owners[0], &frontend_ops) == expected &&
+                  !context.session_owner && !context.session_lifetime_owner &&
+                  !context.session_lifetime_ops && !context.session_module_pinned &&
+                  module_gets == 1 && module_puts == 1 && !module_refs &&
+                  frontend_owners[0].refs == 1 && !frontend_owners[0].gets &&
+                  !frontend_owners[0].retired && !frontend_owners[0].puts &&
+                  !frontend_lifetime_step && !elem_live && !dio_live && !rings_live &&
+                  context.hw_ctx == (existing ? &hardware : NULL),
+                  "safe setup rollback never adopts or notifies a frontend reference");
+        }
+    }
+
+    for (unsigned failure = 0; failure < 3; failure++) {
+        struct frontend_owner *owner = &frontend_owners[0];
+
+        ResetReferencedOwner();
+        if (failure == 0) elem_error = -1;
+        if (failure == 1) dio_error = -1;
+        if (failure == 2) ring_status = BC_STS_INSUFF_RES;
+        stop_ok = false;
+        Check(crystalhd_session_acquire_ref_locked(&context, owner, &frontend_ops) ==
+                  (failure == 2 ? BC_STS_INSUFF_RES : BC_STS_ERROR) &&
+              !context.session_owner && context.session_lifetime_owner == owner &&
+              context.session_lifetime_ops == &frontend_ops &&
+              context.session_module_pinned && module_refs == 1 && !module_puts &&
+              owner->gets == 1 && owner->refs == 2 && !owner->retired && !owner->puts,
+              "uncertain setup rollback adopts one frontend reference despite an unpublished session owner");
+        owner->refs--; /* The unsuccessful caller releases only its own reference. */
+        Check(crystalhd_session_release_locked(&context, owner) == BC_STS_ERR_USAGE &&
+              crystalhd_session_acquire_ref_locked(&context, &frontend_owners[1],
+                                                   &frontend_ops) == BC_STS_BUSY &&
+              owner->refs == 1 && owner->gets == 1 && !owner->retired && !owner->puts &&
+              !frontend_owners[1].gets && module_gets == 1 && !module_puts &&
+              context.hw_ctx == &hardware && hardware_allocated && hardware.dma_fault &&
+              !adapter.present && !adapter.dma_terminal_quiesced && !hardware_frees,
+              "failed caller departure leaves unpublished fatal ownership referenced without a retry or fake proof");
+    }
+}
+
+static void ReferencedOwnerRetirement(void)
+{
+    for (unsigned terminal = 0; terminal < 2; terminal++) {
+        for (unsigned departed = 0; departed < 2; departed++) {
+            struct frontend_owner *owner = &frontend_owners[0];
+
+            ResetReferencedOwner();
+            checking_module_callbacks = module_expect_no_hardware_on_put = true;
+            Check(crystalhd_session_acquire_ref_locked(&context, owner, &frontend_ops) ==
+                      BC_STS_SUCCESS && context.session_owner == owner &&
+                  context.session_lifetime_owner == owner &&
+                  context.session_lifetime_ops == &frontend_ops &&
+                  owner->refs == 2 && owner->gets == 1 && !owner->retired && !owner->puts,
+                  "successful reference acquisition publishes one independent lifetime owner");
+            {
+                struct crystalhd_cmd before = context;
+
+                Check(crystalhd_session_acquire_ref_locked(&context, owner, &frontend_ops) ==
+                          BC_STS_BUSY &&
+                      crystalhd_session_acquire_ref_locked(&context, &frontend_owners[1],
+                                                           &frontend_ops) == BC_STS_BUSY &&
+                      crystalhd_session_release_locked(&context, &frontend_owners[1]) ==
+                          BC_STS_ERR_USAGE &&
+                      !memcmp(&before, &context, sizeof(context)) && owner->gets == 1 &&
+                      !frontend_owners[1].gets && owner->refs == 2 && !module_puts,
+                      "same-owner reacquire and foreign acquire/release cannot consume lifetime references");
+            }
+            context.stream = &stream_cookie;
+            context.decoder_phase = CRYSTALHD_DECODER_CHANNEL_STARTED;
+            context.decoder_codec = CRYSTALHD_DECODER_CODEC_H264;
+            if (departed)
+                owner->refs--; /* Leave only the core-owned frontend reference. */
+            if (terminal) {
+                /* Independent terminal caller-precondition model; the PCI/IRQ
+                 * proof itself is exercised by device-lifetime, not invented
+                 * by a successful local stop or by clearing dma_fault here.
+                 */
+                hardware.dma_fault = true;
+                adapter.present = false;
+                adapter.dma_terminal_quiesced = true;
+                context.cin_wait_exit = 1;
+                retained_tx_lease = true;
+            }
+            Check((terminal ? crystalhd_delete_cmd_context(&context) :
+                  crystalhd_session_release_locked(&context, owner)) == BC_STS_SUCCESS &&
+                  owner->retired == 1 && owner->puts == 1 && owner->refs == !departed &&
+                  frontend_lifetime_step == 4 && module_puts == 1 && !module_refs &&
+                  !context.session_lifetime_owner && !context.session_lifetime_ops,
+                  "normal and terminal retirement notify once, put the frontend, then unpin the module");
+            if (terminal)
+                Check(hardware.dma_fault && !adapter.present && !context.adp &&
+                      retained_tx_puts == 1 && !stops && !captures && !cancels,
+                      "terminal referenced-owner retirement never resumes or retries uncertain engines");
+            Check(crystalhd_session_release_locked(&context, owner) == BC_STS_ERR_USAGE,
+                  "repeated owner release cannot retire a departed session twice");
+            crystalhd_session_retire_owner(&context);
+            crystalhd_session_unpin(&context);
+            Check(owner->retired == 1 && owner->puts == 1 && module_puts == 1 &&
+                  frontend_lifetime_step == 4,
+                  "empty lifetime and module helpers cannot repeat notification or either put");
+        }
+    }
+
+    ResetReferencedOwner();
+    /* Independently model the retained unpublished setup outcome. Its actual
+     * failed acquisition is covered above; terminal PCI/IRQ proof is supplied
+     * by the caller, without recovering the previous unsafe test context.
+     */
+    Check(try_module_get(THIS_MODULE), "prepare the unpublished owner's original module pin");
+    context.session_module_pinned = true;
+    Check(crystalhd_ensure_hw_context(&context) == BC_STS_SUCCESS,
+          "prepare the separately retained unpublished hardware context");
+    FrontendGet(&frontend_owners[0]);
+    context.session_lifetime_owner = &frontend_owners[0];
+    context.session_lifetime_ops = &frontend_ops;
+    frontend_owners[0].refs--;
+    hardware.dma_fault = true;
+    adapter.present = false;
+    adapter.dma_terminal_quiesced = true;
+    context.cin_wait_exit = 1;
+    Check(!context.session_owner && crystalhd_delete_cmd_context(&context) == BC_STS_SUCCESS &&
+          frontend_owners[0].retired == 1 && frontend_owners[0].puts == 1 &&
+          !frontend_owners[0].refs && frontend_lifetime_step == 4 && module_puts == 1,
+          "terminal deletion retires an unpublished lifetime owner even though session_owner is NULL");
+}
+
+static void ReferencedOwnerFaultRetention(void)
+{
+    for (unsigned failure = 0; failure < 4; failure++) {
+        struct frontend_owner *owner = &frontend_owners[0];
+        unsigned attempts;
+
+        ResetReferencedOwner();
+        Check(crystalhd_session_acquire_ref_locked(&context, owner, &frontend_ops) ==
+                  BC_STS_SUCCESS,
+              "prepare a referenced owner for each fatal retirement boundary");
+        context.stream = &stream_cookie;
+        if (failure == 0) crystalhd_hw_dma_fatal_stop(&hardware);
+        if (failure == 1) capture_status = BC_STS_TIMEOUT;
+        if (failure == 2) cancel_status = BC_STS_IO_ERROR;
+        if (failure == 3) stop_ok = false;
+        Check(crystalhd_session_release_locked(&context, owner) == BC_STS_IO_ERROR,
+              "each uncertain retirement stage retains the frontend owner");
+        owner->refs--;
+        attempts = captures + cancels + stops;
+        Check(crystalhd_session_release_locked(&context, owner) == BC_STS_IO_ERROR &&
+              crystalhd_delete_cmd_context(&context) == BC_STS_IO_ERROR &&
+              captures + cancels + stops == attempts && hardware.dma_fault &&
+              !adapter.present && !adapter.dma_terminal_quiesced &&
+              context.session_owner == owner && context.session_lifetime_owner == owner &&
+              context.session_lifetime_ops == &frontend_ops && context.session_module_pinned &&
+              owner->refs == 1 && owner->gets == 1 && !owner->retired && !owner->puts &&
+              frontend_lifetime_step == 1 && module_refs == 1 && !module_puts &&
+              elem_live && dio_live && rings_live && hardware_allocated &&
+              context.stream == &stream_cookie && !stream_releases && !hardware_frees,
+              "fatal release and unproven terminal deletion never notify, put, unpin or retry hardware");
+    }
+}
+
+static void ReferencedOwnerPowerLifetime(void)
+{
+    struct frontend_owner *owner = &frontend_owners[0];
+    crystalhd_ioctl_data data = {0};
+
+    ResetReferencedOwner();
+    Check(crystalhd_session_acquire_ref_locked(&context, owner, &frontend_ops) == BC_STS_SUCCESS,
+          "prepare reference-backed ownership across successful PM");
+    context.state = BC_LINK_INIT;
+    Check(crystalhd_suspend(&context, &data) == BC_STS_SUCCESS,
+          "successful suspend stops hardware without revoking the frontend owner");
+    crystalhd_rx_retire_quiesced(&context, true);
+    crystalhd_rx_retire_quiesced(&context, false);
+    Check(quiesced_rx_retires == 2 && context.session_owner == owner &&
+          context.session_lifetime_owner == owner && context.session_lifetime_ops == &frontend_ops &&
+          owner->refs == 2 && owner->gets == 1 && !owner->retired && !owner->puts &&
+          context.session_module_pinned && module_refs == 1 && !module_puts && frontend_lifetime_step == 1,
+          "suspend and both RX-only retirement modes preserve reference-backed session ownership");
+    Check(crystalhd_resume(&context) == BC_STS_SUCCESS && owner->gets == 1 &&
+          owner->refs == 2 && !owner->retired && !owner->puts,
+          "resume keeps the existing frontend reference without adopting another");
+    Check(crystalhd_session_release_locked(&context, owner) == BC_STS_SUCCESS &&
+          owner->retired == 1 && owner->puts == 1 && owner->refs == 1 &&
+          frontend_lifetime_step == 4 && module_puts == 1,
+          "explicit post-PM release alone retires the referenced session");
+}
+
 static void FrontendNeutralSessionOwner(void)
 {
     int foreign_owner, wrong_owner;
@@ -5090,6 +5437,11 @@ int main(void)
         {"session module owner and callback lifetime", ModulePinOwnerLifetime},
         {"session module setup guards and final context teardown", ModulePinContextGuards},
         {"session module lifetime through PM and accounting-only close", ModulePinPowerLifetime},
+        {"reference-backed owner admission and callback contract", ReferencedOwnerAdmission},
+        {"reference-backed safe and uncertain setup rollback", ReferencedOwnerSetupRollback},
+        {"reference-backed normal and terminal exact-once retirement", ReferencedOwnerRetirement},
+        {"reference-backed fatal ownership retention", ReferencedOwnerFaultRetention},
+        {"reference-backed owner lifetime across suspend and RX retirement", ReferencedOwnerPowerLifetime},
         {"quiesced RX retirement policy and early states", QuiescedRxPolicy},
         {"RX retention frontend admission and release", RxRetentionAdmission},
         {"RX retention context setup and deletion", RxRetentionContextReset},

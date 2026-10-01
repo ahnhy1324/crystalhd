@@ -1141,7 +1141,8 @@ static bool chd_dec_session_dma_absent(struct crystalhd_adp *adp)
 	 * module pin. Verify the empty inventory before allowing a no-session
 	 * remove during module exit, where taking a new module pin is too late.
 	 */
-	resources = ctx->session_owner || ctx->stream || adp->fill_byte_pool ||
+	resources = ctx->session_owner || ctx->session_lifetime_owner ||
+		ctx->session_lifetime_ops || ctx->stream || adp->fill_byte_pool ||
 		adp->elem_pool_head || adp->ua_map_free_head;
 	if (hw) {
 		resources |= !ctx->adp || hw->rx_pkt_pool_head ||

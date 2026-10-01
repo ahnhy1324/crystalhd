@@ -67,6 +67,21 @@ struct crystalhd_decoder_config {
 	enum crystalhd_decoder_codec codec;
 };
 
+/* Process-context owner lifetime operations. get cannot fail; each reference
+ * keeps the owner, this immutable ops table and callback code alive, including
+ * any independent frontend module/execution lifetime. Callback code must stay
+ * executable through the final put return. retired only notifies:
+ * it must preserve the reference reserved for the following put. Callbacks
+ * run under device/session barriers and must not reenter admission, wait for
+ * workers or destroy the shared command context/adapter. Deferred work needs
+ * its own owner and execution references.
+ */
+struct crystalhd_session_owner_ops {
+	void (*get)(const void *owner);
+	void (*retired)(const void *owner);
+	void (*put)(const void *owner);
+};
+
 struct crystalhd_stream;
 
 struct crystalhd_user {
@@ -88,6 +103,9 @@ struct crystalhd_cmd {
 	 * without a frontend release.
 	 */
 	const void		*session_owner;
+	/* May outlive failed acquisition without a published session_owner. */
+	const void		*session_lifetime_owner;
+	const struct crystalhd_session_owner_ops *session_lifetime_ops;
 	/* Held from resource setup until complete session ownership teardown. */
 	bool			session_module_pinned;
 	/* Only the legacy adapter retains RX registrations across successful PM. */
@@ -142,6 +160,21 @@ BC_STATUS crystalhd_user_set_mode(struct crystalhd_cmd *ctx,
  */
 BC_STATUS crystalhd_session_acquire_locked(struct crystalhd_cmd *ctx,
 					   const void *owner);
+/* Optional reference-backed acquisition with the same admission/locking
+ * contract as above. All three callbacks are required. The caller keeps the
+ * owner, ops and callback code alive through return. This call gets one owner
+ * reference on success, or on error if its own failed setup leaves a newly
+ * pinned hardware context awaiting terminal cleanup; BUSY never adopts a
+ * preexisting session pin. Thus an error return may retain a frontend lease.
+ * Safe whole-session release or terminal deletion detaches the binding and
+ * calls retired then put exactly once, after all backing/state retirement and
+ * before the core module pin drops. Failed-stop quarantine, successful suspend
+ * and RX-only retirement preserve the lease. The caller's reference is never
+ * consumed, and no callback grants permission to access the retired device.
+ */
+BC_STATUS crystalhd_session_acquire_ref_locked(struct crystalhd_cmd *ctx,
+					       const void *owner,
+					       const struct crystalhd_session_owner_ops *ops);
 BC_STATUS crystalhd_session_release_locked(struct crystalhd_cmd *ctx,
 					   const void *owner);
 /* The caller excludes device removal, has verified a present adapter, holds

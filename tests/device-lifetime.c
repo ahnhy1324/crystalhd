@@ -64,6 +64,7 @@ struct crystalhd_hw {
 	} tx_pkt_pool[2];
 };
 struct crystalhd_stream;
+#include "lifetime-owner.h"
 enum crystalhd_decoder_phase {
 	CRYSTALHD_DECODER_COLD = 0,
 	CRYSTALHD_DECODER_BOOTSTRAPPED,
@@ -80,6 +81,8 @@ struct crystalhd_cmd {
 	struct crystalhd_hw *hw_ctx;
 	struct crystalhd_user user[2];
 	const void *session_owner;
+	const void *session_lifetime_owner;
+	const struct crystalhd_session_owner_ops *session_lifetime_ops;
 	enum crystalhd_decoder_phase decoder_phase;
 	enum crystalhd_decoder_codec decoder_codec;
 	uint32_t fw_sequence, decoder_channel_id;
@@ -132,6 +135,9 @@ static unsigned int frontend_releases;
 static int module_token;
 #define THIS_MODULE (&module_token)
 static unsigned int session_admissions, module_refs, module_puts;
+static struct {
+	unsigned int refs, gets, retirements, puts;
+} lifetime_owner;
 static unsigned int pci_gets, pci_puts;
 static unsigned int saved_invalidations, core_restores;
 static bool dma_drained;
@@ -193,6 +199,7 @@ static void module_put(void *module)
 	assert(module == THIS_MODULE && module_refs == 1);
 	/* The extracted unpin helper clears the token before the final put. */
 	assert(!cmd->session_module_pinned && !cmd->session_owner);
+	assert(!cmd->session_lifetime_owner && !cmd->session_lifetime_ops);
 	assert(!cmd->retain_rx_on_suspend && !cmd->adp && !cmd->hw_ctx);
 	assert(!g_adp_info->fill_byte_pool && !g_adp_info->elem_pool_head);
 	assert(!cmd->stream && !stream_live);
@@ -206,6 +213,51 @@ static void module_put(void *module)
 	module_refs--;
 	module_puts++;
 }
+
+static void lifetime_get(const void *owner)
+{
+	assert(owner == &lifetime_owner && lifetime_owner.refs == 1);
+	assert(g_adp_info->cmds.session_module_pinned && module_refs == 1);
+	lifetime_owner.refs++;
+	lifetime_owner.gets++;
+}
+
+static void lifetime_retired(const void *owner)
+{
+	struct crystalhd_cmd *cmd = &g_adp_info->cmds;
+
+	assert_quiesced();
+	assert(owner == &lifetime_owner && lifetime_owner.refs == 1);
+	assert(!lifetime_owner.retirements && !lifetime_owner.puts);
+	assert(!cmd->session_lifetime_owner && !cmd->session_lifetime_ops);
+	assert(cmd->session_module_pinned && module_refs == 1 && !module_puts);
+	assert(!cmd->session_owner && !cmd->adp && !cmd->hw_ctx);
+	assert(!cmd->stream && !stream_live && !cmd->retain_rx_on_suspend);
+	assert(cmd->state == BC_LINK_INVALID);
+	assert(cmd->decoder_phase == CRYSTALHD_DECODER_COLD);
+	assert(cmd->decoder_codec == CRYSTALHD_DECODER_CODEC_INVALID);
+	assert(!cmd->fw_sequence && !cmd->decoder_channel_id);
+	assert(!g_adp_info->fill_byte_pool && !g_adp_info->elem_pool_head);
+	assert(allocated[HARDWARE] == released[HARDWARE]);
+	assert(allocated[DIO_POOL] == released[DIO_POOL]);
+	assert(allocated[ELEM_POOL] == released[ELEM_POOL]);
+	lifetime_owner.retirements++;
+}
+
+static void lifetime_put(const void *owner)
+{
+	assert(owner == &lifetime_owner && lifetime_owner.refs == 1);
+	assert(lifetime_owner.retirements == 1 && !lifetime_owner.puts);
+	assert(module_refs == 1 && !module_puts);
+	lifetime_owner.refs--;
+	lifetime_owner.puts++;
+}
+
+static const struct crystalhd_session_owner_ops lifetime_ops = {
+	.get = lifetime_get,
+	.retired = lifetime_retired,
+	.put = lifetime_put,
+};
 
 static void crystalhd_v4l2_unregister(struct crystalhd_adp *adp)
 {
@@ -577,6 +629,8 @@ static void reset(void)
 	assert(!g_adp_info && !pci.data);
 	assert(!module_refs && session_admissions == module_puts);
 	session_admissions = module_refs = module_puts = 0;
+	assert(!lifetime_owner.refs);
+	memset(&lifetime_owner, 0, sizeof(lifetime_owner));
 	memset(allocated, 0, sizeof(allocated));
 	memset(released, 0, sizeof(released));
 	chd_device_lock = (struct mock_lock){0};
@@ -863,7 +917,7 @@ static void test_no_session_inventory(void)
 	assert(chd_dec_session_dma_absent(adp));
 	adp->cmds.hw_ctx = &hw;
 	assert(chd_dec_session_dma_absent(adp));
-	for (field = 0; field < 23; field++) {
+	for (field = 0; field < 25; field++) {
 		unsigned int before = warnings;
 
 		switch (field) {
@@ -880,6 +934,8 @@ static void test_no_session_inventory(void)
 		case 10: hw.rx_freeq = &token; break;
 		case 11: hw.tx_actq = &token; break;
 		case 12: hw.tx_freeq = &token; break;
+		case 23: adp->cmds.session_lifetime_owner = &token; break;
+		case 24: adp->cmds.session_lifetime_ops = &lifetime_ops; break;
 		default:
 			switch ((field - 13) % 5) {
 			case 0: hw.tx_pkt_pool[(field - 13) / 5].desc_mem.pdma_desc_start = &token; break;
@@ -892,6 +948,8 @@ static void test_no_session_inventory(void)
 		assert(!chd_dec_session_dma_absent(adp) && warnings == before + 1);
 		assert(!module_refs && !module_puts && !pci_gets && !pci_puts);
 		adp->cmds.session_owner = NULL;
+		adp->cmds.session_lifetime_owner = NULL;
+		adp->cmds.session_lifetime_ops = NULL;
 		adp->cmds.stream = NULL;
 		adp->fill_byte_pool = adp->elem_pool_head = adp->ua_map_free_head = NULL;
 		adp->cmds.adp = adp;
@@ -1030,6 +1088,53 @@ static void test_fence_faults(void)
 	}
 }
 
+static void test_reference_owner_fence_faults(void)
+{
+	enum fence_fault fault;
+	unsigned int unpublished;
+
+	for (unpublished = 0; unpublished < 2; unpublished++) {
+		for (fault = 0; fault < FENCE_FAULT_COUNT; fault++) {
+			struct crystalhd_adp *adp;
+			unsigned int attempt;
+
+			reset();
+			adp = attach(true, true);
+			adp->cmds.session_owner = unpublished ? NULL : &lifetime_owner;
+			adp->cmds.retain_rx_on_suspend = false;
+			/* Model the handoff tested by command-pm, then close the
+			 * frontend's base reference before terminal retirement.
+			 */
+			lifetime_owner.refs = 1;
+			lifetime_get(&lifetime_owner);
+			adp->cmds.session_lifetime_owner = &lifetime_owner;
+			adp->cmds.session_lifetime_ops = &lifetime_ops;
+			lifetime_owner.refs--;
+			set_fence_fault(fault);
+			for (attempt = 0; attempt < 2; attempt++) {
+				assert(!chd_dec_fail_closed(adp, -EIO));
+				assert(lifetime_owner.refs == 1 && lifetime_owner.gets == 1);
+				assert(!lifetime_owner.retirements && !lifetime_owner.puts);
+				assert(adp->cmds.session_lifetime_owner == &lifetime_owner);
+				assert(adp->cmds.session_lifetime_ops == &lifetime_ops);
+				assert(module_refs == 1 && !module_puts && !dma_frees);
+				assert(chd_dma_quarantine == adp && pci.refs == 1);
+			}
+			ignore_master_clear = false;
+			express = true;
+			command_error = status_error = 0;
+			command_output = status_output = 0;
+			pending_result = 1;
+			chd_dec_pci_remove(&pci);
+			assert(!lifetime_owner.refs && lifetime_owner.gets == 1);
+			assert(lifetime_owner.retirements == 1 && lifetime_owner.puts == 1);
+			assert(!module_refs && module_puts == 1 && dma_frees == 1);
+			assert(pci_gets == 1 && pci_puts == 1);
+			assert_released();
+		}
+	}
+}
+
 static void test_empty_preopened_context(void)
 {
 	struct crystalhd_adp *adp;
@@ -1055,6 +1160,7 @@ int main(void)
 	test_no_session_inventory();
 	test_terminal_proof_and_recovery();
 	test_fence_faults();
+	test_reference_owner_fence_faults();
 	test_empty_preopened_context();
 	test_permanent_quarantine();
 	printf("Device lifetime: %u scenarios passed\n", scenarios);

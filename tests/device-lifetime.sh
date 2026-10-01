@@ -8,6 +8,7 @@ cleanup()
 {
     rm -f "$lifetime_test_dir/check" "$lifetime_test_dir/lifetime-functions.h" \
         "$lifetime_test_dir/lifetime-command.h" "$lifetime_test_dir/lifetime-binding.h" \
+        "$lifetime_test_dir/lifetime-owner.h" \
         "$lifetime_test_dir/access-check" "$lifetime_test_dir/access-binding.h" \
         "$lifetime_test_dir/access-functions.h" "$lifetime_test_dir/probe-admission.h"
     rmdir "$lifetime_test_dir"
@@ -23,15 +24,22 @@ awk '
     END { if (found != 1 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_lnx.c" > "$lifetime_test_dir/lifetime-binding.h"
 awk '
+    /^struct crystalhd_session_owner_ops \{/ { copying = 1; found++ }
+    copying { print }
+    copying && /^};/ { copying = 0 }
+    END { if (found != 1 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_cmds.h" > "$lifetime_test_dir/lifetime-owner.h"
+awk '
     /^static void crystalhd_decoder_tracking_reset\(/ ||
     /^static bool crystalhd_retire_hw_context\(/ ||
+    /^static void crystalhd_session_retire_owner\(/ ||
     /^static void crystalhd_session_unpin\(/ ||
     /^BC_STATUS crystalhd_session_release_locked\(/ ||
     /^void crystalhd_user_close\(/ ||
     /^BC_STATUS crystalhd_delete_cmd_context\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 6 || copying) exit 1 }
+    END { if (found != 7 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" > "$lifetime_test_dir/lifetime-command.h"
 awk '
     /^static int chd_dec_disable_int\(/ ||
