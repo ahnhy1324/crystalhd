@@ -165,6 +165,15 @@ static void crystalhd_retire_hw_context(struct crystalhd_cmd *ctx,
 	enable_irq(ctx->adp->pdev->irq);
 }
 
+static void crystalhd_session_unpin(struct crystalhd_cmd *ctx)
+{
+	if (!ctx->session_module_pinned)
+		return;
+
+	ctx->session_module_pinned = false;
+	module_put(THIS_MODULE);
+}
+
 BC_STATUS crystalhd_session_acquire_locked(struct crystalhd_cmd *ctx,
 					   const void *owner)
 {
@@ -177,11 +186,19 @@ BC_STATUS crystalhd_session_acquire_locked(struct crystalhd_cmd *ctx,
 		return BC_STS_BUSY;
 	if (ctx->state != BC_LINK_INVALID)
 		return BC_STS_ERR_USAGE;
+	if (ctx->session_module_pinned)
+		return BC_STS_BUSY;
+	/* A file may close while failed PM retains its DMA resources. Pin the
+	 * module before setup, not later from a remove callback during unload.
+	 */
+	if (!try_module_get(THIS_MODULE))
+		return BC_STS_NO_ACCESS;
+	ctx->session_module_pinned = true;
 
 	opened_context = !ctx->hw_ctx;
 	sts = crystalhd_ensure_hw_context(ctx);
 	if (sts != BC_STS_SUCCESS)
-		return sts;
+		goto unpin;
 
 	sts = crystalhd_session_setup(ctx);
 	if (sts != BC_STS_SUCCESS) {
@@ -191,7 +208,7 @@ BC_STATUS crystalhd_session_acquire_locked(struct crystalhd_cmd *ctx,
 		 */
 		if (opened_context)
 			crystalhd_retire_hw_context(ctx, false);
-		return sts;
+		goto unpin;
 	}
 
 	/* Publish ownership only after the complete resource set exists. */
@@ -201,6 +218,10 @@ BC_STATUS crystalhd_session_acquire_locked(struct crystalhd_cmd *ctx,
 	ctx->retain_rx_on_suspend = false;
 	ctx->cin_wait_exit = 0;
 	return BC_STS_SUCCESS;
+
+unpin:
+	crystalhd_session_unpin(ctx);
+	return sts;
 }
 
 BC_STATUS crystalhd_session_release_locked(struct crystalhd_cmd *ctx,
@@ -214,6 +235,7 @@ BC_STATUS crystalhd_session_release_locked(struct crystalhd_cmd *ctx,
 	crystalhd_retire_hw_context(ctx, true);
 	ctx->session_owner = NULL;
 	ctx->retain_rx_on_suspend = false;
+	crystalhd_session_unpin(ctx);
 	return BC_STS_SUCCESS;
 }
 
@@ -2268,12 +2290,16 @@ BC_STATUS crystalhd_setup_cmd_context(struct crystalhd_cmd *ctx,
 		dev_err(dev, "%s: Invalid arg\n", __func__);
 		return BC_STS_INV_ARG;
 	}
+	/* Reinitialization must never erase a live session's module reference. */
+	if (ctx->session_module_pinned)
+		return BC_STS_BUSY;
 
 	if (ctx->adp)
 		dev_dbg(dev, "Resetting Cmd context delete missing..\n");
 
 	ctx->adp = adp;
 	ctx->session_owner = NULL;
+	ctx->session_module_pinned = false;
 	ctx->retain_rx_on_suspend = false;
 	crystalhd_decoder_tracking_reset(ctx);
 	for (i = 0; i < BC_LINK_MAX_OPENS; i++) {
@@ -2331,6 +2357,7 @@ BC_STATUS crystalhd_delete_cmd_context(struct crystalhd_cmd *ctx)
 	crystalhd_stream_release(ctx);
 	crystalhd_decoder_tracking_reset(ctx);
 	ctx->adp = NULL;
+	crystalhd_session_unpin(ctx);
 
 	return BC_STS_SUCCESS;
 }

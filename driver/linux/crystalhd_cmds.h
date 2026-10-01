@@ -88,6 +88,8 @@ struct crystalhd_cmd {
 	 * without a frontend release.
 	 */
 	const void		*session_owner;
+	/* Held from resource setup until complete session ownership teardown. */
+	bool			session_module_pinned;
 	/* Only the legacy adapter retains RX registrations across successful PM. */
 	bool			retain_rx_on_suspend;
 	enum crystalhd_decoder_phase decoder_phase;
@@ -131,7 +133,10 @@ BC_STATUS crystalhd_user_set_mode(struct crystalhd_cmd *ctx,
  * verified a present adapter, and holds adp->user_lock exclusively. The owner
  * token is stable and unique from successful acquisition through release.
  * Do not call release after the device becomes unavailable; teardown forcibly
- * revokes the token without dereferencing it.
+ * revokes the token without dereferencing it. Acquisition pins the module
+ * before allocating session resources; release/removal unpin only after full
+ * ownership teardown. Suspend and RX-only retirement preserve this pin. It
+ * does not retain a frontend's owner token, buffers or completion context.
  */
 BC_STATUS crystalhd_session_acquire_locked(struct crystalhd_cmd *ctx,
 					   const void *owner);
