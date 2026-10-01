@@ -50,6 +50,26 @@ jobs:
           node -e 'require("ws")'
           make -j2 W=1 check KDIR="$KDIR" KVER="$KVER"
 
+      - name: Verify optional V4L2 module integration
+        shell: bash
+        run: |
+          v4l2_imports=$(nm -u driver/linux/crystalhd.ko)
+          if grep -q 'v4l2_device_' <<< "$v4l2_imports"; then
+            echo 'unexpected V4L2 import in the default module' >&2
+            exit 1
+          fi
+          make -j2 W=1 driver CRYSTALHD_V4L2=1 KDIR="$KDIR" KVER="$KVER"
+          v4l2_imports=$(nm -u driver/linux/crystalhd.ko)
+          grep -q 'v4l2_device_register' <<< "$v4l2_imports"
+          grep -q 'v4l2_device_unregister' <<< "$v4l2_imports"
+          grep -q 'v4l2_device_put' <<< "$v4l2_imports"
+          make -j2 W=1 driver CRYSTALHD_V4L2=0 KDIR="$KDIR" KVER="$KVER"
+          v4l2_imports=$(nm -u driver/linux/crystalhd.ko)
+          if grep -q 'v4l2_device_' <<< "$v4l2_imports"; then
+            echo 'V4L2 import remains after disabling the optional build' >&2
+            exit 1
+          fi
+
       - name: Verify seek regression test against software decoding
         run: |
           sh tests/generate-h264-samples.sh "$RUNNER_TEMP/h264-samples"

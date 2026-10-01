@@ -53,6 +53,7 @@
 #include "crystalhd_ioctl_limits.h"
 #include "crystalhd_cmds.h"
 #include "crystalhd_l0s.h"
+#include "crystalhd_v4l2.h"
 
 #define CRYSTAL_HD_NAME "Broadcom Crystal HD Decoder Driver"
 
@@ -80,6 +81,7 @@ struct crystalhd_adp {
 	u64			generation;
 	/* PM readiness under user_lock; probe initializes before publication. */
 	bool			hw_accessible;
+	struct crystalhd_v4l2	*v4l2;
 
 	spinlock_t		lock;
 	struct rw_semaphore	user_lock;

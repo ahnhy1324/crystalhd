@@ -540,6 +540,7 @@ static int msi_result, irq_result;
 static bool msi_active, irq_active;
 static bool pm_tracking, pm_master, pm_bound, pm_alloc_fail;
 static bool pm_resume_success_pending;
+static bool pm_frontend_live;
 static int pm_enable_error, pm_suspend_error, pm_resume_error, pm_pending;
 static int chd_device_lock, pm_lock_depth, pm_user_lock_depth;
 static unsigned int pm_user_locks, pm_user_unlocks;
@@ -549,6 +550,14 @@ static crystalhd_ioctl_data pm_data;
 static struct crystalhd_hw pm_hw;
 static char pm_events[128];
 static unsigned int pm_event_count;
+static void crystalhd_v4l2_unregister(struct crystalhd_adp *adp)
+{
+	CHECK(adp == &irq_adapter && pm_lock_depth == 1);
+	CHECK(!pm_user_lock_depth && !pm_master && !irq_active && !msi_active);
+	CHECK(!adp->present && adp->cmds.cin_wait_exit);
+	pm_frontend_live = false;
+}
+
 static void pm_event(char event)
 {
 	if (pm_tracking && pm_event_count + 1 < sizeof(pm_events)) {
@@ -826,6 +835,7 @@ static void reset_pm_model(const char *name)
 	pm_master = pm_bound = true;
 	pm_alloc_fail = false;
 	pm_resume_success_pending = false;
+	pm_frontend_live = true;
 	pm_enable_error = pm_suspend_error = pm_resume_error = 0;
 	pm_pending = 1;
 	pm_lock_depth = pm_user_lock_depth = 0;
@@ -858,6 +868,7 @@ static void check_pm_closed(void)
 {
 	unsigned int old_events = pm_event_count, old_reads = reads;
 	CHECK(!irq_adapter.present && irq_adapter.cmds.cin_wait_exit);
+	CHECK(!pm_frontend_live);
 	CHECK(!pm_master && !irq_active && !msi_active && !pm_lock_depth);
 	CHECK(!irq_adapter.irq_registered && !irq_adapter.msi);
 	CHECK(pm_waits == 1);
@@ -880,11 +891,13 @@ static void test_pm_lifecycle(void)
 		CHECK(pm_allocs == 1 && pm_frees == 1 && pm_saves == 1);
 		CHECK(!irq_adapter.l0s.raw_active && irq_adapter.present);
 		CHECK(!irq_adapter.hw_accessible);
+		CHECK(pm_frontend_live);
 		pm_event_count = 0; pm_events[0] = '\0';
 		CHECK(chd_dec_pci_resume(&endpoint) == 0);
 		CHECK(strcmp(pm_events, "PRCEQMH") == 0);
 		CHECK(irq_adapter.l0s.raw_active && irq_adapter.present);
 		CHECK(irq_adapter.hw_accessible);
+		CHECK(pm_frontend_live);
 		CHECK(irq_adapter.cmds.hw_ctx == (which ? &pm_hw : NULL));
 		CHECK(pm_master && irq_active && msi_active && pm_resumes == 1);
 		finish_pm_model();
@@ -913,6 +926,7 @@ static void test_pm_lifecycle(void)
 		} else {
 			CHECK(!pm_waits && irq_adapter.present && irq_active);
 			CHECK(irq_adapter.hw_accessible);
+			CHECK(pm_frontend_live);
 		}
 		finish_pm_model();
 	}

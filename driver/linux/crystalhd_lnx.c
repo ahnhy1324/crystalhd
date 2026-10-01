@@ -1093,6 +1093,7 @@ static void chd_dec_fail_closed(struct crystalhd_adp *adp, int error)
 		dev_warn(&adp->pdev->dev,
 			 "PCI transactions pending after failed power transition\n");
 	chd_dec_disable_int(adp);
+	crystalhd_v4l2_unregister(adp);
 	up_write(&chd_device_lock);
 	dev_err(&adp->pdev->dev,
 		"power transition failed (%d); device unavailable until driver reload\n",
@@ -1120,6 +1121,7 @@ static void chd_dec_pci_remove(struct pci_dev *pdev)
 	if (!pci_wait_for_pending_transaction(pdev))
 		dev_warn(&pdev->dev, "PCI transactions pending during removal\n");
 	chd_dec_disable_int(pinfo);
+	crystalhd_v4l2_unregister(pinfo);
 
 	sts = crystalhd_delete_cmd_context(&pinfo->cmds);
 	if (sts != BC_STS_SUCCESS)
@@ -1227,7 +1229,7 @@ static int chd_dec_pci_probe(struct pci_dev *pdev,
 		goto cleanup_int;
 	}
 
-	/* Last fallible setup, while file operations are still excluded. The
+	/* File operations are still excluded during the link setup. The
 	 * temporary context was freed without allocating or posting DMA, but
 	 * its hardware-open path enabled mastering. Disable it for the opt-in
 	 * link change before exposing any playback session.
@@ -1248,6 +1250,11 @@ static int chd_dec_pci_probe(struct pci_dev *pdev,
 	pci_set_master(pdev);
 
 	pci_set_drvdata(pdev, pinfo);
+	rc = crystalhd_v4l2_register(pinfo);
+	if (rc) {
+		pci_set_drvdata(pdev, NULL);
+		goto cleanup_l0s;
+	}
 
 	pinfo->hw_accessible = true;
 

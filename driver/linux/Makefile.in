@@ -8,6 +8,7 @@ DESTDIR ?=
 MODULEDIR ?= /lib/modules/$(KVER)/updates
 UDEVDIR ?= /lib/udev/rules.d
 FIRMWAREDIR ?= /lib/firmware
+CRYSTALHD_V4L2 ?= 0
 
 
 INCLUDES  = -I$(src)/../../include
@@ -34,10 +35,15 @@ PWD := $(CURDIR)
 obj-m := crystalhd.o
 crystalhd-objs := $(OBJ)
 
+ifeq ($(CRYSTALHD_V4L2),1)
+ccflags-y += -DCRYSTALHD_ENABLE_V4L2
+crystalhd-objs += crystalhd_v4l2.o
+endif
+
 .PHONY: all install install-module install-udev install-firmware uninstall uninstall-module uninstall-udev uninstall-firmware clean distclean
 
 all:
-	$(MAKE) -C $(KDIR) M=$(PWD) modules
+	$(MAKE) -C $(KDIR) M=$(PWD) CRYSTALHD_V4L2=$(CRYSTALHD_V4L2) modules
 
 install: install-module install-udev install-firmware
 
