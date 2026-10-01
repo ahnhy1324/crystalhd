@@ -5,6 +5,8 @@
  * fails, matching the ownership ambiguity of a post-command copyout error.
  */
 #include <cerrno>
+#include <chrono>
+#include <condition_variable>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
@@ -12,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
+#include <mutex>
 #include <pthread.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
@@ -19,7 +22,9 @@
 #include <unistd.h>
 
 #include "7411d.h"
+#include "libcrystalhd_fwcmds.h"
 #include "libcrystalhd_if.h"
+#include "libcrystalhd_int_if.h"
 #include "libcrystalhd_priv.h"
 
 extern bc_dil_glob_s *bc_dil_glob_ptr;
@@ -97,6 +102,16 @@ static unsigned close_sequence;
 static bool release_clears_ownership;
 static pthread_mutex_t *observed_forbidden_lock;
 static unsigned forbidden_lock_calls;
+static std::mutex lifecycle_gate;
+static std::condition_variable lifecycle_changed;
+static bool delayed_lock_waiting;
+static bool release_delayed_lock;
+static bool pause_firmware_stop;
+static bool firmware_stop_waiting;
+static bool release_firmware_stop;
+static thread_local unsigned delay_context_lock;
+static unsigned firmware_stop_calls;
+static unsigned firmware_close_calls;
 
 static bool release_tracking;
 static void *release_outputs[BC_RX_LIST_CNT];
@@ -145,6 +160,48 @@ static void ResetMock(bool clear_ownership)
 	forbidden_lock_calls = 0;
 	if (clear_ownership)
 		ClearOwnership();
+}
+
+static void ResetLifecycleGate()
+{
+	std::lock_guard<std::mutex> lock(lifecycle_gate);
+	delayed_lock_waiting = false;
+	release_delayed_lock = false;
+	pause_firmware_stop = false;
+	firmware_stop_waiting = false;
+	release_firmware_stop = false;
+	firmware_stop_calls = 0;
+	firmware_close_calls = 0;
+}
+
+static void WaitForDelayedLock()
+{
+	std::unique_lock<std::mutex> lock(lifecycle_gate);
+	if (!lifecycle_changed.wait_for(lock, std::chrono::seconds(2),
+	                                [] { return delayed_lock_waiting; }))
+		std::abort();
+}
+
+static void ReleaseDelayedLock()
+{
+	std::lock_guard<std::mutex> lock(lifecycle_gate);
+	release_delayed_lock = true;
+	lifecycle_changed.notify_all();
+}
+
+static void WaitForFirmwareStop()
+{
+	std::unique_lock<std::mutex> lock(lifecycle_gate);
+	if (!lifecycle_changed.wait_for(lock, std::chrono::seconds(2),
+	                                [] { return firmware_stop_waiting; }))
+		std::abort();
+}
+
+static void ReleaseFirmwareStop()
+{
+	std::lock_guard<std::mutex> lock(lifecycle_gate);
+	release_firmware_stop = true;
+	lifecycle_changed.notify_all();
 }
 
 static IoctlEvent *RecordEvent(unsigned long command)
@@ -263,6 +320,15 @@ extern "C" int __wrap_pthread_mutex_lock(pthread_mutex_t *mutex)
 {
 	if (mutex == observed_forbidden_lock)
 		++forbidden_lock_calls;
+	if (delay_context_lock && active_context &&
+	    mutex == &active_context->thLock && --delay_context_lock == 0) {
+		std::unique_lock<std::mutex> lock(lifecycle_gate);
+		delayed_lock_waiting = true;
+		lifecycle_changed.notify_all();
+		if (!lifecycle_changed.wait_for(lock, std::chrono::seconds(2),
+		                                [] { return release_delayed_lock; }))
+			std::abort();
+	}
 	return __real_pthread_mutex_lock(mutex);
 }
 
@@ -319,6 +385,40 @@ extern "C" int __wrap_shmctl(int, int command, struct shmid_ds *buffer)
 		buffer->shm_nattch = 1;
 	}
 	return 0;
+}
+
+BC_STATUS DtsFWDecFlushChannel(HANDLE, uint32_t)
+{
+	return BC_STS_SUCCESS;
+}
+
+BC_STATUS DtsFWPauseVideo(HANDLE, uint32_t)
+{
+	return BC_STS_SUCCESS;
+}
+
+BC_STATUS DtsFWStopVideo(HANDLE, uint32_t, bool)
+{
+	++firmware_stop_calls;
+	if (pause_firmware_stop) {
+		std::unique_lock<std::mutex> lock(lifecycle_gate);
+		firmware_stop_waiting = true;
+		lifecycle_changed.notify_all();
+		if (!lifecycle_changed.wait_for(lock, std::chrono::seconds(2),
+		                                [] { return release_firmware_stop; }))
+			std::abort();
+	}
+	return BC_STS_SUCCESS;
+}
+
+BC_STATUS DtsFWCloseChannel(HANDLE, uint32_t)
+{
+	++firmware_close_calls;
+	return BC_STS_SUCCESS;
+}
+
+void DumpInputSampleToFile(uint8_t *, uint32_t)
+{
 }
 
 /* DtsReleaseInterface owns this call, but parser behavior is unrelated to
@@ -389,6 +489,12 @@ static BC_STATUS StartCapture(Fixture &fixture, bool immediate)
 {
 	return immediate ? DtsStartCaptureImmidiate(&fixture.context, 0) :
 	                   DtsStartCapture(&fixture.context);
+}
+
+static BC_STATUS ShutdownDecoder(Fixture &fixture, bool close_decoder)
+{
+	return close_decoder ? DtsCloseDecoder(&fixture.context) :
+	                       DtsStopDecoder(&fixture.context);
 }
 
 static unsigned CountCommand(unsigned long command)
@@ -679,6 +785,217 @@ static void TestConcurrentStarts()
 	      "concurrent starts preserve the complete ioctl pool");
 }
 
+static void TestCaptureLifecycleStates()
+{
+	const uint32_t devices[] = {BC_PCI_DEVID_LINK, BC_PCI_DEVID_FLEA};
+	const uint32_t states[] = {
+		BC_DEC_STATE_FLUSH,
+		BC_DEC_STATE_STOP,
+		BC_DEC_STATE_CLOSE,
+	};
+	char label[96];
+	for (uint32_t device : devices) {
+		for (bool immediate : {false, true}) {
+			for (uint32_t state : states) {
+				std::snprintf(label, sizeof(label), "%s %s rejects state %u",
+				              device == BC_PCI_DEVID_FLEA ? "FLEA" : "LINK",
+				              immediate ? "immediate" : "ordinary",
+				              static_cast<unsigned>(state));
+				case_name = label;
+				Fixture fixture(device);
+				fixture.context.State = state;
+				Check(StartCapture(fixture, immediate) ==
+				          BC_STS_DEC_NOT_STARTED,
+				      "capture rejects a lifecycle with closed admission");
+				Check(event_count == 0 && add_calls == 0 && start_calls == 0,
+				      "rejected lifecycle performs no driver operation");
+				Check(!fixture.context.bMapOutBufDone &&
+				      !fixture.context.bMapOutBufDirty && OwnedCount() == 0,
+				      "rejected lifecycle cannot acquire output ownership");
+				Check(PoolSize(fixture.context) == BC_IOCTL_DATA_POOL_SIZE,
+				      "rejected lifecycle preserves every ioctl envelope");
+			}
+		}
+	}
+}
+
+static void TestShutdownWinsCaptureRace()
+{
+	const uint32_t devices[] = {BC_PCI_DEVID_LINK, BC_PCI_DEVID_FLEA};
+	char label[112];
+	for (uint32_t device : devices) {
+		for (bool immediate : {false, true}) {
+			for (bool close_decoder : {false, true}) {
+				std::snprintf(label, sizeof(label),
+				              "%s %s delayed after %s",
+				              device == BC_PCI_DEVID_FLEA ? "FLEA" : "LINK",
+				              immediate ? "immediate" : "ordinary",
+				              close_decoder ? "close" : "stop");
+				case_name = label;
+				Fixture fixture(device);
+				Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_SUCCESS,
+				      "race fixture begins with driver-owned output buffers");
+				ResetMock(false);
+				ResetLifecycleGate();
+
+				BC_STATUS start_status = BC_STS_ERROR;
+				std::thread starter([&] {
+					delay_context_lock = 1;
+					start_status = StartCapture(fixture, immediate);
+				});
+				WaitForDelayedLock();
+				const BC_STATUS shutdown_status =
+					ShutdownDecoder(fixture, close_decoder);
+				const size_t shutdown_events = event_count;
+				ReleaseDelayedLock();
+				starter.join();
+
+				Check(shutdown_status == BC_STS_SUCCESS,
+				      "shutdown completes while delayed capture is excluded");
+				Check(start_status == BC_STS_DEC_NOT_STARTED,
+				      "capture revalidates lifecycle after acquiring the mutex");
+				Check(shutdown_events == 1 && event_count == shutdown_events &&
+				      CountCommand(BCM_IOC_FLUSH_RX_CAP) == 1 &&
+				      CountCommand(BCM_IOC_ADD_RXBUFFS) == 0 &&
+				      CountCommand(BCM_IOC_START_RX_CAP) == 0,
+				      "no capture command follows completed shutdown cleanup");
+				Check(events[0].command == BCM_IOC_FLUSH_RX_CAP &&
+				      events[0].discard_only == FALSE,
+				      "shutdown performs one destructive output flush");
+				Check(fixture.context.State ==
+				          (close_decoder ? BC_DEC_STATE_CLOSE : BC_DEC_STATE_STOP),
+				      "shutdown leaves the requested terminal decoder state");
+				Check(!fixture.context.bMapOutBufDone &&
+				      !fixture.context.bMapOutBufDirty && OwnedCount() == 0,
+				      "shutdown retains no output-buffer ownership");
+				Check(firmware_stop_calls == 1 &&
+				      firmware_close_calls == (close_decoder ? 1U : 0U),
+				      "shutdown crosses each required firmware boundary once");
+				Check(PoolSize(fixture.context) == BC_IOCTL_DATA_POOL_SIZE,
+				      "shutdown race preserves every ioctl envelope");
+			}
+		}
+	}
+}
+
+static void TestFlushAdmissionBarrier()
+{
+	const uint32_t devices[] = {BC_PCI_DEVID_LINK, BC_PCI_DEVID_FLEA};
+	char label[96];
+	for (uint32_t device : devices) {
+		for (bool immediate : {false, true}) {
+			std::snprintf(label, sizeof(label), "%s %s FLUSH barrier",
+			              device == BC_PCI_DEVID_FLEA ? "FLEA" : "LINK",
+			              immediate ? "immediate" : "ordinary");
+			case_name = label;
+			Fixture fixture(device);
+			Check(DtsMapYUVBuffs(&fixture.context) == BC_STS_SUCCESS,
+			      "barrier fixture begins with driver-owned output buffers");
+			ResetMock(false);
+			ResetLifecycleGate();
+			pause_firmware_stop = true;
+
+			BC_STATUS start_status = BC_STS_ERROR;
+			BC_STATUS stop_status = BC_STS_ERROR;
+			std::thread starter([&] {
+				delay_context_lock = 1;
+				start_status = StartCapture(fixture, immediate);
+			});
+			WaitForDelayedLock();
+			std::thread stopper([&] {
+				stop_status = DtsStopDecoder(&fixture.context);
+			});
+			WaitForFirmwareStop();
+			Check(fixture.context.State == BC_DEC_STATE_FLUSH,
+			      "stop publishes FLUSH before firmware and output cleanup");
+
+			ReleaseDelayedLock();
+			starter.join();
+			Check(start_status == BC_STS_DEC_NOT_STARTED,
+			      "FLUSH closes capture admission under the shared mutex");
+			Check(event_count == 0 && add_calls == 0 && start_calls == 0,
+			      "capture cannot issue commands after the FLUSH barrier");
+
+			ReleaseFirmwareStop();
+			stopper.join();
+			Check(stop_status == BC_STS_SUCCESS && firmware_stop_calls == 1,
+			      "stop completes after the barrier probe");
+			Check(event_count == 1 &&
+			      events[0].command == BCM_IOC_FLUSH_RX_CAP &&
+			      events[0].discard_only == FALSE,
+			      "stop destructively retires the original output mapping");
+			Check(fixture.context.State == BC_DEC_STATE_STOP &&
+			      !fixture.context.bMapOutBufDone &&
+			      !fixture.context.bMapOutBufDirty && OwnedCount() == 0,
+			      "barrier race finishes stopped with no output ownership");
+			Check(PoolSize(fixture.context) == BC_IOCTL_DATA_POOL_SIZE,
+			      "barrier race preserves every ioctl envelope");
+		}
+	}
+}
+
+static void TestCaptureWinsShutdownRace()
+{
+	const uint32_t devices[] = {BC_PCI_DEVID_LINK, BC_PCI_DEVID_FLEA};
+	char label[112];
+	for (uint32_t device : devices) {
+		for (bool immediate : {false, true}) {
+			for (bool close_decoder : {false, true}) {
+				std::snprintf(label, sizeof(label),
+				              "%s %s wins before %s",
+				              device == BC_PCI_DEVID_FLEA ? "FLEA" : "LINK",
+				              immediate ? "immediate" : "ordinary",
+				              close_decoder ? "close" : "stop");
+				case_name = label;
+				Fixture fixture(device);
+				ResetLifecycleGate();
+
+				BC_STATUS shutdown_status = BC_STS_ERROR;
+				std::thread shutdown([&] {
+					delay_context_lock = 1;
+					shutdown_status =
+						ShutdownDecoder(fixture, close_decoder);
+				});
+				WaitForDelayedLock();
+				const BC_STATUS start_status =
+					StartCapture(fixture, immediate);
+				const size_t start_events = event_count;
+				Check(start_status == BC_STS_SUCCESS &&
+				      start_events == BC_RX_LIST_CNT + 1,
+				      "capture completes before shutdown acquires admission");
+				Check(AddsUseUniqueConfiguredBuffers(0, BC_RX_LIST_CNT) &&
+				      CountCommand(BCM_IOC_START_RX_CAP) == 1 &&
+				      OwnedCount() == BC_RX_LIST_CNT,
+				      "winning capture registers one complete unique output set");
+				CheckStartPayload(events[BC_RX_LIST_CNT], device, immediate);
+
+				ReleaseDelayedLock();
+				shutdown.join();
+				Check(shutdown_status == BC_STS_SUCCESS,
+				      "shutdown succeeds after capture wins admission");
+				Check(event_count == start_events + 1 &&
+				      CountCommand(BCM_IOC_ADD_RXBUFFS) == BC_RX_LIST_CNT &&
+				      CountCommand(BCM_IOC_START_RX_CAP) == 1 &&
+				      CountCommand(BCM_IOC_FLUSH_RX_CAP) == 1 &&
+				      events[event_count - 1].command == BCM_IOC_FLUSH_RX_CAP,
+				      "shutdown follows capture with one destructive flush");
+				Check(!duplicate_add && OwnedCount() == 0 &&
+				      !fixture.context.bMapOutBufDone &&
+				      !fixture.context.bMapOutBufDirty,
+				      "shutdown cleans every buffer admitted by winning capture");
+				Check(fixture.context.State ==
+				          (close_decoder ? BC_DEC_STATE_CLOSE : BC_DEC_STATE_STOP),
+				      "capture-win race reaches the requested terminal state");
+				Check(firmware_stop_calls == 1 &&
+				      firmware_close_calls == (close_decoder ? 1U : 0U),
+				      "capture-win shutdown crosses firmware boundaries once");
+				Check(PoolSize(fixture.context) == BC_IOCTL_DATA_POOL_SIZE,
+				      "capture-win race preserves every ioctl envelope");
+			}
+		}
+	}
+}
+
 static void TestStartFailuresAndRetry()
 {
 	const FailureKind kinds[] = {FAIL_STATUS, FAIL_SYSCALL};
@@ -962,6 +1279,10 @@ int main()
 	TestRepeatedStartMappingFailures();
 	TestSuccessfulStarts();
 	TestConcurrentStarts();
+	TestCaptureLifecycleStates();
+	TestShutdownWinsCaptureRace();
+	TestFlushAdmissionBarrier();
+	TestCaptureWinsShutdownRace();
 	TestStartFailuresAndRetry();
 	TestFlushSemantics();
 	TestFlushPidMismatch();
