@@ -6,11 +6,19 @@ repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 l0s_test_dir=$(mktemp -d "${TMPDIR:-/tmp}/crystalhd-l0s-check.XXXXXX")
 cleanup()
 {
-    rm -f "$l0s_test_dir/check" "$l0s_test_dir/l0s-irq-functions.h"
+    rm -f "$l0s_test_dir/check" "$l0s_test_dir/l0s-irq-functions.h" \
+        "$l0s_test_dir/l0s-retire-command.h"
     rmdir "$l0s_test_dir"
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
+
+awk '
+    /^void crystalhd_rx_retire_quiesced\(/ { copying = 1; found++ }
+    copying { print }
+    copying && /^}/ { copying = 0 }
+    END { if (found != 1 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_cmds.c" > "$l0s_test_dir/l0s-retire-command.h"
 
 # Extract the actual IRQ/PM lifecycle functions, not parallel implementations.
 awk '

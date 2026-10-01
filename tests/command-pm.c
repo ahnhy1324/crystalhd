@@ -92,6 +92,7 @@ struct crystalhd_cmd {
     struct crystalhd_adp *adp;
     struct crystalhd_user user[BC_LINK_MAX_OPENS];
     const void *session_owner;
+    bool retain_rx_on_suspend;
     enum crystalhd_decoder_phase decoder_phase;
     enum crystalhd_decoder_codec decoder_codec;
     uint32_t fw_sequence, decoder_channel_id;
@@ -130,6 +131,7 @@ static unsigned hardware_alloc_attempts;
 static unsigned binding_count, binding_frees, device_reads, user_writes;
 static unsigned downloads, download_resets;
 static unsigned stream_prepares, stream_releases;
+static unsigned quiesced_rx_retires;
 static int stream_prepare_error;
 static uint8_t stream_cookie;
 static const uint8_t *last_download_image;
@@ -295,6 +297,14 @@ static void *kmalloc(size_t size, int flags)
     hardware_allocated = true;
     hardware_allocations++;
     return &hardware;
+}
+static void *kzalloc(size_t size, int flags)
+{
+    void *memory = kmalloc(size, flags);
+
+    if (memory)
+        memset(memory, 0, size);
+    return memory;
 }
 static void kfree(void *memory)
 {
@@ -507,6 +517,12 @@ static BC_STATUS crystalhd_hw_stop_capture(struct crystalhd_hw *hw, bool unmap)
         Event('C');
     return capture_status;
 }
+static void crystalhd_hw_retire_rx_quiesced(struct crystalhd_hw *hw)
+{
+    Check(hw == &hardware && hw->fetch_sem == 1,
+          "quiesced command retirement delegates the exact hardware outside fetch serialization");
+    quiesced_rx_retires++;
+}
 static BC_STATUS crystalhd_hw_cancel_all_tx(struct crystalhd_hw *hw)
 {
     Check(hw == &hardware, "suspend cancels every TX-list owner");
@@ -697,6 +713,7 @@ static void Reset(uint32_t state, bool with_hardware)
     adapter_visible = true;
     downloads = download_resets = 0;
     stream_prepares = stream_releases = 0;
+    quiesced_rx_retires = 0;
     stream_prepare_error = 0;
     last_download_image = NULL;
     last_download_size = 0;
@@ -3104,7 +3121,8 @@ static void CloseFile(struct file *file)
 static void CheckNoSession(void)
 {
     Check(!adapter.cfg_users && !bc_get_userhandle_count(&context) &&
-          !context.session_owner && !context.hw_ctx && !hardware_allocated && !elem_live && !dio_live &&
+          !context.session_owner && !context.retain_rx_on_suspend &&
+          !context.hw_ctx && !hardware_allocated && !elem_live && !dio_live &&
           !rings_live && !adapter.fill_byte_pool && !adapter.elem_pool_head &&
           !hardware.rx_freeq,
           "the final close leaves no session user, hardware, or pool allocation");
@@ -3123,7 +3141,8 @@ static struct file OpenResourceFile(uint32_t mode)
     admission_state = context.state;
     admission_wait = context.cin_wait_exit;
     data.udata.u.NotifyMode.Mode = mode;
-    Check(bc_cproc_notify_mode(&context, &data) == BC_STS_SUCCESS,
+    Check(bc_cproc_notify_mode(&context, &data) == BC_STS_SUCCESS &&
+          context.retain_rx_on_suspend,
           "all legacy non-monitor modes can acquire an idle resource set");
     admission_pending = false;
     Check(context.session_owner == user && user->mode == mode &&
@@ -3189,6 +3208,179 @@ static void ResourceOwnership(void)
               "owner RELEASE and file close cannot retire resources twice");
     }
 }
+static void QuiescedRxPolicy(void)
+{
+    static const uint32_t states[] = {
+        BC_LINK_INVALID, BC_LINK_INIT, BC_LINK_READY,
+        BC_LINK_READY | BC_LINK_CAP_EN, BC_LINK_SUSPEND, BC_LINK_RESUME,
+    };
+
+    for (unsigned state = 0; state < sizeof(states) / sizeof(states[0]); state++) {
+        for (unsigned retain = 0; retain < 2; retain++) {
+            for (unsigned suspend_only = 0; suspend_only < 2; suspend_only++) {
+                struct crystalhd_cmd before;
+                struct crystalhd_hw hardware_before;
+                unsigned expected = !(retain && suspend_only);
+
+                Reset(states[state], true);
+                context.retain_rx_on_suspend = retain;
+                before = context;
+                hardware_before = hardware;
+                crystalhd_rx_retire_quiesced(&context, suspend_only);
+                Check(quiesced_rx_retires == expected &&
+                      !memcmp(&context, &before, sizeof(before)) &&
+                      !memcmp(&hardware, &hardware_before, sizeof(hardware_before)),
+                      "RX-only retirement honors only legacy suspend retention without revoking session or state");
+                crystalhd_rx_retire_quiesced(&context, suspend_only);
+                Check(quiesced_rx_retires == expected * 2 &&
+                      !starts && !stops && !captures && !cancels &&
+                      !irq_disables && !irq_enables && !hardware_closes &&
+                      !ring_frees && !dio_destroys && !elem_deletes,
+                      "repeated policy calls delegate memory-only retirement without device or session teardown");
+            }
+        }
+    }
+    Reset(BC_LINK_INVALID, false);
+    context.retain_rx_on_suspend = true;
+    {
+        struct crystalhd_cmd before = context;
+
+        crystalhd_rx_retire_quiesced(NULL, false);
+        crystalhd_rx_retire_quiesced(NULL, true);
+        crystalhd_rx_retire_quiesced(&context, false);
+        crystalhd_rx_retire_quiesced(&context, true);
+        Check(!quiesced_rx_retires && !memcmp(&context, &before, sizeof(before)),
+              "quiesced retirement tolerates NULL and early contexts without hardware");
+    }
+}
+
+static void RxRetentionAdmission(void)
+{
+    int owner, other;
+    static const uint32_t modes[] = {
+        DTS_PLAYBACK_MODE, DTS_DIAG_MODE,
+        0x100 | DTS_PLAYBACK_MODE, 0x100 | DTS_DIAG_MODE,
+    };
+
+    Reset(BC_LINK_INVALID, false);
+    context.retain_rx_on_suspend = true; /* A new generic owner must not inherit it. */
+    Check(crystalhd_session_acquire_locked(&context, &owner) == BC_STS_SUCCESS &&
+          !context.retain_rx_on_suspend,
+          "successful generic acquisition resets stale legacy suspend retention");
+    crystalhd_rx_retire_quiesced(&context, true);
+    Check(quiesced_rx_retires == 1 && context.session_owner == &owner,
+          "generic suspend retires RX while retaining the exact session owner");
+    Check(crystalhd_session_release_locked(&context, &owner) == BC_STS_SUCCESS &&
+          !context.retain_rx_on_suspend,
+          "generic release leaves suspend policy at its safe default");
+
+    for (unsigned mode = 0; mode < sizeof(modes) / sizeof(modes[0]); mode++) {
+        Reset(BC_LINK_INVALID, false);
+        context.user[0].in_use = 1;
+        Check(crystalhd_user_set_mode(&context, &context.user[0], modes[mode]) ==
+                  BC_STS_SUCCESS && context.retain_rx_on_suspend,
+              "successful legacy playback and diagnostic admission opt into RX suspend retention");
+        crystalhd_rx_retire_quiesced(&context, true);
+        Check(!quiesced_rx_retires && context.session_owner == &context.user[0],
+              "legacy suspend keeps its registrations and session owner");
+        Check(crystalhd_session_acquire_locked(&context, &other) == BC_STS_BUSY &&
+              crystalhd_session_release_locked(&context, &other) == BC_STS_ERR_USAGE &&
+              context.retain_rx_on_suspend,
+              "rejected foreign acquire or release cannot erase the live legacy policy");
+        Check(crystalhd_user_set_mode(&context, &context.user[1], DTS_MONITOR_MODE) ==
+                  BC_STS_SUCCESS && context.retain_rx_on_suspend,
+              "a nonowning monitor cannot overwrite the legacy owner policy");
+        crystalhd_rx_retire_quiesced(&context, false);
+        Check(quiesced_rx_retires == 1 && context.retain_rx_on_suspend,
+              "remove or fail-closed retirement ignores legacy suspend retention");
+        Check(crystalhd_session_release_locked(&context, &context.user[0]) ==
+                  BC_STS_SUCCESS && !context.retain_rx_on_suspend,
+              "legacy release clears retention before a later owner can acquire");
+        Check(crystalhd_session_acquire_locked(&context, &owner) == BC_STS_SUCCESS &&
+              !context.retain_rx_on_suspend,
+              "generic reacquisition after a legacy owner uses non-retaining suspend policy");
+        Check(crystalhd_session_release_locked(&context, &owner) == BC_STS_SUCCESS,
+              "reacquired generic session releases cleanly");
+    }
+
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        for (unsigned failure = 0; failure < 3; failure++) {
+            BC_STATUS expected = failure == 2 ? BC_STS_INSUFF_RES : BC_STS_ERROR;
+
+            Reset(BC_LINK_INVALID, false);
+            context.user[0].in_use = legacy;
+            if (failure == 0) elem_error = -1;
+            if (failure == 1) dio_error = -1;
+            if (failure == 2) ring_status = BC_STS_INSUFF_RES;
+            Check((legacy ?
+                      crystalhd_user_set_mode(&context, &context.user[0], DTS_PLAYBACK_MODE) :
+                      crystalhd_session_acquire_locked(&context, &owner)) == expected &&
+                  !context.session_owner && !context.retain_rx_on_suspend,
+                  "failed session setup cannot publish legacy RX retention");
+            elem_error = dio_error = 0;
+            ring_status = BC_STS_SUCCESS;
+            Check((legacy ?
+                      crystalhd_user_set_mode(&context, &context.user[0], DTS_PLAYBACK_MODE) :
+                      crystalhd_session_acquire_locked(&context, &owner)) == BC_STS_SUCCESS &&
+                  context.retain_rx_on_suspend == (bool)legacy,
+                  "setup retry publishes retention for precisely the successful frontend");
+            Check(crystalhd_session_release_locked(&context,
+                      legacy ? (const void *)&context.user[0] : &owner) == BC_STS_SUCCESS &&
+                  !context.retain_rx_on_suspend,
+                  "successful retry release clears its RX retention policy");
+        }
+    }
+
+    Reset(BC_LINK_INVALID, false);
+    Check(crystalhd_user_set_mode(&context, &context.user[0], DTS_MONITOR_MODE) ==
+              BC_STS_SUCCESS && !context.retain_rx_on_suspend && !context.session_owner,
+          "monitor-only admission never enables legacy owner retention");
+    context.session_owner = &owner;
+    context.retain_rx_on_suspend = true;
+    Check(crystalhd_session_release_locked(&context, &owner) == BC_STS_SUCCESS &&
+          !context.retain_rx_on_suspend && !context.session_owner,
+          "release resets retention even for an already retired hardware context");
+}
+
+static void RxRetentionContextReset(void)
+{
+    for (unsigned failure = 0; failure < 3; failure++) {
+        BC_STATUS expected = failure == 0 ? BC_STS_SUCCESS :
+            failure == 1 ? BC_STS_ERROR : BC_STS_IO_ERROR;
+
+        Reset(BC_LINK_INVALID, false);
+        context.retain_rx_on_suspend = true;
+        if (failure == 1) hardware_alloc_fail = true;
+        if (failure == 2) hardware_open_status = BC_STS_IO_ERROR;
+        Check(crystalhd_setup_cmd_context(&context, &adapter) == expected &&
+              !context.retain_rx_on_suspend && !context.session_owner && !context.hw_ctx,
+              "actual context setup clears stale retention on success, allocation failure and open failure");
+        Check(!hardware_allocated && !irq_depth && irq_disables == irq_enables,
+              "context setup policy reset leaves no hardware allocation or IRQ imbalance");
+    }
+
+    for (unsigned with_session = 0; with_session < 2; with_session++) {
+        int owner;
+
+        Reset(BC_LINK_INVALID, false);
+        if (with_session)
+            Check(crystalhd_session_acquire_locked(&context, &owner) == BC_STS_SUCCESS,
+                  "prepare resources for actual command-context deletion");
+        context.retain_rx_on_suspend = true;
+        {
+            unsigned previous_stops = stops, previous_irqs = irq_disables;
+
+            Check(crystalhd_delete_cmd_context(&context) == BC_STS_SUCCESS &&
+                  !context.retain_rx_on_suspend && !context.session_owner &&
+                  !context.hw_ctx && !context.adp && !hardware_allocated &&
+                  !elem_live && !dio_live && !rings_live,
+                  "actual context deletion clears retention and all owned resources, including early contexts");
+            Check(stops == previous_stops && irq_disables == previous_irqs,
+                  "post-quiescence command deletion has no hardware stop or IRQ side effects");
+        }
+    }
+}
+
 static void FrontendNeutralSessionOwner(void)
 {
     int foreign_owner, wrong_owner;
@@ -4265,6 +4457,9 @@ int main(void)
         {"HWINIT admission rejects overlapping resource setup", HwInitAdmission},
         {"explicit resource ownership across legacy modes", ResourceOwnership},
         {"frontend-neutral decoder session arbitration", FrontendNeutralSessionOwner},
+        {"quiesced RX retirement policy and early states", QuiescedRxPolicy},
+        {"RX retention frontend admission and release", RxRetentionAdmission},
+        {"RX retention context setup and deletion", RxRetentionContextReset},
         {"pending unconfigured handle after resource owner close", PendingOpenAfterOwnerClose},
         {"pending acquisition failure rollback, retry and close", PendingAcquisitionFailures},
         {"monitor and rejected admission avoid hardware recreation", AdmissionWithoutReopeningHardware},

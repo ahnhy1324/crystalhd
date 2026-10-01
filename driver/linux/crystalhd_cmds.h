@@ -88,6 +88,8 @@ struct crystalhd_cmd {
 	 * without a frontend release.
 	 */
 	const void		*session_owner;
+	/* Only the legacy adapter retains RX registrations across successful PM. */
+	bool			retain_rx_on_suspend;
 	enum crystalhd_decoder_phase decoder_phase;
 	enum crystalhd_decoder_codec decoder_codec;
 	uint32_t		fw_sequence;
@@ -112,6 +114,14 @@ struct crystalhd_cmd_tbl {
 
 BC_STATUS crystalhd_suspend(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *idata);
 BC_STATUS crystalhd_resume(struct crystalhd_cmd *ctx);
+/* Ownership-only PM/removal boundary. Caller excludes session operations,
+ * retains ctx/adp lifetime, and has stopped/drained DMA and disabled IRQs.
+ * Successful suspend preserves the legacy session's RX registrations; all
+ * other callers retire them. Release callbacks must not reenter or wait on
+ * the caller's device/session barrier. This does not revoke the session token
+ * or free rings. A failed device_enter alone is not a retirement fence.
+ */
+void crystalhd_rx_retire_quiesced(struct crystalhd_cmd *ctx, bool suspend_only);
 crystalhd_cmd_proc crystalhd_get_cmd_proc(struct crystalhd_cmd *ctx, uint32_t cmd,
 				      struct crystalhd_user *uc);
 BC_STATUS crystalhd_user_open(struct crystalhd_cmd *ctx, struct crystalhd_user **user_ctx);
