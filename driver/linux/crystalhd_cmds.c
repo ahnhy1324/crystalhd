@@ -1949,7 +1949,13 @@ BC_STATUS crystalhd_capture_flush(struct crystalhd_cmd *ctx, bool discard_only)
 
 	if (down_interruptible(&ctx->hw_ctx->fetch_sem))
 		return BC_STS_IO_USER_ABORT;
-	if (!(ctx->state & BC_LINK_CAP_EN)) {
+	/*
+	 * Registration precedes capture enable. Permit an exact INIT session to
+	 * destructively unwind a partially registered pool, but never let the
+	 * discard/restart path or another inactive state touch capture queues.
+	 */
+	if (!(ctx->state & BC_LINK_CAP_EN) &&
+	    (discard_only || ctx->state != BC_LINK_INIT)) {
 		sts = BC_STS_ERR_USAGE;
 		goto out;
 	}

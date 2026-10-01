@@ -1294,29 +1294,29 @@ void DtsReleaseMemPools(DTS_LIB_CONTEXT *Ctx)
 {
 	uint32_t	i,cnt=0;
 	DTS_MPOOL_TYPE	*mp;
-	BC_IOCTL_DATA *pIoData = NULL;
+	const bool quarantine_output = Ctx && Ctx->bMapOutBufDirty;
 
 
 	if (!Ctx) //vgd
 		return;
 
-	/* need to release any user buffers mapped in driver
-	 * or free(mp->buff) can hang under Linux and Mac OS X */
-	if (Ctx->DevHandle >= 0) {
-		pIoData = DtsAllocIoctlData(Ctx);
-		if (pIoData) {
-			pIoData->u.FlushRxCap.bDiscardOnly = TRUE;
-			DtsDrvCmd(Ctx, BCM_IOC_FLUSH_RX_CAP, 0, pIoData, TRUE);
-		}
-	}
+	/* DtsReleaseInterface retires driver ownership and closes the device
+	 * before freeing any userspace capture backing here. */
 	if (Ctx->Mpools) {
 		for (i = 0; i < Ctx->MpoolCnt; i++){
 			mp = &Ctx->Mpools[i];
 			if (mp->buff){
-				//DebugLog_Trace(LDIL_DBG,"DtsReleaseMemPools: Free Mpool %x Buff:%p\n",mp->type,mp->buff);
-				free(mp->buff);
+				/* A failed destructive cleanup can mean DMA ownership is
+				 * intentionally retained by the kernel. Do not make that
+				 * backing available for allocator reuse. */
+				if (!quarantine_output ||
+				    !(mp->type & BC_MEM_DEC_YUVBUFF))
+					free(mp->buff);
 			}
 		}
+		if (quarantine_output)
+			DebugLog_Trace(LDIL_DBG,
+				"DtsReleaseMemPools: retaining capture backing after unconfirmed unmap\n");
 		free(Ctx->Mpools);
 	}
 
@@ -1525,34 +1525,95 @@ BC_STATUS DtsCancelFetchOutInt(DTS_LIB_CONTEXT *Ctx)
 }
 
 //------------------------------------------------------------------------
+// Name: DtsUnmapYUVBuffs
+// Description: Destructively release every driver-owned output buffer.
+//------------------------------------------------------------------------
+BC_STATUS DtsUnmapYUVBuffs(DTS_LIB_CONTEXT *Ctx)
+{
+	BC_IOCTL_DATA *pIocData;
+	BC_STATUS sts;
+
+	if (!Ctx)
+		return BC_STS_INV_ARG;
+
+	DtsLock(Ctx);
+	if (!Ctx->bMapOutBufDirty) {
+		DtsUnLock(Ctx);
+		return BC_STS_SUCCESS;
+	}
+
+	pIocData = DtsAllocIoctlData(Ctx);
+	if (!pIocData) {
+		DtsUnLock(Ctx);
+		return BC_STS_INSUFF_RES;
+	}
+
+	/* Once destructive cleanup enters the kernel, a failed copy-out cannot
+	 * tell whether the complete set still exists. Require a cleanup/re-map
+	 * before treating it as complete again. */
+	Ctx->bMapOutBufDone = false;
+	pIocData->u.FlushRxCap.bDiscardOnly = FALSE;
+	sts = DtsDrvCmd(Ctx, BCM_IOC_FLUSH_RX_CAP, 0, pIocData, TRUE);
+	if (sts == BC_STS_SUCCESS) {
+		Ctx->bMapOutBufDone = false;
+		Ctx->bMapOutBufDirty = false;
+	}
+	DtsUnLock(Ctx);
+	return sts;
+}
+
+//------------------------------------------------------------------------
 // Name: DtsMapYUVBuffs
 // Description: Pass user mode pre-allocated buffers to driver for mapping.
 //------------------------------------------------------------------------
 BC_STATUS DtsMapYUVBuffs(DTS_LIB_CONTEXT *Ctx)
 {
 	uint32_t i;
-	BC_STATUS	sts;
-	DTS_MPOOL_TYPE	*mp;
+	BC_STATUS sts = BC_STS_SUCCESS;
+	DTS_MPOOL_TYPE *mp;
 
+	if (!Ctx)
+		return BC_STS_INV_ARG;
+
+	DtsLock(Ctx);
 	if (Ctx->bMapOutBufDone)
-		return BC_STS_SUCCESS;
-	if(!Ctx->Mpools || !(Ctx->CfgFlags & BC_MPOOL_INCL_YUV_BUFFS)){
-		return BC_STS_SUCCESS;
+		goto done;
+
+	/* A failed rollback leaves ownership ambiguous. Prove that the old set
+	 * is detached before attempting any new ADD_RXBUFFS command. */
+	if (Ctx->bMapOutBufDirty) {
+		sts = DtsUnmapYUVBuffs(Ctx);
+		if (sts != BC_STS_SUCCESS)
+			goto done;
 	}
 
-	for(i=0; i<Ctx->MpoolCnt; i++){
+	if (!Ctx->Mpools || !(Ctx->CfgFlags & BC_MPOOL_INCL_YUV_BUFFS))
+		goto done;
+
+	for (i = 0; i < Ctx->MpoolCnt; i++) {
 		mp = &Ctx->Mpools[i];
-		if(mp->type & BC_MEM_DEC_YUVBUFF){
-			sts = DtsAddOutBuff(Ctx, mp->buff,mp->sz, mp->type);
-			if(sts != BC_STS_SUCCESS) {
-				DebugLog_Trace(LDIL_DBG,"Map YUV buffs Failed [%x]\n",sts);
-				return sts;
+		if (mp->type & BC_MEM_DEC_YUVBUFF) {
+			/* A negative ioctl result can follow successful driver admission,
+			 * so ownership becomes dirty before entering the kernel. */
+			Ctx->bMapOutBufDirty = true;
+			sts = DtsAddOutBuff(Ctx, mp->buff, mp->sz, mp->type);
+			if (sts != BC_STS_SUCCESS) {
+				BC_STATUS rollback_sts;
+
+				DebugLog_Trace(LDIL_DBG,
+					"Map YUV buffs Failed [%x]\n", sts);
+				rollback_sts = DtsUnmapYUVBuffs(Ctx);
+				if (rollback_sts != BC_STS_SUCCESS)
+					sts = rollback_sts;
+				goto done;
 			}
 		}
 	}
 
 	Ctx->bMapOutBufDone = true;
-	return BC_STS_SUCCESS;
+done:
+	DtsUnLock(Ctx);
+	return sts;
 }
 //------------------------------------------------------------------------
 // Name: DtsInitInterface
@@ -1649,6 +1710,7 @@ void DtsJoinTxThread(DTS_LIB_CONTEXT *Ctx)
 
 BC_STATUS DtsReleaseInterface(DTS_LIB_CONTEXT *Ctx)
 {
+	BC_STATUS cleanup_sts;
 
 	if(!Ctx)
 		return BC_STS_INV_ARG;
@@ -1661,15 +1723,25 @@ BC_STATUS DtsReleaseInterface(DTS_LIB_CONTEXT *Ctx)
 	if(Ctx->alignBuf)
 		free(Ctx->alignBuf);
 
-	DtsReleaseMemPools(Ctx);
-
 	if(Ctx->DevHandle >= 0)
 	{
+		/* Try to establish an explicit unmap acknowledgement. A terminal
+		 * DMA fault may retain kernel ownership even after RELEASE/close. */
+		cleanup_sts = DtsUnmapYUVBuffs(Ctx);
+		if (cleanup_sts != BC_STS_SUCCESS)
+			DebugLog_Trace(LDIL_DBG,
+				"DtsReleaseInterface: capture cleanup failed: %d\n",
+				cleanup_sts);
 		DtsReleaseUserHandle(Ctx);
 
 		if(0 != close(Ctx->DevHandle))
 			DebugLog_Trace(LDIL_DBG,"DtsDeviceClose: Close Handle Failed with error %d\n",errno);
+		Ctx->DevHandle = -1;
 	}
+
+	/* Normal ownership is retired before userspace backing is freed. If an
+	 * unmap was not confirmed, DtsReleaseMemPools quarantines that backing. */
+	DtsReleaseMemPools(Ctx);
 
 	DtsSetHwInitSts(BC_DIL_HWINIT_NOT_YET);
 

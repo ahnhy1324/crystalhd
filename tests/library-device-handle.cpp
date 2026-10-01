@@ -179,10 +179,6 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
 		Check(data->u.NotifyMode.Mode == DTS_MONITOR_MODE,
 		      "open notifies the selected monitor mode");
 		break;
-	case BCM_IOC_FLUSH_RX_CAP:
-		Check(data->u.FlushRxCap.bDiscardOnly == TRUE,
-		      "cleanup flush discards mapped buffers");
-		break;
 	case BCM_IOC_RELEASE:
 		break;
 	default:
@@ -190,8 +186,7 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
 		break;
 	}
 
-	if (fail_cleanup &&
-	    (command == BCM_IOC_FLUSH_RX_CAP || command == BCM_IOC_RELEASE)) {
+	if (fail_cleanup && command == BCM_IOC_RELEASE) {
 		errno = EIO;
 		return -1;
 	}
@@ -367,8 +362,8 @@ static void CheckCommandOwnership()
 	DtsReleaseMemPools(&context);
 	CheckIoctls(0,
 		{BCM_IOC_GET_VERSION, BCM_IOC_GET_VERSION,
-		 BCM_IOC_GET_VERSION, BCM_IOC_FLUSH_RX_CAP},
-		"fd-zero commands and cleanup use descriptor zero exactly");
+		 BCM_IOC_GET_VERSION},
+		"fd-zero commands use descriptor zero exactly");
 	EndCase("fd-zero command paths release every allocation");
 }
 
@@ -426,7 +421,7 @@ static void CheckOpenSuccess(int descriptor)
 	      "successful lifetime balances shared-memory attachment");
 	CheckIoctls(descriptor,
 		{BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION, BCM_IOC_NOTIFY_MODE,
-		 BCM_IOC_FLUSH_RX_CAP, BCM_IOC_RELEASE},
+		 BCM_IOC_RELEASE},
 		"successful lifetime preserves command and teardown ordering");
 	EndCase("successful device lifetime releases every allocation");
 }
@@ -565,23 +560,22 @@ int main()
 	CheckInitAllocationFailure(sizeof(BC_IOCTL_DATA), 1,
 		DTS_MONITOR_MODE, {BCM_IOC_RELEASE});
 	CheckInitAllocationFailure(sizeof(BC_IOCTL_DATA), 4,
-		DTS_MONITOR_MODE, {BCM_IOC_FLUSH_RX_CAP, BCM_IOC_RELEASE});
+		DTS_MONITOR_MODE, {BCM_IOC_RELEASE});
 	CheckInitAllocationFailure(sizeof(BC_IOCTL_DATA),
 		BC_IOCTL_DATA_POOL_SIZE + 1, DTS_MONITOR_MODE,
-		{BCM_IOC_FLUSH_RX_CAP, BCM_IOC_RELEASE});
+		{BCM_IOC_RELEASE});
 	CheckInitAllocationFailure(
 		BC_MAX_SW_VOUT_BUFFS * sizeof(DTS_MPOOL_TYPE), 1,
-		DTS_PLAYBACK_MODE, {BCM_IOC_FLUSH_RX_CAP, BCM_IOC_RELEASE});
+		DTS_PLAYBACK_MODE, {BCM_IOC_RELEASE});
 	CheckOpenSuccess(0);
 	CheckOpenSuccess(99);
 	CheckOpenFailure(BCM_IOC_GET_HWTYPE, false, true, BC_STS_BUSY,
-		{BCM_IOC_GET_HWTYPE, BCM_IOC_FLUSH_RX_CAP, BCM_IOC_RELEASE});
+		{BCM_IOC_GET_HWTYPE, BCM_IOC_RELEASE});
 	CheckOpenFailure(BCM_IOC_GET_VERSION, true, false, BC_STS_ERROR,
-		{BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION,
-		 BCM_IOC_FLUSH_RX_CAP, BCM_IOC_RELEASE});
+		{BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION, BCM_IOC_RELEASE});
 	CheckOpenFailure(BCM_IOC_NOTIFY_MODE, false, false, BC_STS_BUSY,
 		{BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION, BCM_IOC_NOTIFY_MODE,
-		 BCM_IOC_FLUSH_RX_CAP, BCM_IOC_RELEASE});
+		 BCM_IOC_RELEASE});
 	CheckSystemOpenFailure();
 	std::printf("Library device handles: %u checks, %u failures\n",
 	            checks, failures);

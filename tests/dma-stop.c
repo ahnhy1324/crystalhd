@@ -22,8 +22,9 @@ typedef enum {
 #define BC_PCI_DEVID_FLEA 0x1615
 #define BC_PCI_DEVID_LINK 0x1612
 #define BC_EVENT_START_CAPTURE 6
-#define BC_LINK_CAP_EN 1
-#define BC_LINK_FMT_CHG 2
+#define BC_LINK_INIT 1
+#define BC_LINK_CAP_EN 2
+#define BC_LINK_FMT_CHG 4
 #define BC_RX_LIST_CNT 16
 #define BC_TX_LIST_CNT 2
 #define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
