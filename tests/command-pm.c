@@ -93,6 +93,7 @@ struct crystalhd_cmd {
     struct crystalhd_user user[BC_LINK_MAX_OPENS];
     const void *session_owner;
     bool retain_rx_on_suspend;
+    bool session_module_pinned;
     enum crystalhd_decoder_phase decoder_phase;
     enum crystalhd_decoder_codec decoder_codec;
     uint32_t fw_sequence, decoder_channel_id;
@@ -132,6 +133,11 @@ static unsigned binding_count, binding_frees, device_reads, user_writes;
 static unsigned downloads, download_resets;
 static unsigned stream_prepares, stream_releases;
 static unsigned quiesced_rx_retires;
+static unsigned module_refs, module_get_attempts, module_gets, module_puts;
+static unsigned module_callbacks, module_identity;
+static bool module_get_allowed, checking_module_callbacks;
+static bool module_expect_no_hardware_on_put;
+#define THIS_MODULE (&module_identity)
 static int stream_prepare_error;
 static uint8_t stream_cookie;
 static const uint8_t *last_download_image;
@@ -212,6 +218,41 @@ static void Check(bool ok, const char *why)
     checks++;
     if (!ok) { failures++; fprintf(stderr, "FAIL: %s\n", why); }
 }
+static bool try_module_get(const void *module)
+{
+    Check(module == THIS_MODULE && !module_refs && !context.session_module_pinned &&
+          !context.session_owner && context.state == BC_LINK_INVALID,
+          "session pre-pin uses the exact module only after ownership and state admission");
+    module_get_attempts++;
+    if (!module_get_allowed)
+        return false;
+    module_refs++;
+    module_gets++;
+    return true;
+}
+static void module_put(const void *module)
+{
+    Check(module == THIS_MODULE && module_refs == 1 &&
+          !context.session_module_pinned && !context.session_owner &&
+          !context.retain_rx_on_suspend && !elem_live && !dio_live && !rings_live,
+          "module put clears pin and ownership only after session resources are retired");
+    if (module_expect_no_hardware_on_put)
+        Check(!context.hw_ctx && !hardware_allocated && !context.stream &&
+              context.decoder_phase == CRYSTALHD_DECODER_COLD &&
+              context.decoder_codec == CRYSTALHD_DECODER_CODEC_INVALID,
+              "final module put follows hardware, staging and decoder-owner teardown");
+    if (module_refs)
+        module_refs--;
+    module_puts++;
+}
+static void ModuleCallback(void)
+{
+    if (!checking_module_callbacks)
+        return;
+    Check(context.session_module_pinned && module_refs == 1,
+          "allocation and cleanup callbacks execute while the session module pin is held");
+    module_callbacks++;
+}
 static void Event(char event)
 {
     size_t n = strlen(events);
@@ -284,6 +325,7 @@ static void ConfigureHardware(struct crystalhd_hw *hw)
 }
 static void *kmalloc(size_t size, int flags)
 {
+    ModuleCallback();
     CheckPendingAdmission();
     Check(size == sizeof(hardware) && flags == GFP_KERNEL && !hardware_allocated,
           "user open allocates one fresh hardware context");
@@ -323,6 +365,7 @@ static void kfree(void *memory)
     }
     Check(memory == &hardware && hardware_allocated,
           "session teardown frees its hardware context exactly once");
+    ModuleCallback();
     hardware_allocated = false;
     hardware_frees++;
 }
@@ -344,6 +387,7 @@ static BC_STATUS crystalhd_hw_open(struct crystalhd_hw *hw, struct crystalhd_adp
 {
     static const struct crystalhd_hw zero_hardware;
 
+    ModuleCallback();
     CheckPendingAdmission();
     Check(hw == &hardware && adp == &adapter,
           "user open initializes the allocated hardware context");
@@ -365,6 +409,7 @@ static BC_STATUS crystalhd_hw_close(struct crystalhd_hw *hw)
     bool was_started = hw->dev_started;
     BC_STATUS status;
 
+    ModuleCallback();
     Check(hw == &hardware && hw->adp == &adapter,
           "session release closes the owned hardware context");
     hardware_closes++;
@@ -509,6 +554,7 @@ static BC_STATUS FirmwareCommand(struct crystalhd_hw *hw, BC_FW_CMD *command)
 }
 static BC_STATUS crystalhd_hw_stop_capture(struct crystalhd_hw *hw, bool unmap)
 {
+    ModuleCallback();
     Check(hw == &hardware, "capture stop receives the owned hardware context");
     captures++;
     if (unmap)
@@ -519,6 +565,7 @@ static BC_STATUS crystalhd_hw_stop_capture(struct crystalhd_hw *hw, bool unmap)
 }
 static void crystalhd_hw_retire_rx_quiesced(struct crystalhd_hw *hw)
 {
+    ModuleCallback();
     Check(hw == &hardware && hw->fetch_sem == 1,
           "quiesced command retirement delegates the exact hardware outside fetch serialization");
     quiesced_rx_retires++;
@@ -583,6 +630,7 @@ static void CheckPendingAdmission(void)
 }
 static int crystalhd_create_elem_pool(struct crystalhd_adp *adp, unsigned size)
 {
+    ModuleCallback();
     CheckPendingAdmission();
     Check(adp == &adapter && size == BC_LINK_ELEM_POOL_SZ, "notify allocates element pool");
     pools++; elem_live = true; adp->elem_pool_head = &elem_live;
@@ -590,11 +638,13 @@ static int crystalhd_create_elem_pool(struct crystalhd_adp *adp, unsigned size)
 }
 static void crystalhd_delete_elem_pool(struct crystalhd_adp *adp)
 {
+    ModuleCallback();
     Check(adp == &adapter, "element-pool teardown receives the adapter");
     elem_deletes++; elem_live = false; adp->elem_pool_head = NULL;
 }
 static int crystalhd_create_dio_pool(struct crystalhd_adp *adp, unsigned size)
 {
+    ModuleCallback();
     CheckPendingAdmission();
     Check(adp == &adapter && size == BC_LINK_MAX_SGLS, "notify allocates DMA pool");
     pools++;
@@ -605,11 +655,13 @@ static int crystalhd_create_dio_pool(struct crystalhd_adp *adp, unsigned size)
 }
 static void crystalhd_destroy_dio_pool(struct crystalhd_adp *adp)
 {
+    ModuleCallback();
     Check(adp == &adapter, "DMA-pool teardown receives the adapter");
     dio_destroys++; dio_live = false; adp->fill_byte_pool = NULL;
 }
 static BC_STATUS crystalhd_hw_setup_dma_rings(struct crystalhd_hw *hw)
 {
+    ModuleCallback();
     CheckPendingAdmission();
     rings++;
     if (!hw)
@@ -621,6 +673,7 @@ static BC_STATUS crystalhd_hw_setup_dma_rings(struct crystalhd_hw *hw)
 }
 static BC_STATUS crystalhd_hw_free_dma_rings(struct crystalhd_hw *hw)
 {
+    ModuleCallback();
     Check(hw == &hardware, "DMA-ring teardown receives the hardware context");
     ring_frees++; rings_live = false; hw->rx_freeq = NULL;
     return BC_STS_SUCCESS;
@@ -680,6 +733,7 @@ static void crystalhd_stream_release(struct crystalhd_cmd *ctx)
 {
     if (!ctx || !ctx->stream)
         return;
+    ModuleCallback();
     Check(ctx == &context && ctx->stream == &stream_cookie,
           "typed channel releases its exact staging owner");
     ctx->stream = NULL;
@@ -714,6 +768,10 @@ static void Reset(uint32_t state, bool with_hardware)
     downloads = download_resets = 0;
     stream_prepares = stream_releases = 0;
     quiesced_rx_retires = 0;
+    module_refs = module_get_attempts = module_gets = module_puts = 0;
+    module_callbacks = 0;
+    module_get_allowed = true;
+    checking_module_callbacks = module_expect_no_hardware_on_put = false;
     stream_prepare_error = 0;
     last_download_image = NULL;
     last_download_size = 0;
@@ -3122,6 +3180,7 @@ static void CheckNoSession(void)
 {
     Check(!adapter.cfg_users && !bc_get_userhandle_count(&context) &&
           !context.session_owner && !context.retain_rx_on_suspend &&
+          !context.session_module_pinned && !module_refs && module_gets == module_puts &&
           !context.hw_ctx && !hardware_allocated && !elem_live && !dio_live &&
           !rings_live && !adapter.fill_byte_pool && !adapter.elem_pool_head &&
           !hardware.rx_freeq,
@@ -3378,6 +3437,279 @@ static void RxRetentionContextReset(void)
             Check(stops == previous_stops && irq_disables == previous_irqs,
                   "post-quiescence command deletion has no hardware stop or IRQ side effects");
         }
+    }
+}
+
+static void ModulePinAdmission(void)
+{
+    int owner;
+
+    for (unsigned gate = 0; gate < 7; gate++) {
+        struct crystalhd_cmd *argument;
+        const void *token = &owner;
+        BC_STATUS expected = gate < 3 ? BC_STS_INV_ARG :
+            gate == 3 || gate == 6 ? BC_STS_BUSY : BC_STS_ERR_USAGE;
+
+        Reset(BC_LINK_INVALID, false);
+        argument = &context;
+        if (gate == 0) argument = NULL;
+        if (gate == 1) context.adp = NULL;
+        if (gate == 2) token = NULL;
+        if (gate == 3) context.session_owner = &owner;
+        if (gate == 4) context.state = BC_LINK_INIT;
+        if (gate == 5) context.state = BC_LINK_SUSPEND;
+        if (gate == 6) {
+            context.session_module_pinned = true;
+            module_refs = 1;
+        }
+        {
+            struct crystalhd_cmd before = context;
+
+            Check(crystalhd_session_acquire_locked(argument, token) == expected &&
+                  !memcmp(&before, &context, sizeof(before)) &&
+                  !module_get_attempts && !module_gets && !module_puts &&
+                  !hardware_alloc_attempts && !pools && !rings,
+                  "argument, owner, state and unexpected live-pin gates precede module acquisition");
+        }
+    }
+
+    for (unsigned existing = 0; existing < 2; existing++) {
+        Reset(BC_LINK_INVALID, false);
+        if (existing)
+            Check(crystalhd_ensure_hw_context(&context) == BC_STS_SUCCESS,
+                  "prepare a pre-existing file-owned hardware context");
+        module_get_allowed = false;
+        {
+            struct crystalhd_cmd before = context;
+
+            Check(crystalhd_session_acquire_locked(&context, &owner) == BC_STS_NO_ACCESS &&
+                  !memcmp(&before, &context, sizeof(before)) &&
+                  module_get_attempts == 1 && !module_gets && !module_puts && !module_refs &&
+                  hardware_alloc_attempts == existing && hardware_opens == existing &&
+                  !hardware_closes && !hardware_frees && !pools && !rings,
+                  "denied shared pre-pin precedes every hardware or session allocation in that call");
+        }
+        module_get_allowed = true;
+        checking_module_callbacks = true;
+        Check(crystalhd_session_acquire_locked(&context, &owner) == BC_STS_SUCCESS &&
+              module_get_attempts == 2 && module_gets == 1 && module_refs == 1 &&
+              context.session_module_pinned,
+              "a denied shared pre-pin can retry and publish exactly one held module reference");
+        module_expect_no_hardware_on_put = true;
+        Check(crystalhd_session_release_locked(&context, &owner) == BC_STS_SUCCESS &&
+              module_puts == 1 && !module_refs && !context.session_module_pinned,
+              "successful retry releases its single module reference after cleanup");
+    }
+
+    for (unsigned existing = 0; existing < 2; existing++) {
+        struct crystalhd_user *user;
+
+        Reset(BC_LINK_INVALID, false);
+        user = &context.user[0];
+        if (existing)
+            Check(crystalhd_user_open(&context, &user) == BC_STS_SUCCESS,
+                  "legacy open holds its independent file lifetime before mode admission");
+        else
+            user->in_use = 1; /* An existing handle whose earlier owner retired hardware. */
+        adapter.cfg_users = 1;
+        module_get_allowed = false;
+        Check(crystalhd_user_set_mode(&context, user, DTS_PLAYBACK_MODE) == BC_STS_NO_ACCESS &&
+              module_get_attempts == 1 && !module_gets && !module_refs && !module_puts &&
+              !context.session_module_pinned && !context.session_owner &&
+              user->mode == (uint32_t)DTS_MODE_INV && !pools && !rings &&
+              context.hw_ctx == &hardware && hardware_allocated && hardware_opens == 1,
+              "legacy pin denial retains its historical pre-open but allocates no session pools or rings");
+        crystalhd_user_close(&context, user);
+        CheckNoSession();
+        Check(hardware_closes == 1 && hardware_frees == 1 && !module_puts,
+              "normal legacy close retires a denied pre-open without an unmatched module put");
+    }
+}
+
+static void ModulePinSetupFailures(void)
+{
+    int owner;
+
+    for (unsigned existing = 0; existing < 2; existing++) {
+        for (unsigned failure = existing ? 2 : 0; failure < 5; failure++) {
+            BC_STATUS expected = failure == 1 ? BC_STS_IO_ERROR :
+                failure == 4 ? BC_STS_INSUFF_RES : BC_STS_ERROR;
+
+            Reset(BC_LINK_INVALID, false);
+            if (existing)
+                Check(crystalhd_ensure_hw_context(&context) == BC_STS_SUCCESS,
+                      "prepare caller-owned hardware for setup rollback");
+            if (failure == 0) hardware_alloc_fail = true;
+            if (failure == 1) hardware_open_status = BC_STS_IO_ERROR;
+            if (failure == 2) elem_error = -1;
+            if (failure == 3) dio_error = -1;
+            if (failure == 4) ring_status = BC_STS_INSUFF_RES;
+            checking_module_callbacks = true;
+            module_expect_no_hardware_on_put = !existing;
+            Check(crystalhd_session_acquire_locked(&context, &owner) == expected &&
+                  module_get_attempts == 1 && module_gets == 1 && module_puts == 1 &&
+                  !module_refs && !context.session_module_pinned && !context.session_owner &&
+                  !elem_live && !dio_live && !rings_live && module_callbacks &&
+                  context.hw_ctx == (existing ? &hardware : NULL) &&
+                  hardware_allocated == (bool)existing,
+                  "every allocation/open/pool/ring failure rolls back under its pin then puts exactly once");
+            hardware_alloc_fail = false;
+            hardware_open_status = BC_STS_SUCCESS;
+            elem_error = dio_error = 0;
+            ring_status = BC_STS_SUCCESS;
+            Check(crystalhd_session_acquire_locked(&context, &owner) == BC_STS_SUCCESS &&
+                  module_gets == 2 && module_puts == 1 && module_refs == 1 &&
+                  context.session_module_pinned,
+                  "each rollback edge permits a fresh balanced module acquisition on retry");
+            module_expect_no_hardware_on_put = true;
+            Check(crystalhd_session_release_locked(&context, &owner) == BC_STS_SUCCESS &&
+                  module_puts == 2 && !module_refs,
+                  "retry teardown balances both successful pre-pins");
+        }
+    }
+}
+
+static void ModulePinOwnerLifetime(void)
+{
+    int owner, wrong_owner;
+
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        const void *token;
+
+        Reset(BC_LINK_INVALID, false);
+        if (legacy) {
+            Check(crystalhd_ensure_hw_context(&context) == BC_STS_SUCCESS,
+                  "legacy owner enters shared admission with its pre-opened hardware");
+            context.user[0].in_use = 1;
+        }
+        checking_module_callbacks = true;
+        token = legacy ? (const void *)&context.user[0] : &owner;
+        Check((legacy ? crystalhd_user_set_mode(&context, &context.user[0], DTS_PLAYBACK_MODE) :
+              crystalhd_session_acquire_locked(&context, token)) == BC_STS_SUCCESS &&
+              context.session_module_pinned && module_refs == 1 && module_gets == 1,
+              "generic and legacy resource owners each retain one pre-acquired module reference");
+        {
+            struct crystalhd_cmd before = context;
+            unsigned callbacks = module_callbacks;
+
+            Check(crystalhd_session_acquire_locked(&context, &wrong_owner) == BC_STS_BUSY &&
+                  crystalhd_session_release_locked(&context, &wrong_owner) == BC_STS_ERR_USAGE &&
+                  crystalhd_session_release_locked(&context, NULL) == BC_STS_INV_ARG &&
+                  !memcmp(&before, &context, sizeof(before)) &&
+                  module_get_attempts == 1 && !module_puts && module_refs == 1 &&
+                  module_callbacks == callbacks,
+                  "foreign or repeated ownership operations cannot consume or release the active module pin");
+        }
+        Check(crystalhd_user_set_mode(&context, &context.user[1], DTS_MONITOR_MODE) ==
+                  BC_STS_SUCCESS && module_gets == 1 && !module_puts,
+              "a nonowning monitor neither acquires nor drops the session module reference");
+        context.stream = &stream_cookie;
+        context.decoder_phase = CRYSTALHD_DECODER_CHANNEL_STARTED;
+        context.decoder_codec = CRYSTALHD_DECODER_CODEC_H264;
+        module_expect_no_hardware_on_put = true;
+        Check(crystalhd_session_release_locked(&context, token) == BC_STS_SUCCESS &&
+              module_puts == 1 && !module_refs && !context.session_module_pinned &&
+              stream_releases == 1,
+              "owner release keeps callback code pinned until staging and all resources are retired");
+        Check(crystalhd_session_release_locked(&context, token) == BC_STS_ERR_USAGE &&
+              module_puts == 1,
+              "a repeated owner release cannot put the module twice");
+        crystalhd_session_unpin(&context);
+        Check(module_puts == 1, "the extracted unpin helper is idempotent for an empty pin");
+    }
+}
+
+static void ModulePinContextGuards(void)
+{
+    int owner;
+
+    Reset(BC_LINK_INVALID, false);
+    Check(crystalhd_session_acquire_locked(&context, &owner) == BC_STS_SUCCESS,
+          "prepare live module ownership for a repeated command-context setup");
+    {
+        struct crystalhd_cmd before = context;
+        unsigned allocations = hardware_alloc_attempts;
+
+        Check(crystalhd_setup_cmd_context(&context, &adapter) == BC_STS_BUSY &&
+              !memcmp(&before, &context, sizeof(before)) &&
+              hardware_alloc_attempts == allocations && module_refs == 1 &&
+              module_gets == 1 && !module_puts,
+              "repeated context setup cannot erase a live module pin or reinitialize its owner");
+    }
+    checking_module_callbacks = module_expect_no_hardware_on_put = true;
+    context.stream = &stream_cookie;
+    Check(crystalhd_delete_cmd_context(&context) == BC_STS_SUCCESS &&
+          !context.adp && !context.hw_ctx && !context.session_owner &&
+          !context.session_module_pinned && !module_refs && module_puts == 1,
+          "quiesced command deletion puts only after ring/pool/staging callbacks and owner clearing");
+
+    for (unsigned via_delete = 0; via_delete < 2; via_delete++) {
+        Reset(BC_LINK_INVALID, false);
+        /* Model already-retired hardware while the exact logical owner/pin survives. */
+        context.session_owner = &owner;
+        context.session_module_pinned = context.retain_rx_on_suspend = true;
+        module_refs = module_gets = 1;
+        context.stream = &stream_cookie;
+        checking_module_callbacks = module_expect_no_hardware_on_put = true;
+        Check((via_delete ? crystalhd_delete_cmd_context(&context) :
+              crystalhd_session_release_locked(&context, &owner)) == BC_STS_SUCCESS &&
+              !context.session_owner && !context.session_module_pinned &&
+              !module_refs && module_puts == 1 && stream_releases == 1 &&
+              !hardware_closes && !hardware_frees,
+              "no-hardware release and delete still retire staging before balancing the surviving pin");
+    }
+}
+
+static void ModulePinPowerLifetime(void)
+{
+    int owner;
+    crystalhd_ioctl_data data = {0};
+
+    Reset(BC_LINK_INVALID, false);
+    checking_module_callbacks = true;
+    Check(crystalhd_session_acquire_locked(&context, &owner) == BC_STS_SUCCESS,
+          "prepare generic module ownership for suspend and RX-only retirement");
+    context.state = BC_LINK_INIT;
+    Check(crystalhd_suspend(&context, &data) == BC_STS_SUCCESS &&
+          context.session_owner == &owner && context.session_module_pinned &&
+          module_refs == 1 && !module_puts,
+          "successful command suspend preserves the session token and module pin");
+    crystalhd_rx_retire_quiesced(&context, true);
+    Check(quiesced_rx_retires == 1 && context.session_owner == &owner &&
+          context.session_module_pinned && module_refs == 1 && !module_puts,
+          "RX-only quiesced retirement never revokes the module-owning session");
+    Check(crystalhd_resume(&context) == BC_STS_SUCCESS && module_refs == 1 && !module_puts,
+          "resume recovery neither acquires a second pin nor drops the existing pin");
+    module_expect_no_hardware_on_put = true;
+    Check(crystalhd_session_release_locked(&context, &owner) == BC_STS_SUCCESS &&
+          module_gets == 1 && module_puts == 1 && !module_refs,
+          "explicit owner release finally balances the pin retained across PM");
+
+    for (unsigned failure = 0; failure < 3; failure++) {
+        struct file file;
+        const void *token;
+
+        Reset(BC_LINK_INVALID, false);
+        file = OpenFile(DTS_PLAYBACK_MODE);
+        token = context.session_owner;
+        context.state = BC_LINK_READY | BC_LINK_CAP_EN;
+        if (failure == 0) capture_status = BC_STS_TIMEOUT;
+        if (failure == 1) cancel_status = BC_STS_IO_ERROR;
+        if (failure == 2) stop_ok = false;
+        checking_module_callbacks = true;
+        Check(crystalhd_suspend(&context, &data) != BC_STS_SUCCESS &&
+              context.session_owner == token && context.session_module_pinned &&
+              module_refs == 1 && !module_puts,
+              "every failed PM stop stage retains its resources and their module owner");
+        adapter.present = false; /* Existing PCI PM fail-closed admission publication. */
+        CloseFile(&file);
+        Check(context.session_owner == token && context.session_module_pinned &&
+              module_refs == 1 && !module_puts && hardware_allocated && rings_live,
+              "accounting-only last file close after failed PM cannot unload retained callback code");
+        module_expect_no_hardware_on_put = true;
+        Check(crystalhd_delete_cmd_context(&context) == BC_STS_SUCCESS &&
+              module_gets == 1 && module_puts == 1 && !module_refs,
+              "later externally quiesced deletion releases the failed-PM pin after cleanup");
     }
 }
 
@@ -3932,7 +4264,8 @@ static void FileCloseUnavailableDevice(void)
         if (which == 2) chd_device_generation++;
         CloseFile(&file);
         Check(context.hw_ctx == &hardware && hardware_allocated && elem_live &&
-              context.session_owner == user &&
+              context.session_owner == user && context.session_module_pinned &&
+              module_refs == 1 && module_gets == 1 && !module_puts &&
               dio_live && rings_live && !captures && !stops && !ring_frees &&
               !dio_destroys && !elem_deletes && !hardware_closes && !hardware_frees &&
               irq_disables == 1 && irq_enables == 1 && binding_frees == 1,
@@ -3955,6 +4288,8 @@ static void OwnerCloseWithoutHardware(void)
             user->in_use = 1;
             user->mode = resource_modes[n];
             context.session_owner = user;
+            context.session_module_pinned = true;
+            module_refs = module_gets = 1;
             context.user[1].in_use = monitor;
             context.user[1].mode = DTS_MONITOR_MODE;
             adapter.cfg_users = 1 + monitor;
@@ -4457,6 +4792,11 @@ int main(void)
         {"HWINIT admission rejects overlapping resource setup", HwInitAdmission},
         {"explicit resource ownership across legacy modes", ResourceOwnership},
         {"frontend-neutral decoder session arbitration", FrontendNeutralSessionOwner},
+        {"session module pre-pin admission and denial", ModulePinAdmission},
+        {"session module pre-pin setup rollback and retry", ModulePinSetupFailures},
+        {"session module owner and callback lifetime", ModulePinOwnerLifetime},
+        {"session module setup guards and final context teardown", ModulePinContextGuards},
+        {"session module lifetime through PM and accounting-only close", ModulePinPowerLifetime},
         {"quiesced RX retirement policy and early states", QuiescedRxPolicy},
         {"RX retention frontend admission and release", RxRetentionAdmission},
         {"RX retention context setup and deletion", RxRetentionContextReset},

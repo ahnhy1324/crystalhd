@@ -62,6 +62,7 @@ struct crystalhd_cmd {
 	struct crystalhd_stream *stream;
 	uint32_t cin_wait_exit, pwr_state_change, state;
 	bool retain_rx_on_suspend;
+	bool session_module_pinned;
 };
 typedef struct crystalhd_ioctl_data {
 	struct crystalhd_ioctl_data *next;
@@ -101,6 +102,9 @@ static unsigned int stream_releases;
 static bool stream_live;
 static bool frontend_live;
 static unsigned int frontend_releases;
+static int module_token;
+#define THIS_MODULE (&module_token)
+static unsigned int session_admissions, module_refs, module_puts;
 
 static void *allocate(size_t size, enum allocation_kind kind)
 {
@@ -122,6 +126,40 @@ static void assert_quiesced(void)
 	assert(chd_device_lock.writers == 1);
 	assert(!chd_device_lock.readers && !master && !irq_live && !msi_live);
 	assert(g_adp_info && !g_adp_info->present && g_adp_info->cmds.cin_wait_exit);
+}
+
+/* Admission itself is exercised by command-pm. This fixture starts with an
+ * already-admitted legacy or generic session and tests its actual teardown.
+ */
+static void model_session_admission(struct crystalhd_cmd *cmd)
+{
+	assert(cmd == &g_adp_info->cmds && !cmd->session_module_pinned);
+	assert(!module_refs);
+	cmd->session_module_pinned = true;
+	module_refs++;
+	session_admissions++;
+}
+
+static void module_put(void *module)
+{
+	struct crystalhd_cmd *cmd = &g_adp_info->cmds;
+
+	assert_quiesced();
+	assert(module == THIS_MODULE && module_refs == 1);
+	/* The extracted unpin helper clears the token before the final put. */
+	assert(!cmd->session_module_pinned && !cmd->session_owner);
+	assert(!cmd->retain_rx_on_suspend && !cmd->adp && !cmd->hw_ctx);
+	assert(!g_adp_info->fill_byte_pool && !g_adp_info->elem_pool_head);
+	assert(!cmd->stream && !stream_live && !frontend_live);
+	assert(cmd->state == BC_LINK_INVALID);
+	assert(cmd->decoder_phase == CRYSTALHD_DECODER_COLD);
+	assert(cmd->decoder_codec == CRYSTALHD_DECODER_CODEC_INVALID);
+	assert(!cmd->fw_sequence && !cmd->decoder_channel_id);
+	assert(allocated[HARDWARE] == released[HARDWARE]);
+	assert(allocated[DIO_POOL] == released[DIO_POOL]);
+	assert(allocated[ELEM_POOL] == released[ELEM_POOL]);
+	module_refs--;
+	module_puts++;
 }
 
 static void crystalhd_v4l2_unregister(struct crystalhd_adp *adp)
@@ -151,6 +189,7 @@ static void kfree(void *ptr)
 				assert(!frontend_live);
 				assert(!adp->cmds.session_owner);
 				assert(!adp->cmds.retain_rx_on_suspend);
+				assert(!adp->cmds.session_module_pinned && !module_refs);
 				assert(adp->cmds.decoder_phase ==
 				       CRYSTALHD_DECODER_COLD);
 				assert(adp->cmds.decoder_codec ==
@@ -159,6 +198,8 @@ static void kfree(void *ptr)
 				       !adp->cmds.decoder_channel_id);
 			} else if (kind != BINDING) {
 				assert_quiesced();
+				if (kind == HARDWARE || kind == DIO_POOL || kind == ELEM_POOL)
+					assert(g_adp_info->cmds.session_module_pinned && module_refs == 1);
 			}
 			released[kind]++;
 			allocations[i].ptr = NULL;
@@ -258,6 +299,7 @@ static void crystalhd_hw_free_dma_rings(struct crystalhd_hw *hw)
 {
 	assert_quiesced();
 	assert(hw == g_adp_info->cmds.hw_ctx && hw->rx_freeq);
+	assert(g_adp_info->cmds.session_module_pinned && module_refs == 1);
 	hw->rx_freeq = NULL;
 	dma_frees++;
 }
@@ -345,6 +387,7 @@ static void crystalhd_stream_release(struct crystalhd_cmd *cmd)
 	assert(cmd == &g_adp_info->cmds &&
 	       cmd->stream == (struct crystalhd_stream *)&stream_token &&
 	       stream_live);
+	assert(cmd->session_module_pinned && module_refs == 1);
 	cmd->stream = NULL;
 	stream_live = false;
 	stream_releases++;
@@ -374,6 +417,7 @@ static struct crystalhd_adp *attach(bool playback, bool msi)
 		adp->idata_free_head = data;
 	}
 	if (playback) {
+		model_session_admission(&adp->cmds);
 		adp->cmds.session_owner = &adp->cmds.user[0];
 		adp->cmds.retain_rx_on_suspend = true;
 		adp->cmds.hw_ctx = allocate(sizeof(*adp->cmds.hw_ctx), HARDWARE);
@@ -398,6 +442,8 @@ static void reset(void)
 	for (i = 0; i < sizeof(allocations) / sizeof(allocations[0]); i++)
 		assert(!allocations[i].ptr);
 	assert(!g_adp_info && !pci.data);
+	assert(!module_refs && session_admissions == module_puts);
+	session_admissions = module_refs = module_puts = 0;
 	memset(allocated, 0, sizeof(allocated));
 	memset(released, 0, sizeof(released));
 	chd_device_lock = (struct mock_lock){0};
@@ -432,6 +478,7 @@ static void assert_released(void)
 	assert(!device_live && !regions_live && !chdev_live && !class_live);
 	assert(!bars_live[0] && !bars_live[1]);
 	assert(!stream_live);
+	assert(!module_refs && module_puts == session_admissions);
 	assert(!frontend_live && frontend_releases == released[ADAPTER]);
 	assert(!chd_device_lock.readers && !chd_device_lock.writers);
 	for (i = 0; i < 6; i++)
@@ -457,12 +504,14 @@ static void test_remove(void)
 		assert(irq_frees == 1 && msi_disables == msi);
 		assert(dma_frees == playback && l0s_releases == 1);
 		assert(stream_releases == playback);
+		assert(module_puts == playback && !module_refs);
 		assert(bar_unmaps == 2 && region_releases == 1 && device_disables == 1);
 		assert(warnings == (unsigned int)!pending_result + (unsigned int)!!l0s_result);
 		assert_released();
 		/* drvdata is cleared; a second callback cannot release any resource twice. */
 		chd_dec_pci_remove(&pci);
 		assert(irq_frees == 1 && region_releases == 1 && device_disables == 1);
+		assert(module_puts == playback && !module_refs);
 		assert_released();
 	}
 }
@@ -480,6 +529,7 @@ static void test_fail_stop_then_remove(void)
 		pending_result = which;
 		chd_dec_fail_closed(adp, -EIO);
 		chd_dec_fail_closed(adp, -EIO);
+		assert(adp->cmds.session_module_pinned && module_refs == 1 && !module_puts);
 		assert(!adp->present && adp->cmds.cin_wait_exit);
 		assert(!master && !irq_live && !msi_live && irq_frees == 1 && msi_disables == 1);
 		assert(!dma_frees && !l0s_releases && !device_disables);
@@ -488,6 +538,7 @@ static void test_fail_stop_then_remove(void)
 		assert(chd_dec_close(NULL, &first) == 0 && !first.private_data);
 		assert(adp->cfg_users == 1 && !adp->cmds.user[0].in_use);
 		assert(adp->cmds.user[0].mode == DTS_MODE_INV && adp->cmds.user[1].in_use);
+		assert(adp->cmds.session_module_pinned && module_refs == 1 && !module_puts);
 		/* Accounting-only close leaves resource ownership for quiesced removal. */
 		assert(adp->cmds.session_owner == &adp->cmds.user[0]);
 		assert(chd_dec_close(NULL, &second) == 0 && !second.private_data);
@@ -495,10 +546,12 @@ static void test_fail_stop_then_remove(void)
 		assert(!dma_frees && !released[HARDWARE] && !released[DIO_POOL]);
 		assert(stream_live && !stream_releases);
 		assert(adp->cmds.session_owner == &adp->cmds.user[0]);
+		assert(adp->cmds.session_module_pinned && module_refs == 1 && !module_puts);
 		chd_dec_pci_remove(&pci);
 		assert(binding_cancellations == 3 && master_clears == 3 && pending_waits == 3);
 		assert(irq_frees == 1 && msi_disables == 1 && dma_frees == 1);
 		assert(stream_releases == 1 && !stream_live);
+		assert(module_puts == 1 && !module_refs);
 		assert_released();
 	}
 }
@@ -519,15 +572,18 @@ static void test_external_owner_teardown(void)
 		adp->cmds.decoder_codec = CRYSTALHD_DECODER_CODEC_H264;
 		adp->cmds.fw_sequence = 5;
 		assert(!adp->cfg_users);
+		assert(adp->cmds.session_module_pinned && module_refs == 1 && !module_puts);
 		if (fail_first) {
 			chd_dec_fail_closed(adp, -EIO);
 			assert(!adp->present &&
 			       adp->cmds.session_owner == &external_owner);
+			assert(adp->cmds.session_module_pinned && module_refs == 1 && !module_puts);
 		}
 		chd_dec_pci_remove(&pci);
 		assert(dma_frees == 1 && released[HARDWARE] == 1 &&
 		       released[DIO_POOL] == 1 && released[ELEM_POOL] == 1);
 		assert(stream_releases == 1 && !stream_live);
+		assert(module_puts == 1 && !module_refs);
 		assert_released();
 	}
 }
@@ -543,6 +599,7 @@ static void test_stale_close(void)
 		stale = bind_user(adp, 0);
 		chd_dec_pci_remove(&pci);
 		assert(released[ADAPTER] == 1 && !released[BINDING]);
+		assert(module_puts == 1 && !module_refs);
 		if (which) {
 			/* Its old user pointer refers to freed storage. A replacement
 			 * generation must not make that binding valid again.
@@ -553,6 +610,7 @@ static void test_stale_close(void)
 		}
 		assert(chd_dec_close(NULL, &stale) == 0 && !stale.private_data);
 		assert(released[BINDING] == 1);
+		assert(module_puts == 1 && !module_refs);
 		if (which) {
 			assert(adp->cfg_users == 1 && adp->cmds.user[0].in_use);
 			assert(!adp->cmds.session_owner);
@@ -565,12 +623,24 @@ static void test_stale_close(void)
 	}
 }
 
+static void test_unpinned_context(void)
+{
+	struct crystalhd_cmd empty = {0};
+
+	reset();
+	crystalhd_session_unpin(&empty);
+	crystalhd_session_unpin(&empty);
+	assert(!empty.session_module_pinned && !module_refs && !module_puts);
+	assert_released();
+}
+
 int main(void)
 {
 	test_remove();
 	test_fail_stop_then_remove();
 	test_external_owner_teardown();
 	test_stale_close();
+	test_unpinned_context();
 	printf("Device lifetime: %u scenarios passed\n", scenarios);
 	return 0;
 }
