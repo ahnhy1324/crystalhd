@@ -9,7 +9,7 @@ cleanup()
     rm -f "$lifetime_test_dir/check" "$lifetime_test_dir/lifetime-functions.h" \
         "$lifetime_test_dir/lifetime-command.h" "$lifetime_test_dir/lifetime-binding.h" \
         "$lifetime_test_dir/access-check" "$lifetime_test_dir/access-binding.h" \
-        "$lifetime_test_dir/access-functions.h"
+        "$lifetime_test_dir/access-functions.h" "$lifetime_test_dir/probe-admission.h"
     rmdir "$lifetime_test_dir"
 }
 trap cleanup EXIT
@@ -40,11 +40,12 @@ awk '
     /^static void chd_dec_release_chdev\(/ ||
     /^static void chd_pci_release_mem\(/ ||
     /^static void chd_release_l0s\(/ ||
-    /^static void chd_dec_fail_closed\(/ ||
+    /^static bool chd_dec_(clear_master_and_drain|quiesce_terminal_dma|session_dma_absent|fail_closed)\(/ ||
+    /^static void chd_dec_quarantine_dma\(/ ||
     /^static void chd_dec_pci_remove\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 9 || copying) exit 1 }
+    END { if (found != 13 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_lnx.c" > "$lifetime_test_dir/lifetime-functions.h"
 
 awk '
@@ -62,6 +63,16 @@ awk '
     END { if (found != 3 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_lnx.c" > "$lifetime_test_dir/access-functions.h"
 
+# Execute the actual probe admission prefix, stopping before its first
+# allocation/PCI operation. The fixture supplies only locals and the out label.
+awk '
+    /^static int chd_dec_pci_probe\(/ { probe = 1 }
+    probe && /down_write\(&chd_device_lock\)/ { copying = 1; starts++ }
+    copying && /pinfo = kzalloc\(/ { copying = 0; probe = 0; ends++; next }
+    copying { print }
+    END { if (starts != 1 || ends != 1 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_lnx.c" > "$lifetime_test_dir/probe-admission.h"
+
 # The helper tests must stay connected to the real probe. Check its narrow
 # ordering contract without reproducing the PCI/resource setup implementation.
 awk '
@@ -74,6 +85,7 @@ awk '
     probe {
         if (/down_write\(&chd_device_lock\)/) locked = NR
         if (/if \(g_adp_info\)/) busy = NR
+        if (/if \(chd_dma_quarantine\)/) quarantine = NR
         if (/crystalhd_device_reserve_generation\(&generation\)/) {
             reserved = NR; reservations++
         }
@@ -93,7 +105,7 @@ awk '
     END {
         if (bad || increments != 1 || probes != 1 || reservations != 1 ||
             allocations != 1 || readiness != 1 || !locked ||
-            !(locked < busy && busy < reserved && reserved < checked &&
+            !(locked < busy && busy < quarantine && quarantine < reserved && reserved < checked &&
               checked < rejected && rejected < allocated && allocated < assigned &&
               assigned < published && published < context && context < l0s &&
               l0s < master && master < drvdata && drvdata < ready && ready < unlocked)) {

@@ -34,6 +34,10 @@ MODULE_PARM_DESC(force_l0s_off,
 /* Keep adapter lookup and use atomic with respect to PCI removal. */
 static DECLARE_RWSEM(chd_device_lock);
 static u64 chd_device_generation;
+/* One adapter is supported. A failed terminal drain retains its DMA storage
+ * and one PCI reference here, with the session's existing module pin.
+ */
+static struct crystalhd_adp *chd_dma_quarantine;
 
 struct crystalhd_file {
 	struct crystalhd_user *user;
@@ -857,9 +861,9 @@ static int chd_dec_close_locked(struct inode *in, struct file *fd)
 	if (!uc) {
 		goto unlock;
 	}
-	/* Failed PM leaves DMA disabled and may have no registered IRQ. Keep
-	 * the hardware context and registrations for remove's quiesced cleanup;
-	 * a file close must not restart or touch that hardware.
+	/* Failed PM has either retired the command context or retained unproven
+	 * DMA ownership. User slots remain adapter-owned in either case; close
+	 * must not restart hardware or dereference the retired command adapter.
 	 */
 	if (!READ_ONCE(adp->present)) {
 		if (uc->in_use) {
@@ -1080,24 +1084,125 @@ static void chd_release_l0s(struct crystalhd_adp *adp)
 			rc);
 }
 
-static void chd_dec_fail_closed(struct crystalhd_adp *adp, int error)
+static bool chd_dec_clear_master_and_drain(struct pci_dev *pdev)
 {
+	u16 command, status;
+
+	pci_clear_master(pdev);
+	/* pci_clear_master() does not report config access errors. An empty
+	 * pending-transaction bit alone cannot prove that new DMA is disabled.
+	 */
+	if (pci_read_config_word(pdev, PCI_COMMAND, &command) ||
+	    (command & PCI_COMMAND_MASTER))
+		return false;
+	if (!pci_is_pcie(pdev) || !pci_wait_for_pending_transaction(pdev))
+		return false;
+	/* Older pending-wait helpers ignored config read failures. Require one
+	 * checked final status read as well; this adds no polling or reset.
+	 */
+	return pcie_capability_read_word(pdev, PCI_EXP_DEVSTA, &status) ==
+		PCIBIOS_SUCCESSFUL && !(status & PCI_EXP_DEVSTA_TRPND);
+}
+
+static bool chd_dec_quiesce_terminal_dma(struct crystalhd_adp *adp)
+{
+	bool drained = adp->dma_terminal_quiesced;
+
+	lockdep_assert_held_write(&chd_device_lock);
+	if (WARN_ON_ONCE(READ_ONCE(adp->present)))
+		return false;
+	/* Only terminal cancellation can establish this proof. */
+	if (!drained)
+		drained = chd_dec_clear_master_and_drain(adp->pdev);
+	chd_dec_disable_int(adp);
+	/* PCI core resume can restore config before our callback checks present.
+	 * Discard any stale saved MASTER bit before releasing DMA backing or
+	 * retaining this proof. NULL invalidates the cache without hardware I/O,
+	 * including when an unproven drain requires resource quarantine.
+	 */
+	pci_load_saved_state(adp->pdev, NULL);
+	if (drained)
+		adp->dma_terminal_quiesced = true;
+	return drained;
+}
+
+static bool chd_dec_session_dma_absent(struct crystalhd_adp *adp)
+{
+	struct crystalhd_cmd *ctx = &adp->cmds;
+	struct crystalhd_hw *hw = ctx->hw_ctx;
+	bool resources;
+	unsigned int i;
+
+	lockdep_assert_held_write(&chd_device_lock);
+	if (ctx->session_module_pinned)
+		return false;
+
+	/* Session setup owns the sole pool/ring allocation route and requires a
+	 * module pin. Verify the empty inventory before allowing a no-session
+	 * remove during module exit, where taking a new module pin is too late.
+	 */
+	resources = ctx->session_owner || ctx->stream || adp->fill_byte_pool ||
+		adp->elem_pool_head || adp->ua_map_free_head;
+	if (hw) {
+		resources |= !ctx->adp || hw->rx_pkt_pool_head ||
+			hw->rx_fallback_head || hw->rx_actq || hw->rx_rdyq ||
+			hw->rx_freeq || hw->tx_actq || hw->tx_freeq;
+		for (i = 0; i < ARRAY_SIZE(hw->tx_pkt_pool); i++)
+			resources |= hw->tx_pkt_pool[i].desc_mem.pdma_desc_start ||
+				hw->tx_pkt_pool[i].buffer ||
+				hw->tx_pkt_pool[i].call_back ||
+				hw->tx_pkt_pool[i].cb_context;
+	}
+	/* An invariant violation is retained, never treated as safe to free. */
+	return !WARN_ON_ONCE(resources);
+}
+
+static void chd_dec_quarantine_dma(struct crystalhd_adp *adp)
+{
+	lockdep_assert_held_write(&chd_device_lock);
+	if (chd_dma_quarantine == adp)
+		return;
+	if (WARN_ON_ONCE(chd_dma_quarantine))
+		return;
+
+	/* Valid DMA-owning sessions already pin the module. A contradictory
+	 * unpinned inventory is leaked defensively; it cannot obtain unload
+	 * protection here after module exit has begun.
+	 */
+	WARN_ON_ONCE(!adp->cmds.session_module_pinned);
+	pci_dev_get(adp->pdev);
+	chd_dma_quarantine = adp;
+	dev_err(&adp->pdev->dev,
+		"DMA drain unproven; retaining resources until safe removal or reboot\n");
+}
+
+/* Called only from PCI PM callbacks, whose device lock excludes removal even
+ * after complete command teardown drops the session's module reference.
+ */
+static bool chd_dec_fail_closed(struct crystalhd_adp *adp, int error)
+{
+	bool safe;
+
 	/* Publish cancellation before waiting for an input ioctl holding the
 	 * file-operation read lock. No new open/ioctl can enter after this.
 	 */
 	WRITE_ONCE(adp->present, 0);
 	WRITE_ONCE(adp->cmds.cin_wait_exit, 1);
 	down_write(&chd_device_lock);
-	pci_clear_master(adp->pdev);
-	if (!pci_wait_for_pending_transaction(adp->pdev))
-		dev_warn(&adp->pdev->dev,
-			 "PCI transactions pending after failed power transition\n");
-	chd_dec_disable_int(adp);
+	safe = chd_dec_quiesce_terminal_dma(adp) ||
+		chd_dec_session_dma_absent(adp);
+	if (safe) {
+		if (adp->cmds.adp)
+			crystalhd_delete_cmd_context(&adp->cmds);
+	} else {
+		chd_dec_quarantine_dma(adp);
+	}
 	crystalhd_v4l2_unregister(adp);
 	up_write(&chd_device_lock);
 	dev_err(&adp->pdev->dev,
-		"power transition failed (%d); device unavailable until driver reload\n",
-		error);
+		"power transition failed (%d); device unavailable%s\n", error,
+		safe ? " until driver reload" : "; DMA resources quarantined");
+	return safe;
 }
 
 
@@ -1105,6 +1210,8 @@ static void chd_dec_pci_remove(struct pci_dev *pdev)
 {
 	struct crystalhd_adp *pinfo;
 	BC_STATUS sts = BC_STS_SUCCESS;
+	bool put_quarantine = false;
+	bool safe;
 
 	pinfo = (struct crystalhd_adp *) pci_get_drvdata(pdev);
 	/* Let FIFO waiters finish before waiting for all file operations. */
@@ -1117,20 +1224,31 @@ static void chd_dec_pci_remove(struct pci_dev *pdev)
 		dev_err(&pdev->dev, "could not get adp\n");
 		goto unlock;
 	}
-	pci_clear_master(pdev);
-	if (!pci_wait_for_pending_transaction(pdev))
-		dev_warn(&pdev->dev, "PCI transactions pending during removal\n");
-	chd_dec_disable_int(pinfo);
+	safe = chd_dec_quiesce_terminal_dma(pinfo) ||
+		chd_dec_session_dma_absent(pinfo);
+	if (!safe) {
+		chd_dec_quarantine_dma(pinfo);
+		crystalhd_v4l2_unregister(pinfo);
+		chd_dec_release_chdev(pinfo);
+		pci_set_drvdata(pdev, NULL);
+		g_adp_info = NULL;
+		/* Keep all DMA backing, mappings, BAR regions and the adapter alive.
+		 * A valid session's existing pin prevents ordinary module unload.
+		 */
+		dev_err(&pdev->dev, "device removed with DMA resources quarantined until reboot\n");
+		goto unlock;
+	}
+	if (pinfo->cmds.adp) {
+		sts = crystalhd_delete_cmd_context(&pinfo->cmds);
+		if (sts != BC_STS_SUCCESS)
+			dev_err(chddev(), "cmd delete :%d\n", sts);
+	}
 	crystalhd_v4l2_unregister(pinfo);
-
-	sts = crystalhd_delete_cmd_context(&pinfo->cmds);
-	if (sts != BC_STS_SUCCESS)
-		dev_err(chddev(), "cmd delete :%d\n", sts);
 
 	chd_dec_release_chdev(pinfo);
 
-	/* IRQs and DMA are quiesced; the parent is still referenced and both
-	 * devices remain accessible before PCI disable/remove.
+	/* No session DMA storage remains; the parent is still referenced and
+	 * both devices remain accessible before PCI disable/remove.
 	 */
 	chd_release_l0s(pinfo);
 	chd_pci_release_mem(pinfo);
@@ -1138,9 +1256,15 @@ static void chd_dec_pci_remove(struct pci_dev *pdev)
 
 	pci_set_drvdata(pdev, NULL);
 	g_adp_info = NULL;
+	if (chd_dma_quarantine == pinfo) {
+		chd_dma_quarantine = NULL;
+		put_quarantine = true;
+	}
 	kfree(pinfo);
 unlock:
 	up_write(&chd_device_lock);
+	if (put_quarantine)
+		pci_dev_put(pdev);
 }
 
 static int chd_dec_pci_probe(struct pci_dev *pdev,
@@ -1154,6 +1278,11 @@ static int chd_dec_pci_probe(struct pci_dev *pdev,
 
 	down_write(&chd_device_lock);
 	if (g_adp_info) {
+		rc = -EBUSY;
+		goto out;
+	}
+	if (chd_dma_quarantine) {
+		dev_err(dev, "DMA resources remain quarantined; reboot required\n");
 		rc = -EBUSY;
 		goto out;
 	}
@@ -1322,9 +1451,8 @@ int chd_dec_pci_suspend(struct pci_dev *pdev, pm_message_t state)
 	/* Even an early-success command suspend must establish the DMA barrier
 	 * before frontend callbacks can return capture backing to its owner.
 	 */
-	pci_clear_master(pdev);
-	if (!pci_wait_for_pending_transaction(pdev)) {
-		dev_err(dev, "PCI transactions pending during suspend\n");
+	if (!chd_dec_clear_master_and_drain(pdev)) {
+		dev_err(dev, "PCI DMA quiescence unproven during suspend\n");
 		rc = -EIO;
 		goto fail_closed;
 	}
@@ -1417,9 +1545,10 @@ disable_device:
 	WRITE_ONCE(adp->present, 0);
 	WRITE_ONCE(adp->cmds.cin_wait_exit, 1);
 	up_write(&adp->user_lock);
-	chd_dec_fail_closed(adp, rc);
-	chd_restore_l0s(adp);
-	pci_disable_device(pdev);
+	if (chd_dec_fail_closed(adp, rc)) {
+		chd_restore_l0s(adp);
+		pci_disable_device(pdev);
+	}
 	return rc;
 
 fail_closed:

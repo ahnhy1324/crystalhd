@@ -14,6 +14,81 @@ cleanup()
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
+# These are the only session-resource allocation routes. Keep the graph tied
+# to real call sites: comments/strings do not count, nor typed definitions and
+# prototypes. A new route must extend this proof and its lifetime tests.
+awk '
+    BEGIN {
+        caller["crystalhd_session_setup"] = "crystalhd_session_acquire_locked"
+        caller["crystalhd_create_elem_pool"] = "crystalhd_session_setup"
+        caller["crystalhd_create_dio_pool"] = "crystalhd_session_setup"
+        caller["crystalhd_hw_setup_dma_rings"] = "crystalhd_session_setup"
+        caller["crystalhd_stream_prepare"] = "crystalhd_decoder_channel_open_locked"
+        apostrophe = sprintf("%c", 39)
+    }
+    # Small C lexical filter, preserving line boundaries for useful diagnostics.
+    function code_only(line, out, i, c, next_c) {
+        out = ""
+        for (i = 1; i <= length(line); i++) {
+            c = substr(line, i, 1)
+            next_c = substr(line, i + 1, 1)
+            if (block) {
+                if (c == "*" && next_c == "/") { block = 0; i++ }
+            } else if (quote != "") {
+                if (escaped) escaped = 0
+                else if (c == "\\") escaped = 1
+                else if (c == quote) quote = ""
+            } else if (c == "/" && next_c == "*") {
+                block = 1; out = out " "; i++
+            } else if (c == "/" && next_c == "/") {
+                break
+            } else if (c == "\"" || c == apostrophe) {
+                quote = c; out = out " "
+            } else out = out c
+        }
+        return out
+    }
+    FNR == 1 { block = escaped = 0; quote = previous = current = "" }
+    {
+        code = code_only($0)
+        for (callee in caller) {
+            parent = caller[callee]
+            if (code ~ "^(static[[:space:]]+)?(BC_STATUS|int)[[:space:]]+" parent "[[:space:]]*\\(")
+                current = parent
+        }
+        if (code ~ /^static[[:space:]]+BC_STATUS[[:space:]]+crystalhd_session_setup[[:space:]]*\(/)
+            private_setup++
+        rest = code
+        while (match(rest, /[[:alpha:]_][[:alnum:]_]*|[^[:space:]]/)) {
+            token = substr(rest, RSTART, RLENGTH)
+            rest = substr(rest, RSTART + RLENGTH)
+            if (token in caller && previous != "int" && previous != "BC_STATUS") {
+                calls[token]++
+                if (FILENAME !~ /\/crystalhd_cmds\.c$/ || current != caller[token]) {
+                    printf "%s:%d: session resource route %s must be called only by %s\n", \
+                        FILENAME, FNR, token, caller[token] > "/dev/stderr"
+                    bad = 1
+                }
+            }
+            previous = token
+        }
+        if (code ~ /^}/) current = ""
+    }
+    END {
+        for (callee in caller)
+            if (calls[callee] != 1) {
+                printf "session resource route %s has %d uses, expected one\n", \
+                    callee, calls[callee] > "/dev/stderr"
+                bad = 1
+            }
+        if (private_setup != 1) {
+            print "session setup must retain one private production entry" > "/dev/stderr"
+            bad = 1
+        }
+        exit bad
+    }
+' "$repo_dir"/driver/linux/*.[ch]
+
 # Use the real state constants and the exact command/hardware PM functions.
 # Only device callbacks and allocation primitives are replaced by the test.
 awk '

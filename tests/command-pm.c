@@ -3526,6 +3526,37 @@ static void ModulePinAdmission(void)
     }
 }
 
+static void ModulePinPrivateSetup(void)
+{
+    Reset(BC_LINK_INVALID, false);
+    context.adp = NULL; /* The pin guard must precede even resource dereferences. */
+    {
+        struct crystalhd_cmd before = context;
+
+        Check(crystalhd_session_setup(&context) == BC_STS_NO_ACCESS &&
+              !memcmp(&context, &before, sizeof(before)) &&
+              !pools && !rings && !elem_deletes && !dio_destroys && !ring_frees &&
+              !hardware_alloc_attempts && !module_get_attempts && !module_puts,
+              "private session setup rejects an absent pre-pin before any resource access or allocation");
+    }
+
+    Reset(BC_LINK_INVALID, false);
+    Check(try_module_get(THIS_MODULE), "model the shared caller acquiring its module pre-pin");
+    context.session_module_pinned = true;
+    checking_module_callbacks = true;
+    Check(crystalhd_ensure_hw_context(&context) == BC_STS_SUCCESS,
+          "prepare hardware under the private setup caller pin");
+    Check(crystalhd_session_setup(&context) == BC_STS_SUCCESS &&
+          pools == 2 && rings == 1 && elem_live && dio_live && rings_live &&
+          context.session_module_pinned && module_refs == 1 && module_gets == 1 &&
+          !module_puts && !context.session_owner,
+          "pinned private setup allocates the complete resource set without publishing an owner or changing the pin");
+    module_expect_no_hardware_on_put = true;
+    Check(crystalhd_delete_cmd_context(&context) == BC_STS_SUCCESS &&
+          !module_refs && module_gets == 1 && module_puts == 1,
+          "unpublished private setup resources still retire completely before the single module put");
+}
+
 static void ModulePinSetupFailures(void)
 {
     int owner;
@@ -4793,6 +4824,7 @@ int main(void)
         {"explicit resource ownership across legacy modes", ResourceOwnership},
         {"frontend-neutral decoder session arbitration", FrontendNeutralSessionOwner},
         {"session module pre-pin admission and denial", ModulePinAdmission},
+        {"private session setup requires an existing module pin", ModulePinPrivateSetup},
         {"session module pre-pin setup rollback and retry", ModulePinSetupFailures},
         {"session module owner and callback lifetime", ModulePinOwnerLifetime},
         {"session module setup guards and final context teardown", ModulePinContextGuards},

@@ -114,6 +114,10 @@ static BC_STATUS crystalhd_session_setup(struct crystalhd_cmd *ctx)
 	BC_STATUS sts;
 	int rc;
 
+	/* Terminal cleanup relies on every session DMA allocation owning a pin. */
+	if (!ctx->session_module_pinned)
+		return BC_STS_NO_ACCESS;
+
 	/* Create list pools */
 	rc = crystalhd_create_elem_pool(ctx->adp, BC_LINK_ELEM_POOL_SZ);
 	if (rc) {
@@ -2339,7 +2343,7 @@ BC_STATUS crystalhd_delete_cmd_context(struct crystalhd_cmd *ctx)
 {
 	dev_dbg(chddev(), "Deleting Command context..\n");
 
-	/* PCI removal has excluded all ioctls, disabled bus mastering and
+	/* Terminal PM/removal has excluded all ioctls, disabled bus mastering and
 	 * released the IRQ before entry. No hardware or IRQ callbacks here.
 	 */
 	if (ctx->hw_ctx) {

@@ -17,6 +17,11 @@ typedef uint32_t u32;
 #define PCI_EXP_LNKCTL 0x10
 #define PCI_EXP_LNKCTL_ASPM_L0S 1
 #define PCI_EXP_LNKCTL_ASPM_L1 2
+#define PCI_COMMAND 0x04
+#define PCI_COMMAND_MASTER 0x04
+#define PCI_EXP_DEVSTA 0x0a
+#define PCI_EXP_DEVSTA_TRPND 0x20
+#define PCIBIOS_SUCCESSFUL 0
 #define PCIE_LINK_STATE_L0S TEST_API_L0S
 #define PCI_FUNC(devfn) ((devfn) & 7)
 #define MOCK_UNUSED __attribute__((unused))
@@ -41,6 +46,7 @@ struct pci_dev {
 	u16 lnkctl;
 	struct pci_bus *bus, *subordinate;
 	unsigned int refs;
+	bool state_saved, saved_master;
 };
 
 enum operation { READ_CONFIG, WRITE_CONFIG, CALL_API };
@@ -54,6 +60,7 @@ static bool api_applies;
 static struct pci_dev endpoint, parent, sibling;
 static struct pci_bus root_bus, link_bus;
 static unsigned int checks, failures, groups;
+static unsigned int endpoint_gets, endpoint_puts;
 static const char *case_name;
 
 #define CHECK(condition) do { \
@@ -82,6 +89,7 @@ static void reset_model(const char *name, u16 child_bits, u16 parent_bits)
 	api_result = -EPERM;
 	read_error = write_error = -EIO;
 	api_applies = false;
+	endpoint_gets = endpoint_puts = 0;
 	root_bus = (struct pci_bus){0};
 	link_bus = (struct pci_bus){0};
 	parent = (struct pci_dev){.vendor = 0x8086, .device = 0x1234,
@@ -100,9 +108,9 @@ static void reset_model(const char *name, u16 child_bits, u16 parent_bits)
 }
 
 static struct pci_dev *pci_dev_get(struct pci_dev *dev)
-{ dev->refs++; return dev; }
+{ dev->refs++; if (dev == &endpoint) endpoint_gets++; return dev; }
 static void pci_dev_put(struct pci_dev *dev)
-{ CHECK(dev->refs > 0); dev->refs--; }
+{ CHECK(dev->refs > 0); dev->refs--; if (dev == &endpoint) endpoint_puts++; }
 
 static bool MOCK_UNUSED pci_is_pcie(struct pci_dev *dev)
 { return dev && dev->express; }
@@ -118,8 +126,12 @@ static void MOCK_UNUSED pci_walk_bus(struct pci_bus *bus,
 			break;
 }
 
+static int pm_read_devsta(struct pci_dev *dev, u16 *value);
+
 static int pcie_capability_read_word(struct pci_dev *dev, int reg, u16 *value)
 {
+	if (reg == PCI_EXP_DEVSTA)
+		return pm_read_devsta(dev, value);
 	CHECK(dev == &endpoint || dev == &parent);
 	CHECK(reg == PCI_EXP_LNKCTL);
 	reads++;
@@ -508,11 +520,23 @@ static void test_fault_edges(void)
 }
 
 /* The runner extracts complete IRQ/PM functions from crystalhd_lnx.c. */
-struct crystalhd_hw { bool dma_fault, rx_registered; };
+struct crystalhd_hw {
+	bool dma_fault, rx_registered;
+	void *rx_freeq, *rx_actq, *rx_rdyq, *tx_actq, *tx_freeq;
+	void *rx_pkt_pool_head, *rx_fallback_head;
+	struct {
+		struct { void *pdma_desc_start; } desc_mem;
+		void *buffer, *call_back, *cb_context;
+	} tx_pkt_pool[2];
+};
+struct crystalhd_adp;
 struct crystalhd_cmd {
 	int cin_wait_exit;
+	struct crystalhd_adp *adp;
 	struct crystalhd_hw *hw_ctx;
 	bool retain_rx_on_suspend;
+	bool session_module_pinned;
+	void *session_owner, *stream;
 };
 struct crystalhd_adp {
 	struct pci_dev *pdev;
@@ -520,10 +544,12 @@ struct crystalhd_adp {
 	int user_lock;
 	bool irq_registered;
 	bool hw_accessible;
+	bool dma_terminal_quiesced;
 	int msi;
 	int present;
 	struct crystalhd_cmd cmds;
 	struct crystalhd_l0s_state l0s;
+	void *fill_byte_pool, *elem_pool_head, *ua_map_free_head;
 };
 #define KERN_ERR ""
 #define IRQF_SHARED 0x80UL
@@ -533,12 +559,18 @@ struct crystalhd_adp {
 #define READ_ONCE(value) (value)
 #define WRITE_ONCE(value, update) ((value) = (update))
 #define BC_STS_SUCCESS 0
+#define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
+#define lockdep_assert_held_write(lock) \
+	CHECK((lock) == &chd_device_lock && pm_lock_depth == 1)
+#define WARN_ON_ONCE(value) warn_on(value)
 #define PCI_D0 0
 typedef int BC_STATUS;
 typedef int pm_message_t;
 typedef int crystalhd_ioctl_data;
 static void mock_log(const void *dev, ...) { (void)dev; }
 static struct crystalhd_adp irq_adapter;
+static struct crystalhd_adp *chd_dma_quarantine;
+static bool warn_on(bool value) { CHECK(!value); return value; }
 static unsigned int msi_requests, msi_disables, irq_requests, irq_frees;
 static int msi_result, irq_result;
 static bool msi_active, irq_active;
@@ -553,6 +585,14 @@ static unsigned int pm_allocs, pm_frees, pm_saves, pm_enables, pm_disables;
 static unsigned int pm_suspends, pm_resumes, pm_clears, pm_waits;
 static unsigned int pm_fail_wait;
 static unsigned int pm_rx_retires, pm_rx_releases;
+static unsigned int pm_deletes, pm_module_refs, pm_module_puts;
+static unsigned int pm_terminal_reads, pm_terminal_writes;
+static unsigned int pm_saved_invalidations, pm_core_restores;
+static bool pm_ignore_master_clear;
+static int pm_command_error, pm_status_error;
+static u16 pm_command_output, pm_status_output;
+static unsigned int pm_command_reads, pm_status_reads;
+static int pm_owner_token;
 static crystalhd_ioctl_data pm_data;
 static struct crystalhd_hw pm_hw;
 static char pm_events[128];
@@ -560,9 +600,19 @@ static unsigned int pm_event_count;
 static void crystalhd_v4l2_unregister(struct crystalhd_adp *adp)
 {
 	CHECK(adp == &irq_adapter && pm_lock_depth == 1);
-	CHECK(!pm_user_lock_depth && !pm_master && !irq_active && !msi_active);
+	CHECK(!pm_user_lock_depth && !irq_active && !msi_active);
 	CHECK(!adp->present && adp->cmds.cin_wait_exit);
+	CHECK(!endpoint.state_saved);
+	if (adp->cmds.session_module_pinned) {
+		CHECK(chd_dma_quarantine == adp && endpoint.refs == 1 && !pm_deletes);
+		CHECK(!adp->dma_terminal_quiesced && !pm_dma_drained);
+	} else {
+		CHECK(!adp->cmds.adp && !adp->cmds.hw_ctx && !adp->cmds.session_owner);
+		CHECK(!adp->fill_byte_pool && !adp->elem_pool_head && !adp->cmds.stream);
+	}
 	pm_frontend_live = false;
+	pm_terminal_reads = reads;
+	pm_terminal_writes = writes;
 }
 
 static void pm_event(char event)
@@ -656,7 +706,8 @@ static void up_write(int *lock)
 static void pci_clear_master(struct pci_dev *dev)
 {
 	CHECK(dev == &endpoint);
-	pm_master = false;
+	if (!pm_ignore_master_clear)
+		pm_master = false;
 	pm_dma_drained = false;
 	pm_clears++;
 	pm_event('C');
@@ -679,8 +730,33 @@ static int pci_wait_for_pending_transaction(struct pci_dev *dev)
 		CHECK(!irq_active && !msi_active && !irq_adapter.hw_accessible);
 	pm_waits++;
 	pm_event('W');
-	pm_dma_drained = pm_pending && pm_waits != pm_fail_wait;
-	return pm_dma_drained;
+	return pm_pending && pm_waits != pm_fail_wait;
+}
+static int pci_read_config_word(struct pci_dev *dev, int reg, u16 *value)
+{
+	CHECK(dev == &endpoint && reg == PCI_COMMAND);
+	CHECK(pm_lock_depth + pm_user_lock_depth == 1);
+	pm_command_reads++;
+	*value = pm_command_error ? pm_command_output :
+		pm_command_output | (pm_master ? PCI_COMMAND_MASTER : 0);
+	return pm_command_error;
+}
+static int pm_read_devsta(struct pci_dev *dev, u16 *value)
+{
+	CHECK(dev == &endpoint && !pm_master && pm_pending && pm_waits != pm_fail_wait);
+	CHECK(pm_lock_depth + pm_user_lock_depth == 1);
+	pm_status_reads++;
+	*value = pm_status_output;
+	pm_dma_drained = !pm_status_error && !(pm_status_output & PCI_EXP_DEVSTA_TRPND);
+	return pm_status_error;
+}
+static int pci_load_saved_state(struct pci_dev *dev, void *state)
+{
+	CHECK(dev == &endpoint && !state && pm_lock_depth == 1 && !pm_user_lock_depth);
+	CHECK(!irq_adapter.present && !irq_active && !msi_active);
+	dev->state_saved = false;
+	pm_saved_invalidations++;
+	return 0;
 }
 static void *pci_get_drvdata(struct pci_dev *dev)
 {
@@ -730,14 +806,18 @@ static void pci_save_state(struct pci_dev *dev)
 	CHECK(!irq_adapter.cmds.hw_ctx || irq_adapter.cmds.retain_rx_on_suspend ||
 	      !pm_hw.rx_registered);
 	CHECK(endpoint.lnkctl == 0x43 && parent.lnkctl == 0x43);
+	dev->state_saved = true;
+	dev->saved_master = pm_master;
 	pm_saves++;
 	pm_event('S');
 }
 static void pci_restore_state(struct pci_dev *dev)
 {
 	CHECK(dev == &endpoint && pm_user_lock_depth == 1);
-	/* Saved command can restore MASTER; actual callback must clear it. */
-	pm_master = true;
+	if (dev->state_saved) {
+		pm_master = dev->saved_master;
+		dev->state_saved = false;
+	}
 	pm_event('R');
 }
 static int pci_enable_device(struct pci_dev *dev)
@@ -778,6 +858,38 @@ static void crystalhd_hw_retire_rx_quiesced(struct crystalhd_hw *hw)
 	}
 	pm_event('T');
 }
+/* Full command deletion is source-extracted in device-lifetime. Here it is a
+ * resource boundary: wrappers must establish proof before calling it and
+ * must not detach the frontend first or repeat an already-tombstoned delete.
+ */
+static BC_STATUS crystalhd_delete_cmd_context(struct crystalhd_cmd *cmd)
+{
+	CHECK(cmd == &irq_adapter.cmds && cmd->adp == &irq_adapter);
+	CHECK(pm_lock_depth == 1 && !pm_user_lock_depth && !irq_adapter.present);
+	CHECK(!irq_active && !msi_active);
+	CHECK(!endpoint.state_saved);
+	if (cmd->session_module_pinned) {
+		CHECK(!pm_master && irq_adapter.dma_terminal_quiesced && pm_dma_drained && pm_module_refs == 1);
+		if (pm_hw.rx_registered) {
+			pm_hw.rx_registered = false;
+			pm_rx_releases++;
+		}
+		cmd->session_module_pinned = false;
+		pm_module_refs--;
+		pm_module_puts++;
+	} else {
+		CHECK(!pm_hw.rx_registered && !cmd->session_owner && !cmd->stream &&
+		      !irq_adapter.fill_byte_pool && !irq_adapter.elem_pool_head);
+	}
+	cmd->adp = NULL;
+	cmd->hw_ctx = NULL;
+	cmd->session_owner = cmd->stream = NULL;
+	cmd->retain_rx_on_suspend = false;
+	irq_adapter.fill_byte_pool = irq_adapter.elem_pool_head = irq_adapter.ua_map_free_head = NULL;
+	pm_deletes++;
+	pm_event('Z');
+	return BC_STS_SUCCESS;
+}
 #include "l0s-retire-command.h"
 #include "l0s-irq-functions.h"
 
@@ -790,6 +902,7 @@ static void reset_irq_model(const char *name)
 	msi_result = irq_result = 0;
 	msi_active = irq_active = false;
 	pm_tracking = false;
+	chd_dma_quarantine = NULL;
 }
 
 static void test_irq_lifecycle(void)
@@ -878,12 +991,25 @@ static void reset_pm_model(const char *name)
 	pm_suspends = pm_resumes = pm_clears = pm_waits = 0;
 	pm_fail_wait = 0;
 	pm_rx_retires = pm_rx_releases = 0;
+	pm_deletes = pm_module_puts = 0;
+	pm_terminal_reads = pm_terminal_writes = 0;
+	pm_saved_invalidations = pm_core_restores = 0;
+	pm_ignore_master_clear = false;
+	pm_command_error = pm_status_error = 0;
+	pm_command_output = pm_status_output = 0;
+	pm_command_reads = pm_status_reads = 0;
+	pm_module_refs = 1;
 	pm_event_count = 0;
 	pm_events[0] = '\0';
 	pm_hw = (struct crystalhd_hw){.rx_registered = true};
 	irq_adapter.present = 1;
+	endpoint.state_saved = endpoint.saved_master = true;
 	irq_adapter.hw_accessible = true;
 	irq_adapter.cmds.hw_ctx = &pm_hw;
+	irq_adapter.cmds.adp = &irq_adapter;
+	irq_adapter.cmds.session_module_pinned = true;
+	irq_adapter.cmds.session_owner = irq_adapter.cmds.stream = &pm_owner_token;
+	irq_adapter.fill_byte_pool = irq_adapter.elem_pool_head = &pm_owner_token;
 	irq_adapter.cmds.retain_rx_on_suspend = true;
 	CHECK(crystalhd_l0s_init(&endpoint, &irq_adapter.l0s, true) == 0);
 	CHECK(chd_dec_enable_int(&irq_adapter) == 0);
@@ -892,6 +1018,17 @@ static void reset_pm_model(const char *name)
 
 static void finish_pm_model(void)
 {
+	if (chd_dma_quarantine && !irq_adapter.dma_terminal_quiesced) {
+		/* This isolated model remains quarantined; do not manufacture a
+		 * hardware restore or reference release just to clean the fixture.
+		 */
+		CHECK(chd_dma_quarantine == &irq_adapter && endpoint.refs == 1 &&
+		      endpoint_gets == 1 && !endpoint_puts);
+		CHECK(pm_module_refs == 1 && !pm_module_puts && !pm_deletes);
+		CHECK(pm_hw.rx_registered && parent.refs == 1);
+		CHECK(!irq_active && !msi_active && !pm_lock_depth && !pm_user_lock_depth);
+		return;
+	}
 	pm_tracking = false;
 	fail_read = fail_write = ignored_write = mismatch_read = 0;
 	CHECK(chd_dec_disable_int(&irq_adapter) == 0);
@@ -904,14 +1041,18 @@ static void finish_pm_model(void)
 static void check_pm_closed(unsigned int expected_waits)
 {
 	unsigned int old_events = pm_event_count, old_reads = reads;
+	unsigned int old_commands = pm_command_reads, old_statuses = pm_status_reads;
 	CHECK(!irq_adapter.present && irq_adapter.cmds.cin_wait_exit);
 	CHECK(!pm_frontend_live);
-	CHECK(!pm_master && !irq_active && !msi_active && !pm_lock_depth);
+	CHECK(!irq_active && !msi_active && !pm_lock_depth);
+	CHECK(!pm_master || (chd_dma_quarantine && irq_adapter.cmds.session_module_pinned) ||
+	      (!irq_adapter.cmds.adp && !irq_adapter.cmds.hw_ctx && !pm_module_refs));
 	CHECK(!irq_adapter.irq_registered && !irq_adapter.msi);
 	CHECK(pm_waits == expected_waits);
 	CHECK(chd_dec_pci_suspend(&endpoint, 3) == -ENODEV);
 	CHECK(chd_dec_pci_resume(&endpoint) == -ENODEV);
 	CHECK(pm_event_count == old_events && reads == old_reads);
+	CHECK(pm_command_reads == old_commands && pm_status_reads == old_statuses);
 }
 
 static void test_pm_lifecycle(void)
@@ -924,6 +1065,10 @@ static void test_pm_lifecycle(void)
 		if (!which) {
 			irq_adapter.cmds.hw_ctx = NULL;
 			pm_hw.rx_registered = false;
+			irq_adapter.cmds.session_module_pinned = false;
+			irq_adapter.cmds.session_owner = irq_adapter.cmds.stream = NULL;
+			irq_adapter.fill_byte_pool = irq_adapter.elem_pool_head = NULL;
+			pm_module_refs = 0;
 		}
 		if (which == 2) irq_adapter.cmds.retain_rx_on_suspend = false;
 		CHECK(irq_adapter.hw_accessible);
@@ -934,6 +1079,8 @@ static void test_pm_lifecycle(void)
 		CHECK(pm_allocs == 1 && pm_frees == 1 && pm_saves == 1);
 		CHECK(!irq_adapter.l0s.raw_active && irq_adapter.present);
 		CHECK(!irq_adapter.hw_accessible);
+		CHECK(!irq_adapter.dma_terminal_quiesced && !pm_deletes && !pm_module_puts);
+		CHECK(endpoint.state_saved && !endpoint.saved_master && !pm_saved_invalidations);
 		CHECK(pm_frontend_live);
 		pm_event_count = 0; pm_events[0] = '\0';
 		CHECK(chd_dec_pci_resume(&endpoint) == 0);
@@ -953,7 +1100,8 @@ static void test_pm_lifecycle(void)
 		CHECK(chd_dec_pci_suspend(&endpoint, 3) == -EIO);
 		CHECK(strncmp(pm_events, "DFCWLCW", 7) == 0);
 		CHECK(pm_waits == 2 && pm_dma_drained && !pm_saves && !pm_disables);
-		CHECK(!pm_rx_retires && !pm_rx_releases && pm_hw.rx_registered);
+		CHECK(!pm_rx_retires && pm_rx_releases == 1 && !pm_hw.rx_registered);
+		CHECK(pm_deletes == 1 && !pm_module_refs && pm_module_puts == 1);
 		CHECK(!irq_adapter.hw_accessible && irq_frees == 1 && msi_disables == 1);
 		check_pm_closed(2);
 		finish_pm_model();
@@ -977,7 +1125,7 @@ static void test_pm_lifecycle(void)
 		CHECK(!pm_saves && !pm_disables);
 		CHECK(pm_allocs == 1 && pm_frees == which && pm_suspends == which);
 		if (which) {
-			CHECK(strcmp(pm_events, "DLCWFU") == 0);
+			CHECK(strcmp(pm_events, "DLCWFZU") == 0);
 			check_pm_closed(1);
 		} else {
 			CHECK(!pm_waits && irq_adapter.present && irq_active);
@@ -992,7 +1140,8 @@ static void test_pm_lifecycle(void)
 		fail_write = writes + 1;
 		pm_pending = which; /* pending-transaction timeout must not skip IRQ cleanup */
 		CHECK(chd_dec_pci_suspend(&endpoint, 3) == -EIO);
-		CHECK(strcmp(pm_events, "DLCWFU") == 0);
+		CHECK(strcmp(pm_events, which ? "DLCWFZU" : "DLCWFU") == 0);
+		CHECK(pm_deletes == which && pm_module_puts == which && pm_module_refs == !which);
 		CHECK(!pm_saves && !pm_disables && pm_allocs == pm_frees);
 		CHECK(!irq_adapter.hw_accessible);
 		check_pm_closed(1);
@@ -1028,6 +1177,223 @@ static void test_pm_lifecycle(void)
 	}
 }
 
+static void test_terminal_pm_quarantine(void)
+{
+	unsigned int which;
+
+	for (which = 0; which < 5; which++) {
+		unsigned int disabled, requested;
+		int expected = which >= 3 ? -ENODEV : -EIO;
+
+		reset_pm_model("unsafe resume failure quarantines without L0s restore or PCI disable");
+		CHECK(chd_dec_pci_suspend(&endpoint, 3) == 0);
+		CHECK(!irq_adapter.dma_terminal_quiesced && pm_dma_drained);
+		disabled = pm_disables;
+		pm_pending = 0;
+		if (which == 0) pm_enable_error = -EIO;
+		else if (which == 1) fail_write = writes + 2;
+		else if (which == 2) irq_result = -EIO;
+		else {
+			pm_resume_error = 1;
+			pm_hw.dma_fault = which == 4;
+		}
+		CHECK(chd_dec_pci_resume(&endpoint) == expected);
+		CHECK(!irq_adapter.dma_terminal_quiesced && !pm_dma_drained);
+		CHECK(!pm_deletes && !pm_module_puts && pm_module_refs == 1);
+		CHECK(pm_hw.rx_registered && irq_adapter.cmds.adp == &irq_adapter);
+		CHECK(irq_adapter.cmds.session_owner == &pm_owner_token &&
+		      irq_adapter.cmds.stream == &pm_owner_token);
+		CHECK(chd_dma_quarantine == &irq_adapter && endpoint.refs == 1 && endpoint_gets == 1);
+		CHECK(reads == pm_terminal_reads && writes == pm_terminal_writes && pm_disables == disabled);
+		if (which >= 2)
+			CHECK(irq_adapter.l0s.raw_active && endpoint.lnkctl == 0x42 && parent.lnkctl == 0x42);
+		check_pm_closed(2);
+		requested = irq_frees;
+		CHECK(!chd_dec_fail_closed(&irq_adapter, -EIO));
+		CHECK(pm_waits == 3 && irq_frees == requested && endpoint_gets == 1 && !endpoint_puts);
+		CHECK(!pm_deletes && !pm_module_puts && pm_module_refs == 1);
+		finish_pm_model();
+	}
+
+	for (which = 0; which < 2; which++) {
+		reset_pm_model("unconfigured no-DMA resume failure needs no quarantine rescue pin");
+		irq_adapter.cmds.hw_ctx = which ? &pm_hw : NULL;
+		irq_adapter.cmds.session_module_pinned = false;
+		irq_adapter.cmds.session_owner = irq_adapter.cmds.stream = NULL;
+		irq_adapter.fill_byte_pool = irq_adapter.elem_pool_head = NULL;
+		pm_hw.rx_registered = false;
+		pm_module_refs = 0;
+		CHECK(chd_dec_pci_suspend(&endpoint, 3) == 0);
+		CHECK(!irq_adapter.dma_terminal_quiesced);
+		pm_pending = 0;
+		pm_resume_error = 1;
+		CHECK(chd_dec_pci_resume(&endpoint) == -ENODEV);
+		CHECK(!irq_adapter.dma_terminal_quiesced && !chd_dma_quarantine);
+		CHECK(pm_deletes == 1 && !pm_module_refs && !pm_module_puts && !endpoint_gets);
+		CHECK(pm_disables == 2 && !irq_adapter.l0s.raw_active);
+		check_original(0x43, 0x43);
+		check_pm_closed(2);
+		finish_pm_model();
+	}
+}
+
+static void test_terminal_saved_state(void)
+{
+	unsigned int drained;
+
+	for (drained = 0; drained < 2; drained++) {
+		unsigned int old_events, old_reads, old_writes;
+		unsigned int old_commands, old_statuses, old_clears;
+
+		reset_pm_model("terminal robustness invalidates stale MASTER-on restore before later callback");
+		CHECK(endpoint.state_saved && endpoint.saved_master);
+		pm_suspend_error = 1;
+		pm_pending = drained;
+		CHECK(chd_dec_pci_suspend(&endpoint, 3) == -ENODEV);
+		CHECK(!endpoint.state_saved && endpoint.saved_master && pm_saved_invalidations == 1);
+		CHECK(irq_adapter.dma_terminal_quiesced == (bool)drained);
+		old_events = pm_event_count;
+		old_reads = reads;
+		old_writes = writes;
+		/* Deliberate robustness schedule: simulate PCI core's conditional
+		 * restore before invoking an unavailable driver's callback. Ordinary
+		 * DPM rollback does not resume the device whose suspend failed.
+		 */
+		if (endpoint.state_saved) {
+			pm_master = endpoint.saved_master;
+			endpoint.state_saved = false;
+			pm_core_restores++;
+		}
+		CHECK(!pm_master && !pm_core_restores);
+		CHECK(chd_dec_pci_resume(&endpoint) == -ENODEV);
+		CHECK(pm_event_count == old_events && reads == old_reads && writes == old_writes);
+		old_commands = pm_command_reads;
+		old_statuses = pm_status_reads;
+		old_clears = pm_clears;
+		pm_pending = 0;
+		if (drained) pm_command_error = pm_status_error = -EIO;
+		CHECK(chd_dec_fail_closed(&irq_adapter, -EIO) == (bool)drained);
+		CHECK(pm_saved_invalidations == 2 && !endpoint.state_saved);
+		CHECK(pm_waits == (drained ? 1U : 2U));
+		CHECK(pm_deletes == drained && pm_module_puts == drained);
+		CHECK(endpoint_gets == !drained && !endpoint_puts);
+		if (drained) {
+			CHECK(pm_command_reads == old_commands && pm_status_reads == old_statuses &&
+			      pm_clears == old_clears && reads == old_reads && writes == old_writes);
+		}
+		finish_pm_model();
+	}
+}
+
+enum fence_fault {
+	CLEAR_IGNORED, COMMAND_ERROR_ZERO, COMMAND_ERROR_ONES, COMMAND_ALL_ONES,
+	NOT_PCIE, WAIT_TIMEOUT, STATUS_ERROR_ZERO, STATUS_ERROR_ONES,
+	STATUS_PENDING, STATUS_ALL_ONES, FENCE_FAULT_COUNT
+};
+
+static void set_pm_fence_fault(enum fence_fault fault)
+{
+	pm_ignore_master_clear = fault == CLEAR_IGNORED;
+	endpoint.express = fault != NOT_PCIE;
+	pm_command_error = fault == COMMAND_ERROR_ZERO || fault == COMMAND_ERROR_ONES ? -EIO : 0;
+	pm_command_output = fault == COMMAND_ERROR_ONES || fault == COMMAND_ALL_ONES ? 0xffff : 0;
+	pm_pending = fault != WAIT_TIMEOUT;
+	pm_status_error = fault == STATUS_ERROR_ZERO || fault == STATUS_ERROR_ONES ? -EIO : 0;
+	pm_status_output = fault == STATUS_ERROR_ONES || fault == STATUS_ALL_ONES ? 0xffff :
+		fault == STATUS_PENDING ? PCI_EXP_DEVSTA_TRPND : 0;
+}
+
+static void check_fence_quarantine(enum fence_fault fault)
+{
+	CHECK(!irq_adapter.dma_terminal_quiesced && !pm_dma_drained);
+	CHECK(pm_master == (fault == CLEAR_IGNORED));
+	CHECK(!pm_deletes && !pm_module_puts && pm_module_refs == 1);
+	CHECK(!pm_rx_retires && !pm_rx_releases && pm_hw.rx_registered);
+	CHECK(irq_adapter.cmds.hw_ctx == &pm_hw && irq_adapter.cmds.adp == &irq_adapter);
+	CHECK(irq_adapter.cmds.session_module_pinned &&
+	      irq_adapter.cmds.session_owner == &pm_owner_token &&
+	      irq_adapter.cmds.stream == &pm_owner_token);
+	CHECK(irq_adapter.fill_byte_pool == &pm_owner_token && irq_adapter.elem_pool_head == &pm_owner_token);
+	CHECK(chd_dma_quarantine == &irq_adapter && endpoint.refs == 1 && endpoint_gets == 1 && !endpoint_puts);
+	CHECK(!irq_active && !msi_active && !endpoint.state_saved && !irq_adapter.hw_accessible);
+}
+
+static void test_pm_fence_faults(void)
+{
+	enum fence_fault fault;
+	unsigned int legacy;
+
+	for (legacy = 0; legacy < 2; legacy++) {
+		for (fault = 0; fault < FENCE_FAULT_COUNT; fault++) {
+			reset_pm_model("failed suspend fence and terminal retry retain legacy/generic DMA");
+			irq_adapter.cmds.retain_rx_on_suspend = legacy != 0;
+			set_pm_fence_fault(fault);
+			CHECK(chd_dec_pci_suspend(&endpoint, 3) == -EIO);
+			CHECK(pm_command_reads == 2 && pm_clears == 2);
+			CHECK(pm_waits == (fault >= WAIT_TIMEOUT ? 2U : 0U));
+			CHECK(pm_status_reads == (fault > WAIT_TIMEOUT ? 2U : 0U));
+			CHECK(!pm_saves && !pm_disables && pm_allocs == pm_frees);
+			check_fence_quarantine(fault);
+			CHECK(!chd_dec_fail_closed(&irq_adapter, -EIO));
+			CHECK(pm_command_reads == 3 && pm_clears == 3 && irq_frees == 1);
+			CHECK(pm_waits == (fault >= WAIT_TIMEOUT ? 3U : 0U));
+			CHECK(pm_status_reads == (fault > WAIT_TIMEOUT ? 3U : 0U));
+			check_fence_quarantine(fault);
+			check_pm_closed(pm_waits);
+			finish_pm_model();
+		}
+	}
+
+	for (fault = 0; fault < FENCE_FAULT_COUNT; fault++) {
+		unsigned int disabled;
+
+		reset_pm_model("unsafe resume fence retains backing and suppresses final hardware tail");
+		CHECK(chd_dec_pci_suspend(&endpoint, 3) == 0);
+		disabled = pm_disables;
+		set_pm_fence_fault(fault);
+		pm_resume_error = 1;
+		CHECK(chd_dec_pci_resume(&endpoint) == -ENODEV);
+		CHECK(pm_command_reads == 2 && pm_clears == 3);
+		CHECK(pm_waits == 1U + (fault >= WAIT_TIMEOUT));
+		CHECK(pm_status_reads == 1U + (fault > WAIT_TIMEOUT));
+		check_fence_quarantine(fault);
+		CHECK(reads == pm_terminal_reads && writes == pm_terminal_writes && pm_disables == disabled);
+		CHECK(irq_adapter.l0s.raw_active && endpoint.lnkctl == 0x42 && parent.lnkctl == 0x42);
+		check_pm_closed(pm_waits);
+		finish_pm_model();
+	}
+
+	for (fault = 0; fault < FENCE_FAULT_COUNT; fault++) {
+		reset_pm_model("empty unpinned resume context is safe independently of failed DMA fence");
+		irq_adapter.cmds.session_module_pinned = false;
+		irq_adapter.cmds.session_owner = irq_adapter.cmds.stream = NULL;
+		irq_adapter.fill_byte_pool = irq_adapter.elem_pool_head = NULL;
+		pm_hw.rx_registered = false;
+		pm_module_refs = 0;
+		CHECK(chd_dec_pci_suspend(&endpoint, 3) == 0);
+		set_pm_fence_fault(fault);
+		pm_resume_error = 1;
+		CHECK(chd_dec_pci_resume(&endpoint) == -ENODEV);
+		CHECK(!irq_adapter.dma_terminal_quiesced && !pm_dma_drained && !chd_dma_quarantine);
+		CHECK(pm_master == (fault == CLEAR_IGNORED));
+		CHECK(pm_deletes == 1 && !pm_module_refs && !pm_module_puts && !endpoint_gets);
+		CHECK(pm_disables == 2 && !irq_adapter.l0s.raw_active);
+		check_original(0x43, 0x43);
+		check_pm_closed(pm_waits);
+		finish_pm_model();
+	}
+
+	reset_pm_model("unrelated COMMAND and DEVSTA bits permit checked suspend proof");
+	irq_adapter.cmds.retain_rx_on_suspend = false;
+	pm_command_output = 0x0103;
+	pm_status_output = 0x0009;
+	CHECK(chd_dec_pci_suspend(&endpoint, 3) == 0);
+	CHECK(pm_command_reads == 1 && pm_status_reads == 1 && pm_waits == 1);
+	CHECK(!pm_master && pm_dma_drained && pm_rx_retires == 1 && pm_rx_releases == 1);
+	CHECK(!irq_adapter.dma_terminal_quiesced && !chd_dma_quarantine && pm_saves == 1);
+	finish_pm_model();
+}
+
 int main(void)
 {
 	test_eligibility();
@@ -1038,6 +1404,9 @@ int main(void)
 	test_fault_edges();
 	test_irq_lifecycle();
 	test_pm_lifecycle();
+	test_terminal_pm_quarantine();
+	test_terminal_saved_state();
+	test_pm_fence_faults();
 	printf("L0s production-helper tests: %u groups, %u checks, %u failures\n",
 		groups, checks, failures);
 	return failures ? 1 : 0;
