@@ -1306,7 +1306,7 @@ void DtsReleaseMemPools(DTS_LIB_CONTEXT *Ctx)
 			DtsDrvCmd(Ctx, BCM_IOC_FLUSH_RX_CAP, 0, pIoData, TRUE);
 		}
 	}
-	if (Ctx->MpoolCnt) {
+	if (Ctx->Mpools) {
 		for (i = 0; i < Ctx->MpoolCnt; i++){
 			mp = &Ctx->Mpools[i];
 			if (mp->buff){
@@ -1562,6 +1562,10 @@ BC_STATUS DtsInitInterface(int hDevice, HANDLE *RetCtx, uint32_t mode)
 	BC_STATUS	sts = BC_STS_SUCCESS;
 	pthread_attr_t thread_attr;
 	int ret = 0;
+
+	if (!RetCtx)
+		return BC_STS_INV_ARG;
+	*RetCtx = NULL;
 
 	Ctx = (DTS_LIB_CONTEXT*)malloc(sizeof(*Ctx));
 	if(!Ctx){

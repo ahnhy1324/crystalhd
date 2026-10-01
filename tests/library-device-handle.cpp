@@ -29,6 +29,7 @@ static int closed_fd;
 static unsigned thread_create_calls;
 static unsigned shared_attach_calls;
 static unsigned shared_detach_calls;
+static bool raw_close_expected;
 
 struct IoctlRecord {
 	int fd;
@@ -48,6 +49,10 @@ static bool allocation_overflow;
 static void *tracked_allocations[64];
 static size_t tracked_count;
 static size_t tracked_frees;
+static size_t failed_malloc_size;
+static unsigned failed_malloc_occurrence;
+static unsigned matching_malloc_calls;
+static bool malloc_failure_fired;
 
 static bc_dil_glob_s shared_state;
 
@@ -91,6 +96,11 @@ extern "C" int __real_posix_memalign(void **, size_t, size_t);
 
 extern "C" void *__wrap_malloc(size_t size)
 {
+	if (failed_malloc_occurrence && failed_malloc_size == size &&
+	    ++matching_malloc_calls == failed_malloc_occurrence) {
+		malloc_failure_fired = true;
+		return nullptr;
+	}
 	void *pointer = __real_malloc(size);
 	TrackAllocation(pointer);
 	return pointer;
@@ -126,10 +136,14 @@ extern "C" int __wrap_close(int fd)
 {
 	++close_calls;
 	closed_fd = fd;
-	Check(ioctl_count > 0 &&
-	      ioctl_count <= sizeof(ioctl_log) / sizeof(ioctl_log[0]) &&
-	      ioctl_log[ioctl_count - 1].command == BCM_IOC_RELEASE,
-	      "device close follows the driver release command");
+	if (raw_close_expected)
+		Check(ioctl_count == 0,
+		      "context-allocation failure closes without driver commands");
+	else
+		Check(ioctl_count > 0 &&
+		      ioctl_count <= sizeof(ioctl_log) / sizeof(ioctl_log[0]) &&
+		      ioctl_log[ioctl_count - 1].command == BCM_IOC_RELEASE,
+		      "device close follows the driver release command");
 	return 0;
 }
 
@@ -242,6 +256,7 @@ static void BeginCase(int descriptor)
 	thread_create_calls = 0;
 	shared_attach_calls = 0;
 	shared_detach_calls = 0;
+	raw_close_expected = false;
 	ioctl_count = 0;
 	failed_command = 0;
 	fail_with_status = false;
@@ -251,6 +266,10 @@ static void BeginCase(int descriptor)
 	allocation_overflow = false;
 	tracked_count = 0;
 	tracked_frees = 0;
+	failed_malloc_size = 0;
+	failed_malloc_occurrence = 0;
+	matching_malloc_calls = 0;
+	malloc_failure_fired = false;
 	std::memset(tracked_allocations, 0, sizeof(tracked_allocations));
 	track_allocations = true;
 }
@@ -412,6 +431,90 @@ static void CheckOpenSuccess(int descriptor)
 	EndCase("successful device lifetime releases every allocation");
 }
 
+static void CheckNullOpenOutput()
+{
+	BeginCase(0);
+	Check(DtsDeviceOpen(nullptr, DTS_MONITOR_MODE) == BC_STS_INV_ARG,
+	      "null device output is rejected");
+	Check(open_calls == 0 && close_calls == 0 && ioctl_count == 0,
+	      "null device output performs no device operation");
+	Check(shared_attach_calls == 0 && shared_detach_calls == 0,
+	      "null device output performs no shared-memory operation");
+	Check(thread_create_calls == 0,
+	      "null device output creates no worker");
+	Check(DtsInitInterface(0, nullptr, DTS_MONITOR_MODE) == BC_STS_INV_ARG,
+	      "null internal output is rejected");
+	EndCase("null device output leaves no allocation");
+}
+
+static void CheckContextAllocationFailure(int descriptor)
+{
+	BeginCase(descriptor);
+	failed_malloc_size = sizeof(DTS_LIB_CONTEXT);
+	failed_malloc_occurrence = 1;
+	raw_close_expected = true;
+	HANDLE device = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(1));
+	Check(DtsDeviceOpen(&device, DTS_MONITOR_MODE) == BC_STS_INSUFF_RES,
+	      "context allocation failure preserves its resource status");
+	Check(malloc_failure_fired,
+	      "context allocation failure injection is exercised");
+	Check(device == nullptr,
+	      "context allocation failure publishes no handle");
+	Check(open_calls == 1 && close_calls == 1 && closed_fd == descriptor,
+	      "context allocation failure closes the raw descriptor once");
+	Check(ioctl_count == 0 && thread_create_calls == 0,
+	      "context allocation failure issues no ioctl or worker creation");
+	Check(shared_attach_calls == 1 && shared_detach_calls == 1,
+	      "context allocation failure balances shared-memory attachment");
+	EndCase("context allocation failure leaves no allocation");
+}
+
+static void CheckInternalContextAllocationFailure()
+{
+	BeginCase(0);
+	failed_malloc_size = sizeof(DTS_LIB_CONTEXT);
+	failed_malloc_occurrence = 1;
+	HANDLE context = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(1));
+	Check(DtsInitInterface(0, &context, DTS_MONITOR_MODE) ==
+	          BC_STS_INSUFF_RES,
+	      "internal context allocation preserves its resource status");
+	Check(malloc_failure_fired,
+	      "internal context allocation failure injection is exercised");
+	Check(context == nullptr,
+	      "internal context allocation failure clears its output");
+	Check(open_calls == 0 && close_calls == 0 && ioctl_count == 0,
+	      "internal context allocation leaves descriptor ownership to caller");
+	Check(thread_create_calls == 0 && shared_attach_calls == 0 &&
+	      shared_detach_calls == 0,
+	      "internal context allocation failure has no external side effect");
+	EndCase("internal context allocation failure leaves no allocation");
+}
+
+static void CheckInitAllocationFailure(size_t size, unsigned occurrence,
+			       uint32_t mode,
+			       std::initializer_list<unsigned long> commands)
+{
+	BeginCase(0);
+	failed_malloc_size = size;
+	failed_malloc_occurrence = occurrence;
+	HANDLE device = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(1));
+	Check(DtsDeviceOpen(&device, mode) == BC_STS_INSUFF_RES,
+	      "partial initialization preserves its resource status");
+	Check(malloc_failure_fired,
+	      "partial initialization failure injection is exercised");
+	Check(device == nullptr,
+	      "partial initialization failure publishes no handle");
+	Check(open_calls == 1 && close_calls == 1 && closed_fd == 0,
+	      "partial initialization closes descriptor zero once");
+	Check(thread_create_calls == 0,
+	      "pre-worker initialization failure creates no worker");
+	Check(shared_attach_calls == 1 && shared_detach_calls == 1,
+	      "partial initialization detaches shared memory once");
+	CheckIoctls(0, commands,
+	      "partial initialization preserves cleanup command ordering");
+	EndCase("partial initialization releases every allocation");
+}
+
 static void CheckOpenFailure(unsigned long command, bool syscall_failure,
 			     bool cleanup_failure, BC_STATUS expected,
 			     std::initializer_list<unsigned long> commands)
@@ -421,11 +524,15 @@ static void CheckOpenFailure(unsigned long command, bool syscall_failure,
 	fail_with_status = !syscall_failure;
 	fail_with_syscall = syscall_failure;
 	fail_cleanup = cleanup_failure;
-	HANDLE device = nullptr;
+	HANDLE device = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(1));
 	Check(DtsDeviceOpen(&device, DTS_MONITOR_MODE) == expected,
 	      "device initialization preserves the triggering failure");
+	Check(device == nullptr,
+	      "failed device initialization publishes no handle");
 	Check(open_calls == 1 && close_calls == 1 && closed_fd == 0,
 	      "failed initialization releases descriptor zero exactly once");
+	Check(shared_attach_calls == 1 && shared_detach_calls == 1,
+	      "failed initialization detaches shared memory exactly once");
 	CheckIoctls(0, commands,
 	      "failed initialization preserves cleanup command ordering");
 	EndCase("failed initialization releases every allocation");
@@ -434,7 +541,7 @@ static void CheckOpenFailure(unsigned long command, bool syscall_failure,
 static void CheckSystemOpenFailure()
 {
 	BeginCase(-1);
-	HANDLE device = nullptr;
+	HANDLE device = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(1));
 	Check(DtsDeviceOpen(&device, DTS_MONITOR_MODE) == BC_STS_ERROR,
 	      "system open failure preserves the public error status");
 	Check(device == nullptr, "system open failure publishes no handle");
@@ -451,12 +558,29 @@ int main()
 {
 	CheckCommandOwnership();
 	CheckInvalidDescriptorCleanup();
+	CheckNullOpenOutput();
+	CheckContextAllocationFailure(0);
+	CheckContextAllocationFailure(99);
+	CheckInternalContextAllocationFailure();
+	CheckInitAllocationFailure(sizeof(BC_IOCTL_DATA), 1,
+		DTS_MONITOR_MODE, {BCM_IOC_RELEASE});
+	CheckInitAllocationFailure(sizeof(BC_IOCTL_DATA), 4,
+		DTS_MONITOR_MODE, {BCM_IOC_FLUSH_RX_CAP, BCM_IOC_RELEASE});
+	CheckInitAllocationFailure(sizeof(BC_IOCTL_DATA),
+		BC_IOCTL_DATA_POOL_SIZE + 1, DTS_MONITOR_MODE,
+		{BCM_IOC_FLUSH_RX_CAP, BCM_IOC_RELEASE});
+	CheckInitAllocationFailure(
+		BC_MAX_SW_VOUT_BUFFS * sizeof(DTS_MPOOL_TYPE), 1,
+		DTS_PLAYBACK_MODE, {BCM_IOC_FLUSH_RX_CAP, BCM_IOC_RELEASE});
 	CheckOpenSuccess(0);
 	CheckOpenSuccess(99);
 	CheckOpenFailure(BCM_IOC_GET_HWTYPE, false, true, BC_STS_BUSY,
 		{BCM_IOC_GET_HWTYPE, BCM_IOC_FLUSH_RX_CAP, BCM_IOC_RELEASE});
 	CheckOpenFailure(BCM_IOC_GET_VERSION, true, false, BC_STS_ERROR,
 		{BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION,
+		 BCM_IOC_FLUSH_RX_CAP, BCM_IOC_RELEASE});
+	CheckOpenFailure(BCM_IOC_NOTIFY_MODE, false, false, BC_STS_BUSY,
+		{BCM_IOC_GET_HWTYPE, BCM_IOC_GET_VERSION, BCM_IOC_NOTIFY_MODE,
 		 BCM_IOC_FLUSH_RX_CAP, BCM_IOC_RELEASE});
 	CheckSystemOpenFailure();
 	std::printf("Library device handles: %u checks, %u failures\n",
