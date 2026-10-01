@@ -30,8 +30,8 @@ awk '
     END { if (found != 1 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_v4l2_compat.h" > "$node_test_dir/node-queue.h"
 awk '
-    /^#define (CHD_DISCOVERY_BUFFERS|CHD_TX_TIMEOUT_MS|CHD_CODED_SIZE) / { print; found++ }
-    END { if (found != 3) exit 1 }
+    /^#define (CHD_DISCOVERY_BUFFERS|CHD_TX_TIMEOUT_MS|CHD_DRAIN_TIMEOUT_MS|CHD_CODED_SIZE) / { print; found++ }
+    END { if (found != 4) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_v4l2_node.c" > "$node_test_dir/node-constants.h"
 awk '
     /^#define CRYSTALHD_V4L2_TIMESTAMPS / { print; found++ }
@@ -75,7 +75,7 @@ awk '
 ' "$repo_dir/driver/linux/crystalhd_v4l2_node.c" > "$node_test_dir/node-types.h"
 awk '
     BEGIN {
-        count = split("chd_file chd_kick chd_admit chd_error chd_copy_colors chd_default_colorspace chd_normalize_colors chd_source_colors chd_discovery_free chd_discovery_alloc chd_receive chd_finish_last chd_input_ready chd_next_input chd_empty_drain chd_tx_run chd_schedule_tx chd_join chd_reset_channel chd_job_ready chd_device_run chd_file_destroy chd_try_fmt_locked chd_set_fmt chd_reqbufs chd_qbuf chd_resume chd_reuse_capture chd_streamon chd_streamoff chd_try_decoder_cmd chd_decoder_cmd", names, " ")
+        count = split("chd_file chd_kick chd_admit chd_error chd_copy_colors chd_default_colorspace chd_normalize_colors chd_source_colors chd_discovery_free chd_discovery_alloc chd_receive chd_finish_last chd_input_ready chd_next_input chd_empty_drain chd_tx_run chd_schedule_tx chd_drain_watchdog chd_join chd_reset_channel chd_job_ready chd_device_run chd_file_destroy chd_try_fmt_locked chd_set_fmt chd_reqbufs chd_qbuf chd_resume chd_reuse_capture chd_streamon chd_streamoff chd_try_decoder_cmd chd_decoder_cmd", names, " ")
         for (i = 1; i <= count; i++) selected[names[i]] = 1
     }
     /^static .*chd_[[:alnum:]_]+\(/ {

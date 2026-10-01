@@ -2,6 +2,7 @@
 /* Execute extracted syscall/cancellation code with modeled core and VB2 edges. */
 #include <assert.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -92,7 +93,7 @@ struct crystalhd_v4l2_capture_buffer {
     struct v4l2_m2m_buffer m2m;
     u64 decoder_epoch; bool owned; u32 width, height;
 };
-struct crystalhd_v4l2_decoder { int phase; unsigned count; };
+struct crystalhd_v4l2_decoder { int phase; unsigned count; u64 epoch; };
 struct crystalhd_v4l2 { int unused; };
 struct crystalhd_v4l2_ctx { int unused; };
 #define KERNEL_VERSION(a, b, c) (((a) << 16) | ((b) << 8) | (c))
@@ -570,6 +571,8 @@ static int crystalhd_v4l2_capture_prepare(struct crystalhd_v4l2_capture_buffer *
     b->width = width; b->height = height; return 0;
 }
 static void crystalhd_rx_buffer_release(struct crystalhd_adp *, struct crystalhd_rx_buffer *);
+static unsigned long jiffies;
+static unsigned long msecs_to_jiffies(unsigned ms) { return (ms + 9U) / 10U; }
 #include "node-production.h"
 
 static void down(struct semaphore *s) { assert(!s->held); s->held = true; }
@@ -1308,9 +1311,94 @@ static void unsolicited_eos_completion(void)
     }
 }
 
+static void drain_watchdog_cases(void)
+{
+    const unsigned long limit = msecs_to_jiffies(CHD_DRAIN_TIMEOUT_MS);
+    reset(true);
+    fixture.drain_requested = fixture.drain_tx_done = true;
+    fixture.decoder.phase = CHD_V4L2_DRAINING;
+    fixture.active[0] = &last_capture; last_capture.owned = true;
+    fixture.drain_clock_count = fixture.decoder.count;
+    jiffies = ULONG_MAX - limit / 2;
+    chd_drain_watchdog(&fixture);
+    jiffies += limit - 1;
+    chd_drain_watchdog(&fixture);
+    CHECK(!fixture.fatal && fixture.drain_clock_elapsed == limit - 1);
+    jiffies++;
+    chd_drain_watchdog(&fixture);
+    CHECK(fixture.fatal && queues.src.error && queues.dst.error &&
+          !fixture.admitted && last_capture.owned &&
+          fixture.active[0] == &last_capture && !last_buffer.done &&
+          !fixture.pending_last && !eos_events && fixture.decoder.count == 3 &&
+          fixture.decoder.phase == CHD_V4L2_DRAINING);
+
+    for (unsigned pause = 0; pause < 5; pause++) {
+        reset(true); fixture.drain_requested = fixture.drain_tx_done = true;
+        fixture.decoder.phase = CHD_V4L2_DRAINING;
+        fixture.active[0] = &last_capture; last_capture.owned = true;
+        fixture.drain_clock_count = fixture.decoder.count;
+        jiffies = 10; chd_drain_watchdog(&fixture);
+        jiffies += limit / 2; chd_drain_watchdog(&fixture);
+        if (pause == 0) fixture.format_pending = true;
+        if (pause == 1) fixture.capture_streaming = false;
+        if (pause == 2) fixture.active[0] = NULL;
+        if (pause == 3) last_capture.owned = false;
+        if (pause == 4) fixture.capture_started = false;
+        chd_drain_watchdog(&fixture);
+        jiffies += 10 * limit; chd_drain_watchdog(&fixture);
+        CHECK(!fixture.fatal && fixture.drain_clock_elapsed == limit / 2);
+        fixture.format_pending = false; fixture.capture_streaming = true;
+        fixture.active[0] = &last_capture; last_capture.owned = true;
+        fixture.capture_started = true;
+        chd_drain_watchdog(&fixture);
+        CHECK(!fixture.fatal && fixture.drain_clock_elapsed == limit / 2);
+        /* Genuine progress, including exact-token ERROR, restarts budget. */
+        for (unsigned i = 0; i < 3; i++) {
+            jiffies += limit - 1; fixture.decoder.count--;
+            chd_drain_watchdog(&fixture);
+            CHECK(!fixture.fatal && !fixture.drain_clock_elapsed);
+        }
+        jiffies += limit; chd_drain_watchdog(&fixture);
+        CHECK(fixture.fatal && !fixture.decoder.count && !eos_events);
+    }
+    for (unsigned gate = 0; gate < 5; gate++) {
+        reset(true); fixture.drain_requested = fixture.drain_tx_done = true;
+        fixture.decoder.phase = CHD_V4L2_DRAINING;
+        fixture.active[0] = &last_capture; last_capture.owned = true;
+        fixture.drain_clock_count = fixture.decoder.count;
+        jiffies = 0; chd_drain_watchdog(&fixture);
+        jiffies += limit / 2; chd_drain_watchdog(&fixture);
+        if (gate == 0) fixture.tx_active = true;
+        if (gate == 1) fixture.drain_tx_done = false;
+        if (gate == 2) fixture.drain_requested = false;
+        if (gate == 3) fixture.decoder.phase = CHD_V4L2_DRAINED;
+        if (gate == 4) fixture.decoder.epoch++;
+        jiffies += 10 * limit; chd_drain_watchdog(&fixture);
+        CHECK(!fixture.fatal && !fixture.drain_clock_running && !fixture.drain_clock_elapsed);
+    }
+    reset(true); fixture.drain_clock_running = true; fixture.drain_clock_elapsed = limit / 2;
+    chd_join(&fixture);
+    CHECK(!fixture.drain_clock_running && !fixture.drain_clock_elapsed);
+    reset(true); fixture.drain_requested = fixture.drain_tx_done = true;
+    fixture.decoder.phase = CHD_V4L2_DRAINING;
+    fixture.pending_last = &last_buffer;
+    fixture.drain_clock_count = fixture.decoder.count = 0;
+    fixture.drain_clock_running = true; fixture.drain_clock_last = 0;
+    jiffies = 10 * limit;
+    chd_drain_watchdog(&fixture);
+    CHECK(!fixture.fatal && !fixture.drain_clock_running && !last_buffer.done);
+    mutex_lock(&fixture.run_lock);
+    CHECK(!chd_finish_last(&fixture));
+    mutex_unlock(&fixture.run_lock);
+    chd_drain_watchdog(&fixture);
+    CHECK(!fixture.fatal && !fixture.drain_clock_elapsed &&
+          fixture.decoder.phase == CHD_V4L2_DRAINED && eos_events == 1);
+}
+
 int main(void)
 {
     node_api_cases();
+    drain_watchdog_cases();
     invalid_and_busy(); format_reallocation(); stop_failures();
     restart_and_drain(); cleanup_and_scheduler();
     streamon_allocation_failures();

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <linux/dma-mapping.h>
+#include <linux/jiffies.h>
 #include <linux/workqueue.h>
 #include <linux/vmalloc.h>
 #include <media/v4l2-event.h>
@@ -21,6 +22,7 @@
 
 #define CHD_CODED_SIZE (2U * 1024U * 1024U)
 #define CHD_TX_TIMEOUT_MS 2000U
+#define CHD_DRAIN_TIMEOUT_MS 30000U
 #define CHD_DISCOVERY_BUFFERS 1U
 
 struct crystalhd_v4l2_node {
@@ -82,6 +84,11 @@ struct crystalhd_v4l2_file {
 	bool tx_active;
 	bool tx_stopping;
 	bool drain_tx_done;
+	bool drain_clock_running;
+	unsigned long drain_clock_last;
+	unsigned long drain_clock_elapsed;
+	u64 drain_clock_epoch;
+	u32 drain_clock_count;
 	struct vb2_v4l2_buffer *pending_last;
 	struct crystalhd_rx_metadata last_metadata;
 	u64 last_epoch;
@@ -749,6 +756,55 @@ static void chd_schedule_tx(struct crystalhd_v4l2_file *f)
 	spin_unlock_irqrestore(&f->kick_lock, flags);
 }
 
+/* Account only intervals with receive capacity. Client starvation is not a
+ * firmware timeout. A correlated picture/error restarts the inactivity budget.
+ * Unsigned subtraction also handles a jiffies wrap during an eligible interval.
+ */
+static void chd_drain_watchdog(struct crystalhd_v4l2_file *f)
+{
+	unsigned long now = jiffies;
+	unsigned long limit = msecs_to_jiffies(CHD_DRAIN_TIMEOUT_MS);
+	bool eligible = false;
+	u32 i;
+
+	if (!f->drain_requested || !f->drain_tx_done || f->tx_active ||
+	    f->decoder.phase != CHD_V4L2_DRAINING ||
+	    f->drain_clock_epoch != f->decoder.epoch) {
+		f->drain_clock_running = false;
+		f->drain_clock_elapsed = 0;
+		f->drain_clock_epoch = f->decoder.epoch;
+		f->drain_clock_count = f->decoder.count;
+		return;
+	}
+	if (f->decoder.count < f->drain_clock_count) {
+		f->drain_clock_elapsed = 0;
+		f->drain_clock_running = false;
+	}
+	f->drain_clock_count = f->decoder.count;
+	if (f->admitted && !f->fatal && f->output_streaming &&
+	    f->capture_streaming && f->capture_started && f->format_known &&
+	    !f->format_pending && !f->pending_last) {
+		for (i = 0; i < BC_RX_LIST_CNT; i++)
+			if (f->active[i] && crystalhd_v4l2_capture_owned(f->active[i])) {
+				eligible = true;
+				break;
+			}
+	}
+	if (eligible && f->drain_clock_running) {
+		unsigned long elapsed = now - f->drain_clock_last;
+
+		/* Saturate before addition, including across long scheduling gaps. */
+		if (elapsed >= limit - f->drain_clock_elapsed)
+			f->drain_clock_elapsed = limit;
+		else
+			f->drain_clock_elapsed += elapsed;
+	}
+	f->drain_clock_running = eligible;
+	f->drain_clock_last = now;
+	if (f->drain_clock_elapsed >= limit)
+		chd_error(f);
+}
+
 static void chd_run(struct work_struct *work)
 {
 	struct crystalhd_v4l2_file *f = container_of(to_delayed_work(work),
@@ -771,8 +827,10 @@ static void chd_run(struct work_struct *work)
 		goto unlock;
 	rc = crystalhd_device_enter(f->node->generation,
 				    f->decoder.phase == CHD_V4L2_OFF, &access);
-	if (rc == -EAGAIN)
+	if (rc == -EAGAIN) {
+		f->drain_clock_running = false;
 		goto retry;
+	}
 	if (rc) {
 		chd_error(f);
 		goto unlock;
@@ -805,6 +863,7 @@ static void chd_run(struct work_struct *work)
 			goto exit;
 	}
 	chd_schedule_tx(f);
+	chd_drain_watchdog(f);
 exit:
 	crystalhd_device_exit(&access);
 	if (rc) {
@@ -848,6 +907,8 @@ static void chd_join(struct crystalhd_v4l2_file *f)
 	cancel_delayed_work_sync(&f->run_work);
 	mutex_lock(&f->run_lock);
 	f->tx_active = false; /* A canceled queued work item never ran its tail. */
+	f->drain_clock_running = false;
+	f->drain_clock_elapsed = 0;
 	mutex_unlock(&f->run_lock);
 }
 
@@ -1544,6 +1605,10 @@ static int chd_decoder_cmd(struct file *file, void *fh, struct v4l2_decoder_cmd 
 		    !crystalhd_v4l2_decoder_drained(&f->decoder)) {
 			f->drain_left = v4l2_m2m_num_src_bufs_ready(f->fh.m2m_ctx);
 			f->drain_requested = true;
+			f->drain_clock_running = false;
+			f->drain_clock_elapsed = 0;
+			f->drain_clock_epoch = f->decoder.epoch;
+			f->drain_clock_count = f->decoder.count;
 		}
 		mutex_unlock(&f->run_lock);
 	}
