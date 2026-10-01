@@ -15,6 +15,7 @@
 #include <initializer_list>
 #include <mutex>
 #include <thread>
+#include <vector>
 #include <unistd.h>
 #include "7411d.h"
 #include "libcrystalhd_if.h"
@@ -41,6 +42,23 @@ static BC_STATUS mock_flush_status = BC_STS_SUCCESS;
 static BC_STATUS mock_stop_status = BC_STS_SUCCESS;
 static BC_STATUS mock_close_status = BC_STS_SUCCESS;
 static unsigned close_calls;
+struct FetchReply {
+    BC_STATUS status;
+    BC_DEC_OUT_BUFF output;
+};
+struct AddReply {
+    BC_STATUS status;
+    bool syscall_failure;
+};
+static std::vector<FetchReply> fetch_replies;
+static std::vector<AddReply> add_replies;
+static std::vector<uint8_t *> reposted_buffers;
+static std::vector<uint8_t *> copied_buffers;
+static std::vector<uint8_t *> callback_buffers;
+static unsigned copy_calls, callback_calls;
+static BC_STATUS mock_copy_status = BC_STS_SUCCESS;
+static bool allow_copy;
+static uint8_t frame_storage[8][32];
 
 extern "C" int __real_pthread_mutex_lock(pthread_mutex_t *mutex);
 extern "C" int __wrap_pthread_mutex_lock(pthread_mutex_t *mutex)
@@ -97,16 +115,30 @@ extern "C" int __wrap_ioctl(int, unsigned long code, ...)
         BC_IOCTL_DATA *data = va_arg(args, BC_IOCTL_DATA *);
         va_end(args);
         if (code == BCM_IOC_FETCH_RXBUFF) {
-            ++fetch_calls;
-            data->RetSts = mock_fetch_status;
+            const unsigned call = fetch_calls++;
+            if (call < fetch_replies.size()) {
+                data->u.DecOutData = fetch_replies[call].output;
+                data->RetSts = fetch_replies[call].status;
+            } else {
+                data->RetSts = mock_fetch_status;
+            }
             if (cancel_after_fetch) {
                 DtsLock(observed);
                 observed->CancelWaiting = 1;
                 DtsUnLock(observed);
             }
         } else {
-            ++add_calls;
-            data->RetSts = mock_add_status;
+            const unsigned call = add_calls++;
+            reposted_buffers.push_back(data->u.RxBuffs.YuvBuff);
+            if (call < add_replies.size()) {
+                data->RetSts = add_replies[call].status;
+                if (add_replies[call].syscall_failure) {
+                    errno = EFAULT;
+                    return -1;
+                }
+            } else {
+                data->RetSts = mock_add_status;
+            }
         }
         return 0;
     }
@@ -142,14 +174,43 @@ void DumpInputSampleToFile(uint8_t *, uint32_t) {}
 /* Needed only by the unexecuted EOS branch; entering it is a test error. */
 uint16_t WORD_SWAP(uint16_t) { std::abort(); }
 void PTS2MakerBit5Bytes(uint8_t *, int64_t) { std::abort(); }
-BC_STATUS DtsCopyRawDataToOutBuff(DTS_LIB_CONTEXT *, BC_DTS_PROC_OUT *, BC_DTS_PROC_OUT *)
-{ std::abort(); }
-BC_STATUS DtsCopyNV12ToYV12(DTS_LIB_CONTEXT *, BC_DTS_PROC_OUT *, BC_DTS_PROC_OUT *)
-{ std::abort(); }
-BC_STATUS DtsCopyNV12(DTS_LIB_CONTEXT *, BC_DTS_PROC_OUT *, BC_DTS_PROC_OUT *)
-{ std::abort(); }
-BC_STATUS DtsCopyFormat(DTS_LIB_CONTEXT *, BC_DTS_PROC_OUT *, BC_DTS_PROC_OUT *)
-{ std::abort(); }
+static BC_STATUS copy_output(BC_DTS_PROC_OUT *source)
+{
+    if (!allow_copy)
+        std::abort();
+    ++copy_calls;
+    copied_buffers.push_back(source->Ybuff);
+    return mock_copy_status;
+}
+BC_STATUS DtsCopyRawDataToOutBuff(DTS_LIB_CONTEXT *, BC_DTS_PROC_OUT *, BC_DTS_PROC_OUT *source)
+{ return copy_output(source); }
+BC_STATUS DtsCopyNV12ToYV12(DTS_LIB_CONTEXT *, BC_DTS_PROC_OUT *, BC_DTS_PROC_OUT *source)
+{ return copy_output(source); }
+BC_STATUS DtsCopyNV12(DTS_LIB_CONTEXT *, BC_DTS_PROC_OUT *, BC_DTS_PROC_OUT *source)
+{ return copy_output(source); }
+BC_STATUS DtsCopyFormat(DTS_LIB_CONTEXT *, BC_DTS_PROC_OUT *, BC_DTS_PROC_OUT *source)
+{ return copy_output(source); }
+
+static BC_STATUS output_callback(void *, uint32_t, uint32_t, uint32_t, void *opaque)
+{
+    BC_DTS_PROC_OUT *output = static_cast<BC_DTS_PROC_OUT *>(opaque);
+
+    ++callback_calls;
+    callback_buffers.push_back(output->Ybuff);
+    return BC_STS_SUCCESS;
+}
+
+static void reset_output_mocks()
+{
+    fetch_replies.clear();
+    add_replies.clear();
+    reposted_buffers.clear();
+    copied_buffers.clear();
+    callback_buffers.clear();
+    copy_calls = callback_calls = 0;
+    mock_copy_status = BC_STS_SUCCESS;
+    allow_copy = false;
+}
 
 static void test_flush(unsigned mode, bool pending)
 {
@@ -250,6 +311,7 @@ struct OutputContext {
         if (txBufInit(&context.circBuf, CIRC_TX_BUF_SIZE) != BC_STS_SUCCESS)
             std::abort();
         allow_output_io = true;
+        reset_output_mocks();
         mock_fetch_status = BC_STS_NO_DATA;
         mock_add_status = BC_STS_SUCCESS;
         cancel_after_fetch = false;
@@ -264,9 +326,87 @@ struct OutputContext {
         observed = nullptr;
         bc_dil_glob_ptr = nullptr;
         allow_output_io = admission_probe = false;
+        reset_output_mocks();
         mock_flush_status = mock_stop_status = mock_close_status = BC_STS_SUCCESS;
     }
 };
+
+enum AddOutcome {
+    ADD_SUCCEEDS,
+    ADD_STATUS_FAILURE,
+    ADD_SYSCALL_FAILURE,
+};
+
+static AddReply make_add_reply(AddOutcome outcome)
+{
+    if (outcome == ADD_STATUS_FAILURE)
+        return AddReply{BC_STS_IO_ERROR, false};
+    if (outcome == ADD_SYSCALL_FAILURE)
+        return AddReply{BC_STS_SUCCESS, true};
+    return AddReply{BC_STS_SUCCESS, false};
+}
+
+static BC_STATUS add_result(AddOutcome outcome)
+{
+    return outcome == ADD_STATUS_FAILURE ? BC_STS_IO_ERROR :
+        outcome == ADD_SYSCALL_FAILURE ? BC_STS_ERROR : BC_STS_SUCCESS;
+}
+
+static FetchReply make_frame(unsigned index, uint32_t picture_number, int32_t session)
+{
+    BC_DEC_OUT_BUFF output = {};
+
+    output.OutPutBuffs.YuvBuff = frame_storage[index];
+    output.OutPutBuffs.YuvBuffSz = sizeof(frame_storage[index]);
+    output.OutPutBuffs.UVbuffOffset = sizeof(frame_storage[index]) / 2;
+    output.OutPutBuffs.YBuffDoneSz = sizeof(frame_storage[index]) / 2;
+    output.OutPutBuffs.UVBuffDoneSz = sizeof(frame_storage[index]) / 2;
+    output.PibInfo.ppb.picture_number = picture_number;
+    output.PibInfo.ppb.width = 16;
+    output.PibInfo.ppb.height = 16;
+    output.PibInfo.ptsStcOffset = session;
+    output.Flags = COMP_FLAG_PIB_VALID | COMP_FLAG_DATA_VALID;
+    return FetchReply{BC_STS_SUCCESS, output};
+}
+
+static FetchReply make_fetch_error(BC_STATUS status)
+{
+    BC_DEC_OUT_BUFF output = {};
+
+    return FetchReply{status, output};
+}
+
+static void prepare_scripted_output(OutputContext &fixture, uint32_t device)
+{
+    fixture.context.DevId = device;
+    fixture.context.FixFlags = 0;
+    fixture.context.RegCfg.DbgOptions |= BC_BIT(6);
+    fixture.context.VidParams.Progressive = TRUE;
+    fixture.context.HWOutPicWidth = 16;
+    fixture.context.SingleThreadedAppMode = 0;
+    allow_copy = true;
+}
+
+static BC_DTS_PROC_OUT make_public_output(OutputContext &fixture, uint8_t drops)
+{
+    BC_DTS_PROC_OUT output = {};
+
+    output.hnd = &fixture.context;
+    output.AppCallBack = output_callback;
+    output.DropFrames = drops;
+    return output;
+}
+
+static bool reposts_match(unsigned count)
+{
+    if (reposted_buffers.size() != count)
+        return false;
+    for (unsigned i = 0; i < count; ++i) {
+        if (reposted_buffers[i] != frame_storage[i])
+            return false;
+    }
+    return true;
+}
 
 static void test_late_output(unsigned mode, bool no_copy, bool during_stop)
 {
@@ -404,6 +544,154 @@ static void test_canceled_fetch(bool no_copy, bool repost_fails)
     }
 }
 
+static void test_repeated_picture_repost(AddOutcome outcome)
+{
+    OutputContext fixture;
+    prepare_scripted_output(fixture, BC_PCI_DEVID_LINK);
+    fixture.context.LastPicNum = 10;
+    fixture.context.LastSessNum = 4;
+    fixture.context.PullDownFlag = 0;
+    fetch_replies.push_back(make_frame(0, 10, 4));
+    add_replies.push_back(make_add_reply(outcome));
+    BC_DTS_PROC_OUT output = make_public_output(fixture, 2);
+    const BC_STATUS status = DtsProcOutput(&fixture.context, 0, &output);
+    const BC_STATUS expected = outcome == ADD_SUCCEEDS ? BC_STS_NO_DATA : add_result(outcome);
+
+    check(status == expected, "LINK repeat reports the repost result before NO_DATA");
+    check(fetch_calls == 1 && add_calls == 1 && reposts_match(1),
+          "LINK repeat fetches and reposts its buffer exactly once");
+    check(copy_calls == 0 && callback_calls == 0 && output.DropFrames == 2,
+          "LINK repeat cannot copy, callback, or consume a requested drop");
+    check(fixture.context.ProcOutPending == (outcome == ADD_SUCCEEDS ? 0 : 1),
+          "LINK repeat retires pending ownership only after confirmed repost");
+    if (outcome != ADD_SUCCEEDS) {
+        const unsigned old_fetch_calls = fetch_calls;
+        const unsigned old_add_calls = add_calls;
+        check(DtsProcOutput(&fixture.context, 0, &output) == BC_STS_BUSY &&
+              fetch_calls == old_fetch_calls && add_calls == old_add_calls,
+              "failed LINK repeat repost blocks reuse without retrying ownership");
+    }
+}
+
+static void test_flea_repeat_seed_control()
+{
+    OutputContext fixture;
+    prepare_scripted_output(fixture, BC_PCI_DEVID_FLEA);
+    fixture.context.LastPicNum = 10;
+    fixture.context.LastSessNum = 4;
+    fetch_replies.push_back(make_frame(0, 10, 4));
+    add_replies.push_back(make_add_reply(ADD_SUCCEEDS));
+    BC_DTS_PROC_OUT output = make_public_output(fixture, 0);
+
+    check(DtsProcOutput(&fixture.context, 0, &output) == BC_STS_SUCCESS,
+          "FLEA bypasses LINK repeated-picture filtering");
+    check(fetch_calls == 1 && add_calls == 1 && reposts_match(1),
+          "FLEA repeat seed retains one fetch and one repost");
+    check(copy_calls == 1 && callback_calls == 1 &&
+          copied_buffers[0] == frame_storage[0] && callback_buffers[0] == frame_storage[0],
+          "FLEA repeat seed delivers the fetched frame once");
+    check(fixture.context.ProcOutPending == 0,
+          "FLEA delivery retires pending ownership after repost");
+}
+
+static void test_successful_drops(uint32_t device, bool single_threaded, uint8_t drops)
+{
+    OutputContext fixture;
+    prepare_scripted_output(fixture, device);
+    fixture.context.SingleThreadedAppMode = single_threaded;
+    const unsigned frame_count = drops + (single_threaded ? 0U : 1U);
+    for (unsigned i = 0; i < frame_count; ++i) {
+        fetch_replies.push_back(make_frame(i, 10 + i, 4));
+        add_replies.push_back(make_add_reply(ADD_SUCCEEDS));
+    }
+    BC_DTS_PROC_OUT output = make_public_output(fixture, drops);
+
+    check(DtsProcOutput(&fixture.context, 0, &output) == BC_STS_SUCCESS,
+          "successful frame drops preserve public success");
+    check(output.DropFrames == 0 && fetch_calls == frame_count &&
+          add_calls == frame_count && reposts_match(frame_count),
+          "each dropped or delivered buffer has one distinct fetch and repost");
+    check(fixture.context.ProcOutPending == 0,
+          "successful drops and delivery retire every pending reference");
+    if (single_threaded) {
+        check(copy_calls == 0 && callback_calls == 0,
+              "single-threaded final drop returns without delivering a frame");
+        check(output.PicInfo.picture_number == 9U + frame_count,
+              "single-threaded final drop preserves the dropped picture number");
+    } else {
+        check(copy_calls == 1 && callback_calls == 1 &&
+              copied_buffers[0] == frame_storage[frame_count - 1] &&
+              callback_buffers[0] == frame_storage[frame_count - 1],
+              "ordinary mode delivers only a freshly fetched undropped frame");
+    }
+}
+
+static void test_failed_drop_repost(uint32_t device, bool single_threaded,
+                                    unsigned failure_index, AddOutcome outcome)
+{
+    OutputContext fixture;
+    prepare_scripted_output(fixture, device);
+    fixture.context.SingleThreadedAppMode = single_threaded;
+    const uint8_t drops = 2;
+    for (unsigned i = 0; i <= failure_index; ++i) {
+        fetch_replies.push_back(make_frame(i, 10 + i, 4));
+        add_replies.push_back(make_add_reply(i == failure_index ? outcome : ADD_SUCCEEDS));
+    }
+    BC_DTS_PROC_OUT output = make_public_output(fixture, drops);
+
+    check(DtsProcOutput(&fixture.context, 0, &output) == add_result(outcome),
+          "drop path returns the first repost failure");
+    check(fetch_calls == failure_index + 1 && add_calls == failure_index + 1 &&
+          reposts_match(failure_index + 1),
+          "drop repost failure stops before any extra fetch or duplicate repost");
+    check(output.DropFrames == drops - failure_index,
+          "failed repost does not consume its requested drop");
+    check(copy_calls == 0 && callback_calls == 0 && fixture.context.ProcOutPending == 1,
+          "failed drop repost retains ownership without copy or callback");
+    const unsigned old_fetch_calls = fetch_calls;
+    const unsigned old_add_calls = add_calls;
+    check(DtsProcOutput(&fixture.context, 0, &output) == BC_STS_BUSY &&
+          fetch_calls == old_fetch_calls && add_calls == old_add_calls,
+          "ambiguous failed drop repost blocks a second fetch and repost");
+}
+
+static void test_replacement_fetch_failure(uint32_t device, BC_STATUS fetch_status)
+{
+    OutputContext fixture;
+    prepare_scripted_output(fixture, device);
+    fetch_replies.push_back(make_frame(0, 10, 4));
+    fetch_replies.push_back(make_fetch_error(fetch_status));
+    add_replies.push_back(make_add_reply(ADD_SUCCEEDS));
+    BC_DTS_PROC_OUT output = make_public_output(fixture, 1);
+    const BC_STATUS expected = fetch_status == BC_STS_TIMEOUT ? BC_STS_NO_DATA : fetch_status;
+
+    check(DtsProcOutput(&fixture.context, 0, &output) == expected,
+          "replacement fetch preserves existing timeout and error reporting");
+    check(output.DropFrames == 0 && fetch_calls == 2 && add_calls == 1 && reposts_match(1),
+          "replacement fetch occurs only after the dropped buffer was reposted");
+    check(copy_calls == 0 && callback_calls == 0 && fixture.context.ProcOutPending == 0,
+          "failed replacement fetch cannot copy the released dropped buffer");
+}
+
+static void test_delivery_status_precedence(BC_STATUS copy_status, AddOutcome outcome)
+{
+    OutputContext fixture;
+    prepare_scripted_output(fixture, BC_PCI_DEVID_FLEA);
+    fetch_replies.push_back(make_frame(0, 10, 4));
+    add_replies.push_back(make_add_reply(outcome));
+    mock_copy_status = copy_status;
+    BC_DTS_PROC_OUT output = make_public_output(fixture, 0);
+    const BC_STATUS expected = copy_status != BC_STS_SUCCESS ? copy_status : add_result(outcome);
+
+    check(DtsProcOutput(&fixture.context, 0, &output) == expected,
+          "delivered output preserves copy-error precedence over repost status");
+    check(fetch_calls == 1 && add_calls == 1 && reposts_match(1) &&
+          copy_calls == 1 && callback_calls == 1,
+          "delivered output performs one callback, copy, and repost attempt");
+    check(fixture.context.ProcOutPending == (outcome == ADD_SUCCEEDS ? 0 : 1),
+          "delivered output retires pending ownership only after confirmed repost");
+}
+
 static void test_cleanup_errors(unsigned mode, unsigned errors)
 {
     OutputContext fixture;
@@ -449,11 +737,31 @@ int main()
     test_canceled_fetch(true, false);
     test_canceled_fetch(false, true);
     test_canceled_fetch(true, true);
+    for (AddOutcome outcome : {ADD_SUCCEEDS, ADD_STATUS_FAILURE, ADD_SYSCALL_FAILURE})
+        test_repeated_picture_repost(outcome);
+    test_flea_repeat_seed_control();
+    for (uint32_t device : {static_cast<uint32_t>(BC_PCI_DEVID_LINK),
+                            static_cast<uint32_t>(BC_PCI_DEVID_FLEA)}) {
+        for (bool single_threaded : {false, true}) {
+            for (uint8_t drops : {static_cast<uint8_t>(1), static_cast<uint8_t>(2)})
+                test_successful_drops(device, single_threaded, drops);
+            for (unsigned failure_index : {0U, 1U}) {
+                for (AddOutcome outcome : {ADD_STATUS_FAILURE, ADD_SYSCALL_FAILURE})
+                    test_failed_drop_repost(device, single_threaded, failure_index, outcome);
+            }
+        }
+        test_replacement_fetch_failure(device, BC_STS_IO_ERROR);
+        test_replacement_fetch_failure(device, BC_STS_TIMEOUT);
+    }
+    for (BC_STATUS copy_status : {BC_STS_SUCCESS, BC_STS_IO_ERROR}) {
+        for (AddOutcome outcome : {ADD_SUCCEEDS, ADD_STATUS_FAILURE, ADD_SYSCALL_FAILURE})
+            test_delivery_status_precedence(copy_status, outcome);
+    }
     for (unsigned mode : {0U, 1U, 2U, 4U})
         for (unsigned errors = 0; errors < 8; ++errors)
             test_cleanup_errors(mode, errors);
     if (failures)
         return 1;
-    std::puts("PASS: production flush completes pending output before decoder stop");
+    std::puts("PASS: production output ownership and flush ordering checks");
     return 0;
 }
