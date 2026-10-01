@@ -18,10 +18,31 @@ struct _BC_DTS_PROC_OUT;
 
 typedef uint8_t u8;
 typedef uint32_t u32;
+typedef struct { unsigned int refs; } refcount_t;
+static void refcount_set(refcount_t *ref, unsigned int count) { ref->refs = count; }
+static void refcount_inc(refcount_t *ref)
+{ if (!ref->refs) abort(); ref->refs++; }
+static bool refcount_dec_and_test(refcount_t *ref)
+{ if (!ref->refs) abort(); return --ref->refs == 0; }
 
 #define KERN_ERR ""
 #define READ_ONCE(value) (value)
 #define WRITE_ONCE(value, next) ((value) = (next))
+#define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
+#define WARN_ON_ONCE(value) ((bool)(value))
+#define DMA_TO_DEVICE 1
+#define DMA_BIDIRECTIONAL 2
+#define crystalhd_dio_locked 1
+#define crystalhd_dio_sg_mapped 2
+#define PAGE_SHIFT 12
+#define PAGE_SIZE (1UL << PAGE_SHIFT)
+#define FOLL_LONGTERM 1U
+#define FOLL_WRITE 2U
+#define __user
+#define offset_in_page(address) ((address) & (PAGE_SIZE - 1U))
+#define DIV_ROUND_UP(value, divisor) (((value) + (divisor) - 1U) / (divisor))
+#define min_t(type, left, right) \
+    ((type)(left) < (type)(right) ? (type)(left) : (type)(right))
 #define MAX_JIFFY_OFFSET ((LONG_MAX >> 1) - 1)
 #define msecs_to_jiffies(value) \
     (run.saturate_timeout_conversion ? MAX_JIFFY_OFFSET : \
@@ -41,18 +62,58 @@ typedef uint32_t u32;
 typedef struct { unsigned wakeups; } wait_queue_head_t;
 typedef union { uint64_t full_addr; } addr_64;
 struct device { int unused; };
-struct pci_dev { struct device dev; int irq; };
-struct crystalhd_adp { struct pci_dev *pdev; bool present; int user_lock; };
+struct pci_dev { struct device dev; int irq; uint32_t device; };
+struct crystalhd_adp {
+    struct pci_dev *pdev;
+    bool present;
+    int user_lock;
+    bool dma_terminal_quiesced;
+    struct { uint32_t cin_wait_exit; } cmds;
+};
+struct crystalhd_tx_buffer;
+struct page { unsigned index; };
+struct scatterlist {
+    struct page *page;
+    unsigned length, offset;
+    uint64_t dma_address;
+    unsigned dma_length;
+};
+#define sg_dma_len(sg) ((sg)->dma_length)
+static struct scatterlist *sg_next(struct scatterlist *sg) { return sg + 1; }
+struct crystalhd_tx_buffer_ops {
+    void (*get)(const struct crystalhd_tx_buffer *);
+    void (*put)(struct crystalhd_adp *, const struct crystalhd_tx_buffer *);
+};
 struct crystalhd_tx_buffer {
     void *sgl;
     uint32_t dma_nents, bytes;
     uint64_t tail_addr;
     uint32_t tail_size;
     void *cookie;
+    const struct crystalhd_tx_buffer_ops *ops;
 };
 struct crystalhd_dio_req {
-    struct { uint32_t xfr_len; } uinfo;
+    struct {
+        uint32_t xfr_len, uv_offset, uv_sg_ix, uv_sg_off;
+        void *xfr_buff;
+        BC_OUTPUT_FORMAT b422mode;
+        bool dir_tx;
+    } uinfo;
     struct crystalhd_tx_buffer tx_buffer;
+    struct {
+        struct scatterlist *sgl;
+        uint32_t dma_nents, capacity, uv_offset, uv_sg_ix, uv_sg_off;
+        BC_OUTPUT_FORMAT output_format;
+        const void *ops;
+        void *cookie;
+    } rx_buffer;
+    refcount_t tx_refs;
+    int sig, page_cnt, sg_nents, sg_cnt, direction;
+    unsigned max_pages, fb_size;
+    uint64_t fb_pa;
+    void *fb_va;
+    struct page **pages;
+    struct scatterlist *sg;
 };
 typedef void (*hw_comp_callback)(void *, BC_STATUS);
 struct dma_desc_mem { uint64_t phy_addr; };
@@ -60,11 +121,12 @@ struct tx_dma_pkt {
     struct dma_desc_mem desc_mem;
     hw_comp_callback call_back;
     const struct crystalhd_tx_buffer *buffer;
+    const struct crystalhd_tx_buffer *retained_buffer;
     void *cb_context;
     uint32_t list_tag;
 };
 struct crystalhd_dioq {
-    struct tx_dma_pkt *packet, *next;
+    struct tx_dma_pkt *head, *next;
 };
 typedef struct { uint32_t cmd[64]; } BC_FW_CMD;
 struct crystalhd_user { uint32_t uid, in_use, mode; };
@@ -83,6 +145,7 @@ struct crystalhd_hw {
     BC_STATUS (*pfnDoFirmwareCmd)(struct crystalhd_hw *, BC_FW_CMD *);
     BC_STATUS (*pfnIssuePause)(struct crystalhd_hw *, bool);
     int fetch_sem;
+    struct tx_dma_pkt tx_pkt_pool[DMA_ENGINE_CNT];
 };
 struct crystalhd_cmd {
     uint32_t state, tx_list_id, cin_wait_exit;
@@ -101,23 +164,42 @@ typedef struct {
 
 static unsigned checks, failures;
 static unsigned long jiffies;
-static struct pci_dev endpoint = { .irq = 19 };
+static struct pci_dev endpoint = { .irq = 19, .device = BC_PCI_DEVID_FLEA };
 static struct crystalhd_adp adapter;
 static struct crystalhd_hw hardware;
 static struct crystalhd_cmd context;
 static struct crystalhd_dio_req request;
 static struct crystalhd_dio_req request2;
-static struct tx_dma_pkt packet, packet2;
+static struct tx_dma_pkt *const packet0 = &hardware.tx_pkt_pool[0];
+#define packet2 (hardware.tx_pkt_pool[1])
 static struct crystalhd_dioq freeq, activeq;
 static uint32_t input[16];
 static uint32_t opaque_cookie;
 static crystalhd_ioctl_data input_ioctl;
+/* Dedicated boundaries for the separately named, source-extracted map path.
+ * Ordinary TX scenarios continue using their existing mapping mock.
+ */
+static _Alignas(PAGE_SIZE) uint8_t map_input[3 * PAGE_SIZE];
+static struct page map_page_storage[3];
+static struct page *map_pages[3];
+static struct scatterlist map_sg[3];
+static uint8_t map_tail[4];
+static const unsigned crystalhd_dio_rx_buffer_ops;
+static struct map_boundary_state {
+    bool active, allocated, mapped, mapping_succeeded;
+    bool alloc_fail, copy_fail, map_fail;
+    bool expected_tx;
+    unsigned max_pages, expected_bytes, expected_pins;
+    long pin_result;
+    unsigned allocs, frees, pins, copies, sg_maps, sg_unmaps, syncs;
+    unsigned unpin_calls, unpinned_pages, live_pages;
+} map_boundary;
 static void Complete(void);
 static struct {
     unsigned maps, unmaps, descriptors, starts, stops, syncs, sleeps, waits;
     unsigned wakes, irq_depth, irq_disables, irq_enables, fifo_calls, busy;
     unsigned firmware_calls, firmware_depth, bus_clears, bus_drains;
-    unsigned callback_calls;
+    unsigned callback_calls, masks;
     unsigned sleep_budget[4], sleep_budget_count, completion_budget;
     unsigned post_delay_ms, wait_entry_delay_ms;
     unsigned cancel_on_sleep, remove_on_sleep, absolute_waits;
@@ -125,6 +207,7 @@ static struct {
     bool mapped, immediate_completion, completion_before_cancel, flush_on_busy;
     bool drain_ok, fault_on_sleep, signal_pending, remove_on_wait;
     bool complete_on_status, saturate_timeout_conversion;
+    bool fault_on_wait, fault_after_descriptor;
     unsigned free_add_failures;
     BC_STATUS map_status, descriptor_status, active_add_status, free_add_status, stop_status;
     BC_STATUS completion_status, firmware_status;
@@ -137,7 +220,7 @@ static struct {
 static bool signal_pending(void *task)
 {
     (void)task;
-    if (run.complete_on_status && context.tx_list_id && activeq.packet) {
+    if (run.complete_on_status && context.tx_list_id && activeq.head) {
         run.complete_on_status = false;
         Complete();
     }
@@ -158,23 +241,28 @@ static void Check(bool condition, const char *why)
 }
 static unsigned QueueCount(const struct crystalhd_dioq *queue)
 {
-    return (queue->packet != NULL) + (queue->next != NULL);
+    return (queue->head != NULL) + (queue->next != NULL);
 }
 static bool QueueContains(const struct crystalhd_dioq *queue,
                           const struct tx_dma_pkt *owned)
 {
-    return queue->packet == owned || queue->next == owned;
+    return queue->head == owned || queue->next == owned;
 }
 static struct device *chddev(void) { return &endpoint.dev; }
 static BC_STATUS bc_cproc_do_fw_cmd(struct crystalhd_cmd *, crystalhd_ioctl_data *);
 static BC_STATUS crystalhd_hw_tx_req_complete(struct crystalhd_hw *, uint32_t, BC_STATUS);
 static void crystalhd_hw_dma_fatal_stop(struct crystalhd_hw *);
+static void disable_irq(int);
+static void enable_irq(int);
+static void synchronize_irq(int);
+static BC_STATUS crystalhd_unmap_dio(struct crystalhd_adp *, struct crystalhd_dio_req *);
+static const struct crystalhd_tx_buffer_ops crystalhd_dio_tx_buffer_ops;
 
 static void Complete(void)
 {
-    Check(activeq.packet == &packet && packet.list_tag != 0,
+    Check(activeq.head == packet0 && packet0->list_tag != 0,
           "IRQ completion finds the published TX owner");
-    Check(crystalhd_hw_tx_req_complete(&hardware, packet.list_tag,
+    Check(crystalhd_hw_tx_req_complete(&hardware, packet0->list_tag,
                                       run.completion_status) == BC_STS_SUCCESS,
           "IRQ completion retires the real active request");
 }
@@ -182,7 +270,7 @@ static void Unlock(unsigned *lock)
 {
     Check(lock == &hardware.lock && *lock == 1, "TX publication releases its spinlock");
     *lock = 0;
-    if (run.immediate_completion && activeq.packet) {
+    if (run.immediate_completion && activeq.head) {
         run.immediate_completion = false;
         Complete();
     }
@@ -195,9 +283,9 @@ static void Unlock(unsigned *lock)
 #define crystalhd_create_event(event) (*(event) = (wait_queue_head_t){0})
 static void crystalhd_set_event(wait_queue_head_t *event)
 {
-    Check(event && freeq.packet == &packet && !activeq.packet &&
-          !packet.buffer && !packet.cb_context && !packet.call_back &&
-          !packet.list_tag,
+    Check(event && freeq.head == packet0 && !activeq.head &&
+          !packet0->buffer && !packet0->cb_context && !packet0->call_back &&
+          !packet0->list_tag,
           "completion wakes only after common TX ownership has retired");
     event->wakeups++; run.wakes++;
 }
@@ -225,6 +313,13 @@ static int Wait(wait_queue_head_t *event, int condition, unsigned timeout)
           "submitted TX wait retains its published tag and DMA watchdog");
     run.completion_budget = timeout;
     run.waits++;
+    if (run.fault_on_wait) {
+        disable_irq(endpoint.irq);
+        crystalhd_hw_dma_fatal_stop(&hardware);
+        enable_irq(endpoint.irq);
+        synchronize_irq(endpoint.irq);
+        return -EIO;
+    }
     if (run.remove_on_wait)
         adapter.present = false;
     if (run.wait_result)
@@ -266,9 +361,9 @@ static int Wait(wait_queue_head_t *event, int condition, unsigned timeout)
 } while (0)
 static void synchronize_irq(int irq)
 {
-    Check(irq == endpoint.irq && !hardware.lock && !activeq.packet &&
-          !activeq.next,
-          "IRQ synchronization observes no published TX owner");
+    Check(irq == endpoint.irq && !hardware.lock &&
+          ((!activeq.head && !activeq.next) || hardware.dma_fault),
+          "IRQ synchronization excludes ownership callbacks on completed or fault-retained TX");
     run.syncs++;
 }
 static void disable_irq(int irq)
@@ -279,9 +374,9 @@ static void disable_irq(int irq)
 }
 static void enable_irq(int irq)
 {
-    Check(irq == endpoint.irq && run.irq_depth == 1 && !activeq.packet &&
-          !activeq.next,
-          "cancellation reenables IRQ after request ownership is retired");
+    Check(irq == endpoint.irq && run.irq_depth == 1 &&
+          ((!activeq.head && !activeq.next) || hardware.dma_fault),
+          "IRQ resumes only with retired ownership or fault-gated completion delivery");
     run.irq_depth--; run.irq_enables++;
 }
 static void pci_clear_master(struct pci_dev *pdev)
@@ -296,12 +391,20 @@ static bool pci_wait_for_pending_transaction(struct pci_dev *pdev)
     run.bus_drains++;
     return run.drain_ok;
 }
+static void crystalhd_flea_disable_interrupts(struct crystalhd_hw *hw)
+{
+    Check(hw == &hardware && hardware.dma_fault && !adapter.present,
+          "fatal stop masks the endpoint without returning any DMA backing");
+    run.masks++;
+}
+static void crystalhd_link_disable_interrupts(struct crystalhd_hw *hw)
+{ crystalhd_flea_disable_interrupts(hw); }
 static void *crystalhd_dioq_fetch(struct crystalhd_dioq *queue)
 {
-    struct tx_dma_pkt *owned = queue->packet;
+    struct tx_dma_pkt *owned = queue->head;
     Check(queue == &freeq || queue == &activeq,
           "submission or cancellation fetches from a TX ownership queue");
-    queue->packet = queue->next;
+    queue->head = queue->next;
     queue->next = NULL;
     return owned;
 }
@@ -309,9 +412,9 @@ static void *crystalhd_dioq_find_and_fetch(struct crystalhd_dioq *queue, uint32_
 {
     struct tx_dma_pkt *owned = NULL;
     Check(queue == &activeq, "completion searches the active ownership queue");
-    if (queue->packet && queue->packet->list_tag == tag) {
-        owned = queue->packet;
-        queue->packet = queue->next;
+    if (queue->head && queue->head->list_tag == tag) {
+        owned = queue->head;
+        queue->head = queue->next;
         queue->next = NULL;
     } else if (queue->next && queue->next->list_tag == tag) {
         owned = queue->next;
@@ -322,7 +425,7 @@ static void *crystalhd_dioq_find_and_fetch(struct crystalhd_dioq *queue, uint32_
 static BC_STATUS crystalhd_dioq_add(struct crystalhd_dioq *queue,
                                   struct tx_dma_pkt *owned, bool wake, uint32_t tag)
 {
-    Check((owned == &packet || owned == &packet2) && !queue->next && !wake,
+    Check((owned == packet0 || owned == &packet2) && !queue->next && !wake,
           "a packet is returned to exactly one queue");
     if (queue == &activeq) {
         Check(hardware.lock && tag == owned->list_tag && tag,
@@ -338,10 +441,10 @@ static BC_STATUS crystalhd_dioq_add(struct crystalhd_dioq *queue,
             return run.free_add_status;
         }
     }
-    if (queue->packet)
+    if (queue->head)
         queue->next = owned;
     else
-        queue->packet = owned;
+        queue->head = owned;
     return BC_STS_SUCCESS;
 }
 static BC_STATUS crystalhd_tx_buffer_preflight(const struct crystalhd_tx_buffer *buffer,
@@ -356,11 +459,17 @@ static BC_STATUS crystalhd_xlat_tx_buffer_to_dma_desc(
         const struct crystalhd_tx_buffer *buffer,
         struct dma_desc_mem *desc, uint32_t *index, struct device *dev, uint32_t destination)
 {
-    Check(((buffer == &request.tx_buffer && desc == &packet.desc_mem) ||
+    Check(((buffer == &request.tx_buffer && desc == &packet0->desc_mem) ||
            (buffer == &request2.tx_buffer && desc == &packet2.desc_mem)) &&
           index && dev == &endpoint.dev,
           "TX descriptor construction uses its request and reserved packet");
     run.descriptors++; run.seen_destination = destination;
+    if (run.fault_after_descriptor) {
+        disable_irq(endpoint.irq);
+        crystalhd_hw_dma_fatal_stop(&hardware);
+        enable_irq(endpoint.irq);
+        synchronize_irq(endpoint.irq);
+    }
     return run.descriptor_status;
 }
 static BC_STATUS crystalhd_map_dio(struct crystalhd_adp *adp, void *bytes, uint32_t size,
@@ -373,16 +482,70 @@ static BC_STATUS crystalhd_map_dio(struct crystalhd_adp *adp, void *bytes, uint3
         return run.map_status;
     run.mapped = true;
     request = (struct crystalhd_dio_req){
-        .uinfo.xfr_len = size,
-        .tx_buffer = { .bytes = size, .cookie = &request },
+        .uinfo = { .xfr_len = size, .dir_tx = true },
+        .tx_buffer = { .bytes = size, .cookie = &request,
+                       .ops = &crystalhd_dio_tx_buffer_ops },
+        .sig = crystalhd_dio_sg_mapped, .page_cnt = 1, .sg_nents = 1,
+        .direction = DMA_TO_DEVICE,
     };
+    refcount_set(&request.tx_refs, 1);
     *dio = &request;
     return BC_STS_SUCCESS;
 }
-static void crystalhd_unmap_dio(struct crystalhd_adp *adp, struct crystalhd_dio_req *dio)
+static void crystalhd_dio_to_device(struct crystalhd_adp *adp, struct crystalhd_dio_req *dio)
 {
-    Check(adp == &adapter && dio == &request && run.mapped && !activeq.packet &&
-          !packet.buffer && !packet.cb_context && !packet.call_back &&
+    if (map_boundary.active) {
+        Check(adp == &adapter && dio == &request && map_boundary.allocated &&
+              map_boundary.mapped,
+              "actual-map cleanup synchronizes a still-live mapping before unmap");
+        map_boundary.syncs++;
+        return;
+    }
+    Check(adp == &adapter && dio == &request && run.mapped, "final unmap retains mapped DIO");
+}
+static void dma_unmap_sg(struct device *dev, void *sg, int count, int direction)
+{
+    if (map_boundary.active) {
+        Check(dev == &endpoint.dev && sg == map_sg && count == request.sg_nents &&
+              count > 0 && direction == request.direction &&
+              map_boundary.mapped && map_boundary.syncs == 1 &&
+              map_boundary.live_pages == map_boundary.expected_pins,
+              "actual-map unmap uses original SG count and direction while pages remain pinned");
+        map_boundary.mapped = false;
+        map_boundary.sg_unmaps++;
+        return;
+    }
+    Check(dev == &endpoint.dev && sg == request.sg && count == 1 && direction == DMA_TO_DEVICE,
+          "final TX lease unmaps the original SG mapping");
+}
+static void unpin_user_pages_dirty_lock(void *pages, int count, bool dirty)
+{
+    if (map_boundary.active) {
+        Check(pages == map_pages && count > 0 &&
+              (unsigned)count == map_boundary.live_pages && !map_boundary.mapped &&
+              dirty == (map_boundary.mapping_succeeded && !map_boundary.expected_tx),
+              "actual-map cleanup unpins only acquired pages and dirties only mapped RX pages");
+        map_boundary.unpin_calls++;
+        map_boundary.unpinned_pages += count;
+        map_boundary.live_pages = 0;
+        return;
+    }
+    Check(pages == request.pages && count == 1 && !dirty,
+          "final TX lease unpins read-only source pages without dirtying them");
+}
+static void crystalhd_free_dio(struct crystalhd_adp *adp, struct crystalhd_dio_req *dio)
+{
+    if (map_boundary.active) {
+        Check(adp == &adapter && dio == &request && map_boundary.allocated &&
+              !map_boundary.mapped && !map_boundary.live_pages &&
+              (!dio->uinfo.dir_tx || !dio->tx_refs.refs),
+              "actual-map DIO storage returns to its pool only after final TX reference and physical cleanup");
+        map_boundary.allocated = false;
+        map_boundary.frees++;
+        return;
+    }
+    Check(adp == &adapter && dio == &request && run.mapped && !activeq.head &&
+          !packet0->buffer && !packet0->retained_buffer && !packet0->cb_context && !packet0->call_back &&
           !context.tx_list_id,
           "input unmaps exactly once after all TX/callback ownership has retired");
     if (run.starts)
@@ -390,12 +553,101 @@ static void crystalhd_unmap_dio(struct crystalhd_adp *adp, struct crystalhd_dio_
               "DMA ownership is not unmapped before completion or cancellation drains IRQ");
     run.mapped = false; run.unmaps++;
 }
+
+static struct crystalhd_dio_req *crystalhd_alloc_dio(struct crystalhd_adp *adp)
+{
+    Check(map_boundary.active && adp == &adapter && !map_boundary.allocated,
+          "actual map allocates exactly one DIO pool object");
+    if (map_boundary.alloc_fail)
+        return NULL;
+    request = (struct crystalhd_dio_req){
+        .max_pages = map_boundary.max_pages, .pages = map_pages, .sg = map_sg,
+        .fb_va = map_tail, .fb_pa = 0,
+    };
+    /* Deliberately leave tx_refs zero: only production map_dio may initialize
+     * the caller reference, before any pin or mapping failure can unwind.
+     */
+    map_boundary.allocated = true;
+    map_boundary.allocs++;
+    return &request;
+}
+
+static long pin_user_pages_fast(unsigned long address, unsigned long count,
+                                unsigned flags, struct page **pages)
+{
+    Check(map_boundary.active && map_boundary.allocated &&
+          address == (unsigned long)map_input && count == map_boundary.expected_pins &&
+          pages == map_pages && request.uinfo.dir_tx == map_boundary.expected_tx &&
+          request.direction == (map_boundary.expected_tx ? DMA_TO_DEVICE : DMA_BIDIRECTIONAL) &&
+          flags == (FOLL_LONGTERM | (map_boundary.expected_tx ? 0U : FOLL_WRITE)) &&
+          request.tx_refs.refs == (map_boundary.expected_tx ? 1U : 0U),
+          "production initializes TX direction and its reference before the first fallible pin boundary; RX stays unrefcounted");
+    map_boundary.pins++;
+    if (map_boundary.pin_result > 0) {
+        if ((unsigned long)map_boundary.pin_result > count) abort();
+        for (long i = 0; i < map_boundary.pin_result; i++)
+            pages[i] = &map_page_storage[i];
+        map_boundary.live_pages = map_boundary.pin_result;
+    }
+    return map_boundary.pin_result;
+}
+
+static unsigned long copy_from_user(void *dst, const void *src, size_t count)
+{
+    Check(map_boundary.active && map_boundary.allocated && dst == map_tail &&
+          count == (map_boundary.expected_bytes & 3U) && count &&
+          src == map_input + map_boundary.expected_bytes - count &&
+          request.tx_refs.refs == 1 && !map_boundary.mapped,
+          "TX tail copy follows caller-reference initialization but precedes SG mapping");
+    map_boundary.copies++;
+    if (map_boundary.copy_fail)
+        return count;
+    memcpy(dst, src, count);
+    return 0;
+}
+
+static void crystalhd_init_sg(struct scatterlist *sg, unsigned count)
+{
+    Check(map_boundary.active && sg == map_sg && count && count <= ARRAY_SIZE(map_sg),
+          "actual map initializes a bounded original SG table");
+    memset(sg, 0, count * sizeof(*sg));
+}
+
+static void crystalhd_set_sg(struct scatterlist *sg, struct page *page,
+                            unsigned length, unsigned offset)
+{
+    Check(map_boundary.active && sg >= map_sg && sg < map_sg + ARRAY_SIZE(map_sg) &&
+          page == map_pages[sg - map_sg] && length && offset + length <= PAGE_SIZE,
+          "actual map builds SG entries from exactly the pinned pages");
+    sg->page = page;
+    sg->length = length;
+    sg->offset = offset;
+}
+
+static int dma_map_sg(struct device *dev, struct scatterlist *sg, int count, int direction)
+{
+    Check(map_boundary.active && map_boundary.allocated && !map_boundary.mapped &&
+          dev == &endpoint.dev && sg == map_sg && count == request.sg_nents &&
+          count > 0 && direction == request.direction &&
+          map_boundary.live_pages == map_boundary.expected_pins &&
+          request.tx_refs.refs == (map_boundary.expected_tx ? 1U : 0U),
+          "DMA mapping sees a complete pin set and the production-owned initial TX reference");
+    map_boundary.sg_maps++;
+    if (map_boundary.map_fail)
+        return 0;
+    for (int i = 0; i < count; i++) {
+        sg[i].dma_address = 0x100000U + i * PAGE_SIZE;
+        sg[i].dma_length = sg[i].length;
+    }
+    map_boundary.mapped = map_boundary.mapping_succeeded = true;
+    return count;
+}
 static void OpaqueComplete(void *context, BC_STATUS status)
 {
     Check(context == &opaque_cookie && context != &request,
           "hardware retirement returns the exact frontend cookie, not its DMA backing");
-    Check(freeq.packet == &packet && !activeq.packet && !packet.buffer &&
-          !packet.cb_context && !packet.call_back && !packet.list_tag,
+    Check(freeq.head == packet0 && !activeq.head && !packet0->buffer &&
+          !packet0->cb_context && !packet0->call_back && !packet0->list_tag,
           "opaque completion runs only after common packet ownership retires");
     run.callback_calls++;
     run.seen_callback_context = context;
@@ -405,7 +657,7 @@ static void MultiComplete(void *context, BC_STATUS status)
 {
     struct multi_cookie *cookie = context;
     unsigned index = (unsigned)(cookie - multi_cookie);
-    struct tx_dma_pkt *owned = index ? &packet2 : &packet;
+    struct tx_dma_pkt *owned = index ? &packet2 : packet0;
 
     Check(index < 2 && cookie->mapped && !hardware.lock &&
           !QueueContains(&activeq, owned) &&
@@ -413,7 +665,7 @@ static void MultiComplete(void *context, BC_STATUS status)
           !owned->list_tag,
           "each TX callback observes its retired packet while its backing remains mapped");
     if (status == BC_STS_IO_USER_ABORT)
-        Check(!activeq.packet && !activeq.next,
+        Check(!activeq.head && !activeq.next,
               "cancel callbacks run only after every stopped TX owner is detached");
     cookie->calls++;
     cookie->status = status;
@@ -434,6 +686,7 @@ static int down_interruptible(int *sem) { Check(*sem == 1, "capture semaphore is
 static void down(int *sem) { (void)down_interruptible(sem); }
 static void up(int *sem) { Check(*sem == 0, "capture semaphore is held"); *sem = 1; }
 
+#include "tx-admission-buffer.h"
 #include "tx-admission-hardware.h"
 #include "tx-admission-command.h"
 
@@ -465,8 +718,8 @@ static bool Fifo(struct crystalhd_hw *hw, uint32_t size, uint32_t *index,
 }
 static void Start(struct crystalhd_hw *hw, uint8_t index, addr_64 descriptor)
 {
-    struct tx_dma_pkt *owned = descriptor.full_addr == packet.desc_mem.phy_addr ?
-        &packet : &packet2;
+    struct tx_dma_pkt *owned = descriptor.full_addr == packet0->desc_mem.phy_addr ?
+        packet0 : &packet2;
     Check(hw == &hardware && hardware.lock &&
           QueueContains(&activeq, owned) && owned->buffer &&
           owned->call_back && owned->cb_context &&
@@ -504,9 +757,7 @@ static void Reset(void)
     jiffies = 0;
     memset(&run, 0, sizeof(run));
     memset(&request, 0, sizeof(request));
-    packet = (struct tx_dma_pkt){ .desc_mem.phy_addr = 0x1000 };
-    packet2 = (struct tx_dma_pkt){ .desc_mem.phy_addr = 0x2000 };
-    freeq = (struct crystalhd_dioq){ .packet = &packet };
+    freeq = (struct crystalhd_dioq){ .head = packet0 };
     activeq = (struct crystalhd_dioq){0};
     memset(multi_cookie, 0, sizeof(multi_cookie));
     adapter = (struct crystalhd_adp){
@@ -516,6 +767,8 @@ static void Reset(void)
         .pfnCheckInputFIFO = Fifo, .pfnStartTxDMA = Start, .pfnStopTxDMA = Stop,
         .pfnDoFirmwareCmd = Firmware, .pfnIssuePause = Pause, .fetch_sem = 1,
         .TxFwInputBuffInfo.DramBuffAdd = 0x8000 };
+    *packet0 = (struct tx_dma_pkt){ .desc_mem.phy_addr = 0x1000 };
+    packet2 = (struct tx_dma_pkt){ .desc_mem.phy_addr = 0x2000 };
     context = (struct crystalhd_cmd){ .state = BC_LINK_READY, .adp = &adapter,
         .hw_ctx = &hardware };
     context.user[0] = (struct crystalhd_user){
@@ -530,11 +783,34 @@ static void Reset(void)
 }
 static void Balanced(void)
 {
-    Check(!run.mapped && !activeq.packet && freeq.packet == &packet &&
+    Check(!run.mapped && !activeq.head && freeq.head == packet0 &&
           !activeq.next && !freeq.next && !context.tx_list_id &&
           !hardware.lock && !run.irq_depth && !run.firmware_depth &&
-          !packet.buffer && !packet.call_back && !packet.cb_context && !packet.list_tag,
+          !packet0->buffer && !packet0->call_back && !packet0->cb_context && !packet0->list_tag,
           "completed input leaves balanced mapping, packet, locks and callback ownership");
+}
+
+static void RetireTerminalTx(void)
+{
+    unsigned int unmaps = run.unmaps;
+
+    Check(hardware.dma_fault && !adapter.present && !run.irq_depth,
+          "terminal retirement starts with fault-retained ownership and no admitted TX");
+    /* Model the separately tested PCI-writer fence and queue deletion. Do
+     * not clear dma_fault or manufacture a successful engine-stop retry.
+     */
+    adapter.dma_terminal_quiesced = true;
+    disable_irq(endpoint.irq);
+    while (crystalhd_dioq_fetch(&activeq)) { }
+    crystalhd_hw_retire_tx_quiesced(&hardware);
+    Check(!packet0->buffer && !packet0->retained_buffer && !packet0->call_back &&
+          !packet0->cb_context && !packet2.buffer && !packet2.retained_buffer &&
+          !packet2.call_back && !packet2.cb_context,
+          "pure terminal retirement clears every fixed TX identity before its final put");
+    crystalhd_hw_retire_tx_quiesced(&hardware);
+    Check(run.unmaps <= unmaps + 1U,
+          "repeated terminal retirement cannot release backing twice");
+    enable_irq(endpoint.irq);
 }
 static void Admission(void)
 {
@@ -579,7 +855,7 @@ static void Admission(void)
                                bc_proc_in_completion, &event, &tag, 0) ==
               BC_STS_INV_ARG &&
           tag == 0xfeed && !run.fifo_calls && !run.descriptors &&
-          !run.starts && freeq.packet == &packet && !activeq.packet,
+          !run.starts && freeq.head == packet0 && !activeq.head,
           "empty mapped TX is rejected before FIFO or packet ownership");
     request.tx_buffer = (struct crystalhd_tx_buffer){
         .bytes = run.transfer_size,
@@ -588,7 +864,7 @@ static void Admission(void)
                                bc_proc_in_completion, &event, &tag, 0) ==
               BC_STS_INV_ARG &&
           tag == 0xfeed && !run.fifo_calls && !run.descriptors &&
-          !run.starts && freeq.packet == &packet && !activeq.packet,
+          !run.starts && freeq.head == packet0 && !activeq.head,
           "ownerless mapped TX is rejected before FIFO or packet ownership");
     Balanced();
 
@@ -687,11 +963,11 @@ static void OpaqueCookie(void)
 }
 static void BalancedTwo(void)
 {
-    Check(!run.mapped && !activeq.packet && !activeq.next &&
-          QueueCount(&freeq) == 2 && QueueContains(&freeq, &packet) &&
+    Check(!run.mapped && !activeq.head && !activeq.next &&
+          QueueCount(&freeq) == 2 && QueueContains(&freeq, packet0) &&
           QueueContains(&freeq, &packet2) && !hardware.lock && !run.irq_depth &&
-          !packet.buffer && !packet.cb_context && !packet.call_back &&
-          !packet.list_tag && !packet2.buffer && !packet2.cb_context &&
+          !packet0->buffer && !packet0->cb_context && !packet0->call_back &&
+          !packet0->list_tag && !packet2.buffer && !packet2.cb_context &&
           !packet2.call_back && !packet2.list_tag,
           "two-list completion leaves both packets and mappings with one owner");
 }
@@ -735,25 +1011,36 @@ static void CancelAllOwners(void)
               "one engine-wide cancellation reports the stop result");
         Check(run.stops == 1 && run.irq_disables == 1 &&
               run.irq_enables == 1 && run.syncs == 1 &&
-              multi_cookie[0].calls == 1 && multi_cookie[1].calls == 1 &&
-              multi_cookie[0].status == BC_STS_IO_USER_ABORT &&
-              multi_cookie[1].status == BC_STS_IO_USER_ABORT,
-              "cancel-all stops once and aborts both cookies exactly once");
+              multi_cookie[0].calls == !stop_failure &&
+              multi_cookie[1].calls == !stop_failure &&
+              (stop_failure || (multi_cookie[0].status == BC_STS_IO_USER_ABORT &&
+                                multi_cookie[1].status == BC_STS_IO_USER_ABORT)),
+              "cancel returns both owners only after a successful engine stop");
         if (stop_failure)
-            Check(hardware.dma_fault && run.bus_clears == 1 && run.bus_drains == 1,
-                  "a failed shared stop revokes DMA before returning both owners");
+            Check(hardware.dma_fault && !adapter.present &&
+                  adapter.cmds.cin_wait_exit && run.bus_clears == 1 &&
+                  run.bus_drains == 1 && run.masks == 1 &&
+                  QueueCount(&activeq) == 2 && !QueueCount(&freeq),
+                  "a failed shared stop retains both borrowed owners even after local drain success");
         Check(crystalhd_hw_tx_req_complete(&hardware, tag[0], BC_STS_SUCCESS) ==
-              BC_STS_NO_DATA &&
+              (stop_failure ? BC_STS_IO_ERROR : BC_STS_NO_DATA) &&
               crystalhd_hw_tx_req_complete(&hardware, tag[1], BC_STS_SUCCESS) ==
-              BC_STS_NO_DATA && run.callback_calls == 2,
+              (stop_failure ? BC_STS_IO_ERROR : BC_STS_NO_DATA) &&
+              run.callback_calls == (stop_failure ? 0U : 2U),
               "late IRQs cannot complete either cancelled owner twice");
         Check(crystalhd_hw_cancel_all_tx(&hardware) ==
               (stop_failure ? BC_STS_IO_ERROR : BC_STS_SUCCESS) &&
-              run.callback_calls == 2,
+              run.callback_calls == (stop_failure ? 0U : 2U),
               "repeated cancel-all cannot repeat an owner callback");
+        if (stop_failure) {
+            RetireTerminalTx();
+            Check(!run.callback_calls,
+                  "terminal cleanup detaches borrowed callbacks rather than invoking an expired context");
+        }
         multi_cookie[0].mapped = multi_cookie[1].mapped = false;
         run.mapped = false;
-        BalancedTwo();
+        if (!stop_failure)
+            BalancedTwo();
     }
 
     {
@@ -780,12 +1067,12 @@ static void CancelAllOwners(void)
               BC_STS_SUCCESS,
               "cleanup-error coverage starts with both TX owners published");
         Check(crystalhd_hw_cancel_all_tx(&hardware) == BC_STS_INSUFF_RES &&
-              !activeq.packet && !activeq.next && QueueCount(&freeq) == 1 &&
+              !activeq.head && !activeq.next && QueueCount(&freeq) == 1 &&
               multi_cookie[0].calls == 1 && multi_cookie[1].calls == 1 &&
               multi_cookie[0].status == BC_STS_IO_USER_ABORT &&
               multi_cookie[1].status == BC_STS_IO_USER_ABORT &&
-              !packet.buffer && !packet.cb_context && !packet.call_back &&
-              !packet.list_tag && !packet2.buffer && !packet2.cb_context &&
+              !packet0->buffer && !packet0->cb_context && !packet0->call_back &&
+              !packet0->list_tag && !packet2.buffer && !packet2.cb_context &&
               !packet2.call_back && !packet2.list_tag,
               "a first requeue error is returned without stranding the peer owner");
         multi_cookie[0].mapped = multi_cookie[1].mapped = false;
@@ -866,11 +1153,11 @@ static void Completion(void)
 }
 static void Rollback(void)
 {
-    Reset(); freeq.packet = NULL;
+    Reset(); freeq.head = NULL;
     Check(bc_cproc_proc_input(&context, &input_ioctl) == BC_STS_INSUFF_RES &&
           !run.descriptors && !run.starts && run.unmaps == 1,
           "an exhausted packet pool rejects input without building or starting DMA");
-    freeq.packet = &packet;
+    freeq.head = packet0;
     Balanced();
 
     Reset(); run.descriptor_status = BC_STS_NOT_IMPL;
@@ -996,16 +1283,34 @@ static void Cancellation(void)
                 run.stop_status = stop_failure ? BC_STS_IO_ERROR : BC_STS_SUCCESS;
                 run.drain_ok = stop_failure != 2;
                 Check(bc_cproc_proc_input(&context, &input_ioctl) == expected[i] &&
-                      run.stops == 1 && run.irq_disables == 1 && run.irq_enables == 1 &&
-                      run.wakes == 1 && run.syncs == 1 && run.unmaps == 1,
-                      "wait status wins over racing completion and cancellation errors without double retirement");
-                Balanced();
+                      run.stops == 1 && run.irq_disables == (stop_failure ? 2U : 1U) &&
+                      run.irq_enables == run.irq_disables &&
+                      run.wakes == (completed || !stop_failure ? 1U : 0U) &&
+                      run.syncs == run.irq_disables &&
+                      run.unmaps == (completed || !stop_failure ? 1U : 0U),
+                      "wait status survives cancellation while only proven ownership is released");
                 if (stop_failure) {
-                    Check(hardware.dma_fault && run.bus_clears == 1 && run.bus_drains == 1,
+                    Check(hardware.dma_fault && !adapter.present &&
+                          adapter.cmds.cin_wait_exit && run.bus_clears == 1 &&
+                          run.bus_drains == 1 && run.masks == 1,
                           "failed stop revokes DMA even when IRQ completion already retired the request");
-                    Check(bc_cproc_proc_input(&context, &input_ioctl) == BC_STS_IO_ERROR &&
-                          run.starts == 1 && run.maps == 2 && run.unmaps == 2,
-                          "fatal stop rejects subsequent DMA admission until session recovery");
+                    if (!completed) {
+                        Check(run.mapped && request.tx_refs.refs == 1 &&
+                              packet0->retained_buffer == &request.tx_buffer &&
+                              !packet0->buffer && !packet0->call_back && !packet0->cb_context,
+                              "returning input leaves its extra DIO lease, never its stack waiter, in fixed inventory");
+                        Check(crystalhd_hw_tx_req_complete(&hardware, 0x100, BC_STS_SUCCESS) ==
+                                  BC_STS_IO_ERROR && !run.unmaps && !run.wakes,
+                              "late completion cannot release retained pages or touch the returned stack");
+                    } else {
+                        Check(!run.mapped && !request.tx_refs.refs &&
+                              !packet0->retained_buffer,
+                              "a completion winning cancellation returns its extra lease instead of leaking it");
+                    }
+                    RetireTerminalTx();
+                    Check(!run.mapped && run.unmaps == 1 && !request.tx_refs.refs,
+                          "later proven terminal retirement releases retained DIO exactly once");
+                } else {
                     Balanced();
                 }
             }
@@ -1018,20 +1323,43 @@ static void PrepareBorrowedInput(void)
     run.transfer_size = 7;
     run.transfer_flags = 0x81;
     request = (struct crystalhd_dio_req){
-        .uinfo.xfr_len = run.transfer_size,
+        .uinfo = { .xfr_len = run.transfer_size, .dir_tx = true },
         .tx_buffer = {
             .bytes = run.transfer_size,
             .cookie = &request,
+            .ops = &crystalhd_dio_tx_buffer_ops,
         },
+        .sig = crystalhd_dio_sg_mapped, .page_cnt = 1, .sg_nents = 1,
+        .direction = DMA_TO_DEVICE,
     };
+    refcount_set(&request.tx_refs, 1);
     run.mapped = true;
 }
 
 static void FinishBorrowedInput(void)
 {
+    if (packet0->retained_buffer) {
+        Check(run.mapped && !run.maps && !run.unmaps &&
+              request.tx_refs.refs == 2 && !context.tx_list_id &&
+              packet0->retained_buffer == &request.tx_buffer &&
+              !packet0->buffer && !packet0->cb_context && !packet0->call_back &&
+              hardware.dma_fault && !adapter.present,
+              "unsafe borrowed return keeps backing but no expired stack waiter");
+        crystalhd_unmap_dio(&adapter, &request);
+        Check(run.mapped && !run.unmaps && request.tx_refs.refs == 1,
+              "caller release cannot unmap an unsafe retained transfer");
+        Check(crystalhd_hw_tx_req_complete(&hardware, packet0->list_tag,
+                                           BC_STS_SUCCESS) == BC_STS_IO_ERROR &&
+              !run.unmaps && !run.wakes,
+              "late IRQ cannot touch a returned borrowed-transfer waiter");
+        RetireTerminalTx();
+        Check(!run.mapped && run.unmaps == 1 && !request.tx_refs.refs,
+              "terminal proof releases the final borrowed lease exactly once");
+        return;
+    }
     Check(run.mapped && !run.maps && !run.unmaps && !context.tx_list_id &&
-          !activeq.packet && freeq.packet == &packet && !packet.buffer &&
-          !packet.cb_context && !packet.call_back && !packet.list_tag,
+          !activeq.head && freeq.head == packet0 && !packet0->buffer &&
+          !packet0->cb_context && !packet0->call_back && !packet0->list_tag,
           "borrowed transfer retires hardware ownership before caller release");
     crystalhd_unmap_dio(&adapter, &request);
     Balanced();
@@ -1215,7 +1543,7 @@ static void BoundedTransfer(void)
     Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
                                      run.transfer_flags, 250) == BC_STS_TIMEOUT &&
           run.starts == 1 && run.stops == 1 && hardware.dma_fault &&
-          run.bus_clears == 1 && run.bus_drains == 1 && run.syncs == 1,
+          run.bus_clears == 1 && run.bus_drains == 1 && run.syncs == 2,
           "bounded timeout status survives a failed fatal DMA stop");
     FinishBorrowedInput();
 
@@ -1320,10 +1648,266 @@ static void BorrowedTransfer(void)
         FinishBorrowedInput();
     }
 }
+
+struct lease_owner {
+    struct crystalhd_tx_buffer buffer;
+    unsigned refs, gets, puts;
+};
+
+static void LeaseGet(const struct crystalhd_tx_buffer *buffer)
+{
+    struct lease_owner *owner = buffer->cookie;
+
+    Check(owner && buffer == &owner->buffer && owner->refs,
+          "core lease get refers to a stable live frontend wrapper");
+    owner->refs++;
+    owner->gets++;
+}
+
+static void LeasePut(struct crystalhd_adp *adp,
+                     const struct crystalhd_tx_buffer *buffer)
+{
+    struct lease_owner *owner = buffer->cookie;
+
+    Check(adp == &adapter && owner && buffer == &owner->buffer && owner->refs &&
+          !packet0->buffer && !packet0->retained_buffer && !packet0->call_back &&
+          !packet0->cb_context && !packet2.buffer && !packet2.retained_buffer &&
+          !packet2.call_back && !packet2.cb_context &&
+          !activeq.head && !activeq.next && !freeq.head && !freeq.next,
+          "every queue and fixed TX identity is detached before any terminal lease put");
+    owner->refs--;
+    owner->puts++;
+}
+
+static void RetainedLeaseProtocol(void)
+{
+    const struct crystalhd_tx_buffer_ops ops = { .get = LeaseGet, .put = LeasePut };
+    struct lease_owner owner[2] = {
+        { .refs = 1 }, { .refs = 1 },
+    };
+    unsigned waiter[2] = {0};
+
+    Reset();
+    for (unsigned i = 0; i < 2; i++) {
+        owner[i].buffer.cookie = &owner[i];
+        owner[i].buffer.ops = &ops;
+        crystalhd_tx_buffer_get(&owner[i].buffer);
+    }
+    Check(!crystalhd_hw_retain_tx_buffer(&hardware, &owner[0].buffer, &waiter[0]) &&
+          !run.irq_disables && owner[0].refs == 2,
+          "healthy retention is inert and cannot take a frontend lease");
+    disable_irq(endpoint.irq);
+    crystalhd_hw_dma_fatal_stop(&hardware);
+    enable_irq(endpoint.irq);
+    for (unsigned i = 0; i < 2; i++) {
+        hardware.tx_pkt_pool[i].buffer = &owner[i].buffer;
+        hardware.tx_pkt_pool[i].cb_context = &waiter[i];
+        hardware.tx_pkt_pool[i].call_back = OpaqueComplete;
+    }
+    Check(!crystalhd_hw_retain_tx_buffer(&hardware, &owner[0].buffer, &waiter[1]) &&
+          !crystalhd_hw_retain_tx_buffer(&hardware, &owner[1].buffer, &waiter[0]) &&
+          packet0->buffer == &owner[0].buffer &&
+          packet2.buffer == &owner[1].buffer &&
+          !packet0->retained_buffer && !packet2.retained_buffer,
+          "retention requires both exact buffer and exact stack-context identities");
+    for (unsigned i = 0; i < 2; i++) {
+        struct tx_dma_pkt *packet = &hardware.tx_pkt_pool[i];
+
+        Check(crystalhd_hw_retain_tx_buffer(&hardware, &owner[i].buffer, &waiter[i]) &&
+              packet->retained_buffer == &owner[i].buffer &&
+              !packet->buffer && !packet->call_back && !packet->cb_context &&
+              owner[i].refs == 2 && owner[i].gets == 1 && !owner[i].puts,
+              "either fixed slot adopts one existing lease and severs the stack identity");
+        Check(!crystalhd_hw_retain_tx_buffer(&hardware, &owner[i].buffer, &waiter[i]),
+              "duplicate adoption cannot create another retained reference");
+        /* Return the caller reference while the retained lease remains live. */
+        owner[i].refs--;
+    }
+    RetireTerminalTx();
+    Check(!owner[0].refs && !owner[1].refs &&
+          owner[0].puts == 1 && owner[1].puts == 1 && !run.callback_calls,
+          "terminal retirement puts both detached leases exactly once without borrowed callbacks");
+
+    Reset(); PrepareBorrowedInput();
+    run.fault_on_wait = true;
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                                     run.transfer_flags, 250) == BC_STS_IO_ERROR &&
+          run.starts == 1 && !run.stops && run.bus_clears == 1 &&
+          run.bus_drains == 1 && request.tx_refs.refs == 2 &&
+          packet0->retained_buffer == &request.tx_buffer,
+          "a posted TX wait survives an RX-origin fatal stop without a second engine stop");
+    FinishBorrowedInput();
+
+    Reset(); PrepareBorrowedInput();
+    run.fault_after_descriptor = true;
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                                     run.transfer_flags, 250) == BC_STS_IO_ERROR &&
+          run.descriptors == 1 && !run.starts && !run.stops &&
+          request.tx_refs.refs == 1 && !packet0->retained_buffer &&
+          !packet0->buffer && !packet0->call_back && !packet0->cb_context,
+          "fault between preflight and publication rolls back the unposted packet and extra lease");
+    FinishBorrowedInput();
+
+    for (unsigned missing = 0; missing < 3; missing++) {
+        struct crystalhd_tx_buffer_ops incomplete = crystalhd_dio_tx_buffer_ops;
+
+        Reset(); PrepareBorrowedInput();
+        if (missing == 0) request.tx_buffer.ops = NULL;
+        if (missing == 1) { incomplete.get = NULL; request.tx_buffer.ops = &incomplete; }
+        if (missing == 2) { incomplete.put = NULL; request.tx_buffer.ops = &incomplete; }
+        Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer, 0, 0) ==
+                  BC_STS_INV_ARG && request.tx_refs.refs == 1 &&
+              !run.fifo_calls && !run.starts && !run.unmaps,
+              "synchronous TX rejects an incomplete lease contract before taking ownership");
+        FinishBorrowedInput();
+    }
+}
+static void MapBoundaryReset(bool tx, unsigned bytes)
+{
+    Check(!map_boundary.allocated && !map_boundary.mapped && !map_boundary.live_pages,
+          "each actual-map case starts with no retained pool, pin or SG ownership");
+    Reset();
+    map_boundary = (struct map_boundary_state){
+        .active = true, .expected_tx = tx, .expected_bytes = bytes,
+        .max_pages = ARRAY_SIZE(map_pages),
+        .expected_pins = DIV_ROUND_UP(bytes, PAGE_SIZE),
+        .pin_result = DIV_ROUND_UP(bytes, PAGE_SIZE),
+    };
+    for (unsigned i = 0; i < sizeof(map_input); i++)
+        map_input[i] = (uint8_t)(i * 17U + 3U);
+    memset(map_pages, 0, sizeof(map_pages));
+    memset(map_sg, 0, sizeof(map_sg));
+    memset(map_tail, 0xa5, sizeof(map_tail));
+}
+
+static BC_STATUS MapActual(struct crystalhd_dio_req **out)
+{
+    return crystalhd_map_dio_actual(&adapter, map_input,
+        map_boundary.expected_bytes, map_boundary.expected_tx ? 0 : PAGE_SIZE,
+        MODE420, map_boundary.expected_tx, out);
+}
+
+static void MapBoundaryBalanced(void)
+{
+    Check(!map_boundary.allocated && !map_boundary.mapped &&
+          !map_boundary.live_pages && map_boundary.allocs == map_boundary.frees &&
+          !request.tx_refs.refs,
+          "actual mapping cleanup balances the caller reference, DIO pool, SG and all acquired pages");
+}
+
+static void ActualMappingLifetime(void)
+{
+    static const long failed_pins[] = { -EFAULT, 0, 1 };
+    struct crystalhd_dio_req *out;
+
+    for (unsigned tx = 0; tx < 2; tx++) {
+        for (unsigned failure = 0; failure < ARRAY_SIZE(failed_pins); failure++) {
+            MapBoundaryReset(tx, PAGE_SIZE + 8);
+            map_boundary.pin_result = failed_pins[failure];
+            out = &request2;
+            Check(MapActual(&out) == BC_STS_ERROR && !out &&
+                  map_boundary.allocs == 1 && map_boundary.frees == 1 &&
+                  map_boundary.pins == 1 && !map_boundary.copies &&
+                  !map_boundary.sg_maps && !map_boundary.sg_unmaps &&
+                  map_boundary.unpinned_pages == (failure == 2 ? 1U : 0U) &&
+                  map_boundary.unpin_calls == (failure == 2 ? 1U : 0U),
+                  "negative, zero and short pin returns unwind exact TX/RX page ownership without publishing a DIO");
+            MapBoundaryBalanced();
+        }
+
+        MapBoundaryReset(tx, PAGE_SIZE + 8);
+        map_boundary.map_fail = true;
+        out = &request2;
+        Check(MapActual(&out) == BC_STS_ERROR && !out &&
+              map_boundary.pins == 1 && map_boundary.sg_maps == 1 &&
+              !map_boundary.sg_unmaps && !map_boundary.syncs &&
+              map_boundary.unpin_calls == 1 && map_boundary.unpinned_pages == 2 &&
+              map_boundary.frees == 1,
+              "failed SG mapping unpins the complete TX/RX pin set without unmapping a nonexistent DMA mapping");
+        MapBoundaryBalanced();
+    }
+
+    MapBoundaryReset(true, PAGE_SIZE + 7);
+    map_boundary.copy_fail = true;
+    out = &request2;
+    Check(MapActual(&out) == BC_STS_ERROR && !out &&
+          map_boundary.copies == 1 && !map_boundary.sg_maps &&
+          map_boundary.unpin_calls == 1 && map_boundary.unpinned_pages == 2 &&
+          map_boundary.frees == 1,
+          "TX tail-copy failure consumes the production-initialized caller reference during unwind");
+    MapBoundaryBalanced();
+
+    for (unsigned tail_only = 0; tail_only < 2; tail_only++) {
+        MapBoundaryReset(true, tail_only ? 3 : PAGE_SIZE + 7);
+        out = NULL;
+        Check(MapActual(&out) == BC_STS_SUCCESS && out == &request &&
+              request.tx_refs.refs == 1 &&
+              request.tx_buffer.cookie == &request &&
+              request.tx_buffer.ops == &crystalhd_dio_tx_buffer_ops &&
+              request.tx_buffer.sgl == map_sg &&
+              request.tx_buffer.dma_nents == (tail_only ? 0U : 2U) &&
+              request.tx_buffer.bytes == map_boundary.expected_bytes &&
+              request.tx_buffer.tail_addr == 0 && request.tx_buffer.tail_size == 3 &&
+              !memcmp(map_tail, map_input + map_boundary.expected_bytes - 3, 3) &&
+              map_tail[3] == 0,
+              "actual TX mapping publishes its embedded lease descriptor with a valid DMA-zero coherent tail");
+        crystalhd_tx_buffer_get(&request.tx_buffer);
+        Check(request.tx_refs.refs == 2 &&
+              crystalhd_unmap_dio(&adapter, out) == BC_STS_SUCCESS &&
+              request.tx_refs.refs == 1 && map_boundary.allocated &&
+              map_boundary.live_pages == map_boundary.expected_pins &&
+              map_boundary.mapped == !tail_only &&
+              !map_boundary.sg_unmaps && !map_boundary.unpin_calls && !map_boundary.frees,
+              "caller unmap only drops its reference while a core TX lease retains pages, SG and coherent tail");
+        crystalhd_tx_buffer_put(&adapter, &request.tx_buffer);
+        Check(map_boundary.sg_unmaps == !tail_only &&
+              map_boundary.unpin_calls == 1 &&
+              map_boundary.unpinned_pages == map_boundary.expected_pins &&
+              map_boundary.frees == 1,
+              "the final core TX put performs physical unmap and unpin exactly once, including tail-only input");
+        MapBoundaryBalanced();
+    }
+
+    MapBoundaryReset(false, PAGE_SIZE + 8);
+    out = NULL;
+    Check(MapActual(&out) == BC_STS_SUCCESS && out == &request &&
+          !request.tx_refs.refs && request.rx_buffer.cookie == &request &&
+          request.rx_buffer.ops == &crystalhd_dio_rx_buffer_ops &&
+          request.rx_buffer.sgl == map_sg && request.rx_buffer.dma_nents == 2 &&
+          request.rx_buffer.capacity == PAGE_SIZE + 8 &&
+          request.rx_buffer.uv_offset == PAGE_SIZE &&
+          request.rx_buffer.uv_sg_ix == 1 && !request.rx_buffer.uv_sg_off &&
+          request.rx_buffer.output_format == MODE420,
+          "actual RX mapping remains unrefcounted and publishes its mapped UV-plane layout");
+    Check(crystalhd_unmap_dio(&adapter, out) == BC_STS_SUCCESS &&
+          map_boundary.sg_unmaps == 1 && map_boundary.unpin_calls == 1 &&
+          map_boundary.unpinned_pages == 2 && map_boundary.frees == 1,
+          "unchanged RX unmap synchronizes, unmaps and dirty-unpins all pages once without a TX reference");
+    MapBoundaryBalanced();
+
+    MapBoundaryReset(true, PAGE_SIZE + 8);
+    map_boundary.max_pages = 1;
+    out = &request2;
+    Check(MapActual(&out) == BC_STS_INSUFF_RES && !out &&
+          map_boundary.allocs == 1 && map_boundary.frees == 1 &&
+          !map_boundary.pins && !request.tx_refs.refs,
+          "oversize DIO storage returns directly to its pool before reference initialization or pinning");
+    MapBoundaryBalanced();
+    MapBoundaryReset(true, PAGE_SIZE + 8);
+    map_boundary.alloc_fail = true;
+    out = &request2;
+    Check(MapActual(&out) == BC_STS_INSUFF_RES && !out &&
+          !map_boundary.allocs && !map_boundary.frees && !map_boundary.pins,
+          "DIO pool allocation failure publishes no reference or page ownership");
+    MapBoundaryBalanced();
+    map_boundary.active = false;
+}
+
 int main(void)
 {
     Admission(); OpaqueCookie(); CancelAllOwners(); Completion(); Rollback(); TransferArguments(); BusyErrors(); BusyAndFlush(); Cancellation();
-    BoundedTransfer(); BorrowedTransfer();
+    BoundedTransfer(); BorrowedTransfer(); RetainedLeaseProtocol();
+    ActualMappingLifetime();
     printf("TX admission: %u checks, %u failures\n", checks, failures);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

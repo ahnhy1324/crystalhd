@@ -70,6 +70,7 @@ struct crystalhd_hw {
     uint32_t rx_list_post_index, tx_list_post_index;
     bool (*pfnStartDevice)(struct crystalhd_hw *);
     bool (*pfnStopDevice)(struct crystalhd_hw *);
+    bool (*pfnFindAndClearIntr)(struct crystalhd_adp *, struct crystalhd_hw *);
     BC_STATUS (*pfnStopTxDMA)(struct crystalhd_hw *);
     BC_STATUS (*pfnFWDwnld)(struct crystalhd_hw *, const uint8_t *, uint32_t);
     BC_STATUS (*pfnIssuePause)(struct crystalhd_hw *, bool);
@@ -105,6 +106,7 @@ struct crystalhd_adp {
     struct pci_dev *pdev;
     unsigned cfg_users;
     bool present;
+    bool dma_terminal_quiesced;
     void *fill_byte_pool, *elem_pool_head;
     int user_lock;
     struct crystalhd_cmd cmds;
@@ -133,6 +135,13 @@ static unsigned binding_count, binding_frees, device_reads, user_writes;
 static unsigned downloads, download_resets;
 static unsigned stream_prepares, stream_releases;
 static unsigned quiesced_rx_retires;
+static unsigned quiesced_tx_retires, retained_tx_puts;
+static bool retained_tx_lease;
+static unsigned fatal_master_clears, fatal_pending_waits;
+static unsigned fatal_chip_masks;
+static bool fatal_pending;
+static unsigned normal_interrupts, fault_interrupts;
+static bool interrupt_handled;
 static unsigned module_refs, module_get_attempts, module_gets, module_puts;
 static unsigned module_callbacks, module_identity;
 static bool module_get_allowed, checking_module_callbacks;
@@ -213,6 +222,7 @@ static BC_STATUS WriteMemory(struct crystalhd_hw *hw, uint32_t offset,
 static void CheckPendingAdmission(void);
 BC_STATUS crystalhd_hw_suspend(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_close_actual(struct crystalhd_hw *hw);
+void crystalhd_hw_dma_fatal_stop(struct crystalhd_hw *hw);
 static void Check(bool ok, const char *why)
 {
     checks++;
@@ -371,7 +381,8 @@ static void kfree(void *memory)
 }
 static void disable_irq(int irq)
 {
-    Check(irq == endpoint.irq && !irq_depth, "session transition disables the device IRQ");
+    Check(irq == endpoint.irq && irq_depth < 2,
+          "device stop may nest one IRQ exclusion inside session retirement");
     if (expect_retire_irq)
         Check(context.cin_wait_exit == 1 &&
               context.pwr_state_change == BC_HW_RUNNING,
@@ -380,7 +391,8 @@ static void disable_irq(int irq)
 }
 static void enable_irq(int irq)
 {
-    Check(irq == endpoint.irq && irq_depth == 1, "session transition reenables the device IRQ");
+    Check(irq == endpoint.irq && irq_depth >= 1 && irq_depth <= 2,
+          "device stop and session retirement each balance their IRQ exclusion");
     irq_depth--; irq_enables++;
 }
 static BC_STATUS crystalhd_hw_open(struct crystalhd_hw *hw, struct crystalhd_adp *adp)
@@ -407,6 +419,7 @@ static BC_STATUS crystalhd_hw_close(struct crystalhd_hw *hw)
 {
     unsigned previous_stops = stops;
     bool was_started = hw->dev_started;
+    bool was_faulted = hw->dma_fault;
     BC_STATUS status;
 
     ModuleCallback();
@@ -415,8 +428,10 @@ static BC_STATUS crystalhd_hw_close(struct crystalhd_hw *hw)
     hardware_closes++;
     last_close_cfg_users = adapter.cfg_users;
     status = crystalhd_hw_close_actual(hw);
-    Check(stops == previous_stops + was_started && !hw->dev_started,
-          "real hardware close stops a started context before its owner frees it");
+    Check(stops == previous_stops + (was_started && !was_faulted),
+          "real hardware close attempts only the eligible owned device stop");
+    Check(status != BC_STS_SUCCESS || !hw->dev_started,
+          "successful hardware close retires the started device");
     return status;
 }
 static bool Start(struct crystalhd_hw *hw)
@@ -428,6 +443,46 @@ static bool Stop(struct crystalhd_hw *hw)
 {
     Check(hw == &hardware, "stop receives the owned hardware context");
     stops++; Event('S'); return stop_ok;
+}
+static void pci_clear_master(struct pci_dev *pdev)
+{
+    Check(pdev == &endpoint, "fatal stop targets the current PCI device");
+    fatal_master_clears++;
+}
+static void crystalhd_flea_disable_interrupts(struct crystalhd_hw *hw)
+{
+    Check(hw == &hardware && endpoint.device == BC_PCI_DEVID_FLEA &&
+          hw->dma_fault && !adapter.present && context.cin_wait_exit,
+          "fatal Flea stop masks only its device after publishing cancellation");
+    fatal_chip_masks++;
+}
+static void crystalhd_link_disable_interrupts(struct crystalhd_hw *hw)
+{
+    Check(hw == &hardware && endpoint.device == BC_PCI_DEVID_LINK &&
+          hw->dma_fault && !adapter.present && context.cin_wait_exit,
+          "fatal Link stop masks only its device after publishing cancellation");
+    fatal_chip_masks++;
+}
+static int pci_wait_for_pending_transaction(struct pci_dev *pdev)
+{
+    Check(pdev == &endpoint, "fatal stop uses only a best-effort pending wait");
+    fatal_pending_waits++;
+    return fatal_pending;
+}
+static bool NormalInterrupt(struct crystalhd_adp *adp, struct crystalhd_hw *hw)
+{
+    Check(adp == &adapter && hw == &hardware && !hw->dma_fault,
+          "normal interrupt dispatch receives only a nonfatal hardware owner");
+    normal_interrupts++;
+    return interrupt_handled;
+}
+/* Actual bounded register acknowledgement is extracted in dma-stop.c. */
+static bool crystalhd_hw_ack_fault_interrupt(struct crystalhd_hw *hw)
+{
+    Check(hw == &hardware && hw->dma_fault && !adapter.present && context.cin_wait_exit,
+          "late fatal interrupt selects acknowledgement without ordinary ownership callbacks");
+    fault_interrupts++;
+    return interrupt_handled;
 }
 static BC_STATUS StopTx(struct crystalhd_hw *hw)
 {
@@ -561,6 +616,8 @@ static BC_STATUS crystalhd_hw_stop_capture(struct crystalhd_hw *hw, bool unmap)
         capture_unmaps++;
     else
         Event('C');
+    if (capture_status != BC_STS_SUCCESS)
+        crystalhd_hw_dma_fatal_stop(hw);
     return capture_status;
 }
 static void crystalhd_hw_retire_rx_quiesced(struct crystalhd_hw *hw)
@@ -573,7 +630,25 @@ static void crystalhd_hw_retire_rx_quiesced(struct crystalhd_hw *hw)
 static BC_STATUS crystalhd_hw_cancel_all_tx(struct crystalhd_hw *hw)
 {
     Check(hw == &hardware, "suspend cancels every TX-list owner");
-    cancels++; Event('X'); return cancel_status;
+    cancels++; Event('X');
+    if (cancel_status != BC_STS_SUCCESS)
+        crystalhd_hw_dma_fatal_stop(hw);
+    return cancel_status;
+}
+/* Actual fixed-packet detach/put behavior is exercised by tx-admission.
+ * This boundary checks ordering against the real command teardown below.
+ */
+static void crystalhd_hw_retire_tx_quiesced(struct crystalhd_hw *hw)
+{
+    Check(hw == &hardware, "terminal TX retirement receives the retained hardware");
+    quiesced_tx_retires++;
+    if (retained_tx_lease) {
+        ModuleCallback();
+        Check(dio_live && rings_live && context.stream == &stream_cookie,
+              "terminal retained TX put precedes DIO, ring and stream-owner destruction");
+        retained_tx_lease = false;
+        retained_tx_puts++;
+    }
 }
 static uint32_t RawRegister(struct crystalhd_adp *adp, unsigned operation,
                             uint32_t offset, uint32_t value)
@@ -675,6 +750,11 @@ static BC_STATUS crystalhd_hw_free_dma_rings(struct crystalhd_hw *hw)
 {
     ModuleCallback();
     Check(hw == &hardware, "DMA-ring teardown receives the hardware context");
+    if (hw->dma_fault && !adapter.dma_terminal_quiesced &&
+        (rings_live || retained_tx_lease))
+        return BC_STS_IO_ERROR;
+    crystalhd_hw_retire_tx_quiesced(hw);
+    Check(!retained_tx_lease, "TX retained backing is retired before descriptor-ring storage");
     ring_frees++; rings_live = false; hw->rx_freeq = NULL;
     return BC_STS_SUCCESS;
 }
@@ -736,6 +816,7 @@ static void crystalhd_stream_release(struct crystalhd_cmd *ctx)
     ModuleCallback();
     Check(ctx == &context && ctx->stream == &stream_cookie,
           "typed channel releases its exact staging owner");
+    Check(!retained_tx_lease, "stream owner survives until its retained TX lease is returned");
     ctx->stream = NULL;
     stream_releases++;
 }
@@ -768,6 +849,13 @@ static void Reset(uint32_t state, bool with_hardware)
     downloads = download_resets = 0;
     stream_prepares = stream_releases = 0;
     quiesced_rx_retires = 0;
+    quiesced_tx_retires = retained_tx_puts = 0;
+    retained_tx_lease = false;
+    fatal_master_clears = fatal_pending_waits = 0;
+    fatal_chip_masks = 0;
+    fatal_pending = true;
+    normal_interrupts = fault_interrupts = 0;
+    interrupt_handled = false;
     module_refs = module_get_attempts = module_gets = module_puts = 0;
     module_callbacks = 0;
     module_get_allowed = true;
@@ -2974,14 +3062,19 @@ static void HardwareClose(void)
                 adapter.cfg_users = counts[n];
                 hardware.dev_started = started;
                 stop_ok = !fail;
-                Check(crystalhd_hw_close_actual(&hardware) == BC_STS_SUCCESS,
-                      "hardware close preserves successful retirement even when device stop fails");
-                Check(stops == started && !hardware.dev_started &&
+                Check((crystalhd_hw_close_actual(&hardware) != BC_STS_SUCCESS) ==
+                      (bool)(started && fail),
+                      "hardware close propagates an unsuccessful device-stop barrier");
+                Check(stops == started && hardware.dev_started == (bool)(started && fail) &&
                       adapter.cfg_users == counts[n] && !starts && !captures && !tx_stops,
-                      "only started hardware is stopped regardless of configuration handle count");
-                Check(crystalhd_hw_close_actual(&hardware) == BC_STS_SUCCESS &&
+                      "only a successful stop retires a started device regardless of file count");
+                Check((crystalhd_hw_close_actual(&hardware) != BC_STS_SUCCESS) ==
+                      (bool)(started && fail) &&
                       stops == started,
-                      "repeated hardware close never stops an already retired device twice");
+                      "repeated hardware close neither retries a fatal engine nor stops a retired device");
+                Check(hardware.dma_fault == (bool)(started && fail) &&
+                      adapter.present == !(started && fail),
+                      "device-stop failure remains terminal rather than allowing reopen");
             }
         }
     }
@@ -3043,8 +3136,8 @@ static void SessionOwnership(void)
           "the active owner releases its session");
     Check(!adapter.cfg_users && !owner->in_use && owner->mode == (uint32_t)DTS_MODE_INV &&
           context.hw_ctx == NULL && !hardware_allocated && !elem_live && !dio_live &&
-          !rings_live && ring_frees == 1 && hardware_closes == 1 && capture_unmaps == 1 &&
-          !irq_depth && irq_disables == 2 && irq_enables == 2,
+          !rings_live && ring_frees == 1 && hardware_closes == 1 && !capture_unmaps &&
+          !irq_depth && irq_disables == 2 + stops && irq_enables == 2 + stops,
           "owner release retires each resource once and balances the user/IRQ state");
 
     Check(crystalhd_user_open(&context, &reopened) == BC_STS_SUCCESS,
@@ -3061,7 +3154,7 @@ static void SessionOwnership(void)
           "the reopened owner releases cleanly");
     Check(!adapter.cfg_users && context.hw_ctx == NULL && !hardware_allocated &&
           hardware_opens == 2 && hardware_closes == 2 && ring_frees == 2 &&
-          elem_deletes == 2 && dio_destroys == 2 && capture_unmaps == 2 && !irq_depth,
+          elem_deletes == 2 && dio_destroys == 2 && !capture_unmaps && !irq_depth,
           "the complete open/busy/release/reopen cycle leaves no owner or allocation");
 }
 static void MonitorOnlyRelease(void)
@@ -3086,9 +3179,9 @@ static void MonitorOnlyRelease(void)
           monitor->mode == (uint32_t)DTS_MODE_INV && context.hw_ctx == NULL &&
           !hardware_allocated && !elem_live && !dio_live && !rings_live,
           "final monitor release leaves no handle, hardware context, or allocation");
-    Check(hardware_opens == 1 && hardware_closes == 1 && capture_unmaps == 1 &&
+    Check(hardware_opens == 1 && hardware_closes == 1 && !capture_unmaps &&
           ring_frees == 1 && dio_destroys == 1 && elem_deletes == 1 &&
-          irq_disables == 2 && irq_enables == 2 && !irq_depth,
+          irq_disables == 2 + stops && irq_enables == 2 + stops && !irq_depth,
           "final monitor release performs each safe empty teardown exactly once");
 }
 static void OwnerBeforeMonitor(void)
@@ -3120,7 +3213,7 @@ static void OwnerBeforeMonitor(void)
           !hardware_allocated && !elem_live && !dio_live && !rings_live,
           "owner-first release retains only the monitor handle");
     Check(hardware_closes == 1 && ring_frees == 1 && dio_destroys == 1 &&
-          elem_deletes == 1 && capture_unmaps == 1,
+          elem_deletes == 1 && !capture_unmaps,
           "owner-first release retires each playback resource exactly once");
 
     Check(crystalhd_user_open(&context, &reopened) == BC_STS_SUCCESS,
@@ -3142,8 +3235,8 @@ static void OwnerBeforeMonitor(void)
     Check(!adapter.cfg_users && context.hw_ctx == NULL && !hardware_allocated &&
           !owner->in_use && !monitor->in_use && hardware_opens == 2 &&
           hardware_closes == 2 && ring_frees == 2 && dio_destroys == 2 &&
-          elem_deletes == 2 && capture_unmaps == 2 && irq_disables == 4 &&
-          irq_enables == 4 && !irq_depth,
+          elem_deletes == 2 && !capture_unmaps && irq_disables == 4 + stops &&
+          irq_enables == 4 + stops && !irq_depth,
           "owner-first close, reacquire, and final close preserve exact teardown counts");
 }
 static struct file OpenFile(uint32_t mode)
@@ -3732,15 +3825,14 @@ static void ModulePinPowerLifetime(void)
               context.session_owner == token && context.session_module_pinned &&
               module_refs == 1 && !module_puts,
               "every failed PM stop stage retains its resources and their module owner");
-        adapter.present = false; /* Existing PCI PM fail-closed admission publication. */
+        Check(!adapter.present && hardware.dma_fault,
+              "actual fatal-stop publication precedes accounting-only file close");
         CloseFile(&file);
         Check(context.session_owner == token && context.session_module_pinned &&
               module_refs == 1 && !module_puts && hardware_allocated && rings_live,
               "accounting-only last file close after failed PM cannot unload retained callback code");
-        module_expect_no_hardware_on_put = true;
-        Check(crystalhd_delete_cmd_context(&context) == BC_STS_SUCCESS &&
-              module_gets == 1 && module_puts == 1 && !module_refs,
-              "later externally quiesced deletion releases the failed-PM pin after cleanup");
+        Check(!adapter.dma_terminal_quiesced && !ring_frees && !hardware_frees,
+              "failed-PM fixture ends retained without inventing terminal DMA proof");
     }
 }
 
@@ -3766,7 +3858,7 @@ static void FrontendNeutralSessionOwner(void)
               "failed frontend-only acquisition leaves no owner or hardware context");
         Check(hardware_opens == 1 && hardware_closes == 1 &&
               hardware_allocations == 1 && hardware_frees == 1 &&
-              irq_disables == 2 && irq_enables == 2 && !irq_depth,
+              irq_disables == 2 + stops && irq_enables == 2 + stops && !irq_depth,
               "failed frontend-only acquisition closes exactly the context it opened");
     }
 
@@ -3842,7 +3934,7 @@ static struct file OpenPendingAfterOwnerClose(uint32_t mode)
     Reset(BC_LINK_INVALID, false);
     owner = OpenResourceFile(mode);
     pending = OpenFile(DTS_MODE_INV);
-    hardware.dma_fault = hardware.fwcmd_poisoned = true;
+    hardware.fwcmd_poisoned = true;
     CloseFile(&owner);
     Check(!context.session_owner && !context.hw_ctx && context.user[1].in_use &&
           adapter.cfg_users == 1 && hardware_opens == 1 && hardware_closes == 1,
@@ -3869,7 +3961,7 @@ static void PendingOpenAfterOwnerClose(void)
               pools == 4 && rings == 2 && elem_live && dio_live && rings_live &&
               elem_deletes == 1 && dio_destroys == 1 &&
               hardware_opens == 2 && hardware_allocations == 2 && !irq_depth &&
-              irq_disables == 3 && irq_enables == 3 &&
+              irq_disables == 3 + stops && irq_enables == 3 + stops &&
               !hardware.dma_fault && !hardware.fwcmd_poisoned,
               "pending acquisition recreates one complete session with unchanged file accounting");
         reopened = OpenFile(DTS_MONITOR_MODE);
@@ -3911,7 +4003,7 @@ static void PendingAcquisitionFailures(void)
                       context.state == BC_LINK_INVALID && context.cin_wait_exit == 1 &&
                       context.pwr_state_change == BC_HW_RUNNING &&
                       !elem_live && !dio_live && !rings_live &&
-                      !irq_depth && irq_disables == 3 && irq_enables == 3,
+                      !irq_depth && irq_disables == 3 + stops && irq_enables == 3 + stops,
                       "failed pending acquisition preserves its handle and rolls back session ownership");
                 Check((context.hw_ctx != NULL) == (which >= 2) &&
                       hardware_allocated == (which >= 2) && hardware_alloc_attempts == 2 &&
@@ -3965,7 +4057,7 @@ static void AdmissionWithoutReopeningHardware(void)
         data.udata.u.NotifyMode.Mode = DTS_PLAYBACK_MODE;
         Check(bc_cproc_notify_mode(&context, &data) == BC_STS_ERR_USAGE &&
               hardware_opens == 1 && hardware_alloc_attempts == 1 &&
-              pools == 2 && rings == 1 && irq_disables == 2 && irq_enables == 2,
+              pools == 2 && rings == 1 && irq_disables == 2 + stops && irq_enables == 2 + stops,
               "monitor reconfiguration rejection does not create hardware or session resources");
         CloseFile(&pending);
         CheckNoSession();
@@ -4135,11 +4227,11 @@ static void FileCloseModes(void)
         Check(hardware_allocations == 1 && hardware_frees == 1 &&
               hardware_opens == 1 && hardware_closes == 1 && last_close_cfg_users == 1,
               "normal close retires hardware before decrementing the last user");
-        Check(captures == 1 && capture_unmaps == 1 && ring_frees == 1 &&
+        Check(captures == 1 && !capture_unmaps && ring_frees == 1 &&
               dio_destroys == 1 && elem_deletes == 1 &&
               pools == (owner ? 2U : 0U) && rings == owner,
               "common close safely handles empty resources without new allocations");
-        Check(irq_disables == 2 && irq_enables == 2 && device_reads == 1 &&
+        Check(irq_disables == 2 + stops && irq_enables == 2 + stops && device_reads == 1 &&
               user_writes == 1 && binding_frees == 1,
               "normal open and file close balance hardware and binding ownership");
     }
@@ -4186,8 +4278,8 @@ static void FileOwnerBeforeMonitor(void)
             Check(hardware_opens == 2 - monitor_first &&
                   hardware_closes == hardware_opens && hardware_allocations == hardware_opens &&
                   hardware_frees == hardware_opens && ring_frees == hardware_opens &&
-                  capture_unmaps == hardware_opens && dio_destroys == hardware_opens &&
-                  elem_deletes == hardware_opens && irq_disables == 2 * hardware_opens &&
+                  !capture_unmaps && dio_destroys == hardware_opens &&
+                  elem_deletes == hardware_opens && irq_disables == 2 * hardware_opens + stops &&
                   irq_enables == irq_disables && binding_frees == 3 - monitor_first,
                   "both owner/monitor close orders retain exact allocation and teardown counts");
         }
@@ -4212,7 +4304,7 @@ static void ReleaseThenFileClose(void)
               "RELEASE preserves unconfigured rejection and configured success");
         if (configured) {
             CheckNoSession();
-            Check(last_close_cfg_users == 1 && capture_unmaps == 1 && ring_frees == 1 &&
+            Check(last_close_cfg_users == 1 && !capture_unmaps && ring_frees == 1 &&
                   dio_destroys == 1 && elem_deletes == 1,
                   "RELEASE retains its safe empty teardown calls for the last monitor");
             Check(bc_cproc_release_user(&context, &data) == BC_STS_ERR_USAGE,
@@ -4224,7 +4316,7 @@ static void ReleaseThenFileClose(void)
         CloseFile(&file);
         CheckNoSession();
         Check(hardware_closes == 1 && hardware_allocations == 1 && hardware_frees == 1 &&
-              irq_disables == 2 && irq_enables == 2 && binding_frees == 1,
+              irq_disables == 2 + stops && irq_enables == 2 + stops && binding_frees == 1,
               "RELEASE followed by file close retires hardware and binding exactly once");
     }
 }
@@ -4251,33 +4343,202 @@ static void FileCloseAfterSetupFailure(void)
         Check(hardware_closes == 1 && hardware_allocations == 1 && hardware_frees == 1 &&
               last_close_cfg_users == 1 && captures == 1 && ring_frees == 1 &&
               elem_deletes == 2 && dio_destroys == 1 + (which == 2) &&
-              irq_disables == 2 && irq_enables == 2 && binding_frees == 1,
+              irq_disables == 2 + stops && irq_enables == 2 + stops && binding_frees == 1,
               "file close after failed acquisition safely completes empty-resource cleanup");
     }
 }
 static void CloseCaptureFailure(void)
 {
-    unsigned via_release;
+    for (unsigned failure = 0; failure < 3; failure++) {
+        for (unsigned pending = 0; pending < 2; pending++) {
+            for (unsigned via_release = 0; via_release < 3; via_release++) {
+                struct file file = {0};
+                crystalhd_ioctl_data data = {0};
+                int generic_owner;
+                const void *owner;
+                unsigned before_captures, before_cancels, before_stops;
 
-    for (via_release = 0; via_release < 2; via_release++) {
-        struct file file;
-        crystalhd_ioctl_data data = {0};
+                Reset(BC_LINK_INVALID, false);
+                if (via_release == 2) {
+                    Check(crystalhd_session_acquire_locked(&context, &generic_owner) == BC_STS_SUCCESS,
+                          "prepare generic ownership for a failed release barrier");
+                } else {
+                    file = OpenFile(DTS_PLAYBACK_MODE);
+                    data.u_id = ((struct crystalhd_file *)file.private_data)->user->uid;
+                }
+                owner = context.session_owner;
+                context.stream = &stream_cookie;
+                context.decoder_phase = CRYSTALHD_DECODER_CHANNEL_STARTED;
+                context.decoder_codec = CRYSTALHD_DECODER_CODEC_H264;
+                context.decoder_channel_id = 7;
+                fatal_pending = pending;
+                if (failure == 0) capture_status = BC_STS_TIMEOUT;
+                if (failure == 1) cancel_status = BC_STS_IO_ERROR;
+                if (failure == 2) stop_ok = false;
+                checking_module_callbacks = true;
+                if (via_release == 2) {
+                    Check(crystalhd_session_release_locked(&context, owner) != BC_STS_SUCCESS,
+                          "generic release reports that its stop barrier did not retire ownership");
+                } else {
+                    if (via_release == 1)
+                        Check(bc_cproc_release_user(&context, &data) == BC_STS_SUCCESS,
+                              "legacy RELEASE keeps its accounting result while retaining unsafe backing");
+                    CloseFile(&file);
+                    Check(binding_frees == 1 && !adapter.cfg_users && !context.user[data.u_id].in_use,
+                          "failed release still retires only the logical file binding");
+                }
+                Check(hardware.dma_fault && !adapter.present && context.cin_wait_exit &&
+                      !adapter.dma_terminal_quiesced,
+                      "every failed engine stop is terminal even when the local pending wait succeeds");
+                Check(context.hw_ctx == &hardware && hardware_allocated && rings_live &&
+                      dio_live && elem_live && !ring_frees && !dio_destroys && !elem_deletes &&
+                      !hardware_frees && context.stream == &stream_cookie && !stream_releases,
+                      "failed release retains payload owner, rings, pools and hardware context");
+                Check(context.session_owner == owner && context.session_module_pinned &&
+                      module_refs == 1 && !module_puts &&
+                      context.decoder_phase == CRYSTALHD_DECODER_CHANNEL_STARTED &&
+                      context.decoder_channel_id == 7,
+                      "failed release does not reset decoder ownership or unload its callbacks");
+                Check(!irq_depth && irq_disables == irq_enables,
+                      "conditional teardown balances IRQ exclusion without pretending it stopped DMA");
+                before_captures = captures;
+                before_cancels = cancels;
+                before_stops = stops;
+                Check(crystalhd_session_release_locked(&context, owner) != BC_STS_SUCCESS &&
+                      crystalhd_session_acquire_locked(&context, &generic_owner) != BC_STS_SUCCESS,
+                      "terminal ownership cannot be released by retry or replaced by a new owner");
+                Check(captures == before_captures && cancels == before_cancels && stops == before_stops &&
+                      !ring_frees && !module_puts && module_refs == 1,
+                      "rejected terminal retries have no stop, free or module-put effects");
+            }
+        }
+    }
+}
+static void FatalCommandOwnership(void)
+{
+    struct file owner_file, pending_file;
+    crystalhd_ioctl_data data = {0};
+    const void *owner;
+
+    Reset(BC_LINK_INVALID, false);
+    owner_file = OpenResourceFile(DTS_PLAYBACK_MODE);
+    pending_file = OpenFile(DTS_MODE_INV);
+    owner = context.session_owner;
+    data.u_id = ((struct crystalhd_file *)pending_file.private_data)->user->uid;
+    data.udata.u.NotifyMode.Mode = DTS_PLAYBACK_MODE;
+    crystalhd_hw_dma_fatal_stop(&hardware);
+    CloseFile(&owner_file);
+    Check(bc_cproc_notify_mode(&context, &data) != BC_STS_SUCCESS &&
+          context.session_owner == owner && context.hw_ctx == &hardware,
+          "pending unconfigured file cannot reopen a fatally retained owner's hardware");
+    CloseFile(&pending_file);
+    Check(!adapter.cfg_users && binding_frees == 2 && context.session_owner == owner &&
+          context.session_module_pinned && module_refs == 1 && !module_puts &&
+          elem_live && dio_live && rings_live && hardware_allocated &&
+          !captures && !cancels && !stops && !hardware_frees && !ring_frees,
+          "closing all files after fatal publication leaves every DMA owner pinned");
+
+    for (unsigned proof = 0; proof < 2; proof++) {
+        int generic_owner;
+        unsigned previous_irqs;
 
         Reset(BC_LINK_INVALID, false);
-        file = OpenFile(DTS_PLAYBACK_MODE);
-        capture_status = BC_STS_TIMEOUT;
-        if (via_release) {
-            data.u_id = ((struct crystalhd_file *)file.private_data)->user->uid;
-            Check(bc_cproc_release_user(&context, &data) == BC_STS_SUCCESS,
-                  "RELEASE retains its existing success result after capture-stop failure");
+        Check(crystalhd_session_acquire_locked(&context, &generic_owner) == BC_STS_SUCCESS,
+              "prepare exact retained resources for terminal command-deletion entry");
+        context.stream = &stream_cookie;
+        retained_tx_lease = true;
+        hardware.dma_fault = true;
+        adapter.present = false;
+        context.cin_wait_exit = 1;
+        /* Independent caller-precondition cases, not a fabricated recovery
+         * of the preceding failed-stop model. device-lifetime executes the
+         * actual global-writer PCI/IRQ proof before command deletion.
+         */
+        adapter.dma_terminal_quiesced = proof;
+        previous_irqs = irq_disables;
+        checking_module_callbacks = module_expect_no_hardware_on_put = true;
+        if (!proof) {
+            Check(crystalhd_delete_cmd_context(&context) == BC_STS_IO_ERROR &&
+                  context.adp == &adapter && context.hw_ctx == &hardware &&
+                  context.stream == &stream_cookie && retained_tx_lease,
+                  "terminal deletion without proof refuses to free uncertain command ownership");
+            Check(elem_live && dio_live && rings_live && hardware_allocated &&
+                  context.session_owner == &generic_owner && module_refs == 1 &&
+                  !module_puts && !quiesced_tx_retires && !retained_tx_puts && !ring_frees,
+                  "rejected terminal deletion retains the TX lease, pools and module owner");
+        } else {
+            Check(crystalhd_delete_cmd_context(&context) == BC_STS_SUCCESS &&
+                  !context.adp && !context.hw_ctx && !context.stream && !retained_tx_lease,
+                  "caller-proven command deletion consumes the exact retained ownership");
+            Check(quiesced_tx_retires == 1 && retained_tx_puts == 1 && ring_frees == 1 &&
+                  dio_destroys == 1 && elem_deletes == 1 && stream_releases == 1 &&
+                  module_puts == 1 && !module_refs && !hardware_allocated,
+                  "proven deletion returns the TX lease before pools, stream and final module pin");
         }
-        CloseFile(&file);
-        CheckNoSession();
-        Check(captures == 1 && capture_unmaps == 1 && ring_frees == 1 &&
-              dio_destroys == 1 && elem_deletes == 1 && hardware_closes == 1 &&
-              hardware_frees == 1 && last_close_cfg_users == 1 &&
-              irq_disables == 2 && irq_enables == 2 && binding_frees == 1,
-              "both close paths complete existing teardown after capture-stop failure");
+        Check(!captures && !cancels && !stops && irq_disables == previous_irqs &&
+              irq_enables == previous_irqs,
+              "terminal command deletion never attempts a new hardware stop or IRQ transition");
+    }
+
+    Reset(BC_LINK_INVALID, false);
+    owner_file = OpenFile(DTS_MONITOR_MODE);
+    stop_ok = false;
+    CloseFile(&owner_file);
+    Check(hardware.dma_fault && !adapter.present && hardware_allocated &&
+          context.hw_ctx == &hardware && !context.session_owner && !context.stream &&
+          !context.session_module_pinned && !module_refs && !module_gets &&
+          !elem_live && !dio_live && !rings_live,
+          "failed empty-monitor stop leaves no session or DMA backing to quarantine");
+    Check(!adapter.dma_terminal_quiesced &&
+          crystalhd_delete_cmd_context(&context) == BC_STS_SUCCESS &&
+          !context.hw_ctx && !context.adp && !hardware_allocated &&
+          !module_gets && !module_puts && !retained_tx_puts,
+          "empty monitor context can be deleted from absence proof without a late rescue pin");
+
+    for (unsigned failure = 0; failure < 3; failure++) {
+        int generic_owner;
+        BC_STATUS expected = failure == 2 ? BC_STS_INSUFF_RES : BC_STS_ERROR;
+
+        Reset(BC_LINK_INVALID, false);
+        if (failure == 0) elem_error = -1;
+        if (failure == 1) dio_error = -1;
+        if (failure == 2) ring_status = BC_STS_INSUFF_RES;
+        stop_ok = false;
+        Check(crystalhd_session_acquire_locked(&context, &generic_owner) == expected &&
+              hardware.dma_fault && !adapter.present && context.hw_ctx == &hardware &&
+              hardware_allocated && !context.session_owner,
+              "failed setup rollback preserves hardware when its device stop also fails");
+        Check(context.session_module_pinned && module_refs == 1 && module_gets == 1 &&
+              !module_puts && !hardware_frees && !elem_live && !dio_live && !rings_live,
+              "failed rollback retains its pre-acquired module pin after ordinary setup resources unwind");
+        Check(crystalhd_session_acquire_locked(&context, &generic_owner) == BC_STS_BUSY &&
+              module_gets == 1 && !module_puts && hardware_opens == 1 && stops == 1,
+              "an unpublished retained module owner blocks new setup without another hardware attempt");
+    }
+}
+static void FaultInterruptDispatch(void)
+{
+    for (unsigned fault = 0; fault < 2; fault++) {
+        for (unsigned handled = 0; handled < 2; handled++) {
+            struct crystalhd_cmd before_context;
+            struct crystalhd_hw before_hw;
+
+            Reset(BC_LINK_READY, true);
+            hardware.pfnFindAndClearIntr = NormalInterrupt;
+            interrupt_handled = handled;
+            if (fault)
+                crystalhd_hw_dma_fatal_stop(&hardware);
+            before_context = context;
+            before_hw = hardware;
+            Check(crystalhd_cmd_interrupt(&context) == (bool)handled &&
+                  normal_interrupts == !fault && fault_interrupts == fault,
+                  "actual interrupt entry chooses exactly the normal or fatal-acknowledgement path");
+            Check(!memcmp(&context, &before_context, sizeof(context)) &&
+                  !memcmp(&hardware, &before_hw, sizeof(hardware)) &&
+                  !captures && !cancels && !starts && !stops && !ring_frees &&
+                  !stream_releases && !module_puts && !irq_disables && !irq_enables,
+                  "late interrupt acknowledgement cannot complete, retire, repost or reset ownership");
+        }
     }
 }
 static void FileCloseUnavailableDevice(void)
@@ -4587,7 +4848,7 @@ static void OpenFailuresAndRetry(void)
               context.hw_ctx == &hardware && hardware_allocated &&
               context.pwr_state_change == BC_HW_RUNNING && !adapter.cfg_users &&
               hardware_alloc_attempts == 2 && hardware_allocations == which + 1 &&
-              hardware_opens == which + 1 && irq_disables == 2 && irq_enables == 2,
+              hardware_opens == which + 1 && irq_disables == 2 + stops && irq_enables == 2 + stops,
               "successful retry publishes a fresh user but leaves file accounting to caller");
         adapter.cfg_users++;
         crystalhd_user_close(&context, user);
@@ -4875,7 +5136,9 @@ int main(void)
         {"actual file close owner/monitor ordering and reacquisition", FileOwnerBeforeMonitor},
         {"RELEASE then actual file close", ReleaseThenFileClose},
         {"actual file close after session setup failure", FileCloseAfterSetupFailure},
-        {"existing close behavior after capture-stop failure", CloseCaptureFailure},
+        {"conditional close retains ownership after every engine-stop failure", CloseCaptureFailure},
+        {"fatal pending-file and terminal command ownership", FatalCommandOwnership},
+        {"late fatal interrupt acknowledgement dispatch", FaultInterruptDispatch},
         {"actual file close after failed PM or stale device binding", FileCloseUnavailableDevice},
         {"owner close without hardware and repeated close", OwnerCloseWithoutHardware},
         {"NULL resume argument", NullResume}, {"invalid suspend arguments", InvalidSuspend},

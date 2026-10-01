@@ -19,6 +19,8 @@ struct crystalhd_stream {
 	u8 *cpu;
 	dma_addr_t dma;
 	struct scatterlist sg;
+	struct crystalhd_tx_buffer buffer;
+	refcount_t refs;
 	bool failed;
 	bool eos_submitted;
 };
@@ -119,6 +121,33 @@ static int crystalhd_h264_format_eos(u8 *dst, size_t capacity,
 	return 0;
 }
 
+static void crystalhd_stream_get(const struct crystalhd_tx_buffer *buffer)
+{
+	struct crystalhd_stream *stream = buffer->cookie;
+
+	refcount_inc(&stream->refs);
+}
+
+static void crystalhd_stream_put(struct crystalhd_adp *adp,
+				 const struct crystalhd_tx_buffer *buffer)
+{
+	struct crystalhd_stream *stream = buffer->cookie;
+
+	(void)adp;
+	if (!refcount_dec_and_test(&stream->refs))
+		return;
+	if (stream->cpu)
+		dma_free_coherent(stream->dev,
+				  CRYSTALHD_H264_STAGE_BYTES,
+				  stream->cpu, stream->dma);
+	kfree(stream);
+}
+
+static const struct crystalhd_tx_buffer_ops crystalhd_stream_buffer_ops = {
+	.get = crystalhd_stream_get,
+	.put = crystalhd_stream_put,
+};
+
 int crystalhd_stream_prepare(struct crystalhd_cmd *ctx)
 {
 	struct crystalhd_stream *stream;
@@ -140,6 +169,11 @@ int crystalhd_stream_prepare(struct crystalhd_cmd *ctx)
 		return -ENOMEM;
 	}
 	sg_init_table(&stream->sg, 1);
+	refcount_set(&stream->refs, 1);
+	stream->buffer.sgl = &stream->sg;
+	stream->buffer.dma_nents = 1;
+	stream->buffer.ops = &crystalhd_stream_buffer_ops;
+	stream->buffer.cookie = stream;
 	ctx->stream = stream;
 	return 0;
 }
@@ -153,12 +187,16 @@ void crystalhd_stream_release(struct crystalhd_cmd *ctx)
 	stream = ctx->stream;
 	if (!stream)
 		return;
+	/* An admitted controller operation may discover fail-stop concurrently.
+	 * Keep the context reference until terminal cleanup has proved safety.
+	 */
+	if (ctx->hw_ctx && ctx->adp &&
+	    (READ_ONCE(ctx->hw_ctx->dma_fault) ||
+	     !READ_ONCE(ctx->adp->present)) &&
+	    !ctx->adp->dma_terminal_quiesced)
+		return;
 	ctx->stream = NULL;
-	if (stream->cpu)
-		dma_free_coherent(stream->dev,
-				  CRYSTALHD_H264_STAGE_BYTES,
-				  stream->cpu, stream->dma);
-	kfree(stream);
+	crystalhd_tx_buffer_put(ctx->adp, &stream->buffer);
 }
 
 static int crystalhd_h264_validate(struct crystalhd_cmd *ctx,
@@ -175,6 +213,8 @@ static int crystalhd_h264_validate(struct crystalhd_cmd *ctx,
 	lockdep_assert_held(&ctx->adp->tx_lock);
 	if (!READ_ONCE(ctx->adp->present))
 		return -ENODEV;
+	if (READ_ONCE(ctx->hw_ctx->dma_fault))
+		return -EIO;
 	if (!ctx->session_owner)
 		return -EINVAL;
 	if (ctx->session_owner != owner)
@@ -197,22 +237,17 @@ static int crystalhd_h264_send_staged(struct crystalhd_cmd *ctx,
 {
 	struct crystalhd_stream *stream = ctx->stream;
 	size_t aligned_bytes = wire_bytes & ~3U;
-	struct crystalhd_tx_buffer buffer = {
-		.sgl = &stream->sg,
-		.dma_nents = 1,
-		.bytes = wire_bytes,
-		.tail_addr = stream->dma + aligned_bytes,
-		.tail_size = wire_bytes & 3U,
-		.cookie = stream,
-	};
 	BC_STATUS sts;
 
+	stream->buffer.bytes = wire_bytes;
+	stream->buffer.tail_addr = stream->dma + aligned_bytes;
+	stream->buffer.tail_size = wire_bytes & 3U;
 	memset(stream->cpu + wire_bytes, 0,
 	       ALIGN(wire_bytes, 4U) - wire_bytes);
 	sg_dma_address(&stream->sg) = stream->dma;
 	sg_dma_len(&stream->sg) = aligned_bytes;
 	dma_wmb();
-	sts = crystalhd_tx_transfer_until(ctx, &buffer, 0, deadline);
+	sts = crystalhd_tx_transfer_until(ctx, &stream->buffer, 0, deadline);
 	if (sts != BC_STS_SUCCESS)
 		stream->failed = true;
 	return crystalhd_status_to_errno(sts);

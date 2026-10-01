@@ -33,6 +33,7 @@
 
 bool crystalhd_flea_start_device(struct crystalhd_hw *hw);
 bool crystalhd_flea_stop_device(struct crystalhd_hw *hw);
+void crystalhd_flea_disable_interrupts(struct crystalhd_hw *hw);
 bool crystalhd_flea_hw_interrupt_handle(struct crystalhd_adp *adp, struct crystalhd_hw *hw);
 uint32_t crystalhd_flea_reg_rd(struct crystalhd_adp *adp, uint32_t reg_off);											/* Done */
 void crystalhd_flea_reg_wr(struct crystalhd_adp *adp, uint32_t reg_off, uint32_t val);									/* Done */

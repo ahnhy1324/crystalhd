@@ -137,6 +137,8 @@ BC_STATUS crystalhd_user_set_mode(struct crystalhd_cmd *ctx,
  * before allocating session resources; release/removal unpin only after full
  * ownership teardown. Suspend and RX-only retirement preserve this pin. It
  * does not retain a frontend's owner token, buffers or completion context.
+ * A fatal stop makes release fail without revoking ownership or dropping the
+ * pin; only globally serialized terminal quiescence may retire that session.
  */
 BC_STATUS crystalhd_session_acquire_locked(struct crystalhd_cmd *ctx,
 					   const void *owner);
@@ -207,8 +209,11 @@ int crystalhd_decoder_channel_stop_locked(struct crystalhd_cmd *ctx,
  */
 int crystalhd_decoder_channel_close_locked(struct crystalhd_cmd *ctx,
 					   const void *owner);
-/* Caller retains device/session lifetime and serializes TX submission through
- * return; the legacy ioctl adapter does this with user_lock and tx_lock.
+/* Caller retains device/session lifetime and one stable TX backing reference,
+ * and serializes submission through return. Mandatory buffer get/put ops run
+ * only in process context. A fatal stop transfers the core's extra reference
+ * to fixed TX inventory until terminal quiescence; return never consumes the
+ * caller's own reference. Legacy ioctls hold user_lock and tx_lock.
  * A supported nonzero timeout bounds admission and completion waiting as one
  * budget; values above INT_MAX or conversions to MAX_JIFFY_OFFSET are rejected.
  * Safe cancellation can extend return and posted DMA keeps its three-second

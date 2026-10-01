@@ -35,16 +35,30 @@
 #include <linux/ioctl.h>
 #include <linux/dma-mapping.h>
 #include <linux/sched.h>
+#include <linux/refcount.h>
 #include "bc_dts_glob_lnx.h"
 
 /* forward declare */
 struct crystalhd_adp;
 struct crystalhd_hw;
 struct crystalhd_rx_buffer;
+struct crystalhd_tx_buffer;
 
-/* Frontend-neutral, already DMA-mapped input buffer. The frontend owns the
- * mapping and every backing byte until its completion callback runs. The
- * final 1..3 bytes, when present, live in one coherent, zero-padded word.
+/* Both operations run in process context. Each reference keeps the complete
+ * buffer descriptor, ops, cookie, SG mapping and DMA backing alive.
+ */
+struct crystalhd_tx_buffer_ops {
+	void (*get)(const struct crystalhd_tx_buffer *buffer);
+	void (*put)(struct crystalhd_adp *adp,
+		    const struct crystalhd_tx_buffer *buffer);
+};
+
+/* Frontend-neutral, already DMA-mapped input buffer. The frontend retains a
+ * reference through submission; the synchronous core takes an extra backing
+ * lease before posting. Completion notification does not release that lease.
+ * The descriptor, ops, SG and backing survive until the last put and remain
+ * immutable while the core holds its submission or retained lease.
+ * The final 1..3 bytes live in one coherent, zero-padded word.
  */
 struct crystalhd_tx_buffer {
 	struct scatterlist	*sgl;
@@ -52,6 +66,7 @@ struct crystalhd_tx_buffer {
 	uint32_t		bytes; /* exact transfer length within the backing */
 	dma_addr_t		tail_addr;
 	uint32_t		tail_size;
+	const struct crystalhd_tx_buffer_ops *ops;
 	void			*cookie; /* stable, non-NULL ownership identity */
 };
 
@@ -127,6 +142,7 @@ struct crystalhd_dio_req {
 	bool							cpu_owned;
 	struct crystalhd_dio_user_info	uinfo;
 	struct crystalhd_tx_buffer		tx_buffer;
+	refcount_t				tx_refs;
 	struct crystalhd_rx_buffer		rx_buffer;
 	void							*fb_va;
 	uint32_t						fb_size;
@@ -237,6 +253,9 @@ extern BC_STATUS crystalhd_map_dio(struct crystalhd_adp *, void *, uint32_t,
 				   struct crystalhd_dio_req **);
 
 extern BC_STATUS crystalhd_unmap_dio(struct crystalhd_adp *, struct crystalhd_dio_req*);
+void crystalhd_tx_buffer_get(const struct crystalhd_tx_buffer *buffer);
+void crystalhd_tx_buffer_put(struct crystalhd_adp *adp,
+			     const struct crystalhd_tx_buffer *buffer);
 void crystalhd_dio_to_cpu(struct crystalhd_adp *, struct crystalhd_dio_req *);
 void crystalhd_dio_to_device(struct crystalhd_adp *, struct crystalhd_dio_req *);
 void crystalhd_rx_buffer_sync_for_cpu(struct crystalhd_adp *,

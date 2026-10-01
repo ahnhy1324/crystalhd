@@ -32,6 +32,7 @@ static void discard_log(const char *format, ...) { (void)format; }
 #define dev_dbg(dev, ...) ((void)(dev))
 #define dev_info(dev, ...) ((void)(dev))
 #define READ_ONCE(value) (value)
+#define WRITE_ONCE(value, update) ((value) = (update))
 #define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
 #define spin_lock_irqsave(lock, flags) \
     (assert(*(lock) == 0), *(lock) = 1, (flags) = 0)
@@ -40,7 +41,6 @@ static void discard_log(const char *format, ...) { (void)format; }
 
 struct device { int unused; };
 struct pci_dev { struct device dev; int irq; uint32_t device; };
-struct crystalhd_adp { struct pci_dev *pdev; unsigned present; };
 struct crystalhd_dio_req {
     struct crystalhd_dio_user_info uinfo;
     struct crystalhd_rx_buffer rx_buffer;
@@ -78,12 +78,18 @@ struct crystalhd_cmd {
     struct crystalhd_adp *adp;
     struct crystalhd_hw *hw_ctx;
     uint32_t state;
+    uint32_t cin_wait_exit;
+};
+struct crystalhd_adp {
+    struct pci_dev *pdev;
+    unsigned present;
+    struct crystalhd_cmd cmds;
 };
 
 static struct pci_dev endpoint = { .irq = 17 };
 static struct crystalhd_adp adapter = { .pdev = &endpoint };
 static struct crystalhd_hw hardware;
-static struct crystalhd_cmd context;
+#define context adapter.cmds
 static struct crystalhd_dioq active, ready, available;
 static struct crystalhd_rx_dma_pkt packets[BC_RX_LIST_CNT];
 static struct crystalhd_dio_req requests[BC_RX_LIST_CNT];
@@ -116,6 +122,9 @@ static bool interrupt_lock, wait_signal, wait_suspend, wait_full_flush;
 static bool wait_restart_fresh, wait_restart_mode422;
 static enum FLEA_POWER_STATES wait_restart_power;
 static bool stop_fault, notify_ok;
+static bool local_pending, master_enabled;
+static unsigned master_clears, pending_waits;
+static unsigned chip_masks;
 static bool firmware_alive;
 static bool checking_admission;
 static bool checking_metadata_reset;
@@ -137,6 +146,7 @@ static int start_post_sem;
 static struct crystalhd_dioq *fail_queue;
 static const struct crystalhd_rx_buffer_ops legacy_buffer_ops;
 static const struct crystalhd_rx_buffer_ops direct_buffer_ops;
+void crystalhd_hw_dma_fatal_stop(struct crystalhd_hw *hw);
 
 static void check(bool condition, const char *message)
 {
@@ -650,7 +660,31 @@ static void stop_dma(struct crystalhd_hw *hw)
     stop_observed_sem = hw->fetch_sem;
     stop_observed_irq = irq_depth;
     stop_calls++;
-    if (stop_fault) hw->dma_fault = true;
+    if (stop_fault) crystalhd_hw_dma_fatal_stop(hw);
+}
+static void pci_clear_master(struct pci_dev *pdev)
+{
+    assert(pdev == &endpoint);
+    master_clears++;
+    master_enabled = false;
+}
+static void crystalhd_flea_disable_interrupts(struct crystalhd_hw *hw)
+{
+    assert(hw == &hardware && endpoint.device == BC_PCI_DEVID_FLEA);
+    assert(hw->dma_fault && !adapter.present && context.cin_wait_exit);
+    chip_masks++;
+}
+static void crystalhd_link_disable_interrupts(struct crystalhd_hw *hw)
+{
+    assert(hw == &hardware && endpoint.device == BC_PCI_DEVID_LINK);
+    assert(hw->dma_fault && !adapter.present && context.cin_wait_exit);
+    chip_masks++;
+}
+static int pci_wait_for_pending_transaction(struct pci_dev *pdev)
+{
+    assert(pdev == &endpoint);
+    pending_waits++;
+    return local_pending;
 }
 /* Model only the DMA programming contract: success enters the active queue;
  * BUSY and errors return the unowned packet to the real post wrapper.
@@ -698,10 +732,12 @@ static BC_STATUS crystalhd_link_hw_prog_rxdma(struct crystalhd_hw *hw, struct cr
     return program_dma(hw, packet);
 }
 BC_STATUS crystalhd_hw_repost_cap_buffer(struct crystalhd_hw *, struct crystalhd_rx_dma_pkt *);
+#undef context
 #include "rx-post.h"
 #include "rx-hardware.h"
 #include "rx-flea-fll.h"
 #include "rx-command.h"
+#define context adapter.cmds
 
 static void run_wait_full_flush_hook(void)
 {
@@ -733,6 +769,9 @@ static void run_wait_restart_fresh_hook(void)
 
 static void reset(uint32_t device)
 {
+    /* Static model instances are independent scenarios. Reset does not call
+     * any release callback for ownership retained by a prior fatal case.
+     */
     groups++;
     reset_lifecycle_events();
     memset(&active, 0, sizeof(active));
@@ -785,6 +824,9 @@ static void reset(uint32_t device)
     wait_restart_start_status = wait_restart_add_status = BC_STS_ERROR;
     wait_restart_ready_status = wait_restart_complete_status = BC_STS_ERROR;
     stop_fault = false;
+    local_pending = master_enabled = true;
+    master_clears = pending_waits = 0;
+    chip_masks = 0;
     firmware_alive = true;
     checking_admission = false;
     checking_metadata_reset = false;
@@ -1434,21 +1476,20 @@ static void admission_state_cases(uint32_t device)
         for (unsigned paused = 0; paused < 2; paused++) {
             for (unsigned fault = 0; fault < 2; fault++) {
                 bool post = states[s] == BC_LINK_READY && !paused;
-                bool rejected = post && fault;
+                bool rejected = fault;
                 reset(device);
                 context.state = states[s];
                 hardware.hw_pause_issued = paused;
                 hardware.dma_fault = fault;
                 check(add(0) == (rejected ? BC_STS_IO_ERROR : BC_STS_SUCCESS),
-                      "only exact READY and unpaused admission attempts DMA, preserving fault policy");
+                      "faulted hardware rejects every RX admission before any deferred or immediate post");
                 check(context.state == states[s] && hardware.hw_pause_issued == (bool)paused &&
-                      hardware.dma_fault == (bool)fault && post_calls == (unsigned)post &&
+                      hardware.dma_fault == (bool)fault && post_calls == (unsigned)(post && !fault) &&
                       map_attempts == 1 && sem_attempts == 1 && unmaps[0] == (unsigned)rejected,
                       "admission preserves state, balances locking and releases only rejected mappings");
-                inventory(post && !fault, 0, !post);
-                /* The DMA boundary now models a quiesced engine for cleanup. */
-                hardware.dma_fault = false;
-                drain();
+                inventory(post && !fault, 0, !post && !fault);
+                if (!fault)
+                    drain();
             }
         }
     }
@@ -1552,9 +1593,8 @@ static void mapped_admission_cases(uint32_t device)
                   "caller releases the buffer after failed admission");
             inventory(0, 0, 0);
         }
-        /* No accepted DMA remains faulted; cleanup models a quiesced engine. */
-        hardware.dma_fault = false;
-        drain();
+        if (!hardware.dma_fault)
+            drain();
     }
 }
 static void mapped_completion_cases(uint32_t device)
@@ -2341,9 +2381,8 @@ static void format_failed_stop_epoch_case(uint32_t device)
           unmaps[0] == 1 && post_calls == post_before,
           "failed full stop cannot revive its detached format registration");
     inventory(0, 0, 0);
-    stop_fault = false;
-    hardware.dma_fault = false;
-    drain();
+    check(hardware.dma_fault && !adapter.present && context.cin_wait_exit,
+          "failed stop stays terminal even after a previously detached result is released");
 }
 static void format_fresh_epoch_cases(uint32_t device)
 {
@@ -2483,15 +2522,114 @@ static void cancellation_cases(uint32_t device)
     check(crystalhd_hw_start_capture(&hardware) == BC_STS_IO_ERROR,
           "faulted capture rejects restarting queued DMA");
     inventory(1, 1, 1);
-    /* The hardware boundary now represents a completed reset/quiescence. */
-    stop_fault = false; hardware.dma_fault = false;
-    drain();
+    stop_fault = false;
+    check(crystalhd_hw_stop_capture(&hardware, true) == BC_STS_IO_ERROR &&
+          hardware.dma_fault && !adapter.present && context.cin_wait_exit,
+          "a later successful engine callback cannot revoke terminal ownership uncertainty");
+    inventory(1, 1, 1);
+    check(!unmaps[0] && !unmaps[1] && !unmaps[2],
+          "failed-stop scenario retains every backing without test-only teardown");
 
     reset(device);
     hardware.rx_actq = hardware.rx_rdyq = hardware.rx_freeq = NULL;
     check(crystalhd_hw_stop_capture(&hardware, true) == BC_STS_SUCCESS && !stop_calls,
           "monitor context without RX queues needs no DMA stop");
     inventory(0, 0, 0);
+}
+static void fatal_owner_retention_cases(uint32_t device)
+{
+    for (unsigned pending = 0; pending < 2; pending++) {
+        for (unsigned direct = 0; direct < 2; direct++) {
+            struct crystalhd_rx_dma_pkt *fallback;
+            unsigned old_posts;
+
+            reset(device);
+            for (unsigned i = 0; i < 4; i++) {
+                check((direct ? submit(&context, map_private_at(i, false)) : add(i)) ==
+                      BC_STS_SUCCESS, "seed every retained RX owner location");
+            }
+            complete(0);
+            fallback = crystalhd_dioq_fetch(&available);
+            check(fallback != NULL, "reserve a fallback registration before fatal stop");
+            crystalhd_hw_retain_rx_pkt(&hardware, fallback);
+            inventory(1, 1, 1);
+            check(fallback_count() == 1, "fatal case includes a fallback owner");
+            local_pending = pending;
+            stop_fault = true;
+            check(crystalhd_hw_stop_capture(&hardware, true) == BC_STS_IO_ERROR,
+                  "fatal stop cannot authorize ownership release from local pending status");
+            check(hardware.dma_fault && !adapter.present && context.cin_wait_exit,
+                  "fatal stop publishes sticky engine uncertainty and device cancellation");
+            check(chip_masks == 1 && master_clears == 1 && pending_waits == 1 && !master_enabled,
+                  "a local clear and pending wait remain best-effort rather than release proof");
+            inventory(1, 1, 1);
+            check(fallback_count() == 1 && hardware.rx_fallback_head == fallback,
+                  "failed stop keeps the exact fallback identity reachable");
+            for (unsigned i = 0; i < 4; i++)
+                check(mapped[i] && !unmaps[i], "fatal stop retains every DMA backing");
+            old_posts = post_calls;
+            stop_fault = false;
+            check(crystalhd_hw_stop_capture(&hardware, true) == BC_STS_IO_ERROR &&
+                  crystalhd_hw_start_capture(&hardware) == BC_STS_IO_ERROR,
+                  "a later successful backend stop cannot recover a fatal context");
+            check(post_calls == old_posts && hardware.dma_fault && !adapter.present,
+                  "terminal context never reposts retained buffers");
+            inventory(1, 1, 1);
+            for (unsigned i = 0; i < 4; i++)
+                check(mapped[i] && !unmaps[i], "no test-only reset or release hides retained ownership");
+        }
+    }
+}
+static void fatal_late_rx_cases(uint32_t device)
+{
+    for (unsigned route = 0; route < 4; route++) {
+        struct crystalhd_rx_dma_pkt *packet = NULL;
+        struct crystalhd_rx_completion result;
+        unsigned old_posts, old_pause;
+
+        reset(device);
+        check(submit(&context, map_private(false)) == BC_STS_SUCCESS,
+              "prepare RX identity for a late fatal-boundary callback");
+        if (route == 1 || route == 2) {
+            packet = crystalhd_rx_pkt_detach(&hardware, 0, BC_STS_SUCCESS);
+            check(packet != NULL && !active.count && packet->buffer == &direct_buffers[0],
+                  "the racing callback owns an exact packet detached before fatal publication");
+        } else if (route == 3) {
+            complete(0);
+            hardware.FleaPowerState = FLEA_PS_LP_COMPLETE;
+            hardware.hw_pause_issued = true;
+        }
+        crystalhd_hw_dma_fatal_stop(&hardware);
+        old_posts = post_calls;
+        old_pause = pause_calls;
+        if (route == 0) {
+            check(crystalhd_rx_pkt_detach(&hardware, 0, BC_STS_SUCCESS) == NULL &&
+                  crystalhd_rx_pkt_done(&hardware, 0, BC_STS_SUCCESS) == BC_STS_INV_ARG,
+                  "late RX completion cannot detach an uncertain active owner");
+            inventory(1, 0, 0);
+        } else if (route == 1) {
+            check(crystalhd_rx_pkt_complete(&hardware, packet, 0, BC_STS_SUCCESS) == BC_STS_IO_ERROR,
+                  "late completion retains an already-detached packet instead of publishing data");
+            check(hardware.rx_fallback_head == packet, "completion retains the exact detached identity");
+            inventory(0, 0, 0);
+        } else if (route == 2) {
+            check(crystalhd_hw_repost_cap_buffer(&hardware, packet) == BC_STS_IO_ERROR &&
+                  hardware.rx_fallback_head == packet,
+                  "late repost transfers its exact owner to fallback without DMA programming");
+            inventory(0, 0, 0);
+        } else {
+            memset(&result, 0xa5, sizeof(result));
+            check(crystalhd_hw_get_cap_buffer(&hardware, &result, hardware.rx_cancel_epoch) == BC_STS_IO_ERROR &&
+                  memory_is_zero(&result, sizeof(result)),
+                  "legacy ready fetch cannot return data or release backing after fatal publication");
+            inventory(0, 0, 0);
+        }
+        check(fallback_count() == (unsigned)(route != 0) && mapped[0] && !unmaps[0] &&
+              post_calls == old_posts && pause_calls == old_pause && hardware.fetch_sem == 1,
+              "late callback retains ownership without release, resume, repost or lock leakage");
+        check(!adapter.present && context.cin_wait_exit && hardware.dma_fault,
+              "late RX callbacks cannot reverse terminal cancellation");
+    }
 }
 static void flush_argument_and_gate_cases(uint32_t device)
 {
@@ -2689,9 +2827,8 @@ static void discard_flush_cases(uint32_t device)
               !unmaps[0] && !unmaps[1] && !unmaps[2],
               "discard stop fault preserves state and all queue ownership");
         inventory(1, 1, 1);
-        stop_fault = false;
-        hardware.dma_fault = false;
-        drain();
+        check(!adapter.present && context.cin_wait_exit,
+              "discard engine failure cancels device admission without releasing ownership");
     }
 }
 static void full_flush_cases(uint32_t device)
@@ -2737,9 +2874,8 @@ static void full_flush_cases(uint32_t device)
               !unmaps[0] && !unmaps[1] && !unmaps[2],
               "failed full flush keeps every registration reachable without restart");
         inventory(1, 1, 1);
-        stop_fault = false;
-        hardware.dma_fault = false;
-        drain();
+        check(!adapter.present && context.cin_wait_exit,
+              "full flush failure keeps terminal admission cancelled");
     }
 }
 static void invalid_command_arguments(uint32_t device)
@@ -2955,12 +3091,12 @@ static void start_command_cases(uint32_t device)
         context.state |= BC_LINK_FMT_CHG;
         hardware.dma_fault = true;
         check(start_capture(direct, 0, 0) == BC_STS_IO_ERROR &&
-              context.state == BC_LINK_READY && hardware_notifications == 1 &&
+              context.state == (BC_LINK_INIT | BC_LINK_FMT_CHG) && !hardware_notifications &&
               !post_calls && !start_post_observed,
-              "faulted hardware start preserves its error after capture-state publication");
+              "faulted capture start rejects before state publication or hardware notification");
         inventory(0, 0, 2);
-        hardware.dma_fault = false;
-        drain();
+        check(!unmaps[0] && !unmaps[1],
+              "faulted start leaves its unposted buffers owned until proven terminal teardown");
     }
 }
 static void try_dequeue_gate_cases(uint32_t device)
@@ -3161,14 +3297,15 @@ static void try_dequeue_cancellation_cases(uint32_t device)
                       !fetch_wait_calls && fetch_try_calls == after_pop &&
                       hardware.fetch_sem == 1 && !pause_calls && hardware.hw_pause_issued,
                       "absence/fault/epoch cancellation returns an empty result without stale capture wake");
-                check(unmaps[0] == (has_packet && after_pop) &&
+                check(unmaps[0] == (has_packet && after_pop && !hardware.dma_fault) &&
                       ready.count == (has_packet && !after_pop),
-                      "cancellation releases only an already-detached owner and preserves unconsumed queue ownership");
+                      "fault cancellation retains detached ownership while safe cancellation releases it");
+                check(fallback_count() == (unsigned)(has_packet && after_pop && hardware.dma_fault),
+                      "faulted dequeue moves the exact detached owner into retained fallback inventory");
                 inventory(0, has_packet && !after_pop, 0);
                 checking_try_release = false;
-                adapter.present = 1;
-                hardware.dma_fault = false;
-                drain();
+                if (adapter.present && !hardware.dma_fault)
+                    drain();
             }
         }
     }
@@ -3251,6 +3388,8 @@ int main(void)
         format_fresh_epoch_cases(devices[i]);
         format_capture_gate_case(devices[i]);
         cancellation_cases(devices[i]);
+        fatal_owner_retention_cases(devices[i]);
+        fatal_late_rx_cases(devices[i]);
         flush_argument_and_gate_cases(devices[i]);
         discard_flush_cases(devices[i]);
         full_flush_cases(devices[i]);

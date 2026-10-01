@@ -6,6 +6,7 @@
 #include <string.h>
 
 typedef uint64_t dma_addr_t;
+typedef unsigned int refcount_t;
 typedef unsigned int BC_OUTPUT_FORMAT;
 typedef enum {
 	BC_STS_SUCCESS, BC_STS_INV_ARG, BC_STS_NOT_IMPL,

@@ -14,13 +14,21 @@ trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
 awk '
+    /^void crystalhd_tx_buffer_(get|put)\(/ { copying = 1; found++ }
+    copying { print }
+    copying && /^}/ { copying = 0 }
+    END { if (found != 2 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_misc.c" \
+    > "$stream_test_dir/h264-stream-production.h"
+
+awk '
     /^enum (_crystalhd_state|crystalhd_decoder_phase|crystalhd_decoder_codec|_BC_PCI_DEV_IDS)[[:space:]{]/ {
         copying = 1; found++
     }
-    /^struct crystalhd_tx_buffer[[:space:]]*\{/ { copying = 1; found++ }
+    /^struct crystalhd_tx_buffer(_ops)?[[:space:]]*\{/ { copying = 1; found++ }
     copying { print }
     copying && /^};/ { copying = 0 }
-    END { if (found != 5 || copying) exit 1 }
+    END { if (found != 6 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.h" \
     "$repo_dir/include/bc_dts_glob_lnx.h" \
     "$repo_dir/driver/linux/crystalhd_misc.h" \
@@ -36,11 +44,15 @@ awk '
         copying = 1; found++
     }
     /^void crystalhd_stream_release\(/ { copying = 1; found++ }
+    /^static void crystalhd_stream_(get|put)\(/ ||
+    /^static const struct crystalhd_tx_buffer_ops crystalhd_stream_buffer_ops =/ {
+        copying = 1; found++
+    }
     copying { print }
-    copying && /^}/ { copying = 0 }
-    END { if (found != 9 || copying) exit 1 }
+    copying && /^};?$/ { copying = 0 }
+    END { if (found != 12 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_stream.c" \
-    > "$stream_test_dir/h264-stream-production.h"
+    >> "$stream_test_dir/h264-stream-production.h"
 
 awk '
     /^int crystalhd_status_to_errno\(/ { copying = 1; found++ }

@@ -18,7 +18,11 @@ typedef struct {
     unsigned wakeups;
 } wait_queue_head_t;
 
+struct crystalhd_adp { bool present; };
+
 struct crystalhd_hw {
+    struct crystalhd_adp *adp;
+    bool dma_fault;
     spinlock_t lock;
     struct mutex fwcmd_trans_mutex;
     struct mutex fwcmd_mutex;
@@ -36,6 +40,7 @@ enum wait_mode {
 };
 
 static struct crystalhd_hw hardware;
+static struct crystalhd_adp adapter;
 static enum wait_mode wait_mode;
 static wait_queue_head_t *last_woken;
 static pthread_mutex_t audit_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -115,6 +120,9 @@ static void Check(bool condition, const char *why)
 static void InitHardware(void)
 {
     memset(&hardware, 0, sizeof(hardware));
+    memset(&adapter, 0, sizeof(adapter));
+    adapter.present = true;
+    hardware.adp = &adapter;
     if (pthread_mutex_init(&hardware.lock, NULL) ||
         pthread_mutex_init(&hardware.fwcmd_trans_mutex.native, NULL) ||
         pthread_mutex_init(&hardware.fwcmd_mutex.native, NULL) ||
@@ -170,6 +178,67 @@ static void AdmissionBeforePreprocess(void)
           "verified-reset transaction may enter a poisoned mailbox");
     crystalhd_hw_fw_cmd_leave(&hardware);
     DestroyHardware();
+}
+
+static void CheckUnlocked(pthread_mutex_t *lock, const char *why)
+{
+    int rc = pthread_mutex_trylock(lock);
+
+    Check(!rc, why);
+    if (!rc && pthread_mutex_unlock(lock)) abort();
+}
+
+static void UnavailableAdmission(void)
+{
+    BC_STATUS (*const enter[])(struct crystalhd_hw *) = {
+        crystalhd_hw_fw_cmd_enter,
+        crystalhd_hw_fw_cmd_recovery_enter,
+    };
+    unsigned entry, unavailable, mailbox;
+
+    for (entry = 0; entry < sizeof(enter) / sizeof(enter[0]); entry++) {
+        for (unavailable = 1; unavailable < 4; unavailable++) {
+            for (mailbox = 0; mailbox < 4; mailbox++) {
+                /* Each case is a fresh device, not a recovery that clears a
+                 * sticky DMA fault or revives a removed adapter.
+                 */
+                InitHardware();
+                hardware.dma_fault = !!(unavailable & 1);
+                adapter.present = !(unavailable & 2);
+                hardware.fwcmd_pending = !!(mailbox & 1);
+                hardware.fwcmd_poisoned = !!(mailbox & 2);
+                hardware.fwcmd_evt_sts = 7;
+                hardware.FwCmdCnt = 11;
+                hardware.fwcmd_event.wakeups = 13;
+                last_woken = &hardware.fwcmd_event;
+
+                Check(enter[entry](&hardware) == BC_STS_IO_ERROR,
+                      "both entries reject DMA fault or absence before mailbox admission");
+                Check(hardware.fwcmd_pending == !!(mailbox & 1) &&
+                      hardware.fwcmd_poisoned == !!(mailbox & 2) &&
+                      hardware.fwcmd_evt_sts == 7 && hardware.FwCmdCnt == 11,
+                      "unavailable admission preserves all mailbox state, even pending/poisoned");
+                Check(hardware.fwcmd_event.wakeups == 13 &&
+                      last_woken == &hardware.fwcmd_event,
+                      "unavailable admission neither wakes nor replaces the firmware waitqueue");
+                Check(hardware.adp == &adapter &&
+                      hardware.dma_fault == !!(unavailable & 1) &&
+                      adapter.present == !(unavailable & 2),
+                      "denied admission cannot clear fault or restore device presence");
+                Check(mutex_attempts == 1,
+                      "denied admission acquires only transaction serialization");
+                CheckUnlocked(&hardware.fwcmd_trans_mutex.native,
+                              "denied admission releases transaction serialization");
+                CheckUnlocked(&hardware.lock,
+                              "denied admission releases the hardware state lock");
+                CheckUnlocked(&hardware.fwcmd_mutex.native,
+                              "denied admission leaves mailbox serialization available");
+                CheckUnlocked(&hardware.fwcmd_event.lock,
+                              "denied admission leaves the firmware waitqueue unlocked");
+                DestroyHardware();
+            }
+        }
+    }
 }
 
 static void NormalAndLateCompletion(void)
@@ -331,6 +400,7 @@ static void SerializedCommands(void)
 int main(void)
 {
     AdmissionBeforePreprocess();
+    UnavailableAdmission();
     NormalAndLateCompletion();
     TimeoutLateIrqAndRetry();
     TimeoutBoundaryAndReset();
