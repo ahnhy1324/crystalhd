@@ -214,8 +214,18 @@ BC_STATUS crystalhd_tx_transfer_until(struct crystalhd_cmd *ctx,
 				      unsigned long deadline);
 BC_STATUS crystalhd_rx_submit(struct crystalhd_cmd *ctx,
 			      struct crystalhd_rx_buffer *buffer);
+/* Caller retains device/session lifetime without holding fetch_sem. Success
+ * transfers buffer/cookie ownership; requeue or release exactly once.
+ */
 BC_STATUS crystalhd_rx_dequeue(struct crystalhd_cmd *ctx,
 			       struct crystalhd_rx_completion *result);
+/* Same ownership contract, without waiting for picture arrival. Empty or
+ * wholly filtered ready queues return NO_DATA with a cleared result. This is
+ * process context: lock acquisition, parsing and hardware callbacks may sleep.
+ * A destructive stop invalidates the admission epoch and cancels the fetch.
+ */
+BC_STATUS crystalhd_rx_try_dequeue(struct crystalhd_cmd *ctx,
+				   struct crystalhd_rx_completion *result);
 /* Requeue an untouched format-change result in its capture epoch. Caller
  * verifies COMP_FLAG_FMT_CHANGE and retains device/session lifetime from
  * dequeue through acknowledgement, excluding PCI removal and session

@@ -83,22 +83,24 @@ awk '
     /^uint32_t crystalhd_hw_count_free_rx_pkts\(/ ||
     /^void crystalhd_hw_stats\(/ ||
     /^BC_STATUS crystalhd_rx_pkt_(complete|done)\(/ ||
-    /^BC_STATUS crystalhd_hw_(add_cap_buffer|get_cap_buffer|repost_cap_buffer|start_capture|stop_capture_locked|stop_capture)\(/ {
+    /^static BC_STATUS crystalhd_hw_complete_rx_locked\(/ ||
+    /^BC_STATUS crystalhd_hw_(add_cap_buffer|get_cap_buffer|try_get_cap_buffer|repost_cap_buffer|start_capture|stop_capture_locked|stop_capture)\(/ {
         copying = 1; found++
     }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 18 || copying || awaiting_name) exit 1 }
+    END { if (found != 20 || copying || awaiting_name) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_hw.c" > "$rx_test_dir/rx-hardware.h"
 awk '
-	/^BC_STATUS crystalhd_(rx_submit|rx_dequeue|rx_ack_format|capture_start|capture_flush)\(/ ||
+	/^BC_STATUS crystalhd_(rx_submit|rx_dequeue|rx_try_dequeue|rx_ack_format|capture_start|capture_flush)\(/ ||
+	/^static BC_STATUS crystalhd_rx_dequeue_common\(/ ||
 	/^static void bc_cproc_copy_pib\(/ ||
 	/^static BC_STATUS bc_cproc_(check_inbuffs|add_cap_buff|fetch_frame|start_capture|flush_cap_buffs)\(/ {
         copying = 1; found++
     }
     copying { print }
     copying && /^}/ { copying = 0 }
-	END { if (found != 11 || copying) exit 1 }
+	END { if (found != 13 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" > "$rx_test_dir/rx-command.h"
 awk '
     /^BC_STATUS crystalhd_(flea|link)_hw_post_cap_buff\(/ {
@@ -117,11 +119,14 @@ awk '
 ' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > \
     "$rx_test_dir/rx-flea-fll.h"
 awk '
-    /^void \*crystalhd_dioq_fetch_wait\(/ { copying = 1; found++ }
+    /^enum _BC_DTS_GLOBALS[[:space:]]*\{/ { copying = 1; globals++ }
+    /^static bool crystalhd_rx_accept_packet_locked\(/ ||
+    /^void \*crystalhd_dioq_(fetch_wait|try_fetch_locked)\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 1 || copying) exit 1 }
-' "$repo_dir/driver/linux/crystalhd_misc.c" > \
+    END { if (found != 3 || globals != 1 || copying) exit 1 }
+' "$repo_dir/include/bc_dts_glob_lnx.h" \
+    "$repo_dir/driver/linux/crystalhd_misc.c" > \
     "$rx_test_dir/rx-fetch-wait-function.h"
 
 for rx_sanitize in no yes; do

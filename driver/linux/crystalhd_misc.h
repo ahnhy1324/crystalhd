@@ -259,6 +259,8 @@ extern BC_STATUS crystalhd_dioq_add(struct crystalhd_dioq *ioq, void *data, bool
 extern void *crystalhd_dioq_fetch(struct crystalhd_dioq *ioq);
 extern void *crystalhd_dioq_find_and_fetch(struct crystalhd_dioq *ioq, uint32_t tag);
 extern void *crystalhd_dioq_fetch_wait(struct crystalhd_hw *hw, uint32_t to_secs, uint32_t *sig_pend);
+/* Caller holds fetch_sem; bounded scan without waiting for picture arrival. */
+void *crystalhd_dioq_try_fetch_locked(struct crystalhd_hw *hw);
 
 #define crystalhd_dioq_count(_ioq)	((_ioq) ? _ioq->count : 0)
 

@@ -7,18 +7,33 @@ pib_test_dir=$(mktemp -d "${TMPDIR:-/tmp}/crystalhd-pib-check.XXXXXX")
 cleanup()
 {
     rm -f "$pib_test_dir/check" "$pib_test_dir/flea-pib-functions.h" \
-        "$pib_test_dir/rx-metadata.h"
+        "$pib_test_dir/rx-metadata.h" "$pib_test_dir/rx-buffer-functions.h"
     rmdir "$pib_test_dir"
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
 awk '
-    /^struct crystalhd_rx_metadata[[:space:]]*\{/ { copying = 1; found++ }
+    /^struct crystalhd_rx_(metadata|completion|image)[[:space:]]*\{/ { copying = 1; found++ }
     copying { print }
     copying && /^};/ { copying = 0 }
-    END { if (found != 1 || copying) exit 1 }
+    END { if (found != 3 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_hw.h" > "$pib_test_dir/rx-metadata.h"
+
+# Exercise the real bounds-checking buffer wrappers and opt-in pixel finisher.
+awk '
+    /^BC_STATUS crystalhd_rx_buffer_(read|write)\(/ ||
+    /^BC_STATUS crystalhd_rx_finish_yuyv\(/ { candidate = 1; header = "" }
+    candidate {
+        header = header $0 "\n"
+        if (/;[[:space:]]*$/) { candidate = 0; next }
+        if (/^\{/) { printf "%s", header; candidate = 0; copying = 1; found++; next }
+        next
+    }
+    copying { print }
+    copying && /^}/ { copying = 0 }
+    END { if (found != 3 || copying || candidate) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_misc.c" > "$pib_test_dir/rx-buffer-functions.h"
 
 # Include exact production definitions, ignoring their forward declarations.
 # The test's public wrapper and ready-queue path therefore execute the same

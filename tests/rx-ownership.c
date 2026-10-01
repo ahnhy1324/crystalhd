@@ -40,7 +40,7 @@ static void discard_log(const char *format, ...) { (void)format; }
 
 struct device { int unused; };
 struct pci_dev { struct device dev; int irq; uint32_t device; };
-struct crystalhd_adp { struct pci_dev *pdev; };
+struct crystalhd_adp { struct pci_dev *pdev; unsigned present; };
 struct crystalhd_dio_req {
     struct crystalhd_dio_user_info uinfo;
     struct crystalhd_rx_buffer rx_buffer;
@@ -98,6 +98,9 @@ static unsigned checks, failures, groups, maps, post_calls, stop_calls, irq_dept
 static unsigned irq_disables, irq_enables, notify_calls, pause_calls;
 static unsigned sem_attempts, hardware_notifications, map_attempts, translate_calls;
 static unsigned fetch_wait_calls;
+static unsigned fetch_try_calls, try_mutation_at;
+static unsigned try_sem_mutation, try_fetch_mutation;
+static bool checking_try_release;
 static unsigned dram_write_calls, firmware_alive_checks;
 static uint32_t dram_write_address, dram_write_dwords, dram_write_value;
 static unsigned interrupt_after;
@@ -336,6 +339,33 @@ static void *crystalhd_dioq_fetch_wait(struct crystalhd_hw *hw, uint32_t timeout
         run_wait_full_flush_hook();
     return packet;
 }
+static void apply_try_mutation(unsigned mutation)
+{
+    switch (mutation) {
+    case 0: break;
+    case 1: context.state |= BC_LINK_SUSPEND; break;
+    case 2: context.state &= ~BC_LINK_CAP_EN; break;
+    case 3: adapter.present = 0; break;
+    case 4: hardware.dma_fault = true; break;
+    case 5: hardware.rx_cancel_epoch++; break;
+    case 6:
+        hardware.dma_fault = true;
+        adapter.present = 0;
+        hardware.rx_cancel_epoch++;
+        break;
+    default: abort();
+    }
+}
+static void *crystalhd_dioq_try_fetch_locked(struct crystalhd_hw *hw)
+{
+    struct crystalhd_rx_dma_pkt *packet;
+
+    assert(hw == &hardware && !hw->fetch_sem);
+    fetch_try_calls++;
+    packet = crystalhd_dioq_fetch(hw->rx_rdyq);
+    apply_try_mutation(try_fetch_mutation);
+    return packet;
+}
 static BC_STATUS crystalhd_map_dio(struct crystalhd_adp *adp, void *buffer,
         uint32_t size, uint32_t uv, BC_OUTPUT_FORMAT output_format, bool tx,
         struct crystalhd_dio_req **result)
@@ -370,6 +400,9 @@ static BC_STATUS crystalhd_unmap_dio(struct crystalhd_adp *adp, struct crystalhd
 {
     size_t i = request_index(request);
     assert(adp == &adapter);
+    if (checking_try_release)
+        check(hardware.fetch_sem == 1,
+              "cancelled try completion releases backing only after dropping fetch semaphore");
     check(mapped[i] && !unmaps[i] &&
           registered_buffers[i] == &request->rx_buffer &&
           registered_cookies[i] == request &&
@@ -389,6 +422,9 @@ static void direct_release(struct crystalhd_adp *adp,
     size_t i = buffer_index(buffer);
 
     assert(adp == &adapter && buffer == &direct_buffers[i]);
+    if (checking_try_release)
+        check(hardware.fetch_sem == 1,
+              "cancelled direct completion releases backing outside fetch semaphore");
     check(mapped[i] && !unmaps[i] && registered_buffers[i] == buffer &&
           registered_cookies[i] == &cookies[i] &&
           buffer->cookie == &cookies[i] && !queued_buffer(buffer),
@@ -473,6 +509,8 @@ static int down_interruptible(int *sem)
     if (interrupt_lock)
         interrupt_after--;
     *sem = 0;
+    if (try_mutation_at && sem_attempts == try_mutation_at)
+        apply_try_mutation(try_sem_mutation);
     return 0;
 }
 static void down(int *sem) { assert(sem == &hardware.fetch_sem && *sem == 1); *sem = 0; }
@@ -676,6 +714,8 @@ static void reset(uint32_t device)
     memset(mapped, 0, sizeof(mapped));
     memset(unmaps, 0, sizeof(unmaps));
     endpoint.device = device;
+    adapter.pdev = &endpoint;
+    adapter.present = 1;
     hardware = (struct crystalhd_hw){ .adp = &adapter, .fetch_sem = 1,
         .rx_actq = &active, .rx_rdyq = &ready, .rx_freeq = &available,
         .rx_pkt_tag_seed = 0x70029070, .PauseThreshold = 12, .ResumeThreshold = 4,
@@ -698,6 +738,8 @@ static void reset(uint32_t device)
     notify_calls = pause_calls = fail_post_call = 0;
     sem_attempts = hardware_notifications = map_attempts = translate_calls = 0;
     fetch_wait_calls = interrupt_after = 0;
+    fetch_try_calls = try_mutation_at = try_sem_mutation = try_fetch_mutation = 0;
+    checking_try_release = false;
     dram_write_calls = firmware_alive_checks = 0;
     dram_write_address = dram_write_dwords = dram_write_value = 0;
     map_status = translate_status = post_status = queue_status = BC_STS_SUCCESS;
@@ -2749,10 +2791,262 @@ static void start_command_cases(uint32_t device)
         drain();
     }
 }
+static void try_dequeue_gate_cases(uint32_t device)
+{
+    for (unsigned variant = 0; variant < 11; variant++) {
+        struct crystalhd_rx_completion result;
+        struct crystalhd_cmd *ctx = &context;
+        BC_STATUS expected = BC_STS_INV_ARG;
+
+        reset(device);
+        memset(&result, 0xa5, sizeof(result));
+        switch (variant) {
+        case 0: ctx = NULL; break;
+        case 1: context.hw_ctx = NULL; break;
+        case 2:
+            context.hw_ctx = NULL;
+            context.state |= BC_LINK_SUSPEND;
+            expected = BC_STS_PWR_MGMT;
+            break;
+        case 3:
+            context.hw_ctx = NULL;
+            context.state = BC_LINK_INIT;
+            expected = BC_STS_ERR_USAGE;
+            break;
+        case 4:
+            context.state = BC_LINK_INIT | BC_LINK_SUSPEND;
+            expected = BC_STS_PWR_MGMT;
+            break;
+        case 5:
+        case 6:
+            interrupt_lock = true;
+            interrupt_after = variant == 6;
+            expected = BC_STS_IO_USER_ABORT;
+            break;
+        case 7:
+        case 8:
+            try_mutation_at = 1;
+            try_sem_mutation = variant == 7 ? 1 : 2;
+            expected = variant == 7 ? BC_STS_PWR_MGMT : BC_STS_ERR_USAGE;
+            break;
+        case 9:
+            expected = BC_STS_NO_DATA;
+            break;
+        case 10:
+            try_fetch_mutation = 1;
+            expected = BC_STS_PWR_MGMT;
+            break;
+        }
+        check(crystalhd_rx_try_dequeue(ctx, &result) == expected &&
+              memory_is_zero(&result, sizeof(result)),
+              "try-dequeue preserves gate/interruption status ordering and clears failure output");
+        check(!fetch_wait_calls && fetch_try_calls == (variant >= 9) &&
+              hardware.fetch_sem == 1 && !hardware.lock && !hardware.rx_lock,
+              "try-dequeue failure leaves no owner or lock and never enters picture wait");
+        inventory(0, 0, 0);
+    }
+
+    reset(device);
+    check(crystalhd_rx_try_dequeue(&context, NULL) == BC_STS_INV_ARG &&
+          !sem_attempts && !fetch_try_calls && !fetch_wait_calls,
+          "try-dequeue rejects null output before locking or fetching");
+    check(crystalhd_hw_try_get_cap_buffer(&hardware, NULL, 0) == BC_STS_INV_ARG &&
+          !sem_attempts && !fetch_try_calls,
+          "hardware try-get rejects null output before locking");
+    {
+        struct crystalhd_rx_completion result;
+        memset(&result, 0xa5, sizeof(result));
+        check(crystalhd_hw_try_get_cap_buffer(NULL, &result, 0) == BC_STS_INV_ARG &&
+              memory_is_zero(&result, sizeof(result)) && !sem_attempts,
+              "hardware try-get clears output for invalid hardware");
+    }
+    for (unsigned invalid = 0; invalid < 3; invalid++) {
+        struct crystalhd_rx_completion result;
+
+        reset(device);
+        if (invalid == 0)
+            hardware.adp = NULL;
+        else if (invalid == 1)
+            adapter.pdev = NULL;
+        else
+            hardware.rx_rdyq = NULL;
+        memset(&result, 0xa5, sizeof(result));
+        check(crystalhd_hw_try_get_cap_buffer(&hardware, &result, 0) == BC_STS_INV_ARG &&
+              memory_is_zero(&result, sizeof(result)) && !sem_attempts &&
+              !fetch_try_calls && !fetch_wait_calls,
+              "hardware try-get rejects absent adapter, PCI device or ready queue before locking");
+    }
+}
+
+static void try_dequeue_completion_cases(uint32_t device)
+{
+    for (unsigned direct = 0; direct < 2; direct++) {
+        for (unsigned mode422 = 0; mode422 < 2; mode422++) {
+            for (unsigned marker = 0; marker < 4; marker++) {
+                struct crystalhd_rx_completion result, expected;
+                struct crystalhd_rx_buffer *buffer;
+                crystalhd_ioctl_data data = {0};
+                uint32_t flags = COMP_FLAG_DATA_VALID |
+                    (marker & 1 ? COMP_FLAG_FMT_CHANGE : 0) |
+                    (marker & 2 ? COMP_FLAG_PIB_VALID : 0);
+
+                reset(device);
+                hardware.rx_cancel_epoch = direct ? UINT64_C(0x100000029) : 0;
+                if (direct) {
+                    buffer = map_private(mode422);
+                    check(submit(&context, buffer) == BC_STS_SUCCESS,
+                          "prepare direct completion for bounded dequeue");
+                } else {
+                    data.udata.u.RxBuffs.YuvBuff = (uint8_t *)buffers[0];
+                    data.udata.u.RxBuffs.YuvBuffSz = sizeof(buffers[0]);
+                    data.udata.u.RxBuffs.UVbuffOffset = mode422 ? 0 : 128;
+                    data.udata.u.RxBuffs.b422Mode = mode422;
+                    check(add_data(&data) == BC_STS_SUCCESS,
+                          "prepare legacy mapping for bounded dequeue");
+                    buffer = &requests[0].rx_buffer;
+                }
+                complete(0);
+                ready.packets[0]->flags = flags;
+                fill_ready_pib(ready.packets[0]);
+                if (device == BC_PCI_DEVID_FLEA)
+                    ready.packets[0]->metadata = (struct crystalhd_rx_metadata){
+                        .firmware_timestamp = mode422 ? UINT64_C(0x123456789) : 0,
+                        .picture_number = 71, .picture_flags = 0x102,
+                        .picture_width = 720, .picture_height = 480,
+                        .row_width = 720, .pib_line = 481,
+                        .first_pixel_word = UINT32_C(0xa0286028),
+                        .valid = true, .eos_trailer = !!mode422,
+                    };
+                memset(&expected, 0, sizeof(expected));
+                expected.buffer = buffer;
+                expected.cookie = direct ? (void *)&cookies[0] : (void *)&requests[0];
+                expected.flags = flags;
+                expected.capture_epoch = direct ? UINT64_C(0x100000029) : 0;
+                expected.y_done_sz = 128;
+                expected.uv_done_sz = mode422 ? 0 : 64;
+                if (marker & 2)
+                    apply_expected_pib(&expected.pib, ready.packets[0]);
+                if (device == BC_PCI_DEVID_FLEA && !(marker & 1))
+                    expected.metadata = (struct crystalhd_rx_metadata){
+                        .firmware_timestamp = mode422 ? UINT64_C(0x123456789) : 0,
+                        .picture_number = 71, .picture_flags = 0x102,
+                        .picture_width = 720, .picture_height = 480,
+                        .row_width = 720, .pib_line = 481,
+                        .first_pixel_word = UINT32_C(0xa0286028),
+                        .valid = true, .eos_trailer = !!mode422,
+                    };
+                memset(&result, 0xa5, sizeof(result));
+                check(crystalhd_rx_try_dequeue(&context, &result) == BC_STS_SUCCESS &&
+                      !memcmp(&result, &expected, sizeof(result)) &&
+                      !unmaps[0] && !fetch_wait_calls && fetch_try_calls == 1 &&
+                      hardware.fetch_sem == 1,
+                      "try-dequeue returns exact ordinary/format/PIB fields, metadata and owner without waiting");
+                inventory_with_private(0, 0, 0, result.buffer);
+                if (marker & 1) {
+                    check(crystalhd_rx_ack_format(&context, &result) == BC_STS_SUCCESS &&
+                          !result.buffer && !result.cookie && !unmaps[0],
+                          "try-dequeued format owner remains consumable by the real acknowledgement path");
+                    inventory(1, 0, 0);
+                    drain();
+                } else {
+                    crystalhd_rx_buffer_release(&adapter, result.buffer);
+                    check(unmaps[0] == 1, "ordinary try completion releases exactly once in caller");
+                    inventory(0, 0, 0);
+                }
+            }
+        }
+    }
+}
+
+static void try_dequeue_cancellation_cases(uint32_t device)
+{
+    for (unsigned mutation = 3; mutation <= 6; mutation++) {
+        for (unsigned after_pop = 0; after_pop < 2; after_pop++) {
+            for (unsigned has_packet = 0; has_packet < 2; has_packet++) {
+                struct crystalhd_rx_completion result;
+                BC_STATUS expected = mutation == 4 || mutation == 6 ?
+                    BC_STS_IO_ERROR : BC_STS_IO_USER_ABORT;
+
+                reset(device);
+                if (has_packet) {
+                    check(submit(&context, map_private(false)) == BC_STS_SUCCESS,
+                          "prepare private completion for bounded dequeue cancellation");
+                    complete(0);
+                }
+                hardware.FleaPowerState = FLEA_PS_LP_COMPLETE;
+                hardware.hw_pause_issued = true;
+                sem_attempts = 0;
+                if (after_pop)
+                    try_fetch_mutation = mutation;
+                else {
+                    try_mutation_at = 2; /* After command admission, at HW semaphore acquisition. */
+                    try_sem_mutation = mutation;
+                }
+                checking_try_release = true;
+                memset(&result, 0xa5, sizeof(result));
+                check(crystalhd_rx_try_dequeue(&context, &result) == expected &&
+                      memory_is_zero(&result, sizeof(result)) &&
+                      !fetch_wait_calls && fetch_try_calls == after_pop &&
+                      hardware.fetch_sem == 1 && !pause_calls && hardware.hw_pause_issued,
+                      "absence/fault/epoch cancellation returns an empty result without stale capture wake");
+                check(unmaps[0] == (has_packet && after_pop) &&
+                      ready.count == (has_packet && !after_pop),
+                      "cancellation releases only an already-detached owner and preserves unconsumed queue ownership");
+                inventory(0, has_packet && !after_pop, 0);
+                checking_try_release = false;
+                adapter.present = 1;
+                hardware.dma_fault = false;
+                drain();
+            }
+        }
+    }
+}
+
+static void try_dequeue_epoch_wake_cases(uint32_t device)
+{
+    struct crystalhd_rx_completion result;
+
+    reset(device);
+    check(submit(&context, map_private(false)) == BC_STS_SUCCESS,
+          "prepare old packet epoch for bounded dequeue");
+    complete(0);
+    hardware.rx_cancel_epoch = 1;
+    hardware.FleaPowerState = FLEA_PS_LP_PENDING;
+    hardware.hw_pause_issued = true;
+    checking_try_release = true;
+    memset(&result, 0xa5, sizeof(result));
+    check(crystalhd_rx_try_dequeue(&context, &result) == BC_STS_IO_USER_ABORT &&
+          memory_is_zero(&result, sizeof(result)) && unmaps[0] == 1 &&
+          fetch_try_calls == 1 && !fetch_wait_calls && !pause_calls &&
+          hardware.fetch_sem == 1,
+          "matching admission epoch still rejects an independently stale packet epoch");
+    inventory(0, 0, 0);
+    checking_try_release = false;
+
+    if (device == BC_PCI_DEVID_FLEA) {
+        for (unsigned power = 0; power < 2; power++) {
+            reset(device);
+            hardware.FleaPowerState = power ? FLEA_PS_LP_PENDING : FLEA_PS_LP_COMPLETE;
+            hardware.hw_pause_issued = true;
+            memset(&result, 0xa5, sizeof(result));
+            check(crystalhd_rx_try_dequeue(&context, &result) == BC_STS_NO_DATA &&
+                  memory_is_zero(&result, sizeof(result)) && pause_calls == 1 &&
+                  !hardware.hw_pause_issued && !fetch_wait_calls &&
+                  fetch_try_calls == 1 && hardware.fetch_sem == 1,
+                  "current-epoch empty try-dequeue retains Flea low-power wake semantics without picture wait");
+            inventory(0, 0, 0);
+        }
+    }
+}
+
 int main(void)
 {
     uint32_t devices[] = { BC_PCI_DEVID_LINK, BC_PCI_DEVID_FLEA };
     for (size_t i = 0; i < sizeof(devices) / sizeof(devices[0]); i++) {
+        try_dequeue_gate_cases(devices[i]);
+        try_dequeue_completion_cases(devices[i]);
+        try_dequeue_cancellation_cases(devices[i]);
+        try_dequeue_epoch_wake_cases(devices[i]);
         dequeue_argument_cases(devices[i]);
         dequeue_gate_wait_cases(devices[i]);
         mapped_dequeue_cases(devices[i]);

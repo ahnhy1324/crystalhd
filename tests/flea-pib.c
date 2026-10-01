@@ -21,6 +21,8 @@ struct _BC_DTS_PROC_OUT;
 #define COMP_FLAG_FMT_CHANGE 1
 #define COMP_FLAG_PIB_VALID 2
 #define COMP_FLAG_DATA_VALID 4
+#define COMP_FLAG_DATA_ENC 8
+#define COMP_FLAG_DATA_BOT 16
 #define dev_err(dev, ...) ((void)(dev))
 #define dev_dbg(dev, ...) ((void)(dev))
 #define spin_lock_irqsave(lock, flags) ((void)(lock), (flags) = 0)
@@ -45,6 +47,8 @@ struct crystalhd_rx_buffer {
     const struct crystalhd_rx_buffer_ops *ops;
     void *cookie;
 };
+/* The finisher must not inspect the legacy PIB, whose ABI is tested elsewhere. */
+struct C011_PIB { uint32_t unused; };
 #include "rx-metadata.h"
 struct crystalhd_rx_dma_pkt {
     struct crystalhd_rx_buffer *buffer;
@@ -67,6 +71,7 @@ struct crystalhd_hw {
 static unsigned checks, groups, failures;
 static unsigned reads, writes, syncs, fail_read, fail_write;
 static bool partial_write;
+static BC_STATUS write_error;
 static void check(bool condition, const char *message)
 {
     ++checks;
@@ -79,6 +84,7 @@ static void reset_faults(void)
 {
     reads = writes = syncs = fail_read = fail_write = 0;
     partial_write = false;
+    write_error = BC_STS_IO_ERROR;
 }
 static bool metadata_empty(const struct crystalhd_rx_dma_pkt *packet)
 {
@@ -115,7 +121,7 @@ static BC_STATUS buffer_write(struct crystalhd_rx_buffer *buffer, uint32_t offse
     if (++writes == fail_write) {
         if (partial_write)
             memcpy(buffer->sgl->base + offset, source, size / 2);
-        return BC_STS_IO_ERROR;
+        return write_error;
     }
     memcpy(buffer->sgl->base + offset, source, size);
     return BC_STS_SUCCESS;
@@ -138,18 +144,7 @@ static void crystalhd_rx_buffer_sync_for_cpu(struct crystalhd_adp *adp,
 {
     buffer->ops->sync_for_cpu(adp, buffer);
 }
-static BC_STATUS crystalhd_rx_buffer_read(struct crystalhd_rx_buffer *buffer,
-                                          uint32_t offset, void *destination,
-                                          size_t size)
-{
-    return buffer->ops->read(buffer, offset, destination, size);
-}
-static BC_STATUS crystalhd_rx_buffer_write(struct crystalhd_rx_buffer *buffer,
-                                           uint32_t offset, const void *source,
-                                           size_t size)
-{
-    return buffer->ops->write(buffer, offset, source, size);
-}
+#include "rx-buffer-functions.h"
 static uint64_t rdtsc_ordered(void) { return 123; }
 static bool flea_get_picture_info(struct crystalhd_hw *, struct crystalhd_rx_dma_pkt *,
                                   uint32_t *, uint64_t *, bool);
@@ -277,6 +272,11 @@ static void fetch(struct fixture *f)
           f->packet.metadata.firmware_timestamp == pib.timeStamp &&
           f->packet.metadata.picture_number == f->number &&
           f->packet.metadata.picture_flags == pib.flags &&
+          f->packet.metadata.picture_width == pib.width &&
+          f->packet.metadata.picture_height == pib.height &&
+          f->packet.metadata.row_width == 64 &&
+          f->packet.metadata.pib_line == f->line &&
+          f->packet.metadata.first_pixel_word == f->first &&
           !f->packet.metadata.eos_trailer,
           "accepted picture publishes exact firmware metadata independently of legacy flags");
 }
@@ -620,6 +620,12 @@ static void kernel_snapshot_cases(void)
                   f.packet.metadata.eos_trailer == (trailer != 0) &&
                   f.packet.metadata.picture_flags == (eos_flag ? VDEC_FLAG_EOS : 0),
                   "trailer and PIB EOS indicators remain independent even when they disagree");
+            check(f.packet.metadata.picture_width == 64 &&
+                  f.packet.metadata.picture_height == 32 &&
+                  f.packet.metadata.row_width == 64 &&
+                  f.packet.metadata.pib_line == f.line &&
+                  f.packet.metadata.first_pixel_word == (trailer ? 0 : f.first),
+                  "EOS snapshots retain geometry but never invent saved pixels for trailer EOS");
         }
 
     for (unsigned rejected = 0; rejected < 3; rejected++) {
@@ -670,6 +676,319 @@ static void kernel_snapshot_cases(void)
     }
 }
 
+static struct crystalhd_rx_completion completion_from(const struct fixture *f)
+{
+    struct crystalhd_rx_completion result = {
+        .buffer = f->packet.buffer,
+        .cookie = f->packet.cookie,
+        .pib = {.unused = 0xdeadbeef},
+        .metadata = f->packet.metadata,
+        .capture_epoch = 27,
+        .flags = f->packet.flags,
+        .y_done_sz = f->packet.y_done_sz,
+    };
+
+    return result;
+}
+
+static bool image_empty(const struct crystalhd_rx_image *image)
+{
+    static const struct crystalhd_rx_image empty;
+
+    return !memcmp(image, &empty, sizeof(empty));
+}
+
+static void finish_success_cases(void)
+{
+    const uint32_t first_words[] = {0xa0286028, 32, 0};
+
+    for (unsigned pattern = 0; pattern < 3; pattern++)
+        for (unsigned alignment_row = 0; alignment_row < 2; alignment_row++) {
+            struct fixture f;
+            struct crystalhd_rx_completion result, before;
+            struct crystalhd_rx_image image, first_image;
+            struct crystalhd_rx_buffer_ops write_only = {.write = buffer_write};
+            uint32_t prepared[2048];
+            BC_PIC_INFO_BLOCK pib;
+
+            init(&f);
+            ++groups;
+            prepare(&f, first_words[pattern], 7, 0, VDEC_FLAG_LAST_PICTURE, true);
+            pib = read_pib(&f);
+            pib.height -= alignment_row;
+            pib.timeStamp = 0;
+            memcpy((uint8_t *)f.words + f.pib_offset, &pib, sizeof(pib));
+            memcpy(f.original, f.words, sizeof(f.original));
+            fetch(&f);
+            result = completion_from(&f);
+            before = result;
+            memcpy(prepared, f.words, sizeof(prepared));
+            // Prove the completed snapshot is independent of packet reuse,
+            // legacy PIB contents, reads and hardware/cache callbacks.
+            memset(&f.packet.metadata, 0, sizeof(f.packet.metadata));
+            f.buffer.ops = &write_only;
+            reset_faults();
+            memset(&image, 0xa5, sizeof(image));
+            check(crystalhd_rx_finish_yuyv(&result, &image) == BC_STS_SUCCESS,
+                  "progressive YUYV finishes from an owned by-value snapshot");
+            check(image.width == 64 && image.height == 32 - alignment_row &&
+                  image.stride_bytes == 128 &&
+                  image.payload_bytes == 128 * (32 - alignment_row) &&
+                  image.payload_bytes < result.y_done_sz * 4,
+                  "visible payload excludes an optional alignment row, PIB and DMA trailer");
+            check(f.words[0] == f.first && writes == 1 && !reads && !syncs &&
+                  !memcmp((uint8_t *)f.words + 4, (uint8_t *)prepared + 4,
+                          sizeof(prepared) - 4),
+                  "finishing restores exactly the saved first word with no parsing or sync");
+            check(!memcmp(&result, &before, sizeof(result)) &&
+                  result.metadata.valid && result.metadata.firmware_timestamp == 0 &&
+                  result.metadata.picture_flags == VDEC_FLAG_LAST_PICTURE,
+                  "finishing retains ownership and zero-timestamp/LAST_PICTURE metadata");
+            first_image = image;
+            memcpy(prepared, f.words, sizeof(prepared));
+            check(crystalhd_rx_finish_yuyv(&result, &image) == BC_STS_SUCCESS &&
+                  !memcmp(&image, &first_image, sizeof(image)) && writes == 2 &&
+                  !reads && !syncs && !memcmp(f.words, prepared, sizeof(prepared)) &&
+                  !memcmp(&result, &before, sizeof(result)),
+                  "repeated finish is byte-idempotent even when original pixels equal the marker");
+        }
+
+    {
+        struct fixture f;
+        struct crystalhd_rx_completion result;
+        struct crystalhd_rx_image image;
+
+        init(&f);
+        ++groups;
+        set_completion_tail(&f, f.pib_offset + 2 * sizeof(BC_PIC_INFO_BLOCK) - 132);
+        fetch(&f);
+        result = completion_from(&f);
+        reset_faults();
+        check(crystalhd_rx_finish_yuyv(&result, &image) == BC_STS_SUCCESS &&
+              image.payload_bytes == 4096 && writes == 1 && !reads && !syncs,
+              "valid PIB extension beyond completed bytes does not enlarge visible image payload");
+    }
+}
+
+static void finish_rejection_cases(void)
+{
+    enum variant {
+        NO_BUFFER, NO_COOKIE, WRONG_COOKIE, NO_OPS, NO_WRITE, FORMAT_CHANGE,
+        NO_DATA, NO_METADATA, DECODE_ERROR, PLANAR, UYVY, INVALID_MODE,
+        UV_OFFSET, UV_DONE, ENCRYPTED, BOTTOM_DATA, FIELDPAIR, TOP_FIELD,
+        BOTTOM_FIELD, INTERLACED, UNKNOWN_SOURCE, BOTTOM_FIRST, ZERO_WIDTH,
+        ODD_WIDTH, WIDTH_MISMATCH, WIDE_ROW, ZERO_HEIGHT, HUGE_HEIGHT,
+        LINE_BEFORE_IMAGE, TOO_MANY_ROWS, HUGE_LINE, SHORT_DONE, HUGE_DONE,
+        DONE_PAST_CAPACITY, PIXELS_PAST_DONE, NO_PIB_WORD, SHORT_CAPACITY,
+    };
+    const struct {
+        enum variant variant;
+        BC_STATUS status;
+        const char *name;
+    } cases[] = {
+        {NO_BUFFER, BC_STS_INV_ARG, "finish rejects missing buffer"},
+        {NO_COOKIE, BC_STS_INV_ARG, "finish rejects missing ownership cookie"},
+        {WRONG_COOKIE, BC_STS_INV_ARG, "finish rejects mismatched ownership cookie"},
+        {NO_OPS, BC_STS_INV_ARG, "finish rejects missing buffer operations"},
+        {NO_WRITE, BC_STS_INV_ARG, "finish rejects missing write operation"},
+        {FORMAT_CHANGE, BC_STS_NO_DATA, "finish does not expose a format dummy as pixels"},
+        {NO_DATA, BC_STS_IO_ERROR, "finish rejects a non-data completion"},
+        {NO_METADATA, BC_STS_NOT_IMPL, "finish cannot reinterpret Link or missing snapshots"},
+        {DECODE_ERROR, BC_STS_IO_ERROR, "finish rejects firmware decode errors"},
+        {PLANAR, BC_STS_NOT_IMPL, "finish rejects planar output"},
+        {UYVY, BC_STS_NOT_IMPL, "finish rejects UYVY without swapping pixels"},
+        {INVALID_MODE, BC_STS_NOT_IMPL, "finish rejects unknown output modes"},
+        {UV_OFFSET, BC_STS_NOT_IMPL, "finish rejects a split Y/UV buffer"},
+        {UV_DONE, BC_STS_NOT_IMPL, "finish rejects unexpected UV completion"},
+        {ENCRYPTED, BC_STS_NOT_IMPL, "finish rejects encrypted output"},
+        {BOTTOM_DATA, BC_STS_NOT_IMPL, "finish rejects bottom-field completion"},
+        {FIELDPAIR, BC_STS_NOT_IMPL, "finish rejects field-pair pictures"},
+        {TOP_FIELD, BC_STS_NOT_IMPL, "finish rejects top-field pictures"},
+        {BOTTOM_FIELD, BC_STS_NOT_IMPL, "finish rejects bottom-field pictures"},
+        {INTERLACED, BC_STS_NOT_IMPL, "finish rejects interlaced sources"},
+        {UNKNOWN_SOURCE, BC_STS_NOT_IMPL, "finish rejects unknown source scan type"},
+        {BOTTOM_FIRST, BC_STS_NOT_IMPL, "finish rejects contradictory bottom-first flags"},
+        {ZERO_WIDTH, BC_STS_INV_ARG, "finish rejects zero width"},
+        {ODD_WIDTH, BC_STS_INV_ARG, "finish rejects incomplete YUYV pixel pairs"},
+        {WIDTH_MISMATCH, BC_STS_INV_ARG, "finish rejects mismatched PIB and DMA row widths"},
+        {WIDE_ROW, BC_STS_INV_ARG, "finish rejects rows outside validated Flea bounds"},
+        {ZERO_HEIGHT, BC_STS_INV_ARG, "finish rejects zero height"},
+        {HUGE_HEIGHT, BC_STS_INV_ARG, "finish rejects height without arithmetic wrap"},
+        {LINE_BEFORE_IMAGE, BC_STS_INV_ARG, "finish rejects metadata overlapping image rows"},
+        {TOO_MANY_ROWS, BC_STS_INV_ARG, "finish rejects unsupported multiple padding rows"},
+        {HUGE_LINE, BC_STS_INV_ARG, "finish rejects PIB lines outside validated Flea bounds"},
+        {SHORT_DONE, BC_STS_INV_ARG, "finish rejects short DMA completions"},
+        {HUGE_DONE, BC_STS_INV_ARG, "finish rejects overflowing DWORD-to-byte extents"},
+        {DONE_PAST_CAPACITY, BC_STS_INV_ARG, "finish rejects completed data beyond capacity"},
+        {PIXELS_PAST_DONE, BC_STS_INV_ARG, "finish rejects pixels beyond completed DMA data"},
+        {NO_PIB_WORD, BC_STS_INV_ARG, "finish rejects completion without the saved PIB position"},
+        {SHORT_CAPACITY, BC_STS_INV_ARG, "finish rejects backing shorter than the image"},
+    };
+
+    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        struct fixture f;
+        struct crystalhd_rx_completion result, before;
+        struct crystalhd_rx_image image;
+        struct crystalhd_rx_buffer_ops no_write = buffer_ops;
+        uint32_t prepared[2048];
+
+        init(&f);
+        ++groups;
+        fetch(&f);
+        result = completion_from(&f);
+        switch (cases[i].variant) {
+        case NO_BUFFER: result.buffer = NULL; break;
+        case NO_COOKIE: result.cookie = NULL; break;
+        case WRONG_COOKIE: result.cookie = &f.number; break;
+        case NO_OPS: f.buffer.ops = NULL; break;
+        case NO_WRITE: no_write.write = NULL; f.buffer.ops = &no_write; break;
+        case FORMAT_CHANGE: result.flags = COMP_FLAG_FMT_CHANGE | COMP_FLAG_PIB_VALID; break;
+        case NO_DATA: result.flags = 0; break;
+        case NO_METADATA: result.metadata.valid = false; break;
+        case DECODE_ERROR: result.metadata.picture_flags = FLEA_DECODE_ERROR_FLAG; break;
+        case PLANAR: f.buffer.output_format = MODE420; break;
+        case UYVY: f.buffer.output_format = MODE422_UYVY; break;
+        case INVALID_MODE: f.buffer.output_format = OUTPUT_MODE_INVALID; break;
+        case UV_OFFSET: f.buffer.uv_offset = 4096; break;
+        case UV_DONE: result.uv_done_sz = 1; break;
+        case ENCRYPTED: result.flags |= COMP_FLAG_DATA_ENC; break;
+        case BOTTOM_DATA: result.flags |= COMP_FLAG_DATA_BOT; break;
+        case FIELDPAIR: result.metadata.picture_flags = VDEC_FLAG_FIELDPAIR; break;
+        case TOP_FIELD: result.metadata.picture_flags = VDEC_FLAG_TOPFIELD; break;
+        case BOTTOM_FIELD: result.metadata.picture_flags = VDEC_FLAG_BOTTOMFIELD; break;
+        case INTERLACED: result.metadata.picture_flags = VDEC_FLAG_INTERLACED_SRC; break;
+        case UNKNOWN_SOURCE: result.metadata.picture_flags = VDEC_FLAG_UNKNOWN_SRC; break;
+        case BOTTOM_FIRST: result.metadata.picture_flags = VDEC_FLAG_BOTTOM_FIRST; break;
+        case ZERO_WIDTH: result.metadata.picture_width = 0; break;
+        case ODD_WIDTH: result.metadata.picture_width = result.metadata.row_width = 63; break;
+        case WIDTH_MISMATCH: result.metadata.picture_width = 62; break;
+        case WIDE_ROW: result.metadata.picture_width = result.metadata.row_width = UINT32_MAX - 1; break;
+        case ZERO_HEIGHT: result.metadata.picture_height = 0; break;
+        case HUGE_HEIGHT: result.metadata.picture_height = UINT32_MAX; break;
+        case LINE_BEFORE_IMAGE: result.metadata.pib_line = 31; break;
+        case TOO_MANY_ROWS: result.metadata.pib_line = 34; break;
+        case HUGE_LINE: result.metadata.pib_line = UINT32_MAX; break;
+        case SHORT_DONE: result.y_done_sz = 1; break;
+        case HUGE_DONE: f.buffer.capacity = UINT32_MAX; result.y_done_sz = UINT32_MAX; break;
+        case DONE_PAST_CAPACITY: result.y_done_sz = f.buffer.capacity / 4 + 1; break;
+        case PIXELS_PAST_DONE: result.y_done_sz = 4096 / 4 - 1; break;
+        case NO_PIB_WORD: result.y_done_sz = 4096 / 4; break;
+        case SHORT_CAPACITY: f.buffer.capacity = 4092; result.y_done_sz = 4092 / 4; break;
+        }
+        before = result;
+        memcpy(prepared, f.words, sizeof(prepared));
+        memset(&image, 0xa5, sizeof(image));
+        reset_faults();
+        check(crystalhd_rx_finish_yuyv(&result, &image) == cases[i].status, cases[i].name);
+        check(image_empty(&image) && !writes && !reads && !syncs &&
+              !memcmp(f.words, prepared, sizeof(prepared)) &&
+              !memcmp(&result, &before, sizeof(result)),
+              "rejected finish clears output without storage I/O or ownership changes");
+    }
+
+    {
+        struct crystalhd_rx_image image;
+        struct crystalhd_rx_completion result = {0};
+
+        ++groups;
+        memset(&image, 0xa5, sizeof(image));
+        reset_faults();
+        check(crystalhd_rx_finish_yuyv(NULL, &image) == BC_STS_INV_ARG && image_empty(&image),
+              "missing completion still clears output");
+        check(crystalhd_rx_finish_yuyv(&result, NULL) == BC_STS_INV_ARG &&
+              !writes && !reads && !syncs, "missing image result performs no I/O");
+    }
+}
+
+static void finish_nonpicture_cases(void)
+{
+    for (unsigned variant = 0; variant < 4; variant++) {
+        struct fixture f;
+        struct crystalhd_rx_completion result, before;
+        struct crystalhd_rx_image image;
+        uint32_t number, prepared[2048];
+        uint64_t timestamp;
+
+        init(&f);
+        ++groups;
+        prepare(&f, 7, 7,
+                variant == 3 ? PIB_FORMAT_CHANGE_BIT :
+                variant != 0 ? PIB_EOS_DETECTED_BIT : 0,
+                variant != 1 && variant != 3 ? VDEC_FLAG_EOS : 0, true);
+        (void)flea_GetPictureInfo(&f.hw, &f.packet, &number, &timestamp);
+        result = completion_from(&f);
+        before = result;
+        memcpy(prepared, f.words, sizeof(prepared));
+        memset(&image, 0xa5, sizeof(image));
+        reset_faults();
+        check(crystalhd_rx_finish_yuyv(&result, &image) == BC_STS_NO_DATA &&
+              image_empty(&image) && !writes && !reads && !syncs &&
+              !memcmp(&result, &before, sizeof(result)) &&
+              !memcmp(f.words, prepared, sizeof(prepared)),
+              "actual independent EOS indications and format packets remain nonpicture evidence");
+    }
+
+    for (unsigned bottom_field = 0; bottom_field < 2; bottom_field++) {
+        struct fixture f;
+        struct crystalhd_rx_completion result, before;
+        struct crystalhd_rx_image image;
+        uint32_t prepared[2048];
+
+        init(&f);
+        ++groups;
+        prepare(&f, 0xa0286028, 7 | (bottom_field ? UINT32_C(0x40000000) :
+                                  UINT32_C(0x80000000)), 0, 0, true);
+        fetch(&f);
+        result = completion_from(&f);
+        before = result;
+        memcpy(prepared, f.words, sizeof(prepared));
+        memset(&image, 0xa5, sizeof(image));
+        reset_faults();
+        check(crystalhd_rx_finish_yuyv(&result, &image) == BC_STS_NOT_IMPL &&
+              image_empty(&image) && !writes && !reads && !syncs &&
+              !memcmp(&result, &before, sizeof(result)) &&
+              !memcmp(f.words, prepared, sizeof(prepared)),
+              "real parsed encrypted/bottom picture-number sideband bits reject native pixels");
+    }
+}
+
+static void finish_write_retries(void)
+{
+    for (unsigned variant = 0; variant < 3; variant++) {
+        struct fixture f;
+        struct crystalhd_rx_completion result, before;
+        struct crystalhd_rx_image image;
+        uint32_t prepared[2048];
+        BC_STATUS expected = variant == 2 ? BC_STS_NO_ACCESS : BC_STS_IO_ERROR;
+
+        init(&f);
+        ++groups;
+        fetch(&f);
+        result = completion_from(&f);
+        before = result;
+        memcpy(prepared, f.words, sizeof(prepared));
+        reset_faults();
+        fail_write = 1;
+        partial_write = variant == 1;
+        write_error = expected;
+        memset(&image, 0xa5, sizeof(image));
+        check(crystalhd_rx_finish_yuyv(&result, &image) == expected &&
+              image_empty(&image) && writes == 1 && !reads && !syncs &&
+              !memcmp(&result, &before, sizeof(result)) &&
+              !memcmp((uint8_t *)f.words + 4, (uint8_t *)prepared + 4,
+                      sizeof(prepared) - 4),
+              "failed writes propagate status, publish no image and retain the owned snapshot");
+        check((f.words[0] != prepared[0]) == partial_write,
+              "a partial callback failure may already have modified the first word");
+        reset_faults();
+        check(crystalhd_rx_finish_yuyv(&result, &image) == BC_STS_SUCCESS &&
+              f.words[0] == f.first && image.payload_bytes == 4096 &&
+              writes == 1 && !reads && !syncs &&
+              !memcmp(&result, &before, sizeof(result)),
+              "retry restores all saved bytes without re-reading a partly changed marker");
+    }
+}
+
 int main(void)
 {
     repeated_peeks();
@@ -679,6 +998,10 @@ int main(void)
     pib_tail_extent_cases();
     completed_extent_cases();
     kernel_snapshot_cases();
+    finish_success_cases();
+    finish_rejection_cases();
+    finish_nonpicture_cases();
+    finish_write_retries();
     printf("Flea PIB: %u groups, %u checks, %u failures\n", groups, checks, failures);
     return failures ? 1 : 0;
 }

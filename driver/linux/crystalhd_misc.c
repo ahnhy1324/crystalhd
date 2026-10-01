@@ -535,6 +535,69 @@ void *crystalhd_dioq_find_and_fetch(struct crystalhd_dioq *ioq, uint32_t tag)
 	return data;
 }
 
+/* Caller holds fetch_sem. A rejected packet remains registered for reuse. */
+static bool crystalhd_rx_accept_packet_locked(struct crystalhd_hw *hw,
+					      struct crystalhd_rx_dma_pkt *pkt)
+{
+	uint32_t picture;
+
+	if (pkt->flags & (COMP_FLAG_PIB_VALID | COMP_FLAG_FMT_CHANGE))
+		return true;
+	if (hw->adp->pdev->device == BC_PCI_DEVID_LINK) {
+		picture = link_GetRptDropParam(hw, hw->PICHeight, hw->PICWidth,
+					       pkt);
+	} else {
+		/* Flea discovers geometry and format changes in the picture PIB. */
+		picture = flea_GetRptDropParam(hw, pkt);
+		if (pkt->flags & (COMP_FLAG_PIB_VALID | COMP_FLAG_FMT_CHANGE))
+			return true;
+	}
+	if (!picture || picture == hw->LastPicNo ||
+	    picture == hw->LastTwoPicNo) {
+		if (picture) {
+			hw->LastTwoPicNo = hw->LastPicNo;
+			hw->LastPicNo = picture;
+		}
+		if (crystalhd_dioq_add(hw->rx_freeq, pkt, false,
+				       pkt->pkt_tag) != BC_STS_SUCCESS)
+			crystalhd_hw_retain_rx_pkt(hw, pkt);
+		return false;
+	}
+	if (hw->adp->pdev->device == BC_PCI_DEVID_LINK &&
+	    picture - hw->LastPicNo > 1)
+		dev_info(chddev(), "MISSING %u PICTURES\n",
+			 picture - hw->LastPicNo);
+	hw->LastTwoPicNo = hw->LastPicNo;
+	hw->LastPicNo = picture;
+	return true;
+}
+
+/* No arrival wait. Caller holds fetch_sem and keeps device/session lifetime.
+ * Snapshot a finite candidate budget: IRQ replenishment cannot extend it.
+ * Queue locks cover only the snapshot/pop, never parsing or recycling.
+ */
+void *crystalhd_dioq_try_fetch_locked(struct crystalhd_hw *hw)
+{
+	struct crystalhd_dioq *ioq = hw->rx_rdyq;
+	struct crystalhd_rx_dma_pkt *pkt;
+	unsigned long flags;
+	uint32_t budget;
+
+	if (!ioq || ioq->sig != BC_LINK_DIOQ_SIG)
+		return NULL;
+	spin_lock_irqsave(&ioq->lock, flags);
+	budget = min_t(uint32_t, ioq->count, BC_RX_LIST_CNT);
+	spin_unlock_irqrestore(&ioq->lock, flags);
+	while (budget--) {
+		pkt = crystalhd_dioq_fetch(ioq);
+		if (!pkt)
+			break;
+		if (crystalhd_rx_accept_packet_locked(hw, pkt))
+			return pkt;
+	}
+	return NULL;
+}
+
 /**
  * crystalhd_dioq_fetch_wait - Fetch element from Head.
  * @hw: Hardware context containing the ready queue.
@@ -555,7 +618,6 @@ void *crystalhd_dioq_fetch_wait(struct crystalhd_hw *hw, uint32_t to_secs, uint3
 
 	struct crystalhd_rx_dma_pkt *r_pkt = NULL;
 	struct crystalhd_dioq *ioq = hw->rx_rdyq;
-	uint32_t picYcomp = 0;
 
 	unsigned long fetchTimeout = jiffies + msecs_to_jiffies(to_secs * 1000);
 
@@ -589,43 +651,10 @@ void *crystalhd_dioq_fetch_wait(struct crystalhd_hw *hw, uint32_t to_secs, uint3
 				spin_lock_irqsave(&ioq->lock, flags);
 				continue;
 			}
-			/* If format change packet, then return with out checking anything */
-			if (r_pkt->flags & (COMP_FLAG_PIB_VALID | COMP_FLAG_FMT_CHANGE))
+			if (crystalhd_rx_accept_packet_locked(hw, r_pkt))
 				goto sem_rel_return;
-			if (hw->adp->pdev->device == BC_PCI_DEVID_LINK) {
-				picYcomp = link_GetRptDropParam(hw, hw->PICHeight, hw->PICWidth, (void *)r_pkt);
-			}
-			else {
-				/* For Flea, we don't have the width and height handy since they */
-				/* come in the PIB in the picture, so this function will also */
-				/* populate the width and height */
-				picYcomp = flea_GetRptDropParam(hw, (void *)r_pkt);
-				/* For flea it is the above function that indicated format change */
-				if(r_pkt->flags & (COMP_FLAG_PIB_VALID | COMP_FLAG_FMT_CHANGE))
-					goto sem_rel_return;
-			}
-			if(!picYcomp || (picYcomp == hw->LastPicNo) ||
-				(picYcomp == hw->LastTwoPicNo)) {
-				/*Discard picture */
-				if(picYcomp != 0) {
-					hw->LastTwoPicNo = hw->LastPicNo;
-					hw->LastPicNo = picYcomp;
-				}
-				if (crystalhd_dioq_add(hw->rx_freeq, r_pkt, false,
-							r_pkt->pkt_tag) != BC_STS_SUCCESS)
-					crystalhd_hw_retain_rx_pkt(hw, r_pkt);
-				r_pkt = NULL;
-				up(&hw->fetch_sem);
-			} else {
-				if(hw->adp->pdev->device == BC_PCI_DEVID_LINK) {
-					if((picYcomp - hw->LastPicNo) > 1) {
-						dev_info(dev, "MISSING %u PICTURES\n", (picYcomp - hw->LastPicNo));
-					}
-				}
-				hw->LastTwoPicNo = hw->LastPicNo;
-				hw->LastPicNo = picYcomp;
-				goto sem_rel_return;
-			}
+			r_pkt = NULL;
+			up(&hw->fetch_sem);
 		} else if (rc == -EINTR) {
 			*sig_pend = 1;
 			return r_pkt;
@@ -847,6 +876,86 @@ BC_STATUS crystalhd_rx_buffer_write(struct crystalhd_rx_buffer *buffer,
 		return BC_STS_INV_ARG;
 
 	return buffer->ops->write(buffer, offset, src, size);
+}
+
+BC_STATUS crystalhd_rx_finish_yuyv(struct crystalhd_rx_completion *result,
+				   struct crystalhd_rx_image *image)
+{
+	/* The matching VDEC_FLAG definitions are userspace-only. */
+	enum {
+		picture_eos = 0x0004,
+		picture_fields = 0x0018,
+		picture_interlaced = 0x0020,
+		picture_unknown_source = 0x0040,
+		picture_bottom_first = 0x0080,
+	};
+	const struct crystalhd_rx_metadata *metadata;
+	struct crystalhd_rx_buffer *buffer;
+	uint64_t stride, payload, pib_start;
+	uint32_t done_bytes;
+	BC_STATUS sts;
+
+	if (image)
+		memset(image, 0, sizeof(*image));
+	if (!result || !image || !result->buffer || !result->cookie)
+		return BC_STS_INV_ARG;
+	buffer = result->buffer;
+	if (buffer->cookie != result->cookie || !buffer->ops ||
+	    !buffer->ops->write)
+		return BC_STS_INV_ARG;
+	if (result->flags & COMP_FLAG_FMT_CHANGE)
+		return BC_STS_NO_DATA;
+	if (!(result->flags & COMP_FLAG_DATA_VALID))
+		return BC_STS_IO_ERROR;
+	metadata = &result->metadata;
+	if (!metadata->valid)
+		return BC_STS_NOT_IMPL;
+	if (metadata->picture_flags & FLEA_DECODE_ERROR_FLAG)
+		return BC_STS_IO_ERROR;
+	if (metadata->eos_trailer || (metadata->picture_flags & picture_eos))
+		return BC_STS_NO_DATA;
+	/* The picture-number word also carries encrypted/bottom-field bits. */
+	if (buffer->output_format != MODE422_YUY2 || buffer->uv_offset ||
+	    result->uv_done_sz ||
+	    (result->flags & (COMP_FLAG_DATA_ENC | COMP_FLAG_DATA_BOT)) ||
+	    (metadata->picture_number & 0xc0000000U) ||
+	    (metadata->picture_flags & (picture_fields | picture_interlaced |
+				       picture_unknown_source | picture_bottom_first)))
+		return BC_STS_NOT_IMPL;
+
+	/* Flea rows have no independently configurable byte stride. A progressive
+	 * image may have one alignment row before the picture-number word/PIB.
+	 */
+	if (!metadata->picture_width || (metadata->picture_width & 1) ||
+	    metadata->picture_width != metadata->row_width ||
+	    metadata->row_width > 2048 || !metadata->picture_height ||
+	    metadata->pib_line > 1092 ||
+	    metadata->pib_line < metadata->picture_height ||
+	    metadata->pib_line - metadata->picture_height > 1 ||
+	    result->y_done_sz < 2 || result->y_done_sz > buffer->capacity / 4)
+		return BC_STS_INV_ARG;
+	done_bytes = result->y_done_sz * 4;
+	stride = (uint64_t)metadata->row_width * 2;
+	payload = stride * metadata->picture_height;
+	pib_start = stride * metadata->pib_line;
+	if (payload < sizeof(metadata->first_pixel_word) ||
+	    payload > pib_start || payload > done_bytes ||
+	    payload > buffer->capacity ||
+	    pib_start + sizeof(uint32_t) > done_bytes)
+		return BC_STS_INV_ARG;
+
+	/* Restore saved bytes, never reinterpret the current marker: real pixels
+	 * can equal it, and a failed write may already have changed some bytes.
+	 */
+	sts = crystalhd_rx_buffer_write(buffer, 0, &metadata->first_pixel_word,
+					sizeof(metadata->first_pixel_word));
+	if (sts != BC_STS_SUCCESS)
+		return sts;
+	image->width = metadata->picture_width;
+	image->height = metadata->picture_height;
+	image->stride_bytes = stride;
+	image->payload_bytes = payload;
+	return BC_STS_SUCCESS;
 }
 
 void crystalhd_rx_buffer_release(struct crystalhd_adp *adp,

@@ -1469,30 +1469,14 @@ release_packet:
 	return sts;
 }
 
-BC_STATUS crystalhd_hw_get_cap_buffer(struct crystalhd_hw *hw,
-				      struct crystalhd_rx_completion *result,
-				      uint64_t expected_epoch)
+static BC_STATUS crystalhd_hw_complete_rx_locked(struct crystalhd_hw *hw,
+						 struct crystalhd_rx_completion *result,
+						 struct crystalhd_rx_dma_pkt *rpkt,
+						 uint64_t expected_epoch,
+						 BC_STATUS empty_status)
 {
-	struct crystalhd_rx_dma_pkt *rpkt;
-	uint32_t timeout = BC_PROC_OUTPUT_TIMEOUT / 1000;
-	uint32_t sig_pending = 0;
 	bool resume_allowed;
 
-	if (!result) {
-		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
-		return BC_STS_INV_ARG;
-	}
-	memset(result, 0, sizeof(*result));
-	if (!hw) {
-		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
-		return BC_STS_INV_ARG;
-	}
-
-	rpkt = crystalhd_dioq_fetch_wait(hw, timeout, &sig_pending);
-	/* The queue wait releases fetch_sem. Serialize the subsequent wake/
-	 * repost against process-context stop and queue recycling.
-	 */
-	down(&hw->fetch_sem);
 	/* A destructive stop may have completed after the ready packet was
 	 * detached. Do not let that stale completion wake capture afterward.
 	 */
@@ -1525,14 +1509,8 @@ BC_STATUS crystalhd_hw_get_cap_buffer(struct crystalhd_hw *hw,
 #endif
 	}
 
-	if (!rpkt) {
-		up(&hw->fetch_sem);
-		if (sig_pending) {
-			return BC_STS_IO_USER_ABORT;
-		} else {
-			return BC_STS_TIMEOUT;
-		}
-	}
+	if (!rpkt)
+		return empty_status;
 
 	if (rpkt->flags & COMP_FLAG_PIB_VALID)
 	{
@@ -1562,9 +1540,85 @@ BC_STATUS crystalhd_hw_get_cap_buffer(struct crystalhd_hw *hw,
 	result->uv_done_sz = rpkt->uv_done_sz;
 
 	crystalhd_hw_free_rx_pkt(hw, rpkt);
-	up(&hw->fetch_sem);
 
 	return BC_STS_SUCCESS;
+}
+
+BC_STATUS crystalhd_hw_get_cap_buffer(struct crystalhd_hw *hw,
+				      struct crystalhd_rx_completion *result,
+				      uint64_t expected_epoch)
+{
+	struct crystalhd_rx_dma_pkt *rpkt;
+	uint32_t sig_pending = 0;
+	BC_STATUS sts;
+
+	if (!result)
+		return BC_STS_INV_ARG;
+	memset(result, 0, sizeof(*result));
+	if (!hw)
+		return BC_STS_INV_ARG;
+
+	rpkt = crystalhd_dioq_fetch_wait(hw, BC_PROC_OUTPUT_TIMEOUT / 1000,
+					 &sig_pending);
+	/* Preserve the legacy wait and detached-packet ownership semantics. */
+	down(&hw->fetch_sem);
+	sts = crystalhd_hw_complete_rx_locked(hw, result, rpkt, expected_epoch,
+					      sig_pending ? BC_STS_IO_USER_ABORT :
+							    BC_STS_TIMEOUT);
+	up(&hw->fetch_sem);
+	return sts;
+}
+
+/* No wait for picture arrival; semaphore acquisition and hardware callbacks
+ * may sleep. Caller retains device/session lifetime through buffer retirement.
+ */
+BC_STATUS crystalhd_hw_try_get_cap_buffer(struct crystalhd_hw *hw,
+					  struct crystalhd_rx_completion *result,
+					  uint64_t expected_epoch)
+{
+	struct crystalhd_rx_buffer *retired = NULL;
+	struct crystalhd_rx_dma_pkt *rpkt = NULL;
+	BC_STATUS sts;
+
+	if (!result)
+		return BC_STS_INV_ARG;
+	memset(result, 0, sizeof(*result));
+	if (!hw || !hw->adp || !hw->adp->pdev || !hw->rx_rdyq)
+		return BC_STS_INV_ARG;
+	if (down_interruptible(&hw->fetch_sem))
+		return BC_STS_IO_USER_ABORT;
+	if (READ_ONCE(hw->dma_fault)) {
+		sts = BC_STS_IO_ERROR;
+		goto out;
+	}
+	if (!READ_ONCE(hw->adp->present) ||
+	    expected_epoch != hw->rx_cancel_epoch) {
+		sts = BC_STS_IO_USER_ABORT;
+		goto out;
+	}
+	rpkt = crystalhd_dioq_try_fetch_locked(hw);
+	if (READ_ONCE(hw->dma_fault)) {
+		sts = BC_STS_IO_ERROR;
+		goto out;
+	}
+	if (!READ_ONCE(hw->adp->present) ||
+	    expected_epoch != hw->rx_cancel_epoch ||
+	    (rpkt && rpkt->capture_epoch != expected_epoch)) {
+		sts = BC_STS_IO_USER_ABORT;
+		goto out;
+	}
+	sts = crystalhd_hw_complete_rx_locked(hw, result, rpkt, expected_epoch,
+					      BC_STS_NO_DATA);
+	rpkt = NULL;
+out:
+	if (rpkt) {
+		retired = rpkt->buffer;
+		crystalhd_hw_free_rx_pkt(hw, rpkt);
+	}
+	up(&hw->fetch_sem);
+	if (retired)
+		crystalhd_rx_buffer_release(hw->adp, retired);
+	return sts;
 }
 
 BC_STATUS crystalhd_hw_repost_cap_buffer(struct crystalhd_hw *hw,
