@@ -54,7 +54,7 @@ awk '
     /^static BC_STATUS bc_cproc_notify_mode\(/ ||
     /^static BC_STATUS bc_cproc_((link_)?reg|mem)_(rd|wr)\(/ ||
     /^BC_STATUS crystalhd_fw_download_locked\(/ ||
-    /^static int crystalhd_fw_status_to_errno\(/ ||
+    /^int crystalhd_status_to_errno\(/ ||
     /^int crystalhd_request_firmware_locked\(/ ||
     /^static BC_STATUS bc_cproc_download_fw\(/ ||
     /^BC_STATUS crystalhd_fw_exec_locked\(/ ||

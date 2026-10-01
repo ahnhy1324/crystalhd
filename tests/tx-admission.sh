@@ -38,13 +38,16 @@ awk '
     /^struct crystalhd_tx_completion[[:space:]]*\{/ ||
     /^static BC_STATUS crystalhd_session_require_owner\(/ ||
     /^BC_STATUS crystalhd_fw_exec_locked\(/ ||
+    /^BC_STATUS crystalhd_tx_deadline_from_ms\(/ ||
     /^static BC_STATUS crystalhd_bounded_tx_status\(/ ||
     /^static BC_STATUS bc_cproc_(do_fw_cmd|codein_sleep|check_inbuffs|proc_input)\(/ ||
+    /^static BC_STATUS crystalhd_tx_transfer_common\(/ ||
     /^BC_STATUS crystalhd_tx_transfer_sync\(/ ||
+    /^BC_STATUS crystalhd_tx_transfer_until\(/ ||
     /^static void bc_proc_in_completion\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 10 || copying) exit 1 }
+    END { if (found != 13 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" > "$tx_test_dir/tx-admission-command.h"
 
 for tx_sanitize in no yes; do

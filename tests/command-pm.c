@@ -95,6 +95,7 @@ struct crystalhd_cmd {
     enum crystalhd_decoder_phase decoder_phase;
     enum crystalhd_decoder_codec decoder_codec;
     uint32_t fw_sequence, decoder_channel_id;
+    void *stream;
     uint32_t tx_list_id, cin_wait_exit, pwr_state_change;
     struct crystalhd_hw *hw_ctx;
 };
@@ -128,6 +129,9 @@ static unsigned hardware_allocations, hardware_frees, last_close_cfg_users;
 static unsigned hardware_alloc_attempts;
 static unsigned binding_count, binding_frees, device_reads, user_writes;
 static unsigned downloads, download_resets;
+static unsigned stream_prepares, stream_releases;
+static int stream_prepare_error;
+static uint8_t stream_cookie;
 static const uint8_t *last_download_image;
 static uint32_t last_download_size;
 static unsigned kernel_fw_requests, kernel_fw_releases;
@@ -646,6 +650,25 @@ static void crystalhd_hw_fw_cmd_leave(struct crystalhd_hw *hw)
     if (hw != &hardware) abort();
     TransactionUnlock(&hw->fwcmd_trans_mutex);
 }
+static int crystalhd_stream_prepare(struct crystalhd_cmd *ctx)
+{
+    Check(ctx == &context && !ctx->stream,
+          "typed channel allocates staging before firmware setup");
+    stream_prepares++;
+    if (stream_prepare_error)
+        return stream_prepare_error;
+    ctx->stream = &stream_cookie;
+    return 0;
+}
+static void crystalhd_stream_release(struct crystalhd_cmd *ctx)
+{
+    if (!ctx || !ctx->stream)
+        return;
+    Check(ctx == &context && ctx->stream == &stream_cookie,
+          "typed channel releases its exact staging owner");
+    ctx->stream = NULL;
+    stream_releases++;
+}
 /* Keep close accounting while executing its complete production body. */
 #define crystalhd_hw_close crystalhd_hw_close_actual
 #include "command-pm-hardware.h"
@@ -673,6 +696,8 @@ static void Reset(uint32_t state, bool with_hardware)
     chd_device_generation = 42;
     adapter_visible = true;
     downloads = download_resets = 0;
+    stream_prepares = stream_releases = 0;
+    stream_prepare_error = 0;
     last_download_image = NULL;
     last_download_size = 0;
     kernel_fw_requests = kernel_fw_releases = 0;
@@ -1701,6 +1726,7 @@ static void ResetConfigured(const void *owner)
     context.decoder_codec = CRYSTALHD_DECODER_CODEC_H264;
     context.fw_sequence = 3;
     context.decoder_channel_id = 0;
+    context.stream = &stream_cookie;
 }
 
 static void ResetStarted(const void *owner)
@@ -1710,6 +1736,7 @@ static void ResetStarted(const void *owner)
     context.decoder_codec = CRYSTALHD_DECODER_CODEC_H264;
     context.fw_sequence = 5;
     context.decoder_channel_id = 0;
+    context.stream = &stream_cookie;
 }
 
 static void CheckKernelChannelPayload(const BC_FW_CMD *command, bool opening,
@@ -1759,7 +1786,8 @@ static void KernelDecoderChannelOpenPayload(void)
           context.decoder_phase == CRYSTALHD_DECODER_CHANNEL_CONFIGURED &&
           context.decoder_codec == CRYSTALHD_DECODER_CODEC_H264 &&
           context.fw_sequence == 3 && !context.decoder_channel_id &&
-          context.session_owner == &frontend_owner,
+          context.session_owner == &frontend_owner && context.stream &&
+          stream_prepares == 1 && !stream_releases,
           "typed channel setup publishes only the complete configured channel");
     Check(kernel_fw_requests == 1 && kernel_fw_releases == 1 &&
           downloads == 1 && download_resets == 1 && firmware_calls == 3 &&
@@ -1845,6 +1873,15 @@ static void KernelDecoderChannelOpenPreconditions(void)
           "typed channel setup rejects an unsupported codec before mutation");
     config.codec = CRYSTALHD_DECODER_CODEC_H264;
 
+    ResetBootstrapped(&frontend_owner);
+    stream_prepare_error = -ENOMEM;
+    Check(crystalhd_decoder_channel_open_locked(&context, &frontend_owner,
+                                                &config) == -ENOMEM &&
+          stream_prepares == 1 && !stream_releases && !context.stream &&
+          !firmware_calls && context.fw_sequence == 1 &&
+          context.decoder_phase == CRYSTALHD_DECODER_BOOTSTRAPPED,
+          "typed staging allocation fails before firmware mutation");
+
     for (unsigned which = 0; which < 3; which++) {
         ResetBootstrapped(&frontend_owner);
         if (which == 0)
@@ -1873,7 +1910,8 @@ static void KernelDecoderChannelOpenFailures(void)
     Check(crystalhd_decoder_channel_open_locked(&context, &frontend_owner,
                                                 &config) == -EIO &&
           context.decoder_phase == CRYSTALHD_DECODER_BOOTSTRAPPED &&
-          context.fw_sequence == 2 && firmware_calls == 1,
+          context.fw_sequence == 2 && firmware_calls == 1 &&
+          stream_prepares == 1 && stream_releases == 1 && !context.stream,
           "confirmed OPEN firmware rejection retains a retryable bootstrap");
     firmware_status_call = 0;
     Check(crystalhd_decoder_channel_open_locked(&context, &frontend_owner,
@@ -2270,7 +2308,8 @@ static void KernelDecoderChannelStopClosePayload(void)
           context.decoder_codec == CRYSTALHD_DECODER_CODEC_INVALID &&
           context.fw_sequence == 7 && !context.decoder_channel_id &&
           context.session_owner == &frontend_owner &&
-          context.hw_ctx == &hardware,
+          context.hw_ctx == &hardware && !context.stream &&
+          stream_releases == 1,
           "typed CLOSE retains the bootstrapped owner and command sequence");
     Check(firmware_calls == 2 && !captures && !cancels &&
           !ring_frees && !hardware_closes,

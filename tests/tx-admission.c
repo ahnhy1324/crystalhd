@@ -16,6 +16,9 @@ struct _BC_DTS_PROC_OUT;
 #include "bc_dts_defs.h"
 #include "tx-admission-types.h"
 
+typedef uint8_t u8;
+typedef uint32_t u32;
+
 #define KERN_ERR ""
 #define READ_ONCE(value) (value)
 #define WRITE_ONCE(value, next) ((value) = (next))
@@ -1036,6 +1039,34 @@ static void FinishBorrowedInput(void)
 
 static void BoundedTransfer(void)
 {
+	unsigned long deadline = 0xfeedUL;
+
+	Reset();
+	jiffies = ULONG_MAX - 19UL;
+	Check(crystalhd_tx_deadline_from_ms(50, &deadline) == BC_STS_SUCCESS &&
+	      deadline == 30UL,
+	      "finite TX deadline construction remains wrap-safe");
+	Check(crystalhd_tx_deadline_from_ms(0, &deadline) == BC_STS_INV_ARG &&
+	      crystalhd_tx_deadline_from_ms(1, NULL) == BC_STS_INV_ARG &&
+	      deadline == 30UL,
+	      "deadline construction rejects absent budgets and output without mutation");
+
+	Reset(); PrepareBorrowedInput(); run.busy = 1; run.wait_result = -EBUSY;
+	jiffies = 50;
+	Check(crystalhd_tx_transfer_until(&context, &request.tx_buffer,
+				      run.transfer_flags, 250) == BC_STS_TIMEOUT &&
+	      run.fifo_calls == 2 && run.sleeps == 1 && run.starts == 1 &&
+	      run.completion_budget == 100 && jiffies == 250 && run.stops == 1,
+	      "absolute TX entry consumes an existing budget instead of renewing it");
+	FinishBorrowedInput();
+
+	Reset(); PrepareBorrowedInput();
+	Check(crystalhd_tx_transfer_until(&context, &request.tx_buffer,
+				      run.transfer_flags, 0) == BC_STS_TIMEOUT &&
+	      !run.fifo_calls && !run.starts,
+	      "an expired absolute deadline is rejected before hardware");
+	FinishBorrowedInput();
+
     Reset(); PrepareBorrowedInput(); run.busy = 10;
     Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
                                      run.transfer_flags, 250) == BC_STS_TIMEOUT &&

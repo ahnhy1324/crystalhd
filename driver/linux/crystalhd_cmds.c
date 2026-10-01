@@ -31,6 +31,7 @@
 
 #include "crystalhd_lnx.h"
 #include "crystalhd_hw.h"
+#include "crystalhd_stream.h"
 int bc_get_userhandle_count(struct crystalhd_cmd *ctx);
 BC_STATUS bc_cproc_release_user(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *idata);
 static struct crystalhd_user *bc_cproc_get_uid(struct crystalhd_cmd *ctx)
@@ -140,6 +141,7 @@ static BC_STATUS crystalhd_session_setup(struct crystalhd_cmd *ctx)
 static void crystalhd_retire_hw_context(struct crystalhd_cmd *ctx,
 					bool retire_session_resources)
 {
+	crystalhd_stream_release(ctx);
 	crystalhd_decoder_tracking_reset(ctx);
 	if (!ctx->hw_ctx)
 		return;
@@ -193,6 +195,7 @@ BC_STATUS crystalhd_session_acquire_locked(struct crystalhd_cmd *ctx,
 	}
 
 	/* Publish ownership only after the complete resource set exists. */
+	crystalhd_stream_release(ctx);
 	crystalhd_decoder_tracking_reset(ctx);
 	ctx->session_owner = owner;
 	ctx->cin_wait_exit = 0;
@@ -530,6 +533,7 @@ BC_STATUS crystalhd_fw_download_locked(struct crystalhd_cmd *ctx,
 		dev_info(chddev(), "Firmware Download Failure!! - %d\n", sts);
 	} else {
 		ctx->state |= BC_LINK_INIT;
+		crystalhd_stream_release(ctx);
 		crystalhd_decoder_tracking_reset(ctx);
 		/* A successful image download is the verified firmware reset that
 		 * reconciles any earlier timed-out mailbox command.
@@ -544,7 +548,7 @@ done:
 	return sts;
 }
 
-static int crystalhd_fw_status_to_errno(BC_STATUS sts)
+int crystalhd_status_to_errno(BC_STATUS sts)
 {
 	switch (sts) {
 	case BC_STS_SUCCESS:
@@ -620,7 +624,7 @@ int crystalhd_request_firmware_locked(struct crystalhd_cmd *ctx,
 
 	sts = crystalhd_fw_download_locked(ctx, owner, firmware->data,
 					    firmware->size);
-	rc = crystalhd_fw_status_to_errno(sts);
+	rc = crystalhd_status_to_errno(sts);
 
 release:
 	release_firmware(firmware);
@@ -799,7 +803,7 @@ int crystalhd_fw_bootstrap_locked(struct crystalhd_cmd *ctx,
 		init->rsa_decrypt = CRYSTALHD_FW_INIT_RSA_DECRYPT;
 
 	sts = crystalhd_fw_exec_locked(ctx, owner, &fw_cmd);
-	rc = crystalhd_fw_status_to_errno(sts);
+	rc = crystalhd_status_to_errno(sts);
 	if (rc)
 		goto rollback;
 	if (!READ_ONCE(ctx->adp->present)) {
@@ -867,6 +871,9 @@ int crystalhd_decoder_channel_open_locked(
 	default:
 		return -EINVAL;
 	}
+	rc = crystalhd_stream_prepare(ctx);
+	if (rc)
+		return rc;
 
 	BUILD_BUG_ON(sizeof(*open) !=
 		     CRYSTALHD_FW_CHANNEL_OPEN_WORDS * sizeof(uint32_t));
@@ -889,7 +896,7 @@ int crystalhd_decoder_channel_open_locked(
 	open->video_algorithm = video_algorithm;
 
 	sts = crystalhd_fw_exec_locked(ctx, owner, &fw_cmd);
-	rc = crystalhd_fw_status_to_errno(sts);
+	rc = crystalhd_status_to_errno(sts);
 	if (rc) {
 		/* A firmware rejection is the one result known not to have opened a
 		 * channel. Transport failures have an ambiguous device-side result.
@@ -899,12 +906,14 @@ int crystalhd_decoder_channel_open_locked(
 				CRYSTALHD_DECODER_RECOVERY_REQUIRED;
 		ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
 		ctx->decoder_channel_id = 0;
+		crystalhd_stream_release(ctx);
 		return rc;
 	}
 	if (!READ_ONCE(ctx->adp->present)) {
 		ctx->decoder_phase = CRYSTALHD_DECODER_RECOVERY_REQUIRED;
 		ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
 		ctx->decoder_channel_id = 0;
+		crystalhd_stream_release(ctx);
 		return -ENODEV;
 	}
 
@@ -913,6 +922,7 @@ int crystalhd_decoder_channel_open_locked(
 		ctx->decoder_phase = CRYSTALHD_DECODER_RECOVERY_REQUIRED;
 		ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
 		ctx->decoder_channel_id = 0;
+		crystalhd_stream_release(ctx);
 		return -EIO;
 	}
 
@@ -933,11 +943,12 @@ int crystalhd_decoder_channel_open_locked(
 	input->sync_mode = CRYSTALHD_FW_SYNC_MODE_SYNCPIN;
 
 	sts = crystalhd_fw_exec_locked(ctx, owner, &fw_cmd);
-	rc = crystalhd_fw_status_to_errno(sts);
+	rc = crystalhd_status_to_errno(sts);
 	if (rc || !READ_ONCE(ctx->adp->present)) {
 		ctx->decoder_phase = CRYSTALHD_DECODER_RECOVERY_REQUIRED;
 		ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
 		ctx->decoder_channel_id = 0;
+		crystalhd_stream_release(ctx);
 		return rc ? rc : -ENODEV;
 	}
 
@@ -1013,7 +1024,7 @@ int crystalhd_decoder_channel_start_locked(struct crystalhd_cmd *ctx,
 	activate->channel_id = ctx->decoder_channel_id;
 
 	sts = crystalhd_fw_exec_locked(ctx, owner, &fw_cmd);
-	rc = crystalhd_fw_status_to_errno(sts);
+	rc = crystalhd_status_to_errno(sts);
 	if (!READ_ONCE(ctx->adp->present)) {
 		ctx->decoder_phase = CRYSTALHD_DECODER_RECOVERY_REQUIRED;
 		ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
@@ -1070,7 +1081,7 @@ int crystalhd_decoder_channel_start_locked(struct crystalhd_cmd *ctx,
 		CRYSTALHD_FW_PROGRESSIVE_OUTPUT;
 
 	sts = crystalhd_fw_exec_locked(ctx, owner, &fw_cmd);
-	rc = crystalhd_fw_status_to_errno(sts);
+	rc = crystalhd_status_to_errno(sts);
 	if (rc || !READ_ONCE(ctx->adp->present)) {
 		/* ACTIVATE has committed, so START cannot be retried in isolation. */
 		ctx->decoder_phase = CRYSTALHD_DECODER_RECOVERY_REQUIRED;
@@ -1111,7 +1122,7 @@ static int crystalhd_decoder_release_cmd_locked(struct crystalhd_cmd *ctx,
 		CRYSTALHD_FW_LAST_PICTURE_DISPLAY_ON;
 
 	sts = crystalhd_fw_exec_locked(ctx, owner, &fw_cmd);
-	rc = crystalhd_fw_status_to_errno(sts);
+	rc = crystalhd_status_to_errno(sts);
 	if (!READ_ONCE(ctx->adp->present)) {
 		ctx->decoder_phase = CRYSTALHD_DECODER_RECOVERY_REQUIRED;
 		ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
@@ -1197,6 +1208,7 @@ int crystalhd_decoder_channel_close_locked(struct crystalhd_cmd *ctx,
 	ctx->decoder_phase = CRYSTALHD_DECODER_BOOTSTRAPPED;
 	ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
 	ctx->decoder_channel_id = 0;
+	crystalhd_stream_release(ctx);
 	return 0;
 }
 
@@ -1282,26 +1294,39 @@ static BC_STATUS crystalhd_bounded_tx_status(struct crystalhd_cmd *ctx,
 	return BC_STS_SUCCESS;
 }
 
+BC_STATUS crystalhd_tx_deadline_from_ms(u32 total_timeout_ms,
+					unsigned long *deadline)
+{
+	unsigned long timeout_jiffies;
+
+	if (!deadline || !total_timeout_ms || total_timeout_ms > INT_MAX)
+		return BC_STS_INV_ARG;
+
+	timeout_jiffies = msecs_to_jiffies(total_timeout_ms);
+	if (timeout_jiffies == MAX_JIFFY_OFFSET)
+		return BC_STS_INV_ARG;
+	*deadline = jiffies + timeout_jiffies;
+	return BC_STS_SUCCESS;
+}
+
 /*
  * Synchronous mapped-input transfer. The caller keeps the command/device
  * lifetime and TX serialization locks, and owns the mapped buffer until this
- * function returns.
+ * function returns. A bounded caller supplies one absolute deadline shared by
+ * every fragment in its operation.
  */
-BC_STATUS crystalhd_tx_transfer_sync(struct crystalhd_cmd *ctx,
-				     const struct crystalhd_tx_buffer *buffer,
-				     uint8_t data_flags,
-				     uint32_t total_timeout_ms)
+static BC_STATUS crystalhd_tx_transfer_common(struct crystalhd_cmd *ctx,
+					      const struct crystalhd_tx_buffer *buffer,
+					      u8 data_flags, bool bounded,
+					      unsigned long deadline)
 {
 	struct device *dev = chddev();
 	struct crystalhd_tx_completion completion = {
 		.status = BC_STS_SUCCESS,
 	};
-	unsigned long deadline = 0;
-	unsigned long timeout_jiffies;
 	unsigned long wait_deadline;
 	uint32_t tx_listid = 0;
 	BC_STATUS sts = BC_STS_SUCCESS;
-	bool bounded = total_timeout_ms != 0;
 	int rc = 0;
 
 	if (!ctx || !ctx->adp || !ctx->adp->pdev || !ctx->hw_ctx || !buffer) {
@@ -1309,12 +1334,6 @@ BC_STATUS crystalhd_tx_transfer_sync(struct crystalhd_cmd *ctx,
 		return BC_STS_INV_ARG;
 	}
 	if (bounded) {
-		if (total_timeout_ms > INT_MAX)
-			return BC_STS_INV_ARG;
-		timeout_jiffies = msecs_to_jiffies(total_timeout_ms);
-		if (timeout_jiffies == MAX_JIFFY_OFFSET)
-			return BC_STS_INV_ARG;
-		deadline = jiffies + timeout_jiffies;
 		sts = crystalhd_bounded_tx_status(ctx, deadline, false);
 		if (sts != BC_STS_SUCCESS)
 			return sts;
@@ -1417,6 +1436,32 @@ complete:
 	/* The callback uses this stack's completion cookie. */
 	synchronize_irq(ctx->adp->pdev->irq);
 	return READ_ONCE(completion.status);
+}
+
+BC_STATUS crystalhd_tx_transfer_until(struct crystalhd_cmd *ctx,
+				      const struct crystalhd_tx_buffer *buffer,
+				      u8 data_flags,
+				      unsigned long deadline)
+{
+	return crystalhd_tx_transfer_common(ctx, buffer, data_flags, true,
+					    deadline);
+}
+
+BC_STATUS crystalhd_tx_transfer_sync(struct crystalhd_cmd *ctx,
+				     const struct crystalhd_tx_buffer *buffer,
+				     u8 data_flags, u32 total_timeout_ms)
+{
+	unsigned long deadline;
+	BC_STATUS sts;
+
+	if (!total_timeout_ms)
+		return crystalhd_tx_transfer_common(ctx, buffer, data_flags, false,
+						    0);
+
+	sts = crystalhd_tx_deadline_from_ms(total_timeout_ms, &deadline);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
+	return crystalhd_tx_transfer_until(ctx, buffer, data_flags, deadline);
 }
 
 /* Helper function to check on user buffers */
@@ -2260,6 +2305,7 @@ BC_STATUS crystalhd_delete_cmd_context(struct crystalhd_cmd *ctx)
 		crystalhd_delete_elem_pool(ctx->adp);
 	ctx->state = BC_LINK_INVALID;
 	ctx->session_owner = NULL;
+	crystalhd_stream_release(ctx);
 	crystalhd_decoder_tracking_reset(ctx);
 	ctx->adp = NULL;
 

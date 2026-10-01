@@ -67,6 +67,8 @@ struct crystalhd_decoder_config {
 	enum crystalhd_decoder_codec codec;
 };
 
+struct crystalhd_stream;
+
 struct crystalhd_user {
 	uint32_t	uid;
 	uint32_t	in_use;
@@ -90,6 +92,7 @@ struct crystalhd_cmd {
 	enum crystalhd_decoder_codec decoder_codec;
 	uint32_t		fw_sequence;
 	uint32_t		decoder_channel_id;
+	struct crystalhd_stream	*stream;
 
 	spinlock_t		ctx_lock;
 	uint32_t		tx_list_id;
@@ -147,6 +150,7 @@ int crystalhd_request_firmware_locked(struct crystalhd_cmd *ctx,
  */
 BC_STATUS crystalhd_fw_exec_locked(struct crystalhd_cmd *ctx,
 				   const void *owner, BC_FW_CMD *fw_cmd);
+int crystalhd_status_to_errno(BC_STATUS sts);
 /* Request the chip firmware and issue its fixed C011 INIT command as one
  * retryable controller transition from BC_LINK_INVALID, BC_LINK_RESUME, or
  * BC_LINK_INIT while decoder recovery is required. The caller excludes device
@@ -197,8 +201,17 @@ int crystalhd_decoder_channel_close_locked(struct crystalhd_cmd *ctx,
  */
 BC_STATUS crystalhd_tx_transfer_sync(struct crystalhd_cmd *ctx,
 				     const struct crystalhd_tx_buffer *buffer,
-				     uint8_t data_flags,
-				     uint32_t total_timeout_ms);
+				     u8 data_flags, u32 total_timeout_ms);
+/* Build and consume a finite TX deadline without renewing the caller's
+ * original budget between fragments. These are internal driver interfaces;
+ * the deadline uses the kernel jiffies clock and remains wrap-safe.
+ */
+BC_STATUS crystalhd_tx_deadline_from_ms(u32 total_timeout_ms,
+					unsigned long *deadline);
+BC_STATUS crystalhd_tx_transfer_until(struct crystalhd_cmd *ctx,
+				      const struct crystalhd_tx_buffer *buffer,
+				      u8 data_flags,
+				      unsigned long deadline);
 BC_STATUS crystalhd_rx_submit(struct crystalhd_cmd *ctx,
 			      struct crystalhd_rx_buffer *buffer);
 BC_STATUS crystalhd_rx_dequeue(struct crystalhd_cmd *ctx,
