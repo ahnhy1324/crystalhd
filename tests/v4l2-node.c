@@ -1281,6 +1281,33 @@ static void native_error_completion(void)
     }
 }
 
+static void unsolicited_eos_completion(void)
+{
+    for (unsigned state = 0; state < 3; state++) {
+        reset(true);
+        fixture.active[0] = &last_capture;
+        last_capture.owned = true;
+        eos_receive = true;
+        fixture.drain_requested = state == 1;
+        fixture.decoder.phase = state == 2 ? CHD_V4L2_DRAINING : CHD_V4L2_RUNNING;
+        int phase = fixture.decoder.phase;
+        unsigned count = fixture.decoder.count;
+        last_buffer.flags = V4L2_BUF_FLAG_LAST;
+        last_buffer.vb2_buf.timestamp = 123;
+        last_buffer.vb2_buf.payload = 456;
+        mutex_lock(&fixture.run_lock);
+        CHECK(chd_receive(&fixture, &adapter.cmds) == -EPROTO);
+        CHECK(last_buffer.done == VB2_BUF_STATE_ERROR &&
+              (last_buffer.flags & V4L2_BUF_FLAG_ERROR) &&
+              !(last_buffer.flags & V4L2_BUF_FLAG_LAST) &&
+              !last_buffer.vb2_buf.payload && !last_buffer.vb2_buf.timestamp);
+        CHECK(!fixture.pending_last && !fixture.active[0] && !last_capture.owned &&
+              !eos_events && !completed && fixture.decoder.count == count &&
+              fixture.decoder.phase == phase && !fixture.drain_tx_done);
+        mutex_unlock(&fixture.run_lock);
+    }
+}
+
 int main(void)
 {
     node_api_cases();
@@ -1288,6 +1315,7 @@ int main(void)
     restart_and_drain(); cleanup_and_scheduler();
     streamon_allocation_failures();
     native_error_completion();
+    unsolicited_eos_completion();
     allocation_failure_cases();
     format_pause_cases();
     rx_idle_snapshot_cases();

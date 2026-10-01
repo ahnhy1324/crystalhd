@@ -522,6 +522,20 @@ static int chd_receive(struct crystalhd_v4l2_file *f, struct crystalhd_cmd *cmd)
 		if (pixels == BC_STS_NO_DATA && result.metadata.valid &&
 		    result.metadata.eos_trailer &&
 		    result.metadata.picture_number == 0xffffffffU) {
+			/* An unsolicited marker must not block input behind a drain
+			 * TX that was never started. Epoch alone is not EOS proof.
+			 */
+			if (!f->drain_requested ||
+			    f->decoder.phase != CHD_V4L2_DRAINING) {
+				vb->field = V4L2_FIELD_NONE;
+				vb->sequence = f->sequence++;
+				vb->flags &= ~V4L2_BUF_FLAG_LAST;
+				vb->flags |= V4L2_BUF_FLAG_ERROR;
+				vb->vb2_buf.timestamp = 0;
+				vb2_set_plane_payload(&vb->vb2_buf, 0, 0);
+				v4l2_m2m_buf_done(vb, VB2_BUF_STATE_ERROR);
+				return -EPROTO;
+			}
 			/* Firmware may deliver its marker before the final EOS TX
 			 * returns. Keep controller drain and LAST unpublished until
 			 * the complete bounded EOS transport has succeeded.
