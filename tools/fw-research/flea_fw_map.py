@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Offline, hash-pinned BCM70015 firmware and embedded ELF32 symbol inventory."""
+"""Offline, hash-pinned BCM70015 firmware, ELF32 symbols and retained references."""
 
 import argparse
+from bisect import bisect_right
 import hashlib
 import json
 import os
@@ -17,6 +18,10 @@ MAX_FIRMWARE_SIZE = 4 * 1024 * 1024  # include/crystalhd_ioctl_limits.h
 TRAILER_SIZE = 20  # driver/linux/FleaDefs.h: length slot plus 16-byte CMAC
 MAX_SYMBOL_RECORDS = 65536  # Aggregate across all tables/images, including duplicates.
 MAX_STRING_TABLE_BYTES = MAX_FIRMWARE_SIZE
+MAX_RELOCATION_RECORDS = 65536  # Includes no-ops and repeated tables/images.
+MAX_OWNER_LOOKUP_STEPS = 1000000  # Bounds overlapping/aliased function intervals.
+MAX_METADATA_OUTPUT_BYTES = 16 * 1024 * 1024  # Retained symbols and section names.
+MAX_REFERENCE_OUTPUT_BYTES = 32 * 1024 * 1024  # Conservative JSON size accounting.
 DEFAULT_SYMBOLS = (
     "Arc_UartInit", "Arc_UartPoll", "ArcGetc", "ArcPutc", "ArcCommandBuffer",
     "ReadLine", "MatchKeyword", "Core_Command", "CmdPeek", "CmdCore",
@@ -69,7 +74,140 @@ def string_at(table, offset):
     return table[offset:end].decode("ascii", errors="backslashreplace")
 
 
-def parse_elf(payload, base, wanted, symbol_budget, string_budget):
+def function_intervals(symbol_tables, sections):
+    """Index sized functions by section, without collapsing aliases or tables."""
+    by_section = {}
+    for symbols in symbol_tables.values():
+        for symbol in symbols:
+            index = symbol["section_index"]
+            if (symbol["type"] == 2 and symbol["size"] and 0 < index < len(sections)
+                    and sections[index]["flags"] & 4):
+                by_section.setdefault(index, []).append(symbol)
+    result = {}
+    for index, symbols in by_section.items():
+        symbols.sort(key=lambda symbol: (symbol["elf_virtual_address"],
+                                         symbol["symbol_table_section_index"],
+                                         symbol["symbol_index"]))
+        starts = []
+        prefix_ends = []
+        end = 0
+        for symbol in symbols:
+            start = symbol["elf_virtual_address"]
+            end = max(end, start + symbol["size"])
+            starts.append(start)
+            prefix_ends.append(end)
+        result[index] = (symbols, starts, prefix_ends)
+    return result
+
+
+def parse_references(image, base, sections, symbol_tables, wanted, all_symbols,
+                     relocation_budget, owner_budget, output_budget):
+    # ET_EXEC r_offset is a VA in sh_info's section, not a file offset. Keep
+    # numeric types: old ARC ABI revisions disagree on their names/semantics.
+    # https://gabi.xinuos.com/elf/06-reloc.html
+    tables = [(index, section) for index, section in enumerate(sections)
+              if section["type"] in (4, 9)]  # SHT_RELA / SHT_REL
+    if any(table["type"] == 9 for _, table in tables):
+        raise FormatError("SHT_REL references without explicit addends are unsupported")
+    count = sum(table["size"] // 12 for _, table in tables)
+    if count > relocation_budget:
+        raise FormatError("ELF relocation-record budget exceeded")
+    intervals = function_intervals(symbol_tables, sections)
+    references = []
+    type_counts = {}
+    noop_count = unowned_count = owner_steps = output_bytes = 0
+    encoded_symbol_sizes = {}
+    for table_index, table in tables:
+        if table["entry_size"] != 12 or table["size"] % 12:
+            raise FormatError("invalid ELF32 RELA table size")
+        if table["link"] not in symbol_tables:
+            raise FormatError("ELF relocations do not link to a symbol table")
+        if not 0 < table["info"] < len(sections) or sections[table["info"]]["type"] == 0:
+            raise FormatError("ELF relocation target section index is invalid")
+        source_section = sections[table["info"]]
+        symbols = symbol_tables[table["link"]]
+        for offset in range(table["offset"], table["offset"] + table["size"], 12):
+            address, info, addend = struct.unpack_from("<IIi", image, offset)
+            symbol_index, kind = info >> 8, info & 0xff
+            if symbol_index >= len(symbols):
+                raise FormatError("ELF relocation symbol index is outside its symbol table")
+            type_counts[str(kind)] = type_counts.get(str(kind), 0) + 1
+            # The blob retains no-ops at the exclusive end of .text. They
+            # represent no source byte and cannot be used to infer an edge.
+            if kind == 0:
+                noop_count += 1
+                continue
+            delta = address - source_section["address"]
+            if not 0 <= delta < source_section["size"]:
+                raise FormatError("ELF relocation source extends outside its target section")
+            source_file_offset = (None if source_section["type"] == 8 else
+                                  base + source_section["offset"] + delta)
+            owners = []
+            if table["info"] in intervals:
+                functions, starts, prefix_ends = intervals[table["info"]]
+                index = bisect_right(starts, address) - 1
+                while index >= 0 and prefix_ends[index] > address:
+                    if owner_steps >= owner_budget:
+                        raise FormatError("ELF function-owner lookup budget exceeded")
+                    owner_steps += 1
+                    function = functions[index]
+                    if address < function["elf_virtual_address"] + function["size"]:
+                        owners.append(function)
+                    index -= 1
+                owners.sort(key=lambda symbol: (symbol["symbol_table_section_index"],
+                                                symbol["symbol_index"]))
+            if not owners and source_section["flags"] & 4:
+                unowned_count += 1
+            target = symbols[symbol_index]
+            if not (all_symbols or target["name"] in wanted or
+                    any(owner["name"] in wanted for owner in owners)):
+                continue
+            # S+A is only an arithmetic candidate, NOT an applied relocation.
+            # Never resolve via a global VA search: overlay sections share VAs.
+            candidate = target["elf_virtual_address"] + addend
+            candidate_in_section = False
+            candidate_file_offset = None
+            target_index = target["section_index"]
+            if 0 < target_index < len(sections) and 0 <= candidate < 1 << 32:
+                target_section = sections[target_index]
+                candidate_delta = candidate - target_section["address"]
+                candidate_in_section = 0 <= candidate_delta < target_section["size"]
+                if (candidate_in_section and target_section["type"] not in (0, 8)
+                        and target_section["flags"] & 2):
+                    candidate_file_offset = base + target_section["offset"] + candidate_delta
+            # Repeated long names/aliases must not expand a small input into
+            # unbounded JSON. Cache symbol accounting, not per-use output.
+            cost = 1024 + 6 * len(source_section["name"])
+            for symbol in [target] + owners:
+                identity = (symbol["symbol_table_section_index"], symbol["symbol_index"])
+                if identity not in encoded_symbol_sizes:
+                    encoded_symbol_sizes[identity] = len(json.dumps(symbol, ensure_ascii=True)) + 768
+                cost += encoded_symbol_sizes[identity]
+            if output_bytes + cost > output_budget:
+                raise FormatError("ELF reference-output byte budget exceeded")
+            output_bytes += cost
+            references.append({"relocation_record_offset": base + offset,
+                               "relocation_section_index": table_index,
+                               "relocation_type": kind, "addend": addend,
+                               "source": {"section_index": table["info"],
+                                          "section": source_section["name"],
+                                          "elf_virtual_address": address,
+                                          "blob_file_offset": source_file_offset,
+                                          "function_owners": owners},
+                               "target": {"symbol": target,
+                                          "addend_candidate_virtual_address": candidate,
+                                          "addend_candidate_blob_file_offset": candidate_file_offset,
+                                          "addend_candidate_in_section": candidate_in_section}})
+    return {"relocation_count": count, "relocation_type_counts": type_counts,
+            "relocation_noop_count": noop_count,
+            "unowned_executable_reference_count": unowned_count,
+            "owner_lookup_steps": owner_steps, "reference_output_budget_used": output_bytes,
+            "references": references}
+
+
+def parse_elf(payload, base, wanted, symbol_budget, string_budget,
+              references=False, all_symbols=False, relocation_budget=0,
+              owner_budget=0, output_budget=0, metadata_budget=MAX_METADATA_OUTPUT_BYTES):
     # ELF32 Ehdr/Phdr/Shdr/Sym layouts follow https://gabi.xinuos.com/elf/.
     image = memoryview(payload)[base:]
     header = bounded(image, 0, 52, "ELF header")
@@ -82,7 +220,8 @@ def parse_elf(payload, base, wanted, symbol_budget, string_budget):
         raise FormatError("embedded image is not an ELF32 ARC executable")
     if ehsize != 52 or phsize != 32 or shsize != 40:
         raise FormatError("unsupported ELF header entry size")
-    if not phcount or phcount == 0xffff or not shcount or names_index >= shcount:
+    if (not phcount or phcount == 0xffff or not 0 < shcount < 0xff00
+            or names_index >= shcount):
         raise FormatError("missing or unsupported extended ELF header table")
     bounded(image, phoff, phsize * phcount, "ELF program table")
     bounded(image, shoff, shsize * shcount, "ELF section table")
@@ -124,16 +263,26 @@ def parse_elf(payload, base, wanted, symbol_budget, string_budget):
     name_table = bytes(bounded(image, names["offset"], names["size"], "section names"))
     string_table_bytes = names["size"]
     string_cache = {(names["offset"], names["size"]): name_table}
+    metadata_bytes = 0
     for section in sections:
-        section["name"] = string_at(name_table, section["name_index"])
+        name = string_at(name_table, section["name_index"])
+        # Bound decoded names before retaining them, including repeated names
+        # and metadata-only --all-symbols runs that never parse references.
+        metadata_bytes += 1024 + 6 * len(name)
+        if metadata_bytes > metadata_budget:
+            raise FormatError("ELF retained-metadata byte budget exceeded")
+        section["name"] = name
 
     symbols = []
     symbol_count = 0
     # SHT_SYMTAB is retained linker metadata, not merely matching strings.
-    symbol_tables = [table for table in sections if table["type"] == 2]
-    if sum(table["size"] // 16 for table in symbol_tables) > symbol_budget:
+    symbol_tables = [(index, table) for index, table in enumerate(sections) if table["type"] == 2]
+    if sum(table["size"] // 16 for _, table in symbol_tables) > symbol_budget:
         raise FormatError("ELF symbol-record budget exceeded")
-    for table in symbol_tables:
+    indexed_symbols = {}
+    for table_index, table in symbol_tables:
+        if references:
+            indexed_symbols[table_index] = []
         if table["entry_size"] != 16 or table["size"] % 16:
             raise FormatError("invalid ELF32 symbol table size")
         if table["link"] >= shcount or sections[table["link"]]["type"] != 3:
@@ -168,18 +317,28 @@ def parse_elf(payload, base, wanted, symbol_budget, string_budget):
                 raise FormatError("symbol section index is outside the ELF section table")
             elif section_index == 0xffff:
                 raise FormatError("extended symbol section indexes are unsupported")
-            if name not in wanted:
+            if not (references or all_symbols or name in wanted):
                 continue
-            symbols.append({"name": name, "elf_virtual_address": value,
-                            "blob_file_offset": file_offset, "size": size,
-                            "type": info & 15, "binding": info >> 4,
-                            "visibility": other & 3, "section": section_name,
-                            "section_index": section_index,
-                            "symbol_record_offset": base + offset})
+            metadata_bytes += 1024 + 6 * (len(name) + len(section_name or ""))
+            if metadata_bytes > metadata_budget:
+                raise FormatError("ELF retained-metadata byte budget exceeded")
+            symbol = {"name": name, "elf_virtual_address": value,
+                      "blob_file_offset": file_offset, "size": size,
+                      "type": info & 15, "binding": info >> 4,
+                      "visibility": other & 3, "section": section_name,
+                      "section_index": section_index,
+                      "symbol_record_offset": base + offset}
+            if references or all_symbols:
+                symbol["symbol_table_section_index"] = table_index
+                symbol["symbol_index"] = (offset - table["offset"]) // 16
+            if references:
+                indexed_symbols[table_index].append(symbol)
+            if all_symbols or name in wanted:
+                symbols.append(symbol)
 
     role_hints = [section["name"] for section in sections
                   if "outerloop" in section["name"] or "innerloop" in section["name"]]
-    return {"blob_file_offset": base, "blob_file_end": base + extent,
+    result = {"blob_file_offset": base, "blob_file_end": base + extent,
             "class": 32, "endianness": "little", "machine": machine,
             "elf_type": kind, "flags": flags, "entry_virtual_address": entry,
             "program_header_count": phcount, "section_count": shcount,
@@ -187,10 +346,28 @@ def parse_elf(payload, base, wanted, symbol_budget, string_budget):
             "load_segments": segments,
             "role_hint_sections": role_hints,
             "symbols": symbols,
-            "missing_symbols": sorted(wanted - {symbol["name"] for symbol in symbols})}
+            "missing_symbols": sorted(wanted - {symbol["name"] for symbol in symbols}),
+            "_metadata_budget_used": metadata_bytes}
+    if all_symbols:
+        result["sections"] = [{"section_index": index, "name": section["name"],
+                               "type": section["type"], "flags": section["flags"],
+                               "elf_virtual_address": section["address"],
+                               "blob_file_offset": (base + section["offset"]
+                                                    if section["type"] not in (0, 8)
+                                                    and section["size"] else None),
+                               "size": section["size"], "link": section["link"],
+                               "info": section["info"], "align": section["align"],
+                               "entry_size": section["entry_size"],
+                               "section_header_blob_file_offset": base + shoff + index * shsize}
+                              for index, section in enumerate(sections)]
+    if references:
+        result.update(parse_references(image, base, sections, indexed_symbols, wanted,
+                                       all_symbols, relocation_budget, owner_budget, output_budget))
+    return result
 
 
-def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256):
+def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
+            references=False, all_symbols=False):
     if len(data) < 24 or len(data) > MAX_FIRMWARE_SIZE or len(data) % 4:
         raise FormatError("invalid BCM70015 firmware size")
     sha256 = hashlib.sha256(data).hexdigest()
@@ -203,14 +380,25 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256):
     images = []
     symbol_budget = MAX_SYMBOL_RECORDS
     string_budget = MAX_STRING_TABLE_BYTES
+    relocation_budget = MAX_RELOCATION_RECORDS
+    owner_budget = MAX_OWNER_LOOKUP_STEPS
+    output_budget = MAX_REFERENCE_OUTPUT_BYTES
+    metadata_budget = MAX_METADATA_OUTPUT_BYTES
     wanted = set(wanted)
     offset = payload.find(b"\x7fELF")
     while offset >= 0:
         if len(images) == 16:
             raise FormatError("too many embedded ELF images")
-        image = parse_elf(payload, offset, wanted, symbol_budget, string_budget)
+        image = parse_elf(payload, offset, wanted, symbol_budget, string_budget,
+                          references, all_symbols, relocation_budget, owner_budget,
+                          output_budget, metadata_budget)
         symbol_budget -= image["symbol_count"]
         string_budget -= image["string_table_bytes"]
+        metadata_budget -= image.pop("_metadata_budget_used")
+        if references:
+            relocation_budget -= image["relocation_count"]
+            owner_budget -= image["owner_lookup_steps"]
+            output_budget -= image["reference_output_budget_used"]
         if images and offset < images[-1]["blob_file_end"]:
             raise FormatError("embedded ELF file extents overlap")
         images.append(image)
@@ -228,7 +416,7 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256):
     revisions = [{"blob_file_offset": match.start(),
                   "text": match.group().decode("ascii")}
                  for match in re.finditer(rb"\$Media_PC_FW_Rev: [0-9.]+ \$", payload)]
-    return {"schema_version": 1, "sha256": sha256,
+    result = {"schema_version": 1, "sha256": sha256,
             "git_blob_sha1": hashlib.sha1(b"blob " + str(len(data)).encode("ascii")
                                          + b"\0" + data).hexdigest(),
             "bundled_baseline": sha256 == BUNDLED_SHA256, "size": len(data),
@@ -240,6 +428,13 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256):
                             "Role hints do not identify an exact ARC core or usable codecs.",
                             "Symbols do not prove UART or host-mailbox accessibility.",
                             "ARM image extent and command call graph are not established."]}
+    if references:
+        result["limitations"].extend([
+            "Retained references are incomplete and are not a proven instruction call graph.",
+            "Relocation types are numeric; their ARC encoding semantics are not applied.",
+            "S+A arithmetic candidates are not resolved targets; file mappings require containment in the referenced section.",
+            "No-op relocations have no reference edge; unowned sites are not assigned to nearby functions."])
+    return result
 
 
 def main(argv=None):
@@ -253,12 +448,17 @@ def main(argv=None):
     parser.add_argument("--expect-sha256", default=BUNDLED_SHA256,
                         help="explicitly select another SHA-256-pinned blob")
     parser.add_argument("--symbol", action="append", help="exact ELF symbol name; repeatable")
+    parser.add_argument("--references", action="store_true", help=(
+        "inventory retained RELA references whose target or sized source function matches --symbol; "
+        "not disassembly or a complete call graph"))
+    parser.add_argument("--all-symbols", action="store_true", help=(
+        "include all symbol records and section metadata; with --references include all retained references"))
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-fA-F]{64}", args.expect_sha256):
         parser.error("--expect-sha256 must be 64 hexadecimal digits")
     try:
         report = analyze(read_firmware(args.firmware), args.symbol or DEFAULT_SYMBOLS,
-                         args.expect_sha256.lower())
+                         args.expect_sha256.lower(), args.references, args.all_symbols)
     except (OSError, FormatError) as error:
         print(f"flea_fw_map: {error}", file=sys.stderr)
         return 1
