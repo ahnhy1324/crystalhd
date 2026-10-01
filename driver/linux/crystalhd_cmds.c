@@ -184,11 +184,29 @@ retained:
 	return false;
 }
 
+static void crystalhd_session_retire_owner(struct crystalhd_cmd *ctx)
+{
+	const struct crystalhd_session_owner_ops *ops = ctx->session_lifetime_ops;
+	const void *owner = ctx->session_lifetime_owner;
+
+	ctx->session_lifetime_owner = NULL;
+	ctx->session_lifetime_ops = NULL;
+	if (!ops)
+		return;
+
+	ops->retired(owner);
+	ops->put(owner);
+}
+
 static void crystalhd_session_unpin(struct crystalhd_cmd *ctx)
 {
 	if (!ctx->session_module_pinned)
 		return;
 
+	/* Every caller has finished resource/state retirement, or is unwinding
+	 * an acquisition that has not yet adopted a frontend reference.
+	 */
+	crystalhd_session_retire_owner(ctx);
 	ctx->session_module_pinned = false;
 	module_put(THIS_MODULE);
 }
@@ -205,7 +223,8 @@ BC_STATUS crystalhd_session_acquire_locked(struct crystalhd_cmd *ctx,
 		return BC_STS_BUSY;
 	if (ctx->state != BC_LINK_INVALID)
 		return BC_STS_ERR_USAGE;
-	if (ctx->session_module_pinned)
+	if (ctx->session_module_pinned || ctx->session_lifetime_owner ||
+	    ctx->session_lifetime_ops)
 		return BC_STS_BUSY;
 	/* A file may close while failed PM retains its DMA resources. Pin the
 	 * module before setup, not later from a remove callback during unload.
@@ -240,6 +259,31 @@ BC_STATUS crystalhd_session_acquire_locked(struct crystalhd_cmd *ctx,
 
 unpin:
 	crystalhd_session_unpin(ctx);
+	return sts;
+}
+
+BC_STATUS crystalhd_session_acquire_ref_locked(struct crystalhd_cmd *ctx,
+					       const void *owner,
+					       const struct crystalhd_session_owner_ops *ops)
+{
+	bool already_pinned;
+	BC_STATUS sts;
+
+	if (!ctx || !ctx->adp || !owner || !ops || !ops->get ||
+	    !ops->retired || !ops->put)
+		return BC_STS_INV_ARG;
+
+	already_pinned = ctx->session_module_pinned;
+	sts = crystalhd_session_acquire_locked(ctx, owner);
+	/* A failed rollback may retain hardware without publishing ownership.
+	 * The caller keeps its token/code live until this handoff has completed.
+	 * Never attach to a pin belonging to an earlier acquisition attempt.
+	 */
+	if (!already_pinned && ctx->session_module_pinned) {
+		ops->get(owner);
+		ctx->session_lifetime_owner = owner;
+		ctx->session_lifetime_ops = ops;
+	}
 	return sts;
 }
 
@@ -2321,8 +2365,9 @@ BC_STATUS crystalhd_setup_cmd_context(struct crystalhd_cmd *ctx,
 		dev_err(dev, "%s: Invalid arg\n", __func__);
 		return BC_STS_INV_ARG;
 	}
-	/* Reinitialization must never erase a live session's module reference. */
-	if (ctx->session_module_pinned)
+	/* Reinitialization must never erase a live module or frontend reference. */
+	if (ctx->session_module_pinned || ctx->session_lifetime_owner ||
+	    ctx->session_lifetime_ops)
 		return BC_STS_BUSY;
 
 	if (ctx->adp)
@@ -2330,6 +2375,8 @@ BC_STATUS crystalhd_setup_cmd_context(struct crystalhd_cmd *ctx,
 
 	ctx->adp = adp;
 	ctx->session_owner = NULL;
+	ctx->session_lifetime_owner = NULL;
+	ctx->session_lifetime_ops = NULL;
 	ctx->session_module_pinned = false;
 	ctx->retain_rx_on_suspend = false;
 	crystalhd_decoder_tracking_reset(ctx);

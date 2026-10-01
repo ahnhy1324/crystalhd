@@ -536,6 +536,8 @@ struct crystalhd_cmd {
 	struct crystalhd_hw *hw_ctx;
 	bool retain_rx_on_suspend;
 	bool session_module_pinned;
+	const void *session_lifetime_owner;
+	const struct crystalhd_session_owner_ops *session_lifetime_ops;
 	void *session_owner, *stream;
 };
 struct crystalhd_adp {
