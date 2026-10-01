@@ -1933,7 +1933,7 @@ static void format_full_flush_race_cases(uint32_t device)
             }
 
             post_before = post_calls;
-            check(bc_cproc_fmt_change(&context, &result) ==
+            check(crystalhd_rx_ack_format(&context, &result) ==
                       BC_STS_IO_USER_ABORT,
                   "late format completion is cancelled after a full flush");
             check(!result.buffer && !result.cookie &&
@@ -1942,7 +1942,7 @@ static void format_full_flush_race_cases(uint32_t device)
                   post_calls == post_before && !mapped[0] &&
                   (!restart || (mapped[1] && !unmaps[1])),
                   "cancelled format completion cannot restore state, queue or DMA ownership");
-            check(bc_cproc_fmt_change(&context, &result) == BC_STS_INV_ARG &&
+            check(crystalhd_rx_ack_format(&context, &result) == BC_STS_INV_ARG &&
                   unmaps[0] == 1,
                   "a cancelled format result cannot be consumed twice");
             inventory(0, 0, restart ? 1 : 0);
@@ -1984,7 +1984,7 @@ static void format_wait_flush_race_cases(uint32_t device)
               "packet epoch survives a full flush after ready-pop and before dequeue resumes");
         inventory_with_private(0, 0, 0, result.buffer);
         post_before = post_calls;
-        check(bc_cproc_fmt_change(&context, &result) == BC_STS_IO_USER_ABORT &&
+        check(crystalhd_rx_ack_format(&context, &result) == BC_STS_IO_USER_ABORT &&
               !result.buffer && !result.cookie &&
               unmaps[0] == 1 && !mapped[0] &&
               context.state == BC_LINK_INIT && post_calls == post_before,
@@ -2056,7 +2056,7 @@ static void fresh_packet_after_wait_restart_cases(uint32_t device)
             check(pause_calls == 1 && !hardware.hw_pause_issued,
                   "a current-epoch packet resumes FLEA after a cross-epoch wait");
             inventory_with_private(0, 0, 0, result.buffer);
-            check(bc_cproc_fmt_change(&context, &result) == BC_STS_SUCCESS &&
+            check(crystalhd_rx_ack_format(&context, &result) == BC_STS_SUCCESS &&
                   !result.buffer && !result.cookie && !unmaps[0] &&
                   context.state == BC_LINK_READY,
                   "fresh post-restart format ownership remains consumable");
@@ -2088,7 +2088,7 @@ static void format_discard_epoch_cases(uint32_t device)
         check(flush_capture(&context, true, 1) == BC_STS_SUCCESS &&
               hardware.rx_cancel_epoch == epoch,
               "discard preserves the capture epoch for retained registrations");
-        check(bc_cproc_fmt_change(&context, &result) == BC_STS_SUCCESS &&
+        check(crystalhd_rx_ack_format(&context, &result) == BC_STS_SUCCESS &&
               !result.buffer && !result.cookie &&
               context.state == BC_LINK_READY &&
               !unmaps[0],
@@ -2122,7 +2122,7 @@ static void format_failed_stop_epoch_case(uint32_t device)
           context.state == BC_LINK_INIT,
           "destructive flush invalidates detached results even when DMA stop fails");
     post_before = post_calls;
-    check(bc_cproc_fmt_change(&context, &result) == BC_STS_IO_USER_ABORT &&
+    check(crystalhd_rx_ack_format(&context, &result) == BC_STS_IO_USER_ABORT &&
           !result.buffer && !result.cookie &&
           unmaps[0] == 1 && post_calls == post_before,
           "failed full stop cannot revive its detached format registration");
@@ -2168,7 +2168,7 @@ static void format_fresh_epoch_cases(uint32_t device)
               result.capture_epoch == hardware.rx_cancel_epoch,
               "fresh completion carries the nonzero current epoch");
         inventory_with_private(0, 0, 0, result.buffer);
-        check(bc_cproc_fmt_change(&context, &result) == BC_STS_SUCCESS &&
+        check(crystalhd_rx_ack_format(&context, &result) == BC_STS_SUCCESS &&
               !result.buffer && !result.cookie && !unmaps[1] &&
               context.state == BC_LINK_READY,
               "current-epoch format completion requeues normally");
@@ -2197,7 +2197,7 @@ static void format_capture_gate_case(uint32_t device)
     inventory_with_private(0, 0, 0, result.buffer);
     context.state &= ~BC_LINK_CAP_EN;
     post_before = post_calls;
-    check(bc_cproc_fmt_change(&context, &result) == BC_STS_IO_USER_ABORT &&
+    check(crystalhd_rx_ack_format(&context, &result) == BC_STS_IO_USER_ABORT &&
           !result.buffer && !result.cookie &&
           unmaps[0] == 1 && post_calls == post_before &&
           context.state == BC_LINK_INIT,
