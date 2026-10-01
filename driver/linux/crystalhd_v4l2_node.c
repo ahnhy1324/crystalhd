@@ -1003,8 +1003,7 @@ static const struct vb2_ops chd_queue_ops = {
 	.buf_queue = chd_buf_queue,
 	.start_streaming = chd_start_streaming,
 	.stop_streaming = chd_stop_streaming,
-	.wait_prepare = vb2_ops_wait_prepare,
-	.wait_finish = vb2_ops_wait_finish,
+	CRYSTALHD_V4L2_WAIT_OPS
 };
 
 static int chd_queues(void *private, struct vb2_queue *src, struct vb2_queue *dst)
@@ -1116,8 +1115,7 @@ static int chd_open(struct file *file)
 	if (rc)
 		goto free_m2m;
 	crystalhd_v4l2_ctx_bind(f->lease, f, chd_file_destroy);
-	file->private_data = &f->fh;
-	v4l2_fh_add(&f->fh);
+	crystalhd_v4l2_fh_add(&f->fh, file);
 	return 0;
 free_m2m:
 	v4l2_m2m_ctx_release(f->fh.m2m_ctx);
@@ -1138,10 +1136,9 @@ static int chd_release(struct file *file)
 	f->admitted = false;
 	spin_unlock_irqrestore(&f->kick_lock, flags);
 	chd_join(f);
-	v4l2_fh_del(&f->fh);
+	crystalhd_v4l2_fh_del(&f->fh, file);
 	v4l2_fh_exit(&f->fh);
 	mutex_unlock(&f->node->ioctl_lock);
-	file->private_data = NULL;
 	crystalhd_v4l2_ctx_close(f->lease);
 	return 0;
 }

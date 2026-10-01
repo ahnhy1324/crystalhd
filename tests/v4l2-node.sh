@@ -8,11 +8,21 @@ cleanup()
     rm -f "$node_test_dir/check" "$node_test_dir/node-types.h" \
         "$node_test_dir/node-production.h" "$node_test_dir/node-size.h" \
         "$node_test_dir/node-pause.h" "$node_test_dir/node-idle.h" \
-        "$node_test_dir/node-constants.h" "$node_test_dir/node-queue.h"
+        "$node_test_dir/node-constants.h" "$node_test_dir/node-queue.h" \
+        "$node_test_dir/node-api.h"
     rmdir "$node_test_dir"
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
+awk '
+    /^\/\* V4L2 node API compatibility/ { copying = 1; found++ }
+    /^\/\* vb2_get_num_buffers/ { copying = 0 }
+    copying { print }
+    END { if (found != 1 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_v4l2_compat.h" > "$node_test_dir/node-api.h"
+grep -q 'crystalhd_v4l2_fh_add(&f->fh, file);' "$repo_dir/driver/linux/crystalhd_v4l2_node.c"
+grep -q 'crystalhd_v4l2_fh_del(&f->fh, file);' "$repo_dir/driver/linux/crystalhd_v4l2_node.c"
+grep -q '^[[:space:]]*CRYSTALHD_V4L2_WAIT_OPS$' "$repo_dir/driver/linux/crystalhd_v4l2_node.c"
 awk '
     /^static inline unsigned int crystalhd_v4l2_num_buffers\(/ { copying = 1; found++ }
     copying { print }
@@ -100,19 +110,22 @@ awk '
     END { if (found != 1 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_hw.c" > "$node_test_dir/node-idle.h"
 
-for node_queue_api in old new; do
+for node_api in 5.15.0 6.17.0 6.18.0 6.18.54 6.19.0 7.0.0 7.2.8; do
+    node_major=${node_api%%.*}
+    node_rest=${node_api#*.}
+    node_minor=${node_rest%%.*}
+    node_patch=${node_rest#*.}
+    node_version=$((node_major * 65536 + node_minor * 256 + node_patch))
 for node_sanitize in no yes; do
     node_extra=
     if [ "$node_sanitize" = yes ]; then
         node_extra='-fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie -no-pie'
     fi
-    if [ "$node_queue_api" = new ]; then
-        node_extra="$node_extra -DNODE_NEW_QUEUE_API"
-    fi
     "${CC:-cc}" ${CFLAGS:-} -std=c11 -O1 -g -Wall -Wextra -Werror \
-        $node_extra -I"$node_test_dir" -I"$repo_dir/include" "$repo_dir/tests/v4l2-node.c" \
+        $node_extra -DNODE_KERNEL_VERSION="$node_version" \
+        -I"$node_test_dir" -I"$repo_dir/include" "$repo_dir/tests/v4l2-node.c" \
         -o "$node_test_dir/check"
-    printf 'V4L2 native node guards: queue-api=%s sanitizers=%s\n' "$node_queue_api" "$node_sanitize"
+    printf 'V4L2 native node guards: kernel-api=%s sanitizers=%s\n' "$node_api" "$node_sanitize"
     ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
         UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 "$node_test_dir/check"
 done

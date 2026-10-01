@@ -96,11 +96,13 @@ struct crystalhd_v4l2_decoder { int phase; unsigned count; };
 struct crystalhd_v4l2 { int unused; };
 struct crystalhd_v4l2_ctx { int unused; };
 #define KERNEL_VERSION(a, b, c) (((a) << 16) | ((b) << 8) | (c))
+#define LINUX_VERSION_CODE NODE_KERNEL_VERSION
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0)
+#define NODE_NEW_QUEUE_API
+#endif
 #ifdef NODE_NEW_QUEUE_API
-#define LINUX_VERSION_CODE KERNEL_VERSION(6, 17, 0)
 #define QUEUE_COUNT(q) ((q)->allocated_buffers)
 #else
-#define LINUX_VERSION_CODE KERNEL_VERSION(5, 15, 0)
 #define QUEUE_COUNT(q) ((q)->num_buffers)
 #endif
 struct vb2_queue {
@@ -126,6 +128,48 @@ struct v4l2_fh { struct v4l2_m2m_ctx *m2m_ctx; };
 struct v4l2_pix_format { u32 width, height, bytesperline, sizeimage, pixelformat, field, colorspace, ycbcr_enc, quantization, xfer_func, priv, flags; };
 struct v4l2_format { unsigned type; struct { struct v4l2_pix_format pix; } fmt; };
 struct file { void *private_data; };
+/* Mutually exclusive prototypes and members: wrong compatibility branches
+ * fail to compile, rather than silently accepting an obsolete API.
+ */
+static unsigned fh_add_calls, fh_del_calls, wait_prepare_calls, wait_finish_calls;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 18, 0)
+static void v4l2_fh_add(struct v4l2_fh *fh) { assert(fh); fh_add_calls++; }
+static void v4l2_fh_del(struct v4l2_fh *fh) { assert(fh); fh_del_calls++; }
+#else
+static void v4l2_fh_add(struct v4l2_fh *fh, struct file *file)
+{ assert(fh && file); file->private_data = fh; fh_add_calls++; }
+static void v4l2_fh_del(struct v4l2_fh *fh, struct file *file)
+{ assert(file->private_data == fh); file->private_data = NULL; fh_del_calls++; }
+#endif
+struct vb2_ops {
+    unsigned present;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
+    void (*wait_prepare)(struct vb2_queue *);
+    void (*wait_finish)(struct vb2_queue *);
+#endif
+};
+#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
+static void vb2_ops_wait_prepare(struct vb2_queue *q) { assert(q); wait_prepare_calls++; }
+static void vb2_ops_wait_finish(struct vb2_queue *q) { assert(q); wait_finish_calls++; }
+#endif
+#include "node-api.h"
+static void node_api_cases(void)
+{
+    struct v4l2_fh fh = {0};
+    struct file file = {0};
+    const struct vb2_ops ops = { .present = 1, CRYSTALHD_V4L2_WAIT_OPS };
+    crystalhd_v4l2_fh_add(&fh, &file);
+    assert(file.private_data == &fh && fh_add_calls == 1);
+    crystalhd_v4l2_fh_del(&fh, &file);
+    assert(!file.private_data && fh_del_calls == 1 && ops.present);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
+    struct vb2_queue q = {0};
+    ops.wait_prepare(&q); ops.wait_finish(&q);
+    assert(wait_prepare_calls == 1 && wait_finish_calls == 1);
+#else
+    assert(!wait_prepare_calls && !wait_finish_calls);
+#endif
+}
 struct v4l2_requestbuffers { unsigned type, memory, count; };
 struct v4l2_buffer { unsigned type; };
 struct v4l2_decoder_cmd { unsigned cmd, flags; struct { int speed; unsigned format; } start; };
@@ -1239,6 +1283,7 @@ static void native_error_completion(void)
 
 int main(void)
 {
+    node_api_cases();
     invalid_and_busy(); format_reallocation(); stop_failures();
     restart_and_drain(); cleanup_and_scheduler();
     streamon_allocation_failures();
