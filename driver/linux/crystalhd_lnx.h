@@ -77,6 +77,9 @@ struct crystalhd_adp {
 	unsigned int		present;
 	unsigned int		msi;
 	bool			irq_registered;
+	u64			generation;
+	/* PM readiness under user_lock; probe initializes before publication. */
+	bool			hw_accessible;
 
 	spinlock_t		lock;
 	struct rw_semaphore	user_lock;
@@ -95,6 +98,21 @@ struct crystalhd_adp {
 	struct dma_pool		*fill_byte_pool;
 };
 
+struct crystalhd_device_access {
+	struct crystalhd_adp *adp;
+	bool exclusive;
+};
+
+/* Enter one sleepable, non-nested operation using a frontend's probe generation.
+ * The caller supplies an inactive handle and holds no device/user/TX locks.
+ * Success borrows adp under device -> user locks until same-task exit; do not
+ * copy the handle, retain adp afterward or wait for workers while holding it.
+ * This gates PM readiness, not firmware/DMA/session validity. Removal can
+ * publish cancellation during the operation, so core cancellation checks apply.
+ */
+int crystalhd_device_enter(u64 generation, bool exclusive,
+			   struct crystalhd_device_access *access);
+void crystalhd_device_exit(struct crystalhd_device_access *access);
 
 struct crystalhd_adp *chd_get_adp(void);
 struct device *chddev(void);
