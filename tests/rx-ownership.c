@@ -2634,8 +2634,12 @@ static void fatal_late_rx_cases(uint32_t device)
 static void flush_argument_and_gate_cases(uint32_t device)
 {
     const uint32_t no_capture_states[] = {
-        BC_LINK_INVALID, BC_LINK_INIT, BC_LINK_FMT_CHG,
+        BC_LINK_INVALID, BC_LINK_FMT_CHG,
         BC_LINK_SUSPEND, BC_LINK_PAUSED, BC_LINK_RESUME,
+        BC_LINK_INIT | BC_LINK_FMT_CHG,
+        BC_LINK_INIT | BC_LINK_SUSPEND,
+        BC_LINK_INIT | BC_LINK_PAUSED,
+        BC_LINK_INIT | BC_LINK_RESUME,
         BC_LINK_INIT | BC_LINK_FMT_CHG | BC_LINK_PAUSED
     };
 
@@ -2703,6 +2707,104 @@ static void flush_argument_and_gate_cases(uint32_t device)
           !hardware_notifications && !post_calls,
           "legacy flush rejects NULL ioctl data before locking or callbacks");
     inventory(0, 0, 0);
+}
+static void pre_capture_full_flush_cases(uint32_t device)
+{
+    for (unsigned direct = 0; direct < 2; direct++) {
+        reset(device);
+        context.state = BC_LINK_INIT;
+        check(add(0) == BC_STS_SUCCESS && add(1) == BC_STS_SUCCESS &&
+              add(2) == BC_STS_SUCCESS,
+              "prepare deferred registrations for pre-capture destructive flush");
+        check(context.state == BC_LINK_INIT && !active.count && !ready.count &&
+              available.count == 3 && !post_calls && !unmaps[0] &&
+              !unmaps[1] && !unmaps[2],
+              "pre-capture registration keeps exact INIT state and deferred ownership");
+        reset_flush_observers();
+        check(flush_capture(&context, direct, 0) == BC_STS_SUCCESS &&
+              !strcmp(lifecycle_events, "DSE") && context.state == BC_LINK_INIT,
+              "exact INIT permits destructive unregister without enabling capture");
+        check(stop_observed_state == BC_LINK_INIT &&
+              !stop_observed_active && !stop_observed_ready &&
+              stop_observed_free == 3 && !stop_observed_sem &&
+              stop_observed_irq == 1 && stop_calls == 1 &&
+              irq_disables == 1 && irq_enables == 1,
+              "pre-capture unregister quiesces DMA with every deferred owner visible");
+        check(!hardware_notifications && !post_calls &&
+              unmaps[0] == 1 && unmaps[1] == 1 && unmaps[2] == 1,
+              "pre-capture unregister releases each registration exactly once without restart");
+        inventory(0, 0, 0);
+        reset_flush_observers();
+        check(flush_capture(&context, direct, 0) == BC_STS_SUCCESS &&
+              !strcmp(lifecycle_events, "DSE") && context.state == BC_LINK_INIT &&
+              stop_calls == 1 && unmaps[0] == 1 && unmaps[1] == 1 &&
+              unmaps[2] == 1,
+              "repeated pre-capture unregister is idempotent and cannot double-release owners");
+        inventory(0, 0, 0);
+
+        reset(device);
+        context.state = BC_LINK_INIT;
+        check(add(0) == BC_STS_SUCCESS && add(1) == BC_STS_SUCCESS &&
+              add(2) == BC_STS_SUCCESS,
+              "prepare deferred registrations for interrupted pre-capture flush");
+        reset_flush_observers();
+        interrupt_lock = true;
+        check(flush_capture(&context, direct, 0) == BC_STS_IO_USER_ABORT &&
+              context.state == BC_LINK_INIT && sem_attempts == 1 &&
+              !lifecycle_event_count && !stop_calls && !irq_disables &&
+              !hardware_notifications && !post_calls &&
+              !unmaps[0] && !unmaps[1] && !unmaps[2],
+              "interrupted pre-capture unregister retains state and every owner");
+        inventory(0, 0, 3);
+        check(flush_capture(&context, direct, 0) == BC_STS_SUCCESS &&
+              !strcmp(lifecycle_events, "DSE") && context.state == BC_LINK_INIT &&
+              sem_attempts == 2 && stop_calls == 1 &&
+              unmaps[0] == 1 && unmaps[1] == 1 && unmaps[2] == 1,
+              "retry after interruption releases each pre-capture owner exactly once");
+        inventory(0, 0, 0);
+
+        reset(device);
+        context.state = BC_LINK_INIT;
+        check(add(0) == BC_STS_SUCCESS && add(1) == BC_STS_SUCCESS &&
+              add(2) == BC_STS_SUCCESS,
+              "prepare deferred registrations for pre-capture DMA-stop fault");
+        stop_fault = true;
+        reset_flush_observers();
+        check(flush_capture(&context, direct, 0) == BC_STS_IO_ERROR &&
+              !strcmp(lifecycle_events, "DSE") && context.state == BC_LINK_INIT &&
+              stop_calls == 1 && hardware.dma_fault &&
+              !unmaps[0] && !unmaps[1] && !unmaps[2],
+              "faulted pre-capture unregister retains state and all registrations");
+        inventory(0, 0, 3);
+        check(!adapter.present && context.cin_wait_exit,
+              "pre-capture stop fault makes the device unavailable before retaining owners");
+        stop_fault = false;
+        check(flush_capture(&context, direct, 0) == BC_STS_IO_ERROR &&
+              !strcmp(lifecycle_events, "DSE") && context.state == BC_LINK_INIT &&
+              sem_attempts == 2 && stop_calls == 1 &&
+              irq_disables == 1 && irq_enables == 1 &&
+              !unmaps[0] && !unmaps[1] && !unmaps[2],
+              "retry after a DMA fault cannot release or stop retained owners again");
+        inventory(0, 0, 3);
+
+        reset(device);
+        context.state = BC_LINK_INIT;
+        check(add(0) == BC_STS_SUCCESS && add(1) == BC_STS_SUCCESS,
+              "prepare deferred registrations for pre-capture discard rejection");
+        reset_flush_observers();
+        check(flush_capture(&context, direct, 1) == BC_STS_ERR_USAGE &&
+              context.state == BC_LINK_INIT && sem_attempts == 1 &&
+              !lifecycle_event_count && !stop_calls && !irq_disables &&
+              !hardware_notifications && !post_calls &&
+              !unmaps[0] && !unmaps[1],
+              "pre-capture discard remains gated on active capture");
+        inventory(0, 0, 2);
+        check(flush_capture(&context, direct, 0) == BC_STS_SUCCESS &&
+              context.state == BC_LINK_INIT &&
+              unmaps[0] == 1 && unmaps[1] == 1,
+              "destructive retry after rejected discard releases deferred owners once");
+        inventory(0, 0, 0);
+    }
 }
 static void discard_flush_cases(uint32_t device)
 {
@@ -3391,6 +3493,7 @@ int main(void)
         fatal_owner_retention_cases(devices[i]);
         fatal_late_rx_cases(devices[i]);
         flush_argument_and_gate_cases(devices[i]);
+        pre_capture_full_flush_cases(devices[i]);
         discard_flush_cases(devices[i]);
         full_flush_cases(devices[i]);
         start_command_cases(devices[i]);

@@ -1455,18 +1455,21 @@ DtsStartCaptureImmidiate(HANDLE		hDevice,
 		return BC_STS_DEC_NOT_STARTED;
 	}
 
-	if (!DtsChkPID(Ctx->ProcessID))
+	if (Ctx->ProcessID != getpid() || !DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
 
-	if(!(pIocData = DtsAllocIoctlData(Ctx)))
-		return BC_STS_INSUFF_RES;
-
+	DtsLock(Ctx);
 	if(Ctx->CfgFlags & BC_ADDBUFF_MOVE){
 		sts = DtsMapYUVBuffs(Ctx);
 		if(sts != BC_STS_SUCCESS){
 			DebugLog_Trace(LDIL_DBG,"DtsMapYUVBuffs failed Sts:%d\n",sts);
-			return sts;
+			goto done;
 		}
+	}
+
+	if(!(pIocData = DtsAllocIoctlData(Ctx))) {
+		sts = BC_STS_INSUFF_RES;
+		goto done;
 	}
 
 //	DebugLog_Trace(LDIL_DBG,"DbgOptions=%x\n", Ctx->RegCfg.DbgOptions);
@@ -1489,6 +1492,8 @@ DtsStartCaptureImmidiate(HANDLE		hDevice,
 
 	DtsRelIoctlData(Ctx,pIocData);
 
+done:
+	DtsUnLock(Ctx);
 	return sts;
 }
 
@@ -1502,7 +1507,7 @@ DtsStartCapture(HANDLE  hDevice)
 
 	DTS_GET_CTX(hDevice,Ctx);
 
-	if (!DtsChkPID(Ctx->ProcessID))
+	if (Ctx->ProcessID != getpid() || !DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
 
 	if (Ctx->State != BC_DEC_STATE_START)
@@ -1511,15 +1516,18 @@ DtsStartCapture(HANDLE  hDevice)
 		return BC_STS_DEC_NOT_STARTED;
 	}
 
-	if(!(pIocData = DtsAllocIoctlData(Ctx)))
-		return BC_STS_INSUFF_RES;
-
+	DtsLock(Ctx);
 	if(Ctx->CfgFlags & BC_ADDBUFF_MOVE){
 		sts = DtsMapYUVBuffs(Ctx);
 		if(sts != BC_STS_SUCCESS){
 			DebugLog_Trace(LDIL_DBG,"DtsMapYUVBuffs failed Sts:%d\n",sts);
-			return sts;
+			goto done;
 		}
+	}
+
+	if(!(pIocData = DtsAllocIoctlData(Ctx))) {
+		sts = BC_STS_INSUFF_RES;
+		goto done;
 	}
 
 //	DebugLog_Trace(LDIL_DBG,"DbgOptions=%x\n", Ctx->RegCfg.DbgOptions);
@@ -1542,6 +1550,8 @@ DtsStartCapture(HANDLE  hDevice)
 
 	DtsRelIoctlData(Ctx,pIocData);
 
+done:
+	DtsUnLock(Ctx);
 	return sts;
 }
 
@@ -1556,29 +1566,40 @@ DtsFlushRxCapture(
 
 	DTS_GET_CTX(hDevice,Ctx);
 
-	if (!Ctx->bMapOutBufDone)
+	/* A mutex held by another parent thread is not recoverable after fork.
+	 * Preserve the historical clean no-op while rejecting inherited driver
+	 * ownership, and make that decision before touching the mutex. */
+	if ((Ctx->ProcessID && Ctx->ProcessID != getpid()) ||
+	    !DtsChkPID(Ctx->ProcessID))
+		return Ctx->bMapOutBufDirty ? BC_STS_ERROR : BC_STS_SUCCESS;
+
+	DtsLock(Ctx);
+	if (!Ctx->bMapOutBufDirty)
 	{
+		DtsUnLock(Ctx);
 		return BC_STS_SUCCESS;
 	}
 
-	if (!DtsChkPID(Ctx->ProcessID))
-		return BC_STS_ERROR;
-
 	if (Ctx->State == BC_DEC_STATE_CLOSE)
 	{
+		DtsUnLock(Ctx);
 		return BC_STS_DEC_NOT_OPEN;
 	}
 
-	if(!(pIocData = DtsAllocIoctlData(Ctx)))
+	if (!bDiscardOnly) {
+		Sts = DtsUnmapYUVBuffs(Ctx);
+		DtsUnLock(Ctx);
+		return Sts;
+	}
+
+	if(!(pIocData = DtsAllocIoctlData(Ctx))) {
+		DtsUnLock(Ctx);
 		return BC_STS_INSUFF_RES;
+	}
 
 	pIocData->u.FlushRxCap.bDiscardOnly = bDiscardOnly;
 	Sts = DtsDrvCmd(Ctx,BCM_IOC_FLUSH_RX_CAP, 0, pIocData, TRUE);
-	//If it is not Discard Only, RX Buffer will be un-mapped
-	if(bDiscardOnly == false)
-	{
-		Ctx->bMapOutBufDone = false;
-    }
+	DtsUnLock(Ctx);
 
 	return Sts;
 }

@@ -295,6 +295,7 @@ typedef struct _DTS_LIB_CONTEXT{
 	BC_HW_CAPS		capInfo;
 //	uint16_t		InSampleCount;
 	uint8_t			bMapOutBufDone;
+	uint8_t			bMapOutBufDirty;
 
 	BC_PIC_INFO_BLOCK	FormatInfo;
 
@@ -359,6 +360,7 @@ BC_STATUS DtsAddOutBuff(DTS_LIB_CONTEXT *Ctx, PVOID buff, uint32_t BuffSz, uint3
 BC_STATUS DtsRelRxBuff(DTS_LIB_CONTEXT *Ctx, BC_DEC_YUV_BUFFS *buff,BOOL SkipAddBuff);
 BC_STATUS DtsFetchOutInterruptible(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *DecOut, uint32_t dwTimeout);
 BC_STATUS DtsCancelFetchOutInt(DTS_LIB_CONTEXT *Ctx);
+BC_STATUS DtsUnmapYUVBuffs(DTS_LIB_CONTEXT *Ctx);
 BC_STATUS DtsMapYUVBuffs(DTS_LIB_CONTEXT *Ctx);
 BC_STATUS DtsInitInterface(int hDevice,HANDLE *RetCtx, uint32_t mode);
 BC_STATUS DtsSetupConfig(DTS_LIB_CONTEXT *Ctx, uint32_t did, uint32_t rid, uint32_t FixFlags);
