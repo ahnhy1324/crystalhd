@@ -23,6 +23,10 @@ static std::vector<BC_FW_CMD> command_log;
 static BC_STATUS ioctl_status;
 static uint32_t response_status;
 static bool syscall_failure;
+static unsigned sleep_calls;
+static unsigned clear_on_sleep;
+static unsigned long last_ioctl_code;
+static bool flag_seen_in_ioctl;
 
 static void Check(bool condition, const char *message)
 {
@@ -35,7 +39,8 @@ static void Check(bool condition, const char *message)
 
 extern "C" int __wrap_ioctl(int fd, unsigned long code, ...)
 {
-	if (!active_context || fd != 99 || code != BCM_IOC_FW_CMD) {
+	if (!active_context || fd != 99 ||
+	    (code != BCM_IOC_FW_CMD && code != BCM_IOC_GET_VERSION)) {
 		std::fputs("unexpected ioctl in hardware-free firmware-command test\n",
 		           stderr);
 		std::abort();
@@ -46,18 +51,51 @@ extern "C" int __wrap_ioctl(int fd, unsigned long code, ...)
 	BC_IOCTL_DATA *data = va_arg(args, BC_IOCTL_DATA *);
 	va_end(args);
 	++calls;
+	last_ioctl_code = code;
+	flag_seen_in_ioctl = active_context->fw_cmd_issued;
+	data->RetSts = ioctl_status;
+	if (code != BCM_IOC_FW_CMD) {
+		if (syscall_failure) {
+			errno = EIO;
+			return -1;
+		}
+		return 0;
+	}
 	captured_fw = data->u.fwCmd;
 	command_log.push_back(captured_fw);
 	captured = *reinterpret_cast<C011CmdSelfTest *>(data->u.fwCmd.cmd);
 	C011RspSelfTest *response =
 		reinterpret_cast<C011RspSelfTest *>(data->u.fwCmd.rsp);
 	response->status = response_status;
-	data->RetSts = ioctl_status;
 	if (syscall_failure) {
 		errno = EIO;
 		return -1;
 	}
 	return 0;
+}
+
+extern "C" int __wrap_usleep(useconds_t usec)
+{
+	++sleep_calls;
+	Check(usec == 100,
+	      "firmware contention requests the historical wait interval");
+	if (active_context && clear_on_sleep == sleep_calls)
+		active_context->fw_cmd_issued = false;
+	return 0;
+}
+
+static void ResetObservations()
+{
+	captured = {};
+	captured_fw = {};
+	command_log.clear();
+	ioctl_status = BC_STS_SUCCESS;
+	response_status = 0;
+	syscall_failure = false;
+	sleep_calls = 0;
+	clear_on_sleep = 0;
+	last_ioctl_code = 0;
+	flag_seen_in_ioctl = false;
 }
 
 struct Fixture {
@@ -92,12 +130,7 @@ struct Fixture {
 		std::memset(&pooled, 0xa5, sizeof(pooled));
 		pooled.next = nullptr;
 		context.pIoDataFreeHd = &pooled;
-		captured = {};
-		captured_fw = {};
-		command_log.clear();
-		ioctl_status = BC_STS_SUCCESS;
-		response_status = 0;
-		syscall_failure = false;
+		ResetObservations();
 	}
 
 	void PoolReturned()
@@ -110,6 +143,49 @@ struct Fixture {
 	{
 		PoolReturned();
 		pthread_mutex_destroy(&context.thLock);
+		active_context = nullptr;
+		bc_dil_glob_ptr = nullptr;
+	}
+};
+
+static size_t PoolSize(const DTS_LIB_CONTEXT &context)
+{
+	size_t count = 0;
+	for (const BC_IOCTL_DATA *item = context.pIoDataFreeHd;
+	     item && count <= BC_IOCTL_DATA_POOL_SIZE; item = item->next)
+		++count;
+	return count;
+}
+
+struct FullPoolFixture {
+	bc_dil_glob_s globals = {};
+	DTS_LIB_CONTEXT context = {};
+
+	explicit FullPoolFixture(uint32_t device)
+	{
+		bc_dil_glob_ptr = &globals;
+		active_context = &context;
+		context.Sig = LIB_CTX_SIG;
+		context.DevHandle = 99;
+		context.DevId = device;
+		context.OpMode = DTS_MONITOR_MODE;
+		Check(DtsAllocMemPools(&context) == BC_STS_SUCCESS,
+		      "contention fixture allocates the complete command pool");
+		Check(PoolSize(context) == BC_IOCTL_DATA_POOL_SIZE,
+		      "contention fixture starts with the complete command pool");
+		ResetObservations();
+	}
+
+	void Prepare(bool pending = true)
+	{
+		ResetObservations();
+		context.fw_cmd_issued = pending;
+	}
+
+	~FullPoolFixture()
+	{
+		context.DevHandle = -1;
+		DtsReleaseMemPools(&context);
 		active_context = nullptr;
 		bc_dil_glob_ptr = nullptr;
 	}
@@ -444,6 +520,191 @@ static void PositiveRateCommands()
 	}
 }
 
+static void ContentionEnvelopeOwnership()
+{
+	{
+		FullPoolFixture fixture(BC_PCI_DEVID_LINK);
+		for (unsigned attempt = 0; attempt < BC_IOCTL_DATA_POOL_SIZE + 2;
+		     ++attempt) {
+			fixture.Prepare();
+			const unsigned old_calls = calls;
+			Check(DtsDrvCmd(&fixture.context, BCM_IOC_FW_CMD, 0, nullptr,
+			                FALSE) == BC_STS_ERROR,
+			      "persistent LINK contention preserves its timeout status");
+			Check(sleep_calls == 30,
+			      "persistent LINK contention consumes the exact wait budget");
+			Check(calls == old_calls,
+			      "persistent LINK contention issues no ioctl");
+			Check(fixture.context.fw_cmd_issued,
+			      "rejected command does not clear the outstanding owner");
+			Check(PoolSize(fixture.context) == BC_IOCTL_DATA_POOL_SIZE,
+			      "repeated internal timeouts restore the complete pool");
+		}
+	}
+
+	FullPoolFixture fixture(BC_PCI_DEVID_LINK);
+	fixture.Prepare();
+	Check(DtsDrvCmd(&fixture.context, BCM_IOC_FW_CMD, 0, nullptr,
+	                TRUE) == BC_STS_ERROR,
+	      "internal timeout ignores redundant transferred ownership");
+	Check(sleep_calls == 30 &&
+	          PoolSize(fixture.context) == BC_IOCTL_DATA_POOL_SIZE,
+	      "internal transferred timeout returns its envelope once");
+
+	fixture.Prepare();
+	BC_IOCTL_DATA *borrowed = DtsAllocIoctlData(&fixture.context);
+	Check(borrowed &&
+	          PoolSize(fixture.context) == BC_IOCTL_DATA_POOL_SIZE - 1,
+	      "caller can borrow an envelope before contention");
+	Check(DtsDrvCmd(&fixture.context, BCM_IOC_FW_CMD, 0, borrowed,
+	                FALSE) == BC_STS_ERROR,
+	      "caller-owned envelope preserves the contention status");
+	Check(sleep_calls == 30 &&
+	          PoolSize(fixture.context) == BC_IOCTL_DATA_POOL_SIZE - 1,
+	      "caller-owned timeout leaves the envelope borrowed");
+	DtsRelIoctlData(&fixture.context, borrowed);
+	Check(PoolSize(fixture.context) == BC_IOCTL_DATA_POOL_SIZE,
+	      "caller can return its envelope after contention");
+
+	fixture.Prepare();
+	borrowed = DtsAllocIoctlData(&fixture.context);
+	Check(DtsDrvCmd(&fixture.context, BCM_IOC_FW_CMD, 0, borrowed,
+	                TRUE) == BC_STS_ERROR,
+	      "transferred envelope preserves the contention status");
+	Check(sleep_calls == 30 &&
+	          PoolSize(fixture.context) == BC_IOCTL_DATA_POOL_SIZE,
+	      "transferred timeout restores the envelope to the pool");
+
+	fixture.Prepare();
+	BC_IOCTL_DATA *pool = fixture.context.pIoDataFreeHd;
+	fixture.context.pIoDataFreeHd = nullptr;
+	const unsigned empty_calls = calls;
+	Check(DtsDrvCmd(&fixture.context, BCM_IOC_FW_CMD, 0, nullptr,
+	                FALSE) == BC_STS_INSUFF_RES,
+	      "empty pool retains precedence over contention");
+	Check(sleep_calls == 0 && calls == empty_calls,
+	      "empty pool returns before waiting or issuing ioctl");
+	Check(fixture.context.fw_cmd_issued,
+	      "empty pool cannot disturb the outstanding owner");
+	fixture.context.pIoDataFreeHd = pool;
+	Check(PoolSize(fixture.context) == BC_IOCTL_DATA_POOL_SIZE,
+	      "empty-pool fixture restores its detached list");
+
+	fixture.Prepare();
+	const unsigned invalid_calls = calls;
+	Check(DtsDrvCmd(nullptr, BCM_IOC_FW_CMD, 0, nullptr, FALSE) ==
+	          BC_STS_INV_ARG,
+	      "null context retains precedence over firmware contention");
+	fixture.context.DevHandle = -1;
+	Check(DtsDrvCmd(&fixture.context, BCM_IOC_FW_CMD, 0, nullptr, FALSE) ==
+	          BC_STS_INV_ARG,
+	      "invalid descriptor retains precedence over firmware contention");
+	fixture.context.DevHandle = 99;
+	Check(sleep_calls == 0 && calls == invalid_calls &&
+	          fixture.context.fw_cmd_issued &&
+	          PoolSize(fixture.context) == BC_IOCTL_DATA_POOL_SIZE,
+	      "invalid command paths do not wait, issue, or borrow envelopes");
+}
+
+static void ContentionWaitBoundaries()
+{
+	FullPoolFixture fixture(BC_PCI_DEVID_LINK);
+	for (unsigned release_at : {1U, 29U}) {
+		fixture.Prepare();
+		clear_on_sleep = release_at;
+		const unsigned old_calls = calls;
+		Check(DtsDrvCmd(&fixture.context, BCM_IOC_FW_CMD, 0, nullptr,
+		                FALSE) == BC_STS_SUCCESS,
+		      "LINK command proceeds when the owner clears in budget");
+		Check(sleep_calls == release_at && calls == old_calls + 1,
+		      "released contention preserves the exact wait and ioctl count");
+		Check(last_ioctl_code == BCM_IOC_FW_CMD && flag_seen_in_ioctl,
+		      "released contender owns the flag while issuing firmware ioctl");
+		Check(!fixture.context.fw_cmd_issued &&
+		          PoolSize(fixture.context) == BC_IOCTL_DATA_POOL_SIZE,
+		      "issued contender clears its flag and returns its envelope");
+	}
+
+	fixture.Prepare();
+	clear_on_sleep = 30;
+	const unsigned boundary_calls = calls;
+	Check(DtsDrvCmd(&fixture.context, BCM_IOC_FW_CMD, 0, nullptr,
+	                FALSE) == BC_STS_ERROR,
+	      "owner release during the final sleep retains timeout behavior");
+	Check(sleep_calls == 30 && calls == boundary_calls,
+	      "final-sleep boundary performs no extra poll or ioctl");
+	Check(!fixture.context.fw_cmd_issued &&
+	          PoolSize(fixture.context) == BC_IOCTL_DATA_POOL_SIZE,
+	      "timeout leaves an externally cleared flag unchanged");
+}
+
+static void ContentionCommandBoundaries()
+{
+	FullPoolFixture fixture(BC_PCI_DEVID_LINK);
+
+	fixture.Prepare(false);
+	ioctl_status = BC_STS_BUSY;
+	unsigned old_calls = calls;
+	Check(DtsDrvCmd(&fixture.context, BCM_IOC_FW_CMD, 0, nullptr,
+	                FALSE) == BC_STS_BUSY,
+	      "issued firmware command preserves driver status");
+	Check(sleep_calls == 0 && calls == old_calls + 1 &&
+	          flag_seen_in_ioctl && !fixture.context.fw_cmd_issued,
+	      "driver-status path acquires and releases firmware ownership");
+	Check(PoolSize(fixture.context) == BC_IOCTL_DATA_POOL_SIZE,
+	      "driver-status path returns its internal envelope");
+
+	fixture.Prepare(false);
+	ioctl_status = BC_STS_BUSY;
+	syscall_failure = true;
+	old_calls = calls;
+	Check(DtsDrvCmd(&fixture.context, BCM_IOC_FW_CMD, 0, nullptr,
+	                FALSE) == BC_STS_ERROR,
+	      "firmware ioctl syscall failure preserves the public error");
+	Check(calls == old_calls + 1 && flag_seen_in_ioctl &&
+	          !fixture.context.fw_cmd_issued &&
+	          PoolSize(fixture.context) == BC_IOCTL_DATA_POOL_SIZE,
+	      "syscall failure releases flag and internal envelope ownership");
+
+	fixture.context.DevId = BC_PCI_DEVID_FLEA;
+	fixture.Prepare();
+	old_calls = calls;
+	Check(DtsDrvCmd(&fixture.context, BCM_IOC_FW_CMD, 0, nullptr,
+	                FALSE) == BC_STS_SUCCESS,
+	      "FLEA firmware command bypasses LINK contention");
+	Check(sleep_calls == 0 && calls == old_calls + 1 &&
+	          fixture.context.fw_cmd_issued &&
+	          PoolSize(fixture.context) == BC_IOCTL_DATA_POOL_SIZE,
+	      "FLEA bypass preserves unrelated flag and envelope ownership");
+
+	fixture.context.DevId = BC_PCI_DEVID_LINK;
+	fixture.Prepare();
+	old_calls = calls;
+	Check(DtsDrvCmd(&fixture.context, BCM_IOC_GET_VERSION, 0, nullptr,
+	                FALSE) == BC_STS_SUCCESS,
+	      "non-firmware LINK command bypasses firmware contention");
+	Check(sleep_calls == 0 && calls == old_calls + 1 &&
+	          last_ioctl_code == BCM_IOC_GET_VERSION &&
+	          fixture.context.fw_cmd_issued &&
+	          PoolSize(fixture.context) == BC_IOCTL_DATA_POOL_SIZE,
+	      "non-firmware bypass preserves flag and envelope ownership");
+}
+
+static void FirmwareHelperContention()
+{
+	Fixture fixture(BC_PCI_DEVID_LINK);
+	fixture.context.fw_cmd_issued = true;
+	const unsigned old_calls = calls;
+	Check(DtsFWHwSelfTest(&fixture.context, eC011_TEST_SHORT_MEMORY) ==
+	          BC_STS_ERROR,
+	      "public firmware helper preserves contention failure");
+	Check(sleep_calls == 30 && calls == old_calls,
+	      "public firmware helper waits without issuing ioctl");
+	Check(fixture.context.fw_cmd_issued,
+	      "public firmware helper cannot clear another command owner");
+	fixture.PoolReturned();
+}
+
 int main()
 {
 	ValidTestIds(BC_PCI_DEVID_FLEA);
@@ -453,6 +714,10 @@ int main()
 	ZeroRateValidation();
 	RateErrorPrecedence();
 	PositiveRateCommands();
+	ContentionEnvelopeOwnership();
+	ContentionWaitBoundaries();
+	ContentionCommandBoundaries();
+	FirmwareHelperContention();
 	std::printf("Library firmware commands: %u checks, %u failures\n",
 	            checks, failures);
 	return failures ? 1 : 0;
