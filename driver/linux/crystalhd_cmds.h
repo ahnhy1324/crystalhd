@@ -216,6 +216,15 @@ BC_STATUS crystalhd_rx_submit(struct crystalhd_cmd *ctx,
 			      struct crystalhd_rx_buffer *buffer);
 BC_STATUS crystalhd_rx_dequeue(struct crystalhd_cmd *ctx,
 			       struct crystalhd_rx_completion *result);
+/* Requeue an untouched format-change result in its capture epoch. Caller
+ * verifies COMP_FLAG_FMT_CHANGE and retains device/session lifetime from
+ * dequeue through acknowledgement, excluding PCI removal and session
+ * replacement/teardown, without holding fetch_sem. With valid ctx, hw_ctx and
+ * both result identities, this consumes buffer/cookie on every return:
+ * the buffer is requeued or released.
+ */
+BC_STATUS crystalhd_rx_ack_format(struct crystalhd_cmd *ctx,
+				  struct crystalhd_rx_completion *result);
 BC_STATUS crystalhd_capture_start(struct crystalhd_cmd *ctx,
 				  uint32_t pause_threshold,
 				  uint32_t resume_threshold);

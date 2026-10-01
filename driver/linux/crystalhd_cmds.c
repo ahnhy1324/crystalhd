@@ -1609,8 +1609,8 @@ static BC_STATUS bc_cproc_add_cap_buff(struct crystalhd_cmd *ctx,
 	return BC_STS_SUCCESS;
 }
 
-static BC_STATUS bc_cproc_fmt_change(struct crystalhd_cmd *ctx,
-				     struct crystalhd_rx_completion *result)
+BC_STATUS crystalhd_rx_ack_format(struct crystalhd_cmd *ctx,
+				  struct crystalhd_rx_completion *result)
 {
 	struct crystalhd_rx_buffer *buffer;
 	void *cookie;
@@ -1750,7 +1750,7 @@ static BC_STATUS bc_cproc_fetch_frame(struct crystalhd_cmd *ctx,
 		bc_cproc_copy_pib(&frame->PibInfo, &result.pib);
 
 	if (result.flags & COMP_FLAG_FMT_CHANGE)
-		return bc_cproc_fmt_change(ctx, &result);
+		return crystalhd_rx_ack_format(ctx, &result);
 
 	dio = crystalhd_dio_from_rx_buffer(result.buffer);
 	if (!dio || result.cookie != dio) {

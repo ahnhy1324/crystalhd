@@ -91,9 +91,9 @@ awk '
     END { if (found != 18 || copying || awaiting_name) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_hw.c" > "$rx_test_dir/rx-hardware.h"
 awk '
-	/^BC_STATUS crystalhd_(rx_submit|rx_dequeue|capture_start|capture_flush)\(/ ||
+	/^BC_STATUS crystalhd_(rx_submit|rx_dequeue|rx_ack_format|capture_start|capture_flush)\(/ ||
 	/^static void bc_cproc_copy_pib\(/ ||
-	/^static BC_STATUS bc_cproc_(check_inbuffs|add_cap_buff|fmt_change|fetch_frame|start_capture|flush_cap_buffs)\(/ {
+	/^static BC_STATUS bc_cproc_(check_inbuffs|add_cap_buff|fetch_frame|start_capture|flush_cap_buffs)\(/ {
         copying = 1; found++
     }
     copying { print }
