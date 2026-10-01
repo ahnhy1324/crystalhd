@@ -5,6 +5,7 @@
  * Flush may cancel a BUSY retry. It is not a persistent admission latch.
  */
 #include <errno.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -18,6 +19,13 @@ struct _BC_DTS_PROC_OUT;
 #define KERN_ERR ""
 #define READ_ONCE(value) (value)
 #define WRITE_ONCE(value, next) ((value) = (next))
+#define MAX_JIFFY_OFFSET ((LONG_MAX >> 1) - 1)
+#define msecs_to_jiffies(value) \
+    (run.saturate_timeout_conversion ? MAX_JIFFY_OFFSET : \
+                                       (unsigned long)(value))
+#define time_after(a, b) ((long)((b) - (a)) < 0)
+#define time_after_eq(a, b) ((long)((a) - (b)) >= 0)
+#define current NULL
 #define printk(...) ((void)0)
 #define dev_err(dev, ...) ((void)(dev))
 #define dev_dbg(dev, ...) ((void)(dev))
@@ -89,6 +97,7 @@ typedef struct {
 } crystalhd_ioctl_data;
 
 static unsigned checks, failures;
+static unsigned long jiffies;
 static struct pci_dev endpoint = { .irq = 19 };
 static struct crystalhd_adp adapter;
 static struct crystalhd_hw hardware;
@@ -100,14 +109,19 @@ static struct crystalhd_dioq freeq, activeq;
 static uint32_t input[16];
 static uint32_t opaque_cookie;
 static crystalhd_ioctl_data input_ioctl;
+static void Complete(void);
 static struct {
     unsigned maps, unmaps, descriptors, starts, stops, syncs, sleeps, waits;
     unsigned wakes, irq_depth, irq_disables, irq_enables, fifo_calls, busy;
     unsigned firmware_calls, firmware_depth, bus_clears, bus_drains;
     unsigned callback_calls;
+    unsigned sleep_budget[4], sleep_budget_count, completion_budget;
+    unsigned post_delay_ms, wait_entry_delay_ms;
+    unsigned cancel_on_sleep, remove_on_sleep, absolute_waits;
     int wait_result, sleep_result;
     bool mapped, immediate_completion, completion_before_cancel, flush_on_busy;
-    bool drain_ok, fault_on_sleep;
+    bool drain_ok, fault_on_sleep, signal_pending, remove_on_wait;
+    bool complete_on_status, saturate_timeout_conversion;
     unsigned free_add_failures;
     BC_STATUS map_status, descriptor_status, active_add_status, free_add_status, stop_status;
     BC_STATUS completion_status, firmware_status;
@@ -116,6 +130,16 @@ static struct {
     uint8_t seen_flags, transfer_flags;
     uint32_t seen_destination, transfer_size;
 } run;
+
+static bool signal_pending(void *task)
+{
+    (void)task;
+    if (run.complete_on_status && context.tx_list_id && activeq.packet) {
+        run.complete_on_status = false;
+        Complete();
+    }
+    return run.signal_pending;
+}
 
 struct multi_cookie {
     unsigned calls;
@@ -176,16 +200,32 @@ static void crystalhd_set_event(wait_queue_head_t *event)
 }
 static int Wait(wait_queue_head_t *event, int condition, unsigned timeout)
 {
-    if (timeout == 100) {
+    if (!context.tx_list_id) {
+        Check(timeout && timeout <= 100,
+              "FIFO retry sleep is clipped to the remaining budget");
         Check(!condition && !event->wakeups, "FIFO retry uses a separate idle event");
+        if (run.sleep_budget_count < sizeof(run.sleep_budget) /
+                                     sizeof(run.sleep_budget[0]))
+            run.sleep_budget[run.sleep_budget_count] = timeout;
+        run.sleep_budget_count++;
         run.sleeps++;
+        jiffies += timeout;
         if (run.fault_on_sleep)
             hardware.dma_fault = true;
+        if (run.cancel_on_sleep == run.sleeps)
+            context.cin_wait_exit = 1;
+        if (run.remove_on_sleep == run.sleeps)
+            adapter.present = false;
         return run.sleep_result;
     }
-    Check(timeout == 3000 && context.tx_list_id != 0,
-          "submitted TX waits with its published cancellation tag");
+    Check(timeout && timeout <= 3000,
+          "submitted TX wait retains its published tag and DMA watchdog");
+    run.completion_budget = timeout;
     run.waits++;
+    if (run.remove_on_wait)
+        adapter.present = false;
+    if (run.wait_result)
+        jiffies += timeout;
     if (run.wait_result && !run.completion_before_cancel)
         return run.wait_result;
     if (!condition)
@@ -196,8 +236,30 @@ static int Wait(wait_queue_head_t *event, int condition, unsigned timeout)
 }
 #define crystalhd_wait_on_event(event, condition, timeout, result, nosig) do { \
     (void)(nosig); (result) = Wait(event, condition, timeout); \
-    if ((timeout) == 3000 && !(result)) \
+    if (context.tx_list_id && !(result)) \
         Check((condition), "TX wait rechecks the completion predicate after wakeup"); \
+} while (0)
+#define crystalhd_wait_on_event_until(event, condition, deadline, result, nosig) do { \
+    unsigned long __test_deadline = (deadline); \
+    (void)(nosig); \
+    run.absolute_waits++; \
+    if (run.wait_entry_delay_ms) { \
+        jiffies += run.wait_entry_delay_ms; \
+        run.wait_entry_delay_ms = 0; \
+    } \
+    if (condition) { \
+        (result) = 0; \
+    } else if (time_after_eq(jiffies, __test_deadline)) { \
+        (result) = -EBUSY; \
+    } else { \
+        (result) = Wait(event, condition, \
+                        (unsigned)(__test_deadline - jiffies)); \
+        if (!(result) && !(condition) && \
+            time_after_eq(jiffies, __test_deadline)) \
+            (result) = -EBUSY; \
+    } \
+    if (context.tx_list_id && !(result)) \
+        Check((condition), "bounded TX wait rechecks completion after wakeup"); \
 } while (0)
 static void synchronize_irq(int irq)
 {
@@ -386,6 +448,7 @@ static bool Fifo(struct crystalhd_hw *hw, uint32_t size, uint32_t *index,
           *flags == run.transfer_flags,
           "pre-submit FIFO admission receives the whole mapped input");
     run.fifo_calls++; run.seen_flags = *flags;
+    jiffies += run.post_delay_ms;
     if (run.busy) {
         run.busy--;
         if (run.flush_on_busy) {
@@ -435,6 +498,7 @@ static BC_STATUS Pause(struct crystalhd_hw *hw, bool pause)
 }
 static void Reset(void)
 {
+    jiffies = 0;
     memset(&run, 0, sizeof(run));
     memset(&request, 0, sizeof(request));
     packet = (struct tx_dma_pkt){ .desc_mem.phy_addr = 0x1000 };
@@ -863,6 +927,12 @@ static void BusyErrors(void)
 }
 static void BusyAndFlush(void)
 {
+    Reset(); run.busy = 31;
+    Check(bc_cproc_proc_input(&context, &input_ioctl) == BC_STS_SUCCESS &&
+          run.sleeps == 31 && jiffies == 3100 &&
+          run.completion_budget == 3000 && run.starts == 1,
+          "legacy admission remains unbounded beyond the DMA watchdog interval");
+    Balanced();
     Reset(); run.busy = 2;
     Check(bc_cproc_proc_input(&context, &input_ioctl) == BC_STS_SUCCESS &&
           run.sleeps == 2 && run.fifo_calls == 3 && hardware.stats.cin_busy == 2 &&
@@ -898,11 +968,16 @@ static void BusyAndFlush(void)
           "a cancelling flush flag applies to BUSY retry, not immediately admissible input");
     Balanced();
     Reset(); context.cin_wait_exit = 1; context.state = BC_LINK_SUSPEND;
-    Check(bc_cproc_codein_sleep(&context) == BC_STS_PWR_MGMT && context.cin_wait_exit,
+    Check(bc_cproc_codein_sleep(&context, 100, false, 0) ==
+              BC_STS_PWR_MGMT &&
+          context.cin_wait_exit,
           "suspended retry reports PM before consuming the one-shot flush flag");
     adapter.present = false;
-    Check(bc_cproc_codein_sleep(&context) == BC_STS_CMD_CANCELLED &&
-          bc_cproc_codein_sleep(&context) == BC_STS_CMD_CANCELLED && !run.sleeps,
+    Check(bc_cproc_codein_sleep(&context, 100, false, 0) ==
+              BC_STS_CMD_CANCELLED &&
+          bc_cproc_codein_sleep(&context, 100, false, 0) ==
+              BC_STS_CMD_CANCELLED &&
+          !run.sleeps,
           "removal cancels every retry even if another caller consumed a flush flag");
     Balanced();
 }
@@ -934,6 +1009,243 @@ static void Cancellation(void)
         }
     }
 }
+
+static void PrepareBorrowedInput(void)
+{
+    run.transfer_size = 7;
+    run.transfer_flags = 0x81;
+    request = (struct crystalhd_dio_req){
+        .uinfo.xfr_len = run.transfer_size,
+        .tx_buffer = {
+            .bytes = run.transfer_size,
+            .cookie = &request,
+        },
+    };
+    run.mapped = true;
+}
+
+static void FinishBorrowedInput(void)
+{
+    Check(run.mapped && !run.maps && !run.unmaps && !context.tx_list_id &&
+          !activeq.packet && freeq.packet == &packet && !packet.buffer &&
+          !packet.cb_context && !packet.call_back && !packet.list_tag,
+          "borrowed transfer retires hardware ownership before caller release");
+    crystalhd_unmap_dio(&adapter, &request);
+    Balanced();
+}
+
+static void BoundedTransfer(void)
+{
+    Reset(); PrepareBorrowedInput(); run.busy = 10;
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                                     run.transfer_flags, 250) == BC_STS_TIMEOUT &&
+          run.fifo_calls == 3 && run.sleeps == 3 &&
+          run.absolute_waits == 3 &&
+          run.sleep_budget_count == 3 && run.sleep_budget[0] == 100 &&
+          run.sleep_budget[1] == 100 && run.sleep_budget[2] == 50 &&
+          jiffies == 250 && !run.descriptors && !run.starts && !run.stops,
+          "bounded BUSY admission expires at one clipped absolute deadline");
+    FinishBorrowedInput();
+
+    Reset(); PrepareBorrowedInput(); run.busy = 10;
+    run.wait_entry_delay_ms = 120;
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                                     run.transfer_flags, 250) == BC_STS_TIMEOUT &&
+          run.fifo_calls == 3 && run.absolute_waits == 3 && run.sleeps == 2 &&
+          run.sleep_budget[0] == 100 && run.sleep_budget[1] == 30 &&
+          jiffies == 250 && !run.starts,
+          "preemption before a bounded sleep cannot create a fresh relative budget");
+    FinishBorrowedInput();
+
+    Reset(); PrepareBorrowedInput(); run.busy = 2; run.wait_result = -EBUSY;
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                                     run.transfer_flags, 250) == BC_STS_TIMEOUT &&
+          run.fifo_calls == 3 && run.sleeps == 2 && run.starts == 1 &&
+          run.completion_budget == 50 && jiffies == 250 && run.stops == 1 &&
+          run.irq_disables == 1 && run.irq_enables == 1 && run.syncs == 1,
+          "DMA completion receives only the total budget left after admission");
+    FinishBorrowedInput();
+
+    Reset(); PrepareBorrowedInput(); run.post_delay_ms = 250;
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                                     run.transfer_flags, 250) == BC_STS_TIMEOUT &&
+          run.starts == 1 && !run.waits && run.stops == 1 && jiffies == 250,
+          "a posted request crossing the deadline is cancelled before return");
+    FinishBorrowedInput();
+
+    Reset(); PrepareBorrowedInput(); run.post_delay_ms = 250;
+    run.immediate_completion = true;
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                                     run.transfer_flags, 250) == BC_STS_SUCCESS &&
+          run.starts == 1 && !run.waits && !run.stops && run.syncs == 1,
+          "an IRQ completion already observed at the deadline wins without cancellation");
+    FinishBorrowedInput();
+
+    Reset(); PrepareBorrowedInput(); run.post_delay_ms = 250;
+    run.complete_on_status = true;
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                                     run.transfer_flags, 250) == BC_STS_SUCCESS &&
+          run.starts == 1 && !run.waits && !run.stops && run.wakes == 1 &&
+          run.syncs == 1,
+          "completion racing the deadline status check is observed before cancellation");
+    FinishBorrowedInput();
+
+    Reset(); PrepareBorrowedInput(); run.busy = 2;
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                                     run.transfer_flags, 40) == BC_STS_TIMEOUT &&
+          run.fifo_calls == 1 && run.sleeps == 1 &&
+          run.sleep_budget[0] == 40 && jiffies == 40 && !run.starts,
+          "a sub-retry budget cannot oversleep or attempt DMA after expiry");
+    FinishBorrowedInput();
+
+    Reset(); PrepareBorrowedInput(); run.busy = 10;
+    jiffies = ULONG_MAX - 149;
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                                     run.transfer_flags, 250) == BC_STS_TIMEOUT &&
+          run.fifo_calls == 3 && run.sleep_budget[0] == 100 &&
+          run.sleep_budget[1] == 100 && run.sleep_budget[2] == 50 &&
+          jiffies == 100 && !run.starts,
+          "bounded admission keeps its deadline across jiffies wrap");
+    FinishBorrowedInput();
+
+    Reset(); PrepareBorrowedInput(); run.busy = 1; run.remove_on_sleep = 1;
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                                     run.transfer_flags, 250) ==
+              BC_STS_CMD_CANCELLED &&
+          run.fifo_calls == 1 && run.sleeps == 1 && !run.starts,
+          "removal during bounded BUSY sleep prevents the now-ready repost");
+    FinishBorrowedInput();
+
+    Reset(); PrepareBorrowedInput(); run.busy = 1; run.cancel_on_sleep = 1;
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                                     run.transfer_flags, 250) ==
+              BC_STS_CMD_CANCELLED &&
+          run.fifo_calls == 1 && run.sleeps == 1 && !run.starts &&
+          !context.cin_wait_exit,
+          "a legacy flush arriving during bounded sleep is consumed before repost");
+    FinishBorrowedInput();
+
+    Reset(); PrepareBorrowedInput(); run.busy = 1; run.sleep_result = -EINTR;
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                                     run.transfer_flags, 250) ==
+              BC_STS_IO_USER_ABORT &&
+          run.fifo_calls == 1 && run.sleeps == 1 && !run.starts,
+          "a signal during bounded admission aborts without DMA ownership");
+    FinishBorrowedInput();
+
+    Reset(); PrepareBorrowedInput(); run.busy = 1; run.sleep_result = -EIO;
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                                     run.transfer_flags, 250) == BC_STS_IO_ERROR &&
+          run.fifo_calls == 1 && run.sleeps == 1 && !run.starts,
+          "an unexpected bounded admission wait error cannot repost DMA");
+    FinishBorrowedInput();
+
+    Reset(); PrepareBorrowedInput(); run.wait_result = -EBUSY;
+    run.remove_on_wait = true;
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                                     run.transfer_flags, 250) ==
+              BC_STS_CMD_CANCELLED &&
+          run.starts == 1 && run.stops == 1 && run.wakes == 1 &&
+          run.syncs == 1,
+          "removal during a posted bounded wait cancels and retires DMA once");
+    FinishBorrowedInput();
+
+    Reset(); PrepareBorrowedInput(); run.wait_result = -EBUSY;
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                                     run.transfer_flags, 5000) == BC_STS_TIMEOUT &&
+          run.completion_budget == 3000 && jiffies == 3000 &&
+          run.starts == 1 && run.stops == 1,
+          "bounded completion retains the three-second hardware watchdog cap");
+    FinishBorrowedInput();
+
+    for (unsigned which = 0; which < 2; which++) {
+        Reset(); PrepareBorrowedInput();
+        run.wait_result = which ? -EIO : -EINTR;
+        Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                                         run.transfer_flags, 250) ==
+                  (which ? BC_STS_IO_ERROR : BC_STS_IO_USER_ABORT) &&
+              run.starts == 1 && run.stops == 1 &&
+              run.irq_disables == 1 && run.irq_enables == 1 &&
+              run.syncs == 1,
+              "bounded posted wait errors cancel and retire DMA exactly once");
+        FinishBorrowedInput();
+    }
+
+    Reset(); PrepareBorrowedInput(); run.wait_result = -EBUSY;
+    run.completion_before_cancel = true;
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                                     run.transfer_flags, 250) == BC_STS_SUCCESS &&
+          run.starts == 1 && !run.stops && run.wakes == 1 && run.syncs == 1,
+          "bounded completion observed at deadline wins over cancellation");
+    FinishBorrowedInput();
+
+    Reset(); PrepareBorrowedInput(); run.wait_result = -EBUSY;
+    run.stop_status = BC_STS_IO_ERROR; run.drain_ok = false;
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                                     run.transfer_flags, 250) == BC_STS_TIMEOUT &&
+          run.starts == 1 && run.stops == 1 && hardware.dma_fault &&
+          run.bus_clears == 1 && run.bus_drains == 1 && run.syncs == 1,
+          "bounded timeout status survives a failed fatal DMA stop");
+    FinishBorrowedInput();
+
+    Reset(); PrepareBorrowedInput(); context.state = BC_LINK_SUSPEND;
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                                     run.transfer_flags, 250) == BC_STS_PWR_MGMT &&
+          !run.fifo_calls && !run.starts,
+          "bounded admission rejects an already suspended session before hardware");
+    FinishBorrowedInput();
+
+    Reset(); PrepareBorrowedInput(); run.signal_pending = true;
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                                     run.transfer_flags, 250) ==
+              BC_STS_IO_USER_ABORT &&
+          !run.fifo_calls && !run.starts,
+          "bounded admission observes a pending signal before hardware");
+    FinishBorrowedInput();
+
+    Reset(); PrepareBorrowedInput(); run.post_delay_ms = 250;
+    run.descriptor_status = BC_STS_NOT_IMPL;
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                                     run.transfer_flags, 250) ==
+              BC_STS_NOT_IMPL &&
+          !run.starts && !run.stops,
+          "a hard post failure is not replaced by an expired budget");
+    FinishBorrowedInput();
+
+    Reset(); PrepareBorrowedInput(); run.immediate_completion = true;
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                                     run.transfer_flags, INT_MAX) ==
+              BC_STS_SUCCESS &&
+          run.fifo_calls == 1 && run.starts == 1 && !run.absolute_waits,
+          "the largest signed millisecond budget remains finite when representable");
+    FinishBorrowedInput();
+
+    Reset(); PrepareBorrowedInput();
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                                     run.transfer_flags,
+                                     (uint32_t)INT_MAX + 1U) ==
+              BC_STS_INV_ARG &&
+          !run.fifo_calls && !run.starts && !run.absolute_waits,
+          "a millisecond budget above INT_MAX is rejected before hardware");
+    FinishBorrowedInput();
+
+    Reset(); PrepareBorrowedInput();
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                                     run.transfer_flags, UINT32_MAX) ==
+              BC_STS_INV_ARG &&
+          !run.fifo_calls && !run.starts && !run.absolute_waits,
+          "UINT32_MAX cannot turn a finite TX budget into an infinite wait");
+    FinishBorrowedInput();
+
+    Reset(); PrepareBorrowedInput(); run.saturate_timeout_conversion = true;
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                                     run.transfer_flags, 250) ==
+              BC_STS_INV_ARG &&
+          !run.fifo_calls && !run.starts && !run.absolute_waits,
+          "a saturating jiffies conversion is rejected before hardware");
+    FinishBorrowedInput();
+}
+
 static void BorrowedTransfer(void)
 {
     const BC_STATUS expected[] = {
@@ -943,13 +1255,13 @@ static void BorrowedTransfer(void)
     };
 
     Reset();
-    Check(crystalhd_tx_transfer_sync(NULL, &request.tx_buffer, 0) == BC_STS_INV_ARG &&
-          crystalhd_tx_transfer_sync(&context, NULL, 0) == BC_STS_INV_ARG,
+    Check(crystalhd_tx_transfer_sync(NULL, &request.tx_buffer, 0, 0) == BC_STS_INV_ARG &&
+          crystalhd_tx_transfer_sync(&context, NULL, 0, 0) == BC_STS_INV_ARG,
           "the ioctl-independent transfer rejects NULL context or request");
     context.hw_ctx = NULL;
     context.tx_list_id = 0x1234;
     context.cin_wait_exit = 1;
-    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer, 0) == BC_STS_INV_ARG &&
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer, 0, 0) == BC_STS_INV_ARG &&
           context.tx_list_id == 0x1234 && context.cin_wait_exit == 1,
           "missing hardware is rejected without changing command ownership or cancellation state");
     Check(!run.maps && !run.unmaps && !run.fifo_calls && !run.starts && !run.waits,
@@ -960,16 +1272,7 @@ static void BorrowedTransfer(void)
         Reset();
         /* The caller lends a freshly mapped request, including clear completion
          * fields. The transfer must retire DMA, not unmap the caller's request. */
-        run.transfer_size = 7;
-        run.transfer_flags = 0x81;
-        request = (struct crystalhd_dio_req){
-            .uinfo.xfr_len = run.transfer_size,
-            .tx_buffer = {
-                .bytes = run.transfer_size,
-                .cookie = &request,
-            },
-        };
-        run.mapped = true;
+        PrepareBorrowedInput();
         if (which == 1) run.immediate_completion = true;
         if (which == 2) run.busy = 2;
         if (which == 3 || which == 8) run.wait_result = -EBUSY;
@@ -981,20 +1284,15 @@ static void BorrowedTransfer(void)
         if (which == 9) run.completion_status = BC_STS_IO_ERROR;
         if (which == 10) context.hw_ctx = NULL;
         Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
-                                         run.transfer_flags) == expected[which],
+                                         run.transfer_flags, 0) == expected[which],
               "borrowed transfers preserve success, retry, completion and cancellation statuses");
-        Check(run.mapped && !run.maps && !run.unmaps && !context.tx_list_id &&
-              !activeq.packet && freeq.packet == &packet && !packet.buffer &&
-              !packet.cb_context && !packet.call_back && !packet.list_tag,
-              "transfer return retires every DMA and callback owner without releasing the borrowed mapping");
-        crystalhd_unmap_dio(&adapter, &request);
-        Balanced();
+        FinishBorrowedInput();
     }
 }
 int main(void)
 {
     Admission(); OpaqueCookie(); CancelAllOwners(); Completion(); Rollback(); TransferArguments(); BusyErrors(); BusyAndFlush(); Cancellation();
-    BorrowedTransfer();
+    BoundedTransfer(); BorrowedTransfer();
     printf("TX admission: %u checks, %u failures\n", checks, failures);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

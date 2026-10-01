@@ -190,10 +190,15 @@ int crystalhd_decoder_channel_close_locked(struct crystalhd_cmd *ctx,
 					   const void *owner);
 /* Caller retains device/session lifetime and serializes TX submission through
  * return; the legacy ioctl adapter does this with user_lock and tx_lock.
+ * A supported nonzero timeout bounds admission and completion waiting as one
+ * budget; values above INT_MAX or conversions to MAX_JIFFY_OFFSET are rejected.
+ * Safe cancellation can extend return and posted DMA keeps its three-second
+ * hardware watchdog. Zero preserves the legacy unbounded-admission policy.
  */
 BC_STATUS crystalhd_tx_transfer_sync(struct crystalhd_cmd *ctx,
 				     const struct crystalhd_tx_buffer *buffer,
-				     uint8_t data_flags);
+				     uint8_t data_flags,
+				     uint32_t total_timeout_ms);
 BC_STATUS crystalhd_rx_submit(struct crystalhd_cmd *ctx,
 			      struct crystalhd_rx_buffer *buffer);
 BC_STATUS crystalhd_rx_dequeue(struct crystalhd_cmd *ctx,

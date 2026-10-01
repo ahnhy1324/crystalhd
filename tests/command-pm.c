@@ -26,6 +26,7 @@ struct _BC_DTS_PROC_OUT;
 #define KERN_ERR ""
 #define GFP_KERNEL 0
 #define READ_ONCE(value) (value)
+#define WRITE_ONCE(value, update) ((value) = (update))
 #define BUILD_BUG_ON(condition) _Static_assert(!(condition), "BUILD_BUG_ON")
 #define printk(...) ((void)0)
 #define dev_err(dev, ...) ((void)(dev))
