@@ -12,10 +12,6 @@ and [DMA.md](DMA.md) for DMA ownership and failure boundaries.
   finish physical display/audio, device and lifecycle coverage.
 - [ ] [#12: YouTube][issue-12]:
   diagnose live 1x A/V desynchronization and validate playback controls.
-- [ ] [#52: V4L2 stateful M2M roadmap][issue-52]:
-  add the V4L2 frontend against the frozen legacy reference without breaking
-  the existing ABI or hardware support; track the remaining Ubuntu LTS
-  hardware sanity separately.
 
 ## Coverage and lifecycle
 
@@ -48,4 +44,3 @@ logs and investigation history in the relevant issue or CI artifact.
 
 [issue-8]: https://github.com/ahnhy1324/crystalhd/issues/8
 [issue-12]: https://github.com/ahnhy1324/crystalhd/issues/12
-[issue-52]: https://github.com/ahnhy1324/crystalhd/issues/52
