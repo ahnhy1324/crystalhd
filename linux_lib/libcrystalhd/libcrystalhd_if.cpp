@@ -2660,6 +2660,8 @@ DtsSetRateChange(HANDLE  hDevice ,
 
 	if (!DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
+	if (!rate)
+		return BC_STS_INV_ARG;
 
 	//Change Rate Value for Version 1.1
 	//Rate: Specifies the new rate x 10000
@@ -2808,6 +2810,8 @@ DtsSetFFRate(HANDLE  hDevice ,
 
 	if (!DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
+	if (!rate)
+		return BC_STS_INV_ARG;
 
 	//Change Rate Value for Version 1.1
 	//Rate: Specifies the new rate x 10000
