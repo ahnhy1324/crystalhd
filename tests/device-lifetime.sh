@@ -21,13 +21,14 @@ awk '
     END { if (found != 1 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_lnx.c" > "$lifetime_test_dir/lifetime-binding.h"
 awk '
+    /^static void crystalhd_decoder_tracking_reset\(/ ||
     /^static void crystalhd_retire_hw_context\(/ ||
     /^BC_STATUS crystalhd_session_release_locked\(/ ||
     /^void crystalhd_user_close\(/ ||
     /^BC_STATUS crystalhd_delete_cmd_context\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 4 || copying) exit 1 }
+    END { if (found != 5 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" > "$lifetime_test_dir/lifetime-command.h"
 awk '
     /^static int chd_dec_disable_int\(/ ||

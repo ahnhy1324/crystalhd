@@ -39,11 +39,19 @@ struct file { void *private_data; };
 struct crystalhd_user { uint32_t uid, in_use, mode; };
 struct crystalhd_adp;
 struct crystalhd_hw { void *rx_freeq; };
+enum crystalhd_decoder_phase {
+	CRYSTALHD_DECODER_COLD = 0,
+	CRYSTALHD_DECODER_BOOTSTRAPPED,
+	CRYSTALHD_DECODER_CHANNEL_CONFIGURED,
+	CRYSTALHD_DECODER_RECOVERY_REQUIRED,
+};
 struct crystalhd_cmd {
 	struct crystalhd_adp *adp;
 	struct crystalhd_hw *hw_ctx;
 	struct crystalhd_user user[2];
 	const void *session_owner;
+	enum crystalhd_decoder_phase decoder_phase;
+	uint32_t fw_sequence, decoder_channel_id;
 	uint32_t cin_wait_exit, pwr_state_change, state;
 };
 typedef struct crystalhd_ioctl_data {

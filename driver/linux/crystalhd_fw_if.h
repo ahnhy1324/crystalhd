@@ -271,6 +271,67 @@ struct crystalhd_fw_init_cmd {
 #define CRYSTALHD_FW_INIT_FGT_ENABLE	0x00000001U
 #define CRYSTALHD_FW_INIT_RSA_DECRYPT	0x00000001U
 
+/* Fixed-width kernel forms of the BCM70015 channel setup requests. Keep enum
+ * types out of firmware wire layouts: compiler enum width is not an ABI.
+ */
+struct crystalhd_fw_channel_open_cmd {
+	uint32_t command;
+	uint32_t sequence;
+	uint32_t input_port;
+	uint32_t output_port;
+	uint32_t stream_type;
+	uint32_t max_picture_size;
+	uint32_t output_control;
+	uint32_t channel_type;
+	uint32_t scaling;
+	uint32_t video_algorithm;
+	uint32_t source_mode;
+	uint32_t pulldown;
+	uint32_t picture_info;
+	uint32_t display_order;
+	uint32_t drop_half;
+	uint32_t reserved_word15;
+	uint32_t stream_id;
+	uint32_t deblocking;
+	uint32_t vcxo_control;
+	uint32_t display_timing;
+	uint32_t video_display_offset;
+	uint32_t user_data_mode;
+	uint32_t enable_user_data_interrupt;
+	uint32_t pts_stc_diff_threshold;
+	uint32_t stc_pts_diff_threshold;
+	uint32_t enable_first_pts_interrupt;
+	uint32_t enable_stc_pts_threshold_interrupt;
+	uint32_t frame_rate_definition;
+	uint32_t host_dma_interrupt_enable;
+	uint32_t async_event_notify_enable;
+	uint32_t enable_pts_stc_change_interrupt;
+	uint32_t enable_pts_error_interrupt;
+	uint32_t enable_fgt;
+	uint32_t enable_23_297_frame_rate_output;
+	uint32_t enable_video_data_underflow_interrupt;
+	uint32_t reserved_word35;
+	uint32_t picture_info_interrupt_enable;
+};
+
+struct crystalhd_fw_input_params_cmd {
+	uint32_t command;
+	uint32_t sequence;
+	uint32_t channel_id;
+	uint32_t sync_mode;
+	uint32_t discontinuity_notify;
+	uint32_t discontinuity_packet_threshold;
+	uint32_t discontinuity_threshold;
+	uint32_t disable_flow_control;
+	uint32_t disable_pcr_offset;
+};
+
+#define CRYSTALHD_FW_CHANNEL_OPEN_WORDS	37U
+#define CRYSTALHD_FW_INPUT_PARAMS_WORDS	9U
+#define CRYSTALHD_FW_STREAM_TYPE_PES	1U
+#define CRYSTALHD_FW_VIDEO_ALGORITHM_H264	0U
+#define CRYSTALHD_FW_SYNC_MODE_SYNCPIN	1U
+
 struct DecRspChannelStartVideo {
     uint32_t	command;
     uint32_t	sequence;

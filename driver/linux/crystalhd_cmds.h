@@ -50,6 +50,21 @@ enum _crystalhd_state{
 	BC_LINK_READY	= (BC_LINK_INIT | BC_LINK_CAP_EN | BC_LINK_FMT_CHG),
 };
 
+enum crystalhd_decoder_phase {
+	CRYSTALHD_DECODER_COLD = 0,
+	CRYSTALHD_DECODER_BOOTSTRAPPED,
+	CRYSTALHD_DECODER_CHANNEL_CONFIGURED,
+	CRYSTALHD_DECODER_RECOVERY_REQUIRED,
+};
+
+enum crystalhd_decoder_codec {
+	CRYSTALHD_DECODER_CODEC_H264 = 0,
+};
+
+struct crystalhd_decoder_config {
+	enum crystalhd_decoder_codec codec;
+};
+
 struct crystalhd_user {
 	uint32_t	uid;
 	uint32_t	in_use;
@@ -69,6 +84,9 @@ struct crystalhd_cmd {
 	 * without a frontend release.
 	 */
 	const void		*session_owner;
+	enum crystalhd_decoder_phase decoder_phase;
+	uint32_t		fw_sequence;
+	uint32_t		decoder_channel_id;
 
 	spinlock_t		ctx_lock;
 	uint32_t		tx_list_id;
@@ -127,14 +145,24 @@ int crystalhd_request_firmware_locked(struct crystalhd_cmd *ctx,
 BC_STATUS crystalhd_fw_exec_locked(struct crystalhd_cmd *ctx,
 				   const void *owner, BC_FW_CMD *fw_cmd);
 /* Request the chip firmware and issue its fixed C011 INIT command as one
- * retryable controller transition from BC_LINK_INVALID or BC_LINK_RESUME. The
- * caller excludes device removal, holds adp->user_lock exclusively, and owns
- * the active session. On failure, local admission state is restored so the
- * next attempt must perform a fresh verified firmware download before issuing
- * another command.
+ * retryable controller transition from BC_LINK_INVALID, BC_LINK_RESUME, or
+ * BC_LINK_INIT while decoder recovery is required. The caller excludes device
+ * removal, holds adp->user_lock exclusively, and owns the active session. A
+ * successful verified download resets the decoder phase and command sequence;
+ * on failure, the next attempt must perform another fresh verified download
+ * before issuing a command.
  */
 int crystalhd_fw_bootstrap_locked(struct crystalhd_cmd *ctx,
 				  const void *owner);
+/* Configure the first BCM70015 decoder channel with one OPEN + INPUT_PARAMS
+ * transition. The caller excludes PCI removal, holds adp->user_lock
+ * exclusively, owns the active session, and has completed the bootstrap above
+ * without dropping that lock. A partial channel open is never published; it
+ * requires a fresh bootstrap before retry.
+ */
+int crystalhd_decoder_channel_open_locked(
+	struct crystalhd_cmd *ctx, const void *owner,
+	const struct crystalhd_decoder_config *config);
 /* Caller retains device/session lifetime and serializes TX submission through
  * return; the legacy ioctl adapter does this with user_lock and tx_lock.
  */
