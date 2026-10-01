@@ -75,6 +75,10 @@ struct crystalhd_tx_buffer {
  * read, write and release run in process context; release follows full detach.
  */
 struct crystalhd_rx_buffer_ops {
+	/* Native clients can return an explicit failed-frame completion. Legacy
+	 * clients leave this clear and retain their historical drop behavior.
+	 */
+	bool report_decode_errors;
 	void (*sync_for_cpu)(struct crystalhd_adp *adp,
 			     struct crystalhd_rx_buffer *buffer);
 	void (*sync_for_device)(struct crystalhd_adp *adp,

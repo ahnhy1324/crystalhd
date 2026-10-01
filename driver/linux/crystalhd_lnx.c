@@ -56,6 +56,53 @@ static int crystalhd_device_reserve_generation(u64 *generation)
 	return 0;
 }
 
+/* New native sessions must not queue a writer behind backpressured TX:
+ * that writer would also block the RX readers needed to retire the TX.
+ * Teardown and established-session access keep their blocking barriers.
+ */
+int crystalhd_device_try_enter_exclusive(u64 generation,
+				       struct crystalhd_device_access *access)
+{
+	struct crystalhd_adp *adp;
+	int rc = -ENODEV;
+
+	if (!access)
+		return -EINVAL;
+	memset(access, 0, sizeof(*access));
+	if (!down_read_trylock(&chd_device_lock))
+		return -EBUSY;
+	if (!generation || generation != chd_device_generation)
+		goto unlock_device;
+	adp = g_adp_info;
+	if (!adp || !READ_ONCE(adp->present))
+		goto unlock_device;
+	if (!mutex_trylock(&adp->legacy_gate)) {
+		rc = -EBUSY;
+		goto unlock_device;
+	}
+	if (!down_write_trylock(&adp->user_lock)) {
+		rc = -EBUSY;
+		goto unlock_gate;
+	}
+	if (!READ_ONCE(adp->present))
+		goto unlock_user;
+	if (!adp->hw_accessible) {
+		rc = -EAGAIN;
+		goto unlock_user;
+	}
+	access->adp = adp;
+	access->exclusive = true;
+	mutex_unlock(&adp->legacy_gate);
+	return 0;
+unlock_user:
+	up_write(&adp->user_lock);
+unlock_gate:
+	mutex_unlock(&adp->legacy_gate);
+unlock_device:
+	up_read(&chd_device_lock);
+	return rc;
+}
+
 int crystalhd_device_enter(u64 generation, bool exclusive,
 			   struct crystalhd_device_access *access)
 {
@@ -665,6 +712,41 @@ static bool crystalhd_rawio_command(unsigned int cmd)
 	}
 }
 
+/* Keep the gate across a read-to-write transition: a new native claim also
+ * tries this gate, so it cannot publish an owner in the upgrade gap. Native
+ * TX/RX use only user_lock readers and never wait for legacy bookkeeping.
+ */
+static bool crystalhd_legacy_enter(struct crystalhd_adp *adp, bool *exclusive)
+{
+	bool native;
+
+	mutex_lock(&adp->legacy_gate);
+	down_read(&adp->user_lock);
+	native = adp->cmds.session_owner && adp->cmds.session_lifetime_ops &&
+		 adp->cmds.session_owner == adp->cmds.session_lifetime_owner;
+	if (native) {
+		*exclusive = false;
+		return true; /* Shared owner lifetime plus serialized legacy slots. */
+	}
+	if (*exclusive) {
+		up_read(&adp->user_lock);
+		down_write(&adp->user_lock);
+	}
+	mutex_unlock(&adp->legacy_gate);
+	return false;
+}
+
+static void crystalhd_legacy_exit(struct crystalhd_adp *adp, bool exclusive,
+				  bool native)
+{
+	if (exclusive)
+		up_write(&adp->user_lock);
+	else
+		up_read(&adp->user_lock);
+	if (native)
+		mutex_unlock(&adp->legacy_gate);
+}
+
 static long chd_dec_ioctl_common(struct file *fd, unsigned int cmd,
 				 unsigned long ua, bool compat)
 {
@@ -674,6 +756,7 @@ static long chd_dec_ioctl_common(struct file *fd, unsigned int cmd,
 	struct crystalhd_file *binding = fd->private_data;
 	struct crystalhd_user *uc;
 	bool exclusive;
+	bool native;
 	bool tx_locked = false;
 	long rc;
 
@@ -692,10 +775,7 @@ static long chd_dec_ioctl_common(struct file *fd, unsigned int cmd,
 
 	exclusive = cmd == BCM_IOC_NOTIFY_MODE || cmd == BCM_IOC_RELEASE ||
 		    cmd == BCM_IOC_FW_DOWNLOAD;
-	if (exclusive)
-		down_write(&adp->user_lock);
-	else
-		down_read(&adp->user_lock);
+	native = crystalhd_legacy_enter(adp, &exclusive);
 	/* A PM failure can be published while this file operation waits behind
 	 * the user barrier. Revalidate after admission before touching hardware.
 	 */
@@ -717,6 +797,12 @@ static long chd_dec_ioctl_common(struct file *fd, unsigned int cmd,
 	}
 
 	cproc = crystalhd_get_cmd_proc(&adp->cmds, cmd, uc);
+	if (native && cproc) {
+		if (cmd == BCM_IOC_NOTIFY_MODE)
+			cproc = crystalhd_native_legacy_notify;
+		else if (cmd == BCM_IOC_RELEASE)
+			cproc = crystalhd_native_legacy_release;
+	}
 	if (!cproc && !(adp->cmds.state & BC_LINK_SUSPEND)) {
 		dev_err(chddev(), "Unhandled command: %d\n", cmd);
 		rc = -ENOTTY;
@@ -725,7 +811,11 @@ static long chd_dec_ioctl_common(struct file *fd, unsigned int cmd,
 	/* Cancellation stops both TX lists. Exclude another input caller
 	 * posting a new list while allowing receive ioctls to make progress.
 	 */
-	if (cmd == BCM_IOC_PROC_INPUT) {
+	/* A native-held legacy caller cannot own input: dispatch already chose
+	 * the usage-status rejection (or denied monitor access). Do not wait for
+	 * the native transport mutex merely to return that unchanged status.
+	 */
+	if (cmd == BCM_IOC_PROC_INPUT && !native) {
 		if (mutex_lock_interruptible(&adp->tx_lock)) {
 			rc = -ERESTARTSYS;
 			goto unlock;
@@ -744,10 +834,7 @@ static long chd_dec_ioctl_common(struct file *fd, unsigned int cmd,
 unlock:
 	if (tx_locked)
 		mutex_unlock(&adp->tx_lock);
-	if (exclusive)
-		up_write(&adp->user_lock);
-	else
-		up_read(&adp->user_lock);
+	crystalhd_legacy_exit(adp, exclusive, native);
 	return rc;
 }
 
@@ -792,6 +879,7 @@ static int chd_dec_open_locked(struct inode *in, struct file *fd)
 	BC_STATUS sts = BC_STS_SUCCESS;
 	struct crystalhd_user *uc = NULL;
 	struct crystalhd_file *binding;
+	bool exclusive = true, native;
 
 	if (!adp || !READ_ONCE(adp->present))
 		return -ENODEV;
@@ -800,7 +888,7 @@ static int chd_dec_open_locked(struct inode *in, struct file *fd)
 		return -ENOMEM;
 	dev = &adp->pdev->dev;
 	dev_dbg(dev, "Entering %s\n", __func__);
-	down_write(&adp->user_lock);
+	native = crystalhd_legacy_enter(adp, &exclusive);
 	if (!READ_ONCE(adp->present)) {
 		rc = -ENODEV;
 		goto unlock;
@@ -812,7 +900,8 @@ static int chd_dec_open_locked(struct inode *in, struct file *fd)
 		goto unlock;
 	}
 
-	sts = crystalhd_user_open(&adp->cmds, &uc);
+	sts = native ? crystalhd_native_legacy_open(&adp->cmds, &uc) :
+		       crystalhd_user_open(&adp->cmds, &uc);
 	if (sts != BC_STS_SUCCESS) {
 		dev_err(dev, "cmd_user_open - %d\n", sts);
 		rc = -EBUSY;
@@ -825,7 +914,7 @@ static int chd_dec_open_locked(struct inode *in, struct file *fd)
 	}
 
 unlock:
-	up_write(&adp->user_lock);
+	crystalhd_legacy_exit(adp, exclusive, native);
 	if (rc)
 		kfree(binding);
 	return rc;
@@ -849,13 +938,14 @@ static int chd_dec_close_locked(struct inode *in, struct file *fd)
 	struct crystalhd_file *binding = fd->private_data;
 	struct crystalhd_user *uc;
 	int rc = 0;
+	bool exclusive = true, native;
 
 	if (!adp || !binding || binding->generation != chd_device_generation)
 		return 0;
 	dev = &adp->pdev->dev;
 	ctx = &adp->cmds;
 	dev_dbg(dev, "Entering %s\n", __func__);
-	down_write(&adp->user_lock);
+	native = crystalhd_legacy_enter(adp, &exclusive);
 
 	uc = binding->user;
 	if (!uc) {
@@ -875,10 +965,13 @@ static int chd_dec_close_locked(struct inode *in, struct file *fd)
 		goto unlock;
 	}
 
-	crystalhd_user_close(ctx, uc);
+	if (native)
+		crystalhd_native_legacy_close(ctx, uc);
+	else
+		crystalhd_user_close(ctx, uc);
 
 unlock:
-	up_write(&adp->user_lock);
+	crystalhd_legacy_exit(adp, exclusive, native);
 	return rc;
 }
 
@@ -1327,6 +1420,7 @@ static int chd_dec_pci_probe(struct pci_dev *pdev,
 	/* Setup adapter level lock.. */
 	spin_lock_init(&pinfo->lock);
 	init_rwsem(&pinfo->user_lock);
+	mutex_init(&pinfo->legacy_gate);
 	mutex_init(&pinfo->tx_lock);
 
 	/* setup api stuff.. */

@@ -4,6 +4,7 @@
 #include <linux/workqueue.h>
 
 #include "crystalhd_lnx.h"
+#include "crystalhd_v4l2_node.h"
 
 struct crystalhd_v4l2 {
 	struct v4l2_device device;
@@ -11,6 +12,7 @@ struct crystalhd_v4l2 {
 	bool disconnected;
 	spinlock_t close_lock; /* Pending registry and context lifetime state. */
 	struct list_head pending;
+	struct crystalhd_v4l2_node *node;
 };
 
 enum crystalhd_v4l2_owner_state {
@@ -33,6 +35,8 @@ struct crystalhd_v4l2_ctx {
 	bool work_active;
 	bool kick_pending;
 	bool cleanup_committed;
+	void (*release_private)(void *private);
+	void *private;
 };
 
 static struct workqueue_struct *crystalhd_v4l2_close_wq;
@@ -62,6 +66,8 @@ static void crystalhd_v4l2_ctx_release(struct kref *ref)
 
 	WARN_ON_ONCE(!ctx->cleanup_committed || ctx->core_reference_held ||
 		     ctx->work_active || !list_empty(&ctx->pending));
+	if (ctx->release_private)
+		ctx->release_private(ctx->private);
 	kfree(ctx);
 	v4l2_device_put(&parent->device);
 	module_put(THIS_MODULE);
@@ -235,7 +241,7 @@ int crystalhd_v4l2_ctx_acquire(struct crystalhd_v4l2_ctx *ctx)
 	spin_unlock_irqrestore(&ctx->parent->close_lock, flags);
 	if (rc)
 		goto unlock;
-	rc = crystalhd_device_enter(ctx->generation, true, &access);
+	rc = crystalhd_device_try_enter_exclusive(ctx->generation, &access);
 	if (rc)
 		goto unlock;
 	if (access.adp->v4l2 != ctx->parent) {
@@ -293,7 +299,26 @@ static void crystalhd_v4l2_release(struct v4l2_device *device)
 	struct crystalhd_v4l2 *parent =
 		container_of(device, struct crystalhd_v4l2, device);
 
+	crystalhd_v4l2_node_destroy(parent->node);
 	kfree(parent);
+}
+
+void crystalhd_v4l2_parent_get(struct crystalhd_v4l2 *parent)
+{
+	v4l2_device_get(&parent->device);
+}
+
+void crystalhd_v4l2_parent_put(struct crystalhd_v4l2 *parent)
+{
+	v4l2_device_put(&parent->device);
+}
+
+void crystalhd_v4l2_ctx_bind(struct crystalhd_v4l2_ctx *ctx,
+			    void *private, void (*release)(void *private))
+{
+	/* The unpublished context's sole caller installs its deferred cleanup. */
+	ctx->private = private;
+	ctx->release_private = release;
 }
 
 int crystalhd_v4l2_register(struct crystalhd_adp *adp)
@@ -321,7 +346,15 @@ int crystalhd_v4l2_register(struct crystalhd_adp *adp)
 		return rc;
 	}
 	adp->v4l2 = parent;
-	return 0;
+	rc = crystalhd_v4l2_node_register(parent, &parent->device,
+					&adp->pdev->dev, adp->pdev->device,
+					parent->generation, &parent->node);
+	if (rc) {
+		adp->v4l2 = NULL;
+		v4l2_device_unregister(&parent->device);
+		v4l2_device_put(&parent->device);
+	}
+	return rc;
 }
 
 void crystalhd_v4l2_unregister(struct crystalhd_adp *adp)
@@ -339,6 +372,7 @@ void crystalhd_v4l2_unregister(struct crystalhd_adp *adp)
 	list_for_each_entry(ctx, &parent->pending, pending)
 		crystalhd_v4l2_queue_close_locked(ctx);
 	spin_unlock_irqrestore(&parent->close_lock, flags);
+	crystalhd_v4l2_node_unregister(parent->node);
 	v4l2_device_unregister(&parent->device);
 	v4l2_device_put(&parent->device);
 }

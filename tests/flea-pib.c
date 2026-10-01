@@ -33,6 +33,7 @@ struct pci_dev { struct device dev; };
 struct crystalhd_adp { struct pci_dev *pdev; };
 struct crystalhd_rx_buffer;
 struct crystalhd_rx_buffer_ops {
+    bool report_decode_errors;
     void (*sync_for_cpu)(struct crystalhd_adp *, struct crystalhd_rx_buffer *);
     void (*sync_for_device)(struct crystalhd_adp *, struct crystalhd_rx_buffer *);
     BC_STATUS (*read)(struct crystalhd_rx_buffer *, uint32_t, void *, size_t);
@@ -989,9 +990,43 @@ static void finish_write_retries(void)
     }
 }
 
+static void native_decode_errors(void)
+{
+    for (unsigned native = 0; native < 2; native++) {
+        for (unsigned bad = 0; bad < 4; bad++) {
+            struct fixture f;
+            struct crystalhd_rx_buffer_ops ops = buffer_ops;
+            uint32_t number = 99;
+            uint64_t timestamp = 99;
+            init(&f); groups++;
+            ops.report_decode_errors = native;
+            f.buffer.ops = &ops;
+            prepare(&f, 0xa0286028, 22, 0, FLEA_DECODE_ERROR_FLAG, true);
+            if (bad == 1) f.packet.y_done_sz = f.buffer.capacity / 4 + 1;
+            if (bad == 2) f.words[f.packet.y_done_sz - 1] = 1093;
+            if (bad == 3) f.packet.flags = 0;
+            bool okay = flea_GetPictureInfo(&f.hw, &f.packet, &number, &timestamp);
+            check(okay == (bad == 0 || bad == 3) && number == 0,
+                  "firmware errors never become repeat-filter picture numbers");
+            if (native && !bad) {
+                check(f.packet.metadata.valid &&
+                      f.packet.metadata.picture_flags == FLEA_DECODE_ERROR_FLAG &&
+                      f.packet.metadata.picture_number == 22 &&
+                      f.packet.metadata.firmware_timestamp == 123422 &&
+                      !f.packet.metadata.eos_trailer,
+                      "native errors preserve actual bounded PIB picture/token metadata");
+            } else {
+                check(metadata_empty(&f.packet),
+                      "legacy errors and invalid bounds retain no metadata");
+            }
+        }
+    }
+}
+
 int main(void)
 {
     repeated_peeks();
+    native_decode_errors();
     uyvy_metadata_lane_case();
     special_pictures();
     failures_and_retries();

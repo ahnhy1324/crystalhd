@@ -19,7 +19,7 @@ crystalhd-objs := crystalhd_lnx.o \
 	crystalhd_fleafuncs.o \
 	crystalhd_flea_ddr.o
 
-# Opt-in parent lifetime support; it does not expose a decoding video node.
+# Opt-in native stateful decoder; the default legacy module is unchanged.
 CRYSTALHD_V4L2 ?= 0
 ifneq ($(CRYSTALHD_V4L2),0)
 ifneq ($(CRYSTALHD_V4L2),1)
@@ -28,6 +28,13 @@ endif
 ifeq ($(filter y m,$(CONFIG_VIDEO_DEV)),)
 $(error CRYSTALHD_V4L2=1 requires CONFIG_VIDEO_DEV=y or m)
 endif
+ifeq ($(filter y m,$(CONFIG_V4L2_MEM2MEM_DEV)),)
+$(error CRYSTALHD_V4L2=1 requires CONFIG_V4L2_MEM2MEM_DEV=y or m)
+endif
+ifeq ($(filter y m,$(CONFIG_VIDEOBUF2_DMA_SG)),)
+$(error CRYSTALHD_V4L2=1 requires CONFIG_VIDEOBUF2_DMA_SG=y or m)
+endif
 ccflags-y += -DCRYSTALHD_ENABLE_V4L2
-crystalhd-objs += crystalhd_v4l2.o
+crystalhd-objs += crystalhd_v4l2.o crystalhd_v4l2_node.o \
+	crystalhd_v4l2_buffers.o crystalhd_v4l2_decoder.o crystalhd_v4l2_output.o
 endif

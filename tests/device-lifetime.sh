@@ -36,10 +36,12 @@ awk '
     /^static void crystalhd_session_unpin\(/ ||
     /^BC_STATUS crystalhd_session_release_locked\(/ ||
     /^void crystalhd_user_close\(/ ||
+    /^static bool crystalhd_native_legacy_owned\(/ ||
+    /^void crystalhd_native_legacy_close\(/ ||
     /^BC_STATUS crystalhd_delete_cmd_context\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 7 || copying) exit 1 }
+    END { if (found != 9 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" > "$lifetime_test_dir/lifetime-command.h"
 awk '
     /^static int chd_dec_disable_int\(/ ||
@@ -51,9 +53,10 @@ awk '
     /^static bool chd_dec_(clear_master_and_drain|quiesce_terminal_dma|session_dma_absent|fail_closed)\(/ ||
     /^static void chd_dec_quarantine_dma\(/ ||
     /^static void chd_dec_pci_remove\(/ { copying = 1; found++ }
+    /^static (bool|void) crystalhd_legacy_(enter|exit)\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 13 || copying) exit 1 }
+    END { if (found != 15 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_lnx.c" > "$lifetime_test_dir/lifetime-functions.h"
 
 awk '
@@ -65,10 +68,12 @@ awk '
 awk '
     /^static int crystalhd_device_reserve_generation\(/ ||
     /^int crystalhd_device_enter\(/ ||
+    /^int crystalhd_device_try_enter_exclusive\(/ ||
+    /^static (bool|void) crystalhd_legacy_(enter|exit)\(/ ||
     /^void crystalhd_device_exit\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 3 || copying) exit 1 }
+    END { if (found != 6 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_lnx.c" > "$lifetime_test_dir/access-functions.h"
 
 # Execute the actual probe admission prefix, stopping before its first

@@ -205,6 +205,19 @@ against maintained LTS, stable and mainline kernel APIs. Linux 5.15 coverage
 is an API compilation check, not BCM70012 or BCM70015 hardware certification;
 device-free tests do not establish hardware playback.
 
+### Native V4L2 development
+
+`make CRYSTALHD_V4L2=1 driver` enables the experimental BCM70015 video node;
+the kernel must provide V4L2 mem2mem and videobuf2 DMA-SG support. The current
+path accepts one progressive H.264 Annex-B access unit per MMAP OUTPUT buffer
+and produces YUYV MMAP CAPTURE buffers. Other codecs remain on the legacy
+frontends; DMABUF and BCM70012 native decoding are not advertised.
+
+This is not yet a supported stateful playback backend: mid-GOP STOP/START
+can lose reference-dependent pictures. Follow [#114](https://github.com/ahnhy1324/crystalhd/issues/114)
+and the [Phase 2 checklist](https://github.com/ahnhy1324/crystalhd/issues/52).
+Use the legacy playback path until that lifecycle gate passes.
+
 ## Licensing
 
 Existing file notices remain authoritative in this mixed-license codebase;

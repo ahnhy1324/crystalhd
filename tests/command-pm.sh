@@ -146,12 +146,14 @@ awk '
     /^int crystalhd_decoder_channel_(stop|close)_locked\(/ ||
     /^static BC_STATUS bc_cproc_do_fw_cmd\(/ ||
     /^void crystalhd_user_close\(/ ||
+    /^static bool crystalhd_native_legacy_owned\(/ ||
+    /^void crystalhd_native_legacy_close\(/ ||
     (/^BC_STATUS bc_cproc_release_user\(/ && !/;[[:space:]]*$/) ||
     /^BC_STATUS crystalhd_(suspend|resume|user_open)\(/ { copying = 1; found++ }
     /^bool crystalhd_cmd_interrupt\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 42 || copying) exit 1 }
+    END { if (found != 44 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" > "$pm_test_dir/command-pm-functions.h"
 
 awk '
@@ -222,9 +224,10 @@ if [ "$fw_exec_calls" -ne 1 ] ||
 fi
 awk '
     /^static int chd_dec_close(_locked)?\(/ { copying = 1; found++ }
+    /^static (bool|void) crystalhd_legacy_(enter|exit)\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 2 || copying) exit 1 }
+    END { if (found != 4 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_lnx.c" > "$pm_test_dir/command-pm-close.h"
 
 for pm_sanitize in no yes; do

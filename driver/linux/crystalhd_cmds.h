@@ -145,6 +145,14 @@ void crystalhd_rx_retire_quiesced(struct crystalhd_cmd *ctx, bool suspend_only);
 crystalhd_cmd_proc crystalhd_get_cmd_proc(struct crystalhd_cmd *ctx, uint32_t cmd,
 				      struct crystalhd_user *uc);
 BC_STATUS crystalhd_user_open(struct crystalhd_cmd *ctx, struct crystalhd_user **user_ctx);
+BC_STATUS crystalhd_native_legacy_open(struct crystalhd_cmd *ctx,
+				      struct crystalhd_user **user_ctx);
+void crystalhd_native_legacy_close(struct crystalhd_cmd *ctx,
+				  struct crystalhd_user *uc);
+BC_STATUS crystalhd_native_legacy_notify(struct crystalhd_cmd *ctx,
+					crystalhd_ioctl_data *idata);
+BC_STATUS crystalhd_native_legacy_release(struct crystalhd_cmd *ctx,
+					 crystalhd_ioctl_data *idata);
 BC_STATUS crystalhd_user_set_mode(struct crystalhd_cmd *ctx,
 				 struct crystalhd_user *uc, uint32_t mode);
 /* Caller excludes PCI removal (normally with chd_device_lock for read), has
@@ -288,6 +296,16 @@ BC_STATUS crystalhd_rx_try_dequeue(struct crystalhd_cmd *ctx,
  */
 BC_STATUS crystalhd_rx_ack_format(struct crystalhd_cmd *ctx,
 				  struct crystalhd_rx_completion *result);
+/* Native format negotiation: consume the detached format packet, stop and
+ * reclaim other RX registrations without stopping the firmware channel, and
+ * acknowledge geometry without posting DMA. Caller excludes removal/session
+ * replacement and holds user_lock for session lifetime. TX may run in parallel
+ * under the same session reader; it does not mutate RX inventory. On failure
+ * other registrations
+ * remain owned by the core; only a successful stop permits queue cancellation.
+ */
+BC_STATUS crystalhd_rx_pause_format(struct crystalhd_cmd *ctx,
+				    struct crystalhd_rx_completion *result);
 BC_STATUS crystalhd_capture_start(struct crystalhd_cmd *ctx,
 				  uint32_t pause_threshold,
 				  uint32_t resume_threshold);

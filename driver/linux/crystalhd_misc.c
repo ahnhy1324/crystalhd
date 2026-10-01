@@ -582,16 +582,35 @@ static bool crystalhd_rx_accept_packet_locked(struct crystalhd_hw *hw,
 		picture = flea_GetRptDropParam(hw, pkt);
 		if (pkt->flags & (COMP_FLAG_PIB_VALID | COMP_FLAG_FMT_CHANGE))
 			return true;
+		/* Only an opted-in frontend receives validated firmware failures.
+		 * They are not decoded pictures and must not advance repeat history.
+		 */
+		if (pkt->metadata.valid &&
+		    (pkt->metadata.picture_flags & FLEA_DECODE_ERROR_FLAG) &&
+		    pkt->buffer && pkt->buffer->ops &&
+		    pkt->buffer->ops->report_decode_errors)
+			return true;
 	}
 	if (!picture || picture == hw->LastPicNo ||
 	    picture == hw->LastTwoPicNo) {
+		dev_dbg(chddev(), "RX reject pic=%u last=%u previous=%u flags=%x ready=%u free=%u active=%u picq=%x\n",
+			picture, hw->LastPicNo, hw->LastTwoPicNo, pkt->flags,
+			crystalhd_dioq_count(hw->rx_rdyq),
+			crystalhd_dioq_count(hw->rx_freeq),
+			crystalhd_dioq_count(hw->rx_actq), hw->PicQSts);
 		if (picture) {
 			hw->LastTwoPicNo = hw->LastPicNo;
 			hw->LastPicNo = picture;
 		}
-		if (crystalhd_dioq_add(hw->rx_freeq, pkt, false,
-				       pkt->pkt_tag) != BC_STS_SUCCESS)
-			crystalhd_hw_retain_rx_pkt(hw, pkt);
+		/* The ready completion was this registration's only DMA owner.
+		 * A bare free-queue insertion can strand a single-buffer client:
+		 * the completion IRQ already tried the empty free queue, and Flea
+		 * still sees FLL zero. Retry through the normal post wrapper, which
+		 * either posts now or queues BUSY and updates firmware's FLL.
+		 * Hard errors/faults retain the packet for safe process teardown.
+		 * fetch_sem is held; neither queue lock nor rx_lock is held here.
+		 */
+		crystalhd_hw_repost_cap_buffer(hw, pkt);
 		return false;
 	}
 	if (hw->adp->pdev->device == BC_PCI_DEVID_LINK &&

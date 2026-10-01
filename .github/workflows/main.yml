@@ -173,11 +173,44 @@ jobs:
           git clone --quiet --depth 1 --branch "v$KERNEL_VERSION" \
             "$KERNEL_REPOSITORY" "$KERNEL_DIR"
           make -s -C "$KERNEL_DIR" ARCH="${{ matrix.arch }}" defconfig
+          # Select hidden mem2mem and DMA-SG support through real drivers.
+          # Setting those hidden symbols directly is lost by olddefconfig.
+          media_config() {
+            mode=$1
+            symbol=$2
+            if ! git -C "$KERNEL_DIR" grep -q -E \
+                "^[[:space:]]*(menu)?config[[:space:]]+$symbol([[:space:]]|$)" \
+                -- '*Kconfig*'; then
+              echo "Required kernel configuration symbol missing: $symbol" >&2
+              exit 1
+            fi
+            "$KERNEL_DIR/scripts/config" --file "$KERNEL_DIR/.config" \
+              "$mode" "$symbol"
+          }
+          for symbol in MODULES PCI SOUND SND MEDIA_SUPPORT MEDIA_SUPPORT_FILTER \
+              MEDIA_CAMERA_SUPPORT MEDIA_TEST_SUPPORT VIDEO_DEV MEDIA_PCI_SUPPORT \
+              V4L_TEST_DRIVERS; do
+            media_config --enable "$symbol"
+          done
+          media_config --module VIDEO_VIM2M
+          media_config --module VIDEO_TW686X
+          make -s -C "$KERNEL_DIR" ARCH="${{ matrix.arch }}" olddefconfig
+          for symbol in VIDEO_DEV V4L2_MEM2MEM_DEV VIDEOBUF2_DMA_SG; do
+            if ! grep -Eq "^CONFIG_${symbol}=(y|m)$" "$KERNEL_DIR/.config"; then
+              echo "Optional frontend dependency was not selected: $symbol" >&2
+              exit 1
+            fi
+          done
           make -s -j2 -C "$KERNEL_DIR" ARCH="${{ matrix.arch }}" modules_prepare
 
       - name: Compile CrystalHD kernel API
         run: |
-          make -C "$KERNEL_DIR" \
-            ARCH="${{ matrix.arch }}" \
-            M="$GITHUB_WORKSPACE/driver/linux" \
-            W=1 crystalhd.o
+          # Exercise both configurations and switching back in every kernel/
+          # architecture entry. Kbuild tracks changed commands and object lists.
+          for frontend in 0 1 0; do
+            echo "Compile CRYSTALHD_V4L2=$frontend"
+            make -C "$KERNEL_DIR" \
+              ARCH="${{ matrix.arch }}" \
+              M="$GITHUB_WORKSPACE/driver/linux" \
+              CRYSTALHD_V4L2="$frontend" W=1 crystalhd.o
+          done

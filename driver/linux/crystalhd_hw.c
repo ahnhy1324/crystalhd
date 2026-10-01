@@ -1926,6 +1926,33 @@ out:
 	return hw->dma_fault ? BC_STS_IO_ERROR : BC_STS_SUCCESS;
 }
 
+bool crystalhd_hw_rx_idle(struct crystalhd_hw *hw)
+{
+	struct crystalhd_rx_dma_pkt *packet;
+	unsigned long flags;
+	unsigned int count = 0;
+	bool idle;
+
+	if (!hw || READ_ONCE(hw->dma_fault) || !hw->rx_actq ||
+	    !hw->rx_rdyq || !hw->rx_freeq)
+		return false;
+	spin_lock_irqsave(&hw->rx_lock, flags);
+	idle = hw->rx_list_sts[0] == sts_free && hw->rx_list_sts[1] == sts_free;
+	spin_unlock_irqrestore(&hw->rx_lock, flags);
+	if (!idle || crystalhd_dioq_count(hw->rx_actq) ||
+	    crystalhd_dioq_count(hw->rx_rdyq) || crystalhd_dioq_count(hw->rx_freeq))
+		return false;
+	spin_lock_irqsave(&hw->lock, flags);
+	idle = !hw->rx_fallback_head;
+	for (packet = hw->rx_pkt_pool_head; idle && packet; packet = packet->next) {
+		if (++count > BC_RX_LIST_CNT || packet->buffer || packet->cookie)
+			idle = false;
+	}
+	idle = idle && count == BC_RX_LIST_CNT;
+	spin_unlock_irqrestore(&hw->lock, flags);
+	return idle;
+}
+
 BC_STATUS crystalhd_hw_stop_capture(struct crystalhd_hw *hw, bool unmap)
 {
 	BC_STATUS sts;

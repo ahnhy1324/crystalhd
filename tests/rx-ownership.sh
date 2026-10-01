@@ -13,11 +13,19 @@ cleanup()
 		"$rx_test_dir/rx-isr-types.h" \
         "$rx_test_dir/rx-types.h" "$rx_test_dir/rx-fetch-wait-function.h" \
         "$rx_test_dir/rx-hardware.h" "$rx_test_dir/rx-command.h" \
-        "$rx_test_dir/rx-post.h"
+        "$rx_test_dir/rx-post.h" "$rx_test_dir/rx-reject-repost.h"
     rmdir "$rx_test_dir"
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
+awk '
+    /^BC_STATUS crystalhd_flea_hw_post_cap_buff\(/ ||
+    /^BC_STATUS crystalhd_hw_repost_cap_buffer\(/ { copying = 1; found++ }
+    copying { print }
+    copying && /^}/ { copying = 0 }
+    END { if (found != 2 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" \
+  "$repo_dir/driver/linux/crystalhd_hw.c" > "$rx_test_dir/rx-reject-repost.h"
 
 # Completion status belongs to packets/results, never the legacy DIO mapping.
 awk '

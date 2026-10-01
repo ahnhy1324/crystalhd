@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 typedef uint64_t u64;
+typedef uint16_t u16;
 struct crystalhd_v4l2;
 struct crystalhd_v4l2_ctx;
 typedef enum { BC_STS_SUCCESS, BC_STS_BUSY, BC_STS_ERROR,
@@ -25,7 +26,7 @@ struct crystalhd_cmd {
     const struct crystalhd_session_owner_ops *session_lifetime_ops;
 };
 struct device { void *driver_data; unsigned refs; };
-struct pci_dev { struct device dev; };
+struct pci_dev { struct device dev; u16 device; };
 struct crystalhd_adp {
     struct pci_dev *pdev;
     struct crystalhd_v4l2 *v4l2;
@@ -155,6 +156,18 @@ struct v4l2_device {
 #include "parent-owner-type.h"
 #include "parent-binding.h"
 
+/* Node internals are tested separately; this boundary models its publication
+ * and final allocation lifetime without adding a video-device reference. */
+struct crystalhd_v4l2_node {
+    struct crystalhd_v4l2 *parent;
+    bool registered;
+};
+static struct crystalhd_v4l2_node nodes[4];
+static int node_registration_error;
+static unsigned node_registrations, node_unregistrations, node_destroys;
+static unsigned private_bindings, private_releases;
+static struct crystalhd_v4l2 *private_parent_put_expected;
+
 static struct crystalhd_adp *adapter;
 static struct pci_dev *pci;
 static size_t page_size;
@@ -180,7 +193,7 @@ static struct work_struct *queued_work[16], *running_work;
 static unsigned queued_count, work_runs, workqueue_allocations, workqueue_destroys;
 static bool fail_workqueue;
 static bool access_active;
-static unsigned access_enters, access_exits, core_acquires, core_releases;
+static unsigned access_enters, access_exits, core_acquires, core_releases, access_tries;
 static BC_STATUS acquire_status, release_status;
 static bool acquire_retains_error, run_between_retired_put;
 static void (*enter_hook)(void), (*exit_hook)(void);
@@ -195,6 +208,62 @@ static void event(char value)
     assert(event_count + 1 < sizeof(events));
     events[event_count++] = value;
     events[event_count] = 0;
+}
+
+static int crystalhd_v4l2_node_register(struct crystalhd_v4l2 *parent,
+        struct v4l2_device *device, struct device *dma_dev, u16 chip,
+        u64 generation, struct crystalhd_v4l2_node **out)
+{
+    assert(writer_held && !spin_depth && !mutex_depth && !access_active);
+    assert(parent == adapter->v4l2 && device == &parent->device &&
+           device->registered && dma_dev == &pci->dev && chip == pci->device &&
+           generation == parent->generation && generation == adapter->generation);
+    assert(out == &parent->node && !*out);
+    node_registrations++;
+    if (node_registration_error) return node_registration_error;
+    for (unsigned i = 0; i < 4; i++) {
+        if (!nodes[i].parent) {
+            nodes[i].parent = parent;
+            nodes[i].registered = true;
+            *out = &nodes[i];
+            return 0;
+        }
+    }
+    abort();
+}
+
+static void crystalhd_v4l2_node_unregister(struct crystalhd_v4l2_node *node)
+{
+    assert(node && node->parent && node->registered && writer_held &&
+           !spin_depth && !mutex_depth && !adapter->v4l2 &&
+           node->parent->disconnected && node->parent->device.registered);
+    node->registered = false;
+    node_unregistrations++;
+}
+
+static void crystalhd_v4l2_node_destroy(struct crystalhd_v4l2_node *node)
+{
+    if (!node) return;
+    assert(node->parent && !node->registered && !node->parent->device.refs &&
+           !node->parent->device.registered && !node->parent->device.dev);
+    node->parent = NULL;
+    node_destroys++;
+}
+
+static void private_release(void *private)
+{
+    struct crystalhd_v4l2_ctx *ctx = private;
+
+    assert(!writer_held && !access_active && !spin_depth && !mutex_depth);
+    assert(!ctx->ref.refs && ctx->cleanup_committed && !ctx->core_reference_held &&
+           !ctx->work_active && list_empty(&ctx->pending));
+    assert(ctx->owner_state == CRYSTALHD_V4L2_OWNER_NEVER ||
+           ctx->owner_state == CRYSTALHD_V4L2_OWNER_RETIRED);
+    assert(ctx->parent->device.refs && ctx->parent->node &&
+           ctx->parent->node->parent == ctx->parent && native_module_refs);
+    assert(!private_parent_put_expected);
+    private_parent_put_expected = ctx->parent;
+    private_releases++;
 }
 
 static bool try_module_get(const void *module)
@@ -316,6 +385,9 @@ static void kfree(void *ptr)
             else
                 assert(!ctx->pending.next && !ctx->pending.prev);
             assert(native_module_refs);
+            if (ctx->release_private)
+                assert(ctx->release_private == private_release &&
+                       private_parent_put_expected == ctx->parent);
             native_live[i] = NULL;
             native_frees++;
             free(ptr);
@@ -400,7 +472,8 @@ static void v4l2_device_unregister(struct v4l2_device *device)
 {
     struct crystalhd_v4l2 *parent =
         container_of(device, struct crystalhd_v4l2, device);
-    assert(writer_held && !adapter->v4l2 && parent->disconnected);
+    assert(writer_held && !adapter->v4l2 &&
+           (parent->disconnected || (node_registration_error && !parent->node)));
     assert(device->registered && device->dev == &pci->dev && device->refs);
     assert(pci->dev.refs == 2);
     unregistrations++;
@@ -422,6 +495,10 @@ static void v4l2_device_get(struct v4l2_device *device)
 static int v4l2_device_put(struct v4l2_device *device)
 {
     assert(device->refs);
+    if (private_parent_put_expected) {
+        assert(device == &private_parent_put_expected->device);
+        private_parent_put_expected = NULL;
+    }
     parent_puts++;
     event('P');
     if (--device->refs)
@@ -455,6 +532,14 @@ static int crystalhd_device_enter(u64 generation, bool exclusive,
     }
     if (hook) { enter_hook = NULL; hook(); }
     return rc;
+}
+
+/* The nonblocking lock implementation is extracted in device-access.c. */
+static int crystalhd_device_try_enter_exclusive(u64 generation,
+                                  struct crystalhd_device_access *access)
+{
+    access_tries++;
+    return crystalhd_device_enter(generation, true, access);
 }
 
 static void crystalhd_device_exit(struct crystalhd_device_access *access)
@@ -662,10 +747,11 @@ static void up_write(int *lock)
 static void reset(void)
 {
     for (unsigned i = 0; i < 4; i++)
-        assert(!live[i]);
+        assert(!live[i] && !nodes[i].parent);
     for (unsigned i = 0; i < 8; i++)
         assert(!native_live[i]);
     assert(!workqueue.live && !queued_count && !running_work && !native_module_refs);
+    assert(!private_parent_put_expected && private_bindings == private_releases);
     scenarios++;
     memset(adapter, 0, sizeof(*adapter));
     memset(pci, 0, sizeof(*pci));
@@ -674,9 +760,13 @@ static void reset(void)
     memcpy(adapter->name, "crystalhd_pci_e:7:2:1", sizeof("crystalhd_pci_e:7:2:1"));
     pci->dev.driver_data = adapter;
     pci->dev.refs = 1;
+    pci->device = 0x1615;
     writer_held = true;
     fail_allocation = false;
     registration_error = 0;
+    node_registration_error = 0;
+    node_registrations = node_unregistrations = node_destroys = 0;
+    private_bindings = private_releases = 0;
     allocations = frees = registrations = unregistrations = parent_puts = releases = 0;
     event_count = 0;
     events[0] = 0;
@@ -695,7 +785,7 @@ static void reset(void)
     after_mutex_unlock = NULL;
     work_runs = workqueue_allocations = workqueue_destroys = 0;
     access_active = false;
-    access_enters = access_exits = core_acquires = core_releases = 0;
+    access_enters = access_exits = core_acquires = core_releases = access_tries = 0;
     acquire_status = release_status = BC_STS_SUCCESS;
     acquire_retains_error = run_between_retired_put = false;
     enter_hook = exit_hook = NULL;
@@ -775,6 +865,42 @@ static void ordinary_case(void)
           parent_puts == 1 && releases == 1 && pci->dev.refs == 1 &&
           pci->dev.driver_data == adapter && !strcmp(events, "ARUPLF"),
           "unregister detaches before media teardown and drops the initial ref exactly once");
+    check(node_registrations == 1 && node_unregistrations == 1 && node_destroys == 1,
+          "node is published, disconnected and destroyed exactly once with its parent");
+}
+
+static void node_failure_cases(void)
+{
+    for (unsigned probe = 0; probe < 2; probe++) {
+        for (unsigned failure = 0; failure < 2; failure++) {
+            reset();
+            node_registration_error = failure ? -EIO : -ENOMEM;
+            if (probe) {
+                probe_tail_active = true;
+                l0s_live = irq_live = chdev_live = bars_live = pci_live = true;
+                pci->dev.driver_data = NULL;
+            }
+            check((probe ? probe_publication_tail(pci, adapter) :
+                           crystalhd_v4l2_register(adapter)) == node_registration_error,
+                  "node publication failure propagates through parent and actual probe tail");
+            check(!adapter->v4l2 && allocations == 1 && frees == 1 &&
+                  registrations == 1 && unregistrations == 1 && parent_puts == 1 &&
+                  releases == 1 && node_registrations == 1 && !node_unregistrations &&
+                  !node_destroys && pci->dev.refs == 1,
+                  "failed node publication unwinds the registered parent without a phantom node");
+            if (probe)
+                check(!g_adp_info && !pci->dev.driver_data && adapter_retired &&
+                      !adapter->hw_accessible && !master_live && !l0s_live &&
+                      !irq_live && !chdev_live && !bars_live && !pci_live &&
+                      !writer_held && writer_releases == 1 &&
+                      !strcmp(events, "MDARUPLFdmlicbpaw"),
+                      "node failure follows full probe cleanup after parent teardown");
+            else
+                check(pci->dev.driver_data == adapter && !strcmp(events, "ARUPLF"),
+                      "node failure preserves PCI ownership while balancing media references");
+            crystalhd_v4l2_unregister(adapter);
+        }
+    }
 }
 
 static void retained_case(void)
@@ -792,6 +918,9 @@ static void retained_case(void)
           pci->dev.refs == 1 && pci->dev.driver_data == adapter && !frees &&
           unregistrations == 1 && parent_puts == 1,
           "synthetic frontend refs survive fail-close and repeated removal");
+    check(node_unregistrations == 1 && !node_destroys && parent->node &&
+          !parent->node->registered,
+          "node allocation survives disconnection until the final parent reference");
     writer_held = false;
     assert(!mprotect(adapter, page_size, PROT_NONE));
     assert(!mprotect(pci, page_size, PROT_NONE));
@@ -896,12 +1025,17 @@ static struct crystalhd_v4l2_ctx *native_create(struct crystalhd_v4l2 *parent)
 {
     struct crystalhd_v4l2_ctx *ctx = NULL;
 
-    v4l2_device_get(&parent->device); /* Explicit caller reference during create. */
+    crystalhd_v4l2_parent_get(parent); /* Caller reference during create. */
     check(!crystalhd_v4l2_ctx_create(parent, &ctx) && ctx && ctx->parent == parent &&
           ctx->generation == parent->generation && ctx->ref.refs == 1 &&
           ctx->owner_state == CRYSTALHD_V4L2_OWNER_NEVER && !ctx->core_reference_held,
           "created context owns immutable generation, one base reference and no adapter pointer");
-    v4l2_device_put(&parent->device);
+    crystalhd_v4l2_ctx_bind(ctx, ctx, private_release);
+    private_bindings++;
+    check(ctx->private == ctx && ctx->release_private == private_release &&
+          !private_releases && ctx->ref.refs == 1,
+          "binding installs deferred private cleanup without changing native ownership");
+    crystalhd_v4l2_parent_put(parent);
     return ctx;
 }
 
@@ -913,7 +1047,8 @@ static void native_finish(void)
     writer_held = false;
     flush_workqueue(&workqueue);
     check(native_allocations == native_frees && native_module_gets == native_module_puts &&
-          !native_module_refs && !queued_count && !adapter->cmds.session_lifetime_owner,
+          !native_module_refs && !queued_count && !adapter->cmds.session_lifetime_owner &&
+          private_bindings == private_releases && !private_parent_put_expected,
           "native close retires every context, parent and independent module reference");
     crystalhd_v4l2_cleanup();
     check(!workqueue.live && workqueue_destroys == 1 && allocations == frees,
@@ -1018,8 +1153,12 @@ static void native_ordinary_case(void)
           "successful acquire holds one actual callback-owned context reference");
     check(crystalhd_v4l2_ctx_acquire(ctx) == -EBUSY && ctx->ref.refs == 2,
           "repeated acquisition does not adopt a second core reference");
+    check(access_tries == 2 && access_enters == 2,
+          "every new-session attempt uses nonblocking exclusive admission");
     crystalhd_v4l2_ctx_close(ctx);
     flush_workqueue(&workqueue);
+    check(access_tries == 2,
+          "established-session retirement retains blocking admission");
     check(native_frees == 1 && core_releases == 1 && access_enters == access_exits &&
           !adapter->cmds.session_owner && !adapter->cmds.session_lifetime_owner,
           "ordinary deferred close releases core ownership and destroys only after device exit");
@@ -1263,7 +1402,8 @@ static void native_quarantine_child(void)
         crystalhd_v4l2_ctx_close(ctx);
         flush_workqueue(&workqueue);
         check(ctx->core_reference_held && !ctx->work_active && !list_empty(&ctx->pending) &&
-              !native_frees && native_module_refs == 1 && !core_releases && !queued_count,
+              !native_frees && !private_releases && native_module_refs == 1 &&
+              !core_releases && !queued_count,
               "ENODEV cannot convert held ownership into destruction permission");
         writer_held = true;
         crystalhd_v4l2_unregister(adapter);
@@ -1271,7 +1411,8 @@ static void native_quarantine_child(void)
         flush_workqueue(&workqueue);
         check(parent->disconnected && !parent->device.dev && parent->device.refs == 1 &&
               !list_empty(&parent->pending) && ctx->core_reference_held && ctx->ref.refs == 2 &&
-              !native_frees && !frees && native_module_refs == 1 && !queued_count,
+              !native_frees && !private_releases && !frees && !node_destroys &&
+              native_module_refs == 1 && !queued_count,
               "permanent quarantine stays reachable through core and parent registry references");
         /* No cleanup: retained storage and callback code remain owned. */
         exit(0);
@@ -1294,6 +1435,7 @@ int main(void)
     assert(adapter != MAP_FAILED && pci != MAP_FAILED);
     invalid_cases();
     failure_cases();
+    node_failure_cases();
     ordinary_case();
     retained_case();
     reprobe_case();

@@ -14,19 +14,29 @@
 #define printk(...) ((void)0)
 #define dev_err(device, ...) ((void)(device))
 #define dev_info(device, ...) ((void)(device))
+#define dev_dbg(device, ...) ((void)(device))
 #define BC_LINK_DIOQ_SIG UINT32_C(0x09223280)
 #define BC_PCI_DEVID_LINK UINT32_C(0x1612)
 #define BC_PCI_DEVID_FLEA UINT32_C(0x1615)
 #define COMP_FLAG_FMT_CHANGE UINT32_C(0x01)
 #define COMP_FLAG_PIB_VALID UINT32_C(0x02)
 #define BC_STS_SUCCESS 0
+#define BC_STS_BUSY 1
+#define BC_STS_IO_ERROR 2
+#define FLEA_DECODE_ERROR_FLAG 0x800U
+#define READ_ONCE(v) (v)
+typedef int BC_STATUS;
 #define min_t(type, left, right) \
     ((type)(left) < (type)(right) ? (type)(left) : (type)(right))
 
 struct device { int unused; };
 struct pci_dev { struct device dev; uint32_t device; };
 struct crystalhd_adp { struct pci_dev *pdev; };
+struct crystalhd_rx_buffer_ops { bool report_decode_errors; };
+struct crystalhd_rx_buffer { const struct crystalhd_rx_buffer_ops *ops; };
 struct crystalhd_rx_dma_pkt {
+    struct crystalhd_rx_buffer *buffer;
+    struct { bool valid; uint32_t picture_flags; } metadata;
     uint32_t pkt_tag, flags;
     struct crystalhd_rx_dma_pkt *next;
     uint32_t picture, parsed_flags;
@@ -43,6 +53,9 @@ struct crystalhd_hw {
     struct crystalhd_rx_dma_pkt *rx_fallback_head;
     int fetch_sem;
     uint32_t PICHeight, PICWidth, LastPicNo, LastTwoPicNo;
+    bool dma_fault;
+    BC_STATUS (*pfnPostRxSideBuff)(struct crystalhd_hw *, struct crystalhd_rx_dma_pkt *);
+    void (*pfnNotifyFLLChange)(struct crystalhd_hw *, bool);
 };
 
 static struct pci_dev endpoint;
@@ -56,6 +69,9 @@ static unsigned long jiffies;
 static unsigned checks, failures, scenarios;
 static unsigned wait_calls, down_calls, fetch_calls, add_calls, retain_calls;
 static unsigned parser_calls;
+static unsigned post_calls, notify_calls, firmware_free;
+static BC_STATUS post_result;
+static struct crystalhd_rx_dma_pkt *active_packet;
 static int wait_result, add_result;
 static uint32_t reported_picture;
 static bool interrupt_lock, inject_packet_after_wait;
@@ -213,6 +229,24 @@ static uint32_t flea_GetRptDropParam(struct crystalhd_hw *hw, void *data)
     return candidate->custom_picture ? candidate->picture : reported_picture;
 }
 
+static BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
+                                             struct crystalhd_rx_dma_pkt *pkt)
+{
+    assert(hw == &hardware && !hw->fetch_sem && !ready.lock && !freeq.lock && pkt);
+    post_calls++;
+    if (post_result == BC_STS_SUCCESS) {
+        assert(!active_packet);
+        active_packet = pkt;
+    }
+    return post_result;
+}
+static void notify_free(struct crystalhd_hw *hw, bool cleanup)
+{
+    assert(hw == &hardware && !hw->fetch_sem && !cleanup);
+    firmware_free = freeq.count;
+    notify_calls++;
+}
+#include "rx-reject-repost.h"
 #include "rx-fetch-wait-function.h"
 
 static void reset(uint32_t device)
@@ -231,10 +265,14 @@ static void reset(uint32_t device)
         .rx_rdyq = &ready,
         .rx_freeq = &freeq,
         .fetch_sem = 1,
+        .pfnPostRxSideBuff = crystalhd_flea_hw_post_cap_buff,
+        .pfnNotifyFLLChange = notify_free,
     };
     jiffies = checks ? 17 : 0;
     wait_calls = down_calls = fetch_calls = add_calls = retain_calls = 0;
     parser_calls = 0;
+    post_calls = notify_calls = firmware_free = 0;
+    post_result = BC_STS_BUSY; active_packet = NULL;
     wait_result = -EBUSY;
     add_result = BC_STS_SUCCESS;
     reported_picture = 1;
@@ -323,7 +361,7 @@ static void discard_owner_fallback_case(uint32_t device)
         reported_picture = 0;
         add_result = fail_add ? -ENOSPC : BC_STS_SUCCESS;
         result = crystalhd_dioq_fetch_wait(&hardware, 1, &signal);
-        check(!result && !signal && fetch_calls == 1 && add_calls == 1,
+        check(!result && !signal && fetch_calls == 1 && add_calls == 1 + fail_add,
               "discarded completion transfers ownership exactly once");
         check((freeq.packet == &packet) == !fail_add &&
               (hardware.rx_fallback_head == &packet) == fail_add &&
@@ -478,7 +516,7 @@ static void try_fetch_cases(uint32_t device)
             second = queue_candidate(1, 8, 0);
             add_result = fail_add ? -ENOSPC : BC_STS_SUCCESS;
             check(try_fetch() == second && fetch_calls == 2 && parser_calls == 2 &&
-                  add_calls == 1 && retain_calls == fail_add && !ready.count,
+                  add_calls == 1 + fail_add && retain_calls == fail_add && !ready.count,
                   "bounded filtering skips rejected candidate and returns next accepted owner");
             check((freeq.packet == first) == !fail_add &&
                   (hardware.rx_fallback_head == first) == fail_add &&
@@ -514,6 +552,70 @@ static void try_fetch_cases(uint32_t device)
           "single-candidate snapshot is not renewed by concurrent replenishment");
 }
 
+static void sole_registration_recovery(void)
+{
+    for (unsigned rejected = 0; rejected < 3; rejected++) {
+        for (unsigned failure = 0; failure < 5; failure++) {
+            struct crystalhd_rx_dma_pkt *only;
+            unsigned owners;
+
+            reset(BC_PCI_DEVID_FLEA);
+            hardware.LastPicNo = 7; hardware.LastTwoPicNo = 6;
+            only = queue_candidate(0, rejected == 0 ? 0 : rejected == 1 ? 7 : 6, 0);
+            post_result = failure == 0 ? BC_STS_SUCCESS : failure == 1 ?
+                          BC_STS_BUSY : BC_STS_IO_ERROR;
+            if (failure == 3) add_result = -ENOSPC;
+            if (failure == 4) hardware.dma_fault = true;
+            check(!try_fetch(), "zero/repeated picture is not returned to client");
+            owners = (active_packet == only) + (freeq.packet == only) +
+                     (hardware.rx_fallback_head == only);
+            check(owners == 1 && !ready.count && !ready.packet,
+                  "rejected sole registration retains exactly one active/free/fallback owner");
+            if (failure == 0) {
+                check(post_calls == 1 && notify_calls == 1 && active_packet == only &&
+                      !freeq.count && !retain_calls,
+                      "cached picture availability immediately reposts the sole owner");
+                active_packet = NULL; only->picture = 8;
+                ready.packet = only; ready.count = 1;
+                check(try_fetch() == only && hardware.LastPicNo == 8,
+                      "same reposted buffer delivers the next valid picture after rejection");
+            } else if (failure == 1) {
+                check(post_calls == 1 && notify_calls == 1 && firmware_free == 1 &&
+                      freeq.packet == only && !retain_calls,
+                      "BUSY repost advertises one free buffer instead of stranding firmware at FLL zero");
+            } else if (failure < 4) {
+                check(post_calls == 1 && retain_calls == (failure == 3) &&
+                      (hardware.rx_fallback_head == only) == (failure == 3),
+                      "hard repost and queue failures preserve recovery ownership without release");
+            } else {
+                check(!post_calls && !notify_calls && !add_calls && retain_calls == 1,
+                      "concurrent DMA fault quarantines sole owner without hardware repost");
+            }
+        }
+    }
+}
+
+static void native_error_handoff(void)
+{
+    for (unsigned variant = 0; variant < 4; variant++) {
+        struct crystalhd_rx_buffer_ops ops = { .report_decode_errors = variant != 0 };
+        struct crystalhd_rx_buffer buffer = { .ops = &ops };
+        reset(BC_PCI_DEVID_FLEA);
+        packet.flags = 0;
+        packet.buffer = &buffer;
+        packet.metadata.valid = variant != 2;
+        packet.metadata.picture_flags = variant == 3 ? 0 : FLEA_DECODE_ERROR_FLAG;
+        packet.custom_picture = true; packet.picture = 0;
+        hardware.LastPicNo = 21; hardware.LastTwoPicNo = UINT32_MAX;
+        hardware.fetch_sem = 0;
+        check(crystalhd_rx_accept_packet_locked(&hardware, &packet) == (variant == 1),
+              "only opted-in validated firmware errors bypass legacy recycling");
+        check(hardware.LastPicNo == 21 && hardware.LastTwoPicNo == UINT32_MAX &&
+              post_calls == (variant != 1),
+              "failed pictures never modify history; legacy and malformed errors still recycle");
+    }
+}
+
 int main(void)
 {
     const uint32_t devices[] = { BC_PCI_DEVID_LINK, BC_PCI_DEVID_FLEA };
@@ -527,6 +629,8 @@ int main(void)
         legacy_parser_history_cases(devices[i]);
         try_fetch_cases(devices[i]);
     }
+    sole_registration_recovery();
+    native_error_handoff();
     printf("RX fetch wait: %u scenarios, %u checks, %u failures\n",
            scenarios, checks, failures);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;

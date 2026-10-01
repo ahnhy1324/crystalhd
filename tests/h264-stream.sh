@@ -37,10 +37,10 @@ awk '
 awk '
     /^#define[[:space:]]+CRYSTALHD_H264_[A-Z_]+[[:space:]]/ { print }
     /^struct crystalhd_stream[[:space:]]*\{/ { copying = 1; found++ }
-    /^static int crystalhd_h264_(format_pes|format_eos|validate|send_staged)\(/ {
+    /^static int crystalhd_h264_(format_pes|format_eos|send_staged)\(/ {
         copying = 1; found++
     }
-    /^int crystalhd_(stream_prepare|decoder_submit_h264|decoder_submit_h264_eos)\(/ {
+    /^int crystalhd_(stream_prepare|decoder_submit_h264|decoder_submit_h264_eos|decoder_validate_h264_locked|decoder_resume_h264_locked)\(/ {
         copying = 1; found++
     }
     /^void crystalhd_stream_release\(/ { copying = 1; found++ }
@@ -50,7 +50,7 @@ awk '
     }
     copying { print }
     copying && /^};?$/ { copying = 0 }
-    END { if (found != 12 || copying) exit 1 }
+    END { if (found != 13 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_stream.c" \
     >> "$stream_test_dir/h264-stream-production.h"
 

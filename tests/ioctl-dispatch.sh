@@ -40,15 +40,19 @@ awk '
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" > "$ioctl_test_dir/ioctl-table.h"
 awk '
     /^static BC_STATUS bc_cproc_session_owner_required\(/ ||
+    /^static struct crystalhd_user \*bc_cproc_get_uid\(/ ||
+    /^(static bool|void|BC_STATUS) crystalhd_native_legacy_[[:alnum:]_]+\(/ ||
+    /^static (bool|void) crystalhd_legacy_(enter|exit)\(/ ||
     /^crystalhd_cmd_proc crystalhd_get_cmd_proc\(/ ||
     /^static bool crystalhd_(legacy_color_command|rawio_command)\(/ ||
     /^static int chd_dec_api_cmd\(/ ||
+    /^static int chd_dec_(open|close)_locked\(/ ||
     /^static long chd_dec_(ioctl_common|ioctl|compat_ioctl)\(/ {
         copying = 1; found++
     }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 8 || copying) exit 1 }
+    END { if (found != 18 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" \
     "$repo_dir/driver/linux/crystalhd_lnx.c" > "$ioctl_test_dir/ioctl-functions.h"
 
@@ -60,7 +64,7 @@ for ioctl_bits in 32 64; do
         fi
         # Existing command-table sentinel omits its trailing zero field.
         "${CC:-cc}" ${CFLAGS:-} -m"$ioctl_bits" -std=c11 -O1 -g \
-            -Wall -Wextra -Werror -Wno-missing-field-initializers \
+            -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter \
             -D__LINUX_USER__ $ioctl_extra -I"$repo_dir/include" -I"$repo_dir/include/link" \
             -I"$ioctl_test_dir" "$repo_dir/tests/ioctl-dispatch.c" \
             -o "$ioctl_test_dir/check"

@@ -38,6 +38,12 @@ bool crystalhd_flea_hw_interrupt_handle(struct crystalhd_adp *adp, struct crysta
 uint32_t crystalhd_flea_reg_rd(struct crystalhd_adp *adp, uint32_t reg_off);											/* Done */
 void crystalhd_flea_reg_wr(struct crystalhd_adp *adp, uint32_t reg_off, uint32_t val);									/* Done */
 bool crystalhd_flea_check_input_full(struct crystalhd_hw *hw, uint32_t needed_sz, uint32_t *empty_sz, bool b_188_byte_pkts, uint8_t *flags);
+/* Typed bounded TX only, after BUSY. Caller holds session lifetime/user_lock
+ * and tx_lock, in process context, without fetch_sem (acquired internally).
+ * SUCCESS requests wrap, NO_DATA means no
+ * eligible tail, other errors fail closed. Never replaces the TX deadline.
+ */
+BC_STATUS crystalhd_flea_request_tx_wrap(struct crystalhd_hw *hw, uint32_t needed_sz);
 BC_STATUS crystalhd_flea_mem_rd(struct crystalhd_hw *hw, uint32_t start_off, uint32_t dw_cnt, uint32_t *rd_buff);		/* Done */
 BC_STATUS crystalhd_flea_mem_wr(struct crystalhd_hw *hw, uint32_t start_off, uint32_t dw_cnt, const uint32_t *wr_buff);		/* Done */
 BC_STATUS crystalhd_flea_do_fw_cmd(struct crystalhd_hw *hw, BC_FW_CMD *fw_cmd);

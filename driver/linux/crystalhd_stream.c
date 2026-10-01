@@ -199,7 +199,7 @@ void crystalhd_stream_release(struct crystalhd_cmd *ctx)
 	crystalhd_tx_buffer_put(ctx->adp, &stream->buffer);
 }
 
-static int crystalhd_h264_validate(struct crystalhd_cmd *ctx,
+int crystalhd_decoder_validate_h264_locked(struct crystalhd_cmd *ctx,
 				   const void *owner)
 {
 	const u32 allowed_state = BC_LINK_INIT | BC_LINK_CAP_EN |
@@ -229,6 +229,32 @@ static int crystalhd_h264_validate(struct crystalhd_cmd *ctx,
 	if (ctx->stream->failed || ctx->stream->eos_submitted)
 		return -EPIPE;
 	return 0;
+}
+
+int crystalhd_decoder_resume_h264_locked(struct crystalhd_cmd *ctx,
+					const void *owner)
+{
+	int rc;
+
+	/* A successful EOS transport is necessary, but is NOT a drain proof.
+	 * The caller has verified the strict firmware trailer and joined TX.
+	 * Reuse every admission check before touching the transport guard.
+	 */
+	rc = crystalhd_decoder_validate_h264_locked(ctx, owner);
+	if (rc != -EPIPE)
+		return rc ? rc : -EINVAL;
+	if (ctx->stream->failed)
+		return -EPIPE;
+	if (!ctx->stream->eos_submitted)
+		return -EINVAL;
+	if (refcount_read(&ctx->stream->refs) != 1)
+		return -EBUSY;
+	lockdep_assert_held_write(&ctx->adp->user_lock);
+	ctx->stream->eos_submitted = false;
+	rc = crystalhd_decoder_validate_h264_locked(ctx, owner);
+	if (rc)
+		ctx->stream->eos_submitted = true;
+	return rc;
 }
 
 static int crystalhd_h264_send_staged(struct crystalhd_cmd *ctx,
@@ -265,7 +291,7 @@ int crystalhd_decoder_submit_h264(struct crystalhd_cmd *ctx,
 
 	if (!annexb || !bytes)
 		return -EINVAL;
-	rc = crystalhd_h264_validate(ctx, owner);
+	rc = crystalhd_decoder_validate_h264_locked(ctx, owner);
 	if (rc)
 		return rc;
 	sts = crystalhd_tx_deadline_from_ms(total_timeout_ms, &deadline);
@@ -300,7 +326,7 @@ int crystalhd_decoder_submit_h264_eos(struct crystalhd_cmd *ctx,
 	unsigned int i;
 	int rc;
 
-	rc = crystalhd_h264_validate(ctx, owner);
+	rc = crystalhd_decoder_validate_h264_locked(ctx, owner);
 	if (rc)
 		return rc;
 	sts = crystalhd_tx_deadline_from_ms(total_timeout_ms, &deadline);

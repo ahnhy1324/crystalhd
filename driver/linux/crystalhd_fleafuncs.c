@@ -1669,6 +1669,74 @@ crystalhd_flea_wake_up_hw(struct crystalhd_hw *hw)
 	return true;
 }
 
+BC_STATUS crystalhd_flea_request_tx_wrap(struct crystalhd_hw *hw, uint32_t needed_sz)
+{
+	uint32_t address, available, flags_address, flags;
+	const uint32_t flags_offset = offsetof(TX_INPUT_BUFFER_INFO, Flags);
+	BC_STATUS sts = BC_STS_NO_DATA;
+
+	if (!hw || !hw->adp || !hw->adp->pdev)
+		return BC_STS_INV_ARG;
+	lockdep_assert_held(&hw->adp->user_lock);
+	lockdep_assert_held(&hw->adp->tx_lock);
+	if (hw->adp->pdev->device != BC_PCI_DEVID_FLEA ||
+	    !needed_sz || needed_sz > 0xfff0U + 6U)
+		return BC_STS_NO_DATA;
+	/* The mailbox ISR publishes this cache without hw->lock. Drain it
+	 * across the request AND cache invalidation, so a new firmware region
+	 * cannot be published and then accidentally erased by this process.
+	 * Do not invoke the wake path here: it may repost RX and take hw->lock.
+	 */
+	/* RX process callbacks also use the shared DRAM access window. */
+	down(&hw->fetch_sem);
+	disable_irq(hw->adp->pdev->irq);
+	dev_dbg(&hw->adp->pdev->dev,
+		"Typed TX BUSY: needed=%u contiguous=%u address=%x flags=%x awake=%u power=%u seq=%u info=%x fault=%u present=%u\n",
+		needed_sz, hw->TxFwInputBuffInfo.DramBuffSzInBytes,
+		hw->TxFwInputBuffInfo.DramBuffAdd, hw->TxFwInputBuffInfo.Flags,
+		(unsigned int)hw->WakeUpDecodeDone, (unsigned int)hw->FleaPowerState,
+		hw->TxFwInputBuffInfo.SeqNum, hw->TxBuffInfoAddr,
+		(unsigned int)READ_ONCE(hw->dma_fault),
+		(unsigned int)READ_ONCE(hw->adp->present));
+	if (READ_ONCE(hw->dma_fault) || !READ_ONCE(hw->adp->present)) {
+		sts = BC_STS_IO_ERROR;
+		goto out;
+	}
+	if (!hw->WakeUpDecodeDone || hw->FleaPowerState != FLEA_PS_ACTIVE ||
+	    (hw->TxFwInputBuffInfo.Flags & DFW_FLAGS_TX_ABORT))
+		goto out;
+	address = hw->TxFwInputBuffInfo.DramBuffAdd;
+	available = hw->TxFwInputBuffInfo.DramBuffSzInBytes;
+	if (!address || (address & 3) || !available || available >= needed_sz ||
+	    !hw->TxBuffInfoAddr || (hw->TxBuffInfoAddr & 3) ||
+	    hw->TxBuffInfoAddr > ~0U - flags_offset - sizeof(uint32_t) + 1U)
+		goto out;
+	flags_address = hw->TxBuffInfoAddr + flags_offset;
+	sts = hw->pfnDevDRAMRead(hw, flags_address, 1, &flags);
+	if (sts != BC_STS_SUCCESS)
+		goto out;
+	if (flags & DFW_FLAGS_TX_ABORT) {
+		sts = BC_STS_IO_ERROR;
+		goto out;
+	}
+	flags |= DFW_FLAGS_WRAP;
+	sts = hw->pfnDevDRAMWrite(hw, flags_address, 1, &flags);
+	if (sts != BC_STS_SUCCESS)
+		goto out;
+	/* Same protocol as the legacy single-thread statistics probe. No DMA
+	 * may use this old region while waiting for a fresh mailbox interrupt.
+	 */
+	hw->TxFwInputBuffInfo.DramBuffSzInBytes = 0;
+	hw->TxFwInputBuffInfo.DramBuffAdd = 0;
+	dev_dbg(&hw->adp->pdev->dev,
+		"Typed TX wrap requested: needed=%u contiguous=%u address=%x\n",
+		needed_sz, available, address);
+out:
+	enable_irq(hw->adp->pdev->irq);
+	up(&hw->fetch_sem);
+	return sts;
+}
+
 bool crystalhd_flea_check_input_full(struct crystalhd_hw *hw, uint32_t needed_sz, uint32_t *empty_sz, bool b_188_byte_pkts, uint8_t *flags)
 {
 	uint32_t				regVal=0;
@@ -2849,13 +2917,14 @@ static bool flea_get_picture_info(struct crystalhd_hw *hw,
 	struct device *dev = &hw->adp->pdev->dev;
 	struct crystalhd_rx_buffer *buffer;
 	uint32_t PicInfoLineNum = 0, offset = 0, size = 0;
-	uint32_t y_capacity, y_done_bytes, row_width;
+	uint32_t y_capacity = 0, y_done_bytes = 0, row_width = 0;
 	PBC_PIC_INFO_BLOCK pPicInfoLine;
 	uint32_t scratch_word, widthField = 0;
 	uint64_t offset64;
 	unsigned int pixel_stride;
-	BC_STATUS sts;
+	BC_STATUS sts = BC_STS_SUCCESS;
 	bool rtVal = true;
+	const char *reason = "missing-buffer";
 	union {
 		BC_PIC_INFO_BLOCK pib[2];
 		uint8_t bytes[2 * sizeof(BC_PIC_INFO_BLOCK) + 16];
@@ -2870,6 +2939,7 @@ static bool flea_get_picture_info(struct crystalhd_hw *hw,
 	if (!rx_pkt || !rx_pkt->buffer)
 		goto getpictureinfo_err;
 	buffer = rx_pkt->buffer;
+	reason = "output-format";
 	switch (buffer->output_format) {
 	case MODE420:
 		pixel_stride = 1;
@@ -2882,19 +2952,23 @@ static bool flea_get_picture_info(struct crystalhd_hw *hw,
 		goto getpictureinfo_err;
 	}
 
+	reason = "y-capacity";
 	if (buffer->uv_offset > buffer->capacity)
 		goto getpictureinfo_err;
 	y_capacity = buffer->uv_offset ? buffer->uv_offset : buffer->capacity;
+	reason = "done-size";
 	if (rx_pkt->y_done_sz > y_capacity / 4 || rx_pkt->y_done_sz < 2)
 		goto getpictureinfo_err;
 	y_done_bytes = rx_pkt->y_done_sz * 4;
 	crystalhd_rx_buffer_sync_for_cpu(hw->adp, buffer);
 
 	offset = y_done_bytes - PIC_PIB_DATA_OFFSET_FROM_END;
+	reason = "pib-line-read";
 	sts = flea_rx_read(buffer, y_done_bytes, offset, &PicInfoLineNum,
 			   sizeof(PicInfoLineNum));
 	if (sts != BC_STS_SUCCESS)
 		goto getpictureinfo_err;
+	reason = "pib-line-range";
 	if (PicInfoLineNum > 1092) {
 		dev_err(dev, "Invalid Line Number[%x], DoneSz:0x%x Bytes\n",
 			(int)PicInfoLineNum, y_done_bytes);
@@ -2902,12 +2976,14 @@ static bool flea_get_picture_info(struct crystalhd_hw *hw,
 	}
 
 	offset = y_done_bytes - PIC_WIDTH_OFFSET_FROM_END;
+	reason = "width-read";
 	sts = flea_rx_read(buffer, y_done_bytes, offset, &widthField,
 			   sizeof(widthField));
 	if (sts != BC_STS_SUCCESS)
 		goto getpictureinfo_err;
 
 	row_width = widthField & 0x3FFFFFFF;
+	reason = "row-width";
 	if (!row_width || row_width > 2048) {
 		dev_err(dev, "Invalid width [%d]\n", row_width);
 		goto getpictureinfo_err;
@@ -2920,26 +2996,33 @@ static bool flea_get_picture_info(struct crystalhd_hw *hw,
 	 * PIB. Require its common fields in completed data, but allow extension
 	 * bytes through the registered Y plane. Planar buffers stop before UV.
 	 */
+	reason = "pib-common-range";
 	if (offset64 >= y_done_bytes ||
 	    pixel_stride * OFFSETOF(BC_PIC_INFO_BLOCK, other) >
 		    y_done_bytes - offset64)
 		goto getpictureinfo_err;
 	offset = offset64;
+	reason = "pib-read";
 	sts = flea_rx_read(buffer, y_capacity, offset, pic_info.bytes, size);
 	if (sts != BC_STS_SUCCESS)
 		goto getpictureinfo_err;
 
 	pPicInfoLine = &pic_info.pib[0];
 	*PicMetaData = pPicInfoLine->timeStamp;
+	reason = "format-width";
 	if ((widthField & PIB_FORMAT_CHANGE_BIT) &&
 	    (!pPicInfoLine->width || pPicInfoLine->width > 2048))
 		goto getpictureinfo_err;
 
 	if (widthField & PIB_EOS_DETECTED_BIT) {
-		dev_dbg(dev, "Got EOS flag.\n");
+		dev_dbg(dev, "Got EOS flag: original_pic=%u session=%u pts=%llu flags=%x prepare=%u\n",
+			pPicInfoLine->picture_number, pPicInfoLine->sess_num,
+			(unsigned long long)pPicInfoLine->timeStamp,
+			pPicInfoLine->flags, prepare_output);
 		hw->DrvEosDetected = 1;
 		if (prepare_output) {
 			scratch_word = 0xFFFFFFFF;
+			reason = "eos-marker-write";
 			sts = flea_rx_write(buffer, y_done_bytes, 0,
 					    &scratch_word, sizeof(scratch_word));
 			if (sts != BC_STS_SUCCESS)
@@ -2950,6 +3033,7 @@ static bool flea_get_picture_info(struct crystalhd_hw *hw,
 			hw->DrvCancelEosFlag = 1;
 
 		hw->DrvEosDetected = 0;
+		reason = "first-pixel-read";
 		sts = flea_rx_read(buffer, y_done_bytes, 0, &scratch_word,
 				   sizeof(scratch_word));
 		if (sts != BC_STS_SUCCESS)
@@ -2957,12 +3041,14 @@ static bool flea_get_picture_info(struct crystalhd_hw *hw,
 
 		pPicInfoLine->ycom = scratch_word;
 		if (prepare_output) {
+			reason = "pib-write";
 			sts = flea_rx_write(buffer, y_capacity, offset,
 					    pic_info.bytes, size);
 			if (sts != BC_STS_SUCCESS)
 				goto getpictureinfo_err;
 
 			scratch_word = PicInfoLineNum;
+			reason = "pib-marker-write";
 			sts = flea_rx_write(buffer, y_done_bytes, 0,
 					    &scratch_word, sizeof(scratch_word));
 			if (sts != BC_STS_SUCCESS)
@@ -3007,12 +3093,18 @@ static bool flea_get_picture_info(struct crystalhd_hw *hw,
 	}
 
 	if (pPicInfoLine->flags & FLEA_DECODE_ERROR_FLAG) {
+		dev_dbg(dev, "RX firmware decode error: flags=%x picture=%u pts=%llu row=%u line=%u ybytes=%u\n",
+			pPicInfoLine->flags, pPicInfoLine->picture_number,
+			(unsigned long long)pPicInfoLine->timeStamp, row_width,
+			PicInfoLineNum, y_done_bytes);
 		*PicNumber = 0;
 	} else {
 		offset64 = (uint64_t)PicInfoLineNum * row_width * pixel_stride;
+		reason = "picture-number-range";
 		if (offset64 > y_done_bytes)
 			goto getpictureinfo_err;
 		offset = offset64;
+		reason = "picture-number-read";
 		sts = flea_rx_read(buffer, y_done_bytes, offset, PicNumber,
 				   sizeof(*PicNumber));
 		if (sts != BC_STS_SUCCESS)
@@ -3024,10 +3116,18 @@ static bool flea_get_picture_info(struct crystalhd_hw *hw,
 			*PicNumber = 0xFFFFFFFF;
 	}
 
-	if (prepare_output && rtVal && *PicNumber &&
-	    !(pPicInfoLine->flags & FLEA_DECODE_ERROR_FLAG)) {
+	/* Preserve the bounded PIB for opt-in error consumers without turning a
+	 * failed picture into a repeat-filter number. Legacy still receives zero.
+	 */
+	if (prepare_output && rtVal &&
+	    ((*PicNumber && !(pPicInfoLine->flags & FLEA_DECODE_ERROR_FLAG)) ||
+	     ((pPicInfoLine->flags & FLEA_DECODE_ERROR_FLAG) &&
+	      (rx_pkt->flags & COMP_FLAG_DATA_VALID) &&
+	      buffer->ops->report_decode_errors))) {
 		rx_pkt->metadata.firmware_timestamp = pPicInfoLine->timeStamp;
-		rx_pkt->metadata.picture_number = *PicNumber;
+		rx_pkt->metadata.picture_number =
+			(pPicInfoLine->flags & FLEA_DECODE_ERROR_FLAG) ?
+			pPicInfoLine->picture_number : *PicNumber;
 		rx_pkt->metadata.picture_flags = pPicInfoLine->flags;
 		rx_pkt->metadata.picture_width = pPicInfoLine->width;
 		rx_pkt->metadata.picture_height = pPicInfoLine->height;
@@ -3042,6 +3142,10 @@ static bool flea_get_picture_info(struct crystalhd_hw *hw,
 	return rtVal;
 
 getpictureinfo_err:
+	dev_dbg(dev, "RX picture parse rejected: reason=%s status=%u row=%u line=%u ybytes=%u capacity=%u offset=%u size=%u widthfield=%x\n",
+		reason, sts, row_width, PicInfoLineNum, y_done_bytes, y_capacity,
+		offset, size, widthField);
+	(void)reason; /* Diagnostic may be compiled out. */
 	*PicNumber = 0;
 	*PicMetaData = 0;
 	return false;

@@ -663,6 +663,13 @@ BC_STATUS crystalhd_hw_try_get_cap_buffer(struct crystalhd_hw *hw,
 					  uint64_t expected_epoch);
 BC_STATUS crystalhd_hw_start_capture(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_stop_capture(struct crystalhd_hw *hw, bool unmap);
+/* Caller holds fetch_sem and a session lifetime lease (reader is sufficient),
+ * with IRQ delivery drained. No parallel process caller may mutate RX state;
+ * TX under the same session reader does not change RX inventory.
+ * Positive fixed-inventory proof that no RX registration remains owned.
+ * This is not a terminal fence for TX, PCI teardown or arbitrary faults.
+ */
+bool crystalhd_hw_rx_idle(struct crystalhd_hw *hw);
 /* Process callers must hold fetch_sem before calling the locked variant. */
 BC_STATUS crystalhd_hw_stop_capture_locked(struct crystalhd_hw *hw, bool unmap);
 /* Process-context ownership retirement only: caller has stopped and drained

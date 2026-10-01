@@ -28,25 +28,34 @@ typedef int32_t s32;
 #define READ_ONCE(value) (value)
 #define dev_err(dev, ...) ((void)(dev))
 #define dev_dbg(dev, ...) ((void)(dev))
+#define dev_info(dev, ...) ((void)(dev))
+#define GFP_KERNEL 0
+#define kzalloc(size, flags) calloc(1, (size))
+#define kfree(pointer) free(pointer)
 #define ERESTARTSYS 512
 #define CAP_SYS_RAWIO 17
+#define lockdep_assert_held(lock) assert((lock)->readers || (lock)->writers)
 
 struct device { int unused; };
 struct pci_dev { struct device dev; unsigned int device; };
 struct test_lock { unsigned readers, writers; };
 struct crystalhd_cmd {
+    struct crystalhd_adp *adp;
     uint32_t state;
     struct crystalhd_user user[BC_LINK_MAX_OPENS];
     const void *session_owner;
+    const void *session_lifetime_owner, *session_lifetime_ops;
 };
 struct crystalhd_adp {
     struct pci_dev *pdev;
     bool present;
     struct crystalhd_cmd cmds;
-    struct test_lock user_lock, tx_lock;
+    struct test_lock user_lock, tx_lock, legacy_gate;
+    unsigned cfg_users;
 };
 struct crystalhd_file { struct crystalhd_user *user; uint64_t generation; };
 struct file { void *private_data; };
+struct inode { int unused; };
 typedef BC_STATUS (*crystalhd_cmd_proc)(struct crystalhd_cmd *, crystalhd_ioctl_data *);
 struct crystalhd_cmd_tbl {
     uint32_t cmd_id;
@@ -124,9 +133,20 @@ static int mutex_lock_interruptible(struct test_lock *lock)
 }
 static void mutex_unlock(struct test_lock *lock)
 {
+    if (lock == &adapter.legacy_gate) {
+        Check(lock->writers == 1, "legacy slot gate released");
+        lock->writers--; return;
+    }
     Check(lock == &adapter.tx_lock && lock->writers == 1 &&
           adapter.user_lock.readers == 1, "TX serialization ends before user admission");
     lock->writers--;
+}
+static void mutex_lock(struct test_lock *lock)
+{
+    Check(lock == &adapter.legacy_gate && !lock->writers &&
+          !adapter.user_lock.readers && !adapter.user_lock.writers,
+          "legacy gate precedes user barrier admission");
+    lock->writers++;
 }
 static bool capable(int cap)
 {
@@ -217,16 +237,21 @@ static BC_STATUS crystalhd_legacy_color_access(struct crystalhd_cmd *ctx, crysta
     color_calls++;
     return Handle(ctx, io, io->cmd);
 }
+static BC_STATUS crystalhd_user_open(struct crystalhd_cmd *ctx, struct crystalhd_user **user)
+{ (void)ctx; (void)user; abort(); }
+static void crystalhd_user_close(struct crystalhd_cmd *ctx, struct crystalhd_user *user)
+{ (void)ctx; (void)user; abort(); }
 #include "ioctl-table.h"
 #include "ioctl-functions.h"
 
 static void Reset(void)
 {
     Check(!pool_live && !chd_device_lock.readers && !adapter.user_lock.readers &&
-          !adapter.user_lock.writers && !adapter.tx_lock.writers,
+          !adapter.user_lock.writers && !adapter.tx_lock.writers && !adapter.legacy_gate.writers,
           "previous operation released all admission and temporary ownership");
     pci = (struct pci_dev){ .device = BC_PCI_DEVID_FLEA };
     adapter = (struct crystalhd_adp){ .pdev = &pci, .present = true };
+    adapter.cmds.adp = &adapter;
     adapter.cmds.user[1] = (struct crystalhd_user){ .uid = 1, .in_use = 1, .mode = DTS_PLAYBACK_MODE };
     adapter.cmds.session_owner = &adapter.cmds.user[1];
     current_adapter = &adapter;
@@ -318,7 +343,7 @@ static void SessionOwnership(void)
                 Check(!handler_calls && allocations == 1 && copies == 2 && frees == 1,
                       "nonowner session commands reach no stateful leaf handler");
                 Check(user_writes == (number == DRV_CMD_FW_DOWNLOAD) &&
-                      user_reads == (number != DRV_CMD_FW_DOWNLOAD),
+                      user_reads == 1,
                       "firmware reset is exclusive even when ownership rejects it");
             }
         }
@@ -426,6 +451,78 @@ static void Permissions(void)
               "neighboring registers are never exposed by the color exception");
     }
 }
+static void NativeHeld(void)
+{
+    for (unsigned compat = 0; compat < 2; compat++) {
+        for (unsigned number = 0; number < DRV_CMD_END; number++) {
+            if (!SessionRequired(number)) continue;
+            Reset();
+            adapter.cmds.session_owner = &pci;
+            adapter.cmds.session_lifetime_owner = &pci;
+            adapter.cmds.session_lifetime_ops = &pci;
+            binding.user->mode = DTS_MODE_INV;
+            unsigned cmd = _IOC(_IOC_READ | _IOC_WRITE, BC_IOC_BASE, number,
+                                sizeof(BC_IOCTL_DATA));
+            Check(!Call(cmd, compat) && caller_data.RetSts == BC_STS_ERR_USAGE &&
+                  !user_writes && !handler_calls && !tx_locks &&
+                  !adapter.legacy_gate.writers,
+                  "native owner rejects every legacy owner-only command without writer/TX waits");
+        }
+        for (unsigned variant = 0; variant < 10; variant++) {
+            Reset();
+            adapter.cmds.session_owner = &pci;
+            adapter.cmds.session_lifetime_owner = &pci;
+            adapter.cmds.session_lifetime_ops = &pci;
+            adapter.cfg_users = 1;
+            binding.user->mode = DTS_MODE_INV;
+            caller_data.u.NotifyMode.Mode = DTS_PLAYBACK_MODE;
+            if (variant == 1) caller_data.u.NotifyMode.Mode = DTS_MONITOR_MODE | 0x81000000U;
+            if (variant == 2) binding.user->mode = DTS_MONITOR_MODE;
+            if (variant == 3) copy_in_error = -EFAULT;
+            if (variant == 4) copy_out_error = -EFAULT;
+            if (variant == 5) pool_empty = true;
+            if (variant == 6) fail_user_admission = true;
+            unsigned cmd = variant == 7 ? BCM_IOC_FW_DOWNLOAD :
+                           variant == 8 ? BCM_IOC_RELEASE :
+                           variant == 9 ? BCM_IOC_REG_WR : BCM_IOC_NOTIFY_MODE;
+            if (variant == 9) privileged = false;
+            long expected = variant == 3 || variant == 4 ? -EFAULT :
+                            variant == 5 ? -EINVAL : variant == 6 ? -ENODEV :
+                            variant == 9 ? -EPERM : 0;
+            Check(Call(cmd, compat) == expected, "native-held legacy envelope retains error semantics");
+            Check(!user_writes && !handler_calls && !adapter.legacy_gate.writers &&
+                  adapter.cmds.session_owner == &pci && adapter.cfg_users == 1,
+                  "native-held rejected/control ioctls neither queue writers nor change decoder ownership");
+            if (!expected) {
+                Check(caller_data.RetSts == (variant == 1 ? BC_STS_SUCCESS : BC_STS_ERR_USAGE),
+                      "playback rejection remains status 13; monitor mode remains successful");
+                if (variant == 1) {
+                    Check(binding.user->mode == (DTS_MONITOR_MODE | 0x81000000U),
+                          "monitor mode high flags preserved");
+                    Check(!Call(BCM_IOC_RELEASE, compat) && !binding.user &&
+                          !adapter.cfg_users && adapter.cmds.session_owner == &pci,
+                          "monitor release retires only its legacy slot");
+                }
+            }
+        }
+    }
+    Reset();
+    adapter.cmds.session_owner = &pci;
+    adapter.cmds.session_lifetime_owner = &pci;
+    adapter.cmds.session_lifetime_ops = &pci;
+    adapter.cfg_users = 1;
+    struct file opened = {0};
+    down_read(&chd_device_lock);
+    Check(!chd_dec_open_locked(NULL, &opened) && adapter.cfg_users == 2 &&
+          !user_writes && !adapter.legacy_gate.writers,
+          "actual native-held char open allocates only a serialized user slot");
+    Check(!chd_dec_close_locked(NULL, &opened) && adapter.cfg_users == 1 &&
+          !user_writes && adapter.cmds.session_owner == &pci,
+          "actual native-held char close never retires the native hardware owner");
+    free(opened.private_data);
+    up_read(&chd_device_lock);
+}
+
 int main(void)
 {
     Routing();
@@ -433,6 +530,7 @@ int main(void)
     Admission();
     ResultsAndCleanup();
     Permissions();
+    NativeHeld();
     Reset();
     printf("Legacy ioctl dispatch passed (%u checks)\n", checks);
     return 0;

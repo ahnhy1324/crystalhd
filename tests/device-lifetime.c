@@ -39,6 +39,7 @@ typedef int BC_STATUS;
 #define dev_warn(...) mock_log(__VA_ARGS__)
 #define WARN_ON_ONCE(value) ((value) ? (++warnings, true) : false)
 #define lockdep_assert_held_write(lock) assert((lock)->writers == 1)
+#define lockdep_assert_held(lock) assert((lock)->writers || (lock)->readers)
 #define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
 
 struct mock_lock { unsigned int readers, writers, entries; };
@@ -99,6 +100,7 @@ struct crystalhd_adp {
 	struct pci_dev *pdev;
 	struct crystalhd_cmd cmds;
 	struct mock_lock user_lock;
+	struct mock_lock legacy_gate;
 	struct crystalhd_l0s_state l0s;
 	crystalhd_ioctl_data *idata_free_head;
 	void *mem_addr, *i2o_addr, *fill_byte_pool, *elem_pool_head;
@@ -336,13 +338,13 @@ static void mock_log(const struct device *dev, const char *format, ...)
 
 static void down_read(struct mock_lock *lock)
 {
-	assert(lock == &chd_device_lock && !lock->writers);
+	assert((lock == &chd_device_lock || (g_adp_info && lock == &g_adp_info->user_lock)) && !lock->writers);
 	lock->readers++;
 	lock->entries++;
 }
 static void up_read(struct mock_lock *lock)
 {
-	assert(lock == &chd_device_lock && lock->readers == 1 && !lock->writers);
+	assert(lock->readers == 1 && !lock->writers);
 	lock->readers--;
 }
 static void down_write(struct mock_lock *lock)
@@ -369,6 +371,10 @@ static void up_write(struct mock_lock *lock)
 	assert(lock->writers == 1 && !lock->readers);
 	lock->writers--;
 }
+static void mutex_lock(struct mock_lock *lock)
+{ assert(!lock->writers); lock->writers = 1; }
+static void mutex_unlock(struct mock_lock *lock)
+{ assert(lock->writers == 1); lock->writers = 0; }
 
 static void *pci_get_drvdata(struct pci_dev *dev)
 { assert(dev == &pci); return dev->data; }

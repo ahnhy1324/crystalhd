@@ -100,6 +100,7 @@ fw-download-check:
 
 tx-admission-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/tx-admission.sh
+	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/tx-wrap.sh
 
 h264-stream-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/h264-stream.sh
@@ -112,6 +113,10 @@ device-lifetime-check:
 
 v4l2-parent-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/v4l2-parent.sh
+	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/v4l2-buffers.sh
+	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/v4l2-decoder.sh
+	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/v4l2-output.sh
+	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/v4l2-node.sh
 
 ioctl-dispatch-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/ioctl-dispatch.sh

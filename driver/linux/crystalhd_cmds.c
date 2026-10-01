@@ -31,6 +31,7 @@
 
 #include "crystalhd_lnx.h"
 #include "crystalhd_hw.h"
+#include "crystalhd_fleafuncs.h"
 #include "crystalhd_stream.h"
 int bc_get_userhandle_count(struct crystalhd_cmd *ctx);
 BC_STATUS bc_cproc_release_user(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *idata);
@@ -1443,6 +1444,13 @@ static BC_STATUS crystalhd_tx_transfer_common(struct crystalhd_cmd *ctx,
 			sts = crystalhd_bounded_tx_status(ctx, deadline, false);
 			if (sts != BC_STS_SUCCESS)
 				break;
+			/* Native consumers do not poll the legacy single-thread stats
+			 * ioctl that asks firmware to wrap a too-small contiguous tail.
+			 * This process-only request cannot extend the AU deadline.
+			 */
+			sts = crystalhd_flea_request_tx_wrap(ctx->hw_ctx, buffer->bytes);
+			if (sts != BC_STS_SUCCESS && sts != BC_STS_NO_DATA)
+				break;
 			wait_deadline = jiffies + msecs_to_jiffies(100);
 			if (time_after(wait_deadline, deadline))
 				wait_deadline = deadline;
@@ -1747,6 +1755,53 @@ BC_STATUS crystalhd_rx_ack_format(struct crystalhd_cmd *ctx,
 	up(&ctx->hw_ctx->fetch_sem);
 
 	return sts == BC_STS_NO_DATA ? BC_STS_SUCCESS : sts;
+}
+
+BC_STATUS crystalhd_rx_pause_format(struct crystalhd_cmd *ctx,
+				    struct crystalhd_rx_completion *result)
+{
+	struct crystalhd_rx_buffer *buffer;
+	BC_STATUS sts;
+
+	if (!ctx || !ctx->hw_ctx || !result || !result->buffer ||
+	    !result->cookie || result->buffer->cookie != result->cookie ||
+	    !(result->flags & COMP_FLAG_FMT_CHANGE))
+		return BC_STS_INV_ARG;
+	buffer = result->buffer;
+	result->buffer = NULL;
+	result->cookie = NULL;
+	down(&ctx->hw_ctx->fetch_sem);
+	if (result->capture_epoch != ctx->hw_ctx->rx_cancel_epoch ||
+	    !(ctx->state & BC_LINK_CAP_EN)) {
+		sts = BC_STS_IO_USER_ABORT;
+	} else {
+		/* A native single-registration format boundary already completed
+		 * its only DMA. Preserve Flea's cached picture/sequence handshake
+		 * rather than resetting it while userspace negotiates CAPTURE.
+		 */
+		disable_irq(ctx->adp->pdev->irq);
+		if (ctx->adp->pdev->device == BC_PCI_DEVID_FLEA &&
+		    crystalhd_hw_rx_idle(ctx->hw_ctx)) {
+			ctx->hw_ctx->rx_cancel_epoch++;
+			sts = BC_STS_SUCCESS;
+			enable_irq(ctx->adp->pdev->irq);
+		} else {
+			enable_irq(ctx->adp->pdev->irq);
+			sts = crystalhd_hw_stop_capture_locked(ctx->hw_ctx, true);
+		}
+		if (sts == BC_STS_SUCCESS) {
+			if (READ_ONCE(ctx->hw_ctx->dma_fault))
+				sts = BC_STS_IO_ERROR;
+			else
+				ctx->state |= BC_LINK_FMT_CHG;
+		}
+	}
+	up(&ctx->hw_ctx->fetch_sem);
+	/* This packet was already detached by dequeue, independent of whether
+	 * the remaining DMA registrations could be stopped.
+	 */
+	crystalhd_rx_buffer_release(ctx->adp, buffer);
+	return sts;
 }
 
 static void bc_cproc_copy_pib(struct C011_PIB *dst,
@@ -2308,6 +2363,84 @@ BC_STATUS crystalhd_resume(struct crystalhd_cmd *ctx)
  * application specific resources. HW layer initialization
  * is done for the first open request.
  */
+/* These narrow callbacks run only with a native lifetime owner protected by
+ * user_lock read and legacy_gate. They never open/retire hardware or mutate
+ * decoder state. Ordinary legacy callbacks retain their writer contract.
+ */
+static bool crystalhd_native_legacy_owned(struct crystalhd_cmd *ctx)
+{
+	if (!ctx || !ctx->adp || !ctx->session_owner ||
+	    !ctx->session_lifetime_ops ||
+	    ctx->session_owner != ctx->session_lifetime_owner)
+		return false;
+	lockdep_assert_held(&ctx->adp->user_lock);
+	lockdep_assert_held(&ctx->adp->legacy_gate);
+	return true;
+}
+
+BC_STATUS crystalhd_native_legacy_open(struct crystalhd_cmd *ctx,
+				      struct crystalhd_user **user_ctx)
+{
+	struct crystalhd_user *uc;
+
+	if (!user_ctx || !crystalhd_native_legacy_owned(ctx))
+		return BC_STS_INV_ARG;
+	*user_ctx = NULL;
+	uc = bc_cproc_get_uid(ctx);
+	if (!uc)
+		return BC_STS_BUSY;
+	uc->mode = DTS_MODE_INV;
+	uc->in_use = 1;
+	*user_ctx = uc;
+	return BC_STS_SUCCESS;
+}
+
+void crystalhd_native_legacy_close(struct crystalhd_cmd *ctx,
+				  struct crystalhd_user *uc)
+{
+	if (!crystalhd_native_legacy_owned(ctx) || !uc || !uc->in_use ||
+	    ctx->session_owner == uc)
+		return;
+	uc->mode = DTS_MODE_INV;
+	uc->in_use = 0;
+	if (ctx->adp->cfg_users > 0)
+		ctx->adp->cfg_users--;
+}
+
+BC_STATUS crystalhd_native_legacy_notify(struct crystalhd_cmd *ctx,
+					crystalhd_ioctl_data *idata)
+{
+	struct crystalhd_user *uc;
+	u32 mode;
+
+	if (!idata || idata->u_id >= BC_LINK_MAX_OPENS ||
+	    !crystalhd_native_legacy_owned(ctx))
+		return BC_STS_INV_ARG;
+	uc = &ctx->user[idata->u_id];
+	mode = idata->udata.u.NotifyMode.Mode;
+	if (uc->mode != (u32)DTS_MODE_INV || ctx->session_owner == uc)
+		return BC_STS_ERR_USAGE;
+	if ((mode & 0xff) != DTS_MONITOR_MODE)
+		return BC_STS_ERR_USAGE;
+	uc->mode = mode;
+	return BC_STS_SUCCESS;
+}
+
+BC_STATUS crystalhd_native_legacy_release(struct crystalhd_cmd *ctx,
+					 crystalhd_ioctl_data *idata)
+{
+	struct crystalhd_user *uc;
+
+	if (!idata || idata->u_id >= BC_LINK_MAX_OPENS ||
+	    !crystalhd_native_legacy_owned(ctx))
+		return BC_STS_INV_ARG;
+	uc = &ctx->user[idata->u_id];
+	if (uc->mode == (u32)DTS_MODE_INV)
+		return BC_STS_ERR_USAGE;
+	crystalhd_native_legacy_close(ctx, uc);
+	return BC_STS_SUCCESS;
+}
+
 BC_STATUS crystalhd_user_open(struct crystalhd_cmd *ctx,
 			      struct crystalhd_user **user_ctx)
 {

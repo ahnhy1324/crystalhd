@@ -200,6 +200,8 @@ static struct {
     unsigned wakes, irq_depth, irq_disables, irq_enables, fifo_calls, busy;
     unsigned firmware_calls, firmware_depth, bus_clears, bus_drains;
     unsigned callback_calls, masks;
+    unsigned wrap_calls, wrap_delay_ms;
+    BC_STATUS wrap_status;
     unsigned sleep_budget[4], sleep_budget_count, completion_budget;
     unsigned post_delay_ms, wait_entry_delay_ms;
     unsigned cancel_on_sleep, remove_on_sleep, absolute_waits;
@@ -688,6 +690,15 @@ static void up(int *sem) { Check(*sem == 0, "capture semaphore is held"); *sem =
 
 #include "tx-admission-buffer.h"
 #include "tx-admission-hardware.h"
+static BC_STATUS crystalhd_flea_request_tx_wrap(struct crystalhd_hw *hw, u32 bytes)
+{
+    Check(hw == &hardware && bytes == run.transfer_size && !hardware.lock &&
+          !run.irq_depth && !activeq.head && !run.starts,
+          "bounded BUSY wrap request carries input size before DMA ownership");
+    run.wrap_calls++;
+    jiffies += run.wrap_delay_ms;
+    return run.wrap_status;
+}
 #include "tx-admission-command.h"
 
 static BC_STATUS Flush(bool cancel)
@@ -1368,6 +1379,25 @@ static void FinishBorrowedInput(void)
 static void BoundedTransfer(void)
 {
 	unsigned long deadline = 0xfeedUL;
+
+    for (unsigned kind = 0; kind < 3; kind++) {
+        Reset(); PrepareBorrowedInput(); run.busy = 1;
+        run.immediate_completion = true;
+        run.wrap_status = kind == 0 ? BC_STS_SUCCESS :
+                          kind == 1 ? BC_STS_NO_DATA : BC_STS_IO_ERROR;
+        Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                  run.transfer_flags, 250) == (kind == 2 ? BC_STS_IO_ERROR : BC_STS_SUCCESS) &&
+              run.wrap_calls == 1 && run.starts == (kind != 2) &&
+              run.sleeps == (kind != 2),
+              "bounded wrap success/no-data retries; hard error stops before sleep or DMA");
+        FinishBorrowedInput();
+    }
+    Reset(); PrepareBorrowedInput(); run.busy = 10; run.wrap_delay_ms = 250;
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+              run.transfer_flags, 250) == BC_STS_TIMEOUT &&
+          run.wrap_calls == 1 && !run.starts && jiffies == 250,
+          "wrap-request time consumes the existing absolute deadline");
+    FinishBorrowedInput();
 
 	Reset();
 	jiffies = ULONG_MAX - 19UL;

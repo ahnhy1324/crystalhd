@@ -27,6 +27,8 @@ struct rw_semaphore {
 };
 struct crystalhd_adp {
     struct rw_semaphore user_lock;
+    pthread_mutex_t legacy_gate;
+    struct { const void *session_owner, *session_lifetime_owner, *session_lifetime_ops; } cmds;
     u64 generation;
     unsigned present;
     bool hw_accessible;
@@ -47,6 +49,7 @@ static size_t event_count;
 static struct crystalhd_device_access *watched_access;
 static bool drop_present, drop_ready, writer_blocked, writer_finished;
 static unsigned scenarios, checks;
+static void (*user_unlocked_hook)(void);
 
 static void check(bool condition, const char *message)
 {
@@ -64,6 +67,15 @@ static void must(int rc)
         abort();
     }
 }
+
+static int mutex_trylock(pthread_mutex_t *lock)
+{
+    int rc = pthread_mutex_trylock(lock);
+    if (rc == EBUSY) return 0;
+    must(rc); return 1;
+}
+static void mutex_lock(pthread_mutex_t *lock) { must(pthread_mutex_lock(lock)); }
+static void mutex_unlock(pthread_mutex_t *lock) { must(pthread_mutex_unlock(lock)); }
 
 static struct timespec deadline(void)
 {
@@ -138,6 +150,40 @@ static void assert_empty_before_unlock(void)
         assert(!watched_access->adp && !watched_access->exclusive);
 }
 
+static int down_read_trylock(struct rw_semaphore *lock)
+{
+    int rc;
+
+    assert(lock == &chd_device_lock && !global_read && !global_write &&
+           !user_read && !user_write);
+    rc = pthread_rwlock_tryrdlock(&lock->native);
+    if (rc == EBUSY) return 0;
+    must(rc);
+    must(pthread_mutex_lock(&audit));
+    assert(!lock->writers);
+    lock->readers++; global_read++; event('G');
+    must(pthread_mutex_unlock(&audit));
+    return 1;
+}
+
+static int down_write_trylock(struct rw_semaphore *lock)
+{
+    int rc;
+
+    assert(lock == &adapter.user_lock && global_read == 1 &&
+           !global_write && !user_read && !user_write);
+    rc = pthread_rwlock_trywrlock(&lock->native);
+    if (rc == EBUSY) return 0;
+    must(rc);
+    must(pthread_mutex_lock(&audit));
+    assert(!lock->writers && !lock->readers);
+    lock->writers++; user_write++; event('W');
+    if (drop_present) WRITE_ONCE(adapter.present, 0);
+    if (drop_ready) adapter.hw_accessible = false;
+    must(pthread_mutex_unlock(&audit));
+    return 1;
+}
+
 static void up_read(struct rw_semaphore *lock)
 {
     must(pthread_mutex_lock(&audit));
@@ -156,6 +202,11 @@ static void up_read(struct rw_semaphore *lock)
     lock->readers--;
     must(pthread_mutex_unlock(&audit));
     must(pthread_rwlock_unlock(&lock->native));
+    if (lock == &adapter.user_lock && user_unlocked_hook) {
+        void (*hook)(void) = user_unlocked_hook;
+        user_unlocked_hook = NULL;
+        hook();
+    }
 }
 
 static void up_write(struct rw_semaphore *lock)
@@ -208,6 +259,7 @@ static void reset(void)
     adapter.present = 1;
     adapter.hw_accessible = true;
     g_adp_info = &adapter;
+    memset(&adapter.cmds, 0, sizeof(adapter.cmds));
 }
 
 static void balanced(const char *expected)
@@ -471,6 +523,133 @@ static void probe_admission_cases(void *unreadable)
     }
 }
 
+static void nonblocking_cases(void)
+{
+    for (unsigned failure = 0; failure < 12; failure++) {
+        struct crystalhd_device_access access = {0};
+        int expected = 0;
+        const char *order = "GWwg";
+        u64 generation = 41;
+
+        reset();
+        watched_access = &access;
+        switch (failure) {
+        case 1: generation = 0; expected = -ENODEV; order = "Gg"; break;
+        case 2: generation = 40; expected = -ENODEV; order = "Gg"; break;
+        case 3: g_adp_info = NULL; expected = -ENODEV; order = "Gg"; break;
+        case 4: adapter.present = 0; expected = -ENODEV; order = "Gg"; break;
+        case 5: drop_present = true; expected = -ENODEV; break;
+        case 6: adapter.hw_accessible = false; expected = -EAGAIN; break;
+        case 7: drop_ready = true; expected = -EAGAIN; break;
+        case 8:
+            /* An established TX holds the native reader. A failed claim
+             * must not enqueue a writer that would obstruct its RX peer.
+             */
+            must(pthread_rwlock_rdlock(&adapter.user_lock.native));
+            expected = -EBUSY; order = "Gg"; break;
+        case 9:
+            must(pthread_rwlock_wrlock(&chd_device_lock.native));
+            expected = -EBUSY; order = ""; break;
+        case 10:
+            must(pthread_rwlock_wrlock(&adapter.user_lock.native));
+            expected = -EBUSY; order = "Gg"; break;
+        case 11:
+            mutex_lock(&adapter.legacy_gate);
+            expected = -EBUSY; order = "Gg"; break;
+        }
+        check(crystalhd_device_try_enter_exclusive(generation, &access) == expected,
+              "new-session admission is nonblocking and preserves lifetime/readiness guards");
+        if (!expected) {
+            check(access.adp == &adapter && access.exclusive && user_write == 1,
+                  "successful new-session admission retains exclusive owner-check protection");
+            crystalhd_device_exit(&access);
+        } else {
+            check(!access.adp && !access.exclusive,
+                  "failed new-session admission publishes no borrowed adapter");
+        }
+        if (failure == 8) {
+            /* RX can still enter while the original TX reader remains. */
+            must(pthread_rwlock_tryrdlock(&adapter.user_lock.native));
+            must(pthread_rwlock_unlock(&adapter.user_lock.native));
+            must(pthread_rwlock_unlock(&adapter.user_lock.native));
+        }
+        if (failure == 9)
+            must(pthread_rwlock_unlock(&chd_device_lock.native));
+        if (failure == 10)
+            must(pthread_rwlock_unlock(&adapter.user_lock.native));
+        if (failure == 11)
+            mutex_unlock(&adapter.legacy_gate);
+        balanced(order);
+    }
+    check(crystalhd_device_try_enter_exclusive(41, NULL) == -EINVAL,
+          "new-session admission validates output handle");
+}
+
+static void legacy_admission_cases(void)
+{
+    for (unsigned native = 0; native < 2; native++) {
+        for (unsigned writer = 0; writer < 2; writer++) {
+            bool exclusive = writer, held;
+            reset();
+            if (native) {
+                adapter.cmds.session_owner = &adapter;
+                adapter.cmds.session_lifetime_owner = &adapter;
+                adapter.cmds.session_lifetime_ops = &adapter;
+                /* A real outstanding TX reader remains held throughout. */
+                must(pthread_rwlock_rdlock(&adapter.user_lock.native));
+            }
+            down_read(&chd_device_lock);
+            held = crystalhd_legacy_enter(&adapter, &exclusive);
+            check(held == !!native && exclusive == (writer && !native),
+                  "native-held legacy admission never requests a writer");
+            check(mutex_trylock(&adapter.legacy_gate) == !native,
+                  "native slot operations retain gate; ordinary admission releases it");
+            if (!native) mutex_unlock(&adapter.legacy_gate);
+            if (native) {
+                must(pthread_rwlock_tryrdlock(&adapter.user_lock.native));
+                must(pthread_rwlock_unlock(&adapter.user_lock.native));
+            }
+            crystalhd_legacy_exit(&adapter, exclusive, held);
+            up_read(&chd_device_lock);
+            if (native) must(pthread_rwlock_unlock(&adapter.user_lock.native));
+            check(mutex_trylock(&adapter.legacy_gate), "legacy admission gate released on exit");
+            mutex_unlock(&adapter.legacy_gate);
+            balanced(writer && !native ? "GRrWwg" : "GRrg");
+        }
+    }
+}
+
+static void *native_claim_in_upgrade(void *opaque)
+{
+    struct crystalhd_device_access access = {0};
+    int *result = opaque;
+    *result = crystalhd_device_try_enter_exclusive(41, &access);
+    assert(!access.adp && !global_read && !user_write);
+    return NULL;
+}
+
+static void compete_in_upgrade(void)
+{
+    pthread_t thread;
+    int result = 0;
+    must(pthread_create(&thread, NULL, native_claim_in_upgrade, &result));
+    must(pthread_join(thread, NULL));
+    check(result == -EBUSY, "native claim cannot publish in legacy read-to-write upgrade gap");
+}
+
+static void legacy_upgrade_race(void)
+{
+    bool exclusive = true;
+    reset();
+    down_read(&chd_device_lock);
+    user_unlocked_hook = compete_in_upgrade;
+    check(!crystalhd_legacy_enter(&adapter, &exclusive) && exclusive,
+          "ordinary legacy writer keeps original exclusive callback contract");
+    crystalhd_legacy_exit(&adapter, exclusive, false);
+    up_read(&chd_device_lock);
+    balanced("GRrGgWwg");
+}
+
 int main(void)
 {
     long page_size = sysconf(_SC_PAGESIZE);
@@ -482,12 +661,17 @@ int main(void)
     assert(unreadable != MAP_FAILED);
     must(pthread_rwlock_init(&chd_device_lock.native, NULL));
     must(pthread_rwlock_init(&adapter.user_lock.native, NULL));
+    must(pthread_mutex_init(&adapter.legacy_gate, NULL));
     success_cases();
+    nonblocking_cases();
+    legacy_admission_cases();
+    legacy_upgrade_race();
     failure_cases(unreadable);
     generation_cases();
     removal_cases();
     probe_admission_cases(unreadable);
     must(pthread_rwlock_destroy(&adapter.user_lock.native));
+    must(pthread_mutex_destroy(&adapter.legacy_gate));
     must(pthread_rwlock_destroy(&chd_device_lock.native));
     must(pthread_cond_destroy(&changed));
     must(pthread_mutex_destroy(&audit));
