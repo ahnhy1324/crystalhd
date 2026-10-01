@@ -515,6 +515,7 @@ struct crystalhd_adp {
 	const char *name;
 	int user_lock;
 	bool irq_registered;
+	bool hw_accessible;
 	int msi;
 	int present;
 	struct crystalhd_cmd cmds;
@@ -538,6 +539,7 @@ static unsigned int msi_requests, msi_disables, irq_requests, irq_frees;
 static int msi_result, irq_result;
 static bool msi_active, irq_active;
 static bool pm_tracking, pm_master, pm_bound, pm_alloc_fail;
+static bool pm_resume_success_pending;
 static int pm_enable_error, pm_suspend_error, pm_resume_error, pm_pending;
 static int chd_device_lock, pm_lock_depth, pm_user_lock_depth;
 static unsigned int pm_user_locks, pm_user_unlocks;
@@ -583,6 +585,7 @@ static int request_irq(unsigned int irq, int (*handler)(int, void *),
 	irq_requests++;
 	if (pm_tracking) {
 		CHECK(pm_user_lock_depth == 1);
+		CHECK(!irq_adapter.hw_accessible);
 		CHECK(!pm_master);
 		CHECK(!(endpoint.lnkctl & 1) && !(parent.lnkctl & 1));
 		pm_event('Q');
@@ -595,8 +598,10 @@ static void free_irq(unsigned int irq, void *argument)
 	CHECK(irq == (unsigned int)endpoint.irq && argument == &irq_adapter);
 	CHECK(irq_active);
 	irq_frees++;
-	if (pm_tracking)
+	if (pm_tracking) {
 		CHECK(pm_user_lock_depth == !!irq_adapter.present);
+		CHECK(!irq_adapter.present || !irq_adapter.hw_accessible);
+	}
 	irq_active = false;
 	pm_event('F');
 }
@@ -619,6 +624,10 @@ static void up_write(int *lock)
 {
 	if (lock == &irq_adapter.user_lock) {
 		CHECK(pm_user_lock_depth == 1);
+		if (pm_resume_success_pending) {
+			CHECK(irq_adapter.hw_accessible);
+			pm_resume_success_pending = false;
+		}
 		pm_user_lock_depth--;
 		pm_user_unlocks++;
 		return;
@@ -682,15 +691,19 @@ static BC_STATUS crystalhd_resume(struct crystalhd_cmd *cmd)
 {
 	CHECK(cmd == &irq_adapter.cmds && irq_adapter.irq_registered);
 	CHECK(pm_user_lock_depth == 1);
-	CHECK(pm_master == !pm_hw.dma_fault);
+	CHECK(!irq_adapter.hw_accessible);
+	CHECK(cmd->hw_ctx == NULL || cmd->hw_ctx == &pm_hw);
+	CHECK(pm_master == (!cmd->hw_ctx || !cmd->hw_ctx->dma_fault));
 	pm_resumes++;
 	pm_event('H');
+	pm_resume_success_pending = !pm_resume_error;
 	return pm_resume_error;
 }
 static void pci_save_state(struct pci_dev *dev)
 {
 	CHECK(dev == &endpoint && !irq_active && !irq_adapter.irq_registered);
 	CHECK(pm_user_lock_depth == 1);
+	CHECK(!irq_adapter.hw_accessible);
 	CHECK(endpoint.lnkctl == 0x43 && parent.lnkctl == 0x43);
 	pm_saves++;
 	pm_event('S');
@@ -812,6 +825,7 @@ static void reset_pm_model(const char *name)
 	reset_irq_model(name);
 	pm_master = pm_bound = true;
 	pm_alloc_fail = false;
+	pm_resume_success_pending = false;
 	pm_enable_error = pm_suspend_error = pm_resume_error = 0;
 	pm_pending = 1;
 	pm_lock_depth = pm_user_lock_depth = 0;
@@ -822,6 +836,7 @@ static void reset_pm_model(const char *name)
 	pm_events[0] = '\0';
 	pm_hw = (struct crystalhd_hw){0};
 	irq_adapter.present = 1;
+	irq_adapter.hw_accessible = true;
 	irq_adapter.cmds.hw_ctx = &pm_hw;
 	CHECK(crystalhd_l0s_init(&endpoint, &irq_adapter.l0s, true) == 0);
 	CHECK(chd_dec_enable_int(&irq_adapter) == 0);
@@ -854,17 +869,26 @@ static void check_pm_closed(void)
 static void test_pm_lifecycle(void)
 {
 	unsigned int which;
-	reset_pm_model("actual PM callbacks restore then reapply around IRQ/mastering");
-	CHECK(chd_dec_pci_suspend(&endpoint, 3) == 0);
-	CHECK(strcmp(pm_events, "DFSXP") == 0);
-	CHECK(pm_allocs == 1 && pm_frees == 1 && pm_saves == 1);
-	CHECK(!irq_adapter.l0s.raw_active && irq_adapter.present);
-	pm_event_count = 0; pm_events[0] = '\0';
-	CHECK(chd_dec_pci_resume(&endpoint) == 0);
-	CHECK(strcmp(pm_events, "PRCEQMH") == 0);
-	CHECK(irq_adapter.l0s.raw_active && irq_adapter.present);
-	CHECK(pm_master && irq_active && msi_active && pm_resumes == 1);
-	finish_pm_model();
+	for (which = 0; which < 2; which++) {
+		reset_pm_model(which ?
+			"active PM callbacks restore readiness only after decoder resume" :
+			"idle PM callbacks gate readiness without a hardware context");
+		if (!which) irq_adapter.cmds.hw_ctx = NULL;
+		CHECK(irq_adapter.hw_accessible);
+		CHECK(chd_dec_pci_suspend(&endpoint, 3) == 0);
+		CHECK(strcmp(pm_events, "DFSXP") == 0);
+		CHECK(pm_allocs == 1 && pm_frees == 1 && pm_saves == 1);
+		CHECK(!irq_adapter.l0s.raw_active && irq_adapter.present);
+		CHECK(!irq_adapter.hw_accessible);
+		pm_event_count = 0; pm_events[0] = '\0';
+		CHECK(chd_dec_pci_resume(&endpoint) == 0);
+		CHECK(strcmp(pm_events, "PRCEQMH") == 0);
+		CHECK(irq_adapter.l0s.raw_active && irq_adapter.present);
+		CHECK(irq_adapter.hw_accessible);
+		CHECK(irq_adapter.cmds.hw_ctx == (which ? &pm_hw : NULL));
+		CHECK(pm_master && irq_active && msi_active && pm_resumes == 1);
+		finish_pm_model();
+	}
 
 	for (which = 0; which < 2; which++) {
 		reset_pm_model("unavailable PM adapter rejects without hardware operations");
@@ -888,6 +912,7 @@ static void test_pm_lifecycle(void)
 			check_pm_closed();
 		} else {
 			CHECK(!pm_waits && irq_adapter.present && irq_active);
+			CHECK(irq_adapter.hw_accessible);
 		}
 		finish_pm_model();
 	}
@@ -899,6 +924,7 @@ static void test_pm_lifecycle(void)
 		CHECK(chd_dec_pci_suspend(&endpoint, 3) == -EIO);
 		CHECK(strcmp(pm_events, "DLCWFU") == 0);
 		CHECK(!pm_saves && !pm_disables && pm_allocs == pm_frees);
+		CHECK(!irq_adapter.hw_accessible);
 		check_pm_closed();
 		CHECK(chd_dec_disable_int(&irq_adapter) == 0);
 		CHECK(irq_frees == 1 && msi_disables == 1);
@@ -909,6 +935,7 @@ static void test_pm_lifecycle(void)
 		int expected = which == 3 || which == 4 ? -ENODEV : -EIO;
 		reset_pm_model("each resumed resource failure fails closed and rolls back raw L0s");
 		CHECK(chd_dec_pci_suspend(&endpoint, 3) == 0);
+		CHECK(!irq_adapter.hw_accessible);
 		pm_event_count = 0; pm_events[0] = '\0';
 		if (which == 0) pm_enable_error = -EIO;
 		else if (which == 1) fail_write = writes + 2;
@@ -921,6 +948,7 @@ static void test_pm_lifecycle(void)
 		CHECK(strncmp(pm_events, "PRCE", 4) == 0);
 		CHECK(strstr(pm_events, "LCW") != NULL);
 		CHECK(pm_resumes == (which >= 3 ? 1U : 0U));
+		CHECK(!irq_adapter.hw_accessible);
 		check_pm_closed();
 		check_original(0x43, 0x43);
 		CHECK(!irq_adapter.l0s.raw_active);

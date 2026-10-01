@@ -40,6 +40,75 @@ struct crystalhd_file {
 	u64 generation;
 };
 
+static int crystalhd_device_reserve_generation(u64 *generation)
+{
+	lockdep_assert_held_write(&chd_device_lock);
+	if (!generation)
+		return -EINVAL;
+	*generation = 0;
+	if (chd_device_generation == U64_MAX)
+		return -EOVERFLOW;
+	*generation = ++chd_device_generation;
+	return 0;
+}
+
+int crystalhd_device_enter(u64 generation, bool exclusive,
+			   struct crystalhd_device_access *access)
+{
+	struct crystalhd_adp *adp;
+	int rc = -ENODEV;
+
+	if (!access)
+		return -EINVAL;
+	memset(access, 0, sizeof(*access));
+	down_read(&chd_device_lock);
+	if (!generation || generation != chd_device_generation)
+		goto unlock_device;
+	adp = g_adp_info;
+	if (!adp || !READ_ONCE(adp->present))
+		goto unlock_device;
+
+	if (exclusive)
+		down_write(&adp->user_lock);
+	else
+		down_read(&adp->user_lock);
+	if (!READ_ONCE(adp->present))
+		goto unlock_user;
+	if (!adp->hw_accessible) {
+		rc = -EAGAIN;
+		goto unlock_user;
+	}
+	access->adp = adp;
+	access->exclusive = exclusive;
+	return 0;
+
+unlock_user:
+	if (exclusive)
+		up_write(&adp->user_lock);
+	else
+		up_read(&adp->user_lock);
+unlock_device:
+	up_read(&chd_device_lock);
+	return rc;
+}
+
+void crystalhd_device_exit(struct crystalhd_device_access *access)
+{
+	struct crystalhd_adp *adp;
+	bool exclusive;
+
+	if (!access || !access->adp)
+		return;
+	adp = access->adp;
+	exclusive = access->exclusive;
+	memset(access, 0, sizeof(*access));
+	if (exclusive)
+		up_write(&adp->user_lock);
+	else
+		up_read(&adp->user_lock);
+	up_read(&chd_device_lock);
+}
+
 crystalhd_ioctl_data *chd_dec_alloc_iodata(struct crystalhd_adp *adp, bool isr);
 void chd_dec_free_iodata(struct crystalhd_adp *adp, crystalhd_ioctl_data *iodata,bool isr);
 int chd_dec_pci_suspend(struct pci_dev *pdev, pm_message_t state);
@@ -1077,6 +1146,7 @@ static int chd_dec_pci_probe(struct pci_dev *pdev,
 {
 	struct device *dev = &pdev->dev;
 	struct crystalhd_adp *pinfo;
+	u64 generation;
 	int rc;
 	BC_STATUS sts = BC_STS_SUCCESS;
 
@@ -1085,6 +1155,9 @@ static int chd_dec_pci_probe(struct pci_dev *pdev,
 		rc = -EBUSY;
 		goto out;
 	}
+	rc = crystalhd_device_reserve_generation(&generation);
+	if (rc)
+		goto out;
 	dev_info(dev, "Starting Device:0x%04x\n", pdev->device);
 
 	pinfo = kzalloc(sizeof(struct crystalhd_adp), GFP_KERNEL);
@@ -1095,6 +1168,7 @@ static int chd_dec_pci_probe(struct pci_dev *pdev,
 	}
 
 	pinfo->pdev = pdev;
+	pinfo->generation = generation;
 	g_adp_info = pinfo;
 
 	rc = pci_enable_device(pdev);
@@ -1175,7 +1249,7 @@ static int chd_dec_pci_probe(struct pci_dev *pdev,
 
 	pci_set_drvdata(pdev, pinfo);
 
-	chd_device_generation++;
+	pinfo->hw_accessible = true;
 
 out:
 	up_write(&chd_device_lock);
@@ -1228,6 +1302,7 @@ int chd_dec_pci_suspend(struct pci_dev *pdev, pm_message_t state)
 	}
 
 	chd_dec_free_iodata(adp, temp, false);
+	adp->hw_accessible = false;
 	/* Do not save an opt-in raw override as the platform's original state.
 	 * The decoder has stopped before restoring the dedicated link.
 	 */
@@ -1314,6 +1389,7 @@ int chd_dec_pci_resume(struct pci_dev *pdev)
 		goto disable_device;
 	}
 
+	adp->hw_accessible = true;
 	up_write(&adp->user_lock);
 	return 0;
 
