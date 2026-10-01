@@ -18,3 +18,16 @@ crystalhd-objs := crystalhd_lnx.o \
 	crystalhd_linkfuncs.o \
 	crystalhd_fleafuncs.o \
 	crystalhd_flea_ddr.o
+
+# Opt-in parent lifetime support; it does not expose a decoding video node.
+CRYSTALHD_V4L2 ?= 0
+ifneq ($(CRYSTALHD_V4L2),0)
+ifneq ($(CRYSTALHD_V4L2),1)
+$(error CRYSTALHD_V4L2 must be 0 or 1)
+endif
+ifeq ($(filter y m,$(CONFIG_VIDEO_DEV)),)
+$(error CRYSTALHD_V4L2=1 requires CONFIG_VIDEO_DEV=y or m)
+endif
+ccflags-y += -DCRYSTALHD_ENABLE_V4L2
+crystalhd-objs += crystalhd_v4l2.o
+endif

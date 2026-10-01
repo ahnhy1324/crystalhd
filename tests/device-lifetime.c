@@ -98,6 +98,8 @@ static unsigned int dma_frees, l0s_releases, device_disables, region_releases;
 static unsigned int bar_unmaps, binding_cancellations, warnings;
 static unsigned int stream_releases;
 static bool stream_live;
+static bool frontend_live;
+static unsigned int frontend_releases;
 
 static void *allocate(size_t size, enum allocation_kind kind)
 {
@@ -121,6 +123,16 @@ static void assert_quiesced(void)
 	assert(g_adp_info && !g_adp_info->present && g_adp_info->cmds.cin_wait_exit);
 }
 
+static void crystalhd_v4l2_unregister(struct crystalhd_adp *adp)
+{
+	assert_quiesced();
+	assert(adp == g_adp_info);
+	if (frontend_live) {
+		frontend_live = false;
+		frontend_releases++;
+	}
+}
+
 static void kfree(void *ptr)
 {
 	unsigned int i;
@@ -135,6 +147,7 @@ static void kfree(void *ptr)
 				assert(!g_adp_info && !pci.data && !device_live);
 				assert(!regions_live && !bars_live[0] && !bars_live[1]);
 				assert(!chdev_live && !class_live);
+				assert(!frontend_live);
 				assert(!adp->cmds.session_owner);
 				assert(adp->cmds.decoder_phase ==
 				       CRYSTALHD_DECODER_COLD);
@@ -371,6 +384,7 @@ static struct crystalhd_adp *attach(bool playback, bool msi)
 	chd_device_generation++; /* Successful probe publication, modeled here. */
 	master = irq_live = device_live = regions_live = true;
 	chdev_live = class_live = bars_live[0] = bars_live[1] = true;
+	frontend_live = true;
 	msi_live = msi;
 	return adp;
 }
@@ -392,6 +406,8 @@ static void reset(void)
 	bar_unmaps = binding_cancellations = warnings = 0;
 	stream_releases = 0;
 	stream_live = false;
+	frontend_live = false;
+	frontend_releases = 0;
 	scenarios++;
 }
 
@@ -413,6 +429,7 @@ static void assert_released(void)
 	assert(!device_live && !regions_live && !chdev_live && !class_live);
 	assert(!bars_live[0] && !bars_live[1]);
 	assert(!stream_live);
+	assert(!frontend_live && frontend_releases == released[ADAPTER]);
 	assert(!chd_device_lock.readers && !chd_device_lock.writers);
 	for (i = 0; i < 6; i++)
 		assert(allocated[i] == released[i]);
