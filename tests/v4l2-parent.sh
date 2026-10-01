@@ -8,26 +8,43 @@ cleanup()
 {
     rm -f "$parent_test_dir/check" "$parent_test_dir/disabled-check" \
         "$parent_test_dir/parent-binding.h" "$parent_test_dir/parent-functions.h" \
-        "$parent_test_dir/parent-probe-tail.h"
+        "$parent_test_dir/parent-probe-tail.h" "$parent_test_dir/parent-owner-type.h" \
+        "$parent_test_dir/parent-module-functions.h"
     rmdir "$parent_test_dir"
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
 awk '
-    /^struct crystalhd_v4l2 \{/ { copying = 1; found++ }
+    /^struct crystalhd_session_owner_ops \{/ { copying = 1; found++ }
     copying { print }
     copying && /^};/ { copying = 0 }
     END { if (found != 1 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_cmds.h" > "$parent_test_dir/parent-owner-type.h"
+
+awk '
+    /^(struct crystalhd_v4l2(_ctx)?|enum crystalhd_v4l2_owner_state) \{/ { copying = 1; found++ }
+    copying { print }
+    copying && /^};/ { copying = 0 }
+    END { if (found != 3 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_v4l2.c" > "$parent_test_dir/parent-binding.h"
 awk '
-    /^static void crystalhd_v4l2_release\(/ ||
-    /^int crystalhd_v4l2_register\(/ ||
-    /^void crystalhd_v4l2_unregister\(/ { copying = 1; found++ }
+    /^static struct workqueue_struct \*/ { print }
+    /^(static )?(void|int|bool) crystalhd_v4l2_[[:alnum:]_]+\(/ { copying = 1; found++ }
+    /^static const struct crystalhd_session_owner_ops / { copying = 1; ops++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 3 || copying) exit 1 }
+    END { if (found != 16 || ops != 1 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_v4l2.c" > "$parent_test_dir/parent-functions.h"
+
+awk '
+    /^static (int __init chd_dec_module_init|void __exit chd_dec_module_cleanup)\(/ {
+        copying = 1; found++
+    }
+    copying { print }
+    copying && /^}/ { copying = 0 }
+    END { if (found != 2 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_lnx.c" > "$parent_test_dir/parent-module-functions.h"
 
 # Execute the unchanged probe publication/cleanup tail, not a copy of its
 # control flow. The earlier PCI setup is represented by fixture resource state.
