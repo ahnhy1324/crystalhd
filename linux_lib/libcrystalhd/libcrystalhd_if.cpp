@@ -451,8 +451,6 @@ static BC_STATUS DtsRecoverableDecOpen(HANDLE  hDevice,uint32_t StreamType)
 }
 
 //===================================Externs ============================================
-extern BOOL glob_mode_valid;
-
 DRVIFLIB_API BC_STATUS
 DtsDeviceOpen(
     HANDLE	*hDevice,
