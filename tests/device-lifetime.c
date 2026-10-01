@@ -43,7 +43,12 @@ enum crystalhd_decoder_phase {
 	CRYSTALHD_DECODER_COLD = 0,
 	CRYSTALHD_DECODER_BOOTSTRAPPED,
 	CRYSTALHD_DECODER_CHANNEL_CONFIGURED,
+	CRYSTALHD_DECODER_CHANNEL_STARTED,
 	CRYSTALHD_DECODER_RECOVERY_REQUIRED,
+};
+enum crystalhd_decoder_codec {
+	CRYSTALHD_DECODER_CODEC_INVALID = -1,
+	CRYSTALHD_DECODER_CODEC_H264 = 0,
 };
 struct crystalhd_cmd {
 	struct crystalhd_adp *adp;
@@ -51,6 +56,7 @@ struct crystalhd_cmd {
 	struct crystalhd_user user[2];
 	const void *session_owner;
 	enum crystalhd_decoder_phase decoder_phase;
+	enum crystalhd_decoder_codec decoder_codec;
 	uint32_t fw_sequence, decoder_channel_id;
 	uint32_t cin_wait_exit, pwr_state_change, state;
 };
@@ -125,6 +131,12 @@ static void kfree(void *ptr)
 				assert(!regions_live && !bars_live[0] && !bars_live[1]);
 				assert(!chdev_live && !class_live);
 				assert(!adp->cmds.session_owner);
+				assert(adp->cmds.decoder_phase ==
+				       CRYSTALHD_DECODER_COLD);
+				assert(adp->cmds.decoder_codec ==
+				       CRYSTALHD_DECODER_CODEC_INVALID);
+				assert(!adp->cmds.fw_sequence &&
+				       !adp->cmds.decoder_channel_id);
 			} else if (kind != BINDING) {
 				assert_quiesced();
 			}
@@ -458,6 +470,9 @@ static void test_external_owner_teardown(void)
 		reset();
 		adp = attach(true, true);
 		adp->cmds.session_owner = &external_owner;
+		adp->cmds.decoder_phase = CRYSTALHD_DECODER_CHANNEL_STARTED;
+		adp->cmds.decoder_codec = CRYSTALHD_DECODER_CODEC_H264;
+		adp->cmds.fw_sequence = 5;
 		assert(!adp->cfg_users);
 		if (fail_first) {
 			chd_dec_fail_closed(adp, -EIO);

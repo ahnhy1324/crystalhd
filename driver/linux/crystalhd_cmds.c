@@ -77,6 +77,7 @@ static void bc_cproc_mark_pwr_state(struct crystalhd_cmd *ctx, uint32_t state)
 static void crystalhd_decoder_tracking_reset(struct crystalhd_cmd *ctx)
 {
 	ctx->decoder_phase = CRYSTALHD_DECODER_COLD;
+	ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
 	ctx->fw_sequence = 0;
 	ctx->decoder_channel_id = 0;
 }
@@ -809,6 +810,7 @@ int crystalhd_fw_bootstrap_locked(struct crystalhd_cmd *ctx,
 	ctx->state = BC_LINK_INIT;
 	ctx->pwr_state_change = BC_HW_RUNNING;
 	ctx->decoder_phase = CRYSTALHD_DECODER_BOOTSTRAPPED;
+	ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
 	ctx->decoder_channel_id = 0;
 	return 0;
 
@@ -820,6 +822,7 @@ rollback:
 	ctx->pwr_state_change = initial_power_state;
 	if (firmware_loaded) {
 		ctx->decoder_phase = CRYSTALHD_DECODER_RECOVERY_REQUIRED;
+		ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
 		ctx->decoder_channel_id = 0;
 	}
 	return rc;
@@ -893,11 +896,13 @@ int crystalhd_decoder_channel_open_locked(
 		if (sts != BC_STS_FW_CMD_ERR)
 			ctx->decoder_phase =
 				CRYSTALHD_DECODER_RECOVERY_REQUIRED;
+		ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
 		ctx->decoder_channel_id = 0;
 		return rc;
 	}
 	if (!READ_ONCE(ctx->adp->present)) {
 		ctx->decoder_phase = CRYSTALHD_DECODER_RECOVERY_REQUIRED;
+		ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
 		ctx->decoder_channel_id = 0;
 		return -ENODEV;
 	}
@@ -905,6 +910,7 @@ int crystalhd_decoder_channel_open_locked(
 	channel_id = fw_cmd.rsp[3];
 	if (channel_id != 0) {
 		ctx->decoder_phase = CRYSTALHD_DECODER_RECOVERY_REQUIRED;
+		ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
 		ctx->decoder_channel_id = 0;
 		return -EIO;
 	}
@@ -929,12 +935,150 @@ int crystalhd_decoder_channel_open_locked(
 	rc = crystalhd_fw_status_to_errno(sts);
 	if (rc || !READ_ONCE(ctx->adp->present)) {
 		ctx->decoder_phase = CRYSTALHD_DECODER_RECOVERY_REQUIRED;
+		ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
 		ctx->decoder_channel_id = 0;
 		return rc ? rc : -ENODEV;
 	}
 
 	ctx->decoder_channel_id = channel_id;
+	ctx->decoder_codec = config->codec;
 	ctx->decoder_phase = CRYSTALHD_DECODER_CHANNEL_CONFIGURED;
+	return 0;
+}
+
+int crystalhd_decoder_channel_start_locked(struct crystalhd_cmd *ctx,
+					   const void *owner)
+{
+	struct crystalhd_fw_channel_activate_cmd *activate;
+	struct crystalhd_fw_channel_start_video_cmd *start;
+	BC_FW_CMD fw_cmd = { };
+	unsigned long flags;
+	uint32_t color_control, video_algorithm;
+	BC_STATUS sts;
+	int rc;
+
+	if (!ctx || !owner)
+		return -EINVAL;
+	if (!ctx->adp || !ctx->adp->pdev || !ctx->hw_ctx ||
+	    !ctx->hw_ctx->pfnDoFirmwareCmd ||
+	    !ctx->hw_ctx->pfnReadDevRegister ||
+	    !ctx->hw_ctx->pfnWriteDevRegister)
+		return -ENODEV;
+
+	lockdep_assert_held_write(&ctx->adp->user_lock);
+	if (!READ_ONCE(ctx->adp->present))
+		return -ENODEV;
+	if (!ctx->session_owner)
+		return -EINVAL;
+	if (ctx->session_owner != owner)
+		return -EBUSY;
+	if (ctx->adp->pdev->device != BC_PCI_DEVID_FLEA)
+		return -EOPNOTSUPP;
+	if (ctx->state != BC_LINK_INIT ||
+	    ctx->decoder_phase != CRYSTALHD_DECODER_CHANNEL_CONFIGURED ||
+	    !ctx->fw_sequence || ctx->decoder_channel_id)
+		return -EBUSY;
+
+	switch (ctx->decoder_codec) {
+	case CRYSTALHD_DECODER_CODEC_H264:
+		video_algorithm = CRYSTALHD_FW_VIDEO_ALGORITHM_H264;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	/* The production Flea path selects packed YUY2 before activation. Preserve
+	 * the live driver-owned controls while clearing reserved and 4:2:0 bits.
+	 */
+	spin_lock_irqsave(&ctx->hw_ctx->lock, flags);
+	color_control = ctx->hw_ctx->pfnReadDevRegister(
+		ctx->adp, CRYSTALHD_FLEA_COLOR_REGISTER);
+	color_control &= CRYSTALHD_FLEA_COLOR_DRIVER_MASK;
+	color_control |= CRYSTALHD_FLEA_COLOR_YUY2;
+	ctx->hw_ctx->pfnWriteDevRegister(ctx->adp,
+		CRYSTALHD_FLEA_COLOR_REGISTER, color_control);
+	spin_unlock_irqrestore(&ctx->hw_ctx->lock, flags);
+
+	BUILD_BUG_ON(sizeof(*activate) !=
+		     CRYSTALHD_FW_CHANNEL_ACTIVATE_WORDS * sizeof(uint32_t));
+	BUILD_BUG_ON(sizeof(*activate) > sizeof(fw_cmd.cmd));
+	BUILD_BUG_ON(offsetof(struct crystalhd_fw_channel_activate_cmd,
+			      channel_id) != 8U);
+	BUILD_BUG_ON(offsetof(struct crystalhd_fw_channel_activate_cmd,
+			      debug_mode) != 12U);
+	activate = (struct crystalhd_fw_channel_activate_cmd *)fw_cmd.cmd;
+	activate->command = eCMD_C011_DEC_CHAN_ACTIVATE;
+	activate->sequence = ++ctx->fw_sequence;
+	activate->channel_id = ctx->decoder_channel_id;
+
+	sts = crystalhd_fw_exec_locked(ctx, owner, &fw_cmd);
+	rc = crystalhd_fw_status_to_errno(sts);
+	if (!READ_ONCE(ctx->adp->present)) {
+		ctx->decoder_phase = CRYSTALHD_DECODER_RECOVERY_REQUIRED;
+		ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
+		ctx->decoder_channel_id = 0;
+		return -ENODEV;
+	}
+	if (rc) {
+		/* A firmware rejection is known not to have activated the channel.
+		 * Transport failures have an ambiguous device-side result.
+		 */
+		if (sts != BC_STS_FW_CMD_ERR) {
+			ctx->decoder_phase =
+				CRYSTALHD_DECODER_RECOVERY_REQUIRED;
+			ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
+			ctx->decoder_channel_id = 0;
+		}
+		return rc;
+	}
+
+	memset(&fw_cmd, 0, sizeof(fw_cmd));
+	BUILD_BUG_ON(sizeof(*start) !=
+		     CRYSTALHD_FW_CHANNEL_START_VIDEO_WORDS * sizeof(uint32_t));
+	BUILD_BUG_ON(sizeof(*start) > sizeof(fw_cmd.cmd));
+	BUILD_BUG_ON(offsetof(struct crystalhd_fw_channel_start_video_cmd,
+			      channel_id) != 8U);
+	BUILD_BUG_ON(offsetof(struct crystalhd_fw_channel_start_video_cmd,
+			      video_algorithm) != 32U);
+	BUILD_BUG_ON(offsetof(struct crystalhd_fw_channel_start_video_cmd,
+			      display_timing) != 72U);
+	BUILD_BUG_ON(offsetof(struct crystalhd_fw_channel_start_video_cmd,
+			      user_data_mode) != 80U);
+	BUILD_BUG_ON(offsetof(struct crystalhd_fw_channel_start_video_cmd,
+			      enable_fgt) != 124U);
+	BUILD_BUG_ON(offsetof(struct crystalhd_fw_channel_start_video_cmd,
+			      enable_23_297_frame_rate_output) != 128U);
+	BUILD_BUG_ON(offsetof(struct crystalhd_fw_channel_start_video_cmd,
+			      picture_info_interrupt_enable) != 140U);
+	BUILD_BUG_ON(sizeof(struct DecRspChannelStartVideo) !=
+		     12U * sizeof(uint32_t));
+	BUILD_BUG_ON(offsetof(struct DecRspChannelStartVideo,
+			      picInfoDeliveryQ) != 20U);
+	BUILD_BUG_ON(offsetof(struct DecRspChannelStartVideo,
+			      picInfoReleaseQ) != 24U);
+	BUILD_BUG_ON(offsetof(struct DecRspChannelStartVideo,
+			      asyncEventQ) != 44U);
+	start = (struct crystalhd_fw_channel_start_video_cmd *)fw_cmd.cmd;
+	start->command = eCMD_C011_DEC_CHAN_START_VIDEO;
+	start->sequence = ++ctx->fw_sequence;
+	start->channel_id = ctx->decoder_channel_id;
+	start->video_algorithm = video_algorithm;
+	start->display_timing = CRYSTALHD_FW_DISPLAY_TIMING_IGNORE_PTS;
+	start->user_data_mode = CRYSTALHD_FW_USER_DATA_MODE_ON;
+	start->enable_23_297_frame_rate_output =
+		CRYSTALHD_FW_PROGRESSIVE_OUTPUT;
+
+	sts = crystalhd_fw_exec_locked(ctx, owner, &fw_cmd);
+	rc = crystalhd_fw_status_to_errno(sts);
+	if (rc || !READ_ONCE(ctx->adp->present)) {
+		/* ACTIVATE has committed, so START cannot be retried in isolation. */
+		ctx->decoder_phase = CRYSTALHD_DECODER_RECOVERY_REQUIRED;
+		ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
+		ctx->decoder_channel_id = 0;
+		return rc ? rc : -ENODEV;
+	}
+
+	ctx->decoder_phase = CRYSTALHD_DECODER_CHANNEL_STARTED;
 	return 0;
 }
 
@@ -1728,6 +1872,7 @@ BC_STATUS crystalhd_suspend(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *ida
 
 	ctx->state = BC_LINK_SUSPEND;
 	ctx->decoder_phase = CRYSTALHD_DECODER_RECOVERY_REQUIRED;
+	ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
 	ctx->decoder_channel_id = 0;
 
 	sts = crystalhd_hw_suspend(ctx->hw_ctx);

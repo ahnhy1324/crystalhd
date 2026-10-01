@@ -326,11 +326,62 @@ struct crystalhd_fw_input_params_cmd {
 	uint32_t disable_pcr_offset;
 };
 
+struct crystalhd_fw_channel_activate_cmd {
+	uint32_t command;
+	uint32_t sequence;
+	uint32_t channel_id;
+	uint32_t debug_mode;
+};
+
+struct crystalhd_fw_channel_start_video_cmd {
+	uint32_t command;
+	uint32_t sequence;
+	uint32_t channel_id;
+	uint32_t output_port;
+	uint32_t max_picture_size;
+	uint32_t output_control;
+	uint32_t channel_type;
+	uint32_t default_frame_rate;
+	uint32_t video_algorithm;
+	uint32_t source_mode;
+	uint32_t pulldown;
+	uint32_t picture_info;
+	uint32_t display_order;
+	uint32_t decoder_operation_mode;
+	uint32_t max_frame_rate_mode;
+	uint32_t stream_id;
+	uint32_t deblocking;
+	uint32_t vcxo_control;
+	uint32_t display_timing;
+	uint32_t video_display_offset;
+	uint32_t user_data_mode;
+	uint32_t enable_user_data_interrupt;
+	uint32_t pts_stc_diff_threshold;
+	uint32_t stc_pts_diff_threshold;
+	uint32_t enable_first_pts_interrupt;
+	uint32_t enable_stc_pts_threshold_interrupt;
+	uint32_t frame_rate_definition;
+	uint32_t host_dma_interrupt_enable;
+	uint32_t async_event_notify_enable;
+	uint32_t enable_pts_stc_change_interrupt;
+	uint32_t enable_pts_error_interrupt;
+	uint32_t enable_fgt;
+	uint32_t enable_23_297_frame_rate_output;
+	uint32_t enable_video_data_underflow_interrupt;
+	uint32_t reserved_word34;
+	uint32_t picture_info_interrupt_enable;
+};
+
 #define CRYSTALHD_FW_CHANNEL_OPEN_WORDS	37U
 #define CRYSTALHD_FW_INPUT_PARAMS_WORDS	9U
+#define CRYSTALHD_FW_CHANNEL_ACTIVATE_WORDS	4U
+#define CRYSTALHD_FW_CHANNEL_START_VIDEO_WORDS	36U
 #define CRYSTALHD_FW_STREAM_TYPE_PES	1U
 #define CRYSTALHD_FW_VIDEO_ALGORITHM_H264	0U
 #define CRYSTALHD_FW_SYNC_MODE_SYNCPIN	1U
+#define CRYSTALHD_FW_DISPLAY_TIMING_IGNORE_PTS	1U
+#define CRYSTALHD_FW_USER_DATA_MODE_ON	1U
+#define CRYSTALHD_FW_PROGRESSIVE_OUTPUT	1U
 
 struct DecRspChannelStartVideo {
     uint32_t	command;

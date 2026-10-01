@@ -54,10 +54,12 @@ enum crystalhd_decoder_phase {
 	CRYSTALHD_DECODER_COLD = 0,
 	CRYSTALHD_DECODER_BOOTSTRAPPED,
 	CRYSTALHD_DECODER_CHANNEL_CONFIGURED,
+	CRYSTALHD_DECODER_CHANNEL_STARTED,
 	CRYSTALHD_DECODER_RECOVERY_REQUIRED,
 };
 
 enum crystalhd_decoder_codec {
+	CRYSTALHD_DECODER_CODEC_INVALID = -1,
 	CRYSTALHD_DECODER_CODEC_H264 = 0,
 };
 
@@ -85,6 +87,7 @@ struct crystalhd_cmd {
 	 */
 	const void		*session_owner;
 	enum crystalhd_decoder_phase decoder_phase;
+	enum crystalhd_decoder_codec decoder_codec;
 	uint32_t		fw_sequence;
 	uint32_t		decoder_channel_id;
 
@@ -163,6 +166,13 @@ int crystalhd_fw_bootstrap_locked(struct crystalhd_cmd *ctx,
 int crystalhd_decoder_channel_open_locked(
 	struct crystalhd_cmd *ctx, const void *owner,
 	const struct crystalhd_decoder_config *config);
+/* Activate and start the configured BCM70015 channel using the progressive
+ * H.264 baseline. The caller retains the same exclusion, write lock and owner
+ * token used for channel setup. Once activation succeeds, any incomplete start
+ * requires a fresh bootstrap rather than a partial retry.
+ */
+int crystalhd_decoder_channel_start_locked(struct crystalhd_cmd *ctx,
+					   const void *owner);
 /* Caller retains device/session lifetime and serializes TX submission through
  * return; the legacy ioctl adapter does this with user_lock and tx_lock.
  */
