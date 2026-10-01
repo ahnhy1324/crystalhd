@@ -1107,8 +1107,11 @@ BC_STATUS DtsDrvCmd(DTS_LIB_CONTEXT	*Ctx,
 			usleep(100);
 			i--;
 		}
-		if (i == 0)
+		if (i == 0) {
+			if (locRel || Rel)
+				DtsRelIoctlData(Ctx, pIo);
 			return BC_STS_ERROR; // cannot issue second FW command while one is pending
+		}
 		Ctx->fw_cmd_issued = true;
 	}
 	rc = ioctl(Ctx->DevHandle, Code, pIo);
