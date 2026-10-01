@@ -715,6 +715,9 @@ DtsDeviceClose(
 		globMode = 0;
 	}
 	DtsSetOPMode(globMode);
+	if (Ctx->OpMode == DTS_PLAYBACK_MODE &&
+	    Ctx->State != BC_DEC_STATE_CLOSE && Ctx->ProcessID != 0)
+		DumpInputSampleToFile(NULL, 0);
 	const BC_STATUS release_sts = DtsReleaseInterface(Ctx);
 	return sts == BC_STS_SUCCESS ? release_sts : sts;
 
@@ -1059,13 +1062,11 @@ DtsCloseDecoder(
 
 
 	BC_STATUS close_sts = DtsFWCloseChannel(hDevice,Ctx->OpenRsp.channelId);
-	if (sts == BC_STS_SUCCESS)
-		sts = close_sts;
-
-	/*if(sts != BC_STS_SUCCESS )
-	{
-		return sts;
-	}*/
+	/* The firmware channel is still owned when close was not confirmed.
+	 * Keep the public and shared state open so a later caller can retry.
+	 */
+	if (close_sts != BC_STS_SUCCESS)
+		return sts == BC_STS_SUCCESS ? close_sts : sts;
 
 	DtsSetDecStat(false, Ctx->ProcessID);
 

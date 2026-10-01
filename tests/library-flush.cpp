@@ -695,6 +695,7 @@ static void test_delivery_status_precedence(BC_STATUS copy_status, AddOutcome ou
 static void test_cleanup_errors(unsigned mode, unsigned errors)
 {
     OutputContext fixture;
+    DtsSetDecStat(true, fixture.context.ProcessID);
     mock_flush_status = errors & 1 ? BC_STS_FW_CMD_ERR : BC_STS_SUCCESS;
     mock_stop_status = errors & 2 ? BC_STS_IO_ERROR : BC_STS_SUCCESS;
     mock_close_status = errors & 4 ? BC_STS_TIMEOUT : BC_STS_SUCCESS;
@@ -708,8 +709,14 @@ static void test_cleanup_errors(unsigned mode, unsigned errors)
     check(status == expected, "cleanup reports the first firmware failure, not a later success");
     check(stop_calls == 1 && close_calls == (mode == 0 ? 0U : 1U),
           "failure does not skip the existing stop/close cleanup sequence");
-    check(fixture.context.State == (mode == 0 ? BC_DEC_STATE_STOP : BC_DEC_STATE_CLOSE),
-          "error reporting preserves the existing lifecycle state policy");
+    const bool close_confirmed = mode != 0 && mock_close_status == BC_STS_SUCCESS;
+    check(fixture.context.State ==
+              (close_confirmed ? BC_DEC_STATE_CLOSE : BC_DEC_STATE_STOP),
+          "only a confirmed channel close publishes CLOSED state");
+    check(fixture.globals.g_bDecOpened == !close_confirmed &&
+              fixture.globals.g_nProcID ==
+                  (close_confirmed ? 0 : fixture.context.ProcessID),
+          "shared decoder ownership follows confirmed channel close");
 }
 
 int main()

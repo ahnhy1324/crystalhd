@@ -1711,9 +1711,15 @@ void DtsJoinTxThread(DTS_LIB_CONTEXT *Ctx)
 BC_STATUS DtsReleaseInterface(DTS_LIB_CONTEXT *Ctx)
 {
 	BC_STATUS cleanup_sts;
+	bool terminal_decoder_owner;
 
 	if(!Ctx)
 		return BC_STS_INV_ARG;
+
+	terminal_decoder_owner = Ctx->OpMode == DTS_PLAYBACK_MODE &&
+		Ctx->State != BC_DEC_STATE_CLOSE && Ctx->ProcessID != 0 &&
+		bc_dil_glob_ptr && bc_dil_glob_ptr->g_bDecOpened &&
+		bc_dil_glob_ptr->g_nProcID == Ctx->ProcessID;
 
 	DtsJoinTxThread(Ctx);
 	DtsReleasePESConverter((HANDLE)Ctx);
@@ -1737,6 +1743,13 @@ BC_STATUS DtsReleaseInterface(DTS_LIB_CONTEXT *Ctx)
 		if(0 != close(Ctx->DevHandle))
 			DebugLog_Trace(LDIL_DBG,"DtsDeviceClose: Close Handle Failed with error %d\n",errno);
 		Ctx->DevHandle = -1;
+	}
+
+	/* A failed firmware close remains retryable while its handle is live.
+	 * This path consumes that handle after releasing the driver session, so
+	 * retire only the decoder ownership represented by this context. */
+	if (terminal_decoder_owner) {
+		DtsSetDecStat(false, Ctx->ProcessID);
 	}
 
 	/* Normal ownership is retired before userspace backing is freed. If an

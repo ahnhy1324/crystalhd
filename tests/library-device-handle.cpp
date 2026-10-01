@@ -29,6 +29,7 @@ static int closed_fd;
 static unsigned thread_create_calls;
 static unsigned shared_attach_calls;
 static unsigned shared_detach_calls;
+static unsigned shared_nattch;
 static bool raw_close_expected;
 
 struct IoctlRecord {
@@ -180,6 +181,7 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
 		      "open notifies the selected monitor mode");
 		break;
 	case BCM_IOC_RELEASE:
+	case BCM_IOC_FW_CMD:
 		break;
 	default:
 		unexpected_ioctl = true;
@@ -235,6 +237,7 @@ extern "C" int __wrap_shmctl(int, int command, struct shmid_ds *buffer)
 {
 	if (command == IPC_STAT && buffer) {
 		std::memset(buffer, 0, sizeof(*buffer));
+		buffer->shm_nattch = shared_nattch;
 		return 0;
 	}
 	if (command == IPC_RMID)
@@ -251,6 +254,7 @@ static void BeginCase(int descriptor)
 	thread_create_calls = 0;
 	shared_attach_calls = 0;
 	shared_detach_calls = 0;
+	shared_nattch = 0;
 	raw_close_expected = false;
 	ioctl_count = 0;
 	failed_command = 0;
@@ -426,6 +430,86 @@ static void CheckOpenSuccess(int descriptor)
 	EndCase("successful device lifetime releases every allocation");
 }
 
+static DTS_LIB_CONTEXT *AllocateTerminalContext(uint32_t mode, pid_t process_id)
+{
+	DTS_LIB_CONTEXT *context = reinterpret_cast<DTS_LIB_CONTEXT *>(
+		std::malloc(sizeof(*context)));
+	Check(context != nullptr, "terminal fixture allocates a context");
+	if (!context)
+		return nullptr;
+	std::memset(context, 0, sizeof(*context));
+	context->Sig = LIB_CTX_SIG;
+	context->DevHandle = mode == DTS_PLAYBACK_MODE ? 0 : -1;
+	context->DevId = BC_PCI_DEVID_FLEA;
+	context->OpMode = mode;
+	context->ProcessID = process_id;
+	Check(DtsAllocMemPools(context) == BC_STS_SUCCESS,
+	      "terminal fixture allocates its pools");
+	return context;
+}
+
+static void CheckTerminalDecoderOwnership()
+{
+	BeginCase(0);
+	shared_nattch = 1;
+	std::memset(&shared_state, 0, sizeof(shared_state));
+	bc_dil_glob_ptr = &shared_state;
+	const pid_t owner = 1234;
+	DTS_LIB_CONTEXT *context =
+		AllocateTerminalContext(DTS_PLAYBACK_MODE, owner);
+	if (context) {
+		context->State = BC_DEC_STATE_STOP;
+		context->OpenRsp.channelId = 7;
+		DtsSetDecStat(true, owner);
+		failed_command = BCM_IOC_FW_CMD;
+		fail_with_status = true;
+		Check(DtsDeviceClose(context) == BC_STS_BUSY,
+		      "terminal close preserves the firmware failure status");
+		Check(!shared_state.g_bDecOpened && shared_state.g_nProcID == 0,
+		      "terminal release retires its unreachable decoder ownership");
+		Check(!DtsIsDecOpened(owner + 1),
+		      "a surviving shared segment admits a later decoder process");
+	}
+	Check(close_calls == 1 && shared_detach_calls == 1,
+	      "terminal close consumes the device and shared attachment once");
+	CheckIoctls(0, {BCM_IOC_FW_CMD, BCM_IOC_RELEASE},
+	      "terminal failure still releases the driver session");
+	EndCase("terminal decoder failure releases every allocation");
+
+	BeginCase(-1);
+	shared_nattch = 1;
+	std::memset(&shared_state, 0, sizeof(shared_state));
+	bc_dil_glob_ptr = &shared_state;
+	DtsSetDecStat(true, owner);
+	context = AllocateTerminalContext(DTS_MONITOR_MODE, owner + 1);
+	if (context)
+		Check(DtsReleaseInterface(context) == BC_STS_SUCCESS,
+		      "non-owner monitor release succeeds");
+	Check(shared_state.g_bDecOpened && shared_state.g_nProcID == owner,
+	      "non-owner release preserves another decoder's ownership");
+	Check(close_calls == 0 && ioctl_count == 0 && shared_detach_calls == 1,
+	      "non-owner control performs only local terminal cleanup");
+	EndCase("non-owner terminal release frees every allocation");
+
+	BeginCase(-1);
+	shared_nattch = 1;
+	std::memset(&shared_state, 0, sizeof(shared_state));
+	bc_dil_glob_ptr = &shared_state;
+	DtsSetDecStat(true, owner);
+	context = AllocateTerminalContext(DTS_PLAYBACK_MODE, owner + 1);
+	if (context) {
+		context->DevHandle = -1;
+		context->State = BC_DEC_STATE_STOP;
+		Check(DtsReleaseInterface(context) == BC_STS_SUCCESS,
+		      "foreign decoder-context release succeeds");
+	}
+	Check(shared_state.g_bDecOpened && shared_state.g_nProcID == owner,
+	      "foreign decoder context cannot retire the current owner");
+	Check(close_calls == 0 && ioctl_count == 0 && shared_detach_calls == 1,
+	      "foreign-owner control performs only local terminal cleanup");
+	EndCase("foreign decoder-context release frees every allocation");
+}
+
 static void CheckNullOpenOutput()
 {
 	BeginCase(0);
@@ -569,6 +653,7 @@ int main()
 		DTS_PLAYBACK_MODE, {BCM_IOC_RELEASE});
 	CheckOpenSuccess(0);
 	CheckOpenSuccess(99);
+	CheckTerminalDecoderOwnership();
 	CheckOpenFailure(BCM_IOC_GET_HWTYPE, false, true, BC_STS_BUSY,
 		{BCM_IOC_GET_HWTYPE, BCM_IOC_RELEASE});
 	CheckOpenFailure(BCM_IOC_GET_VERSION, true, false, BC_STS_ERROR,
