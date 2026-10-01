@@ -459,6 +459,7 @@ DtsDeviceOpen(
 {
 	int 		drvHandle=1;
 	BC_STATUS	Sts=BC_STS_SUCCESS;
+	HANDLE		localDevice = NULL;
 	uint32_t globMode = 0;
 	uint8_t	nTry=1;
 	uint32_t		VendorID, DeviceID, RevID, FixFlags, drvMode;
@@ -469,6 +470,10 @@ DtsDeviceOpen(
 
 	DebugLog_Trace(LDIL_DBG,"Running DIL (%d.%d.%d) Version\n",
 		DIL_MAJOR_VERSION,DIL_MINOR_VERSION,DIL_REVISION );
+
+	if (!hDevice)
+		return BC_STS_INV_ARG;
+	*hDevice = NULL;
 
 	processID = getpid();
 
@@ -519,21 +524,17 @@ DtsDeviceOpen(
 
 
 	/* Initialize Internal Driver interfaces.. */
-	if( (Sts = DtsInitInterface(drvHandle,hDevice, mode)) != BC_STS_SUCCESS){
+	if( (Sts = DtsInitInterface(drvHandle,&localDevice, mode)) != BC_STS_SUCCESS){
 		DebugLog_Trace(LDIL_ERR,"DtsDeviceOpen: Interface Init Failed:%x\n",Sts);
-		DtsReleaseInterface(DtsGetContext(*hDevice));
-		DtsDelDilShMem();
-		return Sts;
+		goto fail;
 	}
-	if( (Sts = DtsGetHwType(*hDevice,&DeviceID,&VendorID,&RevID))!=BC_STS_SUCCESS){
+	if( (Sts = DtsGetHwType(localDevice,&DeviceID,&VendorID,&RevID))!=BC_STS_SUCCESS){
 		DebugLog_Trace(LDIL_DBG,"Get Hardware Type Failed\n");
-		DtsReleaseInterface(DtsGetContext(*hDevice));
-		DtsDelDilShMem();
-		return Sts;
+		goto fail;
 	}
 
 	// set Ctx->DevId early, other depend on it
-	DtsGetContext(*hDevice)->DevId = DeviceID;
+	DtsGetContext(localDevice)->DevId = DeviceID;
 	DtsSetgDevID(DeviceID);
 
 	/*
@@ -541,18 +542,16 @@ DtsDeviceOpen(
 	 * 180 for all link cards, as we have no way to tell old layout from
 	 * new layout cards.
 	 */
-	DtsSetCoreClock(*hDevice, 180);
+	DtsSetCoreClock(localDevice, 180);
 
 	/*
 	 * We have to specify the mode to the driver.
 	 * So the driver can cleanup only in case of
 	 * playback/Diag mode application close.
 	 */
-	if ((Sts = DtsGetVersion(*hDevice, &drvVer, &dilVer)) != BC_STS_SUCCESS) {
+	if ((Sts = DtsGetVersion(localDevice, &drvVer, &dilVer)) != BC_STS_SUCCESS) {
 		DebugLog_Trace(LDIL_DBG,"Get drv ver failed\n");
-		DtsReleaseInterface(DtsGetContext(*hDevice));
-		DtsDelDilShMem();
-		return Sts;
+		goto fail;
 	}
 	/* If driver minor version is more than 13, enable DTS_SKIP_TX_CHK_CPB feature */
 	if (FixFlags & DTS_SKIP_TX_CHK_CPB) {
@@ -561,10 +560,10 @@ DtsDeviceOpen(
 	}
 
 	if (FixFlags & DTS_ADAPTIVE_OUTPUT_PER) {
-        if(DtsGetContext(*hDevice)->DevId == BC_PCI_DEVID_FLEA)
-            Sts = DtsGetFWVersion(*hDevice, &fwVer, &decVer, &hwVer, (char*)FWBINFILE_70015, 0);
-        else
-            Sts = DtsGetFWVersion(*hDevice, &fwVer, &decVer, &hwVer, (char*)FWBINFILE_70012, 0);
+		if(DtsGetContext(localDevice)->DevId == BC_PCI_DEVID_FLEA)
+			Sts = DtsGetFWVersion(localDevice, &fwVer, &decVer, &hwVer, (char*)FWBINFILE_70015, 0);
+		else
+			Sts = DtsGetFWVersion(localDevice, &fwVer, &decVer, &hwVer, (char*)FWBINFILE_70012, 0);
         if(Sts == BC_STS_SUCCESS) {
 			if (fwVer >= ((14 << 16) | (8 << 8) | (1)))		// 2.14.8.1 (ignore 2)
 				FixFlags |= DTS_ADAPTIVE_OUTPUT_PER;
@@ -587,20 +586,18 @@ DtsDeviceOpen(
 	else
 		drvMode = FixFlags;
 
-	if( (Sts = DtsNotifyOperatingMode(*hDevice,drvMode)) != BC_STS_SUCCESS){
+	if( (Sts = DtsNotifyOperatingMode(localDevice,drvMode)) != BC_STS_SUCCESS){
 		DebugLog_Trace(LDIL_DBG,"Notify Operating Mode Failed\n");
-		DtsReleaseInterface(DtsGetContext(*hDevice));
-		DtsDelDilShMem();
-		return Sts;
+		goto fail;
 	}
 
 	/* Setup Hardware Specific Configuration */
-	DtsSetupConfig(DtsGetContext(*hDevice), DeviceID, RevID, FixFlags);
+	DtsSetupConfig(DtsGetContext(localDevice), DeviceID, RevID, FixFlags);
 
 	/* Enable single threaded mode in the context */
 	if (FixFlags & DTS_SINGLE_THREADED_MODE) {
 		DebugLog_Trace(LDIL_DBG,"Enable single threaded mode\n");
-		DtsGetContext(*hDevice)->SingleThreadedAppMode = 1;
+		DtsGetContext(localDevice)->SingleThreadedAppMode = 1;
 	}
 
 	if(mode == DTS_PLAYBACK_MODE){
@@ -626,7 +623,7 @@ DtsDeviceOpen(
 	{
 		while(nTry--)
 		{
-			Sts = 	DtsSetupHardware(*hDevice, FALSE);
+			Sts = 	DtsSetupHardware(localDevice, FALSE);
 			if(Sts == BC_STS_SUCCESS)
 			{
 				break;
@@ -638,11 +635,7 @@ DtsDeviceOpen(
 			}
 		}
 		if(Sts != BC_STS_SUCCESS )
-		{
-			DtsReleaseInterface(DtsGetContext(*hDevice));
-			DtsDelDilShMem();
-			goto exit;
-		}
+			goto fail;
 	}
 
 	if(mode == DTS_HWINIT_MODE){
@@ -651,13 +644,22 @@ DtsDeviceOpen(
 
 	// Clear all stats before we start play back
 	if(mode == DTS_PLAYBACK_MODE) {
-		DtsRstDrvStat(*hDevice);
+		DtsRstDrvStat(localDevice);
 	}
 
-	DtsGetContext(*hDevice)->ProcessID = processID;
+	DtsGetContext(localDevice)->ProcessID = processID;
+	*hDevice = localDevice;
 
 	//DtsDevRegisterWr( hDevice,UartSelectA, 3);
-exit:
+	return Sts;
+
+fail:
+	if (localDevice)
+		DtsReleaseInterface(DtsGetContext(localDevice));
+	else {
+		close(drvHandle);
+		DtsDelDilShMem();
+	}
 	return Sts;
 }
 
