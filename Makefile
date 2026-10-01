@@ -5,11 +5,12 @@ DESTDIR ?=
 BINDIR ?= $(PREFIX)/bin
 KVER ?= $(shell uname -r)
 KDIR ?= /lib/modules/$(KVER)/build
+PYTHON3 ?= python3
 
 DRIVER_ARGS := KVER=$(KVER) KDIR=$(KDIR) DESTDIR=$(DESTDIR)
 USER_ARGS := PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 
-.PHONY: all driver library library-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check l0s-check command-pm-check fw-command-check fw-download-check tx-admission-check h264-stream-check rx-ownership-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check architecture-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check clean
+.PHONY: all driver library library-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check l0s-check command-pm-check fw-command-check fw-download-check fw-research-check tx-admission-check h264-stream-check rx-ownership-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check architecture-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check clean
 
 all: driver library gstreamer vaapi examples
 
@@ -113,6 +114,9 @@ fw-command-check:
 fw-download-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/fw-download.sh
 
+fw-research-check:
+	$(PYTHON3) -B tests/fw-research.py
+
 tx-admission-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/tx-admission.sh
 
@@ -153,7 +157,7 @@ phase1-check: library-drain-test tests/phase1-oracle.tsv
 	sh tests/phase1-release-gate.sh --self-test
 	sh tests/phase1-release-gate.sh manifest-check tests/phase1-oracle.tsv
 
-check: uapi-check dma-check l0s-check architecture-check pib-check library-check all
+check: uapi-check dma-check l0s-check architecture-check pib-check library-check fw-research-check all
 	$(MAKE) -C filters/gst/gst-plugin-1.0 check
 	$(MAKE) -C filters/vaapi check
 	$(MAKE) -C browser check
