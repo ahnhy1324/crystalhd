@@ -14,6 +14,7 @@ struct _BC_DTS_PROC_OUT;
 #include "bc_dts_defs.h"
 
 typedef uint32_t u32;
+typedef uint16_t u16;
 typedef uint64_t u64;
 typedef uintptr_t dma_addr_t;
 typedef unsigned spinlock_t;
@@ -63,7 +64,7 @@ static bool v4l2_is_colorspace_valid(u32 v) { return v > 0 && v <= 12; }
 static bool v4l2_is_xfer_func_valid(u32 v) { return v > 0 && v <= 7; }
 static bool v4l2_is_ycbcr_enc_valid(uint8_t v) { return v > 0 && v <= 8; }
 static bool v4l2_is_quant_valid(uint8_t v) { return v == 1 || v == 2; }
-struct work_struct { bool pending; };
+struct work_struct { bool pending; void (*function)(struct work_struct *); };
 struct vb2_buffer { u64 timestamp; unsigned payload, index, size; };
 struct vb2_v4l2_buffer { struct vb2_buffer vb2_buf; unsigned field, sequence, flags, done; };
 struct v4l2_m2m_buffer { struct vb2_v4l2_buffer vb; struct v4l2_m2m_buffer *next; };
@@ -75,9 +76,18 @@ enum { CRYSTALHD_DECODER_CHANNEL_CONFIGURED = 1,
     CRYSTALHD_DECODER_CHANNEL_STARTED = 2 };
 struct mutex { bool held; };
 struct device { int unused; };
-struct video_device { int unused; };
+struct v4l2_device { int unused; };
+struct video_device {
+    struct v4l2_device *v4l2_dev;
+    void *ctrl_handler;
+    const void *fops, *ioctl_ops;
+    void (*release)(struct video_device *);
+    struct mutex *lock;
+    unsigned vfl_dir, device_caps;
+    char name[32]; void *drvdata;
+};
 struct workqueue_struct { int unused; };
-struct delayed_work { bool pending; };
+struct delayed_work { bool pending; void (*function)(struct work_struct *); };
 struct scatterlist { int unused; };
 struct page { bool head; unsigned dma_refs, vmap_refs; };
 struct sg_table {
@@ -114,6 +124,10 @@ struct vb2_queue {
 #endif
     bool streaming, error, last;
     struct vb2_buffer *bufs[BC_RX_LIST_CNT];
+    unsigned type, io_modes, buf_struct_size, timestamp_flags, bidirectional;
+    void *drv_priv; const void *ops, *mem_ops;
+    struct mutex *lock; struct device *dev;
+    bool initialized;
 };
 #ifdef NODE_NEW_QUEUE_API
 static unsigned vb2_get_num_buffers(struct vb2_queue *q) { return QUEUE_COUNT(q); }
@@ -123,11 +137,13 @@ static struct vb2_buffer *vb2_get_buffer(struct vb2_queue *q, unsigned index)
 #include "node-queue.h"
 struct v4l2_m2m_ctx { struct vb2_queue src, dst; struct v4l2_m2m_buffer *dst_ready; };
 #define v4l2_m2m_for_each_dst_buf(ctx, b) for ((b) = (ctx)->dst_ready; (b); (b) = (b)->next)
-struct v4l2_ctrl_handler { int unused; };
+struct v4l2_ctrl_handler { int error; };
+struct v4l2_ctrl { unsigned flags; };
 struct v4l2_m2m_dev { int unused; };
 struct v4l2_fh { struct v4l2_m2m_ctx *m2m_ctx; };
 struct v4l2_pix_format { u32 width, height, bytesperline, sizeimage, pixelformat, field, colorspace, ycbcr_enc, quantization, xfer_func, priv, flags; };
 struct v4l2_format { unsigned type; struct { struct v4l2_pix_format pix; } fmt; };
+struct v4l2_fmtdesc { unsigned index, type, pixelformat, flags; };
 struct file { void *private_data; };
 /* Mutually exclusive prototypes and members: wrong compatibility branches
  * fail to compile, rather than silently accepting an obsolete API.
@@ -212,6 +228,22 @@ static unsigned streamon_calls, qbuf_calls, acquires, returns;
 static unsigned ctx_destroys, dma_frees, private_frees;
 static int enter_error, stop_error, release_error, acquire_error, streamon_error;
 static bool access_active, hardware_owned;
+static bool constructor_mode, ctor_file_live, ctor_node_live, ctor_fh_live;
+static bool ctor_ctrl_live, ctor_m2m_live, ctor_video_live, ctor_close_pending;
+static unsigned ctor_fail, ctor_allocs, ctor_queue_calls, ctor_queue_releases;
+static unsigned ctor_dev_refs, ctor_parent_refs, ctor_wq_calls, ctor_wq_live;
+static unsigned ctor_fh_exits, ctor_ctx_creates, ctor_binds, ctor_video_releases;
+static int ctor_ctx_error;
+static void (*ctor_cleanup)(void *);
+static struct device ctor_device;
+static struct crystalhd_v4l2 ctor_parent;
+static struct v4l2_device ctor_v4l2;
+static struct v4l2_m2m_dev ctor_m2m;
+static struct workqueue_struct ctor_workqueues[2];
+static bool ctor_workqueue_live[2];
+static struct v4l2_ctrl ctor_minimum;
+enum { CTOR_OK, CTOR_ALLOC, CTOR_CTRL_INIT, CTOR_CTRL_NEW, CTOR_RX_WQ,
+    CTOR_TX_WQ, CTOR_M2M, CTOR_VIDEO, CTOR_CTX_INIT, CTOR_SRC_QUEUE, CTOR_DST_QUEUE };
 static void (*join_hook)(void *);
 static struct crystalhd_v4l2_output_buffer tx_buffer;
 static struct crystalhd_v4l2_capture_buffer last_capture;
@@ -495,9 +527,158 @@ static void v4l2_m2m_ctx_release(struct v4l2_m2m_ctx *m)
            !fixture.run_work.pending && !fixture.tx_work.pending &&
            !fixture.tx_active && !access_active && !fixture.run_lock.held);
     ctx_destroys++;
+    if (constructor_mode) {
+        assert(m->src.initialized && m->dst.initialized);
+        m->src.initialized = m->dst.initialized = false;
+        ctor_queue_releases += 2;
+    }
 }
 static void kfree(void *p)
-{ assert(p == &fixture && ctx_destroys && !access_active); private_frees++; }
+{
+    if (constructor_mode) {
+        if (p == &fixture) {
+            assert(ctor_file_live && !ctor_fh_live && !access_active);
+            ctor_file_live = false;
+        } else {
+            assert(p == &node && ctor_node_live && !ctor_ctrl_live &&
+                   !ctor_m2m_live && !ctor_wq_live && !ctor_dev_refs && !ctor_parent_refs);
+            ctor_node_live = false;
+        }
+        private_frees++; return;
+    }
+    assert(p == &fixture && ctx_destroys && !access_active); private_frees++;
+}
+
+/* Constructor dependencies model framework contracts, not driver decisions. */
+#define VB2_MMAP 1U
+#define V4L2_BUF_FLAG_TIMESTAMP_COPY 0x100U
+#define V4L2_FMT_FLAG_COMPRESSED 1U
+#define V4L2_CID_MIN_BUFFERS_FOR_CAPTURE 77U
+#define V4L2_CTRL_FLAG_READ_ONLY 1U
+#define VFL_DIR_M2M 2U
+#define VFL_TYPE_VIDEO 3U
+#define V4L2_CAP_VIDEO_M2M 0x10U
+#define V4L2_CAP_STREAMING 0x20U
+#define WQ_MEM_RECLAIM 1U
+#define ERR_PTR(e) ((void *)(intptr_t)(e))
+#define PTR_ERR(p) ((int)(intptr_t)(p))
+#define IS_ERR(p) ((uintptr_t)(p) >= (uintptr_t)-4095)
+#define INIT_WORK(w, fn) do { (w)->pending = false; (w)->function = (fn); } while (0)
+#define INIT_DELAYED_WORK(w, fn) INIT_WORK(w, fn)
+/* Constructor captures the production binding; execution remains in worker tests. */
+static void chd_run(struct work_struct *w) { (void)w; assert(!"constructor ran RX work"); }
+static const unsigned chd_queue_ops, vb2_dma_sg_memops, chd_m2m_ops, chd_fops, chd_ioctl_ops;
+static void mutex_init(struct mutex *m) { m->held = false; }
+static void spin_lock_init(spinlock_t *l) { *l = 0; }
+static void *kzalloc(size_t bytes, unsigned flags)
+{
+    assert(constructor_mode && flags == GFP_KERNEL); ctor_allocs++;
+    if (ctor_fail == CTOR_ALLOC) return NULL;
+    if (bytes == sizeof(fixture)) {
+        assert(!ctor_file_live); ctor_file_live = true;
+        memset(&fixture, 0, sizeof(fixture)); return &fixture;
+    }
+    assert(bytes == sizeof(node) && !ctor_node_live); ctor_node_live = true;
+    memset(&node, 0, sizeof(node)); return &node;
+}
+static void *video_drvdata(struct file *file) { assert(file == &handle); return &node; }
+static void crystalhd_v4l2_decoder_init(struct crystalhd_v4l2_decoder *d)
+{ memset(d, 0, sizeof(*d)); }
+static void v4l2_fh_init(struct v4l2_fh *fh, struct video_device *v)
+{ assert(fh == &fixture.fh && v == &node.video && !ctor_fh_live); ctor_fh_live = true; }
+static void v4l2_fh_exit(struct v4l2_fh *fh)
+{ assert(fh == &fixture.fh && ctor_fh_live); ctor_fh_live = false; ctor_fh_exits++; }
+static int vb2_queue_init(struct vb2_queue *q)
+{
+    ctor_queue_calls++;
+    assert(!q->initialized && q->lock == &node.ioctl_lock && q->drv_priv == &fixture);
+    if ((ctor_fail == CTOR_SRC_QUEUE && q == &queues.src) ||
+        (ctor_fail == CTOR_DST_QUEUE && q == &queues.dst)) return -EINVAL;
+    q->initialized = true; return 0;
+}
+static void vb2_queue_release(struct vb2_queue *q)
+{ assert(q->initialized); q->initialized = false; ctor_queue_releases++; }
+static struct v4l2_m2m_ctx *v4l2_m2m_ctx_init(struct v4l2_m2m_dev *m,
+        void *private, int (*init)(void *, struct vb2_queue *, struct vb2_queue *))
+{
+    assert(m == &ctor_m2m && private == &fixture && ctor_fh_live);
+    if (ctor_fail == CTOR_CTX_INIT) return ERR_PTR(-ENOMEM);
+    int rc = init(private, &queues.src, &queues.dst);
+    return rc ? ERR_PTR(rc) : &queues;
+}
+static int crystalhd_v4l2_ctx_create(struct crystalhd_v4l2 *p, struct crystalhd_v4l2_ctx **out)
+{
+    assert(p == &ctor_parent && queues.src.initialized && queues.dst.initialized);
+    ctor_ctx_creates++;
+    if (ctor_ctx_error) return ctor_ctx_error;
+    *out = &lease; return 0;
+}
+static void crystalhd_v4l2_ctx_bind(struct crystalhd_v4l2_ctx *l, void *p, void (*cleanup)(void *))
+{ assert(l == &lease && p == &fixture); ctor_binds++; ctor_cleanup = cleanup; }
+static void crystalhd_v4l2_ctx_close(struct crystalhd_v4l2_ctx *l)
+{
+    assert(l == &lease && !handle.private_data && !ctor_fh_live &&
+           !node.ioctl_lock.held && !fixture.run_lock.held &&
+           !fixture.tx_work.pending && !fixture.run_work.pending);
+    ctor_close_pending = true; /* Core retirement may occur after release returns. */
+}
+static struct device *get_device(struct device *d)
+{ assert(d == &ctor_device); ctor_dev_refs++; return d; }
+static void put_device(struct device *d)
+{ assert(d == &ctor_device && ctor_dev_refs == 1); ctor_dev_refs--; }
+static void v4l2_ctrl_handler_init(struct v4l2_ctrl_handler *h, unsigned count)
+{ assert(count == 1 && !ctor_ctrl_live); ctor_ctrl_live = true; h->error = ctor_fail == CTOR_CTRL_INIT ? -ENOMEM : 0; }
+static struct v4l2_ctrl *v4l2_ctrl_new_std(struct v4l2_ctrl_handler *h,
+        void *ops, unsigned id, int min, int max, int step, int def)
+{
+    assert(!ops && id == V4L2_CID_MIN_BUFFERS_FOR_CAPTURE && min == 2 && max == 2 && step == 1 && def == 2);
+    if (ctor_fail == CTOR_CTRL_NEW) h->error = -EINVAL;
+    return h->error ? NULL : &ctor_minimum;
+}
+static void v4l2_ctrl_handler_free(struct v4l2_ctrl_handler *h)
+{ assert(h == &node.ctrls && ctor_ctrl_live); ctor_ctrl_live = false; }
+static struct workqueue_struct *alloc_ordered_workqueue(const char *name, unsigned flags)
+{
+    unsigned i = ctor_wq_calls++;
+    assert(i < 2 && flags == WQ_MEM_RECLAIM && !strcmp(name, i ? "crystalhd-input" : "crystalhd-decode"));
+    if (ctor_fail == (i ? CTOR_TX_WQ : CTOR_RX_WQ)) return NULL;
+    assert(!ctor_workqueue_live[i]); ctor_workqueue_live[i] = true;
+    ctor_wq_live++; return &ctor_workqueues[i];
+}
+static void destroy_workqueue(struct workqueue_struct *w)
+{
+    unsigned i = w == &ctor_workqueues[0] ? 0 : 1;
+    assert(w == &ctor_workqueues[i] && ctor_workqueue_live[i] && ctor_wq_live);
+    ctor_workqueue_live[i] = false; ctor_wq_live--;
+}
+static struct v4l2_m2m_dev *v4l2_m2m_init(const void *ops)
+{
+    assert(ops == &chd_m2m_ops);
+    if (ctor_fail == CTOR_M2M) return ERR_PTR(-ENODEV);
+    ctor_m2m_live = true; return &ctor_m2m;
+}
+static void v4l2_m2m_release(struct v4l2_m2m_dev *m)
+{ assert(m == &ctor_m2m && ctor_m2m_live && !ctor_wq_live); ctor_m2m_live = false; }
+static void crystalhd_v4l2_parent_get(struct crystalhd_v4l2 *p)
+{ assert(p == &ctor_parent); ctor_parent_refs++; }
+static void crystalhd_v4l2_parent_put(struct crystalhd_v4l2 *p)
+{ assert(p == &ctor_parent && ctor_parent_refs == 1); ctor_parent_refs--; }
+static void strscpy(char *dst, const char *src, size_t size)
+{ assert(strlen(src) < size); strcpy(dst, src); }
+static void video_set_drvdata(struct video_device *v, void *p) { v->drvdata = p; }
+static int video_register_device(struct video_device *v, unsigned type, int number)
+{
+    assert(v == &node.video && type == VFL_TYPE_VIDEO && number == -1 &&
+           ctor_parent_refs == 1 && v->drvdata == &node);
+    if (ctor_fail == CTOR_VIDEO) return -ENFILE; /* No release callback on failure. */
+    ctor_video_live = true; return 0;
+}
+static void video_unregister_device(struct video_device *v)
+{
+    assert(v == &node.video && ctor_video_live);
+    ctor_video_live = false; ctor_video_releases++; v->release(v);
+}
+void crystalhd_v4l2_node_destroy(struct crystalhd_v4l2_node *node);
 static int crystalhd_v4l2_decoder_complete(struct crystalhd_v4l2_decoder *d,
         struct crystalhd_rx_metadata *metadata, u64 epoch, u64 *timestamp)
 {
@@ -1542,9 +1723,113 @@ static void drain_watchdog_cases(void)
           fixture.decoder.phase == CHD_V4L2_DRAINED && eos_events == 1);
 }
 
+static void constructor_reset(unsigned failure)
+{
+    assert(!ctor_file_live && !ctor_node_live && !ctor_fh_live &&
+           !ctor_ctrl_live && !ctor_m2m_live && !ctor_video_live &&
+           !ctor_dev_refs && !ctor_parent_refs && !ctor_wq_live);
+    reset(false); constructor_mode = true;
+    ctor_fail = failure; ctor_allocs = ctor_queue_calls = ctor_queue_releases = 0;
+    ctor_wq_calls = ctor_fh_exits = ctor_ctx_creates = ctor_binds = ctor_video_releases = 0;
+    ctor_ctx_error = 0; ctor_cleanup = NULL; ctor_close_pending = false;
+    ctor_minimum.flags = 0; node.m2m = &ctor_m2m;
+    node.parent = &ctor_parent; node.dma_dev = &ctor_device;
+    node.ioctl_lock.held = false; handle.private_data = NULL;
+}
+
+static void constructor_cases(void)
+{
+    const unsigned failures[] = { CTOR_ALLOC, CTOR_CTX_INIT, CTOR_SRC_QUEUE,
+        CTOR_DST_QUEUE, CTOR_OK, CTOR_OK, CTOR_OK, CTOR_OK };
+    for (unsigned i = 0; i < sizeof(failures) / sizeof(failures[0]); i++) {
+        constructor_reset(failures[i]);
+        if (i == 4) ctor_ctx_error = -ENOMEM;
+        if (i == 5) ctor_ctx_error = -ENODEV;
+        if (i == 6) ctor_ctx_error = -EIO;
+        unsigned adds = fh_add_calls, dels = fh_del_calls;
+        int rc = chd_open(&handle);
+        if (i < 7) {
+            int expected = i < 2 ? -ENOMEM : i < 4 ? -EINVAL : ctor_ctx_error;
+            CHECK(rc == expected && !ctor_file_live && !ctor_fh_live && !handle.private_data);
+            CHECK(fh_add_calls == adds && fh_del_calls == dels && !ctor_binds);
+            CHECK(ctor_fh_exits == (i != 0) && !queues.src.initialized && !queues.dst.initialized);
+            CHECK(ctor_queue_calls == (i < 2 ? 0U : i == 2 ? 1U : 2U));
+            CHECK(ctor_queue_releases == (i < 3 ? 0U : i == 3 ? 1U : 2U));
+            CHECK(ctx_destroys == (i >= 4));
+            continue;
+        }
+        CHECK(!rc && handle.private_data == &fixture.fh && ctor_file_live && ctor_fh_live);
+        CHECK(ctor_binds == 1 && ctor_cleanup == chd_file_destroy && fh_add_calls == adds + 1);
+        CHECK(fixture.decoder.phase == CHD_V4L2_OFF && !fixture.admitted && !enters && !acquires && !transports);
+        CHECK(fixture.run_work.function == chd_run && fixture.tx_work.function == chd_tx_run &&
+              !fixture.run_work.pending && !fixture.tx_work.pending);
+        CHECK(fixture.output.pixelformat == V4L2_PIX_FMT_H264 && fixture.output.width == 640 &&
+              fixture.output.height == 480 && fixture.output.sizeimage == CHD_CODED_SIZE &&
+              fixture.output.field == V4L2_FIELD_NONE && fixture.color_default);
+        CHECK(fixture.capture.pixelformat == V4L2_PIX_FMT_YUYV && fixture.capture.width == 640 &&
+              fixture.capture.height == 480 && fixture.capture.bytesperline == 1280 && fixture.capture.sizeimage);
+        for (unsigned qindex = 0; qindex < 2; qindex++) {
+            struct vb2_queue *q = qindex ? &queues.dst : &queues.src;
+            CHECK(q->initialized && q->type == (qindex ? V4L2_BUF_TYPE_VIDEO_CAPTURE : V4L2_BUF_TYPE_VIDEO_OUTPUT));
+            CHECK(q->io_modes == VB2_MMAP && q->ops == &chd_queue_ops && q->mem_ops == &vb2_dma_sg_memops);
+            CHECK(q->timestamp_flags == V4L2_BUF_FLAG_TIMESTAMP_COPY && q->bidirectional == qindex &&
+                  q->dev == &ctor_device && q->lock == &node.ioctl_lock && q->drv_priv == &fixture);
+            CHECK(q->buf_struct_size == (qindex ? sizeof(struct crystalhd_v4l2_capture_buffer) :
+                  sizeof(struct crystalhd_v4l2_output_buffer)));
+        }
+        CHECK(!chd_release(&handle));
+        CHECK(!handle.private_data && !ctor_fh_live && ctor_fh_exits == 1 &&
+              fh_del_calls == dels + 1 && ctor_close_pending && ctor_file_live);
+        CHECK(!ctx_destroys && !ctor_queue_releases && queues.src.initialized && queues.dst.initialized);
+        /* Simulate positive lease retirement after release, invoking its real cleanup. */
+        ctor_cleanup(&fixture);
+        CHECK(!ctor_file_live && ctx_destroys == 1 && ctor_queue_releases == 2 && private_frees == 1);
+    }
+    for (unsigned fail = CTOR_OK; fail <= CTOR_VIDEO; fail++) {
+        constructor_reset(fail);
+        struct crystalhd_v4l2_node *out = (void *)1;
+        int rc = crystalhd_v4l2_node_register(&ctor_parent, &ctor_v4l2, &ctor_device,
+                                             BC_PCI_DEVID_FLEA, 123, &out);
+        if (fail) {
+            int expected = fail == CTOR_CTRL_NEW ? -EINVAL : fail == CTOR_M2M ? -ENODEV :
+                           fail == CTOR_VIDEO ? -ENFILE : -ENOMEM;
+            CHECK(rc == expected && !out && !ctor_node_live && !ctor_video_live);
+            CHECK(!ctor_ctrl_live && !ctor_m2m_live && !ctor_wq_live && !ctor_dev_refs && !ctor_parent_refs);
+            CHECK(!ctor_video_releases && ctor_allocs == 1);
+            continue;
+        }
+        CHECK(!rc && out == &node && ctor_node_live && ctor_parent_refs == 1 && ctor_dev_refs == 1);
+        CHECK(node.generation == 123 && node.parent == &ctor_parent && node.dma_dev == &ctor_device);
+        CHECK(node.video.v4l2_dev == &ctor_v4l2 && node.video.ctrl_handler == &node.ctrls &&
+              node.video.lock == &node.ioctl_lock && node.video.fops == &chd_fops && node.video.ioctl_ops == &chd_ioctl_ops);
+        CHECK(node.video.vfl_dir == VFL_DIR_M2M && node.video.device_caps == (V4L2_CAP_VIDEO_M2M | V4L2_CAP_STREAMING));
+        CHECK(ctor_minimum.flags == V4L2_CTRL_FLAG_READ_ONLY && ctor_wq_live == 2 && ctor_m2m_live);
+        crystalhd_v4l2_node_unregister(out);
+        CHECK(!ctor_video_live && !ctor_parent_refs && ctor_video_releases == 1 && ctor_node_live);
+        crystalhd_v4l2_node_destroy(out);
+        CHECK(!ctor_node_live && !ctor_dev_refs && !ctor_wq_live && !ctor_m2m_live && !ctor_ctrl_live);
+    }
+    constructor_reset(CTOR_OK);
+    struct crystalhd_v4l2_node *out = (void *)1;
+    CHECK(!crystalhd_v4l2_node_register(&ctor_parent, &ctor_v4l2, &ctor_device, 0x1612, 123, &out));
+    CHECK(!out && !ctor_allocs && !ctor_dev_refs && !ctor_parent_refs);
+    crystalhd_v4l2_node_unregister(NULL); crystalhd_v4l2_node_destroy(NULL);
+    for (unsigned output = 0; output < 2; output++) {
+        struct v4l2_fmtdesc fmt = { .type = output ? V4L2_BUF_TYPE_VIDEO_OUTPUT : V4L2_BUF_TYPE_VIDEO_CAPTURE };
+        CHECK(!chd_enum_fmt(&handle, &fixture.fh, &fmt));
+        CHECK(fmt.pixelformat == (output ? V4L2_PIX_FMT_H264 : V4L2_PIX_FMT_YUYV));
+        CHECK(fmt.flags == (output ? V4L2_FMT_FLAG_COMPRESSED : 0));
+        fmt.index = 1;
+        struct v4l2_fmtdesc saved = fmt;
+        CHECK(chd_enum_fmt(&handle, &fixture.fh, &fmt) == -EINVAL && !memcmp(&fmt, &saved, sizeof(fmt)));
+    }
+    constructor_mode = false;
+}
+
 int main(void)
 {
     node_api_cases();
+    constructor_cases();
     discovery_watchdog_cases();
     credit_watchdog_cases();
     drain_watchdog_cases();

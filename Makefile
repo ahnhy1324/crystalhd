@@ -112,6 +112,8 @@ device-lifetime-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/device-lifetime.sh
 
 v4l2-parent-check:
+	$(CC) $(CPPFLAGS) $(CFLAGS) -std=c11 -Wall -Wextra -Werror -fsyntax-only tests/v4l2-api.c
+	sh -n tests/v4l2-api.sh
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/v4l2-parent.sh
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/v4l2-buffers.sh
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/v4l2-decoder.sh
