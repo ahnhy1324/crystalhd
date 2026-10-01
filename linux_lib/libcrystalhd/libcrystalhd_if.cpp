@@ -764,12 +764,12 @@ DtsGetFWVersionFromFile(
 	char      *fname
 	)
 {
-	BC_STATUS sts = BC_STS_SUCCESS;
-	uint8_t *buf;
-	//uint32_t buflen=0;
-	uint32_t sizeRead=0;
-	uint32_t err=0;
-	FILE *fhnd =NULL;
+	static const char marker[] = "Media_PC_FW_Rev";
+	BC_STATUS sts = BC_STS_ERROR;
+	uint8_t *buf = NULL;
+	long fileSize;
+	size_t sizeRead;
+	FILE *fhnd = NULL;
 	char fwdir[MAX_PATH+1];
 	char fwfile[MAX_PATH+1];
 
@@ -781,6 +781,7 @@ DtsGetFWVersionFromFile(
 	if(sts != BC_STS_SUCCESS){
 		return sts;
 	}
+	sts = BC_STS_ERROR;
 
 	const char *fwname = fname ? fname :
 		(Ctx->DevId == BC_PCI_DEVID_FLEA ? FWBINFILE_70015 : FWBINFILE_70012);
@@ -800,51 +801,54 @@ DtsGetFWVersionFromFile(
 		return BC_STS_INSUFF_RES;
 	}
 
-	buf=(uint8_t *)malloc(MAX_BIN_FILE_SZ);
+	if (fseek(fhnd, 0, SEEK_END) || (fileSize = ftell(fhnd)) < 0) {
+		DebugLog_Trace(LDIL_DBG,"DtsGetFWVersionFromFile:Failed to query file size\n");
+		goto done;
+	}
+	if (fileSize < (long)(4U + sizeof(marker) - 1U) ||
+	    fileSize > (long)MAX_BIN_FILE_SZ) {
+		DebugLog_Trace(LDIL_DBG,"DtsGetFWVersionFromFile:Invalid file size\n");
+		goto done;
+	}
+	if (fseek(fhnd, 0, SEEK_SET)) {
+		DebugLog_Trace(LDIL_DBG,"DtsGetFWVersionFromFile:Failed to rewind file\n");
+		goto done;
+	}
+
+	buf=(uint8_t *)malloc((size_t)fileSize);
 	if(buf==NULL) {
 		DebugLog_Trace(LDIL_DBG,"DtsGetFWVersionFromFile:Failed to allocate memory\n");
-		return BC_STS_INSUFF_RES;
+		sts = BC_STS_INSUFF_RES;
+		goto done;
 	}
 	/* Read the FW bin file */
-	err = fread(buf, sizeof(uint8_t), MAX_BIN_FILE_SZ, fhnd);
-	if(!err)
-		 {
-			sizeRead = err;
-	}
-	if((err==0)&&(errno!=0))
-	{
-		DebugLog_Trace(LDIL_DBG,"DtsGetFWVersionFromFile:Failed to read bin file %d\n",errno);
-
-		if(buf)free(buf);
-
-		fclose(fhnd);
-
-		return BC_STS_ERROR;
+	sizeRead = fread(buf, sizeof(uint8_t), (size_t)fileSize, fhnd);
+	if(sizeRead != (size_t)fileSize) {
+		DebugLog_Trace(LDIL_DBG,"DtsGetFWVersionFromFile:Failed to read bin file\n");
+		goto done;
 	}
 
-	//There is 16k hole in the FW binary. Hnece start searching from 16k in the bin file
-	uint8_t *pSearchStr = &buf[0x4000];
-	*StreamVer =0;
-	for(uint32_t i=0; i <(sizeRead-0x4000);i++){
-		if(NULL != strstr((char *)pSearchStr,(const char *)"Media_PC_FW_Rev")){
-			//The actual FW versions are at searchstring - 4 bytes.
-			*StreamVer = ((*(pSearchStr-4)) << 16) |
-						 ((*(pSearchStr-3))<<8) |
-						 (*(pSearchStr-2));
+	for (size_t offset = 4U;
+	     offset + sizeof(marker) - 1U <= sizeRead; ++offset) {
+		if (buf[offset] == (uint8_t)marker[0] &&
+		    !memcmp(buf + offset, marker, sizeof(marker) - 1U)) {
+			const uint32_t version = ((uint32_t)buf[offset - 4U] << 16) |
+						 ((uint32_t)buf[offset - 3U] << 8) |
+						 (uint32_t)buf[offset - 2U];
+			if (!version)
+				break;
+			*StreamVer = version;
+			if (DecVer)
+				*DecVer = 0;
+			sts = BC_STS_SUCCESS;
 			break;
 		}
-		pSearchStr++;
 	}
-	if(buf)
-		free(buf);
-	if(fhnd)
-		fhnd=NULL;
-	if(*StreamVer ==0)
-		return BC_STS_ERROR;
-	else
-		return BC_STS_SUCCESS;
 
-
+done:
+	free(buf);
+	fclose(fhnd);
+	return sts;
 }
 
 DRVIFLIB_API BC_STATUS
@@ -877,6 +881,8 @@ DtsGetFWVersion(
 		sts = DtsGetFWVersionFromFile(hDevice,StreamVer,DecVer,fname);
 		if(sts == BC_STS_SUCCESS)
 		{
+			if (HwVer != NULL)
+				*HwVer = 0;
 			DebugLog_Trace(LDIL_DBG,"FW Version: Stream: %x",*StreamVer);
 			if(DecVer !=NULL)
 				DebugLog_Trace(LDIL_DBG," Dec: %x\n",*DecVer);
