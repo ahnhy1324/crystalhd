@@ -1669,14 +1669,9 @@ static void bc_cproc_copy_pib(struct C011_PIB *dst,
 	dst->resolution = src->resolution;
 }
 
-/*
- * Fetch one completed RX buffer using the legacy blocking timeout. The caller
- * keeps command/device lifetime protection but does not hold fetch_sem.
- * Success transfers result->buffer and its opaque cookie to the caller, which
- * must requeue or release the buffer exactly once.
- */
-BC_STATUS crystalhd_rx_dequeue(struct crystalhd_cmd *ctx,
-			       struct crystalhd_rx_completion *result)
+static BC_STATUS crystalhd_rx_dequeue_common(struct crystalhd_cmd *ctx,
+					     struct crystalhd_rx_completion *result,
+					     bool try_fetch)
 {
 	uint64_t expected_epoch;
 	BC_STATUS sts;
@@ -1703,8 +1698,8 @@ BC_STATUS crystalhd_rx_dequeue(struct crystalhd_cmd *ctx,
 		return BC_STS_INV_ARG;
 	}
 
-	/* Couple capture admission to the generation passed through the blocking
-	 * wait. A full stop in either wait gap then suppresses stale HW wakeups.
+	/* Couple admission to the epoch checked by the completion path. A full
+	 * stop between admission and fetch then suppresses stale HW wakeups.
 	 */
 	if (down_interruptible(&ctx->hw_ctx->fetch_sem))
 		return BC_STS_IO_USER_ABORT;
@@ -1719,12 +1714,26 @@ BC_STATUS crystalhd_rx_dequeue(struct crystalhd_cmd *ctx,
 	expected_epoch = ctx->hw_ctx->rx_cancel_epoch;
 	up(&ctx->hw_ctx->fetch_sem);
 
-	sts = crystalhd_hw_get_cap_buffer(ctx->hw_ctx, result, expected_epoch);
+	sts = try_fetch ?
+		crystalhd_hw_try_get_cap_buffer(ctx->hw_ctx, result, expected_epoch) :
+		crystalhd_hw_get_cap_buffer(ctx->hw_ctx, result, expected_epoch);
 	if (sts != BC_STS_SUCCESS)
 		return (ctx->state & BC_LINK_SUSPEND) ? BC_STS_PWR_MGMT : sts;
 
 	dev_dbg(chddev(), "Got Picture\n");
 	return BC_STS_SUCCESS;
+}
+
+BC_STATUS crystalhd_rx_dequeue(struct crystalhd_cmd *ctx,
+			       struct crystalhd_rx_completion *result)
+{
+	return crystalhd_rx_dequeue_common(ctx, result, false);
+}
+
+BC_STATUS crystalhd_rx_try_dequeue(struct crystalhd_cmd *ctx,
+				   struct crystalhd_rx_completion *result)
+{
+	return crystalhd_rx_dequeue_common(ctx, result, true);
 }
 
 static BC_STATUS bc_cproc_fetch_frame(struct crystalhd_cmd *ctx,

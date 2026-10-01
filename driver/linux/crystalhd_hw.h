@@ -245,11 +245,17 @@ struct tx_dma_pkt {
  * keeps firmware units. eos_trailer records the trailer bit independently of
  * picture_flags and is not by itself proof that decoder drain completed.
  * Format-change packets, rejected pictures and Link leave this invalid.
+ * Geometry is observed firmware data, not a validated native image layout.
  */
 struct crystalhd_rx_metadata {
 	uint64_t	firmware_timestamp;
 	uint32_t	picture_number; /* Parsed repeat-filter value, including EOS sentinel. */
 	uint32_t	picture_flags;
+	uint32_t	picture_width;
+	uint32_t	picture_height;
+	uint32_t	row_width;
+	uint32_t	pib_line;
+	uint32_t	first_pixel_word; /* Saved bytes, unavailable for trailer EOS. */
 	bool		valid;
 	bool		eos_trailer;
 };
@@ -280,6 +286,28 @@ struct crystalhd_rx_completion {
 	uint32_t		y_done_sz;
 	uint32_t		uv_done_sz;
 };
+
+/* Visible packed image extent, excluding padding lines and firmware metadata. */
+struct crystalhd_rx_image {
+	uint32_t	width;
+	uint32_t	height;
+	uint32_t	stride_bytes;
+	uint32_t	payload_bytes;
+};
+
+/* Opt in to native progressive Flea YUYV pixels, replacing the legacy marker
+ * with its saved first word. Caller exclusively owns the CPU-synchronized
+ * completion and keeps its buffer/ops/cookie alive throughout this call.
+ * No hardware access, release, requeue or device sync occurs. Every return
+ * retains ownership; success is byte-idempotent, and a partial write failure
+ * can be retried. Only success publishes image; legacy consumers must not
+ * receive a completion after this helper is called.
+ * NO_DATA denotes format/EOS, not completed drain; NOT_IMPL denotes an
+ * unsupported snapshot/format/source; IO_ERROR denotes invalid picture data;
+ * INV_ARG denotes invalid identity/geometry/extents. Write errors propagate.
+ */
+BC_STATUS crystalhd_rx_finish_yuyv(struct crystalhd_rx_completion *result,
+				   struct crystalhd_rx_image *image);
 
 struct crystalhd_hw_stats{
 	uint32_t	rx_errors;
@@ -615,6 +643,9 @@ BC_STATUS crystalhd_hw_repost_cap_buffer(struct crystalhd_hw *hw,
 BC_STATUS crystalhd_hw_get_cap_buffer(struct crystalhd_hw *hw,
 				      struct crystalhd_rx_completion *result,
 				      uint64_t expected_epoch);
+BC_STATUS crystalhd_hw_try_get_cap_buffer(struct crystalhd_hw *hw,
+					  struct crystalhd_rx_completion *result,
+					  uint64_t expected_epoch);
 BC_STATUS crystalhd_hw_start_capture(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_stop_capture(struct crystalhd_hw *hw, bool unmap);
 /* Process callers must hold fetch_sem before calling the locked variant. */

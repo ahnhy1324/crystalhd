@@ -3029,7 +3029,13 @@ static bool flea_get_picture_info(struct crystalhd_hw *hw,
 		rx_pkt->metadata.firmware_timestamp = pPicInfoLine->timeStamp;
 		rx_pkt->metadata.picture_number = *PicNumber;
 		rx_pkt->metadata.picture_flags = pPicInfoLine->flags;
+		rx_pkt->metadata.picture_width = pPicInfoLine->width;
+		rx_pkt->metadata.picture_height = pPicInfoLine->height;
+		rx_pkt->metadata.row_width = row_width;
+		rx_pkt->metadata.pib_line = PicInfoLineNum;
 		rx_pkt->metadata.eos_trailer = !!(widthField & PIB_EOS_DETECTED_BIT);
+		if (!rx_pkt->metadata.eos_trailer)
+			rx_pkt->metadata.first_pixel_word = pPicInfoLine->ycom;
 		rx_pkt->metadata.valid = true;
 	}
 
