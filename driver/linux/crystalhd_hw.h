@@ -241,6 +241,19 @@ struct tx_dma_pkt {
 
 };
 
+/* Kernel-only Flea PIB snapshot. valid includes timestamp zero; the timestamp
+ * keeps firmware units. eos_trailer records the trailer bit independently of
+ * picture_flags and is not by itself proof that decoder drain completed.
+ * Format-change packets, rejected pictures and Link leave this invalid.
+ */
+struct crystalhd_rx_metadata {
+	uint64_t	firmware_timestamp;
+	uint32_t	picture_number; /* Parsed repeat-filter value, including EOS sentinel. */
+	uint32_t	picture_flags;
+	bool		valid;
+	bool		eos_trailer;
+};
+
 struct crystalhd_rx_dma_pkt {
 	struct dma_desc_mem			desc_mem;
 	struct crystalhd_rx_buffer	*buffer;
@@ -251,6 +264,7 @@ struct crystalhd_rx_dma_pkt {
 	uint32_t			y_done_sz;
 	uint32_t			uv_done_sz;
 	BC_PIC_INFO_BLOCK		pib;
+	struct crystalhd_rx_metadata	metadata;
 	dma_addr_t			uv_phy_addr;
 	struct  crystalhd_rx_dma_pkt	*next;
 };
@@ -260,6 +274,7 @@ struct crystalhd_rx_completion {
 	struct crystalhd_rx_buffer	*buffer;
 	void			*cookie;
 	struct C011_PIB		pib;
+	struct crystalhd_rx_metadata metadata;
 	uint64_t		capture_epoch;
 	uint32_t		flags;
 	uint32_t		y_done_sz;

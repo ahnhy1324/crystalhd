@@ -2864,6 +2864,9 @@ static bool flea_get_picture_info(struct crystalhd_hw *hw,
 	*PicNumber = 0;
 	*PicMetaData = 0;
 
+	if (rx_pkt)
+		memset(&rx_pkt->metadata, 0, sizeof(rx_pkt->metadata));
+
 	if (!rx_pkt || !rx_pkt->buffer)
 		goto getpictureinfo_err;
 	buffer = rx_pkt->buffer;
@@ -3019,6 +3022,15 @@ static bool flea_get_picture_info(struct crystalhd_hw *hw,
 		if (!prepare_output && (widthField & PIB_EOS_DETECTED_BIT) &&
 		    PicInfoLineNum == 0)
 			*PicNumber = 0xFFFFFFFF;
+	}
+
+	if (prepare_output && rtVal && *PicNumber &&
+	    !(pPicInfoLine->flags & FLEA_DECODE_ERROR_FLAG)) {
+		rx_pkt->metadata.firmware_timestamp = pPicInfoLine->timeStamp;
+		rx_pkt->metadata.picture_number = *PicNumber;
+		rx_pkt->metadata.picture_flags = pPicInfoLine->flags;
+		rx_pkt->metadata.eos_trailer = !!(widthField & PIB_EOS_DETECTED_BIT);
+		rx_pkt->metadata.valid = true;
 	}
 
 	return rtVal;

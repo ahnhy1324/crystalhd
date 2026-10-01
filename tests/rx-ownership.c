@@ -112,6 +112,7 @@ static enum FLEA_POWER_STATES wait_restart_power;
 static bool stop_fault, notify_ok;
 static bool firmware_alive;
 static bool checking_admission;
+static bool checking_metadata_reset;
 static bool checking_start, start_post_observed;
 static char lifecycle_events[64];
 static unsigned lifecycle_event_count;
@@ -226,6 +227,8 @@ static void inventory_with_private(unsigned active_count, unsigned ready_count,
         seen[packet_index(packet)]++;
         check(!packet->buffer && !packet->cookie,
               "pooled RX packet is detached from buffer and cookie");
+        check(memory_is_zero(&packet->metadata, sizeof(packet->metadata)),
+              "pooled RX packet retains no metadata from its previous owner");
         packet = packet->next;
     }
     packet = hardware.rx_fallback_head;
@@ -279,6 +282,9 @@ static BC_STATUS crystalhd_dioq_add(struct crystalhd_dioq *queue, void *data,
     struct crystalhd_dioq *queues[] = { &active, &ready, &available };
     assert(queue && packet && queue->count < BC_RX_LIST_CNT);
     (void)wake;
+    if (checking_metadata_reset)
+        check(memory_is_zero(&packet->metadata, sizeof(packet->metadata)),
+              "completion clears old metadata before publishing a queue owner");
     if (queue == fail_queue) return queue_status;
     for (size_t q = 0; q < 3; q++)
         for (unsigned i = 0; i < queues[q]->count; i++)
@@ -704,6 +710,7 @@ static void reset(uint32_t device)
     stop_fault = false;
     firmware_alive = true;
     checking_admission = false;
+    checking_metadata_reset = false;
     checking_start = start_post_observed = false;
     start_notify_observed = start_notify_notifications = 0;
     start_notify_state = start_notify_pause = start_notify_resume = 0;
@@ -981,6 +988,7 @@ static void mapped_dequeue_cases(uint32_t device)
 static void reverse_list_completion_case(uint32_t device)
 {
     struct crystalhd_rx_buffer *first, *second;
+    struct crystalhd_rx_dma_pkt *first_completed, *reused;
     struct crystalhd_rx_completion result;
 
     reset(device);
@@ -996,12 +1004,38 @@ static void reverse_list_completion_case(uint32_t device)
 
     complete(1);
     complete(0);
+    first_completed = ready.packets[0];
+    if (device == BC_PCI_DEVID_FLEA) {
+        ready.packets[0]->metadata = (struct crystalhd_rx_metadata){
+            .firmware_timestamp = 0, .picture_number = 71,
+            .picture_flags = 0x102, .valid = true, .eos_trailer = false,
+        };
+        ready.packets[1]->metadata = (struct crystalhd_rx_metadata){
+            .firmware_timestamp = UINT64_C(0x123456789), .picture_number = 93,
+            .picture_flags = 0x405, .valid = true, .eos_trailer = true,
+        };
+    }
     inventory(0, 2, 0);
     memset(&result, 0xa5, sizeof(result));
     check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS &&
           result.buffer == second && result.cookie == &cookies[1] &&
           result.y_done_sz == 128 && result.uv_done_sz == 0,
           "reverse list completion dequeues list one's exact backing and cookie first");
+    reused = crystalhd_hw_alloc_rx_pkt(&hardware);
+    check(reused == first_completed &&
+          memory_is_zero(&reused->metadata, sizeof(reused->metadata)),
+          "dequeue returns its cleared metadata packet to the reusable pool");
+    memset(&reused->metadata, 0xa5, sizeof(reused->metadata));
+    if (device == BC_PCI_DEVID_FLEA)
+        check(result.metadata.valid && !result.metadata.firmware_timestamp &&
+              result.metadata.picture_number == 71 &&
+              result.metadata.picture_flags == 0x102 &&
+              !result.metadata.eos_trailer,
+              "zero timestamp remains valid and the result survives packet reuse by value");
+    else
+        check(memory_is_zero(&result.metadata, sizeof(result.metadata)),
+              "Link completion cannot invent a metadata snapshot");
+    crystalhd_hw_free_rx_pkt(&hardware, reused);
     inventory_with_private(0, 1, 0, result.buffer);
     crystalhd_rx_buffer_release(&adapter, result.buffer);
     check(unmaps[1] == 1 && !unmaps[0],
@@ -1012,12 +1046,115 @@ static void reverse_list_completion_case(uint32_t device)
           result.buffer == first && result.cookie == &cookies[0] &&
           result.y_done_sz == 128 && result.uv_done_sz == 64,
           "reverse list completion then dequeues list zero without identity crossover");
+    if (device == BC_PCI_DEVID_FLEA)
+        check(result.metadata.valid &&
+              result.metadata.firmware_timestamp == UINT64_C(0x123456789) &&
+              result.metadata.picture_number == 93 &&
+              result.metadata.picture_flags == 0x405 &&
+              result.metadata.eos_trailer,
+              "the second packet keeps its own timestamp, picture and EOS metadata");
+    else
+        check(memory_is_zero(&result.metadata, sizeof(result.metadata)),
+              "separate Link completions both retain invalid metadata");
     inventory_with_private(0, 0, 0, result.buffer);
     crystalhd_rx_buffer_release(&adapter, result.buffer);
     check(unmaps[0] == 1,
           "reverse completion releases list zero after its result is detached");
     inventory(0, 0, 0);
     drain();
+}
+static void metadata_pool_reset_case(uint32_t device)
+{
+    struct crystalhd_rx_dma_pkt *packet, *head;
+    dma_addr_t descriptor_address;
+
+    reset(device);
+    head = hardware.rx_pkt_pool_head;
+    descriptor_address = head->desc_mem.phy_addr;
+    memset(&head->metadata, 0xa5, sizeof(head->metadata));
+    packet = crystalhd_hw_alloc_rx_pkt(&hardware);
+    check(packet == head &&
+          memory_is_zero(&packet->metadata, sizeof(packet->metadata)) &&
+          packet->desc_mem.phy_addr == descriptor_address,
+          "allocation clears stale metadata without destroying DMA descriptor storage");
+    memset(&packet->metadata, 0x5a, sizeof(packet->metadata));
+    crystalhd_hw_free_rx_pkt(&hardware, packet);
+    check(hardware.rx_pkt_pool_head == packet &&
+          memory_is_zero(&packet->metadata, sizeof(packet->metadata)) &&
+          packet->desc_mem.phy_addr == descriptor_address,
+          "free clears all metadata before publishing the packet to its pool");
+    inventory(0, 0, 0);
+}
+static void metadata_completion_reset_cases(uint32_t device)
+{
+    for (unsigned variant = 0; variant < 5; variant++) {
+        struct crystalhd_rx_dma_pkt *packet;
+        BC_STATUS completion_status = variant && variant < 4 ?
+            BC_STS_IO_ERROR : BC_STS_SUCCESS;
+        BC_STATUS expected = BC_STS_SUCCESS;
+
+        reset(device);
+        check(add(0) == BC_STS_SUCCESS,
+              "prepare a registration carrying metadata from an earlier frame");
+        packet = active.packets[0];
+        memset(&packet->metadata, 0xa5, sizeof(packet->metadata));
+        if (variant == 2)
+            expected = post_status = BC_STS_BUSY;
+        else if (variant == 3)
+            expected = post_status = BC_STS_IO_ERROR;
+        else if (variant == 4) {
+            fail_queue = &ready;
+            expected = queue_status = BC_STS_INSUFF_RES;
+        }
+        checking_metadata_reset = true;
+        check(crystalhd_rx_pkt_done(&hardware, 0, completion_status) == expected,
+              "metadata reset preserves ready and failed-completion status semantics");
+        checking_metadata_reset = false;
+        check(memory_is_zero(&packet->metadata, sizeof(packet->metadata)),
+              "successful, reposted and retained completions clear stale metadata");
+        if (variant == 1) {
+            check(active.count == 1 && active.packets[0] == packet,
+                  "failed completion reuses the exact original registration");
+            memset(&packet->metadata, 0x5a, sizeof(packet->metadata));
+            checking_metadata_reset = true;
+            complete(0);
+            checking_metadata_reset = false;
+            check(ready.count == 1 && ready.packets[0] == packet &&
+                  memory_is_zero(&packet->metadata, sizeof(packet->metadata)),
+                  "successful completion after error reuse cannot expose prior metadata");
+        }
+        fail_queue = NULL;
+        queue_status = post_status = BC_STS_SUCCESS;
+        drain();
+    }
+}
+static void metadata_suppression_cases(uint32_t device)
+{
+    for (unsigned variant = 0; variant < 3; variant++) {
+        struct crystalhd_rx_completion result;
+        uint32_t flags = variant ? COMP_FLAG_FMT_CHANGE |
+            (variant == 2 ? COMP_FLAG_PIB_VALID : COMP_FLAG_DATA_VALID) :
+            COMP_FLAG_DATA_VALID;
+
+        reset(device);
+        check(add(0) == BC_STS_SUCCESS,
+              "prepare invalid or format-only metadata for typed dequeue");
+        complete(0);
+        ready.packets[0]->flags = flags;
+        ready.packets[0]->metadata = (struct crystalhd_rx_metadata){
+            .firmware_timestamp = UINT64_C(0x1ffffffff),
+            .picture_number = 99, .picture_flags = 0x12345678,
+            .valid = variant != 0, .eos_trailer = true,
+        };
+        memset(&result, 0xa5, sizeof(result));
+        check(crystalhd_rx_dequeue(&context, &result) == BC_STS_SUCCESS &&
+              result.flags == flags &&
+              memory_is_zero(&result.metadata, sizeof(result.metadata)),
+              "invalid and format-change metadata never leaks into a typed result");
+        inventory_with_private(0, 0, 0, result.buffer);
+        crystalhd_rx_buffer_release(&adapter, result.buffer);
+        inventory(0, 0, 0);
+    }
 }
 static void pib_dequeue_cases(uint32_t device)
 {
@@ -1051,6 +1188,14 @@ static void pib_dequeue_cases(uint32_t device)
     check(add(0) == BC_STS_SUCCESS,
           "prepare completion without valid PIB for legacy dequeue");
     complete(0);
+    if (device == BC_PCI_DEVID_FLEA)
+        ready.packets[0]->metadata = (struct crystalhd_rx_metadata){
+            .firmware_timestamp = UINT64_C(0x123456789),
+            .picture_number = 0xfeed, .picture_flags = 0xbeef,
+            .valid = true, .eos_trailer = true,
+        };
+    check(ready.packets[0]->flags == COMP_FLAG_DATA_VALID,
+          "ordinary typed metadata does not require the legacy PIB flag");
     memset(&data, 0xa5, sizeof(data));
     memcpy(&expected_frame, &data.udata.u.DecOutData, sizeof(expected_frame));
     expected_frame.Flags = COMP_FLAG_DATA_VALID;
@@ -1063,7 +1208,7 @@ static void pib_dequeue_cases(uint32_t device)
     check(bc_cproc_fetch_frame(&context, &data) == BC_STS_SUCCESS &&
           !memcmp(&data.udata.u.DecOutData, &expected_frame, sizeof(expected_frame)) &&
           unmaps[0] == 1,
-          "legacy dequeue copies packet completion fields without storing them in the DIO");
+          "ordinary typed metadata leaves the full legacy output unchanged without a PIB flag");
     inventory(0, 0, 0);
 
     reset(device);
@@ -1071,6 +1216,12 @@ static void pib_dequeue_cases(uint32_t device)
     complete(0);
     ready.packets[0]->flags = COMP_FLAG_DATA_VALID | COMP_FLAG_PIB_VALID;
     fill_ready_pib(ready.packets[0]);
+    if (device == BC_PCI_DEVID_FLEA)
+        ready.packets[0]->metadata = (struct crystalhd_rx_metadata){
+            .firmware_timestamp = UINT64_C(0x123456789),
+            .picture_number = 0xfeed, .picture_flags = 0xbeef,
+            .valid = true, .eos_trailer = true,
+        };
     memset(&data, 0xa5, sizeof(data));
     memcpy(&expected_frame, &data.udata.u.DecOutData, sizeof(expected_frame));
     expected_frame.Flags = COMP_FLAG_DATA_VALID | COMP_FLAG_PIB_VALID;
@@ -1084,7 +1235,7 @@ static void pib_dequeue_cases(uint32_t device)
     check(bc_cproc_fetch_frame(&context, &data) == BC_STS_SUCCESS &&
           !memcmp(&data.udata.u.DecOutData, &expected_frame, sizeof(expected_frame)) &&
           unmaps[0] == 1,
-          "legacy dequeue changes only Flags, valid PIB fields and six output fields");
+          "typed metadata leaves legacy Flags, PIB and six output fields unchanged");
     inventory(0, 0, 0);
 }
 static void direct_format_dequeue_cases(uint32_t device)
@@ -2606,6 +2757,9 @@ int main(void)
         dequeue_gate_wait_cases(devices[i]);
         mapped_dequeue_cases(devices[i]);
         reverse_list_completion_case(devices[i]);
+        metadata_pool_reset_case(devices[i]);
+        metadata_completion_reset_cases(devices[i]);
+        metadata_suppression_cases(devices[i]);
         pib_dequeue_cases(devices[i]);
         direct_format_dequeue_cases(devices[i]);
         completion_case(devices[i]);

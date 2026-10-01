@@ -342,6 +342,7 @@ struct crystalhd_rx_dma_pkt *crystalhd_hw_alloc_rx_pkt(struct crystalhd_hw *hw)
 		temp->y_done_sz = 0;
 		temp->uv_done_sz = 0;
 		memset(&temp->pib, 0, sizeof(temp->pib));
+		memset(&temp->metadata, 0, sizeof(temp->metadata));
 		temp->uv_phy_addr = 0;
 		temp->next = NULL;
 	}
@@ -367,6 +368,7 @@ void crystalhd_hw_free_rx_pkt(struct crystalhd_hw *hw,
 	pkt->y_done_sz = 0;
 	pkt->uv_done_sz = 0;
 	memset(&pkt->pib, 0, sizeof(pkt->pib));
+	memset(&pkt->metadata, 0, sizeof(pkt->metadata));
 	pkt->uv_phy_addr = 0;
 	pkt->next = hw->rx_pkt_pool_head;
 	hw->rx_pkt_pool_head = pkt;
@@ -1117,6 +1119,9 @@ BC_STATUS crystalhd_rx_pkt_complete(struct crystalhd_hw *hw,
 		return BC_STS_INV_ARG;
 	}
 
+	/* Recycled free-queue packets can bypass allocation before another DMA. */
+	memset(&rx_pkt->metadata, 0, sizeof(rx_pkt->metadata));
+
 	if (comp_sts == BC_STS_SUCCESS)
 	{
 		hw->DrvTotalFrmCaptured++;
@@ -1545,6 +1550,9 @@ BC_STATUS crystalhd_hw_get_cap_buffer(struct crystalhd_hw *hw,
 			rpkt->pib.picture_meta_payload;
 		result->pib.resolution = rpkt->pib.frame_rate;
 	}
+
+	if (rpkt->metadata.valid && !(rpkt->flags & COMP_FLAG_FMT_CHANGE))
+		result->metadata = rpkt->metadata;
 
 	result->buffer = rpkt->buffer;
 	result->cookie = rpkt->cookie;

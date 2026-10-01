@@ -6,11 +6,19 @@ repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 pib_test_dir=$(mktemp -d "${TMPDIR:-/tmp}/crystalhd-pib-check.XXXXXX")
 cleanup()
 {
-    rm -f "$pib_test_dir/check" "$pib_test_dir/flea-pib-functions.h"
+    rm -f "$pib_test_dir/check" "$pib_test_dir/flea-pib-functions.h" \
+        "$pib_test_dir/rx-metadata.h"
     rmdir "$pib_test_dir"
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
+
+awk '
+    /^struct crystalhd_rx_metadata[[:space:]]*\{/ { copying = 1; found++ }
+    copying { print }
+    copying && /^};/ { copying = 0 }
+    END { if (found != 1 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_hw.h" > "$pib_test_dir/rx-metadata.h"
 
 # Include exact production definitions, ignoring their forward declarations.
 # The test's public wrapper and ready-queue path therefore execute the same
