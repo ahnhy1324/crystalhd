@@ -1450,16 +1450,17 @@ DtsStartCaptureImmidiate(HANDLE		hDevice,
 
 	DTS_GET_CTX(hDevice,Ctx);
 
-	if(Ctx->State != BC_DEC_STATE_START)
-	{
-		DebugLog_Trace(LDIL_DBG, "DtsStartCaptureImmidiate: Decoder is not started\n");
-		return BC_STS_DEC_NOT_STARTED;
-	}
-
 	if (Ctx->ProcessID != getpid() || !DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
 
 	DtsLock(Ctx);
+	if(Ctx->State != BC_DEC_STATE_START)
+	{
+		DebugLog_Trace(LDIL_DBG, "DtsStartCaptureImmidiate: Decoder is not started\n");
+		sts = BC_STS_DEC_NOT_STARTED;
+		goto done;
+	}
+
 	if(Ctx->CfgFlags & BC_ADDBUFF_MOVE){
 		sts = DtsMapYUVBuffs(Ctx);
 		if(sts != BC_STS_SUCCESS){
@@ -1511,13 +1512,14 @@ DtsStartCapture(HANDLE  hDevice)
 	if (Ctx->ProcessID != getpid() || !DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
 
+	DtsLock(Ctx);
 	if (Ctx->State != BC_DEC_STATE_START)
 	{
 		DebugLog_Trace(LDIL_DBG, "DtsStartCapture: Decoder is not started\n");
-		return BC_STS_DEC_NOT_STARTED;
+		sts = BC_STS_DEC_NOT_STARTED;
+		goto done;
 	}
 
-	DtsLock(Ctx);
 	if(Ctx->CfgFlags & BC_ADDBUFF_MOVE){
 		sts = DtsMapYUVBuffs(Ctx);
 		if(sts != BC_STS_SUCCESS){
