@@ -20,16 +20,16 @@ awk '
     /^enum (_crystalhd_state|crystalhd_decoder_phase|crystalhd_decoder_codec|_BC_PCI_DEV_IDS|_BC_DTS_GLOBALS|list_sts|LIST_STATUS|eC011_TS_CMD)[[:space:]{]/ {
         copying = 1; found++
     }
-    /^struct (crystalhd_decoder_config|crystalhd_fw_init_cmd|crystalhd_fw_channel_open_cmd|crystalhd_fw_input_params_cmd|DecRspChannelChannelOpen)[[:space:]{]/ {
+    /^struct (crystalhd_decoder_config|crystalhd_fw_init_cmd|crystalhd_fw_channel_open_cmd|crystalhd_fw_input_params_cmd|crystalhd_fw_channel_activate_cmd|crystalhd_fw_channel_start_video_cmd|crystalhd_fw_channel_stop_close_cmd|DecRspChannelChannelOpen|DecRspChannelStartVideo)[[:space:]{]/ {
         copying = 1; found++
     }
     copying { print }
     copying && /^};/ { copying = 0 }
     /^#define[[:space:]]+(DTS_MODE_INV|BC_LINK_ELEM_POOL_SZ|CRYSTALHD_(LINK|FLEA)_FIRMWARE_NAME)[[:space:]]/ { print }
     /^#define[[:space:]]+CRYSTALHD_FW_INIT_[A-Z_]+[[:space:]]/ { print }
-    /^#define[[:space:]]+CRYSTALHD_FW_(CHANNEL_OPEN_WORDS|INPUT_PARAMS_WORDS|STREAM_TYPE_PES|VIDEO_ALGORITHM_H264|SYNC_MODE_SYNCPIN)[[:space:]]/ { print }
+    /^#define[[:space:]]+CRYSTALHD_FW_(CHANNEL_OPEN_WORDS|INPUT_PARAMS_WORDS|CHANNEL_ACTIVATE_WORDS|CHANNEL_START_VIDEO_WORDS|CHANNEL_STOP_CLOSE_WORDS|STREAM_TYPE_PES|VIDEO_ALGORITHM_H264|SYNC_MODE_SYNCPIN|DISPLAY_TIMING_IGNORE_PTS|USER_DATA_MODE_ON|PROGRESSIVE_OUTPUT|PICTURE_RELEASE_INTERNAL|LAST_PICTURE_DISPLAY_ON)[[:space:]]/ { print }
     /^#define[[:space:]]+eCMD_C011_CMD_BASE[[:space:]]/ { print }
-    END { if (found != 13 || copying) exit 1 }
+    END { if (found != 17 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.h" "$repo_dir/include/bc_dts_glob_lnx.h" \
     "$repo_dir/driver/linux/crystalhd_hw.h" "$repo_dir/driver/linux/crystalhd_misc.h" \
     "$repo_dir/driver/linux/crystalhd_fw_if.h" \
@@ -54,19 +54,22 @@ awk '
     /^static BC_STATUS bc_cproc_notify_mode\(/ ||
     /^static BC_STATUS bc_cproc_((link_)?reg|mem)_(rd|wr)\(/ ||
     /^BC_STATUS crystalhd_fw_download_locked\(/ ||
-    /^static int crystalhd_fw_status_to_errno\(/ ||
+    /^int crystalhd_status_to_errno\(/ ||
     /^int crystalhd_request_firmware_locked\(/ ||
     /^static BC_STATUS bc_cproc_download_fw\(/ ||
     /^BC_STATUS crystalhd_fw_exec_locked\(/ ||
     /^int crystalhd_fw_bootstrap_locked\(/ ||
     /^int crystalhd_decoder_channel_open_locked\(/ ||
+    /^int crystalhd_decoder_channel_start_locked\(/ ||
+    /^static int crystalhd_decoder_release_cmd_locked\(/ ||
+    /^int crystalhd_decoder_channel_(stop|close)_locked\(/ ||
     /^static BC_STATUS bc_cproc_do_fw_cmd\(/ ||
     /^void crystalhd_user_close\(/ ||
     (/^BC_STATUS bc_cproc_release_user\(/ && !/;[[:space:]]*$/) ||
     /^BC_STATUS crystalhd_(suspend|resume|user_open)\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 31 || copying) exit 1 }
+    END { if (found != 35 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" > "$pm_test_dir/command-pm-functions.h"
 
 awk '

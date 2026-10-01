@@ -39,11 +39,17 @@ struct file { void *private_data; };
 struct crystalhd_user { uint32_t uid, in_use, mode; };
 struct crystalhd_adp;
 struct crystalhd_hw { void *rx_freeq; };
+struct crystalhd_stream;
 enum crystalhd_decoder_phase {
 	CRYSTALHD_DECODER_COLD = 0,
 	CRYSTALHD_DECODER_BOOTSTRAPPED,
 	CRYSTALHD_DECODER_CHANNEL_CONFIGURED,
+	CRYSTALHD_DECODER_CHANNEL_STARTED,
 	CRYSTALHD_DECODER_RECOVERY_REQUIRED,
+};
+enum crystalhd_decoder_codec {
+	CRYSTALHD_DECODER_CODEC_INVALID = -1,
+	CRYSTALHD_DECODER_CODEC_H264 = 0,
 };
 struct crystalhd_cmd {
 	struct crystalhd_adp *adp;
@@ -51,7 +57,9 @@ struct crystalhd_cmd {
 	struct crystalhd_user user[2];
 	const void *session_owner;
 	enum crystalhd_decoder_phase decoder_phase;
+	enum crystalhd_decoder_codec decoder_codec;
 	uint32_t fw_sequence, decoder_channel_id;
+	struct crystalhd_stream *stream;
 	uint32_t cin_wait_exit, pwr_state_change, state;
 };
 typedef struct crystalhd_ioctl_data {
@@ -80,6 +88,7 @@ static struct crystalhd_adp *g_adp_info;
 static struct mock_lock chd_device_lock;
 static u64 chd_device_generation;
 static int class_token, bar_tokens[2];
+static int stream_token;
 static void *crystalhd_class = &class_token;
 static bool master, irq_live, msi_live, device_live, regions_live;
 static bool chdev_live, class_live, bars_live[2];
@@ -87,6 +96,8 @@ static int pending_result, l0s_result;
 static unsigned int master_clears, pending_waits, irq_frees, msi_disables;
 static unsigned int dma_frees, l0s_releases, device_disables, region_releases;
 static unsigned int bar_unmaps, binding_cancellations, warnings;
+static unsigned int stream_releases;
+static bool stream_live;
 
 static void *allocate(size_t size, enum allocation_kind kind)
 {
@@ -125,6 +136,12 @@ static void kfree(void *ptr)
 				assert(!regions_live && !bars_live[0] && !bars_live[1]);
 				assert(!chdev_live && !class_live);
 				assert(!adp->cmds.session_owner);
+				assert(adp->cmds.decoder_phase ==
+				       CRYSTALHD_DECODER_COLD);
+				assert(adp->cmds.decoder_codec ==
+				       CRYSTALHD_DECODER_CODEC_INVALID);
+				assert(!adp->cmds.fw_sequence &&
+				       !adp->cmds.decoder_channel_id);
 			} else if (kind != BINDING) {
 				assert_quiesced();
 			}
@@ -306,6 +323,17 @@ static void crystalhd_hw_stop_capture(struct crystalhd_hw *hw, bool discard)
 { abort(); }
 static BC_STATUS crystalhd_hw_close(struct crystalhd_hw *hw)
 { abort(); }
+static void crystalhd_stream_release(struct crystalhd_cmd *cmd)
+{
+	if (!cmd || !cmd->stream)
+		return;
+	assert(cmd == &g_adp_info->cmds &&
+	       cmd->stream == (struct crystalhd_stream *)&stream_token &&
+	       stream_live);
+	cmd->stream = NULL;
+	stream_live = false;
+	stream_releases++;
+}
 #include "lifetime-command.h"
 #include "lifetime-functions.h"
 
@@ -336,6 +364,8 @@ static struct crystalhd_adp *attach(bool playback, bool msi)
 		adp->cmds.hw_ctx->rx_freeq = adp;
 		adp->fill_byte_pool = allocate(1, DIO_POOL);
 		adp->elem_pool_head = allocate(1, ELEM_POOL);
+		adp->cmds.stream = (struct crystalhd_stream *)&stream_token;
+		stream_live = true;
 	}
 	assert(!!adp->cmds.session_owner == playback);
 	chd_device_generation++; /* Successful probe publication, modeled here. */
@@ -360,6 +390,8 @@ static void reset(void)
 	master_clears = pending_waits = irq_frees = msi_disables = 0;
 	dma_frees = l0s_releases = device_disables = region_releases = 0;
 	bar_unmaps = binding_cancellations = warnings = 0;
+	stream_releases = 0;
+	stream_live = false;
 	scenarios++;
 }
 
@@ -380,6 +412,7 @@ static void assert_released(void)
 	assert(!g_adp_info && !pci.data && !master && !irq_live && !msi_live);
 	assert(!device_live && !regions_live && !chdev_live && !class_live);
 	assert(!bars_live[0] && !bars_live[1]);
+	assert(!stream_live);
 	assert(!chd_device_lock.readers && !chd_device_lock.writers);
 	for (i = 0; i < 6; i++)
 		assert(allocated[i] == released[i]);
@@ -403,6 +436,7 @@ static void test_remove(void)
 		assert(binding_cancellations == 1 && master_clears == 1 && pending_waits == 1);
 		assert(irq_frees == 1 && msi_disables == msi);
 		assert(dma_frees == playback && l0s_releases == 1);
+		assert(stream_releases == playback);
 		assert(bar_unmaps == 2 && region_releases == 1 && device_disables == 1);
 		assert(warnings == (unsigned int)!pending_result + (unsigned int)!!l0s_result);
 		assert_released();
@@ -439,10 +473,12 @@ static void test_fail_stop_then_remove(void)
 		assert(chd_dec_close(NULL, &second) == 0 && !second.private_data);
 		assert(!adp->cfg_users && !adp->cmds.user[1].in_use);
 		assert(!dma_frees && !released[HARDWARE] && !released[DIO_POOL]);
+		assert(stream_live && !stream_releases);
 		assert(adp->cmds.session_owner == &adp->cmds.user[0]);
 		chd_dec_pci_remove(&pci);
 		assert(binding_cancellations == 3 && master_clears == 3 && pending_waits == 3);
 		assert(irq_frees == 1 && msi_disables == 1 && dma_frees == 1);
+		assert(stream_releases == 1 && !stream_live);
 		assert_released();
 	}
 }
@@ -458,6 +494,9 @@ static void test_external_owner_teardown(void)
 		reset();
 		adp = attach(true, true);
 		adp->cmds.session_owner = &external_owner;
+		adp->cmds.decoder_phase = CRYSTALHD_DECODER_CHANNEL_STARTED;
+		adp->cmds.decoder_codec = CRYSTALHD_DECODER_CODEC_H264;
+		adp->cmds.fw_sequence = 5;
 		assert(!adp->cfg_users);
 		if (fail_first) {
 			chd_dec_fail_closed(adp, -EIO);
@@ -467,6 +506,7 @@ static void test_external_owner_teardown(void)
 		chd_dec_pci_remove(&pci);
 		assert(dma_frees == 1 && released[HARDWARE] == 1 &&
 		       released[DIO_POOL] == 1 && released[ELEM_POOL] == 1);
+		assert(stream_releases == 1 && !stream_live);
 		assert_released();
 	}
 }

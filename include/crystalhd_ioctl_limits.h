@@ -19,6 +19,8 @@
 #define CRYSTALHD_PCI_CONFIG_SIZE 256U
 #define CRYSTALHD_DEVICE_DRAM_SIZE (64U * 1024U * 1024U)
 #define CRYSTALHD_FLEA_COLOR_REGISTER 0x00502100U
+#define CRYSTALHD_FLEA_COLOR_DRIVER_MASK 0x0000007cU
+#define CRYSTALHD_FLEA_COLOR_YUY2 0x00000002U
 
 static inline bool crystalhd_valid_firmware_image(const void *image,
 						   unsigned int size,

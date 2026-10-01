@@ -54,16 +54,20 @@ enum crystalhd_decoder_phase {
 	CRYSTALHD_DECODER_COLD = 0,
 	CRYSTALHD_DECODER_BOOTSTRAPPED,
 	CRYSTALHD_DECODER_CHANNEL_CONFIGURED,
+	CRYSTALHD_DECODER_CHANNEL_STARTED,
 	CRYSTALHD_DECODER_RECOVERY_REQUIRED,
 };
 
 enum crystalhd_decoder_codec {
+	CRYSTALHD_DECODER_CODEC_INVALID = -1,
 	CRYSTALHD_DECODER_CODEC_H264 = 0,
 };
 
 struct crystalhd_decoder_config {
 	enum crystalhd_decoder_codec codec;
 };
+
+struct crystalhd_stream;
 
 struct crystalhd_user {
 	uint32_t	uid;
@@ -85,8 +89,10 @@ struct crystalhd_cmd {
 	 */
 	const void		*session_owner;
 	enum crystalhd_decoder_phase decoder_phase;
+	enum crystalhd_decoder_codec decoder_codec;
 	uint32_t		fw_sequence;
 	uint32_t		decoder_channel_id;
+	struct crystalhd_stream	*stream;
 
 	spinlock_t		ctx_lock;
 	uint32_t		tx_list_id;
@@ -144,6 +150,7 @@ int crystalhd_request_firmware_locked(struct crystalhd_cmd *ctx,
  */
 BC_STATUS crystalhd_fw_exec_locked(struct crystalhd_cmd *ctx,
 				   const void *owner, BC_FW_CMD *fw_cmd);
+int crystalhd_status_to_errno(BC_STATUS sts);
 /* Request the chip firmware and issue its fixed C011 INIT command as one
  * retryable controller transition from BC_LINK_INVALID, BC_LINK_RESUME, or
  * BC_LINK_INIT while decoder recovery is required. The caller excludes device
@@ -163,12 +170,48 @@ int crystalhd_fw_bootstrap_locked(struct crystalhd_cmd *ctx,
 int crystalhd_decoder_channel_open_locked(
 	struct crystalhd_cmd *ctx, const void *owner,
 	const struct crystalhd_decoder_config *config);
+/* Activate and start the configured BCM70015 channel using the progressive
+ * H.264 baseline. The caller retains the same exclusion, write lock and owner
+ * token used for channel setup. Once activation succeeds, any incomplete start
+ * requires a fresh bootstrap rather than a partial retry.
+ */
+int crystalhd_decoder_channel_start_locked(struct crystalhd_cmd *ctx,
+					   const void *owner);
+/* Stop only the firmware channel after TX admission and ownership have been
+ * quiesced. Capture remains caller-owned so it can be flushed after firmware
+ * stops producing pictures and before channel_close_locked(). Keep removal
+ * lifetime and the write lock across that whole sequence. A successful stop
+ * returns to the configured phase and may be followed by start or close.
+ */
+int crystalhd_decoder_channel_stop_locked(struct crystalhd_cmd *ctx,
+					  const void *owner);
+/* Close a configured firmware channel, including one returned there by STOP.
+ * The caller must already have reclaimed every RX registration; exact
+ * BC_LINK_INIT is required so an active capture engine cannot be mistaken for
+ * a closed channel.
+ */
+int crystalhd_decoder_channel_close_locked(struct crystalhd_cmd *ctx,
+					   const void *owner);
 /* Caller retains device/session lifetime and serializes TX submission through
  * return; the legacy ioctl adapter does this with user_lock and tx_lock.
+ * A supported nonzero timeout bounds admission and completion waiting as one
+ * budget; values above INT_MAX or conversions to MAX_JIFFY_OFFSET are rejected.
+ * Safe cancellation can extend return and posted DMA keeps its three-second
+ * hardware watchdog. Zero preserves the legacy unbounded-admission policy.
  */
 BC_STATUS crystalhd_tx_transfer_sync(struct crystalhd_cmd *ctx,
-				     struct crystalhd_dio_req *dio,
-				     uint8_t data_flags);
+				     const struct crystalhd_tx_buffer *buffer,
+				     u8 data_flags, u32 total_timeout_ms);
+/* Build and consume a finite TX deadline without renewing the caller's
+ * original budget between fragments. These are internal driver interfaces;
+ * the deadline uses the kernel jiffies clock and remains wrap-safe.
+ */
+BC_STATUS crystalhd_tx_deadline_from_ms(u32 total_timeout_ms,
+					unsigned long *deadline);
+BC_STATUS crystalhd_tx_transfer_until(struct crystalhd_cmd *ctx,
+				      const struct crystalhd_tx_buffer *buffer,
+				      u8 data_flags,
+				      unsigned long deadline);
 BC_STATUS crystalhd_rx_submit(struct crystalhd_cmd *ctx,
 			      struct crystalhd_rx_buffer *buffer);
 BC_STATUS crystalhd_rx_dequeue(struct crystalhd_cmd *ctx,

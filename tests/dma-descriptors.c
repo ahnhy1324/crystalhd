@@ -164,20 +164,20 @@ static uint64_t desc_buffer_address(const struct dma_descriptor *desc)
 static void rx_descriptor_parity(bool merged, uint32_t uv_offset)
 {
 	struct scatterlist sg[3];
-	struct dma_descriptor generic_desc[5], legacy_desc[5];
+	struct dma_descriptor generic_desc[5], common_desc[5];
 	struct dma_desc_mem generic_mem = {
 		.pdma_desc_start = generic_desc,
 		.phy_addr = 0x400000,
 		.sz = sizeof(generic_desc),
 	};
-	struct dma_desc_mem legacy_mem = {
-		.pdma_desc_start = legacy_desc,
+	struct dma_desc_mem common_mem = {
+		.pdma_desc_start = common_desc,
 		.phy_addr = 0x400000,
-		.sz = sizeof(legacy_desc),
+		.sz = sizeof(common_desc),
 	};
+	struct crystalhd_dma_desc_source source;
 	struct crystalhd_rx_buffer buffer;
-	struct crystalhd_dio_req req;
-	uint32_t generic_uv_index = 99, legacy_uv_index = 99;
+	uint32_t generic_uv_index = 99, common_uv_index = 99;
 	uint32_t y_bytes = 0, uv_bytes = 0;
 	uint32_t expected_index = merged ? 1 : (uv_offset + 4095) / 4096;
 	uint32_t uv_sg_ix = merged ? 0 : uv_offset / RX_SEGMENT_SIZE;
@@ -202,25 +202,24 @@ static void rx_descriptor_parity(bool merged, uint32_t uv_offset)
 	buffer.uv_sg_ix = uv_sg_ix;
 	buffer.uv_sg_off = uv_sg_off;
 
-	memset(&req, 0, sizeof(req));
-	req.sg = sg;
-	req.sg_cnt = buffer.dma_nents;
-	req.uinfo.xfr_len = RX_CAPACITY;
-	req.uinfo.uv_offset = uv_offset;
-	req.uinfo.uv_sg_ix = uv_sg_ix;
-	req.uinfo.uv_sg_off = uv_sg_off;
+	source = (struct crystalhd_dma_desc_source) {
+		.sgl = sg,
+		.dma_nents = buffer.dma_nents,
+		.dir_tx = false,
+	};
 
 	memset(generic_desc, 0xa5, sizeof(generic_desc));
-	memset(legacy_desc, 0xa5, sizeof(legacy_desc));
+	memset(common_desc, 0xa5, sizeof(common_desc));
 	assert(crystalhd_xlat_rx_buffer_to_dma_desc(&buffer, &generic_mem,
 						       &generic_uv_index, NULL)
 	       == BC_STS_SUCCESS);
-	assert(crystalhd_xlat_sgl_to_dma_desc(&req, &legacy_mem,
-					     &legacy_uv_index, NULL, 0)
+	assert(crystalhd_xlat_dma_to_desc(&source, RX_CAPACITY, uv_offset,
+					 uv_sg_ix, uv_sg_off, &common_mem,
+					 &common_uv_index, NULL, 0)
 	       == BC_STS_SUCCESS);
 	assert(generic_uv_index == expected_index);
-	assert(legacy_uv_index == generic_uv_index);
-	assert(!memcmp(generic_desc, legacy_desc, sizeof(generic_desc)));
+	assert(common_uv_index == generic_uv_index);
+	assert(!memcmp(generic_desc, common_desc, sizeof(generic_desc)));
 
 	for (i = 0; i < generic_uv_index; i++)
 		y_bytes += generic_desc[i].xfer_size * 4;
@@ -431,13 +430,17 @@ static void input_tail(unsigned int aligned_bytes, unsigned int tail)
 	struct dma_descriptor desc[2], expected[2];
 	struct dma_desc_mem mem = { .pdma_desc_start = desc,
 		.phy_addr = 0x400000, .sz = sizeof(desc) };
-	struct crystalhd_dio_req req = { .sg = &sg, .sg_cnt = !!aligned_bytes,
-		.fb_size = tail, .fb_pa = 0x500000 };
+	struct crystalhd_tx_buffer buffer = {
+		.sgl = &sg,
+		.dma_nents = !!aligned_bytes,
+		.bytes = aligned_bytes + tail,
+		.tail_addr = 0x500000,
+		.tail_size = tail,
+		.cookie = &buffer,
+	};
 	uint32_t uv_index = 99;
 	unsigned int tail_index = !!aligned_bytes;
 
-	req.uinfo.dir_tx = true;
-	req.uinfo.xfr_len = aligned_bytes + tail;
 	memset(desc, 0xa5, sizeof(desc));
 	memset(expected, 0, sizeof(expected));
 	if (aligned_bytes) {
@@ -448,7 +451,7 @@ static void input_tail(unsigned int aligned_bytes, unsigned int tail)
 		expected[0].next_desc_addr_low =
 			mem.phy_addr + sizeof(struct dma_descriptor);
 	}
-	expected[tail_index].buff_addr_low = req.fb_pa;
+	expected[tail_index].buff_addr_low = buffer.tail_addr;
 	expected[tail_index].xfer_size = 1;
 	expected[tail_index].fill_bytes = 4 - tail;
 	expected[tail_index].dma_dir = 1;
@@ -456,12 +459,145 @@ static void input_tail(unsigned int aligned_bytes, unsigned int tail)
 	expected[tail_index].last_rec_indicator = 1;
 	expected[tail_index].intr_enable = 1;
 
-	assert(crystalhd_xlat_sgl_to_dma_desc(&req, &mem, &uv_index, NULL,
-					     dest_dram)
+	assert(crystalhd_xlat_tx_buffer_to_dma_desc(&buffer, &mem, &uv_index,
+						   NULL, dest_dram)
 	       == BC_STS_SUCCESS);
 	assert(uv_index == 0);
 	assert(!memcmp(desc, expected,
 		       (tail_index + 1) * sizeof(struct dma_descriptor)));
+}
+
+static void tx_short_mapped_backing(void)
+{
+	struct scatterlist sg[3];
+	struct dma_descriptor desc[4], before[4];
+	struct dma_desc_mem mem = {
+		.pdma_desc_start = desc,
+		.phy_addr = 0x400000,
+		.sz = sizeof(desc),
+	};
+	struct crystalhd_tx_buffer buffer = {
+		.sgl = sg,
+		.dma_nents = 3,
+		.bytes = 6145,
+		.tail_addr = 0x500000,
+		.tail_size = 1,
+		.cookie = &buffer,
+	};
+	uint32_t uv_index = 99;
+
+	init_unmerged_sg(sg);
+	memset(desc, 0xa5, sizeof(desc));
+	memcpy(before, desc, sizeof(before));
+	assert(crystalhd_xlat_tx_buffer_to_dma_desc(&buffer, &mem, &uv_index,
+						   NULL, 0x120000)
+	       == BC_STS_SUCCESS);
+	assert(uv_index == 0);
+	assert(desc_buffer_address(&desc[0]) == 0x100000 &&
+	       desc[0].xfer_size == 1024 && !desc[0].last_rec_indicator);
+	assert(desc_buffer_address(&desc[1]) == 0x200000 &&
+	       desc[1].xfer_size == 512 && !desc[1].last_rec_indicator);
+	assert(desc_buffer_address(&desc[2]) == buffer.tail_addr &&
+	       desc[2].xfer_size == 1 && desc[2].fill_bytes == 3 &&
+	       desc[2].last_rec_indicator && desc[2].intr_enable);
+	assert(!memcmp(&desc[3], &before[3], sizeof(desc[3])));
+}
+
+static void assert_tx_rejected(const struct crystalhd_tx_buffer *buffer,
+			       size_t descriptor_bytes, BC_STATUS expected)
+{
+	struct dma_descriptor desc[4], before[4];
+	struct dma_desc_mem mem = {
+		.pdma_desc_start = desc,
+		.phy_addr = 0x400000,
+		.sz = descriptor_bytes,
+	};
+	uint32_t uv_index = 99;
+
+	memset(desc, 0xa5, sizeof(desc));
+	memcpy(before, desc, sizeof(before));
+	assert(crystalhd_xlat_tx_buffer_to_dma_desc(buffer, &mem, &uv_index,
+						   NULL, 0) == expected);
+	assert(uv_index == 99);
+	assert(!memcmp(desc, before, sizeof(desc)));
+}
+
+static void tx_descriptor_width(void)
+{
+	struct scatterlist sg = {
+		.dma_address = 0x100000,
+		.dma_length = 0x02000000,
+	};
+	struct dma_descriptor desc = {0};
+	struct dma_desc_mem mem = {
+		.pdma_desc_start = &desc,
+		.phy_addr = 0x400000,
+		.sz = sizeof(desc),
+	};
+	struct crystalhd_tx_buffer buffer = {
+		.sgl = &sg,
+		.dma_nents = 1,
+		.bytes = 0x01fffffc,
+		.cookie = &buffer,
+	};
+	uint32_t uv_index = 99;
+
+	/* bytes may stop within a larger mapped segment at the hardware limit. */
+	assert(crystalhd_xlat_tx_buffer_to_dma_desc(&buffer, &mem, &uv_index,
+						   NULL, 0) == BC_STS_SUCCESS);
+	assert(desc.xfer_size == 0x7fffff && desc.last_rec_indicator &&
+	       desc.intr_enable);
+
+	buffer.bytes = 0x02000000;
+	assert_tx_rejected(&buffer, sizeof(desc), BC_STS_NOT_IMPL);
+}
+
+static void invalid_tx_bounds(void)
+{
+	struct scatterlist sg[2] = {
+		{ .dma_address = 0x100000, .dma_length = 4096 },
+		{ .dma_address = 0x200000, .dma_length = 4096 },
+	};
+	struct crystalhd_tx_buffer buffer = {
+		.sgl = sg,
+		.dma_nents = 1,
+		.bytes = 4096,
+		.cookie = &buffer,
+	};
+
+	sg[0].next = &sg[1];
+	assert_tx_rejected(&(struct crystalhd_tx_buffer){0},
+			   4 * sizeof(struct dma_descriptor), BC_STS_INV_ARG);
+	buffer.cookie = NULL;
+	assert_tx_rejected(&buffer, 4 * sizeof(struct dma_descriptor),
+			   BC_STS_INV_ARG);
+	buffer.cookie = &buffer;
+	buffer.bytes = 4097;
+	assert_tx_rejected(&buffer, 4 * sizeof(struct dma_descriptor),
+			   BC_STS_INV_ARG);
+	buffer.tail_size = 1;
+	buffer.tail_addr = 0x500002;
+	assert_tx_rejected(&buffer, 4 * sizeof(struct dma_descriptor),
+			   BC_STS_INV_ARG);
+	buffer.tail_addr = 0x500000;
+	buffer.tail_size = 2;
+	assert_tx_rejected(&buffer, 4 * sizeof(struct dma_descriptor),
+			   BC_STS_INV_ARG);
+	buffer.bytes = 8192;
+	buffer.tail_size = 0;
+	assert_tx_rejected(&buffer, 4 * sizeof(struct dma_descriptor),
+			   BC_STS_INV_ARG);
+	buffer.dma_nents = 2;
+	sg[0].next = NULL;
+	assert_tx_rejected(&buffer, 4 * sizeof(struct dma_descriptor),
+			   BC_STS_INV_ARG);
+	sg[0].next = &sg[1];
+	sg[1].dma_address += 2;
+	assert_tx_rejected(&buffer, 4 * sizeof(struct dma_descriptor),
+			   BC_STS_NOT_IMPL);
+	sg[1].dma_address -= 2;
+	assert_tx_rejected(&buffer, sizeof(struct dma_descriptor),
+			   BC_STS_INSUFF_RES);
 }
 
 static void rx_descriptor_allocation_failure(void)
@@ -498,6 +634,9 @@ int main(void)
 		input_tail(0, tail);
 		input_tail(4096, tail);
 	}
+	tx_short_mapped_backing();
+	tx_descriptor_width();
+	invalid_tx_bounds();
 	rx_descriptor_allocation_failure();
 	puts("DMA descriptor/setup tests passed (ASan/UBSan)");
 	return 0;

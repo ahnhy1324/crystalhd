@@ -42,6 +42,19 @@ struct crystalhd_adp;
 struct crystalhd_hw;
 struct crystalhd_rx_buffer;
 
+/* Frontend-neutral, already DMA-mapped input buffer. The frontend owns the
+ * mapping and every backing byte until its completion callback runs. The
+ * final 1..3 bytes, when present, live in one coherent, zero-padded word.
+ */
+struct crystalhd_tx_buffer {
+	struct scatterlist	*sgl;
+	uint32_t		dma_nents; /* mapped entries, not original entries */
+	uint32_t		bytes; /* exact transfer length within the backing */
+	dma_addr_t		tail_addr;
+	uint32_t		tail_size;
+	void			*cookie; /* stable, non-NULL ownership identity */
+};
+
 /* The buffer, ops and cookie stay immutable while submitted. Device sync can
  * run from hard IRQ context with a spinlock held and must not sleep. CPU sync,
  * read, write and release run in process context; release follows full detach.
@@ -113,6 +126,7 @@ struct crystalhd_dio_req {
 	int								direction;
 	bool							cpu_owned;
 	struct crystalhd_dio_user_info	uinfo;
+	struct crystalhd_tx_buffer		tx_buffer;
 	struct crystalhd_rx_buffer		rx_buffer;
 	void							*fb_va;
 	uint32_t						fb_size;
@@ -174,6 +188,38 @@ do {									\
 			break;						\
 		}							\
 		schedule_timeout((HZ / 100 > 1) ? HZ / 100 : 1);	\
+		if (!nosig && signal_pending(current)) {		\
+			ret = -EINTR;					\
+			break;						\
+		}							\
+	}								\
+	set_current_state(TASK_RUNNING);				\
+	remove_wait_queue(ev, &entry);					\
+} while (0)
+
+#define crystalhd_wait_on_event_until(ev, condition, deadline, ret, nosig) \
+do {									\
+	DECLARE_WAITQUEUE(entry, current);				\
+	unsigned long __chd_end = (deadline);				\
+	unsigned long __chd_now;					\
+	unsigned long __chd_remaining;				\
+	unsigned long __chd_slice;					\
+	ret = 0;							\
+	add_wait_queue(ev, &entry);					\
+	for (;;) {							\
+		set_current_state(TASK_INTERRUPTIBLE);			\
+		if (condition)						\
+			break;						\
+		__chd_now = jiffies;					\
+		if (time_after_eq(__chd_now, __chd_end)) {		\
+			ret = -EBUSY;					\
+			break;						\
+		}							\
+		__chd_remaining = __chd_end - __chd_now;		\
+		__chd_slice = (HZ / 100 > 1) ? HZ / 100 : 1;	\
+		if (__chd_slice > __chd_remaining)			\
+			__chd_slice = __chd_remaining;			\
+		schedule_timeout(__chd_slice);				\
 		if (!nosig && signal_pending(current)) {		\
 			ret = -EINTR;					\
 			break;						\

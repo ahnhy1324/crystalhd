@@ -45,12 +45,14 @@ struct crystalhd_rx_buffer {
     const struct crystalhd_rx_buffer_ops *ops;
     void *cookie;
 };
+#include "rx-metadata.h"
 struct crystalhd_rx_dma_pkt {
     struct crystalhd_rx_buffer *buffer;
     void *cookie;
     uint32_t y_done_sz;
     uint32_t flags;
     BC_PIC_INFO_BLOCK pib;
+    struct crystalhd_rx_metadata metadata;
 };
 struct crystalhd_elem { void *data; };
 struct crystalhd_dioq { unsigned count, lock; struct crystalhd_elem *head; };
@@ -77,6 +79,12 @@ static void reset_faults(void)
 {
     reads = writes = syncs = fail_read = fail_write = 0;
     partial_write = false;
+}
+static bool metadata_empty(const struct crystalhd_rx_dma_pkt *packet)
+{
+    static const struct crystalhd_rx_metadata empty;
+
+    return !memcmp(&packet->metadata, &empty, sizeof(empty));
 }
 static void sync_for_cpu(struct crystalhd_adp *adp,
                          struct crystalhd_rx_buffer *buffer)
@@ -242,6 +250,8 @@ static void peek(struct fixture *f)
     check(f->packet.buffer == &f->buffer &&
           f->packet.cookie == &f->cookie && f->buffer.cookie == &f->cookie,
           "successful peek preserves distinct backing and opaque cookie identities");
+    check(metadata_empty(&f->packet),
+          "status peek leaves kernel completion metadata unpublished");
 }
 
 static void fetch(struct fixture *f)
@@ -263,6 +273,12 @@ static void fetch(struct fixture *f)
     check(syncs == syncs_before + 1 && f->packet.buffer == &f->buffer &&
           f->packet.cookie == &f->cookie,
           "dequeue metadata I/O borrows the exact buffer without changing its cookie");
+    check(f->packet.metadata.valid &&
+          f->packet.metadata.firmware_timestamp == pib.timeStamp &&
+          f->packet.metadata.picture_number == f->number &&
+          f->packet.metadata.picture_flags == pib.flags &&
+          !f->packet.metadata.eos_trailer,
+          "accepted picture publishes exact firmware metadata independently of legacy flags");
 }
 
 static void repeated_peeks(void)
@@ -276,7 +292,7 @@ static void repeated_peeks(void)
                 init(&f);
                 ++groups;
                 // Reuse the exact packet/backing as fresh DMA completion would.
-                // No new per-packet state needs reset on repost.
+                // The parser must discard metadata from the prior picture.
                 for (unsigned reuse = 0; reuse != 3; ++reuse) {
                     prepare(&f, first_values[pattern] + reuse, 7 + reuse, 0, 0, mode != 0);
                     for (unsigned i = 0; i != peek_counts[count]; ++i) peek(&f);
@@ -313,6 +329,8 @@ static void special_pictures(void)
           f.packet.pib.ycom == f.first && f.hw.PICWidth == 64 && f.hw.PICHeight == 32 &&
           f.hw.LastPicNo == 0 && f.hw.PauseThreshold == 6,
           "format metadata and geometry/repeat reset semantics are preserved");
+    check(metadata_empty(&f.packet),
+          "format-change status retains no accepted-picture snapshot");
 
     ++groups;
     prepare(&f, 7, 7, PIB_EOS_DETECTED_BIT, VDEC_FLAG_EOS, true);
@@ -328,6 +346,10 @@ static void special_pictures(void)
           "EOS dequeue does not alter the remaining metadata/image bytes");
     check(f.packet.buffer == &f.buffer && f.packet.cookie == &f.cookie,
           "EOS parsing retains the generic buffer and opaque cookie");
+    check(f.packet.metadata.valid && f.packet.metadata.eos_trailer &&
+          f.packet.metadata.picture_flags == VDEC_FLAG_EOS &&
+          f.packet.metadata.picture_number == UINT32_MAX,
+          "EOS dequeue exposes separate trailer and PIB evidence with its sentinel");
 
     ++groups;
     prepare(&f, 0xa0286028, 7, 0, VDEC_FLAG_EOS, true);
@@ -338,6 +360,9 @@ static void special_pictures(void)
           "EOS with a nonzero PIB line retains its original picture number, not the word-zero sentinel");
     check(f.words[0] == UINT32_MAX && writes == 1,
           "nonzero-line EOS still prepares exactly the same dequeue sentinel");
+    check(f.packet.metadata.valid && f.packet.metadata.eos_trailer &&
+          f.packet.metadata.picture_number == 7,
+          "nonzero-line EOS preserves the parsed number in its snapshot");
 
     ++groups;
     prepare(&f, 0xa0286028, 8, 0, 0, true);
@@ -354,6 +379,7 @@ static void failures_and_retries(void)
         init(&f);
         ++groups;
         fail_read = failure;
+        memset(&f.packet.metadata, 0xa5, sizeof(f.packet.metadata));
         uint32_t number = 99;
         uint64_t metadata = 99;
         crystalhd_flea_peek_next_decoded_frame(&f.hw, &metadata, &number, 64);
@@ -361,6 +387,8 @@ static void failures_and_retries(void)
               f.packet.buffer == &f.buffer && f.packet.cookie == &f.cookie,
               "failed generic read publishes no picture and preserves both identities");
         check(memcmp(f.words, f.original, sizeof(f.words)) == 0, "failed peek never edits shared bytes");
+        check(metadata_empty(&f.packet),
+              "failed peek discards metadata from a previous packet use");
         reset_faults();
         peek(&f);
         fetch(&f);
@@ -374,6 +402,7 @@ static void failures_and_retries(void)
             reset_faults();
             fail_write = failure;
             partial_write = partial != 0;
+            memset(&f.packet.metadata, 0xa5, sizeof(f.packet.metadata));
             uint32_t number = 99;
             uint64_t metadata = 99;
             check(!flea_GetPictureInfo(&f.hw, &f.packet, &number, &metadata),
@@ -381,6 +410,8 @@ static void failures_and_retries(void)
             check(number == 0 && metadata == 0 &&
                   f.packet.buffer == &f.buffer && f.packet.cookie == &f.cookie,
                   "failed dequeue write clears outputs without changing either identity");
+            check(metadata_empty(&f.packet),
+                  "failed dequeue preparation never publishes stale metadata");
             // The actual fetch caller drops PicNumber==0 back to the free queue.
             // A subsequent hardware completion supplies a new image; do not
             // pretend a failed frontend write is atomic or retry mutated pixels.
@@ -393,10 +424,12 @@ static void failures_and_retries(void)
         init(&f);
         ++groups;
         f.packet.buffer = NULL;
+        memset(&f.packet.metadata, 0xa5, sizeof(f.packet.metadata));
         uint32_t number = 99;
         uint64_t metadata = 99;
         check(!flea_GetPictureInfo(&f.hw, &f.packet, &number, &metadata) &&
-              number == 0 && metadata == 0 && !reads && !writes && !syncs,
+              number == 0 && metadata == 0 && !reads && !writes && !syncs &&
+              metadata_empty(&f.packet),
               "missing generic buffer fails without touching storage callbacks");
     }
 }
@@ -449,8 +482,10 @@ static void pib_tail_extent_cases(void)
         prepare(&f, 0xa0286028, 7, 0, 0, stride == 2);
         f.buffer.output_format = formats[i];
         set_completion_tail(&f, f.pib_offset + common_bytes - 4);
+        memset(&f.packet.metadata, 0xa5, sizeof(f.packet.metadata));
         check(!flea_GetPictureInfo(&f.hw, &f.packet, &number, &metadata) &&
-              number == 0 && metadata == 0 && reads == 2 && !writes,
+              number == 0 && metadata == 0 && reads == 2 && !writes &&
+              metadata_empty(&f.packet),
               "truncated common PIB fields are rejected before buffer I/O");
         check(!memcmp(f.words, f.original, sizeof(f.words)),
               "common-prefix rejection preserves capture storage");
@@ -473,8 +508,10 @@ static void pib_tail_extent_cases(void)
             f.buffer.uv_offset = pib_end - 4;
         else
             f.buffer.capacity = pib_end - 4;
+        memset(&f.packet.metadata, 0xa5, sizeof(f.packet.metadata));
         check(!flea_GetPictureInfo(&f.hw, &f.packet, &number, &metadata) &&
-              number == 0 && metadata == 0 && reads == 2 && !writes,
+              number == 0 && metadata == 0 && reads == 2 && !writes &&
+              metadata_empty(&f.packet),
               "PIB crossing the registered Y plane is rejected before buffer I/O");
         check(!memcmp(f.words, f.original, sizeof(f.words)) &&
               f.packet.buffer == &f.buffer && f.packet.cookie == &f.cookie,
@@ -522,12 +559,114 @@ static void completed_extent_cases(void)
             break;
         }
         memcpy(f.original, f.words, sizeof(f.original));
+        memset(&f.packet.metadata, 0xa5, sizeof(f.packet.metadata));
         check(!flea_GetPictureInfo(&f.hw, &f.packet, &number, &metadata) &&
-              number == 0 && metadata == 0 && !writes,
+              number == 0 && metadata == 0 && !writes &&
+              metadata_empty(&f.packet),
               "invalid layout or completed-Y extent is rejected without output");
         check(!memcmp(f.words, f.original, sizeof(f.words)) &&
               f.packet.buffer == &f.buffer && f.packet.cookie == &f.cookie,
               "extent rejection preserves storage, buffer and opaque cookie");
+    }
+}
+
+static void kernel_snapshot_cases(void)
+{
+    const BC_OUTPUT_FORMAT formats[] = {
+        MODE420, MODE422_YUY2, MODE422_UYVY,
+    };
+    const uint64_t timestamps[] = {0, UINT64_C(0xabcdef0123456789)};
+    const uint32_t picture_flags = VDEC_FLAG_FIELDPAIR |
+        VDEC_FLAG_INTERLACED_SRC | VDEC_FLAG_BOTTOM_FIRST |
+        VDEC_FLAG_LAST_PICTURE | VDEC_FLAG_PICTURE_META_DATA_PRESENT;
+
+    for (unsigned mode = 0; mode < sizeof(formats) / sizeof(formats[0]); mode++)
+        for (unsigned timestamp = 0; timestamp < 2; timestamp++) {
+            struct fixture f;
+            uint32_t number = 99;
+            uint64_t metadata = 99;
+            BC_PIC_INFO_BLOCK pib;
+
+            init(&f);
+            ++groups;
+            prepare(&f, 0xa0286028, 19, 0, picture_flags, mode != 0);
+            f.buffer.output_format = formats[mode];
+            pib = read_pib(&f);
+            pib.timeStamp = timestamps[timestamp];
+            memcpy((uint8_t *)f.words + f.pib_offset, &pib, sizeof(pib));
+            check(flea_GetPictureInfo(&f.hw, &f.packet, &number, &metadata) &&
+                  number == 19 && metadata == timestamps[timestamp] &&
+                  f.packet.metadata.valid &&
+                  f.packet.metadata.firmware_timestamp == timestamps[timestamp] &&
+                  f.packet.metadata.picture_number == 19 &&
+                  f.packet.metadata.picture_flags == picture_flags &&
+                  !f.packet.metadata.eos_trailer &&
+                  f.packet.flags == COMP_FLAG_DATA_VALID,
+                  "zero/full-width timestamps and field flags retain exact firmware values");
+        }
+
+    for (unsigned trailer = 0; trailer < 2; trailer++)
+        for (unsigned eos_flag = 0; eos_flag < 2; eos_flag++) {
+            struct fixture f;
+            uint32_t number = 99;
+            uint64_t metadata = 99;
+
+            init(&f);
+            ++groups;
+            prepare(&f, 7, 7, trailer ? PIB_EOS_DETECTED_BIT : 0,
+                    eos_flag ? VDEC_FLAG_EOS : 0, true);
+            check(flea_GetPictureInfo(&f.hw, &f.packet, &number, &metadata) &&
+                  f.packet.metadata.valid &&
+                  f.packet.metadata.eos_trailer == (trailer != 0) &&
+                  f.packet.metadata.picture_flags == (eos_flag ? VDEC_FLAG_EOS : 0),
+                  "trailer and PIB EOS indicators remain independent even when they disagree");
+        }
+
+    for (unsigned rejected = 0; rejected < 3; rejected++) {
+        struct fixture f;
+        uint32_t number = 99;
+        uint64_t metadata = 99;
+
+        init(&f);
+        ++groups;
+        prepare(&f, 0xa0286028, rejected == 0 ? 0 : 7,
+                rejected == 1 ? PIB_FORMAT_CHANGE_BIT : 0,
+                rejected == 2 ? FLEA_DECODE_ERROR_FLAG : 0, true);
+        memset(&f.packet.metadata, 0xa5, sizeof(f.packet.metadata));
+        bool success = flea_GetPictureInfo(&f.hw, &f.packet, &number, &metadata);
+        check(success == (rejected != 1) && metadata_empty(&f.packet),
+              "zero-number, format-change and decode-error packets publish no picture metadata");
+    }
+
+    for (unsigned failure = 1; failure <= 5; failure++) {
+        struct fixture f;
+        uint32_t number = 99;
+        uint64_t metadata = 99;
+
+        init(&f);
+        ++groups;
+        fetch(&f);
+        check(f.packet.metadata.valid, "prior packet use has a populated snapshot");
+        prepare(&f, 0xa0286028, 8, 0, 0, true);
+        fail_read = failure;
+        check(!flea_GetPictureInfo(&f.hw, &f.packet, &number, &metadata) &&
+              number == 0 && metadata == 0 && metadata_empty(&f.packet),
+              "failed read after successful dequeue clears the prior snapshot");
+    }
+
+    for (unsigned failure = 1; failure <= 4; failure++) {
+        struct fixture f;
+        uint32_t number = 99;
+        uint64_t metadata = 99;
+
+        init(&f);
+        ++groups;
+        prepare(&f, 7, 7, PIB_EOS_DETECTED_BIT, VDEC_FLAG_EOS, true);
+        memset(&f.packet.metadata, 0xa5, sizeof(f.packet.metadata));
+        fail_read = failure;
+        check(!flea_GetPictureInfo(&f.hw, &f.packet, &number, &metadata) &&
+              number == 0 && metadata == 0 && metadata_empty(&f.packet),
+              "failed EOS read publishes no metadata even after sentinel preparation");
     }
 }
 
@@ -539,6 +678,7 @@ int main(void)
     failures_and_retries();
     pib_tail_extent_cases();
     completed_extent_cases();
+    kernel_snapshot_cases();
     printf("Flea PIB: %u groups, %u checks, %u failures\n", groups, checks, failures);
     return failures ? 1 : 0;
 }

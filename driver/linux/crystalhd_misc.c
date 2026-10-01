@@ -67,6 +67,7 @@ static void crystalhd_free_dio(struct crystalhd_adp *adp, struct crystalhd_dio_r
 	dio->cpu_owned = false;
 	dio->fb_size = 0;
 	memset(&dio->uinfo, 0, sizeof(dio->uinfo));
+	memset(&dio->tx_buffer, 0, sizeof(dio->tx_buffer));
 	memset(&dio->rx_buffer, 0, sizeof(dio->rx_buffer));
 	dio->next = adp->ua_map_free_head;
 	adp->ua_map_free_head = dio;
@@ -767,7 +768,14 @@ BC_STATUS crystalhd_map_dio(struct crystalhd_adp *adp, void *ubuff,
 	dio->uinfo.uv_offset = uv_offset;
 	dio->uinfo.b422mode = output_format;
 	dio->uinfo.dir_tx = dir_tx;
-	if (!dir_tx) {
+	if (dir_tx) {
+		dio->tx_buffer.sgl = dio->sg;
+		dio->tx_buffer.dma_nents = dio->sg_cnt;
+		dio->tx_buffer.bytes = ubuff_sz;
+		dio->tx_buffer.tail_addr = dio->fb_pa;
+		dio->tx_buffer.tail_size = dio->fb_size;
+		dio->tx_buffer.cookie = dio;
+	} else {
 		dio->rx_buffer.sgl = dio->sg;
 		dio->rx_buffer.dma_nents = dio->sg_cnt;
 		dio->rx_buffer.capacity = ubuff_sz;

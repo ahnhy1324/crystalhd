@@ -41,6 +41,7 @@
 #define MIN_PIB_Q_DEPTH		2
 #define WR_POINTER_OFF		4
 #define MAX_VALID_POLL_CNT	1000
+#define CRYSTALHD_DMA_DESC_MAX_XFER_BYTES	(0x7fffffU * 4U)
 
 #define TX_WRAP_THRESHOLD 128 * 1024
 
@@ -234,10 +235,23 @@ struct RX_DMA_LIST {
 struct tx_dma_pkt {
 	struct dma_desc_mem		desc_mem;
 	hw_comp_callback	call_back;
-	struct crystalhd_dio_req	*dio_req;
+	const struct crystalhd_tx_buffer *buffer;
 	void			*cb_context;
 	uint32_t		list_tag;
 
+};
+
+/* Kernel-only Flea PIB snapshot. valid includes timestamp zero; the timestamp
+ * keeps firmware units. eos_trailer records the trailer bit independently of
+ * picture_flags and is not by itself proof that decoder drain completed.
+ * Format-change packets, rejected pictures and Link leave this invalid.
+ */
+struct crystalhd_rx_metadata {
+	uint64_t	firmware_timestamp;
+	uint32_t	picture_number; /* Parsed repeat-filter value, including EOS sentinel. */
+	uint32_t	picture_flags;
+	bool		valid;
+	bool		eos_trailer;
 };
 
 struct crystalhd_rx_dma_pkt {
@@ -250,6 +264,7 @@ struct crystalhd_rx_dma_pkt {
 	uint32_t			y_done_sz;
 	uint32_t			uv_done_sz;
 	BC_PIC_INFO_BLOCK		pib;
+	struct crystalhd_rx_metadata	metadata;
 	dma_addr_t			uv_phy_addr;
 	struct  crystalhd_rx_dma_pkt	*next;
 };
@@ -259,6 +274,7 @@ struct crystalhd_rx_completion {
 	struct crystalhd_rx_buffer	*buffer;
 	void			*cookie;
 	struct C011_PIB		pib;
+	struct crystalhd_rx_metadata metadata;
 	uint64_t		capture_epoch;
 	uint32_t		flags;
 	uint32_t		y_done_sz;
@@ -557,10 +573,12 @@ BC_STATUS crystalhd_xlat_dma_to_desc(
 					uint32_t *uv_desc_index,
 					struct device *dev,
 					uint32_t destDRAMaddr);
-BC_STATUS crystalhd_xlat_sgl_to_dma_desc(struct crystalhd_dio_req *ioreq,
-					struct dma_desc_mem * pdesc_mem,
+BC_STATUS crystalhd_xlat_tx_buffer_to_dma_desc(
+					const struct crystalhd_tx_buffer *buffer,
+					struct dma_desc_mem *pdesc_mem,
 					uint32_t *uv_desc_index,
-					struct device *dev, uint32_t destDRAMaddr);
+					struct device *dev,
+					uint32_t destDRAMaddr);
 BC_STATUS crystalhd_xlat_rx_buffer_to_dma_desc(
 					struct crystalhd_rx_buffer *buffer,
 					struct dma_desc_mem *pdesc_mem,
@@ -579,10 +597,10 @@ BC_STATUS crystalhd_rx_pkt_complete(struct crystalhd_hw *hw,
 BC_STATUS crystalhd_rx_pkt_done(struct crystalhd_hw *hw,
 				uint32_t list_index,
 				BC_STATUS comp_sts);
-BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw, struct crystalhd_dio_req *ioreq,
-				hw_comp_callback call_back,
-				void *cb_context, uint32_t *list_id,
-				uint8_t data_flags);
+BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw,
+				const struct crystalhd_tx_buffer *buffer,
+				hw_comp_callback call_back, void *cb_context,
+				uint32_t *list_id, uint8_t data_flags);
 /* Process callers serialize post and cancel for the shared two-list engine.
  * The legacy ioctl path holds adp->tx_lock; session-exclusive stop paths hold
  * adp->user_lock for write. The list_id returned by post identifies an IRQ

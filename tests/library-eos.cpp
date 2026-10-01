@@ -5,6 +5,7 @@
  * bounded status/DMA stubs and the public output APIs against a fake FETCH.
  * No device, firmware, shared-memory setup or OS worker thread is started.
  */
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -254,6 +255,79 @@ static BC_STATUS send(Fixture &fixture, unsigned mode, bool public_api)
                       : DtsSendEOS(&fixture.context, mode);
 }
 
+static void test_h264_pes_oracle()
+{
+    const std::vector<uint8_t> payload = {0, 0, 1, 0x65, 0xaa};
+    {
+        Fixture fixture(BC_PCI_DEVID_FLEA, BC_MSUBTYPE_H264);
+        check(DtsAlignSendData(&fixture.context,
+                               const_cast<uint8_t *>(payload.data()),
+                               payload.size(), 66, false) == BC_STS_SUCCESS,
+              "H.264 PTS oracle accepts one Annex-B payload");
+        const std::vector<uint8_t> expected = {
+            0, 0, 1, 0xe0, 0, 13, 0x81, 0x80, 5,
+            0x21, 0, 1, 0, 0x85,
+            0, 0, 1, 0x65, 0xaa,
+        };
+        check(packets.size() == 1 && packets[0] == expected,
+              "H.264 PTS oracle freezes the exact PES header and marker bits");
+    }
+    {
+        Fixture fixture(BC_PCI_DEVID_FLEA, BC_MSUBTYPE_H264);
+        check(DtsAlignSendData(&fixture.context,
+                               const_cast<uint8_t *>(payload.data()),
+                               payload.size(), 0, false) == BC_STS_SUCCESS,
+              "H.264 no-PTS oracle accepts one Annex-B payload");
+        const std::vector<uint8_t> expected = {
+            0, 0, 1, 0xe0, 0, 8, 0x81, 0, 0,
+            0, 0, 1, 0x65, 0xaa,
+        };
+        check(packets.size() == 1 && packets[0] == expected,
+              "H.264 no-PTS oracle freezes the exact nine-byte PES header");
+    }
+    {
+        Fixture fixture(BC_PCI_DEVID_FLEA, BC_MSUBTYPE_H264);
+        const uint8_t expected_pts[] = {0x2f, 0xff, 0xff, 0xff, 0xff};
+        check(DtsAlignSendData(&fixture.context,
+                               const_cast<uint8_t *>(payload.data()),
+                               payload.size(), UINT64_C(0x1ffffffff), false) ==
+                  BC_STS_SUCCESS,
+              "H.264 maximum 33-bit PTS is accepted");
+        check(packets.size() == 1 && packets[0].size() == payload.size() + 14 &&
+                  std::equal(packets[0].begin() + 9, packets[0].begin() + 14,
+                             expected_pts),
+              "H.264 maximum 33-bit PTS retains every marker bit");
+    }
+
+    for (bool pts : {false, true}) {
+        const size_t maximum = pts ? 65512U : 65517U;
+        for (size_t extra : {size_t{0}, size_t{1}}) {
+            Fixture fixture(BC_PCI_DEVID_FLEA, BC_MSUBTYPE_H264);
+            std::vector<uint8_t> source(maximum + extra);
+            for (size_t i = 0; i < source.size(); ++i)
+                source[i] = static_cast<uint8_t>(i * 131U + 17U);
+            check(DtsAlignSendData(&fixture.context, source.data(), source.size(),
+                                   pts ? 66 : 0, false) == BC_STS_SUCCESS,
+                  "H.264 boundary oracle accepts maximum and split payloads");
+            check(packets.size() == 1 + extra && packets[0].size() == 65526 &&
+                      packets[0][4] == 0xff && packets[0][5] == 0xf0,
+                  "H.264 boundary oracle freezes the 0xfff0 PES length cap");
+            size_t consumed = 0;
+            for (size_t n = 0; n < packets.size(); ++n) {
+                const size_t header = 9U + packets[n][8];
+                check((n == 0 && pts) == ((packets[n][7] & 0x80) != 0),
+                      "only the first H.264 PES fragment carries PTS");
+                check(std::equal(packets[n].begin() + header, packets[n].end(),
+                                 source.begin() + consumed),
+                      "H.264 PES fragments retain source bytes without padding");
+                consumed += packets[n].size() - header;
+            }
+            check(consumed == source.size(),
+                  "H.264 PES boundary split consumes the source exactly once");
+        }
+    }
+}
+
 static void test_packets(uint32_t device, uint32_t subtype, unsigned mode)
 {
     fail_at = 0;
@@ -299,6 +373,47 @@ static void test_packets(uint32_t device, uint32_t subtype, unsigned mode)
             : subtype == BC_MSUBTYPE_MPEG2VIDEO ? UINT64_C(0x4ed2a7fde1262c74)
             : UINT64_C(0x24352af17dc9a696);
     check(signature == expected_signature, "successful EOS packet bytes match pre-fix baseline");
+    if (device == BC_PCI_DEVID_FLEA && subtype == BC_MSUBTYPE_H264 && mode == 0) {
+        const std::vector<uint8_t> eos = {
+            0, 0, 1, 0xe0, 0, 0x0b, 0x81, 0, 0,
+            0, 0, 1, 0x0a, 0, 0, 1, 0x0a,
+        };
+        const std::vector<uint8_t> marker_header = {
+            0, 0, 1, 0xe0, 0, 0xb2, 0x81, 1, 0x14, 0x80,
+            'B', 'R', 'C', 'M',
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0xff, 0xff, 0xff,
+        };
+        check(packets.size() == 4 && packets[0] == eos &&
+                  packets[2] == eos && packets[3] == eos,
+              "FLEA H.264 mode-0 EOS freezes the E-M-E-E packet order");
+        check(packets[1].size() == 184 &&
+                  std::equal(marker_header.begin(), marker_header.end(),
+                             packets[1].begin()),
+              "FLEA H.264 timing marker freezes its PES private-data header");
+        if (packets[1].size() == 184) {
+            const uint8_t *body = packets[1].data() + marker_header.size();
+            bool body_matches = true;
+            for (size_t offset = 0; offset < 155; ++offset) {
+                uint8_t expected = offset >= 37 ? 0xff : 0;
+                if (offset == 4)
+                    expected = 0x0c;
+                else if (offset == 13 || offset == 14 ||
+                         (offset >= 17 && offset <= 28))
+                    expected = 0xff;
+                else if (offset == 16)
+                    expected = 0x01;
+                else if (offset == 36)
+                    expected = 0xbc;
+                if (body[offset] != expected) {
+                    body_matches = false;
+                    break;
+                }
+            }
+            check(body_matches,
+                  "FLEA H.264 timing marker freezes all 155 body bytes");
+        }
+    }
     {
         Fixture public_success(device, subtype);
         check(send(public_success, mode, true) == BC_STS_SUCCESS && packets == reference,
@@ -857,6 +972,7 @@ static void test_link_repeat_compatibility()
 
 int main()
 {
+    test_h264_pes_oracle();
     for (uint32_t device : {BC_PCI_DEVID_FLEA, BC_PCI_DEVID_LINK}) {
         for (uint32_t subtype : {BC_MSUBTYPE_H264, BC_MSUBTYPE_MPEG2VIDEO,
                                  BC_MSUBTYPE_VC1, BC_MSUBTYPE_WVC1, BC_MSUBTYPE_WMV3}) {

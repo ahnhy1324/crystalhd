@@ -342,6 +342,7 @@ struct crystalhd_rx_dma_pkt *crystalhd_hw_alloc_rx_pkt(struct crystalhd_hw *hw)
 		temp->y_done_sz = 0;
 		temp->uv_done_sz = 0;
 		memset(&temp->pib, 0, sizeof(temp->pib));
+		memset(&temp->metadata, 0, sizeof(temp->metadata));
 		temp->uv_phy_addr = 0;
 		temp->next = NULL;
 	}
@@ -367,6 +368,7 @@ void crystalhd_hw_free_rx_pkt(struct crystalhd_hw *hw,
 	pkt->y_done_sz = 0;
 	pkt->uv_done_sz = 0;
 	memset(&pkt->pib, 0, sizeof(pkt->pib));
+	memset(&pkt->metadata, 0, sizeof(pkt->metadata));
 	pkt->uv_phy_addr = 0;
 	pkt->next = hw->rx_pkt_pool_head;
 	hw->rx_pkt_pool_head = pkt;
@@ -698,7 +700,7 @@ static BC_STATUS crystalhd_hw_tx_req_retire(struct crystalhd_hw *hw,
 	/* Retire common DMA ownership before a frontend completion can release its
 	 * backing buffer or its completion context.
 	 */
-	tx_req->dio_req = NULL;
+	tx_req->buffer = NULL;
 	tx_req->cb_context = NULL;
 	tx_req->call_back = NULL;
 	tx_req->list_tag = 0;
@@ -799,6 +801,8 @@ BC_STATUS crystalhd_hw_fill_desc(const struct crystalhd_dma_desc_source *source,
 			return BC_STS_ERROR;
 		if (len > sg_xfr_sz - count)
 			len = sg_xfr_sz - count;
+		if (len > CRYSTALHD_DMA_DESC_MAX_XFER_BYTES)
+			return BC_STS_NOT_IMPL;
 
 		/* Debug.. */
 		if (!len || len > available) {
@@ -972,27 +976,76 @@ BC_STATUS crystalhd_xlat_dma_to_desc(
 				      destDRAMaddr);
 }
 
-BC_STATUS crystalhd_xlat_sgl_to_dma_desc(struct crystalhd_dio_req *ioreq,
+static BC_STATUS crystalhd_tx_buffer_preflight(
+					 const struct crystalhd_tx_buffer *buffer,
+					 uint32_t max_descriptors)
+{
+	struct scatterlist *sg;
+	uint64_t available = 0;
+	uint32_t required, mapped_nents = 0;
+	uint32_t i, len;
+
+	if (!buffer || !buffer->bytes || !buffer->cookie ||
+	    buffer->tail_size > 3 ||
+	    buffer->tail_size != (buffer->bytes & 3) ||
+	    (buffer->tail_size && (!buffer->tail_addr ||
+				    (buffer->tail_addr & 3))))
+		return BC_STS_INV_ARG;
+
+	required = buffer->bytes - buffer->tail_size;
+	if (!!required != !!buffer->dma_nents ||
+	    (required && !buffer->sgl))
+		return BC_STS_INV_ARG;
+
+	sg = buffer->sgl;
+	for (i = 0; i < buffer->dma_nents; i++) {
+		if (!sg)
+			return BC_STS_INV_ARG;
+		len = sg_dma_len(sg);
+		if (!len || (len & 3) || (sg_dma_address(sg) & 3))
+			return BC_STS_NOT_IMPL;
+		/* A larger backing segment is valid when bytes ends inside it. */
+		if (available < required &&
+		    len > CRYSTALHD_DMA_DESC_MAX_XFER_BYTES &&
+		    required - available > CRYSTALHD_DMA_DESC_MAX_XFER_BYTES)
+			return BC_STS_NOT_IMPL;
+		available += len;
+		if (!mapped_nents && available >= required)
+			mapped_nents = i + 1;
+		sg = sg_next(sg);
+	}
+	if (available < required || (required && !mapped_nents))
+		return BC_STS_INV_ARG;
+	if (mapped_nents + !!buffer->tail_size > max_descriptors)
+		return BC_STS_INSUFF_RES;
+
+	return BC_STS_SUCCESS;
+}
+
+BC_STATUS crystalhd_xlat_tx_buffer_to_dma_desc(
+					 const struct crystalhd_tx_buffer *buffer,
 					 struct dma_desc_mem *pdesc_mem,
 					 uint32_t *uv_desc_index,
 					 struct device *dev,
 					 uint32_t destDRAMaddr)
 {
 	struct crystalhd_dma_desc_source source;
+	BC_STATUS sts;
 
-	if (!ioreq)
+	if (!pdesc_mem || !uv_desc_index)
 		return BC_STS_INV_ARG;
+	sts = crystalhd_tx_buffer_preflight(buffer,
+			pdesc_mem->sz / sizeof(struct dma_descriptor));
+	if (sts != BC_STS_SUCCESS)
+		return sts;
 
-	source.sgl = ioreq->sg;
-	source.dma_nents = ioreq->sg_cnt;
-	source.dir_tx = ioreq->uinfo.dir_tx;
-	source.fill_addr = ioreq->fb_pa;
-	source.fill_size = ioreq->fb_size;
+	source.sgl = buffer->sgl;
+	source.dma_nents = buffer->dma_nents;
+	source.dir_tx = true;
+	source.fill_addr = buffer->tail_addr;
+	source.fill_size = buffer->tail_size;
 
-	return crystalhd_xlat_dma_to_desc(&source, ioreq->uinfo.xfr_len,
-					  ioreq->uinfo.uv_offset,
-					  ioreq->uinfo.uv_sg_ix,
-					  ioreq->uinfo.uv_sg_off,
+	return crystalhd_xlat_dma_to_desc(&source, buffer->bytes, 0, 0, 0,
 					  pdesc_mem, uv_desc_index, dev,
 					  destDRAMaddr);
 }
@@ -1065,6 +1118,9 @@ BC_STATUS crystalhd_rx_pkt_complete(struct crystalhd_hw *hw,
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
 		return BC_STS_INV_ARG;
 	}
+
+	/* Recycled free-queue packets can bypass allocation before another DMA. */
+	memset(&rx_pkt->metadata, 0, sizeof(rx_pkt->metadata));
 
 	if (comp_sts == BC_STS_SUCCESS)
 	{
@@ -1173,10 +1229,10 @@ BC_STATUS crystalhd_rx_pkt_done(struct crystalhd_hw *hw,
 	return crystalhd_rx_pkt_complete(hw, rx_pkt, list_index, comp_sts);
 }
 
-BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw, struct crystalhd_dio_req *ioreq,
-			     hw_comp_callback call_back,
-			     void *cb_context, uint32_t *list_id,
-			     uint8_t data_flags)
+BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw,
+			     const struct crystalhd_tx_buffer *buffer,
+			     hw_comp_callback call_back, void *cb_context,
+			     uint32_t *list_id, uint8_t data_flags)
 {
 	struct device *dev;
 	struct tx_dma_pkt *tx_dma_packet = NULL;
@@ -1189,10 +1245,13 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw, struct crystalhd_dio_req
 	bool rc;
 	uint32_t destDRAMaddr = 0;
 
-	if (!hw || !ioreq || !call_back || !cb_context || !list_id) {
+	if (!hw || !buffer || !call_back || !cb_context || !list_id) {
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
 		return BC_STS_INV_ARG;
 	}
+	sts = crystalhd_tx_buffer_preflight(buffer, BC_LINK_MAX_SGLS);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
 
 	dev = &hw->adp->pdev->dev;
 
@@ -1206,7 +1265,7 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw, struct crystalhd_dio_req
 	if (READ_ONCE(hw->dma_fault))
 		return BC_STS_IO_ERROR;
 
-	rc = hw->pfnCheckInputFIFO(hw, ioreq->uinfo.xfr_len,
+	rc = hw->pfnCheckInputFIFO(hw, buffer->bytes,
 					   &dummy_index, false, &local_flags);
 
 	if (rc) {
@@ -1224,9 +1283,10 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw, struct crystalhd_dio_req
 		return BC_STS_INSUFF_RES;
 	}
 
-	sts = crystalhd_xlat_sgl_to_dma_desc(ioreq,
-					     &tx_dma_packet->desc_mem,
-					     &dummy_index, dev, destDRAMaddr);
+	sts = crystalhd_xlat_tx_buffer_to_dma_desc(buffer,
+						   &tx_dma_packet->desc_mem,
+						   &dummy_index, dev,
+						   destDRAMaddr);
 	if (sts != BC_STS_SUCCESS) {
 		add_sts = crystalhd_dioq_add(hw->tx_freeq, tx_dma_packet,
 					   false, 0);
@@ -1240,7 +1300,7 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw, struct crystalhd_dio_req
 
 	tx_dma_packet->call_back = call_back;
 	tx_dma_packet->cb_context = cb_context;
-	tx_dma_packet->dio_req   = ioreq;
+	tx_dma_packet->buffer = buffer;
 
 	spin_lock_irqsave(&hw->lock, flags);
 
@@ -1253,7 +1313,7 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw, struct crystalhd_dio_req
 	sts = crystalhd_dioq_add(hw->tx_actq, tx_dma_packet, false,
 				 tx_dma_packet->list_tag);
 	if (sts != BC_STS_SUCCESS) {
-		tx_dma_packet->dio_req = NULL;
+		tx_dma_packet->buffer = NULL;
 		tx_dma_packet->cb_context = NULL;
 		tx_dma_packet->call_back = NULL;
 		tx_dma_packet->list_tag = 0;
@@ -1279,7 +1339,7 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw, struct crystalhd_dio_req
 	 */
 
 	/* Save the transfer length */
-	hw->TxFwInputBuffInfo.HostXferSzInBytes = ioreq->uinfo.xfr_len;
+	hw->TxFwInputBuffInfo.HostXferSzInBytes = buffer->bytes;
 
 	hw->pfnStartTxDMA(hw, list_posted, desc_addr);
 
@@ -1490,6 +1550,9 @@ BC_STATUS crystalhd_hw_get_cap_buffer(struct crystalhd_hw *hw,
 			rpkt->pib.picture_meta_payload;
 		result->pib.resolution = rpkt->pib.frame_rate;
 	}
+
+	if (rpkt->metadata.valid && !(rpkt->flags & COMP_FLAG_FMT_CHANGE))
+		result->metadata = rpkt->metadata;
 
 	result->buffer = rpkt->buffer;
 	result->cookie = rpkt->cookie;

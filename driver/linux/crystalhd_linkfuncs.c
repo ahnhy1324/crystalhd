@@ -1256,6 +1256,7 @@ void crystalhd_link_proc_pib(struct crystalhd_hw *hw)
 			if (!rx_pkt)
 				return;
 
+			memset(&rx_pkt->metadata, 0, sizeof(rx_pkt->metadata));
 			rx_pkt->flags = 0;
 			rx_pkt->flags |= COMP_FLAG_PIB_VALID |
 					 COMP_FLAG_FMT_CHANGE;

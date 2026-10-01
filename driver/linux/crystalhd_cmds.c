@@ -26,10 +26,12 @@
 
 #include <linux/errno.h>
 #include <linux/firmware.h>
+#include <linux/limits.h>
 #include <linux/sched/signal.h>
 
 #include "crystalhd_lnx.h"
 #include "crystalhd_hw.h"
+#include "crystalhd_stream.h"
 int bc_get_userhandle_count(struct crystalhd_cmd *ctx);
 BC_STATUS bc_cproc_release_user(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *idata);
 static struct crystalhd_user *bc_cproc_get_uid(struct crystalhd_cmd *ctx)
@@ -77,6 +79,7 @@ static void bc_cproc_mark_pwr_state(struct crystalhd_cmd *ctx, uint32_t state)
 static void crystalhd_decoder_tracking_reset(struct crystalhd_cmd *ctx)
 {
 	ctx->decoder_phase = CRYSTALHD_DECODER_COLD;
+	ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
 	ctx->fw_sequence = 0;
 	ctx->decoder_channel_id = 0;
 }
@@ -138,6 +141,7 @@ static BC_STATUS crystalhd_session_setup(struct crystalhd_cmd *ctx)
 static void crystalhd_retire_hw_context(struct crystalhd_cmd *ctx,
 					bool retire_session_resources)
 {
+	crystalhd_stream_release(ctx);
 	crystalhd_decoder_tracking_reset(ctx);
 	if (!ctx->hw_ctx)
 		return;
@@ -191,6 +195,7 @@ BC_STATUS crystalhd_session_acquire_locked(struct crystalhd_cmd *ctx,
 	}
 
 	/* Publish ownership only after the complete resource set exists. */
+	crystalhd_stream_release(ctx);
 	crystalhd_decoder_tracking_reset(ctx);
 	ctx->session_owner = owner;
 	ctx->cin_wait_exit = 0;
@@ -528,6 +533,7 @@ BC_STATUS crystalhd_fw_download_locked(struct crystalhd_cmd *ctx,
 		dev_info(chddev(), "Firmware Download Failure!! - %d\n", sts);
 	} else {
 		ctx->state |= BC_LINK_INIT;
+		crystalhd_stream_release(ctx);
 		crystalhd_decoder_tracking_reset(ctx);
 		/* A successful image download is the verified firmware reset that
 		 * reconciles any earlier timed-out mailbox command.
@@ -542,7 +548,7 @@ done:
 	return sts;
 }
 
-static int crystalhd_fw_status_to_errno(BC_STATUS sts)
+int crystalhd_status_to_errno(BC_STATUS sts)
 {
 	switch (sts) {
 	case BC_STS_SUCCESS:
@@ -618,7 +624,7 @@ int crystalhd_request_firmware_locked(struct crystalhd_cmd *ctx,
 
 	sts = crystalhd_fw_download_locked(ctx, owner, firmware->data,
 					    firmware->size);
-	rc = crystalhd_fw_status_to_errno(sts);
+	rc = crystalhd_status_to_errno(sts);
 
 release:
 	release_firmware(firmware);
@@ -711,7 +717,7 @@ BC_STATUS crystalhd_fw_exec_locked(struct crystalhd_cmd *ctx,
 	} else if (cmd[0] == eCMD_C011_DEC_CHAN_FLUSH) {
 		dev_dbg(dev, "Flush issued\n");
 		if (cmd[3])
-			ctx->cin_wait_exit = 1;
+			WRITE_ONCE(ctx->cin_wait_exit, 1);
 	}
 
 	sts = ctx->hw_ctx->pfnDoFirmwareCmd(ctx->hw_ctx, fw_cmd);
@@ -797,7 +803,7 @@ int crystalhd_fw_bootstrap_locked(struct crystalhd_cmd *ctx,
 		init->rsa_decrypt = CRYSTALHD_FW_INIT_RSA_DECRYPT;
 
 	sts = crystalhd_fw_exec_locked(ctx, owner, &fw_cmd);
-	rc = crystalhd_fw_status_to_errno(sts);
+	rc = crystalhd_status_to_errno(sts);
 	if (rc)
 		goto rollback;
 	if (!READ_ONCE(ctx->adp->present)) {
@@ -809,6 +815,7 @@ int crystalhd_fw_bootstrap_locked(struct crystalhd_cmd *ctx,
 	ctx->state = BC_LINK_INIT;
 	ctx->pwr_state_change = BC_HW_RUNNING;
 	ctx->decoder_phase = CRYSTALHD_DECODER_BOOTSTRAPPED;
+	ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
 	ctx->decoder_channel_id = 0;
 	return 0;
 
@@ -820,6 +827,7 @@ rollback:
 	ctx->pwr_state_change = initial_power_state;
 	if (firmware_loaded) {
 		ctx->decoder_phase = CRYSTALHD_DECODER_RECOVERY_REQUIRED;
+		ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
 		ctx->decoder_channel_id = 0;
 	}
 	return rc;
@@ -863,6 +871,9 @@ int crystalhd_decoder_channel_open_locked(
 	default:
 		return -EINVAL;
 	}
+	rc = crystalhd_stream_prepare(ctx);
+	if (rc)
+		return rc;
 
 	BUILD_BUG_ON(sizeof(*open) !=
 		     CRYSTALHD_FW_CHANNEL_OPEN_WORDS * sizeof(uint32_t));
@@ -885,7 +896,7 @@ int crystalhd_decoder_channel_open_locked(
 	open->video_algorithm = video_algorithm;
 
 	sts = crystalhd_fw_exec_locked(ctx, owner, &fw_cmd);
-	rc = crystalhd_fw_status_to_errno(sts);
+	rc = crystalhd_status_to_errno(sts);
 	if (rc) {
 		/* A firmware rejection is the one result known not to have opened a
 		 * channel. Transport failures have an ambiguous device-side result.
@@ -893,19 +904,25 @@ int crystalhd_decoder_channel_open_locked(
 		if (sts != BC_STS_FW_CMD_ERR)
 			ctx->decoder_phase =
 				CRYSTALHD_DECODER_RECOVERY_REQUIRED;
+		ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
 		ctx->decoder_channel_id = 0;
+		crystalhd_stream_release(ctx);
 		return rc;
 	}
 	if (!READ_ONCE(ctx->adp->present)) {
 		ctx->decoder_phase = CRYSTALHD_DECODER_RECOVERY_REQUIRED;
+		ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
 		ctx->decoder_channel_id = 0;
+		crystalhd_stream_release(ctx);
 		return -ENODEV;
 	}
 
 	channel_id = fw_cmd.rsp[3];
 	if (channel_id != 0) {
 		ctx->decoder_phase = CRYSTALHD_DECODER_RECOVERY_REQUIRED;
+		ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
 		ctx->decoder_channel_id = 0;
+		crystalhd_stream_release(ctx);
 		return -EIO;
 	}
 
@@ -926,15 +943,272 @@ int crystalhd_decoder_channel_open_locked(
 	input->sync_mode = CRYSTALHD_FW_SYNC_MODE_SYNCPIN;
 
 	sts = crystalhd_fw_exec_locked(ctx, owner, &fw_cmd);
-	rc = crystalhd_fw_status_to_errno(sts);
+	rc = crystalhd_status_to_errno(sts);
 	if (rc || !READ_ONCE(ctx->adp->present)) {
 		ctx->decoder_phase = CRYSTALHD_DECODER_RECOVERY_REQUIRED;
+		ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
 		ctx->decoder_channel_id = 0;
+		crystalhd_stream_release(ctx);
 		return rc ? rc : -ENODEV;
 	}
 
 	ctx->decoder_channel_id = channel_id;
+	ctx->decoder_codec = config->codec;
 	ctx->decoder_phase = CRYSTALHD_DECODER_CHANNEL_CONFIGURED;
+	return 0;
+}
+
+int crystalhd_decoder_channel_start_locked(struct crystalhd_cmd *ctx,
+					   const void *owner)
+{
+	struct crystalhd_fw_channel_activate_cmd *activate;
+	struct crystalhd_fw_channel_start_video_cmd *start;
+	BC_FW_CMD fw_cmd = { };
+	unsigned long flags;
+	uint32_t color_control, video_algorithm;
+	BC_STATUS sts;
+	int rc;
+
+	if (!ctx || !owner)
+		return -EINVAL;
+	if (!ctx->adp || !ctx->adp->pdev || !ctx->hw_ctx ||
+	    !ctx->hw_ctx->pfnDoFirmwareCmd ||
+	    !ctx->hw_ctx->pfnReadDevRegister ||
+	    !ctx->hw_ctx->pfnWriteDevRegister)
+		return -ENODEV;
+
+	lockdep_assert_held_write(&ctx->adp->user_lock);
+	if (!READ_ONCE(ctx->adp->present))
+		return -ENODEV;
+	if (!ctx->session_owner)
+		return -EINVAL;
+	if (ctx->session_owner != owner)
+		return -EBUSY;
+	if (ctx->adp->pdev->device != BC_PCI_DEVID_FLEA)
+		return -EOPNOTSUPP;
+	if (ctx->state != BC_LINK_INIT ||
+	    ctx->decoder_phase != CRYSTALHD_DECODER_CHANNEL_CONFIGURED ||
+	    !ctx->fw_sequence || ctx->decoder_channel_id)
+		return -EBUSY;
+
+	switch (ctx->decoder_codec) {
+	case CRYSTALHD_DECODER_CODEC_H264:
+		video_algorithm = CRYSTALHD_FW_VIDEO_ALGORITHM_H264;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	/* The production Flea path selects packed YUY2 before activation. Preserve
+	 * the live driver-owned controls while clearing reserved and 4:2:0 bits.
+	 */
+	spin_lock_irqsave(&ctx->hw_ctx->lock, flags);
+	color_control = ctx->hw_ctx->pfnReadDevRegister(
+		ctx->adp, CRYSTALHD_FLEA_COLOR_REGISTER);
+	color_control &= CRYSTALHD_FLEA_COLOR_DRIVER_MASK;
+	color_control |= CRYSTALHD_FLEA_COLOR_YUY2;
+	ctx->hw_ctx->pfnWriteDevRegister(ctx->adp,
+		CRYSTALHD_FLEA_COLOR_REGISTER, color_control);
+	spin_unlock_irqrestore(&ctx->hw_ctx->lock, flags);
+
+	BUILD_BUG_ON(sizeof(*activate) !=
+		     CRYSTALHD_FW_CHANNEL_ACTIVATE_WORDS * sizeof(uint32_t));
+	BUILD_BUG_ON(sizeof(*activate) > sizeof(fw_cmd.cmd));
+	BUILD_BUG_ON(offsetof(struct crystalhd_fw_channel_activate_cmd,
+			      channel_id) != 8U);
+	BUILD_BUG_ON(offsetof(struct crystalhd_fw_channel_activate_cmd,
+			      debug_mode) != 12U);
+	activate = (struct crystalhd_fw_channel_activate_cmd *)fw_cmd.cmd;
+	activate->command = eCMD_C011_DEC_CHAN_ACTIVATE;
+	activate->sequence = ++ctx->fw_sequence;
+	activate->channel_id = ctx->decoder_channel_id;
+
+	sts = crystalhd_fw_exec_locked(ctx, owner, &fw_cmd);
+	rc = crystalhd_status_to_errno(sts);
+	if (!READ_ONCE(ctx->adp->present)) {
+		ctx->decoder_phase = CRYSTALHD_DECODER_RECOVERY_REQUIRED;
+		ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
+		ctx->decoder_channel_id = 0;
+		return -ENODEV;
+	}
+	if (rc) {
+		/* A firmware rejection is known not to have activated the channel.
+		 * Transport failures have an ambiguous device-side result.
+		 */
+		if (sts != BC_STS_FW_CMD_ERR) {
+			ctx->decoder_phase =
+				CRYSTALHD_DECODER_RECOVERY_REQUIRED;
+			ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
+			ctx->decoder_channel_id = 0;
+		}
+		return rc;
+	}
+
+	memset(&fw_cmd, 0, sizeof(fw_cmd));
+	BUILD_BUG_ON(sizeof(*start) !=
+		     CRYSTALHD_FW_CHANNEL_START_VIDEO_WORDS * sizeof(uint32_t));
+	BUILD_BUG_ON(sizeof(*start) > sizeof(fw_cmd.cmd));
+	BUILD_BUG_ON(offsetof(struct crystalhd_fw_channel_start_video_cmd,
+			      channel_id) != 8U);
+	BUILD_BUG_ON(offsetof(struct crystalhd_fw_channel_start_video_cmd,
+			      video_algorithm) != 32U);
+	BUILD_BUG_ON(offsetof(struct crystalhd_fw_channel_start_video_cmd,
+			      display_timing) != 72U);
+	BUILD_BUG_ON(offsetof(struct crystalhd_fw_channel_start_video_cmd,
+			      user_data_mode) != 80U);
+	BUILD_BUG_ON(offsetof(struct crystalhd_fw_channel_start_video_cmd,
+			      enable_fgt) != 124U);
+	BUILD_BUG_ON(offsetof(struct crystalhd_fw_channel_start_video_cmd,
+			      enable_23_297_frame_rate_output) != 128U);
+	BUILD_BUG_ON(offsetof(struct crystalhd_fw_channel_start_video_cmd,
+			      picture_info_interrupt_enable) != 140U);
+	BUILD_BUG_ON(sizeof(struct DecRspChannelStartVideo) !=
+		     12U * sizeof(uint32_t));
+	BUILD_BUG_ON(offsetof(struct DecRspChannelStartVideo,
+			      picInfoDeliveryQ) != 20U);
+	BUILD_BUG_ON(offsetof(struct DecRspChannelStartVideo,
+			      picInfoReleaseQ) != 24U);
+	BUILD_BUG_ON(offsetof(struct DecRspChannelStartVideo,
+			      asyncEventQ) != 44U);
+	start = (struct crystalhd_fw_channel_start_video_cmd *)fw_cmd.cmd;
+	start->command = eCMD_C011_DEC_CHAN_START_VIDEO;
+	start->sequence = ++ctx->fw_sequence;
+	start->channel_id = ctx->decoder_channel_id;
+	start->video_algorithm = video_algorithm;
+	start->display_timing = CRYSTALHD_FW_DISPLAY_TIMING_IGNORE_PTS;
+	start->user_data_mode = CRYSTALHD_FW_USER_DATA_MODE_ON;
+	start->enable_23_297_frame_rate_output =
+		CRYSTALHD_FW_PROGRESSIVE_OUTPUT;
+
+	sts = crystalhd_fw_exec_locked(ctx, owner, &fw_cmd);
+	rc = crystalhd_status_to_errno(sts);
+	if (rc || !READ_ONCE(ctx->adp->present)) {
+		/* ACTIVATE has committed, so START cannot be retried in isolation. */
+		ctx->decoder_phase = CRYSTALHD_DECODER_RECOVERY_REQUIRED;
+		ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
+		ctx->decoder_channel_id = 0;
+		return rc ? rc : -ENODEV;
+	}
+
+	ctx->decoder_phase = CRYSTALHD_DECODER_CHANNEL_STARTED;
+	return 0;
+}
+
+static int crystalhd_decoder_release_cmd_locked(struct crystalhd_cmd *ctx,
+						const void *owner,
+						uint32_t command)
+{
+	struct crystalhd_fw_channel_stop_close_cmd *request;
+	BC_FW_CMD fw_cmd = { };
+	BC_STATUS sts;
+	int rc;
+
+	BUILD_BUG_ON(sizeof(*request) !=
+		     CRYSTALHD_FW_CHANNEL_STOP_CLOSE_WORDS * sizeof(uint32_t));
+	BUILD_BUG_ON(sizeof(*request) > sizeof(fw_cmd.cmd));
+	BUILD_BUG_ON(offsetof(struct crystalhd_fw_channel_stop_close_cmd,
+			      channel_id) != 8U);
+	BUILD_BUG_ON(offsetof(struct crystalhd_fw_channel_stop_close_cmd,
+			      picture_release) != 12U);
+	BUILD_BUG_ON(offsetof(struct crystalhd_fw_channel_stop_close_cmd,
+			      last_picture_display) != 16U);
+
+	request = (struct crystalhd_fw_channel_stop_close_cmd *)fw_cmd.cmd;
+	request->command = command;
+	request->sequence = ++ctx->fw_sequence;
+	request->channel_id = ctx->decoder_channel_id;
+	request->picture_release = CRYSTALHD_FW_PICTURE_RELEASE_INTERNAL;
+	request->last_picture_display =
+		CRYSTALHD_FW_LAST_PICTURE_DISPLAY_ON;
+
+	sts = crystalhd_fw_exec_locked(ctx, owner, &fw_cmd);
+	rc = crystalhd_status_to_errno(sts);
+	if (!READ_ONCE(ctx->adp->present)) {
+		ctx->decoder_phase = CRYSTALHD_DECODER_RECOVERY_REQUIRED;
+		ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
+		ctx->decoder_channel_id = 0;
+		return -ENODEV;
+	}
+	if (rc && sts != BC_STS_FW_CMD_ERR) {
+		ctx->decoder_phase = CRYSTALHD_DECODER_RECOVERY_REQUIRED;
+		ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
+		ctx->decoder_channel_id = 0;
+	}
+	return rc;
+}
+
+int crystalhd_decoder_channel_stop_locked(struct crystalhd_cmd *ctx,
+					  const void *owner)
+{
+	const uint32_t allowed_state = BC_LINK_INIT | BC_LINK_CAP_EN |
+		BC_LINK_FMT_CHG;
+	int rc;
+
+	if (!ctx || !owner)
+		return -EINVAL;
+	if (!ctx->adp || !ctx->adp->pdev || !ctx->hw_ctx ||
+	    !ctx->hw_ctx->pfnDoFirmwareCmd)
+		return -ENODEV;
+
+	lockdep_assert_held_write(&ctx->adp->user_lock);
+	if (!READ_ONCE(ctx->adp->present))
+		return -ENODEV;
+	if (!ctx->session_owner)
+		return -EINVAL;
+	if (ctx->session_owner != owner)
+		return -EBUSY;
+	if (ctx->adp->pdev->device != BC_PCI_DEVID_FLEA)
+		return -EOPNOTSUPP;
+	if (!(ctx->state & BC_LINK_INIT) || (ctx->state & ~allowed_state) ||
+	    ctx->decoder_phase != CRYSTALHD_DECODER_CHANNEL_STARTED ||
+	    !ctx->fw_sequence || ctx->decoder_channel_id)
+		return -EBUSY;
+	if (ctx->decoder_codec != CRYSTALHD_DECODER_CODEC_H264)
+		return -EINVAL;
+
+	rc = crystalhd_decoder_release_cmd_locked(ctx, owner,
+						    eCMD_C011_DEC_CHAN_STOP_VIDEO);
+	if (!rc)
+		ctx->decoder_phase = CRYSTALHD_DECODER_CHANNEL_CONFIGURED;
+	return rc;
+}
+
+int crystalhd_decoder_channel_close_locked(struct crystalhd_cmd *ctx,
+					   const void *owner)
+{
+	int rc;
+
+	if (!ctx || !owner)
+		return -EINVAL;
+	if (!ctx->adp || !ctx->adp->pdev || !ctx->hw_ctx ||
+	    !ctx->hw_ctx->pfnDoFirmwareCmd)
+		return -ENODEV;
+
+	lockdep_assert_held_write(&ctx->adp->user_lock);
+	if (!READ_ONCE(ctx->adp->present))
+		return -ENODEV;
+	if (!ctx->session_owner)
+		return -EINVAL;
+	if (ctx->session_owner != owner)
+		return -EBUSY;
+	if (ctx->adp->pdev->device != BC_PCI_DEVID_FLEA)
+		return -EOPNOTSUPP;
+	if (ctx->state != BC_LINK_INIT ||
+	    ctx->decoder_phase != CRYSTALHD_DECODER_CHANNEL_CONFIGURED ||
+	    !ctx->fw_sequence || ctx->decoder_channel_id)
+		return -EBUSY;
+	if (ctx->decoder_codec != CRYSTALHD_DECODER_CODEC_H264)
+		return -EINVAL;
+
+	rc = crystalhd_decoder_release_cmd_locked(ctx, owner,
+						    eCMD_C011_DEC_CHAN_CLOSE);
+	if (rc)
+		return rc;
+
+	ctx->decoder_phase = CRYSTALHD_DECODER_BOOTSTRAPPED;
+	ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
+	ctx->decoder_channel_id = 0;
+	crystalhd_stream_release(ctx);
 	return 0;
 }
 
@@ -968,7 +1242,9 @@ static void bc_proc_in_completion(void *context, BC_STATUS sts)
 	crystalhd_set_event(&completion->event);
 }
 
-static BC_STATUS bc_cproc_codein_sleep(struct crystalhd_cmd *ctx)
+static BC_STATUS bc_cproc_codein_sleep(struct crystalhd_cmd *ctx,
+				       uint32_t timeout_ms, bool bounded,
+				       unsigned long deadline)
 {
 	wait_queue_head_t sleep_ev;
 	int rc = 0;
@@ -981,52 +1257,116 @@ static BC_STATUS bc_cproc_codein_sleep(struct crystalhd_cmd *ctx)
 	if (ctx->state & BC_LINK_SUSPEND)
 		return BC_STS_PWR_MGMT;
 
-	if (ctx->cin_wait_exit) {
-		ctx->cin_wait_exit = 0;
+	if (READ_ONCE(ctx->cin_wait_exit)) {
+		WRITE_ONCE(ctx->cin_wait_exit, 0);
 		return BC_STS_CMD_CANCELLED;
 	}
 	crystalhd_create_event(&sleep_ev);
-	crystalhd_wait_on_event(&sleep_ev, 0, 100, rc, false);
+	if (bounded)
+		crystalhd_wait_on_event_until(&sleep_ev, 0, deadline, rc, false);
+	else
+		crystalhd_wait_on_event(&sleep_ev, 0, timeout_ms, rc, false);
 	if (rc == -EINTR)
 		return BC_STS_IO_USER_ABORT;
+	if (bounded && rc && rc != -EBUSY)
+		return BC_STS_IO_ERROR;
 
+	return BC_STS_SUCCESS;
+}
+
+static BC_STATUS crystalhd_bounded_tx_status(struct crystalhd_cmd *ctx,
+					      unsigned long deadline,
+					      bool consume_legacy_cancel)
+{
+	if (!READ_ONCE(ctx->adp->present))
+		return BC_STS_CMD_CANCELLED;
+	if (ctx->state & BC_LINK_SUSPEND)
+		return BC_STS_PWR_MGMT;
+	if (consume_legacy_cancel && READ_ONCE(ctx->cin_wait_exit)) {
+		WRITE_ONCE(ctx->cin_wait_exit, 0);
+		return BC_STS_CMD_CANCELLED;
+	}
+	if (signal_pending(current))
+		return BC_STS_IO_USER_ABORT;
+	if (time_after_eq(jiffies, deadline))
+		return BC_STS_TIMEOUT;
+
+	return BC_STS_SUCCESS;
+}
+
+BC_STATUS crystalhd_tx_deadline_from_ms(u32 total_timeout_ms,
+					unsigned long *deadline)
+{
+	unsigned long timeout_jiffies;
+
+	if (!deadline || !total_timeout_ms || total_timeout_ms > INT_MAX)
+		return BC_STS_INV_ARG;
+
+	timeout_jiffies = msecs_to_jiffies(total_timeout_ms);
+	if (timeout_jiffies == MAX_JIFFY_OFFSET)
+		return BC_STS_INV_ARG;
+	*deadline = jiffies + timeout_jiffies;
 	return BC_STS_SUCCESS;
 }
 
 /*
  * Synchronous mapped-input transfer. The caller keeps the command/device
- * lifetime and TX serialization locks, and owns a fresh mapped request until
- * this function returns.
+ * lifetime and TX serialization locks, and owns the mapped buffer until this
+ * function returns. A bounded caller supplies one absolute deadline shared by
+ * every fragment in its operation.
  */
-BC_STATUS crystalhd_tx_transfer_sync(struct crystalhd_cmd *ctx,
-				     struct crystalhd_dio_req *dio,
-				     uint8_t data_flags)
+static BC_STATUS crystalhd_tx_transfer_common(struct crystalhd_cmd *ctx,
+					      const struct crystalhd_tx_buffer *buffer,
+					      u8 data_flags, bool bounded,
+					      unsigned long deadline)
 {
 	struct device *dev = chddev();
 	struct crystalhd_tx_completion completion = {
 		.status = BC_STS_SUCCESS,
 	};
+	unsigned long wait_deadline;
 	uint32_t tx_listid = 0;
 	BC_STATUS sts = BC_STS_SUCCESS;
 	int rc = 0;
 
-	if (!ctx || !ctx->hw_ctx || !dio) {
+	if (!ctx || !ctx->adp || !ctx->adp->pdev || !ctx->hw_ctx || !buffer) {
 		dev_err(dev, "%s: Invalid Arg\n", __func__);
 		return BC_STS_INV_ARG;
+	}
+	if (bounded) {
+		sts = crystalhd_bounded_tx_status(ctx, deadline, false);
+		if (sts != BC_STS_SUCCESS)
+			return sts;
 	}
 
 	crystalhd_create_event(&completion.event);
 
 	ctx->tx_list_id = 0;
 	/* msleep_interruptible(2000); */
-	sts = crystalhd_hw_post_tx(ctx->hw_ctx, dio, bc_proc_in_completion,
+	sts = crystalhd_hw_post_tx(ctx->hw_ctx, buffer, bc_proc_in_completion,
 				 &completion, &tx_listid, data_flags);
 
 	while (sts == BC_STS_BUSY) {
-		sts = bc_cproc_codein_sleep(ctx);
+		if (bounded) {
+			sts = crystalhd_bounded_tx_status(ctx, deadline, false);
+			if (sts != BC_STS_SUCCESS)
+				break;
+			wait_deadline = jiffies + msecs_to_jiffies(100);
+			if (time_after(wait_deadline, deadline))
+				wait_deadline = deadline;
+			sts = bc_cproc_codein_sleep(ctx, 0, true,
+						   wait_deadline);
+		} else {
+			sts = bc_cproc_codein_sleep(ctx, 100, false, 0);
+		}
 		if (sts != BC_STS_SUCCESS)
 			break;
-		sts = crystalhd_hw_post_tx(ctx->hw_ctx, dio,
+		if (bounded) {
+			sts = crystalhd_bounded_tx_status(ctx, deadline, true);
+			if (sts != BC_STS_SUCCESS)
+				break;
+		}
+		sts = crystalhd_hw_post_tx(ctx->hw_ctx, buffer,
 					 bc_proc_in_completion,
 					 &completion, &tx_listid, data_flags);
 	}
@@ -1034,26 +1374,47 @@ BC_STATUS crystalhd_tx_transfer_sync(struct crystalhd_cmd *ctx,
 		dev_dbg(dev, "_hw_txdma returning sts:%d\n", sts);
 		return sts;
 	}
-	if (ctx->cin_wait_exit)
-		ctx->cin_wait_exit = 0;
+	if (READ_ONCE(ctx->cin_wait_exit))
+		WRITE_ONCE(ctx->cin_wait_exit, 0);
 
 	ctx->tx_list_id = tx_listid;
 
 	dev_dbg(dev, "Sending TX\n");
 
 	/* _post() succeeded.. wait for the completion. */
-	crystalhd_wait_on_event(&completion.event,
-				READ_ONCE(completion.done), 3000, rc, false);
-	ctx->tx_list_id = 0;
-	if (!rc) {
-		/* The wakeup occurs inside the ISR callback. Wait until it has
-		 * stopped using both the request and this stack's completion cookie.
-		 */
-		synchronize_irq(ctx->adp->pdev->irq);
-		return READ_ONCE(completion.status);
-	} else if (rc == -EBUSY) {
+	if (bounded && !READ_ONCE(completion.done)) {
+		sts = crystalhd_bounded_tx_status(ctx, deadline, false);
+		if (sts != BC_STS_SUCCESS) {
+			if (READ_ONCE(completion.done))
+				goto complete;
+			goto cancel;
+		}
+	}
+	if (READ_ONCE(completion.done))
+		goto complete;
+	if (bounded) {
+		wait_deadline = jiffies + msecs_to_jiffies(3000);
+		if (time_after(wait_deadline, deadline))
+			wait_deadline = deadline;
+		crystalhd_wait_on_event_until(&completion.event,
+					READ_ONCE(completion.done),
+					wait_deadline, rc, false);
+	} else {
+		crystalhd_wait_on_event(&completion.event,
+					READ_ONCE(completion.done), 3000,
+					rc, false);
+	}
+	if (!rc)
+		goto complete;
+	if (rc == -EBUSY) {
 		dev_dbg(dev, "_tx_post() T/O \n");
-		sts = BC_STS_TIMEOUT;
+		if (bounded) {
+			sts = crystalhd_bounded_tx_status(ctx, deadline, false);
+			if (READ_ONCE(completion.done))
+				goto complete;
+		}
+		if (!bounded || sts == BC_STS_SUCCESS)
+			sts = BC_STS_TIMEOUT;
 	} else if (rc == -EINTR) {
 		dev_dbg(dev, "Tx Wait Signal int.\n");
 		sts = BC_STS_IO_USER_ABORT;
@@ -1061,13 +1422,46 @@ BC_STATUS crystalhd_tx_transfer_sync(struct crystalhd_cmd *ctx,
 		sts = BC_STS_IO_ERROR;
 	}
 
+cancel:
 	/* We are cancelling the IO from the same context as the _post().
 	 * so no need to wait on the event again.. the return itself
 	 * ensures the release of our resources.
 	 */
+	ctx->tx_list_id = 0;
 	crystalhd_hw_cancel_all_tx(ctx->hw_ctx);
-
 	return sts;
+
+complete:
+	ctx->tx_list_id = 0;
+	/* The callback uses this stack's completion cookie. */
+	synchronize_irq(ctx->adp->pdev->irq);
+	return READ_ONCE(completion.status);
+}
+
+BC_STATUS crystalhd_tx_transfer_until(struct crystalhd_cmd *ctx,
+				      const struct crystalhd_tx_buffer *buffer,
+				      u8 data_flags,
+				      unsigned long deadline)
+{
+	return crystalhd_tx_transfer_common(ctx, buffer, data_flags, true,
+					    deadline);
+}
+
+BC_STATUS crystalhd_tx_transfer_sync(struct crystalhd_cmd *ctx,
+				     const struct crystalhd_tx_buffer *buffer,
+				     u8 data_flags, u32 total_timeout_ms)
+{
+	unsigned long deadline;
+	BC_STATUS sts;
+
+	if (!total_timeout_ms)
+		return crystalhd_tx_transfer_common(ctx, buffer, data_flags, false,
+						    0);
+
+	sts = crystalhd_tx_deadline_from_ms(total_timeout_ms, &deadline);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
+	return crystalhd_tx_transfer_until(ctx, buffer, data_flags, deadline);
 }
 
 /* Helper function to check on user buffers */
@@ -1138,8 +1532,8 @@ static BC_STATUS bc_cproc_proc_input(struct crystalhd_cmd *ctx, crystalhd_ioctl_
 	if (!dio_hnd)
 		return BC_STS_ERROR;
 
-	sts = crystalhd_tx_transfer_sync(ctx, dio_hnd,
-					 idata->udata.u.ProcInput.Encrypted);
+	sts = crystalhd_tx_transfer_sync(ctx, &dio_hnd->tx_buffer,
+					 idata->udata.u.ProcInput.Encrypted, 0);
 
 	crystalhd_unmap_dio(ctx->adp, dio_hnd);
 
@@ -1728,6 +2122,7 @@ BC_STATUS crystalhd_suspend(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *ida
 
 	ctx->state = BC_LINK_SUSPEND;
 	ctx->decoder_phase = CRYSTALHD_DECODER_RECOVERY_REQUIRED;
+	ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
 	ctx->decoder_channel_id = 0;
 
 	sts = crystalhd_hw_suspend(ctx->hw_ctx);
@@ -1910,6 +2305,7 @@ BC_STATUS crystalhd_delete_cmd_context(struct crystalhd_cmd *ctx)
 		crystalhd_delete_elem_pool(ctx->adp);
 	ctx->state = BC_LINK_INVALID;
 	ctx->session_owner = NULL;
+	crystalhd_stream_release(ctx);
 	crystalhd_decoder_tracking_reset(ctx);
 	ctx->adp = NULL;
 

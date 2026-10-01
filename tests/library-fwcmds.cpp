@@ -13,6 +13,7 @@
 static unsigned checks, failures, calls;
 static DTS_LIB_CONTEXT *active_context;
 static C011CmdSelfTest captured;
+static BC_FW_CMD captured_fw;
 static BC_STATUS ioctl_status;
 static uint32_t response_status;
 static bool syscall_failure;
@@ -39,6 +40,7 @@ extern "C" int __wrap_ioctl(int fd, unsigned long code, ...)
 	BC_IOCTL_DATA *data = va_arg(args, BC_IOCTL_DATA *);
 	va_end(args);
 	++calls;
+	captured_fw = data->u.fwCmd;
 	captured = *reinterpret_cast<C011CmdSelfTest *>(data->u.fwCmd.cmd);
 	C011RspSelfTest *response =
 		reinterpret_cast<C011RspSelfTest *>(data->u.fwCmd.rsp);
@@ -64,6 +66,8 @@ struct Fixture {
 		context.HWOutPicWidth = 1920;
 		context.HWOutPicHeight = 1080;
 		context.fwcmdseq = 40;
+		context.State = BC_DEC_STATE_STOP;
+		context.OpenRsp.channelId = 0;
 		pthread_mutexattr_t attr;
 		pthread_mutexattr_init(&attr);
 		pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
@@ -78,6 +82,7 @@ struct Fixture {
 		pooled.next = nullptr;
 		context.pIoDataFreeHd = &pooled;
 		captured = {};
+		captured_fw = {};
 		ioctl_status = BC_STS_SUCCESS;
 		response_status = 0;
 		syscall_failure = false;
@@ -96,6 +101,17 @@ struct Fixture {
 		active_context = nullptr;
 	}
 };
+
+static void CheckFirmwarePayload(const uint32_t expected[BC_MAX_FW_CMD_BUFF_SZ],
+				 const char *message)
+{
+	bool exact = captured_fw.flags == 0 && captured_fw.add_data == 0;
+
+	for (unsigned word = 0; word < BC_MAX_FW_CMD_BUFF_SZ; ++word)
+		exact &= captured_fw.cmd[word] == expected[word] &&
+		         captured_fw.rsp[word] == 0;
+	Check(exact, message);
+}
 
 static bool HasFleaParameters(uint32_t test_id)
 {
@@ -162,11 +178,68 @@ static void FailurePropagation()
 	      "pooled command storage is reusable after every failure path");
 }
 
+static void DecoderStartPayload()
+{
+	Fixture fixture(BC_PCI_DEVID_FLEA);
+	uint32_t expected[BC_MAX_FW_CMD_BUFF_SZ] = {};
+
+	expected[0] = 0x73763102U;
+	expected[1] = 41U;
+	Check(DtsFWActivateDecoder(&fixture.context) == BC_STS_SUCCESS,
+	      "decoder channel activation succeeds");
+	CheckFirmwarePayload(expected,
+		"decoder activation preserves the reviewed 64-word wire payload");
+	fixture.PoolReturned();
+
+	fixture.Prepare();
+	std::memset(expected, 0, sizeof(expected));
+	expected[0] = 0x7376311aU;
+	expected[1] = 42U;
+	expected[18] = 1U;
+	expected[20] = 1U;
+	expected[32] = 1U;
+	Check(DtsFWStartVideo(&fixture.context, 0, 0, 0, 1, 0) ==
+	          BC_STS_SUCCESS,
+	      "progressive H.264 video start succeeds");
+	CheckFirmwarePayload(expected,
+		"decoder start preserves the reviewed 64-word wire payload");
+	Check(fixture.context.State == BC_DEC_STATE_START,
+	      "successful low-level start publishes the library run state");
+	fixture.PoolReturned();
+
+	fixture.Prepare();
+	std::memset(expected, 0, sizeof(expected));
+	expected[0] = 0x7376311bU;
+	expected[1] = 43U;
+	expected[3] = 1U;
+	Check(DtsFWStopVideo(&fixture.context, 0, false) == BC_STS_SUCCESS,
+	      "started decoder channel stops successfully");
+	CheckFirmwarePayload(expected,
+		"decoder stop preserves the reviewed 64-word wire payload");
+	Check(fixture.context.State == BC_DEC_STATE_STOP,
+	      "successful low-level stop publishes the library stop state");
+	fixture.PoolReturned();
+
+	fixture.Prepare();
+	std::memset(expected, 0, sizeof(expected));
+	expected[0] = 0x73763101U;
+	expected[1] = 44U;
+	expected[3] = 1U;
+	fixture.context.OpenRsp.channelStatus = 0xfeedfaceU;
+	Check(DtsFWCloseChannel(&fixture.context, 0) == BC_STS_SUCCESS,
+	      "stopped decoder channel closes successfully");
+	CheckFirmwarePayload(expected,
+		"decoder close preserves the reviewed 64-word wire payload");
+	Check(fixture.context.OpenRsp.channelStatus == 0,
+	      "successful low-level close clears the cached open response");
+}
+
 int main()
 {
 	ValidTestIds(BC_PCI_DEVID_FLEA);
 	ValidTestIds(BC_PCI_DEVID_LINK);
 	FailurePropagation();
+	DecoderStartPayload();
 	std::printf("Library firmware commands: %u checks, %u failures\n",
 	            checks, failures);
 	return failures ? 1 : 0;
