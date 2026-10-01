@@ -32,6 +32,7 @@
 #include "libcrystalhd_priv.h"
 #include "libcrystalhd_int_if.h"
 #include "libcrystalhd_fwcmds.h"
+#include "crystalhd_ioctl_limits.h"
 
 #include <emmintrin.h>
 
@@ -43,6 +44,21 @@
 #define BCHP_MISC2_GLOBAL_CTRL 0x00502100 /* Global Control Register */
 #define BCHP_CLK_TEMP_MON_CTRL 0x00070040 /* Temperature monitor control. */
 #define BCHP_CLK_TEMP_MON_STATUS 0x00070044 /* Temperature monitor status. */
+
+static bool DtsIoctlTransferAllocationSize(uint32_t payload_size,
+					   uint32_t *allocation_size)
+{
+	unsigned int checked_size;
+
+	if ((payload_size & 3U) ||
+	    !crystalhd_ioctl_transfer_size(payload_size / 4U, &checked_size) ||
+	    checked_size != payload_size ||
+	    sizeof(BC_IOCTL_DATA) > (size_t)UINT32_MAX - checked_size)
+		return false;
+
+	*allocation_size = (uint32_t)sizeof(BC_IOCTL_DATA) + checked_size;
+	return true;
+}
 
 
 //===================================Externs ===========================================
@@ -801,14 +817,11 @@ DtsDevMemRd(
 		return BC_STS_INV_ARG;
 	}
 
-	if(BuffSz % 4)
+	if(!DtsIoctlTransferAllocationSize(BuffSz, &AllocSz))
 	{
-		DebugLog_Trace(LDIL_DBG,"DtsDevMemRd: Buff Size is not a multiple of DWORD\n");
+		DebugLog_Trace(LDIL_DBG,"DtsDevMemRd: Invalid buffer size\n");
 		return BC_STS_ERROR;
 	}
-
-
-	AllocSz = sizeof(BC_IOCTL_DATA) + (BuffSz);
 
 	pIoctlData = (BC_IOCTL_DATA *) malloc(AllocSz);
 
@@ -889,14 +902,11 @@ DtsDevMemWr(
 		return BC_STS_INV_ARG;
 	}
 
-	if(BuffSz % 4)
+	if(!DtsIoctlTransferAllocationSize(BuffSz, &AllocSz))
 	{
-		DebugLog_Trace(LDIL_DBG,"DtsDevMemWr: Buff Size is not a multiple of DWORD\n");
+		DebugLog_Trace(LDIL_DBG,"DtsDevMemWr: Invalid buffer size\n");
 		return BC_STS_ERROR;
 	}
-
-
-	AllocSz = sizeof(BC_IOCTL_DATA) + (BuffSz);
 
 	pIoctlData = (BC_IOCTL_DATA *) malloc(AllocSz);
 
@@ -1625,12 +1635,11 @@ DtsPushFwBinToLink(
 		return BC_STS_INV_ARG;
 	}
 
-	if (BuffSz % 4) {
-		DebugLog_Trace(LDIL_DBG,"DtsPushFwBinToLink: Buff Size is not a multiple of DWORD\n");
+	if (!DtsIoctlTransferAllocationSize(BuffSz, &AllocSz)) {
+		DebugLog_Trace(LDIL_DBG,"DtsPushFwBinToLink: Invalid buffer size\n");
 		return BC_STS_ERROR;
 	}
 
-	AllocSz = sizeof(BC_IOCTL_DATA) + (BuffSz);
 	pIoctlData = (BC_IOCTL_DATA *) malloc(AllocSz);
 	if(!pIoctlData) {
 		DebugLog_Trace(LDIL_DBG,"DtsPushFwBinToLink: Memory Allocation Failed\n");
@@ -1647,17 +1656,19 @@ DtsPushFwBinToLink(
 
 	if (!DtsDrvIoctl(hDevice, BCM_IOC_FW_DOWNLOAD, pIoctlData, AllocSz, pIoctlData, AllocSz, (LPDWORD)&BytesReturned, 0)) {
 		DebugLog_Trace(LDIL_DBG,"DtsPushFwBinToLink: DeviceIoControl Failed\n");
+		free(pIoctlData);
 		return BC_STS_ERROR;
 	}
 
 	if (BC_STS_ERROR == pIoctlData->RetSts) {
+		BC_STATUS status = pIoctlData->RetSts;
+
 		DebugLog_Trace(LDIL_DBG,"DtsPushFwBinToLink: IOCTL Cmd Failed By Driver\n");
-		return pIoctlData->RetSts;
+		free(pIoctlData);
+		return status;
 	}
 
-	if(pIoctlData) {
-		free(pIoctlData);
-	}
+	free(pIoctlData);
 
 	return BC_STS_SUCCESS;
 }
