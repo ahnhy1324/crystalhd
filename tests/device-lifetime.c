@@ -61,6 +61,7 @@ struct crystalhd_cmd {
 	uint32_t fw_sequence, decoder_channel_id;
 	struct crystalhd_stream *stream;
 	uint32_t cin_wait_exit, pwr_state_change, state;
+	bool retain_rx_on_suspend;
 };
 typedef struct crystalhd_ioctl_data {
 	struct crystalhd_ioctl_data *next;
@@ -149,6 +150,7 @@ static void kfree(void *ptr)
 				assert(!chdev_live && !class_live);
 				assert(!frontend_live);
 				assert(!adp->cmds.session_owner);
+				assert(!adp->cmds.retain_rx_on_suspend);
 				assert(adp->cmds.decoder_phase ==
 				       CRYSTALHD_DECODER_COLD);
 				assert(adp->cmds.decoder_codec ==
@@ -373,6 +375,7 @@ static struct crystalhd_adp *attach(bool playback, bool msi)
 	}
 	if (playback) {
 		adp->cmds.session_owner = &adp->cmds.user[0];
+		adp->cmds.retain_rx_on_suspend = true;
 		adp->cmds.hw_ctx = allocate(sizeof(*adp->cmds.hw_ctx), HARDWARE);
 		adp->cmds.hw_ctx->rx_freeq = adp;
 		adp->fill_byte_pool = allocate(1, DIO_POOL);
@@ -511,6 +514,7 @@ static void test_external_owner_teardown(void)
 		reset();
 		adp = attach(true, true);
 		adp->cmds.session_owner = &external_owner;
+		adp->cmds.retain_rx_on_suspend = false;
 		adp->cmds.decoder_phase = CRYSTALHD_DECODER_CHANNEL_STARTED;
 		adp->cmds.decoder_codec = CRYSTALHD_DECODER_CODEC_H264;
 		adp->cmds.fw_sequence = 5;

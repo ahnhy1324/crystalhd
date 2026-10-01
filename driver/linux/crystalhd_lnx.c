@@ -1319,6 +1319,16 @@ int chd_dec_pci_suspend(struct pci_dev *pdev, pm_message_t state)
 		goto fail_closed;
 	}
 	chd_dec_disable_int(adp);
+	/* Even an early-success command suspend must establish the DMA barrier
+	 * before frontend callbacks can return capture backing to its owner.
+	 */
+	pci_clear_master(pdev);
+	if (!pci_wait_for_pending_transaction(pdev)) {
+		dev_err(dev, "PCI transactions pending during suspend\n");
+		rc = -EIO;
+		goto fail_closed;
+	}
+	crystalhd_rx_retire_quiesced(&adp->cmds, true);
 	pci_save_state(pdev);
 
 	/* Disable IO/bus master/irq router */

@@ -650,6 +650,14 @@ BC_STATUS crystalhd_hw_start_capture(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_stop_capture(struct crystalhd_hw *hw, bool unmap);
 /* Process callers must hold fetch_sem before calling the locked variant. */
 BC_STATUS crystalhd_hw_stop_capture_locked(struct crystalhd_hw *hw, bool unmap);
+/* Process-context ownership retirement only: caller has stopped and drained
+ * DMA, synchronized/disabled IRQs, and excluded all submissions and dequeues.
+ * Caller retains hw/adp lifetime and does not hold fetch_sem. All RX packets
+ * detach before callbacks, which run without capture locks but may still be
+ * inside a device/session barrier. Callbacks must not reenter or wait on that
+ * barrier. Rings/queues remain allocated; no hardware/IRQ callback runs here.
+ */
+void crystalhd_hw_retire_rx_quiesced(struct crystalhd_hw *hw);
 void crystalhd_hw_dma_fatal_stop(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_suspend(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_resume(struct crystalhd_hw *hw);

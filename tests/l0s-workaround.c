@@ -508,8 +508,12 @@ static void test_fault_edges(void)
 }
 
 /* The runner extracts complete IRQ/PM functions from crystalhd_lnx.c. */
-struct crystalhd_hw { bool dma_fault; };
-struct crystalhd_cmd { int cin_wait_exit; struct crystalhd_hw *hw_ctx; };
+struct crystalhd_hw { bool dma_fault, rx_registered; };
+struct crystalhd_cmd {
+	int cin_wait_exit;
+	struct crystalhd_hw *hw_ctx;
+	bool retain_rx_on_suspend;
+};
 struct crystalhd_adp {
 	struct pci_dev *pdev;
 	const char *name;
@@ -539,6 +543,7 @@ static unsigned int msi_requests, msi_disables, irq_requests, irq_frees;
 static int msi_result, irq_result;
 static bool msi_active, irq_active;
 static bool pm_tracking, pm_master, pm_bound, pm_alloc_fail;
+static bool pm_dma_drained;
 static bool pm_resume_success_pending;
 static bool pm_frontend_live;
 static int pm_enable_error, pm_suspend_error, pm_resume_error, pm_pending;
@@ -546,6 +551,8 @@ static int chd_device_lock, pm_lock_depth, pm_user_lock_depth;
 static unsigned int pm_user_locks, pm_user_unlocks;
 static unsigned int pm_allocs, pm_frees, pm_saves, pm_enables, pm_disables;
 static unsigned int pm_suspends, pm_resumes, pm_clears, pm_waits;
+static unsigned int pm_fail_wait;
+static unsigned int pm_rx_retires, pm_rx_releases;
 static crystalhd_ioctl_data pm_data;
 static struct crystalhd_hw pm_hw;
 static char pm_events[128];
@@ -650,6 +657,7 @@ static void pci_clear_master(struct pci_dev *dev)
 {
 	CHECK(dev == &endpoint);
 	pm_master = false;
+	pm_dma_drained = false;
 	pm_clears++;
 	pm_event('C');
 }
@@ -660,14 +668,19 @@ static void pci_set_master(struct pci_dev *dev)
 		CHECK(pm_user_lock_depth == 1);
 	CHECK(!(endpoint.lnkctl & 1) && !(parent.lnkctl & 1));
 	pm_master = true;
+	pm_dma_drained = false;
 	pm_event('M');
 }
 static int pci_wait_for_pending_transaction(struct pci_dev *dev)
 {
-	CHECK(dev == &endpoint && !pm_master && pm_lock_depth == 1);
+	CHECK(dev == &endpoint && !pm_master);
+	CHECK(pm_lock_depth + pm_user_lock_depth == 1);
+	if (pm_user_lock_depth)
+		CHECK(!irq_active && !msi_active && !irq_adapter.hw_accessible);
 	pm_waits++;
 	pm_event('W');
-	return pm_pending;
+	pm_dma_drained = pm_pending && pm_waits != pm_fail_wait;
+	return pm_dma_drained;
 }
 static void *pci_get_drvdata(struct pci_dev *dev)
 {
@@ -711,8 +724,11 @@ static BC_STATUS crystalhd_resume(struct crystalhd_cmd *cmd)
 static void pci_save_state(struct pci_dev *dev)
 {
 	CHECK(dev == &endpoint && !irq_active && !irq_adapter.irq_registered);
+	CHECK(!pm_master && pm_dma_drained);
 	CHECK(pm_user_lock_depth == 1);
 	CHECK(!irq_adapter.hw_accessible);
+	CHECK(!irq_adapter.cmds.hw_ctx || irq_adapter.cmds.retain_rx_on_suspend ||
+	      !pm_hw.rx_registered);
 	CHECK(endpoint.lnkctl == 0x43 && parent.lnkctl == 0x43);
 	pm_saves++;
 	pm_event('S');
@@ -746,6 +762,23 @@ static void pci_set_power_state(struct pci_dev *dev, int state)
 	CHECK(pm_user_lock_depth == 1);
 	pm_event('P');
 }
+/* Boundary only: real hardware queue detach/release is tested by rx-ownership.
+ * The actual command wrapper below decides whether legacy suspend retains RX.
+ */
+static void crystalhd_hw_retire_rx_quiesced(struct crystalhd_hw *hw)
+{
+	CHECK(hw == &pm_hw && irq_adapter.cmds.hw_ctx == hw);
+	CHECK(!pm_master && !irq_active && !msi_active && pm_dma_drained && pm_waits);
+	CHECK(pm_lock_depth + pm_user_lock_depth == 1);
+	CHECK(!irq_adapter.present || !irq_adapter.hw_accessible);
+	pm_rx_retires++;
+	if (hw->rx_registered) {
+		hw->rx_registered = false;
+		pm_rx_releases++;
+	}
+	pm_event('T');
+}
+#include "l0s-retire-command.h"
 #include "l0s-irq-functions.h"
 
 static void reset_irq_model(const char *name)
@@ -833,6 +866,7 @@ static void reset_pm_model(const char *name)
 {
 	reset_irq_model(name);
 	pm_master = pm_bound = true;
+	pm_dma_drained = false;
 	pm_alloc_fail = false;
 	pm_resume_success_pending = false;
 	pm_frontend_live = true;
@@ -842,12 +876,15 @@ static void reset_pm_model(const char *name)
 	pm_user_locks = pm_user_unlocks = 0;
 	pm_allocs = pm_frees = pm_saves = pm_enables = pm_disables = 0;
 	pm_suspends = pm_resumes = pm_clears = pm_waits = 0;
+	pm_fail_wait = 0;
+	pm_rx_retires = pm_rx_releases = 0;
 	pm_event_count = 0;
 	pm_events[0] = '\0';
-	pm_hw = (struct crystalhd_hw){0};
+	pm_hw = (struct crystalhd_hw){.rx_registered = true};
 	irq_adapter.present = 1;
 	irq_adapter.hw_accessible = true;
 	irq_adapter.cmds.hw_ctx = &pm_hw;
+	irq_adapter.cmds.retain_rx_on_suspend = true;
 	CHECK(crystalhd_l0s_init(&endpoint, &irq_adapter.l0s, true) == 0);
 	CHECK(chd_dec_enable_int(&irq_adapter) == 0);
 	pm_tracking = true;
@@ -864,14 +901,14 @@ static void finish_pm_model(void)
 	      !pm_user_lock_depth && pm_user_locks == pm_user_unlocks);
 }
 
-static void check_pm_closed(void)
+static void check_pm_closed(unsigned int expected_waits)
 {
 	unsigned int old_events = pm_event_count, old_reads = reads;
 	CHECK(!irq_adapter.present && irq_adapter.cmds.cin_wait_exit);
 	CHECK(!pm_frontend_live);
 	CHECK(!pm_master && !irq_active && !msi_active && !pm_lock_depth);
 	CHECK(!irq_adapter.irq_registered && !irq_adapter.msi);
-	CHECK(pm_waits == 1);
+	CHECK(pm_waits == expected_waits);
 	CHECK(chd_dec_pci_suspend(&endpoint, 3) == -ENODEV);
 	CHECK(chd_dec_pci_resume(&endpoint) == -ENODEV);
 	CHECK(pm_event_count == old_events && reads == old_reads);
@@ -880,14 +917,20 @@ static void check_pm_closed(void)
 static void test_pm_lifecycle(void)
 {
 	unsigned int which;
-	for (which = 0; which < 2; which++) {
+	for (which = 0; which < 3; which++) {
 		reset_pm_model(which ?
 			"active PM callbacks restore readiness only after decoder resume" :
 			"idle PM callbacks gate readiness without a hardware context");
-		if (!which) irq_adapter.cmds.hw_ctx = NULL;
+		if (!which) {
+			irq_adapter.cmds.hw_ctx = NULL;
+			pm_hw.rx_registered = false;
+		}
+		if (which == 2) irq_adapter.cmds.retain_rx_on_suspend = false;
 		CHECK(irq_adapter.hw_accessible);
 		CHECK(chd_dec_pci_suspend(&endpoint, 3) == 0);
-		CHECK(strcmp(pm_events, "DFSXP") == 0);
+		CHECK(strcmp(pm_events, which == 2 ? "DFCWTSXP" : "DFCWSXP") == 0);
+		CHECK(pm_rx_retires == (which == 2) && pm_rx_releases == (which == 2));
+		CHECK(pm_hw.rx_registered == (which == 1));
 		CHECK(pm_allocs == 1 && pm_frees == 1 && pm_saves == 1);
 		CHECK(!irq_adapter.l0s.raw_active && irq_adapter.present);
 		CHECK(!irq_adapter.hw_accessible);
@@ -900,6 +943,19 @@ static void test_pm_lifecycle(void)
 		CHECK(pm_frontend_live);
 		CHECK(irq_adapter.cmds.hw_ctx == (which ? &pm_hw : NULL));
 		CHECK(pm_master && irq_active && msi_active && pm_resumes == 1);
+		finish_pm_model();
+	}
+
+	for (which = 0; which < 2; which++) {
+		reset_pm_model("suspend pending timeout retries only through fail-closed barrier");
+		irq_adapter.cmds.retain_rx_on_suspend = which != 0;
+		pm_fail_wait = 1;
+		CHECK(chd_dec_pci_suspend(&endpoint, 3) == -EIO);
+		CHECK(strncmp(pm_events, "DFCWLCW", 7) == 0);
+		CHECK(pm_waits == 2 && pm_dma_drained && !pm_saves && !pm_disables);
+		CHECK(!pm_rx_retires && !pm_rx_releases && pm_hw.rx_registered);
+		CHECK(!irq_adapter.hw_accessible && irq_frees == 1 && msi_disables == 1);
+		check_pm_closed(2);
 		finish_pm_model();
 	}
 
@@ -922,7 +978,7 @@ static void test_pm_lifecycle(void)
 		CHECK(pm_allocs == 1 && pm_frees == which && pm_suspends == which);
 		if (which) {
 			CHECK(strcmp(pm_events, "DLCWFU") == 0);
-			check_pm_closed();
+			check_pm_closed(1);
 		} else {
 			CHECK(!pm_waits && irq_adapter.present && irq_active);
 			CHECK(irq_adapter.hw_accessible);
@@ -939,7 +995,7 @@ static void test_pm_lifecycle(void)
 		CHECK(strcmp(pm_events, "DLCWFU") == 0);
 		CHECK(!pm_saves && !pm_disables && pm_allocs == pm_frees);
 		CHECK(!irq_adapter.hw_accessible);
-		check_pm_closed();
+		check_pm_closed(1);
 		CHECK(chd_dec_disable_int(&irq_adapter) == 0);
 		CHECK(irq_frees == 1 && msi_disables == 1);
 		finish_pm_model();
@@ -963,7 +1019,7 @@ static void test_pm_lifecycle(void)
 		CHECK(strstr(pm_events, "LCW") != NULL);
 		CHECK(pm_resumes == (which >= 3 ? 1U : 0U));
 		CHECK(!irq_adapter.hw_accessible);
-		check_pm_closed();
+		check_pm_closed(2);
 		check_original(0x43, 0x43);
 		CHECK(!irq_adapter.l0s.raw_active);
 		CHECK(chd_dec_disable_int(&irq_adapter) == 0);

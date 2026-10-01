@@ -101,6 +101,9 @@ static unsigned fetch_wait_calls;
 static unsigned fetch_try_calls, try_mutation_at;
 static unsigned try_sem_mutation, try_fetch_mutation;
 static bool checking_try_release;
+static bool checking_quiesced_retire;
+static unsigned quiesced_releases, quiesced_downs;
+static uint64_t quiesced_epoch;
 static unsigned dram_write_calls, firmware_alive_checks;
 static uint32_t dram_write_address, dram_write_dwords, dram_write_value;
 static unsigned interrupt_after;
@@ -299,6 +302,9 @@ static BC_STATUS crystalhd_dioq_add(struct crystalhd_dioq *queue, void *data,
 static void *fetch_index(struct crystalhd_dioq *queue, unsigned index)
 {
     struct crystalhd_rx_dma_pkt *packet;
+    if (checking_quiesced_retire)
+        check(!hardware.fetch_sem,
+              "quiesced retirement detaches queue owners under fetch serialization");
     if (index >= queue->count) return NULL;
     packet = queue->packets[index];
     queue->count--;
@@ -396,10 +402,29 @@ static BC_STATUS crystalhd_map_dio(struct crystalhd_adp *adp, void *buffer,
     *result = &requests[i];
     return BC_STS_SUCCESS;
 }
+static void observe_quiesced_release(void)
+{
+    if (!checking_quiesced_retire)
+        return;
+    quiesced_releases++;
+    check(quiesced_releases <= 16 && hardware.fetch_sem == 1 &&
+          !hardware.lock && !hardware.rx_lock &&
+          hardware.rx_cancel_epoch == quiesced_epoch,
+          "quiesced release is bounded and runs after epoch publication outside RX locks");
+    check(!active.count && !ready.count && !available.count &&
+          !hardware.rx_fallback_head,
+          "every queue and fallback owner is detached before the first release callback");
+    for (unsigned p = 0; p < BC_RX_LIST_CNT; p++)
+        check(!packets[p].buffer && !packets[p].cookie &&
+              !packets[p].capture_epoch &&
+              memory_is_zero(&packets[p].metadata, sizeof(packets[p].metadata)),
+              "each release sees every packet identity and metadata already cleared");
+}
 static BC_STATUS crystalhd_unmap_dio(struct crystalhd_adp *adp, struct crystalhd_dio_req *request)
 {
     size_t i = request_index(request);
     assert(adp == &adapter);
+    observe_quiesced_release();
     if (checking_try_release)
         check(hardware.fetch_sem == 1,
               "cancelled try completion releases backing only after dropping fetch semaphore");
@@ -422,6 +447,7 @@ static void direct_release(struct crystalhd_adp *adp,
     size_t i = buffer_index(buffer);
 
     assert(adp == &adapter && buffer == &direct_buffers[i]);
+    observe_quiesced_release();
     if (checking_try_release)
         check(hardware.fetch_sem == 1,
               "cancelled direct completion releases backing outside fetch semaphore");
@@ -513,7 +539,13 @@ static int down_interruptible(int *sem)
         apply_try_mutation(try_sem_mutation);
     return 0;
 }
-static void down(int *sem) { assert(sem == &hardware.fetch_sem && *sem == 1); *sem = 0; }
+static void down(int *sem)
+{
+    assert(sem == &hardware.fetch_sem && *sem == 1);
+    if (checking_quiesced_retire)
+        quiesced_downs++;
+    *sem = 0;
+}
 static void up(int *sem) { assert(sem == &hardware.fetch_sem && !*sem); *sem = 1; }
 static void disable_irq(int irq)
 {
@@ -740,6 +772,9 @@ static void reset(uint32_t device)
     fetch_wait_calls = interrupt_after = 0;
     fetch_try_calls = try_mutation_at = try_sem_mutation = try_fetch_mutation = 0;
     checking_try_release = false;
+    checking_quiesced_retire = false;
+    quiesced_releases = quiesced_downs = 0;
+    quiesced_epoch = 0;
     dram_write_calls = firmware_alive_checks = 0;
     dram_write_address = dram_write_dwords = dram_write_value = 0;
     map_status = translate_status = post_status = queue_status = BC_STS_SUCCESS;
@@ -1784,6 +1819,143 @@ static void fallback_free_ring_cases(uint32_t device)
     inventory(0, 0, 0);
     drain();
 }
+static void quiesced_retirement_cases(uint32_t device)
+{
+    /* Independent owner counts, including the complete sixteen-packet pool.
+     * Active ownership never exceeds the two hardware lists.
+     */
+    static const unsigned layouts[][4] = {
+        {0, 0, 0, 0}, {1, 0, 0, 0}, {0, 1, 0, 0},
+        {0, 0, 1, 0}, {0, 0, 0, 1}, {1, 1, 1, 1},
+        {2, 5, 5, 4}, {0, 16, 0, 0}, {0, 0, 16, 0}, {0, 0, 0, 16},
+    };
+
+    _Static_assert(BC_RX_LIST_CNT == 16, "retirement ownership bound");
+    for (unsigned backing = 0; backing < 3; backing++) {
+        for (unsigned layout = 0; layout < ARRAY_SIZE(layouts); layout++) {
+            struct crystalhd_dioq *queues[] = { &active, &ready, &available };
+            struct dma_desc_mem descriptors[BC_RX_LIST_CNT];
+            unsigned owners = 0;
+
+            reset(device);
+            hardware.rx_cancel_epoch = UINT64_C(0x10000002a);
+            hardware.dma_fault = true; /* DMA has already been quiesced externally. */
+            adapter.present = 0;
+            adapter.pdev = NULL; /* No PCI/IRQ/MMIO access is valid at this boundary. */
+            hardware.rx_list_sts[0] = 0x1234;
+            hardware.rx_list_sts[1] = 0x5678;
+            hardware.rx_list_post_index = 1;
+            for (unsigned q = 0; q < ARRAY_SIZE(layouts[layout]); q++) {
+                for (unsigned n = 0; n < layouts[layout][q]; n++, owners++) {
+                    struct crystalhd_rx_dma_pkt *packet;
+                    struct crystalhd_rx_buffer *buffer;
+
+                    if (backing == 0 || (backing == 2 && (owners & 1))) {
+                        struct crystalhd_dio_req *request = NULL;
+
+                        check(crystalhd_map_dio(&adapter, buffers[owners],
+                              sizeof(buffers[owners]), 128, MODE420, false,
+                              &request) == BC_STS_SUCCESS,
+                              "prepare legacy backing for quiesced retirement");
+                        buffer = &request->rx_buffer;
+                    } else {
+                        buffer = map_private_at(owners, true);
+                    }
+                    packet = crystalhd_hw_alloc_rx_pkt(&hardware);
+                    assert(packet);
+                    packet->buffer = buffer;
+                    packet->cookie = buffer->cookie;
+                    packet->capture_epoch = hardware.rx_cancel_epoch;
+                    packet->flags = COMP_FLAG_DATA_VALID;
+                    memset(&packet->metadata, 0xa5, sizeof(packet->metadata));
+                    if (q < ARRAY_SIZE(queues))
+                        check(crystalhd_dioq_add(queues[q], packet, false,
+                              owners + 1) == BC_STS_SUCCESS,
+                              "prepare exact queue owner for quiesced retirement");
+                    else
+                        crystalhd_hw_retain_rx_pkt(&hardware, packet);
+                }
+            }
+            for (unsigned p = 0; p < BC_RX_LIST_CNT; p++)
+                descriptors[p] = packets[p].desc_mem;
+            inventory(layouts[layout][0], layouts[layout][1], layouts[layout][2]);
+            interrupt_lock = true;
+            checking_quiesced_retire = true;
+            quiesced_epoch = UINT64_C(0x10000002b);
+            crystalhd_hw_retire_rx_quiesced(&hardware);
+            check(quiesced_releases == owners && quiesced_downs == 1 &&
+                  !sem_attempts && interrupt_lock &&
+                  hardware.rx_cancel_epoch == UINT64_C(0x10000002b),
+                  "quiesced retirement advances epoch once and cannot be abandoned by a signal");
+            inventory(0, 0, 0);
+            for (unsigned p = 0; p < BC_RX_LIST_CNT; p++) {
+                check(unmaps[p] == (p < owners) && !mapped[p],
+                      "quiesced retirement releases each registered owner exactly once");
+                check(!memcmp(&packets[p].desc_mem, &descriptors[p], sizeof(descriptors[p])),
+                      "quiesced retirement preserves packet DMA-ring allocations");
+            }
+            quiesced_epoch++;
+            crystalhd_hw_retire_rx_quiesced(&hardware);
+            check(quiesced_releases == owners && quiesced_downs == 2 &&
+                  hardware.rx_cancel_epoch == UINT64_C(0x10000002c),
+                  "repeated empty retirement advances cancellation without a second release");
+            check(hardware.rx_actq == &active && hardware.rx_rdyq == &ready &&
+                  hardware.rx_freeq == &available && hardware.dma_fault &&
+                  hardware.rx_list_sts[0] == 0x1234 &&
+                  hardware.rx_list_sts[1] == 0x5678 &&
+                  hardware.rx_list_post_index == 1 && context.state == BC_LINK_READY &&
+                  !irq_disables && !irq_enables && !post_calls && !stop_calls &&
+                  !notify_calls && !pause_calls && !hardware_notifications &&
+                  !dram_write_calls && !firmware_alive_checks,
+                  "memory-only retirement leaves queues, ring state and command state intact without hardware callbacks");
+            checking_quiesced_retire = false;
+            inventory(0, 0, 0);
+        }
+    }
+
+    reset(device);
+    hardware.rx_actq = hardware.rx_rdyq = hardware.rx_freeq = NULL;
+    checking_quiesced_retire = true;
+    quiesced_epoch = 1;
+    crystalhd_hw_retire_rx_quiesced(&hardware);
+    check(hardware.rx_cancel_epoch == 1 && hardware.fetch_sem == 1 &&
+          quiesced_downs == 1 && !quiesced_releases &&
+          !hardware.rx_actq && !hardware.rx_rdyq && !hardware.rx_freeq,
+          "an unconfigured context without queues still invalidates the cancellation epoch");
+    checking_quiesced_retire = false;
+    {
+        struct crystalhd_rx_buffer *buffer = map_private_at(0, true);
+        struct crystalhd_rx_dma_pkt *packet = crystalhd_hw_alloc_rx_pkt(&hardware);
+
+        assert(packet);
+        packet->buffer = buffer;
+        packet->cookie = buffer->cookie;
+        crystalhd_hw_retain_rx_pkt(&hardware, packet);
+        checking_quiesced_retire = true;
+        quiesced_epoch = 2;
+        crystalhd_hw_retire_rx_quiesced(&hardware);
+        check(quiesced_releases == 1 && unmaps[0] == 1 && !mapped[0] &&
+              !hardware.rx_fallback_head && hardware.rx_cancel_epoch == 2,
+              "fallback ownership is retired even when every ordinary queue is absent");
+        checking_quiesced_retire = false;
+        inventory(0, 0, 0);
+    }
+
+    reset(device);
+    hardware.adp = NULL;
+    {
+        struct crystalhd_hw before = hardware;
+
+        checking_quiesced_retire = true;
+        crystalhd_hw_retire_rx_quiesced(NULL);
+        crystalhd_hw_retire_rx_quiesced(&hardware);
+        check(!memcmp(&before, &hardware, sizeof(before)) &&
+              !quiesced_releases && !quiesced_downs,
+              "NULL hardware and absent adapter are no-ops before semaphore access");
+        checking_quiesced_retire = false;
+    }
+}
+
 static void legacy_fetch_rejects_generic_case(uint32_t device)
 {
     crystalhd_ioctl_data data = {0};
@@ -3065,6 +3237,7 @@ int main(void)
         retry_cases(devices[i]);
         fallback_ownership_cases(devices[i]);
         fallback_free_ring_cases(devices[i]);
+        quiesced_retirement_cases(devices[i]);
         legacy_fetch_rejects_generic_case(devices[i]);
         free_count_consumer_cases(devices[i]);
         for (unsigned failure = 0; failure < 4; failure++) format_case(devices[i], failure);

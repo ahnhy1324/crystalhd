@@ -198,6 +198,7 @@ BC_STATUS crystalhd_session_acquire_locked(struct crystalhd_cmd *ctx,
 	crystalhd_stream_release(ctx);
 	crystalhd_decoder_tracking_reset(ctx);
 	ctx->session_owner = owner;
+	ctx->retain_rx_on_suspend = false;
 	ctx->cin_wait_exit = 0;
 	return BC_STS_SUCCESS;
 }
@@ -212,6 +213,7 @@ BC_STATUS crystalhd_session_release_locked(struct crystalhd_cmd *ctx,
 
 	crystalhd_retire_hw_context(ctx, true);
 	ctx->session_owner = NULL;
+	ctx->retain_rx_on_suspend = false;
 	return BC_STS_SUCCESS;
 }
 
@@ -280,6 +282,7 @@ BC_STATUS crystalhd_user_set_mode(struct crystalhd_cmd *ctx,
 	if (sts != BC_STS_SUCCESS)
 		return sts;
 
+	ctx->retain_rx_on_suspend = true;
 	uc->mode = mode;
 	return BC_STS_SUCCESS;
 }
@@ -2070,6 +2073,15 @@ static BC_STATUS bc_cproc_session_owner_required(struct crystalhd_cmd *ctx,
 }
 
 /*=============== Cmd Proc Functions.. ===================================*/
+void crystalhd_rx_retire_quiesced(struct crystalhd_cmd *ctx, bool suspend_only)
+{
+	if (!ctx || !ctx->hw_ctx ||
+	    (suspend_only && ctx->retain_rx_on_suspend))
+		return;
+
+	crystalhd_hw_retire_rx_quiesced(ctx->hw_ctx);
+}
+
 /**
  * crystalhd_suspend - Power management suspend request.
  * @ctx: Command layer context.
@@ -2262,6 +2274,7 @@ BC_STATUS crystalhd_setup_cmd_context(struct crystalhd_cmd *ctx,
 
 	ctx->adp = adp;
 	ctx->session_owner = NULL;
+	ctx->retain_rx_on_suspend = false;
 	crystalhd_decoder_tracking_reset(ctx);
 	for (i = 0; i < BC_LINK_MAX_OPENS; i++) {
 		ctx->user[i].uid = i;
@@ -2314,6 +2327,7 @@ BC_STATUS crystalhd_delete_cmd_context(struct crystalhd_cmd *ctx)
 		crystalhd_delete_elem_pool(ctx->adp);
 	ctx->state = BC_LINK_INVALID;
 	ctx->session_owner = NULL;
+	ctx->retain_rx_on_suspend = false;
 	crystalhd_stream_release(ctx);
 	crystalhd_decoder_tracking_reset(ctx);
 	ctx->adp = NULL;

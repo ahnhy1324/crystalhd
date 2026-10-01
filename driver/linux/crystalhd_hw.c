@@ -521,6 +521,29 @@ static unsigned int crystalhd_hw_detach_rx_owners(
 	return retired_count;
 }
 
+void crystalhd_hw_retire_rx_quiesced(struct crystalhd_hw *hw)
+{
+	struct crystalhd_rx_buffer *retired[BC_RX_LIST_CNT];
+	unsigned int retired_count, retired_index;
+
+	if (!hw || !hw->adp)
+		return;
+
+	/* DMA and IRQs are already quiesced, and the caller excludes new work.
+	 * The fixed packet inventory bounds detachment without waiting for DMA.
+	 */
+	down(&hw->fetch_sem);
+	hw->rx_cancel_epoch++;
+	retired_count = crystalhd_hw_detach_rx_owners(hw, retired);
+	up(&hw->fetch_sem);
+
+	/* A callback may return backing storage to its frontend. No packet may
+	 * retain that frontend's identity, and no capture lock may be held here.
+	 */
+	for (retired_index = 0; retired_index < retired_count; retired_index++)
+		crystalhd_rx_buffer_release(hw->adp, retired[retired_index]);
+}
+
 #define crystalhd_hw_create_ioq(sts, hw, q, cb)			\
 do {								\
 	sts = crystalhd_create_dioq(hw->adp, &q, cb, hw);	\
