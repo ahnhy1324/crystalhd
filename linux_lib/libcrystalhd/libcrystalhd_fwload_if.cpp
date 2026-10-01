@@ -32,6 +32,71 @@
 #include "libcrystalhd_fwload_if.h"
 #include "libcrystalhd_int_if.h"
 #include "libcrystalhd_priv.h"
+#include "crystalhd_ioctl_limits.h"
+
+static BC_STATUS fwbinPushToDevice(HANDLE hDevice, char *FwBinFile,
+				   uint32_t *bytesDnld, const char *device)
+{
+	BC_STATUS status = BC_STS_ERROR;
+	long file_size;
+	size_t bytes_read;
+	char *buffer = NULL;
+	FILE *file = NULL;
+
+	if (bytesDnld)
+		*bytesDnld = 0;
+	if (!FwBinFile || !hDevice || !bytesDnld) {
+		DebugLog_Trace(LDIL_DBG,"Invalid Arguments\n");
+		return BC_STS_INV_ARG;
+	}
+
+	file = fopen(FwBinFile, "rb");
+	if (!file) {
+		DebugLog_Trace(LDIL_DBG,"Failed to Open FW file.  %s\n", FwBinFile);
+		perror(device);
+		return BC_STS_ERROR;
+	}
+
+	if (fseek(file, 0, SEEK_END) || (file_size = ftell(file)) < 0) {
+		DebugLog_Trace(LDIL_DBG,"Failed to query FW file size\n");
+		status = BC_STS_IO_ERROR;
+		goto done;
+	}
+	if (!file_size || (file_size & 3L) ||
+	    file_size > (long)CRYSTALHD_MAX_FIRMWARE_SIZE) {
+		DebugLog_Trace(LDIL_DBG,"Invalid FW file size\n");
+		status = BC_STS_INV_ARG;
+		goto done;
+	}
+	if (fseek(file, 0, SEEK_SET)) {
+		DebugLog_Trace(LDIL_DBG,"Failed to rewind FW file\n");
+		status = BC_STS_IO_ERROR;
+		goto done;
+	}
+
+	buffer = (char *)malloc((size_t)file_size);
+	if (!buffer) {
+		DebugLog_Trace(LDIL_DBG,"Failed to allocate memory\n");
+		status = BC_STS_INSUFF_RES;
+		goto done;
+	}
+
+	bytes_read = fread(buffer, 1, (size_t)file_size, file);
+	if (bytes_read != (size_t)file_size) {
+		DebugLog_Trace(LDIL_DBG,"Failed to read complete FW file\n");
+		status = BC_STS_IO_ERROR;
+		goto done;
+	}
+
+	/* Preserve the complete submitted count even if the download fails. */
+	*bytesDnld = (uint32_t)bytes_read;
+	status = DtsPushFwBinToLink(hDevice, (uint32_t *)buffer, *bytesDnld);
+
+done:
+	free(buffer);
+	fclose(file);
+	return status;
+}
 
 DRVIFLIB_INT_API BC_STATUS
 DtsPushAuthFwToLink(HANDLE hDevice, char *FwBinFile)
@@ -132,91 +197,13 @@ DtsPushFwToFlea(HANDLE hDevice, char *FwBinFile)
 DRVIFLIB_INT_API BC_STATUS
 fwbinPushToLINK(HANDLE hDevice, char *FwBinFile, uint32_t *bytesDnld)
 {
-	BC_STATUS	status=BC_STS_ERROR;
-	uint32_t	FileSz=0;
-	char		*buff=NULL;
-	FILE 		*fp=NULL;
-
-	if( (!FwBinFile) || (!hDevice) || (!bytesDnld))
-	{
-		DebugLog_Trace(LDIL_DBG,"Invalid Arguments\n");
-		return BC_STS_INV_ARG;
-	}
-
-	fp = fopen(FwBinFile,"rb");
-	if(!fp)
-	{
-		DebugLog_Trace(LDIL_DBG,"Failed to Open FW file.  %s\n", FwBinFile);
-		perror("LINK FW");
-		return BC_STS_ERROR;
-	}
-
-	fseek(fp,0,SEEK_END);
-	FileSz = ftell(fp);
-	fseek(fp,0,SEEK_SET);
-
-	buff = (char*)malloc(FileSz);
-	if (!buff) {
-		DebugLog_Trace(LDIL_DBG,"Failed to allocate memory\n");
-		return BC_STS_INSUFF_RES;
-	}
-
-	*bytesDnld = fread(buff,1,FileSz,fp);
-	if(0 == *bytesDnld)
-	{
-		DebugLog_Trace(LDIL_DBG,"Failed to Read The File\n");
-		return BC_STS_IO_ERROR;
-	}
-
-	status = DtsPushFwBinToLink(hDevice, (uint32_t*)buff, *bytesDnld);
-	if(buff) free(buff);
-	if(fp) fclose(fp);
-	return status;
+	return fwbinPushToDevice(hDevice, FwBinFile, bytesDnld, "LINK FW");
 }
 
 DRVIFLIB_INT_API BC_STATUS
 fwbinPushToFLEA(HANDLE hDevice, char *FwBinFile, uint32_t *bytesDnld)
 {
-	BC_STATUS	status=BC_STS_ERROR;
-	uint32_t	FileSz=0;
-	char		*buff=NULL;
-	FILE 		*fp=NULL;
-
-	if( (!FwBinFile) || (!hDevice) || (!bytesDnld))
-	{
-		DebugLog_Trace(LDIL_DBG,"Invalid Arguments\n");
-		return BC_STS_INV_ARG;
-	}
-
-	fp = fopen(FwBinFile,"rb");
-	if(!fp)
-	{
-		DebugLog_Trace(LDIL_DBG,"Failed to Open FW file.  %s\n", FwBinFile);
-		perror("FLEA FW");
-		return BC_STS_ERROR;
-	}
-
-	fseek(fp,0,SEEK_END);
-	FileSz = ftell(fp);
-	fseek(fp,0,SEEK_SET);
-
-	buff = (char*)malloc(FileSz);
-	if (!buff) {
-		DebugLog_Trace(LDIL_DBG,"Failed to allocate memory\n");
-		return BC_STS_INSUFF_RES;
-	}
-
-	*bytesDnld = fread(buff,1,FileSz,fp);
-	if(0 == *bytesDnld)
-	{
-		DebugLog_Trace(LDIL_DBG,"Failed to Read The File\n");
-		return BC_STS_IO_ERROR;
-	}
-
-	status = DtsPushFwBinToLink(hDevice, (uint32_t*)buff, *bytesDnld);
-	if(buff) free(buff);
-	if(fp) fclose(fp);
-	return status;
+	return fwbinPushToDevice(hDevice, FwBinFile, bytesDnld, "FLEA FW");
 }
 
 BC_STATUS dec_write_fw_Sig(HANDLE hndl, uint32_t* Sig)
@@ -239,7 +226,4 @@ BC_STATUS dec_write_fw_Sig(HANDLE hndl, uint32_t* Sig)
     }
     return sts;
 }
-
-
-
 
