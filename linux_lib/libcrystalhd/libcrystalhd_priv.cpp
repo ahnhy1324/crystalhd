@@ -55,7 +55,7 @@
 */
 
 bc_dil_glob_s *bc_dil_glob_ptr=NULL;
-bool glob_mode_valid=TRUE;
+BOOL glob_mode_valid=TRUE;
 
 BC_STATUS DtsCreateShMem(int *shmem_id)
 {
@@ -1082,7 +1082,7 @@ BC_STATUS DtsDrvCmd(DTS_LIB_CONTEXT	*Ctx,
 	BC_STATUS	Sts = BC_STS_SUCCESS ;
 	int i = 30;
 
-	if(!Ctx || !Ctx->DevHandle){
+	if(!Ctx || Ctx->DevHandle < 0){
 		DebugLog_Trace(LDIL_DBG,"Invalid arg..%p \n",Ctx);
 		return BC_STS_INV_ARG;
 	}
@@ -1299,10 +1299,12 @@ void DtsReleaseMemPools(DTS_LIB_CONTEXT *Ctx)
 
 	/* need to release any user buffers mapped in driver
 	 * or free(mp->buff) can hang under Linux and Mac OS X */
-	pIoData = DtsAllocIoctlData(Ctx);
-	if (pIoData) {
-		pIoData->u.FlushRxCap.bDiscardOnly = TRUE;
-		DtsDrvCmd(Ctx, BCM_IOC_FLUSH_RX_CAP, 0, pIoData, TRUE);
+	if (Ctx->DevHandle >= 0) {
+		pIoData = DtsAllocIoctlData(Ctx);
+		if (pIoData) {
+			pIoData->u.FlushRxCap.bDiscardOnly = TRUE;
+			DtsDrvCmd(Ctx, BCM_IOC_FLUSH_RX_CAP, 0, pIoData, TRUE);
+		}
 	}
 	if (Ctx->MpoolCnt) {
 		for (i = 0; i < Ctx->MpoolCnt; i++){
@@ -1654,7 +1656,7 @@ BC_STATUS DtsReleaseInterface(DTS_LIB_CONTEXT *Ctx)
 
 	DtsReleaseMemPools(Ctx);
 
-	if(Ctx->DevHandle != 0) //Zero if success
+	if(Ctx->DevHandle >= 0)
 	{
 		DtsReleaseUserHandle(Ctx);
 

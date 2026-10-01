@@ -403,6 +403,7 @@ typedef struct _bc_dil_glob_s{
 	uint32_t 		DevID;
 } bc_dil_glob_s;
 
+extern BOOL glob_mode_valid;
 
 BC_STATUS DtsGetDilShMem(uint32_t shmid);
 BC_STATUS DtsDelDilShMem(void);
