@@ -43,7 +43,7 @@ library-check:
 				test_wrap="$$test_wrap -Wl,--wrap=fclose,--wrap=malloc,--wrap=free"; \
 				test_sources=linux_lib/libcrystalhd/libcrystalhd_if.cpp ;; \
 			fwcmds) test_wrap=-Wl,--wrap=ioctl; \
-				test_sources="linux_lib/libcrystalhd/libcrystalhd_fwcmds.cpp linux_lib/libcrystalhd/libcrystalhd_priv.cpp" ;; \
+				test_sources="linux_lib/libcrystalhd/libcrystalhd_if.cpp linux_lib/libcrystalhd/libcrystalhd_fwcmds.cpp linux_lib/libcrystalhd/libcrystalhd_priv.cpp" ;; \
 			input|mpeg4-input) test_wrap=-Wl,--wrap=ioctl,--wrap=txBufPush,--wrap=usleep; \
 				test_extra=linux_lib/libcrystalhd/libcrystalhd_parser.cpp ;; \
 			input-format) test_wrap=-Wl,--wrap=ioctl,--wrap=malloc,--wrap=free,--wrap=posix_memalign; \

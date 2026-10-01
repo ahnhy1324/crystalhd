@@ -105,7 +105,8 @@ for bits in $build_bits; do
                 section_wrap=-Wl,--wrap=fopen,--wrap=fseek,--wrap=ftell,--wrap=fread,--wrap=__fread_chk
                 section_wrap="$section_wrap -Wl,--wrap=fclose,--wrap=malloc,--wrap=free" ;;
             fwcmds)
-                set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_fwcmds.cpp" \
+                set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_if.cpp" \
+                    "$build_dir/linux_lib/libcrystalhd/libcrystalhd_fwcmds.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_priv.cpp"
                 section_wrap=-Wl,--wrap=ioctl ;;
             input|mpeg4-input)
