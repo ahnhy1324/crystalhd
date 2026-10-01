@@ -1702,6 +1702,15 @@ static void ResetConfigured(const void *owner)
     context.decoder_channel_id = 0;
 }
 
+static void ResetStarted(const void *owner)
+{
+    ResetFrontendOwned(BC_LINK_INIT, true, owner);
+    context.decoder_phase = CRYSTALHD_DECODER_CHANNEL_STARTED;
+    context.decoder_codec = CRYSTALHD_DECODER_CODEC_H264;
+    context.fw_sequence = 5;
+    context.decoder_channel_id = 0;
+}
+
 static void CheckKernelChannelPayload(const BC_FW_CMD *command, bool opening,
                                       uint32_t sequence)
 {
@@ -2208,6 +2217,406 @@ static void KernelDecoderChannelStartFailures(void)
           context.decoder_phase == CRYSTALHD_DECODER_RECOVERY_REQUIRED &&
           context.fw_sequence == 5 && firmware_calls == 2,
           "removal after START prevents running publication");
+}
+
+static void CheckKernelChannelStopClosePayload(const BC_FW_CMD *command,
+                                               bool closing,
+                                               uint32_t sequence)
+{
+    uint32_t expected[64] = {0};
+
+    expected[0] = closing ? 0x73763101U : 0x7376311bU;
+    expected[1] = sequence;
+    expected[3] = 1U;
+
+    for (unsigned word = 0; word < 64; word++) {
+        Check(command->cmd[word] == expected[word],
+              "typed decoder teardown submits the exact zero-filled request");
+        Check(!command->rsp[word],
+              "typed decoder teardown submits a zero-filled response buffer");
+    }
+    Check(!command->flags && !command->add_data,
+          "typed decoder teardown leaves passthrough flags and data clear");
+}
+
+static void KernelDecoderChannelStopClosePayload(void)
+{
+    const struct crystalhd_decoder_config config = {
+        .codec = CRYSTALHD_DECODER_CODEC_H264,
+    };
+    int frontend_owner = 0;
+
+    ResetStarted(&frontend_owner);
+    Check(crystalhd_decoder_channel_stop_locked(&context,
+                                                &frontend_owner) == 0 &&
+          context.state == BC_LINK_INIT &&
+          context.decoder_phase == CRYSTALHD_DECODER_CHANNEL_CONFIGURED &&
+          context.decoder_codec == CRYSTALHD_DECODER_CODEC_H264 &&
+          context.fw_sequence == 6 && !context.decoder_channel_id &&
+          context.session_owner == &frontend_owner &&
+          context.hw_ctx == &hardware,
+          "typed STOP publishes a restartable configured channel");
+    Check(firmware_calls == 1 && !raw_calls[0] && !raw_calls[1] &&
+          !captures && !cancels && !ring_frees && !hardware_closes,
+          "firmware STOP does not claim host DMA or resource teardown");
+    CheckKernelChannelStopClosePayload(&firmware_command_snapshots[0],
+                                       false, 6);
+
+    Check(crystalhd_decoder_channel_close_locked(&context,
+                                                 &frontend_owner) == 0 &&
+          context.state == BC_LINK_INIT &&
+          context.decoder_phase == CRYSTALHD_DECODER_BOOTSTRAPPED &&
+          context.decoder_codec == CRYSTALHD_DECODER_CODEC_INVALID &&
+          context.fw_sequence == 7 && !context.decoder_channel_id &&
+          context.session_owner == &frontend_owner &&
+          context.hw_ctx == &hardware,
+          "typed CLOSE retains the bootstrapped owner and command sequence");
+    Check(firmware_calls == 2 && !captures && !cancels &&
+          !ring_frees && !hardware_closes,
+          "firmware CLOSE leaves host resource retirement to its caller");
+    CheckKernelChannelStopClosePayload(&firmware_command_snapshots[1],
+                                       true, 7);
+
+    Check(crystalhd_decoder_channel_open_locked(&context, &frontend_owner,
+                                                &config) == 0 &&
+          crystalhd_decoder_channel_start_locked(&context,
+                                                 &frontend_owner) == 0 &&
+          context.decoder_phase == CRYSTALHD_DECODER_CHANNEL_STARTED &&
+          context.fw_sequence == 11 && firmware_calls == 6,
+          "normal close preserves monotonic sequence and permits reopen");
+    CheckKernelChannelPayload(&firmware_command_snapshots[2], true, 8);
+    CheckKernelChannelPayload(&firmware_command_snapshots[3], false, 9);
+    CheckKernelChannelStartPayload(&firmware_command_snapshots[4], true, 10);
+    CheckKernelChannelStartPayload(&firmware_command_snapshots[5], false, 11);
+
+    ResetStarted(&frontend_owner);
+    context.state = BC_LINK_READY;
+    Check(crystalhd_decoder_channel_stop_locked(&context,
+                                                &frontend_owner) == 0 &&
+          context.state == BC_LINK_READY &&
+          context.decoder_phase == CRYSTALHD_DECODER_CHANNEL_CONFIGURED &&
+          crystalhd_decoder_channel_close_locked(&context,
+                                                 &frontend_owner) == -EBUSY &&
+          firmware_calls == 1 && !captures,
+          "active capture must be reclaimed between firmware STOP and CLOSE");
+    context.state = BC_LINK_INIT;
+    Check(crystalhd_decoder_channel_close_locked(&context,
+                                                 &frontend_owner) == 0 &&
+          context.decoder_phase == CRYSTALHD_DECODER_BOOTSTRAPPED &&
+          firmware_calls == 2,
+          "CLOSE succeeds after the caller publishes completed RX teardown");
+
+    ResetConfigured(&frontend_owner);
+    Check(crystalhd_decoder_channel_close_locked(&context,
+                                                 &frontend_owner) == 0 &&
+          context.decoder_phase == CRYSTALHD_DECODER_BOOTSTRAPPED &&
+          context.decoder_codec == CRYSTALHD_DECODER_CODEC_INVALID &&
+          context.fw_sequence == 4 && firmware_calls == 1,
+          "a configured channel that never started closes without STOP");
+    CheckKernelChannelStopClosePayload(&firmware_command_snapshots[0],
+                                       true, 4);
+
+    ResetStarted(&frontend_owner);
+    hardware.pfnReadDevRegister = NULL;
+    hardware.pfnWriteDevRegister = NULL;
+    Check(crystalhd_decoder_channel_stop_locked(&context,
+                                                &frontend_owner) == 0 &&
+          crystalhd_decoder_channel_close_locked(&context,
+                                                 &frontend_owner) == 0 &&
+          firmware_calls == 2 &&
+          context.decoder_phase == CRYSTALHD_DECODER_BOOTSTRAPPED,
+          "typed STOP/CLOSE does not depend on color-register callbacks");
+
+    ResetStarted(&frontend_owner);
+    Check(crystalhd_decoder_channel_stop_locked(&context,
+                                                &frontend_owner) == 0 &&
+          crystalhd_decoder_channel_start_locked(&context,
+                                                 &frontend_owner) == 0 &&
+          context.decoder_phase == CRYSTALHD_DECODER_CHANNEL_STARTED &&
+          context.decoder_codec == CRYSTALHD_DECODER_CODEC_H264 &&
+          context.fw_sequence == 8 && firmware_calls == 3,
+          "typed STOP returns the channel to the existing restart path");
+    CheckKernelChannelStopClosePayload(&firmware_command_snapshots[0],
+                                       false, 6);
+    CheckKernelChannelStartPayload(&firmware_command_snapshots[1], true, 7);
+    CheckKernelChannelStartPayload(&firmware_command_snapshots[2], false, 8);
+}
+
+static void KernelDecoderChannelStopClosePreconditions(void)
+{
+    int (*transition[2])(struct crystalhd_cmd *, const void *) = {
+        crystalhd_decoder_channel_stop_locked,
+        crystalhd_decoder_channel_close_locked,
+    };
+    int frontend_owner = 0, foreign_owner = 0;
+    const void *owner;
+
+    for (unsigned operation = 0; operation < 2; operation++) {
+        if (operation)
+            ResetConfigured(&frontend_owner);
+        else
+            ResetStarted(&frontend_owner);
+        Check(transition[operation](NULL, &frontend_owner) == -EINVAL &&
+              transition[operation](&context, NULL) == -EINVAL,
+              "typed STOP/CLOSE rejects missing arguments");
+        Check(!firmware_calls && context.fw_sequence ==
+                  (operation ? 3U : 5U),
+              "missing teardown arguments have no firmware effects");
+
+        if (operation)
+            ResetConfigured(&frontend_owner);
+        else
+            ResetStarted(&frontend_owner);
+        owner = context.session_owner;
+        context.adp = NULL;
+        Check(transition[operation](&context, owner) == -ENODEV,
+              "typed STOP/CLOSE rejects a retired adapter");
+
+        if (operation)
+            ResetConfigured(&frontend_owner);
+        else
+            ResetStarted(&frontend_owner);
+        context.adp->pdev = NULL;
+        Check(transition[operation](&context, &frontend_owner) == -ENODEV,
+              "typed STOP/CLOSE rejects a missing PCI endpoint");
+
+        if (operation)
+            ResetConfigured(&frontend_owner);
+        else
+            ResetStarted(&frontend_owner);
+        context.hw_ctx = NULL;
+        Check(transition[operation](&context, &frontend_owner) == -ENODEV,
+              "typed STOP/CLOSE rejects a missing hardware context");
+
+        if (operation)
+            ResetConfigured(&frontend_owner);
+        else
+            ResetStarted(&frontend_owner);
+        hardware.pfnDoFirmwareCmd = NULL;
+        Check(transition[operation](&context, &frontend_owner) == -ENODEV &&
+              !firmware_calls,
+              "typed STOP/CLOSE requires the firmware callback only");
+
+        if (operation)
+            ResetConfigured(&frontend_owner);
+        else
+            ResetStarted(&frontend_owner);
+        adapter.present = false;
+        Check(transition[operation](&context, &frontend_owner) == -ENODEV,
+              "typed STOP/CLOSE rejects removal before firmware access");
+
+        if (operation)
+            ResetConfigured(&frontend_owner);
+        else
+            ResetStarted(&frontend_owner);
+        context.session_owner = NULL;
+        Check(transition[operation](&context, &frontend_owner) == -EINVAL,
+              "typed STOP/CLOSE requires an active session owner");
+
+        if (operation)
+            ResetConfigured(&frontend_owner);
+        else
+            ResetStarted(&frontend_owner);
+        Check(transition[operation](&context, &foreign_owner) == -EBUSY,
+              "typed STOP/CLOSE rejects a foreign session owner");
+
+        if (operation)
+            ResetConfigured(&frontend_owner);
+        else
+            ResetStarted(&frontend_owner);
+        endpoint.device = BC_PCI_DEVID_LINK;
+        Check(transition[operation](&context, &frontend_owner) ==
+                  -EOPNOTSUPP,
+              "typed STOP/CLOSE rejects BCM70012 before firmware access");
+
+        for (unsigned condition = 0; condition < 4; condition++) {
+            if (operation)
+                ResetConfigured(&frontend_owner);
+            else
+                ResetStarted(&frontend_owner);
+            if (condition == 0)
+                context.state = BC_LINK_RESUME;
+            else if (condition == 1)
+                context.fw_sequence = 0;
+            else if (condition == 2)
+                context.decoder_channel_id = 7;
+            else
+                context.decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
+            Check(transition[operation](&context, &frontend_owner) ==
+                      (condition == 3 ? -EINVAL : -EBUSY) &&
+                  !firmware_calls && !raw_calls[0] && !raw_calls[1],
+                  "typed STOP/CLOSE rejects inconsistent cached state");
+        }
+    }
+
+    ResetStarted(&frontend_owner);
+    context.state = BC_LINK_INIT | BC_LINK_PAUSED;
+    Check(crystalhd_decoder_channel_stop_locked(&context,
+                                                &frontend_owner) == -EBUSY &&
+          !firmware_calls,
+          "typed STOP rejects unsupported paused-session teardown");
+
+    ResetStarted(&frontend_owner);
+    context.decoder_phase = CRYSTALHD_DECODER_CHANNEL_CONFIGURED;
+    Check(crystalhd_decoder_channel_stop_locked(&context,
+                                                &frontend_owner) == -EBUSY,
+          "typed STOP requires a started channel");
+
+    ResetConfigured(&frontend_owner);
+    context.decoder_phase = CRYSTALHD_DECODER_CHANNEL_STARTED;
+    Check(crystalhd_decoder_channel_close_locked(&context,
+                                                 &frontend_owner) == -EBUSY,
+          "typed CLOSE requires a configured or stopped channel");
+
+    ResetConfigured(&frontend_owner);
+    context.state = BC_LINK_READY;
+    Check(crystalhd_decoder_channel_close_locked(&context,
+                                                 &frontend_owner) == -EBUSY &&
+          !firmware_calls,
+          "typed CLOSE rejects unreclaimed active capture state");
+}
+
+static void KernelDecoderChannelStopCloseFailures(void)
+{
+    const struct crystalhd_decoder_config config = {
+        .codec = CRYSTALHD_DECODER_CODEC_H264,
+    };
+    int frontend_owner = 0;
+
+    ResetStarted(&frontend_owner);
+    firmware_status_call = 1;
+    firmware_call_status = BC_STS_FW_CMD_ERR;
+    Check(crystalhd_decoder_channel_stop_locked(&context,
+                                                &frontend_owner) == -EIO &&
+          context.decoder_phase == CRYSTALHD_DECODER_CHANNEL_STARTED &&
+          context.decoder_codec == CRYSTALHD_DECODER_CODEC_H264 &&
+          context.fw_sequence == 6 && firmware_calls == 1,
+          "confirmed STOP rejection retains the started retry state");
+    firmware_status_call = 0;
+    Check(crystalhd_decoder_channel_stop_locked(&context,
+                                                &frontend_owner) == 0 &&
+          crystalhd_decoder_channel_close_locked(&context,
+                                                 &frontend_owner) == 0 &&
+          context.decoder_phase == CRYSTALHD_DECODER_BOOTSTRAPPED &&
+          context.fw_sequence == 8 && firmware_calls == 3,
+          "STOP retry and CLOSE consume fresh sequence values");
+    CheckKernelChannelStopClosePayload(&firmware_command_snapshots[1],
+                                       false, 7);
+    CheckKernelChannelStopClosePayload(&firmware_command_snapshots[2],
+                                       true, 8);
+
+    ResetStarted(&frontend_owner);
+    firmware_status = BC_STS_BUSY;
+    Check(crystalhd_decoder_channel_stop_locked(&context,
+                                                &frontend_owner) == -EBUSY &&
+          context.decoder_phase == CRYSTALHD_DECODER_RECOVERY_REQUIRED &&
+          context.decoder_codec == CRYSTALHD_DECODER_CODEC_INVALID &&
+          !context.decoder_channel_id && context.fw_sequence == 6 &&
+          firmware_calls == 1,
+          "ambiguous STOP failure requires verified recovery");
+
+    ResetStarted(&frontend_owner);
+    firmware_status = BC_STS_TIMEOUT;
+    poison_on_firmware_timeout = true;
+    Check(crystalhd_decoder_channel_stop_locked(&context,
+                                                &frontend_owner) ==
+              -ETIMEDOUT &&
+          context.decoder_phase == CRYSTALHD_DECODER_RECOVERY_REQUIRED &&
+          context.decoder_codec == CRYSTALHD_DECODER_CODEC_INVALID &&
+          context.fw_sequence == 6 && hardware.fwcmd_poisoned &&
+          firmware_calls == 1,
+          "timed-out STOP quarantines the mailbox and decoder state");
+    Check(crystalhd_decoder_channel_stop_locked(&context,
+                                                &frontend_owner) == -EBUSY &&
+          firmware_calls == 1,
+          "timed-out STOP cannot be retried without fresh bootstrap");
+    firmware_status = BC_STS_SUCCESS;
+    poison_on_firmware_timeout = false;
+    Check(crystalhd_fw_bootstrap_locked(&context, &frontend_owner) == 0 &&
+          crystalhd_decoder_channel_open_locked(&context, &frontend_owner,
+                                                &config) == 0 &&
+          crystalhd_decoder_channel_start_locked(&context,
+                                                 &frontend_owner) == 0 &&
+          crystalhd_decoder_channel_stop_locked(&context,
+                                                &frontend_owner) == 0 &&
+          crystalhd_decoder_channel_close_locked(&context,
+                                                 &frontend_owner) == 0 &&
+          context.decoder_phase == CRYSTALHD_DECODER_BOOTSTRAPPED &&
+          context.fw_sequence == 7 && !hardware.fwcmd_poisoned &&
+          firmware_calls == 8,
+          "fresh bootstrap recovers the complete start and close lifecycle");
+    CheckKernelChannelStopClosePayload(&firmware_command_snapshots[6],
+                                       false, 6);
+    CheckKernelChannelStopClosePayload(&firmware_command_snapshots[7],
+                                       true, 7);
+
+    ResetStarted(&frontend_owner);
+    remove_during_firmware_call = 1;
+    Check(crystalhd_decoder_channel_stop_locked(&context,
+                                                &frontend_owner) ==
+              -ENODEV && !adapter.present &&
+          context.decoder_phase == CRYSTALHD_DECODER_RECOVERY_REQUIRED &&
+          context.decoder_codec == CRYSTALHD_DECODER_CODEC_INVALID &&
+          context.fw_sequence == 6 && firmware_calls == 1,
+          "removal after STOP prevents configured publication");
+
+    ResetStarted(&frontend_owner);
+    firmware_status_call = remove_during_firmware_call = 1;
+    firmware_call_status = BC_STS_FW_CMD_ERR;
+    Check(crystalhd_decoder_channel_stop_locked(&context,
+                                                &frontend_owner) ==
+              -ENODEV &&
+          context.decoder_phase == CRYSTALHD_DECODER_RECOVERY_REQUIRED,
+          "removal overrides an otherwise retryable STOP rejection");
+
+    ResetStarted(&frontend_owner);
+    Check(crystalhd_decoder_channel_stop_locked(&context,
+                                                &frontend_owner) == 0,
+          "STOP succeeds before testing CLOSE rejection");
+    firmware_status_call = 2;
+    firmware_call_status = BC_STS_FW_CMD_ERR;
+    Check(crystalhd_decoder_channel_close_locked(&context,
+                                                 &frontend_owner) == -EIO &&
+          context.decoder_phase == CRYSTALHD_DECODER_CHANNEL_CONFIGURED &&
+          context.decoder_codec == CRYSTALHD_DECODER_CODEC_H264 &&
+          context.fw_sequence == 7 && firmware_calls == 2,
+          "confirmed CLOSE rejection retains the configured retry state");
+    firmware_status_call = 0;
+    Check(crystalhd_decoder_channel_close_locked(&context,
+                                                 &frontend_owner) == 0 &&
+          context.decoder_phase == CRYSTALHD_DECODER_BOOTSTRAPPED &&
+          context.fw_sequence == 8 && firmware_calls == 3,
+          "CLOSE retry succeeds with a fresh sequence value");
+
+    ResetConfigured(&frontend_owner);
+    firmware_status = BC_STS_BUSY;
+    Check(crystalhd_decoder_channel_close_locked(&context,
+                                                 &frontend_owner) == -EBUSY &&
+          context.decoder_phase == CRYSTALHD_DECODER_RECOVERY_REQUIRED &&
+          context.decoder_codec == CRYSTALHD_DECODER_CODEC_INVALID &&
+          context.fw_sequence == 4 && firmware_calls == 1,
+          "ambiguous CLOSE failure requires verified recovery");
+
+    ResetConfigured(&frontend_owner);
+    firmware_status = BC_STS_TIMEOUT;
+    poison_on_firmware_timeout = true;
+    Check(crystalhd_decoder_channel_close_locked(&context,
+                                                 &frontend_owner) ==
+              -ETIMEDOUT &&
+          context.decoder_phase == CRYSTALHD_DECODER_RECOVERY_REQUIRED &&
+          context.fw_sequence == 4 && hardware.fwcmd_poisoned &&
+          firmware_calls == 1,
+          "timed-out CLOSE quarantines the mailbox and decoder state");
+
+    ResetConfigured(&frontend_owner);
+    remove_during_firmware_call = 1;
+    Check(crystalhd_decoder_channel_close_locked(&context,
+                                                 &frontend_owner) ==
+              -ENODEV && !adapter.present &&
+          context.decoder_phase == CRYSTALHD_DECODER_RECOVERY_REQUIRED &&
+          context.decoder_codec == CRYSTALHD_DECODER_CODEC_INVALID &&
+          context.fw_sequence == 4 && firmware_calls == 1,
+          "removal after CLOSE prevents bootstrapped publication");
 }
 
 static void KernelDecoderChannelSuspendRecovery(void)
@@ -3843,6 +4252,9 @@ int main(void)
         {"BCM70015 typed start payload and publication", KernelDecoderChannelStartPayload},
         {"BCM70015 typed start preconditions", KernelDecoderChannelStartPreconditions},
         {"BCM70015 typed start failure and recovery", KernelDecoderChannelStartFailures},
+        {"BCM70015 typed STOP/CLOSE payload and publication", KernelDecoderChannelStopClosePayload},
+        {"BCM70015 typed STOP/CLOSE preconditions", KernelDecoderChannelStopClosePreconditions},
+        {"BCM70015 typed STOP/CLOSE failure and recovery", KernelDecoderChannelStopCloseFailures},
         {"BCM70015 typed channel suspend recovery", KernelDecoderChannelSuspendRecovery},
         {"firmware pause/resume rollback", FirmwarePauseRollback},
         {"firmware download serialization", FirmwareDownloadSerialization},

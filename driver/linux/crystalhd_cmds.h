@@ -173,6 +173,21 @@ int crystalhd_decoder_channel_open_locked(
  */
 int crystalhd_decoder_channel_start_locked(struct crystalhd_cmd *ctx,
 					   const void *owner);
+/* Stop only the firmware channel after TX admission and ownership have been
+ * quiesced. Capture remains caller-owned so it can be flushed after firmware
+ * stops producing pictures and before channel_close_locked(). Keep removal
+ * lifetime and the write lock across that whole sequence. A successful stop
+ * returns to the configured phase and may be followed by start or close.
+ */
+int crystalhd_decoder_channel_stop_locked(struct crystalhd_cmd *ctx,
+					  const void *owner);
+/* Close a configured firmware channel, including one returned there by STOP.
+ * The caller must already have reclaimed every RX registration; exact
+ * BC_LINK_INIT is required so an active capture engine cannot be mistaken for
+ * a closed channel.
+ */
+int crystalhd_decoder_channel_close_locked(struct crystalhd_cmd *ctx,
+					   const void *owner);
 /* Caller retains device/session lifetime and serializes TX submission through
  * return; the legacy ioctl adapter does this with user_lock and tx_lock.
  */

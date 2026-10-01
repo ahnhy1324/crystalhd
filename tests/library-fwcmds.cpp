@@ -205,6 +205,33 @@ static void DecoderStartPayload()
 		"decoder start preserves the reviewed 64-word wire payload");
 	Check(fixture.context.State == BC_DEC_STATE_START,
 	      "successful low-level start publishes the library run state");
+	fixture.PoolReturned();
+
+	fixture.Prepare();
+	std::memset(expected, 0, sizeof(expected));
+	expected[0] = 0x7376311bU;
+	expected[1] = 43U;
+	expected[3] = 1U;
+	Check(DtsFWStopVideo(&fixture.context, 0, false) == BC_STS_SUCCESS,
+	      "started decoder channel stops successfully");
+	CheckFirmwarePayload(expected,
+		"decoder stop preserves the reviewed 64-word wire payload");
+	Check(fixture.context.State == BC_DEC_STATE_STOP,
+	      "successful low-level stop publishes the library stop state");
+	fixture.PoolReturned();
+
+	fixture.Prepare();
+	std::memset(expected, 0, sizeof(expected));
+	expected[0] = 0x73763101U;
+	expected[1] = 44U;
+	expected[3] = 1U;
+	fixture.context.OpenRsp.channelStatus = 0xfeedfaceU;
+	Check(DtsFWCloseChannel(&fixture.context, 0) == BC_STS_SUCCESS,
+	      "stopped decoder channel closes successfully");
+	CheckFirmwarePayload(expected,
+		"decoder close preserves the reviewed 64-word wire payload");
+	Check(fixture.context.OpenRsp.channelStatus == 0,
+	      "successful low-level close clears the cached open response");
 }
 
 int main()

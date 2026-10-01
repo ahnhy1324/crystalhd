@@ -372,16 +372,27 @@ struct crystalhd_fw_channel_start_video_cmd {
 	uint32_t picture_info_interrupt_enable;
 };
 
+struct crystalhd_fw_channel_stop_close_cmd {
+	uint32_t command;
+	uint32_t sequence;
+	uint32_t channel_id;
+	uint32_t picture_release;
+	uint32_t last_picture_display;
+};
+
 #define CRYSTALHD_FW_CHANNEL_OPEN_WORDS	37U
 #define CRYSTALHD_FW_INPUT_PARAMS_WORDS	9U
 #define CRYSTALHD_FW_CHANNEL_ACTIVATE_WORDS	4U
 #define CRYSTALHD_FW_CHANNEL_START_VIDEO_WORDS	36U
+#define CRYSTALHD_FW_CHANNEL_STOP_CLOSE_WORDS	5U
 #define CRYSTALHD_FW_STREAM_TYPE_PES	1U
 #define CRYSTALHD_FW_VIDEO_ALGORITHM_H264	0U
 #define CRYSTALHD_FW_SYNC_MODE_SYNCPIN	1U
 #define CRYSTALHD_FW_DISPLAY_TIMING_IGNORE_PTS	1U
 #define CRYSTALHD_FW_USER_DATA_MODE_ON	1U
 #define CRYSTALHD_FW_PROGRESSIVE_OUTPUT	1U
+#define CRYSTALHD_FW_PICTURE_RELEASE_INTERNAL	1U
+#define CRYSTALHD_FW_LAST_PICTURE_DISPLAY_ON	0U
 
 struct DecRspChannelStartVideo {
     uint32_t	command;
