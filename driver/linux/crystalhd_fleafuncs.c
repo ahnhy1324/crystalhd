@@ -1861,6 +1861,7 @@ BC_STATUS crystalhd_flea_do_fw_cmd(struct crystalhd_hw *hw, BC_FW_CMD *fw_cmd)
 		return BC_STS_INV_ARG;
 	}
 
+	memset(res_buff, 0, sizeof(fw_cmd->rsp));
 	sts = crystalhd_hw_fw_cmd_begin(hw);
 	if (sts != BC_STS_SUCCESS)
 		return sts;
@@ -1906,9 +1907,20 @@ BC_STATUS crystalhd_flea_do_fw_cmd(struct crystalhd_hw *hw, BC_FW_CMD *fw_cmd)
 	cmd_res_addr = hw->pfnReadDevRegister(hw->adp, hw->fwcmdRespMbox);
 
 	/*Read the Response*/
-	hw->pfnDevDRAMRead(hw, cmd_res_addr, FW_CMD_BUFF_SZ, res_buff);
+	sts = hw->pfnDevDRAMRead(hw, cmd_res_addr, FW_CMD_BUFF_SZ, res_buff);
+	if (sts != BC_STS_SUCCESS) {
+		/* Firmware may have committed the command. Without its reply, do
+		 * not publish stale/partial state or admit another command before
+		 * verified firmware/device recovery. The ISR already retired it.
+		 */
+		memset(res_buff, 0, sizeof(fw_cmd->rsp));
+		hw->fwcmd_poisoned = true;
+		sts = BC_STS_IO_ERROR;
+	}
 
 	spin_unlock_irqrestore(&hw->lock, flags);
+	if (sts != BC_STS_SUCCESS)
+		goto done;
 
 	if (res_buff[2] != 0) {
 		dev_err(dev, "res_buff[2] != C011_RET_SUCCESS\n");
