@@ -1537,6 +1537,7 @@ int chd_dec_pci_resume(struct pci_dev *pdev)
 	}
 
 	adp->hw_accessible = true;
+	crystalhd_v4l2_resume_ready(adp);
 	up_write(&adp->user_lock);
 	return 0;
 
@@ -1589,11 +1590,16 @@ static int __init chd_dec_module_init(void)
 	printk(KERN_DEBUG "Loading crystalhd v%d.%d.%d\n",
 	       crystalhd_kmod_major, crystalhd_kmod_minor, crystalhd_kmod_rev);
 
+	rc = crystalhd_v4l2_init();
+	if (rc)
+		return rc;
 	rc = pci_register_driver(&bc_chd_driver);
 
-	if (rc < 0)
+	if (rc < 0) {
 		printk(KERN_ERR "%s: Could not find any devices. err:%d\n",
 		       __func__, rc);
+		crystalhd_v4l2_cleanup();
+	}
 
 	return rc;
 }
@@ -1605,6 +1611,7 @@ static void __exit chd_dec_module_cleanup(void)
 	       crystalhd_kmod_major, crystalhd_kmod_minor, crystalhd_kmod_rev);
 
 	pci_unregister_driver(&bc_chd_driver);
+	crystalhd_v4l2_cleanup();
 }
 module_exit(chd_dec_module_cleanup);
 

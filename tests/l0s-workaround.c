@@ -579,6 +579,7 @@ static bool msi_active, irq_active;
 static bool pm_tracking, pm_master, pm_bound, pm_alloc_fail;
 static bool pm_dma_drained;
 static bool pm_resume_success_pending;
+static bool pm_resume_ready_called;
 static bool pm_frontend_live;
 static int pm_enable_error, pm_suspend_error, pm_resume_error, pm_pending;
 static int chd_device_lock, pm_lock_depth, pm_user_lock_depth;
@@ -693,8 +694,9 @@ static void up_write(int *lock)
 	if (lock == &irq_adapter.user_lock) {
 		CHECK(pm_user_lock_depth == 1);
 		if (pm_resume_success_pending) {
-			CHECK(irq_adapter.hw_accessible);
+			CHECK(irq_adapter.hw_accessible && pm_resume_ready_called);
 			pm_resume_success_pending = false;
+			pm_resume_ready_called = false;
 		}
 		pm_user_lock_depth--;
 		pm_user_unlocks++;
@@ -798,6 +800,13 @@ static BC_STATUS crystalhd_resume(struct crystalhd_cmd *cmd)
 	pm_event('H');
 	pm_resume_success_pending = !pm_resume_error;
 	return pm_resume_error;
+}
+static void crystalhd_v4l2_resume_ready(struct crystalhd_adp *adp)
+{
+	CHECK(adp == &irq_adapter && pm_user_lock_depth == 1);
+	CHECK(adp->present && adp->hw_accessible && pm_resume_success_pending);
+	CHECK(!pm_resume_ready_called);
+	pm_resume_ready_called = true;
 }
 static void pci_save_state(struct pci_dev *dev)
 {
@@ -984,6 +993,7 @@ static void reset_pm_model(const char *name)
 	pm_dma_drained = false;
 	pm_alloc_fail = false;
 	pm_resume_success_pending = false;
+	pm_resume_ready_called = false;
 	pm_frontend_live = true;
 	pm_enable_error = pm_suspend_error = pm_resume_error = 0;
 	pm_pending = 1;
