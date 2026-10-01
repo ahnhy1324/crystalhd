@@ -81,6 +81,8 @@ struct crystalhd_adp {
 	u64			generation;
 	/* PM readiness under user_lock; probe initializes before publication. */
 	bool			hw_accessible;
+	/* Proven only after terminal cancellation; protected by chd_device_lock. */
+	bool			dma_terminal_quiesced;
 	struct crystalhd_v4l2	*v4l2;
 
 	spinlock_t		lock;

@@ -9,7 +9,13 @@
 #include <string.h>
 
 typedef uint64_t u64;
+typedef uint16_t u16;
 typedef int BC_STATUS;
+#define PCI_COMMAND 0x04
+#define PCI_COMMAND_MASTER 0x04
+#define PCI_EXP_DEVSTA 0x0a
+#define PCI_EXP_DEVSTA_TRPND 0x20
+#define PCIBIOS_SUCCESSFUL 0
 #define BC_STS_SUCCESS 0
 #define BC_STS_INV_ARG 1
 #define BC_STS_ERR_USAGE 2
@@ -30,15 +36,31 @@ typedef int BC_STATUS;
 #define dev_info(...) mock_log(__VA_ARGS__)
 #define dev_err(...) mock_log(__VA_ARGS__)
 #define dev_warn(...) mock_log(__VA_ARGS__)
+#define WARN_ON_ONCE(value) ((value) ? (++warnings, true) : false)
+#define lockdep_assert_held_write(lock) assert((lock)->writers == 1)
+#define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
 
 struct mock_lock { unsigned int readers, writers, entries; };
 struct device { int unused; };
-struct pci_dev { struct device dev; int irq; void *data; };
+struct pci_dev {
+	struct device dev;
+	int irq;
+	void *data;
+	unsigned int refs;
+	bool state_saved, saved_master;
+};
 struct inode { int unused; };
 struct file { void *private_data; };
 struct crystalhd_user { uint32_t uid, in_use, mode; };
 struct crystalhd_adp;
-struct crystalhd_hw { void *rx_freeq; };
+struct crystalhd_hw {
+	void *rx_freeq, *rx_actq, *rx_rdyq, *tx_actq, *tx_freeq;
+	void *rx_pkt_pool_head, *rx_fallback_head;
+	struct {
+		struct { void *pdma_desc_start; } desc_mem;
+		void *buffer, *call_back, *cb_context;
+	} tx_pkt_pool[2];
+};
 struct crystalhd_stream;
 enum crystalhd_decoder_phase {
 	CRYSTALHD_DECODER_COLD = 0,
@@ -75,9 +97,11 @@ struct crystalhd_adp {
 	struct crystalhd_l0s_state l0s;
 	crystalhd_ioctl_data *idata_free_head;
 	void *mem_addr, *i2o_addr, *fill_byte_pool, *elem_pool_head;
+	void *ua_map_free_head;
 	unsigned int cfg_users;
 	int present, msi, chd_dec_major, lock;
 	bool irq_registered;
+	bool dma_terminal_quiesced;
 };
 #include "lifetime-binding.h"
 
@@ -87,6 +111,7 @@ static struct allocation allocations[16];
 static unsigned int allocated[6], released[6], scenarios;
 static struct pci_dev pci;
 static struct crystalhd_adp *g_adp_info;
+static struct crystalhd_adp *chd_dma_quarantine;
 static struct mock_lock chd_device_lock;
 static u64 chd_device_generation;
 static int class_token, bar_tokens[2];
@@ -105,6 +130,14 @@ static unsigned int frontend_releases;
 static int module_token;
 #define THIS_MODULE (&module_token)
 static unsigned int session_admissions, module_refs, module_puts;
+static unsigned int pci_gets, pci_puts;
+static unsigned int saved_invalidations, core_restores;
+static bool dma_drained;
+static bool ignore_master_clear, express;
+static int command_error, status_error;
+static u16 command_output, status_output;
+static unsigned int command_reads, status_reads;
+static bool chd_dec_session_dma_absent(struct crystalhd_adp *adp);
 
 static void *allocate(size_t size, enum allocation_kind kind)
 {
@@ -121,11 +154,21 @@ static void *allocate(size_t size, enum allocation_kind kind)
 	abort();
 }
 
-static void assert_quiesced(void)
+static void assert_excluded(void)
 {
 	assert(chd_device_lock.writers == 1);
-	assert(!chd_device_lock.readers && !master && !irq_live && !msi_live);
+	assert(!chd_device_lock.readers && !irq_live && !msi_live);
+	assert(!pci.state_saved);
 	assert(g_adp_info && !g_adp_info->present && g_adp_info->cmds.cin_wait_exit);
+}
+
+static void assert_quiesced(void)
+{
+	assert_excluded();
+	if (g_adp_info->dma_terminal_quiesced)
+		assert(!master && dma_drained);
+	else
+		assert(chd_dec_session_dma_absent(g_adp_info));
 }
 
 /* Admission itself is exercised by command-pm. This fixture starts with an
@@ -150,7 +193,7 @@ static void module_put(void *module)
 	assert(!cmd->session_module_pinned && !cmd->session_owner);
 	assert(!cmd->retain_rx_on_suspend && !cmd->adp && !cmd->hw_ctx);
 	assert(!g_adp_info->fill_byte_pool && !g_adp_info->elem_pool_head);
-	assert(!cmd->stream && !stream_live && !frontend_live);
+	assert(!cmd->stream && !stream_live);
 	assert(cmd->state == BC_LINK_INVALID);
 	assert(cmd->decoder_phase == CRYSTALHD_DECODER_COLD);
 	assert(cmd->decoder_codec == CRYSTALHD_DECODER_CODEC_INVALID);
@@ -164,8 +207,17 @@ static void module_put(void *module)
 
 static void crystalhd_v4l2_unregister(struct crystalhd_adp *adp)
 {
-	assert_quiesced();
+	assert_excluded();
 	assert(adp == g_adp_info);
+	if (adp->cmds.session_module_pinned) {
+		assert(!adp->dma_terminal_quiesced && !dma_drained);
+		assert(chd_dma_quarantine == adp && pci.refs == 1);
+		assert(adp->cmds.adp == adp && module_refs == 1);
+	} else {
+		/* Actual command deletion, not just RX retirement, precedes detach. */
+		assert(!adp->cmds.adp && !adp->cmds.hw_ctx && !adp->cmds.session_owner);
+		assert(!adp->fill_byte_pool && !adp->elem_pool_head && !stream_live);
+	}
 	if (frontend_live) {
 		frontend_live = false;
 		frontend_releases++;
@@ -197,8 +249,12 @@ static void kfree(void *ptr)
 				assert(!adp->cmds.fw_sequence &&
 				       !adp->cmds.decoder_channel_id);
 			} else if (kind != BINDING) {
-				assert_quiesced();
-				if (kind == HARDWARE || kind == DIO_POOL || kind == ELEM_POOL)
+				if (kind == IODATA)
+					assert_excluded();
+				else
+					assert_quiesced();
+				if (kind == DIO_POOL || kind == ELEM_POOL ||
+				    (kind == HARDWARE && g_adp_info->cmds.session_module_pinned))
 					assert(g_adp_info->cmds.session_module_pinned && module_refs == 1);
 			}
 			released[kind]++;
@@ -264,15 +320,35 @@ static void *pci_get_drvdata(struct pci_dev *dev)
 { assert(dev == &pci); return dev->data; }
 static void pci_set_drvdata(struct pci_dev *dev, void *data)
 {
-	assert(dev == &pci && !data && !device_live);
+	assert(dev == &pci && !data);
 	assert(chd_device_lock.writers == 1);
+	assert(!device_live || (chd_dma_quarantine == g_adp_info && module_refs == 1));
 	dev->data = data;
+}
+static struct pci_dev *pci_dev_get(struct pci_dev *dev)
+{
+	assert_excluded();
+	assert(dev == &pci && !pci.refs && !dma_drained);
+	assert(g_adp_info->cmds.session_module_pinned && module_refs == 1);
+	pci.refs++;
+	pci_gets++;
+	return dev;
+}
+static void pci_dev_put(struct pci_dev *dev)
+{
+	assert(dev == &pci && pci.refs == 1);
+	assert(!g_adp_info && !pci.data && !chd_dma_quarantine && !module_refs);
+	assert(!chd_device_lock.writers && !device_live && released[ADAPTER]);
+	pci.refs--;
+	pci_puts++;
 }
 static void pci_clear_master(struct pci_dev *dev)
 {
 	assert(dev == &pci && chd_device_lock.writers == 1);
 	assert(!g_adp_info->present && g_adp_info->cmds.cin_wait_exit);
-	master = false;
+	if (!ignore_master_clear)
+		master = false;
+	dma_drained = false;
 	master_clears++;
 }
 static int pci_wait_for_pending_transaction(struct pci_dev *dev)
@@ -281,10 +357,54 @@ static int pci_wait_for_pending_transaction(struct pci_dev *dev)
 	pending_waits++;
 	return pending_result;
 }
+static int pci_read_config_word(struct pci_dev *dev, int reg, u16 *value)
+{
+	assert(dev == &pci && reg == PCI_COMMAND && chd_device_lock.writers == 1);
+	command_reads++;
+	*value = command_error ? command_output :
+		command_output | (master ? PCI_COMMAND_MASTER : 0);
+	return command_error;
+}
+static bool pci_is_pcie(struct pci_dev *dev)
+{
+	assert(dev == &pci);
+	return express;
+}
+static int pcie_capability_read_word(struct pci_dev *dev, int reg, u16 *value)
+{
+	assert(dev == &pci && reg == PCI_EXP_DEVSTA && !master);
+	assert(chd_device_lock.writers == 1 && pending_waits && pending_result);
+	status_reads++;
+	*value = status_output;
+	dma_drained = !status_error && !(status_output & PCI_EXP_DEVSTA_TRPND);
+	return status_error;
+}
+static int pci_load_saved_state(struct pci_dev *dev, void *state)
+{
+	assert(dev == &pci && !state && chd_device_lock.writers == 1);
+	assert(g_adp_info && !g_adp_info->present && !irq_live && !msi_live);
+	dev->state_saved = false;
+	saved_invalidations++;
+	return 0;
+}
+static void simulate_pci_core_restore(void)
+{
+	bool old_master = master;
+
+	/* Robustness schedule, not a claim that DPM resumes a failed-suspend
+	 * device: PCI core may restore a valid image before a driver callback.
+	 */
+	if (pci.state_saved) {
+		master = pci.saved_master;
+		pci.state_saved = false;
+		core_restores++;
+	}
+	assert(master == old_master && !pci.state_saved && !core_restores);
+}
 static void free_irq(unsigned int irq, void *arg)
 {
 	assert(irq == (unsigned int)pci.irq && arg == g_adp_info);
-	assert(chd_device_lock.writers == 1 && !master && pending_waits);
+	assert(chd_device_lock.writers == 1 && master_clears);
 	assert(irq_live);
 	irq_live = false;
 	irq_frees++;
@@ -298,10 +418,15 @@ static void pci_disable_msi(struct pci_dev *dev)
 static void crystalhd_hw_free_dma_rings(struct crystalhd_hw *hw)
 {
 	assert_quiesced();
-	assert(hw == g_adp_info->cmds.hw_ctx && hw->rx_freeq);
-	assert(g_adp_info->cmds.session_module_pinned && module_refs == 1);
-	hw->rx_freeq = NULL;
-	dma_frees++;
+	assert(hw == g_adp_info->cmds.hw_ctx);
+	if (hw->rx_freeq) {
+		assert(g_adp_info->cmds.session_module_pinned && module_refs == 1);
+		hw->rx_freeq = NULL;
+		dma_frees++;
+	} else {
+		assert(chd_dec_session_dma_absent(g_adp_info));
+		assert(!module_refs);
+	}
 }
 static void crystalhd_destroy_dio_pool(struct crystalhd_adp *adp)
 {
@@ -319,21 +444,22 @@ static void crystalhd_delete_elem_pool(struct crystalhd_adp *adp)
 }
 static void device_destroy(void *class_ptr, int device_number)
 {
-	assert_quiesced();
+	assert_excluded();
 	assert(class_ptr == crystalhd_class && device_number == MKDEV(240, 0));
-	assert(chdev_live && class_live && !g_adp_info->cmds.adp);
-	assert(!g_adp_info->cmds.session_owner);
+	assert(chdev_live && class_live && !frontend_live);
+	assert(!g_adp_info->cmds.adp ||
+	       (chd_dma_quarantine == g_adp_info && module_refs == 1));
 	chdev_live = false;
 }
 static void unregister_chrdev(int major, const char *name)
 {
-	assert_quiesced();
+	assert_excluded();
 	assert(major == 240 && !strcmp(name, CRYSTALHD_API_NAME));
 	assert(!chdev_live && class_live);
 }
 static void class_destroy(void *class_ptr)
 {
-	assert_quiesced();
+	assert_excluded();
 	assert(class_ptr == crystalhd_class && !chdev_live && class_live);
 	class_live = false;
 }
@@ -400,8 +526,10 @@ static struct crystalhd_adp *attach(bool playback, bool msi)
 	unsigned int i;
 	struct crystalhd_adp *adp = allocate(sizeof(*adp), ADAPTER);
 	assert(!g_adp_info && !pci.data);
+	assert(!chd_dma_quarantine && !pci.refs);
 	g_adp_info = pci.data = adp;
 	adp->pdev = &pci;
+	pci.state_saved = pci.saved_master = true;
 	adp->present = 1;
 	adp->irq_registered = true;
 	adp->msi = msi;
@@ -449,6 +577,11 @@ static void reset(void)
 	chd_device_lock = (struct mock_lock){0};
 	pci = (struct pci_dev){.irq = 19};
 	pending_result = 1;
+	ignore_master_clear = false;
+	express = true;
+	command_error = status_error = 0;
+	command_output = status_output = 0;
+	command_reads = status_reads = 0;
 	l0s_result = 0;
 	master_clears = pending_waits = irq_frees = msi_disables = 0;
 	dma_frees = l0s_releases = device_disables = region_releases = 0;
@@ -457,6 +590,9 @@ static void reset(void)
 	stream_live = false;
 	frontend_live = false;
 	frontend_releases = 0;
+	pci_gets = pci_puts = 0;
+	saved_invalidations = core_restores = 0;
+	dma_drained = false;
 	scenarios++;
 }
 
@@ -474,11 +610,13 @@ static struct file bind_user(struct crystalhd_adp *adp, unsigned int uid)
 static void assert_released(void)
 {
 	unsigned int i;
-	assert(!g_adp_info && !pci.data && !master && !irq_live && !msi_live);
+	assert(!g_adp_info && !pci.data && !irq_live && !msi_live);
+	assert(!session_admissions || !master);
 	assert(!device_live && !regions_live && !chdev_live && !class_live);
 	assert(!bars_live[0] && !bars_live[1]);
 	assert(!stream_live);
 	assert(!module_refs && module_puts == session_admissions);
+	assert(!chd_dma_quarantine && !pci.refs && pci_gets == pci_puts);
 	assert(!frontend_live && frontend_releases == released[ADAPTER]);
 	assert(!chd_device_lock.readers && !chd_device_lock.writers);
 	for (i = 0; i < 6; i++)
@@ -496,7 +634,10 @@ static void test_remove(void)
 		bool playback = which & 1, msi = which & 2;
 		reset();
 		attach(playback, msi);
-		pending_result = !(which & 4);
+		/* No-session failures own no DMA backing; pinned failure retention
+		 * is exercised separately instead of pretending release is safe.
+		 */
+		pending_result = playback || !(which & 4);
 		/* Restoration failure is diagnostic, not an excuse to leak resources. */
 		l0s_result = which == 7 ? -EIO : 0;
 		chd_dec_pci_remove(&pci);
@@ -506,7 +647,7 @@ static void test_remove(void)
 		assert(stream_releases == playback);
 		assert(module_puts == playback && !module_refs);
 		assert(bar_unmaps == 2 && region_releases == 1 && device_disables == 1);
-		assert(warnings == (unsigned int)!pending_result + (unsigned int)!!l0s_result);
+		assert(warnings == (unsigned int)!!l0s_result);
 		assert_released();
 		/* drvdata is cleared; a second callback cannot release any resource twice. */
 		chd_dec_pci_remove(&pci);
@@ -527,31 +668,45 @@ static void test_fail_stop_then_remove(void)
 		first = bind_user(adp, 0);
 		second = bind_user(adp, 1);
 		pending_result = which;
-		chd_dec_fail_closed(adp, -EIO);
-		chd_dec_fail_closed(adp, -EIO);
-		assert(adp->cmds.session_module_pinned && module_refs == 1 && !module_puts);
+		assert(chd_dec_fail_closed(adp, -EIO) == (bool)which);
+		assert(chd_dec_fail_closed(adp, -EIO) == (bool)which);
+		assert(adp->dma_terminal_quiesced == (bool)which);
+		assert(!pci.state_saved && pci.saved_master && saved_invalidations == 2);
+		simulate_pci_core_restore();
+		assert(adp->cmds.session_module_pinned == !which);
+		assert(module_refs == !which && module_puts == which);
 		assert(!adp->present && adp->cmds.cin_wait_exit);
 		assert(!master && !irq_live && !msi_live && irq_frees == 1 && msi_disables == 1);
-		assert(!dma_frees && !l0s_releases && !device_disables);
-		assert(adp->cmds.hw_ctx && adp->fill_byte_pool && adp->elem_pool_head);
-		assert(adp->cmds.session_owner == &adp->cmds.user[0]);
+		assert(dma_frees == which && !l0s_releases && !device_disables);
+		assert(!!adp->cmds.hw_ctx == !which && !!adp->fill_byte_pool == !which &&
+		       !!adp->elem_pool_head == !which && !!adp->cmds.adp == !which);
+		assert(adp->cmds.session_owner == (which ? NULL : &adp->cmds.user[0]));
 		assert(chd_dec_close(NULL, &first) == 0 && !first.private_data);
 		assert(adp->cfg_users == 1 && !adp->cmds.user[0].in_use);
 		assert(adp->cmds.user[0].mode == DTS_MODE_INV && adp->cmds.user[1].in_use);
-		assert(adp->cmds.session_module_pinned && module_refs == 1 && !module_puts);
-		/* Accounting-only close leaves resource ownership for quiesced removal. */
-		assert(adp->cmds.session_owner == &adp->cmds.user[0]);
+		assert(adp->cmds.session_module_pinned == !which && module_refs == !which);
+		/* Accounting-only close neither revives a tombstone nor unpins an
+		 * unsafe session retained for a later removal drain attempt.
+		 */
+		assert(adp->cmds.session_owner == (which ? NULL : &adp->cmds.user[0]));
 		assert(chd_dec_close(NULL, &second) == 0 && !second.private_data);
 		assert(!adp->cfg_users && !adp->cmds.user[1].in_use);
-		assert(!dma_frees && !released[HARDWARE] && !released[DIO_POOL]);
-		assert(stream_live && !stream_releases);
-		assert(adp->cmds.session_owner == &adp->cmds.user[0]);
-		assert(adp->cmds.session_module_pinned && module_refs == 1 && !module_puts);
+		assert(dma_frees == which && released[HARDWARE] == which && released[DIO_POOL] == which);
+		assert(stream_live == !which && stream_releases == which);
+		assert(adp->cmds.session_owner == (which ? NULL : &adp->cmds.user[0]));
+		assert(adp->cmds.session_module_pinned == !which && module_refs == !which);
+		assert(module_puts == which && pci_gets == !which && !pci_puts);
+		/* A successful proof is latched; a prior failure must retry and can
+		 * now reclaim quarantine. Never recheck config after a safe tombstone.
+		 */
+		pending_result = !which;
 		chd_dec_pci_remove(&pci);
-		assert(binding_cancellations == 3 && master_clears == 3 && pending_waits == 3);
+		assert(binding_cancellations == 3);
+		assert(master_clears == (which ? 1U : 3U) && pending_waits == master_clears);
 		assert(irq_frees == 1 && msi_disables == 1 && dma_frees == 1);
 		assert(stream_releases == 1 && !stream_live);
 		assert(module_puts == 1 && !module_refs);
+		assert(pci_gets == !which && pci_puts == !which);
 		assert_released();
 	}
 }
@@ -574,10 +729,9 @@ static void test_external_owner_teardown(void)
 		assert(!adp->cfg_users);
 		assert(adp->cmds.session_module_pinned && module_refs == 1 && !module_puts);
 		if (fail_first) {
-			chd_dec_fail_closed(adp, -EIO);
-			assert(!adp->present &&
-			       adp->cmds.session_owner == &external_owner);
-			assert(adp->cmds.session_module_pinned && module_refs == 1 && !module_puts);
+			assert(chd_dec_fail_closed(adp, -EIO));
+			assert(!adp->present && !adp->cmds.session_owner && !adp->cmds.adp);
+			assert(!adp->cmds.session_module_pinned && !module_refs && module_puts == 1);
 		}
 		chd_dec_pci_remove(&pci);
 		assert(dma_frees == 1 && released[HARDWARE] == 1 &&
@@ -634,6 +788,254 @@ static void test_unpinned_context(void)
 	assert_released();
 }
 
+static void test_permanent_quarantine(void)
+{
+	struct crystalhd_adp *adp;
+	struct crystalhd_hw *hw;
+	void *dio, *elements;
+	struct file first, stale;
+	unsigned int clears, waits;
+
+	reset();
+	adp = attach(true, true);
+	first = bind_user(adp, 0);
+	stale = bind_user(adp, 1);
+	hw = adp->cmds.hw_ctx;
+	dio = adp->fill_byte_pool;
+	elements = adp->elem_pool_head;
+	/* Even an apparently empty pending queue cannot rescue a rejected
+	 * MASTER clear. Removal must retain the complete live DMA inventory.
+	 */
+	ignore_master_clear = true;
+	pending_result = 1;
+	assert(!chd_dec_fail_closed(adp, -EIO));
+	assert(!chd_dec_fail_closed(adp, -EIO));
+	simulate_pci_core_restore();
+	assert(chd_dma_quarantine == adp && pci.refs == 1 && pci_gets == 1 && !pci_puts);
+	assert(!adp->dma_terminal_quiesced && !dma_drained);
+	assert(master && !pending_waits && !status_reads);
+	assert(chd_dec_close(NULL, &first) == 0 && !first.private_data);
+	assert(module_refs == 1 && !module_puts && !dma_frees && !stream_releases);
+	chd_dec_pci_remove(&pci);
+	assert(!g_adp_info && !pci.data && !frontend_live && !chdev_live && !class_live);
+	assert(chd_dma_quarantine == adp && pci.refs == 1 && pci_gets == 1 && !pci_puts);
+	assert(adp->cmds.adp == adp && adp->cmds.hw_ctx == hw && hw->rx_freeq == adp);
+	assert(adp->fill_byte_pool == dio && adp->elem_pool_head == elements);
+	assert(adp->cmds.session_owner == &adp->cmds.user[0] && adp->cmds.session_module_pinned);
+	assert(adp->cmds.stream == (struct crystalhd_stream *)&stream_token && stream_live);
+	assert(adp->mem_addr == &bar_tokens[0] && adp->i2o_addr == &bar_tokens[1]);
+	assert(bars_live[0] && bars_live[1] && device_live && regions_live && adp->l0s.owned);
+	assert(!released[ADAPTER] && !released[HARDWARE] && !released[DIO_POOL] &&
+	       !released[ELEM_POOL] && released[IODATA] == allocated[IODATA]);
+	assert(!dma_frees && !stream_releases && !module_puts && module_refs == 1);
+	assert(!l0s_releases && !bar_unmaps && !device_disables && !region_releases);
+	clears = master_clears;
+	waits = pending_waits;
+	chd_dec_pci_remove(&pci);
+	assert(chd_dec_close(NULL, &stale) == 0 && !stale.private_data);
+	assert(master_clears == clears && pending_waits == waits && irq_frees == 1);
+	assert(pci_gets == 1 && !pci_puts && module_refs == 1 && !module_puts);
+	assert(chd_dma_quarantine == adp && !chd_device_lock.readers && !chd_device_lock.writers);
+	/* Deliberately last: retained allocations remain reachable until process
+	 * exit, matching quarantine. No fake DMA stop or test-only release occurs.
+	 */
+}
+
+static void test_no_session_inventory(void)
+{
+	struct crystalhd_adp *adp;
+	struct crystalhd_hw hw = {0};
+	unsigned int field;
+	int token;
+
+	reset();
+	adp = attach(false, false);
+	adp->present = 0;
+	adp->cmds.cin_wait_exit = 1;
+	down_write(&chd_device_lock);
+	assert(chd_dec_session_dma_absent(adp));
+	adp->cmds.hw_ctx = &hw;
+	assert(chd_dec_session_dma_absent(adp));
+	for (field = 0; field < 21; field++) {
+		unsigned int before = warnings;
+
+		switch (field) {
+		case 0: adp->cmds.session_owner = &token; break;
+		case 1: adp->cmds.stream = (struct crystalhd_stream *)&token; break;
+		case 2: adp->fill_byte_pool = &token; break;
+		case 3: adp->elem_pool_head = &token; break;
+		case 4: adp->ua_map_free_head = &token; break;
+		case 5: adp->cmds.adp = NULL; break;
+		case 6: hw.rx_pkt_pool_head = &token; break;
+		case 7: hw.rx_fallback_head = &token; break;
+		case 8: hw.rx_actq = &token; break;
+		case 9: hw.rx_rdyq = &token; break;
+		case 10: hw.rx_freeq = &token; break;
+		case 11: hw.tx_actq = &token; break;
+		case 12: hw.tx_freeq = &token; break;
+		default:
+			switch ((field - 13) % 4) {
+			case 0: hw.tx_pkt_pool[(field - 13) / 4].desc_mem.pdma_desc_start = &token; break;
+			case 1: hw.tx_pkt_pool[(field - 13) / 4].buffer = &token; break;
+			case 2: hw.tx_pkt_pool[(field - 13) / 4].call_back = &token; break;
+			case 3: hw.tx_pkt_pool[(field - 13) / 4].cb_context = &token; break;
+			}
+		}
+		assert(!chd_dec_session_dma_absent(adp) && warnings == before + 1);
+		assert(!module_refs && !module_puts && !pci_gets && !pci_puts);
+		adp->cmds.session_owner = NULL;
+		adp->cmds.stream = NULL;
+		adp->fill_byte_pool = adp->elem_pool_head = adp->ua_map_free_head = NULL;
+		adp->cmds.adp = adp;
+		memset(&hw, 0, sizeof(hw));
+	}
+	adp->cmds.hw_ctx = NULL;
+	up_write(&chd_device_lock);
+	pending_result = 0;
+	chd_dec_pci_remove(&pci);
+	assert(!dma_frees && !module_refs && !module_puts && !pci_gets);
+	assert_released();
+}
+
+static void test_terminal_proof_and_recovery(void)
+{
+	struct crystalhd_adp *adp;
+	int external_owner;
+	unsigned int waits, commands, statuses, clears;
+
+	reset();
+	adp = attach(true, true);
+	adp->cmds.session_owner = &external_owner;
+	adp->cmds.retain_rx_on_suspend = false;
+	adp->present = 0;
+	adp->cmds.cin_wait_exit = 1;
+	down_write(&chd_device_lock);
+	adp->present = 1; /* Deliberately violate the private helper's prerequisite. */
+	assert(!chd_dec_quiesce_terminal_dma(adp));
+	assert(!adp->dma_terminal_quiesced && !master_clears && !pending_waits && irq_live);
+	adp->present = 0;
+	up_write(&chd_device_lock);
+	pending_result = 0;
+	assert(!chd_dec_fail_closed(adp, -EIO));
+	assert(chd_dma_quarantine == adp && pci.refs == 1 && module_refs == 1);
+	pending_result = 1;
+	assert(chd_dec_fail_closed(adp, -EIO));
+	assert(adp->dma_terminal_quiesced && !adp->cmds.adp && !module_refs && module_puts == 1);
+	assert(chd_dma_quarantine == adp && pci.refs == 1 && pci_gets == 1 && !pci_puts);
+	waits = pending_waits;
+	commands = command_reads;
+	statuses = status_reads;
+	clears = master_clears;
+	pending_result = 0;
+	command_error = status_error = -EIO;
+	chd_dec_pci_remove(&pci);
+	assert(pending_waits == waits && pci_puts == 1 && dma_frees == 1 && module_puts == 1);
+	assert(command_reads == commands && status_reads == statuses && master_clears == clears);
+	assert_released();
+}
+
+enum fence_fault {
+	CLEAR_IGNORED, COMMAND_ERROR_ZERO, COMMAND_ERROR_ONES, COMMAND_ALL_ONES,
+	NOT_PCIE, WAIT_TIMEOUT, STATUS_ERROR_ZERO, STATUS_ERROR_ONES,
+	STATUS_PENDING, STATUS_ALL_ONES, FENCE_FAULT_COUNT
+};
+
+static void set_fence_fault(enum fence_fault fault)
+{
+	ignore_master_clear = fault == CLEAR_IGNORED;
+	express = fault != NOT_PCIE;
+	command_error = fault == COMMAND_ERROR_ZERO || fault == COMMAND_ERROR_ONES ? -EIO : 0;
+	command_output = fault == COMMAND_ERROR_ONES || fault == COMMAND_ALL_ONES ? 0xffff : 0;
+	pending_result = fault != WAIT_TIMEOUT;
+	status_error = fault == STATUS_ERROR_ZERO || fault == STATUS_ERROR_ONES ? -EIO : 0;
+	status_output = fault == STATUS_ERROR_ONES || fault == STATUS_ALL_ONES ? 0xffff :
+		fault == STATUS_PENDING ? PCI_EXP_DEVSTA_TRPND : 0;
+}
+
+static void test_fence_faults(void)
+{
+	enum fence_fault fault;
+
+	for (fault = 0; fault < FENCE_FAULT_COUNT; fault++) {
+		struct crystalhd_adp *adp;
+		struct crystalhd_hw *hw;
+		struct file binding;
+		void *dio, *elements;
+		unsigned int attempt;
+
+		reset();
+		adp = attach(true, true);
+		binding = bind_user(adp, 0);
+		hw = adp->cmds.hw_ctx;
+		dio = adp->fill_byte_pool;
+		elements = adp->elem_pool_head;
+		set_fence_fault(fault);
+		for (attempt = 1; attempt <= 2; attempt++) {
+			assert(!chd_dec_fail_closed(adp, -EIO));
+			assert(!adp->dma_terminal_quiesced && !dma_drained);
+			assert(master == (fault == CLEAR_IGNORED));
+			assert(command_reads == attempt && master_clears == attempt);
+			assert(pending_waits == (fault >= WAIT_TIMEOUT ? attempt : 0));
+			assert(status_reads == (fault > WAIT_TIMEOUT ? attempt : 0));
+			assert(!pci.state_saved && !irq_live && !msi_live);
+			assert(chd_dma_quarantine == adp && pci_gets == 1 && pci.refs == 1 && !pci_puts);
+			assert(module_refs == 1 && !module_puts && !dma_frees && !stream_releases);
+			assert(adp->cmds.hw_ctx == hw && hw->rx_freeq == adp);
+			assert(adp->fill_byte_pool == dio && adp->elem_pool_head == elements);
+			assert(adp->cmds.stream == (struct crystalhd_stream *)&stream_token && stream_live);
+			assert(adp->cmds.session_owner == &adp->cmds.user[0] && adp->cmds.session_module_pinned);
+			assert(bars_live[0] && bars_live[1] && device_live && regions_live && adp->l0s.owned);
+			assert(!released[ADAPTER] && !released[HARDWARE] && !released[DIO_POOL] && !released[ELEM_POOL]);
+			simulate_pci_core_restore();
+		}
+		assert(chd_dec_close(NULL, &binding) == 0 && !binding.private_data);
+		assert(module_refs == 1 && !module_puts && !dma_frees);
+		/* Recovery must use a fresh complete proof, not the failed wait or
+		 * read. Unrelated successful COMMAND/DEVSTA bits are harmless.
+		 */
+		ignore_master_clear = false;
+		express = true;
+		command_error = status_error = 0;
+		command_output = 0x0103;
+		status_output = 0x0009;
+		pending_result = 1;
+		chd_dec_pci_remove(&pci);
+		assert(pci_gets == 1 && pci_puts == 1 && dma_frees == 1 && module_puts == 1);
+		assert_released();
+	}
+
+	for (fault = 0; fault < FENCE_FAULT_COUNT; fault++) {
+		struct crystalhd_adp *adp;
+
+		reset();
+		adp = attach(false, true);
+		adp->cmds.hw_ctx = allocate(sizeof(*adp->cmds.hw_ctx), HARDWARE);
+		set_fence_fault(fault);
+		chd_dec_pci_remove(&pci);
+		/* Empty inventory, not a false DMA fence, authorizes this cleanup.
+		 * A rejected clear can leave MASTER set but there is no owned DMA.
+		 */
+		assert(master == (fault == CLEAR_IGNORED) && !dma_drained);
+		assert(!pci_gets && !pci_puts && !module_refs && !module_puts && !dma_frees);
+		assert(released[HARDWARE] == 1);
+		assert_released();
+	}
+}
+
+static void test_empty_preopened_context(void)
+{
+	struct crystalhd_adp *adp;
+
+	reset();
+	adp = attach(false, true);
+	adp->cmds.hw_ctx = allocate(sizeof(*adp->cmds.hw_ctx), HARDWARE);
+	pending_result = 0;
+	chd_dec_pci_remove(&pci);
+	assert(released[HARDWARE] == 1 && !dma_frees && !module_refs && !module_puts);
+	assert(!pci_gets && !pci_puts);
+	assert_released();
+}
+
 int main(void)
 {
 	test_remove();
@@ -641,6 +1043,11 @@ int main(void)
 	test_external_owner_teardown();
 	test_stale_close();
 	test_unpinned_context();
+	test_no_session_inventory();
+	test_terminal_proof_and_recovery();
+	test_fence_faults();
+	test_empty_preopened_context();
+	test_permanent_quarantine();
 	printf("Device lifetime: %u scenarios passed\n", scenarios);
 	return 0;
 }

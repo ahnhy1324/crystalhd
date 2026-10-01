@@ -18,6 +18,8 @@ typedef uint64_t u64;
 #define READ_ONCE(value) __atomic_load_n(&(value), __ATOMIC_SEQ_CST)
 #define WRITE_ONCE(value, update) \
     __atomic_store_n(&(value), (update), __ATOMIC_SEQ_CST)
+#define dev_err(...) ((void)0)
+#define dev_info(...) ((void)0)
 
 struct rw_semaphore {
     pthread_rwlock_t native;
@@ -35,6 +37,7 @@ struct crystalhd_user;
 
 static struct rw_semaphore chd_device_lock;
 static struct crystalhd_adp adapter, *g_adp_info;
+static struct crystalhd_adp *chd_dma_quarantine;
 static u64 chd_device_generation;
 static pthread_mutex_t audit = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t changed = PTHREAD_COND_INITIALIZER;
@@ -178,6 +181,17 @@ static void up_write(struct rw_semaphore *lock)
 #define lockdep_assert_held_write(lock) \
     assert((lock) == &chd_device_lock && global_write == 1)
 #include "access-functions.h"
+
+static int probe_admission_fixture(void)
+{
+    u64 generation;
+    int rc;
+
+#include "probe-admission.h"
+out:
+    up_write(&chd_device_lock);
+    return rc;
+}
 
 static void reset(void)
 {
@@ -437,6 +451,26 @@ static void removal_cases(void)
     }
 }
 
+static void probe_admission_cases(void *unreadable)
+{
+    for (unsigned variant = 0; variant < 5; variant++) {
+        int expected = variant == 0 ? 0 : variant == 4 ? -EOVERFLOW : -EBUSY;
+        u64 original;
+
+        reset();
+        g_adp_info = variant == 1 || variant == 3 ? unreadable : NULL;
+        chd_dma_quarantine = variant == 2 || variant == 3 ? unreadable : NULL;
+        if (variant == 4) chd_device_generation = U64_MAX;
+        original = chd_device_generation;
+        check(probe_admission_fixture() == expected,
+              "actual probe prefix rejects occupied/quarantined/exhausted devices before setup");
+        check(chd_device_generation == original + (variant == 0),
+              "quarantine rejection consumes no generation and dereferences neither stale pointer");
+        balanced("Xx");
+        chd_dma_quarantine = NULL;
+    }
+}
+
 int main(void)
 {
     long page_size = sysconf(_SC_PAGESIZE);
@@ -452,6 +486,7 @@ int main(void)
     failure_cases(unreadable);
     generation_cases();
     removal_cases();
+    probe_admission_cases(unreadable);
     must(pthread_rwlock_destroy(&adapter.user_lock.native));
     must(pthread_rwlock_destroy(&chd_device_lock.native));
     must(pthread_cond_destroy(&changed));
