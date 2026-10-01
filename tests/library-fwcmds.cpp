@@ -28,6 +28,8 @@ static unsigned clear_on_sleep;
 static unsigned long last_ioctl_code;
 static bool flag_seen_in_ioctl;
 
+extern "C" void DumpInputSampleToFile(uint8_t *, uint32_t) {}
+
 static void Check(bool condition, const char *message)
 {
 	++checks;
@@ -354,6 +356,99 @@ static void DecoderStartPayload()
 		"decoder close preserves the reviewed 64-word wire payload");
 	Check(fixture.context.OpenRsp.channelStatus == 0,
 	      "successful low-level close clears the cached open response");
+}
+
+enum CloseFailure {
+	CLOSE_POOL_EMPTY,
+	CLOSE_DRIVER_STATUS,
+	CLOSE_FIRMWARE_RESPONSE,
+	CLOSE_SYSCALL,
+};
+
+static BC_STATUS ExpectedCloseFailure(CloseFailure failure)
+{
+	switch (failure) {
+	case CLOSE_POOL_EMPTY:
+		return BC_STS_INSUFF_RES;
+	case CLOSE_DRIVER_STATUS:
+		return BC_STS_IO_ERROR;
+	case CLOSE_FIRMWARE_RESPONSE:
+		return BC_STS_FW_CMD_ERR;
+	case CLOSE_SYSCALL:
+		return BC_STS_ERROR;
+	}
+	std::abort();
+}
+
+static void DecoderCloseOwnership(uint32_t device, CloseFailure failure)
+{
+	Fixture fixture(device);
+	fixture.context.OpenRsp.channelId = 7;
+	fixture.context.OpenRsp.channelStatus = 0xfeedfaceU;
+	fixture.context.LastPicNum = 17;
+	fixture.context.LastSessNum = 9;
+	fixture.context.EOSCnt = 5;
+	fixture.context.DrvStatusEOSCnt = 6;
+	DtsSetDecStat(true, fixture.context.ProcessID);
+	const auto open_response = fixture.context.OpenRsp;
+
+	if (failure == CLOSE_POOL_EMPTY)
+		fixture.context.pIoDataFreeHd = nullptr;
+	else if (failure == CLOSE_DRIVER_STATUS)
+		ioctl_status = BC_STS_IO_ERROR;
+	else if (failure == CLOSE_FIRMWARE_RESPONSE)
+		response_status = 1;
+	else
+		syscall_failure = true;
+
+	const unsigned old_calls = calls;
+	Check(DtsCloseDecoder(&fixture.context) == ExpectedCloseFailure(failure),
+	      "failed decoder close preserves its public status");
+	Check(calls == old_calls + (failure == CLOSE_POOL_EMPTY ? 0U : 1U),
+	      "failed decoder close issues at most one firmware command");
+	Check(fixture.context.State == BC_DEC_STATE_STOP &&
+	          std::memcmp(&fixture.context.OpenRsp, &open_response,
+	                      sizeof(open_response)) == 0,
+	      "failed decoder close retains channel state and response identity");
+	Check(fixture.globals.g_bDecOpened &&
+	          fixture.globals.g_nProcID == fixture.context.ProcessID,
+	      "failed decoder close retains shared decoder ownership");
+	Check(fixture.context.LastPicNum == 17 &&
+	          fixture.context.LastSessNum == 9 &&
+	          fixture.context.EOSCnt == 5 &&
+	          fixture.context.DrvStatusEOSCnt == 6,
+	      "failed decoder close preserves session metadata");
+	if (failure != CLOSE_POOL_EMPTY)
+		fixture.PoolReturned();
+
+	fixture.Prepare();
+	const unsigned retry_calls = calls;
+	const uint32_t retry_sequence = fixture.context.fwcmdseq;
+	Check(DtsCloseDecoder(&fixture.context) == BC_STS_SUCCESS,
+	      "decoder close can be retried after a transient failure");
+	Check(calls == retry_calls + 1,
+	      "successful retry issues exactly one firmware close command");
+	uint32_t expected[BC_MAX_FW_CMD_BUFF_SZ] = {};
+	expected[0] = eCMD_C011_DEC_CHAN_CLOSE;
+	expected[1] = retry_sequence + 1;
+	expected[2] = 7;
+	expected[3] = eC011_PIC_REL_INTERNAL;
+	expected[4] = eC011_LASTPIC_DISPLAY_ON;
+	CheckFirmwarePayload(expected,
+	      "decoder close retry preserves the exact reviewed wire payload");
+	const decltype(fixture.context.OpenRsp) empty_response = {};
+	Check(fixture.context.State == BC_DEC_STATE_CLOSE &&
+	          std::memcmp(&fixture.context.OpenRsp, &empty_response,
+	                      sizeof(empty_response)) == 0,
+	      "successful decoder close retires channel ownership");
+	Check(!fixture.globals.g_bDecOpened && fixture.globals.g_nProcID == 0,
+	      "successful decoder close clears shared ownership");
+	Check(fixture.context.LastPicNum == static_cast<uint32_t>(-1) &&
+	          fixture.context.LastSessNum == static_cast<uint32_t>(-1) &&
+	          fixture.context.EOSCnt == 0 &&
+	          fixture.context.DrvStatusEOSCnt == 0,
+	      "successful decoder close resets session metadata");
+	fixture.PoolReturned();
 }
 
 static void ZeroRateValidation()
@@ -711,6 +806,10 @@ int main()
 	ValidTestIds(BC_PCI_DEVID_LINK);
 	FailurePropagation();
 	DecoderStartPayload();
+	for (uint32_t device : {BC_PCI_DEVID_LINK, BC_PCI_DEVID_FLEA})
+		for (CloseFailure failure : {CLOSE_POOL_EMPTY, CLOSE_DRIVER_STATUS,
+		                             CLOSE_FIRMWARE_RESPONSE, CLOSE_SYSCALL})
+			DecoderCloseOwnership(device, failure);
 	ZeroRateValidation();
 	RateErrorPrecedence();
 	PositiveRateCommands();
