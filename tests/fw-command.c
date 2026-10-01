@@ -7,8 +7,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "bc_dts_types.h"
 struct _BC_DTS_PROC_OUT;
 #include "bc_dts_defs.h"
+#include "crystalhd_ioctl_limits.h"
+#include "crystalhd_fw_if.h"
+#include "DriverFwShare.h"
+#include "FleaDefs.h"
+
+#define FW_CMD_BUFF_SZ 64U
+#define C011_RET_SUCCESS 0U
+typedef struct {
+    uint32_t cmd[FW_CMD_BUFF_SZ], rsp[FW_CMD_BUFF_SZ], flags, add_data;
+} BC_FW_CMD;
+_Static_assert(sizeof(BC_FW_CMD) == 520U, "firmware command ABI fixture changed");
 
 struct mutex { pthread_mutex_t native; };
 typedef pthread_mutex_t spinlock_t;
@@ -18,7 +30,9 @@ typedef struct {
     unsigned wakeups;
 } wait_queue_head_t;
 
-struct crystalhd_adp { bool present; };
+struct device { int unused; };
+struct pci_dev { struct device dev; };
+struct crystalhd_adp { bool present; struct pci_dev *pdev; };
 
 struct crystalhd_hw {
     struct crystalhd_adp *adp;
@@ -31,21 +45,38 @@ struct crystalhd_hw {
     bool fwcmd_poisoned;
     int fwcmd_evt_sts;
     uint32_t FwCmdCnt;
+    BC_STATUS (*pfnDevDRAMWrite)(struct crystalhd_hw *, uint32_t,
+                               uint32_t, const uint32_t *);
+    BC_STATUS (*pfnDevDRAMRead)(struct crystalhd_hw *, uint32_t,
+                              uint32_t, uint32_t *);
+    uint32_t (*pfnReadDevRegister)(struct crystalhd_adp *, uint32_t);
+    void (*pfnWriteDevRegister)(struct crystalhd_adp *, uint32_t, uint32_t);
+    uint32_t fwcmdPostAddr, fwcmdPostMbox, fwcmdRespMbox;
+    uint32_t channelNum, TxBuffInfoAddr, pib_del_Q_addr, pib_rel_Q_addr;
+    TX_INPUT_BUFFER_INFO TxFwInputBuffInfo;
+    enum FLEA_POWER_STATES FleaPowerState;
+    bool PwrDwnTxIntr, PwrDwnPiQIntr, SingleThreadAppFIFOEmpty;
+    uint32_t EmptyCnt;
 };
 
 enum wait_mode {
     WAIT_BLOCK,
     WAIT_TIMEOUT,
     WAIT_COMPLETE_AT_TIMEOUT,
+    WAIT_COMPLETE_IMMEDIATELY,
+    WAIT_SIGNAL,
+    WAIT_IO_ERROR,
 };
 
 static struct crystalhd_hw hardware;
 static struct crystalhd_adp adapter;
+static struct pci_dev pci;
 static enum wait_mode wait_mode;
 static wait_queue_head_t *last_woken;
 static pthread_mutex_t audit_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t audit_changed = PTHREAD_COND_INITIALIZER;
 static unsigned mutex_attempts;
+static bool interrupt_mailbox_begin;
 
 static void crystalhd_hw_fw_cmd_complete(struct crystalhd_hw *hw);
 
@@ -55,6 +86,8 @@ static int TestMutexLock(struct mutex *mutex)
     mutex_attempts++;
     pthread_cond_broadcast(&audit_changed);
     pthread_mutex_unlock(&audit_lock);
+    if (interrupt_mailbox_begin && mutex == &hardware.fwcmd_mutex)
+        return -EINTR;
     return pthread_mutex_lock(&mutex->native);
 }
 
@@ -76,9 +109,17 @@ static int TestWait(wait_queue_head_t *event)
 {
     if (wait_mode == WAIT_TIMEOUT)
         return -EBUSY;
+    if (wait_mode == WAIT_SIGNAL)
+        return -EINTR;
+    if (wait_mode == WAIT_IO_ERROR)
+        return -EIO;
     if (wait_mode == WAIT_COMPLETE_AT_TIMEOUT) {
         crystalhd_hw_fw_cmd_complete(&hardware);
         return -EBUSY;
+    }
+    if (wait_mode == WAIT_COMPLETE_IMMEDIATELY) {
+        crystalhd_hw_fw_cmd_complete(&hardware);
+        return 0;
     }
     if (pthread_mutex_lock(&event->lock)) abort();
     while (!hardware.fwcmd_evt_sts)
@@ -104,8 +145,20 @@ static int TestWait(wait_queue_head_t *event)
     (void)(condition); (void)(timeout); (void)(nosig); \
     (ret) = TestWait(event); \
 } while (0)
+#define KERN_ERR ""
+#define printk(...) ((void)0)
+#define dev_dbg(dev, ...) ((void)(dev))
+#define dev_err(dev, ...) ((void)(dev))
+#define dev_info(dev, ...) ((void)(dev))
+#define msleep_interruptible(milliseconds) TestSleep(milliseconds)
+
+static int TestSleep(unsigned milliseconds);
+static bool crystalhd_link_load_firmware_config(struct crystalhd_hw *hw);
+static void crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
+                                               enum FLEA_STATE_CH_EVENT event);
 
 #include "fw-command-functions.h"
+#include "fw-transport-functions.h"
 
 static unsigned checks, failures;
 static void Check(bool condition, const char *why)
@@ -122,6 +175,7 @@ static void InitHardware(void)
     memset(&hardware, 0, sizeof(hardware));
     memset(&adapter, 0, sizeof(adapter));
     adapter.present = true;
+    adapter.pdev = &pci;
     hardware.adp = &adapter;
     if (pthread_mutex_init(&hardware.lock, NULL) ||
         pthread_mutex_init(&hardware.fwcmd_trans_mutex.native, NULL) ||
@@ -131,6 +185,7 @@ static void InitHardware(void)
         abort();
     last_woken = NULL;
     wait_mode = WAIT_BLOCK;
+    interrupt_mailbox_begin = false;
     pthread_mutex_lock(&audit_lock);
     mutex_attempts = 0;
     pthread_mutex_unlock(&audit_lock);
@@ -397,6 +452,378 @@ static void SerializedCommands(void)
     DestroyHardware();
 }
 
+static BC_FW_CMD *transfer_command;
+static uint32_t response_words[FW_CMD_BUFF_SZ], response_address;
+static BC_STATUS response_read_status;
+static bool partial_response;
+static unsigned transfer_reads, transfer_writes, mailbox_reads, mailbox_posts;
+static unsigned sleeps, firmware_config_calls, power_wakes;
+
+static bool WordsZero(const uint32_t *words, unsigned count)
+{
+    unsigned word;
+
+    for (word = 0; word < count; word++)
+        if (words[word]) return false;
+    return true;
+}
+
+static void CheckHardwareLocked(void)
+{
+    int rc = pthread_mutex_trylock(&hardware.lock);
+
+    Check(rc == EBUSY, "mailbox and DRAM callbacks run under the hardware lock");
+    if (!rc && pthread_mutex_unlock(&hardware.lock)) abort();
+}
+
+static int TestSleep(unsigned milliseconds)
+{
+    Check(milliseconds == 50, "production mailbox wait retains its bounded delay");
+    sleeps++;
+    return 0;
+}
+
+static bool crystalhd_link_load_firmware_config(struct crystalhd_hw *hw)
+{
+    Check(hw == &hardware, "Link INIT postprocessing uses the active hardware");
+    firmware_config_calls++;
+    return true;
+}
+
+static void crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
+                                               enum FLEA_STATE_CH_EVENT event)
+{
+    Check(hw == &hardware && event == FLEA_EVT_FW_CMD_POST,
+          "Flea power wake uses only the firmware-post event");
+    power_wakes++;
+}
+
+static BC_STATUS WriteCommand(struct crystalhd_hw *hw, uint32_t address,
+                              uint32_t count, const uint32_t *words)
+{
+    CheckHardwareLocked();
+    Check(hw == &hardware && address == hw->fwcmdPostAddr &&
+          count == FW_CMD_BUFF_SZ && words == transfer_command->cmd,
+          "production sends the unchanged complete command buffer");
+    transfer_writes++;
+    return BC_STS_SUCCESS;
+}
+
+static BC_STATUS ReadTransfer(struct crystalhd_hw *hw, uint32_t address,
+                             uint32_t count, uint32_t *words)
+{
+    CheckHardwareLocked();
+    Check(hw == &hardware, "DRAM reads use the active hardware");
+    transfer_reads++;
+    if (count == 1) {
+        Check(address == hw->fwcmdPostAddr && transfer_reads == 1,
+              "command publication flush precedes reply read");
+        *words = transfer_command->cmd[0];
+        return BC_STS_SUCCESS;
+    }
+    Check(count == FW_CMD_BUFF_SZ && address == response_address &&
+          words == transfer_command->rsp && transfer_reads == 2,
+          "production reads the complete reply from the response mailbox address");
+    Check(WordsZero(words, count), "caller-supplied response data is cleared before reading");
+    if (!crystalhd_valid_dram_range(address, count))
+        return BC_STS_INV_ARG;
+    if (response_read_status == BC_STS_SUCCESS || partial_response)
+        memcpy(words, response_words,
+               (partial_response ? 12U : count) * sizeof(*words));
+    return response_read_status;
+}
+
+static uint32_t ReadMailbox(struct crystalhd_adp *adp, uint32_t address)
+{
+    CheckHardwareLocked();
+    Check(adp == &adapter && address == hardware.fwcmdRespMbox,
+          "only the firmware response mailbox register is read");
+    mailbox_reads++;
+    return response_address;
+}
+
+static void PostMailbox(struct crystalhd_adp *adp, uint32_t address, uint32_t value)
+{
+    CheckHardwareLocked();
+    Check(adp == &adapter && address == hardware.fwcmdPostMbox &&
+          value == hardware.fwcmdPostAddr,
+          "command mailbox publishes the command address exactly once");
+    mailbox_posts++;
+}
+
+static void InitTransfer(BC_FW_CMD *command, uint32_t id, bool stale)
+{
+    unsigned word;
+
+    InitHardware();
+    memset(command, 0, sizeof(*command));
+    command->cmd[0] = id;
+    command->cmd[1] = 17;
+    command->flags = 0x1234;
+    command->add_data = 0x5678;
+    if (stale)
+        for (word = 0; word < FW_CMD_BUFF_SZ; word++)
+            command->rsp[word] = word == 2 ? 0 : 0x11110000U + word;
+    transfer_command = command;
+    memset(response_words, 0, sizeof(response_words));
+    response_words[0] = id;
+    response_words[1] = 17;
+    response_words[3] = 7;
+    response_words[5] = 0x12300;
+    response_words[6] = 0x12400;
+    response_words[11] = 0x12500;
+    response_address = 0x200;
+    response_read_status = BC_STS_SUCCESS;
+    partial_response = false;
+    transfer_reads = transfer_writes = mailbox_reads = mailbox_posts = 0;
+    sleeps = firmware_config_calls = power_wakes = 0;
+    hardware.pfnDevDRAMWrite = WriteCommand;
+    hardware.pfnDevDRAMRead = ReadTransfer;
+    hardware.pfnReadDevRegister = ReadMailbox;
+    hardware.pfnWriteDevRegister = PostMailbox;
+    hardware.fwcmdPostAddr = 0x100;
+    hardware.fwcmdPostMbox = 0x1000;
+    hardware.fwcmdRespMbox = 0x1004;
+    hardware.FleaPowerState = FLEA_PS_ACTIVE;
+    hardware.channelNum = 0xaabb;
+    hardware.TxBuffInfoAddr = 0xbbcc;
+    hardware.pib_del_Q_addr = 0xccdd;
+    hardware.pib_rel_Q_addr = 0xddee;
+    memset(&hardware.TxFwInputBuffInfo, 0x5a, sizeof(hardware.TxFwInputBuffInfo));
+    hardware.PwrDwnTxIntr = hardware.PwrDwnPiQIntr = true;
+    hardware.SingleThreadAppFIFOEmpty = true;
+    hardware.EmptyCnt = 123;
+    wait_mode = WAIT_COMPLETE_IMMEDIATELY;
+}
+
+static void ReplyReadFailure(void)
+{
+    BC_STATUS (*const execute[])(struct crystalhd_hw *, BC_FW_CMD *) = {
+        crystalhd_flea_do_fw_cmd, crystalhd_link_do_fw_cmd,
+    };
+    const uint32_t commands[] = {
+        eCMD_C011_INIT, eCMD_C011_GET_VERSION, eCMD_C011_DEC_CHAN_OPEN,
+        eCMD_C011_DEC_CHAN_STATUS, eCMD_C011_DEC_CHAN_CLOSE,
+        eCMD_C011_DEC_CHAN_START_VIDEO, eCMD_C011_DEC_CHAN_STREAM_OPEN,
+    };
+    const BC_STATUS errors[] = {
+        BC_STS_INV_ARG, BC_STS_BUSY, BC_STS_ERROR, BC_STS_IO_ERROR,
+        BC_STS_FW_CMD_ERR,
+    };
+    unsigned generation, cmd, error, content;
+
+    for (generation = 0; generation < 2; generation++) {
+        for (cmd = 0; cmd < sizeof(commands) / sizeof(commands[0]); cmd++) {
+            for (error = 0; error < sizeof(errors) / sizeof(errors[0]); error++) {
+                for (content = 0; content < 3; content++) {
+                    BC_FW_CMD command, original;
+                    TX_INPUT_BUFFER_INFO input;
+                    unsigned attempts;
+
+                    InitTransfer(&command, commands[cmd], content != 0);
+                    original = command;
+                    input = hardware.TxFwInputBuffInfo;
+                    response_read_status = errors[error];
+                    partial_response = content == 2;
+                    /* An error after a valid-looking success header/pointers
+                     * must not reach either firmware-status or postprocessing.
+                     */
+                    Check(execute[generation](&hardware, &command) == BC_STS_IO_ERROR,
+                          "every failed reply read reports transport IO_ERROR, not firmware rejection");
+                    Check(WordsZero(command.rsp, FW_CMD_BUFF_SZ),
+                          "failed reads discard zero, supplied and partially written replies");
+                    Check(!memcmp(command.cmd, original.cmd, sizeof(command.cmd)) &&
+                          command.flags == original.flags && command.add_data == original.add_data,
+                          "reply failure preserves the request and ancillary ABI fields");
+                    Check(hardware.channelNum == 0xaabb && hardware.TxBuffInfoAddr == 0xbbcc &&
+                          hardware.pib_del_Q_addr == 0xccdd && hardware.pib_rel_Q_addr == 0xddee &&
+                          !memcmp(&hardware.TxFwInputBuffInfo, &input, sizeof(input)) &&
+                          hardware.PwrDwnTxIntr && hardware.PwrDwnPiQIntr &&
+                          hardware.SingleThreadAppFIFOEmpty && hardware.EmptyCnt == 123 &&
+                          !firmware_config_calls,
+                          "unreadable replies cannot publish channels, queues, power or INIT config state");
+                    Check(hardware.fwcmd_poisoned && !hardware.fwcmd_pending &&
+                          !hardware.FwCmdCnt && hardware.fwcmd_evt_sts == 1,
+                          "completed reply-read failure quarantines without inventing outstanding work");
+                    Check(transfer_reads == 2 && transfer_writes == 1 &&
+                          mailbox_posts == 1 && mailbox_reads == 1 && sleeps == 1 && !power_wakes,
+                          "failure performs only the original single command and reply attempt");
+                    CheckUnlocked(&hardware.lock, "reply failure releases hardware serialization");
+                    CheckUnlocked(&hardware.fwcmd_mutex.native,
+                                  "reply failure releases mailbox serialization");
+                    attempts = transfer_reads + transfer_writes + mailbox_reads + mailbox_posts;
+                    Check(execute[generation](&hardware, &command) == BC_STS_BUSY &&
+                          attempts == transfer_reads + transfer_writes + mailbox_reads + mailbox_posts,
+                          "quarantine blocks direct retries before any hardware callback");
+                    Check(crystalhd_hw_fw_cmd_enter(&hardware) == BC_STS_BUSY,
+                          "quarantine blocks normal transaction preprocessing");
+                    crystalhd_hw_fw_cmd_complete(&hardware);
+                    Check(hardware.fwcmd_poisoned && !hardware.FwCmdCnt,
+                          "a duplicate/late IRQ cannot reopen an unreconciled mailbox");
+                    Check(crystalhd_hw_fw_cmd_recovery_enter(&hardware) == BC_STS_SUCCESS,
+                          "completed read failure permits only verified-reset recovery");
+                    crystalhd_hw_fw_cmd_reset_locked(&hardware);
+                    crystalhd_hw_fw_cmd_leave(&hardware);
+                    response_read_status = BC_STS_SUCCESS;
+                    partial_response = false;
+                    transfer_reads = 0;
+                    Check(execute[generation](&hardware, &command) == BC_STS_SUCCESS &&
+                          !hardware.fwcmd_poisoned && !hardware.FwCmdCnt,
+                          "a successful reply is usable after verified-reset state recovery");
+                    DestroyHardware();
+                }
+            }
+        }
+    }
+}
+
+static void ReplyRangeAndFirmwareStatus(void)
+{
+    BC_STATUS (*const execute[])(struct crystalhd_hw *, BC_FW_CMD *) = {
+        crystalhd_flea_do_fw_cmd, crystalhd_link_do_fw_cmd,
+    };
+    const uint32_t invalid[] = { 3U, CRYSTALHD_DEVICE_DRAM_SIZE,
+                               CRYSTALHD_DEVICE_DRAM_SIZE - 252U, UINT32_MAX };
+    unsigned generation, range, status;
+
+    for (generation = 0; generation < 2; generation++) {
+        for (range = 0; range < sizeof(invalid) / sizeof(invalid[0]); range++) {
+            BC_FW_CMD command;
+
+            InitTransfer(&command, eCMD_C011_DEC_CHAN_OPEN, true);
+            response_address = invalid[range];
+            Check(execute[generation](&hardware, &command) == BC_STS_IO_ERROR &&
+                  WordsZero(command.rsp, FW_CMD_BUFF_SZ) && hardware.fwcmd_poisoned,
+                  "unaligned, overflowing and out-of-DRAM replies cannot appear successful");
+            DestroyHardware();
+        }
+        for (status = 0; status < 3; status++) {
+            BC_FW_CMD command;
+            const uint32_t firmware_status[] = { 0U, 1U, UINT32_MAX };
+            BC_STATUS expected = status ? BC_STS_FW_CMD_ERR : BC_STS_SUCCESS;
+
+            InitTransfer(&command, eCMD_C011_DEC_CHAN_START_VIDEO, true);
+            response_address = CRYSTALHD_DEVICE_DRAM_SIZE - sizeof(command.rsp);
+            response_words[2] = firmware_status[status];
+            Check(execute[generation](&hardware, &command) == expected,
+                  "last valid DRAM reply and firmware status retain existing semantics");
+            Check(!memcmp(command.rsp, response_words, sizeof(command.rsp)) &&
+                  !hardware.fwcmd_poisoned && !hardware.fwcmd_pending && !hardware.FwCmdCnt,
+                  "valid success and rejection preserve the complete reply and clean mailbox");
+            Check(hardware.pib_del_Q_addr == (status ? 0xccddU : response_words[5]) &&
+                  hardware.pib_rel_Q_addr == (status ? 0xddeeU : response_words[6]),
+                  "only a successfully read firmware success reply publishes PIB queues");
+            DestroyHardware();
+        }
+    }
+}
+
+static void ReplyAdmissionAndWaitFailure(void)
+{
+    BC_STATUS (*const execute[])(struct crystalhd_hw *, BC_FW_CMD *) = {
+        crystalhd_flea_do_fw_cmd, crystalhd_link_do_fw_cmd,
+    };
+    const enum wait_mode waits[] = { WAIT_TIMEOUT, WAIT_SIGNAL, WAIT_IO_ERROR };
+    const BC_STATUS expected[] = {
+        BC_STS_TIMEOUT, BC_STS_IO_USER_ABORT, BC_STS_IO_ERROR,
+    };
+    unsigned generation, fault;
+
+    for (generation = 0; generation < 2; generation++) {
+        for (fault = 0; fault < 6; fault++) {
+            BC_FW_CMD command;
+
+            InitTransfer(&command, eCMD_C011_DEC_CHAN_OPEN, true);
+            if (fault < 2) {
+                hardware.fwcmd_poisoned = !fault;
+                hardware.fwcmd_pending = !!fault;
+                hardware.FwCmdCnt = 1;
+                Check(execute[generation](&hardware, &command) == BC_STS_BUSY,
+                      "poisoned and already-pending attempts retain admission result");
+                Check(!transfer_reads && !transfer_writes && !mailbox_reads &&
+                      !mailbox_posts && !sleeps && !power_wakes,
+                      "denied admission never reaches any hardware callback");
+                Check(hardware.fwcmd_poisoned == !fault &&
+                      hardware.fwcmd_pending == !!fault && hardware.FwCmdCnt == 1,
+                      "denied admission preserves the earlier command lifetime");
+            } else if (fault == 2) {
+                interrupt_mailbox_begin = true;
+                Check(execute[generation](&hardware, &command) == BC_STS_IO_USER_ABORT,
+                      "interrupted begin preserves its user-abort admission result");
+                Check(!transfer_reads && !transfer_writes && !mailbox_reads &&
+                      !mailbox_posts && !sleeps && !power_wakes,
+                      "interrupted begin never reaches any hardware callback");
+                Check(!hardware.fwcmd_poisoned && !hardware.fwcmd_pending &&
+                      !hardware.FwCmdCnt,
+                      "interrupted begin creates neither a command lifetime nor quarantine");
+            } else {
+                wait_mode = waits[fault - 3];
+                Check(execute[generation](&hardware, &command) == expected[fault - 3],
+                      "timeout and interrupted/failed wait preserve their transport status");
+                Check(transfer_reads == 1 && transfer_writes == 1 &&
+                      !mailbox_reads && mailbox_posts == 1 && sleeps == 1,
+                      "wait failure cannot read or postprocess a reply");
+                Check(hardware.fwcmd_poisoned && !hardware.fwcmd_pending &&
+                      hardware.FwCmdCnt == 1,
+                      "wait failure retains the outstanding count until its late completion");
+                crystalhd_hw_fw_cmd_complete(&hardware);
+                Check(hardware.fwcmd_poisoned && !hardware.FwCmdCnt,
+                      "late completion balances wait failure but cannot clear quarantine");
+            }
+            Check(WordsZero(command.rsp, FW_CMD_BUFF_SZ),
+                  "all denied or incomplete attempts invalidate supplied response data");
+            Check(hardware.channelNum == 0xaabb && hardware.TxBuffInfoAddr == 0xbbcc &&
+                  !firmware_config_calls,
+                  "admission/wait failures never publish reply-derived host state");
+            CheckUnlocked(&hardware.lock, "admission/wait failure releases the hardware lock");
+            CheckUnlocked(&hardware.fwcmd_mutex.native,
+                          "admission/wait failure releases mailbox serialization");
+            DestroyHardware();
+        }
+    }
+}
+
+static void PreservedReplyTransport(void)
+{
+    BC_STATUS (*const execute[])(struct crystalhd_hw *, BC_FW_CMD *) = {
+        crystalhd_flea_do_fw_cmd, crystalhd_link_do_fw_cmd,
+    };
+    BC_FW_CMD command;
+    unsigned generation;
+
+    for (generation = 0; generation < 2; generation++) {
+        InitTransfer(&command, 0xdeadbeefU, true);
+        response_words[0] = 0x01020304;
+        response_words[1] = 0xfedcba98;
+        Check(execute[generation](&hardware, &command) == BC_STS_SUCCESS &&
+              !memcmp(command.rsp, response_words, sizeof(command.rsp)),
+              "reply-read hardening neither restricts commands nor imposes new echo equality");
+        Check(!hardware.fwcmd_poisoned && !hardware.FwCmdCnt,
+              "valid opaque replies retain the existing clean transport result");
+        DestroyHardware();
+    }
+
+    InitTransfer(&command, eCMD_C011_DEC_CHAN_OPEN, true);
+    Check(crystalhd_flea_do_fw_cmd(&hardware, &command) == BC_STS_SUCCESS &&
+          hardware.channelNum == response_words[3] &&
+          hardware.TxBuffInfoAddr == response_words[11] &&
+          !hardware.TxFwInputBuffInfo.DramBuffAdd &&
+          !hardware.TxFwInputBuffInfo.DramBuffSzInBytes &&
+          !hardware.TxFwInputBuffInfo.Flags &&
+          !hardware.TxFwInputBuffInfo.HostXferSzInBytes &&
+          !hardware.TxFwInputBuffInfo.SeqNum &&
+          !hardware.PwrDwnTxIntr && !hardware.PwrDwnPiQIntr &&
+          !hardware.SingleThreadAppFIFOEmpty && !hardware.EmptyCnt,
+          "a valid Flea OPEN reply still publishes and resets its existing channel state");
+    DestroyHardware();
+
+    InitTransfer(&command, eCMD_C011_INIT, true);
+    Check(crystalhd_link_do_fw_cmd(&hardware, &command) == BC_STS_SUCCESS &&
+          firmware_config_calls == 1,
+          "a valid Link INIT reply still performs its existing configuration postprocessing");
+    DestroyHardware();
+}
+
 int main(void)
 {
     AdmissionBeforePreprocess();
@@ -405,6 +832,10 @@ int main(void)
     TimeoutLateIrqAndRetry();
     TimeoutBoundaryAndReset();
     SerializedCommands();
+    ReplyReadFailure();
+    ReplyRangeAndFirmwareStatus();
+    ReplyAdmissionAndWaitFailure();
+    PreservedReplyTransport();
     printf("Firmware command recovery: %u checks, %u failures (no hardware)\n",
            checks, failures);
     return failures ? 1 : 0;
