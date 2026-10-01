@@ -1648,7 +1648,7 @@ DtsProcOutput(
 	savFlags = pOut->PoutFlags;
 	pOut->discCnt = 0;
 
-	do
+	for (;;)
 	{
 		memset(&OutBuffs,0,sizeof(OutBuffs));
 
@@ -1724,20 +1724,24 @@ DtsProcOutput(
 		{
 			if (DtsCheckRptPic(Ctx, &OutBuffs) == true)
 			{
-				DtsRelRxBuff(Ctx,&Ctx->pOutData->u.RxBuffs,FALSE);
+				stRel = DtsRelRxBuff(Ctx,&Ctx->pOutData->u.RxBuffs,FALSE);
+				if (stRel != BC_STS_SUCCESS)
+					return stRel;
 				return BC_STS_NO_DATA;
 			}
 		}
 
 		if(pOut->DropFrames)
 		{
-			/* We need to release the buffers even if we fail to copy..*/
+			/* Return this dropped buffer before fetching another frame. */
 			stRel = DtsRelRxBuff(Ctx,&Ctx->pOutData->u.RxBuffs,FALSE);
 
-			if(sts != BC_STS_SUCCESS)
+			if(stRel != BC_STS_SUCCESS)
 			{
-				DebugLog_Trace(LDIL_DBG,"DtsProcOutput: Failed to copy out buffs.. %x\n", sts);
-				return sts;
+				DebugLog_Trace(LDIL_DBG,
+					"DtsProcOutput: Failed to repost output buffer.. %x\n",
+					stRel);
+				return stRel;
 			}
 			pOut->DropFrames--;
 
@@ -1753,13 +1757,10 @@ DtsProcOutput(
 					pOut->PicInfo.flags |= (VDEC_FLAG_EOS|VDEC_FLAG_LAST_PICTURE);
 				return BC_STS_SUCCESS;
 			}
+			continue;
 		}
-		else
-			break;
-
-	// this can't be right, DropFrames is a uint8_t so it will always be greater than or equal to zero.
-  //} while((pOut->DropFrames >= 0));
-	} while((pOut->DropFrames > 0));
+		break;
+	}
 
 
 	if(pOut->AppCallBack && pOut->hnd && (OutBuffs.PoutFlags & BC_POUT_FLAGS_PIB_VALID))
