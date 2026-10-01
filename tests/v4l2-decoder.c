@@ -231,33 +231,6 @@ static void asynchronous_checks(void)
     assert(d.phase == CHD_V4L2_FAILED && d.count == 1);
 }
 
-static void resume_checks(void)
-{
-    struct crystalhd_v4l2_decoder d;
-    const enum crystalhd_v4l2_decoder_phase blocked[] = {
-        CHD_V4L2_OFF, CHD_V4L2_DRAINING, CHD_V4L2_STOPPED, CHD_V4L2_FAILED,
-    };
-    crystalhd_v4l2_decoder_init(&d);
-    assert(crystalhd_v4l2_decoder_resume(NULL) == -EINVAL);
-    for (unsigned i = 0; i < sizeof(blocked) / sizeof(blocked[0]); i++) {
-        d.phase = blocked[i];
-        assert(crystalhd_v4l2_decoder_resume(&d) == -EBUSY);
-        assert(d.phase == blocked[i]);
-    }
-    d.phase = CHD_V4L2_DRAINED;
-    d.epoch = 99;
-    d.next_token = 500;
-    /* A genuine drain has no live tokens; consumed slots can retain their
-     * timestamp bytes. Resume must not become a hidden ledger reset.
-     */
-    d.count = 0; d.timestamps[0].token = 0; d.timestamps[0].timestamp = UINT64_MAX;
-    assert(!crystalhd_v4l2_decoder_resume(&d));
-    assert(d.phase == CHD_V4L2_RUNNING && d.epoch == 99 && d.next_token == 500);
-    assert(d.count == 0 && d.timestamps[0].token == 0 && d.timestamps[0].timestamp == UINT64_MAX);
-    assert(!crystalhd_v4l2_decoder_resume(&d));
-    assert(d.phase == CHD_V4L2_RUNNING && d.epoch == 99 && d.next_token == 500);
-}
-
 static void failed_picture_checks(void)
 {
     const struct crystalhd_rx_metadata eos = {
@@ -440,7 +413,6 @@ int main(void)
     assert(d.phase == CHD_V4L2_FAILED);
     mapped_checks();
     asynchronous_checks();
-    resume_checks();
     failed_picture_checks();
     puts("V4L2 decoder state, timestamp correlation and genuine drain checks passed");
     return 0;

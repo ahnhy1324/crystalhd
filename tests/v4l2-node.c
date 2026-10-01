@@ -252,8 +252,6 @@ static struct vb2_v4l2_buffer *source;
 static struct vb2_v4l2_buffer *source_next;
 static unsigned tx_queues, tx_joins, transports, completed, eos_events;
 static int transport_error;
-static int resume_error, controller_resume_error;
-static unsigned firmware_resumes, controller_resumes;
 static bool access_exclusive;
 static void (*transport_hook)(void);
 static void (*tx_join_hook)(void);
@@ -476,21 +474,6 @@ static int crystalhd_v4l2_decoder_close_locked(struct crystalhd_v4l2_decoder *d,
 }
 static bool crystalhd_v4l2_decoder_drained(struct crystalhd_v4l2_decoder *d)
 { return d->phase == CHD_V4L2_DRAINED; }
-static int crystalhd_decoder_resume_h264_locked(struct crystalhd_cmd *cmd, void *owner)
-{
-    assert(cmd == &adapter.cmds && owner == &lease && access_active && access_exclusive &&
-           adapter.tx_lock.held && fixture.run_lock.held && !fixture.admitted &&
-           !fixture.tx_active && !fixture.tx_work.pending && !fixture.run_work.pending);
-    firmware_resumes++; return resume_error;
-}
-static int crystalhd_v4l2_decoder_resume(struct crystalhd_v4l2_decoder *d)
-{
-    assert(fixture.run_lock.held && !access_active && !adapter.tx_lock.held &&
-           d->phase == CHD_V4L2_DRAINED);
-    controller_resumes++;
-    if (controller_resume_error) return controller_resume_error;
-    d->phase = CHD_V4L2_RUNNING; return 0;
-}
 static void chd_return_active(struct crystalhd_v4l2_file *f)
 { assert(f == &fixture && !hardware_owned); returns++; }
 static int crystalhd_v4l2_ctx_acquire(struct crystalhd_v4l2_ctx *l)
@@ -810,7 +793,6 @@ static void reset(bool running)
     join_hook = NULL;
     tx_queues = tx_joins = transports = completed = eos_events = 0;
     transport_error = 0; transport_hook = NULL; tx_join_hook = NULL; source = source_next = NULL;
-    resume_error = controller_resume_error = 0; firmware_resumes = controller_resumes = 0;
     eos_receive = false;
     error_receive = false; decode_error_result = -EILSEQ;
     memset(&tx_buffer, 0, sizeof(tx_buffer)); memset(&last_capture, 0, sizeof(last_capture));
@@ -908,34 +890,29 @@ static void restart_and_drain(void)
           fixture.session_acquired && fixture.admitted);
     reset(true); fixture.decoder.phase = CHD_V4L2_DRAINED; fixture.drain_requested = true;
     queues.dst.last = true;
-    CHECK(!chd_decoder_cmd(&handle, &fixture.fh, &cmd));
-    CHECK(!releases && !stops && !flushes && !closes &&
+    CHECK(chd_decoder_cmd(&handle, &fixture.fh, &cmd) == -EOPNOTSUPP);
+    CHECK(!releases && !stops && !flushes && !closes && !enters &&
           !streamoff_calls && queues.src.streaming && queues.dst.streaming &&
           QUEUE_COUNT(&queues.src) == 4 && QUEUE_COUNT(&queues.dst) == 4 &&
-          fixture.session_acquired && fixture.admitted && !queues.dst.last &&
-          firmware_resumes == 1 && controller_resumes == 1 && hardware_owned &&
-          fixture.decoder.phase == CHD_V4L2_RUNNING && fixture.format_known &&
-          fixture.capture_started && !fixture.drain_requested && !fixture.drain_tx_done);
+          fixture.session_acquired && !fixture.admitted && queues.dst.last &&
+          hardware_owned && fixture.decoder.phase == CHD_V4L2_DRAINED &&
+          fixture.format_known && fixture.capture_started &&
+          fixture.drain_requested && !fixture.drain_tx_done);
     reset(true);
     CHECK(!chd_decoder_cmd(&handle, &fixture.fh, &cmd));
-    CHECK(!enters && !joins && !tx_joins && !firmware_resumes && !controller_resumes &&
+    CHECK(!enters && !joins && !tx_joins &&
           !kicks && fixture.admitted);
     reset(true); fixture.decoder.phase = CHD_V4L2_DRAINING;
     CHECK(chd_decoder_cmd(&handle, &fixture.fh, &cmd) == -EBUSY);
-    CHECK(!joins && !enters && !firmware_resumes && !controller_resumes);
-    for (unsigned fail = 0; fail < 3; fail++) {
-        reset(true); fixture.decoder.phase = CHD_V4L2_DRAINED;
-        fixture.drain_requested = fixture.drain_tx_done = queues.dst.last = true;
-        if (fail == 0) enter_error = -ENODEV;
-        if (fail == 1) resume_error = -EIO;
-        if (fail == 2) controller_resume_error = -EPIPE;
-        CHECK(chd_decoder_cmd(&handle, &fixture.fh, &cmd) < 0);
-        CHECK(!fixture.admitted && !fixture.tx_active && !kicks && queues.dst.last &&
-              fixture.drain_requested && fixture.drain_tx_done && hardware_owned &&
-              fixture.decoder.phase == CHD_V4L2_DRAINED && !stops && !closes &&
-              !flushes && !releases && !streamoff_calls);
-        CHECK(firmware_resumes == (fail != 0) && controller_resumes == (fail == 2));
-    }
+    CHECK(!joins && !enters);
+    reset(true); fixture.decoder.phase = CHD_V4L2_DRAINED;
+    fixture.drain_requested = fixture.drain_tx_done = queues.dst.last = true;
+    CHECK(chd_decoder_cmd(&handle, &fixture.fh, &cmd) == -EOPNOTSUPP);
+    CHECK(chd_decoder_cmd(&handle, &fixture.fh, &cmd) == -EOPNOTSUPP);
+    CHECK(!fixture.admitted && !fixture.tx_active && !kicks && queues.dst.last &&
+          fixture.drain_requested && fixture.drain_tx_done && hardware_owned &&
+          fixture.decoder.phase == CHD_V4L2_DRAINED && !enters && !stops &&
+          !closes && !flushes && !releases && !streamoff_calls && joins == 2);
     reset(true); cmd.cmd = V4L2_DEC_CMD_STOP;
     CHECK(!chd_decoder_cmd(&handle, &fixture.fh, &cmd));
     CHECK(fixture.drain_requested && !chd_qbuf(&handle, &fixture.fh, &buf));
@@ -1351,7 +1328,20 @@ static void stateful_lifecycle_cases(void)
     cmd.cmd = V4L2_DEC_CMD_START;
     CHECK(!chd_decoder_cmd(&handle, &fixture.fh, &cmd));
     CHECK(fixture.decoder.phase == CHD_V4L2_OFF && !fixture.drain_requested &&
-          !fixture.empty_drain && !firmware_resumes && !enters && source);
+          !fixture.empty_drain && !enters && source);
+
+    reset(true); fixture.input_seen = false; fixture.decoder.count = 0;
+    queues.dst_ready = &last_capture.m2m; cmd.cmd = V4L2_DEC_CMD_STOP;
+    CHECK(!chd_decoder_cmd(&handle, &fixture.fh, &cmd));
+    mutex_lock(&fixture.run_lock); CHECK(chd_empty_drain(&fixture)); mutex_unlock(&fixture.run_lock);
+    CHECK(fixture.decoder.phase == CHD_V4L2_DRAINED && fixture.empty_drain &&
+          !fixture.empty_drain_unopened && last_buffer.done == VB2_BUF_STATE_DONE &&
+          (last_buffer.flags & V4L2_BUF_FLAG_LAST) && eos_events == 1);
+    queues.dst.last = true; cmd.cmd = V4L2_DEC_CMD_START;
+    CHECK(!chd_decoder_cmd(&handle, &fixture.fh, &cmd));
+    CHECK(fixture.decoder.phase == CHD_V4L2_RUNNING && !fixture.drain_requested &&
+          !fixture.drain_tx_done && !fixture.empty_drain && !queues.dst.last &&
+          fixture.admitted && !enters);
 
     reset(true); fixture.active[0] = &spare; source = &tx_buffer.m2m.vb;
     memset(&post_stop_buffer, 0, sizeof(post_stop_buffer));
@@ -1364,17 +1354,32 @@ static void stateful_lifecycle_cases(void)
     CHECK(source == &post_stop_buffer.m2m.vb && !source->done && fixture.drain_tx_done);
     mutex_lock(&fixture.run_lock); CHECK(!chd_finish_last(&fixture)); mutex_unlock(&fixture.run_lock);
     CHECK(fixture.decoder.phase == CHD_V4L2_DRAINED && !source->done);
-    CHECK(!chd_decoder_cmd(&handle, &fixture.fh, &cmd));
-    CHECK(fixture.decoder.phase == CHD_V4L2_RUNNING && !fixture.drain_requested && source);
+    unsigned resume_enters = enters;
+    CHECK(chd_decoder_cmd(&handle, &fixture.fh, &cmd) == -EOPNOTSUPP);
+    CHECK(fixture.decoder.phase == CHD_V4L2_DRAINED && fixture.drain_requested &&
+          fixture.drain_tx_done && !fixture.admitted && source && !source->done &&
+          enters == resume_enters);
+    queues.dst.last = true;
+    CHECK(!chd_streamoff(&handle, &fixture.fh, V4L2_BUF_TYPE_VIDEO_OUTPUT));
+    CHECK(releases == 1 && !fixture.session_acquired && !fixture.output_streaming &&
+          fixture.decoder.phase == CHD_V4L2_OFF && !fixture.drain_requested &&
+          !fixture.drain_tx_done && !fixture.input_seen && !fixture.format_known &&
+          !fixture.format_pending && !hardware_owned && !queues.dst.last &&
+          streamoff_calls == 1);
+    CHECK(!chd_streamon(&handle, &fixture.fh, V4L2_BUF_TYPE_VIDEO_OUTPUT));
+    CHECK(acquires == 1 && fixture.session_acquired && fixture.output_streaming &&
+          fixture.decoder.phase == CHD_V4L2_OFF && fixture.admitted &&
+          queues.src.streaming && streamon_calls == 1);
 
     reset(true); fixture.decoder.phase = CHD_V4L2_DRAINED;
     fixture.drain_requested = fixture.drain_tx_done = true; hardware_owned = false;
     CHECK(!chd_streamoff(&handle, &fixture.fh, V4L2_BUF_TYPE_VIDEO_CAPTURE));
     CHECK(!enters && !stops && !flushes && !closes && !releases &&
           fixture.decoder.phase == CHD_V4L2_DRAINED && fixture.capture_started);
-    CHECK(!chd_streamon(&handle, &fixture.fh, V4L2_BUF_TYPE_VIDEO_CAPTURE));
-    CHECK(firmware_resumes == 1 && controller_resumes == 1 && !stops && !closes &&
-          fixture.decoder.phase == CHD_V4L2_RUNNING && fixture.capture_streaming);
+    CHECK(chd_streamon(&handle, &fixture.fh, V4L2_BUF_TYPE_VIDEO_CAPTURE) == -EOPNOTSUPP);
+    CHECK(!enters && !stops && !closes && fixture.decoder.phase == CHD_V4L2_DRAINED &&
+          !fixture.capture_streaming && !queues.dst.streaming && streamon_calls == 1 &&
+          streamoff_calls == 2);
 
     reset(true); fixture.format_pending = true; fixture.capture_started = false;
     fixture.capture.width = 640; fixture.capture.height = 480; fixture.capture.sizeimage = 700000;

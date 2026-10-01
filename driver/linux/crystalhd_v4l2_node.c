@@ -1399,7 +1399,6 @@ static int chd_qbuf(struct file *file, void *fh, struct v4l2_buffer *buf)
 
 static int chd_resume(struct crystalhd_v4l2_file *f)
 {
-	struct crystalhd_device_access access;
 	int rc = 0;
 
 	chd_join(f);
@@ -1407,15 +1406,13 @@ static int chd_resume(struct crystalhd_v4l2_file *f)
 	if (f->empty_drain) {
 		f->decoder.phase = f->empty_drain_unopened ? CHD_V4L2_OFF : CHD_V4L2_RUNNING;
 	} else {
-		rc = crystalhd_device_enter(f->node->generation, true, &access);
-		if (!rc) {
-			mutex_lock(&access.adp->tx_lock);
-			rc = crystalhd_decoder_resume_h264_locked(&access.adp->cmds, f->lease);
-			mutex_unlock(&access.adp->tx_lock);
-			crystalhd_device_exit(&access);
-		}
-		if (!rc)
-			rc = crystalhd_v4l2_decoder_resume(&f->decoder);
+		/* The signed BCM70015 firmware implements the H.264 EOS marker by
+		 * outputting and removing every DPB entry. Clearing only the host EOS
+		 * guard would falsely resume a channel whose reference state is gone.
+		 * Keep the drained state and queued post-STOP OUTPUT intact; OUTPUT
+		 * STREAMOFF remains the explicit destructive recovery boundary.
+		 */
+		rc = -EOPNOTSUPP;
 	}
 	if (!rc) {
 		f->drain_requested = false;
@@ -1555,10 +1552,16 @@ static int chd_streamoff(struct file *file, void *fh, enum v4l2_buf_type type)
 			return rc;
 	}
 	mutex_lock(&f->run_lock);
-	if (output)
+	if (output) {
 		f->output_streaming = false;
-	else
+		/* OUTPUT STREAMOFF is the full-session recovery fence.  A prior
+		 * terminal drain left CAPTURE reporting EPIPE; the fresh decoder
+		 * session must be able to reuse that still-streaming queue.
+		 */
+		vb2_clear_last_buffer_dequeued(v4l2_m2m_get_dst_vq(f->fh.m2m_ctx));
+	} else {
 		f->capture_streaming = false;
+	}
 	mutex_unlock(&f->run_lock);
 	rc = v4l2_m2m_ioctl_streamoff(file, fh, type);
 	if (!output && f->output_streaming && !f->format_pending &&

@@ -9,15 +9,6 @@ struct crystalhd_cmd;
 int crystalhd_decoder_validate_h264_locked(struct crystalhd_cmd *ctx,
 					   const void *owner);
 
-/* Clear the EOS transport guard without resetting channel/firmware state.
- * Caller MUST first verify strict native firmware drain completion and join
- * every TX operation, then hold user_lock for session lifetime and tx_lock.
- * This helper cannot infer firmware drain from eos_submitted alone. Failed
- * transport or retained staging leases remain blocked; errors preserve EOS.
- */
-int crystalhd_decoder_resume_h264_locked(struct crystalhd_cmd *ctx,
-					const void *owner);
-
 int crystalhd_stream_prepare(struct crystalhd_cmd *ctx);
 void crystalhd_stream_release(struct crystalhd_cmd *ctx);
 
@@ -33,7 +24,8 @@ int crystalhd_decoder_submit_h264(struct crystalhd_cmd *ctx,
 /* Submit the BCM70015 H.264 E-M-E-E marker sequence. Success means that all
  * four packets completed TX; firmware drain completion is a separate event.
  * Any transport failure, or a successful EOS submission, blocks further
- * input until channel close, or verified native drain followed by resume.
+ * input until channel close. The signed BCM70015 firmware removes H.264
+ * reference state while completing this drain, so it is terminal.
  */
 int crystalhd_decoder_submit_h264_eos(struct crystalhd_cmd *ctx,
 				      const void *owner,

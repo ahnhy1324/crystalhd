@@ -231,32 +231,6 @@ int crystalhd_decoder_validate_h264_locked(struct crystalhd_cmd *ctx,
 	return 0;
 }
 
-int crystalhd_decoder_resume_h264_locked(struct crystalhd_cmd *ctx,
-					const void *owner)
-{
-	int rc;
-
-	/* A successful EOS transport is necessary, but is NOT a drain proof.
-	 * The caller has verified the strict firmware trailer and joined TX.
-	 * Reuse every admission check before touching the transport guard.
-	 */
-	rc = crystalhd_decoder_validate_h264_locked(ctx, owner);
-	if (rc != -EPIPE)
-		return rc ? rc : -EINVAL;
-	if (ctx->stream->failed)
-		return -EPIPE;
-	if (!ctx->stream->eos_submitted)
-		return -EINVAL;
-	if (refcount_read(&ctx->stream->refs) != 1)
-		return -EBUSY;
-	lockdep_assert_held_write(&ctx->adp->user_lock);
-	ctx->stream->eos_submitted = false;
-	rc = crystalhd_decoder_validate_h264_locked(ctx, owner);
-	if (rc)
-		ctx->stream->eos_submitted = true;
-	return rc;
-}
-
 static int crystalhd_h264_send_staged(struct crystalhd_cmd *ctx,
 				      size_t wire_bytes,
 				      unsigned long deadline)

@@ -213,10 +213,10 @@ path accepts one progressive H.264 Annex-B access unit per MMAP OUTPUT buffer
 and produces YUYV MMAP CAPTURE buffers. Other codecs remain on the legacy
 frontends; DMABUF and BCM70012 native decoding are not advertised.
 
-This is not yet a supported stateful playback backend: mid-GOP STOP/START
-can lose reference-dependent pictures. Follow [#114](https://github.com/ahnhy1324/crystalhd/issues/114)
-and the [Phase 2 checklist](https://github.com/ahnhy1324/crystalhd/issues/52).
-Use the legacy playback path until that lifecycle gate passes.
+This is not a supported stateful playback backend. The signed firmware's
+nonempty H.264 drain removes reference state, so the experimental node rejects
+START after that drain rather than returning corrupted continuation frames.
+Use the legacy playback path; see [#114](https://github.com/ahnhy1324/crystalhd/issues/114).
 
 ## Licensing
 

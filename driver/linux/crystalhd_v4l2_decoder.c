@@ -173,18 +173,6 @@ int crystalhd_v4l2_decoder_begin_drain(struct crystalhd_v4l2_decoder *d)
 	return 0;
 }
 
-int crystalhd_v4l2_decoder_resume(struct crystalhd_v4l2_decoder *d)
-{
-	if (!d)
-		return -EINVAL;
-	if (d->phase == CHD_V4L2_RUNNING)
-		return 0;
-	if (d->phase != CHD_V4L2_DRAINED)
-		return -EBUSY;
-	d->phase = CHD_V4L2_RUNNING;
-	return 0;
-}
-
 int crystalhd_v4l2_decoder_drain(struct crystalhd_v4l2_decoder *d,
 	struct crystalhd_cmd *cmd, const void *owner, u32 timeout_ms)
 {

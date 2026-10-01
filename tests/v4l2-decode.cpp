@@ -505,6 +505,15 @@ static void decoder_command(int fd, unsigned command, const char *what)
     v4l2_decoder_cmd cmd{}; cmd.cmd = command;
     checked(fd, VIDIOC_DECODER_CMD, &cmd, what);
 }
+static void expect_decoder_command_errno(int fd, unsigned command, int expected, const char *what)
+{
+    v4l2_decoder_cmd cmd{}; cmd.cmd = command;
+    int rc = call(fd, VIDIOC_DECODER_CMD, &cmd);
+    int saved_errno = errno;
+    require(rc < 0 && saved_errno == expected,
+        std::string(what) + " must fail with " + strerror(expected) +
+        ", got " + (rc < 0 ? strerror(saved_errno) : "success"));
+}
 static void assert_epipe(int fd)
 {
     v4l2_buffer b{}; b.type = V4L2_BUF_TYPE_VIDEO_CAPTURE; b.memory = V4L2_MEMORY_MMAP;
@@ -610,7 +619,7 @@ static std::vector<std::string> queued_stop_preflight(const std::string &path, c
         }
     }
     require(!input.packets[prefix_count].keyframe, "contract continuation must start with a non-keyframe AU");
-    std::vector<std::string> reference_hashes(prefix_count + continuation_count);
+    std::vector<std::string> reference_hashes(prefix_count);
     printf("contract_discovery pre_stop_aus=%zu output_completed=%zu reserved_post_stop_slots=%u\n",
         prefix_count, size_t(std::count(completed_packets.begin(), completed_packets.end(), true)), continuation_count);
     v4l2_format fmt{}; fmt.type = capture.type;
@@ -687,13 +696,19 @@ static std::vector<std::string> queued_stop_preflight(const std::string &path, c
         int rc = poll(&pfd, 1, 10);
         require(rc >= 0 || errno == EINTR, "contract hold poll failed");
     } while (std::chrono::steady_clock::now() < hold_until);
-    decoder_command(device.fd, V4L2_DEC_CMD_START, "resume queued non-IDR continuation");
-    for (unsigned i = 0; i < capture.buffers.size(); i++)
-        if (!capture.buffers[i].queued) capture.queue(i);
-    decoder_command(device.fd, V4L2_DEC_CMD_STOP, "drain post-START continuation");
-    drain_range(prefix_count, prefix_count + continuation_count);
-    printf("CONTRACT queued_stop_snapshot=%zu post_stop_accepted=%u held_until_start=1 drain_busy=1 continuation_frames=%u\n",
-        prefix_count, continuation_count, continuation_count);
+    expect_decoder_command_errno(device.fd, V4L2_DEC_CMD_START, EOPNOTSUPP,
+        "START after terminal nonempty drain");
+    expect_decoder_command_errno(device.fd, V4L2_DEC_CMD_START, EOPNOTSUPP,
+        "repeated START after terminal nonempty drain");
+    v4l2_buffer held{};
+    require(!output.dequeue(held), "post-STOP OUTPUT completed after rejected START");
+    for (unsigned i = 0; i < continuation_count; i++)
+        require(output.buffers[prefix_slots + i].queued,
+            "post-STOP OUTPUT ownership changed after rejected START");
+    assert_epipe(device.fd);
+    printf("CONTRACT queued_stop_snapshot=%zu post_stop_accepted=%u held_after_rejected_start=1 "
+        "drain_busy=1 start_errno=EOPNOTSUPP repeated_start_errno=EOPNOTSUPP\n",
+        prefix_count, continuation_count);
     return reference_hashes;
 }
 static void empty_stop_preflight(int fd, Queue &output, Queue &capture, const Input &input, unsigned timeout)
@@ -731,9 +746,32 @@ static void decode(int fd, Queue &output, Queue &capture, const Input &input,
     const std::vector<std::string> &contract_hashes, LegacyLibrary *legacy,
     const std::string &late_admission_device)
 {
-    const bool restarting = output.streaming;
+    bool restarting = output.streaming;
+    bool recovered_terminal_drain = false;
     v4l2_format fmt{};
-    if (!restarting) {
+    if (restarting && !after_empty_drain) {
+        expect_decoder_command_errno(fd, V4L2_DEC_CMD_START, EOPNOTSUPP,
+            "START after terminal nonempty drain");
+        output.stop();
+        v4l2_buffer retired{};
+        unsigned retired_done = 0, retired_error = 0;
+        while (capture.dequeue(retired, true)) {
+            require(!(retired.flags & V4L2_BUF_FLAG_LAST),
+                "terminal recovery returned a second LAST buffer");
+            require(retired.bytesused <= capture.buffers[retired.index].length,
+                "terminal recovery CAPTURE extent invalid");
+            if (retired.flags & V4L2_BUF_FLAG_ERROR) retired_error++;
+            else retired_done++;
+        }
+        for (unsigned i = 0; i < capture.buffers.size(); i++)
+            if (!capture.buffers[i].queued) capture.queue(i);
+        printf("terminal_recovery start_errno=EOPNOTSUPP output_streamoff=1 "
+            "retired_done=%u retired_error=%u full_decode_follows=1\n",
+            retired_done, retired_error);
+        restarting = false;
+        recovered_terminal_drain = true;
+    }
+    if (!restarting && output.buffers.empty()) {
         fmt.type = output.type;
         fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_H264;
         fmt.fmt.pix.width = input.width; fmt.fmt.pix.height = input.height;
@@ -742,17 +780,17 @@ static void decode(int fd, Queue &output, Queue &capture, const Input &input,
         checked(fd, VIDIOC_S_FMT, &fmt, "S_FMT OUTPUT");
         require(fmt.fmt.pix.pixelformat == V4L2_PIX_FMT_H264, "H264 OUTPUT format unavailable");
         output.allocate(8);
-    } else {
-        /* START must occur while the last drained queues are still streaming.
-         * Keep every queued CAPTURE buffer; return only userspace-owned LAST.
-         */
-        v4l2_decoder_cmd cmd{}; cmd.cmd = V4L2_DEC_CMD_START;
-        if (!after_empty_drain) checked(fd, VIDIOC_DECODER_CMD, &cmd, "DECODER START after drain");
+    } else if (restarting) {
+        /* An empty drain is resumable without resetting either queue. */
+        require(after_empty_drain, "streaming restart must follow an empty drain");
         for (unsigned i = 0; i < capture.buffers.size(); i++)
             if (!capture.buffers[i].queued) capture.queue(i);
+    } else {
+        require(recovered_terminal_drain && !output.buffers.empty(),
+            "stopped OUTPUT queue lacks a terminal-drain recovery fence");
     }
     size_t next = 0, completed = 0, frames = 0;
-    bool stopped = false, last = false, source_change = restarting && !after_empty_drain;
+    bool stopped = false, last = false, source_change = false;
     bool resolution_pending = false;
     unsigned resolution_boundaries = 0;
     bool seek_done = false;
@@ -885,7 +923,7 @@ static void decode(int fd, Queue &output, Queue &capture, const Input &input,
                 size_t packet_index = size_t(display_order[frames] - input.packets.data());
                 if (packet_index < contract_hashes.size())
                     require(frame_digest == contract_hashes[packet_index],
-                        "STOP/START continuation pixels differ from uninterrupted full decode");
+                        "drained prefix pixels differ from uninterrupted full decode");
                 if (!frames) {
                     if (seek_done) require(frame_digest == initial_frame_hash, "seek first frame differs from original first frame");
                     else initial_frame_hash = frame_digest;
@@ -1020,7 +1058,8 @@ int main(int argc, char **argv)
                      "       [--legacy-arbitration|--check-legacy-busy] (installed libcrystalhd, both directions)\n"
                      "       [--legacy-contract N] (legacy-only: drain N AUs, resume next three without reset)\n"
                      "Fixtures must contain exactly one progressive H.264 picture per demuxed AU.\n"
-                     "Hashes cover tightly packed visible YUYV rows in display order; --repeat tests START after drain.");
+                     "Hashes cover tightly packed visible YUYV rows in display order; --repeat tests rejected START and\n"
+                     "OUTPUT STREAMOFF recovery after each terminal nonempty drain.");
                 return 0;
             }
             if (arg == "--demux-only") { demux_only = true; continue; }

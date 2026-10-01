@@ -56,11 +56,6 @@ int crystalhd_v4l2_decoder_submitted(struct crystalhd_v4l2_decoder *d, int rc);
  * DRAINED alone does not prove that concurrent EOS TX has returned success.
  */
 int crystalhd_v4l2_decoder_begin_drain(struct crystalhd_v4l2_decoder *d);
-/* Resume a genuinely drained channel without discarding firmware references
- * or changing token/epoch state. Caller first clears the shared stream's EOS
- * admission guard through its validated resume API. RUNNING is a no-op.
- */
-int crystalhd_v4l2_decoder_resume(struct crystalhd_v4l2_decoder *d);
 /* Stable owner, removal exclusion, user_lock and tx_lock held. -EAGAIN is
  * timestamp-ledger backpressure; successful TX does not retire its timestamp.
  */

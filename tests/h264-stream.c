@@ -26,7 +26,6 @@ typedef uint64_t u64;
 typedef uint64_t dma_addr_t;
 typedef struct { unsigned int refs; } refcount_t;
 static void refcount_set(refcount_t *ref, unsigned int count) { ref->refs = count; }
-static unsigned int refcount_read(const refcount_t *ref) { return ref->refs; }
 static void refcount_inc(refcount_t *ref)
 { if (!ref->refs) abort(); ref->refs++; }
 static bool refcount_dec_and_test(refcount_t *ref)
@@ -870,65 +869,6 @@ static void EosSender(void)
     }
 }
 
-static void ResumeAfterVerifiedDrain(void)
-{
-    int foreign_owner;
-    struct crystalhd_stream before;
-    struct crystalhd_cmd saved;
-
-    Reset(); Prepare();
-    Check(crystalhd_decoder_resume_h264_locked(NULL, &owner_token) == -EINVAL &&
-          crystalhd_decoder_resume_h264_locked(&context, NULL) == -EINVAL,
-          "resume requires context and explicit owner");
-    Check(crystalhd_decoder_resume_h264_locked(&context, &owner_token) == -EINVAL,
-          "resume cannot reopen a stream before successful EOS transport");
-    context.stream->eos_submitted = true;
-    before = *context.stream;
-    saved = context;
-    for (unsigned condition = 0; condition < 8; condition++) {
-        int expected = -EBUSY;
-        context = saved;
-        *context.stream = before;
-        adapter.present = true;
-        hardware.dma_fault = false;
-        if (condition == 0) context.session_owner = &foreign_owner;
-        if (condition == 1) { adapter.present = false; expected = -ENODEV; }
-        if (condition == 2) { hardware.dma_fault = true; expected = -EIO; }
-        if (condition == 3) context.decoder_phase = CRYSTALHD_DECODER_CHANNEL_CONFIGURED;
-        if (condition == 4) { context.stream->failed = true; expected = -EPIPE; }
-        if (condition == 5) context.stream->refs.refs = 2;
-        if (condition == 6) context.state = BC_LINK_SUSPEND;
-        if (condition == 7) context.fw_sequence = 0;
-        Check(crystalhd_decoder_resume_h264_locked(&context, &owner_token) == expected &&
-              context.stream->eos_submitted && !transfer_calls && !deadline_calls,
-              "resume rejects foreign/absent/faulted/stopped/failed/retained/invalid session without clearing EOS");
-    }
-    context = saved;
-    *context.stream = before;
-    adapter.present = true;
-    hardware.dma_fault = false;
-    fault_at_lock = lock_assertions + 3;
-    Check(crystalhd_decoder_resume_h264_locked(&context, &owner_token) == -EIO &&
-          context.stream->eos_submitted,
-          "a DMA fault during revalidation restores the original EOS guard");
-    fault_at_lock = 0;
-    hardware.dma_fault = false;
-    /* Strict firmware drain is a consumer-side precondition, deliberately
-     * not inferred from this transport-only fixture's eos_submitted flag.
-     */
-    Check(crystalhd_decoder_resume_h264_locked(&context, &owner_token) == 0 &&
-          !context.stream->eos_submitted && !memcmp(&context, &saved, sizeof(saved)) &&
-          !transfer_calls && !deadline_calls,
-          "verified-drain resume changes no channel/firmware identity and sends no reset or TX");
-    before.eos_submitted = false;
-    Check(!memcmp(context.stream, &before, sizeof(before)) &&
-          crystalhd_decoder_validate_h264_locked(&context, &owner_token) == 0,
-          "resume changes only the EOS guard and restores normal input admission");
-    Check(crystalhd_decoder_resume_h264_locked(&context, &owner_token) == -EINVAL,
-          "duplicate resume fails closed without another completed EOS");
-    Finish();
-}
-
 int main(void)
 {
     ResourceLifetime();
@@ -939,7 +879,6 @@ int main(void)
     OrdinarySender();
     EosSender();
     FatalSenderRetention();
-    ResumeAfterVerifiedDrain();
     printf("H.264 typed stream: %u checks, %u failures\n", checks, failures);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }
