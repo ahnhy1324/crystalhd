@@ -7,7 +7,8 @@ tx_test_dir=$(mktemp -d "${TMPDIR:-/tmp}/crystalhd-tx-admission-check.XXXXXX")
 cleanup()
 {
     rm -f "$tx_test_dir/check" "$tx_test_dir/tx-admission-types.h" \
-        "$tx_test_dir/tx-admission-hardware.h" "$tx_test_dir/tx-admission-command.h"
+        "$tx_test_dir/tx-admission-hardware.h" "$tx_test_dir/tx-admission-command.h" \
+        "$tx_test_dir/tx-admission-buffer.h"
     rmdir "$tx_test_dir"
 }
 trap cleanup EXIT
@@ -16,23 +17,51 @@ trap 'exit 1' HUP INT TERM
 # Retain the driver state values and the exact command/hardware TX paths.
 # The fixture supplies queues, DMA mapping and hardware/IRQ boundaries only.
 awk '
-    /^enum (_crystalhd_state|_BC_DTS_GLOBALS|LIST_STATUS)[[:space:]{]/ {
+    /^static void crystalhd_dio_tx_(get|put)\(/ ||
+    /^void crystalhd_tx_buffer_(get|put)\(/ ||
+    /^BC_STATUS crystalhd_(map_dio|unmap_dio)\(/ ||
+    /^static const struct crystalhd_tx_buffer_ops crystalhd_dio_tx_buffer_ops =/ {
+        copying = 1; found++
+        if ($0 ~ /^BC_STATUS crystalhd_map_dio\(/) {
+            mapping = 1
+            # The kernel does not enable -Wextra: retain its exact signed
+            # GUP-result comparison while keeping all other warnings fatal.
+            print "#pragma GCC diagnostic push"
+            print "#pragma GCC diagnostic ignored \"-Wsign-compare\""
+        }
+    }
+    copying {
+        # Keep the command-path mapping boundary mock independent; extract the
+        # complete production mapper under a distinct fixture-only name.
+        sub(/^BC_STATUS crystalhd_map_dio\(/, "BC_STATUS crystalhd_map_dio_actual(")
+        print
+    }
+    copying && /^};?$/ {
+        copying = 0
+        if (mapping) { print "#pragma GCC diagnostic pop"; mapping = 0 }
+    }
+    END { if (found != 7 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_misc.c" > "$tx_test_dir/tx-admission-buffer.h"
+awk '
+    /^enum (_crystalhd_state|_BC_DTS_GLOBALS|_BC_PCI_DEV_IDS|LIST_STATUS)[[:space:]{]/ {
         copying = 1; found++
     }
     copying { print }
     copying && /^};/ { copying = 0 }
     /^#define[[:space:]]+DMA_ENGINE_CNT[[:space:]]/ { print }
-    END { if (found != 3 || copying) exit 1 }
+    END { if (found != 4 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.h" "$repo_dir/include/bc_dts_glob_lnx.h" \
     "$repo_dir/driver/linux/crystalhd_hw.h" \
     > "$tx_test_dir/tx-admission-types.h"
 awk '
     /^static BC_STATUS crystalhd_hw_tx_req_retire\(/ ||
     /^BC_STATUS crystalhd_hw_(post_tx|cancel_all_tx|tx_req_complete)\(/ ||
+    /^bool crystalhd_hw_retain_tx_buffer\(/ ||
+    /^void crystalhd_hw_retire_tx_quiesced\(/ ||
     /^void crystalhd_hw_dma_fatal_stop\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 5 || copying) exit 1 }
+    END { if (found != 7 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_hw.c" > "$tx_test_dir/tx-admission-hardware.h"
 awk '
     /^struct crystalhd_tx_completion[[:space:]]*\{/ ||

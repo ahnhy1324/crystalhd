@@ -24,7 +24,7 @@ awk '
 ' "$repo_dir/driver/linux/crystalhd_lnx.c" > "$lifetime_test_dir/lifetime-binding.h"
 awk '
     /^static void crystalhd_decoder_tracking_reset\(/ ||
-    /^static void crystalhd_retire_hw_context\(/ ||
+    /^static bool crystalhd_retire_hw_context\(/ ||
     /^static void crystalhd_session_unpin\(/ ||
     /^BC_STATUS crystalhd_session_release_locked\(/ ||
     /^void crystalhd_user_close\(/ ||

@@ -52,6 +52,10 @@ copy && /^};/ { copy = 0 }
 
 awk '
 /^void crystalhd_flea_stop_rx_dma_engine\(/ { copy = 1 }
+/^void crystalhd_hw_dma_fatal_stop\(/ { copy = 1; fatal_found++ }
+/^bool crystalhd_hw_ack_fault_interrupt\(/ { copy = 1; ack_found++ }
+/^static bool crystalhd_hw_dma_inventory_empty\(/ { copy = 1; inventory_found++ }
+/^BC_STATUS crystalhd_hw_free_dma_rings\(/ { copy = 1; free_found++ }
 /^static unsigned int crystalhd_hw_detach_rx_owners\(/ { copy = 1; helper_found++ }
 /^BC_STATUS crystalhd_hw_stop_capture\(/ { copy = 1 }
 /^BC_STATUS crystalhd_hw_stop_capture_locked\(/ { copy = 1 }
@@ -59,12 +63,19 @@ awk '
 /^static BC_STATUS bc_cproc_flush_cap_buffs\(/ { copy = 1; command_found++ }
 copy { print }
 copy && /^}/ { copy = 0 }
-END { if (command_found != 2 || helper_found != 1 || copy) exit 1 }
+END { if (command_found != 2 || helper_found != 1 || fatal_found != 1 || ack_found != 1 || inventory_found != 1 || free_found != 1 || copy) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" \
   "$repo_dir/driver/linux/crystalhd_hw.c" \
   "$repo_dir/driver/linux/crystalhd_cmds.c" > "$dma_test_dir/dma-stop-functions.h"
 
-"${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
-  -fsanitize=address,undefined -fno-omit-frame-pointer \
-  -I"$dma_test_dir" "$repo_dir/tests/dma-stop.c" -o "$dma_test_dir/dma-stop"
-"$dma_test_dir/dma-stop"
+for stop_sanitize in no yes; do
+  stop_extra=
+  if [ "$stop_sanitize" = yes ]; then
+    stop_extra='-fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie -no-pie'
+  fi
+  "${CC:-cc}" ${CFLAGS:-} -std=c11 -Wall -Wextra -Werror $stop_extra \
+    -I"$dma_test_dir" "$repo_dir/tests/dma-stop.c" -o "$dma_test_dir/dma-stop"
+  printf 'DMA stop: sanitizers=%s\n' "$stop_sanitize"
+  ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+    UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 "$dma_test_dir/dma-stop"
+done

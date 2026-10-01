@@ -1150,6 +1150,7 @@ static bool chd_dec_session_dma_absent(struct crystalhd_adp *adp)
 		for (i = 0; i < ARRAY_SIZE(hw->tx_pkt_pool); i++)
 			resources |= hw->tx_pkt_pool[i].desc_mem.pdma_desc_start ||
 				hw->tx_pkt_pool[i].buffer ||
+				hw->tx_pkt_pool[i].retained_buffer ||
 				hw->tx_pkt_pool[i].call_back ||
 				hw->tx_pkt_pool[i].cb_context;
 	}

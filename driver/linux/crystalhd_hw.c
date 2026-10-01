@@ -50,7 +50,9 @@ BC_STATUS crystalhd_hw_fw_cmd_enter(struct crystalhd_hw *hw)
 	 * retained as a defensive backstop for callers outside this transaction.
 	 */
 	spin_lock_irqsave(&hw->lock, flags);
-	if (hw->fwcmd_poisoned || hw->fwcmd_pending)
+	if (READ_ONCE(hw->dma_fault) || !READ_ONCE(hw->adp->present))
+		sts = BC_STS_IO_ERROR;
+	else if (hw->fwcmd_poisoned || hw->fwcmd_pending)
 		sts = BC_STS_BUSY;
 	spin_unlock_irqrestore(&hw->lock, flags);
 	if (sts != BC_STS_SUCCESS)
@@ -71,7 +73,9 @@ BC_STATUS crystalhd_hw_fw_cmd_recovery_enter(struct crystalhd_hw *hw)
 	 * a defensive/direct low-level caller that bypassed transaction locking.
 	 */
 	spin_lock_irqsave(&hw->lock, flags);
-	if (hw->fwcmd_pending)
+	if (READ_ONCE(hw->dma_fault) || !READ_ONCE(hw->adp->present))
+		sts = BC_STS_IO_ERROR;
+	else if (hw->fwcmd_pending)
 		sts = BC_STS_BUSY;
 	spin_unlock_irqrestore(&hw->lock, flags);
 	if (sts != BC_STS_SUCCESS)
@@ -292,8 +296,8 @@ BC_STATUS crystalhd_hw_open(struct crystalhd_hw *hw, struct crystalhd_adp *adp)
 	hw->stop_pending = 0;
 	if (!hw->pfnStartDevice(hw))
 		return BC_STS_ERROR;
-	/* A fresh hardware context resets the engines before recovering from
-	 * a prior session's fail-stop of PCI bus mastering.
+	/* Enable mastering only after fresh-context engine initialization.
+	 * Fatal contexts remain unavailable until terminal teardown.
 	 */
 	pci_set_master(adp->pdev);
 	hw->dev_started = true;
@@ -306,16 +310,22 @@ BC_STATUS crystalhd_hw_open(struct crystalhd_hw *hw, struct crystalhd_adp *adp)
 
 BC_STATUS crystalhd_hw_close(struct crystalhd_hw *hw)
 {
+	BC_STATUS sts;
+
 	if (!hw) {
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
 		return BC_STS_SUCCESS;
 	}
+	if (READ_ONCE(hw->dma_fault))
+		return BC_STS_IO_ERROR;
 
 	if (!hw->dev_started)
 		return BC_STS_SUCCESS;
 
 	/* The caller is retiring this context, even if non-owning files remain. */
-	crystalhd_hw_suspend(hw);
+	sts = crystalhd_hw_suspend(hw);
+	if (sts != BC_STS_SUCCESS)
+		return sts;
 
 	hw->dev_started = false;
 
@@ -663,6 +673,59 @@ BC_STATUS crystalhd_hw_setup_dma_rings(struct crystalhd_hw *hw)
 	return BC_STS_SUCCESS;
 }
 
+void crystalhd_hw_retire_tx_quiesced(struct crystalhd_hw *hw)
+{
+	const struct crystalhd_tx_buffer *retired[DMA_ENGINE_CNT];
+	struct crystalhd_dioq *queues[2];
+	unsigned int count = 0, i;
+	unsigned int queue_index;
+
+	if (!hw || !hw->adp)
+		return;
+	queues[0] = hw->tx_actq;
+	queues[1] = hw->tx_freeq;
+	for (queue_index = 0; queue_index < ARRAY_SIZE(queues); queue_index++) {
+		if (!queues[queue_index])
+			continue;
+		for (i = 0; i < ARRAY_SIZE(hw->tx_pkt_pool); i++)
+			if (!crystalhd_dioq_fetch(queues[queue_index]))
+				break;
+	}
+	/* The fixed inventory also covers requests no longer linked in a queue.
+	 * A borrowed completion context may already be gone: never call it here.
+	 */
+	for (i = 0; i < ARRAY_SIZE(hw->tx_pkt_pool); i++) {
+		struct tx_dma_pkt *packet = &hw->tx_pkt_pool[i];
+
+		if (packet->retained_buffer)
+			retired[count++] = packet->retained_buffer;
+		packet->buffer = NULL;
+		packet->retained_buffer = NULL;
+		packet->call_back = NULL;
+		packet->cb_context = NULL;
+		packet->list_tag = 0;
+	}
+	for (i = 0; i < count; i++)
+		crystalhd_tx_buffer_put(hw->adp, retired[i]);
+}
+
+static bool crystalhd_hw_dma_inventory_empty(struct crystalhd_hw *hw)
+{
+	unsigned int i;
+
+	if (hw->rx_pkt_pool_head || hw->rx_fallback_head || hw->rx_actq ||
+	    hw->rx_rdyq || hw->rx_freeq || hw->tx_actq || hw->tx_freeq)
+		return false;
+	for (i = 0; i < ARRAY_SIZE(hw->tx_pkt_pool); i++) {
+		struct tx_dma_pkt *packet = &hw->tx_pkt_pool[i];
+
+		if (packet->desc_mem.pdma_desc_start || packet->buffer ||
+		    packet->retained_buffer || packet->call_back || packet->cb_context)
+			return false;
+	}
+	return true;
+}
+
 BC_STATUS crystalhd_hw_free_dma_rings(struct crystalhd_hw *hw)
 {
 	struct crystalhd_rx_buffer *retired[BC_RX_LIST_CNT];
@@ -674,10 +737,14 @@ BC_STATUS crystalhd_hw_free_dma_rings(struct crystalhd_hw *hw)
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
 		return BC_STS_INV_ARG;
 	}
+	if (READ_ONCE(hw->dma_fault) && !hw->adp->dma_terminal_quiesced &&
+	    !crystalhd_hw_dma_inventory_empty(hw))
+		return BC_STS_IO_ERROR;
 
-	/* No frontend release runs until every RX packet has been detached. */
+	/* Detach every RX and TX owner before any frontend lease is released. */
 	retired_count = crystalhd_hw_detach_rx_owners(hw, retired);
 	crystalhd_hw_delete_ioqs(hw);
+	crystalhd_hw_retire_tx_quiesced(hw);
 	for (retired_index = 0; retired_index < retired_count; retired_index++)
 		crystalhd_rx_buffer_release(hw->adp, retired[retired_index]);
 
@@ -742,6 +809,8 @@ BC_STATUS crystalhd_hw_tx_req_complete(struct crystalhd_hw *hw,
 		printk(KERN_ERR "%s: Invalid Arg!!\n", __func__);
 		return BC_STS_INV_ARG;
 	}
+	if (READ_ONCE(hw->dma_fault))
+		return BC_STS_IO_ERROR;
 
 	tx_req = (struct tx_dma_pkt *)crystalhd_dioq_find_and_fetch(hw->tx_actq, list_id);
 	if (!tx_req) {
@@ -1107,6 +1176,8 @@ struct crystalhd_rx_dma_pkt *crystalhd_rx_pkt_detach(struct crystalhd_hw *hw,
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
 		return NULL;
 	}
+	if (READ_ONCE(hw->dma_fault))
+		return NULL;
 
 	rx_pkt = crystalhd_dioq_find_and_fetch(hw->rx_actq,
 		hw->rx_pkt_tag_seed + list_index);
@@ -1140,6 +1211,10 @@ BC_STATUS crystalhd_rx_pkt_complete(struct crystalhd_hw *hw,
 	    list_index >= DMA_ENGINE_CNT) {
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
 		return BC_STS_INV_ARG;
+	}
+	if (READ_ONCE(hw->dma_fault)) {
+		crystalhd_hw_retain_rx_pkt(hw, rx_pkt);
+		return BC_STS_IO_ERROR;
 	}
 
 	/* Recycled free-queue packets can bypass allocation before another DMA. */
@@ -1326,6 +1401,14 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw,
 	tx_dma_packet->buffer = buffer;
 
 	spin_lock_irqsave(&hw->lock, flags);
+	if (READ_ONCE(hw->dma_fault)) {
+		tx_dma_packet->buffer = NULL;
+		tx_dma_packet->cb_context = NULL;
+		tx_dma_packet->call_back = NULL;
+		spin_unlock_irqrestore(&hw->lock, flags);
+		crystalhd_dioq_add(hw->tx_freeq, tx_dma_packet, false, 0);
+		return BC_STS_IO_ERROR;
+	}
 
 	list_posted = hw->tx_list_post_index;
 
@@ -1391,8 +1474,12 @@ BC_STATUS crystalhd_hw_cancel_all_tx(struct crystalhd_hw *hw)
 	 * drain the ISR before detaching either fixed-list owner.
 	 */
 	disable_irq(hw->adp->pdev->irq);
+	if (READ_ONCE(hw->dma_fault))
+		goto out;
 	if (hw->pfnStopTxDMA(hw) != BC_STS_SUCCESS)
 		crystalhd_hw_dma_fatal_stop(hw);
+	if (READ_ONCE(hw->dma_fault))
+		goto out;
 
 	for (count = 0; count < DMA_ENGINE_CNT; count++) {
 		tx_req = (struct tx_dma_pkt *)crystalhd_dioq_fetch(hw->tx_actq);
@@ -1409,6 +1496,7 @@ BC_STATUS crystalhd_hw_cancel_all_tx(struct crystalhd_hw *hw)
 		if (call_back[i] && cb_context[i])
 			call_back[i](cb_context[i], BC_STS_IO_USER_ABORT);
 	}
+out:
 	enable_irq(hw->adp->pdev->irq);
 	/* Drain a completion latched while the engine was stopping before the
 	 * caller releases TX serialization and a fixed list tag can be reused.
@@ -1418,16 +1506,95 @@ BC_STATUS crystalhd_hw_cancel_all_tx(struct crystalhd_hw *hw)
 	return hw->dma_fault ? BC_STS_IO_ERROR : sts;
 }
 
+bool crystalhd_hw_retain_tx_buffer(struct crystalhd_hw *hw,
+				   const struct crystalhd_tx_buffer *buffer,
+				   void *completion_context)
+{
+	unsigned int i;
+	bool retained = false;
+
+	if (!hw || !hw->adp || !hw->adp->pdev || !buffer ||
+	    !completion_context)
+		return false;
+	if (!READ_ONCE(hw->dma_fault))
+		return false;
+	/* The caller still owns its extra reference and stack waiter here.
+	 * A completion that won the cancellation race has already cleared buffer.
+	 */
+	disable_irq(hw->adp->pdev->irq);
+	for (i = 0; i < ARRAY_SIZE(hw->tx_pkt_pool); i++) {
+		struct tx_dma_pkt *packet = &hw->tx_pkt_pool[i];
+
+		if (packet->buffer != buffer ||
+		    packet->cb_context != completion_context)
+			continue;
+		packet->retained_buffer = buffer;
+		packet->buffer = NULL;
+		packet->call_back = NULL;
+		packet->cb_context = NULL;
+		retained = true;
+		break;
+	}
+	enable_irq(hw->adp->pdev->irq);
+	synchronize_irq(hw->adp->pdev->irq);
+	return retained;
+}
+
+bool crystalhd_hw_ack_fault_interrupt(struct crystalhd_hw *hw)
+{
+	uint32_t status, decoder_status;
+	bool dma_interrupt, decoder_interrupt;
+
+	/* A late interrupt must not complete/repost any quarantined owner. Only
+	 * acknowledge known causes and mask sources again: an already admitted
+	 * raw-register writer may have undone the original fatal-stop mask.
+	 */
+	if (hw->adp->pdev->device == BC_PCI_DEVID_FLEA) {
+		status = hw->pfnReadDevRegister(hw->adp, BCHP_INTR_INTR_STATUS);
+		if (!status || status == ~0U)
+			return false;
+		crystalhd_flea_disable_interrupts(hw);
+		hw->pfnWriteDevRegister(hw->adp, BCHP_INTR_INTR_CLR_REG, status);
+		hw->pfnWriteDevRegister(hw->adp, BCHP_INTR_EOI_CTRL, 1);
+		return true;
+	}
+	if (hw->adp->pdev->device != BC_PCI_DEVID_LINK)
+		return false;
+	status = hw->pfnReadFPGARegister(hw->adp, INTR_INTR_STATUS);
+	decoder_status = hw->pfnReadDevRegister(hw->adp, Stream2Host_Intr_Sts);
+	dma_interrupt = status && status != ~0U;
+	decoder_interrupt = decoder_status && decoder_status != ~0U &&
+			    decoder_status != 0xdeaddead;
+	if (!dma_interrupt && !decoder_interrupt)
+		return false;
+	crystalhd_link_disable_interrupts(hw);
+	if (decoder_interrupt) {
+		hw->pfnWriteDevRegister(hw->adp, Stream2Host_Intr_Sts, decoder_status);
+		hw->pfnWriteDevRegister(hw->adp, Stream2Host_Intr_Sts, 0);
+	}
+	if (dma_interrupt)
+		hw->pfnWriteFPGARegister(hw->adp, INTR_INTR_CLR_REG, status);
+	hw->pfnWriteFPGARegister(hw->adp, INTR_EOI_CTRL, 1);
+	return true;
+}
+
 void crystalhd_hw_dma_fatal_stop(struct crystalhd_hw *hw)
 {
-	/* Do not release DMA pages while a timed-out engine can issue more
-	 * transactions. Recovery requires closing and resetting the session.
+	/* Other admitted readers may still touch device state. Even a local
+	 * successful drain is not a lifetime fence: only terminal cleanup under
+	 * the global writer can prove that DMA backing may be released.
 	 */
 	WRITE_ONCE(hw->dma_fault, true);
+	WRITE_ONCE(hw->adp->present, 0);
+	WRITE_ONCE(hw->adp->cmds.cin_wait_exit, 1);
+	if (hw->adp->pdev->device == BC_PCI_DEVID_FLEA)
+		crystalhd_flea_disable_interrupts(hw);
+	else if (hw->adp->pdev->device == BC_PCI_DEVID_LINK)
+		crystalhd_link_disable_interrupts(hw);
 	pci_clear_master(hw->adp->pdev);
 	if (!pci_wait_for_pending_transaction(hw->adp->pdev))
 		dev_err(&hw->adp->pdev->dev, "PCI transactions did not drain after DMA stop\n");
-	dev_err(&hw->adp->pdev->dev, "DMA disabled after stop failure; reopen the device\n");
+	dev_err(&hw->adp->pdev->dev, "DMA stop failed; device unavailable, retaining ownership until terminal quiescence\n");
 }
 
 BC_STATUS crystalhd_hw_add_cap_buffer(struct crystalhd_hw *hw,
@@ -1451,6 +1618,8 @@ BC_STATUS crystalhd_hw_add_cap_buffer(struct crystalhd_hw *hw,
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
 		return BC_STS_INV_ARG;
 	}
+	if (READ_ONCE(hw->dma_fault))
+		return BC_STS_IO_ERROR;
 
 	rpkt = crystalhd_hw_alloc_rx_pkt(hw);
 	if (!rpkt) {
@@ -1500,6 +1669,11 @@ static BC_STATUS crystalhd_hw_complete_rx_locked(struct crystalhd_hw *hw,
 {
 	bool resume_allowed;
 
+	if (READ_ONCE(hw->dma_fault)) {
+		if (rpkt)
+			crystalhd_hw_retain_rx_pkt(hw, rpkt);
+		return BC_STS_IO_ERROR;
+	}
 	/* A destructive stop may have completed after the ready packet was
 	 * detached. Do not let that stale completion wake capture afterward.
 	 */
@@ -1635,8 +1809,12 @@ BC_STATUS crystalhd_hw_try_get_cap_buffer(struct crystalhd_hw *hw,
 	rpkt = NULL;
 out:
 	if (rpkt) {
-		retired = rpkt->buffer;
-		crystalhd_hw_free_rx_pkt(hw, rpkt);
+		if (READ_ONCE(hw->dma_fault)) {
+			crystalhd_hw_retain_rx_pkt(hw, rpkt);
+		} else {
+			retired = rpkt->buffer;
+			crystalhd_hw_free_rx_pkt(hw, rpkt);
+		}
 	}
 	up(&hw->fetch_sem);
 	if (retired)
@@ -1647,7 +1825,13 @@ out:
 BC_STATUS crystalhd_hw_repost_cap_buffer(struct crystalhd_hw *hw,
 					 struct crystalhd_rx_dma_pkt *pkt)
 {
-	BC_STATUS sts = hw->pfnPostRxSideBuff(hw, pkt);
+	BC_STATUS sts;
+
+	if (READ_ONCE(hw->dma_fault)) {
+		crystalhd_hw_retain_rx_pkt(hw, pkt);
+		return BC_STS_IO_ERROR;
+	}
+	sts = hw->pfnPostRxSideBuff(hw, pkt);
 
 	/* Internal retries already own this registration. On a hard error
 	 * retain it for process-context flush/close: dirty unpinning can sleep.
@@ -1701,6 +1885,8 @@ BC_STATUS crystalhd_hw_stop_capture_locked(struct crystalhd_hw *hw, bool unmap)
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
 		return BC_STS_INV_ARG;
 	}
+	if (READ_ONCE(hw->dma_fault))
+		return BC_STS_IO_ERROR;
 	/* A monitor handle never creates capture queues or posts DMA. */
 	if (!hw->rx_actq && !hw->rx_rdyq && !hw->rx_freeq)
 		return BC_STS_SUCCESS;
@@ -1760,15 +1946,25 @@ BC_STATUS crystalhd_hw_suspend(struct crystalhd_hw *hw)
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
 		return BC_STS_INV_ARG;
 	}
+	if (READ_ONCE(hw->dma_fault))
+		return BC_STS_IO_ERROR;
 
 	/* Exclude command pre/post processing as well as the mailbox wait before
 	 * resetting the device. This also protects non-PCI-PM stop callers.
 	 */
 	mutex_lock(&hw->fwcmd_trans_mutex);
+	if (READ_ONCE(hw->dma_fault)) {
+		sts = BC_STS_IO_ERROR;
+		goto unlock;
+	}
+	disable_irq(hw->adp->pdev->irq);
 	if (!hw->pfnStopDevice(hw)) {
 		dev_info(&hw->adp->pdev->dev, "Failed to Stop Device!!\n");
+		crystalhd_hw_dma_fatal_stop(hw);
 		sts = BC_STS_ERROR;
 	}
+	enable_irq(hw->adp->pdev->irq);
+unlock:
 	mutex_unlock(&hw->fwcmd_trans_mutex);
 
 	return sts;

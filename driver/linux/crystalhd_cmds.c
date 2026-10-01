@@ -142,13 +142,13 @@ static BC_STATUS crystalhd_session_setup(struct crystalhd_cmd *ctx)
 	return BC_STS_SUCCESS;
 }
 
-static void crystalhd_retire_hw_context(struct crystalhd_cmd *ctx,
+static bool crystalhd_retire_hw_context(struct crystalhd_cmd *ctx,
 					bool retire_session_resources)
 {
-	crystalhd_stream_release(ctx);
-	crystalhd_decoder_tracking_reset(ctx);
 	if (!ctx->hw_ctx)
-		return;
+		goto retired;
+	if (READ_ONCE(ctx->hw_ctx->dma_fault))
+		return false;
 
 	if (retire_session_resources) {
 		ctx->cin_wait_exit = 1;
@@ -157,16 +157,31 @@ static void crystalhd_retire_hw_context(struct crystalhd_cmd *ctx,
 	}
 	disable_irq(ctx->adp->pdev->irq);
 	if (retire_session_resources) {
-		crystalhd_hw_stop_capture(ctx->hw_ctx, true);
-		crystalhd_hw_free_dma_rings(ctx->hw_ctx);
+		/* Keep RX ownership until every device/engine stop has succeeded. */
+		if (crystalhd_hw_stop_capture(ctx->hw_ctx, false) != BC_STS_SUCCESS ||
+		    crystalhd_hw_cancel_all_tx(ctx->hw_ctx) != BC_STS_SUCCESS)
+			goto retained;
+	}
+	if (crystalhd_hw_close(ctx->hw_ctx) != BC_STS_SUCCESS)
+		goto retained;
+	if (retire_session_resources) {
+		if (crystalhd_hw_free_dma_rings(ctx->hw_ctx) != BC_STS_SUCCESS)
+			goto retained;
 		crystalhd_destroy_dio_pool(ctx->adp);
 		crystalhd_delete_elem_pool(ctx->adp);
 	}
 	ctx->state = BC_LINK_INVALID;
-	crystalhd_hw_close(ctx->hw_ctx);
 	kfree(ctx->hw_ctx);
 	ctx->hw_ctx = NULL;
 	enable_irq(ctx->adp->pdev->irq);
+retired:
+	crystalhd_stream_release(ctx);
+	crystalhd_decoder_tracking_reset(ctx);
+	return true;
+
+retained:
+	enable_irq(ctx->adp->pdev->irq);
+	return false;
 }
 
 static void crystalhd_session_unpin(struct crystalhd_cmd *ctx)
@@ -210,8 +225,8 @@ BC_STATUS crystalhd_session_acquire_locked(struct crystalhd_cmd *ctx,
 		 * opened by this attempt. The setup helper already unwound pools and
 		 * rings; retain a context supplied by an existing file lifetime.
 		 */
-		if (opened_context)
-			crystalhd_retire_hw_context(ctx, false);
+		if (opened_context && !crystalhd_retire_hw_context(ctx, false))
+			return sts;
 		goto unpin;
 	}
 
@@ -236,7 +251,8 @@ BC_STATUS crystalhd_session_release_locked(struct crystalhd_cmd *ctx,
 	if (ctx->session_owner != owner)
 		return BC_STS_ERR_USAGE;
 
-	crystalhd_retire_hw_context(ctx, true);
+	if (!crystalhd_retire_hw_context(ctx, true))
+		return BC_STS_IO_ERROR;
 	ctx->session_owner = NULL;
 	ctx->retain_rx_on_suspend = false;
 	crystalhd_session_unpin(ctx);
@@ -1340,9 +1356,9 @@ BC_STATUS crystalhd_tx_deadline_from_ms(u32 total_timeout_ms,
 
 /*
  * Synchronous mapped-input transfer. The caller keeps the command/device
- * lifetime and TX serialization locks, and owns the mapped buffer until this
- * function returns. A bounded caller supplies one absolute deadline shared by
- * every fragment in its operation.
+ * lifetime and TX serialization locks and a backing reference through return.
+ * An extra lease preserves the descriptor/mapping after an uncertain stop.
+ * A bounded caller supplies one deadline shared by every fragment.
  */
 static BC_STATUS crystalhd_tx_transfer_common(struct crystalhd_cmd *ctx,
 					      const struct crystalhd_tx_buffer *buffer,
@@ -1358,7 +1374,9 @@ static BC_STATUS crystalhd_tx_transfer_common(struct crystalhd_cmd *ctx,
 	BC_STATUS sts = BC_STS_SUCCESS;
 	int rc = 0;
 
-	if (!ctx || !ctx->adp || !ctx->adp->pdev || !ctx->hw_ctx || !buffer) {
+	if (!ctx || !ctx->adp || !ctx->adp->pdev || !ctx->hw_ctx || !buffer ||
+	    !buffer->cookie || !buffer->ops || !buffer->ops->get ||
+	    !buffer->ops->put) {
 		dev_err(dev, "%s: Invalid Arg\n", __func__);
 		return BC_STS_INV_ARG;
 	}
@@ -1367,6 +1385,7 @@ static BC_STATUS crystalhd_tx_transfer_common(struct crystalhd_cmd *ctx,
 		if (sts != BC_STS_SUCCESS)
 			return sts;
 	}
+	crystalhd_tx_buffer_get(buffer);
 
 	crystalhd_create_event(&completion.event);
 
@@ -1401,7 +1420,7 @@ static BC_STATUS crystalhd_tx_transfer_common(struct crystalhd_cmd *ctx,
 	}
 	if (sts != BC_STS_SUCCESS) {
 		dev_dbg(dev, "_hw_txdma returning sts:%d\n", sts);
-		return sts;
+		goto put_buffer;
 	}
 	if (READ_ONCE(ctx->cin_wait_exit))
 		WRITE_ONCE(ctx->cin_wait_exit, 0);
@@ -1452,19 +1471,23 @@ static BC_STATUS crystalhd_tx_transfer_common(struct crystalhd_cmd *ctx,
 	}
 
 cancel:
-	/* We are cancelling the IO from the same context as the _post().
-	 * so no need to wait on the event again.. the return itself
-	 * ensures the release of our resources.
-	 */
 	ctx->tx_list_id = 0;
 	crystalhd_hw_cancel_all_tx(ctx->hw_ctx);
-	return sts;
+	/* Cancellation may have lost to a normal completion. Only a matching
+	 * retained packet takes this lease; always sever its stack waiter first.
+	 */
+	if (crystalhd_hw_retain_tx_buffer(ctx->hw_ctx, buffer, &completion))
+		return sts;
+	goto put_buffer;
 
 complete:
 	ctx->tx_list_id = 0;
 	/* The callback uses this stack's completion cookie. */
 	synchronize_irq(ctx->adp->pdev->irq);
-	return READ_ONCE(completion.status);
+	sts = READ_ONCE(completion.status);
+put_buffer:
+	crystalhd_tx_buffer_put(ctx->adp, buffer);
+	return sts;
 }
 
 BC_STATUS crystalhd_tx_transfer_until(struct crystalhd_cmd *ctx,
@@ -1824,6 +1847,10 @@ BC_STATUS crystalhd_capture_start(struct crystalhd_cmd *ctx,
 
 	if (down_interruptible(&ctx->hw_ctx->fetch_sem))
 		return BC_STS_IO_USER_ABORT;
+	if (READ_ONCE(ctx->hw_ctx->dma_fault)) {
+		up(&ctx->hw_ctx->fetch_sem);
+		return BC_STS_IO_ERROR;
+	}
 
 	if (pause_threshold)
 		ctx->hw_ctx->PauseThreshold = pause_threshold;
@@ -2322,7 +2349,7 @@ BC_STATUS crystalhd_setup_cmd_context(struct crystalhd_cmd *ctx,
 	disable_irq(ctx->adp->pdev->irq);
 	sts = crystalhd_hw_open(ctx->hw_ctx, ctx->adp);
 	if (sts == BC_STS_SUCCESS)
-		crystalhd_hw_close(ctx->hw_ctx);
+		sts = crystalhd_hw_close(ctx->hw_ctx);
 	kfree(ctx->hw_ctx);
 	ctx->hw_ctx = NULL;
 	enable_irq(ctx->adp->pdev->irq);
@@ -2341,13 +2368,17 @@ BC_STATUS crystalhd_setup_cmd_context(struct crystalhd_cmd *ctx,
  */
 BC_STATUS crystalhd_delete_cmd_context(struct crystalhd_cmd *ctx)
 {
+	BC_STATUS sts;
+
 	dev_dbg(chddev(), "Deleting Command context..\n");
 
 	/* Terminal PM/removal has excluded all ioctls, disabled bus mastering and
 	 * released the IRQ before entry. No hardware or IRQ callbacks here.
 	 */
 	if (ctx->hw_ctx) {
-		crystalhd_hw_free_dma_rings(ctx->hw_ctx);
+		sts = crystalhd_hw_free_dma_rings(ctx->hw_ctx);
+		if (sts != BC_STS_SUCCESS)
+			return sts;
 		kfree(ctx->hw_ctx);
 		ctx->hw_ctx = NULL;
 	}
@@ -2434,6 +2465,8 @@ bool crystalhd_cmd_interrupt(struct crystalhd_cmd *ctx)
 	/* If HW has not been initialized then all interrupts are spurious */
 	if ((ctx->hw_ctx == NULL) || (ctx->hw_ctx->pfnFindAndClearIntr == NULL))
 		return false;
+	if (READ_ONCE(ctx->hw_ctx->dma_fault))
+		return crystalhd_hw_ack_fault_interrupt(ctx->hw_ctx);
 
 	return ctx->hw_ctx->pfnFindAndClearIntr(ctx->adp, ctx->hw_ctx);
 }

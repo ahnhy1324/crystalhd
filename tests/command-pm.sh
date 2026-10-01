@@ -111,9 +111,10 @@ awk '
     > "$pm_test_dir/command-pm-types.h"
 awk '
     /^BC_STATUS crystalhd_hw_(close|suspend|resume)\(/ { copying = 1; found++ }
+    /^void crystalhd_hw_dma_fatal_stop\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 3 || copying) exit 1 }
+    END { if (found != 4 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_hw.c" > "$pm_test_dir/command-pm-hardware.h"
 awk '
     /^static struct crystalhd_user \*bc_cproc_get_uid\(/ ||
@@ -123,7 +124,7 @@ awk '
     /^static void crystalhd_session_unpin\(/ ||
     /^static BC_STATUS crystalhd_ensure_hw_context\(/ ||
     /^static BC_STATUS crystalhd_session_setup\(/ ||
-    /^static void crystalhd_retire_hw_context\(/ ||
+    /^static bool crystalhd_retire_hw_context\(/ ||
     /^void crystalhd_rx_retire_quiesced\(/ ||
     /^BC_STATUS crystalhd_(setup|delete)_cmd_context\(/ ||
     /^BC_STATUS crystalhd_session_(acquire|release)_locked\(/ ||
@@ -145,9 +146,10 @@ awk '
     /^void crystalhd_user_close\(/ ||
     (/^BC_STATUS bc_cproc_release_user\(/ && !/;[[:space:]]*$/) ||
     /^BC_STATUS crystalhd_(suspend|resume|user_open)\(/ { copying = 1; found++ }
+    /^bool crystalhd_cmd_interrupt\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 39 || copying) exit 1 }
+    END { if (found != 40 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" > "$pm_test_dir/command-pm-functions.h"
 
 awk '

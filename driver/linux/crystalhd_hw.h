@@ -236,6 +236,8 @@ struct tx_dma_pkt {
 	struct dma_desc_mem		desc_mem;
 	hw_comp_callback	call_back;
 	const struct crystalhd_tx_buffer *buffer;
+	/* Extra synchronous backing lease transferred after an unsafe cancel. */
+	const struct crystalhd_tx_buffer *retained_buffer;
 	void			*cb_context;
 	uint32_t		list_tag;
 
@@ -408,7 +410,8 @@ struct crystalhd_hw {
 	uint32_t		rx_pkt_tag_seed;
 
 	bool			dev_started;
-	bool			dma_fault; /* bus mastering disabled after a stop timeout */
+	/* Fatal stop; only terminal DMA proof permits teardown. */
+	bool			dma_fault;
 	struct crystalhd_adp	*adp;
 
 	struct mutex		fwcmd_trans_mutex;
@@ -635,6 +638,18 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw,
  * completion only and never limits engine-wide cancellation.
  */
 BC_STATUS crystalhd_hw_cancel_all_tx(struct crystalhd_hw *hw);
+/* Only after a fatal engine stop and IRQ synchronization, transfer exactly
+ * this synchronous caller's extra lease and sever its stack waiter. Caller
+ * excludes submissions; false means no matching packet retains the buffer.
+ */
+bool crystalhd_hw_retain_tx_buffer(struct crystalhd_hw *hw,
+				   const struct crystalhd_tx_buffer *buffer,
+				   void *completion_context);
+/* Pure process-context cleanup after DMA/IRQ quiescence and operation
+ * exclusion. Detach every TX identity before putting retained leases; no
+ * borrowed completion callback is invoked. Must precede DIO pool teardown.
+ */
+void crystalhd_hw_retire_tx_quiesced(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_add_cap_buffer(struct crystalhd_hw *hw,
 				      struct crystalhd_rx_buffer *buffer,
 				      bool en_post);
@@ -658,6 +673,7 @@ BC_STATUS crystalhd_hw_stop_capture_locked(struct crystalhd_hw *hw, bool unmap);
  * barrier. Rings/queues remain allocated; no hardware/IRQ callback runs here.
  */
 void crystalhd_hw_retire_rx_quiesced(struct crystalhd_hw *hw);
+bool crystalhd_hw_ack_fault_interrupt(struct crystalhd_hw *hw);
 void crystalhd_hw_dma_fatal_stop(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_suspend(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_resume(struct crystalhd_hw *hw);

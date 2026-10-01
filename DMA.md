@@ -7,8 +7,8 @@ memory; it does not expose a dma-buf import/export API.
 
 | Buffer | Pin flags | DMA direction | Ownership ends |
 | --- | --- | --- | --- |
-| Compressed input (`PROC_INPUT`) | `FOLL_LONGTERM` | `DMA_TO_DEVICE` | Synchronous input ioctl completion, including cancellation/error cleanup |
-| Registered capture (`ADD_RXBUFFS`) | `FOLL_LONGTERM | FOLL_WRITE` | `DMA_BIDIRECTIONAL` | Frame fetch, full capture flush, playback release/close, or PCI removal |
+| Compressed input (`PROC_INPUT`) | `FOLL_LONGTERM` | `DMA_TO_DEVICE` | Completion or successful cancellation; retained after an uncertain stop |
+| Registered capture (`ADD_RXBUFFS`) | `FOLL_LONGTERM | FOLL_WRITE` | `DMA_BIDIRECTIONAL` | Successful fetch/full flush/close, or proven-safe terminal teardown |
 
 Both paths call `pin_user_pages_fast()`, which supplies `FOLL_PIN` internally.
 Capture registrations can remain queued indefinitely, including across discard
@@ -44,15 +44,15 @@ or fill descriptor. These rules follow the kernel's
 | Negative/short pin result | Record only positive acquired pins and unpin that prefix |
 | Fill-byte copy or SG mapping failure | Unpin acquired pages; do not unmap a mapping that never succeeded |
 | Normal input completion | Wait for the IRQ callback to finish, unmap DMA, then unpin |
-| Input signal/timeout cancellation | Drain the IRQ handler, stop TX without holding a spinlock, complete the request, then unmap/unpin |
+| Input signal/timeout cancellation | Successful TX stop permits completion and unmap/unpin; failed stop retains backing and severs the returned stack waiter |
 | Capture descriptor/queue failure | Return packet ownership to the caller; process context releases pins |
-| Capture repost error in IRQ context | Retain the packet in the free queue for process-context cleanup |
+| Capture repost error in IRQ context | Retain the packet in the free queue or fallback inventory for process-context cleanup |
 | Frame fetch | Synchronize metadata access, then unmap and dirty-unpin the capture pages |
 | Discard flush | Stop capture; retain registered buffers for reuse |
 | Full flush | Serialize capture mutations/metadata peeks, exclude IRQ completion, stop capture, drain active/ready/free queues, then release pins |
-| Playback release/close | Exclude ioctls and IRQ access while draining capture and freeing hardware context/pools |
+| Playback release/close | Free context/pools only after successful engine/device stops; retain session ownership and module pin on failure |
 | Suspend | Stop RX/TX; capture registrations remain pinned for later cleanup |
-| PCI removal | Cancel all FIFO waiters, exclude ioctls, clear bus mastering, drain/free IRQ, then destroy queues and pools |
+| PCI removal | Exclude ioctls and IRQ access; destroy backing only after checked MASTER-off and PCIe drain proof, otherwise quarantine it |
 | DIO pool allocation failure | Free the partially allocated coherent buffers and DIO objects |
 
 Every successful streaming mapping is unmapped while its pages remain pinned.
@@ -69,10 +69,15 @@ Removal uses a persistent `present == 0` condition, so cancelling one FIFO waite
 cannot leave another waiting indefinitely. Existing file descriptors are bound
 to a device generation and cannot operate on a later PCI reprobe.
 
-An engine stop timeout disables PCI bus mastering, drains pending transactions,
-and marks the hardware context faulted. New TX/RX work is rejected until a fresh
-open resets the device. A pending-transaction drain timeout is logged; physically
-stuck PCI transactions remain an unvalidated hardware failure condition.
+An engine stop failure makes the adapter unavailable, masks device interrupts
+and attempts to disable bus mastering and drain pending transactions. This local
+drain is not a lifetime fence: already-admitted operations may still touch the
+device. TX backing leases, RX registrations, rings, pools and the session's
+module pin remain reachable; late interrupts cannot complete or repost owners.
+Neither close nor reopen counts as recovery. Only globally serialized terminal
+cleanup with checked PCI quiescence may release the retained backing. If that
+proof fails, quarantine also retains the PCI device reference and blocks reprobe;
+do not force module unloading to bypass it.
 
 ## Verification
 
@@ -91,7 +96,8 @@ normal registration, fetch, reuse and close on hardware.
 DMA-map fault injection, stop-timeout injection, DAX and
 other file-backed memory variants, concurrent power-management callbacks, and
 physical removal during DMA need dedicated kernel/hardware validation. The
-descriptor harness does not emulate these paths. Suspend/resume should not be
+source-extracted TX/RX, command-PM and device-lifetime fixtures model ownership
+and failure boundaries, not physical PCI faults. Suspend/resume should not be
 described as validated solely because ordinary playback succeeds.
 
 `sh tests/ioctl-smoke.sh` runs against the loaded driver by default: its

@@ -19,6 +19,7 @@ typedef int BC_STATUS;
 #define BC_STS_SUCCESS 0
 #define BC_STS_INV_ARG 1
 #define BC_STS_ERR_USAGE 2
+#define BC_STS_IO_ERROR 3
 #define BC_LINK_INVALID 0
 #define BC_HW_RUNNING 0
 #define DTS_MODE_INV UINT32_MAX
@@ -54,11 +55,12 @@ struct file { void *private_data; };
 struct crystalhd_user { uint32_t uid, in_use, mode; };
 struct crystalhd_adp;
 struct crystalhd_hw {
+	bool dma_fault;
 	void *rx_freeq, *rx_actq, *rx_rdyq, *tx_actq, *tx_freeq;
 	void *rx_pkt_pool_head, *rx_fallback_head;
 	struct {
 		struct { void *pdma_desc_start; } desc_mem;
-		void *buffer, *call_back, *cb_context;
+		void *buffer, *retained_buffer, *call_back, *cb_context;
 	} tx_pkt_pool[2];
 };
 struct crystalhd_stream;
@@ -415,7 +417,7 @@ static void pci_disable_msi(struct pci_dev *dev)
 	msi_live = false;
 	msi_disables++;
 }
-static void crystalhd_hw_free_dma_rings(struct crystalhd_hw *hw)
+static BC_STATUS crystalhd_hw_free_dma_rings(struct crystalhd_hw *hw)
 {
 	assert_quiesced();
 	assert(hw == g_adp_info->cmds.hw_ctx);
@@ -427,6 +429,7 @@ static void crystalhd_hw_free_dma_rings(struct crystalhd_hw *hw)
 		assert(chd_dec_session_dma_absent(g_adp_info));
 		assert(!module_refs);
 	}
+	return BC_STS_SUCCESS;
 }
 static void crystalhd_destroy_dio_pool(struct crystalhd_adp *adp)
 {
@@ -502,7 +505,9 @@ static void pci_disable_device(struct pci_dev *dev)
 static int bc_get_userhandle_count(struct crystalhd_cmd *cmd) { abort(); }
 static void disable_irq(int irq) { abort(); }
 static void enable_irq(int irq) { abort(); }
-static void crystalhd_hw_stop_capture(struct crystalhd_hw *hw, bool discard)
+static BC_STATUS crystalhd_hw_stop_capture(struct crystalhd_hw *hw, bool discard)
+{ abort(); }
+static BC_STATUS crystalhd_hw_cancel_all_tx(struct crystalhd_hw *hw)
 { abort(); }
 static BC_STATUS crystalhd_hw_close(struct crystalhd_hw *hw)
 { abort(); }
@@ -803,6 +808,7 @@ static void test_permanent_quarantine(void)
 	hw = adp->cmds.hw_ctx;
 	dio = adp->fill_byte_pool;
 	elements = adp->elem_pool_head;
+	hw->tx_pkt_pool[1].retained_buffer = &stream_token;
 	/* Even an apparently empty pending queue cannot rescue a rejected
 	 * MASTER clear. Removal must retain the complete live DMA inventory.
 	 */
@@ -820,6 +826,7 @@ static void test_permanent_quarantine(void)
 	assert(!g_adp_info && !pci.data && !frontend_live && !chdev_live && !class_live);
 	assert(chd_dma_quarantine == adp && pci.refs == 1 && pci_gets == 1 && !pci_puts);
 	assert(adp->cmds.adp == adp && adp->cmds.hw_ctx == hw && hw->rx_freeq == adp);
+	assert(hw->tx_pkt_pool[1].retained_buffer == &stream_token);
 	assert(adp->fill_byte_pool == dio && adp->elem_pool_head == elements);
 	assert(adp->cmds.session_owner == &adp->cmds.user[0] && adp->cmds.session_module_pinned);
 	assert(adp->cmds.stream == (struct crystalhd_stream *)&stream_token && stream_live);
@@ -856,7 +863,7 @@ static void test_no_session_inventory(void)
 	assert(chd_dec_session_dma_absent(adp));
 	adp->cmds.hw_ctx = &hw;
 	assert(chd_dec_session_dma_absent(adp));
-	for (field = 0; field < 21; field++) {
+	for (field = 0; field < 23; field++) {
 		unsigned int before = warnings;
 
 		switch (field) {
@@ -874,11 +881,12 @@ static void test_no_session_inventory(void)
 		case 11: hw.tx_actq = &token; break;
 		case 12: hw.tx_freeq = &token; break;
 		default:
-			switch ((field - 13) % 4) {
-			case 0: hw.tx_pkt_pool[(field - 13) / 4].desc_mem.pdma_desc_start = &token; break;
-			case 1: hw.tx_pkt_pool[(field - 13) / 4].buffer = &token; break;
-			case 2: hw.tx_pkt_pool[(field - 13) / 4].call_back = &token; break;
-			case 3: hw.tx_pkt_pool[(field - 13) / 4].cb_context = &token; break;
+			switch ((field - 13) % 5) {
+			case 0: hw.tx_pkt_pool[(field - 13) / 5].desc_mem.pdma_desc_start = &token; break;
+			case 1: hw.tx_pkt_pool[(field - 13) / 5].buffer = &token; break;
+			case 2: hw.tx_pkt_pool[(field - 13) / 5].retained_buffer = &token; break;
+			case 3: hw.tx_pkt_pool[(field - 13) / 5].call_back = &token; break;
+			case 4: hw.tx_pkt_pool[(field - 13) / 5].cb_context = &token; break;
 			}
 		}
 		assert(!chd_dec_session_dma_absent(adp) && warnings == before + 1);
@@ -1029,6 +1037,7 @@ static void test_empty_preopened_context(void)
 	reset();
 	adp = attach(false, true);
 	adp->cmds.hw_ctx = allocate(sizeof(*adp->cmds.hw_ctx), HARDWARE);
+	adp->cmds.hw_ctx->dma_fault = true;
 	pending_result = 0;
 	chd_dec_pci_remove(&pci);
 	assert(released[HARDWARE] == 1 && !dma_frees && !module_refs && !module_puts);

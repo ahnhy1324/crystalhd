@@ -24,6 +24,14 @@ typedef uint8_t u8;
 typedef uint32_t u32;
 typedef uint64_t u64;
 typedef uint64_t dma_addr_t;
+typedef struct { unsigned int refs; } refcount_t;
+static void refcount_set(refcount_t *ref, unsigned int count) { ref->refs = count; }
+static void refcount_inc(refcount_t *ref)
+{ if (!ref->refs) abort(); ref->refs++; }
+static bool refcount_dec_and_test(refcount_t *ref)
+{ if (!ref->refs) abort(); return --ref->refs == 0; }
+struct crystalhd_adp;
+struct crystalhd_tx_buffer;
 
 struct scatterlist {
     dma_addr_t dma_address;
@@ -43,11 +51,12 @@ static void sg_init_table(struct scatterlist *sg, unsigned int count)
 
 struct device { int unused; };
 struct pci_dev { struct device dev; u32 device; };
-struct crystalhd_hw { int unused; };
+struct crystalhd_hw { bool dma_fault; };
 struct crystalhd_stream;
 struct crystalhd_adp {
     struct pci_dev *pdev;
     bool present;
+    bool dma_terminal_quiesced;
     int user_lock;
     int tx_lock;
 };
@@ -119,6 +128,9 @@ static u32 seen_timeout;
 static unsigned long supplied_deadline;
 static BC_STATUS transfer_status[MAX_PACKETS];
 static struct captured_packet captured[MAX_PACKETS];
+static const struct crystalhd_tx_buffer *retained_core_buffer;
+static unsigned fatal_transfer_index;
+static bool terminal_proof_required;
 
 static void Check(bool condition, const char *why)
 {
@@ -178,6 +190,10 @@ static void *dma_alloc_coherent(struct device *device, size_t size,
 static void dma_free_coherent(struct device *device, size_t size,
                               void *cpu, dma_addr_t dma)
 {
+    Check(!terminal_proof_required || adapter.dma_terminal_quiesced,
+          "fault-retained coherent storage is freed only after modeled terminal proof");
+    Check(!retained_core_buffer,
+          "terminal core identity is detached before the final coherent put");
     Check(device == &endpoint.dev && size == CRYSTALHD_H264_STAGE_BYTES &&
           cpu == stage_cpu && dma == stage_dma,
           "coherent staging release accepts the original CPU and DMA owners");
@@ -230,9 +246,10 @@ static BC_STATUS crystalhd_tx_transfer_until(
     aligned = buffer->bytes & ~3U;
     Check(ctx == &context && stream && buffer && data_flags == 0,
           "typed sender delegates one clear mapped transfer");
-    Check(buffer->cookie == stream && buffer->sgl == &stream->sg &&
+    Check(buffer == &stream->buffer && buffer->ops && buffer->ops->get &&
+          buffer->ops->put && buffer->cookie == stream && buffer->sgl == &stream->sg &&
           buffer->dma_nents == 1,
-          "staged transfer retains one stable coherent SG owner");
+          "staged transfer retains a non-stack descriptor and coherent SG owner");
     Check(buffer->bytes && buffer->bytes <= CRYSTALHD_H264_PES_MAX_WIRE &&
           buffer->tail_size == (buffer->bytes & 3U),
           "staged transfer advertises the exact unpadded wire length");
@@ -247,6 +264,9 @@ static BC_STATUS crystalhd_tx_transfer_until(
               "DMA-only alignment bytes are zero without extending the stream");
     Check(barriers == transfer_calls,
           "CPU packet writes are ordered before every DMA submission");
+    crystalhd_tx_buffer_get(buffer);
+    Check(stream->refs.refs == 2,
+          "each synchronous transfer takes one extra lease beyond the session reference");
     packet->bytes = buffer->bytes;
     memcpy(packet->data, stage_cpu, buffer->bytes);
     packet->sg_address = sg_dma_address(buffer->sgl);
@@ -254,17 +274,30 @@ static BC_STATUS crystalhd_tx_transfer_until(
     packet->tail_address = buffer->tail_addr;
     packet->tail_size = buffer->tail_size;
     packet->deadline = deadline;
+    if (index == fatal_transfer_index) {
+        Check(!retained_core_buffer && transfer_status[index] != BC_STS_SUCCESS,
+              "fatal transfer retains one failing fixed-inventory lease");
+        retained_core_buffer = buffer;
+        terminal_proof_required = true;
+        hardware.dma_fault = true;
+        adapter.present = false;
+    } else {
+        crystalhd_tx_buffer_put(&adapter, buffer);
+        Check(stream->refs.refs == 1,
+              "safe synchronous completion returns the extra lease before staging reuse");
+    }
     return transfer_status[index];
 }
 
 static void Reset(void)
 {
-    Check(!stage_cpu && !stream_heap,
+    Check(!stage_cpu && !stream_heap && !retained_core_buffer,
           "each stream test begins without leaked staging ownership");
     endpoint = (struct pci_dev){ .device = BC_PCI_DEVID_FLEA };
     adapter = (struct crystalhd_adp){
         .pdev = &endpoint, .present = true, .user_lock = 1, .tx_lock = 1,
     };
+    hardware = (struct crystalhd_hw){ 0 };
     context = (struct crystalhd_cmd){
         .state = BC_LINK_INIT,
         .adp = &adapter,
@@ -281,6 +314,8 @@ static void Reset(void)
     tx_lock_assertions = deadline_calls = transfer_calls = 0;
     seen_timeout = 0;
     supplied_deadline = 0xabc123UL;
+    fatal_transfer_index = UINT_MAX;
+    terminal_proof_required = false;
     memset(transfer_status, 0, sizeof(transfer_status));
     memset(captured, 0, sizeof(captured));
 }
@@ -412,6 +447,192 @@ static void Formatter(void)
               -EINVAL && wire == 23 &&
           !memcmp(output, before, sizeof(output)),
           "invalid EOS index leaves destination and length unchanged");
+}
+
+static void RetainedStagingLease(void)
+{
+    struct crystalhd_stream *stream;
+    const struct crystalhd_tx_buffer *held;
+
+    Reset(); Prepare();
+    stream = context.stream;
+    held = &stream->buffer;
+    crystalhd_tx_buffer_get(held);
+    Check(stream->refs.refs == 2 && held->cookie == stream,
+          "TX takes an independent lease on its durable staging descriptor");
+    crystalhd_stream_release(&context);
+    Check(!context.stream && stream->refs.refs == 1 && stage_cpu && stream_heap &&
+          !dma_frees && !stream_frees && held->sgl == &stream->sg,
+          "dropping the session reference cannot free retained TX backing or its SG descriptor");
+    crystalhd_stream_release(&context);
+    Check(stream->refs.refs == 1 && !dma_frees && !stream_frees,
+          "repeated context release cannot consume the independent TX lease");
+    /* Pure ownership boundary: the core may drop this reference only after
+     * ordinary completion or the separately tested terminal PCI fence.
+     */
+    crystalhd_tx_buffer_put(&adapter, held);
+    Check(!stage_cpu && !stream_heap && dma_frees == 1 && stream_frees == 1,
+          "the final process-context lease balances coherent and descriptor storage exactly once");
+}
+
+static void PutRetainedCoreLease(void)
+{
+    const struct crystalhd_tx_buffer *held = retained_core_buffer;
+
+    Check(held && adapter.dma_terminal_quiesced,
+          "fixture terminal retirement requires separate proof and a retained core lease");
+    /* Model the fixed inventory detach-before-put boundary; the actual PCI
+     * fence and TX inventory implementation are tested in their own suites.
+     */
+    retained_core_buffer = NULL;
+    crystalhd_tx_buffer_put(&adapter, held);
+}
+
+static void FatalContextRetention(void)
+{
+    for (unsigned condition = 0; condition < 3; condition++) {
+        for (unsigned core_lease = 0; core_lease < 2; core_lease++) {
+            for (unsigned context_first = 0; context_first < 2; context_first++) {
+                struct crystalhd_stream *stream;
+                const struct crystalhd_tx_buffer *held;
+                void *cpu;
+
+                Reset(); next_dma = 0; Prepare();
+                stream = context.stream;
+                held = &stream->buffer;
+                cpu = stage_cpu;
+                if (core_lease) {
+                    crystalhd_tx_buffer_get(held);
+                    retained_core_buffer = held;
+                }
+                hardware.dma_fault = condition != 1;
+                adapter.present = condition == 0;
+                terminal_proof_required = true;
+                Check(crystalhd_decoder_submit_h264(&context, &owner_token,
+                                                    (const u8 *)"x", 1,
+                                                    false, 0, 400) ==
+                          (adapter.present ? -EIO : -ENODEV) &&
+                      crystalhd_decoder_submit_h264_eos(&context, &owner_token, 900) ==
+                          (adapter.present ? -EIO : -ENODEV) &&
+                      !deadline_calls && !transfer_calls && !barriers,
+                      "fault-only and absent admission reject data and EOS before any staging write");
+                for (unsigned attempt = 0; attempt < 4; attempt++) {
+                    crystalhd_stream_release(&context);
+                    Check(context.stream == stream && stage_cpu == cpu &&
+                          stream_heap == stream && !dma_frees && !stream_frees &&
+                          stream->refs.refs == 1U + core_lease &&
+                          held == &stream->buffer && held->cookie == stream &&
+                          held->sgl == &stream->sg &&
+                          retained_core_buffer == (core_lease ? held : NULL),
+                          "fault or absence without terminal proof permanently preserves context, backing and each lease");
+                }
+                /* No fault flag is cleared to manufacture recovery. The
+                 * fixture now models a later successful terminal PCI fence.
+                 */
+                adapter.present = false;
+                adapter.dma_terminal_quiesced = true;
+                if (context_first) {
+                    crystalhd_stream_release(&context);
+                    if (core_lease) {
+                        Check(!context.stream && stream->refs.refs == 1 &&
+                              stage_cpu == cpu && stream_heap == stream &&
+                              !dma_frees && !stream_frees,
+                              "terminal context release alone cannot consume the core lease");
+                        PutRetainedCoreLease();
+                    }
+                } else {
+                    if (core_lease) {
+                        PutRetainedCoreLease();
+                        Check(context.stream == stream && stream->refs.refs == 1 &&
+                              stage_cpu == cpu && stream_heap == stream &&
+                              !dma_frees && !stream_frees,
+                              "terminal core put alone cannot consume the context lease");
+                    }
+                    crystalhd_stream_release(&context);
+                }
+                Check(!context.stream && !stage_cpu && !stream_heap &&
+                      !retained_core_buffer && dma_frees == 1 && stream_frees == 1 &&
+                      hardware.dma_fault == (condition != 1) &&
+                      !adapter.present,
+                      "only proved final ownership release frees DMA-zero storage exactly once without reopening the device");
+                crystalhd_stream_release(&context);
+                Check(dma_frees == 1 && stream_frees == 1,
+                      "terminal context release remains idempotent after the final put");
+            }
+        }
+    }
+}
+
+static void FatalSenderRetention(void)
+{
+    const size_t source_size = 65512U + 65517U + 3U;
+    u8 *source = malloc(source_size);
+
+    if (!source) abort();
+    for (size_t i = 0; i < source_size; i++)
+        source[i] = (u8)(i * 29U + 7U);
+    for (unsigned eos = 0; eos < 2; eos++) {
+        for (unsigned failed = 0; failed < (eos ? 4U : 3U); failed++) {
+            struct crystalhd_stream *stream;
+            struct crystalhd_tx_buffer descriptor;
+            struct scatterlist sg;
+            unsigned deadlines, submissions, writes;
+            int rc;
+
+            Reset(); Prepare();
+            stream = context.stream;
+            fatal_transfer_index = failed;
+            transfer_status[failed] = BC_STS_IO_ERROR;
+            rc = eos ? crystalhd_decoder_submit_h264_eos(&context, &owner_token, 900) :
+                crystalhd_decoder_submit_h264(&context, &owner_token, source,
+                                             source_size, true, 3, 400);
+            Check(rc == -EIO && transfer_calls == failed + 1U &&
+                  deadline_calls == 1 && stream->failed && !stream->eos_submitted &&
+                  hardware.dma_fault && !adapter.present &&
+                  stream->refs.refs == 2 && retained_core_buffer == &stream->buffer &&
+                  !dma_frees && !stream_frees,
+                  "fatal data/EOS failure stops later packets and retains the exact embedded descriptor plus staging");
+            descriptor = stream->buffer;
+            sg = stream->sg;
+            deadlines = deadline_calls;
+            submissions = transfer_calls;
+            writes = barriers;
+            for (unsigned attempt = 0; attempt < 3; attempt++) {
+                Check(crystalhd_decoder_submit_h264(&context, &owner_token, source,
+                                                    1, false, 0, 400) == -ENODEV &&
+                      crystalhd_decoder_submit_h264_eos(&context, &owner_token, 900) ==
+                          -ENODEV &&
+                      deadline_calls == deadlines && transfer_calls == submissions &&
+                      barriers == writes,
+                      "unavailable device rejects data and EOS before mutating retained staging");
+                crystalhd_stream_release(&context);
+                Check(context.stream == stream && stream->refs.refs == 2 &&
+                      retained_core_buffer == &stream->buffer &&
+                      stream->buffer.sgl == descriptor.sgl &&
+                      stream->buffer.dma_nents == descriptor.dma_nents &&
+                      stream->buffer.bytes == descriptor.bytes &&
+                      stream->buffer.tail_addr == descriptor.tail_addr &&
+                      stream->buffer.tail_size == descriptor.tail_size &&
+                      stream->buffer.ops == descriptor.ops &&
+                      stream->buffer.cookie == descriptor.cookie &&
+                      stream->sg.dma_address == sg.dma_address &&
+                      stream->sg.dma_length == sg.dma_length &&
+                      stream->sg.last == sg.last &&
+                      !memcmp(stage_cpu, captured[failed].data, captured[failed].bytes) &&
+                      !dma_frees && !stream_frees,
+                      "failed release preserves immutable descriptor, SG and failed wire bytes while the core lease remains uncertain");
+            }
+            adapter.dma_terminal_quiesced = true;
+            PutRetainedCoreLease();
+            Check(context.stream == stream && stream->refs.refs == 1 &&
+                  stage_cpu && stream_heap && !dma_frees && !stream_frees,
+                  "proved TX retirement leaves the independent staging context reference alive");
+            Finish();
+            Check(hardware.dma_fault && !adapter.present,
+                  "terminal staging cleanup does not clear fatal state or republish the device");
+        }
+    }
+    free(source);
 }
 
 static void SenderValidation(void)
@@ -647,10 +868,13 @@ static void EosSender(void)
 int main(void)
 {
     ResourceLifetime();
+    RetainedStagingLease();
+    FatalContextRetention();
     Formatter();
     SenderValidation();
     OrdinarySender();
     EosSender();
+    FatalSenderRetention();
     printf("H.264 typed stream: %u checks, %u failures\n", checks, failures);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

@@ -180,6 +180,37 @@ static void crystalhd_dio_rx_release(struct crystalhd_adp *adp,
 		crystalhd_unmap_dio(adp, dio);
 }
 
+static void crystalhd_dio_tx_get(const struct crystalhd_tx_buffer *buffer)
+{
+	struct crystalhd_dio_req *dio = buffer->cookie;
+
+	refcount_inc(&dio->tx_refs);
+}
+
+static void crystalhd_dio_tx_put(struct crystalhd_adp *adp,
+				 const struct crystalhd_tx_buffer *buffer)
+{
+	struct crystalhd_dio_req *dio = buffer->cookie;
+
+	crystalhd_unmap_dio(adp, dio);
+}
+
+static const struct crystalhd_tx_buffer_ops crystalhd_dio_tx_buffer_ops = {
+	.get = crystalhd_dio_tx_get,
+	.put = crystalhd_dio_tx_put,
+};
+
+void crystalhd_tx_buffer_get(const struct crystalhd_tx_buffer *buffer)
+{
+	buffer->ops->get(buffer);
+}
+
+void crystalhd_tx_buffer_put(struct crystalhd_adp *adp,
+			     const struct crystalhd_tx_buffer *buffer)
+{
+	buffer->ops->put(adp, buffer);
+}
+
 static const struct crystalhd_rx_buffer_ops crystalhd_dio_rx_buffer_ops = {
 	.sync_for_cpu = crystalhd_dio_rx_sync_for_cpu,
 	.sync_for_device = crystalhd_dio_rx_sync_for_device,
@@ -728,6 +759,9 @@ BC_STATUS crystalhd_map_dio(struct crystalhd_adp *adp, void *ubuff,
 		crystalhd_free_dio(adp, dio);
 		return BC_STS_INSUFF_RES;
 	}
+	dio->uinfo.dir_tx = dir_tx;
+	if (dir_tx)
+		refcount_set(&dio->tx_refs, 1);
 
 	/* The capture metadata parser also updates words in the Y buffer. */
 	dio->direction = dir_tx ? DMA_TO_DEVICE : DMA_BIDIRECTIONAL;
@@ -803,6 +837,7 @@ BC_STATUS crystalhd_map_dio(struct crystalhd_adp *adp, void *ubuff,
 		dio->tx_buffer.bytes = ubuff_sz;
 		dio->tx_buffer.tail_addr = dio->fb_pa;
 		dio->tx_buffer.tail_size = dio->fb_size;
+		dio->tx_buffer.ops = &crystalhd_dio_tx_buffer_ops;
 		dio->tx_buffer.cookie = dio;
 	} else {
 		dio->rx_buffer.sgl = dio->sg;
@@ -994,6 +1029,11 @@ BC_STATUS crystalhd_unmap_dio(struct crystalhd_adp *adp, struct crystalhd_dio_re
 		printk(KERN_ERR "%s: Invalid arg\n", __func__);
 		return BC_STS_INV_ARG;
 	}
+	/* A failed TX stop can outlive its ioctl. The fixed TX inventory holds
+	 * the extra reference until terminal quiescence permits the final put.
+	 */
+	if (dio->uinfo.dir_tx && !refcount_dec_and_test(&dio->tx_refs))
+		return BC_STS_SUCCESS;
 
 	/* DMA must be stopped before entry. Unmap while the pages are pinned:
 	 * SWIOTLB may copy capture data back during dma_unmap_sg().

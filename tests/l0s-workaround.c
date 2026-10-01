@@ -526,7 +526,7 @@ struct crystalhd_hw {
 	void *rx_pkt_pool_head, *rx_fallback_head;
 	struct {
 		struct { void *pdma_desc_start; } desc_mem;
-		void *buffer, *call_back, *cb_context;
+		void *buffer, *retained_buffer, *call_back, *cb_context;
 	} tx_pkt_pool[2];
 };
 struct crystalhd_adp;
