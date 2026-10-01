@@ -16,10 +16,10 @@ trap 'exit 1' HUP INT TERM
 # Compile the exact lifetime/state helpers used by both mailbox implementations.
 awk '
     /^BC_STATUS crystalhd_hw_fw_cmd_(enter|recovery_enter|begin|wait)\(/ ||
-    /^void crystalhd_hw_fw_cmd_(leave|end|complete|reset_locked|reset)\(/ { copying = 1; found++ }
+    /^void crystalhd_hw_fw_cmd_(leave|end|complete|reset_locked|reset|abort_unposted_locked)\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 9 || copying) exit 1 }
+    END { if (found != 10 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_hw.c" > "$fw_test_dir/fw-command-functions.h"
 
 # Execute both production reply-transfer and postprocessing bodies as well;

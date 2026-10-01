@@ -77,8 +77,13 @@ static pthread_mutex_t audit_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t audit_changed = PTHREAD_COND_INITIALIZER;
 static unsigned mutex_attempts;
 static bool interrupt_mailbox_begin;
+static bool complete_before_publication;
+static unsigned wait_calls;
 
 static void crystalhd_hw_fw_cmd_complete(struct crystalhd_hw *hw);
+static void TestSpinLock(spinlock_t *lock);
+static void AssertSpinHeld(spinlock_t *lock);
+static void AssertMutexHeld(struct mutex *mutex);
 
 static int TestMutexLock(struct mutex *mutex)
 {
@@ -107,6 +112,7 @@ static void TestWake(wait_queue_head_t *event)
 
 static int TestWait(wait_queue_head_t *event)
 {
+    wait_calls++;
     if (wait_mode == WAIT_TIMEOUT)
         return -EBUSY;
     if (wait_mode == WAIT_SIGNAL)
@@ -134,7 +140,7 @@ static int TestWait(wait_queue_head_t *event)
 #define mutex_unlock(mutex) TestMutexUnlock(mutex)
 #define spin_lock_irqsave(lock, flags) do { \
     (flags) = 0; \
-    if (pthread_mutex_lock(lock)) abort(); \
+    TestSpinLock(lock); \
 } while (0)
 #define spin_unlock_irqrestore(lock, flags) do { \
     (void)(flags); \
@@ -151,6 +157,8 @@ static int TestWait(wait_queue_head_t *event)
 #define dev_err(dev, ...) ((void)(dev))
 #define dev_info(dev, ...) ((void)(dev))
 #define msleep_interruptible(milliseconds) TestSleep(milliseconds)
+#define lockdep_assert_held(lock) _Generic((lock), \
+    struct mutex *: AssertMutexHeld, spinlock_t *: AssertSpinHeld)(lock)
 
 static int TestSleep(unsigned milliseconds);
 static bool crystalhd_link_load_firmware_config(struct crystalhd_hw *hw);
@@ -159,6 +167,16 @@ static void crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
 
 #include "fw-command-functions.h"
 #include "fw-transport-functions.h"
+
+static void TestSpinLock(spinlock_t *lock)
+{
+    if (complete_before_publication && lock == &hardware.lock &&
+        hardware.fwcmd_pending) {
+        complete_before_publication = false;
+        crystalhd_hw_fw_cmd_complete(&hardware);
+    }
+    if (pthread_mutex_lock(lock)) abort();
+}
 
 static unsigned checks, failures;
 static void Check(bool condition, const char *why)
@@ -186,6 +204,8 @@ static void InitHardware(void)
     last_woken = NULL;
     wait_mode = WAIT_BLOCK;
     interrupt_mailbox_begin = false;
+    complete_before_publication = false;
+    wait_calls = 0;
     pthread_mutex_lock(&audit_lock);
     mutex_attempts = 0;
     pthread_mutex_unlock(&audit_lock);
@@ -455,7 +475,10 @@ static void SerializedCommands(void)
 static BC_FW_CMD *transfer_command;
 static uint32_t response_words[FW_CMD_BUFF_SZ], response_address;
 static BC_STATUS response_read_status;
+static BC_STATUS command_write_status, flush_read_status;
 static bool partial_response;
+static bool partial_command;
+static uint32_t written_command[FW_CMD_BUFF_SZ];
 static unsigned transfer_reads, transfer_writes, mailbox_reads, mailbox_posts;
 static unsigned sleeps, firmware_config_calls, power_wakes;
 
@@ -474,6 +497,21 @@ static void CheckHardwareLocked(void)
 
     Check(rc == EBUSY, "mailbox and DRAM callbacks run under the hardware lock");
     if (!rc && pthread_mutex_unlock(&hardware.lock)) abort();
+}
+
+static void AssertSpinHeld(spinlock_t *lock)
+{
+    Check(lock == &hardware.lock, "abort asserts the active hardware lock");
+    CheckHardwareLocked();
+}
+
+static void AssertMutexHeld(struct mutex *mutex)
+{
+    int rc = pthread_mutex_trylock(&mutex->native);
+
+    Check(mutex == &hardware.fwcmd_mutex && rc == EBUSY,
+          "abort requires the current mailbox serialization lock");
+    if (!rc && pthread_mutex_unlock(&mutex->native)) abort();
 }
 
 static int TestSleep(unsigned milliseconds)
@@ -506,7 +544,10 @@ static BC_STATUS WriteCommand(struct crystalhd_hw *hw, uint32_t address,
           count == FW_CMD_BUFF_SZ && words == transfer_command->cmd,
           "production sends the unchanged complete command buffer");
     transfer_writes++;
-    return BC_STS_SUCCESS;
+    if (command_write_status == BC_STS_SUCCESS || partial_command)
+        memcpy(written_command, words,
+               (partial_command ? 8U : count) * sizeof(*words));
+    return command_write_status;
 }
 
 static BC_STATUS ReadTransfer(struct crystalhd_hw *hw, uint32_t address,
@@ -519,7 +560,7 @@ static BC_STATUS ReadTransfer(struct crystalhd_hw *hw, uint32_t address,
         Check(address == hw->fwcmdPostAddr && transfer_reads == 1,
               "command publication flush precedes reply read");
         *words = transfer_command->cmd[0];
-        return BC_STS_SUCCESS;
+        return flush_read_status;
     }
     Check(count == FW_CMD_BUFF_SZ && address == response_address &&
           words == transfer_command->rsp && transfer_reads == 2,
@@ -574,7 +615,10 @@ static void InitTransfer(BC_FW_CMD *command, uint32_t id, bool stale)
     response_words[11] = 0x12500;
     response_address = 0x200;
     response_read_status = BC_STS_SUCCESS;
+    command_write_status = flush_read_status = BC_STS_SUCCESS;
     partial_response = false;
+    partial_command = false;
+    memset(written_command, 0, sizeof(written_command));
     transfer_reads = transfer_writes = mailbox_reads = mailbox_posts = 0;
     sleeps = firmware_config_calls = power_wakes = 0;
     hardware.pfnDevDRAMWrite = WriteCommand;
@@ -824,6 +868,123 @@ static void PreservedReplyTransport(void)
     DestroyHardware();
 }
 
+static void CommandPublicationFailure(void)
+{
+    BC_STATUS (*const execute[])(struct crystalhd_hw *, BC_FW_CMD *) = {
+        crystalhd_flea_do_fw_cmd, crystalhd_link_do_fw_cmd,
+    };
+    const BC_STATUS errors[] = {
+        BC_STS_INV_ARG, BC_STS_BUSY, BC_STS_ERROR, BC_STS_IO_ERROR,
+        BC_STS_FW_CMD_ERR,
+    };
+    unsigned generation, error, stage, interrupt;
+
+    for (generation = 0; generation < 2; generation++) {
+        for (error = 0; error < sizeof(errors) / sizeof(errors[0]); error++) {
+            for (stage = 0; stage < 3; stage++) {
+                for (interrupt = 0; interrupt < 2; interrupt++) {
+                    BC_FW_CMD command, original;
+                    TX_INPUT_BUFFER_INFO input;
+                    unsigned events;
+
+                    InitTransfer(&command, eCMD_C011_DEC_CHAN_OPEN, true);
+                    command.cmd[FW_CMD_BUFF_SZ - 1] = 0x33445566U;
+                    original = command;
+                    input = hardware.TxFwInputBuffInfo;
+                    if (stage < 2) {
+                        command_write_status = errors[error];
+                        partial_command = stage == 1;
+                    } else {
+                        flush_read_status = errors[error];
+                    }
+                    complete_before_publication = !!interrupt;
+                    Check(execute[generation](&hardware, &command) == BC_STS_IO_ERROR,
+                          "write/partial-write/flush failure reports transport IO_ERROR");
+                    Check(transfer_writes == 1 && transfer_reads == (stage == 2 ? 1U : 0U) &&
+                          !mailbox_posts && !mailbox_reads && !sleeps && !wait_calls,
+                          "failed command publication stops before flush, mailbox, wait or reply as applicable");
+                    Check(WordsZero(command.rsp, FW_CMD_BUFF_SZ) &&
+                          !memcmp(command.cmd, original.cmd, sizeof(command.cmd)) &&
+                          command.flags == original.flags && command.add_data == original.add_data,
+                          "unposted failure invalidates reply without changing command ABI fields");
+                    Check(hardware.fwcmd_poisoned && !hardware.fwcmd_pending &&
+                          !hardware.FwCmdCnt && !hardware.fwcmd_evt_sts,
+                          "unposted abort retires exactly once and clears a spurious completion");
+                    Check(hardware.fwcmd_event.wakeups == interrupt &&
+                          !complete_before_publication,
+                          "abort itself neither wakes an event nor invokes completion");
+                    Check(hardware.channelNum == 0xaabb && hardware.TxBuffInfoAddr == 0xbbcc &&
+                          !memcmp(&hardware.TxFwInputBuffInfo, &input, sizeof(input)) &&
+                          hardware.PwrDwnTxIntr && hardware.PwrDwnPiQIntr &&
+                          hardware.SingleThreadAppFIFOEmpty && hardware.EmptyCnt == 123 &&
+                          !firmware_config_calls,
+                          "unposted failure cannot publish firmware reply or channel state");
+                    if (stage == 1)
+                        Check(written_command[0] == command.cmd[0] &&
+                              WordsZero(written_command + 8, FW_CMD_BUFF_SZ - 8) &&
+                              written_command[FW_CMD_BUFF_SZ - 1] !=
+                                  command.cmd[FW_CMD_BUFF_SZ - 1],
+                              "partial DRAM write is reproduced without posting its incomplete command");
+                    CheckUnlocked(&hardware.lock, "unposted failure releases the hardware lock");
+                    CheckUnlocked(&hardware.fwcmd_mutex.native,
+                                  "unposted failure releases mailbox serialization");
+                    Check(execute[generation](&hardware, &command) == BC_STS_BUSY &&
+                          transfer_writes == 1 && !mailbox_posts && !wait_calls,
+                          "poison blocks a direct retry before any command write or mailbox post");
+                    Check(crystalhd_hw_fw_cmd_enter(&hardware) == BC_STS_BUSY,
+                          "poison blocks transaction preprocessing after unposted failure");
+                    events = hardware.fwcmd_event.wakeups;
+                    crystalhd_hw_fw_cmd_complete(&hardware);
+                    Check(hardware.fwcmd_poisoned && !hardware.fwcmd_pending &&
+                          !hardware.FwCmdCnt && !hardware.fwcmd_evt_sts &&
+                          hardware.fwcmd_event.wakeups == events,
+                          "late IRQ after abort cannot double-retire, signal success or release quarantine");
+                    Check(crystalhd_hw_fw_cmd_recovery_enter(&hardware) == BC_STS_SUCCESS,
+                          "no pending unposted work remains to block verified recovery");
+                    crystalhd_hw_fw_cmd_reset_locked(&hardware);
+                    crystalhd_hw_fw_cmd_leave(&hardware);
+                    command_write_status = flush_read_status = BC_STS_SUCCESS;
+                    partial_command = false;
+                    transfer_reads = 0;
+                    Check(execute[generation](&hardware, &command) == BC_STS_SUCCESS &&
+                          mailbox_posts == 1 && wait_calls == 1 && !hardware.fwcmd_poisoned &&
+                          !hardware.fwcmd_pending && !hardware.FwCmdCnt,
+                          "valid publication resumes only after verified-reset state recovery");
+                    DestroyHardware();
+                }
+            }
+        }
+    }
+}
+
+static void UnpostedCountState(void)
+{
+    unsigned pending, count;
+
+    for (pending = 0; pending < 2; pending++) {
+        for (count = 0; count < 3; count++) {
+            const uint32_t original[] = { 0U, 1U, 7U };
+            uint32_t expected = pending && original[count] ? original[count] - 1 : original[count];
+
+            InitHardware();
+            hardware.fwcmd_pending = !!pending;
+            hardware.FwCmdCnt = original[count];
+            hardware.fwcmd_evt_sts = 1;
+            if (TestMutexLock(&hardware.fwcmd_mutex)) abort();
+            if (pthread_mutex_lock(&hardware.lock)) abort();
+            crystalhd_hw_fw_cmd_abort_unposted_locked(&hardware);
+            Check(hardware.FwCmdCnt == expected && !hardware.fwcmd_pending &&
+                  hardware.fwcmd_poisoned && !hardware.fwcmd_evt_sts,
+                  "abort balances only a present current pending count, without underflow or resetting others");
+            Check(!hardware.fwcmd_event.wakeups && !last_woken,
+                  "count-state abort performs no completion or wake callback");
+            if (pthread_mutex_unlock(&hardware.lock)) abort();
+            TestMutexUnlock(&hardware.fwcmd_mutex);
+            DestroyHardware();
+        }
+    }
+}
+
 int main(void)
 {
     AdmissionBeforePreprocess();
@@ -836,6 +997,8 @@ int main(void)
     ReplyRangeAndFirmwareStatus();
     ReplyAdmissionAndWaitFailure();
     PreservedReplyTransport();
+    CommandPublicationFailure();
+    UnpostedCountState();
     printf("Firmware command recovery: %u checks, %u failures (no hardware)\n",
            checks, failures);
     return failures ? 1 : 0;

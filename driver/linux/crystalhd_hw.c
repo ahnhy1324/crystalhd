@@ -151,6 +151,23 @@ BC_STATUS crystalhd_hw_fw_cmd_wait(struct crystalhd_hw *hw)
 	return sts;
 }
 
+void crystalhd_hw_fw_cmd_abort_unposted_locked(struct crystalhd_hw *hw)
+{
+	lockdep_assert_held(&hw->lock);
+	lockdep_assert_held(&hw->fwcmd_mutex);
+	/* An unexpected interrupt between begin and publication may already have
+	 * retired this attempt. Balance only its still-pending count, then discard
+	 * any such completion and require verified recovery before another post.
+	 */
+	if (hw->fwcmd_pending) {
+		hw->fwcmd_pending = false;
+		if (hw->FwCmdCnt)
+			hw->FwCmdCnt--;
+	}
+	hw->fwcmd_evt_sts = 0;
+	hw->fwcmd_poisoned = true;
+}
+
 void crystalhd_hw_fw_cmd_end(struct crystalhd_hw *hw)
 {
 	if (hw)

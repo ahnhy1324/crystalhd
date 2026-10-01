@@ -582,6 +582,8 @@ BC_STATUS crystalhd_hw_fw_cmd_recovery_enter(struct crystalhd_hw *hw);
 void crystalhd_hw_fw_cmd_leave(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_fw_cmd_begin(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_hw_fw_cmd_wait(struct crystalhd_hw *hw);
+/* Caller holds hw->lock and fwcmd_mutex; its mailbox post has not occurred. */
+void crystalhd_hw_fw_cmd_abort_unposted_locked(struct crystalhd_hw *hw);
 void crystalhd_hw_fw_cmd_end(struct crystalhd_hw *hw);
 void crystalhd_hw_fw_cmd_complete(struct crystalhd_hw *hw);
 /* Caller must hold fwcmd_trans_mutex. */

@@ -2004,10 +2004,17 @@ BC_STATUS crystalhd_link_do_fw_cmd(struct crystalhd_hw *hw, BC_FW_CMD *fw_cmd)
 	spin_lock_irqsave(&hw->lock, flags);
 
 	/*Write the command to the memory*/
-	hw->pfnDevDRAMWrite(hw, hw->fwcmdPostAddr, FW_CMD_BUFF_SZ, cmd_buff);
+	sts = hw->pfnDevDRAMWrite(hw, hw->fwcmdPostAddr, FW_CMD_BUFF_SZ, cmd_buff);
 
 	/*Memory Read for memory arbitrator flush*/
-	hw->pfnDevDRAMRead(hw, hw->fwcmdPostAddr, 1, &cnt);
+	if (sts == BC_STS_SUCCESS)
+		sts = hw->pfnDevDRAMRead(hw, hw->fwcmdPostAddr, 1, &cnt);
+	if (sts != BC_STS_SUCCESS) {
+		crystalhd_hw_fw_cmd_abort_unposted_locked(hw);
+		spin_unlock_irqrestore(&hw->lock, flags);
+		sts = BC_STS_IO_ERROR;
+		goto done;
+	}
 
 	/* Write the command address to mailbox */
 	hw->pfnWriteDevRegister(hw->adp, hw->fwcmdPostMbox, hw->fwcmdPostAddr);
