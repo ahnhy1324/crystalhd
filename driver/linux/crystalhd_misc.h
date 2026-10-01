@@ -42,6 +42,19 @@ struct crystalhd_adp;
 struct crystalhd_hw;
 struct crystalhd_rx_buffer;
 
+/* Frontend-neutral, already DMA-mapped input buffer. The frontend owns the
+ * mapping and every backing byte until its completion callback runs. The
+ * final 1..3 bytes, when present, live in one coherent, zero-padded word.
+ */
+struct crystalhd_tx_buffer {
+	struct scatterlist	*sgl;
+	uint32_t		dma_nents; /* mapped entries, not original entries */
+	uint32_t		bytes; /* exact transfer length within the backing */
+	dma_addr_t		tail_addr;
+	uint32_t		tail_size;
+	void			*cookie; /* stable, non-NULL ownership identity */
+};
+
 /* The buffer, ops and cookie stay immutable while submitted. Device sync can
  * run from hard IRQ context with a spinlock held and must not sleep. CPU sync,
  * read, write and release run in process context; release follows full detach.
@@ -113,6 +126,7 @@ struct crystalhd_dio_req {
 	int								direction;
 	bool							cpu_owned;
 	struct crystalhd_dio_user_info	uinfo;
+	struct crystalhd_tx_buffer		tx_buffer;
 	struct crystalhd_rx_buffer		rx_buffer;
 	void							*fb_va;
 	uint32_t						fb_size;

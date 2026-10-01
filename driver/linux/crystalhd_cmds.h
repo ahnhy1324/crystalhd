@@ -192,7 +192,7 @@ int crystalhd_decoder_channel_close_locked(struct crystalhd_cmd *ctx,
  * return; the legacy ioctl adapter does this with user_lock and tx_lock.
  */
 BC_STATUS crystalhd_tx_transfer_sync(struct crystalhd_cmd *ctx,
-				     struct crystalhd_dio_req *dio,
+				     const struct crystalhd_tx_buffer *buffer,
 				     uint8_t data_flags);
 BC_STATUS crystalhd_rx_submit(struct crystalhd_cmd *ctx,
 			      struct crystalhd_rx_buffer *buffer);

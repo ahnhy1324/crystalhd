@@ -9,8 +9,9 @@ trap 'rm -rf "$dma_test_dir"' EXIT HUP INT TERM
 # Compile the actual descriptor builders and their production data structures
 # against a small DMA-address shim. No device or kernel module is required.
 awk '
+/^#define CRYSTALHD_DMA_DESC_MAX_XFER_BYTES[[:space:]]/ { print }
 /^enum _BC_DTS_GLOBALS \{/ { copy = 1 }
-/^struct (dma_descriptor|dma_desc_mem|crystalhd_dma_desc_source|crystalhd_rx_buffer|crystalhd_dio_user_info|crystalhd_dio_req) \{/ { copy = 1 }
+/^struct (dma_descriptor|dma_desc_mem|crystalhd_dma_desc_source|crystalhd_tx_buffer|crystalhd_rx_buffer|crystalhd_dio_user_info|crystalhd_dio_req) \{/ { copy = 1 }
 copy { print }
 copy && /^};/ { copy = 0 }
 ' "$repo_dir/include/bc_dts_glob_lnx.h" \
@@ -18,13 +19,14 @@ copy && /^};/ { copy = 0 }
   "$repo_dir/driver/linux/crystalhd_misc.h" > "$dma_test_dir/dma-types.h"
 
 awk '
-/^BC_STATUS crystalhd_(hw_fill_desc|xlat_dma_to_desc|xlat_sgl_to_dma_desc|xlat_rx_buffer_to_dma_desc)\(/ {
+/^static BC_STATUS crystalhd_tx_buffer_preflight\(/ ||
+/^BC_STATUS crystalhd_(hw_fill_desc|xlat_dma_to_desc|xlat_tx_buffer_to_dma_desc|xlat_rx_buffer_to_dma_desc)\(/ {
 	copy = 1
 	found++
 }
 copy { print }
 copy && /^}/ { copy = 0 }
-END { if (found != 4 || copy) exit 1 }
+END { if (found != 5 || copy) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_hw.c" > "$dma_test_dir/dma-builders.h"
 
 awk '

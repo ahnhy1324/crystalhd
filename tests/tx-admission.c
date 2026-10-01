@@ -32,15 +32,23 @@ typedef union { uint64_t full_addr; } addr_64;
 struct device { int unused; };
 struct pci_dev { struct device dev; int irq; };
 struct crystalhd_adp { struct pci_dev *pdev; bool present; int user_lock; };
+struct crystalhd_tx_buffer {
+    void *sgl;
+    uint32_t dma_nents, bytes;
+    uint64_t tail_addr;
+    uint32_t tail_size;
+    void *cookie;
+};
 struct crystalhd_dio_req {
     struct { uint32_t xfr_len; } uinfo;
+    struct crystalhd_tx_buffer tx_buffer;
 };
 typedef void (*hw_comp_callback)(void *, BC_STATUS);
 struct dma_desc_mem { uint64_t phy_addr; };
 struct tx_dma_pkt {
     struct dma_desc_mem desc_mem;
     hw_comp_callback call_back;
-    struct crystalhd_dio_req *dio_req;
+    const struct crystalhd_tx_buffer *buffer;
     void *cb_context;
     uint32_t list_tag;
 };
@@ -161,7 +169,7 @@ static void Unlock(unsigned *lock)
 static void crystalhd_set_event(wait_queue_head_t *event)
 {
     Check(event && freeq.packet == &packet && !activeq.packet &&
-          !packet.dio_req && !packet.cb_context && !packet.call_back &&
+          !packet.buffer && !packet.cb_context && !packet.call_back &&
           !packet.list_tag,
           "completion wakes only after common TX ownership has retired");
     event->wakeups++; run.wakes++;
@@ -257,7 +265,7 @@ static BC_STATUS crystalhd_dioq_add(struct crystalhd_dioq *queue,
         if (run.active_add_status != BC_STS_SUCCESS)
             return run.active_add_status;
     } else {
-        Check(queue == &freeq && !tag && !owned->dio_req && !owned->cb_context &&
+        Check(queue == &freeq && !tag && !owned->buffer && !owned->cb_context &&
               !owned->call_back && !owned->list_tag,
               "free packets retain no request, callback, cookie or tag ownership");
         if (run.free_add_failures) {
@@ -271,11 +279,20 @@ static BC_STATUS crystalhd_dioq_add(struct crystalhd_dioq *queue,
         queue->packet = owned;
     return BC_STS_SUCCESS;
 }
-static BC_STATUS crystalhd_xlat_sgl_to_dma_desc(struct crystalhd_dio_req *dio,
+static BC_STATUS crystalhd_tx_buffer_preflight(const struct crystalhd_tx_buffer *buffer,
+                                                uint32_t max_descriptors)
+{
+    Check(buffer && max_descriptors == BC_LINK_MAX_SGLS,
+          "TX preflight receives the mapped frontend buffer");
+    return buffer && buffer->bytes && buffer->cookie ?
+        BC_STS_SUCCESS : BC_STS_INV_ARG;
+}
+static BC_STATUS crystalhd_xlat_tx_buffer_to_dma_desc(
+        const struct crystalhd_tx_buffer *buffer,
         struct dma_desc_mem *desc, uint32_t *index, struct device *dev, uint32_t destination)
 {
-    Check(((dio == &request && desc == &packet.desc_mem) ||
-           (dio == &request2 && desc == &packet2.desc_mem)) &&
+    Check(((buffer == &request.tx_buffer && desc == &packet.desc_mem) ||
+           (buffer == &request2.tx_buffer && desc == &packet2.desc_mem)) &&
           index && dev == &endpoint.dev,
           "TX descriptor construction uses its request and reserved packet");
     run.descriptors++; run.seen_destination = destination;
@@ -290,14 +307,17 @@ static BC_STATUS crystalhd_map_dio(struct crystalhd_adp *adp, void *bytes, uint3
     if (run.map_status != BC_STS_SUCCESS)
         return run.map_status;
     run.mapped = true;
-    request = (struct crystalhd_dio_req){ .uinfo.xfr_len = size };
+    request = (struct crystalhd_dio_req){
+        .uinfo.xfr_len = size,
+        .tx_buffer = { .bytes = size, .cookie = &request },
+    };
     *dio = &request;
     return BC_STS_SUCCESS;
 }
 static void crystalhd_unmap_dio(struct crystalhd_adp *adp, struct crystalhd_dio_req *dio)
 {
     Check(adp == &adapter && dio == &request && run.mapped && !activeq.packet &&
-          !packet.dio_req && !packet.cb_context && !packet.call_back &&
+          !packet.buffer && !packet.cb_context && !packet.call_back &&
           !context.tx_list_id,
           "input unmaps exactly once after all TX/callback ownership has retired");
     if (run.starts)
@@ -309,7 +329,7 @@ static void OpaqueComplete(void *context, BC_STATUS status)
 {
     Check(context == &opaque_cookie && context != &request,
           "hardware retirement returns the exact frontend cookie, not its DMA backing");
-    Check(freeq.packet == &packet && !activeq.packet && !packet.dio_req &&
+    Check(freeq.packet == &packet && !activeq.packet && !packet.buffer &&
           !packet.cb_context && !packet.call_back && !packet.list_tag,
           "opaque completion runs only after common packet ownership retires");
     run.callback_calls++;
@@ -324,7 +344,7 @@ static void MultiComplete(void *context, BC_STATUS status)
 
     Check(index < 2 && cookie->mapped && !hardware.lock &&
           !QueueContains(&activeq, owned) &&
-          !owned->dio_req && !owned->cb_context && !owned->call_back &&
+          !owned->buffer && !owned->cb_context && !owned->call_back &&
           !owned->list_tag,
           "each TX callback observes its retired packet while its backing remains mapped");
     if (status == BC_STS_IO_USER_ABORT)
@@ -382,9 +402,9 @@ static void Start(struct crystalhd_hw *hw, uint8_t index, addr_64 descriptor)
     struct tx_dma_pkt *owned = descriptor.full_addr == packet.desc_mem.phy_addr ?
         &packet : &packet2;
     Check(hw == &hardware && hardware.lock &&
-          QueueContains(&activeq, owned) && owned->dio_req &&
+          QueueContains(&activeq, owned) && owned->buffer &&
           owned->call_back && owned->cb_context &&
-          owned->cb_context != owned->dio_req &&
+          owned->cb_context != owned->buffer->cookie &&
           owned->list_tag == hardware.tx_ioq_tag_seed + index &&
           descriptor.full_addr == owned->desc_mem.phy_addr &&
           hw->TxFwInputBuffInfo.HostXferSzInBytes == run.transfer_size,
@@ -446,7 +466,7 @@ static void Balanced(void)
     Check(!run.mapped && !activeq.packet && freeq.packet == &packet &&
           !activeq.next && !freeq.next && !context.tx_list_id &&
           !hardware.lock && !run.irq_depth && !run.firmware_depth &&
-          !packet.dio_req && !packet.call_back && !packet.cb_context && !packet.list_tag,
+          !packet.buffer && !packet.call_back && !packet.cb_context && !packet.list_tag,
           "completed input leaves balanced mapping, packet, locks and callback ownership");
 }
 static void Admission(void)
@@ -469,17 +489,40 @@ static void Admission(void)
     input_ioctl.udata.u.ProcInput.BuffSz = 0;
     Check(bc_cproc_proc_input(&context, &input_ioctl) == BC_STS_INV_ARG && !run.maps,
           "empty input is rejected before DMA mapping");
-    Check(crystalhd_hw_post_tx(NULL, &request, bc_proc_in_completion,
+    request.tx_buffer = (struct crystalhd_tx_buffer){
+        .bytes = run.transfer_size, .cookie = &request,
+    };
+    Check(crystalhd_hw_post_tx(NULL, &request.tx_buffer, bc_proc_in_completion,
                               &event, &tag, 0) == BC_STS_INV_ARG &&
           crystalhd_hw_post_tx(&hardware, NULL, bc_proc_in_completion,
                               &event, &tag, 0) == BC_STS_INV_ARG &&
-          crystalhd_hw_post_tx(&hardware, &request, NULL,
+          crystalhd_hw_post_tx(&hardware, &request.tx_buffer, NULL,
                               &event, &tag, 0) == BC_STS_INV_ARG &&
-          crystalhd_hw_post_tx(&hardware, &request, bc_proc_in_completion,
+          crystalhd_hw_post_tx(&hardware, &request.tx_buffer, bc_proc_in_completion,
                               NULL, &tag, 0) == BC_STS_INV_ARG &&
-          crystalhd_hw_post_tx(&hardware, &request, bc_proc_in_completion,
+          crystalhd_hw_post_tx(&hardware, &request.tx_buffer, bc_proc_in_completion,
                               &event, NULL, 0) == BC_STS_INV_ARG && !run.fifo_calls,
           "incomplete hardware admission arguments cannot reach FIFO or packet ownership");
+    Balanced();
+
+    Reset();
+    tag = 0xfeed;
+    request.tx_buffer = (struct crystalhd_tx_buffer){ .cookie = &request };
+    Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer,
+                               bc_proc_in_completion, &event, &tag, 0) ==
+              BC_STS_INV_ARG &&
+          tag == 0xfeed && !run.fifo_calls && !run.descriptors &&
+          !run.starts && freeq.packet == &packet && !activeq.packet,
+          "empty mapped TX is rejected before FIFO or packet ownership");
+    request.tx_buffer = (struct crystalhd_tx_buffer){
+        .bytes = run.transfer_size,
+    };
+    Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer,
+                               bc_proc_in_completion, &event, &tag, 0) ==
+              BC_STS_INV_ARG &&
+          tag == 0xfeed && !run.fifo_calls && !run.descriptors &&
+          !run.starts && freeq.packet == &packet && !activeq.packet,
+          "ownerless mapped TX is rejected before FIFO or packet ownership");
     Balanced();
 
     Reset(); run.map_status = BC_STS_INSUFF_RES;
@@ -509,7 +552,10 @@ static void OpaqueCookie(void)
         run.immediate_completion = immediate;
         run.mapped = true;
         request.uinfo.xfr_len = run.transfer_size;
-        Check(crystalhd_hw_post_tx(&hardware, &request, OpaqueComplete,
+        request.tx_buffer = (struct crystalhd_tx_buffer){
+            .bytes = run.transfer_size, .cookie = &request,
+        };
+        Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer, OpaqueComplete,
                                    &opaque_cookie, &tag, run.transfer_flags) ==
               BC_STS_SUCCESS && tag == 0x100,
               "TX accepts a frontend cookie independent from DMA backing");
@@ -530,10 +576,13 @@ static void OpaqueCookie(void)
     run.mapped = true;
     run.completion_status = BC_STS_ERROR;
     request.uinfo.xfr_len = run.transfer_size;
+    request.tx_buffer = (struct crystalhd_tx_buffer){
+        .bytes = run.transfer_size, .cookie = &request,
+    };
     {
         uint32_t tag = 0;
 
-        Check(crystalhd_hw_post_tx(&hardware, &request, OpaqueComplete,
+        Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer, OpaqueComplete,
                                    &opaque_cookie, &tag, run.transfer_flags) ==
               BC_STS_SUCCESS,
               "TX admits an opaque cookie before an ISR error");
@@ -548,10 +597,13 @@ static void OpaqueCookie(void)
     Reset();
     run.mapped = true;
     request.uinfo.xfr_len = run.transfer_size;
+    request.tx_buffer = (struct crystalhd_tx_buffer){
+        .bytes = run.transfer_size, .cookie = &request,
+    };
     {
         uint32_t tag = 0;
 
-        Check(crystalhd_hw_post_tx(&hardware, &request, OpaqueComplete,
+        Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer, OpaqueComplete,
                                    &opaque_cookie, &tag, run.transfer_flags) ==
               BC_STS_SUCCESS &&
               crystalhd_hw_cancel_all_tx(&hardware) == BC_STS_SUCCESS &&
@@ -571,8 +623,8 @@ static void BalancedTwo(void)
     Check(!run.mapped && !activeq.packet && !activeq.next &&
           QueueCount(&freeq) == 2 && QueueContains(&freeq, &packet) &&
           QueueContains(&freeq, &packet2) && !hardware.lock && !run.irq_depth &&
-          !packet.dio_req && !packet.cb_context && !packet.call_back &&
-          !packet.list_tag && !packet2.dio_req && !packet2.cb_context &&
+          !packet.buffer && !packet.cb_context && !packet.call_back &&
+          !packet.list_tag && !packet2.buffer && !packet2.cb_context &&
           !packet2.call_back && !packet2.list_tag,
           "two-list completion leaves both packets and mappings with one owner");
 }
@@ -593,14 +645,20 @@ static void CancelAllOwners(void)
         freeq.next = &packet2;
         request.uinfo.xfr_len = run.transfer_size;
         request2.uinfo.xfr_len = run.transfer_size;
+        request.tx_buffer = (struct crystalhd_tx_buffer){
+            .bytes = run.transfer_size, .cookie = &request,
+        };
+        request2.tx_buffer = (struct crystalhd_tx_buffer){
+            .bytes = run.transfer_size, .cookie = &request2,
+        };
         multi_cookie[0].mapped = multi_cookie[1].mapped = true;
         run.mapped = true;
         run.stop_status = stop_failure ? BC_STS_IO_ERROR : BC_STS_SUCCESS;
 
-        Check(crystalhd_hw_post_tx(&hardware, &request, MultiComplete,
+        Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer, MultiComplete,
                                    &multi_cookie[0], &tag[0], run.transfer_flags) ==
               BC_STS_SUCCESS &&
-              crystalhd_hw_post_tx(&hardware, &request2, MultiComplete,
+              crystalhd_hw_post_tx(&hardware, &request2.tx_buffer, MultiComplete,
                                    &multi_cookie[1], &tag[1], run.transfer_flags) ==
               BC_STS_SUCCESS && tag[0] == 0x100 && tag[1] == 0x101 &&
               QueueCount(&activeq) == 2 && !QueueCount(&freeq),
@@ -638,13 +696,19 @@ static void CancelAllOwners(void)
         freeq.next = &packet2;
         request.uinfo.xfr_len = run.transfer_size;
         request2.uinfo.xfr_len = run.transfer_size;
+        request.tx_buffer = (struct crystalhd_tx_buffer){
+            .bytes = run.transfer_size, .cookie = &request,
+        };
+        request2.tx_buffer = (struct crystalhd_tx_buffer){
+            .bytes = run.transfer_size, .cookie = &request2,
+        };
         multi_cookie[0].mapped = multi_cookie[1].mapped = true;
         run.mapped = true;
         run.free_add_failures = 1;
-        Check(crystalhd_hw_post_tx(&hardware, &request, MultiComplete,
+        Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer, MultiComplete,
                                    &multi_cookie[0], &tag[0], run.transfer_flags) ==
               BC_STS_SUCCESS &&
-              crystalhd_hw_post_tx(&hardware, &request2, MultiComplete,
+              crystalhd_hw_post_tx(&hardware, &request2.tx_buffer, MultiComplete,
                                    &multi_cookie[1], &tag[1], run.transfer_flags) ==
               BC_STS_SUCCESS,
               "cleanup-error coverage starts with both TX owners published");
@@ -653,8 +717,8 @@ static void CancelAllOwners(void)
               multi_cookie[0].calls == 1 && multi_cookie[1].calls == 1 &&
               multi_cookie[0].status == BC_STS_IO_USER_ABORT &&
               multi_cookie[1].status == BC_STS_IO_USER_ABORT &&
-              !packet.dio_req && !packet.cb_context && !packet.call_back &&
-              !packet.list_tag && !packet2.dio_req && !packet2.cb_context &&
+              !packet.buffer && !packet.cb_context && !packet.call_back &&
+              !packet.list_tag && !packet2.buffer && !packet2.cb_context &&
               !packet2.call_back && !packet2.list_tag,
               "a first requeue error is returned without stranding the peer owner");
         multi_cookie[0].mapped = multi_cookie[1].mapped = false;
@@ -673,12 +737,18 @@ static void CancelAllOwners(void)
             freeq.next = &packet2;
             request.uinfo.xfr_len = run.transfer_size;
             request2.uinfo.xfr_len = run.transfer_size;
+            request.tx_buffer = (struct crystalhd_tx_buffer){
+                .bytes = run.transfer_size, .cookie = &request,
+            };
+            request2.tx_buffer = (struct crystalhd_tx_buffer){
+                .bytes = run.transfer_size, .cookie = &request2,
+            };
             multi_cookie[0].mapped = multi_cookie[1].mapped = true;
             run.mapped = true;
-            Check(crystalhd_hw_post_tx(&hardware, &request, MultiComplete,
+            Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer, MultiComplete,
                                        &multi_cookie[0], &tag[0], run.transfer_flags) ==
                   BC_STS_SUCCESS &&
-                  crystalhd_hw_post_tx(&hardware, &request2, MultiComplete,
+                  crystalhd_hw_post_tx(&hardware, &request2.tx_buffer, MultiComplete,
                                        &multi_cookie[1], &tag[1], run.transfer_flags) ==
                   BC_STS_SUCCESS,
                   "mixed completion/cancel starts with two independent owners");
@@ -873,13 +943,13 @@ static void BorrowedTransfer(void)
     };
 
     Reset();
-    Check(crystalhd_tx_transfer_sync(NULL, &request, 0) == BC_STS_INV_ARG &&
+    Check(crystalhd_tx_transfer_sync(NULL, &request.tx_buffer, 0) == BC_STS_INV_ARG &&
           crystalhd_tx_transfer_sync(&context, NULL, 0) == BC_STS_INV_ARG,
           "the ioctl-independent transfer rejects NULL context or request");
     context.hw_ctx = NULL;
     context.tx_list_id = 0x1234;
     context.cin_wait_exit = 1;
-    Check(crystalhd_tx_transfer_sync(&context, &request, 0) == BC_STS_INV_ARG &&
+    Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer, 0) == BC_STS_INV_ARG &&
           context.tx_list_id == 0x1234 && context.cin_wait_exit == 1,
           "missing hardware is rejected without changing command ownership or cancellation state");
     Check(!run.maps && !run.unmaps && !run.fifo_calls && !run.starts && !run.waits,
@@ -892,7 +962,13 @@ static void BorrowedTransfer(void)
          * fields. The transfer must retire DMA, not unmap the caller's request. */
         run.transfer_size = 7;
         run.transfer_flags = 0x81;
-        request = (struct crystalhd_dio_req){ .uinfo.xfr_len = run.transfer_size };
+        request = (struct crystalhd_dio_req){
+            .uinfo.xfr_len = run.transfer_size,
+            .tx_buffer = {
+                .bytes = run.transfer_size,
+                .cookie = &request,
+            },
+        };
         run.mapped = true;
         if (which == 1) run.immediate_completion = true;
         if (which == 2) run.busy = 2;
@@ -904,10 +980,11 @@ static void BorrowedTransfer(void)
         if (which == 8) run.stop_status = BC_STS_IO_ERROR;
         if (which == 9) run.completion_status = BC_STS_IO_ERROR;
         if (which == 10) context.hw_ctx = NULL;
-        Check(crystalhd_tx_transfer_sync(&context, &request, run.transfer_flags) == expected[which],
+        Check(crystalhd_tx_transfer_sync(&context, &request.tx_buffer,
+                                         run.transfer_flags) == expected[which],
               "borrowed transfers preserve success, retry, completion and cancellation statuses");
         Check(run.mapped && !run.maps && !run.unmaps && !context.tx_list_id &&
-              !activeq.packet && freeq.packet == &packet && !packet.dio_req &&
+              !activeq.packet && freeq.packet == &packet && !packet.buffer &&
               !packet.cb_context && !packet.call_back && !packet.list_tag,
               "transfer return retires every DMA and callback owner without releasing the borrowed mapping");
         crystalhd_unmap_dio(&adapter, &request);
