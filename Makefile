@@ -24,7 +24,7 @@ library:
 library-check:
 	@set -eu; lib_test_dir=$$(mktemp -d /tmp/crystalhd-library-check.XXXXXX); \
 	trap 'rm -f "$$lib_test_dir/check"; rmdir "$$lib_test_dir"' EXIT HUP INT TERM; \
-	for lib_test in tx-ring flush tx-flush eos copy planar format input mpeg4-input input-format status color clock fwcmds; do \
+	for lib_test in tx-ring flush tx-flush eos copy planar format input mpeg4-input input-format status color clock devmem fwcmds; do \
 		test_extra=; \
 		test_sources="linux_lib/libcrystalhd/libcrystalhd_priv.cpp linux_lib/libcrystalhd/libcrystalhd_if.cpp"; \
 		case $$lib_test in \
@@ -33,6 +33,8 @@ library-check:
 			status|color) test_wrap=-Wl,--wrap=ioctl; \
 				test_extra=linux_lib/libcrystalhd/libcrystalhd_int_if.cpp ;; \
 			clock) test_wrap=-Wl,--wrap=ioctl,--wrap=usleep; \
+				test_sources="linux_lib/libcrystalhd/libcrystalhd_int_if.cpp linux_lib/libcrystalhd/libcrystalhd_priv.cpp" ;; \
+			devmem) test_wrap=-Wl,--wrap=ioctl,--wrap=malloc,--wrap=free; \
 				test_sources="linux_lib/libcrystalhd/libcrystalhd_int_if.cpp linux_lib/libcrystalhd/libcrystalhd_priv.cpp" ;; \
 			fwcmds) test_wrap=-Wl,--wrap=ioctl; \
 				test_sources="linux_lib/libcrystalhd/libcrystalhd_fwcmds.cpp linux_lib/libcrystalhd/libcrystalhd_priv.cpp" ;; \
