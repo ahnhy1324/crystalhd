@@ -85,6 +85,7 @@ struct crystalhd_v4l2_file {
 	bool tx_stopping;
 	bool drain_tx_done;
 	bool drain_clock_running;
+	bool drain_clock_format_known;
 	unsigned long drain_clock_last;
 	unsigned long drain_clock_elapsed;
 	u64 drain_clock_epoch;
@@ -765,30 +766,48 @@ static void chd_drain_watchdog(struct crystalhd_v4l2_file *f)
 	unsigned long now = jiffies;
 	unsigned long limit = msecs_to_jiffies(CHD_DRAIN_TIMEOUT_MS);
 	bool eligible = false;
+	bool waiting_eos = f->decoder.phase == CHD_V4L2_DRAINING &&
+			   f->drain_tx_done;
+	/* A full correlation ledger can prevent the next pre-STOP AU from
+	 * reaching bounded TX at all. Only RX can release that credit.
+	 */
+	bool waiting_credit = f->decoder.phase == CHD_V4L2_RUNNING &&
+		f->drain_left && chd_next_input(f) &&
+		f->decoder.count == CRYSTALHD_V4L2_TIMESTAMPS;
 	u32 i;
 
-	if (!f->drain_requested || !f->drain_tx_done || f->tx_active ||
-	    f->decoder.phase != CHD_V4L2_DRAINING ||
+	if (!f->drain_requested || f->tx_active ||
+	    (!waiting_eos && !waiting_credit) ||
 	    f->drain_clock_epoch != f->decoder.epoch) {
 		f->drain_clock_running = false;
 		f->drain_clock_elapsed = 0;
 		f->drain_clock_epoch = f->decoder.epoch;
 		f->drain_clock_count = f->decoder.count;
+		f->drain_clock_format_known = f->format_known;
 		return;
 	}
-	if (f->decoder.count < f->drain_clock_count) {
+	if (f->decoder.count < f->drain_clock_count ||
+	    f->format_known != f->drain_clock_format_known) {
 		f->drain_clock_elapsed = 0;
 		f->drain_clock_running = false;
 	}
 	f->drain_clock_count = f->decoder.count;
+	f->drain_clock_format_known = f->format_known;
 	if (f->admitted && !f->fatal && f->output_streaming &&
-	    f->capture_streaming && f->capture_started && f->format_known &&
+	    f->capture_started &&
 	    !f->format_pending && !f->pending_last) {
-		for (i = 0; i < BC_RX_LIST_CNT; i++)
-			if (f->active[i] && crystalhd_v4l2_capture_owned(f->active[i])) {
-				eligible = true;
-				break;
-			}
+		if (!f->format_known) {
+			/* Private discovery backing is real posted RX capacity too.
+			 * A confirmed source change switches to the client queue gate.
+			 */
+			eligible = f->discovery[0].owned;
+		} else if (f->format_known && f->capture_streaming) {
+			for (i = 0; i < BC_RX_LIST_CNT; i++)
+				if (f->active[i] && crystalhd_v4l2_capture_owned(f->active[i])) {
+					eligible = true;
+					break;
+				}
+		}
 	}
 	if (eligible && f->drain_clock_running) {
 		unsigned long elapsed = now - f->drain_clock_last;
