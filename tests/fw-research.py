@@ -1278,5 +1278,367 @@ class FirmwareBootstrapTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(BLOB.read_bytes()).hexdigest(), MAP.BUNDLED_SHA256)
 
 
+class FirmwarePictureOutputTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.data = MAP.read_firmware(BLOB)
+        cls.payload = cls.data[:-MAP.TRAILER_SIZE]
+        cls.images = MAP.analyze(cls.data)["images"]
+
+    def mapping(self, payload=None, images=None):
+        return MAP._picture_output_map(self.payload if payload is None else payload,
+                                       self.images if images is None else images)
+
+    def test_picture_output_schema_and_independent_instruction_decoding(self):
+        result = MAP.analyze(self.data, picture_output=True)["picture_output"]
+        self.assertEqual((result["schema_version"], result["isa"], result["endianness"]),
+                         (1, "A32", "little"))
+        self.assertFalse(result["device_observed"])
+        anchors = result["instruction_anchors"]
+        self.assertEqual(len(anchors), 187)
+        self.assertEqual(len({a["blob_file_offset"] for a in anchors}), 187)
+        self.assertEqual(MAP.MAX_PICTURE_OUTPUT_ANCHORS, 192)
+        groups = {anchor["group"] for anchor in anchors}
+        self.assertEqual({group: sum(a["group"] == group for a in anchors) for group in groups},
+                         {"delivery": 27, "pending_main": 28, "picture_handler": 18,
+                          "bop": 16, "dnr": 15, "mfd": 18, "scl": 27,
+                          "key_stubs": 36, "key_callers": 2})
+        for anchor in anchors:
+            offset = anchor["blob_file_offset"]
+            with self.subTest(offset=offset):
+                self.assertEqual(offset % 4, 0)
+                self.assertLess(offset, 0x2ea60)
+                word, = struct.unpack_from("<I", self.payload, offset)
+                self.assertEqual(anchor["word"], word)
+                if anchor["operation"] in ("B", "BL"):
+                    displacement = word & 0xffffff
+                    if displacement & 0x800000:
+                        displacement -= 0x1000000
+                    self.assertEqual(anchor["target_blob_file_offset"], offset + 8 + displacement * 4)
+                    self.assertEqual(anchor["condition"], word >> 28)
+                    self.assertEqual(anchor["operation"], "BL" if word & 0x1000000 else "B")
+                    self.assertLess(anchor["target_blob_file_offset"], len(self.payload) - 3)
+                elif anchor["operation"] == "LDR literal":
+                    displacement = word & 0xfff
+                    literal = offset + 8 + (displacement if word & 0x800000 else -displacement)
+                    self.assertEqual(anchor["literal_blob_file_offset"], literal)
+                    self.assertEqual(anchor["literal_value"], struct.unpack_from("<I", self.payload, literal)[0])
+                    self.assertEqual(anchor["destination_register"], (word >> 12) & 15)
+                else:
+                    self.assertEqual(anchor["operation"], "validated word")
+
+    def test_picture_output_public_pin_precedes_all_parsing(self):
+        altered = bytearray(self.data)
+        altered[400] ^= 1
+        for data in (fixture(), altered, self.data[:-4], self.data + bytes(4)):
+            with self.subTest(size=len(data)), \
+                    mock.patch.object(MAP, "parse_elf", side_effect=AssertionError("unexpected ELF parse")), \
+                    mock.patch.object(MAP, "_picture_output_map", side_effect=AssertionError("unexpected mapper")):
+                with self.assertRaisesRegex(MAP.FormatError, "exact bundled"):
+                    MAP.analyze(data, expected_sha256=hashlib.sha256(data).hexdigest(), picture_output=True)
+        with mock.patch.object(MAP.hashlib, "sha256") as digest, \
+                mock.patch.object(MAP, "parse_elf", side_effect=AssertionError("unexpected ELF parse")), \
+                mock.patch.object(MAP, "_picture_output_map", side_effect=AssertionError("unexpected mapper")):
+            digest.return_value.hexdigest.return_value = MAP.BUNDLED_SHA256
+            with self.assertRaisesRegex(MAP.FormatError, "exact bundled"):
+                MAP.analyze(fixture(), picture_output=True)
+
+    def test_picture_output_private_bounds_and_exact_elf_identities(self):
+        for payload in (self.payload[:-4], self.payload + bytes(4), b""):
+            with self.subTest(size=len(payload)), self.assertRaisesRegex(MAP.FormatError, "payload size"):
+                self.mapping(payload=payload)
+        cases = [[], self.images[:1], self.images[::-1], self.images * 2]
+        for index, field in ((0, "blob_file_offset"), (0, "blob_file_end"),
+                             (1, "blob_file_offset"), (1, "blob_file_end")):
+            for adjustment in (-4, 4):
+                images = [dict(image) for image in self.images]
+                images[index][field] += adjustment
+                cases.append(images)
+        for index in range(2):
+            for field, value in (("class", 64), ("endianness", "big"),
+                                 ("machine", 40), ("elf_type", 1),
+                                 ("entry_virtual_address", self.images[index]["entry_virtual_address"] + 4)):
+                images = [dict(image) for image in self.images]
+                images[index][field] = value
+                cases.append(images)
+        for images in cases:
+            with self.subTest(images=len(images)), self.assertRaisesRegex(MAP.FormatError, "ELF identities"):
+                self.mapping(images=images)
+
+    def test_picture_output_exact_anchor_budget(self):
+        with mock.patch.object(MAP, "MAX_PICTURE_OUTPUT_ANCHORS", 187):
+            self.assertEqual(len(self.mapping()["instruction_anchors"]), 187)
+        with mock.patch.object(MAP, "MAX_PICTURE_OUTPUT_ANCHORS", 186):
+            with self.assertRaisesRegex(MAP.FormatError, "anchor budget"):
+                self.mapping()
+
+    def test_key_stub_groups_cover_both_complete_eighteen_word_bodies(self):
+        anchors = {a["blob_file_offset"]: a for a in self.mapping()["instruction_anchors"]
+                   if a["group"] == "key_stubs"}
+        self.assertEqual(set(anchors), set(range(0x3ed8, 0x3f68, 4)))
+        # Independently inspected complete handler bodies: nonnull input logs,
+        # clears ACK status, copies sequence, and returns; no provisioning work.
+        expected = (
+            (0x3ed8, (0xe92d4070, 0xe3500000, 0x0a000009, 0xe2805014,
+                      0xe2804f45, 0xe28f0f7b, 0xeb007133, 0xe3a00000,
+                      0xe5840008, 0xe5950004, 0xe5840004, 0xe3a00000,
+                      0xe8bd8070, 0xe1a01000, 0xe59f01fc, 0xeb00712a,
+                      0xe3a00002, 0xeafffff9)),
+            (0x3f20, (0xe92d4070, 0xe3500000, 0x0a000009, 0xe2805014,
+                      0xe2804f45, 0xe28f0f77, 0xeb007121, 0xe3a00000,
+                      0xe5840008, 0xe5950004, 0xe5840004, 0xe3a00000,
+                      0xe8bd8070, 0xe1a01000, 0xe59f01ec, 0xeb007118,
+                      0xe3a00002, 0xeafffff9)))
+        for base, words in expected:
+            self.assertEqual([anchors[base + 4 * index]["word"] for index in range(18)], list(words))
+            self.assertEqual(anchors[base + 8]["target_blob_file_offset"], base + 52)
+            self.assertEqual(anchors[base + 68]["target_blob_file_offset"], base + 48)
+            for relative in (24, 60):
+                self.assertEqual(anchors[base + relative]["target_blob_file_offset"], 0x203c4)
+
+    def test_descriptor_delivery_pending_slots_and_copy_argument_limits(self):
+        result = self.mapping()
+        delivery = result["descriptor_delivery"]
+        anchors = {a["blob_file_offset"]: a for a in result["instruction_anchors"]}
+        expected = {"reader_entry_blob_file_offset": 0x7708, "arm2_callback_call_blob_file_offset": 0x701c,
+                    "arm_mailbox_physical_address": 0x100e0024, "arm_mailbox_rdb_address": 0xe0024,
+                    "source_expression": "BORCH_END + 0x401", "slot_stride_bytes": 0x1cc,
+                    "destination_slot_offset": 0x188, "copy_argument_bytes": 32,
+                    "copy_helper_entry_blob_file_offset": 0x2c59c, "copy_helper_body_validated": False,
+                    "pending_slot_offset": 0x1a8, "active_slot_offset": 0xc4,
+                    "main_slot_range": [0, 3], "main_call_blob_file_offset": 0x8e90,
+                    "picture_handler_entry_blob_file_offset": 0x834c,
+                    "started_slot_offset": 0xd2, "pending_clear_blob_file_offset": 0x8820,
+                    "complete_dma_ownership_verified": False}
+        self.assertEqual({key: delivery[key] for key in expected}, expected)
+        for source, target in ((0x701c, 0x7708), (0x7714, 0x898),
+                               (0x777c, 0x2c59c), (0x8e80, 0x778c), (0x8e90, 0x834c)):
+            self.assertEqual(anchors[source]["target_blob_file_offset"], target)
+        self.assertEqual(anchors[0x7720]["literal_value"] + (anchors[0x7724]["word"] & 0xfff), 0x100f6004)
+        self.assertEqual(anchors[0x7728]["word"], 0xe3002401)  # fixed MOVW +0x401
+        self.assertEqual(anchors[0x7730]["literal_value"] + (anchors[0x7734]["word"] & 0xfff),
+                         delivery["arm_mailbox_physical_address"])
+        self.assertEqual(anchors[0x7768]["word"] & 255, delivery["slot_stride_bytes"] // 4)
+        self.assertEqual(anchors[0x7774]["word"] & 255, delivery["copy_argument_bytes"])
+        self.assertEqual(delivery["destination_slot_offset"] + delivery["copy_argument_bytes"], delivery["pending_slot_offset"])
+        for offset, word in ((0x7784, 0xe5c401a8), (0x77ac, 0xe5d011a8),
+                             (0x77b8, 0xe5d000c4), (0x8394, 0xe5d400d2),
+                             (0x8354, 0xe1a09000), (0x8358, 0xe3a07000), (0x8820, 0xe5c471a8)):
+            self.assertEqual(anchors[offset]["word"], word)
+        self.assertEqual(anchors[0x8e9c]["condition"], 11)
+
+    def test_descriptor_host_abi_and_mailbox_provenance_fuses(self):
+        delivery = self.mapping()["descriptor_delivery"]
+        shared = (ROOT / "include/flea/DriverFwShare.h").read_text()
+        record = shared.split("_PIC_DELIVERY_HOST_INFO_", 1)[1].split("}PIC_DELIVERY_HOST_INFO", 1)[0]
+        fields = re.findall(r"unsigned int\s+(\w+)(?:\[(\d+)\])?\s*;", record)
+        self.assertEqual([name for name, _ in fields],
+                         ["ListIndex", "HostDescMemLowAddr_Y", "HostDescMemHighAddr_Y",
+                          "HostDescMemLowAddr_UV", "HostDescMemHighAddr_UV", "RxSeqNumber", "ChannelID", "Reserved"])
+        self.assertEqual(sum(int(count or 1) for _, count in fields) * 4, delivery["copy_argument_bytes"])
+        self.assertRegex(shared, r"#define\s+HOST_TO_FW_PIC_DEL_INFO_ADDR\s+0x400\b")
+        native = (ROOT / "driver/linux/crystalhd_fleafuncs.c").read_text()
+        self.assertIn("sizeof (PicDeliInfo) - sizeof(PicDeliInfo.Reserved)", native)
+        self.assertRegex(native, r"FleaRxPicDelAddr\s*=\s*borchStachAddr\s*\+\s*1\s*\+\s*HOST_TO_FW_PIC_DEL_INFO_ADDR")
+        self.assertRegex(native, r"pfnWriteDevRegister\(hw->adp, RX_POST_MAILBOX, hw->channelNum\)")
+        for key, text in (("host_record_source", "_PIC_DELIVERY_HOST_INFO_"),
+                          ("host_submit_source", "pfnDevDRAMWrite")):
+            path, line = delivery[key].rsplit(":", 1)
+            self.assertFalse(Path(path).is_absolute())
+            self.assertIn(text, (ROOT / path).read_text().splitlines()[int(line) - 1])
+        definitions = (ROOT / "driver/linux/FleaDefs.h").read_text()
+        self.assertRegex(definitions, r"#define\s+RX_POST_MAILBOX\s+BCHP_ARMCR4_BRIDGE_REG_MBOX_ARM2\b")
+        bridge = (ROOT / "include/flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_armcr4_bridge.h").read_text()
+        self.assertRegex(bridge, rf"#define\s+BCHP_ARMCR4_BRIDGE_REG_MBOX_ARM2\s+0x{delivery['arm_mailbox_rdb_address']:08x}\b")
+
+    def test_picture_feed_trigger_callers_and_bop_not_input_decryption(self):
+        result = self.mapping()
+        feed = result["picture_feed"]
+        anchors = {a["blob_file_offset"]: a for a in result["instruction_anchors"]}
+        self.assertEqual(feed["entry_blob_file_offset"], 0x7898)
+        self.assertEqual(feed["callers"], [{"blob_file_offset": offset, "r0": value, "r1": "slot"}
+                                          for offset, value in ((0x86a0, 1), (0x871c, 1), (0x87b0, 0))])
+        for caller in feed["callers"]:
+            offset = caller["blob_file_offset"]
+            self.assertEqual(anchors[offset]["target_blob_file_offset"], 0x7898)
+            self.assertEqual(anchors[offset - 4]["word"], 0xe3a00000 | caller["r0"])
+            self.assertEqual(anchors[offset - 8]["word"], 0xe1a01009)
+        self.assertIn("not generic AES or input decryption", feed["scope"])
+        self.assertEqual(anchors[0x78a8]["word"], 0xe3820001)  # OR bit zero
+        self.assertEqual(anchors[0x78bc]["word"], 0xe3c20001)  # clear bit zero
+        self.assertEqual(anchors[0x78cc]["word"], 0xe5810030)
+
+    def test_register_operations_match_rdb_fields_without_inferred_physical_base(self):
+        operations = self.mapping()["register_operations"]
+        expected = (
+            ("BOP_AES_CTRL", 0x10510000, 0x510000, [0x78ac, 0x78c0], ["START_ENCRYPTION_SCRAMBLE"]),
+            ("MFD_PIC_FEED_CMD", 0x10540030, 0x540030, [0x78cc], ["START_FEED"]),
+            ("MFD_DISP_HSIZE", None, 0x540014, [0x1ca8], ["VALUE"]),
+            ("DNR_DNR_TOP_CTRL", 0x10540404, 0x540404, [0x82e0], ["DNR_ENABLE"]),
+            ("DNR_LINE_STORE_CONFIG", 0x10540408, 0x540408, [0x82f0], ["LS_MODE"]),
+            ("DNR_SRC_PIC_SIZE", 0x1054040c, 0x54040c, [0x82fc], ["HSIZE", "VSIZE"]),
+            ("SCL_HD_TOP_CONTROL", None, 0x540804, [0x1d14], ["ENABLE_CTRL", "UPDATE_SEL"]),
+            ("SCL_HD_BVB_IN_SIZE", None, 0x540810, [0x1d48], ["HSIZE", "VSIZE"]),
+            ("SCL_HD_DEST_PIC_SIZE", None, 0x54081c, [0x1d78], ["HSIZE", "VSIZE"]),
+            ("SCL_HD_ENABLE", None, 0x540854, [0x1e5c], ["SCALER_ENABLE"]))
+        self.assertEqual(len(operations), len(expected))
+        for operation, (name, physical, address, sites, fields) in zip(operations, expected):
+            with self.subTest(register=name):
+                self.assertEqual((operation["name"], operation["arm_physical_address"], operation["rdb_address"],
+                                  operation["instruction_blob_file_offsets"]), (name, physical, address, sites))
+                path, line = operation["source"].rsplit(":", 1)
+                self.assertFalse(Path(path).is_absolute())
+                source = (ROOT / path).read_text()
+                register = re.search(rf"#define\s+BCHP_{name}\s+(0x[0-9a-fA-F]+)\b", source)
+                self.assertEqual(int(register.group(1), 16), address)
+                mask = 0
+                for field in fields:
+                    definition = re.search(rf"#define\s+BCHP_{name}_{field}_MASK\s+(0x[0-9a-fA-F]+)\b", source)
+                    mask |= int(definition.group(1), 16)
+                self.assertEqual(mask, operation["field_mask"])
+                self.assertIn(fields[0], "\n".join(source.splitlines()[int(line) - 1:int(line) + 1]))
+                self.assertEqual(operation["register_write_helper_entry_blob_file_offset"],
+                                 0x1e8e8 if physical is None else None)
+                if physical is not None:
+                    self.assertEqual(physical - address, 0x10000000)
+        dnr = next(o for o in operations if o["name"] == "DNR_LINE_STORE_CONFIG")
+        self.assertIn("width > 720", dnr["selected_operation"])
+        size = next(o for o in operations if o["name"] == "DNR_SRC_PIC_SIZE")
+        self.assertIn("no width masking", size["selected_operation"])
+        self.assertTrue(all("CSC" not in operation["name"] for operation in operations))
+
+    def test_key_ack_metadata_and_common_response_abi_are_not_provisioning(self):
+        result = self.mapping()
+        anchors = {a["blob_file_offset"]: a for a in result["instruction_anchors"]}
+        stubs = result["key_handler_stubs"]
+        self.assertEqual([(s["name"], s["entry_blob_file_offset"], s["last_instruction_blob_file_offset"],
+                           s["caller_blob_file_offset"], s["diagnostic_blob_file_offset"]) for s in stubs],
+                         [("SetSessionKey", 0x3ed8, 0x3f1c, 0x6928, 0x40e0),
+                          ("SetContentKey", 0x3f20, 0x3f64, 0x6908, 0x4118)])
+        header = (ROOT / "include/7411d.h").read_text()
+        reply = header.split("/* common response structure */", 1)[1].split("}", 1)[0]
+        fields = re.findall(r"uint32_t\s+(\w+)\s*;", reply)
+        self.assertEqual(fields, ["command", "sequence", "status"])
+        self.assertEqual({a["blob_file_offset"] for a in anchors.values() if a["group"] == "key_callers"}, {0x6908, 0x6928})
+        for stub in stubs:
+            self.assertEqual(anchors[stub["caller_blob_file_offset"]]["target_blob_file_offset"], stub["entry_blob_file_offset"])
+            self.assertEqual((stub["request_record_offset"], stub["reply_record_offset"]), (0x14, 0x114))
+            self.assertEqual(fields[stub["sequence_word_index"]], "sequence")
+            self.assertEqual(fields[stub["status_word_index"]], "status")
+            self.assertEqual(stub["nonnull_reply_status"], 0)
+            self.assertFalse(stub["key_payload_reads_in_bounded_body"])
+            self.assertFalse(stub["key_provisioning_verified"])
+            self.assertIn("status zero is not key provisioning", stub["scope"])
+        self.assertTrue(any("CSC dispatcher routing" in text for text in result["deferred"]))
+        for text in ("not a complete call graph", "not complete DMA ownership", "Context-relative register writes",
+                     "copy-helper implementations", "ARC paths and Thumb helpers", "No hardware execution"):
+            self.assertTrue(any(text in limitation for limitation in result["limitations"]), text)
+
+    def test_every_picture_output_instruction_anchor_rejects_mutation(self):
+        for anchor in self.mapping()["instruction_anchors"]:
+            data = bytearray(self.payload)
+            offset = anchor["blob_file_offset"]
+            struct.pack_into("<I", data, offset, anchor["word"] ^ 1)
+            with self.subTest(offset=offset), self.assertRaises(MAP.FormatError):
+                self.mapping(payload=data)
+
+    def test_every_picture_output_literal_rejects_mutation(self):
+        offsets = {}
+        for anchor in self.mapping()["instruction_anchors"]:
+            if anchor["operation"] == "LDR literal":
+                offsets[anchor["literal_blob_file_offset"]] = anchor["literal_value"]
+        self.assertTrue(offsets)
+        for offset, value in offsets.items():
+            data = bytearray(self.payload)
+            struct.pack_into("<I", data, offset, value ^ 4)
+            with self.subTest(offset=offset), self.assertRaises(MAP.FormatError):
+                self.mapping(payload=data)
+
+    def test_picture_output_key_log_strings_reject_every_byte_mutation(self):
+        strings = ((0x40e0, b"[fw] SMP_CmdIf_SetSessionKey(): NOT Implemented\n\0"),
+                   (0x4118, b"[fw] SMP_CmdIf_SetContentKey(): NOT Implemented\n\0"),
+                   (0x2cf84, b"[fw] SMP_CmdIf_SetSessionKey(): Invalid Parameter with Command Header Address = 0x%x\n\0"),
+                   (0x2cfdc, b"[fw] SMP_CmdIf_SetContentKey(): Invalid Parameter with Command Header Address = 0x%x\n\0"))
+        for offset, text in strings:
+            self.assertEqual(self.payload[offset:offset + len(text)], text)
+            for index in range(len(text)):
+                data = bytearray(self.payload)
+                data[offset + index] ^= 1
+                with self.subTest(offset=offset + index), self.assertRaises(MAP.FormatError):
+                    self.mapping(payload=data)
+
+    def test_picture_output_pure_map_and_all_existing_option_combinations(self):
+        with mock.patch("builtins.open", side_effect=AssertionError("unexpected file read")), \
+                mock.patch.object(MAP.os, "open", side_effect=AssertionError("unexpected device/file open")):
+            self.mapping()
+            MAP.analyze(self.data, picture_output=True)
+        for mask in range(8):
+            options = {"references": bool(mask & 1), "all_symbols": bool(mask & 2), "bootstrap": bool(mask & 4)}
+            with self.subTest(options=options):
+                plain = MAP.analyze(self.data, **options)
+                enriched = MAP.analyze(self.data, picture_output=True, **options)
+                self.assertNotIn("picture_output", plain)
+                self.assertEqual(enriched.pop("picture_output"), self.mapping())
+                self.assertEqual(enriched, plain)
+
+    def test_picture_output_cli_pinned_failure_without_json_or_mapper(self):
+        data = fixture()
+        with mock.patch.object(MAP, "read_firmware", return_value=data), \
+                mock.patch.object(MAP, "parse_elf", side_effect=AssertionError("unexpected ELF parse")), \
+                mock.patch.object(MAP, "_picture_output_map", side_effect=AssertionError("unexpected mapper")), \
+                mock.patch.object(sys, "stdout", new_callable=io.StringIO) as stdout, \
+                mock.patch.object(sys, "stderr", new_callable=io.StringIO) as stderr:
+            self.assertEqual(MAP.main(["fixture.bin", "--picture-output", "--expect-sha256",
+                                       hashlib.sha256(data).hexdigest()]), 1)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("exact bundled", stderr.getvalue())
+
+    def test_picture_output_cli_keeps_regular_file_admission_before_read(self):
+        # Pin an ordinary inode, then inject nonregular metadata. The second
+        # read-open and both parsers must remain unreachable with this option.
+        real_open = os.open
+        calls = []
+        def pin_only(path, flags):
+            self.assertEqual(flags, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW)
+            calls.append(path)
+            self.assertEqual(len(calls), 1)
+            return real_open(path, flags)
+        metadata = mock.Mock(st_mode=0o20600, st_size=len(self.data))
+        with mock.patch.object(MAP.os, "open", side_effect=pin_only), \
+                mock.patch.object(MAP.os, "fstat", return_value=metadata), \
+                mock.patch.object(MAP, "parse_elf", side_effect=AssertionError("unexpected ELF parse")), \
+                mock.patch.object(MAP, "_picture_output_map", side_effect=AssertionError("unexpected mapper")), \
+                mock.patch.object(sys, "stdout", new_callable=io.StringIO) as stdout, \
+                mock.patch.object(sys, "stderr", new_callable=io.StringIO) as stderr:
+            self.assertEqual(MAP.main([str(BLOB), "--picture-output"]), 1)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("regular file", stderr.getvalue())
+
+    def test_picture_output_cli_all_combinations_and_reproducible_json(self):
+        for mask in range(8):
+            flags = []
+            if mask & 1:
+                flags += ["--references", "--symbol", "ReadLine"]
+            if mask & 2:
+                flags += ["--all-symbols"]
+            if mask & 4:
+                flags += ["--bootstrap"]
+            command = [sys.executable, "-B", str(TOOL), str(BLOB)] + flags
+            plain = subprocess.run(command, capture_output=True, timeout=10)
+            first = subprocess.run(command + ["--picture-output"], capture_output=True, timeout=10)
+            second = subprocess.run(command + ["--picture-output"], capture_output=True, timeout=10)
+            with self.subTest(flags=flags):
+                self.assertEqual(plain.returncode, 0, plain.stderr)
+                self.assertEqual(first.returncode, 0, first.stderr)
+                self.assertEqual(second.returncode, 0, second.stderr)
+                self.assertEqual(first.stdout, second.stdout)
+                enriched = json.loads(first.stdout)
+                self.assertEqual(enriched.pop("picture_output"), self.mapping())
+                self.assertEqual(enriched, json.loads(plain.stdout))
+                self.assertNotIn(str(ROOT).encode(), first.stdout)
+        self.assertEqual(hashlib.sha256(BLOB.read_bytes()).hexdigest(), MAP.BUNDLED_SHA256)
+
+
 if __name__ == "__main__":
     unittest.main()

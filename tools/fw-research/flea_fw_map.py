@@ -24,6 +24,7 @@ MAX_OWNER_LOOKUP_STEPS = 1000000  # Bounds overlapping/aliased function interval
 MAX_METADATA_OUTPUT_BYTES = 16 * 1024 * 1024  # Retained symbols and section names.
 MAX_REFERENCE_OUTPUT_BYTES = 32 * 1024 * 1024  # Conservative JSON size accounting.
 MAX_BOOTSTRAP_ANCHORS = 256  # Fixed, audited ARM instructions; never a general scan.
+MAX_PICTURE_OUTPUT_ANCHORS = 192  # Separate fixed picture-path inventory, not a scan.
 DEFAULT_SYMBOLS = (
     "Arc_UartInit", "Arc_UartPoll", "ArcGetc", "ArcPutc", "ArcCommandBuffer",
     "ReadLine", "MatchKeyword", "Core_Command", "CmdPeek", "CmdCore",
@@ -473,6 +474,228 @@ def _bootstrap_map(payload, images):
                             "SHA-256 identity is not CMAC authentication or runtime capability proof."]}
 
 
+def _picture_output_map(payload, images):
+    """Pure fixed A32 evidence; callers must pin the exact bundled SHA/size."""
+    if len(payload) != BUNDLED_SIZE - TRAILER_SIZE:
+        raise FormatError("picture-output payload size does not match the bundled baseline")
+    identities = [(0x2ea60, 0x79dd8, 32, "little", 45, 2, 0x3a678),
+                  (0x79dd8, 0xcfbb0, 32, "little", 45, 2, 0x49f68)]
+    fields = ("blob_file_offset", "blob_file_end", "class", "endianness",
+              "machine", "elf_type", "entry_virtual_address")
+    if [tuple(i.get(field) for field in fields) for i in images] != identities:
+        raise FormatError("picture-output ELF identities do not match the bundled baseline")
+
+    # Only these independently decoded A32 sites are instructions. Neither the
+    # whole prefix nor either embedded ARC image is treated as executable A32.
+    groups = {
+        "delivery": (
+            (0x6ff4, 0xe92d4070), (0x6ff8, 0xe1a04001), (0x6ffc, 0xe59f5130),
+            (0x7014, 0xe3140c02), (0x7018, 0x0a000002), (0x701c, 0xeb0001b9),
+            (0x7020, 0xe3000200), (0x7024, 0xe5850008), (0x7708, 0xe92d4070),
+            (0x7714, 0xebffe45f), (0x7720, 0xe51f1034), (0x7724, 0xe5911004),
+            (0x7728, 0xe3002401), (0x772c, 0xe0811002), (0x7730, 0xe51f4088),
+            (0x7734, 0xe5943024), (0x7768, 0xe3a02073), (0x776c, 0xe0020293),
+            (0x7770, 0xe0804102), (0x7774, 0xe3a02020), (0x7778, 0xe2840f62),
+            (0x777c, 0xeb009386), (0x7780, 0xe3a00001), (0x7784, 0xe5c401a8),
+            (0x7788, 0xe8bd8070), (0x898, 0xe51f01a4), (0x89c, 0xe12fff1e),
+        ),
+        "pending_main": (
+            (0x8e78, 0xe3a05000), (0x8e7c, 0xe1a00005), (0x8e80, 0xebfffa41),
+            (0x8e84, 0xe3500000), (0x8e88, 0x0a000001), (0x8e8c, 0xe1a00005),
+            (0x8e90, 0xebfffd2d), (0x8e94, 0xe2855001), (0x8e98, 0xe3550004),
+            (0x8e9c, 0xbafffff6), (0x77ac, 0xe5d011a8), (0x77b0, 0xe3510000),
+            (0x77b4, 0x0a000007), (0x77b8, 0xe5d000c4), (0x77bc, 0xe3500000),
+            (0x77c0, 0x0a000004), (0x77c4, 0xe3a00001), (0x77c8, 0xe8bd8010),
+            (0x77d8, 0xe3a00000), (0x77dc, 0xeafffff9), (0x77a0, 0xe3a01073),
+            (0x77a4, 0xe0010194), (0x77a8, 0xe0800101), (0x778c, 0xe92d4010),
+            (0x7790, 0xe1a04000), (0x7794, 0xebffe43f), (0x7798, 0xe3500000),
+            (0x779c, 0x0a00000a),
+        ),
+        "picture_handler": (
+            (0x834c, 0xe92d43f0), (0x8350, 0xe24dd0ac), (0x8394, 0xe5d400d2),
+            (0x8398, 0xe3500001), (0x839c, 0x0a000005), (0x8354, 0xe1a09000),
+            (0x8698, 0xe1a01009), (0x869c, 0xe3a00001), (0x86a0, 0xebfffc7c),
+            (0x8714, 0xe1a01009), (0x8718, 0xe3a00001), (0x871c, 0xebfffc5d),
+            (0x87a8, 0xe1a01009), (0x87ac, 0xe3a00000), (0x87b0, 0xebfffc38),
+            (0x8820, 0xe5c471a8), (0x8358, 0xe3a07000), (0x83b4, 0xe8bd83f0),
+        ),
+        "bop": (
+            (0x7898, 0xe59f3188), (0x789c, 0xe5932000), (0x78a0, 0xe3500000),
+            (0x78a4, 0x1a000003), (0x78a8, 0xe3820001), (0x78ac, 0xe5830000),
+            (0x78b0, 0xe51f0220), (0x78b4, 0xe5801008), (0x78b8, 0x0a000001),
+            (0x78bc, 0xe3c20001), (0x78c0, 0xe5830000), (0x78c4, 0xe59f1160),
+            (0x78c8, 0xe3a00001), (0x78cc, 0xe5810030), (0x78d0, 0xe3a0002b),
+            (0x78d4, 0xea000d8f),
+        ),
+        "dnr": (
+            (0x82d0, 0xe92d4010), (0x82d4, 0xe3a03000), (0x82d8, 0xe51f28b4),
+            (0x82dc, 0xe3a04001), (0x82e0, 0xe5824404), (0x82e4, 0xe3500e2d),
+            (0x82e8, 0x9a000000), (0x82ec, 0xe3a03801), (0x82f0, 0xe5823408),
+            (0x82f4, 0xe7df159f), (0x82f8, 0xe1810800), (0x82fc, 0xe582040c),
+            (0x8348, 0xe8bd8010), (0x8610, 0xe1cd03d4), (0x8614, 0xebffff2d),
+        ),
+        "mfd": (
+            (0x1bfc, 0xe92d41f0), (0x1c00, 0xe1a06000), (0x1c08, 0xe1a04003),
+            (0x1c34, 0xe5945014), (0x1c3c, 0xe5960000), (0x1c40, 0xe5906004),
+            (0x1c9c, 0xe1a02005), (0x1ca0, 0xe59f125c), (0x1ca4, 0xe1a00006),
+            (0x1ca8, 0xeb00730e), (0x84cc, 0xe28d3020), (0x84d0, 0xe1a01009),
+            (0x84d4, 0xe28d2014), (0x84d8, 0xe1a00008), (0x84dc, 0xebffe5c6),
+            (0x1e8e8, 0xe5903000), (0x1e8ec, 0xe7832001), (0x1e8f0, 0xe12fff1e),
+        ),
+        "scl": (
+            (0x1cf4, 0xe92d4070), (0x1cf8, 0xe1a06001), (0x1cfc, 0xe1a05002),
+            (0x1d00, 0xe5900000), (0x1d04, 0xe5904004), (0x1d08, 0xe3a0200c),
+            (0x1d0c, 0xe59f1224), (0x1d10, 0xe1a00004), (0x1d14, 0xeb0072f3),
+            (0x1d38, 0xe1855806), (0x1d3c, 0xe59f1200), (0x1d40, 0xe1a02005),
+            (0x1d44, 0xe1a00004), (0x1d48, 0xeb0072e6), (0x1d6c, 0xe59f11dc),
+            (0x1d70, 0xe1a02005), (0x1d74, 0xe1a00004), (0x1d78, 0xeb0072da),
+            (0x1e4c, 0xe1a00004), (0x1e50, 0xe59f1130), (0x1e54, 0xe8bd4070),
+            (0x1e58, 0xe3a02001), (0x1e5c, 0xea0072a1), (0x2034, 0xe5941014),
+            (0x2038, 0xe1a00008), (0x203c, 0xe5942018), (0x2040, 0xebffff2b),
+        ),
+        "key_stubs": (
+            (0x3ed8, 0xe92d4070), (0x3edc, 0xe3500000), (0x3ee0, 0x0a000009),
+            (0x3ee4, 0xe2805014), (0x3ee8, 0xe2804f45), (0x3eec, 0xe28f0f7b),
+            (0x3ef0, 0xeb007133), (0x3ef4, 0xe3a00000), (0x3ef8, 0xe5840008),
+            (0x3efc, 0xe5950004), (0x3f00, 0xe5840004), (0x3f04, 0xe3a00000),
+            (0x3f08, 0xe8bd8070), (0x3f0c, 0xe1a01000), (0x3f10, 0xe59f01fc),
+            (0x3f14, 0xeb00712a), (0x3f18, 0xe3a00002), (0x3f1c, 0xeafffff9),
+            (0x3f20, 0xe92d4070), (0x3f24, 0xe3500000), (0x3f28, 0x0a000009),
+            (0x3f2c, 0xe2805014), (0x3f30, 0xe2804f45), (0x3f34, 0xe28f0f77),
+            (0x3f38, 0xeb007121), (0x3f3c, 0xe3a00000), (0x3f40, 0xe5840008),
+            (0x3f44, 0xe5950004), (0x3f48, 0xe5840004), (0x3f4c, 0xe3a00000),
+            (0x3f50, 0xe8bd8070), (0x3f54, 0xe1a01000), (0x3f58, 0xe59f01ec),
+            (0x3f5c, 0xeb007118), (0x3f60, 0xe3a00002), (0x3f64, 0xeafffff9),
+        ),
+        "key_callers": ((0x6908, 0xebfff584), (0x6928, 0xebfff56a)),
+    }
+    literals = {
+        0x6ffc: (0x7134, 0x100f2000, 5), 0x7720: (0x76f4, 0x100f6000, 1),
+        0x7730: (0x76b0, 0x100e0000, 4), 0x898: (0x6fc, 0xd3a00, 0),
+        0x7898: (0x7a28, 0x10510000, 3), 0x78b0: (0x7698, 0xd2210, 0),
+        0x78c4: (0x7a2c, 0x10540000, 1), 0x82d8: (0x7a2c, 0x10540000, 2),
+        0x1ca0: (0x1f04, 0x00540014, 1), 0x1d0c: (0x1f38, 0x00540804, 1),
+        0x1d3c: (0x1f44, 0x00540810, 1), 0x1d6c: (0x1f50, 0x0054081c, 1),
+        0x1e50: (0x1f88, 0x00540854, 1), 0x3f10: (0x4114, 0x2cf84, 0),
+        0x3f58: (0x414c, 0x2cfdc, 0),
+    }
+    anchors = []
+    for group, sites in groups.items():
+        for offset, expected in sites:
+            if len(anchors) >= MAX_PICTURE_OUTPUT_ANCHORS:
+                raise FormatError("picture-output instruction-anchor budget exceeded")
+            actual = _bootstrap_word(payload, offset)
+            if actual != expected:
+                raise FormatError(f"picture-output word at {offset:#x} does not match the baseline")
+            record = {"blob_file_offset": offset, "word": actual,
+                      "operation": "validated word", "group": group}
+            if offset in literals:
+                record.update(_a32_literal(payload, offset))
+                if (record["literal_blob_file_offset"], record["literal_value"],
+                        record["destination_register"]) != literals[offset]:
+                    raise FormatError("picture-output literal does not match the baseline")
+            elif actual & 0x0e000000 == 0x0a000000:
+                # Decode a branch only after matching its fixed audited word.
+                # This includes the one fixed BLS at 0x82e8, not a general scan.
+                displacement = actual & 0xffffff
+                if displacement & 0x800000:
+                    displacement -= 1 << 24
+                target = offset + 8 + displacement * 4
+                _bootstrap_word(payload, target)
+                record.update(operation="BL" if actual & (1 << 24) else "B",
+                              condition=actual >> 28, target_blob_file_offset=target)
+            anchors.append(record)
+
+    diagnostics = []
+    for offset, expected in (
+            (0x40e0, b"[fw] SMP_CmdIf_SetSessionKey(): NOT Implemented\n"),
+            (0x4118, b"[fw] SMP_CmdIf_SetContentKey(): NOT Implemented\n"),
+            (0x2cf84, b"[fw] SMP_CmdIf_SetSessionKey(): Invalid Parameter with Command Header Address = 0x%x\n"),
+            (0x2cfdc, b"[fw] SMP_CmdIf_SetContentKey(): Invalid Parameter with Command Header Address = 0x%x\n")):
+        if bounded(payload, offset, len(expected) + 1, "picture-output diagnostic") != expected + b"\0":
+            raise FormatError("picture-output diagnostic does not match the baseline")
+        diagnostics.append({"blob_file_offset": offset, "text": expected.decode("ascii")})
+    # ADR r0,PC+imm for the two non-null diagnostics; rotated-immediate A32.
+    for offset, target in ((0x3eec, 0x40e0), (0x3f34, 0x4118)):
+        instruction = _bootstrap_word(payload, offset)
+        rotation = ((instruction >> 8) & 15) * 2
+        value = instruction & 255
+        immediate = ((value >> rotation) | (value << ((32 - rotation) % 32))) & 0xffffffff
+        if offset + 8 + immediate != target:
+            raise FormatError("picture-output diagnostic ADR does not match the baseline")
+
+    rdb = "include/flea/70015/magnum/basemodules/chp/70015/rdb/a0/"
+    # Context-relative writes do not establish that context's physical base.
+    # Direct ARM physical addresses and RDB offsets are separate namespaces.
+    operations = [
+        ("BOP_AES_CTRL", 0x10510000, 0x00510000, [0x78ac, 0x78c0], 1,
+         "START_ENCRYPTION_SCRAMBLE: set when r0==0, clear otherwise", "bchp_bop_aes.h:97"),
+        ("MFD_PIC_FEED_CMD", 0x10540030, 0x00540030, [0x78cc], 1,
+         "START_FEED written as 1", "bchp_mfd.h:323"),
+        ("MFD_DISP_HSIZE", None, 0x00540014, [0x1ca8], 0x1fff,
+         "descriptor word at offset 0x14 passed to register-write helper", "bchp_mfd.h:232"),
+        ("DNR_DNR_TOP_CTRL", 0x10540404, 0x00540404, [0x82e0], 1,
+         "DNR_ENABLE written as 1", "bchp_dnr.h:108"),
+        ("DNR_LINE_STORE_CONFIG", 0x10540408, 0x00540408, [0x82f0], 0x10000,
+         "LS_MODE HD bit set only when input width > 720", "bchp_dnr.h:121"),
+        ("DNR_SRC_PIC_SIZE", 0x1054040c, 0x0054040c, [0x82fc], 0x07ff07ff,
+         "width<<16 | (height & 0x7ff); no width masking is established", "bchp_dnr.h:138"),
+        ("SCL_HD_TOP_CONTROL", None, 0x00540804, [0x1d14], 12,
+         "ENABLE_CTRL and UPDATE_SEL picture-controlled bits written as 12", "bchp_scl_hd.h:299"),
+        ("SCL_HD_BVB_IN_SIZE", None, 0x00540810, [0x1d48], 0x07ff07ff,
+         "width<<16 | height passed to register-write helper", "bchp_scl_hd.h:410"),
+        ("SCL_HD_DEST_PIC_SIZE", None, 0x0054081c, [0x1d78], 0x07ff07ff,
+         "same packed value as BVB_IN_SIZE in this selected path", "bchp_scl_hd.h:467"),
+        ("SCL_HD_ENABLE", None, 0x00540854, [0x1e5c], 1,
+         "enable value 1 passed to register-write helper", "bchp_scl_hd.h:657"),
+    ]
+    return {
+        "schema_version": 1, "isa": "A32", "endianness": "little", "device_observed": False,
+        "instruction_anchors": anchors, "diagnostics": diagnostics,
+        "descriptor_delivery": {
+            "reader_entry_blob_file_offset": 0x7708, "arm2_callback_call_blob_file_offset": 0x701c,
+            "arm_mailbox_physical_address": 0x100e0024, "arm_mailbox_rdb_address": 0x000e0024,
+            "source_expression": "BORCH_END + 0x401", "slot_stride_bytes": 0x1cc,
+            "destination_slot_offset": 0x188, "copy_argument_bytes": 32,
+            "copy_helper_entry_blob_file_offset": 0x2c59c, "copy_helper_body_validated": False,
+            "pending_slot_offset": 0x1a8, "active_slot_offset": 0xc4,
+            "main_slot_range": [0, 3], "main_call_blob_file_offset": 0x8e90,
+            "picture_handler_entry_blob_file_offset": 0x834c,
+            "started_slot_offset": 0xd2, "pending_clear_blob_file_offset": 0x8820,
+            "host_record_source": "include/flea/DriverFwShare.h:22",
+            "host_submit_source": "driver/linux/crystalhd_fleafuncs.c:2199",
+            "complete_dma_ownership_verified": False},
+        "picture_feed": {
+            "entry_blob_file_offset": 0x7898,
+            "callers": [{"blob_file_offset": offset, "r0": value, "r1": "slot"}
+                        for offset, value in ((0x86a0, 1), (0x871c, 1), (0x87b0, 0))],
+            "scope": "Picture-feed trigger and output encryption/scramble control, not generic AES or input decryption."},
+        "register_operations": [
+            {"name": name, "arm_physical_address": physical, "rdb_address": address,
+             "instruction_blob_file_offsets": sites, "field_mask": mask,
+             "selected_operation": operation, "source": rdb + source,
+             "register_write_helper_entry_blob_file_offset": 0x1e8e8 if physical is None else None}
+            for name, physical, address, sites, mask, operation, source in operations],
+        "key_handler_stubs": [
+            {"name": name, "entry_blob_file_offset": entry, "last_instruction_blob_file_offset": end,
+             "caller_blob_file_offset": caller, "diagnostic_blob_file_offset": diagnostic,
+             "nonnull_reply_status": 0, "request_record_offset": 0x14, "reply_record_offset": 0x114,
+             "sequence_word_index": 1, "status_word_index": 2,
+             "key_payload_reads_in_bounded_body": False, "key_provisioning_verified": False,
+             "scope": "Non-null record ACK stub with NOT Implemented diagnostic; status zero is not key provisioning."}
+            for name, entry, end, caller, diagnostic in (
+                ("SetSessionKey", 0x3ed8, 0x3f1c, 0x6928, 0x40e0),
+                ("SetContentKey", 0x3f20, 0x3f64, 0x6908, 0x4118))],
+        "deferred": ["CSC dispatcher routing and coefficient programming are not validated here.",
+                     "Full scaler/filter configuration and arbitrary raw-frame operations are not validated here."],
+        "limitations": ["Only fixed A32 anchors and bounded diagnostic data are validated, not a complete call graph.",
+                        "Descriptor submission is not complete DMA ownership, lifetime or completion proof.",
+                        "ARM physical address/RDB correspondence does not establish host GISB access, clock/reset readiness or safe reads.",
+                        "Context-relative register writes do not establish their physical base.",
+                        "The log routine and copy-helper implementations, ARC paths and Thumb helpers are not decoded.",
+                        "No hardware execution, key provisioning, cipher transformation or standalone processing capability is verified."]}
+
+
 def string_at(table, offset):
     if offset < 0 or offset >= len(table):
         raise FormatError("string index is outside its ELF string table")
@@ -776,7 +999,7 @@ def parse_elf(payload, base, wanted, symbol_budget, string_budget,
 
 
 def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
-            references=False, all_symbols=False, bootstrap=False):
+            references=False, all_symbols=False, bootstrap=False, picture_output=False):
     if len(data) < 24 or len(data) > MAX_FIRMWARE_SIZE or len(data) % 4:
         raise FormatError("invalid BCM70015 firmware size")
     sha256 = hashlib.sha256(data).hexdigest()
@@ -784,6 +1007,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         raise FormatError("firmware SHA-256 does not match --expect-sha256")
     if bootstrap and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
         raise FormatError("--bootstrap requires the exact bundled firmware SHA-256 and size")
+    if picture_output and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
+        raise FormatError("--picture-output requires the exact bundled firmware SHA-256 and size")
     payload = data[:-TRAILER_SIZE]
     length_slot = struct.unpack_from("<I", data, len(payload))[0]
     if length_slot != 16:
@@ -847,6 +1072,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
             "No-op relocations have no reference edge; unowned sites are not assigned to nearby functions."])
     if bootstrap:
         result["bootstrap"] = _bootstrap_map(payload, images)
+    if picture_output:
+        result["picture_output"] = _picture_output_map(payload, images)
     return result
 
 
@@ -868,12 +1095,15 @@ def main(argv=None):
         "include all symbol records and section metadata; with --references include all retained references"))
     parser.add_argument("--bootstrap", action="store_true", help=(
         "validate fixed ARM bootstrap/mailbox anchors and image catalog; bundled firmware only"))
+    parser.add_argument("--picture-output", action="store_true", help=(
+        "validate fixed picture-output and key ACK-stub anchors; bundled firmware only, not capability proof"))
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-fA-F]{64}", args.expect_sha256):
         parser.error("--expect-sha256 must be 64 hexadecimal digits")
     try:
         report = analyze(read_firmware(args.firmware), args.symbol or DEFAULT_SYMBOLS,
-                         args.expect_sha256.lower(), args.references, args.all_symbols, args.bootstrap)
+                         args.expect_sha256.lower(), args.references, args.all_symbols, args.bootstrap,
+                         args.picture_output)
     except (OSError, FormatError) as error:
         print(f"flea_fw_map: {error}", file=sys.stderr)
         return 1
