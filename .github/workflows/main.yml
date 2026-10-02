@@ -133,6 +133,65 @@ jobs:
             --preflight "$RUNNER_TEMP/drain.h264" 180 --mpeg1-via-mpeg2 || probe_status=$?
           test "$probe_status" -eq 2
 
+      - name: Verify H.263 research admission and actual host PES transport
+        run: |
+          ffmpeg -nostdin -hide_banner -loglevel error -xerror -n \
+            -f lavfi -i color=c=gray:size=128x96:rate=25 -frames:v 3 \
+            -c:v h263 -g 1 -q:v 3 -flags +bitexact -threads 1 \
+            -f h263 "$RUNNER_TEMP/h263-i-only.h263"
+          test "$(ffprobe -v error -count_frames -select_streams v:0 \
+            -show_entries stream=width,height,nb_read_frames -of csv=p=0 \
+            "$RUNNER_TEMP/h263-i-only.h263")" = "128,96,3"
+          ffmpeg -nostdin -hide_banner -loglevel error -xerror -n \
+            -i "$RUNNER_TEMP/h263-i-only.h263" -map 0:v:0 -vsync 0 \
+            -pix_fmt yuyv422 -f rawvideo "$RUNNER_TEMP/h263-software.yuy2"
+          test "$(wc -c < "$RUNNER_TEMP/h263-software.yuy2")" -eq 73728
+          LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" tests/library-drain-test \
+            --preflight "$RUNNER_TEMP/h263-i-only.h263" 3 --scaler-test 0 --h263-via-divx
+          expect_rejected() {
+            probe_status=0
+            LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" tests/library-drain-test \
+              "$@" || probe_status=$?
+            test "$probe_status" -eq 2
+          }
+          expect_rejected --preflight "$RUNNER_TEMP/h263-i-only.h263" 3
+          expect_rejected --preflight "$RUNNER_TEMP/h263-i-only.h263" 2 --h263-via-divx
+          expect_rejected --preflight "$RUNNER_TEMP/drain.h264" 180 --h263-via-divx
+          expect_rejected --preflight "$RUNNER_TEMP/h263-i-only.h263" 3 --mpeg1-via-mpeg2
+          expect_rejected --preflight "$RUNNER_TEMP/h263-i-only.h263" 3 \
+            --mpeg1-via-mpeg2 --h263-via-divx
+          expect_rejected --preflight "$RUNNER_TEMP/h263-i-only.h263" 3 \
+            --h263-via-divx --open-only
+          ffmpeg -nostdin -hide_banner -loglevel error -xerror -n \
+            -f lavfi -i color=c=gray:size=128x96:rate=25 -frames:v 3 \
+            -map 0:v:0 -c:v h263p -g 1 -q:v 3 -threads 1 \
+            -f data "$RUNNER_TEMP/h263-plus.h263"
+          test "$(ffprobe -v error -count_frames -select_streams v:0 \
+            -show_entries stream=width,height,nb_read_frames -of csv=p=0 \
+            "$RUNNER_TEMP/h263-plus.h263")" = "128,96,3"
+          expect_rejected --preflight "$RUNNER_TEMP/h263-plus.h263" 3 --h263-via-divx
+          for transport_variant in native sanitized legacy; do
+            transport_flags=""
+            case "$transport_variant" in
+              sanitized) transport_flags="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie -no-pie" ;;
+              legacy) transport_flags="-m32 -march=i686 -mno-mmx -mno-sse -mno-sse2" ;;
+            esac
+            transport_binary="$RUNNER_TEMP/h263-transport-$transport_variant"
+            g++ -std=c++11 -O1 -g -Wall -Werror $transport_flags \
+              -ffunction-sections -fdata-sections -D__LINUX_USER__ \
+              -Ilinux_lib/libcrystalhd -Iinclude -Iinclude/link \
+              tests/library-mpeg4-input.cpp linux_lib/libcrystalhd/libcrystalhd_priv.cpp \
+              linux_lib/libcrystalhd/libcrystalhd_if.cpp linux_lib/libcrystalhd/libcrystalhd_parser.cpp \
+              -Wl,--gc-sections -Wl,--wrap=ioctl,--wrap=txBufPush,--wrap=usleep \
+              -pthread -lrt -o "$transport_binary"
+            if test "$transport_variant" = legacy; then
+              qemu-i386 -cpu pentium2 "$transport_binary" \
+                --h263-pes-fixture "$RUNNER_TEMP/h263-i-only.h263"
+            else
+              "$transport_binary" --h263-pes-fixture "$RUNNER_TEMP/h263-i-only.h263"
+            fi
+          done
+
       - name: Verify local audio/video controls against software decoding
         run: |
           sh tests/generate-browser-sample.sh "$RUNNER_TEMP/av360.mp4" --av-360p
