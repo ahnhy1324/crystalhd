@@ -23,7 +23,7 @@ MAX_RELOCATION_RECORDS = 65536  # Includes no-ops and repeated tables/images.
 MAX_OWNER_LOOKUP_STEPS = 1000000  # Bounds overlapping/aliased function intervals.
 MAX_METADATA_OUTPUT_BYTES = 16 * 1024 * 1024  # Retained symbols and section names.
 MAX_REFERENCE_OUTPUT_BYTES = 32 * 1024 * 1024  # Conservative JSON size accounting.
-MAX_BOOTSTRAP_ANCHORS = 128  # Fixed, audited ARM instructions; never a general scan.
+MAX_BOOTSTRAP_ANCHORS = 256  # Fixed, audited ARM instructions; never a general scan.
 DEFAULT_SYMBOLS = (
     "Arc_UartInit", "Arc_UartPoll", "ArcGetc", "ArcPutc", "ArcCommandBuffer",
     "ReadLine", "MatchKeyword", "Core_Command", "CmdPeek", "CmdCore",
@@ -259,6 +259,142 @@ def _bootstrap_map(payload, images):
                           "slot_check_blob_file_offset": 0x5250, "device_observed": False},
         "device_observed": False,
         "scope": "Static host OPEN selector policy, not channel-open or codec capability proof."}
+    # DeviceStart passes host-interface +4 as an out-pointer to API init. Init
+    # writes the same static context that the START getter returns: matching
+    # slot offsets alone would not establish the OPEN -> START cache handoff.
+    for offset, expected in ((0x54c, 0xe92d40f0), (0x558, 0xe1a07001),
+                             (0x880, 0xe5874000), (0x89c, 0xe12fff1e),
+                             (0x526c, 0xe3a00073), (0x5278, 0xe0050097),
+                             (0x5298, 0xe3a0a001), (0x529c, 0xe3a09000)):
+        word(offset, expected)
+    literal(0x5ce8, 0x5128, 0xd1ff4, 7)
+    literal(0x5d44, 0x5ed4, 0xd1ff8, 1)
+    branch(0x5d4c, 0x54c, link=True)
+    literal(0x56c, 0x6fc, 0xd3a00, 4)
+    literal(0x898, 0x6fc, 0xd3a00, 0)
+    # Each admitted OPEN branch writes a byte into context + slot*0x1cc +0xd0.
+    for offset, expected in ((0x5408, 0xe59b0004), (0x540c, 0xe0800105),
+                             (0x5410, 0xe5c0a0d0), (0x5420, 0xe59b0004),
+                             (0x5424, 0xe0800105), (0x5428, 0xe5c090d0),
+                             (0x5438, 0xe59b1004), (0x543c, 0xe3a00004),
+                             (0x5440, 0xe0811105), (0x5444, 0xe5c100d0),
+                             (0x5454, 0xe59b1004), (0x5458, 0xe3a00007),
+                             (0x545c, 0xe0811105), (0x5460, 0xe5c100d0),
+                             (0x547c, 0xe59b0004), (0x5480, 0xe0800105),
+                             (0x5484, 0xe5c010d0), (0x55b0, 0xe59b0004),
+                             (0x55b4, 0xe0800105), (0x55b8, 0xe5c010d0)):
+        word(offset, expected)
+    for offset in (0x541c, 0x5434, 0x5450, 0x5478, 0x549c):
+        branch(offset, 0x55d4)
+    # START command - dispatcher base == 0x12. The handler indexes the supplied
+    # channel before its opened-byte check; this does not prove range safety.
+    for offset, expected in ((0x602c, 0xe350001c), (0x6038, 0xe3500015),
+                             (0x604c, 0xe3500012), (0x6684, 0xe1a00004),
+                             (0x4630, 0xe92d47ff), (0x463c, 0xe2805014),
+                             (0x4640, 0xe2804f45), (0x4644, 0xe5957008),
+                             (0x4660, 0xe3a00073), (0x4668, 0xe0060097),
+                             (0x466c, 0xe59a0004), (0x4670, 0xe0802106),
+                             (0x4674, 0xe5d200c4), (0x4678, 0xe3500001),
+                             (0x4830, 0xe1a00007)):
+        word(offset, expected)
+    branch(0x6034, 0x607c, condition=12)
+    branch(0x6040, 0x6060, condition=12)
+    branch(0x6050, 0x667c, condition=0)
+    branch(0x6688, 0x4630, link=True)
+    literal(0x465c, 0x3de8, 0xd1ff4, 10)
+    branch(0x467c, 0x4808, condition=0)
+    branch(0x4834, 0xdf0, link=True)
+    # API START obtains that context and replaces the first configuration byte
+    # from the cached OPEN byte. The two configuration copies are 56 bytes.
+    for offset, expected in ((0xdf8, 0xe1a01000), (0xe08, 0xe3a02073),
+                             (0xe0c, 0xe0010291), (0xe10, 0xe0807101),
+                             (0xe14, 0xe2874018), (0xff0, 0xe5940008),
+                             (0xff4, 0xe28d1004), (0x1054, 0xe5d720d0),
+                             (0x1058, 0xe5cd2004), (0x10ac, 0xe5940008),
+                             (0x10b0, 0xe28d1004), (0xee9c, 0xe1a04001),
+                             (0xeecc, 0xe3a02038), (0xeed4, 0xe1a00004),
+                             (0xf0cc, 0xe92d4ffe), (0xf0d0, 0xe1a06000),
+                             (0xf0d4, 0xe1a0b001), (0xf104, 0xe1a04006),
+                             (0xf13c, 0xe3a02038), (0xf140, 0xe1a0100b),
+                             (0xf144, 0xe2840068), (0xf1d4, 0xe5d40068),
+                             (0xf1d8, 0xe3500007), (0xf1e0, 0xe3a00004),
+                             (0xf1e4, 0xe5c40068), (0xf390, 0xe5d42068),
+                             (0xf394, 0xe1a03005), (0xf398, 0xe1a00007),
+                             (0xf39c, 0xe5961000)):
+        word(offset, expected)
+    branch(0xdfc, 0x898, link=True)
+    branch(0xff8, 0xee94, link=True)
+    literal(0xeed0, 0xf6c8, 0x2dd88, 1)
+    bounded(payload, 0x2dd88, 56, "START default configuration")
+    branch(0xeed8, 0x20708, link=True)
+    branch(0x10b4, 0xf0cc, link=True)
+    branch(0xf148, 0x20708, link=True)
+    branch(0xf1dc, 0xf1e8, condition=1)
+    branch(0xf3a0, 0x276b0, link=True)
+    branch(0xf3a4, 0x206a0, link=True)
+    # The packet helper preserves r2 as word1 and returns the transport result.
+    # Its caller immediately makes another BL without checking that result.
+    for offset, expected in ((0x276b0, 0xe92d4ff0), (0x276c0, 0xe1a09002),
+                             (0x276d4, 0xe28d4f42), (0x276fc, 0xe1a05004),
+                             (0x27708, 0xe5850000), (0x2770c, 0xe5859004),
+                             (0x27730, 0xe1a02004), (0x27740, 0xe58d0008),
+                             (0x27744, 0xe59d0008), (0x27748, 0xe28ddf81),
+                             (0x2774c, 0xe8bd8ff0), (0x27068, 0xe1a06002),
+                             (0x27080, 0xe5d4008c), (0x27084, 0xe3500000),
+                             (0x270ac, 0xe3a020fc), (0x270b0, 0xe1a01006),
+                             (0x270b4, 0xe5940094), (0x270bc, 0xe5941118),
+                             (0x270c0, 0xe59421cc), (0x270c4, 0xe1a00004),
+                             (0x25024, 0xe5903004), (0x25028, 0xe5933000),
+                             (0x2502c, 0xe7832001), (0x270d8, 0xe1a0100b),
+                             (0x270dc, 0xe5940088)):
+        word(offset, expected)
+    literal(0x27704, 0x27aac, 0x73760005, 0)
+    branch(0x2773c, 0x2705c, link=True)
+    branch(0x27088, 0x27098, condition=0)
+    branch(0x270b8, 0x20708, link=True)
+    branch(0x270c8, 0x25024, link=True)
+    branch(0x270e0, 0x20598, link=True)
+    decoder_start = {
+        "command": 0x7376311a, "command_source": "include/7411d.h:173",
+        "dispatcher_call_blob_file_offset": 0x6688, "entry_blob_file_offset": 0x4630,
+        "request_channel_word_index": 2, "request_channel_load_blob_file_offset": 0x4644,
+        "context_link": {"host_interface_global_address": 0xd1ff4,
+                         "init_output_pointer_address": 0xd1ff8,
+                         "context_address": 0xd3a00, "slot_stride_bytes": 0x1cc,
+                         "cached_algorithm_byte_offset": 0xd0,
+                         "instruction_blob_file_offsets": [0x5ce8, 0x5d44, 0x5d4c,
+                                                           0x558, 0x56c, 0x880, 0x898]},
+        "preconditions": {"opened_byte_equals": 1, "opened_byte_offset": 0xc4,
+                          "check_blob_file_offset": 0x4678,
+                          "channel_range_validation_established": False,
+                          "device_observed": False},
+        "selector_mapping": [
+            {"host_open_low_byte": selector, "cached_algorithm_byte": cached,
+             "inner_start_algorithm_byte": inner, "cache_store_blob_file_offset": store}
+            for selector, cached, inner, store in ((0, 0, 0, 0x5428), (1, 1, 1, 0x5410),
+                                                   (4, 4, 4, 0x5444), (6, 8, 8, 0x5484),
+                                                   (7, 7, 4, 0x5460), (8, 8, 8, 0x55b8))],
+        "configuration": {"bytes": 56, "cache_load_blob_file_offset": 0x1054,
+                          "first_byte_store_blob_file_offset": 0x1058,
+                          "copy_call_blob_file_offsets": [0xeed8, 0xf148],
+                          "channel_configuration_offset": 0x68,
+                          "normalize_compare_blob_file_offset": 0xf1d8,
+                          "normalize_store_blob_file_offset": 0xf1e4},
+        "inner_packet": {"command": 0x73760005, "command_word_index": 0,
+                         "algorithm_word_index": 1, "entry_blob_file_offset": 0x276b0,
+                         "algorithm_store_blob_file_offset": 0x2770c,
+                         "transport_call_blob_file_offset": 0x2773c,
+                         "copy_bytes": 252, "copy_call_blob_file_offset": 0x270b8,
+                         "register_write_call_blob_file_offset": 0x270c8,
+                         "wait_call_blob_file_offset": 0x270e0,
+                         "publication_is_path_dependent": True,
+                         "return_checked_by_caller": False,
+                         "unchecked_continuation_blob_file_offset": 0xf3a4},
+        "device_observed": False,
+        "scope": "Static cached-selector path, not inner decoder acceptance or codec capability proof.",
+        "limitations": ["The specific packet helper return is unchecked on this continuation; earlier START state/configuration failures can still be returned.",
+                        "Numeric inner algorithm bytes are not RAVE parser protocol enums or decoded ARC calls.",
+                        "AVS and MVC reachability through the host API is not established."]}
     # ARM initialized catalog data is outside both ELF files, inside payload.
     root = _bootstrap_word(payload, 0xcfc00)
     if root != 0xcfbe8:
@@ -316,6 +452,7 @@ def _bootstrap_map(payload, images):
                               "images": descriptors},
             "instruction_anchors": anchors, "function_anchors": functions,
             "host_channel_open_policy": open_policy,
+            "host_decoder_start": decoder_start,
             "host_mailbox_dispatch": {"arm_mailbox_address": 0x100e001c,
                                       "receive_entry_blob_file_offset": 0x8d48,
                                       "queue_entry_blob_file_offset": 0x8cf4,
