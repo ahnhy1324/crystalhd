@@ -8,7 +8,8 @@ cleanup()
 {
     rm -f "$tx_test_dir/check" "$tx_test_dir/tx-admission-types.h" \
         "$tx_test_dir/tx-admission-hardware.h" "$tx_test_dir/tx-admission-command.h" \
-        "$tx_test_dir/tx-admission-buffer.h"
+        "$tx_test_dir/tx-admission-buffer.h" "$tx_test_dir/tx-admission-flea-types.h" \
+        "$tx_test_dir/tx-admission-flea.h"
     rmdir "$tx_test_dir"
 }
 trap cleanup EXIT
@@ -43,16 +44,53 @@ awk '
     END { if (found != 7 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_misc.c" > "$tx_test_dir/tx-admission-buffer.h"
 awk '
-    /^enum (_crystalhd_state|_BC_DTS_GLOBALS|_BC_PCI_DEV_IDS|LIST_STATUS)[[:space:]{]/ {
+    /^enum (_crystalhd_state|_BC_DTS_GLOBALS|_BC_PCI_DEV_IDS|LIST_STATUS|FLEA_POWER_STATES)[[:space:]{]/ {
         copying = 1; found++
     }
     copying { print }
     copying && /^};/ { copying = 0 }
     /^#define[[:space:]]+DMA_ENGINE_CNT[[:space:]]/ { print }
-    END { if (found != 4 || copying) exit 1 }
+    /^#define[[:space:]]+TX_WRAP_THRESHOLD[[:space:]]/ { print; thresholds++ }
+    END { if (found != 5 || thresholds != 1 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.h" "$repo_dir/include/bc_dts_glob_lnx.h" \
-    "$repo_dir/driver/linux/crystalhd_hw.h" \
+    "$repo_dir/driver/linux/crystalhd_hw.h" "$repo_dir/driver/linux/FleaDefs.h" \
     > "$tx_test_dir/tx-admission-types.h"
+awk '
+    /^typedef enum _DRIVER_FW_FLAGS_\{/ { copying = 1; flags++ }
+    /^_TX_INPUT_BUFFER_INFO_$/ { print "typedef struct"; copying = 1; records++ }
+    copying { print }
+    copying && (/^}DRIVER_FW_FLAGS;/ || /^\*PTX_INPUT_BUFFER_INFO;/) { copying = 0 }
+    END { if (flags != 1 || records != 1 || copying) exit 1 }
+' "$repo_dir/include/flea/DriverFwShare.h" > "$tx_test_dir/tx-admission-flea-types.h"
+
+# Keep the full notification and FIFO bodies, skipping their declarations.
+awk '
+    /^(void crystalhd_flea_update_tx_buff_info|bool crystalhd_flea_check_input_full)\(/ {
+        candidate = 1; header = ""
+        fifo = $0 ~ /^bool crystalhd_flea_check_input_full\(/
+    }
+    candidate {
+        header = header $0 "\n"
+        if (/;[[:space:]]*$/) { candidate = 0; next }
+        if (/^\{/) {
+            # The kernel omits -Wextra. Preserve the unused FIFO ABI parameter
+            # while retaining fatal warnings everywhere else in this fixture.
+            if (fifo) {
+                print "#pragma GCC diagnostic push"
+                print "#pragma GCC diagnostic ignored \"-Wunused-parameter\""
+            }
+            printf "%s", header
+            candidate = 0; copying = 1; found++
+        }
+        next
+    }
+    copying { print }
+    copying && /^}/ {
+        copying = 0
+        if (fifo) { print "#pragma GCC diagnostic pop"; fifo = 0 }
+    }
+    END { if (found != 2 || copying || candidate) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$tx_test_dir/tx-admission-flea.h"
 awk '
     /^static BC_STATUS crystalhd_hw_tx_req_retire\(/ ||
     /^BC_STATUS crystalhd_hw_(post_tx|cancel_all_tx|tx_req_complete)\(/ ||
