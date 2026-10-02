@@ -44,8 +44,7 @@ void crystalhd_flea_disable_interrupts(struct crystalhd_hw *hw);
 void crystalhd_flea_enable_interrupts(struct crystalhd_hw *hw);
 void crystalhd_flea_clear_interrupts(struct crystalhd_hw *hw);
 bool crystalhd_flea_detect_ddr3(struct crystalhd_hw *hw);
-void crystalhd_flea_init_dram(struct crystalhd_hw *hw);
-void crystalhd_flea_init_dram(struct crystalhd_hw *hw);
+bool crystalhd_flea_init_dram(struct crystalhd_hw *hw);
 bool crystalhd_flea_detect_fw_alive(struct crystalhd_hw *hw);
 void crystalhd_flea_handle_PicQSts_intr(struct crystalhd_hw *hw);
 void crystalhd_flea_update_tx_buff_info(struct crystalhd_hw *hw);
@@ -189,7 +188,7 @@ bool crystalhd_flea_detect_ddr3(struct crystalhd_hw *hw)
 	return false;
 }
 
-void crystalhd_flea_init_dram(struct crystalhd_hw *hw)
+bool crystalhd_flea_init_dram(struct crystalhd_hw *hw)
 {
 	int32_t ddr2_speed_grade[2];
 	uint32_t sd_0_col_size, sd_0_bank_size, sd_0_row_size;
@@ -217,7 +216,8 @@ void crystalhd_flea_init_dram(struct crystalhd_hw *hw)
 	}
 
 	/* Step 1. PLL Init */
-	crystalhd_flea_ddr_pll_config(hw, ddr2_speed_grade, 1, 0); /* only need to configure PLLs in TM0 */
+	if (!crystalhd_flea_ddr_pll_config(hw, ddr2_speed_grade, 1, 0))
+		return false;
 
 	/* Step 2. DDR CTRL Init */
 	crystalhd_flea_ddr_ctrl_init(hw, 0, ddr3_mode[0], ddr2_speed_grade[0], sd_0_col_size, sd_0_bank_size, sd_0_row_size, 0);
@@ -254,7 +254,7 @@ void crystalhd_flea_init_dram(struct crystalhd_hw *hw)
 	regVal &= ~(BCHP_DDR23_PHY_BYTE_LANE_1_READ_CONTROL_dq_odt_enable_MASK);
 	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_PHY_BYTE_LANE_1_READ_CONTROL, regVal);
 
-	return;
+	return true;
 }
 
 uint32_t crystalhd_flea_reg_rd(struct crystalhd_adp *adp, uint32_t reg_off)
@@ -1447,17 +1447,20 @@ bool crystalhd_flea_start_device(struct crystalhd_hw *hw)
 	regVal &= ~BCHP_MISC_PERST_CLOCK_CTRL_EARLY_L1_EXIT_MASK;
 	hw->pfnWriteDevRegister(hw->adp, BCHP_MISC_PERST_CLOCK_CTRL, regVal);
 
-	crystalhd_flea_init_dram(hw);
+	if (!crystalhd_flea_init_dram(hw)) {
+		/* Undo the startup enables; this is not proof of DMA quiescence. */
+		hw->pfnWriteDevRegister(hw->adp, BCHP_MISC1_TX_DMA_CTRL, 0);
+		hw->pfnWriteDevRegister(hw->adp, BCHP_MISC1_HIF_DMA_CTRL, 0);
+		hw->pfnWriteDevRegister(hw->adp, BCHP_MISC1_Y_RX_SW_DESC_LIST_CTRL_STS, 0);
+		return false;
+	}
 
 	msleep_interruptible(5);
-
 	/* Enable the Single Shot Transaction on PCI by disabling the */
 	/* bit 29 of transaction configuration register */
-
 	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_PCIE_TL_TRANSACTION_CONFIGURATION);
 	regVal &= (~(BC_BIT(29)));
 	hw->pfnWriteDevRegister(hw->adp, BCHP_PCIE_TL_TRANSACTION_CONFIGURATION, regVal);
-
 	crystalhd_flea_init_temperature_measure(hw,true);
 
 	crystalhd_flea_init_power_state(hw);
@@ -1476,12 +1479,9 @@ bool crystalhd_flea_start_device(struct crystalhd_hw *hw)
 	*/
 	hw->rx_list_post_index = 0;
 	hw->RxCaptureState = 0;
-
 	msleep_interruptible(1);
-
 	return true;
 }
-
 
 bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
 {
