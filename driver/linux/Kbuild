@@ -19,6 +19,18 @@ crystalhd-objs := crystalhd_lnx.o \
 	crystalhd_fleafuncs.o \
 	crystalhd_flea_ddr.o
 
+CRYSTALHD_FW_RESEARCH ?= 0
+ifneq ($(CRYSTALHD_FW_RESEARCH),0)
+ifneq ($(CRYSTALHD_FW_RESEARCH),1)
+$(error CRYSTALHD_FW_RESEARCH must be 0 or 1)
+endif
+ifeq ($(filter y m,$(CONFIG_CRYPTO_HASH)),)
+$(error CRYSTALHD_FW_RESEARCH=1 requires CONFIG_CRYPTO_HASH=y or m)
+endif
+ccflags-y += -DCRYSTALHD_ENABLE_FW_RESEARCH
+crystalhd-objs += crystalhd_fw_research.o
+endif
+
 # Opt-in parent lifetime support; it does not expose a decoding video node.
 CRYSTALHD_V4L2 ?= 0
 ifneq ($(CRYSTALHD_V4L2),0)

@@ -70,6 +70,28 @@ jobs:
             exit 1
           fi
 
+      - name: Verify optional firmware research module integration
+        shell: bash
+        run: |
+          research_symbols=$(nm driver/linux/crystalhd.ko)
+          if grep -q ' crystalhd_fw_research_' <<< "$research_symbols"; then
+            echo 'unexpected firmware research code in the default module' >&2
+            exit 1
+          fi
+          make -j2 W=1 driver CRYSTALHD_FW_RESEARCH=1 KDIR="$KDIR" KVER="$KVER"
+          research_symbols=$(nm driver/linux/crystalhd.ko)
+          grep -q ' crystalhd_fw_research_init$' <<< "$research_symbols"
+          research_imports=$(nm -u driver/linux/crystalhd.ko)
+          grep -q ' crypto_alloc_shash$' <<< "$research_imports"
+          grep -q ' crypto_shash_digest$' <<< "$research_imports"
+          make -j2 W=1 driver CRYSTALHD_FW_RESEARCH=0 KDIR="$KDIR" KVER="$KVER"
+          research_symbols=$(nm driver/linux/crystalhd.ko)
+          if grep -q ' crystalhd_fw_research_' <<< "$research_symbols"; then
+            echo 'firmware research code remains after disabling the optional build' >&2
+            exit 1
+          fi
+          make fw-probe-tool
+
       - name: Verify seek regression test against software decoding
         run: |
           sh tests/generate-h264-samples.sh "$RUNNER_TEMP/h264-samples"
@@ -181,3 +203,7 @@ jobs:
             ARCH="${{ matrix.arch }}" \
             M="$GITHUB_WORKSPACE/driver/linux" \
             W=1 crystalhd.o
+          make -C "$KERNEL_DIR" \
+            ARCH="${{ matrix.arch }}" \
+            M="$GITHUB_WORKSPACE/driver/linux" \
+            CRYSTALHD_FW_RESEARCH=1 W=1 crystalhd.o

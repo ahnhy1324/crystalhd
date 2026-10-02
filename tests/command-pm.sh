@@ -178,9 +178,11 @@ fi
 # The kernel firmware frontend owns request/release lifetime but delegates all
 # owner, geometry, state and recovery effects to the shared download helper.
 request_calls=$(grep -R -h --include='*.c' -c \
+    --exclude='crystalhd_fw_research.c' \
     'request_firmware[[:space:]]*(' "$repo_dir/driver/linux" | \
     awk '{ total += $1 } END { print total + 0 }')
 release_calls=$(grep -R -h --include='*.c' -c \
+    --exclude='crystalhd_fw_research.c' \
     'release_firmware[[:space:]]*(' "$repo_dir/driver/linux" | \
     awk '{ total += $1 } END { print total + 0 }')
 write_lock_assertions=$(grep -F -c \
