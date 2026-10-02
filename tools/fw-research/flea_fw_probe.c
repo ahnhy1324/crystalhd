@@ -22,6 +22,8 @@ struct _BC_DTS_PROC_OUT;
 #define CONTROLLER_CANDIDATE_BYTES 0x378U
 #define IMAGE_CONTEXT_MIN 0x000d53dcU
 #define IMAGE_TUPLE_OFFSET 0x1acU
+#define PACKET_ALIASES_OFFSET 0x94U
+#define PACKET_PHYSICAL_OFFSET 0x1ccU
 
 enum action {
 	ACTION_NONE, ACTION_INFO, ACTION_VERSION, ACTION_H264,
@@ -29,6 +31,7 @@ enum action {
 	ACTION_SCALING_FILTERS, ACTION_PIC_CAPTURE, ACTION_SET_CSC,
 	ACTION_SET_FGT, ACTION_CUSTOM_VIDOUT, ACTION_FILL_PIC_BUF,
 	ACTION_FIXED_STATE, ACTION_CONTROLLER_ROOT, ACTION_CONTROLLER_IMAGE,
+	ACTION_CONTROLLER_PACKET,
 };
 
 struct options {
@@ -63,6 +66,8 @@ static void usage(FILE *stream)
 	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
 	      "       flea-fw-probe --controller-image\n"
 	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
+	      "       flea-fw-probe --controller-packet\n"
+	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
 	      "       flea-fw-probe --help\n"
 	      "\n"
 	      "The live selectors reload firmware and reset an idle card. They do\n"
@@ -77,6 +82,9 @@ static void usage(FILE *stream)
 	      "tuple values are not followed and the low-byte owned declaration\n"
 	      "is not evidence of ownership. Matching bracket roots do not exclude ABA.\n"
 	      "Admission failures are diagnostic restrictions, not firmware rejection.\n"
+	      "Controller-packet adds the image tuple and three packet fields within\n"
+	      "one fresh root bracket. Returned values are not followed and do not\n"
+	      "establish ownership, coherence, a lease or DMA suitability.\n"
 	      "Use --info first;\n"
 	      "it reports metadata only, including the bound device generation.\n"
 	      "The separate research device requires CAP_SYS_RAWIO and an opt-in\n"
@@ -145,6 +153,8 @@ static bool parse_options(int argc, char **argv, struct options *options)
 			action = ACTION_CONTROLLER_ROOT;
 		else if (!strcmp(argv[i], "--controller-image"))
 			action = ACTION_CONTROLLER_IMAGE;
+		else if (!strcmp(argv[i], "--controller-packet"))
+			action = ACTION_CONTROLLER_PACKET;
 		else if (!strcmp(argv[i], "--acknowledge-card-reset")) {
 			if (options->acknowledge)
 				return false;
@@ -549,6 +559,69 @@ static bool image_result_valid(const struct crystalhd_fw_research_image_result *
 	return true;
 }
 
+static bool packet_sample_succeeded(const struct crystalhd_fw_research_packet_sample *sample)
+{
+	return sample->attempted && sample->read_complete && !sample->status;
+}
+
+static bool packet_result_valid(const struct crystalhd_fw_research_packet_result *result,
+	const struct crystalhd_fw_research_state_request *request, uint64_t generation)
+{
+	const struct crystalhd_fw_research_result *control = &result->image.controller.state.control;
+	const struct crystalhd_fw_research_packet_sample *samples[] = {&result->after_init, &result->after_open};
+	const struct crystalhd_fw_research_image_sample *prerequisites[] = {
+		&result->image.after_init, &result->image.after_open,
+	};
+	unsigned int i, j;
+
+	if (!image_result_valid(&result->image, request, generation))
+		return false;
+	for (i = 0; i < sizeof(samples) / sizeof(samples[0]); i++) {
+		const struct crystalhd_fw_research_packet_sample *sample = samples[i];
+		bool active = sample->attempted || sample->status || sample->read_complete;
+
+		if (sample->attempted > 1 || sample->read_complete > 1 || sample->reserved ||
+		    sample->status > 0 || sample->status < -4095 ||
+		    active != image_sample_succeeded(prerequisites[i]))
+			return false;
+		if (sample->read_complete) {
+			uint64_t root = sample->root_before;
+			uint64_t image = root + IMAGE_TUPLE_OFFSET;
+			uint64_t aliases = root + PACKET_ALIASES_OFFSET;
+			uint64_t physical = root + PACKET_PHYSICAL_OFFSET;
+
+			if (!sample->attempted || sample->status || sample->root_before != sample->root_after ||
+			    (sample->root_before & 3U) || root < IMAGE_CONTEXT_MIN ||
+			    root + CONTROLLER_CANDIDATE_BYTES > CONTROLLER_CANDIDATE_END ||
+			    (image & 0xffffU) + sizeof(sample->image_words) > 0x10000U ||
+			    (aliases & 0xffffU) + 2U * sizeof(uint32_t) > 0x10000U ||
+			    (physical & 0xffffU) + sizeof(uint32_t) > 0x10000U)
+				return false;
+			/* Values are raw, independent of every preceding root and tuple.
+			 * Equal bracket roots do not prove lifetime or exclude ABA.
+			 */
+		} else {
+			if (sample->root_before || sample->root_after || (sample->attempted && !sample->status))
+				return false;
+			for (j = 0; j < sizeof(sample->image_words) / sizeof(sample->image_words[0]); j++)
+				if (sample->image_words[j])
+					return false;
+			for (j = 0; j < sizeof(sample->packet_words) / sizeof(sample->packet_words[0]); j++)
+				if (sample->packet_words[j])
+					return false;
+		}
+		if (active && i && !packet_sample_succeeded(samples[0]))
+			return false;
+		if (sample->status && (control->status != sample->status || control->command_count != (i ? 3U : 2U)))
+			return false;
+	}
+	if ((control->command_count > 2 && !packet_sample_succeeded(samples[0])) ||
+	    (control->command_count > 3 && !packet_sample_succeeded(samples[1])) ||
+	    (!control->status && (!packet_sample_succeeded(samples[0]) || !packet_sample_succeeded(samples[1]))))
+		return false;
+	return true;
+}
+
 static void print_info(const struct crystalhd_fw_research_info *info)
 {
 	char hex[65];
@@ -738,7 +811,7 @@ static void print_image_sample(const struct crystalhd_fw_research_image_sample *
 	putchar('}');
 }
 
-static void print_image_result(const struct crystalhd_fw_research_image_result *result)
+static void print_image_result_object(const struct crystalhd_fw_research_image_result *result)
 {
 	printf("{\"version\":%" PRIu32 ",\"controller_image\":true,\"controller\":",
 	       (uint32_t)result->controller.state.request.version);
@@ -750,8 +823,50 @@ static void print_image_result(const struct crystalhd_fw_research_image_result *
 	printf("},\"scope\":{\"fresh_root_lower_bound\":%" PRIu32 ",\"tuple_word_offset\":%" PRIu32
 	       ",\"tuple_words\":4,\"controller_root_used_for_fixed_tuple\":true,"
 	       "\"tuple_values_followed\":false,\"ownership_established\":false,"
-	       "\"coherence_established\":false,\"lease_established\":false,\"bracket_equality_excludes_aba\":false}}\n",
+	       "\"coherence_established\":false,\"lease_established\":false,\"bracket_equality_excludes_aba\":false}}",
 	       IMAGE_CONTEXT_MIN, IMAGE_TUPLE_OFFSET);
+}
+
+static void print_image_result(const struct crystalhd_fw_research_image_result *result)
+{
+	print_image_result_object(result);
+	putchar('\n');
+}
+
+static void print_packet_sample(const struct crystalhd_fw_research_packet_sample *sample)
+{
+	printf("{\"attempted\":%s,\"status\":%" PRId32 ",\"read_complete\":%s,\"root_before\":",
+	       sample->attempted ? "true" : "false", (int32_t)sample->status,
+	       sample->read_complete ? "true" : "false");
+	if (sample->read_complete) {
+		printf("%" PRIu32 ",\"root_after\":%" PRIu32 ",\"image_words\":[%" PRIu32 ",%" PRIu32
+		       ",%" PRIu32 ",%" PRIu32 "],\"packet_words\":[%" PRIu32 ",%" PRIu32 ",%" PRIu32 "]",
+		       (uint32_t)sample->root_before, (uint32_t)sample->root_after,
+		       (uint32_t)sample->image_words[0], (uint32_t)sample->image_words[1],
+		       (uint32_t)sample->image_words[2], (uint32_t)sample->image_words[3],
+		       (uint32_t)sample->packet_words[0], (uint32_t)sample->packet_words[1],
+		       (uint32_t)sample->packet_words[2]);
+	} else {
+		fputs("null,\"root_after\":null,\"image_words\":null,\"packet_words\":null", stdout);
+	}
+	putchar('}');
+}
+
+static void print_packet_result(const struct crystalhd_fw_research_packet_result *result)
+{
+	printf("{\"version\":%" PRIu32 ",\"controller_packet\":true,\"image\":",
+	       (uint32_t)result->image.controller.state.request.version);
+	print_image_result_object(&result->image);
+	fputs(",\"packet_samples\":{\"after_init\":", stdout);
+	print_packet_sample(&result->after_init);
+	fputs(",\"after_open\":", stdout);
+	print_packet_sample(&result->after_open);
+	printf("},\"scope\":{\"fresh_root_lower_bound\":%" PRIu32 ",\"image_word_offset\":%" PRIu32
+	       ",\"packet_aliases_offset\":%" PRIu32 ",\"packet_physical_offset\":%" PRIu32
+	       ",\"controller_root_used_for_fixed_fields\":true,\"returned_values_followed\":false,"
+	       "\"ownership_established\":false,\"coherence_established\":false,\"lease_established\":false,"
+	       "\"dma_suitability_established\":false,\"bracket_equality_excludes_aba\":false}}\n",
+	       IMAGE_CONTEXT_MIN, IMAGE_TUPLE_OFFSET, PACKET_ALIASES_OFFSET, PACKET_PHYSICAL_OFFSET);
 }
 
 int main(int argc, char **argv)
@@ -763,10 +878,11 @@ int main(int argc, char **argv)
 	struct crystalhd_fw_research_state_request state_request = { 0 };
 	struct crystalhd_fw_research_controller_result controller_result = { 0 };
 	struct crystalhd_fw_research_image_result image_result = { 0 };
+	struct crystalhd_fw_research_packet_result packet_result = { 0 };
 	struct options options;
 	struct stat statbuf;
 	bool have_info = false, have_result = false, have_state = false, have_controller = false;
-	bool have_image = false;
+	bool have_image = false, have_packet = false;
 	int fd = -1, rc = 1;
 
 	if (argc == 2 && !strcmp(argv[1], "--help")) {
@@ -817,6 +933,7 @@ int main(int argc, char **argv)
 	case ACTION_FIXED_STATE:
 	case ACTION_CONTROLLER_ROOT:
 	case ACTION_CONTROLLER_IMAGE:
+	case ACTION_CONTROLLER_PACKET:
 		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
 		break;
 	case ACTION_H261:
@@ -852,6 +969,28 @@ int main(int argc, char **argv)
 	}
 	if (!(info.selector_mask & (1U << (request.selector - 1)))) {
 		fputs("Research selector unavailable; no live command attempted.\n", stderr);
+		goto out;
+	}
+	if (options.action == ACTION_CONTROLLER_PACKET) {
+		const struct crystalhd_fw_research_result *control = &packet_result.image.controller.state.control;
+
+		state_request.version = CRYSTALHD_FW_RESEARCH_VERSION;
+		state_request.size = sizeof(packet_result);
+		packet_result.image.controller.state.request = state_request;
+		if (ioctl(fd, CRYSTALHD_FW_RESEARCH_RUN_PACKET, &packet_result) < 0) {
+			perror("run controller-packet readback");
+			fputs("Device state may have changed; no retry was attempted.\n", stderr);
+			goto out;
+		}
+		if (control->retained)
+			fputs("Research resources remain retained. Do not force unload the driver.\n", stderr);
+		if (!packet_result_valid(&packet_result, &state_request, info.generation)) {
+			fputs("Invalid controller-packet result; no further command attempted.\n", stderr);
+			goto out;
+		}
+		have_packet = true;
+		rc = control->status || control->retained ||
+			(control->cleanup_attempted && control->cleanup_status != BC_STS_SUCCESS) ? 1 : 0;
 		goto out;
 	}
 	if (options.action == ACTION_CONTROLLER_IMAGE) {
@@ -949,6 +1088,8 @@ out:
 		print_controller_result(&controller_result);
 	if (have_image)
 		print_image_result(&image_result);
+	if (have_packet)
+		print_packet_result(&packet_result);
 	if (output_finish())
 		rc = 1;
 	return rc;
