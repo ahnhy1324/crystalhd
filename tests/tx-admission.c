@@ -73,7 +73,11 @@ static bool refcount_dec_and_test(refcount_t *ref)
 #define eCMD_C011_DEC_CHAN_FLUSH (eCMD_C011_CMD_BASE + 0x104U)
 #define eCMD_C011_DEC_CHAN_PAUSE (eCMD_C011_CMD_BASE + 0x11dU)
 typedef struct { unsigned wakeups; } wait_queue_head_t;
-typedef union { uint64_t full_addr; } addr_64;
+typedef union {
+    uint64_t full_addr;
+    struct { uint32_t low_part, high_part; };
+} addr_64;
+typedef unsigned spinlock_t;
 struct device { int unused; };
 struct pci_dev { struct device dev; int irq; uint32_t device; };
 struct crystalhd_adp {
@@ -138,9 +142,7 @@ struct tx_dma_pkt {
     void *cb_context;
     uint32_t list_tag;
 };
-struct crystalhd_dioq {
-    struct tx_dma_pkt *head, *next;
-};
+#include "tx-admission-queue-types.h"
 typedef struct { uint32_t cmd[64]; } BC_FW_CMD;
 struct crystalhd_user { uint32_t uid, in_use, mode; };
 struct crystalhd_hw {
@@ -156,7 +158,10 @@ struct crystalhd_hw {
     uint32_t tx_list_post_index, tx_ioq_tag_seed;
     enum LIST_STATUS TxList0Sts, TxList1Sts;
     bool (*pfnCheckInputFIFO)(struct crystalhd_hw *, uint32_t, uint32_t *, bool, uint8_t *);
+    BC_STATUS (*pfnPrepareTxDMA)(struct crystalhd_hw *, uint32_t);
     void (*pfnStartTxDMA)(struct crystalhd_hw *, uint8_t, addr_64);
+    uint32_t (*pfnReadFPGARegister)(struct crystalhd_adp *, uint32_t);
+    void (*pfnWriteFPGARegister)(struct crystalhd_adp *, uint32_t, uint32_t);
     BC_STATUS (*pfnStopTxDMA)(struct crystalhd_hw *);
     BC_STATUS (*pfnDoFirmwareCmd)(struct crystalhd_hw *, BC_FW_CMD *);
     BC_STATUS (*pfnIssuePause)(struct crystalhd_hw *, bool);
@@ -182,6 +187,8 @@ typedef struct {
 } crystalhd_ioctl_data;
 
 static unsigned checks, failures;
+static struct tx_dma_pkt *QueueHead(const struct crystalhd_dioq *);
+static struct tx_dma_pkt *QueueNext(const struct crystalhd_dioq *);
 static unsigned long jiffies;
 static struct pci_dev endpoint = { .irq = 19, .device = BC_PCI_DEVID_FLEA };
 static struct crystalhd_adp adapter;
@@ -192,6 +199,8 @@ static struct crystalhd_dio_req request2;
 static struct tx_dma_pkt *const packet0 = &hardware.tx_pkt_pool[0];
 #define packet2 (hardware.tx_pkt_pool[1])
 static struct crystalhd_dioq freeq, activeq;
+static struct crystalhd_elem node_pool[8];
+static bool node_allocated[ARRAY_SIZE(node_pool)];
 static uint32_t input[16];
 static uint32_t opaque_cookie;
 static crystalhd_ioctl_data input_ioctl;
@@ -219,7 +228,9 @@ static struct {
     unsigned wakes, irq_depth, irq_disables, irq_enables, fifo_calls, busy;
     unsigned firmware_calls, firmware_depth, bus_clears, bus_drains;
     unsigned callback_calls, masks;
-    unsigned queue_fetches, queue_adds;
+    unsigned queue_fetches, queue_adds, node_allocs, node_frees, node_attempts;
+    bool allocator_exhausted;
+    BC_STATUS prep_status;
     unsigned sleep_budget[4], sleep_budget_count, completion_budget;
     unsigned post_delay_ms, wait_entry_delay_ms;
     unsigned cancel_on_sleep, remove_on_sleep, absolute_waits;
@@ -229,7 +240,7 @@ static struct {
     bool complete_on_status, saturate_timeout_conversion;
     bool fault_on_wait, fault_after_descriptor;
     unsigned free_add_failures;
-    BC_STATUS map_status, descriptor_status, active_add_status, free_add_status, stop_status;
+    BC_STATUS map_status, descriptor_status, free_add_status, stop_status;
     BC_STATUS completion_status, firmware_status;
     BC_STATUS seen_callback_status;
     void *seen_callback_context;
@@ -240,12 +251,25 @@ static struct {
         BC_STATUS status;
         unsigned copied_words, reads, writes, wakes;
     } flea;
+    struct {
+        bool enabled;
+        BC_STATUS status;
+        unsigned copied_words, writes, reg_reads, reg_writes;
+        uint32_t firmware_words[3], control, reg_address[3], reg_value[3];
+        uint32_t *caller_tag;
+        uint32_t original_tag, index, seed, empty;
+        enum LIST_STATUS list0, list1;
+        bool single;
+        TX_INPUT_BUFFER_INFO before;
+        struct tx_dma_pkt *candidate;
+        struct crystalhd_elem *reserved;
+    } prep;
 } run;
 
 static bool signal_pending(void *task)
 {
     (void)task;
-    if (run.complete_on_status && context.tx_list_id && activeq.head) {
+    if (run.complete_on_status && context.tx_list_id && QueueHead(&activeq)) {
         run.complete_on_status = false;
         Complete();
     }
@@ -264,14 +288,46 @@ static void Check(bool condition, const char *why)
     checks++;
     if (!condition) { failures++; fprintf(stderr, "FAIL: %s\n", why); }
 }
+static struct tx_dma_pkt *QueueHead(const struct crystalhd_dioq *queue)
+{
+    return queue->head == (const struct crystalhd_elem *)&queue->head ?
+        NULL : queue->head->data;
+}
+static struct tx_dma_pkt *QueueNext(const struct crystalhd_dioq *queue)
+{
+    return !QueueHead(queue) ||
+        queue->head->flink == (const struct crystalhd_elem *)&queue->head ?
+        NULL : queue->head->flink->data;
+}
 static unsigned QueueCount(const struct crystalhd_dioq *queue)
 {
-    return (queue->head != NULL) + (queue->next != NULL);
+    return queue->count;
 }
 static bool QueueContains(const struct crystalhd_dioq *queue,
                           const struct tx_dma_pkt *owned)
 {
-    return queue->head == owned || queue->next == owned;
+    return QueueHead(queue) == owned || QueueNext(queue) == owned;
+}
+static void QueueInvariant(const struct crystalhd_dioq *queue)
+{
+    const struct crystalhd_elem *sentinel =
+        (const struct crystalhd_elem *)&queue->head;
+    const struct crystalhd_elem *previous = sentinel;
+    const struct crystalhd_elem *elem = queue->head;
+    unsigned count = 0;
+
+    Check(queue->sig == BC_LINK_DIOQ_SIG && queue->adp == &adapter &&
+          !queue->lock, "actual queue retains its signature, adapter and unlocked state");
+    while (elem != sentinel && count < ARRAY_SIZE(node_pool)) {
+        Check(elem->blink == previous && previous->flink == elem,
+              "actual queue retains reciprocal forward/backward node links");
+        previous = elem;
+        elem = elem->flink;
+        count++;
+    }
+    Check(elem == sentinel && count == queue->count && queue->tail == previous &&
+          previous->flink == sentinel && sentinel->blink == previous,
+          "actual queue head, tail, count and sentinel agree after node transfer");
 }
 static struct device *chddev(void) { return &endpoint.dev; }
 static BC_STATUS bc_cproc_do_fw_cmd(struct crystalhd_cmd *, crystalhd_ioctl_data *);
@@ -285,7 +341,7 @@ static const struct crystalhd_tx_buffer_ops crystalhd_dio_tx_buffer_ops;
 
 static void Complete(void)
 {
-    Check(activeq.head == packet0 && packet0->list_tag != 0,
+    Check(QueueHead(&activeq) == packet0 && packet0->list_tag != 0,
           "IRQ completion finds the published TX owner");
     Check(crystalhd_hw_tx_req_complete(&hardware, packet0->list_tag,
                                       run.completion_status) == BC_STS_SUCCESS,
@@ -293,9 +349,10 @@ static void Complete(void)
 }
 static void Unlock(unsigned *lock)
 {
-    Check(lock == &hardware.lock && *lock == 1, "TX publication releases its spinlock");
+    Check((lock == &hardware.lock || lock == &freeq.lock || lock == &activeq.lock) &&
+          *lock == 1, "hardware or actual ownership queue releases its spinlock");
     *lock = 0;
-    if (run.immediate_completion && activeq.head) {
+    if (lock == &hardware.lock && run.immediate_completion && QueueHead(&activeq)) {
         run.immediate_completion = false;
         Complete();
     }
@@ -308,7 +365,7 @@ static void Unlock(unsigned *lock)
 #define crystalhd_create_event(event) (*(event) = (wait_queue_head_t){0})
 static void crystalhd_set_event(wait_queue_head_t *event)
 {
-    Check(event && freeq.head == packet0 && !activeq.head &&
+    Check(event && QueueHead(&freeq) == packet0 && !QueueHead(&activeq) &&
           !packet0->buffer && !packet0->cb_context && !packet0->call_back &&
           !packet0->list_tag,
           "completion wakes only after common TX ownership has retired");
@@ -387,7 +444,7 @@ static int Wait(wait_queue_head_t *event, int condition, unsigned timeout)
 static void synchronize_irq(int irq)
 {
     Check(irq == endpoint.irq && !hardware.lock &&
-          ((!activeq.head && !activeq.next) || hardware.dma_fault),
+          ((!QueueHead(&activeq) && !QueueNext(&activeq)) || hardware.dma_fault),
           "IRQ synchronization excludes ownership callbacks on completed or fault-retained TX");
     run.syncs++;
 }
@@ -400,7 +457,7 @@ static void disable_irq(int irq)
 static void enable_irq(int irq)
 {
     Check(irq == endpoint.irq && run.irq_depth == 1 &&
-          ((!activeq.head && !activeq.next) || hardware.dma_fault),
+          ((!QueueHead(&activeq) && !QueueNext(&activeq)) || hardware.dma_fault),
           "IRQ resumes only with retired ownership or fault-gated completion delivery");
     run.irq_depth--; run.irq_enables++;
 }
@@ -424,55 +481,106 @@ static void crystalhd_flea_disable_interrupts(struct crystalhd_hw *hw)
 }
 static void crystalhd_link_disable_interrupts(struct crystalhd_hw *hw)
 { crystalhd_flea_disable_interrupts(hw); }
-static void *crystalhd_dioq_fetch(struct crystalhd_dioq *queue)
+static struct crystalhd_elem *crystalhd_alloc_elem(struct crystalhd_adp *adp)
 {
-    struct tx_dma_pkt *owned = queue->head;
+    Check(adp == &adapter, "generic queue nodes use the same adapter pool");
+    run.node_attempts++;
+    if (run.allocator_exhausted)
+        return NULL;
+    for (unsigned i = 0; i < ARRAY_SIZE(node_pool); i++) {
+        if (!node_allocated[i]) {
+            node_allocated[i] = true;
+            node_pool[i] = (struct crystalhd_elem){0};
+            run.node_allocs++;
+            return &node_pool[i];
+        }
+    }
+    return NULL;
+}
+static void crystalhd_free_elem(struct crystalhd_adp *adp,
+                                struct crystalhd_elem *elem)
+{
+    Check(adp == &adapter && elem >= node_pool &&
+          elem < node_pool + ARRAY_SIZE(node_pool),
+          "generic queue node returns to its own adapter pool");
+    unsigned index = (unsigned)(elem - node_pool);
+    Check(node_allocated[index], "a generic queue node is freed exactly once");
+    node_allocated[index] = false;
+    run.node_frees++;
+}
+
+void crystalhd_dioq_add_elem_actual(struct crystalhd_dioq *,
+                                   struct crystalhd_elem *, bool, uint32_t);
+#include "tx-admission-queue.h"
+
+static struct crystalhd_elem *crystalhd_dioq_fetch_elem(struct crystalhd_dioq *queue)
+{
     run.queue_fetches++;
     Check(queue == &freeq || queue == &activeq,
           "submission or cancellation fetches from a TX ownership queue");
-    queue->head = queue->next;
-    queue->next = NULL;
-    return owned;
+    return crystalhd_dioq_fetch_elem_actual(queue);
 }
-static void *crystalhd_dioq_find_and_fetch(struct crystalhd_dioq *queue, uint32_t tag)
+static void crystalhd_dioq_add_elem(struct crystalhd_dioq *queue,
+                                   struct crystalhd_elem *elem,
+                                   bool wake, uint32_t tag)
 {
-    struct tx_dma_pkt *owned = NULL;
-    Check(queue == &activeq, "completion searches the active ownership queue");
-    if (queue->head && queue->head->list_tag == tag) {
-        owned = queue->head;
-        queue->head = queue->next;
-        queue->next = NULL;
-    } else if (queue->next && queue->next->list_tag == tag) {
-        owned = queue->next;
-        queue->next = NULL;
-    }
-    return owned;
-}
-static BC_STATUS crystalhd_dioq_add(struct crystalhd_dioq *queue,
-                                  struct tx_dma_pkt *owned, bool wake, uint32_t tag)
-{
+    struct tx_dma_pkt *owned = elem->data;
     run.queue_adds++;
-    Check((owned == packet0 || owned == &packet2) && !queue->next && !wake,
-          "a packet is returned to exactly one queue");
+    Check((owned == packet0 || owned == &packet2 || !owned) && QueueCount(queue) < 2 &&
+          !wake && !elem->flink && !elem->blink,
+          "the same detached node and packet acquire exactly one queue owner");
     if (queue == &activeq) {
         Check(hardware.lock && tag == owned->list_tag && tag,
               "active ownership is published under lock before DMA can start");
-        if (run.active_add_status != BC_STS_SUCCESS)
-            return run.active_add_status;
-    } else {
+    } else if (owned) {
         Check(queue == &freeq && !tag && !owned->buffer && !owned->cb_context &&
               !owned->call_back && !owned->list_tag,
               "free packets retain no request, callback, cookie or tag ownership");
-        if (run.free_add_failures) {
-            run.free_add_failures--;
-            return run.free_add_status;
-        }
+    } else {
+        Check(queue == &freeq && !tag,
+              "a malformed reserved node is returned unchanged to its original free queue");
     }
-    if (queue->head)
-        queue->next = owned;
-    else
-        queue->head = owned;
-    return BC_STS_SUCCESS;
+    crystalhd_dioq_add_elem_actual(queue, elem, wake, tag);
+}
+static void *crystalhd_dioq_fetch(struct crystalhd_dioq *queue)
+{
+    run.queue_fetches++;
+    Check(queue == &freeq || queue == &activeq,
+          "submission or cancellation fetches from a TX ownership queue");
+    return crystalhd_dioq_fetch_actual(queue);
+}
+static void *crystalhd_dioq_find_and_fetch(struct crystalhd_dioq *queue, uint32_t tag)
+{
+    Check(queue == &activeq, "completion searches the active ownership queue");
+    return crystalhd_dioq_find_and_fetch_actual(queue, tag);
+}
+static BC_STATUS crystalhd_dioq_add(struct crystalhd_dioq *queue,
+                                  void *data, bool wake, uint32_t tag)
+{
+    struct tx_dma_pkt *owned = data;
+    run.queue_adds++;
+    Check((owned == packet0 || owned == &packet2) && QueueCount(queue) < 2 && !wake,
+          "a packet is returned to exactly one queue");
+    Check(queue == &freeq && !tag && !owned->buffer && !owned->cb_context &&
+          !owned->call_back && !owned->list_tag,
+          "free packets retain no request, callback, cookie or tag ownership");
+    if (run.free_add_failures) {
+        run.free_add_failures--;
+        return run.free_add_status;
+    }
+    return crystalhd_dioq_add_actual(queue, data, wake, tag);
+}
+static void QueueInit(struct crystalhd_dioq *queue)
+{
+    *queue = (struct crystalhd_dioq){ .sig = BC_LINK_DIOQ_SIG, .adp = &adapter };
+    queue->head = queue->tail = (struct crystalhd_elem *)&queue->head;
+}
+static void QueueSeed(struct crystalhd_dioq *queue, struct tx_dma_pkt *owned)
+{
+    struct crystalhd_elem *elem = crystalhd_alloc_elem(&adapter);
+    if (!elem) abort();
+    elem->data = owned;
+    crystalhd_dioq_add_elem_actual(queue, elem, false, 0);
 }
 static BC_STATUS crystalhd_tx_buffer_preflight(const struct crystalhd_tx_buffer *buffer,
                                                 uint32_t max_descriptors)
@@ -571,7 +679,7 @@ static void crystalhd_free_dio(struct crystalhd_adp *adp, struct crystalhd_dio_r
         map_boundary.frees++;
         return;
     }
-    Check(adp == &adapter && dio == &request && run.mapped && !activeq.head &&
+    Check(adp == &adapter && dio == &request && run.mapped && !QueueHead(&activeq) &&
           !packet0->buffer && !packet0->retained_buffer && !packet0->cb_context && !packet0->call_back &&
           !context.tx_list_id,
           "input unmaps exactly once after all TX/callback ownership has retired");
@@ -673,7 +781,7 @@ static void OpaqueComplete(void *context, BC_STATUS status)
 {
     Check(context == &opaque_cookie && context != &request,
           "hardware retirement returns the exact frontend cookie, not its DMA backing");
-    Check(freeq.head == packet0 && !activeq.head && !packet0->buffer &&
+    Check(QueueHead(&freeq) == packet0 && !QueueHead(&activeq) && !packet0->buffer &&
           !packet0->cb_context && !packet0->call_back && !packet0->list_tag,
           "opaque completion runs only after common packet ownership retires");
     run.callback_calls++;
@@ -692,7 +800,7 @@ static void MultiComplete(void *context, BC_STATUS status)
           !owned->list_tag,
           "each TX callback observes its retired packet while its backing remains mapped");
     if (status == BC_STS_IO_USER_ABORT)
-        Check(!activeq.head && !activeq.next,
+        Check(!QueueHead(&activeq) && !QueueNext(&activeq),
               "cancel callbacks run only after every stopped TX owner is detached");
     cookie->calls++;
     cookie->status = status;
@@ -779,6 +887,12 @@ static bool Fifo(struct crystalhd_hw *hw, uint32_t size, uint32_t *index,
     }
     return false;
 }
+static BC_STATUS Prepare(struct crystalhd_hw *hw, uint32_t bytes)
+{
+    Check(hw == &hardware && hardware.lock && bytes == run.transfer_size,
+          "optional TX preparation runs under the publication lock with mapped length");
+    return run.prep_status;
+}
 static void Start(struct crystalhd_hw *hw, uint8_t index, addr_64 descriptor)
 {
     struct tx_dma_pkt *owned = descriptor.full_addr == packet0->desc_mem.phy_addr ?
@@ -818,10 +932,15 @@ static BC_STATUS Pause(struct crystalhd_hw *hw, bool pause)
 static void Reset(void)
 {
     jiffies = 0;
+    endpoint.device = BC_PCI_DEVID_FLEA;
     memset(&run, 0, sizeof(run));
     memset(&request, 0, sizeof(request));
-    freeq = (struct crystalhd_dioq){ .head = packet0 };
-    activeq = (struct crystalhd_dioq){0};
+    memset(node_pool, 0, sizeof(node_pool));
+    memset(node_allocated, 0, sizeof(node_allocated));
+    QueueInit(&freeq);
+    QueueInit(&activeq);
+    QueueSeed(&freeq, packet0);
+    run.node_allocs = run.node_attempts = 0;
     memset(multi_cookie, 0, sizeof(multi_cookie));
     adapter = (struct crystalhd_adp){
         .pdev = &endpoint, .present = true, .user_lock = 1 };
@@ -849,8 +968,8 @@ static void Reset(void)
 }
 static void Balanced(void)
 {
-    Check(!run.mapped && !activeq.head && freeq.head == packet0 &&
-          !activeq.next && !freeq.next && !context.tx_list_id &&
+    Check(!run.mapped && !QueueHead(&activeq) && QueueHead(&freeq) == packet0 &&
+          !QueueNext(&activeq) && !QueueNext(&freeq) && !context.tx_list_id &&
           !hardware.lock && !run.irq_depth && !run.firmware_depth &&
           !packet0->buffer && !packet0->call_back && !packet0->cb_context && !packet0->list_tag,
           "completed input leaves balanced mapping, packet, locks and callback ownership");
@@ -921,7 +1040,7 @@ static void Admission(void)
                                bc_proc_in_completion, &event, &tag, 0) ==
               BC_STS_INV_ARG &&
           tag == 0xfeed && !run.fifo_calls && !run.descriptors &&
-          !run.starts && freeq.head == packet0 && !activeq.head,
+          !run.starts && QueueHead(&freeq) == packet0 && !QueueHead(&activeq),
           "empty mapped TX is rejected before FIFO or packet ownership");
     request.tx_buffer = (struct crystalhd_tx_buffer){
         .bytes = run.transfer_size,
@@ -930,7 +1049,7 @@ static void Admission(void)
                                bc_proc_in_completion, &event, &tag, 0) ==
               BC_STS_INV_ARG &&
           tag == 0xfeed && !run.fifo_calls && !run.descriptors &&
-          !run.starts && freeq.head == packet0 && !activeq.head,
+          !run.starts && QueueHead(&freeq) == packet0 && !QueueHead(&activeq),
           "ownerless mapped TX is rejected before FIFO or packet ownership");
     Balanced();
 
@@ -1029,7 +1148,7 @@ static void OpaqueCookie(void)
 }
 static void BalancedTwo(void)
 {
-    Check(!run.mapped && !activeq.head && !activeq.next &&
+    Check(!run.mapped && !QueueHead(&activeq) && !QueueNext(&activeq) &&
           QueueCount(&freeq) == 2 && QueueContains(&freeq, packet0) &&
           QueueContains(&freeq, &packet2) && !hardware.lock && !run.irq_depth &&
           !packet0->buffer && !packet0->cb_context && !packet0->call_back &&
@@ -1051,7 +1170,7 @@ static void CancelAllOwners(void)
         uint32_t tag[2] = {0, 0};
 
         Reset();
-        freeq.next = &packet2;
+        QueueSeed(&freeq, &packet2);
         request.uinfo.xfr_len = run.transfer_size;
         request2.uinfo.xfr_len = run.transfer_size;
         request.tx_buffer = (struct crystalhd_tx_buffer){
@@ -1113,7 +1232,7 @@ static void CancelAllOwners(void)
         uint32_t tag[2] = {0, 0};
 
         Reset();
-        freeq.next = &packet2;
+        QueueSeed(&freeq, &packet2);
         request.uinfo.xfr_len = run.transfer_size;
         request2.uinfo.xfr_len = run.transfer_size;
         request.tx_buffer = (struct crystalhd_tx_buffer){
@@ -1133,7 +1252,7 @@ static void CancelAllOwners(void)
               BC_STS_SUCCESS,
               "cleanup-error coverage starts with both TX owners published");
         Check(crystalhd_hw_cancel_all_tx(&hardware) == BC_STS_INSUFF_RES &&
-              !activeq.head && !activeq.next && QueueCount(&freeq) == 1 &&
+              !QueueHead(&activeq) && !QueueNext(&activeq) && QueueCount(&freeq) == 1 &&
               multi_cookie[0].calls == 1 && multi_cookie[1].calls == 1 &&
               multi_cookie[0].status == BC_STS_IO_USER_ABORT &&
               multi_cookie[1].status == BC_STS_IO_USER_ABORT &&
@@ -1154,7 +1273,7 @@ static void CancelAllOwners(void)
             BC_STATUS first_status = first_failed ? BC_STS_ERROR : BC_STS_SUCCESS;
 
             Reset();
-            freeq.next = &packet2;
+            QueueSeed(&freeq, &packet2);
             request.uinfo.xfr_len = run.transfer_size;
             request2.uinfo.xfr_len = run.transfer_size;
             request.tx_buffer = (struct crystalhd_tx_buffer){
@@ -1219,20 +1338,34 @@ static void Completion(void)
 }
 static void Rollback(void)
 {
-    Reset(); freeq.head = NULL;
+    Reset();
+    struct crystalhd_elem *reserved = crystalhd_dioq_fetch_elem_actual(&freeq);
     Check(bc_cproc_proc_input(&context, &input_ioctl) == BC_STS_INSUFF_RES &&
           !run.descriptors && !run.starts && run.unmaps == 1,
           "an exhausted packet pool rejects input without building or starting DMA");
-    freeq.head = packet0;
+    crystalhd_dioq_add_elem_actual(&freeq, reserved, false, 0);
     Balanced();
 
     Reset(); run.descriptor_status = BC_STS_NOT_IMPL;
     Check(bc_cproc_proc_input(&context, &input_ioctl) == BC_STS_NOT_IMPL && !run.starts,
           "descriptor failure returns the free packet without starting DMA");
     Balanced();
-    Reset(); run.active_add_status = BC_STS_INSUFF_RES;
-    Check(bc_cproc_proc_input(&context, &input_ioctl) == BC_STS_INSUFF_RES && !run.starts,
-          "active-queue failure clears callback ownership before returning the packet");
+    Reset();
+    request.tx_buffer = (struct crystalhd_tx_buffer){
+        .bytes = run.transfer_size, .cookie = &request,
+    };
+    uint32_t tag = 0;
+    run.allocator_exhausted = true;
+    Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer, OpaqueComplete,
+                               &opaque_cookie, &tag, run.transfer_flags) ==
+              BC_STS_SUCCESS && run.starts == 1 && !run.node_attempts &&
+          activeq.head == &node_pool[0] && QueueCount(&freeq) == 0,
+          "reserved-node commit succeeds without allocation even when the generic pool is exhausted");
+    run.allocator_exhausted = false;
+    Check(crystalhd_hw_tx_req_complete(&hardware, tag, BC_STS_SUCCESS) ==
+              BC_STS_SUCCESS && run.callback_calls == 1 &&
+          !packet0->buffer && !packet0->cb_context && !packet0->call_back,
+          "allocation-free active commit still retires callback ownership exactly once");
     Balanced();
 }
 static void TransferArguments(void)
@@ -1272,7 +1405,10 @@ static void BusyErrors(void)
     for (unsigned which = 0; which < 3; which++) {
         Reset(); run.busy = 1;
         if (which == 0) run.descriptor_status = BC_STS_NOT_IMPL;
-        if (which == 1) run.active_add_status = BC_STS_INSUFF_RES;
+        if (which == 1) {
+            run.prep_status = BC_STS_INSUFF_RES;
+            hardware.pfnPrepareTxDMA = Prepare;
+        }
         if (which == 2) run.fault_on_sleep = true;
         Check(bc_cproc_proc_input(&context, &input_ioctl) ==
               (which == 0 ? BC_STS_NOT_IMPL : which == 1 ? BC_STS_INSUFF_RES : BC_STS_IO_ERROR) &&
@@ -1424,7 +1560,7 @@ static void FinishBorrowedInput(void)
         return;
     }
     Check(run.mapped && !run.maps && !run.unmaps && !context.tx_list_id &&
-          !activeq.head && freeq.head == packet0 && !packet0->buffer &&
+          !QueueHead(&activeq) && QueueHead(&freeq) == packet0 && !packet0->buffer &&
           !packet0->cb_context && !packet0->call_back && !packet0->list_tag,
           "borrowed transfer retires hardware ownership before caller release");
     crystalhd_unmap_dio(&adapter, &request);
@@ -1739,7 +1875,7 @@ static void LeasePut(struct crystalhd_adp *adp,
           !packet0->buffer && !packet0->retained_buffer && !packet0->call_back &&
           !packet0->cb_context && !packet2.buffer && !packet2.retained_buffer &&
           !packet2.call_back && !packet2.cb_context &&
-          !activeq.head && !activeq.next && !freeq.head && !freeq.next,
+          !QueueHead(&activeq) && !QueueNext(&activeq) && !QueueHead(&freeq) && !QueueNext(&freeq),
           "every queue and fixed TX identity is detached before any terminal lease put");
     owner->refs--;
     owner->puts++;
@@ -2014,8 +2150,8 @@ static void FleaBlockedPost(TX_INPUT_BUFFER_INFO before)
           tag == 0xfeedbabe && hardware.stats.cin_busy == 1,
           "the actual post path reports BUSY before assigning a list tag");
     Check(!run.queue_fetches && !run.queue_adds && !run.descriptors && !run.starts &&
-          !run.callback_calls && !activeq.head && !activeq.next &&
-          freeq.head == packet0 && !freeq.next &&
+          !run.callback_calls && !QueueHead(&activeq) && !QueueNext(&activeq) &&
+          QueueHead(&freeq) == packet0 && !QueueNext(&freeq) &&
           memcmp(packet0, &unposted, sizeof(unposted)) == 0 &&
           !hardware.tx_list_post_index &&
           hardware.TxList0Sts == ListStsFree && hardware.TxList1Sts == ListStsFree,
@@ -2117,10 +2253,10 @@ static void FleaNotificationGuard(void)
                                &opaque_cookie, &tag, 0) == BC_STS_SUCCESS &&
           run.descriptors == 1 && run.starts == 1 &&
           run.seen_destination == run.flea.payload.DramBuffAdd &&
-          tag == hardware.tx_ioq_tag_seed && activeq.head == packet0,
+          tag == hardware.tx_ioq_tag_seed && QueueHead(&activeq) == packet0,
           "the actual FIFO and post path admit new work after a valid notification");
     Check(crystalhd_hw_tx_req_complete(&hardware, tag, BC_STS_SUCCESS) == BC_STS_SUCCESS &&
-          run.callback_calls == 1 && !activeq.head && freeq.head == packet0 &&
+          run.callback_calls == 1 && !QueueHead(&activeq) && QueueHead(&freeq) == packet0 &&
           !packet0->buffer && !packet0->cb_context && !packet0->call_back &&
           !run.flea.writes && !run.flea.wakes && !hardware.dma_fault,
           "recovered post completion retains existing exactly-once callback ownership");
@@ -2161,8 +2297,8 @@ static void FleaAbortNotification(void)
                                    &opaque_cookie, &tag, 0) == BC_STS_BUSY &&
               tag == 0xfeedbabe && hardware.stats.cin_busy == 1 &&
               !run.descriptors && !run.starts && !run.queue_fetches && !run.queue_adds &&
-              !run.callback_calls && !activeq.head && !activeq.next &&
-              freeq.head == packet0 && !freeq.next &&
+              !run.callback_calls && !QueueHead(&activeq) && !QueueNext(&activeq) &&
+              QueueHead(&freeq) == packet0 && !QueueNext(&freeq) &&
               !packet0->buffer && !packet0->cb_context && !packet0->call_back &&
               !packet0->list_tag && !hardware.lock && !hardware.dma_fault &&
               !hardware.EmptyCnt && !run.flea.writes && !run.flea.wakes,
@@ -2189,8 +2325,8 @@ static void FleaNotificationWithActiveOwner(void)
     run.flea.status = BC_STS_ERROR;
     crystalhd_flea_update_tx_buff_info(&hardware);
     Check(memcmp(&hardware.TxFwInputBuffInfo, &before, sizeof(before)) == 0 &&
-          memcmp(packet0, &owned, sizeof(owned)) == 0 && activeq.head == packet0 &&
-          !activeq.next && !freeq.head && !freeq.next && !run.stops &&
+          memcmp(packet0, &owned, sizeof(owned)) == 0 && QueueHead(&activeq) == packet0 &&
+          !QueueNext(&activeq) && !QueueHead(&freeq) && !QueueNext(&freeq) && !run.stops &&
           !run.callback_calls && !hardware.dma_fault,
           "notification failure does not cancel, retire or alter already-admitted TX ownership");
     hardware.pfnCheckInputFIFO = crystalhd_flea_check_input_full;
@@ -2202,12 +2338,533 @@ static void FleaNotificationWithActiveOwner(void)
                                &opaque_cookie, &unposted_tag, 0) == BC_STS_BUSY &&
           unposted_tag == 0xfeedbabe && run.descriptors == 1 && run.starts == 1 &&
           run.queue_fetches == 1 && run.queue_adds == 1 &&
-          memcmp(packet0, &owned, sizeof(owned)) == 0 && activeq.head == packet0,
+          memcmp(packet0, &owned, sizeof(owned)) == 0 && QueueHead(&activeq) == packet0,
           "invalidated availability blocks only new work before descriptor or queue admission");
     Check(crystalhd_hw_tx_req_complete(&hardware, tag, BC_STS_SUCCESS) == BC_STS_SUCCESS &&
-          run.callback_calls == 1 && !activeq.head && freeq.head == packet0 &&
+          run.callback_calls == 1 && !QueueHead(&activeq) && QueueHead(&freeq) == packet0 &&
           !run.flea.writes && !run.flea.wakes && !run.stops && !hardware.dma_fault,
           "an already-admitted owner can still complete normally after a failed notification");
+}
+
+static void PrepareUnpublished(void)
+{
+    struct tx_dma_pkt *owned = run.prep.candidate;
+    Check(run.prep.enabled && hardware.lock && run.prep.caller_tag &&
+          *run.prep.caller_tag == run.prep.original_tag &&
+          hardware.tx_list_post_index == run.prep.index &&
+          hardware.tx_ioq_tag_seed == run.prep.seed &&
+          hardware.TxList0Sts == run.prep.list0 && hardware.TxList1Sts == run.prep.list1 &&
+          hardware.TxFwInputBuffInfo.HostXferSzInBytes == run.prep.before.HostXferSzInBytes,
+          "preparation precedes caller tag, list state, index and cached transfer-length publication");
+    Check(!owned->buffer && !owned->retained_buffer && !owned->cb_context &&
+          !owned->call_back && !owned->list_tag &&
+          !QueueContains(&freeq, owned) && !QueueContains(&activeq, owned) &&
+          run.prep.reserved->data == owned && !run.prep.reserved->flink &&
+          !run.prep.reserved->blink && !run.node_attempts && !run.node_frees,
+          "preparation owns the detached original node without publishing request references or using the allocator");
+}
+
+static BC_STATUS FleaPrepareWrite(struct crystalhd_hw *hw, uint32_t address,
+                                  uint32_t words, const uint32_t *data)
+{
+    TX_INPUT_BUFFER_INFO expected = run.prep.before;
+    PrepareUnpublished();
+    expected.DramBuffAdd = expected.DramBuffSzInBytes = 0;
+    Check(hw == &hardware && address == hardware.TxBuffInfoAddr && words == 3 &&
+          !data[0] && !data[1] && data[2] == run.transfer_size,
+          "actual Flea preparation writes exactly the original three-DWORD zero/zero/length wire record");
+    for (unsigned word = 3; word < 8; word++)
+        Check(!data[word], "the entire fallible-write source record is initialized");
+    Check(memcmp(&hardware.TxFwInputBuffInfo, &expected, sizeof(expected)) == 0 &&
+          hardware.EmptyCnt == run.prep.empty &&
+          hardware.SingleThreadAppFIFOEmpty == run.prep.single,
+          "preparation invalidates only cached capacity and preserves FIFO counters, single-thread state and opaque words");
+    Check(run.prep.copied_words <= words, "partial writes never exceed the requested record");
+    if (run.prep.copied_words > words) abort();
+    memcpy(run.prep.firmware_words, data, run.prep.copied_words * sizeof(uint32_t));
+    run.prep.writes++;
+    return run.prep.status;
+}
+
+static BC_STATUS FleaPrepare(struct crystalhd_hw *hw, uint32_t bytes)
+{
+    PrepareUnpublished();
+    Check(bytes == run.transfer_size &&
+          memcmp(&hardware.TxFwInputBuffInfo, &run.prep.before,
+                 sizeof(run.prep.before)) == 0,
+          "actual Flea helper receives the still-uncommitted cached record and complete mapped byte count");
+    return crystalhd_flea_prepare_tx_dma(hw, bytes);
+}
+
+static void PreparedPublished(void)
+{
+    struct tx_dma_pkt *owned = run.prep.candidate;
+    Check(hardware.lock && run.prep.writes == 1 &&
+          run.prep.status == BC_STS_SUCCESS &&
+          activeq.tail == run.prep.reserved && run.prep.reserved->data == owned &&
+          QueueContains(&activeq, owned) && owned->buffer && owned->cb_context == owned &&
+          owned->call_back && owned->list_tag == run.prep.seed + run.prep.index &&
+          *run.prep.caller_tag == owned->list_tag &&
+          hardware.tx_list_post_index == (run.prep.index + 1) % DMA_ENGINE_CNT &&
+          hardware.TxFwInputBuffInfo.HostXferSzInBytes == run.transfer_size &&
+          (run.prep.index ? (hardware.TxList1Sts & TxListWaitingForIntr) :
+                            (hardware.TxList0Sts & TxListWaitingForIntr)),
+          "register access follows successful metadata preparation and same-node active ownership publication");
+}
+
+static uint32_t FleaRegisterRead(struct crystalhd_adp *adp, uint32_t address)
+{
+    PreparedPublished();
+    Check(adp == &adapter && address == BCHP_MISC1_TX_SW_DESC_LIST_CTRL_STS &&
+          !run.prep.reg_reads && !run.prep.reg_writes &&
+          hardware.EmptyCnt == run.prep.empty - 1U &&
+          !hardware.SingleThreadAppFIFOEmpty,
+          "actual register-only start preserves its existing counter decrement and reads control before writing descriptors");
+    run.prep.reg_reads++;
+    return run.prep.control;
+}
+
+static void FleaRegisterWrite(struct crystalhd_adp *adp, uint32_t address, uint32_t value)
+{
+    PreparedPublished();
+    Check(adp == &adapter && run.prep.reg_reads == 1 && run.prep.reg_writes < 3,
+          "register-only start writes a bounded sequence after its control read");
+    if (run.prep.reg_writes >= 3) abort();
+    run.prep.reg_address[run.prep.reg_writes] = address;
+    run.prep.reg_value[run.prep.reg_writes++] = value;
+}
+
+static void PreparedComplete(void *cookie, BC_STATUS status)
+{
+    struct tx_dma_pkt *owned = cookie;
+    Check((owned == packet0 || owned == &packet2) &&
+          QueueContains(&freeq, owned) && !QueueContains(&activeq, owned) &&
+          !owned->buffer && !owned->cb_context && !owned->call_back && !owned->list_tag,
+          "prepared ownership retires before its exact opaque callback executes");
+    run.callback_calls++;
+    run.seen_callback_context = cookie;
+    run.seen_callback_status = status;
+}
+
+static void FleaStart(struct crystalhd_hw *hw, uint8_t index, addr_64 descriptor)
+{
+    PreparedPublished();
+    Check(hw == &hardware && index == run.prep.index &&
+          descriptor.full_addr == run.prep.candidate->desc_mem.phy_addr,
+          "the actual register-only start receives the selected list and original descriptor address");
+    run.starts++;
+    crystalhd_flea_start_tx_dma_engine(hw, index, descriptor);
+    Check(run.prep.writes == 1, "register-only start never duplicates the metadata DRAM write");
+}
+
+static void PrepareSnapshot(uint32_t *tag, struct tx_dma_pkt *candidate)
+{
+    run.prep.enabled = true;
+    run.prep.caller_tag = tag;
+    run.prep.original_tag = *tag;
+    run.prep.candidate = candidate;
+    run.prep.reserved = freeq.head;
+    run.prep.index = hardware.tx_list_post_index;
+    run.prep.seed = hardware.tx_ioq_tag_seed;
+    run.prep.empty = hardware.EmptyCnt;
+    run.prep.single = hardware.SingleThreadAppFIFOEmpty;
+    run.prep.list0 = hardware.TxList0Sts;
+    run.prep.list1 = hardware.TxList1Sts;
+    run.prep.before = hardware.TxFwInputBuffInfo;
+    run.prep.writes = run.prep.reg_reads = run.prep.reg_writes = 0;
+    run.prep.firmware_words[0] = 0x11111111;
+    run.prep.firmware_words[1] = 0x22222222;
+    run.prep.firmware_words[2] = 0x33333333;
+    run.node_attempts = run.node_allocs = run.node_frees = 0;
+}
+
+static void FleaPrepareReset(uint32_t *tag)
+{
+    (void)FleaNotificationReset();
+    hardware.EmptyCnt = 7;
+    hardware.SingleThreadAppFIFOEmpty = true;
+    hardware.pfnPrepareTxDMA = FleaPrepare;
+    hardware.pfnStartTxDMA = FleaStart;
+    hardware.pfnDevDRAMWrite = FleaPrepareWrite;
+    hardware.pfnReadFPGARegister = FleaRegisterRead;
+    hardware.pfnWriteFPGARegister = FleaRegisterWrite;
+    request.tx_buffer = (struct crystalhd_tx_buffer){
+        .bytes = run.transfer_size, .cookie = &request,
+    };
+    run.prep.copied_words = 3;
+    PrepareSnapshot(tag, packet0);
+}
+
+static void PreparationRejected(uint32_t tag, const struct tx_dma_pkt *before)
+{
+    TX_INPUT_BUFFER_INFO expected = run.prep.before;
+    expected.DramBuffAdd = expected.DramBuffSzInBytes = 0;
+    Check(tag == run.prep.original_tag && freeq.head == run.prep.reserved &&
+          QueueHead(&freeq) == run.prep.candidate && !QueueHead(&activeq) &&
+          QueueCount(&freeq) == 1 && !QueueCount(&activeq) &&
+          memcmp(run.prep.candidate, before, sizeof(*before)) == 0 &&
+          hardware.tx_list_post_index == run.prep.index &&
+          hardware.tx_ioq_tag_seed == run.prep.seed &&
+          hardware.TxList0Sts == run.prep.list0 && hardware.TxList1Sts == run.prep.list1 &&
+          !run.starts && !run.prep.reg_reads && !run.prep.reg_writes &&
+          !run.callback_calls && !run.node_attempts && !run.node_frees,
+          "failed preparation restores the identical node and packet without tag/list/index, DMA, callback or allocation publication");
+    Check(memcmp(&hardware.TxFwInputBuffInfo, &expected, sizeof(expected)) == 0 &&
+          hardware.EmptyCnt == run.prep.empty &&
+          hardware.SingleThreadAppFIFOEmpty == run.prep.single &&
+          !hardware.lock && !hardware.dma_fault,
+          "failed preparation preserves opaque metadata, old cached length and existing FIFO policy without a fatal latch");
+    QueueInvariant(&freeq);
+    QueueInvariant(&activeq);
+}
+
+static void PreparationQueueValidation(void)
+{
+    for (unsigned invalid = 0; invalid < 9; invalid++) {
+        uint32_t tag = 0xfeedbabe;
+        FleaPrepareReset(&tag);
+        struct crystalhd_dioq free_before = freeq, active_before = activeq;
+        struct tx_dma_pkt packet_before = *packet0;
+        TX_INPUT_BUFFER_INFO metadata_before = hardware.TxFwInputBuffInfo;
+        if (invalid == 0) hardware.adp = NULL;
+        if (invalid == 1) adapter.pdev = NULL;
+        if (invalid == 2) hardware.tx_freeq = NULL;
+        if (invalid == 3) hardware.tx_actq = NULL;
+        if (invalid == 4) hardware.tx_actq = hardware.tx_freeq;
+        if (invalid == 5) freeq.sig = 0;
+        if (invalid == 6) activeq.sig = 0;
+        if (invalid == 7) freeq.adp = NULL;
+        if (invalid == 8) activeq.adp = NULL;
+        Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer, PreparedComplete,
+                                   packet0, &tag, run.transfer_flags) == BC_STS_INV_ARG &&
+              tag == 0xfeedbabe && !run.fifo_calls && !run.queue_fetches &&
+              !run.queue_adds && !run.descriptors && !run.starts &&
+              !run.prep.writes && !run.node_attempts && !run.callback_calls &&
+              memcmp(packet0, &packet_before, sizeof(packet_before)) == 0 &&
+              memcmp(&hardware.TxFwInputBuffInfo, &metadata_before,
+                     sizeof(metadata_before)) == 0,
+              "invalid adapter, queue, signature or pool identity is rejected before FIFO and every firmware/ownership side effect");
+        freeq.sig = free_before.sig;
+        activeq.sig = active_before.sig;
+        freeq.adp = free_before.adp;
+        activeq.adp = active_before.adp;
+        Check(memcmp(&freeq, &free_before, sizeof(freeq)) == 0 &&
+              memcmp(&activeq, &active_before, sizeof(activeq)) == 0,
+              "early validation never mutates either actual queue");
+        QueueInvariant(&freeq);
+        QueueInvariant(&activeq);
+    }
+
+    uint32_t tag = 0xfeedbabe;
+    FleaPrepareReset(&tag);
+    struct crystalhd_elem *reserved = freeq.head;
+    struct tx_dma_pkt packet_before = *packet0;
+    reserved->data = NULL;
+    run.allocator_exhausted = true;
+    Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer, PreparedComplete,
+                               packet0, &tag, run.transfer_flags) == BC_STS_INSUFF_RES &&
+          tag == 0xfeedbabe && freeq.head == reserved && freeq.tail == reserved &&
+          !reserved->data && QueueCount(&freeq) == 1 && !QueueCount(&activeq) &&
+          !run.descriptors && !run.prep.writes && !run.starts &&
+          !run.node_attempts && !run.node_frees && !run.callback_calls &&
+          memcmp(packet0, &packet_before, sizeof(packet_before)) == 0,
+          "a reserved node with NULL data returns unchanged without allocation, preparation or lost queue ownership");
+    QueueInvariant(&freeq);
+    QueueInvariant(&activeq);
+
+    FleaPrepareReset(&tag);
+    reserved = crystalhd_dioq_fetch_elem_actual(&freeq);
+    run.allocator_exhausted = true;
+    Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer, PreparedComplete,
+                               packet0, &tag, run.transfer_flags) == BC_STS_INSUFF_RES &&
+          !run.prep.writes && !run.descriptors && !run.starts && !run.node_attempts,
+          "an actually empty free queue cannot reach firmware preparation");
+    crystalhd_dioq_add_elem_actual(&freeq, reserved, false, 0);
+    QueueInvariant(&freeq);
+    QueueInvariant(&activeq);
+}
+
+static void FleaPreparationFailures(void)
+{
+    static const BC_STATUS errors[] = {
+        BC_STS_BUSY, BC_STS_ERROR, BC_STS_INV_ARG, BC_STS_IO_ERROR,
+    };
+    for (unsigned error = 0; error < ARRAY_SIZE(errors); error++) {
+        for (unsigned copied = 0; copied <= 3; copied++) {
+            uint32_t tag = 0xfeedbabe;
+            FleaPrepareReset(&tag);
+            struct tx_dma_pkt before = *packet0;
+            run.prep.status = errors[error];
+            run.prep.copied_words = copied;
+            run.allocator_exhausted = true;
+            Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer, PreparedComplete,
+                                       packet0, &tag, run.transfer_flags) == errors[error] &&
+                  run.prep.writes == 1 && run.descriptors == 1 &&
+                  run.seen_destination == run.prep.before.DramBuffAdd,
+                  "every preparation failure and partial-write shape propagates after descriptor construction without retry");
+            for (unsigned word = 0; word < 3; word++)
+                Check(run.prep.firmware_words[word] == (word < copied ?
+                      (word == 2 ? run.transfer_size : 0U) :
+                      (word + 1U) * 0x11111111U),
+                      "containment does not claim to undo a partially written firmware record");
+            PreparationRejected(tag, &before);
+        }
+    }
+
+    for (unsigned fault = 0; fault < 2; fault++) {
+        uint32_t tag = 0xfeedbabe;
+        FleaPrepareReset(&tag);
+        struct crystalhd_elem *reserved = freeq.head;
+        struct tx_dma_pkt before = *packet0;
+        run.allocator_exhausted = true;
+        if (fault) run.fault_after_descriptor = true;
+        else run.descriptor_status = BC_STS_NOT_IMPL;
+        Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer, PreparedComplete,
+                                   packet0, &tag, run.transfer_flags) ==
+                  (fault ? BC_STS_IO_ERROR : BC_STS_NOT_IMPL) &&
+              tag == 0xfeedbabe && freeq.head == reserved &&
+              memcmp(packet0, &before, sizeof(before)) == 0 &&
+              !run.prep.writes && !run.starts && !run.node_attempts &&
+              !run.node_frees && !run.callback_calls,
+              "descriptor or second-fault failure restores the retained node without a failable requeue allocation");
+        QueueInvariant(&freeq);
+        QueueInvariant(&activeq);
+    }
+}
+
+static void FleaPreparationSuccess(void)
+{
+    for (unsigned list = 0; list < 2; list++) {
+        for (unsigned running = 0; running < 2; running++) {
+            uint32_t tag = 0xfeedbabe;
+            FleaPrepareReset(&tag);
+            packet0->desc_mem.phy_addr = UINT64_C(0x1234567887654320);
+            hardware.tx_list_post_index = list;
+            PrepareSnapshot(&tag, packet0);
+            run.prep.control = running ? 0x41U : 0x40U;
+            run.allocator_exhausted = true;
+            Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer, PreparedComplete,
+                                       packet0, &tag, run.transfer_flags) == BC_STS_SUCCESS &&
+                  tag == run.prep.seed + list && run.starts == 1 &&
+                  run.prep.writes == 1 && !run.node_attempts && !run.node_frees &&
+                  activeq.head == run.prep.reserved && activeq.tail == run.prep.reserved,
+                  "successful preparation commits the exact reserved node on either DMA list with an exhausted allocator");
+            unsigned first_descriptor = running ? 0 : 1;
+            Check(run.prep.reg_writes == first_descriptor + 2 &&
+                  (running || (run.prep.reg_address[0] == BCHP_MISC1_TX_SW_DESC_LIST_CTRL_STS &&
+                               run.prep.reg_value[0] == 0x41U)) &&
+                  run.prep.reg_address[first_descriptor] == (list ?
+                      BCHP_MISC1_TX_FIRST_DESC_U_ADDR_LIST1 : BCHP_MISC1_TX_FIRST_DESC_U_ADDR_LIST0) &&
+                  run.prep.reg_value[first_descriptor] == 0x12345678U &&
+                  run.prep.reg_address[first_descriptor + 1] == (list ?
+                      BCHP_MISC1_TX_FIRST_DESC_L_ADDR_LIST1 : BCHP_MISC1_TX_FIRST_DESC_L_ADDR_LIST0) &&
+                  run.prep.reg_value[first_descriptor + 1] == 0x87654321U,
+                  "actual start retains control/upper/lower-valid publication order and both full descriptor halves");
+            QueueInvariant(&freeq);
+            QueueInvariant(&activeq);
+            run.allocator_exhausted = false;
+            Check(crystalhd_hw_tx_req_complete(&hardware, tag, BC_STS_SUCCESS) == BC_STS_SUCCESS &&
+                  run.callback_calls == 1 && run.seen_callback_context == packet0 &&
+                  crystalhd_hw_tx_req_complete(&hardware, tag, BC_STS_SUCCESS) == BC_STS_NO_DATA &&
+                  run.callback_calls == 1,
+                  "successful prepared work completes once and rejects duplicate completion");
+            QueueInvariant(&freeq);
+            QueueInvariant(&activeq);
+            Balanced();
+        }
+    }
+}
+
+static void FleaPreparationRecoveryAndOwner(void)
+{
+    uint32_t tag = 0xfeedbabe;
+    FleaPrepareReset(&tag);
+    struct tx_dma_pkt before = *packet0;
+    run.prep.status = BC_STS_ERROR;
+    run.prep.copied_words = 1;
+    Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer, PreparedComplete,
+                               packet0, &tag, run.transfer_flags) == BC_STS_ERROR,
+          "recovery starts with a failed partial metadata preparation");
+    PreparationRejected(tag, &before);
+    run.flea.status = BC_STS_SUCCESS;
+    crystalhd_flea_update_tx_buff_info(&hardware);
+    Check(hardware.TxFwInputBuffInfo.DramBuffAdd == run.flea.payload.DramBuffAdd &&
+          hardware.TxFwInputBuffInfo.DramBuffSzInBytes == run.flea.payload.DramBuffSzInBytes,
+          "a subsequent valid firmware notification supplies fresh capacity after failed preparation");
+    PrepareSnapshot(&tag, packet0);
+    hardware.pfnCheckInputFIFO = crystalhd_flea_check_input_full;
+    run.prep.empty++;
+    run.prep.status = BC_STS_SUCCESS;
+    run.prep.copied_words = 3;
+    Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer, PreparedComplete,
+                               packet0, &tag, run.transfer_flags) == BC_STS_SUCCESS &&
+          crystalhd_hw_tx_req_complete(&hardware, tag, BC_STS_SUCCESS) == BC_STS_SUCCESS &&
+          run.callback_calls == 1,
+          "fresh notification recovery publishes and completes work without resetting or fault-latching the device");
+    QueueInvariant(&freeq);
+    QueueInvariant(&activeq);
+
+    tag = 0xfeedbabe;
+    FleaPrepareReset(&tag);
+    QueueSeed(&freeq, &packet2);
+    PrepareSnapshot(&tag, packet0);
+    Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer, PreparedComplete,
+                               packet0, &tag, run.transfer_flags) == BC_STS_SUCCESS,
+          "peer-failure coverage starts with an already-active prepared owner");
+    struct tx_dma_pkt active_before = *packet0;
+    struct crystalhd_elem *active_node = activeq.head;
+    uint32_t failed_tag = 0xcafebabe;
+    request2.tx_buffer = (struct crystalhd_tx_buffer){
+        .bytes = run.transfer_size, .cookie = &request2,
+    };
+    hardware.TxFwInputBuffInfo.DramBuffAdd = 0xa000;
+    hardware.TxFwInputBuffInfo.DramBuffSzInBytes = 0x80000;
+    PrepareSnapshot(&failed_tag, &packet2);
+    run.prep.status = BC_STS_IO_ERROR;
+    run.prep.copied_words = 2;
+    run.allocator_exhausted = true;
+    Check(crystalhd_hw_post_tx(&hardware, &request2.tx_buffer, PreparedComplete,
+                               &packet2, &failed_tag, run.transfer_flags) == BC_STS_IO_ERROR &&
+          failed_tag == 0xcafebabe && activeq.head == active_node &&
+          activeq.tail == active_node && QueueCount(&activeq) == 1 &&
+          memcmp(packet0, &active_before, sizeof(active_before)) == 0 &&
+          freeq.head == run.prep.reserved && QueueHead(&freeq) == &packet2 &&
+          !packet2.buffer && !packet2.cb_context && !packet2.call_back && !packet2.list_tag &&
+          run.starts == 1 && !run.prep.reg_reads && !run.prep.reg_writes &&
+          !run.callback_calls && !run.stops && !run.node_attempts && !hardware.dma_fault,
+          "failed peer preparation preserves the existing active owner and returns only the unpublished candidate node");
+    QueueInvariant(&freeq);
+    QueueInvariant(&activeq);
+    run.allocator_exhausted = false;
+    Check(crystalhd_hw_tx_req_complete(&hardware, tag, BC_STS_SUCCESS) == BC_STS_SUCCESS &&
+          run.callback_calls == 1 && run.seen_callback_context == packet0 &&
+          crystalhd_hw_tx_req_complete(&hardware, tag, BC_STS_SUCCESS) == BC_STS_NO_DATA &&
+          run.callback_calls == 1,
+          "an already-active owner still completes exactly once after peer preparation fails");
+    QueueInvariant(&freeq);
+    QueueInvariant(&activeq);
+    BalancedTwo();
+}
+
+static void FleaPreparationFifoPolicy(void)
+{
+    static const uint8_t flags[] = { 0, 0x04, 0x08, 0x0c };
+    for (unsigned flag = 0; flag < ARRAY_SIZE(flags); flag++) {
+        for (unsigned success = 0; success < 2; success++) {
+            uint32_t tag = 0xfeedbabe;
+            FleaPrepareReset(&tag);
+            struct tx_dma_pkt before = *packet0;
+            hardware.SingleThreadAppFIFOEmpty = false;
+            hardware.pfnCheckInputFIFO = crystalhd_flea_check_input_full;
+            run.prep.empty = hardware.EmptyCnt + ((flags[flag] & 0x0c) == 0);
+            run.prep.single = (flags[flag] & 0x08) != 0;
+            run.prep.status = success ? BC_STS_SUCCESS : BC_STS_BUSY;
+            run.allocator_exhausted = true;
+            Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer, PreparedComplete,
+                                       packet0, &tag, flags[flag]) == run.prep.status &&
+                  run.prep.writes == 1 && run.seen_destination == run.prep.before.DramBuffAdd,
+                  "actual FIFO flags retain their existing reservation and single-thread behavior before fallible preparation");
+            if (success) {
+                Check(hardware.EmptyCnt == run.prep.empty - 1U &&
+                      !hardware.SingleThreadAppFIFOEmpty,
+                      "successful register-only start preserves the old decrement/clear policy for every FIFO flag branch");
+                run.allocator_exhausted = false;
+                Check(crystalhd_hw_tx_req_complete(&hardware, tag, BC_STS_SUCCESS) == BC_STS_SUCCESS &&
+                      run.callback_calls == 1, "actual FIFO prepared success still completes once");
+                QueueInvariant(&freeq);
+                QueueInvariant(&activeq);
+            } else {
+                PreparationRejected(tag, &before);
+                Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer, PreparedComplete,
+                                           packet0, &tag, flags[flag]) == BC_STS_BUSY &&
+                      run.prep.writes == 1 && run.descriptors == 1 &&
+                      !run.starts && freeq.head == run.prep.reserved &&
+                      !run.node_attempts && !run.callback_calls,
+                      "invalidated cached capacity blocks a second actual-FIFO post without another metadata write");
+            }
+        }
+    }
+}
+
+static void QueueApiCompatibility(void)
+{
+    Reset();
+    unsigned freed = run.node_frees;
+    Check(crystalhd_dioq_fetch_actual(&freeq) == packet0 &&
+          run.node_frees == freed + 1 && !QueueCount(&freeq),
+          "ordinary fetch retains its data-returning and generic-node-freeing API");
+    QueueInvariant(&freeq);
+    Check(crystalhd_dioq_add_actual(NULL, packet0, false, 1) == BC_STS_INV_ARG &&
+          crystalhd_dioq_add_actual(&freeq, NULL, false, 1) == BC_STS_INV_ARG &&
+          !QueueCount(&freeq), "ordinary add still rejects NULL queue/data before allocating");
+    struct crystalhd_dioq before = freeq;
+    freeq.sig = 0;
+    unsigned attempts = run.node_attempts;
+    Check(crystalhd_dioq_add_actual(&freeq, packet0, false, 1) == BC_STS_INV_ARG &&
+          !crystalhd_dioq_fetch_elem_actual(&freeq) &&
+          !crystalhd_dioq_fetch_actual(&freeq) &&
+          !crystalhd_dioq_find_and_fetch_actual(&freeq, 1) &&
+          !crystalhd_dioq_fetch_elem_actual(NULL) &&
+          run.node_attempts == attempts,
+          "ordinary and retained-node APIs still reject invalid signatures without node allocation");
+    freeq.sig = before.sig;
+    Check(memcmp(&freeq, &before, sizeof(before)) == 0,
+          "invalid queue APIs do not alter head/tail/count/sentinel state");
+    run.allocator_exhausted = true;
+    Check(crystalhd_dioq_add_actual(&freeq, packet0, false, 1) == BC_STS_INSUFF_RES &&
+          !QueueCount(&freeq), "ordinary add retains its allocator-failure status unlike retained-node commit");
+    run.allocator_exhausted = false;
+    Check(crystalhd_dioq_add_actual(&freeq, packet0, false, 0x77) == BC_STS_SUCCESS &&
+          crystalhd_dioq_add_actual(&freeq, &packet2, false, 0x88) == BC_STS_SUCCESS &&
+          freeq.head->tag == 0x77 && freeq.tail->tag == 0x88 && QueueCount(&freeq) == 2,
+          "ordinary add still allocates nodes, preserves FIFO order and stores searchable tags");
+    QueueInvariant(&freeq);
+    freed = run.node_frees;
+    Check(!crystalhd_dioq_find_and_fetch_actual(&freeq, 0x99) &&
+          run.node_frees == freed && QueueCount(&freeq) == 2 &&
+          crystalhd_dioq_find_and_fetch_actual(&freeq, 0x88) == &packet2 &&
+          run.node_frees == freed + 1 && QueueCount(&freeq) == 1 &&
+          QueueHead(&freeq) == packet0,
+          "ordinary find-and-fetch preserves miss/no-free and tagged tail detach/free semantics");
+    QueueInvariant(&freeq);
+    Check(crystalhd_dioq_fetch_actual(&freeq) == packet0 &&
+          !crystalhd_dioq_fetch_actual(&freeq) && !QueueCount(&freeq),
+          "ordinary fetch frees the remaining node and returns NULL from an empty sentinel queue");
+    QueueInvariant(&freeq);
+}
+
+static void LinkWithoutPreparation(void)
+{
+    for (unsigned list = 0; list < 2; list++) {
+        uint32_t tag = 0xfeedbabe;
+        Reset();
+        endpoint.device = BC_PCI_DEVID_LINK;
+        hardware.tx_list_post_index = list;
+        hardware.TxFwInputBuffInfo.DramBuffSzInBytes = 0x40000;
+        TX_INPUT_BUFFER_INFO before = hardware.TxFwInputBuffInfo;
+        struct crystalhd_elem *reserved = freeq.head;
+        request.tx_buffer = (struct crystalhd_tx_buffer){
+            .bytes = run.transfer_size, .cookie = &request,
+        };
+        run.allocator_exhausted = true;
+        Check(!hardware.pfnPrepareTxDMA &&
+              crystalhd_hw_post_tx(&hardware, &request.tx_buffer, OpaqueComplete,
+                                   &opaque_cookie, &tag, run.transfer_flags) == BC_STS_SUCCESS &&
+              tag == hardware.tx_ioq_tag_seed + list && activeq.head == reserved &&
+              run.starts == 1 && !run.flea.writes && !run.prep.writes && !run.node_attempts,
+              "Link's optional NULL preparation retains ordinary start and allocation-free same-node admission on both lists");
+        before.HostXferSzInBytes = run.transfer_size;
+        Check(memcmp(&hardware.TxFwInputBuffInfo, &before, sizeof(before)) == 0,
+              "no-preparation admission does not invalidate Link's cached address or capacity");
+        QueueInvariant(&freeq);
+        QueueInvariant(&activeq);
+        run.allocator_exhausted = false;
+        Check(crystalhd_hw_tx_req_complete(&hardware, tag, BC_STS_SUCCESS) == BC_STS_SUCCESS &&
+              run.callback_calls == 1, "Link's no-preparation completion retains exactly-once ownership retirement");
+        QueueInvariant(&freeq);
+        QueueInvariant(&activeq);
+        Balanced();
+    }
 }
 
 int main(void)
@@ -2218,6 +2875,13 @@ int main(void)
     FleaNotificationGuard();
     FleaAbortNotification();
     FleaNotificationWithActiveOwner();
+    PreparationQueueValidation();
+    FleaPreparationFailures();
+    FleaPreparationSuccess();
+    FleaPreparationRecoveryAndOwner();
+    FleaPreparationFifoPolicy();
+    QueueApiCompatibility();
+    LinkWithoutPreparation();
     printf("TX admission: %u checks, %u failures\n", checks, failures);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

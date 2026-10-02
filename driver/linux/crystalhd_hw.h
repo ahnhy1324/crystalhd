@@ -372,6 +372,7 @@ typedef BC_STATUS	(*HW_WRITE_DEV_MEM)(struct crystalhd_hw*,uint32_t,uint32_t,con
 /* typedef bool		(*HW_ENABLE_INTR)(struct crystalhd_adp*); */
 typedef BC_STATUS	(*HW_POST_RX_SIDE_BUFF)(struct crystalhd_hw*,struct crystalhd_rx_dma_pkt*);
 typedef bool		(*HW_CHECK_INPUT_FIFO)(struct crystalhd_hw*, uint32_t, uint32_t*,bool,uint8_t*);
+typedef BC_STATUS	(*HW_PREPARE_TX_DMA)(struct crystalhd_hw*, uint32_t);
 typedef void		(*HW_START_TX_DMA)(struct crystalhd_hw*, uint8_t, addr_64);
 typedef BC_STATUS	(*HW_STOP_TX_DMA)(struct crystalhd_hw*);
 /* typedef bool		(*HW_EVENT_NOTIFICATION)(struct crystalhd_adp*,BRCM_EVENT); */
@@ -541,6 +542,7 @@ struct crystalhd_hw {
 /*	HW_ENABLE_INTR				pfnEnableIntr; */
 	HW_POST_RX_SIDE_BUFF			pfnPostRxSideBuff;
 	HW_CHECK_INPUT_FIFO			pfnCheckInputFIFO;
+	HW_PREPARE_TX_DMA			pfnPrepareTxDMA;
 	HW_START_TX_DMA				pfnStartTxDMA;
 	HW_STOP_TX_DMA				pfnStopTxDMA;
 	HW_GET_DONE_SIZE			pfnHWGetDoneSize;

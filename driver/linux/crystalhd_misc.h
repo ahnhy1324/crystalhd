@@ -275,6 +275,12 @@ crystalhd_dio_from_rx_buffer(struct crystalhd_rx_buffer *);
 extern BC_STATUS crystalhd_create_dioq(struct crystalhd_adp *, struct crystalhd_dioq **, crystalhd_data_free_cb , void *);
 extern void crystalhd_delete_dioq(struct crystalhd_adp *, struct crystalhd_dioq *);
 extern BC_STATUS crystalhd_dioq_add(struct crystalhd_dioq *ioq, void *data, bool wake, uint32_t tag);
+/* Retain a detached node for allocation-free transfer between queues. The
+ * caller keeps both validated, same-adapter queues alive through add_elem.
+ */
+struct crystalhd_elem *crystalhd_dioq_fetch_elem(struct crystalhd_dioq *ioq);
+void crystalhd_dioq_add_elem(struct crystalhd_dioq *ioq,
+			    struct crystalhd_elem *elem, bool wake, uint32_t tag);
 extern void *crystalhd_dioq_fetch(struct crystalhd_dioq *ioq);
 extern void *crystalhd_dioq_find_and_fetch(struct crystalhd_dioq *ioq, uint32_t tag);
 extern void *crystalhd_dioq_fetch_wait(struct crystalhd_hw *hw, uint32_t to_secs, uint32_t *sig_pend);

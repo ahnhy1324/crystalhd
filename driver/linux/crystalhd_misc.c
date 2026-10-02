@@ -451,7 +451,6 @@ void crystalhd_delete_dioq(struct crystalhd_adp *adp, struct crystalhd_dioq *dio
 BC_STATUS crystalhd_dioq_add(struct crystalhd_dioq *ioq, void *data,
 			   bool wake, uint32_t tag)
 {
-	unsigned long flags = 0;
 	struct crystalhd_elem *tmp;
 
 	if (!ioq || (ioq->sig != BC_LINK_DIOQ_SIG) || !data) {
@@ -466,36 +465,44 @@ BC_STATUS crystalhd_dioq_add(struct crystalhd_dioq *ioq, void *data,
 	}
 
 	tmp->data = data;
-	tmp->tag = tag;
+	crystalhd_dioq_add_elem(ioq, tmp, wake, tag);
+
+	return BC_STS_SUCCESS;
+}
+
+/* The caller owns this detached node and has validated the queue lifetime. */
+void crystalhd_dioq_add_elem(struct crystalhd_dioq *ioq,
+			    struct crystalhd_elem *elem, bool wake, uint32_t tag)
+{
+	unsigned long flags = 0;
+
+	elem->tag = tag;
 	spin_lock_irqsave(&ioq->lock, flags);
-	tmp->flink = (struct crystalhd_elem *)&ioq->head;
-	tmp->blink = ioq->tail;
-	tmp->flink->blink = tmp;
-	tmp->blink->flink = tmp;
+	elem->flink = (struct crystalhd_elem *)&ioq->head;
+	elem->blink = ioq->tail;
+	elem->flink->blink = elem;
+	elem->blink->flink = elem;
 	ioq->count++;
 	spin_unlock_irqrestore(&ioq->lock, flags);
 
 	if (wake)
 		crystalhd_set_event(&ioq->event);
-
-	return BC_STS_SUCCESS;
 }
 
 /**
- * crystalhd_dioq_fetch - Fetch element from head.
+ * crystalhd_dioq_fetch_elem - Detach an element from the head.
  * @ioq: DIO queue instance
  *
  * Return:
- *	data element from the head..
+ *	queue node, still owned by the caller rather than the element pool.
  *
  * Remove an element from Queue.
  */
-void *crystalhd_dioq_fetch(struct crystalhd_dioq *ioq)
+struct crystalhd_elem *crystalhd_dioq_fetch_elem(struct crystalhd_dioq *ioq)
 {
 	unsigned long flags = 0;
 	struct crystalhd_elem *tmp;
 	struct crystalhd_elem *ret = NULL;
-	void *data = NULL;
 
 	if (!ioq || (ioq->sig != BC_LINK_DIOQ_SIG)) {
 		dev_err(chddev(), "%s: Invalid arg\n", __func__);
@@ -503,7 +510,7 @@ void *crystalhd_dioq_fetch(struct crystalhd_dioq *ioq)
 			dev_err(chddev(), "ioq not initialized\n");
 		else
 			dev_err(chddev(), "ioq invalid signature\n");
-		return data;
+		return NULL;
 	}
 
 	spin_lock_irqsave(&ioq->lock, flags);
@@ -513,8 +520,19 @@ void *crystalhd_dioq_fetch(struct crystalhd_dioq *ioq)
 		tmp->flink->blink = tmp->blink;
 		tmp->blink->flink = tmp->flink;
 		ioq->count--;
+		ret->flink = NULL;
+		ret->blink = NULL;
 	}
 	spin_unlock_irqrestore(&ioq->lock, flags);
+
+	return ret;
+}
+
+void *crystalhd_dioq_fetch(struct crystalhd_dioq *ioq)
+{
+	struct crystalhd_elem *ret = crystalhd_dioq_fetch_elem(ioq);
+	void *data = NULL;
+
 	if (ret) {
 		data = ret->data;
 		crystalhd_free_elem(ioq->adp, ret);

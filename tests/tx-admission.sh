@@ -9,14 +9,40 @@ cleanup()
     rm -f "$tx_test_dir/check" "$tx_test_dir/tx-admission-types.h" \
         "$tx_test_dir/tx-admission-hardware.h" "$tx_test_dir/tx-admission-command.h" \
         "$tx_test_dir/tx-admission-buffer.h" "$tx_test_dir/tx-admission-flea-types.h" \
-        "$tx_test_dir/tx-admission-flea.h"
+        "$tx_test_dir/tx-admission-flea.h" "$tx_test_dir/tx-admission-queue-types.h" \
+        "$tx_test_dir/tx-admission-queue.h"
     rmdir "$tx_test_dir"
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
 # Retain the driver state values and the exact command/hardware TX paths.
-# The fixture supplies queues, DMA mapping and hardware/IRQ boundaries only.
+# The fixture supplies node allocation, DMA mapping and hardware/IRQ boundaries.
+awk '
+    /^struct crystalhd_(elem|dioq)[[:space:]]*\{/ { copying = 1; found++ }
+    /^#define[[:space:]]+BC_LINK_DIOQ_SIG[[:space:]]/ { print }
+    /^typedef void \(\*crystalhd_data_free_cb\)/ { print }
+    copying { print }
+    copying && /^};/ { copying = 0 }
+    END { if (found != 2 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_misc.h" > "$tx_test_dir/tx-admission-queue-types.h"
+awk '
+    /^struct crystalhd_elem \*crystalhd_dioq_fetch_elem\(/ ||
+    /^void crystalhd_dioq_add_elem\(/ ||
+    /^BC_STATUS crystalhd_dioq_add\(/ ||
+    /^void \*crystalhd_dioq_(fetch|find_and_fetch)\(/ { copying = 1; found++ }
+    copying {
+        # Instrument the public fixture boundary without replacing node logic.
+        gsub(/crystalhd_dioq_fetch_elem\(/, "crystalhd_dioq_fetch_elem_actual(")
+        gsub(/crystalhd_dioq_add_elem\(/, "crystalhd_dioq_add_elem_actual(")
+        gsub(/crystalhd_dioq_find_and_fetch\(/, "crystalhd_dioq_find_and_fetch_actual(")
+        gsub(/crystalhd_dioq_fetch\(/, "crystalhd_dioq_fetch_actual(")
+        gsub(/crystalhd_dioq_add\(/, "crystalhd_dioq_add_actual(")
+        print
+    }
+    copying && /^}/ { copying = 0 }
+    END { if (found != 5 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_misc.c" > "$tx_test_dir/tx-admission-queue.h"
 awk '
     /^static void crystalhd_dio_tx_(get|put)\(/ ||
     /^void crystalhd_tx_buffer_(get|put)\(/ ||
@@ -62,10 +88,16 @@ awk '
     copying && (/^}DRIVER_FW_FLAGS;/ || /^\*PTX_INPUT_BUFFER_INFO;/) { copying = 0 }
     END { if (flags != 1 || records != 1 || copying) exit 1 }
 ' "$repo_dir/include/flea/DriverFwShare.h" > "$tx_test_dir/tx-admission-flea-types.h"
+awk '
+    /^#define BCHP_MISC1_TX_(FIRST_DESC_[UL]_ADDR_LIST[01]|SW_DESC_LIST_CTRL_STS(_TX_DMA_RUN_STOP_MASK)?)[[:space:]]/ {
+        print; found++
+    }
+    END { if (found != 6) exit 1 }
+' "$repo_dir/include/flea/bcm_70015_regs.h" >> "$tx_test_dir/tx-admission-flea-types.h"
 
 # Keep the full notification and FIFO bodies, skipping their declarations.
 awk '
-    /^(void crystalhd_flea_update_tx_buff_info|bool crystalhd_flea_check_input_full)\(/ {
+    /^(void crystalhd_flea_update_tx_buff_info|bool crystalhd_flea_check_input_full|BC_STATUS crystalhd_flea_prepare_tx_dma|void crystalhd_flea_start_tx_dma_engine)\(/ {
         candidate = 1; header = ""
         fifo = $0 ~ /^bool crystalhd_flea_check_input_full\(/
     }
@@ -89,7 +121,7 @@ awk '
         copying = 0
         if (fifo) { print "#pragma GCC diagnostic pop"; fifo = 0 }
     }
-    END { if (found != 2 || copying || candidate) exit 1 }
+    END { if (found != 4 || copying || candidate) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$tx_test_dir/tx-admission-flea.h"
 awk '
     /^static BC_STATUS crystalhd_hw_tx_req_retire\(/ ||
