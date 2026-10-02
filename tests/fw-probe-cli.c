@@ -17,15 +17,18 @@ struct _BC_DTS_PROC_OUT;
 #include "crystalhd_fw_research.h"
 
 int crystalhd_probe_main(int argc, char **argv);
-static unsigned checks, opens, stats, infos, runs, closes;
+static unsigned checks, opens, stats, infos, runs, state_runs, closes;
 static int open_error, stat_error, info_error, run_error, close_error;
 static bool character, output_error, flush_error;
 static struct crystalhd_fw_research_info metadata;
 static struct crystalhd_fw_research_request submitted;
+static struct crystalhd_fw_research_state_request state_submitted;
 static char output[32768], errors[8192];
 static unsigned mutation;
 static unsigned fault_at, fault_kind;
 static unsigned response_pattern;
+static unsigned state_mutation, sample_fault_at, sample_fault_kind;
+static bool state_opaque;
 static const uint32_t commands[] = {eCMD_C011_INIT, eCMD_C011_GET_VERSION,
     eCMD_C011_DEC_CHAN_OPEN, eCMD_C011_DEC_CHAN_STATUS, eCMD_C011_DEC_CHAN_CLOSE};
 static const uint32_t raw_commands[] = {eCMD_C011_DEC_CHAN_SCALING_FILTERS,
@@ -258,6 +261,107 @@ static void make_result(struct crystalhd_fw_research_result *result)
                (CRYSTALHD_FW_RESEARCH_MAX_COMMANDS - fault_at) * sizeof(result->replies[0]));
     }
 }
+
+static bool successful_reply(const struct crystalhd_fw_research_reply *reply)
+{
+    return reply->transport_status == BC_STS_SUCCESS && reply->raw_response_valid &&
+        reply->header_matches && !reply->response[2];
+}
+
+static void make_state_result(struct crystalhd_fw_research_state_result *result)
+{
+    struct crystalhd_fw_research_state_sample *samples[] = {
+        &result->calibration, &result->after_init, &result->after_open,
+    };
+    unsigned i;
+    memset(result, 0, sizeof(*result)); result->request = state_submitted;
+    make_result(&result->control);
+    if (result->control.command_count >= 2 && successful_reply(&result->control.replies[0]) &&
+        successful_reply(&result->control.replies[1])) {
+        for (i = 0; i < 2; i++) samples[i]->attempted = samples[i]->read_complete = 1;
+        result->calibration.words[0] = 0xd3a00;
+        result->after_init.words[0] = 1; result->after_init.words[1] = 0xd3a00;
+        if (state_opaque) {
+            result->after_init.words[2] = 0xffffff00;
+            result->after_init.words[3] = 0xff000000;
+        }
+        if (result->control.command_count >= 3 && successful_reply(&result->control.replies[2]) &&
+            !result->control.replies[2].response[3]) {
+            result->after_open.attempted = result->after_open.read_complete = 1;
+            result->after_open.words[0] = 1; result->after_open.words[1] = 0xd3a00;
+            result->after_open.words[2] = state_opaque ? 0xffffff01 : 1;
+            result->after_open.words[3] = state_opaque ? 0xff000200 : 0x200;
+        }
+    }
+    if (sample_fault_at) {
+        struct crystalhd_fw_research_state_sample *sample = samples[sample_fault_at - 1];
+        unsigned count = sample_fault_at == 3 ? 3 : 2;
+        CHECK(sample_fault_at <= 3 && sample_fault_kind >= 1 && sample_fault_kind <= 9);
+        result->control.command_count = count;
+        memset(result->control.replies + count, 0,
+               (CRYSTALHD_FW_RESEARCH_MAX_COMMANDS - count) * sizeof(result->control.replies[0]));
+        for (i = sample_fault_at; i < 3; i++) memset(samples[i], 0, sizeof(*samples[i]));
+        sample->status = sample_fault_kind == 2 ? -ETIMEDOUT :
+            sample_fault_kind >= 3 && sample_fault_kind <= 6 ? -EPROTO :
+            sample_fault_kind == 7 || sample_fault_kind == 9 ? -ENODEV :
+            sample_fault_kind == 8 ? -4095 : -EIO;
+        result->control.status = sample->status;
+        if (sample_fault_kind <= 2 || sample_fault_kind >= 7) {
+            sample->read_complete = 0; memset(sample->words, 0, sizeof(sample->words));
+            if (sample_fault_kind == 9) sample->attempted = 0;
+        } else if (sample_fault_kind == 3) sample->words[0] ^= 1;
+        else if (sample_fault_kind == 4) sample->words[1] ^= 1;
+        else if (sample_fault_kind == 5) sample->words[2] ^= 1;
+        else sample->words[3] ^= 1;
+    }
+    switch (state_mutation) {
+    case 0: break;
+    case 1: result->request.version++; break;
+    case 2: result->request.size--; break;
+    case 3: result->request.flags = 1; break;
+    case 4: result->request.reserved = 1; break;
+    case 5: result->calibration.attempted = 2; break;
+    case 6: result->calibration.read_complete = 2; break;
+    case 7: result->calibration.reserved = 1; break;
+    case 8: result->after_init.reserved = 1; break;
+    case 9: result->after_open.reserved = 1; break;
+    case 10: result->calibration.status = 1; break;
+    case 11: result->calibration.status = -4096; break;
+    case 12: result->calibration.status = -EIO; break;
+    case 13: result->calibration.read_complete = 0; break;
+    case 14: result->calibration.attempted = 0; break;
+    case 15: memset(&result->calibration, 0, sizeof(result->calibration)); break;
+    case 16: memset(&result->after_init, 0, sizeof(result->after_init)); break;
+    case 17: memset(&result->after_open, 0, sizeof(result->after_open)); break;
+    case 18: result->calibration.words[0]++; break;
+    case 19: result->calibration.words[1] = 1; break;
+    case 20: result->calibration.words[2] = 1; break;
+    case 21: result->calibration.words[3] = 1; break;
+    case 22: result->after_init.words[0] = 0; break;
+    case 23: result->after_init.words[1]++; break;
+    case 24: result->after_init.words[2] = 1; break;
+    case 25: result->after_init.words[3] = 1; break;
+    case 26: result->after_open.words[0] = 0; break;
+    case 27: result->after_open.words[1]++; break;
+    case 28: result->after_open.words[2] = 0; break;
+    case 29: result->after_open.words[3] = 0; break;
+    case 30: result->control.status = 0; break;
+    case 31: result->control.command_count++; result_reply(&result->control, result->control.command_count - 1, BC_STS_SUCCESS); break;
+    case 32: result->calibration.status = -EPROTO; break;
+    case 33: result->control.request.selector = CRYSTALHD_FW_RESEARCH_VERSION_ONLY; break;
+    case 34: result->control.request.size = sizeof(*result); break;
+    case 35: result->after_init.attempted = 2; break;
+    case 36: result->after_open.read_complete = 2; break;
+    case 37: result->control.status = -EIO; result->control.command_count = 2;
+        result->after_init.status = -EIO; result->after_init.read_complete = 0;
+        memset(result->after_init.words, 0, sizeof(result->after_init.words)); break;
+    case 38: result->calibration.words[0] = 1; break;
+    case 39: result->control.status = -EIO; break;
+    case 40: result->control.status = -EPROTO; break;
+    default: CHECK(false);
+    }
+}
+
 int probe_ioctl(int fd, unsigned long command, ...)
 {
     void *argument; va_list args;
@@ -267,6 +371,21 @@ int probe_ioctl(int fd, unsigned long command, ...)
         CHECK(!infos++ && !runs);
         if (info_error) { errno = info_error; return -1; }
         memcpy(argument, &metadata, sizeof(metadata)); return 0;
+    }
+    if (command == CRYSTALHD_FW_RESEARCH_RUN_STATE) {
+        struct crystalhd_fw_research_state_result *result = argument;
+        const unsigned char *bytes = argument;
+        unsigned i;
+        CHECK(infos == 1 && !runs++ && !state_runs++);
+        state_submitted = result->request;
+        CHECK(state_submitted.version == 1 && state_submitted.size == sizeof(*result));
+        CHECK(!state_submitted.flags && !state_submitted.reserved);
+        for (i = sizeof(result->request); i < sizeof(*result); i++) CHECK(!bytes[i]);
+        memset(&submitted, 0, sizeof(submitted));
+        submitted.version = 1; submitted.size = sizeof(result->control);
+        submitted.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
+        if (run_error) { errno = run_error; return -1; }
+        make_state_result(result); return 0;
     }
     CHECK(command == CRYSTALHD_FW_RESEARCH_RUN && infos == 1 && !runs++);
     submitted = ((struct crystalhd_fw_research_result *)argument)->request;
@@ -305,10 +424,11 @@ int __wrap_ioctl(int fd, unsigned long command, ...)
 
 static void reset(void)
 {
-    opens = stats = infos = runs = closes = 0;
+    opens = stats = infos = runs = state_runs = closes = 0;
     open_error = stat_error = info_error = run_error = close_error = 0;
     character = true; output_error = flush_error = false;
     mutation = fault_at = fault_kind = response_pattern = 0;
+    state_mutation = sample_fault_at = sample_fault_kind = 0; state_opaque = false;
     output[0] = errors[0] = 0;
     memset(&metadata, 0, sizeof(metadata));
     metadata.version = 1; metadata.size = sizeof(metadata); metadata.generation = 42;
@@ -325,6 +445,7 @@ static int invoke(char **arguments)
 static char *info_args[] = {"probe", "--info", NULL};
 static char *version_args[] = {"probe", "--version", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *h264_args[] = {"probe", "--h264-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
+static char *state_args[] = {"probe", "--fixed-state", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *h261_args[] = {"probe", "--h261-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *h263_args[] = {"probe", "--h263-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *mpeg1_args[] = {"probe", "--mpeg1-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
@@ -659,8 +780,147 @@ static void test_decoding(void)
     check_decoding(5, true);
 }
 
+static void test_fixed_state(void)
+{
+    static const unsigned read_failures[] = {1, 2, 7, 8, 9};
+    char *invalid[][10] = {
+        {"probe", "--fixed-state", NULL},
+        {"probe", "--fixed-state", "--acknowledge-card-reset", NULL},
+        {"probe", "--fixed-state", "--expected-generation", "42", NULL},
+        {"probe", "--fixed-state", "--fixed-state", "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+        {"probe", "--fixed-state", "--info", "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+        {"probe", "--fixed-state", "--h264-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+        {"probe", "--fixed-state", "--csc-command", "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+        {"probe", "--fixed-state", "--acknowledge-card-reset", "--expected-generation", "42", "--address", "0x6fc", NULL},
+        {"probe", "--fixed-state", "--acknowledge-card-reset", "--expected-generation", "42", "--selector", "2", NULL},
+    };
+    unsigned i, stage, kind, phase;
+    for (i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        reset(); CHECK(invoke(invalid[i]) == 1 && !opens && !output[0]);
+    }
+    reset(); CHECK(!invoke(state_args) && state_runs == 1 && runs == 1);
+    CHECK(strstr(output, "\"fixed_state\":true") && strstr(output, "\"command_count\":5"));
+    CHECK(strstr(output, "\"calibration\":{\"attempted\":true,\"status\":0,\"read_complete\":true,\"raw_words\":[866816,0,0,0]}"));
+    CHECK(strstr(output, "\"after_init\":{\"attempted\":true,\"status\":0,\"read_complete\":true,\"raw_words\":[1,866816,0,0]}"));
+    CHECK(strstr(output, "\"after_open\":{\"attempted\":true,\"status\":0,\"read_complete\":true,\"raw_words\":[1,866816,1,512]}"));
+    check_decoding(5, true);
+    reset(); state_opaque = true; response_pattern = 2;
+    CHECK(!invoke(state_args) && state_runs == 1 && strstr(output, "4294967041,4278190592"));
+    check_decoding(5, true);
+    reset(); metadata.selector_mask = 1;
+    CHECK(invoke(state_args) == 1 && !runs && !state_runs && strstr(errors, "unavailable"));
+    reset(); metadata.selector_mask = 2; CHECK(!invoke(state_args) && state_runs == 1);
+    reset(); metadata.generation++;
+    CHECK(invoke(state_args) == 1 && !runs && !output[0] && strstr(errors, "generation changed"));
+    reset(); metadata.firmware_sha256[0] ^= 1;
+    CHECK(invoke(state_args) == 1 && !runs && !output[0] && strstr(errors, "Invalid research metadata"));
+    reset(); run_error = ENOTTY;
+    CHECK(invoke(state_args) == 1 && state_runs == 1 && runs == 1 && !output[0] && strstr(errors, "no retry"));
+    reset(); run_error = EINTR;
+    CHECK(invoke(state_args) == 1 && state_runs == 1 && runs == 1 && !output[0] && strstr(errors, "no retry"));
+    for (stage = 1; stage <= 3; stage++) {
+        for (i = 0; i < sizeof(read_failures) / sizeof(read_failures[0]); i++) {
+            reset(); sample_fault_at = stage; sample_fault_kind = read_failures[i];
+            CHECK(invoke(state_args) == 1 && state_runs == 1 && output[0]);
+            CHECK(!strstr(errors, "Invalid fixed-state result"));
+            CHECK(strstr(output, "\"read_complete\":false,\"raw_words\":[0,0,0,0]"));
+            if (read_failures[i] == 9)
+                CHECK(strstr(output, "\"attempted\":false,\"status\":-19,\"read_complete\":false"));
+            check_decoding(stage == 3 ? 3 : 2, true);
+        }
+        for (kind = 3; kind <= 6; kind++) {
+            reset(); sample_fault_at = stage; sample_fault_kind = kind;
+            CHECK(invoke(state_args) == 1 && state_runs == 1);
+            if (stage == 1 && kind != 3) CHECK(!output[0] && strstr(errors, "Invalid fixed-state result"));
+            else {
+                CHECK(output[0] && !strstr(errors, "Invalid fixed-state result"));
+                CHECK(strstr(output, "\"status\":-71,\"read_complete\":true,\"raw_words\":"));
+                check_decoding(stage == 3 ? 3 : 2, true);
+            }
+        }
+    }
+    for (phase = 1; phase <= 5; phase++) {
+        for (kind = 1; kind <= 7; kind++) {
+            if (kind == 6) continue;
+            reset(); fault_at = phase; fault_kind = kind;
+            CHECK(invoke(state_args) == 1 && state_runs == 1 && output[0]);
+            CHECK(!strstr(errors, "Invalid fixed-state result"));
+            check_decoding(phase, phase > 2);
+        }
+    }
+    reset(); fault_at = 3; fault_kind = 6;
+    CHECK(invoke(state_args) == 1 && output[0] && !strstr(errors, "Invalid fixed-state result"));
+    CHECK(strstr(output, "\"after_open\":{\"attempted\":false,\"status\":0,\"read_complete\":false,\"raw_words\":[0,0,0,0]}"));
+    for (i = 1; i <= 40; i++) {
+        reset(); state_mutation = i;
+        if (i == 30 || i == 31) { sample_fault_at = 1; sample_fault_kind = 3; }
+        if (i == 38) { sample_fault_at = 1; sample_fault_kind = 1; }
+        if (i == 39) { sample_fault_at = 1; sample_fault_kind = 3; }
+        if (i == 40) { sample_fault_at = 2; sample_fault_kind = 1; }
+        CHECK(invoke(state_args) == 1 && state_runs == 1 && !output[0]);
+        CHECK(strstr(errors, "Invalid fixed-state result"));
+    }
+    for (i = 1; i <= 29; i++) {
+        reset(); mutation = i;
+        CHECK(invoke(state_args) == 1 && !output[0] && strstr(errors, "Invalid fixed-state result"));
+    }
+    for (i = 33; i <= 35; i++) {
+        reset(); mutation = i;
+        CHECK(invoke(state_args) == 1 && output[0] && !strstr(errors, "Invalid fixed-state result"));
+    }
+    reset(); mutation = 41; CHECK(invoke(state_args) == 1 && output[0]);
+    CHECK(strstr(output, "\"firmware_hash_valid\":false,\"observed_firmware_sha256\":null"));
+    reset(); mutation = 43; CHECK(invoke(state_args) == 1 && output[0]);
+    for (i = 51; i <= 52; i++) {
+        reset(); mutation = i; CHECK(invoke(state_args) == 1 && output[0]);
+        check_decoding(5, true);
+    }
+    reset(); close_error = EINTR;
+    CHECK(invoke(state_args) == 1 && output[0] && strstr(errors, "close research device"));
+    reset(); output_error = true; CHECK(invoke(state_args) == 1 && state_runs == 1);
+    reset(); flush_error = true; CHECK(invoke(state_args) == 1 && state_runs == 1);
+}
+
+static void state_json_examples(void)
+{
+    static const unsigned read_failures[] = {1, 2, 7, 8, 9};
+    static const unsigned control_failures[] = {33, 34, 35, 41, 43, 51, 52, 36};
+    unsigned pattern, stage, kind, phase, i;
+    for (pattern = 0; pattern <= 2; pattern++) {
+        reset(); response_pattern = pattern; CHECK(!invoke(state_args)); fputs(output, stdout);
+    }
+    reset(); state_opaque = true; response_pattern = 2;
+    CHECK(!invoke(state_args)); fputs(output, stdout);
+    for (stage = 1; stage <= 3; stage++) {
+        for (i = 0; i < sizeof(read_failures) / sizeof(read_failures[0]); i++) {
+            reset(); sample_fault_at = stage; sample_fault_kind = read_failures[i];
+            CHECK(invoke(state_args) == 1 && output[0]); fputs(output, stdout);
+        }
+        for (kind = 3; kind <= 6; kind++) {
+            if (stage == 1 && kind != 3) continue;
+            reset(); sample_fault_at = stage; sample_fault_kind = kind;
+            CHECK(invoke(state_args) == 1 && output[0]); fputs(output, stdout);
+        }
+    }
+    for (phase = 1; phase <= 5; phase++) {
+        for (kind = 1; kind <= 7; kind++) {
+            if (kind == 6) continue;
+            reset(); fault_at = phase; fault_kind = kind;
+            CHECK(invoke(state_args) == 1 && output[0]); fputs(output, stdout);
+        }
+    }
+    reset(); fault_at = 3; fault_kind = 6; CHECK(invoke(state_args) == 1); fputs(output, stdout);
+    for (i = 0; i < sizeof(control_failures) / sizeof(control_failures[0]); i++) {
+        reset(); mutation = control_failures[i]; CHECK(invoke(state_args) == 1 && output[0]); fputs(output, stdout);
+    }
+    reset(); close_error = EINTR; CHECK(invoke(state_args) == 1 && output[0]); fputs(output, stdout);
+}
+
 int main(int argc, char **argv)
 {
+    if (argc == 2 && !strcmp(argv[1], "--state-json-examples")) {
+        state_json_examples(); return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--json-examples")) {
         reset(); CHECK(!invoke(info_args)); fputs(output, stdout);
         reset(); CHECK(!invoke(version_args)); fputs(output, stdout);
@@ -723,7 +983,7 @@ int main(int argc, char **argv)
         return 0;
     }
     CHECK(argc == 1);
-    test_arguments(); test_metadata(); test_errors(); test_results(); test_named_controls(); test_decoding(); test_raw_commands();
+    test_arguments(); test_metadata(); test_errors(); test_results(); test_named_controls(); test_decoding(); test_raw_commands(); test_fixed_state();
     printf("Firmware probe CLI: %u checks passed\n", checks);
     return 0;
 }

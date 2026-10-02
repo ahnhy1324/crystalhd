@@ -8,7 +8,8 @@ cleanup()
 {
     rm -f "$probe_test_dir/check" "$probe_test_dir/probe-functions.h" \
         "$probe_test_dir/device-functions.h" "$probe_test_dir/module-functions.h" \
-        "$probe_test_dir/status-functions.h" "$probe_test_dir/cli.o" "$probe_test_dir/cli-check"
+        "$probe_test_dir/status-functions.h" "$probe_test_dir/hw-transaction-functions.h" \
+        "$probe_test_dir/cli.o" "$probe_test_dir/cli-check"
     rmdir "$probe_test_dir"
 }
 trap cleanup EXIT
@@ -54,6 +55,13 @@ awk '
     copying && /^}/ { copying = 0 }
     END { if (found != 1 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" > "$probe_test_dir/status-functions.h"
+awk '
+    /^BC_STATUS crystalhd_hw_fw_cmd_enter\(/ ||
+    /^void crystalhd_hw_fw_cmd_leave\(/ { copying = 1; found++ }
+    copying { print }
+    copying && /^}/ { copying = 0 }
+    END { if (found != 2 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_hw.c" > "$probe_test_dir/hw-transaction-functions.h"
 
 # The kernel hash implementation is mocked below, but the pin must match the
 # shipped blob exactly. Also evaluate Kbuild with the default and opt-in flags.
@@ -64,6 +72,7 @@ import pathlib
 import platform
 import re
 import shlex
+import struct
 import subprocess
 import sys
 
@@ -76,7 +85,9 @@ uapi = (root / 'include/crystalhd_fw_research.h').read_text()
 pin = re.search(r'crystalhd_fw_research_sha256\[SHA256_DIGEST_SIZE\] = \{(.*?)\};',
                 source, re.S).group(1)
 digest = bytes(int(value, 16) for value in re.findall(r'0x([0-9a-fA-F]{2})', pin))
-assert digest == hashlib.sha256((root / 'firmware/fwbin/70015/bcm70015fw.bin').read_bytes()).digest()
+blob = (root / 'firmware/fwbin/70015/bcm70015fw.bin').read_bytes()
+assert digest == hashlib.sha256(blob).digest()
+assert len(blob) == 0xd3014 and struct.unpack_from('<I', blob, 0x6fc)[0] == 0xd3a00
 assert digest.hex() == re.search(r'CRYSTALHD_FW_RESEARCH_FIRMWARE_SHA256\s+\\\s*"([0-9a-f]+)"', uapi).group(1)
 legacy = (root / 'include/7411d.h').read_text()
 wire_header = (root / 'driver/linux/crystalhd_fw_if.h').read_text()
@@ -140,6 +151,14 @@ _Static_assert(offsetof(struct crystalhd_fw_research_result, replies) == 104, "r
 _Static_assert(offsetof(struct crystalhd_fw_research_result, firmware_hash_valid) == 68, "hash validity");
 _Static_assert(_IOC_SIZE(CRYSTALHD_FW_RESEARCH_RUN) == 1488, "encoding");
 _Static_assert(CRYSTALHD_FW_RESEARCH_RUN == 0xc5d05292U, "ioctl");
+_Static_assert(sizeof(struct crystalhd_fw_research_state_request) == 16, "state request");
+_Static_assert(sizeof(struct crystalhd_fw_research_state_sample) == 32, "state sample");
+_Static_assert(sizeof(struct crystalhd_fw_research_state_result) == 1600, "state result");
+_Static_assert(offsetof(struct crystalhd_fw_research_state_result, control) == 16, "state control");
+_Static_assert(offsetof(struct crystalhd_fw_research_state_result, calibration) == 1504, "state calibration");
+_Static_assert(offsetof(struct crystalhd_fw_research_state_result, after_init) == 1536, "state init");
+_Static_assert(offsetof(struct crystalhd_fw_research_state_result, after_open) == 1568, "state open");
+_Static_assert(CRYSTALHD_FW_RESEARCH_RUN_STATE == 0xc6405293U, "state ioctl");
 _Static_assert(CRYSTALHD_FW_RESEARCH_VERSION_ONLY == 1U, "existing version selector");
 _Static_assert(CRYSTALHD_FW_RESEARCH_H264_CONTROL == 2U, "existing H264 selector");
 _Static_assert(CRYSTALHD_FW_RESEARCH_H261_CONTROL == 3U, "H261 selector");
@@ -217,7 +236,10 @@ for probe_sanitize in no yes; do
         UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 "$probe_test_dir/cli-check"
     probe_linkage_fuse "$probe_test_dir/cli.o" 1
     probe_linkage_fuse "$probe_test_dir/cli-check" 0
-    "$probe_test_dir/cli-check" --json-examples | "${PYTHON3:-python3}" -B -c '
+    {
+        "$probe_test_dir/cli-check" --json-examples
+        "$probe_test_dir/cli-check" --state-json-examples
+    } | "${PYTHON3:-python3}" -B -c '
 import json, sys
 def unique_object(pairs):
     result = {}
@@ -229,7 +251,7 @@ def invalid_constant(value):
     raise AssertionError("non-JSON constant: " + value)
 lines = list(sys.stdin)
 examples = [json.loads(line, object_pairs_hook=unique_object, parse_constant=invalid_constant) for line in lines]
-assert len(examples) == 308
+assert len(examples) == 376
 info, version, h264, failure, nohash, rejectedhash, h261, h263, mpeg1, rejected, readfail = examples[:11]
 assert info["generation"] == "42" and info["research_selector_mask"] == 2047
 assert lines[0] == "{\"version\":1,\"generation\":\"42\",\"research_selector_mask\":2047,\"expected_firmware_sha256\":\"" + info["expected_firmware_sha256"] + "\"}\n"
@@ -286,7 +308,7 @@ def check_result(result):
                 u32(value)
         if reply["command"] == 0x73763103:
             assert reply["decoded_response"] is None
-for result in examples[1:]:
+for result in examples[1:308]:
     check_result(result)
 for result, count in ((version, 2), (h264, 5), (h261, 4), (h263, 4), (mpeg1, 4)):
     assert result["generation"] == "42" and result["status"] == 0
@@ -387,7 +409,56 @@ for selector, command in enumerate((0x7376310b, 0x7376311c, 0x73763180,
     result = examples[position]; position += 1
     assert result["selector"] == selector and result["status"] == 0 and result["command_count"] == 3
     assert result["replies"][2]["raw_response_words"][3] == 7 and result["replies"][2]["decoded_response"] is None
-assert position == len(examples)
+assert position == 308
 print("Firmware probe CLI: original 152 plus 156 raw-route strict JSON examples verified")
+states = examples[308:]
+names = ("calibration", "after_init", "after_open")
+for result in states:
+    assert set(result) == {"version", "fixed_state", "control", "samples"}
+    assert result["version"] == 1 and result["fixed_state"] is True
+    control = result["control"]
+    check_result(control)
+    assert control["selector"] == 2
+    assert set(result["samples"]) == set(names)
+    previous = True
+    for index, name in enumerate(names):
+        sample = result["samples"][name]
+        assert set(sample) == {"attempted", "status", "read_complete", "raw_words"}
+        assert type(sample["attempted"]) is bool and type(sample["read_complete"]) is bool
+        assert type(sample["status"]) is int and -4095 <= sample["status"] <= 0
+        words = sample["raw_words"]
+        assert isinstance(words, list) and len(words) == 4
+        for word in words:
+            u32(word)
+        if index == 0:
+            assert words[1:] == [0, 0, 0]
+        if sample["read_complete"]:
+            assert sample["attempted"]
+            matches = (words[0] == 0xd3a00 if index == 0 else
+                       words[:2] == [1, 0xd3a00] and
+                       words[2] & 0xff == (1 if index == 2 else 0) and
+                       words[3] & 0xffffff == (0x200 if index == 2 else 0))
+            assert sample["status"] == (0 if matches else -71)
+        else:
+            assert words == [0, 0, 0, 0]
+            assert not sample["attempted"] or sample["status"] < 0
+        if sample["attempted"] or sample["status"]:
+            assert previous and control["command_count"] >= (3 if index == 2 else 2)
+            assert all(r["transport_status"] == 0 and r["header_matches"] for r in control["replies"][:2])
+        if sample["status"]:
+            assert control["status"] == sample["status"] and control["command_count"] == (3 if index == 2 else 2)
+        previous = sample["attempted"] and sample["read_complete"] and not sample["status"]
+    if control["status"] == 0:
+        assert all(result["samples"][name]["read_complete"] for name in names)
+    if control["command_count"] > 2:
+        assert all(result["samples"][name]["read_complete"] and not result["samples"][name]["status"] for name in names[:2])
+    if control["command_count"] > 3:
+        assert result["samples"]["after_open"]["read_complete"] and not result["samples"]["after_open"]["status"]
+assert all(states[i]["control"]["status"] == 0 for i in range(4))
+assert states[3]["samples"]["after_init"]["raw_words"][2] & 0xffffff00
+assert states[9]["samples"]["calibration"]["status"] == -71
+assert all(states[i]["control"]["status"] < 0 for i in range(4, 67))
+assert states[67]["control"]["status"] == 0
+print("Firmware probe CLI: 68 fixed-state strict JSON examples verified")
 '
 done
