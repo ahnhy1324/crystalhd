@@ -17,6 +17,7 @@
 
 #include "crystalhd_lnx.h"
 #include "crystalhd_compat_ioctl.h"
+#include "crystalhd_fw_research.h"
 
 #include <linux/capability.h>
 #include <linux/overflow.h>
@@ -55,6 +56,37 @@ static int crystalhd_device_reserve_generation(u64 *generation)
 	*generation = ++chd_device_generation;
 	return 0;
 }
+
+#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+int crystalhd_fw_research_generation(u64 *generation)
+{
+	struct crystalhd_adp *adp;
+	int rc = -ENODEV;
+
+	if (!generation)
+		return -EINVAL;
+	*generation = 0;
+	down_read(&chd_device_lock);
+	adp = g_adp_info;
+	if (!adp || !READ_ONCE(adp->present))
+		goto unlock_device;
+	down_read(&adp->user_lock);
+	if (!READ_ONCE(adp->present) || !adp->generation ||
+	    adp->generation != chd_device_generation)
+		goto unlock_user;
+	if (!adp->hw_accessible) {
+		rc = -EAGAIN;
+		goto unlock_user;
+	}
+	*generation = adp->generation;
+	rc = 0;
+unlock_user:
+	up_read(&adp->user_lock);
+unlock_device:
+	up_read(&chd_device_lock);
+	return rc;
+}
+#endif
 
 int crystalhd_device_enter(u64 generation, bool exclusive,
 			   struct crystalhd_device_access *access)
@@ -1593,11 +1625,21 @@ static int __init chd_dec_module_init(void)
 	rc = crystalhd_v4l2_init();
 	if (rc)
 		return rc;
+#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+	rc = crystalhd_fw_research_init();
+	if (rc) {
+		crystalhd_v4l2_cleanup();
+		return rc;
+	}
+#endif
 	rc = pci_register_driver(&bc_chd_driver);
 
 	if (rc < 0) {
 		printk(KERN_ERR "%s: Could not find any devices. err:%d\n",
 		       __func__, rc);
+#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+		crystalhd_fw_research_cleanup();
+#endif
 		crystalhd_v4l2_cleanup();
 	}
 
@@ -1610,6 +1652,9 @@ static void __exit chd_dec_module_cleanup(void)
 	printk(KERN_DEBUG "Unloading crystalhd %d.%d.%d\n",
 	       crystalhd_kmod_major, crystalhd_kmod_minor, crystalhd_kmod_rev);
 
+#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+	crystalhd_fw_research_cleanup();
+#endif
 	pci_unregister_driver(&bc_chd_driver);
 	crystalhd_v4l2_cleanup();
 }
