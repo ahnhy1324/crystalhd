@@ -110,6 +110,29 @@ jobs:
             --preflight "$RUNNER_TEMP/drain.h264" 179 || probe_status=$?
           test "$probe_status" -eq 2
 
+      - name: Verify MPEG-1 research admission without hardware
+        run: |
+          ffmpeg -nostdin -hide_banner -loglevel error -xerror -n \
+            -f lavfi -i "nullsrc=size=352x288:rate=25,geq=lum='16+7*N':cb=128:cr=128" \
+            -frames:v 30 -an -pix_fmt yuv420p -c:v mpeg1video \
+            -threads 1 -g 1 -bf 0 -q:v 4 -f mpeg1video "$RUNNER_TEMP/mpeg1.m1v"
+          ffmpeg -nostdin -hide_banner -loglevel error -xerror \
+            -i "$RUNNER_TEMP/mpeg1.m1v" -map 0:v:0 -f null -
+          LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" tests/library-drain-test \
+            --preflight "$RUNNER_TEMP/mpeg1.m1v" 30 --scaler-test 0 --mpeg1-via-mpeg2
+          probe_status=0
+          LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" tests/library-drain-test \
+            --preflight "$RUNNER_TEMP/mpeg1.m1v" 30 || probe_status=$?
+          test "$probe_status" -eq 2
+          probe_status=0
+          LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" tests/library-drain-test \
+            --preflight "$RUNNER_TEMP/mpeg1.m1v" 29 --mpeg1-via-mpeg2 || probe_status=$?
+          test "$probe_status" -eq 2
+          probe_status=0
+          LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" tests/library-drain-test \
+            --preflight "$RUNNER_TEMP/drain.h264" 180 --mpeg1-via-mpeg2 || probe_status=$?
+          test "$probe_status" -eq 2
+
       - name: Verify local audio/video controls against software decoding
         run: |
           sh tests/generate-browser-sample.sh "$RUNNER_TEMP/av360.mp4" --av-360p

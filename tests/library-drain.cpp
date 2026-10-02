@@ -41,6 +41,7 @@ struct Packet {
     gsize reservation;
 };
 struct Input {
+    AVCodecID codec = AV_CODEC_ID_NONE;
     BC_MEDIA_SUBTYPE subtype = BC_MSUBTYPE_INVALID;
     unsigned width = 0, height = 0;
     std::vector<uint8_t> metadata;
@@ -68,10 +69,15 @@ struct Options {
     unsigned iterations = 1;
     bool scaler_test = false;
     unsigned scale_width = 0;
+    bool mpeg1_via_mpeg2 = false;
 };
 
 static bool ParseArguments(std::vector<const char *> arguments, Options *options)
 {
+    if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--mpeg1-via-mpeg2")) {
+        options->mpeg1_via_mpeg2 = true;
+        arguments.pop_back();
+    }
     if (arguments.size() >= 4 &&
         !std::strcmp(arguments[arguments.size() - 2], "--scaler-test")) {
         const char *width = arguments.back();
@@ -86,7 +92,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         arguments.resize(arguments.size() - 2);
     }
     if (arguments.size() == 2 && !std::strcmp(arguments[1], "--self-test")) {
-        if (options->scaler_test) return false;
+        if (options->scaler_test || options->mpeg1_via_mpeg2) return false;
         options->mode = Mode::SelfTest;
         return true;
     }
@@ -102,6 +108,26 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
     options->mode = preflight ? Mode::Preflight : Mode::Hardware;
     options->path = arguments[2];
     return true;
+}
+
+// Test-only MPEG-1 admission through the existing algorithm-1 channel. Do not
+// use BC_MSUBTYPE_MPEG1VIDEO: the format setter has no MPEG-1 algorithm branch.
+static BC_MEDIA_SUBTYPE InputSubtype(AVCodecID codec, const char *demuxer,
+                                    bool mpeg1_via_mpeg2)
+{
+    if (!demuxer) return BC_MSUBTYPE_INVALID;
+    if (mpeg1_via_mpeg2)
+        return codec == AV_CODEC_ID_MPEG1VIDEO && !std::strcmp(demuxer, "mpegvideo")
+            ? BC_MSUBTYPE_MPEG2VIDEO : BC_MSUBTYPE_INVALID;
+    if (codec == AV_CODEC_ID_H264 && !std::strcmp(demuxer, "h264"))
+        return BC_MSUBTYPE_H264;
+    if (codec == AV_CODEC_ID_MPEG2VIDEO && !std::strcmp(demuxer, "mpegvideo"))
+        return BC_MSUBTYPE_MPEG2VIDEO;
+    if (codec == AV_CODEC_ID_VC1 && !std::strcmp(demuxer, "vc1"))
+        return BC_MSUBTYPE_VC1;
+    if (codec == AV_CODEC_ID_WMV3 && !std::strcmp(demuxer, "asf"))
+        return BC_MSUBTYPE_WMV3;
+    return BC_MSUBTYPE_INVALID;
 }
 
 // Conditional full-frame firmware expectation, not a general scaling oracle.
@@ -293,6 +319,41 @@ static bool SelfTest()
     options = Options{};
     check(!ParseArguments({"probe", "--self-test", "--scaler-test", "320"}, &options),
           "self-test does not accept hardware options");
+    options = Options{};
+    check(ParseArguments({"probe", "--preflight", "fixture", "30",
+                          "--mpeg1-via-mpeg2"}, &options) &&
+          options.mode == Mode::Preflight && options.mpeg1_via_mpeg2,
+          "device-free MPEG-1 research preflight");
+    options = Options{};
+    check(ParseArguments({"probe", "--hardware", "fixture", "30", "10", "2",
+                          "--scaler-test", "0", "--mpeg1-via-mpeg2"}, &options) &&
+          options.mode == Mode::Hardware && options.mpeg1_via_mpeg2 &&
+          options.scaler_test && options.scale_width == 0 && options.iterations == 2,
+          "explicit MPEG-1 research and pixel-hash arguments");
+    for (const std::vector<const char *> &invalid : {
+             std::vector<const char *>{"probe", "--self-test", "--mpeg1-via-mpeg2"},
+             {"probe", "--hardware", "fixture", "30", "--mpeg1-via-mpeg2", "--mpeg1-via-mpeg2"},
+             {"probe", "--hardware", "fixture", "30", "--mpeg1-via-mpeg2", "--scaler-test", "0"}}) {
+        options = Options{};
+        check(!ParseArguments(invalid, &options), "invalid research option placement");
+    }
+    check(InputSubtype(AV_CODEC_ID_MPEG1VIDEO, "mpegvideo", true) == BC_MSUBTYPE_MPEG2VIDEO &&
+          InputSubtype(AV_CODEC_ID_MPEG1VIDEO, "mpegvideo", false) == BC_MSUBTYPE_INVALID &&
+          InputSubtype(AV_CODEC_ID_MPEG1VIDEO, "mpeg", true) == BC_MSUBTYPE_INVALID &&
+          InputSubtype(AV_CODEC_ID_MPEG1VIDEO, nullptr, true) == BC_MSUBTYPE_INVALID,
+          "MPEG-1 probe is explicit and elementary-stream-only");
+    for (const std::pair<AVCodecID, const char *> &native : {
+             std::pair<AVCodecID, const char *>{AV_CODEC_ID_H264, "h264"},
+             {AV_CODEC_ID_MPEG2VIDEO, "mpegvideo"}, {AV_CODEC_ID_VC1, "vc1"},
+             {AV_CODEC_ID_WMV3, "asf"}})
+        check(InputSubtype(native.first, native.second, false) != BC_MSUBTYPE_INVALID &&
+              InputSubtype(native.first, native.second, true) == BC_MSUBTYPE_INVALID,
+              "native admission unchanged and excluded from MPEG-1 probe");
+    check(InputSubtype(AV_CODEC_ID_MPEG2VIDEO, "mpegvideo", false) == BC_MSUBTYPE_MPEG2VIDEO &&
+          InputSubtype(AV_CODEC_ID_H264, "mpegvideo", false) == BC_MSUBTYPE_INVALID &&
+          InputSubtype(AV_CODEC_ID_HEVC, "hevc", true) == BC_MSUBTYPE_INVALID &&
+          InputSubtype(AV_CODEC_ID_HEVC, "hevc", false) == BC_MSUBTYPE_INVALID,
+          "research option does not admit another decoder protocol");
     unsigned width = 0, height = 0;
     check(ScalerGeometry(640, 360, 0, &width, &height) && width == 640 && height == 360 &&
           ScalerGeometry(640, 360, 640, &width, &height) && width == 640 && height == 360 &&
@@ -361,7 +422,8 @@ static bool StartCode(const uint8_t *data, size_t size)
            (data[2] == 1 || (data[2] == 0 && data[3] == 1));
 }
 
-static bool Load(const char *path, unsigned expected, Deadline *deadline, Input *input)
+static bool Load(const char *path, unsigned expected, Deadline *deadline, Input *input,
+                 bool mpeg1_via_mpeg2)
 {
     struct stat file;
     if (stat(path, &file) || !S_ISREG(file.st_mode) || file.st_size <= 0 ||
@@ -382,14 +444,8 @@ static bool Load(const char *path, unsigned expected, Deadline *deadline, Input 
     if (ok) {
         const AVCodecParameters *parameters = format->streams[index]->codecpar;
         const char *demuxer = format->iformat->name;
-        if (parameters->codec_id == AV_CODEC_ID_H264 && !std::strcmp(demuxer, "h264"))
-            input->subtype = BC_MSUBTYPE_H264;
-        else if (parameters->codec_id == AV_CODEC_ID_MPEG2VIDEO && !std::strcmp(demuxer, "mpegvideo"))
-            input->subtype = BC_MSUBTYPE_MPEG2VIDEO;
-        else if (parameters->codec_id == AV_CODEC_ID_VC1 && !std::strcmp(demuxer, "vc1"))
-            input->subtype = BC_MSUBTYPE_VC1;
-        else if (parameters->codec_id == AV_CODEC_ID_WMV3 && !std::strcmp(demuxer, "asf"))
-            input->subtype = BC_MSUBTYPE_WMV3;
+        input->codec = parameters->codec_id;
+        input->subtype = InputSubtype(input->codec, demuxer, mpeg1_via_mpeg2);
         ok = input->subtype != BC_MSUBTYPE_INVALID && parameters->width > 0 &&
              parameters->width <= 1920 && parameters->height > 0 && parameters->height <= 1088 &&
              (parameters->field_order == AV_FIELD_UNKNOWN || parameters->field_order == AV_FIELD_PROGRESSIVE);
@@ -655,7 +711,7 @@ int main(int argc, char **argv)
         std::fprintf(stderr, "usage: %s --self-test | --preflight LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
-            "[--scaler-test WIDTH_OR_0]\n", argv[0]);
+            "[--scaler-test WIDTH_OR_0] [--mpeg1-via-mpeg2]\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
@@ -669,12 +725,16 @@ int main(int argc, char **argv)
     std::signal(SIGTERM, Interrupt);
     Deadline deadline(options.seconds);
     Input input;
-    if (!Load(options.path, options.expected, &deadline, &input)) {
+    if (!Load(options.path, options.expected, &deadline, &input, options.mpeg1_via_mpeg2)) {
         phase1_progress_close(&progress);
         return 2;
     }
     std::printf("Preflight: %ux%u subtype=%u packets=%zu metadata=%zu\n",
                 input.width, input.height, input.subtype, input.packets.size(), input.metadata.size());
+    if (options.mpeg1_via_mpeg2)
+        std::printf("MPEG-1 research: input-codec=%s configured-algorithm=1 "
+                    "route=MPEG2VIDEO selector5-not-used\n",
+                    avcodec_get_name(input.codec));
     if (options.scaler_test) {
         unsigned width = 0, height = 0;
         if (!ScalerGeometry(input.width, input.height, options.scale_width, &width, &height)) {
