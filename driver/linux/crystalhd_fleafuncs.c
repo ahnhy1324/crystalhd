@@ -810,16 +810,20 @@ void crystalhd_flea_handle_PicQSts_intr(struct crystalhd_hw *hw)
 
 void crystalhd_flea_update_tx_buff_info(struct crystalhd_hw *hw)
 {
-	TX_INPUT_BUFFER_INFO	TxBuffInfo;
+	TX_INPUT_BUFFER_INFO	TxBuffInfo = {0};
 	uint32_t ReadSzInDWords=0;
+	BC_STATUS sts;
 
 	ReadSzInDWords = (sizeof(TxBuffInfo) - sizeof(TxBuffInfo.Reserved))/4;
-	hw->pfnDevDRAMRead(hw, hw->TxBuffInfoAddr, ReadSzInDWords, (uint32_t*)&TxBuffInfo);
+	sts = hw->pfnDevDRAMRead(hw, hw->TxBuffInfoAddr, ReadSzInDWords,
+			       (uint32_t *)&TxBuffInfo);
+	if (sts != BC_STS_SUCCESS)
+		goto invalidate;
 
 	if(TxBuffInfo.DramBuffAdd % 4)
 	{
 		printk("Tx Err:: DWORD UNAligned Tx Addr. Not Updating\n");
-		return;
+		goto invalidate;
 	}
 
 	hw->TxFwInputBuffInfo.DramBuffAdd			= TxBuffInfo.DramBuffAdd;
@@ -829,6 +833,11 @@ void crystalhd_flea_update_tx_buff_info(struct crystalhd_hw *hw)
 	hw->TxFwInputBuffInfo.SeqNum				= TxBuffInfo.SeqNum;
 
 	return;
+
+invalidate:
+	/* A failed notification must not leave previously advertised space usable. */
+	hw->TxFwInputBuffInfo.DramBuffAdd = 0;
+	hw->TxFwInputBuffInfo.DramBuffSzInBytes = 0;
 }
 
 /* was HWFleaNotifyFllChange */

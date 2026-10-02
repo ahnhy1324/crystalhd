@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,6 +16,18 @@
 struct _BC_DTS_PROC_OUT;
 #include "bc_dts_defs.h"
 #include "tx-admission-types.h"
+#include "tx-admission-flea-types.h"
+
+_Static_assert(sizeof(TX_INPUT_BUFFER_INFO) == 8 * sizeof(uint32_t),
+               "TX notification is eight DWORDs including two reserved words");
+_Static_assert(offsetof(TX_INPUT_BUFFER_INFO, DramBuffAdd) == 0 &&
+               offsetof(TX_INPUT_BUFFER_INFO, DramBuffSzInBytes) == 4 &&
+               offsetof(TX_INPUT_BUFFER_INFO, HostXferSzInBytes) == 8 &&
+               offsetof(TX_INPUT_BUFFER_INFO, Flags) == 12 &&
+               offsetof(TX_INPUT_BUFFER_INFO, SeqNum) == 16 &&
+               offsetof(TX_INPUT_BUFFER_INFO, ChannelID) == 20 &&
+               offsetof(TX_INPUT_BUFFER_INFO, Reserved) == 24,
+               "TX notification wire fields retain their exact DWORD offsets");
 
 typedef uint8_t u8;
 typedef uint32_t u32;
@@ -136,7 +149,10 @@ struct crystalhd_hw {
     unsigned lock;
     struct crystalhd_dioq *tx_freeq, *tx_actq;
     struct { unsigned cin_busy; } stats;
-    struct { uint32_t DramBuffAdd, HostXferSzInBytes; } TxFwInputBuffInfo;
+    TX_INPUT_BUFFER_INFO TxFwInputBuffInfo;
+    uint32_t TxBuffInfoAddr, EmptyCnt;
+    bool WakeUpDecodeDone, SingleThreadAppFIFOEmpty;
+    enum FLEA_POWER_STATES FleaPowerState;
     uint32_t tx_list_post_index, tx_ioq_tag_seed;
     enum LIST_STATUS TxList0Sts, TxList1Sts;
     bool (*pfnCheckInputFIFO)(struct crystalhd_hw *, uint32_t, uint32_t *, bool, uint8_t *);
@@ -144,6 +160,9 @@ struct crystalhd_hw {
     BC_STATUS (*pfnStopTxDMA)(struct crystalhd_hw *);
     BC_STATUS (*pfnDoFirmwareCmd)(struct crystalhd_hw *, BC_FW_CMD *);
     BC_STATUS (*pfnIssuePause)(struct crystalhd_hw *, bool);
+    BC_STATUS (*pfnDevDRAMRead)(struct crystalhd_hw *, uint32_t, uint32_t, uint32_t *);
+    BC_STATUS (*pfnDevDRAMWrite)(struct crystalhd_hw *, uint32_t, uint32_t,
+                               const uint32_t *);
     int fetch_sem;
     struct tx_dma_pkt tx_pkt_pool[DMA_ENGINE_CNT];
 };
@@ -200,6 +219,7 @@ static struct {
     unsigned wakes, irq_depth, irq_disables, irq_enables, fifo_calls, busy;
     unsigned firmware_calls, firmware_depth, bus_clears, bus_drains;
     unsigned callback_calls, masks;
+    unsigned queue_fetches, queue_adds;
     unsigned sleep_budget[4], sleep_budget_count, completion_budget;
     unsigned post_delay_ms, wait_entry_delay_ms;
     unsigned cancel_on_sleep, remove_on_sleep, absolute_waits;
@@ -215,6 +235,11 @@ static struct {
     void *seen_callback_context;
     uint8_t seen_flags, transfer_flags;
     uint32_t seen_destination, transfer_size;
+    struct {
+        TX_INPUT_BUFFER_INFO payload;
+        BC_STATUS status;
+        unsigned copied_words, reads, writes, wakes;
+    } flea;
 } run;
 
 static bool signal_pending(void *task)
@@ -402,6 +427,7 @@ static void crystalhd_link_disable_interrupts(struct crystalhd_hw *hw)
 static void *crystalhd_dioq_fetch(struct crystalhd_dioq *queue)
 {
     struct tx_dma_pkt *owned = queue->head;
+    run.queue_fetches++;
     Check(queue == &freeq || queue == &activeq,
           "submission or cancellation fetches from a TX ownership queue");
     queue->head = queue->next;
@@ -425,6 +451,7 @@ static void *crystalhd_dioq_find_and_fetch(struct crystalhd_dioq *queue, uint32_
 static BC_STATUS crystalhd_dioq_add(struct crystalhd_dioq *queue,
                                   struct tx_dma_pkt *owned, bool wake, uint32_t tag)
 {
+    run.queue_adds++;
     Check((owned == packet0 || owned == &packet2) && !queue->next && !wake,
           "a packet is returned to exactly one queue");
     if (queue == &activeq) {
@@ -686,6 +713,42 @@ static int down_interruptible(int *sem) { Check(*sem == 1, "capture semaphore is
 static void down(int *sem) { (void)down_interruptible(sem); }
 static void up(int *sem) { Check(*sem == 0, "capture semaphore is held"); *sem = 1; }
 
+static BC_STATUS FleaRead(struct crystalhd_hw *hw, uint32_t address,
+                          uint32_t words, uint32_t *data)
+{
+    Check(hw == &hardware && address == hardware.TxBuffInfoAddr && words == 6,
+          "the actual TX notification reads exactly six DWORDs from its capture address");
+    Check(!hardware.lock && !hardware.dma_fault,
+          "notification guarding introduces neither a hardware lock nor a fault latch");
+    for (unsigned i = 0; i < 8; i++)
+        Check(data[i] == 0, "the whole local notification is initialized before a fallible read");
+    Check(run.flea.copied_words <= words,
+          "the read boundary copies at most the requested nonreserved words");
+    if (run.flea.copied_words > words)
+        abort();
+    memcpy(data, &run.flea.payload, run.flea.copied_words * sizeof(uint32_t));
+    run.flea.reads++;
+    return run.flea.status;
+}
+
+static BC_STATUS FleaWrite(struct crystalhd_hw *hw, uint32_t address,
+                           uint32_t words, const uint32_t *data)
+{
+    (void)hw; (void)address; (void)words; (void)data;
+    run.flea.writes++;
+    Check(false, "TX notification tests never request firmware WRAP or write memory");
+    return BC_STS_ERROR;
+}
+
+static bool crystalhd_flea_wake_up_hw(struct crystalhd_hw *hw)
+{
+    (void)hw;
+    run.flea.wakes++;
+    Check(false, "FIFO tests use the wake-completed ACTIVE path, not a wake-up substitute");
+    return false;
+}
+
+#include "tx-admission-flea.h"
 #include "tx-admission-buffer.h"
 #include "tx-admission-hardware.h"
 #include "tx-admission-command.h"
@@ -766,6 +829,9 @@ static void Reset(void)
         .tx_freeq = &freeq, .tx_actq = &activeq, .tx_ioq_tag_seed = 0x100,
         .pfnCheckInputFIFO = Fifo, .pfnStartTxDMA = Start, .pfnStopTxDMA = Stop,
         .pfnDoFirmwareCmd = Firmware, .pfnIssuePause = Pause, .fetch_sem = 1,
+        .pfnDevDRAMRead = FleaRead, .pfnDevDRAMWrite = FleaWrite,
+        .TxBuffInfoAddr = 0x00d35000, .WakeUpDecodeDone = true,
+        .FleaPowerState = FLEA_PS_ACTIVE,
         .TxFwInputBuffInfo.DramBuffAdd = 0x8000 };
     *packet0 = (struct tx_dma_pkt){ .desc_mem.phy_addr = 0x1000 };
     packet2 = (struct tx_dma_pkt){ .desc_mem.phy_addr = 0x2000 };
@@ -1903,11 +1969,255 @@ static void ActualMappingLifetime(void)
     map_boundary.active = false;
 }
 
+static TX_INPUT_BUFFER_INFO FleaNotificationReset(void)
+{
+    Reset();
+    hardware.TxFwInputBuffInfo = (TX_INPUT_BUFFER_INFO){
+        .DramBuffAdd = 0x8000, .DramBuffSzInBytes = 0x40000,
+        .HostXferSzInBytes = 0x87654321, .Flags = 0xa5a50000,
+        .SeqNum = 0xfedcba98, .ChannelID = 0x76543210,
+        .Reserved = { 0xcafebabe, 0xdeadbeef },
+    };
+    run.flea.payload = (TX_INPUT_BUFFER_INFO){
+        .DramBuffAdd = 0xa000, .DramBuffSzInBytes = 0x80000,
+        .HostXferSzInBytes = 0x10203040, .Flags = 0x80000000,
+        .SeqNum = UINT32_MAX, .ChannelID = 0x11111111,
+        .Reserved = { 0x22222222, 0x33333333 },
+    };
+    run.flea.copied_words = 6;
+    return hardware.TxFwInputBuffInfo;
+}
+
+static void FleaBlockedPost(TX_INPUT_BUFFER_INFO before)
+{
+    uint32_t empty = UINT32_MAX, tag = 0xfeedbabe;
+    uint8_t flags = 0x04;
+    struct tx_dma_pkt unposted;
+
+    memcpy(&unposted, packet0, sizeof(unposted));
+
+    before.DramBuffAdd = 0;
+    before.DramBuffSzInBytes = 0;
+    Check(memcmp(&hardware.TxFwInputBuffInfo, &before, sizeof(before)) == 0,
+          "read failure invalidates only cached address and size, preserving every opaque word");
+    Check(hardware.WakeUpDecodeDone && hardware.FleaPowerState == FLEA_PS_ACTIVE &&
+          crystalhd_flea_check_input_full(&hardware, run.transfer_size, &empty,
+                                          false, &flags) && !empty && !flags,
+          "the real wake-completed ACTIVE FIFO rejects the invalidated cached space");
+    hardware.pfnCheckInputFIFO = crystalhd_flea_check_input_full;
+    request.tx_buffer = (struct crystalhd_tx_buffer){
+        .bytes = run.transfer_size, .cookie = &request,
+        .ops = &crystalhd_dio_tx_buffer_ops,
+    };
+    Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer, OpaqueComplete,
+                               &opaque_cookie, &tag, 0) == BC_STS_BUSY &&
+          tag == 0xfeedbabe && hardware.stats.cin_busy == 1,
+          "the actual post path reports BUSY before assigning a list tag");
+    Check(!run.queue_fetches && !run.queue_adds && !run.descriptors && !run.starts &&
+          !run.callback_calls && !activeq.head && !activeq.next &&
+          freeq.head == packet0 && !freeq.next &&
+          memcmp(packet0, &unposted, sizeof(unposted)) == 0 &&
+          !hardware.tx_list_post_index &&
+          hardware.TxList0Sts == ListStsFree && hardware.TxList1Sts == ListStsFree,
+          "BUSY from the actual FIFO leaves descriptor, queue and callback ownership untouched");
+    Check(!hardware.lock && !hardware.dma_fault && !hardware.EmptyCnt &&
+          !hardware.SingleThreadAppFIFOEmpty && !run.flea.wakes && !run.flea.writes,
+          "notification rejection neither wakes hardware nor adds locks, faults, WRAP writes or FIFO reservations");
+}
+
+static void FleaNotificationGuard(void)
+{
+    static const BC_STATUS errors[] = {
+        BC_STS_BUSY, BC_STS_ERROR, BC_STS_INV_ARG, BC_STS_IO_ERROR,
+    };
+    static const unsigned copied[] = { 0, 1, 3, 5, 6 };
+    TX_INPUT_BUFFER_INFO before, expected;
+
+    for (unsigned error = 0; error < ARRAY_SIZE(errors); error++) {
+        for (unsigned shape = 0; shape < ARRAY_SIZE(copied); shape++) {
+            before = FleaNotificationReset();
+            run.flea.status = errors[error];
+            run.flea.copied_words = copied[shape];
+            crystalhd_flea_update_tx_buff_info(&hardware);
+            Check(run.flea.reads == 1, "a failed notification is read once without retrying");
+            FleaBlockedPost(before);
+        }
+    }
+
+    before = FleaNotificationReset();
+    run.flea.payload = (TX_INPUT_BUFFER_INFO){0};
+    run.flea.status = BC_STS_ERROR;
+    crystalhd_flea_update_tx_buff_info(&hardware);
+    FleaBlockedPost(before);
+
+    for (unsigned low = 1; low < 4; low++) {
+        before = FleaNotificationReset();
+        run.flea.payload.DramBuffAdd |= low;
+        crystalhd_flea_update_tx_buff_info(&hardware);
+        FleaBlockedPost(before);
+    }
+
+    for (unsigned zero = 0; zero < 4; zero++) {
+        uint32_t empty = UINT32_MAX;
+        uint8_t flags = 0x04;
+
+        before = FleaNotificationReset();
+        if (zero & 1U)
+            run.flea.payload.DramBuffAdd = 0;
+        if (zero & 2U)
+            run.flea.payload.DramBuffSzInBytes = 0;
+        expected = before;
+        expected.DramBuffAdd = run.flea.payload.DramBuffAdd;
+        expected.DramBuffSzInBytes = run.flea.payload.DramBuffSzInBytes;
+        expected.HostXferSzInBytes = run.flea.payload.HostXferSzInBytes;
+        expected.Flags = run.flea.payload.Flags;
+        expected.SeqNum = run.flea.payload.SeqNum;
+        crystalhd_flea_update_tx_buff_info(&hardware);
+        Check(memcmp(&hardware.TxFwInputBuffInfo, &expected, sizeof(expected)) == 0,
+              "successful six-word reads copy exactly five fields, not ChannelID or Reserved");
+        Check(crystalhd_flea_check_input_full(&hardware, run.transfer_size, &empty,
+                                             false, &flags) == (zero != 0) &&
+              empty == (zero ? 0U : expected.DramBuffSzInBytes) &&
+              flags == (zero ? 0U : 0x84U),
+              "successful zero address or size retains the existing real-FIFO admission rules");
+        Check(run.flea.reads == 1 && !run.flea.wakes && !run.flea.writes &&
+              !hardware.EmptyCnt && !hardware.lock && !hardware.dma_fault,
+              "successful notification and status-only FIFO queries have no new device effects");
+    }
+
+    before = FleaNotificationReset();
+    run.flea.payload.DramBuffAdd = 0xfffffffc;
+    run.flea.payload.DramBuffSzInBytes = UINT32_MAX;
+    run.flea.payload.HostXferSzInBytes = UINT32_MAX;
+    run.flea.payload.Flags = 0xfffffffe;
+    run.flea.payload.SeqNum = UINT32_MAX;
+    crystalhd_flea_update_tx_buff_info(&hardware);
+    Check(hardware.TxFwInputBuffInfo.DramBuffAdd == 0xfffffffc &&
+          hardware.TxFwInputBuffInfo.DramBuffSzInBytes == UINT32_MAX &&
+          hardware.TxFwInputBuffInfo.HostXferSzInBytes == UINT32_MAX &&
+          hardware.TxFwInputBuffInfo.Flags == 0xfffffffe &&
+          hardware.TxFwInputBuffInfo.SeqNum == UINT32_MAX &&
+          hardware.TxFwInputBuffInfo.ChannelID == before.ChannelID &&
+          memcmp(hardware.TxFwInputBuffInfo.Reserved, before.Reserved,
+                 sizeof(before.Reserved)) == 0,
+          "successful notification preserves full u32 values without adding range or field policy");
+
+    before = FleaNotificationReset();
+    run.flea.status = BC_STS_ERROR;
+    crystalhd_flea_update_tx_buff_info(&hardware);
+    FleaBlockedPost(before);
+    run.flea.status = BC_STS_SUCCESS;
+    crystalhd_flea_update_tx_buff_info(&hardware);
+    Check(run.flea.reads == 2 &&
+          hardware.TxFwInputBuffInfo.DramBuffAdd == run.flea.payload.DramBuffAdd &&
+          hardware.TxFwInputBuffInfo.DramBuffSzInBytes == run.flea.payload.DramBuffSzInBytes,
+          "a later complete valid notification restores FIFO availability without a fault latch");
+    uint32_t tag = 0;
+    Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer, OpaqueComplete,
+                               &opaque_cookie, &tag, 0) == BC_STS_SUCCESS &&
+          run.descriptors == 1 && run.starts == 1 &&
+          run.seen_destination == run.flea.payload.DramBuffAdd &&
+          tag == hardware.tx_ioq_tag_seed && activeq.head == packet0,
+          "the actual FIFO and post path admit new work after a valid notification");
+    Check(crystalhd_hw_tx_req_complete(&hardware, tag, BC_STS_SUCCESS) == BC_STS_SUCCESS &&
+          run.callback_calls == 1 && !activeq.head && freeq.head == packet0 &&
+          !packet0->buffer && !packet0->cb_context && !packet0->call_back &&
+          !run.flea.writes && !run.flea.wakes && !hardware.dma_fault,
+          "recovered post completion retains existing exactly-once callback ownership");
+}
+
+static void FleaAbortNotification(void)
+{
+    for (unsigned success = 0; success < 2; success++) {
+        TX_INPUT_BUFFER_INFO before = FleaNotificationReset();
+        uint32_t empty = UINT32_MAX, tag = 0xfeedbabe;
+        uint8_t flags = 0x04;
+
+        if (success) {
+            run.flea.payload.Flags |= DFW_FLAGS_TX_ABORT;
+            before.DramBuffAdd = run.flea.payload.DramBuffAdd;
+            before.DramBuffSzInBytes = run.flea.payload.DramBuffSzInBytes;
+            before.HostXferSzInBytes = run.flea.payload.HostXferSzInBytes;
+            before.Flags = run.flea.payload.Flags;
+            before.SeqNum = run.flea.payload.SeqNum;
+        } else {
+            hardware.TxFwInputBuffInfo.Flags |= DFW_FLAGS_TX_ABORT;
+            before.Flags |= DFW_FLAGS_TX_ABORT;
+            before.DramBuffAdd = before.DramBuffSzInBytes = 0;
+            run.flea.status = BC_STS_ERROR;
+        }
+        crystalhd_flea_update_tx_buff_info(&hardware);
+        Check(memcmp(&hardware.TxFwInputBuffInfo, &before, sizeof(before)) == 0,
+              "failed reads preserve cached ABORT and successful reads retain the firmware ABORT bit");
+        Check(crystalhd_flea_check_input_full(&hardware, run.transfer_size, &empty,
+                                             false, &flags) && !empty && flags == 0x05,
+              "the actual wake-completed ACTIVE FIFO retains ABORT flags, not a fabricated zero flag");
+        hardware.pfnCheckInputFIFO = crystalhd_flea_check_input_full;
+        request.tx_buffer = (struct crystalhd_tx_buffer){
+            .bytes = run.transfer_size, .cookie = &request,
+            .ops = &crystalhd_dio_tx_buffer_ops,
+        };
+        Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer, OpaqueComplete,
+                                   &opaque_cookie, &tag, 0) == BC_STS_BUSY &&
+              tag == 0xfeedbabe && hardware.stats.cin_busy == 1 &&
+              !run.descriptors && !run.starts && !run.queue_fetches && !run.queue_adds &&
+              !run.callback_calls && !activeq.head && !activeq.next &&
+              freeq.head == packet0 && !freeq.next &&
+              !packet0->buffer && !packet0->cb_context && !packet0->call_back &&
+              !packet0->list_tag && !hardware.lock && !hardware.dma_fault &&
+              !hardware.EmptyCnt && !run.flea.writes && !run.flea.wakes,
+              "ABORT prevents descriptor, queue and DMA ownership admission without new side effects");
+    }
+}
+
+static void FleaNotificationWithActiveOwner(void)
+{
+    TX_INPUT_BUFFER_INFO before = FleaNotificationReset();
+    struct tx_dma_pkt owned;
+    uint32_t tag = 0, unposted_tag = 0xfeedbabe;
+
+    request.tx_buffer = (struct crystalhd_tx_buffer){
+        .bytes = run.transfer_size, .cookie = &request,
+        .ops = &crystalhd_dio_tx_buffer_ops,
+    };
+    Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer, OpaqueComplete,
+                               &opaque_cookie, &tag, run.transfer_flags) == BC_STS_SUCCESS,
+          "the notification ownership test begins with an already-admitted TX owner");
+    before.HostXferSzInBytes = run.transfer_size;
+    before.DramBuffAdd = before.DramBuffSzInBytes = 0;
+    memcpy(&owned, packet0, sizeof(owned));
+    run.flea.status = BC_STS_ERROR;
+    crystalhd_flea_update_tx_buff_info(&hardware);
+    Check(memcmp(&hardware.TxFwInputBuffInfo, &before, sizeof(before)) == 0 &&
+          memcmp(packet0, &owned, sizeof(owned)) == 0 && activeq.head == packet0 &&
+          !activeq.next && !freeq.head && !freeq.next && !run.stops &&
+          !run.callback_calls && !hardware.dma_fault,
+          "notification failure does not cancel, retire or alter already-admitted TX ownership");
+    hardware.pfnCheckInputFIFO = crystalhd_flea_check_input_full;
+    request2.tx_buffer = (struct crystalhd_tx_buffer){
+        .bytes = run.transfer_size, .cookie = &request2,
+        .ops = &crystalhd_dio_tx_buffer_ops,
+    };
+    Check(crystalhd_hw_post_tx(&hardware, &request2.tx_buffer, OpaqueComplete,
+                               &opaque_cookie, &unposted_tag, 0) == BC_STS_BUSY &&
+          unposted_tag == 0xfeedbabe && run.descriptors == 1 && run.starts == 1 &&
+          run.queue_fetches == 1 && run.queue_adds == 1 &&
+          memcmp(packet0, &owned, sizeof(owned)) == 0 && activeq.head == packet0,
+          "invalidated availability blocks only new work before descriptor or queue admission");
+    Check(crystalhd_hw_tx_req_complete(&hardware, tag, BC_STS_SUCCESS) == BC_STS_SUCCESS &&
+          run.callback_calls == 1 && !activeq.head && freeq.head == packet0 &&
+          !run.flea.writes && !run.flea.wakes && !run.stops && !hardware.dma_fault,
+          "an already-admitted owner can still complete normally after a failed notification");
+}
+
 int main(void)
 {
     Admission(); OpaqueCookie(); CancelAllOwners(); Completion(); Rollback(); TransferArguments(); BusyErrors(); BusyAndFlush(); Cancellation();
     BoundedTransfer(); BorrowedTransfer(); RetainedLeaseProtocol();
     ActualMappingLifetime();
+    FleaNotificationGuard();
+    FleaAbortNotification();
+    FleaNotificationWithActiveOwner();
     printf("TX admission: %u checks, %u failures\n", checks, failures);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

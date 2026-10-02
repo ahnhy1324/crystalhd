@@ -1920,18 +1920,18 @@ class FirmwareArcMetadataTests(unittest.TestCase):
             "2a491f4b9033395cdbc688810319ea159973a296d7828ac65153bc93d45b588f",
             "15af1023987b5f2aee1e9a5560f749560bf33f729252ca3fcb9f41358f49e5aa",
             "85bec0f347f91ccfbb802d07b4c65fb07c8925625710dbe525fd7c3c1376487e",
-            "04b13afcddc28b5b26849309839932fc2ae7a1c2f48ef351222d61b1c4fee279",
-            "a299b545da28d928da63228d61835891b05750b85a7e10425ddda224f51d43d0",
-            "9818336b301d58ee708b243fa0e4371dc797b4794fa4388f869bd7ca92fa51bf",
-            "4d997f643b9c40bec1464e2d1f739bbc5459cc1af21d04dc0ee863121d372643",
-            "71f4f6553e74bacbcc5827212061478b2870228324b44d2985849f4bbc264720",
-            "edcd2e5e20756b35177df5d9c92dc913d72b1a1ee4d0f93a2d4f1d029be4c5da",
-            "b81221b60ec232afb8c0bf809cca91a9b73a014cd740d53c0b5619fead782cac",
-            "3cc03d72d623d18563ec5bb6ebf0588b8db595828440a578e888265d2bec5fe2",
-            "7d9b9fdd4e9383c5cacbd9c8949330c44683a659efb2457869bc4bfe2dff446f",
-            "104420747e6da2a06da0c545abb39a7dbbcc3b330170582f1794cbd8d24889f2",
-            "b699f03e6e2ba7a6e34ee9c834abffebad17d97939e0ac58221403dbf90cbdbf",
-            "fa8d9d60ab3f2b9d661e7279b3e97fbb2a2ffd5dd0f5267804c130ca4e8f9e22")
+            "cd056fbfcfb795f8ffaa169d313bfb5c5535e67f16affd924dedd209f80fb939",
+            "87ded59ecc94e3b4fa3a3cd9da6f2d978bcd5839bd196fd6cc72f717feaaa453",
+            "f470be31c70241e5053aa2a9c4c2388ba8bfb920cc9feb657689b14f8e3a3f38",
+            "804cca53d5c7358d37d06707eee797426a11d6c59d2a7f241198477ce2716d86",
+            "e8ae43289821216de2a1642c823939c287bc24f969e60bba5d7f82540ddcf7c3",
+            "c916f6657729459ab7b93c81c1c9619c657782eb1535eaf76a1c8eb855d5a147",
+            "b9e1b17645e07b470119fdb7172e561260bd7e11feadfc549b08668f59761f0f",
+            "5faab2ae297db1c2606cb2cef700f54469ee8fa1f1be13410404ae4c09ea3692",
+            "05ed4d61c3a96e1a6970525b464a50965d2fb500e37f16f3f5678ffc2ecf1b4b",
+            "0c8f7e8947f024bc901d54f0909b9901e8d8cfb8b3a745e85e660bf2ef3050c3",
+            "76337527493de8c09cc145dc78fcf9490d7907f3bbc7b002739b102b3a35faa3",
+            "9207546a40095c93706574798e62939582e95aa07a0077cbb79ffe6f531812bf")
         for mask in range(16):
             flags = []
             if mask & 1:
@@ -2115,34 +2115,34 @@ class FirmwareCscCommandTests(unittest.TestCase):
             "2a491f4b9033395cdbc688810319ea159973a296d7828ac65153bc93d45b588f",
             "15af1023987b5f2aee1e9a5560f749560bf33f729252ca3fcb9f41358f49e5aa",
             "85bec0f347f91ccfbb802d07b4c65fb07c8925625710dbe525fd7c3c1376487e",
-            "04b13afcddc28b5b26849309839932fc2ae7a1c2f48ef351222d61b1c4fee279",
-            "a299b545da28d928da63228d61835891b05750b85a7e10425ddda224f51d43d0",
-            "9818336b301d58ee708b243fa0e4371dc797b4794fa4388f869bd7ca92fa51bf",
-            "4d997f643b9c40bec1464e2d1f739bbc5459cc1af21d04dc0ee863121d372643",
-            "71f4f6553e74bacbcc5827212061478b2870228324b44d2985849f4bbc264720",
-            "edcd2e5e20756b35177df5d9c92dc913d72b1a1ee4d0f93a2d4f1d029be4c5da",
-            "b81221b60ec232afb8c0bf809cca91a9b73a014cd740d53c0b5619fead782cac",
-            "3cc03d72d623d18563ec5bb6ebf0588b8db595828440a578e888265d2bec5fe2",
-            "7d9b9fdd4e9383c5cacbd9c8949330c44683a659efb2457869bc4bfe2dff446f",
-            "104420747e6da2a06da0c545abb39a7dbbcc3b330170582f1794cbd8d24889f2",
-            "b699f03e6e2ba7a6e34ee9c834abffebad17d97939e0ac58221403dbf90cbdbf",
-            "fa8d9d60ab3f2b9d661e7279b3e97fbb2a2ffd5dd0f5267804c130ca4e8f9e22",
+            "cd056fbfcfb795f8ffaa169d313bfb5c5535e67f16affd924dedd209f80fb939",
+            "87ded59ecc94e3b4fa3a3cd9da6f2d978bcd5839bd196fd6cc72f717feaaa453",
+            "f470be31c70241e5053aa2a9c4c2388ba8bfb920cc9feb657689b14f8e3a3f38",
+            "804cca53d5c7358d37d06707eee797426a11d6c59d2a7f241198477ce2716d86",
+            "e8ae43289821216de2a1642c823939c287bc24f969e60bba5d7f82540ddcf7c3",
+            "c916f6657729459ab7b93c81c1c9619c657782eb1535eaf76a1c8eb855d5a147",
+            "b9e1b17645e07b470119fdb7172e561260bd7e11feadfc549b08668f59761f0f",
+            "5faab2ae297db1c2606cb2cef700f54469ee8fa1f1be13410404ae4c09ea3692",
+            "05ed4d61c3a96e1a6970525b464a50965d2fb500e37f16f3f5678ffc2ecf1b4b",
+            "0c8f7e8947f024bc901d54f0909b9901e8d8cfb8b3a745e85e660bf2ef3050c3",
+            "76337527493de8c09cc145dc78fcf9490d7907f3bbc7b002739b102b3a35faa3",
+            "9207546a40095c93706574798e62939582e95aa07a0077cbb79ffe6f531812bf",
             "3553b947d6948d11fc48b2994ca29599caa8a70ff7b79d7ffc2639901c9aedfe",
             "6da05d4dca3424ef76e9359ed7ab3228d5c2622dcd1573b62bc88d2b0c3f2e7b",
             "6946e167d1dfbb01632025d014ebd76284aafcf58f79099881552c6fc80a4964",
             "839f141d887e74b8e5d9da871b2160ba15ab5ce5ad6acc77a87a7def68ef4ce6",
-            "3052c6a0be9280ce7dc64cd63cc1cb0f5a6952a772597a5140fc9e7fe4a569c8",
-            "69083d2540bf15ff74a718cad540e15abeaf3fae894176114d2cea9cd42c963d",
-            "be7edbd1a31c609eaf33c94577d98f2e599a2a92cde71ba36db2085487300ae9",
-            "ed0d60bcf68c0187dc3082a908d74411ce161a637aa8f14921588eaca5571f0f",
-            "ed8d637d4c50f41888a5eab84b7f2b80223753a911dfdae27b382dbec1e9539d",
-            "d50be9b85465c563a80aa3dddefe84bd163df964795bb3960110aecf70c11eaa",
-            "ecf785961c0f202cc685df6b23b32dcfaf2ac3f8d21ec933dc26d661be2561dd",
-            "7974a762e99d8fe42d7eaee953ffbd0b5fc528adda0ba2731b82efe310958ae7",
-            "0d0ca12ef03882fb20d272f453f19dc448e0013a86662278196518adf574b15c",
-            "87af0e7b0031d0fb32ddbbdda1d2d2699c3f74bd441b97e13d61e6189ad5b07a",
-            "c5e1be475f6073a208c6bc2a5a0c76989ab9791111561d4cf54f46927b2af6b3",
-            "47ef9dcca7270991a5e623a5e535f86309956faed0f62825189f64641324ed8f")
+            "8083817bbe282d0727a2aeae18e162e3c8634d2805891a3641f8516fa610c16a",
+            "10732aabc68b8e6a019b714212e726dc82400b139755429283c80192f2a9a3ab",
+            "14c6de19078879dad7c645441cad2a4cc76e1f584946f8d6a1477edbc42a7902",
+            "75bce6cbfd367c8af1cc2837cff10ce356f95064a45469a1a207f89ade347a45",
+            "56d782a7915522e233fe31eec63d050dceadb1db42817ef53432068934e15376",
+            "663f89283c223eb923915f281e3f1666e37c1fbab89da8ce50922674a5a84d01",
+            "1cf5fd882d4823769e6b0bd56a173477747d30a933f5dfe43d63c0582a7de261",
+            "1ccb0a07745a876632d9df78de865f6ad73f18a864b84a19d7d880353c8b8fbd",
+            "9d792eb0ff22a200ebea30fbc8a5aa959611049596a508624e05be7a574150f6",
+            "2b5428a579b9c555a839dc2a775e245a2d3178de6d0ef970ab2423feeb285ef0",
+            "c44ea6be37c146802f3f246d07bc1f5df2e8dd441f0c6ecb222c03f28afcd590",
+            "a744b6856dc69ff7ded2da24848b979e97331b5608ab315403acf256f382ec30")
         for mask in range(32):
             flags = []
             if mask & 1:
@@ -2383,7 +2383,7 @@ class FirmwareCommandBufferBridgeTests(unittest.TestCase):
             with self.subTest(mask=mask):
                 self.assertEqual(enriched.pop("command_buffer_bridge"), mapping)
                 self.assertEqual(enriched, plain)
-        self.assertEqual(aggregate.hexdigest(), "1e6b80ad8fa76d0a37a959a955c61e323cb8c4f4606fc553985736027cd2edd8")
+        self.assertEqual(aggregate.hexdigest(), "c1d48a09457d506c842ea632cd655fbc343caadedb812f9c8939427bab694aeb")
         self.assertEqual(hashlib.sha256(BLOB.read_bytes()).hexdigest(), MAP.BUNDLED_SHA256)
 
     def test_bridge_cli_flag_combinations_and_repeated_stdout(self):
@@ -2841,7 +2841,7 @@ class FirmwareInnerDescriptorTests(unittest.TestCase):
                 self.assertEqual(enriched.pop("inner_descriptor"), mapping)
                 self.assertEqual(enriched, plain)
         # Golden includes the verified RX metadata source-location update.
-        self.assertEqual(aggregate.hexdigest(), "588588f1c823e22c94f917da0f9be143e97bb399a3e1d02f507706d1d9803060")
+        self.assertEqual(aggregate.hexdigest(), "9d0924cbc287c646015a5e333abeb8cdf158117f07efedb4b49b3bcb1b0c34e4")
 
     def test_inner_descriptor_cli_stdout_determinism_and_combinations(self):
         combinations = [[], ["--references", "--symbol", "ReadLine"],
