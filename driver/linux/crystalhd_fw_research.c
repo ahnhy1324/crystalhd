@@ -11,6 +11,12 @@
 #include "../../include/crystalhd_fw_research.h"
 
 static const u8 crystalhd_fw_research_owner;
+
+/* Research-only wire values: eC011_VIDEO_ALG_H261/H263/MPEG1 in 7411d.h. */
+#define CRYSTALHD_FW_RESEARCH_ALGORITHM_H261 2U
+#define CRYSTALHD_FW_RESEARCH_ALGORITHM_H263 3U
+#define CRYSTALHD_FW_RESEARCH_ALGORITHM_MPEG1 5U
+
 static const u8 crystalhd_fw_research_sha256[SHA256_DIGEST_SIZE] = {
 	0x8b, 0xf3, 0xa6, 0x8f, 0x5c, 0x64, 0x68, 0x63,
 	0x58, 0xa5, 0x22, 0x74, 0xe4, 0x09, 0x11, 0xa8,
@@ -30,10 +36,18 @@ static bool crystalhd_fw_research_request_valid(
 
 	if (request->version != CRYSTALHD_FW_RESEARCH_VERSION ||
 	    request->size != sizeof(struct crystalhd_fw_research_result) ||
-	    request->flags ||
-	    (request->selector != CRYSTALHD_FW_RESEARCH_VERSION_ONLY &&
-	     request->selector != CRYSTALHD_FW_RESEARCH_H264_CONTROL))
+	    request->flags)
 		return false;
+	switch (request->selector) {
+	case CRYSTALHD_FW_RESEARCH_VERSION_ONLY:
+	case CRYSTALHD_FW_RESEARCH_H264_CONTROL:
+	case CRYSTALHD_FW_RESEARCH_H261_CONTROL:
+	case CRYSTALHD_FW_RESEARCH_H263_CONTROL:
+	case CRYSTALHD_FW_RESEARCH_MPEG1_CONTROL:
+		break;
+	default:
+		return false;
+	}
 	for (i = 0; i < ARRAY_SIZE(request->reserved); i++)
 		if (request->reserved[i])
 			return false;
@@ -109,7 +123,7 @@ free_tfm:
 }
 
 static int crystalhd_fw_research_payload(BC_FW_CMD *fw_cmd, u32 command,
-					 u32 sequence)
+					 u32 sequence, u32 selector)
 {
 	struct crystalhd_fw_init_cmd *init;
 	struct crystalhd_fw_channel_open_cmd *open;
@@ -144,7 +158,22 @@ static int crystalhd_fw_research_payload(BC_FW_CMD *fw_cmd, u32 command,
 	case eCMD_C011_DEC_CHAN_OPEN:
 		open = (struct crystalhd_fw_channel_open_cmd *)fw_cmd->cmd;
 		open->stream_type = CRYSTALHD_FW_STREAM_TYPE_PES;
-		open->video_algorithm = CRYSTALHD_FW_VIDEO_ALGORITHM_H264;
+		switch (selector) {
+		case CRYSTALHD_FW_RESEARCH_H264_CONTROL:
+			open->video_algorithm = CRYSTALHD_FW_VIDEO_ALGORITHM_H264;
+			break;
+		case CRYSTALHD_FW_RESEARCH_H261_CONTROL:
+			open->video_algorithm = CRYSTALHD_FW_RESEARCH_ALGORITHM_H261;
+			break;
+		case CRYSTALHD_FW_RESEARCH_H263_CONTROL:
+			open->video_algorithm = CRYSTALHD_FW_RESEARCH_ALGORITHM_H263;
+			break;
+		case CRYSTALHD_FW_RESEARCH_MPEG1_CONTROL:
+			open->video_algorithm = CRYSTALHD_FW_RESEARCH_ALGORITHM_MPEG1;
+			break;
+		default:
+			return -EINVAL;
+		}
 		break;
 	case eCMD_C011_DEC_CHAN_CLOSE:
 		close = (struct crystalhd_fw_channel_stop_close_cmd *)fw_cmd->cmd;
@@ -170,7 +199,8 @@ static int crystalhd_fw_research_command(struct crystalhd_cmd *ctx,
 	if (result->command_count >= CRYSTALHD_FW_RESEARCH_MAX_COMMANDS ||
 	    ctx->fw_sequence >= CRYSTALHD_FW_RESEARCH_MAX_COMMANDS)
 		return -EOVERFLOW;
-	rc = crystalhd_fw_research_payload(&fw_cmd, command, ++ctx->fw_sequence);
+	rc = crystalhd_fw_research_payload(&fw_cmd, command, ++ctx->fw_sequence,
+					  result->request.selector);
 	if (rc)
 		return rc;
 	reply = &result->replies[result->command_count++];
@@ -272,9 +302,11 @@ static void crystalhd_fw_research_run(u64 generation,
 	rc = crystalhd_fw_research_command(ctx, result, eCMD_C011_DEC_CHAN_OPEN);
 	if (rc)
 		goto cleanup;
-	rc = crystalhd_fw_research_command(ctx, result, eCMD_C011_DEC_CHAN_STATUS);
-	if (rc)
-		goto cleanup;
+	if (request->selector == CRYSTALHD_FW_RESEARCH_H264_CONTROL) {
+		rc = crystalhd_fw_research_command(ctx, result, eCMD_C011_DEC_CHAN_STATUS);
+		if (rc)
+			goto cleanup;
+	}
 	rc = crystalhd_fw_research_command(ctx, result, eCMD_C011_DEC_CHAN_CLOSE);
 
 cleanup:

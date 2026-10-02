@@ -17,7 +17,10 @@ struct _BC_DTS_PROC_OUT;
 
 #define PROBE_DEVICE "/dev/crystalhd-fw-research"
 
-enum action { ACTION_NONE, ACTION_INFO, ACTION_VERSION, ACTION_H264 };
+enum action {
+	ACTION_NONE, ACTION_INFO, ACTION_VERSION, ACTION_H264,
+	ACTION_H261, ACTION_H263, ACTION_MPEG1,
+};
 
 struct options {
 	enum action action;
@@ -38,7 +41,8 @@ static int output_finish(void)
 static void usage(FILE *stream)
 {
 	fputs("Usage: flea-fw-probe --info\n"
-	      "       flea-fw-probe (--version | --h264-control)\n"
+	      "       flea-fw-probe (--version | --h264-control | --h261-control |\n"
+	      "         --h263-control | --mpeg1-control)\n"
 	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
 	      "       flea-fw-probe --help\n"
 	      "\n"
@@ -87,6 +91,12 @@ static bool parse_options(int argc, char **argv, struct options *options)
 			action = ACTION_VERSION;
 		else if (!strcmp(argv[i], "--h264-control"))
 			action = ACTION_H264;
+		else if (!strcmp(argv[i], "--h261-control"))
+			action = ACTION_H261;
+		else if (!strcmp(argv[i], "--h263-control"))
+			action = ACTION_H263;
+		else if (!strcmp(argv[i], "--mpeg1-control"))
+			action = ACTION_MPEG1;
 		else if (!strcmp(argv[i], "--acknowledge-card-reset")) {
 			if (options->acknowledge)
 				return false;
@@ -155,15 +165,36 @@ static bool result_valid(const struct crystalhd_fw_research_result *result,
 			 const struct crystalhd_fw_research_request *request,
 			 uint64_t generation)
 {
-	static const __u32 commands[] = {
+	static const __u32 channel_commands[] = {
 		/* The fixed V1 command sequence, from include/7411d.h. */
 		0x73763001U, 0x73763004U, 0x73763100U,
 		0x73763103U, 0x73763101U,
 	};
-	unsigned int expected_count = request->selector ==
-		CRYSTALHD_FW_RESEARCH_VERSION_ONLY ? 2 : 5;
+	static const __u32 open_only_commands[] = {
+		0x73763001U, 0x73763004U, 0x73763100U, 0x73763101U,
+	};
+	const __u32 *commands;
+	unsigned int expected_count;
 	unsigned int i, j;
 
+	switch (request->selector) {
+	case CRYSTALHD_FW_RESEARCH_VERSION_ONLY:
+		commands = channel_commands;
+		expected_count = 2;
+		break;
+	case CRYSTALHD_FW_RESEARCH_H264_CONTROL:
+		commands = channel_commands;
+		expected_count = 5;
+		break;
+	case CRYSTALHD_FW_RESEARCH_H261_CONTROL:
+	case CRYSTALHD_FW_RESEARCH_H263_CONTROL:
+	case CRYSTALHD_FW_RESEARCH_MPEG1_CONTROL:
+		commands = open_only_commands;
+		expected_count = 4;
+		break;
+	default:
+		return false;
+	}
 	if (memcmp(&result->request, request, sizeof(*request)) ||
 	    result->generation != generation || result->status > 0 ||
 	    result->status < -4095 || result->firmware_hash_valid > 1 ||
@@ -337,8 +368,26 @@ int main(int argc, char **argv)
 	}
 	request.version = CRYSTALHD_FW_RESEARCH_VERSION;
 	request.size = sizeof(result);
-	request.selector = options.action == ACTION_VERSION ?
-		CRYSTALHD_FW_RESEARCH_VERSION_ONLY : CRYSTALHD_FW_RESEARCH_H264_CONTROL;
+	switch (options.action) {
+	case ACTION_VERSION:
+		request.selector = CRYSTALHD_FW_RESEARCH_VERSION_ONLY;
+		break;
+	case ACTION_H264:
+		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
+		break;
+	case ACTION_H261:
+		request.selector = CRYSTALHD_FW_RESEARCH_H261_CONTROL;
+		break;
+	case ACTION_H263:
+		request.selector = CRYSTALHD_FW_RESEARCH_H263_CONTROL;
+		break;
+	case ACTION_MPEG1:
+		request.selector = CRYSTALHD_FW_RESEARCH_MPEG1_CONTROL;
+		break;
+	default:
+		fputs("Invalid research selector; no live command attempted.\n", stderr);
+		goto out;
+	}
 	if (!(info.selector_mask & (1U << (request.selector - 1)))) {
 		fputs("Research selector unavailable; no live command attempted.\n", stderr);
 		goto out;

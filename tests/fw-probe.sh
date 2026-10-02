@@ -78,6 +78,11 @@ pin = re.search(r'crystalhd_fw_research_sha256\[SHA256_DIGEST_SIZE\] = \{(.*?)\}
 digest = bytes(int(value, 16) for value in re.findall(r'0x([0-9a-fA-F]{2})', pin))
 assert digest == hashlib.sha256((root / 'firmware/fwbin/70015/bcm70015fw.bin').read_bytes()).digest()
 assert digest.hex() == re.search(r'CRYSTALHD_FW_RESEARCH_FIRMWARE_SHA256\s+\\\s*"([0-9a-f]+)"', uapi).group(1)
+legacy = (root / 'include/7411d.h').read_text()
+for name, value in (('H261', 2), ('H263', 3), ('MPEG1', 5)):
+    wire = re.search(r'\bCRYSTALHD_FW_RESEARCH_ALGORITHM_' + name + r'\s+(\d+)U\b', source)
+    declared = re.search(r'\beC011_VIDEO_ALG_' + name + r'\s*=\s*(0x[0-9a-fA-F]+)\b', legacy)
+    assert wire and declared and int(wire.group(1)) == int(declared.group(1), 16) == value
 for enabled in (None, '0', '1'):
     script = f'include {root}/driver/linux/Kbuild\nprobe-check:\n\t@echo $(crystalhd-objs)\n\t@echo $(ccflags-y)\n'
     args = ['make', '--no-print-directory', '-f', '-', 'probe-check', 'CONFIG_CRYPTO_HASH=y']
@@ -114,6 +119,12 @@ _Static_assert(offsetof(struct crystalhd_fw_research_result, replies) == 104, "r
 _Static_assert(offsetof(struct crystalhd_fw_research_result, firmware_hash_valid) == 68, "hash validity");
 _Static_assert(_IOC_SIZE(CRYSTALHD_FW_RESEARCH_RUN) == 1488, "encoding");
 _Static_assert(CRYSTALHD_FW_RESEARCH_RUN == 0xc5d05292U, "ioctl");
+_Static_assert(CRYSTALHD_FW_RESEARCH_VERSION_ONLY == 1U, "existing version selector");
+_Static_assert(CRYSTALHD_FW_RESEARCH_H264_CONTROL == 2U, "existing H264 selector");
+_Static_assert(CRYSTALHD_FW_RESEARCH_H261_CONTROL == 3U, "H261 selector");
+_Static_assert(CRYSTALHD_FW_RESEARCH_H263_CONTROL == 4U, "H263 selector");
+_Static_assert(CRYSTALHD_FW_RESEARCH_MPEG1_CONTROL == 5U, "MPEG1 selector");
+_Static_assert(CRYSTALHD_FW_RESEARCH_SELECTOR_MASK == 31U, "five fixed selectors");
 '''
 compiler = shlex.split(os.environ.get('CC', 'cc'))
 multiarch = subprocess.check_output(compiler + ['-print-multiarch'], text=True).strip()
@@ -165,9 +176,9 @@ for probe_sanitize in no yes; do
     probe_linkage_fuse "$probe_test_dir/cli-check" 0
     "$probe_test_dir/cli-check" --json-examples | "${PYTHON3:-python3}" -B -c '
 import json, sys
-info, version, h264, failure, nohash, rejectedhash = [json.loads(line) for line in sys.stdin]
-assert info["generation"] == "42" and info["research_selector_mask"] == 3
-for result, count in ((version, 2), (h264, 5)):
+info, version, h264, failure, nohash, rejectedhash, h261, h263, mpeg1, rejected, readfail = [json.loads(line) for line in sys.stdin]
+assert info["generation"] == "42" and info["research_selector_mask"] == 31
+for result, count in ((version, 2), (h264, 5), (h261, 4), (h263, 4), (mpeg1, 4)):
     assert result["generation"] == "42" and result["status"] == 0
     assert result["firmware_hash_valid"] and result["observed_firmware_sha256"] == info["expected_firmware_sha256"]
     assert result["command_count"] == count and len(result["replies"]) == count
@@ -176,10 +187,23 @@ for result, count in ((version, 2), (h264, 5)):
         assert reply["raw_response_valid"] and reply["header_matches"]
         assert len(reply["raw_response_words"]) == 64
         assert reply["raw_response_words"][-1] == 4294967295
+for selector, result in ((3, h261), (4, h263), (5, mpeg1)):
+    assert result["selector"] == selector
+    assert [r["command"] for r in result["replies"]] == [0x73763001, 0x73763004, 0x73763100, 0x73763101]
+    assert result["replies"][3]["sequence"] == 4
+assert [r["command"] for r in h264["replies"]] == [0x73763001, 0x73763004, 0x73763100, 0x73763103, 0x73763101]
+assert h264["replies"][4]["sequence"] == 5
 assert failure["status"] < 0 and failure["replies"][0]["raw_response_words"] is None
 assert not failure["replies"][0]["raw_response_valid"]
 assert not nohash["firmware_hash_valid"] and nohash["observed_firmware_sha256"] is None
 assert rejectedhash["firmware_hash_valid"] and rejectedhash["observed_firmware_sha256"] != info["expected_firmware_sha256"]
+assert rejected["selector"] == 3 and rejected["status"] < 0 and rejected["command_count"] == 3
+assert [r["command"] for r in rejected["replies"]] == [0x73763001, 0x73763004, 0x73763100]
+reply = rejected["replies"][2]
+assert reply["raw_response_valid"] and reply["header_matches"] and reply["transport_status"] == 11
+assert len(reply["raw_response_words"]) == 64 and reply["raw_response_words"][2:4] == [4294967295, 4294967295]
+assert readfail["selector"] == 4 and readfail["status"] < 0 and readfail["command_count"] == 3
+assert not readfail["replies"][2]["raw_response_valid"] and readfail["replies"][2]["raw_response_words"] is None
 print("Firmware probe CLI: JSON metadata, full replies and invalid raw=null verified")
 '
 done
