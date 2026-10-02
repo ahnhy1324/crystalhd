@@ -2482,5 +2482,245 @@ class FirmwareCommandBufferBridgeTests(unittest.TestCase):
                 self.mapping(payload=payload)
 
 
+class FirmwareInnerDescriptorTests(unittest.TestCase):
+    OPTIONS = ("references", "all_symbols", "bootstrap", "picture_output", "arc_metadata",
+               "csc_command", "command_buffer_bridge")
+
+    @classmethod
+    def setUpClass(cls):
+        cls.data = MAP.read_firmware(BLOB)
+        cls.payload = cls.data[:-MAP.TRAILER_SIZE]
+        cls.images = MAP.analyze(cls.data)["images"]
+
+    def mapping(self, payload=None, images=None):
+        return MAP._inner_descriptor_map(self.payload if payload is None else payload,
+                                         self.images if images is None else images)
+
+    def word(self, slot, address):
+        # Independent ELF VM/file conversions for the selected sections.
+        layouts = ((0, 0x7f8c, 0xc158, 0x32e30), (0, 0x23d74, 0x3b3c8, 0x46908),
+                   (1, 0x23e0, 0x2c5c, 0x7a61c), (1, 0x40f68, 0x4a210, 0xb8769),
+                   (1, 0x40368, 0x40824, 0xb7b69))
+        for image, low, high, offset in layouts:
+            if slot == image and low <= address < high:
+                return struct.unpack_from("<I", self.payload, offset + address - low)[0]
+        self.fail("test VM outside selected sections")
+
+    def test_inner_descriptor_two_paths_and_distinct_state_bases(self):
+        result = MAP.analyze(self.data, inner_descriptor=True)["inner_descriptor"]
+        self.assertEqual(result, self.mapping())
+        self.assertFalse(result["device_observed"])
+        self.assertEqual(result["basis"], "original pre-relocation ELF bytes")
+        self.assertIn("not host addresses", result["address_domain"])
+        self.assertEqual(set(result["paths"]), {"record_pointer_and_boundary", "mpeg_argument_return_byte"})
+        first = result["paths"]["record_pointer_and_boundary"]
+        record = first["record_F"]
+        second = result["paths"]["mpeg_argument_return_byte"]
+        self.assertEqual((first["core_state_local_base"], second["parser_state_local_base"],
+                          second["inner_packet_local_base"], second["inner_state_local_base"]),
+                         (0x3fffcf70, 0x3fffc000, 0x3fffc2f0, 0x3fffc200))
+        self.assertEqual((first["pointer_state_offset"], first["boundary_state_offset"],
+                          record["core_prefix_offset"], record["pointer_P_offset"], record["boundary_offset"]),
+                         (120, 124, 92, 28, 32))
+        self.assertEqual(first["pointer_state_offset"] - record["core_prefix_offset"], record["pointer_P_offset"])
+        self.assertEqual(first["boundary_state_offset"] - record["core_prefix_offset"], record["boundary_offset"])
+        self.assertEqual((record["producer_record_base_core_state_offset"], record["reader_record_base_local_address"],
+                          record["completion_record_base_local_address"]), (88, 0x3fffd2dc, 0x3fffd2dc))
+        self.assertFalse(record["same_record_pool_identity_validated"])
+        self.assertEqual((record["prefix_bytes"], record["stride_bytes"], first["inner_shared_prefix"]["bytes"],
+                          first["selected_mpeg_packet_P"]["copy_bytes_under_base_model"]), (56, 284, 48, 256))
+        self.assertEqual(first["allocator_success_return_value"], 0)
+        boundary = first["completion_boundary"]
+        self.assertEqual(boundary["allocator_boundary_local_address"], 0x3fffd370 - 84)
+        self.assertIn("not free or quiescence", boundary["meaning"])
+        self.assertEqual((second["argument_value"], second["parser_byte_offset"], second["copy_source_state_offset"],
+                          second["copy_bytes"], second["packet_P_destination_offset"], second["packet_P_byte_offset"]),
+                         (3, 124, 120, 16, 180, 184))
+        self.assertEqual(180 + (124 - 120), second["packet_P_byte_offset"])
+        self.assertEqual(second["inner_packet_local_base"] + 184, second["inner_packet_word_local_address"])
+        self.assertEqual(second["inner_packet_word_local_address"], 0x3fffc400 - 88)
+        self.assertEqual(second["inner_state_local_base"] - 56, 0x3fffc1c8)
+        self.assertEqual(second["comparison_values"], [2, 1, 3])
+        self.assertTrue(all(value is False for value in result["validation_scope"].values()))
+        for phrase in ("relocation effects", "register preservation", "distinct record-base fields",
+                       "not a direct cross-image", "computed STATUS", "coherence", "bitstream parsing"):
+            self.assertTrue(any(phrase in text for text in result["limitations"]), phrase)
+        self.assertNotIn(str(ROOT), json.dumps(result))
+
+    def test_inner_descriptor_independent_original_calls_lengths_fields_and_delay_slots(self):
+        first = self.mapping()["paths"]["record_pointer_and_boundary"]
+        second = self.mapping()["paths"]["mpeg_argument_return_byte"]
+        self.assertEqual((first["outer_record_write"]["call_elf_virtual_address"],
+                          first["outer_record_write"]["delay_slot_elf_virtual_address"],
+                          first["outer_record_read"]["call_elf_virtual_address"],
+                          first["outer_record_read"]["delay_slot_elf_virtual_address"],
+                          first["outer_record_read"]["sync_call_elf_virtual_address"]),
+                         (0xa7a8, 0xa7ac, 0xad00, 0xad04, 0xad08))
+        packet = first["selected_mpeg_packet_P"]
+        self.assertEqual((packet["conditional_call_elf_virtual_address"],
+                          packet["original_callee_elf_virtual_address"],
+                          packet["copy_call_elf_virtual_address"],
+                          packet["copy_delay_slot_elf_virtual_address"]), (0x2958, 0x441e4, 0x44200, 0x44204))
+        self.assertEqual((second["call_elf_virtual_address"], second["argument_delay_slot_elf_virtual_address"],
+                          second["byte_store_elf_virtual_address"], second["copy_call_elf_virtual_address"],
+                          second["copy_delay_slot_elf_virtual_address"]),
+                         (0x2d4dc, 0x2d4e0, 0x2d4e4, 0x2ea44, 0x2ea48))
+        self.assertEqual(second["comparison_elf_virtual_addresses"], [0x40610, 0x40640, 0x40664])
+        self.assertEqual(second["conditional_branch_elf_virtual_addresses"], [0x40618, 0x40644, 0x40668])
+        self.assertEqual(second["original_branch_target_elf_virtual_addresses"], [0x40640, 0x40664, 0x40674])
+        # Base GNU ARC branch interpretation only; not applied vendor relocations.
+        for slot, address, target in ((0, 0x2daa4, 0x8758), (0, 0xa7a8, 0x537c),
+                                      (0, 0xad00, 0x53c8), (0, 0xad08, 0x5364),
+                                      (0, 0x2d4dc, 0x4374), (0, 0x2ea30, 0x5550),
+                                      (0, 0x2ea44, 0x537c), (1, 0x2840, 0x2160),
+                                      (1, 0x2958, 0x441e4), (1, 0x44200, 0x2160),
+                                      (1, 0x40618, 0x40640), (1, 0x40644, 0x40664),
+                                      (1, 0x40668, 0x40674)):
+            word = self.word(slot, address)
+            displacement = (word >> 7) & 0xfffff
+            if displacement & 0x80000:
+                displacement -= 0x100000
+            with self.subTest(slot=slot, address=address):
+                self.assertEqual(address + 4 + 4 * displacement, target)
+        expected = ((0, 0x888c, 0x10008a78), (0, 0x8890, 0x1000807c), (0, 0x8898, 0x50000000),
+                    (0, 0x2daa8, 0x401ffe80), (0, 0xa788, 0x605ffe38), (0, 0xa7ac, 0x605ffe38),
+                    (0, 0xad04, 0x605ffe38), (0, 0xad0c, 0x0847801c),
+                    (0, 0x99d8, 0x080b0020), (0, 0x99e4, 0x100881ac),
+                    (0, 0x2d4e0, 0x601ffe03), (0, 0x2d4e4, 0x1047007c),
+                    (0, 0x2ea34, 0x605ffe10), (0, 0x2ea48, 0x605ffe10),
+                    (1, 0x2844, 0x605ffe30), (1, 0x295c, 0x6009a600),
+                    (1, 0x44204, 0x405ffe80), (1, 0x44154, 0x094781a8),
+                    (1, 0x44164, 0x100715c8), (1, 0x405ec, 0x088385c8),
+                    (1, 0x40610, 0x57e27a02), (1, 0x4061c, 0x100d81f4),
+                    (1, 0x40640, 0x57e27a01), (1, 0x40664, 0x57e27a03))
+        for slot, address, value in expected:
+            with self.subTest(slot=slot, address=address):
+                self.assertEqual(self.word(slot, address), value)
+        # ADD-alias has both source register fields equal to short-immediate 128.
+        for slot, address in ((0, 0x2daa8), (1, 0x44204)):
+            word = self.word(slot, address)
+            self.assertEqual(word >> 27, 8)
+            self.assertEqual((word >> 15) & 63, (word >> 9) & 63)
+            self.assertEqual(word & 511, 128)
+            self.assertEqual(128 + 128, 256)
+
+    def test_inner_descriptor_each_selected_byte_rejects_before_interpretation(self):
+        result = self.mapping()
+        for region in result["validated_regions"]:
+            for delta in range(region["size"]):
+                payload = bytearray(self.payload)
+                offset = region["blob_file_offset"] + delta
+                payload[offset] ^= 1
+                with self.subTest(role=region["role"], offset=offset), \
+                        mock.patch.object(MAP.struct, "unpack", side_effect=AssertionError("unexpected decode")), \
+                        self.assertRaisesRegex(MAP.FormatError, "region"):
+                    self.mapping(payload=payload)
+
+    def test_inner_descriptor_private_identity_mapping_and_budget_limits(self):
+        result = self.mapping()
+        self.assertEqual(len(result["validated_regions"]), 40)
+        self.assertEqual(sum(r["size"] for r in result["validated_regions"]), 2067)
+        self.assertEqual(len(result["instruction_windows"]), 24)
+        with mock.patch.object(MAP, "MAX_INNER_DESCRIPTOR_REGIONS", 40), \
+                mock.patch.object(MAP, "MAX_INNER_DESCRIPTOR_BYTES", 2067):
+            self.assertEqual(self.mapping(), result)
+        for name, limit in (("MAX_INNER_DESCRIPTOR_REGIONS", 39), ("MAX_INNER_DESCRIPTOR_BYTES", 2066)):
+            with mock.patch.object(MAP, name, limit), \
+                    mock.patch.object(MAP, "bounded", side_effect=AssertionError("unexpected read")), \
+                    self.assertRaisesRegex(MAP.FormatError, "budget"):
+                self.mapping()
+        for payload, images in ((self.payload[:-4], self.images), (self.payload, self.images[::-1]),
+                                (self.payload, self.images[:1]), (self.payload, self.images + self.images)):
+            with self.assertRaisesRegex(MAP.FormatError, "identities"):
+                self.mapping(payload, images)
+        for slot in (0, 1):
+            for key, value in (("flags", 1), ("machine", 93), ("section_count", 54), ("endianness", "big"),
+                               ("class", 64), ("elf_type", 1), ("blob_file_offset", 0), ("blob_file_end", 0)):
+                images = [dict(i) for i in self.images]
+                images[slot][key] = value
+                with self.subTest(slot=slot, key=key), self.assertRaisesRegex(MAP.FormatError, "identities"):
+                    self.mapping(images=images)
+        windows = list(MAP._INNER_DESCRIPTOR_WINDOWS)
+        slot, role, index, address, offset, raw = windows[0]
+        windows[0] = (slot, role, index, address + 4, offset, raw)
+        with mock.patch.object(MAP, "_INNER_DESCRIPTOR_WINDOWS", windows), \
+                self.assertRaisesRegex(MAP.FormatError, "instruction mapping"):
+            self.mapping()
+
+    def test_inner_descriptor_public_pin_precedes_parse_for_all_old_options(self):
+        changed = bytearray(self.data)
+        changed[0x33710] ^= 1
+        for data in (fixture(), self.data[:-4], bytes(changed)):
+            for mask in range(128):
+                with self.subTest(size=len(data), mask=mask), \
+                        mock.patch.object(MAP, "parse_elf", side_effect=AssertionError("unexpected ELF parse")), \
+                        mock.patch.object(MAP, "_inner_descriptor_map", side_effect=AssertionError("unexpected path parse")), \
+                        self.assertRaises(MAP.FormatError):
+                    MAP.analyze(data, expected_sha256=hashlib.sha256(data).hexdigest(), inner_descriptor=True,
+                                **{name: bool(mask & (1 << bit)) for bit, name in enumerate(self.OPTIONS)})
+        with mock.patch.object(MAP.hashlib, "sha256") as digest, \
+                mock.patch.object(MAP, "parse_elf", side_effect=AssertionError("unexpected ELF parse")):
+            digest.return_value.hexdigest.return_value = MAP.BUNDLED_SHA256
+            with self.assertRaisesRegex(MAP.FormatError, "exact bundled"):
+                MAP.analyze(fixture(), inner_descriptor=True)
+
+    def test_inner_descriptor_no_io_or_decoder_and_cli_pin_failure_has_no_output(self):
+        with mock.patch("builtins.open", side_effect=AssertionError("unexpected file read")), \
+                mock.patch.object(MAP.os, "open", side_effect=AssertionError("unexpected open")), \
+                mock.patch.object(subprocess, "run", side_effect=AssertionError("unexpected execution")):
+            self.mapping()
+            MAP.analyze(self.data, inner_descriptor=True)
+        data = fixture()
+        with mock.patch.object(MAP, "read_firmware", return_value=data), \
+                mock.patch.object(MAP, "parse_elf", side_effect=AssertionError("unexpected ELF parse")), \
+                mock.patch.object(sys, "stdout", new_callable=io.StringIO) as output, \
+                mock.patch.object(sys, "stderr", new_callable=io.StringIO) as error:
+            self.assertEqual(MAP.main(["fixture.bin", "--inner-descriptor", "--expect-sha256",
+                                       hashlib.sha256(data).hexdigest()]), 1)
+        self.assertEqual(output.getvalue(), "")
+        self.assertIn("exact bundled", error.getvalue())
+
+    def test_inner_descriptor_preserves_128_old_outputs_and_composes_exactly(self):
+        aggregate = hashlib.sha256()
+        mapping = self.mapping()
+        for mask in range(128):
+            options = {name: bool(mask & (1 << bit)) for bit, name in enumerate(self.OPTIONS)}
+            wanted = ("ReadLine",) if mask & 1 else MAP.DEFAULT_SYMBOLS
+            plain = MAP.analyze(self.data, wanted, **options)
+            stdout = (json.dumps(plain, indent=2, sort_keys=True) + "\n").encode()
+            aggregate.update(bytes([mask]))
+            aggregate.update(hashlib.sha256(stdout).digest())
+            enriched = MAP.analyze(self.data, wanted, inner_descriptor=True, **options)
+            with self.subTest(mask=mask):
+                self.assertEqual(enriched.pop("inner_descriptor"), mapping)
+                self.assertEqual(enriched, plain)
+        # Independently captured from exact base df9bc328 before editing the mapper.
+        self.assertEqual(aggregate.hexdigest(), "c8768c7dcedd5c8fbd674b098a8cfb783a47687bb9192102816c82d86d42c8b1")
+
+    def test_inner_descriptor_cli_stdout_determinism_and_combinations(self):
+        combinations = [[], ["--references", "--symbol", "ReadLine"],
+                        ["--" + name.replace("_", "-") for name in self.OPTIONS]]
+        for flags in combinations:
+            command = [sys.executable, "-B", str(TOOL), str(BLOB), "--inner-descriptor"] + flags
+            first = subprocess.run(command, check=False, capture_output=True)
+            repeated = subprocess.run(command, check=False, capture_output=True)
+            with self.subTest(flags=flags):
+                self.assertEqual(first.returncode, 0, first.stderr)
+                self.assertEqual(first.stderr, b"")
+                self.assertEqual(repeated.returncode, 0, repeated.stderr)
+                self.assertEqual(first.stdout, repeated.stdout)
+                self.assertEqual(json.loads(first.stdout)["inner_descriptor"], self.mapping())
+                self.assertNotIn(str(ROOT).encode(), first.stdout)
+
+    def test_inner_descriptor_cli_accepts_no_arbitrary_selector_or_address(self):
+        for option in ("--inner-descriptor=0x2958", "--inner-descriptor=1", "--inner-descriptor-budget"):
+            with self.subTest(option=option), \
+                    mock.patch.object(MAP, "read_firmware", side_effect=AssertionError("unexpected file read")), \
+                    mock.patch.object(sys, "stderr", new_callable=io.StringIO), \
+                    self.assertRaises(SystemExit) as error:
+                MAP.main(["offline.bin", option])
+            self.assertEqual(error.exception.code, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

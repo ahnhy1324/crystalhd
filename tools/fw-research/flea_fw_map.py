@@ -35,6 +35,110 @@ MAX_CSC_COMMAND_ANCHORS = 32  # Fixed local command path, not a dispatcher scan.
 MAX_COMMAND_BUFFER_BRIDGE_REGIONS = 80
 MAX_COMMAND_BUFFER_BRIDGE_BYTES = 40 * 1024
 MAX_COMMAND_BUFFER_BRIDGE_RELOCATIONS = 2171
+MAX_INNER_DESCRIPTOR_REGIONS = 40
+MAX_INNER_DESCRIPTOR_BYTES = 4096
+# Original ELF bytes only: no runtime relocation, ARC decode or execution here.
+_INNER_DESCRIPTOR_HEADERS = (
+    (0, 0x2ea60, "7f454c4601010100000000000000000002002d000100000078a6030034000000e0aa040000000000340020001200280037003600"),
+    (1, 0x79dd8, "7f454c4601010100000000000000000002002d0001000000689f040034000000584c050000000000340020001300280070006f00"),
+)
+_INNER_DESCRIPTOR_SECTIONS = (
+    (0, 4, 0x795e0,
+     "3d00000001000000060000008c7f0000d0430000cc41000000000000000000000400000001000000",
+     0x790d5, ".core_critical_code_picture"),
+    (0, 16, 0x797c0,
+     "a00100000100000006004000743d0200a87e01005476010000000000000000000400000001000000",
+     0x79238, ".text"),
+    (0, 2, 0x79590,
+     "0900000001000000060000000040000044040000d423000000000000000000000040000001000000",
+     0x790a1, ".core_critical_code_slice"),
+    (1, 3, 0xceaa8,
+     "230000000100000006000000e0230000440800007c08000000000000000000000400000001000000",
+     0xcdf83, ".core_critical_code"),
+    (1, 47, 0xcf188,
+     "980400000100000006004000680f040091e90300a892000000000000000000000400000001000000",
+     0xce3f8, ".text"),
+    (1, 45, 0xcf138,
+     "6504000001000000060000006803040091dd0300bc04000000000000000000000400000001000000",
+     0xce3c5, ".mpeg_innerloop_code"),
+    (0, 54, 0x79db0,
+     "9d04000003000000000000000000000038a60400a704000000000000000000000100000001000000",
+     0x79535, ".shstrtab"),
+    (1, 111, 0xcfb88,
+     "c60a000003000000000000000000000088410500d00a000000000000000000000100000001000000",
+     0xcea26, ".shstrtab"),
+)
+_INNER_DESCRIPTOR_WINDOWS = (
+    (0, "allocator_inputs", 4, 0x8758, 0x335fc,
+     "007c7f6070d3ff3fac812108a881a1080083e257037e0040a5090020037ec070a4818108"),
+    (0, "allocator_publish", 4, 0x886c, 0x33710,
+     "008c02400009e057007c3f6070cfff3fa5010020a8810110a0810108a8810110788a00107c80001020800f3800000050"),
+    (0, "mpeg_allocation", 16, 0x2da6c, 0x50600,
+     "007cff6170cfff3f64800708007cdf6100c2ff3f009aa651607c0710801b0530307e20405c000710641a071070820710"
+     "347e0040748007102096b52f80fe1f400001e06702f6ff2778800708007f005068000710009a0660"),
+    (0, "record_core_base", 4, 0xa314, 0x351b8,
+     "007cdf6170cfff3f"),
+    (0, "record_scratch_base", 4, 0xa298, 0x3513c,
+     "007c1f63000f0030007c3f63801a0530"),
+    (0, "record_prefix_source", 4, 0xa3f0, 0x35294,
+     "5c7e874200280a6020d8f52f38fe3f60"),
+    (0, "record_prefix_write", 4, 0xa778, 0x3561c,
+     "5800e70900280a6000b22c60206bf52f38fe5f6000b20c6003fea88100a2a64103fea68100a2a65102fea681009a2740"
+     "207af52f38fe5f60"),
+    (0, "outer_attempt_bases", 4, 0xac2c, 0x35ad0,
+     "007cbf6170cdff3f21840608181e0e10017ae057141c0e10a20100201c200e10a0240020ffff1f60007c1f6270cfff3f"
+     "8605280800a0c0414405c709"),
+    (0, "outer_record_read_publish", 4, 0xacbc, 0x35b60,
+     "00003f08dcd2ff3f017e00403f7e006086014810c2880708047e0070c2808710037e0780001c0040037e0080001c0050"
+     "027e008000800040007cff61801a0530009e2760a0d8f42f38fe5f6000cbf42f1c804708007c3f60000f0030d0c00008"
+     "017ae06782feff2718840608007c216800000080007c0040000f0000007c00680000003000020014188406081f844608"
+     "047e0040047e00601880461013840608001a2040017e0040149c40101684401013804610"),
+    (0, "outer_completion_queue", 2, 0x41e8, 0x2f08c,
+     "007c1f6170cdff3f130484080009e26701800f3816040408057e0080007ce04068d3ff3f2486630802fae1570a800f38"
+     "19044408007c2140000f000000fc20680000003000c0c008000de36704800f381404a408007c204088d3ff3f007c0040"
+     "8ad3ff3f0086204000060040008a4010000c401001fe614015040408248643101400441017040408017e825013084410"
+     "16004410047e0140047e006020800f3819004410"),
+    (0, "outer_channel_completion", 4, 0x9850, 0x346f4,
+     "043e0e1000360e1000386e633c7e8e53101a0e10141c0e10181e0e101c200e1020220e1024240e1028260e102c280e10"
+     "007c1f6270cdff3f1f040808382e0e10057e0080007ce04268d3ff3f2486ab09342c0e1000fae657302a0e10ac3d0020"
+     "00aaaa52007c3f6270d3ff3f007c404288d3ff3f007c80428ad3ff3f0004c9096c810808007cdf62801a053000046a0a"
+     "037ee781009ce74103fee781009ce75102fee781001e0040002c2b602059f72f38fe5f60a04bf72f001cc741"),
+    (0, "allocator_boundary_restore", 4, 0x99d8, 0x3487c,
+     "20000b08007cff61001b0530ac8108100c000b08009e27608c810810"),
+    (0, "mpeg_parser_field", 16, 0x2d49c, 0x50030,
+     "141c0e10007cdf6100c0ff3f1c060708007ae057a9030020101a0e1000a803281000ae090480ed0b1400ce0920800f38"
+     "18106e0b20d4ad2f0afe1f6078008710a0d2ad2f03fe1f607c004710"),
+    (0, "mpeg_final_bases", 16, 0x2e824, 0x513b8,
+     "0000e0610082c0620004c161007c5f6200c2ff3f205fad2f6d7e0940d8054908302a0e100005e167007cbf6100c0ff3f"),
+    (0, "mpeg_final_core_base", 16, 0x2e8dc, 0x51470,
+     "007cbf6270cfff3f05024010"),
+    (0, "mpeg_field_copy", 16, 0x2ea18, 0x515ac,
+     "6d040908077e0080007cc041001a0530001c076078fe2640a063ad2f10fe5f6078800a08b47e2040001c0760a026ad2f"
+     "10fe5f608022ad2f"),
+    (1, "inner_loop", 3, 0x2afc, 0x7ad38,
+     "043e0e1000360e1000386e63a02f8128107e8e5380548128007cff61000f0000007cbf6114c1ff3f007c7f620010f03f"
+     "007c5f6200e1f505007c3f62000f003000fc076a0000003014c00908207ae06701d380284ca408144cc008080040c809"
+     "001de76703fcff2721a01f088c8126080083e06781010020908126080002005094810610007c0760ffffff7f008aff2f"
+     "00fc2768000000300080001404fee77921a01f0801fe3f608c830610"),
+    (1, "inner_prefix_copy", 3, 0x2814, 0x7aa50,
+     "0000606221a01f080000c06200244952007c3f62000f003028a40814007cdf6114c1ff3f007f074000a62960a023ff2f"
+     "30fe5f60"),
+    (1, "inner_mpeg_call", 3, 0x2954, 0x7ab90,
+     "e8ff2d402011832800a60960"),
+    (1, "inner_mpeg_copy", 47, 0x441e4, 0xbb9e5,
+     "043e0e1000360e1000386e63147e8e5300002060007c1f60f0c2ff3fa0eb7b2f80fe5f40204aff2f101a0e10008fff2f"
+     "0076f82f"),
+    (1, "inner_packet_base", 47, 0x43ea8, 0xbb6a9,
+     "007cff6100c4ff3f04812708007cdf6100c2ff3f"),
+    (1, "inner_field_transfer", 47, 0x44150, 0xbb951,
+     "a4816709a8814709ac812709b0810709c4170710c8150710cc130710d0110710"),
+    (1, "inner_consumer_base_and_two", 45, 0x405e4, 0xb7de5,
+     "007cff6000c2ff3fc88583080881c308017ae157d98563080000005038814310dc85230801febf60028aa250027ae257"
+     "fd8b4d10a2040020f4810d10"),
+    (1, "inner_consumer_one_and_three", 45, 0x40640, 0xb7e41,
+     "017ae2578203002080fe5f4003fae157f4850d10a2050020b4800310a005002000040160037ae2570201002002fe5f60"
+     "b484031003fae157"),
+)
 # Exact windows of the pinned control path, not a disassembler or a code scan.
 _COMMAND_BUFFER_BRIDGE_REGIONS = (
     ("host_init_dispatch", 0x5f44,
@@ -559,6 +663,139 @@ def _arc_metadata_map(payload, images, image_sections):
                 "MetaWare -core8 and GNU ELF flag interpretations use different namespaces; their relationship is unresolved.",
                 "Extension records declare ASCII names and fields, not instruction semantics or a complete ISA.",
                 "Stored metadata does not establish silicon architecture, a call graph or codec capabilities."]}
+
+
+def _inner_descriptor_map(payload, images):
+    """Two fixed pre-relocation field paths, conditional on the base GNU ARC model."""
+    identities = [(0x2ea60, 0x79dd8, 55), (0x79dd8, 0xcfbb0, 112)]
+    if (len(payload) != BUNDLED_SIZE - TRAILER_SIZE or
+            [(i.get("blob_file_offset"), i.get("blob_file_end"), i.get("section_count"))
+             for i in images] != identities or
+            any((i.get("class"), i.get("endianness"), i.get("machine"),
+                 i.get("elf_type"), i.get("flags")) != (32, "little", 45, 2, 0)
+                for i in images)):
+        raise FormatError("inner-descriptor image identities do not match the baseline")
+    regions = [(f"elf_header_{slot}", offset, bytes.fromhex(raw))
+               for slot, offset, raw in _INNER_DESCRIPTOR_HEADERS]
+    for slot, index, offset, raw, name_offset, name in _INNER_DESCRIPTOR_SECTIONS:
+        regions.append((f"section_header_{slot}_{index}", offset, bytes.fromhex(raw)))
+        if name != ".shstrtab":
+            regions.append((f"section_name_{slot}_{index}", name_offset, name.encode("ascii") + b"\0"))
+    regions.extend((role, offset, bytes.fromhex(raw))
+                   for _, role, _, _, offset, raw in _INNER_DESCRIPTOR_WINDOWS)
+    if (len(regions) > MAX_INNER_DESCRIPTOR_REGIONS or
+            sum(len(raw) for _, _, raw in regions) > MAX_INNER_DESCRIPTOR_BYTES):
+        raise FormatError("inner-descriptor validation budget exceeded")
+    validated = []
+    # All selected bytes, including headers, literals and delay slots, precede
+    # any field interpretation. These are ORIGINAL bytes, not loaded operands.
+    for role, offset, expected in regions:
+        actual = bounded(payload, offset, len(expected), "inner-descriptor region")
+        if actual != expected:
+            raise FormatError(f"inner-descriptor region {role} does not match the baseline")
+        validated.append({"role": role, "blob_file_offset": offset, "size": len(actual),
+                          "sha256": hashlib.sha256(actual).hexdigest()})
+    headers = {slot: struct.unpack("<16sHHIIIIIHHHHHH", bytes.fromhex(raw))
+               for slot, _, raw in _INNER_DESCRIPTOR_HEADERS}
+    sections = {(slot, index): struct.unpack("<10I", bytes.fromhex(raw))
+                for slot, index, _, raw, _, _ in _INNER_DESCRIPTOR_SECTIONS}
+    for slot, index, offset, _, name_offset, name in _INNER_DESCRIPTOR_SECTIONS:
+        base, end, _ = identities[slot]
+        header, section = headers[slot], sections[slot, index]
+        names = sections[slot, header[-1]]
+        if (offset != base + header[6] + index * 40 or names[1] != 3 or
+                base + names[4] + names[5] > end or
+                name_offset != base + names[4] + section[0] or
+                section[0] + len(name) + 1 > names[5] or
+                base + section[4] + section[5] > end):
+            raise FormatError("inner-descriptor section mapping does not match the baseline")
+    windows = []
+    for slot, role, index, address, offset, raw in _INNER_DESCRIPTOR_WINDOWS:
+        base, _, _ = identities[slot]
+        section = sections[slot, index]
+        size = len(raw) // 2
+        if (section[1] != 1 or not section[2] & 4 or address < section[3] or
+                address + size > section[3] + section[5] or
+                offset != base + section[4] + address - section[3]):
+            raise FormatError("inner-descriptor instruction mapping does not match the baseline")
+        windows.append({"role": role, "image_slot": slot, "section_index": index,
+                        "elf_virtual_address": address, "blob_file_offset": offset, "size": size})
+    return {
+        "device_observed": False, "basis": "original pre-relocation ELF bytes",
+        "address_domain": "ELF virtual addresses and ARC-local firmware literals, not host addresses",
+        "interpretation": {"tool": "GNU binutils 2.23.2 default ARC base-case model",
+                           "two_operand_asl_is_add_alias_source": "opcodes/arc-opc.c:1365-1366"},
+        "paths": {
+            "record_pointer_and_boundary": {
+                "core_state_local_base": 0x3fffcf70,
+                "pointer_state_offset": 120, "boundary_state_offset": 124,
+                "allocator_publish_elf_virtual_address": 0x888c,
+                "allocator_success_return_value": 0,
+                "mpeg_allocator_call_elf_virtual_address": 0x2daa4,
+                "mpeg_allocator_delay_slot_elf_virtual_address": 0x2daa8,
+                "record_F": {"core_prefix_offset": 92, "prefix_bytes": 56, "stride_bytes": 284,
+                             "pointer_P_offset": 28, "boundary_offset": 32,
+                             "producer_record_base_core_state_offset": 88,
+                             "reader_record_base_local_address": 0x3fffd2dc,
+                             "completion_record_base_local_address": 0x3fffd2dc,
+                             "same_record_pool_identity_validated": False},
+                "outer_record_write": {"call_elf_virtual_address": 0xa7a8,
+                                       "original_callee_elf_virtual_address": 0x537c,
+                                       "delay_slot_elf_virtual_address": 0xa7ac, "bytes": 56},
+                "outer_record_read": {"call_elf_virtual_address": 0xad00,
+                                      "original_callee_elf_virtual_address": 0x53c8,
+                                      "delay_slot_elf_virtual_address": 0xad04,
+                                      "sync_call_elf_virtual_address": 0xad08,
+                                      "bytes": 56, "scratch_local_address": 0x30051a80},
+                "pointer_result_mailbox": {"arc_literal_base": 0x30000f00, "slot_offsets": [0, 4],
+                                           "pointer_publication_mask": 0x80000000,
+                                           "pointer_consumption_mask": 0x7fffffff},
+                "inner_shared_prefix": {"call_elf_virtual_address": 0x2840,
+                                        "original_callee_elf_virtual_address": 0x2160,
+                                        "bytes": 48, "local_destination": 0x3fffc014},
+                "selected_mpeg_packet_P": {"conditional_call_elf_virtual_address": 0x2958,
+                                           "original_callee_elf_virtual_address": 0x441e4,
+                                           "copy_call_elf_virtual_address": 0x44200,
+                                           "original_copy_callee_elf_virtual_address": 0x2160,
+                                           "copy_delay_slot_elf_virtual_address": 0x44204,
+                                           "copy_bytes_under_base_model": 256,
+                                           "local_destination": 0x3fffc2f0},
+                "completion_boundary": {"record_F_offset": 32, "scratch_read_elf_virtual_address": 0x99d8,
+                                        "store_elf_virtual_address": 0x99e4,
+                                        "allocator_boundary_local_address": 0x3fffd31c,
+                                        "meaning": "consumed boundary/bookkeeping only; not free or quiescence"}},
+            "mpeg_argument_return_byte": {
+                "parser_state_local_base": 0x3fffc000, "parser_byte_offset": 124,
+                "original_helper_elf_virtual_address": 0x4374,
+                "call_elf_virtual_address": 0x2d4dc, "argument_delay_slot_elf_virtual_address": 0x2d4e0,
+                "argument_value": 3, "byte_store_elf_virtual_address": 0x2d4e4,
+                "copy_source_state_offset": 120, "copy_bytes": 16, "packet_P_destination_offset": 180,
+                "packet_P_byte_offset": 184, "copy_call_elf_virtual_address": 0x2ea44,
+                "copy_delay_slot_elf_virtual_address": 0x2ea48,
+                "inner_packet_local_base": 0x3fffc2f0, "inner_packet_word_local_address": 0x3fffc3a8,
+                "inner_word_load_elf_virtual_address": 0x44154,
+                "inner_state_local_base": 0x3fffc200, "inner_state_word_offset": -56,
+                "inner_word_store_elf_virtual_address": 0x44164,
+                "inner_byte_load_elf_virtual_address": 0x405ec,
+                "comparison_values": [2, 1, 3],
+                "comparison_elf_virtual_addresses": [0x40610, 0x40640, 0x40664],
+                "conditional_branch_elf_virtual_addresses": [0x40618, 0x40644, 0x40668],
+                "original_branch_target_elf_virtual_addresses": [0x40640, 0x40664, 0x40674]}},
+        "validation_scope": {"full_descriptor_validated": False, "worklist_validated": False,
+                             "reference_lifetime_validated": False, "vendor_ISA_validated": False,
+                             "native_backend_api_validated": False, "public_PPB_equivalence_validated": False,
+                             "relocation_effects_validated": False, "inner_entry_selection_validated": False,
+                             "record_base_identity_validated": False, "active_context_identity_validated": False,
+                             "free_or_quiescence_validated": False, "bitstream_helper_semantics_validated": False},
+        "validated_regions": validated, "instruction_windows": windows,
+        "limitations": [
+            "Original call/literal targets are conditional: selected relocation effects and runtime operands are not validated.",
+            "Field paths assume the GNU base-case ISA interpretation, selected callees and register preservation conventions.",
+            "Producer CORE+88 and reader/completion local 0x3fffd2dc are distinct record-base fields; the same F pool and active codec contexts are assumptions, not validated equality.",
+            "Mailbox transfer is not a direct cross-image function call or a host-callable native backend ABI.",
+            "The computed STATUS dispatcher is not validated; the selected MPEG call is conditional on reaching that path.",
+            "Overlay/BSS initialization, DMA coherence and runtime execution are not observed.",
+            "SiU argument/return linkage does not establish bitstream parsing semantics or name comparison values."]}
 
 
 def _command_buffer_bridge_map(payload, images):
@@ -1849,7 +2086,7 @@ def parse_elf(payload, base, wanted, symbol_budget, string_budget,
 
 def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
             references=False, all_symbols=False, bootstrap=False, picture_output=False,
-            arc_metadata=False, csc_command=False, command_buffer_bridge=False):
+            arc_metadata=False, csc_command=False, command_buffer_bridge=False, inner_descriptor=False):
     if len(data) < 24 or len(data) > MAX_FIRMWARE_SIZE or len(data) % 4:
         raise FormatError("invalid BCM70015 firmware size")
     sha256 = hashlib.sha256(data).hexdigest()
@@ -1865,6 +2102,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         raise FormatError("--csc-command requires the exact bundled firmware SHA-256 and size")
     if command_buffer_bridge and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
         raise FormatError("--command-buffer-bridge requires the exact bundled firmware SHA-256 and size")
+    if inner_descriptor and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
+        raise FormatError("--inner-descriptor requires the exact bundled firmware SHA-256 and size")
     payload = data[:-TRAILER_SIZE]
     length_slot = struct.unpack_from("<I", data, len(payload))[0]
     if length_slot != 16:
@@ -1939,6 +2178,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         result["csc_command"] = _csc_command_map(payload, images)
     if command_buffer_bridge:
         result["command_buffer_bridge"] = _command_buffer_bridge_map(payload, images)
+    if inner_descriptor:
+        result["inner_descriptor"] = _inner_descriptor_map(payload, images)
     return result
 
 
@@ -1968,13 +2209,16 @@ def main(argv=None):
         "validate the fixed local CSC command fallback path; bundled firmware only, not completion or capability proof"))
     parser.add_argument("--command-buffer-bridge", action="store_true", help=(
         "validate the initialized outer packet address/loader relocation bridge; bundled firmware only, not runtime proof"))
+    parser.add_argument("--inner-descriptor", action="store_true", help=(
+        "validate two fixed pre-relocation descriptor field paths; bundled firmware only, conditional ARC interpretation"))
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-fA-F]{64}", args.expect_sha256):
         parser.error("--expect-sha256 must be 64 hexadecimal digits")
     try:
         report = analyze(read_firmware(args.firmware), args.symbol or DEFAULT_SYMBOLS,
                          args.expect_sha256.lower(), args.references, args.all_symbols, args.bootstrap,
-                         args.picture_output, args.arc_metadata, args.csc_command, args.command_buffer_bridge)
+                         args.picture_output, args.arc_metadata, args.csc_command, args.command_buffer_bridge,
+                         args.inner_descriptor)
     except (OSError, FormatError) as error:
         print(f"flea_fw_map: {error}", file=sys.stderr)
         return 1
