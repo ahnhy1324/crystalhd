@@ -2167,5 +2167,238 @@ class FirmwareCscCommandTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(BLOB.read_bytes()).hexdigest(), MAP.BUNDLED_SHA256)
 
 
+class FirmwareCommandBufferBridgeTests(unittest.TestCase):
+    OPTIONS = ("references", "all_symbols", "bootstrap", "picture_output", "arc_metadata", "csc_command")
+
+    @classmethod
+    def setUpClass(cls):
+        cls.data = MAP.read_firmware(BLOB)
+        cls.payload = cls.data[:-MAP.TRAILER_SIZE]
+        cls.images = MAP.analyze(cls.data)["images"]
+
+    def mapping(self, payload=None, images=None):
+        return MAP._command_buffer_bridge_map(self.payload if payload is None else payload,
+                                             self.images if images is None else images)
+
+    def test_bridge_initialized_identity_heap_and_owned_symbolic_block(self):
+        result = MAP.analyze(self.data, command_buffer_bridge=True)["command_buffer_bridge"]
+        self.assertEqual(result, self.mapping())
+        self.assertFalse(result["device_observed"])
+        self.assertEqual(result["base_symbol"], "B")
+        heap = result["initialized_heap"]
+        self.assertEqual((heap["virtual_base"], heap["physical_base"], heap["bytes"]),
+                         (0x116004, 0x116004, 0x3ee5ffc))
+        self.assertEqual(heap["alignment_exponent"], 2)
+        self.assertEqual(heap["inclusive_virtual_range"], [0x116068, 0x3ffc000])
+        self.assertEqual(heap["map_offsets"], {"virtual_base": 0x28, "physical_base": 0x30,
+                                               "inclusive_low": 0x18, "inclusive_high": 0x1c})
+        self.assertTrue(heap["initialized_translation_is_identity"])
+        allocation = result["allocation"]
+        self.assertEqual((allocation["bytes"], allocation["alignment_exponent"]), (0x100000, 12))
+        self.assertEqual((allocation["virtual_pointer_context_offset"],
+                          allocation["physical_pointer_context_offset"],
+                          allocation["owned_flag_byte_context_offset"], allocation["owned_flag_value"]),
+                         (0x1ac, 0x1b0, 0x1b8, 1))
+        self.assertTrue(allocation["packet_is_subrange_not_separate_allocation"])
+        self.assertEqual(allocation["release_call_blob_file_offset"], 0x288b0)
+        self.assertIn("translated allocated block base", allocation["base_definition"])
+
+    def test_bridge_actual_init_catalog_callbacks_and_both_elf_placements(self):
+        result = self.mapping()
+        init = result["host_init"]
+        self.assertEqual(init["command"], 0x73763001)
+        header = (ROOT / "include/7411d.h").read_text()
+        self.assertRegex(header, r"#define\s+eCMD_C011_CMD_BASE\s+\(0x73763000\)")
+        self.assertRegex(header, r"eCMD_C011_INIT\s*=\s*eCMD_C011_CMD_BASE\s*\+\s*0x01")
+        self.assertTrue(init["requires_uninitialized_host_context"])
+        self.assertEqual((init["factory_call_blob_file_offset"], init["configuration_copy_bytes"]), (0x7e0, 72))
+        self.assertEqual((init["callback_context_offset"], init["catalog_context_offset"]), (0x3c, 0x40))
+        self.assertEqual((init["callback_table_blob_file_offset"], init["catalog_blob_file_offset"]),
+                         (0xcfcf0, 0xcfbe8))
+        self.assertEqual(init["combined_image_slot"], 4)
+        self.assertTrue(init["combined_image_slot_is_null"])
+        self.assertEqual(init["fallback_image_slots"], [0, 1])
+        self.assertEqual([(p["slot"], p["image_blob_file_offset"], p["image_base_offset_from_B"],
+                           p["first_data_section_index"], p["first_data_section_name"],
+                           p["first_data_offset_from_B"], p["first_data_bytes"])
+                          for p in result["image_placements"]],
+                         [(0, 0x2ea60, 0, 17, ".vdec_cmd_block", 0x70000, 256),
+                          (1, 0x79dd8, 0x90000, 50, ".rodata", 0xe0000, 384)])
+        anchors = {a["blob_file_offset"]: a for a in result["instruction_anchors"]}
+        for offset, target in ((0x60d4, 0x5ccc), (0x5d4c, 0x54c), (0x7e0, 0xe8b0),
+                               (0x280b4, 0x27bd0), (0x28120, 0x27bd0), (0x27d74, 0x2af2c)):
+            self.assertEqual(anchors[offset]["target_blob_file_offset"], target)
+        self.assertEqual(anchors[0xe894]["literal_value"], 0xcfcf0)
+        self.assertEqual(anchors[0xe89c]["literal_value"], 0xcfc00)
+
+    def test_bridge_exact_symbol_relocation_and_little_endian_type4_before_copy(self):
+        result = self.mapping()
+        rela = result["outer_pointer_relocation"]
+        self.assertEqual((rela["relocation_record_blob_file_offset"], rela["relocation_section_index"],
+                          rela["relocation_record_index"], rela["vendor_type"], rela["symbol_index"],
+                          rela["symbol_record_blob_file_offset"], rela["symbol_section_index"]),
+                         (0x72f00, 51, 160, 4, 18, 0x69c90, 17))
+        self.assertEqual((rela["original_symbol_value"], rela["addend"], rela["original_literal"]),
+                         (0x70000, 0x100, 0x70100))
+        self.assertEqual((rela["literal_blob_file_offset"], rela["literal_elf_virtual_address"]),
+                         (0x483c4, 0x25830))
+        self.assertEqual((rela["symbol_offset_from_B"], rela["patched_literal_offset_from_B"]),
+                         (0x70000, 0x70100))
+        self.assertTrue(rela["selected_literal_relocation_is_unique"])
+        self.assertEqual(rela["byte_store_blob_file_offsets"], [0x29c9c, 0x29ca4, 0x29cb0, 0x29cbc])
+        self.assertEqual([struct.unpack_from("<I", self.payload, p)[0]
+                          for p in rela["byte_store_blob_file_offsets"]],
+                         [0xe7c4600a, 0xe7c4000b, 0xe7c41000, 0xe7c41000])
+        self.assertIn("32-bit little-endian S+A", rela["semantics"])
+        self.assertNotIn("R_ARC", rela["semantics"])
+        self.assertTrue(rela["applied_before_section_copy"])
+        self.assertEqual((rela["apply_call_blob_file_offset"], rela["copy_call_blob_file_offset"]),
+                         (0x2b16c, 0x2b21c))
+        anchors = {a["blob_file_offset"]: a for a in result["instruction_anchors"]}
+        self.assertEqual(anchors[0x2b010]["target_blob_file_offset"], 0x2a474)
+        self.assertEqual(anchors[0x2b018]["target_blob_file_offset"], 0x2a3e0)
+        self.assertEqual(anchors[0x2a178]["target_blob_file_offset"], 0x29ba4)
+        self.assertEqual(anchors[0x29c20]["target_blob_file_offset"], 0x29c98)
+        self.assertEqual(anchors[0x29cc0]["target_blob_file_offset"], 0x29f00)
+
+    def test_bridge_outer_arc_operand_matches_arm_packet_with_explicit_limits(self):
+        result = self.mapping()
+        arm, arc = result["arm_packet"], result["outer_arc_operand"]
+        self.assertEqual((arm["physical_pointer_context_offset"], arm["virtual_pointer_context_offsets"]),
+                         (0x1cc, [0x94, 0x98]))
+        self.assertEqual((arm["physical_store_blob_file_offset"], arm["virtual_store_blob_file_offsets"]),
+                         (0x280f4, [0x28180, 0x28188]))
+        self.assertEqual((arm["bytes"], arm["copy_bytes"]), (256, 252))
+        self.assertEqual((arc["function"], arc["image_slot"], arc["function_elf_virtual_address"]),
+                         ("Core_Command", 0, 0x25808))
+        self.assertEqual((arc["load_instruction_blob_file_offset"], arc["add_negative_256_blob_file_offset"],
+                          arc["dma_argument_move_blob_file_offset"], arc["dma_call_blob_file_offset"]),
+                         (0x483c0, 0x483c8, 0x483cc, 0x483d4))
+        self.assertEqual((arc["dma_function"], arc["dma_function_blob_file_offset"]), ("Dma_Read", 0x3026c))
+        self.assertEqual((arc["dma_operand_offset_from_B"], arm["offset_from_B"]), (0x70000, 0x70000))
+        self.assertTrue(arc["matches_arm_packet"])
+        self.assertIn("not standalone operation or codec acceptance", result["scope"])
+        self.assertTrue(any("allocations" in s and "loads succeed" in s for s in result["assumptions"]))
+        self.assertTrue(any("calling convention" in s for s in result["assumptions"]))
+        self.assertTrue(any("extension semantics are unvalidated" in s for s in result["assumptions"]))
+        self.assertTrue(any("not an inner decoder packet" in s for s in result["limitations"]))
+        self.assertTrue(any("has not been read" in s for s in result["limitations"]))
+        self.assertNotIn(str(ROOT), json.dumps(result))
+
+    def test_bridge_every_fixed_window_word_and_name_byte_fail_before_decode(self):
+        for name, offset, encoded in MAP._COMMAND_BUFFER_BRIDGE_REGIONS:
+            size = len(encoded) // 2
+            steps = range(size) if name.endswith("_name") else range(0, size, 4)
+            for delta in steps:
+                payload = bytearray(self.payload)
+                payload[offset + delta] ^= 1
+                with self.subTest(region=name, offset=offset + delta), \
+                        mock.patch.object(MAP, "_a32_branch", side_effect=AssertionError("unexpected decode")), \
+                        mock.patch.object(MAP, "_a32_literal", side_effect=AssertionError("unexpected decode")), \
+                        self.assertRaisesRegex(MAP.FormatError, "region"):
+                    self.mapping(payload=payload)
+
+    def test_bridge_complete_relocation_table_and_each_record_are_pinned_before_decode(self):
+        for offset in list(range(0x72780, 0x78d44, 12)) + [0x78d43]:
+            payload = bytearray(self.payload)
+            payload[offset] ^= 1
+            with self.subTest(offset=offset), \
+                    mock.patch.object(MAP, "_a32_branch", side_effect=AssertionError("unexpected decode")), \
+                    self.assertRaises(MAP.FormatError):
+                self.mapping(payload=payload)
+        for offset in range(0x72f00, 0x72f0c):
+            payload = bytearray(self.payload)
+            payload[offset] ^= 1
+            with self.subTest(offset=offset), self.assertRaises(MAP.FormatError):
+                self.mapping(payload=payload)
+
+    def test_bridge_resource_budgets_and_private_image_identity(self):
+        result = self.mapping()
+        self.assertEqual(len(result["validated_regions"]), 75)
+        self.assertEqual(result["validated_byte_count"], 36443)
+        self.assertEqual(result["relocation_record_count"], 2171)
+        self.assertEqual(len(result["instruction_anchors"]), 48)
+        for budget, value in (("MAX_COMMAND_BUFFER_BRIDGE_REGIONS", 74),
+                              ("MAX_COMMAND_BUFFER_BRIDGE_BYTES", 36442),
+                              ("MAX_COMMAND_BUFFER_BRIDGE_RELOCATIONS", 2170)):
+            with mock.patch.object(MAP, budget, value), \
+                    mock.patch.object(MAP, "bounded", side_effect=AssertionError("unexpected read")), \
+                    self.assertRaisesRegex(MAP.FormatError, "budget"):
+                self.mapping()
+        for payload, images in ((self.payload[:-4], self.images), (self.payload, self.images[::-1]),
+                                (self.payload, self.images[:1]), (self.payload, self.images + self.images)):
+            with self.assertRaisesRegex(MAP.FormatError, "identities"):
+                self.mapping(payload, images)
+        for key, value in (("flags", 1), ("machine", 93), ("section_count", 54), ("endianness", "big")):
+            images = [dict(i) for i in self.images]
+            images[0][key] = value
+            with self.subTest(key=key), self.assertRaisesRegex(MAP.FormatError, "identities"):
+                self.mapping(images=images)
+
+    def test_bridge_public_pin_precedes_every_parser_option_combination(self):
+        changed = bytearray(self.data)
+        changed[0x29c9c] ^= 1
+        for data in (fixture(), self.data[:-4], bytes(changed)):
+            for mask in range(64):
+                with self.subTest(size=len(data), mask=mask), \
+                        mock.patch.object(MAP, "parse_elf", side_effect=AssertionError("unexpected ELF parse")), \
+                        mock.patch.object(MAP, "_command_buffer_bridge_map", side_effect=AssertionError("unexpected bridge parse")), \
+                        self.assertRaisesRegex(MAP.FormatError, "exact bundled"):
+                    MAP.analyze(data, expected_sha256=hashlib.sha256(data).hexdigest(),
+                                command_buffer_bridge=True,
+                                **{name: bool(mask & (1 << bit)) for bit, name in enumerate(self.OPTIONS)})
+        with mock.patch.object(MAP.hashlib, "sha256") as digest, \
+                mock.patch.object(MAP, "parse_elf", side_effect=AssertionError("unexpected ELF parse")):
+            digest.return_value.hexdigest.return_value = MAP.BUNDLED_SHA256
+            with self.assertRaisesRegex(MAP.FormatError, "exact bundled"):
+                MAP.analyze(fixture(), command_buffer_bridge=True)
+
+    def test_bridge_pure_map_and_cli_pin_failure_without_output(self):
+        with mock.patch("builtins.open", side_effect=AssertionError("unexpected file read")), \
+                mock.patch.object(MAP.os, "open", side_effect=AssertionError("unexpected open")), \
+                mock.patch.object(subprocess, "run", side_effect=AssertionError("unexpected execution")):
+            self.mapping()
+            MAP.analyze(self.data, command_buffer_bridge=True)
+        data = fixture()
+        with mock.patch.object(MAP, "read_firmware", return_value=data), \
+                mock.patch.object(MAP, "parse_elf", side_effect=AssertionError("unexpected ELF parse")), \
+                mock.patch.object(sys, "stdout", new_callable=io.StringIO) as output, \
+                mock.patch.object(sys, "stderr", new_callable=io.StringIO) as error:
+            self.assertEqual(MAP.main(["fixture.bin", "--command-buffer-bridge", "--expect-sha256",
+                                       hashlib.sha256(data).hexdigest()]), 1)
+        self.assertEqual(output.getvalue(), "")
+        self.assertIn("exact bundled", error.getvalue())
+
+    def test_bridge_all_64_old_outputs_are_byte_identical_and_new_report_deterministic(self):
+        aggregate = hashlib.sha256()
+        mapping = self.mapping()
+        for mask in range(64):
+            options = {name: bool(mask & (1 << bit)) for bit, name in enumerate(self.OPTIONS)}
+            wanted = ("ReadLine",) if mask & 1 else MAP.DEFAULT_SYMBOLS
+            plain = MAP.analyze(self.data, wanted, **options)
+            stdout = (json.dumps(plain, indent=2, sort_keys=True) + "\n").encode()
+            aggregate.update(bytes([mask]))
+            aggregate.update(hashlib.sha256(stdout).digest())
+            enriched = MAP.analyze(self.data, wanted, command_buffer_bridge=True, **options)
+            with self.subTest(mask=mask):
+                self.assertEqual(enriched.pop("command_buffer_bridge"), mapping)
+                self.assertEqual(enriched, plain)
+        self.assertEqual(aggregate.hexdigest(), "7513e2e91952bbad750fa2b82107998c4fbb9c06617dbedd9dc3e743add8b037")
+        self.assertEqual(hashlib.sha256(BLOB.read_bytes()).hexdigest(), MAP.BUNDLED_SHA256)
+
+    def test_bridge_cli_flag_combinations_and_repeated_stdout(self):
+        flags = ("--references", "--all-symbols", "--bootstrap", "--picture-output", "--arc-metadata", "--csc-command")
+        for selected in ((), *[(flag,) for flag in flags], flags):
+            command = [sys.executable, "-B", str(TOOL), str(BLOB), "--command-buffer-bridge", *selected]
+            first = subprocess.run(command, capture_output=True, timeout=10)
+            repeated = subprocess.run(command, capture_output=True, timeout=10)
+            with self.subTest(flags=selected):
+                self.assertEqual(first.returncode, 0, first.stderr)
+                self.assertEqual(repeated.returncode, 0, repeated.stderr)
+                self.assertEqual(first.stdout, repeated.stdout)
+                self.assertEqual(json.loads(first.stdout)["command_buffer_bridge"], self.mapping())
+                self.assertNotIn(str(ROOT).encode(), first.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
