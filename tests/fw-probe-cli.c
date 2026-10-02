@@ -24,6 +24,7 @@ static struct crystalhd_fw_research_info metadata;
 static struct crystalhd_fw_research_request submitted;
 static char output[32768], errors[8192];
 static unsigned mutation;
+static unsigned fault_at, fault_kind;
 static const uint32_t commands[] = {eCMD_C011_INIT, eCMD_C011_GET_VERSION,
     eCMD_C011_DEC_CHAN_OPEN, eCMD_C011_DEC_CHAN_STATUS, eCMD_C011_DEC_CHAN_CLOSE};
 #define CHECK(value) do { checks++; if (!(value)) { \
@@ -95,7 +96,8 @@ static void result_reply(struct crystalhd_fw_research_result *result, unsigned i
 {
     struct crystalhd_fw_research_reply *reply = &result->replies[index];
     memset(reply, 0, sizeof(*reply));
-    reply->command = commands[index]; reply->sequence = index + 1;
+    reply->command = submitted.selector >= 3 && index == 3 ? eCMD_C011_DEC_CHAN_CLOSE : commands[index];
+    reply->sequence = index + 1;
     reply->transport_status = status;
     if (status == BC_STS_SUCCESS || status == BC_STS_FW_CMD_ERR) {
         reply->raw_response_valid = reply->header_matches = 1;
@@ -111,7 +113,8 @@ static void make_result(struct crystalhd_fw_research_result *result)
     result->generation = metadata.generation;
     result->download_attempted = result->cleanup_attempted = 1;
     result->firmware_hash_valid = 1;
-    result->command_count = submitted.selector == CRYSTALHD_FW_RESEARCH_VERSION_ONLY ? 2 : 5;
+    result->command_count = submitted.selector == CRYSTALHD_FW_RESEARCH_VERSION_ONLY ? 2 :
+        submitted.selector == CRYSTALHD_FW_RESEARCH_H264_CONTROL ? 5 : 4;
     digest(result->firmware_sha256);
     for (i = 0; i < result->command_count; i++) result_reply(result, i, BC_STS_SUCCESS);
     switch (mutation) {
@@ -181,7 +184,34 @@ static void make_result(struct crystalhd_fw_research_result *result)
     case 45: result->replies[2].response[3] = 7; break;
     case 46: result->status = -EPROTO; result->replies[2].response[3] = 7; break;
     case 47: result->replies[0].response[2] = 1; break;
+    case 48: result->command_count = 5; result_reply(result, 4, BC_STS_SUCCESS); break;
+    case 49: result->replies[3].command = eCMD_C011_DEC_CHAN_STATUS;
+        result->replies[3].response[0] = eCMD_C011_DEC_CHAN_STATUS; break;
+    case 50: result->replies[3].sequence = result->replies[3].response[1] = 5; break;
+    case 51: result->status = -EIO; result->retained = 1; break;
+    case 52: result->status = -EIO; result->cleanup_status = BC_STS_IO_ERROR; break;
+    case 53: result->replies[2].response[2] = UINT32_MAX;
+        result->replies[2].response[3] = UINT32_MAX; break;
     default: CHECK(false);
+    }
+    if (fault_at) {
+        struct crystalhd_fw_research_reply *reply;
+        unsigned index = fault_at - 1;
+        CHECK(fault_at <= result->command_count && fault_kind >= 1 && fault_kind <= 6);
+        result->command_count = fault_at;
+        result->status = fault_kind == 2 ? -ETIMEDOUT : fault_kind >= 4 ? -EPROTO : -EIO;
+        result_reply(result, index, fault_kind == 1 ? BC_STS_IO_ERROR :
+            fault_kind == 2 ? BC_STS_TIMEOUT : fault_kind == 3 ? BC_STS_FW_CMD_ERR : BC_STS_SUCCESS);
+        reply = &result->replies[index];
+        if (fault_kind == 3) {
+            reply->response[2] = UINT32_MAX;
+            if (index == 2) reply->response[3] = UINT32_MAX;
+        }
+        if (fault_kind == 4) { reply->response[0]++; reply->header_matches = 0; }
+        if (fault_kind == 5) { reply->response[1]++; reply->header_matches = 0; }
+        if (fault_kind == 6) { CHECK(index == 2); reply->response[3] = 7; }
+        memset(result->replies + fault_at, 0,
+               (CRYSTALHD_FW_RESEARCH_MAX_COMMANDS - fault_at) * sizeof(result->replies[0]));
     }
 }
 int probe_ioctl(int fd, unsigned long command, ...)
@@ -197,7 +227,7 @@ int probe_ioctl(int fd, unsigned long command, ...)
     CHECK(command == CRYSTALHD_FW_RESEARCH_RUN && infos == 1 && !runs++);
     submitted = ((struct crystalhd_fw_research_result *)argument)->request;
     CHECK(submitted.version == 1 && submitted.size == sizeof(struct crystalhd_fw_research_result));
-    CHECK(submitted.selector == 1 || submitted.selector == 2);
+    CHECK(submitted.selector >= 1 && submitted.selector <= 5);
     CHECK(!submitted.flags && !submitted.reserved[0] && !submitted.reserved[1] && !submitted.reserved[2] && !submitted.reserved[3]);
     if (run_error) { errno = run_error; return -1; }
     make_result(argument); return 0;
@@ -233,7 +263,7 @@ static void reset(void)
 {
     opens = stats = infos = runs = closes = 0;
     open_error = stat_error = info_error = run_error = close_error = 0;
-    character = true; output_error = flush_error = false; mutation = 0;
+    character = true; output_error = flush_error = false; mutation = fault_at = fault_kind = 0;
     output[0] = errors[0] = 0;
     memset(&metadata, 0, sizeof(metadata));
     metadata.version = 1; metadata.size = sizeof(metadata); metadata.generation = 42;
@@ -250,6 +280,10 @@ static int invoke(char **arguments)
 static char *info_args[] = {"probe", "--info", NULL};
 static char *version_args[] = {"probe", "--version", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *h264_args[] = {"probe", "--h264-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
+static char *h261_args[] = {"probe", "--h261-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
+static char *h263_args[] = {"probe", "--h263-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
+static char *mpeg1_args[] = {"probe", "--mpeg1-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
+static char **named_args[] = {h261_args, h263_args, mpeg1_args};
 
 static void test_arguments(void)
 {
@@ -287,14 +321,14 @@ static void test_metadata(void)
 {
     unsigned i;
     reset(); CHECK(!invoke(info_args) && opens == 1 && infos == 1 && !runs && closes == 1);
-    CHECK(strstr(output, "\"generation\":\"42\"") && strstr(output, "\"research_selector_mask\":3"));
+    CHECK(strstr(output, "\"generation\":\"42\"") && strstr(output, "\"research_selector_mask\":31"));
     CHECK(strstr(output, CRYSTALHD_FW_RESEARCH_FIRMWARE_SHA256));
     for (i = 0; i < 8; i++) {
         reset();
         if (i == 0) metadata.version++;
         if (i == 1) metadata.size--;
         if (i == 2) metadata.generation = 0;
-        if (i == 3) metadata.selector_mask |= 4;
+        if (i == 3) metadata.selector_mask |= 32;
         if (i == 4) metadata.firmware_sha256[0] ^= 1;
         if (i >= 5) metadata.reserved[i - 5] = 1;
         CHECK(invoke(version_args) == 1 && infos == 1 && !runs && closes == 1 && !output[0]);
@@ -309,6 +343,69 @@ static void test_metadata(void)
     reset(); metadata.selector_mask = 1;
     CHECK(invoke(h264_args) == 1 && !runs && strstr(errors, "unavailable"));
     reset(); metadata.selector_mask = 1; CHECK(!invoke(version_args) && runs == 1);
+}
+static void test_named_controls(void)
+{
+    unsigned action, phase, kind, malformed;
+    for (action = 0; action < 3; action++) {
+        char *missing_ack[] = {"probe", named_args[action][1], "--expected-generation", "42", NULL};
+        char *missing_generation[] = {"probe", named_args[action][1], "--acknowledge-card-reset", NULL};
+        char *duplicate[] = {"probe", named_args[action][1], named_args[action][1],
+            "--acknowledge-card-reset", "--expected-generation", "42", NULL};
+        char *mixed[] = {"probe", named_args[action][1], "--version",
+            "--acknowledge-card-reset", "--expected-generation", "42", NULL};
+        char *arbitrary[] = {"probe", named_args[action][1], "--acknowledge-card-reset",
+            "--expected-generation", "42", "--algorithm", "8", NULL};
+        char *algorithm_equal[] = {"probe", named_args[action][1], "--acknowledge-card-reset",
+            "--expected-generation", "42", "--algorithm=2", NULL};
+        char *invalid_selector[] = {"probe", named_args[action][1], "--acknowledge-card-reset",
+            "--expected-generation", "42", "--selector", "3", NULL};
+        char **invalid[] = {missing_ack, missing_generation, duplicate, mixed,
+            arbitrary, algorithm_equal, invalid_selector};
+        for (malformed = 0; malformed < sizeof(invalid) / sizeof(invalid[0]); malformed++) {
+            reset(); CHECK(invoke(invalid[malformed]) == 1 && !opens && !output[0]);
+        }
+        reset(); CHECK(!invoke(named_args[action]) && submitted.selector == action + 3 && runs == 1 && closes == 1);
+        CHECK(strstr(output, "\"command_count\":4") && strstr(output, "\"sequence\":4"));
+        CHECK(submitted.flags == 0 && submitted.reserved[0] == 0 && submitted.reserved[1] == 0 &&
+              submitted.reserved[2] == 0 && submitted.reserved[3] == 0);
+        reset(); metadata.selector_mask = 3;
+        CHECK(invoke(named_args[action]) == 1 && infos == 1 && !runs && closes == 1 && !output[0]);
+        CHECK(strstr(errors, "unavailable"));
+        reset(); metadata.selector_mask = 1U << (action + 2);
+        CHECK(!invoke(named_args[action]) && runs == 1);
+        reset(); metadata.generation++;
+        CHECK(invoke(named_args[action]) == 1 && infos == 1 && !runs && !output[0]);
+        for (phase = 1; phase <= 4; phase++) {
+            for (kind = 1; kind <= 5; kind++) {
+                reset(); fault_at = phase; fault_kind = kind;
+                CHECK(invoke(named_args[action]) == 1 && runs == 1 && closes == 1 && output[0]);
+                CHECK(!strstr(errors, "Invalid research result"));
+                CHECK(submitted.selector == action + 3);
+                if (kind <= 2) CHECK(strstr(output, "\"raw_response_words\":null"));
+                if (kind == 3) CHECK(strstr(output, "4294967295") && strstr(output, "\"transport_status\":11"));
+                if (kind >= 4) CHECK(strstr(output, "\"header_matches\":false"));
+            }
+        }
+        reset(); fault_at = 3; fault_kind = 3;
+        CHECK(invoke(named_args[action]) == 1 && strstr(output, "\"command_count\":3"));
+        CHECK(strstr(output, "4294967295,4294967295") && strstr(output, "\"raw_response_valid\":true"));
+        reset(); fault_at = 3; fault_kind = 6;
+        CHECK(invoke(named_args[action]) == 1 && output[0] && strstr(output, "\"command_count\":3"));
+        reset(); mutation = 24; /* Retention cannot turn completed CLOSE into success. */
+        CHECK(invoke(named_args[action]) == 1 && !output[0] && strstr(errors, "Invalid research result"));
+        for (malformed = 48; malformed <= 53; malformed++) {
+            reset(); mutation = malformed;
+            CHECK(invoke(named_args[action]) == 1 && runs == 1 && closes == 1);
+            if (malformed == 51 || malformed == 52) {
+                CHECK(output[0] && !strstr(errors, "Invalid research result"));
+                CHECK(strstr(output, "\"command_count\":4"));
+                if (malformed == 51) CHECK(strstr(errors, "remain retained"));
+            } else CHECK(!output[0] && strstr(errors, "Invalid research result"));
+        }
+    }
+    reset(); metadata.selector_mask = 3; CHECK(!invoke(version_args) && runs == 1 && submitted.selector == 1);
+    reset(); metadata.selector_mask = 3; CHECK(!invoke(h264_args) && runs == 1 && submitted.selector == 2);
 }
 static void test_errors(void)
 {
@@ -375,10 +472,15 @@ int main(int argc, char **argv)
         reset(); mutation = 30; CHECK(invoke(version_args) == 1); fputs(output, stdout);
         reset(); mutation = 41; CHECK(invoke(version_args) == 1); fputs(output, stdout);
         reset(); mutation = 43; CHECK(invoke(version_args) == 1); fputs(output, stdout);
+        reset(); CHECK(!invoke(h261_args)); fputs(output, stdout);
+        reset(); CHECK(!invoke(h263_args)); fputs(output, stdout);
+        reset(); CHECK(!invoke(mpeg1_args)); fputs(output, stdout);
+        reset(); fault_at = 3; fault_kind = 3; CHECK(invoke(h261_args) == 1); fputs(output, stdout);
+        reset(); fault_at = 3; fault_kind = 1; CHECK(invoke(h263_args) == 1); fputs(output, stdout);
         return 0;
     }
     CHECK(argc == 1);
-    test_arguments(); test_metadata(); test_errors(); test_results();
+    test_arguments(); test_metadata(); test_errors(); test_results(); test_named_controls();
     printf("Firmware probe CLI: %u checks passed\n", checks);
     return 0;
 }
