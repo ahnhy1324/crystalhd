@@ -6,7 +6,8 @@ repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 test_dir=$(mktemp -d "${TMPDIR:-/tmp}/crystalhd-flea-rx-metadata.XXXXXX")
 cleanup()
 {
-	rm -f "$test_dir/check" "$test_dir/fire-rxdma.h" "$test_dir/rx-types.h"
+	rm -f "$test_dir/check" "$test_dir/fire-rxdma.h" "$test_dir/rx-post.h" \
+		"$test_dir/rx-types.h"
 	rmdir "$test_dir"
 }
 trap cleanup EXIT
@@ -30,6 +31,13 @@ awk '
 	copying && /^}/ { copying = 0 }
 	END { if (found != 1 || copying || candidate) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$test_dir/fire-rxdma.h"
+
+awk '
+	/^BC_STATUS crystalhd_flea_hw_post_cap_buff\(/ { copying = 1; found++ }
+	copying { print }
+	copying && /^}/ { copying = 0 }
+	END { if (found != 1 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$test_dir/rx-post.h"
 
 awk '
 	/^typedef union _addr_64_[[:space:]]*\{/ { copying = 1; addresses++ }

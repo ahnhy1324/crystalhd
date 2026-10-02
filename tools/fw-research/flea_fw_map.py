@@ -1743,7 +1743,7 @@ def _picture_output_map(payload, images):
             "picture_handler_entry_blob_file_offset": 0x834c,
             "started_slot_offset": 0xd2, "pending_clear_blob_file_offset": 0x8820,
             "host_record_source": "include/flea/DriverFwShare.h:22",
-            "host_submit_source": "driver/linux/crystalhd_fleafuncs.c:2203",
+            "host_submit_source": "driver/linux/crystalhd_fleafuncs.c:2196",
             "complete_dma_ownership_verified": False},
         "picture_feed": {
             "entry_blob_file_offset": 0x7898,
