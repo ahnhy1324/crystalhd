@@ -43,6 +43,63 @@ MAX_STOCK_HOST_COMMAND_REGIONS = 16
 MAX_STOCK_HOST_COMMAND_BYTES = 16 * 1024
 MAX_STOCK_HOST_COMMAND_CFG_STATES = 4096
 MAX_STOCK_HOST_COMMAND_PARTITIONS = 256
+MAX_PPB_BANK_REGIONS = 64
+MAX_PPB_BANK_BYTES = 80 * 1024
+MAX_PPB_BANK_RELOCATIONS = 2516
+MAX_PPB_BANK_MODEL_STEPS = 4096
+# Complete selected original outer bodies, not an image-wide address delta.
+# ELF virtual addresses, bundled file offsets and device addresses are distinct.
+_PPB_BANK_BODIES = (
+    ("Core_Run", 2, 0x4dc4, 0x51cc, 0x2fc68, "26e570670d39d004b02634814b88d8b510d6294eb268f08599d25c02e22403f3"),
+    ("Core_CircBuffer_Get", 2, 0x4d10, 0x4dc4, 0x2fbb4, "4e0746e00040cedaee3d0275eaa7c1a14fa9f4dc056a60511dfd9b423a901a90"),
+    ("SystemCore_MonitorIL", 2, 0x41e8, 0x428c, 0x2f08c, "201e15dcc371f4367107ca43b8c71e16ccc281b351cfbf2db4dcbdbbf8276685"),
+    ("VideoParameters", 4, 0x80dc, 0x8218, 0x32f80, "e4525894db6bffca8c049ff0607d87d17f98cfea965b3f2af785de31b7b82a74"),
+    ("Core_OrderPIF_Release", 4, 0x903c, 0x907c, 0x33ee0, "71bd2df89b0a19472ee16e27751c344b9c83a552d789eacf6822d39e533a5c14"),
+    ("Core_DeallocatePPB", 4, 0x907c, 0x91c4, 0x33f20, "2117ff7294daa5e9da4d290f92d28b28ae3a04b927491427e7f7885c1e90b1bf"),
+    ("Core_OrderPIF_ReleaseOnLatest", 4, 0x91c4, 0x92a8, 0x34068, "8fd0c47de533593c0c4eacb9b2c92bf05cc32a64de05da36ede4eeb1c87a06a7"),
+    ("ChannelCore_MonitorIL", 4, 0x9850, 0x9ad8, 0x346f4, "697350ac240ad589c6576efbdb3196d6f8c93f55799720e6113215232bb9e047"),
+    ("Core_CopyDramToLsram", 4, 0x9e74, 0x9f90, 0x34d18, "a78e06a80f25a603981e888fa35ccf9e811dca10acdc4d71b919bd8902f88a1e"),
+    ("System_Activate", 4, 0x9f90, 0xa0b4, 0x34e34, "9530baaafd18492433c0f9fdca77cfcd8d0ad1aa982e221303d6cd54de17521e"),
+    ("Core_AttemptDecode", 4, 0xa258, 0xa844, 0x350fc, "02d9516500364df9de2e00eef06024988f55cac6afe09c3b34fdf6613d1d9cfd"),
+    ("AttemptRelease", 4, 0xab44, 0xac18, 0x359e8, "e48508989d3e07060459c9a4fab4d2d3b397d088de3e8477061647a29d353b1e"),
+    ("Core_AttemptIL", 4, 0xac18, 0xad90, 0x35abc, "b2809c8ed5d4b625f5bf0e3fc02d79cf36502fd47c3124d9958766a2de5c2c6e"),
+    ("AllocatePPB", 4, 0xad90, 0xb080, 0x35c34, "749dd3f410d7ccabe322d3be1f972f68edea06623bac913614b3535024eac134"),
+    ("PPB_Video_Address", 4, 0xb080, 0xb0fc, 0x35f24, "fd889611f1240599a758bb10fe64b35cd82f723f9c65027736b4ca5766280c26"),
+    ("Core_AttemptPPBAssignment", 4, 0xb0fc, 0xb38c, 0x35fa0, "c7e91dc4bcd1f99f7eb720d709e5d60c522ca65c49127e2bd41d08f901b79adc"),
+    ("Core_CircBuffer_Put", 4, 0xb554, 0xb610, 0x363f8, "b2b2c7a2b5d695d0e732f54fdc87cd1ced68f62814469793999d46cd518e9375"),
+    ("Core_AttemptDisplay", 4, 0xb610, 0xba98, 0x364b4, "7451b2344541e6428f8cf4e7da1df523acea2739bc40c4c881561e6441ca29c4"),
+    ("Core_PPB_From_Address", 4, 0xba98, 0xbac8, 0x3693c, "edfdd3c4305efa139464b9e1b9fa67614ee6ff684e96de4156f63564261609b0"),
+    ("_udivmod", 4, 0xbc04, 0xbd18, 0x36aa8, "baa89531a255d78c4d4f65b6ca83520e9fd15d57622d3f801e31362f67a3023f"),
+    ("Platform_VideoStripeHeight", 4, 0xbd90, 0xbdc4, 0x36c34, "d1c6cb2f1e6c67710173229a20ab155c521377eac7de02ce860de44b7e9eab17"),
+    ("Platform_DeliverPicture", 4, 0xbdec, 0xbe38, 0x36c90, "3e32bb1c023229ce130c2b8184586eb92dddf88eefca2b54948347e5b7b1b21a"),
+    ("Platform_UpdateReleaseQueue", 4, 0xbe38, 0xbe70, 0x36cdc, "009ee74b4c5cb5684519e88dcda070e71a1df472a97ab19976761a57d184b5a4"),
+    ("CmdInitialize", 16, 0x245ec, 0x24788, 0x47180, "f6a261cb43d156ce01a7a04419811312e5750c4271ff1f99f6c4f6f17cb34c72"),
+    ("CmdChannelOpen", 16, 0x24788, 0x24bb4, 0x4731c, "299ddffe5d7c502e0d0df9be965842c76f7de59cd09b30c65ed00fb807a49e22"),
+    ("CmdChannelStart", 16, 0x24dac, 0x254d4, 0x47940, "a13392f375549b5945eb02558207542e70632ebd3d8a9d35b2a19050c996bb48"),
+    ("Core_Command", 16, 0x25808, 0x25a0c, 0x4839c, "6bce8ec0e12cbc0b5e9193c6a4d88d84e3ab156ae47df80743073ac2529c508b"),
+    ("Core_SetPIF_NoDisplay", 16, 0x25f10, 0x26080, 0x48aa4, "cf24692882521152ddd02efe85eef379964a8b42cd88def02294d7817a707699"),
+    ("Core_ReleasePPB", 16, 0x260e4, 0x26144, 0x48c78, "44e00b85365feb9e2a1d82da5a8dab81807830a46133df7c72987db0a07fb43a"),
+    ("Core_GetUndeliveredPPBs", 16, 0x26144, 0x26270, 0x48cd8, "7bd43689268dc47f4cddc6da57a25bad8e57db03f48fda4b67f5649cf4473797"),
+    ("Core_Late_PPB_Release", 16, 0x26330, 0x263a8, 0x48ec4, "58114adacd64a3500e950dff3c8d1529aa38610614f0605a98bd0f0451715cf9"),
+    ("PopulateEmptyPPB", 16, 0x263a8, 0x26444, 0x48f3c, "0ac2aa670ad6a1c001190de6b1618dfbc40843c0669a35f40e175b564766be35"),
+    ("Core_ChanInitialize", 16, 0x266f8, 0x26974, 0x4928c, "11aeb52ef9f2a3c8ab99cf099c75eade7a69abe991e3561a05f423e54b1b4d71"),
+    ("Core_StartChannel", 16, 0x26974, 0x26ba0, 0x49508, "8fe220a7487341e1975615f11a7553681f25ef618556f6f03838a87327d8be4b"),
+    ("Core_StopChannel", 16, 0x26ba0, 0x26e10, 0x49734, "b89f444e9f18bf1a998993eb4ea5f81fc733b6ab18343b5fd1e1d942b589a4b7"),
+)
+_PPB_BANK_METADATA = (
+    ("elf_header", 0x2ea60, 52, "23799a2426f4a4d638beb46ecaf49047463bf78b1527bcb1880f6473ea02c380"),
+    ("section_headers", 0x79540, 2200, "5ba0754ef57c2d51ba8362ac7c9778b6d3f77a72466f9a09588337a8d99ea7d6"),
+    ("section_names", 0x79098, 1191, "f54ad2922e3d4a39bdb26a36a249301a78dae5e6b4e190d1d84ea03427f64a86"),
+    ("symbol_table", 0x69b70, 13392, "d148d757c8d16a65a1ed1f52957317867986847e5e626a551eaafcaf6fcc1ccb"),
+    ("symbol_names", 0x67a95, 8410, "4a9e326f9ad7c3be6015519586e7decab7a5647be27b7bc00578f1ef2f281b4a"),
+    ("slice_relocations", 0x6d020, 1008, "31d0234e0f31d3ed02cee74f82a66c64f897a69575888b83336f9fcabfe631a7"),
+    ("picture_relocations", 0x6da34, 3132, "5c8ac2c91e08eeabe4567c2d908d2a7841c700b6a77c01b9329e727bf7eaf091"),
+    ("text_relocations", 0x72780, 26052, "8c1c3eb2f61ad26f9278028b0aa9a596650345df13b1dd0d6d806cf677b9bba9"),
+    ("vendor_extension_declarations", 0x67a25, 112, "50144f0baa420310c9ac35d5739a4e90af2f13e07bb65daa87894472f695ed00"),
+)
+_PPB_BANK_REGIONS = _PPB_BANK_METADATA + tuple(
+    (name, offset, end - start, digest)
+    for name, _, start, end, offset, digest in _PPB_BANK_BODIES)
 # Fixed stock host contract only. These hashes are independent local fuses;
 # the public firmware identity remains unchanged and this helper is test-only.
 _STOCK_HOST_COMMAND_REGIONS = (
@@ -2693,6 +2750,799 @@ def _stock_host_command_closure(payload):
         "conclusion": {"conditional": True, "explicit_raw_source_plane_lease": False,
                        "compressed_tx_metadata_is_raw_plane_lease": False,
                        "scope": "No explicit bounded caller raw-source-plane lease in this stock dispatch contract; source-plane lifecycle and runtime ownership are not proven. Not silicon incapability, arbitrary host-buffer absence, whole-firmware ownership, or standalone execution."}}
+
+
+_PPB_BANK_RELEASE_EDGES = (
+    ("returned", "Core_Run", 2, 0x51a4, 0x51a8, 0x3000),
+    ("latest", "Core_OrderPIF_ReleaseOnLatest", 4, 0x9280, 0x9284, 0x4000),
+    ("attempt", "AttemptRelease", 4, 0xabcc, 0xabd0, 0x4000),
+    ("discard", "Core_AttemptDisplay", 4, 0xb964, 0xb968, 0x3000),
+    ("no_display", "Core_SetPIF_NoDisplay", 16, 0x25f90, 0x25f94, 0x2000),
+    ("release", "Core_ReleasePPB", 16, 0x26130, 0x2612c, 0x6000),
+    ("undelivered_display", "Core_GetUndeliveredPPBs", 16, 0x261d4, 0x261d0, 0x6000),
+    ("undelivered_return", "Core_GetUndeliveredPPBs", 16, 0x26264, 0x26260, 0x6000),
+    ("late", "Core_Late_PPB_Release", 16, 0x26390, 0x2638c, 0x3000),
+)
+
+
+def _ppb_bank_u32(value, label="scalar"):
+    if type(value) is not int or not 0 <= value <= 0xffffffff:
+        raise FormatError(f"PPB bank {label} must be a u32")
+    return value
+
+
+def _ppb_bank_capacity(dividend, divisor):
+    """Actual selected unsigned division followed by a SIGNED GE clamp."""
+    dividend, divisor = _ppb_bank_u32(dividend), _ppb_bank_u32(divisor)
+    quotient, remainder = divmod(dividend, divisor) if divisor else (0x7fffffff, 0)
+    signed = quotient if quotient < 0x80000000 else quotient - (1 << 32)
+    return {"quotient": quotient, "remainder": remainder,
+            "capacity": 32 if signed >= 32 else quotient, "division_by_zero": divisor == 0}
+
+
+def _ppb_bank_geometry(width, height, stripe_exponent, alignment_mask, metadata_extra=False):
+    """Pinned equations, conditional on ARC flags and vendor mul16 semantics.
+
+    This deliberately refuses unknown shift/mul16 domains rather than inventing
+    silicon behavior. Refusal is a model limitation, not a firmware input guard.
+    """
+    width, height = _ppb_bank_u32(width, "width"), _ppb_bank_u32(height, "height")
+    if type(stripe_exponent) is not int or not 0 <= stripe_exponent < 32:
+        raise FormatError("PPB bank stripe shift is outside the supported ISA domain")
+    if type(alignment_mask) is not int or not 0 <= alignment_mask <= 255 or type(metadata_extra) is not bool:
+        raise FormatError("PPB bank geometry requires byte alignment mask and boolean metadata flag")
+    u32 = lambda value: value & 0xffffffff
+    signed = lambda value: value if value < 0x80000000 else value - (1 << 32)
+    page = lambda value: u32(value + 4095) & 0xfffff000
+    stripe = 1 << stripe_exponent
+
+    def striped(value):
+        rounded = u32(value + stripe - 1) & u32(~(stripe - 1))
+        if not ((rounded >> stripe_exponent) & 1):
+            rounded = u32(rounded + stripe)
+        return min(rounded, 1120) & 0xffff  # STW then LDW in VideoParameters.
+
+    y_height = striped(height)
+    c_height = striped(u32(signed(height) >> 1))
+    pitch = u32(width + alignment_mask) & u32(~alignment_mask)
+    # Both operands below 32768 avoid signed-vs-unsigned low16 ambiguity, but
+    # even this product remains conditional on the unvalidated vendor opcode.
+    if pitch >= 32768 or y_height >= 32768 or c_height >= 32768:
+        raise FormatError("PPB bank mul16 operands are outside the conditional supported domain")
+    y_bytes = page(u32(pitch * y_height))
+    chroma_bytes = u32(pitch * c_height)
+    total = page(u32(y_bytes + chroma_bytes))
+    extra_offset = total if metadata_extra else 0
+    extra_bytes = u32(6 * u32((signed(width) >> 4) * (signed(height) >> 4))) if metadata_extra else 0
+    if metadata_extra:
+        total = page(u32(total + extra_bytes))
+    return {"pitch": pitch, "y_stripe_height": y_height, "chroma_stripe_height": c_height,
+            "y_bytes": y_bytes, "chroma_bytes": chroma_bytes, "extra_offset": extra_offset,
+            "extra_bytes": extra_bytes, "frame_bytes": total, "conditional_vendor_mul16": True}
+
+
+def _ppb_bank_state(bank_bases, bank_bytes, descriptor_limit=34, stripe_exponent=5,
+                    alignment_mask=63, metadata_extra=False):
+    """Bounded original constructor projection; not a device buffer allocator."""
+    if not isinstance(bank_bases, (tuple, list)) or len(bank_bases) > 9:
+        raise FormatError("PPB bank model bank count must be 0..9")
+    _ppb_bank_u32(bank_bytes, "bank bytes")
+    if type(descriptor_limit) is not int or not 0 <= descriptor_limit <= 34:
+        raise FormatError("PPB bank model descriptor limit must be 0..34")
+    if (type(stripe_exponent) is not int or not 0 <= stripe_exponent <= 255 or
+            type(alignment_mask) is not int or not 0 <= alignment_mask <= 255 or
+            type(metadata_extra) is not bool):
+        raise FormatError("PPB bank initialization parameters do not fit their stored fields")
+    return {"flags": [0] * 34,
+            "banks": [{"base": _ppb_bank_u32(base, "bank base"), "mask": 0, "stride": 0, "geometry": 0}
+                      for base in bank_bases],
+            "bank_bytes": bank_bytes, "descriptor_limit": descriptor_limit,
+            "stripe_exponent": stripe_exponent, "alignment_mask": alignment_mask,
+            "metadata_extra": metadata_extra, "metadata_pool": 0, "frame_pool": 0,
+            "core_error_flags": 0,
+            "frame_flags": [0] * 63, "assigned": [99] * 63, "ppb_frames": [0] * 34,
+            "recent_ppb": 99, "frame_word124": [0] * 63,
+            "release_request": {"head": 0, "tail": 0, "slots": [0] * 64},
+            "delivery_ring": {"read": 2, "write": 2, "slots": [0] * 64},
+            "return_ring": {"read": 2, "write": 2, "slots": [0] * 64}}
+
+
+def _ppb_bank_copy_state(state):
+    """Validate the finite model storage, without inventing native index guards."""
+    if not isinstance(state, dict):
+        raise FormatError("PPB bank model state must be an object")
+    expected = set(_ppb_bank_state([], 0))
+    if set(state) != expected:
+        raise FormatError("PPB bank model state fields do not match")
+    result = {}
+    for key, count, maximum in (("flags", 34, 65535), ("frame_flags", 63, 65535),
+                                ("assigned", 63, 255), ("ppb_frames", 34, 255),
+                                ("frame_word124", 63, 0xffffffff)):
+        values = state[key]
+        if not isinstance(values, list) or len(values) != count or any(
+                type(value) is not int or not 0 <= value <= maximum for value in values):
+            raise FormatError(f"PPB bank model {key} storage does not match")
+        result[key] = list(values)
+    banks = state["banks"]
+    if not isinstance(banks, list) or len(banks) > 9:
+        raise FormatError("PPB bank model bank count does not match")
+    result["banks"] = []
+    for bank in banks:
+        if not isinstance(bank, dict) or set(bank) != {"base", "mask", "stride", "geometry"}:
+            raise FormatError("PPB bank model bank fields do not match")
+        result["banks"].append({key: _ppb_bank_u32(value, key) for key, value in bank.items()})
+    for key in ("bank_bytes", "metadata_pool", "frame_pool", "core_error_flags"):
+        result[key] = _ppb_bank_u32(state[key], key)
+    for key, maximum in (("descriptor_limit", 34), ("stripe_exponent", 255),
+                         ("alignment_mask", 255), ("recent_ppb", 255)):
+        value = state[key]
+        if type(value) is not int or not 0 <= value <= maximum:
+            raise FormatError(f"PPB bank model {key} does not match")
+        result[key] = value
+    if type(state["metadata_extra"]) is not bool:
+        raise FormatError("PPB bank model metadata flag does not match")
+    result["metadata_extra"] = state["metadata_extra"]
+    for key in ("release_request", "delivery_ring", "return_ring"):
+        ring = state[key]
+        indices = ("head", "tail") if key == "release_request" else ("read", "write")
+        if not isinstance(ring, dict) or set(ring) != set(indices) | {"slots"}:
+            raise FormatError("PPB bank model ring fields do not match")
+        if any(type(ring[index]) is not int or not 0 <= ring[index] < 64 for index in indices):
+            raise FormatError("PPB bank model ring position does not match")
+        if not isinstance(ring["slots"], list) or len(ring["slots"]) != 64:
+            raise FormatError("PPB bank model ring storage does not match")
+        result[key] = {index: ring[index] for index in indices}
+        result[key]["slots"] = [_ppb_bank_u32(value, "ring word") for value in ring["slots"]]
+    return result
+
+
+def _ppb_bank_elf_context(payload):
+    """Selected original ELF mapping and relocation receipts after all pins."""
+    base = 0x2ea60
+    header = struct.unpack_from("<16sHHIIIIIHHHHHH", payload, base)
+    if (header[0][:7] != b"\x7fELF\x01\x01\x01" or header[2] != 45 or
+            header[6] != 0x4aae0 or header[11:] != (40, 55, 54)):
+        raise FormatError("PPB bank original ELF header does not match")
+    sections = [struct.unpack_from("<10I", payload, 0x79540 + index * 40) for index in range(55)]
+    names = bounded(payload, 0x79098, 1191, "PPB bank section names")
+
+    def string(table, offset):
+        if offset >= len(table) or table.find(b"\0", offset) < 0:
+            raise FormatError("PPB bank original string offset does not match")
+        return table[offset:table.index(b"\0", offset)].decode("ascii")
+
+    expected = {2: (".core_critical_code_slice", 0x4000, 0x444),
+                4: (".core_critical_code_picture", 0x7f8c, 0x43d0),
+                16: (".text", 0x23d74, 0x17ea8)}
+    mappings = []
+    for index, (name, address, offset) in expected.items():
+        section = sections[index]
+        if (string(names, section[0]) != name or section[1] != 1 or
+                (section[3], section[4]) != (address, offset)):
+            raise FormatError("PPB bank containing section does not match")
+        mappings.append({"section_index": index, "name": name, "elf_virtual_address": address,
+                         "elf_file_offset": offset, "blob_file_offset": base + offset,
+                         "size": section[5], "blob_minus_elf_address": base + offset - address})
+    symbol_names = bounded(payload, 0x67a95, 8410, "PPB bank symbol names")
+    symbols = []
+    for offset in range(0x69b70, 0x69b70 + 13392, 16):
+        name, value, size, info, other, section = struct.unpack_from("<IIIBBH", payload, offset)
+        symbols.append({"name": string(symbol_names, name), "elf_value": value,
+                        "size": size, "info": info, "other": other, "section_index": section})
+    for name, index, start, end, offset, _ in _PPB_BANK_BODIES:
+        section = sections[index]
+        if (start < section[3] or end > section[3] + section[5] or
+                base + section[4] + start - section[3] != offset or
+                not any(symbol["name"] == name and symbol["elf_value"] == start and
+                        symbol["section_index"] == index and symbol["size"] ==
+                        (0 if name == "_udivmod" else end - start) for symbol in symbols)):
+            raise FormatError(f"PPB bank original body mapping {name} does not match")
+    dependencies, count = [], 0
+    for index, owner, offset, size in ((37, 2, 0x6d020, 1008), (39, 4, 0x6da34, 3132),
+                                       (51, 16, 0x72780, 26052)):
+        section = sections[index]
+        if (section[1], base + section[4], section[5], section[6], section[7], section[9]) != (
+                4, offset, size, 35, owner, 12):
+            raise FormatError("PPB bank original relocation section does not match")
+        for cursor in range(offset, offset + size, 12):
+            count += 1
+            if count > MAX_PPB_BANK_RELOCATIONS:
+                raise FormatError("PPB bank relocation budget exceeded")
+            location, info, addend = struct.unpack_from("<IIi", payload, cursor)
+            symbol_index, kind = info >> 8, info & 255
+            if symbol_index >= len(symbols) or kind not in (0, 4, 6, 7):
+                raise FormatError("PPB bank original relocation kind/index does not match")
+            owners = [name for name, sec, start, end, _, _ in _PPB_BANK_BODIES
+                      if sec == owner and start <= location < end]
+            if not owners:
+                continue
+            if len(owners) != 1 or location + 4 > sections[owner][3] + sections[owner][5]:
+                raise FormatError("PPB bank original relocation ownership does not match")
+            symbol = symbols[symbol_index]
+            target = symbol["elf_value"] + addend
+            target_section = symbol["section_index"]
+            target_offset = None
+            if target_section < len(sections):
+                selected = sections[target_section]
+                if (0 <= target <= 0xffffffff and selected[1] not in (0, 8) and
+                        selected[2] & 2 and selected[3] <= target < selected[3] + selected[5]):
+                    target_offset = base + selected[4] + target - selected[3]
+            dependencies.append({"owner": owners[0], "elf_virtual_address": location,
+                                 "blob_file_offset": base + sections[owner][4] + location - sections[owner][3],
+                                 "relocation_record_blob_file_offset": cursor, "type": kind,
+                                 "symbol_index": symbol_index, "symbol": symbol["name"],
+                                 "symbol_elf_value": symbol["elf_value"], "addend": addend,
+                                 "original_target_elf_value": target,
+                                 "original_target_is_u32": 0 <= target <= 0xffffffff,
+                                 "target_section_index": target_section,
+                                 "original_target_blob_file_offset": target_offset,
+                                 "runtime_application_validated": False})
+    if count != 2516:
+        raise FormatError("PPB bank complete relocation context does not match")
+    return mappings, dependencies, count
+
+
+def _ppb_bank_flag_gates(flag):
+    if type(flag) is not int or not 0 <= flag <= 65535:
+        raise FormatError("PPB bank flag must be a u16")
+    eligible = (flag & 0x8800) == 0x8800
+    return {"allocator_free": not bool(flag & 0x8000),
+            "video_candidate": bool(flag & 0xe000),
+            "deallocation_admitted": bool(flag & 0x8000) and not bool(flag & 0x6000),
+            "stop_eligible": eligible, "stop_force_release": eligible and not bool(flag & 0x1000)}
+
+
+def _ppb_bank_contract(payload):
+    """Private, pinned selected-state contract; never a host-plane lease API."""
+    if len(payload) != BUNDLED_SIZE - TRAILER_SIZE:
+        raise FormatError("PPB bank payload identity/size does not match")
+    total = sum(size for _, _, size, _ in _PPB_BANK_REGIONS)
+    if (len(_PPB_BANK_REGIONS) > MAX_PPB_BANK_REGIONS or total > MAX_PPB_BANK_BYTES or
+            MAX_PPB_BANK_RELOCATIONS < 1 or MAX_PPB_BANK_MODEL_STEPS < 1):
+        raise FormatError("PPB bank validation budget exceeded")
+    validated = []
+    # All complete selected bodies and metadata, including skipped branches,
+    # pass their independent fuses before a single field is interpreted.
+    for role, offset, size, digest in _PPB_BANK_REGIONS:
+        data = bounded(payload, offset, size, "PPB bank pinned region")
+        if hashlib.sha256(data).hexdigest() != digest:
+            raise FormatError(f"PPB bank region {role} does not match the baseline")
+        validated.append({"role": role, "blob_file_offset": offset, "size": size, "sha256": digest})
+    sections, dependencies, relocation_count = _ppb_bank_elf_context(payload)
+    reference_edges = []
+    for role, owner, section, call, store, clear in _PPB_BANK_RELEASE_EDGES:
+        matches = [entry for entry in dependencies if entry["elf_virtual_address"] == call and
+                   entry["owner"] == owner and entry["type"] == 6 and
+                   entry["symbol"] == "Core_DeallocatePPB" and
+                   entry["original_target_elf_value"] == 0x907c]
+        same_section = section == 4
+        if len(matches) != (0 if same_section else 1):
+            raise FormatError("PPB bank selected deallocation dependency does not match")
+        delta = next(entry["blob_minus_elf_address"] for entry in sections if entry["section_index"] == section)
+        word = struct.unpack_from("<I", payload, call + delta)[0]
+        displacement = (word >> 7) & 0xfffff
+        if displacement & (1 << 19):
+            displacement -= 1 << 20
+        if word & 0xf800007f != 0x28000020 or call + 4 + displacement * 4 != 0x907c:
+            raise FormatError("PPB bank pinned direct BL.d dependency does not match")
+        reference_edges.append({"role": role, "owner": owner, "section_index": section,
+                                "call_elf_virtual_address": call, "call_blob_file_offset": call + delta,
+                                "store_elf_virtual_address": store, "store_blob_file_offset": store + delta,
+                                "clear_mask": clear, "store_before_callee": True,
+                                "normal_delay_slot_store": store == call + 4,
+                                "original_relocation_record_present": not same_section,
+                                "direct_target_elf_virtual_address": 0x907c})
+    return {
+        "basis": {"model": "selected-ppb-bank-v1", "conditional": True, "outer_blob_file_offset": 0x2ea60,
+                  "complete_body_count": len(_PPB_BANK_BODIES), "code_bytes": 15712,
+                  "region_count": len(validated), "validated_bytes": total,
+                  "address_spaces": "ELF virtual, bundled blob-file, ARC-local and host DRAM addresses are distinct."},
+        "validated_regions": validated, "containing_sections": sections,
+        "original_relocation_dependencies": {"complete_table_record_count": relocation_count,
+                                             "selected_body_records": dependencies,
+                                             "types_are_original_records_not_runtime_ISA_proof": True},
+        "context_initialization": {
+            "open_bank_count_maximum": 9, "open_allows_zero_banks": True,
+            "open_bank_count_check_elf_virtual_addresses": [0x24878, 0x2487c],
+            "open_rounding_elf_range": [0x2497c, 0x249a4], "rounding": "u32(value+4095)&0xfffff000",
+            "pre_round_nonzero_implies_post_round_nonzero": False,
+            "constructor_bank_count_guard": False, "constructor_saved_bank_count_offset": 0x490,
+            "constructor_saved_bank_bytes_offset": 0x48c, "constructor_saved_bank_start_offset": 0x3fc,
+            "constructor_saved_flags_offset": 0x354, "constructor_cleared_flag_count": 34,
+            "constructor_cleared_metadata_field_offset": 68, "metadata_record_bytes": 228,
+            "bank_base_increment": "u32(base+bank_bytes)",
+            "activation": {"lookup_elf_virtual_address": 0x9fa8, "saved_context_load_elf_virtual_address": 0x9fbc,
+                           "copy_call_elf_virtual_address": 0x9fd0, "copy_bytes": 0x5bc,
+                           "local_common_header_base": 0x3fffcd70, "snapshot_destination": 0x3fffcdac,
+                           "common_header_bytes_not_copied": 60, "successful_coherent_copy_assumed": True},
+            "init_geometry": {"stripe_exponent_core_byte_offset": 26,
+                              "stripe_exponent_expression": "(init request word3+5)&255",
+                              "alignment_mask_core_byte_offset": 27,
+                              "alignment_masks_for_request_word2": [63, 127, 255], "default_alignment_mask": 63,
+                              "metadata_extra_saved_context_byte_offset": 82,
+                              "metadata_extra_open_request_byte_offset": 52}},
+        "bank_layout": {"arc_local_base": 0x3fffd170, "bank_count_address": 0x3fffd23c,
+                        "bank_bytes_address": 0x3fffd238, "entry_bytes": 16,
+                        "entry_offsets_from_local_base": {"base": 56, "mask": 60, "stride": 64, "geometry": 68},
+                        "encoding_bank_bits": 4, "encoding_subslot_bits": 5,
+                        "geometry_fields": {"width": [0, 11], "height": [11, 11], "capacity": [22, 6]},
+                        "geometry_pack_masks_inputs": False, "final_free_preserves_base": True},
+        "descriptor_layout": {"flags_address": 0x3fffd100, "flag_bytes": 2, "flag_count": 34,
+                              "allocator_limit_byte_address": 0x3fffceb2, "allocator_limit_is_dynamic": True,
+                              "release_native_index_range": [0, 33], "getter_native_index_guard": False,
+                              "getter_shifted_index_wraps_u32": True, "metadata_pool_address": 0x3fffd0e8,
+                              "metadata_record_bytes": 228, "generation_field_validated": False,
+                              "frame_flag_address": 0x3fffce32, "frame_flag_count": 63,
+                              "frame_record_bytes": 284, "frame_prefix_bytes": 56,
+                              "producer_pool_pointer_address": 0x3fffcfc8,
+                              "reader_pool_pointer_address": 0x3fffd2dc,
+                              "runtime_pool_identity_validated": False},
+        "geometry_path": {"video_parameters_elf_range": [0x80dc, 0x8218],
+                          "stripe_height_elf_range": [0xbd90, 0xbdc4], "division_elf_range": [0xbc04, 0xbd18],
+                          "stripe_rule": "u32 ceil to stripe; force odd stripe count; unsigned cap1120; store/reloadu16",
+                          "chroma_height_input": "signed ASR(height,1)",
+                          "vendor_mul16_elf_virtual_addresses": [0x814c, 0x8170],
+                          "mul16_supported_conditional_operand_maximum": 32767,
+                          "vendor_mul16_semantics_validated": False, "shift_count_at_least32_supported": False,
+                          "frame_bytes_rule": "page_round(page_round(Y product)+raw chroma product), plus optional page-rounded metadata",
+                          "extra_bytes_rule": "u32(6*((signed width>>4)*(signed height>>4)))",
+                          "division_zero_quotient": 0x7fffffff, "division_zero_remainder": 0,
+                          "capacity_clamp_is_signed_ge": True, "geometry_input_pack_is_unmasked": True},
+        "operations": {
+            "allocate": {"free_test_mask": 0x8000, "both_zero_flag": 0xac00, "regular_flag": 0xe800,
+                         "capacity32_full_mask": 0xffffffff, "first_free_slot_has_no_native_bound": True},
+            "video_address": {"any_flag_mask": 0xe000, "required_bitmap_bit": True,
+                              "result": "u32(bank.base+bank.stride*subslot)", "native_extent_guard": False,
+                              "special_ac00_can_alias_bank0_slot0": True},
+            "deallocate": {"blocking_reference_mask": 0x6000, "required_live_mask": 0x8000,
+                           "skip_bank_mask": 0x0400, "metadata_release_callees": ["Core_ReleaseUD", "Core_ReleaseOffsetMeta"],
+                           "opaque_metadata_return_errors_checked": False},
+            "start": {"clear_flag_mask": 0x0800, "ppb_count": 34, "frame_flag_clear_count": 63,
+                      "frame_record_word124_clear_count": 63, "banks_preserved": True,
+                      "state_is_after_picture_scan_reset": True,
+                      "picture_scan_reset_and_other_effects_modeled": False},
+            "stop_selected": {"required_flag_mask": 0x8800, "clear_flag_mask": 0x4000,
+                              "force_release_only_when_original_flag1000_clear": True,
+                              "state_is_after_prelude": True,
+                              "prelude": "MonitorIL, UpdateReleaseQueue and conditional GetUndelivered effects must already be applied; not modeled as no-ops."},
+            "step_scope": "Conditional selected bank/flag/record/ring effects, not execution of every instruction in the35 pinned bodies."},
+        "reference_edges": reference_edges,
+        "delivery_edges": {
+            "assignment_getter_call_elf_virtual_address": 0xb23c, "inner_packet_bank_base_word_byte_offset": 28,
+            "inner_packet_pointer_in_frame_prefix_byte_offset": 28,
+            "assignment_drop2000_condition_frame_flag_bit": 14,
+            "attempt_release_call_elf_virtual_address": 0xacb0, "later_il_busy_read_elf_virtual_address": 0xad18,
+            "later_il_start_write_elf_virtual_address": 0xad40, "drop4000_is_decode_completion": False,
+            "monitor_frame_flag_clear_mask": 0x2400,
+            "display_skip_getter_picture_flag_mask": 0x100,
+            "display_bank_base_record_byte_offset": 4, "display_chroma_add_record_byte_offset": 8,
+            "display_optional_nonzero_add_record_byte_offset": 112,
+            "display_dma_write_elf_virtual_address": 0xb8fc, "display_dma_sync_elf_virtual_address": 0xb904,
+            "display_record_bytes": 228, "display_queue_put_elf_virtual_address": 0xb980,
+            "display_deliver_call_elf_virtual_address": 0xb988, "display_set1000_store_elf_virtual_address": 0xb9a4,
+            "circ_buffer_header_word_indices": [0, 1], "circ_buffer_data_word_index_range": [2, 63],
+            "release_request_positions": 64, "release_request_wrap_mask": 63,
+            "returned_or_delivered_metadata_address_is_host_plane_lease": False,
+            "selected_return_indices_are_inputs_not_completion_oracle": True},
+        "empty_picture_path": {"zero_dimensions_elf_virtual_addresses": [0xa718, 0xa720],
+                               "populate_empty_call_elf_virtual_address": 0xa774,
+                               "metadata_tag100_store_elf_virtual_address": 0x26420,
+                               "frame_prefix_publication_elf_virtual_address": 0xa7a8,
+                               "metadata_publication_elf_virtual_address": 0xa7d4,
+                               "display_tag_guard_elf_virtual_addresses": [0xb878, 0xb87c],
+                               "selected_empty_producer_tags_picture": True,
+                               "all_both_zero_codec_outputs_tagged": False},
+        "assumptions": [
+            "Pinned original per-section ELF mapping/relocations are source evidence, not runtime relocation or active channel/context identity.",
+            "GNU ARC base-case operands, normal both-path delay and taken-only .jd delay, flag and carry effects agree with this vendor ISA; not independently validated.",
+            "Vendor mul16 equals the selected product for operands0..32767; larger operands and variable shifts>=32 are unsupported model domains, not proven firmware rejection.",
+            "Valid same-channel initialized context and ordinary disjoint local/context/frame/metadata/ring/bank spans; aliasing opaque writes do not alter modeled state.",
+            "Selected activation/DMA/local-copy/clear operations complete coherently and preserve modeled words; caches, worklists and active pool identity are not proven.",
+            "Opaque codec callbacks, indirect callees, logging, MMIO and metadata-release helpers preserve the selected equations/fields when returning; their complete bodies/effects are not validated.",
+            "Selected transitions are serialized snapshots with no concurrent unmodeled mutation of their state; event ordering does not establish asynchronous firmware completion or a reusable lease.",
+            "Ready assignment/display branches and returned/undelivered ring inputs are supplied explicitly; STOP state is after its monitor/ring prelude, not an idle-state guarantee.",
+            "The tagged empty producer path is selected; other codec-generated both-zero pictures and Assignment getter exclusion are not universally proven."],
+        "validation_scope": {"complete_selected_body_pins": True, "selected_state_projection": True,
+                             "all_nine_direct_deallocation_edges": True, "original_section_mapping": True,
+                             "whole_body_execution": False, "vendor_ISA": False, "runtime_relocation": False,
+                             "runtime_context_identity": False, "source_plane_host_ownership": False,
+                             "completion_or_cache_coherence": False, "generation_safe_reuse": False,
+                             "minimum_inner_ABI": False, "standalone_raw_feed": False,
+                             "silicon_incapability": False}}
+
+
+def _ppb_bank_step(contract, state, operation, **args):
+    """Finite conditional raw transitions; input state is never modified.
+
+    Caller-selected branch/ring inputs are evidence prerequisites. This is not
+    an ARC interpreter, device command, whole-function or asynchronous model.
+    The private dictionary checks are schema consistency, not authentication of
+    an external caller's proof or state; no public API uses these helpers.
+    """
+    if (not isinstance(contract, dict) or not isinstance(contract.get("basis"), dict) or
+            not isinstance(contract.get("validation_scope"), dict) or
+            contract["basis"].get("model") != "selected-ppb-bank-v1" or
+            not contract["validation_scope"].get("selected_state_projection")):
+        raise FormatError("PPB bank model requires the selected pinned contract")
+    if MAX_PPB_BANK_MODEL_STEPS < 1:
+        raise FormatError("PPB bank model budget exceeded")
+    schema = {"geometry": ({"width", "height"}, set()), "allocate": ({"width", "height"}, set()),
+              "video_address": ({"index"}, set()), "deallocate": ({"index"}, set()),
+              "release": ({"index"}, set()), "start": (set(), set()), "stop_selected": (set(), set()),
+              "reference_drop": ({"index", "caller"}, set()),
+              "assignment_reference": ({"index", "frame_flags"}, set()),
+              "display_publish": ({"index", "record"}, {"discarded"}),
+              "empty_picture": (set(), set()), "constructor": ({"base", "count", "bank_bytes"}, set()),
+              "ring_put": ({"ring", "value"}, set()), "ring_get": ({"ring"}, set()),
+              "ppb_from_address": ({"address"}, set()),
+              "undelivered": ({"delivery_addresses", "return_addresses"}, set()),
+              "order_release": ({"frame", "reason"}, set()),
+              "monitor_complete": ({"frame"}, set())}
+    if not isinstance(operation, str) or operation not in schema:
+        raise FormatError("unsupported PPB bank model operation")
+    required, optional = schema[operation]
+    if not required <= set(args) or not set(args) <= required | optional:
+        raise FormatError("PPB bank model operation arguments do not match")
+    current = _ppb_bank_copy_state(state)
+    events, steps = [], 0
+    u32 = lambda value: value & 0xffffffff
+
+    def event(kind, **fields):
+        nonlocal steps
+        steps += 1
+        if steps > MAX_PPB_BANK_MODEL_STEPS:
+            raise FormatError("PPB bank model budget exceeded")
+        events.append({"kind": kind, **fields})
+
+    def index(value):
+        if type(value) is not int or not 0 <= value < 34:
+            raise FormatError("PPB bank index is outside bounded model storage, not a native getter guard")
+        return value
+
+    def frame(value):
+        if type(value) is not int or not 0 <= value < 63:
+            raise FormatError("PPB bank frame index is outside bounded model storage")
+        return value
+
+    def selected_bank(flag):
+        bank_index, subslot = flag & 15, (flag >> 4) & 31
+        if bank_index >= len(current["banks"]):
+            raise FormatError("PPB bank descriptor selects unmodeled bank storage; no native bounds guard")
+        return current["banks"][bank_index], bank_index, subslot
+
+    def address(ppb):
+        flag = current["flags"][index(ppb)]
+        if not _ppb_bank_flag_gates(flag)["video_candidate"]:
+            return 0
+        bank, _, slot = selected_bank(flag)
+        return u32(bank["base"] + u32(bank["stride"] * slot)) if bank["mask"] & (1 << slot) else 0
+
+    def deallocate(ppb):
+        ppb = index(ppb)
+        flag = current["flags"][ppb]
+        if not _ppb_bank_flag_gates(flag)["deallocation_admitted"]:
+            return False
+        # Contents/callee effects at record+68/+224 are intentionally opaque.
+        event("metadata_release", index=ppb, record_address=u32(current["metadata_pool"] + 228 * ppb),
+              conditional_nonzero_fields=[68, 224], callees=["Core_ReleaseUD", "Core_ReleaseOffsetMeta"],
+              complete_callee_effects_modeled=False)
+        if not flag & 0x0400:
+            bank, bank_index, slot = selected_bank(flag)
+            bank["mask"] &= u32(~(1 << slot))
+            event("bank_mask", bank=bank_index, value=bank["mask"])
+            if bank["mask"] == 0:
+                bank["geometry"] = bank["stride"] = 0
+                event("bank_empty", bank=bank_index, base_preserved=bank["base"])
+        current["flags"][ppb] = 0
+        event("flag", index=ppb, value=0)
+        return True
+
+    def drop(ppb, caller):
+        ppb = index(ppb)
+        selected = [edge for edge in _PPB_BANK_RELEASE_EDGES if edge[0] == caller]
+        if len(selected) != 1:
+            raise FormatError("PPB bank reference caller is not one of the nine pinned edges")
+        clear = selected[0][5]
+        current["flags"][ppb] &= ~clear
+        event("reference_drop", index=ppb, caller=caller, clear_mask=clear, value=current["flags"][ppb])
+        return deallocate(ppb)
+
+    def from_address(value):
+        value = _ppb_bank_u32(value, "metadata address")
+        for ppb in range(34):
+            if value == u32(current["metadata_pool"] + 228 * ppb):
+                return ppb
+        return -1
+
+    def ring_named(name):
+        if name not in ("delivery_ring", "return_ring"):
+            raise FormatError("PPB bank circular ring selector does not match")
+        return current[name]
+
+    def put(ring, value):
+        value = _ppb_bank_u32(value, "ring value")
+        if not 2 <= ring["read"] <= 63 or not 2 <= ring["write"] <= 63:
+            raise FormatError("PPB bank circular put would enter opaque Debug/out-of-domain storage")
+        slot = ring["write"]
+        ring["slots"][slot] = value
+        ring["write"] = 2 if slot == 63 else slot + 1
+        event("ring_put", data_word_index=slot, value=value, next_write=ring["write"], native_full_guard=False)
+        return 0
+
+    if operation == "geometry":
+        result = _ppb_bank_geometry(args["width"], args["height"], current["stripe_exponent"],
+                                    current["alignment_mask"], current["metadata_extra"])
+    elif operation == "constructor":
+        base, size = _ppb_bank_u32(args["base"], "bank base"), _ppb_bank_u32(args["bank_bytes"], "bank bytes")
+        count = args["count"]
+        if type(count) is not int or not 0 <= count <= 9:
+            raise FormatError("PPB bank constructor count requires the OPEN0..9 model premise")
+        current["banks"] = [{"base": u32(base + size * bank), "mask": 0, "stride": 0, "geometry": 0}
+                            for bank in range(count)]
+        current["bank_bytes"] = size
+        current["flags"] = [0] * 34
+        current["core_error_flags"] = 0  # C+64 is inside the assumed context clear.
+        event("constructor_projection", banks=count, cleared_flags=34, cleared_metadata_field68_count=34,
+              opaque_clear_and_context_effects_modeled=False)
+        result = None
+    elif operation == "allocate":
+        width, height = _ppb_bank_u32(args["width"], "width"), _ppb_bank_u32(args["height"], "height")
+        ppb = next((value for value in range(current["descriptor_limit"])
+                    if _ppb_bank_flag_gates(current["flags"][value])["allocator_free"]), None)
+        result = -1
+        if ppb is not None and width == height == 0:
+            current["flags"][ppb] = 0xac00
+            event("flag", index=ppb, value=0xac00)
+            result = ppb
+        elif ppb is not None:
+            choice = None
+            for bank_index, bank in enumerate(current["banks"]):
+                geometry = bank["geometry"]
+                if not geometry or (geometry & 2047) != width or ((geometry >> 11) & 2047) != height:
+                    continue
+                capacity = (geometry >> 22) & 63
+                if capacity >= 32 and capacity != 32:
+                    raise FormatError("PPB bank capacity shift>=32 has unvalidated vendor behavior")
+                full = 0xffffffff if capacity == 32 else (1 << capacity) - 1
+                if bank["mask"] & full != full:
+                    choice = bank_index
+                    break
+            if choice is None:
+                choice = next((value for value, bank in enumerate(current["banks"]) if not bank["geometry"]), None)
+                if choice is not None:
+                    geometry = _ppb_bank_geometry(width, height, current["stripe_exponent"],
+                                                 current["alignment_mask"], current["metadata_extra"])
+                    if geometry["frame_bytes"] > current["bank_bytes"]:
+                        current["core_error_flags"] |= 0x400
+                        event("core_error_flags", value=current["core_error_flags"])
+                        event("frame_exceeds_bank", frame_bytes=geometry["frame_bytes"], bank_bytes=current["bank_bytes"])
+                        choice = None
+                    else:
+                        current["core_error_flags"] &= ~0x400
+                        event("core_error_flags", value=current["core_error_flags"])
+                        bank = current["banks"][choice]
+                        capacity = _ppb_bank_capacity(current["bank_bytes"], geometry["frame_bytes"])
+                        bank["geometry"] = u32(width | u32(height << 11) | u32(capacity["capacity"] << 22))
+                        bank["stride"], bank["mask"] = geometry["frame_bytes"], 0
+                        event("bank_geometry", bank=choice, geometry=bank["geometry"], stride=bank["stride"],
+                              capacity=capacity["capacity"], quotient=capacity["quotient"])
+            if choice is not None:
+                bank = current["banks"][choice]
+                slot = next((value for value in range(32) if not bank["mask"] & (1 << value)), None)
+                if slot is None:
+                    raise FormatError("PPB bank unbounded native slot search exceeds model domain")
+                bank["mask"] |= 1 << slot
+                current["flags"][ppb] = (0xe800 | (slot << 4) | choice) & 65535
+                event("bank_mask", bank=choice, value=bank["mask"])
+                event("flag", index=ppb, value=current["flags"][ppb])
+                result = ppb
+    elif operation == "video_address":
+        result = address(args["index"])
+    elif operation == "deallocate":
+        result = deallocate(args["index"])
+    elif operation == "release":
+        value = _ppb_bank_u32(args["index"], "release index")
+        # The selected Core_ReleasePPB has a real signed0..33 guard. The
+        # unchecked getter/deallocator do not inherit that guard.
+        result = drop(value, "release") if value < 34 else False
+    elif operation == "reference_drop":
+        result = drop(args["index"], args["caller"])
+    elif operation == "assignment_reference":
+        ppb, flags = index(args["index"]), args["frame_flags"]
+        if type(flags) is not int or not 0 <= flags <= 65535:
+            raise FormatError("PPB bank assignment frame flags must be a u16")
+        if flags & 0x4000:
+            current["flags"][ppb] &= ~0x2000
+            event("assignment_reference_drop", index=ppb, clear_mask=0x2000, value=current["flags"][ppb])
+        result = current["flags"][ppb]
+    elif operation == "start":
+        current["flags"] = [flag & ~0x0800 for flag in current["flags"]]
+        current["frame_flags"], current["frame_word124"] = [0] * 63, [0] * 63
+        # The same CORE+124 word contains control bytes: START writes byte124
+        # zero, byte125 one and byte126 zero; byte127 is not written here.
+        current["core_error_flags"] = (current["core_error_flags"] & 0xff000000) | 0x100
+        event("start_projection", cleared_ppb_mask=0x0800, ppb_count=34, frame_count=63,
+              opaque_picture_scan_and_other_state_effects_modeled=False)
+        result = None
+    elif operation == "stop_selected":
+        freed = []
+        for ppb, original in enumerate(list(current["flags"])):
+            gates = _ppb_bank_flag_gates(original)
+            if gates["stop_eligible"]:
+                current["flags"][ppb] &= ~0x4000
+                event("stop_reference_drop", index=ppb, clear_mask=0x4000, value=current["flags"][ppb])
+                if gates["stop_force_release"] and drop(ppb, "release"):
+                    freed.append(ppb)
+        result = freed
+    elif operation == "empty_picture":
+        result = {"width": 0, "height": 0, "picture_flags": 0x100, "record_bytes": 228,
+                  "selected_producer_only": True}
+        event("empty_picture_projection", clear_record_bytes=228, set_picture_flag=0x100)
+    elif operation == "display_publish":
+        ppb, record = index(args["index"]), args["record"]
+        if not isinstance(record, dict) or set(record) != {"flags", "y_offset", "chroma_offset", "optional_offset"}:
+            raise FormatError("PPB bank display selected record fields do not match")
+        record = {key: _ppb_bank_u32(value, "picture field") for key, value in record.items()}
+        discarded = args.get("discarded", False)
+        if type(discarded) is not bool:
+            raise FormatError("PPB bank display branch selector must be boolean")
+        if not record["flags"] & 0x100:
+            base = address(ppb)
+            record["y_offset"] = base
+            record["chroma_offset"] = u32(record["chroma_offset"] + base)
+            if record["optional_offset"]:
+                record["optional_offset"] = u32(record["optional_offset"] + base)
+        event("display_record_publication", index=ppb, record_bytes=228,
+              record_address=u32(current["metadata_pool"] + 228 * ppb), dma_and_sync_assumed=True,
+              omitted_record_metadata_effects=True)
+        if discarded:
+            drop(ppb, "discard")
+        else:
+            put(current["delivery_ring"], u32(current["metadata_pool"] + 228 * ppb))
+            event("deliver_picture", is_host_plane_lease=False, opaque_interface_effects_modeled=False)
+            current["flags"][ppb] |= 0x1000
+            event("flag", index=ppb, value=current["flags"][ppb])
+        result = record
+    elif operation in ("ring_put", "ring_get"):
+        ring = ring_named(args["ring"])
+        if operation == "ring_put":
+            result = put(ring, args["value"])
+        elif ring["read"] == ring["write"] or not 2 <= ring["read"] <= 63 or not 2 <= ring["write"] <= 63:
+            result = 0
+        else:
+            slot = ring["read"]
+            result = ring["slots"][slot]
+            ring["read"] = 2 if slot == 63 else slot + 1
+            event("ring_get", data_word_index=slot, value=result, next_read=ring["read"])
+    elif operation == "ppb_from_address":
+        result = from_address(args["address"])
+    elif operation == "undelivered":
+        freed = []
+        for key, caller in (("delivery_addresses", "undelivered_display"), ("return_addresses", "undelivered_return")):
+            values = args[key]
+            if not isinstance(values, list) or len(values) > MAX_PPB_BANK_MODEL_STEPS:
+                raise FormatError("PPB bank explicit undelivered inputs exceed the model budget")
+            for value in values:
+                value = _ppb_bank_u32(value, "selected ring result")
+                if value == 0:
+                    raise FormatError("PPB bank explicit undelivered list excludes the terminal zero result")
+                ppb = from_address(value)
+                event("selected_undelivered_ring_result", caller=caller, address=value, index=ppb)
+                if ppb >= 0 and drop(ppb, caller):
+                    freed.append(ppb)
+        result = freed
+    elif operation == "order_release":
+        value, reason = frame(args["frame"]), args["reason"]
+        if type(reason) is not int or not 0 <= reason <= 255:
+            raise FormatError("PPB bank release-request reason must be a byte")
+        current["frame_flags"][value] |= 0x10
+        ring = current["release_request"]
+        slot = ring["head"]
+        ring["slots"][slot] = value | (reason << 8)
+        ring["head"] = (slot + 1) & 63
+        event("order_release", frame=value, reason=reason, position=slot, no_immediate_bank_release=True)
+        result = None
+    else:  # Selected completed-metadata frame flag effect, not its completion oracle.
+        value = frame(args["frame"])
+        current["frame_flags"][value] &= ~0x2400
+        event("monitor_complete_projection", frame=value, clear_frame_mask=0x2400,
+              completed_dma_metadata_is_input=True, metadata_word0_effects_modeled=False)
+        result = None
+    return {"state": current, "result": result, "events": events}
+
+
+def _ppb_bank_admission(contract, state, width, height):
+    """Mathematical safe-image premises, NOT runtime/host ownership evidence."""
+    if (not isinstance(contract, dict) or not isinstance(contract.get("basis"), dict) or
+            contract["basis"].get("model") != "selected-ppb-bank-v1"):
+        raise FormatError("PPB bank admission requires the selected pinned contract")
+    current = _ppb_bank_copy_state(state)
+    width, height = _ppb_bank_u32(width, "width"), _ppb_bank_u32(height, "height")
+    reasons = []
+    if not (0 < width <= 2047 and 0 < height <= 2047):
+        reasons.append("positive11-bit dimensions required; both-zero special and malformed geometry are separate raw cases")
+    if current["stripe_exponent"] >= 32:
+        reasons.append("unsupported vendor stripe shift")
+    if current["alignment_mask"] not in (63, 127, 255):
+        reasons.append("expected INIT alignment mask required")
+    if not current["banks"] or not current["bank_bytes"] or not current["descriptor_limit"]:
+        reasons.append("positive bank span/count and descriptor limit required")
+    if current["bank_bytes"] & 4095:
+        reasons.append("OPEN-derived bank bytes must be page aligned")
+    geometry = None
+    try:
+        geometry = _ppb_bank_geometry(width, height, current["stripe_exponent"],
+                                      current["alignment_mask"], current["metadata_extra"])
+    except FormatError as error:
+        reasons.append(str(error))
+    if geometry is not None and not 0 < geometry["frame_bytes"] <= current["bank_bytes"]:
+        reasons.append("positive image stride fitting bank required")
+    if geometry is not None and (geometry["y_stripe_height"] < height or
+                                 geometry["chroma_stripe_height"] < (height + 1) // 2):
+        reasons.append("requested rows must fit the capped modeled luma/chroma stripes")
+    intervals, occupied, expected_masks = [], set(), [0] * len(current["banks"])
+    for bank_index, bank in enumerate(current["banks"]):
+        start, end = bank["base"], bank["base"] + current["bank_bytes"]
+        if not start or end > (1 << 32):
+            reasons.append("bank base/span must be nonzero and nonwrapping")
+        if start & 4095:
+            reasons.append("OPEN-derived bank bases must be page aligned")
+        if start != current["banks"][0]["base"] + bank_index * current["bank_bytes"]:
+            reasons.append("initialized bank bases must follow the constructor's nonwrapping increment")
+        if any(start < other_end and other_start < end for other_start, other_end in intervals):
+            reasons.append("bank spans must be disjoint")
+        intervals.append((start, end))
+        packed, mask, stride = bank["geometry"], bank["mask"], bank["stride"]
+        capacity = (packed >> 22) & 63
+        if packed == 0:
+            if mask or stride:
+                reasons.append("empty geometry requires empty mask/stride")
+        elif (not 1 <= capacity <= 32 or not (packed & 2047) or not ((packed >> 11) & 2047) or
+              not stride or capacity * stride > current["bank_bytes"] or
+              (capacity < 32 and mask >> capacity)):
+            reasons.append("occupied bank requires positive geometry/capacity/stride and bounded slot extents")
+        if packed:
+            packed_width, packed_height = packed & 2047, (packed >> 11) & 2047
+            if packed != packed_width | (packed_height << 11) | (capacity << 22):
+                reasons.append("occupied bank geometry must contain only the positive11-bit dimension/capacity fields")
+            try:
+                bank_geometry = _ppb_bank_geometry(packed_width, packed_height, current["stripe_exponent"],
+                                                   current["alignment_mask"], current["metadata_extra"])
+                if (bank_geometry["y_stripe_height"] < packed_height or
+                        bank_geometry["chroma_stripe_height"] < (packed_height + 1) // 2):
+                    reasons.append("occupied bank rows must fit the capped modeled stripes")
+                if stride != bank_geometry["frame_bytes"]:
+                    reasons.append("occupied bank stride must match its packed dimensions and active geometry parameters")
+                if capacity != _ppb_bank_capacity(current["bank_bytes"], bank_geometry["frame_bytes"])["capacity"]:
+                    reasons.append("occupied bank capacity must match the selected division/clamp")
+            except FormatError as error:
+                reasons.append(str(error))
+    for ppb, flag in enumerate(current["flags"]):
+        if ppb >= current["descriptor_limit"] and flag & 0x8000:
+            reasons.append("live descriptor lies beyond active allocator limit")
+        if not flag & 0xe000:
+            continue
+        if flag & 0x0400:
+            reasons.append("no-video descriptor cannot be admitted to ordinary video getter")
+            continue
+        bank_index, slot = flag & 15, (flag >> 4) & 31
+        if not flag & 0x8000 or bank_index >= len(current["banks"]):
+            reasons.append("getter-candidate descriptor must be live and select initialized bank")
+            continue
+        bank = current["banks"][bank_index]
+        capacity = (bank["geometry"] >> 22) & 63
+        key = (bank_index, slot)
+        if key in occupied:
+            reasons.append("descriptor bank/subslot ownership must be injective")
+        occupied.add(key)
+        expected_masks[bank_index] |= 1 << slot
+        if not bank["mask"] & (1 << slot) or slot >= capacity:
+            reasons.append("descriptor must reference an occupied in-capacity subslot")
+    if any(bank["mask"] != expected_masks[value] for value, bank in enumerate(current["banks"])):
+        reasons.append("every occupied bank bit requires exactly one live descriptor")
+    return {"admitted": not reasons, "reasons": sorted(set(reasons)), "geometry": geometry,
+            "conditional_vendor_ISA": True, "runtime_ownership_established": False,
+            "host_plane_lease": False, "generation_safe_reuse": False}
 
 
 def _mfd_source_model(record, rows):
