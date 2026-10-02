@@ -366,6 +366,19 @@ _COMMAND_BUFFER_BRIDGE_REGIONS = (
      "0430a0e3931221e0010050e10c00009a1c0094e5181094e5010040e0000085e50000a0e3040085e5080085e5900085e5"
      "0510a0e10400a0e10ad5ffeb085084e5010000ea0600a0e308008de5380094e50e00d0e5000050e30400000a08009de5"
      "000050e30100000a0400a0e172d7ffeb00f020e308009de51cd08de2f08fbde8"),
+    ("vendor_relocation_type6", 0x29d50,
+     "00f020e320009de5000046e0047040e2030017e30600000a00f020e3660f8fe2fae3ffeb790f8fe220109de559e5ffeb"
+     "00f020e3c70ab0e10900000a0000e0e3c70a50e10600000a00f020e35a0f8fe2eee3ffeb7b0f8fe220109de54de5ffeb"
+     "00f020e38772a0e13e73c7e37f70c7e30000d4e57f0000e20310d4e5f81001e2015c80e0075085e10a50c4e75504e7e7"
+     "0b00c4e75518e7e718009de50010c4e7250ca0e114109de50100c4e73f0000ea"),
+    ("outer_dma_sync_symbol", 0x6c3b0,
+     "7c140000645300001800000012000200"),
+    ("outer_dma_sync_name", 0x68f11,
+     "446d615f53796e6300"),
+    ("outer_dma_sync_code", 0x30208,
+     "007c3f600018053040c000080f7ae06701800f3800feff27"),
+    ("outer_call_relocations", 0x72f0c,
+     "405802000686020000000000485802000684020000000000"),
 )
 _COMMAND_BUFFER_BRIDGE_RELA_SHA256 = "8c1c3eb2f61ad26f9278028b0aa9a596650345df13b1dd0d6d806cf677b9bba9"
 DEFAULT_SYMBOLS = (
@@ -602,7 +615,9 @@ def _command_buffer_bridge_map(payload, images):
             (0x2a178, 0x29ba4, True, 14), (0x29c20, 0x29c98, False, 14),
             (0x29cc0, 0x29f00, False, 14), (0x2b21c, 0x29ae4, True, 14),
             (0x29b04, 0x1fdac, True, 14), (0x28178, 0x1fdac, True, 14),
-            (0x288b0, 0x1fa08, True, 14), (0x270b8, 0x20708, True, 14)):
+            (0x288b0, 0x1fa08, True, 14), (0x270b8, 0x20708, True, 14),
+            (0x29c28, 0x29d50, False, 14), (0x29d64, 0x29d84, False, 0),
+            (0x29d94, 0x29db4, False, 0), (0x29dfc, 0x29f00, False, 14)):
         record = _a32_branch(payload, offset, link, condition)
         if record["target_blob_file_offset"] != target:
             raise FormatError("command-buffer bridge branch target does not match the baseline")
@@ -664,6 +679,64 @@ def _command_buffer_bridge_map(payload, images):
             matches += 1
     if matches != 1:
         raise FormatError("command-buffer bridge literal relocation is not unique")
+    calls = []
+    symbol_table = section(0x79540, 35)
+    # These two fixed records only. Executable S/P stay normalized during
+    # relocation; the same B is added when both code sections are copied.
+    for name, position, symbol_position, expected in (
+            ("Dma_Read", 0x72f0c, 0x6c3d0, (0x25840, 0x28606, 0)),
+            ("Dma_Sync", 0x72f18, 0x6c3b0, (0x25848, 0x28406, 0))):
+        record = struct.unpack("<IIi", bounded(payload, position, 12, "outer call relocation"))
+        index = record[1] >> 8
+        definition = struct.unpack("<IIIBBH", bounded(payload, symbol_position, 16, "outer call symbol"))
+        destination = section(0x79540, definition[5])
+        if (record != expected or 0x2ea60 + symbol_table[4] + index * 16 != symbol_position or
+                definition[5] != 2 or not destination[2] & 4 or not source[2] & 4):
+            raise FormatError("command-buffer bridge fixed call identity does not match the baseline")
+        normalized_source = source[3] + record[0] - source[3]
+        normalized_symbol = destination[3] + definition[1] - destination[3]
+        instruction_position = 0x2ea60 + source[4] + record[0] - source[3]
+        original = _bootstrap_word(payload, instruction_position)
+        delta = normalized_symbol + record[2] - normalized_source - 4
+        # Firmware diagnostics fall through to patching if their callees
+        # return. These fixed records satisfy the checks; this offline assertion
+        # is not a general rejecting policy of the firmware relocator.
+        if delta & 3 or not -(1 << 21) <= delta < (1 << 21):
+            raise FormatError("command-buffer bridge fixed call displacement is invalid")
+        preserve_mask, displacement_mask = 0xf800007f, 0x07ffff80
+        patched = (original & preserve_mask) | ((delta << 5) & displacement_mask)
+        displacement_words = (patched >> 7) & 0xfffff
+        if displacement_words & (1 << 19):
+            displacement_words -= 1 << 20
+        decoded_target = normalized_source + 4 + displacement_words * 4
+        if patched != original or decoded_target != normalized_symbol + record[2]:
+            raise FormatError("command-buffer bridge fixed call is not preserved")
+        calls.append({"target": name, "vendor_type": record[1] & 255,
+                      "relocation_record_blob_file_offset": position,
+                      "symbol_index": index, "symbol_record_blob_file_offset": symbol_position,
+                      "target_section_index": definition[5], "addend": record[2],
+                      "instruction_blob_file_offset": instruction_position,
+                      "normalized_source_address": normalized_source,
+                      "normalized_symbol_address": normalized_symbol,
+                      "normalization_excludes_B": True, "signed_byte_displacement": delta,
+                      "signed_displacement_bits": 22, "four_byte_aligned": True,
+                      "firmware_diagnostics": {"alignment_check_satisfied": True,
+                                               "signed22_range_check_satisfied": True,
+                                               "invalid_checks_log_then_fall_through": True,
+                                               "fallthrough_requires_logging_callees_to_return": True,
+                                               "diagnostic_path_taken_for_fixed_record": False},
+                      "pc_bias_bytes": 4, "displacement_field_bits": 20,
+                      "displacement_scale_bytes": 4, "preserved_mask": preserve_mask,
+                      "displacement_mask": displacement_mask,
+                      "original_word": original, "patched_word": patched,
+                      "original_bytes_hex": struct.pack("<I", original).hex(),
+                      "patched_bytes_hex": struct.pack("<I", patched).hex(),
+                      "instruction_bytes_unchanged": True, "write_byte_order": "little",
+                      "byte_store_blob_file_offsets": [0x29dd8, 0x29de0, 0x29dec, 0x29df8],
+                      "loaded_source_offset_from_B": normalized_source,
+                      "loaded_target_offset_from_B": decoded_target,
+                      "loaded_target_equation": "(B + P) + 4 + displacement = B + S + A",
+                      "runtime_call_observed": False})
     heap_start, heap_end = _bootstrap_word(payload, 0x76b8), _bootstrap_word(payload, 0x76b4)
     alignment = max(_bootstrap_word(payload, 0x2e21c), 2)
     mask = (1 << alignment) - 1
@@ -730,12 +803,18 @@ def _command_buffer_bridge_map(payload, images):
                               "dma_function": "Dma_Read", "dma_function_blob_file_offset": 0x3026c,
                               "dma_operand_offset_from_B": patched_literal_offset - 0x100,
                               "matches_arm_packet": patched_literal_offset - 0x100 == rebased_symbol_offset},
+        "outer_call_relocations": calls,
+        "validation_scope": {"selected_type4_literals": 1, "selected_type6_calls": 2,
+                             "all_other_relocations_validated": False,
+                             "vendor_extensions_validated": False,
+                             "host_memory_access_validated": False, "operational_dma_observed": False},
         "assumptions": [
             "Fresh INIT reaches these paths; allocations, helper initialization and both ELF loads succeed.",
             "Copy, allocator, logging and other callees obey their observed calling convention and preserve required context/map fields.",
             "Selected standard ARC operand annotations agree with legacy decoding; the complete vendor ISA and extension semantics are unvalidated.",
-            "Other vendor relocation semantics and operational ARC DMA completion are not validated by this local type-4 proof."],
+            "Operational ARC DMA completion is not established by preserving the selected branch instructions."],
         "limitations": [
+            "Only the selected type-4 literal and two type-6 call relocations are validated; other vendor relocations remain unvalidated.",
             "B is dynamic and has not been read from a running device; this is not a memory-access or ownership-borrowing API.",
             "The bridge is for the outer command buffer, not an inner decoder packet or a complete instruction call graph.",
             "Initialized range checks do not establish quiescence, safe raw-register access, runtime acceptance or silicon capability."]}

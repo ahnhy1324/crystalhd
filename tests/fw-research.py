@@ -2314,12 +2314,12 @@ class FirmwareCommandBufferBridgeTests(unittest.TestCase):
 
     def test_bridge_resource_budgets_and_private_image_identity(self):
         result = self.mapping()
-        self.assertEqual(len(result["validated_regions"]), 75)
-        self.assertEqual(result["validated_byte_count"], 36443)
+        self.assertEqual(len(result["validated_regions"]), 80)
+        self.assertEqual(result["validated_byte_count"], 36692)
         self.assertEqual(result["relocation_record_count"], 2171)
-        self.assertEqual(len(result["instruction_anchors"]), 48)
-        for budget, value in (("MAX_COMMAND_BUFFER_BRIDGE_REGIONS", 74),
-                              ("MAX_COMMAND_BUFFER_BRIDGE_BYTES", 36442),
+        self.assertEqual(len(result["instruction_anchors"]), 52)
+        for budget, value in (("MAX_COMMAND_BUFFER_BRIDGE_REGIONS", 79),
+                              ("MAX_COMMAND_BUFFER_BRIDGE_BYTES", 36691),
                               ("MAX_COMMAND_BUFFER_BRIDGE_RELOCATIONS", 2170)):
             with mock.patch.object(MAP, budget, value), \
                     mock.patch.object(MAP, "bounded", side_effect=AssertionError("unexpected read")), \
@@ -2398,6 +2398,88 @@ class FirmwareCommandBufferBridgeTests(unittest.TestCase):
                 self.assertEqual(first.stdout, repeated.stdout)
                 self.assertEqual(json.loads(first.stdout)["command_buffer_bridge"], self.mapping())
                 self.assertNotIn(str(ROOT).encode(), first.stdout)
+
+    def test_bridge_two_type6_calls_preserve_exact_words_and_signed_pc_bias(self):
+        result = self.mapping()
+        self.assertEqual(len(result["outer_call_relocations"]), 2)
+        expected = (("Dma_Read", 0x72f0c, 646, 0x6c3d0, 0x25840, 0x53c8, -132220, 0x2fbf70a0, "a070bf2f"),
+                    ("Dma_Sync", 0x72f18, 644, 0x6c3b0, 0x25848, 0x5364, -132328, 0x2fbf6320, "2063bf2f"))
+        for call, (name, record, index, definition, source, symbol, delta, word, encoded) in zip(
+                result["outer_call_relocations"], expected):
+            with self.subTest(target=name):
+                self.assertEqual((call["target"], call["relocation_record_blob_file_offset"],
+                                  call["symbol_index"], call["symbol_record_blob_file_offset"]),
+                                 (name, record, index, definition))
+                self.assertEqual((call["vendor_type"], call["target_section_index"], call["addend"]), (6, 2, 0))
+                self.assertEqual((call["normalized_source_address"], call["normalized_symbol_address"],
+                                  call["signed_byte_displacement"]), (source, symbol, delta))
+                self.assertEqual((call["original_word"], call["patched_word"]), (word, word))
+                self.assertEqual((call["original_bytes_hex"], call["patched_bytes_hex"]), (encoded, encoded))
+                self.assertTrue(call["instruction_bytes_unchanged"])
+                self.assertEqual(call["write_byte_order"], "little")
+                self.assertEqual(call["byte_store_blob_file_offsets"], [0x29dd8, 0x29de0, 0x29dec, 0x29df8])
+                self.assertEqual((call["signed_displacement_bits"], call["pc_bias_bytes"],
+                                  call["displacement_field_bits"], call["displacement_scale_bytes"]), (22, 4, 20, 4))
+                self.assertEqual((call["preserved_mask"], call["displacement_mask"]), (0xf800007f, 0x07ffff80))
+                self.assertTrue(call["four_byte_aligned"])
+                self.assertEqual(delta & 3, 0)
+                self.assertTrue(-(1 << 21) <= delta < (1 << 21))
+                self.assertEqual(word & ~call["displacement_mask"], word & call["preserved_mask"])
+                self.assertEqual(word & call["preserved_mask"], 0x28000020)  # BL opcode, condition/delay bits.
+                packed = (word & call["preserved_mask"]) | ((delta << 5) & call["displacement_mask"])
+                self.assertEqual(packed, word)
+                displacement = (word >> 7) & 0xfffff
+                if displacement & 0x80000:
+                    displacement -= 0x100000
+                self.assertEqual(displacement * 4, delta)
+                self.assertEqual(source + 4 + displacement * 4, symbol)
+                self.assertTrue(call["normalization_excludes_B"])
+                self.assertEqual(call["loaded_source_offset_from_B"], source)
+                self.assertEqual(call["loaded_target_offset_from_B"], symbol)
+                for base in (0x117000, 0x2e0000, 0x3000000):
+                    self.assertEqual((base + source) + 4 + delta, base + symbol)
+                self.assertFalse(call["runtime_call_observed"])
+
+    def test_bridge_type6_diagnostic_fallthrough_and_explicit_validation_scope(self):
+        result = self.mapping()
+        for call in result["outer_call_relocations"]:
+            self.assertEqual(call["firmware_diagnostics"], {"alignment_check_satisfied": True,
+                                                            "signed22_range_check_satisfied": True,
+                                                            "invalid_checks_log_then_fall_through": True,
+                                                            "fallthrough_requires_logging_callees_to_return": True,
+                                                            "diagnostic_path_taken_for_fixed_record": False})
+        self.assertEqual(result["validation_scope"], {"selected_type4_literals": 1, "selected_type6_calls": 2,
+                                                       "all_other_relocations_validated": False,
+                                                       "vendor_extensions_validated": False,
+                                                       "host_memory_access_validated": False,
+                                                       "operational_dma_observed": False})
+        self.assertTrue(any("Only the selected type-4 literal and two type-6 call relocations" in s
+                            for s in result["limitations"]))
+        anchors = {a["blob_file_offset"]: a for a in result["instruction_anchors"]}
+        for offset, target in ((0x29c28, 0x29d50), (0x29d64, 0x29d84),
+                               (0x29d94, 0x29db4), (0x29dfc, 0x29f00)):
+            self.assertEqual(anchors[offset]["target_blob_file_offset"], target)
+        # The invalid-alignment and invalid-range logging paths end in NOP,
+        # then flow into range checking/patching, not a rejecting return.
+        self.assertEqual(MAP._bootstrap_word(self.payload, 0x29d80), 0xe320f000)
+        self.assertEqual(MAP._bootstrap_word(self.payload, 0x29db0), 0xe320f000)
+
+    def test_bridge_type6_handler_masks_pc_range_byte_order_and_identity_mutations(self):
+        for offset, replacement in ((0x29d58, 0xe0860000), (0x29d5c, 0xe2407008),
+                                    (0x29d60, 0xe3170001), (0x29d84, 0xe1b00a47),
+                                    (0x29d94, 0xea000006), (0x29db4, 0xe1a07207),
+                                    (0x29db8, 0xe3c7731e), (0x29dbc, 0xe3c7703f),
+                                    (0x29ddc, 0xe7e70855), (0x29df8, 0xe7c4000a),
+                                    (0x72f0c, 0x25844), (0x72f10, 0x28604), (0x72f14, 4),
+                                    (0x72f18, 0x2584c), (0x72f1c, 0x28506), (0x72f20, 4),
+                                    (0x6c3b4, 0x5368), (0x6c3bc, 0x00100012),
+                                    (0x483d4, 0x2fbf70c0), (0x483dc, 0x27bf6320)):
+            payload = bytearray(self.payload)
+            struct.pack_into("<I", payload, offset, replacement)
+            with self.subTest(offset=offset), \
+                    mock.patch.object(MAP, "_a32_branch", side_effect=AssertionError("unexpected decode")), \
+                    self.assertRaises(MAP.FormatError):
+                self.mapping(payload=payload)
 
 
 if __name__ == "__main__":
