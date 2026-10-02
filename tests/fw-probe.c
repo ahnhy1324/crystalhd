@@ -137,9 +137,12 @@ static unsigned metadata_race;
 static unsigned read_count, read_fail_at, read_mutate_at, read_mutation;
 static unsigned read_mismatch_stage, read_mismatch_word;
 static bool read_padding;
+static bool controller_reads, controller_only;
+static u32 controller_roots[2];
 static BC_STATUS read_status;
 static int transaction_error;
-static unsigned transaction_mutation;
+static unsigned transaction_mutation, transaction_count;
+static unsigned transaction_error_at, transaction_mutation_at;
 static BC_STATUS read_mock(struct crystalhd_hw *hw, u32 offset, u32 count, u32 *words);
 
 static void down_read(struct rwsem *lock)
@@ -189,8 +192,13 @@ static void state_mutate(unsigned mutation)
 static int mutex_lock_interruptible(struct mutex *lock)
 {
     barrier(); CHECK(lock == &hardware.fwcmd_trans_mutex && !lock->held && !hardware.lock.held);
-    if (transaction_error) return transaction_error;
-    lock->held = 1; state_mutate(transaction_mutation); return 0;
+    transaction_count++;
+    if (transaction_error && (!transaction_error_at || transaction_count == transaction_error_at))
+        return transaction_error;
+    lock->held = 1;
+    if (!transaction_mutation_at || transaction_count == transaction_mutation_at)
+        state_mutate(transaction_mutation);
+    return 0;
 }
 static void mutex_unlock(struct mutex *lock)
 { CHECK(lock == &hardware.fwcmd_trans_mutex && lock->held == 1 && !hardware.lock.held); lock->held = 0; }
@@ -408,7 +416,10 @@ static void reset(void)
     codec_rejection = unknown_command_reply = false;
     read_count = read_fail_at = read_mutate_at = read_mutation = 0;
     read_mismatch_stage = read_mismatch_word = 0; read_padding = false;
+    controller_reads = controller_only = false;
+    controller_roots[0] = controller_roots[1] = 0xd6000;
     read_status = BC_STS_IO_ERROR; transaction_error = 0; transaction_mutation = 0;
+    transaction_count = transaction_error_at = transaction_mutation_at = 0;
 }
 static struct crystalhd_fw_research_result run(void)
 {
@@ -964,20 +975,29 @@ static BC_STATUS read_mock(struct crystalhd_hw *hw, u32 offset, u32 count, u32 *
     static const u32 offsets[] = {0x6fc, 0xd1ff4, 0xd3ac4, 0xd3ad0,
         0xd1ff4, 0xd3ac4, 0xd3ad0};
     static const u32 counts[] = {1, 2, 1, 1, 2, 1, 1};
-    unsigned index = read_count++, stage = index == 0 ? 1 : index < 4 ? 2 : 3;
+    static const u32 root_offsets[] = {0x6fc, 0xd1ff4, 0xd3ac4, 0xd3ad0, 0xd3a08,
+        0xd1ff4, 0xd3ac4, 0xd3ad0, 0xd3a08};
+    static const u32 root_counts[] = {1, 2, 1, 1, 1, 2, 1, 1, 1};
+    unsigned index = read_count++, stage = controller_only ? 2 :
+        index == 0 ? 1 : index < (controller_reads ? 5U : 4U) ? 2 : 3;
+    bool root_read = controller_only || (controller_reads && (index == 4 || index == 8));
     unsigned first = offset == 0xd1ff4 ? 0 : offset == 0xd3ac4 ? 2 : 3;
     unsigned i;
     u32 expected[] = {1, 0xd3a00, command_count >= 3 ? 1 : 0,
         command_count >= 3 ? 0x200 : 0};
     barrier(); CHECK(hw == &hardware && hw->lock.held == 1 && hw->fwcmd_trans_mutex.held == 1);
     CHECK(adp.cmds.session_owner == &crystalhd_fw_research_owner && adp.cmds.session_module_pinned);
-    CHECK(index < ARRAY_SIZE(offsets) && offset == offsets[index] && count == counts[index]);
+    if (controller_only) CHECK(index == 0 && offset == 0xd3a08 && count == 1);
+    else if (controller_reads)
+        CHECK(index < ARRAY_SIZE(root_offsets) && offset == root_offsets[index] && count == root_counts[index]);
+    else CHECK(index < ARRAY_SIZE(offsets) && offset == offsets[index] && count == counts[index]);
     CHECK(command_count == (stage == 3 ? 3U : 2U));
     if (read_padding) { expected[2] |= 0xa5b6c700; expected[3] |= 0xab000000; }
     for (i = 0; i < count; i++) {
         unsigned word = offset == 0x6fc ? 0 : first + i;
-        words[i] = offset == 0x6fc ? 0xd3a00 : expected[word];
-        if (read_mismatch_stage == stage && read_mismatch_word == word) words[i] ^= 1;
+        words[i] = root_read ? controller_roots[index == 8] :
+            offset == 0x6fc ? 0xd3a00 : expected[word];
+        if (!root_read && read_mismatch_stage == stage && read_mismatch_word == word) words[i] ^= 1;
     }
     if (read_count == read_fail_at) {
         for (i = 0; i < count; i++) words[i] = 0xdeadbeef;
@@ -1000,7 +1020,7 @@ static struct crystalhd_fw_research_state_result state_run(void)
     struct crystalhd_fw_research_state_result result;
     struct crystalhd_fw_research_request req = request();
     memset(&result, 0xa5, sizeof(result)); result.request = state_request();
-    crystalhd_fw_research_run_internal(42, &req, &result.control, &result);
+    crystalhd_fw_research_run_internal(42, &req, &result.control, &result, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.control.request.selector == CRYSTALHD_FW_RESEARCH_H264_CONTROL);
     CHECK(result.control.generation == 42);
@@ -1201,6 +1221,307 @@ static void test_fixed_state_ioctl(void)
     CHECK(!crystalhd_fw_research_release(&inode, &file) && !live_allocations);
 }
 
+static void controller_reset(void)
+{ state_reset(); controller_reads = true; }
+static struct crystalhd_fw_research_state_request controller_request(void)
+{
+    struct crystalhd_fw_research_state_request req = state_request();
+    req.size = sizeof(struct crystalhd_fw_research_controller_result);
+    return req;
+}
+static struct crystalhd_fw_research_controller_result controller_run(void)
+{
+    struct crystalhd_fw_research_controller_result result;
+    struct crystalhd_fw_research_request req = request();
+    memset(&result, 0xa5, sizeof(result)); result.state.request = controller_request();
+    crystalhd_fw_research_run_internal(42, &req, &result.state.control, &result.state, &result);
+    unlocked(); CHECK(!live_allocations);
+    CHECK(result.state.control.request.selector == CRYSTALHD_FW_RESEARCH_H264_CONTROL);
+    CHECK(result.state.control.request.size == sizeof(struct crystalhd_fw_research_result));
+    CHECK(result.state.control.generation == 42);
+    return result;
+}
+static void controller_empty(const struct crystalhd_fw_research_controller_sample *sample,
+                             bool attempted, int status)
+{
+    CHECK(sample->attempted == (u32)attempted && sample->status == status);
+    CHECK(!sample->read_complete && !sample->root);
+}
+static void controller_complete(const struct crystalhd_fw_research_controller_sample *sample, u32 root)
+{
+    CHECK(sample->attempted == 1 && sample->read_complete == 1 && !sample->status && sample->root == root);
+}
+
+static void test_controller_observation_and_exact_whitelist(void)
+{
+    static const u32 roots[] = {0, 1, 3, 0xd5383, 0xd5384, 0xd6000, 0x115c88,
+        0x116000, 0x3fffffc, 0x4000000, 0x30000f00, 0x3fffd170, UINT32_MAX};
+    struct crystalhd_fw_research_controller_result result;
+    unsigned i, stage;
+    for (i = 0; i < ARRAY_SIZE(roots); i++) {
+        controller_reset();
+        controller_roots[0] = roots[i]; controller_roots[1] = roots[(i + 1) % ARRAY_SIZE(roots)];
+        result = controller_run();
+        CHECK(!result.state.control.status && command_count == 5 && read_count == 9 && release_count == 1);
+        CHECK(!result.state.control.retained && firmware_release_count == 1);
+        CHECK(result.state.request.size == sizeof(result));
+        controller_complete(&result.after_init, controller_roots[0]);
+        controller_complete(&result.after_open, controller_roots[1]);
+        for (stage = 1; stage <= 3; stage++) {
+            struct crystalhd_fw_research_state_sample *sample = state_stage(&result.state, stage);
+            CHECK(sample->attempted == 1 && sample->read_complete == 1 && !sample->status && !sample->reserved);
+        }
+        CHECK(result.state.calibration.words[0] == 0xd3a00);
+        CHECK(result.state.after_init.words[0] == 1 && result.state.after_init.words[1] == 0xd3a00 &&
+            !result.state.after_init.words[2] && !result.state.after_init.words[3]);
+        CHECK(result.state.after_open.words[2] == 1 && result.state.after_open.words[3] == 0x200);
+        /* read_mock admits exactly nine fixed reads, independent of every
+         * returned C value. Neither range, alignment nor equality is a gate.
+         */
+    }
+    controller_reset(); read_padding = true; result = controller_run();
+    CHECK(!result.state.control.status && read_count == 9);
+    CHECK(result.state.after_init.words[2] == 0xa5b6c700 && result.state.after_open.words[3] == 0xab000200);
+}
+
+static void test_controller_progression_and_cleanup(void)
+{
+    static const BC_STATUS failures[] = {BC_STS_IO_ERROR, BC_STS_TIMEOUT,
+        BC_STS_IO_USER_ABORT, BC_STS_CMD_CANCELLED, BC_STS_BUSY, BC_STS_PWR_MGMT,
+        BC_STS_FW_CMD_ERR, BC_STS_INV_ARG};
+    struct crystalhd_fw_research_controller_result result;
+    unsigned stage, word, read, failure, gate;
+    for (stage = 1; stage <= 3; stage++) {
+        for (word = 0; word < (stage == 1 ? 1U : 4U); word++) {
+            controller_reset(); read_mismatch_stage = stage; read_mismatch_word = word; result = controller_run();
+            CHECK(result.state.control.status == -EPROTO && release_count == 1 && !result.state.control.retained);
+            CHECK(read_count == (stage == 1 ? 1U : stage == 2 ? 4U : 8U));
+            CHECK(command_count == (stage == 3 ? 3U : 2U));
+            CHECK(state_stage(&result.state, stage)->read_complete == 1);
+            CHECK(state_stage(&result.state, stage)->status == -EPROTO);
+            if (stage == 3) controller_complete(&result.after_init, controller_roots[0]);
+            else controller_empty(&result.after_init, false, 0);
+            controller_empty(&result.after_open, false, 0);
+            for (gate = stage + 1; gate <= 3; gate++) sample_empty(state_stage(&result.state, gate), false, 0);
+        }
+    }
+    for (read = 1; read <= 9; read++) {
+        stage = read == 1 ? 1 : read <= 5 ? 2 : 3;
+        for (failure = 0; failure < ARRAY_SIZE(failures); failure++) {
+            int error = crystalhd_status_to_errno(failures[failure]);
+            controller_reset(); read_fail_at = read; read_status = failures[failure]; result = controller_run();
+            CHECK(result.state.control.status == error && read_count == read);
+            CHECK(command_count == (stage == 3 ? 3U : 2U) && release_count == 1 && !result.state.control.retained);
+            if (read <= 4) controller_empty(&result.after_init, false, 0);
+            else if (read == 5) controller_empty(&result.after_init, true, error);
+            else controller_complete(&result.after_init, controller_roots[0]);
+            controller_empty(&result.after_open, read == 9, read == 9 ? error : 0);
+            if (read == 5 || read == 9) {
+                CHECK(state_stage(&result.state, stage)->read_complete == 1);
+                CHECK(!state_stage(&result.state, stage)->status);
+            } else sample_empty(state_stage(&result.state, stage), true, error);
+            for (gate = stage + 1; gate <= 3; gate++) sample_empty(state_stage(&result.state, gate), false, 0);
+        }
+        controller_reset(); read_mutate_at = read; read_mutation = 1; result = controller_run();
+        CHECK(result.state.control.status == -ENODEV && read_count == read && !release_count);
+        CHECK(result.state.control.retained && !result.state.control.cleanup_attempted &&
+            result.state.control.cleanup_status == BC_STS_CMD_CANCELLED && firmware_release_count == 1);
+        if (read <= 4) controller_empty(&result.after_init, false, 0);
+        else if (read == 5) controller_empty(&result.after_init, true, -ENODEV);
+        else controller_complete(&result.after_init, controller_roots[0]);
+        controller_empty(&result.after_open, read == 9, read == 9 ? -ENODEV : 0);
+    }
+    for (gate = 0; gate < 5; gate++) {
+        controller_reset(); command_status[gate] = BC_STS_TIMEOUT; result = controller_run();
+        CHECK(result.state.control.status == -ETIMEDOUT && command_count == gate + 1 && release_count == 1);
+        CHECK(read_count == (gate < 2 ? 0U : gate == 2 ? 5U : 9U));
+        if (gate < 2) controller_empty(&result.after_init, false, 0);
+        else controller_complete(&result.after_init, controller_roots[0]);
+        if (gate < 3) controller_empty(&result.after_open, false, 0);
+        else controller_complete(&result.after_open, controller_roots[1]);
+    }
+    controller_reset(); release_status = BC_STS_IO_ERROR; release_retains = true; result = controller_run();
+    CHECK(result.state.control.status == -EIO && result.state.control.retained && read_count == 9);
+    controller_complete(&result.after_init, controller_roots[0]);
+    controller_complete(&result.after_open, controller_roots[1]);
+    controller_reset(); read_fail_at = 5; release_status = BC_STS_IO_ERROR; release_retains = true;
+    result = controller_run(); CHECK(result.state.control.status == -EIO && result.state.control.retained);
+    CHECK(result.state.control.cleanup_status == BC_STS_IO_ERROR && read_count == 5 && command_count == 2);
+    controller_empty(&result.after_init, true, -EIO); controller_empty(&result.after_open, false, 0);
+    for (gate = 0; gate < 9; gate++) {
+        controller_reset();
+        switch (gate) {
+        case 0: adp.i2o_addr = NULL; break;
+        case 1: adp.mem_addr = NULL; break;
+        case 2: adp.pci_i2o_len = 0xffff; break;
+        case 3: adp.pci_mem_len = 0x3a0c; break;
+        case 4: adp.pci_mem_len = 0xffff; break;
+        case 5: adp.generation++; break;
+        case 6: privileged = false; break;
+        case 7: module.state = MODULE_STATE_COMING; break;
+        case 8: adp.cfg_users = 1; break;
+        }
+        result = controller_run();
+        CHECK(result.state.control.status == (gate < 2 ? -ENODEV : gate < 5 ? -ERANGE :
+            gate == 5 ? -ESTALE : gate == 6 ? -EPERM : gate == 7 ? -EAGAIN : -EBUSY));
+        no_hardware(); controller_empty(&result.after_init, false, 0); controller_empty(&result.after_open, false, 0);
+    }
+    controller_reset(); firmware.size--; result = controller_run();
+    CHECK(result.state.control.status == -EINVAL && !acquire_count && !download_count && !read_count);
+    controller_empty(&result.after_init, false, 0); controller_empty(&result.after_open, false, 0);
+    controller_reset(); bad_digest = true; result = controller_run();
+    CHECK(result.state.control.status == -EKEYREJECTED && !acquire_count && !read_count);
+    controller_empty(&result.after_init, false, 0); controller_empty(&result.after_open, false, 0);
+}
+
+static void controller_guard_setup(void)
+{
+    state_reset(); controller_only = true;
+    down_read(&chd_device_lock); down_write(&adp.user_lock);
+    adp.cmds.hw_ctx = &hardware; adp.cmds.session_owner = &crystalhd_fw_research_owner;
+    adp.cmds.session_module_pinned = true; adp.cmds.state = BC_LINK_INIT; command_count = 2;
+}
+static void controller_guard_exit(void)
+{ up_write(&adp.user_lock); up_read(&chd_device_lock); unlocked(); }
+static void test_controller_guarded_publication(void)
+{
+    static const int errors[] = {0, -ENODEV, -ESTALE, -EAGAIN, -EIO,
+        -EBUSY, -EBUSY, -EAGAIN, -EACCES, -ERANGE, -ENODEV};
+    struct crystalhd_fw_research_controller_sample sample;
+    unsigned mutation, phase;
+    for (phase = 0; phase < 3; phase++) {
+        for (mutation = 1; mutation <= 10; mutation++) {
+            if (phase == 1 && mutation == 10) continue;
+            controller_guard_setup();
+            if (phase == 0) state_mutate(mutation);
+            if (phase == 1) transaction_mutation = mutation;
+            if (phase == 2) { read_mutate_at = 1; read_mutation = mutation; }
+            CHECK(crystalhd_fw_research_controller_sample(&adp.cmds, 42, &sample) == errors[mutation]);
+            controller_empty(&sample, phase == 2, errors[mutation]);
+            CHECK(read_count == (phase == 2 ? 1U : 0U)); controller_guard_exit();
+        }
+    }
+    controller_guard_setup(); transaction_error = -EINTR;
+    CHECK(crystalhd_fw_research_controller_sample(&adp.cmds, 42, &sample) == -ERESTARTSYS);
+    controller_empty(&sample, false, -ERESTARTSYS); CHECK(!read_count); controller_guard_exit();
+    for (mutation = 1; mutation <= 10; mutation++) {
+        controller_guard_setup(); read_fail_at = read_mutate_at = 1; read_mutation = mutation;
+        CHECK(crystalhd_fw_research_controller_sample(&adp.cmds, 42, &sample) == errors[mutation]);
+        controller_empty(&sample, true, errors[mutation]); CHECK(read_count == 1); controller_guard_exit();
+    }
+    for (mutation = 0; mutation < 7; mutation++) {
+        int expected = mutation < 3 ? -ENODEV : mutation == 3 ? -EACCES :
+            mutation == 4 ? -EBUSY : mutation == 5 ? -EOPNOTSUPP : -EACCES;
+        controller_guard_setup();
+        if (mutation == 0) adp.cmds.hw_ctx = NULL;
+        if (mutation == 1) hardware.pfnDevDRAMRead = NULL;
+        if (mutation == 2) hardware.pfnWriteDevRegister = NULL;
+        if (mutation == 3) adp.cmds.session_module_pinned = false;
+        if (mutation == 4) adp.cmds.state = BC_LINK_INVALID;
+        if (mutation == 5) pci.device = 0x1612;
+        if (mutation == 6) adp.cmds.session_owner = NULL;
+        CHECK(crystalhd_fw_research_controller_sample(&adp.cmds, 42, &sample) == expected);
+        controller_empty(&sample, false, expected); CHECK(!read_count); controller_guard_exit();
+    }
+    controller_guard_setup(); controller_roots[0] = UINT32_MAX;
+    CHECK(!crystalhd_fw_research_controller_sample(&adp.cmds, 42, &sample));
+    controller_complete(&sample, UINT32_MAX); CHECK(read_count == 1); controller_guard_exit();
+    state_reset(); adp.pci_mem_len = 0x3a0c;
+    CHECK(!crystalhd_fw_research_state_span(&adp, 0xd3a08, 1));
+    adp.pci_mem_len--;
+    CHECK(crystalhd_fw_research_state_span(&adp, 0xd3a08, 1) == -ERANGE);
+}
+
+static void test_controller_stage_fences(void)
+{
+    static const int errors[] = {0, -ENODEV, -ESTALE, -EAGAIN, -EIO,
+        -EBUSY, -EBUSY, -EAGAIN, -EACCES, -ERANGE, -ENODEV};
+    struct crystalhd_fw_research_controller_result result;
+    unsigned opened, mutation, phase;
+    for (opened = 0; opened < 2; opened++) {
+        unsigned transaction = opened ? 5 : 3, reads = opened ? 8 : 4;
+        controller_reset(); transaction_error = -EINTR; transaction_error_at = transaction;
+        result = controller_run();
+        CHECK(result.state.control.status == -ERESTARTSYS && read_count == reads);
+        CHECK(command_count == (opened ? 3U : 2U) && release_count == 1 && !result.state.control.retained);
+        if (opened) controller_complete(&result.after_init, controller_roots[0]);
+        else controller_empty(&result.after_open, false, 0);
+        controller_empty(opened ? &result.after_open : &result.after_init, false, -ERESTARTSYS);
+        CHECK(state_stage(&result.state, opened ? 3 : 2)->read_complete == 1);
+        if (!opened) sample_empty(&result.state.after_open, false, 0);
+        for (phase = 0; phase < 2; phase++) {
+            for (mutation = 1; mutation <= 10; mutation++) {
+                /* Replacing the owner is tested directly above; the session
+                 * release mock deliberately requires the original owner.
+                 */
+                if (mutation == 8 || (phase == 0 && mutation == 10)) continue;
+                controller_reset();
+                if (phase == 0) {
+                    transaction_mutation = mutation; transaction_mutation_at = transaction;
+                } else { read_mutate_at = reads + 1; read_mutation = mutation; }
+                result = controller_run();
+                CHECK(result.state.control.status == errors[mutation]);
+                CHECK(read_count == reads + phase && command_count == (opened ? 3U : 2U));
+                CHECK(release_count == (mutation == 1 ? 0 : 1));
+                CHECK(result.state.control.retained == (u32)(mutation == 1));
+                if (opened) controller_complete(&result.after_init, controller_roots[0]);
+                else controller_empty(&result.after_open, false, 0);
+                controller_empty(opened ? &result.after_open : &result.after_init, phase == 1, errors[mutation]);
+                CHECK(state_stage(&result.state, opened ? 3 : 2)->read_complete == 1);
+                if (!opened) sample_empty(&result.state.after_open, false, 0);
+            }
+        }
+    }
+}
+
+static void test_controller_ioctl_and_compat(void)
+{
+    struct inode inode = {0}; struct file file = {0};
+    struct crystalhd_fw_research_controller_result result;
+    unsigned long arg = (unsigned long)&result;
+    const unsigned malformed[] = {_IO('R', 0x94),
+        _IOR('R', 0x94, struct crystalhd_fw_research_controller_result),
+        _IOWR('R', 0x94, struct crystalhd_fw_research_state_result),
+        _IOWR('R', 0x94, struct crystalhd_fw_research_state_request),
+        _IOWR('S', 0x94, struct crystalhd_fw_research_controller_result)};
+    unsigned field;
+    controller_reset(); CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_CONTROLLER, arg) == -ENODEV);
+    CHECK(!crystalhd_fw_research_open(&inode, &file));
+    for (field = 0; field < ARRAY_SIZE(malformed); field++)
+        CHECK(crystalhd_fw_research_ioctl(&file, malformed[field], arg) == -ENOTTY);
+    for (field = 0; field < 6; field++) {
+        memset(&result, 0, sizeof(result)); result.state.request = controller_request();
+        if (field == 0) result.state.request.version++;
+        if (field == 1) result.state.request.size--;
+        if (field == 2) result.state.request.flags = 1;
+        if (field == 3) result.state.request.reserved = 1;
+        if (field == 4) result.state.request.size = sizeof(struct crystalhd_fw_research_state_result);
+        if (field == 5) result.state.request.size = UINT32_MAX;
+        CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_CONTROLLER, arg) == -EINVAL);
+    }
+    no_hardware(); result.state.request = controller_request(); copy_in_error = true;
+    CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_CONTROLLER, arg) == -EFAULT);
+    copy_in_error = false; allocation_fail = allocations + 1;
+    CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_CONTROLLER, arg) == -ENOMEM); no_hardware();
+    allocation_fail = 0;
+    CHECK(!crystalhd_fw_research_compat_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_CONTROLLER, arg));
+    CHECK(!result.state.control.status && read_count == 9 && command_count == 5 && !result.state.control.retained);
+    CHECK(result.state.request.size == sizeof(result) && result.state.control.request.size == 1488);
+    controller_complete(&result.after_init, controller_roots[0]); controller_complete(&result.after_open, controller_roots[1]);
+    CHECK(!crystalhd_fw_research_release(&inode, &file) && !live_allocations);
+    controller_reset(); CHECK(!crystalhd_fw_research_open(&inode, &file));
+    result.state.request = controller_request(); copy_out_error = true;
+    CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_CONTROLLER, arg) == -EFAULT);
+    CHECK(release_count == 1 && !adp.cmds.session_owner && read_count == 9);
+    CHECK(!crystalhd_fw_research_release(&inode, &file) && !live_allocations);
+    controller_reset(); CHECK(!crystalhd_fw_research_open(&inode, &file)); chd_device_generation++;
+    result.state.request = controller_request();
+    CHECK(!crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_CONTROLLER, arg));
+    CHECK(result.state.control.status == -ENODEV); no_hardware();
+    controller_empty(&result.after_init, false, 0); controller_empty(&result.after_open, false, 0);
+    CHECK(!crystalhd_fw_research_release(&inode, &file) && !live_allocations);
+}
+
 int main(void)
 {
     _Static_assert(sizeof(struct crystalhd_fw_research_info) == 64, "info ABI");
@@ -1214,6 +1535,15 @@ int main(void)
     _Static_assert(offsetof(struct crystalhd_fw_research_result, replies) == 104, "reply offset ABI");
     _Static_assert(offsetof(struct crystalhd_fw_research_result, firmware_hash_valid) == 68, "hash validity ABI");
     _Static_assert(_IOC_SIZE(CRYSTALHD_FW_RESEARCH_RUN) == 1488, "ioctl ABI");
+    _Static_assert(sizeof(struct crystalhd_fw_research_state_result) == 1600, "unchanged state ABI");
+    _Static_assert(CRYSTALHD_FW_RESEARCH_RUN_STATE == 0xc6405293U, "unchanged state ioctl");
+    _Static_assert(sizeof(struct crystalhd_fw_research_controller_sample) == 16, "controller sample ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_controller_sample, root) == 12, "controller root ABI");
+    _Static_assert(sizeof(struct crystalhd_fw_research_controller_result) == 1632, "controller result ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_controller_result, state) == 0, "controller state ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_controller_result, after_init) == 1600, "controller init ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_controller_result, after_open) == 1616, "controller open ABI");
+    _Static_assert(CRYSTALHD_FW_RESEARCH_RUN_CONTROLLER == 0xc6605294U, "controller ioctl ABI");
     _Static_assert(CRYSTALHD_FW_RESEARCH_H261_CONTROL == 3 && CRYSTALHD_FW_RESEARCH_H263_CONTROL == 4 &&
                    CRYSTALHD_FW_RESEARCH_MPEG1_CONTROL == 5 && CRYSTALHD_FW_RESEARCH_SELECTOR_MASK == 2047, "named selectors");
     _Static_assert(CRYSTALHD_FW_RESEARCH_SCALING_FILTERS_COMMAND == 6 &&
@@ -1222,6 +1552,8 @@ int main(void)
                    CRYSTALHD_FW_RESEARCH_FILL_PIC_BUF_COMMAND == 11, "fixed command selectors");
     test_lifecycle(); test_admission(); test_idle(); test_hash(); test_commands(); test_named_controls(); test_raw_commands(); test_cleanup(); test_ioctl(); test_info();
     test_fixed_state(); test_fixed_state_guards(); test_fixed_state_ioctl();
+    test_controller_observation_and_exact_whitelist(); test_controller_progression_and_cleanup();
+    test_controller_guarded_publication(); test_controller_stage_fences(); test_controller_ioctl_and_compat();
     CHECK(!live_allocations); unlocked();
     printf("Firmware probe: %u checks passed\n", checks);
     return 0;

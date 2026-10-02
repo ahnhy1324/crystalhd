@@ -104,4 +104,24 @@ struct crystalhd_fw_research_state_result {
 #define CRYSTALHD_FW_RESEARCH_RUN_STATE \
 	_IOWR('R', 0x93, struct crystalhd_fw_research_state_result)
 
+struct crystalhd_fw_research_controller_sample {
+	__u32 attempted;
+	__s32 status;
+	/* A completed fixed ARM DRAM read, not controller lifetime or ownership. */
+	__u32 read_complete;
+	/* Observed value only: never followed as an address by this diagnostic. */
+	__u32 root;
+};
+
+struct crystalhd_fw_research_controller_result {
+	/* Same fixed control/state samples; request.size names this larger result. */
+	struct crystalhd_fw_research_state_result state;
+	struct crystalhd_fw_research_controller_sample after_init;
+	struct crystalhd_fw_research_controller_sample after_open;
+};
+
+/* Additive fixed-root observation; RUN_STATE's layout/semantics are unchanged. */
+#define CRYSTALHD_FW_RESEARCH_RUN_CONTROLLER \
+	_IOWR('R', 0x94, struct crystalhd_fw_research_controller_result)
+
 #endif
