@@ -16,13 +16,17 @@ struct _BC_DTS_PROC_OUT;
 #include "crystalhd_fw_research.h"
 
 #define PROBE_DEVICE "/dev/crystalhd-fw-research"
+#define CONTROLLER_ROOT_ADDRESS 0x000d3a08U
+#define CONTROLLER_CANDIDATE_START 0x000d5384U
+#define CONTROLLER_CANDIDATE_END 0x00116000U
+#define CONTROLLER_CANDIDATE_BYTES 0x378U
 
 enum action {
 	ACTION_NONE, ACTION_INFO, ACTION_VERSION, ACTION_H264,
 	ACTION_H261, ACTION_H263, ACTION_MPEG1,
 	ACTION_SCALING_FILTERS, ACTION_PIC_CAPTURE, ACTION_SET_CSC,
 	ACTION_SET_FGT, ACTION_CUSTOM_VIDOUT, ACTION_FILL_PIC_BUF,
-	ACTION_FIXED_STATE,
+	ACTION_FIXED_STATE, ACTION_CONTROLLER_ROOT,
 };
 
 struct options {
@@ -53,6 +57,8 @@ static void usage(FILE *stream)
 	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
 	      "       flea-fw-probe --fixed-state\n"
 	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
+	      "       flea-fw-probe --controller-root\n"
+	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
 	      "       flea-fw-probe --help\n"
 	      "\n"
 	      "The live selectors reload firmware and reset an idle card. They do\n"
@@ -61,6 +67,8 @@ static void usage(FILE *stream)
 	      "opening or starting a decoder. A reply is not raw-processing support.\n"
 	      "Fixed-state reads use stock INIT and H.264 OPEN; completed reads do\n"
 	      "not certify cache coherence or backend ownership.\n"
+	      "Controller-root reads add two fixed observations, never follow the\n"
+	      "returned pointer, and do not establish ownership, coherence or a lease.\n"
 	      "Use --info first;\n"
 	      "it reports metadata only, including the bound device generation.\n"
 	      "The separate research device requires CAP_SYS_RAWIO and an opt-in\n"
@@ -125,6 +133,8 @@ static bool parse_options(int argc, char **argv, struct options *options)
 			action = ACTION_FILL_PIC_BUF;
 		else if (!strcmp(argv[i], "--fixed-state"))
 			action = ACTION_FIXED_STATE;
+		else if (!strcmp(argv[i], "--controller-root"))
+			action = ACTION_CONTROLLER_ROOT;
 		else if (!strcmp(argv[i], "--acknowledge-card-reset")) {
 			if (options->acknowledge)
 				return false;
@@ -397,6 +407,82 @@ static bool state_result_valid(const struct crystalhd_fw_research_state_result *
 	return true;
 }
 
+static bool state_sample_succeeded(const struct crystalhd_fw_research_state_sample *sample)
+{
+	return sample->attempted && sample->read_complete && !sample->status;
+}
+
+static bool controller_sample_succeeded(
+	const struct crystalhd_fw_research_controller_sample *sample)
+{
+	return sample->attempted && sample->read_complete && !sample->status;
+}
+
+static bool controller_result_valid(
+	const struct crystalhd_fw_research_controller_result *result,
+	const struct crystalhd_fw_research_state_request *request, uint64_t generation)
+{
+	const struct crystalhd_fw_research_state_result *state = &result->state;
+	const struct crystalhd_fw_research_result *control = &state->control;
+	const struct crystalhd_fw_research_controller_sample *samples[] = {
+		&result->after_init, &result->after_open,
+	};
+	const struct crystalhd_fw_research_state_sample *prerequisites[] = {
+		&state->after_init, &state->after_open,
+	};
+	unsigned int i;
+
+	if (!state_result_valid(state, request, generation) ||
+	    (!control->download_attempted && control->download_status != BC_STS_SUCCESS) ||
+	    (control->command_count && control->download_status != BC_STS_SUCCESS) ||
+	    (control->cleanup_attempted &&
+	     (!control->download_attempted || !control->firmware_hash_valid ||
+	      !digest_matches(control->firmware_sha256))) ||
+	    (!control->cleanup_attempted &&
+	     (control->cleanup_status != BC_STS_SUCCESS &&
+	      control->cleanup_status != BC_STS_CMD_CANCELLED)) ||
+	    (!control->cleanup_attempted && control->download_attempted &&
+	     control->cleanup_status != BC_STS_CMD_CANCELLED))
+		return false;
+	/* The kernel zeroes unused reply storage. Do not accept forged follow-on
+	 * bytes hidden behind a shorter command_count in this additive result.
+	 */
+	for (i = control->command_count; i < CRYSTALHD_FW_RESEARCH_MAX_COMMANDS; i++) {
+		const struct crystalhd_fw_research_reply zero = { 0 };
+
+		if (memcmp(&control->replies[i], &zero, sizeof(zero)))
+			return false;
+	}
+	for (i = 0; i < sizeof(samples) / sizeof(samples[0]); i++) {
+		const struct crystalhd_fw_research_controller_sample *sample = samples[i];
+		bool active = sample->attempted || sample->status || sample->read_complete;
+
+		if (sample->attempted > 1 || sample->read_complete > 1 ||
+		    sample->status > 0 || sample->status < -4095 ||
+		    active != state_sample_succeeded(prerequisites[i]))
+			return false;
+		if (sample->read_complete) {
+			/* Numeric root values are observations, never protocol failures. */
+			if (!sample->attempted || sample->status)
+				return false;
+		} else if (sample->root || (sample->attempted && !sample->status)) {
+			return false;
+		}
+		if (active && (!state_sample_succeeded(&state->calibration) ||
+			       (i && !controller_sample_succeeded(samples[0]))))
+			return false;
+		if (sample->status &&
+		    (control->status != sample->status || control->command_count != (i ? 3U : 2U)))
+			return false;
+	}
+	if ((control->command_count > 2 && !controller_sample_succeeded(samples[0])) ||
+	    (control->command_count > 3 && !controller_sample_succeeded(samples[1])) ||
+	    (!control->status && (!controller_sample_succeeded(samples[0]) ||
+				 !controller_sample_succeeded(samples[1]))))
+		return false;
+	return true;
+}
+
 static void print_info(const struct crystalhd_fw_research_info *info)
 {
 	char hex[65];
@@ -512,6 +598,56 @@ static void print_state_result(const struct crystalhd_fw_research_state_result *
 	fputs("}}\n", stdout);
 }
 
+static void print_controller_sample(
+	const struct crystalhd_fw_research_controller_sample *sample)
+{
+	printf("{\"attempted\":%s,\"status\":%" PRId32 ",\"read_complete\":%s,\"raw_root\":",
+	       sample->attempted ? "true" : "false", (int32_t)sample->status,
+	       sample->read_complete ? "true" : "false");
+	if (sample->read_complete) {
+		uint64_t start = sample->root;
+		bool aligned = !(sample->root & 3U);
+		bool span = start >= CONTROLLER_CANDIDATE_START &&
+			start + CONTROLLER_CANDIDATE_BYTES <= CONTROLLER_CANDIDATE_END;
+
+		printf("%" PRIu32 ",\"candidate_alignment_4\":%s,"
+		       "\"candidate_full_span_in_window\":%s",
+		       (uint32_t)sample->root, aligned ? "true" : "false", span ? "true" : "false");
+	} else {
+		fputs("null,\"candidate_alignment_4\":null,\"candidate_full_span_in_window\":null", stdout);
+	}
+	putchar('}');
+}
+
+static void print_controller_result(const struct crystalhd_fw_research_controller_result *result)
+{
+	printf("{\"version\":%" PRIu32 ",\"controller_root\":true,\"control\":",
+	       (uint32_t)result->state.request.version);
+	print_result_object(&result->state.control);
+	fputs(",\"fixed_state_samples\":{\"calibration\":", stdout);
+	print_state_sample(&result->state.calibration);
+	fputs(",\"after_init\":", stdout);
+	print_state_sample(&result->state.after_init);
+	fputs(",\"after_open\":", stdout);
+	print_state_sample(&result->state.after_open);
+	fputs("},\"controller_root_samples\":{\"after_init\":", stdout);
+	print_controller_sample(&result->after_init);
+	fputs(",\"after_open\":", stdout);
+	print_controller_sample(&result->after_open);
+	fputs("},\"root_values_equal\":", stdout);
+	if (result->after_init.read_complete && result->after_open.read_complete)
+		fputs(result->after_init.root == result->after_open.root ? "true" : "false", stdout);
+	else
+		fputs("null", stdout);
+	printf(",\"scope\":{\"fixed_root_read_address\":%" PRIu32 ","
+	       "\"candidate_lower_bound\":%" PRIu32 ",\"candidate_upper_bound_exclusive\":%" PRIu32 ","
+	       "\"candidate_span_bytes\":%" PRIu32 ",\"returned_pointer_followed\":false,"
+	       "\"ownership_established\":false,\"coherence_established\":false,"
+	       "\"lease_established\":false,\"equality_excludes_aba\":false}}\n",
+	       CONTROLLER_ROOT_ADDRESS, CONTROLLER_CANDIDATE_START,
+	       CONTROLLER_CANDIDATE_END, CONTROLLER_CANDIDATE_BYTES);
+}
+
 int main(int argc, char **argv)
 {
 	struct crystalhd_fw_research_info info = { 0 };
@@ -519,9 +655,10 @@ int main(int argc, char **argv)
 	struct crystalhd_fw_research_request request = { 0 };
 	struct crystalhd_fw_research_state_result state_result = { 0 };
 	struct crystalhd_fw_research_state_request state_request = { 0 };
+	struct crystalhd_fw_research_controller_result controller_result = { 0 };
 	struct options options;
 	struct stat statbuf;
-	bool have_info = false, have_result = false, have_state = false;
+	bool have_info = false, have_result = false, have_state = false, have_controller = false;
 	int fd = -1, rc = 1;
 
 	if (argc == 2 && !strcmp(argv[1], "--help")) {
@@ -570,6 +707,7 @@ int main(int argc, char **argv)
 		break;
 	case ACTION_H264:
 	case ACTION_FIXED_STATE:
+	case ACTION_CONTROLLER_ROOT:
 		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
 		break;
 	case ACTION_H261:
@@ -605,6 +743,27 @@ int main(int argc, char **argv)
 	}
 	if (!(info.selector_mask & (1U << (request.selector - 1)))) {
 		fputs("Research selector unavailable; no live command attempted.\n", stderr);
+		goto out;
+	}
+	if (options.action == ACTION_CONTROLLER_ROOT) {
+		state_request.version = CRYSTALHD_FW_RESEARCH_VERSION;
+		state_request.size = sizeof(controller_result);
+		controller_result.state.request = state_request;
+		if (ioctl(fd, CRYSTALHD_FW_RESEARCH_RUN_CONTROLLER, &controller_result) < 0) {
+			perror("run controller-root readback");
+			fputs("Device state may have changed; no retry was attempted.\n", stderr);
+			goto out;
+		}
+		if (controller_result.state.control.retained)
+			fputs("Research resources remain retained. Do not force unload the driver.\n", stderr);
+		if (!controller_result_valid(&controller_result, &state_request, info.generation)) {
+			fputs("Invalid controller-root result; no further command attempted.\n", stderr);
+			goto out;
+		}
+		have_controller = true;
+		rc = controller_result.state.control.status || controller_result.state.control.retained ||
+			(controller_result.state.control.cleanup_attempted &&
+			 controller_result.state.control.cleanup_status != BC_STS_SUCCESS) ? 1 : 0;
 		goto out;
 	}
 	if (options.action == ACTION_FIXED_STATE) {
@@ -655,6 +814,8 @@ out:
 		print_result(&result);
 	if (have_state)
 		print_state_result(&state_result);
+	if (have_controller)
+		print_controller_result(&controller_result);
 	if (output_finish())
 		rc = 1;
 	return rc;

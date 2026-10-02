@@ -159,6 +159,14 @@ _Static_assert(offsetof(struct crystalhd_fw_research_state_result, calibration) 
 _Static_assert(offsetof(struct crystalhd_fw_research_state_result, after_init) == 1536, "state init");
 _Static_assert(offsetof(struct crystalhd_fw_research_state_result, after_open) == 1568, "state open");
 _Static_assert(CRYSTALHD_FW_RESEARCH_RUN_STATE == 0xc6405293U, "state ioctl");
+_Static_assert(sizeof(struct crystalhd_fw_research_controller_sample) == 16, "controller sample");
+_Static_assert(offsetof(struct crystalhd_fw_research_controller_sample, root) == 12, "controller root");
+_Static_assert(sizeof(struct crystalhd_fw_research_controller_result) == 1632, "controller result");
+_Static_assert(offsetof(struct crystalhd_fw_research_controller_result, state) == 0, "controller state");
+_Static_assert(offsetof(struct crystalhd_fw_research_controller_result, after_init) == 1600, "controller init");
+_Static_assert(offsetof(struct crystalhd_fw_research_controller_result, after_open) == 1616, "controller open");
+_Static_assert(_IOC_SIZE(CRYSTALHD_FW_RESEARCH_RUN_CONTROLLER) == 1632, "controller encoding");
+_Static_assert(CRYSTALHD_FW_RESEARCH_RUN_CONTROLLER == 0xc6605294U, "controller ioctl");
 _Static_assert(CRYSTALHD_FW_RESEARCH_VERSION_ONLY == 1U, "existing version selector");
 _Static_assert(CRYSTALHD_FW_RESEARCH_H264_CONTROL == 2U, "existing H264 selector");
 _Static_assert(CRYSTALHD_FW_RESEARCH_H261_CONTROL == 3U, "H261 selector");
@@ -239,6 +247,7 @@ for probe_sanitize in no yes; do
     {
         "$probe_test_dir/cli-check" --json-examples
         "$probe_test_dir/cli-check" --state-json-examples
+        "$probe_test_dir/cli-check" --controller-json-examples
     } | "${PYTHON3:-python3}" -B -c '
 import json, sys
 def unique_object(pairs):
@@ -251,7 +260,7 @@ def invalid_constant(value):
     raise AssertionError("non-JSON constant: " + value)
 lines = list(sys.stdin)
 examples = [json.loads(line, object_pairs_hook=unique_object, parse_constant=invalid_constant) for line in lines]
-assert len(examples) == 376
+assert len(examples) == 449
 info, version, h264, failure, nohash, rejectedhash, h261, h263, mpeg1, rejected, readfail = examples[:11]
 assert info["generation"] == "42" and info["research_selector_mask"] == 2047
 assert lines[0] == "{\"version\":1,\"generation\":\"42\",\"research_selector_mask\":2047,\"expected_firmware_sha256\":\"" + info["expected_firmware_sha256"] + "\"}\n"
@@ -411,7 +420,7 @@ for selector, command in enumerate((0x7376310b, 0x7376311c, 0x73763180,
     assert result["replies"][2]["raw_response_words"][3] == 7 and result["replies"][2]["decoded_response"] is None
 assert position == 308
 print("Firmware probe CLI: original 152 plus 156 raw-route strict JSON examples verified")
-states = examples[308:]
+states = examples[308:376]
 names = ("calibration", "after_init", "after_open")
 for result in states:
     assert set(result) == {"version", "fixed_state", "control", "samples"}
@@ -460,5 +469,97 @@ assert states[9]["samples"]["calibration"]["status"] == -71
 assert all(states[i]["control"]["status"] < 0 for i in range(4, 67))
 assert states[67]["control"]["status"] == 0
 print("Firmware probe CLI: 68 fixed-state strict JSON examples verified")
+controllers = examples[376:]
+root_names = ("after_init", "after_open")
+root_values = (0, 1, 0xd5380, 0xd5384, 0xd5385, 0x115c88, 0x115c89,
+               0x115c8c, 0x115ffc, 0x116000, 0x80000000, 0xfffffc88, 0xffffffff)
+expected_scope = {"fixed_root_read_address": 0xd3a08, "candidate_lower_bound": 0xd5384,
+                  "candidate_upper_bound_exclusive": 0x116000, "candidate_span_bytes": 0x378,
+                  "returned_pointer_followed": False, "ownership_established": False,
+                  "coherence_established": False, "lease_established": False,
+                  "equality_excludes_aba": False}
+for result in controllers:
+    assert set(result) == {"version", "controller_root", "control", "fixed_state_samples",
+                           "controller_root_samples", "root_values_equal", "scope"}
+    assert result["version"] == 1 and result["controller_root"] is True
+    assert result["scope"] == expected_scope
+    for key in ("returned_pointer_followed", "ownership_established", "coherence_established",
+                "lease_established", "equality_excludes_aba"):
+        assert result["scope"][key] is False
+    control = result["control"]
+    check_result(control)
+    assert control["selector"] == 2
+    fixed = result["fixed_state_samples"]
+    assert set(fixed) == set(names)
+    previous = True
+    for index, name in enumerate(names):
+        sample = fixed[name]
+        assert set(sample) == {"attempted", "status", "read_complete", "raw_words"}
+        assert type(sample["attempted"]) is bool and type(sample["read_complete"]) is bool
+        assert type(sample["status"]) is int and -4095 <= sample["status"] <= 0
+        words = sample["raw_words"]
+        assert isinstance(words, list) and len(words) == 4
+        for word in words:
+            u32(word)
+        if sample["read_complete"]:
+            assert sample["attempted"]
+            matches = (words == [0xd3a00, 0, 0, 0] if index == 0 else
+                       words[:2] == [1, 0xd3a00] and words[2] & 0xff == (1 if index == 2 else 0) and
+                       words[3] & 0xffffff == (0x200 if index == 2 else 0))
+            assert sample["status"] == (0 if matches else -71)
+        else:
+            assert words == [0, 0, 0, 0]
+            assert not sample["attempted"] or sample["status"] < 0
+        if sample["attempted"] or sample["status"]:
+            assert previous and control["command_count"] >= (3 if index == 2 else 2)
+        if sample["status"]:
+            assert control["status"] == sample["status"]
+            assert control["command_count"] == (3 if index == 2 else 2)
+        previous = sample["attempted"] and sample["read_complete"] and not sample["status"]
+    roots = result["controller_root_samples"]
+    assert set(roots) == set(root_names)
+    previous = True
+    for index, name in enumerate(root_names):
+        sample = roots[name]
+        assert set(sample) == {"attempted", "status", "read_complete", "raw_root",
+                               "candidate_alignment_4", "candidate_full_span_in_window"}
+        assert type(sample["attempted"]) is bool and type(sample["read_complete"]) is bool
+        assert type(sample["status"]) is int and -4095 <= sample["status"] <= 0
+        active = sample["attempted"] or sample["status"] != 0 or sample["read_complete"]
+        ready = fixed[name]["attempted"] and fixed[name]["read_complete"] and fixed[name]["status"] == 0
+        assert active == ready
+        if sample["read_complete"]:
+            assert sample["attempted"] and sample["status"] == 0
+            root = sample["raw_root"]
+            u32(root)
+            # Independent subtraction-bound oracle, never wrapping u32 ADD.
+            assert sample["candidate_alignment_4"] is (root % 4 == 0)
+            assert sample["candidate_full_span_in_window"] is (0xd5384 <= root <= 0x116000 - 0x378)
+        else:
+            assert sample["raw_root"] is None
+            assert sample["candidate_alignment_4"] is None and sample["candidate_full_span_in_window"] is None
+            assert not sample["attempted"] or sample["status"] < 0
+        if active:
+            assert previous and fixed["calibration"]["read_complete"] and fixed["calibration"]["status"] == 0
+        if sample["status"]:
+            assert control["status"] == sample["status"] and control["command_count"] == index + 2
+        previous = sample["read_complete"] and sample["status"] == 0
+    completed = all(roots[name]["read_complete"] for name in root_names)
+    expected_equal = roots["after_init"]["raw_root"] == roots["after_open"]["raw_root"] if completed else None
+    assert result["root_values_equal"] is expected_equal
+    if control["command_count"] > 2:
+        assert roots["after_init"]["read_complete"] and roots["after_init"]["status"] == 0
+    if control["command_count"] > 3:
+        assert roots["after_open"]["read_complete"] and roots["after_open"]["status"] == 0
+    if control["status"] == 0:
+        assert completed
+for index, value in enumerate(root_values):
+    assert controllers[index]["control"]["status"] == 0
+    assert all(controllers[index]["controller_root_samples"][name]["raw_root"] == value for name in root_names)
+assert controllers[13]["root_values_equal"] is False and controllers[13]["control"]["status"] == 0
+assert controllers[15]["controller_root_samples"]["after_init"]["attempted"] is False
+assert all(result["control"]["status"] < 0 for result in controllers[14:72])
+assert controllers[72]["control"]["status"] == 0
+print("Firmware probe CLI: 73 controller-root strict JSON examples verified")
 '
 done

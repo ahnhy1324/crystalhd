@@ -17,7 +17,7 @@ struct _BC_DTS_PROC_OUT;
 #include "crystalhd_fw_research.h"
 
 int crystalhd_probe_main(int argc, char **argv);
-static unsigned checks, opens, stats, infos, runs, state_runs, closes;
+static unsigned checks, opens, stats, infos, runs, state_runs, controller_runs, closes;
 static int open_error, stat_error, info_error, run_error, close_error;
 static bool character, output_error, flush_error;
 static struct crystalhd_fw_research_info metadata;
@@ -29,6 +29,8 @@ static unsigned fault_at, fault_kind;
 static unsigned response_pattern;
 static unsigned state_mutation, sample_fault_at, sample_fault_kind;
 static bool state_opaque;
+static unsigned controller_mutation, root_fault_at, root_fault_kind;
+static uint32_t root_values[2];
 static const uint32_t commands[] = {eCMD_C011_INIT, eCMD_C011_GET_VERSION,
     eCMD_C011_DEC_CHAN_OPEN, eCMD_C011_DEC_CHAN_STATUS, eCMD_C011_DEC_CHAN_CLOSE};
 static const uint32_t raw_commands[] = {eCMD_C011_DEC_CHAN_SCALING_FILTERS,
@@ -362,6 +364,81 @@ static void make_state_result(struct crystalhd_fw_research_state_result *result)
     }
 }
 
+static void make_controller_result(struct crystalhd_fw_research_controller_result *result)
+{
+    struct crystalhd_fw_research_controller_sample *roots[] = {&result->after_init, &result->after_open};
+    memset(result, 0, sizeof(*result));
+    make_state_result(&result->state);
+    /* Real kernel storage is zeroed before command_count can stop early. */
+    if (result->state.control.command_count <= CRYSTALHD_FW_RESEARCH_MAX_COMMANDS)
+        memset(result->state.control.replies + result->state.control.command_count, 0,
+               (CRYSTALHD_FW_RESEARCH_MAX_COMMANDS - result->state.control.command_count) *
+               sizeof(result->state.control.replies[0]));
+    if (mutation == 35) result->state.control.cleanup_status = BC_STS_CMD_CANCELLED;
+    if (result->state.after_init.attempted && result->state.after_init.read_complete && !result->state.after_init.status) {
+        roots[0]->attempted = roots[0]->read_complete = 1; roots[0]->root = root_values[0];
+        if (result->state.after_open.attempted && result->state.after_open.read_complete && !result->state.after_open.status) {
+            roots[1]->attempted = roots[1]->read_complete = 1; roots[1]->root = root_values[1];
+        }
+    }
+    if (root_fault_at) {
+        struct crystalhd_fw_research_controller_sample *sample = roots[root_fault_at - 1];
+        unsigned count = root_fault_at == 1 ? 2 : 3;
+        CHECK(root_fault_at <= 2 && root_fault_kind >= 1 && root_fault_kind <= 5);
+        sample->status = root_fault_kind == 2 ? -ENODEV : root_fault_kind == 3 ? -ETIMEDOUT :
+            root_fault_kind == 4 ? -4095 : root_fault_kind == 5 ? -EPROTO : -EIO;
+        sample->attempted = root_fault_kind != 2;
+        sample->read_complete = sample->root = 0;
+        result->state.control.status = sample->status;
+        result->state.control.command_count = count;
+        memset(result->state.control.replies + count, 0,
+               (CRYSTALHD_FW_RESEARCH_MAX_COMMANDS - count) * sizeof(result->state.control.replies[0]));
+        if (root_fault_at == 1) {
+            memset(&result->state.after_open, 0, sizeof(result->state.after_open));
+            memset(roots[1], 0, sizeof(*roots[1]));
+        }
+    }
+    switch (controller_mutation) {
+    case 0: break;
+    case 1: roots[0]->attempted = 2; break;
+    case 2: roots[0]->read_complete = 2; break;
+    case 3: roots[0]->status = 1; break;
+    case 4: roots[0]->status = -4096; break;
+    case 5: roots[0]->status = -EIO; break;
+    case 6: roots[0]->attempted = 0; break;
+    case 7: roots[0]->read_complete = roots[0]->root = 0; break;
+    case 8: memset(roots[0], 0, sizeof(*roots[0])); break;
+    case 9: roots[0]->root = 0xdeadbeef; break;
+    case 10: roots[0]->read_complete = 1; break;
+    case 11: result->state.control.status = -EIO; break;
+    case 12: result->state.control.command_count++; result_reply(&result->state.control, 2, BC_STS_SUCCESS); break;
+    case 13: roots[0]->status = 0; break;
+    case 14: roots[1]->attempted = roots[1]->read_complete = 1; roots[1]->root = 0xd5384; break;
+    case 15: roots[1]->attempted = 2; break;
+    case 16: roots[1]->read_complete = 2; break;
+    case 17: roots[1]->status = 1; break;
+    case 18: roots[1]->status = -4096; break;
+    case 19: roots[1]->status = -EIO; break;
+    case 20: roots[1]->attempted = 0; break;
+    case 21: roots[1]->read_complete = roots[1]->root = 0; break;
+    case 22: memset(roots[1], 0, sizeof(*roots[1])); break;
+    case 23: roots[1]->root = 0xdeadbeef; break;
+    case 24: roots[1]->read_complete = 1; break;
+    case 25: result->state.control.status = -EIO; break;
+    case 26: result->state.control.command_count++; result_reply(&result->state.control, 3, BC_STS_SUCCESS); break;
+    case 27: roots[1]->status = 0; break;
+    case 28: roots[0]->root = 1; break;
+    case 29: result->state.control.replies[4].response[63] = 1; break;
+    case 30: result->state.request.size = sizeof(result->state); break;
+    case 31: result->state.control.cleanup_status = BC_STS_IO_ERROR; break;
+    case 32: result->state.control.download_status = BC_STS_IO_ERROR; break;
+    case 33: result->state.control.cleanup_attempted = 0; result->state.control.cleanup_status = 0; break;
+    case 34: result->state.control.cleanup_attempted = 1; break;
+    case 35: roots[0]->attempted = roots[0]->read_complete = 1; roots[0]->root = 0xd5384; break;
+    default: CHECK(false);
+    }
+}
+
 int probe_ioctl(int fd, unsigned long command, ...)
 {
     void *argument; va_list args;
@@ -386,6 +463,21 @@ int probe_ioctl(int fd, unsigned long command, ...)
         submitted.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
         if (run_error) { errno = run_error; return -1; }
         make_state_result(result); return 0;
+    }
+    if (command == CRYSTALHD_FW_RESEARCH_RUN_CONTROLLER) {
+        struct crystalhd_fw_research_controller_result *result = argument;
+        const unsigned char *bytes = argument;
+        unsigned i;
+        CHECK(infos == 1 && !runs++ && !controller_runs++ && !state_runs);
+        state_submitted = result->state.request;
+        CHECK(state_submitted.version == 1 && state_submitted.size == sizeof(*result));
+        CHECK(!state_submitted.flags && !state_submitted.reserved);
+        for (i = sizeof(result->state.request); i < sizeof(*result); i++) CHECK(!bytes[i]);
+        memset(&submitted, 0, sizeof(submitted));
+        submitted.version = 1; submitted.size = sizeof(result->state.control);
+        submitted.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
+        if (run_error) { errno = run_error; return -1; }
+        make_controller_result(result); return 0;
     }
     CHECK(command == CRYSTALHD_FW_RESEARCH_RUN && infos == 1 && !runs++);
     submitted = ((struct crystalhd_fw_research_result *)argument)->request;
@@ -424,11 +516,13 @@ int __wrap_ioctl(int fd, unsigned long command, ...)
 
 static void reset(void)
 {
-    opens = stats = infos = runs = state_runs = closes = 0;
+    opens = stats = infos = runs = state_runs = controller_runs = closes = 0;
     open_error = stat_error = info_error = run_error = close_error = 0;
     character = true; output_error = flush_error = false;
     mutation = fault_at = fault_kind = response_pattern = 0;
     state_mutation = sample_fault_at = sample_fault_kind = 0; state_opaque = false;
+    controller_mutation = root_fault_at = root_fault_kind = 0;
+    root_values[0] = root_values[1] = 0xd5384;
     output[0] = errors[0] = 0;
     memset(&metadata, 0, sizeof(metadata));
     metadata.version = 1; metadata.size = sizeof(metadata); metadata.generation = 42;
@@ -446,6 +540,7 @@ static char *info_args[] = {"probe", "--info", NULL};
 static char *version_args[] = {"probe", "--version", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *h264_args[] = {"probe", "--h264-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *state_args[] = {"probe", "--fixed-state", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
+static char *controller_args[] = {"probe", "--controller-root", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *h261_args[] = {"probe", "--h261-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *h263_args[] = {"probe", "--h263-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *mpeg1_args[] = {"probe", "--mpeg1-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
@@ -916,8 +1011,199 @@ static void state_json_examples(void)
     reset(); close_error = EINTR; CHECK(invoke(state_args) == 1 && output[0]); fputs(output, stdout);
 }
 
+static const uint32_t controller_roots[] = {
+    0, 1, 0xd5380, 0xd5384, 0xd5385, 0x115c88, 0x115c89,
+    0x115c8c, 0x115ffc, 0x116000, 0x80000000, 0xfffffc88, UINT32_MAX,
+};
+
+static void test_controller_root(void)
+{
+    static const unsigned read_failures[] = {1, 2, 7, 8, 9};
+    char *invalid[][11] = {
+        {"probe", "--controller-root", NULL},
+        {"probe", "--controller-root", "--acknowledge-card-reset", NULL},
+        {"probe", "--controller-root", "--expected-generation", "42", NULL},
+        {"probe", "--controller-root", "--controller-root", "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+        {"probe", "--controller-root", "--info", "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+        {"probe", "--controller-root", "--fixed-state", "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+        {"probe", "--controller-root", "--h264-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+        {"probe", "--controller-root", "--csc-command", "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+        {"probe", "--controller-root", "--acknowledge-card-reset", "--expected-generation", "42", "--address", "0xd3a08", NULL},
+        {"probe", "--controller-root", "--acknowledge-card-reset", "--expected-generation", "42", "--selector", "2", NULL},
+        {"probe", "--controller-root", "--acknowledge-card-reset", "--expected-generation", "0", NULL},
+        {"probe", "--controller-root", "--acknowledge-card-reset", "--expected-generation", "42", "--acknowledge-card-reset", NULL},
+        {"probe", "--controller-root", "--acknowledge-card-reset", "--expected-generation", "42", "--root", "0", NULL},
+    };
+    unsigned i, stage, kind, phase;
+    for (i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        reset(); CHECK(invoke(invalid[i]) == 1 && !opens && !output[0]);
+    }
+    for (i = 0; i < sizeof(all_live_args) / sizeof(all_live_args[0]); i++) {
+        char *conflict[] = {"probe", "--controller-root", all_live_args[i][1],
+                           "--acknowledge-card-reset", "--expected-generation", "42", NULL};
+        reset(); CHECK(invoke(conflict) == 1 && !opens && !output[0]);
+    }
+    for (i = 0; i < sizeof(raw_args) / sizeof(raw_args[0]); i++) {
+        char *conflict[] = {"probe", "--controller-root", raw_args[i][1],
+                           "--acknowledge-card-reset", "--expected-generation", "42", NULL};
+        reset(); CHECK(invoke(conflict) == 1 && !opens && !output[0]);
+    }
+    reset(); CHECK(!invoke(controller_args) && controller_runs == 1 && !state_runs && runs == 1);
+    CHECK(strstr(output, "\"controller_root\":true") && strstr(output, "\"root_values_equal\":true"));
+    CHECK(strstr(output, "\"raw_root\":873348,\"candidate_alignment_4\":true,\"candidate_full_span_in_window\":true"));
+    CHECK(strstr(output, "\"returned_pointer_followed\":false") && strstr(output, "\"equality_excludes_aba\":false"));
+    CHECK(strstr(output, "\"ownership_established\":false") && strstr(output, "\"lease_established\":false"));
+    check_decoding(5, true);
+    for (i = 0; i < sizeof(controller_roots) / sizeof(controller_roots[0]); i++) {
+        reset(); root_values[0] = root_values[1] = controller_roots[i];
+        CHECK(!invoke(controller_args) && controller_runs == 1 && output[0]);
+        CHECK(!strstr(errors, "Invalid controller-root result"));
+        CHECK(strstr(output, "\"root_values_equal\":true"));
+    }
+    reset(); root_values[1] = UINT32_MAX;
+    CHECK(!invoke(controller_args) && strstr(output, "\"root_values_equal\":false"));
+    reset(); metadata.selector_mask = 1;
+    CHECK(invoke(controller_args) == 1 && !runs && !controller_runs && strstr(errors, "unavailable"));
+    reset(); metadata.selector_mask = 2; CHECK(!invoke(controller_args) && controller_runs == 1);
+    reset(); metadata.generation++;
+    CHECK(invoke(controller_args) == 1 && !runs && !output[0] && strstr(errors, "generation changed"));
+    reset(); metadata.reserved[0] = 1;
+    CHECK(invoke(controller_args) == 1 && !runs && !output[0] && strstr(errors, "Invalid research metadata"));
+    reset(); metadata.selector_mask |= 1U << 31;
+    CHECK(invoke(controller_args) == 1 && !runs && !output[0] && strstr(errors, "Invalid research metadata"));
+    reset(); metadata.firmware_sha256[0] ^= 1;
+    CHECK(invoke(controller_args) == 1 && !runs && !output[0] && strstr(errors, "Invalid research metadata"));
+    reset(); open_error = EACCES;
+    CHECK(invoke(controller_args) == 1 && opens == 1 && !runs && !output[0]);
+    reset(); character = false;
+    CHECK(invoke(controller_args) == 1 && opens == 1 && !runs && !output[0]);
+    reset(); info_error = ENOTTY;
+    CHECK(invoke(controller_args) == 1 && infos == 1 && !runs && !output[0]);
+    {
+        char *reordered[] = {"probe", "--expected-generation", "42", "--acknowledge-card-reset", "--controller-root", NULL};
+        reset(); CHECK(!invoke(reordered) && controller_runs == 1 && !state_runs);
+    }
+    for (i = 0; i < 2; i++) {
+        reset(); run_error = i ? EINTR : ENOTTY;
+        CHECK(invoke(controller_args) == 1 && controller_runs == 1 && runs == 1 && !state_runs && !output[0]);
+        CHECK(strstr(errors, "no retry"));
+    }
+    for (stage = 1; stage <= 2; stage++) {
+        for (kind = 1; kind <= 5; kind++) {
+            reset(); root_fault_at = stage; root_fault_kind = kind;
+            CHECK(invoke(controller_args) == 1 && controller_runs == 1 && output[0]);
+            CHECK(!strstr(errors, "Invalid controller-root result"));
+            CHECK(strstr(output, "\"raw_root\":null,\"candidate_alignment_4\":null,\"candidate_full_span_in_window\":null"));
+            CHECK(strstr(output, "\"root_values_equal\":null"));
+            if (kind == 2) CHECK(strstr(output, "\"attempted\":false,\"status\":-19,\"read_complete\":false"));
+            check_decoding(stage == 1 ? 2 : 3, true);
+        }
+    }
+    for (stage = 1; stage <= 3; stage++) {
+        for (i = 0; i < sizeof(read_failures) / sizeof(read_failures[0]); i++) {
+            reset(); sample_fault_at = stage; sample_fault_kind = read_failures[i];
+            CHECK(invoke(controller_args) == 1 && controller_runs == 1 && output[0]);
+            CHECK(!strstr(errors, "Invalid controller-root result"));
+        }
+        reset(); sample_fault_at = stage; sample_fault_kind = 3;
+        CHECK(invoke(controller_args) == 1 && output[0] && !strstr(errors, "Invalid controller-root result"));
+    }
+    for (phase = 1; phase <= 5; phase++) {
+        for (kind = 1; kind <= 7; kind++) {
+            if (kind == 6 && phase != 3) continue;
+            reset(); fault_at = phase; fault_kind = kind;
+            CHECK(invoke(controller_args) == 1 && output[0] && !strstr(errors, "Invalid controller-root result"));
+        }
+    }
+    for (i = 1; i <= 35; i++) {
+        reset(); controller_mutation = i;
+        if ((i >= 9 && i <= 13) || i == 14) { root_fault_at = 1; root_fault_kind = 2; }
+        if (i == 11) root_fault_kind = 3;
+        if (i >= 23 && i <= 27) { root_fault_at = 2; root_fault_kind = 2; }
+        if (i == 25) root_fault_kind = 3;
+        if (i == 28) { sample_fault_at = 1; sample_fault_kind = 1; }
+        if (i == 29) { sample_fault_at = 1; sample_fault_kind = 1; }
+        if (i == 31) mutation = 35;
+        if (i == 34) mutation = 41;
+        if (i == 35) { sample_fault_at = 2; sample_fault_kind = 3; }
+        CHECK(invoke(controller_args) == 1 && controller_runs == 1 && !output[0]);
+        CHECK(strstr(errors, "Invalid controller-root result"));
+    }
+    /* A forged successful root cannot override a failed old fixed sample. */
+    for (stage = 2; stage <= 3; stage++) {
+        for (kind = 1; kind <= 3; kind++) {
+            reset(); sample_fault_at = stage; sample_fault_kind = kind;
+            controller_mutation = stage == 2 ? 35 : 14;
+            CHECK(invoke(controller_args) == 1 && !output[0] && strstr(errors, "Invalid controller-root result"));
+        }
+    }
+    for (i = 1; i <= 40; i++) {
+        reset(); state_mutation = i;
+        if (i == 30 || i == 31) { sample_fault_at = 1; sample_fault_kind = 3; }
+        if (i == 38) { sample_fault_at = 1; sample_fault_kind = 1; }
+        if (i == 39) { sample_fault_at = 1; sample_fault_kind = 3; }
+        if (i == 40) { sample_fault_at = 2; sample_fault_kind = 1; }
+        CHECK(invoke(controller_args) == 1 && !output[0] && strstr(errors, "Invalid controller-root result"));
+    }
+    for (i = 1; i <= 29; i++) {
+        reset(); mutation = i;
+        CHECK(invoke(controller_args) == 1 && !output[0] && strstr(errors, "Invalid controller-root result"));
+    }
+    for (i = 33; i <= 35; i++) {
+        reset(); mutation = i;
+        CHECK(invoke(controller_args) == 1 && output[0] && !strstr(errors, "Invalid controller-root result"));
+    }
+    for (i = 41; i <= 43; i += 2) {
+        reset(); mutation = i; CHECK(invoke(controller_args) == 1 && output[0]);
+    }
+    for (i = 51; i <= 52; i++) {
+        reset(); mutation = i; CHECK(invoke(controller_args) == 1 && output[0]);
+    }
+    reset(); close_error = EINTR;
+    CHECK(invoke(controller_args) == 1 && output[0] && strstr(errors, "close research device"));
+    reset(); output_error = true; CHECK(invoke(controller_args) == 1 && controller_runs == 1);
+    reset(); flush_error = true; CHECK(invoke(controller_args) == 1 && controller_runs == 1);
+}
+
+static void controller_json_examples(void)
+{
+    static const unsigned control_failures[] = {33, 34, 35, 41, 43, 51, 52, 36};
+    unsigned i, stage, kind, phase;
+    for (i = 0; i < sizeof(controller_roots) / sizeof(controller_roots[0]); i++) {
+        reset(); root_values[0] = root_values[1] = controller_roots[i];
+        CHECK(!invoke(controller_args)); fputs(output, stdout);
+    }
+    reset(); root_values[1] = UINT32_MAX; CHECK(!invoke(controller_args)); fputs(output, stdout);
+    for (stage = 1; stage <= 2; stage++) {
+        for (kind = 1; kind <= 5; kind++) {
+            reset(); root_fault_at = stage; root_fault_kind = kind;
+            CHECK(invoke(controller_args) == 1 && output[0]); fputs(output, stdout);
+        }
+    }
+    for (stage = 1; stage <= 3; stage++) {
+        for (kind = 1; kind <= 3; kind++) {
+            reset(); sample_fault_at = stage; sample_fault_kind = kind;
+            CHECK(invoke(controller_args) == 1 && output[0]); fputs(output, stdout);
+        }
+    }
+    for (phase = 1; phase <= 5; phase++) {
+        for (kind = 1; kind <= 7; kind++) {
+            if (kind == 6 && phase != 3) continue;
+            reset(); fault_at = phase; fault_kind = kind;
+            CHECK(invoke(controller_args) == 1 && output[0]); fputs(output, stdout);
+        }
+    }
+    for (i = 0; i < sizeof(control_failures) / sizeof(control_failures[0]); i++) {
+        reset(); mutation = control_failures[i]; CHECK(invoke(controller_args) == 1 && output[0]); fputs(output, stdout);
+    }
+    reset(); close_error = EINTR; CHECK(invoke(controller_args) == 1 && output[0]); fputs(output, stdout);
+}
+
 int main(int argc, char **argv)
 {
+    if (argc == 2 && !strcmp(argv[1], "--controller-json-examples")) {
+        controller_json_examples(); return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--state-json-examples")) {
         state_json_examples(); return 0;
     }
@@ -983,7 +1269,7 @@ int main(int argc, char **argv)
         return 0;
     }
     CHECK(argc == 1);
-    test_arguments(); test_metadata(); test_errors(); test_results(); test_named_controls(); test_decoding(); test_raw_commands(); test_fixed_state();
+    test_arguments(); test_metadata(); test_errors(); test_results(); test_named_controls(); test_decoding(); test_raw_commands(); test_fixed_state(); test_controller_root();
     printf("Firmware probe CLI: %u checks passed\n", checks);
     return 0;
 }
