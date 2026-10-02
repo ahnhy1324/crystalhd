@@ -43,6 +43,31 @@ END { if (found != 1 || copy) exit 1 }
 "$dma_test_dir/dma-descriptors"
 
 awk '
+    /^#define FLEA_GISB_(DIRECT_BASE|INDIRECT_ADDRESS|INDIRECT_DATA)[[:space:]]/ {
+        print; found++
+    }
+    END { if (found != 3) exit 1 }
+' "$repo_dir/driver/linux/FleaDefs.h" > "$dma_test_dir/flea-register-addresses.h"
+awk '
+    /^uint32_t crystalhd_flea_reg_rd\(/ { copy = 1; read_found++ }
+    /^void crystalhd_flea_reg_wr\(/ { copy = 1; write_found++ }
+    copy { print }
+    copy && /^}/ { copy = 0 }
+    END { if (read_found != 1 || write_found != 1 || copy) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$dma_test_dir/flea-register-functions.h"
+for register_sanitize in no address undefined; do
+    register_extra=
+    if [ "$register_sanitize" != no ]; then
+        register_extra="-fsanitize=$register_sanitize -fno-omit-frame-pointer -fno-pie -no-pie"
+    fi
+    "${CC:-cc}" ${CFLAGS:-} -std=c11 -Wall -Wextra -Werror $register_extra \
+        -I"$dma_test_dir" "$repo_dir/tests/flea-registers.c" -o "$dma_test_dir/flea-registers"
+    printf 'Flea registers: sanitizers=%s\n' "$register_sanitize"
+    ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+        UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 "$dma_test_dir/flea-registers"
+done
+
+awk '
 /^enum list_sts \{/ { copy = 1 }
 /^union FLEA_INTR_BITS_COMMON$/ { copy = 1 }
 copy { print }
