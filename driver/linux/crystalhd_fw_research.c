@@ -29,6 +29,26 @@ static bool crystalhd_fw_research_live(void)
 	return READ_ONCE(THIS_MODULE->state) == MODULE_STATE_LIVE;
 }
 
+static u32 crystalhd_fw_research_raw_command(u32 selector)
+{
+	switch (selector) {
+	case CRYSTALHD_FW_RESEARCH_SCALING_FILTERS_COMMAND:
+		return eCMD_C011_DEC_CHAN_SCALING_FILTERS;
+	case CRYSTALHD_FW_RESEARCH_PIC_CAPTURE_COMMAND:
+		return eCMD_C011_DEC_CHAN_PIC_CAPTURE;
+	case CRYSTALHD_FW_RESEARCH_SET_CSC_COMMAND:
+		return eCMD_C011_DEC_CHAN_SET_CSC;
+	case CRYSTALHD_FW_RESEARCH_SET_FGT_COMMAND:
+		return eCMD_C011_DEC_CHAN_SET_FGT;
+	case CRYSTALHD_FW_RESEARCH_CUSTOM_VIDOUT_COMMAND:
+		return eCMD_C011_DEC_CHAN_CUSTOM_VIDOUT;
+	case CRYSTALHD_FW_RESEARCH_FILL_PIC_BUF_COMMAND:
+		return eCMD_C011_DEC_CHAN_FILL_PIC_BUF;
+	default:
+		return 0;
+	}
+}
+
 static bool crystalhd_fw_research_request_valid(
 	const struct crystalhd_fw_research_request *request)
 {
@@ -44,6 +64,12 @@ static bool crystalhd_fw_research_request_valid(
 	case CRYSTALHD_FW_RESEARCH_H261_CONTROL:
 	case CRYSTALHD_FW_RESEARCH_H263_CONTROL:
 	case CRYSTALHD_FW_RESEARCH_MPEG1_CONTROL:
+	case CRYSTALHD_FW_RESEARCH_SCALING_FILTERS_COMMAND:
+	case CRYSTALHD_FW_RESEARCH_PIC_CAPTURE_COMMAND:
+	case CRYSTALHD_FW_RESEARCH_SET_CSC_COMMAND:
+	case CRYSTALHD_FW_RESEARCH_SET_FGT_COMMAND:
+	case CRYSTALHD_FW_RESEARCH_CUSTOM_VIDOUT_COMMAND:
+	case CRYSTALHD_FW_RESEARCH_FILL_PIC_BUF_COMMAND:
 		break;
 	default:
 		return false;
@@ -181,7 +207,11 @@ static int crystalhd_fw_research_payload(BC_FW_CMD *fw_cmd, u32 command,
 		close->last_picture_display = CRYSTALHD_FW_LAST_PICTURE_DISPLAY_ON;
 		break;
 	default:
-		return -EINVAL;
+		/* Fixed zero-argument routes only, bound to the named selector.
+		 * The pinned image's fallback need not produce a matching reply.
+		 */
+		if (!command || command != crystalhd_fw_research_raw_command(selector))
+			return -EINVAL;
 	}
 	return 0;
 }
@@ -238,6 +268,7 @@ static void crystalhd_fw_research_run(u64 generation,
 	bool session_attempted = false;
 	bool hash_completed;
 	BC_STATUS sts;
+	u32 raw_command;
 	int rc;
 
 	memset(result, 0, sizeof(*result));
@@ -299,6 +330,11 @@ static void crystalhd_fw_research_run(u64 generation,
 	rc = crystalhd_fw_research_command(ctx, result, eCMD_C011_GET_VERSION);
 	if (rc || request->selector == CRYSTALHD_FW_RESEARCH_VERSION_ONLY)
 		goto cleanup;
+	raw_command = crystalhd_fw_research_raw_command(request->selector);
+	if (raw_command) {
+		rc = crystalhd_fw_research_command(ctx, result, raw_command);
+		goto cleanup;
+	}
 	rc = crystalhd_fw_research_command(ctx, result, eCMD_C011_DEC_CHAN_OPEN);
 	if (rc)
 		goto cleanup;

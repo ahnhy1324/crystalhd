@@ -103,7 +103,12 @@ static BC_STATUS acquire_status, download_status, release_status;
 static BC_STATUS command_status[5];
 static unsigned command_count, wrong_command, wrong_sequence, wrong_channel;
 static u32 active_selector;
-static bool codec_rejection;
+static bool codec_rejection, unknown_command_reply;
+static const u32 raw_commands[] = {
+    eCMD_C011_DEC_CHAN_SCALING_FILTERS, eCMD_C011_DEC_CHAN_PIC_CAPTURE,
+    eCMD_C011_DEC_CHAN_SET_CSC, eCMD_C011_DEC_CHAN_SET_FGT,
+    eCMD_C011_DEC_CHAN_CUSTOM_VIDOUT, eCMD_C011_DEC_CHAN_FILL_PIC_BUF,
+};
 static int remove_at, step;
 static const void *last_owner;
 static unsigned lifecycle[16], lifecycle_count;
@@ -206,8 +211,9 @@ static BC_STATUS crystalhd_fw_exec_locked(struct crystalhd_cmd *ctx, const void 
         eCMD_C011_DEC_CHAN_OPEN, eCMD_C011_DEC_CHAN_STATUS, eCMD_C011_DEC_CHAN_CLOSE};
     unsigned index = command_count++;
     barrier(); CHECK(index < 5 && ctx == &adp.cmds && owner == last_owner && ctx->session_owner == owner);
-    CHECK(index < (active_selector == 1 ? 2U : active_selector == 2 ? 5U : 4U));
-    CHECK(cmd->cmd[0] == (active_selector >= 3 && index == 3 ? eCMD_C011_DEC_CHAN_CLOSE : commands[index]));
+    CHECK(index < (active_selector == 1 ? 2U : active_selector == 2 ? 5U : active_selector <= 5 ? 4U : 3U));
+    CHECK(cmd->cmd[0] == (active_selector >= 6 && index == 2 ? raw_commands[active_selector - 6] :
+        active_selector >= 3 && active_selector <= 5 && index == 3 ? eCMD_C011_DEC_CHAN_CLOSE : commands[index]));
     check_payload(cmd);
     CHECK(cmd->cmd[1] == index + 1);
     cmd->rsp[0] = cmd->cmd[0] ^ (index + 1 == wrong_command ? 1U : 0U);
@@ -219,6 +225,11 @@ static BC_STATUS crystalhd_fw_exec_locked(struct crystalhd_cmd *ctx, const void 
         cmd->rsp[2] = cmd->rsp[3] = UINT32_MAX;
     }
     cmd->rsp[63] = 0xfeed;
+    if (unknown_command_reply && index == 2) {
+        CHECK(active_selector >= 6 && command_status[index] == BC_STS_SUCCESS);
+        memset(cmd->rsp, 0, sizeof(cmd->rsp));
+        cmd->rsp[0] = cmd->cmd[0];
+    }
     advance();
     return command_status[index];
 }
@@ -283,7 +294,11 @@ static void check_payload(const BC_FW_CMD *cmd)
         expected[2] = 64; expected[3] = 200000000; expected[4] = 38400;
         expected[5] = 3; expected[6] = 1; expected[8] = 2; expected[9] = 1;
         break;
-    case eCMD_C011_GET_VERSION: case eCMD_C011_DEC_CHAN_STATUS: break;
+    case eCMD_C011_GET_VERSION: case eCMD_C011_DEC_CHAN_STATUS:
+    case eCMD_C011_DEC_CHAN_SCALING_FILTERS: case eCMD_C011_DEC_CHAN_PIC_CAPTURE:
+    case eCMD_C011_DEC_CHAN_SET_CSC: case eCMD_C011_DEC_CHAN_SET_FGT:
+    case eCMD_C011_DEC_CHAN_CUSTOM_VIDOUT: case eCMD_C011_DEC_CHAN_FILL_PIC_BUF:
+        break;
     case eCMD_C011_DEC_CHAN_OPEN:
         expected[4] = 1;
         expected[9] = active_selector == 3 ? 2U : active_selector == 4 ? 3U : active_selector == 5 ? 5U : 0U;
@@ -324,7 +339,8 @@ static void reset(void)
     copy_in_count = copy_out_count = 0;
     remove_at = step = 0; lifecycle_count = 0; v4l2_error = misc_error = pci_error = 0;
     last_owner = NULL;
-    active_selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL; codec_rejection = false;
+    active_selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
+    codec_rejection = unknown_command_reply = false;
 }
 static struct crystalhd_fw_research_result run(void)
 {
@@ -562,7 +578,7 @@ static void test_named_controls(void)
     static const BC_STATUS failures[] = {BC_STS_IO_ERROR, BC_STS_TIMEOUT,
         BC_STS_IO_USER_ABORT, BC_STS_CMD_CANCELLED, BC_STS_BUSY, BC_STS_PWR_MGMT,
         BC_STS_FW_CMD_ERR};
-    static const u32 unknown[] = {0, 6, UINT32_MAX};
+    static const u32 unknown[] = {0, 12, UINT32_MAX};
     struct crystalhd_fw_research_result result;
     struct crystalhd_fw_research_request req;
     BC_FW_CMD payload;
@@ -633,7 +649,7 @@ static void test_named_controls(void)
             reset(); active_selector = selector; req = request();
             if (i == 0) req.flags = 2; /* No arbitrary algorithm override. */
             else if (i <= 4) req.reserved[i - 1] = 8;
-            else req.selector = 6;
+            else req.selector = 12;
             crystalhd_fw_research_run(42, &req, &result);
             CHECK(result.status == -EINVAL && !allocations && !lock_attempts); no_hardware();
         }
@@ -643,6 +659,112 @@ static void test_named_controls(void)
         crystalhd_fw_research_run(42, &req, &result);
         CHECK(result.status == -EINVAL && !allocations && !lock_attempts); no_hardware();
         CHECK(crystalhd_fw_research_payload(&payload, eCMD_C011_DEC_CHAN_OPEN, 1, unknown[i]) == -EINVAL);
+    }
+}
+
+static void test_raw_commands(void)
+{
+    static const BC_STATUS failures[] = {BC_STS_IO_ERROR, BC_STS_TIMEOUT,
+        BC_STS_IO_USER_ABORT, BC_STS_CMD_CANCELLED, BC_STS_BUSY, BC_STS_PWR_MGMT,
+        BC_STS_FW_CMD_ERR};
+    struct crystalhd_fw_research_result result;
+    struct crystalhd_fw_research_request req;
+    BC_FW_CMD payload;
+    unsigned selector, phase, failure, other, i, remove;
+
+    for (selector = 0; selector <= 5; selector++)
+        CHECK(!crystalhd_fw_research_raw_command(selector));
+    CHECK(!crystalhd_fw_research_raw_command(12) && !crystalhd_fw_research_raw_command(UINT32_MAX));
+    for (selector = 6; selector <= 11; selector++) {
+        u32 commands[] = {eCMD_C011_INIT, eCMD_C011_GET_VERSION, raw_commands[selector - 6]};
+        reset(); active_selector = selector; result = run();
+        CHECK(!result.status && result.command_count == 3 && command_count == 3 && !result.retained);
+        CHECK(download_count == 1 && release_count == 1 && firmware_release_count == 1);
+        CHECK(crystalhd_fw_research_raw_command(selector) == commands[2]);
+        for (i = 0; i < ARRAY_SIZE(commands); i++) {
+            CHECK(result.replies[i].command == commands[i] && result.replies[i].sequence == i + 1);
+            CHECK(result.replies[i].raw_response_valid && result.replies[i].header_matches);
+            memset(&payload, 0xa5, sizeof(payload));
+            CHECK(!crystalhd_fw_research_payload(&payload, commands[i], i + 1, selector));
+            check_payload(&payload);
+        }
+        CHECK(!memcmp(&result.replies[3], (struct crystalhd_fw_research_reply[2]){{0}},
+                      2 * sizeof(result.replies[0])));
+        for (other = 0; other <= 12; other++) {
+            if (other == selector) continue;
+            CHECK(crystalhd_fw_research_payload(&payload, commands[2], 3, other) == -EINVAL);
+        }
+        CHECK(crystalhd_fw_research_payload(&payload, commands[2], 3, UINT32_MAX) == -EINVAL);
+        CHECK(crystalhd_fw_research_payload(&payload, eCMD_C011_DEC_CHAN_OPEN, 3, selector) == -EINVAL);
+        CHECK(crystalhd_fw_research_payload(&payload, eCMD_C011_DEC_CHAN_START_VIDEO, 3, selector) == -EINVAL);
+        CHECK(crystalhd_fw_research_payload(&payload, 0xdeadbeef, 3, selector) == -EINVAL);
+        for (phase = 0; phase < 3; phase++) {
+            for (failure = 0; failure < ARRAY_SIZE(failures); failure++) {
+                reset(); active_selector = selector; command_status[phase] = failures[failure]; result = run();
+                CHECK(result.status == crystalhd_status_to_errno(failures[failure]));
+                CHECK(result.command_count == phase + 1 && command_count == phase + 1 && release_count == 1);
+                CHECK(result.replies[phase].transport_status == (u32)failures[failure]);
+                CHECK(result.replies[phase].raw_response_valid == (failures[failure] == BC_STS_FW_CMD_ERR));
+                CHECK(result.replies[phase].header_matches == (failures[failure] == BC_STS_FW_CMD_ERR));
+                if (failures[failure] != BC_STS_FW_CMD_ERR)
+                    CHECK(!memcmp(result.replies[phase].response, (u32[64]){0}, sizeof(result.replies[phase].response)));
+                CHECK(!result.retained && firmware_release_count == 1);
+                CHECK(!memcmp(&result.replies[phase + 1], (struct crystalhd_fw_research_reply[5]){{0}},
+                              (4 - phase) * sizeof(result.replies[0])));
+            }
+            reset(); active_selector = selector; wrong_command = phase + 1; result = run();
+            CHECK(result.status == -EPROTO && command_count == phase + 1 && release_count == 1);
+            CHECK(result.replies[phase].raw_response_valid && !result.replies[phase].header_matches);
+            reset(); active_selector = selector; wrong_sequence = phase + 1; result = run();
+            CHECK(result.status == -EPROTO && command_count == phase + 1 && release_count == 1);
+        }
+        reset(); active_selector = selector; unknown_command_reply = true; result = run();
+        CHECK(result.status == -EPROTO && result.command_count == 3 && command_count == 3 && release_count == 1);
+        CHECK(result.replies[2].transport_status == BC_STS_SUCCESS && result.replies[2].raw_response_valid);
+        CHECK(!result.replies[2].header_matches && result.replies[2].response[0] == commands[2]);
+        CHECK(!memcmp(result.replies[2].response + 1, (u32[63]){0}, 63 * sizeof(u32)));
+        reset(); active_selector = selector; wrong_channel = 3; result = run();
+        CHECK(!result.status && result.command_count == 3 && result.replies[2].response[3] == 7);
+        for (i = 0; i < 4; i++) {
+            reset(); active_selector = selector;
+            if (i == 0) acquire_status = BC_STS_BUSY;
+            if (i == 1) { acquire_status = BC_STS_IO_ERROR; acquire_retains = true; }
+            if (i == 2) download_status = BC_STS_IO_ERROR;
+            if (i == 3) { release_status = BC_STS_IO_ERROR; release_retains = true; }
+            result = run();
+            CHECK(result.status == (i == 0 ? -EBUSY : -EIO));
+            CHECK(result.retained == (i == 1 || i == 3));
+            CHECK(command_count == (i == 3 ? 3U : 0U) && release_count == (i >= 2));
+        }
+        reset(); active_selector = selector; release_retains = true; result = run();
+        CHECK(result.command_count == 3 && !result.cleanup_status && result.retained);
+        reset(); active_selector = selector; unknown_command_reply = true;
+        release_status = BC_STS_IO_ERROR; release_retains = true; result = run();
+        CHECK(result.status == -EPROTO && result.command_count == 3 && result.retained && result.cleanup_status == BC_STS_IO_ERROR);
+        reset(); active_selector = selector; command_status[2] = BC_STS_TIMEOUT;
+        release_status = BC_STS_IO_ERROR; release_retains = true; result = run();
+        CHECK(result.status == -ETIMEDOUT && result.retained && result.command_count == 3);
+        for (remove = 1; remove <= 7; remove++) {
+            reset(); active_selector = selector; remove_at = remove; result = run();
+            CHECK(result.status == -ENODEV && !release_count && firmware_release_count == 1);
+            CHECK(result.retained == (remove >= 3) && !result.cleanup_attempted);
+            CHECK(command_count == (remove > 4 ? remove - 4 : 0));
+            if (remove >= 3) CHECK(result.cleanup_status == BC_STS_CMD_CANCELLED && adp.cmds.session_module_pinned);
+        }
+        for (i = 0; i < 5; i++) {
+            reset(); active_selector = selector; req = request();
+            if (!i) req.flags = 1; else req.reserved[i - 1] = 0x70000;
+            crystalhd_fw_research_run(42, &req, &result);
+            CHECK(result.status == -EINVAL && !allocations && !lock_attempts); no_hardware();
+        }
+        reset(); active_selector = selector; bad_digest = true; result = run();
+        CHECK(result.status == -EKEYREJECTED && !acquire_count && !download_count && !command_count);
+        reset(); active_selector = selector; adp.cfg_users = 1; result = run();
+        CHECK(result.status == -EBUSY); no_hardware();
+        reset(); active_selector = selector; chd_device_generation++;
+        result = run(); CHECK(result.status == -ENODEV); no_hardware();
+        reset(); active_selector = selector; privileged = false;
+        result = run(); CHECK(result.status == -EPERM); no_hardware();
     }
 }
 
@@ -694,7 +816,7 @@ static void test_ioctl(void)
         if (i == 0) result.request.version++;
         else if (i == 1) result.request.size--;
         else if (i == 2) result.request.selector = 0;
-        else if (i == 3) result.request.selector = 6;
+        else if (i == 3) result.request.selector = 12;
         else if (i == 4) result.request.flags = 1;
         else result.request.reserved[i - 5] = 1;
         CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN, argument) == -EINVAL);
@@ -783,8 +905,12 @@ int main(void)
     _Static_assert(offsetof(struct crystalhd_fw_research_result, firmware_hash_valid) == 68, "hash validity ABI");
     _Static_assert(_IOC_SIZE(CRYSTALHD_FW_RESEARCH_RUN) == 1488, "ioctl ABI");
     _Static_assert(CRYSTALHD_FW_RESEARCH_H261_CONTROL == 3 && CRYSTALHD_FW_RESEARCH_H263_CONTROL == 4 &&
-                   CRYSTALHD_FW_RESEARCH_MPEG1_CONTROL == 5 && CRYSTALHD_FW_RESEARCH_SELECTOR_MASK == 31, "named selectors");
-    test_lifecycle(); test_admission(); test_idle(); test_hash(); test_commands(); test_named_controls(); test_cleanup(); test_ioctl(); test_info();
+                   CRYSTALHD_FW_RESEARCH_MPEG1_CONTROL == 5 && CRYSTALHD_FW_RESEARCH_SELECTOR_MASK == 2047, "named selectors");
+    _Static_assert(CRYSTALHD_FW_RESEARCH_SCALING_FILTERS_COMMAND == 6 &&
+                   CRYSTALHD_FW_RESEARCH_PIC_CAPTURE_COMMAND == 7 && CRYSTALHD_FW_RESEARCH_SET_CSC_COMMAND == 8 &&
+                   CRYSTALHD_FW_RESEARCH_SET_FGT_COMMAND == 9 && CRYSTALHD_FW_RESEARCH_CUSTOM_VIDOUT_COMMAND == 10 &&
+                   CRYSTALHD_FW_RESEARCH_FILL_PIC_BUF_COMMAND == 11, "fixed command selectors");
+    test_lifecycle(); test_admission(); test_idle(); test_hash(); test_commands(); test_named_controls(); test_raw_commands(); test_cleanup(); test_ioctl(); test_info();
     CHECK(!live_allocations); unlocked();
     printf("Firmware probe: %u checks passed\n", checks);
     return 0;

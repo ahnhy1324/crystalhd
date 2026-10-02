@@ -28,6 +28,10 @@ static unsigned fault_at, fault_kind;
 static unsigned response_pattern;
 static const uint32_t commands[] = {eCMD_C011_INIT, eCMD_C011_GET_VERSION,
     eCMD_C011_DEC_CHAN_OPEN, eCMD_C011_DEC_CHAN_STATUS, eCMD_C011_DEC_CHAN_CLOSE};
+static const uint32_t raw_commands[] = {eCMD_C011_DEC_CHAN_SCALING_FILTERS,
+    eCMD_C011_DEC_CHAN_PIC_CAPTURE, eCMD_C011_DEC_CHAN_SET_CSC,
+    eCMD_C011_DEC_CHAN_SET_FGT, eCMD_C011_DEC_CHAN_CUSTOM_VIDOUT,
+    eCMD_C011_DEC_CHAN_FILL_PIC_BUF};
 #define CHECK(value) do { checks++; if (!(value)) { \
     fprintf(stderr, "CLI line %u: %s\n%s", __LINE__, #value, errors); abort(); } } while (0)
 
@@ -97,7 +101,8 @@ static void result_reply(struct crystalhd_fw_research_result *result, unsigned i
 {
     struct crystalhd_fw_research_reply *reply = &result->replies[index];
     memset(reply, 0, sizeof(*reply));
-    reply->command = submitted.selector >= 3 && index == 3 ? eCMD_C011_DEC_CHAN_CLOSE : commands[index];
+    reply->command = submitted.selector >= 6 && index == 2 ? raw_commands[submitted.selector - 6] :
+        submitted.selector >= 3 && submitted.selector <= 5 && index == 3 ? eCMD_C011_DEC_CHAN_CLOSE : commands[index];
     reply->sequence = index + 1;
     reply->transport_status = status;
     if (status == BC_STS_SUCCESS || status == BC_STS_FW_CMD_ERR) {
@@ -129,7 +134,7 @@ static void make_result(struct crystalhd_fw_research_result *result)
     result->download_attempted = result->cleanup_attempted = 1;
     result->firmware_hash_valid = 1;
     result->command_count = submitted.selector == CRYSTALHD_FW_RESEARCH_VERSION_ONLY ? 2 :
-        submitted.selector == CRYSTALHD_FW_RESEARCH_H264_CONTROL ? 5 : 4;
+        submitted.selector == CRYSTALHD_FW_RESEARCH_H264_CONTROL ? 5 : submitted.selector <= 5 ? 4 : 3;
     digest(result->firmware_sha256);
     for (i = 0; i < result->command_count; i++) result_reply(result, i, BC_STS_SUCCESS);
     switch (mutation) {
@@ -212,6 +217,22 @@ static void make_result(struct crystalhd_fw_research_result *result)
     case 56: result->replies[1].raw_response_valid = 0; break;
     case 57: result->replies[1].header_matches = 0; break;
     case 58: result->replies[3].header_matches = 0; break;
+    case 59: case 60: case 61: /* Pinned UnknownCommand echoes only command. */
+        CHECK(submitted.selector >= 6);
+        result->status = mutation == 60 ? 0 : -EPROTO;
+        memset(result->replies[2].response, 0, sizeof(result->replies[2].response));
+        result->replies[2].response[0] = result->replies[2].command;
+        result->replies[2].header_matches = 0;
+        if (mutation == 61) { result->retained = 1; result->cleanup_status = BC_STS_IO_ERROR; }
+        break;
+    case 62: result->command_count = 4; result_reply(result, 3, BC_STS_SUCCESS); break;
+    case 63: result->replies[2].command++; result->replies[2].response[0]++; break;
+    case 64: result->replies[2].sequence = result->replies[2].response[1] = 4; break;
+    case 65: result->status = -EPROTO; result->replies[2].header_matches = 0; break;
+    case 66: result->replies[2].response[2] = 1; break;
+    case 67: result->replies[2].response[3] = 7; break;
+    case 68: result->replies[2].command = result->replies[2].response[0] = eCMD_C011_DEC_CHAN_OPEN; break;
+    case 69: result->replies[1].command = result->replies[1].response[0] = eCMD_C011_INIT; break;
     default: CHECK(false);
     }
     if (fault_at) {
@@ -250,7 +271,7 @@ int probe_ioctl(int fd, unsigned long command, ...)
     CHECK(command == CRYSTALHD_FW_RESEARCH_RUN && infos == 1 && !runs++);
     submitted = ((struct crystalhd_fw_research_result *)argument)->request;
     CHECK(submitted.version == 1 && submitted.size == sizeof(struct crystalhd_fw_research_result));
-    CHECK(submitted.selector >= 1 && submitted.selector <= 5);
+    CHECK(submitted.selector >= 1 && submitted.selector <= 11);
     CHECK(!submitted.flags && !submitted.reserved[0] && !submitted.reserved[1] && !submitted.reserved[2] && !submitted.reserved[3]);
     if (run_error) { errno = run_error; return -1; }
     make_result(argument); return 0;
@@ -309,6 +330,14 @@ static char *h263_args[] = {"probe", "--h263-control", "--acknowledge-card-reset
 static char *mpeg1_args[] = {"probe", "--mpeg1-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char **named_args[] = {h261_args, h263_args, mpeg1_args};
 static char **all_live_args[] = {version_args, h264_args, h261_args, h263_args, mpeg1_args};
+static char *raw_args[][7] = {
+    {"probe", "--scaling-filters-command", "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+    {"probe", "--pic-capture-command", "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+    {"probe", "--csc-command", "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+    {"probe", "--fgt-command", "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+    {"probe", "--custom-vidout-command", "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+    {"probe", "--fill-pic-buf-command", "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+};
 
 static unsigned output_count(const char *needle)
 {
@@ -370,7 +399,7 @@ static void test_metadata(void)
 {
     unsigned i;
     reset(); CHECK(!invoke(info_args) && opens == 1 && infos == 1 && !runs && closes == 1);
-    CHECK(strstr(output, "\"generation\":\"42\"") && strstr(output, "\"research_selector_mask\":31"));
+    CHECK(strstr(output, "\"generation\":\"42\"") && strstr(output, "\"research_selector_mask\":2047"));
     CHECK(strstr(output, CRYSTALHD_FW_RESEARCH_FIRMWARE_SHA256));
     CHECK(!strstr(output, "decoded_response"));
     for (i = 0; i < 8; i++) {
@@ -378,7 +407,7 @@ static void test_metadata(void)
         if (i == 0) metadata.version++;
         if (i == 1) metadata.size--;
         if (i == 2) metadata.generation = 0;
-        if (i == 3) metadata.selector_mask |= 32;
+        if (i == 3) metadata.selector_mask |= 2048;
         if (i == 4) metadata.firmware_sha256[0] ^= 1;
         if (i >= 5) metadata.reserved[i - 5] = 1;
         CHECK(invoke(version_args) == 1 && infos == 1 && !runs && closes == 1 && !output[0]);
@@ -514,6 +543,84 @@ static void test_results(void)
     }
 }
 
+static void test_raw_commands(void)
+{
+    unsigned action, phase, kind, pattern, malformed;
+    for (action = 0; action < sizeof(raw_args) / sizeof(raw_args[0]); action++) {
+        char *missing_ack[] = {"probe", raw_args[action][1], "--expected-generation", "42", NULL};
+        char *missing_generation[] = {"probe", raw_args[action][1], "--acknowledge-card-reset", NULL};
+        char *duplicate[] = {"probe", raw_args[action][1], raw_args[action][1], "--acknowledge-card-reset",
+            "--expected-generation", "42", NULL};
+        char *mixed[] = {"probe", raw_args[action][1], raw_args[(action + 1) % 6][1],
+            "--acknowledge-card-reset", "--expected-generation", "42", NULL};
+        char *legacy_mixed[] = {"probe", raw_args[action][1], "--h264-control",
+            "--acknowledge-card-reset", "--expected-generation", "42", NULL};
+        char *command[] = {"probe", raw_args[action][1], "--acknowledge-card-reset",
+            "--expected-generation", "42", "--command", "0x73763180", NULL};
+        char *address[] = {"probe", raw_args[action][1], "--acknowledge-card-reset",
+            "--expected-generation", "42", "--address", "0x70000", NULL};
+        char *algorithm[] = {"probe", raw_args[action][1], "--acknowledge-card-reset",
+            "--expected-generation", "42", "--algorithm=8", NULL};
+        char *selector[] = {"probe", raw_args[action][1], "--acknowledge-card-reset",
+            "--expected-generation", "42", "--selector", "6", NULL};
+        char **invalid[] = {missing_ack, missing_generation, duplicate, mixed, legacy_mixed,
+            command, address, algorithm, selector};
+        for (malformed = 0; malformed < sizeof(invalid) / sizeof(invalid[0]); malformed++) {
+            reset(); CHECK(invoke(invalid[malformed]) == 1 && !opens && !output[0]);
+        }
+        for (pattern = 0; pattern <= 2; pattern++) {
+            reset(); response_pattern = pattern;
+            CHECK(!invoke(raw_args[action]) && submitted.selector == action + 6 && runs == 1 && closes == 1);
+            CHECK(strstr(output, "\"command_count\":3") && !strstr(output, "\"sequence\":4"));
+            check_decoding(3, true);
+        }
+        reset(); metadata.selector_mask = 31;
+        CHECK(invoke(raw_args[action]) == 1 && infos == 1 && !runs && !output[0] && strstr(errors, "unavailable"));
+        reset(); metadata.selector_mask = 1U << (action + 5);
+        CHECK(!invoke(raw_args[action]) && runs == 1);
+        reset(); metadata.selector_mask &= ~(1U << (action + 5));
+        CHECK(invoke(raw_args[action]) == 1 && !runs && strstr(errors, "unavailable"));
+        reset(); metadata.generation++;
+        CHECK(invoke(raw_args[action]) == 1 && !runs && !output[0] && strstr(errors, "generation changed"));
+        for (phase = 1; phase <= 3; phase++) {
+            for (kind = 1; kind <= 7; kind++) {
+                if (kind == 6) continue;
+                reset(); response_pattern = 2; fault_at = phase; fault_kind = kind;
+                CHECK(invoke(raw_args[action]) == 1 && runs == 1 && closes == 1 && output[0]);
+                CHECK(!strstr(errors, "Invalid research result"));
+                check_decoding(phase, phase > 2);
+            }
+        }
+        for (malformed = 59; malformed <= 69; malformed++) {
+            reset(); mutation = malformed; response_pattern = 2;
+            if (malformed == 67) CHECK(!invoke(raw_args[action]) && output[0]);
+            else CHECK(invoke(raw_args[action]) == 1 && runs == 1 && closes == 1);
+            if (malformed == 59 || malformed == 61 || malformed == 67) {
+                CHECK(output[0] && !strstr(errors, "Invalid research result"));
+                check_decoding(3, true);
+                if (malformed != 67) {
+                    CHECK(strstr(output, "\"header_matches\":false") && strstr(output, "\"status\":-71"));
+                    CHECK(strstr(output, "\"transport_status\":0"));
+                }
+                if (malformed == 61) CHECK(strstr(errors, "remain retained"));
+            } else CHECK(!output[0] && strstr(errors, "Invalid research result"));
+        }
+        for (malformed = 51; malformed <= 52; malformed++) {
+            reset(); response_pattern = 2; mutation = malformed;
+            CHECK(invoke(raw_args[action]) == 1 && output[0]); check_decoding(3, true);
+        }
+        reset(); mutation = 35; response_pattern = 2;
+        CHECK(invoke(raw_args[action]) == 1 && output[0] && strstr(errors, "remain retained"));
+        check_decoding(3, true);
+        reset(); close_error = EINTR;
+        CHECK(invoke(raw_args[action]) == 1 && output[0] && strstr(errors, "close research device"));
+    }
+    for (action = 0; action < sizeof(all_live_args) / sizeof(all_live_args[0]); action++) {
+        reset(); metadata.selector_mask = 31;
+        CHECK(!invoke(all_live_args[action]) && runs == 1 && submitted.selector == action + 1);
+    }
+}
+
 static void test_decoding(void)
 {
     unsigned action, pattern, phase, kind, malformed;
@@ -589,10 +696,34 @@ int main(int argc, char **argv)
         CHECK(invoke(version_args) == 1); fputs(output, stdout);
         reset(); close_error = EINTR; response_pattern = 2;
         CHECK(invoke(h264_args) == 1); fputs(output, stdout);
+        for (action = 0; action < sizeof(raw_args) / sizeof(raw_args[0]); action++) {
+            for (pattern = 0; pattern <= 2; pattern++) {
+                reset(); response_pattern = pattern;
+                CHECK(!invoke(raw_args[action])); fputs(output, stdout);
+            }
+            for (phase = 1; phase <= 3; phase++) {
+                for (kind = 1; kind <= 7; kind++) {
+                    if (kind == 6) continue;
+                    reset(); response_pattern = 2; fault_at = phase; fault_kind = kind;
+                    CHECK(invoke(raw_args[action]) == 1); fputs(output, stdout);
+                }
+            }
+            for (failure = 51; failure <= 52; failure++) {
+                reset(); response_pattern = 2; mutation = failure;
+                CHECK(invoke(raw_args[action]) == 1); fputs(output, stdout);
+            }
+            for (failure = 59; failure <= 61; failure++) {
+                if (failure == 60) continue;
+                reset(); response_pattern = 2; mutation = failure;
+                CHECK(invoke(raw_args[action]) == 1); fputs(output, stdout);
+            }
+            reset(); response_pattern = 2; mutation = 67;
+            CHECK(!invoke(raw_args[action])); fputs(output, stdout);
+        }
         return 0;
     }
     CHECK(argc == 1);
-    test_arguments(); test_metadata(); test_errors(); test_results(); test_named_controls(); test_decoding();
+    test_arguments(); test_metadata(); test_errors(); test_results(); test_named_controls(); test_decoding(); test_raw_commands();
     printf("Firmware probe CLI: %u checks passed\n", checks);
     return 0;
 }
