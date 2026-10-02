@@ -1028,11 +1028,116 @@ class FirmwareBootstrapTests(unittest.TestCase):
 
     def test_bootstrap_fixed_anchor_budget(self):
         result = MAP._bootstrap_map(self.payload, self.images)
-        self.assertEqual(len(result["instruction_anchors"]), 127)
+        self.assertEqual(len(result["instruction_anchors"]), 256)
         self.assertLessEqual(len(result["instruction_anchors"]), MAP.MAX_BOOTSTRAP_ANCHORS)
-        with mock.patch.object(MAP, "MAX_BOOTSTRAP_ANCHORS", 126):
+        with mock.patch.object(MAP, "MAX_BOOTSTRAP_ANCHORS", 255):
             with self.assertRaisesRegex(MAP.FormatError, "anchor budget"):
                 MAP._bootstrap_map(self.payload, self.images)
+
+    def test_host_decoder_start_context_handoff_and_cached_selector_mapping(self):
+        result = MAP._bootstrap_map(self.payload, self.images)
+        start = result["host_decoder_start"]
+        anchors = {a["blob_file_offset"]: a for a in result["instruction_anchors"]}
+        context = start["context_link"]
+        self.assertEqual((context["host_interface_global_address"],
+                          context["init_output_pointer_address"], context["context_address"]),
+                         (0xd1ff4, 0xd1ff8, 0xd3a00))
+        self.assertEqual(anchors[0x5d44]["literal_value"], context["init_output_pointer_address"])
+        self.assertEqual(anchors[0x5d4c]["target_blob_file_offset"], 0x54c)
+        self.assertEqual(anchors[0x558]["word"], 0xe1a07001)  # saved init out-pointer
+        self.assertEqual(anchors[0x880]["word"], 0xe5874000)  # *out-pointer = context
+        for offset in (0x56c, 0x898):
+            self.assertEqual(anchors[offset]["literal_value"], context["context_address"])
+        self.assertGreater(context["context_address"], len(self.payload))
+        self.assertEqual((context["slot_stride_bytes"], context["cached_algorithm_byte_offset"]),
+                         (0x1cc, 0xd0))
+        self.assertEqual([(r["host_open_low_byte"], r["cached_algorithm_byte"],
+                           r["inner_start_algorithm_byte"], r["cache_store_blob_file_offset"])
+                          for r in start["selector_mapping"]],
+                         [(0, 0, 0, 0x5428), (1, 1, 1, 0x5410), (4, 4, 4, 0x5444),
+                          (6, 8, 8, 0x5484), (7, 7, 4, 0x5460), (8, 8, 8, 0x55b8)])
+        admitted = {r["low_byte_selector"] for r in result["host_channel_open_policy"]["comparison_routes"]}
+        self.assertEqual(admitted, {r["host_open_low_byte"] for r in start["selector_mapping"]})
+        self.assertTrue(all(set(r) == {"host_open_low_byte", "cached_algorithm_byte",
+                                       "inner_start_algorithm_byte", "cache_store_blob_file_offset"}
+                            for r in start["selector_mapping"]))
+        self.assertFalse(start["device_observed"])
+
+    def test_host_decoder_start_dispatch_fields_and_config_path(self):
+        result = MAP._bootstrap_map(self.payload, self.images)
+        start = result["host_decoder_start"]
+        anchors = {a["blob_file_offset"]: a for a in result["instruction_anchors"]}
+        self.assertEqual((start["command"], start["dispatcher_call_blob_file_offset"],
+                          start["entry_blob_file_offset"]), (0x7376311a, 0x6688, 0x4630))
+        self.assertEqual(anchors[0x6050]["target_blob_file_offset"], 0x667c)
+        self.assertEqual(anchors[0x6688]["target_blob_file_offset"], start["entry_blob_file_offset"])
+        self.assertEqual(start["request_channel_word_index"], 2)
+        header = (ROOT / "include/7411d.h").read_text()
+        line = int(start["command_source"].rsplit(":", 1)[1])
+        self.assertRegex(header.splitlines()[line - 1],
+                         r"eCMD_C011_DEC_CHAN_START_VIDEO\s*=\s*eCMD_C011_CMD_BASE\s*\+\s*0x11A")
+        self.assertRegex(header, r"#define\s+eCMD_C011_CMD_BASE\s+\(0x73763000\)")
+        native = (ROOT / "driver/linux/crystalhd_fw_if.h").read_text()
+        request = native.split("struct crystalhd_fw_channel_start_video_cmd {", 1)[1].split("};", 1)[0]
+        fields = re.findall(r"uint32_t\s+(\w+)\s*;", request)
+        self.assertEqual(fields[start["request_channel_word_index"]], "channel_id")
+        self.assertEqual(anchors[start["request_channel_load_blob_file_offset"]]["word"], 0xe5957008)
+        self.assertEqual(start["preconditions"], {"opened_byte_equals": 1, "opened_byte_offset": 0xc4,
+                                                "check_blob_file_offset": 0x4678,
+                                                "channel_range_validation_established": False,
+                                                "device_observed": False})
+        self.assertEqual(anchors[0x467c]["target_blob_file_offset"], 0x4808)
+        config = start["configuration"]
+        self.assertEqual((config["bytes"], config["channel_configuration_offset"]), (56, 0x68))
+        self.assertEqual(config["copy_call_blob_file_offsets"], [0xeed8, 0xf148])
+        self.assertEqual(anchors[0xeed0]["literal_value"], 0x2dd88)
+        self.assertEqual(anchors[config["cache_load_blob_file_offset"]]["word"], 0xe5d720d0)
+        self.assertEqual(anchors[config["first_byte_store_blob_file_offset"]]["word"], 0xe5cd2004)
+        for offset in config["copy_call_blob_file_offsets"]:
+            self.assertEqual(anchors[offset]["target_blob_file_offset"], 0x20708)
+        self.assertEqual(anchors[config["normalize_compare_blob_file_offset"]]["word"], 0xe3500007)
+        self.assertEqual(anchors[config["normalize_store_blob_file_offset"]]["word"], 0xe5c40068)
+
+    def test_host_decoder_inner_packet_transport_and_evidence_limits(self):
+        result = MAP._bootstrap_map(self.payload, self.images)
+        start = result["host_decoder_start"]
+        packet = start["inner_packet"]
+        anchors = {a["blob_file_offset"]: a for a in result["instruction_anchors"]}
+        self.assertEqual((packet["command"], packet["command_word_index"], packet["algorithm_word_index"]),
+                         (0x73760005, 0, 1))
+        self.assertEqual(anchors[0x27704]["literal_value"], packet["command"])
+        self.assertEqual(anchors[packet["algorithm_store_blob_file_offset"]]["word"], 0xe5859004)
+        self.assertEqual(anchors[0xf3a0]["target_blob_file_offset"], packet["entry_blob_file_offset"])
+        for field, target in (("transport_call_blob_file_offset", 0x2705c),
+                              ("copy_call_blob_file_offset", 0x20708),
+                              ("register_write_call_blob_file_offset", 0x25024),
+                              ("wait_call_blob_file_offset", 0x20598),
+                              ("unchecked_continuation_blob_file_offset", 0x206a0)):
+            self.assertEqual(anchors[packet[field]]["target_blob_file_offset"], target)
+        self.assertEqual(packet["copy_bytes"], 252)
+        self.assertTrue(packet["publication_is_path_dependent"])
+        self.assertFalse(packet["return_checked_by_caller"])
+        self.assertIn("not inner decoder acceptance or codec capability proof", start["scope"])
+        self.assertTrue(any("earlier START state/configuration failures" in s for s in start["limitations"]))
+        self.assertTrue(any("not RAVE parser protocol enums" in s for s in start["limitations"]))
+        self.assertTrue(any("AVS and MVC reachability" in s for s in start["limitations"]))
+
+    def test_host_decoder_cache_config_packet_and_status_semantic_mutations(self):
+        for offset, replacement in (
+                (0x5ed4, 0xd1ffc), (0x6fc, 0xd3a04), (0x558, 0xe1a07000),
+                (0x880, 0xe5875000), (0x5278, 0xe0050095), (0x5298, 0xe3a0a000),
+                (0x543c, 0xe3a00005), (0x5458, 0xe3a00004), (0x5484, 0xe5c000d0),
+                (0x55b8, 0xe5c010d1), (0x6050, 0xea000189), (0x4644, 0xe595700c),
+                (0x4678, 0xe3500002), (0x1054, 0xe59720d0), (0x1058, 0xe5cd2008),
+                (0xeecc, 0xe3a02034), (0xf13c, 0xe3a0203c), (0xf144, 0xe284006c),
+                (0xf1d8, 0xe3500006), (0xf1dc, 0xea000001), (0xf1e0, 0xe3a00008),
+                (0xf390, 0xe5d42069), (0x276c0, 0xe1a09003), (0x27aac, 0x73760006),
+                (0x2770c, 0xe5859008), (0x27730, 0xe1a02006), (0x27744, 0xe3a00000),
+                (0xf3a4, 0xe3500000), (0x270ac, 0xe3a020f8), (0x2502c, 0xe7831001)):
+            data = bytearray(self.payload)
+            struct.pack_into("<I", data, offset, replacement)
+            with self.subTest(offset=offset, word=replacement), self.assertRaises(MAP.FormatError):
+                MAP._bootstrap_map(data, self.images)
 
     def test_bootstrap_cli_alternative_pin_fails_without_json(self):
         data = fixture()
