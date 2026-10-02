@@ -14,6 +14,7 @@ import sys
 
 
 BUNDLED_SHA256 = "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9"
+BUNDLED_SIZE = 0xd3014
 MAX_FIRMWARE_SIZE = 4 * 1024 * 1024  # include/crystalhd_ioctl_limits.h
 TRAILER_SIZE = 20  # driver/linux/FleaDefs.h: length slot plus 16-byte CMAC
 MAX_SYMBOL_RECORDS = 65536  # Aggregate across all tables/images, including duplicates.
@@ -22,6 +23,7 @@ MAX_RELOCATION_RECORDS = 65536  # Includes no-ops and repeated tables/images.
 MAX_OWNER_LOOKUP_STEPS = 1000000  # Bounds overlapping/aliased function intervals.
 MAX_METADATA_OUTPUT_BYTES = 16 * 1024 * 1024  # Retained symbols and section names.
 MAX_REFERENCE_OUTPUT_BYTES = 32 * 1024 * 1024  # Conservative JSON size accounting.
+MAX_BOOTSTRAP_ANCHORS = 128  # Fixed, audited ARM instructions; never a general scan.
 DEFAULT_SYMBOLS = (
     "Arc_UartInit", "Arc_UartPoll", "ArcGetc", "ArcPutc", "ArcCommandBuffer",
     "ReadLine", "MatchKeyword", "Core_Command", "CmdPeek", "CmdCore",
@@ -62,6 +64,276 @@ def bounded(data, offset, size, description):
     if offset < 0 or size < 0 or offset > len(data) - size:
         raise FormatError(f"{description} extends outside the firmware payload")
     return data[offset:offset + size]
+
+
+def _bootstrap_word(payload, offset):
+    if offset % 4:
+        raise FormatError("bootstrap word is not aligned")
+    return struct.unpack("<I", bounded(payload, offset, 4, "bootstrap word"))[0]
+
+
+def _a32_branch(payload, offset, link=False, condition=14):
+    """Decode only audited A32 B/BL, not Thumb, BLX or arbitrary conditions."""
+    word = _bootstrap_word(payload, offset)
+    if condition not in (0, 1, 11, 12, 14) or word >> 24 != (condition << 4) | 10 | int(link):
+        raise FormatError("bootstrap instruction is not the required A32 branch")
+    displacement = word & 0xffffff
+    if displacement & 0x800000:
+        displacement -= 1 << 24
+    target = offset + 8 + displacement * 4
+    _bootstrap_word(payload, target)
+    return {"blob_file_offset": offset, "word": word,
+            "operation": "BL" if link else "B", "condition": condition,
+            "target_blob_file_offset": target}
+
+
+def _a32_literal(payload, offset):
+    """Decode AL LDR word [PC, +/-imm12], with no writeback or register offset."""
+    word = _bootstrap_word(payload, offset)
+    if word & 0xff7f0000 != 0xe51f0000:
+        raise FormatError("bootstrap instruction is not an AL A32 LDR literal")
+    displacement = word & 0xfff
+    literal = offset + 8 + (displacement if word & (1 << 23) else -displacement)
+    value = _bootstrap_word(payload, literal)
+    return {"blob_file_offset": offset, "word": word, "operation": "LDR literal",
+            "destination_register": (word >> 12) & 15,
+            "literal_blob_file_offset": literal, "literal_value": value}
+
+
+def _bootstrap_map(payload, images):
+    """Private pure validator; public callers must pin SHA/size before entering."""
+    if len(payload) != BUNDLED_SIZE - TRAILER_SIZE:
+        raise FormatError("bootstrap payload size does not match the bundled baseline")
+    extents = [(0x2ea60, 0x79dd8), (0x79dd8, 0xcfbb0)]
+    if [(image["blob_file_offset"], image["blob_file_end"]) for image in images] != extents:
+        raise FormatError("bootstrap catalog does not match the parsed ELF identities")
+    anchors = []
+
+    def word(offset, expected):
+        actual = _bootstrap_word(payload, offset)
+        if actual != expected:
+            raise FormatError(f"bootstrap word at {offset:#x} does not match the baseline")
+        anchors.append({"blob_file_offset": offset, "word": actual,
+                        "operation": "validated word"})
+        return actual
+
+    def branch(offset, target, link=False, condition=14):
+        record = _a32_branch(payload, offset, link, condition)
+        if record["target_blob_file_offset"] != target:
+            raise FormatError("bootstrap branch target does not match the baseline")
+        anchors.append(record)
+
+    def literal(offset, position, value, register):
+        record = _a32_literal(payload, offset)
+        if (record["literal_blob_file_offset"], record["literal_value"],
+                record["destination_register"]) != (position, value, register):
+            raise FormatError("bootstrap literal does not match the baseline")
+        anchors.append(record)
+
+    # Flat ARM vectors + coherent reset/main branches corroborate ARMCR4 in
+    # crystalhd_fleafuncs.c:1307-1309. Do not decode either embedded ARC image.
+    for offset, position, target in ((0, 0x20, 0x2ca00), (4, 0x24, 0x3c),
+                                     (8, 0x28, 0x5c), (12, 0x2c, 0x7c),
+                                     (16, 0x30, 0x9c), (24, 0x34, 0xdc),
+                                     (28, 0x38, 0x104)):
+        literal(offset, position, target, 15)
+        _bootstrap_word(payload, target)
+    word(0x2ca00, 0xee100f31)
+    branch(0x2cc0c, 0x74bc, link=True)
+    word(0x74bc, 0xe92d4010)
+    branch(0x7530, 0x8d98)
+    word(0x8d98, 0xe92d4ff8)
+    # Host ARM1 mailbox read, queued receive and actual dispatcher call.
+    word(0x8d48, 0xe92d4010)
+    literal(0x8d54, 0x8f74, 0x100e0000, 0)
+    word(0x8d58, 0xe590401c)
+    word(0x8d70, 0xe1a00004)
+    branch(0x8d74, 0x8cf4, link=True)
+    word(0x8cf4, 0xe92d4038)
+    word(0x8d04, 0xe3001100)
+    branch(0x8d14, 0x8c30, link=True)
+    word(0x8c30, 0xe92d47f0)
+    branch(0x8e40, 0x9048, link=True)
+    word(0x9048, 0xe92d4070)
+    branch(0x9204, 0x5f2c, link=True)
+    # Compare-tree arithmetic: 0x73763108 - 7 - 0xfd = GET_VERSION.
+    literal(0x5f78, 0x6174, 0x73763108, 2)
+    word(0x5f8c, 0xe2420007)
+    word(0x5fa0, 0xe24020fd)
+    word(0x5fa4, 0xe1510002)
+    branch(0x5fac, 0x6264, condition=0)
+    branch(0x6270, 0x5ba4, link=True)
+    word(0x5f5c, 0xe5950000)
+    word(0x5f60, 0xe5860000)
+    for offset, expected in ((0x5c10, 0xe3a00000), (0x5c14, 0xe5840008),
+                             (0x5c18, 0xe5950004), (0x5c1c, 0xe5840004)):
+        word(offset, expected)
+    # Function entry/common-return words, not claimed complete function maps.
+    functions = []
+    for name, entry, prologue, exit_offset, epilogue in (
+            ("host_command_dispatch", 0x5f2c, 0xe92d4070, 0x60c4, 0xe8bd8070),
+            ("get_version", 0x5ba4, 0xe92d4070, 0x5c24, 0xe8bd8070),
+            ("image_container_open", 0x26e7c, 0xe92d41f0, 0x26ebc, 0xe8bd81f0),
+            ("image_container_read", 0x26f74, 0xe92d41f0, 0x26fb8, 0xe8bd81f0),
+            ("image_container_close", 0x26fdc, 0xe92d4010, 0x26ff4, 0xe8bd8010)):
+        word(entry, prologue)
+        word(exit_offset, epilogue)
+        functions.append({"name": name, "entry_blob_file_offset": entry,
+                          "common_exit_blob_file_offset": exit_offset})
+    # OPEN selection in the same dispatcher: command - GET_VERSION == 0xfc.
+    # Record buffers are 256 bytes; this is a host selector policy, not codec
+    # capability or proof that an admitted selector can decode a bitstream.
+    for offset, expected in ((0x5f44, 0xe2845014), (0x5f48, 0xe2846f45),
+                             (0x5f4c, 0xe3002100), (0x5f50, 0xe3a01000),
+                             (0x5f54, 0xe1a00006), (0x5f70, 0xe5951000),
+                             (0x5f7c, 0xe1510002), (0x5f80, 0xe0410002),
+                             (0x5f90, 0xe1510000), (0x5f94, 0xe0412000),
+                             (0x5fa8, 0xe0410002), (0x5fe8, 0xe3500001),
+                             (0x5ff0, 0xe3500002), (0x5ff8, 0xe35000fc),
+                             (0x62d4, 0xe1a00004)):
+        word(offset, expected)
+    for offset, target, condition in ((0x5f84, 0x662c, 0), (0x5f88, 0x602c, 12),
+                                      (0x5f98, 0x6428, 0), (0x5f9c, 0x6004, 12),
+                                      (0x5fb0, 0x5fe8, 12), (0x5fec, 0x628c, 0),
+                                      (0x5ff4, 0x62ac, 0), (0x5ffc, 0x60b8, 1)):
+        branch(offset, target, condition=condition)
+    branch(0x5f58, 0x206e4, link=True)
+    branch(0x6000, 0x62cc)
+    branch(0x62d8, 0x51c8, link=True)
+    # Initial-state and free-slot checks precede the low-byte selector ladder.
+    for offset, expected in ((0x51c8, 0xe92d4ff0), (0x51cc, 0xe24dd01c),
+                             (0x51d0, 0xe3e07000), (0x51d4, 0xe3a05000),
+                             (0x51d8, 0xe3500000), (0x51e0, 0xe2806014),
+                             (0x51e4, 0xe2804f45), (0x51ec, 0xe3e08000),
+                             (0x51f0, 0xe59b0000), (0x51f4, 0xe3500001),
+                             (0x523c, 0xe59b0004), (0x5240, 0xe3a01073),
+                             (0x5244, 0xe0010195), (0x5248, 0xe0801101),
+                             (0x524c, 0xe5d110c4), (0x5250, 0xe3510000),
+                             (0x5258, 0xe2855001), (0x525c, 0xe3550004),
+                             (0x5264, 0xe3570000), (0x5300, 0xe1a07005),
+                             (0x5218, 0xe28dd01c), (0x521c, 0xe8bd8ff0)):
+        word(offset, expected)
+    literal(0x51e8, 0x5128, 0xd1ff4, 11)
+    branch(0x51dc, 0x5220, condition=0)
+    branch(0x51f8, 0x5234, condition=0)
+    branch(0x5254, 0x52f4, condition=0)
+    branch(0x5260, 0x5240, condition=11)
+    branch(0x5268, 0x59f0, condition=11)
+    branch(0x5304, 0x5264)
+    # LDRB deliberately establishes no validation of algorithm word high bits.
+    word(0x5294, 0xe5d60024)
+    word(0x52c4, 0xe3a01008)
+    routes = []
+    for selector, compare, jump, target in ((1, 0x52a0, 0x52a4, 0x5408),
+                                            (0, 0x52a8, 0x52ac, 0x5420),
+                                            (4, 0x52b0, 0x52b4, 0x5438),
+                                            (7, 0x52b8, 0x52bc, 0x5454),
+                                            (6, 0x52c0, 0x52c8, 0x547c),
+                                            (8, 0x52cc, 0x52d0, 0x55b0)):
+        word(compare, 0xe3500000 | selector)
+        branch(jump, target, condition=0)
+        routes.append({"low_byte_selector": selector, "compare_blob_file_offset": compare,
+                       "branch_blob_file_offset": jump, "target_blob_file_offset": target})
+    for offset, expected in ((0x52d4, 0xe28f00b8), (0x52dc, 0xe584800c),
+                             (0x52e0, 0xe5960004), (0x52e4, 0xe5840004),
+                             (0x52e8, 0xe5848008), (0x52ec, 0xe3a00002)):
+        word(offset, expected)
+    branch(0x52d8, 0x203c4, link=True)
+    branch(0x52f0, 0x5218)
+    open_policy = {
+        "command": 0x73763100, "dispatcher_call_blob_file_offset": 0x62d8,
+        "entry_blob_file_offset": 0x51c8, "record_buffer_bytes": 256,
+        "request_record_offset": 0x14, "reply_record_offset": 0x114,
+        "algorithm_word_index": 9, "algorithm_load_blob_file_offset": 0x5294,
+        "algorithm_bits_compared": 8, "algorithm_upper_bits_checked": False,
+        "comparison_routes": routes,
+        "named_rejected_selectors": [
+            {"name": name, "value": value, "source": f"include/7411d.h:{line}"}
+            for name, value, line in (("H261", 2, 390), ("H263", 3, 391), ("MPEG1", 5, 393))],
+        "fallback": {"entry_blob_file_offset": 0x52d4, "channel_id_word_index": 3,
+                     "channel_id": 0xffffffff, "status_word_index": 2, "status": 0xffffffff,
+                     "sequence_copy_blob_file_offsets": [0x52e0, 0x52e4],
+                     "internal_return": 2, "common_exit_blob_file_offset": 0x5218},
+        "preconditions": {"state_word_equals": 1, "state_check_blob_file_offset": 0x51f4,
+                          "free_channel_slot_required": True, "slot_scan_limit": 4,
+                          "slot_check_blob_file_offset": 0x5250, "device_observed": False},
+        "device_observed": False,
+        "scope": "Static host OPEN selector policy, not channel-open or codec capability proof."}
+    # ARM initialized catalog data is outside both ELF files, inside payload.
+    root = _bootstrap_word(payload, 0xcfc00)
+    if root != 0xcfbe8:
+        raise FormatError("bootstrap catalog root does not match the baseline")
+    callbacks = [_bootstrap_word(payload, 0xcfcf0 + index * 4) for index in range(3)]
+    if callbacks != [0x26e7c, 0x26f74, 0x26fdc]:
+        raise FormatError("bootstrap catalog callbacks do not match the baseline")
+    descriptors = []
+    slots = [_bootstrap_word(payload, root + index * 4) for index in range(6)]
+    if slots != [0xcfbd0, 0xcfbdc, 0, 0, 0, 0]:
+        raise FormatError("bootstrap catalog slots do not match the baseline")
+    for index, (start, end) in enumerate(extents):
+        descriptor = slots[index]
+        size_pointer, blob_pointer, metadata_pointer = (
+            _bootstrap_word(payload, descriptor + offset) for offset in (0, 4, 8))
+        size = _bootstrap_word(payload, size_pointer)
+        metadata = _bootstrap_word(payload, metadata_pointer)
+        expected_pointers = ((0xcfbb0, start, 0xcfbcc), (0xcfbb4, start, 0xcfbb8))[index]
+        if (size_pointer, blob_pointer, metadata_pointer) != expected_pointers:
+            raise FormatError("bootstrap image descriptor pointers do not match the baseline")
+        if size != end - start:
+            raise FormatError("bootstrap declared image size differs from its ELF extent")
+        if metadata != (0, 0x90000)[index]:
+            raise FormatError("bootstrap catalog metadata word does not match the baseline")
+        bounded(payload, blob_pointer, size, "bootstrap catalog image")
+        descriptors.append({"slot": index, "descriptor_blob_file_offset": descriptor,
+                            "size_pointer_blob_file_offset": size_pointer,
+                            "image_blob_file_offset": start, "image_blob_file_end": end,
+                            "declared_image_size": size,
+                            "metadata_pointer_blob_file_offset": metadata_pointer,
+                            "metadata_word": metadata})
+    # Joint static derivation, not a hardware observation: driver programs
+    # BORCH_END = payload size - 1; firmware reply uses that register + 0x201.
+    literal(0x9298, 0x8be8, 0x100f6000, 0)
+    word(0x929c, 0xe5900004)
+    word(0x92a0, 0xe3001201)
+    word(0x92a4, 0xe0804001)
+    if len(anchors) > MAX_BOOTSTRAP_ANCHORS:
+        raise FormatError("bootstrap instruction-anchor budget exceeded")
+    scrub_end = len(payload) - 1
+    return {"schema_version": 1, "isa": "A32", "endianness": "little",
+            "regions": [{"blob_file_offset": start, "blob_file_end": end, "kind": kind}
+                        for start, end, kind in (
+                            (0, extents[0][0], "ARM bootstrap code, literals and data"),
+                            (*extents[0], "embedded ARC ELF image 0"),
+                            (*extents[1], "embedded ARC ELF image 1"),
+                            (extents[1][1], len(payload), "ARM initialized data and padding"))],
+            "cmac": {"length_slot_blob_file_offset": len(payload), "length": 16,
+                     "blob_file_offset": len(payload) + 4, "authentication_verified": False},
+            "image_catalog": {"root_blob_file_offset": 0xcfc00,
+                              "table_blob_file_offset": root, "slot_count": 6,
+                              "descriptor_blob_file_offsets": slots,
+                              "callback_table_blob_file_offset": 0xcfcf0,
+                              "callback_entry_blob_file_offsets": callbacks,
+                              "images": descriptors},
+            "instruction_anchors": anchors, "function_anchors": functions,
+            "host_channel_open_policy": open_policy,
+            "host_mailbox_dispatch": {"arm_mailbox_address": 0x100e001c,
+                                      "receive_entry_blob_file_offset": 0x8d48,
+                                      "queue_entry_blob_file_offset": 0x8cf4,
+                                      "dispatch_entry_blob_file_offset": 0x5f2c,
+                                      "get_version_command": 0x73763004,
+                                      "get_version_entry_blob_file_offset": 0x5ba4},
+            "static_derived_layout": {
+                "device_observed": False,
+                "scrub_end": {"address": scrub_end, "source_kind": "driver",
+                              "source": "driver/linux/FleaDefs.h:42"},
+                "host_command": {"address": scrub_end + 1 + 0x100, "source_kind": "driver",
+                                 "source": "driver/linux/FleaDefs.h:51; driver/linux/crystalhd_fleafuncs.c:1242"},
+                "reply": {"address": scrub_end + 0x201, "source_kind": "driver and ARM anchors",
+                          "instruction_blob_file_offsets": [0x9298, 0x929c, 0x92a0, 0x92a4]}},
+            "limitations": ["Only fixed baseline instruction anchors are decoded; this is not a complete ARM call graph.",
+                            "Region boundaries do not classify every byte as code or data; ARM also uses Thumb helpers.",
+                            "Catalog metadata words and OL/IL physical destinations are not established.",
+                            "SHA-256 identity is not CMAC authentication or runtime capability proof."]}
 
 
 def string_at(table, offset):
@@ -367,12 +639,14 @@ def parse_elf(payload, base, wanted, symbol_budget, string_budget,
 
 
 def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
-            references=False, all_symbols=False):
+            references=False, all_symbols=False, bootstrap=False):
     if len(data) < 24 or len(data) > MAX_FIRMWARE_SIZE or len(data) % 4:
         raise FormatError("invalid BCM70015 firmware size")
     sha256 = hashlib.sha256(data).hexdigest()
     if sha256 != expected_sha256:
         raise FormatError("firmware SHA-256 does not match --expect-sha256")
+    if bootstrap and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
+        raise FormatError("--bootstrap requires the exact bundled firmware SHA-256 and size")
     payload = data[:-TRAILER_SIZE]
     length_slot = struct.unpack_from("<I", data, len(payload))[0]
     if length_slot != 16:
@@ -434,6 +708,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
             "Relocation types are numeric; their ARC encoding semantics are not applied.",
             "S+A arithmetic candidates are not resolved targets; file mappings require containment in the referenced section.",
             "No-op relocations have no reference edge; unowned sites are not assigned to nearby functions."])
+    if bootstrap:
+        result["bootstrap"] = _bootstrap_map(payload, images)
     return result
 
 
@@ -453,12 +729,14 @@ def main(argv=None):
         "not disassembly or a complete call graph"))
     parser.add_argument("--all-symbols", action="store_true", help=(
         "include all symbol records and section metadata; with --references include all retained references"))
+    parser.add_argument("--bootstrap", action="store_true", help=(
+        "validate fixed ARM bootstrap/mailbox anchors and image catalog; bundled firmware only"))
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-fA-F]{64}", args.expect_sha256):
         parser.error("--expect-sha256 must be 64 hexadecimal digits")
     try:
         report = analyze(read_firmware(args.firmware), args.symbol or DEFAULT_SYMBOLS,
-                         args.expect_sha256.lower(), args.references, args.all_symbols)
+                         args.expect_sha256.lower(), args.references, args.all_symbols, args.bootstrap)
     except (OSError, FormatError) as error:
         print(f"flea_fw_map: {error}", file=sys.stderr)
         return 1
