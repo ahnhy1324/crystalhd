@@ -22,6 +22,7 @@ enum action {
 	ACTION_H261, ACTION_H263, ACTION_MPEG1,
 	ACTION_SCALING_FILTERS, ACTION_PIC_CAPTURE, ACTION_SET_CSC,
 	ACTION_SET_FGT, ACTION_CUSTOM_VIDOUT, ACTION_FILL_PIC_BUF,
+	ACTION_FIXED_STATE,
 };
 
 struct options {
@@ -50,12 +51,16 @@ static void usage(FILE *stream)
 	      "         --csc-command | --fgt-command | --custom-vidout-command |\n"
 	      "         --fill-pic-buf-command)\n"
 	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
+	      "       flea-fw-probe --fixed-state\n"
+	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
 	      "       flea-fw-probe --help\n"
 	      "\n"
 	      "The live selectors reload firmware and reset an idle card. They do\n"
 	      "not decode video or establish codec capability. Command-only probes\n"
 	      "send one fixed zero-argument command after INIT and VERSION, without\n"
 	      "opening or starting a decoder. A reply is not raw-processing support.\n"
+	      "Fixed-state reads use stock INIT and H.264 OPEN; completed reads do\n"
+	      "not certify cache coherence or backend ownership.\n"
 	      "Use --info first;\n"
 	      "it reports metadata only, including the bound device generation.\n"
 	      "The separate research device requires CAP_SYS_RAWIO and an opt-in\n"
@@ -118,6 +123,8 @@ static bool parse_options(int argc, char **argv, struct options *options)
 			action = ACTION_CUSTOM_VIDOUT;
 		else if (!strcmp(argv[i], "--fill-pic-buf-command"))
 			action = ACTION_FILL_PIC_BUF;
+		else if (!strcmp(argv[i], "--fixed-state"))
+			action = ACTION_FIXED_STATE;
 		else if (!strcmp(argv[i], "--acknowledge-card-reset")) {
 			if (options->acknowledge)
 				return false;
@@ -309,6 +316,87 @@ static bool result_valid(const struct crystalhd_fw_research_result *result,
 	return true;
 }
 
+static bool reply_succeeded(const struct crystalhd_fw_research_reply *reply)
+{
+	return reply->transport_status == BC_STS_SUCCESS &&
+		reply->raw_response_valid && reply->header_matches &&
+		!reply->response[2];
+}
+
+static bool state_sample_matches(const struct crystalhd_fw_research_state_sample *sample,
+				 unsigned int stage)
+{
+	if (!stage)
+		return sample->words[0] == 0x000d3a00U && !sample->words[1] &&
+			!sample->words[2] && !sample->words[3];
+	return sample->words[0] == 1 && sample->words[1] == 0x000d3a00U &&
+		(sample->words[2] & 0xffU) == (stage == 2 ? 1U : 0U) &&
+		(sample->words[3] & 0xffffffU) == (stage == 2 ? 0x200U : 0U);
+}
+
+static bool state_result_valid(const struct crystalhd_fw_research_state_result *result,
+			       const struct crystalhd_fw_research_state_request *request,
+			       uint64_t generation)
+{
+	const struct crystalhd_fw_research_state_sample *samples[] = {
+		&result->calibration, &result->after_init, &result->after_open,
+	};
+	struct crystalhd_fw_research_request control_request = {
+		.version = CRYSTALHD_FW_RESEARCH_VERSION,
+		.size = sizeof(result->control),
+		.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL,
+	};
+	unsigned int i, j;
+
+	if (memcmp(&result->request, request, sizeof(*request)) ||
+	    !result_valid(&result->control, &control_request, generation))
+		return false;
+	for (i = 0; i < sizeof(samples) / sizeof(samples[0]); i++) {
+		const struct crystalhd_fw_research_state_sample *sample = samples[i];
+
+		if (sample->attempted > 1 || sample->read_complete > 1 || sample->reserved ||
+		    sample->status > 0 || sample->status < -4095)
+			return false;
+		if (!i && (sample->words[1] || sample->words[2] || sample->words[3]))
+			return false;
+		if (!sample->attempted || !sample->read_complete) {
+			if ((!sample->attempted && sample->read_complete) ||
+			    (sample->attempted && !sample->status))
+				return false;
+			for (j = 0; j < sizeof(sample->words) / sizeof(sample->words[0]); j++)
+				if (sample->words[j])
+					return false;
+		} else if ((sample->status != 0 && sample->status != -EPROTO) ||
+			   (!sample->status != state_sample_matches(sample, i))) {
+			return false;
+		}
+		if ((sample->attempted || sample->status) &&
+		    (result->control.command_count < (i == 2 ? 3U : 2U) ||
+		     !reply_succeeded(&result->control.replies[0]) ||
+		     !reply_succeeded(&result->control.replies[1]) ||
+		     (i && (!samples[i - 1]->attempted || samples[i - 1]->status)) ||
+		     (i == 2 && (!reply_succeeded(&result->control.replies[2]) ||
+				 result->control.replies[2].response[3]))))
+			return false;
+		if (sample->status &&
+		    (result->control.status != sample->status ||
+		     result->control.command_count != (i == 2 ? 3U : 2U)))
+			return false;
+	}
+	if (result->control.command_count > 2 &&
+	    (!result->calibration.attempted || result->calibration.status ||
+	     !result->after_init.attempted || result->after_init.status))
+		return false;
+	if (result->control.command_count > 3 &&
+	    (!result->after_open.attempted || result->after_open.status))
+		return false;
+	if (!result->control.status &&
+	    (!result->calibration.attempted || !result->after_init.attempted ||
+	     !result->after_open.attempted))
+		return false;
+	return true;
+}
+
 static void print_info(const struct crystalhd_fw_research_info *info)
 {
 	char hex[65];
@@ -340,7 +428,7 @@ static void print_decoded_response(const struct crystalhd_fw_research_reply *rep
 	       (uint32_t)reply->response[5]);
 }
 
-static void print_result(const struct crystalhd_fw_research_result *result)
+static void print_result_object(const struct crystalhd_fw_research_result *result)
 {
 	char hex[65];
 	unsigned int i, j;
@@ -389,7 +477,39 @@ static void print_result(const struct crystalhd_fw_research_result *result)
 		print_decoded_response(reply);
 		putchar('}');
 	}
-	fputs("]}\n", stdout);
+	fputs("]}", stdout);
+}
+
+static void print_result(const struct crystalhd_fw_research_result *result)
+{
+	print_result_object(result);
+	putchar('\n');
+}
+
+static void print_state_sample(const struct crystalhd_fw_research_state_sample *sample)
+{
+	unsigned int i;
+
+	printf("{\"attempted\":%s,\"status\":%" PRId32 ",\"read_complete\":%s,\"raw_words\":[",
+	       sample->attempted ? "true" : "false", (int32_t)sample->status,
+	       sample->read_complete ? "true" : "false");
+	for (i = 0; i < sizeof(sample->words) / sizeof(sample->words[0]); i++)
+		printf("%s%" PRIu32, i ? "," : "", (uint32_t)sample->words[i]);
+	fputs("]}", stdout);
+}
+
+static void print_state_result(const struct crystalhd_fw_research_state_result *result)
+{
+	printf("{\"version\":%" PRIu32 ",\"fixed_state\":true,\"control\":",
+	       (uint32_t)result->request.version);
+	print_result_object(&result->control);
+	fputs(",\"samples\":{\"calibration\":", stdout);
+	print_state_sample(&result->calibration);
+	fputs(",\"after_init\":", stdout);
+	print_state_sample(&result->after_init);
+	fputs(",\"after_open\":", stdout);
+	print_state_sample(&result->after_open);
+	fputs("}}\n", stdout);
 }
 
 int main(int argc, char **argv)
@@ -397,9 +517,11 @@ int main(int argc, char **argv)
 	struct crystalhd_fw_research_info info = { 0 };
 	struct crystalhd_fw_research_result result = { 0 };
 	struct crystalhd_fw_research_request request = { 0 };
+	struct crystalhd_fw_research_state_result state_result = { 0 };
+	struct crystalhd_fw_research_state_request state_request = { 0 };
 	struct options options;
 	struct stat statbuf;
-	bool have_info = false, have_result = false;
+	bool have_info = false, have_result = false, have_state = false;
 	int fd = -1, rc = 1;
 
 	if (argc == 2 && !strcmp(argv[1], "--help")) {
@@ -447,6 +569,7 @@ int main(int argc, char **argv)
 		request.selector = CRYSTALHD_FW_RESEARCH_VERSION_ONLY;
 		break;
 	case ACTION_H264:
+	case ACTION_FIXED_STATE:
 		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
 		break;
 	case ACTION_H261:
@@ -484,6 +607,27 @@ int main(int argc, char **argv)
 		fputs("Research selector unavailable; no live command attempted.\n", stderr);
 		goto out;
 	}
+	if (options.action == ACTION_FIXED_STATE) {
+		state_request.version = CRYSTALHD_FW_RESEARCH_VERSION;
+		state_request.size = sizeof(state_result);
+		state_result.request = state_request;
+		if (ioctl(fd, CRYSTALHD_FW_RESEARCH_RUN_STATE, &state_result) < 0) {
+			perror("run fixed-state readback");
+			fputs("Device state may have changed; no retry was attempted.\n", stderr);
+			goto out;
+		}
+		if (state_result.control.retained)
+			fputs("Research resources remain retained. Do not force unload the driver.\n", stderr);
+		if (!state_result_valid(&state_result, &state_request, info.generation)) {
+			fputs("Invalid fixed-state result; no further command attempted.\n", stderr);
+			goto out;
+		}
+		have_state = true;
+		rc = state_result.control.status || state_result.control.retained ||
+			(state_result.control.cleanup_attempted &&
+			 state_result.control.cleanup_status != BC_STS_SUCCESS) ? 1 : 0;
+		goto out;
+	}
 	result.request = request;
 	if (ioctl(fd, CRYSTALHD_FW_RESEARCH_RUN, &result) < 0) {
 		perror("run research selector");
@@ -509,6 +653,8 @@ out:
 		print_info(&info);
 	if (have_result)
 		print_result(&result);
+	if (have_state)
+		print_state_result(&state_result);
 	if (output_finish())
 		rc = 1;
 	return rc;

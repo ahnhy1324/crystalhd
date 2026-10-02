@@ -75,4 +75,33 @@ struct crystalhd_fw_research_result {
 #define CRYSTALHD_FW_RESEARCH_GET_INFO \
 	_IOR('R', 0x91, struct crystalhd_fw_research_info)
 
+struct crystalhd_fw_research_state_request {
+	__u32 version;
+	__u32 size;
+	__u32 flags;
+	__u32 reserved;
+};
+
+struct crystalhd_fw_research_state_sample {
+	__u32 attempted;
+	__s32 status;
+	/* Completed host reads, not bus-error or cache-coherence certification. */
+	__u32 read_complete;
+	__u32 reserved;
+	__u32 words[4];
+};
+
+struct crystalhd_fw_research_state_result {
+	struct crystalhd_fw_research_state_request request;
+	/* Fixed H.264 OPEN-only control; its existing wire contract is unchanged. */
+	struct crystalhd_fw_research_result control;
+	struct crystalhd_fw_research_state_sample calibration;
+	struct crystalhd_fw_research_state_sample after_init;
+	struct crystalhd_fw_research_state_sample after_open;
+};
+
+/* Reloads stock firmware. No caller-provided address, selector or data. */
+#define CRYSTALHD_FW_RESEARCH_RUN_STATE \
+	_IOWR('R', 0x93, struct crystalhd_fw_research_state_result)
+
 #endif

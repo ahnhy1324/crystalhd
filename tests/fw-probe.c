@@ -13,12 +13,15 @@ struct _BC_DTS_PROC_OUT;
 #include "crystalhd_ioctl_limits.h"
 #include "crystalhd_fw_if.h"
 #include "crystalhd_fw_research.h"
+#include "flea/bcm_70015_regs.h"
 
 typedef uint8_t u8;
 typedef uint32_t u32;
 typedef uint64_t u64;
 typedef struct { u32 cmd[64], rsp[64], flags, add_data; } BC_FW_CMD;
-enum { BC_LINK_INVALID = 0, DTS_MODE_INV = -1, BC_PCI_DEVID_FLEA = 0x1615 };
+enum { BC_LINK_INVALID = 0, BC_LINK_INIT = 1, DTS_MODE_INV = -1, BC_PCI_DEVID_FLEA = 0x1615 };
+enum { FLEA_PS_ACTIVE, FLEA_PS_LP_COMPLETE };
+#define FLEA_GISB_INDIRECT_DATA 0xfffcU
 enum { MODULE_STATE_LIVE, MODULE_STATE_COMING, MODULE_STATE_GOING };
 #define SHA256_DIGEST_SIZE 32U
 #define GFP_KERNEL 0
@@ -50,11 +53,23 @@ static struct module module;
 struct device { int unused; };
 struct pci_dev { struct device dev; unsigned device; };
 struct crystalhd_adp;
+struct mutex { unsigned held; };
+struct spinlock { unsigned held; };
+struct crystalhd_hw {
+    struct crystalhd_adp *adp;
+    struct mutex fwcmd_trans_mutex;
+    struct spinlock lock;
+    bool dma_fault, fwcmd_pending, fwcmd_poisoned;
+    unsigned FleaPowerState;
+    BC_STATUS (*pfnDevDRAMRead)(struct crystalhd_hw *, u32, u32, u32 *);
+    void *pfnWriteDevRegister;
+};
 struct crystalhd_cmd {
     struct crystalhd_adp *adp;
     const void *session_owner, *session_lifetime_owner, *session_lifetime_ops;
     bool session_module_pinned, retain_rx_on_suspend;
-    void *stream, *hw_ctx;
+    void *stream;
+    struct crystalhd_hw *hw_ctx;
     int state;
     u32 fw_sequence;
     struct { bool in_use; int mode; } user[4];
@@ -66,6 +81,8 @@ struct crystalhd_adp {
     struct pci_dev *pdev;
     struct crystalhd_cmd cmds;
     struct rwsem user_lock;
+    void *i2o_addr, *mem_addr;
+    size_t pci_i2o_len, pci_mem_len;
     void *fill_byte_pool, *elem_pool_head, *ua_map_free_head;
 };
 struct crystalhd_device_access { struct crystalhd_adp *adp; bool exclusive; };
@@ -88,6 +105,7 @@ struct miscdevice { int minor; const char *name; const struct file_operations *f
 
 static struct crystalhd_adp adp, *g_adp_info;
 static struct pci_dev pci;
+static struct crystalhd_hw hardware;
 static struct rwsem chd_device_lock;
 static u64 chd_device_generation;
 static struct firmware firmware;
@@ -116,6 +134,13 @@ static int v4l2_error, misc_error, pci_error;
 static int bc_chd_driver;
 static unsigned lock_attempts;
 static unsigned metadata_race;
+static unsigned read_count, read_fail_at, read_mutate_at, read_mutation;
+static unsigned read_mismatch_stage, read_mismatch_word;
+static bool read_padding;
+static BC_STATUS read_status;
+static int transaction_error;
+static unsigned transaction_mutation;
+static BC_STATUS read_mock(struct crystalhd_hw *hw, u32 offset, u32 count, u32 *words);
 
 static void down_read(struct rwsem *lock)
 {
@@ -142,7 +167,41 @@ static void up_write(struct rwsem *lock)
 static void barrier(void)
 { CHECK(chd_device_lock.readers == 1 && adp.user_lock.writers == 1); }
 static void unlocked(void)
-{ CHECK(!chd_device_lock.readers && !adp.user_lock.writers && !adp.user_lock.readers); }
+{ CHECK(!chd_device_lock.readers && !adp.user_lock.writers && !adp.user_lock.readers);
+  CHECK(!hardware.lock.held && !hardware.fwcmd_trans_mutex.held); }
+static void state_mutate(unsigned mutation)
+{
+    switch (mutation) {
+    case 0: break;
+    case 1: adp.present = false; break;
+    case 2: adp.generation++; break;
+    case 3: adp.hw_accessible = false; break;
+    case 4: hardware.dma_fault = true; break;
+    case 5: hardware.fwcmd_pending = true; break;
+    case 6: hardware.fwcmd_poisoned = true; break;
+    case 7: hardware.FleaPowerState = FLEA_PS_LP_COMPLETE; break;
+    case 8: adp.cmds.session_owner = &pci; break;
+    case 9: adp.pci_mem_len = 0x3ad3; break;
+    case 10: hardware.adp = NULL; break;
+    default: CHECK(false);
+    }
+}
+static int mutex_lock_interruptible(struct mutex *lock)
+{
+    barrier(); CHECK(lock == &hardware.fwcmd_trans_mutex && !lock->held && !hardware.lock.held);
+    if (transaction_error) return transaction_error;
+    lock->held = 1; state_mutate(transaction_mutation); return 0;
+}
+static void mutex_unlock(struct mutex *lock)
+{ CHECK(lock == &hardware.fwcmd_trans_mutex && lock->held == 1 && !hardware.lock.held); lock->held = 0; }
+#define spin_lock_irqsave(lock, flags) do { \
+    CHECK(!(lock)->held && hardware.fwcmd_trans_mutex.held == 1); \
+    (lock)->held = 1; (flags) = 0x1234; \
+} while (0)
+#define spin_unlock_irqrestore(lock, flags) do { \
+    CHECK((lock)->held == 1 && (flags) == 0x1234); (lock)->held = 0; \
+} while (0)
+#define lockdep_assert_held(lock) CHECK((lock)->held == 1)
 static void advance(void)
 { barrier(); if (++step == remove_at) adp.present = false; }
 static bool capable(unsigned capability)
@@ -182,7 +241,7 @@ static void retained_clear(struct crystalhd_cmd *ctx)
 {
     ctx->session_owner = ctx->session_lifetime_owner = ctx->session_lifetime_ops = NULL;
     ctx->session_module_pinned = false;
-    ctx->hw_ctx = ctx->stream = NULL;
+    ctx->hw_ctx = NULL; ctx->stream = NULL;
 }
 static BC_STATUS crystalhd_session_acquire_locked(struct crystalhd_cmd *ctx, const void *owner)
 {
@@ -190,9 +249,9 @@ static BC_STATUS crystalhd_session_acquire_locked(struct crystalhd_cmd *ctx, con
     acquire_count++; last_owner = owner; advance();
     if (acquire_status == BC_STS_SUCCESS) {
         ctx->session_owner = owner; ctx->session_module_pinned = true;
-        ctx->hw_ctx = &pci; ctx->fw_sequence = 0;
+        ctx->hw_ctx = &hardware; ctx->fw_sequence = 0;
     } else if (acquire_retains) {
-        ctx->session_module_pinned = true; ctx->hw_ctx = &pci;
+        ctx->session_module_pinned = true; ctx->hw_ctx = &hardware;
     }
     return acquire_status;
 }
@@ -202,6 +261,7 @@ static BC_STATUS crystalhd_fw_download_locked(struct crystalhd_cmd *ctx, const v
     barrier(); CHECK(ctx == &adp.cmds && owner == last_owner && ctx->session_owner == owner);
     CHECK(bytes == firmware.data && size == firmware.size && hash_count == 1);
     CHECK(download_count++ == 0); advance();
+    if (download_status == BC_STS_SUCCESS) ctx->state = BC_LINK_INIT;
     return download_status;
 }
 static void check_payload(const BC_FW_CMD *cmd);
@@ -265,6 +325,7 @@ static void pci_unregister_driver(void *driver)
 
 #include "device-functions.h"
 #include "status-functions.h"
+#include "hw-transaction-functions.h"
 #include "probe-functions.h"
 #include "module-functions.h"
 #undef CRYSTALHD_ENABLE_FW_RESEARCH
@@ -324,6 +385,10 @@ static void reset(void)
     unsigned i;
     CHECK(!live_allocations); unlocked();
     memset(&adp, 0, sizeof(adp)); memset(&pci, 0, sizeof(pci));
+    memset(&hardware, 0, sizeof(hardware)); hardware.adp = &adp;
+    hardware.pfnDevDRAMRead = read_mock; hardware.pfnWriteDevRegister = &pci;
+    hardware.FleaPowerState = FLEA_PS_ACTIVE;
+    adp.i2o_addr = adp.mem_addr = &pci; adp.pci_i2o_len = 0x10000; adp.pci_mem_len = 0x10000;
     g_adp_info = &adp; adp.pdev = &pci; adp.present = adp.hw_accessible = true;
     adp.generation = chd_device_generation = 42; adp.cmds.adp = &adp;
     for (i = 0; i < ARRAY_SIZE(adp.cmds.user); i++) adp.cmds.user[i].mode = DTS_MODE_INV;
@@ -341,6 +406,9 @@ static void reset(void)
     last_owner = NULL;
     active_selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
     codec_rejection = unknown_command_reply = false;
+    read_count = read_fail_at = read_mutate_at = read_mutation = 0;
+    read_mismatch_stage = read_mismatch_word = 0; read_padding = false;
+    read_status = BC_STS_IO_ERROR; transaction_error = 0; transaction_mutation = 0;
 }
 static struct crystalhd_fw_research_result run(void)
 {
@@ -352,7 +420,7 @@ static struct crystalhd_fw_research_result run(void)
     return result;
 }
 static void no_hardware(void)
-{ CHECK(!request_count && !hash_count && !acquire_count && !download_count && !command_count && !release_count); }
+{ CHECK(!request_count && !hash_count && !acquire_count && !download_count && !command_count && !release_count && !read_count); }
 
 static void test_lifecycle(void)
 {
@@ -471,7 +539,7 @@ static void test_idle(void)
         case 9: adp.cmds.session_lifetime_owner = &pci; break;
         case 10: adp.cmds.session_lifetime_ops = &pci; break;
         case 11: adp.cmds.stream = &pci; break;
-        case 12: adp.cmds.hw_ctx = &pci; break;
+        case 12: adp.cmds.hw_ctx = &hardware; break;
         case 13: adp.fill_byte_pool = &pci; break;
         case 14: adp.elem_pool_head = &pci; break;
         case 15: adp.ua_map_free_head = &pci; break;
@@ -774,7 +842,7 @@ static void test_cleanup(void)
     unsigned remove;
     reset(); acquire_status = BC_STS_IO_ERROR; acquire_retains = true; result = run();
     CHECK(result.status == -EIO && result.retained && !result.cleanup_attempted && !release_count && !download_count);
-    CHECK(adp.cmds.session_module_pinned && !adp.cmds.session_owner && adp.cmds.hw_ctx == &pci);
+    CHECK(adp.cmds.session_module_pinned && !adp.cmds.session_owner && adp.cmds.hw_ctx == &hardware);
     reset(); acquire_status = BC_STS_BUSY; result = run();
     CHECK(result.status == -EBUSY && !result.retained && !release_count);
     reset(); download_status = BC_STS_IO_ERROR; result = run();
@@ -782,7 +850,7 @@ static void test_cleanup(void)
     CHECK(!command_count && release_count == 1 && !result.retained);
     reset(); release_status = BC_STS_IO_ERROR; release_retains = true; result = run();
     CHECK(result.status == -EIO && result.retained && result.cleanup_attempted && release_count == 1);
-    CHECK(adp.cmds.session_owner == last_owner && adp.cmds.session_module_pinned && adp.cmds.hw_ctx == &pci);
+    CHECK(adp.cmds.session_owner == last_owner && adp.cmds.session_module_pinned && adp.cmds.hw_ctx == &hardware);
     reset(); command_status[0] = BC_STS_TIMEOUT; release_status = BC_STS_IO_ERROR; release_retains = true; result = run();
     CHECK(result.status == -ETIMEDOUT && result.cleanup_status == BC_STS_IO_ERROR && result.retained);
     /* request, hash, acquire, download, then five commands. Removal owns the
@@ -863,7 +931,7 @@ static void test_info(void)
         if (i == 2) {
             adp.cfg_users = 1; adp.cmds.state = 9;
             adp.cmds.session_owner = &pci; adp.cmds.session_module_pinned = true;
-            adp.cmds.hw_ctx = adp.cmds.stream = adp.fill_byte_pool = &pci;
+            adp.cmds.hw_ctx = &hardware; adp.cmds.stream = adp.fill_byte_pool = &pci;
         }
         before = allocations; memset(&info, 0xa5, sizeof(info));
         CHECK(!crystalhd_fw_research_compat_ioctl(&file, CRYSTALHD_FW_RESEARCH_GET_INFO, argument));
@@ -872,7 +940,7 @@ static void test_info(void)
         CHECK(!info.reserved[0] && !info.reserved[1] && !info.reserved[2]);
         CHECK(!memcmp(info.firmware_sha256, crystalhd_fw_research_sha256, 32));
         CHECK(allocations == (int)before && !copy_in_count && copy_out_count == 1); no_hardware();
-        if (i == 2) CHECK(adp.cmds.session_owner == &pci && adp.cmds.session_module_pinned && adp.cmds.hw_ctx == &pci);
+        if (i == 2) CHECK(adp.cmds.session_owner == &pci && adp.cmds.session_module_pinned && adp.cmds.hw_ctx == &hardware);
         CHECK(!crystalhd_fw_research_release(&inode, &file));
     }
     for (i = 0; i < 6; i++) {
@@ -889,6 +957,248 @@ static void test_info(void)
         CHECK(info.version == 0xa5a5a5a5U && !copy_in_count && copy_out_count == (i == 5));
         no_hardware(); unlocked(); CHECK(!crystalhd_fw_research_release(&inode, &file));
     }
+}
+
+static BC_STATUS read_mock(struct crystalhd_hw *hw, u32 offset, u32 count, u32 *words)
+{
+    static const u32 offsets[] = {0x6fc, 0xd1ff4, 0xd3ac4, 0xd3ad0,
+        0xd1ff4, 0xd3ac4, 0xd3ad0};
+    static const u32 counts[] = {1, 2, 1, 1, 2, 1, 1};
+    unsigned index = read_count++, stage = index == 0 ? 1 : index < 4 ? 2 : 3;
+    unsigned first = offset == 0xd1ff4 ? 0 : offset == 0xd3ac4 ? 2 : 3;
+    unsigned i;
+    u32 expected[] = {1, 0xd3a00, command_count >= 3 ? 1 : 0,
+        command_count >= 3 ? 0x200 : 0};
+    barrier(); CHECK(hw == &hardware && hw->lock.held == 1 && hw->fwcmd_trans_mutex.held == 1);
+    CHECK(adp.cmds.session_owner == &crystalhd_fw_research_owner && adp.cmds.session_module_pinned);
+    CHECK(index < ARRAY_SIZE(offsets) && offset == offsets[index] && count == counts[index]);
+    CHECK(command_count == (stage == 3 ? 3U : 2U));
+    if (read_padding) { expected[2] |= 0xa5b6c700; expected[3] |= 0xab000000; }
+    for (i = 0; i < count; i++) {
+        unsigned word = offset == 0x6fc ? 0 : first + i;
+        words[i] = offset == 0x6fc ? 0xd3a00 : expected[word];
+        if (read_mismatch_stage == stage && read_mismatch_word == word) words[i] ^= 1;
+    }
+    if (read_count == read_fail_at) {
+        for (i = 0; i < count; i++) words[i] = 0xdeadbeef;
+    }
+    if (read_count == read_mutate_at) state_mutate(read_mutation);
+    return read_count == read_fail_at ? read_status : BC_STS_SUCCESS;
+}
+
+static void state_reset(void)
+{ reset(); firmware.size = 0xd3014; }
+static struct crystalhd_fw_research_state_request state_request(void)
+{
+    struct crystalhd_fw_research_state_request req = {0};
+    req.version = CRYSTALHD_FW_RESEARCH_VERSION;
+    req.size = sizeof(struct crystalhd_fw_research_state_result);
+    return req;
+}
+static struct crystalhd_fw_research_state_result state_run(void)
+{
+    struct crystalhd_fw_research_state_result result;
+    struct crystalhd_fw_research_request req = request();
+    memset(&result, 0xa5, sizeof(result)); result.request = state_request();
+    crystalhd_fw_research_run_internal(42, &req, &result.control, &result);
+    unlocked(); CHECK(!live_allocations);
+    CHECK(result.control.request.selector == CRYSTALHD_FW_RESEARCH_H264_CONTROL);
+    CHECK(result.control.generation == 42);
+    return result;
+}
+static void sample_empty(const struct crystalhd_fw_research_state_sample *sample,
+                         bool attempted, int status)
+{
+    static const u32 zero[4];
+    CHECK(sample->attempted == (u32)attempted && sample->status == status);
+    CHECK(!sample->read_complete && !sample->reserved && !memcmp(sample->words, zero, sizeof(zero)));
+}
+static struct crystalhd_fw_research_state_sample *state_stage(
+    struct crystalhd_fw_research_state_result *result, unsigned stage)
+{
+    return stage == 1 ? &result->calibration : stage == 2 ? &result->after_init : &result->after_open;
+}
+static void test_fixed_state(void)
+{
+    static const BC_STATUS failures[] = {BC_STS_IO_ERROR, BC_STS_TIMEOUT,
+        BC_STS_IO_USER_ABORT, BC_STS_CMD_CANCELLED, BC_STS_BUSY, BC_STS_PWR_MGMT,
+        BC_STS_FW_CMD_ERR, BC_STS_INV_ARG};
+    struct crystalhd_fw_research_state_result result;
+    unsigned stage, word, read, failure, gate;
+    state_reset(); result = state_run();
+    CHECK(!result.control.status && command_count == 5 && read_count == 7 && release_count == 1);
+    CHECK(!result.control.retained && firmware_release_count == 1);
+    for (stage = 1; stage <= 3; stage++) {
+        struct crystalhd_fw_research_state_sample *sample = state_stage(&result, stage);
+        CHECK(sample->attempted == 1 && sample->read_complete == 1 && !sample->status && !sample->reserved);
+    }
+    CHECK(result.calibration.words[0] == 0xd3a00 && !result.calibration.words[1] &&
+        !result.calibration.words[2] && !result.calibration.words[3]);
+    CHECK(result.after_init.words[0] == 1 && result.after_init.words[1] == 0xd3a00 &&
+        !result.after_init.words[2] && !result.after_init.words[3]);
+    CHECK(result.after_open.words[0] == 1 && result.after_open.words[1] == 0xd3a00 &&
+        result.after_open.words[2] == 1 && result.after_open.words[3] == 0x200);
+    state_reset(); read_padding = true; result = state_run(); CHECK(!result.control.status && read_count == 7);
+    CHECK(result.after_init.words[2] == 0xa5b6c700 && result.after_open.words[3] == 0xab000200);
+    for (stage = 1; stage <= 3; stage++) {
+        for (word = 0; word < (stage == 1 ? 1U : 4U); word++) {
+            state_reset(); read_mismatch_stage = stage; read_mismatch_word = word; result = state_run();
+            CHECK(result.control.status == -EPROTO && release_count == 1 && !result.control.retained);
+            CHECK(read_count == (stage == 1 ? 1U : stage == 2 ? 4U : 7U));
+            CHECK(command_count == (stage == 3 ? 3U : 2U));
+            CHECK(state_stage(&result, stage)->attempted == 1 && state_stage(&result, stage)->read_complete == 1);
+            CHECK(state_stage(&result, stage)->status == -EPROTO);
+            for (gate = stage + 1; gate <= 3; gate++) sample_empty(state_stage(&result, gate), false, 0);
+        }
+    }
+    for (read = 1; read <= 7; read++) {
+        stage = read == 1 ? 1 : read <= 4 ? 2 : 3;
+        for (failure = 0; failure < ARRAY_SIZE(failures); failure++) {
+            state_reset(); read_fail_at = read; read_status = failures[failure]; result = state_run();
+            CHECK(result.control.status == crystalhd_status_to_errno(failures[failure]));
+            CHECK(read_count == read && command_count == (stage == 3 ? 3U : 2U));
+            CHECK(release_count == 1 && !result.control.retained);
+            sample_empty(state_stage(&result, stage), true, result.control.status);
+            for (gate = stage + 1; gate <= 3; gate++) sample_empty(state_stage(&result, gate), false, 0);
+        }
+        state_reset(); read_mutate_at = read; read_mutation = 1; result = state_run();
+        CHECK(result.control.status == -ENODEV && read_count == read && !release_count);
+        CHECK(result.control.retained && !result.control.cleanup_attempted && result.control.cleanup_status == BC_STS_CMD_CANCELLED);
+        sample_empty(state_stage(&result, stage), true, -ENODEV);
+        for (gate = stage + 1; gate <= 3; gate++) sample_empty(state_stage(&result, gate), false, 0);
+    }
+    for (gate = 0; gate < 9; gate++) {
+        state_reset();
+        switch (gate) {
+        case 0: adp.i2o_addr = NULL; break;
+        case 1: adp.mem_addr = NULL; break;
+        case 2: adp.pci_i2o_len = 0xffff; break;
+        case 3: adp.pci_mem_len = 0x3ad4; break;
+        case 4: adp.pci_mem_len = 0xffff; break;
+        case 5: adp.generation++; break;
+        case 6: privileged = false; break;
+        case 7: module.state = MODULE_STATE_COMING; break;
+        case 8: adp.cfg_users = 1; break;
+        }
+        result = state_run();
+        CHECK(result.control.status == (gate < 2 ? -ENODEV : gate < 5 ? -ERANGE :
+            gate == 5 ? -ESTALE : gate == 6 ? -EPERM : gate == 7 ? -EAGAIN : -EBUSY));
+        no_hardware();
+        for (stage = 1; stage <= 3; stage++) sample_empty(state_stage(&result, stage), false, 0);
+    }
+    state_reset(); firmware.size--; result = state_run(); CHECK(result.control.status == -EINVAL);
+    CHECK(hash_count == 1 && !acquire_count && !download_count && !read_count && firmware_release_count == 1);
+    state_reset(); bad_digest = true; result = state_run(); CHECK(result.control.status == -EKEYREJECTED);
+    CHECK(!acquire_count && !read_count);
+    for (gate = 0; gate < 5; gate++) {
+        state_reset(); command_status[gate] = BC_STS_TIMEOUT; result = state_run();
+        CHECK(result.control.status == -ETIMEDOUT && command_count == gate + 1 && release_count == 1);
+        CHECK(read_count == (gate < 2 ? 0U : gate == 2 ? 4U : 7U));
+    }
+    state_reset(); release_status = BC_STS_IO_ERROR; release_retains = true; result = state_run();
+    CHECK(result.control.status == -EIO && result.control.retained && read_count == 7);
+}
+
+static void test_fixed_state_guards(void)
+{
+    static const int errors[] = {0, -ENODEV, -ESTALE, -EAGAIN, -EIO,
+        -EBUSY, -EBUSY, -EAGAIN, -EACCES, -ERANGE, -ENODEV};
+    struct crystalhd_fw_research_state_sample sample;
+    unsigned mutation, phase;
+    for (phase = 0; phase < 3; phase++) {
+        for (mutation = 1; mutation <= 10; mutation++) {
+            /* A corrupt hw back-pointer is a preflight test only: production
+             * transaction admission itself requires a valid back-pointer. */
+            if (phase == 1 && mutation == 10) continue;
+            state_reset(); down_read(&chd_device_lock); down_write(&adp.user_lock);
+            adp.cmds.hw_ctx = &hardware; adp.cmds.session_owner = &crystalhd_fw_research_owner;
+            adp.cmds.session_module_pinned = true; adp.cmds.state = BC_LINK_INIT; command_count = 2;
+            if (phase == 0) state_mutate(mutation);
+            if (phase == 1) transaction_mutation = mutation;
+            if (phase == 2) { read_mutate_at = 1; read_mutation = mutation; }
+            CHECK(crystalhd_fw_research_state_sample(&adp.cmds, 42, &sample, true, false) == errors[mutation]);
+            sample_empty(&sample, phase == 2, errors[mutation]);
+            CHECK(read_count == (phase == 2 ? 1U : 0U));
+            up_write(&adp.user_lock); up_read(&chd_device_lock); unlocked();
+        }
+    }
+    state_reset(); down_read(&chd_device_lock); down_write(&adp.user_lock);
+    adp.cmds.hw_ctx = &hardware; adp.cmds.session_owner = &crystalhd_fw_research_owner;
+    adp.cmds.session_module_pinned = true; adp.cmds.state = BC_LINK_INIT;
+    transaction_error = -EINTR;
+    CHECK(crystalhd_fw_research_state_sample(&adp.cmds, 42, &sample, true, false) == -ERESTARTSYS);
+    sample_empty(&sample, false, -ERESTARTSYS); CHECK(!read_count);
+    up_write(&adp.user_lock); up_read(&chd_device_lock); unlocked();
+    for (mutation = 0; mutation < 7; mutation++) {
+        int expected = mutation < 3 ? -ENODEV : mutation == 3 ? -EACCES :
+            mutation == 4 ? -EBUSY : mutation == 5 ? -EOPNOTSUPP : -EACCES;
+        state_reset(); down_read(&chd_device_lock); down_write(&adp.user_lock);
+        adp.cmds.hw_ctx = &hardware; adp.cmds.session_owner = &crystalhd_fw_research_owner;
+        adp.cmds.session_module_pinned = true; adp.cmds.state = BC_LINK_INIT;
+        if (mutation == 0) adp.cmds.hw_ctx = NULL;
+        if (mutation == 1) hardware.pfnDevDRAMRead = NULL;
+        if (mutation == 2) hardware.pfnWriteDevRegister = NULL;
+        if (mutation == 3) adp.cmds.session_module_pinned = false;
+        if (mutation == 4) adp.cmds.state = BC_LINK_INVALID;
+        if (mutation == 5) pci.device = 0x1612;
+        if (mutation == 6) adp.cmds.session_owner = NULL;
+        CHECK(crystalhd_fw_research_state_sample(&adp.cmds, 42, &sample, true, false) == expected);
+        sample_empty(&sample, false, expected); CHECK(!read_count);
+        up_write(&adp.user_lock); up_read(&chd_device_lock); unlocked();
+    }
+    state_reset();
+    CHECK(!crystalhd_fw_research_state_span(&adp, 0, 1));
+    CHECK(!crystalhd_fw_research_state_span(&adp, 0xfffc, 1));
+    CHECK(!crystalhd_fw_research_state_span(&adp, 0x3fffffc, 1));
+    CHECK(crystalhd_fw_research_state_span(&adp, 0xfffc, 2) == -ERANGE);
+    CHECK(crystalhd_fw_research_state_span(&adp, 0x4000000, 1) == -ERANGE);
+    CHECK(crystalhd_fw_research_state_span(&adp, 0x3fffffc, 2) == -ERANGE);
+    CHECK(crystalhd_fw_research_state_span(&adp, 1, 1) == -ERANGE);
+    CHECK(crystalhd_fw_research_state_span(&adp, 0, 0) == -ERANGE);
+    CHECK(crystalhd_fw_research_state_span(&adp, 0, UINT32_MAX) == -ERANGE);
+    adp.pci_mem_len = 0x3ad4;
+    CHECK(!crystalhd_fw_research_state_span(&adp, 0xd3ad0, 1));
+    adp.pci_mem_len--;
+    CHECK(crystalhd_fw_research_state_span(&adp, 0xd3ad0, 1) == -ERANGE);
+    adp.pci_mem_len = 3;
+    CHECK(crystalhd_fw_research_state_span(&adp, 0, 1) == -ERANGE);
+}
+
+static void test_fixed_state_ioctl(void)
+{
+    struct inode inode = {0}; struct file file = {0};
+    struct crystalhd_fw_research_state_result result;
+    unsigned long arg = (unsigned long)&result;
+    unsigned field;
+    state_reset(); CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_STATE, arg) == -ENODEV);
+    CHECK(!crystalhd_fw_research_open(&inode, &file));
+    CHECK(crystalhd_fw_research_ioctl(&file, _IOWR('R', 0x93, struct crystalhd_fw_research_state_request), arg) == -ENOTTY);
+    for (field = 0; field < 4; field++) {
+        memset(&result, 0, sizeof(result)); result.request = state_request();
+        if (field == 0) result.request.version++;
+        if (field == 1) result.request.size--;
+        if (field == 2) result.request.flags = 1;
+        if (field == 3) result.request.reserved = 1;
+        CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_STATE, arg) == -EINVAL);
+    }
+    no_hardware(); result.request = state_request(); copy_in_error = true;
+    CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_STATE, arg) == -EFAULT);
+    copy_in_error = false; allocation_fail = allocations + 1;
+    CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_STATE, arg) == -ENOMEM); no_hardware();
+    allocation_fail = 0;
+    CHECK(!crystalhd_fw_research_compat_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_STATE, arg));
+    CHECK(!result.control.status && read_count == 7 && command_count == 5 && !result.control.retained);
+    CHECK(!crystalhd_fw_research_release(&inode, &file) && !live_allocations);
+    state_reset(); CHECK(!crystalhd_fw_research_open(&inode, &file));
+    result.request = state_request(); copy_out_error = true;
+    CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_STATE, arg) == -EFAULT);
+    CHECK(release_count == 1 && !adp.cmds.session_owner && read_count == 7);
+    CHECK(!crystalhd_fw_research_release(&inode, &file) && !live_allocations);
+    state_reset(); CHECK(!crystalhd_fw_research_open(&inode, &file)); chd_device_generation++;
+    result.request = state_request();
+    CHECK(!crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_STATE, arg));
+    CHECK(result.control.status == -ENODEV); no_hardware();
+    CHECK(!crystalhd_fw_research_release(&inode, &file) && !live_allocations);
 }
 
 int main(void)
@@ -911,6 +1221,7 @@ int main(void)
                    CRYSTALHD_FW_RESEARCH_SET_FGT_COMMAND == 9 && CRYSTALHD_FW_RESEARCH_CUSTOM_VIDOUT_COMMAND == 10 &&
                    CRYSTALHD_FW_RESEARCH_FILL_PIC_BUF_COMMAND == 11, "fixed command selectors");
     test_lifecycle(); test_admission(); test_idle(); test_hash(); test_commands(); test_named_controls(); test_raw_commands(); test_cleanup(); test_ioctl(); test_info();
+    test_fixed_state(); test_fixed_state_guards(); test_fixed_state_ioctl();
     CHECK(!live_allocations); unlocked();
     printf("Firmware probe: %u checks passed\n", checks);
     return 0;
