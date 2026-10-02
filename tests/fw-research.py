@@ -8,6 +8,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import struct
 import subprocess
 import sys
@@ -916,7 +917,7 @@ class FirmwareBootstrapTests(unittest.TestCase):
         result = MAP._bootstrap_map(self.payload, self.images)
         anchors = {a["blob_file_offset"]: a for a in result["instruction_anchors"]}
         self.assertEqual(len(anchors), len(result["instruction_anchors"]))
-        self.assertLessEqual(len(anchors), 64)
+        self.assertLessEqual(len(anchors), MAP.MAX_BOOTSTRAP_ANCHORS)
         self.assertTrue(all(offset < 0x2ea60 for offset in anchors))
         self.assertEqual(anchors[0]["literal_value"], 0x2ca00)
         self.assertEqual(anchors[0x8d54]["literal_blob_file_offset"], 0x8f74)
@@ -949,6 +950,90 @@ class FirmwareBootstrapTests(unittest.TestCase):
             with self.assertRaisesRegex(MAP.FormatError, "exact bundled"):
                 MAP.analyze(fixture(), bootstrap=True)
 
+    def test_bundled_host_open_low_byte_policy_and_failure_reply(self):
+        result = MAP._bootstrap_map(self.payload, self.images)
+        policy = result["host_channel_open_policy"]
+        anchors = {a["blob_file_offset"]: a for a in result["instruction_anchors"]}
+        self.assertEqual((policy["command"], policy["dispatcher_call_blob_file_offset"],
+                          policy["entry_blob_file_offset"]), (0x73763100, 0x62d8, 0x51c8))
+        self.assertEqual(anchors[0x62d8]["target_blob_file_offset"], 0x51c8)
+        self.assertEqual((policy["record_buffer_bytes"], policy["request_record_offset"],
+                          policy["reply_record_offset"]), (256, 0x14, 0x114))
+        self.assertEqual((policy["algorithm_word_index"], policy["algorithm_bits_compared"],
+                          policy["algorithm_load_blob_file_offset"]), (9, 8, 0x5294))
+        self.assertFalse(policy["algorithm_upper_bits_checked"])
+        self.assertEqual(anchors[0x5294]["word"], 0xe5d60024)
+        routes = policy["comparison_routes"]
+        self.assertEqual([(r["low_byte_selector"], r["target_blob_file_offset"]) for r in routes],
+                         [(1, 0x5408), (0, 0x5420), (4, 0x5438),
+                          (7, 0x5454), (6, 0x547c), (8, 0x55b0)])
+        for route in routes:
+            self.assertEqual(set(route), {"low_byte_selector", "compare_blob_file_offset",
+                                          "branch_blob_file_offset", "target_blob_file_offset"})
+            self.assertEqual(anchors[route["compare_blob_file_offset"]]["word"],
+                             0xe3500000 | route["low_byte_selector"])
+            jump = anchors[route["branch_blob_file_offset"]]
+            self.assertEqual((jump["condition"], jump["target_blob_file_offset"]),
+                             (0, route["target_blob_file_offset"]))
+        self.assertEqual(policy["fallback"], {
+            "entry_blob_file_offset": 0x52d4, "channel_id_word_index": 3,
+            "channel_id": 0xffffffff, "status_word_index": 2, "status": 0xffffffff,
+            "sequence_copy_blob_file_offsets": [0x52e0, 0x52e4],
+            "internal_return": 2, "common_exit_blob_file_offset": 0x5218})
+        self.assertEqual(policy["preconditions"], {
+            "state_word_equals": 1, "state_check_blob_file_offset": 0x51f4,
+            "free_channel_slot_required": True, "slot_scan_limit": 4,
+            "slot_check_blob_file_offset": 0x5250, "device_observed": False})
+        self.assertFalse(policy["device_observed"])
+        self.assertIn("not channel-open or codec capability proof", policy["scope"])
+
+    def test_host_open_named_rejections_and_word_fields_match_headers(self):
+        policy = MAP._bootstrap_map(self.payload, self.images)["host_channel_open_policy"]
+        header = (ROOT / "include/7411d.h").read_text()
+        self.assertEqual([(r["name"], r["value"]) for r in policy["named_rejected_selectors"]],
+                         [("H261", 2), ("H263", 3), ("MPEG1", 5)])
+        matched = {r["low_byte_selector"] for r in policy["comparison_routes"]}
+        for rejected in policy["named_rejected_selectors"]:
+            pattern = rf"\beC011_VIDEO_ALG_{rejected['name']}\s*=\s*0x{rejected['value']:08x}\b"
+            self.assertRegex(header, pattern)
+            line = int(rejected["source"].rsplit(":", 1)[1])
+            self.assertRegex(header.splitlines()[line - 1], pattern)
+            self.assertNotIn(rejected["value"], matched)
+        native = (ROOT / "driver/linux/crystalhd_fw_if.h").read_text()
+        request = native.split("struct crystalhd_fw_channel_open_cmd {", 1)[1].split("};", 1)[0]
+        reply = native.split("struct DecRspChannelChannelOpen {", 1)[1].split("};", 1)[0]
+        request_fields = re.findall(r"uint32_t\s+(\w+)\s*;", request)
+        reply_fields = re.findall(r"uint32_t\s+(\w+)\s*;", reply)
+        self.assertEqual(request_fields[policy["algorithm_word_index"]], "video_algorithm")
+        self.assertEqual(reply_fields[policy["fallback"]["channel_id_word_index"]], "ChannelID")
+        self.assertEqual(reply_fields[policy["fallback"]["status_word_index"]], "status")
+        self.assertEqual((request_fields[1], reply_fields[1]), ("sequence", "sequence"))
+
+    def test_host_open_ladder_load_and_reply_semantic_mutations(self):
+        for offset, replacement in (
+                (0x5294, 0xe5960024),  # word load would no longer prove low-byte selection
+                (0x5294, 0xe5d60020),  # wrong request field
+                (0x52a0, 0xe3500002), (0x52b0, 0xe3500003), (0x52cc, 0xe3500005),
+                (0x52a4, 0x1a000057), (0x52c8, 0x0a00006c),
+                (0x52d0, 0xea0000b6), (0x52dc, 0xe5848008),
+                (0x52e0, 0xe5960000), (0x52e4, 0xe5840000),
+                (0x52e8, 0xe584800c), (0x52ec, 0xe3a00000),
+                (0x51ec, 0xe3a08000), (0x51f4, 0xe3500000),
+                (0x525c, 0xe3550005), (0x51e0, 0xe2806018),
+                (0x51e4, 0xe2804f46), (0x5f4c, 0xe3002080)):
+            data = bytearray(self.payload)
+            struct.pack_into("<I", data, offset, replacement)
+            with self.subTest(offset=offset, word=replacement), self.assertRaises(MAP.FormatError):
+                MAP._bootstrap_map(data, self.images)
+
+    def test_bootstrap_fixed_anchor_budget(self):
+        result = MAP._bootstrap_map(self.payload, self.images)
+        self.assertEqual(len(result["instruction_anchors"]), 127)
+        self.assertLessEqual(len(result["instruction_anchors"]), MAP.MAX_BOOTSTRAP_ANCHORS)
+        with mock.patch.object(MAP, "MAX_BOOTSTRAP_ANCHORS", 126):
+            with self.assertRaisesRegex(MAP.FormatError, "anchor budget"):
+                MAP._bootstrap_map(self.payload, self.images)
+
     def test_bootstrap_cli_alternative_pin_fails_without_json(self):
         data = fixture()
         with mock.patch.object(MAP, "read_firmware", return_value=data):
@@ -964,7 +1049,10 @@ class FirmwareBootstrapTests(unittest.TestCase):
         data = bytearray(64)
         for offset, word, target, options in (
                 (16, 0xeafffffb, 4, {}), (4, 0xeb000004, 28, {"link": True}),
-                (8, 0x0a000000, 16, {"condition": 0})):
+                (8, 0x0a000000, 16, {"condition": 0}),
+                (8, 0x1a000000, 16, {"condition": 1}),
+                (8, 0xba000000, 16, {"condition": 11}),
+                (8, 0xca000000, 16, {"condition": 12})):
             struct.pack_into("<I", data, offset, word)
             result = MAP._a32_branch(data, offset, **options)
             self.assertEqual(result["target_blob_file_offset"], target)
@@ -972,6 +1060,7 @@ class FirmwareBootstrapTests(unittest.TestCase):
         for word, options in ((0xfa000000, {}), (0xeb000000, {}),
                               (0x1a000000, {}), (0x0a000000, {}),
                               (0xfa000000, {"condition": 15}),
+                              (0x2a000000, {"condition": 2}),
                               (0xf000f800, {"link": True}),
                               (0xea7fffff, {}), (0xea800000, {})):
             struct.pack_into("<I", data, 16, word)

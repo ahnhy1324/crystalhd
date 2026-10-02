@@ -23,6 +23,7 @@ MAX_RELOCATION_RECORDS = 65536  # Includes no-ops and repeated tables/images.
 MAX_OWNER_LOOKUP_STEPS = 1000000  # Bounds overlapping/aliased function intervals.
 MAX_METADATA_OUTPUT_BYTES = 16 * 1024 * 1024  # Retained symbols and section names.
 MAX_REFERENCE_OUTPUT_BYTES = 32 * 1024 * 1024  # Conservative JSON size accounting.
+MAX_BOOTSTRAP_ANCHORS = 128  # Fixed, audited ARM instructions; never a general scan.
 DEFAULT_SYMBOLS = (
     "Arc_UartInit", "Arc_UartPoll", "ArcGetc", "ArcPutc", "ArcCommandBuffer",
     "ReadLine", "MatchKeyword", "Core_Command", "CmdPeek", "CmdCore",
@@ -74,7 +75,7 @@ def _bootstrap_word(payload, offset):
 def _a32_branch(payload, offset, link=False, condition=14):
     """Decode only audited A32 B/BL, not Thumb, BLX or arbitrary conditions."""
     word = _bootstrap_word(payload, offset)
-    if condition not in (0, 14) or word >> 24 != (condition << 4) | 10 | int(link):
+    if condition not in (0, 1, 11, 12, 14) or word >> 24 != (condition << 4) | 10 | int(link):
         raise FormatError("bootstrap instruction is not the required A32 branch")
     displacement = word & 0xffffff
     if displacement & 0x800000:
@@ -179,6 +180,85 @@ def _bootstrap_map(payload, images):
         word(exit_offset, epilogue)
         functions.append({"name": name, "entry_blob_file_offset": entry,
                           "common_exit_blob_file_offset": exit_offset})
+    # OPEN selection in the same dispatcher: command - GET_VERSION == 0xfc.
+    # Record buffers are 256 bytes; this is a host selector policy, not codec
+    # capability or proof that an admitted selector can decode a bitstream.
+    for offset, expected in ((0x5f44, 0xe2845014), (0x5f48, 0xe2846f45),
+                             (0x5f4c, 0xe3002100), (0x5f50, 0xe3a01000),
+                             (0x5f54, 0xe1a00006), (0x5f70, 0xe5951000),
+                             (0x5f7c, 0xe1510002), (0x5f80, 0xe0410002),
+                             (0x5f90, 0xe1510000), (0x5f94, 0xe0412000),
+                             (0x5fa8, 0xe0410002), (0x5fe8, 0xe3500001),
+                             (0x5ff0, 0xe3500002), (0x5ff8, 0xe35000fc),
+                             (0x62d4, 0xe1a00004)):
+        word(offset, expected)
+    for offset, target, condition in ((0x5f84, 0x662c, 0), (0x5f88, 0x602c, 12),
+                                      (0x5f98, 0x6428, 0), (0x5f9c, 0x6004, 12),
+                                      (0x5fb0, 0x5fe8, 12), (0x5fec, 0x628c, 0),
+                                      (0x5ff4, 0x62ac, 0), (0x5ffc, 0x60b8, 1)):
+        branch(offset, target, condition=condition)
+    branch(0x5f58, 0x206e4, link=True)
+    branch(0x6000, 0x62cc)
+    branch(0x62d8, 0x51c8, link=True)
+    # Initial-state and free-slot checks precede the low-byte selector ladder.
+    for offset, expected in ((0x51c8, 0xe92d4ff0), (0x51cc, 0xe24dd01c),
+                             (0x51d0, 0xe3e07000), (0x51d4, 0xe3a05000),
+                             (0x51d8, 0xe3500000), (0x51e0, 0xe2806014),
+                             (0x51e4, 0xe2804f45), (0x51ec, 0xe3e08000),
+                             (0x51f0, 0xe59b0000), (0x51f4, 0xe3500001),
+                             (0x523c, 0xe59b0004), (0x5240, 0xe3a01073),
+                             (0x5244, 0xe0010195), (0x5248, 0xe0801101),
+                             (0x524c, 0xe5d110c4), (0x5250, 0xe3510000),
+                             (0x5258, 0xe2855001), (0x525c, 0xe3550004),
+                             (0x5264, 0xe3570000), (0x5300, 0xe1a07005),
+                             (0x5218, 0xe28dd01c), (0x521c, 0xe8bd8ff0)):
+        word(offset, expected)
+    literal(0x51e8, 0x5128, 0xd1ff4, 11)
+    branch(0x51dc, 0x5220, condition=0)
+    branch(0x51f8, 0x5234, condition=0)
+    branch(0x5254, 0x52f4, condition=0)
+    branch(0x5260, 0x5240, condition=11)
+    branch(0x5268, 0x59f0, condition=11)
+    branch(0x5304, 0x5264)
+    # LDRB deliberately establishes no validation of algorithm word high bits.
+    word(0x5294, 0xe5d60024)
+    word(0x52c4, 0xe3a01008)
+    routes = []
+    for selector, compare, jump, target in ((1, 0x52a0, 0x52a4, 0x5408),
+                                            (0, 0x52a8, 0x52ac, 0x5420),
+                                            (4, 0x52b0, 0x52b4, 0x5438),
+                                            (7, 0x52b8, 0x52bc, 0x5454),
+                                            (6, 0x52c0, 0x52c8, 0x547c),
+                                            (8, 0x52cc, 0x52d0, 0x55b0)):
+        word(compare, 0xe3500000 | selector)
+        branch(jump, target, condition=0)
+        routes.append({"low_byte_selector": selector, "compare_blob_file_offset": compare,
+                       "branch_blob_file_offset": jump, "target_blob_file_offset": target})
+    for offset, expected in ((0x52d4, 0xe28f00b8), (0x52dc, 0xe584800c),
+                             (0x52e0, 0xe5960004), (0x52e4, 0xe5840004),
+                             (0x52e8, 0xe5848008), (0x52ec, 0xe3a00002)):
+        word(offset, expected)
+    branch(0x52d8, 0x203c4, link=True)
+    branch(0x52f0, 0x5218)
+    open_policy = {
+        "command": 0x73763100, "dispatcher_call_blob_file_offset": 0x62d8,
+        "entry_blob_file_offset": 0x51c8, "record_buffer_bytes": 256,
+        "request_record_offset": 0x14, "reply_record_offset": 0x114,
+        "algorithm_word_index": 9, "algorithm_load_blob_file_offset": 0x5294,
+        "algorithm_bits_compared": 8, "algorithm_upper_bits_checked": False,
+        "comparison_routes": routes,
+        "named_rejected_selectors": [
+            {"name": name, "value": value, "source": f"include/7411d.h:{line}"}
+            for name, value, line in (("H261", 2, 390), ("H263", 3, 391), ("MPEG1", 5, 393))],
+        "fallback": {"entry_blob_file_offset": 0x52d4, "channel_id_word_index": 3,
+                     "channel_id": 0xffffffff, "status_word_index": 2, "status": 0xffffffff,
+                     "sequence_copy_blob_file_offsets": [0x52e0, 0x52e4],
+                     "internal_return": 2, "common_exit_blob_file_offset": 0x5218},
+        "preconditions": {"state_word_equals": 1, "state_check_blob_file_offset": 0x51f4,
+                          "free_channel_slot_required": True, "slot_scan_limit": 4,
+                          "slot_check_blob_file_offset": 0x5250, "device_observed": False},
+        "device_observed": False,
+        "scope": "Static host OPEN selector policy, not channel-open or codec capability proof."}
     # ARM initialized catalog data is outside both ELF files, inside payload.
     root = _bootstrap_word(payload, 0xcfc00)
     if root != 0xcfbe8:
@@ -216,7 +296,7 @@ def _bootstrap_map(payload, images):
     word(0x929c, 0xe5900004)
     word(0x92a0, 0xe3001201)
     word(0x92a4, 0xe0804001)
-    if len(anchors) > 64:
+    if len(anchors) > MAX_BOOTSTRAP_ANCHORS:
         raise FormatError("bootstrap instruction-anchor budget exceeded")
     scrub_end = len(payload) - 1
     return {"schema_version": 1, "isa": "A32", "endianness": "little",
@@ -235,6 +315,7 @@ def _bootstrap_map(payload, images):
                               "callback_entry_blob_file_offsets": callbacks,
                               "images": descriptors},
             "instruction_anchors": anchors, "function_anchors": functions,
+            "host_channel_open_policy": open_policy,
             "host_mailbox_dispatch": {"arm_mailbox_address": 0x100e001c,
                                       "receive_entry_blob_file_offset": 0x8d48,
                                       "queue_entry_blob_file_offset": 0x8cf4,
