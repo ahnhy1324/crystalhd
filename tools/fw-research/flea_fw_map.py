@@ -35,7 +35,7 @@ MAX_CSC_COMMAND_ANCHORS = 32  # Fixed local command path, not a dispatcher scan.
 MAX_COMMAND_BUFFER_BRIDGE_REGIONS = 80
 MAX_COMMAND_BUFFER_BRIDGE_BYTES = 40 * 1024
 MAX_COMMAND_BUFFER_BRIDGE_RELOCATIONS = 2171
-MAX_INNER_DESCRIPTOR_REGIONS = 40
+MAX_INNER_DESCRIPTOR_REGIONS = 45
 MAX_INNER_DESCRIPTOR_BYTES = 4096
 # Original ELF bytes only: no runtime relocation, ARC decode or execution here.
 _INNER_DESCRIPTOR_HEADERS = (
@@ -69,6 +69,31 @@ _INNER_DESCRIPTOR_SECTIONS = (
      0xcea26, ".shstrtab"),
 )
 _INNER_DESCRIPTOR_WINDOWS = (
+    (0, "constructor_context_argument", 16, 0x2672c, 0x492c0,
+     "00006062"),
+    (0, "constructor_registration_and_slot_copy", 16, 0x2677c, 0x49310,
+     "1c808d08007c5f6070d4ff3f087f01401ffee741057e22800002004000260010107f014000020040002800100"
+     "0fc294000060000309b00101ffe077000fc494000040000f000011000866150f80601100c87001000fc0640"
+     "e44500000481001000fc0640e44e00009400011000fca641e4ce0000981a01109c060110a0060110ac060110"
+     "b0060110b406011010fe9f670086a16080010030000a0140bc06401001fea24010800d0844a30010027e8280"
+     "4ca30010002200404881001050a3001054a1001058ab0010007c024000240000007c80680000003000200214"
+     "407e0040007c0068000000300006001414800d0818808d08007ae757901c4110648100106c81001070810010"
+     "00000240688100108c2401100d0401600d1c87670d030030fc2d00100024cb42000600100406001008060010"
+     "107e004022fe9f67000481600001003054078210027e82403081000800fc89411c02000001fe9f6021fe9f67"
+     "00000610"),
+    (0, "activation_snapshot_copy", 4, 0x9fa4, 0x34e48,
+     "0000a061057e0080181e0e10141c0e10007ce04168d3ff3f10800708007c5f60bc050000007cdf6170cdff3f"
+     "20d4ff2f3c7e2740"),
+    (0, "context_dram_to_local_copy", 4, 0x9e74, 0x34d18,
+     "043e0e1000360e1000386e63307e8e53101a0e10141c0e10181e0e101c200e1020220e1024240e1028260e10"
+     "2c280e10000060620082406200052162009aa65121120020019a066201fe9f62007c1f62801a0530009ac661"
+     "20020020009ae6610020c861009ae6610000006280fe1f600081e8570ba2a861a08ef62f0a00a06100a60960"
+     "002028602099f62f009a4660009fe7672103002000a66642001c076000242960a078f62f009e476000a44742"
+     "017e8a42027aea57097c9f6201000000077e0a80009b2852007c0040001a053082f1ff270083f62f009be667"
+     "0102002000200860002429602070f62f009a46601000ae091400ce091800ee091c000e0a20002e0a24004e0a"
+     "28006e0a0480ed0b2c008e0a20800f3830106e0b"),
+    (0, "context_local_word_copy", 2, 0x52e0, 0x30184,
+     "027e4190017e6150fffbe15701800f38000481670002003000004008047e00400084001004fe204000800f38"),
     (0, "allocator_inputs", 4, 0x8758, 0x335fc,
      "007c7f6070d3ff3fac812108a881a1080083e257037e0040a5090020037ec070a4818108"),
     (0, "allocator_publish", 4, 0x886c, 0x33710,
@@ -739,6 +764,61 @@ def _inner_descriptor_map(payload, images):
                              "reader_record_base_local_address": 0x3fffd2dc,
                              "completion_record_base_local_address": 0x3fffd2dc,
                              "same_record_pool_identity_validated": False},
+                "record_pool_context_snapshot": {
+                    "immediate_slot_assignment": {
+                        "context_argument_elf_virtual_address": 0x2672c,
+                        "source_slot_write_elf_virtual_address": 0x267b0,
+                        "source_slot_context_offset": 0x530,
+                        "source_reload_elf_virtual_address": 0x268c8,
+                        "destination_address_calculation_elf_virtual_address": 0x268cc,
+                        "destination_slot_context_offset": 0x21c,
+                        "destination_store_elf_virtual_address": 0x268dc,
+                        "equal_value_immediately_after_store_under_base_model": True,
+                        "scope": "loaded value assignment only; conditional on unchanged source during this edge",
+                        "constructor_exit_equality_validated": False},
+                    "channel_table": {
+                        "constructor_channel_load_elf_virtual_address": 0x2677c,
+                        "constructor_table_literal": 0x3fffd470,
+                        "constructor_table_offset": -248,
+                        "constructor_context_store_elf_virtual_address": 0x26798,
+                        "activation_channel_shift_elf_virtual_address": 0x9fa8,
+                        "activation_table_literal": 0x3fffd368,
+                        "activation_table_offset": 16,
+                        "activation_context_load_elf_virtual_address": 0x9fbc,
+                        "context_entry_local_base": 0x3fffd378, "channel_stride_bytes": 32,
+                        "channel_range_validated": False, "active_channel_match_validated": False,
+                        "entry_unchanged_validated": False},
+                    "selected_snapshot_copy": {
+                        "call_elf_virtual_address": 0x9fd0,
+                        "original_callee_elf_virtual_address": 0x9e74,
+                        "destination_delay_slot_elf_virtual_address": 0x9fd4,
+                        "local_base_literal": 0x3fffcd70, "local_base_offset": 60,
+                        "local_destination": 0x3fffcdac, "bytes": 0x5bc,
+                        "word_bytes": 4, "chunk_bytes": 128, "full_chunks": 11, "tail_bytes": 60,
+                        "fields": [
+                            {"role": "producer_record_base", "source_context_offset": 0x21c,
+                             "destination_local_address": 0x3fffcfc8},
+                            {"role": "reader_completion_record_base", "source_context_offset": 0x530,
+                             "destination_local_address": 0x3fffd2dc}],
+                        "original_dma_read_callee_elf_virtual_address": 0x53c8,
+                        "dma_read_call_elf_virtual_address": 0x9efc,
+                        "dma_read_length_delay_slot_elf_virtual_address": 0x9f00,
+                        "original_sync_callee_elf_virtual_address": 0x5364,
+                        "sync_call_elf_virtual_addresses": [0x9eec, 0x9f48],
+                        "original_local_copy_callee_elf_virtual_address": 0x52e0,
+                        "local_copy_call_elf_virtual_addresses": [0x9f18, 0x9f5c],
+                        "local_copy_length_delay_slot_elf_virtual_addresses": [0x9f1c, 0x9f60],
+                        "successful_copy_validated": False},
+                    "propagation": "equal local values only if the same channel snapshot successfully copies unchanged equal source slots",
+                    "required_conditions": [
+                        "GNU base-case ISA, selected callee semantics and register preservation",
+                        "original call/literal edges survive the unresolved relocation/base model",
+                        "same valid channel and unchanged matching context table entry",
+                        "source slots remain equal after 0x268dc, including subsequent derived-pointer writes",
+                        "no address overflow, source aliasing or concurrent changes invalidate the selected snapshot",
+                        "successful initialized copy with the required DMA visibility and completion"],
+                    "later_source_slot_equality_validated": False,
+                    "runtime_snapshot_identity_validated": False},
                 "outer_record_write": {"call_elf_virtual_address": 0xa7a8,
                                        "original_callee_elf_virtual_address": 0x537c,
                                        "delay_slot_elf_virtual_address": 0xa7ac, "bytes": 56},
@@ -791,7 +871,8 @@ def _inner_descriptor_map(payload, images):
         "limitations": [
             "Original call/literal targets are conditional: selected relocation effects and runtime operands are not validated.",
             "Field paths assume the GNU base-case ISA interpretation, selected callees and register preservation conventions.",
-            "Producer CORE+88 and reader/completion local 0x3fffd2dc are distinct record-base fields; the same F pool and active codec contexts are assumptions, not validated equality.",
+            "Producer CORE+88 and reader/completion local 0x3fffd2dc are distinct record-base fields; constructor slot assignment and conditional snapshot offsets do not validate their current equality or active codec contexts.",
+            "The assignment is scoped immediately after 0x268dc, not constructor exit; later derived-pointer writes, aliasing and address overflow are not ruled out.",
             "Mailbox transfer is not a direct cross-image function call or a host-callable native backend ABI.",
             "The computed STATUS dispatcher is not validated; the selected MPEG call is conditional on reaching that path.",
             "Overlay/BSS initialization, DMA coherence and runtime execution are not observed.",
