@@ -124,4 +124,28 @@ struct crystalhd_fw_research_controller_result {
 #define CRYSTALHD_FW_RESEARCH_RUN_CONTROLLER \
 	_IOWR('R', 0x94, struct crystalhd_fw_research_controller_result)
 
+struct crystalhd_fw_research_image_sample {
+	__u32 attempted;
+	__s32 status;
+	/* Completed bracketed reads, not lifetime, ownership or coherence. */
+	__u32 read_complete;
+	__u32 reserved;
+	__u32 root_before;
+	__u32 root_after;
+	/* Raw order: virtual image pointer, translated physical image base, extent,
+	 * owned-byte word (low byte only; upper 24 bits remain raw).
+	 */
+	__u32 words[4];
+};
+
+struct crystalhd_fw_research_image_result {
+	struct crystalhd_fw_research_controller_result controller;
+	struct crystalhd_fw_research_image_sample after_init;
+	struct crystalhd_fw_research_image_sample after_open;
+};
+
+/* Fixed C-relative tuple only; returned image-pointer words are never followed. */
+#define CRYSTALHD_FW_RESEARCH_RUN_IMAGE \
+	_IOWR('R', 0x95, struct crystalhd_fw_research_image_result)
+
 #endif

@@ -17,13 +17,20 @@ static const u8 crystalhd_fw_research_owner;
 #define CRYSTALHD_FW_RESEARCH_ALGORITHM_H263 3U
 #define CRYSTALHD_FW_RESEARCH_ALGORITHM_MPEG1 5U
 
-/* Fixed locations in the pinned image; none is dereferenced as a pointer. */
+/* Fixed stock ARM locations; no caller-provided address is accepted. */
 #define CRYSTALHD_FW_RESEARCH_STATE_CALIBRATION_OFFSET 0x000006fcU
 #define CRYSTALHD_FW_RESEARCH_STATE_GLOBAL_OFFSET 0x000d1ff4U
 #define CRYSTALHD_FW_RESEARCH_STATE_OPEN_OFFSET 0x000d3ac4U
 #define CRYSTALHD_FW_RESEARCH_STATE_CONTEXT_OFFSET 0x000d3ad0U
 #define CRYSTALHD_FW_RESEARCH_STATE_CHANNEL_ZERO 0x000d3a00U
 #define CRYSTALHD_FW_RESEARCH_CONTROLLER_ROOT_OFFSET 0x000d3a08U
+/* Pinned fresh-INIT variable heap: base 0xd5384 + 0x3c heap metadata +
+ * 0x1c block header. This envelope is not runtime allocation certification.
+ */
+#define CRYSTALHD_FW_RESEARCH_IMAGE_CONTEXT_MIN 0x000d53dcU
+#define CRYSTALHD_FW_RESEARCH_IMAGE_CONTEXT_END 0x00116000U
+#define CRYSTALHD_FW_RESEARCH_IMAGE_CONTEXT_BYTES 0x378U
+#define CRYSTALHD_FW_RESEARCH_IMAGE_TUPLE_OFFSET 0x1acU
 #define CRYSTALHD_FW_RESEARCH_STATE_FIRMWARE_SIZE 0x000d3014U
 
 static const u8 crystalhd_fw_research_sha256[SHA256_DIGEST_SIZE] = {
@@ -102,6 +109,14 @@ static bool crystalhd_fw_research_controller_request_valid(
 {
 	return request->version == CRYSTALHD_FW_RESEARCH_VERSION &&
 		request->size == sizeof(struct crystalhd_fw_research_controller_result) &&
+		!request->flags && !request->reserved;
+}
+
+static bool crystalhd_fw_research_image_request_valid(
+	const struct crystalhd_fw_research_state_request *request)
+{
+	return request->version == CRYSTALHD_FW_RESEARCH_VERSION &&
+		request->size == sizeof(struct crystalhd_fw_research_image_result) &&
 		!request->flags && !request->reserved;
 }
 
@@ -484,11 +499,85 @@ done:
 	return rc;
 }
 
+static int crystalhd_fw_research_image_sample(struct crystalhd_cmd *ctx,
+	u64 generation, struct crystalhd_fw_research_image_sample *sample)
+{
+	struct crystalhd_hw *hw = ctx->hw_ctx;
+	u32 roots[2] = { }, words[4] = { };
+	unsigned long flags;
+	unsigned int i;
+	BC_STATUS sts;
+	int rc;
+
+	memset(sample, 0, sizeof(*sample));
+	rc = crystalhd_fw_research_state_context(ctx, generation, hw);
+	if (rc)
+		goto done;
+	sts = crystalhd_hw_fw_cmd_enter(hw);
+	rc = crystalhd_status_to_errno(sts);
+	if (rc) {
+		if (!READ_ONCE(ctx->adp->present))
+			rc = -ENODEV;
+		goto done;
+	}
+	/* One bounded tuple between fresh fixed-root reads, under the same host
+	 * fence. Address admission and root equality do not certify a live object.
+	 */
+	spin_lock_irqsave(&hw->lock, flags);
+	rc = crystalhd_fw_research_state_ready(ctx, generation, hw);
+	if (rc)
+		goto unlock;
+	for (i = 0; i < 3; i++) {
+		u32 offset = CRYSTALHD_FW_RESEARCH_CONTROLLER_ROOT_OFFSET, count = 1;
+		u32 *destination = i == 1 ? words : &roots[i == 2];
+
+		if (i == 1) {
+			if ((roots[0] & 3U) ||
+			    (u64)roots[0] < CRYSTALHD_FW_RESEARCH_IMAGE_CONTEXT_MIN ||
+			    (u64)roots[0] + CRYSTALHD_FW_RESEARCH_IMAGE_CONTEXT_BYTES >
+			    CRYSTALHD_FW_RESEARCH_IMAGE_CONTEXT_END) {
+				rc = -ERANGE;
+				goto unlock;
+			}
+			offset = roots[0] + CRYSTALHD_FW_RESEARCH_IMAGE_TUPLE_OFFSET;
+			count = ARRAY_SIZE(words);
+		}
+		rc = crystalhd_fw_research_state_span(ctx->adp, offset, count);
+		if (!rc)
+			rc = crystalhd_fw_research_state_ready(ctx, generation, hw);
+		if (rc)
+			goto unlock;
+		if (!i)
+			sample->attempted = 1;
+		sts = hw->pfnDevDRAMRead(hw, offset, count, destination);
+		rc = crystalhd_fw_research_state_ready(ctx, generation, hw);
+		if (!rc)
+			rc = crystalhd_status_to_errno(sts);
+		if (rc)
+			goto unlock;
+	}
+	if (roots[0] != roots[1]) {
+		rc = -ESTALE;
+		goto unlock;
+	}
+	sample->root_before = roots[0];
+	sample->root_after = roots[1];
+	memcpy(sample->words, words, sizeof(words));
+	sample->read_complete = 1;
+unlock:
+	spin_unlock_irqrestore(&hw->lock, flags);
+	crystalhd_hw_fw_cmd_leave(hw);
+done:
+	sample->status = rc;
+	return rc;
+}
+
 static void crystalhd_fw_research_run_internal(u64 generation,
 	const struct crystalhd_fw_research_request *request,
 	struct crystalhd_fw_research_result *result,
 	struct crystalhd_fw_research_state_result *state,
-	struct crystalhd_fw_research_controller_result *controller)
+	struct crystalhd_fw_research_controller_result *controller,
+	struct crystalhd_fw_research_image_result *image)
 {
 	struct crystalhd_device_access access;
 	struct crystalhd_cmd *ctx;
@@ -508,6 +597,10 @@ static void crystalhd_fw_research_run_internal(u64 generation,
 	if (controller) {
 		memset(&controller->after_init, 0, sizeof(controller->after_init));
 		memset(&controller->after_open, 0, sizeof(controller->after_open));
+	}
+	if (image) {
+		memset(&image->after_init, 0, sizeof(image->after_init));
+		memset(&image->after_open, 0, sizeof(image->after_open));
 	}
 	result->request = *request;
 	result->generation = generation;
@@ -595,6 +688,12 @@ static void crystalhd_fw_research_run_internal(u64 generation,
 			if (rc)
 				goto cleanup;
 		}
+		if (image) {
+			rc = crystalhd_fw_research_image_sample(ctx, generation,
+						      &image->after_init);
+			if (rc)
+				goto cleanup;
+		}
 	}
 	raw_command = crystalhd_fw_research_raw_command(request->selector);
 	if (raw_command) {
@@ -612,6 +711,12 @@ static void crystalhd_fw_research_run_internal(u64 generation,
 		if (controller) {
 			rc = crystalhd_fw_research_controller_sample(ctx, generation,
 							&controller->after_open);
+			if (rc)
+				goto cleanup;
+		}
+		if (image) {
+			rc = crystalhd_fw_research_image_sample(ctx, generation,
+						      &image->after_open);
 			if (rc)
 				goto cleanup;
 		}
@@ -651,7 +756,7 @@ static void crystalhd_fw_research_run(u64 generation,
 	const struct crystalhd_fw_research_request *request,
 	struct crystalhd_fw_research_result *result)
 {
-	crystalhd_fw_research_run_internal(generation, request, result, NULL, NULL);
+	crystalhd_fw_research_run_internal(generation, request, result, NULL, NULL, NULL);
 }
 
 struct crystalhd_fw_research_file {
@@ -726,6 +831,7 @@ static long crystalhd_fw_research_ioctl(struct file *file, unsigned int command,
 	struct crystalhd_fw_research_state_request state_request;
 	struct crystalhd_fw_research_state_result *state_result;
 	struct crystalhd_fw_research_controller_result *controller_result;
+	struct crystalhd_fw_research_image_result *image_result;
 	struct crystalhd_fw_research_request request;
 	struct crystalhd_fw_research_result *result;
 	void __user *user = (void __user *)argument;
@@ -753,7 +859,7 @@ static long crystalhd_fw_research_ioctl(struct file *file, unsigned int command,
 		request.size = sizeof(struct crystalhd_fw_research_result);
 		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
 		crystalhd_fw_research_run_internal(binding->generation, &request,
-						 &state_result->control, state_result, NULL);
+						 &state_result->control, state_result, NULL, NULL);
 		if (copy_to_user(user, state_result, sizeof(*state_result)))
 			rc = -EFAULT;
 		kfree(state_result);
@@ -774,10 +880,31 @@ static long crystalhd_fw_research_ioctl(struct file *file, unsigned int command,
 		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
 		crystalhd_fw_research_run_internal(binding->generation, &request,
 			&controller_result->state.control, &controller_result->state,
-			controller_result);
+			controller_result, NULL);
 		if (copy_to_user(user, controller_result, sizeof(*controller_result)))
 			rc = -EFAULT;
 		kfree(controller_result);
+		return rc;
+	}
+	if (command == CRYSTALHD_FW_RESEARCH_RUN_IMAGE) {
+		if (copy_from_user(&state_request, user, sizeof(state_request)))
+			return -EFAULT;
+		if (!crystalhd_fw_research_image_request_valid(&state_request))
+			return -EINVAL;
+		image_result = kzalloc(sizeof(*image_result), GFP_KERNEL);
+		if (!image_result)
+			return -ENOMEM;
+		image_result->controller.state.request = state_request;
+		memset(&request, 0, sizeof(request));
+		request.version = CRYSTALHD_FW_RESEARCH_VERSION;
+		request.size = sizeof(struct crystalhd_fw_research_result);
+		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
+		crystalhd_fw_research_run_internal(binding->generation, &request,
+			&image_result->controller.state.control,
+			&image_result->controller.state, &image_result->controller, image_result);
+		if (copy_to_user(user, image_result, sizeof(*image_result)))
+			rc = -EFAULT;
+		kfree(image_result);
 		return rc;
 	}
 	if (command != CRYSTALHD_FW_RESEARCH_RUN)

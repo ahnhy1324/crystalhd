@@ -139,6 +139,8 @@ static unsigned read_mismatch_stage, read_mismatch_word;
 static bool read_padding;
 static bool controller_reads, controller_only;
 static u32 controller_roots[2];
+static bool image_reads, image_only;
+static u32 image_roots[2][2], image_words[2][4];
 static BC_STATUS read_status;
 static int transaction_error;
 static unsigned transaction_mutation, transaction_count;
@@ -418,6 +420,13 @@ static void reset(void)
     read_mismatch_stage = read_mismatch_word = 0; read_padding = false;
     controller_reads = controller_only = false;
     controller_roots[0] = controller_roots[1] = 0xd6000;
+    image_reads = image_only = false;
+    image_roots[0][0] = image_roots[0][1] = 0xd7000;
+    image_roots[1][0] = image_roots[1][1] = 0xd7800;
+    for (i = 0; i < 2; i++) {
+        image_words[i][0] = image_words[i][1] = 0x117000;
+        image_words[i][2] = 0x100000; image_words[i][3] = 0xfe12ab01;
+    }
     read_status = BC_STS_IO_ERROR; transaction_error = 0; transaction_mutation = 0;
     transaction_count = transaction_error_at = transaction_mutation_at = 0;
 }
@@ -978,16 +987,32 @@ static BC_STATUS read_mock(struct crystalhd_hw *hw, u32 offset, u32 count, u32 *
     static const u32 root_offsets[] = {0x6fc, 0xd1ff4, 0xd3ac4, 0xd3ad0, 0xd3a08,
         0xd1ff4, 0xd3ac4, 0xd3ad0, 0xd3a08};
     static const u32 root_counts[] = {1, 2, 1, 1, 1, 2, 1, 1, 1};
-    unsigned index = read_count++, stage = controller_only ? 2 :
-        index == 0 ? 1 : index < (controller_reads ? 5U : 4U) ? 2 : 3;
-    bool root_read = controller_only || (controller_reads && (index == 4 || index == 8));
+    static const u32 image_offsets[] = {0x6fc, 0xd1ff4, 0xd3ac4, 0xd3ad0,
+        0xd3a08, 0xd3a08, 0, 0xd3a08, 0xd1ff4, 0xd3ac4, 0xd3ad0,
+        0xd3a08, 0xd3a08, 0, 0xd3a08};
+    static const u32 image_counts[] = {1, 2, 1, 1, 1, 1, 4, 1, 2, 1, 1, 1, 1, 4, 1};
+    unsigned index = read_count++, stage = controller_only || image_only ? 2 :
+        index == 0 ? 1 : index < (image_reads ? 8U : controller_reads ? 5U : 4U) ? 2 : 3;
+    unsigned image_stage = image_only ? 0 : index >= 8;
+    bool tuple_read = image_only ? index == 1 : image_reads && (index == 6 || index == 13);
+    bool bracket_read = image_only ? index != 1 :
+        image_reads && (index == 5 || index == 7 || index == 12 || index == 14);
+    bool root_read = bracket_read || controller_only ||
+        (controller_reads && (index == 4 || index == (image_reads ? 11U : 8U)));
     unsigned first = offset == 0xd1ff4 ? 0 : offset == 0xd3ac4 ? 2 : 3;
     unsigned i;
     u32 expected[] = {1, 0xd3a00, command_count >= 3 ? 1 : 0,
         command_count >= 3 ? 0x200 : 0};
     barrier(); CHECK(hw == &hardware && hw->lock.held == 1 && hw->fwcmd_trans_mutex.held == 1);
     CHECK(adp.cmds.session_owner == &crystalhd_fw_research_owner && adp.cmds.session_module_pinned);
-    if (controller_only) CHECK(index == 0 && offset == 0xd3a08 && count == 1);
+    if (image_only) {
+        CHECK(index < 3 && offset == (tuple_read ? image_roots[0][0] + 0x1ac : 0xd3a08));
+        CHECK(count == (tuple_read ? 4U : 1U));
+    } else if (image_reads) {
+        CHECK(index < ARRAY_SIZE(image_offsets));
+        CHECK(offset == (tuple_read ? image_roots[image_stage][0] + 0x1ac : image_offsets[index]));
+        CHECK(count == image_counts[index]);
+    } else if (controller_only) CHECK(index == 0 && offset == 0xd3a08 && count == 1);
     else if (controller_reads)
         CHECK(index < ARRAY_SIZE(root_offsets) && offset == root_offsets[index] && count == root_counts[index]);
     else CHECK(index < ARRAY_SIZE(offsets) && offset == offsets[index] && count == counts[index]);
@@ -995,9 +1020,11 @@ static BC_STATUS read_mock(struct crystalhd_hw *hw, u32 offset, u32 count, u32 *
     if (read_padding) { expected[2] |= 0xa5b6c700; expected[3] |= 0xab000000; }
     for (i = 0; i < count; i++) {
         unsigned word = offset == 0x6fc ? 0 : first + i;
-        words[i] = root_read ? controller_roots[index == 8] :
+        words[i] = tuple_read ? image_words[image_stage][i] :
+            bracket_read ? image_roots[image_stage][image_only ? index == 2 : index == 7 || index == 14] :
+            root_read ? controller_roots[index == (image_reads ? 11U : 8U)] :
             offset == 0x6fc ? 0xd3a00 : expected[word];
-        if (!root_read && read_mismatch_stage == stage && read_mismatch_word == word) words[i] ^= 1;
+        if (!root_read && !tuple_read && read_mismatch_stage == stage && read_mismatch_word == word) words[i] ^= 1;
     }
     if (read_count == read_fail_at) {
         for (i = 0; i < count; i++) words[i] = 0xdeadbeef;
@@ -1020,7 +1047,7 @@ static struct crystalhd_fw_research_state_result state_run(void)
     struct crystalhd_fw_research_state_result result;
     struct crystalhd_fw_research_request req = request();
     memset(&result, 0xa5, sizeof(result)); result.request = state_request();
-    crystalhd_fw_research_run_internal(42, &req, &result.control, &result, NULL);
+    crystalhd_fw_research_run_internal(42, &req, &result.control, &result, NULL, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.control.request.selector == CRYSTALHD_FW_RESEARCH_H264_CONTROL);
     CHECK(result.control.generation == 42);
@@ -1234,7 +1261,7 @@ static struct crystalhd_fw_research_controller_result controller_run(void)
     struct crystalhd_fw_research_controller_result result;
     struct crystalhd_fw_research_request req = request();
     memset(&result, 0xa5, sizeof(result)); result.state.request = controller_request();
-    crystalhd_fw_research_run_internal(42, &req, &result.state.control, &result.state, &result);
+    crystalhd_fw_research_run_internal(42, &req, &result.state.control, &result.state, &result, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.state.control.request.selector == CRYSTALHD_FW_RESEARCH_H264_CONTROL);
     CHECK(result.state.control.request.size == sizeof(struct crystalhd_fw_research_result));
@@ -1522,6 +1549,203 @@ static void test_controller_ioctl_and_compat(void)
     CHECK(!crystalhd_fw_research_release(&inode, &file) && !live_allocations);
 }
 
+static void image_reset(void)
+{ controller_reset(); image_reads = true; }
+static struct crystalhd_fw_research_state_request image_request(void)
+{
+    struct crystalhd_fw_research_state_request req = state_request();
+    req.size = sizeof(struct crystalhd_fw_research_image_result); return req;
+}
+static struct crystalhd_fw_research_image_result image_run(void)
+{
+    struct crystalhd_fw_research_image_result result;
+    struct crystalhd_fw_research_request req = request();
+    memset(&result, 0xa5, sizeof(result)); result.controller.state.request = image_request();
+    crystalhd_fw_research_run_internal(42, &req, &result.controller.state.control,
+        &result.controller.state, &result.controller, &result);
+    unlocked(); CHECK(!live_allocations);
+    CHECK(result.controller.state.request.size == sizeof(result));
+    CHECK(result.controller.state.control.request.size == 1488 &&
+        result.controller.state.control.request.selector == CRYSTALHD_FW_RESEARCH_H264_CONTROL);
+    return result;
+}
+static void image_empty(const struct crystalhd_fw_research_image_sample *sample, bool attempted, int status)
+{
+    unsigned i;
+    CHECK(sample->attempted == (u32)attempted && sample->status == status);
+    CHECK(!sample->read_complete && !sample->reserved && !sample->root_before && !sample->root_after);
+    for (i = 0; i < ARRAY_SIZE(sample->words); i++) CHECK(!sample->words[i]);
+}
+static void image_complete(const struct crystalhd_fw_research_image_sample *sample, unsigned stage)
+{
+    CHECK(sample->attempted == 1 && !sample->status && sample->read_complete == 1 && !sample->reserved);
+    CHECK(sample->root_before == image_roots[stage][0] && sample->root_after == image_roots[stage][1]);
+    CHECK(!memcmp(sample->words, image_words[stage], sizeof(sample->words)));
+}
+static void image_guard_setup(void)
+{ controller_guard_setup(); controller_only = false; image_only = true; }
+
+static void test_image_admission_and_publication(void)
+{
+    static const struct { u32 root; bool admitted; } cases[] = {
+        {0, false}, {1, false}, {0xd53d8, false}, {0xd53db, false},
+        {0xd53dc, true}, {0xd53dd, false}, {0xd53e0, true},
+        {0x115c84, true}, {0x115c88, true}, {0x115c8c, false}, {0x116000, false},
+        {0xdfe44, true}, {0xdfe48, false}, {0xdfe4c, false}, {0xdfe50, false}, {0xdfe54, true},
+        {0xfffffc88, false}, {0xfffffffc, false}, {UINT32_MAX, false},
+        {0x30000f00, false}, {0x3fffd170, false}
+    };
+    static const u32 tuples[][4] = {{0, 0, 0, 0}, {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX},
+        {0x30000f00, 0x3fffd170, 7, 0xab120100}, {0x117000, 0x117000, 0x100000, 0xfe12ab01}};
+    struct crystalhd_fw_research_image_sample sample;
+    struct crystalhd_fw_research_image_result result;
+    unsigned i, read, failure, phase, mutation;
+    static const BC_STATUS failures[] = {BC_STS_IO_ERROR, BC_STS_TIMEOUT, BC_STS_IO_USER_ABORT,
+        BC_STS_CMD_CANCELLED, BC_STS_BUSY, BC_STS_PWR_MGMT, BC_STS_FW_CMD_ERR, BC_STS_INV_ARG};
+    static const int errors[] = {0, -ENODEV, -ESTALE, -EAGAIN, -EIO,
+        -EBUSY, -EBUSY, -EAGAIN, -EACCES, -ERANGE, -ENODEV};
+    for (i = 0; i < ARRAY_SIZE(cases); i++) {
+        image_guard_setup(); image_roots[0][0] = image_roots[0][1] = cases[i].root;
+        memset(&sample, 0xa5, sizeof(sample));
+        CHECK(crystalhd_fw_research_image_sample(&adp.cmds, 42, &sample) == (cases[i].admitted ? 0 : -ERANGE));
+        CHECK(read_count == (cases[i].admitted ? 3U : 1U));
+        if (cases[i].admitted) image_complete(&sample, 0); else image_empty(&sample, true, -ERANGE);
+        controller_guard_exit();
+    }
+    for (i = 0; i < ARRAY_SIZE(tuples); i++) {
+        image_reset(); memcpy(image_words[0], tuples[i], sizeof(tuples[i]));
+        memcpy(image_words[1], tuples[(i + 1) % ARRAY_SIZE(tuples)], sizeof(tuples[i]));
+        if (!i) { controller_roots[0] = UINT32_MAX; controller_roots[1] = 0; }
+        result = image_run(); CHECK(!result.controller.state.control.status && read_count == 15 && command_count == 5);
+        CHECK(release_count == 1 && !result.controller.state.control.retained);
+        controller_complete(&result.controller.after_init, controller_roots[0]);
+        controller_complete(&result.controller.after_open, controller_roots[1]);
+        CHECK(result.controller.after_init.root != result.after_init.root_before);
+        image_complete(&result.after_init, 0); image_complete(&result.after_open, 1);
+    }
+    for (read = 1; read <= 3; read++) for (failure = 0; failure < ARRAY_SIZE(failures); failure++) {
+        int error = crystalhd_status_to_errno(failures[failure]);
+        image_guard_setup(); read_fail_at = read; read_status = failures[failure];
+        CHECK(crystalhd_fw_research_image_sample(&adp.cmds, 42, &sample) == error);
+        image_empty(&sample, true, error); CHECK(read_count == read); controller_guard_exit();
+    }
+    image_guard_setup(); image_roots[0][1] = 0;
+    CHECK(crystalhd_fw_research_image_sample(&adp.cmds, 42, &sample) == -ESTALE);
+    image_empty(&sample, true, -ESTALE); CHECK(read_count == 3); controller_guard_exit();
+    for (phase = 0; phase < 5; phase++) for (mutation = 1; mutation <= 10; mutation++) {
+        if (phase == 1 && mutation == 10) continue; /* Transaction enter uses hw->adp. */
+        image_guard_setup();
+        if (phase == 0) state_mutate(mutation);
+        else if (phase == 1) transaction_mutation = mutation;
+        else { read_mutate_at = phase - 1; read_mutation = mutation; read_fail_at = phase - 1; read_status = BC_STS_TIMEOUT; }
+        CHECK(crystalhd_fw_research_image_sample(&adp.cmds, 42, &sample) == errors[mutation]);
+        image_empty(&sample, phase >= 2, errors[mutation]);
+        CHECK(read_count == (phase >= 2 ? phase - 1 : 0)); controller_guard_exit();
+    }
+    image_guard_setup(); transaction_error = -EINTR;
+    CHECK(crystalhd_fw_research_image_sample(&adp.cmds, 42, &sample) == -ERESTARTSYS);
+    image_empty(&sample, false, -ERESTARTSYS); CHECK(!read_count); controller_guard_exit();
+}
+
+static void test_image_progression_and_cleanup(void)
+{
+    struct crystalhd_fw_research_image_result result;
+    unsigned read, stage, phase;
+    for (read = 1; read <= 15; read++) {
+        image_reset(); read_fail_at = read; result = image_run();
+        CHECK(result.controller.state.control.status == -EIO && read_count == read && release_count == 1);
+        CHECK(command_count == (read <= 8 ? 2U : 3U) && !result.controller.state.control.retained);
+        if (read <= 8) image_empty(&result.after_init, read >= 6, read >= 6 ? -EIO : 0);
+        else image_complete(&result.after_init, 0);
+        image_empty(&result.after_open, read >= 13, read >= 13 ? -EIO : 0);
+        if (read >= 6) controller_complete(&result.controller.after_init, controller_roots[0]);
+        if (read >= 13) controller_complete(&result.controller.after_open, controller_roots[1]);
+        if (read <= 8) { sample_empty(&result.controller.state.after_open, false, 0);
+            controller_empty(&result.controller.after_open, false, 0); }
+    }
+    for (stage = 0; stage < 2; stage++) for (phase = 0; phase < 6; phase++) {
+        unsigned before = stage ? 12 : 5;
+        int error = phase == 0 ? -ERANGE : phase == 1 ? -ESTALE : phase == 2 ? -ERESTARTSYS : -ENODEV;
+        image_reset();
+        if (phase == 0) image_roots[stage][0] = 0;
+        if (phase == 1) image_roots[stage][1]++;
+        if (phase == 2) { transaction_error = -EINTR; transaction_error_at = stage ? 7 : 4; }
+        if (phase >= 3) { read_mutate_at = before + phase - 2; read_mutation = 1; }
+        result = image_run();
+        CHECK(result.controller.state.control.status == error && command_count == (stage ? 3U : 2U));
+        CHECK(read_count == before + (phase == 0 ? 1U : phase == 1 ? 3U : phase == 2 ? 0U : phase - 2));
+        CHECK(release_count == (phase >= 3 ? 0 : 1) && result.controller.state.control.retained == (u32)(phase >= 3));
+        controller_complete(stage ? &result.controller.after_open : &result.controller.after_init, controller_roots[stage]);
+        image_empty(stage ? &result.after_open : &result.after_init, phase != 2, error);
+        if (stage) image_complete(&result.after_init, 0); else image_empty(&result.after_open, false, 0);
+    }
+    for (stage = 0; stage < 5; stage++) {
+        image_reset(); command_status[stage] = BC_STS_TIMEOUT; result = image_run();
+        CHECK(result.controller.state.control.status == -ETIMEDOUT && command_count == stage + 1 && release_count == 1);
+        CHECK(read_count == (stage < 2 ? 0U : stage == 2 ? 8U : 15U));
+        if (stage < 2) image_empty(&result.after_init, false, 0); else image_complete(&result.after_init, 0);
+        if (stage < 3) image_empty(&result.after_open, false, 0); else image_complete(&result.after_open, 1);
+    }
+    image_reset(); image_roots[0][0] = 0; release_status = BC_STS_IO_ERROR; release_retains = true;
+    result = image_run(); CHECK(result.controller.state.control.status == -ERANGE && result.controller.state.control.retained);
+    CHECK(result.controller.state.control.cleanup_status == BC_STS_IO_ERROR);
+    image_empty(&result.after_init, true, -ERANGE); image_empty(&result.after_open, false, 0);
+    image_reset(); release_status = BC_STS_IO_ERROR; release_retains = true; result = image_run();
+    CHECK(result.controller.state.control.status == -EIO && result.controller.state.control.retained);
+    image_complete(&result.after_init, 0); image_complete(&result.after_open, 1);
+}
+
+static void test_image_ioctl_and_compat(void)
+{
+    struct inode inode = {0}; struct file file = {0};
+    struct crystalhd_fw_research_image_result result;
+    unsigned long arg = (unsigned long)&result;
+    const unsigned malformed[] = {_IO('R', 0x95), _IOR('R', 0x95, struct crystalhd_fw_research_image_result),
+        _IOWR('R', 0x95, struct crystalhd_fw_research_controller_result),
+        _IOWR('R', 0x95, struct crystalhd_fw_research_state_request),
+        _IOWR('S', 0x95, struct crystalhd_fw_research_image_result)};
+    unsigned field;
+    image_reset(); CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_IMAGE, arg) == -ENODEV);
+    CHECK(!crystalhd_fw_research_open(&inode, &file));
+    for (field = 0; field < ARRAY_SIZE(malformed); field++)
+        CHECK(crystalhd_fw_research_ioctl(&file, malformed[field], arg) == -ENOTTY);
+    for (field = 0; field < 7; field++) {
+        memset(&result, 0, sizeof(result)); result.controller.state.request = image_request();
+        if (field == 0) result.controller.state.request.version++;
+        if (field == 1) result.controller.state.request.size--;
+        if (field == 2) result.controller.state.request.flags = 1;
+        if (field == 3) result.controller.state.request.reserved = 1;
+        if (field == 4) result.controller.state.request.size = 1600;
+        if (field == 5) result.controller.state.request.size = 1632;
+        if (field == 6) result.controller.state.request.size = UINT32_MAX;
+        CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_IMAGE, arg) == -EINVAL);
+    }
+    result.controller.state.request = image_request(); module.state = MODULE_STATE_COMING;
+    CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_IMAGE, arg) == -EAGAIN);
+    module.state = MODULE_STATE_LIVE; privileged = false;
+    CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_IMAGE, arg) == -EPERM); privileged = true;
+    copy_in_error = true;
+    CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_IMAGE, arg) == -EFAULT);
+    copy_in_error = false; allocation_fail = allocations + 1;
+    CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_IMAGE, arg) == -ENOMEM); no_hardware();
+    allocation_fail = 0;
+    CHECK(!crystalhd_fw_research_compat_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_IMAGE, arg));
+    CHECK(!result.controller.state.control.status && command_count == 5 && read_count == 15);
+    image_complete(&result.after_init, 0); image_complete(&result.after_open, 1);
+    CHECK(!crystalhd_fw_research_release(&inode, &file) && !live_allocations);
+    image_reset(); CHECK(!crystalhd_fw_research_open(&inode, &file)); result.controller.state.request = image_request();
+    copy_out_error = true;
+    CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_IMAGE, arg) == -EFAULT);
+    CHECK(release_count == 1 && read_count == 15 && !adp.cmds.session_owner);
+    CHECK(!crystalhd_fw_research_release(&inode, &file));
+    image_reset(); CHECK(!crystalhd_fw_research_open(&inode, &file)); result.controller.state.request = image_request();
+    chd_device_generation++;
+    CHECK(!crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_IMAGE, arg));
+    CHECK(result.controller.state.control.status == -ENODEV); no_hardware();
+    image_empty(&result.after_init, false, 0); image_empty(&result.after_open, false, 0);
+    CHECK(!crystalhd_fw_research_release(&inode, &file) && !live_allocations);
+}
+
 int main(void)
 {
     _Static_assert(sizeof(struct crystalhd_fw_research_info) == 64, "info ABI");
@@ -1544,6 +1768,14 @@ int main(void)
     _Static_assert(offsetof(struct crystalhd_fw_research_controller_result, after_init) == 1600, "controller init ABI");
     _Static_assert(offsetof(struct crystalhd_fw_research_controller_result, after_open) == 1616, "controller open ABI");
     _Static_assert(CRYSTALHD_FW_RESEARCH_RUN_CONTROLLER == 0xc6605294U, "controller ioctl ABI");
+    _Static_assert(sizeof(struct crystalhd_fw_research_image_sample) == 40, "image sample ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_image_sample, root_before) == 16, "image root ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_image_sample, words) == 24, "image tuple ABI");
+    _Static_assert(sizeof(struct crystalhd_fw_research_image_result) == 1712, "image result ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_image_result, controller) == 0, "image controller ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_image_result, after_init) == 1632, "image init ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_image_result, after_open) == 1672, "image open ABI");
+    _Static_assert(CRYSTALHD_FW_RESEARCH_RUN_IMAGE == 0xc6b05295U, "image ioctl ABI");
     _Static_assert(CRYSTALHD_FW_RESEARCH_H261_CONTROL == 3 && CRYSTALHD_FW_RESEARCH_H263_CONTROL == 4 &&
                    CRYSTALHD_FW_RESEARCH_MPEG1_CONTROL == 5 && CRYSTALHD_FW_RESEARCH_SELECTOR_MASK == 2047, "named selectors");
     _Static_assert(CRYSTALHD_FW_RESEARCH_SCALING_FILTERS_COMMAND == 6 &&
@@ -1554,6 +1786,7 @@ int main(void)
     test_fixed_state(); test_fixed_state_guards(); test_fixed_state_ioctl();
     test_controller_observation_and_exact_whitelist(); test_controller_progression_and_cleanup();
     test_controller_guarded_publication(); test_controller_stage_fences(); test_controller_ioctl_and_compat();
+    test_image_admission_and_publication(); test_image_progression_and_cleanup(); test_image_ioctl_and_compat();
     CHECK(!live_allocations); unlocked();
     printf("Firmware probe: %u checks passed\n", checks);
     return 0;
