@@ -2617,7 +2617,7 @@ class FirmwareInnerDescriptorTests(unittest.TestCase):
                         self.assertRaisesRegex(MAP.FormatError, "region"):
                     self.mapping(payload=payload)
 
-    def test_inner_descriptor_constructor_assignment_is_not_constructor_exit_identity(self):
+    def test_inner_descriptor_immediate_assignment_is_not_unconditional_exit_identity(self):
         first = self.mapping()["paths"]["record_pointer_and_boundary"]
         binding = first["record_pool_context_snapshot"]
         assignment = binding["immediate_slot_assignment"]
@@ -2656,7 +2656,124 @@ class FirmwareInnerDescriptorTests(unittest.TestCase):
         for phrase in ("register preservation", "relocation/base model", "same valid channel",
                        "derived-pointer writes", "address overflow", "DMA visibility"):
             self.assertTrue(any(phrase in condition for condition in binding["required_conditions"]), phrase)
-        self.assertTrue(any("not constructor exit" in text for text in self.mapping()["limitations"]))
+        self.assertTrue(any("not constructor exit identity" in text for text in self.mapping()["limitations"]))
+
+    def test_inner_descriptor_constructor_size_and_source_are_conditional(self):
+        proof = self.mapping()["paths"]["record_pointer_and_boundary"]["record_pool_context_snapshot"]["conditional_constructor_return"]
+        source = proof["source_initialization"]
+        word = self.word(0, 0x3b308)
+        self.assertEqual(word, 0x401ffeec)
+        self.assertEqual((word >> 27, (word >> 21) & 63,
+                          (word >> 15) & 63, (word >> 9) & 63, word & 511),
+                         (8, 0, 63, 63, 236))
+        # Both ADD operands are the same signed short immediate, not one shift.
+        immediate = word & 511
+        if immediate & 256:
+            immediate -= 512
+        self.assertEqual(source["add_short_immediate_operands"], [immediate, immediate])
+        self.assertEqual(immediate + immediate, source["size_bytes_under_base_model"])
+        self.assertEqual(0x5bc + immediate + immediate, source["pool_context_offset_under_conditions"])
+        self.assertEqual(self.word(0, 0x3b304), 0x380f8020)
+        for address, target in ((0x26758, 0xa13c), (0x26760, 0x3b304),
+                                (0x26768, 0x3b304), (0x26774, 0xa13c)):
+            word = self.word(0, address)
+            displacement = (word >> 7) & 0xfffff
+            if displacement & 0x80000:
+                displacement -= 0x100000
+            self.assertEqual(address + 4 + 4 * displacement, target)
+        for address, expected in ((0x26734, 0x61c10400), (0x26748, 0x42807c00),
+                                  (0x2674c, 0x5bc), (0x2676c, 0x41a02800),
+                                  (0x26778, 0x600a2800), (0x26870, 0x57e77a00),
+                                  (0x26890, 0x6001040d), (0x26894, 0x67871c0d),
+                                  (0x26898, 0x3000030d), (0x2689c, 0x10002dfc),
+                                  (0x268a4, 0x10000600), (0x268a8, 0x10000604),
+                                  (0x268ac, 0x10000608), (0x268b0, 0x40007e10)):
+            with self.subTest(address=address):
+                self.assertEqual(self.word(0, address), expected)
+        loop = source["earlier_variable_loop"]
+        self.assertEqual((loop["constructor_argument_register"], loop["store_context_offsets"],
+                          loop["stride_bytes"], loop["maximum_nonclobbering_count"],
+                          loop["source_clobber_iteration"]),
+                         (14, [0x3fc, 0x400, 0x404, 0x408], 16, 19, 19))
+        for count in range(20):
+            stores = {offset + 16 * k for k in range(count)
+                      for offset in (0x3fc, 0x400, 0x404, 0x408)}
+            self.assertNotIn(0x530, stores)
+        self.assertEqual(0x400 + 16 * 19, 0x530)
+        self.assertIn(0x530, {offset + 16 * k for k in range(20)
+                             for offset in (0x3fc, 0x400, 0x404, 0x408)})
+        self.assertFalse(loop["actual_input_count_validated"])
+
+    def test_inner_descriptor_return_edge_store_footprint_and_no_wrap(self):
+        proof = self.mapping()["paths"]["record_pointer_and_boundary"]["record_pool_context_snapshot"]["conditional_constructor_return"]
+        stores = proof["derived_word_stores"]
+        for address, expected in ((0x268d8, 0x679ffe21), (0x268e0, 0x40007c00),
+                                  (0x268e4, 0x150e4), (0x268e8, 0x1001013c),
+                                  (0x268ec, 0x10000644), (0x268f0, 0x30000480),
+                                  (0x268f4, 0x0801013c), (0x268f8, 0x80a27e03),
+                                  (0x268fc, 0x50a28800), (0x26900, 0x80a2fe03),
+                                  (0x26904, 0x40a28800), (0x26908, 0x80a2fe02),
+                                  (0x2690c, 0x40000a00), (0x26910, 0x10000644),
+                                  (0x26914, 0x40827e01), (0x26918, 0x08008130),
+                                  (0x26924, 0x40407c00), (0x26928, 0x14ee4),
+                                  (0x2692c, 0x10008524), (0x26938, 0x40407c00),
+                                  (0x2693c, 0x14fe4), (0x26948, 0x40007c00),
+                                  (0x2694c, 0x16f30), (0x26958, 0x10008528),
+                                  (0x26960, 0x100081b4), (0x2696c, 0x380f8020),
+                                  (0x26970, 0x0b6e1038)):
+            with self.subTest(address=address):
+                self.assertEqual(self.word(0, address), expected)
+        self.assertEqual((stores["base_offset"], stores["stride_bytes"],
+                          stores["count"], stores["word_bytes"]), (0x15128, 228, 34, 4))
+        offsets = []
+        for n in range(34):
+            # Independently reconstruct the selected shift/sub/add chain.
+            stride = (((n << 3) - n) << 3) + n
+            stride <<= 2
+            self.assertEqual(stride, 228 * n)
+            offsets.append(0x794 + 0x150e4 + 68 + stride)
+        self.assertEqual((offsets[0], offsets[-1]),
+                         (stores["first_context_offset_under_conditions"],
+                          stores["last_context_offset_under_conditions"]))
+        self.assertEqual((offsets[0], offsets[-1]), (0x158bc, 0x17620))
+        self.assertEqual(proof["direct_context_word_stores"], [
+            {"elf_virtual_address": 0x268e8, "context_offset": 0x33c},
+            {"elf_virtual_address": 0x2692c, "context_offset": 0x524},
+            {"elf_virtual_address": 0x26958, "context_offset": 0x528},
+            {"elf_virtual_address": 0x26960, "context_offset": 0x5b4}])
+        direct = [0x400 - 196, 0x600 - 220, 0x600 - 216, 0x600 - 76]
+        for offset in offsets + direct:
+            for slot in (0x21c, 0x530):
+                self.assertTrue(offset + 4 <= slot or slot + 4 <= offset)
+        largest = 0x794 + 0x16f30
+        self.assertEqual(largest, proof["largest_computed_context_offset_under_conditions"])
+        maximum = (0xffffffff - largest) & ~3
+        self.assertEqual(maximum, proof["maximum_aligned_context_base_without_wrap"])
+        self.assertLessEqual(maximum + largest, 0xffffffff)
+        self.assertGreater(maximum + 4 + largest, 0xffffffff)
+        # No branch-with-link word exists in the selected original tail.
+        self.assertTrue(all(self.word(0, address) >> 27 != 5
+                            for address in range(0x268e0, 0x26974, 4)))
+        self.assertFalse(proof["tail_contains_calls_under_base_model"])
+        self.assertTrue(proof["equal_value_on_selected_return_under_conditions"])
+        for name in ("allocation_extent_validated", "runtime_constructor_execution_validated",
+                     "unconditional_constructor_exit_identity_validated"):
+            self.assertFalse(proof[name])
+        for phrase in ("loop semantics", "relocation effects", "at most 19", "unchanged",
+                       "0xfffe8938", "stack", "non-aliasing", "concurrent"):
+            self.assertTrue(any(phrase in text for text in proof["required_conditions"]), phrase)
+
+    def test_inner_descriptor_opaque_source_has_concrete_tail_alias_counterexamples(self):
+        context = 0x10000000
+        for source, clobbered in ((0x0ffeb0f4, 0x21c), (0x0ffeb408, 0x530)):
+            slots = {context + 0x21c: source, context + 0x530: source}
+            self.assertEqual(slots[context + 0x21c], slots[context + 0x530])
+            self.assertEqual(source + 0x15128, context + clobbered)
+            for n in range(34):
+                target = source + 0x15128 + 228 * n
+                if target in slots:
+                    slots[target] = 0
+            self.assertNotEqual(slots[context + 0x21c], slots[context + 0x530])
 
     def test_inner_descriptor_same_channel_table_and_snapshot_word_offsets(self):
         first = self.mapping()["paths"]["record_pointer_and_boundary"]
@@ -2740,13 +2857,13 @@ class FirmwareInnerDescriptorTests(unittest.TestCase):
 
     def test_inner_descriptor_private_identity_mapping_and_budget_limits(self):
         result = self.mapping()
-        self.assertEqual(len(result["validated_regions"]), 45)
-        self.assertEqual(sum(r["size"] for r in result["validated_regions"]), 2807)
-        self.assertEqual(len(result["instruction_windows"]), 29)
-        with mock.patch.object(MAP, "MAX_INNER_DESCRIPTOR_REGIONS", 45), \
-                mock.patch.object(MAP, "MAX_INNER_DESCRIPTOR_BYTES", 2807):
+        self.assertEqual(len(result["validated_regions"]), 48)
+        self.assertEqual(sum(r["size"] for r in result["validated_regions"]), 3039)
+        self.assertEqual(len(result["instruction_windows"]), 32)
+        with mock.patch.object(MAP, "MAX_INNER_DESCRIPTOR_REGIONS", 48), \
+                mock.patch.object(MAP, "MAX_INNER_DESCRIPTOR_BYTES", 3039):
             self.assertEqual(self.mapping(), result)
-        for name, limit in (("MAX_INNER_DESCRIPTOR_REGIONS", 44), ("MAX_INNER_DESCRIPTOR_BYTES", 2806)):
+        for name, limit in (("MAX_INNER_DESCRIPTOR_REGIONS", 47), ("MAX_INNER_DESCRIPTOR_BYTES", 3038)):
             with mock.patch.object(MAP, name, limit), \
                     mock.patch.object(MAP, "bounded", side_effect=AssertionError("unexpected read")), \
                     self.assertRaisesRegex(MAP.FormatError, "budget"):
@@ -2772,16 +2889,21 @@ class FirmwareInnerDescriptorTests(unittest.TestCase):
 
     def test_inner_descriptor_context_windows_mapping_extents_and_source_bounds(self):
         expected = (("constructor_context_argument", 16, 0x2672c, 0x492c0, 4),
+                    ("constructor_pool_source_initialization", 16, 0x26730, 0x492c4, 76),
                     ("constructor_registration_and_slot_copy", 16, 0x2677c, 0x49310, 356),
+                    ("constructor_return_edge", 16, 0x268e0, 0x49474, 148),
+                    ("constructor_driver_context_size", 16, 0x3b304, 0x5de98, 8),
                     ("activation_snapshot_copy", 4, 0x9fa4, 0x34e48, 52),
                     ("context_dram_to_local_copy", 4, 0x9e74, 0x34d18, 284),
                     ("context_local_word_copy", 2, 0x52e0, 0x30184, 44))
-        selected = self.mapping()["instruction_windows"][:5]
+        selected = self.mapping()["instruction_windows"][:8]
         self.assertEqual([(w["role"], w["section_index"], w["elf_virtual_address"],
                            w["blob_file_offset"], w["size"]) for w in selected], list(expected))
         self.assertTrue(all(w["image_slot"] == 0 for w in selected))
-        self.assertEqual(selected[1]["elf_virtual_address"] + selected[1]["size"], 0x268e0)
-        for position in range(5):
+        self.assertEqual(selected[1]["elf_virtual_address"] + selected[1]["size"], 0x2677c)
+        self.assertEqual(selected[2]["elf_virtual_address"] + selected[2]["size"], 0x268e0)
+        self.assertEqual(selected[3]["elf_virtual_address"] + selected[3]["size"], 0x26974)
+        for position in range(8):
             original = MAP._INNER_DESCRIPTOR_WINDOWS[position]
             for field, value in ((3, original[3] + 4), (4, -1), (4, len(self.payload) - 1)):
                 windows = list(MAP._INNER_DESCRIPTOR_WINDOWS)
