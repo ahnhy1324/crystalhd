@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
-// Optional direct-library firmware-EOS probe, not a pixel-quality benchmark.
+// Optional direct-library drain probe, not a pixel-quality benchmark.
 // Use an external timeout as well: a userspace deadline cannot bound a stuck
 // kernel ioctl or device close. --preflight never opens the CrystalHD device.
 #include <bc_dts_types.h>
@@ -70,14 +70,25 @@ struct Options {
     bool scaler_test = false;
     unsigned scale_width = 0;
     bool mpeg1_via_mpeg2 = false;
+    bool h263_via_divx = false;
+    bool open_only = false;
 };
 
 static bool ParseArguments(std::vector<const char *> arguments, Options *options)
 {
+    if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--open-only")) {
+        options->open_only = true;
+        arguments.pop_back();
+    }
     if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--mpeg1-via-mpeg2")) {
         options->mpeg1_via_mpeg2 = true;
         arguments.pop_back();
+    } else if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--h263-via-divx")) {
+        options->h263_via_divx = true;
+        arguments.pop_back();
     }
+    if ((options->mpeg1_via_mpeg2 && options->h263_via_divx) ||
+        (options->open_only && !options->h263_via_divx)) return false;
     if (arguments.size() >= 4 &&
         !std::strcmp(arguments[arguments.size() - 2], "--scaler-test")) {
         const char *width = arguments.back();
@@ -92,7 +103,8 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         arguments.resize(arguments.size() - 2);
     }
     if (arguments.size() == 2 && !std::strcmp(arguments[1], "--self-test")) {
-        if (options->scaler_test || options->mpeg1_via_mpeg2) return false;
+        if (options->scaler_test || options->mpeg1_via_mpeg2 ||
+            options->h263_via_divx || options->open_only) return false;
         options->mode = Mode::SelfTest;
         return true;
     }
@@ -100,6 +112,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
     const bool preflight = !std::strcmp(arguments[1], "--preflight");
     const bool hardware = !std::strcmp(arguments[1], "--hardware");
     if ((!preflight && !hardware) || (preflight && arguments.size() > 5) ||
+        (options->open_only && (!hardware || options->scaler_test)) ||
         !Number(arguments[3], kMaximumPackets, &options->expected) ||
         (arguments.size() >= 5 && !Number(arguments[4], 300, &options->seconds)) ||
         (arguments.size() == 6 &&
@@ -113,9 +126,15 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
 // Test-only MPEG-1 admission through the existing algorithm-1 channel. Do not
 // use BC_MSUBTYPE_MPEG1VIDEO: the format setter has no MPEG-1 algorithm branch.
 static BC_MEDIA_SUBTYPE InputSubtype(AVCodecID codec, const char *demuxer,
-                                    bool mpeg1_via_mpeg2)
+                                    bool mpeg1_via_mpeg2,
+                                    bool h263_via_divx = false, int extradata_size = 0)
 {
-    if (!demuxer) return BC_MSUBTYPE_INVALID;
+    if (!demuxer || (mpeg1_via_mpeg2 && h263_via_divx)) return BC_MSUBTYPE_INVALID;
+    // Test-only baseline H.263 bytes through the existing algorithm-6 route.
+    // No container, H.263+ protocol, or synthesized MPEG-4 metadata is admitted.
+    if (h263_via_divx)
+        return codec == AV_CODEC_ID_H263 && !std::strcmp(demuxer, "h263") &&
+               extradata_size == 0 ? BC_MSUBTYPE_DIVX : BC_MSUBTYPE_INVALID;
     if (mpeg1_via_mpeg2)
         return codec == AV_CODEC_ID_MPEG1VIDEO && !std::strcmp(demuxer, "mpegvideo")
             ? BC_MSUBTYPE_MPEG2VIDEO : BC_MSUBTYPE_INVALID;
@@ -128,6 +147,33 @@ static BC_MEDIA_SUBTYPE InputSubtype(AVCodecID codec, const char *demuxer,
     if (codec == AV_CODEC_ID_WMV3 && !std::strcmp(demuxer, "asf"))
         return BC_MSUBTYPE_WMV3;
     return BC_MSUBTYPE_INVALID;
+}
+
+static unsigned H263Bits(const uint8_t *data, unsigned offset, unsigned count)
+{
+    unsigned value = 0;
+    for (unsigned bit = offset; bit < offset + count; ++bit)
+        value = (value << 1) | ((data[bit / 8] >> (7 - bit % 8)) & 1);
+    return value;
+}
+
+// Only the first 50 bits are inspected, after checking the seven-byte prefix.
+// This checks the curated baseline picture header, not decoder conformance.
+static bool BaselineH263Picture(const uint8_t *data, size_t size,
+                                unsigned width, unsigned height)
+{
+    static const unsigned dimensions[][2] = {
+        {128, 96}, {176, 144}, {352, 288}, {704, 576},
+    };
+    if (!data || size < 7 || H263Bits(data, 0, 22) != 0x20 ||
+        H263Bits(data, 30, 1) != 1 || H263Bits(data, 31, 4) != 0 ||
+        H263Bits(data, 39, 4) != 0 || H263Bits(data, 43, 5) == 0 ||
+        H263Bits(data, 48, 2) != 0)
+        return false;
+    const unsigned source_format = H263Bits(data, 35, 3);
+    return source_format >= 1 && source_format <= 4 &&
+           width == dimensions[source_format - 1][0] &&
+           height == dimensions[source_format - 1][1];
 }
 
 // Conditional full-frame firmware expectation, not a general scaling oracle.
@@ -354,6 +400,130 @@ static bool SelfTest()
           InputSubtype(AV_CODEC_ID_HEVC, "hevc", true) == BC_MSUBTYPE_INVALID &&
           InputSubtype(AV_CODEC_ID_HEVC, "hevc", false) == BC_MSUBTYPE_INVALID,
           "research option does not admit another decoder protocol");
+    for (const std::vector<const char *> &valid : {
+             std::vector<const char *>{"probe", "--preflight", "fixture", "30", "--h263-via-divx"},
+             {"probe", "--hardware", "fixture", "30", "--h263-via-divx"},
+             {"probe", "--hardware", "fixture", "30", "9", "2", "--h263-via-divx"},
+             {"probe", "--hardware", "fixture", "30", "--scaler-test", "0", "--h263-via-divx"}}) {
+        options = Options{};
+        check(ParseArguments(valid, &options) && options.h263_via_divx &&
+              !options.mpeg1_via_mpeg2 && !options.open_only,
+              "explicit H.263 research parser path");
+    }
+    for (const std::vector<const char *> &valid : {
+             std::vector<const char *>{"probe", "--hardware", "fixture", "30", "--h263-via-divx", "--open-only"},
+             {"probe", "--hardware", "fixture", "30", "9", "2", "--h263-via-divx", "--open-only"}}) {
+        options = Options{};
+        check(ParseArguments(valid, &options) && options.mode == Mode::Hardware &&
+              options.h263_via_divx && options.open_only && !options.scaler_test,
+              "H.263 OPEN-only hardware parser path");
+    }
+    for (const std::vector<const char *> &invalid : {
+             std::vector<const char *>{"probe", "--self-test", "--h263-via-divx"},
+             {"probe", "--self-test", "--open-only"},
+             {"probe", "--preflight", "fixture", "30", "--h263-via-divx", "--open-only"},
+             {"probe", "--hardware", "fixture", "30", "--open-only"},
+             {"probe", "--hardware", "fixture", "30", "--mpeg1-via-mpeg2", "--open-only"},
+             {"probe", "--hardware", "fixture", "30", "--h263-via-divx", "--mpeg1-via-mpeg2"},
+             {"probe", "--hardware", "fixture", "30", "--mpeg1-via-mpeg2", "--h263-via-divx"},
+             {"probe", "--hardware", "fixture", "30", "--h263-via-divx", "--h263-via-divx"},
+             {"probe", "--hardware", "fixture", "30", "--open-only", "--h263-via-divx"},
+             {"probe", "--hardware", "fixture", "30", "--h263-via-divx", "--open-only", "--open-only"},
+             {"probe", "--hardware", "fixture", "30", "--h263-via-divx", "--scaler-test", "0"},
+             {"probe", "--hardware", "fixture", "30", "--scaler-test", "0", "--h263-via-divx", "--open-only"},
+             {"probe", "--hardware", "fixture", "30", "--scaler-test", "128", "--h263-via-divx", "--open-only"}}) {
+        options = Options{};
+        check(!ParseArguments(invalid, &options), "H.263 option conflict or misplaced OPEN-only");
+    }
+    check(InputSubtype(AV_CODEC_ID_H263, "h263", false, true, 0) == BC_MSUBTYPE_DIVX &&
+          InputSubtype(AV_CODEC_ID_H263, "h263", false) == BC_MSUBTYPE_INVALID &&
+          InputSubtype(AV_CODEC_ID_H263, "h263", true, true) == BC_MSUBTYPE_INVALID,
+          "H.263 DIVX admission is explicit and excludes MPEG-1 flag");
+    for (const char *demuxer : {"avi", "mov,mp4,m4a,3gp,3g2,mj2", "mpeg", "h263p", ""})
+        check(InputSubtype(AV_CODEC_ID_H263, demuxer, false, true) == BC_MSUBTYPE_INVALID,
+              "H.263 containers and alternate demuxers rejected");
+    check(InputSubtype(AV_CODEC_ID_H263, nullptr, false, true) == BC_MSUBTYPE_INVALID &&
+          InputSubtype(AV_CODEC_ID_H263, "h263", false, true, 1) == BC_MSUBTYPE_INVALID &&
+          InputSubtype(AV_CODEC_ID_H263, "h263", false, true, -1) == BC_MSUBTYPE_INVALID,
+          "H.263 requires raw demuxer and empty extradata");
+    for (AVCodecID codec : {AV_CODEC_ID_H263P, AV_CODEC_ID_H263I, AV_CODEC_ID_MPEG4,
+                           AV_CODEC_ID_H264, AV_CODEC_ID_MPEG1VIDEO,
+                           AV_CODEC_ID_MPEG2VIDEO, AV_CODEC_ID_VC1,
+                           AV_CODEC_ID_WMV3, AV_CODEC_ID_HEVC, AV_CODEC_ID_NONE})
+        check(InputSubtype(codec, "h263", false, true) == BC_MSUBTYPE_INVALID,
+              "H.263 research flag rejects every other tested codec");
+
+    // Synthetic headers for admission tests only; no coded picture is created.
+    const auto put_bits = [](std::vector<uint8_t> *data, unsigned offset,
+                             unsigned count, unsigned value) {
+        for (unsigned bit = 0; bit < count; ++bit) {
+            const unsigned position = offset + bit;
+            const uint8_t mask = static_cast<uint8_t>(1U << (7 - position % 8));
+            (*data)[position / 8] = static_cast<uint8_t>(((*data)[position / 8] & ~mask) |
+                (((value >> (count - bit - 1)) & 1U) ? mask : 0));
+        }
+    };
+    const auto h263_header = [&put_bits](unsigned source_format, bool predicted, unsigned quantizer) {
+        std::vector<uint8_t> data(7, 0);
+        put_bits(&data, 0, 22, 0x20);
+        put_bits(&data, 22, 8, 255);
+        put_bits(&data, 30, 1, 1);
+        put_bits(&data, 35, 3, source_format);
+        put_bits(&data, 38, 1, predicted);
+        put_bits(&data, 43, 5, quantizer);
+        return data;
+    };
+    static const unsigned h263_dimensions[][2] = {
+        {128, 96}, {176, 144}, {352, 288}, {704, 576},
+    };
+    for (unsigned source_format = 1; source_format <= 4; ++source_format) {
+        for (bool predicted : {false, true}) {
+            const std::vector<uint8_t> data = h263_header(source_format, predicted, predicted ? 31 : 1);
+            check(BaselineH263Picture(data.data(), data.size(),
+                                      h263_dimensions[source_format - 1][0],
+                                      h263_dimensions[source_format - 1][1]),
+                  "standard baseline H.263 I/P picture header");
+        }
+        const std::vector<uint8_t> data = h263_header(source_format, false, 2);
+        check(!BaselineH263Picture(data.data(), data.size(),
+                                   h263_dimensions[source_format - 1][0] + 2,
+                                   h263_dimensions[source_format - 1][1]) &&
+              !BaselineH263Picture(data.data(), data.size(),
+                                   h263_dimensions[source_format - 1][0],
+                                   h263_dimensions[source_format - 1][1] + 2),
+              "H.263 source-format geometry must match demux geometry");
+    }
+    const std::vector<uint8_t> header = h263_header(2, false, 2);
+    check(!BaselineH263Picture(nullptr, 7, 176, 144), "null H.263 header rejected");
+    for (size_t size = 0; size < 7; ++size) {
+        const std::vector<uint8_t> truncated(header.begin(), header.begin() + size);
+        check(!BaselineH263Picture(truncated.data(), truncated.size(), 176, 144),
+              "truncated H.263 header rejected before bit access");
+    }
+    for (unsigned bit : {0U, 21U, 31U, 32U, 33U, 34U, 39U, 40U, 41U, 42U, 48U, 49U}) {
+        std::vector<uint8_t> changed = header;
+        changed[bit / 8] ^= static_cast<uint8_t>(1U << (7 - bit % 8));
+        check(!BaselineH263Picture(changed.data(), changed.size(), 176, 144),
+              "wrong PSC, id, or extended H.263 feature bit rejected");
+    }
+    std::vector<uint8_t> changed = header;
+    put_bits(&changed, 30, 1, 0);
+    check(!BaselineH263Picture(changed.data(), changed.size(), 176, 144),
+          "H.263 marker bit required");
+    changed = header;
+    put_bits(&changed, 43, 5, 0);
+    check(!BaselineH263Picture(changed.data(), changed.size(), 176, 144),
+          "H.263 quantizer must be nonzero");
+    for (unsigned source_format : {0U, 5U, 6U, 7U}) {
+        changed = h263_header(source_format, false, 2);
+        check(!BaselineH263Picture(changed.data(), changed.size(), 176, 144),
+              "unsupported H.263 source format rejected");
+    }
+    changed = header;
+    changed.insert(changed.end(), {0, 0, 1, 0xb6});
+    const std::vector<uint8_t> original = changed;
+    check(BaselineH263Picture(changed.data(), changed.size(), 176, 144) && changed == original,
+          "H.263 header validation preserves every packet byte");
     unsigned width = 0, height = 0;
     check(ScalerGeometry(640, 360, 0, &width, &height) && width == 640 && height == 360 &&
           ScalerGeometry(640, 360, 640, &width, &height) && width == 640 && height == 360 &&
@@ -423,7 +593,7 @@ static bool StartCode(const uint8_t *data, size_t size)
 }
 
 static bool Load(const char *path, unsigned expected, Deadline *deadline, Input *input,
-                 bool mpeg1_via_mpeg2)
+                 bool mpeg1_via_mpeg2, bool h263_via_divx = false)
 {
     struct stat file;
     if (stat(path, &file) || !S_ISREG(file.st_mode) || file.st_size <= 0 ||
@@ -445,7 +615,8 @@ static bool Load(const char *path, unsigned expected, Deadline *deadline, Input 
         const AVCodecParameters *parameters = format->streams[index]->codecpar;
         const char *demuxer = format->iformat->name;
         input->codec = parameters->codec_id;
-        input->subtype = InputSubtype(input->codec, demuxer, mpeg1_via_mpeg2);
+        input->subtype = InputSubtype(input->codec, demuxer, mpeg1_via_mpeg2,
+                                     h263_via_divx, parameters->extradata_size);
         ok = input->subtype != BC_MSUBTYPE_INVALID && parameters->width > 0 &&
              parameters->width <= 1920 && parameters->height > 0 && parameters->height <= 1088 &&
              (parameters->field_order == AV_FIELD_UNKNOWN || parameters->field_order == AV_FIELD_PROGRESSIVE);
@@ -469,7 +640,9 @@ static bool Load(const char *path, unsigned expected, Deadline *deadline, Input 
             ok = packet->data && !(packet->flags & AV_PKT_FLAG_CORRUPT) &&
                  gst_crystalhd_input_reservation(input->subtype, next.size,
                      input->metadata.size(), &next.reservation) &&
-                 (input->subtype == BC_MSUBTYPE_WMV3 || StartCode(packet->data, next.size)) &&
+                 (h263_via_divx ? BaselineH263Picture(packet->data, next.size,
+                                                     input->width, input->height) :
+                  (input->subtype == BC_MSUBTYPE_WMV3 || StartCode(packet->data, next.size))) &&
                  input->packets.size() < expected && total + next.size <= 64 * 1024 * 1024;
             if (ok) {
                 // The library may inspect a full startcode even for short ASF input.
@@ -625,7 +798,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     BC_INFO_CRYSTAL version = {};
     if (ok) ok = Status("DtsCrystalHDVersion", DtsCrystalHDVersion(device.handle, &version));
     if (ok && version.device != 1) {
-        std::fprintf(stderr, "This firmware-marker probe is restricted to BCM70015\n");
+        std::fprintf(stderr, "This hardware probe is restricted to BCM70015\n");
         ok = false;
     }
     BC_INPUT_FORMAT format = {};
@@ -647,6 +820,16 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
         ok = Status("DtsSetScaleParams", DtsSetScaleParams(device.handle, &scaling));
     }
     if (ok) device.opened = ok = Status("DtsOpenDecoder", DtsOpenDecoder(device.handle, BC_STREAM_TYPE_ES));
+    if (options.open_only) {
+        const bool opened = device.opened;
+        const bool closed = device.Close();
+        ok = ok && opened && closed && !deadline.expired();
+        std::printf("H.263 research OPEN-only: iteration=%u/%u opened=%s "
+                    "cleanup=%s result=%s\n", iteration, iterations,
+                    opened ? "yes" : "no", closed ? "PASS" : "FAIL", ok ? "PASS" : "FAIL");
+        std::fflush(stdout);
+        return ok;
+    }
     if (ok) ok = Status("DtsSetColorSpace", DtsSetColorSpace(device.handle, OUTPUT_MODE422_YUY2));
     if (ok) device.started = ok = Status("DtsStartDecoder", DtsStartDecoder(device.handle));
     if (ok) ok = Status("DtsStartCapture", DtsStartCapture(device.handle));
@@ -679,17 +862,18 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
         if (!ok || (audit.eos && audit.ready == 0 && audit.pending.empty())) break;
         g_usleep(1000);
     }
-    // BCM70015 sets DtsIsEndOfStream only after its RX path consumes the real
-    // firmware timing marker.  That marker is not necessarily exposed as a
-    // successful NoCopy lease, so require the firmware-derived EOS state and
-    // complete token retirement rather than manufacturing a client marker.
+    // Native paths derive EOS from the firmware timing marker, which need not
+    // appear as a successful NoCopy lease. DIVX also has a library idle-fence
+    // fallback: its EOS state alone does not prove firmware-marker consumption.
+    // In either case require complete frame delivery and token retirement.
     ok = ok && !deadline.expired() && audit.eos && audit.ready == 0 &&
          audit.frames == expected && audit.pending.empty();
     const bool closed = device.Close();
     ok = ok && closed;
     std::printf("Library drain: iteration=%u/%u frames=%u/%u pending=%zu "
-        "firmware-EOS=%s output-marker=%s ready=%u cleanup=%s result=%s\n",
+        "%s-EOS=%s output-marker=%s ready=%u cleanup=%s result=%s\n",
         iteration, iterations, audit.frames, expected, audit.pending.size(),
+        options.h263_via_divx ? "library" : "firmware",
         audit.eos ? "yes" : "no", audit.marker ? "yes" : "no", audit.ready,
         closed ? "PASS" : "FAIL", ok ? "PASS" : "FAIL");
     std::fflush(stdout);
@@ -711,7 +895,8 @@ int main(int argc, char **argv)
         std::fprintf(stderr, "usage: %s --self-test | --preflight LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
-            "[--scaler-test WIDTH_OR_0] [--mpeg1-via-mpeg2]\n", argv[0]);
+            "[--scaler-test WIDTH_OR_0] [--mpeg1-via-mpeg2 | --h263-via-divx] "
+            "[--open-only]\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
@@ -725,7 +910,8 @@ int main(int argc, char **argv)
     std::signal(SIGTERM, Interrupt);
     Deadline deadline(options.seconds);
     Input input;
-    if (!Load(options.path, options.expected, &deadline, &input, options.mpeg1_via_mpeg2)) {
+    if (!Load(options.path, options.expected, &deadline, &input,
+              options.mpeg1_via_mpeg2, options.h263_via_divx)) {
         phase1_progress_close(&progress);
         return 2;
     }
@@ -735,6 +921,11 @@ int main(int argc, char **argv)
         std::printf("MPEG-1 research: input-codec=%s configured-algorithm=1 "
                     "route=MPEG2VIDEO selector5-not-used\n",
                     avcodec_get_name(input.codec));
+    if (options.h263_via_divx)
+        std::printf("H.263 research: input-codec=%s configured-algorithm=6 "
+                    "route=DIVX/PES metadata=empty picture-header=baseline "
+                    "packet-bytes=unchanged open-only=%s\n",
+                    avcodec_get_name(input.codec), options.open_only ? "yes" : "no");
     if (options.scaler_test) {
         unsigned width = 0, height = 0;
         if (!ScalerGeometry(input.width, input.height, options.scale_width, &width, &height)) {
