@@ -1956,5 +1956,216 @@ class FirmwareArcMetadataTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(BLOB.read_bytes()).hexdigest(), MAP.BUNDLED_SHA256)
 
 
+class FirmwareCscCommandTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.data = MAP.read_firmware(BLOB)
+        cls.payload = cls.data[:-MAP.TRAILER_SIZE]
+        cls.images = MAP.analyze(cls.data)["images"]
+
+    def mapping(self, payload=None, images=None):
+        return MAP._csc_command_map(self.payload if payload is None else payload,
+                                    self.images if images is None else images)
+
+    def test_csc_local_path_schema_and_signed_comparisons(self):
+        result = MAP.analyze(self.data, csc_command=True)["csc_command"]
+        self.assertEqual(result, self.mapping())
+        self.assertEqual((result["isa"], result["endianness"]), ("A32", "little"))
+        self.assertEqual(result["command"]["value"], 0x73763180)
+        self.assertEqual(result["handler_entry_blob_file_offset"], 0x5f2c)
+        self.assertEqual(result["record_command_byte_offset"], 0x14)
+        self.assertEqual(result["command_load_blob_file_offset"], 0x5f70)
+        self.assertEqual(result["delta"], 0x78)
+        self.assertFalse(result["subtract_updates_flags"])
+        comparisons = result["selected_path_comparisons"]
+        self.assertEqual([c["compare_blob_file_offset"] for c in comparisons],
+                         [0x5f7c, 0x602c, 0x607c, 0x6088, 0x6090, 0x6098])
+        self.assertEqual([c["rhs"] for c in comparisons], [0x73763108, 0x1c, 0x89, 0x2e, 0x3c, 0x88])
+        self.assertTrue(all(c["lhs"] > c["rhs"] for c in comparisons[:2]))
+        self.assertLess(comparisons[2]["lhs"], comparisons[2]["rhs"])
+        self.assertTrue(all(c["lhs"] != c["rhs"] for c in comparisons[3:]))
+        self.assertEqual([c["relation"] for c in comparisons],
+                         ["signed greater than", "signed greater than", "signed less than"] + ["not equal"] * 3)
+        anchors = {a["blob_file_offset"]: a for a in result["instruction_anchors"]}
+        self.assertEqual(anchors[0x5f78]["literal_blob_file_offset"], 0x6174)
+        self.assertEqual(anchors[0x5f78]["literal_value"], 0x73763108)
+        self.assertEqual(anchors[0x5f80]["word"], 0xe0410002)  # SUB, not SUBS.
+        self.assertEqual([anchors[p]["condition"] for p in (0x5f88, 0x6034, 0x6084)], [12] * 3)
+        self.assertEqual([anchors[p]["target_blob_file_offset"] for p in (0x5f88, 0x6034, 0x609c)],
+                         [0x602c, 0x607c, 0x60b8])
+        self.assertEqual(result["instruction_anchor_count"], 28)
+        self.assertEqual(len(anchors), 28)
+
+    def test_csc_fallback_register_facts_keep_unvalidated_call_boundary(self):
+        result = self.mapping()
+        fallback = result["local_fallback"]
+        self.assertEqual(fallback["diagnostic"], {
+            "blob_file_offset": 0x61a8, "text": "[fw] SMP_CmdApi_ProcessHstCmd(): Unknown Command\n",
+            "nul_terminated": True})
+        self.assertEqual(fallback["logging_call_blob_file_offset"], 0x60bc)
+        self.assertEqual(fallback["logging_callee_blob_file_offset"], 0x203c4)
+        self.assertFalse(fallback["logging_callee_body_validated"])
+        self.assertEqual(fallback["value_register_setup"], {"blob_file_offset": 0x5f74, "register": 5, "value": 8})
+        self.assertEqual(fallback["record_byte_store"], {
+            "blob_file_offset": 0x60c0, "base_register": 4, "source_register": 5, "byte_offset": 0x10})
+        self.assertNotIn("value", fallback["record_byte_store"])
+        self.assertEqual(fallback["return_blob_file_offset"], 0x60c4)
+        self.assertIn("preserve callee-saved r4/r5", result["register_flow_assumption"])
+        self.assertIn("conditional", result["register_flow_assumption"])
+        self.assertTrue(any("local instruction path" in text for text in result["limitations"]))
+        encoded = json.dumps(result).lower()
+        for prohibited in ("reply", "acknowledg", "response_status", "sequence", "matrix_payload",
+                           "silicon_incapability", "global_absence", "registers_safe"):
+            self.assertNotIn(prohibited, encoded)
+
+    def test_csc_source_enum_and_library_packing_context_fuses(self):
+        result = self.mapping()
+        header = (ROOT / "include/7411d.h").read_text()
+        base = int(re.search(r"#define\s+eCMD_C011_CMD_BASE\s+\((0x[0-9a-fA-F]+)\)", header)[1], 16)
+        offset = int(re.search(r"eCMD_C011_DEC_CHAN_SET_CSC\s*=\s*eCMD_C011_CMD_BASE\s*\+\s*(0x[0-9a-fA-F]+)", header)[1], 16)
+        self.assertEqual(base + offset, result["command"]["value"])
+        wrapper = (ROOT / "linux_lib/libcrystalhd/libcrystalhd_if.cpp").read_text()
+        wrapper = wrapper.split("DtsSetColorSpace(", 1)[1].split("DtsGetDILPath(", 1)[0]
+        self.assertIn("return DtsSetOutputColorSpace(hDevice, Mode422);", wrapper)
+        packing = (ROOT / "linux_lib/libcrystalhd/libcrystalhd_int_if.cpp").read_text()
+        packing = packing.split("DtsProgramFleaColorSpace(", 1)[1].split("DtsSetOutputColorSpace(", 1)[0]
+        self.assertIn("DtsDevRegisterRead(hDevice, BCHP_MISC2_GLOBAL_CTRL, &Val)", packing)
+        self.assertIn("Val &= 0x0000007c;", packing)
+        self.assertRegex(packing, r"if\( ModeSelect == OUTPUT_MODE422_YUY2 \)\s*\{\s*Val \|= BC_BIT\(1\);")
+        self.assertIn("DtsDevRegisterWr(hDevice, BCHP_MISC2_GLOBAL_CTRL, Val)", packing)
+        self.assertEqual(result["library_context"]["packing_selection"], ["YUY2", "UYVY"])
+        self.assertEqual(result["library_context"]["register_symbol"], "MISC2_GLOBAL_CTRL")
+        self.assertIn("not a firmware matrix route", result["library_context"]["kind"])
+        self.assertNotIn(str(ROOT), json.dumps(result))
+
+    def test_csc_every_fixed_instruction_bit_rejected_before_branch_decode(self):
+        result = self.mapping()
+        for anchor in result["instruction_anchors"]:
+            offset = anchor["blob_file_offset"]
+            for bit in range(32):
+                payload = bytearray(self.payload)
+                struct.pack_into("<I", payload, offset, anchor["word"] ^ (1 << bit))
+                with self.subTest(offset=offset, bit=bit), \
+                        mock.patch.object(MAP, "_a32_branch", side_effect=AssertionError("unexpected branch decode")), \
+                        self.assertRaisesRegex(MAP.FormatError, "word"):
+                    self.mapping(payload=payload)
+
+    def test_csc_literal_and_every_diagnostic_byte_rejected_before_branch_decode(self):
+        result = self.mapping()
+        diagnostic = result["local_fallback"]["diagnostic"]
+        offsets = list(range(0x6174, 0x6178))
+        offsets += range(diagnostic["blob_file_offset"], diagnostic["blob_file_offset"] + len(diagnostic["text"]) + 1)
+        for offset in offsets:
+            payload = bytearray(self.payload)
+            payload[offset] ^= 1
+            with self.subTest(offset=offset), \
+                    mock.patch.object(MAP, "_a32_branch", side_effect=AssertionError("unexpected branch decode")), \
+                    self.assertRaises(MAP.FormatError):
+                self.mapping(payload=payload)
+
+    def test_csc_own_anchor_budget_and_private_bounds(self):
+        self.assertEqual(MAP.MAX_CSC_COMMAND_ANCHORS, 32)
+        with mock.patch.object(MAP, "MAX_CSC_COMMAND_ANCHORS", 27), \
+                mock.patch.object(MAP, "_bootstrap_word", side_effect=AssertionError("unexpected word read")), \
+                self.assertRaisesRegex(MAP.FormatError, "budget"):
+            self.mapping()
+        for payload, images in ((self.payload[:-4], self.images), (self.payload, self.images[::-1]),
+                                (self.payload, self.images[:1]), (self.payload, self.images + self.images)):
+            with self.assertRaisesRegex(MAP.FormatError, "identities"):
+                self.mapping(payload, images)
+
+    def test_csc_public_pin_precedes_every_existing_parser_combination(self):
+        changed = bytearray(self.data)
+        changed[0x60bc] ^= 1
+        for data in (fixture(), self.data[:-4], bytes(changed)):
+            for mask in range(32):
+                with self.subTest(size=len(data), options=mask), \
+                        mock.patch.object(MAP, "parse_elf", side_effect=AssertionError("unexpected ELF parse")), \
+                        mock.patch.object(MAP, "_csc_command_map", side_effect=AssertionError("unexpected CSC parse")):
+                    with self.assertRaisesRegex(MAP.FormatError, "exact bundled"):
+                        MAP.analyze(data, expected_sha256=hashlib.sha256(data).hexdigest(), csc_command=True,
+                                    references=bool(mask & 1), all_symbols=bool(mask & 2), bootstrap=bool(mask & 4),
+                                    picture_output=bool(mask & 8), arc_metadata=bool(mask & 16))
+        with mock.patch.object(MAP.hashlib, "sha256") as digest, \
+                mock.patch.object(MAP, "parse_elf", side_effect=AssertionError("unexpected ELF parse")):
+            digest.return_value.hexdigest.return_value = MAP.BUNDLED_SHA256
+            with self.assertRaisesRegex(MAP.FormatError, "exact bundled"):
+                MAP.analyze(fixture(), csc_command=True)
+
+    def test_csc_pure_mapping_and_cli_pin_failure_emit_no_json(self):
+        with mock.patch("builtins.open", side_effect=AssertionError("unexpected file read")), \
+                mock.patch.object(MAP.os, "open", side_effect=AssertionError("unexpected open")), \
+                mock.patch.object(subprocess, "run", side_effect=AssertionError("unexpected execution")):
+            self.mapping()
+            MAP.analyze(self.data, csc_command=True)
+        data = fixture()
+        with mock.patch.object(MAP, "read_firmware", return_value=data), \
+                mock.patch.object(MAP, "parse_elf", side_effect=AssertionError("unexpected ELF parse")), \
+                mock.patch.object(MAP, "_csc_command_map", side_effect=AssertionError("unexpected CSC parse")), \
+                mock.patch.object(sys, "stdout", new_callable=io.StringIO) as output, \
+                mock.patch.object(sys, "stderr", new_callable=io.StringIO) as error:
+            self.assertEqual(MAP.main(["fixture.bin", "--csc-command", "--expect-sha256",
+                                       hashlib.sha256(data).hexdigest()]), 1)
+        self.assertEqual(output.getvalue(), "")
+        self.assertIn("exact bundled", error.getvalue())
+
+    def test_csc_cli_all_32_options_preserve_baseline_bytes_and_reproduce_report(self):
+        expected = (
+            "15068c07a81a510e02435b6203b1cf5e424152e37ff456b1da9c12b77c15799e",
+            "2a491f4b9033395cdbc688810319ea159973a296d7828ac65153bc93d45b588f",
+            "15af1023987b5f2aee1e9a5560f749560bf33f729252ca3fcb9f41358f49e5aa",
+            "85bec0f347f91ccfbb802d07b4c65fb07c8925625710dbe525fd7c3c1376487e",
+            "f0ba5d1db5c2ef15a5fa55ec53cc6eafab6cdda39c7b28b6c34d343329a6a514",
+            "bc315b8a18db8bbca306e7bd5cfdaedaf3ce9d35fe9dee27d57cbb049c0f88e4",
+            "a624ecefbd5383cd199fe35399e001b472f5ad261af8b60867e6f87fc99e03ba",
+            "270adf1e656ad1efab36d0cf4cbeb4bbfec1817086a523df9f1469276b68f129",
+            "0b8a28e688da85e5afcd518a2fca41bc551608512f2d39f33a04c068e443afb4",
+            "8861a22a3cc940a2ac5f3151b2baf91490a0da303748a35db73056d1cd815036",
+            "ba44d8bc10d015af515ae4729e06fca2e99b8f4e5eda4e1ff25a56b165687148",
+            "1a7447bbe42119f824c9a5dcb607752e242724457de3ffade69d0446216589e3",
+            "115289615745d138661d2b198345ebbaa91ae5adc6dbe5eed13840fd41c2c6da",
+            "3b3558a388083601e462a05a49c03477706c882a4c580cbd32105ea2adfe6fe0",
+            "caf0256815253dfcebdde93248ce8b8323f5694987a14cf5aacd0b831b71eb7e",
+            "e470aa7de978b89a9e8c9cd37d0e2fdcd2ca1e512bbbd7f8782bfb80f4c2f138",
+            "3553b947d6948d11fc48b2994ca29599caa8a70ff7b79d7ffc2639901c9aedfe",
+            "6da05d4dca3424ef76e9359ed7ab3228d5c2622dcd1573b62bc88d2b0c3f2e7b",
+            "6946e167d1dfbb01632025d014ebd76284aafcf58f79099881552c6fc80a4964",
+            "839f141d887e74b8e5d9da871b2160ba15ab5ce5ad6acc77a87a7def68ef4ce6",
+            "516318616888efbf1e60e29538e5acc1c16fa6a70f479e83d01f9f1657b1699c",
+            "9657591de54ac4ff9b351a4bc17012468df532e6bb90c60ab6d069e2bc817de2",
+            "d2c2008b4132878819ccc1b5170305cfa8ca60c9d6d64d35ea8c0b2880c82ed6",
+            "952114519462b14e4dec5f5fe4de14c65972e9e98101d56b5ddc598eb488aef3",
+            "beaa22f44e2dab8b79d76ac0893a2dd3d2f5f00d274cece0d91fba3cd40498d7",
+            "9b783b56d132d064f438dcfb3d5de7cd9ba9358763cb45730c225e8eda64f802",
+            "bfd06ebf3bdde8a63d8580298b2df715ce6cdd7592074b7b673f0d7fdb67d52d",
+            "ff5c56982561469f91e87f5da1e5d63fcff002e851337d105ee44eec0faceca4",
+            "48070fe3ec6e2d42d0a381f2c4504e8b4596a7480d6e1f78ee61c392ab21074e",
+            "f23e7215ddb7842fb8c0295ceb93f5d9a3d30aca6491e89e2326dbb1a8945fae",
+            "3dce1c9be2d4f0207d913b99cf502da99c86a149d8f128764eb60ec3fa052160",
+            "9327274efebb9947e2a494e9bcef60723515ed3d8e1f1aa009011d956112da25")
+        for mask in range(32):
+            flags = []
+            if mask & 1:
+                flags += ["--references", "--symbol", "ReadLine"]
+            for bit, flag in ((2, "--all-symbols"), (4, "--bootstrap"), (8, "--picture-output"), (16, "--arc-metadata")):
+                if mask & bit:
+                    flags.append(flag)
+            command = [sys.executable, "-B", str(TOOL), str(BLOB)] + flags
+            plain = subprocess.run(command, capture_output=True, timeout=10)
+            enriched = subprocess.run(command + ["--csc-command"], capture_output=True, timeout=10)
+            repeated = subprocess.run(command + ["--csc-command"], capture_output=True, timeout=10)
+            with self.subTest(flags=flags):
+                self.assertEqual(plain.returncode, 0, plain.stderr)
+                self.assertEqual(hashlib.sha256(plain.stdout).hexdigest(), expected[mask])
+                self.assertEqual(enriched.returncode, 0, enriched.stderr)
+                self.assertEqual(repeated.returncode, 0, repeated.stderr)
+                self.assertEqual(enriched.stdout, repeated.stdout)
+                result = json.loads(enriched.stdout)
+                self.assertEqual(result.pop("csc_command"), self.mapping())
+                self.assertEqual(result, json.loads(plain.stdout))
+                self.assertNotIn(str(ROOT).encode(), enriched.stdout)
+        self.assertEqual(hashlib.sha256(BLOB.read_bytes()).hexdigest(), MAP.BUNDLED_SHA256)
+
+
 if __name__ == "__main__":
     unittest.main()
