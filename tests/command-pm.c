@@ -5391,10 +5391,20 @@ static void ResumeErrors(void)
         context.user[0].mode = idle ? DTS_MONITOR_MODE : DTS_PLAYBACK_MODE;
         before = context;
         hardware.dma_fault = fault != 0; start_ok = false;
+        hardware.fwcmd_pending = hardware.fwcmd_poisoned = true;
+        hardware.FwCmdCnt = 7;
+        rings_live = true;
+        hardware.rx_freeq = &rings_live;
         Check(crystalhd_resume(&context) == (fault ? BC_STS_IO_ERROR : BC_STS_ERROR),
               "DMA-fault/device-start failures propagate for active and monitor contexts");
         Check(!memcmp(&before, &context, sizeof(context)), "resume failure does not publish success state");
         Check(starts == (fault ? 0U : 1U), "DMA fault prevents hardware restart");
+        Check(!download_resets && hardware.fwcmd_pending &&
+              hardware.fwcmd_poisoned && hardware.FwCmdCnt == 7,
+              "failed warm resume does not clear command quarantine");
+        Check(rings_live && hardware.rx_freeq == &rings_live && !ring_frees &&
+              !dio_destroys && !elem_deletes && !hardware_closes,
+              "failed warm resume retains DMA owners and session storage");
     }
 }
 static void SuspendErrors(void)

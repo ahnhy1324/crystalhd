@@ -30,6 +30,7 @@
 #include <linux/sched/signal.h>
 #include <asm/tsc.h>
 #include <asm/msr.h>
+#include "70015/magnum/basemodules/chp/70015/rdb/a0/bchp_misc3.h"
 #include "crystalhd_hw.h"
 #include "crystalhd_fleafuncs.h"
 #include "crystalhd_lnx.h"
@@ -38,7 +39,7 @@
 
 #define OFFSETOF(_s_, _m_) ((size_t)(unsigned long)&(((_s_ *)0)->_m_))
 
-void crystalhd_flea_core_reset(struct crystalhd_hw *hw);
+bool crystalhd_flea_core_reset(struct crystalhd_hw *hw);
 void crystalhd_flea_disable_interrupts(struct crystalhd_hw *hw);
 void crystalhd_flea_enable_interrupts(struct crystalhd_hw *hw);
 void crystalhd_flea_clear_interrupts(struct crystalhd_hw *hw);
@@ -60,13 +61,14 @@ static bool flea_get_picture_info(struct crystalhd_hw *hw,
 BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
 	struct crystalhd_rx_dma_pkt *rx_pkt);
 
-void crystalhd_flea_core_reset(struct crystalhd_hw *hw)
+bool crystalhd_flea_core_reset(struct crystalhd_hw *hw)
 {
 	unsigned int pollCnt=0,regVal=0;
 
 	dev_dbg(&hw->adp->pdev->dev,"[crystalhd_flea_core_reset]: Starting core reset\n");
 
-	hw->pfnWriteDevRegister(hw->adp, BCHP_MISC3_RESET_CTRL,	0x01);
+	hw->pfnWriteDevRegister(hw->adp, BCHP_MISC3_RESET_CTRL,
+			      BCHP_MISC3_RESET_CTRL_CORE_RESET_MASK);
 
 	pollCnt=0;
 	while (1)
@@ -78,7 +80,7 @@ void crystalhd_flea_core_reset(struct crystalhd_hw *hw)
 
 		regVal = hw->pfnReadDevRegister(hw->adp, BCHP_MISC3_RESET_CTRL);
 
-		if(!(regVal & 0x01))
+		if(!(regVal & BCHP_MISC3_RESET_CTRL_CORE_RESET_MASK))
 		{
 			/*
 			-- Bit is 0, Reset is completed. Which means that
@@ -91,13 +93,13 @@ void crystalhd_flea_core_reset(struct crystalhd_hw *hw)
 		if(pollCnt > MAX_VALID_POLL_CNT)
 		{
 			printk("!!FATAL ERROR!! Core Reset Failure\n");
-			break;
+			return false;
 		}
 	}
 
 	msleep_interruptible(5);
 
-	return;
+	return true;
 }
 
 void crystalhd_flea_disable_interrupts(struct crystalhd_hw *hw)
@@ -1386,7 +1388,8 @@ bool crystalhd_flea_start_device(struct crystalhd_hw *hw)
 	/*
 	-- Issue Core reset to bring in the default values in place
 	*/
-	crystalhd_flea_core_reset(hw);
+	if (!crystalhd_flea_core_reset(hw))
+		return false;
 
 	/*
 	-- If the gisb arbitar register is not set to some other value
@@ -1479,7 +1482,8 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
 	-- Issue the core reset so that we
 	-- make sure there is nothing running.
 	*/
-	crystalhd_flea_core_reset(hw);
+	if (!crystalhd_flea_core_reset(hw))
+		return false;
 
 	crystalhd_flea_init_temperature_measure(hw, false);
 
