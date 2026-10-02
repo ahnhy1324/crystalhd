@@ -2126,9 +2126,9 @@ BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
 {
 	struct device *dev;
 	addr_64 desc_addr;
-	unsigned long flags;
+	unsigned long rx_flags, hw_flags;
 	PIC_DELIVERY_HOST_INFO	PicDeliInfo = {0};
-	uint32_t BuffSzInDwords;
+	uint32_t BuffSzInDwords, pkt_tag;
 	BC_STATUS sts;
 
 	if (!hw || !rx_pkt || !rx_pkt->buffer) {
@@ -2150,21 +2150,24 @@ BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
 		return BC_STS_BUSY;
 	}
 
-	spin_lock_irqsave(&hw->rx_lock, flags);
+	spin_lock_irqsave(&hw->rx_lock, rx_flags);
+	if (hw->rx_list_post_index >= DMA_ENGINE_CNT) {
+		dev_err(dev, "List Out Of bounds %x\n", hw->rx_list_post_index);
+		spin_unlock_irqrestore(&hw->rx_lock, rx_flags);
+		return BC_STS_INV_ARG;
+	}
 	if (hw->rx_list_sts[hw->rx_list_post_index]) {
 		dev_dbg(dev, "HW list is busy\n");
-		spin_unlock_irqrestore(&hw->rx_lock, flags);
+		spin_unlock_irqrestore(&hw->rx_lock, rx_flags);
 		return BC_STS_BUSY;
 	}
 
 	if (!TEST_BIT(hw->PicQSts, hw->channelNum)) {
 		/* NO pictures available for this channel */
 		dev_dbg(dev, "No Picture Available for DMA\n");
-		spin_unlock_irqrestore(&hw->rx_lock, flags);
+		spin_unlock_irqrestore(&hw->rx_lock, rx_flags);
 		return BC_STS_BUSY;
 	}
-
-	CLEAR_BIT(hw->PicQSts, hw->channelNum);
 
 	desc_addr.full_addr = rx_pkt->desc_mem.phy_addr;
 
@@ -2180,34 +2183,40 @@ BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
 		PicDeliInfo.HostDescMemHighAddr_UV = desc_addr.high_part;
 	}
 
-	rx_pkt->pkt_tag = hw->rx_pkt_tag_seed + hw->rx_list_post_index;
-	sts = crystalhd_dioq_add(hw->rx_actq, rx_pkt, false, rx_pkt->pkt_tag);
-	if (sts != BC_STS_SUCCESS) {
-		SET_BIT(hw->PicQSts, hw->channelNum);
-		spin_unlock_irqrestore(&hw->rx_lock, flags);
-		return sts;
+	BuffSzInDwords = (sizeof (PicDeliInfo) - sizeof(PicDeliInfo.Reserved))/4;
+
+	/* Keep the shared metadata and list admission serialized until the
+	 * doorbell. A failed write must not transfer ownership or arm an IRQ.
+	 */
+	spin_lock_irqsave(&hw->lock, hw_flags);
+	if (READ_ONCE(hw->dma_fault)) {
+		sts = BC_STS_IO_ERROR;
+		goto unlock;
 	}
+	sts = hw->pfnDevDRAMWrite(hw, hw->FleaRxPicDelAddr, BuffSzInDwords,
+				(uint32_t *)&PicDeliInfo);
+	if (sts != BC_STS_SUCCESS)
+		goto unlock;
+
+	pkt_tag = hw->rx_pkt_tag_seed + hw->rx_list_post_index;
+	sts = crystalhd_dioq_add(hw->rx_actq, rx_pkt, false, pkt_tag);
+	if (sts != BC_STS_SUCCESS)
+		goto unlock;
+	rx_pkt->pkt_tag = pkt_tag;
+	CLEAR_BIT(hw->PicQSts, hw->channelNum);
 	hw->rx_list_sts[hw->rx_list_post_index] |= rx_waiting_y_intr;
 	if (rx_pkt->uv_phy_addr)
 		hw->rx_list_sts[hw->rx_list_post_index] |= rx_waiting_uv_intr;
 	hw->rx_list_post_index = (hw->rx_list_post_index + 1) % DMA_ENGINE_CNT;
 
-	spin_unlock_irqrestore(&hw->rx_lock, flags);
-
-	BuffSzInDwords = (sizeof (PicDeliInfo) - sizeof(PicDeliInfo.Reserved))/4;
-
-	/*
-	-- Write the parameters in DRAM.
-	*/
-	spin_lock_irqsave(&hw->lock, flags);
-	hw->pfnDevDRAMWrite(hw, hw->FleaRxPicDelAddr, BuffSzInDwords, (uint32_t*)&PicDeliInfo);
 	crystalhd_rx_buffer_sync_for_device(hw->adp, rx_pkt->buffer);
 	hw->pfnWriteDevRegister(hw->adp, RX_POST_MAILBOX, hw->channelNum);
-	spin_unlock_irqrestore(&hw->lock, flags);
-
 	hw->RxSeqNum++;
 
-	return BC_STS_SUCCESS;
+unlock:
+	spin_unlock_irqrestore(&hw->lock, hw_flags);
+	spin_unlock_irqrestore(&hw->rx_lock, rx_flags);
+	return sts;
 }
 
 BC_STATUS crystalhd_flea_hw_post_cap_buff(struct crystalhd_hw *hw, struct crystalhd_rx_dma_pkt *rx_pkt)
