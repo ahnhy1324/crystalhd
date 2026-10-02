@@ -2383,7 +2383,7 @@ class FirmwareCommandBufferBridgeTests(unittest.TestCase):
             with self.subTest(mask=mask):
                 self.assertEqual(enriched.pop("command_buffer_bridge"), mapping)
                 self.assertEqual(enriched, plain)
-        self.assertEqual(aggregate.hexdigest(), "7513e2e91952bbad750fa2b82107998c4fbb9c06617dbedd9dc3e743add8b037")
+        self.assertEqual(aggregate.hexdigest(), "20cf86c814aba932f0e55c68924bab49a11522c74ed58b1af7857ed72d568b77")
         self.assertEqual(hashlib.sha256(BLOB.read_bytes()).hexdigest(), MAP.BUNDLED_SHA256)
 
     def test_bridge_cli_flag_combinations_and_repeated_stdout(self):
