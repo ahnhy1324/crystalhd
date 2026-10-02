@@ -110,14 +110,15 @@ awk '
     END { if (found != 1) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_hw.h" > "$dma_test_dir/flea-reset-limit.h"
 awk '
-    /^bool crystalhd_flea_(core_reset|start_device|stop_device)\(/ {
+    /^bool crystalhd_flea_(core_reset|start_device|stop_device|init_dram|ddr_pll_config)\(/ {
         if (/;[[:space:]]*$/) next
         copy = 1; found++
     }
     copy { print }
     copy && /^}/ { copy = 0 }
-    END { if (found != 3 || copy) exit 1 }
-' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$dma_test_dir/flea-reset-functions.h"
+    END { if (found != 5 || copy) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_flea_ddr.c" \
+  "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$dma_test_dir/flea-reset-functions.h"
 for reset_sanitize in no yes; do
     reset_extra=
     if [ "$reset_sanitize" = yes ]; then

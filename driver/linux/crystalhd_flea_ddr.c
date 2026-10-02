@@ -68,7 +68,7 @@ uint32_t rts_prog_vals[21][5] = {
   { 0, 0, 0, 0, 0}, /*(20) */
 };
 
-void crystalhd_flea_ddr_pll_config(struct crystalhd_hw* hw, int32_t *speed_grade, int32_t num_plls, uint32_t tmode)
+bool crystalhd_flea_ddr_pll_config(struct crystalhd_hw* hw, int32_t *speed_grade, int32_t num_plls, uint32_t tmode)
 {
 	uint32_t PLL_NDIV_INT[2];
 	uint32_t PLL_M1DIV[2];
@@ -125,7 +125,7 @@ void crystalhd_flea_ddr_pll_config(struct crystalhd_hw* hw, int32_t *speed_grade
 					  (0 << 6) | /*PWRDWN_CH1 */
 					  (0 << 8) | /*DLY_CH1 */
 					  (0 << 10)| /*VCO_RNG */
-					  (1 << 31)  /*DIV2 CLK RESET */
+					  (1U << 31)  /*DIV2 CLK RESET */
 					  );
 
 			hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_PLL_PRE_DIVIDER,
@@ -154,8 +154,10 @@ void crystalhd_flea_ddr_pll_config(struct crystalhd_hw* hw, int32_t *speed_grade
 				tmp = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_PLL_STATUS);
 				timeout--;
 			}
-			if (timeout<=0)
+			if (!(tmp & 0x1)) {
 				printk("Timed out waiting for DDR Controller PLL %d to lock\n",i);
+				return false;
+			}
 		}
 
 		/*deassert PLL digital reset */
@@ -197,8 +199,10 @@ void crystalhd_flea_ddr_pll_config(struct crystalhd_hw* hw, int32_t *speed_grade
 				timeout--;
 				tmp = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_PHY_BYTE_LANE_0_VDL_STATUS);
 			}
-			if ((tmp & 0x3) != 0x3)
+			if ((tmp & 0x3) != 0x3) {
 				printk("VDL calibration did not finish or did not lock!\n");
+				goto vdl_failed;
+			}
 			timeout=100;
 			tmp = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_PHY_BYTE_LANE_1_VDL_STATUS);
 			while((timeout>0) && ((tmp & 0x3) == 0x0)){
@@ -206,11 +210,9 @@ void crystalhd_flea_ddr_pll_config(struct crystalhd_hw* hw, int32_t *speed_grade
 				timeout--;
 				tmp = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_PHY_BYTE_LANE_1_VDL_STATUS);
 			}
-			if ((tmp & 0x3) != 0x3)
+			if ((tmp & 0x3) != 0x3) {
 				printk("VDL calibration did not finish or did not lock!\n");
-
-			if(timeout<=0){
-				printk("DDR PHY %d VDL Calibration failed\n",i);
+				goto vdl_failed;
 			}
 		}
 		else {
@@ -261,6 +263,11 @@ void crystalhd_flea_ddr_pll_config(struct crystalhd_hw* hw, int32_t *speed_grade
 			if(poll_cnt++ > 100)
 				break;
 		}
+		if (!tmode &&
+		    !(tmp & BCHP_DDR23_PHY_CONTROL_REGS_ZQ_PVT_COMP_CTL_sample_done_MASK)) {
+			printk("DDR PHY %d ZQ calibration did not finish\n", i);
+			return false;
+		}
 
 		if(tmode) {
 			/* Set fields addr_ovr_en and dq_pvr_en to '1'.  Set all *_override_val fields to 0xf - ZQ_PVT_COMP_CTL */
@@ -277,6 +284,12 @@ void crystalhd_flea_ddr_pll_config(struct crystalhd_hw* hw, int32_t *speed_grade
 			hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_PHY_CONTROL_REGS_DRIVE_PAD_CTL,tmp);
 		}
 	}/*for(i=0.. */
+	return true;
+
+vdl_failed:
+	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_PHY_BYTE_LANE_0_VDL_CALIBRATE, 0);
+	hw->pfnWriteDevRegister(hw->adp, BCHP_DDR23_PHY_BYTE_LANE_1_VDL_CALIBRATE, 0);
+	return false;
 }
 
 void crystalhd_flea_ddr_ctrl_init(struct crystalhd_hw *hw,
