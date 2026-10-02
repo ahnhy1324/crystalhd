@@ -20,6 +20,8 @@ struct _BC_DTS_PROC_OUT;
 enum action {
 	ACTION_NONE, ACTION_INFO, ACTION_VERSION, ACTION_H264,
 	ACTION_H261, ACTION_H263, ACTION_MPEG1,
+	ACTION_SCALING_FILTERS, ACTION_PIC_CAPTURE, ACTION_SET_CSC,
+	ACTION_SET_FGT, ACTION_CUSTOM_VIDOUT, ACTION_FILL_PIC_BUF,
 };
 
 struct options {
@@ -44,10 +46,17 @@ static void usage(FILE *stream)
 	      "       flea-fw-probe (--version | --h264-control | --h261-control |\n"
 	      "         --h263-control | --mpeg1-control)\n"
 	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
+	      "       flea-fw-probe (--scaling-filters-command | --pic-capture-command |\n"
+	      "         --csc-command | --fgt-command | --custom-vidout-command |\n"
+	      "         --fill-pic-buf-command)\n"
+	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
 	      "       flea-fw-probe --help\n"
 	      "\n"
 	      "The live selectors reload firmware and reset an idle card. They do\n"
-	      "not decode video or establish codec capability. Use --info first;\n"
+	      "not decode video or establish codec capability. Command-only probes\n"
+	      "send one fixed zero-argument command after INIT and VERSION, without\n"
+	      "opening or starting a decoder. A reply is not raw-processing support.\n"
+	      "Use --info first;\n"
 	      "it reports metadata only, including the bound device generation.\n"
 	      "The separate research device requires CAP_SYS_RAWIO and an opt-in\n"
 	      "driver build. There are no retries, fallback devices or unloads.\n",
@@ -97,6 +106,18 @@ static bool parse_options(int argc, char **argv, struct options *options)
 			action = ACTION_H263;
 		else if (!strcmp(argv[i], "--mpeg1-control"))
 			action = ACTION_MPEG1;
+		else if (!strcmp(argv[i], "--scaling-filters-command"))
+			action = ACTION_SCALING_FILTERS;
+		else if (!strcmp(argv[i], "--pic-capture-command"))
+			action = ACTION_PIC_CAPTURE;
+		else if (!strcmp(argv[i], "--csc-command"))
+			action = ACTION_SET_CSC;
+		else if (!strcmp(argv[i], "--fgt-command"))
+			action = ACTION_SET_FGT;
+		else if (!strcmp(argv[i], "--custom-vidout-command"))
+			action = ACTION_CUSTOM_VIDOUT;
+		else if (!strcmp(argv[i], "--fill-pic-buf-command"))
+			action = ACTION_FILL_PIC_BUF;
 		else if (!strcmp(argv[i], "--acknowledge-card-reset")) {
 			if (options->acknowledge)
 				return false;
@@ -161,6 +182,27 @@ static bool status_valid(__u32 status)
 	return status <= BC_STS_PWR_MGMT || status == (__u32)BC_STS_ERROR;
 }
 
+static __u32 raw_command(__u32 selector)
+{
+	/* Fixed wire values from include/7411d.h; never caller-provided. */
+	switch (selector) {
+	case CRYSTALHD_FW_RESEARCH_SCALING_FILTERS_COMMAND:
+		return 0x7376310bU;
+	case CRYSTALHD_FW_RESEARCH_PIC_CAPTURE_COMMAND:
+		return 0x7376311cU;
+	case CRYSTALHD_FW_RESEARCH_SET_CSC_COMMAND:
+		return 0x73763180U;
+	case CRYSTALHD_FW_RESEARCH_SET_FGT_COMMAND:
+		return 0x73763182U;
+	case CRYSTALHD_FW_RESEARCH_CUSTOM_VIDOUT_COMMAND:
+		return 0x737631ffU;
+	case CRYSTALHD_FW_RESEARCH_FILL_PIC_BUF_COMMAND:
+		return 0x73763126U;
+	default:
+		return 0;
+	}
+}
+
 static bool result_valid(const struct crystalhd_fw_research_result *result,
 			 const struct crystalhd_fw_research_request *request,
 			 uint64_t generation)
@@ -173,6 +215,7 @@ static bool result_valid(const struct crystalhd_fw_research_result *result,
 	static const __u32 open_only_commands[] = {
 		0x73763001U, 0x73763004U, 0x73763100U, 0x73763101U,
 	};
+	__u32 raw_commands[] = {0x73763001U, 0x73763004U, 0};
 	const __u32 *commands;
 	unsigned int expected_count;
 	unsigned int i, j;
@@ -191,6 +234,16 @@ static bool result_valid(const struct crystalhd_fw_research_result *result,
 	case CRYSTALHD_FW_RESEARCH_MPEG1_CONTROL:
 		commands = open_only_commands;
 		expected_count = 4;
+		break;
+	case CRYSTALHD_FW_RESEARCH_SCALING_FILTERS_COMMAND:
+	case CRYSTALHD_FW_RESEARCH_PIC_CAPTURE_COMMAND:
+	case CRYSTALHD_FW_RESEARCH_SET_CSC_COMMAND:
+	case CRYSTALHD_FW_RESEARCH_SET_FGT_COMMAND:
+	case CRYSTALHD_FW_RESEARCH_CUSTOM_VIDOUT_COMMAND:
+	case CRYSTALHD_FW_RESEARCH_FILL_PIC_BUF_COMMAND:
+		raw_commands[2] = raw_command(request->selector);
+		commands = raw_commands;
+		expected_count = 3;
 		break;
 	default:
 		return false;
@@ -240,7 +293,7 @@ static bool result_valid(const struct crystalhd_fw_research_result *result,
 		/* V1 only follows OPEN on channel zero. Preserve a correctly
 		 * stopped error record, but reject claimed success/follow-ons.
 		 */
-		if (i == 2 && reply->transport_status == BC_STS_SUCCESS &&
+		if (reply->command == 0x73763100U && reply->transport_status == BC_STS_SUCCESS &&
 		    reply->header_matches && reply->response[3] &&
 		    (!result->status || i + 1 < result->command_count))
 			return false;
@@ -404,6 +457,24 @@ int main(int argc, char **argv)
 		break;
 	case ACTION_MPEG1:
 		request.selector = CRYSTALHD_FW_RESEARCH_MPEG1_CONTROL;
+		break;
+	case ACTION_SCALING_FILTERS:
+		request.selector = CRYSTALHD_FW_RESEARCH_SCALING_FILTERS_COMMAND;
+		break;
+	case ACTION_PIC_CAPTURE:
+		request.selector = CRYSTALHD_FW_RESEARCH_PIC_CAPTURE_COMMAND;
+		break;
+	case ACTION_SET_CSC:
+		request.selector = CRYSTALHD_FW_RESEARCH_SET_CSC_COMMAND;
+		break;
+	case ACTION_SET_FGT:
+		request.selector = CRYSTALHD_FW_RESEARCH_SET_FGT_COMMAND;
+		break;
+	case ACTION_CUSTOM_VIDOUT:
+		request.selector = CRYSTALHD_FW_RESEARCH_CUSTOM_VIDOUT_COMMAND;
+		break;
+	case ACTION_FILL_PIC_BUF:
+		request.selector = CRYSTALHD_FW_RESEARCH_FILL_PIC_BUF_COMMAND;
 		break;
 	default:
 		fputs("Invalid research selector; no live command attempted.\n", stderr);

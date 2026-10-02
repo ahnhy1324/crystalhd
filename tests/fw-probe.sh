@@ -79,10 +79,31 @@ digest = bytes(int(value, 16) for value in re.findall(r'0x([0-9a-fA-F]{2})', pin
 assert digest == hashlib.sha256((root / 'firmware/fwbin/70015/bcm70015fw.bin').read_bytes()).digest()
 assert digest.hex() == re.search(r'CRYSTALHD_FW_RESEARCH_FIRMWARE_SHA256\s+\\\s*"([0-9a-f]+)"', uapi).group(1)
 legacy = (root / 'include/7411d.h').read_text()
+wire_header = (root / 'driver/linux/crystalhd_fw_if.h').read_text()
+cli = (root / 'tools/fw-research/flea_fw_probe.c').read_text()
 for name, value in (('H261', 2), ('H263', 3), ('MPEG1', 5)):
     wire = re.search(r'\bCRYSTALHD_FW_RESEARCH_ALGORITHM_' + name + r'\s+(\d+)U\b', source)
     declared = re.search(r'\beC011_VIDEO_ALG_' + name + r'\s*=\s*(0x[0-9a-fA-F]+)\b', legacy)
     assert wire and declared and int(wire.group(1)) == int(declared.group(1), 16) == value
+raw_commands = (('SCALING_FILTERS', 'SCALING_FILTERS', 6, 0x10b),
+                ('PIC_CAPTURE', 'PIC_CAPTURE', 7, 0x11c),
+                ('SET_CSC', 'SET_CSC', 8, 0x180),
+                ('SET_FGT', 'SET_FGT', 9, 0x182),
+                ('CUSTOM_VIDOUT', 'CUSTOM_VIDOUT', 10, 0x1ff),
+                ('FILL_PIC_BUF', 'FILL_PIC_BUF', 11, 0x126))
+for selector_name, command_name, selector, offset in raw_commands:
+    name = 'eCMD_C011_DEC_CHAN_' + command_name
+    pattern = r'\b' + name + r'\s*=\s*eCMD_C011_CMD_BASE\s*\+\s*(0x[0-9a-fA-F]+)\b'
+    for header in (legacy, wire_header):
+        declared = re.search(pattern, header)
+        assert declared and int(declared.group(1), 16) == offset
+        assert re.search(r'#define\s+eCMD_C011_CMD_BASE\s+\(0x73763000\)', header)
+    selector_macro = 'CRYSTALHD_FW_RESEARCH_' + selector_name + '_COMMAND'
+    assert re.search(r'\b' + selector_macro + r'\s+' + str(selector) + r'U\b', uapi)
+    assert re.search(r'case\s+' + selector_macro + r':\s*return\s+' + name + r'\s*;', source)
+    wire = re.search(r'case\s+' + selector_macro + r':\s*return\s+(0x[0-9a-fA-F]+)U\s*;', cli)
+    assert wire and int(wire.group(1), 16) == 0x73763000 + offset
+print('Firmware probe: six fixed command routes match both source enums and CLI wire values')
 for enabled in (None, '0', '1'):
     script = f'include {root}/driver/linux/Kbuild\nprobe-check:\n\t@echo $(crystalhd-objs)\n\t@echo $(ccflags-y)\n'
     args = ['make', '--no-print-directory', '-f', '-', 'probe-check', 'CONFIG_CRYPTO_HASH=y']
@@ -124,7 +145,15 @@ _Static_assert(CRYSTALHD_FW_RESEARCH_H264_CONTROL == 2U, "existing H264 selector
 _Static_assert(CRYSTALHD_FW_RESEARCH_H261_CONTROL == 3U, "H261 selector");
 _Static_assert(CRYSTALHD_FW_RESEARCH_H263_CONTROL == 4U, "H263 selector");
 _Static_assert(CRYSTALHD_FW_RESEARCH_MPEG1_CONTROL == 5U, "MPEG1 selector");
-_Static_assert(CRYSTALHD_FW_RESEARCH_SELECTOR_MASK == 31U, "five fixed selectors");
+_Static_assert(CRYSTALHD_FW_RESEARCH_SCALING_FILTERS_COMMAND == 6U, "scaling selector");
+_Static_assert(CRYSTALHD_FW_RESEARCH_PIC_CAPTURE_COMMAND == 7U, "capture selector");
+_Static_assert(CRYSTALHD_FW_RESEARCH_SET_CSC_COMMAND == 8U, "CSC selector");
+_Static_assert(CRYSTALHD_FW_RESEARCH_SET_FGT_COMMAND == 9U, "FGT selector");
+_Static_assert(CRYSTALHD_FW_RESEARCH_CUSTOM_VIDOUT_COMMAND == 10U, "custom selector");
+_Static_assert(CRYSTALHD_FW_RESEARCH_FILL_PIC_BUF_COMMAND == 11U, "fill selector");
+_Static_assert(CRYSTALHD_FW_RESEARCH_SELECTOR_MASK == 2047U, "eleven fixed selectors");
+_Static_assert(CRYSTALHD_FW_RESEARCH_MAX_COMMANDS == 5U, "unchanged reply capacity");
+_Static_assert(CRYSTALHD_FW_RESEARCH_RESPONSE_WORDS == 64U, "unchanged raw capacity");
 '''
 compiler = shlex.split(os.environ.get('CC', 'cc'))
 multiarch = subprocess.check_output(compiler + ['-print-multiarch'], text=True).strip()
@@ -200,10 +229,10 @@ def invalid_constant(value):
     raise AssertionError("non-JSON constant: " + value)
 lines = list(sys.stdin)
 examples = [json.loads(line, object_pairs_hook=unique_object, parse_constant=invalid_constant) for line in lines]
-assert len(examples) == 152
+assert len(examples) == 308
 info, version, h264, failure, nohash, rejectedhash, h261, h263, mpeg1, rejected, readfail = examples[:11]
-assert info["generation"] == "42" and info["research_selector_mask"] == 31
-assert lines[0] == "{\"version\":1,\"generation\":\"42\",\"research_selector_mask\":31,\"expected_firmware_sha256\":\"" + info["expected_firmware_sha256"] + "\"}\n"
+assert info["generation"] == "42" and info["research_selector_mask"] == 2047
+assert lines[0] == "{\"version\":1,\"generation\":\"42\",\"research_selector_mask\":2047,\"expected_firmware_sha256\":\"" + info["expected_firmware_sha256"] + "\"}\n"
 assert set(info) == {"version", "generation", "research_selector_mask", "expected_firmware_sha256"}
 def u32(value):
     assert type(value) is int and 0 <= value <= 4294967295
@@ -214,13 +243,22 @@ def check_result(result):
                            "command_count", "replies"}
     assert type(result["status"]) is int and -4095 <= result["status"] <= 0
     assert result["generation"] == "42" and result["version"] == 1
-    assert type(result["selector"]) is int and 1 <= result["selector"] <= 5
+    assert type(result["selector"]) is int and 1 <= result["selector"] <= 11
     assert result["expected_firmware_sha256"] == info["expected_firmware_sha256"]
     for field in ("firmware_hash_valid", "download_attempted", "cleanup_attempted", "retained"):
         assert type(result[field]) is bool
     for field in ("download_status", "cleanup_status", "command_count"):
         u32(result[field])
     assert isinstance(result["replies"], list) and len(result["replies"]) == result["command_count"]
+    schedules = {1: [0x73763001, 0x73763004],
+                 2: [0x73763001, 0x73763004, 0x73763100, 0x73763103, 0x73763101]}
+    for selector in (3, 4, 5):
+        schedules[selector] = [0x73763001, 0x73763004, 0x73763100, 0x73763101]
+    for selector, command in enumerate((0x7376310b, 0x7376311c, 0x73763180,
+                                         0x73763182, 0x737631ff, 0x73763126), 6):
+        schedules[selector] = [0x73763001, 0x73763004, command]
+    assert [reply["command"] for reply in result["replies"]] == schedules[result["selector"]][:result["command_count"]]
+    assert result["command_count"] <= len(schedules[result["selector"]])
     for index, reply in enumerate(result["replies"]):
         assert set(reply) == {"command", "sequence", "transport_status", "raw_response_valid",
                               "header_matches", "raw_response_words", "decoded_response"}
@@ -305,11 +343,51 @@ for selector in range(1, 6):
         assert result["retained"] is retained
         assert result["cleanup_status"] == (0 if retained else 7)
         assert list(result["replies"][1]["decoded_response"].values()) == list(patterns[2])
-assert position == len(examples) - 2
-assert examples[-2]["status"] < 0 and examples[-2]["retained"] and not examples[-2]["cleanup_attempted"]
-assert examples[-1]["status"] == 0 and not examples[-1]["retained"] and examples[-1]["command_count"] == 5
-for result in examples[-2:]:
+assert position == 150
+assert examples[150]["status"] < 0 and examples[150]["retained"] and not examples[150]["cleanup_attempted"]
+assert examples[151]["status"] == 0 and not examples[151]["retained"] and examples[151]["command_count"] == 5
+for result in examples[150:152]:
     assert list(result["replies"][1]["decoded_response"].values()) == list(patterns[2])
-print("Firmware probe CLI: 152 strict JSON examples, raw evidence and success-only version decoding verified")
+position = 152
+for selector, command in enumerate((0x7376310b, 0x7376311c, 0x73763180,
+                                     0x73763182, 0x737631ff, 0x73763126), 6):
+    for pattern in patterns:
+        result = examples[position]; position += 1
+        assert result["selector"] == selector and result["status"] == 0 and result["command_count"] == 3
+        assert list(result["replies"][1]["decoded_response"].values()) == list(pattern)
+        assert result["replies"][2]["decoded_response"] is None
+    for phase in range(1, 4):
+        for kind in (1, 2, 3, 4, 5, 7):
+            result = examples[position]; position += 1
+            assert result["selector"] == selector and result["status"] < 0 and result["command_count"] == phase
+            reply = result["replies"][-1]
+            assert reply["decoded_response"] is None
+            if phase > 2:
+                assert list(result["replies"][1]["decoded_response"].values()) == list(patterns[2])
+            if kind in (1, 2):
+                assert not reply["raw_response_valid"] and reply["raw_response_words"] is None
+            elif kind in (3, 7):
+                assert reply["transport_status"] == 11 and reply["header_matches"]
+                assert reply["raw_response_words"][2] == (4294967295 if kind == 3 else 0)
+            else:
+                assert reply["raw_response_valid"] and not reply["header_matches"]
+    for retained in (True, False):
+        result = examples[position]; position += 1
+        assert result["selector"] == selector and result["status"] < 0 and result["command_count"] == 3
+        assert result["retained"] is retained and result["cleanup_status"] == (0 if retained else 7)
+        assert list(result["replies"][1]["decoded_response"].values()) == list(patterns[2])
+    for retained in (False, True):
+        result = examples[position]; position += 1
+        assert result["selector"] == selector and result["status"] == -71 and result["command_count"] == 3
+        reply = result["replies"][2]
+        assert reply["transport_status"] == 0 and reply["raw_response_valid"] and not reply["header_matches"]
+        assert reply["raw_response_words"] == [command] + [0] * 63 and reply["decoded_response"] is None
+        assert result["retained"] is retained and result["cleanup_status"] == (7 if retained else 0)
+        assert list(result["replies"][1]["decoded_response"].values()) == list(patterns[2])
+    result = examples[position]; position += 1
+    assert result["selector"] == selector and result["status"] == 0 and result["command_count"] == 3
+    assert result["replies"][2]["raw_response_words"][3] == 7 and result["replies"][2]["decoded_response"] is None
+assert position == len(examples)
+print("Firmware probe CLI: original 152 plus 156 raw-route strict JSON examples verified")
 '
 done
