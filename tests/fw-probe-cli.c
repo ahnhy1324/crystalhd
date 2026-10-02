@@ -17,7 +17,7 @@ struct _BC_DTS_PROC_OUT;
 #include "crystalhd_fw_research.h"
 
 int crystalhd_probe_main(int argc, char **argv);
-static unsigned checks, opens, stats, infos, runs, state_runs, controller_runs, image_runs, packet_runs, closes;
+static unsigned checks, opens, stats, infos, runs, state_runs, controller_runs, image_runs, packet_runs, heap_runs, closes;
 static int open_error, stat_error, info_error, run_error, close_error;
 static bool character, output_error, flush_error;
 static struct crystalhd_fw_research_info metadata;
@@ -35,6 +35,9 @@ static unsigned image_fault_at, image_fault_kind, image_mutation, image_mutation
 static uint32_t image_roots[2], image_words[4], image_bad_root;
 static unsigned packet_fault_at, packet_fault_kind, packet_mutation, packet_mutation_stage, packet_word;
 static uint32_t packet_roots[2], packet_image_words[4], packet_words[3], packet_bad_root;
+static unsigned heap_fault_at, heap_fault_kind, heap_mutation, heap_stage, heap_word;
+static uint32_t heap_roots[2], heap_bases[2], heap_extent, heap_owned, heap_header[5], heap_slots[2];
+static uint32_t heap_bad_root, heap_bad_value;
 static const uint32_t commands[] = {eCMD_C011_INIT, eCMD_C011_GET_VERSION,
     eCMD_C011_DEC_CHAN_OPEN, eCMD_C011_DEC_CHAN_STATUS, eCMD_C011_DEC_CHAN_CLOSE};
 static const uint32_t raw_commands[] = {eCMD_C011_DEC_CHAN_SCALING_FILTERS,
@@ -577,6 +580,97 @@ static void make_packet_result(struct crystalhd_fw_research_packet_result *resul
     }
 }
 
+static void fill_heap_sample(struct crystalhd_fw_research_heap_packet_sample *sample, unsigned stage)
+{
+    uint32_t target = (uint32_t)((uint64_t)heap_bases[stage] + 0x70000U);
+    unsigned i;
+    memset(sample, 0, sizeof(*sample));
+    sample->attempted = sample->read_complete = 1;
+    sample->root_before = sample->root_after = heap_roots[stage];
+    sample->image_before[0] = sample->image_before[1] = heap_bases[stage];
+    sample->image_before[2] = heap_extent; sample->image_before[3] = heap_owned;
+    memcpy(sample->image_after, sample->image_before, sizeof(sample->image_before));
+    for (i = 0; i < 3; i++) sample->packet_before[i] = sample->packet_after[i] = target;
+    sample->packet_address = target;
+    memcpy(sample->header_words, heap_header, sizeof(heap_header));
+    memcpy(sample->slots_before, heap_slots, sizeof(heap_slots));
+    memcpy(sample->slots_after, heap_slots, sizeof(heap_slots));
+}
+
+static void make_heap_result(struct crystalhd_fw_research_heap_packet_result *result)
+{
+    struct crystalhd_fw_research_heap_packet_sample *samples[] = {&result->after_init, &result->after_open};
+    const struct crystalhd_fw_research_image_sample *images[] = {&result->image.after_init, &result->image.after_open};
+    struct crystalhd_fw_research_result *control = &result->image.controller.state.control;
+    struct crystalhd_fw_research_heap_packet_sample *changed;
+    unsigned i;
+    memset(result, 0, sizeof(*result));
+    make_image_result(&result->image);
+    for (i = 0; i < 2; i++)
+        if (images[i]->attempted && images[i]->read_complete && !images[i]->status)
+            fill_heap_sample(samples[i], i);
+    if (heap_fault_at) {
+        unsigned count = heap_fault_at + 1;
+        struct crystalhd_fw_research_heap_packet_sample *sample = samples[heap_fault_at - 1];
+        CHECK(heap_fault_at <= 2 && heap_fault_kind >= 1 && heap_fault_kind <= 6);
+        memset(sample, 0, sizeof(*sample));
+        sample->attempted = heap_fault_kind != 2;
+        sample->status = heap_fault_kind == 2 ? -ENODEV : heap_fault_kind == 3 ? -ERANGE :
+            heap_fault_kind == 4 ? -ESTALE : heap_fault_kind == 5 ? -ETIMEDOUT : heap_fault_kind == 6 ? -4095 : -EIO;
+        control->status = sample->status; control->command_count = count;
+        memset(control->replies + count, 0,
+               (CRYSTALHD_FW_RESEARCH_MAX_COMMANDS - count) * sizeof(control->replies[0]));
+        if (heap_fault_at == 1) {
+            memset(&result->image.controller.state.after_open, 0, sizeof(result->image.controller.state.after_open));
+            memset(&result->image.controller.after_open, 0, sizeof(result->image.controller.after_open));
+            memset(&result->image.after_open, 0, sizeof(result->image.after_open));
+            memset(samples[1], 0, sizeof(*samples[1]));
+        }
+    }
+    CHECK(heap_stage < 2);
+    changed = samples[heap_stage];
+    switch (heap_mutation) {
+    case 0: break;
+    case 1: changed->attempted = 2; break;
+    case 2: changed->read_complete = 2; break;
+    case 3: changed->reserved = 1; break;
+    case 4: changed->status = 1; break;
+    case 5: changed->status = -4096; break;
+    case 6: changed->attempted = 0; break;
+    case 7: memset(changed, 0, sizeof(*changed)); break;
+    case 8: changed->status = -EIO; break;
+    case 9: changed->root_after ^= 4; break;
+    case 10: changed->root_before = changed->root_after = heap_bad_root; break;
+    case 11: {
+        uint32_t one = 1;
+        CHECK(heap_word < 26);
+        memcpy((unsigned char *)changed + 16 + heap_word * sizeof(one), &one, sizeof(one));
+        break;
+    }
+    case 12: changed->read_complete = 1; break;
+    case 13: changed->attempted = 1; changed->status = 0; break;
+    case 14: control->status = -EIO; break;
+    case 15: control->command_count++; result_reply(control, control->command_count - 1, BC_STS_SUCCESS); break;
+    case 16: fill_heap_sample(changed, heap_stage); break;
+    case 17: result->image.controller.state.request.size = sizeof(result->image); break;
+    case 18: control->replies[4].response[63] = 1; break;
+    case 20: changed->image_before[0] ^= 4; changed->image_after[0] = changed->image_before[0]; break;
+    case 21:
+        heap_bases[heap_stage] = heap_bad_value;
+        fill_heap_sample(changed, heap_stage); break;
+    case 22: changed->image_before[2] = changed->image_after[2] = heap_bad_value; break;
+    case 23: changed->image_before[3] = changed->image_after[3] = heap_bad_value; break;
+    case 24: CHECK(heap_word < 3); changed->packet_before[heap_word] ^= 4;
+        changed->packet_after[heap_word] = changed->packet_before[heap_word]; break;
+    case 25: changed->packet_address ^= 4; break;
+    case 26: CHECK(heap_word < 4); changed->image_after[heap_word] ^= 4; break;
+    case 27: CHECK(heap_word < 3); changed->packet_after[heap_word] ^= 4; break;
+    case 28: CHECK(heap_word < 2); changed->slots_after[heap_word] ^= 4; break;
+    case 30: memset(changed, 0, sizeof(*changed)); changed->attempted = 1; break;
+    default: CHECK(false);
+    }
+}
+
 int probe_ioctl(int fd, unsigned long command, ...)
 {
     void *argument; va_list args;
@@ -647,6 +741,21 @@ int probe_ioctl(int fd, unsigned long command, ...)
         if (run_error) { errno = run_error; return -1; }
         make_packet_result(result); return 0;
     }
+    if (command == CRYSTALHD_FW_RESEARCH_RUN_HEAP_PACKET) {
+        struct crystalhd_fw_research_heap_packet_result *result = argument;
+        const unsigned char *bytes = argument;
+        unsigned i;
+        CHECK(infos == 1 && !runs++ && !heap_runs++ && !state_runs && !controller_runs && !image_runs && !packet_runs);
+        state_submitted = result->image.controller.state.request;
+        CHECK(state_submitted.version == 1 && state_submitted.size == sizeof(*result));
+        CHECK(!state_submitted.flags && !state_submitted.reserved);
+        for (i = sizeof(result->image.controller.state.request); i < sizeof(*result); i++) CHECK(!bytes[i]);
+        memset(&submitted, 0, sizeof(submitted));
+        submitted.version = 1; submitted.size = sizeof(result->image.controller.state.control);
+        submitted.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
+        if (run_error) { errno = run_error; return -1; }
+        make_heap_result(result); return 0;
+    }
     CHECK(command == CRYSTALHD_FW_RESEARCH_RUN && infos == 1 && !runs++);
     submitted = ((struct crystalhd_fw_research_result *)argument)->request;
     CHECK(submitted.version == 1 && submitted.size == sizeof(struct crystalhd_fw_research_result));
@@ -684,7 +793,7 @@ int __wrap_ioctl(int fd, unsigned long command, ...)
 
 static void reset(void)
 {
-    opens = stats = infos = runs = state_runs = controller_runs = image_runs = packet_runs = closes = 0;
+    opens = stats = infos = runs = state_runs = controller_runs = image_runs = packet_runs = heap_runs = closes = 0;
     open_error = stat_error = info_error = run_error = close_error = 0;
     character = true; output_error = flush_error = false;
     mutation = fault_at = fault_kind = response_pattern = 0;
@@ -698,6 +807,11 @@ static void reset(void)
     packet_roots[0] = packet_roots[1] = 0xd53e0;
     memset(packet_image_words, 0, sizeof(packet_image_words));
     memset(packet_words, 0, sizeof(packet_words)); packet_bad_root = 0;
+    heap_fault_at = heap_fault_kind = heap_mutation = heap_stage = heap_word = 0;
+    heap_roots[0] = heap_roots[1] = 0xd53e0;
+    heap_bases[0] = heap_bases[1] = 0x117000;
+    heap_extent = 0x100000; heap_owned = 1; heap_bad_root = heap_bad_value = 0;
+    memset(heap_header, 0, sizeof(heap_header)); memset(heap_slots, 0, sizeof(heap_slots));
     output[0] = errors[0] = 0;
     memset(&metadata, 0, sizeof(metadata));
     metadata.version = 1; metadata.size = sizeof(metadata); metadata.generation = 42;
@@ -718,6 +832,7 @@ static char *state_args[] = {"probe", "--fixed-state", "--acknowledge-card-reset
 static char *controller_args[] = {"probe", "--controller-root", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *image_args[] = {"probe", "--controller-image", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *packet_args[] = {"probe", "--controller-packet", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
+static char *heap_args[] = {"probe", "--heap-packet", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *h261_args[] = {"probe", "--h261-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *h263_args[] = {"probe", "--h263-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *mpeg1_args[] = {"probe", "--mpeg1-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
@@ -1665,8 +1780,220 @@ static void packet_json_examples(void)
     reset(); close_error = EINTR; CHECK(invoke(packet_args) == 1 && output[0]); fputs(output, stdout);
 }
 
+static const uint32_t heap_slot_neighbors[] = {
+    0xdfda8, 0xdfdb0, 0xefda8, 0xefdb0, 0xffda8, 0xffdb0, 0x10fda8, 0x10fdb0,
+};
+static const uint32_t heap_slot_crossings[] = {0xdfdac, 0xefdac, 0xffdac, 0x10fdac};
+static const uint32_t heap_valid_bases[] = {0x117000, 0x118000, 0x120000, 0x3efc000};
+static const uint32_t heap_invalid_bases[] = {
+    0, 1, 0x116000, 0x116fff, 0x117001, 0x117ffc, 0x3efc001, 0x3efd000,
+    0x3ffc000, 0x4000000, 0xfff00000, 0xfffffff0, UINT32_MAX,
+};
+static const uint32_t heap_header_patterns[][5] = {
+    {0, 0, 0, 0, 0}, {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX},
+    {eCMD_C011_INIT, 0, 0x12345678, 0xfffffff0, 1},
+    {eCMD_C011_DEC_CHAN_OPEN, 7, 0x80000000, 0, UINT32_MAX},
+    {1, 0xffffffff, 0x70000, 0x100000, 0x117000},
+};
+static const uint32_t heap_owned_patterns[] = {1, 0xffffff01, 0x80000001, 0x12345601};
+
+static void test_heap_packet(void)
+{
+    char *invalid[][10] = {
+        {"probe", "--heap-packet", NULL},
+        {"probe", "--heap-packet", "--acknowledge-card-reset", NULL},
+        {"probe", "--heap-packet", "--expected-generation", "42", NULL},
+        {"probe", "--heap-packet", "--heap-packet", "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+        {"probe", "--heap-packet", "--acknowledge-card-reset", "--expected-generation", "42", "--address", "0", NULL},
+        {"probe", "--heap-packet", "--acknowledge-card-reset", "--expected-generation", "42", "--packet-width", "5", NULL},
+        {"probe", "--heap-packet", "--acknowledge-card-reset", "--expected-generation", "42", "--slots", NULL},
+    };
+    char **other_actions[] = {info_args, state_args, controller_args, image_args, packet_args};
+    const uint32_t invalid_extents[] = {0, 1, 0xffffc, 0x100004, UINT32_MAX};
+    unsigned i, stage, word, kind, phase;
+    for (i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        reset(); CHECK(invoke(invalid[i]) == 1 && !opens && !output[0]);
+    }
+    for (i = 0; i < 16; i++) {
+        char *conflict[] = {"probe", "--heap-packet", i < 5 ? other_actions[i][1] :
+                           i < 10 ? all_live_args[i - 5][1] : raw_args[i - 10][1],
+                           "--acknowledge-card-reset", "--expected-generation", "42", NULL};
+        reset(); CHECK(invoke(conflict) == 1 && !opens && !output[0]);
+    }
+    reset(); CHECK(!invoke(heap_args) && heap_runs == 1 && !state_runs && !controller_runs && !image_runs && !packet_runs);
+    CHECK(strstr(output, "\"heap_packet\":true") && strstr(output, "\"header_words\":[0,0,0,0,0]"));
+    CHECK(strstr(output, "\"image_base_used_for_computed_admitted_fixed_span\":true") &&
+          strstr(output, "\"packet_declarations_used_as_equality_gates\":true"));
+    CHECK(strstr(output, "\"header_values_followed\":false") && strstr(output, "\"stored_reply_values_followed\":false"));
+    CHECK(!strstr(output, "\"returned_values_followed\""));
+    CHECK(strstr(output, "\"freshness_established\":false") && strstr(output, "\"queue_validity_established\":false") &&
+          strstr(output, "\"independent_fetch_errors_certified\":false"));
+    for (i = 0; i < sizeof(image_valid_roots) / sizeof(image_valid_roots[0]); i++) {
+        reset(); heap_roots[0] = heap_roots[1] = image_valid_roots[i]; CHECK(!invoke(heap_args));
+    }
+    for (i = 0; i < sizeof(packet_alias_neighbors) / sizeof(packet_alias_neighbors[0]); i++) {
+        reset(); heap_roots[0] = heap_roots[1] = packet_alias_neighbors[i]; CHECK(!invoke(heap_args));
+    }
+    for (i = 0; i < sizeof(heap_slot_neighbors) / sizeof(heap_slot_neighbors[0]); i++) {
+        reset(); heap_roots[0] = heap_roots[1] = heap_slot_neighbors[i]; CHECK(!invoke(heap_args));
+    }
+    for (i = 0; i < sizeof(heap_valid_bases) / sizeof(heap_valid_bases[0]); i++) {
+        reset(); heap_bases[0] = heap_bases[1] = heap_valid_bases[i]; CHECK(!invoke(heap_args));
+    }
+    for (i = 0; i < sizeof(heap_header_patterns) / sizeof(heap_header_patterns[0]); i++) {
+        reset(); memcpy(heap_header, heap_header_patterns[i], sizeof(heap_header));
+        heap_slots[0] = heap_header[4]; heap_slots[1] = heap_header[3];
+        CHECK(!invoke(heap_args));
+    }
+    /* Embedded observations do not admit, or constrain, the fresh heap stage. */
+    reset(); root_values[0] = 0; root_values[1] = UINT32_MAX;
+    image_words[0] = UINT32_MAX; image_words[1] = 1; image_words[2] = 0; image_words[3] = 0xff;
+    heap_roots[1] = 0xd53e4; heap_bases[1] = 0x3efc000;
+    CHECK(!invoke(heap_args));
+    for (i = 0; i < sizeof(heap_owned_patterns) / sizeof(heap_owned_patterns[0]); i++) {
+        reset(); heap_owned = heap_owned_patterns[i]; CHECK(!invoke(heap_args));
+    }
+    for (stage = 0; stage < 2; stage++) {
+        for (kind = 1; kind <= 6; kind++) {
+            reset(); heap_fault_at = stage + 1; heap_fault_kind = kind;
+            CHECK(invoke(heap_args) == 1 && output[0] && !strstr(errors, "Invalid heap-packet result"));
+            CHECK(strstr(output, "\"packet_address\":null,\"header_words\":null,\"slots_before\":null,\"slots_after\":null"));
+        }
+        for (i = 1; i <= 9; i++) {
+            reset(); heap_stage = stage; heap_mutation = i;
+            CHECK(invoke(heap_args) == 1 && !output[0] && strstr(errors, "Invalid heap-packet result"));
+        }
+        for (i = 0; i < sizeof(image_invalid_roots) / sizeof(image_invalid_roots[0]) +
+                          sizeof(packet_alias_crossings) / sizeof(packet_alias_crossings[0]) +
+                          sizeof(heap_slot_crossings) / sizeof(heap_slot_crossings[0]); i++) {
+            unsigned image_count = sizeof(image_invalid_roots) / sizeof(image_invalid_roots[0]);
+            unsigned alias_count = sizeof(packet_alias_crossings) / sizeof(packet_alias_crossings[0]);
+            reset(); heap_stage = stage; heap_mutation = 10;
+            heap_bad_root = i < image_count ? image_invalid_roots[i] :
+                i < image_count + alias_count ? packet_alias_crossings[i - image_count] :
+                heap_slot_crossings[i - image_count - alias_count];
+            CHECK(invoke(heap_args) == 1 && !output[0]);
+        }
+        for (kind = 1; kind <= 6; kind++)
+            for (word = 0; word < 26; word++) {
+                reset(); heap_fault_at = stage + 1; heap_fault_kind = kind;
+                heap_mutation = 11; heap_stage = stage; heap_word = word;
+                CHECK(invoke(heap_args) == 1 && !output[0]);
+            }
+        for (i = 12; i <= 15; i++) {
+            reset(); heap_fault_at = stage + 1; heap_fault_kind = 4; heap_mutation = i; heap_stage = stage;
+            CHECK(invoke(heap_args) == 1 && !output[0]);
+        }
+        for (i = 17; i <= 18; i++) {
+            reset(); heap_fault_at = stage + 1; heap_fault_kind = 4; heap_mutation = i; heap_stage = stage;
+            CHECK(invoke(heap_args) == 1 && !output[0]);
+        }
+        reset(); heap_stage = stage; heap_mutation = 20; CHECK(invoke(heap_args) == 1 && !output[0]);
+        for (i = 0; i < sizeof(heap_invalid_bases) / sizeof(heap_invalid_bases[0]); i++) {
+            reset(); heap_stage = stage; heap_mutation = 21; heap_bad_value = heap_invalid_bases[i];
+            CHECK(invoke(heap_args) == 1 && !output[0]);
+        }
+        for (i = 0; i < sizeof(invalid_extents) / sizeof(invalid_extents[0]); i++) {
+            reset(); heap_stage = stage; heap_mutation = 22; heap_bad_value = invalid_extents[i];
+            CHECK(invoke(heap_args) == 1 && !output[0]);
+        }
+        for (i = 0; i < 256; i++) {
+            reset(); heap_stage = stage; heap_mutation = 23; heap_bad_value = 0xabcd1200U | i;
+            CHECK(invoke(heap_args) == (i != 1)); CHECK((output[0] != 0) == (i == 1));
+        }
+        for (word = 0; word < 3; word++) {
+            reset(); heap_stage = stage; heap_mutation = 24; heap_word = word;
+            CHECK(invoke(heap_args) == 1 && !output[0]);
+        }
+        reset(); heap_stage = stage; heap_mutation = 25; CHECK(invoke(heap_args) == 1 && !output[0]);
+        for (i = 26; i <= 28; i++)
+            for (word = 0; word < (i == 26 ? 4U : i == 27 ? 3U : 2U); word++) {
+                reset(); heap_stage = stage; heap_mutation = i; heap_word = word;
+                CHECK(invoke(heap_args) == 1 && !output[0]);
+            }
+        reset(); heap_stage = stage; heap_mutation = 30; CHECK(invoke(heap_args) == 1 && !output[0]);
+        for (i = 0; i < 3; i++) {
+            reset(); heap_stage = stage; heap_mutation = 16;
+            if (!i) { image_fault_at = stage + 1; image_fault_kind = 2; }
+            else if (i == 1) { root_fault_at = stage + 1; root_fault_kind = 2; }
+            else { sample_fault_at = stage + 2; sample_fault_kind = 1; }
+            CHECK(invoke(heap_args) == 1 && !output[0]);
+        }
+        reset(); heap_fault_at = stage + 1; heap_fault_kind = 4; mutation = 52;
+        CHECK(invoke(heap_args) == 1 && output[0] && !strstr(errors, "Invalid heap-packet result"));
+        CHECK(strstr(output, "\"status\":-116")); /* Original ESTALE wins over failed cleanup. */
+    }
+    reset(); heap_fault_at = 1; heap_fault_kind = 4; heap_stage = 1; heap_mutation = 16;
+    CHECK(invoke(heap_args) == 1 && !output[0]);
+    for (i = 0; i < 2; i++) {
+        reset(); run_error = i ? EINTR : ENOTTY;
+        CHECK(invoke(heap_args) == 1 && heap_runs == 1 && !state_runs && !controller_runs && !image_runs && !packet_runs && !output[0]);
+        CHECK(strstr(errors, "no retry"));
+    }
+    for (phase = 1; phase <= 5; phase++) {
+        reset(); fault_at = phase; fault_kind = 2;
+        CHECK(invoke(heap_args) == 1 && output[0] && !strstr(errors, "Invalid heap-packet result"));
+    }
+    reset(); mutation = 2; CHECK(invoke(heap_args) == 1 && !output[0]);
+    reset(); state_mutation = 7; CHECK(invoke(heap_args) == 1 && !output[0]);
+    reset(); image_mutation = 3; CHECK(invoke(heap_args) == 1 && !output[0]);
+    reset(); metadata.selector_mask = 1; CHECK(invoke(heap_args) == 1 && !runs);
+    reset(); metadata.generation++; CHECK(invoke(heap_args) == 1 && !runs);
+    reset(); open_error = ENOENT; CHECK(invoke(heap_args) == 1 && !runs);
+    reset(); stat_error = EIO; CHECK(invoke(heap_args) == 1 && !runs);
+    reset(); info_error = ENOTTY; CHECK(invoke(heap_args) == 1 && !runs);
+    reset(); character = false; CHECK(invoke(heap_args) == 1 && !runs);
+    reset(); close_error = EINTR; CHECK(invoke(heap_args) == 1 && output[0]);
+    reset(); output_error = true; CHECK(invoke(heap_args) == 1 && heap_runs == 1);
+    reset(); flush_error = true; CHECK(invoke(heap_args) == 1 && heap_runs == 1);
+}
+
+static void heap_packet_json_examples(void)
+{
+    unsigned i, stage, phase;
+    for (i = 0; i < sizeof(image_valid_roots) / sizeof(image_valid_roots[0]); i++) {
+        reset(); heap_roots[0] = heap_roots[1] = image_valid_roots[i]; CHECK(!invoke(heap_args)); fputs(output, stdout);
+    }
+    for (i = 0; i < sizeof(heap_slot_neighbors) / sizeof(heap_slot_neighbors[0]); i++) {
+        reset(); heap_roots[0] = heap_roots[1] = heap_slot_neighbors[i]; CHECK(!invoke(heap_args)); fputs(output, stdout);
+    }
+    for (i = 0; i < sizeof(heap_valid_bases) / sizeof(heap_valid_bases[0]); i++) {
+        reset(); heap_bases[0] = heap_bases[1] = heap_valid_bases[i]; CHECK(!invoke(heap_args)); fputs(output, stdout);
+    }
+    for (i = 0; i < sizeof(heap_header_patterns) / sizeof(heap_header_patterns[0]); i++) {
+        reset(); memcpy(heap_header, heap_header_patterns[i], sizeof(heap_header));
+        heap_slots[0] = heap_header[4]; heap_slots[1] = heap_header[3]; CHECK(!invoke(heap_args)); fputs(output, stdout);
+    }
+    for (i = 0; i < sizeof(heap_owned_patterns) / sizeof(heap_owned_patterns[0]); i++) {
+        reset(); heap_owned = heap_owned_patterns[i]; CHECK(!invoke(heap_args)); fputs(output, stdout);
+    }
+    reset(); root_values[0] = 0; root_values[1] = UINT32_MAX; image_words[0] = UINT32_MAX;
+    heap_roots[1] = 0xd53e4; heap_bases[1] = 0x3efc000; CHECK(!invoke(heap_args)); fputs(output, stdout);
+    for (stage = 1; stage <= 2; stage++) {
+        for (i = 1; i <= 6; i++) {
+            reset(); heap_fault_at = stage; heap_fault_kind = i;
+            CHECK(invoke(heap_args) == 1 && output[0]); fputs(output, stdout);
+        }
+        reset(); image_fault_at = stage; image_fault_kind = 2; CHECK(invoke(heap_args) == 1 && output[0]); fputs(output, stdout);
+        reset(); root_fault_at = stage; root_fault_kind = 2; CHECK(invoke(heap_args) == 1 && output[0]); fputs(output, stdout);
+    }
+    for (stage = 1; stage <= 3; stage++) {
+        reset(); sample_fault_at = stage; sample_fault_kind = 1; CHECK(invoke(heap_args) == 1 && output[0]); fputs(output, stdout);
+    }
+    for (phase = 1; phase <= 5; phase++) {
+        reset(); fault_at = phase; fault_kind = 2; CHECK(invoke(heap_args) == 1 && output[0]); fputs(output, stdout);
+    }
+    for (i = 51; i <= 52; i++) {
+        reset(); mutation = i; CHECK(invoke(heap_args) == 1 && output[0]); fputs(output, stdout);
+    }
+    reset(); close_error = EINTR; CHECK(invoke(heap_args) == 1 && output[0]); fputs(output, stdout);
+}
+
 int main(int argc, char **argv)
 {
+    if (argc == 2 && !strcmp(argv[1], "--heap-packet-json-examples")) {
+        heap_packet_json_examples(); return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--packet-json-examples")) {
         packet_json_examples(); return 0;
     }
@@ -1741,7 +2068,7 @@ int main(int argc, char **argv)
         return 0;
     }
     CHECK(argc == 1);
-    test_arguments(); test_metadata(); test_errors(); test_results(); test_named_controls(); test_decoding(); test_raw_commands(); test_fixed_state(); test_controller_root(); test_controller_image(); test_controller_packet();
+    test_arguments(); test_metadata(); test_errors(); test_results(); test_named_controls(); test_decoding(); test_raw_commands(); test_fixed_state(); test_controller_root(); test_controller_image(); test_controller_packet(); test_heap_packet();
     printf("Firmware probe CLI: %u checks passed\n", checks);
     return 0;
 }

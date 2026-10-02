@@ -24,6 +24,13 @@ struct _BC_DTS_PROC_OUT;
 #define IMAGE_TUPLE_OFFSET 0x1acU
 #define PACKET_ALIASES_OFFSET 0x94U
 #define PACKET_PHYSICAL_OFFSET 0x1ccU
+#define HEAP_SLOTS_OFFSET 0x250U
+#define HEAP_IMAGE_MIN 0x00117000U
+#define HEAP_IMAGE_LIMIT 0x03ffc000U
+#define HEAP_IMAGE_BYTES 0x00100000U
+#define HEAP_PACKET_OFFSET 0x00070000U
+#define HEAP_PACKET_SECTION_BYTES 256U
+#define DRAM_LIMIT 0x04000000U
 
 enum action {
 	ACTION_NONE, ACTION_INFO, ACTION_VERSION, ACTION_H264,
@@ -32,6 +39,7 @@ enum action {
 	ACTION_SET_FGT, ACTION_CUSTOM_VIDOUT, ACTION_FILL_PIC_BUF,
 	ACTION_FIXED_STATE, ACTION_CONTROLLER_ROOT, ACTION_CONTROLLER_IMAGE,
 	ACTION_CONTROLLER_PACKET,
+	ACTION_HEAP_PACKET,
 };
 
 struct options {
@@ -68,6 +76,8 @@ static void usage(FILE *stream)
 	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
 	      "       flea-fw-probe --controller-packet\n"
 	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
+	      "       flea-fw-probe --heap-packet\n"
+	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
 	      "       flea-fw-probe --help\n"
 	      "\n"
 	      "The live selectors reload firmware and reset an idle card. They do\n"
@@ -85,6 +95,10 @@ static void usage(FILE *stream)
 	      "Controller-packet adds the image tuple and three packet fields within\n"
 	      "one fresh root bracket. Returned values are not followed and do not\n"
 	      "establish ownership, coherence, a lease or DMA suitability.\n"
+	      "Heap-packet computes one admitted fixed DRAM span from the declared\n"
+	      "image base. Header and stored reply words remain raw and are never\n"
+	      "followed. Equal brackets do not certify freshness, object lifetime,\n"
+	      "atomic coherence, queue validity or independent fetch-error detection.\n"
 	      "Use --info first;\n"
 	      "it reports metadata only, including the bound device generation.\n"
 	      "The separate research device requires CAP_SYS_RAWIO and an opt-in\n"
@@ -155,6 +169,8 @@ static bool parse_options(int argc, char **argv, struct options *options)
 			action = ACTION_CONTROLLER_IMAGE;
 		else if (!strcmp(argv[i], "--controller-packet"))
 			action = ACTION_CONTROLLER_PACKET;
+		else if (!strcmp(argv[i], "--heap-packet"))
+			action = ACTION_HEAP_PACKET;
 		else if (!strcmp(argv[i], "--acknowledge-card-reset")) {
 			if (options->acknowledge)
 				return false;
@@ -622,6 +638,87 @@ static bool packet_result_valid(const struct crystalhd_fw_research_packet_result
 	return true;
 }
 
+static bool heap_span_valid(uint64_t address, uint64_t bytes)
+{
+	return !(address & 3U) && bytes && address < DRAM_LIMIT &&
+		bytes <= DRAM_LIMIT - address &&
+		(address & 0xffffU) + bytes <= 0x10000U;
+}
+
+static bool heap_packet_sample_succeeded(
+	const struct crystalhd_fw_research_heap_packet_sample *sample)
+{
+	return sample->attempted && sample->read_complete && !sample->status;
+}
+
+static bool heap_packet_result_valid(const struct crystalhd_fw_research_heap_packet_result *result,
+	const struct crystalhd_fw_research_state_request *request, uint64_t generation)
+{
+	const struct crystalhd_fw_research_result *control = &result->image.controller.state.control;
+	const struct crystalhd_fw_research_heap_packet_sample *samples[] = {&result->after_init, &result->after_open};
+	const struct crystalhd_fw_research_image_sample *prerequisites[] = {
+		&result->image.after_init, &result->image.after_open,
+	};
+	unsigned int i;
+
+	if (!image_result_valid(&result->image, request, generation))
+		return false;
+	for (i = 0; i < sizeof(samples) / sizeof(samples[0]); i++) {
+		const struct crystalhd_fw_research_heap_packet_sample *sample = samples[i];
+		bool active = sample->attempted || sample->status || sample->read_complete;
+
+		if (sample->attempted > 1 || sample->read_complete > 1 || sample->reserved ||
+		    sample->status > 0 || sample->status < -4095 ||
+		    active != image_sample_succeeded(prerequisites[i]))
+			return false;
+		if (sample->read_complete) {
+			uint64_t root = sample->root_before;
+			uint64_t base = sample->image_before[1];
+			uint64_t target = base + HEAP_PACKET_OFFSET;
+
+			if (!sample->attempted || sample->status || sample->root_before != sample->root_after ||
+			    (root & 3U) || root < IMAGE_CONTEXT_MIN ||
+			    root + CONTROLLER_CANDIDATE_BYTES > CONTROLLER_CANDIDATE_END ||
+			    !heap_span_valid(root + IMAGE_TUPLE_OFFSET, sizeof(sample->image_before)) ||
+			    !heap_span_valid(root + PACKET_ALIASES_OFFSET, 2U * sizeof(uint32_t)) ||
+			    !heap_span_valid(root + PACKET_PHYSICAL_OFFSET, sizeof(uint32_t)) ||
+			    !heap_span_valid(root + HEAP_SLOTS_OFFSET, sizeof(sample->slots_before)) ||
+			    sample->image_before[0] != base || (base & 0xfffU) || base < HEAP_IMAGE_MIN ||
+			    base + HEAP_IMAGE_BYTES > HEAP_IMAGE_LIMIT ||
+			    sample->image_before[2] != HEAP_IMAGE_BYTES || (sample->image_before[3] & 0xffU) != 1U ||
+			    !heap_span_valid(target, HEAP_PACKET_SECTION_BYTES) ||
+			    !heap_span_valid(target, sizeof(sample->header_words)) ||
+			    sample->packet_address != target || sample->packet_before[0] != target ||
+			    sample->packet_before[1] != target || sample->packet_before[2] != target ||
+			    memcmp(sample->image_before, sample->image_after, sizeof(sample->image_before)) ||
+			    memcmp(sample->packet_before, sample->packet_after, sizeof(sample->packet_before)) ||
+			    memcmp(sample->slots_before, sample->slots_after, sizeof(sample->slots_before)))
+				return false;
+			/* Only this fresh bracket admits the B-derived fixed physical span.
+			 * Header/stored reply values are raw; none select another access.
+			 * Earlier embedded roots/tuples are not numeric admission inputs.
+			 */
+		} else {
+			const struct crystalhd_fw_research_heap_packet_sample zero = { 0 };
+			struct crystalhd_fw_research_heap_packet_sample cleared = *sample;
+
+			cleared.attempted = 0;
+			cleared.status = 0;
+			if ((sample->attempted && !sample->status) || memcmp(&cleared, &zero, sizeof(zero)))
+				return false;
+		}
+		if (active && i && !heap_packet_sample_succeeded(samples[0]))
+			return false;
+		if (sample->status && (control->status != sample->status || control->command_count != (i ? 3U : 2U)))
+			return false;
+	}
+	if ((control->command_count > 2 && !heap_packet_sample_succeeded(samples[0])) ||
+	    (control->command_count > 3 && !heap_packet_sample_succeeded(samples[1])) ||
+	    (!control->status && (!heap_packet_sample_succeeded(samples[0]) || !heap_packet_sample_succeeded(samples[1]))))
+		return false;
+	return true;
+}
+
 static void print_info(const struct crystalhd_fw_research_info *info)
 {
 	char hex[65];
@@ -869,6 +966,76 @@ static void print_packet_result(const struct crystalhd_fw_research_packet_result
 	       IMAGE_CONTEXT_MIN, IMAGE_TUPLE_OFFSET, PACKET_ALIASES_OFFSET, PACKET_PHYSICAL_OFFSET);
 }
 
+static void print_heap_array(const __u32 *words, unsigned int count, bool complete)
+{
+	unsigned int i;
+
+	if (!complete) {
+		fputs("null", stdout);
+		return;
+	}
+	putchar('[');
+	for (i = 0; i < count; i++)
+		printf("%s%" PRIu32, i ? "," : "", (uint32_t)words[i]);
+	putchar(']');
+}
+
+static void print_heap_packet_sample(const struct crystalhd_fw_research_heap_packet_sample *sample)
+{
+	printf("{\"attempted\":%s,\"status\":%" PRId32 ",\"read_complete\":%s,\"root_before\":",
+	       sample->attempted ? "true" : "false", (int32_t)sample->status,
+	       sample->read_complete ? "true" : "false");
+	if (sample->read_complete)
+		printf("%" PRIu32 ",\"root_after\":%" PRIu32, (uint32_t)sample->root_before, (uint32_t)sample->root_after);
+	else
+		fputs("null,\"root_after\":null", stdout);
+	fputs(",\"image_before\":", stdout);
+	print_heap_array(sample->image_before, 4, sample->read_complete);
+	fputs(",\"image_after\":", stdout);
+	print_heap_array(sample->image_after, 4, sample->read_complete);
+	fputs(",\"packet_before\":", stdout);
+	print_heap_array(sample->packet_before, 3, sample->read_complete);
+	fputs(",\"packet_after\":", stdout);
+	print_heap_array(sample->packet_after, 3, sample->read_complete);
+	fputs(",\"packet_address\":", stdout);
+	if (sample->read_complete)
+		printf("%" PRIu32, (uint32_t)sample->packet_address);
+	else
+		fputs("null", stdout);
+	fputs(",\"header_words\":", stdout);
+	print_heap_array(sample->header_words, 5, sample->read_complete);
+	fputs(",\"slots_before\":", stdout);
+	print_heap_array(sample->slots_before, 2, sample->read_complete);
+	fputs(",\"slots_after\":", stdout);
+	print_heap_array(sample->slots_after, 2, sample->read_complete);
+	putchar('}');
+}
+
+static void print_heap_packet_result(const struct crystalhd_fw_research_heap_packet_result *result)
+{
+	printf("{\"version\":%" PRIu32 ",\"heap_packet\":true,\"image\":",
+	       (uint32_t)result->image.controller.state.request.version);
+	print_image_result_object(&result->image);
+	fputs(",\"heap_packet_samples\":{\"after_init\":", stdout);
+	print_heap_packet_sample(&result->after_init);
+	fputs(",\"after_open\":", stdout);
+	print_heap_packet_sample(&result->after_open);
+	printf("},\"scope\":{\"fresh_root_lower_bound\":%" PRIu32 ",\"image_word_offset\":%" PRIu32
+	       ",\"packet_aliases_offset\":%" PRIu32 ",\"packet_physical_offset\":%" PRIu32
+	       ",\"stored_reply_offset\":%" PRIu32 ",\"image_base_lower_bound\":%" PRIu32
+	       ",\"image_upper_bound_exclusive\":%" PRIu32 ",\"image_extent_bytes\":%" PRIu32
+	       ",\"fixed_packet_offset\":%" PRIu32 ",\"section_bytes\":%" PRIu32 ",\"header_words\":5,"
+	       "\"image_base_used_for_computed_admitted_fixed_span\":true,\"packet_declarations_used_as_equality_gates\":true,"
+	       "\"header_values_followed\":false,\"stored_reply_values_followed\":false,"
+	       "\"freshness_established\":false,\"object_lifetime_established\":false,\"atomic_coherence_established\":false,"
+	       "\"ownership_established\":false,\"lease_established\":false,\"queue_validity_established\":false,"
+	       "\"dma_suitability_established\":false,\"independent_fetch_errors_certified\":false,"
+	       "\"bracket_equality_excludes_aba\":false}}\n",
+	       IMAGE_CONTEXT_MIN, IMAGE_TUPLE_OFFSET, PACKET_ALIASES_OFFSET, PACKET_PHYSICAL_OFFSET,
+	       HEAP_SLOTS_OFFSET, HEAP_IMAGE_MIN, HEAP_IMAGE_LIMIT, HEAP_IMAGE_BYTES,
+	       HEAP_PACKET_OFFSET, HEAP_PACKET_SECTION_BYTES);
+}
+
 int main(int argc, char **argv)
 {
 	struct crystalhd_fw_research_info info = { 0 };
@@ -879,10 +1046,12 @@ int main(int argc, char **argv)
 	struct crystalhd_fw_research_controller_result controller_result = { 0 };
 	struct crystalhd_fw_research_image_result image_result = { 0 };
 	struct crystalhd_fw_research_packet_result packet_result = { 0 };
+	struct crystalhd_fw_research_heap_packet_result heap_packet_result = { 0 };
 	struct options options;
 	struct stat statbuf;
 	bool have_info = false, have_result = false, have_state = false, have_controller = false;
 	bool have_image = false, have_packet = false;
+	bool have_heap_packet = false;
 	int fd = -1, rc = 1;
 
 	if (argc == 2 && !strcmp(argv[1], "--help")) {
@@ -934,6 +1103,7 @@ int main(int argc, char **argv)
 	case ACTION_CONTROLLER_ROOT:
 	case ACTION_CONTROLLER_IMAGE:
 	case ACTION_CONTROLLER_PACKET:
+	case ACTION_HEAP_PACKET:
 		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
 		break;
 	case ACTION_H261:
@@ -969,6 +1139,28 @@ int main(int argc, char **argv)
 	}
 	if (!(info.selector_mask & (1U << (request.selector - 1)))) {
 		fputs("Research selector unavailable; no live command attempted.\n", stderr);
+		goto out;
+	}
+	if (options.action == ACTION_HEAP_PACKET) {
+		const struct crystalhd_fw_research_result *control = &heap_packet_result.image.controller.state.control;
+
+		state_request.version = CRYSTALHD_FW_RESEARCH_VERSION;
+		state_request.size = sizeof(heap_packet_result);
+		heap_packet_result.image.controller.state.request = state_request;
+		if (ioctl(fd, CRYSTALHD_FW_RESEARCH_RUN_HEAP_PACKET, &heap_packet_result) < 0) {
+			perror("run heap-packet readback");
+			fputs("Device state may have changed; no retry was attempted.\n", stderr);
+			goto out;
+		}
+		if (control->retained)
+			fputs("Research resources remain retained. Do not force unload the driver.\n", stderr);
+		if (!heap_packet_result_valid(&heap_packet_result, &state_request, info.generation)) {
+			fputs("Invalid heap-packet result; no further command attempted.\n", stderr);
+			goto out;
+		}
+		have_heap_packet = true;
+		rc = control->status || control->retained ||
+			(control->cleanup_attempted && control->cleanup_status != BC_STS_SUCCESS) ? 1 : 0;
 		goto out;
 	}
 	if (options.action == ACTION_CONTROLLER_PACKET) {
@@ -1090,6 +1282,8 @@ out:
 		print_image_result(&image_result);
 	if (have_packet)
 		print_packet_result(&packet_result);
+	if (have_heap_packet)
+		print_heap_packet_result(&heap_packet_result);
 	if (output_finish())
 		rc = 1;
 	return rc;

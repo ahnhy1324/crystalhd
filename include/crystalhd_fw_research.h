@@ -172,4 +172,35 @@ struct crystalhd_fw_research_packet_result {
 #define CRYSTALHD_FW_RESEARCH_RUN_PACKET \
 	_IOWR('R', 0x96, struct crystalhd_fw_research_packet_result)
 
+struct crystalhd_fw_research_heap_packet_sample {
+	__u32 attempted;
+	__s32 status;
+	/* Completed physical reads and equal brackets, not freshness or ownership. */
+	__u32 read_complete;
+	__u32 reserved;
+	__u32 root_before;
+	__u32 root_after;
+	__u32 image_before[4];
+	__u32 image_after[4];
+	/* Raw aliases C+0x94/C+0x98 and physical declaration C+0x1cc. */
+	__u32 packet_before[3];
+	__u32 packet_after[3];
+	/* Independently bounded image base + the fixed 0x70000 offset. */
+	__u32 packet_address;
+	__u32 header_words[5];
+	/* Raw stored translation results C+0x250/C+0x254, never followed. */
+	__u32 slots_before[2];
+	__u32 slots_after[2];
+};
+
+struct crystalhd_fw_research_heap_packet_result {
+	struct crystalhd_fw_research_image_result image;
+	struct crystalhd_fw_research_heap_packet_sample after_init;
+	struct crystalhd_fw_research_heap_packet_sample after_open;
+};
+
+/* Fixed heap span only; header and stored reply values never select addresses. */
+#define CRYSTALHD_FW_RESEARCH_RUN_HEAP_PACKET \
+	_IOWR('R', 0x97, struct crystalhd_fw_research_heap_packet_result)
+
 #endif
