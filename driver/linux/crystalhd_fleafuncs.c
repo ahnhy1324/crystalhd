@@ -281,7 +281,7 @@ uint32_t crystalhd_flea_reg_rd(struct crystalhd_adp *adp, uint32_t reg_off)
 	}
 	else /* non directly mapped region */
 	{
-		if(adp->pci_i2o_len < 0xFFFF) {
+		if(adp->pci_i2o_len < FLEA_GISB_INDIRECT_DATA + sizeof(uint32_t)) {
 			printk("Un-expected mapped region size\n");
 			return 0;
 		}
@@ -316,7 +316,7 @@ void crystalhd_flea_reg_wr(struct crystalhd_adp *adp, uint32_t reg_off, uint32_t
 	}
 	else /* non directly mapped region */
 	{
-		if(adp->pci_i2o_len < 0xFFFF) {
+		if(adp->pci_i2o_len < FLEA_GISB_INDIRECT_DATA + sizeof(uint32_t)) {
 			printk("Un-expected mapped region size\n");
 			return;
 		}
