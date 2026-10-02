@@ -10,7 +10,7 @@ PYTHON3 ?= python3
 DRIVER_ARGS := KVER=$(KVER) KDIR=$(KDIR) DESTDIR=$(DESTDIR)
 USER_ARGS := PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 
-.PHONY: all driver library library-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check l0s-check command-pm-check fw-command-check fw-download-check fw-research-check tx-admission-check h264-stream-check rx-ownership-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check architecture-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check clean
+.PHONY: all driver library library-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check l0s-check command-pm-check fw-command-check fw-download-check fw-research-check fw-probe-check fw-probe-tool tx-admission-check h264-stream-check rx-ownership-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check architecture-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check clean
 
 all: driver library gstreamer vaapi examples
 
@@ -117,6 +117,15 @@ fw-download-check:
 fw-research-check:
 	$(PYTHON3) -B tests/fw-research.py
 
+fw-probe-check:
+	CC="$(CC)" CFLAGS="$(CFLAGS)" PYTHON3="$(PYTHON3)" sh ./tests/fw-probe.sh
+
+# Optional tool; building it does not open a device. Live actions require
+# an explicit reset acknowledgement and an expected device generation.
+fw-probe-tool:
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror $(CFLAGS) -Iinclude \
+		tools/fw-research/flea_fw_probe.c -o tools/fw-research/flea-fw-probe
+
 tx-admission-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/tx-admission.sh
 
@@ -135,7 +144,7 @@ v4l2-parent-check:
 ioctl-dispatch-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/ioctl-dispatch.sh
 
-architecture-check: command-pm-check fw-command-check fw-download-check tx-admission-check h264-stream-check rx-ownership-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check
+architecture-check: command-pm-check fw-command-check fw-download-check fw-probe-check tx-admission-check h264-stream-check rx-ownership-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check
 
 pib-check:
 	CC="$(CC)" sh ./tests/flea-pib.sh
@@ -208,6 +217,7 @@ uninstall-check:
 
 clean:
 	rm -f tests/library-drain-test
+	rm -f tools/fw-research/flea-fw-probe
 	$(MAKE) -C driver/linux -f Makefile.in KVER=$(KVER) KDIR=$(KDIR) clean
 	$(MAKE) -C linux_lib/libcrystalhd clean
 	$(MAKE) -C filters/gst/gst-plugin-1.0 clean

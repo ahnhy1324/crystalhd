@@ -9,6 +9,7 @@ MODULEDIR ?= /lib/modules/$(KVER)/updates
 UDEVDIR ?= /lib/udev/rules.d
 FIRMWAREDIR ?= /lib/firmware
 CRYSTALHD_V4L2 ?= 0
+CRYSTALHD_FW_RESEARCH ?= 0
 
 
 INCLUDES  = -I$(src)/../../include
@@ -43,7 +44,8 @@ endif
 .PHONY: all install install-module install-udev install-firmware uninstall uninstall-module uninstall-udev uninstall-firmware clean distclean
 
 all:
-	$(MAKE) -C $(KDIR) M=$(PWD) CRYSTALHD_V4L2=$(CRYSTALHD_V4L2) modules
+	$(MAKE) -C $(KDIR) M=$(PWD) CRYSTALHD_V4L2=$(CRYSTALHD_V4L2) \
+		CRYSTALHD_FW_RESEARCH=$(CRYSTALHD_FW_RESEARCH) modules
 
 install: install-module install-udev install-firmware
 
