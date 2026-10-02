@@ -39,6 +39,30 @@ MAX_INNER_DESCRIPTOR_REGIONS = 48
 MAX_INNER_DESCRIPTOR_BYTES = 4096
 MAX_MFD_SOURCE_REGIONS = 10
 MAX_MFD_SOURCE_BYTES = 1280
+MAX_STOCK_HOST_COMMAND_REGIONS = 16
+MAX_STOCK_HOST_COMMAND_BYTES = 16 * 1024
+MAX_STOCK_HOST_COMMAND_CFG_STATES = 4096
+MAX_STOCK_HOST_COMMAND_PARTITIONS = 256
+# Fixed stock host contract only. These hashes are independent local fuses;
+# the public firmware identity remains unchanged and this helper is test-only.
+_STOCK_HOST_COMMAND_REGIONS = (
+    ("handlers", 0x3ca8, 8836, "5bccf2815b633adec748196859a327a6957b9841f49f28a72f7bc2e27c97f4be"),
+    ("dispatcher", 0x5f2c, 2648, "9af9fb8464ca471a065039afecfc37ea0426a6a2560674fc68cd8e3a08b16ce0"),
+    ("stream_ack", 0x6984, 52, "1f9092e749c1a3fb12c5966cdc0439e304027878bcc8b43fc8dadd8a89cf559e"),
+    ("clear_arm", 0x206e4, 36, "198a9ab2bd9405ec7cb7e17b1e98f23a564a370215758ad1f2d3500dd6b25292"),
+    ("clear_thumb_value", 0x2c688, 16, "ecef68fb180095ac4ba52e4d21271f040e6516c3f613feea4c3067855882561a"),
+    ("clear_thumb_fill", 0x2c73c, 142, "40142c13e3b9e4840b17fb10874e1f87ec3fd9dc712b7e678c257e12ac553f8e"),
+    ("caller", 0x9048, 496, "fddc1f25c5cda3614b16df8ca7295344b443adee4e41a2cd4146c26d3667719c"),
+    ("caller_base", 0x92fc, 4, "fef271f24fb2cf3f477ed2952cf742115f84b7a46d2bca54b3d5b91626bd6984"),
+    ("caller_queue", 0x8c28, 4, "7f184bcf7fa75e733ba0b16821477063ad86198931699eba7615d718fb5885d5"),
+    ("caller_publication", 0x8fcc, 4, "45c81a95420e3a6faad7914f835787acc2a65ad0094fea16ba55eddc02836600"),
+    ("stream_null", 0x6ab8, 20, "d02d0902db2767ce86847cd8edf5e417707dea4957c728d0ff1ab86a75d65463"),
+    ("queue_publish", 0x8afc, 236, "5fccc23e2748e4592dc8841c42e963b53470e7644ef85a7139b52e1a0144fff1"),
+    ("context_getter", 0x898, 8, "fed8d9727528a2abbf8b8b5c258b5d558e3192d5fc3232bc4a7f0a1c91cd6e38"),
+    ("context_getter_literal", 0x6fc, 4, "5d41a43f0a6983f407fc72552a64a4ea2e7bd6565d4df18496b2c7c102017755"),
+    ("start_stack_output_prefix", 0x1bf04, 40, "3a16b7e9650678acffc3ddd927eeb2129bb621aceb9614109c1ef467c6dff4db"),
+    ("start_stack_output_literal", 0x1bbd4, 4, "e0a38388779be070015cf72408ffbb625cb9f356f4ce0f9a215b7dd3287edc0d"),
+)
 _MFD_SOURCE_REGIONS = (
     ("source_address", 0x1918,
      "f0402de914d04de20070a0e10140a0e1f8219fe55c10d4e5810081e00031b2e7050092e90c008de510208de508308de5"
@@ -1734,6 +1758,941 @@ def _csc_command_map(payload, images):
                 "Only this local instruction path is validated, under a non-null-record and returning-callee assumption.",
                 "Branch target bodies outside the listed anchors, including the logging callee, are unvalidated.",
                 "No device execution was observed; this is not a standalone execution proof or silicon capability claim."]}
+
+
+def _stock_host_dispatch_domains(payload):
+    """Partition all u32 commands through this fixed stock A32 selector only."""
+    mask = 0xffffffff
+
+    def normalize(parts):
+        result = []
+        for low, high in sorted(parts):
+            if not 0 <= low <= high <= mask:
+                raise FormatError("stock command interval is outside u32")
+            if result and low <= result[-1][1] + 1:
+                result[-1] = (result[-1][0], max(high, result[-1][1]))
+            else:
+                result.append((low, high))
+        if len(result) > MAX_STOCK_HOST_COMMAND_PARTITIONS:
+            raise FormatError("stock command partition budget exceeded")
+        return result
+
+    def intersect(left, right):
+        return normalize((max(a, c), min(b, d)) for a, b in left for c, d in right
+                         if max(a, c) <= min(b, d))
+
+    def subtract(left, right):
+        result = list(left)
+        for c, d in right:
+            remaining = []
+            for a, b in result:
+                if d < a or b < c:
+                    remaining.append((a, b))
+                else:
+                    if a < c:
+                        remaining.append((a, c - 1))
+                    if d < b:
+                        remaining.append((d + 1, b))
+            result = remaining
+        return normalize(result)
+
+    def inverse(parts, value):
+        coefficient, bias = value
+        if coefficient == 0:
+            return [(0, mask)] if any(a <= bias <= b for a, b in parts) else []
+        result = []
+        for a, b in parts:
+            low, high = (a - bias) & mask, (b - bias) & mask
+            result.extend([(low, high)] if low <= high else [(0, high), (low, mask)])
+        return normalize(result)
+
+    def predicate(flags, condition):
+        if condition == 14:
+            return [(0, mask)]
+        if flags is None:
+            raise FormatError("stock command branch has unknown flags")
+        operation, left, right = flags
+        if operation == "zero":
+            if condition not in (0, 1):
+                raise FormatError("stock command ADD flags used outside audited Z test")
+            equal = inverse([(0, 0)], left)
+            return equal if condition == 0 else subtract([(0, mask)], equal)
+        if right[0] != 0:
+            raise FormatError("stock command comparison has a variable RHS")
+        rhs = right[1]
+        if condition in (0, 1):
+            equal = inverse([(rhs, rhs)], left)
+            return equal if condition == 0 else subtract([(0, mask)], equal)
+        if condition == 3:  # CC: CMP carry is clear exactly when unsigned lhs < rhs.
+            return inverse([(0, rhs - 1)] if rhs else [], left)
+        if condition == 12:  # GT: !Z && N == V, including signed subtraction overflow.
+            signed = rhs if rhs < 0x80000000 else rhs - (1 << 32)
+            values = ([(signed + 1, 0x7fffffff)] if 0 <= signed < 0x7fffffff else
+                      [] if signed == 0x7fffffff else
+                      [(0, 0x7fffffff)] if signed == -1 else
+                      [(0, 0x7fffffff), ((signed + 1) & mask, mask)])
+            return inverse(values, left)
+        raise FormatError("unsupported stock command condition")
+
+    def operand(word, registers):
+        if word & (1 << 25):
+            value, rotate = word & 0xff, ((word >> 8) & 15) * 2
+            return (0, ((value >> rotate) | (value << ((32 - rotate) % 32))) & mask)
+        if word & (1 << 4):
+            raise FormatError("unsupported stock command register shift")
+        value = registers[word & 15]
+        if value is None:
+            raise FormatError("stock command operand is unknown")
+        shift, kind = (word >> 7) & 31, (word >> 5) & 3
+        if kind == 0 and shift == 0:
+            return value
+        if kind == 2 and shift == 29 and value[0] == 0:
+            signed = value[1] if value[1] < 0x80000000 else value[1] - (1 << 32)
+            return (0, (signed >> 29) & mask)
+        raise FormatError("unsupported stock command shifted operand")
+
+    def affine(left, right, subtract_right=False):
+        if left is None or right is None:
+            raise FormatError("stock command arithmetic has unknown input")
+        coefficient = left[0] - right[0] if subtract_right else left[0] + right[0]
+        if coefficient not in (0, 1):
+            raise FormatError("unsupported stock command affine expression")
+        return (coefficient, (left[1] - right[1] if subtract_right else left[1] + right[1]) & mask)
+
+    registers = [None] * 16
+    registers[1] = (1, 0)
+    queue = [(0x5f78, tuple(registers), None, [(0, mask)])]
+    terminals, states, table_domains = {}, 0, {}
+    while queue:
+        pc, saved, flags, domain = queue.pop()
+        if not domain:
+            continue
+        states += 1
+        if states > MAX_STOCK_HOST_COMMAND_CFG_STATES:
+            raise FormatError("stock command CFG state budget exceeded")
+        if pc == 0x60b8 or 0x60c8 <= pc < 0x6984:
+            terminals[pc] = normalize(terminals.get(pc, []) + domain)
+            continue
+        if not 0x5f78 <= pc < 0x60b8 or pc % 4:
+            raise FormatError("stock command selector escaped its fixed CFG")
+        word = _bootstrap_word(payload, pc)
+        registers = list(saved)
+        if pc == 0x6008:
+            if word != 0x308ff102 or registers[2] is None:
+                raise FormatError("unsupported stock command bounded table")
+            allowed = predicate(flags, 3)
+            taken = intersect(domain, allowed)
+            queue.append((pc + 4, saved, flags, subtract(domain, allowed)))
+            covered = []
+            for index in range(7):
+                selected = intersect(taken, inverse([(index, index)], registers[2]))
+                table_domains[index] = normalize(table_domains.get(index, []) + selected)
+                covered += selected
+                queue.append((pc + 8 + index * 4, saved, flags, selected))
+            if normalize(covered) != taken:
+                raise FormatError("stock command table index lacks a bounded partition")
+            continue
+        if (word >> 25) & 7 == 5:
+            condition = word >> 28
+            if word & (1 << 24) or condition not in (0, 1, 12, 14):
+                raise FormatError("unsupported stock command selector branch")
+            branch = _a32_branch(payload, pc, False, condition)
+            allowed = predicate(flags, condition)
+            queue.append((branch["target_blob_file_offset"], saved, flags, intersect(domain, allowed)))
+            if condition != 14:
+                queue.append((pc + 4, saved, flags, subtract(domain, allowed)))
+            continue
+        if pc == 0x5f78:
+            literal = _a32_literal(payload, pc)
+            if (literal["destination_register"], literal["literal_blob_file_offset"]) != (2, 0x6174):
+                raise FormatError("unsupported stock command base load")
+            registers[2] = (0, literal["literal_value"])
+        else:
+            if word >> 28 != 14 or (word >> 26) & 3 != 0:
+                raise FormatError("unsupported stock command selector instruction")
+            operation, source, destination = (word >> 21) & 15, (word >> 16) & 15, (word >> 12) & 15
+            value = operand(word, registers)
+            if operation == 10 and word & (1 << 20):
+                if registers[source] is None:
+                    raise FormatError("stock command CMP has unknown input")
+                flags = ("cmp", registers[source], value)
+            elif operation in (2, 3, 4, 15) and destination != 15:
+                if operation == 15:
+                    if value[0] != 0 or word & (1 << 20):
+                        raise FormatError("unsupported stock command MVN")
+                    result = (0, (~value[1]) & mask)
+                elif operation == 3:
+                    result = affine(value, registers[source], True)
+                else:
+                    result = affine(registers[source], value, operation == 2)
+                registers[destination] = result
+                if word & (1 << 20):
+                    if operation != 4:
+                        raise FormatError("unsupported stock command arithmetic flags")
+                    flags = ("zero", result, (0, 0))
+            else:
+                raise FormatError("unsupported stock command selector opcode")
+        queue.append((pc + 4, tuple(registers), flags, domain))
+
+    pieces = sorted(part for domain in terminals.values() for part in domain)
+    if (not pieces or pieces[0][0] != 0 or pieces[-1][1] != mask or
+            any(left[1] + 1 != right[0] for left, right in zip(pieces, pieces[1:]))):
+        raise FormatError("stock command domains are not disjoint and exhaustive")
+    routes = []
+    for case, domain in sorted(terminals.items()):
+        if case == 0x60b8:
+            continue
+        if len(domain) != 1 or domain[0][0] != domain[0][1]:
+            raise FormatError("stock command admitted domain is not a singleton")
+        handler = None
+        for pc in range(case, case + 32, 4):
+            if _bootstrap_word(payload, pc) == 0xe1a00004:
+                handler = _a32_branch(payload, pc + 4, True)["target_blob_file_offset"]
+                break
+        if handler is None:
+            raise FormatError("stock command wrapper lacks a direct packet handler")
+        routes.append({"command": domain[0][0], "case_blob_file_offset": case,
+                       "handler_blob_file_offset": handler})
+    routes.sort(key=lambda route: route["command"])
+    fallback = terminals.get(0x60b8, [])
+    return {"entry_blob_file_offset": 0x5f2c, "domain_bits": 32,
+            "accepted_count": len(routes), "fallback_count": sum(b - a + 1 for a, b in fallback),
+            "complete_domain": True, "disjoint_domains": True, "routes": routes,
+            "fallback_domains": [list(part) for part in fallback],
+            "table_blob_file_offset": 0x6008, "table_entry_count": 7,
+            "zero_index_reachable": bool(table_domains.get(0)), "cfg_states": states,
+            "flag_semantics": "CMP EQ uses Z, CC uses !C, GT uses !Z and N==V; non-S preserves flags; ADDS replaces Z."}
+
+
+def _stock_host_handler_footprints(payload, entries):
+    """Direct packet fields only; opaque callees and external storage stay conditional."""
+    ranges = ((0x3ca8, 0x5f2c), (0x6984, 0x69b8), (0x6ab8, 0x6acc))
+    mask, results = 0xffffffff, []
+
+    def packet(value):
+        return value is not None and value[0] in ("packet", "packet_unknown")
+
+    def stack(value):
+        return value is not None and value[0] == "stack"
+
+    def immediate(word):
+        value, rotate = word & 0xff, ((word >> 8) & 15) * 2
+        return ((value >> rotate) | (value << ((32 - rotate) % 32))) & mask
+
+    def add(left, right, subtract=False):
+        if left is None or right is None or right[0] != "constant":
+            if stack(left) or stack(right):
+                raise FormatError("unsupported stock handler stack arithmetic")
+            return ("packet_unknown", 0) if packet(left) or packet(right) else None
+        value = left[1] - right[1] if subtract else left[1] + right[1]
+        return (left[0], value & mask if left[0] == "constant" else value)
+
+    def operand(word, registers):
+        if word & (1 << 25):
+            return ("constant", immediate(word))
+        value = registers[word & 15]
+        if word & (1 << 4):
+            amount = registers[(word >> 8) & 15]
+            if stack(value) or stack(amount):
+                raise FormatError("unsupported stock handler stack register shift")
+            return ("packet_unknown", 0) if packet(value) or packet(amount) else None
+        shift, kind = (word >> 7) & 31, (word >> 5) & 3
+        if not shift and kind == 0:
+            return value
+        if value is None or value[0] != "constant":
+            if stack(value):
+                raise FormatError("unsupported stock handler stack shift")
+            return ("packet_unknown", 0) if packet(value) else None
+        number = value[1]
+        if kind == 0:
+            number <<= shift
+        elif kind == 1:
+            number >>= shift or 32
+        elif kind == 2:
+            number = (number if number < 0x80000000 else number - (1 << 32)) >> (shift or 32)
+        elif shift:
+            number = (number >> shift) | (number << (32 - shift))
+        else:
+            return None
+        return ("constant", number & mask)
+
+    for entry in sorted(set(entries)):
+        initial = [None] * 16
+        initial[0], initial[13] = ("packet", 0), ("stack", 0)
+        # Dispatcher r4/r6 remain packet/reply aliases across each wrapper.
+        initial[4], initial[5], initial[6] = ("packet", 0), ("constant", 8), ("packet", 0x114)
+        for register in range(7, 12):
+            initial[register] = ("saved_register", register)
+        initial[14] = ("return_address", 0)
+        facts, queue, stack_facts = {entry: tuple(initial)}, [entry], {entry: {}}
+        spills = {}
+        reads, writes, callees, external_stores = set(), set(), set(), set()
+        header_reads, header_writes = set(), set()
+        packet_spills, output_calls = set(), set()
+        protected_slots = {}
+        steps, returns = 0, set()
+
+        def enqueue(pc, state, spill_state=None):
+            if not any(low <= pc < high for low, high in ranges) or pc % 4:
+                raise FormatError("stock handler escaped its fixed local CFG")
+            state = tuple(state)
+            old = facts.get(pc)
+            if old is not None and any(a != b and (stack(a) or stack(b))
+                                       for a, b in zip(old, state)):
+                raise FormatError("unsupported stock handler conditional stack provenance")
+            merged = state if old is None else tuple(
+                a if a == b else ("packet_unknown", 0) if packet(a) or packet(b) else None
+                for a, b in zip(old, state))
+            incoming = spills if spill_state is None else spill_state
+            old_spills = stack_facts.get(pc)
+            merged_spills = dict(incoming) if old_spills is None else {
+                slot: old_spills.get(slot) if old_spills.get(slot) == incoming.get(slot) else ("packet_unknown", 0)
+                for slot in old_spills.keys() | incoming.keys()}
+            if len(merged_spills) > 64:
+                raise FormatError("stock handler stack provenance budget exceeded")
+            if old != merged or old_spills != merged_spills:
+                facts[pc] = merged
+                stack_facts[pc] = merged_spills
+                queue.append(pc)
+
+        def stack_read(base, offset, width):
+            if base is None or base[0] != "stack":
+                return None
+            position = base[1] + offset
+            if width == 4 and position in protected_slots:
+                return protected_slots[position][1]
+            overlap = [(slot, value) for slot, value in spills.items()
+                       if position < slot + 4 and slot < position + width]
+            if not overlap:
+                return None
+            if width == 4 and len(overlap) == 1 and overlap[0][0] == position:
+                return overlap[0][1]
+            return ("packet_unknown", 0)
+
+        def stack_store(base, offset, width, value, pc, push_floor=None):
+            if stack(value):
+                raise FormatError("unsupported stock handler stack-pointer spill")
+            if base is None or base[0] != "stack":
+                if packet(value):
+                    raise FormatError("stock handler stores/escapes a packet alias")
+                return
+            position = base[1] + offset
+            current = registers[13]
+            floor = push_floor if push_floor is not None else current[1] if current is not None and current[0] == "stack" else None
+            if floor is None or not -512 <= floor <= position or position + width > 0:
+                raise FormatError("stock handler stack store is outside bounded frame")
+            if any(position < slot + 4 and slot < position + width for slot in protected_slots):
+                raise FormatError("stock handler overwrites a saved register/return slot")
+            for slot in list(spills):
+                if position <= slot and slot + 4 <= position + width:
+                    del spills[slot]
+                elif position < slot + 4 and slot < position + width:
+                    spills[slot] = ("packet_unknown", 0)
+            if packet(value):
+                if width != 4 or position % 4:
+                    raise FormatError("stock handler partial packet spill is unsupported")
+                spills[position] = value
+                packet_spills.add((pc, position, value[1] if value[0] == "packet" else None))
+
+        def access(base, offset, width, load, pc):
+            if base is not None and base[0] == "packet_unknown":
+                raise FormatError("stock handler packet alias became unbounded")
+            if base is None or base[0] != "packet":
+                if not load:
+                    external_stores.add(pc)
+                return
+            position = base[1] + offset
+            if 0 <= position and position + width <= 0x14:
+                (header_reads if load else header_writes).add((position, width))
+            elif 0x14 <= position and position + width <= 0x114:
+                if not load:
+                    raise FormatError("stock handler directly writes its request payload")
+                reads.add((position - 0x14, width))
+            elif 0x114 <= position and position + width <= 0x214:
+                if load:
+                    raise FormatError("stock handler directly reads its reply payload")
+                if position % 4 or width != 4:
+                    raise FormatError("stock handler reply write is not an audited DWORD")
+                writes.add((position - 0x114, width))
+            else:
+                raise FormatError(f"stock handler {entry:#x} packet access at {pc:#x} escaped fields: {position:#x}/{width}")
+
+        while queue:
+            pc = queue.pop()
+            saved = facts[pc]
+            registers = list(saved)
+            spills = dict(stack_facts[pc])
+            saved_spills = dict(spills)
+            steps += 1
+            if steps > MAX_STOCK_HOST_COMMAND_CFG_STATES:
+                raise FormatError("stock handler CFG state budget exceeded")
+            word = _bootstrap_word(payload, pc)
+            condition = word >> 28
+            if condition == 15:
+                raise FormatError("unsupported stock handler unconditional extension")
+            if (word >> 25) & 7 == 5:
+                if condition == 3:
+                    if pc not in (0x5608, 0x5640) or word != 0x3a000000:
+                        raise FormatError("unsupported stock handler unsigned branch")
+                    target = pc + 8
+                else:
+                    branch = _a32_branch(payload, pc, bool(word & (1 << 24)), condition)
+                    target = branch["target_blob_file_offset"]
+                if word & (1 << 24):
+                    if target == 0x898:
+                        if (_bootstrap_word(payload, 0x898), _bootstrap_word(payload, 0x89c)) != (0xe51f01a4, 0xe12fff1e):
+                            raise FormatError("unsupported stock context getter")
+                        literal = _a32_literal(payload, 0x898)
+                        if (literal["literal_blob_file_offset"], literal["literal_value"],
+                                literal["destination_register"]) != (0x6fc, 0xd3a00, 0):
+                            raise FormatError("stock context getter literal does not match")
+                        callees.add(target)
+                        registers[0] = ("constant", literal["literal_value"])
+                        registers[14] = ("constant", pc + 4)
+                        enqueue(pc + 4, registers)
+                        if condition != 14:
+                            enqueue(pc + 4, saved)
+                        continue
+                    if any(packet(value) for value in registers[:4]):
+                        raise FormatError(f"stock handler {entry:#x} passes a packet pointer to an opaque callee at {pc:#x}")
+                    if target == 0x1bf04:
+                        prefix = (0xe92d40f0, 0xe1a06000, 0xe1a04001, 0xe3a07000, 0xe51f1348,
+                                  0xe1a00006, 0xebfffec0, 0xe1a05000, 0xe20500ff, 0xe5840000)
+                        if any(_bootstrap_word(payload, 0x1bf04 + i * 4) != expected
+                               for i, expected in enumerate(prefix)):
+                            raise FormatError("unsupported stock START stack-output prefix")
+                        literal = _a32_literal(payload, 0x1bf14)
+                        if (literal["literal_blob_file_offset"], literal["literal_value"],
+                                literal["destination_register"]) != (0x1bbd4, 0x20b008, 1):
+                            raise FormatError("stock START output-prefix literal does not match")
+                        output = registers[1]
+                        if output is None or output[0] != "stack":
+                            raise FormatError("stock START output prefix lacks bounded stack destination")
+                        # r4 holds the output pointer across the register-read
+                        # call (whose args are external object/fixed scalar).
+                        # Its return is ANDed255 before STR[r4], replacing the
+                        # saved packet DWORD; later body remains opaque.
+                        stack_store(output, 0, 4, None, pc)
+                        output_calls.add((pc, output[1]))
+                    callees.add(target)
+                    for register in (0, 1, 2, 3, 12):
+                        registers[register] = None
+                    registers[14] = ("constant", pc + 4)
+                    enqueue(pc + 4, registers)
+                    if condition != 14:
+                        enqueue(pc + 4, saved, saved_spills)
+                else:
+                    # The selected dispatcher passes a non-null packet. All
+                    # handlers test it with this adjacent CMP/BEQ pair before
+                    # forming request/reply aliases; their null diagnostics
+                    # are not reachable from an admitted stock route.
+                    previous = _bootstrap_word(payload, pc - 4)
+                    compared = registers[(previous >> 16) & 15]
+                    if (condition in (0, 1) and previous >> 28 == 14 and
+                            previous & 0x0ff0ffff == 0x03500000 and
+                            compared is not None and compared[0] == "packet" and 0 <= compared[1] < 0x214):
+                        enqueue(pc + 4 if condition == 0 else target, registers)
+                        continue
+                    enqueue(target, registers)
+                    if condition != 14:
+                        enqueue(pc + 4, saved)
+                continue
+            if word == 0xe12fff1e or ((word >> 25) & 7 == 4 and word & (1 << 20) and word & (1 << 15)):
+                if word != 0xe12fff1e and word & 0x0fff0000 != 0x08bd0000:
+                    raise FormatError("unsupported stock handler non-stack return")
+                frame = registers[13]
+                if frame is None or frame[0] != "stack":
+                    raise FormatError("stock handler return lost stack provenance")
+                restored = 0 if word == 0xe12fff1e else (word & 0xffff).bit_count() * 4
+                if frame[1] + restored != 0:
+                    raise FormatError("stock handler return has an unbalanced stack")
+                if word == 0xe12fff1e:
+                    if registers[14] != ("return_address", 0):
+                        raise FormatError("stock handler leaf return lost return-address provenance")
+                else:
+                    position = 0
+                    restored_saved = set()
+                    for register in range(16):
+                        if word & (1 << register):
+                            if register == 0 and packet(stack_read(frame, position, 4)):
+                                raise FormatError("stock handler returns a spilled packet alias")
+                            slot = frame[1] + position
+                            if register == 15:
+                                if protected_slots.get(slot) != (14, ("return_address", 0)):
+                                    raise FormatError("stock handler POP lost return-address provenance")
+                            elif 4 <= register <= 11:
+                                if protected_slots.get(slot) != (register, initial[register]):
+                                    raise FormatError("stock handler POP lost saved-register provenance")
+                                restored_saved.add(register)
+                            position += 4
+                    if restored_saved != {register for register, _ in protected_slots.values() if 4 <= register <= 11}:
+                        raise FormatError("stock handler POP omits a saved register")
+                if packet(registers[0]):
+                    raise FormatError("stock handler returns a packet alias")
+                returns.add(pc)
+                if condition != 14:
+                    enqueue(pc + 4, saved)
+                continue
+            if word & 0x0fe00070 == 0x07e00050:  # Selected UBFX, not a memory access.
+                destination, source = (word >> 12) & 15, word & 15
+                width, shift = ((word >> 16) & 31) + 1, (word >> 7) & 31
+                if destination == 15 or source == 15 or width + shift > 32:
+                    raise FormatError("unsupported stock handler bit-field extraction")
+                value = registers[source]
+                if stack(value):
+                    raise FormatError("unsupported stock handler stack bit-field extraction")
+                registers[destination] = (("constant", (value[1] >> shift) & ((1 << width) - 1))
+                                          if value is not None and value[0] == "constant" else
+                                          ("packet_unknown", 0) if packet(value) else None)
+            elif (word >> 26) & 3 == 1:
+                base, destination = (word >> 16) & 15, (word >> 12) & 15
+                if word & (1 << 25) and word & (1 << 4):
+                    raise FormatError(f"unsupported stock handler media/transfer instruction at {pc:#x}: {word:#x}")
+                if destination == 15:
+                    raise FormatError("unsupported stock handler load to PC")
+                if word & (1 << 25):
+                    register_word = word & ~(1 << 25)
+                    value = operand(register_word, registers)
+                    if value is None or value[0] != "constant":
+                        if packet(registers[base]) or stack(registers[base]):
+                            raise FormatError("stock handler packet/stack access has an unbounded register offset")
+                        offset = None
+                    else:
+                        offset = value[1]
+                else:
+                    offset = word & 0xfff
+                if offset is not None and not word & (1 << 23):
+                    offset = -offset
+                load, width = bool(word & (1 << 20)), 1 if word & (1 << 22) else 4
+                if destination == base and (word & (1 << 21) or not word & (1 << 24)):
+                    raise FormatError("unsupported stock handler overlapping transfer/writeback")
+                actual_offset = offset if word & (1 << 24) else 0
+                if actual_offset is not None:
+                    access(registers[base], actual_offset, width, load, pc)
+                elif not load:
+                    external_stores.add(pc)
+                if load:
+                    if base == 15:
+                        if width != 4:
+                            raise FormatError("unsupported stock handler PC-relative byte load")
+                        literal = _a32_literal(payload, pc)
+                        registers[destination] = ("constant", literal["literal_value"])
+                    else:
+                        registers[destination] = (stack_read(registers[base], actual_offset, width)
+                                                  if actual_offset is not None else
+                                                  ("packet_unknown", 0) if registers[base] is not None and
+                                                  registers[base][0] == "stack" and spills else None)
+                else:
+                    if actual_offset is None:
+                        if packet(registers[destination]) or (registers[base] is not None and
+                                                             registers[base][0] == "stack" and spills):
+                            raise FormatError("stock handler stack/packet spill offset is unbounded")
+                    else:
+                        stack_store(registers[base], actual_offset, width, registers[destination], pc)
+                if word & (1 << 21) or not word & (1 << 24):
+                    registers[base] = (add(registers[base], ("constant", offset)) if offset is not None else
+                                       ("packet_unknown", 0) if packet(registers[base]) else None)
+            elif (word >> 25) & 7 == 4:
+                if word & (1 << 20):
+                    raise FormatError("unsupported stock handler non-return block load")
+                if word & 0x0fff0000 != 0x092d0000:
+                    raise FormatError("unsupported stock handler block store")
+                if pc != entry:
+                    raise FormatError("unsupported stock handler non-prologue PUSH")
+                count = (word & 0xffff).bit_count()
+                frame = add(registers[13], ("constant", count * 4), True)
+                if frame is None or frame[0] != "stack":
+                    raise FormatError("stock handler PUSH lacks bounded stack provenance")
+                position = 0
+                for register in range(16):
+                    if word & (1 << register):
+                        stack_store(frame, position, 4, registers[register], pc, frame[1])
+                        if 4 <= register <= 11 or register == 14:
+                            if registers[register] != initial[register]:
+                                raise FormatError("stock handler prologue lost incoming saved register")
+                            protected_slots[frame[1] + position] = (register, registers[register])
+                        position += 4
+                registers[13] = frame
+            elif (word >> 25) & 7 == 0 and word & 0x90 == 0x90:
+                kind = (word >> 5) & 3
+                if kind == 0:  # MUL: no packet pointer is multiplied in this contract.
+                    destination = (word >> 16) & 15
+                    if word & 0x0fe000f0 != 0x00000090 or destination == 15:
+                        raise FormatError("unsupported stock handler multiply/atomic instruction")
+                    if packet(registers[word & 15]) or packet(registers[(word >> 8) & 15]):
+                        raise FormatError("stock handler multiplies a packet alias")
+                    if stack(registers[word & 15]) or stack(registers[(word >> 8) & 15]):
+                        raise FormatError("stock handler multiplies a stack pointer")
+                    registers[destination] = None
+                else:
+                    base, destination = (word >> 16) & 15, (word >> 12) & 15
+                    if word & (1 << 22):
+                        offset = ((word >> 4) & 0xf0) | (word & 15)
+                    else:
+                        value = registers[word & 15]
+                        offset = value[1] if value is not None and value[0] == "constant" else None
+                    if offset is not None and not word & (1 << 23):
+                        offset = -offset
+                    double = not word & (1 << 20) and kind in (2, 3)
+                    load = bool(word & (1 << 20)) or (double and kind == 2)
+                    width = 8 if double else 2 if kind in (1, 3) else 1
+                    if destination == 15 or (double and destination >= 14):
+                        raise FormatError("unsupported stock handler halfword/double register")
+                    actual_offset = offset if word & (1 << 24) else 0
+                    if actual_offset is None:
+                        if packet(registers[base]) or stack(registers[base]):
+                            raise FormatError("stock handler packet/stack halfword offset is unbounded")
+                        if not load:
+                            external_stores.add(pc)
+                    else:
+                        access(registers[base], actual_offset, width, load, pc)
+                    if load:
+                        registers[destination] = (stack_read(registers[base], actual_offset, 4 if double else width)
+                                                  if actual_offset is not None else
+                                                  ("packet_unknown", 0) if registers[base] is not None and
+                                                  registers[base][0] == "stack" and spills else None)
+                        if double:
+                            registers[destination + 1] = (stack_read(registers[base], actual_offset + 4, 4)
+                                                         if actual_offset is not None else registers[destination])
+                    else:
+                        if actual_offset is None:
+                            if packet(registers[destination]) or (double and packet(registers[destination + 1])) or (
+                                    registers[base] is not None and registers[base][0] == "stack" and spills):
+                                raise FormatError("stock handler stack/packet spill offset is unbounded")
+                        elif double:
+                            stack_store(registers[base], actual_offset, 4, registers[destination], pc)
+                            stack_store(registers[base], actual_offset + 4, 4, registers[destination + 1], pc)
+                        else:
+                            stack_store(registers[base], actual_offset, width, registers[destination], pc)
+                    if word & (1 << 21) or not word & (1 << 24):
+                        registers[base] = (add(registers[base], ("constant", offset)) if offset is not None else
+                                           ("packet_unknown", 0) if packet(registers[base]) else None)
+            elif word & 0x0ff00000 in (0x03000000, 0x03400000):
+                destination = (word >> 12) & 15
+                value = ((word >> 4) & 0xf000) | (word & 0xfff)
+                old = registers[destination]
+                if word & 0x0ff00000 == 0x03400000 and stack(old):
+                    raise FormatError("unsupported stock handler stack MOVT")
+                registers[destination] = (("constant", value) if word & 0x0ff00000 == 0x03000000 else
+                                          ("constant", (old[1] & 0xffff) | (value << 16))
+                                          if old is not None and old[0] == "constant" else
+                                          ("packet_unknown", 0) if packet(old) else None)
+            elif (word >> 26) & 3 == 0:
+                operation, source, destination = (word >> 21) & 15, (word >> 16) & 15, (word >> 12) & 15
+                if operation not in (0, 1, 2, 3, 4, 8, 9, 10, 11, 12, 13, 14, 15):
+                    raise FormatError("unsupported stock handler data operation")
+                if operation in (8, 9, 10, 11) and (not word & (1 << 20) or destination != 0):
+                    raise FormatError("unsupported stock handler status/control instruction")
+                if operation not in (8, 9, 10, 11):
+                    if destination == 15:
+                        raise FormatError("unsupported stock handler computed PC")
+                    left = ("constant", pc + 8) if source == 15 else registers[source]
+                    right = operand(word, registers)
+                    if operation == 13:
+                        registers[destination] = right
+                    elif operation in (2, 4):
+                        registers[destination] = add(left, right, operation == 2)
+                    elif operation == 3:
+                        registers[destination] = add(right, left, True)
+                    elif operation == 15:
+                        if stack(right):
+                            raise FormatError("unsupported stock handler stack MVN")
+                        registers[destination] = (("constant", ~right[1] & mask)
+                                                  if right is not None and right[0] == "constant" else
+                                                  ("packet_unknown", 0) if packet(right) else None)
+                    elif left is not None and right is not None and left[0] == right[0] == "constant":
+                        a, b = left[1], right[1]
+                        number = {0: a & b, 1: a ^ b, 12: a | b, 14: a & ~b}[operation]
+                        registers[destination] = ("constant", number & mask)
+                    else:
+                        if stack(left) or stack(right):
+                            raise FormatError("unsupported stock handler stack bit operation")
+                        registers[destination] = ("packet_unknown", 0) if packet(left) or packet(right) else None
+            else:
+                raise FormatError("unsupported stock handler instruction")
+            enqueue(pc + 4, registers)
+            if condition != 14:
+                enqueue(pc + 4, saved, saved_spills)
+        if not returns:
+            raise FormatError("stock handler has no bounded local return edge")
+        results.append({"entry_blob_file_offset": entry,
+                        "request_reads": [{"byte_offset": offset, "width": width} for offset, width in sorted(reads)],
+                        "reply_writes": [{"word_index": offset // 4, "byte_offset": offset, "width": width}
+                                         for offset, width in sorted(writes)],
+                        "callee_targets": sorted(callees), "direct_request_reply_only": True,
+                        "packet_header_reads": [{"byte_offset": offset, "width": width}
+                                                for offset, width in sorted(header_reads)],
+                        "packet_header_writes": [{"byte_offset": offset, "width": width}
+                                                 for offset, width in sorted(header_writes)],
+                        "local_instruction_count": len(facts), "cfg_states": steps,
+                        "return_blob_file_offsets": sorted(returns),
+                        "stack_packet_spills": [{"instruction_blob_file_offset": pc, "frame_byte_offset": slot,
+                                                 "packet_byte_offset": value} for pc, slot, value in
+                                                sorted(packet_spills, key=lambda item: (item[0], item[1], -1 if item[2] is None else item[2]))],
+                        "validated_stack_output_prefix_calls": [
+                            {"call_blob_file_offset": pc, "frame_byte_offset": slot,
+                             "overwritten_bytes": 4, "value_mask": 255} for pc, slot in sorted(output_calls)],
+                        "conditional_external_store_count": len(external_stores)})
+    return results
+
+
+def _stock_host_reply_clear(payload):
+    """The actual zero/256-byte call, for every destination alignment."""
+    expected = {0x5f44: 0xe2845014, 0x5f48: 0xe2846f45, 0x5f4c: 0xe3002100,
+                0x5f50: 0xe3a01000, 0x5f54: 0xe1a00006, 0x5f58: 0xeb0069e1,
+                0x206e4: 0xe92d4070, 0x206e8: 0xe1a06000, 0x206ec: 0xe1a04001,
+                0x206f0: 0xe1a05002, 0x206f4: 0xe1a02004, 0x206f8: 0xe1a01005,
+                0x206fc: 0xe1a00006, 0x20700: 0xfa002fe0, 0x20704: 0xe8bd8070}
+    for pc, word in expected.items():
+        if _bootstrap_word(payload, pc) != word:
+            raise FormatError("unsupported stock reply-clear ARM instruction")
+    if (_bootstrap_word(payload, 0x5f5c), _bootstrap_word(payload, 0x5f60)) != (0xe5950000, 0xe5860000):
+        raise FormatError("unsupported stock reply command echo")
+    if bounded(payload, 0x2c688, 16, "stock clear expansion") != bytes.fromhex(
+            "02f0ff0343ea032242ea024200f052b8"):
+        raise FormatError("unsupported stock reply-clear byte expansion")
+    # Explicit audited Thumb instructions, not a general Thumb decoder.
+    ops = (
+        (0x2c73c, "0429", "cmp4"), (0x2c73e, "c0f01280", "bcc_small"),
+        (0x2c742, "10f0030c", "alignment"), (0x2c746, "00f01b80", "beq_bulk"),
+        (0x2c74a, "ccf1040c", "prefix"), (0x2c74e, "bcf1020f", "cmp2"),
+        (0x2c752, "18bf", "it_ne"), (0x2c754, "00f8012b", "byte"),
+        (0x2c758, "a8bf", "it_ge"), (0x2c75a, "20f8022b", "half"),
+        (0x2c75e, "a1eb0c01", "subtract_prefix"), (0x2c762, "00f00db8", "bulk"),
+        (0x2c766, "5fea c17c".replace(" ", ""), "shift31"),
+        (0x2c76a, "24bf", "itt_cs"), (0x2c76c, "00f8012b", "byte"),
+        (0x2c770, "00f8012b", "byte"), (0x2c774, "48bf", "it_mi"),
+        (0x2c776, "00f8012b", "byte"), (0x2c77a, "7047", "return"),
+        (0x2c77c, "4ff00002", "zero_entry"),
+        (0x2c780, "00b5", "push_lr"), (0x2c782, "1346", "copy_r3"),
+        (0x2c784, "9446", "copy_ip"), (0x2c786, "9646", "copy_lr"),
+        (0x2c788, "2039", "subtract32"), (0x2c78a, "22bf", "ittt_cs"),
+        (0x2c78c, "a0e80c50", "stm16"), (0x2c790, "a0e80c50", "stm16"),
+        (0x2c794, "b1f12001", "subtract32"), (0x2c798, "bff4f7af", "bcs_loop"),
+        (0x2c79c, "0907", "shift28"), (0x2c79e, "28bf", "it_cs"),
+        (0x2c7a0, "a0e80c50", "stm16"), (0x2c7a4, "48bf", "it_mi"),
+        (0x2c7a6, "0cc0", "stm8"), (0x2c7a8, "5df804eb", "pop_lr"),
+        (0x2c7ac, "8900", "shift2"), (0x2c7ae, "28bf", "it_cs"),
+        (0x2c7b0, "40f8042b", "word"), (0x2c7b4, "08bf", "it_eq"),
+        (0x2c7b6, "7047", "return"), (0x2c7b8, "48bf", "it_mi"),
+        (0x2c7ba, "20f8022b", "half"), (0x2c7be, "11f0804f", "tst_bit30"),
+        (0x2c7c2, "18bf", "it_ne"), (0x2c7c4, "00f8012b", "byte"),
+        (0x2c7c8, "7047", "return"))
+    instructions = {}
+    for pc, raw, operation in ops:
+        encoded = bytes.fromhex(raw)
+        if bounded(payload, pc, len(encoded), "stock clear Thumb instruction") != encoded:
+            raise FormatError("unsupported stock reply-clear Thumb instruction")
+        instructions[pc] = (len(encoded), operation)
+    mask, alignments = 0xffffffff, []
+    for alignment in range(4):
+        pc, destination, remaining, ip = 0x2c73c, alignment, 256, 0
+        n, z, c, v = False, False, False, False
+        guards, writes, saved_lr, steps = [], [], False, 0
+        r2, r3, lr_value = 0, None, None
+
+        def compare(left, right):
+            result = (left - right) & mask
+            return (bool(result & 0x80000000), result == 0, left >= right,
+                    bool(((left ^ right) & (left ^ result)) & 0x80000000))
+
+        def allowed(condition):
+            return {"ne": not z, "ge": n == v, "cs": c, "mi": n, "eq": z}[condition]
+
+        while True:
+            steps += 1
+            if steps > MAX_STOCK_HOST_COMMAND_CFG_STATES or pc not in instructions:
+                raise FormatError("stock reply-clear instruction/state budget exceeded")
+            size, operation = instructions[pc]
+            next_pc = pc + size
+            if guards and not allowed(guards.pop(0)):
+                pc = next_pc
+                continue
+            if operation.startswith("it"):
+                count = 3 if operation.startswith("ittt_") else 2 if operation.startswith("itt_") else 1
+                if guards:
+                    raise FormatError("unsupported nested stock clear IT block")
+                guards = [operation.rsplit("_", 1)[1]] * count
+            elif operation == "cmp4":
+                n, z, c, v = compare(remaining, 4)
+            elif operation == "bcc_small":
+                if not c:
+                    next_pc = 0x2c766
+            elif operation == "alignment":
+                ip = destination & 3
+                n, z = False, ip == 0
+            elif operation == "beq_bulk":
+                if z:
+                    next_pc = 0x2c780
+            elif operation == "prefix":
+                ip = (4 - ip) & mask
+            elif operation == "cmp2":
+                n, z, c, v = compare(ip, 2)
+            elif operation == "subtract_prefix":
+                remaining = (remaining - ip) & mask
+            elif operation == "bulk":
+                next_pc = 0x2c780
+            elif operation in ("byte", "half", "word", "stm8", "stm16"):
+                width = {"byte": 1, "half": 2, "word": 4, "stm8": 8, "stm16": 16}[operation]
+                values = [r2, r3, ip, lr_value] if operation == "stm16" else [r2, r3] if operation == "stm8" else [r2]
+                if any(value != 0 for value in values):
+                    raise FormatError("stock reply clear stores a nonzero or unknown value")
+                offset = destination - alignment
+                if not 0 <= offset <= 256 - width:
+                    raise FormatError("stock reply clear writes outside its exact span")
+                writes.append([offset, width])
+                destination += width
+            elif operation == "subtract32":
+                n, z, c, v = compare(remaining, 32)
+                remaining = (remaining - 32) & mask
+            elif operation == "bcs_loop":
+                if c:
+                    next_pc = 0x2c78a
+            elif operation in ("shift31", "shift28", "shift2"):
+                shift = {"shift31": 31, "shift28": 28, "shift2": 2}[operation]
+                shifted = (remaining << shift) & mask
+                c, n, z = bool((remaining >> (32 - shift)) & 1), bool(shifted & 0x80000000), shifted == 0
+                if operation == "shift31":
+                    ip = shifted
+                else:
+                    remaining = shifted
+            elif operation == "push_lr":
+                if saved_lr:
+                    raise FormatError("stock reply-clear stack is unbalanced")
+                saved_lr = True
+            elif operation == "pop_lr":
+                if not saved_lr:
+                    raise FormatError("stock reply-clear stack is unbalanced")
+                saved_lr = False
+                lr_value = None  # The real return address is restored, not stored.
+            elif operation == "tst_bit30":
+                z, n = not bool(remaining & 0x40000000), False
+                c = False  # Modified immediate 0x40000000 has bit31 clear.
+            elif operation == "copy_r3":
+                r3 = r2
+            elif operation == "copy_ip":
+                ip = r2
+            elif operation == "copy_lr":
+                lr_value = r2
+            elif operation == "zero_entry":
+                raise FormatError("stock clear reached a different entry")
+            elif operation == "return":
+                if saved_lr or guards:
+                    raise FormatError("stock reply-clear return has outstanding state")
+                break
+            else:
+                raise FormatError("unsupported stock reply-clear operation")
+            pc = next_pc
+        cursor = 0
+        for offset, width in writes:
+            if offset != cursor:
+                raise FormatError("stock reply-clear footprint overlaps or has holes")
+            cursor += width
+        if cursor != 256:
+            raise FormatError("stock reply clear is not exactly 256 bytes")
+        alignments.append({"destination_alignment": alignment, "write_ranges": writes,
+                           "written_bytes": cursor, "complete": True, "overlap": False,
+                           "instruction_steps": steps})
+    return {"request_record_offset": 0x14, "reply_record_offset": 0x114,
+            "byte_count": 256, "byte_value": 0, "alignments": alignments,
+            "command_echo": {"request_word_index": 0, "reply_word_index": 0,
+                             "load_blob_file_offset": 0x5f5c, "store_blob_file_offset": 0x5f60}}
+
+
+def _stock_host_command_closure(payload):
+    """Private conditional stock host contract; never a device/raw-frame API."""
+    if len(payload) != BUNDLED_SIZE - TRAILER_SIZE:
+        raise FormatError("stock host command payload identity/size does not match")
+    regions = _STOCK_HOST_COMMAND_REGIONS
+    total = sum(size for _, _, size, _ in regions)
+    if (len(regions) > MAX_STOCK_HOST_COMMAND_REGIONS or total > MAX_STOCK_HOST_COMMAND_BYTES or
+            MAX_STOCK_HOST_COMMAND_CFG_STATES < 1 or MAX_STOCK_HOST_COMMAND_PARTITIONS < 1):
+        raise FormatError("stock host command validation budget exceeded")
+    validated = []
+    # Every selected byte, including skipped arms and helper literals, must
+    # pass before ANY instruction/field/domain interpretation begins.
+    for role, offset, size, expected in regions:
+        actual = bounded(payload, offset, size, "stock host command region")
+        if hashlib.sha256(actual).hexdigest() != expected:
+            raise FormatError(f"stock host command region {role} does not match the baseline")
+        validated.append({"role": role, "blob_file_offset": offset, "size": size, "sha256": expected})
+    dispatch = _stock_host_dispatch_domains(payload)
+    if (dispatch["accepted_count"] != 29 or dispatch["fallback_count"] != (1 << 32) - 29 or
+            dispatch["zero_index_reachable"]):
+        raise FormatError("stock host command selector does not match the complete baseline domain")
+    entries = [route["handler_blob_file_offset"] for route in dispatch["routes"]]
+    handlers = _stock_host_handler_footprints(payload, entries)
+    expected_requests = {
+        0x3ca8: ((4, 4), (8, 4), (12, 4)),
+        0x3fb0: ((4, 4), (8, 4), (12, 1)),
+        0x41bc: ((4, 4), (8, 4), (12, 4)),
+        0x4288: ((4, 4), (8, 4)), 0x4630: ((4, 4), (8, 4)),
+        0x4a60: ((4, 4), (8, 4), (12, 4), (16, 1)),
+        0x4bd4: ((4, 4), (8, 4)), 0x4c7c: ((4, 4), (8, 4), (12, 4)),
+        0x4f88: ((4, 4), (8, 4)),
+        0x51c8: ((4, 4), (16, 1), (32, 4), (36, 1), (56, 4))}
+    controls = {0x3ca8, 0x3fb0, 0x41bc, 0x4288, 0x4630, 0x4a60, 0x4c7c, 0x4f88, 0x5ccc}
+    header_flag_handlers = {0x3fb0, 0x41bc, 0x4288, 0x4a60, 0x4bd4, 0x4c7c}
+    classifications = {}
+    for handler in handlers:
+        entry = handler["entry_blob_file_offset"]
+        request = tuple((field["byte_offset"], field["width"]) for field in handler["request_reads"])
+        reply = [field["word_index"] for field in handler["reply_writes"]]
+        expected_reply = [1, 2, 3, 11] if entry == 0x51c8 else [1, 2, 3, 4, 5] if entry == 0x5ba4 else [1, 2]
+        expected_header = [{"byte_offset": 16, "width": 1}] if entry in header_flag_handlers else []
+        if (request != expected_requests.get(entry, ((4, 4),)) or reply != expected_reply or
+                handler["packet_header_reads"] or handler["packet_header_writes"] != expected_header):
+            raise FormatError("stock host command direct field footprint does not match")
+        classification = ("compressed_input_open" if entry == 0x51c8 else "version_metadata" if entry == 0x5ba4 else
+                          "started_ack_only" if entry == 0x4bd4 else "control" if entry in controls else "ack_only")
+        handler["classification"] = classification
+        classifications[entry] = classification
+    if len(handlers) != 25:
+        raise FormatError("stock host command unique handler count does not match")
+    for route in dispatch["routes"]:
+        route["classification"] = classifications[route["handler_blob_file_offset"]]
+    clear = _stock_host_reply_clear(payload)
+    return {
+        "validation": {"region_count": len(validated), "bytes": total, "regions": validated},
+        "dispatch": dispatch, "handlers": handlers, "reply_initialization": clear,
+        "source_context": {
+            "compressed_tx_metadata_reply_word": 11,
+            "open_reply_stores_blob_file_offsets": [0x5914, 0x591c],
+            "tx_metadata_address_expression": "word at ARM MMIO 0x100f6004 + 0x301; no plane extent returned",
+            "driver_open_postprocessing": "driver/linux/crystalhd_fleafuncs.c:1820",
+            "tx_layout_header": "include/flea/DriverFwShare.h",
+            "tx_window_kind": "Bounded compressed-input DRAM windows, not a raw-source-plane lease.",
+            "getter": {"entry_blob_file_offset": 0x898, "literal_blob_file_offset": 0x6fc,
+                       "fixed_context_value": 0xd3a00, "incoming_arguments_read": False},
+            "caller": {"entry_blob_file_offset": 0x9048, "dispatch_call_blob_file_offset": 0x9204,
+                       "direct_payload_read": "command word only; queue/header flags are separate",
+                       "unknown_preclassification_still_queued": True},
+            "queue_publication": {"entry_blob_file_offset": 0x8afc,
+                                  "node_write_byte_offsets": [0, 4, 8, 12],
+                                  "reply_payload_written": False, "packet_header_overlay_bytes": 16,
+                                  "request_reply_payloads_disjoint": True, "whole_packet_disjoint": False},
+            "start_stack_output_prefix": {"entry_blob_file_offset": 0x1bf04,
+                                          "last_validated_blob_file_offset": 0x1bf28,
+                                          "nested_callee_blob_file_offset": 0x1ba24,
+                                          "literal_blob_file_offset": 0x1bbd4,
+                                          "literal_value": 0x20b008, "stored_value_mask": 255,
+                                          "post_prefix_body_validated": False}},
+        "assumptions": [
+            "Non-null packet has readable request256 bytes and writable reply256 bytes at +0x14/+0x114; its full532-byte span does not wrap u32.",
+            "Valid initialized channel IDs/objects and ordinary stock control states; malformed scalar channels are not a raw-buffer interface.",
+            "Opaque callees return, preserve callee-saved registers/SP under the calling convention, and do not mutate packet fields through undisclosed aliases.",
+            "Ordinary valid packet storage follows the stock address map: all modeled external-store destinations, including firmware globals/context, stack, MMIO and compressed TX metadata, do not alias request/reply payload spans.",
+            "Intrusive queue nodes intentionally overlay the first16 packet-header bytes; well-formed queue link/header writes remain separate from the request/reply payload spans, not from the whole packet.",
+            "Opaque callees do not inspect saved/local non-argument stack aliases or introduce packet aliases via undisclosed memory reads. START's pinned output prefix overwrites its saved packet DWORD; register-read and post-prefix bodies remain opaque.",
+            "Opaque callees preserve protected caller stack slots, do not return packet aliases, and keep explicitly passed stack output within allocated scratch storage; wrapper logging arguments/callees remain unmodeled under the same no-undisclosed-alias condition.",
+            "The direct-field CFG conservatively explores unknown conditions; only adjacent null-packet tests are pruned under the non-null assumption.",
+            "The fixed context getter ignores incoming arguments; all other callee bodies remain unvalidated."],
+        "validation_scope": {"full_stock_selector": True, "direct_handler_footprints": True,
+                             "exact_reply_clear": True, "callee_bodies": False, "runtime_observed": False,
+                             "source_plane_ownership": False, "whole_firmware_absence": False},
+        "conclusion": {"conditional": True, "explicit_raw_source_plane_lease": False,
+                       "compressed_tx_metadata_is_raw_plane_lease": False,
+                       "scope": "No explicit bounded caller raw-source-plane lease in this stock dispatch contract; source-plane lifecycle and runtime ownership are not proven. Not silicon incapability, arbitrary host-buffer absence, whole-firmware ownership, or standalone execution."}}
 
 
 def _mfd_source_model(record, rows):
