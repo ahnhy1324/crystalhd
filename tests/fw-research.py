@@ -3253,5 +3253,716 @@ class FirmwareMfdSourceTests(unittest.TestCase):
                 MAP.analyze(altered, expected_sha256=hashlib.sha256(altered).hexdigest(), picture_output=True)
 
 
+class FirmwareStockHostCommandTests(unittest.TestCase):
+    # Independently transcribed from the bundled A32 compare tree, computed
+    # branch table and each case's BL. Do not construct this oracle with the
+    # mapper's symbolic interval evaluator or its reported routes.
+    routes = (
+        (0x73763001, 0x60c8, 0x5ccc), (0x73763002, 0x621c, 0x5c84),
+        (0x73763003, 0x6244, 0x5c3c), (0x73763004, 0x6264, 0x5ba4),
+        (0x73763005, 0x628c, 0x5a50), (0x73763006, 0x62ac, 0x5a08),
+        (0x73763100, 0x62cc, 0x51c8), (0x73763101, 0x6428, 0x4f88),
+        (0x73763102, 0x6450, 0x3f68), (0x73763103, 0x6478, 0x4f40),
+        (0x73763104, 0x6498, 0x4c7c), (0x73763105, 0x64c4, 0x4bd4),
+        (0x73763106, 0x64ec, 0x4b8c), (0x73763107, 0x660c, 0x4b44),
+        (0x73763108, 0x662c, 0x3f68), (0x7376310e, 0x6654, 0x4a60),
+        (0x7376311a, 0x667c, 0x4630), (0x7376311b, 0x66a4, 0x4288),
+        (0x7376311d, 0x66d0, 0x3f68), (0x7376311f, 0x66fc, 0x3f68),
+        (0x73763121, 0x671c, 0x41bc), (0x73763123, 0x687c, 0x4174),
+        (0x73763124, 0x689c, 0x3fb0), (0x73763136, 0x68c4, 0x6984),
+        (0x73763144, 0x68e4, 0x3f68), (0x73763190, 0x6904, 0x3f20),
+        (0x73763191, 0x6924, 0x3ed8), (0x73763192, 0x6944, 0x3e90),
+        (0x73763501, 0x6964, 0x3ca8),
+    )
+    calls = (0x60d4, 0x6228, 0x6248, 0x6270, 0x6290, 0x62b0, 0x62d8,
+             0x6434, 0x645c, 0x647c, 0x64a4, 0x64d0, 0x64f0, 0x6610,
+             0x6638, 0x6660, 0x6688, 0x66b0, 0x66dc, 0x6700, 0x6728,
+             0x6880, 0x68a8, 0x68c8, 0x68e8, 0x6908, 0x6928, 0x6948,
+             0x6968)
+
+    @classmethod
+    def setUpClass(cls):
+        cls.data = MAP.read_firmware(BLOB)
+        cls.payload = cls.data[:-MAP.TRAILER_SIZE]
+
+    @staticmethod
+    def nzcv(left, right, subtract):
+        # ARM AddWithCarry arithmetic, independently using signed mathematical
+        # overflow rather than interval boundaries or the mapper's flag model.
+        left, right = left & 0xffffffff, right & 0xffffffff
+        full = left - right if subtract else left + right
+        value = full & 0xffffffff
+        signed = lambda word: word if word < 0x80000000 else word - 0x100000000
+        mathematical = signed(left) - signed(right) if subtract else signed(left) + signed(right)
+        return value, (bool(value & 0x80000000), value == 0,
+                       left >= right if subtract else full > 0xffffffff,
+                       not -0x80000000 <= mathematical <= 0x7fffffff)
+
+    def execute_selector(self, command, payload=None):
+        # Test-only concrete A32 interpreter of the fixed selector, not firmware
+        # execution. It follows no memory except the literal at0x6174, calls no
+        # handler, and stops at the independently listed case/fallback entries.
+        data = self.payload if payload is None else payload
+        registers, flags, pc = [0] * 16, (False,) * 4, 0x5f78
+        registers[1] = command
+        exits = {case for _, case, _ in self.routes} | {0x60b8}
+        for _ in range(64):
+            if pc in exits:
+                return pc
+            self.assertTrue(0x5f78 <= pc < 0x60b8, hex(pc))
+            word, = struct.unpack_from("<I", data, pc)
+            condition = word >> 28
+            n, z, c, v = flags
+            self.assertIn(condition, (0, 1, 3, 12, 14))
+            take = {0: z, 1: not z, 3: not c, 12: not z and n == v, 14: True}[condition]
+            next_pc = pc + 4
+            if not take:
+                pc = next_pc
+                continue
+            reg = lambda index: pc + 8 if index == 15 else registers[index]
+            if word & 0x0e000000 == 0x0a000000:
+                self.assertFalse(word & (1 << 24))  # Only B, never a handler call.
+                displacement = word & 0xffffff
+                if displacement & 0x800000:
+                    displacement -= 1 << 24
+                next_pc = pc + 8 + displacement * 4
+            elif word & 0x0c000000 == 0x04000000:
+                self.assertEqual(word, 0xe59f21f4)
+                registers[2], = struct.unpack_from("<I", data, pc + 8 + (word & 0xfff))
+            else:
+                self.assertEqual(word & 0x0c000000, 0)
+                destination, opcode = (word >> 12) & 15, (word >> 21) & 15
+                left = reg((word >> 16) & 15)
+                if word & (1 << 25):
+                    amount, immediate = ((word >> 8) & 15) * 2, word & 255
+                    right = ((immediate >> amount) | (immediate << ((32 - amount) % 32))) & 0xffffffff
+                else:
+                    self.assertFalse(word & 16)
+                    right, kind, amount = reg(word & 15), (word >> 5) & 3, (word >> 7) & 31
+                    self.assertIn(kind, (0, 2))
+                    if kind == 0:
+                        right = (right << amount) & 0xffffffff
+                    else:
+                        self.assertNotEqual(amount, 0)
+                        right = (right if right < 0x80000000 else right - 0x100000000) >> amount
+                        right &= 0xffffffff
+                self.assertIn(opcode, (2, 3, 4, 10, 15))
+                if opcode == 15:
+                    value = ~right & 0xffffffff
+                    self.assertFalse(word & (1 << 20))
+                else:
+                    if opcode == 3:
+                        left, right = right, left
+                    value, new_flags = self.nzcv(left, right, opcode in (2, 3, 10))
+                    if word & (1 << 20):
+                        flags = new_flags
+                if opcode != 10:
+                    if destination == 15:
+                        next_pc = value
+                    else:
+                        registers[destination] = value
+            pc = next_pc
+        self.fail("fixed stock selector exceeded independent64-step limit")
+
+    def test_independent_firmware_route_and_branch_call_oracle(self):
+        self.assertEqual(len(self.routes), 29)
+        self.assertEqual(len({command for command, _, _ in self.routes}), 29)
+        for (command, case, handler), call in zip(self.routes, self.calls):
+            with self.subTest(command=hex(command)):
+                self.assertEqual(self.execute_selector(command), case)
+                word, = struct.unpack_from("<I", self.payload, call)
+                self.assertEqual(word >> 24, 0xeb)
+                displacement = word & 0xffffff
+                if displacement & 0x800000:
+                    displacement -= 1 << 24
+                self.assertEqual(call + 8 + 4 * displacement, handler)
+        # Unreachable slotzero is nevertheless an explicit fallback branch.
+        self.assertEqual(struct.unpack_from("<I", self.payload, 0x6010)[0], 0xea000028)
+        self.assertEqual(self.execute_selector(0x73763101), 0x6428)
+
+    def test_independent_exact_add_sub_nzcv_boundary_oracle(self):
+        cases = (
+            (0, 0, True, 0, (False, True, True, False)),
+            (0, 1, True, 0xffffffff, (True, False, False, False)),
+            (0x80000000, 1, True, 0x7fffffff, (False, False, True, True)),
+            (0x7fffffff, 0xffffffff, True, 0x80000000, (True, False, False, True)),
+            (0xffffffff, 0xffffffff, True, 0, (False, True, True, False)),
+            (0x7fffffff, 1, False, 0x80000000, (True, False, False, True)),
+            (0xffffffff, 1, False, 0, (False, True, True, False)),
+            (0x80000000, 0x80000000, False, 0, (False, True, True, True)),
+            (0xfffffffe, 1, False, 0xffffffff, (True, False, False, False)),
+            (0, 0, False, 0, (False, True, False, False)),
+        )
+        for left, right, subtract, value, flags in cases:
+            with self.subTest(left=hex(left), right=hex(right), subtract=subtract):
+                self.assertEqual(self.nzcv(left, right, subtract), (value, flags))
+
+    def test_full_dispatch_matches_fixed29_routes_and_exact_domain_partition(self):
+        dispatch = MAP._stock_host_command_closure(self.payload)["dispatch"]
+        actual = [(r["command"], r["case_blob_file_offset"], r["handler_blob_file_offset"])
+                  for r in dispatch["routes"]]
+        self.assertEqual(actual, list(self.routes))
+        control_handlers = {0x3ca8, 0x3fb0, 0x41bc, 0x4288, 0x4630,
+                            0x4a60, 0x4c7c, 0x4f88, 0x5ccc}
+        for route in dispatch["routes"]:
+            handler = route["handler_blob_file_offset"]
+            classification = ("compressed_input_open" if handler == 0x51c8 else
+                              "version_metadata" if handler == 0x5ba4 else
+                              "started_ack_only" if handler == 0x4bd4 else
+                              "control" if handler in control_handlers else "ack_only")
+            self.assertEqual(route["classification"], classification)
+        self.assertEqual((dispatch["entry_blob_file_offset"], dispatch["domain_bits"],
+                          dispatch["accepted_count"], dispatch["fallback_count"]),
+                         (0x5f2c, 32, 29, (1 << 32) - 29))
+        self.assertTrue(dispatch["complete_domain"])
+        self.assertTrue(dispatch["disjoint_domains"])
+        self.assertEqual((dispatch["table_blob_file_offset"], dispatch["table_entry_count"],
+                          dispatch["zero_index_reachable"]), (0x6008, 7, False))
+        # The full complement is independently built from literal expected
+        # commands, not from production intervals or concrete sample coverage.
+        expected, cursor = [], 0
+        for command, _, _ in self.routes:
+            if cursor < command:
+                expected.append([cursor, command - 1])
+            cursor = command + 1
+        expected.append([cursor, 0xffffffff])
+        self.assertEqual(dispatch["fallback_domains"], expected)
+        segments = sorted([(low, high) for low, high in dispatch["fallback_domains"]] +
+                          [(command, command) for command, _, _ in self.routes])
+        self.assertEqual(sum(high - low + 1 for low, high in segments), 1 << 32)
+        self.assertEqual((segments[0][0], segments[-1][1]), (0, 0xffffffff))
+        self.assertTrue(all(left[1] + 1 == right[0] for left, right in zip(segments, segments[1:])))
+
+    def test_concrete_nzcv_selector_boundary_signed_overflow_and_wrap_probes(self):
+        dispatch = MAP._stock_host_command_closure(self.payload)["dispatch"]
+        expected = {command: case for command, case, _ in self.routes}
+        probes = {0, 1, 2, 3, 4, 0x7ffffffe, 0x7fffffff, 0x80000000,
+                  0x80000001, 0xfffffffc, 0xfffffffd, 0xfffffffe, 0xffffffff}
+        boundaries = {command for command, _, _ in self.routes} | {0x73763000, 0x73763108}
+        for boundary in boundaries:
+            for delta in (-9, -8, -7, -3, -2, -1, 0, 1, 2, 3, 6, 7, 8, 9):
+                probes.add((boundary + delta) & 0xffffffff)
+            # Signed compare overflow boundaries and modular arithmetic aliases.
+            for delta in (-1, 0, 1):
+                probes.add((boundary + 0x80000000 + delta) & 0xffffffff)
+            for bit in range(32):
+                probes.add(boundary ^ (1 << bit))
+        # Dense low/high wraps supplement, rather than replace, the exhaustive
+        # production interval-domain closure above.
+        probes.update(range(256))
+        probes.update(range(0xffffff00, 0x100000000))
+        for command in sorted(probes):
+            with self.subTest(command=hex(command)):
+                case = self.execute_selector(command)
+                self.assertEqual(case, expected.get(command, 0x60b8))
+                domains = sum(low <= command <= high for low, high in dispatch["fallback_domains"])
+                self.assertEqual(domains, int(case == 0x60b8))
+        self.assertGreater(len(probes), 850)
+
+    def test_private_selector_signed_rhs_negative_one_and_modular_base_boundaries(self):
+        # The public contract rejects these literal mutations at its pin gate.
+        # Direct evaluator tests exercise supported arithmetic independently,
+        # especially CMP GT's rhs=-1 split at zero and signed wrap boundaries.
+        for base in (0, 1, 0x7fffffff, 0x80000000, 0xfffffffe, 0xffffffff):
+            changed = bytearray(self.payload)
+            struct.pack_into("<I", changed, 0x6174, base)
+            with self.subTest(base=hex(base)):
+                dispatch = MAP._stock_host_dispatch_domains(changed)
+                cases = {route["command"]: route["case_blob_file_offset"] for route in dispatch["routes"]}
+                segments = sorted([(low, high) for low, high in dispatch["fallback_domains"]] +
+                                  [(command, command) for command in cases])
+                self.assertEqual((segments[0][0], segments[-1][1]), (0, 0xffffffff))
+                self.assertEqual(sum(high - low + 1 for low, high in segments), 1 << 32)
+                self.assertTrue(all(left[1] + 1 == right[0] for left, right in zip(segments, segments[1:])))
+                probes = {0, 1, 2, 0x7ffffffe, 0x7fffffff, 0x80000000,
+                          0x80000001, 0xfffffffd, 0xfffffffe, 0xffffffff}
+                for boundary in set(cases) | {base, (base - 7) & 0xffffffff,
+                                               (base - 264) & 0xffffffff}:
+                    for delta in (-3, -2, -1, 0, 1, 2, 3):
+                        probes.add((boundary + delta) & 0xffffffff)
+                        probes.add((boundary + 0x80000000 + delta) & 0xffffffff)
+                for command in probes:
+                    with self.subTest(command=hex(command)):
+                        case = self.execute_selector(command, changed)
+                        self.assertEqual(case, cases.get(command, 0x60b8))
+                        self.assertEqual(sum(low <= command <= high for low, high in dispatch["fallback_domains"]),
+                                         int(case == 0x60b8))
+
+    def test_all_direct_handler_footprints_have_independent_fixed_field_oracles(self):
+        report = MAP._stock_host_command_closure(self.payload)
+        handlers = {handler["entry_blob_file_offset"]: handler for handler in report["handlers"]}
+        self.assertEqual(set(handlers), {handler for _, _, handler in self.routes})
+        # Manually audited direct LDR/STR operands after request+20/reply+276
+        # aliases. These are union footprints, not promises about called bodies.
+        request = {
+            0x3ca8: ((4, 4), (8, 4), (12, 4)),
+            0x3e90: ((4, 4),), 0x3ed8: ((4, 4),), 0x3f20: ((4, 4),),
+            0x3f68: ((4, 4),), 0x3fb0: ((4, 4), (8, 4), (12, 1)),
+            0x4174: ((4, 4),), 0x41bc: ((4, 4), (8, 4), (12, 4)),
+            0x4288: ((4, 4), (8, 4)), 0x4630: ((4, 4), (8, 4)),
+            0x4a60: ((4, 4), (8, 4), (12, 4), (16, 1)),
+            0x4b44: ((4, 4),), 0x4b8c: ((4, 4),),
+            0x4bd4: ((4, 4), (8, 4)), 0x4c7c: ((4, 4), (8, 4), (12, 4)),
+            0x4f40: ((4, 4),), 0x4f88: ((4, 4), (8, 4)),
+            0x51c8: ((4, 4), (16, 1), (32, 4), (36, 1), (56, 4)),
+            0x5a08: ((4, 4),), 0x5a50: ((4, 4),), 0x5ba4: ((4, 4),),
+            0x5c3c: ((4, 4),), 0x5c84: ((4, 4),), 0x5ccc: ((4, 4),),
+            0x6984: ((4, 4),),
+        }
+        for entry, handler in handlers.items():
+            with self.subTest(entry=hex(entry)):
+                reads = [(read["byte_offset"], read["width"]) for read in handler["request_reads"]]
+                writes = [(write["byte_offset"], write["width"]) for write in handler["reply_writes"]]
+                self.assertEqual(reads, list(request[entry]))
+                expected = [(4, 4), (8, 4)]
+                if entry == 0x51c8:
+                    expected += [(12, 4), (44, 4)]
+                elif entry == 0x5ba4:
+                    expected += [(12, 4), (16, 4), (20, 4)]
+                self.assertEqual(writes, expected)
+                self.assertEqual([write["word_index"] for write in handler["reply_writes"]],
+                                 [offset // 4 for offset, _ in expected])
+                self.assertTrue(handler["direct_request_reply_only"])
+                if entry in (0x3fb0, 0x41bc, 0x4a60):
+                    self.assertEqual(handler["callee_targets"],
+                                     [0x898, {0x3fb0: 0x16dc, 0x41bc: 0x168c, 0x4a60: 0x15d8}[entry]])
+                else:
+                    self.assertIn(0x203c4, handler["callee_targets"])
+                self.assertEqual(handler["packet_header_reads"], [])
+                header = [(16, 1)] if entry in (0x3fb0, 0x41bc, 0x4288, 0x4a60, 0x4bd4, 0x4c7c) else []
+                self.assertEqual([(write["byte_offset"], write["width"])
+                                  for write in handler["packet_header_writes"]], header)
+
+    @staticmethod
+    def independent_clear_ranges(alignment):
+        # Thumb memset's independently decoded head alignment, two STM16
+        # writes per32-byte iteration, then16/8/4/2/1 tails for fixed256 bytes.
+        writes, cursor, remaining = [], 0, 256
+        def append(width):
+            nonlocal cursor, remaining
+            writes.append([cursor, width])
+            cursor, remaining = cursor + width, remaining - width
+        if alignment:
+            head = 4 - alignment
+            if head != 2:
+                append(1)
+            if head >= 2:
+                append(2)
+        while remaining >= 32:
+            append(16)
+            append(16)
+        for width in (16, 8, 4, 2, 1):
+            if remaining >= width:
+                append(width)
+        return writes
+
+    def test_actual_clear_helper_exactly_zeros256_bytes_at_all_four_alignments(self):
+        clear = MAP._stock_host_command_closure(self.payload)["reply_initialization"]
+        self.assertEqual((clear["request_record_offset"], clear["reply_record_offset"],
+                          clear["byte_count"], clear["byte_value"]), (20, 276, 256, 0))
+        self.assertEqual([alignment["destination_alignment"] for alignment in clear["alignments"]],
+                         list(range(4)))
+        for alignment in clear["alignments"]:
+            start = alignment["destination_alignment"]
+            with self.subTest(alignment=start):
+                self.assertEqual(alignment["write_ranges"], self.independent_clear_ranges(start))
+                self.assertEqual(alignment["written_bytes"], 256)
+                self.assertTrue(alignment["complete"])
+                self.assertFalse(alignment["overlap"])
+                # Mocked memory guards ensure there is no prefix/suffix write,
+                # each byte is covered once, and zero is the full direct output.
+                memory, counts = bytearray(b"\xa5" * 272), [0] * 256
+                for offset, width in alignment["write_ranges"]:
+                    self.assertTrue(0 <= offset and offset + width <= 256)
+                    self.assertIn(width, (1, 2, 4, 8, 16))
+                    self.assertEqual((start + offset) % min(width, 4), 0)
+                    for index in range(offset, offset + width):
+                        counts[index] += 1
+                    memory[8 + offset:8 + offset + width] = bytes(width)
+                self.assertEqual(counts, [1] * 256)
+                self.assertEqual(memory, b"\xa5" * 8 + bytes(256) + b"\xa5" * 8)
+
+    def test_conditional_scope_does_not_promote_compressed_tx_or_runtime_proof(self):
+        report = MAP._stock_host_command_closure(self.payload)
+        self.assertEqual(report["validation_scope"], {
+            "full_stock_selector": True, "direct_handler_footprints": True,
+            "exact_reply_clear": True, "callee_bodies": False,
+            "runtime_observed": False, "source_plane_ownership": False,
+            "whole_firmware_absence": False})
+        self.assertTrue(report["conclusion"]["conditional"])
+        self.assertFalse(report["conclusion"]["explicit_raw_source_plane_lease"])
+        self.assertFalse(report["conclusion"]["compressed_tx_metadata_is_raw_plane_lease"])
+        context = report["source_context"]
+        self.assertEqual(context["compressed_tx_metadata_reply_word"], 11)
+        self.assertEqual(context["open_reply_stores_blob_file_offsets"], [0x5914, 0x591c])
+        self.assertEqual(context["getter"], {
+            "entry_blob_file_offset": 0x898, "literal_blob_file_offset": 0x6fc,
+            "fixed_context_value": 0xd3a00, "incoming_arguments_read": False})
+        queue = context["queue_publication"]
+        self.assertFalse(queue["reply_payload_written"])
+        self.assertEqual(queue["node_write_byte_offsets"], [0, 4, 8, 12])
+        self.assertEqual(queue["packet_header_overlay_bytes"], 16)
+        self.assertTrue(queue["request_reply_payloads_disjoint"])
+        self.assertFalse(queue["whole_packet_disjoint"])
+        self.assertEqual(struct.unpack_from("<I", self.payload, 0x8bb0)[0], 0xe580000c)
+        self.assertTrue(report["assumptions"])
+        external = [text.lower() for text in report["assumptions"]
+                    if "all modeled external-store destinations" in text.lower()]
+        self.assertEqual(len(external), 1)
+        for requirement in ("mmio", "compressed", "request", "reply", "do not alias"):
+            self.assertIn(requirement, external[0])
+        scope = json.dumps((report["assumptions"], report["conclusion"], report["source_context"])).lower()
+        for requirement in ("calling convention", "disjoint", "raw", "compressed", "lifecycle", "silicon"):
+            self.assertIn(requirement, scope)
+
+    def test_region_identity_sizes_hashes_and_each_word_or_thumb_halfword_pin(self):
+        report = MAP._stock_host_command_closure(self.payload)
+        regions = (
+            ("handlers", 0x3ca8, 8836), ("dispatcher", 0x5f2c, 2648),
+            ("stream_ack", 0x6984, 52), ("clear_arm", 0x206e4, 36),
+            ("clear_thumb_value", 0x2c688, 16), ("clear_thumb_fill", 0x2c73c, 142),
+            ("caller", 0x9048, 496), ("caller_base", 0x92fc, 4),
+            ("caller_queue", 0x8c28, 4), ("caller_publication", 0x8fcc, 4),
+            ("stream_null", 0x6ab8, 20), ("queue_publish", 0x8afc, 236),
+            ("context_getter", 0x898, 8), ("context_getter_literal", 0x6fc, 4),
+            ("start_stack_output_prefix", 0x1bf04, 40),
+            ("start_stack_output_literal", 0x1bbd4, 4),
+        )
+        self.assertEqual((report["validation"]["region_count"], report["validation"]["bytes"]),
+                         (16, 12550))
+        self.assertEqual([(region["role"], region["blob_file_offset"], region["size"])
+                          for region in report["validation"]["regions"]], list(regions))
+        self.assertEqual([(role, offset, size) for role, offset, size, _ in MAP._STOCK_HOST_COMMAND_REGIONS],
+                         list(regions))
+        for region in report["validation"]["regions"]:
+            offset, size = region["blob_file_offset"], region["size"]
+            self.assertEqual(region["sha256"], hashlib.sha256(self.payload[offset:offset + size]).hexdigest())
+        mutations = 0
+        with mock.patch.object(MAP, "_stock_host_dispatch_domains",
+                               side_effect=AssertionError("selector interpreted before pins")), \
+                mock.patch.object(MAP, "_stock_host_handler_footprints",
+                                  side_effect=AssertionError("handlers interpreted before pins")), \
+                mock.patch.object(MAP, "_stock_host_reply_clear",
+                                  side_effect=AssertionError("clear interpreted before pins")):
+            for role, offset, size in regions:
+                width = 2 if role.startswith("clear_thumb") else 4
+                self.assertEqual(size % width, 0)
+                for position in range(offset, offset + size, width):
+                    changed = bytearray(self.payload)
+                    changed[position] ^= 1
+                    mutations += 1
+                    with self.subTest(role=role, offset=hex(position)), self.assertRaises(MAP.FormatError):
+                        MAP._stock_host_command_closure(changed)
+        self.assertEqual(mutations, 3177)
+
+    def test_targeted_new_route_table_flag_store_and_clear_mutations_fail_before_interpretation(self):
+        mutations = (
+            (0x6054, "<I", 0xe3500014),  # Admit currently absent base+0x14 instead of+0x13.
+            (0x6008, "<I", 0xe08ff102),  # Remove CC bound on computed selector table.
+            (0x6010, "<I", 0xea00018d),  # Added route in the currently unreachable slotzero.
+            (0x6014, "<I", 0xea000116),  # Swap two existing table handlers.
+            (0x5f88, "<I", 0x8a000027),  # Unsigned HI does not implement signed NZCV GT.
+            (0x5f80, "<I", 0xe0510002),  # SUBS incorrectly replaces preceding CMP flags.
+            (0x5fb4, "<I", 0xe0620e42),  # ASR28 changes the stock sign-derived bias.
+            (0x5fb8, "<I", 0xe0800001),  # ADD without S loses the Z update.
+            (0x60b0, "<I", 0xe0800001),
+            (0x6270, "<I", 0xebfffe5d),  # Retarget GET_VERSION's actual handler.
+            (0x3f88, "<I", 0xe5840100),  # Direct reply store escapes256-byte record.
+            (0x3f90, "<I", 0xe584000c),  # Change the sequence reply field.
+            (0x591c, "<I", 0xe5841030),  # Change OPEN's published metadata field.
+            (0x5f4c, "<I", 0xe3002104),  # Clear more than the reply record.
+            (0x5f50, "<I", 0xe3a01001),  # Nonzero fill.
+            (0x20700, "<I", 0xfa002fdf),  # Wrong A32-to-Thumb call target.
+            (0x2c754, "<H", 0xf820),  # Prefix byte becomes halfword.
+            (0x2c78c, "<H", 0xe890),  # Bulk write becomes load.
+            (0x2c790, "<H", 0xe8a1),  # Second bulk store uses the length as base.
+            (0x2c7b0, "<H", 0xf800),  # Tail word store becomes byte store.
+            (0x898, "<I", 0xe5900000),  # Getter would dereference incoming packet.
+            (0x89c, "<I", 0xe1a00001),  # Getter would no longer immediately return.
+            (0x6fc, "<I", 0xd3a04),  # Wrong static context getter literal.
+            (0x1bf0c, "<I", 0xe1a04000),  # Output prefix would save the wrong pointer.
+            (0x1bf1c, "<I", 0xebfffebf),  # Wrong selected scalar-query target.
+            (0x1bf24, "<I", 0xe2050fff),  # Wrong shifted mask would not prove low8 scalar.
+            (0x1bf28, "<I", 0xe5c40000),  # Byte store leaves stale packet-pointer bytes.
+            (0x1bbd4, "<I", 0x20b00c),  # Wrong fixed query-register literal.
+        )
+        with mock.patch.object(MAP, "_stock_host_dispatch_domains",
+                               side_effect=AssertionError("unexpected selector interpretation")), \
+                mock.patch.object(MAP, "_stock_host_handler_footprints",
+                                  side_effect=AssertionError("unexpected handler interpretation")), \
+                mock.patch.object(MAP, "_stock_host_reply_clear",
+                                  side_effect=AssertionError("unexpected clear interpretation")):
+            for offset, format_string, value in mutations:
+                changed = bytearray(self.payload)
+                self.assertNotEqual(struct.unpack_from(format_string, changed, offset)[0], value)
+                struct.pack_into(format_string, changed, offset, value)
+                with self.subTest(offset=hex(offset), value=hex(value)), self.assertRaises(MAP.FormatError):
+                    MAP._stock_host_command_closure(changed)
+
+    def test_exact_pin_budget_payload_bounds_and_no_partial_interpretation(self):
+        self.assertEqual((MAP.MAX_STOCK_HOST_COMMAND_REGIONS, MAP.MAX_STOCK_HOST_COMMAND_BYTES),
+                         (16, 16 * 1024))
+        with mock.patch.object(MAP, "MAX_STOCK_HOST_COMMAND_REGIONS", 16), \
+                mock.patch.object(MAP, "MAX_STOCK_HOST_COMMAND_BYTES", 12550):
+            self.assertEqual(MAP._stock_host_command_closure(self.payload)["validation"]["bytes"], 12550)
+        with mock.patch.object(MAP, "_stock_host_dispatch_domains",
+                               side_effect=AssertionError("unexpected selector interpretation")), \
+                mock.patch.object(MAP, "_stock_host_handler_footprints",
+                                  side_effect=AssertionError("unexpected handler interpretation")), \
+                mock.patch.object(MAP, "_stock_host_reply_clear",
+                                  side_effect=AssertionError("unexpected clear interpretation")):
+            for field, value in (("MAX_STOCK_HOST_COMMAND_REGIONS", 15),
+                                 ("MAX_STOCK_HOST_COMMAND_BYTES", 12549)):
+                with mock.patch.object(MAP, field, value), self.assertRaisesRegex(MAP.FormatError, "budget"):
+                    MAP._stock_host_command_closure(self.payload)
+            for payload in (b"", self.payload[:-1], self.payload[:-4], self.payload + bytes(4), self.data):
+                with self.subTest(size=len(payload)), self.assertRaisesRegex(MAP.FormatError, "payload.*size"):
+                    MAP._stock_host_command_closure(payload)
+            for _, offset, size, _ in MAP._STOCK_HOST_COMMAND_REGIONS:
+                with self.subTest(offset=hex(offset)), self.assertRaises(MAP.FormatError):
+                    MAP._stock_host_command_closure(self.payload[:offset + size - 1])
+
+    def test_private_models_fail_closed_on_unsupported_instruction_and_alias(self):
+        # Direct model calls deliberately bypass the enclosing pin validator:
+        # an unsupported model must raise, never quietly produce a full proof.
+        for offset, word in ((0x5f78, 0xe3a02000), (0x5f7c, 0xffffffff),
+                             (0x5f88, 0x8a000027), (0x5fb4, 0xe0620e42),
+                             (0x5fc0, 0xe1500003), (0x6008, 0xe08ff102)):
+            changed = bytearray(self.payload)
+            struct.pack_into("<I", changed, offset, word)
+            with self.subTest(model="selector", offset=hex(offset)), self.assertRaises(MAP.FormatError):
+                MAP._stock_host_dispatch_domains(changed)
+        for offset, word in ((0x3f84, 0xffffffff),
+                             (0x3f84, 0x11a04005),  # Conditional request/reply alias merge.
+                             (0x3f84, 0xe0844001),  # Opaque addition must not erase a packet alias.
+                             (0x3f88, 0xe7840001),  # Variable direct reply address.
+                             (0x3f88, 0xe5840100),  # Direct reply span overflow.
+                             (0x3f88, 0xe5040008)):  # Direct reply negative offset.
+            changed = bytearray(self.payload)
+            struct.pack_into("<I", changed, offset, word)
+            with self.subTest(model="handler", offset=hex(offset)), self.assertRaises(MAP.FormatError):
+                MAP._stock_host_handler_footprints(changed, [0x3f68])
+        for offset in (0x5f4c, 0x20700, 0x2c688, 0x2c73c, 0x2c78c, 0x2c7c8):
+            changed = bytearray(self.payload)
+            changed[offset] ^= 1
+            with self.subTest(model="clear", offset=hex(offset)), self.assertRaises(MAP.FormatError):
+                MAP._stock_host_reply_clear(changed)
+        for offset, word in ((0x898, 0xe5900000), (0x89c, 0xe1a00001), (0x6fc, 0xd3a04)):
+            changed = bytearray(self.payload)
+            struct.pack_into("<I", changed, offset, word)
+            with self.subTest(model="getter", offset=hex(offset)), self.assertRaises(MAP.FormatError):
+                MAP._stock_host_handler_footprints(changed, [0x3fb0])
+        for offset, word in ((0x1bf0c, 0xe1a04000), (0x1bf1c, 0xebfffebf),
+                             (0x1bf24, 0xe2050fff), (0x1bf28, 0xe5c40000),
+                             (0x1bbd4, 0x20b00c)):
+            changed = bytearray(self.payload)
+            struct.pack_into("<I", changed, offset, word)
+            with self.subTest(model="stack-output-prefix", offset=hex(offset)), self.assertRaises(MAP.FormatError):
+                MAP._stock_host_handler_footprints(changed, [0x4630])
+
+    def test_independent_cfg_partition_and_clear_state_budgets_fail_closed(self):
+        for field, value in (("MAX_STOCK_HOST_COMMAND_CFG_STATES", 0),
+                             ("MAX_STOCK_HOST_COMMAND_CFG_STATES", 1),
+                             ("MAX_STOCK_HOST_COMMAND_PARTITIONS", 0),
+                             ("MAX_STOCK_HOST_COMMAND_PARTITIONS", 1)):
+            with mock.patch.object(MAP, field, value), self.assertRaisesRegex(MAP.FormatError, "budget"):
+                MAP._stock_host_dispatch_domains(self.payload)
+        with mock.patch.object(MAP, "MAX_STOCK_HOST_COMMAND_CFG_STATES", 1), \
+                self.assertRaisesRegex(MAP.FormatError, "budget"):
+            MAP._stock_host_reply_clear(self.payload)
+        with mock.patch.object(MAP, "MAX_STOCK_HOST_COMMAND_CFG_STATES", 1), \
+                self.assertRaisesRegex(MAP.FormatError, "budget"):
+            MAP._stock_host_handler_footprints(self.payload, [0x3f68])
+
+    def test_packet_alias_spills_reload_push_movt_and_offsets_cannot_hide_ownership(self):
+        # These direct model calls bypass pins to challenge the alias lattice.
+        # Conditional external-memory separation does not permit a known packet
+        # pointer to vanish through storage, reload, writeback or arithmetic.
+        sequences = (
+            ((0x3f84, 0xe58d4000),),  # STR packet-valued r4,[sp].
+            ((0x3f84, 0xe58d4000), (0x3f88, 0xe59d4000)),  # Stack spill/reload into write base.
+            ((0x3f88, 0xe58d4004),),  # Overwrite saved r5 with reply pointer.
+            ((0x3f88, 0xe58d400c),),  # Overwrite saved LR/POP PC with reply pointer.
+            ((0x3f84, 0xe5814000),),  # STR packet-valued r4,[opaque r1].
+            ((0x3f84, 0xe5814000), (0x3f88, 0xe5914000)),  # External spill/reload.
+            ((0x3f84, 0xe58d4000), (0x3f88, 0xe59d0000),
+             (0x3f8c, 0xeb00710c)),  # Reload r0 packet then escape to opaque logger.
+            ((0x3f84, 0xe92d0010),),  # PUSH packet-valued r4.
+            ((0x3f68, 0xe92d4071),),  # PUSH additionally saves initial packet-valued r0.
+            ((0x3f84, 0xe3404001),),  # MOVT r4,#1 must preserve may-packet taint.
+            ((0x3f84, 0xe6840001),),  # STR r0,[r4],r1: offset0 then unknown writeback.
+            ((0x3f84, 0xe2454014), (0x3f88, 0xe08410b2),
+             (0x3f8c, 0xe1a04004)),  # Header STRH [r4],r2 unknown writeback, then reuse.
+            ((0x3f84, 0xe1a04511),),  # MOV r4,r1,LSL r5: packet-valued shift amount.
+        )
+        for sequence in sequences:
+            changed = bytearray(self.payload)
+            for offset, word in sequence:
+                struct.pack_into("<I", changed, offset, word)
+            with self.subTest(sequence=[(hex(offset), hex(word)) for offset, word in sequence]), \
+                    self.assertRaises(MAP.FormatError):
+                MAP._stock_host_handler_footprints(changed, [0x3f68])
+
+    def allocated_local_spill_payload(self):
+        # A test-only A32 body, independently assembled, preserving ACK's
+        # fields and caller-save restoration. Unlike overwriting a PUSH slot,
+        # two explicit scratch words are reserved and balanced on every exit.
+        words = (
+            0xe92d4070,  # PUSH {r4,r5,r6,lr}.
+            0xe24dd008,  # SUB sp,sp,#8: bounded local scratch.
+            0xe2805014,  # ADD r5,r0,#20: request.
+            0xe2804f45,  # ADD r4,r0,#276: reply.
+            0xe58d4000,  # STR r4,[sp]: local reply-pointer spill, slot-24.
+            0xe3a04000,  # MOV r4,#0: the reload must actually recover provenance.
+            0xe59d4000,  # LDR r4,[sp].
+            0xe3a00000,  # MOV r0,#0.
+            0xe5840008,  # STR r0,[r4,#8]: status.
+            0xe5950004,  # LDR r0,[r5,#4]: sequence.
+            0xe5840004,  # STR r0,[r4,#4]: echoed sequence.
+            0xe3a00000,  # MOV r0,#0: scalar return.
+            0xe28dd008,  # ADD sp,sp,#8: release only local scratch.
+            0xe8bd8070,  # POP {r4,r5,r6,pc}: exact original saved slots.
+        )
+        payload = bytearray(self.payload)
+        struct.pack_into("<" + "I" * len(words), payload, 0x3f68, *words)
+        return payload
+
+    def test_bounded_local_packet_spill_reload_preserves_fields_and_return(self):
+        changed = self.allocated_local_spill_payload()
+        # The fixed stock entry still refuses this modified body before any
+        # interpretation. Only the private model accepts the supported fixture.
+        with self.assertRaises(MAP.FormatError):
+            MAP._stock_host_command_closure(changed)
+        handler, = MAP._stock_host_handler_footprints(changed, [0x3f68])
+        self.assertEqual(handler["request_reads"], [{"byte_offset": 4, "width": 4}])
+        self.assertEqual(handler["reply_writes"], [
+            {"word_index": 1, "byte_offset": 4, "width": 4},
+            {"word_index": 2, "byte_offset": 8, "width": 4}])
+        self.assertEqual(handler["packet_header_reads"], [])
+        self.assertEqual(handler["packet_header_writes"], [])
+        self.assertEqual(handler["callee_targets"], [])
+        self.assertEqual(handler["return_blob_file_offsets"], [0x3f9c])
+        self.assertEqual(handler["stack_packet_spills"], [
+            {"instruction_blob_file_offset": 0x3f68, "frame_byte_offset": -16,
+             "packet_byte_offset": 0},
+            {"instruction_blob_file_offset": 0x3f68, "frame_byte_offset": -8,
+             "packet_byte_offset": 276},
+            {"instruction_blob_file_offset": 0x3f78, "frame_byte_offset": -24,
+             "packet_byte_offset": 276}])
+        self.assertEqual(handler["validated_stack_output_prefix_calls"], [])
+        self.assertTrue(handler["direct_request_reply_only"])
+
+    def test_allocated_stack_alias_loss_escape_and_unbalanced_returns_fail_closed(self):
+        # Start with a real allocated scratch slot so saved-slot protections
+        # cannot accidentally satisfy these stack-provenance regressions.
+        branch = lambda pc: 0xeb000000 | (((0x203c4 - pc - 8) // 4) & 0xffffff)
+        sequences = (
+            ((0x3f80, 0xe59d0000), (0x3f84, branch(0x3f84))),  # Reload packet into opaque BL argument.
+            ((0x3f7c, 0xe08d1002), (0x3f80, 0xe5910000),
+             (0x3f84, branch(0x3f84))),  # ADD r1,sp,unknown r2 must not erase stack alias.
+            ((0x3f7c, 0xe1a0100d), (0x3f80, 0xe3401001),
+             (0x3f84, 0xe5910000), (0x3f88, branch(0x3f88))),  # MOVT of copied stack pointer.
+            ((0x3f7c, 0x11a0100d), (0x3f80, 0xe5910000),
+             (0x3f84, branch(0x3f84))),  # Conditional stack/unknown join must not erase alias.
+            ((0x3f7c, 0xe68d1002),),  # STR r1,[sp],r2: unbounded single-transfer writeback.
+            ((0x3f7c, 0xe08d10b2),),  # STRH r1,[sp],r2: unbounded extra-transfer writeback.
+            ((0x3f7c, 0xe58dd004), (0x3f80, 0xe59d1004),
+             (0x3f84, 0xe5910000), (0x3f88, branch(0x3f88))),  # Spill SP and reload double indirection.
+            ((0x3f7c, 0xe1a0121d),),  # MOV r1,sp,LSL r2 must not erase stack alias.
+            ((0x3f98, 0xe28dd004),),  # Release only one of two scratch words.
+            ((0x3f9c, 0xe8bd8071),),  # Extra restored register gives wrong return balance.
+            ((0x3f9c, 0xe8bd8068),),  # Same POP width but saved-register mapping changes.
+            ((0x3f9c, 0xe12fff1e),),  # BX LR with frame still allocated is not a leaf return.
+        )
+        for sequence in sequences:
+            changed = self.allocated_local_spill_payload()
+            for offset, word in sequence:
+                struct.pack_into("<I", changed, offset, word)
+            with self.subTest(sequence=[(hex(offset), hex(word)) for offset, word in sequence]), \
+                    self.assertRaises(MAP.FormatError):
+                MAP._stock_host_handler_footprints(changed, [0x3f68])
+
+    def test_start_packet_stack_scratch_is_overwritten_by_exact_selected_prefix(self):
+        # Independently decoded prefix: preserve output pointer across an
+        # external-object/fixed-register query, AND the scalar result to8 bits,
+        # and overwrite all4 bytes before the later local-stack consumer.
+        prefix = (0xe92d40f0, 0xe1a06000, 0xe1a04001, 0xe3a07000,
+                  0xe51f1348, 0xe1a00006, 0xebfffec0, 0xe1a05000,
+                  0xe20500ff, 0xe5840000)
+        self.assertEqual(struct.unpack_from("<10I", self.payload, 0x1bf04), prefix)
+        self.assertEqual(struct.unpack_from("<I", self.payload, 0x1bbd4)[0], 0x20b008)
+        report = MAP._stock_host_command_closure(self.payload)
+        handler = next(item for item in report["handlers"] if item["entry_blob_file_offset"] == 0x4630)
+        self.assertEqual(handler["stack_packet_spills"], [
+            {"instruction_blob_file_offset": 0x4630, "frame_byte_offset": -48,
+             "packet_byte_offset": 0},
+            {"instruction_blob_file_offset": 0x4630, "frame_byte_offset": -32,
+             "packet_byte_offset": 0},
+            {"instruction_blob_file_offset": 0x4630, "frame_byte_offset": -24,
+             "packet_byte_offset": 276}])
+        self.assertEqual(handler["validated_stack_output_prefix_calls"], [
+            {"call_blob_file_offset": 0x48d0, "frame_byte_offset": -48,
+             "overwritten_bytes": 4, "value_mask": 255}])
+        self.assertEqual(report["source_context"]["start_stack_output_prefix"], {
+            "entry_blob_file_offset": 0x1bf04, "last_validated_blob_file_offset": 0x1bf28,
+            "nested_callee_blob_file_offset": 0x1ba24,
+            "literal_blob_file_offset": 0x1bbd4, "literal_value": 0x20b008,
+            "stored_value_mask": 255, "post_prefix_body_validated": False})
+        self.assertIn("post-prefix", " ".join(report["assumptions"]).lower())
+
+    def test_leaf_return_preserves_original_lr_and_calls_cannot_fake_it(self):
+        # A real scalar leaf can BX the untouched original LR with SP0. A BL
+        # instead replaces LR with its local return PC, even for the explicitly
+        # pinned zero-input getter; treating that as the caller return is wrong.
+        leaf = bytearray(self.payload)
+        struct.pack_into("<2I", leaf, 0x3f68, 0xe3a00000, 0xe12fff1e)
+        handler, = MAP._stock_host_handler_footprints(leaf, [0x3f68])
+        self.assertEqual(handler["return_blob_file_offsets"], [0x3f6c])
+        self.assertEqual(handler["request_reads"], [])
+        self.assertEqual(handler["reply_writes"], [])
+        branch = lambda pc, target: 0xeb000000 | (((target - pc - 8) // 4) & 0xffffff)
+        for words in ((branch(0x3f68, 0x898), 0xe12fff1e),
+                      (0xe3a00000, branch(0x3f6c, 0x203c4), 0xe12fff1e)):
+            changed = bytearray(self.payload)
+            struct.pack_into("<" + "I" * len(words), changed, 0x3f68, *words)
+            with self.subTest(words=[hex(word) for word in words]), self.assertRaises(MAP.FormatError):
+                MAP._stock_host_handler_footprints(changed, [0x3f68])
+
+    def test_contract_is_pure_offline_and_has_no_public_cli_option(self):
+        mutable = bytearray(self.payload)
+        before = bytes(mutable)
+        with mock.patch("builtins.open", side_effect=AssertionError("unexpected file read")), \
+                mock.patch.object(MAP.os, "open", side_effect=AssertionError("unexpected file/device open")), \
+                mock.patch.object(subprocess, "run", side_effect=AssertionError("unexpected external command")), \
+                mock.patch.object(subprocess, "Popen", side_effect=AssertionError("unexpected external process")):
+            MAP._stock_host_command_closure(mutable)
+        self.assertEqual(mutable, before)
+        for option in ("--stock-host-command-closure", "--stock-host-command-closure=0x73763004",
+                       "--stock-host-command-budget"):
+            with mock.patch.object(MAP, "read_firmware", side_effect=AssertionError("unexpected file read")), \
+                    mock.patch.object(sys, "stderr", new_callable=io.StringIO), \
+                    self.assertRaises(SystemExit) as error:
+                MAP.main(["offline.bin", option])
+            self.assertEqual(error.exception.code, 2)
+
+    def test_private_helper_does_not_change_any_of256_existing_public_reports(self):
+        options = ("references", "all_symbols", "bootstrap", "picture_output",
+                   "arc_metadata", "csc_command", "command_buffer_bridge", "inner_descriptor")
+        aggregate = hashlib.sha256()
+        with mock.patch.object(MAP, "_stock_host_command_closure",
+                               side_effect=AssertionError("unexpected private contract evaluation")):
+            for mask in range(256):
+                flags = {name: bool(mask & (1 << bit)) for bit, name in enumerate(options)}
+                wanted = ("ReadLine",) if mask & 1 else MAP.DEFAULT_SYMBOLS
+                report = MAP.analyze(self.data, wanted, **flags)
+                self.assertNotIn("stock_host_command_closure", report)
+                stdout = (json.dumps(report, indent=2, sort_keys=True) + "\n").encode()
+                aggregate.update(bytes([mask]))
+                aggregate.update(hashlib.sha256(stdout).digest())
+        # Computed from git9354041 before the private helper was added.
+        self.assertEqual(aggregate.hexdigest(),
+                         "bf116a4627c71956042f25a98f63fde401b58140569c22cdc5ebf8298bbc85dd")
+
+
 if __name__ == "__main__":
     unittest.main()
