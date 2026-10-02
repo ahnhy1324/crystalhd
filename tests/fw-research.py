@@ -875,5 +875,214 @@ class FirmwareMapTests(unittest.TestCase):
         self.assertEqual(result.exception.code, 2)
 
 
+class FirmwareBootstrapTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.data = MAP.read_firmware(BLOB)
+        cls.payload = cls.data[:-MAP.TRAILER_SIZE]
+        cls.images = MAP.analyze(cls.data)["images"]
+
+    def test_bundled_catalog_regions_and_static_layout(self):
+        result = MAP.analyze(self.data, bootstrap=True)["bootstrap"]
+        self.assertEqual((result["isa"], result["endianness"]), ("A32", "little"))
+        self.assertEqual([(r["blob_file_offset"], r["blob_file_end"]) for r in result["regions"]],
+                         [(0, 0x2ea60), (0x2ea60, 0x79dd8),
+                          (0x79dd8, 0xcfbb0), (0xcfbb0, 0xd3000)])
+        self.assertIn("literals and data", result["regions"][0]["kind"])
+        self.assertIn("initialized data", result["regions"][3]["kind"])
+        catalog = result["image_catalog"]
+        self.assertEqual(catalog["table_blob_file_offset"], 0xcfbe8)
+        self.assertEqual(catalog["descriptor_blob_file_offsets"], [0xcfbd0, 0xcfbdc, 0, 0, 0, 0])
+        self.assertEqual(catalog["callback_entry_blob_file_offsets"], [0x26e7c, 0x26f74, 0x26fdc])
+        for index, image in enumerate(catalog["images"]):
+            self.assertEqual(image["slot"], index)
+            self.assertEqual(image["image_blob_file_offset"], self.images[index]["blob_file_offset"])
+            self.assertEqual(image["image_blob_file_end"], self.images[index]["blob_file_end"])
+            self.assertEqual(image["declared_image_size"], image["image_blob_file_end"] - image["image_blob_file_offset"])
+        self.assertEqual(result["cmac"], {"length_slot_blob_file_offset": 0xd3000,
+                                          "blob_file_offset": 0xd3004, "length": 16,
+                                          "authentication_verified": False})
+        layout = result["static_derived_layout"]
+        self.assertFalse(layout["device_observed"])
+        self.assertEqual([layout[k]["address"] for k in ("scrub_end", "host_command", "reply")],
+                         [0xd2fff, 0xd3100, 0xd3200])
+        self.assertEqual(layout["host_command"]["source_kind"], "driver")
+        self.assertIn("FleaDefs.h:51", layout["host_command"]["source"])
+        self.assertEqual(layout["reply"]["source_kind"], "driver and ARM anchors")
+        self.assertTrue(any("destinations are not established" in text for text in result["limitations"]))
+        self.assertTrue(any("not CMAC authentication" in text for text in result["limitations"]))
+
+    def test_bundled_actual_arm_dispatch_and_callback_anchors(self):
+        result = MAP._bootstrap_map(self.payload, self.images)
+        anchors = {a["blob_file_offset"]: a for a in result["instruction_anchors"]}
+        self.assertEqual(len(anchors), len(result["instruction_anchors"]))
+        self.assertLessEqual(len(anchors), 64)
+        self.assertTrue(all(offset < 0x2ea60 for offset in anchors))
+        self.assertEqual(anchors[0]["literal_value"], 0x2ca00)
+        self.assertEqual(anchors[0x8d54]["literal_blob_file_offset"], 0x8f74)
+        self.assertEqual(anchors[0x8d54]["literal_value"], 0x100e0000)
+        self.assertEqual(anchors[0x8d58]["word"], 0xe590401c)
+        for source, target in ((0x2cc0c, 0x74bc), (0x7530, 0x8d98),
+                               (0x8d74, 0x8cf4), (0x8d14, 0x8c30),
+                               (0x8e40, 0x9048), (0x9204, 0x5f2c),
+                               (0x5fac, 0x6264), (0x6270, 0x5ba4)):
+            self.assertEqual(anchors[source]["target_blob_file_offset"], target)
+        self.assertEqual(anchors[0x5fac]["condition"], 0)
+        self.assertEqual(anchors[0x9298]["literal_blob_file_offset"], 0x8be8)
+        self.assertEqual(anchors[0x9298]["literal_value"], 0x100f6000)
+        self.assertEqual(result["host_mailbox_dispatch"]["get_version_command"], 0x73763004)
+        self.assertEqual({f["entry_blob_file_offset"] for f in result["function_anchors"]},
+                         {0x5f2c, 0x5ba4, 0x26e7c, 0x26f74, 0x26fdc})
+
+    def test_bootstrap_public_pin_precedes_elf_and_anchor_parsing(self):
+        altered = bytearray(self.data)
+        altered[400] ^= 1
+        for data in (fixture(), altered, self.data[:-4]):
+            with self.subTest(size=len(data)):
+                with mock.patch.object(MAP, "parse_elf", side_effect=AssertionError("unexpected ELF parse")):
+                    with mock.patch.object(MAP, "_bootstrap_map", side_effect=AssertionError("unexpected anchor parse")):
+                        with self.assertRaisesRegex(MAP.FormatError, "exact bundled"):
+                            MAP.analyze(data, expected_sha256=hashlib.sha256(data).hexdigest(), bootstrap=True)
+        # Even a forged expected identity cannot bypass the independent size gate.
+        with mock.patch.object(MAP.hashlib, "sha256") as digest:
+            digest.return_value.hexdigest.return_value = MAP.BUNDLED_SHA256
+            with self.assertRaisesRegex(MAP.FormatError, "exact bundled"):
+                MAP.analyze(fixture(), bootstrap=True)
+
+    def test_bootstrap_cli_alternative_pin_fails_without_json(self):
+        data = fixture()
+        with mock.patch.object(MAP, "read_firmware", return_value=data):
+            with mock.patch.object(sys, "stdout", new_callable=io.StringIO) as output:
+                with mock.patch.object(sys, "stderr", new_callable=io.StringIO) as error:
+                    result = MAP.main(["fixture.bin", "--bootstrap", "--expect-sha256",
+                                       hashlib.sha256(data).hexdigest()])
+        self.assertEqual(result, 1)
+        self.assertEqual(output.getvalue(), "")
+        self.assertIn("exact bundled", error.getvalue())
+
+    def test_a32_branch_pc_bias_sign_extension_and_conditions(self):
+        data = bytearray(64)
+        for offset, word, target, options in (
+                (16, 0xeafffffb, 4, {}), (4, 0xeb000004, 28, {"link": True}),
+                (8, 0x0a000000, 16, {"condition": 0})):
+            struct.pack_into("<I", data, offset, word)
+            result = MAP._a32_branch(data, offset, **options)
+            self.assertEqual(result["target_blob_file_offset"], target)
+            self.assertEqual(result["word"], word)
+        for word, options in ((0xfa000000, {}), (0xeb000000, {}),
+                              (0x1a000000, {}), (0x0a000000, {}),
+                              (0xfa000000, {"condition": 15}),
+                              (0xf000f800, {"link": True}),
+                              (0xea7fffff, {}), (0xea800000, {})):
+            struct.pack_into("<I", data, 16, word)
+            with self.subTest(word=word), self.assertRaises(MAP.FormatError):
+                MAP._a32_branch(data, 16, **options)
+        with self.assertRaises(MAP.FormatError):
+            MAP._a32_branch(data, 1)
+        with self.assertRaises(MAP.FormatError):
+            MAP._a32_branch(data[:17], 16)
+
+    def test_a32_literal_pc_bias_positive_negative_and_rejected_modes(self):
+        for offset, instruction, literal in ((8, 0xe59f3004, 20), (16, 0xe51f3010, 8)):
+            data = bytearray(32)
+            struct.pack_into("<I", data, offset, instruction)
+            struct.pack_into("<I", data, literal, 0x12345678)
+            result = MAP._a32_literal(data, offset)
+            self.assertEqual(result["literal_blob_file_offset"], literal)
+            self.assertEqual(result["literal_value"], 0x12345678)
+            self.assertEqual(result["destination_register"], 3)
+        for instruction in (0xe51f000c, 0xe59f0fff, 0xe59f0001, 0xe79f0000,
+                            0xe5bf0000, 0xe5df0000, 0x059f0000, 0xf59f0000):
+            data = bytearray(32)
+            struct.pack_into("<I", data, 0, instruction)
+            with self.subTest(word=instruction), self.assertRaises(MAP.FormatError):
+                MAP._a32_literal(data, 0)
+        with self.assertRaises(MAP.FormatError):
+            MAP._a32_literal(bytes.fromhex("00009fe5"), 0)
+
+    def test_every_bootstrap_instruction_anchor_rejects_changed_word(self):
+        result = MAP._bootstrap_map(self.payload, self.images)
+        for anchor in result["instruction_anchors"]:
+            data = bytearray(self.payload)
+            offset = anchor["blob_file_offset"]
+            struct.pack_into("<I", data, offset, anchor["word"] ^ 1)
+            with self.subTest(offset=offset), self.assertRaises(MAP.FormatError):
+                MAP._bootstrap_map(data, self.images)
+
+    def test_bootstrap_literals_and_vector_targets_reject_mutation(self):
+        result = MAP._bootstrap_map(self.payload, self.images)
+        for anchor in result["instruction_anchors"]:
+            if anchor["operation"] != "LDR literal":
+                continue
+            data = bytearray(self.payload)
+            offset = anchor["literal_blob_file_offset"]
+            struct.pack_into("<I", data, offset, anchor["literal_value"] ^ 4)
+            with self.subTest(offset=offset), self.assertRaises(MAP.FormatError):
+                MAP._bootstrap_map(data, self.images)
+        with self.assertRaisesRegex(MAP.FormatError, "payload size"):
+            MAP._bootstrap_map(self.payload[:-4], self.images)
+
+    def test_bootstrap_catalog_root_slots_and_callback_mutations(self):
+        offsets = [0xcfc00] + list(range(0xcfbe8, 0xcfc00, 4)) + list(range(0xcfcf0, 0xcfcfc, 4))
+        for offset in offsets:
+            data = bytearray(self.payload)
+            struct.pack_into("<I", data, offset, 0xffffffff)
+            with self.subTest(offset=offset), self.assertRaisesRegex(MAP.FormatError, "catalog"):
+                MAP._bootstrap_map(data, self.images)
+
+    def test_bootstrap_descriptor_pointer_bounds_and_elf_size_identity(self):
+        for descriptor in (0xcfbd0, 0xcfbdc):
+            for field in (0, 4, 8):
+                for value in (1, 0xd3000, 0xfffffffc, 0x2ea64):
+                    data = bytearray(self.payload)
+                    struct.pack_into("<I", data, descriptor + field, value)
+                    with self.subTest(descriptor=descriptor, field=field, value=value):
+                        with self.assertRaises(MAP.FormatError):
+                            MAP._bootstrap_map(data, self.images)
+        for offset in (0xcfbb0, 0xcfbb4, 0xcfbcc, 0xcfbb8):
+            data = bytearray(self.payload)
+            struct.pack_into("<I", data, offset, 0xffffffff)
+            with self.subTest(offset=offset), self.assertRaises(MAP.FormatError):
+                MAP._bootstrap_map(data, self.images)
+        for images in (self.images[::-1], self.images[:1], self.images * 2,
+                       [{**self.images[0], "blob_file_end": 0x79dd4}, self.images[1]]):
+            with self.subTest(images=len(images)), self.assertRaisesRegex(MAP.FormatError, "ELF identities"):
+                MAP._bootstrap_map(self.payload, images)
+
+    def test_bootstrap_pure_mapping_and_unmodified_existing_report_options(self):
+        with mock.patch("builtins.open", side_effect=AssertionError("unexpected file read")):
+            with mock.patch.object(MAP.os, "open", side_effect=AssertionError("unexpected device/file open")):
+                MAP._bootstrap_map(self.payload, self.images)
+        for options in ({}, {"references": True}, {"all_symbols": True},
+                        {"references": True, "all_symbols": True}):
+            plain = MAP.analyze(self.data, **options)
+            enriched = MAP.analyze(self.data, bootstrap=True, **options)
+            self.assertNotIn("bootstrap", plain)
+            enriched.pop("bootstrap")
+            self.assertEqual(enriched, plain)
+
+    def test_default_cli_stdout_bytes_unchanged_and_bootstrap_reproducible(self):
+        for options, expected in (([], "15068c07a81a510e02435b6203b1cf5e424152e37ff456b1da9c12b77c15799e"),
+                                  (["--references", "--symbol", "ReadLine"], "2a491f4b9033395cdbc688810319ea159973a296d7828ac65153bc93d45b588f"),
+                                  (["--all-symbols"], "15af1023987b5f2aee1e9a5560f749560bf33f729252ca3fcb9f41358f49e5aa")):
+            command = [sys.executable, "-B", str(TOOL), str(BLOB)] + options
+            plain = subprocess.run(command, capture_output=True, timeout=10)
+            enriched = subprocess.run(command + ["--bootstrap"], capture_output=True, timeout=10)
+            with self.subTest(options=options):
+                self.assertEqual(plain.returncode, 0, plain.stderr)
+                self.assertEqual(hashlib.sha256(plain.stdout).hexdigest(), expected)
+                self.assertEqual(enriched.returncode, 0, enriched.stderr)
+                report = json.loads(enriched.stdout)
+                report.pop("bootstrap")
+                self.assertEqual(report, json.loads(plain.stdout))
+                self.assertNotIn(str(ROOT).encode(), enriched.stdout)
+        command = [sys.executable, "-B", str(TOOL), str(BLOB), "--bootstrap"]
+        first = subprocess.run(command, capture_output=True, timeout=10)
+        second = subprocess.run(command, capture_output=True, timeout=10)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(first.stdout, second.stdout)
+        self.assertEqual(hashlib.sha256(BLOB.read_bytes()).hexdigest(), MAP.BUNDLED_SHA256)
+
+
 if __name__ == "__main__":
     unittest.main()
