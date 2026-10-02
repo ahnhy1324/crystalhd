@@ -267,6 +267,7 @@ BC_STATUS crystalhd_hw_open(struct crystalhd_hw *hw, struct crystalhd_adp *adp)
 		hw->pfnIssuePause = crystalhd_flea_hw_pause;
 		hw->pfnPeekNextDeodedFr = crystalhd_flea_peek_next_decoded_frame;
 		hw->pfnPostRxSideBuff = crystalhd_flea_hw_post_cap_buff;
+		hw->pfnPrepareTxDMA = crystalhd_flea_prepare_tx_dma;
 		hw->pfnStartTxDMA = crystalhd_flea_start_tx_dma_engine;
 		hw->pfnStopTxDMA = crystalhd_flea_stop_tx_dma_engine;
 		hw->pfnStopRXDMAEngines = crystalhd_flea_stop_rx_dma_engine;
@@ -290,6 +291,7 @@ BC_STATUS crystalhd_hw_open(struct crystalhd_hw *hw, struct crystalhd_adp *adp)
 		hw->pfnIssuePause = crystalhd_link_hw_pause;
 		hw->pfnPeekNextDeodedFr = crystalhd_link_peek_next_decoded_frame;
 		hw->pfnPostRxSideBuff = crystalhd_link_hw_post_cap_buff;
+		hw->pfnPrepareTxDMA = NULL;
 		hw->pfnStartTxDMA = crystalhd_link_start_tx_dma_engine;
 		hw->pfnStopTxDMA = crystalhd_link_stop_tx_dma_engine;
 		hw->pfnStopRXDMAEngines = crystalhd_link_stop_rx_dma_engine;
@@ -1351,8 +1353,9 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw,
 {
 	struct device *dev;
 	struct tx_dma_pkt *tx_dma_packet = NULL;
+	struct crystalhd_elem *tx_elem;
 	addr_64 desc_addr;
-	BC_STATUS sts, add_sts;
+	BC_STATUS sts;
 	uint32_t dummy_index = 0;
 	unsigned long flags;
 	uint8_t list_posted;
@@ -1364,6 +1367,12 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw,
 		printk(KERN_ERR "%s: Invalid Arguments\n", __func__);
 		return BC_STS_INV_ARG;
 	}
+	if (!hw->adp || !hw->adp->pdev || !hw->tx_freeq || !hw->tx_actq ||
+	    hw->tx_freeq == hw->tx_actq ||
+	    hw->tx_freeq->sig != BC_LINK_DIOQ_SIG ||
+	    hw->tx_actq->sig != BC_LINK_DIOQ_SIG ||
+	    hw->tx_freeq->adp != hw->adp || hw->tx_actq->adp != hw->adp)
+		return BC_STS_INV_ARG;
 	sts = crystalhd_tx_buffer_preflight(buffer, BC_LINK_MAX_SGLS);
 	if (sts != BC_STS_SUCCESS)
 		return sts;
@@ -1391,9 +1400,13 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw,
 	if(local_flags & BC_BIT(7))
 		destDRAMaddr = hw->TxFwInputBuffInfo.DramBuffAdd;
 
-	/* Get a list from TxFreeQ */
-	tx_dma_packet = (struct tx_dma_pkt *)crystalhd_dioq_fetch(hw->tx_freeq);
+	/* Keep the free node reserved until preparation and active admission. */
+	tx_elem = crystalhd_dioq_fetch_elem(hw->tx_freeq);
+	if (tx_elem)
+		tx_dma_packet = tx_elem->data;
 	if (!tx_dma_packet) {
+		if (tx_elem)
+			crystalhd_dioq_add_elem(hw->tx_freeq, tx_elem, false, 0);
 		dev_err(dev, "No empty elements..\n");
 		return BC_STS_INSUFF_RES;
 	}
@@ -1402,30 +1415,25 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw,
 						   &tx_dma_packet->desc_mem,
 						   &dummy_index, dev,
 						   destDRAMaddr);
-	if (sts != BC_STS_SUCCESS) {
-		add_sts = crystalhd_dioq_add(hw->tx_freeq, tx_dma_packet,
-					   false, 0);
-		if (add_sts != BC_STS_SUCCESS)
-			dev_err(dev, "double fault..\n");
-
-		return sts;
-	}
+	if (sts != BC_STS_SUCCESS)
+		goto requeue;
 
 	desc_addr.full_addr = tx_dma_packet->desc_mem.phy_addr;
+
+	spin_lock_irqsave(&hw->lock, flags);
+	if (READ_ONCE(hw->dma_fault)) {
+		sts = BC_STS_IO_ERROR;
+		goto unlock_requeue;
+	}
+	if (hw->pfnPrepareTxDMA) {
+		sts = hw->pfnPrepareTxDMA(hw, buffer->bytes);
+		if (sts != BC_STS_SUCCESS)
+			goto unlock_requeue;
+	}
 
 	tx_dma_packet->call_back = call_back;
 	tx_dma_packet->cb_context = cb_context;
 	tx_dma_packet->buffer = buffer;
-
-	spin_lock_irqsave(&hw->lock, flags);
-	if (READ_ONCE(hw->dma_fault)) {
-		tx_dma_packet->buffer = NULL;
-		tx_dma_packet->cb_context = NULL;
-		tx_dma_packet->call_back = NULL;
-		spin_unlock_irqrestore(&hw->lock, flags);
-		crystalhd_dioq_add(hw->tx_freeq, tx_dma_packet, false, 0);
-		return BC_STS_IO_ERROR;
-	}
 
 	list_posted = hw->tx_list_post_index;
 
@@ -1433,18 +1441,8 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw,
 					     hw->tx_list_post_index;
 
 	/* Keep the request reachable before enabling the DMA engine. */
-	sts = crystalhd_dioq_add(hw->tx_actq, tx_dma_packet, false,
-				 tx_dma_packet->list_tag);
-	if (sts != BC_STS_SUCCESS) {
-		tx_dma_packet->buffer = NULL;
-		tx_dma_packet->cb_context = NULL;
-		tx_dma_packet->call_back = NULL;
-		tx_dma_packet->list_tag = 0;
-		*list_id = 0;
-		spin_unlock_irqrestore(&hw->lock, flags);
-		crystalhd_dioq_add(hw->tx_freeq, tx_dma_packet, false, 0);
-		return sts;
-	}
+	crystalhd_dioq_add_elem(hw->tx_actq, tx_elem, false,
+				tx_dma_packet->list_tag);
 
 	if( hw->tx_list_post_index % DMA_ENGINE_CNT) {
 		hw->TxList1Sts |= TxListWaitingForIntr;
@@ -1469,6 +1467,15 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw,
 	spin_unlock_irqrestore(&hw->lock, flags);
 
 	return BC_STS_SUCCESS;
+
+unlock_requeue:
+	spin_unlock_irqrestore(&hw->lock, flags);
+requeue:
+	tx_dma_packet->buffer = NULL;
+	tx_dma_packet->cb_context = NULL;
+	tx_dma_packet->call_back = NULL;
+	crystalhd_dioq_add_elem(hw->tx_freeq, tx_elem, false, 0);
+	return sts;
 }
 
 /* Stop the shared TX engine and return every list owner exactly once. */

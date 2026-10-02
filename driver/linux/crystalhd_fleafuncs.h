@@ -46,6 +46,7 @@ void crystalhd_flea_get_dnsz(struct crystalhd_hw *hw, uint32_t list_index, uint3
 BC_STATUS crystalhd_flea_hw_pause(struct crystalhd_hw *hw, bool state);
 bool crystalhd_flea_peek_next_decoded_frame(struct crystalhd_hw *hw, uint64_t *meta_payload, uint32_t *picNumFlags, uint32_t PicWidth);
 BC_STATUS crystalhd_flea_hw_post_cap_buff(struct crystalhd_hw *hw, struct crystalhd_rx_dma_pkt *rx_pkt);
+BC_STATUS crystalhd_flea_prepare_tx_dma(struct crystalhd_hw *hw, uint32_t bytes);
 void crystalhd_flea_start_tx_dma_engine(struct crystalhd_hw *hw, uint8_t list_id, addr_64 desc_addr);
 void crystalhd_flea_stop_rx_dma_engine(struct crystalhd_hw *hw);
 BC_STATUS crystalhd_flea_stop_tx_dma_engine(struct crystalhd_hw *hw);

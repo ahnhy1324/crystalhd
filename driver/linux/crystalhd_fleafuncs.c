@@ -2247,28 +2247,29 @@ BC_STATUS crystalhd_flea_hw_post_cap_buff(struct crystalhd_hw *hw, struct crysta
 	return sts;
 }
 
+BC_STATUS crystalhd_flea_prepare_tx_dma(struct crystalhd_hw *hw, uint32_t bytes)
+{
+	TX_INPUT_BUFFER_INFO TxBuffInfo = { 0 };
+	uint32_t WrSzInDWords = (sizeof(TxBuffInfo.DramBuffAdd) +
+				 sizeof(TxBuffInfo.DramBuffSzInBytes) +
+				 sizeof(TxBuffInfo.HostXferSzInBytes)) / 4;
+
+	/* Do not reuse capacity after attempting a firmware-visible write. */
+	hw->TxFwInputBuffInfo.DramBuffAdd = 0;
+	hw->TxFwInputBuffInfo.DramBuffSzInBytes = 0;
+	TxBuffInfo.HostXferSzInBytes = bytes;
+
+	return hw->pfnDevDRAMWrite(hw, hw->TxBuffInfoAddr, WrSzInDWords,
+				 (uint32_t *)&TxBuffInfo);
+}
+
 void crystalhd_flea_start_tx_dma_engine(struct crystalhd_hw *hw, uint8_t list_id, addr_64 desc_addr)
 {
 	uint32_t dma_cntrl;
 	uint32_t first_desc_u_addr, first_desc_l_addr;
-	TX_INPUT_BUFFER_INFO	TxBuffInfo;
-	uint32_t WrAddr=0, WrSzInDWords=0;
 
 	hw->EmptyCnt--;
 	hw->SingleThreadAppFIFOEmpty = false;
-
-	/* For FLEA, first update the HW with the DMA parameters */
-	WrSzInDWords = (sizeof(TxBuffInfo.DramBuffAdd) +
-					sizeof(TxBuffInfo.DramBuffSzInBytes) +
-					sizeof(TxBuffInfo.HostXferSzInBytes))/4;
-
-	/*Make the DramBuffSz as Zero skip first ULONG*/
-	WrAddr = hw->TxBuffInfoAddr;
-	hw->TxFwInputBuffInfo.DramBuffAdd = TxBuffInfo.DramBuffAdd = 0;
-	hw->TxFwInputBuffInfo.DramBuffSzInBytes =  TxBuffInfo.DramBuffSzInBytes = 0;
-	TxBuffInfo.HostXferSzInBytes = hw->TxFwInputBuffInfo.HostXferSzInBytes;
-
-	hw->pfnDevDRAMWrite(hw,	WrAddr,	WrSzInDWords, (uint32_t *)&TxBuffInfo);
 
 	if (list_id == 0) {
 		first_desc_u_addr = BCHP_MISC1_TX_FIRST_DESC_U_ADDR_LIST0;
