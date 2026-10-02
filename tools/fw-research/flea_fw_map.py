@@ -31,6 +31,7 @@ MAX_ARC_METADATA_STRING_BYTES = 128
 MAX_ARC_EXTENSION_BYTES = 112
 MAX_ARC_EXTENSION_RECORDS = 10
 MAX_ARC_METADATA_BYTES = 2 * (MAX_ARC_COMMENT_BYTES + MAX_ARC_EXTENSION_BYTES)
+MAX_CSC_COMMAND_ANCHORS = 32  # Fixed local command path, not a dispatcher scan.
 DEFAULT_SYMBOLS = (
     "Arc_UartInit", "Arc_UartPoll", "ArcGetc", "ArcPutc", "ArcCommandBuffer",
     "ReadLine", "MatchKeyword", "Core_Command", "CmdPeek", "CmdCore",
@@ -618,6 +619,96 @@ def _bootstrap_map(payload, images):
                             "SHA-256 identity is not CMAC authentication or runtime capability proof."]}
 
 
+def _csc_command_map(payload, images):
+    """Private local-path validator; the public entry pins bundled SHA and size."""
+    if (len(payload) != BUNDLED_SIZE - TRAILER_SIZE or
+            [(i["blob_file_offset"], i["blob_file_end"]) for i in images] !=
+            [(0x2ea60, 0x79dd8), (0x79dd8, 0xcfbb0)]):
+        raise FormatError("CSC command image identities do not match the baseline")
+    fixed = ((0x5f2c, 0xe92d4070), (0x5f30, 0xe1a04000), (0x5f3c, 0xe3540000),
+             (0x5f40, 0x0a000023), (0x5f44, 0xe2845014),
+             (0x5f70, 0xe5951000), (0x5f74, 0xe3a05008), (0x5f78, 0xe59f21f4),
+             (0x5f7c, 0xe1510002), (0x5f80, 0xe0410002), (0x5f84, 0x0a0001a8),
+             (0x5f88, 0xca000027), (0x602c, 0xe350001c), (0x6030, 0x0a000219),
+             (0x6034, 0xca000010), (0x607c, 0xe3500089), (0x6080, 0x0a000227),
+             (0x6084, 0xca000006), (0x6088, 0xe350002e), (0x608c, 0x0a00020c),
+             (0x6090, 0xe350003c), (0x6094, 0x0a000212), (0x6098, 0xe3500088),
+             (0x609c, 0x1a000005), (0x60b8, 0xe28f00e8), (0x60bc, 0xeb0068c0),
+             (0x60c0, 0xe5c45010), (0x60c4, 0xe8bd8070))
+    if len(fixed) > MAX_CSC_COMMAND_ANCHORS:
+        raise FormatError("CSC command instruction-anchor budget exceeded")
+    anchors = {}
+    # Validate every word before decoding any branch, including skipped arms.
+    for offset, expected in fixed:
+        actual = _bootstrap_word(payload, offset)
+        if actual != expected:
+            raise FormatError(f"CSC command word at {offset:#x} does not match the baseline")
+        anchors[offset] = {"blob_file_offset": offset, "word": actual,
+                           "operation": "validated word"}
+    literal = _a32_literal(payload, 0x5f78)
+    if (literal["literal_blob_file_offset"], literal["literal_value"],
+            literal["destination_register"]) != (0x6174, 0x73763108, 2):
+        raise FormatError("CSC command base literal does not match the baseline")
+    diagnostic = b"[fw] SMP_CmdApi_ProcessHstCmd(): Unknown Command\n\0"
+    diagnostic_offset = 0x60b8 + 8 + (anchors[0x60b8]["word"] & 0xff)
+    if bounded(payload, diagnostic_offset, len(diagnostic), "CSC command diagnostic") != diagnostic:
+        raise FormatError("CSC command diagnostic does not match the baseline")
+    anchors[0x5f78] = literal
+    for offset, target, condition, link in (
+            (0x5f40, 0x5fd4, 0, False), (0x5f84, 0x662c, 0, False),
+            (0x5f88, 0x602c, 12, False), (0x6030, 0x689c, 0, False),
+            (0x6034, 0x607c, 12, False), (0x6080, 0x6924, 0, False),
+            (0x6084, 0x60a4, 12, False), (0x608c, 0x68c4, 0, False),
+            (0x6094, 0x68e4, 0, False), (0x609c, 0x60b8, 1, False),
+            (0x60bc, 0x203c4, 14, True)):
+        record = _a32_branch(payload, offset, link, condition)
+        if record["target_blob_file_offset"] != target:
+            raise FormatError("CSC command branch does not match the baseline")
+        anchors[offset] = record
+    command = 0x73763180  # include/7411d.h:128,218; not a configurable probe.
+    delta = command - literal["literal_value"]
+    return {"isa": "A32", "endianness": "little",
+            "command": {"name": "eCMD_C011_DEC_CHAN_SET_CSC", "value": command,
+                        "source": "include/7411d.h:128,218"},
+            "handler_entry_blob_file_offset": 0x5f2c,
+            "record_command_byte_offset": anchors[0x5f44]["word"] & 0xff,
+            "command_load_blob_file_offset": 0x5f70,
+            "delta": delta, "subtract_blob_file_offset": 0x5f80,
+            "subtract_updates_flags": bool(anchors[0x5f80]["word"] & (1 << 20)),
+            "selected_path_comparisons": [
+                {"compare_blob_file_offset": 0x5f7c, "relation": "signed greater than",
+                 "lhs": command, "rhs": literal["literal_value"], "branch_blob_file_offset": 0x5f88},
+                {"compare_blob_file_offset": 0x602c, "relation": "signed greater than",
+                 "lhs": delta, "rhs": 0x1c, "branch_blob_file_offset": 0x6034},
+                {"compare_blob_file_offset": 0x607c, "relation": "signed less than",
+                 "lhs": delta, "rhs": 0x89, "not_taken_branch_blob_file_offset": 0x6084},
+                {"compare_blob_file_offset": 0x6088, "relation": "not equal", "lhs": delta, "rhs": 0x2e},
+                {"compare_blob_file_offset": 0x6090, "relation": "not equal", "lhs": delta, "rhs": 0x3c},
+                {"compare_blob_file_offset": 0x6098, "relation": "not equal",
+                 "lhs": delta, "rhs": 0x88, "branch_blob_file_offset": 0x609c}],
+            "local_fallback": {
+                "entry_blob_file_offset": 0x60b8,
+                "diagnostic": {"blob_file_offset": diagnostic_offset,
+                               "text": diagnostic[:-1].decode("ascii"), "nul_terminated": True},
+                "logging_call_blob_file_offset": 0x60bc, "logging_callee_blob_file_offset": 0x203c4,
+                "logging_callee_body_validated": False,
+                "value_register_setup": {"blob_file_offset": 0x5f74, "register": 5, "value": 8},
+                "record_byte_store": {"blob_file_offset": 0x60c0, "base_register": 4,
+                                      "source_register": 5, "byte_offset": 0x10},
+                "return_blob_file_offset": 0x60c4},
+            "register_flow_assumption": "Unvalidated calls return and preserve callee-saved r4/r5; value propagation is conditional.",
+            "library_context": {
+                "wrapper_source": "linux_lib/libcrystalhd/libcrystalhd_if.cpp:3045-3050",
+                "packing_source": "linux_lib/libcrystalhd/libcrystalhd_int_if.cpp:193-212",
+                "register_symbol": "MISC2_GLOBAL_CTRL", "packing_selection": ["YUY2", "UYVY"],
+                "kind": "source-derived packed-YUV422 selection, not a firmware matrix route"},
+            "instruction_anchor_count": len(anchors), "instruction_anchors": list(anchors.values()),
+            "limitations": [
+                "Only this local instruction path is validated, under a non-null-record and returning-callee assumption.",
+                "Branch target bodies outside the listed anchors, including the logging callee, are unvalidated.",
+                "No device execution was observed; this is not a standalone execution proof or silicon capability claim."]}
+
+
 def _picture_output_map(payload, images):
     """Pure fixed A32 evidence; callers must pin the exact bundled SHA/size."""
     if len(payload) != BUNDLED_SIZE - TRAILER_SIZE:
@@ -1150,7 +1241,7 @@ def parse_elf(payload, base, wanted, symbol_budget, string_budget,
 
 def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
             references=False, all_symbols=False, bootstrap=False, picture_output=False,
-            arc_metadata=False):
+            arc_metadata=False, csc_command=False):
     if len(data) < 24 or len(data) > MAX_FIRMWARE_SIZE or len(data) % 4:
         raise FormatError("invalid BCM70015 firmware size")
     sha256 = hashlib.sha256(data).hexdigest()
@@ -1162,6 +1253,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         raise FormatError("--picture-output requires the exact bundled firmware SHA-256 and size")
     if arc_metadata and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
         raise FormatError("--arc-metadata requires the exact bundled firmware SHA-256 and size")
+    if csc_command and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
+        raise FormatError("--csc-command requires the exact bundled firmware SHA-256 and size")
     payload = data[:-TRAILER_SIZE]
     length_slot = struct.unpack_from("<I", data, len(payload))[0]
     if length_slot != 16:
@@ -1232,6 +1325,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         result["picture_output"] = _picture_output_map(payload, images)
     if arc_metadata:
         result["arc_metadata"] = _arc_metadata_map(payload, images, arc_sections)
+    if csc_command:
+        result["csc_command"] = _csc_command_map(payload, images)
     return result
 
 
@@ -1257,13 +1352,15 @@ def main(argv=None):
         "validate fixed picture-output and key ACK-stub anchors; bundled firmware only, not capability proof"))
     parser.add_argument("--arc-metadata", action="store_true", help=(
         "validate stored ARC compiler hints and extension declarations; bundled firmware only, not ISA proof"))
+    parser.add_argument("--csc-command", action="store_true", help=(
+        "validate the fixed local CSC command fallback path; bundled firmware only, not completion or capability proof"))
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-fA-F]{64}", args.expect_sha256):
         parser.error("--expect-sha256 must be 64 hexadecimal digits")
     try:
         report = analyze(read_firmware(args.firmware), args.symbol or DEFAULT_SYMBOLS,
                          args.expect_sha256.lower(), args.references, args.all_symbols, args.bootstrap,
-                         args.picture_output, args.arc_metadata)
+                         args.picture_output, args.arc_metadata, args.csc_command)
     except (OSError, FormatError) as error:
         print(f"flea_fw_map: {error}", file=sys.stderr)
         return 1
