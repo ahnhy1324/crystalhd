@@ -66,11 +66,27 @@ struct Options {
     unsigned expected = 0;
     unsigned seconds = 30;
     unsigned iterations = 1;
+    bool scaler_test = false;
+    unsigned scale_width = 0;
 };
 
-static bool ParseArguments(const std::vector<const char *> &arguments, Options *options)
+static bool ParseArguments(std::vector<const char *> arguments, Options *options)
 {
+    if (arguments.size() >= 4 &&
+        !std::strcmp(arguments[arguments.size() - 2], "--scaler-test")) {
+        const char *width = arguments.back();
+        if (std::strcmp(width, "0")) {
+            for (const char *digit = width; *digit; ++digit)
+                if (*digit < '0' || *digit > '9') return false;
+            if (!Number(width, 1918, &options->scale_width) ||
+                options->scale_width < 128 || (options->scale_width & 1))
+                return false;
+        }
+        options->scaler_test = true;
+        arguments.resize(arguments.size() - 2);
+    }
     if (arguments.size() == 2 && !std::strcmp(arguments[1], "--self-test")) {
+        if (options->scaler_test) return false;
         options->mode = Mode::SelfTest;
         return true;
     }
@@ -85,6 +101,37 @@ static bool ParseArguments(const std::vector<const char *> &arguments, Options *
         return false;
     options->mode = preflight ? Mode::Preflight : Mode::Hardware;
     options->path = arguments[2];
+    return true;
+}
+
+// Conditional full-frame firmware expectation, not a general scaling oracle.
+// Width zero selects an unscaled control; reject upscaling and ambiguous edges.
+static bool ScalerGeometry(unsigned source_width, unsigned source_height,
+                           unsigned scale_width, unsigned *width, unsigned *height)
+{
+    if (!source_width || source_width > 1920 || !source_height ||
+        source_height > 1088 || (source_width & 1) || (source_height & 1) ||
+        (scale_width && (scale_width < 128 || scale_width > 1918 ||
+                         (scale_width & 1) || scale_width > source_width)))
+        return false;
+    *width = scale_width ? scale_width : source_width;
+    *height = source_height * *width / source_width;
+    *height += *height & 1;
+    return *height != 0;
+}
+
+static bool HashActivePixels(GChecksum *checksum, const BC_DTS_PROC_OUT &output,
+                             unsigned width, unsigned height)
+{
+    const uint64_t bytes = static_cast<uint64_t>(width) * height * 2;
+    if (!checksum || !width || width > 1920 || (width & 1) || !height ||
+        height > 1088 || !output.Ybuff || !output.b422Mode ||
+        output.PicInfo.width != width || output.PicInfo.height != height ||
+        static_cast<uint64_t>(output.YBuffDoneSz) * 4 < bytes)
+        return false;
+    // BCM70015 packed YUY2 has width*2 stride (same as the production GST path).
+    // Only active rows are hashed, while the successful NoCopy lease is owned.
+    g_checksum_update(checksum, output.Ybuff, static_cast<gssize>(bytes));
     return true;
 }
 
@@ -224,6 +271,55 @@ static bool SelfTest()
           !ParseArguments({"probe", "--preflight", "fixture", "12", "9", "2"},
                           &options),
           "iteration argument bounds");
+
+    for (const char *width : {"0", "128", "320", "640", "1918"}) {
+        options = Options{};
+        check(ParseArguments({"probe", "--hardware", "fixture", "12", "9", "2",
+                              "--scaler-test", width}, &options) &&
+              options.scaler_test && options.iterations == 2,
+              "opt-in scaler arguments");
+    }
+    for (const char *width : {"", "127", "319", "1919", "1920", "1921", "-1",
+                             "+128", " 128", "128x", "4294967296"}) {
+        options = Options{};
+        check(!ParseArguments({"probe", "--hardware", "fixture", "12",
+                               "--scaler-test", width}, &options),
+              "invalid scaler width rejected before hardware");
+    }
+    options = Options{};
+    check(ParseArguments({"probe", "--preflight", "fixture", "12", "--scaler-test", "320"},
+                         &options) && options.mode == Mode::Preflight,
+          "device-free scaler preflight");
+    options = Options{};
+    check(!ParseArguments({"probe", "--self-test", "--scaler-test", "320"}, &options),
+          "self-test does not accept hardware options");
+    unsigned width = 0, height = 0;
+    check(ScalerGeometry(640, 360, 0, &width, &height) && width == 640 && height == 360 &&
+          ScalerGeometry(640, 360, 640, &width, &height) && width == 640 && height == 360 &&
+          ScalerGeometry(640, 360, 320, &width, &height) && width == 320 && height == 180 &&
+          ScalerGeometry(640, 362, 320, &width, &height) && height == 182,
+          "unscaled identity downscale and odd-height rounding");
+    check(!ScalerGeometry(640, 360, 1280, &width, &height) &&
+          !ScalerGeometry(0, 360, 320, &width, &height) &&
+          !ScalerGeometry(640, 361, 320, &width, &height),
+          "ambiguous scaler geometry rejected");
+    uint8_t pixels[12] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
+    BC_DTS_PROC_OUT picture = {};
+    picture.Ybuff = pixels; picture.YBuffDoneSz = 3; picture.b422Mode = TRUE;
+    picture.PicInfo.width = 2; picture.PicInfo.height = 2;
+    GChecksum *checksum = g_checksum_new(G_CHECKSUM_SHA256);
+    GChecksum *reference = g_checksum_new(G_CHECKSUM_SHA256);
+    g_checksum_update(reference, pixels, 8);
+    check(HashActivePixels(checksum, picture, 2, 2) &&
+          !std::strcmp(g_checksum_get_string(checksum), g_checksum_get_string(reference)),
+          "digest covers active rows but not trailing bytes");
+    picture.YBuffDoneSz = 1;
+    check(!HashActivePixels(checksum, picture, 2, 2), "short lease rejected before read");
+    picture.YBuffDoneSz = 3; picture.b422Mode = FALSE;
+    check(!HashActivePixels(checksum, picture, 2, 2), "wrong output format rejected");
+    picture.b422Mode = TRUE; picture.Ybuff = nullptr;
+    check(!HashActivePixels(checksum, picture, 2, 2), "missing pixel lease rejected");
+    g_checksum_free(checksum); g_checksum_free(reference);
 
     check(Token(0, 0) == 100000 && Token(0, 9999) < Token(1, 0) &&
           Token(998, 9999) < Token(999, 0), "generation token ranges");
@@ -373,6 +469,9 @@ struct Audit {
     std::set<uint64_t> pending;
     unsigned iteration = 0;
     Phase1Progress *progress = nullptr;
+    unsigned output_width = 0, output_height = 0;
+    GChecksum *pixels = nullptr;
+    ~Audit() { if (pixels) g_checksum_free(pixels); }
 };
 
 static bool Receive(Device *device, const Input &input, Audit *audit)
@@ -392,10 +491,14 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
             if (!marker) {
                 const unsigned width = output.PicInfo.width, height = output.PicInfo.height;
                 valid = (output.PoutFlags & BC_POUT_FLAGS_PIB_VALID) && output.Ybuff &&
-                    !(output.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) && width == input.width &&
-                    (height == input.height || (input.height == 1080 && height == 1088)) &&
+                    !(output.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) &&
+                    width == audit->output_width &&
+                    (height == audit->output_height ||
+                     (!audit->pixels && input.height == 1080 && height == 1088)) &&
                     static_cast<uint64_t>(output.YBuffDoneSz) * 4 >= static_cast<uint64_t>(width) * height * 2 &&
                     audit->pending.erase(output.PicInfo.timeStamp) == 1;
+                if (valid && audit->pixels)
+                    valid = HashActivePixels(audit->pixels, output, width, height);
                 if (valid) ++audit->frames;
             }
             // Every successful NoCopy fetch owns a lease, even invalid output.
@@ -406,8 +509,16 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                     "probe=library-drain iteration=%u frame-index=%u token=%llu\n",
                     audit->iteration, audit->frames - 1,
                     static_cast<unsigned long long>(output.PicInfo.timeStamp));
-            if (!valid) std::fprintf(stderr, "Invalid progressive picture geometry/data/token: %llu\n",
-                                    static_cast<unsigned long long>(output.PicInfo.timeStamp));
+            if (!valid) {
+                std::fprintf(stderr, "Invalid progressive picture geometry/data/token: %llu\n",
+                             static_cast<unsigned long long>(output.PicInfo.timeStamp));
+                if (audit->pixels)
+                    std::fprintf(stderr, "Scaler picture: got=%ux%u expected=%ux%u "
+                                 "flags=%x words=%u packed422=%u\n",
+                                 output.PicInfo.width, output.PicInfo.height,
+                                 audit->output_width, audit->output_height,
+                                 output.PicInfo.flags, output.YBuffDoneSz, output.b422Mode);
+            }
             if (!valid || !released) return false;
         } else if (result != BC_STS_FMT_CHANGE && result != BC_STS_NO_DATA &&
                    result != BC_STS_BUSY && result != BC_STS_TIMEOUT) {
@@ -436,13 +547,21 @@ static bool WaitInput(Device *device, const Input &input, Audit *audit,
 
 static bool Run(Input &input, unsigned expected, unsigned seconds,
                 unsigned iteration, unsigned iterations,
-                Phase1Progress *progress)
+                Phase1Progress *progress, const Options &options)
 {
     Deadline deadline(seconds);
     Device device;
     Audit audit;
     audit.iteration = iteration;
     audit.progress = progress;
+    audit.output_width = input.width;
+    audit.output_height = input.height;
+    if (options.scaler_test) {
+        if (!ScalerGeometry(input.width, input.height, options.scale_width,
+                            &audit.output_width, &audit.output_height)) return false;
+        audit.pixels = g_checksum_new(G_CHECKSUM_SHA256);
+        if (!audit.pixels) return false;
+    }
     const uint32_t mode = DTS_PLAYBACK_MODE | DTS_LOAD_FILE_PLAY_FW | DTS_SKIP_TX_CHK_CPB |
         DTS_PLAYBACK_DROP_RPT_MODE | DTS_SINGLE_THREADED_MODE |
         DTS_DFLT_RESOLUTION(vdecRESOLUTION_1080p23_976);
@@ -464,6 +583,13 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     format.pMetaData = input.metadata.empty() ? nullptr : input.metadata.data();
     format.metaDataSz = input.metadata.size();
     if (ok) ok = Status("DtsSetInputFormat", DtsSetInputFormat(device.handle, &format));
+    if (ok && options.scale_width) {
+        // The format setter may select its historical single-thread width.
+        // Override that cache before OPEN; this is not a live channel update.
+        BC_SCALING_PARAMS scaling = {};
+        scaling.sWidth = options.scale_width;
+        ok = Status("DtsSetScaleParams", DtsSetScaleParams(device.handle, &scaling));
+    }
     if (ok) device.opened = ok = Status("DtsOpenDecoder", DtsOpenDecoder(device.handle, BC_STREAM_TYPE_ES));
     if (ok) ok = Status("DtsSetColorSpace", DtsSetColorSpace(device.handle, OUTPUT_MODE422_YUY2));
     if (ok) device.started = ok = Status("DtsStartDecoder", DtsStartDecoder(device.handle));
@@ -511,6 +637,13 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
         audit.eos ? "yes" : "no", audit.marker ? "yes" : "no", audit.ready,
         closed ? "PASS" : "FAIL", ok ? "PASS" : "FAIL");
     std::fflush(stdout);
+    if (audit.pixels) {
+        std::printf("Scaler test: iteration=%u/%u requested-width=%u expected-output=%ux%u "
+                    "yuy2-sha256=%s result=%s\n", iteration, iterations,
+                    options.scale_width, audit.output_width, audit.output_height,
+                    g_checksum_get_string(audit.pixels), ok ? "PASS" : "FAIL");
+        std::fflush(stdout);
+    }
     return ok;
 }
 
@@ -521,7 +654,8 @@ int main(int argc, char **argv)
     if (!ParseArguments(arguments, &options)) {
         std::fprintf(stderr, "usage: %s --self-test | --preflight LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
-            "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]]\n", argv[0]);
+            "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
+            "[--scaler-test WIDTH_OR_0]\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
@@ -541,6 +675,16 @@ int main(int argc, char **argv)
     }
     std::printf("Preflight: %ux%u subtype=%u packets=%zu metadata=%zu\n",
                 input.width, input.height, input.subtype, input.packets.size(), input.metadata.size());
+    if (options.scaler_test) {
+        unsigned width = 0, height = 0;
+        if (!ScalerGeometry(input.width, input.height, options.scale_width, &width, &height)) {
+            std::fprintf(stderr, "Require even progressive geometry and no upscaling\n");
+            phase1_progress_close(&progress);
+            return 2;
+        }
+        std::printf("Scaler preflight: requested-width=%u expected=%ux%u\n",
+                    options.scale_width, width, height);
+    }
     if (options.mode == Mode::Preflight) {
         phase1_progress_close(&progress);
         return 0;
@@ -563,7 +707,7 @@ int main(int argc, char **argv)
             "probe=library-drain iteration=%u/%u state=starting last-complete=%u\n",
             iteration, options.iterations, completed);
         ok = Run(input, options.expected, options.seconds, iteration,
-                 options.iterations, &progress);
+                 options.iterations, &progress, options);
         if (!SampleResources(&current)) {
             std::fprintf(stderr, "Unable to sample resources after iteration %u\n",
                          iteration);
