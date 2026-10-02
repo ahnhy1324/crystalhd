@@ -35,7 +35,7 @@ MAX_CSC_COMMAND_ANCHORS = 32  # Fixed local command path, not a dispatcher scan.
 MAX_COMMAND_BUFFER_BRIDGE_REGIONS = 80
 MAX_COMMAND_BUFFER_BRIDGE_BYTES = 40 * 1024
 MAX_COMMAND_BUFFER_BRIDGE_RELOCATIONS = 2171
-MAX_INNER_DESCRIPTOR_REGIONS = 45
+MAX_INNER_DESCRIPTOR_REGIONS = 48
 MAX_INNER_DESCRIPTOR_BYTES = 4096
 # Original ELF bytes only: no runtime relocation, ARC decode or execution here.
 _INNER_DESCRIPTOR_HEADERS = (
@@ -71,6 +71,10 @@ _INNER_DESCRIPTOR_SECTIONS = (
 _INNER_DESCRIPTOR_WINDOWS = (
     (0, "constructor_context_argument", 16, 0x2672c, 0x492c0,
      "00006062"),
+    (0, "constructor_pool_source_initialization", 16, 0x26730, 0x492c4,
+     "0082e0610004c161008641620008c262008a0262000ca362007c8042bc050000"
+     "007c3f60bc050000203cc72f008e236220742928101a0e10207329280028a041"
+     "00002060a038c72f00280a60"),
     (0, "constructor_registration_and_slot_copy", 16, 0x2677c, 0x49310,
      "1c808d08007c5f6070d4ff3f087f01401ffee741057e22800002004000260010107f014000020040002800100"
      "0fc294000060000309b00101ffe077000fc494000040000f000011000866150f80601100c87001000fc0640"
@@ -81,6 +85,14 @@ _INNER_DESCRIPTOR_WINDOWS = (
      "00000240688100108c2401100d0401600d1c87670d030030fc2d00100024cb42000600100406001008060010"
      "107e004022fe9f67000481600001003054078210027e82403081000800fc89411c02000001fe9f6021fe9f67"
      "00000610"),
+    (0, "constructor_return_edge", 16, 0x268e0, 0x49474,
+     "007c0040e45001003c01011044060010800400303c010108037ea2800088a250"
+     "03fea2800088a24002fea280000a004044060010017e8240308100081000ae09"
+     "1400ce09007c4040e44e0100248500101800ee091c000e0a007c4040e44f0100"
+     "20002e0a24004e0a007c0040306f010028006e0a2c008e0a288500103000ae0a"
+     "b48100100480ed0b3400ce0a20800f3838106e0b"),
+    (0, "constructor_driver_context_size", 16, 0x3b304, 0x5de98,
+     "20800f38ecfe1f40"),
     (0, "activation_snapshot_copy", 4, 0x9fa4, 0x34e48,
      "0000a061057e0080181e0e10141c0e10007ce04168d3ff3f10800708007c5f60bc050000007cdf6170cdff3f"
      "20d4ff2f3c7e2740"),
@@ -776,6 +788,53 @@ def _inner_descriptor_map(payload, images):
                         "equal_value_immediately_after_store_under_base_model": True,
                         "scope": "loaded value assignment only; conditional on unchanged source during this edge",
                         "constructor_exit_equality_validated": False},
+                    "conditional_constructor_return": {
+                        "source_initialization": {
+                            "context_end_offset": 0x5bc,
+                            "size_call_elf_virtual_addresses": [0x26760, 0x26768],
+                            "original_size_callee_elf_virtual_address": 0x3b304,
+                            "size_return_delay_slot_elf_virtual_address": 0x3b308,
+                            "size_return_word": 0x401ffeec,
+                            "add_short_immediate_operands": [236, 236],
+                            "size_bytes_under_base_model": 0x1d8,
+                            "pool_context_offset_under_conditions": 0x794,
+                            "earlier_variable_loop": {
+                                "body_elf_virtual_address": 0x2689c,
+                                "constructor_argument_register": 14,
+                                "store_context_offsets": [0x3fc, 0x400, 0x404, 0x408],
+                                "stride_bytes": 16,
+                                "maximum_nonclobbering_count": 19,
+                                "source_clobber_iteration": 19,
+                                "actual_input_count_validated": False}},
+                        "tail_elf_virtual_address": 0x268e0,
+                        "return_elf_virtual_address": 0x2696c,
+                        "return_delay_slot_elf_virtual_address": 0x26970,
+                        "tail_contains_calls_under_base_model": False,
+                        "derived_word_stores": {
+                            "base": "source value reloaded at 0x268c8",
+                            "first_store_elf_virtual_address": 0x268ec,
+                            "loop_store_elf_virtual_address": 0x26910,
+                            "base_offset": 0x15128, "stride_bytes": 228,
+                            "count": 34, "word_bytes": 4,
+                            "first_context_offset_under_conditions": 0x158bc,
+                            "last_context_offset_under_conditions": 0x17620},
+                        "direct_context_word_stores": [
+                            {"elf_virtual_address": 0x268e8, "context_offset": 0x33c},
+                            {"elf_virtual_address": 0x2692c, "context_offset": 0x524},
+                            {"elf_virtual_address": 0x26958, "context_offset": 0x528},
+                            {"elf_virtual_address": 0x26960, "context_offset": 0x5b4}],
+                        "largest_computed_context_offset_under_conditions": 0x176c4,
+                        "maximum_aligned_context_base_without_wrap": 0xfffe8938,
+                        "equal_value_on_selected_return_under_conditions": True,
+                        "required_conditions": [
+                            "GNU base-case instructions, delay slots and loop semantics; selected callees preserve the assumed registers",
+                            "original call/literal edges survive unresolved relocation effects",
+                            "unsigned constructor r14 count is at most 19; initialized source is unchanged through all earlier stores",
+                            "four-byte-aligned context base is at most 0xfffe8938; all accessed context, derived and stack memory is valid, injectively mapped and non-aliasing",
+                            "no concurrent or external changes to the tracked slots or reloaded source"],
+                        "allocation_extent_validated": False,
+                        "runtime_constructor_execution_validated": False,
+                        "unconditional_constructor_exit_identity_validated": False},
                     "channel_table": {
                         "constructor_channel_load_elf_virtual_address": 0x2677c,
                         "constructor_table_literal": 0x3fffd470,
@@ -872,7 +931,7 @@ def _inner_descriptor_map(payload, images):
             "Original call/literal targets are conditional: selected relocation effects and runtime operands are not validated.",
             "Field paths assume the GNU base-case ISA interpretation, selected callees and register preservation conventions.",
             "Producer CORE+88 and reader/completion local 0x3fffd2dc are distinct record-base fields; constructor slot assignment and conditional snapshot offsets do not validate their current equality or active codec contexts.",
-            "The assignment is scoped immediately after 0x268dc, not constructor exit; later derived-pointer writes, aliasing and address overflow are not ruled out.",
+            "The immediate assignment alone is not constructor exit identity; the separate return-edge lemma requires the bounded input count, unchanged source, valid non-aliasing memory and no address overflow.",
             "Mailbox transfer is not a direct cross-image function call or a host-callable native backend ABI.",
             "The computed STATUS dispatcher is not validated; the selected MPEG call is conditional on reaching that path.",
             "Overlay/BSS initialization, DMA coherence and runtime execution are not observed.",
