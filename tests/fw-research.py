@@ -3964,5 +3964,1027 @@ class FirmwareStockHostCommandTests(unittest.TestCase):
                          "bf116a4627c71956042f25a98f63fde401b58140569c22cdc5ebf8298bbc85dd")
 
 
+class FirmwarePpbBankContractTests(unittest.TestCase):
+    # Independently checked against the outer ELF symbol/section tables and
+    # GNU 2.23.2 disassembly. Addresses are ARC ELF VMAs, never ARM offsets.
+    bodies = (
+        ("Core_Run", 2, 0x4dc4, 0x51cc),
+        ("Core_CircBuffer_Get", 2, 0x4d10, 0x4dc4),
+        ("SystemCore_MonitorIL", 2, 0x41e8, 0x428c),
+        ("VideoParameters", 4, 0x80dc, 0x8218),
+        ("Core_OrderPIF_Release", 4, 0x903c, 0x907c),
+        ("Core_DeallocatePPB", 4, 0x907c, 0x91c4),
+        ("Core_OrderPIF_ReleaseOnLatest", 4, 0x91c4, 0x92a8),
+        ("ChannelCore_MonitorIL", 4, 0x9850, 0x9ad8),
+        ("Core_CopyDramToLsram", 4, 0x9e74, 0x9f90),
+        ("System_Activate", 4, 0x9f90, 0xa0b4),
+        ("Core_AttemptDecode", 4, 0xa258, 0xa844),
+        ("AttemptRelease", 4, 0xab44, 0xac18),
+        ("Core_AttemptIL", 4, 0xac18, 0xad90),
+        ("AllocatePPB", 4, 0xad90, 0xb080),
+        ("PPB_Video_Address", 4, 0xb080, 0xb0fc),
+        ("Core_AttemptPPBAssignment", 4, 0xb0fc, 0xb38c),
+        ("Core_CircBuffer_Put", 4, 0xb554, 0xb610),
+        ("Core_AttemptDisplay", 4, 0xb610, 0xba98),
+        ("Core_PPB_From_Address", 4, 0xba98, 0xbac8),
+        ("_udivmod", 4, 0xbc04, 0xbd18),
+        ("Platform_VideoStripeHeight", 4, 0xbd90, 0xbdc4),
+        ("Platform_DeliverPicture", 4, 0xbdec, 0xbe38),
+        ("Platform_UpdateReleaseQueue", 4, 0xbe38, 0xbe70),
+        ("CmdInitialize", 16, 0x245ec, 0x24788),
+        ("CmdChannelOpen", 16, 0x24788, 0x24bb4),
+        ("CmdChannelStart", 16, 0x24dac, 0x254d4),
+        ("Core_Command", 16, 0x25808, 0x25a0c),
+        ("Core_SetPIF_NoDisplay", 16, 0x25f10, 0x26080),
+        ("Core_ReleasePPB", 16, 0x260e4, 0x26144),
+        ("Core_GetUndeliveredPPBs", 16, 0x26144, 0x26270),
+        ("Core_Late_PPB_Release", 16, 0x26330, 0x263a8),
+        ("PopulateEmptyPPB", 16, 0x263a8, 0x26444),
+        ("Core_ChanInitialize", 16, 0x266f8, 0x26974),
+        ("Core_StartChannel", 16, 0x26974, 0x26ba0),
+        ("Core_StopChannel", 16, 0x26ba0, 0x26e10),
+    )
+    release_calls = (
+        ("Core_Run", 2, 0x51a4, 0x3000, 0x519c, 0x51a8),
+        ("Core_OrderPIF_ReleaseOnLatest", 4, 0x9280, 0x4000, 0x9278, 0x9284),
+        ("AttemptRelease", 4, 0xabcc, 0x4000, 0xabc4, 0xabd0),
+        ("Core_AttemptDisplay", 4, 0xb964, 0x3000, 0xb95c, 0xb968),
+        ("Core_SetPIF_NoDisplay", 16, 0x25f90, 0x2000, 0x25f88, 0x25f94),
+        ("Core_ReleasePPB", 16, 0x26130, 0x6000, 0x26124, 0x2612c),
+        ("Core_GetUndeliveredPPBs", 16, 0x261d4, 0x6000, 0x261c8, 0x261d0),
+        ("Core_GetUndeliveredPPBs", 16, 0x26264, 0x6000, 0x26258, 0x26260),
+        ("Core_Late_PPB_Release", 16, 0x26390, 0x3000, 0x26384, 0x2638c),
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        cls.data = MAP.read_firmware(BLOB)
+        cls.payload = cls.data[:-MAP.TRAILER_SIZE]
+        # Independent ELF32 layout parser: no mapper parsing or body registry.
+        cls.elf_base = 0x2ea60
+        header = struct.unpack_from("<16sHHIIIIIHHHHHH", cls.payload, cls.elf_base)
+        cls.sections = [struct.unpack_from("<10I", cls.payload, cls.elf_base + header[6] + index * 40)
+                        for index in range(header[12])]
+        cls.elf_header = header
+
+    def word(self, section, address):
+        record = self.sections[section]
+        self.assertTrue(record[3] <= address <= record[3] + record[5] - 4)
+        offset = self.elf_base + record[4] + address - record[3]
+        return struct.unpack_from("<I", self.payload, offset)[0]
+
+    def test_independent_elf_symbols_and_per_section_body_mapping(self):
+        self.assertEqual(self.elf_header[1:],
+                         (2, 45, 1, 0x3a678, 52, 0x4aae0, 0, 52, 32, 18, 40, 55, 54))
+        for index, vma, offset, size in ((2, 0x4000, 0x444, 0x23d4),
+                                       (4, 0x7f8c, 0x43d0, 0x41cc),
+                                       (16, 0x23d74, 0x17ea8, 0x17654)):
+            section = self.sections[index]
+            self.assertEqual((section[1], section[3], section[4], section[5]), (1, vma, offset, size))
+        symbols, strings = self.sections[35], self.sections[34]
+        names = self.payload[self.elf_base + strings[4]:self.elf_base + strings[4] + strings[5]]
+        entries = {}
+        for position in range(0, symbols[5], 16):
+            name, value, size, info, _, section = struct.unpack_from(
+                "<IIIBBH", self.payload, self.elf_base + symbols[4] + position)
+            if info & 15 == 2:
+                text = names[name:names.index(b"\0", name)].decode("ascii")
+                entries.setdefault(text, []).append((value, size, section))
+        for name, section, start, end in self.bodies:
+            with self.subTest(function=name):
+                # GNU records the assembly division entry with size zero;
+                # its full selected body includes _divmod and _div0 suffixes.
+                expected_size = 0 if name == "_udivmod" else end - start
+                self.assertIn((start, expected_size, section), entries[name])
+        self.assertEqual(sum(end - start for _, _, start, end in self.bodies), 15712)
+        self.assertEqual(self.elf_base + self.sections[4][4] + 0xad90 - self.sections[4][3], 0x35c34)
+        self.assertEqual(self.elf_base + self.sections[16][4] + 0x260e4 - self.sections[16][3], 0x48c78)
+
+    def test_independent_full_function_instruction_transition_oracles(self):
+        # Exact selected 32-bit ARC instruction words and long immediates. The
+        # table is transcribed from disassembly, not from a production decoder.
+        words = {
+            4: {
+                0xadbc: 0x087f0400, 0xadc0: 0x3fffceb2,  # Dynamic descriptor limit.
+                0xadfc: 0x08410990, 0xae00: 0x1fe10d00,  # Sign-bit free test.
+                0xae1c: 0x67e8a300, 0xae20: 0x67e79f01,
+                0xae30: 0x1086fd90, 0xae34: 0xac00,  # Only BOTH dimensions zero.
+                0xae64: 0x08a684cc, 0xae84: 0x08008044,
+                0xae90: 0x60807c00, 0xae94: 0x7ff,
+                0xae98: 0x88607e0b, 0xaea0: 0x7ff,
+                0xaea4: 0x88007e16, 0xaea8: 0x60007e3f,
+                0xaeb8: 0x57e07a20, 0xaec4: 0x57fe83ff,
+                0xaedc: 0x801f8001, 0xaee0: 0x50007e01,
+                0xaf18: 0x08208044, 0xaf20: 0x20000081,
+                0xaf78: 0x080680c8, 0xaf7c: 0x0a7f0000, 0xaf80: 0x3fffd2c8,
+                0xaf90: 0x2000038e, 0xafc8: 0x6029a600,
+                0xafd0: 0x57e00300, 0xafd8: 0x6000820a,  # SIGNED GE clamp, not unsigned min.
+                0xafd4: 0x81e7fe0b, 0xafdc: 0x6827a200,  # Unmasked geometry OR.
+                0xafe0: 0x80007e16, 0xafe4: 0x68000200,
+                0xaff0: 0x10018044, 0xaff8: 0x1001843c, 0xb000: 0x1001a640,
+                0xb018: 0x803f8401, 0xb034: 0x80417e04, 0xb040: 0x1001803c,
+                0xb048: 0x68477c00, 0xb04c: 0xe800, 0xb050: 0x10868590,
+                0xb080: 0x40000000, 0xb090: 0x08200990,
+                0xb094: 0x67e0fd00, 0xb098: 0xe000,  # ANY E000 bit, no special gate.
+                0xb0a8: 0x6000fe0f, 0xb0b4: 0x6060fe1f,
+                0xb0c0: 0x801f8601, 0xb0cc: 0x08010038, 0xb0d0: 0x08210040,
+                0xb0d4: 0x679ffe20, 0xb0e0: 0x18618500,
+                0xb0e4: 0x40410205, 0xb0e8: 0x40208302, 0xb0f4: 0x40010000,
+                0x90bc: 0x67e87d00, 0x90c0: 0x6000, 0x90cc: 0x1fe80d00,
+                0x90f8: 0x62487c00, 0x90fc: 0x400,
+                0x9180: 0x801f8001, 0x9184: 0x70008100, 0x918c: 0x1001003c,
+                0x9190: 0x10011e44, 0x9194: 0x10011e40, 0x9198: 0x10869f90,
+                0xb14c: 0x67e77a01, 0xb158: 0x87e77a16,
+                0xb1b0: 0x87e77a12, 0xb210: 0x87e77a15,
+                0xb2f4: 0x87e77a11, 0xb314: 0x60007c00, 0xb318: 0xffffdfff,
+                0xb678: 0x67e8fd00, 0xb67c: 0x600,
+                0xb704: 0x87e8fa14, 0xb878: 0x87e87a17, 0xb87c: 0x200006a4,
+                0xb944: 0x1fe88d00, 0xb99c: 0x68007c00, 0xb9a0: 0x1000,
+                0xbc0c: 0x20000402, 0xbc10: 0x20001f00,
+                0xbd0c: 0x181f85ff, 0xbd14: 0x603ffe00,  # div0 returns 7fffffff/remainder0.
+                0xbd90: 0x807f8201, 0xbd98: 0x40010000, 0xbda8: 0x40018001,
+                0xbdac: 0x57e07d00, 0xbdb0: 0x460,
+                0xacb0: 0x2fffd220, 0xad18: 0x0800c0d0, 0xad40: 0x14000200,
+                0x9a8c: 0x60007c00, 0x9a90: 0xdbff,  # Separate completion PIF clearing.
+            },
+            16: {
+                0x260f4: 0x200001a4, 0x260fc: 0x57e0fa22, 0x26100: 0x2000020b,
+                0x26124: 0x60007c00, 0x26128: 0xffff9fff,
+                0x26890: 0x6001040d, 0x26898: 0x3000030d,
+                0x2689c: 0x10002dfc, 0x268a0: 0x42cb2400,
+                0x268a4: 0x10000600, 0x268a8: 0x10000604, 0x268ac: 0x10000608,
+                0x268b4: 0x679ffe22, 0x268c0: 0x10820754,
+                0x2487c: 0x57e07a09, 0x24880: 0x2000028e,
+                0x246a0: 0x40007e05, 0x246a4: 0x1046801a,
+                0x24674: 0x601f7c01, 0x24678: 0x7f, 0x2468c: 0x601ffe3f,
+                0x24698: 0x1046841b,
+                0x26a0c: 0x679ffe22, 0x26a18: 0x60007c00, 0x26a1c: 0xfffff7ff,
+                0x26ca0: 0x1fe10d00, 0x26ca4: 0x87e17d04, 0x26ca8: 0x14,
+                0x26cb0: 0x60217c00, 0x26cb4: 0xffffbfff,
+                0x26cb8: 0x87e17a13, 0x26cc0: 0x2ffe8423,
+                0x26420: 0x68007c00, 0x26424: 0x100,
+            },
+        }
+        for section, expected in words.items():
+            for address, word in expected.items():
+                with self.subTest(section=section, address=hex(address)):
+                    self.assertEqual(self.word(section, address), word)
+        # The .jd taken-only error delay must not overwrite a valid returned ID.
+        self.assertEqual(self.word(2, 0x5184), 0x2000054b)
+        self.assertEqual(self.word(2, 0x5188), 0x601ffe13)
+
+    def independent_regions(self):
+        metadata = (
+            ("elf_header", 0x2ea60, 52),
+            ("section_headers", 0x79540, 2200),
+            ("section_names", 0x79098, 1191),
+            ("symbol_table", 0x69b70, 13392),
+            ("symbol_names", 0x67a95, 8410),
+            ("slice_relocations", 0x6d020, 1008),
+            ("picture_relocations", 0x6da34, 3132),
+            ("text_relocations", 0x72780, 26052),
+            ("vendor_extension_declarations", 0x67a25, 112),
+        )
+        return metadata + tuple(
+            (name, self.elf_base + self.sections[section][4] + start - self.sections[section][3], end - start)
+            for name, section, start, end in self.bodies)
+
+    def test_independent_all_region_manifest_sizes_hashes_and_relocation_headers(self):
+        expected = self.independent_regions()
+        self.assertEqual(len(expected), 44)
+        self.assertEqual(sum(size for _, _, size in expected), 71261)
+        self.assertEqual([(role, offset, size) for role, offset, size, _ in MAP._PPB_BANK_REGIONS],
+                         list(expected))
+        self.assertEqual([(name, section, start, end) for name, section, start, end, _, _
+                          in MAP._PPB_BANK_BODIES], list(self.bodies))
+        for role, offset, size, digest in MAP._PPB_BANK_REGIONS:
+            with self.subTest(role=role):
+                self.assertEqual(hashlib.sha256(self.payload[offset:offset + size]).hexdigest(), digest)
+        # Original RELA tables contain 2516 entries. They are not applied to
+        # the in-memory byte model, and cannot establish runtime relocation.
+        for index, target, count in ((37, 2, 84), (39, 4, 261), (51, 16, 2171)):
+            section = self.sections[index]
+            self.assertEqual((section[1], section[5], section[6], section[7], section[9]),
+                             (4, count * 12, 35, target, 12))
+        self.assertEqual(sum(self.sections[index][5] // 12 for index in (37, 39, 51)), 2516)
+        self.assertEqual((self.sections[33][4], self.sections[33][5]), (0x38fc5, 112))
+        self.assertEqual((MAP.MAX_PPB_BANK_REGIONS, MAP.MAX_PPB_BANK_BYTES,
+                          MAP.MAX_PPB_BANK_RELOCATIONS, MAP.MAX_PPB_BANK_MODEL_STEPS),
+                         (64, 80 * 1024, 2516, 4096))
+
+    def test_all_nine_reference_drop_call_sites_and_delay_slot_store_oracles(self):
+        call_words = (0x2807daa0, 0x2fffbf20, 0x2ffc95a0, 0x2ffae2a0,
+                      0x2fc61d20, 0x2fc5e920, 0x2fc5d4a0, 0x2fc5c2a0, 0x2fc59d20)
+        for index, (name, section, call, clear, and_site, store) in enumerate(self.release_calls):
+            with self.subTest(function=name, call=hex(call)):
+                self.assertEqual(self.word(section, and_site), 0x6020fc00 if index < 5 else 0x60007c00)
+                self.assertEqual(self.word(section, and_site + 4), ~clear & 0xffffffff)
+                self.assertEqual(self.word(section, call), call_words[index])
+                self.assertEqual(self.word(section, store),
+                                 0x10810390 if index < 5 else 0x10808190 if index == 8 else 0x10810190)
+                # Ordinary .d executes the field store before entering the
+                # callee; the two explicit pre-call stores are also included.
+                self.assertIn(store - call, (-4, 4))
+
+    @staticmethod
+    def raw_capacity(dividend, divisor):
+        # Independent mathematical division followed by the disassembled
+        # SIGNED GE conditional move. Not Python min(), and not silicon proof.
+        quotient, remainder = divmod(dividend, divisor) if divisor else (0x7fffffff, 0)
+        signed = quotient if quotient < 0x80000000 else quotient - 0x100000000
+        return quotient, remainder, 32 if signed >= 32 else quotient
+
+    @staticmethod
+    def packed_geometry(width, height, capacity):
+        return (width | (height << 11) | (capacity << 22)) & 0xffffffff
+
+    def test_unsigned_division_signed_capacity_clamp_and_zero_divisor(self):
+        for dividend in (0, 1, 31, 32, 33, 63, 64, 0x7fffffff, 0x80000000, 0x80000001, 0xffffffff):
+            for divisor in (0, 1, 2, 3, 31, 32, 33, 0x7fffffff, 0x80000000, 0xffffffff):
+                quotient, remainder, capacity = self.raw_capacity(dividend, divisor)
+                with self.subTest(dividend=dividend, divisor=divisor):
+                    self.assertEqual(MAP._ppb_bank_capacity(dividend, divisor), {
+                        "quotient": quotient, "remainder": remainder, "capacity": capacity,
+                        "division_by_zero": divisor == 0})
+        self.assertEqual(MAP._ppb_bank_capacity(0x80000000, 1)["capacity"], 0x80000000)
+        self.assertEqual(MAP._ppb_bank_capacity(0xffffffff, 1)["capacity"], 0xffffffff)
+        self.assertEqual(MAP._ppb_bank_capacity(0, 0)["capacity"], 32)
+        for value in (-1, 0x100000000, True, 1.0, None):
+            with self.subTest(value=value), self.assertRaises(MAP.FormatError):
+                MAP._ppb_bank_capacity(value, 1)
+
+    def test_original_relocation_receipts_are_independently_resolved_not_runtime_applied(self):
+        mappings, actual, examined = MAP._ppb_bank_elf_context(self.payload)
+        self.assertEqual([(entry["section_index"], entry["blob_minus_elf_address"]) for entry in mappings],
+                         [(2, 0x2aea4), (4, 0x2aea4), (16, 0x22b94)])
+        names_section, symbols_section = self.sections[34], self.sections[35]
+        names = self.payload[self.elf_base + names_section[4]:self.elf_base + names_section[4] + names_section[5]]
+        symbols = [struct.unpack_from("<IIIBBH", self.payload, self.elf_base + symbols_section[4] + position)
+                   for position in range(0, symbols_section[5], 16)]
+        expected = []
+        for relocation_index in (37, 39, 51):
+            relocation_section = self.sections[relocation_index]
+            owner_section = relocation_section[7]
+            offset = self.elf_base + relocation_section[4]
+            for position in range(offset, offset + relocation_section[5], 12):
+                address, info, addend = struct.unpack_from("<IIi", self.payload, position)
+                owners = [name for name, section, start, end in self.bodies
+                          if section == owner_section and start <= address < end]
+                if not owners:
+                    continue
+                self.assertEqual(len(owners), 1)
+                name, value, _, _, _, target_section = symbols[info >> 8]
+                text = names[name:names.index(b"\0", name)].decode("ascii")
+                target = value + addend
+                target_offset = None
+                if 0 <= target_section < len(self.sections):
+                    record = self.sections[target_section]
+                    if record[1] != 8 and record[3] <= target < record[3] + record[5]:
+                        target_offset = self.elf_base + record[4] + target - record[3]
+                expected.append((owners[0], address, position, info & 255, info >> 8,
+                                 text, value, addend, target & 0xffffffff, target_section, target_offset))
+        self.assertEqual((examined, len(expected)), (2516, 315))
+        self.assertEqual([(entry["owner"], entry["elf_virtual_address"],
+                           entry["relocation_record_blob_file_offset"], entry["type"],
+                           entry["symbol_index"], entry["symbol"], entry["symbol_elf_value"],
+                           entry["addend"], entry["original_target_elf_value"],
+                           entry["target_section_index"], entry["original_target_blob_file_offset"])
+                          for entry in actual], expected)
+        self.assertTrue(all(entry["runtime_application_validated"] is False for entry in actual))
+        self.assertTrue(all(entry["original_target_blob_file_offset"] is None for entry in actual
+                            if entry["target_section_index"] in (21, 31)))
+        with mock.patch.object(MAP, "MAX_PPB_BANK_RELOCATIONS", 2515), \
+                self.assertRaisesRegex(MAP.FormatError, "budget"):
+            MAP._ppb_bank_elf_context(self.payload)
+        mutations = ((0x2ea60 + 18, "<H", 93),  # Different ELF machine.
+                     (0x79540 + 4 * 40 + 12, "<I", 0x4000),  # Pretend global section delta.
+                     (0x79540 + 39 * 40 + 28, "<I", 2),  # Wrong relocation owner.
+                     (0x6d020 + 4, "<I", 255),  # Unsupported relocation kind.
+                     (0x6d020 + 4, "<I", (837 << 8) | 4))  # Symbol index outside 837 records.
+        for offset, format_string, value in mutations:
+            changed = bytearray(self.payload)
+            struct.pack_into(format_string, changed, offset, value)
+            with self.subTest(offset=hex(offset)), self.assertRaises(MAP.FormatError):
+                MAP._ppb_bank_elf_context(changed)
+
+    @staticmethod
+    def geometry_oracle(width, height, exponent, mask, extra):
+        # Independent ceiling-division formulation of the exact stripe code.
+        # Wrap occurs at each recorded ADD/ASL, not only on the final result.
+        unit = 2 ** exponent
+        signed_height = height - 2 ** 32 if height >= 2 ** 31 else height
+        def stripe(value):
+            stripes = ((value + unit - 1) % (2 ** 32)) // unit
+            if stripes % 2 == 0:
+                stripes += 1
+            return min((stripes * unit) % (2 ** 32), 1120)
+        y_height, c_height = stripe(height), stripe((signed_height // 2) % (2 ** 32))
+        pitch = ((width + mask) % (2 ** 32)) & (0xffffffff ^ mask)
+        if pitch >= 32768:
+            return None
+        page = lambda value: ((value + 4095) % (2 ** 32)) // 4096 * 4096
+        y_bytes, c_bytes = page(pitch * y_height), pitch * c_height
+        total = page(y_bytes + c_bytes)
+        offset = total if extra else 0
+        signed_width = width - 2 ** 32 if width >= 2 ** 31 else width
+        extra_bytes = (6 * (signed_width // 16) * (signed_height // 16)) % (2 ** 32) if extra else 0
+        if extra:
+            total = page(total + extra_bytes)
+        return {"pitch": pitch, "y_stripe_height": y_height, "chroma_stripe_height": c_height,
+                "y_bytes": y_bytes, "chroma_bytes": c_bytes, "extra_offset": offset,
+                "extra_bytes": extra_bytes, "frame_bytes": total, "conditional_vendor_mul16": True}
+
+    def test_independent_stripe_alignment_frame_and_metadata_extent_equations(self):
+        for width in (0, 1, 16, 63, 64, 127, 128, 640, 2047, 2048, 32704, 32705, 0xfffffff0, 0xffffffff):
+            for height in (0, 1, 16, 31, 32, 480, 1120, 1121, 2047, 2048, 0x80000000, 0xffffffff):
+                for exponent in (0, 1, 5, 6, 7, 10, 11, 31):
+                    for mask in (0, 63, 127, 255):
+                        for extra in (False, True):
+                            expected = self.geometry_oracle(width, height, exponent, mask, extra)
+                            with self.subTest(width=width, height=height, exponent=exponent, mask=mask, extra=extra):
+                                if expected is None:
+                                    with self.assertRaises(MAP.FormatError):
+                                        MAP._ppb_bank_geometry(width, height, exponent, mask, extra)
+                                else:
+                                    self.assertEqual(MAP._ppb_bank_geometry(width, height, exponent, mask, extra), expected)
+        ordinary = MAP._ppb_bank_geometry(640, 480, 5, 63)
+        self.assertEqual((ordinary["pitch"], ordinary["y_stripe_height"], ordinary["chroma_stripe_height"],
+                          ordinary["frame_bytes"]), (640, 480, 288, 0x78000))
+        self.assertEqual(MAP._ppb_bank_geometry(0, 480, 5, 63)["frame_bytes"], 0)
+        self.assertEqual(MAP._ppb_bank_geometry(640, 0, 5, 63)["frame_bytes"], 0xa000)
+        for exponent in (-1, 32, 255, True):
+            with self.subTest(exponent=exponent), self.assertRaises(MAP.FormatError):
+                MAP._ppb_bank_geometry(640, 480, exponent, 63)
+        for mask, extra in ((-1, False), (256, False), (True, False), (63, 1)):
+            with self.subTest(mask=mask, extra=extra), self.assertRaises(MAP.FormatError):
+                MAP._ppb_bank_geometry(640, 480, 5, mask, extra)
+
+    def test_constructor_projection_initializes_all_storage_without_implied_extent(self):
+        state = MAP._ppb_bank_state([0x100000, 0x200000], 0x100000)
+        self.assertEqual(state["flags"], [0] * 34)
+        self.assertEqual(state["banks"], [
+            {"base": 0x100000, "mask": 0, "stride": 0, "geometry": 0},
+            {"base": 0x200000, "mask": 0, "stride": 0, "geometry": 0}])
+        self.assertEqual((state["descriptor_limit"], state["stripe_exponent"], state["alignment_mask"],
+                          state["metadata_extra"], state["recent_ppb"]), (34, 5, 63, False, 99))
+        for key, value in (("frame_flags", [0] * 63), ("assigned", [99] * 63),
+                           ("frame_word124", [0] * 63), ("ppb_frames", [0] * 34)):
+            self.assertEqual(state[key], value)
+        self.assertEqual(state["release_request"], {"head": 0, "tail": 0, "slots": [0] * 64})
+        for key in ("delivery_ring", "return_ring"):
+            self.assertEqual(state[key], {"read": 2, "write": 2, "slots": [0] * 64})
+        copied = MAP._ppb_bank_copy_state(state)
+        self.assertEqual(copied, state)
+        copied["banks"][0]["mask"] = 1
+        copied["flags"][0] = 0xe800
+        copied["delivery_ring"]["slots"][2] = 0x1234
+        self.assertEqual(state["banks"][0]["mask"], 0)
+        self.assertEqual(state["flags"][0], 0)
+        self.assertEqual(state["delivery_ring"]["slots"][2], 0)
+        # Initialization itself does not establish nonzero/nonwrapping spans
+        # or a physical address namespace. Admission checks mathematical span
+        # premises only, not DRAM validity or device ownership.
+        for bases, bank_bytes in (([], 0), ([0], 0), ([0xfffffff0], 0x20), ([0x4000000], 1)):
+            self.assertEqual(MAP._ppb_bank_state(bases, bank_bytes)["bank_bytes"], bank_bytes)
+        for count in (0, 1, 33, 34):
+            self.assertEqual(MAP._ppb_bank_state([], 0, descriptor_limit=count)["descriptor_limit"], count)
+        for kwargs in ({"bank_bases": [0] * 10}, {"bank_bases": [-1]}, {"bank_bases": [True]},
+                       {"descriptor_limit": -1}, {"descriptor_limit": 35}, {"descriptor_limit": 255},
+                       {"descriptor_limit": True}, {"bank_bytes": 0x100000000},
+                       {"stripe_exponent": 256}, {"metadata_extra": 1}):
+            arguments = {"bank_bases": [], "bank_bytes": 0}
+            arguments.update(kwargs)
+            with self.subTest(arguments=arguments), self.assertRaises(MAP.FormatError):
+                MAP._ppb_bank_state(**arguments)
+        mutations = (("flags", [0] * 33), ("flags", [0] * 33 + [65536]),
+                     ("flags", [0] * 33 + [True]), ("assigned", [0] * 63 + [0]),
+                     ("frame_flags", [0] * 62), ("frame_pool", -1),
+                     ("descriptor_limit", 35), ("metadata_extra", 1))
+        for key, value in mutations:
+            changed = dict(state)
+            changed[key] = value
+            with self.subTest(key=key), self.assertRaises(MAP.FormatError):
+                MAP._ppb_bank_copy_state(changed)
+        changed = dict(state, unsupported_field=0)
+        with self.assertRaises(MAP.FormatError):
+            MAP._ppb_bank_copy_state(changed)
+
+    def test_all65536_flag_predicates_preserve_distinct_native_gates(self):
+        for flag in range(65536):
+            live, references, started, delivered = bool(flag & 0x8000), bool(flag & 0x6000), \
+                bool(flag & 0x0800), bool(flag & 0x1000)
+            self.assertEqual(MAP._ppb_bank_flag_gates(flag), {
+                "allocator_free": not live, "video_candidate": live or references,
+                "deallocation_admitted": live and not references,
+                "stop_eligible": live and started,
+                "stop_force_release": live and started and not delivered}, hex(flag))
+        for flag in (-1, 65536, True, None):
+            with self.subTest(flag=flag), self.assertRaises(MAP.FormatError):
+                MAP._ppb_bank_flag_gates(flag)
+
+    def test_contract_receipts_initialization_release_dependencies_and_conditional_scope(self):
+        contract = MAP._ppb_bank_contract(self.payload)
+        self.assertEqual((contract["basis"]["complete_body_count"], contract["basis"]["code_bytes"],
+                          contract["basis"]["region_count"], contract["basis"]["validated_bytes"]),
+                         (35, 15712, 44, 71261))
+        self.assertTrue(contract["basis"]["conditional"])
+        self.assertEqual([(entry["role"], entry["blob_file_offset"], entry["size"])
+                          for entry in contract["validated_regions"]], list(self.independent_regions()))
+        self.assertEqual([(entry["owner"], entry["section_index"], entry["call_elf_virtual_address"],
+                           entry["clear_mask"], entry["store_elf_virtual_address"])
+                          for entry in contract["reference_edges"]],
+                         [(name, section, call, clear, store)
+                          for name, section, call, clear, _, store in self.release_calls])
+        self.assertTrue(all(entry["store_before_callee"] for entry in contract["reference_edges"]))
+        for edge in contract["reference_edges"]:
+            section = self.sections[edge["section_index"]]
+            delta = self.elf_base + section[4] - section[3]
+            self.assertEqual(edge["call_blob_file_offset"], edge["call_elf_virtual_address"] + delta)
+            self.assertEqual(edge["store_blob_file_offset"], edge["store_elf_virtual_address"] + delta)
+        initialization = contract["context_initialization"]
+        self.assertEqual((initialization["open_bank_count_maximum"], initialization["constructor_cleared_flag_count"],
+                          initialization["constructor_saved_flags_offset"], initialization["metadata_record_bytes"]),
+                         (9, 34, 0x354, 228))
+        self.assertTrue(initialization["open_allows_zero_banks"])
+        self.assertFalse(initialization["constructor_bank_count_guard"])
+        self.assertFalse(initialization["pre_round_nonzero_implies_post_round_nonzero"])
+        self.assertEqual(initialization["activation"]["snapshot_destination"], 0x3fffcdac)
+        self.assertEqual(initialization["activation"]["common_header_bytes_not_copied"], 60)
+        self.assertEqual(initialization["init_geometry"]["alignment_masks_for_request_word2"], [63, 127, 255])
+        self.assertEqual(contract["bank_layout"]["entry_offsets_from_local_base"],
+                         {"base": 56, "mask": 60, "stride": 64, "geometry": 68})
+        self.assertFalse(contract["bank_layout"]["geometry_pack_masks_inputs"])
+        self.assertTrue(contract["bank_layout"]["final_free_preserves_base"])
+        self.assertEqual(contract["descriptor_layout"]["release_native_index_range"], [0, 33])
+        self.assertFalse(contract["descriptor_layout"]["getter_native_index_guard"])
+        self.assertFalse(contract["descriptor_layout"]["generation_field_validated"])
+        stop = contract["operations"]["stop_selected"]
+        self.assertEqual((stop["required_flag_mask"], stop["clear_flag_mask"]), (0x8800, 0x4000))
+        self.assertTrue(stop["state_is_after_prelude"])
+        self.assertIn("not modeled as no-ops", stop["prelude"])
+        delivery = contract["delivery_edges"]
+        self.assertFalse(delivery["drop4000_is_decode_completion"])
+        self.assertEqual((delivery["attempt_release_call_elf_virtual_address"],
+                          delivery["later_il_busy_read_elf_virtual_address"],
+                          delivery["later_il_start_write_elf_virtual_address"]), (0xacb0, 0xad18, 0xad40))
+        self.assertEqual(delivery["circ_buffer_data_word_index_range"], [2, 63])
+        self.assertFalse(delivery["returned_or_delivered_metadata_address_is_host_plane_lease"])
+        self.assertFalse(contract["empty_picture_path"]["all_both_zero_codec_outputs_tagged"])
+        scope = contract["validation_scope"]
+        for key in ("complete_selected_body_pins", "selected_state_projection",
+                    "all_nine_direct_deallocation_edges", "original_section_mapping"):
+            self.assertIs(scope[key], True)
+        for key in ("whole_body_execution", "vendor_ISA", "runtime_relocation", "runtime_context_identity",
+                    "source_plane_host_ownership", "completion_or_cache_coherence", "generation_safe_reuse",
+                    "minimum_inner_ABI", "standalone_raw_feed", "silicon_incapability"):
+            self.assertIs(scope[key], False)
+        assumptions = " ".join(contract["assumptions"]).lower()
+        for phrase in ("delay", "mul16", "unsupported model", "disjoint", "coherently", "opaque",
+                       "after its monitor/ring prelude", "not universally proven"):
+            self.assertIn(phrase, assumptions)
+        self.assertEqual(json.loads(json.dumps(contract)), contract)
+
+    def test_every_pinned_byte_mutation_refuses_before_context_interpretation(self):
+        changed = bytearray(self.payload)
+        mutations = 0
+        with mock.patch.object(MAP, "_ppb_bank_elf_context",
+                               side_effect=AssertionError("context interpreted before all pins")):
+            for role, offset, size in self.independent_regions():
+                # Includes every word's four bytes and non-word string tails.
+                for position in range(offset, offset + size):
+                    changed[position] ^= 1
+                    try:
+                        with self.assertRaises(MAP.FormatError, msg=f"{role}@{position:#x}"):
+                            MAP._ppb_bank_contract(changed)
+                    finally:
+                        changed[position] ^= 1
+                    mutations += 1
+        self.assertEqual(mutations, 71261)
+        self.assertEqual(changed, self.payload)
+
+    def test_contract_budget_truncation_and_identity_fail_closed(self):
+        with mock.patch.object(MAP, "MAX_PPB_BANK_REGIONS", 44), \
+                mock.patch.object(MAP, "MAX_PPB_BANK_BYTES", 71261):
+            self.assertEqual(MAP._ppb_bank_contract(self.payload)["basis"]["validated_bytes"], 71261)
+        with mock.patch.object(MAP, "_ppb_bank_elf_context",
+                               side_effect=AssertionError("context interpreted after validation refusal")):
+            for field, maximum in (("MAX_PPB_BANK_REGIONS", 43), ("MAX_PPB_BANK_BYTES", 71260),
+                                   ("MAX_PPB_BANK_RELOCATIONS", 0), ("MAX_PPB_BANK_MODEL_STEPS", 0)):
+                with mock.patch.object(MAP, field, maximum), self.assertRaisesRegex(MAP.FormatError, "budget"):
+                    MAP._ppb_bank_contract(self.payload)
+            for payload in (b"", self.payload[:-1], self.payload + bytes(1), self.data):
+                with self.subTest(size=len(payload)), self.assertRaisesRegex(MAP.FormatError, "size"):
+                    MAP._ppb_bank_contract(payload)
+            for _, offset, size in self.independent_regions():
+                with self.subTest(offset=hex(offset)), self.assertRaises(MAP.FormatError):
+                    MAP._ppb_bank_contract(self.payload[:offset + size - 1])
+
+    def test_all_encoded_bank_subslots_and_wrapped_raw_getter_are_not_ownership(self):
+        contract = MAP._ppb_bank_contract(self.payload)
+        state = MAP._ppb_bank_state([0x100000 + bank * 0x100000 for bank in range(9)], 0x100000)
+        for bank in state["banks"]:
+            bank.update(mask=0xffffffff, stride=0x1000, geometry=self.packed_geometry(64, 32, 32))
+        for bank_index in range(16):
+            for slot in range(32):
+                state["flags"][0] = 0xe800 | slot << 4 | bank_index
+                with self.subTest(bank=bank_index, slot=slot):
+                    if bank_index >= 9:
+                        with self.assertRaisesRegex(MAP.FormatError, "unmodeled bank"):
+                            MAP._ppb_bank_step(contract, state, "video_address", index=0)
+                    else:
+                        result = MAP._ppb_bank_step(contract, state, "video_address", index=0)
+                        self.assertEqual(result["result"], 0x100000 + bank_index * 0x100000 + slot * 0x1000)
+                        self.assertEqual(result["state"], state)
+                        state["banks"][bank_index]["mask"] ^= 1 << slot
+                        self.assertEqual(MAP._ppb_bank_step(contract, state, "video_address", index=0)["result"], 0)
+                        state["banks"][bank_index]["mask"] ^= 1 << slot
+        state = MAP._ppb_bank_state([0x123400], 0x100000)
+        state["banks"][0].update(mask=1, stride=0x1000, geometry=self.packed_geometry(64, 32, 32))
+        for flag in (0x2000, 0x4000, 0x6000, 0x8000, 0xac00, 0xe800):
+            state["flags"][0] = flag
+            self.assertEqual(MAP._ppb_bank_step(contract, state, "video_address", index=0)["result"], 0x123400)
+        for flag in (0, 0x0400, 0x0800, 0x1000, 0x1fff):
+            state["flags"][0] = flag
+            self.assertEqual(MAP._ppb_bank_step(contract, state, "video_address", index=0)["result"], 0)
+        # AC00 and 2000/4000/6000 are genuinely getter-valid, not invented
+        # special->zero cases. Ordinary admission must reject their invariants.
+        for flag in (0xac00, 0x2000, 0x4000, 0x6000):
+            state["flags"][0] = flag
+            self.assertFalse(MAP._ppb_bank_admission(contract, state, 64, 32)["admitted"])
+        state["banks"][0].update(base=0xfffffff0, stride=16, mask=2)
+        state["flags"][0] = 0xe810
+        self.assertEqual(MAP._ppb_bank_step(contract, state, "video_address", index=0)["result"], 0)
+        state["banks"][0]["stride"] = 0xffffffff
+        self.assertEqual(MAP._ppb_bank_step(contract, state, "video_address", index=0)["result"], 0xffffffef)
+        for index in (-1, 34, 255, 0x80000000, 0xffffffff, True):
+            with self.subTest(index=index), self.assertRaisesRegex(MAP.FormatError, "bounded model storage"):
+                MAP._ppb_bank_step(contract, state, "video_address", index=index)
+
+    def test_allocate_all_slots_banks_descriptor_limits_and_exhaustion(self):
+        contract = MAP._ppb_bank_contract(self.payload)
+        state = MAP._ppb_bank_state([0x100000], 0x40000)
+        for slot in range(32):
+            result = MAP._ppb_bank_step(contract, state, "allocate", width=64, height=32)
+            self.assertEqual(result["result"], slot)
+            state = result["state"]
+            self.assertEqual(state["flags"][slot], 0xe800 | slot << 4)
+            self.assertEqual(state["banks"][0], {"base": 0x100000, "mask": (1 << (slot + 1)) - 1,
+                                                "stride": 0x2000, "geometry": 0x08010040})
+        failed = MAP._ppb_bank_step(contract, state, "allocate", width=64, height=32)
+        self.assertEqual((failed["result"], failed["state"], failed["events"]), (-1, state, []))
+        state["banks"].append({"base": 0x200000, "mask": 0, "stride": 0, "geometry": 0})
+        for slot in (32, 33):
+            result = MAP._ppb_bank_step(contract, state, "allocate", width=64, height=32)
+            self.assertEqual(result["result"], slot)
+            state = result["state"]
+            self.assertEqual(state["flags"][slot], 0xe801 | (slot - 32) << 4)
+        self.assertEqual(MAP._ppb_bank_step(contract, state, "allocate", width=0, height=0)["result"], -1)
+        for limit in (0, 1, 33, 34):
+            state = MAP._ppb_bank_state([], 0, descriptor_limit=limit)
+            state["flags"] = [0x8000] * 34
+            if limit:
+                state["flags"][limit - 1] = 0x6000  # No8000 remains allocator-free, despite getter gate.
+            result = MAP._ppb_bank_step(contract, state, "allocate", width=0, height=0)
+            self.assertEqual(result["result"], limit - 1 if limit else -1)
+            if limit:
+                self.assertEqual(result["state"]["flags"][limit - 1], 0xac00)
+            self.assertEqual(result["state"]["banks"], [])
+        # Existing available geometry wins over an earlier empty bank.
+        state = MAP._ppb_bank_state([0x100000, 0x200000], 0x40000)
+        state["banks"][1].update(mask=1, stride=0x2000, geometry=self.packed_geometry(64, 32, 4))
+        result = MAP._ppb_bank_step(contract, state, "allocate", width=64, height=32)
+        self.assertEqual(result["state"]["flags"][0], 0xe811)
+        self.assertEqual(result["state"]["banks"][0], state["banks"][0])
+        # Last free bit at every position is chosen, including bit31.
+        for slot in range(32):
+            state = MAP._ppb_bank_state([0x100000], 0x40000)
+            state["banks"][0].update(mask=0xffffffff ^ (1 << slot), stride=0x2000,
+                                      geometry=self.packed_geometry(64, 32, 32))
+            result = MAP._ppb_bank_step(contract, state, "allocate", width=64, height=32)
+            self.assertEqual(result["state"]["flags"][0], 0xe800 | slot << 4)
+            self.assertEqual(result["state"]["banks"][0]["mask"], 0xffffffff)
+
+    def test_capacity_zero_full_and_unsupported_shifts_and_unmasked_geometry(self):
+        contract = MAP._ppb_bank_contract(self.payload)
+        for capacity in (0, 1, 31, 32, 33, 63):
+            state = MAP._ppb_bank_state([0x100000], 0x40000)
+            mask = 0xffffffff if capacity == 32 else (1 << capacity) - 1 if capacity < 32 else 0
+            state["banks"][0].update(mask=mask, stride=0x2000,
+                                      geometry=self.packed_geometry(64, 32, capacity))
+            if capacity > 32:
+                with self.assertRaisesRegex(MAP.FormatError, "unvalidated vendor"):
+                    MAP._ppb_bank_step(contract, state, "allocate", width=64, height=32)
+            else:
+                failed = MAP._ppb_bank_step(contract, state, "allocate", width=64, height=32)
+                self.assertEqual((failed["result"], failed["state"]), (-1, state))
+        # One zero dimension is not the special path. Zero pitch yields real
+        # division-by-zero quotient, cap32, stride0 and identical slot bases.
+        state = MAP._ppb_bank_state([0x100000], 0x40000)
+        first = MAP._ppb_bank_step(contract, state, "allocate", width=0, height=480)
+        second = MAP._ppb_bank_step(contract, first["state"], "allocate", width=0, height=480)
+        self.assertEqual(first["state"]["banks"][0]["geometry"], self.packed_geometry(0, 480, 32))
+        self.assertEqual(first["state"]["banks"][0]["stride"], 0)
+        for result, index in ((first, 0), (second, 1)):
+            self.assertEqual(MAP._ppb_bank_step(contract, result["state"], "video_address", index=index)["result"], 0x100000)
+        # Unmasked oversized H contaminates the six-bit capacity field.
+        oversized = MAP._ppb_bank_step(contract, state, "allocate", width=0, height=2048)
+        packed = oversized["state"]["banks"][0]["geometry"]
+        self.assertEqual(packed, self.packed_geometry(0, 2048, 32))
+        self.assertEqual((packed >> 22) & 63, 33)
+        # Oversized W contaminates the extracted H field, too.
+        oversized = MAP._ppb_bank_step(contract, state, "allocate", width=2048, height=32)
+        packed = oversized["state"]["banks"][0]["geometry"]
+        self.assertEqual((packed & 2047, (packed >> 11) & 2047), (0, 33))
+        # Too-large stride leaves flags/banks unchanged, but reports the
+        # conditional failure event; no native raw bounds promise follows.
+        state = MAP._ppb_bank_state([0x100000], 1)
+        result = MAP._ppb_bank_step(contract, state, "allocate", width=640, height=480)
+        expected = dict(state, core_error_flags=0x0400)
+        self.assertEqual((result["result"], result["state"]), (-1, expected))
+        self.assertEqual(result["events"], [
+            {"kind": "core_error_flags", "value": 0x0400},
+            {"kind": "frame_exceeds_bank", "frame_bytes": 0x78000, "bank_bytes": 1}])
+
+    def test_deallocator_reference_gates_special_skip_and_final_bank_cleanup(self):
+        contract = MAP._ppb_bank_contract(self.payload)
+        for flag in (0, 0x2000, 0x4000, 0x6000, 0x8000, 0x8800, 0x9000, 0x9800,
+                     0xa800, 0xc800, 0xe800, 0xf800, 0x8400, 0x8c00, 0xac00):
+            state = MAP._ppb_bank_state([0x100000], 0x40000)
+            state["flags"][0] = flag
+            state["banks"][0].update(mask=1, stride=0x2000, geometry=self.packed_geometry(64, 32, 1))
+            result = MAP._ppb_bank_step(contract, state, "deallocate", index=0)
+            admitted = bool(flag & 0x8000) and not bool(flag & 0x6000)
+            self.assertEqual(result["result"], admitted, hex(flag))
+            if not admitted:
+                self.assertEqual((result["state"], result["events"]), (state, []))
+            else:
+                self.assertEqual(result["state"]["flags"][0], 0)
+                expected_bank = state["banks"][0] if flag & 0x0400 else {
+                    "base": 0x100000, "mask": 0, "stride": 0, "geometry": 0}
+                self.assertEqual(result["state"]["banks"][0], expected_bank)
+                self.assertEqual(result["events"][0]["conditional_nonzero_fields"], [68, 224])
+                self.assertFalse(result["events"][0]["complete_callee_effects_modeled"])
+        for slot in range(32):
+            state = MAP._ppb_bank_state([0x100000], 0x40000)
+            state["flags"][0] = 0x8800 | slot << 4
+            state["banks"][0].update(mask=0xffffffff, stride=0x2000,
+                                      geometry=self.packed_geometry(64, 32, 32))
+            result = MAP._ppb_bank_step(contract, state, "deallocate", index=0)
+            self.assertEqual(result["state"]["banks"][0]["mask"], 0xffffffff ^ (1 << slot))
+            self.assertEqual(result["state"]["banks"][0]["geometry"], state["banks"][0]["geometry"])
+            state["banks"][0]["mask"] = 1 << slot
+            result = MAP._ppb_bank_step(contract, state, "deallocate", index=0)
+            self.assertEqual(result["state"]["banks"][0],
+                             {"base": 0x100000, "mask": 0, "stride": 0, "geometry": 0})
+
+    def test_all_nine_reference_transitions_preserve_remaining_holds(self):
+        contract = MAP._ppb_bank_contract(self.payload)
+        roles = ("returned", "latest", "attempt", "discard", "no_display", "release",
+                 "undelivered_display", "undelivered_return", "late")
+        for role, (_, _, _, clear, _, _) in zip(roles, self.release_calls):
+            for original in (0xe800, 0x8800 | clear):
+                state = MAP._ppb_bank_state([0x100000], 0x40000)
+                state["flags"][0] = original
+                state["banks"][0].update(mask=1, stride=0x2000, geometry=self.packed_geometry(64, 32, 1))
+                result = MAP._ppb_bank_step(contract, state, "reference_drop", index=0, caller=role)
+                dropped = original & ~clear
+                freed = bool(dropped & 0x8000) and not bool(dropped & 0x6000)
+                self.assertEqual(result["result"], freed, role)
+                self.assertEqual(result["events"][0], {"kind": "reference_drop", "index": 0,
+                                                       "caller": role, "clear_mask": clear, "value": dropped})
+                self.assertEqual(result["state"]["flags"][0], 0 if freed else dropped)
+                self.assertEqual(result["state"]["banks"][0]["mask"], 0 if freed else 1)
+        with self.assertRaises(MAP.FormatError):
+            MAP._ppb_bank_step(contract, state, "reference_drop", index=0, caller="decoder_completed")
+
+    def test_release_repeat_and_allocate_release_reuse_stale_release_aba(self):
+        contract = MAP._ppb_bank_contract(self.payload)
+        state = MAP._ppb_bank_state([0x100000], 0x40000)
+        first = MAP._ppb_bank_step(contract, state, "allocate", width=64, height=32)
+        second = MAP._ppb_bank_step(contract, first["state"], "allocate", width=64, height=32)
+        self.assertEqual((first["result"], second["result"]), (0, 1))
+        released = MAP._ppb_bank_step(contract, second["state"], "release", index=0)
+        self.assertTrue(released["result"])
+        self.assertEqual(released["state"]["banks"][0]["mask"], 2)
+        self.assertEqual(released["state"]["banks"][0]["stride"], 0x2000)
+        repeated = MAP._ppb_bank_step(contract, released["state"], "release", index=0)
+        self.assertFalse(repeated["result"])
+        self.assertEqual(repeated["state"], released["state"])
+        reused = MAP._ppb_bank_step(contract, released["state"], "allocate", width=64, height=32)
+        self.assertEqual(reused["result"], 0)
+        self.assertEqual(reused["state"]["flags"][0], first["state"]["flags"][0])
+        stale = MAP._ppb_bank_step(contract, reused["state"], "release", index=first["result"])
+        self.assertTrue(stale["result"])  # Old integer ID frees the new occupant: no generations.
+        self.assertEqual(stale["state"]["flags"][0], 0)
+        final = MAP._ppb_bank_step(contract, stale["state"], "release", index=1)
+        self.assertEqual(final["state"]["banks"][0],
+                         {"base": 0x100000, "mask": 0, "stride": 0, "geometry": 0})
+        state = MAP._ppb_bank_state([], 0, descriptor_limit=1)
+        state["flags"][33] = 0x8400
+        self.assertTrue(MAP._ppb_bank_step(contract, state, "release", index=33)["result"])
+        for index in (34, 255, 0x7fffffff, 0x80000000, 0xffffffff):
+            result = MAP._ppb_bank_step(contract, state, "release", index=index)
+            self.assertEqual((result["result"], result["state"]), (False, state))
+
+    def test_start_preserves_banks_and_stop_post_prelude_is_not_free_all(self):
+        contract = MAP._ppb_bank_contract(self.payload)
+        state = MAP._ppb_bank_state([0x100000], 0x40000)
+        state["flags"] = [0xffff - index for index in range(34)]
+        state["frame_flags"], state["frame_word124"] = [0xffff] * 63, [0xffffffff] * 63
+        state["core_error_flags"] = 0xabffffff
+        result = MAP._ppb_bank_step(contract, state, "start")
+        self.assertEqual(result["state"]["flags"], [flag & ~0x0800 for flag in state["flags"]])
+        self.assertEqual(result["state"]["banks"], state["banks"])
+        self.assertEqual(result["state"]["core_error_flags"], 0xab000100)
+        self.assertEqual(result["state"]["frame_flags"], [0] * 63)
+        self.assertEqual(result["state"]["frame_word124"], [0] * 63)
+        self.assertFalse(result["events"][0]["opaque_picture_scan_and_other_state_effects_modeled"])
+        for original in (0, 0x0800, 0x8000, 0x8800, 0xe000, 0xe800, 0xf800,
+                         0xc800, 0xd800, 0xa800, 0xb800, 0x9800, 0x8c00, 0xac00, 0xbc00):
+            state = MAP._ppb_bank_state([0x100000], 0x40000)
+            state["flags"][0] = original
+            state["banks"][0].update(mask=1, stride=0x2000, geometry=self.packed_geometry(64, 32, 1))
+            result = MAP._ppb_bank_step(contract, state, "stop_selected")
+            eligible = bool(original & 0x8000) and bool(original & 0x0800)
+            forced = eligible and not bool(original & 0x1000)
+            expected_flag = 0 if forced else original & ~0x4000 if eligible else original
+            self.assertEqual(result["state"]["flags"][0], expected_flag, hex(original))
+            self.assertEqual(result["result"], [0] if forced else [])
+            expected_mask = 0 if forced and not original & 0x0400 else 1
+            self.assertEqual(result["state"]["banks"][0]["mask"], expected_mask)
+        # Old allocations without0800, and delivered allocations with1000,
+        # explicitly survive this selected loop. Prelude completion is input.
+        self.assertEqual(MAP._ppb_bank_contract(self.payload)["operations"]["stop_selected"]["required_flag_mask"], 0x8800)
+
+    def test_new_bank_mixed_core_error_word_and_constructor_wrap_projection(self):
+        contract = MAP._ppb_bank_contract(self.payload)
+        state = MAP._ppb_bank_state([0x100000], 0x40000)
+        state["core_error_flags"] = 0xabcdffff
+        fitted = MAP._ppb_bank_step(contract, state, "allocate", width=64, height=32)
+        self.assertEqual(fitted["state"]["core_error_flags"], 0xabcdfbff)
+        reused_state = fitted["state"]
+        reused_state["core_error_flags"] = 0xabcdffff
+        reused = MAP._ppb_bank_step(contract, reused_state, "allocate", width=64, height=32)
+        self.assertEqual(reused["state"]["core_error_flags"], 0xabcdffff)
+        state["flags"] = [0x8000] * 34
+        failed = MAP._ppb_bank_step(contract, state, "allocate", width=64, height=32)
+        self.assertEqual(failed["state"]["core_error_flags"], 0xabcdffff)
+        constructed = MAP._ppb_bank_step(contract, state, "constructor", base=0xfffff000, count=3, bank_bytes=0x1000)
+        self.assertEqual([bank["base"] for bank in constructed["state"]["banks"]], [0xfffff000, 0, 0x1000])
+        self.assertEqual(constructed["state"]["flags"], [0] * 34)
+        self.assertEqual(constructed["state"]["core_error_flags"], 0)
+        self.assertFalse(MAP._ppb_bank_admission(contract, constructed["state"], 64, 32)["admitted"])
+        for count in (-1, 10, 255, True):
+            with self.subTest(count=count), self.assertRaises(MAP.FormatError):
+                MAP._ppb_bank_step(contract, state, "constructor", base=0x100000, count=count, bank_bytes=0x1000)
+
+    def test_admission_requires_exact_initialized_ownership_geometry_and_nonwrapping_spans(self):
+        contract = MAP._ppb_bank_contract(self.payload)
+        state = MAP._ppb_bank_state([0x100000], 0x40000)
+        self.assertTrue(MAP._ppb_bank_admission(contract, state, 64, 32)["admitted"])
+        state = MAP._ppb_bank_step(contract, state, "allocate", width=64, height=32)["state"]
+        admitted = MAP._ppb_bank_admission(contract, state, 64, 32)
+        self.assertTrue(admitted["admitted"])
+        self.assertEqual(admitted["reasons"], [])
+        self.assertTrue(admitted["conditional_vendor_ISA"])
+        for key in ("runtime_ownership_established", "host_plane_lease", "generation_safe_reuse"):
+            self.assertIs(admitted[key], False)
+        # The test starts each refusal from a genuinely admitted state, so an
+        # unrelated failed premise cannot mask a missing ownership/extent gate.
+        mutations = (
+            ("banks", [{"base": 0, "mask": 1, "stride": 0x2000, "geometry": 0x08010040}]),
+            ("banks", [{"base": 0xfffff000, "mask": 1, "stride": 0x2000, "geometry": 0x08010040}]),
+            ("banks", [{"base": 0x100001, "mask": 1, "stride": 0x2000, "geometry": 0x08010040}]),
+            ("bank_bytes", 0x40001), ("bank_bytes", 0), ("descriptor_limit", 0),
+            ("stripe_exponent", 32), ("alignment_mask", 0),
+            ("flags", [0x6000] + [0] * 33), ("flags", [0xac00] + [0] * 33),
+            ("flags", [0xe808] + [0] * 33), ("flags", [0xe810] + [0] * 33),
+            ("flags", [0xe800, 0xe800] + [0] * 32),
+            ("flags", [0] * 34),
+            ("banks", [{"base": 0x100000, "mask": 0, "stride": 0x2000, "geometry": 0x08010040}]),
+            ("banks", [{"base": 0x100000, "mask": 1, "stride": 0, "geometry": 0x08010040}]),
+            ("banks", [{"base": 0x100000, "mask": 1, "stride": 0x3000, "geometry": 0x08010040}]),
+            ("banks", [{"base": 0x100000, "mask": 1, "stride": 0x2000, "geometry": 0}]),
+            ("banks", [{"base": 0x100000, "mask": 1, "stride": 0x2000,
+                        "geometry": self.packed_geometry(64, 32, 31)}]),
+            ("banks", [{"base": 0x100000, "mask": 1, "stride": 0x2000, "geometry": 0x18010040}]),
+            ("banks", [{"base": 0x100000, "mask": 0x80000001, "stride": 0x2000,
+                        "geometry": self.packed_geometry(64, 32, 1)}]),
+        )
+        for key, value in mutations:
+            changed = dict(state)
+            changed[key] = value
+            refusal = MAP._ppb_bank_admission(contract, changed, 64, 32)
+            with self.subTest(key=key, value=value):
+                self.assertFalse(refusal["admitted"])
+                self.assertTrue(refusal["reasons"])
+                self.assertFalse(refusal["host_plane_lease"])
+        for bases in ([0x100000, 0x100000], [0x100000, 0x120000], [0x100000, 0x200000]):
+            changed = MAP._ppb_bank_state(bases, 0x40000)
+            self.assertFalse(MAP._ppb_bank_admission(contract, changed, 64, 32)["admitted"])
+        self.assertTrue(MAP._ppb_bank_admission(contract, MAP._ppb_bank_state([0x100000, 0x140000], 0x40000), 64, 32)["admitted"])
+        for width, height in ((0, 0), (0, 480), (640, 0), (2048, 32), (64, 1121), (64, 2047)):
+            refusal = MAP._ppb_bank_admission(contract, MAP._ppb_bank_state([0x100000], 0x400000), width, height)
+            self.assertFalse(refusal["admitted"], (width, height))
+        # Raw truncated-row geometry remains modeled; admission alone excludes it.
+        raw = MAP._ppb_bank_step(contract, MAP._ppb_bank_state([0x100000], 0x400000),
+                                 "allocate", width=64, height=1121)
+        self.assertEqual(raw["result"], 0)
+        self.assertEqual(MAP._ppb_bank_geometry(64, 1121, 5, 63)["y_stripe_height"], 1120)
+
+    def test_assignment_reference_request_and_completion_are_distinct_selected_effects(self):
+        contract = MAP._ppb_bank_contract(self.payload)
+        state = MAP._ppb_bank_state([0x100000], 0x40000)
+        state = MAP._ppb_bank_step(contract, state, "allocate", width=64, height=32)["state"]
+        for flags in (0, 0x2000, 0x4000, 0xffff):
+            result = MAP._ppb_bank_step(contract, state, "assignment_reference", index=0, frame_flags=flags)
+            self.assertEqual(result["result"], 0xc800 if flags & 0x4000 else 0xe800)
+            self.assertEqual(result["state"]["banks"], state["banks"])
+        requested = MAP._ppb_bank_step(contract, state, "order_release", frame=62, reason=255)
+        self.assertEqual(requested["state"]["frame_flags"][62], 0x10)
+        self.assertEqual(requested["state"]["release_request"]["slots"][0], 0xff3e)
+        self.assertEqual(requested["state"]["release_request"]["head"], 1)
+        self.assertEqual(requested["state"]["flags"], state["flags"])
+        self.assertEqual(requested["state"]["banks"], state["banks"])
+        self.assertTrue(requested["events"][0]["no_immediate_bank_release"])
+        state["release_request"]["head"] = 63
+        wrapped = MAP._ppb_bank_step(contract, state, "order_release", frame=0, reason=1)
+        self.assertEqual(wrapped["state"]["release_request"]["head"], 0)
+        self.assertEqual(wrapped["state"]["release_request"]["slots"][63], 0x100)
+        state["frame_flags"][62] = 0xffff
+        completed = MAP._ppb_bank_step(contract, state, "monitor_complete", frame=62)
+        self.assertEqual(completed["state"]["frame_flags"][62], 0xdbff)
+        self.assertEqual(completed["state"]["flags"], state["flags"])
+        self.assertEqual(completed["state"]["banks"], state["banks"])
+        self.assertTrue(completed["events"][0]["completed_dma_metadata_is_input"])
+        self.assertFalse(completed["events"][0]["metadata_word0_effects_modeled"])
+        for frame in (-1, 63, 255, True):
+            with self.subTest(frame=frame), self.assertRaises(MAP.FormatError):
+                MAP._ppb_bank_step(contract, state, "monitor_complete", frame=frame)
+
+    def test_display_publication_offsets_tagged_empty_and_discard_reference(self):
+        contract = MAP._ppb_bank_contract(self.payload)
+        state = MAP._ppb_bank_state([0x100000], 0x40000)
+        state["metadata_pool"] = 0x300000
+        state = MAP._ppb_bank_step(contract, state, "allocate", width=64, height=32)["state"]
+        for optional in (0, 1, 0xffffffff):
+            record = {"flags": 0, "y_offset": 0x1234, "chroma_offset": 0xffffffff, "optional_offset": optional}
+            result = MAP._ppb_bank_step(contract, state, "display_publish", index=0, record=record)
+            self.assertEqual(result["result"], {"flags": 0, "y_offset": 0x100000,
+                                                "chroma_offset": 0x0fffff,
+                                                "optional_offset": (optional + 0x100000) & 0xffffffff if optional else 0})
+            self.assertEqual(record["y_offset"], 0x1234)  # Caller record is not rewritten.
+            self.assertEqual(result["state"]["flags"][0], 0xf800)
+            self.assertEqual(result["state"]["delivery_ring"]["slots"][2], 0x300000)
+            self.assertEqual(result["state"]["delivery_ring"]["write"], 3)
+            publication = result["events"][0]
+            self.assertEqual((publication["record_address"], publication["record_bytes"]), (0x300000, 228))
+            self.assertTrue(publication["dma_and_sync_assumed"])
+            self.assertFalse(next(event for event in result["events"] if event["kind"] == "deliver_picture")["is_host_plane_lease"])
+        empty = MAP._ppb_bank_step(contract, state, "empty_picture")
+        self.assertEqual(empty["result"], {"width": 0, "height": 0, "picture_flags": 0x100,
+                                           "record_bytes": 228, "selected_producer_only": True})
+        no_video = MAP._ppb_bank_state([], 0)
+        no_video = MAP._ppb_bank_step(contract, no_video, "allocate", width=0, height=0)["state"]
+        tagged = {"flags": 0x100, "y_offset": 11, "chroma_offset": 22, "optional_offset": 33}
+        result = MAP._ppb_bank_step(contract, no_video, "display_publish", index=0, record=tagged)
+        self.assertEqual(result["result"], tagged)
+        self.assertEqual(result["state"]["flags"][0], 0xbc00)
+        # Without the producer's tag, AC00 really aliases occupied bank0/slot0.
+        state["flags"][0] = 0xac00
+        untagged = MAP._ppb_bank_step(contract, state, "display_publish", index=0,
+                                     record={"flags": 0, "y_offset": 0, "chroma_offset": 0, "optional_offset": 0})
+        self.assertEqual(untagged["result"]["y_offset"], 0x100000)
+        state["flags"][0] = 0xa800  # No4000 hold; discarded clears3000 and actually frees.
+        discarded = MAP._ppb_bank_step(contract, state, "display_publish", index=0,
+                                       record={"flags": 0, "y_offset": 0, "chroma_offset": 0, "optional_offset": 0}, discarded=True)
+        self.assertEqual(discarded["state"]["flags"][0], 0)
+        self.assertEqual(discarded["state"]["banks"][0]["mask"], 0)
+        self.assertEqual(discarded["state"]["delivery_ring"], state["delivery_ring"])
+
+    def test_circular_data_positions_wrap_full_alias_and_returned_metadata_lookup(self):
+        contract = MAP._ppb_bank_contract(self.payload)
+        state = MAP._ppb_bank_state([], 0)
+        for position in range(2, 64):
+            result = MAP._ppb_bank_step(contract, state, "ring_put", ring="delivery_ring", value=position)
+            self.assertEqual(result["state"]["delivery_ring"]["slots"][position], position)
+            self.assertFalse(result["events"][0]["native_full_guard"])
+            state = result["state"]
+        self.assertEqual((state["delivery_ring"]["read"], state["delivery_ring"]["write"]), (2, 2))
+        # No put fullness guard: a complete62-slot cycle is indistinguishable
+        # from empty to this getter. No invented flow-control guarantee.
+        self.assertEqual(MAP._ppb_bank_step(contract, state, "ring_get", ring="delivery_ring")["result"], 0)
+        state["delivery_ring"].update(read=63, write=2)
+        result = MAP._ppb_bank_step(contract, state, "ring_get", ring="delivery_ring")
+        self.assertEqual((result["result"], result["state"]["delivery_ring"]["read"]), (63, 2))
+        for read, write in ((0, 2), (1, 2), (2, 0), (2, 1)):
+            state["delivery_ring"].update(read=read, write=write)
+            self.assertEqual(MAP._ppb_bank_step(contract, state, "ring_get", ring="delivery_ring")["result"], 0)
+            with self.assertRaises(MAP.FormatError):
+                MAP._ppb_bank_step(contract, state, "ring_put", ring="delivery_ring", value=0x1234)
+        for base in (0, 0x300000, 0xffffff80):
+            state["metadata_pool"] = base
+            for index in range(34):
+                address = (base + index * 228) & 0xffffffff
+                self.assertEqual(MAP._ppb_bank_step(contract, state, "ppb_from_address", address=address)["result"], index)
+                self.assertEqual(MAP._ppb_bank_step(contract, state, "ppb_from_address", address=(address + 1) & 0xffffffff)["result"], -1)
+
+    def test_explicit_undelivered_metadata_inputs_release_without_completion_claim(self):
+        contract = MAP._ppb_bank_contract(self.payload)
+        state = MAP._ppb_bank_state([0x100000], 0x40000)
+        state["metadata_pool"] = 0x300000
+        for _ in range(2):
+            state = MAP._ppb_bank_step(contract, state, "allocate", width=64, height=32)["state"]
+        result = MAP._ppb_bank_step(contract, state, "undelivered",
+                                    delivery_addresses=[0x300000, 0xdeadbeef], return_addresses=[0x3000e4, 0x300000])
+        self.assertEqual(result["result"], [0, 1])
+        self.assertEqual(result["state"]["flags"], [0] * 34)
+        self.assertEqual(result["state"]["banks"][0], {"base": 0x100000, "mask": 0, "stride": 0, "geometry": 0})
+        selected = [event for event in result["events"] if event["kind"] == "selected_undelivered_ring_result"]
+        self.assertEqual([event["index"] for event in selected], [0, -1, 1, 0])
+        self.assertEqual([event["caller"] for event in selected],
+                         ["undelivered_display", "undelivered_display", "undelivered_return", "undelivered_return"])
+        for values in ([0], [-1], [0x100000000], [True], None):
+            with self.subTest(values=values), self.assertRaises(MAP.FormatError):
+                MAP._ppb_bank_step(contract, state, "undelivered", delivery_addresses=values, return_addresses=[])
+
+    def test_unsupported_models_argument_shapes_storage_and_step_budgets_refuse_purely(self):
+        contract = MAP._ppb_bank_contract(self.payload)
+        state = MAP._ppb_bank_state([0x100000], 0x40000)
+        original = json.dumps(state, sort_keys=True)
+        for unsupported in (None, {}, {"basis": None}, {"basis": {"model": "whole-firmware"}},
+                            {"basis": {"model": "selected-ppb-bank-v1"}, "validation_scope": None},
+                            {"basis": {"model": "selected-ppb-bank-v1"}, "validation_scope": {}}):
+            with self.subTest(contract=unsupported), self.assertRaises(MAP.FormatError):
+                MAP._ppb_bank_step(unsupported, state, "start")
+        for operation, arguments in ((None, {}), ([], {}), ({}, {}), ("stop", {}), ("allocate", {}),
+                                     ("allocate", {"width": 64, "height": 32, "physical_base": 0x100000}),
+                                     ("start", {"index": 0}), ("reference_drop", {"index": 0}),
+                                     ("display_publish", {"index": 0, "record": {}}),
+                                     ("display_publish", {"index": 0, "record": {
+                                         "flags": 0, "y_offset": 0, "chroma_offset": 0, "optional_offset": 0}, "discarded": 1}),
+                                     ("ring_put", {"ring": "release_request", "value": 1}),
+                                     ("ring_get", {"ring": "return_ring", "completion": True}),
+                                     ("order_release", {"frame": 0, "reason": 256}),
+                                     ("assignment_reference", {"index": 0, "frame_flags": 65536}),
+                                     ("release", {"index": True})):
+            with self.subTest(operation=operation, arguments=arguments), self.assertRaises(MAP.FormatError):
+                MAP._ppb_bank_step(contract, state, operation, **arguments)
+        for maximum in (0, 1, 2, 3):
+            with mock.patch.object(MAP, "MAX_PPB_BANK_MODEL_STEPS", maximum), \
+                    self.assertRaisesRegex(MAP.FormatError, "budget"):
+                MAP._ppb_bank_step(contract, state, "allocate", width=64, height=32)
+        self.assertEqual(json.dumps(state, sort_keys=True), original)
+        with mock.patch.object(MAP, "MAX_PPB_BANK_MODEL_STEPS", 1), self.assertRaisesRegex(MAP.FormatError, "budget"):
+            MAP._ppb_bank_step(contract, state, "undelivered", delivery_addresses=[1, 2], return_addresses=[])
+        self.assertEqual(json.dumps(state, sort_keys=True), original)
+        state["stripe_exponent"] = 255  # INIT byte wrapping is not a native shift validity guard.
+        with self.assertRaisesRegex(MAP.FormatError, "supported ISA"):
+            MAP._ppb_bank_step(contract, state, "allocate", width=64, height=32)
+        self.assertFalse(MAP._ppb_bank_admission(contract, state, 64, 32)["admitted"])
+
+    def test_private_contract_models_are_offline_pure_and_no_public_cli_route_exists(self):
+        mutable = bytearray(self.payload)
+        state = MAP._ppb_bank_state([0x100000], 0x40000)
+        state_before = json.dumps(state, sort_keys=True)
+        with mock.patch("builtins.open", side_effect=AssertionError("unexpected file read")), \
+                mock.patch.object(MAP.os, "open", side_effect=AssertionError("unexpected file/device open")), \
+                mock.patch.object(subprocess, "run", side_effect=AssertionError("unexpected external command")), \
+                mock.patch.object(subprocess, "Popen", side_effect=AssertionError("unexpected external process")):
+            contract = MAP._ppb_bank_contract(mutable)
+            contract_before = json.dumps(contract, sort_keys=True)
+            result = MAP._ppb_bank_step(contract, state, "allocate", width=64, height=32)
+            MAP._ppb_bank_step(contract, result["state"], "release", index=0)
+            MAP._ppb_bank_admission(contract, state, 64, 32)
+        self.assertEqual(mutable, self.payload)
+        self.assertEqual(json.dumps(state, sort_keys=True), state_before)
+        self.assertEqual(json.dumps(contract, sort_keys=True), contract_before)
+        for option in ("--ppb-bank-contract", "--ppb-bank-step=allocate", "--ppb-bank-budget"):
+            with mock.patch.object(MAP, "read_firmware", side_effect=AssertionError("unexpected file read")), \
+                    mock.patch.object(sys, "stderr", new_callable=io.StringIO), self.assertRaises(SystemExit) as error:
+                MAP.main(["offline.bin", option])
+            self.assertEqual(error.exception.code, 2)
+
+    def test_private_ppb_helpers_leave_all256_existing_public_reports_unchanged(self):
+        options = ("references", "all_symbols", "bootstrap", "picture_output",
+                   "arc_metadata", "csc_command", "command_buffer_bridge", "inner_descriptor")
+        aggregate = hashlib.sha256()
+        with mock.patch.object(MAP, "_ppb_bank_contract", side_effect=AssertionError("unexpected private contract")), \
+                mock.patch.object(MAP, "_ppb_bank_step", side_effect=AssertionError("unexpected private transition")), \
+                mock.patch.object(MAP, "_ppb_bank_admission", side_effect=AssertionError("unexpected private admission")):
+            for mask in range(256):
+                flags = {name: bool(mask & (1 << bit)) for bit, name in enumerate(options)}
+                wanted = ("ReadLine",) if mask & 1 else MAP.DEFAULT_SYMBOLS
+                report = MAP.analyze(self.data, wanted, **flags)
+                self.assertNotIn("ppb_bank_contract", report)
+                stdout = (json.dumps(report, indent=2, sort_keys=True) + "\n").encode()
+                aggregate.update(bytes([mask]))
+                aggregate.update(hashlib.sha256(stdout).digest())
+        # Independent public-output baseline predates these private helpers;
+        # the same snapshot also survives clean parent091387c unchanged.
+        self.assertEqual(aggregate.hexdigest(),
+                         "bf116a4627c71956042f25a98f63fde401b58140569c22cdc5ebf8298bbc85dd")
+
+
 if __name__ == "__main__":
     unittest.main()
