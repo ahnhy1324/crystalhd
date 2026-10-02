@@ -2123,7 +2123,7 @@ BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
 	struct device *dev;
 	addr_64 desc_addr;
 	unsigned long flags;
-	PIC_DELIVERY_HOST_INFO	PicDeliInfo;
+	PIC_DELIVERY_HOST_INFO	PicDeliInfo = {0};
 	uint32_t BuffSzInDwords;
 	BC_STATUS sts;
 
@@ -2168,7 +2168,7 @@ BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
 	PicDeliInfo.RxSeqNumber = hw->RxSeqNum;
 	PicDeliInfo.HostDescMemLowAddr_Y = desc_addr.low_part;
 	PicDeliInfo.HostDescMemHighAddr_Y = desc_addr.high_part;
-
+	PicDeliInfo.ChannelID = hw->channelNum;
 	if (rx_pkt->uv_phy_addr) {
 		/* Program the UV descriptor */
 		desc_addr.full_addr = rx_pkt->uv_phy_addr;
