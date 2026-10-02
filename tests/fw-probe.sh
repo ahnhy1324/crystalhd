@@ -95,6 +95,13 @@ for offset, word in ((0x28340, 0xe58401ac), (0x28348, 0xe58401b0),
                      (0x280f4, 0xe58401cc)):
     assert struct.unpack_from('<I', blob, offset)[0] == word
 assert digest.hex() == re.search(r'CRYSTALHD_FW_RESEARCH_FIRMWARE_SHA256\s+\\\s*"([0-9a-f]+)"', uapi).group(1)
+# Page alignment and full-window BAR admission make these two span sizes
+# behaviorally equivalent on accepted inputs; retain both explicit checks.
+heap_sampler = re.search(r'static int crystalhd_fw_research_heap_packet_sample\(.*?\n}', source, re.S).group(0)
+assert re.search(r'crystalhd_fw_research_state_span\(ctx->adp, offset,\s*'
+                 r'CRYSTALHD_FW_RESEARCH_HEAP_PACKET_BYTES / sizeof\(u32\)\)', heap_sampler)
+assert re.search(r'count = ARRAY_SIZE\(observed.header_words\)', heap_sampler)
+assert re.search(r'crystalhd_fw_research_state_span\(ctx->adp, offset, count\)', heap_sampler)
 legacy = (root / 'include/7411d.h').read_text()
 wire_header = (root / 'driver/linux/crystalhd_fw_if.h').read_text()
 cli = (root / 'tools/fw-research/flea_fw_probe.c').read_text()
@@ -196,6 +203,24 @@ _Static_assert(offsetof(struct crystalhd_fw_research_packet_result, after_init) 
 _Static_assert(offsetof(struct crystalhd_fw_research_packet_result, after_open) == 1764, "packet open");
 _Static_assert(_IOC_SIZE(CRYSTALHD_FW_RESEARCH_RUN_PACKET) == 1816, "packet encoding");
 _Static_assert(CRYSTALHD_FW_RESEARCH_RUN_PACKET == 0xc7185296U, "packet ioctl");
+_Static_assert(sizeof(struct crystalhd_fw_research_heap_packet_sample) == 120, "heap packet sample");
+_Static_assert(offsetof(struct crystalhd_fw_research_heap_packet_sample, reserved) == 12, "heap padding");
+_Static_assert(offsetof(struct crystalhd_fw_research_heap_packet_sample, root_before) == 16, "heap root before");
+_Static_assert(offsetof(struct crystalhd_fw_research_heap_packet_sample, root_after) == 20, "heap root after");
+_Static_assert(offsetof(struct crystalhd_fw_research_heap_packet_sample, image_before) == 24, "heap image before");
+_Static_assert(offsetof(struct crystalhd_fw_research_heap_packet_sample, image_after) == 40, "heap image after");
+_Static_assert(offsetof(struct crystalhd_fw_research_heap_packet_sample, packet_before) == 56, "heap packet before");
+_Static_assert(offsetof(struct crystalhd_fw_research_heap_packet_sample, packet_after) == 68, "heap packet after");
+_Static_assert(offsetof(struct crystalhd_fw_research_heap_packet_sample, packet_address) == 80, "heap address");
+_Static_assert(offsetof(struct crystalhd_fw_research_heap_packet_sample, header_words) == 84, "heap header");
+_Static_assert(offsetof(struct crystalhd_fw_research_heap_packet_sample, slots_before) == 104, "heap slots before");
+_Static_assert(offsetof(struct crystalhd_fw_research_heap_packet_sample, slots_after) == 112, "heap slots after");
+_Static_assert(sizeof(struct crystalhd_fw_research_heap_packet_result) == 1952, "heap packet result");
+_Static_assert(offsetof(struct crystalhd_fw_research_heap_packet_result, image) == 0, "heap image");
+_Static_assert(offsetof(struct crystalhd_fw_research_heap_packet_result, after_init) == 1712, "heap init");
+_Static_assert(offsetof(struct crystalhd_fw_research_heap_packet_result, after_open) == 1832, "heap open");
+_Static_assert(_IOC_SIZE(CRYSTALHD_FW_RESEARCH_RUN_HEAP_PACKET) == 1952, "heap encoding");
+_Static_assert(CRYSTALHD_FW_RESEARCH_RUN_HEAP_PACKET == 0xc7a05297U, "heap ioctl");
 _Static_assert(CRYSTALHD_FW_RESEARCH_VERSION_ONLY == 1U, "existing version selector");
 _Static_assert(CRYSTALHD_FW_RESEARCH_H264_CONTROL == 2U, "existing H264 selector");
 _Static_assert(CRYSTALHD_FW_RESEARCH_H261_CONTROL == 3U, "H261 selector");
@@ -279,8 +304,9 @@ for probe_sanitize in no yes; do
         "$probe_test_dir/cli-check" --controller-json-examples
         "$probe_test_dir/cli-check" --image-json-examples
         "$probe_test_dir/cli-check" --packet-json-examples
+        "$probe_test_dir/cli-check" --heap-packet-json-examples
     } | "${PYTHON3:-python3}" -B -c '
-import json, sys
+import hashlib, json, sys
 def unique_object(pairs):
     result = {}
     for key, value in pairs:
@@ -291,7 +317,12 @@ def invalid_constant(value):
     raise AssertionError("non-JSON constant: " + value)
 lines = list(sys.stdin)
 examples = [json.loads(line, object_pairs_hook=unique_object, parse_constant=invalid_constant) for line in lines]
+heaps, examples = examples[542:], examples[:542]
 assert len(examples) == 542
+assert len(heaps) == 60
+legacy_bytes = "".join(lines[:542]).encode("utf-8")
+assert len(legacy_bytes) == 1020137
+assert hashlib.sha256(legacy_bytes).hexdigest() == "7bd6c6e9034849298fa08a6711e0f9faad5aba1b3ac22ad100b04efe30e834b7"
 info, version, h264, failure, nohash, rejectedhash, h261, h263, mpeg1, rejected, readfail = examples[:11]
 assert info["generation"] == "42" and info["research_selector_mask"] == 2047
 assert lines[0] == "{\"version\":1,\"generation\":\"42\",\"research_selector_mask\":2047,\"expected_firmware_sha256\":\"" + info["expected_firmware_sha256"] + "\"}\n"
@@ -511,7 +542,7 @@ expected_scope = {"fixed_root_read_address": 0xd3a08, "candidate_lower_bound": 0
                   "returned_pointer_followed": False, "ownership_established": False,
                   "coherence_established": False, "lease_established": False,
                   "equality_excludes_aba": False}
-for result in controllers + [image["controller"] for image in images] + [packet["image"]["controller"] for packet in packets]:
+for result in controllers + [image["controller"] for image in images] + [packet["image"]["controller"] for packet in packets + heaps]:
     assert set(result) == {"version", "controller_root", "control", "fixed_state_samples",
                            "controller_root_samples", "root_values_equal", "scope"}
     assert result["version"] == 1 and result["controller_root"] is True
@@ -598,7 +629,7 @@ expected_image_scope = {"fresh_root_lower_bound": 0xd53dc, "tuple_word_offset": 
                         "controller_root_used_for_fixed_tuple": True, "tuple_values_followed": False,
                         "ownership_established": False, "coherence_established": False,
                         "lease_established": False, "bracket_equality_excludes_aba": False}
-for result in images + [packet["image"] for packet in packets]:
+for result in images + [packet["image"] for packet in packets + heaps]:
     assert set(result) == {"version", "controller_image", "controller", "image_samples", "scope"}
     assert result["version"] == 1 and result["controller_image"] is True
     assert result["scope"] == expected_image_scope
@@ -727,5 +758,83 @@ assert packets[24]["packet_samples"]["after_init"]["root_before"] != packets[24]
 assert all(packets[i]["image"]["controller"]["control"]["status"] < 0 for i in range(25, 50))
 assert packets[50]["image"]["controller"]["control"]["status"] == 0
 print("Firmware probe CLI: 51 bounded packet-linkage strict JSON examples verified")
+expected_heap_scope = {"fresh_root_lower_bound": 0xd53dc, "image_word_offset": 0x1ac,
+                       "packet_aliases_offset": 0x94, "packet_physical_offset": 0x1cc,
+                       "stored_reply_offset": 0x250, "image_base_lower_bound": 0x117000,
+                       "image_upper_bound_exclusive": 0x3ffc000, "image_extent_bytes": 0x100000,
+                       "fixed_packet_offset": 0x70000, "section_bytes": 256, "header_words": 5,
+                       "image_base_used_for_computed_admitted_fixed_span": True,
+                       "packet_declarations_used_as_equality_gates": True,
+                       "header_values_followed": False, "stored_reply_values_followed": False,
+                       "freshness_established": False, "object_lifetime_established": False,
+                       "atomic_coherence_established": False, "ownership_established": False,
+                       "lease_established": False, "queue_validity_established": False,
+                       "dma_suitability_established": False, "independent_fetch_errors_certified": False,
+                       "bracket_equality_excludes_aba": False}
+payload = ("root_before", "root_after", "image_before", "image_after", "packet_before",
+           "packet_after", "packet_address", "header_words", "slots_before", "slots_after")
+for result in heaps:
+    assert set(result) == {"version", "heap_packet", "image", "heap_packet_samples", "scope"}
+    assert result["version"] == 1 and result["heap_packet"] is True
+    assert result["scope"] == expected_heap_scope
+    for key, value in expected_heap_scope.items():
+        assert type(result["scope"][key]) is type(value)
+    samples, control = result["heap_packet_samples"], result["image"]["controller"]["control"]
+    assert set(samples) == set(root_names)
+    previous = True
+    for index, name in enumerate(root_names):
+        sample = samples[name]
+        assert set(sample) == {"attempted", "status", "read_complete", *payload}
+        assert type(sample["attempted"]) is bool and type(sample["read_complete"]) is bool
+        assert type(sample["status"]) is int and -4095 <= sample["status"] <= 0
+        prior = result["image"]["image_samples"][name]
+        ready = prior["attempted"] and prior["read_complete"] and prior["status"] == 0
+        active = sample["attempted"] or sample["status"] != 0 or sample["read_complete"]
+        assert active == ready
+        if sample["read_complete"]:
+            assert sample["attempted"] and sample["status"] == 0
+            root, after = sample["root_before"], sample["root_after"]
+            u32(root); u32(after)
+            assert root == after and root % 4 == 0 and 0xd53dc <= root <= 0x116000 - 0x378
+            for offset, length in ((0x1ac, 16), (0x94, 8), (0x1cc, 4), (0x250, 8)):
+                assert (root + offset) // 65536 == (root + offset + length - 1) // 65536
+            for key, length in (("image_before", 4), ("image_after", 4), ("packet_before", 3),
+                                ("packet_after", 3), ("header_words", 5), ("slots_before", 2), ("slots_after", 2)):
+                assert isinstance(sample[key], list) and len(sample[key]) == length
+                for word in sample[key]:
+                    u32(word)
+            image = sample["image_before"]
+            base = image[1]
+            assert image == sample["image_after"]
+            assert image[0] == base and base % 4096 == 0
+            assert 0x117000 <= base <= 0x3ffc000 - 0x100000
+            assert image[2] == 0x100000 and image[3] % 256 == 1
+            address = sample["packet_address"]
+            u32(address)
+            assert address == base + 0x70000
+            assert sample["packet_before"] == sample["packet_after"] == [address] * 3
+            assert sample["slots_before"] == sample["slots_after"]
+            for length in (256, 20):
+                assert 0 <= address <= 0x3ffc000 - length
+                assert address // 65536 == (address + length - 1) // 65536
+            # Header/slots are raw: no command/status/type or queue-pointer gate.
+        else:
+            assert all(sample[key] is None for key in payload)
+            assert not sample["attempted"] or sample["status"] < 0
+        if active:
+            assert previous
+        if sample["status"]:
+            assert control["status"] == sample["status"] and control["command_count"] == index + 2
+        previous = sample["read_complete"] and sample["status"] == 0
+    if control["command_count"] > 2:
+        assert samples["after_init"]["read_complete"] and samples["after_init"]["status"] == 0
+    if control["command_count"] > 3:
+        assert samples["after_open"]["read_complete"] and samples["after_open"]["status"] == 0
+    if control["status"] == 0:
+        assert all(samples[name]["read_complete"] for name in root_names)
+assert all(result["image"]["controller"]["control"]["status"] == 0 for result in heaps[:33])
+assert all(result["image"]["controller"]["control"]["status"] < 0 for result in heaps[33:59])
+assert heaps[59]["image"]["controller"]["control"]["status"] == 0
+print("Firmware probe CLI: 542 legacy JSON bytes unchanged; 60 heap-packet strict JSON examples verified")
 '
 done

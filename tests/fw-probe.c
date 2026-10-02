@@ -143,6 +143,9 @@ static bool image_reads, image_only;
 static u32 image_roots[2][2], image_words[2][4];
 static bool packet_reads, packet_only;
 static u32 packet_roots[2][2], packet_image_words[2][4], packet_words[2][3];
+static bool heap_packet_reads, heap_packet_only;
+static u32 heap_roots[2][2], heap_images[2][2][4], heap_packets[2][2][3];
+static u32 heap_slots[2][2][2], heap_headers[2][5];
 static BC_STATUS read_status;
 static int transaction_error;
 static unsigned transaction_mutation, transaction_count;
@@ -435,6 +438,21 @@ static void reset(void)
         packet_words[i][2] = 0x187200;
     }
     packet_reads = packet_only = false;
+    heap_packet_reads = heap_packet_only = false;
+    for (i = 0; i < 2; i++) {
+        unsigned side, word;
+        u32 base = 0x127000 + i * 0x110000;
+        heap_roots[i][0] = heap_roots[i][1] = 0xd9000 + i * 0x800;
+        for (side = 0; side < 2; side++) {
+            heap_images[i][side][0] = heap_images[i][side][1] = base;
+            heap_images[i][side][2] = 0x100000;
+            heap_images[i][side][3] = 0xab12fe01;
+            for (word = 0; word < 3; word++) heap_packets[i][side][word] = base + 0x70000;
+            heap_slots[i][side][0] = 0x30000f00 + i;
+            heap_slots[i][side][1] = UINT32_MAX - i;
+        }
+        for (word = 0; word < 5; word++) heap_headers[i][word] = 0xdead0000 + i * 16 + word;
+    }
     read_status = BC_STS_IO_ERROR; transaction_error = 0; transaction_mutation = 0;
     transaction_count = transaction_error_at = transaction_mutation_at = 0;
 }
@@ -1016,6 +1034,46 @@ static BC_STATUS packet_read_mock(struct crystalhd_hw *hw, u32 offset, u32 count
     return read_count == read_fail_at ? read_status : BC_STS_SUCCESS;
 }
 
+static BC_STATUS heap_packet_read_mock(struct crystalhd_hw *hw, u32 offset, u32 count, u32 *words)
+{
+    unsigned index = read_count++, stage = heap_packet_only ? 0 : index >= 26;
+    unsigned read = heap_packet_only ? index : index - (stage ? 26 : 8);
+    u32 expected_offset, expected_count, *source;
+    unsigned i, side = read >= 6;
+
+    barrier(); CHECK(hw == &hardware && hw->lock.held == 1 && hw->fwcmd_trans_mutex.held == 1);
+    CHECK(adp.cmds.session_owner == &crystalhd_fw_research_owner && adp.cmds.session_module_pinned);
+    CHECK(read < 11 && command_count == (stage ? 3U : 2U));
+    switch (read) {
+    case 1: case 9:
+        expected_offset = heap_roots[stage][0] + 0x1ac; expected_count = 4;
+        source = heap_images[stage][side]; break;
+    case 2: case 8:
+        expected_offset = heap_roots[stage][0] + 0x94; expected_count = 2;
+        source = heap_packets[stage][side]; break;
+    case 3: case 7:
+        expected_offset = heap_roots[stage][0] + 0x1cc; expected_count = 1;
+        source = &heap_packets[stage][side][2]; break;
+    case 4: case 6:
+        expected_offset = heap_roots[stage][0] + 0x250; expected_count = 2;
+        source = heap_slots[stage][side]; break;
+    case 5:
+        /* Only independently admitted B+0x70000 may choose the physical read;
+         * aliases, slots and raw header words never choose a subsequent read.
+         */
+        CHECK((u64)heap_images[stage][0][1] + 0x70000 <= UINT32_MAX);
+        expected_offset = heap_images[stage][0][1] + 0x70000; expected_count = 5;
+        source = heap_headers[stage]; break;
+    default:
+        expected_offset = 0xd3a08; expected_count = 1;
+        source = &heap_roots[stage][read == 10]; break;
+    }
+    CHECK(offset == expected_offset && count == expected_count);
+    for (i = 0; i < count; i++) words[i] = read_count == read_fail_at ? 0xdeadbeef : source[i];
+    if (read_count == read_mutate_at) state_mutate(read_mutation);
+    return read_count == read_fail_at ? read_status : BC_STS_SUCCESS;
+}
+
 static BC_STATUS read_mock(struct crystalhd_hw *hw, u32 offset, u32 count, u32 *words)
 {
     static const u32 offsets[] = {0x6fc, 0xd1ff4, 0xd3ac4, 0xd3ad0,
@@ -1029,9 +1087,12 @@ static BC_STATUS read_mock(struct crystalhd_hw *hw, u32 offset, u32 count, u32 *
         0xd3a08, 0xd3a08, 0, 0xd3a08};
     static const u32 image_counts[] = {1, 2, 1, 1, 1, 1, 4, 1, 2, 1, 1, 1, 1, 4, 1};
     unsigned index, stage;
+    if (heap_packet_only || (heap_packet_reads && ((read_count >= 8 && read_count < 19) || read_count >= 26)))
+        return heap_packet_read_mock(hw, offset, count, words);
     if (packet_only || (packet_reads && ((read_count >= 8 && read_count < 13) || read_count >= 20)))
         return packet_read_mock(hw, offset, count, words);
     index = read_count++;
+    if (heap_packet_reads && index >= 19) index -= 11;
     if (packet_reads && index >= 13) index -= 5;
     stage = controller_only || image_only ? 2 :
         index == 0 ? 1 : index < (image_reads ? 8U : controller_reads ? 5U : 4U) ? 2 : 3;
@@ -1089,7 +1150,7 @@ static struct crystalhd_fw_research_state_result state_run(void)
     struct crystalhd_fw_research_state_result result;
     struct crystalhd_fw_research_request req = request();
     memset(&result, 0xa5, sizeof(result)); result.request = state_request();
-    crystalhd_fw_research_run_internal(42, &req, &result.control, &result, NULL, NULL, NULL);
+    crystalhd_fw_research_run_internal(42, &req, &result.control, &result, NULL, NULL, NULL, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.control.request.selector == CRYSTALHD_FW_RESEARCH_H264_CONTROL);
     CHECK(result.control.generation == 42);
@@ -1303,7 +1364,7 @@ static struct crystalhd_fw_research_controller_result controller_run(void)
     struct crystalhd_fw_research_controller_result result;
     struct crystalhd_fw_research_request req = request();
     memset(&result, 0xa5, sizeof(result)); result.state.request = controller_request();
-    crystalhd_fw_research_run_internal(42, &req, &result.state.control, &result.state, &result, NULL, NULL);
+    crystalhd_fw_research_run_internal(42, &req, &result.state.control, &result.state, &result, NULL, NULL, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.state.control.request.selector == CRYSTALHD_FW_RESEARCH_H264_CONTROL);
     CHECK(result.state.control.request.size == sizeof(struct crystalhd_fw_research_result));
@@ -1604,7 +1665,7 @@ static struct crystalhd_fw_research_image_result image_run(void)
     struct crystalhd_fw_research_request req = request();
     memset(&result, 0xa5, sizeof(result)); result.controller.state.request = image_request();
     crystalhd_fw_research_run_internal(42, &req, &result.controller.state.control,
-        &result.controller.state, &result.controller, &result, NULL);
+        &result.controller.state, &result.controller, &result, NULL, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.controller.state.request.size == sizeof(result));
     CHECK(result.controller.state.control.request.size == 1488 &&
@@ -1801,7 +1862,7 @@ static struct crystalhd_fw_research_packet_result packet_run(void)
     struct crystalhd_fw_research_request req = request();
     memset(&result, 0xa5, sizeof(result)); result.image.controller.state.request = packet_request();
     crystalhd_fw_research_run_internal(42, &req, &result.image.controller.state.control,
-        &result.image.controller.state, &result.image.controller, &result.image, &result);
+        &result.image.controller.state, &result.image.controller, &result.image, &result, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.image.controller.state.request.size == sizeof(result));
     CHECK(result.image.controller.state.control.request.size == 1488 &&
@@ -2042,6 +2103,373 @@ static void test_packet_ioctl_and_compat(void)
     CHECK(!crystalhd_fw_research_release(&inode, &file) && !live_allocations);
 }
 
+static void heap_packet_reset(void)
+{ image_reset(); heap_packet_reads = true; }
+static struct crystalhd_fw_research_state_request heap_packet_request(void)
+{
+    struct crystalhd_fw_research_state_request req = state_request();
+    req.size = sizeof(struct crystalhd_fw_research_heap_packet_result); return req;
+}
+static struct crystalhd_fw_research_heap_packet_result heap_packet_run(void)
+{
+    struct crystalhd_fw_research_heap_packet_result result;
+    struct crystalhd_fw_research_request req = request();
+    memset(&result, 0xa5, sizeof(result)); result.image.controller.state.request = heap_packet_request();
+    crystalhd_fw_research_run_internal(42, &req, &result.image.controller.state.control,
+        &result.image.controller.state, &result.image.controller, &result.image, NULL, &result);
+    unlocked(); CHECK(!live_allocations);
+    CHECK(result.image.controller.state.request.size == sizeof(result));
+    CHECK(result.image.controller.state.control.request.size == 1488 &&
+        result.image.controller.state.control.request.selector == CRYSTALHD_FW_RESEARCH_H264_CONTROL);
+    return result;
+}
+static void heap_packet_empty(const struct crystalhd_fw_research_heap_packet_sample *sample,
+                              bool attempted, int status)
+{
+    struct crystalhd_fw_research_heap_packet_sample expected = {0};
+    expected.attempted = attempted; expected.status = status;
+    CHECK(!memcmp(sample, &expected, sizeof(expected)));
+}
+static void heap_packet_complete(const struct crystalhd_fw_research_heap_packet_sample *sample, unsigned stage)
+{
+    CHECK(sample->attempted == 1 && !sample->status && sample->read_complete == 1 && !sample->reserved);
+    CHECK(sample->root_before == heap_roots[stage][0] && sample->root_after == heap_roots[stage][1]);
+    CHECK(!memcmp(sample->image_before, heap_images[stage][0], sizeof(sample->image_before)) &&
+        !memcmp(sample->image_after, heap_images[stage][1], sizeof(sample->image_after)));
+    CHECK(!memcmp(sample->packet_before, heap_packets[stage][0], sizeof(sample->packet_before)) &&
+        !memcmp(sample->packet_after, heap_packets[stage][1], sizeof(sample->packet_after)));
+    CHECK(!memcmp(sample->slots_before, heap_slots[stage][0], sizeof(sample->slots_before)) &&
+        !memcmp(sample->slots_after, heap_slots[stage][1], sizeof(sample->slots_after)));
+    CHECK(!memcmp(sample->header_words, heap_headers[stage], sizeof(sample->header_words)));
+    CHECK(sample->packet_address == heap_images[stage][0][1] + 0x70000);
+}
+static void heap_packet_guard_setup(void)
+{ controller_guard_setup(); controller_only = false; heap_packet_only = true; }
+static void heap_packet_base(unsigned stage, u32 base)
+{
+    unsigned side, word;
+    for (side = 0; side < 2; side++) {
+        heap_images[stage][side][0] = heap_images[stage][side][1] = base;
+        for (word = 0; word < 3; word++) heap_packets[stage][side][word] = base + 0x70000;
+    }
+}
+
+static void test_heap_packet_admission_and_raw_payload(void)
+{
+    static const struct { u32 root; unsigned reads; } roots[] = {
+        {0, 1}, {1, 1}, {0xd53d8, 1}, {0xd53db, 1}, {0xd53dc, 11}, {0xd53dd, 1},
+        {0x115c88, 11}, {0x115c8c, 1}, {0x116000, 1}, {0xfffffc88, 1},
+        {0xfffffffc, 1}, {UINT32_MAX, 1}, {0x30000f00, 1}, {0x3fffd170, 1}
+    };
+    static const struct { u32 base; bool admitted; } bases[] = {
+        {0, false}, {0x116000, false}, {0x116fff, false}, {0x117000, true},
+        {0x117001, false}, {0x118000, true}, {0x3efc000, true}, {0x3efd000, false},
+        {0x3ffc000, false}, {0x4000000, false}, {0x30000f00, false},
+        {0xfffff000, false}, {UINT32_MAX, false}
+    };
+    static const u32 raw[] = {0, 1, 2, 0x73760001, 0x30000f00, 0x3fffd170, 0x80000000, UINT32_MAX};
+    struct crystalhd_fw_research_heap_packet_sample sample;
+    struct crystalhd_fw_research_heap_packet_result result;
+    unsigned i, window, edge, neighbor, side, word;
+    for (i = 0; i < ARRAY_SIZE(roots); i++) {
+        heap_packet_guard_setup(); heap_roots[0][0] = heap_roots[0][1] = roots[i].root;
+        memset(&sample, 0xa5, sizeof(sample));
+        CHECK(crystalhd_fw_research_heap_packet_sample(&adp.cmds, 42, &sample) ==
+            (roots[i].reads == 11 ? 0 : -ERANGE));
+        CHECK(read_count == roots[i].reads);
+        if (roots[i].reads == 11) heap_packet_complete(&sample, 0);
+        else heap_packet_empty(&sample, true, -ERANGE);
+        controller_guard_exit();
+    }
+    /* Each actual C-relative span has its own 64-KiB admission. In particular,
+     * C=ffdac puts the two translation slots at ffffc: do not split that read.
+     */
+    for (window = 0xd0000; window <= 0x100000; window += 0x10000) {
+        static const u32 low[] = {0xfe44, 0xfe48, 0xfe4c, 0xfe50, 0xfe54,
+                                 0xff64, 0xff68, 0xff6c, 0xfda8, 0xfdac, 0xfdb0};
+        for (edge = 0; edge < ARRAY_SIZE(low); edge++) {
+            unsigned reads = edge >= 1 && edge <= 3 ? 1 : edge == 6 ? 2 : edge == 9 ? 4 : 11;
+            heap_packet_guard_setup(); heap_roots[0][0] = heap_roots[0][1] = window + low[edge];
+            CHECK(crystalhd_fw_research_heap_packet_sample(&adp.cmds, 42, &sample) ==
+                (reads == 11 ? 0 : -ERANGE));
+            CHECK(read_count == reads);
+            if (reads == 11) heap_packet_complete(&sample, 0);
+            else heap_packet_empty(&sample, true, -ERANGE);
+            controller_guard_exit();
+        }
+    }
+    for (i = 0; i < ARRAY_SIZE(bases); i++) {
+        heap_packet_guard_setup(); heap_packet_base(0, bases[i].base);
+        CHECK(crystalhd_fw_research_heap_packet_sample(&adp.cmds, 42, &sample) ==
+            (bases[i].admitted ? 0 : -ERANGE));
+        CHECK(read_count == (bases[i].admitted ? 11U : 2U));
+        if (bases[i].admitted) heap_packet_complete(&sample, 0);
+        else heap_packet_empty(&sample, true, -ERANGE);
+        controller_guard_exit();
+    }
+    for (i = 0; i < 8; i++) {
+        heap_packet_guard_setup();
+        switch (i) {
+        case 0: heap_images[0][0][0] += 0x1000; break;
+        case 1: heap_images[0][0][0] = 0; break;
+        case 2: heap_images[0][0][2]--; break;
+        case 3: heap_images[0][0][2]++; break;
+        case 4: heap_images[0][0][2] = UINT32_MAX; break;
+        case 5: heap_images[0][0][3] &= ~0xffU; break;
+        case 6: heap_images[0][0][3] |= 2U; break;
+        case 7: heap_images[0][0][0] = heap_images[0][0][1] = 0x127004; break;
+        }
+        CHECK(crystalhd_fw_research_heap_packet_sample(&adp.cmds, 42, &sample) == -ERANGE);
+        CHECK(read_count == 2); heap_packet_empty(&sample, true, -ERANGE); controller_guard_exit();
+    }
+    for (i = 0; i < 256; i++) {
+        heap_packet_guard_setup();
+        for (side = 0; side < 2; side++) heap_images[0][side][3] = 0xffff0000 | i;
+        CHECK(crystalhd_fw_research_heap_packet_sample(&adp.cmds, 42, &sample) == (i == 1 ? 0 : -ERANGE));
+        CHECK(read_count == (i == 1 ? 11U : 2U));
+        if (i == 1) heap_packet_complete(&sample, 0); else heap_packet_empty(&sample, true, -ERANGE);
+        controller_guard_exit();
+    }
+    for (word = 0; word < 3; word++) for (neighbor = 0; neighbor < ARRAY_SIZE(raw); neighbor++) {
+        heap_packet_guard_setup(); heap_packets[0][0][word] = raw[neighbor];
+        CHECK(crystalhd_fw_research_heap_packet_sample(&adp.cmds, 42, &sample) == -ERANGE);
+        CHECK(read_count == 4);
+        heap_packet_empty(&sample, true, -ERANGE); controller_guard_exit();
+    }
+    for (i = 0; i < ARRAY_SIZE(raw); i++) {
+        heap_packet_reset(); controller_roots[0] = 0; controller_roots[1] = UINT32_MAX;
+        for (word = 0; word < 4; word++) image_words[0][word] = image_words[1][word] = UINT32_MAX;
+        for (side = 0; side < 2; side++) {
+            heap_images[0][side][3] = (raw[i] & ~0xffU) | 1U;
+            heap_images[1][side][3] = (raw[(i + 1) % ARRAY_SIZE(raw)] & ~0xffU) | 1U;
+            for (word = 0; word < 2; word++) {
+                heap_slots[0][side][word] = raw[i];
+                heap_slots[1][side][word] = raw[(i + 1) % ARRAY_SIZE(raw)];
+            }
+        }
+        for (word = 0; word < 5; word++) {
+            heap_headers[0][word] = raw[i]; heap_headers[1][word] = raw[(i + 1) % ARRAY_SIZE(raw)];
+        }
+        result = heap_packet_run();
+        CHECK(!result.image.controller.state.control.status && read_count == 37 && command_count == 5);
+        CHECK(release_count == 1 && !result.image.controller.state.control.retained);
+        image_complete(&result.image.after_init, 0); image_complete(&result.image.after_open, 1);
+        heap_packet_complete(&result.after_init, 0); heap_packet_complete(&result.after_open, 1);
+        CHECK(result.after_init.root_before != result.image.after_init.root_before &&
+            result.after_open.root_before != result.image.after_open.root_before);
+        CHECK(memcmp(result.after_init.image_before, result.image.after_init.words, sizeof(result.after_init.image_before)));
+    }
+    /* The common span primitive must independently admit section extent and
+     * actual read extent; neither a shorter read nor a larger BAR hides an end.
+     */
+    state_reset(); adp.pci_mem_len = 0x80;
+    CHECK(!crystalhd_fw_research_state_span(&adp, 0x190000, 5));
+    CHECK(crystalhd_fw_research_state_span(&adp, 0x190000, 64) == -ERANGE);
+    adp.pci_mem_len = 0x100;
+    CHECK(!crystalhd_fw_research_state_span(&adp, 0x190000, 64));
+    adp.pci_mem_len = 0xff;
+    CHECK(crystalhd_fw_research_state_span(&adp, 0x190000, 64) == -ERANGE);
+    adp.pci_mem_len = 0x10000;
+    CHECK(!crystalhd_fw_research_state_span(&adp, 0x19ffec, 5));
+    CHECK(crystalhd_fw_research_state_span(&adp, 0x19fff0, 5) == -ERANGE);
+    CHECK(!crystalhd_fw_research_state_span(&adp, 0x19ff00, 64));
+    CHECK(crystalhd_fw_research_state_span(&adp, 0x19ff04, 64) == -ERANGE);
+}
+
+static void test_heap_packet_brackets_and_guarded_publication(void)
+{
+    static const BC_STATUS failures[] = {BC_STS_IO_ERROR, BC_STS_TIMEOUT, BC_STS_IO_USER_ABORT,
+        BC_STS_CMD_CANCELLED, BC_STS_BUSY, BC_STS_PWR_MGMT, BC_STS_FW_CMD_ERR, BC_STS_INV_ARG};
+    static const int errors[] = {0, -ENODEV, -ESTALE, -EAGAIN, -EIO,
+        -EBUSY, -EBUSY, -EAGAIN, -EACCES, -ERANGE, -ENODEV};
+    struct crystalhd_fw_research_heap_packet_sample sample;
+    unsigned read, failure, phase, mutation, field;
+    for (field = 0; field < 11; field++) {
+        heap_packet_guard_setup();
+        if (field < 4) heap_images[0][1][field] ^= field == 3 ? 0x100U : 1U;
+        else if (field < 7) heap_packets[0][1][field - 4] ^= 1;
+        else if (field < 9) heap_slots[0][1][field - 7] ^= 1;
+        else if (field == 9) heap_roots[0][1] = 0;
+        else heap_images[0][1][3] ^= 1;
+        CHECK(crystalhd_fw_research_heap_packet_sample(&adp.cmds, 42, &sample) == -ESTALE);
+        CHECK(read_count == 11);
+        heap_packet_empty(&sample, true, -ESTALE); controller_guard_exit();
+    }
+    for (read = 1; read <= 11; read++) for (failure = 0; failure < ARRAY_SIZE(failures); failure++) {
+        int error = crystalhd_status_to_errno(failures[failure]);
+        heap_packet_guard_setup(); read_fail_at = read; read_status = failures[failure];
+        memset(&sample, 0xa5, sizeof(sample));
+        CHECK(crystalhd_fw_research_heap_packet_sample(&adp.cmds, 42, &sample) == error);
+        CHECK(read_count == read); heap_packet_empty(&sample, true, error); controller_guard_exit();
+    }
+    for (phase = 0; phase < 13; phase++) for (mutation = 1; mutation <= 10; mutation++) {
+        if (phase == 1 && mutation == 10) continue;
+        heap_packet_guard_setup();
+        if (phase == 0) state_mutate(mutation);
+        else if (phase == 1) transaction_mutation = mutation;
+        else { read_mutate_at = read_fail_at = phase - 1; read_mutation = mutation; read_status = BC_STS_TIMEOUT; }
+        CHECK(crystalhd_fw_research_heap_packet_sample(&adp.cmds, 42, &sample) == errors[mutation]);
+        heap_packet_empty(&sample, phase >= 2, errors[mutation]);
+        CHECK(read_count == (phase >= 2 ? phase - 1 : 0)); controller_guard_exit();
+    }
+    heap_packet_guard_setup(); transaction_error = -EINTR;
+    CHECK(crystalhd_fw_research_heap_packet_sample(&adp.cmds, 42, &sample) == -ERESTARTSYS);
+    heap_packet_empty(&sample, false, -ERESTARTSYS); CHECK(!read_count); controller_guard_exit();
+    for (mutation = 0; mutation < 13; mutation++) {
+        int error = mutation < 3 || mutation == 7 || mutation == 8 ? -ENODEV :
+            mutation == 4 ? -EBUSY : mutation == 5 ? -EOPNOTSUPP : mutation >= 9 ? -ERANGE : -EACCES;
+        heap_packet_guard_setup();
+        switch (mutation) {
+        case 0: adp.cmds.hw_ctx = NULL; break;
+        case 1: hardware.pfnDevDRAMRead = NULL; break;
+        case 2: hardware.pfnWriteDevRegister = NULL; break;
+        case 3: adp.cmds.session_module_pinned = false; break;
+        case 4: adp.cmds.state = BC_LINK_INVALID; break;
+        case 5: pci.device = 0x1612; break;
+        case 6: adp.cmds.session_owner = NULL; break;
+        case 7: adp.i2o_addr = NULL; break;
+        case 8: adp.mem_addr = NULL; break;
+        case 9: adp.pci_i2o_len = 0xffff; break;
+        case 10: adp.pci_mem_len = 0xffff; break;
+        case 11: adp.pci_i2o_len = 0; break;
+        case 12: adp.pci_mem_len = 0; break;
+        }
+        CHECK(crystalhd_fw_research_heap_packet_sample(&adp.cmds, 42, &sample) == error);
+        heap_packet_empty(&sample, false, error); CHECK(!read_count); controller_guard_exit();
+    }
+}
+
+static void test_heap_packet_progression_and_cleanup(void)
+{
+    static const BC_STATUS failures[] = {BC_STS_IO_ERROR, BC_STS_TIMEOUT, BC_STS_IO_USER_ABORT,
+        BC_STS_CMD_CANCELLED, BC_STS_BUSY, BC_STS_PWR_MGMT, BC_STS_FW_CMD_ERR, BC_STS_INV_ARG};
+    struct crystalhd_fw_research_heap_packet_result result;
+    unsigned read, stage, phase, failure;
+    for (read = 1; read <= 37; read++) for (failure = 0; failure < ARRAY_SIZE(failures); failure++) {
+        int error = crystalhd_status_to_errno(failures[failure]);
+        heap_packet_reset(); read_fail_at = read; read_status = failures[failure]; result = heap_packet_run();
+        CHECK(result.image.controller.state.control.status == error && read_count == read && release_count == 1);
+        CHECK(command_count == (read <= 19 ? 2U : 3U) && !result.image.controller.state.control.retained);
+        if (read <= 19) heap_packet_empty(&result.after_init, read >= 9, read >= 9 ? error : 0);
+        else heap_packet_complete(&result.after_init, 0);
+        heap_packet_empty(&result.after_open, read >= 27, read >= 27 ? error : 0);
+        if (read >= 9) image_complete(&result.image.after_init, 0);
+        if (read >= 27) image_complete(&result.image.after_open, 1);
+        if (read <= 19) {
+            sample_empty(&result.image.controller.state.after_open, false, 0);
+            controller_empty(&result.image.controller.after_open, false, 0);
+            image_empty(&result.image.after_open, false, 0);
+        }
+    }
+    for (stage = 0; stage < 2; stage++) for (phase = 0; phase < 14; phase++) {
+        unsigned before = stage ? 26 : 8;
+        int error = phase == 0 ? -ERANGE : phase == 1 ? -ESTALE : phase == 2 ? -ERESTARTSYS : -ENODEV;
+        heap_packet_reset();
+        if (phase == 0) heap_roots[stage][0] = 0;
+        if (phase == 1) heap_roots[stage][1]++;
+        if (phase == 2) { transaction_error = -EINTR; transaction_error_at = stage ? 9 : 5; }
+        if (phase >= 3) { read_mutate_at = before + phase - 2; read_mutation = 1; }
+        result = heap_packet_run();
+        CHECK(result.image.controller.state.control.status == error && command_count == (stage ? 3U : 2U));
+        CHECK(read_count == before + (phase == 0 ? 1U : phase == 1 ? 11U : phase == 2 ? 0U : phase - 2));
+        CHECK(release_count == (phase >= 3 ? 0 : 1) && result.image.controller.state.control.retained == (u32)(phase >= 3));
+        CHECK(result.image.controller.state.control.cleanup_attempted == (u32)(phase < 3));
+        if (phase >= 3) CHECK(result.image.controller.state.control.cleanup_status == BC_STS_CMD_CANCELLED);
+        image_complete(stage ? &result.image.after_open : &result.image.after_init, stage);
+        heap_packet_empty(stage ? &result.after_open : &result.after_init, phase != 2, error);
+        if (stage) heap_packet_complete(&result.after_init, 0); else heap_packet_empty(&result.after_open, false, 0);
+    }
+    for (stage = 0; stage < 5; stage++) {
+        heap_packet_reset(); command_status[stage] = BC_STS_TIMEOUT; result = heap_packet_run();
+        CHECK(result.image.controller.state.control.status == -ETIMEDOUT && command_count == stage + 1 && release_count == 1);
+        CHECK(read_count == (stage < 2 ? 0U : stage == 2 ? 19U : 37U));
+        if (stage < 2) heap_packet_empty(&result.after_init, false, 0); else heap_packet_complete(&result.after_init, 0);
+        if (stage < 3) heap_packet_empty(&result.after_open, false, 0); else heap_packet_complete(&result.after_open, 1);
+    }
+    heap_packet_reset(); read_mismatch_stage = 2; result = heap_packet_run();
+    CHECK(result.image.controller.state.control.status == -EPROTO && read_count == 4 && command_count == 2);
+    heap_packet_empty(&result.after_init, false, 0); heap_packet_empty(&result.after_open, false, 0);
+    heap_packet_reset(); image_roots[1][1]++; result = heap_packet_run();
+    CHECK(result.image.controller.state.control.status == -ESTALE && read_count == 26 && command_count == 3);
+    heap_packet_complete(&result.after_init, 0); heap_packet_empty(&result.after_open, false, 0);
+    heap_packet_reset(); heap_roots[0][0] = 0xffdac; release_status = BC_STS_IO_ERROR; release_retains = true;
+    result = heap_packet_run(); CHECK(result.image.controller.state.control.status == -ERANGE && result.image.controller.state.control.retained);
+    CHECK(result.image.controller.state.control.cleanup_status == BC_STS_IO_ERROR && read_count == 12 && command_count == 2);
+    heap_packet_empty(&result.after_init, true, -ERANGE); heap_packet_empty(&result.after_open, false, 0);
+    heap_packet_reset(); release_status = BC_STS_IO_ERROR; release_retains = true; result = heap_packet_run();
+    CHECK(result.image.controller.state.control.status == -EIO && result.image.controller.state.control.retained);
+    heap_packet_complete(&result.after_init, 0); heap_packet_complete(&result.after_open, 1);
+    for (phase = 0; phase < 6; phase++) {
+        heap_packet_reset();
+        if (phase == 0) firmware.size--;
+        if (phase == 1) bad_digest = true;
+        if (phase == 2) adp.cfg_users = 1;
+        if (phase == 3) privileged = false;
+        if (phase == 4) module.state = MODULE_STATE_COMING;
+        if (phase == 5) adp.generation++;
+        result = heap_packet_run(); CHECK(!acquire_count && !download_count && !command_count && !read_count);
+        CHECK(result.image.controller.state.control.status == (phase == 0 ? -EINVAL : phase == 1 ? -EKEYREJECTED :
+            phase == 2 ? -EBUSY : phase == 3 ? -EPERM : phase == 4 ? -EAGAIN : -ESTALE));
+        heap_packet_empty(&result.after_init, false, 0); heap_packet_empty(&result.after_open, false, 0);
+    }
+}
+
+static void test_heap_packet_ioctl_and_compat(void)
+{
+    struct inode inode = {0}; struct file file = {0};
+    struct crystalhd_fw_research_heap_packet_result result;
+    unsigned long arg = (unsigned long)&result;
+    const unsigned malformed[] = {_IO('R', 0x97), _IOR('R', 0x97, struct crystalhd_fw_research_heap_packet_result),
+        _IOW('R', 0x97, struct crystalhd_fw_research_heap_packet_result),
+        _IOWR('R', 0x97, struct crystalhd_fw_research_packet_result),
+        _IOWR('R', 0x97, struct crystalhd_fw_research_image_result),
+        _IOWR('R', 0x97, struct crystalhd_fw_research_state_request),
+        _IOWR('S', 0x97, struct crystalhd_fw_research_heap_packet_result)};
+    const unsigned old[] = {CRYSTALHD_FW_RESEARCH_RUN_STATE, CRYSTALHD_FW_RESEARCH_RUN_CONTROLLER,
+        CRYSTALHD_FW_RESEARCH_RUN_IMAGE, CRYSTALHD_FW_RESEARCH_RUN_PACKET};
+    const u32 sizes[] = {1488, 1600, 1632, 1712, 1816, 1951, 1953, UINT32_MAX};
+    struct crystalhd_fw_research_state_request req;
+    unsigned field;
+    heap_packet_reset(); req = heap_packet_request(); CHECK(crystalhd_fw_research_heap_packet_request_valid(&req));
+    CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_HEAP_PACKET, arg) == -ENODEV);
+    CHECK(!crystalhd_fw_research_open(&inode, &file));
+    for (field = 0; field < ARRAY_SIZE(malformed); field++)
+        CHECK(crystalhd_fw_research_ioctl(&file, malformed[field], arg) == -ENOTTY);
+    result.image.controller.state.request = req;
+    for (field = 0; field < ARRAY_SIZE(old); field++)
+        CHECK(crystalhd_fw_research_ioctl(&file, old[field], arg) == -EINVAL);
+    for (field = 0; field < ARRAY_SIZE(sizes) + 3; field++) {
+        memset(&result, 0, sizeof(result)); result.image.controller.state.request = heap_packet_request();
+        if (field < ARRAY_SIZE(sizes)) result.image.controller.state.request.size = sizes[field];
+        else if (field == ARRAY_SIZE(sizes)) result.image.controller.state.request.version++;
+        else if (field == ARRAY_SIZE(sizes) + 1) result.image.controller.state.request.flags = 1;
+        else result.image.controller.state.request.reserved = 1;
+        CHECK(!crystalhd_fw_research_heap_packet_request_valid(&result.image.controller.state.request));
+        CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_HEAP_PACKET, arg) == -EINVAL);
+    }
+    result.image.controller.state.request = heap_packet_request(); copy_in_error = true;
+    CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_HEAP_PACKET, arg) == -EFAULT);
+    copy_in_error = false; allocation_fail = allocations + 1;
+    CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_HEAP_PACKET, arg) == -ENOMEM); no_hardware();
+    allocation_fail = 0;
+    CHECK(!crystalhd_fw_research_compat_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_HEAP_PACKET, arg));
+    CHECK(!result.image.controller.state.control.status && command_count == 5 && read_count == 37);
+    CHECK(result.image.controller.state.request.size == 1952 && result.image.controller.state.control.request.size == 1488);
+    heap_packet_complete(&result.after_init, 0); heap_packet_complete(&result.after_open, 1);
+    CHECK(!crystalhd_fw_research_release(&inode, &file) && !live_allocations);
+    heap_packet_reset(); CHECK(!crystalhd_fw_research_open(&inode, &file)); result.image.controller.state.request = heap_packet_request();
+    copy_out_error = true;
+    CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_HEAP_PACKET, arg) == -EFAULT);
+    CHECK(release_count == 1 && read_count == 37 && !adp.cmds.session_owner);
+    CHECK(!crystalhd_fw_research_release(&inode, &file));
+    heap_packet_reset(); CHECK(!crystalhd_fw_research_open(&inode, &file)); result.image.controller.state.request = heap_packet_request();
+    chd_device_generation++;
+    CHECK(!crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_HEAP_PACKET, arg));
+    CHECK(result.image.controller.state.control.status == -ENODEV); no_hardware();
+    heap_packet_empty(&result.after_init, false, 0); heap_packet_empty(&result.after_open, false, 0);
+    CHECK(!crystalhd_fw_research_release(&inode, &file) && !live_allocations);
+}
+
 int main(void)
 {
     _Static_assert(sizeof(struct crystalhd_fw_research_info) == 64, "info ABI");
@@ -2081,6 +2509,26 @@ int main(void)
     _Static_assert(offsetof(struct crystalhd_fw_research_packet_result, after_init) == 1712, "packet init ABI");
     _Static_assert(offsetof(struct crystalhd_fw_research_packet_result, after_open) == 1764, "packet open ABI");
     _Static_assert(CRYSTALHD_FW_RESEARCH_RUN_PACKET == 0xc7185296U, "packet ioctl ABI");
+    _Static_assert(sizeof(struct crystalhd_fw_research_heap_packet_sample) == 120, "heap packet sample ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_heap_packet_sample, image_before) == 24, "heap image before ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_heap_packet_sample, image_after) == 40, "heap image after ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_heap_packet_sample, packet_before) == 56, "heap packet before ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_heap_packet_sample, packet_after) == 68, "heap packet after ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_heap_packet_sample, packet_address) == 80, "heap packet address ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_heap_packet_sample, header_words) == 84, "heap header ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_heap_packet_sample, slots_before) == 104, "heap slots before ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_heap_packet_sample, slots_after) == 112, "heap slots after ABI");
+    _Static_assert(sizeof(struct crystalhd_fw_research_heap_packet_result) == 1952, "heap packet result ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_heap_packet_result, image) == 0, "heap image result ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_heap_packet_result, after_init) == 1712, "heap packet init ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_heap_packet_result, after_open) == 1832, "heap packet open ABI");
+    _Static_assert(CRYSTALHD_FW_RESEARCH_RUN_HEAP_PACKET == 0xc7a05297U, "heap packet ioctl ABI");
+    _Static_assert(CRYSTALHD_FW_RESEARCH_HEAP_IMAGE_MIN == 0x117000U &&
+                   CRYSTALHD_FW_RESEARCH_HEAP_IMAGE_BYTES == 0x100000U &&
+                   CRYSTALHD_FW_RESEARCH_HEAP_END == 0x3ffc000U, "heap admission bounds");
+    _Static_assert(CRYSTALHD_FW_RESEARCH_HEAP_PACKET_OFFSET == 0x70000U &&
+                   CRYSTALHD_FW_RESEARCH_HEAP_PACKET_BYTES == 256U &&
+                   CRYSTALHD_FW_RESEARCH_REPLY_SLOTS_OFFSET == 0x250U, "fixed heap spans");
     _Static_assert(CRYSTALHD_FW_RESEARCH_H261_CONTROL == 3 && CRYSTALHD_FW_RESEARCH_H263_CONTROL == 4 &&
                    CRYSTALHD_FW_RESEARCH_MPEG1_CONTROL == 5 && CRYSTALHD_FW_RESEARCH_SELECTOR_MASK == 2047, "named selectors");
     _Static_assert(CRYSTALHD_FW_RESEARCH_SCALING_FILTERS_COMMAND == 6 &&
@@ -2093,6 +2541,8 @@ int main(void)
     test_controller_guarded_publication(); test_controller_stage_fences(); test_controller_ioctl_and_compat();
     test_image_admission_and_publication(); test_image_progression_and_cleanup(); test_image_ioctl_and_compat();
     test_packet_admission_and_publication(); test_packet_progression_and_cleanup(); test_packet_ioctl_and_compat();
+    test_heap_packet_admission_and_raw_payload(); test_heap_packet_brackets_and_guarded_publication();
+    test_heap_packet_progression_and_cleanup(); test_heap_packet_ioctl_and_compat();
     CHECK(!live_allocations); unlocked();
     printf("Firmware probe: %u checks passed\n", checks);
     return 0;
