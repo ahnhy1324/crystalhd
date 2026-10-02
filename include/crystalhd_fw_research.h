@@ -148,4 +148,28 @@ struct crystalhd_fw_research_image_result {
 #define CRYSTALHD_FW_RESEARCH_RUN_IMAGE \
 	_IOWR('R', 0x95, struct crystalhd_fw_research_image_result)
 
+struct crystalhd_fw_research_packet_sample {
+	__u32 attempted;
+	__s32 status;
+	/* Completed bracketed reads, not lifetime, ownership or coherence. */
+	__u32 read_complete;
+	__u32 reserved;
+	__u32 root_before;
+	__u32 root_after;
+	/* Same raw image tuple order as image_sample.words. */
+	__u32 image_words[4];
+	/* Raw order: virtual packet aliases C+0x94/C+0x98, physical packet C+0x1cc. */
+	__u32 packet_words[3];
+};
+
+struct crystalhd_fw_research_packet_result {
+	struct crystalhd_fw_research_image_result image;
+	struct crystalhd_fw_research_packet_sample after_init;
+	struct crystalhd_fw_research_packet_sample after_open;
+};
+
+/* Fixed C-relative fields only; returned image/packet pointers are never followed. */
+#define CRYSTALHD_FW_RESEARCH_RUN_PACKET \
+	_IOWR('R', 0x96, struct crystalhd_fw_research_packet_result)
+
 #endif

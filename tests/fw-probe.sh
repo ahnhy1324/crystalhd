@@ -90,7 +90,9 @@ assert digest == hashlib.sha256(blob).digest()
 assert len(blob) == 0xd3014 and struct.unpack_from('<I', blob, 0x6fc)[0] == 0xd3a00
 for offset, word in ((0x28340, 0xe58401ac), (0x28348, 0xe58401b0),
                      (0x2837c, 0xe58401b4), (0x283d0, 0xe5c401b8),
-                     (0x283d8, 0xe58401b4), (0x2c1c4, 0xe5c401b9)):
+                     (0x283d8, 0xe58401b4), (0x2c1c4, 0xe5c401b9),
+                     (0x28180, 0xe5840094), (0x28188, 0xe5840098),
+                     (0x280f4, 0xe58401cc)):
     assert struct.unpack_from('<I', blob, offset)[0] == word
 assert digest.hex() == re.search(r'CRYSTALHD_FW_RESEARCH_FIRMWARE_SHA256\s+\\\s*"([0-9a-f]+)"', uapi).group(1)
 legacy = (root / 'include/7411d.h').read_text()
@@ -182,6 +184,18 @@ _Static_assert(offsetof(struct crystalhd_fw_research_image_result, after_init) =
 _Static_assert(offsetof(struct crystalhd_fw_research_image_result, after_open) == 1672, "image open");
 _Static_assert(_IOC_SIZE(CRYSTALHD_FW_RESEARCH_RUN_IMAGE) == 1712, "image encoding");
 _Static_assert(CRYSTALHD_FW_RESEARCH_RUN_IMAGE == 0xc6b05295U, "image ioctl");
+_Static_assert(sizeof(struct crystalhd_fw_research_packet_sample) == 52, "packet sample");
+_Static_assert(offsetof(struct crystalhd_fw_research_packet_sample, reserved) == 12, "packet padding");
+_Static_assert(offsetof(struct crystalhd_fw_research_packet_sample, root_before) == 16, "packet before");
+_Static_assert(offsetof(struct crystalhd_fw_research_packet_sample, root_after) == 20, "packet after");
+_Static_assert(offsetof(struct crystalhd_fw_research_packet_sample, image_words) == 24, "packet image words");
+_Static_assert(offsetof(struct crystalhd_fw_research_packet_sample, packet_words) == 40, "packet words");
+_Static_assert(sizeof(struct crystalhd_fw_research_packet_result) == 1816, "packet result");
+_Static_assert(offsetof(struct crystalhd_fw_research_packet_result, image) == 0, "packet image");
+_Static_assert(offsetof(struct crystalhd_fw_research_packet_result, after_init) == 1712, "packet init");
+_Static_assert(offsetof(struct crystalhd_fw_research_packet_result, after_open) == 1764, "packet open");
+_Static_assert(_IOC_SIZE(CRYSTALHD_FW_RESEARCH_RUN_PACKET) == 1816, "packet encoding");
+_Static_assert(CRYSTALHD_FW_RESEARCH_RUN_PACKET == 0xc7185296U, "packet ioctl");
 _Static_assert(CRYSTALHD_FW_RESEARCH_VERSION_ONLY == 1U, "existing version selector");
 _Static_assert(CRYSTALHD_FW_RESEARCH_H264_CONTROL == 2U, "existing H264 selector");
 _Static_assert(CRYSTALHD_FW_RESEARCH_H261_CONTROL == 3U, "H261 selector");
@@ -264,6 +278,7 @@ for probe_sanitize in no yes; do
         "$probe_test_dir/cli-check" --state-json-examples
         "$probe_test_dir/cli-check" --controller-json-examples
         "$probe_test_dir/cli-check" --image-json-examples
+        "$probe_test_dir/cli-check" --packet-json-examples
     } | "${PYTHON3:-python3}" -B -c '
 import json, sys
 def unique_object(pairs):
@@ -276,7 +291,7 @@ def invalid_constant(value):
     raise AssertionError("non-JSON constant: " + value)
 lines = list(sys.stdin)
 examples = [json.loads(line, object_pairs_hook=unique_object, parse_constant=invalid_constant) for line in lines]
-assert len(examples) == 491
+assert len(examples) == 542
 info, version, h264, failure, nohash, rejectedhash, h261, h263, mpeg1, rejected, readfail = examples[:11]
 assert info["generation"] == "42" and info["research_selector_mask"] == 2047
 assert lines[0] == "{\"version\":1,\"generation\":\"42\",\"research_selector_mask\":2047,\"expected_firmware_sha256\":\"" + info["expected_firmware_sha256"] + "\"}\n"
@@ -486,7 +501,8 @@ assert all(states[i]["control"]["status"] < 0 for i in range(4, 67))
 assert states[67]["control"]["status"] == 0
 print("Firmware probe CLI: 68 fixed-state strict JSON examples verified")
 controllers = examples[376:449]
-images = examples[449:]
+images = examples[449:491]
+packets = examples[491:]
 root_names = ("after_init", "after_open")
 root_values = (0, 1, 0xd5380, 0xd5384, 0xd5385, 0x115c88, 0x115c89,
                0x115c8c, 0x115ffc, 0x116000, 0x80000000, 0xfffffc88, 0xffffffff)
@@ -495,7 +511,7 @@ expected_scope = {"fixed_root_read_address": 0xd3a08, "candidate_lower_bound": 0
                   "returned_pointer_followed": False, "ownership_established": False,
                   "coherence_established": False, "lease_established": False,
                   "equality_excludes_aba": False}
-for result in controllers + [image["controller"] for image in images]:
+for result in controllers + [image["controller"] for image in images] + [packet["image"]["controller"] for packet in packets]:
     assert set(result) == {"version", "controller_root", "control", "fixed_state_samples",
                            "controller_root_samples", "root_values_equal", "scope"}
     assert result["version"] == 1 and result["controller_root"] is True
@@ -582,7 +598,7 @@ expected_image_scope = {"fresh_root_lower_bound": 0xd53dc, "tuple_word_offset": 
                         "controller_root_used_for_fixed_tuple": True, "tuple_values_followed": False,
                         "ownership_established": False, "coherence_established": False,
                         "lease_established": False, "bracket_equality_excludes_aba": False}
-for result in images:
+for result in images + [packet["image"] for packet in packets]:
     assert set(result) == {"version", "controller_image", "controller", "image_samples", "scope"}
     assert result["version"] == 1 and result["controller_image"] is True
     assert result["scope"] == expected_image_scope
@@ -645,5 +661,71 @@ assert images[17]["image_samples"]["after_init"]["root_before"] != images[17]["i
 assert all(images[i]["controller"]["control"]["status"] < 0 for i in range(18, 41))
 assert images[41]["controller"]["control"]["status"] == 0
 print("Firmware probe CLI: 42 bounded image-tuple strict JSON examples verified")
+expected_packet_scope = {"fresh_root_lower_bound": 0xd53dc, "image_word_offset": 0x1ac,
+                         "packet_aliases_offset": 0x94, "packet_physical_offset": 0x1cc,
+                         "controller_root_used_for_fixed_fields": True, "returned_values_followed": False,
+                         "ownership_established": False, "coherence_established": False,
+                         "lease_established": False, "dma_suitability_established": False,
+                         "bracket_equality_excludes_aba": False}
+for result in packets:
+    assert set(result) == {"version", "controller_packet", "image", "packet_samples", "scope"}
+    assert result["version"] == 1 and result["controller_packet"] is True
+    assert result["scope"] == expected_packet_scope
+    assert result["scope"]["controller_root_used_for_fixed_fields"] is True
+    for key in ("returned_values_followed", "ownership_established", "coherence_established",
+                "lease_established", "dma_suitability_established", "bracket_equality_excludes_aba"):
+        assert result["scope"][key] is False
+    control = result["image"]["controller"]["control"]
+    samples = result["packet_samples"]
+    assert set(samples) == set(root_names)
+    previous = True
+    for index, name in enumerate(root_names):
+        sample = samples[name]
+        assert set(sample) == {"attempted", "status", "read_complete", "root_before", "root_after",
+                               "image_words", "packet_words"}
+        assert type(sample["attempted"]) is bool and type(sample["read_complete"]) is bool
+        assert type(sample["status"]) is int and -4095 <= sample["status"] <= 0
+        prior = result["image"]["image_samples"][name]
+        ready = prior["attempted"] and prior["read_complete"] and prior["status"] == 0
+        active = sample["attempted"] or sample["status"] != 0 or sample["read_complete"]
+        assert active == ready
+        if sample["read_complete"]:
+            assert sample["attempted"] and sample["status"] == 0
+            before, after = sample["root_before"], sample["root_after"]
+            u32(before); u32(after)
+            assert before == after and before % 4 == 0
+            assert 0xd53dc <= before <= 0x116000 - 0x378
+            # Independent page-quotient oracle for each constituent span.
+            for offset, length in ((0x1ac, 16), (0x94, 8), (0x1cc, 4)):
+                start, last = before + offset, before + offset + length - 1
+                assert start // 65536 == last // 65536
+            for key, length in (("image_words", 4), ("packet_words", 3)):
+                assert isinstance(sample[key], list) and len(sample[key]) == length
+                for word in sample[key]:
+                    u32(word)
+            # No relationship with preceding roots/tuples or among returned
+            # values is a protocol success, ownership or DMA predicate.
+        else:
+            assert all(sample[key] is None for key in ("root_before", "root_after", "image_words", "packet_words"))
+            assert not sample["attempted"] or sample["status"] < 0
+        if active:
+            assert previous
+        if sample["status"]:
+            assert control["status"] == sample["status"] and control["command_count"] == index + 2
+        previous = sample["read_complete"] and sample["status"] == 0
+    if control["command_count"] > 2:
+        assert samples["after_init"]["read_complete"] and samples["after_init"]["status"] == 0
+    if control["command_count"] > 3:
+        assert samples["after_open"]["read_complete"] and samples["after_open"]["status"] == 0
+    if control["status"] == 0:
+        assert all(samples[name]["read_complete"] for name in root_names)
+assert all(packets[i]["image"]["controller"]["control"]["status"] == 0 for i in range(25))
+assert packets[21]["packet_samples"]["after_init"]["image_words"][3] == 0x101
+assert packets[24]["packet_samples"]["after_init"]["root_before"] != packets[24]["image"]["image_samples"]["after_init"]["root_before"]
+assert packets[24]["packet_samples"]["after_init"]["image_words"] != packets[24]["image"]["image_samples"]["after_init"]["raw_words"]
+assert packets[24]["packet_samples"]["after_init"]["root_before"] != packets[24]["packet_samples"]["after_open"]["root_before"]
+assert all(packets[i]["image"]["controller"]["control"]["status"] < 0 for i in range(25, 50))
+assert packets[50]["image"]["controller"]["control"]["status"] == 0
+print("Firmware probe CLI: 51 bounded packet-linkage strict JSON examples verified")
 '
 done

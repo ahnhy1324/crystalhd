@@ -31,6 +31,8 @@ static const u8 crystalhd_fw_research_owner;
 #define CRYSTALHD_FW_RESEARCH_IMAGE_CONTEXT_END 0x00116000U
 #define CRYSTALHD_FW_RESEARCH_IMAGE_CONTEXT_BYTES 0x378U
 #define CRYSTALHD_FW_RESEARCH_IMAGE_TUPLE_OFFSET 0x1acU
+#define CRYSTALHD_FW_RESEARCH_PACKET_ALIASES_OFFSET 0x94U
+#define CRYSTALHD_FW_RESEARCH_PACKET_PHYSICAL_OFFSET 0x1ccU
 #define CRYSTALHD_FW_RESEARCH_STATE_FIRMWARE_SIZE 0x000d3014U
 
 static const u8 crystalhd_fw_research_sha256[SHA256_DIGEST_SIZE] = {
@@ -117,6 +119,14 @@ static bool crystalhd_fw_research_image_request_valid(
 {
 	return request->version == CRYSTALHD_FW_RESEARCH_VERSION &&
 		request->size == sizeof(struct crystalhd_fw_research_image_result) &&
+		!request->flags && !request->reserved;
+}
+
+static bool crystalhd_fw_research_packet_request_valid(
+	const struct crystalhd_fw_research_state_request *request)
+{
+	return request->version == CRYSTALHD_FW_RESEARCH_VERSION &&
+		request->size == sizeof(struct crystalhd_fw_research_packet_result) &&
 		!request->flags && !request->reserved;
 }
 
@@ -499,17 +509,16 @@ done:
 	return rc;
 }
 
-static int crystalhd_fw_research_image_sample(struct crystalhd_cmd *ctx,
-	u64 generation, struct crystalhd_fw_research_image_sample *sample)
+static int crystalhd_fw_research_bounded_read(struct crystalhd_cmd *ctx,
+	u64 generation, u32 roots[2], u32 image_words[4], u32 *packet_words,
+	u32 *attempted)
 {
 	struct crystalhd_hw *hw = ctx->hw_ctx;
-	u32 roots[2] = { }, words[4] = { };
 	unsigned long flags;
 	unsigned int i;
 	BC_STATUS sts;
 	int rc;
 
-	memset(sample, 0, sizeof(*sample));
 	rc = crystalhd_fw_research_state_context(ctx, generation, hw);
 	if (rc)
 		goto done;
@@ -520,16 +529,17 @@ static int crystalhd_fw_research_image_sample(struct crystalhd_cmd *ctx,
 			rc = -ENODEV;
 		goto done;
 	}
-	/* One bounded tuple between fresh fixed-root reads, under the same host
-	 * fence. Address admission and root equality do not certify a live object.
+	/* Fixed C-relative fields between fresh roots, under one host fence.
+	 * No observed image/packet field selects an address. Equal roots do not
+	 * certify a live object, firmware coherence or freedom from ABA changes.
 	 */
 	spin_lock_irqsave(&hw->lock, flags);
 	rc = crystalhd_fw_research_state_ready(ctx, generation, hw);
 	if (rc)
 		goto unlock;
-	for (i = 0; i < 3; i++) {
+	for (i = 0; i < (packet_words ? 5U : 3U); i++) {
 		u32 offset = CRYSTALHD_FW_RESEARCH_CONTROLLER_ROOT_OFFSET, count = 1;
-		u32 *destination = i == 1 ? words : &roots[i == 2];
+		u32 *destination = &roots[i != 0];
 
 		if (i == 1) {
 			if ((roots[0] & 3U) ||
@@ -540,7 +550,15 @@ static int crystalhd_fw_research_image_sample(struct crystalhd_cmd *ctx,
 				goto unlock;
 			}
 			offset = roots[0] + CRYSTALHD_FW_RESEARCH_IMAGE_TUPLE_OFFSET;
-			count = ARRAY_SIZE(words);
+			count = 4;
+			destination = image_words;
+		} else if (packet_words && i == 2) {
+			offset = roots[0] + CRYSTALHD_FW_RESEARCH_PACKET_ALIASES_OFFSET;
+			count = 2;
+			destination = packet_words;
+		} else if (packet_words && i == 3) {
+			offset = roots[0] + CRYSTALHD_FW_RESEARCH_PACKET_PHYSICAL_OFFSET;
+			destination = &packet_words[2];
 		}
 		rc = crystalhd_fw_research_state_span(ctx->adp, offset, count);
 		if (!rc)
@@ -548,7 +566,7 @@ static int crystalhd_fw_research_image_sample(struct crystalhd_cmd *ctx,
 		if (rc)
 			goto unlock;
 		if (!i)
-			sample->attempted = 1;
+			*attempted = 1;
 		sts = hw->pfnDevDRAMRead(hw, offset, count, destination);
 		rc = crystalhd_fw_research_state_ready(ctx, generation, hw);
 		if (!rc)
@@ -560,14 +578,48 @@ static int crystalhd_fw_research_image_sample(struct crystalhd_cmd *ctx,
 		rc = -ESTALE;
 		goto unlock;
 	}
-	sample->root_before = roots[0];
-	sample->root_after = roots[1];
-	memcpy(sample->words, words, sizeof(words));
-	sample->read_complete = 1;
 unlock:
 	spin_unlock_irqrestore(&hw->lock, flags);
 	crystalhd_hw_fw_cmd_leave(hw);
 done:
+	return rc;
+}
+
+static int crystalhd_fw_research_image_sample(struct crystalhd_cmd *ctx,
+	u64 generation, struct crystalhd_fw_research_image_sample *sample)
+{
+	u32 roots[2] = { }, words[4] = { };
+	int rc;
+
+	memset(sample, 0, sizeof(*sample));
+	rc = crystalhd_fw_research_bounded_read(ctx, generation, roots, words,
+					      NULL, &sample->attempted);
+	if (!rc) {
+		sample->root_before = roots[0];
+		sample->root_after = roots[1];
+		memcpy(sample->words, words, sizeof(words));
+		sample->read_complete = 1;
+	}
+	sample->status = rc;
+	return rc;
+}
+
+static int crystalhd_fw_research_packet_sample(struct crystalhd_cmd *ctx,
+	u64 generation, struct crystalhd_fw_research_packet_sample *sample)
+{
+	u32 roots[2] = { }, image_words[4] = { }, packet_words[3] = { };
+	int rc;
+
+	memset(sample, 0, sizeof(*sample));
+	rc = crystalhd_fw_research_bounded_read(ctx, generation, roots, image_words,
+					      packet_words, &sample->attempted);
+	if (!rc) {
+		sample->root_before = roots[0];
+		sample->root_after = roots[1];
+		memcpy(sample->image_words, image_words, sizeof(image_words));
+		memcpy(sample->packet_words, packet_words, sizeof(packet_words));
+		sample->read_complete = 1;
+	}
 	sample->status = rc;
 	return rc;
 }
@@ -577,7 +629,8 @@ static void crystalhd_fw_research_run_internal(u64 generation,
 	struct crystalhd_fw_research_result *result,
 	struct crystalhd_fw_research_state_result *state,
 	struct crystalhd_fw_research_controller_result *controller,
-	struct crystalhd_fw_research_image_result *image)
+	struct crystalhd_fw_research_image_result *image,
+	struct crystalhd_fw_research_packet_result *packet)
 {
 	struct crystalhd_device_access access;
 	struct crystalhd_cmd *ctx;
@@ -601,6 +654,10 @@ static void crystalhd_fw_research_run_internal(u64 generation,
 	if (image) {
 		memset(&image->after_init, 0, sizeof(image->after_init));
 		memset(&image->after_open, 0, sizeof(image->after_open));
+	}
+	if (packet) {
+		memset(&packet->after_init, 0, sizeof(packet->after_init));
+		memset(&packet->after_open, 0, sizeof(packet->after_open));
 	}
 	result->request = *request;
 	result->generation = generation;
@@ -694,6 +751,12 @@ static void crystalhd_fw_research_run_internal(u64 generation,
 			if (rc)
 				goto cleanup;
 		}
+		if (packet) {
+			rc = crystalhd_fw_research_packet_sample(ctx, generation,
+						       &packet->after_init);
+			if (rc)
+				goto cleanup;
+		}
 	}
 	raw_command = crystalhd_fw_research_raw_command(request->selector);
 	if (raw_command) {
@@ -717,6 +780,12 @@ static void crystalhd_fw_research_run_internal(u64 generation,
 		if (image) {
 			rc = crystalhd_fw_research_image_sample(ctx, generation,
 						      &image->after_open);
+			if (rc)
+				goto cleanup;
+		}
+		if (packet) {
+			rc = crystalhd_fw_research_packet_sample(ctx, generation,
+						       &packet->after_open);
 			if (rc)
 				goto cleanup;
 		}
@@ -756,7 +825,7 @@ static void crystalhd_fw_research_run(u64 generation,
 	const struct crystalhd_fw_research_request *request,
 	struct crystalhd_fw_research_result *result)
 {
-	crystalhd_fw_research_run_internal(generation, request, result, NULL, NULL, NULL);
+	crystalhd_fw_research_run_internal(generation, request, result, NULL, NULL, NULL, NULL);
 }
 
 struct crystalhd_fw_research_file {
@@ -832,6 +901,7 @@ static long crystalhd_fw_research_ioctl(struct file *file, unsigned int command,
 	struct crystalhd_fw_research_state_result *state_result;
 	struct crystalhd_fw_research_controller_result *controller_result;
 	struct crystalhd_fw_research_image_result *image_result;
+	struct crystalhd_fw_research_packet_result *packet_result;
 	struct crystalhd_fw_research_request request;
 	struct crystalhd_fw_research_result *result;
 	void __user *user = (void __user *)argument;
@@ -859,7 +929,7 @@ static long crystalhd_fw_research_ioctl(struct file *file, unsigned int command,
 		request.size = sizeof(struct crystalhd_fw_research_result);
 		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
 		crystalhd_fw_research_run_internal(binding->generation, &request,
-						 &state_result->control, state_result, NULL, NULL);
+						 &state_result->control, state_result, NULL, NULL, NULL);
 		if (copy_to_user(user, state_result, sizeof(*state_result)))
 			rc = -EFAULT;
 		kfree(state_result);
@@ -880,7 +950,7 @@ static long crystalhd_fw_research_ioctl(struct file *file, unsigned int command,
 		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
 		crystalhd_fw_research_run_internal(binding->generation, &request,
 			&controller_result->state.control, &controller_result->state,
-			controller_result, NULL);
+			controller_result, NULL, NULL);
 		if (copy_to_user(user, controller_result, sizeof(*controller_result)))
 			rc = -EFAULT;
 		kfree(controller_result);
@@ -901,10 +971,32 @@ static long crystalhd_fw_research_ioctl(struct file *file, unsigned int command,
 		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
 		crystalhd_fw_research_run_internal(binding->generation, &request,
 			&image_result->controller.state.control,
-			&image_result->controller.state, &image_result->controller, image_result);
+			&image_result->controller.state, &image_result->controller, image_result, NULL);
 		if (copy_to_user(user, image_result, sizeof(*image_result)))
 			rc = -EFAULT;
 		kfree(image_result);
+		return rc;
+	}
+	if (command == CRYSTALHD_FW_RESEARCH_RUN_PACKET) {
+		if (copy_from_user(&state_request, user, sizeof(state_request)))
+			return -EFAULT;
+		if (!crystalhd_fw_research_packet_request_valid(&state_request))
+			return -EINVAL;
+		packet_result = kzalloc(sizeof(*packet_result), GFP_KERNEL);
+		if (!packet_result)
+			return -ENOMEM;
+		packet_result->image.controller.state.request = state_request;
+		memset(&request, 0, sizeof(request));
+		request.version = CRYSTALHD_FW_RESEARCH_VERSION;
+		request.size = sizeof(struct crystalhd_fw_research_result);
+		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
+		crystalhd_fw_research_run_internal(binding->generation, &request,
+			&packet_result->image.controller.state.control,
+			&packet_result->image.controller.state, &packet_result->image.controller,
+			&packet_result->image, packet_result);
+		if (copy_to_user(user, packet_result, sizeof(*packet_result)))
+			rc = -EFAULT;
+		kfree(packet_result);
 		return rc;
 	}
 	if (command != CRYSTALHD_FW_RESEARCH_RUN)
