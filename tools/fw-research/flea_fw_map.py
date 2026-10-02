@@ -25,6 +25,12 @@ MAX_METADATA_OUTPUT_BYTES = 16 * 1024 * 1024  # Retained symbols and section nam
 MAX_REFERENCE_OUTPUT_BYTES = 32 * 1024 * 1024  # Conservative JSON size accounting.
 MAX_BOOTSTRAP_ANCHORS = 256  # Fixed, audited ARM instructions; never a general scan.
 MAX_PICTURE_OUTPUT_ANCHORS = 192  # Separate fixed picture-path inventory, not a scan.
+MAX_ARC_COMMENT_BYTES = 4096
+MAX_ARC_COMMENT_RECORDS = 128
+MAX_ARC_METADATA_STRING_BYTES = 128
+MAX_ARC_EXTENSION_BYTES = 112
+MAX_ARC_EXTENSION_RECORDS = 10
+MAX_ARC_METADATA_BYTES = 2 * (MAX_ARC_COMMENT_BYTES + MAX_ARC_EXTENSION_BYTES)
 DEFAULT_SYMBOLS = (
     "Arc_UartInit", "Arc_UartPoll", "ArcGetc", "ArcPutc", "ArcCommandBuffer",
     "ReadLine", "MatchKeyword", "Core_Command", "CmdPeek", "CmdCore",
@@ -65,6 +71,144 @@ def bounded(data, offset, size, description):
     if offset < 0 or size < 0 or offset > len(data) - size:
         raise FormatError(f"{description} extends outside the firmware payload")
     return data[offset:offset + size]
+
+
+def _arc_comment(data, base, expected_count):
+    """Validate stored compiler hints, not the meaning of vendor core options."""
+    if not data or len(data) > MAX_ARC_COMMENT_BYTES or data[-1] != 0:
+        raise FormatError("invalid ARC comment size or termination")
+    if data.count(b"\0") > MAX_ARC_COMMENT_RECORDS:
+        raise FormatError("ARC comment record budget exceeded")
+    records = data[:-1].split(b"\0")
+    if any(not record or len(record) > MAX_ARC_METADATA_STRING_BYTES or
+           any(byte < 32 or byte > 126 for byte in record.replace(b"\n", b""))
+           for record in records):
+        raise FormatError("invalid ARC comment record")
+    linker = b"MetaWare Linker v8.4.6\n"
+    compiler = b"hc8.4.18 -a4 -core8 -O -Xbs "
+    if not records[0].startswith(linker):
+        raise FormatError("ARC linker hint does not match the baseline")
+    records[0] = records[0][len(linker):]
+    if len(records) != expected_count * 2:
+        raise FormatError("ARC compiler record count does not match the baseline")
+    for index in range(0, len(records), 2):
+        if (not records[index].startswith(compiler) or
+                not re.fullmatch(rb"[A-Za-z_][A-Za-z_0-9]*\.c", records[index][len(compiler):]) or
+                records[index + 1] != b"11202009.075353"):
+            raise FormatError("ARC compiler hint record does not match the baseline")
+    return {"linker_hint": linker[:-1].decode("ascii"),
+            "compiler_hint": compiler.rstrip().decode("ascii"),
+            "compiler_record_count": expected_count, "nul_record_count": len(records),
+            "first_compiler_record_blob_file_offset": base + len(linker)}
+
+
+def _arc_extensions(data, base):
+    """Strict declarations only; GNU 2.23.2 arc-ext.c:159-172 defines the layout."""
+    if not data or len(data) > MAX_ARC_EXTENSION_BYTES:
+        raise FormatError("ARC extension byte budget exceeded")
+    records, identities, names = [], set(), set()
+    offset = 0
+    while offset < len(data):
+        if len(records) >= MAX_ARC_EXTENSION_RECORDS:
+            raise FormatError("ARC extension record budget exceeded")
+        if len(data) - offset < 2:
+            raise FormatError("truncated ARC extension record header")
+        length, kind = data[offset:offset + 2]
+        if kind not in (0, 2):
+            raise FormatError("unsupported ARC extension record type")
+        prefix = 5 if kind == 0 else 6
+        if length < prefix + 2 or length > len(data) - offset:
+            raise FormatError("invalid ARC extension record length")
+        record = data[offset:offset + length]
+        name = record[prefix:]
+        if (name[-1] != 0 or b"\0" in name[:-1] or
+                len(name) - 1 > MAX_ARC_METADATA_STRING_BYTES or
+                any(byte < 32 or byte > 126 for byte in name[:-1])):
+            raise FormatError("invalid ARC extension name")
+        name = name[:-1].decode("ascii")
+        item = {"record_blob_file_offset": base + offset, "length": length,
+                "type": kind, "name": name}
+        if kind == 0:
+            opcode, minor, flags = record[2:5]
+            if not 0x10 <= opcode <= 0x1f or minor or flags:
+                raise FormatError("ARC extension instruction fields do not match the baseline")
+            item.update(opcode=opcode, minor_opcode=minor, flags=flags)
+            identity = (kind, opcode, minor)
+        else:
+            address = int.from_bytes(record[2:6], "big")
+            item["auxiliary_address"] = address
+            identity = (kind, address)
+        if identity in identities or name in names:
+            raise FormatError("duplicate ARC extension declaration")
+        identities.add(identity)
+        names.add(name)
+        records.append(item)
+        offset += length
+    expected = [(2, 0x21, "t0_count"), (2, 0x22, "t0_control"), (2, 0x23, "t0_limit")]
+    expected += [(0, opcode, name) for opcode, name in
+                 ((0x10, "asl"), (0x11, "lsr"), (0x12, "asr"), (0x13, "ror"),
+                  (0x16, "mul16"), (0x1e, "max"), (0x1f, "min"))]
+    if [(r["type"], r.get("opcode", r.get("auxiliary_address")), r["name"])
+            for r in records] != expected:
+        raise FormatError("ARC extension declarations do not match the baseline")
+    return records
+
+
+def _arc_metadata_map(payload, images, image_sections):
+    """Private pure validator; public entry requires the exact bundled SHA/size."""
+    extents = [(0x2ea60, 0x79dd8), (0x79dd8, 0xcfbb0)]
+    if (len(payload) != BUNDLED_SIZE - TRAILER_SIZE or len(image_sections) != 2 or
+            [(i["blob_file_offset"], i["blob_file_end"]) for i in images] != extents):
+        raise FormatError("ARC metadata image identities do not match the baseline")
+    expected = ((32, 0x6711c, 2313, 0x79a40, 0x67a25, 0x79a68, 43),
+                (63, 0xc1ced, 1289, 0xcf408, 0xc21f6, 0xcf430, 24))
+    result, extensions, budget = [], [], MAX_ARC_METADATA_BYTES
+    for image, sections, values in zip(images, image_sections, expected):
+        if (image["class"], image["endianness"], image["machine"],
+                image["elf_type"], image["flags"]) != (32, "little", 45, 2, 0):
+            raise FormatError("ARC ELF header does not match the baseline")
+        if len(sections) != 2 or {s["name"] for s in sections} != {".comment", ".arcextmap"}:
+            raise FormatError("missing, duplicate or unexpected ARC metadata section")
+        index, comment_base, comment_size, comment_header, ext_base, ext_header, count = values
+        contents, sources = {}, {}
+        for name, position, size, section_index, header in (
+                (".comment", comment_base, comment_size, index, comment_header),
+                (".arcextmap", ext_base, 112, index + 1, ext_header)):
+            section = next(s for s in sections if s["name"] == name)
+            if (section["size"] > budget or section["size"] >
+                    (MAX_ARC_COMMENT_BYTES if name == ".comment" else MAX_ARC_EXTENSION_BYTES)):
+                raise FormatError("ARC metadata byte budget exceeded")
+            budget -= section["size"]
+            if (section["blob_file_offset"] is None or section["size"] < 0 or
+                    not image["blob_file_offset"] <= section["blob_file_offset"] <=
+                    image["blob_file_end"] - section["size"]):
+                raise FormatError("ARC metadata section crosses its ELF image bounds")
+            if (section["section_index"], section["type"], section["flags"],
+                    section["elf_virtual_address"], section["blob_file_offset"], section["size"],
+                    section["link"], section["info"], section["align"], section["entry_size"],
+                    section["section_header_blob_file_offset"]) != (
+                        section_index, 1, 0, 0, position, size, 0, 0, 1, 1, header):
+                raise FormatError("ARC metadata section does not match the baseline")
+            contents[name] = bounded(payload, position, size, "ARC metadata section")
+            sources[name] = {"blob_file_offset": position, "size": size,
+                             "section_header_blob_file_offset": header}
+        declarations = _arc_extensions(contents[".arcextmap"], ext_base)
+        extensions.append(contents[".arcextmap"])
+        result.append({"image_blob_file_offset": image["blob_file_offset"],
+                       "elf_flags": image["flags"], "gnu_2_23_2_flag_machine": "ARC5",
+                       "arc_attributes_present": False, "sections": sources,
+                       "comment": _arc_comment(contents[".comment"], comment_base, count),
+                       "extension_declarations": declarations})
+    if extensions[0] != extensions[1]:
+        raise FormatError("ARC extension maps differ between the baseline images")
+    return {"gnu_binutils_version": "2.23.2", "architecture_selection": "unresolved",
+            "extension_record_layout_source": "opcodes/arc-ext.c:159-172; gas/config/tc-arc.c:609-623,824-837",
+            "elf_flags_source": "include/elf/arc.h:42-49; bfd/elf32-arc.c:187-205",
+            "auxiliary_address_byte_order": "big", "extension_maps_identical": True,
+            "images": result, "limitations": [
+                "MetaWare -core8 and GNU ELF flag interpretations use different namespaces; their relationship is unresolved.",
+                "Extension records declare ASCII names and fields, not instruction semantics or a complete ISA.",
+                "Stored metadata does not establish silicon architecture, a call graph or codec capabilities."]}
 
 
 def _bootstrap_word(payload, offset):
@@ -839,7 +983,8 @@ def parse_references(image, base, sections, symbol_tables, wanted, all_symbols,
 
 def parse_elf(payload, base, wanted, symbol_budget, string_budget,
               references=False, all_symbols=False, relocation_budget=0,
-              owner_budget=0, output_budget=0, metadata_budget=MAX_METADATA_OUTPUT_BYTES):
+              owner_budget=0, output_budget=0, metadata_budget=MAX_METADATA_OUTPUT_BYTES,
+              arc_metadata=False):
     # ELF32 Ehdr/Phdr/Shdr/Sym layouts follow https://gabi.xinuos.com/elf/.
     image = memoryview(payload)[base:]
     header = bounded(image, 0, 52, "ELF header")
@@ -980,8 +1125,8 @@ def parse_elf(payload, base, wanted, symbol_budget, string_budget,
             "symbols": symbols,
             "missing_symbols": sorted(wanted - {symbol["name"] for symbol in symbols}),
             "_metadata_budget_used": metadata_bytes}
-    if all_symbols:
-        result["sections"] = [{"section_index": index, "name": section["name"],
+    if all_symbols or arc_metadata:
+        section_metadata = [{"section_index": index, "name": section["name"],
                                "type": section["type"], "flags": section["flags"],
                                "elf_virtual_address": section["address"],
                                "blob_file_offset": (base + section["offset"]
@@ -992,6 +1137,11 @@ def parse_elf(payload, base, wanted, symbol_budget, string_budget,
                                "entry_size": section["entry_size"],
                                "section_header_blob_file_offset": base + shoff + index * shsize}
                               for index, section in enumerate(sections)]
+        if all_symbols:
+            result["sections"] = section_metadata
+        if arc_metadata:
+            result["_arc_sections"] = [s for s in section_metadata if s["name"] in
+                                       (".comment", ".arcextmap", ".ARC.attributes")]
     if references:
         result.update(parse_references(image, base, sections, indexed_symbols, wanted,
                                        all_symbols, relocation_budget, owner_budget, output_budget))
@@ -999,7 +1149,8 @@ def parse_elf(payload, base, wanted, symbol_budget, string_budget,
 
 
 def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
-            references=False, all_symbols=False, bootstrap=False, picture_output=False):
+            references=False, all_symbols=False, bootstrap=False, picture_output=False,
+            arc_metadata=False):
     if len(data) < 24 or len(data) > MAX_FIRMWARE_SIZE or len(data) % 4:
         raise FormatError("invalid BCM70015 firmware size")
     sha256 = hashlib.sha256(data).hexdigest()
@@ -1009,11 +1160,14 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         raise FormatError("--bootstrap requires the exact bundled firmware SHA-256 and size")
     if picture_output and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
         raise FormatError("--picture-output requires the exact bundled firmware SHA-256 and size")
+    if arc_metadata and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
+        raise FormatError("--arc-metadata requires the exact bundled firmware SHA-256 and size")
     payload = data[:-TRAILER_SIZE]
     length_slot = struct.unpack_from("<I", data, len(payload))[0]
     if length_slot != 16:
         raise FormatError("firmware trailer does not match the BCM70015 signature layout")
     images = []
+    arc_sections = []
     symbol_budget = MAX_SYMBOL_RECORDS
     string_budget = MAX_STRING_TABLE_BYTES
     relocation_budget = MAX_RELOCATION_RECORDS
@@ -1027,7 +1181,9 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
             raise FormatError("too many embedded ELF images")
         image = parse_elf(payload, offset, wanted, symbol_budget, string_budget,
                           references, all_symbols, relocation_budget, owner_budget,
-                          output_budget, metadata_budget)
+                          output_budget, metadata_budget, arc_metadata)
+        if arc_metadata:
+            arc_sections.append(image.pop("_arc_sections"))
         symbol_budget -= image["symbol_count"]
         string_budget -= image["string_table_bytes"]
         metadata_budget -= image.pop("_metadata_budget_used")
@@ -1074,6 +1230,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         result["bootstrap"] = _bootstrap_map(payload, images)
     if picture_output:
         result["picture_output"] = _picture_output_map(payload, images)
+    if arc_metadata:
+        result["arc_metadata"] = _arc_metadata_map(payload, images, arc_sections)
     return result
 
 
@@ -1097,13 +1255,15 @@ def main(argv=None):
         "validate fixed ARM bootstrap/mailbox anchors and image catalog; bundled firmware only"))
     parser.add_argument("--picture-output", action="store_true", help=(
         "validate fixed picture-output and key ACK-stub anchors; bundled firmware only, not capability proof"))
+    parser.add_argument("--arc-metadata", action="store_true", help=(
+        "validate stored ARC compiler hints and extension declarations; bundled firmware only, not ISA proof"))
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-fA-F]{64}", args.expect_sha256):
         parser.error("--expect-sha256 must be 64 hexadecimal digits")
     try:
         report = analyze(read_firmware(args.firmware), args.symbol or DEFAULT_SYMBOLS,
                          args.expect_sha256.lower(), args.references, args.all_symbols, args.bootstrap,
-                         args.picture_output)
+                         args.picture_output, args.arc_metadata)
     except (OSError, FormatError) as error:
         print(f"flea_fw_map: {error}", file=sys.stderr)
         return 1

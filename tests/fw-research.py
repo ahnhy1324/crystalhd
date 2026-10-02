@@ -1640,5 +1640,321 @@ class FirmwarePictureOutputTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(BLOB.read_bytes()).hexdigest(), MAP.BUNDLED_SHA256)
 
 
+class FirmwareArcMetadataTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.data = MAP.read_firmware(BLOB)
+        cls.payload = cls.data[:-MAP.TRAILER_SIZE]
+        cls.images = MAP.analyze(cls.data, all_symbols=True)["images"]
+        cls.sections = [[s for s in image["sections"] if s["name"] in
+                         (".comment", ".arcextmap", ".ARC.attributes")] for image in cls.images]
+
+    def mapping(self, payload=None, images=None, sections=None):
+        return MAP._arc_metadata_map(self.payload if payload is None else payload,
+                                    self.images if images is None else images,
+                                    self.sections if sections is None else sections)
+
+    def test_arc_metadata_exact_offsets_counts_and_namespace_limits(self):
+        report = MAP.analyze(self.data, arc_metadata=True)
+        result = report["arc_metadata"]
+        self.assertEqual(result, self.mapping())
+        self.assertEqual(result["gnu_binutils_version"], "2.23.2")
+        self.assertEqual(result["architecture_selection"], "unresolved")
+        self.assertEqual(result["auxiliary_address_byte_order"], "big")
+        self.assertTrue(result["extension_maps_identical"])
+        expected = ((0x2ea60, 0x6711c, 2313, 0x79a40, 0x67a25, 0x79a68, 43),
+                    (0x79dd8, 0xc1ced, 1289, 0xcf408, 0xc21f6, 0xcf430, 24))
+        for image, (base, comment, size, header, ext, ext_header, count) in zip(result["images"], expected):
+            self.assertEqual(image["image_blob_file_offset"], base)
+            self.assertEqual(image["elf_flags"], 0)
+            self.assertEqual(image["gnu_2_23_2_flag_machine"], "ARC5")
+            self.assertFalse(image["arc_attributes_present"])
+            self.assertEqual(image["sections"], {
+                ".comment": {"blob_file_offset": comment, "size": size,
+                             "section_header_blob_file_offset": header},
+                ".arcextmap": {"blob_file_offset": ext, "size": 112,
+                               "section_header_blob_file_offset": ext_header}})
+            self.assertEqual(image["comment"], {
+                "linker_hint": "MetaWare Linker v8.4.6", "compiler_hint": "hc8.4.18 -a4 -core8 -O -Xbs",
+                "compiler_record_count": count, "nul_record_count": count * 2,
+                "first_compiler_record_blob_file_offset": comment + 23})
+            self.assertEqual(self.payload[comment:comment + 23], b"MetaWare Linker v8.4.6\n")
+            self.assertEqual(len(image["extension_declarations"]), 10)
+        encoded = json.dumps(result)
+        self.assertNotIn("main.c", encoded)
+        self.assertNotIn("11202009", encoded)
+        self.assertNotIn("/tmp/", encoded)
+        self.assertIn("not instruction semantics", encoded)
+        self.assertTrue(all("sections" not in i for i in report["images"]))
+        self.assertTrue(all(not any(k.startswith("_") for k in i) for i in report["images"]))
+
+    def test_arc_extension_declarations_exact_record_offsets_and_big_endian_aux(self):
+        for image, base in zip(self.mapping()["images"], (0x67a25, 0xc21f6)):
+            records = image["extension_declarations"]
+            self.assertEqual([(r["record_blob_file_offset"] - base, r["length"], r["type"], r["name"])
+                              for r in records], [(0, 15, 2, "t0_count"), (15, 17, 2, "t0_control"),
+                              (32, 15, 2, "t0_limit"), (47, 9, 0, "asl"), (56, 9, 0, "lsr"),
+                              (65, 9, 0, "asr"), (74, 9, 0, "ror"), (83, 11, 0, "mul16"),
+                              (94, 9, 0, "max"), (103, 9, 0, "min")])
+            self.assertEqual([r["auxiliary_address"] for r in records[:3]], [0x21, 0x22, 0x23])
+            self.assertEqual([r["opcode"] for r in records[3:]], [0x10, 0x11, 0x12, 0x13, 0x16, 0x1e, 0x1f])
+            self.assertTrue(all(r["minor_opcode"] == r["flags"] == 0 for r in records[3:]))
+            for r in records[:3]:
+                pos = r["record_blob_file_offset"] + 2
+                self.assertEqual(int.from_bytes(self.payload[pos:pos + 4], "big"), r["auxiliary_address"])
+                self.assertNotEqual(int.from_bytes(self.payload[pos:pos + 4], "little"), r["auxiliary_address"])
+
+    def test_arc_public_pin_precedes_elf_and_metadata_parsing(self):
+        changed = bytearray(self.data)
+        changed[0x6711c + 51] ^= 1
+        for data in (fixture(), self.data[:-4], bytes(changed)):
+            for mask in range(16):
+                with self.subTest(size=len(data), options=mask), \
+                        mock.patch.object(MAP, "parse_elf", side_effect=AssertionError("unexpected ELF parse")), \
+                        mock.patch.object(MAP, "_arc_metadata_map", side_effect=AssertionError("unexpected metadata parse")):
+                    with self.assertRaisesRegex(MAP.FormatError, "exact bundled"):
+                        MAP.analyze(data, expected_sha256=hashlib.sha256(data).hexdigest(), arc_metadata=True,
+                                    references=bool(mask & 1), all_symbols=bool(mask & 2),
+                                    bootstrap=bool(mask & 4), picture_output=bool(mask & 8))
+        with mock.patch.object(MAP.hashlib, "sha256") as digest, \
+                mock.patch.object(MAP, "parse_elf", side_effect=AssertionError("unexpected ELF parse")):
+            digest.return_value.hexdigest.return_value = MAP.BUNDLED_SHA256
+            with self.assertRaisesRegex(MAP.FormatError, "exact bundled"):
+                MAP.analyze(fixture(), arc_metadata=True)
+
+    def test_arc_private_image_header_and_bounds_mutations(self):
+        for payload, images, sections in ((self.payload[:-4], self.images, self.sections),
+                                         (self.payload, self.images[::-1], self.sections),
+                                         (self.payload, self.images[:1], self.sections),
+                                         (self.payload, self.images, self.sections[:1])):
+            with self.assertRaises(MAP.FormatError):
+                self.mapping(payload, images, sections)
+        for image_index in range(2):
+            for field, value in (("blob_file_offset", 0), ("blob_file_end", len(self.payload)),
+                                 ("class", 64), ("endianness", "big"), ("machine", 195),
+                                 ("elf_type", 1), ("flags", 3)):
+                images = [dict(i) for i in self.images]
+                images[image_index][field] = value
+                with self.subTest(image=image_index, field=field), self.assertRaises(MAP.FormatError):
+                    self.mapping(images=images)
+
+    def test_arc_metadata_section_ambiguity_and_each_field(self):
+        for image_index in range(2):
+            for operation in ("missing", "duplicate", "attributes", "rename"):
+                sections = [[dict(s) for s in group] for group in self.sections]
+                if operation == "missing":
+                    sections[image_index].pop()
+                elif operation in ("duplicate", "attributes"):
+                    extra = dict(sections[image_index][0])
+                    if operation == "attributes":
+                        extra["name"] = ".ARC.attributes"
+                    sections[image_index].append(extra)
+                else:
+                    sections[image_index][0]["name"] = ".ARC.attributes"
+                with self.subTest(image=image_index, operation=operation), self.assertRaises(MAP.FormatError):
+                    self.mapping(sections=sections)
+            for section_index in range(2):
+                for field in ("section_index", "type", "flags", "elf_virtual_address", "blob_file_offset",
+                              "size", "link", "info", "align", "entry_size", "section_header_blob_file_offset"):
+                    sections = [[dict(s) for s in group] for group in self.sections]
+                    sections[image_index][section_index][field] += 1
+                    with self.subTest(image=image_index, section=section_index, field=field), \
+                            self.assertRaises(MAP.FormatError):
+                        self.mapping(sections=sections)
+                section = self.sections[image_index][section_index]
+                for position in (None, -1, self.images[image_index]["blob_file_offset"] - 1,
+                                 self.images[image_index]["blob_file_end"] - section["size"] + 1):
+                    sections = [[dict(s) for s in group] for group in self.sections]
+                    sections[image_index][section_index]["blob_file_offset"] = position
+                    with self.subTest(image=image_index, position=position), \
+                            self.assertRaisesRegex(MAP.FormatError, "bounds"):
+                        self.mapping(sections=sections)
+
+    def test_arc_raw_section_header_mutations_reach_metadata_validator(self):
+        for image_index, image in enumerate(self.images):
+            for target in ("duplicate", "cross-image", "attributes", "flags"):
+                data = bytearray(self.data)
+                metadata = self.sections[image_index][0]
+                header = metadata["section_header_blob_file_offset"]
+                if target == "duplicate":
+                    name_index = struct.unpack_from("<I", data, header)[0]
+                    other = image["sections"][1]["section_header_blob_file_offset"]
+                    struct.pack_into("<I", data, other, name_index)
+                elif target == "cross-image":
+                    struct.pack_into("<I", data, header + 16, image["blob_file_end"] - image["blob_file_offset"])
+                elif target == "attributes":
+                    # Replace an existing sufficiently long section name in place.
+                    other = next(s for s in image["sections"] if len(s["name"]) >= len(".ARC.attributes"))
+                    name_index = struct.unpack_from("<I", data, other["section_header_blob_file_offset"])[0]
+                    names_index = struct.unpack_from("<H", data, image["blob_file_offset"] + 50)[0]
+                    name_table = image["sections"][names_index]["blob_file_offset"]
+                    position = name_table + name_index
+                    data[position:position + 16] = b".ARC.attributes\0"
+                else:
+                    struct.pack_into("<I", data, image["blob_file_offset"] + 36, 3)
+                with self.subTest(image=image_index, target=target), self.assertRaises(MAP.FormatError):
+                    parsed = MAP.analyze(data, expected_sha256=hashlib.sha256(data).hexdigest(), all_symbols=True)["images"]
+                    sections = [[s for s in i["sections"] if s["name"] in
+                                 (".comment", ".arcextmap", ".ARC.attributes")] for i in parsed]
+                    self.mapping(payload=data[:-20], images=parsed, sections=sections)
+
+    def test_arc_every_extension_byte_and_truncation_rejected(self):
+        for base in (0x67a25, 0xc21f6):
+            for index in range(112):
+                payload = bytearray(self.payload)
+                payload[base + index] ^= 1
+                with self.subTest(offset=base + index), self.assertRaises(MAP.FormatError):
+                    self.mapping(payload=payload)
+        data = self.payload[0x67a25:0x67a95]
+        for size in range(len(data)):
+            with self.subTest(size=size), self.assertRaises(MAP.FormatError):
+                MAP._arc_extensions(data[:size], 0)
+
+    def test_arc_extension_types_lengths_duplicates_and_fields(self):
+        original = self.payload[0x67a25:0x67a95]
+        changes = ((0, 0), (0, 1), (0, 7), (0, 113), (1, 1), (1, 3), (1, 255),
+                   (0x2f, 6), (0x31, 3), (0x31, 0x20), (0x32, 1), (0x33, 1),
+                   (0x14, 0x21), (0x3a, 0x10), (0xe, ord("x")), (6, 0), (6, 255))
+        for offset, value in changes:
+            data = bytearray(original)
+            data[offset] = value
+            with self.subTest(offset=offset, value=value), self.assertRaises(MAP.FormatError):
+                MAP._arc_extensions(data, 0)
+        for data in (original[:2] + original[2:6][::-1] + original[6:],
+                     original[:0x26] + b"t0_count" + original[0x2e:], original + b"\0"):
+            with self.assertRaises(MAP.FormatError):
+                MAP._arc_extensions(data, 0)
+        with mock.patch.object(MAP, "MAX_ARC_EXTENSION_BYTES", 128):
+            with self.assertRaisesRegex(MAP.FormatError, "record budget"):
+                MAP._arc_extensions(original + original[-9:], 0)
+
+    def test_arc_comment_hint_grammar_counts_and_termination(self):
+        for base, size, count in ((0x6711c, 2313, 43), (0xc1ced, 1289, 24)):
+            original = self.payload[base:base + size]
+            offsets = list(range(23))
+            position = 0
+            for index, record in enumerate(original[:-1].split(b"\0")):
+                start = position + (23 if index == 0 else 0)
+                offsets += range(start, start + (28 if index % 2 == 0 else len(record)))
+                offsets.append(position + len(record))
+                position += len(record) + 1
+            for offset in offsets:
+                data = bytearray(original)
+                data[offset] ^= 1
+                with self.subTest(offset=base + offset), self.assertRaises(MAP.FormatError):
+                    MAP._arc_comment(data, base, count)
+            for data in (b"", original[:-1], original + b"\0", b"\0" + original,
+                         original.replace(b"main.c", b"ma\xffn.c", 1),
+                         original.replace(b"main.c", b"ma\nn.c", 1),
+                         original.replace(b"main.c", b"main.x", 1), bytes(4097)):
+                with self.assertRaises(MAP.FormatError):
+                    MAP._arc_comment(data, base, count)
+            with self.assertRaisesRegex(MAP.FormatError, "count"):
+                MAP._arc_comment(original, base, count - 1)
+
+    def test_arc_independent_byte_record_and_string_budgets(self):
+        data = self.payload[0x67a25:0x67a95]
+        comment = self.payload[0x6711c:0x67a25]
+        for constant, limit, call in (
+                ("MAX_ARC_METADATA_BYTES", sum(s["size"] for group in self.sections for s in group) - 1,
+                 self.mapping),
+                ("MAX_ARC_COMMENT_BYTES", len(comment) - 1, self.mapping),
+                ("MAX_ARC_EXTENSION_BYTES", 111, self.mapping),
+                ("MAX_ARC_COMMENT_RECORDS", 85, lambda: MAP._arc_comment(comment, 0, 43)),
+                ("MAX_ARC_EXTENSION_RECORDS", 9, lambda: MAP._arc_extensions(data, 0)),
+                ("MAX_ARC_METADATA_STRING_BYTES", 56, lambda: MAP._arc_comment(comment, 0, 43)),
+                ("MAX_ARC_METADATA_STRING_BYTES", 9, lambda: MAP._arc_extensions(data, 0))):
+            with self.subTest(constant=constant), mock.patch.object(MAP, constant, limit), \
+                    self.assertRaises(MAP.FormatError):
+                call()
+        with mock.patch.object(MAP, "MAX_ARC_METADATA_BYTES", len(comment) - 1), \
+                mock.patch.object(MAP, "bounded", side_effect=AssertionError("unexpected metadata copy")), \
+                self.assertRaisesRegex(MAP.FormatError, "budget"):
+            self.mapping()
+
+    def test_arc_metadata_pure_mapping_and_cli_pin_failure(self):
+        with mock.patch("builtins.open", side_effect=AssertionError("unexpected file read")), \
+                mock.patch.object(MAP.os, "open", side_effect=AssertionError("unexpected open")), \
+                mock.patch.object(subprocess, "run", side_effect=AssertionError("unexpected execution")):
+            self.mapping()
+            MAP.analyze(self.data, arc_metadata=True)
+        data = fixture()
+        with mock.patch.object(MAP, "read_firmware", return_value=data), \
+                mock.patch.object(MAP, "parse_elf", side_effect=AssertionError("unexpected ELF parse")), \
+                mock.patch.object(MAP, "_arc_metadata_map", side_effect=AssertionError("unexpected metadata parse")), \
+                mock.patch.object(sys, "stdout", new_callable=io.StringIO) as output, \
+                mock.patch.object(sys, "stderr", new_callable=io.StringIO) as error:
+            self.assertEqual(MAP.main(["fixture.bin", "--arc-metadata", "--expect-sha256",
+                                       hashlib.sha256(data).hexdigest()]), 1)
+        self.assertEqual(output.getvalue(), "")
+        self.assertIn("exact bundled", error.getvalue())
+
+    def test_arc_cli_nonregular_admission_does_not_read_or_parse(self):
+        real_open = os.open
+        for mode in (0o20600, 0o10600, 0o120000):
+            descriptors = []
+            def pin_only(path, flags):
+                self.assertEqual(flags, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW)
+                self.assertEqual(len(descriptors), 0)
+                descriptor = real_open(path, flags)
+                descriptors.append(descriptor)
+                return descriptor
+            metadata = mock.Mock(st_mode=mode, st_size=len(self.data))
+            with self.subTest(mode=mode), mock.patch.object(MAP.os, "open", side_effect=pin_only), \
+                    mock.patch.object(MAP.os, "fstat", return_value=metadata), \
+                    mock.patch.object(MAP.os, "fdopen", side_effect=AssertionError("unexpected read-open")), \
+                    mock.patch.object(MAP, "parse_elf", side_effect=AssertionError("unexpected ELF parse")), \
+                    mock.patch.object(MAP, "_arc_metadata_map", side_effect=AssertionError("unexpected metadata parse")), \
+                    mock.patch.object(sys, "stdout", new_callable=io.StringIO) as output, \
+                    mock.patch.object(sys, "stderr", new_callable=io.StringIO) as error:
+                self.assertEqual(MAP.main([str(BLOB), "--arc-metadata"]), 1)
+            self.assertEqual(len(descriptors), 1)
+            self.assertEqual(output.getvalue(), "")
+            self.assertIn("regular file", error.getvalue())
+            with self.assertRaises(OSError):
+                os.fstat(descriptors[0])
+
+    def test_arc_cli_all_options_preserve_baseline_bytes_and_reproduce_metadata(self):
+        expected = (
+            "15068c07a81a510e02435b6203b1cf5e424152e37ff456b1da9c12b77c15799e",
+            "2a491f4b9033395cdbc688810319ea159973a296d7828ac65153bc93d45b588f",
+            "15af1023987b5f2aee1e9a5560f749560bf33f729252ca3fcb9f41358f49e5aa",
+            "85bec0f347f91ccfbb802d07b4c65fb07c8925625710dbe525fd7c3c1376487e",
+            "f0ba5d1db5c2ef15a5fa55ec53cc6eafab6cdda39c7b28b6c34d343329a6a514",
+            "bc315b8a18db8bbca306e7bd5cfdaedaf3ce9d35fe9dee27d57cbb049c0f88e4",
+            "a624ecefbd5383cd199fe35399e001b472f5ad261af8b60867e6f87fc99e03ba",
+            "270adf1e656ad1efab36d0cf4cbeb4bbfec1817086a523df9f1469276b68f129",
+            "0b8a28e688da85e5afcd518a2fca41bc551608512f2d39f33a04c068e443afb4",
+            "8861a22a3cc940a2ac5f3151b2baf91490a0da303748a35db73056d1cd815036",
+            "ba44d8bc10d015af515ae4729e06fca2e99b8f4e5eda4e1ff25a56b165687148",
+            "1a7447bbe42119f824c9a5dcb607752e242724457de3ffade69d0446216589e3",
+            "115289615745d138661d2b198345ebbaa91ae5adc6dbe5eed13840fd41c2c6da",
+            "3b3558a388083601e462a05a49c03477706c882a4c580cbd32105ea2adfe6fe0",
+            "caf0256815253dfcebdde93248ce8b8323f5694987a14cf5aacd0b831b71eb7e",
+            "e470aa7de978b89a9e8c9cd37d0e2fdcd2ca1e512bbbd7f8782bfb80f4c2f138")
+        for mask in range(16):
+            flags = []
+            if mask & 1:
+                flags += ["--references", "--symbol", "ReadLine"]
+            for bit, flag in ((2, "--all-symbols"), (4, "--bootstrap"), (8, "--picture-output")):
+                if mask & bit:
+                    flags.append(flag)
+            command = [sys.executable, "-B", str(TOOL), str(BLOB)] + flags
+            plain = subprocess.run(command, capture_output=True, timeout=10)
+            enriched = subprocess.run(command + ["--arc-metadata"], capture_output=True, timeout=10)
+            repeated = subprocess.run(command + ["--arc-metadata"], capture_output=True, timeout=10)
+            with self.subTest(flags=flags):
+                self.assertEqual(plain.returncode, 0, plain.stderr)
+                self.assertEqual(hashlib.sha256(plain.stdout).hexdigest(), expected[mask])
+                self.assertEqual(enriched.returncode, 0, enriched.stderr)
+                self.assertEqual(repeated.returncode, 0, repeated.stderr)
+                self.assertEqual(enriched.stdout, repeated.stdout)
+                result = json.loads(enriched.stdout)
+                self.assertEqual(result.pop("arc_metadata"), self.mapping())
+                self.assertEqual(result, json.loads(plain.stdout))
+                self.assertNotIn(str(ROOT).encode(), enriched.stdout)
+        self.assertEqual(hashlib.sha256(BLOB.read_bytes()).hexdigest(), MAP.BUNDLED_SHA256)
+
+
 if __name__ == "__main__":
     unittest.main()
