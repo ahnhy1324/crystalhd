@@ -17,7 +17,7 @@ struct _BC_DTS_PROC_OUT;
 #include "crystalhd_fw_research.h"
 
 int crystalhd_probe_main(int argc, char **argv);
-static unsigned checks, opens, stats, infos, runs, state_runs, controller_runs, closes;
+static unsigned checks, opens, stats, infos, runs, state_runs, controller_runs, image_runs, closes;
 static int open_error, stat_error, info_error, run_error, close_error;
 static bool character, output_error, flush_error;
 static struct crystalhd_fw_research_info metadata;
@@ -31,6 +31,8 @@ static unsigned state_mutation, sample_fault_at, sample_fault_kind;
 static bool state_opaque;
 static unsigned controller_mutation, root_fault_at, root_fault_kind;
 static uint32_t root_values[2];
+static unsigned image_fault_at, image_fault_kind, image_mutation, image_mutation_stage, image_word;
+static uint32_t image_roots[2], image_words[4], image_bad_root;
 static const uint32_t commands[] = {eCMD_C011_INIT, eCMD_C011_GET_VERSION,
     eCMD_C011_DEC_CHAN_OPEN, eCMD_C011_DEC_CHAN_STATUS, eCMD_C011_DEC_CHAN_CLOSE};
 static const uint32_t raw_commands[] = {eCMD_C011_DEC_CHAN_SCALING_FILTERS,
@@ -439,6 +441,73 @@ static void make_controller_result(struct crystalhd_fw_research_controller_resul
     }
 }
 
+static void make_image_result(struct crystalhd_fw_research_image_result *result)
+{
+    struct crystalhd_fw_research_image_sample *samples[] = {&result->after_init, &result->after_open};
+    const struct crystalhd_fw_research_controller_sample *roots[] = {
+        &result->controller.after_init, &result->controller.after_open,
+    };
+    struct crystalhd_fw_research_result *control = &result->controller.state.control;
+    struct crystalhd_fw_research_image_sample *changed;
+    unsigned i;
+    memset(result, 0, sizeof(*result));
+    make_controller_result(&result->controller);
+    for (i = 0; i < 2; i++) {
+        if (roots[i]->attempted && roots[i]->read_complete && !roots[i]->status) {
+            samples[i]->attempted = samples[i]->read_complete = 1;
+            samples[i]->root_before = samples[i]->root_after = image_roots[i];
+            memcpy(samples[i]->words, image_words, sizeof(image_words));
+        }
+    }
+    if (image_fault_at) {
+        unsigned count = image_fault_at + 1;
+        struct crystalhd_fw_research_image_sample *sample = samples[image_fault_at - 1];
+        CHECK(image_fault_at <= 2 && image_fault_kind >= 1 && image_fault_kind <= 6);
+        memset(sample, 0, sizeof(*sample));
+        sample->attempted = image_fault_kind != 2;
+        sample->status = image_fault_kind == 2 ? -ENODEV : image_fault_kind == 3 ? -ERANGE :
+            image_fault_kind == 4 ? -ESTALE : image_fault_kind == 5 ? -ETIMEDOUT : image_fault_kind == 6 ? -4095 : -EIO;
+        control->status = sample->status; control->command_count = count;
+        memset(control->replies + count, 0,
+               (CRYSTALHD_FW_RESEARCH_MAX_COMMANDS - count) * sizeof(control->replies[0]));
+        if (image_fault_at == 1) {
+            memset(&result->controller.state.after_open, 0, sizeof(result->controller.state.after_open));
+            memset(&result->controller.after_open, 0, sizeof(result->controller.after_open));
+            memset(samples[1], 0, sizeof(*samples[1]));
+        }
+    }
+    CHECK(image_mutation_stage < 2);
+    changed = samples[image_mutation_stage];
+    switch (image_mutation) {
+    case 0: break;
+    case 1: changed->attempted = 2; break;
+    case 2: changed->read_complete = 2; break;
+    case 3: changed->reserved = 1; break;
+    case 4: changed->status = 1; break;
+    case 5: changed->status = -4096; break;
+    case 6: changed->attempted = 0; break;
+    case 7: changed->read_complete = 0; changed->root_before = changed->root_after = 0;
+        memset(changed->words, 0, sizeof(changed->words)); break;
+    case 8: changed->status = -EIO; break;
+    case 9: changed->root_after ^= 4; break;
+    case 10: changed->root_before = changed->root_after = 0; break;
+    case 11: changed->root_before = changed->root_after = image_bad_root; break;
+    case 12: memset(changed, 0, sizeof(*changed)); break;
+    case 13: changed->root_before = 1; break;
+    case 14: changed->root_after = 1; break;
+    case 15: CHECK(image_word < 4); changed->words[image_word] = 1; break;
+    case 16: changed->read_complete = 1; break;
+    case 17: changed->attempted = 1; changed->status = 0; break;
+    case 18: control->status = -EIO; break;
+    case 19: control->command_count++; result_reply(control, control->command_count - 1, BC_STS_SUCCESS); break;
+    case 20: changed->attempted = changed->read_complete = 1;
+        changed->root_before = changed->root_after = image_roots[image_mutation_stage]; break;
+    case 21: result->controller.state.request.size = sizeof(result->controller); break;
+    case 22: control->replies[4].response[63] = 1; break;
+    default: CHECK(false);
+    }
+}
+
 int probe_ioctl(int fd, unsigned long command, ...)
 {
     void *argument; va_list args;
@@ -479,6 +548,21 @@ int probe_ioctl(int fd, unsigned long command, ...)
         if (run_error) { errno = run_error; return -1; }
         make_controller_result(result); return 0;
     }
+    if (command == CRYSTALHD_FW_RESEARCH_RUN_IMAGE) {
+        struct crystalhd_fw_research_image_result *result = argument;
+        const unsigned char *bytes = argument;
+        unsigned i;
+        CHECK(infos == 1 && !runs++ && !image_runs++ && !state_runs && !controller_runs);
+        state_submitted = result->controller.state.request;
+        CHECK(state_submitted.version == 1 && state_submitted.size == sizeof(*result));
+        CHECK(!state_submitted.flags && !state_submitted.reserved);
+        for (i = sizeof(result->controller.state.request); i < sizeof(*result); i++) CHECK(!bytes[i]);
+        memset(&submitted, 0, sizeof(submitted));
+        submitted.version = 1; submitted.size = sizeof(result->controller.state.control);
+        submitted.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
+        if (run_error) { errno = run_error; return -1; }
+        make_image_result(result); return 0;
+    }
     CHECK(command == CRYSTALHD_FW_RESEARCH_RUN && infos == 1 && !runs++);
     submitted = ((struct crystalhd_fw_research_result *)argument)->request;
     CHECK(submitted.version == 1 && submitted.size == sizeof(struct crystalhd_fw_research_result));
@@ -516,13 +600,16 @@ int __wrap_ioctl(int fd, unsigned long command, ...)
 
 static void reset(void)
 {
-    opens = stats = infos = runs = state_runs = controller_runs = closes = 0;
+    opens = stats = infos = runs = state_runs = controller_runs = image_runs = closes = 0;
     open_error = stat_error = info_error = run_error = close_error = 0;
     character = true; output_error = flush_error = false;
     mutation = fault_at = fault_kind = response_pattern = 0;
     state_mutation = sample_fault_at = sample_fault_kind = 0; state_opaque = false;
     controller_mutation = root_fault_at = root_fault_kind = 0;
     root_values[0] = root_values[1] = 0xd5384;
+    image_fault_at = image_fault_kind = image_mutation = image_mutation_stage = image_word = 0;
+    image_roots[0] = image_roots[1] = 0xd53dc;
+    memset(image_words, 0, sizeof(image_words)); image_bad_root = 0;
     output[0] = errors[0] = 0;
     memset(&metadata, 0, sizeof(metadata));
     metadata.version = 1; metadata.size = sizeof(metadata); metadata.generation = 42;
@@ -541,6 +628,7 @@ static char *version_args[] = {"probe", "--version", "--acknowledge-card-reset",
 static char *h264_args[] = {"probe", "--h264-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *state_args[] = {"probe", "--fixed-state", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *controller_args[] = {"probe", "--controller-root", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
+static char *image_args[] = {"probe", "--controller-image", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *h261_args[] = {"probe", "--h261-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *h263_args[] = {"probe", "--h263-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *mpeg1_args[] = {"probe", "--mpeg1-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
@@ -1199,8 +1287,147 @@ static void controller_json_examples(void)
     reset(); close_error = EINTR; CHECK(invoke(controller_args) == 1 && output[0]); fputs(output, stdout);
 }
 
+static const uint32_t image_valid_roots[] = {
+    0xd53dc, 0xd53e0, 0x115c88, 0xdfe44, 0xdfe54, 0xefe44,
+    0xefe54, 0xffe44, 0xffe54, 0x10fe44, 0x10fe54,
+};
+static const uint32_t image_invalid_roots[] = {
+    0, 1, 0xd5384, 0xd53d8, 0xd53dd, 0x115c8c, 0x116000, 0xfffffc88, UINT32_MAX,
+    0xdfe48, 0xdfe4c, 0xdfe50, 0xefe48, 0xefe4c, 0xefe50,
+    0xffe48, 0xffe4c, 0xffe50, 0x10fe48, 0x10fe4c, 0x10fe50,
+};
+static const uint32_t image_word_patterns[][4] = {
+    {0, 0, 0, 0}, {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX},
+    {0x80000000, 0, UINT32_MAX, 0x101}, {1, 2, 3, 2}, {0, 0, 0, 0xffffff00},
+};
+
+static void test_controller_image(void)
+{
+    char *invalid[][10] = {
+        {"probe", "--controller-image", NULL},
+        {"probe", "--controller-image", "--acknowledge-card-reset", NULL},
+        {"probe", "--controller-image", "--expected-generation", "42", NULL},
+        {"probe", "--controller-image", "--controller-image", "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+        {"probe", "--controller-image", "--info", "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+        {"probe", "--controller-image", "--fixed-state", "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+        {"probe", "--controller-image", "--controller-root", "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+        {"probe", "--controller-image", "--acknowledge-card-reset", "--expected-generation", "42", "--address", "0", NULL},
+        {"probe", "--controller-image", "--acknowledge-card-reset", "--expected-generation", "42", "--image-width", "1", NULL},
+    };
+    unsigned i, stage, kind, word;
+    for (i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        reset(); CHECK(invoke(invalid[i]) == 1 && !opens && !output[0]);
+    }
+    for (i = 0; i < 11; i++) {
+        char *conflict[] = {"probe", "--controller-image", i < 5 ? all_live_args[i][1] : raw_args[i - 5][1],
+                           "--acknowledge-card-reset", "--expected-generation", "42", NULL};
+        reset(); CHECK(invoke(conflict) == 1 && !opens && !output[0]);
+    }
+    reset(); CHECK(!invoke(image_args) && image_runs == 1 && runs == 1 && !state_runs && !controller_runs);
+    CHECK(strstr(output, "\"controller_image\":true") && strstr(output, "\"raw_words\":[0,0,0,0],\"owned_declaration_low8\":0"));
+    CHECK(strstr(output, "\"controller_root_used_for_fixed_tuple\":true") && strstr(output, "\"tuple_values_followed\":false"));
+    CHECK(strstr(output, "\"bracket_equality_excludes_aba\":false"));
+    /* The old root may be anywhere; only the image sample's own bracket is
+     * an admission prerequisite. Low declaration bytes never gate success. */
+    for (i = 0; i < 256; i++) {
+        reset(); root_values[0] = 0; root_values[1] = UINT32_MAX;
+        image_words[3] = 0xabcd1200U | i;
+        CHECK(!invoke(image_args) && image_runs == 1 && output[0]);
+    }
+    for (i = 0; i < sizeof(image_valid_roots) / sizeof(image_valid_roots[0]); i++) {
+        reset(); image_roots[0] = image_roots[1] = image_valid_roots[i];
+        CHECK(!invoke(image_args));
+    }
+    for (i = 0; i < sizeof(image_word_patterns) / sizeof(image_word_patterns[0]); i++) {
+        reset(); memcpy(image_words, image_word_patterns[i], sizeof(image_words)); CHECK(!invoke(image_args));
+    }
+    for (stage = 0; stage < 2; stage++) {
+        for (kind = 1; kind <= 6; kind++) {
+            reset(); image_fault_at = stage + 1; image_fault_kind = kind;
+            CHECK(invoke(image_args) == 1 && output[0] && !strstr(errors, "Invalid controller-image result"));
+            CHECK(strstr(output, "\"root_before\":null,\"root_after\":null,\"raw_words\":null"));
+        }
+        for (i = 1; i <= 19; i++) {
+            if (i == 11) continue;
+            reset(); image_mutation_stage = stage; image_mutation = i;
+            if (i >= 13) { image_fault_at = stage + 1; image_fault_kind = 4; }
+            CHECK(invoke(image_args) == 1 && !output[0] && strstr(errors, "Invalid controller-image result"));
+        }
+        for (i = 0; i < sizeof(image_invalid_roots) / sizeof(image_invalid_roots[0]); i++) {
+            reset(); image_mutation_stage = stage; image_mutation = 11; image_bad_root = image_invalid_roots[i];
+            CHECK(invoke(image_args) == 1 && !output[0] && strstr(errors, "Invalid controller-image result"));
+        }
+        for (word = 0; word < 4; word++) {
+            reset(); image_mutation_stage = stage; image_mutation = 15; image_word = word;
+            image_fault_at = stage + 1; image_fault_kind = 2;
+            CHECK(invoke(image_args) == 1 && !output[0]);
+        }
+        reset(); root_fault_at = stage + 1; root_fault_kind = 2;
+        image_mutation_stage = stage; image_mutation = 20;
+        CHECK(invoke(image_args) == 1 && !output[0]);  /* Forged image after failed prior root. */
+    }
+    reset(); image_fault_at = 1; image_fault_kind = 4; image_mutation_stage = 1; image_mutation = 3;
+    CHECK(invoke(image_args) == 1 && !output[0]);  /* Reserved padding also zero when skipped. */
+    reset(); image_fault_at = 1; image_fault_kind = 4; image_mutation_stage = 1; image_mutation = 20;
+    CHECK(invoke(image_args) == 1 && !output[0]);  /* No OPEN tuple after an INIT tuple failure. */
+    for (i = 21; i <= 22; i++) {
+        reset(); image_mutation = i; image_fault_at = 1; image_fault_kind = 4;
+        CHECK(invoke(image_args) == 1 && !output[0]);
+    }
+    for (i = 2; i <= 4; i++) {
+        reset(); state_mutation = i; CHECK(invoke(image_args) == 1 && !output[0]);
+    }
+    reset(); mutation = 2; CHECK(invoke(image_args) == 1 && !output[0]);
+    reset(); state_mutation = 7; CHECK(invoke(image_args) == 1 && !output[0]);
+    for (i = 0; i < 2; i++) {
+        reset(); run_error = i ? EINTR : ENOTTY;
+        CHECK(invoke(image_args) == 1 && image_runs == 1 && !state_runs && !controller_runs && !output[0]);
+        CHECK(strstr(errors, "no retry"));
+    }
+    reset(); metadata.selector_mask = 1; CHECK(invoke(image_args) == 1 && !runs);
+    reset(); metadata.generation++; CHECK(invoke(image_args) == 1 && !runs);
+    reset(); close_error = EINTR; CHECK(invoke(image_args) == 1 && output[0]);
+    reset(); output_error = true; CHECK(invoke(image_args) == 1 && image_runs == 1);
+    reset(); flush_error = true; CHECK(invoke(image_args) == 1 && image_runs == 1);
+}
+
+static void image_json_examples(void)
+{
+    unsigned i, stage, phase;
+    for (i = 0; i < sizeof(image_valid_roots) / sizeof(image_valid_roots[0]); i++) {
+        reset(); image_roots[0] = image_roots[1] = image_valid_roots[i];
+        CHECK(!invoke(image_args)); fputs(output, stdout);
+    }
+    reset(); root_values[0] = root_values[1] = UINT32_MAX; CHECK(!invoke(image_args)); fputs(output, stdout);
+    for (i = 0; i < sizeof(image_word_patterns) / sizeof(image_word_patterns[0]); i++) {
+        reset(); memcpy(image_words, image_word_patterns[i], sizeof(image_words)); CHECK(!invoke(image_args)); fputs(output, stdout);
+    }
+    reset(); image_roots[1] = 0xd53e0; CHECK(!invoke(image_args)); fputs(output, stdout);
+    for (stage = 1; stage <= 2; stage++) {
+        for (i = 1; i <= 6; i++) {
+            reset(); image_fault_at = stage; image_fault_kind = i;
+            CHECK(invoke(image_args) == 1 && output[0]); fputs(output, stdout);
+        }
+        reset(); root_fault_at = stage; root_fault_kind = 2;
+        CHECK(invoke(image_args) == 1 && output[0]); fputs(output, stdout);
+    }
+    for (stage = 1; stage <= 3; stage++) {
+        reset(); sample_fault_at = stage; sample_fault_kind = 1;
+        CHECK(invoke(image_args) == 1 && output[0]); fputs(output, stdout);
+    }
+    for (phase = 1; phase <= 5; phase++) {
+        reset(); fault_at = phase; fault_kind = 2;
+        CHECK(invoke(image_args) == 1 && output[0]); fputs(output, stdout);
+    }
+    reset(); mutation = 51; CHECK(invoke(image_args) == 1 && output[0]); fputs(output, stdout);
+    reset(); close_error = EINTR; CHECK(invoke(image_args) == 1 && output[0]); fputs(output, stdout);
+}
+
 int main(int argc, char **argv)
 {
+    if (argc == 2 && !strcmp(argv[1], "--image-json-examples")) {
+        image_json_examples(); return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--controller-json-examples")) {
         controller_json_examples(); return 0;
     }
@@ -1269,7 +1496,7 @@ int main(int argc, char **argv)
         return 0;
     }
     CHECK(argc == 1);
-    test_arguments(); test_metadata(); test_errors(); test_results(); test_named_controls(); test_decoding(); test_raw_commands(); test_fixed_state(); test_controller_root();
+    test_arguments(); test_metadata(); test_errors(); test_results(); test_named_controls(); test_decoding(); test_raw_commands(); test_fixed_state(); test_controller_root(); test_controller_image();
     printf("Firmware probe CLI: %u checks passed\n", checks);
     return 0;
 }
