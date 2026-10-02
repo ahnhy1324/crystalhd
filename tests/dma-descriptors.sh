@@ -79,3 +79,29 @@ for stop_sanitize in no yes; do
   ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
     UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 "$dma_test_dir/dma-stop"
 done
+
+awk '
+    /^#define[[:space:]]+MAX_VALID_POLL_CNT[[:space:]]/ { print; found++ }
+    END { if (found != 1) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_hw.h" > "$dma_test_dir/flea-reset-limit.h"
+awk '
+    /^bool crystalhd_flea_(core_reset|start_device|stop_device)\(/ {
+        if (/;[[:space:]]*$/) next
+        copy = 1; found++
+    }
+    copy { print }
+    copy && /^}/ { copy = 0 }
+    END { if (found != 3 || copy) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$dma_test_dir/flea-reset-functions.h"
+for reset_sanitize in no yes; do
+    reset_extra=
+    if [ "$reset_sanitize" = yes ]; then
+        reset_extra='-fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie -no-pie'
+    fi
+    "${CC:-cc}" ${CFLAGS:-} -std=c11 -Wall -Wextra -Werror $reset_extra \
+        -I"$repo_dir/driver/linux" -I"$repo_dir/include/flea" -I"$dma_test_dir" \
+        "$repo_dir/tests/flea-reset.c" -o "$dma_test_dir/flea-reset"
+    printf 'Flea reset: sanitizers=%s\n' "$reset_sanitize"
+    ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+        UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 "$dma_test_dir/flea-reset"
+done
