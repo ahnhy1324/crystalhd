@@ -52,6 +52,58 @@ MAX_FRESH_INIT_BYTES = 16 * 1024
 MAX_FRESH_INIT_AGGREGATE_BYTES = 80 * 1024
 MAX_FRESH_INIT_ANCHORS = 160
 MAX_FRESH_INIT_EVENTS = 64
+MAX_INIT_REPLY_REGIONS = 12
+MAX_INIT_REPLY_BYTES = 1024
+MAX_INIT_REPLY_AGGREGATE_BYTES = 80 * 1024
+MAX_INIT_REPLY_ANCHORS = 104
+_INIT_REPLY_REGIONS = (
+    ("delivery_relocation", 0x72948, 12, "47550cc0eb8d0d6d588885855ad7ef12daa7ff9bb1a6b903900f77300181381e"),
+    ("delivery_symbol", 0x6cd00, 16, "d5051f32cf622bb3fed31ff962a2b2787272a099ca3cb1f0f75a71a5cac9b20f"),
+    ("delivery_name", 0x69824, 17, "eaf35101f02f49b3f084841067167b1382adac2948b7afe528f1a83e943ab403"),
+    ("delivery_section", 0x79888, 40, "dadf59bee18295ef7f9bf1c67104d066c2c0d8a0b150511b07af868c0026c8b5"),
+)
+_INIT_REPLY_ARM_SITES = (
+    (0x28058, 0xe1a04000), (0x280ac, 0xe28d301c), (0x27be0, 0xe1a0a003),
+    (0x27c7c, 0xe59d000c),
+    (0x280a4, 0xe59421b0), (0x27bd0, 0xe92d4fff), (0x27bd4, 0xe24dd01c),
+    (0x27c80, 0xe590000c), (0x27c84, 0xe58d0008), (0x27d48, 0xe59d0024),
+    (0x27d4c, 0xe59d1008), (0x27d50, 0xe0800001), (0x27d54, 0xe58a0000),
+    (0x27d5c, 0xe59a2000), (0x27d60, 0xe1cd20f0), (0x27d64, 0xe3a03000),
+    (0x2af2c, 0xe92d4fff), (0x2af30, 0xe24dd014), (0x2af3c, 0xe1a09003),
+    (0x2afac, 0xe5849004), (0x2afb0, 0xe59d0048), (0x2afb4, 0xe5840008),
+    (0x2a48c, 0xe0813101), (0x2a490, 0xe2804040), (0x2a494, 0xe0843183),
+    (0x2a498, 0xe593200c), (0x2a49c, 0xe3520000), (0x2a4a0, 0x1a000006),
+    (0x2a4c0, 0xe3520203), (0x2a4c4, 0x3a000000), (0x2a4cc, 0xe5903004),
+    (0x2a4d0, 0xe1530002), (0x2a4d4, 0x9a000000), (0x2a4e8, 0xe5933008),
+    (0x2a4ec, 0xe3130004), (0x2a4f0, 0x0a000002), (0x2a500, 0xe5903004),
+    (0x2a504, 0xe0423003), (0x2a508, 0xe5904008), (0x2a50c, 0xe0832004),
+    (0x2a510, 0xe2803d61), (0x2a514, 0xe7832101),
+    (0x2a4dc, 0xe0813101), (0x2a4e0, 0xe2804040), (0x2a4e4, 0xe0843183),
+    (0x2a428, 0xe1d050be), (0x2a42c, 0xe0855105), (0x2a430, 0xe2816040),
+    (0x2a434, 0xe0864185),
+    (0x2a438, 0xe5905004), (0x2a43c, 0xe594600c), (0x2a440, 0xe0453006),
+    (0x2a444, 0xe1d050be), (0x2a448, 0xe2816d61), (0x2a44c, 0xe7965105),
+    (0x2a450, 0xe0855003), (0x2a454, 0xe5805004),
+    (0x271d0, 0xe1a04000), (0x271e4, 0xe28d8004), (0x2720c, 0xe1a07008),
+    (0x27244, 0xe28d3004), (0x273bc, 0xe597100c), (0x273c0, 0xe594000c),
+    (0x273c4, 0xe2842e25), (0x273c8, 0xebffe277), (0x273cc, 0xe28f0f81),
+    (0x273d4, 0xe5971010), (0x273d8, 0xe594000c), (0x273dc, 0xe2842f95),
+    (0x273e0, 0xebffe271), (0x273e4, 0xe5970008), (0x273e8, 0xe584018c),
+    (0x1fdb0, 0xe1a03000), (0x1fdb4, 0xe1a04001), (0x1fdbc, 0xe5910028),
+    (0x1fdc0, 0xe0800004), (0x1fdc4, 0xe5915030), (0x1fdc8, 0xe0400005),
+    (0x1fdcc, 0xe5820000), (0x1fdd0, 0xe5920000), (0x1fdd4, 0xe5915018),
+    (0x1fdd8, 0xe1500005), (0x1fddc, 0x3a000004), (0x1fde0, 0xe5920000),
+    (0x1fde4, 0xe591501c), (0x1fde8, 0xe1500005), (0x1fdec, 0x8a000000),
+    (0x1fdf0, 0xea00001a), (0x1fdf4, 0xe5930004), (0x1fdf8, 0xe3500000),
+    (0x1fdfc, 0x0a000015), (0x1fe58, 0xe3a00002), (0x1fe64, 0xe3a00000),
+    (0x1fdb8, 0xe1a01003), (0x1fdac, 0xe92d4030), (0x1fe5c, 0xe8bd8030),
+    (0x1fe68, 0xeafffffb),
+)
+_INIT_REPLY_ARC_SITES = (
+    (0x258b4, 0x60079e00), (0x24604, 0x61c00000),
+    (0x246b4, 0x601f7c00), (0x246bc, 0x1007000c),
+    (0x246c0, 0x40007e0c), (0x246c4, 0x10070010),
+)
 # Additional complete bodies/data for the private, conditional INIT receipt.
 # The separately bounded command-buffer bridge is charged in full as well.
 _FRESH_INIT_REGIONS = (
@@ -2024,6 +2076,383 @@ def _fresh_init_projection(contract, scenario):
             "timeout_proves_backend_nonexecution": False,
             "freshness_assumed": values["freshness_assumed"], "native_wait_output": native,
             "opaque_wait_output_relaxed": not native, "runtime_observed": False}
+
+
+def _init_reply_arm_operand(payload, offset, expected):
+    """Additional fixed loader/translation operands; not a general decoder."""
+    word = _bootstrap_word(payload, offset)
+    if word != expected:
+        raise FormatError("INIT reply ARM operand does not match the baseline")
+    record = {"blob_file_offset": offset, "word": word, "condition": word >> 28}
+    if (word >> 25) & 7 == 5 and word >> 28 in (3, 8, 9):
+        if word & (1 << 24):
+            raise FormatError("INIT reply unsigned branch does not support link")
+        displacement = word & 0xffffff
+        if displacement & 0x800000:
+            displacement -= 1 << 24
+        target = offset + 8 + displacement * 4
+        _bootstrap_word(payload, target)
+        record.update(operation="B", target_blob_file_offset=target)
+    elif word & 0xffff0000 == 0xe92d0000:
+        if not word & 0xffff or word & (1 << 13 | 1 << 15):
+            raise FormatError("INIT reply PUSH register list is unsupported")
+        record.update(operation="PUSH", base_register=13, register_mask=word & 0xffff,
+                      byte_count=(word & 0xffff).bit_count() * 4)
+    elif word & 0xffff0000 == 0xe8bd0000:
+        if not word & (1 << 15) or word & (1 << 13 | 1 << 14):
+            raise FormatError("INIT reply POP register list is unsupported")
+        record.update(operation="POP", base_register=13, register_mask=word & 0xffff,
+                      byte_count=(word & 0xffff).bit_count() * 4)
+    elif word & 0xfff00ff0 == 0xe1d000b0:
+        record.update(operation="LDRH", base_register=(word >> 16) & 15,
+                      data_register=(word >> 12) & 15, byte_width=2,
+                      byte_offset=((word >> 4) & 0xf0) | (word & 15))
+    elif word & 0xfff00ff0 == 0xe1c000f0:
+        register = (word >> 12) & 15
+        if register & 1 or register > 12:
+            raise FormatError("INIT reply STRD register pair is unsupported")
+        record.update(operation="STRD", base_register=(word >> 16) & 15,
+                      data_register=register, second_data_register=register + 1,
+                      byte_width=8, byte_offset=((word >> 4) & 0xf0) | (word & 15))
+    elif (word >> 26) & 3 == 0 and (word >> 21) & 15 in (2, 8):
+        opcode = (word >> 21) & 15
+        if (word >> 28 != 14 or (not word & (1 << 25) and word & 0x70) or
+                bool(word & (1 << 20)) != (opcode == 8) or (opcode == 8 and word & 0xf000)):
+            raise FormatError("INIT reply data operand is unsupported")
+        record.update(operation="SUB" if opcode == 2 else "TST",
+                      source_register=(word >> 16) & 15,
+                      destination_register=(word >> 12) & 15)
+        if word & (1 << 25):
+            value, shift = word & 255, ((word >> 8) & 15) * 2
+            record["immediate"] = ((value >> shift) | (value << ((32 - shift) % 32))) & 0xffffffff
+        else:
+            record.update(operand_register=word & 15, shift_kind="LSL", shift_amount=(word >> 7) & 31)
+    else:
+        return _fresh_init_arm_operand(payload, offset, expected)
+    return record
+
+
+def _init_reply_metadata_linkage(payload, images):
+    """Conditional selected INIT reply metadata; no live pointer certification."""
+    regions = _INIT_REPLY_REGIONS
+    additional = sum(size for _, _, size, _ in regions)
+    bridge_bytes = sum(len(expected) // 2 for _, _, expected in _COMMAND_BUFFER_BRIDGE_REGIONS) + 0x65c4
+    fresh_bytes = sum(size for _, _, size, _ in _FRESH_INIT_REGIONS)
+    dependency_bytes = bridge_bytes + fresh_bytes
+    count = len(_INIT_REPLY_ARM_SITES) + len(_INIT_REPLY_ARC_SITES) + 1
+    fresh_count = len(_FRESH_INIT_ARM_SITES) + len(_FRESH_INIT_ARC_SITES) + len(_FRESH_INIT_ARC_CALLS)
+    if (len(payload) != BUNDLED_SIZE - TRAILER_SIZE or
+            len(regions) > MAX_INIT_REPLY_REGIONS or additional > MAX_INIT_REPLY_BYTES or
+            count > MAX_INIT_REPLY_ANCHORS or additional + dependency_bytes > MAX_INIT_REPLY_AGGREGATE_BYTES or
+            len(_FRESH_INIT_REGIONS) > MAX_FRESH_INIT_REGIONS or fresh_bytes > MAX_FRESH_INIT_BYTES or
+            dependency_bytes > MAX_FRESH_INIT_AGGREGATE_BYTES or fresh_count > MAX_FRESH_INIT_ANCHORS or
+            MAX_FRESH_INIT_EVENTS < 35 or MAX_STOCK_HOST_COMMAND_CFG_STATES < 53 or
+            len(_COMMAND_BUFFER_BRIDGE_REGIONS) + 1 > MAX_COMMAND_BUFFER_BRIDGE_REGIONS or
+            bridge_bytes > MAX_COMMAND_BUFFER_BRIDGE_BYTES or
+            0x65c4 // 12 > MAX_COMMAND_BUFFER_BRIDGE_RELOCATIONS):
+        raise FormatError("INIT reply validation budget/identity exceeded")
+    validated = []
+    # New pins precede the dependency's own complete pre-pin and interpretation.
+    for name, offset, size, digest in regions:
+        if hashlib.sha256(bounded(payload, offset, size, "INIT reply metadata pin")).hexdigest() != digest:
+            raise FormatError(f"INIT reply region {name} does not match the baseline")
+        validated.append({"role": name, "blob_file_offset": offset, "size": size, "sha256": digest})
+    fresh = _fresh_init_causal_contract(payload, images)
+    bridge = fresh["bridge"]
+    pinned = [(off, size) for _, off, size, _ in _FRESH_INIT_REGIONS]
+    pinned += [(off, len(expected) // 2) for _, off, expected in _COMMAND_BUFFER_BRIDGE_REGIONS]
+    if any(not any(low <= off and off + 4 <= low + size for low, size in pinned)
+           for off, _ in _INIT_REPLY_ARM_SITES):
+        raise FormatError("INIT reply operand escaped its complete dependency pins")
+    arm = {off: _init_reply_arm_operand(payload, off, word) for off, word in _INIT_REPLY_ARM_SITES}
+    anchors = [dict(r, architecture="ARM") for r in arm.values()]
+
+    def imm(off):
+        return arm[off]["immediate"]
+
+    def disp(off):
+        return arm[off]["byte_offset"]
+
+    def branch(off, target, condition):
+        if (arm[off]["operation"], arm[off]["target_blob_file_offset"], arm[off]["condition"]) != ("B", target, condition):
+            raise FormatError("INIT reply selected branch is incoherent")
+
+    def section(index):
+        return struct.unpack("<10I", bounded(payload, 0x79540 + index * 40, 40, "INIT reply section"))
+
+    sec = section(21)
+    symbol = struct.unpack("<IIIBBH", bounded(payload, 0x6cd00, 16, "INIT reply symbol"))
+    rela = struct.unpack("<IIi", bounded(payload, 0x72948, 12, "INIT reply relocation"))
+    symtab, strtab, relasec, source = section(35), section(34), section(51), section(16)
+    name = b"dms_deliver_info\0"
+    if (sec != (0x260, 8, 3, 0x77138, 0x35734, 0x1654, 0, 0, 4, 1) or
+            symbol != (0x1d8f, 0x78608, 24, 0x11, 0, 21) or rela != (0x246b8, 0x31904, 0) or
+            0x2ea60 + symtab[4] + (rela[1] >> 8) * 16 != 0x6cd00 or
+            0x2ea60 + strtab[4] + symbol[0] != 0x69824 or
+            bounded(payload, 0x69824, len(name), "INIT reply symbol name") != name or
+            (symtab[1], symtab[6], symtab[9], strtab[1], relasec[1], relasec[6], relasec[7]) != (2, 34, 16, 3, 4, 35, 16) or
+            not sec[3] <= symbol[1] <= sec[3] + sec[5] - symbol[2]):
+        raise FormatError("INIT reply section/symbol/RELA ownership is incoherent")
+
+    # Selected baseline callbacks supply outer slot 0's metadata word, not an
+    # arbitrary descriptor. Their construction/identity is an inherited premise.
+    catalog_offset = _bootstrap_word(payload, 0xcfbcc)
+    fallback_frame = arm[0x27bd0]["byte_count"] + imm(0x27bd4)
+    loader_frame = arm[0x2af2c]["byte_count"] + imm(0x2af30)
+    saved_r2_offset = imm(0x27bd4) + (arm[0x27bd0]["register_mask"] & 3).bit_count() * 4
+    if (catalog_offset != bridge["image_placements"][0]["image_base_offset_from_B"] or
+            disp(0x280a4) != bridge["allocation"]["physical_pointer_context_offset"] or
+            arm[0x280a4]["data_register"] != arm[0x27d60]["data_register"] or
+            disp(0x27d48) != saved_r2_offset or disp(0x27d4c) != disp(0x27c84) or
+            disp(0x27c80) != 12 or disp(0x27d60) != 0 or
+            arm[0x27d60]["base_register"] != 13 or disp(0x2afb0) != loader_frame or
+            arm[0x2af3c]["operand_register"] != arm[0x27d64]["destination_register"] or
+            arm[0x2af3c]["destination_register"] != arm[0x2afac]["data_register"] or
+            arm[0x2afb0]["data_register"] != arm[0x2afb4]["data_register"] or
+            arm[0x28058]["destination_register"] != arm[0x280a4]["base_register"] or
+            arm[0x280ac]["source_register"] != 13 or
+            arm[0x280ac]["destination_register"] != arm[0x27be0]["operand_register"] or
+            arm[0x27be0]["destination_register"] != arm[0x27d54]["base_register"] or
+            arm[0x27d54]["base_register"] != arm[0x27d5c]["base_register"] or
+            arm[0x27c7c]["base_register"] != 13 or
+            arm[0x27c7c]["data_register"] != arm[0x27c80]["base_register"]):
+        raise FormatError("INIT reply selected loader argument/frame provenance is incoherent")
+    original_base = imm(0x27d64)
+    branch(0x2a4a0, 0x2a4c0, 1)
+    branch(0x2a4c4, 0x2a4cc, 3)
+    branch(0x2a4d4, 0x2a4dc, 9)
+    branch(0x2a4f0, 0x2a500, 0)
+    stride = (1 + (1 << arm[0x2a48c]["shift_amount"])) * (1 << arm[0x2a494]["shift_amount"])
+    if (imm(0x2a490) != 0x40 or stride != 40 or disp(0x2a498) != 12 or
+            imm(0x2a49c) != 0 or not sec[3] or not sec[3] < imm(0x2a4c0) or
+            disp(0x2a4cc) != disp(0x2a500) or disp(0x2a4cc) != disp(0x2afac) or
+            sec[3] < original_base or disp(0x2a4e8) != 8 or sec[2] & imm(0x2a4ec) or
+            disp(0x2a508) != disp(0x2afb4) or arm[0x2a504]["operation"] != "SUB" or
+            arm[0x2a50c]["operation"] != "ADD" or arm[0x2a514]["shift_amount"] != 2 or
+            any(arm[a][k] != arm[b][k] for a, b, keys in (
+                (0x2a48c, 0x2a4dc, ("source_register", "destination_register", "operand_register", "shift_amount")),
+                (0x2a490, 0x2a4e0, ("source_register", "destination_register", "immediate")),
+                (0x2a494, 0x2a4e4, ("source_register", "destination_register", "operand_register", "shift_amount"))) for k in keys) or
+            arm[0x2a4e4]["destination_register"] != arm[0x2a4e8]["base_register"]):
+        raise FormatError("INIT reply selected non-executable placement is incoherent")
+    destination = sec[3] - original_base + catalog_offset
+    if (disp(0x2a438) != 4 or disp(0x2a43c) != disp(0x2a498) or
+            disp(0x2a444) != 14 or imm(0x2a448) != imm(0x2a510) or
+            arm[0x2a440]["operation"] != "SUB" or arm[0x2a44c]["shift_amount"] != 2 or
+            arm[0x2a450]["operation"] != "ADD" or disp(0x2a454) != disp(0x2a438) or
+            disp(0x2a428) != disp(0x2a444) or imm(0x2a430) != imm(0x2a490) or
+            (1 + (1 << arm[0x2a42c]["shift_amount"])) * (1 << arm[0x2a434]["shift_amount"]) != stride or
+            arm[0x2a434]["destination_register"] != arm[0x2a43c]["base_register"]):
+        raise FormatError("INIT reply symbol rebasing is incoherent")
+    relative = symbol[1] - sec[3]
+    rebased = destination + relative
+
+    def position(address):
+        if source[1] != 1 or not source[2] & 4 or not source[3] <= address <= source[3] + source[5] - 4:
+            raise FormatError("INIT reply ARC operand escaped its executable section")
+        return 0x2ea60 + source[4] + address - source[3]
+
+    arc = {}
+    for address, expected in _INIT_REPLY_ARC_SITES:
+        off = position(address)
+        word = _bootstrap_word(payload, off)
+        if word != expected or not any(low <= off and off + 4 <= low + size for low, size in pinned):
+            raise FormatError("INIT reply ARC operand does not match its body pin")
+        record = {"architecture": "ARC", "section_index": 16, "elf_virtual_address": address,
+                  "blob_file_offset": off, "word": word, "decode_conditional": True,
+                  "destination_register": (word >> 21) & 63, "source_register": (word >> 15) & 63,
+                  "operand_register": (word >> 9) & 63, "signed_low9": (word & 511) - (512 if word & 256 else 0)}
+        record["operation"] = ("MOV register" if address in (0x258b4, 0x24604) else
+                               "MOV LIMM" if address == 0x246b4 else "ADD immediate" if address == 0x246c0 else "STR")
+        if address == 0x246b4:
+            record["literal_value"] = _bootstrap_word(payload, position(address + 4))
+        arc[address] = record
+        anchors.append(record)
+    relas = [struct.unpack_from("<IIi", payload, 0x72780 + i * 12) for i in range(2171)]
+    owner = struct.unpack("<IIIBBH", bounded(payload, 0x69e50, 16, "INIT reply source function"))
+    if (owner[5] != 16 or owner[3] & 15 != 2 or not owner[1] <= 0x246b4 < 0x246c8 <= owner[1] + owner[2] or
+            [(0x72780 + i * 12, r) for i, r in enumerate(relas) if 0x246b4 <= r[0] < 0x246c8] != [(0x72948, rela)] or
+            arc[0x246b4]["literal_value"] != symbol[1] or
+            arc[0x246b4]["destination_register"] != arc[0x246bc]["operand_register"] or
+            arc[0x246c0]["source_register"] != arc[0x246b4]["destination_register"] or
+            arc[0x246c0]["destination_register"] != arc[0x246c4]["operand_register"] or
+            arc[0x246bc]["source_register"] != arc[0x246c4]["source_register"] or
+            arc[0x246bc]["signed_low9"] != disp(0x273bc) or arc[0x246c4]["signed_low9"] != disp(0x273d4)):
+        raise FormatError("INIT reply selected literal/store dataflow is incoherent")
+    functions = {s["name"]: s for s in fresh["outer_path"]["symbols"]}
+    dispatch = next(r for r in fresh["relocation_receipts"] if r["caller"] == "Core_Command" and r["callee"] == "CmdInitialize")
+    inherited_packet = next(r for r in fresh["instruction_anchors"] if r.get("elf_virtual_address") == 0x25824)
+    for address, function in ((0x258b4, "Core_Command"), (0x24604, "CmdInitialize")):
+        f = functions[function]
+        if (f["section_index"] != 16 or not f["elf_virtual_address"] <= address <= f["elf_virtual_address"] + f["size"] - 4 or
+                any(r[0] == address for r in relas)):
+            raise FormatError("INIT reply buffer MOV has incorrect function/relocation ownership")
+        arc[address]["source_function"] = function
+    if (not dispatch["delay_slot"] or dispatch["delay_slot_semantics"] != "always executed" or
+            dispatch["source_elf_virtual_address"] + 4 != arc[0x258b4]["elf_virtual_address"] or
+            dispatch["delay_slot_word"] != arc[0x258b4]["word"] or
+            inherited_packet["destination_register"] != arc[0x258b4]["source_register"] or
+            inherited_packet["literal_value"] != fresh["outer_path"]["local_packet_address"] or
+            any(arc[a]["source_register"] != arc[a]["operand_register"] for a in (0x258b4, 0x24604)) or
+            arc[0x258b4]["destination_register"] != arc[0x24604]["source_register"] or
+            arc[0x24604]["destination_register"] != arc[0x246bc]["source_register"]):
+        raise FormatError("INIT reply selected outer buffer identity is incoherent")
+    relocation = {"architecture": "ELF", "operation": "selected type4 S+A",
+                  "relocation_record_blob_file_offset": 0x72948, "relocation_section_index": 51,
+                  "vendor_type": rela[1] & 255, "symbol_index": rela[1] >> 8, "addend": rela[2],
+                  "source_section_index": 16, "source_function": "CmdInitialize",
+                  "source_function_symbol_index": 46, "source_function_elf_virtual_address": owner[1],
+                  "source_function_bytes": owner[2],
+                  "symbol_section_index": symbol[5], "literal_blob_file_offset": position(rela[0]),
+                  "literal_elf_virtual_address": rela[0], "original_literal": symbol[1],
+                  "patched_literal_offset_from_B": rebased + rela[2], "selected_relocation_is_unique": True,
+                  "byte_store_blob_file_offsets": bridge["outer_pointer_relocation"]["byte_store_blob_file_offsets"],
+                  "applied_before_section_copy": bridge["outer_pointer_relocation"]["applied_before_section_copy"]}
+    anchors.append(relocation)
+    inherited = {r["blob_file_offset"]: r for r in bridge["instruction_anchors"]}
+    if (inherited[0x2b010]["target_blob_file_offset"] != 0x2a474 or
+            inherited[0x2b018]["target_blob_file_offset"] != 0x2a3e0 or
+            inherited[0x2b010]["blob_file_offset"] >= inherited[0x2b018]["blob_file_offset"]):
+        raise FormatError("INIT reply placement/rebase order is incoherent")
+    response_offset = imm(0x271e4)
+    if (response_offset != imm(0x27244) or arm[0x271e4]["source_register"] != 13 or
+            arm[0x27244]["source_register"] != 13 or
+            arm[0x2720c]["operand_register"] != arm[0x271e4]["destination_register"] or
+            arm[0x273bc]["base_register"] != arm[0x2720c]["destination_register"] or
+            arm[0x273d4]["base_register"] != arm[0x273bc]["base_register"] or
+            disp(0x273c0) != disp(0x273d8) or
+            any(arm[off]["target_blob_file_offset"] != bridge["initialized_heap"]["translation_entry_blob_file_offset"] for off in (0x273c8, 0x273e0)) or
+            arm[0x273cc]["destination_register"] != 0 or arm[0x273e4]["data_register"] != 0):
+        raise FormatError("INIT reply ARM alias/consumer dataflow is incoherent")
+    branch(0x1fddc, 0x1fdf4, 3)
+    branch(0x1fdec, 0x1fdf4, 8)
+    branch(0x1fdf0, 0x1fe60, 14)
+    branch(0x1fdfc, 0x1fe58, 0)
+    branch(0x1fe68, 0x1fe5c, 14)
+    if (arm[0x1fdc0]["operation"] != "ADD" or arm[0x1fdc8]["operation"] != "SUB" or
+            disp(0x1fdcc) != 0 or arm[0x1fdcc]["base_register"] != 2 or
+            disp(0x1fdd0) != 0 or disp(0x1fde0) != 0 or imm(0x1fdf8) != 0 or
+            arm[0x1fdb0]["destination_register"] != arm[0x1fdb8]["operand_register"] or
+            arm[0x1fdb8]["destination_register"] != arm[0x1fdbc]["base_register"] or
+            arm[0x1fdbc]["base_register"] != arm[0x1fdc4]["base_register"] or
+            arm[0x1fdac]["register_mask"] & 0x3fff != arm[0x1fe5c]["register_mask"] & 0x3fff or
+            arm[0x1fdac]["byte_count"] != arm[0x1fe5c]["byte_count"] or
+            not arm[0x1fe5c]["register_mask"] & (1 << 15)):
+        raise FormatError("INIT reply translation/store-before-check dataflow is incoherent")
+    translation = {"virtual_base_offset": disp(0x1fdbc), "physical_base_offset": disp(0x1fdc4),
+                   "inclusive_low_offset": disp(0x1fdd4), "inclusive_high_offset": disp(0x1fde4),
+                   "chain_head_offset": disp(0x1fdf4), "error_status": imm(0x1fe58),
+                   "success_status": imm(0x1fe64), "arithmetic_bits": 32,
+                   "unsigned_inclusive_checks": True, "output_store_blob_file_offset": 0x1fdcc,
+                   "bounds_check_blob_file_offsets": [0x1fdd8, 0x1fde8],
+                   "fallback_chain_evaluated": False, "error_projection_requires_empty_chain": True}
+    return {"basis": dict(fresh["basis"]),
+            "validation": {"additional_region_count": len(regions), "additional_byte_count": additional,
+                           "additional_anchor_count": len(anchors), "dependency_byte_count": dependency_bytes,
+                           "aggregate_byte_count": additional + dependency_bytes, "validated_regions": validated},
+            "fresh_init": fresh,
+            "section_placement": {"section_index": 21, "section_type": sec[1], "flags": sec[2],
+                                  "virtual_address": sec[3], "byte_extent": sec[5], "original_virtual_base": original_base,
+                                  "initialized_contents_proven": False,
+                                  "physical_base_offset_from_B": catalog_offset, "destination_offset_from_B": destination,
+                                  "nonzero_va_bypasses_progbits_gate": True,
+                                  "destination_table_context_offset": imm(0x2a510), "section_header_stride": stride,
+                                  "fallback_frame_bytes": fallback_frame, "loader_frame_bytes": loader_frame,
+                                  "catalog_callbacks_are_inherited_successful_baseline_premise": True,
+                                  "catalog_metadata_word_blob_file_offset": 0xcfbcc,
+                                  "constructed_descriptor_stack_offset": disp(0x27c7c),
+                                  "caller_output_stack_offset": imm(0x280ac),
+                                  "selected_entry_requires_valid_loader_and_section_iteration": True,
+                                  "placement_precedes_symbol_rebase": True},
+            "symbol_rebase": {"name": name[:-1].decode("ascii"), "symbol_index": rela[1] >> 8,
+                              "symbol_record_blob_file_offset": 0x6cd00, "value": symbol[1], "size": symbol[2],
+                              "section_index": symbol[5], "section_relative_offset": relative,
+                              "destination_offset_from_B": destination, "rebased_offset_from_B": rebased,
+                              "selected_entry_requires_valid_loader_and_symbol_iteration": True},
+            "relocation_receipt": relocation,
+            "outer_reply": {"word0_command": fresh["host_init"]["internal_command"],
+                            "word1_status": fresh["outer_path"]["reply_backend_status"],
+                            "word2_interpretation": "raw_uninterpreted",
+                            "conditional_on_selected_fresh_arc_execution": True,
+                            "transport_checks_metadata_words": False,
+                            "local_packet_address": inherited_packet["literal_value"],
+                            "caller_buffer_register": inherited_packet["destination_register"],
+                            "callee_buffer_register": arc[0x24604]["destination_register"],
+                            "buffer_argument_receipt_addresses": [0x258b4, 0x24604],
+                            "word3_offset_from_B": rebased + rela[2],
+                            "word4_offset_from_B": rebased + rela[2] + arc[0x246c0]["signed_low9"],
+                            "word4_delta_bytes": arc[0x246c0]["signed_low9"]},
+            "arm_translations": {"reply_base_stack_offset": response_offset,
+                                 "response_alias_register": arm[0x2720c]["destination_register"],
+                                 "context_register": arm[0x271d0]["destination_register"],
+                                 "map_context_offset": disp(0x273c0),
+                                 "output_context_offsets": [imm(0x273c4), imm(0x273dc)],
+                                 "reply_byte_offsets": [disp(0x273bc), disp(0x273d4)],
+                                 "helper_entry": arm[0x273c8]["target_blob_file_offset"],
+                                 "helper_store_precedes_bounds_check": 0x1fdcc < min(translation["bounds_check_blob_file_offsets"]),
+                                 "helper_status_checked": False, "stored_outputs_validated": False,
+                                 "ignored_return_overwrite_blob_file_offsets": [0x273cc, 0x273e4],
+                                 "saved_transport_status_preserved": fresh["arm_builder"]["preserves_transport_status_on_both_return_edges"],
+                                 "raw_version_reply_byte_offset": disp(0x273e4),
+                                 "raw_version_context_offset": disp(0x273e8), "translation": translation},
+            "instruction_anchors": anchors,
+            "assumptions": fresh["assumptions"] + [
+                "Inherited successful baseline catalog callbacks select outer slot0, copy metadata word0 into the constructed descriptor and return that object; this addition does not decode arbitrary catalog callback behavior.",
+                "Selected entries have valid allocated loader identity: section iteration r0=loader/r1=21 and symbol iteration r0=symbol793/r1=loader, with intact tables and ordinary callee-saved ABI preservation. This is not general loader/callback closure.",
+                "Ordinary nested ARC callees preserve CmdInitialize's saved r14 reply-buffer register through the selected metadata stores.",
+                "Ordinary map storage, C+0x250/C+0x254 output slots and protected stack storage are disjoint; map fields remain stable while the helper stores its output and then reads bounds or chain fields.",
+                "Selected type4 relocation and section copy complete; NOBITS address placement proves no initialized object contents, and unselected vendor relocation/initialization behavior remains conditional.",
+                "Reply metadata follows the selected fresh ARC INIT path only under the inherited serialized execution, visibility, calling-convention and freshness premises; matching declarations alone do not validate a live allocation or queue."],
+            "validation_scope": {"conditional_reply_metadata": True, "catalog_callback_closure": False,
+                                 "fallback_translation_chain_evaluated": False, "stored_queue_pointers_validated": False,
+                                 "hardware_aliasing_proven": False, "runtime_observed": False,
+                                 "freshness_proven": False, "operational_coherence_proven": False,
+                                 "source_plane_lease": False, "active_decode_context": False,
+                                 "standalone_execution": False, "public_route": False}}
+
+
+def _init_reply_translation_projection(contract, scenario):
+    """Initial-map u32 translation with an empty fallback chain, test-only.
+
+    Contract must be the trusted result of the private metadata validator.
+    Stable map fields and disjoint map/output/caller-frame storage are assumed,
+    not established at runtime; aliases are outside this selected projection.
+    """
+    if type(contract) is not dict or type(contract.get("arm_translations")) is not dict:
+        raise FormatError("INIT reply projection fixed-model container is invalid")
+    arm = contract["arm_translations"]
+    if type(arm.get("translation")) is not dict:
+        raise FormatError("INIT reply projection translation container is invalid")
+    t = arm["translation"]
+    fixed = {"arithmetic_bits": 32, "success_status": 0, "error_status": 2,
+             "virtual_base_offset": 0x28, "physical_base_offset": 0x30,
+             "inclusive_low_offset": 0x18, "inclusive_high_offset": 0x1c, "chain_head_offset": 4}
+    if (any(type(t.get(k)) is not int or t[k] != v for k, v in fixed.items()) or
+            t.get("unsigned_inclusive_checks") is not True or
+            arm.get("helper_store_precedes_bounds_check") is not True or
+            arm.get("helper_status_checked") is not False or arm.get("stored_outputs_validated") is not False):
+        raise FormatError("INIT reply projection fixed-model invariants do not match")
+    try:
+        heap = contract["fresh_init"]["bridge"]["initialized_heap"]
+        defaults = {"physical_input": 0, "virtual_base": heap["virtual_base"],
+                    "physical_base": heap["physical_base"], "inclusive_low": heap["inclusive_virtual_range"][0],
+                    "inclusive_high": heap["inclusive_virtual_range"][1], "chain_head": 0}
+    except (KeyError, TypeError, IndexError) as error:
+        raise FormatError("INIT reply projection initialized-map defaults are invalid") from error
+    if type(scenario) is not dict or set(scenario) - set(defaults):
+        raise FormatError("INIT reply translation has unsupported scenario fields")
+    values = dict(defaults, **scenario)
+    if any(type(v) is not int or not 0 <= v <= 0xffffffff for v in values.values()):
+        raise FormatError("INIT reply translation scalar is not u32")
+    if values["chain_head"] != 0:
+        raise FormatError("INIT reply translation projection does not evaluate fallback chains")
+    output = (values["virtual_base"] + values["physical_input"] - values["physical_base"]) & ((1 << t["arithmetic_bits"]) - 1)
+    admitted = values["inclusive_low"] <= output <= values["inclusive_high"]
+    return {"stored_output": output, "helper_status": t["success_status"] if admitted else t["error_status"],
+            "within_initial_map": admitted, "store_precedes_bounds_check": contract["arm_translations"]["helper_store_precedes_bounds_check"],
+            "caller_checks_helper_status": contract["arm_translations"]["helper_status_checked"],
+            "stored_output_validated": contract["arm_translations"]["stored_outputs_validated"],
+            "fallback_chain_evaluated": False, "chain_head": 0, "runtime_observed": False}
 
 
 def _bootstrap_word(payload, offset):

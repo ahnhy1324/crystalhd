@@ -5944,7 +5944,9 @@ class FirmwareFreshInitCausalTests(unittest.TestCase):
                    "arc_metadata", "csc_command", "command_buffer_bridge", "inner_descriptor")
         aggregate = hashlib.sha256()
         with mock.patch.object(MAP, "_fresh_init_causal_contract", side_effect=AssertionError("public causal route")), \
-                mock.patch.object(MAP, "_fresh_init_projection", side_effect=AssertionError("public projection route")):
+                mock.patch.object(MAP, "_fresh_init_projection", side_effect=AssertionError("public projection route")), \
+                mock.patch.object(MAP, "_init_reply_metadata_linkage", side_effect=AssertionError("public reply metadata route")), \
+                mock.patch.object(MAP, "_init_reply_translation_projection", side_effect=AssertionError("public translation route")):
             for mask in range(256):
                 flags = {name: bool(mask & (1 << bit)) for bit, name in enumerate(options)}
                 wanted = ("ReadLine",) if mask & 1 else MAP.DEFAULT_SYMBOLS
@@ -5960,6 +5962,566 @@ class FirmwareFreshInitCausalTests(unittest.TestCase):
                 mock.patch.object(sys, "stderr", new_callable=io.StringIO), \
                 self.assertRaises(SystemExit) as error:
             MAP.main([str(BLOB), "--fresh-init-causal-contract"])
+        self.assertEqual(error.exception.code, 2)
+        self.assertEqual(output.getvalue(), "")
+
+
+class FirmwareInitReplyMetadataTests(unittest.TestCase):
+    ARM_WORDS = {
+        0x28058: 0xe1a04000, 0x280a4: 0xe59421b0, 0x280ac: 0xe28d301c,
+        0x27bd0: 0xe92d4fff, 0x27bd4: 0xe24dd01c, 0x27be0: 0xe1a0a003,
+        0x27c7c: 0xe59d000c,
+        0x27c80: 0xe590000c, 0x27c84: 0xe58d0008, 0x27d48: 0xe59d0024,
+        0x27d4c: 0xe59d1008, 0x27d50: 0xe0800001, 0x27d54: 0xe58a0000,
+        0x27d5c: 0xe59a2000, 0x27d60: 0xe1cd20f0, 0x27d64: 0xe3a03000,
+        0x2af2c: 0xe92d4fff, 0x2af30: 0xe24dd014, 0x2af3c: 0xe1a09003,
+        0x2afac: 0xe5849004, 0x2afb0: 0xe59d0048, 0x2afb4: 0xe5840008,
+        0x2a48c: 0xe0813101, 0x2a490: 0xe2804040, 0x2a494: 0xe0843183,
+        0x271d0: 0xe1a04000, 0x271e4: 0xe28d8004, 0x2720c: 0xe1a07008,
+        0x27244: 0xe28d3004,
+        0x273bc: 0xe597100c, 0x273c0: 0xe594000c, 0x273c4: 0xe2842e25,
+        0x273cc: 0xe28f0f81, 0x273d4: 0xe5971010, 0x273d8: 0xe594000c,
+        0x273dc: 0xe2842f95, 0x273e4: 0xe5970008, 0x273e8: 0xe584018c,
+        0x273f4: 0xe1a0000a,
+        0x1fdac: 0xe92d4030, 0x1fdb0: 0xe1a03000, 0x1fdb4: 0xe1a04001, 0x1fdb8: 0xe1a01003,
+        0x1fdbc: 0xe5910028, 0x1fdc0: 0xe0800004, 0x1fdc4: 0xe5915030,
+        0x1fdc8: 0xe0400005, 0x1fdcc: 0xe5820000, 0x1fdd0: 0xe5920000,
+        0x1fdd4: 0xe5915018, 0x1fdd8: 0xe1500005, 0x1fde0: 0xe5920000,
+        0x1fde4: 0xe591501c, 0x1fde8: 0xe1500005,
+        0x1fdf4: 0xe5930004, 0x1fdf8: 0xe3500000, 0x1fe58: 0xe3a00002, 0x1fe5c: 0xe8bd8030,
+        0x1fe64: 0xe3a00000,
+        0x2a498: 0xe593200c, 0x2a49c: 0xe3520000, 0x2a4b0: 0xe5933004,
+        0x2a4b4: 0xe3530001, 0x2a4c0: 0xe3520203, 0x2a4cc: 0xe5903004,
+        0x2a4d0: 0xe1530002, 0x2a4dc: 0xe0813101, 0x2a4e0: 0xe2804040,
+        0x2a4e4: 0xe0843183, 0x2a4e8: 0xe5933008, 0x2a4ec: 0xe3130004,
+        0x2a4f4: 0xe5903004, 0x2a4f8: 0xe0422003, 0x2a500: 0xe5903004,
+        0x2a504: 0xe0423003, 0x2a508: 0xe5904008, 0x2a50c: 0xe0832004,
+        0x2a510: 0xe2803d61, 0x2a514: 0xe7832101,
+        0x2a3fc: 0xe1d050be, 0x2a408: 0xe1d050be, 0x2a40c: 0xe3550080,
+        0x2a418: 0xe5905004, 0x2a41c: 0xe3550203, 0x2a428: 0xe1d050be,
+        0x2a42c: 0xe0855105, 0x2a430: 0xe2816040, 0x2a434: 0xe0864185,
+        0x2a438: 0xe5905004,
+        0x2a43c: 0xe594600c, 0x2a440: 0xe0453006,
+        0x2a444: 0xe1d050be, 0x2a448: 0xe2816d61, 0x2a44c: 0xe7965105,
+        0x2a450: 0xe0855003, 0x2a454: 0xe5805004,
+    }
+    ARM_BRANCHES = (
+        (0x273c8, 0x1fdac, True, 14), (0x273d0, 0x203c4, True, 14),
+        (0x273e0, 0x1fdac, True, 14), (0x273f0, 0x203c4, True, 14),
+        (0x273f8, 0x2729c, False, 14),
+        (0x1fddc, 0x1fdf4, False, 3), (0x1fdec, 0x1fdf4, False, 8),
+        (0x1fdf0, 0x1fe60, False, 14), (0x1fdfc, 0x1fe58, False, 0),
+        (0x1fe68, 0x1fe5c, False, 14),
+        (0x2a4a0, 0x2a4c0, False, 1), (0x2a4b8, 0x2a4c0, False, 0),
+        (0x2a4c4, 0x2a4cc, False, 3), (0x2a4d4, 0x2a4dc, False, 9),
+        (0x2a4f0, 0x2a500, False, 0), (0x2a4fc, 0x2a510, False, 14),
+        (0x2a404, 0x2a414, False, 0), (0x2a410, 0x2a418, False, 11),
+        (0x2a420, 0x2a428, False, 3),
+    )
+    ARC_WORDS = {0x258b4: 0x60079e00, 0x24604: 0x61c00000,
+                 0x246b4: 0x601f7c00, 0x246b8: 0x78608, 0x246bc: 0x1007000c,
+                 0x246c0: 0x40007e0c, 0x246c4: 0x10070010}
+
+    @classmethod
+    def setUpClass(cls):
+        cls.data = MAP.read_firmware(BLOB)
+        cls.payload = cls.data[:-MAP.TRAILER_SIZE]
+        cls.images = MAP.analyze(cls.data)["images"]
+        cls.elf_base = 0x2ea60
+        header = struct.unpack_from("<16sHHIIIIIHHHHHH", cls.payload, cls.elf_base)
+        cls.sections = [struct.unpack_from("<10I", cls.payload, cls.elf_base + header[6] + i * 40)
+                        for i in range(header[12])]
+
+    word = FirmwareFreshInitCausalTests.word
+    arc_offset = FirmwareFreshInitCausalTests.arc_offset
+    immediate = staticmethod(FirmwareFreshInitCausalTests.immediate)
+
+    def mapping(self, payload=None, images=None):
+        return MAP._init_reply_metadata_linkage(self.payload if payload is None else payload,
+                                               self.images if images is None else images)
+
+    def test_independent_object_relocation_section21_and_NOBITS_extent(self):
+        self.assertEqual(struct.unpack_from("<IIi", self.payload, 0x72948), (0x246b8, 0x31904, 0))
+        self.assertEqual(0x31904 >> 8, 793)
+        self.assertEqual(self.elf_base + self.sections[35][4] + 793 * 16, 0x6cd00)
+        symbol = struct.unpack_from("<IIIBBH", self.payload, 0x6cd00)
+        self.assertEqual(symbol, (0x1d8f, 0x78608, 24, 0x11, 0, 21))
+        self.assertEqual(self.elf_base + self.sections[34][4] + symbol[0], 0x69824)
+        self.assertEqual(self.payload[0x69824:0x69835], b"dms_deliver_info\0")
+        self.assertEqual(self.sections[21], (0x260, 8, 3, 0x77138, 0x35734, 0x1654, 0, 0, 4, 1))
+        self.assertEqual(0x79540 + 21 * 40, 0x79888)
+        self.assertTrue(self.sections[21][3] <= symbol[1] < symbol[1] + symbol[2] <=
+                        self.sections[21][3] + self.sections[21][5])
+        # NOBITS has no object bytes to interpret from its sh_offset.
+        self.assertEqual(self.sections[21][1], 8)
+        self.assertEqual(self.arc_offset(16, 0x246b8), 0x4724c)
+        self.assertEqual(self.word(0x4724c), symbol[1])
+
+    def test_independent_reply_indices_translation_arguments_and_ignored_returns(self):
+        for offset, word in self.ARM_WORDS.items():
+            with self.subTest(arm=hex(offset)):
+                self.assertEqual(self.word(offset), word)
+        for offset, target, link, condition in self.ARM_BRANCHES:
+            word = self.word(offset)
+            signed = (word & 0xffffff) - (0x1000000 if word & 0x800000 else 0)
+            with self.subTest(branch=hex(offset)):
+                self.assertEqual((word >> 25 & 7, bool(word >> 24 & 1), word >> 28), (5, link, condition))
+                self.assertEqual(offset + 8 + signed * 4, target)
+        for address, word in self.ARC_WORDS.items():
+            self.assertEqual(self.word(self.arc_offset(16, address)), word)
+        self.assertEqual([self.ARC_WORDS[p] & 511 for p in (0x246bc, 0x246c0, 0x246c4)], [12, 12, 16])
+        self.assertEqual([self.word(p) & 4095 for p in (0x273bc, 0x273d4, 0x273c0, 0x273d8)], [12, 16, 12, 12])
+        self.assertEqual([self.immediate(self.word(p)) for p in (0x273c4, 0x273dc)], [0x250, 0x254])
+        self.assertEqual(self.word(0x273cc) >> 21 & 15, 4)  # ADD overwrites first returned R0.
+        self.assertTrue(self.word(0x273e4) >> 20 & 1)  # LDR overwrites second returned R0.
+        self.assertEqual(self.word(0x273f4) & 15, 10)  # Return saved transport status, not either translation status.
+        self.assertLess(0x1fdcc, 0x1fdd8)
+        self.assertLess(0x1fdcc, 0x1fde8)
+        self.assertEqual(self.word(0x1fdf4) & 4095, 4)  # Fallback chain head; null takes explicit MOV2 edge.
+        self.assertEqual(self.word(self.arc_offset(16, 0x25824)), 0x61ff7c00)
+        self.assertEqual(self.word(self.arc_offset(16, 0x25828)), 0x30051d00)
+        self.assertEqual(self.word(self.arc_offset(16, 0x25824)) >> 21 & 63, 15)
+        call = self.word(self.arc_offset(16, 0x258b0))
+        self.assertEqual(call, 0x2ffda720)
+        displacement = (call >> 7 & 0xfffff) - 0x100000
+        self.assertEqual(0x258b0 + 4 + displacement * 4, 0x245ec)
+        self.assertEqual(call & 0xf800007f, 0x28000020)  # Ordinary BL.d: delay always executes.
+        self.assertEqual(self.ARC_WORDS[0x258b4] >> 9 & 63, 15)
+        self.assertEqual((self.ARC_WORDS[0x258b4] >> 21 & 63,
+                          self.ARC_WORDS[0x24604] >> 9 & 63), (0, 0))
+        self.assertEqual(self.ARC_WORDS[0x24604] >> 21 & 63, 14)
+        self.assertEqual([self.ARC_WORDS[p] >> 15 & 63 for p in (0x246bc, 0x246c4)], [14, 14])
+        self.assertEqual(struct.unpack_from("<IIIBBH", self.payload, 0x6be10)[1:],
+                         (0x25808, 516, 0x12, 0, 16))
+        relas = [struct.unpack_from("<IIi", self.payload, p) for p in range(0x72780, 0x78d44, 12)]
+        self.assertFalse(any(record[0] in (0x258b4, 0x24604) for record in relas))
+
+    def test_independent_nonzero_NOBITS_placement_and_symbol_rebase_equation(self):
+        section, symbol = self.sections[21], struct.unpack_from("<IIIBBH", self.payload, 0x6cd00)
+        self.assertNotEqual(section[3], 0)
+        self.assertEqual(section[2] & 4, 0)
+        self.assertEqual(self.immediate(self.word(0x2a4c0)), 0x30000000)
+        self.assertEqual(self.immediate(self.word(0x2a4ec)), 4)
+        self.assertEqual(self.immediate(self.word(0x2a510)), 0x1840)
+        self.assertEqual(self.immediate(self.word(0x2a448)), 0x1840)
+        # Selected loader origin0 and data baseB. This comes from section21,
+        # not section17's unrelated command-block extent or file offset.
+        destination_offset = section[3] - 0 + 0
+        rebased_symbol_offset = destination_offset + symbol[1] - section[3]
+        self.assertEqual((destination_offset, rebased_symbol_offset, rebased_symbol_offset + 12),
+                         (0x77138, 0x78608, 0x78614))
+        self.assertNotEqual(section[3], self.sections[17][3])
+        # PUSH52+local28 places incoming R2 at SP+36; the nested loader's
+        # PUSH52+local20 reaches the physical data-base stack argument at+72.
+        self.assertEqual((self.word(0x27bd0) & 65535).bit_count() * 4, 52)
+        self.assertEqual(self.immediate(self.word(0x27bd4)), 28)
+        self.assertEqual(self.word(0x27d48) & 4095, 28 + 2 * 4)
+        self.assertEqual((self.word(0x2af2c) & 65535).bit_count() * 4, 52)
+        self.assertEqual(self.immediate(self.word(0x2af30)), 20)
+        self.assertEqual(self.word(0x2afb0) & 4095, 52 + 20)
+        self.assertEqual(self.immediate(self.word(0x27d64)), 0)
+        self.assertEqual((self.word(0x2af3c) >> 12 & 15, self.word(0x2af3c) & 15), (9, 3))
+        self.assertEqual((self.word(0x2afac) >> 12 & 15, self.word(0x2afac) & 4095), (9, 4))
+
+    def test_returned_section_symbol_relocation_reply_and_translation_contract(self):
+        result = self.mapping()
+        self.assertEqual(result["basis"], result["fresh_init"]["basis"])
+        self.assertTrue(result["basis"]["conditional"])
+        self.assertTrue(result["basis"]["selected_regions_validated"])
+        for key in ("entire_payload_rehashed", "device_observed", "public_route"):
+            self.assertFalse(result["basis"][key])
+        self.assertEqual({key: value for key, value in result["validation"].items()
+                          if key != "validated_regions"},
+                         {"additional_region_count": 4, "additional_byte_count": 85,
+                          "additional_anchor_count": 104, "dependency_byte_count": 45228,
+                          "aggregate_byte_count": 45313})
+        self.assertEqual(result["section_placement"], {
+            "section_index": 21, "section_type": 8, "flags": 3,
+            "virtual_address": 0x77138, "byte_extent": 0x1654,
+            "original_virtual_base": 0, "initialized_contents_proven": False,
+            "physical_base_offset_from_B": 0,
+            "destination_offset_from_B": 0x77138, "nonzero_va_bypasses_progbits_gate": True,
+            "destination_table_context_offset": 0x1840, "section_header_stride": 40,
+            "fallback_frame_bytes": 80, "loader_frame_bytes": 72,
+            "catalog_callbacks_are_inherited_successful_baseline_premise": True,
+            "catalog_metadata_word_blob_file_offset": 0xcfbcc,
+            "constructed_descriptor_stack_offset": 12, "caller_output_stack_offset": 28,
+            "selected_entry_requires_valid_loader_and_section_iteration": True,
+            "placement_precedes_symbol_rebase": True})
+        self.assertEqual(result["symbol_rebase"], {
+            "name": "dms_deliver_info", "symbol_index": 793,
+            "symbol_record_blob_file_offset": 0x6cd00,
+            "value": 0x78608, "size": 24, "section_index": 21,
+            "section_relative_offset": 0x14d0, "destination_offset_from_B": 0x77138,
+            "rebased_offset_from_B": 0x78608,
+            "selected_entry_requires_valid_loader_and_symbol_iteration": True})
+        self.assertEqual(struct.unpack_from("<IIIBBH", self.payload, 0x69e50)[1:],
+                         (0x245ec, 412, 2, 0, 16))
+        self.assertEqual(result["relocation_receipt"], {
+            "architecture": "ELF", "operation": "selected type4 S+A",
+            "relocation_record_blob_file_offset": 0x72948, "relocation_section_index": 51,
+            "vendor_type": 4, "symbol_index": 793, "addend": 0,
+            "source_section_index": 16, "source_function": "CmdInitialize",
+            "source_function_symbol_index": 46, "source_function_elf_virtual_address": 0x245ec,
+            "source_function_bytes": 412, "symbol_section_index": 21,
+            "literal_blob_file_offset": 0x4724c, "literal_elf_virtual_address": 0x246b8,
+            "original_literal": 0x78608, "patched_literal_offset_from_B": 0x78608,
+            "selected_relocation_is_unique": True,
+            "byte_store_blob_file_offsets": [0x29c9c, 0x29ca4, 0x29cb0, 0x29cbc],
+            "applied_before_section_copy": True})
+        self.assertEqual(result["outer_reply"], {
+            "word0_command": 0x73760001, "word1_status": 0,
+            "word2_interpretation": "raw_uninterpreted",
+            "conditional_on_selected_fresh_arc_execution": True,
+            "transport_checks_metadata_words": False,
+            "local_packet_address": 0x30051d00, "caller_buffer_register": 15,
+            "callee_buffer_register": 14,
+            "buffer_argument_receipt_addresses": [0x258b4, 0x24604],
+            "word3_offset_from_B": 0x78608, "word4_offset_from_B": 0x78614,
+            "word4_delta_bytes": 12})
+        self.assertEqual(result["arm_translations"], {
+            "reply_base_stack_offset": 4, "response_alias_register": 7, "context_register": 4,
+            "map_context_offset": 12, "output_context_offsets": [0x250, 0x254],
+            "reply_byte_offsets": [12, 16], "helper_entry": 0x1fdac,
+            "helper_store_precedes_bounds_check": True, "helper_status_checked": False,
+            "stored_outputs_validated": False,
+            "ignored_return_overwrite_blob_file_offsets": [0x273cc, 0x273e4],
+            "saved_transport_status_preserved": True,
+            "raw_version_reply_byte_offset": 8, "raw_version_context_offset": 0x18c,
+            "translation": {"virtual_base_offset": 40, "physical_base_offset": 48,
+                            "inclusive_low_offset": 24, "inclusive_high_offset": 28,
+                            "chain_head_offset": 4, "error_status": 2, "success_status": 0,
+                            "arithmetic_bits": 32, "unsigned_inclusive_checks": True,
+                            "output_store_blob_file_offset": 0x1fdcc,
+                            "bounds_check_blob_file_offsets": [0x1fdd8, 0x1fde8],
+                            "fallback_chain_evaluated": False,
+                            "error_projection_requires_empty_chain": True}})
+        self.assertEqual(result["validation_scope"], {
+            "conditional_reply_metadata": True, "catalog_callback_closure": False,
+            "fallback_translation_chain_evaluated": False, "stored_queue_pointers_validated": False,
+            "hardware_aliasing_proven": False, "runtime_observed": False, "freshness_proven": False,
+            "operational_coherence_proven": False, "source_plane_lease": False,
+            "active_decode_context": False, "standalone_execution": False, "public_route": False})
+        self.assertEqual(result["assumptions"][:len(result["fresh_init"]["assumptions"])],
+                         result["fresh_init"]["assumptions"])
+        added = " ".join(result["assumptions"][len(result["fresh_init"]["assumptions"]):])
+        for phrase in ("catalog callbacks", "does not decode arbitrary", "section iteration r0=loader/r1=21",
+                       "symbol iteration r0=symbol793/r1=loader", "callee-saved ABI preservation",
+                       "preserve CmdInitialize's saved r14 reply-buffer register",
+                       "map storage, C+0x250/C+0x254 output slots and protected stack storage are disjoint",
+                       "map fields remain stable",
+                       "NOBITS address placement proves no initialized object contents", "unselected vendor",
+                       "calling-convention and freshness premises",
+                       "do not validate a live allocation or queue"):
+            self.assertIn(phrase, added)
+
+    def test_all104_returned_anchors_match_independent_words_and_operands(self):
+        result = self.mapping()
+        anchors = result["instruction_anchors"]
+        arm = [record for record in anchors if record["architecture"] == "ARM"]
+        arc = [record for record in anchors if record["architecture"] == "ARC"]
+        elf = [record for record in anchors if record["architecture"] == "ELF"]
+        self.assertEqual((len(anchors), len(arm), len(arc), len(elf)), (104, 97, 6, 1))
+        branch_specs = {offset: (target, link, condition) for offset, target, link, condition in self.ARM_BRANCHES}
+        # Additional static guards and inherited return words are not new receipts.
+        static_only = {0x273d0, 0x273f0, 0x273f4, 0x273f8, 0x2a3fc, 0x2a404, 0x2a408,
+                       0x2a40c, 0x2a410, 0x2a418, 0x2a41c, 0x2a420, 0x2a4b0, 0x2a4b4,
+                       0x2a4b8, 0x2a4f4, 0x2a4f8, 0x2a4fc}
+        selected = (set(self.ARM_WORDS) | set(branch_specs)) - static_only
+        self.assertEqual(len(selected), 97)
+        self.assertEqual({record["blob_file_offset"] for record in arm}, selected)
+        self.assertEqual(len({record["blob_file_offset"] for record in arm}), len(arm))
+        for record in arm:
+            offset, word = record["blob_file_offset"], self.word(record["blob_file_offset"])
+            expected = {"architecture": "ARM", "blob_file_offset": offset, "word": word, "condition": word >> 28}
+            if offset in branch_specs:
+                target, link, condition = branch_specs[offset]
+                expected.update(operation="BL" if link else "B", target_blob_file_offset=target)
+                self.assertEqual(word >> 28, condition)
+            else:
+                self.assertEqual(word, self.ARM_WORDS[offset])
+                if offset in (0x27bd0, 0x2af2c, 0x1fdac, 0x1fe5c):
+                    expected.update(operation="POP" if offset == 0x1fe5c else "PUSH", base_register=13,
+                                    register_mask=word & 65535, byte_count=(word & 65535).bit_count() * 4)
+                elif offset in (0x2a3fc, 0x2a408, 0x2a428, 0x2a444, 0x27d60):
+                    expected.update(operation="STRD" if offset == 0x27d60 else "LDRH",
+                                    base_register=word >> 16 & 15, data_register=word >> 12 & 15,
+                                    byte_width=8 if offset == 0x27d60 else 2,
+                                    byte_offset=(word >> 4 & 0xf0) + (word & 15))
+                    if offset == 0x27d60:
+                        expected["second_data_register"] = 3
+                elif word >> 26 & 3 == 1:
+                    expected.update(operation="LDR" if word >> 20 & 1 else "STR",
+                                    base_register=word >> 16 & 15, data_register=word >> 12 & 15,
+                                    byte_width=1 if word >> 22 & 1 else 4)
+                    if word >> 25 & 1:
+                        expected.update(offset_register=word & 15, shift_kind="LSL", shift_amount=word >> 7 & 31)
+                    else:
+                        expected["byte_offset"] = (word & 4095) * (1 if word >> 23 & 1 else -1)
+                else:
+                    self.assertEqual(word >> 26 & 3, 0)
+                    opcode = word >> 21 & 15
+                    expected.update(operation={2: "SUB", 4: "ADD", 8: "TST", 10: "CMP", 13: "MOV"}[opcode],
+                                    source_register=word >> 16 & 15, destination_register=word >> 12 & 15)
+                    if word >> 25 & 1:
+                        expected["immediate"] = self.immediate(word)
+                    else:
+                        expected.update(operand_register=word & 15, shift_kind="LSL", shift_amount=word >> 7 & 31)
+            with self.subTest(arm=hex(offset)):
+                self.assertEqual(record, expected)
+        self.assertEqual({record["elf_virtual_address"] for record in arc},
+                         {0x258b4, 0x24604, 0x246b4, 0x246bc, 0x246c0, 0x246c4})
+        for record in arc:
+            address = record["elf_virtual_address"]
+            word = self.ARC_WORDS[address]
+            expected = {"architecture": "ARC", "section_index": 16, "elf_virtual_address": address,
+                        "blob_file_offset": self.arc_offset(16, address), "word": word, "decode_conditional": True,
+                        "destination_register": word >> 21 & 63, "source_register": word >> 15 & 63,
+                        "operand_register": word >> 9 & 63, "signed_low9": (word & 511) - (512 if word & 256 else 0),
+                        "operation": {0x246b4: "MOV LIMM", 0x246c0: "ADD immediate"}.get(address, "STR")}
+            if address == 0x246b4:
+                expected["literal_value"] = 0x78608
+            if address in (0x258b4, 0x24604):
+                expected.update(operation="MOV register", source_register=15 if address == 0x258b4 else 0,
+                                source_function="Core_Command" if address == 0x258b4 else "CmdInitialize")
+            with self.subTest(arc=hex(address)):
+                self.assertEqual(record, expected)
+        self.assertEqual(elf, [result["relocation_receipt"]])
+
+    def test_fixed_metadata_regions_hashes_and_exact_one_over_preflight_budgets(self):
+        self.assertEqual({(offset, size) for _, offset, size, _ in MAP._INIT_REPLY_REGIONS},
+                         {(0x79888, 40), (0x6cd00, 16), (0x69824, 17), (0x72948, 12)})
+        self.assertEqual((len(MAP._INIT_REPLY_REGIONS), sum(size for _, _, size, _ in MAP._INIT_REPLY_REGIONS)), (4, 85))
+        for role, offset, size, digest in MAP._INIT_REPLY_REGIONS:
+            with self.subTest(role=role):
+                self.assertEqual(hashlib.sha256(self.payload[offset:offset + size]).hexdigest(), digest)
+        self.assertEqual((MAP.MAX_INIT_REPLY_REGIONS, MAP.MAX_INIT_REPLY_BYTES, MAP.MAX_INIT_REPLY_ANCHORS,
+                          MAP.MAX_INIT_REPLY_AGGREGATE_BYTES), (12, 1024, 104, 80 * 1024))
+        self.assertEqual((MAP.MAX_FRESH_INIT_REGIONS, MAP.MAX_FRESH_INIT_BYTES, MAP.MAX_FRESH_INIT_ANCHORS,
+                          MAP.MAX_FRESH_INIT_EVENTS, MAP.MAX_COMMAND_BUFFER_BRIDGE_REGIONS,
+                          MAP.MAX_COMMAND_BUFFER_BRIDGE_BYTES), (48, 16 * 1024, 160, 64, 80, 40 * 1024))
+        for name, actual in (("MAX_INIT_REPLY_REGIONS", 4), ("MAX_INIT_REPLY_BYTES", 85),
+                             ("MAX_INIT_REPLY_ANCHORS", 104), ("MAX_INIT_REPLY_AGGREGATE_BYTES", 45313)):
+            with self.subTest(exact=name), mock.patch.object(MAP, name, actual):
+                self.assertEqual(self.mapping()["validation"]["additional_anchor_count"], 104)
+            with self.subTest(one_over=name), mock.patch.object(MAP, name, actual - 1), \
+                    mock.patch.object(MAP, "_fresh_init_causal_contract", side_effect=AssertionError("late preflight")), \
+                    self.assertRaisesRegex(MAP.FormatError, "budget"):
+                self.mapping()
+        for name, actual in (("MAX_FRESH_INIT_ANCHORS", 159), ("MAX_FRESH_INIT_BYTES", 8536),
+                             ("MAX_COMMAND_BUFFER_BRIDGE_BYTES", 36692)):
+            with self.subTest(dependency=name), mock.patch.object(MAP, name, actual - 1), \
+                    mock.patch.object(MAP, "_a32_branch", side_effect=AssertionError("decode before dependency bound")), \
+                    self.assertRaisesRegex(MAP.FormatError, "budget"):
+                self.mapping()
+
+    def test_every_metadata_pin_and_targeted_relocation_object_placement_mutation_rejects(self):
+        for role, offset, size, _ in MAP._INIT_REPLY_REGIONS:
+            for delta in range(size):
+                changed = bytearray(self.payload)
+                changed[offset + delta] ^= 1
+                with self.subTest(role=role, byte=delta), \
+                        mock.patch.object(MAP, "_fresh_init_causal_contract", side_effect=AssertionError("metadata decoded before pins")), \
+                        self.assertRaises(MAP.FormatError):
+                    self.mapping(changed)
+        mutations = ((0x72948 + 4, "<I", 0x31906), (0x72948 + 4, "<I", 0x31804),
+                     (0x72948 + 8, "<i", 12), (0x72948 + 8, "<i", -12),
+                     (0x6cd00 + 12, "<B", 0x12), (0x6cd00 + 14, "<H", 17),
+                     (0x6cd00 + 8, "<I", 25), (0x6cd00 + 4, "<I", 0x78784),
+                     (0x79888 + 4, "<I", 1), (0x79888 + 8, "<I", 7),
+                     (0x79888 + 12, "<I", 0), (0x79888 + 12, "<I", 0x70000),
+                     (0x79888 + 20, "<I", 0x14d0))
+        for offset, format_string, value in mutations:
+            changed = bytearray(self.payload)
+            struct.pack_into(format_string, changed, offset, value)
+            with self.subTest(offset=hex(offset), value=value), self.assertRaises(MAP.FormatError):
+                self.mapping(changed)
+        changed = bytearray(self.payload)
+        struct.pack_into("<IIi", changed, 0x72954, 0x246b8, 0x31904, 0)
+        with mock.patch.object(MAP, "_a32_branch", side_effect=AssertionError("duplicate decoded before RELA pin")), \
+                self.assertRaises(MAP.FormatError):
+            self.mapping(changed)
+        for address in (0x258b4, 0x24604):
+            changed = bytearray(self.payload)
+            struct.pack_into("<IIi", changed, 0x72954, address, 0x31904, 0)
+            with self.subTest(unexpected_relocation=hex(address)), \
+                    mock.patch.object(MAP, "_a32_branch", side_effect=AssertionError("MOV relocation decoded before pin")), \
+                    self.assertRaises(MAP.FormatError):
+                self.mapping(changed)
+
+    def test_reply_index_delta_destination_range_and_ignored_return_mutations_reject(self):
+        for offset, replacement in (
+                (0x47250, 0x10070008), (0x47254, 0x40007e08), (0x47258, 0x10070014),
+                (0x273bc, 0xe5971008), (0x273d4, 0xe5971014), (0x273c4, 0xe2842e26),
+                (0x273dc, 0xe2842f94), (0x273cc, 0xe3500000), (0x273e4, 0xe3500000),
+                (0x273f4, 0xe3a00000), (0x1fdcc, 0xe320f000), (0x1fddc, 0x9a000004),
+                (0x1fdec, 0x2a000000), (0x1fdfc, 0x1a000015),
+                (0x2a4a0, 0x0a000006), (0x2a4ec, 0xe3130002),
+                (0x2a504, 0xe0823003), (0x2a50c, 0xe0832003), (0x2a450, 0xe0855005)):
+            changed = bytearray(self.payload)
+            struct.pack_into("<I", changed, offset, replacement)
+            with self.subTest(offset=hex(offset)), self.assertRaises(MAP.FormatError):
+                self.mapping(changed)
+
+    def test_every_new_instruction_pin_rejects_before_decode_and_unsupported_forms_refuse(self):
+        contract = self.mapping()
+        offsets = [record["blob_file_offset"] for record in contract["instruction_anchors"]
+                   if record["architecture"] in ("ARM", "ARC")]
+        self.assertEqual(len(offsets), 103)
+        for offset in offsets:
+            for delta in range(4):
+                changed = bytearray(self.payload)
+                changed[offset + delta] ^= 1
+                with self.subTest(offset=hex(offset), byte=delta), \
+                        mock.patch.object(MAP, "_a32_branch", side_effect=AssertionError("instruction decoded before pin")), \
+                        mock.patch.object(MAP, "_stock_host_handler_footprints", side_effect=AssertionError("handler decoded before pin")), \
+                        self.assertRaises(MAP.FormatError):
+                    self.mapping(changed)
+        for word in (0xe3400000, 0xe92da000, 0xe92d0000, 0xe8bd4000, 0xe8bda000,
+                     0xe1cd30f0, 0xe4920000, 0xe7920013, 0xe0400015, 0xe3131004,
+                     0xe0500005, 0xe3030004, 0x3b000000):
+            changed = bytearray(self.payload)
+            struct.pack_into("<I", changed, 0x1fdac, word)
+            with self.subTest(unsupported=hex(word)), self.assertRaises(MAP.FormatError):
+                MAP._init_reply_arm_operand(changed, 0x1fdac, word)
+
+    def test_raw_u32_translation_inclusive_boundaries_wrap_and_absent_fallback(self):
+        contract = self.mapping()
+        for virtual, physical in ((0, 0), (0x1000, 0x2000), (0xffffffff, 0), (1, 0xffffffff)):
+            for value in (0, 1, 0xfff, 0x1000, 0x1fff, 0x2000, 0xffffffff):
+                stored = (virtual + value - physical) & 0xffffffff
+                for low, high in ((0, 0xffffffff), (0x1000, 0x1fff), (stored, stored),
+                                  (0xffffffff, 0), (1, 0xffffffff)):
+                    scenario = {"physical_input": value, "virtual_base": virtual, "physical_base": physical,
+                                "inclusive_low": low, "inclusive_high": high, "chain_head": 0}
+                    result = MAP._init_reply_translation_projection(contract, scenario)
+                    expected_status = 0 if low <= stored <= high else 2
+                    with self.subTest(**scenario):
+                        self.assertEqual(result["stored_output"], stored)
+                        self.assertEqual(result["helper_status"], expected_status)
+                        self.assertEqual(result["within_initial_map"], expected_status == 0)
+                        self.assertTrue(result["store_precedes_bounds_check"])
+                        self.assertFalse(result["caller_checks_helper_status"])
+                        self.assertFalse(result["stored_output_validated"])
+                        self.assertFalse(result["fallback_chain_evaluated"])
+                        self.assertFalse(result["runtime_observed"])
+                        self.assertEqual(result["chain_head"], 0)
+        scenario = {"physical_input": 0x100, "virtual_base": 0, "physical_base": 0,
+                    "inclusive_low": 0x1000, "inclusive_high": 0x1fff, "chain_head": 0}
+        self.assertEqual(MAP._init_reply_translation_projection(contract, scenario)["helper_status"], 2)
+        for bad in (None, [], dict(scenario, unknown=0), dict(scenario, chain_head=1),
+                    dict(scenario, chain_head=0xffffffff), dict(scenario, physical_input=-1),
+                    dict(scenario, virtual_base=0x100000000), dict(scenario, physical_base=True),
+                    dict(scenario, inclusive_low=1.0), dict(scenario, inclusive_high="0")):
+            with self.subTest(scenario=bad), self.assertRaises(MAP.FormatError):
+                MAP._init_reply_translation_projection(contract, bad)
+
+    def test_successful_transport_can_retain_both_failed_translation_outputs(self):
+        contract = self.mapping()
+        fresh = MAP._fresh_init_projection(contract["fresh_init"], {})
+        self.assertEqual(fresh["transport_status"], 0)
+        self.assertEqual(fresh["host_return"], 0)
+        # Relax the initialized-map premise, retaining the checked transport
+        # return and an explicitly absent fallback chain; this is not a live observation.
+        map_fields = {"virtual_base": 0x1000, "physical_base": 0x2000,
+                      "inclusive_low": 0x1000, "inclusive_high": 0x1fff, "chain_head": 0}
+        for inputs, statuses in (((0x1fff, 0x3000), (2, 2)), ((0x2000, 0x3000), (0, 2)),
+                                 ((0x1fff, 0x2fff), (2, 0)), ((0x2000, 0x2fff), (0, 0))):
+            observations = [MAP._init_reply_translation_projection(contract, dict(map_fields, physical_input=value))
+                            for value in inputs]
+            with self.subTest(inputs=inputs):
+                self.assertEqual(tuple(result["helper_status"] for result in observations), statuses)
+                self.assertEqual([result["stored_output"] for result in observations],
+                                 [(0x1000 + value - 0x2000) & 0xffffffff for value in inputs])
+                self.assertTrue(all(not result["caller_checks_helper_status"] and not result["stored_output_validated"]
+                                    for result in observations))
+                self.assertTrue(contract["arm_translations"]["saved_transport_status_preserved"])
+        delayed = MAP._fresh_init_projection(contract["fresh_init"],
+                                             {"event_origin": "delayed_old", "freshness_assumed": False,
+                                              "request_word1": 0, "completion_mailbox": 1})
+        self.assertEqual((delayed["transport_status"], delayed["host_return"]), (0, 0))
+        self.assertFalse(delayed["current_transaction_acknowledged"])
+        self.assertFalse(delayed["runtime_observed"])
+        self.assertNotIn("outer_call", [event["event"] for event in delayed["events"]])
+
+    def test_translation_projection_fixed_model_corruption_refuses_without_certifying_provenance(self):
+        contract = self.mapping()
+        fixed = {"arithmetic_bits": 32, "success_status": 0, "error_status": 2,
+                 "virtual_base_offset": 40, "physical_base_offset": 48,
+                 "inclusive_low_offset": 24, "inclusive_high_offset": 28, "chain_head_offset": 4}
+        for key, value in fixed.items():
+            for replacement in (None, True, False, str(value), float(value), value + 1, -1):
+                changed = json.loads(json.dumps(contract))
+                changed["arm_translations"]["translation"][key] = replacement
+                with self.subTest(field=key, replacement=replacement), self.assertRaises(MAP.FormatError):
+                    MAP._init_reply_translation_projection(changed, {})
+            changed = json.loads(json.dumps(contract))
+            del changed["arm_translations"]["translation"][key]
+            with self.subTest(missing=key), self.assertRaises(MAP.FormatError):
+                MAP._init_reply_translation_projection(changed, {})
+        for key, parent in (("unsigned_inclusive_checks", "translation"),
+                            ("helper_store_precedes_bounds_check", "arm"),
+                            ("helper_status_checked", "arm"), ("stored_outputs_validated", "arm")):
+            for replacement in (None, 0, 1, "false", []):
+                changed = json.loads(json.dumps(contract))
+                target = changed["arm_translations"] if parent == "arm" else changed["arm_translations"]["translation"]
+                target[key] = replacement
+                with self.subTest(field=key, replacement=replacement), self.assertRaises(MAP.FormatError):
+                    MAP._init_reply_translation_projection(changed, {})
+            changed = json.loads(json.dumps(contract))
+            target = changed["arm_translations"] if parent == "arm" else changed["arm_translations"]["translation"]
+            del target[key]
+            with self.subTest(missing=key), self.assertRaises(MAP.FormatError):
+                MAP._init_reply_translation_projection(changed, {})
+        for path in (("arm_translations",), ("arm_translations", "translation"),
+                     ("fresh_init",), ("fresh_init", "bridge"),
+                     ("fresh_init", "bridge", "initialized_heap")):
+            for replacement in (None, [], "invalid", 0):
+                changed = json.loads(json.dumps(contract))
+                parent = changed
+                for key in path[:-1]:
+                    parent = parent[key]
+                parent[path[-1]] = replacement
+                with self.subTest(path=path, replacement=replacement), self.assertRaises(MAP.FormatError):
+                    MAP._init_reply_translation_projection(changed, {})
+            changed = json.loads(json.dumps(contract))
+            parent = changed
+            for key in path[:-1]:
+                parent = parent[key]
+            del parent[path[-1]]
+            with self.subTest(missing_path=path), self.assertRaises(MAP.FormatError):
+                MAP._init_reply_translation_projection(changed, {})
+        for bad in (None, [], "invalid", 0, True):
+            with self.subTest(contract=bad), self.assertRaises(MAP.FormatError):
+                MAP._init_reply_translation_projection(bad, {})
+        self.assertIn("trusted result", MAP._init_reply_translation_projection.__doc__)
+        self.assertIn("assumed", MAP._init_reply_translation_projection.__doc__)
+        self.assertIn("not established at runtime", MAP._init_reply_translation_projection.__doc__)
+
+    def test_truncation_invalid_image_identity_purity_and_nonpublic_route(self):
+        for length in (0, 0x273bc, 0x4724c, 0x6cd00, 0x79888, len(self.payload) - 1):
+            with self.subTest(length=length), self.assertRaises(MAP.FormatError):
+                self.mapping(self.payload[:length])
+        for images in ([], self.images[:1], self.images[::-1], self.images * 2):
+            with self.subTest(image_count=len(images)), self.assertRaises(MAP.FormatError):
+                self.mapping(images=images)
+        for key, value in (("class", 64), ("endianness", "big"), ("machine", 93),
+                           ("elf_type", 3), ("flags", 1), ("section_count", 54)):
+            images = [dict(image) for image in self.images]
+            images[0][key] = value
+            with self.subTest(key=key), self.assertRaises(MAP.FormatError):
+                self.mapping(images=images)
+        before = bytes(self.payload), json.dumps(self.images, sort_keys=True)
+        with mock.patch.object(MAP, "read_firmware", side_effect=AssertionError("external read")), \
+                mock.patch("subprocess.run", side_effect=AssertionError("external decoder")), \
+                mock.patch.object(MAP, "_fresh_init_causal_contract", wraps=MAP._fresh_init_causal_contract) as dependency:
+            result = self.mapping()
+        self.assertEqual(dependency.call_count, 1)
+        self.assertEqual(before, (bytes(self.payload), json.dumps(self.images, sort_keys=True)))
+        self.assertEqual(result, json.loads(json.dumps(result, sort_keys=True)))
+        with mock.patch.object(sys, "stdout", new_callable=io.StringIO) as output, \
+                mock.patch.object(sys, "stderr", new_callable=io.StringIO), self.assertRaises(SystemExit) as error:
+            MAP.main([str(BLOB), "--init-reply-metadata-linkage"])
         self.assertEqual(error.exception.code, 2)
         self.assertEqual(output.getvalue(), "")
 
