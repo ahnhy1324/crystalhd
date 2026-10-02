@@ -1924,14 +1924,14 @@ class FirmwareArcMetadataTests(unittest.TestCase):
             "87ded59ecc94e3b4fa3a3cd9da6f2d978bcd5839bd196fd6cc72f717feaaa453",
             "f470be31c70241e5053aa2a9c4c2388ba8bfb920cc9feb657689b14f8e3a3f38",
             "804cca53d5c7358d37d06707eee797426a11d6c59d2a7f241198477ce2716d86",
-            "e8ae43289821216de2a1642c823939c287bc24f969e60bba5d7f82540ddcf7c3",
-            "c916f6657729459ab7b93c81c1c9619c657782eb1535eaf76a1c8eb855d5a147",
-            "b9e1b17645e07b470119fdb7172e561260bd7e11feadfc549b08668f59761f0f",
-            "5faab2ae297db1c2606cb2cef700f54469ee8fa1f1be13410404ae4c09ea3692",
-            "05ed4d61c3a96e1a6970525b464a50965d2fb500e37f16f3f5678ffc2ecf1b4b",
-            "0c8f7e8947f024bc901d54f0909b9901e8d8cfb8b3a745e85e660bf2ef3050c3",
-            "76337527493de8c09cc145dc78fcf9490d7907f3bbc7b002739b102b3a35faa3",
-            "9207546a40095c93706574798e62939582e95aa07a0077cbb79ffe6f531812bf")
+            "0e99c9c380bd73676fb1288b4e6095213b25b2d3555478e394a851f1e9922462",
+            "bcbc14bcfe15a2b97e355e9614fa21b79ded210e2cff948d64431fa5d1e160dc",
+            "05dd432d0f3202229831a1e9d8832e49061da9b2a583bbb2e9bf676d975f25d9",
+            "309046019c1e09222dfb96cf767a8736b2599e60b0269cab6f5870a48137c24f",
+            "22e2f752cf00154034af7ad929b69d45ba240936b7b1a8f1d484beb895cda937",
+            "b4fa8538c99ad02ee6a81ca517076b45009bf3848e766ea4762a5aa361100803",
+            "2c7f1db68e27d91bb52ca3d4c03b39e164a19ade3a1842f6642da7aab213e149",
+            "865d6503265abdc69c7b4e385766f8cb1d4f17d73be0f9b494c4487b1b090324")
         for mask in range(16):
             flags = []
             if mask & 1:
@@ -2119,14 +2119,14 @@ class FirmwareCscCommandTests(unittest.TestCase):
             "87ded59ecc94e3b4fa3a3cd9da6f2d978bcd5839bd196fd6cc72f717feaaa453",
             "f470be31c70241e5053aa2a9c4c2388ba8bfb920cc9feb657689b14f8e3a3f38",
             "804cca53d5c7358d37d06707eee797426a11d6c59d2a7f241198477ce2716d86",
-            "e8ae43289821216de2a1642c823939c287bc24f969e60bba5d7f82540ddcf7c3",
-            "c916f6657729459ab7b93c81c1c9619c657782eb1535eaf76a1c8eb855d5a147",
-            "b9e1b17645e07b470119fdb7172e561260bd7e11feadfc549b08668f59761f0f",
-            "5faab2ae297db1c2606cb2cef700f54469ee8fa1f1be13410404ae4c09ea3692",
-            "05ed4d61c3a96e1a6970525b464a50965d2fb500e37f16f3f5678ffc2ecf1b4b",
-            "0c8f7e8947f024bc901d54f0909b9901e8d8cfb8b3a745e85e660bf2ef3050c3",
-            "76337527493de8c09cc145dc78fcf9490d7907f3bbc7b002739b102b3a35faa3",
-            "9207546a40095c93706574798e62939582e95aa07a0077cbb79ffe6f531812bf",
+            "0e99c9c380bd73676fb1288b4e6095213b25b2d3555478e394a851f1e9922462",
+            "bcbc14bcfe15a2b97e355e9614fa21b79ded210e2cff948d64431fa5d1e160dc",
+            "05dd432d0f3202229831a1e9d8832e49061da9b2a583bbb2e9bf676d975f25d9",
+            "309046019c1e09222dfb96cf767a8736b2599e60b0269cab6f5870a48137c24f",
+            "22e2f752cf00154034af7ad929b69d45ba240936b7b1a8f1d484beb895cda937",
+            "b4fa8538c99ad02ee6a81ca517076b45009bf3848e766ea4762a5aa361100803",
+            "2c7f1db68e27d91bb52ca3d4c03b39e164a19ade3a1842f6642da7aab213e149",
+            "865d6503265abdc69c7b4e385766f8cb1d4f17d73be0f9b494c4487b1b090324",
             "3553b947d6948d11fc48b2994ca29599caa8a70ff7b79d7ffc2639901c9aedfe",
             "6da05d4dca3424ef76e9359ed7ab3228d5c2622dcd1573b62bc88d2b0c3f2e7b",
             "6946e167d1dfbb01632025d014ebd76284aafcf58f79099881552c6fc80a4964",
@@ -2135,14 +2135,14 @@ class FirmwareCscCommandTests(unittest.TestCase):
             "10732aabc68b8e6a019b714212e726dc82400b139755429283c80192f2a9a3ab",
             "14c6de19078879dad7c645441cad2a4cc76e1f584946f8d6a1477edbc42a7902",
             "75bce6cbfd367c8af1cc2837cff10ce356f95064a45469a1a207f89ade347a45",
-            "56d782a7915522e233fe31eec63d050dceadb1db42817ef53432068934e15376",
-            "663f89283c223eb923915f281e3f1666e37c1fbab89da8ce50922674a5a84d01",
-            "1cf5fd882d4823769e6b0bd56a173477747d30a933f5dfe43d63c0582a7de261",
-            "1ccb0a07745a876632d9df78de865f6ad73f18a864b84a19d7d880353c8b8fbd",
-            "9d792eb0ff22a200ebea30fbc8a5aa959611049596a508624e05be7a574150f6",
-            "2b5428a579b9c555a839dc2a775e245a2d3178de6d0ef970ab2423feeb285ef0",
-            "c44ea6be37c146802f3f246d07bc1f5df2e8dd441f0c6ecb222c03f28afcd590",
-            "a744b6856dc69ff7ded2da24848b979e97331b5608ab315403acf256f382ec30")
+            "ffb4ed56d28f7f2262ec19d578c08f3ad6187f100986a763667aa0e0c276d864",
+            "4303bf603a1070e397d8d4c6e48d874c78cd2e82c43aca09942d57e9f82c930a",
+            "edfb10be5e6af600a62a8d4f679a5099e7439d987f4ddc215d22007cdb959d65",
+            "5f873b9d8f5ae9e12d5a95c79fb7768a4d15454aabe58cd2fd2fe88371a26374",
+            "dbbf1ef286423a1c3c7e0288fc7f0147fd21467ae91e2fc9078db2a752efa58c",
+            "81114e5b7d4fb2227e3091d72eedb056bf34467ae1f7d2a81bcde1230b29be3e",
+            "e8fec88375cf243161e3f282df0a2757d91ea7de59519b6d5fc96d099b5a0c20",
+            "05cad2965807a274801889efe62b7a0ce903a22f10ac616e165abfb265039884")
         for mask in range(32):
             flags = []
             if mask & 1:
@@ -2369,7 +2369,7 @@ class FirmwareCommandBufferBridgeTests(unittest.TestCase):
         self.assertEqual(output.getvalue(), "")
         self.assertIn("exact bundled", error.getvalue())
 
-    def test_bridge_all_64_old_outputs_are_byte_identical_and_new_report_deterministic(self):
+    def test_bridge_64_option_snapshots_and_new_report_determinism(self):
         aggregate = hashlib.sha256()
         mapping = self.mapping()
         for mask in range(64):
@@ -2383,7 +2383,7 @@ class FirmwareCommandBufferBridgeTests(unittest.TestCase):
             with self.subTest(mask=mask):
                 self.assertEqual(enriched.pop("command_buffer_bridge"), mapping)
                 self.assertEqual(enriched, plain)
-        self.assertEqual(aggregate.hexdigest(), "c1d48a09457d506c842ea632cd655fbc343caadedb812f9c8939427bab694aeb")
+        self.assertEqual(aggregate.hexdigest(), "252ec7e66b0b6a5c1c76c807640b2a2ba1542db1aad83fc03f0922796f661565")
         self.assertEqual(hashlib.sha256(BLOB.read_bytes()).hexdigest(), MAP.BUNDLED_SHA256)
 
     def test_bridge_cli_flag_combinations_and_repeated_stdout(self):
@@ -2948,7 +2948,7 @@ class FirmwareInnerDescriptorTests(unittest.TestCase):
         self.assertEqual(output.getvalue(), "")
         self.assertIn("exact bundled", error.getvalue())
 
-    def test_inner_descriptor_preserves_128_old_outputs_and_composes_exactly(self):
+    def test_inner_descriptor_128_option_snapshots_and_exact_composition(self):
         aggregate = hashlib.sha256()
         mapping = self.mapping()
         for mask in range(128):
@@ -2962,8 +2962,9 @@ class FirmwareInnerDescriptorTests(unittest.TestCase):
             with self.subTest(mask=mask):
                 self.assertEqual(enriched.pop("inner_descriptor"), mapping)
                 self.assertEqual(enriched, plain)
-        # Golden includes the verified RX metadata source-location update.
-        self.assertEqual(aggregate.hexdigest(), "9d0924cbc287c646015a5e333abeb8cdf158117f07efedb4b49b3bcb1b0c34e4")
+        # Snapshot includes the opt-in MFD source field; its legacy projection
+        # is independently pinned across all 256 combinations below.
+        self.assertEqual(aggregate.hexdigest(), "37e06168817763cd85bf8702c313e3599d6821ed841d626e9bca109655208606")
 
     def test_inner_descriptor_cli_stdout_determinism_and_combinations(self):
         combinations = [[], ["--references", "--symbol", "ReadLine"],
@@ -2988,6 +2989,268 @@ class FirmwareInnerDescriptorTests(unittest.TestCase):
                     self.assertRaises(SystemExit) as error:
                 MAP.main(["offline.bin", option])
             self.assertEqual(error.exception.code, 2)
+
+
+class FirmwareMfdSourceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.data = MAP.read_firmware(BLOB)
+        cls.payload = cls.data[:-MAP.TRAILER_SIZE]
+        cls.rows = ((0, 64, 6), (1, 128, 7), (2, 256, 8))
+
+    @staticmethod
+    def record(selector=0, mode=0, form=2, field=0, horizontal=0, vertical=0,
+               y=0x1000, c=0x8000, yn=40, cn=20):
+        result = bytearray(116)
+        result[8], result[0x27], result[0x28], result[0x5c] = mode, form, field, selector
+        for offset, value in ((0x34, y), (0x38, c), (0x54, yn), (0x58, cn),
+                              (0x6c, horizontal), (0x70, vertical)):
+            struct.pack_into("<I", result, offset, value)
+        return result
+
+    def execute_address_helper(self, record):
+        # Test-only interpreter of this fixed 448-byte A32 helper. Calls are
+        # explicit stubs under the report's ABI/memory-preservation conditions.
+        # It never executes firmware or follows a device/host DMA address.
+        regs = [0] * 16
+        regs[0], regs[1], regs[13], regs[14], regs[15] = 0x200000, 0x100000, 0x300100, 0xfffffff0, 0x1918
+        memory = {0x100000 + index: byte for index, byte in enumerate(record)}
+        writes, zero = [], False
+        def read(address, size):
+            if 0 <= address and address + size <= len(self.payload):
+                return int.from_bytes(self.payload[address:address + size], "little")
+            return sum(memory[address + index] << (8 * index) for index in range(size))
+        def store(address, value):
+            self.assertTrue(0x300000 <= address <= 0x3000fc)
+            for index in range(4):
+                memory[address + index] = (value >> (8 * index)) & 255
+        for _ in range(256):
+            pc = regs[15]
+            if pc == 0xfffffff0:
+                return {"writes": writes, "return_value": regs[0]}
+            self.assertTrue(0x1918 <= pc < 0x1ad8)
+            word = read(pc, 4)
+            condition = word >> 28
+            self.assertIn(condition, (0, 1, 14))
+            regs[15] = pc + 4
+            if (condition == 0 and not zero) or (condition == 1 and zero):
+                continue
+            reg = lambda index: pc + 8 if index == 15 else regs[index]
+            def shifted():
+                value, kind = reg(word & 15), (word >> 5) & 3
+                self.assertIn(kind, (0, 1))
+                by_register = bool(word & 16)
+                amount = (reg((word >> 8) & 15) & 255) if by_register else (word >> 7) & 31
+                if kind == 1 and not by_register and amount == 0:
+                    amount = 32
+                if amount >= 32:
+                    return 0
+                return ((value << amount) & 0xffffffff) if kind == 0 else value >> amount
+            if word & 0x0e000000 == 0x0a000000:
+                displacement = word & 0xffffff
+                if displacement & 0x800000:
+                    displacement -= 1 << 24
+                target = pc + 8 + displacement * 4
+                if word & 0x1000000:
+                    self.assertIn(target, (0x203c4, 0x1e8e8))
+                    if target == 0x1e8e8:
+                        self.assertEqual(regs[0], 0x200000)
+                        writes.append([regs[1], regs[2]])
+                    # Model BL's LR update and poison caller-saved registers;
+                    # the address model cannot rely on their call preservation.
+                    regs[:4] = [0xd0, 0xd1, 0xd2, 0xd3]
+                    regs[12], regs[14] = 0xdc, pc + 4
+                else:
+                    regs[15] = target
+            elif word == 0xe1cd20d8:
+                regs[2], regs[3] = read(regs[13] + 8, 4), read(regs[13] + 12, 4)
+            elif word & 0x0fc000f0 == 0x00000090:
+                self.assertFalse(word & (1 << 21))
+                regs[(word >> 16) & 15] = (reg(word & 15) * reg((word >> 8) & 15)) & 0xffffffff
+            elif word & 0x0e000000 == 0x08000000:
+                selected = [index for index in range(16) if word & (1 << index)]
+                base_register = (word >> 16) & 15
+                base, up, pre = reg(base_register), bool(word & (1 << 23)), bool(word & (1 << 24))
+                address = base + (4 if pre else 0) if up else base - 4 * (len(selected) - (0 if pre else 1))
+                for index in selected:
+                    if word & (1 << 20):
+                        regs[index] = read(address, 4)
+                    else:
+                        store(address, reg(index))
+                    address += 4
+                if word & (1 << 21):
+                    regs[base_register] = (base + (4 if up else -4) * len(selected)) & 0xffffffff
+            elif word & 0x0c000000 == 0x04000000:
+                base_register, destination = (word >> 16) & 15, (word >> 12) & 15
+                base = reg(base_register)
+                displacement = shifted() if word & (1 << 25) else word & 0xfff
+                target = (base + (displacement if word & (1 << 23) else -displacement)) & 0xffffffff
+                address = target if word & (1 << 24) else base
+                if word & (1 << 20):
+                    regs[destination] = read(address, 1 if word & (1 << 22) else 4)
+                else:
+                    self.assertFalse(word & (1 << 22))
+                    store(address, reg(destination))
+                if word & (1 << 21) or not word & (1 << 24):
+                    regs[base_register] = target
+            else:
+                self.assertEqual(word & 0x0c000000, 0)
+                opcode, destination = (word >> 21) & 15, (word >> 12) & 15
+                left = reg((word >> 16) & 15)
+                if word & (1 << 25):
+                    rotation, value = ((word >> 8) & 15) * 2, word & 255
+                    right = ((value >> rotation) | (value << ((32 - rotation) % 32))) & 0xffffffff
+                else:
+                    right = shifted()
+                self.assertIn(opcode, (0, 2, 4, 10, 12, 13, 14))
+                values = {0: left & right, 2: left - right, 4: left + right,
+                          10: left - right, 12: left | right, 13: right, 14: left & ~right}
+                value = values[opcode] & 0xffffffff
+                if word & (1 << 20):
+                    zero = value == 0
+                if opcode != 10:
+                    regs[destination] = value
+        self.fail("selected A32 helper did not return within its fixed step budget")
+
+    def test_schema_pins_handoff_and_unverified_contracts(self):
+        report = MAP._mfd_source_map(self.payload)
+        validation = report["validation"]
+        self.assertEqual((validation["region_count"], validation["bytes"]), (9, 1164))
+        self.assertEqual((MAP.MAX_MFD_SOURCE_REGIONS, MAP.MAX_MFD_SOURCE_BYTES), (10, 1280))
+        self.assertEqual({region["role"]: (region["blob_file_offset"], region["bytes"])
+                          for region in validation["regions"]},
+                         {"source_address": (0x1918, 448), "mfd_setup": (0x1bfc, 248),
+                          "source_record_producer": (0xe110, 312), "selected_picture_call": (0x85ec, 36),
+                          "mfd_setup_call": (0x84cc, 20), "source_table_literals": (0x1b28, 8),
+                          "source_register_literals": (0x1b48, 44), "source_table": (0x2cccc, 36),
+                          "register_write": (0x1e8e8, 12)})
+        self.assertFalse(report["device_observed"])
+        self.assertFalse(report["selected_handoff"]["register_context_physical_base_verified"])
+        self.assertFalse(report["addressing"]["table_selector_checked_by_firmware"])
+        self.assertTrue(report["addressing"]["writes_are_context_relative"])
+        self.assertEqual(report["addressing"]["selected_table_rows"], [list(row) for row in self.rows])
+        self.assertEqual(report["source_record_to_picture"]["final_copies"],
+                         [{"load_blob_file_offset": 0xe19c, "record_word_offset": 4,
+                           "store_blob_file_offset": 0xe1a0, "picture_word_offset": 0x34},
+                          {"load_blob_file_offset": 0xe1a4, "record_word_offset": 8,
+                           "store_blob_file_offset": 0xe1a8, "picture_word_offset": 0x38}])
+        self.assertIn("not a complete frame layout", " ".join(report["limitations"]))
+        self.assertIn("ownership", " ".join(report["limitations"]))
+        for example in report["addressing"]["model_examples"]:
+            record = self.record(selector=example["selector"], horizontal=3, vertical=5)
+            self.assertEqual(example["conditional_model"], self.execute_address_helper(record))
+        self.assertEqual(json.loads(json.dumps(report)), report)
+
+    def test_independent_producer_operands_and_call_handoff(self):
+        word = lambda offset: struct.unpack_from("<I", self.payload, offset)[0]
+        # Derive byte offsets/register operands separately from report strings.
+        for load, store, source_offset, picture_offset in ((0xe19c, 0xe1a0, 4, 0x34),
+                                                         (0xe1a4, 0xe1a8, 8, 0x38)):
+            self.assertEqual(word(load) & 0xfff, source_offset)
+            self.assertEqual((word(load) >> 16) & 15, 5)
+            self.assertEqual((word(store) >> 16) & 15, 4)
+            self.assertEqual(word(store) & 0xfff, picture_offset)
+            self.assertEqual((word(load) >> 12) & 15, (word(store) >> 12) & 15)
+        self.assertEqual([word(offset) for offset in (0xe114, 0xe118, 0xe11c)],
+                         [0xe1a06000, 0xe1a05001, 0xe1a04002])
+        self.assertEqual((word(0xe120), word(0xe124), word(0xe1ac), word(0xe244)),
+                         (0xe3550000, 0x0a000021, 0xea000024, 0xe8bd8070))
+        self.assertEqual([word(offset) for offset in (0x85ec, 0x85f0, 0x1c08, 0x1cd8, 0x1cdc, 0x1ce4)],
+                         [0xe59d1014, 0xe28d2020, 0xe1a04003, 0xe1a01004, 0xe1a00006, 0xe1a01004])
+        self.assertEqual([word(offset) for offset in (0x1e8e8, 0x1e8ec, 0x1e8f0)],
+                         [0xe5903000, 0xe7832001, 0xe12fff1e])
+
+    def test_instruction_model_modes_formats_odd_coordinates_and_wrap(self):
+        pairs = ((0, 0), (1, 1), (3, 5), (0x04000002, 0xfffffffd),
+                 (0xffffffff, 0xffffffff), (0x80000001, 0x10003))
+        total = 0
+        for selector in range(3):
+            for mode in (0, 1, 2, 255):
+                for form in (1, 2, 3):
+                    for field in (0, 1, 2):
+                        for horizontal, vertical in pairs:
+                            record = self.record(selector, mode, form, field, horizontal, vertical,
+                                                 0xfffffffc, 0xfffffff8, 0xffffffff, 0x80000001)
+                            with self.subTest(selector=selector, mode=mode, form=form, field=field,
+                                              horizontal=horizontal, vertical=vertical):
+                                self.assertEqual(MAP._mfd_source_model(record, self.rows),
+                                                 self.execute_address_helper(record))
+                            total += 1
+        self.assertEqual(total, 648)
+
+    def test_zero_offset_identity_requires_its_conditions(self):
+        for selector, (_, stripe, _) in enumerate(self.rows):
+            for form in (1, 2):
+                base = self.record(selector=selector, form=form)
+                normal = MAP._mfd_source_model(base, self.rows)
+                self.assertEqual(normal["writes"][-2:], [[0x54001c, 0x1000], [0x540020, 0x8000]])
+                base[8] = 1
+                shifted = MAP._mfd_source_model(base, self.rows)
+                self.assertEqual(shifted["writes"][-2:], [[0x54001c, 0x1000 + stripe],
+                                                        [0x540020, 0x8000 + stripe]])
+                base[0x27] = 3
+                early = MAP._mfd_source_model(base, self.rows)
+                self.assertEqual(early["return_value"], 8)
+                self.assertEqual(len(early["writes"]), 3)
+                self.assertTrue(all(address not in (0x54001c, 0x540020) for address, _ in early["writes"]))
+
+    def test_private_model_rejects_outside_selected_contract(self):
+        for length in (0, 115, 117, 140):
+            with self.subTest(length=length), self.assertRaises(MAP.FormatError):
+                MAP._mfd_source_model(bytes(length), self.rows)
+        for selector, form in ((3, 1), (255, 2), (0, 0), (0, 4), (0, 255)):
+            with self.subTest(selector=selector, form=form), self.assertRaises(MAP.FormatError):
+                MAP._mfd_source_model(self.record(selector=selector, form=form), self.rows)
+        for rows in ((), self.rows[:2], ((0, 64, 5), *self.rows[1:])):
+            with self.subTest(rows=rows), self.assertRaises(MAP.FormatError):
+                MAP._mfd_source_model(self.record(), rows)
+
+    def test_every_region_byte_rejects_mutation(self):
+        for role, offset, raw in MAP._MFD_SOURCE_REGIONS:
+            for index in range(len(bytes.fromhex(raw))):
+                changed = bytearray(self.payload)
+                changed[offset + index] ^= 1
+                with self.subTest(role=role, offset=offset + index), self.assertRaises(MAP.FormatError):
+                    MAP._mfd_source_map(changed)
+
+    def test_exact_region_byte_budget_and_payload_bounds(self):
+        with mock.patch.object(MAP, "MAX_MFD_SOURCE_REGIONS", 9), \
+                mock.patch.object(MAP, "MAX_MFD_SOURCE_BYTES", 1164):
+            self.assertEqual(MAP._mfd_source_map(self.payload)["validation"]["bytes"], 1164)
+        for field, value in (("MAX_MFD_SOURCE_REGIONS", 8), ("MAX_MFD_SOURCE_BYTES", 1163)):
+            with mock.patch.object(MAP, field, value), self.assertRaisesRegex(MAP.FormatError, "budget"):
+                MAP._mfd_source_map(self.payload)
+        for payload in (b"", self.payload[:-4], self.payload + bytes(4)):
+            with self.subTest(size=len(payload)), self.assertRaisesRegex(MAP.FormatError, "payload size"):
+                MAP._mfd_source_map(payload)
+
+    def test_all_256_prior_report_projections_are_unchanged(self):
+        options = ("references", "all_symbols", "bootstrap", "picture_output",
+                   "arc_metadata", "csc_command", "command_buffer_bridge", "inner_descriptor")
+        aggregate = hashlib.sha256()
+        expected_source = MAP._mfd_source_map(self.payload)
+        for mask in range(256):
+            flags = {name: bool(mask & (1 << bit)) for bit, name in enumerate(options)}
+            wanted = ("ReadLine",) if mask & 1 else MAP.DEFAULT_SYMBOLS
+            report = MAP.analyze(self.data, wanted, **flags)
+            if flags["picture_output"]:
+                self.assertEqual(report["picture_output"].pop("mfd_source"), expected_source)
+            stdout = (json.dumps(report, indent=2, sort_keys=True) + "\n").encode()
+            aggregate.update(bytes([mask]))
+            aggregate.update(hashlib.sha256(stdout).digest())
+        # Recomputed from the unmodified b42ff87 mapper, not from this model.
+        self.assertEqual(aggregate.hexdigest(),
+                         "e40601809c6f2c5b1ddb1e76b185c0b46b2486b86e36d333ee200148f7cc90b1")
+
+    def test_new_map_is_default_off_and_public_pin_precedes_parsing(self):
+        with mock.patch.object(MAP, "_mfd_source_map", side_effect=AssertionError("unexpected source map")):
+            self.assertNotIn("picture_output", MAP.analyze(MAP.read_firmware(BLOB)))
+        altered = bytearray(MAP.read_firmware(BLOB))
+        altered[0x1918] ^= 1
+        with mock.patch.object(MAP, "parse_elf", side_effect=AssertionError("unexpected parse")), \
+                mock.patch.object(MAP, "_mfd_source_map", side_effect=AssertionError("unexpected source map")):
+            with self.assertRaisesRegex(MAP.FormatError, "exact bundled"):
+                MAP.analyze(altered, expected_sha256=hashlib.sha256(altered).hexdigest(), picture_output=True)
 
 
 if __name__ == "__main__":
