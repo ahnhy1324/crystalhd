@@ -47,6 +47,125 @@ MAX_PPB_BANK_REGIONS = 64
 MAX_PPB_BANK_BYTES = 80 * 1024
 MAX_PPB_BANK_RELOCATIONS = 2516
 MAX_PPB_BANK_MODEL_STEPS = 4096
+MAX_FRESH_INIT_REGIONS = 48
+MAX_FRESH_INIT_BYTES = 16 * 1024
+MAX_FRESH_INIT_AGGREGATE_BYTES = 80 * 1024
+MAX_FRESH_INIT_ANCHORS = 160
+MAX_FRESH_INIT_EVENTS = 64
+# Additional complete bodies/data for the private, conditional INIT receipt.
+# The separately bounded command-buffer bridge is charged in full as well.
+_FRESH_INIT_REGIONS = (
+    ("host_init", 0x5ccc, 0x260, "9e5582a78d61ca8ceddc0fc6b5e59bf7eda66238837131383bec1d2a4c109428"),
+    ("init_context", 0x54c, 0x354, "766ebdef10b26af75d180b82e886deaa7a35746c8b13748c4705fea13e803b4f"),
+    ("controller_factory", 0xe8b0, 0x44c, "5a39a3cd8e72b709a02706b0d432eabb56aa7488d90929fd5330ab6d0bd14c45"),
+    ("image_initialize", 0x26658, 0x98, "01c6e5189f63daaa0ac6dee59d7b429c81fe644cb4a33b72fab8ba7c626a9555"),
+    ("image_load_call", 0x26358, 0xa0, "b2c2f4ee7c5d8af12536d9c727de895e9afea56adb7c71d651e09bc04e10b5c5"),
+    ("init_packet_builder", 0x271c8, 0x234, "109eabdb9d6276f1d0279c69d6792cad22a095570f28889ebb6b5523341ba26e"),
+    ("transport", 0x2705c, 0x16c, "bd461670f479a8e1f005d75357912eee0b0b61d875c6c87c7a10f79d9303d6f8"),
+    ("register_access", 0x25010, 0x24, "c08d4a86aa8353d7e2000f5eb14ebca387b3ebdfd46aa951902c54137acf7599"),
+    ("event_helpers", 0x2052c, 0x17c, "867160722e72d59fe8b305152f536db655f45a368ab31dd31e9d2e8efc37503e"),
+    ("response_callback", 0x2c16c, 0x24, "959a33dc5e3a95e8dac82cc6652c5de37559cfa1a01383387f7aee721c3fd8ab"),
+    ("response_registration", 0x28194, 0xb8, "32b6a70c0765cbb0dd64f0aed34f791046acc9c7593ff81dd6d83e9bfe7b59c0"),
+    ("irq_slot_registration", 0x6ea0, 0x34, "9e6b69c108f5f1af4178bd069f394176b9675f22e5720791fe13c24e126e6a8f"),
+    ("irq_dispatch", 0x6ef0, 0x100, "fd586631b4c4ff1f065091fc0f186c347b8ec40153b707fb222b0b08abc69bd8"),
+    ("irq_vector", 0x0, 0x3c, "de8b9454a35d359a236ce99751fa0914d415392a41e1b32d7cb903168d5155e0"),
+    ("irq_entry", 0xdc, 0x1c, "2deff474b41a300c7da7ebe19e02683f29533be104ae9a8cfc9ad0861d2008c3"),
+    ("irq_enable", 0xad44, 0xc, "639dfcd5a4d39cf151d135ade70d4229d94cd4ab08b590560d3208b3082a8b76"),
+    ("registration_literals", 0x28694, 0x8, "4d15ccc11ebc9eb4cabcbcd590b6a7bce792c2286027b77b994e423113c148cf"),
+    ("irq_dispatch_literals", 0x7128, 0xc, "27a79d882ee97dda06f4c2ed55e0f598e36dbb0c56cd990ed09e64a792176da1"),
+    ("base_initializer", 0x7534, 0x70, "1ef4bebb542793521b81d76f3625db33c657dcde88d5a77cb070de87b62877ff"),
+    ("base_constructor", 0x1e87c, 0x28, "644ac03f556102511f554a1eeaf73e1ea41e2f7ffe8daca066dffa26fb0c4075"),
+    ("base_constructor_arguments", 0x264, 0x10, "5c4f2da001f1dad1c8e03da7bb19fd45ea129c3253ed03a40051624f25b05a7b"),
+    ("register_table", 0xcfc04, 0xec, "2c14f6c782aabd732ff329b7fea0f691769d6643fe07188a072ecb61daa45881"),
+    ("register_table_copy", 0x26dd8, 0xa4, "f9e5ec75c0e6614253ac2a3359a48602641ba7e7c3726695ad11c570ff54099e"),
+    ("shortcut_global_literal", 0x5128, 0x4, "90235ef9116585e3b06f150c19cc273c8b4098db381d46cf3454ab59501e3688"),
+    ("return_logging", 0x22db8, 0x3c, "5a09c7179f12d8905659b211b1b9f3c27fb37813587ac5770f5a9128e8c87020"),
+    ("outer_init", 0x47180, 0x19c, "f6a261cb43d156ce01a7a04419811312e5750c4271ff1f99f6c4f6f17cb34c72"),
+    ("outer_loop", 0x491e0, 0xac, "f48507026c72adadfd335678642b966e78fbe632cf3ab057de48c8f62fba4358"),
+    ("outer_local_clear", 0x30160, 0x24, "dc0016171f31d69a69d50c4d67559ae5756ea8195e168958555a48fcf413ea7c"),
+    ("outer_dma_write", 0x30220, 0x4c, "0fd491e26ea119ad36ccc54950a0deddea7ec8f4a81ddddf2b6d80066df3a049"),
+    ("outer_flush", 0x32f34, 0x18, "e61a69be34b214be9b87fa2d40c3139e6de6b5415c22048318635fd902678368"),
+    ("outer_enable_interface", 0x5d4f4, 0xa8, "865f922491d3cb36b47f77470bd940910cebdf340f11fbaf9aff64acbfb7d909"),
+    ("outer_deliver_response", 0x36c68, 0x28, "73d62d38541d50dbd9e4b18b5be27783278f78cda4c5085c84f36a4c83006257"),
+    ("init_symbol", 0x69e50, 0x10, "000d055c788abaf42816445adfc8ea936cc31bb2a9e5d56f99a1020f9af217a1"),
+    ("command_flush_symbols", 0x6be10, 0x30, "c71c5e0e53cff430a68564402f17aaaf5bce3f05baf9f2c42666b05f528c7223"),
+    ("loop_dma_symbols", 0x6c260, 0x180, "ef73bb9663e05aca96d1174b30756a6387cff81aa94cbe9dfd43e16efd4477ad"),
+    ("platform_symbols", 0x6cd70, 0x20, "78306ff4da9fac4586be88c8e1b9f045a4b5db5166cf2c824f97cb26ca5b0521"),
+    ("init_name", 0x67b07, 0xe, "a6372ef9578cb48cc8c1604a874e140b7535ba87e84f26669c0966f1f44ed6c3"),
+    ("command_flush_names", 0x688a1, 0x25, "dea3022713a845eaad21201d30d13cada71ac39f0f49adb61af4f656a25692a4"),
+    ("loop_dma_names", 0x68dd9, 0x154, "a2e62d6f169d6379753c6ef6ace58bef0bce0afe13cc29a213c5bd2219336053"),
+    ("platform_names", 0x698a5, 0x32, "c00f46d2ec89f6db17d54164c4dbc8aa615a3f4471b69445782608543a69f97d"),
+    ("outer_section_names", 0x79098, 0x4a7, "f54ad2922e3d4a39bdb26a36a249301a78dae5e6b4e190d1d84ea03427f64a86"),
+)
+# Fixed operands only. Complete bodies above include the intervening code;
+# neither this list nor the projection is an instruction-set emulator.
+_FRESH_INIT_ARM_SITES = (
+    (0x5ce8, 0xe51f7bc8), (0x5cec, 0xe3a08000), (0x5d04, 0xe5848008),
+    (0x5d10, 0xe3a00000), (0x5d64, 0xe3e00000), (0x5d68, 0xe5840008), (0x5d74, 0xe1a00006),
+    (0x5d50, 0xe1a06000), (0x5d54, 0xe3560000), (0x5d58, 0x0a00006a), (0x7e4, 0xe1a05000),
+    (0x7e8, 0xe3550000), (0x7ec, 0x0a000008), (0x860, 0xe1a03005), (0x868, 0xeb008952),
+    (0x22dc8, 0xe1a04003), (0x22dec, 0xe1a00004), (0xec58, 0xe1a05000), (0xec5c, 0xe3550000),
+    (0xec60, 0x0a000003), (0xec6c, 0xe1a00005), (0x266a8, 0xe1a04000), (0x266ac, 0xe3540000),
+    (0x266b0, 0x0a000001), (0x266b4, 0xe1a00004), (0x263c8, 0xeb00037e), (0x263cc, 0xe1a05000),
+    (0x263d0, 0xe3550000), (0x263d4, 0x0a000003), (0x263e0, 0xe1a00005), (0x27254, 0xebffff80),
+    (0x27258, 0xe1a0a000), (0x27288, 0xe35a0000), (0x2728c, 0x0a000048), (0x27298, 0xe1a0000a),
+    (0x273f4, 0xe1a0000a), (0x27080, 0xe5d4008c), (0x27084, 0xe3500000), (0x27088, 0x0a000002),
+    (0x27090, 0xe59f020c), (0x270a4, 0xe5940088), (0x270a8, 0xebffe578), (0x270ac, 0xe3a020fc),
+    (0x270b4, 0xe5940094), (0x270bc, 0xe5941118), (0x270c0, 0xe59421cc), (0x270c8, 0xebfff7d5),
+    (0x270e0, 0xebffe52c), (0x270e4, 0xe1a09000), (0x270e8, 0xe3590005), (0x270ec, 0x1a000003),
+    (0x27108, 0xe5941114), (0x27110, 0xebfff7be), (0x27118, 0xe35a0000), (0x2711c, 0x0a00001f),
+    (0x2712c, 0xebffe575), (0x27130, 0xe5960000), (0x27134, 0xe5951000),
+    (0x27138, 0xe1500001), (0x2713c, 0x0a000005), (0x27160, 0xe5970004), (0x27164, 0xe3500000),
+    (0x27168, 0x0a000010), (0x27150, 0xe3a00002), (0x27198, 0xe3a00002), (0x271a8, 0xe3a00009),
+    (0x271c0, 0xe1a00009), (0x271b4, 0xe5c4008c), (0x27210, 0xe59f0134), (0x27218, 0xe5869004),
+    (0x27234, 0xe59400a8), (0x27238, 0xe5860014), (0x2723c, 0xe3043e20), (0x205e4, 0xe3a06005),
+    (0x205ec, 0xe5d70000), (0x20618, 0xe3a02001), (0x2061c, 0xe5c12000), (0x20694, 0xe3a02000),
+    (0x20698, 0xe5c12000), (0x2c184, 0xe5950020), (0x2c188, 0xebffd121), (0xeb88, 0xeb004667),
+    (0x28204, 0xe3a03009), (0x28208, 0xe2842068), (0x28214, 0xebff7b21), (0xf0, 0xeb001b7e),
+    (0x18, 0xe59ff014), (0x26df8, 0xe3a020ec), (0x26dfc, 0xe59f1074), (0x26e00, 0xe28400a0),
+    (0x26e04, 0xeb001606), (0x7580, 0xe3a00201),
+    (0x27098, 0xe3a00001), (0x2709c, 0xe5c4008c), (0x270f4, 0xe5c4008c),
+    (0x27144, 0xe5c4008c), (0x27170, 0xe5c4008c), (0x205a4, 0xe3a06000),
+    (0x20608, 0xe5c70000),
+    (0x263bc, 0xe5d42030), (0x271d8, 0xe1a09002), (0x2820c, 0xe59f1480),
+    (0x28210, 0xe1a00003), (0x6eb4, 0xe59f426c), (0x6eb8, 0xe0800080),
+    (0x6ebc, 0xe7841100), (0x6ec0, 0xe0840100), (0x6ec4, 0xe5802004),
+    (0x6ec8, 0xe5803008), (0x6f20, 0xe59f9200), (0x6f94, 0xe0848084),
+    (0x6f98, 0xe0896108), (0x6f9c, 0xe5961008), (0x6fa0, 0xe3510000),
+    (0x6fa4, 0x0a000007), (0x6fa8, 0xe7992108), (0x6fac, 0xe5960004),
+    (0x6fb0, 0xe12fff32), (0x2c170, 0xe1a04000), (0x2c178, 0xe1a05004),
+)
+_FRESH_INIT_ARC_SITES = (
+    (16, 0x26668, 0x621f7c00), (16, 0x266c4, 0x08084088),
+    (16, 0x266c8, 0x67e07a01), (16, 0x25824, 0x61ff7c00),
+    (16, 0x2586c, 0x50207c00), (16, 0x2588c, 0x20000400),
+    (16, 0x259c8, 0x40277f00), (16, 0x259dc, 0x601f7c00),
+    (16, 0x259e8, 0x14001a84),
+    (16, 0x246d0, 0x50410400), (16, 0x246e0, 0x10070404),
+    (16, 0x3a984, 0x61df7c00), (16, 0x3a9b8, 0x10071f00),
+    (4, 0xbdc4, 0x081f0000), (4, 0xbdcc, 0x60007c00),
+    (4, 0xbdd4, 0x68207c00), (4, 0xbddc, 0x601f7c00),
+    (4, 0xbde4, 0x14008000),
+    (16, 0x266cc, 0x20000182), (16, 0x25874, 0x57e0fa08),
+    (16, 0x25878, 0x2000278d), (16, 0x2587c, 0x081fa000),
+    (16, 0x25880, 0x40007e03), (16, 0x25884, 0x40000200),
+    (16, 0x25888, 0x38000000), (16, 0x3a980, 0x61e08200),
+    (16, 0x3a9ac, 0x67e79f00), (16, 0x3a9b0, 0x20000141),
+    (16, 0x3a9b4, 0x09e70100),
+)
+# Source function, source VA, target function, optional retained RELA position.
+_FRESH_INIT_ARC_CALLS = (
+    ("CmdInitialize", 0x2461c, "Core_LocalClear", 0x72930),
+    ("CmdInitialize", 0x246ac, "Platform_EnableInterface", 0x7293c),
+    ("Core_Command", 0x25840, "Dma_Read", 0x72f0c),
+    ("Core_Command", 0x25848, "Dma_Sync", 0x72f18),
+    ("Core_Command", 0x258b0, "CmdInitialize", None),
+    ("Core_Command", 0x259cc, "Dma_Write", 0x72f90),
+    ("Core_Command", 0x259d4, "Dma_Sync", 0x72f9c),
+    ("Core_Command", 0x259d8, "Arc_FlushWrites", 0x72fa8),
+    ("Core_Command", 0x259ec, "Platform_DeliverResponse", 0x72fb4),
+    ("Core_Loop", 0x266e0, "Core_Command", 0x733a4),
+)
 # Complete selected original outer bodies, not an image-wide address delta.
 # ELF virtual addresses, bundled file offsets and device addresses are distinct.
 _PPB_BANK_BODIES = (
@@ -1318,6 +1437,593 @@ def _command_buffer_bridge_map(payload, images):
             "B is dynamic and has not been read from a running device; this is not a memory-access or ownership-borrowing API.",
             "The bridge is for the outer command buffer, not an inner decoder packet or a complete instruction call graph.",
             "Initialized range checks do not establish quiescence, safe raw-register access, runtime acceptance or silicon capability."]}
+
+
+def _fresh_init_arm_operand(payload, offset, expected):
+    """Narrow fixed A32 operands, not execution or a general decoder."""
+    word = _bootstrap_word(payload, offset)
+    if word != expected:
+        raise FormatError("fresh INIT ARM operand does not match the baseline")
+    if (word >> 25) & 7 == 5:
+        return _a32_branch(payload, offset, bool(word & (1 << 24)), word >> 28)
+    if word & 0xff7f0000 == 0xe51f0000:
+        return _a32_literal(payload, offset)
+    record = {"blob_file_offset": offset, "word": word, "condition": word >> 28}
+    if word & 0xfffffff0 == 0xe12fff30:
+        record.update(operation="BLX register", operand_register=word & 15)
+    elif word & 0x0ff00000 == 0x03400000:
+        raise FormatError("fresh INIT operand does not support MOVT")
+    elif word & 0x0ff00000 == 0x03000000:
+        record.update(operation="MOVW", destination_register=(word >> 12) & 15,
+                      immediate=((word >> 4) & 0xf000) | (word & 0xfff))
+    elif (word >> 26) & 3 == 1:
+        if word & (1 << 21) or not word & (1 << 24):
+            raise FormatError("fresh INIT memory operand has unsupported writeback")
+        record.update(operation="LDR" if word & (1 << 20) else "STR",
+                      base_register=(word >> 16) & 15, data_register=(word >> 12) & 15,
+                      byte_width=1 if word & (1 << 22) else 4)
+        if word & (1 << 25):
+            if word & 0x70 or not word & (1 << 23):
+                raise FormatError("fresh INIT memory shift is unsupported")
+            record.update(offset_register=word & 15, shift_kind="LSL", shift_amount=(word >> 7) & 31)
+        else:
+            record["byte_offset"] = (word & 0xfff) * (1 if word & (1 << 23) else -1)
+    elif (word >> 26) & 3 == 0:
+        opcode = (word >> 21) & 15
+        if opcode not in (4, 10, 13, 15) or (not word & (1 << 25) and word & 0x70):
+            raise FormatError("fresh INIT data operand is unsupported")
+        record.update(operation={4: "ADD", 10: "CMP", 13: "MOV", 15: "MVN"}[opcode],
+                      source_register=(word >> 16) & 15,
+                      destination_register=(word >> 12) & 15)
+        if word & (1 << 25):
+            value, shift = word & 255, ((word >> 8) & 15) * 2
+            record["immediate"] = ((value >> shift) | (value << ((32 - shift) % 32))) & 0xffffffff
+        else:
+            record["operand_register"] = word & 15
+            record.update(shift_kind="LSL", shift_amount=(word >> 7) & 31)
+    else:
+        raise FormatError("fresh INIT operand is outside the fixed decoder")
+    return record
+
+
+def _fresh_init_causal_contract(payload, images):
+    """Private, conditional fresh stock INIT chain; never a runtime/lease API."""
+    regions = _FRESH_INIT_REGIONS
+    additional = sum(size for _, _, size, _ in regions)
+    bridge_bytes = sum(len(expected) // 2 for _, _, expected in _COMMAND_BUFFER_BRIDGE_REGIONS) + 0x65c4
+    anchor_count = len(_FRESH_INIT_ARM_SITES) + len(_FRESH_INIT_ARC_SITES) + len(_FRESH_INIT_ARC_CALLS)
+    # All invoked dependency budgets are checked before any interpretation.
+    # Overlapping pins intentionally count twice in this conservative receipt.
+    if (len(payload) != BUNDLED_SIZE - TRAILER_SIZE or
+            len(regions) > MAX_FRESH_INIT_REGIONS or additional > MAX_FRESH_INIT_BYTES or
+            additional + bridge_bytes > MAX_FRESH_INIT_AGGREGATE_BYTES or
+            anchor_count > MAX_FRESH_INIT_ANCHORS or MAX_FRESH_INIT_EVENTS < 35 or
+            len(_COMMAND_BUFFER_BRIDGE_REGIONS) + 1 > MAX_COMMAND_BUFFER_BRIDGE_REGIONS or
+            bridge_bytes > MAX_COMMAND_BUFFER_BRIDGE_BYTES or
+            0x65c4 // 12 > MAX_COMMAND_BUFFER_BRIDGE_RELOCATIONS or
+            MAX_STOCK_HOST_COMMAND_CFG_STATES < 53):
+        raise FormatError("fresh INIT validation budget/identity exceeded")
+    validated = []
+    for name, offset, size, digest in regions:
+        data = bounded(payload, offset, size, "fresh INIT region")
+        if hashlib.sha256(data).hexdigest() != digest:
+            raise FormatError(f"fresh INIT region {name} does not match the baseline")
+        validated.append({"role": name, "blob_file_offset": offset, "size": size, "sha256": digest})
+    # Pre-pin the entire invoked bridge before allowing either dependency to
+    # interpret it. The dependency repeats its own unchanged bounded checks.
+    for name, offset, expected in _COMMAND_BUFFER_BRIDGE_REGIONS:
+        if bounded(payload, offset, len(expected) // 2, "fresh INIT bridge pin") != bytes.fromhex(expected):
+            raise FormatError(f"fresh INIT bridge region {name} does not match the baseline")
+    if hashlib.sha256(bounded(payload, 0x72780, 0x65c4, "fresh INIT bridge RELA pin")).hexdigest() != _COMMAND_BUFFER_BRIDGE_RELA_SHA256:
+        raise FormatError("fresh INIT bridge relocation table does not match the baseline")
+    bridge = _command_buffer_bridge_map(payload, images)
+    # Explicitly one handler, not the 29-command selector or its 25-handler CFG.
+    footprints = _stock_host_handler_footprints(payload, [0x5ccc])
+    init_footprint = footprints[0]
+    if (len(footprints) != 1 or init_footprint["entry_blob_file_offset"] != 0x5ccc or
+            init_footprint["request_reads"] != [{"byte_offset": 4, "width": 4}] or
+            [r["byte_offset"] for r in init_footprint["reply_writes"]] != [4, 8] or
+            init_footprint["packet_header_reads"] or init_footprint["packet_header_writes"]):
+        raise FormatError("fresh INIT-only stock receipt does not match")
+    arm = {offset: _fresh_init_arm_operand(payload, offset, word)
+           for offset, word in _FRESH_INIT_ARM_SITES}
+    anchors = [dict(record, architecture="ARM") for record in arm.values()]
+
+    def section(index):
+        return struct.unpack("<10I", bounded(payload, 0x79540 + index * 40, 40, "fresh INIT section"))
+
+    def position(index, address, size=4):
+        s = section(index)
+        if s[1] != 1 or not s[2] & 4 or not s[3] <= address <= s[3] + s[5] - size:
+            raise FormatError("fresh INIT ARC site escaped its executable section")
+        return 0x2ea60 + s[4] + address - s[3]
+
+    symbol_table, string_table = section(35), section(34)
+    if (symbol_table[1], symbol_table[6], symbol_table[9], string_table[1]) != (2, 34, 16, 3):
+        raise FormatError("fresh INIT outer symbol tables do not match")
+    symbols = {}
+    for name, index, sec, address, size in (
+            ("CmdInitialize", 46, 16, 0x245ec, 412), ("Core_Command", 554, 16, 0x25808, 516),
+            ("Arc_FlushWrites", 556, 4, 0x8090, 24), ("Core_Loop", 623, 16, 0x2664c, 172),
+            ("Core_LocalClear", 640, 2, 0x52bc, 36), ("Dma_Sync", 644, 2, 0x5364, 24),
+            ("Dma_Write", 645, 2, 0x537c, 76), ("Dma_Read", 646, 2, 0x53c8, 68),
+            ("Platform_EnableInterface", 800, 16, 0x3a960, 168),
+            ("Platform_DeliverResponse", 801, 4, 0xbdc4, 40)):
+        sympos = 0x2ea60 + symbol_table[4] + index * 16
+        st_name, value, actual_size, info, other, actual_sec = struct.unpack(
+            "<IIIBBH", bounded(payload, sympos, 16, "fresh INIT function symbol"))
+        namepos = 0x2ea60 + string_table[4] + st_name
+        if (value, actual_size, actual_sec, info & 15, other) != (address, size, sec, 2, 0) or bounded(
+                payload, namepos, len(name) + 1, "fresh INIT symbol name") != name.encode() + b"\0":
+            raise FormatError("fresh INIT function ownership/symbol does not match")
+        bodypos = position(sec, address, size)
+        if not any(low <= bodypos and bodypos + size <= low + count
+                   for _, low, count, _ in regions) and not any(
+                low <= bodypos and bodypos + size <= low + len(expected) // 2
+                for _, low, expected in _COMMAND_BUFFER_BRIDGE_REGIONS):
+            raise FormatError("fresh INIT selected function body is not fully pinned")
+        symbols[name] = {"name": name, "symbol_index": index, "symbol_record_blob_file_offset": sympos,
+                         "name_blob_file_offset": namepos, "section_index": sec,
+                         "elf_virtual_address": value, "size": size, "blob_file_offset": bodypos}
+
+    arc = {}
+    for sec, address, expected in _FRESH_INIT_ARC_SITES:
+        off = position(sec, address)
+        word = _bootstrap_word(payload, off)
+        if word != expected:
+            raise FormatError("fresh INIT ARC operand does not match the baseline")
+        # Standard legacy ARC fields only; the vendor ISA remains conditional.
+        record = {"architecture": "ARC", "section_index": sec, "elf_virtual_address": address,
+                  "blob_file_offset": off, "word": word, "decode_conditional": True,
+                  "destination_register": (word >> 21) & 63,
+                  "source_register": (word >> 15) & 63,
+                  "operand_register": (word >> 9) & 63,
+                  "low9": word & 511, "signed_low9": (word & 511) - (512 if word & 256 else 0)}
+        if word >> 27 == 4:
+            displacement = (word >> 7) & 0xfffff
+            if displacement & (1 << 19):
+                displacement -= 1 << 20
+            record.update(operation="B", condition=word & 31,
+                          target_elf_virtual_address=address + 4 + displacement * 4,
+                          pc_bias_bytes=4, delay_slot_semantics="taken only" if word & 64 else
+                          "always executed" if word & 32 else "none")
+        if address in (0x26668, 0x25824, 0x2586c, 0x259dc, 0x3a984, 0xbdc4, 0xbdcc, 0xbdd4, 0xbddc):
+            record["literal_value"] = _bootstrap_word(payload, position(sec, address + 4))
+        arc[address] = record
+        anchors.append(record)
+    relas = [struct.unpack_from("<IIi", payload, 0x72780 + i * 12) for i in range(2171)]
+    receipts = []
+    for caller, address, callee, relapos in _FRESH_INIT_ARC_CALLS:
+        src, dst = symbols[caller], symbols[callee]
+        if not src["elf_virtual_address"] <= address <= src["elf_virtual_address"] + src["size"] - 4:
+            raise FormatError("fresh INIT ARC call has wrong source function ownership")
+        off = position(src["section_index"], address)
+        original = _bootstrap_word(payload, off)
+        preserve_mask, displacement_mask = 0xf800007f, 0x07ffff80
+        if original & preserve_mask not in (0x28000000, 0x28000020):
+            raise FormatError("fresh INIT selected ARC edge is not BL/BL.d")
+        records = [(0x72780 + i * 12, r) for i, r in enumerate(relas) if r[0] == address]
+        if relapos is None:
+            if records or src["section_index"] != dst["section_index"]:
+                raise FormatError("fresh INIT same-section resolved call has unexpected relocation")
+            vendor_type, addend = None, 0
+        else:
+            expected = (address, (dst["symbol_index"] << 8) | 6, 0)
+            if records != [(relapos, expected)]:
+                raise FormatError("fresh INIT ARC call relocation is not uniquely section-owned")
+            vendor_type, addend = 6, expected[2]
+        delta = dst["elf_virtual_address"] + addend - address - 4
+        if delta & 3 or not -(1 << 21) <= delta < (1 << 21):
+            raise FormatError("fresh INIT ARC call displacement is invalid")
+        patched = (original & preserve_mask) | ((delta << 5) & displacement_mask)
+        encoded = (patched >> 7) & 0xfffff
+        signed = encoded - (1 << 20) if encoded & (1 << 19) else encoded
+        decoded = address + 4 + signed * 4
+        if patched != original or decoded != dst["elf_virtual_address"] + addend:
+            raise FormatError("fresh INIT ARC call is not preserved at the selected symbol")
+        delay = bool(original & 32)
+        receipt = {"architecture": "ARC", "caller": caller, "callee": callee,
+                   "source_section_index": src["section_index"], "target_section_index": dst["section_index"],
+                   "instruction_blob_file_offset": off, "source_elf_virtual_address": address,
+                   "target_elf_virtual_address": dst["elf_virtual_address"], "symbol_index": dst["symbol_index"],
+                   "symbol_record_blob_file_offset": dst["symbol_record_blob_file_offset"],
+                   "relocation_record_blob_file_offset": relapos, "relocation_section_index": 51 if relapos else None,
+                   "vendor_type": vendor_type, "addend": addend, "original_word": original, "patched_word": patched,
+                   "instruction_bytes_unchanged": True, "pc_bias_bytes": 4, "signed_byte_displacement": delta,
+                   "preserved_mask": preserve_mask, "displacement_mask": displacement_mask,
+                   "decoded_target_elf_virtual_address": decoded, "normalization_excludes_B": True,
+                   "delay_slot": delay, "delay_slot_elf_virtual_address": address + 4 if delay else None,
+                   "delay_slot_word": _bootstrap_word(payload, position(src["section_index"], address + 4)) if delay else None,
+                   "delay_slot_semantics": "always executed" if delay else "none",
+                   "decode_conditional": True, "runtime_observed": False}
+        receipts.append(receipt)
+        anchors.append(receipt)
+
+    def immediate(offset):
+        return arm[offset]["immediate"]
+
+    def displacement(offset):
+        return arm[offset]["byte_offset"]
+
+    def branch(offset, target, condition=0):
+        if (arm[offset]["target_blob_file_offset"], arm[offset]["condition"]) != (target, condition):
+            raise FormatError("fresh INIT selected predicate/branch does not match")
+
+    # Bind the checked return chain to saved r0, CMP(saved,0), BEQ(success),
+    # and MOV(r0,saved) on the error edge, rather than merely naming callees.
+    chains = []
+    for caller, call, save, compare, edge, success, error in (
+            ("host", 0x5d4c, 0x5d50, 0x5d54, 0x5d58, 0x5f08, 0x5d74),
+            ("context", 0x7e0, 0x7e4, 0x7e8, 0x7ec, 0x814, None),
+            ("factory", 0xec54, 0xec58, 0xec5c, 0xec60, 0xec74, 0xec6c),
+            ("image", 0x266a4, 0x266a8, 0x266ac, 0x266b0, 0x266bc, 0x266b4),
+            ("loader", 0x263c8, 0x263cc, 0x263d0, 0x263d4, 0x263e8, 0x263e0),
+            ("builder", 0x27254, 0x27258, 0x27288, 0x2728c, 0x273b4, 0x27298)):
+        saved = arm[save]["destination_register"]
+        if (arm[save].get("operation"), arm[save].get("operand_register"),
+                arm[compare].get("operation"), arm[compare].get("source_register"),
+                immediate(compare)) != ("MOV", 0, "CMP", saved, 0):
+            raise FormatError("fresh INIT checked return operands are not coherent")
+        branch(edge, success)
+        if error is not None and (arm[error].get("operation"), arm[error].get("destination_register"),
+                                  arm[error].get("operand_register")) != ("MOV", 0, saved):
+            raise FormatError("fresh INIT error return does not preserve the saved result")
+        chains.append({"caller": caller, "call_blob_file_offset": call, "saved_register": saved,
+                       "save_blob_file_offset": save, "compare_blob_file_offset": compare,
+                       "success_branch_blob_file_offset": edge, "success_blob_file_offset": success,
+                       "error_return_blob_file_offset": error, "success_compare_value": immediate(compare),
+                       "error_preserves_result": True,
+                       "call_receipt_scope": "bridge" if call not in arm else "fresh_init"})
+    if (arm[0x860].get("operand_register"), arm[0x860].get("destination_register"),
+            arm[0x22dc8].get("operand_register"), arm[0x22dec].get("operand_register")) != (5, 3, 3, 4):
+        raise FormatError("fresh INIT context logging return does not preserve the result")
+    for offset, target, condition in ((0x27088, 0x27098, 0), (0x270ec, 0x27100, 1),
+                                      (0x2711c, 0x271a0, 0), (0x2713c, 0x27158, 0),
+                                      (0x27168, 0x271b0, 0)):
+        branch(offset, target, condition)
+    for offset, target in ((0x270a8, 0x20690), (0x270c8, 0x25024), (0x270e0, 0x20598),
+                           (0x27110, 0x25010), (0x2712c, 0x20708), (0x2c188, 0x20614),
+                           (0xeb88, 0x2052c), (0x28214, 0x6ea0), (0xf0, 0x6ef0),
+                           (0x26e04, 0x2c624), (0x868, 0x22db8)):
+        branch(offset, target, 14)
+    if (arm[0x271c0].get("operand_register"), arm[0x270e4].get("destination_register"),
+            arm[0x273f4].get("operand_register"), arm[0x27258].get("destination_register")) != (9, 9, 10, 10):
+        raise FormatError("fresh INIT success return does not retain the original wait result")
+    table_base = arm[0x26dfc]["literal_value"]
+    table_context = immediate(0x26e00)
+    table_size = immediate(0x26df8)
+    if table_base != 0xcfc04 or table_size != 236:
+        raise FormatError("fresh INIT register table copy does not match")
+    table = {name: {"context_offset": offset,
+                    "table_blob_file_offset": table_base + offset - table_context,
+                    "value": _bootstrap_word(payload, table_base + offset - table_context)}
+             for name, offset in (("init_response_target", displacement(0x27234)),
+                                  ("generic_callback_selector", 0xcc),
+                                  ("completion", displacement(0x27108)),
+                                  ("publication", displacement(0x270bc)))}
+    transport = {"entry_blob_file_offset": 0x2705c,
+                 "busy_context_offset": displacement(0x27080),
+                 "busy_status": arm[0x27090]["literal_value"],
+                 "event_context_offset": displacement(0x270a4), "copy_bytes": immediate(0x270ac),
+                 "packet_virtual_context_offset": displacement(0x270b4),
+                 "packet_physical_context_offset": displacement(0x270c0),
+                 "publication_register_context_offset": displacement(0x270bc),
+                 "completion_register_context_offset": displacement(0x27108),
+                 "timeout_argument": immediate(0x2723c), "timeout_status": immediate(0x270e8),
+                 "zero_completion_status": immediate(0x271a8),
+                 "command_mismatch_status": immediate(0x27150), "backend_error_status": immediate(0x27198),
+                 "command_word_offset": displacement(0x27130),
+                 "backend_status_word_offset": displacement(0x27160),
+                 "success_returns_wait_status": True, "native_wait_statuses": [immediate(0x205a4), immediate(0x205e4)],
+                 "zero_completion_preserves_busy": True, "locks_are_bare_returns": True,
+                 "busy_acquire_value": immediate(0x27098),
+                 "busy_free_value": immediate(0x27084),
+                 "busy_acquire_offset": displacement(0x2709c),
+                 "busy_clear_offsets": {"timeout": displacement(0x270f4), "command_mismatch": displacement(0x27144),
+                                        "backend_status": displacement(0x27170), "success": displacement(0x271b4)},
+                 "native_wait_success_consumes_event": arm[0x20608]["operation"] == "STR" and arm[0x20608]["byte_width"] == 1,
+                 "event_consumption_offset": displacement(0x20608),
+                 "predicates": {"busy_equals": immediate(0x27084), "timeout_equals": immediate(0x270e8),
+                                "completion_not_equals": immediate(0x27118),
+                                "command_compare_registers": [arm[0x27138]["source_register"], arm[0x27138]["operand_register"]],
+                                "backend_status_equals": immediate(0x27164)},
+                 "order": ["busy_check", "event_reset", "request_copy", "request_publication", "event_wait",
+                           "completion_read", "reply_copy", "command_check", "backend_status_check", "success_reset"],
+                 "operand_receipts": {hex(offset): arm[offset] for offset in arm if 0x2705c <= offset < 0x271c8}}
+    enable_edge = next(r for r in receipts if r["callee"] == "Platform_EnableInterface")
+    zero = arc[0x246d0]
+    if (zero["destination_register"], zero["source_register"], zero["operand_register"],
+            arc[0x246e0]["operand_register"]) != (2, 2, 2, 2):
+        raise FormatError("fresh INIT backend status store is not the self-subtracted zero")
+    outer = {"symbols": list(symbols.values()), "internal_command": arc[0x2586c]["literal_value"],
+             "local_packet_address": arc[0x25824]["literal_value"],
+             "local_mailbox_base": arc[0x259dc]["literal_value"],
+             "trigger_offset": arc[0x266c4]["low9"], "trigger_bit_mask": arc[0x266c8]["low9"],
+             "reply_mailbox_offset": arc[0x259e8]["low9"],
+             "init_response_word_offset": enable_edge["delay_slot_word"] & 511,
+             "reply_backend_status_offset": arc[0x246e0]["low9"],
+             "reply_backend_status": zero["source_register"] - zero["operand_register"],
+             "response_target_storage": arc[0xbdc4]["literal_value"],
+             "response_address_mask": arc[0xbdcc]["literal_value"],
+             "response_address_prefix": arc[0xbdd4]["literal_value"],
+             "response_irq_bits": arc[0xbddc]["literal_value"],
+             "operands": list(arc.values()),
+             "transport_edges": [r["callee"] for r in receipts if r["caller"] == "Core_Command"],
+             "ordinary_call_delay_slots_always_execute": True,
+             "conditional_BZ_jd_slot_executes_only_when_taken": True,
+             "dma_completion_and_visibility_assumed": True}
+    if (outer["internal_command"] != arm[0x27210]["literal_value"] or
+            outer["init_response_word_offset"] != displacement(0x27238) or
+            outer["response_target_storage"] != arc[0x3a984]["literal_value"] - 256 or
+            outer["reply_backend_status_offset"] != displacement(0x27160)):
+        raise FormatError("fresh INIT ARM/outer argument or response linkage is incoherent")
+    trigger_edge = arc[0x266cc]
+    if (trigger_edge["condition"], trigger_edge["target_elf_virtual_address"],
+            arc[0x266c8]["source_register"]) != (2, 0x266dc, arc[0x266c4]["destination_register"]):
+        raise FormatError("fresh INIT bit-set trigger predicate is not connected")
+    outer["trigger"] = {"base_address": arc[0x26668]["literal_value"],
+                        "register_offset": arc[0x266c4]["low9"], "bit_mask": arc[0x266c8]["low9"],
+                        "condition": trigger_edge["condition"],
+                        "branch_target_elf_virtual_address": trigger_edge["target_elf_virtual_address"],
+                        "call_elf_virtual_address": next(r["source_elf_virtual_address"] for r in receipts if r["caller"] == "Core_Loop"),
+                        "pending_byte_alternative_validated": False}
+    range_edge = arc[0x25878]
+    selected_edge = arc[0x2588c]
+    if (arc[0x25874]["source_register"], range_edge["condition"],
+            arc[0x25880]["low9"], arc[0x25884]["operand_register"],
+            selected_edge["target_elf_virtual_address"]) != (1, 13, 3, 1, 0x258b0):
+        raise FormatError("fresh INIT selected command switch operands are incoherent")
+    status_pc = 0x2587c + 4
+    table_entry = status_pc + arc[0x25880]["low9"] * 4
+    if table_entry != selected_edge["elf_virtual_address"]:
+        raise FormatError("fresh INIT conditional STATUS-PC table route is incoherent")
+    outer["init_dispatch"] = {"command_base": outer["internal_command"], "command_index": 0,
+                              "maximum_index": arc[0x25874]["low9"], "range_condition": range_edge["condition"],
+                              "default_target_elf_virtual_address": range_edge["target_elf_virtual_address"],
+                              "status_auxiliary_register": arc[0x2587c]["low9"],
+                              "status_pc_next_elf_virtual_address": status_pc,
+                              "table_bias_words": arc[0x25880]["low9"], "index_register": arc[0x25884]["operand_register"],
+                              "jump_register": arc[0x25888]["source_register"],
+                              "selected_entry_elf_virtual_address": table_entry,
+                              "selected_target_elf_virtual_address": selected_edge["target_elf_virtual_address"],
+                              "status_pc_word_address_semantics_assumed": True}
+    enable_branch = arc[0x3a9b0]
+    if (arc[0x3a980]["destination_register"], arc[0x3a980]["source_register"],
+            arc[0x3a9ac]["source_register"], enable_branch["condition"],
+            enable_branch["target_elf_virtual_address"], enable_branch["delay_slot_semantics"],
+            arc[0x3a9b4]["destination_register"], arc[0x3a9b8]["operand_register"]) != (
+            15, 1, 15, 1, 0x3a9bc, "taken only", 15, 15):
+        raise FormatError("fresh INIT nonzero interface argument is not preserved")
+    storage = arc[0x3a984]["literal_value"] + arc[0x3a9b8]["signed_low9"]
+    if storage != outer["response_target_storage"] or arc[0x3a9b4]["signed_low9"] != arc[0x3a9b8]["signed_low9"]:
+        raise FormatError("fresh INIT interface/delivery storage does not match")
+    outer["enable_interface"] = {"argument_register": arc[0x3a980]["source_register"],
+                                 "saved_register": arc[0x3a980]["destination_register"],
+                                 "argument_value": table["init_response_target"]["value"],
+                                 "zero_branch_condition": enable_branch["condition"],
+                                 "zero_branch_target_elf_virtual_address": enable_branch["target_elf_virtual_address"],
+                                 "delay_slot_semantics": enable_branch["delay_slot_semantics"],
+                                 "old_value_loaded_only_for_zero_argument": True,
+                                 "store_signed_offset": arc[0x3a9b8]["signed_low9"],
+                                 "storage_address": storage, "nonzero_argument_stored": table["init_response_target"]["value"] != 0,
+                                 "first_argument_branch_validated": False}
+    if (arm[0x263bc]["operation"], arm[0x263bc]["data_register"], arm[0x271d8]["operation"],
+            arm[0x271d8]["operand_register"], arm[0x271d8]["destination_register"],
+            arm[0x27218]["data_register"]) != ("LDR", 2, "MOV", 2, 9, 9):
+        raise FormatError("fresh INIT request word1 does not come from the selected byte")
+    # Prove the two independently computed slot addresses and data-register
+    # aliases, not merely a callback name or a claimed table stride.
+    if (arm[0x28210]["destination_register"], arm[0x28210]["operand_register"],
+            arm[0x6eb8]["destination_register"], arm[0x6eb8]["source_register"], arm[0x6eb8]["operand_register"],
+            arm[0x6ebc]["base_register"], arm[0x6ebc]["offset_register"], arm[0x6ebc]["data_register"],
+            arm[0x6ec0]["source_register"], arm[0x6ec0]["operand_register"],
+            arm[0x6ec4]["data_register"], arm[0x6ec8]["data_register"],
+            arm[0x6f94]["source_register"], arm[0x6f94]["operand_register"],
+            arm[0x6f98]["source_register"], arm[0x6f98]["operand_register"],
+            arm[0x6fa8]["base_register"], arm[0x6fa8]["offset_register"], arm[0x6fa8]["data_register"],
+            arm[0x6fac]["base_register"], arm[0x6fac]["data_register"], arm[0x6fb0]["operand_register"],
+            arm[0x2c170]["operand_register"], arm[0x2c178]["operand_register"]) != (
+            0, 3, 0, 0, 0, 4, 0, 1, 4, 0, 2, 3, 4, 4, 9, 8, 9, 8, 2, 6, 0, 2, 0, 4):
+        raise FormatError("fresh INIT IRQ callback register aliases are incoherent")
+    if (arm[0x6eb4]["literal_value"] != arm[0x6f20]["literal_value"] or
+            arm[0x2820c]["literal_value"] != 0x2c16c or
+            displacement(0x6ec4) != displacement(0x6fac) or
+            displacement(0x6ec8) != displacement(0x6f9c) or
+            arm[0x6fa0]["source_register"] != arm[0x6f9c]["data_register"] or immediate(0x6fa0) != 0):
+        raise FormatError("fresh INIT IRQ callback slot/table identity does not match")
+    branch(0x6fa4, 0x6fc8)
+    shift = arm[0x6eb8]["shift_amount"]
+    scale = 1 + (1 << shift)
+    stride = scale * (1 << arm[0x6ebc]["shift_amount"])
+    if (shift != arm[0x6f94]["shift_amount"] or arm[0x6ebc]["shift_amount"] != arm[0x6ec0]["shift_amount"] or
+            arm[0x6ebc]["shift_amount"] != arm[0x6f98]["shift_amount"] or
+            arm[0x6ebc]["shift_amount"] != arm[0x6fa8]["shift_amount"] or
+            immediate(0x28208) + displacement(0x2c184) != transport["event_context_offset"]):
+        raise FormatError("fresh INIT IRQ callback address/event arithmetic is incoherent")
+    registration = {"callback_address": arm[0x2820c]["literal_value"],
+                    "table_address": arm[0x6eb4]["literal_value"], "slot": immediate(0x28204),
+                    "slot_stride": stride, "slot_address": arm[0x6eb4]["literal_value"] + immediate(0x28204) * stride,
+                    "callback_word_offset": 0, "userdata_word_offset": displacement(0x6ec4),
+                    "flag_word_offset": displacement(0x6ec8), "flag_value": immediate(0x28204),
+                    "flag_nonzero_selects_direct_callback": True, "callback_load_register": arm[0x6fa8]["data_register"],
+                    "callback_branch_register": arm[0x6fb0]["operand_register"],
+                    "userdata_context_offset": immediate(0x28208),
+                    "event_offset_from_userdata": displacement(0x2c184),
+                    "event_context_offset": immediate(0x28208) + displacement(0x2c184),
+                    "requires_irq_slot_pending_and_table_preserved": True}
+    host = {"command": bridge["host_init"]["command"], "internal_command": arm[0x27210]["literal_value"],
+            "handler_entry_blob_file_offset": 0x5ccc, "handler_count": 1, "stock_init_receipt": init_footprint,
+            "full_stock_selector_invoked": False, "shortcut_global_address": arm[0x5ce8]["literal_value"],
+            "shortcut_returns0_without_backend": True,
+            "shortcut_branch_receipt": next(a for a in bridge["instruction_anchors"] if a["blob_file_offset"] == 0x5cf8),
+            "shortcut_branch_receipt_scope": "independently bounded bridge",
+            "failure_reply_status": (~immediate(0x5d64)) & 0xffffffff,
+            "success_reply_status": immediate(0x5cec), "success_return": immediate(0x5d10),
+            "sequence_request_offset": init_footprint["request_reads"][0]["byte_offset"],
+            "sequence_reply_offset": init_footprint["reply_writes"][0]["byte_offset"],
+            "status_reply_offset": displacement(0x5d68)}
+    return {"basis": {"baseline_firmware_sha256": BUNDLED_SHA256, "payload_bytes": len(payload),
+                      "selected_regions_validated": True, "entire_payload_rehashed": False,
+                      "conditional": True, "device_observed": False, "public_route": False},
+            "validation": {"additional_region_count": len(regions), "additional_byte_count": additional,
+                           "aggregate_byte_count": additional + bridge_bytes,
+                           "bridge_region_count": len(bridge["validated_regions"]), "bridge_byte_count": bridge_bytes,
+                           "causal_anchor_count": len(anchors), "bridge_anchor_count": len(bridge["instruction_anchors"]),
+                           "projected_event_cap": MAX_FRESH_INIT_EVENTS, "validated_regions": validated},
+            "bridge": bridge, "host_init": host,
+            "arm_builder": {"entry_blob_file_offset": 0x271c8, "internal_command": host["internal_command"],
+                            "request_word1_offset": displacement(0x27218), "request_word1_register": arm[0x27218]["data_register"],
+                            "request_word1_source_width": arm[0x263bc]["byte_width"],
+                            "request_word1_source_context_offset": displacement(0x263bc),
+                            "request_word1_native_max": (1 << (8 * arm[0x263bc]["byte_width"])) - 1,
+                            "response_target_context_offset": displacement(0x27234),
+                            "response_target_word_offset": displacement(0x27238), "timeout_argument": immediate(0x2723c),
+                            "preserves_transport_status_on_both_return_edges": True},
+            "transport": transport, "checked_return_chain": chains,
+            "event_path": {"event_context_offset": transport["event_context_offset"],
+                           "registration": registration,
+                           "callback_entry_blob_file_offset": arm[0x2c188]["blob_file_offset"] - 28,
+                           "callback_userdata_context_offset": immediate(0x28208),
+                           "callback_event_offset_from_userdata": displacement(0x2c184),
+                           "irq_slot": immediate(0x28204), "irq_vector_entry": arm[0x18]["literal_value"],
+                           "irq_dispatch_entry": arm[0xf0]["target_blob_file_offset"],
+                           "event_set_value": immediate(0x20618), "event_reset_value": immediate(0x20694),
+                           "event_byte_width": arm[0x2061c]["byte_width"],
+                           "event_generation_check": False, "register_table": table,
+                           "arm_mmio_base": immediate(0x7580)},
+            "outer_path": outer, "relocation_receipts": receipts, "instruction_anchors": anchors,
+            "assumptions": [
+                "Fresh non-null stock INIT with a serialized controller/packet transaction; other initialization, allocation, ELF load, cleanup and logging helpers return successfully or preserve the checked primary error.",
+                "Opaque callees, including logging/yield and post-transport setup, obey the observed calling convention, preserve required saved registers/stack/context and do not mutate packet words through undisclosed aliases; not all setup helper return values are checked.",
+                "Selected standard legacy ARC operands and delay semantics apply, including STATUS exposing the next PC in word-address units for the fixed computed INIT table; unselected vendor ISA/relocations remain conditional and are not validated by this receipt.",
+                "ARM 0x10000000-base register offsets alias the selected ARC local mailboxes; request publication triggers the selected Core_Loop path and response delivery reaches enabled ARM private IRQ9. These hardware routing/namespace facts are assumptions, not source proof.",
+                "ARC polling/DMA/flush complete and packet writes become visible in order to both processors; cache coherence, DMA visibility and atomic/serialized execution are assumptions.",
+                "Normal fresh inference excludes a delayed old callback/completion after event reset; event byte and mailbox have no transaction generation check. The countermodel explicitly drops this freshness assumption."],
+            "validation_scope": {"fresh_init_only": True, "full_stock_selector": False,
+                                 "conditional_software_chain": True, "opaque_setup_return_values_all_checked": False,
+                                 "transport_zero_requires_successful_post_transport_setup": True,
+                                 "hardware_aliasing_proven": False,
+                                 "runtime_transaction_acknowledged": False, "source_plane_lease": False,
+                                 "active_decode_context": False, "standalone_execution": False,
+                                 "whole_firmware_relocation_closure": False}}
+
+
+def _fresh_init_projection(contract, scenario):
+    """Finite test-only trace; timeout omissions do not prove backend nonexecution."""
+    defaults = {"already_initialized": False, "busy": False, "wait_status": 0,
+                "completion_mailbox": 1, "reply_command": contract["host_init"]["internal_command"],
+                "reply_status": 0, "request_word1": 0, "event_origin": "current", "freshness_assumed": True}
+    if type(scenario) is not dict or set(scenario) - set(defaults):
+        raise FormatError("fresh INIT projection has unsupported scenario fields")
+    values = dict(defaults, **scenario)
+    for name, value in values.items():
+        if name in ("already_initialized", "busy", "freshness_assumed"):
+            if type(value) is not bool:
+                raise FormatError("fresh INIT projection boolean is invalid")
+        elif name == "event_origin":
+            if value not in ("current", "delayed_old") or type(value) is not str:
+                raise FormatError("fresh INIT projection event origin is invalid")
+        elif type(value) is not int or not 0 <= value <= 0xffffffff:
+            raise FormatError("fresh INIT projection scalar is not u32")
+    if values["event_origin"] == "delayed_old" and values["freshness_assumed"]:
+        raise FormatError("delayed old response contradicts the freshness assumption")
+    if values["request_word1"] > contract["arm_builder"]["request_word1_native_max"]:
+        raise FormatError("fresh INIT projection request word1 exceeds the native byte domain")
+    t, h, outer = contract["transport"], contract["host_init"], contract["outer_path"]
+    cap = min(MAX_FRESH_INIT_EVENTS, contract["validation"]["projected_event_cap"])
+    if type(cap) is not int or cap < 1:
+        raise FormatError("fresh INIT projection event budget exceeded")
+    events = []
+
+    def event(name, **fields):
+        if len(events) >= cap:
+            raise FormatError("fresh INIT projection event budget exceeded")
+        events.append(dict(event=name, **fields))
+
+    native = values["wait_status"] in t["native_wait_statuses"]
+    event("host_init", command=h["command"])
+    busy_after, acknowledged, status, consumed = values["busy"], False, None, False
+    current_path, observation_relaxed = False, False
+    if values["already_initialized"]:
+        event("initialized_shortcut", return_value=h["success_return"])
+        result = h["success_return"]
+    else:
+        event("fresh_initialization", opaque_helpers_assumed=True)
+        event("busy_check", context_offset=t["busy_context_offset"], busy=values["busy"])
+        if values["busy"]:
+            status = t["busy_status"]
+        else:
+            busy_after = bool(t["busy_acquire_value"])
+            event("event_reset", context_offset=t["event_context_offset"])
+            event("request_copy", bytes=t["copy_bytes"], command=h["internal_command"], word1=values["request_word1"])
+            event("request_publication", context_offset=t["publication_register_context_offset"])
+            if values["event_origin"] == "delayed_old" and values["wait_status"] != t["timeout_status"]:
+                event("delayed_old_callback", freshness_relaxed=True)
+            elif values["wait_status"] != t["timeout_status"]:
+                # Each call name/order comes from section-owned decoded edges.
+                current_path = True
+                event("outer_trigger", register_offset=outer["trigger_offset"], bit_mask=outer["trigger_bit_mask"])
+                loop_edge = next(r for r in contract["relocation_receipts"] if r["caller"] == "Core_Loop")
+                event("outer_call", function=loop_edge["callee"])
+                for name in outer["transport_edges"]:
+                    if name == "Platform_DeliverResponse":
+                        event("reply_publication", offset=outer["reply_mailbox_offset"])
+                    event("outer_call", function=name)
+                    if name == "CmdInitialize":
+                        for nested in contract["relocation_receipts"]:
+                            if nested["caller"] == name:
+                                event("outer_call", function=nested["callee"])
+                        event("backend_status_store", byte_offset=outer["reply_backend_status_offset"], value=outer["reply_backend_status"])
+                event("response_irq", bits=outer["response_irq_bits"])
+                event("arm_callback", event_set_value=contract["event_path"]["event_set_value"])
+                observation_relaxed = (values["completion_mailbox"] == t["predicates"]["completion_not_equals"] or
+                                       values["reply_command"] != h["internal_command"] or
+                                       values["reply_status"] != outer["reply_backend_status"])
+                if observation_relaxed:
+                    event("observation_coherence_relaxed", selected_outer_reply_preserved=False)
+            event("event_wait", return_value=values["wait_status"], native_output=native)
+            if values["wait_status"] == t["native_wait_statuses"][0]:
+                consumed = t["native_wait_success_consumes_event"]
+                event("event_consumed", byte_offset=t["event_consumption_offset"])
+            if values["wait_status"] == t["predicates"]["timeout_equals"]:
+                busy_after = bool(t["busy_free_value"])
+                status = t["timeout_status"]
+            else:
+                event("completion_read", context_offset=t["completion_register_context_offset"], value=values["completion_mailbox"])
+                if values["completion_mailbox"] == t["predicates"]["completion_not_equals"]:
+                    status = t["zero_completion_status"]
+                else:
+                    reply_command = values["reply_command"] if values["event_origin"] == "current" else h["internal_command"]
+                    reply_status = values["reply_status"] if values["event_origin"] == "current" else values["request_word1"]
+                    event("reply_copy", bytes=t["copy_bytes"], command=reply_command, word1=reply_status)
+                    event("command_check", command=reply_command)
+                    if reply_command != h["internal_command"]:
+                        busy_after = bool(t["busy_free_value"])
+                        status = t["command_mismatch_status"]
+                    else:
+                        event("backend_status_check", status=reply_status)
+                        if reply_status != t["predicates"]["backend_status_equals"]:
+                            busy_after = bool(t["busy_free_value"])
+                            status = t["backend_error_status"]
+                        else:
+                            busy_after = bool(t["busy_free_value"])
+                            event("success_reset", context_offset=t["event_context_offset"])
+                            status = values["wait_status"]
+                            acknowledged = current_path and not observation_relaxed and native
+        result = status
+        for stage in reversed(contract["checked_return_chain"]):
+            event("checked_return", caller=stage["caller"], value=result,
+                  success=result == stage["success_compare_value"])
+    reply = h["success_reply_status"] if result == h["success_return"] else h["failure_reply_status"]
+    event("host_reply_status_store", byte_offset=h["status_reply_offset"], value=reply)
+    return {"events": events, "transport_status": status, "host_return": result, "host_reply_status": reply,
+            "busy_after": busy_after, "busy_after_scope": "transport_return_boundary",
+            "post_transport_opaque_setup_success_assumed": True,
+            "projected_current_path": current_path, "observation_coherence_relaxed": observation_relaxed,
+            "event_consumed": consumed, "current_transaction_acknowledged": acknowledged,
+            "timeout_proves_backend_nonexecution": False,
+            "freshness_assumed": values["freshness_assumed"], "native_wait_output": native,
+            "opaque_wait_output_relaxed": not native, "runtime_observed": False}
 
 
 def _bootstrap_word(payload, offset):

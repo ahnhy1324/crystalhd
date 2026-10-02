@@ -4986,5 +4986,983 @@ class FirmwarePpbBankContractTests(unittest.TestCase):
                          "bf116a4627c71956042f25a98f63fde401b58140569c22cdc5ebf8298bbc85dd")
 
 
+class FirmwareFreshInitCausalTests(unittest.TestCase):
+    # Independent GNU ARM/ARC disassembly oracles. Offsets here are ARM blob
+    # offsets; ARC addresses below are resolved through their own ELF section.
+    ARM_WORDS = {
+        0x5cd8: 0xe2805014, 0x5cdc: 0xe2804f45, 0x5cec: 0xe3a08000,
+        0x5cf0: 0xe5970000, 0x5cf4: 0xe3500000,
+        0x5d04: 0xe5848008, 0x5d08: 0xe5950004, 0x5d0c: 0xe5840004,
+        0x5d10: 0xe3a00000, 0x5d14: 0xe8bd81f0,
+        0x5d50: 0xe1a06000, 0x5d54: 0xe3560000,
+        0x5d64: 0xe3e00000, 0x5d68: 0xe5840008, 0x5d74: 0xe1a00006,
+        0x5f10: 0xe3a00001, 0x5f14: 0xe5870000,
+        0x5f20: 0xe5970004, 0x5f24: 0xe5808744,
+        0x7dc: 0xe2840008, 0x7e4: 0xe1a05000, 0x7e8: 0xe3550000,
+        0x850: 0xe3a00000, 0x854: 0xe5c40740, 0x860: 0xe1a03005,
+        0x86c: 0xe28dd05c, 0x870: 0xe8bd80f0, 0x880: 0xe5874000,
+        0x884: 0xe3a00002, 0x888: 0xe5c40740, 0x890: 0xe3a00000,
+        0xe8f4: 0xe28dd01c, 0xe8f8: 0xe8bd8ff0,
+        0xec2c: 0xe1a00004, 0xec34: 0xe1a05000, 0xec38: 0xe3550000,
+        0xec40: 0xe1a00004, 0xec48: 0xe1a00005,
+        0xec50: 0xe1a00004, 0xec58: 0xe1a05000, 0xec5c: 0xe3550000,
+        0xec64: 0xe1a00004, 0xec6c: 0xe1a00005,
+        0xec7c: 0xe1a05000, 0xec80: 0xe3550000, 0xec90: 0xe1a00005,
+        0xeca4: 0xe1a05000, 0xeca8: 0xe3550000, 0xecb8: 0xe1a00005,
+        0xecc8: 0xe1a05000, 0xeccc: 0xe3550000, 0xecdc: 0xe1a00005,
+        0xecf0: 0xe5884000, 0xecf4: 0xe3a00000,
+        0x2669c: 0xe5951064, 0x266a0: 0xe1a00005,
+        0x266a8: 0xe1a04000, 0x266ac: 0xe3540000, 0x266b4: 0xe1a00004,
+        0x2667c: 0xe8bd8070, 0x266e8: 0xe3a00000,
+        0x263bc: 0xe5d42030, 0x263c0: 0xe1a01006, 0x263c4: 0xe1a00004,
+        0x263cc: 0xe1a05000, 0x263d0: 0xe3550000, 0x263e0: 0xe1a00005,
+        0x26388: 0xe8bd81f0, 0x263f0: 0xe3a00000,
+        0x271d0: 0xe1a04000, 0x271d4: 0xe1a0b001, 0x271d8: 0xe1a09002,
+        0x271e0: 0xe28d5c01, 0x271e4: 0xe28d8004,
+        0x271e8: 0xe3a020fc, 0x271ec: 0xe3a01000, 0x271f0: 0xe1a00005,
+        0x271f8: 0xe3a020fc, 0x271fc: 0xe3a01000, 0x27200: 0xe1a00008,
+        0x27214: 0xe5860000, 0x27218: 0xe5869004,
+        0x2721c: 0xe594020c, 0x27220: 0xe5860008,
+        0x27224: 0xe5940210, 0x27228: 0xe586000c,
+        0x2722c: 0xe59400b4, 0x27230: 0xe5860010,
+        0x27234: 0xe59400a8, 0x27238: 0xe5860014,
+        0x2723c: 0xe3043e20, 0x27240: 0xe58d3000,
+        0x27244: 0xe28d3004, 0x27248: 0xe28d2c01,
+        0x2724c: 0xe1a0100b, 0x27250: 0xe1a00004,
+        0x27258: 0xe1a0a000, 0x27288: 0xe35a0000,
+        0x27298: 0xe1a0000a, 0x2729c: 0xe28ddf7f, 0x272a0: 0xe8bd8ff0,
+        0x273e4: 0xe5970008, 0x273e8: 0xe584018c, 0x273f4: 0xe1a0000a,
+        0x27060: 0xe1a04000, 0x27064: 0xe1a08001, 0x27068: 0xe1a06002,
+        0x2706c: 0xe1a05003, 0x27070: 0xe59db028,
+        0x27080: 0xe5d4008c, 0x27084: 0xe3500000,
+        0x27094: 0xe8bd9ff0, 0x27098: 0xe3a00001, 0x2709c: 0xe5c4008c,
+        0x270a4: 0xe5940088, 0x270ac: 0xe3a020fc, 0x270b0: 0xe1a01006,
+        0x270b4: 0xe5940094, 0x270bc: 0xe5941118, 0x270c0: 0xe59421cc,
+        0x270c4: 0xe1a00004, 0x270d8: 0xe1a0100b, 0x270dc: 0xe5940088,
+        0x270e4: 0xe1a09000, 0x270e8: 0xe3590005,
+        0x270f0: 0xe3a00000, 0x270f4: 0xe5c4008c, 0x270f8: 0xe1a00009,
+        0x27108: 0xe5941114, 0x2710c: 0xe1a00004,
+        0x27114: 0xe1a0a000, 0x27118: 0xe35a0000,
+        0x27120: 0xe3a020fc, 0x27124: 0xe1a00005, 0x27128: 0xe5941094,
+        0x27130: 0xe5960000, 0x27134: 0xe5951000, 0x27138: 0xe1500001,
+        0x27140: 0xe3a00000, 0x27144: 0xe5c4008c, 0x27150: 0xe3a00002,
+        0x27160: 0xe5970004, 0x27164: 0xe3500000,
+        0x2716c: 0xe3a00000, 0x27170: 0xe5c4008c, 0x27198: 0xe3a00002,
+        0x271a8: 0xe3a00009, 0x271b0: 0xe3a00000,
+        0x271b4: 0xe5c4008c, 0x271b8: 0xe5940088, 0x271c0: 0xe1a00009,
+        0x20690: 0xe1a01000, 0x20694: 0xe3a02000, 0x20698: 0xe5c12000,
+        0x20614: 0xe1a01000, 0x20618: 0xe3a02001, 0x2061c: 0xe5c12000,
+        0x205a4: 0xe3a06000, 0x205ac: 0xe3a08000,
+        0x205c4: 0xe2888001, 0x205c8: 0xe3a00064, 0x205e4: 0xe3a06005,
+        0x205ec: 0xe5d70000, 0x205f0: 0xe3500000, 0x205fc: 0xe3560000,
+        0x20604: 0xe3a00000, 0x20608: 0xe5c70000, 0x2060c: 0xe1a00006,
+        0x2c170: 0xe1a04000, 0x2c178: 0xe1a05004, 0x2c184: 0xe5950020,
+        0x26df8: 0xe3a020ec, 0x26e00: 0xe28400a0, 0x26e78: 0xcfc04,
+        0x22dc8: 0xe1a04003, 0x22dec: 0xe1a00004, 0x7580: 0xe3a00201,
+        0x28204: 0xe3a03009, 0x28208: 0xe2842068, 0x28210: 0xe1a00003,
+        0x6ea4: 0xe3500020, 0x6eb8: 0xe0800080, 0x6ebc: 0xe7841100,
+        0x6ec0: 0xe0840100, 0x6ec4: 0xe5802004, 0x6ec8: 0xe5803008,
+        0x6f00: 0xe3170c02, 0x6f8c: 0xe117041a,
+        0x6f94: 0xe0848084, 0x6f98: 0xe0896108,
+        0x6f9c: 0xe5961008, 0x6fa0: 0xe3510000, 0x6fa8: 0xe7992108,
+        0x6fac: 0xe5960004, 0x6fb0: 0xe12fff32,
+        0x6fd8: 0xe7992108, 0x6fdc: 0xe5960004, 0x6fe0: 0xe12fff32,
+    }
+    ARM_BRANCHES = (
+        (0x5cf8, 0x5d2c, False, 0), (0x5d4c, 0x54c, True, 14),
+        (0x5d58, 0x5f08, False, 0), (0x5d78, 0x5d14, False, 14),
+        (0x5f28, 0x5d04, False, 14), (0x7e0, 0xe8b0, True, 14),
+        (0x7ec, 0x814, False, 0), (0x810, 0x850, False, 14),
+        (0x894, 0x86c, False, 14), (0xec30, 0x28310, True, 14),
+        (0xec3c, 0xec50, False, 0), (0xec44, 0xe5bc, True, 14),
+        (0xec4c, 0xe8f4, False, 14), (0xec54, 0x26658, True, 14),
+        (0xec60, 0xec74, False, 0), (0xec68, 0xe5bc, True, 14),
+        (0xec70, 0xe8f4, False, 14), (0x266a4, 0x26358, True, 14),
+        (0xec78, 0x250bc, True, 14), (0xec84, 0xec98, False, 0),
+        (0xec8c, 0xe5bc, True, 14), (0xec94, 0xe8f4, False, 14),
+        (0xeca0, 0x24d98, True, 14), (0xecac, 0xecc0, False, 0),
+        (0xecb4, 0xe5bc, True, 14), (0xecbc, 0xe8f4, False, 14),
+        (0xecc4, 0x266f0, True, 14), (0xecd0, 0xece4, False, 0),
+        (0xecd8, 0xe5bc, True, 14), (0xece0, 0xe8f4, False, 14),
+        (0xecec, 0xe598, True, 14), (0xecf8, 0xe8f4, False, 14),
+        (0x266b0, 0x266bc, False, 0), (0x266b8, 0x2667c, False, 14),
+        (0x263c8, 0x271c8, True, 14), (0x263d4, 0x263e8, False, 0),
+        (0x263e4, 0x26388, False, 14), (0x271f4, 0x206e4, True, 14),
+        (0x27204, 0x206e4, True, 14), (0x27254, 0x2705c, True, 14),
+        (0x2728c, 0x273b4, False, 0), (0x273f8, 0x2729c, False, 14),
+        (0x27088, 0x27098, False, 0), (0x270a8, 0x20690, True, 14),
+        (0x270b8, 0x20708, True, 14), (0x270c8, 0x25024, True, 14),
+        (0x270e0, 0x20598, True, 14), (0x270ec, 0x27100, False, 1),
+        (0x270fc, 0x27094, False, 14), (0x27110, 0x25010, True, 14),
+        (0x2711c, 0x271a0, False, 0), (0x2712c, 0x20708, True, 14),
+        (0x2713c, 0x27158, False, 0), (0x27154, 0x27094, False, 14),
+        (0x27168, 0x271b0, False, 0), (0x2719c, 0x27094, False, 14),
+        (0x271ac, 0x27094, False, 14), (0x271bc, 0x20690, True, 14),
+        (0x271c4, 0x27094, False, 14), (0x205b8, 0x205ec, False, 0),
+        (0x205c0, 0x205dc, False, 13), (0x205f4, 0x205b4, False, 0),
+        (0x20600, 0x2060c, False, 1), (0x2c188, 0x20614, True, 14),
+        (0x26e04, 0x2c624, True, 14), (0x28214, 0x6ea0, True, 14),
+        (0x6ea8, 0x6eb4, False, 3), (0x6f04, 0x6f1c, False, 0),
+        (0x6f90, 0x6fb4, False, 0), (0x6fa4, 0x6fc8, False, 0),
+        (0x6fc0, 0x6f8c, False, 3), (0x6fec, 0x6fb4, False, 14),
+        (0xf0, 0x6ef0, True, 14), (0xeb88, 0x2052c, True, 14),
+        (0x868, 0x22db8, True, 14),
+    )
+    ARM_LITERALS = (
+        (0x5ce8, 0x5128, 7, 0xd1ff4), (0x5d34, 0x5ea4, 0, 0xd4164),
+        (0x5d44, 0x5ed4, 1, 0xd1ff8), (0x27090, 0x272a4, 0, 0x220009),
+        (0x27210, 0x2734c, 0, 0x73760001),
+        (0x281d0, 0x28694, 3, 0x2c16c), (0x2820c, 0x28694, 1, 0x2c16c),
+        (0x2821c, 0x28698, 1, 0x10900000), (0x6eb4, 0x7128, 4, 0xd2000),
+        (0x6f20, 0x7128, 9, 0xd2000),
+        (0x18, 0x34, 15, 0xdc), (0x26dfc, 0x26e78, 1, 0xcfc04),
+    )
+    FRESH_REGIONS = (
+        ("host_init", 0x5ccc, 0x260), ("init_context", 0x54c, 0x354),
+        ("controller_factory", 0xe8b0, 0x44c), ("image_initialize", 0x26658, 0x98),
+        ("image_load_call", 0x26358, 0xa0), ("init_packet_builder", 0x271c8, 0x234),
+        ("transport", 0x2705c, 0x16c), ("register_access", 0x25010, 0x24),
+        ("event_helpers", 0x2052c, 0x17c), ("response_callback", 0x2c16c, 0x24),
+        ("response_registration", 0x28194, 0xb8), ("irq_slot_registration", 0x6ea0, 0x34),
+        ("irq_dispatch", 0x6ef0, 0x100), ("irq_vector", 0, 0x3c),
+        ("irq_entry", 0xdc, 0x1c), ("irq_enable", 0xad44, 0xc),
+        ("registration_literals", 0x28694, 8), ("irq_dispatch_literals", 0x7128, 12),
+        ("base_initializer", 0x7534, 0x70), ("base_constructor", 0x1e87c, 0x28),
+        ("base_constructor_arguments", 0x264, 0x10), ("register_table", 0xcfc04, 0xec),
+        ("register_table_copy", 0x26dd8, 0xa4),
+        ("shortcut_global_literal", 0x5128, 4), ("return_logging", 0x22db8, 0x3c),
+        ("outer_init", 0x47180, 0x19c), ("outer_loop", 0x491e0, 0xac),
+        ("outer_local_clear", 0x30160, 0x24), ("outer_dma_write", 0x30220, 0x4c),
+        ("outer_flush", 0x32f34, 0x18), ("outer_enable_interface", 0x5d4f4, 0xa8),
+        ("outer_deliver_response", 0x36c68, 0x28), ("init_symbol", 0x69e50, 0x10),
+        ("command_flush_symbols", 0x6be10, 0x30), ("loop_dma_symbols", 0x6c260, 0x180),
+        ("platform_symbols", 0x6cd70, 0x20), ("init_name", 0x67b07, 14),
+        ("command_flush_names", 0x688a1, 0x25), ("loop_dma_names", 0x68dd9, 0x154),
+        ("platform_names", 0x698a5, 0x32), ("outer_section_names", 0x79098, 0x4a7),
+    )
+    ARC_SYMBOLS = (
+        ("CmdInitialize", 46, 16, 0x245ec, 412),
+        ("Core_Command", 554, 16, 0x25808, 516),
+        ("Arc_FlushWrites", 556, 4, 0x8090, 24),
+        ("Core_Loop", 623, 16, 0x2664c, 172),
+        ("Core_LocalClear", 640, 2, 0x52bc, 36),
+        ("Dma_Sync", 644, 2, 0x5364, 24),
+        ("Dma_Write", 645, 2, 0x537c, 76),
+        ("Dma_Read", 646, 2, 0x53c8, 68),
+        ("Platform_EnableInterface", 800, 16, 0x3a960, 168),
+        ("Platform_DeliverResponse", 801, 4, 0xbdc4, 40),
+    )
+    ARC_WORDS = {
+        2: {0x52bc: 0x9020fe02, 0x52c0: 0x5040fe01, 0x52c4: 0x57e17bff,
+            0x52c8: 0x67808202, 0x52cc: 0x50410402, 0x52d0: 0x30000102,
+            0x52d4: 0x10000400, 0x52d8: 0x40007e04, 0x52dc: 0x380f8000,
+            0x5364: 0x603f7c00, 0x5368: 0x30051800,
+            0x536c: 0x0800c040, 0x5370: 0x67e07a0f,
+            0x5374: 0x380f8001, 0x5378: 0x27fffe00,
+            0x537c: 0x67e10500, 0x5380: 0x380f8001,
+            0x5384: 0x609f7c00, 0x5388: 0x30051800,
+            0x5390: 0x6061fe03, 0x5394: 0x57e1fa03, 0x5398: 0x27fffe01,
+            0x53a0: 0x67e1fa01, 0x53a4: 0x20000202,
+            0x53a8: 0x14020200, 0x53ac: 0x14020004, 0x53b0: 0x14020408,
+            0x53b8: 0x14020210, 0x53bc: 0x14020014, 0x53c0: 0x14020418,
+            0x53c8: 0x609f7c00, 0x53cc: 0x30051800,
+            0x53d4: 0x6061fe0c, 0x53d8: 0x57e1fa0c, 0x53dc: 0x27fffe01,
+            0x53e4: 0x67e1fa04, 0x53e8: 0x20000202,
+            0x53ec: 0x14020020, 0x53f0: 0x14020224, 0x53f4: 0x14020428,
+            0x53fc: 0x14020030, 0x5400: 0x14020234, 0x5404: 0x14020438},
+        4: {0x8090: 0x603f7c00, 0x8094: 0x30000f00, 0x8098: 0x0800c0d0,
+            0x809c: 0x67e07a01, 0x80a0: 0x27fffe82, 0x80a4: 0x380f8000,
+            0xbdc4: 0x081f0000, 0xbdc8: 0x3fffd588,
+            0xbdcc: 0x60007c00, 0xbdd0: 0x03ffffff,
+            0xbdd4: 0x68207c00, 0xbdd8: 0x34000000,
+            0xbddc: 0x601f7c00, 0xbde0: 0x20000,
+            0xbde4: 0x14008000, 0xbde8: 0x380f8000},
+        16: {
+            0x25824: 0x61ff7c00, 0x25828: 0x30051d00,
+            0x2582c: 0x61df7c00, 0x25830: 0x70100,
+            0x25834: 0x41a77f00, 0x25838: 0x60069a00, 0x2583c: 0x60279e00,
+            0x25840: 0x2fbf70a0, 0x25844: 0x405ffe80, 0x25848: 0x2fbf6320,
+            0x25850: 0x08078000, 0x2586c: 0x50207c00, 0x25870: 0x73760001,
+            0x25874: 0x57e0fa08, 0x25878: 0x2000278d,
+            0x2587c: 0x081fa000, 0x25880: 0x40007e03,
+            0x25884: 0x40000200, 0x25888: 0x38000000,
+            0x2588c: 0x20000400, 0x258b0: 0x2ffda720,
+            0x258b4: 0x60079e00, 0x258b8: 0x20002080,
+            0x24640: 0x08070004, 0x24644: 0x1fe00f00,
+            0x246a8: 0x08070010, 0x246ac: 0x282c5620, 0x246b0: 0x08270014,
+            0x246d0: 0x50410400, 0x246e0: 0x10070404,
+            0x24780: 0x380f8020, 0x24784: 0x0b6e1018,
+            0x259c0: 0x601f7c00, 0x259c4: 0x30051d00,
+            0x259c8: 0x40277f00, 0x259cc: 0x2fbf35a0,
+            0x259d0: 0x405ffe80, 0x259d4: 0x2fbf3180,
+            0x259d8: 0x2fc4d680, 0x259dc: 0x601f7c00, 0x259e0: 0x30000f00,
+            0x259e4: 0x08204080, 0x259e8: 0x14001a84, 0x259ec: 0x2fcc7a80,
+            0x25a04: 0x380f8020, 0x25a08: 0x0b6e1020,
+            0x26668: 0x621f7c00, 0x2666c: 0x30000f00,
+            0x266c4: 0x08084088, 0x266c8: 0x67e07a01, 0x266cc: 0x20000182,
+            0x266d0: 0x0806851d, 0x266d4: 0x67e00100, 0x266d8: 0x20000181,
+            0x266dc: 0x50000000, 0x266e0: 0x2ffe24a0, 0x266e4: 0x1046811d,
+            0x3a97c: 0x60400100, 0x3a980: 0x61e08200,
+            0x3a984: 0x61df7c00, 0x3a988: 0x3fffd688,
+            0x3a98c: 0x20000141, 0x3a990: 0x08470104, 0x3a994: 0x10070504,
+            0x3a9ac: 0x67e79f00, 0x3a9b0: 0x20000141,
+            0x3a9b4: 0x09e70100, 0x3a9b8: 0x10071f00,
+            0x3aa00: 0x380f8020, 0x3aa04: 0x0b6e101c,
+        },
+    }
+    # Nine section16 RELA call records: includes the two bridge prerequisites
+    # and new request/response/control-flow edges. PC bias is4, not ARM's8.
+    ARC_CALLS = (
+        (0x72930, 0x2461c, 640, "Core_LocalClear", 2, 0x52bc, 0x2fc193a0),
+        (0x7293c, 0x246ac, 800, "Platform_EnableInterface", 16, 0x3a960, 0x282c5620),
+        (0x72f0c, 0x25840, 646, "Dma_Read", 2, 0x53c8, 0x2fbf70a0),
+        (0x72f18, 0x25848, 644, "Dma_Sync", 2, 0x5364, 0x2fbf6320),
+        (0x72f90, 0x259cc, 645, "Dma_Write", 2, 0x537c, 0x2fbf35a0),
+        (0x72f9c, 0x259d4, 644, "Dma_Sync", 2, 0x5364, 0x2fbf3180),
+        (0x72fa8, 0x259d8, 556, "Arc_FlushWrites", 4, 0x8090, 0x2fc4d680),
+        (0x72fb4, 0x259ec, 801, "Platform_DeliverResponse", 4, 0xbdc4, 0x2fcc7a80),
+        (0x733a4, 0x266e0, 554, "Core_Command", 16, 0x25808, 0x2ffe24a0),
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        cls.data = MAP.read_firmware(BLOB)
+        cls.payload = cls.data[:-MAP.TRAILER_SIZE]
+        cls.images = MAP.analyze(cls.data)["images"]
+        cls.elf_base = 0x2ea60
+        header = struct.unpack_from("<16sHHIIIIIHHHHHH", cls.payload, cls.elf_base)
+        cls.sections = [struct.unpack_from("<10I", cls.payload, cls.elf_base + header[6] + i * 40)
+                        for i in range(header[12])]
+
+    def word(self, offset):
+        return struct.unpack_from("<I", self.payload, offset)[0]
+
+    def arc_offset(self, section, address):
+        record = self.sections[section]
+        self.assertTrue(record[3] <= address <= record[3] + record[5] - 4)
+        return self.elf_base + record[4] + address - record[3]
+
+    def mapping(self, payload=None, images=None):
+        return MAP._fresh_init_causal_contract(self.payload if payload is None else payload,
+                                             self.images if images is None else images)
+
+    @staticmethod
+    def immediate(word):
+        byte, shift = word & 255, ((word >> 8) & 15) * 2
+        return ((byte >> shift) | (byte << (32 - shift))) & 0xffffffff
+
+    def test_independent_arm_predicate_argument_status_and_return_words(self):
+        for offset, word in self.ARM_WORDS.items():
+            with self.subTest(offset=hex(offset)):
+                self.assertEqual(self.word(offset), word)
+        for offset, target, link, condition in self.ARM_BRANCHES:
+            word = self.word(offset)
+            displacement = word & 0xffffff
+            if displacement >= 0x800000:
+                displacement -= 0x1000000
+            with self.subTest(branch=hex(offset)):
+                self.assertEqual(word >> 25 & 7, 5)
+                self.assertEqual((bool(word >> 24 & 1), word >> 28), (link, condition))
+                self.assertEqual(offset + 8 + 4 * displacement, target)
+        # Operand receipts, not just a hash of surrounding code: both packet
+        # buffers are zeroed/copied252 bytes, command/status are words0/1,
+        # event and busy state are separate byte operations at C+88/C+8c.
+        self.assertEqual([self.immediate(self.word(p)) for p in (0x271e8, 0x271f8, 0x270ac, 0x27120)],
+                         [252] * 4)
+        self.assertEqual([self.word(p) & 0xfff for p in (0x27080, 0x2709c, 0x270f4, 0x27144, 0x27170, 0x271b4)],
+                         [0x8c] * 6)
+        self.assertTrue(all(self.word(p) >> 22 & 1 for p in (0x27080, 0x2709c, 0x20698, 0x2061c)))
+        self.assertEqual([self.word(p) & 0xfff for p in (0x270a4, 0x270dc, 0x271b8)], [0x88] * 3)
+        self.assertEqual((self.word(0x2723c) & 0xfff) | (self.word(0x2723c) >> 4 & 0xf000), 20000)
+        self.assertEqual((self.word(0x2734c), self.word(0x272a4)), (0x73760001, 0x220009))
+        self.assertEqual(self.word(0x263bc) & 0xfff, 0x30)
+        self.assertEqual(self.word(0x27218) & 0xfff, 4)
+        self.assertEqual(self.word(0x27218) >> 12 & 15, 9)  # Saved byte argument, not a transaction ID.
+        self.assertEqual(self.word(0x27160) & 0xfff, 4)
+        self.assertEqual(self.word(0x271c0) & 15, 9)  # Preserve original wait return.
+        for instruction, literal, register, value in self.ARM_LITERALS:
+            word = self.word(instruction)
+            with self.subTest(literal_instruction=hex(instruction)):
+                self.assertEqual(word >> 16 & 15, 15)
+                self.assertEqual(word >> 12 & 15, register)
+                displacement = word & 0xfff
+                self.assertEqual(instruction + 8 + (displacement if word >> 23 & 1 else -displacement), literal)
+                self.assertEqual(self.word(literal), value)
+
+    def test_independent_manifest_hashes_sizes_and_every_oracle_site_coverage(self):
+        self.assertEqual([(role, offset, size) for role, offset, size, _ in MAP._FRESH_INIT_REGIONS],
+                         list(self.FRESH_REGIONS))
+        self.assertEqual((len(self.FRESH_REGIONS), sum(size for _, _, size in self.FRESH_REGIONS)), (41, 8536))
+        for role, offset, size, digest in MAP._FRESH_INIT_REGIONS:
+            with self.subTest(role=role):
+                self.assertEqual(hashlib.sha256(self.payload[offset:offset + size]).hexdigest(), digest)
+        pins = [(offset, size) for _, offset, size in self.FRESH_REGIONS]
+        pins += [(offset, len(encoded) // 2) for _, offset, encoded in MAP._COMMAND_BUFFER_BRIDGE_REGIONS]
+        pins.append((0x72780, 26052))
+        sites = list(self.ARM_WORDS)
+        sites += [offset for offset, _, _, _ in self.ARM_BRANCHES]
+        sites += [p for instruction, literal, _, _ in self.ARM_LITERALS for p in (instruction, literal)]
+        sites += [self.arc_offset(section, address) for section, words in self.ARC_WORDS.items() for address in words]
+        sites += [position for position, *_ in self.ARC_CALLS]
+        for offset in sites:
+            with self.subTest(oracle_offset=hex(offset)):
+                self.assertTrue(any(start <= offset and offset + 4 <= start + size for start, size in pins))
+        self.assertEqual((MAP.MAX_FRESH_INIT_REGIONS, MAP.MAX_FRESH_INIT_BYTES,
+                          MAP.MAX_FRESH_INIT_AGGREGATE_BYTES, MAP.MAX_FRESH_INIT_ANCHORS,
+                          MAP.MAX_FRESH_INIT_EVENTS), (48, 16 * 1024, 80 * 1024, 160, 64))
+        self.assertEqual((MAP.MAX_COMMAND_BUFFER_BRIDGE_REGIONS, MAP.MAX_COMMAND_BUFFER_BRIDGE_BYTES,
+                          MAP.MAX_STOCK_HOST_COMMAND_REGIONS, MAP.MAX_STOCK_HOST_COMMAND_BYTES),
+                         (80, 40 * 1024, 16, 16 * 1024))
+
+    def test_independent_arc_symbols_section_mappings_and_delayed_arguments(self):
+        strings = self.sections[34]
+        names = self.payload[self.elf_base + strings[4]:self.elf_base + strings[4] + strings[5]]
+        for name, index, section, address, size in self.ARC_SYMBOLS:
+            position = self.elf_base + self.sections[35][4] + 16 * index
+            entry = struct.unpack_from("<IIIBBH", self.payload, position)
+            end = names.index(0, entry[0])
+            with self.subTest(symbol=name):
+                self.assertEqual(names[entry[0]:end].decode(), name)
+                self.assertEqual((entry[1], entry[2], entry[3] & 15, entry[5]), (address, size, 2, section))
+                self.assertEqual(self.arc_offset(section, address),
+                                 address + {2: 0x2aea4, 4: 0x2aea4, 16: 0x22b94}[section])
+        for section, words in self.ARC_WORDS.items():
+            for address, word in words.items():
+                with self.subTest(section=section, address=hex(address)):
+                    self.assertEqual(self.word(self.arc_offset(section, address)), word)
+        # .d argument slots execute on the call; .jd slots execute only on
+        # the taken branch. Zero Platform_EnableInterface args load defaults,
+        # while nonzero args store the supplied registration values instead.
+        self.assertEqual(self.word(self.arc_offset(16, 0x258b4)), 0x60079e00)
+        self.assertEqual(self.word(self.arc_offset(16, 0x246b0)), 0x08270014)
+        self.assertEqual(self.word(self.arc_offset(16, 0x259d0)), 0x405ffe80)
+        self.assertEqual(self.word(self.arc_offset(16, 0x266e4)), 0x1046811d)
+        for branch, target in ((0x3a98c, 0x3a998), (0x3a9b0, 0x3a9bc)):
+            word = self.word(self.arc_offset(16, branch))
+            self.assertEqual(word & 63, 1)
+            self.assertEqual(word >> 5 & 3, 2)  # Taken-only delay, not ordinary.d.
+            self.assertEqual(branch + 4 + ((word >> 7) & 0xfffff) * 4, target)
+
+    def test_independent_arc_relocation_symbol_addend_pc_bias_and_call_delay(self):
+        for position, source, index, name, section, target, original in self.ARC_CALLS:
+            with self.subTest(target=name, source=hex(source)):
+                self.assertEqual(struct.unpack_from("<IIi", self.payload, position),
+                                 (source, index * 256 + 6, 0))
+                entry = struct.unpack_from("<IIIBBH", self.payload,
+                                           self.elf_base + self.sections[35][4] + 16 * index)
+                self.assertEqual((entry[1], entry[5]), (target, section))
+                self.assertEqual(self.word(self.arc_offset(16, source)), original)
+                delta = target - source - 4
+                self.assertEqual(delta % 4, 0)
+                self.assertTrue(-(1 << 21) <= delta < (1 << 21))
+                patched = (original & 0xf800007f) | ((delta * 32) & 0x07ffff80)
+                self.assertEqual(patched, original)
+                displacement = original >> 7 & 0xfffff
+                if displacement >= 0x80000:
+                    displacement -= 0x100000
+                self.assertEqual(source + 4 + displacement * 4, target)
+                # Ordinary.d only when low delay field=1. Dma_Sync/flush/
+                # delivery return edges have no manufactured argument slot.
+                self.assertEqual(original >> 5 & 3,
+                                 1 if source in (0x2461c, 0x246ac, 0x25840, 0x25848, 0x259cc, 0x266e0) else 0)
+
+    @staticmethod
+    def arc_branch_target(address, word):
+        displacement = word >> 7 & 0xfffff
+        if displacement >= 0x80000:
+            displacement -= 0x100000
+        return address + 4 + displacement * 4
+
+    def test_irq_slot_trigger_dispatch_and_native_argument_operand_semantics(self):
+        # Native request word1 is a byte widened through R2 -> saved R9.
+        self.assertEqual((self.word(0x263bc) >> 16 & 15, self.word(0x263bc) >> 12 & 15,
+                          bool(self.word(0x263bc) >> 22 & 1), self.word(0x263bc) & 4095), (4, 2, True, 0x30))
+        self.assertEqual((self.word(0x271d8) >> 12 & 15, self.word(0x271d8) & 15), (9, 2))
+        self.assertEqual((self.word(0x27218) >> 12 & 15, bool(self.word(0x27218) >> 22 & 1),
+                          self.word(0x27218) & 4095), (9, False, 4))
+        # Register callback literal and userdata; slot address is12*IRQ, not
+        # a byte index or the generic callback table selector at C+cc.
+        self.assertEqual(self.immediate(self.word(0x28204)), 9)
+        self.assertEqual((self.word(0x28210) >> 12 & 15, self.word(0x28210) & 15), (0, 3))
+        self.assertEqual((self.word(0x28208) >> 16 & 15, self.word(0x28208) >> 12 & 15,
+                          self.immediate(self.word(0x28208))), (4, 2, 0x68))
+        self.assertEqual((self.word(0x6eb8) >> 16 & 15, self.word(0x6eb8) >> 12 & 15,
+                          self.word(0x6eb8) & 15, self.word(0x6eb8) >> 7 & 31), (0, 0, 0, 1))
+        for site, base, data, offset, shift in ((0x6ebc, 4, 1, 0, 2), (0x6fa8, 9, 2, 8, 2)):
+            word = self.word(site)
+            self.assertEqual((word >> 16 & 15, word >> 12 & 15, word & 15, word >> 7 & 31),
+                             (base, data, offset, shift))
+            self.assertEqual(word >> 5 & 3, 0)
+        self.assertEqual((self.word(0x6ec0) >> 16 & 15, self.word(0x6ec0) >> 12 & 15,
+                          self.word(0x6ec0) & 15, self.word(0x6ec0) >> 7 & 31), (4, 0, 0, 2))
+        for site, rd, offset in ((0x6ec4, 2, 4), (0x6ec8, 3, 8), (0x6fac, 0, 4)):
+            self.assertEqual((self.word(site) >> 12 & 15, self.word(site) & 4095), (rd, offset))
+        self.assertEqual((self.word(0x6f94) >> 12 & 15, self.word(0x6f94) >> 16 & 15,
+                          self.word(0x6f94) & 15, self.word(0x6f94) >> 7 & 31), (8, 4, 4, 1))
+        self.assertEqual((self.word(0x6f98) >> 12 & 15, self.word(0x6f98) >> 16 & 15,
+                          self.word(0x6f98) & 15, self.word(0x6f98) >> 7 & 31), (6, 9, 8, 2))
+        self.assertEqual(self.word(0x6fb0), 0xe12fff32)  # Same callback R2 loaded above.
+        self.assertEqual((self.word(0x2c170) >> 12 & 15, self.word(0x2c170) & 15,
+                          self.word(0x2c178) >> 12 & 15, self.word(0x2c178) & 15), (4, 0, 5, 4))
+        self.assertEqual(0x68 + (self.word(0x2c184) & 4095), 0x88)
+        # Selected bit-set trigger and the INIT jump-table entry. Legacy
+        # STATUS-PC word-address semantics remain an explicit assumption.
+        branch = self.word(self.arc_offset(16, 0x266cc))
+        self.assertEqual((branch & 31, branch >> 5 & 3, self.arc_branch_target(0x266cc, branch)), (2, 0, 0x266dc))
+        self.assertEqual(self.word(self.arc_offset(16, 0x25870)), 0x73760001)
+        self.assertEqual(self.word(self.arc_offset(16, 0x25874)) & 511, 8)
+        outside = self.word(self.arc_offset(16, 0x25878))
+        self.assertEqual((outside & 31, self.arc_branch_target(0x25878, outside)), (13, 0x259b8))
+        self.assertEqual(self.word(self.arc_offset(16, 0x25880)) & 511, 3)
+        self.assertEqual(self.arc_branch_target(0x2588c, self.word(self.arc_offset(16, 0x2588c))), 0x258b0)
+        self.assertEqual((0x73760001 - self.word(self.arc_offset(16, 0x25870))) & 0xffffffff, 0)
+        # Nonzero response argument R1 is saved inR15 and skips the taken-only
+        # default-load slot. The following store uses signed9=-256.
+        word = self.word(self.arc_offset(16, 0x3a980))
+        self.assertEqual((word >> 21 & 63, word >> 9 & 63), (15, 1))
+        word = self.word(self.arc_offset(16, 0x3a9b8))
+        signed9 = (word & 511) - 512 if word & 256 else word & 511
+        self.assertEqual((word >> 15 & 63, word >> 9 & 63, signed9), (14, 15, -256))
+        self.assertEqual(self.word(self.arc_offset(16, 0x3a988)) + signed9, 0x3fffd588)
+
+    def test_decoded_receipts_bind_every_anchor_to_independent_instruction_operands(self):
+        result = self.mapping()
+        branches = {p: (target, link, condition) for p, target, link, condition in self.ARM_BRANCHES}
+        literals = {p: (literal, rd, value) for p, literal, rd, value in self.ARM_LITERALS}
+        seen = set()
+        for receipt in result["instruction_anchors"]:
+            if receipt["architecture"] != "ARM":
+                continue
+            p, word = receipt["blob_file_offset"], receipt["word"]
+            self.assertNotIn(p, seen)
+            seen.add(p)
+            with self.subTest(arm=hex(p)):
+                if p in branches:
+                    target, link, condition = branches[p]
+                    self.assertEqual((receipt["target_blob_file_offset"], receipt["operation"], receipt["condition"]),
+                                     (target, "BL" if link else "B", condition))
+                elif p in literals:
+                    literal, rd, value = literals[p]
+                    self.assertEqual((receipt["literal_blob_file_offset"], receipt["destination_register"],
+                                      receipt["literal_value"]), (literal, rd, value))
+                else:
+                    self.assertEqual(word, self.ARM_WORDS[p])
+                    self.assertEqual(receipt["condition"], word >> 28)
+                    if p == 0x6fb0:
+                        self.assertEqual((receipt["operation"], receipt["operand_register"]), ("BLX register", 2))
+                    elif word >> 26 & 3 == 1:
+                        self.assertEqual((receipt["operation"], receipt["base_register"], receipt["data_register"],
+                                          receipt["byte_width"]),
+                                         ("LDR" if word >> 20 & 1 else "STR", word >> 16 & 15,
+                                          word >> 12 & 15, 1 if word >> 22 & 1 else 4))
+                        if word >> 25 & 1:
+                            self.assertEqual((receipt["offset_register"], receipt["shift_kind"], receipt["shift_amount"]),
+                                             (word & 15, "LSL", word >> 7 & 31))
+                        else:
+                            self.assertEqual(receipt["byte_offset"], (word & 4095) * (1 if word >> 23 & 1 else -1))
+                    elif p == 0x2723c:
+                        self.assertEqual((receipt["operation"], receipt["destination_register"], receipt["immediate"]),
+                                         ("MOVW", 3, 20000))
+                    else:
+                        self.assertEqual(receipt["source_register"], word >> 16 & 15)
+                        self.assertEqual(receipt["destination_register"], word >> 12 & 15)
+                        self.assertEqual(receipt["operation"], {4: "ADD", 10: "CMP", 13: "MOV", 15: "MVN"}[word >> 21 & 15])
+                        if word >> 25 & 1:
+                            self.assertEqual(receipt["immediate"], self.immediate(word))
+                        else:
+                            self.assertEqual(receipt["operand_register"], word & 15)
+                            self.assertEqual((receipt["shift_kind"], receipt["shift_amount"]), ("LSL", word >> 7 & 31))
+        for receipt in result["outer_path"]["operands"]:
+            section, address = receipt["section_index"], receipt["elf_virtual_address"]
+            word = self.ARC_WORDS[section][address]
+            with self.subTest(arc=hex(address)):
+                self.assertEqual((receipt["blob_file_offset"], receipt["word"], receipt["destination_register"],
+                                  receipt["source_register"], receipt["operand_register"], receipt["low9"]),
+                                 (self.arc_offset(section, address), word, word >> 21 & 63,
+                                  word >> 15 & 63, word >> 9 & 63, word & 511))
+                self.assertTrue(receipt["decode_conditional"])
+                self.assertEqual(receipt["signed_low9"], (word & 511) - 512 if word & 256 else word & 511)
+                if "literal_value" in receipt:
+                    self.assertEqual(receipt["literal_value"], self.ARC_WORDS[section][address + 4])
+                if "target_elf_virtual_address" in receipt:
+                    self.assertEqual(receipt["target_elf_virtual_address"], self.arc_branch_target(address, word))
+                    self.assertEqual(receipt["condition"], word & 31)
+                    self.assertEqual(receipt["delay_slot_semantics"],
+                                     "taken only" if word >> 5 & 3 == 2 else "always executed" if word >> 5 & 3 == 1 else "none")
+        # The selected same-section INIT branch has no invented RELA record.
+        expected = {source: (position, index, name, section, target, word)
+                    for position, source, index, name, section, target, word in self.ARC_CALLS}
+        expected[0x258b0] = (None, 46, "CmdInitialize", 16, 0x245ec, 0x2ffda720)
+        self.assertEqual(set(r["source_elf_virtual_address"] for r in result["relocation_receipts"]), set(expected))
+        for receipt in result["relocation_receipts"]:
+            source = receipt["source_elf_virtual_address"]
+            position, index, name, section, target, word = expected[source]
+            with self.subTest(edge=hex(source)):
+                self.assertEqual((receipt["relocation_record_blob_file_offset"], receipt["symbol_index"],
+                                  receipt["callee"], receipt["target_section_index"],
+                                  receipt["target_elf_virtual_address"], receipt["original_word"]),
+                                 (position, index, name, section, target, word))
+                self.assertEqual((receipt["source_section_index"], receipt["pc_bias_bytes"],
+                                  receipt["addend"], receipt["vendor_type"], receipt["patched_word"],
+                                  receipt["decoded_target_elf_virtual_address"]),
+                                 (16, 4, 0, 6 if position else None, word, target))
+                self.assertEqual(receipt["signed_byte_displacement"], target - source - 4)
+                self.assertEqual((receipt["preserved_mask"], receipt["displacement_mask"]), (0xf800007f, 0x07ffff80))
+                self.assertEqual(receipt["instruction_blob_file_offset"], self.arc_offset(16, source))
+                delayed = bool(word & 32)
+                self.assertEqual(receipt["delay_slot"], delayed)
+                self.assertEqual(receipt["delay_slot_elf_virtual_address"], source + 4 if delayed else None)
+                self.assertEqual(receipt["delay_slot_word"], self.word(self.arc_offset(16, source + 4)) if delayed else None)
+                self.assertEqual(receipt["delay_slot_semantics"], "always executed" if delayed else "none")
+                self.assertFalse(receipt["runtime_observed"])
+        self.assertEqual(result["validation"]["causal_anchor_count"], len(result["instruction_anchors"]))
+        self.assertEqual(len(result["instruction_anchors"]), 159)
+        self.assertEqual((len(seen), len(result["outer_path"]["operands"]), len(result["relocation_receipts"])), (120, 29, 10))
+
+    def test_transport_event_host_and_outer_contract_fields_have_independent_oracles(self):
+        result = self.mapping()
+        t, h, b, e, o = (result[key] for key in ("transport", "host_init", "arm_builder", "event_path", "outer_path"))
+        expected = {"busy_context_offset": 0x8c, "busy_status": 0x220009, "event_context_offset": 0x88,
+                    "copy_bytes": 252, "packet_virtual_context_offset": 0x94, "packet_physical_context_offset": 0x1cc,
+                    "publication_register_context_offset": 0x118, "completion_register_context_offset": 0x114,
+                    "timeout_argument": 20000, "timeout_status": 5, "zero_completion_status": 9,
+                    "command_mismatch_status": 2, "backend_error_status": 2,
+                    "command_word_offset": 0, "backend_status_word_offset": 4}
+        self.assertEqual({key: t[key] for key in expected}, expected)
+        self.assertEqual(t["native_wait_statuses"], [0, 5])
+        self.assertTrue(t["success_returns_wait_status"])
+        self.assertTrue(t["zero_completion_preserves_busy"])
+        self.assertTrue(t["native_wait_success_consumes_event"])
+        self.assertEqual(t["busy_acquire_value"], 1)
+        self.assertEqual(t["busy_free_value"], 0)
+        self.assertEqual(t["busy_acquire_offset"], 0x8c)
+        self.assertEqual(t["busy_clear_offsets"], dict.fromkeys(("timeout", "command_mismatch", "backend_status", "success"), 0x8c))
+        self.assertEqual(t["predicates"], {"busy_equals": 0, "timeout_equals": 5, "completion_not_equals": 0,
+                                           "command_compare_registers": [0, 1], "backend_status_equals": 0})
+        self.assertEqual(t["order"], ["busy_check", "event_reset", "request_copy", "request_publication", "event_wait",
+                                       "completion_read", "reply_copy", "command_check", "backend_status_check", "success_reset"])
+        self.assertEqual((h["command"], h["internal_command"], h["shortcut_global_address"]),
+                         (0x73763001, 0x73760001, 0xd1ff4))
+        self.assertEqual((h["failure_reply_status"], h["success_reply_status"], h["success_return"],
+                          h["sequence_request_offset"], h["sequence_reply_offset"], h["status_reply_offset"]),
+                         (0xffffffff, 0, 0, 4, 4, 8))
+        self.assertEqual((b["request_word1_offset"], b["request_word1_register"],
+                          b["response_target_context_offset"], b["response_target_word_offset"], b["timeout_argument"]),
+                         (4, 9, 0xa8, 20, 20000))
+        self.assertEqual((b["request_word1_source_width"], b["request_word1_source_context_offset"],
+                          b["request_word1_native_max"]), (1, 0x30, 255))
+        self.assertEqual((e["event_context_offset"], e["callback_userdata_context_offset"],
+                          e["callback_event_offset_from_userdata"], e["irq_slot"], e["event_set_value"],
+                          e["event_reset_value"], e["event_byte_width"], e["irq_vector_entry"], e["irq_dispatch_entry"]),
+                         (0x88, 0x68, 32, 9, 1, 0, 1, 0xdc, 0x6ef0))
+        self.assertFalse(e["event_generation_check"])
+        self.assertEqual(e["arm_mmio_base"], 0x10000000)
+        table = e["register_table"]
+        self.assertEqual({name: (row["context_offset"], row["table_blob_file_offset"], row["value"])
+                          for name, row in table.items()},
+                         {"init_response_target": (0xa8, 0xcfc0c, 0x900004),
+                          "generic_callback_selector": (0xcc, 0xcfc30, 0x4800002),
+                          "completion": (0x114, 0xcfc78, 0x800f84),
+                          "publication": (0x118, 0xcfc7c, 0x800f80)})
+        self.assertEqual((o["internal_command"], o["local_packet_address"], o["local_mailbox_base"],
+                          o["trigger_offset"], o["trigger_bit_mask"], o["reply_mailbox_offset"],
+                          o["init_response_word_offset"], o["reply_backend_status_offset"], o["reply_backend_status"]),
+                         (0x73760001, 0x30051d00, 0x30000f00, 136, 1, 132, 20, 4, 0))
+        self.assertEqual((o["response_target_storage"], o["response_address_mask"],
+                          o["response_address_prefix"], o["response_irq_bits"]),
+                         (0x3fffd588, 0x03ffffff, 0x34000000, 0x20000))
+        self.assertEqual(o["transport_edges"], ["Dma_Read", "Dma_Sync", "CmdInitialize", "Dma_Write", "Dma_Sync",
+                                                "Arc_FlushWrites", "Platform_DeliverResponse"])
+        self.assertTrue(o["ordinary_call_delay_slots_always_execute"])
+        self.assertTrue(o["conditional_BZ_jd_slot_executes_only_when_taken"])
+        self.assertTrue(o["dma_completion_and_visibility_assumed"])
+        wanted = [("host", 0x5d4c, 6, 0x5d50, 0x5d54, 0x5d58, 0x5f08, 0x5d74),
+                  ("context", 0x7e0, 5, 0x7e4, 0x7e8, 0x7ec, 0x814, None),
+                  ("factory", 0xec54, 5, 0xec58, 0xec5c, 0xec60, 0xec74, 0xec6c),
+                  ("image", 0x266a4, 4, 0x266a8, 0x266ac, 0x266b0, 0x266bc, 0x266b4),
+                  ("loader", 0x263c8, 5, 0x263cc, 0x263d0, 0x263d4, 0x263e8, 0x263e0),
+                  ("builder", 0x27254, 10, 0x27258, 0x27288, 0x2728c, 0x273b4, 0x27298)]
+        fields = ("caller", "call_blob_file_offset", "saved_register", "save_blob_file_offset", "compare_blob_file_offset",
+                  "success_branch_blob_file_offset", "success_blob_file_offset", "error_return_blob_file_offset")
+        self.assertEqual([tuple(row[field] for field in fields) for row in result["checked_return_chain"]], wanted)
+        self.assertTrue(all(row["success_compare_value"] == 0 and row["error_preserves_result"]
+                            for row in result["checked_return_chain"]))
+
+    def test_decoded_trigger_dispatch_interface_and_callback_linkage_receipts(self):
+        result = self.mapping()
+        outer, event = result["outer_path"], result["event_path"]
+        self.assertEqual(outer["trigger"], {"base_address": 0x30000f00, "register_offset": 136, "bit_mask": 1,
+                                            "condition": 2, "branch_target_elf_virtual_address": 0x266dc,
+                                            "call_elf_virtual_address": 0x266e0,
+                                            "pending_byte_alternative_validated": False})
+        dispatch = outer["init_dispatch"]
+        expected = {"command_base": 0x73760001, "command_index": 0, "maximum_index": 8, "range_condition": 13,
+                    "default_target_elf_virtual_address": 0x259b8, "status_auxiliary_register": 0,
+                    "status_pc_next_elf_virtual_address": 0x25880, "table_bias_words": 3,
+                    "index_register": 1, "jump_register": 0, "selected_entry_elf_virtual_address": 0x2588c,
+                    "selected_target_elf_virtual_address": 0x258b0, "status_pc_word_address_semantics_assumed": True}
+        self.assertEqual(dispatch, expected)
+        self.assertEqual(dispatch["status_pc_next_elf_virtual_address"] +
+                         4 * (dispatch["table_bias_words"] + dispatch["command_index"]), dispatch["selected_entry_elf_virtual_address"])
+        interface = outer["enable_interface"]
+        self.assertEqual(interface, {"argument_register": 1, "saved_register": 15, "argument_value": 0x900004,
+                                     "zero_branch_condition": 1, "zero_branch_target_elf_virtual_address": 0x3a9bc,
+                                     "delay_slot_semantics": "taken only", "old_value_loaded_only_for_zero_argument": True,
+                                     "store_signed_offset": -256, "storage_address": 0x3fffd588,
+                                     "nonzero_argument_stored": True, "first_argument_branch_validated": False})
+        self.assertEqual(event["registration"], {"callback_address": 0x2c16c, "table_address": 0xd2000,
+                                                 "slot": 9, "slot_stride": 12, "slot_address": 0xd206c,
+                                                 "callback_word_offset": 0, "userdata_word_offset": 4,
+                                                 "flag_word_offset": 8, "flag_value": 9,
+                                                 "flag_nonzero_selects_direct_callback": True,
+                                                 "callback_load_register": 2, "callback_branch_register": 2,
+                                                 "userdata_context_offset": 0x68, "event_offset_from_userdata": 0x20,
+                                                 "event_context_offset": 0x88,
+                                                 "requires_irq_slot_pending_and_table_preserved": True})
+        shortcut = result["host_init"]["shortcut_branch_receipt"]
+        self.assertEqual((shortcut["blob_file_offset"], shortcut["condition"], shortcut["target_blob_file_offset"]),
+                         (0x5cf8, 0, 0x5d2c))
+        self.assertEqual(result["host_init"]["shortcut_branch_receipt_scope"], "independently bounded bridge")
+        self.assertIn("STATUS exposing the next PC in word-address units", " ".join(result["assumptions"]))
+
+    def test_exact_and_one_over_preflight_dependency_budgets(self):
+        # Tighten each cap to actual use, then one below. Do not raise any
+        # existing bridge/stock budget merely to make the new receipt fit.
+        for name, use in (("MAX_FRESH_INIT_REGIONS", 41), ("MAX_FRESH_INIT_BYTES", 8536),
+                          ("MAX_FRESH_INIT_AGGREGATE_BYTES", 45228), ("MAX_FRESH_INIT_ANCHORS", 159),
+                          ("MAX_COMMAND_BUFFER_BRIDGE_REGIONS", 80), ("MAX_COMMAND_BUFFER_BRIDGE_BYTES", 36692),
+                          ("MAX_COMMAND_BUFFER_BRIDGE_RELOCATIONS", 2171),
+                          ("MAX_STOCK_HOST_COMMAND_CFG_STATES", 53), ("MAX_FRESH_INIT_EVENTS", 35)):
+            with self.subTest(exact=name), mock.patch.object(MAP, name, use):
+                self.assertEqual(self.mapping()["host_init"]["handler_count"], 1)
+            with self.subTest(one_over=name), mock.patch.object(MAP, name, use - 1), \
+                    mock.patch.object(MAP, "_command_buffer_bridge_map", side_effect=AssertionError("preflight too late")), \
+                    mock.patch.object(MAP, "_stock_host_handler_footprints", side_effect=AssertionError("INIT decode before preflight")), \
+                    self.assertRaisesRegex(MAP.FormatError, "budget"):
+                self.mapping()
+        for name in ("MAX_FRESH_INIT_EVENTS", "MAX_STOCK_HOST_COMMAND_CFG_STATES"):
+            with self.subTest(name=name), mock.patch.object(MAP, name, 0), \
+                    mock.patch.object(MAP, "_command_buffer_bridge_map", side_effect=AssertionError("preflight too late")), \
+                    self.assertRaisesRegex(MAP.FormatError, "budget"):
+                self.mapping()
+
+    def test_init_only_receipt_purity_json_roundtrip_and_scope_assumptions(self):
+        before = bytes(self.payload), json.dumps(self.images, sort_keys=True)
+        with mock.patch.object(MAP, "_stock_host_command_closure", side_effect=AssertionError("not INIT-only")), \
+                mock.patch.object(MAP, "_stock_host_dispatch_domains", side_effect=AssertionError("selector invoked")), \
+                mock.patch.object(MAP, "read_firmware", side_effect=AssertionError("external read")), \
+                mock.patch("subprocess.run", side_effect=AssertionError("external decoder")):
+            result = self.mapping()
+        self.assertEqual(before, (bytes(self.payload), json.dumps(self.images, sort_keys=True)))
+        self.assertEqual(result, json.loads(json.dumps(result, sort_keys=True)))
+        self.assertEqual((result["validation"]["additional_region_count"], result["validation"]["additional_byte_count"],
+                          result["validation"]["aggregate_byte_count"], result["validation"]["bridge_region_count"],
+                          result["validation"]["bridge_byte_count"], result["validation"]["bridge_anchor_count"]),
+                         (41, 8536, 45228, 80, 36692, 52))
+        self.assertEqual([(r["role"], r["blob_file_offset"], r["size"])
+                          for r in result["validation"]["validated_regions"]], list(self.FRESH_REGIONS))
+        h = result["host_init"]
+        self.assertEqual(h["handler_count"], 1)
+        self.assertFalse(h["full_stock_selector_invoked"])
+        footprint = h["stock_init_receipt"]
+        self.assertEqual(footprint["request_reads"], [{"byte_offset": 4, "width": 4}])
+        self.assertEqual(footprint["reply_writes"], [{"word_index": 1, "byte_offset": 4, "width": 4},
+                                                    {"word_index": 2, "byte_offset": 8, "width": 4}])
+        self.assertEqual(footprint["packet_header_reads"], [])
+        self.assertEqual(footprint["packet_header_writes"], [])
+        self.assertTrue(result["basis"]["conditional"])
+        self.assertEqual(result["basis"]["baseline_firmware_sha256"], hashlib.sha256(self.data).hexdigest())
+        self.assertTrue(result["basis"]["selected_regions_validated"])
+        self.assertFalse(result["basis"]["entire_payload_rehashed"])
+        self.assertNotIn("firmware_sha256", result["basis"])
+        self.assertFalse(result["basis"]["device_observed"])
+        self.assertFalse(result["basis"]["public_route"])
+        scope = result["validation_scope"]
+        self.assertTrue(scope["fresh_init_only"])
+        self.assertTrue(scope["conditional_software_chain"])
+        for name in ("full_stock_selector", "hardware_aliasing_proven", "runtime_transaction_acknowledged", "source_plane_lease",
+                     "active_decode_context", "standalone_execution", "whole_firmware_relocation_closure"):
+            self.assertFalse(scope[name])
+        assumptions = " ".join(result["assumptions"]).lower()
+        for phrase in ("serialized", "opaque callees", "saved registers", "vendor isa", "hardware routing",
+                       "dma visibility", "cache coherence", "delayed old callback", "freshness assumption"):
+            self.assertIn(phrase, assumptions)
+        self.assertIn("logging/yield", assumptions)
+        self.assertIn("not all setup helper return values are checked", assumptions)
+        self.assertFalse(scope["opaque_setup_return_values_all_checked"])
+        self.assertTrue(scope["transport_zero_requires_successful_post_transport_setup"])
+
+    @staticmethod
+    def raw_transport_return(busy, wait, mailbox, command, backend_status):
+        # Independent predicates from 27080/270e8/27118/27138/27164 and
+        # return MOVs. This is the transport boundary, not an emulator or a
+        # claim that later opaque initialization/cleanup preserves live state.
+        if busy:
+            return 0x220009, True
+        if wait == 5:
+            return 5, False
+        if mailbox == 0:
+            return 9, True
+        if command != 0x73760001 or backend_status != 0:
+            return 2, False
+        return wait, False
+
+    def test_checked_return_chain_all_predicate_paths_and_explicit_fault_relaxations(self):
+        contract = self.mapping()
+        frozen = json.dumps(contract, sort_keys=True)
+        for busy in (False, True):
+            for wait in (0, 5, 2, 0xffffffff):
+                for mailbox in (0, 1, 0x12345678, 0xffffffff):
+                    for command in (0x73760001, 0, 0xffffffff):
+                        for status in (0, 1, 0xffffffff):
+                            scenario = {"busy": busy, "wait_status": wait, "completion_mailbox": mailbox,
+                                        "reply_command": command, "reply_status": status}
+                            result = MAP._fresh_init_projection(contract, scenario)
+                            expected, busy_after = self.raw_transport_return(busy, wait, mailbox, command, status)
+                            with self.subTest(**scenario):
+                                self.assertEqual((result["transport_status"], result["host_return"], result["host_reply_status"]),
+                                                 (expected, expected, 0 if expected == 0 else 0xffffffff))
+                                self.assertEqual(result["busy_after"], busy_after)
+                                self.assertEqual(result["busy_after_scope"], "transport_return_boundary")
+                                self.assertTrue(result["post_transport_opaque_setup_success_assumed"])
+                                self.assertEqual(result["native_wait_output"], wait in (0, 5))
+                                self.assertEqual(result["opaque_wait_output_relaxed"], wait not in (0, 5))
+                                self.assertEqual(result["event_consumed"], not busy and wait == 0)
+                                coherent = mailbox != 0 and command == 0x73760001 and status == 0
+                                self.assertEqual(result["current_transaction_acknowledged"], not busy and wait == 0 and coherent)
+                                self.assertEqual(result["projected_current_path"], not busy and wait != 5)
+                                self.assertEqual(result["observation_coherence_relaxed"], not busy and wait != 5 and not coherent)
+                                self.assertFalse(result["runtime_observed"])
+                                self.assertFalse(result["timeout_proves_backend_nonexecution"])
+                                self.assertLessEqual(len(result["events"]), 64)
+                                returns = [event for event in result["events"] if event["event"] == "checked_return"]
+                                self.assertEqual([event["caller"] for event in returns],
+                                                 ["builder", "loader", "image", "factory", "context", "host"])
+                                self.assertTrue(all(event["value"] == expected and event["success"] == (expected == 0)
+                                                    for event in returns))
+                                names = [event["event"] for event in result["events"]]
+                                self.assertEqual("event_consumed" in names, not busy and wait == 0)
+                                self.assertEqual("completion_read" in names, not busy and wait != 5)
+                                self.assertEqual("reply_copy" in names, not busy and wait != 5 and mailbox != 0)
+                                self.assertEqual("backend_status_check" in names,
+                                                 not busy and wait != 5 and mailbox != 0 and command == 0x73760001)
+                                self.assertEqual("success_reset" in names, not busy and wait != 5 and coherent)
+                                self.assertEqual("observation_coherence_relaxed" in names,
+                                                 not busy and wait != 5 and not coherent)
+        self.assertEqual(json.dumps(contract, sort_keys=True), frozen)
+
+    def test_current_outer_order_irq_consumption_non_P_mailbox_and_shortcut(self):
+        contract = self.mapping()
+        result = MAP._fresh_init_projection(contract, {"completion_mailbox": 0x12345678, "request_word1": 255})
+        self.assertEqual((result["host_return"], result["host_reply_status"]), (0, 0))
+        self.assertTrue(result["current_transaction_acknowledged"])
+        self.assertTrue(result["event_consumed"])
+        events = result["events"]
+        operations = [(event["event"], event.get("function")) for event in events]
+        expected = [("outer_call", "Core_Command"), ("outer_call", "Dma_Read"), ("outer_call", "Dma_Sync"),
+                    ("outer_call", "CmdInitialize"), ("outer_call", "Core_LocalClear"),
+                    ("outer_call", "Platform_EnableInterface"), ("backend_status_store", None),
+                    ("outer_call", "Dma_Write"), ("outer_call", "Dma_Sync"), ("outer_call", "Arc_FlushWrites"),
+                    ("reply_publication", None), ("outer_call", "Platform_DeliverResponse"),
+                    ("response_irq", None), ("arm_callback", None)]
+        self.assertEqual([operation for operation in operations if operation[0] in
+                          ("outer_call", "backend_status_store", "reply_publication", "response_irq", "arm_callback")], expected)
+        names = [event["event"] for event in events]
+        self.assertLess(names.index("request_copy"), names.index("request_publication"))
+        self.assertLess(names.index("request_publication"), names.index("outer_trigger"))
+        self.assertLess(names.index("arm_callback"), names.index("event_wait"))
+        self.assertLess(names.index("event_wait"), names.index("event_consumed"))
+        self.assertLess(names.index("event_consumed"), names.index("completion_read"))
+        self.assertLess(names.index("completion_read"), names.index("reply_copy"))
+        self.assertLess(names.index("command_check"), names.index("backend_status_check"))
+        self.assertLess(names.index("backend_status_check"), names.index("success_reset"))
+        self.assertLess(names.index("success_reset"), names.index("checked_return"))
+        self.assertEqual(next(event for event in events if event["event"] == "request_copy")["word1"], 255)
+        self.assertEqual(next(event for event in events if event["event"] == "reply_copy")["word1"], 0)
+        self.assertEqual(next(event for event in events if event["event"] == "completion_read")["value"], 0x12345678)
+        timeout = MAP._fresh_init_projection(contract, {"wait_status": 5})
+        self.assertFalse(timeout["event_consumed"])
+        self.assertFalse(timeout["busy_after"])
+        self.assertFalse(timeout["current_transaction_acknowledged"])
+        self.assertFalse(timeout["timeout_proves_backend_nonexecution"])
+        zero = MAP._fresh_init_projection(contract, {"completion_mailbox": 0})
+        self.assertEqual(zero["host_return"], 9)
+        self.assertTrue(zero["busy_after"])
+        self.assertTrue(zero["event_consumed"])
+        # The shortcut can return0 with no outer command and no event/mailbox
+        # access, even if the irrelevant fresh transport input says busy.
+        shortcut = MAP._fresh_init_projection(contract, {"already_initialized": True, "busy": True})
+        self.assertEqual((shortcut["transport_status"], shortcut["host_return"], shortcut["host_reply_status"]), (None, 0, 0))
+        self.assertEqual([event["event"] for event in shortcut["events"]],
+                         ["host_init", "initialized_shortcut", "host_reply_status_store"])
+        self.assertFalse(shortcut["current_transaction_acknowledged"])
+        self.assertFalse(shortcut["event_consumed"])
+
+    def test_delayed_old_callback_countermodel_drops_freshness_and_preserves_new_request(self):
+        contract = self.mapping()
+        with self.assertRaisesRegex(MAP.FormatError, "freshness"):
+            MAP._fresh_init_projection(contract, {"event_origin": "delayed_old"})
+        for word1 in (0, 1, 255):
+            scenario = {"event_origin": "delayed_old", "freshness_assumed": False,
+                        "completion_mailbox": 0x12345678, "request_word1": word1,
+                        "reply_command": 0xffffffff, "reply_status": 0xffffffff}
+            result = MAP._fresh_init_projection(contract, scenario)
+            expected = 0 if word1 == 0 else 2
+            with self.subTest(word1=word1):
+                self.assertEqual((result["transport_status"], result["host_return"], result["host_reply_status"]),
+                                 (expected, expected, 0 if expected == 0 else 0xffffffff))
+                self.assertFalse(result["freshness_assumed"])
+                self.assertFalse(result["current_transaction_acknowledged"])
+                self.assertFalse(result["projected_current_path"])
+                self.assertFalse(result["runtime_observed"])
+                self.assertTrue(result["event_consumed"])
+                names = [event["event"] for event in result["events"]]
+                self.assertLess(names.index("event_reset"), names.index("request_copy"))
+                self.assertLess(names.index("request_copy"), names.index("delayed_old_callback"))
+                self.assertLess(names.index("delayed_old_callback"), names.index("event_wait"))
+                for forbidden in ("outer_trigger", "outer_call", "backend_status_store", "reply_publication", "response_irq", "arm_callback"):
+                    self.assertNotIn(forbidden, names)
+                reply = next(event for event in result["events"] if event["event"] == "reply_copy")
+                self.assertEqual((reply["command"], reply["word1"]), (0x73760001, word1))
+
+    def test_projection_event_budget_type_byte_domain_and_unsupported_operand_refusals(self):
+        contract = self.mapping()
+        result = MAP._fresh_init_projection(contract, {})
+        used = len(result["events"])
+        with mock.patch.object(MAP, "MAX_FRESH_INIT_EVENTS", used):
+            self.assertEqual(MAP._fresh_init_projection(contract, {}), result)
+        with mock.patch.object(MAP, "MAX_FRESH_INIT_EVENTS", used - 1), self.assertRaisesRegex(MAP.FormatError, "budget"):
+            MAP._fresh_init_projection(contract, {})
+        for cap in (0, used - 1):
+            changed = json.loads(json.dumps(contract))
+            changed["validation"]["projected_event_cap"] = cap
+            with self.subTest(cap=cap), self.assertRaisesRegex(MAP.FormatError, "budget"):
+                MAP._fresh_init_projection(changed, {})
+        for scenario in (None, [], {"unknown": 0}, {"busy": 1}, {"already_initialized": 0},
+                         {"freshness_assumed": "false"}, {"event_origin": "unknown"},
+                         {"event_origin": 1}, {"wait_status": True}, {"wait_status": -1},
+                         {"completion_mailbox": 0x100000000}, {"reply_command": None},
+                         {"reply_status": 1.0}, {"request_word1": 256}, {"request_word1": 0xffffffff}):
+            with self.subTest(scenario=scenario), self.assertRaises(MAP.FormatError):
+                MAP._fresh_init_projection(contract, scenario)
+        # Call the narrow operand decoder directly, beyond the outer pin
+        # validator, so unsupported modeled instructions cannot pass silently.
+        for word in (0xe5940004 | 0x00200000, 0xe4940004, 0xe92d4010,
+                     0xe3400001, 0xe7e70050, 0xe1a00110):
+            changed = bytearray(self.payload)
+            struct.pack_into("<I", changed, 0x27080, word)
+            with self.subTest(word=hex(word)), self.assertRaises(MAP.FormatError):
+                MAP._fresh_init_arm_operand(changed, 0x27080, word)
+
+    def test_every_additional_pin_word_name_and_tail_rejects_before_decode(self):
+        for role, offset, size in self.FRESH_REGIONS:
+            deltas = range(size) if "name" in role else sorted(set(range(0, size, 4)) | {size - 1})
+            for delta in deltas:
+                changed = bytearray(self.payload)
+                changed[offset + delta] ^= 1
+                with self.subTest(role=role, offset=hex(offset + delta)), \
+                        mock.patch.object(MAP, "_a32_branch", side_effect=AssertionError("decode before validation")), \
+                        mock.patch.object(MAP, "_a32_literal", side_effect=AssertionError("decode before validation")), \
+                        self.assertRaises(MAP.FormatError):
+                    self.mapping(changed)
+
+    def test_every_bridge_dependency_pin_and_original_relocation_record_rejects(self):
+        for role, offset, encoded in MAP._COMMAND_BUFFER_BRIDGE_REGIONS:
+            size = len(encoded) // 2
+            deltas = range(size) if "name" in role else sorted(set(range(0, size, 4)) | {size - 1})
+            for delta in deltas:
+                changed = bytearray(self.payload)
+                changed[offset + delta] ^= 1
+                with self.subTest(role=role, offset=hex(offset + delta)), \
+                        mock.patch.object(MAP, "_a32_branch", side_effect=AssertionError("decode before dependency validation")), \
+                        self.assertRaises(MAP.FormatError):
+                    self.mapping(changed)
+        for offset in list(range(0x72780, 0x78d44, 12)) + [0x78d43]:
+            changed = bytearray(self.payload)
+            changed[offset] ^= 1
+            with self.subTest(relocation=hex(offset)), \
+                    mock.patch.object(MAP, "_a32_branch", side_effect=AssertionError("decode before RELA validation")), \
+                    self.assertRaises(MAP.FormatError):
+                self.mapping(changed)
+
+    def test_selected_arguments_predicates_event_and_return_edge_mutations_reject(self):
+        for offset, replacement in (
+                (0x27088, 0x1a000002),  # Invert the busy gate.
+                (0x270b4, 0xe5940098),  # Change copied packet alias.
+                (0x270c0, 0xe59421b0),  # Publish image base instead of physical packet P.
+                (0x27118, 0xe15a0002),  # Invent comparison with P, not nonzero.
+                (0x27138, 0xe1500002),  # Command equality uses wrong saved register.
+                (0x27160, 0xe5970008),  # Status is word1, not word2.
+                (0x271c0, 0xe3a00000),  # Erase nonzero original wait result.
+                (0x27218, 0xe5868004),  # Word1 byte argument comes from saved R9.
+                (0x2723c, 0xe3043e21),  # Exact20000 argument, not measured time.
+                (0x20618, 0xe3a02000),  # Setter must publish1.
+                (0x20608, 0xe320f000),  # Successful wait consumes the byte.
+                (0x2c184, 0xe5950024),  # Callback slot+32 is the event.
+                (0x6fac, 0xe5960008),  # Callback argument and status are distinct slots.
+                (0x5d68, 0xe5840004),  # Failed INIT reply status at+8, not sequence+4.
+                (0x22dec, 0xe3a00000)):  # Error logger must preserve incoming status.
+            changed = bytearray(self.payload)
+            struct.pack_into("<I", changed, offset, replacement)
+            with self.subTest(offset=hex(offset)), self.assertRaises(MAP.FormatError):
+                self.mapping(changed)
+        for section, address, replacement in (
+                (16, 0x258b4, 0x60279e00),  # Delayed INIT argument must be R0.
+                (16, 0x246e0, 0x10070408),  # Reply status store must be word1.
+                (16, 0x259d0, 0x405ffe40),  # Full128-halfword transfer argument.
+                (16, 0x259e8, 0x14001a80),  # Completion writes mailbox132, not128.
+                (16, 0x3a9b0, 0x20000121),  # Taken-only.jd must not become ordinary.d.
+                (16, 0x266e4, 0x1046811c)):
+            changed = bytearray(self.payload)
+            struct.pack_into("<I", changed, self.arc_offset(section, address), replacement)
+            with self.subTest(section=section, address=hex(address)), self.assertRaises(MAP.FormatError):
+                self.mapping(changed)
+        # New original RELA receipts bind every field, signed addend included.
+        for position, *_ in self.ARC_CALLS:
+            for delta in range(12):
+                changed = bytearray(self.payload)
+                changed[position + delta] ^= 1
+                with self.subTest(record=hex(position), byte=delta), self.assertRaises(MAP.FormatError):
+                    self.mapping(changed)
+
+    def test_truncation_and_malformed_image_identities_fail_closed(self):
+        for length in (0, 0x5ccc, 0x271c8, 0x491e0, 0x79098, len(self.payload) - 1):
+            with self.subTest(length=length), self.assertRaises(MAP.FormatError):
+                self.mapping(self.payload[:length])
+        for images in ([], self.images[:1], self.images[::-1], self.images + self.images):
+            with self.subTest(images=len(images)), self.assertRaises(MAP.FormatError):
+                self.mapping(images=images)
+        for key, value in (("flags", 1), ("machine", 93), ("section_count", 54),
+                           ("endianness", "big"), ("blob_file_offset", 0)):
+            images = [dict(image) for image in self.images]
+            images[0][key] = value
+            with self.subTest(key=key), self.assertRaises(MAP.FormatError):
+                self.mapping(images=images)
+
+    def test_private_receipt_and_projection_do_not_route_from_any256_public_reports(self):
+        options = ("references", "all_symbols", "bootstrap", "picture_output",
+                   "arc_metadata", "csc_command", "command_buffer_bridge", "inner_descriptor")
+        aggregate = hashlib.sha256()
+        with mock.patch.object(MAP, "_fresh_init_causal_contract", side_effect=AssertionError("public causal route")), \
+                mock.patch.object(MAP, "_fresh_init_projection", side_effect=AssertionError("public projection route")):
+            for mask in range(256):
+                flags = {name: bool(mask & (1 << bit)) for bit, name in enumerate(options)}
+                wanted = ("ReadLine",) if mask & 1 else MAP.DEFAULT_SYMBOLS
+                result = MAP.analyze(self.data, wanted, **flags)
+                self.assertNotIn("fresh_init_causal_contract", result)
+                self.assertNotIn("fresh_init_projection", result)
+                stdout = (json.dumps(result, indent=2, sort_keys=True) + "\n").encode()
+                aggregate.update(bytes([mask]))
+                aggregate.update(hashlib.sha256(stdout).digest())
+        self.assertEqual(aggregate.hexdigest(),
+                         "bf116a4627c71956042f25a98f63fde401b58140569c22cdc5ebf8298bbc85dd")
+        with mock.patch.object(sys, "stdout", new_callable=io.StringIO) as output, \
+                mock.patch.object(sys, "stderr", new_callable=io.StringIO), \
+                self.assertRaises(SystemExit) as error:
+            MAP.main([str(BLOB), "--fresh-init-causal-contract"])
+        self.assertEqual(error.exception.code, 2)
+        self.assertEqual(output.getvalue(), "")
+
+
 if __name__ == "__main__":
     unittest.main()
