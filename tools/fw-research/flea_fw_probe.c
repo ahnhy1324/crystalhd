@@ -268,6 +268,25 @@ static void print_info(const struct crystalhd_fw_research_info *info)
 	       (uint32_t)info->selector_mask, hex);
 }
 
+static void print_decoded_response(const struct crystalhd_fw_research_reply *reply)
+{
+	/* C011RspGetVersion (include/7411d.h): these three fields are also
+	 * populated by the pinned firmware. Its STATUS handler is ACK-only.
+	 */
+	if (reply->command != 0x73763004U || !reply->raw_response_valid ||
+	    !reply->header_matches || reply->response[0] != reply->command ||
+	    reply->response[1] != reply->sequence ||
+	    reply->transport_status != BC_STS_SUCCESS || reply->response[2]) {
+		fputs("null", stdout);
+		return;
+	}
+	printf("{\"stream_firmware_version\":%" PRIu32 ","
+	       "\"decoder_firmware_version\":%" PRIu32 ","
+	       "\"firmware_reported_chip_hw_version\":%" PRIu32 "}",
+	       (uint32_t)reply->response[3], (uint32_t)reply->response[4],
+	       (uint32_t)reply->response[5]);
+}
+
 static void print_result(const struct crystalhd_fw_research_result *result)
 {
 	char hex[65];
@@ -313,6 +332,8 @@ static void print_result(const struct crystalhd_fw_research_result *result)
 				printf("%s%" PRIu32, j ? "," : "", (uint32_t)reply->response[j]);
 			putchar(']');
 		}
+		fputs(",\"decoded_response\":", stdout);
+		print_decoded_response(reply);
 		putchar('}');
 	}
 	fputs("]}\n", stdout);

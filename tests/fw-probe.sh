@@ -135,7 +135,21 @@ widths = ['-m32', '-m64'] if platform.machine() in ('x86_64', 'i386', 'i686') el
 for width in widths or ['']:
     subprocess.run(compiler + flags + ([width] if width else []) + ['-xc', '-'],
                    input=abi, text=True, check=True)
+version_layout = '''#include <stddef.h>
+#include <stdint.h>
+#include "7411d.h"
+_Static_assert(eCMD_C011_GET_VERSION == 0x73763004U, "GET_VERSION command");
+_Static_assert(offsetof(C011RspGetVersion, status) == 2 * sizeof(uint32_t), "status word");
+_Static_assert(offsetof(C011RspGetVersion, streamSwVersion) == 3 * sizeof(uint32_t), "stream word");
+_Static_assert(offsetof(C011RspGetVersion, decoderSwVersion) == 4 * sizeof(uint32_t), "decoder word");
+_Static_assert(offsetof(C011RspGetVersion, chipHwVersion) == 5 * sizeof(uint32_t), "firmware-reported chip word");
+'''
+for width in widths or ['']:
+    subprocess.run(compiler + flags + ['-Wall', '-Wextra', '-Werror'] +
+                   ([width] if width else []) + ['-xc', '-'],
+                   input=version_layout, text=True, check=True)
 print('Firmware probe: UAPI layout/encoding verified' + (' (32/64-bit)' if widths else ' (native)'))
+print('Firmware probe CLI: GET_VERSION words match the legacy response declaration')
 PY
 
 for probe_sanitize in no yes; do
@@ -176,8 +190,66 @@ for probe_sanitize in no yes; do
     probe_linkage_fuse "$probe_test_dir/cli-check" 0
     "$probe_test_dir/cli-check" --json-examples | "${PYTHON3:-python3}" -B -c '
 import json, sys
-info, version, h264, failure, nohash, rejectedhash, h261, h263, mpeg1, rejected, readfail = [json.loads(line) for line in sys.stdin]
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        assert key not in result, "duplicate JSON key"
+        result[key] = value
+    return result
+def invalid_constant(value):
+    raise AssertionError("non-JSON constant: " + value)
+lines = list(sys.stdin)
+examples = [json.loads(line, object_pairs_hook=unique_object, parse_constant=invalid_constant) for line in lines]
+assert len(examples) == 152
+info, version, h264, failure, nohash, rejectedhash, h261, h263, mpeg1, rejected, readfail = examples[:11]
 assert info["generation"] == "42" and info["research_selector_mask"] == 31
+assert lines[0] == "{\"version\":1,\"generation\":\"42\",\"research_selector_mask\":31,\"expected_firmware_sha256\":\"" + info["expected_firmware_sha256"] + "\"}\n"
+assert set(info) == {"version", "generation", "research_selector_mask", "expected_firmware_sha256"}
+def u32(value):
+    assert type(value) is int and 0 <= value <= 4294967295
+def check_result(result):
+    assert set(result) == {"version", "selector", "generation", "status", "expected_firmware_sha256",
+                           "firmware_hash_valid", "observed_firmware_sha256", "download_attempted",
+                           "download_status", "cleanup_attempted", "cleanup_status", "retained",
+                           "command_count", "replies"}
+    assert type(result["status"]) is int and -4095 <= result["status"] <= 0
+    assert result["generation"] == "42" and result["version"] == 1
+    assert type(result["selector"]) is int and 1 <= result["selector"] <= 5
+    assert result["expected_firmware_sha256"] == info["expected_firmware_sha256"]
+    for field in ("firmware_hash_valid", "download_attempted", "cleanup_attempted", "retained"):
+        assert type(result[field]) is bool
+    for field in ("download_status", "cleanup_status", "command_count"):
+        u32(result[field])
+    assert isinstance(result["replies"], list) and len(result["replies"]) == result["command_count"]
+    for index, reply in enumerate(result["replies"]):
+        assert set(reply) == {"command", "sequence", "transport_status", "raw_response_valid",
+                              "header_matches", "raw_response_words", "decoded_response"}
+        for field in ("command", "sequence", "transport_status"):
+            u32(reply[field])
+        assert reply["sequence"] == index + 1
+        assert type(reply["raw_response_valid"]) is bool and type(reply["header_matches"]) is bool
+        raw = reply["raw_response_words"]
+        if reply["raw_response_valid"]:
+            assert isinstance(raw, list) and len(raw) == 64
+            for word in raw:
+                u32(word)
+            assert reply["header_matches"] == (raw[:2] == [reply["command"], reply["sequence"]])
+            if reply["transport_status"] == 0:
+                assert raw[2] == 0
+        else:
+            assert raw is None and not reply["header_matches"]
+        valid_version = (reply["command"] == 0x73763004 and reply["raw_response_valid"] and
+                         reply["header_matches"] and reply["transport_status"] == 0 and raw[2] == 0)
+        expected = {"stream_firmware_version": raw[3], "decoder_firmware_version": raw[4],
+                    "firmware_reported_chip_hw_version": raw[5]} if valid_version else None
+        assert reply["decoded_response"] == expected
+        if expected is not None:
+            for value in reply["decoded_response"].values():
+                u32(value)
+        if reply["command"] == 0x73763103:
+            assert reply["decoded_response"] is None
+for result in examples[1:]:
+    check_result(result)
 for result, count in ((version, 2), (h264, 5), (h261, 4), (h263, 4), (mpeg1, 4)):
     assert result["generation"] == "42" and result["status"] == 0
     assert result["firmware_hash_valid"] and result["observed_firmware_sha256"] == info["expected_firmware_sha256"]
@@ -204,6 +276,40 @@ assert reply["raw_response_valid"] and reply["header_matches"] and reply["transp
 assert len(reply["raw_response_words"]) == 64 and reply["raw_response_words"][2:4] == [4294967295, 4294967295]
 assert readfail["selector"] == 4 and readfail["status"] < 0 and readfail["command_count"] == 3
 assert not readfail["replies"][2]["raw_response_valid"] and readfail["replies"][2]["raw_response_words"] is None
-print("Firmware probe CLI: JSON metadata, full replies and invalid raw=null verified")
+position = 11
+patterns = [(79360, 305419896, 458773), (0, 0, 0), (4294967295, 2147483648, 3735928559)]
+for selector in range(1, 6):
+    count = 2 if selector == 1 else 5 if selector == 2 else 4
+    for pattern in patterns:
+        result = examples[position]; position += 1
+        assert result["selector"] == selector and result["status"] == 0 and result["command_count"] == count
+        assert list(result["replies"][1]["decoded_response"].values()) == list(pattern)
+    for phase in range(1, count + 1):
+        for kind in (1, 2, 3, 4, 5, 7):
+            result = examples[position]; position += 1
+            assert result["selector"] == selector and result["status"] < 0 and result["command_count"] == phase
+            reply = result["replies"][-1]
+            assert reply["decoded_response"] is None
+            if phase > 2:
+                assert list(result["replies"][1]["decoded_response"].values()) == list(patterns[2])
+            if kind in (1, 2):
+                assert not reply["raw_response_valid"] and reply["raw_response_words"] is None
+            elif kind in (3, 7):
+                assert reply["transport_status"] == 11 and reply["header_matches"]
+                assert reply["raw_response_words"][2] == (4294967295 if kind == 3 else 0)
+            else:
+                assert reply["raw_response_valid"] and not reply["header_matches"]
+    for retained in (True, False):
+        result = examples[position]; position += 1
+        assert result["selector"] == selector and result["status"] < 0 and result["command_count"] == count
+        assert result["retained"] is retained
+        assert result["cleanup_status"] == (0 if retained else 7)
+        assert list(result["replies"][1]["decoded_response"].values()) == list(patterns[2])
+assert position == len(examples) - 2
+assert examples[-2]["status"] < 0 and examples[-2]["retained"] and not examples[-2]["cleanup_attempted"]
+assert examples[-1]["status"] == 0 and not examples[-1]["retained"] and examples[-1]["command_count"] == 5
+for result in examples[-2:]:
+    assert list(result["replies"][1]["decoded_response"].values()) == list(patterns[2])
+print("Firmware probe CLI: 152 strict JSON examples, raw evidence and success-only version decoding verified")
 '
 done
