@@ -37,6 +37,48 @@ MAX_COMMAND_BUFFER_BRIDGE_BYTES = 40 * 1024
 MAX_COMMAND_BUFFER_BRIDGE_RELOCATIONS = 2171
 MAX_INNER_DESCRIPTOR_REGIONS = 48
 MAX_INNER_DESCRIPTOR_BYTES = 4096
+MAX_MFD_SOURCE_REGIONS = 10
+MAX_MFD_SOURCE_BYTES = 1280
+_MFD_SOURCE_REGIONS = (
+    ("source_address", 0x1918,
+     "f0402de914d04de20070a0e10140a0e1f8219fe55c10d4e5810081e00031b2e7050092e90c008de510208de508308de5"
+     "2830d4e510009de504308de500008de5cc019fe5d820cde1977a00eb0800d4e5020050e33900000a0c009de58060a0e1"
+     "2700d4e5010050e33600000a0650a0e11a0e8fe20510a0e18b7a00eb052886e1a8119fe50700a0e1d07300eb542094e5"
+     "0700a0e198119fe5cc7300eb582094e50700a0e18c119fe5c87300eb346094e5700094e50120c0e32710d4e5010051e3"
+     "2b00000a6c3094e510009de53200a0e1545094e50cc09de5950005e09c0303e0950c05e005c283e00c509de5015045e2"
+     "025005e005208ce0062082e0386094e5030051e31d00000aa330a0e1011041e21311a0e1583094e5930000e00c309de5"
+     "900300e0000281e0050080e0065080e00800d4e5010050e31300000a160000ea0c609de5c5ffffea2800d4e5010050e3"
+     "0500000a0c009de58050a0e1d8008fe20510a0e1507a00ebc3ffffea0c509de5f9ffffea6c0094e50130c0e3d1ffffea"
+     "0800a0e314d08de2f080bde80c009de5002082e00c009de5005085e0b0109fe50700a0e1897300eb0520a0e1a4109fe5"
+     "0700a0e1857300eb0000a0e3f0ffffea"),
+    ("mfd_setup", 0x1bfc,
+     "f0412de90060a0e10210a0e10340a0e1000056e30f00000a000051e30d00000a000054e30b00000a8f0f8fe20630a0e1"
+     "0420a0e1e37900eb145094e5187094e5000096e5046090e50100d4e5000050e30300000a0a0000eaf041bde88e0f8fe2"
+     "d87900ea0810d4e5020051e30400001a2820d4e5000052e30100001a8a0f8fe2d07900eb2820d4e5950f8fe20810d4e5"
+     "cc7900eb0410a0e10600a0e1b5ffffeb0520a0e15c129fe50600a0e10e7300eb950f8fe20510a0e1c27900eb260e8fe2"
+     "0710a0e1bf7900eb0810d4e50730a0e10020a0e30600a0e1d7feffeb0410a0e10600a0e1fcfeffeb0410a0e10600a0e1"
+     "f041bde808ffffea"),
+    ("source_record_producer", 0xe110,
+     "70402de90060a0e10150a0e10240a0e1000055e32100000a640096e50c0290e5a8119fe50020d1e70430a0e10510a0e1"
+     "0600a0e1cdfdffeb0420a0e10510a0e10600a0e1f4fdffeb0430a0e10020a0e30510a0e10600a0e115feffeb0420a0e1"
+     "0510a0e10600a0e1d2feffeb0420a0e10510a0e10600a0e1effeffeb0420a0e10510a0e10600a0e195ffffeb040095e5"
+     "340084e5080095e5380084e5240000ea0000a0e30000c4e50100a0e30100c4e50000a0e3040084e50800c4e50200a0e3"
+     "1c00c4e50000a0e31d00c4e51e00c4e5200084e52400c4e52500c4e52600c4e50200a0e32700c4e50000a0e32800c4e5"
+     "0200a0e32900c4e52a00c4e50000a0e3340084e5380084e54000c4e54100c4e5440084e55000c4e55c00c4e50800a0e3"
+     "740084e5780084e50000a0e37c0084e5800084e57080bde8"),
+    ("selected_picture_call", 0x85ec,
+     "14109de520208de2080095e5c41600eb34109de5230e8fe238209de56d5f00ebaeffffea"),
+    ("mfd_setup_call", 0x84cc,
+     "20308de20910a0e114208de20800a0e1c6e5ffeb"),
+    ("source_table_literals", 0x1b28,
+     "cccc020070ce0200"),
+    ("source_register_literals", 0x1b48,
+     "10005400280054002c005400312e204368726f6d6120737472696465203d2030782578001c00540020005400"),
+    ("source_table", 0x2cccc,
+     "000000004000000006000000010000008000000007000000020000000001000008000000"),
+    ("register_write", 0x1e8e8,
+     "003090e5012083e71eff2fe1"),
+)
 # Original ELF bytes only: no runtime relocation, ARC decode or execution here.
 _INNER_DESCRIPTOR_HEADERS = (
     (0, 0x2ea60, "7f454c4601010100000000000000000002002d000100000078a6030034000000e0aa040000000000340020001200280037003600"),
@@ -1694,6 +1736,135 @@ def _csc_command_map(payload, images):
                 "No device execution was observed; this is not a standalone execution proof or silicon capability claim."]}
 
 
+def _mfd_source_model(record, rows):
+    """Selected A32 arithmetic only; this is not an input allocation ABI."""
+    if len(record) != 116:
+        raise FormatError("MFD source model requires the selected 116-byte field prefix")
+    if tuple(map(tuple, rows)) != ((0, 64, 6), (1, 128, 7), (2, 256, 8)):
+        raise FormatError("MFD source model requires the three pinned table rows")
+    selector, mode, form, field = record[0x5c], record[8], record[0x27], record[0x28]
+    if selector > 2 or form not in (1, 2, 3):
+        raise FormatError("MFD source model is conditional on selector 0..2 and format 1..3")
+    _, stripe, shift = rows[selector]
+    word = lambda offset: struct.unpack_from("<I", record, offset)[0]
+    u32 = lambda value: value & 0xffffffff
+    sy = stripe if mode == 2 else 2 * stripe
+    sc = (stripe if field == 1 else 2 * stripe) if form == 1 else sy
+    writes = [[0x540010, u32(sy | (sc << 16))],
+              [0x540028, word(0x54)], [0x54002c, word(0x58)]]
+    if form == 3:
+        return {"writes": writes, "return_value": 8}
+    horizontal = word(0x6c) & (0xfffffffe if form == 1 else 0xffffffff)
+    vertical = word(0x70) & 0xfffffffe
+    quotient, remainder = vertical >> shift, vertical & (stripe - 1)
+    # The wrapped horizontal product is logically shifted before the chroma
+    # format shift; moving wrap to the final addition changes the result.
+    product = u32(stripe * horizontal)
+    y = u32(word(0x34) + product +
+            (u32(u32(word(0x54) * quotient) * stripe) << 4) + remainder)
+    c = u32(word(0x38) + ((product >> 1) << (form - 1)) +
+            (u32(u32(word(0x58) * quotient) * stripe) << 4) + remainder)
+    if mode == 1:
+        y, c = u32(y + stripe), u32(c + stripe)
+    writes.extend(([0x54001c, y], [0x540020, c]))
+    return {"writes": writes, "return_value": 0}
+
+
+def _mfd_source_map(payload):
+    """Bounded original A32 regions, interpreted under stated call conditions."""
+    if len(payload) != BUNDLED_SIZE - TRAILER_SIZE:
+        raise FormatError("MFD source payload size does not match the bundled baseline")
+    if (len(_MFD_SOURCE_REGIONS) > MAX_MFD_SOURCE_REGIONS or
+            sum(len(bytes.fromhex(raw)) for _, _, raw in _MFD_SOURCE_REGIONS) > MAX_MFD_SOURCE_BYTES):
+        raise FormatError("MFD source region/byte budget exceeded")
+    regions = []
+    for role, offset, raw in _MFD_SOURCE_REGIONS:
+        expected = bytes.fromhex(raw)
+        if bounded(payload, offset, len(expected), "MFD source region") != expected:
+            raise FormatError(f"MFD source region {role} does not match the baseline")
+        regions.append({"role": role, "blob_file_offset": offset, "bytes": len(expected)})
+    rows = [list(struct.unpack_from("<3I", payload, 0x2cccc + 12 * index)) for index in range(3)]
+    edges = [(0x85f8, 0xe110, True), (0x860c, 0x84cc, False),
+             (0x84dc, 0x1bfc, True), (0x1cf0, 0x1918, False)]
+    for offset, target, link in edges:
+        if _a32_branch(payload, offset, link=link)["target_blob_file_offset"] != target:
+            raise FormatError("MFD source handoff branch does not match the baseline")
+    for offset, literal, value in ((0x1928, 0x1b28, 0x2cccc),
+                                   (0x1998, 0x1b48, 0x540010),
+                                   (0x19ac, 0x1b4c, 0x540028),
+                                   (0x19bc, 0x1b50, 0x54002c),
+                                   (0x1ab4, 0x1b6c, 0x54001c),
+                                   (0x1ac4, 0x1b70, 0x540020)):
+        decoded = _a32_literal(payload, offset)
+        if (decoded["literal_blob_file_offset"], decoded["literal_value"]) != (literal, value):
+            raise FormatError("MFD source literal does not match the baseline")
+    examples = []
+    for index in range(3):
+        record = bytearray(116)
+        record[8], record[0x27], record[0x5c] = 0, 2, index
+        for offset, value in ((0x34, 0x1000), (0x38, 0x8000), (0x54, 40),
+                              (0x58, 20), (0x6c, 3), (0x70, 5)):
+            struct.pack_into("<I", record, offset, value)
+        examples.append({"selector": index, "mode": 0, "format": 2, "field": 0,
+                         "y_base": 0x1000, "chroma_base": 0x8000,
+                         "luma_nmby": 40, "chroma_nmby": 20, "horizontal": 3, "vertical": 5,
+                         "conditional_model": _mfd_source_model(record, rows)})
+    return {
+        "device_observed": False,
+        "validation": {"regions": regions, "region_count": len(regions),
+                       "bytes": sum(region["bytes"] for region in regions)},
+        "source_record_to_picture": {
+            "entry_blob_file_offset": 0xe110, "nonnull_record_register": 5,
+            "picture_register": 4,
+            "final_copies": [
+                {"load_blob_file_offset": 0xe19c, "record_word_offset": 4,
+                 "store_blob_file_offset": 0xe1a0, "picture_word_offset": 0x34},
+                {"load_blob_file_offset": 0xe1a4, "record_word_offset": 8,
+                 "store_blob_file_offset": 0xe1a8, "picture_word_offset": 0x38}],
+            "return_branch_blob_file_offset": 0xe1ac,
+            "return_blob_file_offset": 0xe244,
+            "scope": "Final stores on the selected non-null path, after unvalidated callees; not allocation or ownership."},
+        "selected_handoff": {
+            "record_pointer_stack_offset": 0x14, "picture_stack_offset": 0x20,
+            "source_call_blob_file_offset": 0x85f8, "join_blob_file_offset": 0x860c,
+            "setup_call_blob_file_offset": 0x84dc,
+            "setup_picture_argument_register": 3,
+            "setup_picture_saved_register": 4,
+            "address_helper_entry_blob_file_offset": 0x1918,
+            "address_helper_picture_argument_register": 1,
+            "register_context_physical_base_verified": False},
+        "addressing": {
+            "selected_field_prefix_bytes": 116,
+            "field_offsets": {"mode_byte": 8, "format_byte": 0x27, "field_byte": 0x28,
+                             "y_base_word": 0x34, "chroma_base_word": 0x38,
+                             "luma_nmby_word": 0x54, "chroma_nmby_word": 0x58,
+                             "table_selector_byte": 0x5c, "horizontal_word": 0x6c, "vertical_word": 0x70},
+            "table_blob_file_offset": 0x2cccc, "table_row_bytes": 12, "selected_table_rows": rows,
+            "table_selector_checked_by_firmware": False,
+            "table_first_word_use": "Diagnostic argument only in the pinned helper.",
+            "arithmetic": "A32 unsigned 32-bit wrap at each operation; logical shifts.",
+            "model_scope": "Selector 0..2, format byte 1/2/3; numeric modes/flags are not asserted to be legal pixel formats.",
+            "write_rdb_order": [0x540010, 0x540028, 0x54002c, 0x54001c, 0x540020],
+            "write_helper_entry_blob_file_offset": 0x1e8e8,
+            "writes_are_context_relative": True,
+            "format3": {"return_value": 8, "preceding_write_count": 3, "line_address_writes": False},
+            "conditional_zero_offset_identity": {
+                "conditions": "Format 1/2, selected table row, horizontal=vertical=0, mode!=1, original bases preserved.",
+                "line_address0": "original frame-record word+4", "line_address1": "original frame-record word+8"},
+            "model_examples": examples},
+        "conditions": [
+            "The selected paths execute in A32 with the original code/literals and returning ABI-preserving callees.",
+            "The non-null frame record and picture/stack/context/table accesses are valid and stable.",
+            "Unvalidated callees and concurrent activity do not alias/mutate the tracked fields or saved registers.",
+            "The model restricts the otherwise unchecked selector to the three pinned rows and format to 1/2/3."],
+        "limitations": [
+            "Selected record words are source bases, not host RX output-descriptor addresses.",
+            "This conditional arithmetic is not a complete frame layout, packing/alignment or host submission ABI.",
+            "Original words may use firmware-specific address namespaces; register-context physical base is unresolved.",
+            "Allocation bounds, source-bank ownership, cache/DMA visibility, release and quiescence remain unvalidated.",
+            "No host/device access, firmware execution, raw submission or standalone backend capability is established."]}
+
+
 def _picture_output_map(payload, images):
     """Pure fixed A32 evidence; callers must pin the exact bundled SHA/size."""
     if len(payload) != BUNDLED_SIZE - TRAILER_SIZE:
@@ -1872,6 +2043,7 @@ def _picture_output_map(payload, images):
     return {
         "schema_version": 1, "isa": "A32", "endianness": "little", "device_observed": False,
         "instruction_anchors": anchors, "diagnostics": diagnostics,
+        "mfd_source": _mfd_source_map(payload),
         "descriptor_delivery": {
             "reader_entry_blob_file_offset": 0x7708, "arm2_callback_call_blob_file_offset": 0x701c,
             "arm_mailbox_physical_address": 0x100e0024, "arm_mailbox_rdb_address": 0x000e0024,
