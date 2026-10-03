@@ -27,6 +27,7 @@
  *******************************************************************/
 
 #include <stdlib.h>
+#include <limits.h>
 #include "7411d.h"
 #include "libcrystalhd_if.h"
 #include "libcrystalhd_priv.h"
@@ -1008,15 +1009,12 @@ int DtsFindBSStartCode (unsigned char *Buf, int ZerosInStartcode)
 
 int DtsGetNaluType(HANDLE hDevice, uint8_t* pInputBuf, uint32_t ulSize, NALU_t* pNalu, bool bSkipSyncMarker)
 {
-	DTS_LIB_CONTEXT *Ctx = NULL;
-	int b20sInSC, b30sInSC ;
-	int bStartCodeFound, Rewind;
-	int nLeadingZero8BitsCount=0, TrailingZero8Bits=0;
-	//unused bool bSetIDR = true;
-	//unused static BOOL fOne = TRUE;
+	DTS_LIB_CONTEXT *Ctx = DtsGetContext(hDevice);
 	uint32_t Pos = 0;
-
-	DTS_GET_CTX(hDevice,Ctx);
+	uint32_t Header, End, Consumed;
+	int Prefix;
+	if (!Ctx || !pInputBuf || !pNalu || !ulSize || ulSize > INT_MAX)
+		return -1;
 
 	if (bSkipSyncMarker)
 	{
@@ -1024,101 +1022,36 @@ int DtsGetNaluType(HANDLE hDevice, uint8_t* pInputBuf, uint32_t ulSize, NALU_t* 
 		pNalu->Len = ulSize;
 		return 1;
 	}
-	while(Pos <= ulSize)
+	while (Pos < ulSize && pInputBuf[Pos] == 0)
+		++Pos;
+	// Require both a complete prefix and its NAL header before changing state.
+	if (Pos < 2 || Pos == ulSize || pInputBuf[Pos] != 1 || ulSize - Pos < 2)
+		return -1;
+	if (!Ctx->PESConvParams.m_bIsFirstByteStreamNALU && Pos > 3)
+		return -1;
+	Prefix = Pos == 2 ? 3 : 4;
+	Header = ++Pos;
+	End = Consumed = ulSize;
+	for (; ulSize - Pos >= 3; ++Pos)
 	{
-		if( (pInputBuf[Pos++]) == 0)
+		if (pInputBuf[Pos] != 0 || pInputBuf[Pos + 1] != 0)
 			continue;
-		else
+		if (pInputBuf[Pos + 2] == 1 ||
+		    (ulSize - Pos >= 4 && pInputBuf[Pos + 2] == 0 && pInputBuf[Pos + 3] == 1))
+		{
+			End = Consumed = Pos;
+			while (End > Header && pInputBuf[End - 1] == 0)
+				--End;
 			break;
+		}
 	}
-	if(pInputBuf[Pos-1] != 1)
-	{
+	if (End <= Header)
 		return -1;
-	}
-	if(Pos < 3)
-	{
-		return -1;
-	}
-	else if(Pos == 3)
-	{
-		pNalu->StartcodePrefixLen = 3;
-		nLeadingZero8BitsCount = 0;
-	}
-	else
-	{
-		nLeadingZero8BitsCount = Pos-4;
-		pNalu->StartcodePrefixLen = 4;
-	}
-
-	//the 1st byte stream NAL unit can has nLeadingZero8BitsCount, but subsequent ones are not
-	//allowed to contain it since these zeros(if any) are considered trailing_zero_8bits
-	//of the previous byte stream NAL unit.
-	if(!Ctx->PESConvParams.m_bIsFirstByteStreamNALU && nLeadingZero8BitsCount>0)
-	{
-//		DbgLog((LOG_TRACE, 1, TEXT("GetNaluType : ret 3\n")));
-		return -1;
-	}
+	pNalu->StartcodePrefixLen = Prefix;
+	pNalu->Len = End - Header;
+	pNalu->NalUnitType = pInputBuf[Header] & 0x1f;
 	Ctx->PESConvParams.m_bIsFirstByteStreamNALU = false;
-
-	bStartCodeFound = 0;
-	b20sInSC = 0;
-	b30sInSC = 0;
-
-	while( (!bStartCodeFound) && (Pos < ulSize))
-	{
-		Pos++;
-		if(Pos > ulSize)
-		{
-//			DbgLog((LOG_TRACE, 1, TEXT("GetNaluType : Pos > size = %d\n"),ulSize));
-
-		}
-		b30sInSC = DtsFindBSStartCode( (pInputBuf + Pos- 4), 3);
-		if(b30sInSC != 1)
-			b20sInSC = DtsFindBSStartCode( (pInputBuf + Pos -3), 2);
-		bStartCodeFound = (b20sInSC  || b30sInSC);
-	}
-
-	Rewind = 0;
-	if(!bStartCodeFound)
-	{
-//		DbgLog((LOG_TRACE, 1, TEXT("GetNaluType : ret 4 Pos = %d size = %d\n"),Pos,ulSize));
-
-		//even if next start code is not found pprocess this NAL.
-#if 0
-		return -1;
-#endif
-
-	}
-
-	if(bStartCodeFound)
-	{
-		//Count the trailing_zero_8bits
-		//TrailingZero8Bits is present only for start code 00 00 00 01
-		if(b30sInSC)
-		{
-			while(pInputBuf[Pos-5-TrailingZero8Bits]==0)
-				TrailingZero8Bits++;
-		}
-		// Here, we have found another start code (and read length of startcode bytes more than we should
-		// have.  Hence, go back in the file
-
-		if(b30sInSC)
-			Rewind = -4;
-		else if (b20sInSC)
-			Rewind = -3;
-	}
-
-	// Here the leading zeros(if any), Start code, the complete NALU, trailing zeros(if any)
-	// until the  next start code .
-	// Total size traversed is Pos, Pos+rewind are the number of bytes excluding the next
-	// start code, and (Pos+rewind)-StartcodePrefixLen-LeadingZero8BitsCount-TrailingZero8Bits
-	// is the size of the NALU.
-
-	pNalu->Len = (Pos+Rewind)-pNalu->StartcodePrefixLen-nLeadingZero8BitsCount-TrailingZero8Bits;
-
-	pNalu->NalUnitType = (pInputBuf[nLeadingZero8BitsCount+pNalu->StartcodePrefixLen]) & 0x1f;
-
-	return (Pos+Rewind);
+	return Consumed;
 }
 
 BC_STATUS DtsParseAVC(HANDLE hDevice, uint8_t* pInputBuf, ULONG ulSize, uint32_t* Offset, bool bIDR, int *pNalType)
@@ -1128,12 +1061,16 @@ BC_STATUS DtsParseAVC(HANDLE hDevice, uint8_t* pInputBuf, ULONG ulSize, uint32_t
 	uint32_t Pos = 0;
 	bool bResult = false;
 
+	if (!pNalType)
+		return BC_STS_ERROR;
 	*pNalType = -1;
+	if (!pInputBuf || !Offset || ulSize > INT_MAX)
+		return BC_STS_ERROR;
 
-	while (1)
+	while (Pos < ulSize)
 	{
 		ret=DtsGetNaluType(hDevice, pInputBuf + Pos,ulSize - Pos,&Nalu, false);
-		if (ret <= 0)
+		if (ret <= 0 || (uint32_t)ret > ulSize - Pos)
 		{
 			return BC_STS_ERROR;
 		}
@@ -1163,12 +1100,11 @@ BC_STATUS DtsParseAVC(HANDLE hDevice, uint8_t* pInputBuf, ULONG ulSize, uint32_t
 		if(bResult)
 		{
 			*Offset = Pos;
-			break;
+			*pNalType = Nalu.NalUnitType;
+			return BC_STS_SUCCESS;
 		}
 	}
-	*pNalType = Nalu.NalUnitType;
-
-	return BC_STS_SUCCESS;
+	return BC_STS_ERROR;
 }
 
 BC_STATUS DtsFindIDR(HANDLE hDevice, uint8_t* pInputBuffer, uint32_t ulSizeInBytes, uint32_t* pOffset)

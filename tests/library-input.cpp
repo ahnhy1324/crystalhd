@@ -200,6 +200,135 @@ static void DetectorBounds()
     }
 }
 
+static void AnnexBScannerBounds()
+{
+    Fixture f(4);
+    f.context.VidParams.MediaSubType = BC_MSUBTYPE_H264;
+    f.context.VidParams.StreamType = BC_STREAM_TYPE_ES;
+    f.context.PESConvParams.m_bAddSpsPps = false;
+    f.context.PESConvParams.m_bIsAdd_SCode_CodeIn = false;
+    DTS_INPUT_MDATA metadata[32] = {};
+    f.context.MdataPoolPtr = metadata;
+    f.context.MDPendHead = f.context.MDPendTail = DTS_MDATA_PEND_LINK((&f.context));
+    for (DTS_INPUT_MDATA &entry : metadata) {
+        entry.flink = f.context.MDFreeHead;
+        f.context.MDFreeHead = &entry;
+    }
+    auto scan = [&](const Bytes &input, bool first, NALU_t &nalu) {
+        f.context.PESConvParams.m_bIsFirstByteStreamNALU = first;
+        uint8_t *exact = new uint8_t[input.size()];
+        if (!input.empty()) std::memcpy(exact, input.data(), input.size());
+        const int consumed = DtsGetNaluType(&f.context, exact, input.size(), &nalu, false);
+        check(input.empty() || !std::memcmp(exact, input.data(), input.size()),
+              "NAL scanning leaves exact-sized caller bytes unchanged");
+        delete[] exact;
+        return consumed;
+    };
+    auto send = [&](const Bytes &input) {
+        packets.clear();
+        f.context.PESConvParams.m_bIsFirstByteStreamNALU = true;
+        uint8_t *exact = new uint8_t[input.size()];
+        std::memcpy(exact, input.data(), input.size());
+        const BC_STATUS status = DtsProcInput(&f.context, exact, input.size(), 666671, false);
+        check(!std::memcmp(exact, input.data(), input.size()), "ES transport preserves caller bytes");
+        delete[] exact;
+        return status;
+    };
+    auto timestamp_packet = [&](const Bytes &packet) {
+        const uint32_t sequence = f.context.InMdataTag & DTS_MDATA_MAX_TAG;
+        const Bytes expected = {0, 0, 1, 0xbd, 7, 0x40,
+            static_cast<uint8_t>(sequence), static_cast<uint8_t>(sequence >> 8), 0x0a, 0, 0, 0};
+        return packet == expected && f.context.MDPendTail != DTS_MDATA_PEND_LINK((&f.context)) &&
+            f.context.MDPendTail->appTimeStamp == 66;
+    };
+    for (const Bytes &input : {Bytes{}, Bytes{0}, Bytes{0, 0}, Bytes{0, 0, 0},
+            Bytes{0, 0, 0, 0}, Bytes{1}, Bytes{0, 1, 0x65}, Bytes{0, 0, 1},
+            Bytes{0, 0, 0, 1}, Bytes{0, 0, 1, 0, 0, 1, 0x65},
+            Bytes{0, 0, 1, 0, 0, 0, 1, 0x65}}) {
+        NALU_t nalu = {};
+        check(scan(input, true, nalu) < 0, "empty/truncated/adjacent prefixes have no NAL header");
+        check(f.context.PESConvParams.m_bIsFirstByteStreamNALU,
+              "a rejected NAL does not consume first-byte-stream state");
+    }
+    NALU_t nalu = {};
+    check(DtsGetNaluType(&f.context, nullptr, 1, &nalu, false) < 0 &&
+          DtsGetNaluType(&f.context, nullptr, 1, &nalu, true) < 0,
+          "both NAL scan modes reject null input");
+    uint8_t header = 0x65;
+    check(DtsGetNaluType(&f.context, &header, 0, &nalu, true) < 0 &&
+          DtsGetNaluType(&f.context, &header, UINT32_MAX, &nalu, false) < 0 &&
+          DtsGetNaluType(nullptr, &header, 1, &nalu, true) < 0 &&
+          DtsGetNaluType(&f.context, &header, 1, nullptr, true) < 0,
+          "NAL scan rejects empty, oversized and invalid arguments before reading");
+    check(DtsGetNaluType(&f.context, &header, 1, &nalu, true) == 1 &&
+          nalu.Len == 1 && nalu.NalUnitType == NALU_TYPE_IDR,
+          "sync-marker-free mode retains its one-byte NAL behavior");
+    const Bytes leading = {0, 0, 0, 0, 1, 0x65};
+    check(scan(leading, true, nalu) == 6 && nalu.StartcodePrefixLen == 4 && nalu.Len == 1,
+          "first NAL permits leading_zero_8bits without changing payload length");
+    check(scan(leading, false, nalu) < 0, "subsequent NAL retains its leading-zero restriction");
+    const Bytes mixed = {0, 0, 1, 9, 0xf0, 0, 0, 0, 0, 0, 1, 0x65, 0x88};
+    check(scan(mixed, true, nalu) == 7 && nalu.StartcodePrefixLen == 3 && nalu.Len == 2 &&
+          nalu.NalUnitType == NALU_TYPE_AUD, "mixed prefixes exclude trailing zeros from NAL length");
+    const Bytes remainder(mixed.begin() + 7, mixed.end());
+    check(scan(remainder, false, nalu) == 6 && nalu.StartcodePrefixLen == 4 && nalu.Len == 2 &&
+          nalu.NalUnitType == NALU_TYPE_IDR, "next scan begins at the complete four-byte prefix");
+
+    // Extension payloads below test framing only, not MVC bitstream conformance.
+    for (uint8_t type : {uint8_t(9), uint8_t(14), uint8_t(15), uint8_t(20), uint8_t(31)}) {
+        const Bytes unknown = {0, 0, 1, type, 0xf0};
+        uint32_t offset = 123;
+        int nal_type = 123;
+        uint8_t *exact = new uint8_t[unknown.size()];
+        std::memcpy(exact, unknown.data(), unknown.size());
+        f.context.PESConvParams.m_bIsFirstByteStreamNALU = true;
+        check(DtsParseAVC(&f.context, exact, unknown.size(), &offset, false, &nal_type) == BC_STS_ERROR &&
+              nal_type == -1, "terminal unrecognized NAL has no timestamp boundary");
+        delete[] exact;
+        const uint32_t previous_tag = f.context.InMdataTag;
+        check(send(unknown) == BC_STS_SUCCESS && packets.size() == 1 && packets[0] == unknown &&
+              f.context.InMdataTag == previous_tag,
+              "terminal unrecognized NAL preserves exact ES bytes without timestamp metadata");
+        Bytes picture = unknown;
+        append(picture, idr, 0);
+        check(send(picture) == BC_STS_SUCCESS && packets.size() == 2 && timestamp_packet(packets[0]) &&
+              packets[1] == picture,
+              "unknown-to-IDR input keeps the whole ES payload after its timestamp metadata");
+        for (const Bytes &parameter : {sps, pps, Bytes{0x06, 0x80}}) {
+            Bytes combined = unknown;
+            append(combined, parameter, 0);
+            const size_t boundary = combined.size();
+            append(combined, idr, 0);
+            const Bytes prefix(combined.begin(), combined.begin() + boundary);
+            const Bytes tail(combined.begin() + boundary, combined.end());
+            check(send(combined) == BC_STS_SUCCESS && packets.size() == 3 &&
+                  packets[0] == prefix && timestamp_packet(packets[1]) && packets[2] == tail,
+                  "parameter-set/SEI cumulative split preserves prefix and timestamped remainder");
+        }
+    }
+    for (uint8_t type : {uint8_t(1), uint8_t(5)}) {
+        Bytes picture = {0, 0, 1, 9, 0xf0, 0, 0, 1, type, 0x88};
+        uint32_t offset = 0;
+        f.context.PESConvParams.m_bIsFirstByteStreamNALU = true;
+        check(DtsFindIDR(&f.context, picture.data(), picture.size(), &offset) == BC_STS_SUCCESS &&
+              offset == picture.size(), "IDR search preserves legacy slice and IDR acceptance");
+    }
+    // All short combinations exercise start-code look-behind and terminal bounds.
+    const uint8_t alphabet[] = {0, 1, 9, 0x65};
+    size_t combinations = 1;
+    for (size_t size = 0; size <= 8; ++size, combinations *= 4) {
+        for (size_t value = 0; value < combinations; ++value) {
+            Bytes input(size);
+            size_t digits = value;
+            for (uint8_t &byte : input) { byte = alphabet[digits & 3]; digits >>= 2; }
+            const int consumed = scan(input, true, nalu);
+            check(consumed < 0 || (static_cast<size_t>(consumed) <= size && nalu.Len > 0 &&
+                  nalu.Len + nalu.StartcodePrefixLen <= static_cast<uint32_t>(consumed)),
+                  "short NAL scan returns only an in-range, nonempty extent");
+        }
+    }
+}
+
 static void WmvBFrameMetadata()
 {
     // Canonical four-byte STRUCT_C. MAXBFRAMES is a three-bit count,
@@ -250,9 +379,9 @@ int main(int argc, char **argv)
     if (argc > 2 || (argc == 2 && std::strcmp(argv[1], "--framing"))) return 2;
     Framing();
     WmvBFrameMetadata();
-    // Baseline proof uses --framing: do not exercise the known unsafe old
-    // Annex-B parser on malformed/exact-sized buffers before the fix.
+    AnnexBScannerBounds();
+    // --framing omits the separate SPS detector regression.
     if (argc == 1) DetectorBounds();
     if (failures) { std::fprintf(stderr, "%u input checks failed\n", failures); return 1; }
-    std::puts("PASS: actual AVC1/WMV3 input timestamps, metadata, framing and bounded SPS detection checks");
+    std::puts("PASS: actual AVC1/WMV3 input timestamps, framing, SPS detection and bounded Annex-B scanning");
 }
