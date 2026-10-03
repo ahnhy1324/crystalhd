@@ -10,11 +10,19 @@
 
 #define BC_BIT(bit) (UINT32_C(1) << (bit))
 #define dev_dbg(dev, ...) ((void)(dev))
+#define dev_err(dev, ...) ((void)(dev))
+#define dev_info(dev, ...) ((void)(dev))
 #define printk(...) ((void)0)
+#define READ_ONCE(value) (value)
+#define WRITE_ONCE(value, update) ((value) = (update))
 
 struct device { int unused; };
-struct pci_dev { struct device dev; };
-struct crystalhd_adp { struct pci_dev *pdev; };
+struct pci_dev { struct device dev; unsigned irq, device; };
+struct crystalhd_adp {
+    struct pci_dev *pdev;
+    bool present, dma_terminal_quiesced;
+    struct { unsigned cin_wait_exit; } cmds;
+};
 struct crystalhd_hw {
     struct crystalhd_adp *adp;
     uint32_t rx_list_post_index, RxCaptureState;
@@ -22,10 +30,14 @@ struct crystalhd_hw {
     void (*pfnWriteDevRegister)(struct crystalhd_adp *, uint32_t, uint32_t);
     enum FLEA_POWER_STATES FleaPowerState;
     bool FleaEnablePWM;
+    bool dma_fault, dev_started;
+    int fwcmd_trans_mutex;
+    bool (*pfnStopDevice)(struct crystalhd_hw *);
+    void *rx_freeq;
 };
 #include "crystalhd_flea_ddr.h"
 
-static struct pci_dev endpoint;
+static struct pci_dev endpoint = { .irq = 17, .device = BC_PCI_DEVID_FLEA };
 static struct crystalhd_adp adapter = { .pdev = &endpoint };
 static unsigned clear_at, reset_reads, reset_writes, other_reads, other_writes;
 static unsigned sleeps, sleep_ms, callbacks, cases;
@@ -35,7 +47,9 @@ static bool require_reset, detected_ddr3;
 
 enum event_kind { READ, WRITE, SLEEP, CALL };
 enum callback_id { CLEAR, DISABLE, ENABLE, DETECT_DDR, CONTROLLER, ARBITER,
-                   TEMPERATURE_ON, TEMPERATURE_OFF, POWER_INIT, START, STOP, CALLBACK_END };
+                   TEMPERATURE_ON, TEMPERATURE_OFF, POWER_INIT, START, STOP,
+                   IRQ_OFF, IRQ_ON, TRANSACTION_LOCK, TRANSACTION_UNLOCK,
+                   MASTER_OFF, PCI_DRAIN, CALLBACK_END };
 struct event { enum event_kind kind; uint32_t address, value; };
 static struct event events[4096];
 static unsigned event_count, callback_count[CALLBACK_END];
@@ -43,9 +57,12 @@ struct register_value { uint32_t address, value; };
 static struct register_value registers[96];
 static unsigned register_count;
 struct status_script { unsigned ready_at, terminal, reads; uint32_t noise, observed; };
-static struct status_script pll, lane[2], zq;
+static struct status_script pll, lane[2], zq, memc, cke;
 static unsigned calibration_clear, override_reads;
-static bool calibration_started;
+static bool calibration_started, self_refresh_requested;
+static bool master_enabled, pending_drained;
+static unsigned irq_depth;
+static struct crystalhd_hw *locked_hw;
 
 static void record(enum event_kind kind, uint32_t address, uint32_t value)
 {
@@ -105,8 +122,15 @@ static uint32_t read_register(struct crystalhd_adp *adp, uint32_t reg)
         value = status_read(&lane[1], 3);
     else if (reg == BCHP_DDR23_PHY_CONTROL_REGS_ZQ_PVT_COMP_CTL)
         value = status_read(&zq, BCHP_DDR23_PHY_CONTROL_REGS_ZQ_PVT_COMP_CTL_sample_done_MASK);
-    else if (reg == BCHP_DDR23_CTL_REGS_0_CTL_STATUS)
-        value = BCHP_DDR23_CTL_REGS_0_CTL_STATUS_idle_MASK;
+    else if (reg == BCHP_DDR23_CTL_REGS_0_CTL_STATUS) {
+        if (!self_refresh_requested)
+            value = status_read(&memc, BCHP_DDR23_CTL_REGS_0_CTL_STATUS_idle_MASK);
+        else {
+            cke.reads++;
+            value = cke.noise | (cke.ready_at && cke.reads >= cke.ready_at ? 0 :
+                                BCHP_DDR23_CTL_REGS_0_CTL_STATUS_clke_MASK);
+        }
+    }
     else
         value = stored_register(reg);
     record(READ, reg, value);
@@ -127,6 +151,9 @@ static void write_register(struct crystalhd_adp *adp, uint32_t reg, uint32_t val
     other_writes++;
     record(WRITE, reg, value);
     store_register(reg, value);
+    if (reg == BCHP_DDR23_CTL_REGS_0_PARAMS2 &&
+        (value & BCHP_DDR23_CTL_REGS_0_PARAMS2_clke_MASK))
+        self_refresh_requested = true;
     if (reg == BCHP_DDR23_PHY_BYTE_LANE_0_VDL_CALIBRATE ||
         reg == BCHP_DDR23_PHY_BYTE_LANE_1_VDL_CALIBRATE) {
         unsigned bit = reg == BCHP_DDR23_PHY_BYTE_LANE_0_VDL_CALIBRATE ? 1 : 2;
@@ -193,6 +220,57 @@ static void crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw, enum FL
 
 #include "flea-reset-functions.h"
 
+static void mutex_lock(int *lock)
+{
+    assert(locked_hw && lock == &locked_hw->fwcmd_trans_mutex && !*lock);
+    *lock = 1;
+    record(CALL, TRANSACTION_LOCK, 0);
+}
+
+static void mutex_unlock(int *lock)
+{
+    assert(locked_hw && lock == &locked_hw->fwcmd_trans_mutex && *lock == 1);
+    *lock = 0;
+    record(CALL, TRANSACTION_UNLOCK, 0);
+}
+
+static void disable_irq(unsigned irq)
+{
+    assert(irq == endpoint.irq && !irq_depth && locked_hw->fwcmd_trans_mutex);
+    irq_depth++;
+    record(CALL, IRQ_OFF, 0);
+}
+
+static void enable_irq(unsigned irq)
+{
+    assert(irq == endpoint.irq && irq_depth == 1 && locked_hw->fwcmd_trans_mutex);
+    irq_depth--;
+    record(CALL, IRQ_ON, 0);
+}
+
+static void crystalhd_link_disable_interrupts(struct crystalhd_hw *hw)
+{
+    (void)hw;
+    assert(!"FLEA shutdown must not mask LINK registers");
+}
+
+static void pci_clear_master(struct pci_dev *pdev)
+{
+    assert(pdev == &endpoint && locked_hw->dma_fault && !adapter.present &&
+           adapter.cmds.cin_wait_exit && irq_depth && locked_hw->fwcmd_trans_mutex);
+    master_enabled = false;
+    record(CALL, MASTER_OFF, 0);
+}
+
+static int pci_wait_for_pending_transaction(struct pci_dev *pdev)
+{
+    assert(pdev == &endpoint && !master_enabled && irq_depth && locked_hw->fwcmd_trans_mutex);
+    record(CALL, PCI_DRAIN, 0);
+    return pending_drained;
+}
+
+#include "flea-stop-callers.h"
+
 static void setup(void)
 {
     clear_at = 1;
@@ -201,12 +279,19 @@ static void setup(void)
     sleeps = sleep_ms = callbacks = event_count = register_count = 0;
     calibration_clear = override_reads = 0;
     calibration_started = false;
+    self_refresh_requested = false;
     require_reset = false;
     reset_complete = true;
     detected_ddr3 = false;
     pll = (struct status_script){1, 1, 0, 0, 0};
     lane[0] = lane[1] = (struct status_script){1, 3, 0, 0x2a0, 0x2a3};
     zq = (struct status_script){1, BCHP_DDR23_PHY_CONTROL_REGS_ZQ_PVT_COMP_CTL_sample_done_MASK, 0, 0, 0};
+    memc = (struct status_script){1, BCHP_DDR23_CTL_REGS_0_CTL_STATUS_idle_MASK, 0, 0, 0};
+    cke = (struct status_script){1, 0, 0, 0, 0};
+    adapter.present = master_enabled = pending_drained = true;
+    adapter.dma_terminal_quiesced = false;
+    adapter.cmds.cin_wait_exit = irq_depth = 0;
+    locked_hw = NULL;
     for (unsigned i = 0; i < CALLBACK_END; i++)
         callback_count[i] = 0;
 }
@@ -419,6 +504,184 @@ static void expect_events(unsigned offset, const struct event *expected, unsigne
                events[offset + i].address == expected[i].address && events[offset + i].value == expected[i].value);
 }
 
+static void run_stop(unsigned idle_at, unsigned cke_at, uint32_t noise)
+{
+    struct crystalhd_hw hw;
+    const unsigned idle_reads = idle_at && idle_at <= 100 ? idle_at : 100;
+    const unsigned cke_reads = cke_at && cke_at <= 100 ? cke_at : 100;
+    const bool idle = idle_at && idle_at <= 100;
+    const struct event prefix[] = {
+        {WRITE, BCHP_MISC3_RESET_CTRL, BCHP_MISC3_RESET_CTRL_CORE_RESET_MASK},
+        {SLEEP, 1, 0}, {READ, BCHP_MISC3_RESET_CTRL, 0}, {SLEEP, 1, 0}, {SLEEP, 5, 0},
+        {CALL, TEMPERATURE_OFF, 0}, {WRITE, BCHP_SUN_GISB_ARB_TIMER, 0xd80},
+        {WRITE, BCHP_MISC1_TX_DMA_CTRL, 0}, {WRITE, BCHP_MISC1_HIF_DMA_CTRL, 0},
+        {WRITE, BCHP_MISC1_Y_RX_SW_DESC_LIST_CTRL_STS, 0},
+        {WRITE, BCHP_PRI_ARB_CONTROL_REGS_REFRESH_CTL_0, 0},
+    };
+    const uint32_t clocks = BCHP_CLK_PM_CTRL_DIS_ARM_CLK_MASK |
+                            BCHP_CLK_PM_CTRL_DIS_AVD_CLK_MASK |
+                            BCHP_CLK_PM_CTRL_DIS_AVD_108_CLK_MASK |
+                            BCHP_CLK_PM_CTRL_DIS_AVD_216_CLK_MASK;
+    const struct event shutdown[] = {
+        {READ, BCHP_CLK_PM_CTRL, 0}, {WRITE, BCHP_CLK_PM_CTRL, clocks},
+        {CALL, CLEAR, 0}, {CALL, DISABLE, 0},
+        {READ, BCHP_DDR23_CTL_REGS_0_PARAMS2, 0},
+        {WRITE, BCHP_DDR23_CTL_REGS_0_PARAMS2, BCHP_DDR23_CTL_REGS_0_PARAMS2_clke_MASK},
+        {WRITE, BCHP_DDR23_CTL_REGS_0_REFRESH_CMD, 0x60},
+    };
+    const uint32_t lane_idle = BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_idle_MASK |
+        BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_dm_iddq_MASK |
+        BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_dq_iddq_MASK |
+        BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_read_enb_iddq_MASK |
+        BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_dqs_iddq_MASK |
+        BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL_clk_iddq_MASK;
+    const uint32_t all_clocks = clocks | BCHP_CLK_PM_CTRL_DIS_SUN_27_LOW_PWR_MASK |
+        BCHP_CLK_PM_CTRL_DIS_SUN_108_LOW_PWR_MASK | BCHP_CLK_PM_CTRL_DIS_MISC_OTP_9_CLK_MASK |
+        BCHP_CLK_PM_CTRL_DIS_BLINK_108_CLK_MASK | BCHP_CLK_PM_CTRL_DIS_MISC_108_CLK_MASK |
+        BCHP_CLK_PM_CTRL_DIS_BLINK_216_CLK_MASK | BCHP_CLK_PM_CTRL_DIS_DDR_108_CLK_MASK |
+        BCHP_CLK_PM_CTRL_DIS_DDR_216_CLK_MASK | BCHP_CLK_PM_CTRL_DIS_MISC_216_CLK_MASK |
+        BCHP_CLK_PM_CTRL_DIS_SUN_216_CLK_MASK;
+    const struct event tail[] = {
+        {WRITE, BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL, lane_idle},
+        {WRITE, BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL, lane_idle},
+        {WRITE, BCHP_DDR23_PHY_BYTE_LANE_0_CLOCK_REG_CONTROL,
+            BCHP_DDR23_PHY_BYTE_LANE_0_CLOCK_REG_CONTROL_pwrdn_MASK},
+        {WRITE, BCHP_DDR23_PHY_BYTE_LANE_1_CLOCK_REG_CONTROL,
+            BCHP_DDR23_PHY_BYTE_LANE_0_CLOCK_REG_CONTROL_pwrdn_MASK},
+        {WRITE, BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL,
+            BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL_idle_MASK |
+            BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL_ctl_iddq_MASK},
+        {WRITE, BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL,
+            BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL_DIS_DDR_CLK_MASK},
+        {READ, BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG, 0},
+        {WRITE, BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG, 0},
+        {WRITE, BCHP_DDR23_PHY_CONTROL_REGS_CLOCK_REG_CONTROL,
+            BCHP_DDR23_PHY_CONTROL_REGS_CLOCK_REG_CONTROL_pwrdn_MASK},
+        {READ, BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG, 0},
+        {WRITE, BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG,
+            BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG_PWRDN_MASK},
+        {READ, BCHP_CLK_PLL1_CTRL, 0},
+        {WRITE, BCHP_CLK_PLL1_CTRL, BCHP_CLK_PLL1_CTRL_POWERDOWN_MASK},
+        {WRITE, BCHP_CLK_PLL0_ARM_DIV, 0xff},
+        {READ, BCHP_CLK_PM_CTRL, clocks}, {WRITE, BCHP_CLK_PM_CTRL, all_clocks},
+        {CALL, STOP, 0},
+    };
+    unsigned cursor = sizeof(prefix) / sizeof(prefix[0]);
+
+    setup();
+    hw = hardware();
+    hw.FleaPowerState = FLEA_PS_ACTIVE;
+    memc.ready_at = idle_at;
+    memc.noise = noise & ~BCHP_DDR23_CTL_REGS_0_CTL_STATUS_idle_MASK;
+    cke.ready_at = cke_at;
+    cke.noise = noise & ~BCHP_DDR23_CTL_REGS_0_CTL_STATUS_clke_MASK;
+    require_reset = true;
+    reset_complete = false;
+    cases++;
+    assert(crystalhd_flea_stop_device(&hw) == idle);
+    assert(memc.reads == idle_reads && cke.reads == (idle ? cke_reads : 0));
+    assert(hw.rx_list_post_index == 17 && hw.RxCaptureState == 23 && hw.FleaEnablePWM);
+    expect_events(0, prefix, cursor);
+    for (unsigned i = 1; i <= idle_reads; i++) {
+        const struct event read = {READ, BCHP_DDR23_CTL_REGS_0_CTL_STATUS,
+            memc.noise | (idle && i == idle_reads ? BCHP_DDR23_CTL_REGS_0_CTL_STATUS_idle_MASK : 0)};
+        expect_events(cursor++, &read, 1);
+        if (i < idle_reads) {
+            const struct event delay = {SLEEP, 1, 0};
+            expect_events(cursor++, &delay, 1);
+        }
+    }
+    if (!idle) {
+        /* Nothing after the failed prerequisite may touch clocks, CKE or PHY. */
+        assert(cursor == event_count && !self_refresh_requested);
+        assert(callback_count[TEMPERATURE_OFF] == 1 && callbacks == 1);
+        assert(!callback_count[CLEAR] && !callback_count[DISABLE] && !callback_count[STOP]);
+        assert(hw.FleaPowerState == FLEA_PS_ACTIVE);
+        assert(sleeps == 3 + idle_reads - 1 && sleep_ms == sleeps + 4);
+        return;
+    }
+    expect_events(cursor, shutdown, sizeof(shutdown) / sizeof(shutdown[0]));
+    cursor += sizeof(shutdown) / sizeof(shutdown[0]);
+    for (unsigned i = 1; i <= cke_reads; i++) {
+        const struct event read = {READ, BCHP_DDR23_CTL_REGS_0_CTL_STATUS,
+            cke.noise | (cke_at && i >= cke_at ? 0 : BCHP_DDR23_CTL_REGS_0_CTL_STATUS_clke_MASK)};
+        expect_events(cursor++, &read, 1);
+        if (i < cke_reads) {
+            const struct event delay = {SLEEP, 1, 0};
+            expect_events(cursor++, &delay, 1);
+        }
+    }
+    expect_events(cursor, tail, sizeof(tail) / sizeof(tail[0]));
+    assert(cursor + sizeof(tail) / sizeof(tail[0]) == event_count);
+    assert(callback_count[TEMPERATURE_OFF] == 1 && callback_count[CLEAR] == 1 &&
+           callback_count[DISABLE] == 1 && callback_count[STOP] == 1 && callbacks == 4);
+    assert(hw.FleaPowerState == FLEA_PS_STOPPED && self_refresh_requested);
+    assert(sleeps == 3 + idle_reads - 1 + cke_reads - 1 && sleep_ms == sleeps + 4);
+}
+
+static void stop_caller(unsigned idle_at, bool closing, bool drained)
+{
+    struct crystalhd_hw hw;
+    unsigned completed_events;
+    const bool idle = idle_at && idle_at <= 100;
+    const struct event failure[] = {
+        {CALL, DISABLE, 0}, {CALL, MASTER_OFF, 0}, {CALL, PCI_DRAIN, 0},
+        {CALL, IRQ_ON, 0}, {CALL, TRANSACTION_UNLOCK, 0},
+    };
+
+    setup();
+    hw = hardware();
+    hw.FleaPowerState = FLEA_PS_ACTIVE;
+    hw.dev_started = true;
+    hw.rx_freeq = &endpoint; /* Reachable owner sentinel, not a DMA fence. */
+    hw.pfnStopDevice = crystalhd_flea_stop_device;
+    locked_hw = &hw;
+    memc.ready_at = idle_at;
+    pending_drained = drained;
+    require_reset = true;
+    reset_complete = false;
+    cases++;
+    assert((closing ? crystalhd_hw_close(&hw) : crystalhd_hw_suspend(&hw)) ==
+           (idle ? BC_STS_SUCCESS : BC_STS_ERROR));
+    assert(!irq_depth && !hw.fwcmd_trans_mutex);
+    assert(hw.dev_started == !(idle && closing));
+    assert(hw.dma_fault == !idle && adapter.present == idle &&
+           adapter.cmds.cin_wait_exit == !idle && master_enabled == idle);
+    assert(hw.rx_freeq == &endpoint && !adapter.dma_terminal_quiesced &&
+           hw.rx_list_post_index == 17 && hw.RxCaptureState == 23);
+    assert(hw.FleaPowerState == (idle ? FLEA_PS_STOPPED : FLEA_PS_ACTIVE));
+    assert(memc.reads == (idle ? idle_at : 100));
+    if (!idle) {
+        assert(!cke.reads && !self_refresh_requested && !callback_count[CLEAR] &&
+               !callback_count[STOP] && callback_count[DISABLE] == 1);
+        assert(!accesses(READ, BCHP_CLK_PM_CTRL) && !accesses(WRITE, BCHP_CLK_PM_CTRL));
+        assert(event_count >= sizeof(failure) / sizeof(failure[0]));
+        expect_events(event_count - sizeof(failure) / sizeof(failure[0]),
+                      failure, sizeof(failure) / sizeof(failure[0]));
+        completed_events = event_count;
+        assert(crystalhd_hw_suspend(&hw) == BC_STS_IO_ERROR &&
+               crystalhd_hw_close(&hw) == BC_STS_IO_ERROR);
+        assert(event_count == completed_events && hw.dev_started && hw.dma_fault &&
+               hw.rx_freeq == &endpoint && !adapter.dma_terminal_quiesced);
+    } else
+        assert(!accesses(CALL, MASTER_OFF) && !accesses(CALL, PCI_DRAIN));
+}
+
+static void stop_cases(void)
+{
+    const unsigned replies[] = {1, 2, 99, 100, 101, 0};
+    const uint32_t noise[] = {0, UINT32_MAX};
+
+    for (unsigned n = 0; n < sizeof(noise) / sizeof(noise[0]); n++)
+        for (unsigned i = 0; i < sizeof(replies) / sizeof(replies[0]); i++)
+            for (unsigned c = 0; c < sizeof(replies) / sizeof(replies[0]); c++)
+                run_stop(replies[i], replies[c], noise[n]);
+    for (unsigned closing = 0; closing < 2; closing++)
+        for (unsigned drained = 0; drained < 2; drained++)
+            for (unsigned i = 0; i < sizeof(replies) / sizeof(replies[0]); i++)
+                stop_caller(replies[i], closing, drained);
+}
+
 static void successful_trace(void)
 {
     const struct event expected[] = {
@@ -598,6 +861,7 @@ int main(void)
             for (unsigned j = 0; j < sizeof(other) / sizeof(other[0]); j++)
                 run_case(operation, releases[i], other[j]);
     ddr_cases();
+    stop_cases();
     printf("Flea reset/DDR: %u production reset/poll/init/start/stop scenarios passed\n", cases);
     return 0;
 }
