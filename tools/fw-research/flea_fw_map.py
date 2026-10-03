@@ -3411,7 +3411,7 @@ def _bootstrap_map(payload, images):
         anchors.append(record)
 
     # Flat ARM vectors + coherent reset/main branches corroborate ARMCR4 in
-    # crystalhd_fleafuncs.c:1318-1320. Do not decode either embedded ARC image.
+    # crystalhd_fleafuncs.c:1331-1333. Do not decode either embedded ARC image.
     for offset, position, target in ((0, 0x20, 0x2ca00), (4, 0x24, 0x3c),
                                      (8, 0x28, 0x5c), (12, 0x2c, 0x7c),
                                      (16, 0x30, 0x9c), (24, 0x34, 0xdc),
@@ -3744,7 +3744,7 @@ def _bootstrap_map(payload, images):
                 "scrub_end": {"address": scrub_end, "source_kind": "driver",
                               "source": "driver/linux/FleaDefs.h:42"},
                 "host_command": {"address": scrub_end + 1 + 0x100, "source_kind": "driver",
-                                 "source": "driver/linux/FleaDefs.h:51; driver/linux/crystalhd_fleafuncs.c:1253"},
+                                 "source": "driver/linux/FleaDefs.h:51; driver/linux/crystalhd_fleafuncs.c:1266"},
                 "reply": {"address": scrub_end + 0x201, "source_kind": "driver and ARM anchors",
                           "instruction_blob_file_offsets": [0x9298, 0x929c, 0x92a0, 0x92a4]}},
             "limitations": ["Only fixed baseline instruction anchors are decoded; this is not a complete ARM call graph.",
@@ -4742,7 +4742,7 @@ def _stock_host_command_closure(payload):
             "compressed_tx_metadata_reply_word": 11,
             "open_reply_stores_blob_file_offsets": [0x5914, 0x591c],
             "tx_metadata_address_expression": "word at ARM MMIO 0x100f6004 + 0x301; no plane extent returned",
-            "driver_open_postprocessing": "driver/linux/crystalhd_fleafuncs.c:1820",
+            "driver_open_postprocessing": "driver/linux/crystalhd_fleafuncs.c:1833",
             "tx_layout_header": "include/flea/DriverFwShare.h",
             "tx_window_kind": "Bounded compressed-input DRAM windows, not a raw-source-plane lease.",
             "getter": {"entry_blob_file_offset": 0x898, "literal_blob_file_offset": 0x6fc,
@@ -5890,7 +5890,7 @@ def _picture_output_map(payload, images):
             "picture_handler_entry_blob_file_offset": 0x834c,
             "started_slot_offset": 0xd2, "pending_clear_blob_file_offset": 0x8820,
             "host_record_source": "include/flea/DriverFwShare.h:22",
-            "host_submit_source": "driver/linux/crystalhd_fleafuncs.c:2205",
+            "host_submit_source": "driver/linux/crystalhd_fleafuncs.c:2218",
             "complete_dma_ownership_verified": False},
         "picture_feed": {
             "entry_blob_file_offset": 0x7898,
