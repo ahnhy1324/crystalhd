@@ -340,6 +340,19 @@ void crystalhd_flea_reg_wr(struct crystalhd_adp *adp, uint32_t reg_off, uint32_t
 	}
 }
 
+static uint32_t crystalhd_flea_dram_burst(uint32_t addr, uint32_t remaining)
+{
+	uint32_t mask = BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_BASE_ADDR_MASK;
+	uint32_t window_words = ((~mask + 1U) - (addr & ~mask)) / 4U;
+
+	/* Bound IRQ-disabled PIO work and never cross the selected window. */
+	if (remaining > 64U)
+		remaining = 64U;
+	if (remaining > window_words)
+		remaining = window_words;
+	return remaining;
+}
+
 /**
 * crystalhd_flea_mem_rd - Read data from DRAM area.
 * @hw: Hardware context.
@@ -355,10 +368,11 @@ void crystalhd_flea_reg_wr(struct crystalhd_adp *adp, uint32_t reg_off, uint32_t
 BC_STATUS crystalhd_flea_mem_rd(struct crystalhd_hw *hw, uint32_t start_off,
 								uint32_t dw_cnt, uint32_t *rd_buff)
 {
-	uint32_t ix = 0;
-	uint32_t addr = start_off, base;
+	uint32_t ix = 0, addr = start_off;
+	uint32_t mask = BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_BASE_ADDR_MASK;
+	unsigned long flags;
 
-	if (!hw || !rd_buff) {
+	if (!hw || !hw->adp || !rd_buff) {
 		printk(KERN_ERR "%s: Invalid arg\n", __func__);
 		return BC_STS_INV_ARG;
 	}
@@ -373,19 +387,21 @@ BC_STATUS crystalhd_flea_mem_rd(struct crystalhd_hw *hw, uint32_t start_off,
 		return BC_STS_ERROR;
 	}
 
-	/* Set the base addr for the 512kb window */
-	hw->pfnWriteDevRegister(hw->adp, BCHP_MISC2_DIRECT_WINDOW_CONTROL,
-							(addr & BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_BASE_ADDR_MASK) | BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_ENABLE_MASK);
+	while (ix < dw_cnt) {
+		uint32_t count = crystalhd_flea_dram_burst(addr, dw_cnt - ix);
+		uint32_t n;
 
-	for (ix = 0; ix < dw_cnt; ix++) {
-		rd_buff[ix] = readl(hw->adp->mem_addr + (addr & ~BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_BASE_ADDR_MASK));
-		base = addr & BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_BASE_ADDR_MASK;
-		addr += 4; /* DWORD access at all times */
-		if (base != (addr & BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_BASE_ADDR_MASK)) {
-			/* Set the base addr for next 512kb window */
-			hw->pfnWriteDevRegister(hw->adp, BCHP_MISC2_DIRECT_WINDOW_CONTROL,
-										(addr & BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_BASE_ADDR_MASK) | BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_ENABLE_MASK);
-		}
+		/* The register helper's GISB lock alone cannot pin this window
+		 * against interrupt-side DRAM transfers after selecting it.
+		 */
+		spin_lock_irqsave(&hw->adp->dram_lock, flags);
+		hw->pfnWriteDevRegister(hw->adp, BCHP_MISC2_DIRECT_WINDOW_CONTROL,
+			(addr & mask) |
+			BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_ENABLE_MASK);
+		for (n = 0; n < count; n++, addr += 4)
+			rd_buff[ix + n] = readl(hw->adp->mem_addr + (addr & ~mask));
+		spin_unlock_irqrestore(&hw->adp->dram_lock, flags);
+		ix += count;
 	}
 	return BC_STS_SUCCESS;
 }
@@ -405,11 +421,11 @@ BC_STATUS crystalhd_flea_mem_rd(struct crystalhd_hw *hw, uint32_t start_off,
 BC_STATUS crystalhd_flea_mem_wr(struct crystalhd_hw *hw, uint32_t start_off,
 								uint32_t dw_cnt, const uint32_t *wr_buff)
 {
-	uint32_t ix = 0;
-	uint32_t addr = start_off, base;
-	uint32_t temp;
+	uint32_t ix = 0, addr = start_off;
+	uint32_t mask = BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_BASE_ADDR_MASK;
+	unsigned long flags;
 
-	if (!hw || !wr_buff) {
+	if (!hw || !hw->adp || !wr_buff) {
 		printk(KERN_ERR "%s: Invalid arg\n", __func__);
 		return BC_STS_INV_ARG;
 	}
@@ -424,23 +440,22 @@ BC_STATUS crystalhd_flea_mem_wr(struct crystalhd_hw *hw, uint32_t start_off,
 		return BC_STS_ERROR;
 	}
 
-	/* Set the base addr for the 512kb window */
-	hw->pfnWriteDevRegister(hw->adp, BCHP_MISC2_DIRECT_WINDOW_CONTROL,
-							(addr & BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_BASE_ADDR_MASK) | BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_ENABLE_MASK);
+	while (ix < dw_cnt) {
+		uint32_t count = crystalhd_flea_dram_burst(addr, dw_cnt - ix);
+		uint32_t offset = addr & ~mask, n;
 
-	for (ix = 0; ix < dw_cnt; ix++) {
-		writel(wr_buff[ix], hw->adp->mem_addr + (addr & ~BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_BASE_ADDR_MASK));
-		base = addr & BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_BASE_ADDR_MASK;
-		addr += 4; /* DWORD access at all times */
-		if (base != (addr & BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_BASE_ADDR_MASK)) {
-			/* Set the base addr for next 512kb window */
-			hw->pfnWriteDevRegister(hw->adp, BCHP_MISC2_DIRECT_WINDOW_CONTROL,
-									(addr & BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_BASE_ADDR_MASK) | BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_ENABLE_MASK);
-		}
+		spin_lock_irqsave(&hw->adp->dram_lock, flags);
+		hw->pfnWriteDevRegister(hw->adp, BCHP_MISC2_DIRECT_WINDOW_CONTROL,
+			(addr & mask) |
+			BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_ENABLE_MASK);
+		for (n = 0; n < count; n++, addr += 4)
+			writel(wr_buff[ix + n], hw->adp->mem_addr + (addr & ~mask));
+		/* Flush posted writes while their window is still selected. */
+		readl(hw->adp->mem_addr + offset);
+		spin_unlock_irqrestore(&hw->adp->dram_lock, flags);
+		ix += count;
 	}
 
-	/*Dummy Read To Flush Memory Arbitrator*/
-	crystalhd_flea_mem_rd(hw, start_off, 1, &temp);
 	return BC_STS_SUCCESS;
 }
 

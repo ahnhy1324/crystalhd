@@ -429,11 +429,24 @@ static BC_STATUS bc_cproc_reg_rd(struct crystalhd_cmd *ctx,
 static BC_STATUS bc_cproc_reg_wr(struct crystalhd_cmd *ctx,
 				 crystalhd_ioctl_data *idata)
 {
+	unsigned long flags = 0;
+	bool flea;
+
 	if (!ctx || !ctx->hw_ctx || !idata)
 		return BC_STS_INV_ARG;
 
+	flea = ctx->adp && ctx->adp->pdev &&
+		ctx->adp->pdev->device == BC_PCI_DEVID_FLEA;
+	/* Raw writes can select the DRAM window through direct aliases or
+	 * the indirect GISB portal. Do not move this lock into the backend:
+	 * normal DRAM transfers already hold it when programming the window.
+	 */
+	if (flea)
+		spin_lock_irqsave(&ctx->adp->dram_lock, flags);
 	ctx->hw_ctx->pfnWriteDevRegister(ctx->adp, idata->udata.u.regAcc.Offset,
 		      idata->udata.u.regAcc.Value);
+	if (flea)
+		spin_unlock_irqrestore(&ctx->adp->dram_lock, flags);
 
 	return BC_STS_SUCCESS;
 }
@@ -452,11 +465,21 @@ static BC_STATUS bc_cproc_link_reg_rd(struct crystalhd_cmd *ctx,
 static BC_STATUS bc_cproc_link_reg_wr(struct crystalhd_cmd *ctx,
 				      crystalhd_ioctl_data *idata)
 {
+	unsigned long flags = 0;
+	bool flea;
+
 	if (!ctx || !ctx->hw_ctx || !idata)
 		return BC_STS_INV_ARG;
 
+	/* On Flea the FPGA-register alias uses the same GISB backend. */
+	flea = ctx->adp && ctx->adp->pdev &&
+		ctx->adp->pdev->device == BC_PCI_DEVID_FLEA;
+	if (flea)
+		spin_lock_irqsave(&ctx->adp->dram_lock, flags);
 	ctx->hw_ctx->pfnWriteFPGARegister(ctx->adp, idata->udata.u.regAcc.Offset,
 		       idata->udata.u.regAcc.Value);
+	if (flea)
+		spin_unlock_irqrestore(&ctx->adp->dram_lock, flags);
 
 	return BC_STS_SUCCESS;
 }
