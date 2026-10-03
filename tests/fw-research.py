@@ -3679,6 +3679,142 @@ class FirmwareMfdSourceTests(unittest.TestCase):
                 MAP.analyze(altered, expected_sha256=hashlib.sha256(altered).hexdigest(), picture_output=True)
 
 
+class FirmwareStopStatusTests(unittest.TestCase):
+    # Stock A32 status flow only: no live STOP, ARC execution or surface lease.
+    regions = (
+        (0x4288, 936, "0fa6a9603dd61c135d027f33708dbcada8df969107fe9ef5f9f7c728d205851a"),
+        (0x125c, 136, "7412ad146fa32d0f03d2a11f08758cd8c29b27a0de198dffb43cfa48a9394bb6"),
+        (0xef10, 172, "dac38f265061167d8a22a7b3e49e128209206062e6138f41fed094c2d0a9b601"),
+        (0x27750, 140, "f95765626233c26ccf54e514bbd6c17216122da1bf71820dc6ecd45e386c9ff9"),
+        (0x2705c, 364, "bd461670f479a8e1f005d75357912eee0b0b61d875c6c87c7a10f79d9303d6f8"),
+        (0x27ab0, 4, "38c07ee2c1401fe213b333a1fbb4ba7d716c9d5df5df4077fbb53a3daa977748"),
+    )
+    statuses = (0, 1, 2, 5, 6, 7, 9, 0x0022000a, 0x00220015, 0x80000000, 0xffffffff)
+
+    @classmethod
+    def setUpClass(cls):
+        cls.payload = MAP.read_firmware(BLOB)[:-MAP.TRAILER_SIZE]
+        for offset, size, expected in cls.regions:
+            actual = cls.payload[offset:offset + size]
+            if len(actual) != size or hashlib.sha256(actual).hexdigest() != expected:
+                raise AssertionError(f"stock STOP region {offset:#x} changed")
+
+    def word(self, offset):
+        return struct.unpack_from("<I", self.payload, offset)[0]
+
+    def execute_tail(self, builder, status, mode=0):
+        # Enter after a normally returning call with arbitrary r0. All data
+        # and saved registers are synthetic; only the pinned instructions run.
+        registers = [0] * 16
+        registers[0], registers[4], registers[13] = status, 0x200000, 0x300100
+        entry, end, pop = (0x277bc, 0x277dc, 0x277d0) if builder else (0xef98, 0xefbc, 0xef44)
+        selected = (4, 5, 6, 7, 8, 9, 10, 15) if builder else (4, 5, 6, 15)
+        saved_base = registers[13] + (512 if builder else 0)
+        saved = {saved_base + index * 4: 0xfffffff0 if reg == 15 else 0xb000 + reg
+                 for index, reg in enumerate(selected)}
+        writes, trace, zero, pc = [], [], False, entry
+        for _ in range(16):
+            if pc == 0xfffffff0:
+                return registers, writes, trace
+            self.assertTrue(entry <= pc < end or pc == pop, hex(pc))
+            word, previous = self.word(pc), pc
+            trace.append(pc)
+            pc += 4
+            if word == 0xe5d40004:
+                self.assertFalse(builder)
+                self.assertEqual(registers[4], 0x200000)
+                registers[0] = mode
+            elif word == 0xe3500000:
+                zero = registers[0] == 0
+            elif word == 0xe3580000:
+                zero = registers[8] == 0
+            elif word & 0x0e000000 == 0x0a000000:
+                condition = word >> 28
+                self.assertIn(condition, (0, 1, 14))
+                self.assertFalse(word & (1 << 24))
+                take = condition == 14 or (condition == 0 and zero) or (condition == 1 and not zero)
+                if take:
+                    displacement = word & 0xffffff
+                    if displacement & 0x800000:
+                        displacement -= 1 << 24
+                    pc = previous + 8 + displacement * 4
+            elif word in (0xe3a00000, 0xe3a00002):
+                registers[0] = word & 255
+            elif word in (0xe5c40261, 0xe5c40060):
+                self.assertFalse(builder)
+                self.assertEqual(registers[4], 0x200000)
+                writes.append((word & 0xfff, 1, registers[0] & 255))
+            elif word == 0xe1a08000:
+                registers[8] = registers[0]
+            elif word == 0xe1a00008:
+                registers[0] = registers[8]
+            elif word == 0xe28ddc02:
+                registers[13] += 512
+            elif word in (0xe8bd8070, 0xe8bd87f0):
+                actual = tuple(index for index in range(16) if word & (1 << index))
+                self.assertEqual(actual, selected)
+                self.assertNotIn(0, actual)
+                for index in actual:
+                    registers[index] = saved[registers[13]]
+                    registers[13] += 4
+                pc = registers[15]
+            elif word == 0xe320f000:
+                pass
+            else:
+                self.fail(f"unsupported STOP continuation instruction {word:#x}")
+        self.fail("stock STOP continuation exceeded 16 instructions")
+
+    def test_complete_body_pins_and_call_chain(self):
+        self.assertEqual(sum(size for _, size, _ in self.regions), 1752)
+        for call, target in ((0x4410, 0x125c), (0x128c, 0xef10),
+                             (0xef94, 0x27750), (0x277b8, 0x2705c)):
+            word = self.word(call)
+            self.assertEqual(word >> 24, 0xeb)
+            displacement = word & 0xffffff
+            if displacement & 0x800000:
+                displacement -= 1 << 24
+            self.assertEqual(call + 8 + displacement * 4, target)
+        self.assertEqual(self.word(0x27ab0), 0x73760006)
+        self.assertEqual(self.word(0x277a0), 0xe3043e20)  # MOVW r3,20000.
+        self.assertEqual(self.word(0x270e8), 0xe3590005)  # Wait timeout status.
+        self.assertEqual(self.word(0x270f8), 0xe1a00009)  # Return the wait status.
+
+    def test_builder_preserves_every_tested_transport_status(self):
+        for status in self.statuses:
+            with self.subTest(status=hex(status)):
+                registers, writes, trace = self.execute_tail(True, status)
+                self.assertEqual(registers[0], status)
+                self.assertEqual(registers[13], 0x300320)
+                self.assertEqual(registers[4:11], list(range(0xb004, 0xb00b)))
+                self.assertEqual(writes, [])
+                self.assertEqual(trace, [0x277bc, 0x277c0, 0x277c4] +
+                                 ([0x277d4, 0x277d8] if status == 0 else [0x277c8]) +
+                                 [0x277cc, 0x277d0])
+
+    def test_decoder_overwrites_status_before_use_for_all_byte_modes(self):
+        self.assertEqual(self.word(0xef98), 0xe5d40004)  # Unconditional overwrite of r0.
+        for status in self.statuses:
+            for mode in range(256):
+                with self.subTest(status=hex(status), mode=mode):
+                    registers, writes, trace = self.execute_tail(False, status, mode)
+                    self.assertEqual(registers[0], 0)
+                    self.assertEqual(registers[13], 0x300110)
+                    self.assertEqual(registers[4:7], [0xb004, 0xb005, 0xb006])
+                    self.assertEqual(writes, ([(0x261, 1, 2)] if mode == 0 else []) + [(0x60, 1, 0)])
+                    self.assertEqual(trace, [0xef98, 0xef9c, 0xefa0] +
+                                     ([0xefa4, 0xefa8] if mode == 0 else []) +
+                                     [0xefac, 0xefb0, 0xefb4, 0xefb8, 0xef44])
+
+    def test_transport_timeout_can_become_decoder_success(self):
+        builder, _, _ = self.execute_tail(True, 5)
+        self.assertEqual(builder[0], 5)
+        for mode in (0, 1, 255):
+            decoder, _, _ = self.execute_tail(False, builder[0], mode)
+            self.assertEqual(decoder[0], 0)
+        # This is a status-flow counterexample, not a simulated host handler:
+        # callers, routing, coherence, ARC drain and source lifetime stay unproved.
+
+
 class FirmwareStockHostCommandTests(unittest.TestCase):
     # Independently transcribed from the bundled A32 compare tree, computed
     # branch table and each case's BL. Do not construct this oracle with the
