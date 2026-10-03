@@ -4756,7 +4756,7 @@ def _stock_host_command_closure(payload):
             "compressed_tx_metadata_reply_word": 11,
             "open_reply_stores_blob_file_offsets": [0x5914, 0x591c],
             "tx_metadata_address_expression": "word at ARM MMIO 0x100f6004 + 0x301; no plane extent returned",
-            "driver_open_postprocessing": "driver/linux/crystalhd_fleafuncs.c:1833",
+            "driver_open_postprocessing": "driver/linux/crystalhd_fleafuncs.c:1838",
             "tx_layout_header": "include/flea/DriverFwShare.h",
             "tx_window_kind": "Bounded compressed-input DRAM windows, not a raw-source-plane lease.",
             "getter": {"entry_blob_file_offset": 0x898, "literal_blob_file_offset": 0x6fc,
@@ -6001,7 +6001,7 @@ def _picture_output_map(payload, images):
             "picture_handler_entry_blob_file_offset": 0x834c,
             "started_slot_offset": 0xd2, "pending_clear_blob_file_offset": 0x8820,
             "host_record_source": "include/flea/DriverFwShare.h:22",
-            "host_submit_source": "driver/linux/crystalhd_fleafuncs.c:2218",
+            "host_submit_source": "driver/linux/crystalhd_fleafuncs.c:2223",
             "complete_dma_ownership_verified": False},
         "picture_feed": {
             "entry_blob_file_offset": 0x7898,
