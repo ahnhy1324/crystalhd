@@ -107,8 +107,12 @@ done
 
 awk '
     /^#define[[:space:]]+MAX_VALID_POLL_CNT[[:space:]]/ { print; found++ }
-    END { if (found != 1) exit 1 }
-' "$repo_dir/driver/linux/crystalhd_hw.h" > "$dma_test_dir/flea-reset-limit.h"
+    /^enum _BC_PCI_DEV_IDS[[:space:]{]/ { copy = 1; found++ }
+    copy { print }
+    copy && /^};/ { copy = 0 }
+    END { if (found != 2 || copy) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_hw.h" \
+  "$repo_dir/include/bc_dts_glob_lnx.h" > "$dma_test_dir/flea-reset-limit.h"
 awk '
     /^bool crystalhd_flea_(core_reset|start_device|stop_device|init_dram|ddr_pll_config)\(/ {
         if (/;[[:space:]]*$/) next
@@ -119,6 +123,22 @@ awk '
     END { if (found != 5 || copy) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_flea_ddr.c" \
   "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$dma_test_dir/flea-reset-functions.h"
+awk '
+    /^typedef enum _BC_STATUS[[:space:]{]/ { copy = 1; found++ }
+    copy { print }
+    copy && /^} BC_STATUS;/ { copy = 0 }
+    END {
+        if (found != 1 || copy) exit 1
+        print "BC_STATUS crystalhd_hw_suspend(struct crystalhd_hw *hw);"
+    }
+' "$repo_dir/include/bc_dts_defs.h" > "$dma_test_dir/flea-stop-callers.h"
+awk '
+    /^BC_STATUS crystalhd_hw_(close|suspend)\(/ { copy = 1; found++ }
+    /^void crystalhd_hw_dma_fatal_stop\(/ { copy = 1; found++ }
+    copy { print }
+    copy && /^}/ { copy = 0 }
+    END { if (found != 3 || copy) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_hw.c" >> "$dma_test_dir/flea-stop-callers.h"
 for reset_sanitize in no yes; do
     reset_extra=
     if [ "$reset_sanitize" = yes ]; then

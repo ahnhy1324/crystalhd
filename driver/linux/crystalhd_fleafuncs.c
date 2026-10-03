@@ -1553,6 +1553,11 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
 		msleep_interruptible(1);
 	}
 
+	if (!(regVal & BCHP_DDR23_CTL_REGS_0_CTL_STATUS_idle_MASK)) {
+		dev_err(&hw->adp->pdev->dev, "MEMC did not become idle during shutdown\n");
+		return false;
+	}
+
 	/*First Disable the AVD and ARM before disabling the DRAM*/
 	regVal = hw->pfnReadDevRegister(hw->adp, BCHP_CLK_PM_CTRL);
 
