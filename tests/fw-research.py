@@ -1290,6 +1290,42 @@ class FirmwareBootstrapTests(unittest.TestCase):
 
 
 class FirmwarePictureOutputTests(unittest.TestCase):
+    FIR_REGIONS = (
+        (0x21ac, 716, "cc9fc5e53343bac1fa521854cc209f7a2d39ed406800d62e3f1f810d19edabe7"),
+        (0x1f8c, 544, "80d45cdf1110c163aff32f66ce053c2f6c938a8e2aa81691f4caee1071a315d7"),
+        (0x1f38, 84, "3c0851eae9ea6eb0130b95d93fb0df7a7b04c2611a47267df370009fbf23dcf9"),
+        (0x244c, 24, "444c4ced61e1d13e8b594ea40369034b319ed0c12771d35379c8335eb5865264"),
+        (0x1e8e8, 12, "127fb56c30f3496c824443348ca74b9236add85c1381d8d0fae5bf61c0a9d927"),
+        (0x2cdf0, 128, "6d77fc3ce84a6391ed6b30c21ddd525e21a54d38709662534668625c8fbb45a2"),
+        (0x2ccf0, 256, "a3cba1c64837a0c6dfd06b9c032bd605a0ac73e2dd7a316f00b0d51aaf1bf82a"),
+        (0x55d4, 156, "2235f36ad7d09336418f4d4571c4a761397529d4abb448b03fdd018573f2fbac"),
+        (0x8518, 4, "c45be60a73538be6ea62105a869309a98a17942001e343b7fe3bfe95d17b5a64"),
+        (0x8634, 4, "2d0d57c2380005c57f9c257fffdb7ea6f3c0e96a812d2e0aca79216d37d7e61e"))
+    FIR_BANKS = (
+        ("vertical", "VERT_FIR", 0x540900, 0x2cdf0, 32, 0x2380),
+        ("vertical", "VERT_FIR_CHROMA", 0x540980, 0x2cdf0, 32, 0x23a8),
+        ("horizontal", "HORIZ_FIR", 0x540a00, 0x2ccf0, 64, 0x23d4),
+        ("horizontal", "HORIZ_FIR_CHROMA", 0x540b00, 0x2ccf0, 64, 0x23fc))
+    FIR_SIGNED_CANDIDATE_ROWS = {
+        "vertical": (
+            (0, 0, 97, 830, 97, 0, 0, 0),
+            (0, 0, 38, 817, 183, -14, 0, 0),
+            (0, 0, 1, 750, 289, -16, 0, 0),
+            (0, 0, -17, 651, 409, -19, 0, 0),
+            (0, 0, -21, 533, 533, -21, 0, 0),
+            (0, 0, -19, 409, 651, -17, 0, 0),
+            (0, 0, -16, 289, 750, 1, 0, 0),
+            (0, 0, -14, 183, 817, 38, 0, 0)),
+        "horizontal": (
+            (4, 0, -18, 36, -2, -119, 272, 678, 272, -119, -2, 36, -18, 0, 4, 0),
+            (3, 2, -19, 28, 16, -123, 197, 670, 350, -105, -23, 44, -16, -3, 5, -2),
+            (2, 4, -18, 19, 31, -118, 125, 646, 425, -80, -45, 48, -12, -7, 5, -1),
+            (1, 5, -16, 10, 41, -106, 59, 608, 495, -44, -68, 50, -6, -10, 6, -1),
+            (0, 6, -13, 1, 48, -89, 2, 557, 557, 2, -89, 48, 1, -13, 6, 0),
+            (-1, 6, -10, -6, 50, -68, -44, 495, 608, 59, -106, 41, 10, -16, 5, 1),
+            (-1, 5, -7, -12, 48, -45, -80, 425, 646, 125, -118, 31, 19, -18, 4, 2),
+            (-2, 5, -3, -16, 44, -23, -105, 350, 670, 197, -123, 16, 28, -19, 2, 3))}
+
     @classmethod
     def setUpClass(cls):
         cls.data = MAP.read_firmware(BLOB)
@@ -1299,6 +1335,381 @@ class FirmwarePictureOutputTests(unittest.TestCase):
     def mapping(self, payload=None, images=None):
         return MAP._picture_output_map(self.payload if payload is None else payload,
                                        self.images if images is None else images)
+
+    def fir_mapping(self, payload=None):
+        return MAP._scaler_fir_map(self.payload if payload is None else payload)
+
+    def execute_fir_loops(self, payload=None):
+        # Interpret only the four fixed loops and the actual register writer.
+        # Their context/base and initial r6=0 are synthetic entry conditions;
+        # no printf/division call or device/host address is followed.
+        payload = self.payload if payload is None else payload
+        regs = [0] * 16
+        regs[7], regs[15] = 0x400000, 0x2378
+        writes, comparison = [], None
+        addresses = {0x90000000 + base + index * 4
+                     for _, _, base, _, count, _ in self.FIR_BANKS for index in range(count)}
+        def read(address):
+            if address == 0x400000:
+                return 0x90000000
+            self.assertTrue(0x244c <= address <= 0x2460 or
+                            0x2ccf0 <= address <= 0x2ce6c, hex(address))
+            self.assertEqual(address % 4, 0)
+            return struct.unpack_from("<I", payload, address)[0]
+        for step in range(4096):
+            pc = regs[15]
+            if pc == 0x2464:
+                return writes, step
+            self.assertTrue(0x2378 <= pc < 0x2420 or 0x1e8e8 <= pc < 0x1e8f4, hex(pc))
+            self.assertEqual(pc % 4, 0)
+            word = struct.unpack_from("<I", payload, pc)[0]
+            regs[15] = pc + 4
+            condition = word >> 28
+            self.assertIn(condition, (11, 14))
+            if condition == 11:
+                self.assertIsNotNone(comparison)
+                if not comparison[0] < comparison[1]:
+                    continue
+            reg = lambda index: pc + 8 if index == 15 else regs[index]
+            if word == 0xe12fff1e:
+                self.assertEqual(pc, 0x1e8f0)
+                regs[15] = regs[14]
+            elif word & 0x0e000000 == 0x0a000000:
+                displacement = word & 0xffffff
+                if displacement & 0x800000:
+                    displacement -= 1 << 24
+                target = pc + 8 + displacement * 4
+                if word & 0x1000000:
+                    self.assertEqual(target, 0x1e8e8)
+                    regs[14] = pc + 4
+                regs[15] = target
+            elif word & 0x0c000000 == 0x04000000:
+                self.assertTrue(word & (1 << 24))  # pre-indexed, no writeback
+                self.assertFalse(word & ((1 << 22) | (1 << 21)))  # word, no writeback
+                base, destination = (word >> 16) & 15, (word >> 12) & 15
+                if word & (1 << 25):
+                    self.assertIn(word & 0xff0, (0, 0x100))  # LSL #0 or #2 only
+                    displacement = reg(word & 15) << ((word >> 7) & 31)
+                else:
+                    displacement = word & 0xfff
+                address = reg(base) + (displacement if word & (1 << 23) else -displacement)
+                if word & (1 << 20):
+                    regs[destination] = read(address)
+                else:
+                    self.assertEqual(pc, 0x1e8ec)
+                    self.assertIn(address, addresses)
+                    writes.append((address, regs[destination]))
+            else:
+                self.assertEqual(word & 0x0c000000, 0)
+                opcode, destination, base = (word >> 21) & 15, (word >> 12) & 15, (word >> 16) & 15
+                self.assertIn(opcode, (4, 10, 13))
+                if word & (1 << 25):
+                    value, rotation = word & 255, ((word >> 8) & 15) * 2
+                    right = ((value >> rotation) | (value << ((32 - rotation) % 32))) & 0xffffffff
+                else:
+                    self.assertEqual(word & 0xff0, 0)
+                    right = reg(word & 15)
+                if opcode == 10:
+                    self.assertTrue(word & (1 << 20))
+                    signed = lambda value: value if value < 0x80000000 else value - 0x100000000
+                    comparison = (signed(reg(base)), signed(right))
+                else:
+                    self.assertFalse(word & (1 << 20))
+                    regs[destination] = (reg(base) + right if opcode == 4 else right) & 0xffffffff
+        self.fail("fixed FIR loops exceeded the 4096-instruction budget")
+
+    def test_scaler_fir_exact_regions_and_bounded_private_entry(self):
+        result = self.fir_mapping()
+        self.assertEqual(result, MAP._scaler_fir_map(self.payload))
+        regions = result["validation"]["validated_regions"]
+        self.assertEqual(len(regions), 10)
+        self.assertEqual([(r["blob_file_offset"], r["size_bytes"], r["sha256"]) for r in regions],
+                         list(self.FIR_REGIONS))
+        self.assertEqual([r["role"] for r in regions],
+                         ["scaling_setup", "scaling_dispatch", "control_literals", "bank_literals",
+                          "register_writer", "vertical_table", "horizontal_table", "open_scaling_fields",
+                          "picture_call_8518", "picture_call_8634"])
+        self.assertEqual(result["validation"]["validated_bytes"], 1928)
+        self.assertEqual((MAP.MAX_SCALER_FIR_REGIONS, MAP.MAX_SCALER_FIR_BYTES), (12, 2048))
+        for offset, size, digest in self.FIR_REGIONS:
+            self.assertEqual(hashlib.sha256(self.payload[offset:offset + size]).hexdigest(), digest)
+        with mock.patch.object(MAP, "MAX_SCALER_FIR_REGIONS", 10), \
+                mock.patch.object(MAP, "MAX_SCALER_FIR_BYTES", 1928):
+            self.assertEqual(MAP._scaler_fir_map(self.payload), result)
+        for name, value in (("MAX_SCALER_FIR_REGIONS", 9), ("MAX_SCALER_FIR_BYTES", 1927)):
+            with self.subTest(limit=name), mock.patch.object(MAP, name, value), self.assertRaises(MAP.FormatError):
+                MAP._scaler_fir_map(self.payload)
+        for payload in (b"", self.payload[:-1], self.payload + b"\0"):
+            with self.subTest(size=len(payload)), self.assertRaises(MAP.FormatError):
+                MAP._scaler_fir_map(payload)
+
+    def test_scaler_fir_every_pinned_byte_rejects_mutation(self):
+        with mock.patch.object(MAP, "_a32_literal", side_effect=AssertionError("decode before all pins")), \
+                mock.patch.object(MAP, "_a32_branch", side_effect=AssertionError("decode before all pins")):
+            for start, size, _ in self.FIR_REGIONS:
+                for offset in range(start, start + size):
+                    data = bytearray(self.payload)
+                    data[offset] ^= 1
+                    with self.subTest(offset=offset), self.assertRaises(MAP.FormatError):
+                        MAP._scaler_fir_map(data)
+
+    def test_scaler_fir_raw_tables_and_candidate_rows_not_hardware_format(self):
+        result = self.fir_mapping()
+        self.assertEqual((result["schema_version"], result["isa"], result["endianness"]), (1, "A32", "little"))
+        self.assertIs(result["device_observed"], False)
+        self.assertEqual(result["entry_blob_file_offset"], 0x21ac)
+        self.assertEqual(result["writer"]["entry_blob_file_offset"], 0x1e8e8)
+        self.assertIs(result["writer"]["physical_base_validated"], False)
+        fmt = result["format"]
+        expected_format = {"bits": 12, "even_tap_shift": 18, "odd_tap_shift": 2,
+                           "signedness_confirmed": False, "fractional_precision_confirmed": False,
+                           "normalization_candidate": 1024}
+        self.assertEqual({key: fmt[key] for key in expected_format}, expected_format)
+        self.assertIs(fmt["signedness_confirmed"], False)
+        self.assertIs(fmt["fractional_precision_confirmed"], False)
+        tables = result["tables"]
+        self.assertEqual(len(tables), 2)
+        for table, (axis, offset, count) in zip(tables, (("vertical", 0x2cdf0, 32),
+                                                       ("horizontal", 0x2ccf0, 64))):
+            with self.subTest(axis=axis):
+                self.assertEqual((table["axis"], table["blob_file_offset"], table["size_bytes"]),
+                                 (axis, offset, count * 4))
+                self.assertEqual(table["name"], axis)
+                raw = self.payload[offset:offset + count * 4]
+                self.assertEqual(table["sha256"], hashlib.sha256(raw).hexdigest())
+                words = list(struct.unpack("<" + "I" * count, raw))
+                self.assertEqual(table["words"], words)
+                self.assertIs(table["reserved_bits_zero"], True)
+                self.assertTrue(all(word & 0xc003c003 == 0 for word in words))
+                phases = table["phases"]
+                self.assertEqual(len(phases), 8)
+                for index, (phase, signed_row) in enumerate(zip(phases, self.FIR_SIGNED_CANDIDATE_ROWS[axis])):
+                    self.assertEqual(phase["phase_index"], index)
+                    self.assertEqual(phase["signed12_candidate_taps"], list(signed_row))
+                    self.assertEqual(phase["unsigned12_taps"], [value % 4096 for value in signed_row])
+                    self.assertEqual(phase["signed12_candidate_sum"], 1024)
+                    self.assertEqual(sum(signed_row), 1024)
+        self.assertTrue(result["limitations"])
+        self.assertTrue(all(isinstance(text, str) and text for text in result["limitations"]))
+
+    def test_scaler_fir_all_four_banks_match_every_rdb_phase_tap_and_reserved_field(self):
+        result = self.fir_mapping()
+        banks = result["banks"]
+        self.assertEqual(len(banks), 4)
+        path = ROOT / "include/flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_scl_hd.h"
+        self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(),
+                         "1ee3a4f791f11d50d26e5eaa000a5897cfc9d917bc21e85939629be1e55322e2")
+        definitions = {name: int(value, 0) for name, value in re.findall(
+            r"^#define\s+(BCHP_SCL_HD_\w+)\s+(0x[0-9a-fA-F]+|[0-9]+)\b", path.read_text(), re.M)}
+        checked = 0
+        for bank, (axis, stem, base, table_offset, count, loop), name in zip(
+                banks, self.FIR_BANKS, ("vertical_luma", "vertical_chroma", "horizontal_luma", "horizontal_chroma")):
+            with self.subTest(bank=stem):
+                self.assertEqual((bank["axis"], bank["rdb_base_address"], bank["table_blob_file_offset"],
+                                  bank["word_count"], bank["loop_entry_blob_file_offset"]),
+                                 (axis, base, table_offset, count, loop))
+                self.assertEqual(bank["name"], name)
+                taps = count // 4
+                for phase in range(8):
+                    for tap in range(0, taps, 2):
+                        name = f"BCHP_SCL_HD_{stem}_COEFF_PHASE{phase}_{tap:02d}_{tap + 1:02d}"
+                        index = phase * (taps // 2) + tap // 2
+                        self.assertEqual(definitions[name], base + index * 4)
+                        word = struct.unpack_from("<I", self.payload, table_offset + index * 4)[0]
+                        fields = ((f"COEFF_{tap}", 0x3ffc0000, 18),
+                                  (f"COEFF_{tap + 1}", 0x00003ffc, 2),
+                                  ("reserved0", 0xc0000000, 30),
+                                  ("reserved1", 0x0003c000, 14), ("reserved2", 0x00000003, 0))
+                        for field, mask, shift in fields:
+                            self.assertEqual(definitions[f"{name}_{field}_MASK"], mask)
+                            self.assertEqual(definitions[f"{name}_{field}_SHIFT"], shift)
+                            if field.startswith("reserved"):
+                                self.assertEqual(word & mask, 0)
+                        table = next(t for t in result["tables"] if t["axis"] == axis)
+                        self.assertEqual(table["phases"][phase]["unsigned12_taps"][tap:tap + 2],
+                                         [(word & 0x3ffc0000) >> 18, (word & 0x00003ffc) >> 2])
+                        checked += 1
+        self.assertEqual(checked, 192)
+
+    def test_scaler_fir_actual_loop_and_writer_oracle_has_exact_192_ordered_writes(self):
+        writes, steps = self.execute_fir_loops()
+        expected = [(0x90000000 + base + index * 4,
+                     struct.unpack_from("<I", self.payload, table + index * 4)[0])
+                    for _, _, base, table, count, _ in self.FIR_BANKS for index in range(count)]
+        self.assertEqual(writes, expected)
+        self.assertEqual((len(writes), steps), (192, 2122))
+        self.assertEqual(len({address for address, _ in writes}), 192)
+        self.assertEqual(writes[0], (0x90540900, 0))
+        self.assertEqual(writes[-1], (0x90540bfc, 0x0008000c))
+        # These mutations bypass mapper pins only in test-owned memory. The
+        # oracle must independently detect loop-bound and address-selection bugs.
+        for offset, replacement in ((0x2398, 0xe356001f), (0x23c0, 0xe354001f),
+                                    (0x23ec, 0xe354003f), (0x2414, 0xe354003f)):
+            data = bytearray(self.payload)
+            struct.pack_into("<I", data, offset, replacement)
+            with self.subTest(offset=offset):
+                changed, _ = self.execute_fir_loops(data)
+                self.assertNotEqual(changed, expected)
+        data = bytearray(self.payload)
+        struct.pack_into("<I", data, 0x1e8ec, 0xe7832101)  # incorrect register offset LSL #2
+        with self.assertRaises(AssertionError):
+            self.execute_fir_loops(data)
+
+    def test_scaler_fir_enable_tail_and_exact_direct_caller_routes(self):
+        result = self.fir_mapping()
+        self.assertEqual((result["coefficient_write_count"], result["preceding_setup_write_count"]), (192, 20))
+        expected_routing = {
+            "entry_blob_file_offset": 0x1f8c, "channel_stride_bytes": 0x1cc,
+            "cache_word_offset": 0x1c8, "active_byte_offset": 0x1cc, "picture_selector_byte_offset": 8,
+            "target_width_fields": {"selector_equal_2": {"shift": 8, "bits": 12},
+                                    "selector_other": {"shift": 20, "bits": 12}},
+            "source_record_width_word_offset": 12, "reuse_record_flag_mask": 0x100,
+            "picture_dispatch_call_offsets": [0x8518, 0x8634], "setup_call_offsets": [0x20fc, 0x215c]}
+        self.assertEqual({key: result["routing"][key] for key in expected_routing}, expected_routing)
+        self.assertIs(result["routing"]["complete_picture_caller_validated"], False)
+        self.assertEqual(result["routing"]["setup_predicate"],
+                         "Cached u32 != 0 and (source-record word+12 == 0 or unsigned word+12 > selected target width).")
+        self.assertEqual(result["routing"]["reuse_predicate"],
+                         "Source-record word+0 bit8 is set and channel active byte equals 1.")
+        open_fields = result["open_fields"]
+        expected_open = {"entry_blob_file_offset": 0x55d4, "request_word_offset": 0x20,
+                         "request_enable_mask": 1, "field_input_range_inclusive": [128, 1919],
+                         "odd_values_round_up": True,
+                         "upper_field": {"shift": 20, "bits": 12, "fallback": 960},
+                         "lower_field": {"shift": 8, "bits": 12, "fallback": 1280}}
+        self.assertEqual({key: open_fields[key] for key in expected_open}, expected_open)
+        self.assertEqual(open_fields["initial_cache_value"],
+                         "Incoming r9; its initialization lies outside this selected region.")
+        self.assertEqual(open_fields["cache_composition"],
+                         "Enabled path ORs normalized fields and bit0 into initial r9; disabled path stores r9.")
+        self.assertTrue(any("r9 must be zero" in text for text in result["conditions"]))
+        expected_tail = {"branch_blob_file_offset": 0x2474, "target_blob_file_offset": 0x1e8e8,
+                         "rdb_address": 0x540854, "value": 1}
+        self.assertEqual({key: result["enable_tail"][key] for key in expected_tail}, expected_tail)
+        setup_writer_calls = []
+        for offset in range(0x21ac, 0x2378, 4):
+            word = struct.unpack_from("<I", self.payload, offset)[0]
+            if word >> 24 != 0xeb:  # AL BL, not opaque Thumb BLX.
+                continue
+            displacement = word & 0xffffff
+            if displacement & 0x800000:
+                displacement -= 1 << 24
+            if offset + 8 + 4 * displacement == 0x1e8e8:
+                setup_writer_calls.append(offset)
+        self.assertEqual(setup_writer_calls,
+                         [0x21f8, 0x2208, 0x2218, 0x2228, 0x2238, 0x2248, 0x2258, 0x2268,
+                          0x2288, 0x229c, 0x22ac, 0x22bc, 0x22cc, 0x2300, 0x2320, 0x2330,
+                          0x2340, 0x2354, 0x2364, 0x2374])
+        self.assertEqual(len(setup_writer_calls), result["preceding_setup_write_count"])
+        for offset, target in ((0x8518, 0x1f8c), (0x8634, 0x1f8c),
+                               (0x20fc, 0x21ac), (0x215c, 0x21ac), (0x2474, 0x1e8e8)):
+            word = struct.unpack_from("<I", self.payload, offset)[0]
+            self.assertEqual(word & 0x0e000000, 0x0a000000)
+            self.assertEqual(word >> 28, 14)
+            self.assertEqual(bool(word & (1 << 24)), offset != 0x2474)
+            displacement = word & 0xffffff
+            if displacement & 0x800000:
+                displacement -= 1 << 24
+            self.assertEqual(offset + 8 + 4 * displacement, target)
+        for offset, expected in ((0x55d4, 0xe5960020), (0x55d8, 0xe3100001),
+                                 (0x562c, 0xe58121c8), (0x565c, 0xe58101c8),
+                                 (0x1fbc, 0xe59701c8), (0x1fc4, 0xe1a01a20),
+                                 (0x1fb4, 0xe3520002), (0x1fcc, 0xe7eb1450),
+                                 (0x1fd4, 0xe3500000), (0x1fd8, 0x0a00000d),
+                                 (0x1fe0, 0xe593000c), (0x1fe8, 0x8a000019),
+                                 (0x1fec, 0xe3500000), (0x1ff0, 0x0a000017),
+                                 (0x205c, 0xe3100c01), (0x2064, 0xe5d701cc),
+                                 (0x2068, 0xe3500001), (0x206c, 0x0a00000e), (0x2470, 0xe3a02001)):
+            self.assertEqual(struct.unpack_from("<I", self.payload, offset)[0], expected)
+        self.assertEqual(struct.unpack_from("<I", self.payload, 0x1f88)[0], 0x540854)
+
+    def test_scaler_fir_extension_is_pure_and_unrequested_reports_do_not_call_it(self):
+        expected = self.fir_mapping()
+        with mock.patch("builtins.open", side_effect=AssertionError("unexpected file/device open")), \
+                mock.patch.object(MAP.os, "open", side_effect=AssertionError("unexpected file/device open")), \
+                mock.patch.object(subprocess, "run", side_effect=AssertionError("unexpected external execution")):
+            self.assertEqual(self.fir_mapping(), expected)
+            self.assertEqual(MAP.analyze(self.data, scaler_fir=True)["scaler_fir"], expected)
+        with mock.patch.object(MAP, "_scaler_fir_map", side_effect=AssertionError("unrequested FIR map")):
+            for mask in range(16):
+                MAP.analyze(self.data, references=bool(mask & 1), all_symbols=bool(mask & 2),
+                            bootstrap=bool(mask & 4), picture_output=bool(mask & 8))
+
+    def test_scaler_fir_public_pinned_admission_precedes_private_mapping(self):
+        altered = bytearray(self.data)
+        altered[0x2ccf0] ^= 1
+        for data in (fixture(), altered, self.data[:-4], self.data + bytes(4)):
+            with self.subTest(size=len(data)), \
+                    mock.patch.object(MAP, "parse_elf", side_effect=AssertionError("parse before identity")), \
+                    mock.patch.object(MAP, "_scaler_fir_map", side_effect=AssertionError("map before identity")):
+                with self.assertRaisesRegex(MAP.FormatError, "exact bundled"):
+                    MAP.analyze(data, expected_sha256=hashlib.sha256(data).hexdigest(), scaler_fir=True)
+        for data in (self.data[:-1], self.data + b"\0"):
+            with self.subTest(size=len(data)), \
+                    mock.patch.object(MAP, "parse_elf", side_effect=AssertionError("parse before size")), \
+                    mock.patch.object(MAP, "_scaler_fir_map", side_effect=AssertionError("map before size")):
+                with self.assertRaisesRegex(MAP.FormatError, "invalid BCM70015 firmware size"):
+                    MAP.analyze(data, scaler_fir=True)
+        with mock.patch.object(MAP.hashlib, "sha256") as digest, \
+                mock.patch.object(MAP, "parse_elf", side_effect=AssertionError("parse before size")), \
+                mock.patch.object(MAP, "_scaler_fir_map", side_effect=AssertionError("map before size")):
+            digest.return_value.hexdigest.return_value = MAP.BUNDLED_SHA256
+            with self.assertRaisesRegex(MAP.FormatError, "exact bundled"):
+                MAP.analyze(fixture(), scaler_fir=True)
+
+    def test_scaler_fir_new_option_composes_without_changing_legacy_fields(self):
+        expected = self.fir_mapping()
+        for mask in range(16):
+            options = {"references": bool(mask & 1), "all_symbols": bool(mask & 2),
+                       "bootstrap": bool(mask & 4), "picture_output": bool(mask & 8)}
+            with self.subTest(options=options):
+                baseline = MAP.analyze(self.data, **options)
+                enriched = MAP.analyze(self.data, scaler_fir=True, **options)
+                self.assertNotIn("scaler_fir", baseline)
+                self.assertEqual(enriched.pop("scaler_fir"), expected)
+                self.assertEqual(enriched, baseline)
+
+    def test_scaler_fir_cli_additive_reproducible_output_and_failure_admission(self):
+        command = [sys.executable, "-B", str(TOOL), str(BLOB)]
+        for flags in ([], ["--picture-output"], ["--references", "--bootstrap", "--all-symbols"]):
+            baseline = subprocess.run(command + flags, capture_output=True, timeout=10)
+            first = subprocess.run(command + flags + ["--scaler-fir"], capture_output=True, timeout=10)
+            second = subprocess.run(command + flags + ["--scaler-fir"], capture_output=True, timeout=10)
+            with self.subTest(flags=flags):
+                for result in (baseline, first, second):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(first.stdout, second.stdout)
+                enriched = json.loads(first.stdout)
+                self.assertEqual(enriched.pop("scaler_fir"), self.fir_mapping())
+                self.assertEqual(enriched, json.loads(baseline.stdout))
+                self.assertNotIn(str(ROOT).encode(), first.stdout)
+        data = fixture()
+        with mock.patch.object(MAP, "read_firmware", return_value=data), \
+                mock.patch.object(MAP, "parse_elf", side_effect=AssertionError("unexpected ELF parse")), \
+                mock.patch.object(MAP, "_scaler_fir_map", side_effect=AssertionError("unexpected FIR map")), \
+                mock.patch.object(sys, "stdout", new_callable=io.StringIO) as stdout, \
+                mock.patch.object(sys, "stderr", new_callable=io.StringIO) as stderr:
+            self.assertEqual(MAP.main(["fixture.bin", "--scaler-fir", "--expect-sha256",
+                                       hashlib.sha256(data).hexdigest()]), 1)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("exact bundled", stderr.getvalue())
+        real_open, calls = os.open, []
+        def pin_only(path, flags):
+            self.assertEqual(flags, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW)
+            calls.append(path)
+            self.assertEqual(len(calls), 1)
+            return real_open(path, flags)
+        metadata = mock.Mock(st_mode=0o20600, st_size=len(self.data))
+        with mock.patch.object(MAP.os, "open", side_effect=pin_only), \
+                mock.patch.object(MAP.os, "fstat", return_value=metadata), \
+                mock.patch.object(MAP, "parse_elf", side_effect=AssertionError("unexpected ELF parse")), \
+                mock.patch.object(MAP, "_scaler_fir_map", side_effect=AssertionError("unexpected FIR map")), \
+                mock.patch.object(sys, "stdout", new_callable=io.StringIO) as stdout, \
+                mock.patch.object(sys, "stderr", new_callable=io.StringIO) as stderr:
+            self.assertEqual(MAP.main([str(BLOB), "--scaler-fir"]), 1)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("regular file", stderr.getvalue())
 
     def test_picture_output_schema_and_independent_instruction_decoding(self):
         result = MAP.analyze(self.data, picture_output=True)["picture_output"]
