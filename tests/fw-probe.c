@@ -13,6 +13,9 @@ struct _BC_DTS_PROC_OUT;
 #include "crystalhd_ioctl_limits.h"
 #include "crystalhd_fw_if.h"
 #include "crystalhd_fw_research.h"
+#include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_arm_uart.h"
+/* The reduced combo header shares the full SUN_TOP RDB's include guard. */
+#include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_sun_top_ctrl.h"
 #include "flea/bcm_70015_regs.h"
 
 typedef uint8_t u8;
@@ -154,7 +157,7 @@ static unsigned transaction_error_at, transaction_mutation_at;
 static BC_STATUS read_mock(struct crystalhd_hw *hw, u32 offset, u32 count, u32 *words);
 static unsigned clock_reads, clock_mutate_at, clock_mutation;
 static unsigned clock_guard_count, clock_guard_mutate_at, clock_guard_mutation;
-static bool clock_only;
+static bool clock_only, uart_mode;
 static u32 clock_values[2][3];
 static u32 clock_read_mock(struct crystalhd_adp *adapter, u32 address);
 
@@ -340,9 +343,19 @@ static BC_STATUS crystalhd_session_release_locked(struct crystalhd_cmd *ctx, con
 static int nonseekable_open(struct inode *inode, struct file *file)
 { unlocked(); CHECK(file->private_data); return nonseekable_error; }
 static unsigned copy_from_user(void *to, const void *from, size_t size)
-{ unlocked(); copy_in_count++; if (copy_in_error) return 1; memcpy(to, from, size); return 0; }
+{
+    unlocked(); copy_in_count++;
+    if (uart_mode) CHECK(size == sizeof(struct crystalhd_fw_research_state_request));
+    if (copy_in_error) return 1;
+    memcpy(to, from, size); return 0;
+}
 static unsigned copy_to_user(void *to, const void *from, size_t size)
-{ unlocked(); copy_out_count++; if (copy_out_error) return 1; memcpy(to, from, size); return 0; }
+{
+    unlocked(); copy_out_count++;
+    if (uart_mode) CHECK(size == sizeof(struct crystalhd_fw_research_uart_result));
+    if (copy_out_error) return 1;
+    memcpy(to, from, size); return 0;
+}
 static void lifecycle_event(unsigned event)
 { CHECK(lifecycle_count < ARRAY_SIZE(lifecycle)); lifecycle[lifecycle_count++] = event; }
 static int misc_register(struct miscdevice *device)
@@ -446,7 +459,7 @@ static void reset(void)
     codec_rejection = unknown_command_reply = false;
     read_count = read_fail_at = read_mutate_at = read_mutation = 0;
     read_mismatch_stage = read_mismatch_word = 0; read_padding = false;
-    clock_reads = clock_mutate_at = clock_mutation = 0; clock_only = false;
+    clock_reads = clock_mutate_at = clock_mutation = 0; clock_only = uart_mode = false;
     clock_guard_count = clock_guard_mutate_at = clock_guard_mutation = 0;
     for (i = 0; i < 2; i++) {
         clock_values[i][0] = 0x01234567U + i;
@@ -1172,10 +1185,12 @@ static void state_reset(void)
 static u32 clock_read_mock(struct crystalhd_adp *adapter, u32 address)
 {
     static const u32 addresses[] = {0x502200, 0x50229c, 0x70004};
+    static const u32 uart_addresses[] = {0xf3004, 0x404100, 0x40421c};
     unsigned index = clock_reads++, stage = clock_only ? 0 : index / 3;
     u32 value;
     barrier(); CHECK(adapter == &adp && hardware.lock.held == 1 && hardware.fwcmd_trans_mutex.held == 1);
-    CHECK(index < (clock_only ? 3U : 6U) && address == addresses[index % 3]);
+    CHECK(index < (clock_only ? 3U : 6U) &&
+          address == (uart_mode ? uart_addresses : addresses)[index % 3]);
     CHECK(adp.cmds.session_owner == &crystalhd_fw_research_owner && adp.cmds.session_module_pinned);
     CHECK(hardware.dev_started && !release_count && command_count == (stage ? 3U : 2U));
     CHECK(read_count == (clock_only ? 0U : stage ? 7U : 4U));
@@ -1195,7 +1210,7 @@ static struct crystalhd_fw_research_state_result state_run(void)
     struct crystalhd_fw_research_state_result result;
     struct crystalhd_fw_research_request req = request();
     memset(&result, 0xa5, sizeof(result)); result.request = state_request();
-    crystalhd_fw_research_run_internal(42, &req, &result.control, &result, NULL, NULL, NULL, NULL, NULL);
+    crystalhd_fw_research_run_internal(42, &req, &result.control, &result, NULL, NULL, NULL, NULL, NULL, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.control.request.selector == CRYSTALHD_FW_RESEARCH_H264_CONTROL);
     CHECK(result.control.generation == 42);
@@ -1409,7 +1424,7 @@ static struct crystalhd_fw_research_controller_result controller_run(void)
     struct crystalhd_fw_research_controller_result result;
     struct crystalhd_fw_research_request req = request();
     memset(&result, 0xa5, sizeof(result)); result.state.request = controller_request();
-    crystalhd_fw_research_run_internal(42, &req, &result.state.control, &result.state, &result, NULL, NULL, NULL, NULL);
+    crystalhd_fw_research_run_internal(42, &req, &result.state.control, &result.state, &result, NULL, NULL, NULL, NULL, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.state.control.request.selector == CRYSTALHD_FW_RESEARCH_H264_CONTROL);
     CHECK(result.state.control.request.size == sizeof(struct crystalhd_fw_research_result));
@@ -1710,7 +1725,7 @@ static struct crystalhd_fw_research_image_result image_run(void)
     struct crystalhd_fw_research_request req = request();
     memset(&result, 0xa5, sizeof(result)); result.controller.state.request = image_request();
     crystalhd_fw_research_run_internal(42, &req, &result.controller.state.control,
-        &result.controller.state, &result.controller, &result, NULL, NULL, NULL);
+        &result.controller.state, &result.controller, &result, NULL, NULL, NULL, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.controller.state.request.size == sizeof(result));
     CHECK(result.controller.state.control.request.size == 1488 &&
@@ -1907,7 +1922,7 @@ static struct crystalhd_fw_research_packet_result packet_run(void)
     struct crystalhd_fw_research_request req = request();
     memset(&result, 0xa5, sizeof(result)); result.image.controller.state.request = packet_request();
     crystalhd_fw_research_run_internal(42, &req, &result.image.controller.state.control,
-        &result.image.controller.state, &result.image.controller, &result.image, &result, NULL, NULL);
+        &result.image.controller.state, &result.image.controller, &result.image, &result, NULL, NULL, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.image.controller.state.request.size == sizeof(result));
     CHECK(result.image.controller.state.control.request.size == 1488 &&
@@ -2161,7 +2176,7 @@ static struct crystalhd_fw_research_heap_packet_result heap_packet_run(void)
     struct crystalhd_fw_research_request req = request();
     memset(&result, 0xa5, sizeof(result)); result.image.controller.state.request = heap_packet_request();
     crystalhd_fw_research_run_internal(42, &req, &result.image.controller.state.control,
-        &result.image.controller.state, &result.image.controller, &result.image, NULL, &result, NULL);
+        &result.image.controller.state, &result.image.controller, &result.image, NULL, &result, NULL, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.image.controller.state.request.size == sizeof(result));
     CHECK(result.image.controller.state.control.request.size == 1488 &&
@@ -2527,7 +2542,7 @@ static struct crystalhd_fw_research_clock_result clock_run(void)
     struct crystalhd_fw_research_request req = request();
     memset(&result, 0xa5, sizeof(result)); result.state.request = clock_request();
     crystalhd_fw_research_run_internal(42, &req, &result.state.control, &result.state,
-                                      NULL, NULL, NULL, NULL, &result);
+                                      NULL, NULL, NULL, NULL, &result, NULL);
     unlocked(); CHECK(!live_allocations);
     CHECK(result.state.control.request.size == 1488 && result.state.request.size == 1656);
     return result;
@@ -2703,6 +2718,209 @@ static void test_clock_ioctl_and_compat(void)
     CHECK(!crystalhd_fw_research_release(&inode, &file) && !live_allocations);
 }
 
+static struct crystalhd_fw_research_state_request uart_request(void)
+{
+    struct crystalhd_fw_research_state_request req = state_request();
+    req.size = sizeof(struct crystalhd_fw_research_uart_result); return req;
+}
+
+static struct crystalhd_fw_research_uart_result uart_run(void)
+{
+    struct crystalhd_fw_research_uart_result result;
+    struct crystalhd_fw_research_request req = request();
+    uart_mode = true;
+    memset(&result, 0xa5, sizeof(result)); result.state.request = uart_request();
+    crystalhd_fw_research_run_internal(42, &req, &result.state.control, &result.state,
+                                      NULL, NULL, NULL, NULL, NULL, &result);
+    unlocked(); CHECK(!live_allocations);
+    CHECK(result.state.control.request.size == 1488 && result.state.request.size == 1656);
+    return result;
+}
+
+static void uart_empty(const struct crystalhd_fw_research_uart_sample *sample, bool attempted, int status)
+{
+    struct crystalhd_fw_research_uart_sample expected = {0};
+    expected.attempted = attempted; expected.status = status;
+    CHECK(!memcmp(sample, &expected, sizeof(expected)));
+}
+
+static void uart_complete(const struct crystalhd_fw_research_uart_sample *sample, unsigned stage)
+{
+    CHECK(sample->attempted == 1 && sample->read_complete == 1 && !sample->status && !sample->reserved);
+    CHECK(sample->arm_uart_ctl == clock_values[stage][0]);
+    CHECK(sample->pin_mux_ctrl_0 == clock_values[stage][1]);
+    CHECK(sample->uart_router_sel == clock_values[stage][2]);
+}
+
+static void uart_guard_setup(void)
+{ clock_guard_setup(); uart_mode = true; }
+
+static void test_uart_whitelist_and_guards(void)
+{
+    static const int errors[] = {0, -ENODEV, -ESTALE, -EAGAIN, -EIO,
+        -EBUSY, -EBUSY, -EAGAIN, -EACCES, -ERANGE, -ENODEV,
+        -EAGAIN, -ENODEV, -EACCES, -EBUSY, -EOPNOTSUPP, -ERANGE,
+        -ENODEV, -ENODEV, -ENODEV, -ENODEV};
+    struct crystalhd_fw_research_uart_sample sample;
+    struct crystalhd_fw_research_uart_result result;
+    unsigned phase, mutation, read, stage, value;
+
+    for (value = 0; value < 3; value++) {
+        state_reset();
+        if (value < 2) for (stage = 0; stage < 2; stage++)
+            memset(clock_values[stage], value ? 0xff : 0, sizeof(clock_values[stage]));
+        result = uart_run();
+        CHECK(!result.state.control.status && command_count == 5 && read_count == 7 && clock_reads == 6);
+        CHECK(release_count == 1 && firmware_release_count == 1 && !result.state.control.retained);
+        uart_complete(&result.after_init, 0); uart_complete(&result.after_open, 1);
+    }
+    /* The shared fixture rejects any DATA/STATUS, out-of-order or extra read.
+     * Every admission and publication fence must independently fail closed.
+     */
+    for (phase = 0; phase < 10; phase++) for (mutation = 1; mutation < ARRAY_SIZE(errors); mutation++) {
+        if (phase == 1 && mutation == 10) continue;
+        uart_guard_setup(); memset(&sample, 0xa5, sizeof(sample));
+        if (phase == 0) state_mutate(mutation);
+        else if (phase == 1) transaction_mutation = mutation;
+        else { clock_guard_mutate_at = phase - 1; clock_guard_mutation = mutation; }
+        read = phase < 3 ? 0 : (phase - 2) / 2;
+        CHECK(crystalhd_fw_research_uart_sample(&adp.cmds, 42, &sample) == errors[mutation]);
+        CHECK(clock_reads == read && !read_count);
+        uart_empty(&sample, read != 0, errors[mutation]); controller_guard_exit();
+    }
+    for (read = 1; read <= 3; read++) for (mutation = 1; mutation < ARRAY_SIZE(errors); mutation++) {
+        uart_guard_setup(); clock_mutate_at = read; clock_mutation = mutation;
+        CHECK(crystalhd_fw_research_uart_sample(&adp.cmds, 42, &sample) == errors[mutation]);
+        CHECK(clock_reads == read && !read_count);
+        uart_empty(&sample, true, errors[mutation]); controller_guard_exit();
+    }
+    uart_guard_setup(); transaction_error = -EINTR;
+    CHECK(crystalhd_fw_research_uart_sample(&adp.cmds, 42, &sample) == -ERESTARTSYS);
+    uart_empty(&sample, false, -ERESTARTSYS); CHECK(!clock_reads); controller_guard_exit();
+    uart_guard_setup(); adp.cmds.hw_ctx = NULL;
+    CHECK(crystalhd_fw_research_uart_sample(&adp.cmds, 42, &sample) == -ENODEV);
+    uart_empty(&sample, false, -ENODEV); CHECK(!clock_reads); controller_guard_exit();
+}
+
+static void test_uart_progression_and_cleanup(void)
+{
+    struct crystalhd_fw_research_uart_result result;
+    unsigned read, phase, mutation;
+    for (read = 1; read <= 7; read++) {
+        state_reset(); read_fail_at = read; read_status = BC_STS_TIMEOUT; result = uart_run();
+        CHECK(result.state.control.status == -ETIMEDOUT && read_count == read);
+        CHECK(clock_reads == (read <= 4 ? 0U : 3U) && release_count == 1);
+        if (read <= 4) uart_empty(&result.after_init, false, 0);
+        else uart_complete(&result.after_init, 0);
+        uart_empty(&result.after_open, false, 0);
+    }
+    for (phase = 0; phase < 5; phase++) for (mutation = 0; mutation < 4; mutation++) {
+        state_reset();
+        if (!mutation) command_status[phase] = BC_STS_TIMEOUT;
+        else if (mutation == 1) wrong_command = phase + 1;
+        else if (mutation == 2) wrong_sequence = phase + 1;
+        else { if (phase != 2) continue; wrong_channel = 3; }
+        result = uart_run();
+        CHECK(result.state.control.status == (!mutation ? -ETIMEDOUT : -EPROTO));
+        CHECK(command_count == phase + 1 && clock_reads == (phase < 2 ? 0U : phase == 2 ? 3U : 6U));
+        CHECK(release_count == 1 && !result.state.control.retained);
+        if (phase < 2) uart_empty(&result.after_init, false, 0);
+        else uart_complete(&result.after_init, 0);
+        if (phase < 3) uart_empty(&result.after_open, false, 0);
+        else uart_complete(&result.after_open, 1);
+    }
+    for (read = 1; read <= 6; read++) {
+        state_reset(); clock_mutate_at = read; clock_mutation = 4; result = uart_run();
+        CHECK(result.state.control.status == -EIO && clock_reads == read && release_count == 1);
+        CHECK(command_count == (read <= 3 ? 2U : 3U) && read_count == (read <= 3 ? 4U : 7U));
+        uart_empty(read <= 3 ? &result.after_init : &result.after_open, true, -EIO);
+        if (read <= 3) uart_empty(&result.after_open, false, 0);
+        else uart_complete(&result.after_init, 0);
+        state_reset(); clock_mutate_at = read; clock_mutation = 1; result = uart_run();
+        CHECK(result.state.control.status == -ENODEV && clock_reads == read && !release_count);
+        CHECK(result.state.control.retained && !result.state.control.cleanup_attempted);
+        uart_empty(read <= 3 ? &result.after_init : &result.after_open, true, -ENODEV);
+    }
+    for (phase = 1; phase <= 5; phase++) {
+        state_reset(); transaction_error = -EINTR; transaction_error_at = phase; result = uart_run();
+        CHECK(result.state.control.status == -ERESTARTSYS && release_count == 1);
+        CHECK(clock_reads == (phase <= 3 ? 0U : 3U));
+    }
+    state_reset(); bad_digest = true; result = uart_run();
+    CHECK(result.state.control.status == -EKEYREJECTED && !clock_reads &&
+          !acquire_count && !download_count && !command_count && !read_count);
+    uart_empty(&result.after_init, false, 0); uart_empty(&result.after_open, false, 0);
+    state_reset(); release_status = BC_STS_IO_ERROR; release_retains = true; result = uart_run();
+    CHECK(result.state.control.status == -EIO && result.state.control.retained && clock_reads == 6);
+    uart_complete(&result.after_init, 0); uart_complete(&result.after_open, 1);
+    state_reset(); command_status[0] = BC_STS_TIMEOUT;
+    release_status = BC_STS_IO_ERROR; release_retains = true; result = uart_run();
+    CHECK(result.state.control.status == -ETIMEDOUT && result.state.control.retained && !clock_reads);
+    CHECK(result.state.control.cleanup_status == BC_STS_IO_ERROR && release_count == 1);
+    uart_empty(&result.after_init, false, 0); uart_empty(&result.after_open, false, 0);
+}
+
+static void test_uart_ioctl_and_compat(void)
+{
+    struct inode inode = {0}; struct file file = {0};
+    struct crystalhd_fw_research_uart_result result;
+    unsigned long arg = (unsigned long)&result;
+    const unsigned malformed[] = {_IO('R', 0x99), _IOR('R', 0x99, struct crystalhd_fw_research_uart_result),
+        _IOW('R', 0x99, struct crystalhd_fw_research_uart_result),
+        _IOWR('R', 0x99, struct crystalhd_fw_research_state_result),
+        _IOWR('R', 0x99, struct crystalhd_fw_research_state_request),
+        _IOWR('S', 0x99, struct crystalhd_fw_research_uart_result)};
+    const unsigned old[] = {CRYSTALHD_FW_RESEARCH_RUN_STATE, CRYSTALHD_FW_RESEARCH_RUN_CONTROLLER,
+        CRYSTALHD_FW_RESEARCH_RUN_IMAGE, CRYSTALHD_FW_RESEARCH_RUN_PACKET, CRYSTALHD_FW_RESEARCH_RUN_HEAP_PACKET};
+    const u32 sizes[] = {0, 1488, 1600, 1632, 1655, 1657, 1712, 1816, 1952, UINT32_MAX};
+    unsigned field, compat;
+    state_reset(); uart_mode = true; result.state.request = uart_request();
+    CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_UART, arg) == -ENODEV);
+    CHECK(!crystalhd_fw_research_open(&inode, &file));
+    for (field = 0; field < ARRAY_SIZE(malformed); field++)
+        CHECK(crystalhd_fw_research_ioctl(&file, malformed[field], arg) == -ENOTTY);
+    for (field = 0; field < ARRAY_SIZE(old); field++)
+        CHECK(crystalhd_fw_research_ioctl(&file, old[field], arg) == -EINVAL);
+    for (field = 0; field < ARRAY_SIZE(sizes) + 3; field++) {
+        result.state.request = uart_request();
+        if (field < ARRAY_SIZE(sizes)) result.state.request.size = sizes[field];
+        else if (field == ARRAY_SIZE(sizes)) result.state.request.version++;
+        else if (field == ARRAY_SIZE(sizes) + 1) result.state.request.flags = 1;
+        else result.state.request.reserved = 1;
+        CHECK(!crystalhd_fw_research_uart_request_valid(&result.state.request));
+        CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_UART, arg) == -EINVAL);
+    }
+    result.state.request = uart_request(); copy_in_error = true;
+    CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_UART, arg) == -EFAULT);
+    copy_in_error = false; allocation_fail = allocations + 1;
+    CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_UART, arg) == -ENOMEM);
+    no_hardware(); CHECK(!clock_reads && !copy_out_count);
+    CHECK(!crystalhd_fw_research_release(&inode, &file));
+    for (compat = 0; compat < 2; compat++) {
+        state_reset(); uart_mode = true;
+        CHECK(!crystalhd_fw_research_open(&inode, &file)); result.state.request = uart_request();
+        CHECK(!(compat ? crystalhd_fw_research_compat_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_UART, arg) :
+                         crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_UART, arg)));
+        CHECK(!result.state.control.status && command_count == 5 && read_count == 7 && clock_reads == 6);
+        CHECK(copy_in_count == 1 && copy_out_count == 1 && release_count == 1 && !result.state.control.retained);
+        uart_complete(&result.after_init, 0); uart_complete(&result.after_open, 1);
+        CHECK(!crystalhd_fw_research_release(&inode, &file) && !live_allocations);
+    }
+    state_reset(); uart_mode = true;
+    CHECK(!crystalhd_fw_research_open(&inode, &file)); result.state.request = uart_request();
+    copy_out_error = true;
+    CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_UART, arg) == -EFAULT);
+    CHECK(release_count == 1 && clock_reads == 6 && !adp.cmds.session_owner);
+    CHECK(!crystalhd_fw_research_release(&inode, &file));
+    state_reset(); uart_mode = true;
+    CHECK(!crystalhd_fw_research_open(&inode, &file)); result.state.request = uart_request();
+    chd_device_generation++;
+    CHECK(!crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_UART, arg));
+    CHECK(result.state.control.status == -ENODEV); no_hardware(); CHECK(!clock_reads);
+    uart_empty(&result.after_init, false, 0); uart_empty(&result.after_open, false, 0);
+    CHECK(!crystalhd_fw_research_release(&inode, &file) && !live_allocations);
+}
+
 int main(void)
 {
     _Static_assert(sizeof(struct crystalhd_fw_research_info) == 64, "info ABI");
@@ -2763,6 +2981,19 @@ int main(void)
     _Static_assert(offsetof(struct crystalhd_fw_research_clock_result, after_init) == 1600, "clock init ABI");
     _Static_assert(offsetof(struct crystalhd_fw_research_clock_result, after_open) == 1628, "clock open ABI");
     _Static_assert(CRYSTALHD_FW_RESEARCH_RUN_CLOCK == 0xc6785298U, "clock ioctl ABI");
+    _Static_assert(sizeof(struct crystalhd_fw_research_uart_sample) == 28, "UART sample ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_uart_sample, attempted) == 0, "UART attempt ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_uart_sample, status) == 4, "UART status ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_uart_sample, read_complete) == 8, "UART completion ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_uart_sample, reserved) == 12, "UART padding ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_uart_sample, arm_uart_ctl) == 16, "UART control ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_uart_sample, pin_mux_ctrl_0) == 20, "UART pinmux ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_uart_sample, uart_router_sel) == 24, "UART router ABI");
+    _Static_assert(sizeof(struct crystalhd_fw_research_uart_result) == 1656, "UART result ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_uart_result, state) == 0, "UART state ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_uart_result, after_init) == 1600, "UART init ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_uart_result, after_open) == 1628, "UART open ABI");
+    _Static_assert(CRYSTALHD_FW_RESEARCH_RUN_UART == 0xc6785299U, "UART ioctl ABI");
     _Static_assert(CRYSTALHD_FW_RESEARCH_HEAP_IMAGE_MIN == 0x117000U &&
                    CRYSTALHD_FW_RESEARCH_HEAP_IMAGE_BYTES == 0x100000U &&
                    CRYSTALHD_FW_RESEARCH_HEAP_END == 0x3ffc000U, "heap admission bounds");
@@ -2784,6 +3015,7 @@ int main(void)
     test_heap_packet_admission_and_raw_payload(); test_heap_packet_brackets_and_guarded_publication();
     test_heap_packet_progression_and_cleanup(); test_heap_packet_ioctl_and_compat();
     test_clock_whitelist_and_guards(); test_clock_progression_and_cleanup(); test_clock_ioctl_and_compat();
+    test_uart_whitelist_and_guards(); test_uart_progression_and_cleanup(); test_uart_ioctl_and_compat();
     CHECK(!live_allocations); unlocked();
     printf("Firmware probe: %u checks passed\n", checks);
     return 0;

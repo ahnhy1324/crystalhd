@@ -117,6 +117,19 @@ for name, header, cli_name, value in (
     declared = re.search(r'#define\s+' + name + r'\s+(0x[0-9a-fA-F]+)', (rdb / header).read_text())
     printed = re.search(r'#define\s+' + cli_name + r'\s+(0x[0-9a-fA-F]+)U', cli)
     assert declared and printed and int(declared.group(1), 16) == int(printed.group(1), 16) == value
+uart_sampler = re.search(r'static int crystalhd_fw_research_uart_sample\(.*?\n}', source, re.S).group(0)
+uart_registers = re.search(r'registers\[\]\s*=\s*\{(.*?)\}', uart_sampler, re.S).group(1)
+assert re.findall(r'BCHP_\w+', uart_registers) == [
+    'BCHP_ARM_UART_CTL', 'BCHP_SUN_TOP_CTRL_PIN_MUX_CTRL_0', 'BCHP_SUN_TOP_CTRL_UART_ROUTER_SEL']
+for name, header, cli_name, value in (
+        ('BCHP_ARM_UART_CTL', 'bchp_arm_uart.h', 'UART_ARM_CTL_ADDRESS', 0xf3004),
+        ('BCHP_SUN_TOP_CTRL_PIN_MUX_CTRL_0', 'bchp_sun_top_ctrl.h', 'UART_PIN_MUX_ADDRESS', 0x404100),
+        ('BCHP_SUN_TOP_CTRL_UART_ROUTER_SEL', 'bchp_sun_top_ctrl.h', 'UART_ROUTER_ADDRESS', 0x40421c)):
+    declared = re.search(r'#define\s+' + name + r'\s+(0x[0-9a-fA-F]+)\b', (rdb / header).read_text())
+    printed = re.search(r'#define\s+' + cli_name + r'\s+(0x[0-9a-fA-F]+)U', cli)
+    assert declared and printed and int(declared.group(1), 16) == int(printed.group(1), 16) == value
+assert 'pfnReadDevRegister(ctx->adp, registers[i])' in uart_sampler
+assert not re.search(r'pfn(?:WriteDevRegister|DevDRAMRead|DevDRAMWrite)\s*\(', uart_sampler)
 assert 'pfnReadDevRegister(ctx->adp, registers[i])' in clock_sampler
 assert not re.search(r'pfn(?:WriteDevRegister|DevDRAMRead|DevDRAMWrite)\s*\(', clock_sampler)
 for name, value in (('H261', 2), ('H263', 3), ('MPEG1', 5)):
@@ -246,6 +259,15 @@ _Static_assert(offsetof(struct crystalhd_fw_research_clock_result, after_init) =
 _Static_assert(offsetof(struct crystalhd_fw_research_clock_result, after_open) == 1628, "clock open");
 _Static_assert(_IOC_SIZE(CRYSTALHD_FW_RESEARCH_RUN_CLOCK) == 1656, "clock encoding");
 _Static_assert(CRYSTALHD_FW_RESEARCH_RUN_CLOCK == 0xc6785298U, "clock ioctl");
+_Static_assert(sizeof(struct crystalhd_fw_research_uart_sample) == 28, "uart sample");
+_Static_assert(offsetof(struct crystalhd_fw_research_uart_sample, arm_uart_ctl) == 16, "uart ctl");
+_Static_assert(offsetof(struct crystalhd_fw_research_uart_sample, pin_mux_ctrl_0) == 20, "uart mux");
+_Static_assert(offsetof(struct crystalhd_fw_research_uart_sample, uart_router_sel) == 24, "uart router");
+_Static_assert(sizeof(struct crystalhd_fw_research_uart_result) == 1656, "uart result");
+_Static_assert(offsetof(struct crystalhd_fw_research_uart_result, after_init) == 1600, "uart init");
+_Static_assert(offsetof(struct crystalhd_fw_research_uart_result, after_open) == 1628, "uart open");
+_Static_assert(_IOC_SIZE(CRYSTALHD_FW_RESEARCH_RUN_UART) == 1656, "uart encoding");
+_Static_assert(CRYSTALHD_FW_RESEARCH_RUN_UART == 0xc6785299U, "uart ioctl");
 _Static_assert(CRYSTALHD_FW_RESEARCH_VERSION_ONLY == 1U, "existing version selector");
 _Static_assert(CRYSTALHD_FW_RESEARCH_H264_CONTROL == 2U, "existing H264 selector");
 _Static_assert(CRYSTALHD_FW_RESEARCH_H261_CONTROL == 3U, "H261 selector");
@@ -331,6 +353,7 @@ for probe_sanitize in no yes; do
         "$probe_test_dir/cli-check" --packet-json-examples
         "$probe_test_dir/cli-check" --heap-packet-json-examples
         "$probe_test_dir/cli-check" --clock-json-examples
+        "$probe_test_dir/cli-check" --uart-json-examples
     } | "${PYTHON3:-python3}" -B -c '
 import hashlib, json, sys
 def unique_object(pairs):
@@ -343,7 +366,7 @@ def invalid_constant(value):
     raise AssertionError("non-JSON constant: " + value)
 lines = list(sys.stdin)
 examples = [json.loads(line, object_pairs_hook=unique_object, parse_constant=invalid_constant) for line in lines]
-clocks, heaps, examples = examples[602:], examples[542:602], examples[:542]
+uarts, clocks, heaps, examples = examples[633:], examples[602:633], examples[542:602], examples[:542]
 assert len(examples) == 542
 assert len(heaps) == 60
 assert len(clocks) == 31
@@ -930,5 +953,74 @@ assert all(result["control"]["status"] == 0 for result in clocks[:3])
 assert all(result["control"]["status"] < 0 for result in clocks[3:30])
 assert clocks[30]["control"]["status"] == 0
 print("Firmware probe CLI: 31 initialized clock/reset strict JSON examples verified")
+assert len(uarts) == 31
+uart_names = ("after_init", "after_open")
+raw_names = ("arm_uart_ctl", "pin_mux_ctrl_0", "uart_router_sel")
+def succeeded(sample):
+    return sample["attempted"] and sample["read_complete"] and sample["status"] == 0
+for result in uarts:
+    assert set(result) == {"version", "uart_state", "control", "fixed_state_samples", "uart_samples", "scope"}
+    assert result["version"] == 1 and result["uart_state"] is True
+    control = result["control"]
+    check_result(control)
+    assert control["selector"] == 2
+    assert result["scope"] == {
+        "register_addresses": [0xf3004, 0x404100, 0x40421c],
+        "reads_per_sample": 3, "maximum_register_reads": 6, "raw_values_only": True,
+        "sample_status_fifo_reads": False, "sample_uart_writes": False,
+        "board_pads_proven": False, "voltage_proven": False,
+        "measured_baud_proven": False, "console_availability_proven": False}
+    for field in ("raw_values_only", "sample_status_fifo_reads", "sample_uart_writes", "board_pads_proven", "voltage_proven", "measured_baud_proven", "console_availability_proven"):
+        assert type(result["scope"][field]) is bool
+    fixed = result["fixed_state_samples"]
+    assert set(fixed) == set(names)
+    for index, name in enumerate(names):
+        sample = fixed[name]
+        assert set(sample) == {"attempted", "status", "read_complete", "raw_words"}
+        assert type(sample["attempted"]) is bool and type(sample["read_complete"]) is bool
+        assert type(sample["status"]) is int and -4095 <= sample["status"] <= 0
+        assert len(sample["raw_words"]) == 4
+        for word in sample["raw_words"]:
+            u32(word)
+        if sample["read_complete"]:
+            assert sample["attempted"] and sample["status"] == 0
+            assert sample["raw_words"] == ([0xd3a00, 0, 0, 0] if index == 0 else
+                [1, 0xd3a00, 0 if index == 1 else 1, 0 if index == 1 else 0x200])
+        else:
+            assert sample["raw_words"] == [0] * 4
+            assert not sample["attempted"] or sample["status"] < 0
+    samples = result["uart_samples"]
+    assert set(samples) == set(uart_names)
+    for index, name in enumerate(uart_names):
+        sample = samples[name]
+        assert set(sample) == {"attempted", "status", "read_complete", *raw_names}
+        assert type(sample["attempted"]) is bool and type(sample["read_complete"]) is bool
+        assert type(sample["status"]) is int and -4095 <= sample["status"] <= 0
+        active = sample["attempted"] or sample["status"] != 0 or sample["read_complete"]
+        assert active == succeeded(fixed[name])
+        if active:
+            assert succeeded(fixed["calibration"])
+            assert not index or succeeded(samples["after_init"])
+        if sample["read_complete"]:
+            assert sample["attempted"] and sample["status"] == 0
+            for raw_name in raw_names:
+                u32(sample[raw_name])
+        else:
+            assert all(sample[raw_name] is None for raw_name in raw_names)
+            assert not sample["attempted"] or sample["status"] < 0
+        if sample["status"]:
+            assert control["status"] == sample["status"] and control["command_count"] == index + 2
+    if control["command_count"] > 2:
+        assert succeeded(samples["after_init"])
+    if control["command_count"] > 3 or control["status"] == 0:
+        assert succeeded(samples["after_open"])
+for pattern, result in enumerate(uarts[:3]):
+    for stage, name in enumerate(uart_names):
+        expected = [0] * 3 if pattern == 0 else [4294967295] * 3 if pattern == 1 else [0x12345678 + stage * 3 + word for word in range(3)]
+        assert [result["uart_samples"][name][raw_name] for raw_name in raw_names] == expected
+assert all(result["control"]["status"] == 0 for result in uarts[:3])
+assert all(result["control"]["status"] < 0 for result in uarts[3:30])
+assert uarts[30]["control"]["status"] == 0
+print("Firmware probe CLI: 31 initialized UART configuration strict JSON examples verified")
 '
 done
