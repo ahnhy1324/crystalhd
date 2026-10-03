@@ -39,13 +39,13 @@ struct _BC_DTS_PROC_OUT;
     Check((lock) == &adapter.user_lock && *(lock) == 1, \
           "firmware loading retains exclusive user admission")
 #define spin_lock_irqsave(spin, flags) do { \
-    Check((spin) == &hardware.lock && !*(spin), \
-          "typed decoder start serializes the color register"); \
+    Check(((spin) == &hardware.lock || (spin) == &adapter.dram_lock) && !*(spin), \
+          "register access acquires its hardware or DRAM-window lock"); \
     *(spin) = 1; (flags) = 0; \
 } while (0)
 #define spin_unlock_irqrestore(spin, flags) do { \
-    Check((spin) == &hardware.lock && *(spin) && !(flags), \
-          "typed decoder start releases color-register serialization"); \
+    Check(((spin) == &hardware.lock || (spin) == &adapter.dram_lock) && *(spin) && !(flags), \
+          "register access releases its hardware or DRAM-window lock"); \
     *(spin) = 0; \
 } while (0)
 struct device { int unused; };
@@ -110,7 +110,7 @@ struct crystalhd_adp {
     bool present;
     bool dma_terminal_quiesced;
     void *fill_byte_pool, *elem_pool_head;
-    int user_lock;
+    int user_lock, dram_lock;
     struct crystalhd_cmd cmds;
 };
 struct crystalhd_file { struct crystalhd_user *user; uint64_t generation; };
@@ -171,6 +171,7 @@ static struct firmware kernel_fw_blob = {
     .data = kernel_fw_image,
 };
 static unsigned raw_calls[6];
+static unsigned raw_dram_writes;
 static uint32_t raw_offset, raw_value, raw_words, raw_memory[2];
 static uint32_t *raw_buffer;
 static BC_STATUS raw_status;
@@ -726,6 +727,7 @@ static uint32_t RawRegister(struct crystalhd_adp *adp, unsigned operation,
 {
     Check(adp == &adapter && operation < 4, "raw register callback receives the adapter");
     raw_calls[operation]++;
+    if ((operation & 1) && adp->dram_lock) raw_dram_writes++;
     raw_offset = offset;
     if (operation & 1)
         raw_value = value;
@@ -948,6 +950,7 @@ static void Reset(uint32_t state, bool with_hardware)
     kernel_fw_blob.size = CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE;
     kernel_fw_blob.data = kernel_fw_image;
     memset(raw_calls, 0, sizeof(raw_calls));
+    raw_dram_writes = 0;
     memset(raw_memory, 0, sizeof(raw_memory));
     raw_offset = raw_value = raw_words = 0;
     raw_buffer = NULL;
@@ -4461,21 +4464,30 @@ static void RawInvalidArguments(void)
 }
 static void RawRegisterCommands(void)
 {
-    const uint32_t values[] = { 0, 0x89abcdef, UINT32_MAX };
+    const uint32_t values[] = { 0, 0x89abcdef, UINT32_MAX,
+        0x00502120, 0x00002120, 0x0000fff8, 0x0000fffc,
+        0x0050fff8, 0x0050fffc };
+    const uint32_t devices[] = { BC_PCI_DEVID_FLEA, BC_PCI_DEVID_LINK };
 
-    for (unsigned op = 0; op < 4; op++) {
-        for (unsigned n = 0; n < sizeof(values) / sizeof(values[0]); n++) {
-            crystalhd_ioctl_data data = {0};
+    for (unsigned chip = 0; chip < sizeof(devices) / sizeof(devices[0]); chip++) {
+        for (unsigned op = 0; op < 4; op++) {
+            for (unsigned n = 0; n < sizeof(values) / sizeof(values[0]); n++) {
+                crystalhd_ioctl_data data = {0};
 
-            Reset(BC_LINK_INVALID, true);
-            data.udata.u.regAcc.Offset = values[n];
-            data.udata.u.regAcc.Value = op & 1 ? values[n] : ~values[n];
-            raw_value = op & 1 ? ~values[n] : values[n];
-            Check(raw_commands[op](&context, &data) == BC_STS_SUCCESS,
-                  "valid device and link register commands retain successful status");
-            Check(raw_calls[op] == 1 && RawCallCount() == 1 && raw_offset == values[n] &&
-                  raw_value == values[n] && data.udata.u.regAcc.Value == values[n],
-                  "register commands preserve offset and read or write the exact 32-bit value");
+                Reset(BC_LINK_INVALID, true);
+                adapter.pdev->device = devices[chip];
+                data.udata.u.regAcc.Offset = values[n];
+                data.udata.u.regAcc.Value = op & 1 ? values[n] : ~values[n];
+                raw_value = op & 1 ? ~values[n] : values[n];
+                Check(raw_commands[op](&context, &data) == BC_STS_SUCCESS,
+                      "valid device and link register commands retain successful status");
+                Check(raw_calls[op] == 1 && RawCallCount() == 1 && raw_offset == values[n] &&
+                      raw_value == values[n] && data.udata.u.regAcc.Value == values[n],
+                      "register commands preserve offset and read or write the exact 32-bit value");
+                Check(raw_dram_writes == ((devices[chip] == BC_PCI_DEVID_FLEA &&
+                                          (op & 1)) ? 1U : 0U) && !adapter.dram_lock,
+                      "both Flea raw-write routes serialize window aliases and GISB portals");
+            }
         }
     }
 }

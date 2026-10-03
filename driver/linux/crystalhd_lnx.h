@@ -88,6 +88,8 @@ struct crystalhd_adp {
 	spinlock_t		lock;
 	/* Serialize each GISB selector/data transaction, including direct aliases. */
 	spinlock_t		gisb_lock;
+	/* Flea window selection + BAR2 PIO. Lock before gisb_lock. */
+	spinlock_t		dram_lock;
 	struct rw_semaphore	user_lock;
 	struct mutex		tx_lock;
 
