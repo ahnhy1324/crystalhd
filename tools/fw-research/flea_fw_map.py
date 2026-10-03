@@ -25,6 +25,20 @@ MAX_METADATA_OUTPUT_BYTES = 16 * 1024 * 1024  # Retained symbols and section nam
 MAX_REFERENCE_OUTPUT_BYTES = 32 * 1024 * 1024  # Conservative JSON size accounting.
 MAX_BOOTSTRAP_ANCHORS = 256  # Fixed, audited ARM instructions; never a general scan.
 MAX_PICTURE_OUTPUT_ANCHORS = 192  # Separate fixed picture-path inventory, not a scan.
+MAX_SCALER_FIR_REGIONS = 12
+MAX_SCALER_FIR_BYTES = 2048
+# Selected stock A32 bodies, literals and coefficient tables, not a device map.
+_SCALER_FIR_REGIONS = (
+    ("scaling_setup", 0x21ac, 716, "cc9fc5e53343bac1fa521854cc209f7a2d39ed406800d62e3f1f810d19edabe7"),
+    ("scaling_dispatch", 0x1f8c, 544, "80d45cdf1110c163aff32f66ce053c2f6c938a8e2aa81691f4caee1071a315d7"),
+    ("control_literals", 0x1f38, 84, "3c0851eae9ea6eb0130b95d93fb0df7a7b04c2611a47267df370009fbf23dcf9"),
+    ("bank_literals", 0x244c, 24, "444c4ced61e1d13e8b594ea40369034b319ed0c12771d35379c8335eb5865264"),
+    ("register_writer", 0x1e8e8, 12, "127fb56c30f3496c824443348ca74b9236add85c1381d8d0fae5bf61c0a9d927"),
+    ("vertical_table", 0x2cdf0, 128, "6d77fc3ce84a6391ed6b30c21ddd525e21a54d38709662534668625c8fbb45a2"),
+    ("horizontal_table", 0x2ccf0, 256, "a3cba1c64837a0c6dfd06b9c032bd605a0ac73e2dd7a316f00b0d51aaf1bf82a"),
+    ("open_scaling_fields", 0x55d4, 156, "2235f36ad7d09336418f4d4571c4a761397529d4abb448b03fdd018573f2fbac"),
+    ("picture_call_8518", 0x8518, 4, "c45be60a73538be6ea62105a869309a98a17942001e343b7fe3bfe95d17b5a64"),
+    ("picture_call_8634", 0x8634, 4, "2d0d57c2380005c57f9c257fffdb7ea6f3c0e96a812d2e0aca79216d37d7e61e"))
 MAX_ARC_COMMENT_BYTES = 4096
 MAX_ARC_COMMENT_RECORDS = 128
 MAX_ARC_METADATA_STRING_BYTES = 128
@@ -5700,6 +5714,103 @@ def _mfd_source_map(payload):
             "No host/device access, firmware execution, raw submission or standalone backend capability is established."]}
 
 
+def _scaler_fir_map(payload):
+    """Pure selected A32 evidence; public entry pins the entire bundled blob."""
+    if len(payload) != BUNDLED_SIZE - TRAILER_SIZE:
+        raise FormatError("scaler FIR payload size does not match the bundled baseline")
+    total = sum(size for _, _, size, _ in _SCALER_FIR_REGIONS)
+    if len(_SCALER_FIR_REGIONS) > MAX_SCALER_FIR_REGIONS or total > MAX_SCALER_FIR_BYTES:
+        raise FormatError("scaler FIR region/byte budget exceeded")
+    validated = []
+    for role, offset, size, digest in _SCALER_FIR_REGIONS:
+        raw = bounded(payload, offset, size, "scaler FIR region")
+        if hashlib.sha256(raw).hexdigest() != digest:
+            raise FormatError(f"scaler FIR region {role} does not match the baseline")
+        validated.append({"role": role, "blob_file_offset": offset,
+                          "size_bytes": size, "sha256": digest})
+
+    tables = []
+    for axis, offset, count in (("vertical", 0x2cdf0, 32), ("horizontal", 0x2ccf0, 64)):
+        raw = bounded(payload, offset, count * 4, "scaler FIR table")
+        words = list(struct.unpack("<" + "I" * count, raw))
+        # RDB COEFF_even is the high field, COEFF_odd the low field.
+        taps = [tap for word in words for tap in ((word >> 18) & 4095, (word >> 2) & 4095)]
+        taps_per_phase = count // 4
+        phases = []
+        for index in range(8):
+            unsigned = taps[index * taps_per_phase:(index + 1) * taps_per_phase]
+            signed = [tap if tap < 2048 else tap - 4096 for tap in unsigned]
+            phases.append({"phase_index": index, "unsigned12_taps": unsigned,
+                           "signed12_candidate_taps": signed, "signed12_candidate_sum": sum(signed)})
+        tables.append({"name": axis, "axis": axis, "blob_file_offset": offset,
+                       "size_bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
+                       "words": words, "phases": phases,
+                       "reserved_bits_zero": all(word & 0xc003c003 == 0 for word in words)})
+
+    banks = []
+    for name, axis, load, table_load, count, loop in (
+            ("vertical_luma", "vertical", 0x2378, 0x237c, 32, 0x2380),
+            ("vertical_chroma", "vertical", 0x23a0, 0x237c, 32, 0x23a8),
+            ("horizontal_luma", "horizontal", 0x23c8, 0x23d0, 64, 0x23d4),
+            ("horizontal_chroma", "horizontal", 0x23f4, 0x23d0, 64, 0x23fc)):
+        banks.append({"name": name, "axis": axis,
+                      "rdb_base_address": _a32_literal(payload, load)["literal_value"],
+                      "table_blob_file_offset": _a32_literal(payload, table_load)["literal_value"],
+                      "word_count": count, "loop_entry_blob_file_offset": loop})
+    calls = [(0x8518, 0x1f8c), (0x8634, 0x1f8c), (0x20fc, 0x21ac), (0x215c, 0x21ac)]
+    for offset, target in calls:
+        if _a32_branch(payload, offset, link=True)["target_blob_file_offset"] != target:
+            raise FormatError("scaler FIR caller does not match the baseline")
+    tail = _a32_branch(payload, 0x2474)
+    return {
+        "schema_version": 1, "isa": "A32", "endianness": "little", "device_observed": False,
+        "validation": {"validated_regions": validated, "validated_bytes": total},
+        "entry_blob_file_offset": 0x21ac,
+        "writer": {"entry_blob_file_offset": 0x1e8e8,
+                   "operation": "Store r2 at [*(u32 *)r0 + r1] using the original A32 writer.",
+                   "physical_base_validated": False},
+        "tables": tables, "banks": banks, "coefficient_write_count": sum(bank["word_count"] for bank in banks),
+        "preceding_setup_write_count": 20,
+        "format": {"bits": 12, "even_tap_shift": 18, "odd_tap_shift": 2,
+                   "even_tap_mask": 0x3ffc0000, "odd_tap_mask": 0x00003ffc,
+                   "reserved_mask": 0xc003c003, "signedness_confirmed": False,
+                   "fractional_precision_confirmed": False, "normalization_candidate": 1024},
+        "enable_tail": {"branch_blob_file_offset": tail["blob_file_offset"],
+                        "target_blob_file_offset": tail["target_blob_file_offset"],
+                        "rdb_address": _a32_literal(payload, 0x2468)["literal_value"], "value": 1},
+        "routing": {
+            "entry_blob_file_offset": 0x1f8c, "channel_stride_bytes": 0x1cc,
+            "cache_word_offset": 0x1c8, "active_byte_offset": 0x1cc,
+            "picture_selector_byte_offset": 8,
+            "target_width_fields": {"selector_equal_2": {"shift": 8, "bits": 12},
+                                    "selector_other": {"shift": 20, "bits": 12}},
+            "source_record_width_word_offset": 12, "reuse_record_flag_mask": 0x100,
+            "setup_predicate": "Cached u32 != 0 and (source-record word+12 == 0 or unsigned word+12 > selected target width).",
+            "reuse_predicate": "Source-record word+0 bit8 is set and channel active byte equals 1.",
+            "picture_dispatch_call_offsets": [0x8518, 0x8634], "setup_call_offsets": [0x20fc, 0x215c],
+            "complete_picture_caller_validated": False},
+        "open_fields": {
+            "entry_blob_file_offset": 0x55d4, "request_word_offset": 0x20, "request_enable_mask": 1,
+            "initial_cache_value": "Incoming r9; its initialization lies outside this selected region.",
+            "field_input_range_inclusive": [128, 1919], "odd_values_round_up": True,
+            "upper_field": {"shift": 20, "bits": 12, "fallback": 960},
+            "lower_field": {"shift": 8, "bits": 12, "fallback": 1280},
+            "cache_composition": "Enabled path ORs normalized fields and bit0 into initial r9; disabled path stores r9."},
+        "conditions": [
+            "Selected original paths execute in A32 with valid stable context, record, picture, stack and table storage.",
+            "Writer destinations and preceding setup writes do not alias or mutate the coefficient tables or tracked entry/context storage.",
+            "Opaque logging/arithmetic callees return and preserve the ABI, saved state and tracked storage; their semantics are not modeled.",
+            "The coefficient-loop entry has r6=0 and a stable r7 writer context, as set by the selected setup prefix.",
+            "Incoming OPEN r9 must be zero for the selected stores to clear the cache or yield just the normalized fields; that initialization is not pinned here."],
+        "limitations": [
+            "Little-endian file words and RDB field layout do not prove hardware coefficient signedness, Q precision, rounding or clipping.",
+            "Signed-12 two's-complement phase sums of 1024 are an arithmetic candidate, not a validated pixel oracle.",
+            "Context-relative register writes do not establish a physical MMIO base or authorize host register access.",
+            "Selected caller edges do not prove the complete host route, valid dimensions, returning division helpers or successful setup completion.",
+            "Source-bank ownership/lifetime, DMA visibility, clocks, reset and quiescence remain unresolved; no standalone scaler or raw backend execution is proved.",
+            "No file/device access or firmware execution occurs in this private mapper; no hardware capability is advertised."]}
+
+
 def _picture_output_map(payload, images):
     """Pure fixed A32 evidence; callers must pin the exact bundled SHA/size."""
     if len(payload) != BUNDLED_SIZE - TRAILER_SIZE:
@@ -6233,7 +6344,8 @@ def parse_elf(payload, base, wanted, symbol_budget, string_budget,
 
 def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
             references=False, all_symbols=False, bootstrap=False, picture_output=False,
-            arc_metadata=False, csc_command=False, command_buffer_bridge=False, inner_descriptor=False):
+            arc_metadata=False, csc_command=False, command_buffer_bridge=False, inner_descriptor=False,
+            scaler_fir=False):
     if len(data) < 24 or len(data) > MAX_FIRMWARE_SIZE or len(data) % 4:
         raise FormatError("invalid BCM70015 firmware size")
     sha256 = hashlib.sha256(data).hexdigest()
@@ -6251,6 +6363,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         raise FormatError("--command-buffer-bridge requires the exact bundled firmware SHA-256 and size")
     if inner_descriptor and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
         raise FormatError("--inner-descriptor requires the exact bundled firmware SHA-256 and size")
+    if scaler_fir and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
+        raise FormatError("--scaler-fir requires the exact bundled firmware SHA-256 and size")
     payload = data[:-TRAILER_SIZE]
     length_slot = struct.unpack_from("<I", data, len(payload))[0]
     if length_slot != 16:
@@ -6327,6 +6441,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         result["command_buffer_bridge"] = _command_buffer_bridge_map(payload, images)
     if inner_descriptor:
         result["inner_descriptor"] = _inner_descriptor_map(payload, images)
+    if scaler_fir:
+        result["scaler_fir"] = _scaler_fir_map(payload)
     return result
 
 
@@ -6358,6 +6474,8 @@ def main(argv=None):
         "validate the initialized outer packet address/loader relocation bridge; bundled firmware only, not runtime proof"))
     parser.add_argument("--inner-descriptor", action="store_true", help=(
         "validate two fixed pre-relocation descriptor field paths; bundled firmware only, conditional ARC interpretation"))
+    parser.add_argument("--scaler-fir", action="store_true", help=(
+        "validate fixed stock A32 scaler routes and FIR tables; bundled firmware only, not hardware coefficient format proof"))
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-fA-F]{64}", args.expect_sha256):
         parser.error("--expect-sha256 must be 64 hexadecimal digits")
@@ -6365,7 +6483,7 @@ def main(argv=None):
         report = analyze(read_firmware(args.firmware), args.symbol or DEFAULT_SYMBOLS,
                          args.expect_sha256.lower(), args.references, args.all_symbols, args.bootstrap,
                          args.picture_output, args.arc_metadata, args.csc_command, args.command_buffer_bridge,
-                         args.inner_descriptor)
+                         args.inner_descriptor, args.scaler_fir)
     except (OSError, FormatError) as error:
         print(f"flea_fw_map: {error}", file=sys.stderr)
         return 1
