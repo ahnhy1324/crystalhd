@@ -1710,7 +1710,7 @@ void DtsJoinTxThread(DTS_LIB_CONTEXT *Ctx)
 
 BC_STATUS DtsReleaseInterface(DTS_LIB_CONTEXT *Ctx)
 {
-	BC_STATUS cleanup_sts;
+	BC_STATUS cleanup_sts = BC_STS_SUCCESS;
 	bool terminal_decoder_owner;
 
 	if(!Ctx)
@@ -1738,10 +1738,17 @@ BC_STATUS DtsReleaseInterface(DTS_LIB_CONTEXT *Ctx)
 			DebugLog_Trace(LDIL_DBG,
 				"DtsReleaseInterface: capture cleanup failed: %d\n",
 				cleanup_sts);
-		DtsReleaseUserHandle(Ctx);
+		const BC_STATUS release_sts = DtsReleaseUserHandle(Ctx);
+		if (cleanup_sts == BC_STS_SUCCESS)
+			cleanup_sts = release_sts;
 
-		if(0 != close(Ctx->DevHandle))
+		if(0 != close(Ctx->DevHandle)) {
 			DebugLog_Trace(LDIL_DBG,"DtsDeviceClose: Close Handle Failed with error %d\n",errno);
+			if (cleanup_sts == BC_STS_SUCCESS)
+				cleanup_sts = BC_STS_ERROR;
+		}
+		/* Linux consumes the descriptor even when close reports a late error.
+		 * A retry could close a descriptor reused by another thread. */
 		Ctx->DevHandle = -1;
 	}
 
@@ -1762,7 +1769,7 @@ BC_STATUS DtsReleaseInterface(DTS_LIB_CONTEXT *Ctx)
 
 	free(Ctx);
 
-	return BC_STS_SUCCESS;
+	return cleanup_sts;
 
 }
 

@@ -92,6 +92,7 @@ static FailureKind add_failure;
 static FailureKind flush_failure;
 static FailureKind start_failure;
 static FailureKind release_failure;
+static int close_error;
 
 static bool release_seen;
 static bool close_seen;
@@ -112,6 +113,7 @@ static bool release_firmware_stop;
 static thread_local unsigned delay_context_lock;
 static unsigned firmware_stop_calls;
 static unsigned firmware_close_calls;
+static BC_STATUS firmware_close_status;
 
 static bool release_tracking;
 static void *release_outputs[BC_RX_LIST_CNT];
@@ -121,6 +123,8 @@ static unsigned release_output_frees;
 static unsigned release_ioctl_frees;
 static bool release_pool_array_freed;
 static bool output_freed_too_early;
+static bool release_context_freed;
+static unsigned shared_detach_calls;
 
 static unsigned OwnedCount()
 {
@@ -152,8 +156,11 @@ static void ResetMock(bool clear_ownership)
 	add_calls = flush_calls = start_calls = release_calls = 0;
 	fail_add_at = fail_flush_at = fail_start_at = -1;
 	add_failure = flush_failure = start_failure = release_failure = FAIL_NONE;
+	close_error = 0;
+	firmware_close_status = BC_STS_SUCCESS;
 	release_seen = close_seen = false;
 	close_calls = 0;
+	shared_detach_calls = 0;
 	sequence_number = release_sequence = close_sequence = 0;
 	release_clears_ownership = true;
 	observed_forbidden_lock = nullptr;
@@ -341,6 +348,10 @@ extern "C" int __wrap_close(int fd)
 	Check(release_seen, "teardown releases the driver handle before close");
 	Check(release_output_frees == 0,
 	      "teardown closes before freeing output backing");
+	if (close_error) {
+		errno = close_error;
+		return -1;
+	}
 	return 0;
 }
 
@@ -348,6 +359,11 @@ extern "C" void __real_free(void *);
 extern "C" void __wrap_free(void *pointer)
 {
 	if (release_tracking && pointer) {
+		if (pointer == active_context) {
+			release_context_freed = true;
+			Check(active_context->DevHandle == -1,
+			      "terminal cleanup consumes the descriptor even after close failure");
+		}
 		for (size_t index = 0; index < BC_RX_LIST_CNT; ++index) {
 			if (pointer == release_outputs[index]) {
 				++release_output_frees;
@@ -370,6 +386,7 @@ extern "C" void __wrap_free(void *pointer)
 
 extern "C" int __wrap_shmdt(const void *)
 {
+	++shared_detach_calls;
 	return 0;
 }
 
@@ -414,7 +431,7 @@ BC_STATUS DtsFWStopVideo(HANDLE, uint32_t, bool)
 BC_STATUS DtsFWCloseChannel(HANDLE, uint32_t)
 {
 	++firmware_close_calls;
-	return BC_STS_SUCCESS;
+	return firmware_close_status;
 }
 
 void DumpInputSampleToFile(uint8_t *, uint32_t)
@@ -1120,23 +1137,39 @@ static void TestFlushPidMismatch()
 	observed_forbidden_lock = nullptr;
 }
 
-static void TestReleaseOrdering()
+static void TestReleaseOrdering(bool device_close, BC_STATUS decoder_status)
 {
 	struct ReleaseScenario {
 		FailureKind cleanup_failure;
 		FailureKind handle_failure;
+		int close_errno;
+		BC_STATUS expected;
 		const char *description;
 	};
 	const ReleaseScenario scenarios[] = {
-		{FAIL_NONE, FAIL_NONE, "confirmed cleanup"},
-		{FAIL_NONE, FAIL_STATUS, "RELEASE status failure"},
-		{FAIL_NONE, FAIL_SYSCALL, "RELEASE syscall failure"},
-		{FAIL_SYSCALL, FAIL_NONE, "failed cleanup"},
+		{FAIL_NONE, FAIL_NONE, 0, BC_STS_SUCCESS, "confirmed cleanup"},
+		{FAIL_STATUS, FAIL_NONE, 0, BC_STS_IO_ERROR, "unmap status failure"},
+		{FAIL_SYSCALL, FAIL_NONE, 0, BC_STS_ERROR, "unmap syscall failure"},
+		{FAIL_NONE, FAIL_STATUS, 0, BC_STS_BUSY, "RELEASE status failure"},
+		{FAIL_NONE, FAIL_SYSCALL, 0, BC_STS_ERROR, "RELEASE syscall failure"},
+		{FAIL_NONE, FAIL_NONE, EIO, BC_STS_ERROR, "close EIO failure"},
+		{FAIL_NONE, FAIL_NONE, EINTR, BC_STS_ERROR, "close EINTR failure"},
+		{FAIL_STATUS, FAIL_STATUS, 0, BC_STS_IO_ERROR, "unmap before RELEASE failure"},
+		{FAIL_STATUS, FAIL_NONE, EIO, BC_STS_IO_ERROR, "unmap before close failure"},
+		{FAIL_NONE, FAIL_STATUS, EIO, BC_STS_BUSY, "RELEASE before close failure"},
+		{FAIL_STATUS, FAIL_STATUS, EIO, BC_STS_IO_ERROR, "all cleanup failures"},
+		{FAIL_SYSCALL, FAIL_STATUS, EINTR, BC_STS_ERROR, "unmap syscall before later failures"},
 	};
-	char label[80];
+	char label[112];
 	for (const ReleaseScenario &scenario : scenarios) {
-		const bool quarantine = scenario.cleanup_failure != FAIL_NONE;
-		std::snprintf(label, sizeof(label), "release %s",
+		const bool decoder_failed = decoder_status != BC_STS_SUCCESS;
+		/* Failed firmware close leaves STOP state, so DeviceClose first retries
+		 * capture cleanup before the terminal release retries a failed unmap. */
+		const bool quarantine = scenario.cleanup_failure != FAIL_NONE &&
+		                        !decoder_failed;
+		std::snprintf(label, sizeof(label), "%s%s %s",
+		              device_close ? "DeviceClose" : "release",
+		              decoder_failed ? " after decoder failure" : "",
 		              scenario.description);
 		case_name = label;
 		bc_dil_glob_s globals = {};
@@ -1150,7 +1183,11 @@ static void TestReleaseOrdering()
 		context->DevHandle = 99;
 		context->DevId = BC_PCI_DEVID_FLEA;
 		context->ProcessID = getpid();
-		context->State = BC_DEC_STATE_START;
+		context->OpMode = DTS_PLAYBACK_MODE;
+		context->State = device_close ?
+			(decoder_failed ? BC_DEC_STATE_STOP : BC_DEC_STATE_CLOSE) :
+			BC_DEC_STATE_START;
+		context->OpenRsp.channelId = 7;
 		context->CfgFlags = BC_MPOOL_INCL_YUV_BUFFS | BC_ADDBUFF_MOVE;
 		context->MpoolCnt = BC_RX_LIST_CNT;
 		context->bMapOutBufDone = true;
@@ -1209,29 +1246,39 @@ static void TestReleaseOrdering()
 		ResetMock(true);
 		for (size_t index = 0; index < BC_RX_LIST_CNT; ++index)
 			driver_owned[index] = true;
-		if (quarantine) {
+		if (scenario.cleanup_failure != FAIL_NONE) {
 			fail_flush_at = 0;
 			flush_failure = scenario.cleanup_failure;
 			release_clears_ownership = false;
 		}
 		release_failure = scenario.handle_failure;
+		close_error = scenario.close_errno;
+		firmware_close_status = decoder_status;
+		firmware_close_calls = 0;
+		if (!device_close || decoder_failed)
+			DtsSetDecStat(true, context->ProcessID);
 		release_pool_array = context->Mpools;
 		release_output_frees = release_ioctl_frees = 0;
 		release_pool_array_freed = false;
+		release_context_freed = false;
 		output_freed_too_early = false;
 		release_tracking = true;
 
 		Check(PoolSize(*context) == BC_IOCTL_DATA_POOL_SIZE,
 		      "release starts with the complete ioctl envelope pool");
-		Check(DtsReleaseInterface(context) == BC_STS_SUCCESS,
-		      "interface release succeeds");
-		Check(event_count == 2 &&
+		const BC_STATUS status = device_close ? DtsDeviceClose(context) :
+		                                      DtsReleaseInterface(context);
+		Check(status == (decoder_failed ? decoder_status : scenario.expected),
+		      "terminal cleanup preserves the first failure status");
+		const size_t unmaps = decoder_failed &&
+		                      scenario.cleanup_failure != FAIL_NONE ? 2U : 1U;
+		Check(event_count == unmaps + 1 &&
 		      events[0].command == BCM_IOC_FLUSH_RX_CAP &&
 		      events[0].discard_only == FALSE &&
-		      events[1].command == BCM_IOC_RELEASE,
+		      events[unmaps].command == BCM_IOC_RELEASE,
 		      "teardown attempts destructive unmap before RELEASE");
 		Check(events[0].pool_size == BC_IOCTL_DATA_POOL_SIZE - 1 &&
-		      events[1].pool_size == BC_IOCTL_DATA_POOL_SIZE,
+		      events[unmaps].pool_size == BC_IOCTL_DATA_POOL_SIZE,
 		      "teardown returns the unmap envelope before RELEASE");
 		Check(release_calls == 1 && close_calls == 1 &&
 		      release_sequence < close_sequence,
@@ -1239,6 +1286,12 @@ static void TestReleaseOrdering()
 		Check(release_ioctl_frees == BC_IOCTL_DATA_POOL_SIZE &&
 		      release_pool_array_freed,
 		      "teardown frees ioctl and output-pool metadata after close");
+		Check(release_context_freed && shared_detach_calls == 1,
+		      "terminal cleanup consumes the context and shared attachment once");
+		Check(!globals.g_bDecOpened && globals.g_nProcID == 0,
+		      "terminal cleanup retires unreachable decoder ownership");
+		Check(firmware_close_calls == (decoder_failed ? 1U : 0U),
+		      "only the open public decoder requires a firmware close");
 		Check(release_output_frees ==
 		          (quarantine ? 0U : static_cast<unsigned>(BC_RX_LIST_CNT)),
 		      quarantine ?
@@ -1246,9 +1299,9 @@ static void TestReleaseOrdering()
 		      "confirmed unmap frees every capture backing");
 		Check(!output_freed_too_early,
 		      "RELEASE and close precede every output-pool free");
-		if (scenario.handle_failure != FAIL_NONE) {
+		if (!quarantine) {
 			Check(release_output_frees == BC_RX_LIST_CNT,
-			      "failed RELEASE cannot retain backing after confirmed unmap");
+			      "later teardown failures cannot retain backing after confirmed unmap");
 		}
 		Check(OwnedCount() ==
 		          (quarantine ? static_cast<unsigned>(BC_RX_LIST_CNT) : 0U),
@@ -1286,7 +1339,9 @@ int main()
 	TestStartFailuresAndRetry();
 	TestFlushSemantics();
 	TestFlushPidMismatch();
-	TestReleaseOrdering();
+	TestReleaseOrdering(false, BC_STS_SUCCESS);
+	TestReleaseOrdering(true, BC_STS_SUCCESS);
+	TestReleaseOrdering(true, BC_STS_TIMEOUT);
 	std::printf("Library capture: %u checks, %u failures\n", checks, failures);
 	return failures ? 1 : 0;
 }
