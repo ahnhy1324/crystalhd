@@ -86,6 +86,8 @@ struct crystalhd_adp {
 	struct crystalhd_v4l2	*v4l2;
 
 	spinlock_t		lock;
+	/* Serialize each GISB selector/data transaction, including direct aliases. */
+	spinlock_t		gisb_lock;
 	struct rw_semaphore	user_lock;
 	struct mutex		tx_lock;
 
