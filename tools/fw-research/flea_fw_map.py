@@ -56,6 +56,334 @@ MAX_INIT_REPLY_REGIONS = 12
 MAX_INIT_REPLY_BYTES = 1024
 MAX_INIT_REPLY_AGGREGATE_BYTES = 80 * 1024
 MAX_INIT_REPLY_ANCHORS = 104
+MAX_OPEN_REPLY_REGIONS = 48
+MAX_OPEN_REPLY_BYTES = 14 * 1024
+MAX_OPEN_REPLY_AGGREGATE_BYTES = 64 * 1024
+MAX_OPEN_REPLY_INSTRUCTIONS = 640
+MAX_OPEN_REPLY_ELF_RECORDS = 16
+MAX_OPEN_REPLY_OWNED_RELOCATIONS = 80
+MAX_OPEN_REPLY_SEMANTIC_RECEIPTS = 736
+MAX_OPEN_REPLY_NEW_TABLE_RECORDS = 345
+MAX_OPEN_REPLY_RELOCATION_RECORDS = 2516
+# Complete selected bodies and metadata; LIMM bytes are inside their body pins.
+_OPEN_REPLY_REGIONS = (
+    ("host_open", 0x51c8, 2112, "d8ab1aaf4f635c38b66dcc210c6aed73f4f1bc73b485b1abf5f4adf8c1a35bdc"),
+    ("channel_wrapper", 0x8a0, 760, "852df88584df06c581c4e32fec35d020233fd042a9c5a4579cdfbce26a535f12"),
+    ("smp_open", 0xa2a4, 272, "152b7de5dac90649b746ae70ed0c9a8709c324785cbca4e56ef040cd02982338"),
+    ("ordinary_decoder_open", 0xf7e4, 1032, "723911a2a94585093da0b4caebd2ba2a20b2c8bc87c4e91dd42646ae95a3a092"),
+    ("open_packet_builder", 0x27480, 324, "c356d9c46eee35ea6dafb60e7e1ef49cf37c77726e4ba14e5e192f9cc2c50f91"),
+    ("CmdChannelOpen", 0x4731c, 1068, "299ddffe5d7c502e0d0df9be965842c76f7de59cd09b30c65ed00fb807a49e22"),
+    ("Core_ChanInitialize", 0x4928c, 636, "11aeb52ef9f2a3c8ab99cf099c75eade7a69abe991e3561a05f423e54b1b4d71"),
+    ("Platform_DrvContextSize", 0x5de98, 8, "837494e6a5e29cf8ca42cf997921cc319edae871aebc286e75b44e30c933dd7b"),
+    ("System_Activate", 0x34e34, 292, "9530baaafd18492433c0f9fdca77cfcd8d0ad1aa982e221303d6cd54de17521e"),
+    ("Core_CopyDramToLsram", 0x34d18, 284, "a78e06a80f25a603981e888fa35ccf9e811dca10acdc4d71b919bd8902f88a1e"),
+    ("Core_CircBuffer_Put", 0x363f8, 188, "b2b2c7a2b5d695d0e732f54fdc87cd1ced68f62814469793999d46cd518e9375"),
+    ("Core_CircBuffer_Get", 0x2fbb4, 180, "4e0746e00040cedaee3d0275eaa7c1a14fa9f4dc056a60511dfd9b423a901a90"),
+    ("Core_AttemptDisplay", 0x364b4, 1160, "7451b2344541e6428f8cf4e7da1df523acea2739bc40c4c881561e6441ca29c4"),
+    ("Core_GetUndeliveredPPBs", 0x48cd8, 300, "7bd43689268dc47f4cddc6da57a25bad8e57db03f48fda4b67f5649cf4473797"),
+    ("Platform_UpdateReleaseQueue", 0x36cdc, 56, "009ee74b4c5cb5684519e88dcda070e71a1df472a97ab19976761a57d184b5a4"),
+    ("CmdChannelOpen_symbol", 0x69e60, 16, "7ca7d4b12ce4edb5ac69937833ba1cac67f921de37fd1a7448bf8e0a166a379d"),
+    ("CmdChannelOpen_name", 0x67b15, 15, "a70af9b303345cb7a3bee0b3f23f26b1757b65faaa06c14b673bbecc76e3cd23"),
+    ("Core_CircBuffer_Put_symbol", 0x69fd0, 16, "378217f0f198ef54d8a32c42229e75232a4325612c0dcb436aefc715b5624431"),
+    ("Core_CircBuffer_Put_name", 0x67c7c, 20, "b3886b1ee538d44db9c30932c71ad01bc046c3f82649b6800cce747c7b94288c"),
+    ("Core_GetUndeliveredPPBs_symbol", 0x6c030, 16, "489c3d066f146350b6cdc72a73b8af5fce33941483a832ff8f04ba070fab0c35"),
+    ("Core_GetUndeliveredPPBs_name", 0x68b0f, 24, "e3f0ce39a361864e01669d0d186cf59b6258f438e9ae2e51fbeb61825f1b0d5e"),
+    ("Core_CopyDramToLsram_symbol", 0x6c100, 16, "47f71315ca28d24515ae36f6ec130a0b5e87156a1696b1bbc1102630004b03a2"),
+    ("Core_CopyDramToLsram_name", 0x68c06, 21, "877e6e345f80b8d612cae6b6594f197bc7cb45a1c7f38cafd3469e52db6b2bc2"),
+    ("System_Activate_symbol", 0x6c110, 16, "5787f45f634723601c0bb273dbc1722baef803a36e7fb9ecf6a8231233ce7dd1"),
+    ("System_Activate_name", 0x68c1b, 16, "5fb4a404d6d1b9463e064182640c757cdde1ccd9c3b5dc8d3b236114b60cb8fc"),
+    ("Core_AttemptDisplay_symbol", 0x6c1a0, 16, "456ac9840b43973079c268e06cbb5e040b54908080bd87605d45bc76e1a5069b"),
+    ("Core_AttemptDisplay_name", 0x68ccd, 20, "a474d0bfd5f5c154d186260bcded60e2ed959071e24d40e51c16e7b2ff959e48"),
+    ("Core_ChanInitialize_symbol", 0x6c270, 16, "eb374b4daf7736bf59e41115b2513ffac54475ec9e6ed56819b3efc183b9d723"),
+    ("Core_ChanInitialize_name", 0x68de3, 20, "62908ec357bb135ad3e91f6b7bb20552f9367ee0c37b635c435f45b9d3c4d856"),
+    ("Core_CircBuffer_Get_symbol", 0x6c340, 16, "24771c2c2e3f0e3c71be480dd9f0e9527e8f0920367bb7bf40532b50eaa9798c"),
+    ("Core_CircBuffer_Get_name", 0x68ea0, 20, "e7f04575cc0341cc9ccf63af12cafa4df5f2d666129958b63abbf13884bc2095"),
+    ("dm_return_info_symbol", 0x6cd10, 16, "c1c140aaacc06fee8723cbe7b498aa307a98e005e61faf27a9d601c29911e525"),
+    ("dm_return_info_name", 0x69835, 15, "f2ccf1e8a7700290fb61db81e8dbfa4bb9916be74f7a3f4fa5b9e3d072cd9f71"),
+    ("Platform_UpdateReleaseQueue_symbol", 0x6cda0, 16, "c6f941d5a33eae54dfb98691de5fdf54fc3859f1474318fd0d814b762cfdb880"),
+    ("Platform_UpdateReleaseQueue_name", 0x698ef, 28, "5264fa781e35b14d770f2465cdd54392d50633969bd77d81ad87f86741771d56"),
+    ("Platform_DrvContextSize_symbol", 0x6cef0, 16, "ff6f634ee713269c7cd4ba177ef771e8177f928da7c94b9291c8d8340dc818d3"),
+    ("Platform_DrvContextSize_name", 0x69aaa, 24, "54aaf3f80ae71bcd3ab9d78bc02ee7cc22a76b9c60b68c08ab325519c382b7c9"),
+    ("picture_relocations", 0x6da34, 3132, "5c8ac2c91e08eeabe4567c2d908d2a7841c700b6a77c01b9329e727bf7eaf091"),
+    ("slice_relocations", 0x6d020, 1008, "31d0234e0f31d3ed02cee74f82a66c64f897a69575888b83336f9fcabfe631a7"),
+    ("open_command_literal", 0x27610, 4, "458262dafd94c17c450f767d215361a360801687865dba4ab3b243664c6c6597"),
+    ("selected_open_dispatch", 0x62d8, 4, "c266cd49bb8474f561d8130cdcc7faf31d0d9e5921ac9b559c58b1f2e9ae8e0c"),
+    ("slice_rela_header", 0x79b08, 40, "f0f411a72bc2b8bfeabf898110237d65e124e95052e801770aa1e009e2380cb5"),
+    ("picture_rela_header", 0x79b58, 40, "e855a380af4559483720d27d271feb0ca488763d0be39328940d3d75c190d2ca"),
+)
+_OPEN_REPLY_ARM_SITES = (
+    (0x898, 0xe51f01a4), (0x89c, 0xe12fff1e), (0x62d8, 0xebfffbba),
+    (0x51c8, 0xe92d4ff0), (0x51cc, 0xe24dd01c), (0x51d8, 0xe3500000),
+    (0x51dc, 0xa00000f), (0x51e0, 0xe2806014), (0x51e4, 0xe2804f45),
+    (0x51e8, 0xe51fb0c8), (0x51ec, 0xe3e08000), (0x51f0, 0xe59b0000),
+    (0x51f4, 0xe3500001), (0x51f8, 0xa00000d), (0x570c, 0xe51f05ec),
+    (0x5710, 0xe5900004), (0x5714, 0xe0800105), (0x5718, 0xe59030cc),
+    (0x571c, 0xe58d3000), (0x5720, 0xe59030c8), (0x5724, 0xe5d020d1),
+    (0x5728, 0xe5d010d0), (0x572c, 0xe1a00007), (0x5730, 0xebffec5a),
+    (0x5734, 0xe1a0b000), (0x5738, 0xe35b0000), (0x573c, 0xa000052),
+    (0x5758, 0xe1a0000b), (0x575c, 0xeafffead), (0x5218, 0xe28dd01c),
+    (0x521c, 0xe8bd8ff0), (0x8a0, 0xe92d47ff), (0x8a4, 0xe1a07000),
+    (0x8a8, 0xe1a09001), (0x8ac, 0xe1a08002), (0x8b0, 0xebfffff8),
+    (0x8b4, 0xe1a06000), (0x8b8, 0xe3560000), (0x8bc, 0xa00000f),
+    (0x8c0, 0xe5960004), (0x8c4, 0xe28d2008), (0x8c8, 0xe1a01007),
+    (0x8cc, 0xeb004801), (0x8d0, 0xe1a04000), (0x8d4, 0xe3540000),
+    (0x8d8, 0xa00000a), (0x908, 0xe3a00073), (0x90c, 0xe1a02007),
+    (0x910, 0xe28d3008), (0x914, 0xe0000097), (0x918, 0xe0865100),
+    (0x91c, 0xe5960004), (0x920, 0xe2851014), (0x924, 0xeb0049f5),
+    (0x928, 0xe1a04000), (0x92c, 0xe3540000), (0x930, 0xa000008),
+    (0x970, 0xe28520ac), (0x974, 0xe1a03006), (0x978, 0xe1a01008),
+    (0x97c, 0xe1a00007), (0x980, 0xeb00225e), (0x984, 0xe1a04000),
+    (0x988, 0xe3540000), (0x98c, 0xa000048), (0xac0, 0xe2852028),
+    (0xac4, 0xe1a01009), (0xac8, 0xe88d0044), (0xacc, 0xe28530ac),
+    (0xad0, 0xe3a020e0), (0xad4, 0xe1a00007), (0xad8, 0xeb002317),
+    (0xadc, 0xe1a04000), (0xae0, 0xe3540000), (0xae4, 0xa000008),
+    (0xb0c, 0xe2851018), (0xb10, 0xe1a02006), (0xb14, 0xe1a00007),
+    (0xb18, 0xeb0025e1), (0xb1c, 0xe1a04000), (0xb20, 0xe3540000),
+    (0xb24, 0xa000010), (0xb40, 0xe1a00004), (0xb44, 0xeb007e1e),
+    (0xb48, 0xe3a00000), (0xb4c, 0xe5c60740), (0xb58, 0xe1a03004),
+    (0xb60, 0xeb008894), (0xb64, 0xe28dd010), (0xb68, 0xe8bd87f0),
+    (0xb90, 0xe1a00004), (0xb94, 0xeafffff2), (0xa2a4, 0xe92d41f0),
+    (0xa2a8, 0xe24dd038), (0xa2ac, 0xe1a07000), (0xa2b0, 0xe1a04001),
+    (0xa2b4, 0xe1a06002), (0xa2b8, 0xe1a0200d), (0xa2bc, 0xe1a01007),
+    (0xa2c0, 0xe5960008), (0xa2c4, 0xeb00128c), (0xa2c8, 0xe1a05000),
+    (0xa2cc, 0xe3a08000), (0xa2d0, 0xe3550000), (0xa2d4, 0xa000008),
+    (0xa2f0, 0xe1a00005), (0xa2f4, 0xeb005832), (0xa2f8, 0xea000012),
+    (0xa2fc, 0xe5cd800d), (0xa300, 0xe3a00001), (0xa304, 0xe5cd0024),
+    (0xa308, 0xe2841008), (0xa30c, 0xe5960008), (0xa310, 0xe1a0300d),
+    (0xa314, 0xe1a02007), (0xa318, 0xeb001531), (0xa31c, 0xe1a05000),
+    (0xa320, 0xe3550000), (0xa324, 0xa00000f), (0xa340, 0xe1a00005),
+    (0xa344, 0xeb00581e), (0xa348, 0xe5c48000), (0xa354, 0xe1a03005),
+    (0xa35c, 0xeb006295), (0xa360, 0xe28dd038), (0xa364, 0xe8bd81f0),
+    (0xa370, 0xe5847004), (0xa374, 0xe584800c), (0xa378, 0xe3a01005),
+    (0xa37c, 0xe5c41000), (0xa3ac, 0xe3a00000), (0xa3b0, 0xeaffffea),
+    (0xf7e4, 0xe92d4ff0), (0xf7e8, 0xe24dd03c), (0xf7ec, 0xe1a05000),
+    (0xf7f0, 0xe1a0a001), (0xf7f4, 0xe1a06002), (0xf7f8, 0xe1a07003),
+    (0xf7fc, 0xe3a08000), (0xf800, 0xe3a04000), (0xf804, 0xe3a09000),
+    (0xf808, 0xe5d5036c), (0xf80c, 0xe3500000), (0xf810, 0xa000008),
+    (0xf830, 0xe28dd03c), (0xf834, 0xe8bd8ff0), (0xf838, 0xe3a00000),
+    (0xf83c, 0xe58a0000), (0xf840, 0xe3560010), (0xf844, 0x3a000001),
+    (0xf848, 0xe3a00002), (0xf84c, 0xeafffff7), (0xf850, 0xe595019c),
+    (0xf854, 0xe7900106), (0xf858, 0xe3500000), (0xf85c, 0xa000008),
+    (0xf87c, 0xe3a00002), (0xf880, 0xeaffffea), (0xf884, 0xe5d70020),
+    (0xf888, 0xe3500001), (0xf88c, 0x1a000000), (0xf890, 0xe3a09001),
+    (0xf894, 0xe3590000), (0xf898, 0xa00000b), (0xf8cc, 0xe30a084c),
+    (0xf8d0, 0xeb00430e), (0xf8d4, 0xe1a04000), (0xf8d8, 0xe3540000),
+    (0xf8dc, 0x1a000001), (0xf8e0, 0xe3a00003), (0xf8e4, 0xeaffffd1),
+    (0xf980, 0xe5845064), (0xf984, 0xe5846000), (0xf9a4, 0xe3590000),
+    (0xf9a8, 0xa000013), (0xfb08, 0xe3590000), (0xfb0c, 0xa000002),
+    (0xfb10, 0xe5d502b4), (0xfb14, 0xe3500000), (0xfb18, 0x1a00001d),
+    (0xfb1c, 0xe1c402d4), (0xfb20, 0xe1c422dc), (0xfb24, 0xe1cd02fc),
+    (0xfb28, 0xe1cd23f4), (0xfb2c, 0xe1c401dc), (0xfb30, 0xe1c421d0),
+    (0xfb34, 0xe1cd01fc), (0xfb38, 0xe1cd22f4), (0xfb3c, 0xe5940040),
+    (0xfb40, 0xe5941034), (0xfb44, 0xe5942038), (0xfb48, 0xe5943018),
+    (0xfb4c, 0xe1cd00fc), (0xfb50, 0xe1cd21f4), (0xfb54, 0xe5941008),
+    (0xfb58, 0xe594200c), (0xfb5c, 0xe594303c), (0xfb60, 0xe88d000e),
+    (0xfb64, 0xe5d430b1), (0xfb68, 0xe1a02009), (0xfb6c, 0xe1a01004),
+    (0xfb70, 0xe1a00005), (0xfb74, 0xeb005e41), (0xfb78, 0xe1a08000),
+    (0xfb7c, 0xe3580000), (0xfb80, 0xa000003), (0xfb84, 0xe1a00004),
+    (0xfb88, 0xebfffed5), (0xfb8c, 0xe1a00008), (0xfb90, 0xeaffff26),
+    (0xfba8, 0xe3a00001), (0xfbac, 0xe5c40230), (0xfbb0, 0xe58a4000),
+    (0xfbb4, 0xe3590000), (0xfbb8, 0xa000001), (0xfbbc, 0xe5c502ac),
+    (0xfbc0, 0xe58562b0), (0xfbc4, 0xe59a0000), (0xfbc8, 0xe595119c),
+    (0xfbcc, 0xe7810106), (0xfbd0, 0xe1a01004), (0xfbd4, 0xe5950368),
+    (0xfbd8, 0xeb00549b), (0xfbdc, 0xe1a00004), (0xfbe0, 0xebfffa59),
+    (0xfbe4, 0xe3a00000), (0xfbe8, 0xeaffff10), (0x27480, 0xe92d4ff0),
+    (0x27484, 0xe24ddf81), (0x27488, 0xe1a09000), (0x2748c, 0xe1a06001),
+    (0x27490, 0xe1a0a002), (0x27494, 0xe1a0b003), (0x27498, 0xe3a00000),
+    (0x2749c, 0xe58d0008), (0x274a0, 0xe28d4f42), (0x274a4, 0xe28d700c),
+    (0x274a8, 0xe3a020fc), (0x274ac, 0xe3a01000), (0x274b0, 0xe1a00004),
+    (0x274b4, 0xebffe48a), (0x274b8, 0xe3a020fc), (0x274bc, 0xe3a01000),
+    (0x274c0, 0xe1a00007), (0x274c4, 0xebffe486), (0x274c8, 0xe1a05004),
+    (0x274cc, 0xe1a08007), (0x274d0, 0xe59f0138), (0x274d4, 0xe5850000),
+    (0x274d8, 0xe5960000), (0x274dc, 0xe5850004), (0x274e0, 0xe585a00c),
+    (0x274e4, 0xe585b008), (0x274e8, 0xe59d0228), (0x274ec, 0xe5850010),
+    (0x274f0, 0xe59d022c), (0x274f4, 0xe5850014), (0x274f8, 0xe59d0240),
+    (0x274fc, 0xe5850018), (0x27500, 0xe59d0244), (0x27504, 0xe585001c),
+    (0x27508, 0xe59d0248), (0x2750c, 0xe5850020), (0x27510, 0xe59d024c),
+    (0x27514, 0xe5850024), (0x27518, 0xe59d0250), (0x2751c, 0xe5850028),
+    (0x27520, 0xe59d0254), (0x27524, 0xe585002c), (0x27528, 0xe59d0258),
+    (0x2752c, 0xe5850030), (0x27530, 0xe59d025c), (0x27534, 0xe5850038),
+    (0x27538, 0xe59d0260), (0x2753c, 0xe585003c), (0x27540, 0xe59d0230),
+    (0x27544, 0xe5850040), (0x27548, 0xe59d0234), (0x2754c, 0xe5850044),
+    (0x27550, 0xe59d0238), (0x27554, 0xe5850048), (0x27558, 0xe59d023c),
+    (0x2755c, 0xe585004c), (0x27560, 0xe3043e20), (0x27564, 0xe58d3000),
+    (0x27568, 0xe1a03007), (0x2756c, 0xe1a02004), (0x27570, 0xe5991064),
+    (0x27574, 0xe1a00009), (0x27578, 0xebfffeb7), (0x2757c, 0xe58d0008),
+    (0x27580, 0xe5980008), (0x27584, 0xe5860044), (0x27588, 0xe598000c),
+    (0x2758c, 0xe5860048), (0x27590, 0xe5980010), (0x27594, 0xe5860050),
+    (0x27598, 0xe5980014), (0x2759c, 0xe58d0004), (0x275a0, 0xe2862058),
+    (0x275a4, 0xe5990008), (0x275a8, 0xe59d1004), (0x275ac, 0xebffe1fe),
+    (0x275b0, 0xe3a00001), (0x275b4, 0xe5c60220), (0x275b8, 0xe59d0008),
+    (0x275bc, 0xe28ddf81), (0x275c0, 0xe8bd8ff0),
+)
+_OPEN_REPLY_ARC_SITES = (
+    (16, 0x247c4, 0x62400000), (16, 0x25890, 0x20000500), (16, 0x258bc, 0x2ffdd920),
+    (16, 0x258c0, 0x60079e00), (16, 0x258c4, 0x20001f00), (16, 0x24788, 0x100e3e04),
+    (16, 0x2478c, 0x100e3600), (16, 0x24790, 0x636e3800), (16, 0x24794, 0x538e7e60),
+    (16, 0x247c8, 0x800000c), (16, 0x247d0, 0x100d81fc), (16, 0x247d4, 0x18400e00),
+    (16, 0x247d8, 0x8090008), (16, 0x247e0, 0x18200a00), (16, 0x247e4, 0x57e0fa03),
+    (16, 0x247e8, 0x100d81f8), (16, 0x247ec, 0x200002a9), (16, 0x247f0, 0x61fffe02),
+    (16, 0x247f4, 0x67e10500), (16, 0x247f8, 0x20000381), (16, 0x247fc, 0x57e0fa01),
+    (16, 0x24800, 0x2000028c), (16, 0x24810, 0x20006c20), (16, 0x24814, 0x10091e04),
+    (16, 0x24818, 0x8090010), (16, 0x2481c, 0x67e00100), (16, 0x24820, 0x20000c01),
+    (16, 0x24824, 0x8090014), (16, 0x24828, 0x67e00100), (16, 0x2482c, 0x20000a81),
+    (16, 0x24830, 0x8090024), (16, 0x24834, 0x67e00100), (16, 0x24838, 0x20000901),
+    (16, 0x2483c, 0x8090028), (16, 0x24840, 0x67e00100), (16, 0x24844, 0x20000781),
+    (16, 0x24848, 0x8090038), (16, 0x2484c, 0x67e00100), (16, 0x24850, 0x20000601),
+    (16, 0x24854, 0x809003c), (16, 0x24858, 0x67e00100), (16, 0x2485c, 0x20000481),
+    (16, 0x24860, 0x8090018), (16, 0x24864, 0x67e00100), (16, 0x24868, 0x20000301),
+    (16, 0x2486c, 0x809001c), (16, 0x24870, 0x67e00100), (16, 0x24874, 0x20000181),
+    (16, 0x24878, 0x8090020), (16, 0x2487c, 0x57e07a09), (16, 0x24880, 0x2000028e),
+    (16, 0x24890, 0x20005c20), (16, 0x24894, 0x10091e04), (16, 0x248bc, 0x631f7c00),
+    (16, 0x248c4, 0x80c0400), (16, 0x248c8, 0x67e00100), (16, 0x248d4, 0x20000202),
+    (16, 0x248e0, 0x20005220), (16, 0x248e4, 0x10091e04), (16, 0x248e8, 0x9a90004),
+    (16, 0x248ec, 0x57e6fa10), (16, 0x248f0, 0x40077f2c), (16, 0x248f4, 0x27ffe2a6),
+    (16, 0x248f8, 0x60269a06), (16, 0x248fc, 0x402c7e0c), (16, 0x24900, 0x8006fe05),
+    (16, 0x24904, 0x42608000), (16, 0x24908, 0x8498800), (16, 0x2490c, 0x67e17a07),
+    (16, 0x24910, 0x20000281), (16, 0x24914, 0x40077f44), (16, 0x24918, 0x280575a0),
+    (16, 0x2491c, 0x60269a00), (16, 0x24920, 0x20004a20), (16, 0x24924, 0x10091e04),
+    (16, 0x24934, 0x50000000), (16, 0x24938, 0x10898000), (16, 0x2493c, 0x8006fe03),
+    (16, 0x24940, 0x40207c00), (16, 0x24948, 0x50000000), (16, 0x2494c, 0x10008004),
+    (16, 0x24950, 0x10009e00), (16, 0x2496c, 0xa090020), (16, 0x24a6c, 0x809003c),
+    (16, 0x24a70, 0x8e90038), (16, 0x24a74, 0x100e0010), (16, 0x24a78, 0x8090048),
+    (16, 0x24a7c, 0x829002c), (16, 0x24a80, 0x100e0014), (16, 0x24a84, 0x809004c),
+    (16, 0x24a88, 0x100e1a1c), (16, 0x24a8c, 0x60482000), (16, 0x24a90, 0x606cb200),
+    (16, 0x24a94, 0x100e0018), (16, 0x24a98, 0x6008a200), (16, 0x24a9c, 0x608b2c00),
+    (16, 0x24aa0, 0x60abae00), (16, 0x24aa4, 0x28038a20), (16, 0x24aa8, 0x8cd81f4),
+    (16, 0x24a3c, 0x57eafa00), (16, 0x24a40, 0x2000050a), (16, 0x24a4c, 0x601ffe07),
+    (16, 0x24a50, 0x20002420), (16, 0x24a54, 0x10090004), (16, 0x24aac, 0x80d81f8),
+    (16, 0x24ab0, 0x8298004), (16, 0x24abc, 0x4040fc00), (16, 0x24adc, 0x61df7c00),
+    (16, 0x24b08, 0x50000000), (16, 0x24b0c, 0x10090004), (16, 0x24b10, 0x8210124),
+    (16, 0x24b14, 0x10090208), (16, 0x24b18, 0x8010128), (16, 0x24b1c, 0x1009000c),
+    (16, 0x24b20, 0x8010130), (16, 0x24b24, 0x40007c00), (16, 0x24b2c, 0x10090014),
+    (16, 0x24b30, 0x60071c00), (16, 0x24b34, 0x10071e00), (16, 0x24b38, 0x10071e04),
+    (16, 0x24b3c, 0x2fc107a0), (16, 0x24b40, 0x605ffe08), (16, 0x24b44, 0x2fc103a0),
+    (16, 0x24b48, 0x81a6fe03), (16, 0x24b4c, 0x829000c), (16, 0x24b50, 0x10071e00),
+    (16, 0x24b54, 0x10071e04), (16, 0x24b58, 0x60071c00), (16, 0x24b5c, 0x2fc103a0),
+    (16, 0x24b60, 0x605ffe08), (16, 0x24b64, 0x2fc0ff80), (16, 0x24b68, 0x41a6fc00),
+    (16, 0x24b70, 0x10091a10), (16, 0x24bac, 0x380f8020), (16, 0x24bb0, 0xb6e1060),
+    (16, 0x266f8, 0x100e3e04), (16, 0x266fc, 0x100e3600), (16, 0x26700, 0x636e3800),
+    (16, 0x26704, 0x538e7e38), (16, 0x2672c, 0x62600000), (16, 0x26734, 0x61c10400),
+    (16, 0x26748, 0x42807c00), (16, 0x26760, 0x28297420), (16, 0x26764, 0x100e1a10),
+    (16, 0x26768, 0x28297320), (16, 0x2676c, 0x41a02800), (16, 0x2677c, 0x88d801c),
+    (16, 0x26780, 0x605f7c00), (16, 0x26788, 0x40017f08), (16, 0x26790, 0x80227e05),
+    (16, 0x26794, 0x40000200), (16, 0x26798, 0x10002600), (16, 0x267a8, 0x4029fc00),
+    (16, 0x267b0, 0x10009b30), (16, 0x267b8, 0x4049fc00), (16, 0x268c8, 0x8008130),
+    (16, 0x268e0, 0x40007c00), (16, 0x268e8, 0x1001013c), (16, 0x26918, 0x8008130),
+    (16, 0x26924, 0x40407c00), (16, 0x2692c, 0x10008524), (16, 0x26938, 0x40407c00),
+    (16, 0x26958, 0x10008528), (16, 0x2696c, 0x380f8020), (16, 0x26970, 0xb6e1038),
+    (16, 0x3b304, 0x380f8020), (16, 0x3b308, 0x401ffeec), (4, 0x9fa4, 0x61a00000),
+    (4, 0x9fa8, 0x80007e05), (4, 0x9fb4, 0x41e07c00), (4, 0x9fbc, 0x8078010),
+    (4, 0x9fc0, 0x605f7c00), (4, 0x9fc8, 0x61df7c00), (4, 0x9fd0, 0x2fffd420),
+    (4, 0x9fd4, 0x40277e3c), (4, 0x9ea4, 0x62600000), (4, 0x9ea8, 0x62408200),
+    (4, 0x9eac, 0x62210500), (4, 0x9efc, 0x2ff69920), (4, 0x9f00, 0x60469a00),
+    (4, 0x9f18, 0x2ff678a0), (4, 0x9f1c, 0x60479e00), (4, 0x9f48, 0x2ff68300),
+    (4, 0x9f5c, 0x2ff67020), (4, 0x9f60, 0x60469a00), (4, 0xb570, 0x62000000),
+    (4, 0xb574, 0x61e08200), (4, 0xb578, 0x61bf7c00), (4, 0xb580, 0x60269a00),
+    (4, 0xb584, 0x2ff3c820), (4, 0xb588, 0x605ffe08), (4, 0xb58c, 0x2ff3baa0),
+    (4, 0xb590, 0x100e1c14), (4, 0xb594, 0x8268000), (4, 0xb598, 0x57e0fa02),
+    (4, 0xb59c, 0x9a68004), (4, 0xb5a0, 0x200003ab), (4, 0xb5a4, 0x41c6fe01),
+    (4, 0xb5a8, 0x57e0fa3f), (4, 0xb5ac, 0x20000209), (4, 0xb5b0, 0x57e6fa02),
+    (4, 0xb5b4, 0x2000010b), (4, 0xb5b8, 0x57e6fa3f), (4, 0xb5bc, 0x2000028c),
+    (4, 0xb5c8, 0x2837dfa0), (4, 0xb5cc, 0x60469a00), (4, 0xb5d0, 0x283d1080),
+    (4, 0xb5d4, 0x57e77a40), (4, 0xb5d8, 0x61df7c01), (4, 0xb5e0, 0x8006fe02),
+    (4, 0xb5e4, 0x40080000), (4, 0xb5e8, 0x10001e00), (4, 0xb5ec, 0x10081c04),
+    (4, 0xb5f8, 0x50000000), (4, 0xb608, 0x380f8020), (4, 0xb60c, 0xb6e1020),
+    (2, 0x4d10, 0x60200000), (2, 0x4d14, 0x607f7c00), (2, 0x4d1c, 0x605f7c00),
+    (2, 0x4d24, 0x8014040), (2, 0x4d28, 0x60007e0c), (2, 0x4d2c, 0x57e07a0c),
+    (2, 0x4d30, 0x27fffe01), (2, 0x4d34, 0x8014040), (2, 0x4d38, 0x67e07a04),
+    (2, 0x4d3c, 0x200002a2), (2, 0x4d40, 0x601ffe08), (2, 0x4d44, 0x14010220),
+    (2, 0x4d48, 0x14010624), (2, 0x4d4c, 0x14010028), (2, 0x4d50, 0x20000180),
+    (2, 0x4d54, 0x14010230), (2, 0x4d58, 0x14010634), (2, 0x4d5c, 0x14010038),
+    (2, 0x4d60, 0x8014040), (2, 0x4d64, 0x67e07a0f), (2, 0x4d68, 0x27fffe82),
+    (2, 0x4d6c, 0x8018004), (2, 0x4d70, 0x8418000), (2, 0x4d74, 0x57e10100),
+    (2, 0x4d78, 0x20000102), (2, 0x4d7c, 0x20000820), (2, 0x4d80, 0x50000000),
+    (2, 0x4d84, 0x57e17a02), (2, 0x4d88, 0x27fffe0b), (2, 0x4d8c, 0x57e17a3f),
+    (2, 0x4d90, 0x27fffd09), (2, 0x4d94, 0x57e07a02), (2, 0x4d98, 0x27fffc0b),
+    (2, 0x4d9c, 0x57e07a3f), (2, 0x4da0, 0x27fffb09), (2, 0x4da4, 0x80017e02),
+    (2, 0x4da8, 0x8000), (2, 0x4dac, 0x40417e01), (2, 0x4db0, 0x57e17a40),
+    (2, 0x4db4, 0x605f7c01), (2, 0x4dbc, 0x10008400), (2, 0x4dc0, 0x380f8000),
+    (4, 0xb650, 0x62ff7c00), (4, 0xb658, 0x61ff7c00), (4, 0xb688, 0x62bf7c00),
+    (4, 0xb818, 0x61df7c00), (4, 0xb880, 0x42669c00), (4, 0xb8d8, 0xac985f6),
+    (4, 0xb8dc, 0xa470178), (4, 0xb8e0, 0x600bae00), (4, 0xb8e4, 0x828b7e03),
+    (4, 0xb8e8, 0x528a2c00), (4, 0xb8ec, 0x828a7e03), (4, 0xb8f0, 0x428a2c00),
+    (4, 0xb8f4, 0x828a7e02), (4, 0xb8f8, 0x40292800), (4, 0xb8fc, 0x2ff34fa0),
+    (4, 0xb900, 0x605ffee4), (4, 0xb904, 0x2ff34b80), (4, 0xb944, 0x1fe88d00),
+    (4, 0xb948, 0x20000483), (4, 0xb970, 0x80a81b4), (4, 0xb974, 0x40007e01),
+    (4, 0xb978, 0x100a81b4), (4, 0xb97c, 0x80a8160), (4, 0xb980, 0x2fff7a20),
+    (4, 0xb984, 0x40292800), (4, 0xb988, 0x28008c00), (16, 0x26158, 0x61bf7c00),
+    (16, 0x26170, 0x2fbd73a0), (16, 0x26174, 0x8068160), (16, 0x26178, 0x67e00100),
+    (16, 0x2617c, 0x20000c01), (16, 0x26180, 0x605f7c00), (16, 0x26188, 0x8610178),
+    (16, 0x2618c, 0x50208200), (16, 0x26190, 0x57e00700), (16, 0x26194, 0x20000281),
+    (16, 0x26198, 0x4020fe01), (16, 0x2619c, 0x57e0fa22), (16, 0x261a0, 0x27fffdab),
+    (16, 0x261a4, 0x4061fee4), (16, 0x261a8, 0x603fffff), (16, 0x261ac, 0x57e0fa00),
+    (16, 0x261d4, 0x2fc5d4a0), (16, 0x261d8, 0x60008200), (16, 0x261e0, 0x2fbd65a0),
+    (16, 0x261e4, 0x8068164), (16, 0x261e8, 0x67e00100), (16, 0x261ec, 0x20000981),
+    (16, 0x261f0, 0x607f7c00), (16, 0x261f8, 0x8418178), (16, 0x261fc, 0x50208200),
+    (16, 0x26200, 0x679ffe22), (16, 0x26204, 0x30000200), (16, 0x26208, 0x57e00500),
+    (16, 0x2620c, 0x20000181), (16, 0x26210, 0x40417ee4), (16, 0x26214, 0x4020fe01),
+    (16, 0x26218, 0x603fffff), (16, 0x26264, 0x2fc5c2a0), (16, 0x26268, 0x60008200),
+    (4, 0xbe38, 0x80207e05), (4, 0xbe3c, 0x4040fc00), (4, 0xbe44, 0x821040f),
+    (4, 0xbe48, 0x57e0faff), (4, 0xbe4c, 0x380f8001), (4, 0xbe50, 0x8210010),
+    (4, 0xbe54, 0x80007e03), (4, 0xbe58, 0x7c00), (4, 0xbe60, 0x20fc00),
+    (4, 0xbe68, 0x380f8020), (4, 0xbe6c, 0x10008004),
+)
+# Name, index, section, VA, size, symbol record, name bytes.
+_OPEN_REPLY_SYMBOLS = (
+    ("CmdChannelOpen", 47, 16, 0x24788, 1068, 0x69e60, 0x67b15),
+    ("Core_CircBuffer_Put", 70, 4, 0xb554, 188, 0x69fd0, 0x67c7c),
+    ("Core_GetUndeliveredPPBs", 588, 16, 0x26144, 300, 0x6c030, 0x68b0f),
+    ("Core_CopyDramToLsram", 601, 4, 0x9e74, 284, 0x6c100, 0x68c06),
+    ("System_Activate", 602, 4, 0x9f90, 292, 0x6c110, 0x68c1b),
+    ("Core_AttemptDisplay", 611, 4, 0xb610, 1160, 0x6c1a0, 0x68ccd),
+    ("Core_ChanInitialize", 624, 16, 0x266f8, 636, 0x6c270, 0x68de3),
+    ("Core_CircBuffer_Get", 637, 2, 0x4d10, 180, 0x6c340, 0x68ea0),
+    ("dm_return_info", 794, 21, 0x78620, 128, 0x6cd10, 0x69835),
+    ("Platform_UpdateReleaseQueue", 803, 4, 0xbe38, 56, 0x6cda0, 0x698ef),
+    ("Platform_DrvContextSize", 824, 16, 0x3b304, 8, 0x6cef0, 0x69aaa),
+)
+# Owner, record position, source VA, vendor type, symbol index, signed addend.
+_OPEN_REPLY_OWNED_RELOCATIONS = (
+    ("CmdChannelOpen", 0x729b4, 0x24808, 4, 19, 500), ("CmdChannelOpen", 0x729c0, 0x2480c, 6, 627, 0),
+    ("CmdChannelOpen", 0x729cc, 0x24888, 4, 19, 520), ("CmdChannelOpen", 0x729d8, 0x2488c, 6, 537, 0),
+    ("CmdChannelOpen", 0x729e4, 0x248b4, 4, 19, 552), ("CmdChannelOpen", 0x729f0, 0x248c0, 4, 622, 0),
+    ("CmdChannelOpen", 0x729fc, 0x248d0, 4, 19, 816), ("CmdChannelOpen", 0x72a08, 0x248d8, 6, 627, 0),
+    ("CmdChannelOpen", 0x72a14, 0x24918, 6, 627, 0), ("CmdChannelOpen", 0x72a20, 0x2492c, 6, 627, 0),
+    ("CmdChannelOpen", 0x72a2c, 0x24944, 4, 794, 0), ("CmdChannelOpen", 0x72a38, 0x24974, 6, 627, 0),
+    ("CmdChannelOpen", 0x72a44, 0x249dc, 6, 627, 0), ("CmdChannelOpen", 0x72a50, 0x24a14, 6, 824, 0),
+    ("CmdChannelOpen", 0x72a5c, 0x24a20, 6, 824, 0), ("CmdChannelOpen", 0x72a68, 0x24a44, 6, 627, 0),
+    ("CmdChannelOpen", 0x72a74, 0x24aa4, 6, 624, 0), ("CmdChannelOpen", 0x72a80, 0x24b3c, 6, 645, 0),
+    ("CmdChannelOpen", 0x72a8c, 0x24b44, 6, 644, 0), ("CmdChannelOpen", 0x72a98, 0x24b5c, 6, 645, 0),
+    ("CmdChannelOpen", 0x72aa4, 0x24b64, 6, 644, 0), ("CmdChannelOpen", 0x72ab0, 0x24b6c, 4, 794, 0),
+    ("Core_CircBuffer_Put", 0x6e478, 0xb584, 6, 646, 0), ("Core_CircBuffer_Put", 0x6e484, 0xb58c, 6, 644, 0),
+    ("Core_CircBuffer_Put", 0x6e490, 0xb5c4, 4, 19, 1884), ("Core_CircBuffer_Put", 0x6e49c, 0xb5c8, 6, 627, 0),
+    ("Core_CircBuffer_Put", 0x6e4a8, 0xb5d0, 6, 629, 0), ("Core_GetUndeliveredPPBs", 0x73164, 0x2615c, 4, 621, 1536),
+    ("Core_GetUndeliveredPPBs", 0x73170, 0x26168, 4, 19, 1840), ("Core_GetUndeliveredPPBs", 0x7317c, 0x2616c, 6, 627, 0),
+    ("Core_GetUndeliveredPPBs", 0x73188, 0x26170, 6, 637, 0), ("Core_GetUndeliveredPPBs", 0x73194, 0x26184, 4, 621, 1024),
+    ("Core_GetUndeliveredPPBs", 0x731a0, 0x261d4, 6, 578, 0), ("Core_GetUndeliveredPPBs", 0x731ac, 0x261e0, 6, 637, 0),
+    ("Core_GetUndeliveredPPBs", 0x731b8, 0x261f4, 4, 621, 1024), ("Core_GetUndeliveredPPBs", 0x731c4, 0x26230, 4, 19, 1840),
+    ("Core_GetUndeliveredPPBs", 0x731d0, 0x26234, 6, 627, 0), ("Core_GetUndeliveredPPBs", 0x731dc, 0x26264, 6, 578, 0),
+    ("Core_CopyDramToLsram", 0x6dfec, 0x9eec, 6, 644, 0), ("Core_CopyDramToLsram", 0x6dff8, 0x9efc, 6, 646, 0),
+    ("Core_CopyDramToLsram", 0x6e004, 0x9f18, 6, 641, 0), ("Core_CopyDramToLsram", 0x6e010, 0x9f48, 6, 644, 0),
+    ("Core_CopyDramToLsram", 0x6e01c, 0x9f5c, 6, 641, 0), ("System_Activate", 0x6e028, 0x9fb8, 4, 622, 0),
+    ("System_Activate", 0x6e034, 0x9fcc, 4, 621, 0), ("System_Activate", 0x6e040, 0xa02c, 6, 669, 0),
+    ("System_Activate", 0x6e04c, 0xa038, 6, 687, 0), ("System_Activate", 0x6e058, 0xa044, 6, 704, 0),
+    ("System_Activate", 0x6e064, 0xa050, 6, 727, 0), ("System_Activate", 0x6e070, 0xa05c, 6, 741, 0),
+    ("System_Activate", 0x6e07c, 0xa068, 6, 773, 0), ("System_Activate", 0x6e088, 0xa074, 6, 748, 0),
+    ("System_Activate", 0x6e094, 0xa07c, 6, 823, 0), ("Core_AttemptDisplay", 0x6e4b4, 0xb648, 4, 621, 512),
+    ("Core_AttemptDisplay", 0x6e4c0, 0xb65c, 4, 621, 0), ("Core_AttemptDisplay", 0x6e4cc, 0xb68c, 4, 621, 1536),
+    ("Core_AttemptDisplay", 0x6e4d8, 0xb6b8, 6, 646, 0), ("Core_AttemptDisplay", 0x6e4e4, 0xb6c0, 6, 644, 0),
+    ("Core_AttemptDisplay", 0x6e4f0, 0xb6e8, 6, 646, 0), ("Core_AttemptDisplay", 0x6e4fc, 0xb6f0, 6, 644, 0),
+    ("Core_AttemptDisplay", 0x6e508, 0xb724, 4, 621, 1024), ("Core_AttemptDisplay", 0x6e514, 0xb81c, 4, 621, 1024),
+    ("Core_AttemptDisplay", 0x6e520, 0xb8fc, 6, 645, 0), ("Core_AttemptDisplay", 0x6e52c, 0xb904, 6, 644, 0),
+    ("Core_AttemptDisplay", 0x6e538, 0xb938, 6, 645, 0), ("Core_AttemptDisplay", 0x6e544, 0xb940, 6, 644, 0),
+    ("Core_AttemptDisplay", 0x6e550, 0xb988, 6, 802, 0), ("Core_AttemptDisplay", 0x6e55c, 0xba4c, 4, 19, 1920),
+    ("Core_AttemptDisplay", 0x6e568, 0xba50, 6, 627, 0), ("Core_AttemptDisplay", 0x6e574, 0xba58, 6, 626, 0),
+    ("Core_ChanInitialize", 0x733bc, 0x26758, 6, 604, 0), ("Core_ChanInitialize", 0x733c8, 0x26760, 6, 824, 0),
+    ("Core_ChanInitialize", 0x733d4, 0x26768, 6, 824, 0), ("Core_ChanInitialize", 0x733e0, 0x26774, 6, 604, 0),
+    ("Core_ChanInitialize", 0x733ec, 0x26784, 4, 27, 1792), ("Platform_UpdateReleaseQueue", 0x6e5d4, 0xbe40, 4, 622, 0),
+    ("Platform_UpdateReleaseQueue", 0x6e5e0, 0xbe5c, 4, 794, 0),
+)
 _INIT_REPLY_REGIONS = (
     ("delivery_relocation", 0x72948, 12, "47550cc0eb8d0d6d588885855ad7ef12daa7ff9bb1a6b903900f77300181381e"),
     ("delivery_symbol", 0x6cd00, 16, "d5051f32cf622bb3fed31ff962a2b2787272a099ca3cb1f0f75a71a5cac9b20f"),
@@ -2453,6 +2781,569 @@ def _init_reply_translation_projection(contract, scenario):
             "caller_checks_helper_status": contract["arm_translations"]["helper_status_checked"],
             "stored_output_validated": contract["arm_translations"]["stored_outputs_validated"],
             "fallback_chain_evaluated": False, "chain_head": 0, "runtime_observed": False}
+
+
+def _open_reply_arm_operand(payload, offset, expected):
+    """Fixed A32 operands needed by the selected ordinary OPEN path."""
+    word = _bootstrap_word(payload, offset)
+    if word != expected:
+        raise FormatError("OPEN ARM operand does not match the baseline")
+    record = {"blob_file_offset": offset, "word": word, "condition": word >> 28}
+    if word & 0x0ffffff0 == 0x012fff10:
+        record.update(operation="BX register", operand_register=word & 15)
+    elif word & 0xfff00000 == 0xe3000000:
+        record.update(operation="MOVW", destination_register=(word >> 12) & 15,
+                      immediate=((word >> 4) & 0xf000) | (word & 0xfff))
+    elif (word >> 25) & 7 == 5 and word >> 28 != 15:
+        displacement = word & 0xffffff
+        if displacement & 0x800000:
+            displacement -= 1 << 24
+        record.update(operation="BL" if word & (1 << 24) else "B",
+                      target_blob_file_offset=offset + 8 + displacement * 4)
+    elif word & 0x0fc000f0 == 0x00000090:
+        if word >> 28 != 14 or word & ((1 << 21) | (1 << 20)):
+            raise FormatError("OPEN multiply shape is unsupported")
+        record.update(operation="MUL", destination_register=(word >> 16) & 15,
+                      source_register=word & 15, operand_register=(word >> 8) & 15,
+                      sets_flags=False)
+    elif word & 0xfff000f0 in (0xe1c000d0, 0xe1c000f0):
+        register = (word >> 12) & 15
+        if register & 1 or register > 12:
+            raise FormatError("OPEN doubleword register pair is unsupported")
+        record.update(operation="LDRD" if word & 0xf0 == 0xd0 else "STRD",
+                      base_register=(word >> 16) & 15, data_register=register,
+                      second_data_register=register + 1, byte_width=8,
+                      byte_offset=((word >> 4) & 0xf0) | (word & 15))
+    elif (word >> 25) & 7 == 4 and word & 0xffff0000 not in (0xe92d0000, 0xe8bd0000):
+        if word >> 28 != 14 or not word & (1 << 23) or word & ((1 << 22) | (1 << 21)):
+            raise FormatError("OPEN multiple-register addressing is unsupported")
+        mask = word & 0xffff
+        if not mask or mask & ((1 << 13) | (1 << 15)):
+            raise FormatError("OPEN multiple-register list is unsupported")
+        record.update(operation="LDM" if word & (1 << 20) else "STM",
+                      base_register=(word >> 16) & 15, register_mask=mask,
+                      byte_count=mask.bit_count() * 4, writeback=False,
+                      addressing="increment before" if word & (1 << 24) else "increment after")
+    else:
+        record.update(_init_reply_arm_operand(payload, offset, expected))
+    return record
+
+
+def _open_reply_arc_operand(payload, section, address, offset, expected, owner_end):
+    """Conditional legacy ARC fields; neither a vendor decoder nor execution."""
+    word = _bootstrap_word(payload, offset)
+    if word != expected:
+        raise FormatError("OPEN ARC operand does not match the baseline")
+    major = word >> 27
+    labels = {0: "LD indexed", 1: "LD", 2: "ST", 3: "EXT", 4: "B", 5: "BL",
+              6: "LP", 7: "J", 8: "ADD", 9: "ADC", 10: "SUB", 11: "SBC",
+              12: "AND", 13: "OR", 14: "BIC", 15: "XOR", 16: "ASL"}
+    if major not in labels:
+        raise FormatError("OPEN ARC opcode is outside the selected base model")
+    record = {"architecture": "ARC", "section_index": section,
+              "elf_virtual_address": address, "blob_file_offset": offset, "word": word,
+              "decode_conditional": True, "opcode_major": major, "operation": labels[major],
+              "destination_register": (word >> 21) & 63, "source_register": (word >> 15) & 63,
+              "operand_register": (word >> 9) & 63, "low9": word & 511,
+              "signed_low9": (word & 511) - (512 if word & 256 else 0)}
+    source, operand = record["source_register"], record["operand_register"]
+    if major == 12 and source == operand:
+        record["operation"] = "MOV"
+    if major in (4, 5, 6):
+        displacement = (word >> 7) & 0xfffff
+        if displacement & (1 << 19):
+            displacement -= 1 << 20
+        record.update(condition=word & 31, target_elf_virtual_address=address + 4 + displacement * 4,
+                      pc_bias_bytes=4)
+    if major in (4, 5, 7):
+        delay = "taken only" if word & 64 else "always executed" if word & 32 else "none"
+        record["delay_slot_semantics"] = delay
+        if delay != "none":
+            if offset + 8 > owner_end:
+                raise FormatError("OPEN ARC delay escaped its complete owner pin")
+            record.update(delay_slot_elf_virtual_address=address + 4,
+                          delay_slot_word=_bootstrap_word(payload, offset + 4))
+    limm = ((major in (0, 8, 9, 10, 11, 12, 13, 14, 15, 16) and 62 in (source, operand)) or
+            (major == 1 and source == 62) or (major == 2 and operand == 62))
+    if limm:
+        if offset + 8 > owner_end:
+            raise FormatError("OPEN ARC LIMM escaped its complete owner pin")
+        record.update(literal_value=_bootstrap_word(payload, offset + 4), literal_blob_file_offset=offset + 4)
+    if major == 16 and operand == 63:
+        record["shift_amount"] = record["signed_low9"]
+    if address == 0x24b48:
+        record["vendor_ISA_validated"] = False
+    return record
+
+
+def _open_reply_preflight(payload):
+    """Conservative complete dependency union, before any firmware interpretation."""
+    bridge_bytes = sum(len(raw) // 2 for _, _, raw in _COMMAND_BUFFER_BRIDGE_REGIONS) + 0x65c4
+    fresh_bytes = sum(size for _, _, size, _ in _FRESH_INIT_REGIONS)
+    init_bytes = sum(size for _, _, size, _ in _INIT_REPLY_REGIONS)
+    inner_count = len(_INNER_DESCRIPTOR_HEADERS) + len(_INNER_DESCRIPTOR_SECTIONS) + len(_INNER_DESCRIPTOR_WINDOWS)
+    inner_count += sum(name != ".shstrtab" for _, _, _, _, _, name in _INNER_DESCRIPTOR_SECTIONS)
+    inner_bytes = sum(len(raw) // 2 for _, _, raw in _INNER_DESCRIPTOR_HEADERS)
+    inner_bytes += sum(len(raw) // 2 + (len(name) + 1 if name != ".shstrtab" else 0)
+                       for _, _, _, raw, _, name in _INNER_DESCRIPTOR_SECTIONS)
+    inner_bytes += sum(len(raw) // 2 for _, _, _, _, _, raw in _INNER_DESCRIPTOR_WINDOWS)
+    new_bytes = sum(size for _, _, size, _ in _OPEN_REPLY_REGIONS)
+    instructions = len(_OPEN_REPLY_ARM_SITES) + len(_OPEN_REPLY_ARC_SITES)
+    elf_count = len(_OPEN_REPLY_SYMBOLS) + 2
+    owned_count = len(_OPEN_REPLY_OWNED_RELOCATIONS)
+    fresh_count = len(_FRESH_INIT_ARM_SITES) + len(_FRESH_INIT_ARC_SITES) + len(_FRESH_INIT_ARC_CALLS)
+    init_count = len(_INIT_REPLY_ARM_SITES) + len(_INIT_REPLY_ARC_SITES) + 1
+    dependency_bytes = bridge_bytes + fresh_bytes + init_bytes + inner_bytes
+    dependency_count = len(_COMMAND_BUFFER_BRIDGE_REGIONS) + 1 + len(_FRESH_INIT_REGIONS) + len(_INIT_REPLY_REGIONS) + inner_count
+    if (len(payload) != BUNDLED_SIZE - TRAILER_SIZE or
+            len(_OPEN_REPLY_REGIONS) > MAX_OPEN_REPLY_REGIONS or new_bytes > MAX_OPEN_REPLY_BYTES or
+            new_bytes + dependency_bytes > MAX_OPEN_REPLY_AGGREGATE_BYTES or
+            instructions > MAX_OPEN_REPLY_INSTRUCTIONS or elf_count > MAX_OPEN_REPLY_ELF_RECORDS or
+            owned_count > MAX_OPEN_REPLY_OWNED_RELOCATIONS or
+            instructions + elf_count + owned_count > MAX_OPEN_REPLY_SEMANTIC_RECEIPTS or
+            MAX_OPEN_REPLY_NEW_TABLE_RECORDS < 345 or MAX_OPEN_REPLY_RELOCATION_RECORDS < 2516 or
+            len(_COMMAND_BUFFER_BRIDGE_REGIONS) + 1 > MAX_COMMAND_BUFFER_BRIDGE_REGIONS or
+            bridge_bytes > MAX_COMMAND_BUFFER_BRIDGE_BYTES or MAX_COMMAND_BUFFER_BRIDGE_RELOCATIONS < 2171 or
+            len(_FRESH_INIT_REGIONS) > MAX_FRESH_INIT_REGIONS or fresh_bytes > MAX_FRESH_INIT_BYTES or
+            bridge_bytes + fresh_bytes > MAX_FRESH_INIT_AGGREGATE_BYTES or fresh_count > MAX_FRESH_INIT_ANCHORS or
+            MAX_FRESH_INIT_EVENTS < 35 or MAX_STOCK_HOST_COMMAND_CFG_STATES < 53 or
+            len(_INIT_REPLY_REGIONS) > MAX_INIT_REPLY_REGIONS or init_bytes > MAX_INIT_REPLY_BYTES or
+            bridge_bytes + fresh_bytes + init_bytes > MAX_INIT_REPLY_AGGREGATE_BYTES or init_count > MAX_INIT_REPLY_ANCHORS or
+            inner_count > MAX_INNER_DESCRIPTOR_REGIONS or inner_bytes > MAX_INNER_DESCRIPTOR_BYTES):
+        raise FormatError("OPEN reply validation budget/identity exceeded")
+    regions = list(_OPEN_REPLY_REGIONS)
+    regions += [("init_reply:" + name, off, size, digest) for name, off, size, digest in _INIT_REPLY_REGIONS]
+    regions += [("fresh_init:" + name, off, size, digest) for name, off, size, digest in _FRESH_INIT_REGIONS]
+    regions += [("bridge:" + name, off, len(raw) // 2, hashlib.sha256(bytes.fromhex(raw)).hexdigest())
+                for name, off, raw in _COMMAND_BUFFER_BRIDGE_REGIONS]
+    regions.append(("bridge:text_relocations", 0x72780, 0x65c4, _COMMAND_BUFFER_BRIDGE_RELA_SHA256))
+    regions += [(f"inner:elf_header_{slot}", off, len(raw) // 2, hashlib.sha256(bytes.fromhex(raw)).hexdigest())
+                for slot, off, raw in _INNER_DESCRIPTOR_HEADERS]
+    for slot, index, off, raw, name_off, name in _INNER_DESCRIPTOR_SECTIONS:
+        regions.append((f"inner:section_{slot}_{index}", off, len(raw) // 2, hashlib.sha256(bytes.fromhex(raw)).hexdigest()))
+        if name != ".shstrtab":
+            encoded = name.encode("ascii") + b"\0"
+            regions.append((f"inner:name_{slot}_{index}", name_off, len(encoded), hashlib.sha256(encoded).hexdigest()))
+    regions += [("inner:" + name, off, len(raw) // 2, hashlib.sha256(bytes.fromhex(raw)).hexdigest())
+                for _, name, _, _, off, raw in _INNER_DESCRIPTOR_WINDOWS]
+    validated = []
+    for name, off, size, digest in regions:
+        if hashlib.sha256(bounded(payload, off, size, "OPEN reply complete union pin")).hexdigest() != digest:
+            raise FormatError(f"OPEN reply region {name} does not match the baseline")
+        validated.append({"role": name, "blob_file_offset": off, "size": size, "sha256": digest})
+    return {"additional_region_count": len(_OPEN_REPLY_REGIONS), "additional_byte_count": new_bytes,
+            "dependency_region_count": dependency_count, "dependency_byte_count": dependency_bytes,
+            "aggregate_region_count": len(regions), "aggregate_byte_count": new_bytes + dependency_bytes,
+            "arm_instruction_count": len(_OPEN_REPLY_ARM_SITES), "arc_instruction_count": len(_OPEN_REPLY_ARC_SITES),
+            "instruction_count": instructions, "fixed_elf_record_count": elf_count,
+            "owned_relocation_count": owned_count, "scanned_relocation_count": 2516,
+            "additional_semantic_count": instructions + elf_count + owned_count,
+            "validated_regions": validated[:len(_OPEN_REPLY_REGIONS)],
+            "dependency_regions": validated[len(_OPEN_REPLY_REGIONS):]}
+
+
+def _open_reply_metadata_linkage(payload, images):
+    """Selected ordinary OPEN metadata provenance, conditional and offline only."""
+    validation = _open_reply_preflight(payload)
+    if (not isinstance(images, (list, tuple)) or len(images) != 2 or
+            any(type(i) is not dict for i in images) or
+            [(i.get("blob_file_offset"), i.get("blob_file_end"), i.get("section_count")) for i in images] !=
+            [(0x2ea60, 0x79dd8, 55), (0x79dd8, 0xcfbb0, 112)] or
+            any((i.get("class"), i.get("endianness"), i.get("machine"), i.get("elf_type"), i.get("flags")) !=
+                (32, "little", 45, 2, 0) for i in images)):
+        raise FormatError("OPEN metadata image identities do not match the baseline")
+    # No helper or operand/ELF decoder runs until the complete conservative
+    # union, including the otherwise later inner dependency, has been pinned.
+    init = _init_reply_metadata_linkage(payload, images)
+    inner = _inner_descriptor_map(payload, images)
+    fresh = init["fresh_init"]
+    lemma = inner["paths"]["record_pointer_and_boundary"]["record_pool_context_snapshot"]["conditional_constructor_return"]
+    all_regions = validation["validated_regions"] + validation["dependency_regions"]
+
+    def read(offset, size):
+        if not any(r["blob_file_offset"] <= offset and offset + size <= r["blob_file_offset"] + r["size"]
+                   for r in all_regions):
+            raise FormatError("OPEN metadata read escaped the complete pinned union")
+        return bounded(payload, offset, size, "OPEN metadata pinned read")
+
+    def section(index):
+        return struct.unpack("<10I", read(0x79540 + index * 40, 40))
+
+    sections = {i: section(i) for i in (2, 4, 16, 21, 34, 35, 37, 39, 51)}
+    if ((sections[34][1], sections[35][1], sections[35][6], sections[35][9]) != (3, 2, 34, 16) or
+            any(sections[i][1] != 1 or not sections[i][2] & 4 for i in (2, 4, 16))):
+        raise FormatError("OPEN metadata section/symbol table ownership is incoherent")
+    functions = {r["name"]: dict(r) for r in fresh["outer_path"]["symbols"]}
+    elf_receipts = []
+    for name, index, owner, address, size, symbol_pos, name_pos in _OPEN_REPLY_SYMBOLS:
+        symbol = struct.unpack("<IIIBBH", read(symbol_pos, 16))
+        expected_info = 0x11 if name == "dm_return_info" else 2 if index in (47, 70) else 0x12
+        encoded = name.encode("ascii") + b"\0"
+        sec = sections[owner]
+        if (symbol_pos != 0x2ea60 + sections[35][4] + index * 16 or
+                symbol != (name_pos - 0x2ea60 - sections[34][4], address, size, expected_info, 0, owner) or
+                read(name_pos, len(encoded)) != encoded or not sec[3] <= address <= sec[3] + sec[5] - size):
+            raise FormatError("OPEN selected symbol/name/section identity is incoherent")
+        r = {"name": name, "symbol_index": index, "symbol_record_blob_file_offset": symbol_pos,
+             "name_blob_file_offset": name_pos, "section_index": owner, "elf_virtual_address": address,
+             "size": size, "info": symbol[3], "other": symbol[4], "section_relative_offset": address - sec[3]}
+        if name != "dm_return_info":
+            r["blob_file_offset"] = 0x2ea60 + sec[4] + address - sec[3]
+            functions[name] = r
+        elf_receipts.append(r)
+    tables = []
+    for index, owner, count in ((37, 2, 84), (39, 4, 261), (51, 16, 2171)):
+        sec = sections[index]
+        if (sec[1], sec[2], sec[3], sec[5], sec[6], sec[7], sec[8], sec[9]) != (4, 0, 0, count * 12, 35, owner, 4, 12):
+            raise FormatError("OPEN RELA table type/link/owner/stride is incoherent")
+        offset = 0x2ea60 + sec[4]
+        raw = read(offset, count * 12)
+        records = [struct.unpack_from("<IIi", raw, i * 12) for i in range(count)]
+        tables.extend((index, owner, offset + i * 12, *record) for i, record in enumerate(records))
+        if index != 51:
+            elf_receipts.append({"operation": "RELA section header", "section_index": index,
+                                 "source_section_index": owner, "linked_symbol_table_index": sec[6],
+                                 "blob_file_offset": 0x79540 + index * 40, "record_blob_file_offset": offset,
+                                 "record_count": count, "entry_size": sec[9]})
+    new_owners = {name: functions[name] for name, *_ in _OPEN_REPLY_SYMBOLS if name != "dm_return_info"}
+    owned = []
+    for table, owner, pos, source, info, addend in tables:
+        matches = [name for name, f in new_owners.items() if f["section_index"] == owner and
+                   f["elf_virtual_address"] <= source < f["elf_virtual_address"] + f["size"]]
+        if len(matches) > 1:
+            raise FormatError("OPEN RELA source has ambiguous function ownership")
+        if matches:
+            owned.append((matches[0], pos, source, info & 255, info >> 8, addend))
+    if sorted(owned) != sorted(_OPEN_REPLY_OWNED_RELOCATIONS):
+        raise FormatError("OPEN owned RELA inventory is missing, duplicated or changed")
+    relocations = []
+    table_at = {(owner, source): [] for _, owner, _, source, _, _ in tables}
+    for table, owner, pos, source, info, addend in tables:
+        table_at[owner, source].append((table, pos, info, addend))
+    for name, pos, address, kind, target, addend in owned:
+        f = functions[name]
+        sec = sections[f["section_index"]]
+        matches = table_at[f["section_index"], address]
+        if len(matches) != 1:
+            raise FormatError("OPEN selected RELA source is not unique within its owning table")
+        relocations.append({"source_function": name, "source_function_symbol_index": f["symbol_index"],
+                            "source_section_index": f["section_index"], "source_elf_virtual_address": address,
+                            "source_blob_file_offset": 0x2ea60 + sec[4] + address - sec[3],
+                            "relocation_section_index": matches[0][0], "relocation_record_blob_file_offset": pos,
+                            "vendor_type": kind, "symbol_index": target, "addend": addend,
+                            "unpinned_target_definition_interpreted": False, "runtime_application_proven": False})
+    arm = {off: dict(_open_reply_arm_operand(payload, off, word), architecture="ARM")
+           for off, word in _OPEN_REPLY_ARM_SITES}
+    for off, r in arm.items():
+        owners = [name for name, low, size, _ in _OPEN_REPLY_REGIONS[:5] if low <= off < low + size]
+        r["source_function"] = (owners[0] if len(owners) == 1 else "fixed_context_getter" if off in (0x898, 0x89c)
+                                else "selected_dispatch_call_site_only" if off == 0x62d8 else None)
+        if r["source_function"] is None:
+            raise FormatError("OPEN ARM operand escaped its selected function/call-site owner")
+    arc = {}
+    for owner, address, expected in _OPEN_REPLY_ARC_SITES:
+        sec = sections[owner]
+        matches = [f for f in functions.values() if f["section_index"] == owner and
+                   f["elf_virtual_address"] <= address <= f["elf_virtual_address"] + f["size"] - 4]
+        if len(matches) != 1:
+            raise FormatError("OPEN ARC instruction has ambiguous or missing selected symbol owner")
+        f = matches[0]
+        off = 0x2ea60 + sec[4] + address - sec[3]
+        read(off, 4)
+        end = 0x2ea60 + sec[4] + f["elf_virtual_address"] - sec[3] + f["size"]
+        arc[address] = _open_reply_arc_operand(payload, owner, address, off, expected, end)
+        arc[address]["source_function"] = f["name"]
+    anchors = list(arm.values()) + list(arc.values())
+    # LIMM and delay words are raw data owned by the complete body pins, not
+    # extra decoded instructions or silently followed external call targets.
+    for r in anchors:
+        for key in ("literal_blob_file_offset",):
+            if key in r:
+                read(r[key], 4)
+        if r.get("delay_slot_semantics", "none") != "none":
+            read(r["blob_file_offset"] + 4, 4)
+
+    def ai(off):
+        return arm[off]["immediate"]
+
+    def ad(off):
+        return arm[off]["byte_offset"]
+
+    def av(address):
+        return arc[address].get("literal_value", arc[address]["signed_low9"])
+
+    def am(address):
+        return arc[address]["signed_low9"]
+
+    def ab(off, target, condition=14, operation="B"):
+        r = arm[off]
+        if (r["operation"], r["target_blob_file_offset"], r["condition"]) != (operation, target, condition):
+            raise FormatError("OPEN selected ARM call/control edge is incoherent")
+
+    for source, target in ((0x62d8, 0x51c8), (0x5730, 0x8a0), (0xb18, 0xa2a4),
+                           (0xa318, 0xf7e4), (0xfb74, 0x27480), (0x27578, 0x2705c), (0x275ac, 0x1fdac)):
+        ab(source, target, operation="BL")
+    for source, target, cond in ((0x573c, 0x588c, 0), (0xa324, 0xa368, 0),
+                                (0xfb0c, 0xfb1c, 0), (0xfb18, 0xfb94, 1),
+                                (0xfb80, 0xfb94, 0), (0xfb90, 0xf830, 14)):
+        ab(source, target, cond)
+    global_literal = next(r for r in fresh["bridge"]["instruction_anchors"] if r.get("literal_blob_file_offset") == 0x6fc)
+    if (arm[0x898]["literal_value"] != global_literal["literal_value"] or
+            arm[0x89c]["operation"] != "BX register" or arm[0x89c]["operand_register"] != 14):
+        raise FormatError("OPEN getter source identity is incoherent")
+    edges = []
+    for address, r in arc.items():
+        rel = table_at.get((r["section_index"], address), [])
+        if r["operation"] != "BL":
+            if rel:
+                raise FormatError("OPEN non-call instruction has an unexpected relocation")
+            continue
+        if len(rel) > 1 or (rel and rel[0][2] & 255 != 6):
+            raise FormatError("OPEN selected ARC call relocation is incoherent")
+        target = r["target_elf_virtual_address"]
+        known = [f for f in functions.values() if f["elf_virtual_address"] == target]
+        e = {"source_function": r["source_function"], "source_section_index": r["section_index"],
+             "source_elf_virtual_address": address, "original_target_elf_virtual_address": target,
+             "pc_bias_bytes": r["pc_bias_bytes"], "delay_slot_semantics": r["delay_slot_semantics"],
+             "runtime_edge_proven": False, "target_definition_validated": bool(known)}
+        if "delay_slot_word" in r:
+            e["delay_slot_word"] = r["delay_slot_word"]
+        if known:
+            if len(known) != 1:
+                raise FormatError("OPEN selected call target definition is ambiguous")
+            f = known[0]
+            e["target_function"] = f["name"]
+            if rel:
+                table, pos, info, addend = rel[0]
+                if info >> 8 != f["symbol_index"]:
+                    raise FormatError("OPEN call RELA names a different selected target")
+                displacement = f["elf_virtual_address"] + addend - address - 4
+                if displacement % 4 or not -(1 << 21) <= displacement < 1 << 21:
+                    raise FormatError("OPEN selected type6 displacement escaped its signed field")
+                patched = (r["word"] & 0xf800007f) | ((displacement << 5) & 0x07ffff80)
+                if patched != r["word"]:
+                    raise FormatError("OPEN selected type6 original call does not match S+A-P-4")
+                e.update(relocation_record_blob_file_offset=pos, vendor_type=info & 255,
+                         symbol_index=info >> 8, addend=addend, original_encoding_preserved_under_selected_rebase=True)
+            elif f["section_index"] != r["section_index"]:
+                raise FormatError("OPEN cross-section selected call lacks an owned relocation")
+        elif rel:
+            e.update(relocation_record_blob_file_offset=rel[0][1], vendor_type=rel[0][2] & 255,
+                     symbol_index=rel[0][2] >> 8, addend=rel[0][3])
+        edges.append(e)
+    for source, target, delay in ((0x258bc, 0x24788, 0x258c0), (0x24aa4, 0x266f8, 0x24aa8),
+                                  (0x9fd0, 0x9e74, 0x9fd4), (0xb980, 0xb554, 0xb984)):
+        r = arc[source]
+        if (r["target_elf_virtual_address"] != target or r["delay_slot_semantics"] != "always executed" or
+                r["delay_slot_elf_virtual_address"] != delay or r["delay_slot_word"] != arc[delay]["word"]):
+            raise FormatError("OPEN selected ARC call/delay linkage is incoherent")
+    inherited_packet = next(r for r in fresh["instruction_anchors"] if r.get("elf_virtual_address") == 0x25824)
+    if (arc[0x25890]["target_elf_virtual_address"] != 0x258bc or
+            arc[0x258c4]["target_elf_virtual_address"] != 0x259c0 or
+            arc[0x258c0]["source_register"] != inherited_packet["destination_register"] or
+            arc[0x258c0]["destination_register"] != arc[0x247c4]["source_register"]):
+        raise FormatError("OPEN dispatch/reply buffer identity is incoherent")
+    reply_register = arc[0x247c4]["destination_register"]
+    if any(arc[off]["source_register"] != reply_register for off in (0x24b0c, 0x24b14, 0x24b1c, 0x24b70)):
+        raise FormatError("OPEN reply stores use a different selected buffer")
+    object_record = next(r for r in elf_receipts if r.get("name") == "dm_return_info")
+    placement = init["section_placement"]
+    rebased = placement["destination_offset_from_B"] + object_record["section_relative_offset"]
+    selected_literals = (0x24944, 0x24b6c, 0xbe5c)
+    for address in selected_literals:
+        rows = [r for r in relocations if r["source_elf_virtual_address"] == address]
+        if (len(rows) != 1 or (rows[0]["vendor_type"], rows[0]["symbol_index"], rows[0]["addend"]) != (4, 794, 0) or
+                struct.unpack("<I", read(rows[0]["source_blob_file_offset"], 4))[0] != object_record["elf_virtual_address"]):
+            raise FormatError("OPEN selected return metadata type4 literal is incoherent")
+        rows[0]["selected_target_name"] = "dm_return_info"
+        rows[0]["patched_literal_offset_from_B"] = rebased
+    frame = arm[0x27480]["byte_count"] + ai(0x27484)
+    raw_reply = [(ad(load), ad(store)) for load, store in ((0x27580, 0x27584), (0x27588, 0x2758c), (0x27590, 0x27594))]
+    if (ai(0x27484) != ai(0x275bc) or arm[0x27480]["byte_count"] != arm[0x275c0]["byte_count"] or
+            ai(0x274a0) - ai(0x274a4) != ai(0x274a8) or ai(0x274a8) != ai(0x274b8) or
+            ad(0x2757c) != ad(0x275b8) or ad(0x27508) - frame != ad(0xfb34) + 4 or
+            ad(0x274dc) != am(0x248e8) or ad(0x2750c) != am(0x24878) or
+            arm[0x274cc]["destination_register"] != arm[0x27580]["base_register"] or
+            arm[0x275b0]["destination_register"] != 0 or ad(0x275a4) == init["arm_translations"]["map_context_offset"]):
+        raise FormatError("OPEN packet frame/raw response provenance is incoherent")
+    if (arm[0xfb70]["operand_register"] != arm[0xf7ec]["destination_register"] or
+            arm[0xfb70]["destination_register"] != arm[0x27488]["operand_register"] or
+            arm[0x27488]["destination_register"] != arm[0x275a4]["base_register"] or
+            arm[0xfb6c]["destination_register"] != arm[0x2748c]["operand_register"] or
+            arm[0xfb6c]["operand_register"] != arm[0xfbb0]["data_register"] or
+            arm[0xf7f0]["destination_register"] != arm[0xfbb0]["base_register"] or
+            arm[0x27568]["operand_register"] != arm[0x274a4]["destination_register"] or
+            arm[0x2756c]["operand_register"] != arm[0x274a0]["destination_register"] or
+            arm[0x2757c]["data_register"] != arm[0x275b8]["data_register"] or
+            any(arm[load]["data_register"] != arm[store]["data_register"] or
+                arm[store]["base_register"] != arm[0x2748c]["destination_register"]
+                for load, store in ((0x27580, 0x27584), (0x27588, 0x2758c), (0x27590, 0x27594))) or
+            arm[0xfb7c]["source_register"] != arm[0xfb78]["destination_register"] or
+            ai(0xfb7c) != 0 or arm[0xfb8c]["operand_register"] != arm[0xfb78]["destination_register"] or
+            arm[0xfbc4]["base_register"] != arm[0xfbb0]["base_register"] or
+            arm[0xfbcc]["data_register"] != arm[0xfbc4]["data_register"] or
+            arm[0xfbcc]["base_register"] != arm[0xfbc8]["data_register"] or
+            arm[0xfb08]["source_register"] != arm[0xfb68]["operand_register"] or ai(0xfb08) != 0):
+        raise FormatError("OPEN selected C/H, saved status or publication register linkage is incoherent")
+    count_max = av(0x2487c)
+    source_init = lemma["source_initialization"]
+    f_offset = source_init["pool_context_offset_under_conditions"]
+    base_context = av(0x267a8)
+    ring_fields = [base_context + am(0x2692c), base_context + am(0x26958)]
+    ring_offsets_from_f = [av(0x26924), av(0x26938)]
+    metadata_from_f = av(0x268e0)
+    metadata_field = av(0x267b8) + am(0x268e8)
+    if (count_max > source_init["earlier_variable_loop"]["maximum_nonclobbering_count"] or
+            arc[0x24880]["condition"] != 14 or arc[0x24880]["target_elf_virtual_address"] != 0x24898 or
+            am(0x2496c) != am(0x24878) or arc[0x2496c]["source_register"] != reply_register or
+            arc[0x2496c]["destination_register"] != arc[0x24a8c]["source_register"] or
+            arc[0x26734]["source_register"] != arc[0x24a8c]["destination_register"] or
+            av(0x26748) != source_init["context_end_offset"] or
+            av(0x3b308) * 2 != source_init["size_bytes_under_base_model"] or
+            base_context + am(0x267b0) != 0x530 or
+            am(0x26918) != am(0x267b0) or am(0x268c8) != am(0x267b0) or
+            ring_fields != [av(0x24abc) + am(0x24b10), av(0x24abc) + am(0x24b18)] or
+            arc[0x26924]["source_register"] != arc[0x26918]["destination_register"] or
+            arc[0x26938]["source_register"] != arc[0x26918]["destination_register"]):
+        raise FormatError("OPEN conditional pool/ring field derivation is incoherent")
+    ring_bytes = ring_offsets_from_f[1] - ring_offsets_from_f[0]
+    if (ring_bytes != (av(0xb5a8) + 1) * (1 << av(0xb5e0)) or
+            av(0x24b40) != av(0xb588) or av(0x24b60) != av(0xb588) or
+            arc[0x24b08]["operation"] != "SUB" or
+            len({arc[0x24b08][k] for k in ("destination_register", "source_register", "operand_register")}) != 1 or
+            arc[0x24948]["operation"] != "SUB" or
+            len({arc[0x24948][k] for k in ("destination_register", "source_register", "operand_register")}) != 1):
+        raise FormatError("OPEN selected zero/status and ring header/index units are incoherent")
+    channel_stride = 1 << arc[0x2493c]["shift_amount"]
+    if (av(0x24940) != object_record["elf_virtual_address"] or
+            av(0x24b68) != object_record["elf_virtual_address"] or
+            av(0x24b48) != arc[0x2493c]["shift_amount"] or object_record["size"] % channel_stride):
+        raise FormatError("OPEN return metadata channel-index scale is incoherent")
+    activated_base = av(0x9fc8) + am(0x9fd4)
+    activated_delivery = activated_base + ring_fields[0]
+    activated_return = activated_base + ring_fields[1]
+    activated_pool = activated_base + metadata_field
+    table_base = av(0x26780) + am(0x26788)
+    if (table_base != av(0x9fb4) + am(0x9fbc) or
+            arc[0x26790]["shift_amount"] != arc[0x9fa8]["shift_amount"] or
+            av(0x9fc0) != source_init["context_end_offset"] or
+            av(0xb688) + am(0xb97c) != activated_delivery or
+            av(0xb818) + am(0xb8dc) != activated_pool or
+            av(0x26158) + am(0x26174) != activated_delivery or
+            av(0x26158) + am(0x261e4) != activated_return):
+        raise FormatError("OPEN conditional activation/consumer address linkage is incoherent")
+    ppb_stride = (((1 << av(0xb8e4)) - 1) * (1 << av(0xb8ec)) + 1) * (1 << av(0xb8f4))
+    ppb_bytes = av(0xb900)
+    if ppb_stride != ppb_bytes or ppb_stride != lemma["derived_word_stores"]["stride_bytes"]:
+        raise FormatError("OPEN selected PPB metadata stride/copy units are incoherent")
+    if (arc[0xb8f8]["source_register"] != arc[0xb8dc]["destination_register"] or
+            any(arc[0xb8f8][k] != arc[0xb984][k]
+                for k in ("operation", "destination_register", "source_register", "operand_register")) or
+            arc[0xbe6c]["source_register"] != arc[0xbe60]["destination_register"] or
+            arc[0xbe6c]["operand_register"] != arc[0xbe58]["destination_register"]):
+        raise FormatError("OPEN selected metadata delivery/release value linkage is incoherent")
+    # The endpoint/index equations classify metadata; they do not borrow a
+    # live allocation, validate queue capacity or certify a source plane.
+    return {"basis": dict(fresh["basis"]), "validation": validation, "init_reply": init,
+            "instruction_anchors": anchors, "elf_receipts": elf_receipts,
+            "relocation_receipts": relocations, "selected_arc_edges": edges,
+            "arm_path": {
+                "identities": {"C": "ARM controller", "K": "ARM API host-channel record",
+                               "H": "allocated ARM decoder/channel object", "D": "ARC channel context",
+                               "F": "ARC record-pool source", "host_command_record": "valid incoming host request"},
+                "selected_dispatch_call_site": 0x62d8, "dispatch_selector_and_argument_continuity_validated": False,
+                "controller_root_global_offset": ad(0xa30c),
+                "host_channel_record_stride_bytes": ai(0x908) * (1 << arm[0x918]["shift_amount"]),
+                "host_channel_record_base_offset": ai(0xb0c),
+                "ordinary_builder_requires_zero_selected_flag": True,
+                "special_channel_bypass_validated": False,
+                "builder": {"entry": 0x27480, "frame_bytes": frame,
+                            "request_stack_offset": ai(0x274a0), "response_stack_offset": ai(0x274a4),
+                            "packet_bytes": ai(0x274a8), "command": arm[0x274d0]["literal_value"],
+                            "channel_reply_request_byte_offset": ad(0x274dc),
+                            "bank_count_request_byte_offset": ad(0x2750c),
+                            "bank_count_H_offset": ad(0xfb2c) + 4,
+                            "timeout_argument": ai(0x27560), "transport_entry": arm[0x27578]["target_blob_file_offset"],
+                            "saved_transport_status_stack_offset": ad(0x2757c),
+                            "raw_reply_to_H": [{"reply_byte_offset": a, "H_offset": b} for a, b in raw_reply],
+                            "writes_raw_outputs_before_transport_status_check": True,
+                            "translation": {"reply_byte_offset": ad(0x27598), "map_C_offset": ad(0x275a4),
+                                            "output_H_offset": ai(0x275a0), "helper_entry": arm[0x275ac]["target_blob_file_offset"],
+                                            "store_precedes_bounds_check": init["arm_translations"]["helper_store_precedes_bounds_check"],
+                                            "helper_status_checked": False, "stored_output_validated": False,
+                                            "same_map_as_INIT_validated": False},
+                            "unconditional_marker_H_offset": ad(0x275b4), "marker_value": ai(0x275b0),
+                            "marker_proves_accepted_object": False, "returns_saved_transport_status": True},
+                "publication": {"transport_status_branch": 0xfb80, "zero_status_success_target": arm[0xfb80]["target_blob_file_offset"],
+                                "nonzero_status_cleanup_is_fallthrough": True, "failure_cleanup_call": 0xfb88,
+                                "cleanup_callee": arm[0xfb88]["target_blob_file_offset"], "deallocation_semantics_validated": False,
+                                "normal_outptr_store": 0xfbb0, "controller_table_store": 0xfbcc,
+                                "controller_table_C_offset": ad(0xfbc8),
+                                "failure_suppresses_normal_publication": True,
+                                "postpublication_opaque_return_statuses_checked": False,
+                                "forced_success_value": ai(0xfbe4)}},
+            "outer_reply": {"conditional_on_selected_fresh_arc_execution": True,
+                            "command": arm[0x274d0]["literal_value"], "status": am(0x24b08),
+                            "reply_buffer_register": reply_register,
+                            "word2": {"interpretation": "delivery_metadata_ring", "D_field_offset": ring_fields[0],
+                                      "offset_from_F": ring_offsets_from_f[0], "offset_from_D": f_offset + ring_offsets_from_f[0]},
+                            "word3": {"interpretation": "return_metadata_ring", "D_field_offset": ring_fields[1],
+                                      "offset_from_F": ring_offsets_from_f[1], "offset_from_D": f_offset + ring_offsets_from_f[1]},
+                            "word4": {"interpretation": "dm_return_info channel entry", "offset_from_B": rebased,
+                                      "channel_stride_bytes": channel_stride, "channel_count": object_record["size"] // channel_stride,
+                                      "word_count_per_channel": channel_stride // 4,
+                                      "channel_scale_vendor_ISA_validated": False},
+                            "bank_count_inclusive_max": count_max, "zero_bank_count_rejected": False,
+                            "constructor_status_checked": False, "transport_checks_metadata_words": False,
+                            "return_metadata_initialized_words": [av(0x247f0), 0],
+                            "NOBITS_initialized_contents_proven": False},
+            "record_pool": {"context_name": "D", "pool_name": "F", "F_offset_from_D": f_offset,
+                            "source_D_field_offset": base_context + am(0x267b0),
+                            "inherited_constructor_preservation": lemma,
+                            "selected_bank_count_discharges_nonclobber_bound": count_max <= source_init["earlier_variable_loop"]["maximum_nonclobbering_count"],
+                            "metadata_pool_D_field_offset": metadata_field,
+                            "metadata_pool_offset_from_F": metadata_from_f,
+                            "metadata_pool_offset_from_D": f_offset + metadata_from_f,
+                            "allocation_extent_validated": False, "runtime_pool_identity_validated": False},
+            "rings": {"header_word_count": av(0xb588) // 4, "header_bytes": av(0xb588),
+                      "index_unit_bytes": 1 << av(0xb5e0), "index_inclusive_min": av(0xb598),
+                      "index_inclusive_max": av(0xb5a8), "data_entry_count": av(0xb5a8) - av(0xb598) + 1,
+                      "declared_index_extent_bytes": ring_bytes, "ring_base_gap_bytes": ring_bytes,
+                      "allocation_extent_validated": False, "full_ring_protection_validated": False,
+                      "invalid_put_can_fall_through_if_opaque_callees_return": True,
+                      "get_empty_and_invalid_both_return_zero": True, "get_MMIO_completion_bounded": False,
+                      "selected_delivery_payload": {"interpretation": "PPB metadata record address",
+                                                    "record_stride_bytes": ppb_stride, "copy_bytes": ppb_bytes,
+                                                    "record_count": lemma["derived_word_stores"]["count"],
+                                                    "index_range_runtime_validated": False, "raw_source_plane": False},
+                      "release_queue": {"slot_byte_gate_offset": am(0xbe44), "gate_skip_value": av(0xbe48),
+                                        "published_return_info_word": 0, "destination_ring_D_field_offset": av(0xbe60),
+                                        "destination_header_byte_offset": am(0xbe6c), "stored_index_validated": False}},
+            "activation_snapshot": {"channel_table_local_base": table_base,
+                                    "channel_stride_bytes": 1 << arc[0x9fa8]["shift_amount"],
+                                    "copy_bytes": av(0x9fc0), "local_destination": activated_base,
+                                    "delivery_ring_field_local_address": activated_delivery,
+                                    "return_ring_field_local_address": activated_return,
+                                    "metadata_pool_field_local_address": activated_pool,
+                                    "successful_byte_preserving_copy_assumed": True,
+                                    "same_channel_and_unchanged_entry_assumed": True,
+                                    "runtime_active_context_validated": False},
+            "assumptions": init["assumptions"] + [
+                "Selected host entry 0x51c8 receives a valid incoming command record; the isolated dispatch call proves neither selector nor argument continuity.",
+                "Successful opaque ARM configuration/allocation supplies valid disjoint C/K/H storage and reaches the ordinary r9=0 builder path; special-channel bypass and opaque setup/cleanup semantics are not validated.",
+                "Selected ARC inputs have initialized state, channel 0..15, an empty channel slot and a valid normalized D; unsupported parameter-normalization and allocation edges remain premises.",
+                "The inherited conditional constructor lemma supplies F=D+0x794 and preservation of D+0x530 under valid nonaliasing storage, unchanged source, base/no-wrap, count and callee-preservation conditions; it is not live pool identity.",
+                "Original ARC call/local-literal edges survive unresolved relocation effects; legacy ARC fields, delay slots, STATUS-PC dispatch and vendor channel-shift semantics remain conditional.",
+                "Selected nested ARC callees preserve the saved reply buffer and source operands. Successful DMA/copy completion, visibility, same-channel activation and unchanged table/fields are assumed, not runtime receipts.",
+                "OPEN C+8 translation uses a valid stable map disjoint from H+0x58 and the protected stack; INIT's C+12 initialized map does not establish this map identity. Helper stores before bounds checking and its caller ignores status.",
+                "The selected display metadata index is within the inherited 34-record pool; ring payload classification does not prove valid queues, raw-plane layout, ownership, a lease, or operational completion.",
+                "An old event and nonzero mailbox can satisfy shared transport predicates when freshness is relaxed; this output inherits the INIT countermodel, not proof of a current OPEN acknowledgment."],
+            "validation_scope": {"conditional_reply_metadata": True, "raw_source_plane_contract": False,
+                                 "full_PPB_contract_invoked": False, "operational_queue_validity": False,
+                                 "runtime_observed": False, "freshness_proven": False,
+                                 "operational_coherence_proven": False, "allocation_lifetime_proven": False,
+                                 "source_plane_lease": False, "active_decode_context": False,
+                                 "hardware_aliasing_proven": False, "standalone_execution": False, "public_route": False}}
 
 
 def _bootstrap_word(payload, offset):

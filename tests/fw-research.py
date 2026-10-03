@@ -3,6 +3,7 @@
 """Hardware-free firmware mapping, malformed-input and file-ownership tests."""
 
 import hashlib
+from contextlib import ExitStack
 import importlib.util
 import io
 import json
@@ -5946,7 +5947,8 @@ class FirmwareFreshInitCausalTests(unittest.TestCase):
         with mock.patch.object(MAP, "_fresh_init_causal_contract", side_effect=AssertionError("public causal route")), \
                 mock.patch.object(MAP, "_fresh_init_projection", side_effect=AssertionError("public projection route")), \
                 mock.patch.object(MAP, "_init_reply_metadata_linkage", side_effect=AssertionError("public reply metadata route")), \
-                mock.patch.object(MAP, "_init_reply_translation_projection", side_effect=AssertionError("public translation route")):
+                mock.patch.object(MAP, "_init_reply_translation_projection", side_effect=AssertionError("public translation route")), \
+                mock.patch.object(MAP, "_open_reply_metadata_linkage", side_effect=AssertionError("public OPEN metadata route")):
             for mask in range(256):
                 flags = {name: bool(mask & (1 << bit)) for bit, name in enumerate(options)}
                 wanted = ("ReadLine",) if mask & 1 else MAP.DEFAULT_SYMBOLS
@@ -6524,6 +6526,1011 @@ class FirmwareInitReplyMetadataTests(unittest.TestCase):
             MAP.main([str(BLOB), "--init-reply-metadata-linkage"])
         self.assertEqual(error.exception.code, 2)
         self.assertEqual(output.getvalue(), "")
+
+
+class FirmwareOpenReplyMetadataTests(unittest.TestCase):
+    # Independently inventoried original ELF/ARM/legacy-ARC sites. Ranges are
+    # inclusive DWORD addresses, not an instruction scan or runtime emulator.
+    ARM_GROUPS = (
+        "898 89c 62d8",
+        "51c8..51cc 51d8..51f8 570c..573c 5758 575c 5218 521c",
+        "8a0..8d8 908..930 970..98c ac0..ae4 b0c..b24 b40 b44 b48 b4c b58 b60 b64 b68 b90 b94",
+        "a2a4..a2d4 a2f0 a2f4 a2f8 a2fc..a324 a340 a344 a348 a354 a35c a360 a364 a370..a37c a3ac a3b0",
+        "f7e4..f810 f830 f834 f838..f85c f87c f880 f884..f898 f8cc..f8e4 f980 f984 f9a4 f9a8 fb08..fb90 fba8..fbe8",
+        "27480..275c0",
+    )
+    ARC_GROUPS = (
+        (16, "25890 258bc 258c0 258c4 247c4"),
+        (16, "24788..24794 247c8 247d0 247d4 247d8 247e0 247e4 247e8 247ec 247f0 247f4 247f8 247fc 24800 24810 24814 24818..24880 24890 24894"),
+        (16, "248bc 248c4 248c8 248d4 248e0 248e4 248e8..24924 24934 24938"),
+        (16, "2493c 24940 24948 2494c 24950 2496c"),
+        (16, "24a6c..24aa8"),
+        (16, "24a3c 24a40 24a4c 24a50 24a54 24aac 24ab0 24abc 24adc 24b08..24b20 24b24 24b2c 24b30..24b70 !24b6c 24bac 24bb0"),
+        (16, "266f8 266fc 26700 26704 2672c 26734 26748 26760 26764 26768 2676c 2677c 26780 26788 26790 26794 26798 267a8 267b0 267b8 268c8 268e0 268e8 26918 26924 2692c 26938 26958 2696c 26970"),
+        (16, "3b304 3b308"),
+        (4, "9fa4 9fa8 9fb4 9fbc 9fc0 9fc8 9fd0 9fd4"),
+        (4, "9ea4 9ea8 9eac 9efc 9f00 9f18 9f1c 9f48 9f5c 9f60"),
+        (4, "b570..b5bc !b57c b5c8 b5cc b5d0 b5d4..b5ec !b5dc b5f8 b608 b60c"),
+        (2, "4d10 4d14 4d1c 4d24..4db4 4dbc 4dc0"),
+        (4, "b650 b658 b688 b818 b880 b8d8 b8dc b8e0 b8e4..b904 b944 b948 b970 b974 b978 b97c b980 b984 b988"),
+        (16, "26158 26170 26174 26178 2617c 26180 26188 2618c..261ac 261d4 261d8 261e0 261e4 261e8 261ec 261f0 261f8 261fc 26200 26204 26208 2620c 26210 26214 26218 26264 26268"),
+        (4, "be38 be3c be44 be48 be4c be50 be54 be58 be60 be68 be6c"),
+    )
+    PIN_SHAPES = (
+        (0x51c8, 2112), (0x8a0, 760), (0xa2a4, 272), (0xf7e4, 1032),
+        (0x27480, 324), (0x4731c, 1068), (0x4928c, 636), (0x5de98, 8),
+        (0x34e34, 292), (0x34d18, 284), (0x363f8, 188), (0x2fbb4, 180),
+        (0x364b4, 1160), (0x48cd8, 300), (0x36cdc, 56),
+        (0x6da34, 3132), (0x6d020, 1008), (0x27610, 4), (0x62d8, 4),
+        (0x79b08, 40), (0x79b58, 40),
+        (0x69e60, 16), (0x67b15, 15), (0x69fd0, 16), (0x67c7c, 20),
+        (0x6c030, 16), (0x68b0f, 24), (0x6c100, 16), (0x68c06, 21),
+        (0x6c110, 16), (0x68c1b, 16), (0x6c1a0, 16), (0x68ccd, 20),
+        (0x6c270, 16), (0x68de3, 20), (0x6c340, 16), (0x68ea0, 20),
+        (0x6cd10, 16), (0x69835, 15), (0x6cda0, 16), (0x698ef, 28),
+        (0x6cef0, 16), (0x69aaa, 24),
+    )
+    # (owning function, source section, source VA, record blob offset,
+    # vendor type, symbol index, signed DECIMAL addend).
+    RELA_GROUPS = (
+        ("CmdChannelOpen", 16, (
+            (0x24808, 0x729b4, 4, 19, 500), (0x2480c, 0x729c0, 6, 627, 0),
+            (0x24888, 0x729cc, 4, 19, 520), (0x2488c, 0x729d8, 6, 537, 0),
+            (0x248b4, 0x729e4, 4, 19, 552), (0x248c0, 0x729f0, 4, 622, 0),
+            (0x248d0, 0x729fc, 4, 19, 816), (0x248d8, 0x72a08, 6, 627, 0),
+            (0x24918, 0x72a14, 6, 627, 0), (0x2492c, 0x72a20, 6, 627, 0),
+            (0x24944, 0x72a2c, 4, 794, 0), (0x24974, 0x72a38, 6, 627, 0),
+            (0x249dc, 0x72a44, 6, 627, 0), (0x24a14, 0x72a50, 6, 824, 0),
+            (0x24a20, 0x72a5c, 6, 824, 0), (0x24a44, 0x72a68, 6, 627, 0),
+            (0x24aa4, 0x72a74, 6, 624, 0), (0x24b3c, 0x72a80, 6, 645, 0),
+            (0x24b44, 0x72a8c, 6, 644, 0), (0x24b5c, 0x72a98, 6, 645, 0),
+            (0x24b64, 0x72aa4, 6, 644, 0), (0x24b6c, 0x72ab0, 4, 794, 0))),
+        ("Core_ChanInitialize", 16, (
+            (0x26758, 0x733bc, 6, 604, 0), (0x26760, 0x733c8, 6, 824, 0),
+            (0x26768, 0x733d4, 6, 824, 0), (0x26774, 0x733e0, 6, 604, 0),
+            (0x26784, 0x733ec, 4, 27, 1792))),
+        ("System_Activate", 4, (
+            (0x9fb8, 0x6e028, 4, 622, 0), (0x9fcc, 0x6e034, 4, 621, 0),
+            (0xa02c, 0x6e040, 6, 669, 0), (0xa038, 0x6e04c, 6, 687, 0),
+            (0xa044, 0x6e058, 6, 704, 0), (0xa050, 0x6e064, 6, 727, 0),
+            (0xa05c, 0x6e070, 6, 741, 0), (0xa068, 0x6e07c, 6, 773, 0),
+            (0xa074, 0x6e088, 6, 748, 0), (0xa07c, 0x6e094, 6, 823, 0))),
+        ("Core_CopyDramToLsram", 4, (
+            (0x9eec, 0x6dfec, 6, 644, 0), (0x9efc, 0x6dff8, 6, 646, 0),
+            (0x9f18, 0x6e004, 6, 641, 0), (0x9f48, 0x6e010, 6, 644, 0),
+            (0x9f5c, 0x6e01c, 6, 641, 0))),
+        ("Core_CircBuffer_Put", 4, (
+            (0xb584, 0x6e478, 6, 646, 0), (0xb58c, 0x6e484, 6, 644, 0),
+            (0xb5c4, 0x6e490, 4, 19, 1884), (0xb5c8, 0x6e49c, 6, 627, 0),
+            (0xb5d0, 0x6e4a8, 6, 629, 0))),
+        ("Core_AttemptDisplay", 4, (
+            (0xb648, 0x6e4b4, 4, 621, 512), (0xb65c, 0x6e4c0, 4, 621, 0),
+            (0xb68c, 0x6e4cc, 4, 621, 1536), (0xb6b8, 0x6e4d8, 6, 646, 0),
+            (0xb6c0, 0x6e4e4, 6, 644, 0), (0xb6e8, 0x6e4f0, 6, 646, 0),
+            (0xb6f0, 0x6e4fc, 6, 644, 0), (0xb724, 0x6e508, 4, 621, 1024),
+            (0xb81c, 0x6e514, 4, 621, 1024), (0xb8fc, 0x6e520, 6, 645, 0),
+            (0xb904, 0x6e52c, 6, 644, 0), (0xb938, 0x6e538, 6, 645, 0),
+            (0xb940, 0x6e544, 6, 644, 0), (0xb988, 0x6e550, 6, 802, 0),
+            (0xba4c, 0x6e55c, 4, 19, 1920), (0xba50, 0x6e568, 6, 627, 0),
+            (0xba58, 0x6e574, 6, 626, 0))),
+        ("Core_GetUndeliveredPPBs", 16, (
+            (0x2615c, 0x73164, 4, 621, 1536), (0x26168, 0x73170, 4, 19, 1840),
+            (0x2616c, 0x7317c, 6, 627, 0), (0x26170, 0x73188, 6, 637, 0),
+            (0x26184, 0x73194, 4, 621, 1024), (0x261d4, 0x731a0, 6, 578, 0),
+            (0x261e0, 0x731ac, 6, 637, 0), (0x261f4, 0x731b8, 4, 621, 1024),
+            (0x26230, 0x731c4, 4, 19, 1840), (0x26234, 0x731d0, 6, 627, 0),
+            (0x26264, 0x731dc, 6, 578, 0))),
+        ("Platform_UpdateReleaseQueue", 4, (
+            (0xbe40, 0x6e5d4, 4, 622, 0), (0xbe5c, 0x6e5e0, 4, 794, 0))),
+    )
+    SYMBOL_SHAPES = (
+        ("CmdChannelOpen", 47, 16, 0x24788, 1068),
+        ("Core_CircBuffer_Put", 70, 4, 0xb554, 188),
+        ("Core_GetUndeliveredPPBs", 588, 16, 0x26144, 300),
+        ("Core_CopyDramToLsram", 601, 4, 0x9e74, 284),
+        ("System_Activate", 602, 4, 0x9f90, 292),
+        ("Core_AttemptDisplay", 611, 4, 0xb610, 1160),
+        ("Core_ChanInitialize", 624, 16, 0x266f8, 636),
+        ("Core_CircBuffer_Get", 637, 2, 0x4d10, 180),
+        ("dm_return_info", 794, 21, 0x78620, 128),
+        ("Platform_UpdateReleaseQueue", 803, 4, 0xbe38, 56),
+        ("Platform_DrvContextSize", 824, 16, 0x3b304, 8),
+    )
+    INHERITED_SYMBOL_INDICES = (46, 554, 556, 623, 640, 644, 645, 646, 800, 801)
+
+    @staticmethod
+    def sites(specification):
+        result = []
+        for item in specification.split():
+            if item.startswith("!"):
+                result.remove(int(item[1:], 16))
+            elif ".." in item:
+                start, end = (int(part, 16) for part in item.split(".."))
+                result.extend(range(start, end + 4, 4))
+            else:
+                result.append(int(item, 16))
+        return result
+
+    @classmethod
+    def setUpClass(cls):
+        cls.data = MAP.read_firmware(BLOB)
+        cls.payload = cls.data[:-MAP.TRAILER_SIZE]
+        cls.images = MAP.analyze(cls.data)["images"]
+        cls.elf_base = 0x2ea60
+        header = struct.unpack_from("<16sHHIIIIIHHHHHH", cls.payload, cls.elf_base)
+        cls.sections = [struct.unpack_from("<10I", cls.payload, cls.elf_base + header[6] + i * 40)
+                        for i in range(header[12])]
+        cls.arm_sites = [address for group in cls.ARM_GROUPS for address in cls.sites(group)]
+        cls.arc_sites = [(section, address) for section, group in cls.ARC_GROUPS for address in cls.sites(group)]
+
+    word = FirmwareFreshInitCausalTests.word
+    arc_offset = FirmwareFreshInitCausalTests.arc_offset
+    immediate = staticmethod(FirmwareFreshInitCausalTests.immediate)
+
+    def mapping(self, payload=None, images=None):
+        return MAP._open_reply_metadata_linkage(self.payload if payload is None else payload,
+                                               self.images if images is None else images)
+
+    def symbol(self, index):
+        position = self.elf_base + self.sections[35][4] + index * 16
+        record = struct.unpack_from("<IIIBBH", self.payload, position)
+        names = self.elf_base + self.sections[34][4]
+        end = self.payload.index(b"\0", names + record[0])
+        return position, record, self.payload[names + record[0]:end].decode("ascii")
+
+    def arc_function_owner(self, section, address):
+        # Independent selected definitions, including the inherited dispatch
+        # owner, never a lookup in the mapper's returned ownership narrative.
+        definitions = self.SYMBOL_SHAPES + (("Core_Command", 554, 16, 0x25808, 516),)
+        owners = [name for name, _, owner, start, size in definitions
+                  if owner == section and start <= address < start + size]
+        self.assertEqual(len(owners), 1, (section, hex(address)))
+        return owners[0]
+
+    def arc_value(self, section, address):
+        word = self.word(self.arc_offset(section, address))
+        source, operand = word >> 15 & 63, word >> 9 & 63
+        if 62 in (source, operand):
+            return self.word(self.arc_offset(section, address + 4))
+        return (word & 511) - (512 if word & 256 else 0)
+
+    def arc_displacement(self, section, address):
+        word = self.word(self.arc_offset(section, address))
+        return (word & 511) - (512 if word & 256 else 0)
+
+    def union_pins(self):
+        pins = [(offset, size) for _, offset, size, _ in MAP._OPEN_REPLY_REGIONS]
+        pins += [(offset, size) for _, offset, size, _ in MAP._INIT_REPLY_REGIONS]
+        pins += [(offset, size) for _, offset, size, _ in MAP._FRESH_INIT_REGIONS]
+        pins += [(offset, len(raw) // 2) for _, offset, raw in MAP._COMMAND_BUFFER_BRIDGE_REGIONS]
+        pins.append((0x72780, 0x65c4))
+        pins += [(offset, len(raw) // 2) for _, offset, raw in MAP._INNER_DESCRIPTOR_HEADERS]
+        for _, _, offset, raw, name_offset, name in MAP._INNER_DESCRIPTOR_SECTIONS:
+            pins.append((offset, len(raw) // 2))
+            if name != ".shstrtab":
+                pins.append((name_offset, len(name.encode("ascii")) + 1))
+        pins += [(offset, len(raw) // 2) for _, _, _, _, offset, raw in MAP._INNER_DESCRIPTOR_WINDOWS]
+        return pins
+
+    @staticmethod
+    def stop_interpretation(stack):
+        # Bounds/hash operations may run; no dependency, opcode, or ELF field
+        # interpretation may start while any member of the union is unpinned.
+        for name in ("_init_reply_metadata_linkage", "_inner_descriptor_map",
+                     "_fresh_init_causal_contract", "_command_buffer_bridge_map",
+                     "_stock_host_handler_footprints", "_open_reply_arm_operand",
+                     "_open_reply_arc_operand", "_bootstrap_word", "_a32_branch", "_a32_literal"):
+            stack.enter_context(mock.patch.object(MAP, name,
+                                side_effect=AssertionError("interpretation before complete OPEN union: " + name)))
+        for name in ("unpack", "unpack_from"):
+            stack.enter_context(mock.patch.object(MAP.struct, name,
+                                side_effect=AssertionError("ELF interpretation before complete OPEN union")))
+
+    def test_every_new_pin_byte_and_all_dependency_words_tails_precede_interpretation(self):
+        self.assertEqual({(offset, size) for _, offset, size, _ in MAP._OPEN_REPLY_REGIONS},
+                         set(self.PIN_SHAPES))
+        pins = self.union_pins()
+        self.assertEqual((len(pins), sum(size for _, size in pins)), (216, 61651))
+        changed = bytearray(self.payload)
+        with ExitStack() as stack:
+            self.stop_interpretation(stack)
+            for offset, size in self.PIN_SHAPES:
+                for delta in range(size):
+                    changed[offset + delta] ^= 1
+                    try:
+                        with self.subTest(new_pin=hex(offset), byte=delta), self.assertRaises(MAP.FormatError):
+                            self.mapping(changed)
+                    finally:
+                        changed[offset + delta] ^= 1
+            for offset, size in pins[len(self.PIN_SHAPES):]:
+                for delta in sorted(set(range(0, size, 4)) | {size - 1}):
+                    changed[offset + delta] ^= 1
+                    try:
+                        with self.subTest(dependency_pin=hex(offset), byte=delta), self.assertRaises(MAP.FormatError):
+                            self.mapping(changed)
+                    finally:
+                        changed[offset + delta] ^= 1
+        self.assertEqual(changed, self.payload)
+        # The final inner-descriptor window is particularly easy to pre-pin
+        # too late when INIT and OPEN dependencies are interpreted separately.
+        self.assertEqual(pins[-1], (0xb7e41, 56))
+
+    def test_exact_one_less_new_and_every_inherited_preflight_budget(self):
+        defaults = {
+            "MAX_OPEN_REPLY_REGIONS": 48, "MAX_OPEN_REPLY_BYTES": 14 * 1024,
+            "MAX_OPEN_REPLY_AGGREGATE_BYTES": 64 * 1024, "MAX_OPEN_REPLY_INSTRUCTIONS": 640,
+            "MAX_OPEN_REPLY_ELF_RECORDS": 16, "MAX_OPEN_REPLY_OWNED_RELOCATIONS": 80,
+            "MAX_OPEN_REPLY_SEMANTIC_RECEIPTS": 736, "MAX_OPEN_REPLY_NEW_TABLE_RECORDS": 345,
+            "MAX_OPEN_REPLY_RELOCATION_RECORDS": 2516,
+            "MAX_INIT_REPLY_REGIONS": 12, "MAX_INIT_REPLY_BYTES": 1024,
+            "MAX_INIT_REPLY_AGGREGATE_BYTES": 80 * 1024, "MAX_INIT_REPLY_ANCHORS": 104,
+            "MAX_FRESH_INIT_REGIONS": 48, "MAX_FRESH_INIT_BYTES": 16 * 1024,
+            "MAX_FRESH_INIT_AGGREGATE_BYTES": 80 * 1024, "MAX_FRESH_INIT_ANCHORS": 160,
+            "MAX_FRESH_INIT_EVENTS": 64, "MAX_COMMAND_BUFFER_BRIDGE_REGIONS": 80,
+            "MAX_COMMAND_BUFFER_BRIDGE_BYTES": 40 * 1024, "MAX_COMMAND_BUFFER_BRIDGE_RELOCATIONS": 2171,
+            "MAX_INNER_DESCRIPTOR_REGIONS": 48, "MAX_INNER_DESCRIPTOR_BYTES": 4096,
+        }
+        for name, value in defaults.items():
+            self.assertEqual(getattr(MAP, name), value, name)
+        uses = {
+            "MAX_OPEN_REPLY_REGIONS": 43, "MAX_OPEN_REPLY_BYTES": 13299,
+            "MAX_OPEN_REPLY_AGGREGATE_BYTES": 61651, "MAX_OPEN_REPLY_INSTRUCTIONS": 637,
+            "MAX_OPEN_REPLY_ELF_RECORDS": 13, "MAX_OPEN_REPLY_OWNED_RELOCATIONS": 77,
+            "MAX_OPEN_REPLY_SEMANTIC_RECEIPTS": 727, "MAX_OPEN_REPLY_NEW_TABLE_RECORDS": 345,
+            "MAX_OPEN_REPLY_RELOCATION_RECORDS": 2516,
+            "MAX_INIT_REPLY_REGIONS": 4, "MAX_INIT_REPLY_BYTES": 85,
+            "MAX_INIT_REPLY_AGGREGATE_BYTES": 45313, "MAX_INIT_REPLY_ANCHORS": 104,
+            "MAX_FRESH_INIT_REGIONS": 41, "MAX_FRESH_INIT_BYTES": 8536,
+            "MAX_FRESH_INIT_AGGREGATE_BYTES": 45228, "MAX_FRESH_INIT_ANCHORS": 159,
+            "MAX_FRESH_INIT_EVENTS": 35, "MAX_STOCK_HOST_COMMAND_CFG_STATES": 53,
+            "MAX_COMMAND_BUFFER_BRIDGE_REGIONS": 80, "MAX_COMMAND_BUFFER_BRIDGE_BYTES": 36692,
+            "MAX_COMMAND_BUFFER_BRIDGE_RELOCATIONS": 2171,
+            "MAX_INNER_DESCRIPTOR_REGIONS": 48, "MAX_INNER_DESCRIPTOR_BYTES": 3039,
+        }
+        for name, use in uses.items():
+            with self.subTest(exact=name), mock.patch.object(MAP, name, use):
+                self.assertEqual(self.mapping()["validation"]["additional_semantic_count"], 727)
+            with self.subTest(one_less=name), ExitStack() as stack:
+                stack.enter_context(mock.patch.object(MAP, name, use - 1))
+                self.stop_interpretation(stack)
+                with self.assertRaisesRegex(MAP.FormatError, "budget"):
+                    self.mapping()
+
+    def test_truncated_and_malformed_identity_inputs_fail_before_dependencies(self):
+        with ExitStack() as stack:
+            self.stop_interpretation(stack)
+            for length in (0, 0x275c0, 0x47700, 0x515ac, 0x6cd10, 0x79b58, len(self.payload) - 1):
+                with self.subTest(length=length), self.assertRaises(MAP.FormatError):
+                    self.mapping(self.payload[:length])
+            for images in ([], self.images[:1], self.images[::-1], self.images * 2):
+                with self.subTest(image_count=len(images)), self.assertRaises(MAP.FormatError):
+                    self.mapping(images=images)
+            for key, value in (("class", 64), ("endianness", "big"), ("machine", 93),
+                               ("elf_type", 3), ("flags", 1), ("section_count", 54),
+                               ("blob_file_offset", 0), ("blob_file_end", 0x79ddc)):
+                images = [dict(image) for image in self.images]
+                images[0][key] = value
+                with self.subTest(identity=key), self.assertRaises(MAP.FormatError):
+                    self.mapping(images=images)
+
+    def test_independent_site_inventory_and_open_return_object(self):
+        self.assertEqual((len(self.arm_sites), len(self.arc_sites)), (308, 329))
+        self.assertEqual(len(set(self.arm_sites)), 308)
+        self.assertEqual(len(set(self.arc_sites)), 329)
+        self.assertEqual((len(self.PIN_SHAPES), sum(size for _, size in self.PIN_SHAPES)), (43, 13299))
+        self.assertEqual(sum(len(records) for _, _, records in self.RELA_GROUPS), 77)
+        # Captured directly from the bundled ELF/raw ARM bytes, separately
+        # from the mapper's site words and SHA manifest.
+        aggregate = hashlib.sha256()
+        sites = [(0, address, address) for address in self.arm_sites]
+        sites += [(section, address, self.arc_offset(section, address)) for section, address in self.arc_sites]
+        for section, address, offset in sorted(sites):
+            aggregate.update(struct.pack("<3I", section, address, self.word(offset)))
+        self.assertEqual(aggregate.hexdigest(), "34899bf3a17e1944c6d3e5d5e454ded33be4af3379bd2200649aaecc313a3955")
+        aggregate = hashlib.sha256()
+        for offset, size in sorted(self.PIN_SHAPES):
+            aggregate.update(struct.pack("<2I", offset, size))
+            aggregate.update(hashlib.sha256(self.payload[offset:offset + size]).digest())
+        self.assertEqual(aggregate.hexdigest(), "6cba127dbb34b912e17df31f99fcc54f36d3f04ec9e31e1af6e361807053624c")
+        position, record, name = self.symbol(794)
+        self.assertEqual((position, record, name),
+                         (0x6cd10, (0x1da0, 0x78620, 128, 0x11, 0, 21), "dm_return_info"))
+        self.assertEqual(self.sections[21], (0x260, 8, 3, 0x77138, 0x35734, 0x1654, 0, 0, 4, 1))
+        self.assertTrue(self.sections[21][3] <= record[1] < record[1] + record[2] <=
+                        self.sections[21][3] + self.sections[21][5])
+        for address, offset, record_position in ((0x24944, 0x474d8, 0x72a2c),
+                                                  (0x24b6c, 0x47700, 0x72ab0)):
+            self.assertEqual(self.arc_offset(16, address), offset)
+            self.assertEqual(self.word(offset), 0x78620)
+            self.assertEqual(struct.unpack_from("<IIi", self.payload, record_position),
+                             (address, 0x31a04, 0))
+        # A separate data use exists: uniqueness is per owned selected field.
+        self.assertEqual(struct.unpack_from("<IIi", self.payload, 0x6e5e0), (0xbe5c, 0x31a04, 0))
+
+    def arm_oracle(self, address):
+        word = self.word(address)
+        out = {"architecture": "ARM", "blob_file_offset": address, "word": word,
+               "condition": word >> 28}
+        rn, rd, rm = word >> 16 & 15, word >> 12 & 15, word & 15
+        if word >> 25 & 7 == 5:
+            displacement = word & 0xffffff
+            if displacement >= 0x800000:
+                displacement -= 0x1000000
+            out.update(operation="BL" if word >> 24 & 1 else "B",
+                       target_blob_file_offset=address + 8 + displacement * 4)
+        elif word & 0x0ffffff0 == 0x012fff10:
+            out.update(operation="BX register", operand_register=rm)
+        elif word & 0x0fc000f0 == 0x00000090:
+            out.update(operation="MUL", destination_register=rn, source_register=rm,
+                       operand_register=word >> 8 & 15, sets_flags=bool(word >> 20 & 1))
+        elif word & 0xffff0000 in (0xe92d0000, 0xe8bd0000):
+            out.update(operation="PUSH" if word >> 16 == 0xe92d else "POP", base_register=13,
+                       register_mask=word & 65535, byte_count=(word & 65535).bit_count() * 4)
+        elif word >> 25 & 7 == 4:
+            out.update(operation="LDM" if word >> 20 & 1 else "STM", base_register=rn,
+                       register_mask=word & 65535, byte_count=(word & 65535).bit_count() * 4,
+                       addressing="increment before" if word >> 24 & 1 else "increment after",
+                       writeback=bool(word >> 21 & 1))
+        elif word & 0x0ff00000 == 0x03000000:
+            out.update(operation="MOVW", destination_register=rd,
+                       immediate=(word >> 4 & 0xf000) | (word & 4095))
+        elif word >> 26 & 3 == 1:
+            if rn == 15 and word >> 20 & 1:
+                literal = address + 8 + (word & 4095) * (1 if word >> 23 & 1 else -1)
+                out.update(operation="LDR literal", destination_register=rd,
+                           literal_blob_file_offset=literal, literal_value=self.word(literal))
+            else:
+                out.update(operation="LDR" if word >> 20 & 1 else "STR", base_register=rn,
+                           data_register=rd, byte_width=1 if word >> 22 & 1 else 4)
+                if word >> 25 & 1:
+                    out.update(offset_register=rm, shift_kind="LSL", shift_amount=word >> 7 & 31)
+                else:
+                    out["byte_offset"] = (word & 4095) * (1 if word >> 23 & 1 else -1)
+        elif word & 0x0e000090 == 0x00000090:
+            operation = {0xb0: "LDRH", 0xd0: "LDRD", 0xf0: "STRD"}[word & 0xf0]
+            out.update(operation=operation, base_register=rn, data_register=rd,
+                       byte_width=2 if operation == "LDRH" else 8,
+                       byte_offset=(word >> 4 & 0xf0) | (word & 15))
+            if operation != "LDRH":
+                out["second_data_register"] = rd + 1
+        else:
+            opcode = word >> 21 & 15
+            out.update(operation={2: "SUB", 4: "ADD", 8: "TST", 10: "CMP", 13: "MOV", 15: "MVN"}[opcode],
+                       source_register=rn, destination_register=rd)
+            if word >> 25 & 1:
+                out["immediate"] = self.immediate(word)
+            else:
+                out.update(operand_register=rm, shift_kind="LSL", shift_amount=word >> 7 & 31)
+        return out
+
+    def test_all637_returned_instructions_match_independent_operand_oracles(self):
+        records = self.mapping()["instruction_anchors"]
+        arm = [r for r in records if r["architecture"] == "ARM"]
+        arc = [r for r in records if r["architecture"] == "ARC"]
+        self.assertEqual((len(records), len(arm), len(arc)), (637, 308, 329))
+        self.assertEqual({r["blob_file_offset"] for r in arm}, set(self.arm_sites))
+        self.assertEqual({(r["section_index"], r["elf_virtual_address"]) for r in arc}, set(self.arc_sites))
+        for record in arm:
+            with self.subTest(arm=hex(record["blob_file_offset"])):
+                expected = self.arm_oracle(record["blob_file_offset"])
+                actual = {key: value for key, value in record.items() if key != "source_function"}
+                self.assertEqual(actual, expected)
+                address = record["blob_file_offset"]
+                owners = [role for role, start, size in (("host_open", 0x51c8, 2112), ("channel_wrapper", 0x8a0, 760),
+                          ("smp_open", 0xa2a4, 272), ("ordinary_decoder_open", 0xf7e4, 1032),
+                          ("open_packet_builder", 0x27480, 324)) if start <= address < start + size]
+                expected_owner = owners[0] if owners else ("fixed_context_getter" if address in (0x898, 0x89c)
+                                                          else "selected_dispatch_call_site_only")
+                self.assertEqual(record["source_function"], expected_owner)
+        majors = {0: "LD indexed", 1: "LD", 2: "ST", 3: "EXT", 4: "B", 5: "BL", 6: "LP",
+                  7: "J", 8: "ADD", 9: "ADC", 10: "SUB", 11: "SBC", 12: "AND", 13: "OR",
+                  14: "BIC", 15: "XOR", 16: "ASL"}
+        for record in arc:
+            section, address = record["section_index"], record["elf_virtual_address"]
+            offset = self.arc_offset(section, address)
+            word = self.word(offset)
+            major = word >> 27
+            expected = {"architecture": "ARC", "section_index": section, "elf_virtual_address": address,
+                        "blob_file_offset": offset, "word": word, "decode_conditional": True,
+                        "opcode_major": major, "destination_register": word >> 21 & 63,
+                        "source_register": word >> 15 & 63, "operand_register": word >> 9 & 63,
+                        "low9": word & 511, "signed_low9": (word & 511) - (512 if word & 256 else 0)}
+            operation = majors[major]
+            if major == 12 and expected["source_register"] == expected["operand_register"]:
+                operation = "MOV"
+            expected["operation"] = operation
+            expected["source_function"] = self.arc_function_owner(section, address)
+            if major in (4, 5, 6):
+                displacement = word >> 7 & 0xfffff
+                if displacement >= 0x80000:
+                    displacement -= 0x100000
+                expected.update(condition=word & 31, pc_bias_bytes=4,
+                                target_elf_virtual_address=address + 4 + displacement * 4)
+            if major in (4, 5, 7):
+                delay = word >> 5 & 3
+                self.assertIn(delay, (0, 1, 2))
+                expected["delay_slot_semantics"] = {0: "none", 1: "always executed", 2: "taken only"}[delay]
+                if delay:
+                    expected.update(delay_slot_elf_virtual_address=address + 4,
+                                    delay_slot_word=self.word(self.arc_offset(section, address + 4)))
+            literal_required = (major == 1 and expected["source_register"] == 62 or
+                                major == 2 and expected["operand_register"] == 62 or
+                                major in (0, 8, 9, 10, 11, 12, 13, 14, 15, 16) and
+                                62 in (expected["source_register"], expected["operand_register"]))
+            if literal_required:
+                expected.update(literal_blob_file_offset=offset + 4, literal_value=self.word(offset + 4))
+            if major == 16 and expected["operand_register"] == 63:
+                expected["shift_amount"] = expected["signed_low9"]
+            # No selected receipt may claim an extension's actual ISA semantics.
+            if address == 0x24b48:
+                expected["vendor_ISA_validated"] = False
+            with self.subTest(arc=hex(address)):
+                self.assertEqual(record, expected)
+
+    def test_independent_arc_argument_delay_pool_ring_and_release_words(self):
+        words = {
+            (16, 0x258bc): 0x2ffdd920, (16, 0x258c0): 0x60079e00,
+            (16, 0x247c4): 0x62400000, (16, 0x2487c): 0x57e07a09,
+            (16, 0x24880): 0x2000028e, (16, 0x248ec): 0x57e6fa10,
+            (16, 0x2493c): 0x8006fe03, (16, 0x24940): 0x40207c00,
+            (16, 0x2494c): 0x10008004, (16, 0x24950): 0x10009e00,
+            (16, 0x24aa4): 0x28038a20, (16, 0x24aa8): 0x08cd81f4,
+            (16, 0x24b0c): 0x10090004, (16, 0x24b14): 0x10090208,
+            (16, 0x24b1c): 0x1009000c, (16, 0x24b2c): 0x10090014,
+            (16, 0x24b68): 0x41a6fc00, (16, 0x24b70): 0x10091a10,
+            (16, 0x2676c): 0x41a02800, (16, 0x267a8): 0x4029fc00,
+            (16, 0x267b0): 0x10009b30, (16, 0x268e8): 0x1001013c,
+            (16, 0x2692c): 0x10008524, (16, 0x26958): 0x10008528,
+            (16, 0x3b304): 0x380f8020, (16, 0x3b308): 0x401ffeec,
+            (4, 0x9fa8): 0x80007e05, (4, 0x9fb4): 0x41e07c00,
+            (4, 0xb598): 0x57e0fa02, (4, 0xb5a8): 0x57e0fa3f,
+            (4, 0xb5b0): 0x57e6fa02, (4, 0xb5b8): 0x57e6fa3f,
+            (4, 0xb5d4): 0x57e77a40, (4, 0xb5e0): 0x8006fe02,
+            (4, 0xb5e8): 0x10001e00, (4, 0xb5ec): 0x10081c04,
+            (4, 0xb8e4): 0x828b7e03, (4, 0xb8e8): 0x528a2c00,
+            (4, 0xb8ec): 0x828a7e03, (4, 0xb8f0): 0x428a2c00,
+            (4, 0xb8f4): 0x828a7e02, (4, 0xb8f8): 0x40292800,
+            (4, 0xbe44): 0x0821040f, (4, 0xbe48): 0x57e0faff,
+            (4, 0xbe50): 0x08210010, (4, 0xbe54): 0x80007e03,
+            (4, 0xbe6c): 0x10008004,
+        }
+        for (section, address), word in words.items():
+            with self.subTest(section=section, address=hex(address)):
+                self.assertEqual(self.word(self.arc_offset(section, address)), word)
+        call = words[16, 0x258bc]
+        self.assertEqual((call >> 27, call & 31, call >> 5 & 3), (5, 0, 1))
+        displacement = (call >> 7 & 0xfffff) - 0x100000
+        self.assertEqual(0x258bc + 4 + displacement * 4, 0x24788)
+        # BL.d's R15 -> R0 argument, then callee R0 -> R18 reply identity.
+        self.assertEqual((words[16, 0x258c0] >> 9 & 63, words[16, 0x258c0] >> 21 & 63), (15, 0))
+        self.assertEqual((words[16, 0x247c4] >> 9 & 63, words[16, 0x247c4] >> 21 & 63), (0, 18))
+        self.assertEqual((words[16, 0x2487c] & 511, words[16, 0x248ec] & 511), (9, 16))
+        self.assertEqual([words[16, p] & 511 for p in (0x24b0c, 0x24b14, 0x24b1c, 0x24b70, 0x24b2c)],
+                         [4, 8, 12, 16, 20])
+        self.assertEqual(words[16, 0x2493c] & 511, 3)  # Channel *8, not *4 or ARC context size.
+        self.assertEqual([words[4, p] & 511 for p in (0xb598, 0xb5a8, 0xb5b0, 0xb5b8, 0xb5d4)],
+                         [2, 63, 2, 63, 64])
+        self.assertEqual([words[4, p] & 511 for p in (0xbe44, 0xbe48, 0xbe50, 0xbe6c)], [15, 255, 16, 4])
+        # A source-derived scalar address, never an operational Y/UV surface.
+        for index in (0, 1, 33):
+            stride_from_opcodes = ((index << 3) - index) << 3
+            stride_from_opcodes = (stride_from_opcodes + index) << 2
+            self.assertEqual(stride_from_opcodes, 228 * index)
+
+    def test_validation_receipt_counts_pins_and_inherited_dependency_scope(self):
+        result = self.mapping()
+        expected = {
+            "additional_region_count": 43, "additional_byte_count": 13299,
+            "dependency_region_count": 173, "dependency_byte_count": 48352,
+            "aggregate_region_count": 216, "aggregate_byte_count": 61651,
+            "arm_instruction_count": 308, "arc_instruction_count": 329, "instruction_count": 637,
+            "fixed_elf_record_count": 13, "owned_relocation_count": 77,
+            "scanned_relocation_count": 2516, "additional_semantic_count": 727,
+        }
+        self.assertEqual({key: value for key, value in result["validation"].items()
+                          if key not in ("validated_regions", "dependency_regions")}, expected)
+        pins = result["validation"]["validated_regions"]
+        self.assertEqual({(r["blob_file_offset"], r["size"]) for r in pins}, set(self.PIN_SHAPES))
+        for record in pins + result["validation"]["dependency_regions"]:
+            offset, size = record["blob_file_offset"], record["size"]
+            self.assertEqual(record["sha256"], hashlib.sha256(self.payload[offset:offset + size]).hexdigest())
+        self.assertEqual(result["init_reply"], MAP._init_reply_metadata_linkage(self.payload, self.images))
+        self.assertEqual(result["basis"], result["init_reply"]["basis"])
+        for key in ("entire_payload_rehashed", "device_observed", "public_route"):
+            self.assertIs(result["basis"][key], False)
+
+    def test_all13_elf_and77_owned_relocation_receipts_match_raw_source_fields(self):
+        result = self.mapping()
+        expected_elf = []
+        definitions = {}
+        for name, index, section, address, size in self.SYMBOL_SHAPES:
+            position, raw, raw_name = self.symbol(index)
+            self.assertEqual((raw_name, raw[1], raw[2], raw[5]), (name, address, size, section))
+            self.assertEqual((raw[3], raw[4]), (0x11 if index == 794 else 2 if index in (47, 70) else 0x12, 0))
+            owner = self.sections[section]
+            record = {"name": name, "symbol_index": index, "symbol_record_blob_file_offset": position,
+                      "name_blob_file_offset": self.elf_base + self.sections[34][4] + raw[0],
+                      "section_index": section, "elf_virtual_address": address, "size": size,
+                      "info": raw[3], "other": raw[4], "section_relative_offset": address - owner[3]}
+            if index != 794:
+                record["blob_file_offset"] = self.arc_offset(section, address)
+            expected_elf.append(record)
+            definitions[name] = index, section, address, size
+        for index, owner, count, table_offset in ((37, 2, 84, 0x6d020), (39, 4, 261, 0x6da34)):
+            expected_elf.append({"operation": "RELA section header", "section_index": index,
+                                 "source_section_index": owner, "linked_symbol_table_index": 35,
+                                 "blob_file_offset": self.elf_base + 0x4aae0 + index * 40,
+                                 "record_blob_file_offset": table_offset, "record_count": count, "entry_size": 12})
+        self.assertEqual(result["elf_receipts"], expected_elf)
+        expected_relocations = []
+        for name, section, rows in self.RELA_GROUPS:
+            for address, position, kind, target, addend in rows:
+                actual = struct.unpack_from("<IIi", self.payload, position)
+                self.assertEqual(actual, (address, target * 256 + kind, addend))
+                row = {"source_function": name, "source_function_symbol_index": definitions[name][0],
+                       "source_section_index": section, "source_elf_virtual_address": address,
+                       "source_blob_file_offset": self.arc_offset(section, address),
+                       "relocation_section_index": {2: 37, 4: 39, 16: 51}[section],
+                       "relocation_record_blob_file_offset": position, "vendor_type": kind,
+                       "symbol_index": target, "addend": addend,
+                       "unpinned_target_definition_interpreted": False, "runtime_application_proven": False}
+                if address in (0x24944, 0x24b6c, 0xbe5c):
+                    row.update(selected_target_name="dm_return_info", patched_literal_offset_from_B=0x78620)
+                expected_relocations.append(row)
+        key = lambda row: row["relocation_record_blob_file_offset"]
+        self.assertEqual(sorted(result["relocation_receipts"], key=key), sorted(expected_relocations, key=key))
+        self.assertEqual((len(expected_elf), len(expected_relocations)), (13, 77))
+        # Type4 addresses are raw data fields owned by their containing ARC
+        # instructions. They must not inflate the 637 instruction receipts.
+        addresses = {r["elf_virtual_address"] for r in result["instruction_anchors"] if r["architecture"] == "ARC"}
+        self.assertTrue({0x24940, 0x24b68, 0xbe58} <= addresses)
+        self.assertTrue({0x24944, 0x24b6c, 0xbe5c}.isdisjoint(addresses))
+
+    def test_selected_arc_edges_bind_pc_bias_delay_owner_and_conditional_relocations(self):
+        result = self.mapping()
+        definitions = {}
+        for index in self.INHERITED_SYMBOL_INDICES + tuple(s[1] for s in self.SYMBOL_SHAPES if s[1] != 794):
+            _, raw, name = self.symbol(index)
+            definitions[raw[1]] = name, index, raw[5]
+        tables = {}
+        for table_index, owner in ((37, 2), (39, 4), (51, 16)):
+            section = self.sections[table_index]
+            table_start = self.elf_base + section[4]
+            for i in range(section[5] // 12):
+                position = table_start + i * 12
+                address, info, addend = struct.unpack_from("<IIi", self.payload, position)
+                tables.setdefault((owner, address), []).append((position, info, addend))
+        expected = []
+        for section, address in self.arc_sites:
+            word = self.word(self.arc_offset(section, address))
+            if word >> 27 != 5:
+                continue
+            displacement = word >> 7 & 0xfffff
+            if displacement >= 0x80000:
+                displacement -= 0x100000
+            target = address + 4 + displacement * 4
+            delay = word >> 5 & 3
+            row = {"source_function": self.arc_function_owner(section, address),
+                   "source_section_index": section, "source_elf_virtual_address": address,
+                   "original_target_elf_virtual_address": target, "pc_bias_bytes": 4,
+                   "delay_slot_semantics": {0: "none", 1: "always executed", 2: "taken only"}[delay],
+                   "runtime_edge_proven": False, "target_definition_validated": target in definitions}
+            if delay:
+                row["delay_slot_word"] = self.word(self.arc_offset(section, address + 4))
+            relocations = tables.get((section, address), [])
+            self.assertLessEqual(len(relocations), 1)
+            if target in definitions:
+                name, index, target_section = definitions[target]
+                row["target_function"] = name
+                if not relocations:
+                    self.assertEqual(section, target_section)
+                else:
+                    position, info, addend = relocations[0]
+                    self.assertEqual((info & 255, info >> 8), (6, index))
+                    signed_delta = target + addend - address - 4
+                    self.assertEqual(signed_delta % 4, 0)
+                    self.assertEqual((word & 0xf800007f) | ((signed_delta << 5) & 0x07ffff80), word)
+                    row["original_encoding_preserved_under_selected_rebase"] = True
+            if relocations:
+                position, info, addend = relocations[0]
+                row.update(relocation_record_blob_file_offset=position, vendor_type=info & 255,
+                           symbol_index=info >> 8, addend=addend)
+            expected.append(row)
+        key = lambda row: (row["source_section_index"], row["source_elf_virtual_address"])
+        self.assertEqual(sorted(result["selected_arc_edges"], key=key), sorted(expected, key=key))
+        by_source = {row["source_elf_virtual_address"]: row for row in result["selected_arc_edges"]}
+        for source, target in ((0x258bc, 0x24788), (0x9fd0, 0x9e74), (0xb980, 0xb554)):
+            self.assertEqual(by_source[source]["original_target_elf_virtual_address"], target)
+            self.assertEqual(by_source[source]["delay_slot_semantics"], "always executed")
+            self.assertNotIn("relocation_record_blob_file_offset", by_source[source])
+        self.assertEqual(by_source[0x24aa4]["relocation_record_blob_file_offset"], 0x72a74)
+        self.assertEqual(by_source[0x24aa4]["target_function"], "Core_ChanInitialize")
+
+    def test_arm_output_before_status_and_distinct_open_translation_publication_contract(self):
+        result = self.mapping()
+        arm = result["arm_path"]
+        self.assertEqual(arm["identities"], {"C": "ARM controller", "K": "ARM API host-channel record",
+                         "H": "allocated ARM decoder/channel object", "D": "ARC channel context",
+                         "F": "ARC record-pool source", "host_command_record": "valid incoming host request"})
+        self.assertEqual({k: v for k, v in arm.items() if k not in ("identities", "builder", "publication")},
+                         {"selected_dispatch_call_site": 0x62d8, "dispatch_selector_and_argument_continuity_validated": False,
+                          "controller_root_global_offset": 8, "host_channel_record_stride_bytes": 0x1cc,
+                          "host_channel_record_base_offset": 0x18, "ordinary_builder_requires_zero_selected_flag": True,
+                          "special_channel_bypass_validated": False})
+        builder = arm["builder"]
+        self.assertEqual(builder, {
+            "entry": 0x27480, "frame_bytes": 552, "request_stack_offset": 264, "response_stack_offset": 12,
+            "packet_bytes": 252, "command": 0x73760002, "channel_reply_request_byte_offset": 4,
+            "bank_count_request_byte_offset": 32, "bank_count_H_offset": 32, "timeout_argument": 20000,
+            "transport_entry": 0x2705c, "saved_transport_status_stack_offset": 8,
+            "raw_reply_to_H": [{"reply_byte_offset": 8, "H_offset": 0x44},
+                               {"reply_byte_offset": 12, "H_offset": 0x48},
+                               {"reply_byte_offset": 16, "H_offset": 0x50}],
+            "writes_raw_outputs_before_transport_status_check": True,
+            "translation": {"reply_byte_offset": 20, "map_C_offset": 8, "output_H_offset": 0x58,
+                            "helper_entry": 0x1fdac, "store_precedes_bounds_check": True,
+                            "helper_status_checked": False, "stored_output_validated": False,
+                            "same_map_as_INIT_validated": False},
+            "unconditional_marker_H_offset": 0x220, "marker_value": 1, "marker_proves_accepted_object": False,
+            "returns_saved_transport_status": True})
+        publication = arm["publication"]
+        self.assertEqual(publication, {
+            "transport_status_branch": 0xfb80, "zero_status_success_target": 0xfb94,
+            "nonzero_status_cleanup_is_fallthrough": True, "failure_cleanup_call": 0xfb88,
+            "cleanup_callee": 0xf6e4, "deallocation_semantics_validated": False,
+            "normal_outptr_store": 0xfbb0, "controller_table_store": 0xfbcc, "controller_table_C_offset": 0x19c,
+            "failure_suppresses_normal_publication": True, "postpublication_opaque_return_statuses_checked": False,
+            "forced_success_value": 0})
+        raw = {address: self.arm_oracle(address) for address in
+               (0x274cc, 0x2757c, 0x27580, 0x27584, 0x275a0, 0x275a4, 0x275a8, 0x275ac,
+                0x275b0, 0x275b4, 0x275b8, 0xfb08, 0xfb0c, 0xfb7c, 0xfb80, 0xfb84,
+                0xfb88, 0xfb8c, 0xfb90, 0xfbb0, 0xfbcc, 0xfbd8, 0xfbe0, 0xfbe4)}
+        self.assertEqual((raw[0x274cc]["destination_register"], raw[0x27580]["base_register"]), (8, 8))
+        self.assertEqual(raw[0x2757c]["data_register"], 0)
+        self.assertEqual((raw[0x2757c]["byte_offset"], raw[0x275b8]["byte_offset"]), (8, 8))
+        self.assertEqual((raw[0x275a4]["base_register"], raw[0x275a4]["data_register"], raw[0x275a4]["byte_offset"]), (9, 0, 8))
+        self.assertEqual((raw[0x275a0]["source_register"], raw[0x275a0]["destination_register"]), (6, 2))
+        self.assertEqual(raw[0x275b8]["data_register"], 0)
+        # The helper's return r0 is overwritten by marker1, then by the saved
+        # transport status; no conditional branch checks helper status here.
+        self.assertEqual((raw[0x275b0]["operation"], raw[0x275b0]["destination_register"], raw[0x275b0]["immediate"]), ("MOV", 0, 1))
+        self.assertEqual((raw[0xfb7c]["source_register"], raw[0xfb7c]["immediate"], raw[0xfb80]["condition"]), (8, 0, 0))
+        self.assertEqual(raw[0xfb80]["target_blob_file_offset"], 0xfb94)
+        self.assertEqual((raw[0xfb84]["destination_register"], raw[0xfb84]["operand_register"]), (0, 4))
+        self.assertEqual((raw[0xfb8c]["destination_register"], raw[0xfb8c]["operand_register"]), (0, 8))
+        self.assertEqual(raw[0xfb90]["target_blob_file_offset"], 0xf830)
+        self.assertEqual(raw[0xfbb0]["data_register"], 4)
+        self.assertEqual((raw[0xfbe4]["destination_register"], raw[0xfbe4]["immediate"]), (0, 0))
+        self.assertEqual(result["init_reply"]["arm_translations"]["map_context_offset"], 12)
+        self.assertNotEqual(builder["translation"]["map_C_offset"], 12)
+        # The inherited helper writes output before bounds checking and may
+        # return2; its INIT-specific identity-map defaults cannot prove OPEN's
+        # C+8 map valid. No new OPEN translation/queue emulator is introduced.
+        translation = result["init_reply"]["arm_translations"]["translation"]
+        self.assertEqual(translation["error_status"], 2)
+        self.assertIs(builder["translation"]["stored_output_validated"], False)
+
+    def test_arc_reply_pool_ring_and_snapshot_equations_remain_conditional_metadata(self):
+        result = self.mapping()
+        outer = result["outer_reply"]
+        self.assertEqual(outer, {
+            "conditional_on_selected_fresh_arc_execution": True, "command": 0x73760002,
+            "status": 0, "reply_buffer_register": 18,
+            "word2": {"interpretation": "delivery_metadata_ring", "D_field_offset": 0x524,
+                      "offset_from_F": 0x14ee4, "offset_from_D": 0x15678},
+            "word3": {"interpretation": "return_metadata_ring", "D_field_offset": 0x528,
+                      "offset_from_F": 0x14fe4, "offset_from_D": 0x15778},
+            "word4": {"interpretation": "dm_return_info channel entry", "offset_from_B": 0x78620,
+                      "channel_stride_bytes": 8, "channel_count": 16, "word_count_per_channel": 2,
+                      "channel_scale_vendor_ISA_validated": False},
+            "bank_count_inclusive_max": 9, "zero_bank_count_rejected": False,
+            "constructor_status_checked": False, "transport_checks_metadata_words": False,
+            "return_metadata_initialized_words": [2, 0], "NOBITS_initialized_contents_proven": False})
+        pool = result["record_pool"]
+        self.assertEqual({k: v for k, v in pool.items() if k != "inherited_constructor_preservation"}, {
+            "context_name": "D", "pool_name": "F", "F_offset_from_D": 0x794, "source_D_field_offset": 0x530,
+            "selected_bank_count_discharges_nonclobber_bound": True, "metadata_pool_D_field_offset": 0x33c,
+            "metadata_pool_offset_from_F": 0x150e4, "metadata_pool_offset_from_D": 0x15878,
+            "allocation_extent_validated": False, "runtime_pool_identity_validated": False})
+        inner = MAP._inner_descriptor_map(self.payload, self.images)
+        self.assertEqual(pool["inherited_constructor_preservation"],
+                         inner["paths"]["record_pointer_and_boundary"]["record_pool_context_snapshot"]["conditional_constructor_return"])
+        self.assertLessEqual(outer["bank_count_inclusive_max"],
+                             pool["inherited_constructor_preservation"]["source_initialization"]["earlier_variable_loop"]["maximum_nonclobbering_count"])
+        self.assertEqual(result["rings"], {
+            "header_word_count": 2, "header_bytes": 8, "index_unit_bytes": 4,
+            "index_inclusive_min": 2, "index_inclusive_max": 63, "data_entry_count": 62,
+            "declared_index_extent_bytes": 256, "ring_base_gap_bytes": 256,
+            "allocation_extent_validated": False, "full_ring_protection_validated": False,
+            "invalid_put_can_fall_through_if_opaque_callees_return": True,
+            "get_empty_and_invalid_both_return_zero": True, "get_MMIO_completion_bounded": False,
+            "selected_delivery_payload": {"interpretation": "PPB metadata record address", "record_stride_bytes": 228,
+                                          "copy_bytes": 228, "record_count": 34,
+                                          "index_range_runtime_validated": False, "raw_source_plane": False},
+            "release_queue": {"slot_byte_gate_offset": 15, "gate_skip_value": 255, "published_return_info_word": 0,
+                              "destination_ring_D_field_offset": 0x528, "destination_header_byte_offset": 4,
+                              "stored_index_validated": False}})
+        snapshot = result["activation_snapshot"]
+        self.assertEqual(snapshot, {
+            "channel_table_local_base": 0x3fffd378, "channel_stride_bytes": 32, "copy_bytes": 0x5bc,
+            "local_destination": 0x3fffcdac, "delivery_ring_field_local_address": 0x3fffd2d0,
+            "return_ring_field_local_address": 0x3fffd2d4, "metadata_pool_field_local_address": 0x3fffd0e8,
+            "successful_byte_preserving_copy_assumed": True, "same_channel_and_unchanged_entry_assumed": True,
+            "runtime_active_context_validated": False})
+        # Bind the equations independently to original immediate/LIMM values;
+        # equal addresses under this conditional copy are not live identity.
+        self.assertEqual(self.arc_value(16, 0x267a8) + self.arc_displacement(16, 0x267b0), 0x530)
+        self.assertEqual(self.arc_value(16, 0x267b8) + self.arc_displacement(16, 0x268e8), 0x33c)
+        self.assertEqual(self.arc_value(16, 0x26924), 0x14ee4)
+        self.assertEqual(self.arc_value(16, 0x26938), 0x14fe4)
+        self.assertEqual(self.arc_value(16, 0x268e0), 0x150e4)
+        self.assertEqual(self.arc_value(4, 0x9fc8) + self.arc_displacement(4, 0x9fd4), snapshot["local_destination"])
+        for word, field in (("word2", "delivery_ring_field_local_address"), ("word3", "return_ring_field_local_address")):
+            self.assertEqual(pool["F_offset_from_D"] + outer[word]["offset_from_F"], outer[word]["offset_from_D"])
+            self.assertEqual(snapshot["local_destination"] + outer[word]["D_field_offset"], snapshot[field])
+        self.assertEqual(snapshot["local_destination"] + pool["metadata_pool_D_field_offset"], snapshot["metadata_pool_field_local_address"])
+        self.assertEqual(self.arc_value(16, 0x2487c), 9)
+        self.assertEqual(self.arc_value(16, 0x248ec), 16)
+        self.assertEqual(self.arc_value(16, 0x247f0), outer["return_metadata_initialized_words"][0])
+        self.assertEqual((self.word(self.arc_offset(16, 0x2493c)) & 511,
+                          self.word(self.arc_offset(16, 0x24b48)) & 511), (3, 3))
+        for channel in (0, 1, 15):
+            self.assertLessEqual(8 * channel + 8, self.symbol(794)[1][2])
+        self.assertGreater(8 * 16 + 8, self.symbol(794)[1][2])
+        # Index64 wraps to2, not0; 62 payload DWORDs do not prove a full-ring
+        # protocol or any allocation's operational capacity.
+        self.assertEqual(self.arc_value(4, 0xb5d4), 64)
+        self.assertEqual(self.arc_value(4, 0xb5d8), 2)
+        self.assertEqual(self.arc_displacement(4, 0xbe44), 15)
+        self.assertEqual(self.arc_value(4, 0xbe48), 255)
+        self.assertEqual(self.arc_value(4, 0xbe60), 0x528)
+        self.assertEqual(self.arc_displacement(4, 0xbe6c), 4)
+
+    def test_scope_and_named_assumptions_exclude_runtime_queue_or_plane_proofs(self):
+        result = self.mapping()
+        self.assertEqual(result["validation_scope"], {
+            "conditional_reply_metadata": True, "raw_source_plane_contract": False,
+            "full_PPB_contract_invoked": False, "operational_queue_validity": False, "runtime_observed": False,
+            "freshness_proven": False, "operational_coherence_proven": False, "allocation_lifetime_proven": False,
+            "source_plane_lease": False, "active_decode_context": False, "hardware_aliasing_proven": False,
+            "standalone_execution": False, "public_route": False})
+        self.assertEqual(result["assumptions"][:len(result["init_reply"]["assumptions"])], result["init_reply"]["assumptions"])
+        assumptions = " ".join(result["assumptions"])
+        for phrase in ("valid incoming command record", "neither selector nor argument continuity", "C/K/H", "r9=0",
+                       "special-channel bypass", "channel 0..15", "empty channel slot", "valid normalized D",
+                       "F=D+0x794", "D+0x530", "nonaliasing", "no-wrap", "callee-preservation", "delay slots",
+                       "STATUS-PC", "vendor channel-shift", "saved reply buffer", "DMA/copy completion", "visibility",
+                       "same-channel activation", "unchanged table/fields", "C+8", "INIT's C+12", "disjoint from H+0x58",
+                       "stores before bounds checking", "ignores status", "34-record pool", "not proof of a current OPEN acknowledgment"):
+            with self.subTest(premise=phrase):
+                self.assertIn(phrase, assumptions)
+        for phrase in ("raw-plane layout", "ownership", "lease", "operational completion", "unresolved relocation"):
+            self.assertIn(phrase, assumptions)
+        # The stored H marker, snapshot addresses and metadata declarations are
+        # intentionally not advertised as observed queue/ownership/freshness.
+        self.assertIs(result["arm_path"]["builder"]["marker_proves_accepted_object"], False)
+        self.assertIs(result["record_pool"]["runtime_pool_identity_validated"], False)
+        self.assertIs(result["activation_snapshot"]["runtime_active_context_validated"], False)
+
+    @staticmethod
+    def repin_fixture(stack, changed):
+        # Deliberately bypass byte identity fuses, NOT semantic checks. This
+        # demonstrates that an accepted hash alone cannot authorize a corrupt
+        # section, owned relocation, or selected symbol interpretation.
+        for name in ("_OPEN_REPLY_REGIONS", "_INIT_REPLY_REGIONS", "_FRESH_INIT_REGIONS"):
+            regions = tuple((role, offset, size, hashlib.sha256(changed[offset:offset + size]).hexdigest())
+                            for role, offset, size, _ in getattr(MAP, name))
+            stack.enter_context(mock.patch.object(MAP, name, regions))
+        regions = tuple((role, offset, bytes(changed[offset:offset + len(raw) // 2]).hex())
+                        for role, offset, raw in MAP._COMMAND_BUFFER_BRIDGE_REGIONS)
+        stack.enter_context(mock.patch.object(MAP, "_COMMAND_BUFFER_BRIDGE_REGIONS", regions))
+        stack.enter_context(mock.patch.object(MAP, "_COMMAND_BUFFER_BRIDGE_RELA_SHA256",
+                            hashlib.sha256(changed[0x72780:0x78d44]).hexdigest()))
+        headers = tuple((slot, offset, bytes(changed[offset:offset + len(raw) // 2]).hex())
+                        for slot, offset, raw in MAP._INNER_DESCRIPTOR_HEADERS)
+        stack.enter_context(mock.patch.object(MAP, "_INNER_DESCRIPTOR_HEADERS", headers))
+        sections = tuple((slot, index, offset, bytes(changed[offset:offset + len(raw) // 2]).hex(), name_offset, name)
+                         for slot, index, offset, raw, name_offset, name in MAP._INNER_DESCRIPTOR_SECTIONS)
+        stack.enter_context(mock.patch.object(MAP, "_INNER_DESCRIPTOR_SECTIONS", sections))
+        windows = tuple((slot, role, section, address, offset, bytes(changed[offset:offset + len(raw) // 2]).hex())
+                        for slot, role, section, address, offset, raw in MAP._INNER_DESCRIPTOR_WINDOWS)
+        stack.enter_context(mock.patch.object(MAP, "_INNER_DESCRIPTOR_WINDOWS", windows))
+
+    def test_re_pinned_semantically_incoherent_sections_symbols_and_relas_still_refuse(self):
+        mutations = []
+        for header, wrong_owner in ((0x79b08, 4), (0x79b58, 2)):
+            mutations += [(header + 4, "<I", 9), (header + 24, "<I", 34),
+                          (header + 28, "<I", wrong_owner), (header + 36, "<I", 16),
+                          (header + 20, "<I", 13)]
+        mutations += [(0x6cd10 + 12, "<B", 0x12), (0x6cd10 + 14, "<H", 17),
+                      (0x6cd10 + 8, "<I", 129), (0x69e60 + 14, "<H", 4),
+                      (0x72a2c + 4, "<I", 0x31a06), (0x72a2c + 4, "<I", 0x31904),
+                      (0x72a2c + 8, "<i", -4), (0x72ab0 + 8, "<i", 4),
+                      (0x729b4 + 8, "<i", 0x500), (0x733ec + 8, "<i", 0x1792),
+                      (0x72a2c, "<I", 0x24948)]
+        for offset, form, value in mutations:
+            changed = bytearray(self.payload)
+            struct.pack_into(form, changed, offset, value)
+            with self.subTest(offset=hex(offset), value=value), ExitStack() as stack:
+                self.repin_fixture(stack, changed)
+                with self.assertRaises(MAP.FormatError):
+                    self.mapping(changed)
+        for position, record in ((0x72abc, (0x24944, 0x31a04, 0)),
+                                  (0x72ab0, (0x24944, 0x31a04, 0)),
+                                  (0x72abc, (0x258c0, 0x31a04, 0))):
+            changed = bytearray(self.payload)
+            struct.pack_into("<IIi", changed, position, *record)
+            with self.subTest(duplicate_or_unowned=hex(position), source=hex(record[0])), ExitStack() as stack:
+                self.repin_fixture(stack, changed)
+                with self.assertRaises(MAP.FormatError):
+                    self.mapping(changed)
+
+    def test_complete_pin_site_byte_branch_delay_and_argument_mutations_refuse(self):
+        # Every new pin byte is tested separately above; these named mutations
+        # identify causal boundaries instead of calling a narrative a proof.
+        mutations = (
+            (0x5730, 0xebffec5b), (0xb18, 0xeb0025e0),
+            (0xfb74, 0xeb005e40), (0xfb80, 0x1a000003),
+            (0x27578, 0xebfffeb6), (0x275ac, 0xebffe1ff),
+            (0x27584, 0xe5860048), (0x2758c, 0xe5860044),
+            (0x27594, 0xe5860058), (0x275a0, 0xe286205c),
+            (0x275b4, 0xe5c60230), (0x275b8, 0xe3a00000),
+            (0xfbb0, 0xe58a5000), (0xfbcc, 0xe7810105),
+            (0x27610, 0x73760001),
+            (0x48450, 0x2ffdd900), (0x48454, 0x60279e00),
+            (0x47358, 0x62679e00), (0x47704, 0x10091a14),
+            (0x474d8, 0x78608), (0x47700, 0x78628),
+        )
+        with ExitStack() as stack:
+            self.stop_interpretation(stack)
+            for offset, replacement in mutations:
+                changed = bytearray(self.payload)
+                struct.pack_into("<I", changed, offset, replacement)
+                with self.subTest(offset=hex(offset)), self.assertRaises(MAP.FormatError):
+                    self.mapping(changed)
+
+    def test_new_interpretation_never_reads_unpinned_opaque_targets_or_whole_symbol_tables(self):
+        init = MAP._init_reply_metadata_linkage(self.payload, self.images)
+        inner = MAP._inner_descriptor_map(self.payload, self.images)
+        pins = self.union_pins()
+        original = MAP.bounded
+        requests = []
+
+        def bounded_read(payload, offset, size, role):
+            requests.append((offset, size, role))
+            self.assertTrue(any(start <= offset and offset + size <= start + extent for start, extent in pins),
+                            (hex(offset), size, role))
+            return original(payload, offset, size, role)
+
+        with mock.patch.object(MAP, "_init_reply_metadata_linkage", return_value=init), \
+                mock.patch.object(MAP, "_inner_descriptor_map", return_value=inner), \
+                mock.patch.object(MAP, "bounded", side_effect=bounded_read), \
+                mock.patch.object(MAP, "_ppb_bank_contract", side_effect=AssertionError("unrelated full PPB closure")):
+            self.mapping()
+        self.assertTrue(requests)
+        self.assertNotIn((0x69b70, 13392), {(offset, size) for offset, size, _ in requests})
+        self.assertNotIn((0x67a95, 8410), {(offset, size) for offset, size, _ in requests})
+        # Free/config/log targets remain opaque; source BL words are enough
+        # to state conditional edges without reading these unpinned bodies.
+        for opaque in (0xf6e4, 0xecfc, 0x128d8, 0x13100, 0x22d60, 0x232e8):
+            self.assertNotIn(opaque, {offset for offset, size, _ in requests if size == 4})
+
+    def test_private_helper_purity_no_public_cli_and_identity_scopes(self):
+        before = bytes(self.payload), json.dumps(self.images, sort_keys=True)
+        with mock.patch.object(MAP, "read_firmware", side_effect=AssertionError("external firmware read")), \
+                mock.patch.object(MAP.os, "open", side_effect=AssertionError("external file or device open")), \
+                mock.patch("subprocess.run", side_effect=AssertionError("external decoder")), \
+                mock.patch.object(MAP, "_ppb_bank_contract", side_effect=AssertionError("full unrelated PPB closure")):
+            result = self.mapping()
+        self.assertEqual(before, (bytes(self.payload), json.dumps(self.images, sort_keys=True)))
+        self.assertEqual(result, json.loads(json.dumps(result, sort_keys=True)))
+        self.assertEqual(set(result), {"basis", "validation", "init_reply", "instruction_anchors", "elf_receipts",
+                                       "relocation_receipts", "selected_arc_edges", "arm_path", "outer_reply",
+                                       "record_pool", "rings", "activation_snapshot", "assumptions", "validation_scope"})
+        self.assertIs(result["basis"]["conditional"], True)
+        for flag in ("device_observed", "entire_payload_rehashed", "public_route"):
+            self.assertIs(result["basis"][flag], False)
+        for option in ("--open-reply-metadata-linkage", "--open-reply-ring-linkage"):
+            with self.subTest(option=option), mock.patch.object(sys, "stdout", new_callable=io.StringIO) as output, \
+                    mock.patch.object(sys, "stderr", new_callable=io.StringIO), self.assertRaises(SystemExit) as error:
+                MAP.main([str(BLOB), option])
+            self.assertEqual(error.exception.code, 2)
+            self.assertEqual(output.getvalue(), "")
+
+    def test_inherited_delayed_old_init_countermodel_is_not_an_open_acknowledgment(self):
+        result = self.mapping()
+        init = result["init_reply"]["fresh_init"]
+        before = json.dumps(result, sort_keys=True)
+        scenario = {"event_origin": "delayed_old", "freshness_assumed": False,
+                    "completion_mailbox": 0x1234, "request_word1": 0,
+                    "reply_command": 0xffffffff, "reply_status": 0xffffffff}
+        projected = MAP._fresh_init_projection(init, scenario)
+        self.assertEqual((projected["transport_status"], projected["host_return"]), (0, 0))
+        self.assertIs(projected["current_transaction_acknowledged"], False)
+        self.assertIs(projected["runtime_observed"], False)
+        self.assertIs(projected["projected_current_path"], False)
+        events = projected["events"]
+        names = [event["event"] for event in events]
+        self.assertLess(names.index("event_reset"), names.index("delayed_old_callback"))
+        self.assertLess(names.index("delayed_old_callback"), names.index("event_wait"))
+        reply = next(event for event in events if event["event"] == "reply_copy")
+        self.assertEqual((reply["command"], reply["word1"]), (0x73760001, 0))
+        for name in ("outer_call", "outer_trigger", "reply_publication", "response_irq"):
+            self.assertNotIn(name, names)
+        # This unchanged dependency model is INIT-specific, not an OPEN
+        # execution projection, observed firmware bug, or freshness theorem.
+        self.assertEqual(json.dumps(result, sort_keys=True), before)
+
+    def test_independent_arm_frames_raw_reply_stores_and_publication_boundaries(self):
+        expected = {
+            0x62d8: 0xebfffbba, 0x5730: 0xebffec5a,
+            0x27480: 0xe92d4ff0, 0x27484: 0xe24ddf81,
+            0x274a0: 0xe28d4f42, 0x274a4: 0xe28d700c,
+            0x274a8: 0xe3a020fc, 0x274b8: 0xe3a020fc,
+            0x274c8: 0xe1a05004, 0x274cc: 0xe1a08007,
+            0x27578: 0xebfffeb7, 0x2757c: 0xe58d0008,
+            0x27580: 0xe5980008, 0x27584: 0xe5860044,
+            0x27588: 0xe598000c, 0x2758c: 0xe5860048,
+            0x27590: 0xe5980010, 0x27594: 0xe5860050,
+            0x27598: 0xe5980014, 0x2759c: 0xe58d0004,
+            0x275a0: 0xe2862058, 0x275a4: 0xe5990008,
+            0x275a8: 0xe59d1004, 0x275ac: 0xebffe1fe,
+            0x275b0: 0xe3a00001, 0x275b4: 0xe5c60220,
+            0x275b8: 0xe59d0008, 0x275bc: 0xe28ddf81, 0x275c0: 0xe8bd8ff0,
+            0xfb08: 0xe3590000, 0xfb0c: 0x0a000002,
+            0xfb10: 0xe5d502b4, 0xfb14: 0xe3500000, 0xfb18: 0x1a00001d,
+            0xfb74: 0xeb005e41, 0xfb7c: 0xe3580000,
+            0xfb80: 0x0a000003, 0xfb84: 0xe1a00004, 0xfb88: 0xebfffed5,
+            0xfb8c: 0xe1a00008, 0xfb90: 0xeaffff26,
+            0xfbb0: 0xe58a4000, 0xfbcc: 0xe7810106,
+            0xfbd8: 0xeb00549b, 0xfbe0: 0xebfffa59, 0xfbe4: 0xe3a00000,
+        }
+        for address, word in expected.items():
+            with self.subTest(address=hex(address)):
+                self.assertEqual(self.word(address), word)
+        self.assertEqual((self.word(0x27480) & 65535).bit_count() * 4, 36)
+        self.assertEqual(self.immediate(self.word(0x27484)), 516)
+        self.assertEqual(self.immediate(self.word(0x274a0)), 264)
+        self.assertEqual(self.immediate(self.word(0x274a4)), 12)
+        self.assertEqual(self.word(0x27610), 0x73760002)
+        # H is the ARM allocated channel, NOT ARC D/F, the ARM API host-channel
+        # record K, or the separately named activated ARC-local snapshot.
+        self.assertEqual([self.word(p) & 4095 for p in (0x27584, 0x2758c, 0x27594)], [0x44, 0x48, 0x50])
+        self.assertEqual(self.immediate(self.word(0x275a0)), 0x58)
+        self.assertEqual(self.word(0x275b4) & 4095, 0x220)
+        self.assertLess(0x2757c, 0x27580)
+        self.assertLess(0x275ac, 0x275b8)
+        self.assertLess(0xfb88, 0xfbb0)
+
+    def test_independent_signed_relas_sections_literals_and_source_owners(self):
+        tables = {}
+        for index, owner, count, offset in ((37, 2, 84, 0x6d020), (39, 4, 261, 0x6da34),
+                                           (51, 16, 2171, 0x72780)):
+            section = self.sections[index]
+            self.assertEqual((section[1], section[6], section[7], section[9]), (4, 35, owner, 12))
+            self.assertEqual((self.elf_base + section[4], section[5] // 12), (offset, count))
+            tables[owner] = [(offset + i * 12, struct.unpack_from("<IIi", self.payload, offset + i * 12))
+                             for i in range(count)]
+        definitions = {}
+        for index in (47, 70, 588, 601, 602, 611, 624, 637, 794, 803, 824):
+            _, record, name = self.symbol(index)
+            definitions[name] = record
+        for name, owner, records in self.RELA_GROUPS:
+            function = definitions[name]
+            self.assertEqual(function[5], owner)
+            actual_owned = [(position, raw) for position, raw in tables[owner]
+                            if function[1] <= raw[0] < function[1] + function[2]]
+            expected_owned = [(position, (address, (symbol << 8) | kind, addend))
+                              for address, position, kind, symbol, addend in records]
+            self.assertEqual(actual_owned, expected_owned)
+            for address, position, kind, symbol, addend in records:
+                with self.subTest(function=name, source=hex(address)):
+                    self.assertIs(type(addend), int)
+                    self.assertEqual(struct.unpack_from("<IIi", self.payload, position),
+                                     (address, (symbol << 8) | kind, addend))
+                    self.assertTrue(function[1] <= address <= function[1] + function[2] - 4)
+        self.assertEqual(self.RELA_GROUPS[0][2][0][-1], 500)
+        self.assertEqual(self.RELA_GROUPS[1][2][-1][-1], 1792)
 
 
 if __name__ == "__main__":
