@@ -105,6 +105,20 @@ assert re.search(r'crystalhd_fw_research_state_span\(ctx->adp, offset, count\)',
 legacy = (root / 'include/7411d.h').read_text()
 wire_header = (root / 'driver/linux/crystalhd_fw_if.h').read_text()
 cli = (root / 'tools/fw-research/flea_fw_probe.c').read_text()
+clock_sampler = re.search(r'static int crystalhd_fw_research_clock_sample\(.*?\n}', source, re.S).group(0)
+register_table = re.search(r'registers\[\]\s*=\s*\{(.*?)\}', clock_sampler, re.S).group(1)
+assert re.findall(r'BCHP_\w+', register_table) == [
+    'BCHP_MISC3_RESET_CTRL', 'BCHP_MISC_PERST_CLOCK_CTRL', 'BCHP_CLK_PM_CTRL']
+rdb = root / 'include/flea/70015/magnum/basemodules/chp/70015/rdb/a0'
+for name, header, cli_name, value in (
+        ('BCHP_MISC3_RESET_CTRL', 'bchp_misc3.h', 'CLOCK_RESET_CTRL_ADDRESS', 0x502200),
+        ('BCHP_MISC_PERST_CLOCK_CTRL', 'bchp_misc_perst.h', 'CLOCK_PERST_CTRL_ADDRESS', 0x50229c),
+        ('BCHP_CLK_PM_CTRL', 'bchp_clk.h', 'CLOCK_PM_CTRL_ADDRESS', 0x70004)):
+    declared = re.search(r'#define\s+' + name + r'\s+(0x[0-9a-fA-F]+)', (rdb / header).read_text())
+    printed = re.search(r'#define\s+' + cli_name + r'\s+(0x[0-9a-fA-F]+)U', cli)
+    assert declared and printed and int(declared.group(1), 16) == int(printed.group(1), 16) == value
+assert 'pfnReadDevRegister(ctx->adp, registers[i])' in clock_sampler
+assert not re.search(r'pfn(?:WriteDevRegister|DevDRAMRead|DevDRAMWrite)\s*\(', clock_sampler)
 for name, value in (('H261', 2), ('H263', 3), ('MPEG1', 5)):
     wire = re.search(r'\bCRYSTALHD_FW_RESEARCH_ALGORITHM_' + name + r'\s+(\d+)U\b', source)
     declared = re.search(r'\beC011_VIDEO_ALG_' + name + r'\s*=\s*(0x[0-9a-fA-F]+)\b', legacy)
@@ -221,6 +235,17 @@ _Static_assert(offsetof(struct crystalhd_fw_research_heap_packet_result, after_i
 _Static_assert(offsetof(struct crystalhd_fw_research_heap_packet_result, after_open) == 1832, "heap open");
 _Static_assert(_IOC_SIZE(CRYSTALHD_FW_RESEARCH_RUN_HEAP_PACKET) == 1952, "heap encoding");
 _Static_assert(CRYSTALHD_FW_RESEARCH_RUN_HEAP_PACKET == 0xc7a05297U, "heap ioctl");
+_Static_assert(sizeof(struct crystalhd_fw_research_clock_sample) == 28, "clock sample");
+_Static_assert(offsetof(struct crystalhd_fw_research_clock_sample, reserved) == 12, "clock padding");
+_Static_assert(offsetof(struct crystalhd_fw_research_clock_sample, reset_ctrl) == 16, "clock reset");
+_Static_assert(offsetof(struct crystalhd_fw_research_clock_sample, perst_clock_ctrl) == 20, "clock PCIe");
+_Static_assert(offsetof(struct crystalhd_fw_research_clock_sample, clk_pm_ctrl) == 24, "clock PM");
+_Static_assert(sizeof(struct crystalhd_fw_research_clock_result) == 1656, "clock result");
+_Static_assert(offsetof(struct crystalhd_fw_research_clock_result, state) == 0, "clock state");
+_Static_assert(offsetof(struct crystalhd_fw_research_clock_result, after_init) == 1600, "clock init");
+_Static_assert(offsetof(struct crystalhd_fw_research_clock_result, after_open) == 1628, "clock open");
+_Static_assert(_IOC_SIZE(CRYSTALHD_FW_RESEARCH_RUN_CLOCK) == 1656, "clock encoding");
+_Static_assert(CRYSTALHD_FW_RESEARCH_RUN_CLOCK == 0xc6785298U, "clock ioctl");
 _Static_assert(CRYSTALHD_FW_RESEARCH_VERSION_ONLY == 1U, "existing version selector");
 _Static_assert(CRYSTALHD_FW_RESEARCH_H264_CONTROL == 2U, "existing H264 selector");
 _Static_assert(CRYSTALHD_FW_RESEARCH_H261_CONTROL == 3U, "H261 selector");
@@ -305,6 +330,7 @@ for probe_sanitize in no yes; do
         "$probe_test_dir/cli-check" --image-json-examples
         "$probe_test_dir/cli-check" --packet-json-examples
         "$probe_test_dir/cli-check" --heap-packet-json-examples
+        "$probe_test_dir/cli-check" --clock-json-examples
     } | "${PYTHON3:-python3}" -B -c '
 import hashlib, json, sys
 def unique_object(pairs):
@@ -317,9 +343,10 @@ def invalid_constant(value):
     raise AssertionError("non-JSON constant: " + value)
 lines = list(sys.stdin)
 examples = [json.loads(line, object_pairs_hook=unique_object, parse_constant=invalid_constant) for line in lines]
-heaps, examples = examples[542:], examples[:542]
+clocks, heaps, examples = examples[602:], examples[542:602], examples[:542]
 assert len(examples) == 542
 assert len(heaps) == 60
+assert len(clocks) == 31
 legacy_bytes = "".join(lines[:542]).encode("utf-8")
 assert len(legacy_bytes) == 1020137
 assert hashlib.sha256(legacy_bytes).hexdigest() == "7bd6c6e9034849298fa08a6711e0f9faad5aba1b3ac22ad100b04efe30e834b7"
@@ -836,5 +863,72 @@ assert all(result["image"]["controller"]["control"]["status"] == 0 for result in
 assert all(result["image"]["controller"]["control"]["status"] < 0 for result in heaps[33:59])
 assert heaps[59]["image"]["controller"]["control"]["status"] == 0
 print("Firmware probe CLI: 542 legacy JSON bytes unchanged; 60 heap-packet strict JSON examples verified")
+clock_names = ("after_init", "after_open")
+raw_names = ("reset_ctrl", "perst_clock_ctrl", "clk_pm_ctrl")
+def succeeded(sample):
+    return sample["attempted"] and sample["read_complete"] and sample["status"] == 0
+for result in clocks:
+    assert set(result) == {"version", "clock_state", "control", "fixed_state_samples", "clock_samples", "scope"}
+    assert result["version"] == 1 and result["clock_state"] is True
+    control = result["control"]
+    check_result(control)
+    assert control["selector"] == 2
+    assert result["scope"] == {
+        "register_addresses": [0x502200, 0x50229c, 0x70004],
+        "reads_per_sample": 3, "maximum_register_reads": 6, "raw_values_only": True,
+        "sample_clock_reset_writes": False, "independent_fetch_errors_certified": False,
+        "atomic_coherence_established": False}
+    for field in ("raw_values_only", "sample_clock_reset_writes", "independent_fetch_errors_certified", "atomic_coherence_established"):
+        assert type(result["scope"][field]) is bool
+    fixed = result["fixed_state_samples"]
+    assert set(fixed) == set(names)
+    for index, name in enumerate(names):
+        sample = fixed[name]
+        assert set(sample) == {"attempted", "status", "read_complete", "raw_words"}
+        assert type(sample["attempted"]) is bool and type(sample["read_complete"]) is bool
+        assert type(sample["status"]) is int and -4095 <= sample["status"] <= 0
+        assert len(sample["raw_words"]) == 4
+        for word in sample["raw_words"]:
+            u32(word)
+        if sample["read_complete"]:
+            assert sample["attempted"] and sample["status"] == 0
+            assert sample["raw_words"] == ([0xd3a00, 0, 0, 0] if index == 0 else
+                [1, 0xd3a00, 0 if index == 1 else 1, 0 if index == 1 else 0x200])
+        else:
+            assert sample["raw_words"] == [0] * 4
+            assert not sample["attempted"] or sample["status"] < 0
+    samples = result["clock_samples"]
+    assert set(samples) == set(clock_names)
+    for index, name in enumerate(clock_names):
+        sample = samples[name]
+        assert set(sample) == {"attempted", "status", "read_complete", *raw_names}
+        assert type(sample["attempted"]) is bool and type(sample["read_complete"]) is bool
+        assert type(sample["status"]) is int and -4095 <= sample["status"] <= 0
+        active = sample["attempted"] or sample["status"] != 0 or sample["read_complete"]
+        assert active == succeeded(fixed[name])
+        if active:
+            assert succeeded(fixed["calibration"])
+            assert not index or succeeded(samples["after_init"])
+        if sample["read_complete"]:
+            assert sample["attempted"] and sample["status"] == 0
+            for raw_name in raw_names:
+                u32(sample[raw_name])
+        else:
+            assert all(sample[raw_name] is None for raw_name in raw_names)
+            assert not sample["attempted"] or sample["status"] < 0
+        if sample["status"]:
+            assert control["status"] == sample["status"] and control["command_count"] == index + 2
+    if control["command_count"] > 2:
+        assert succeeded(samples["after_init"])
+    if control["command_count"] > 3 or control["status"] == 0:
+        assert succeeded(samples["after_open"])
+for pattern, result in enumerate(clocks[:3]):
+    for stage, name in enumerate(clock_names):
+        expected = [0] * 3 if pattern == 0 else [4294967295] * 3 if pattern == 1 else [0x12345678 + stage * 3 + word for word in range(3)]
+        assert [result["clock_samples"][name][raw_name] for raw_name in raw_names] == expected
+assert all(result["control"]["status"] == 0 for result in clocks[:3])
+assert all(result["control"]["status"] < 0 for result in clocks[3:30])
+assert clocks[30]["control"]["status"] == 0
+print("Firmware probe CLI: 31 initialized clock/reset strict JSON examples verified")
 '
 done

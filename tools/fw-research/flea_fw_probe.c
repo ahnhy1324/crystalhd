@@ -31,6 +31,9 @@ struct _BC_DTS_PROC_OUT;
 #define HEAP_PACKET_OFFSET 0x00070000U
 #define HEAP_PACKET_SECTION_BYTES 256U
 #define DRAM_LIMIT 0x04000000U
+#define CLOCK_RESET_CTRL_ADDRESS 0x00502200U
+#define CLOCK_PERST_CTRL_ADDRESS 0x0050229cU
+#define CLOCK_PM_CTRL_ADDRESS 0x00070004U
 
 enum action {
 	ACTION_NONE, ACTION_INFO, ACTION_VERSION, ACTION_H264,
@@ -40,6 +43,7 @@ enum action {
 	ACTION_FIXED_STATE, ACTION_CONTROLLER_ROOT, ACTION_CONTROLLER_IMAGE,
 	ACTION_CONTROLLER_PACKET,
 	ACTION_HEAP_PACKET,
+	ACTION_CLOCK_STATE,
 };
 
 struct options {
@@ -78,6 +82,8 @@ static void usage(FILE *stream)
 	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
 	      "       flea-fw-probe --heap-packet\n"
 	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
+	      "       flea-fw-probe --clock-state\n"
+	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
 	      "       flea-fw-probe --help\n"
 	      "\n"
 	      "The live selectors reload firmware and reset an idle card. They do\n"
@@ -99,6 +105,9 @@ static void usage(FILE *stream)
 	      "image base. Header and stored reply words remain raw and are never\n"
 	      "followed. Equal brackets do not certify freshness, object lifetime,\n"
 	      "atomic coherence, queue validity or independent fetch-error detection.\n"
+	      "Clock-state reads three fixed control registers after verified INIT\n"
+	      "and OPEN, with no clock/reset writes. All bit patterns remain raw;\n"
+	      "completed reads do not certify fetch errors or atomic coherence.\n"
 	      "Use --info first;\n"
 	      "it reports metadata only, including the bound device generation.\n"
 	      "The separate research device requires CAP_SYS_RAWIO and an opt-in\n"
@@ -171,6 +180,8 @@ static bool parse_options(int argc, char **argv, struct options *options)
 			action = ACTION_CONTROLLER_PACKET;
 		else if (!strcmp(argv[i], "--heap-packet"))
 			action = ACTION_HEAP_PACKET;
+		else if (!strcmp(argv[i], "--clock-state"))
+			action = ACTION_CLOCK_STATE;
 		else if (!strcmp(argv[i], "--acknowledge-card-reset")) {
 			if (options->acknowledge)
 				return false;
@@ -446,6 +457,77 @@ static bool state_result_valid(const struct crystalhd_fw_research_state_result *
 static bool state_sample_succeeded(const struct crystalhd_fw_research_state_sample *sample)
 {
 	return sample->attempted && sample->read_complete && !sample->status;
+}
+
+static bool clock_sample_succeeded(const struct crystalhd_fw_research_clock_sample *sample)
+{
+	return sample->attempted && sample->read_complete && !sample->status;
+}
+
+static bool clock_result_valid(const struct crystalhd_fw_research_clock_result *result,
+	const struct crystalhd_fw_research_state_request *request, uint64_t generation)
+{
+	const struct crystalhd_fw_research_state_result *state = &result->state;
+	const struct crystalhd_fw_research_result *control = &state->control;
+	const struct crystalhd_fw_research_clock_sample *samples[] = {
+		&result->after_init, &result->after_open,
+	};
+	const struct crystalhd_fw_research_state_sample *prerequisites[] = {
+		&state->after_init, &state->after_open,
+	};
+	unsigned int i;
+
+	if (!state_result_valid(state, request, generation) ||
+	    (!control->download_attempted && control->download_status != BC_STS_SUCCESS) ||
+	    (control->command_count && control->download_status != BC_STS_SUCCESS) ||
+	    (control->cleanup_attempted &&
+	     (!control->download_attempted || !control->firmware_hash_valid ||
+	      !digest_matches(control->firmware_sha256))) ||
+	    (!control->cleanup_attempted &&
+	     (control->cleanup_status != BC_STS_SUCCESS &&
+	      control->cleanup_status != BC_STS_CMD_CANCELLED)) ||
+	    (!control->cleanup_attempted && control->download_attempted &&
+	     control->cleanup_status != BC_STS_CMD_CANCELLED))
+		return false;
+	for (i = control->command_count; i < CRYSTALHD_FW_RESEARCH_MAX_COMMANDS; i++) {
+		const struct crystalhd_fw_research_reply zero = { 0 };
+
+		if (memcmp(&control->replies[i], &zero, sizeof(zero)))
+			return false;
+	}
+	/* A successful calibration is immediately followed by the INIT sample. */
+	if (state_sample_succeeded(&state->calibration) &&
+	    !state->after_init.attempted && !state->after_init.status)
+		return false;
+	for (i = 0; i < sizeof(samples) / sizeof(samples[0]); i++) {
+		const struct crystalhd_fw_research_clock_sample *sample = samples[i];
+		bool active = sample->attempted || sample->status || sample->read_complete;
+
+		if (sample->attempted > 1 || sample->read_complete > 1 || sample->reserved ||
+		    sample->status > 0 || sample->status < -4095 ||
+		    active != state_sample_succeeded(prerequisites[i]))
+			return false;
+		if (sample->read_complete) {
+			/* No register value, including zero/all ones, is a success gate. */
+			if (!sample->attempted || sample->status)
+				return false;
+		} else if (sample->reset_ctrl || sample->perst_clock_ctrl || sample->clk_pm_ctrl ||
+			   (sample->attempted && !sample->status)) {
+			return false;
+		}
+		if (active && (!state_sample_succeeded(&state->calibration) ||
+			       (i && !clock_sample_succeeded(samples[0]))))
+			return false;
+		if (sample->status &&
+		    (control->status != sample->status || control->command_count != (i ? 3U : 2U)))
+			return false;
+	}
+	if ((control->command_count > 2 && !clock_sample_succeeded(samples[0])) ||
+	    (control->command_count > 3 && !clock_sample_succeeded(samples[1])) ||
+	    (!control->status && (!clock_sample_succeeded(samples[0]) ||
+				 !clock_sample_succeeded(samples[1]))))
+		return false;
+	return true;
 }
 
 static bool controller_sample_succeeded(
@@ -834,6 +916,42 @@ static void print_state_result(const struct crystalhd_fw_research_state_result *
 	fputs("}}\n", stdout);
 }
 
+static void print_clock_sample(const struct crystalhd_fw_research_clock_sample *sample)
+{
+	printf("{\"attempted\":%s,\"status\":%" PRId32 ",\"read_complete\":%s,\"reset_ctrl\":",
+	       sample->attempted ? "true" : "false", (int32_t)sample->status,
+	       sample->read_complete ? "true" : "false");
+	if (sample->read_complete)
+		printf("%" PRIu32 ",\"perst_clock_ctrl\":%" PRIu32 ",\"clk_pm_ctrl\":%" PRIu32,
+		       (uint32_t)sample->reset_ctrl, (uint32_t)sample->perst_clock_ctrl,
+		       (uint32_t)sample->clk_pm_ctrl);
+	else
+		fputs("null,\"perst_clock_ctrl\":null,\"clk_pm_ctrl\":null", stdout);
+	putchar('}');
+}
+
+static void print_clock_result(const struct crystalhd_fw_research_clock_result *result)
+{
+	printf("{\"version\":%" PRIu32 ",\"clock_state\":true,\"control\":",
+	       (uint32_t)result->state.request.version);
+	print_result_object(&result->state.control);
+	fputs(",\"fixed_state_samples\":{\"calibration\":", stdout);
+	print_state_sample(&result->state.calibration);
+	fputs(",\"after_init\":", stdout);
+	print_state_sample(&result->state.after_init);
+	fputs(",\"after_open\":", stdout);
+	print_state_sample(&result->state.after_open);
+	fputs("},\"clock_samples\":{\"after_init\":", stdout);
+	print_clock_sample(&result->after_init);
+	fputs(",\"after_open\":", stdout);
+	print_clock_sample(&result->after_open);
+	printf("},\"scope\":{\"register_addresses\":[%" PRIu32 ",%" PRIu32 ",%" PRIu32 "],"
+	       "\"reads_per_sample\":3,\"maximum_register_reads\":6,\"raw_values_only\":true,"
+	       "\"sample_clock_reset_writes\":false,\"independent_fetch_errors_certified\":false,"
+	       "\"atomic_coherence_established\":false}}\n",
+	       CLOCK_RESET_CTRL_ADDRESS, CLOCK_PERST_CTRL_ADDRESS, CLOCK_PM_CTRL_ADDRESS);
+}
+
 static void print_controller_sample(
 	const struct crystalhd_fw_research_controller_sample *sample)
 {
@@ -1047,11 +1165,13 @@ int main(int argc, char **argv)
 	struct crystalhd_fw_research_image_result image_result = { 0 };
 	struct crystalhd_fw_research_packet_result packet_result = { 0 };
 	struct crystalhd_fw_research_heap_packet_result heap_packet_result = { 0 };
+	struct crystalhd_fw_research_clock_result clock_result = { 0 };
 	struct options options;
 	struct stat statbuf;
 	bool have_info = false, have_result = false, have_state = false, have_controller = false;
 	bool have_image = false, have_packet = false;
 	bool have_heap_packet = false;
+	bool have_clock = false;
 	int fd = -1, rc = 1;
 
 	if (argc == 2 && !strcmp(argv[1], "--help")) {
@@ -1104,6 +1224,7 @@ int main(int argc, char **argv)
 	case ACTION_CONTROLLER_IMAGE:
 	case ACTION_CONTROLLER_PACKET:
 	case ACTION_HEAP_PACKET:
+	case ACTION_CLOCK_STATE:
 		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
 		break;
 	case ACTION_H261:
@@ -1139,6 +1260,28 @@ int main(int argc, char **argv)
 	}
 	if (!(info.selector_mask & (1U << (request.selector - 1)))) {
 		fputs("Research selector unavailable; no live command attempted.\n", stderr);
+		goto out;
+	}
+	if (options.action == ACTION_CLOCK_STATE) {
+		const struct crystalhd_fw_research_result *control = &clock_result.state.control;
+
+		state_request.version = CRYSTALHD_FW_RESEARCH_VERSION;
+		state_request.size = sizeof(clock_result);
+		clock_result.state.request = state_request;
+		if (ioctl(fd, CRYSTALHD_FW_RESEARCH_RUN_CLOCK, &clock_result) < 0) {
+			perror("run clock-state readback");
+			fputs("Device state may have changed; no retry was attempted.\n", stderr);
+			goto out;
+		}
+		if (control->retained)
+			fputs("Research resources remain retained. Do not force unload the driver.\n", stderr);
+		if (!clock_result_valid(&clock_result, &state_request, info.generation)) {
+			fputs("Invalid clock-state result; no further command attempted.\n", stderr);
+			goto out;
+		}
+		have_clock = true;
+		rc = control->status || control->retained ||
+			(control->cleanup_attempted && control->cleanup_status != BC_STS_SUCCESS) ? 1 : 0;
 		goto out;
 	}
 	if (options.action == ACTION_HEAP_PACKET) {
@@ -1284,6 +1427,8 @@ out:
 		print_packet_result(&packet_result);
 	if (have_heap_packet)
 		print_heap_packet_result(&heap_packet_result);
+	if (have_clock)
+		print_clock_result(&clock_result);
 	if (output_finish())
 		rc = 1;
 	return rc;
