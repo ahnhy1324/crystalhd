@@ -203,4 +203,25 @@ struct crystalhd_fw_research_heap_packet_result {
 #define CRYSTALHD_FW_RESEARCH_RUN_HEAP_PACKET \
 	_IOWR('R', 0x97, struct crystalhd_fw_research_heap_packet_result)
 
+struct crystalhd_fw_research_clock_sample {
+	__u32 attempted;
+	__s32 status;
+	/* Completed fixed control reads, not bus-error or coherence certification. */
+	__u32 read_complete;
+	__u32 reserved;
+	__u32 reset_ctrl;
+	__u32 perst_clock_ctrl;
+	__u32 clk_pm_ctrl;
+};
+
+struct crystalhd_fw_research_clock_result {
+	struct crystalhd_fw_research_state_result state;
+	struct crystalhd_fw_research_clock_sample after_init;
+	struct crystalhd_fw_research_clock_sample after_open;
+};
+
+/* Fixed read-only control samples within the stock reset/INIT/OPEN lifecycle. */
+#define CRYSTALHD_FW_RESEARCH_RUN_CLOCK \
+	_IOWR('R', 0x98, struct crystalhd_fw_research_clock_result)
+
 #endif
