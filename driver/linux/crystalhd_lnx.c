@@ -1358,6 +1358,7 @@ static int chd_dec_pci_probe(struct pci_dev *pdev,
 
 	/* Setup adapter level lock.. */
 	spin_lock_init(&pinfo->lock);
+	spin_lock_init(&pinfo->gisb_lock);
 	init_rwsem(&pinfo->user_lock);
 	mutex_init(&pinfo->tx_lock);
 

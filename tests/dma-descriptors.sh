@@ -61,7 +61,7 @@ for register_sanitize in no address undefined; do
         register_extra="-fsanitize=$register_sanitize -fno-omit-frame-pointer -fno-pie -no-pie"
     fi
     "${CC:-cc}" ${CFLAGS:-} -std=c11 -Wall -Wextra -Werror $register_extra \
-        -I"$dma_test_dir" "$repo_dir/tests/flea-registers.c" -o "$dma_test_dir/flea-registers"
+        -I"$dma_test_dir" "$repo_dir/tests/flea-registers.c" -pthread -o "$dma_test_dir/flea-registers"
     printf 'Flea registers: sanitizers=%s\n' "$register_sanitize"
     ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
         UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 "$dma_test_dir/flea-registers"

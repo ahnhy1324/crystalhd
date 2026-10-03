@@ -261,6 +261,8 @@ uint32_t crystalhd_flea_reg_rd(struct crystalhd_adp *adp, uint32_t reg_off)
 {
 	uint32_t baseAddr = reg_off >> 16;
 	uint32_t direct_off = reg_off & 0x0000FFFF;
+	uint32_t val;
+	unsigned long flags;
 	void	*regAddr;
 
 	if (!adp) {
@@ -277,7 +279,10 @@ uint32_t crystalhd_flea_reg_rd(struct crystalhd_adp *adp, uint32_t reg_off)
 			return 0;
 		}
 		regAddr = adp->i2o_addr + direct_off;
-		return readl(regAddr);
+		spin_lock_irqsave(&adp->gisb_lock, flags);
+		val = readl(regAddr);
+		spin_unlock_irqrestore(&adp->gisb_lock, flags);
+		return val;
 	}
 	else /* non directly mapped region */
 	{
@@ -286,9 +291,12 @@ uint32_t crystalhd_flea_reg_rd(struct crystalhd_adp *adp, uint32_t reg_off)
 			return 0;
 		}
 		regAddr = adp->i2o_addr + FLEA_GISB_INDIRECT_ADDRESS;
+		spin_lock_irqsave(&adp->gisb_lock, flags);
 		writel(reg_off | 0x10000000, regAddr);
 		regAddr = adp->i2o_addr + FLEA_GISB_INDIRECT_DATA;
-		return readl(regAddr);
+		val = readl(regAddr);
+		spin_unlock_irqrestore(&adp->gisb_lock, flags);
+		return val;
 	}
 }
 
@@ -296,6 +304,7 @@ void crystalhd_flea_reg_wr(struct crystalhd_adp *adp, uint32_t reg_off, uint32_t
 {
 	uint32_t baseAddr = reg_off >> 16;
 	uint32_t direct_off = reg_off & 0x0000FFFF;
+	unsigned long flags;
 	void	*regAddr;
 
 	if (!adp) {
@@ -312,7 +321,9 @@ void crystalhd_flea_reg_wr(struct crystalhd_adp *adp, uint32_t reg_off, uint32_t
 					return ;
 		}
 		regAddr = adp->i2o_addr + direct_off;
+		spin_lock_irqsave(&adp->gisb_lock, flags);
 		writel(val, regAddr);
+		spin_unlock_irqrestore(&adp->gisb_lock, flags);
 	}
 	else /* non directly mapped region */
 	{
@@ -321,9 +332,11 @@ void crystalhd_flea_reg_wr(struct crystalhd_adp *adp, uint32_t reg_off, uint32_t
 			return;
 		}
 		regAddr = adp->i2o_addr + FLEA_GISB_INDIRECT_ADDRESS;
+		spin_lock_irqsave(&adp->gisb_lock, flags);
 		writel(reg_off | 0x10000000, regAddr);
 		regAddr = adp->i2o_addr + FLEA_GISB_INDIRECT_DATA;
 		writel(val, regAddr);
+		spin_unlock_irqrestore(&adp->gisb_lock, flags);
 	}
 }
 
