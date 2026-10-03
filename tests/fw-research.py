@@ -910,6 +910,16 @@ class FirmwareBootstrapTests(unittest.TestCase):
                          [0xd2fff, 0xd3100, 0xd3200])
         self.assertEqual(layout["host_command"]["source_kind"], "driver")
         self.assertIn("FleaDefs.h:51", layout["host_command"]["source"])
+        references = layout["host_command"]["source"].split("; ")
+        self.assertEqual(len(references), 2)
+        for source, expected_path, statement in zip(references,
+                ("driver/linux/FleaDefs.h", "driver/linux/crystalhd_fleafuncs.c"),
+                ("#define DDRADDR_4_FWCMDS 0x100",
+                 "hw->fwcmdPostAddr = borchStachAddr+1+DDRADDR_4_FWCMDS;")):
+            path, line = source.rsplit(":", 1)
+            self.assertEqual(path, expected_path)
+            actual = (ROOT / path).read_text().splitlines()[int(line) - 1]
+            self.assertEqual(" ".join(actual.split()), statement)
         self.assertEqual(layout["reply"]["source_kind"], "driver and ARM anchors")
         self.assertTrue(any("destinations are not established" in text for text in result["limitations"]))
         self.assertTrue(any("not CMAC authentication" in text for text in result["limitations"]))
@@ -1447,6 +1457,10 @@ class FirmwarePictureOutputTests(unittest.TestCase):
             path, line = delivery[key].rsplit(":", 1)
             self.assertFalse(Path(path).is_absolute())
             self.assertIn(text, (ROOT / path).read_text().splitlines()[int(line) - 1])
+        path, line = delivery["host_submit_source"].rsplit(":", 1)
+        self.assertEqual(path, "driver/linux/crystalhd_fleafuncs.c")
+        self.assertEqual((ROOT / path).read_text().splitlines()[int(line) - 1].strip(),
+                         "sts = hw->pfnDevDRAMWrite(hw, hw->FleaRxPicDelAddr, BuffSzInDwords,")
         definitions = (ROOT / "driver/linux/FleaDefs.h").read_text()
         self.assertRegex(definitions, r"#define\s+RX_POST_MAILBOX\s+BCHP_ARMCR4_BRIDGE_REG_MBOX_ARM2\b")
         bridge = (ROOT / "include/flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_armcr4_bridge.h").read_text()
@@ -1921,18 +1935,18 @@ class FirmwareArcMetadataTests(unittest.TestCase):
             "2a491f4b9033395cdbc688810319ea159973a296d7828ac65153bc93d45b588f",
             "15af1023987b5f2aee1e9a5560f749560bf33f729252ca3fcb9f41358f49e5aa",
             "85bec0f347f91ccfbb802d07b4c65fb07c8925625710dbe525fd7c3c1376487e",
-            "cd056fbfcfb795f8ffaa169d313bfb5c5535e67f16affd924dedd209f80fb939",
-            "87ded59ecc94e3b4fa3a3cd9da6f2d978bcd5839bd196fd6cc72f717feaaa453",
-            "f470be31c70241e5053aa2a9c4c2388ba8bfb920cc9feb657689b14f8e3a3f38",
-            "804cca53d5c7358d37d06707eee797426a11d6c59d2a7f241198477ce2716d86",
-            "0e99c9c380bd73676fb1288b4e6095213b25b2d3555478e394a851f1e9922462",
-            "bcbc14bcfe15a2b97e355e9614fa21b79ded210e2cff948d64431fa5d1e160dc",
-            "05dd432d0f3202229831a1e9d8832e49061da9b2a583bbb2e9bf676d975f25d9",
-            "309046019c1e09222dfb96cf767a8736b2599e60b0269cab6f5870a48137c24f",
-            "22e2f752cf00154034af7ad929b69d45ba240936b7b1a8f1d484beb895cda937",
-            "b4fa8538c99ad02ee6a81ca517076b45009bf3848e766ea4762a5aa361100803",
-            "2c7f1db68e27d91bb52ca3d4c03b39e164a19ade3a1842f6642da7aab213e149",
-            "865d6503265abdc69c7b4e385766f8cb1d4f17d73be0f9b494c4487b1b090324")
+            "c916a88d1b6216ab3179b84fdf55bc5727bdec366c6803c3c0327b764c415bac",
+            "cc362457f2bf92225e635390074404546fcc0181e3be4190f79b79f84e7b5e1d",
+            "9167f2e4342fa1fe3c617a568ac6a1b81a9ac27cebd9f1da23bbc57b7ff2754c",
+            "51fac17e5e0052b1a70b22d2797588d7fad2847d47d29fcb1071bb4b6cf2c398",
+            "c701dc15e098bfbc2167f4210eee02d508fa9c08c215b92027afc475a500d1bd",
+            "185a52b3e1c5493ed5d24e467e3089d7c131dd3b8ed01b4ecbf34b449fa5a63b",
+            "b6af57cc04f723882e6afd766fe4ce0761ffbebaf1e958f6179df7e66295dcb3",
+            "586e2a0210ec48c5368846a1a9584bebb2a49c52584cad0218d8c927b12d57d4",
+            "5b60d180bfb4730b4657e340e5d34c2198c4fbe2d341db6b4033ec36883ee0b5",
+            "70794c774e744feb5aff8bc1fc216582081b5980c622f27d695592eaed27393d",
+            "4c53bdb72ad98b52045bbf5cced496d8c307e68799672d152c938896157a5c78",
+            "657dec767ac7e06e0fe9d703a609c61225514d3539d71af72c6e382ad429293e")
         for mask in range(16):
             flags = []
             if mask & 1:
@@ -2116,34 +2130,34 @@ class FirmwareCscCommandTests(unittest.TestCase):
             "2a491f4b9033395cdbc688810319ea159973a296d7828ac65153bc93d45b588f",
             "15af1023987b5f2aee1e9a5560f749560bf33f729252ca3fcb9f41358f49e5aa",
             "85bec0f347f91ccfbb802d07b4c65fb07c8925625710dbe525fd7c3c1376487e",
-            "cd056fbfcfb795f8ffaa169d313bfb5c5535e67f16affd924dedd209f80fb939",
-            "87ded59ecc94e3b4fa3a3cd9da6f2d978bcd5839bd196fd6cc72f717feaaa453",
-            "f470be31c70241e5053aa2a9c4c2388ba8bfb920cc9feb657689b14f8e3a3f38",
-            "804cca53d5c7358d37d06707eee797426a11d6c59d2a7f241198477ce2716d86",
-            "0e99c9c380bd73676fb1288b4e6095213b25b2d3555478e394a851f1e9922462",
-            "bcbc14bcfe15a2b97e355e9614fa21b79ded210e2cff948d64431fa5d1e160dc",
-            "05dd432d0f3202229831a1e9d8832e49061da9b2a583bbb2e9bf676d975f25d9",
-            "309046019c1e09222dfb96cf767a8736b2599e60b0269cab6f5870a48137c24f",
-            "22e2f752cf00154034af7ad929b69d45ba240936b7b1a8f1d484beb895cda937",
-            "b4fa8538c99ad02ee6a81ca517076b45009bf3848e766ea4762a5aa361100803",
-            "2c7f1db68e27d91bb52ca3d4c03b39e164a19ade3a1842f6642da7aab213e149",
-            "865d6503265abdc69c7b4e385766f8cb1d4f17d73be0f9b494c4487b1b090324",
+            "c916a88d1b6216ab3179b84fdf55bc5727bdec366c6803c3c0327b764c415bac",
+            "cc362457f2bf92225e635390074404546fcc0181e3be4190f79b79f84e7b5e1d",
+            "9167f2e4342fa1fe3c617a568ac6a1b81a9ac27cebd9f1da23bbc57b7ff2754c",
+            "51fac17e5e0052b1a70b22d2797588d7fad2847d47d29fcb1071bb4b6cf2c398",
+            "c701dc15e098bfbc2167f4210eee02d508fa9c08c215b92027afc475a500d1bd",
+            "185a52b3e1c5493ed5d24e467e3089d7c131dd3b8ed01b4ecbf34b449fa5a63b",
+            "b6af57cc04f723882e6afd766fe4ce0761ffbebaf1e958f6179df7e66295dcb3",
+            "586e2a0210ec48c5368846a1a9584bebb2a49c52584cad0218d8c927b12d57d4",
+            "5b60d180bfb4730b4657e340e5d34c2198c4fbe2d341db6b4033ec36883ee0b5",
+            "70794c774e744feb5aff8bc1fc216582081b5980c622f27d695592eaed27393d",
+            "4c53bdb72ad98b52045bbf5cced496d8c307e68799672d152c938896157a5c78",
+            "657dec767ac7e06e0fe9d703a609c61225514d3539d71af72c6e382ad429293e",
             "3553b947d6948d11fc48b2994ca29599caa8a70ff7b79d7ffc2639901c9aedfe",
             "6da05d4dca3424ef76e9359ed7ab3228d5c2622dcd1573b62bc88d2b0c3f2e7b",
             "6946e167d1dfbb01632025d014ebd76284aafcf58f79099881552c6fc80a4964",
             "839f141d887e74b8e5d9da871b2160ba15ab5ce5ad6acc77a87a7def68ef4ce6",
-            "8083817bbe282d0727a2aeae18e162e3c8634d2805891a3641f8516fa610c16a",
-            "10732aabc68b8e6a019b714212e726dc82400b139755429283c80192f2a9a3ab",
-            "14c6de19078879dad7c645441cad2a4cc76e1f584946f8d6a1477edbc42a7902",
-            "75bce6cbfd367c8af1cc2837cff10ce356f95064a45469a1a207f89ade347a45",
-            "ffb4ed56d28f7f2262ec19d578c08f3ad6187f100986a763667aa0e0c276d864",
-            "4303bf603a1070e397d8d4c6e48d874c78cd2e82c43aca09942d57e9f82c930a",
-            "edfb10be5e6af600a62a8d4f679a5099e7439d987f4ddc215d22007cdb959d65",
-            "5f873b9d8f5ae9e12d5a95c79fb7768a4d15454aabe58cd2fd2fe88371a26374",
-            "dbbf1ef286423a1c3c7e0288fc7f0147fd21467ae91e2fc9078db2a752efa58c",
-            "81114e5b7d4fb2227e3091d72eedb056bf34467ae1f7d2a81bcde1230b29be3e",
-            "e8fec88375cf243161e3f282df0a2757d91ea7de59519b6d5fc96d099b5a0c20",
-            "05cad2965807a274801889efe62b7a0ce903a22f10ac616e165abfb265039884")
+            "e810d8ae067bab06150d9d368e091666409011f53d10bcbc1885fdf3c6f231ce",
+            "d85750eb34c8af2b2be896e22802926f7aeef799464a0f5e76da72b6bdf046ea",
+            "ba843c703ee68986975668a44e83b6c73a072b3c5bc4749aa01f4084c9975756",
+            "dbb3672999511a6a614ccd82b24dbf20e290f18d833bd8def041b4259f79bba4",
+            "f51f84527f6c89aaf635d2098308ec6005fe120b75a8496fd6c9531f342eb0ad",
+            "38553e2e9a5d6213fc9c4998c83664e0c9d219676c9eba33f97c1199de27aad1",
+            "ce908a318aecbc0b7d8a10d84c7e29198432d471537dbefc702a3e8171529a65",
+            "b45d63f624d9b6de6ae85d4d7d3a55a1187611970c58d64a951db89ce3bc37d1",
+            "865d3eb0ffe70c70f85c01ad02c815ea99753e9a033bf2b7f9982f9d13727715",
+            "f61f0147aae858cb965ba076efa660b91061ffc9e6f22baac39e82b724bebbad",
+            "4940b65b2ae3db834b1e97444d7b3d0024cab58af1b019c419323d8aeff22e6e",
+            "36f06a0bc7d3a1c55265aed815376c67b54910cafd898454fde9d5004a1db940")
         for mask in range(32):
             flags = []
             if mask & 1:
@@ -2384,7 +2398,7 @@ class FirmwareCommandBufferBridgeTests(unittest.TestCase):
             with self.subTest(mask=mask):
                 self.assertEqual(enriched.pop("command_buffer_bridge"), mapping)
                 self.assertEqual(enriched, plain)
-        self.assertEqual(aggregate.hexdigest(), "252ec7e66b0b6a5c1c76c807640b2a2ba1542db1aad83fc03f0922796f661565")
+        self.assertEqual(aggregate.hexdigest(), "0fa2a2bae7143bed895de4c5d4f567bd8f415416356e41f368f31113e781efc0")
         self.assertEqual(hashlib.sha256(BLOB.read_bytes()).hexdigest(), MAP.BUNDLED_SHA256)
 
     def test_bridge_cli_flag_combinations_and_repeated_stdout(self):
@@ -2965,7 +2979,7 @@ class FirmwareInnerDescriptorTests(unittest.TestCase):
                 self.assertEqual(enriched, plain)
         # Snapshot includes the opt-in MFD source field; its legacy projection
         # is independently pinned across all 256 combinations below.
-        self.assertEqual(aggregate.hexdigest(), "37e06168817763cd85bf8702c313e3599d6821ed841d626e9bca109655208606")
+        self.assertEqual(aggregate.hexdigest(), "acbd5f8032784e63691e248cae71bfa8daf3c2dd3d080f5d03ab6a6d1eb3d0d8")
 
     def test_inner_descriptor_cli_stdout_determinism_and_combinations(self):
         combinations = [[], ["--references", "--symbol", "ReadLine"],
@@ -3239,9 +3253,9 @@ class FirmwareMfdSourceTests(unittest.TestCase):
             stdout = (json.dumps(report, indent=2, sort_keys=True) + "\n").encode()
             aggregate.update(bytes([mask]))
             aggregate.update(hashlib.sha256(stdout).digest())
-        # Recomputed from the unmodified b42ff87 mapper, not from this model.
+        # MFD-free output projection with validated current driver-source anchors.
         self.assertEqual(aggregate.hexdigest(),
-                         "e40601809c6f2c5b1ddb1e76b185c0b46b2486b86e36d333ee200148f7cc90b1")
+                         "140f57fe82d6a96c92db570af771ca494af720af6c27ea78b54f070688c819cf")
 
     def test_new_map_is_default_off_and_public_pin_precedes_parsing(self):
         with mock.patch.object(MAP, "_mfd_source_map", side_effect=AssertionError("unexpected source map")):
@@ -3596,6 +3610,10 @@ class FirmwareStockHostCommandTests(unittest.TestCase):
         context = report["source_context"]
         self.assertEqual(context["compressed_tx_metadata_reply_word"], 11)
         self.assertEqual(context["open_reply_stores_blob_file_offsets"], [0x5914, 0x591c])
+        path, line = context["driver_open_postprocessing"].rsplit(":", 1)
+        self.assertEqual(path, "driver/linux/crystalhd_fleafuncs.c")
+        self.assertEqual((ROOT / path).read_text().splitlines()[int(line) - 1].strip(),
+                         "hw->TxBuffInfoAddr = pRsp->transportStreamCaptureAddr;")
         self.assertEqual(context["getter"], {
             "entry_blob_file_offset": 0x898, "literal_blob_file_offset": 0x6fc,
             "fixed_context_value": 0xd3a00, "incoming_arguments_read": False})
@@ -3960,9 +3978,9 @@ class FirmwareStockHostCommandTests(unittest.TestCase):
                 stdout = (json.dumps(report, indent=2, sort_keys=True) + "\n").encode()
                 aggregate.update(bytes([mask]))
                 aggregate.update(hashlib.sha256(stdout).digest())
-        # Computed from git9354041 before the private helper was added.
+        # Public-output snapshot excludes private helpers.
         self.assertEqual(aggregate.hexdigest(),
-                         "bf116a4627c71956042f25a98f63fde401b58140569c22cdc5ebf8298bbc85dd")
+                         "361bfb994e1a653aba987dfe852132e317dcf865d47ef63dbff3aedd35eb6586")
 
 
 class FirmwarePpbBankContractTests(unittest.TestCase):
@@ -4981,10 +4999,9 @@ class FirmwarePpbBankContractTests(unittest.TestCase):
                 stdout = (json.dumps(report, indent=2, sort_keys=True) + "\n").encode()
                 aggregate.update(bytes([mask]))
                 aggregate.update(hashlib.sha256(stdout).digest())
-        # Independent public-output baseline predates these private helpers;
-        # the same snapshot also survives clean parent091387c unchanged.
+        # Shared public-output snapshot for private-helper isolation.
         self.assertEqual(aggregate.hexdigest(),
-                         "bf116a4627c71956042f25a98f63fde401b58140569c22cdc5ebf8298bbc85dd")
+                         "361bfb994e1a653aba987dfe852132e317dcf865d47ef63dbff3aedd35eb6586")
 
 
 class FirmwareFreshInitCausalTests(unittest.TestCase):
@@ -5959,7 +5976,7 @@ class FirmwareFreshInitCausalTests(unittest.TestCase):
                 aggregate.update(bytes([mask]))
                 aggregate.update(hashlib.sha256(stdout).digest())
         self.assertEqual(aggregate.hexdigest(),
-                         "bf116a4627c71956042f25a98f63fde401b58140569c22cdc5ebf8298bbc85dd")
+                         "361bfb994e1a653aba987dfe852132e317dcf865d47ef63dbff3aedd35eb6586")
         with mock.patch.object(sys, "stdout", new_callable=io.StringIO) as output, \
                 mock.patch.object(sys, "stderr", new_callable=io.StringIO), \
                 self.assertRaises(SystemExit) as error:
