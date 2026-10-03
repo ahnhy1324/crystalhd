@@ -6,6 +6,9 @@
 #include <linux/firmware.h>
 #include <linux/miscdevice.h>
 
+#include "../../include/flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_arm_uart.h"
+/* The reduced combo header shares the full SUN_TOP RDB's include guard. */
+#include "../../include/flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_sun_top_ctrl.h"
 #include "crystalhd_lnx.h"
 #include "crystalhd_fw_research.h"
 #include "../../include/crystalhd_fw_research.h"
@@ -149,6 +152,14 @@ static bool crystalhd_fw_research_clock_request_valid(
 {
 	return request->version == CRYSTALHD_FW_RESEARCH_VERSION &&
 		request->size == sizeof(struct crystalhd_fw_research_clock_result) &&
+		!request->flags && !request->reserved;
+}
+
+static bool crystalhd_fw_research_uart_request_valid(
+	const struct crystalhd_fw_research_state_request *request)
+{
+	return request->version == CRYSTALHD_FW_RESEARCH_VERSION &&
+		request->size == sizeof(struct crystalhd_fw_research_uart_result) &&
 		!request->flags && !request->reserved;
 }
 
@@ -871,6 +882,67 @@ done:
 	return rc;
 }
 
+static int crystalhd_fw_research_uart_sample(struct crystalhd_cmd *ctx,
+	u64 generation, struct crystalhd_fw_research_uart_sample *sample)
+{
+	static const u32 registers[] = {
+		BCHP_ARM_UART_CTL,
+		BCHP_SUN_TOP_CTRL_PIN_MUX_CTRL_0,
+		BCHP_SUN_TOP_CTRL_UART_ROUTER_SEL,
+	};
+	struct crystalhd_hw *hw = ctx->hw_ctx;
+	u32 values[ARRAY_SIZE(registers)];
+	unsigned long flags;
+	unsigned int i;
+	BC_STATUS sts;
+	int rc;
+
+	memset(sample, 0, sizeof(*sample));
+	rc = crystalhd_fw_research_state_context(ctx, generation, hw);
+	if (rc)
+		goto done;
+	sts = crystalhd_hw_fw_cmd_enter(hw);
+	rc = crystalhd_status_to_errno(sts);
+	if (rc) {
+		if (!READ_ONCE(ctx->adp->present))
+			rc = -ENODEV;
+		goto done;
+	}
+	/* Called only after this run's successful stock INIT/OPEN state check.
+	 * The register accessor takes its innermost GISB lock; no UART
+	 * DATA/STATUS access, configuration write or caller-selected address belongs
+	 * to this sample. Stock bootstrap 0x2cbf0 -> 0xac1c configures these banks.
+	 */
+	spin_lock_irqsave(&hw->lock, flags);
+	rc = crystalhd_fw_research_clock_ready(ctx, generation, hw);
+	if (rc)
+		goto unlock;
+	for (i = 0; i < ARRAY_SIZE(registers); i++) {
+		rc = crystalhd_fw_research_clock_ready(ctx, generation, hw);
+		if (rc)
+			goto unlock;
+		sample->attempted = 1;
+		values[i] = hw->pfnReadDevRegister(ctx->adp, registers[i]);
+		rc = crystalhd_fw_research_clock_ready(ctx, generation, hw);
+		if (rc)
+			goto unlock;
+	}
+	rc = crystalhd_fw_research_clock_ready(ctx, generation, hw);
+	if (!rc) {
+		/* All bit patterns are raw observations, including zero/all ones. */
+		sample->arm_uart_ctl = values[0];
+		sample->pin_mux_ctrl_0 = values[1];
+		sample->uart_router_sel = values[2];
+		sample->read_complete = 1;
+	}
+unlock:
+	spin_unlock_irqrestore(&hw->lock, flags);
+	crystalhd_hw_fw_cmd_leave(hw);
+done:
+	sample->status = rc;
+	return rc;
+}
+
 static void crystalhd_fw_research_run_internal(u64 generation,
 	const struct crystalhd_fw_research_request *request,
 	struct crystalhd_fw_research_result *result,
@@ -879,7 +951,8 @@ static void crystalhd_fw_research_run_internal(u64 generation,
 	struct crystalhd_fw_research_image_result *image,
 	struct crystalhd_fw_research_packet_result *packet,
 	struct crystalhd_fw_research_heap_packet_result *heap_packet,
-	struct crystalhd_fw_research_clock_result *clock)
+	struct crystalhd_fw_research_clock_result *clock,
+	struct crystalhd_fw_research_uart_result *uart)
 {
 	struct crystalhd_device_access access;
 	struct crystalhd_cmd *ctx;
@@ -915,6 +988,10 @@ static void crystalhd_fw_research_run_internal(u64 generation,
 	if (clock) {
 		memset(&clock->after_init, 0, sizeof(clock->after_init));
 		memset(&clock->after_open, 0, sizeof(clock->after_open));
+	}
+	if (uart) {
+		memset(&uart->after_init, 0, sizeof(uart->after_init));
+		memset(&uart->after_open, 0, sizeof(uart->after_open));
 	}
 	result->request = *request;
 	result->generation = generation;
@@ -1026,6 +1103,12 @@ static void crystalhd_fw_research_run_internal(u64 generation,
 			if (rc)
 				goto cleanup;
 		}
+		if (uart) {
+			rc = crystalhd_fw_research_uart_sample(ctx, generation,
+						     &uart->after_init);
+			if (rc)
+				goto cleanup;
+		}
 	}
 	raw_command = crystalhd_fw_research_raw_command(request->selector);
 	if (raw_command) {
@@ -1070,6 +1153,12 @@ static void crystalhd_fw_research_run_internal(u64 generation,
 			if (rc)
 				goto cleanup;
 		}
+		if (uart) {
+			rc = crystalhd_fw_research_uart_sample(ctx, generation,
+						     &uart->after_open);
+			if (rc)
+				goto cleanup;
+		}
 	}
 	if (request->selector == CRYSTALHD_FW_RESEARCH_H264_CONTROL) {
 		rc = crystalhd_fw_research_command(ctx, result, eCMD_C011_DEC_CHAN_STATUS);
@@ -1106,7 +1195,7 @@ static void crystalhd_fw_research_run(u64 generation,
 	const struct crystalhd_fw_research_request *request,
 	struct crystalhd_fw_research_result *result)
 {
-	crystalhd_fw_research_run_internal(generation, request, result, NULL, NULL, NULL, NULL, NULL, NULL);
+	crystalhd_fw_research_run_internal(generation, request, result, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
 }
 
 struct crystalhd_fw_research_file {
@@ -1185,6 +1274,7 @@ static long crystalhd_fw_research_ioctl(struct file *file, unsigned int command,
 	struct crystalhd_fw_research_packet_result *packet_result;
 	struct crystalhd_fw_research_heap_packet_result *heap_packet_result;
 	struct crystalhd_fw_research_clock_result *clock_result;
+	struct crystalhd_fw_research_uart_result *uart_result;
 	struct crystalhd_fw_research_request request;
 	struct crystalhd_fw_research_result *result;
 	void __user *user = (void __user *)argument;
@@ -1212,7 +1302,7 @@ static long crystalhd_fw_research_ioctl(struct file *file, unsigned int command,
 		request.size = sizeof(struct crystalhd_fw_research_result);
 		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
 		crystalhd_fw_research_run_internal(binding->generation, &request,
-						 &state_result->control, state_result, NULL, NULL, NULL, NULL, NULL);
+						 &state_result->control, state_result, NULL, NULL, NULL, NULL, NULL, NULL);
 		if (copy_to_user(user, state_result, sizeof(*state_result)))
 			rc = -EFAULT;
 		kfree(state_result);
@@ -1233,7 +1323,7 @@ static long crystalhd_fw_research_ioctl(struct file *file, unsigned int command,
 		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
 		crystalhd_fw_research_run_internal(binding->generation, &request,
 			&controller_result->state.control, &controller_result->state,
-			controller_result, NULL, NULL, NULL, NULL);
+			controller_result, NULL, NULL, NULL, NULL, NULL);
 		if (copy_to_user(user, controller_result, sizeof(*controller_result)))
 			rc = -EFAULT;
 		kfree(controller_result);
@@ -1254,7 +1344,7 @@ static long crystalhd_fw_research_ioctl(struct file *file, unsigned int command,
 		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
 		crystalhd_fw_research_run_internal(binding->generation, &request,
 			&image_result->controller.state.control,
-			&image_result->controller.state, &image_result->controller, image_result, NULL, NULL, NULL);
+			&image_result->controller.state, &image_result->controller, image_result, NULL, NULL, NULL, NULL);
 		if (copy_to_user(user, image_result, sizeof(*image_result)))
 			rc = -EFAULT;
 		kfree(image_result);
@@ -1276,7 +1366,7 @@ static long crystalhd_fw_research_ioctl(struct file *file, unsigned int command,
 		crystalhd_fw_research_run_internal(binding->generation, &request,
 			&packet_result->image.controller.state.control,
 			&packet_result->image.controller.state, &packet_result->image.controller,
-			&packet_result->image, packet_result, NULL, NULL);
+			&packet_result->image, packet_result, NULL, NULL, NULL);
 		if (copy_to_user(user, packet_result, sizeof(*packet_result)))
 			rc = -EFAULT;
 		kfree(packet_result);
@@ -1298,7 +1388,7 @@ static long crystalhd_fw_research_ioctl(struct file *file, unsigned int command,
 		crystalhd_fw_research_run_internal(binding->generation, &request,
 			&heap_packet_result->image.controller.state.control,
 			&heap_packet_result->image.controller.state, &heap_packet_result->image.controller,
-			&heap_packet_result->image, NULL, heap_packet_result, NULL);
+			&heap_packet_result->image, NULL, heap_packet_result, NULL, NULL);
 		if (copy_to_user(user, heap_packet_result, sizeof(*heap_packet_result)))
 			rc = -EFAULT;
 		kfree(heap_packet_result);
@@ -1319,10 +1409,31 @@ static long crystalhd_fw_research_ioctl(struct file *file, unsigned int command,
 		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
 		crystalhd_fw_research_run_internal(binding->generation, &request,
 			&clock_result->state.control, &clock_result->state,
-			NULL, NULL, NULL, NULL, clock_result);
+			NULL, NULL, NULL, NULL, clock_result, NULL);
 		if (copy_to_user(user, clock_result, sizeof(*clock_result)))
 			rc = -EFAULT;
 		kfree(clock_result);
+		return rc;
+	}
+	if (command == CRYSTALHD_FW_RESEARCH_RUN_UART) {
+		if (copy_from_user(&state_request, user, sizeof(state_request)))
+			return -EFAULT;
+		if (!crystalhd_fw_research_uart_request_valid(&state_request))
+			return -EINVAL;
+		uart_result = kzalloc(sizeof(*uart_result), GFP_KERNEL);
+		if (!uart_result)
+			return -ENOMEM;
+		uart_result->state.request = state_request;
+		memset(&request, 0, sizeof(request));
+		request.version = CRYSTALHD_FW_RESEARCH_VERSION;
+		request.size = sizeof(struct crystalhd_fw_research_result);
+		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
+		crystalhd_fw_research_run_internal(binding->generation, &request,
+			&uart_result->state.control, &uart_result->state,
+			NULL, NULL, NULL, NULL, NULL, uart_result);
+		if (copy_to_user(user, uart_result, sizeof(*uart_result)))
+			rc = -EFAULT;
+		kfree(uart_result);
 		return rc;
 	}
 	if (command != CRYSTALHD_FW_RESEARCH_RUN)

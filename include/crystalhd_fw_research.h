@@ -224,4 +224,25 @@ struct crystalhd_fw_research_clock_result {
 #define CRYSTALHD_FW_RESEARCH_RUN_CLOCK \
 	_IOWR('R', 0x98, struct crystalhd_fw_research_clock_result)
 
+struct crystalhd_fw_research_uart_sample {
+	__u32 attempted;
+	__s32 status;
+	/* Fixed configuration reads only, not FIFO, board routing or bus health. */
+	__u32 read_complete;
+	__u32 reserved;
+	__u32 arm_uart_ctl;
+	__u32 pin_mux_ctrl_0;
+	__u32 uart_router_sel;
+};
+
+struct crystalhd_fw_research_uart_result {
+	struct crystalhd_fw_research_state_result state;
+	struct crystalhd_fw_research_uart_sample after_init;
+	struct crystalhd_fw_research_uart_sample after_open;
+};
+
+/* No UART DATA/STATUS access or UART/pinmux/router configuration writes. */
+#define CRYSTALHD_FW_RESEARCH_RUN_UART \
+	_IOWR('R', 0x99, struct crystalhd_fw_research_uart_result)
+
 #endif

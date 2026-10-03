@@ -34,6 +34,9 @@ struct _BC_DTS_PROC_OUT;
 #define CLOCK_RESET_CTRL_ADDRESS 0x00502200U
 #define CLOCK_PERST_CTRL_ADDRESS 0x0050229cU
 #define CLOCK_PM_CTRL_ADDRESS 0x00070004U
+#define UART_ARM_CTL_ADDRESS 0x000f3004U
+#define UART_PIN_MUX_ADDRESS 0x00404100U
+#define UART_ROUTER_ADDRESS 0x0040421cU
 
 enum action {
 	ACTION_NONE, ACTION_INFO, ACTION_VERSION, ACTION_H264,
@@ -44,6 +47,7 @@ enum action {
 	ACTION_CONTROLLER_PACKET,
 	ACTION_HEAP_PACKET,
 	ACTION_CLOCK_STATE,
+	ACTION_UART_STATE,
 };
 
 struct options {
@@ -84,6 +88,8 @@ static void usage(FILE *stream)
 	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
 	      "       flea-fw-probe --clock-state\n"
 	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
+	      "       flea-fw-probe --uart-state\n"
+	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
 	      "       flea-fw-probe --help\n"
 	      "\n"
 	      "The live selectors reload firmware and reset an idle card. They do\n"
@@ -108,6 +114,9 @@ static void usage(FILE *stream)
 	      "Clock-state reads three fixed control registers after verified INIT\n"
 	      "and OPEN, with no clock/reset writes. All bit patterns remain raw;\n"
 	      "completed reads do not certify fetch errors or atomic coherence.\n"
+	      "UART-state reads three fixed configuration registers after verified\n"
+	      "INIT and OPEN, without status/FIFO reads or UART writes. Raw values\n"
+	      "do not prove board pads, voltage, measured baud or console availability.\n"
 	      "Use --info first;\n"
 	      "it reports metadata only, including the bound device generation.\n"
 	      "The separate research device requires CAP_SYS_RAWIO and an opt-in\n"
@@ -182,6 +191,8 @@ static bool parse_options(int argc, char **argv, struct options *options)
 			action = ACTION_HEAP_PACKET;
 		else if (!strcmp(argv[i], "--clock-state"))
 			action = ACTION_CLOCK_STATE;
+		else if (!strcmp(argv[i], "--uart-state"))
+			action = ACTION_UART_STATE;
 		else if (!strcmp(argv[i], "--acknowledge-card-reset")) {
 			if (options->acknowledge)
 				return false;
@@ -526,6 +537,76 @@ static bool clock_result_valid(const struct crystalhd_fw_research_clock_result *
 	    (control->command_count > 3 && !clock_sample_succeeded(samples[1])) ||
 	    (!control->status && (!clock_sample_succeeded(samples[0]) ||
 				 !clock_sample_succeeded(samples[1]))))
+		return false;
+	return true;
+}
+
+static bool uart_sample_succeeded(const struct crystalhd_fw_research_uart_sample *sample)
+{
+	return sample->attempted && sample->read_complete && !sample->status;
+}
+
+static bool uart_result_valid(const struct crystalhd_fw_research_uart_result *result,
+	const struct crystalhd_fw_research_state_request *request, uint64_t generation)
+{
+	const struct crystalhd_fw_research_state_result *state = &result->state;
+	const struct crystalhd_fw_research_result *control = &state->control;
+	const struct crystalhd_fw_research_uart_sample *samples[] = {
+		&result->after_init, &result->after_open,
+	};
+	const struct crystalhd_fw_research_state_sample *prerequisites[] = {
+		&state->after_init, &state->after_open,
+	};
+	unsigned int i;
+
+	if (!state_result_valid(state, request, generation) ||
+	    (!control->download_attempted && control->download_status != BC_STS_SUCCESS) ||
+	    (control->command_count && control->download_status != BC_STS_SUCCESS) ||
+	    (control->cleanup_attempted &&
+	     (!control->download_attempted || !control->firmware_hash_valid ||
+	      !digest_matches(control->firmware_sha256))) ||
+	    (!control->cleanup_attempted &&
+	     (control->cleanup_status != BC_STS_SUCCESS &&
+	      control->cleanup_status != BC_STS_CMD_CANCELLED)) ||
+	    (!control->cleanup_attempted && control->download_attempted &&
+	     control->cleanup_status != BC_STS_CMD_CANCELLED))
+		return false;
+	for (i = control->command_count; i < CRYSTALHD_FW_RESEARCH_MAX_COMMANDS; i++) {
+		const struct crystalhd_fw_research_reply zero = { 0 };
+
+		if (memcmp(&control->replies[i], &zero, sizeof(zero)))
+			return false;
+	}
+	if (state_sample_succeeded(&state->calibration) &&
+	    !state->after_init.attempted && !state->after_init.status)
+		return false;
+	for (i = 0; i < sizeof(samples) / sizeof(samples[0]); i++) {
+		const struct crystalhd_fw_research_uart_sample *sample = samples[i];
+		bool active = sample->attempted || sample->status || sample->read_complete;
+
+		if (sample->attempted > 1 || sample->read_complete > 1 || sample->reserved ||
+		    sample->status > 0 || sample->status < -4095 ||
+		    active != state_sample_succeeded(prerequisites[i]))
+			return false;
+		if (sample->read_complete) {
+			/* Every raw configuration bit pattern is admissible. */
+			if (!sample->attempted || sample->status)
+				return false;
+		} else if (sample->arm_uart_ctl || sample->pin_mux_ctrl_0 || sample->uart_router_sel ||
+			   (sample->attempted && !sample->status)) {
+			return false;
+		}
+		if (active && (!state_sample_succeeded(&state->calibration) ||
+			       (i && !uart_sample_succeeded(samples[0]))))
+			return false;
+		if (sample->status &&
+		    (control->status != sample->status || control->command_count != (i ? 3U : 2U)))
+			return false;
+	}
+	if ((control->command_count > 2 && !uart_sample_succeeded(samples[0])) ||
+	    (control->command_count > 3 && !uart_sample_succeeded(samples[1])) ||
+	    (!control->status && (!uart_sample_succeeded(samples[0]) ||
+				 !uart_sample_succeeded(samples[1]))))
 		return false;
 	return true;
 }
@@ -952,6 +1033,43 @@ static void print_clock_result(const struct crystalhd_fw_research_clock_result *
 	       CLOCK_RESET_CTRL_ADDRESS, CLOCK_PERST_CTRL_ADDRESS, CLOCK_PM_CTRL_ADDRESS);
 }
 
+static void print_uart_sample(const struct crystalhd_fw_research_uart_sample *sample)
+{
+	printf("{\"attempted\":%s,\"status\":%" PRId32 ",\"read_complete\":%s,\"arm_uart_ctl\":",
+	       sample->attempted ? "true" : "false", (int32_t)sample->status,
+	       sample->read_complete ? "true" : "false");
+	if (sample->read_complete)
+		printf("%" PRIu32 ",\"pin_mux_ctrl_0\":%" PRIu32 ",\"uart_router_sel\":%" PRIu32,
+		       (uint32_t)sample->arm_uart_ctl, (uint32_t)sample->pin_mux_ctrl_0,
+		       (uint32_t)sample->uart_router_sel);
+	else
+		fputs("null,\"pin_mux_ctrl_0\":null,\"uart_router_sel\":null", stdout);
+	putchar('}');
+}
+
+static void print_uart_result(const struct crystalhd_fw_research_uart_result *result)
+{
+	printf("{\"version\":%" PRIu32 ",\"uart_state\":true,\"control\":",
+	       (uint32_t)result->state.request.version);
+	print_result_object(&result->state.control);
+	fputs(",\"fixed_state_samples\":{\"calibration\":", stdout);
+	print_state_sample(&result->state.calibration);
+	fputs(",\"after_init\":", stdout);
+	print_state_sample(&result->state.after_init);
+	fputs(",\"after_open\":", stdout);
+	print_state_sample(&result->state.after_open);
+	fputs("},\"uart_samples\":{\"after_init\":", stdout);
+	print_uart_sample(&result->after_init);
+	fputs(",\"after_open\":", stdout);
+	print_uart_sample(&result->after_open);
+	printf("},\"scope\":{\"register_addresses\":[%" PRIu32 ",%" PRIu32 ",%" PRIu32 "],"
+	       "\"reads_per_sample\":3,\"maximum_register_reads\":6,\"raw_values_only\":true,"
+	       "\"sample_status_fifo_reads\":false,\"sample_uart_writes\":false,"
+	       "\"board_pads_proven\":false,\"voltage_proven\":false,"
+	       "\"measured_baud_proven\":false,\"console_availability_proven\":false}}\n",
+	       UART_ARM_CTL_ADDRESS, UART_PIN_MUX_ADDRESS, UART_ROUTER_ADDRESS);
+}
+
 static void print_controller_sample(
 	const struct crystalhd_fw_research_controller_sample *sample)
 {
@@ -1166,12 +1284,14 @@ int main(int argc, char **argv)
 	struct crystalhd_fw_research_packet_result packet_result = { 0 };
 	struct crystalhd_fw_research_heap_packet_result heap_packet_result = { 0 };
 	struct crystalhd_fw_research_clock_result clock_result = { 0 };
+	struct crystalhd_fw_research_uart_result uart_result = { 0 };
 	struct options options;
 	struct stat statbuf;
 	bool have_info = false, have_result = false, have_state = false, have_controller = false;
 	bool have_image = false, have_packet = false;
 	bool have_heap_packet = false;
 	bool have_clock = false;
+	bool have_uart = false;
 	int fd = -1, rc = 1;
 
 	if (argc == 2 && !strcmp(argv[1], "--help")) {
@@ -1225,6 +1345,7 @@ int main(int argc, char **argv)
 	case ACTION_CONTROLLER_PACKET:
 	case ACTION_HEAP_PACKET:
 	case ACTION_CLOCK_STATE:
+	case ACTION_UART_STATE:
 		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
 		break;
 	case ACTION_H261:
@@ -1260,6 +1381,28 @@ int main(int argc, char **argv)
 	}
 	if (!(info.selector_mask & (1U << (request.selector - 1)))) {
 		fputs("Research selector unavailable; no live command attempted.\n", stderr);
+		goto out;
+	}
+	if (options.action == ACTION_UART_STATE) {
+		const struct crystalhd_fw_research_result *control = &uart_result.state.control;
+
+		state_request.version = CRYSTALHD_FW_RESEARCH_VERSION;
+		state_request.size = sizeof(uart_result);
+		uart_result.state.request = state_request;
+		if (ioctl(fd, CRYSTALHD_FW_RESEARCH_RUN_UART, &uart_result) < 0) {
+			perror("run uart-state readback");
+			fputs("Device state may have changed; no retry was attempted.\n", stderr);
+			goto out;
+		}
+		if (control->retained)
+			fputs("Research resources remain retained. Do not force unload the driver.\n", stderr);
+		if (!uart_result_valid(&uart_result, &state_request, info.generation)) {
+			fputs("Invalid uart-state result; no further command attempted.\n", stderr);
+			goto out;
+		}
+		have_uart = true;
+		rc = control->status || control->retained ||
+			(control->cleanup_attempted && control->cleanup_status != BC_STS_SUCCESS) ? 1 : 0;
 		goto out;
 	}
 	if (options.action == ACTION_CLOCK_STATE) {
@@ -1429,6 +1572,8 @@ out:
 		print_heap_packet_result(&heap_packet_result);
 	if (have_clock)
 		print_clock_result(&clock_result);
+	if (have_uart)
+		print_uart_result(&uart_result);
 	if (output_finish())
 		rc = 1;
 	return rc;

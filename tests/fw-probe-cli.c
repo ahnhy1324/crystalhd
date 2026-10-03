@@ -17,7 +17,7 @@ struct _BC_DTS_PROC_OUT;
 #include "crystalhd_fw_research.h"
 
 int crystalhd_probe_main(int argc, char **argv);
-static unsigned checks, opens, stats, infos, runs, state_runs, controller_runs, image_runs, packet_runs, heap_runs, clock_runs, closes;
+static unsigned checks, opens, stats, infos, runs, state_runs, controller_runs, image_runs, packet_runs, heap_runs, clock_runs, uart_runs, closes;
 static int open_error, stat_error, info_error, run_error, close_error;
 static bool character, output_error, flush_error;
 static struct crystalhd_fw_research_info metadata;
@@ -40,6 +40,8 @@ static uint32_t heap_roots[2], heap_bases[2], heap_extent, heap_owned, heap_head
 static uint32_t heap_bad_root, heap_bad_value;
 static unsigned clock_fault_at, clock_fault_kind, clock_mutation, clock_stage, clock_word;
 static uint32_t clock_values[2][3];
+static unsigned uart_fault_at, uart_fault_kind, uart_mutation, uart_stage, uart_word;
+static uint32_t uart_values[2][3];
 static const uint32_t commands[] = {eCMD_C011_INIT, eCMD_C011_GET_VERSION,
     eCMD_C011_DEC_CHAN_OPEN, eCMD_C011_DEC_CHAN_STATUS, eCMD_C011_DEC_CHAN_CLOSE};
 static const uint32_t raw_commands[] = {eCMD_C011_DEC_CHAN_SCALING_FILTERS,
@@ -744,6 +746,79 @@ static void make_clock_result(struct crystalhd_fw_research_clock_result *result)
     }
 }
 
+static void make_uart_result(struct crystalhd_fw_research_uart_result *result)
+{
+    struct crystalhd_fw_research_uart_sample *samples[] = {&result->after_init, &result->after_open};
+    struct crystalhd_fw_research_state_sample *prerequisites[] = {&result->state.after_init, &result->state.after_open};
+    struct crystalhd_fw_research_uart_sample *changed;
+    unsigned i, count;
+    memset(result, 0, sizeof(*result)); make_state_result(&result->state);
+    CHECK(uart_stage < 2 && uart_word < 3);
+    if (result->state.control.command_count <= CRYSTALHD_FW_RESEARCH_MAX_COMMANDS)
+        memset(result->state.control.replies + result->state.control.command_count, 0,
+               (CRYSTALHD_FW_RESEARCH_MAX_COMMANDS - result->state.control.command_count) *
+               sizeof(result->state.control.replies[0]));
+    if (mutation == 35) result->state.control.cleanup_status = BC_STS_CMD_CANCELLED;
+    for (i = 0; i < 2; i++) {
+        if (!prerequisites[i]->attempted || !prerequisites[i]->read_complete || prerequisites[i]->status) break;
+        samples[i]->attempted = samples[i]->read_complete = 1;
+        samples[i]->arm_uart_ctl = uart_values[i][0];
+        samples[i]->pin_mux_ctrl_0 = uart_values[i][1];
+        samples[i]->uart_router_sel = uart_values[i][2];
+    }
+    if (uart_fault_at) {
+        CHECK(uart_fault_at <= 2 && uart_fault_kind >= 1 && uart_fault_kind <= 6);
+        changed = samples[uart_fault_at - 1]; count = uart_fault_at + 1;
+        memset(changed, 0, sizeof(*changed));
+        changed->attempted = uart_fault_kind != 2 && uart_fault_kind < 5;
+        changed->status = uart_fault_kind == 2 ? -ENODEV : uart_fault_kind == 3 ? -ETIMEDOUT :
+            uart_fault_kind == 4 ? -4095 : uart_fault_kind == 5 ? -EAGAIN :
+            uart_fault_kind == 6 ? -512 : -EIO; /* Kernel ERESTARTSYS. */
+        result->state.control.status = changed->status; result->state.control.command_count = count;
+        memset(result->state.control.replies + count, 0,
+               (CRYSTALHD_FW_RESEARCH_MAX_COMMANDS - count) * sizeof(result->state.control.replies[0]));
+        if (uart_fault_at == 1) {
+            memset(&result->state.after_open, 0, sizeof(result->state.after_open));
+            memset(samples[1], 0, sizeof(*samples[1]));
+        }
+    }
+    changed = samples[uart_stage];
+    switch (uart_mutation) {
+    case 0: break;
+    case 1: changed->attempted = 2; break;
+    case 2: changed->read_complete = 2; break;
+    case 3: changed->status = 1; break;
+    case 4: changed->status = -4096; break;
+    case 5: changed->reserved = 1; break;
+    case 6: changed->attempted = 0; break;
+    case 7: changed->read_complete = 0; break;
+    case 8: memset(changed, 0, sizeof(*changed)); break;
+    case 9: changed->status = -EIO; break;
+    case 10: changed->status = 0; break;
+    case 11:
+        if (!uart_word) changed->arm_uart_ctl = 1;
+        else if (uart_word == 1) changed->pin_mux_ctrl_0 = 1;
+        else changed->uart_router_sel = 1;
+        break;
+    case 12: changed->read_complete = 1; break;
+    case 13: result->state.control.replies[4].response[63] = 1; break;
+    case 14: result->state.control.status = 0; break;
+    case 15: result->state.control.command_count++; break;
+    case 16: result->state.control.cleanup_attempted = 0; break;
+    case 17: result->state.control.download_attempted = 0; break;
+    case 18: result->state.control.download_status = BC_STS_IO_ERROR; break;
+    case 19: result->state.control.request.size = sizeof(*result); break;
+    case 20: result->state.control.replies[0].response[0]++; break;
+    case 21: result->state.control.replies[1].response[1]++; break;
+    case 22: result->state.control.replies[2].response[3] = 1; break;
+    case 23: result->state.control.command_count = 0; break;
+    case 24: memset(&result->after_init, 0, sizeof(result->after_init) + sizeof(result->after_open)); break;
+    case 25: result->state.control.replies[3].command = result->state.control.replies[3].response[0] = eCMD_C011_DEC_CHAN_OPEN; break;
+    case 26: result->state.control.replies[4].command = result->state.control.replies[4].response[0] = eCMD_C011_DEC_CHAN_STATUS; break;
+    default: CHECK(false);
+    }
+}
+
 int probe_ioctl(int fd, unsigned long command, ...)
 {
     void *argument; va_list args;
@@ -844,6 +919,22 @@ int probe_ioctl(int fd, unsigned long command, ...)
         if (run_error) { errno = run_error; return -1; }
         make_clock_result(result); return 0;
     }
+    if (command == CRYSTALHD_FW_RESEARCH_RUN_UART) {
+        struct crystalhd_fw_research_uart_result *result = argument;
+        const unsigned char *bytes = argument;
+        unsigned i;
+        CHECK(command == 0xc6785299UL);
+        CHECK(infos == 1 && !runs++ && !uart_runs++ && !state_runs && !controller_runs && !image_runs && !packet_runs && !heap_runs && !clock_runs);
+        state_submitted = result->state.request;
+        CHECK(state_submitted.version == 1 && state_submitted.size == sizeof(*result));
+        CHECK(!state_submitted.flags && !state_submitted.reserved);
+        for (i = sizeof(result->state.request); i < sizeof(*result); i++) CHECK(!bytes[i]);
+        memset(&submitted, 0, sizeof(submitted));
+        submitted.version = 1; submitted.size = sizeof(result->state.control);
+        submitted.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
+        if (run_error) { errno = run_error; return -1; }
+        make_uart_result(result); return 0;
+    }
     CHECK(command == CRYSTALHD_FW_RESEARCH_RUN && infos == 1 && !runs++);
     submitted = ((struct crystalhd_fw_research_result *)argument)->request;
     CHECK(submitted.version == 1 && submitted.size == sizeof(struct crystalhd_fw_research_result));
@@ -881,7 +972,7 @@ int __wrap_ioctl(int fd, unsigned long command, ...)
 
 static void reset(void)
 {
-    opens = stats = infos = runs = state_runs = controller_runs = image_runs = packet_runs = heap_runs = clock_runs = closes = 0;
+    opens = stats = infos = runs = state_runs = controller_runs = image_runs = packet_runs = heap_runs = clock_runs = uart_runs = closes = 0;
     open_error = stat_error = info_error = run_error = close_error = 0;
     character = true; output_error = flush_error = false;
     mutation = fault_at = fault_kind = response_pattern = 0;
@@ -902,6 +993,8 @@ static void reset(void)
     memset(heap_header, 0, sizeof(heap_header)); memset(heap_slots, 0, sizeof(heap_slots));
     clock_fault_at = clock_fault_kind = clock_mutation = clock_stage = clock_word = 0;
     memset(clock_values, 0, sizeof(clock_values));
+    uart_fault_at = uart_fault_kind = uart_mutation = uart_stage = uart_word = 0;
+    memset(uart_values, 0, sizeof(uart_values));
     output[0] = errors[0] = 0;
     memset(&metadata, 0, sizeof(metadata));
     metadata.version = 1; metadata.size = sizeof(metadata); metadata.generation = 42;
@@ -924,6 +1017,7 @@ static char *image_args[] = {"probe", "--controller-image", "--acknowledge-card-
 static char *packet_args[] = {"probe", "--controller-packet", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *heap_args[] = {"probe", "--heap-packet", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *clock_args[] = {"probe", "--clock-state", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
+static char *uart_args[] = {"probe", "--uart-state", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *h261_args[] = {"probe", "--h261-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *h263_args[] = {"probe", "--h263-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *mpeg1_args[] = {"probe", "--mpeg1-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
@@ -2138,6 +2232,171 @@ static void test_clock_state(void)
     }
 }
 
+static void test_uart_state(void)
+{
+    char *invalid[][10] = {
+        {"probe", "--uart-state", NULL},
+        {"probe", "--uart-state", "--acknowledge-card-reset", NULL},
+        {"probe", "--uart-state", "--expected-generation", "42", NULL},
+        {"probe", "--uart-state", "--uart-state", "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+        {"probe", "--uart-state", "--acknowledge-card-reset", "--expected-generation", "42", "--address", "0", NULL},
+        {"probe", "--uart-state", "--acknowledge-card-reset", "--expected-generation", "42", "--register", "0xf3004", NULL},
+        {"probe", "--uart-state", "--acknowledge-card-reset", "--expected-generation", "42", "--write", "0", NULL},
+        {"probe", "--uart-state", "--acknowledge-card-reset", "--expected-generation", "42", "--start", NULL},
+        {"probe", "--uart-state=1", "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+        {"probe", "--uart-state", "--acknowledge-card-reset", "--expected-generation", "0", NULL},
+        {"probe", "--uart-state", "--acknowledge-card-reset", "--expected-generation", "0x2a", NULL},
+        {"probe", "--uart-state", "--acknowledge-card-reset", "--expected-generation", "42", "--acknowledge-card-reset", NULL},
+        {"probe", "--uart-state", "--acknowledge-card-reset", "--expected-generation", "42", "--expected-generation", "42", NULL},
+    };
+    char **other_actions[] = {info_args, state_args, controller_args, image_args, packet_args, heap_args, clock_args};
+    static const unsigned forged_control[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+        14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+        37, 38, 39, 40, 42, 44, 45, 47, 50, 54, 55, 56, 57, 58};
+    static const unsigned stopped_control[] = {30, 31, 32, 33, 34, 35, 41, 43, 51, 52};
+    unsigned i, stage, kind, phase, word, bit;
+    for (i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        reset(); CHECK(invoke(invalid[i]) == 1 && !opens && !output[0]);
+    }
+    for (i = 0; i < 18; i++) {
+        char *conflict[] = {"probe", "--uart-state", i < 7 ? other_actions[i][1] :
+            i < 12 ? all_live_args[i - 7][1] : raw_args[i - 12][1],
+            "--acknowledge-card-reset", "--expected-generation", "42", NULL};
+        reset(); CHECK(invoke(conflict) == 1 && !opens && !output[0]);
+    }
+    for (i = 0; i < 3; i++) {
+        reset();
+        for (stage = 0; stage < 2; stage++) for (word = 0; word < 3; word++)
+            uart_values[stage][word] = i == 1 ? UINT32_MAX : i == 2 ? 0x12345678U + stage * 3 + word : 0;
+        CHECK(!invoke(uart_args) && uart_runs == 1 && !state_runs && !controller_runs && !image_runs && !packet_runs && !heap_runs && !clock_runs);
+        CHECK(strstr(output, "\"uart_state\":true") && strstr(output, "\"register_addresses\":[995332,4210944,4211228]"));
+        CHECK(strstr(output, "\"sample_status_fifo_reads\":false") && strstr(output, "\"sample_uart_writes\":false"));
+        CHECK(strstr(output, "\"raw_values_only\":true") && strstr(output, "\"board_pads_proven\":false"));
+        CHECK(strstr(output, "\"voltage_proven\":false") && strstr(output, "\"measured_baud_proven\":false"));
+        CHECK(strstr(output, "\"console_availability_proven\":false"));
+        CHECK(strstr(output, "\"arm_uart_ctl\":0") || strstr(output, "\"arm_uart_ctl\":4294967295") || strstr(output, "\"arm_uart_ctl\":305419896"));
+        CHECK(!strstr(output, "\"clock_state\":") && !strstr(output, "\"clock_samples\":"));
+    }
+    /* No UART bit, route or divider encoding is an admission criterion. */
+    for (stage = 0; stage < 2; stage++) for (word = 0; word < 3; word++) for (bit = 0; bit < 32; bit++) {
+        reset(); uart_values[stage][word] = UINT32_C(1) << bit;
+        CHECK(!invoke(uart_args) && uart_runs == 1);
+    }
+    for (stage = 0; stage < 2; stage++) {
+        for (i = 1; i <= 9; i++) {
+            reset(); uart_stage = stage; uart_mutation = i;
+            CHECK(invoke(uart_args) == 1 && !output[0]);
+        }
+        for (kind = 1; kind <= 6; kind++) {
+            reset(); uart_fault_at = stage + 1; uart_fault_kind = kind;
+            CHECK(invoke(uart_args) == 1 && output[0] && !strstr(errors, "Invalid uart-state result"));
+            CHECK(strstr(output, "\"arm_uart_ctl\":null,\"pin_mux_ctrl_0\":null,\"uart_router_sel\":null"));
+        }
+        for (i = 10; i <= 15; i++) {
+            unsigned words = i == 11 ? 3 : 1;
+            for (word = 0; word < words; word++) {
+                reset(); uart_stage = stage; uart_fault_at = stage + 1; uart_fault_kind = 1;
+                uart_mutation = i; uart_word = word;
+                CHECK(invoke(uart_args) == 1 && !output[0]);
+            }
+        }
+        for (word = 0; word < 3; word++) {
+            reset(); uart_stage = stage; uart_fault_at = stage + 1; uart_fault_kind = 2;
+            uart_mutation = 11; uart_word = word;
+            CHECK(invoke(uart_args) == 1 && !output[0]);
+            reset(); uart_stage = stage; fault_at = 1; fault_kind = 2;
+            uart_mutation = 11; uart_word = word;
+            CHECK(invoke(uart_args) == 1 && !output[0]);
+        }
+        reset(); uart_stage = stage; sample_fault_at = stage + 2; sample_fault_kind = 1; uart_mutation = 12;
+        CHECK(invoke(uart_args) == 1 && !output[0]);
+        reset(); uart_fault_at = 1; uart_fault_kind = 1; uart_stage = 1; uart_mutation = 12;
+        CHECK(invoke(uart_args) == 1 && !output[0]);
+    }
+    for (i = 16; i <= 26; i++) {
+        reset(); uart_mutation = i; CHECK(invoke(uart_args) == 1 && !output[0]);
+    }
+    for (i = 0; i < sizeof(forged_control) / sizeof(forged_control[0]); i++) {
+        reset(); mutation = forged_control[i]; CHECK(invoke(uart_args) == 1 && !output[0]);
+    }
+    for (i = 1; i <= 40; i++) {
+        if (i == 39 || i == 40) continue;
+        reset(); state_mutation = i;
+        if (i == 30 || i == 31) { sample_fault_at = 2; sample_fault_kind = 1; }
+        CHECK(invoke(uart_args) == 1 && !output[0]);
+    }
+    for (phase = 1; phase <= 5; phase++) for (kind = 1; kind <= 7; kind++) {
+        if (kind == 6 && phase != 3) continue;
+        reset(); fault_at = phase; fault_kind = kind;
+        CHECK(invoke(uart_args) == 1 && output[0] && !strstr(errors, "Invalid uart-state result"));
+    }
+    for (phase = 1; phase <= 3; phase++) for (kind = 1; kind <= 9; kind++) {
+        if (phase == 1 && kind >= 4 && kind <= 6) continue;
+        reset(); sample_fault_at = phase; sample_fault_kind = kind;
+        CHECK(invoke(uart_args) == 1 && output[0] && !strstr(errors, "Invalid uart-state result"));
+    }
+    for (i = 0; i < sizeof(stopped_control) / sizeof(stopped_control[0]); i++) {
+        reset(); mutation = stopped_control[i];
+        CHECK(invoke(uart_args) == 1 && output[0] && !strstr(errors, "Invalid uart-state result"));
+    }
+    for (i = 0; i < 18; i++) {
+        reset();
+        if (i == 0) metadata.selector_mask = 1;
+        if (i == 1) metadata.generation++;
+        if (i == 2) open_error = ENOENT;
+        if (i == 3) stat_error = EIO;
+        if (i == 4) info_error = ENOTTY;
+        if (i == 5) character = false;
+        if (i == 6) run_error = ENOTTY;
+        if (i == 7) run_error = EINTR;
+        if (i == 8) close_error = EINTR;
+        if (i == 9) output_error = true;
+        if (i == 10) flush_error = true;
+        if (i == 11) metadata.reserved[0] = 1;
+        if (i == 12) metadata.version++;
+        if (i == 13) metadata.size--;
+        if (i == 14) metadata.generation = 0;
+        if (i == 15) metadata.selector_mask = 1U << 31;
+        if (i == 16) metadata.firmware_sha256[0] ^= 1;
+        if (i == 17) metadata.reserved[2] = 1;
+        CHECK(invoke(uart_args) == 1);
+        if (i < 6 || i >= 11) CHECK(!runs && !output[0]);
+        if (i == 6 || i == 7) CHECK(uart_runs == 1 && !output[0] && strstr(errors, "no retry"));
+        if (i >= 8 && i <= 10) CHECK(uart_runs == 1 && output[0]);
+    }
+}
+
+static void uart_json_examples(void)
+{
+    unsigned value, stage, kind, phase, word;
+    for (value = 0; value < 3; value++) {
+        reset();
+        for (stage = 0; stage < 2; stage++) for (word = 0; word < 3; word++)
+            uart_values[stage][word] = value == 1 ? UINT32_MAX : value == 2 ? 0x12345678U + stage * 3 + word : 0;
+        CHECK(!invoke(uart_args)); fputs(output, stdout);
+    }
+    for (stage = 1; stage <= 2; stage++) for (kind = 1; kind <= 6; kind++) {
+        reset(); uart_fault_at = stage; uart_fault_kind = kind;
+        CHECK(invoke(uart_args) == 1 && output[0]); fputs(output, stdout);
+    }
+    for (stage = 1; stage <= 3; stage++) for (kind = 1; kind <= 9; kind += 8) {
+        reset(); sample_fault_at = stage; sample_fault_kind = kind;
+        CHECK(invoke(uart_args) == 1 && output[0]); fputs(output, stdout);
+    }
+    for (phase = 1; phase <= 5; phase++) {
+        reset(); fault_at = phase; fault_kind = 2;
+        CHECK(invoke(uart_args) == 1 && output[0]); fputs(output, stdout);
+    }
+    for (value = 51; value <= 52; value++) {
+        reset(); mutation = value; CHECK(invoke(uart_args) == 1 && output[0]); fputs(output, stdout);
+    }
+    for (stage = 1; stage <= 2; stage++) {
+        reset(); uart_fault_at = stage; uart_fault_kind = 1; mutation = 52;
+        CHECK(invoke(uart_args) == 1 && output[0]); fputs(output, stdout);
+    }
+    reset(); close_error = EINTR; CHECK(invoke(uart_args) == 1 && output[0]); fputs(output, stdout);
+}
+
 static void clock_json_examples(void)
 {
     unsigned value, stage, kind, phase, word;
@@ -2212,6 +2471,9 @@ static void heap_packet_json_examples(void)
 
 int main(int argc, char **argv)
 {
+    if (argc == 2 && !strcmp(argv[1], "--uart-json-examples")) {
+        uart_json_examples(); return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--clock-json-examples")) {
         clock_json_examples(); return 0;
     }
@@ -2292,7 +2554,7 @@ int main(int argc, char **argv)
         return 0;
     }
     CHECK(argc == 1);
-    test_arguments(); test_metadata(); test_errors(); test_results(); test_named_controls(); test_decoding(); test_raw_commands(); test_fixed_state(); test_controller_root(); test_controller_image(); test_controller_packet(); test_heap_packet(); test_clock_state();
+    test_arguments(); test_metadata(); test_errors(); test_results(); test_named_controls(); test_decoding(); test_raw_commands(); test_fixed_state(); test_controller_root(); test_controller_image(); test_controller_packet(); test_heap_packet(); test_clock_state(); test_uart_state();
     printf("Firmware probe CLI: %u checks passed\n", checks);
     return 0;
 }
