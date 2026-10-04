@@ -5603,12 +5603,13 @@ def _mfd_source_model(record, rows):
               [0x540028, word(0x54)], [0x54002c, word(0x58)]]
     if form == 3:
         return {"writes": writes, "return_value": 8}
-    horizontal = word(0x6c) & (0xfffffffe if form == 1 else 0xffffffff)
-    vertical = word(0x70) & 0xfffffffe
-    quotient, remainder = vertical >> shift, vertical & (stripe - 1)
-    # The wrapped horizontal product is logically shifted before the chroma
+    # The pinned address helper establishes arithmetic, not coordinate axes.
+    offset_6c = word(0x6c) & (0xfffffffe if form == 1 else 0xffffffff)
+    offset_70 = word(0x70) & 0xfffffffe
+    quotient, remainder = offset_70 >> shift, offset_70 & (stripe - 1)
+    # The wrapped offset_6c product is logically shifted before the chroma
     # format shift; moving wrap to the final addition changes the result.
-    product = u32(stripe * horizontal)
+    product = u32(stripe * offset_6c)
     y = u32(word(0x34) + product +
             (u32(u32(word(0x54) * quotient) * stripe) << 4) + remainder)
     c = u32(word(0x38) + ((product >> 1) << (form - 1)) +
@@ -5656,7 +5657,7 @@ def _mfd_source_map(payload):
             struct.pack_into("<I", record, offset, value)
         examples.append({"selector": index, "mode": 0, "format": 2, "field": 0,
                          "y_base": 0x1000, "chroma_base": 0x8000,
-                         "luma_nmby": 40, "chroma_nmby": 20, "horizontal": 3, "vertical": 5,
+                         "luma_nmby": 40, "chroma_nmby": 20, "offset_6c": 3, "offset_70": 5,
                          "conditional_model": _mfd_source_model(record, rows)})
     return {
         "device_observed": False,
@@ -5687,7 +5688,7 @@ def _mfd_source_map(payload):
             "field_offsets": {"mode_byte": 8, "format_byte": 0x27, "field_byte": 0x28,
                              "y_base_word": 0x34, "chroma_base_word": 0x38,
                              "luma_nmby_word": 0x54, "chroma_nmby_word": 0x58,
-                             "table_selector_byte": 0x5c, "horizontal_word": 0x6c, "vertical_word": 0x70},
+                             "table_selector_byte": 0x5c, "offset_6c_word": 0x6c, "offset_70_word": 0x70},
             "table_blob_file_offset": 0x2cccc, "table_row_bytes": 12, "selected_table_rows": rows,
             "table_selector_checked_by_firmware": False,
             "table_first_word_use": "Diagnostic argument only in the pinned helper.",
@@ -5698,7 +5699,7 @@ def _mfd_source_map(payload):
             "writes_are_context_relative": True,
             "format3": {"return_value": 8, "preceding_write_count": 3, "line_address_writes": False},
             "conditional_zero_offset_identity": {
-                "conditions": "Format 1/2, selected table row, horizontal=vertical=0, mode!=1, original bases preserved.",
+                "conditions": "Format 1/2, selected table row, offset_6c=offset_70=0, mode!=1, original bases preserved.",
                 "line_address0": "original frame-record word+4", "line_address1": "original frame-record word+8"},
             "model_examples": examples},
         "conditions": [
