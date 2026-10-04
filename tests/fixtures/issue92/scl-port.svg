@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="545" viewBox="0 0 1100 545">
+<rect width="1100" height="545" fill="#101923"/>
+<g font-family="sans-serif" fill="#e5edf5">
+<text x="28" y="40" font-size="24">BCM70015: pre-boot SCL_HD test-port response</text>
+<text x="28" y="68" font-size="14" fill="#acbace">One bank-read qualification; two fresh latch sessions; no decoder commands</text>
+<text x="28" y="94" font-size="13" fill="#acbace">ARM_RUN_REQ clear · checked PCI MASTER=0 anchors · columns are observation stages, not elapsed time</text>
+<text x="345" y="121" text-anchor="middle" font-size="14">Initial</text>
+<text x="555" y="121" text-anchor="middle" font-size="14">Recheck</text>
+<text x="765" y="121" text-anchor="middle" font-size="14">Selector 1</text>
+<text x="975" y="121" text-anchor="middle" font-size="14">Restored</text>
+<text x="28" y="178" font-size="20">Latch A</text>
+<text x="28" y="204" font-size="13">2 selector writes</text>
+<rect x="250" y="145" width="190" height="104" rx="6" fill="#1e3044" stroke="#6586ab"/>
+<text x="345" y="173" text-anchor="middle" font-size="18">CTRL = 0</text>
+<text x="345" y="202" text-anchor="middle" font-size="14">DATA = 0x00000000</text>
+<text x="345" y="228" text-anchor="middle" font-size="12">BVB_IN_STATUS = 0</text>
+<rect x="460" y="145" width="190" height="104" rx="6" fill="#1e3044" stroke="#6586ab"/>
+<text x="555" y="173" text-anchor="middle" font-size="18">CTRL = 0</text>
+<text x="555" y="202" text-anchor="middle" font-size="14">DATA = 0x00000000</text>
+<text x="555" y="228" text-anchor="middle" font-size="12">BVB_IN_STATUS = 0</text>
+<rect x="670" y="145" width="190" height="104" rx="6" fill="#25433b" stroke="#77d6bb"/>
+<text x="765" y="173" text-anchor="middle" font-size="18">CTRL = 1</text>
+<text x="765" y="202" text-anchor="middle" font-size="14">DATA = 0x00050000</text>
+<text x="765" y="228" text-anchor="middle" font-size="12">BVB_IN_STATUS = 0</text>
+<rect x="880" y="145" width="190" height="104" rx="6" fill="#1e3044" stroke="#6586ab"/>
+<text x="975" y="173" text-anchor="middle" font-size="18">CTRL = 0</text>
+<text x="975" y="202" text-anchor="middle" font-size="14">DATA = 0x00000000</text>
+<text x="975" y="228" text-anchor="middle" font-size="12">BVB_IN_STATUS = 0</text>
+<text x="28" y="308" font-size="20">Latch B</text>
+<text x="28" y="334" font-size="13">2 selector writes</text>
+<rect x="250" y="275" width="190" height="104" rx="6" fill="#1e3044" stroke="#6586ab"/>
+<text x="345" y="303" text-anchor="middle" font-size="18">CTRL = 0</text>
+<text x="345" y="332" text-anchor="middle" font-size="14">DATA = 0x00000000</text>
+<text x="345" y="358" text-anchor="middle" font-size="12">BVB_IN_STATUS = 0</text>
+<rect x="460" y="275" width="190" height="104" rx="6" fill="#1e3044" stroke="#6586ab"/>
+<text x="555" y="303" text-anchor="middle" font-size="18">CTRL = 0</text>
+<text x="555" y="332" text-anchor="middle" font-size="14">DATA = 0x00000000</text>
+<text x="555" y="358" text-anchor="middle" font-size="12">BVB_IN_STATUS = 0</text>
+<rect x="670" y="275" width="190" height="104" rx="6" fill="#25433b" stroke="#77d6bb"/>
+<text x="765" y="303" text-anchor="middle" font-size="18">CTRL = 1</text>
+<text x="765" y="332" text-anchor="middle" font-size="14">DATA = 0x00050000</text>
+<text x="765" y="358" text-anchor="middle" font-size="12">BVB_IN_STATUS = 0</text>
+<rect x="880" y="275" width="190" height="104" rx="6" fill="#1e3044" stroke="#6586ab"/>
+<text x="975" y="303" text-anchor="middle" font-size="18">CTRL = 0</text>
+<text x="975" y="332" text-anchor="middle" font-size="14">DATA = 0x00000000</text>
+<text x="975" y="358" text-anchor="middle" font-size="12">BVB_IN_STATUS = 0</text>
+<text x="28" y="410" font-size="14">All samples: REV=0x0080, TOP=0x0c, ENABLE=0. CTRL address=0x00540880; DATA address=0x00540884.</text>
+<text x="28" y="437" font-size="13">Selector 1 DATA gives LB_RD_STATUS=0x50 and zero named line addresses; no status-code meaning was inferred.</text>
+<text x="28" y="464" font-size="13">Checked stock cleanup and frozen-pixel H.264 recovery passed; original module restored.</text>
+<text x="28" y="505" font-size="14" fill="#efcf8f">Measured bank/latch response only: not scaler output, pixel routing, engine idle or completion.</text>
+<text x="28" y="529" font-size="12" fill="#acbace">The helper writes only the selector twice. Stock device initialization, staging and stop/reset still run.</text>
+</g>
+</svg>
