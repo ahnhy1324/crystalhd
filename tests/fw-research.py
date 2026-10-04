@@ -27,6 +27,13 @@ SPEC.loader.exec_module(MAP)
 BLOB = ROOT / "firmware/fwbin/70015/bcm70015fw.bin"
 
 
+def prior_inner_descriptor_projection(report):
+    """Remove only the separately tested, opt-in additive dispatch report."""
+    if "inner_descriptor" in report:
+        report["inner_descriptor"]["paths"]["record_pointer_and_boundary"].pop("conditional_inner_dispatch")
+    return report
+
+
 def fixture():
     image = bytearray(0x2f0)
     image[:16] = b"\x7fELF\x01\x01\x01" + bytes(9)
@@ -2919,8 +2926,10 @@ class FirmwareInnerDescriptorTests(unittest.TestCase):
         cls.images = MAP.analyze(cls.data)["images"]
 
     def mapping(self, payload=None, images=None):
-        return MAP._inner_descriptor_map(self.payload if payload is None else payload,
-                                         self.images if images is None else images)
+        payload = self.payload if payload is None else payload
+        result = MAP._inner_descriptor_map(payload, self.images if images is None else images)
+        result["paths"]["record_pointer_and_boundary"]["conditional_inner_dispatch"] = MAP._inner_dispatch_map(payload)
+        return result
 
     def word(self, slot, address):
         # Independent ELF VM/file conversions for the selected sections.
@@ -2973,6 +2982,10 @@ class FirmwareInnerDescriptorTests(unittest.TestCase):
                        "not a direct cross-image", "computed STATUS", "coherence", "bitstream parsing"):
             self.assertTrue(any(phrase in text for text in result["limitations"]), phrase)
         self.assertNotIn(str(ROOT), json.dumps(result))
+
+        # Existing private proofs retain their original dependency/budget scope.
+        private = MAP._inner_descriptor_map(self.payload, self.images)
+        self.assertNotIn("conditional_inner_dispatch", private["paths"]["record_pointer_and_boundary"])
 
     def test_inner_descriptor_independent_original_calls_lengths_fields_and_delay_slots(self):
         first = self.mapping()["paths"]["record_pointer_and_boundary"]
@@ -3030,6 +3043,149 @@ class FirmwareInnerDescriptorTests(unittest.TestCase):
             self.assertEqual((word >> 15) & 63, (word >> 9) & 63)
             self.assertEqual(word & 511, 128)
             self.assertEqual(128 + 128, 256)
+
+    def test_inner_dispatch_conditional_context_not_runtime_certificate(self):
+        result = self.mapping()["paths"]["record_pointer_and_boundary"]["conditional_inner_dispatch"]
+        self.assertEqual(result, MAP._inner_dispatch_map(self.payload))
+        self.assertFalse(result["device_observed"])
+        self.assertIn("STATUS next-word-PC", result["interpretation"])
+        self.assertEqual((len(result["validated_regions"]), result["validated_byte_count"],
+                          result["relocation_record_count"]), (29, 3573, 53))
+        context = result["prefix_context_link"]
+        self.assertEqual((context["packet_codec_byte_offset"], context["packet_channel_byte_offset"],
+                          context["prefix_local_destination"], context["prefix_copy_bytes"]),
+                         (0, 4, 0x3fffc014, 48))
+        self.assertEqual((context["cached_channel_local_address"], context["cached_codec_local_address"]),
+                         (0x3fffc094, 0x3fffc095))
+        self.assertEqual(context["cache_store_elf_virtual_addresses"], [0x276c, 0x2774])
+        self.assertFalse(context["caller_checks_context_status"])
+        self.assertFalse(context["cache_update_proves_restore_success"])
+        self.assertFalse(context["explicit_failure_status_protocol_validated"])
+        self.assertFalse(context["same_context_generation_validated"])
+        self.assertTrue(all(value is False for value in self.mapping()["validation_scope"].values()))
+        for phrase in ("Invalid channel", "caller does not check", "parser-independent"):
+            self.assertTrue(any(phrase in item for item in result["limitations"]))
+        self.assertNotIn(str(ROOT), json.dumps(result))
+
+    def test_inner_dispatch_independent_words_and_all_256_selector_values(self):
+        result = MAP._inner_dispatch_map(self.payload)
+        # Independent VM conversion and original words, not mapper constants.
+        expected_words = {
+            0x2848: 0x08070580, 0x284c: 0x08270504, 0x2854: 0x20000202,
+            0x2858: 0x08070581, 0x285c: 0x08270500, 0x2864: 0x20000081,
+            0x2868: 0x2fff6e80, 0x2764: 0x08088504, 0x2768: 0x08288500,
+            0x276c: 0x10488180, 0x2774: 0x10488381,
+            0x28bc: 0x08070581, 0x28c0: 0x57e07a09, 0x28c4: 0x2000238d,
+            0x28c8: 0x083fa000, 0x28cc: 0x4020fe03, 0x28d0: 0x40208000,
+            0x28d4: 0x38008000,
+        }
+        for address, expected in expected_words.items():
+            with self.subTest(address=address):
+                self.assertEqual(self.word(1, address), expected)
+        expected_targets = (0x2900, 0x2954, 0x29e4, 0x29c8, 0x2974,
+                            0x29e4, 0x29e4, 0x29e4, 0x29ac, 0x2990)
+        selector = result["selector"]
+        self.assertEqual((selector["table_bytes"], selector["byte_domain_size"]), (40, 256))
+        diagnostic_count = 0
+        for value in range(256):
+            if value <= 9:
+                # CONDITIONAL STATUS next-word-PC model: +3 advances three words.
+                address = (((0x28c8 + 4) // 4) + 3 + value) * 4
+                word = self.word(1, address)
+                displacement = (word >> 7) & 0xfffff
+                if displacement & 0x80000:
+                    displacement -= 0x100000
+                target = address + 4 + 4 * displacement
+                self.assertEqual(target, expected_targets[value])
+                self.assertEqual(selector["table"][value]["target_elf_virtual_address"], target)
+            else:
+                # Unsigned BHI guard; no out-of-table read for 10..255.
+                target = 0x29e4
+                self.assertEqual(selector["above_bound_target_elf_virtual_address"], target)
+            diagnostic_count += target == 0x29e4
+        self.assertEqual(diagnostic_count, 250)
+        self.assertFalse(selector["diagnostic_is_hardware_codec_rejection"])
+        self.assertFalse(selector["host_open_enum_equivalence_validated"])
+        # The copied codec byte and the MPEG SiU byte are distinct fields.
+        self.assertNotEqual(self.mapping()["paths"]["mpeg_argument_return_byte"]["packet_P_byte_offset"], 0)
+
+    def test_inner_dispatch_original_rela_symbols_and_uniform_translation_oracle(self):
+        result = MAP._inner_dispatch_map(self.payload)
+        base = 0x79dd8
+        header = struct.unpack_from("<16sHHIIIIIHHHHHH", self.payload, base)
+        sections = [struct.unpack_from("<10I", self.payload, base + header[6] + i * 40)
+                    for i in range(header[-2])]
+        code, rela, symbols = (sections[i] for i in (3, 69, 66))
+        self.assertEqual((rela[1], rela[6], rela[7], rela[9]), (4, 66, 3, 12))
+        records = [(base + rela[4] + i, struct.unpack_from("<IIi", self.payload, base + rela[4] + i))
+                   for i in range(0, rela[5], 12)]
+        self.assertFalse(any(a == 0x2868 or 0x28bc <= a < 0x2900 for _, (a, _, _) in records))
+        expected_calls = ((0x2840, 0x2160), (0x291c, 0x43834), (0x2938, 0x2e3c),
+                          (0x2958, 0x441e4), (0x2974, 0x1e1e8), (0x2990, 0x10000),
+                          (0x29ac, 0x45e04), (0x29c8, 0xe97c))
+        self.assertEqual([(c["call_elf_virtual_address"], c["target_elf_virtual_address"])
+                          for c in result["selected_calls"]], list(expected_calls))
+        for call, (address, target) in zip(result["selected_calls"], expected_calls):
+            matches = [(position, record) for position, record in records if record[0] == address]
+            self.assertEqual(len(matches), 1)
+            position, record = matches[0]
+            symbol_position = base + symbols[4] + (record[1] >> 8) * 16
+            symbol = struct.unpack_from("<IIIBBH", self.payload, symbol_position)
+            self.assertEqual((record[1] & 255, record[2], symbol[1]), (6, 0, target))
+            self.assertEqual(call["relocation_record_blob_file_offset"], position)
+            self.assertEqual(call["symbol_record_blob_file_offset"], symbol_position)
+            self.assertTrue(sections[symbol[5]][2] & 4)
+            for translation in (0, 0x90000, 0x100000):
+                # Algebraic model only, NOT execution of the vendor relocator.
+                delta = translation + symbol[1] + record[2] - (translation + address) - 4
+                original = struct.unpack_from("<I", self.payload,
+                                              base + code[4] + address - code[3])[0]
+                patched = (original & 0xf800007f) | ((delta << 5) & 0x07ffff80)
+                self.assertEqual(patched, original)
+                displacement = (patched >> 7) & 0xfffff
+                if displacement & 0x80000:
+                    displacement -= 0x100000
+                self.assertEqual(translation + address + 4 + displacement * 4,
+                                 translation + target)
+
+    def test_inner_dispatch_all_pinned_bytes_fail_before_interpretation(self):
+        result = MAP._inner_dispatch_map(self.payload)
+        for region in result["validated_regions"]:
+            for delta in range(region["size"]):
+                payload = bytearray(self.payload)
+                payload[region["blob_file_offset"] + delta] ^= 1
+                with self.subTest(role=region["role"], delta=delta), \
+                        mock.patch.object(MAP.struct, "unpack", side_effect=AssertionError("unexpected parse")), \
+                        mock.patch.object(MAP.struct, "unpack_from", side_effect=AssertionError("unexpected parse")), \
+                        self.assertRaisesRegex(MAP.FormatError, "region"):
+                    MAP._inner_dispatch_map(payload)
+
+    def test_inner_dispatch_exact_budgets_and_private_size_gate(self):
+        expected = MAP._inner_dispatch_map(self.payload)
+        with mock.patch.object(MAP, "MAX_INNER_DISPATCH_REGIONS", 29), \
+                mock.patch.object(MAP, "MAX_INNER_DISPATCH_BYTES", 3573), \
+                mock.patch.object(MAP, "MAX_INNER_DISPATCH_RELOCATIONS", 53):
+            self.assertEqual(MAP._inner_dispatch_map(self.payload), expected)
+        for name, limit in (("MAX_INNER_DISPATCH_REGIONS", 28),
+                            ("MAX_INNER_DISPATCH_BYTES", 3572),
+                            ("MAX_INNER_DISPATCH_RELOCATIONS", 52)):
+            with mock.patch.object(MAP, name, limit), \
+                    mock.patch.object(MAP, "bounded", side_effect=AssertionError("unexpected read")), \
+                    self.assertRaisesRegex(MAP.FormatError, "budget"):
+                MAP._inner_dispatch_map(self.payload)
+        for payload in (self.payload[:-1], self.payload + b"\0"):
+            with mock.patch.object(MAP, "bounded", side_effect=AssertionError("unexpected read")), \
+                    self.assertRaisesRegex(MAP.FormatError, "size"):
+                MAP._inner_dispatch_map(payload)
+
+    def test_inner_dispatch_isolated_to_explicit_public_option(self):
+        with mock.patch.object(MAP, "_inner_dispatch_map", side_effect=AssertionError("unexpected dispatch")):
+            MAP._inner_descriptor_map(self.payload, self.images)
+            MAP._open_reply_metadata_linkage(self.payload, self.images)
+            MAP.analyze(self.data)
+            MAP.analyze(self.data, **dict.fromkeys(self.OPTIONS + ("scaler_fir",), True))
+            with self.assertRaisesRegex(AssertionError, "unexpected dispatch"):
+                MAP.analyze(self.data, inner_descriptor=True)
 
     def test_inner_descriptor_each_selected_byte_rejects_before_interpretation(self):
         result = self.mapping()
@@ -3671,6 +3827,7 @@ class FirmwareMfdSourceTests(unittest.TestCase):
             report = MAP.analyze(self.data, wanted, **flags)
             if flags["picture_output"]:
                 self.assertEqual(report["picture_output"].pop("mfd_source"), expected_source)
+            prior_inner_descriptor_projection(report)
             stdout = (json.dumps(report, indent=2, sort_keys=True) + "\n").encode()
             aggregate.update(bytes([mask]))
             aggregate.update(hashlib.sha256(stdout).digest())
@@ -4532,6 +4689,7 @@ class FirmwareStockHostCommandTests(unittest.TestCase):
                 wanted = ("ReadLine",) if mask & 1 else MAP.DEFAULT_SYMBOLS
                 report = MAP.analyze(self.data, wanted, **flags)
                 self.assertNotIn("stock_host_command_closure", report)
+                prior_inner_descriptor_projection(report)
                 stdout = (json.dumps(report, indent=2, sort_keys=True) + "\n").encode()
                 aggregate.update(bytes([mask]))
                 aggregate.update(hashlib.sha256(stdout).digest())
@@ -5553,6 +5711,7 @@ class FirmwarePpbBankContractTests(unittest.TestCase):
                 wanted = ("ReadLine",) if mask & 1 else MAP.DEFAULT_SYMBOLS
                 report = MAP.analyze(self.data, wanted, **flags)
                 self.assertNotIn("ppb_bank_contract", report)
+                prior_inner_descriptor_projection(report)
                 stdout = (json.dumps(report, indent=2, sort_keys=True) + "\n").encode()
                 aggregate.update(bytes([mask]))
                 aggregate.update(hashlib.sha256(stdout).digest())
@@ -6529,6 +6688,7 @@ class FirmwareFreshInitCausalTests(unittest.TestCase):
                 result = MAP.analyze(self.data, wanted, **flags)
                 self.assertNotIn("fresh_init_causal_contract", result)
                 self.assertNotIn("fresh_init_projection", result)
+                prior_inner_descriptor_projection(result)
                 stdout = (json.dumps(result, indent=2, sort_keys=True) + "\n").encode()
                 aggregate.update(bytes([mask]))
                 aggregate.update(hashlib.sha256(stdout).digest())
