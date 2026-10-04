@@ -1,0 +1,446 @@
+--- a/driver/linux/crystalhd_hw.h
++++ b/driver/linux/crystalhd_hw.h
+@@ -400,6 +400,10 @@
+ typedef bool		(*HW_EVENT_NOTIFICATION)(struct crystalhd_hw*, enum BRCM_EVENT);
+ 
+ struct crystalhd_hw {
++#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
++	/* Temporary loader observation; consumed before the first transfer. */
++	bool research_staging_probe;
++#endif
+ 	struct tx_dma_pkt		tx_pkt_pool[DMA_ENGINE_CNT];
+ 	spinlock_t		lock;
+ 
+--- a/driver/linux/crystalhd_fw_research.c
++++ b/driver/linux/crystalhd_fw_research.c
+@@ -1052,8 +1052,11 @@
+ 		goto cleanup;
+ 	}
+ 	result->download_attempted = 1;
++	ctx->hw_ctx->research_staging_probe =
++		request->selector == CRYSTALHD_FW_RESEARCH_VERSION_ONLY;
+ 	sts = crystalhd_fw_download_locked(ctx, &crystalhd_fw_research_owner,
+ 					  firmware->data, firmware->size);
++	ctx->hw_ctx->research_staging_probe = false;
+ 	result->download_status = sts;
+ 	rc = crystalhd_status_to_errno(sts);
+ 	if (rc)
+--- a/driver/linux/crystalhd_fleafuncs.c
++++ b/driver/linux/crystalhd_fleafuncs.c
+@@ -1192,10 +1192,30 @@
+ 	BC_STATUS sts;
+ 	/*uint32_t BuffSz = (BuffSzInDWords * 4); */
+ 	/*uint32_t HBCnt=0; */
++#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
++	bool staging_probe = hw && hw->research_staging_probe;
++	uint32_t bridge_before = 0, bridge_after = 0, observed = 0;
++	/* Fixed 8x8 planar YUV420: Y[64], Cb[16], Cr[16], little-endian DWORDs. */
++	static const uint32_t pattern[24] = {
++		0x40401010, 0xebeb8080, 0x40401010, 0xebeb8080,
++		0x8080ebeb, 0x10104040, 0x8080ebeb, 0x10104040,
++		0x40401010, 0xebeb8080, 0x40401010, 0xebeb8080,
++		0x8080ebeb, 0x10104040, 0x8080ebeb, 0x10104040,
++		0xf0905010, 0xf0905010, 0xf0905010, 0xf0905010,
++		0x105090f0, 0x105090f0, 0x105090f0, 0x105090f0,
++	};
++	uint32_t pattern_readback[24] = {0}, restored[24] = {0};
++	BC_STATUS pattern_status, restore_status;
++#endif
+ 
+ 	bool bRetVal = true;
+ 	bool bSecure = true; // Default production cards. Can be false only for internal Broadcom dev cards
+ 
++#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
++	if (hw)
++		hw->research_staging_probe = false;
++#endif
++
+ /*
+  *-- Step 1. Enable the SRCUBBING and DRAM SCRAMBLING
+  *-- Step 2. Poll for SCRAM_KEY_DONE_INT.
+@@ -1216,6 +1236,11 @@
+ 					       CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE))
+ 		return BC_STS_INV_ARG;
+ 
++#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
++	if (staging_probe && (!hw->pfnDevDRAMRead ||
++	    buffSz - FLEA_FW_SIG_LEN_IN_BYTES - LENGTH_FIELD_SIZE < sizeof(pattern)))
++		return BC_STS_INV_ARG;
++#endif
+ 	dev_dbg(&hw->adp->pdev->dev, "[%s]: Sz:%d\n", __func__, buffSz);
+ 
+ /*-- Step 1. Enable the SRCUBBING and DRAM SCRAMBLING. */
+@@ -1293,6 +1318,14 @@
+ 
+ /*-- Step 4. Write the firmware to DRAM. [Without the Signature, 32-bit access to DRAM] */
+ 
++#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
++	if (staging_probe) {
++		bridge_before = hw->pfnReadDevRegister(hw->adp,
++			BCHP_ARMCR4_BRIDGE_REG_BRIDGE_CTL);
++		if (bridge_before & ARM_RUN_REQ_BIT)
++			return BC_STS_BUSY;
++	}
++#endif
+ 	dev_dbg(&hw->adp->pdev->dev,"[crystalhd_flea_download_fw]: step 4. Write the firmware to DRAM. Sz:%d Bytes\n",
+ 			buffSz - FLEA_FW_SIG_LEN_IN_BYTES - LENGTH_FIELD_SIZE);
+ 
+@@ -1309,6 +1342,58 @@
+ 		return sts;
+ 	}
+ 
++#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
++	if (staging_probe) {
++		sts = hw->pfnDevDRAMRead(hw, FW_DOWNLOAD_START_ADDR, 1,
++				       &observed);
++		bridge_after = hw->pfnReadDevRegister(hw->adp,
++			BCHP_ARMCR4_BRIDGE_REG_BRIDGE_CTL);
++		dev_info(&hw->adp->pdev->dev,
++			 "issue92 staging: words=1 status=%u expected=%08x observed=%08x bridge=%08x/%08x\n",
++			 sts, ((const uint32_t *)pBuffer)[0], observed,
++			 bridge_before, bridge_after);
++		if (sts != BC_STS_SUCCESS)
++			return sts;
++		if ((bridge_after & ARM_RUN_REQ_BIT) ||
++		    observed != ((const uint32_t *)pBuffer)[0])
++			return BC_STS_IO_ERROR;
++		/* Fixed planar YUV staging probe. Every attempted pattern write
++		 * is followed by restoration from the pinned host image, even when
++		 * the write reports failure. Never start modified firmware.
++		 */
++		pattern_status = hw->pfnDevDRAMWrite(hw, FW_DOWNLOAD_START_ADDR,
++						   24, pattern);
++		if (pattern_status == BC_STS_SUCCESS) {
++			pattern_status = hw->pfnDevDRAMRead(hw,
++				FW_DOWNLOAD_START_ADDR, 24, pattern_readback);
++			if (pattern_status == BC_STS_SUCCESS &&
++			    memcmp(pattern_readback, pattern, sizeof(pattern)))
++				pattern_status = BC_STS_IO_ERROR;
++		}
++		restore_status = hw->pfnDevDRAMWrite(hw, FW_DOWNLOAD_START_ADDR,
++						   24, (const uint32_t *)pBuffer);
++		if (restore_status == BC_STS_SUCCESS) {
++			restore_status = hw->pfnDevDRAMRead(hw,
++				FW_DOWNLOAD_START_ADDR, 24, restored);
++			if (restore_status == BC_STS_SUCCESS &&
++			    memcmp(restored, pBuffer, sizeof(restored)))
++				restore_status = BC_STS_IO_ERROR;
++		}
++		bridge_after = hw->pfnReadDevRegister(hw->adp,
++			BCHP_ARMCR4_BRIDGE_REG_BRIDGE_CTL);
++		dev_info(&hw->adp->pdev->dev,
++			 "issue92 pattern: words=24 pattern-status=%u restore-status=%u expected=%08x/%08x observed=%08x/%08x restored=%08x/%08x bridge=%08x\n",
++			 pattern_status, restore_status, pattern[0], pattern[23],
++			 pattern_readback[0], pattern_readback[23],
++			 restored[0], restored[23], bridge_after);
++		if (restore_status != BC_STS_SUCCESS)
++			return restore_status;
++		if (bridge_after & ARM_RUN_REQ_BIT)
++			return BC_STS_IO_ERROR;
++		if (pattern_status != BC_STS_SUCCESS)
++			return pattern_status;
++	}
++#endif
+ /* -- Step 5. Write the signature to CMAC register. */
+ /*
+ -- This is what we need to write to CMAC registers.
+--- a/tests/fw-download.c
++++ b/tests/fw-download.c
+@@ -16,6 +16,7 @@
+ 
+ #include "FleaDefs.h"
+ #include "bcm_70012_regs.h"
++#define CRYSTALHD_ENABLE_FW_RESEARCH
+ 
+ #ifndef FLEA_BLOB_SIZE
+ #error FLEA_BLOB_SIZE is required
+@@ -43,6 +44,7 @@
+ struct pci_dev { struct device dev; };
+ struct crystalhd_adp { struct pci_dev *pdev; };
+ struct crystalhd_hw {
++	bool research_staging_probe;
+ 	struct crystalhd_adp *adp;
+ 	uint32_t (*pfnReadDevRegister)(struct crystalhd_adp *, uint32_t);
+ 	void (*pfnWriteDevRegister)(struct crystalhd_adp *, uint32_t, uint32_t);
+@@ -50,13 +52,15 @@
+ 	void (*pfnWriteFPGARegister)(struct crystalhd_adp *, uint32_t, uint32_t);
+ 	BC_STATUS (*pfnDevDRAMWrite)(struct crystalhd_hw *, uint32_t,
+ 					 uint32_t, const uint32_t *);
++	BC_STATUS (*pfnDevDRAMRead)(struct crystalhd_hw *, uint32_t,
++					uint32_t, uint32_t *);
+ 	uint32_t fwcmdPostAddr, fwcmdPostMbox, fwcmdRespMbox;
+ 	uint32_t FleaRxPicDelAddr, FleaFLLUpdateAddr;
+ };
+ 
+ struct image {
+ 	uint32_t guard_before;
+-	uint32_t words[16];
++	uint32_t words[40];
+ 	uint32_t guard_after;
+ };
+ 
+@@ -70,6 +74,24 @@
+ static unsigned checks, groups, failures;
+ static unsigned dev_reads, dev_writes, fpga_reads, fpga_writes;
+ static unsigned dram_writes, sleeps, heartbeats, cmac_writes;
++static unsigned dram_reads, bridge_reads;
++static uint32_t bridge_initial, bridge_final;
++static bool read_mismatch;
++static BC_STATUS read_status;
++static BC_STATUS pattern_write_status, pattern_read_status;
++static BC_STATUS restore_write_status, restore_read_status;
++static bool pattern_mismatch, restore_mismatch;
++static uint32_t card_first, bridge_restored;
++static uint32_t card_prefix[24], card_suffix;
++static unsigned mismatch_index;
++static const uint32_t pattern_words[24] = {
++	0x40401010, 0xebeb8080, 0x40401010, 0xebeb8080,
++	0x8080ebeb, 0x10104040, 0x8080ebeb, 0x10104040,
++	0x40401010, 0xebeb8080, 0x40401010, 0xebeb8080,
++	0x8080ebeb, 0x10104040, 0x8080ebeb, 0x10104040,
++	0xf0905010, 0xf0905010, 0xf0905010, 0xf0905010,
++	0x105090f0, 0x105090f0, 0x105090f0, 0x105090f0,
++};
+ static unsigned arm_run_writes, flea_status_reads, link_status_reads;
+ static unsigned link_payload_writes;
+ static unsigned link_signature_writes, link_processor_starts;
+@@ -107,6 +129,9 @@
+ {
+ 	check(adp == &adapter, "Flea read uses the admitted adapter");
+ 	dev_reads++;
++	if (offset == BCHP_ARMCR4_BRIDGE_REG_BRIDGE_CTL)
++		return bridge_reads++ == 0 ? bridge_initial :
++			bridge_reads == 2 ? bridge_final : bridge_restored;
+ 	if (offset == BCHP_WRAP_MISC_INTR2_PCI_STATUS)
+ 		return flea_status_reads++ ? BOOT_VER_DONE_BIT :
+ 			SCRAM_KEY_DONE_INT_BIT;
+@@ -134,16 +159,62 @@
+ static BC_STATUS write_dram(struct crystalhd_hw *hw, uint32_t offset,
+ 			    uint32_t words, const uint32_t *buffer)
+ {
+-	check(hw == &hardware && offset == FW_DOWNLOAD_START_ADDR &&
+-	      buffer == expected_image && words,
++	check(hw == &hardware && offset == FW_DOWNLOAD_START_ADDR && words,
+ 	      "Flea DRAM write receives the exact image and start address");
+ 	dram_writes++;
++	if (dram_writes == 2) {
++		check(words == 24 && buffer != expected_image &&
++		      !memcmp(buffer, pattern_words, sizeof(pattern_words)) &&
++		      !cmac_writes && !arm_run_writes,
++		      "pattern writes exactly the fixed 96-byte planar YUV prefix");
++		/* A failed write may mutate only a prefix. */
++		memcpy(card_prefix, buffer,
++		       pattern_write_status == BC_STS_SUCCESS ? sizeof(card_prefix) : 12);
++		card_first = card_prefix[0];
++		return pattern_write_status;
++	}
++	if (dram_writes == 3) {
++		check(words == 24 && buffer == expected_image &&
++		      !cmac_writes && !arm_run_writes,
++		      "every pattern write is restored from the pinned host image");
++		card_first = buffer[0];
++		memcpy(card_prefix, buffer, sizeof(card_prefix));
++		return restore_write_status;
++	}
++	check(dram_writes == 1 && buffer == expected_image,
++	      "initial payload write preserves the original host image");
++	card_first = buffer[0];
++	memcpy(card_prefix, buffer,
++	       (words < 24 ? words : 24) * sizeof(*buffer));
++	card_suffix = words > 24 ? buffer[24] : 0;
+ 	dram_words = words;
+ 	dram_first = buffer[0];
+ 	dram_last = buffer[words - 1];
+ 	return dram_status;
+ }
+ 
++static BC_STATUS read_dram(struct crystalhd_hw *hw, uint32_t offset,
++			   uint32_t words, uint32_t *buffer)
++{
++	check(hw == &hardware && offset == FW_DOWNLOAD_START_ADDR &&
++	      words == (dram_writes == 1 ? 1U : 24U),
++	      "probe reads exactly the admitted loader prefix");
++	check(dram_writes >= 1 && dram_writes <= 3 &&
++	      cmac_writes == 0 && arm_run_writes == 0,
++	      "probe read follows normal write and precedes authentication/start");
++	dram_reads++;
++	BC_STATUS status = dram_writes == 1 ? read_status :
++		dram_writes == 2 ? pattern_read_status : restore_read_status;
++	bool mismatch = dram_writes == 1 ? read_mismatch :
++		dram_writes == 2 ? pattern_mismatch : restore_mismatch;
++	if (status == BC_STS_SUCCESS) {
++		memcpy(buffer, card_prefix, words * sizeof(*buffer));
++		if (mismatch)
++			buffer[dram_writes == 1 ? 0 : mismatch_index] ^= 1U;
++	}
++	return status;
++}
++
+ static uint32_t read_fpga(struct crystalhd_adp *adp, uint32_t offset)
+ {
+ 	check(adp == &adapter, "Link read uses the admitted adapter");
+@@ -213,6 +284,7 @@
+ 		.pfnReadFPGARegister = read_fpga,
+ 		.pfnWriteFPGARegister = write_fpga,
+ 		.pfnDevDRAMWrite = write_dram,
++		.pfnDevDRAMRead = read_dram,
+ 		.fwcmdPostAddr = 0x11111111,
+ 		.fwcmdPostMbox = 0x22222222,
+ 		.fwcmdRespMbox = 0x33333333,
+@@ -228,6 +300,17 @@
+ 	expected_image = firmware.words;
+ 	dev_reads = dev_writes = fpga_reads = fpga_writes = 0;
+ 	dram_writes = sleeps = heartbeats = cmac_writes = 0;
++	dram_reads = bridge_reads = 0;
++	bridge_initial = bridge_final = 0;
++	read_mismatch = false;
++	read_status = BC_STS_SUCCESS;
++	pattern_write_status = pattern_read_status = BC_STS_SUCCESS;
++	restore_write_status = restore_read_status = BC_STS_SUCCESS;
++	pattern_mismatch = restore_mismatch = false;
++	card_first = bridge_restored = 0;
++	memset(card_prefix, 0, sizeof(card_prefix));
++	card_suffix = 0;
++	mismatch_index = 23;
+ 	arm_run_writes = flea_status_reads = link_status_reads = 0;
+ 	link_payload_writes = 0;
+ 	link_signature_writes = link_processor_starts = 0;
+@@ -245,7 +328,7 @@
+ static bool no_effects(void)
+ {
+ 	return !dev_reads && !dev_writes && !fpga_reads && !fpga_writes &&
+-	       !dram_writes && !sleeps && !heartbeats && !cmac_writes &&
++	       !dram_writes && !dram_reads && !sleeps && !heartbeats && !cmac_writes &&
+ 	       !arm_run_writes && !link_status_reads && !link_payload_writes &&
+ 	       !link_signature_writes && !link_processor_starts;
+ }
+@@ -598,6 +681,121 @@
+ 		   "Link traverses the exact accepted maximum image");
+ }
+ 
++static BC_STATUS run_staging(void)
++{
++	hardware.research_staging_probe = true;
++	return crystalhd_flea_download_fw(&hardware,
++		(const uint8_t *)firmware.words, sizeof(firmware.words));
++}
++
++static void staging_results(void)
++{
++	groups++;
++	reset();
++	check(crystalhd_flea_download_fw(&hardware,
++	      (const uint8_t *)firmware.words, sizeof(firmware.words)) ==
++	      BC_STS_SUCCESS && !dram_reads && bridge_reads == 1,
++	      "default-off download adds no readback or admission reads");
++	reset();
++	check(run_staging() == BC_STS_SUCCESS && dram_reads == 3 &&
++	      dram_writes == 3 && bridge_reads == 4 &&
++	      card_first == expected_image[0] && !hardware.research_staging_probe &&
++	      !memcmp(card_prefix, expected_image, sizeof(card_prefix)) &&
++	      card_suffix == expected_image[24] &&
++	      cmac_writes == 4 && arm_run_writes == 1 && heartbeats == 1 &&
++	      !memcmp(&firmware, &firmware_before, sizeof(firmware)),
++	      "matched staging read preserves ordinary authenticated boot");
++	reset();
++	hardware.research_staging_probe = true;
++	check(crystalhd_flea_download_fw(&hardware,
++	      (const uint8_t *)firmware.words, 96 + 16 + 4 - 4) ==
++	      BC_STS_INV_ARG && no_effects() && !hardware.research_staging_probe,
++	      "short valid payload rejects before hardware or pattern access");
++	reset();
++	hardware.pfnDevDRAMRead = NULL;
++	check(run_staging() == BC_STS_INV_ARG && no_effects() &&
++	      !hardware.research_staging_probe,
++	      "missing read callback rejects and consumes flag before MMIO");
++	reset();
++	bridge_initial = ARM_RUN_REQ_BIT;
++	check(run_staging() == BC_STS_BUSY && !dram_writes && !dram_reads &&
++	      !cmac_writes && !arm_run_writes && !heartbeats,
++	      "pre-write asserted run request prevents payload and start");
++	reset();
++	dram_status = BC_STS_IO_XFR_ERROR;
++	check(run_staging() == BC_STS_IO_XFR_ERROR && !dram_reads &&
++	      !cmac_writes && !arm_run_writes && !heartbeats,
++	      "payload write failure never advances to readback or start");
++	for (int status = BC_STS_ERROR; status <= BC_STS_PWR_MGMT; status++) {
++		if (status == BC_STS_SUCCESS)
++			continue;
++		reset();
++		read_status = (BC_STATUS)status;
++		check(run_staging() == read_status && dram_reads == 1 &&
++		      !cmac_writes && !arm_run_writes && !heartbeats &&
++		      !hardware.research_staging_probe &&
++		      !memcmp(&firmware, &firmware_before, sizeof(firmware)),
++		      "every non-success read status aborts before signature/start");
++	}
++	reset();
++	read_mismatch = true;
++	check(run_staging() == BC_STS_IO_ERROR && dram_reads == 1 &&
++	      !cmac_writes && !arm_run_writes && !heartbeats,
++	      "readback mismatch prevents signature and firmware execution");
++	reset();
++	bridge_final = ARM_RUN_REQ_BIT;
++	check(run_staging() == BC_STS_IO_ERROR && dram_reads == 1 &&
++	      !cmac_writes && !arm_run_writes && !heartbeats,
++	      "post-read asserted run request aborts before further effects");
++	for (unsigned stage = 0; stage < 4; stage++) {
++		for (int status = BC_STS_ERROR; status <= BC_STS_PWR_MGMT; status++) {
++			if (status == BC_STS_SUCCESS)
++				continue;
++			reset();
++			BC_STATUS *injected[] = { &pattern_write_status,
++				&pattern_read_status, &restore_write_status,
++				&restore_read_status };
++			*injected[stage] = (BC_STATUS)status;
++			check(run_staging() == (BC_STATUS)status && dram_writes == 3 &&
++			      !cmac_writes && !arm_run_writes && !heartbeats &&
++			      !hardware.research_staging_probe &&
++			      !memcmp(&firmware, &firmware_before, sizeof(firmware)),
++			      "all pattern/restore failures attempt restoration and abort");
++			if (stage < 2)
++				check(!memcmp(card_prefix, expected_image, sizeof(card_prefix)) &&
++				      card_suffix == expected_image[24],
++				      "failed pattern operation restores entire prefix, preserves suffix");
++		}
++	}
++	for (unsigned stage = 0; stage < 3; stage++) {
++		reset();
++		pattern_mismatch = stage == 0;
++		restore_mismatch = stage == 1;
++		bridge_restored = stage == 2 ? ARM_RUN_REQ_BIT : 0;
++		check(run_staging() == BC_STS_IO_ERROR && dram_writes == 3 &&
++		      dram_reads == 3 && !cmac_writes && !arm_run_writes &&
++		      !heartbeats && card_first == expected_image[0],
++	      "pattern/restore mismatch or final run request aborts after restore");
++	}
++	for (unsigned stage = 0; stage < 2; stage++) {
++		reset();
++		mismatch_index = 0;
++		pattern_mismatch = stage == 0;
++		restore_mismatch = stage == 1;
++		check(run_staging() == BC_STS_IO_ERROR && dram_writes == 3 &&
++		      dram_reads == 3 && !cmac_writes && !arm_run_writes &&
++		      !memcmp(card_prefix, expected_image, sizeof(card_prefix)) &&
++		      card_suffix == expected_image[24],
++		      "first-word mismatch also restores and rejects before execution");
++	}
++	reset();
++	pattern_write_status = BC_STS_TIMEOUT;
++	restore_write_status = BC_STS_IO_ERROR;
++	check(run_staging() == BC_STS_IO_ERROR && dram_writes == 3 &&
++	      dram_reads == 1 && !cmac_writes && !arm_run_writes && !heartbeats,
++	      "restore error wins over pattern error without bypassing restoration");
++}
++
+ int main(void)
+ {
+ 	reset();
+@@ -607,6 +805,7 @@
+ 	flea_results();
+ 	link_results();
+ 	sized_images();
++	staging_results();
+ 	printf("Firmware download safety passed (%u groups, %u checks, %u failures)\n",
+ 	       groups, checks, failures);
+ 	return failures ? EXIT_FAILURE : EXIT_SUCCESS;

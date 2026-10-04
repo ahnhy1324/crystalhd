@@ -114,6 +114,10 @@ fw-command-check:
 fw-download-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/fw-download.sh
 
+.PHONY: fw-staging-check
+fw-staging-check:
+	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/fw-staging.sh
+
 fw-qemu-check:
 	$(PYTHON3) -B tests/fw-qemu.py
 
@@ -153,7 +157,7 @@ v4l2-parent-check:
 ioctl-dispatch-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/ioctl-dispatch.sh
 
-architecture-check: command-pm-check fw-command-check fw-download-check fw-probe-check tx-admission-check h264-stream-check rx-ownership-check flea-rx-metadata-check flea-dram-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check
+architecture-check: command-pm-check fw-command-check fw-download-check fw-staging-check fw-probe-check tx-admission-check h264-stream-check rx-ownership-check flea-rx-metadata-check flea-dram-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check
 
 pib-check:
 	CC="$(CC)" sh ./tests/flea-pib.sh
