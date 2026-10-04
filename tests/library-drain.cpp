@@ -1725,7 +1725,7 @@ static bool SelfTest()
                 check(delivered.AfterDelivered(&delivery, frame, true, true,
                     SclViewFixture::Read, SclViewFixture::Write, false) && delivery.calls == calls,
                     "SCL view excludes every non-milestone without diagnostic I/O");
-            for (const std::pair<bool, bool> barrier : {std::make_pair(false, false),
+            for (const std::pair<bool, bool> &barrier : {std::make_pair(false, false),
                     std::make_pair(false, true), std::make_pair(true, false)})
                 check(!delivered.AfterDelivered(&delivery, stage ? 179 : 1, barrier.first, barrier.second,
                     SclViewFixture::Read, SclViewFixture::Write, false) && delivery.calls == calls && !delivered.failed,
