@@ -283,6 +283,8 @@ typedef struct _DTS_LIB_CONTEXT{
 	char			FwBinFile[MAX_PATH+1];	/* Firmware Bin file place holder */
 
 	BC_OUTPUT_FORMAT b422Mode;				/* 422 Mode Identifier for Link */
+	/* Flea keeps its capture/PIB source YUY2; UYVY is a host-output request. */
+	bool softwareUyvy;
 	uint32_t		HWOutPicWidth;
 	uint32_t		HWOutPicHeight;
 
@@ -359,6 +361,8 @@ void DtsReleaseMemPools(DTS_LIB_CONTEXT *Ctx);
 BC_STATUS DtsAddOutBuff(DTS_LIB_CONTEXT *Ctx, PVOID buff, uint32_t BuffSz, uint32_t flags);
 BC_STATUS DtsRelRxBuff(DTS_LIB_CONTEXT *Ctx, BC_DEC_YUV_BUFFS *buff,BOOL SkipAddBuff);
 BC_STATUS DtsFetchOutInterruptible(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *DecOut, uint32_t dwTimeout);
+BC_STATUS DtsPrepareOutputPacking(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *output,
+	uint32_t allocationBytes);
 BC_STATUS DtsCancelFetchOutInt(DTS_LIB_CONTEXT *Ctx);
 BC_STATUS DtsUnmapYUVBuffs(DTS_LIB_CONTEXT *Ctx);
 BC_STATUS DtsMapYUVBuffs(DTS_LIB_CONTEXT *Ctx);

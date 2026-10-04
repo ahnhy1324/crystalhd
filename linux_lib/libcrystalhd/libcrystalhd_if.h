@@ -1261,6 +1261,9 @@ Description:
 
     Use "DtsIs422Supported" to find whether 422 mode is supported.
 
+    On BCM70015, select this before registering capture buffers. UYVY is
+    delivered by host conversion from the device's YUY2 capture layout.
+
 Parameters:
 
     hDevice     Handle to device. This is obtained via a prior call to

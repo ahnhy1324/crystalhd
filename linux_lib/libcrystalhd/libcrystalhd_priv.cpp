@@ -38,6 +38,9 @@
 #include <sys/ioctl.h>
 #include <time.h>
 #include <unistd.h>
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 #include "7411d.h"
 #include "libcrystalhd_if.h"
 #include "libcrystalhd_int_if.h"
@@ -1428,6 +1431,65 @@ BC_STATUS DtsRelRxBuff(DTS_LIB_CONTEXT *Ctx, BC_DEC_YUV_BUFFS *buff, BOOL SkipAd
 	return sts;
 }
 
+/* Operate only on a fetched host lease, after PIB extraction/first-word
+ * repair. The capture/PIB source and subsequent repost remain YUY2.
+ */
+BC_STATUS DtsPrepareOutputPacking(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *output,
+	uint32_t allocationBytes)
+{
+	if (!Ctx || !output)
+		return BC_STS_INV_ARG;
+	output->b422Mode = Ctx->b422Mode;
+	if (!Ctx->softwareUyvy)
+		return BC_STS_SUCCESS;
+	if (Ctx->DevId != BC_PCI_DEVID_FLEA || Ctx->b422Mode != OUTPUT_MODE422_YUY2)
+		return BC_STS_INV_ARG;
+	if ((output->PoutFlags & BC_POUT_FLAGS_FMT_CHANGE) ||
+		(output->PicInfo.flags & VDEC_FLAG_EOS)) {
+		output->b422Mode = OUTPUT_MODE422_UYVY;
+		return BC_STS_SUCCESS;
+	}
+	if (output->PoutFlags & BC_POUT_FLAGS_ENCRYPTED)
+		return BC_STS_NOT_IMPL;
+	const uint32_t width = output->PicInfo.width, height = output->PicInfo.height;
+	const bool field = !Ctx->VidParams.Progressive;
+	if (!(output->PoutFlags & BC_POUT_FLAGS_PIB_VALID) || !output->Ybuff ||
+		!width || (width & 1) || width > 1920 || !height || height > 1088 ||
+		Ctx->HWOutPicWidth < width || Ctx->HWOutPicWidth > 1920 ||
+		(field && (height & 1)))
+		return BC_STS_IO_XFR_ERROR;
+	const uint32_t rows = field ? height / 2 : height;
+	const uint64_t rowBytes = (uint64_t)width * 2;
+	const uint64_t pitch = (uint64_t)Ctx->HWOutPicWidth * 2;
+	const uint64_t doneBytes = (uint64_t)output->YBuffDoneSz * 4;
+	/* Check both the transfer's DWORD extent and the real registration.
+	 * Division keeps pointer arithmetic representable on legacy i386.
+	 */
+	if (!rows || pitch > SIZE_MAX || doneBytes > allocationBytes ||
+		doneBytes < rowBytes || allocationBytes < rowBytes ||
+		(uint64_t)(rows - 1) > (doneBytes - rowBytes) / pitch ||
+		(uint64_t)(rows - 1) > ((uint64_t)allocationBytes - rowBytes) / pitch)
+		return BC_STS_IO_XFR_ERROR;
+	for (uint32_t y = 0; y < rows; ++y) {
+		uint8_t *row = output->Ybuff + (size_t)y * (size_t)pitch;
+		size_t x = 0;
+#if defined(__SSE2__)
+		for (; rowBytes - x >= 16; x += 16) {
+			const __m128i value = _mm_loadu_si128((const __m128i *)(row + x));
+			_mm_storeu_si128((__m128i *)(row + x),
+				_mm_or_si128(_mm_srli_epi16(value, 8), _mm_slli_epi16(value, 8)));
+		}
+#endif
+		for (; x < rowBytes; x += 2) {
+			const uint8_t first = row[x];
+			row[x] = row[x + 1];
+			row[x + 1] = first;
+		}
+	}
+	output->b422Mode = OUTPUT_MODE422_UYVY;
+	return BC_STS_SUCCESS;
+}
+
 //------------------------------------------------------------------------
 // Name: DtsFetchOutInterruptible
 // Description: Get uncompressed video data from hardware.
@@ -1470,8 +1532,25 @@ BC_STATUS DtsFetchOutInterruptible(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, 
 	DtsLock(Ctx);
 	const bool cancel = Ctx->CancelWaiting;
 	DtsUnLock(Ctx);
-	if(!cancel)
+	if (!cancel) {
+		if (sts == BC_STS_SUCCESS) {
+			const BC_DEC_YUV_BUFFS &buffer = Ctx->pOutData->u.DecOutData.OutPutBuffs;
+			BC_STATUS packing = BC_STS_SUCCESS;
+			if (Ctx->softwareUyvy && !(pOut->PoutFlags & BC_POUT_FLAGS_FMT_CHANGE) &&
+				!(pOut->PicInfo.flags & VDEC_FLAG_EOS) &&
+				(!(Ctx->pOutData->u.DecOutData.Flags & COMP_FLAG_DATA_VALID) ||
+				 buffer.YuvBuff != pOut->Ybuff || buffer.UVbuffOffset || buffer.UVBuffDoneSz))
+				packing = BC_STS_IO_XFR_ERROR;
+			else
+				packing = DtsPrepareOutputPacking(Ctx, pOut, buffer.YuvBuffSz);
+			if (packing != BC_STS_SUCCESS) {
+				const BC_STATUS released = DtsRelRxBuff(Ctx, &Ctx->pOutData->u.RxBuffs, FALSE);
+				pOut->Ybuff = pOut->UVbuff = NULL;
+				return released == BC_STS_SUCCESS ? packing : released;
+			}
+		}
 		return sts;
+	}
 
 	/* Cancel request waiting.. Release Buffer back
 	 * to driver and trigger Cancel wait.
@@ -1645,6 +1724,7 @@ BC_STATUS DtsInitInterface(int hDevice, HANDLE *RetCtx, uint32_t mode)
 	Ctx->OpMode		= mode;
 	Ctx->CfgFlags	= BC_DTS_DEF_CFG;
 	Ctx->b422Mode	= OUTPUT_MODE420;
+	Ctx->softwareUyvy = false;
 
 	Ctx->VidParams.MediaSubType = BC_MSUBTYPE_INVALID;
 	Ctx->VidParams.StartCodeSz = 0;
@@ -1826,6 +1906,8 @@ BC_STATUS DtsNotifyOperatingMode(HANDLE hDevice,uint32_t Mode)
 BC_STATUS DtsSetupConfig(DTS_LIB_CONTEXT *Ctx, uint32_t did, uint32_t rid, uint32_t FixFlags)
 {
 	Ctx->DevId = did;
+	if (did == BC_PCI_DEVID_FLEA)
+		Ctx->b422Mode = OUTPUT_MODE422_YUY2;
 	Ctx->hwRevId = rid;
 	Ctx->FixFlags = FixFlags;
 

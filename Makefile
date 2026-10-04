@@ -30,7 +30,7 @@ library-check:
 		test_sources="linux_lib/libcrystalhd/libcrystalhd_priv.cpp linux_lib/libcrystalhd/libcrystalhd_if.cpp"; \
 		case $$lib_test in \
 			copy|planar) test_wrap=; test_sources=linux_lib/libcrystalhd/libcrystalhd_int_if.cpp ;; \
-			format) test_wrap=; test_sources="linux_lib/libcrystalhd/libcrystalhd_int_if.cpp linux_lib/libcrystalhd/libcrystalhd_priv.cpp" ;; \
+			format) test_wrap=; test_sources="linux_lib/libcrystalhd/libcrystalhd_int_if.cpp linux_lib/libcrystalhd/libcrystalhd_priv.cpp linux_lib/libcrystalhd/libcrystalhd_if.cpp" ;; \
 			status|color) test_wrap=-Wl,--wrap=ioctl; \
 				test_extra=linux_lib/libcrystalhd/libcrystalhd_int_if.cpp ;; \
 			clock) test_wrap=-Wl,--wrap=ioctl,--wrap=usleep; \

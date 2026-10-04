@@ -82,7 +82,8 @@ for bits in $build_bits; do
             copy|planar) set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_int_if.cpp" ;;
             format)
                 set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_int_if.cpp" \
-                    "$build_dir/linux_lib/libcrystalhd/libcrystalhd_priv.cpp" ;;
+                    "$build_dir/linux_lib/libcrystalhd/libcrystalhd_priv.cpp" \
+                    "$build_dir/linux_lib/libcrystalhd/libcrystalhd_if.cpp" ;;
             status|color)
                 set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_if.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_priv.cpp" \
