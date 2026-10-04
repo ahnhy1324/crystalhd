@@ -425,6 +425,117 @@ struct SclViewFixture {
     }
 };
 
+// Passive, fixed configuration reads only. 0x50/0x80 pin this board's prior
+// native MFD/SCL observations, not universal revision defaults. Raw remap and
+// colour values are opaque; matching brackets do not establish ownership.
+static const uint32_t kMfdAdmissionAddresses[10] = {
+    BCHP_MFD_REVISION_ID, BCHP_MFD_FEEDER_CNTL, BCHP_MFD_FIXED_COLOUR,
+    BCHP_MFD_DATA_MODE, BCHP_MFD_RANGE_EXP_REMAP_CNTL, BCHP_MFD_TEST_MODE_CNTL,
+    BCHP_SCL_HD_REVISION_ID, BCHP_SCL_HD_BVB_IN_STATUS,
+    BCHP_MFD_REVISION_ID, BCHP_SCL_HD_REVISION_ID
+};
+static const char *const kMfdAdmissionNames[10] = {"mfd-rev", "ctrl", "fixed-colour",
+    "data-mode", "remap", "test-mode", "scl-rev", "scl-status", "closing-mfd-rev", "closing-scl-rev"};
+enum class MfdAdmissionFailure { None, Argument, Read, Revision, Reserved, Mode, EngineStatus, Unstable };
+struct MfdAdmissionSnapshot {
+    uint32_t raw[20] = {};
+    unsigned reads = 0, measured = 0;
+    BC_STATUS status = BC_STS_SUCCESS;
+    MfdAdmissionFailure failure = MfdAdmissionFailure::None;
+};
+static bool ReadMfdAdmission(HANDLE handle, MfdAdmissionSnapshot *snapshot,
+    SclViewProbe::Reader reader = DtsDevRegisterRead)
+{
+    if (!snapshot) return false;
+    *snapshot = MfdAdmissionSnapshot{};
+    if (!handle || !reader) { snapshot->failure = MfdAdmissionFailure::Argument; return false; }
+    const uint32_t masks[10] = {0xffff, 0xf, 0xffffff, 1, 0x3ff, 0xf, 0xffff, 0xff, 0xffff, 0xffff};
+    for (unsigned index = 0; index < 20; ++index) {
+        const unsigned field = index % 10;
+        uint32_t raw = 0;
+        ++snapshot->reads;
+        snapshot->status = reader(handle, kMfdAdmissionAddresses[field], &raw);
+        if (snapshot->status != BC_STS_SUCCESS) snapshot->failure = MfdAdmissionFailure::Read;
+        else {
+            snapshot->raw[index] = raw; ++snapshot->measured;
+            if (raw & ~masks[field]) snapshot->failure = MfdAdmissionFailure::Reserved;
+            else if ((field == 0 || field == 8) && raw != 0x50)
+                snapshot->failure = MfdAdmissionFailure::Revision;
+            else if ((field == 6 || field == 9) && raw != 0x80)
+                snapshot->failure = MfdAdmissionFailure::Revision;
+            else if ((field == 1 || field == 3 || field == 5) && raw)
+                snapshot->failure = MfdAdmissionFailure::Mode;
+            else if (field == 7 && raw) snapshot->failure = MfdAdmissionFailure::EngineStatus;
+        }
+        if (snapshot->failure != MfdAdmissionFailure::None) return false;
+    }
+    if (std::memcmp(snapshot->raw, snapshot->raw + 10, 10 * sizeof(uint32_t))) {
+        snapshot->failure = MfdAdmissionFailure::Unstable; return false;
+    }
+    return true;
+}
+struct MfdAdmissionObserver {
+    bool enabled = false, failed = false;
+    unsigned attempted = 0, reads = 0;
+    HANDLE owner = nullptr;
+    bool Observe(HANDLE handle, unsigned stage, SclViewProbe::Reader reader = DtsDevRegisterRead,
+                 bool report = true) {
+        if (!enabled) return true;
+        if (failed) return false;
+        if (!handle || !reader || stage > 1 || (attempted & (1U << stage)) ||
+            (stage == 1 && (attempted != 1 || handle != owner))) { failed = true; return false; }
+        attempted |= 1U << stage;
+        if (stage == 0) owner = handle;
+        MfdAdmissionSnapshot snapshot;
+        const bool ok = ReadMfdAdmission(handle, &snapshot, reader);
+        reads += snapshot.reads; failed = !ok;
+        if (report) {
+            const char *name = stage ? "first-output-after-release-and-owned-write" : "after-OPEN/pre-START";
+            const char *const failures[] = {"none", "argument", "read-status", "revision",
+                "reserved-bits", "mode-not-zero", "observed-engine-status", "tuple-unstable"};
+            std::printf("MFD admission: stage=%s reads=%u total-reads=%u measured=%u api-status=%d "
+                "failure=%s result=%s raw-stable=%s board-profile=MFD50/SCL80 target-writes=0 non-atomic=yes "
+                "API-success-not-transport-certificate=yes ownership/source-lease/completion-certified=no\n",
+                name, snapshot.reads, reads, snapshot.measured, snapshot.status,
+                failures[static_cast<unsigned>(snapshot.failure)], ok ? "PASS" : "FAIL",
+                snapshot.measured == 20 ? (std::memcmp(snapshot.raw, snapshot.raw + 10,
+                    10 * sizeof(uint32_t)) ? "no" : "yes") : "NOT-READ");
+            for (unsigned index = 0; index < 20; ++index) {
+                std::printf("MFD admission raw: stage=%s pass=%u %s@%08x=", name, index / 10,
+                    kMfdAdmissionNames[index % 10], kMfdAdmissionAddresses[index % 10]);
+                if (index < snapshot.measured) std::printf("%08x", snapshot.raw[index]);
+                else std::printf("NOT-READ");
+                std::printf("\n");
+            }
+            std::fflush(stdout);
+        }
+        return ok;
+    }
+    bool AfterDelivered(HANDLE handle, unsigned frame, bool released, bool written,
+                        SclViewProbe::Reader reader = DtsDevRegisterRead, bool report = true) {
+        if (!enabled) return true;
+        if (!released || !written) return false;
+        return frame == 1 ? Observe(handle, 1, reader, report) : !failed;
+    }
+};
+struct MfdAdmissionFixture {
+    unsigned calls = 0, fail_at = 20;
+    bool valid = true;
+    BC_STATUS status = BC_STS_ERROR;
+    uint32_t raw[20] = {0x50, 0, 0x405ac3, 0, 0x21, 0, 0x80, 0, 0x50, 0x80,
+                       0x50, 0, 0x405ac3, 0, 0x21, 0, 0x80, 0, 0x50, 0x80};
+    static BC_STATUS Read(HANDLE handle, uint32_t address, uint32_t *value) {
+        auto *fixture = static_cast<MfdAdmissionFixture *>(handle);
+        const uint32_t expected[] = {0x540000, 0x540004, 0x540008, 0x540044, 0x54004c,
+            0x540074, 0x540800, 0x5408a4, 0x540000, 0x540800};
+        const unsigned index = fixture->calls++;
+        if (index >= 20) { fixture->valid = false; return BC_STS_ERROR; }
+        fixture->valid &= address == expected[index % 10] && value;
+        *value = index == fixture->fail_at ? 0xdeadbeefU : fixture->raw[index];
+        return index == fixture->fail_at ? fixture->status : BC_STS_SUCCESS;
+    }
+};
+
 static volatile std::sig_atomic_t interrupted;
 static void Interrupt(int) { interrupted = 1; }
 static const unsigned kMaximumPackets = 10000;
@@ -482,6 +593,7 @@ struct Options {
     bool observe_chroma = false;
     bool observe_scl_config = false;
     unsigned observe_scl_view = 0;
+    bool observe_mfd_config = false;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
 };
 
@@ -509,6 +621,10 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
     }
     if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-scl-config")) {
         options->observe_scl_config = true;
+        arguments.pop_back();
+    }
+    if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-mfd-config")) {
+        options->observe_mfd_config = true;
         arguments.pop_back();
     }
     if (arguments.size() >= 3 && !std::strcmp(arguments[arguments.size() - 2], "--observe-scl-view")) {
@@ -548,7 +664,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         arguments.resize(arguments.size() - 2);
     }
     if (arguments.size() == 2 && !std::strcmp(arguments[1], "--self-test")) {
-        if (options->capture_path || options->observe_chroma || options->observe_scl_config || options->observe_scl_view || options->scaler_test || options->mpeg1_via_mpeg2 ||
+        if (options->capture_path || options->observe_chroma || options->observe_scl_config || options->observe_scl_view || options->observe_mfd_config || options->scaler_test || options->mpeg1_via_mpeg2 ||
             options->h263_via_divx || options->open_only) return false;
         options->mode = Mode::SelfTest;
         return true;
@@ -580,16 +696,27 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
          options->output_format != OUTPUT_MODE422_YUY2 || options->observe_scl_config ||
          options->observe_chroma || options->mpeg1_via_mpeg2 || options->h263_via_divx ||
          options->open_only)) return false;
+    if (options->observe_mfd_config &&
+        (!hardware || !options->capture_path || !options->scaler_test || options->scale_width ||
+         options->expected != 180 || options->iterations != 1 || options->output_format != OUTPUT_MODE422_YUY2 ||
+         options->observe_scl_config || options->observe_scl_view || options->observe_chroma ||
+         options->mpeg1_via_mpeg2 || options->h263_via_divx || options->open_only)) return false;
     return !options->capture_path ||
         (hardware && options->scaler_test && !options->open_only && options->iterations == 1);
 }
 
 static bool SclInputAdmitted(const Options &options, const Input &input)
 {
-    return (!options.observe_scl_config && !options.observe_scl_view) ||
+    return (!options.observe_scl_config && !options.observe_scl_view && !options.observe_mfd_config) ||
         (options.expected == 180 && input.codec == AV_CODEC_ID_MPEG2VIDEO &&
          input.subtype == BC_MSUBTYPE_MPEG2VIDEO && input.progressive &&
          input.width == 640 && input.height == 360 && input.packets.size() == 180);
+}
+
+static bool NeedsRawIo(const Options &options)
+{
+    return options.observe_chroma || options.observe_scl_config ||
+        options.observe_scl_view || options.observe_mfd_config;
 }
 
 // Test-only MPEG-1 admission through the existing algorithm-1 channel. Do not
@@ -1867,6 +1994,185 @@ static bool SelfTest()
             check(!SclInputAdmitted(changed, altered), "SCL view input codec/shape/count mismatches refuse before device open");
         }
     }
+    for (unsigned stage = 0; stage < 2; ++stage) {
+        for (unsigned position = 0; position < 20; ++position) {
+            for (int code = -1; code <= BC_STS_PWR_MGMT; ++code) {
+                if (code == BC_STS_SUCCESS) continue;
+                MfdAdmissionFixture fixture; fixture.fail_at = position;
+                fixture.status = static_cast<BC_STATUS>(code);
+                struct { uint32_t before = 0x12345678; MfdAdmissionSnapshot value;
+                         uint32_t after = 0x87654321; } guarded;
+                check(!ReadMfdAdmission(&fixture, &guarded.value, MfdAdmissionFixture::Read) &&
+                    fixture.valid && fixture.calls == position + 1 && guarded.value.reads == position + 1 &&
+                    guarded.value.measured == position && guarded.value.status == code &&
+                    guarded.value.failure == MfdAdmissionFailure::Read &&
+                    guarded.before == 0x12345678 && guarded.after == 0x87654321,
+                    "MFD every API failure stops the literal 20-address sequence within canaries");
+                bool unpublished = true;
+                for (unsigned unread = position; unread < 20; ++unread)
+                    unpublished &= guarded.value.raw[unread] == 0;
+                check(unpublished, "MFD poisoned failed output and all later words remain unmeasured");
+                MfdAdmissionObserver subject; subject.enabled = true;
+                fixture.calls = 0; fixture.fail_at = 20;
+                if (stage) check(subject.Observe(&fixture, 0, MfdAdmissionFixture::Read, false),
+                    "MFD second-stage fault has accepted preSTART admission");
+                fixture.calls = 0; fixture.fail_at = position;
+                check(!subject.Observe(&fixture, stage, MfdAdmissionFixture::Read, false) && subject.failed &&
+                    fixture.valid && fixture.calls == position + 1 &&
+                    subject.reads == stage * 20 + position + 1, "MFD failure latches at either stage without retries");
+                MfdAdmissionFixture other;
+                check(!subject.Observe(&fixture, stage, MfdAdmissionFixture::Read, false) &&
+                    !subject.Observe(&other, 1, MfdAdmissionFixture::Read, false) &&
+                    !subject.AfterDelivered(&fixture, 1, true, true, MfdAdmissionFixture::Read, false) &&
+                    fixture.calls == position + 1 && other.calls == 0,
+                    "MFD failed/repeated/changed-handle calls never read again");
+            }
+        }
+    }
+    for (unsigned position = 0; position < 20; ++position) {
+        const unsigned field = position % 10;
+        const unsigned widths[] = {16, 4, 24, 1, 10, 4, 16, 8, 16, 16};
+        for (unsigned bit = widths[field]; bit < 32; ++bit) {
+            MfdAdmissionFixture fixture; fixture.raw[position] |= 1U << bit;
+            MfdAdmissionSnapshot snapshot;
+            check(!ReadMfdAdmission(&fixture, &snapshot, MfdAdmissionFixture::Read) && fixture.valid &&
+                fixture.calls == position + 1 && snapshot.measured == position + 1 &&
+                snapshot.failure == MfdAdmissionFailure::Reserved, "MFD every reserved bit is fail-fast at both passes");
+        }
+        std::vector<uint32_t> invalid;
+        if (field == 0 || field == 6 || field == 8 || field == 9)
+            invalid = {0U, 1U, 0xffffU, (field == 0 || field == 8) ? 0x51U : 0x81U};
+        if (field == 1 || field == 3 || field == 5 || field == 7)
+            for (unsigned bit = 0; bit < widths[field]; ++bit) invalid.push_back(1U << bit);
+        for (uint32_t raw : invalid) {
+            MfdAdmissionFixture fixture; fixture.raw[position] = raw;
+            MfdAdmissionSnapshot snapshot;
+            const auto failure = field == 7 ? MfdAdmissionFailure::EngineStatus :
+                (field == 1 || field == 3 || field == 5) ? MfdAdmissionFailure::Mode : MfdAdmissionFailure::Revision;
+            check(!ReadMfdAdmission(&fixture, &snapshot, MfdAdmissionFixture::Read) && fixture.valid &&
+                fixture.calls == position + 1 && snapshot.failure == failure,
+                "MFD each defined mode/status bit and wrong board revision reject without later reads");
+        }
+    }
+    for (unsigned field : {2U, 4U}) {
+        for (uint32_t raw : {0U, 1U, field == 2 ? 0xffffffU : 0x3ffU}) {
+            MfdAdmissionFixture fixture; fixture.raw[field] = fixture.raw[field + 10] = raw;
+            MfdAdmissionSnapshot snapshot;
+            check(ReadMfdAdmission(&fixture, &snapshot, MfdAdmissionFixture::Read) && fixture.valid &&
+                fixture.calls == 20 && snapshot.measured == 20, "MFD admitted colour/remap scalars remain opaque, including extremes");
+            fixture.calls = 0; fixture.raw[field + 10] ^= 1;
+            check(!ReadMfdAdmission(&fixture, &snapshot, MfdAdmissionFixture::Read) && fixture.valid &&
+                fixture.calls == 20 && snapshot.failure == MfdAdmissionFailure::Unstable,
+                "MFD admissible repeat changes reject only after the complete snapshot without retargeting");
+        }
+    }
+    {
+        MfdAdmissionFixture fixture; MfdAdmissionObserver disabled;
+        check(disabled.Observe(nullptr, 99, nullptr, false) &&
+            disabled.AfterDelivered(nullptr, 1, false, false, nullptr, false) && !disabled.reads,
+            "MFD default disabled observer is a pure zero-I/O no-op");
+        for (unsigned argument = 0; argument < 4; ++argument) {
+            MfdAdmissionObserver invalid; invalid.enabled = true;
+            check(!invalid.Observe(argument == 0 ? nullptr : &fixture, argument == 2 ? 2 : argument == 3 ? 1 : 0,
+                argument == 1 ? nullptr : MfdAdmissionFixture::Read, false) && fixture.calls == 0 && invalid.failed,
+                "MFD invalid handle/callback/stage/order refuses before first read");
+        }
+        check(!ReadMfdAdmission(&fixture, nullptr, MfdAdmissionFixture::Read) && fixture.calls == 0,
+            "MFD null snapshot has no I/O");
+        for (bool change_handle : {false, true}) {
+            MfdAdmissionObserver subject; subject.enabled = true; fixture.calls = 0;
+            MfdAdmissionFixture other;
+            check(subject.Observe(&fixture, 0, MfdAdmissionFixture::Read, false) &&
+                !subject.Observe(change_handle ? &other : &fixture, change_handle ? 1 : 0,
+                    MfdAdmissionFixture::Read, false) && subject.failed && fixture.calls == 20 && other.calls == 0,
+                "MFD duplicate admission or changed output handle latches without more I/O");
+        }
+        MfdAdmissionObserver delivered; delivered.enabled = true; fixture.calls = 0;
+        check(delivered.Observe(&fixture, 0, MfdAdmissionFixture::Read, false), "MFD delivery preSTART setup");
+        fixture.calls = 0;
+        for (unsigned frame : {0U, 2U, 179U, 180U})
+            check(delivered.AfterDelivered(&fixture, frame, true, true, MfdAdmissionFixture::Read, false) &&
+                fixture.calls == 0, "MFD never observes FMT/last-frame/EOS or other output ordinals");
+        for (const auto &barrier : {std::make_pair(false, false), std::make_pair(false, true), std::make_pair(true, false)})
+            check(!delivered.AfterDelivered(&fixture, 1, barrier.first, barrier.second, MfdAdmissionFixture::Read, false) &&
+                fixture.calls == 0 && !delivered.failed, "MFD requires release and owned write before output observation");
+        fixture.raw[2] = fixture.raw[12] = 0; fixture.raw[4] = fixture.raw[14] = 0x3ff;
+        check(delivered.AfterDelivered(&fixture, 1, true, true, MfdAdmissionFixture::Read, false) &&
+            fixture.valid && fixture.calls == 20 && delivered.reads == 40 && delivered.attempted == 3,
+            "MFD two independent stage admissions total 40 reads, allow opaque interstage scalar changes");
+        check(!delivered.AfterDelivered(&fixture, 1, true, true, MfdAdmissionFixture::Read, false) && fixture.calls == 20,
+            "MFD successful first output cannot be sampled twice");
+    }
+    for (bool closing_revision : {false, true}) {
+        FILE *record = std::tmpfile(); const int saved_stdout = dup(STDOUT_FILENO);
+        std::fflush(stdout);
+        const bool redirected = record && saved_stdout >= 0 && dup2(fileno(record), STDOUT_FILENO) >= 0;
+        bool rejected = false;
+        if (redirected) {
+            MfdAdmissionFixture fixture;
+            if (closing_revision) fixture.raw[19] = 0x81; else fixture.fail_at = 0;
+            MfdAdmissionObserver subject; subject.enabled = true;
+            rejected = !subject.Observe(&fixture, 0, MfdAdmissionFixture::Read) && fixture.valid &&
+                fixture.calls == (closing_revision ? 20U : 1U);
+            std::fflush(stdout);
+        }
+        const bool restored = saved_stdout >= 0 && dup2(saved_stdout, STDOUT_FILENO) >= 0;
+        if (saved_stdout >= 0) close(saved_stdout);
+        char text[8192] = {}; size_t bytes = 0;
+        if (record) { std::rewind(record); bytes = std::fread(text, 1, sizeof(text) - 1, record); std::fclose(record); }
+        check(redirected && restored && rejected && bytes && std::strstr(text, "result=FAIL") &&
+            !std::strstr(text, "deadbeef") && (closing_revision ?
+                (std::strstr(text, "measured=20") && std::strstr(text, "raw-stable=no") &&
+                 std::strstr(text, "closing-scl-rev@00540800=00000081")) :
+                (std::strstr(text, "measured=0") && std::strstr(text, "mfd-rev@00540000=NOT-READ") &&
+                 std::strstr(text, "closing-scl-rev@00540800=NOT-READ") && !std::strstr(text, "raw-stable=yes"))),
+            "MFD actual reporter suppresses poisoned unread words and computes final-failure raw stability independently");
+    }
+    {
+        const std::vector<const char *> valid = {"probe", "--hardware", "fixture", "180", "30", "1",
+            "--scaler-test", "0", "--observe-mfd-config", "--capture-yuy2", "new"};
+        Options admitted;
+        check(ParseArguments(valid, &admitted) && admitted.observe_mfd_config && NeedsRawIo(admitted) &&
+            !admitted.observe_scl_view && !admitted.observe_scl_config && !admitted.observe_chroma && !NeedsRawIo(Options{}),
+            "MFD opt-in requires raw-I/O capability before fixture/capture/device; ordinary options do not");
+        for (unsigned field = 0; field < 10; ++field) {
+            auto arguments = valid;
+            if (field == 0) arguments[1] = "--preflight";
+            if (field == 1) arguments[3] = "179";
+            if (field == 2) arguments[5] = "2";
+            if (field == 3) arguments[7] = "320";
+            if (field == 4) arguments[7] = "640";
+            if (field == 5) arguments[9] = "--capture-uyvy";
+            if (field == 6) arguments.resize(9);
+            if (field == 7) arguments.insert(arguments.begin() + 8, "--mpeg1-via-mpeg2");
+            if (field == 8) arguments.insert(arguments.begin() + 8, "--h263-via-divx");
+            if (field == 9) arguments.insert(arguments.begin() + 8, "--open-only");
+            Options invalid; check(!ParseArguments(arguments, &invalid), "MFD parser rejects nonnative/scaled/repeated/noncapture scope");
+        }
+        for (const std::vector<const char *> &mixed : std::vector<std::vector<const char *>>{
+                {"--observe-chroma"}, {"--observe-scl-config"}, {"--observe-scl-view", "2"}, {"--observe-mfd-config"}})
+            for (unsigned where : {8U, 9U}) {
+                auto arguments = valid; arguments.insert(arguments.begin() + where, mixed.begin(), mixed.end());
+                Options invalid; check(!ParseArguments(arguments, &invalid), "MFD every observer mixture/order/duplicate is rejected");
+            }
+        Options invalid;
+        check(!ParseArguments({"probe", "--self-test", "--observe-mfd-config"}, &invalid), "MFD self-test option mix refused");
+        Input native; native.codec = AV_CODEC_ID_MPEG2VIDEO; native.subtype = BC_MSUBTYPE_MPEG2VIDEO;
+        native.progressive = true; native.width = 640; native.height = 360; native.packets.resize(180);
+        check(SclInputAdmitted(admitted, native), "MFD exact native input admitted before capture/device open");
+        for (unsigned field = 0; field < 7; ++field) {
+            Options changed = admitted; Input altered = native;
+            if (field == 0) altered.codec = AV_CODEC_ID_H264;
+            if (field == 1) altered.subtype = BC_MSUBTYPE_H264;
+            if (field == 2) altered.progressive = false;
+            if (field == 3) altered.width = 638;
+            if (field == 4) altered.height = 358;
+            if (field == 5) altered.packets.pop_back();
+            if (field == 6) changed.expected = 179;
+            check(!SclInputAdmitted(changed, altered) && SclInputAdmitted(Options{}, altered),
+                "MFD codec/subtype/progressive/geometry/packet/expected mismatch rejected, default unchanged");
+        }
+    }
     std::printf("Library drain hardware-free self-test: %u checks %s\n",
                 checks, ok ? "passed" : "failed");
     return ok;
@@ -2039,6 +2345,7 @@ struct Audit {
     unsigned expected = 0;
     SclObserver scl;
     SclViewProbe scl_view;
+    MfdAdmissionObserver mfd;
     GChecksum *pixels = nullptr;
     PixelCapture *capture = nullptr;
     ~Audit() { if (pixels) g_checksum_free(pixels); }
@@ -2092,6 +2399,9 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
             if (!marker && valid && released)
                 valid = audit->scl_view.AfterDelivered(device->handle, audit->frames,
                                                       released, audit->capture != nullptr);
+            if (!marker && valid && released)
+                valid = audit->mfd.AfterDelivered(device->handle, audit->frames,
+                                                 released, audit->capture != nullptr);
             if (!marker && valid && released && audit->capture && audit->frames == 1)
                 valid = PackingState(device->handle, "first-output");
             if (!marker && valid && released && audit->observe_chroma && audit->frames == 1)
@@ -2102,14 +2412,16 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                     audit->iteration, audit->frames - 1,
                     static_cast<unsigned long long>(output.PicInfo.timeStamp));
             if (!valid) {
-                if (audit->scl_view.failed)
+                if (audit->mfd.failed)
+                    std::fprintf(stderr, "MFD passive admission failed; ordinary decoder cleanup follows\n");
+                else if (audit->scl_view.failed)
                     std::fprintf(stderr, "SCL test-view experiment failed; guarded restoration if eligible and ordinary decoder cleanup follow\n");
                 else if (audit->scl.failed)
                     std::fprintf(stderr, "SCL raw configuration observation failed; ordinary decoder cleanup follows\n");
                 else
                     std::fprintf(stderr, "Invalid progressive picture geometry/data/token: %llu\n",
                                  static_cast<unsigned long long>(output.PicInfo.timeStamp));
-                if (audit->pixels && !audit->scl.failed && !audit->scl_view.failed)
+                if (audit->pixels && !audit->scl.failed && !audit->scl_view.failed && !audit->mfd.failed)
                     std::fprintf(stderr, "Scaler picture: got=%ux%u expected=%ux%u "
                                  "flags=%x words=%u packed422=%u\n",
                                  output.PicInfo.width, output.PicInfo.height,
@@ -2165,6 +2477,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.expected = expected;
     audit.scl.enabled = options.observe_scl_config;
     audit.scl_view.selector = options.observe_scl_view;
+    audit.mfd.enabled = options.observe_mfd_config;
     if (options.scaler_test) {
         if (!ScalerGeometry(input.width, input.height, options.scale_width,
                             &audit.output_width, &audit.output_height)) return false;
@@ -2217,6 +2530,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     if (ok && options.capture_path) ok = PackingState(device.handle, "selected-before-start");
     if (ok) ok = audit.scl.Observe(device.handle, SclStage::PreStart);
     if (ok) ok = audit.scl_view.Begin(device.handle);
+    if (ok) ok = audit.mfd.Observe(device.handle, 0);
     if (ok) device.started = ok = Status("DtsStartDecoder", DtsStartDecoder(device.handle));
     if (ok && options.capture_path) ok = PackingState(device.handle, "started");
     if (ok) ok = Status("DtsStartCapture", DtsStartCapture(device.handle));
@@ -2297,13 +2611,15 @@ int main(int argc, char **argv)
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
             "[--scaler-test WIDTH_OR_0] [--mpeg1-via-mpeg2 | --h263-via-divx] "
-            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-view 2_OR_3] "
+            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-view 2_OR_3 | --observe-mfd-config] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
-    if ((options.observe_chroma || options.observe_scl_config || options.observe_scl_view) && !CanReadChromaConfiguration()) {
-        if (options.observe_scl_view)
+    if (NeedsRawIo(options) && !CanReadChromaConfiguration()) {
+        if (options.observe_mfd_config)
+            std::fprintf(stderr, "--observe-mfd-config requires CAP_SYS_RAWIO; no fixture/capture/device was opened\n");
+        else if (options.observe_scl_view)
             std::fprintf(stderr, "--observe-scl-view requires CAP_SYS_RAWIO; no fixture/capture/device was opened\n");
         else if (options.observe_scl_config)
             std::fprintf(stderr, "--observe-scl-config requires CAP_SYS_RAWIO; no fixture/capture/device was opened\n");
@@ -2327,7 +2643,7 @@ int main(int argc, char **argv)
         return 2;
     }
     if (!SclInputAdmitted(options, input)) {
-        std::fprintf(stderr, "SCL observation requires native progressive MPEG2 "
+        std::fprintf(stderr, "Raw observation requires native progressive MPEG2 "
                              "640x360 with 180 packets/expected frames; no device was opened\n");
         phase1_progress_close(&progress);
         return 2;
