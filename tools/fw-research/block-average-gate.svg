@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="390" viewBox="0 0 1000 390" role="img" aria-labelledby="title desc">
+  <title id="title">Conditional stock H.264 block-average gate</title>
+  <desc id="desc">The ordinary ARM OPEN builder omits internal packet offset 0x34 after supplying a zero-fill request. Under the selected legacy ARC interpretation, successful zero fill, preservation through opaque transport and callees, and coherent context and DMA propagation, this clears the averaging offset. If execution reaches either selected inner H.264 gate, zero descriptor offset 0x24 skips its block-average setup. FilmGrain SEI metadata has a separate allocation and release path. This is offline source evidence, not hardware execution or whole-firmware absence.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#475569"/></marker>
+  </defs>
+  <rect width="1000" height="390" fill="#fff"/>
+  <g font-family="sans-serif" fill="#0f172a">
+    <text x="30" y="36" font-size="23" font-weight="bold">Stock H.264: the averaging gate is not the SEI pool</text>
+    <text x="30" y="62" font-size="14">Conditional ARC interpretation; assumes zero fill, opaque-call preservation and coherent context / DMA propagation</text>
+    <g fill="#eff6ff" stroke="#2563eb" stroke-width="1.5">
+      <rect x="30" y="96" width="166" height="88" rx="7"/>
+      <rect x="222" y="96" width="166" height="88" rx="7"/>
+      <rect x="414" y="96" width="166" height="88" rx="7"/>
+      <rect x="606" y="96" width="166" height="88" rx="7"/>
+      <rect x="798" y="96" width="172" height="88" rx="7"/>
+    </g>
+    <g font-size="15" text-anchor="middle">
+      <text x="113" y="124">ARM OPEN builder</text><text x="113" y="148">internal +0x34 = 0</text><text x="113" y="170" font-size="12">27480..275C4</text>
+      <text x="305" y="124">Saved D +0x82</text><text x="305" y="148">→ local 3FFFCE2E</text><text x="305" y="170" font-size="11">CmdChannelOpen / activation</text>
+      <text x="497" y="124">VideoParameters</text><text x="497" y="148">AVG offset = 0</text><text x="497" y="170" font-size="12">819C → 81F0 / 81F4</text>
+      <text x="689" y="124">PPB → inner header</text><text x="689" y="148">descriptor +0x24 = 0</text><text x="689" y="170" font-size="12">951C / 9524 → FD28 / FD34</text>
+      <text x="884" y="124">AVG setup skipped</text><text x="884" y="148">zero-branch gates</text><text x="884" y="170" font-size="12">2EFC / 438F8</text>
+    </g>
+    <g stroke="#475569" stroke-width="2" marker-end="url(#arrow)">
+      <path d="M198 140 H217"/><path d="M390 140 H409"/><path d="M582 140 H601"/><path d="M774 140 H793"/>
+    </g>
+    <rect x="30" y="215" width="940" height="70" rx="7" fill="#f1f5f9" stroke="#94a3b8"/>
+    <text x="50" y="242" font-size="16">Separate FilmGrain SEI path: Core_GetFGT → metadata DMA → Core_LinkFGT → release / clear</text>
+    <text x="50" y="267" font-size="14">The examined metadata path does not supply the averaging-offset gate above.</text>
+    <text x="30" y="320" font-size="14">If execution reaches either selected gate, nonzero descriptor +0x24 admits its AVG setup block.</text>
+    <text x="30" y="344" font-size="14">Public START enableFgt is transported, but not read by the selected stock START handler.</text>
+    <text x="30" y="369" font-size="14" fill="#475569">No supported nonzero producer, host surface lease, MMIO read safety or hardware completion is established.</text>
+  </g>
+</svg>

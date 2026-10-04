@@ -8638,5 +8638,143 @@ class FirmwareOpenAllocationTests(unittest.TestCase):
                 self.execute(budget=budget)
 
 
+class BlockAverageGateTests(unittest.TestCase):
+    """Pinned stock gate path, not ARC execution or block-average capability."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.payload = MAP.read_firmware(BLOB)[:-MAP.TRAILER_SIZE]
+        cls.sections = {}
+        for base in (0x2ea60, 0x79dd8):
+            header = struct.unpack_from("<16sHHIIIIIHHHHHH", cls.payload, base)
+            cls.sections[base] = [struct.unpack_from("<10I", cls.payload,
+                                                    base + header[6] + index * 40)
+                                  for index in range(header[12])]
+
+    def word(self, base, section, address):
+        record = self.sections[base][section]
+        self.assertTrue(record[3] <= address <= record[3] + record[5] - 4)
+        return struct.unpack_from("<I", self.payload,
+                                  base + record[4] + address - record[3])[0]
+
+    def test_complete_selected_bodies_and_original_symbol_ownership(self):
+        # Independent ELF32/symbol mapping, including the duplicate local
+        # FinalILSetup name and unaligned inner .text file position.
+        bodies = (
+            (0x2ea60, 4, "VideoParameters", 0x80dc, 316, 0x32f80,
+             "e4525894db6bffca8c049ff0607d87d17f98cfea965b3f2af785de31b7b82a74"),
+            (0x2ea60, 4, "Core_PopulatePPB", 0x9344, 516, 0x341e8,
+             "2b3cde5b8b4eef00eedd2c7fa4829324f428f7cb89d01eee685db5a5f6de6805"),
+            (0x2ea60, 5, "FinalILSetup", 0xfbac, 504, 0x3aa50,
+             "2a8e46e1910f2bf84ca6020492e83b33de9064e7b5e5cbae07c7808d39a5e265"),
+            (0x79dd8, 4, "H264_DecodePictureInner", 0x2e3c, 1100, 0x7b078,
+             "f28130ced34ec1735975e82d96cf954ad20935e83e4f35c40e53146f1f1444af"),
+            (0x79dd8, 47, "H264P_DecodePicture", 0x43834, 600, 0xbb035,
+             "c8d4cdc1d0130a68a3c1c6d97618d8a1166b9ce08fbd457656b5c6e111b82e51"),
+        )
+        symbols = {}
+        for base, sections in self.sections.items():
+            symbols[base] = set()
+            for table in sections:
+                if table[1] != 2:
+                    continue
+                strings = sections[table[6]]
+                names = self.payload[base + strings[4]:base + strings[4] + strings[5]]
+                for position in range(0, table[5], 16):
+                    name, value, size, info, _, section = struct.unpack_from(
+                        "<IIIBBH", self.payload, base + table[4] + position)
+                    if info & 15 == 2:
+                        text = names[name:names.index(b"\0", name)].decode("ascii")
+                        symbols[base].add((text, value, size, section))
+        for base, section, name, address, size, offset, digest in bodies:
+            with self.subTest(name=name):
+                record = self.sections[base][section]
+                self.assertEqual(base + record[4] + address - record[3], offset)
+                self.assertLessEqual(address + size, record[3] + record[5])
+                self.assertIn((name, address, size, section), symbols[base])
+                self.assertEqual(hashlib.sha256(self.payload[offset:offset + size]).hexdigest(), digest)
+
+    def test_saved_offset_is_hex82_not_decimal82(self):
+        contract = MAP._ppb_bank_contract(self.payload)
+        geometry = contract["context_initialization"]["init_geometry"]
+        load = self.word(0x2ea60, 16, 0x24ac8)
+        store = self.word(0x2ea60, 16, 0x24ad4)
+        self.assertEqual((load, store), (0x08090034, 0x10408082))
+        self.assertEqual(geometry["metadata_extra_open_request_byte_offset"], load & 511)
+        self.assertEqual(geometry["metadata_extra_saved_context_byte_offset"], store & 511)
+        self.assertEqual(store & 511, 130)
+        activation = contract["context_initialization"]["activation"]
+        flag_address = activation["snapshot_destination"] + (store & 511)
+        self.assertEqual(flag_address, 0x3fffce2e)
+        self.assertEqual(self.word(0x2ea60, 4, 0x8194), flag_address)
+
+    def test_ordinary_arm_open_builder_omits_average_flag_word(self):
+        body = self.payload[0x27480:0x275c4]
+        self.assertEqual(hashlib.sha256(body).hexdigest(),
+                         "c356d9c46eee35ea6dafb60e7e1ef49cf37c77726e4ba14e5e192f9cc2c50f91")
+        words = dict(zip(range(0x27480, 0x275c4, 4), struct.unpack("<81I", body)))
+        self.assertEqual((words[0x274a8], words[0x274ac], words[0x274b0]),
+                         (0xe3a020fc, 0xe3a01000, 0xe1a00004))  # size252, zero, request pointer.
+        self.assertEqual((words[0x274cc], words[0x2756c], words[0x27578]),
+                         (0xe1a08007, 0xe1a02004, 0xebfffeb7))
+        stores = [word & 4095 for address, word in words.items()
+                  if 0x274d4 <= address < 0x27578 and word & 0xffff0000 == 0xe5850000]
+        self.assertEqual(stores, [0, 4, 12, 8, 16, 20, 24, 28, 32, 36,
+                                  40, 44, 48, 56, 60, 64, 68, 72, 76])
+        self.assertNotIn(52, stores)
+        # Only this selected builder: its zero-fill callee and opaque
+        # transport must preserve the unwritten word. Not whole-firmware absence.
+
+    def test_zero_flag_clears_average_offset_before_header_publication(self):
+        # Conditional original legacy-ARC operands; successful same-context
+        # activation/DMA and preservation by opaque callees are prerequisites.
+        expected = ((4, 0x8190, 0x081f0400), (4, 0x8198, 0x67e00100),
+                    (4, 0x819c, 0x20000a01), (4, 0x81f0, 0x50000000),
+                    (4, 0x81f4, 0x1001814c), (4, 0x9514, 0x08070150),
+                    (4, 0x951c, 0x0807014c), (4, 0x9524, 0x10068104),
+                    (5, 0xfd28, 0x083f0000), (5, 0xfd2c, 0x3fffd074),
+                    (5, 0xfd34, 0x10000224), (5, 0xfd8c, 0x2feabda0),
+                    (5, 0xfd90, 0x605ffe30))
+        for section, address, word in expected:
+            self.assertEqual(self.word(0x2ea60, section, address), word)
+        branch = self.word(0x2ea60, 4, 0x819c)
+        self.assertEqual(0x819c + 4 + ((branch >> 7) & 0xfffff) * 4, 0x81f0)
+        self.assertEqual(0x3fffd370 - 180, 0x3fffd2bc)
+        self.assertEqual(0x3fffd170 - 252, 0x3fffd074)
+        self.assertEqual(self.payload[0x6f570:0x6f57c].hex(),
+                         "8cfd00000685020000000000")  # Original type6/add0, not applied relocation.
+        sections = self.sections[0x2ea60]
+        relocation, symbols = sections[40], sections[35]
+        self.assertEqual((relocation[1], relocation[6], relocation[7], relocation[9]),
+                         (4, 35, 5, 12))
+        self.assertTrue(0x2ea60 + relocation[4] <= 0x6f570 <
+                        0x2ea60 + relocation[4] + relocation[5])
+        name, address, size, info, _, section = struct.unpack_from(
+            "<IIIBBH", self.payload, 0x2ea60 + symbols[4] + 645 * 16)
+        self.assertEqual((address, size, info & 15, section), (0x537c, 76, 2, 2))
+        strings = sections[symbols[6]]
+        names = self.payload[0x2ea60 + strings[4]:0x2ea60 + strings[4] + strings[5]]
+        self.assertEqual(names[name:names.index(b"\0", name)], b"Dma_Write")
+
+    def test_both_inner_setup_paths_require_nonzero_descriptor_word36(self):
+        for section, gate, branch, skip, literal, base_write, image_write, ctl_write in (
+                (4, 0x2ef4, 0x2efc, 0x2fa8, 0x2f04, 0x2f68, 0x2f80, 0x2f88),
+                (47, 0x438f0, 0x438f8, 0x43988, 0x43900, 0x43964, 0x4397c, 0x43984)):
+            with self.subTest(section=section):
+                load = self.word(0x79dd8, section, gate)
+                self.assertEqual(load & 511, 36)
+                opcode = self.word(0x79dd8, section, branch)
+                self.assertEqual(opcode & 31, 1)  # Zero branch, no delay slot.
+                self.assertEqual(opcode & 96, 0)
+                self.assertEqual(branch + 4 + ((opcode >> 7) & 0xfffff) * 4, skip)
+                self.assertEqual(self.word(0x79dd8, section, literal), 0x30061000)
+                self.assertEqual(self.word(0x79dd8, section, base_write), 0x14010000)
+                self.assertEqual(self.word(0x79dd8, section, image_write), 0x1401000c)
+                self.assertEqual(self.word(0x79dd8, section, ctl_write - 4), 0x601ffe44)
+                self.assertEqual(self.word(0x79dd8, section, ctl_write), 0x14010008)
+        # Firmware read/write operands do not establish host access safety,
+        # read-clear behavior, a source-surface lease or actual completion.
+
+
 if __name__ == "__main__":
     unittest.main()
