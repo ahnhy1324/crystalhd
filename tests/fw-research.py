@@ -8267,5 +8267,283 @@ class FirmwareOpenReplyMetadataTests(unittest.TestCase):
         self.assertEqual(self.RELA_GROUPS[1][2][-1][-1], 1792)
 
 
+class FirmwareOpenAllocationTests(unittest.TestCase):
+    """Concrete stock A32 partitioning, with explicitly synthetic callee contracts."""
+
+    START, END = 0x25c18, 0x26158
+    DIGEST = "b413d045432e9927c877cbc76c507d9d2868cd41632c54f92ca782d35236d376"
+    OUTPUTS = (8, 0x10, 0x18, 0x24, 0x2c, 0x34, 0x3c)
+    K, H, SP, RETURN = 0x100000, 0x200000, 0x300100, 0xfffffff0
+    POISON = 0xa5a5a5a5
+
+    @classmethod
+    def setUpClass(cls):
+        cls.payload = MAP.read_firmware(BLOB)[:-MAP.TRAILER_SIZE]
+
+    def execute(self, picture="common", split="common", generic="private",
+                sizes=None, base=0x800000, fail=None, translation="write",
+                aliases=None, payload=None, budget=512):
+        # No device access, arbitrary code, or payload-derived reads.
+        # The stock body is interpreted; only four external callees are stubbed.
+        data = self.payload if payload is None else payload
+        if hashlib.sha256(data[self.START:self.END]).hexdigest() != self.DIGEST:
+            raise ValueError("stock allocation body changed")
+        if type(budget) is not int or not 1 <= budget <= 512:
+            raise ValueError("invalid allocation instruction budget")
+        self.assertIn(translation, ("write", "error", "zero", "omit"))
+        memory = {address: self.POISON for low, high in
+                  ((self.K, self.K + 0x1b0), (self.H, self.H + 0x240),
+                   (self.SP - 0x100, self.SP + 0x34))
+                  for address in range(low, high, 4)}
+
+        def read(address):
+            if address not in memory:
+                raise ValueError("unmapped synthetic read")
+            return memory[address]
+
+        writes = []
+        def store(address, value, pc=None):
+            if address not in memory:
+                raise ValueError("unmapped synthetic write")
+            memory[address] = value & 0xffffffff
+            writes.append((pc, address, memory[address]))
+
+        fields = {0x0c: 0x100, 0x14: 0x80, 0x1c: 3, 0x20: 0x40,
+                  0x28: 0x200, 0x30: 0x300, 0x38: 0x60, 0x40: 0x70}
+        fields.update(sizes or {})
+        for offset, value in fields.items():
+            store(self.H + offset, value)
+        for field, offset, mode in ((0xd4, 0x1a8, picture), (0xd0, 0x1a4, split)):
+            self.assertIn(mode, ("common", "private", "factory"))
+            store(self.H + field, field if mode == "private" else 0)
+            store(self.K + offset, offset if mode == "factory" else 0)
+        self.assertIn(generic, ("private", "factory"))
+        store(self.H + 0xcc, 0xcc if generic == "private" else 0)
+        for offset in (8, 0x10, 0x14, 0x1a0):
+            store(self.K + offset, offset + 0x1000)
+        destinations = {offset: self.H + offset for offset in self.OUTPUTS}
+        destinations.update(aliases or {})
+        # Ordinary OPEN's FA8C..FAE8 caller ABI, not semantic buffer labels.
+        stack = [fields[0x1c], fields[0x20], fields[0x28], fields[0x30],
+                 fields[0x38], fields[0x40]] + [destinations[offset] for offset in
+                                               (8, 0x10, 0x18, 0x24, 0x2c, 0x34, 0x3c)]
+        for index, value in enumerate(stack):
+            store(self.SP + index * 4, value)
+        regs = [0xabc00000 + index for index in range(16)]
+        regs[0:4] = [self.K, self.H, fields[0x0c], fields[0x14]]
+        regs[13:16] = [self.SP, self.RETURN, self.START]
+        preserved = regs[4:12]
+        calls, allocations, zero = [], {}, False
+        writes.clear()
+        for steps in range(budget):
+            pc = regs[15]
+            if pc == self.RETURN:
+                self.assertEqual((regs[4:12], regs[13]), (preserved, self.SP))
+                return {"status": regs[0], "outputs": {offset: read(self.H + offset)
+                        for offset in self.OUTPUTS}, "calls": calls, "writes": writes,
+                        "steps": steps}
+            if not (self.START <= pc < 0x26040 or 0x26134 <= pc < self.END) or pc & 3:
+                raise ValueError("outside stock executable slices")
+            word, = struct.unpack_from("<I", data, pc)
+            condition = word >> 28
+            self.assertIn(condition, (0, 1, 14))
+            regs[15] = pc + 4
+            if (condition == 0 and not zero) or (condition == 1 and zero):
+                continue
+            reg = lambda index: pc + 8 if index == 15 else regs[index]
+            if word & 0x0e000000 == 0x0a000000:
+                displacement = word & 0xffffff
+                if displacement & 0x800000:
+                    displacement -= 1 << 24
+                target = pc + 8 + displacement * 4
+                if not word & (1 << 24):
+                    regs[15] = target
+                    continue
+                self.assertIn(target, (0x1f5d4, 0x2b628, 0x1fe6c, 0x203c4))
+                args = tuple(regs[:4])
+                calls.append((pc, target, args))
+                result = 0
+                if target in (0x1f5d4, 0x2b628):
+                    slot = len(allocations)
+                    pointer = 0x900000 + slot * 0x1000
+                    allocations[pointer] = (base + slot * 0x10000) & 0xffffffff
+                    result = 0 if slot == fail else pointer
+                elif target == 0x1fe6c:
+                    self.assertIn(args[1], allocations)
+                    if translation != "omit":
+                        store(args[2], 0 if translation == "zero" else allocations[args[1]], pc)
+                    result = 4 if translation in ("error", "omit") else 0
+                # The caller cannot rely on caller-saved registers or flags.
+                regs[:4] = [result, 0xd1d1d1d1, 0xd2d2d2d2, 0xd3d3d3d3]
+                regs[12], regs[14], zero = 0xdcdcdcdc, pc + 4, False
+            elif word in (0xe1cd05d0, 0xe1cd20f0):
+                if word == 0xe1cd05d0:
+                    regs[0:2] = [read(regs[13] + 80), read(regs[13] + 84)]
+                else:
+                    store(regs[13], regs[2], pc)
+                    store(regs[13] + 4, regs[3], pc)
+            elif word & 0x0ff00000 == 0x03000000:
+                regs[(word >> 12) & 15] = ((word >> 4) & 0xf000) | (word & 0xfff)
+            elif word & 0x0fc000f0 == 0x00000090:
+                self.assertEqual(word, 0xe0000190)
+                regs[0] = regs[0] * regs[1] & 0xffffffff
+            elif word in (0xe92d4fff, 0xe8bd8ff0):
+                selected = [index for index in range(16) if word & (1 << index)]
+                base_sp = regs[13]
+                address = base_sp - 4 * len(selected) if word == 0xe92d4fff else base_sp
+                for index in selected:
+                    if word == 0xe92d4fff:
+                        store(address, reg(index), pc)
+                    else:
+                        regs[index] = read(address)
+                    address += 4
+                regs[13] = base_sp + (4 if word == 0xe8bd8ff0 else -4) * len(selected)
+            elif word & 0x0c000000 == 0x04000000:
+                self.assertFalse(word & ((1 << 25) | (1 << 22) | (1 << 21)))
+                self.assertTrue(word & (1 << 24))
+                displacement = word & 0xfff
+                address = (reg((word >> 16) & 15) +
+                           (displacement if word & (1 << 23) else -displacement)) & 0xffffffff
+                destination = (word >> 12) & 15
+                if word & (1 << 20):
+                    regs[destination] = read(address)
+                else:
+                    store(address, reg(destination), pc)
+            else:
+                self.assertEqual(word & 0x0c000000, 0)
+                opcode, destination = (word >> 21) & 15, (word >> 12) & 15
+                self.assertIn(opcode, (2, 4, 10, 13))
+                left = reg((word >> 16) & 15)
+                if word & (1 << 25):
+                    rotation, immediate = ((word >> 8) & 15) * 2, word & 255
+                    right = ((immediate >> rotation) | (immediate << ((32 - rotation) % 32))) & 0xffffffff
+                else:
+                    self.assertEqual(word & 0xff0, 0)
+                    right = reg(word & 15)
+                value = ({2: left - right, 4: left + right, 10: left - right,
+                          13: right}[opcode]) & 0xffffffff
+                if word & (1 << 20):
+                    self.assertEqual(opcode, 10)
+                    zero = value == 0
+                if opcode != 10:
+                    regs[destination] = value
+        raise ValueError("stock allocation instruction budget exceeded")
+
+    def test_exact_partition_and_refuted_final_segment_ring_candidate(self):
+        for picture in ("common", "private", "factory"):
+            for split in ("common", "private", "factory"):
+                for generic in ("private", "factory"):
+                    with self.subTest(picture=picture, split=split, generic=generic):
+                        result = self.execute(picture, split, generic)
+                        out = result["outputs"]
+                        slot = int(picture != "common") + int(split != "common")
+                        cursor = 0x800000 + slot * 0x10000
+                        p = 0xc0 if picture == "common" else 0
+                        x = 0x80 if split == "common" else 0
+                        r = 0x300 if split == "common" else 0
+                        self.assertEqual(result["status"], 0)
+                        self.assertEqual(out[8], cursor + p + x + r)
+                        self.assertEqual(out[0x24], out[8] + 0x100 + 0x70 + 0x60)
+                        expected_ring = cursor + p + x if split == "common" else (
+                            0x800000 + int(picture != "common") * 0x10000 + 0x80)
+                        self.assertEqual(out[0x2c], expected_ring)
+                        self.assertNotEqual(out[0x2c], out[0x24])
+                        if split == "common":
+                            self.assertEqual(out[0x2c], out[8] - 0x300)
+                        allocations = [call for call in result["calls"] if call[1] in (0x1f5d4, 0x2b628)]
+                        self.assertEqual(allocations[-1][2][1:3],
+                                         (0x100 + 0x200 + 0x70 + 0x60 + p + x + r, 12))
+
+    def test_complete_caller_builder_pins_and_distinct_output_publication(self):
+        for start, end, digest in (
+                (0xf7e4, 0xfbec, "723911a2a94585093da0b4caebd2ba2a20b2c8bc87c4e91dd42646ae95a3a092"),
+                (0x27480, 0x275c4, "c356d9c46eee35ea6dafb60e7e1ef49cf37c77726e4ba14e5e192f9cc2c50f91")):
+            self.assertEqual(hashlib.sha256(self.payload[start:end]).hexdigest(), digest)
+        word = lambda offset: struct.unpack_from("<I", self.payload, offset)[0]
+        # Every instruction of the ordinary caller setup, including paired
+        # output destinations and STMIB's +4 start, is pinned independently.
+        self.assertEqual([word(offset) for offset in range(0xfa8c, 0xfaec, 4)], [
+            0xe284303c, 0xe2842034, 0xe284102c, 0xe2840024,
+            0xe1cd02f4, 0xe1cd22fc, 0xe2843018, 0xe2842010,
+            0xe2841008, 0xe5940040, 0xe1cd01f4, 0xe1cd21fc,
+            0xe5940020, 0xe5941028, 0xe5942030, 0xe5943038,
+            0xe98d000f, 0xe594301c, 0xe58d3000, 0xe594200c,
+            0xe5943014, 0xe1a01004, 0xe1a00005, 0xeb00584a])
+        self.assertEqual([word(offset) for offset in (0xfb1c, 0xfb20, 0xfb24, 0xfb28)],
+                         [0xe1c402d4, 0xe1c422dc, 0xe1cd02fc, 0xe1cd23f4])
+        # Builder pushes nine registers and reserves 0x204 bytes: +0x25c
+        # therefore means caller +0x34 (H2C), not +0x2c (H24).
+        self.assertEqual((word(0x27480), word(0x27484)), (0xe92d4ff0, 0xe24ddf81))
+        self.assertEqual([word(offset) for offset in (0x27520, 0x27524, 0x27530, 0x27534)],
+                         [0xe59d0254, 0xe585002c, 0xe59d025c, 0xe5850038])
+        self.assertEqual((0x254 - (9 * 4 + 0x204), 0x25c - (9 * 4 + 0x204)),
+                         (0x2c, 0x34))
+
+    def test_zero_spans_leave_only_uninitialized_optional_outputs_stale(self):
+        spans = (0x0c, 0x14, 0x28, 0x30, 0x38, 0x40)
+        normal = dict(zip(spans, (0x100, 0x80, 0x200, 0x300, 0x60, 0x70)))
+        for mask in range(64):
+            sizes = {offset: value if mask & (1 << index) else 0
+                     for index, (offset, value) in enumerate(normal.items())}
+            result = self.execute(sizes=sizes)
+            out, cursor = result["outputs"], 0x8000c0
+            for size_offset, output in ((0x14, 0x10), (0x30, 0x2c), (0x0c, 8),
+                                        (0x40, 0x3c), (0x38, 0x34), (0x28, 0x24)):
+                expected = cursor if sizes[size_offset] else (self.POISON if output in (0x34, 0x3c) else 0)
+                self.assertEqual(out[output], expected, (mask, output))
+                cursor += sizes[size_offset]
+            self.assertEqual(result["status"], 0)
+
+    def test_failed_allocations_return_four_before_partitioning(self):
+        for mode in ("private", "factory"):
+            for fail in range(3):
+                result = self.execute(mode, mode, mode, fail=fail)
+                self.assertEqual(result["status"], 4)
+                allocations = [c for c in result["calls"] if c[1] in (0x1f5d4, 0x2b628)]
+                self.assertEqual(len(allocations), fail + 1)
+                self.assertEqual(result["outputs"][8], 0)
+                self.assertEqual(result["outputs"][0x24], 0)
+                self.assertEqual(result["outputs"][0x34], self.POISON)
+
+    def test_translation_status_is_ignored_and_not_a_success_certificate(self):
+        valid = self.execute("private", "private")
+        error = self.execute("private", "private", translation="error")
+        self.assertEqual(error["outputs"], valid["outputs"])
+        self.assertEqual(error["status"], 0)
+        zero = self.execute("private", "private", translation="zero")
+        self.assertEqual((zero["status"], zero["outputs"][8]), (0, 0x140))
+        omitted = self.execute(translation="omit")
+        self.assertEqual((omitted["status"], omitted["outputs"][0x18]), (0, self.POISON))
+        self.assertNotEqual(omitted["outputs"][8], valid["outputs"][8])
+
+    def test_aliases_zero_driver_and_wrap_refute_unqualified_ring_equation(self):
+        alias = self.execute(aliases={0x2c: self.H + 8})
+        self.assertEqual(alias["outputs"][8], 0x800140)
+        self.assertEqual(alias["outputs"][0x2c], self.POISON)
+        no_driver = self.execute(sizes={0x0c: 0})["outputs"]
+        self.assertEqual(no_driver[8], 0)
+        self.assertNotEqual(no_driver[0x2c], no_driver[8] - 0x300)
+        wrapped = self.execute(base=0xffffff00)["outputs"]
+        self.assertEqual((wrapped[0x2c], wrapped[8]), (0x40, 0x340))
+        self.assertEqual(wrapped[0x2c], (wrapped[8] - 0x300) & 0xffffffff)
+        self.assertLess(wrapped[0x2c], 0xffffff00)
+        multiplied = self.execute(sizes={0x1c: 0x10000000, 0x20: 0x10})["outputs"]
+        self.assertEqual((multiplied[0x18], multiplied[0x2c]), (0, 0x800080))
+
+    def test_changed_body_unmapped_memory_and_budget_refuse(self):
+        for offset in range(self.START, self.END):
+            changed = bytearray(self.payload)
+            changed[offset] ^= 1
+            with self.assertRaisesRegex(ValueError, "body changed"):
+                self.execute(payload=changed)
+        with self.assertRaisesRegex(ValueError, "unmapped synthetic write"):
+            self.execute(aliases={8: 0x400000})
+        with self.assertRaisesRegex(ValueError, "budget exceeded"):
+            self.execute(budget=1)
+        for budget in (0, 513, True):
+            with self.assertRaisesRegex(ValueError, "invalid allocation instruction budget"):
+                self.execute(budget=budget)
+
+
 if __name__ == "__main__":
     unittest.main()
