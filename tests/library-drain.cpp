@@ -6,6 +6,7 @@
 #include <libcrystalhd_if.h>
 #include "crystalhd_ioctl_limits.h"
 #include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_mfd.h"
+#include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_scl_hd.h"
 #include "../filters/gst/gst-plugin-1.0/gstcrystalhd-input.h"
 extern "C" {
 #include <libavformat/avformat.h>
@@ -73,6 +74,124 @@ struct ChromaReadFixture {
     }
 };
 
+// Fixed raw register observations, not a scaler fetch/completion or bus-error
+// certificate. The library's indirect read portal may write its own selectors;
+// this observer never writes any SCL register, clears status or follows data.
+static const uint32_t kSclAddresses[8] = {
+    BCHP_SCL_HD_REVISION_ID, BCHP_SCL_HD_TOP_CONTROL, BCHP_SCL_HD_ENABLE,
+    BCHP_SCL_HD_BVB_IN_SIZE, BCHP_SCL_HD_SRC_PIC_SIZE, BCHP_SCL_HD_DEST_PIC_SIZE,
+    BCHP_SCL_HD_BVB_IN_STATUS, BCHP_SCL_HD_REVISION_ID
+};
+static const char *const kSclNames[8] = {
+    "rev", "top", "enable", "bvb-in-size", "src-pic-size", "dest-pic-size",
+    "bvb-in-status", "closing-rev"
+};
+enum class SclFailure { None, Argument, Read, Revision, Reserved, EngineStatus };
+static SclFailure SclScalarFailure(unsigned field, uint32_t raw)
+{
+    const uint32_t masks[8] = {
+        0x0000ffffU, 0x0000000eU, 0x00000001U, 0x07ff07ffU,
+        0x07ff07ffU, 0x07ff07ffU, 0x000000ffU, 0x0000ffffU
+    };
+    if (field >= 8) return SclFailure::Argument;
+    if (field == 0 || field == 7)
+        return raw == 0x80U ? SclFailure::None : SclFailure::Revision;
+    if (raw & ~masks[field]) return SclFailure::Reserved;
+    return field == 6 && raw ? SclFailure::EngineStatus : SclFailure::None;
+}
+struct SclSnapshot {
+    uint32_t raw[2][8] = {};
+    unsigned reads = 0, measured = 0;
+    BC_STATUS status = BC_STS_SUCCESS;
+    SclFailure failure = SclFailure::None;
+    bool Stable() const {
+        return measured == 16 && !std::memcmp(raw[0], raw[1], sizeof(raw[0]));
+    }
+};
+static bool ReadSclConfiguration(HANDLE handle, SclSnapshot *snapshot,
+    BC_STATUS (*read_register)(HANDLE, uint32_t, uint32_t *) = DtsDevRegisterRead)
+{
+    if (!snapshot) return false;
+    *snapshot = SclSnapshot{};
+    if (!read_register) { snapshot->failure = SclFailure::Argument; return false; }
+    for (unsigned pass = 0; pass < 2; ++pass) {
+        for (unsigned field = 0; field < 8; ++field) {
+            uint32_t raw = 0;
+            ++snapshot->reads;
+            snapshot->status = read_register(handle, kSclAddresses[field], &raw);
+            if (snapshot->status != BC_STS_SUCCESS) {
+                snapshot->failure = SclFailure::Read;
+                return false;
+            }
+            snapshot->raw[pass][field] = raw;
+            ++snapshot->measured;
+            snapshot->failure = SclScalarFailure(field, raw);
+            if (snapshot->failure != SclFailure::None) return false;
+        }
+    }
+    return true;
+}
+enum class SclStage { PreStart, FormatChange, FirstReleased, LastReleased, EosBarrier };
+struct SclObserver {
+    bool enabled = false, failed = false;
+    unsigned attempted = 0, reads = 0;
+    bool Observe(HANDLE handle, SclStage stage,
+        BC_STATUS (*read_register)(HANDLE, uint32_t, uint32_t *) = DtsDevRegisterRead,
+        bool report = true) {
+        if (!enabled) return true;
+        const unsigned index = static_cast<unsigned>(stage);
+        if (failed || index >= 5 || (attempted & (1U << index))) return false;
+        attempted |= 1U << index; // One attempt, including admission/read failure.
+        SclSnapshot snapshot;
+        const bool ok = ReadSclConfiguration(handle, &snapshot, read_register);
+        reads += snapshot.reads;
+        failed = !ok;
+        if (report) {
+            const char *const stages[] = {"pre-START", "first-FMT-API-return",
+                "first-output-after-release", "last-output-after-release", "final-EOS-barrier"};
+            const char *const failures[] = {"none", "argument", "read-status",
+                "revision", "reserved-bits", "observed-engine-status"};
+            std::printf("SCL config: stage=%s reads=%u total-reads=%u measured=%u "
+                "api-status=%d failure=%s raw-stable=%s atomic=no transport-certified=no "
+                "clock/source/lease/completion-certified=no\n", stages[index], snapshot.reads,
+                reads, snapshot.measured, snapshot.status,
+                failures[static_cast<unsigned>(snapshot.failure)],
+                snapshot.measured == 16 ? (snapshot.Stable() ? "yes" : "no") : "NOT-READ");
+            for (unsigned pass = 0; pass < 2; ++pass) {
+                std::printf("SCL config raw: stage=%s pass=%u", stages[index], pass);
+                for (unsigned field = 0; field < 8; ++field) {
+                    std::printf(" %s@%08x=", kSclNames[field], kSclAddresses[field]);
+                    if (pass * 8 + field < snapshot.measured)
+                        std::printf("%08x", snapshot.raw[pass][field]);
+                    else std::printf("NOT-READ");
+                }
+                std::printf("\n");
+            }
+            std::fflush(stdout);
+        }
+        return ok;
+    }
+};
+
+struct SclReadFixture {
+    unsigned calls = 0, fail_at = 16;
+    bool addresses_valid = true;
+    BC_STATUS status = BC_STS_ERROR;
+    uint32_t raw[16] = {0x80, 0xc, 0, 0, 0, 0, 0, 0x80,
+                       0x80, 0xc, 0, 0, 0, 0, 0, 0x80};
+    static BC_STATUS Read(HANDLE handle, uint32_t address, uint32_t *value) {
+        auto *fixture = static_cast<SclReadFixture *>(handle);
+        // Independent literals, including both closing REV reads.
+        const uint32_t expected[8] = {0x540800, 0x540804, 0x540854, 0x540810,
+            0x540818, 0x54081c, 0x5408a4, 0x540800};
+        const unsigned index = fixture->calls++;
+        if (index >= 16) { fixture->addresses_valid = false; return BC_STS_ERROR; }
+        fixture->addresses_valid &= address == expected[index % 8];
+        *value = index == fixture->fail_at ? 0xffffffffU : fixture->raw[index];
+        return index == fixture->fail_at ? fixture->status : BC_STS_SUCCESS;
+    }
+};
+
 static volatile std::sig_atomic_t interrupted;
 static void Interrupt(int) { interrupted = 1; }
 static const unsigned kMaximumPackets = 10000;
@@ -97,6 +216,7 @@ struct Input {
     AVCodecID codec = AV_CODEC_ID_NONE;
     BC_MEDIA_SUBTYPE subtype = BC_MSUBTYPE_INVALID;
     unsigned width = 0, height = 0;
+    bool progressive = false;
     std::vector<uint8_t> metadata;
     std::vector<Packet> packets;
 };
@@ -127,6 +247,7 @@ struct Options {
     bool open_only = false;
     const char *capture_path = nullptr;
     bool observe_chroma = false;
+    bool observe_scl_config = false;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
 };
 
@@ -151,6 +272,10 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
             ? OUTPUT_MODE422_UYVY : OUTPUT_MODE422_YUY2;
         options->capture_path = path;
         arguments.resize(arguments.size() - 2);
+    }
+    if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-scl-config")) {
+        options->observe_scl_config = true;
+        arguments.pop_back();
     }
     if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-chroma")) {
         options->observe_chroma = true;
@@ -183,7 +308,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         arguments.resize(arguments.size() - 2);
     }
     if (arguments.size() == 2 && !std::strcmp(arguments[1], "--self-test")) {
-        if (options->capture_path || options->observe_chroma || options->scaler_test || options->mpeg1_via_mpeg2 ||
+        if (options->capture_path || options->observe_chroma || options->observe_scl_config || options->scaler_test || options->mpeg1_via_mpeg2 ||
             options->h263_via_divx || options->open_only) return false;
         options->mode = Mode::SelfTest;
         return true;
@@ -203,8 +328,22 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
     if (options->observe_chroma &&
         (!hardware || !options->capture_path || !options->scaler_test || options->scale_width))
         return false;
+    if (options->observe_scl_config &&
+        (!hardware || !options->capture_path || !options->scaler_test ||
+         options->iterations != 1 || options->output_format != OUTPUT_MODE422_YUY2 ||
+         options->mpeg1_via_mpeg2 || options->h263_via_divx || options->open_only ||
+         options->observe_chroma || (options->scale_width != 0 &&
+         options->scale_width != 320 && options->scale_width != 640))) return false;
     return !options->capture_path ||
         (hardware && options->scaler_test && !options->open_only && options->iterations == 1);
+}
+
+static bool SclInputAdmitted(const Options &options, const Input &input)
+{
+    return !options.observe_scl_config ||
+        (options.expected == 180 && input.codec == AV_CODEC_ID_MPEG2VIDEO &&
+         input.subtype == BC_MSUBTYPE_MPEG2VIDEO && input.progressive &&
+         input.width == 640 && input.height == 360 && input.packets.size() == 180);
 }
 
 // Test-only MPEG-1 admission through the existing algorithm-1 channel. Do not
@@ -555,7 +694,8 @@ static bool SelfTest()
     check(ParseArguments({"probe", "--hardware", "fixture", "12"}, &options) &&
           options.mode == Mode::Hardware && options.expected == 12 &&
           options.seconds == 30 && options.iterations == 1 &&
-          options.output_format == OUTPUT_MODE422_YUY2 && !options.observe_chroma,
+          options.output_format == OUTPUT_MODE422_YUY2 && !options.observe_chroma &&
+          !options.observe_scl_config,
           "legacy hardware arguments");
     options = Options{};
     check(ParseArguments({"probe", "--hardware", "fixture", "12", "9", "1000"},
@@ -674,6 +814,151 @@ static bool SelfTest()
                   fixture.calls == failed_read + 1 && fixture.addresses_valid,
                   "chroma read failure stops without retries or another register");
         }
+    }
+    for (const char *width : {"0", "320", "640"}) {
+        options = Options{};
+        check(ParseArguments({"probe", "--hardware", "fixture", "180", "30", "1",
+            "--scaler-test", width, "--observe-scl-config", "--capture-yuy2", "owned.raw"},
+            &options) && options.observe_scl_config && options.iterations == 1 &&
+            options.output_format == OUTPUT_MODE422_YUY2,
+            "SCL raw configuration admits only explicit native YUY2 scaler captures");
+    }
+    for (const std::vector<const char *> &invalid : {
+        std::vector<const char *>{"probe", "--self-test", "--observe-scl-config"},
+        {"probe", "--preflight", "fixture", "180", "--scaler-test", "320", "--observe-scl-config", "--capture-yuy2", "owned.raw"},
+        {"probe", "--hardware", "fixture", "180", "--observe-scl-config", "--capture-yuy2", "owned.raw"},
+        {"probe", "--hardware", "fixture", "180", "--scaler-test", "320", "--observe-scl-config"},
+        {"probe", "--hardware", "fixture", "180", "30", "2", "--scaler-test", "320", "--observe-scl-config", "--capture-yuy2", "owned.raw"},
+        {"probe", "--hardware", "fixture", "180", "--scaler-test", "128", "--observe-scl-config", "--capture-yuy2", "owned.raw"},
+        {"probe", "--hardware", "fixture", "180", "--scaler-test", "320", "--observe-scl-config", "--capture-uyvy", "owned.raw"},
+        {"probe", "--hardware", "fixture", "180", "--scaler-test", "320", "--mpeg1-via-mpeg2", "--observe-scl-config", "--capture-yuy2", "owned.raw"},
+        {"probe", "--hardware", "fixture", "180", "--h263-via-divx", "--open-only", "--observe-scl-config", "--capture-yuy2", "owned.raw"},
+        {"probe", "--hardware", "fixture", "180", "--scaler-test", "320", "--h263-via-divx", "--observe-scl-config", "--capture-yuy2", "owned.raw"},
+        {"probe", "--hardware", "fixture", "180", "--scaler-test", "0", "--observe-chroma", "--observe-scl-config", "--capture-yuy2", "owned.raw"},
+        {"probe", "--hardware", "fixture", "180", "--scaler-test", "0", "--observe-scl-config", "--observe-chroma", "--capture-yuy2", "owned.raw"},
+        {"probe", "--hardware", "fixture", "180", "--scaler-test", "320", "--observe-scl-config", "--observe-scl-config", "--capture-yuy2", "owned.raw"},
+        {"probe", "--hardware", "fixture", "180", "--observe-scl-config", "--scaler-test", "320", "--capture-yuy2", "owned.raw"},
+        {"probe", "--hardware", "fixture", "180", "--scaler-test", "320", "--capture-yuy2", "owned.raw", "--observe-scl-config"},
+        {"probe", "--hardware", "fixture", "180", "--scaler-test", "320", "--observe-scl"}}) {
+        options = Options{};
+        check(!ParseArguments(invalid, &options), "SCL observer rejects mixed/default/alternate/misordered options");
+    }
+    {
+        Input native;
+        native.codec = AV_CODEC_ID_MPEG2VIDEO;
+        native.subtype = BC_MSUBTYPE_MPEG2VIDEO;
+        native.progressive = true;
+        native.width = 640; native.height = 360; native.packets.resize(180);
+        Options admitted;
+        admitted.observe_scl_config = true; admitted.expected = 180;
+        check(SclInputAdmitted(admitted, native), "exact native progressive fixture shape admitted");
+        for (unsigned fault = 0; fault < 7; ++fault) {
+            Input changed = native;
+            Options altered = admitted;
+            if (fault == 0) changed.codec = AV_CODEC_ID_MPEG1VIDEO;
+            if (fault == 1) changed.subtype = BC_MSUBTYPE_DIVX;
+            if (fault == 2) changed.progressive = false;
+            if (fault == 3) changed.width = 638;
+            if (fault == 4) changed.height = 358;
+            if (fault == 5) changed.packets.pop_back();
+            if (fault == 6) altered.expected = 179;
+            check(!SclInputAdmitted(altered, changed) && SclInputAdmitted(Options{}, changed),
+                "SCL-specific input admission preserves legacy input predicates");
+        }
+    }
+    {
+        SclReadFixture fixture;
+        SclSnapshot snapshot;
+        check(ReadSclConfiguration(&fixture, &snapshot, SclReadFixture::Read) &&
+            fixture.addresses_valid && fixture.calls == 16 && snapshot.reads == 16 &&
+            snapshot.measured == 16 && snapshot.Stable(), "two independent fixed REV-bracketed bundles");
+        for (unsigned field = 1; field <= 5; ++field) {
+            SclReadFixture changing;
+            changing.raw[8 + field] ^= field == 1 ? 2 : 1;
+            check(ReadSclConfiguration(&changing, &snapshot, SclReadFixture::Read) &&
+                changing.calls == 16 && !snapshot.Stable() &&
+                snapshot.raw[1][field] == changing.raw[8 + field],
+                "normal duplicate raw differences are recorded, not rejected or normalized");
+        }
+        check(!ReadSclConfiguration(&fixture, nullptr, SclReadFixture::Read) && fixture.calls == 16,
+            "null snapshot refuses before reads");
+        check(!ReadSclConfiguration(&fixture, &snapshot, nullptr) && fixture.calls == 16 &&
+            snapshot.failure == SclFailure::Argument && snapshot.reads == 0,
+            "null read callback refuses before reads");
+    }
+    for (unsigned failed_read = 0; failed_read < 16; ++failed_read) {
+        for (int status = -1; status <= BC_STS_PWR_MGMT; ++status) {
+            if (status == BC_STS_SUCCESS) continue;
+            SclReadFixture fixture;
+            fixture.fail_at = failed_read; fixture.status = static_cast<BC_STATUS>(status);
+            struct { uint32_t before = 0x12345678; SclSnapshot value; uint32_t after = 0x87654321; } guarded;
+            check(!ReadSclConfiguration(&fixture, &guarded.value, SclReadFixture::Read) &&
+                fixture.calls == failed_read + 1 && fixture.addresses_valid &&
+                guarded.value.reads == failed_read + 1 && guarded.value.measured == failed_read &&
+                guarded.value.status == status && guarded.value.failure == SclFailure::Read &&
+                guarded.value.raw[failed_read / 8][failed_read % 8] == 0 &&
+                guarded.before == 0x12345678 && guarded.after == 0x87654321,
+                "every read status stops exactly once without publishing failed read data or crossing canaries");
+            fixture.calls = 0;
+            SclObserver observer; observer.enabled = true;
+            check(!observer.Observe(&fixture, SclStage::FirstReleased, SclReadFixture::Read, false) &&
+                observer.failed && observer.reads == failed_read + 1 &&
+                !observer.Observe(&fixture, SclStage::LastReleased, SclReadFixture::Read, false) &&
+                fixture.calls == failed_read + 1, "failed observer latches and permits no later diagnostic reads");
+        }
+    }
+    const uint32_t scl_allowed[8] = {0xffff, 0xe, 1, 0x07ff07ff, 0x07ff07ff, 0x07ff07ff, 0xff, 0xffff};
+    for (unsigned position = 0; position < 16; ++position) {
+        const unsigned field = position % 8;
+        for (unsigned bit = 0; bit < 32; ++bit) {
+            if (scl_allowed[field] & (1U << bit)) continue;
+            SclReadFixture fixture;
+            fixture.raw[position] |= 1U << bit;
+            SclSnapshot snapshot;
+            check(!ReadSclConfiguration(&fixture, &snapshot, SclReadFixture::Read) &&
+                fixture.calls == position + 1 && snapshot.measured == position + 1 &&
+                snapshot.raw[position / 8][field] == fixture.raw[position],
+                "all reserved bits fail immediately but retain the measured invalid raw word");
+        }
+        if (field == 0 || field == 7) {
+            for (uint32_t raw : {0U, 1U, 0x50U, 0x81U, 0xffffU, 0xffffffffU}) {
+                SclReadFixture fixture; fixture.raw[position] = raw;
+                SclSnapshot snapshot;
+                check(!ReadSclConfiguration(&fixture, &snapshot, SclReadFixture::Read) &&
+                    snapshot.failure == SclFailure::Revision && fixture.calls == position + 1,
+                    "each opening/closing revision must equal the qualified 0x80 raw value");
+            }
+        } else if (field == 6) {
+            for (unsigned bit = 0; bit < 8; ++bit) {
+                SclReadFixture fixture; fixture.raw[position] = 1U << bit;
+                SclSnapshot snapshot;
+                check(!ReadSclConfiguration(&fixture, &snapshot, SclReadFixture::Read) &&
+                    snapshot.failure == SclFailure::EngineStatus && fixture.calls == position + 1,
+                    "each defined observed status bit stops without clear or followup reads");
+            }
+        } else {
+            SclReadFixture fixture; fixture.raw[position] = scl_allowed[field];
+            SclSnapshot snapshot;
+            check(ReadSclConfiguration(&fixture, &snapshot, SclReadFixture::Read) && fixture.calls == 16,
+                "maximum documented field bits accepted without interpreting geometry/enable semantics");
+        }
+    }
+    {
+        SclObserver observer;
+        SclReadFixture fixture;
+        check(observer.Observe(&fixture, SclStage::PreStart, SclReadFixture::Read, false) &&
+            fixture.calls == 0 && observer.reads == 0 && observer.attempted == 0,
+            "default-off observer has zero additional read calls");
+        observer.enabled = true;
+        for (SclStage stage : {SclStage::PreStart, SclStage::FormatChange, SclStage::FirstReleased,
+                              SclStage::LastReleased, SclStage::EosBarrier}) {
+            fixture = SclReadFixture{};
+            check(observer.Observe(&fixture, stage, SclReadFixture::Read, false) && fixture.calls == 16 &&
+                !observer.Observe(&fixture, stage, SclReadFixture::Read, false) && fixture.calls == 16,
+                "five labelled stages each have one fixed bounded attempt");
+        }
+        check(observer.reads == 80 && observer.attempted == 31 && !observer.failed,
+            "maximum five-stage budget is exactly eighty additional API read calls");
     }
     options = Options{};
     check(ParseArguments({"probe", "--preflight", "fixture", "30",
@@ -1124,6 +1409,7 @@ static bool Load(const char *path, unsigned expected, Deadline *deadline, Input 
              (parameters->field_order == AV_FIELD_UNKNOWN || parameters->field_order == AV_FIELD_PROGRESSIVE);
         input->width = parameters->width;
         input->height = parameters->height;
+        input->progressive = parameters->field_order == AV_FIELD_PROGRESSIVE;
         if (ok && input->subtype == BC_MSUBTYPE_WMV3) {
             // Same normalization as gstcrystalhd-codecs.h: four STRUCT_C bytes.
             ok = parameters->extradata &&
@@ -1251,6 +1537,8 @@ struct Audit {
     unsigned output_width = 0, output_height = 0;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
     bool observe_chroma = false;
+    unsigned expected = 0;
+    SclObserver scl;
     GChecksum *pixels = nullptr;
     PixelCapture *capture = nullptr;
     ~Audit() { if (pixels) g_checksum_free(pixels); }
@@ -1296,6 +1584,11 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                 std::fprintf(stderr, "%s capture write/budget failure\n", PackedName(audit->output_format));
                 valid = false;
             }
+            // Preserve an already delivered owned copy before diagnostic failure.
+            if (!marker && valid && released && audit->frames == 1)
+                valid = audit->scl.Observe(device->handle, SclStage::FirstReleased);
+            if (!marker && valid && released && audit->frames == audit->expected)
+                valid = audit->scl.Observe(device->handle, SclStage::LastReleased);
             if (!marker && valid && released && audit->capture && audit->frames == 1)
                 valid = PackingState(device->handle, "first-output");
             if (!marker && valid && released && audit->observe_chroma && audit->frames == 1)
@@ -1306,9 +1599,12 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                     audit->iteration, audit->frames - 1,
                     static_cast<unsigned long long>(output.PicInfo.timeStamp));
             if (!valid) {
-                std::fprintf(stderr, "Invalid progressive picture geometry/data/token: %llu\n",
-                             static_cast<unsigned long long>(output.PicInfo.timeStamp));
-                if (audit->pixels)
+                if (audit->scl.failed)
+                    std::fprintf(stderr, "SCL raw configuration observation failed; ordinary decoder cleanup follows\n");
+                else
+                    std::fprintf(stderr, "Invalid progressive picture geometry/data/token: %llu\n",
+                                 static_cast<unsigned long long>(output.PicInfo.timeStamp));
+                if (audit->pixels && !audit->scl.failed)
                     std::fprintf(stderr, "Scaler picture: got=%ux%u expected=%ux%u "
                                  "flags=%x words=%u packed422=%u\n",
                                  output.PicInfo.width, output.PicInfo.height,
@@ -1319,6 +1615,8 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
         } else if (result == BC_STS_FMT_CHANGE && audit->capture &&
                    !audit->packing_format_observed) {
             audit->packing_format_observed = true;
+            // FMT_CHANGE is an API notification, not a lease/retirement proof.
+            if (!audit->scl.Observe(device->handle, SclStage::FormatChange)) return false;
             if (!PackingState(device->handle, "first-format-change")) return false;
             if (audit->observe_chroma && !ChromaState(device->handle, "first-format-change")) return false;
         } else if (result != BC_STS_FMT_CHANGE && result != BC_STS_NO_DATA &&
@@ -1359,6 +1657,8 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.output_height = input.height;
     audit.output_format = options.output_format;
     audit.observe_chroma = options.observe_chroma;
+    audit.expected = expected;
+    audit.scl.enabled = options.observe_scl_config;
     if (options.scaler_test) {
         if (!ScalerGeometry(input.width, input.height, options.scale_width,
                             &audit.output_width, &audit.output_height)) return false;
@@ -1409,6 +1709,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     }
     if (ok) ok = Status("DtsSetColorSpace", DtsSetColorSpace(device.handle, options.output_format));
     if (ok && options.capture_path) ok = PackingState(device.handle, "selected-before-start");
+    if (ok) ok = audit.scl.Observe(device.handle, SclStage::PreStart);
     if (ok) device.started = ok = Status("DtsStartDecoder", DtsStartDecoder(device.handle));
     if (ok && options.capture_path) ok = PackingState(device.handle, "started");
     if (ok) ok = Status("DtsStartCapture", DtsStartCapture(device.handle));
@@ -1452,6 +1753,8 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     // In either case require complete frame delivery and token retirement.
     ok = ok && !deadline.expired() && audit.eos && audit.ready == 0 &&
          audit.frames == expected && audit.pending.empty();
+    // Delivery EOS barrier only, sampled before ordinary STOP/CLOSE.
+    if (ok) ok = audit.scl.Observe(device.handle, SclStage::EosBarrier);
     const bool closed = device.Close();
     ok = ok && closed;
     const bool captured = capture.Finish(ok);
@@ -1483,13 +1786,16 @@ int main(int argc, char **argv)
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
             "[--scaler-test WIDTH_OR_0] [--mpeg1-via-mpeg2 | --h263-via-divx] "
-            "[--open-only] [--observe-chroma] "
+            "[--open-only] [--observe-chroma | --observe-scl-config] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
-    if (options.observe_chroma && !CanReadChromaConfiguration()) {
-        std::fprintf(stderr, "--observe-chroma requires CAP_SYS_RAWIO; no device was opened\n");
+    if ((options.observe_chroma || options.observe_scl_config) && !CanReadChromaConfiguration()) {
+        if (options.observe_scl_config)
+            std::fprintf(stderr, "--observe-scl-config requires CAP_SYS_RAWIO; no fixture/capture/device was opened\n");
+        else
+            std::fprintf(stderr, "--observe-chroma requires CAP_SYS_RAWIO; no device was opened\n");
         return 2;
     }
     Phase1Progress progress{};
@@ -1504,6 +1810,12 @@ int main(int argc, char **argv)
     Input input;
     if (!Load(options.path, options.expected, &deadline, &input,
               options.mpeg1_via_mpeg2, options.h263_via_divx)) {
+        phase1_progress_close(&progress);
+        return 2;
+    }
+    if (!SclInputAdmitted(options, input)) {
+        std::fprintf(stderr, "--observe-scl-config requires native progressive MPEG2 "
+                             "640x360 with 180 packets/expected frames; no device was opened\n");
         phase1_progress_close(&progress);
         return 2;
     }
