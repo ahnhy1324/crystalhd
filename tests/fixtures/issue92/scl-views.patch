@@ -1,0 +1,1204 @@
+diff --git a/driver/linux/crystalhd_fleafuncs.c b/driver/linux/crystalhd_fleafuncs.c
+index 61883ae..0929a44 100644
+--- a/driver/linux/crystalhd_fleafuncs.c
++++ b/driver/linux/crystalhd_fleafuncs.c
+@@ -1279,7 +1279,7 @@ static BC_STATUS crystalhd_flea_mfd_colour_guard(struct crystalhd_hw *hw,
+  * status bits are observations; only reserved bits invalidate readable state.
+  * A feed-command-zero premise applies ONLY before our sole MFD START.
+  */
+-static BC_STATUS crystalhd_flea_mfd_scl_guard(struct crystalhd_hw *hw,
++static BC_STATUS crystalhd_flea_mfd_scl_guard_view(struct crystalhd_hw *hw,
+ 					   uint64_t generation, const void *owner,
+ 					   uint32_t selector, bool before_feed,
+ 					   uint32_t *status)
+@@ -1294,7 +1294,7 @@ static BC_STATUS crystalhd_flea_mfd_scl_guard(struct crystalhd_hw *hw,
+ 	unsigned int i;
+ 	BC_STATUS sts;
+ 
+-	if (!status || selector > 1)
++	if (!status || selector > 3)
+ 		return BC_STS_INV_ARG;
+ 	*status = 0;
+ 	sts = crystalhd_flea_mfd_colour_guard(hw, generation, owner);
+@@ -1329,21 +1329,34 @@ static BC_STATUS crystalhd_flea_mfd_scl_guard(struct crystalhd_hw *hw,
+ 	return BC_STS_SUCCESS;
+ }
+ 
++/* Preserve the selector-one fixture's admission shape. */
++static BC_STATUS crystalhd_flea_mfd_scl_guard(struct crystalhd_hw *hw,
++					   uint64_t generation, const void *owner,
++					   uint32_t selector, bool before_feed,
++					   uint32_t *status)
++{
++	if (selector > 1)
++		return BC_STS_INV_ARG;
++	return crystalhd_flea_mfd_scl_guard_view(hw, generation, owner, selector,
++					       before_feed, status);
++}
++
+ /* Non-atomic raw tuple: DATA, STATUS, pre-guard STATUS, post-guard STATUS.
+  * Preserve all three status observations instead of assuming sticky flags or
+  * inventing an OR value as a raw register sample. DATA is opaque, never a
+  * pointer or pixel value. There is no command-zero expectation after START.
+  */
+-static BC_STATUS crystalhd_flea_mfd_scl_sample(struct crystalhd_hw *hw,
++static BC_STATUS crystalhd_flea_mfd_scl_sample_view(struct crystalhd_hw *hw,
+ 					    uint64_t generation, const void *owner,
+-					    uint32_t snapshot[4])
++					    uint32_t snapshot[4], uint32_t selector)
+ {
+ 	BC_STATUS sts;
+ 
+-	if (!snapshot)
++	if (!snapshot || !selector || selector > 3)
+ 		return BC_STS_INV_ARG;
+-	sts = crystalhd_flea_mfd_scl_guard(hw, generation, owner, 1, false,
+-					&snapshot[2]);
++	sts = selector == 1 ?
++		crystalhd_flea_mfd_scl_guard(hw, generation, owner, selector, false, &snapshot[2]) :
++		crystalhd_flea_mfd_scl_guard_view(hw, generation, owner, selector, false, &snapshot[2]);
+ 	if (sts != BC_STS_SUCCESS)
+ 		return sts;
+ 	snapshot[0] = hw->pfnReadDevRegister(hw->adp, BCHP_SCL_HD_TEST_PORT_DATA);
+@@ -1353,8 +1366,16 @@ static BC_STATUS crystalhd_flea_mfd_scl_sample(struct crystalhd_hw *hw,
+ 	if (!READ_ONCE(hw->adp->present) || READ_ONCE(hw->dma_fault) ||
+ 	    (snapshot[1] & BCHP_SCL_HD_BVB_IN_STATUS_reserved0_MASK))
+ 		return BC_STS_IO_ERROR;
+-	return crystalhd_flea_mfd_scl_guard(hw, generation, owner, 1, false,
+-					 &snapshot[3]);
++	return selector == 1 ?
++		crystalhd_flea_mfd_scl_guard(hw, generation, owner, selector, false, &snapshot[3]) :
++		crystalhd_flea_mfd_scl_guard_view(hw, generation, owner, selector, false, &snapshot[3]);
++}
++
++static BC_STATUS crystalhd_flea_mfd_scl_sample(struct crystalhd_hw *hw,
++					    uint64_t generation, const void *owner,
++					    uint32_t snapshot[4])
++{
++	return crystalhd_flea_mfd_scl_sample_view(hw, generation, owner, snapshot, 1);
+ }
+ 
+ /* Volatile, pre-boot fixed-colour experiment. RDB names do not establish DDR
+@@ -1366,9 +1387,10 @@ static BC_STATUS crystalhd_flea_mfd_scl_sample(struct crystalhd_hw *hw,
+  * valid guards. It adds one pre-START baseline and <=17 active raw tuples,
+  * not a pixel, routing, clock/idle or completion certificate.
+  */
+-static BC_STATUS crystalhd_flea_mfd_colour_probe_core(struct crystalhd_hw *hw,
++static BC_STATUS crystalhd_flea_mfd_colour_probe_core_view(struct crystalhd_hw *hw,
+ 						   uint64_t generation, const void *owner,
+-						   uint32_t colour, bool observe_scl)
++						   uint32_t colour, bool observe_scl,
++						   uint32_t selector)
+ {
+ 	const uint32_t test_mode = BCHP_MFD_TEST_MODE_CNTL_BVB_TEST_MODE_MASK;
+ 	struct {
+@@ -1407,9 +1429,10 @@ static BC_STATUS crystalhd_flea_mfd_colour_probe_core(struct crystalhd_hw *hw,
+ 	bool feed_started = false, scl_selected = false, observed_engine_error = false;
+ 	BC_STATUS sts;
+ 
+-	if (colour != 0x00405ac3 && colour != 0x00b2d32b)
++	if ((colour != 0x00405ac3 && colour != 0x00b2d32b) ||
++	    (observe_scl && (!selector || selector > 3)))
+ 		return BC_STS_INV_ARG;
+-	sts = observe_scl ? crystalhd_flea_mfd_scl_guard(hw, generation, owner,
++	sts = observe_scl ? crystalhd_flea_mfd_scl_guard_view(hw, generation, owner,
+ 							0, true, &scl_status) :
+ 		crystalhd_flea_mfd_colour_guard(hw, generation, owner);
+ 	if (sts != BC_STS_SUCCESS)
+@@ -1467,7 +1490,7 @@ static BC_STATUS crystalhd_flea_mfd_colour_probe_core(struct crystalhd_hw *hw,
+ 	 */
+ 	hw->research_mfd_pci_isolated = true;
+ 	pci_clear_master(adp->pdev);
+-	sts = observe_scl ? crystalhd_flea_mfd_scl_guard(hw, generation, owner,
++	sts = observe_scl ? crystalhd_flea_mfd_scl_guard_view(hw, generation, owner,
+ 							0, true, &scl_status) :
+ 		crystalhd_flea_mfd_colour_guard(hw, generation, owner);
+ 	if (sts != BC_STS_SUCCESS)
+@@ -1475,7 +1498,7 @@ static BC_STATUS crystalhd_flea_mfd_colour_probe_core(struct crystalhd_hw *hw,
+ 	if (observe_scl && scl_status)
+ 		goto engine_error;
+ 	for (i = 0; i < ARRAY_SIZE(controls); i++) {
+-		sts = observe_scl ? crystalhd_flea_mfd_scl_guard(hw, generation, owner,
++		sts = observe_scl ? crystalhd_flea_mfd_scl_guard_view(hw, generation, owner,
+ 								0, true, &scl_status) :
+ 			crystalhd_flea_mfd_colour_guard(hw, generation, owner);
+ 		if (sts != BC_STS_SUCCESS)
+@@ -1489,7 +1512,7 @@ static BC_STATUS crystalhd_flea_mfd_colour_probe_core(struct crystalhd_hw *hw,
+ 		    original != controls[i].value)
+ 			goto quarantine;
+ 	}
+-	sts = observe_scl ? crystalhd_flea_mfd_scl_guard(hw, generation, owner,
++	sts = observe_scl ? crystalhd_flea_mfd_scl_guard_view(hw, generation, owner,
+ 							0, true, &scl_status) :
+ 		crystalhd_flea_mfd_colour_guard(hw, generation, owner);
+ 	if (sts != BC_STS_SUCCESS)
+@@ -1510,7 +1533,7 @@ static BC_STATUS crystalhd_flea_mfd_colour_probe_core(struct crystalhd_hw *hw,
+ 	if ((sample & BCHP_MFD_BVB_SAMPLE_DATA_reserved0_MASK) ||
+ 	    (tap & 0xf0000000))
+ 		goto quarantine;
+-	sts = observe_scl ? crystalhd_flea_mfd_scl_guard(hw, generation, owner,
++	sts = observe_scl ? crystalhd_flea_mfd_scl_guard_view(hw, generation, owner,
+ 							0, true, &scl_status) :
+ 		crystalhd_flea_mfd_colour_guard(hw, generation, owner);
+ 	if (sts != BC_STS_SUCCESS)
+@@ -1518,11 +1541,11 @@ static BC_STATUS crystalhd_flea_mfd_colour_probe_core(struct crystalhd_hw *hw,
+ 	if (observe_scl) {
+ 		if (scl_status)
+ 			goto engine_error;
+-		/* Sole selector-one write, before our sole MFD START. */
++		/* Sole fixed-target selector write, before our sole MFD START. */
+ 		scl_selected = true;
+-		hw->pfnWriteDevRegister(adp, BCHP_SCL_HD_TEST_PORT_CONTROL, 1);
++		hw->pfnWriteDevRegister(adp, BCHP_SCL_HD_TEST_PORT_CONTROL, selector);
+ 		scl_writes++;
+-		sts = crystalhd_flea_mfd_scl_guard(hw, generation, owner, 1, true,
++		sts = crystalhd_flea_mfd_scl_guard_view(hw, generation, owner, selector, true,
+ 						 &scl_status);
+ 		if (sts != BC_STS_SUCCESS)
+ 			goto quarantine;
+@@ -1532,15 +1555,17 @@ static BC_STATUS crystalhd_flea_mfd_colour_probe_core(struct crystalhd_hw *hw,
+ 		 * are additionally bracketed by before-feed command-zero guards.
+ 		 * This word is not ordinal zero and does not count as a feed sample.
+ 		 */
+-		sts = crystalhd_flea_mfd_scl_sample(hw, generation, owner, scl_snapshot);
++		sts = selector == 1 ?
++			crystalhd_flea_mfd_scl_sample(hw, generation, owner, scl_snapshot) :
++			crystalhd_flea_mfd_scl_sample_view(hw, generation, owner, scl_snapshot, selector);
+ 		if (sts != BC_STS_SUCCESS)
+ 			goto quarantine;
+ 		dev_info(&adp->pdev->dev,
+-			 "issue92 mfd-scl: phase=pre-start data=%08x status=%08x guard-status=%08x/%08x\n",
+-			 scl_snapshot[0], scl_snapshot[1], scl_snapshot[2], scl_snapshot[3]);
++			 "issue92 mfd-scl: selector=%u phase=pre-start data=%08x status=%08x guard-status=%08x/%08x\n",
++			 selector, scl_snapshot[0], scl_snapshot[1], scl_snapshot[2], scl_snapshot[3]);
+ 		if (scl_snapshot[1] || scl_snapshot[2] || scl_snapshot[3])
+ 			goto engine_error;
+-		sts = crystalhd_flea_mfd_scl_guard(hw, generation, owner, 1, true,
++		sts = crystalhd_flea_mfd_scl_guard_view(hw, generation, owner, selector, true,
+ 						 &scl_status);
+ 		if (sts != BC_STS_SUCCESS)
+ 			goto quarantine;
+@@ -1552,8 +1577,8 @@ static BC_STATUS crystalhd_flea_mfd_colour_probe_core(struct crystalhd_hw *hw,
+ 				BCHP_MFD_PIC_FEED_CMD_START_FEED_MASK);
+ 	mfd_writes++;
+ 	for (i = 0; i <= 16; i++) {
+-		sts = observe_scl ? crystalhd_flea_mfd_scl_guard(hw, generation, owner,
+-								1, false, &scl_status) :
++		sts = observe_scl ? crystalhd_flea_mfd_scl_guard_view(hw, generation, owner,
++								selector, false, &scl_status) :
+ 			crystalhd_flea_mfd_colour_guard(hw, generation, owner);
+ 		if (sts != BC_STS_SUCCESS)
+ 			goto quarantine;
+@@ -1593,13 +1618,15 @@ static BC_STATUS crystalhd_flea_mfd_colour_probe_core(struct crystalhd_hw *hw,
+ 		    (feeder & BCHP_MFD_FEEDER_ERROR_INTERRUPT_STATUS_reserved0_MASK))
+ 			goto quarantine;
+ 		if (observe_scl) {
+-			sts = crystalhd_flea_mfd_scl_sample(hw, generation, owner, scl_snapshot);
++			sts = selector == 1 ?
++				crystalhd_flea_mfd_scl_sample(hw, generation, owner, scl_snapshot) :
++				crystalhd_flea_mfd_scl_sample_view(hw, generation, owner, scl_snapshot, selector);
+ 			if (sts != BC_STS_SUCCESS)
+ 				goto quarantine;
+ 			observations++;
+ 			dev_info(&adp->pdev->dev,
+-				 "issue92 mfd-scl: observation=%u host-pulses=%u data=%08x status=%08x guard-status=%08x/%08x entry-status=%08x\n",
+-				 i, pulses, scl_snapshot[0], scl_snapshot[1],
++				 "issue92 mfd-scl: selector=%u observation=%u host-pulses=%u data=%08x status=%08x guard-status=%08x/%08x entry-status=%08x\n",
++				 selector, i, pulses, scl_snapshot[0], scl_snapshot[1],
+ 				 scl_snapshot[2], scl_snapshot[3], entry_status);
+ 			observed_scl_error_bits |= entry_status;
+ 			if (entry_status || scl_snapshot[1] || scl_snapshot[2] || scl_snapshot[3])
+@@ -1607,8 +1634,8 @@ static BC_STATUS crystalhd_flea_mfd_colour_probe_core(struct crystalhd_hw *hw,
+ 		}
+ 		if (i == 16 || feeder)
+ 			break;
+-		sts = observe_scl ? crystalhd_flea_mfd_scl_guard(hw, generation, owner,
+-								1, false, &scl_status) :
++		sts = observe_scl ? crystalhd_flea_mfd_scl_guard_view(hw, generation, owner,
++								selector, false, &scl_status) :
+ 			crystalhd_flea_mfd_colour_guard(hw, generation, owner);
+ 		if (sts != BC_STS_SUCCESS)
+ 			goto quarantine;
+@@ -1618,8 +1645,8 @@ static BC_STATUS crystalhd_flea_mfd_colour_probe_core(struct crystalhd_hw *hw,
+ 					test_mode | BCHP_MFD_TEST_MODE_CNTL_ACCEPT_PULSE_MASK);
+ 		mfd_writes++;
+ 		udelay(10);
+-		sts = observe_scl ? crystalhd_flea_mfd_scl_guard(hw, generation, owner,
+-								1, false, &scl_status) :
++		sts = observe_scl ? crystalhd_flea_mfd_scl_guard_view(hw, generation, owner,
++								selector, false, &scl_status) :
+ 			crystalhd_flea_mfd_colour_guard(hw, generation, owner);
+ 		if (sts != BC_STS_SUCCESS)
+ 			goto quarantine;
+@@ -1630,8 +1657,8 @@ static BC_STATUS crystalhd_flea_mfd_colour_probe_core(struct crystalhd_hw *hw,
+ 			observed_engine_error = true;
+ 			observed_scl_error_bits |= scl_status;
+ 			dev_info(&adp->pdev->dev,
+-				 "issue92 mfd-scl: phase=pulse-low raw-status=%08x classification=observed_engine_error\n",
+-				 scl_status);
++				 "issue92 mfd-scl: selector=%u phase=pulse-low raw-status=%08x classification=observed_engine_error\n",
++				 selector, scl_status);
+ 		}
+ 		hw->pfnWriteDevRegister(adp, BCHP_MFD_TEST_MODE_CNTL, test_mode);
+ 		mfd_writes++;
+@@ -1647,12 +1674,12 @@ engine_error:
+ 	observed_scl_error_bits |= scl_status | scl_snapshot[1] |
+ 				   scl_snapshot[2] | scl_snapshot[3];
+ 	dev_info(&adp->pdev->dev,
+-		 "issue92 mfd-scl: phase=%s raw-guard-status=%08x sample-status=%08x sample-guard-status=%08x/%08x classification=observed_engine_error\n",
+-		 feed_started ? "active" : "before-feed", scl_status,
++		 "issue92 mfd-scl: selector=%u phase=%s raw-guard-status=%08x sample-status=%08x sample-guard-status=%08x/%08x classification=observed_engine_error\n",
++		 selector, feed_started ? "active" : "before-feed", scl_status,
+ 		 scl_snapshot[1], scl_snapshot[2], scl_snapshot[3]);
+ restore:
+-	sts = observe_scl ? crystalhd_flea_mfd_scl_guard(hw, generation, owner,
+-							scl_selected ? 1 : 0,
++	sts = observe_scl ? crystalhd_flea_mfd_scl_guard_view(hw, generation, owner,
++								scl_selected ? selector : 0,
+ 							!feed_started, &scl_status) :
+ 		crystalhd_flea_mfd_colour_guard(hw, generation, owner);
+ 	if (sts != BC_STS_SUCCESS)
+@@ -1662,15 +1689,15 @@ restore:
+ 		observed_scl_error_bits |= scl_status;
+ 		if (scl_status)
+ 			dev_info(&adp->pdev->dev,
+-				 "issue92 mfd-scl: phase=pre-restore raw-status=%08x classification=observed_engine_error\n",
+-				 scl_status);
++				 "issue92 mfd-scl: selector=%u phase=pre-restore raw-status=%08x classification=observed_engine_error\n",
++				 selector, scl_status);
+ 		if (scl_selected) {
+ 			/* Exactly one guarded selector restoration. Defined error flags
+ 			 * are retained observations, not a permission for blind MMIO.
+ 			 */
+ 			hw->pfnWriteDevRegister(adp, BCHP_SCL_HD_TEST_PORT_CONTROL, 0);
+ 			scl_writes++;
+-			sts = crystalhd_flea_mfd_scl_guard(hw, generation, owner, 0,
++			sts = crystalhd_flea_mfd_scl_guard_view(hw, generation, owner, 0,
+ 							 !feed_started, &scl_status);
+ 			if (sts != BC_STS_SUCCESS)
+ 				goto quarantine;
+@@ -1678,12 +1705,12 @@ restore:
+ 			observed_scl_error_bits |= scl_status;
+ 			if (scl_status)
+ 				dev_info(&adp->pdev->dev,
+-					 "issue92 mfd-scl: phase=post-restore raw-status=%08x classification=observed_engine_error\n",
+-					 scl_status);
++					 "issue92 mfd-scl: selector=%u phase=post-restore raw-status=%08x classification=observed_engine_error\n",
++					 selector, scl_status);
+ 		}
+ 		dev_info(&adp->pdev->dev,
+-			 "issue92 mfd-scl: observations=%u host-pulses=%u mfd-writes=%u scl-writes=%u final-status=%08x observed-status-bits=%08x outcome=%s\n",
+-			 observations, pulses, mfd_writes, scl_writes, scl_status,
++			 "issue92 mfd-scl: selector=%u observations=%u host-pulses=%u mfd-writes=%u scl-writes=%u final-status=%08x observed-status-bits=%08x outcome=%s\n",
++			 selector, observations, pulses, mfd_writes, scl_writes, scl_status,
+ 			 observed_scl_error_bits,
+ 			 observed_engine_error ? "observed_engine_error" : "bounded_observation");
+ 	}
+@@ -1695,6 +1722,14 @@ quarantine:
+ 	return BC_STS_IO_ERROR;
+ }
+ 
++static BC_STATUS crystalhd_flea_mfd_colour_probe_core(struct crystalhd_hw *hw,
++						   uint64_t generation, const void *owner,
++						   uint32_t colour, bool observe_scl)
++{
++	return crystalhd_flea_mfd_colour_probe_core_view(hw, generation, owner,
++						       colour, observe_scl, 1);
++}
++
+ /* Keep the legacy colour-only helper's public-to-extraction shape and exact
+  * I/O path. The combined helper is a distinct, opt-in private experiment.
+  */
+@@ -1712,6 +1747,14 @@ static BC_STATUS crystalhd_flea_mfd_scl_probe(struct crystalhd_hw *hw,
+ 	return crystalhd_flea_mfd_colour_probe_core(hw, generation, owner, colour, true);
+ }
+ 
++static BC_STATUS crystalhd_flea_mfd_scl_probe_view(struct crystalhd_hw *hw,
++						uint64_t generation, const void *owner,
++						uint32_t colour, uint32_t selector)
++{
++	return crystalhd_flea_mfd_colour_probe_core_view(hw, generation, owner,
++						       colour, true, selector);
++}
++
+ /* The previously observed pre-boot command latch must remain zero. This is
+  * not an engine-idle proof and must not guard the MFD colour START trial.
+  */
+@@ -1732,9 +1775,9 @@ static BC_STATUS crystalhd_flea_scl_port_guard(struct crystalhd_hw *hw,
+ /* Only fixed control/status and the selected opaque debug word. The separate
+  * CLEAR register is excluded; RDB naming is not a read-side-effect contract.
+  */
+-static BC_STATUS crystalhd_flea_scl_port_sample(struct crystalhd_hw *hw,
++static BC_STATUS crystalhd_flea_scl_port_sample_view(struct crystalhd_hw *hw,
+ 					     uint64_t generation, const void *owner,
+-					     uint32_t snapshot[6])
++					     uint32_t snapshot[6], uint32_t selector)
+ {
+ 	static const uint32_t addresses[6] = {
+ 		BCHP_SCL_HD_REVISION_ID, BCHP_SCL_HD_TOP_CONTROL,
+@@ -1744,7 +1787,11 @@ static BC_STATUS crystalhd_flea_scl_port_sample(struct crystalhd_hw *hw,
+ 	BC_STATUS sts;
+ 	unsigned int i;
+ 
+-	if (!snapshot)
++	/* selector is the frozen qualification target, not the current CTRL.
++	 * Initial/fresh/restored samples remain selector zero; the probe compares
++	 * them explicitly. DATA is opaque under all three named union views.
++	 */
++	if (!snapshot || !selector || selector > 3)
+ 		return BC_STS_INV_ARG;
+ 	sts = crystalhd_flea_scl_port_guard(hw, generation, owner);
+ 	if (sts != BC_STS_SUCCESS)
+@@ -1755,8 +1802,8 @@ static BC_STATUS crystalhd_flea_scl_port_sample(struct crystalhd_hw *hw,
+ 			return BC_STS_IO_ERROR;
+ 	}
+ 	dev_info(&hw->adp->pdev->dev,
+-		 "issue92 scl-port: revision=%08x top=%08x enable=%08x selector=%08x status=%08x data=%08x\n",
+-		 snapshot[0], snapshot[1], snapshot[2],
++		 "issue92 scl-port: target-selector=%u revision=%08x top=%08x enable=%08x selector=%08x status=%08x data=%08x\n",
++		 selector, snapshot[0], snapshot[1], snapshot[2],
+ 			 snapshot[3], snapshot[4], snapshot[5]);
+ 	sts = crystalhd_flea_scl_port_guard(hw, generation, owner);
+ 	if (sts != BC_STS_SUCCESS)
+@@ -1770,14 +1817,21 @@ static BC_STATUS crystalhd_flea_scl_port_sample(struct crystalhd_hw *hw,
+ 	return BC_STS_SUCCESS;
+ }
+ 
++static BC_STATUS crystalhd_flea_scl_port_sample(struct crystalhd_hw *hw,
++					     uint64_t generation, const void *owner,
++					     uint32_t snapshot[6])
++{
++	return crystalhd_flea_scl_port_sample_view(hw, generation, owner, snapshot, 1);
++}
++
+ /* A reversible debug-selector qualification, NOT scaler execution or a pixel
+  * oracle. ENABLE=0 is only a register observation: TOP may say ALWAYS_ENABLE.
+  * No source, geometry, coefficient, feed, enable, reset or clock write.
+- * All target writes are the two literal selector values 1 then original 0.
++ * All target writes are the captured selector value 1..3 then original 0.
+  */
+-static BC_STATUS crystalhd_flea_scl_port_probe(struct crystalhd_hw *hw,
++static BC_STATUS crystalhd_flea_scl_port_probe_view(struct crystalhd_hw *hw,
+ 					    uint64_t generation, const void *owner,
+-					    bool latch)
++					    bool latch, uint32_t selector)
+ {
+ 	uint32_t initial[6] = {0}, fresh[6] = {0};
+ 	uint32_t toggled[6] = {0}, restored[6] = {0};
+@@ -1786,6 +1840,8 @@ static BC_STATUS crystalhd_flea_scl_port_probe(struct crystalhd_hw *hw,
+ 	bool matched;
+ 	unsigned int i;
+ 
++	if (!selector || selector > 3)
++		return BC_STS_INV_ARG;
+ 	sts = crystalhd_flea_scl_port_guard(hw, generation, owner);
+ 	if (sts != BC_STS_SUCCESS)
+ 		return sts;
+@@ -1797,14 +1853,18 @@ static BC_STATUS crystalhd_flea_scl_port_probe(struct crystalhd_hw *hw,
+ 	 */
+ 	hw->research_mfd_pci_isolated = true;
+ 	pci_clear_master(adp->pdev);
+-	sts = crystalhd_flea_scl_port_sample(hw, generation, owner, initial);
++	sts = selector == 1 ?
++		crystalhd_flea_scl_port_sample(hw, generation, owner, initial) :
++		crystalhd_flea_scl_port_sample_view(hw, generation, owner, initial, selector);
+ 	if (sts == BC_STS_BUSY)
+ 		return sts; /* No selector write; ordinary checked stock retirement. */
+ 	if (sts != BC_STS_SUCCESS)
+ 		goto quarantine;
+ 	if (initial[3])
+ 		return BC_STS_BUSY;
+-	sts = crystalhd_flea_scl_port_sample(hw, generation, owner, fresh);
++	sts = selector == 1 ?
++		crystalhd_flea_scl_port_sample(hw, generation, owner, fresh) :
++		crystalhd_flea_scl_port_sample_view(hw, generation, owner, fresh, selector);
+ 	if (sts != BC_STS_SUCCESS)
+ 		goto quarantine;
+ 	for (i = 0; i < 5; i++)
+@@ -1812,14 +1872,17 @@ static BC_STATUS crystalhd_flea_scl_port_probe(struct crystalhd_hw *hw,
+ 			return BC_STS_BUSY;
+ 	if (!latch) {
+ 		dev_info(&adp->pdev->dev,
+-			 "issue92 scl-port: writes=0 fixed-bank qualification only\n");
++			 "issue92 scl-port: target-selector=%u writes=0 fixed-bank qualification only\n",
++			 selector);
+ 		hw->research_mfd_deliberate_abort = true;
+ 		return BC_STS_CMD_CANCELLED;
+ 	}
+ 	if (crystalhd_flea_scl_port_guard(hw, generation, owner) != BC_STS_SUCCESS)
+ 		goto quarantine;
+-	hw->pfnWriteDevRegister(adp, BCHP_SCL_HD_TEST_PORT_CONTROL, 1);
+-	toggle_status = crystalhd_flea_scl_port_sample(hw, generation, owner, toggled);
++	hw->pfnWriteDevRegister(adp, BCHP_SCL_HD_TEST_PORT_CONTROL, selector);
++	toggle_status = selector == 1 ?
++		crystalhd_flea_scl_port_sample(hw, generation, owner, toggled) :
++		crystalhd_flea_scl_port_sample_view(hw, generation, owner, toggled, selector);
+ 	if (toggle_status != BC_STS_SUCCESS && toggle_status != BC_STS_BUSY)
+ 		goto quarantine;
+ 	/* Restore once if checked access is still valid, including a mismatch.
+@@ -1828,15 +1891,17 @@ static BC_STATUS crystalhd_flea_scl_port_probe(struct crystalhd_hw *hw,
+ 	if (crystalhd_flea_scl_port_guard(hw, generation, owner) != BC_STS_SUCCESS)
+ 		goto quarantine;
+ 	hw->pfnWriteDevRegister(adp, BCHP_SCL_HD_TEST_PORT_CONTROL, 0);
+-	sts = crystalhd_flea_scl_port_sample(hw, generation, owner, restored);
++	sts = selector == 1 ?
++		crystalhd_flea_scl_port_sample(hw, generation, owner, restored) :
++		crystalhd_flea_scl_port_sample_view(hw, generation, owner, restored, selector);
+ 	matched = toggle_status == BC_STS_SUCCESS && sts == BC_STS_SUCCESS &&
+-		toggled[3] == 1 && restored[3] == 0;
++		toggled[3] == selector && restored[3] == 0;
+ 	for (i = 0; i < 5; i++)
+ 		if (i != 3 && (toggled[i] != initial[i] || restored[i] != initial[i]))
+ 			matched = false;
+ 	dev_info(&adp->pdev->dev,
+-		 "issue92 scl-port: writes=2 selector=%08x/%08x/%08x matched=%u\n",
+-		 initial[3], toggled[3], restored[3], matched);
++		 "issue92 scl-port: target-selector=%u writes=2 selector=%08x/%08x/%08x matched=%u\n",
++		 selector, initial[3], toggled[3], restored[3], matched);
+ 	if (!matched)
+ 		goto quarantine;
+ 	hw->research_mfd_deliberate_abort = true;
+@@ -1847,6 +1912,13 @@ quarantine:
+ 	return BC_STS_IO_ERROR;
+ }
+ 
++static BC_STATUS crystalhd_flea_scl_port_probe(struct crystalhd_hw *hw,
++					    uint64_t generation, const void *owner,
++					    bool latch)
++{
++	return crystalhd_flea_scl_port_probe_view(hw, generation, owner, latch, 1);
++}
++
+ /* Empirical latch test only: no source address, feed command or engine start.
+  * RDB describes the bit, not its access/restore semantics. Two literal writes
+  * are deliberately bounded; readbacks do not certify every internal master.
+@@ -1950,6 +2022,7 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 	bool mfd_scl_probe = hw && hw->research_mfd_scl_probe;
+ 	bool scl_port_probe = hw && hw->research_scl_port_probe;
+ 	bool scl_port_latch = hw && hw->research_scl_port_latch;
++	uint32_t scl_selector = hw ? hw->research_scl_selector : 0;
+ 	uint32_t mfd_colour = hw ? hw->research_mfd_colour_value : 0;
+ 	uint64_t mfd_generation = hw ? hw->research_mfd_generation : 0;
+ 	const void *mfd_owner = hw ? hw->research_mfd_owner : NULL;
+@@ -1979,6 +2052,7 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 		hw->research_mfd_colour_value = 0;
+ 		hw->research_scl_port_probe = false;
+ 		hw->research_scl_port_latch = false;
++		hw->research_scl_selector = 0;
+ 		hw->research_mfd_generation = 0;
+ 		hw->research_mfd_owner = NULL;
+ 	}
+@@ -2005,6 +2079,9 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 		return BC_STS_INV_ARG;
+ 
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
++	if ((mfd_scl_probe || scl_port_probe) &&
++	    (!scl_selector || scl_selector > 3))
++		return BC_STS_INV_ARG;
+ 	if ((mfd_latch_probe || mfd_colour_probe || mfd_scl_probe || scl_port_probe) &&
+ 	    (!staging_probe || !mfd_owner || !mfd_generation))
+ 		return BC_STS_INV_ARG;
+@@ -2021,7 +2098,7 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 	if (mfd_scl_probe) {
+ 		uint32_t scl_status;
+ 
+-		sts = crystalhd_flea_mfd_scl_guard(hw, mfd_generation, mfd_owner,
++		sts = crystalhd_flea_mfd_scl_guard_view(hw, mfd_generation, mfd_owner,
+ 						 0, true, &scl_status);
+ 		if (sts != BC_STS_SUCCESS)
+ 			return sts;
+@@ -2194,11 +2271,15 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 			return pattern_status;
+ 	}
+ 	if (mfd_scl_probe)
+-		return crystalhd_flea_mfd_scl_probe(hw, mfd_generation, mfd_owner,
+-						   mfd_colour);
++		return scl_selector == 1 ?
++			crystalhd_flea_mfd_scl_probe(hw, mfd_generation, mfd_owner, mfd_colour) :
++			crystalhd_flea_mfd_scl_probe_view(hw, mfd_generation, mfd_owner,
++						   mfd_colour, scl_selector);
+ 	if (scl_port_probe)
+-		return crystalhd_flea_scl_port_probe(hw, mfd_generation, mfd_owner,
+-						    scl_port_latch);
++		return scl_selector == 1 ?
++			crystalhd_flea_scl_port_probe(hw, mfd_generation, mfd_owner, scl_port_latch) :
++			crystalhd_flea_scl_port_probe_view(hw, mfd_generation, mfd_owner,
++						    scl_port_latch, scl_selector);
+ 	if (mfd_colour_probe)
+ 		return crystalhd_flea_mfd_colour_probe(hw, mfd_generation, mfd_owner,
+ 						     mfd_colour);
+diff --git a/driver/linux/crystalhd_fw_research.c b/driver/linux/crystalhd_fw_research.c
+index f7068b8..35ac5c2 100644
+--- a/driver/linux/crystalhd_fw_research.c
++++ b/driver/linux/crystalhd_fw_research.c
+@@ -13,6 +13,14 @@
+ #include "crystalhd_fw_research.h"
+ #include "../../include/crystalhd_fw_research.h"
+ 
++/* Build-time frozen debug view, never a caller-provided MMIO selector. */
++#ifndef CRYSTALHD_SCL_TEST_PORT_SELECTOR
++#define CRYSTALHD_SCL_TEST_PORT_SELECTOR 1
++#endif
++#if CRYSTALHD_SCL_TEST_PORT_SELECTOR < 1 || CRYSTALHD_SCL_TEST_PORT_SELECTOR > 3
++#error "SCL test-port target selector must be 1, 2 or 3"
++#endif
++
+ #if defined(CRYSTALHD_MFD_SCL_STATUS_PROBE) && !defined(CRYSTALHD_MFD_FIXED_COLOUR_PROBE)
+ #error "MFD/SCL observation requires the fixed-colour probe and value configuration"
+ #endif
+@@ -1091,6 +1099,8 @@ static void crystalhd_fw_research_run_internal(u64 generation,
+ #ifdef CRYSTALHD_SCL_PORT_PROBE
+ 	ctx->hw_ctx->research_scl_port_probe =
+ 		request->selector == CRYSTALHD_FW_RESEARCH_VERSION_ONLY;
++	ctx->hw_ctx->research_scl_selector =
++		ctx->hw_ctx->research_scl_port_probe ? CRYSTALHD_SCL_TEST_PORT_SELECTOR : 0;
+ 	ctx->hw_ctx->research_mfd_latch_probe = false;
+ 	ctx->hw_ctx->research_mfd_colour_probe = false;
+ 	ctx->hw_ctx->research_mfd_colour_value = 0;
+@@ -1105,6 +1115,8 @@ static void crystalhd_fw_research_run_internal(u64 generation,
+ #ifdef CRYSTALHD_MFD_SCL_STATUS_PROBE
+ 	ctx->hw_ctx->research_mfd_scl_probe =
+ 		request->selector == CRYSTALHD_FW_RESEARCH_VERSION_ONLY;
++	ctx->hw_ctx->research_scl_selector =
++		ctx->hw_ctx->research_mfd_scl_probe ? CRYSTALHD_SCL_TEST_PORT_SELECTOR : 0;
+ 	ctx->hw_ctx->research_mfd_colour_probe = false;
+ 	ctx->hw_ctx->research_mfd_latch_probe = false;
+ 	ctx->hw_ctx->research_scl_port_probe = false;
+@@ -1121,6 +1133,7 @@ static void crystalhd_fw_research_run_internal(u64 generation,
+ 	ctx->hw_ctx->research_mfd_colour_value = 0;
+ 	ctx->hw_ctx->research_scl_port_probe = false;
+ 	ctx->hw_ctx->research_scl_port_latch = false;
++	ctx->hw_ctx->research_scl_selector = 0;
+ 	ctx->hw_ctx->research_mfd_generation = 0;
+ 	ctx->hw_ctx->research_mfd_owner = NULL;
+ 	result->download_status = sts;
+diff --git a/driver/linux/crystalhd_hw.h b/driver/linux/crystalhd_hw.h
+index cb0e313..8a0975b 100644
+--- a/driver/linux/crystalhd_hw.h
++++ b/driver/linux/crystalhd_hw.h
+@@ -411,6 +411,8 @@ struct crystalhd_hw {
+ 	bool research_mfd_scl_probe;
+ 	bool research_scl_port_probe;
+ 	bool research_scl_port_latch;
++	/* Opt-in target 1..3; captured and cleared with the one-shot flags. */
++	uint32_t research_scl_selector;
+ 	/* Persists until context retirement; never restore old MASTER manually. */
+ 	bool research_mfd_pci_isolated;
+ 	bool research_mfd_deliberate_abort;
+diff --git a/tests/fw-download.c b/tests/fw-download.c
+index 81c7466..0f5280c 100644
+--- a/tests/fw-download.c
++++ b/tests/fw-download.c
+@@ -98,6 +98,7 @@ struct crystalhd_hw {
+ 	bool research_mfd_pci_isolated;
+ 	bool research_mfd_deliberate_abort;
+ 	uint32_t research_mfd_colour_value;
++	uint32_t research_scl_selector;
+ 	u64 research_mfd_generation;
+ 	const void *research_mfd_owner;
+ 	bool dma_fault;
+@@ -231,6 +232,12 @@ static const uint32_t scl_offsets[6] = {
+ };
+ static uint32_t scl_values[6], scl_read_offsets[128];
+ static uint32_t scl_write_offsets[2], scl_write_values[2];
++/* Independent expected target, never populated from the extracted helper. */
++static uint32_t scl_expected_selector;
++static unsigned scl_mutate_field_read;
++static bool scl_field_mutated;
++/* Nonzero only while replaying existing fault campaigns for the new views. */
++static uint32_t scl_campaign_selector, scl_campaign_colour;
+ static bool mfd_scl_active, mfd_scl_fixture;
+ static unsigned mfd_scl_calls, mfd_scl_selector_writes, mfd_scl_observations, mfd_scl_pre_observations;
+ static unsigned mfd_scl_error_ordinal, mfd_scl_target_writes, mfd_scl_writes_at_fault;
+@@ -367,6 +374,10 @@ static uint32_t read_colour(uint32_t offset)
+ 	check(colour_reads < ARRAY_SIZE(colour_read_offsets), "colour reads are bounded");
+ 	if (colour_reads < ARRAY_SIZE(colour_read_offsets)) colour_read_offsets[colour_reads] = offset;
+ 	colour_reads++;
++	if (mfd_scl_active && colour_reads == scl_mutate_field_read) {
++		hardware.research_scl_selector = UINT32_MAX;
++		scl_field_mutated = true;
++	}
+ 	if (mfd_scl_active && offset == 0x540030)
+ 		check(!colour_starts, "combined active observation never repeats a command-zero admission after START");
+ 	if (mfd_scl_active && offset >= 0x540800) {
+@@ -379,7 +390,7 @@ static uint32_t read_colour(uint32_t offset)
+ 		if (field == 5) {
+ 			if (!colour_starts) {
+ 				check(mfd_scl_pre_observations == 0 && colour_writes == 9,
+-				      "one separately bounded selector-one baseline follows all controls and precedes START");
++			      "one separately bounded selected-view baseline follows all controls and precedes START");
+ 				mfd_scl_pre_observations++;
+ 				value = mfd_scl_pre_data;
+ 			} else {
+@@ -435,6 +446,10 @@ static uint32_t read_device(struct crystalhd_adp *adp, uint32_t offset)
+ 		check(scl_reads < ARRAY_SIZE(scl_read_offsets), "SCL reads have a fixed bounded budget");
+ 		if (scl_reads < ARRAY_SIZE(scl_read_offsets)) scl_read_offsets[scl_reads] = offset;
+ 		scl_reads++;
++		if (scl_reads == scl_mutate_field_read) {
++			hardware.research_scl_selector = UINT32_MAX;
++			scl_field_mutated = true;
++		}
+ 		for (unsigned n = 0; n < ARRAY_SIZE(scl_offsets); ++n)
+ 			if (scl_offsets[n] == offset) index = n;
+ 		if (index < ARRAY_SIZE(scl_offsets)) {
+@@ -531,8 +546,8 @@ static void write_device(struct crystalhd_adp *adp, uint32_t offset,
+ 		}
+ 		mfd_scl_target_writes++;
+ 		if (offset == 0x540880) {
+-			check(mfd_scl_selector_writes < 2 && value == (mfd_scl_selector_writes ? 0U : 1U),
+-			      "combined mode changes only selector one then original zero in SCL");
++			check(mfd_scl_selector_writes < 2 && value == (mfd_scl_selector_writes ? 0U : scl_expected_selector),
++			      "combined mode changes only the independently selected literal then original zero in SCL");
+ 			mfd_scl_selector_writes++;
+ 			scl_values[3] = value;
+ 			return;
+@@ -542,8 +557,8 @@ static void write_device(struct crystalhd_adp *adp, uint32_t offset,
+ 		check(!scl_pci_failed && hardware.research_mfd_pci_isolated &&
+ 		      !(pci_command & PCI_COMMAND_MASTER) && !fatal_stops,
+ 		      "SCL selector writes require positively checked PCI isolation and valid access");
+-		check(offset == 0x540880 && scl_writes < 2 && value == (scl_writes ? 0U : 1U),
+-		      "SCL has only the two literal selector writes one then original zero");
++		check(offset == 0x540880 && scl_writes < 2 && value == (scl_writes ? 0U : scl_expected_selector),
++		      "SCL has only the two independently selected literal writes then original zero");
+ 		check(!cmac_writes && !arm_run_writes && !heartbeats &&
+ 		      !colour_writes && !colour_starts && !mfd_target_writes,
+ 		      "selector writes never START, ENABLE, configure geometry or run firmware");
+@@ -724,14 +739,16 @@ static bool crystalhd_flea_detect_fw_alive(struct crystalhd_hw *hw)
+ #include "hw-close-function.h"
+ #include "mfd-colour-guard-function.h"
+ #include "scl-port-guard.h"
++#include "scl-port-sample-view.h"
+ #include "scl-port-sample.h"
+ 
+-#define crystalhd_flea_scl_port_probe extracted_scl_port_probe
+-#include "scl-port-probe.h"
+-#undef crystalhd_flea_scl_port_probe
++#define crystalhd_flea_scl_port_probe_view extracted_scl_port_probe_view
++#include "scl-port-probe-view.h"
++#undef crystalhd_flea_scl_port_probe_view
+ 
+-static BC_STATUS crystalhd_flea_scl_port_probe(struct crystalhd_hw *hw,
+-					     u64 generation, const void *owner, bool latch)
++static BC_STATUS crystalhd_flea_scl_port_probe_view(struct crystalhd_hw *hw,
++					     u64 generation, const void *owner,
++					     bool latch, uint32_t selector)
+ {
+ 	scl_calls++;
+ 	if (dram_writes)
+@@ -740,17 +757,21 @@ static BC_STATUS crystalhd_flea_scl_port_probe(struct crystalhd_hw *hw,
+ 		      card_suffix == expected_image[24] && !cmac_writes && !arm_run_writes &&
+ 		      !heartbeats && !hw->research_staging_probe && !hw->research_mfd_latch_probe &&
+ 		      !hw->research_mfd_colour_probe && !hw->research_scl_port_probe &&
+-		      !hw->research_scl_port_latch && !hw->research_mfd_generation &&
++		      !hw->research_scl_port_latch && !hw->research_scl_selector && !hw->research_mfd_generation &&
+ 		      !hw->research_mfd_owner,
+ 		      "SCL follows exact loader prefix restoration with all one-shot flags consumed");
+ 	scl_probe_active = true;
+-	const BC_STATUS status = extracted_scl_port_probe(hw, generation, owner, latch);
++	const BC_STATUS status = extracted_scl_port_probe_view(hw, generation, owner, latch, selector);
+ 	scl_probe_active = false;
+ 	return status;
+ }
+ 
++#include "scl-port-probe.h"
++#include "mfd-scl-guard-view.h"
+ #include "mfd-scl-guard.h"
++#include "mfd-scl-sample-view.h"
+ #include "mfd-scl-sample.h"
++#include "mfd-colour-core-view.h"
+ #include "mfd-colour-core.h"
+ 
+ #define crystalhd_flea_mfd_colour_probe extracted_mfd_colour_probe
+@@ -792,7 +813,8 @@ static BC_STATUS crystalhd_flea_mfd_scl_probe(struct crystalhd_hw *hw,
+ 		      !heartbeats && !hw->research_staging_probe && !hw->research_mfd_latch_probe &&
+ 		      !hw->research_mfd_colour_probe && !hw->research_mfd_scl_probe &&
+ 		      !hw->research_scl_port_probe && !hw->research_scl_port_latch &&
+-		      !hw->research_mfd_colour_value && !hw->research_mfd_generation && !hw->research_mfd_owner,
++		      !hw->research_mfd_colour_value && !hw->research_scl_selector &&
++		      !hw->research_mfd_generation && !hw->research_mfd_owner,
+ 		      "combined observer follows verified loader prefix restoration with all private flags consumed");
+ 	colour_probe_active = mfd_scl_active = true;
+ 	const BC_STATUS status = extracted_mfd_scl_probe(hw, generation, owner, colour);
+@@ -800,6 +822,31 @@ static BC_STATUS crystalhd_flea_mfd_scl_probe(struct crystalhd_hw *hw,
+ 	return status;
+ }
+ 
++#define crystalhd_flea_mfd_scl_probe_view extracted_mfd_scl_probe_view
++#include "mfd-scl-probe-view.h"
++#undef crystalhd_flea_mfd_scl_probe_view
++
++static BC_STATUS crystalhd_flea_mfd_scl_probe_view(struct crystalhd_hw *hw,
++					    u64 generation, const void *owner,
++					    uint32_t colour, uint32_t selector)
++{
++	mfd_scl_calls++;
++	if (dram_writes)
++		check(dram_writes == 3 && dram_reads == 3 &&
++		      !memcmp(card_prefix, expected_image, sizeof(card_prefix)) &&
++		      card_suffix == expected_image[24] && !cmac_writes && !arm_run_writes &&
++		      !heartbeats && !hw->research_staging_probe && !hw->research_mfd_latch_probe &&
++		      !hw->research_mfd_colour_probe && !hw->research_mfd_scl_probe &&
++		      !hw->research_scl_port_probe && !hw->research_scl_port_latch &&
++		      !hw->research_mfd_colour_value && !hw->research_scl_selector &&
++		      !hw->research_mfd_generation && !hw->research_mfd_owner,
++		      "new combined view enters only after loader restoration and consuming every private field");
++	colour_probe_active = mfd_scl_active = true;
++	const BC_STATUS status = extracted_mfd_scl_probe_view(hw, generation, owner, colour, selector);
++	colour_probe_active = mfd_scl_active = false;
++	return status;
++}
++
+ static BC_STATUS crystalhd_flea_mfd_latch_probe(struct crystalhd_hw *hw,
+ 					     u64 generation, const void *owner)
+ {
+@@ -946,6 +993,9 @@ static void reset(void)
+ 	memset(colour_write_values, 0, sizeof(colour_write_values));
+ 	memset(colour_read_offsets, 0, sizeof(colour_read_offsets));
+ 	scl_probe_active = scl_pci_failed = false;
++	scl_expected_selector = 1;
++	scl_mutate_field_read = 0;
++	scl_field_mutated = false;
+ 	scl_calls = scl_reads = scl_writes = 0;
+ 	scl_fault_read = scl_state_fault_read = scl_state_fault_kind = scl_writes_at_fault = 0;
+ 	scl_fault_value = scl_async_error = scl_async_run = scl_command = 0;
+@@ -2258,10 +2308,14 @@ static void close_isolation_results(void)
+ static void reset_scl(void)
+ {
+ 	reset_colour(0x405ac3);
++	if (scl_campaign_selector) scl_expected_selector = scl_campaign_selector;
+ }
+ 
+ static BC_STATUS run_scl(bool latch)
+ {
++	if (scl_campaign_selector)
++		return crystalhd_flea_scl_port_probe_view(&hardware, adapter.generation,
++			&research_owner, latch, scl_campaign_selector);
+ 	return crystalhd_flea_scl_port_probe(&hardware, adapter.generation,
+ 					   &research_owner, latch);
+ }
+@@ -2490,6 +2544,7 @@ static void scl_download_results(void)
+ 	for (unsigned latch = 0; latch < 2; ++latch) {
+ 		reset_scl(); hardware.research_staging_probe = true;
+ 		hardware.research_scl_port_probe = true; hardware.research_scl_port_latch = latch;
++		hardware.research_scl_selector = 1;
+ 		check(crystalhd_flea_download_fw(&hardware, (const uint8_t *)firmware.words, sizeof(firmware.words)) ==
+ 		      BC_STS_CMD_CANCELLED && scl_calls == 1 && dram_writes == 3 && dram_reads == 3 &&
+ 		      !memcmp(card_prefix, expected_image, sizeof(card_prefix)) && card_suffix == expected_image[24] &&
+@@ -2506,6 +2561,7 @@ static void scl_download_results(void)
+ 	for (unsigned fault = 0; fault < 10; ++fault) {
+ 		reset_scl(); hardware.research_staging_probe = true;
+ 		hardware.research_scl_port_probe = true; hardware.research_scl_port_latch = true;
++		hardware.research_scl_selector = 1;
+ 		switch (fault) {
+ 		case 0: hardware.research_staging_probe = false; break;
+ 		case 1: hardware.research_mfd_owner = NULL; break;
+@@ -2525,6 +2581,7 @@ static void scl_download_results(void)
+ 	}
+ 	reset_scl(); scl_command = 1;
+ 	hardware.research_staging_probe = hardware.research_scl_port_probe = true;
++	hardware.research_scl_selector = 1;
+ 	check(crystalhd_flea_download_fw(&hardware, (const uint8_t *)firmware.words, sizeof(firmware.words)) ==
+ 	      BC_STS_BUSY && dev_reads == 5 && !dev_writes && !dram_writes && !dram_reads && !scl_calls &&
+ 	      !hardware.research_scl_port_probe, "early SCL-only command gate stops before all ordinary loader effects");
+@@ -2533,12 +2590,17 @@ static void scl_download_results(void)
+ static void reset_mfd_scl(void)
+ {
+ 	reset_colour(0x00405ac3);
++	if (scl_campaign_selector) scl_expected_selector = scl_campaign_selector;
++	if (scl_campaign_colour) colour_selected = scl_campaign_colour;
+ 	mfd_scl_fixture = true;
+ 	scl_values[1] = 0x0c;
+ }
+ 
+ static BC_STATUS run_mfd_scl(void)
+ {
++	if (scl_campaign_selector)
++		return crystalhd_flea_mfd_scl_probe_view(&hardware, adapter.generation,
++			&research_owner, colour_selected, scl_campaign_selector);
+ 	return crystalhd_flea_mfd_scl_probe(&hardware, adapter.generation,
+ 					   &research_owner, colour_selected);
+ }
+@@ -2856,6 +2918,7 @@ static void mfd_scl_download_results(void)
+ 		reset_mfd_scl(); colour_selected = colours[n];
+ 		hardware.research_staging_probe = hardware.research_mfd_scl_probe = true;
+ 		hardware.research_mfd_colour_value = colour_selected;
++		hardware.research_scl_selector = 1;
+ 		check(crystalhd_flea_download_fw(&hardware, (const uint8_t *)firmware.words, sizeof(firmware.words)) ==
+ 		      BC_STS_CMD_CANCELLED && mfd_scl_calls == 1 && !colour_calls && !scl_calls && !mfd_calls &&
+ 		      dram_writes == 3 && dram_reads == 3 && !memcmp(card_prefix, expected_image, sizeof(card_prefix)) &&
+@@ -2872,6 +2935,7 @@ static void mfd_scl_download_results(void)
+ 	for (unsigned fault = 0; fault < 13; ++fault) {
+ 		reset_mfd_scl(); hardware.research_staging_probe = hardware.research_mfd_scl_probe = true;
+ 		hardware.research_mfd_colour_value = colour_selected;
++		hardware.research_scl_selector = 1;
+ 		switch (fault) {
+ 		case 0: hardware.research_staging_probe = false; break;
+ 		case 1: hardware.research_mfd_owner = NULL; break;
+@@ -2895,12 +2959,304 @@ static void mfd_scl_download_results(void)
+ 	for (unsigned field = 0; field < 5; ++field) {
+ 		reset_mfd_scl(); hardware.research_staging_probe = hardware.research_mfd_scl_probe = true;
+ 		hardware.research_mfd_colour_value = colour_selected; scl_values[field] = field ? 1U : 0;
++		hardware.research_scl_selector = 1;
+ 		check(crystalhd_flea_download_fw(&hardware, (const uint8_t *)firmware.words, sizeof(firmware.words)) !=
+ 		      BC_STS_CMD_CANCELLED && !dev_writes && !dram_reads && !dram_writes && !pci_clears && !mfd_scl_calls,
+ 		      "fresh combined bank admission precedes DRAM/security loader effects and the probe wrapper");
+ 	}
+ }
+ 
++/* New target values are literal test inputs. Neither DATA nor the consumed
++ * private hardware field can choose the target after the call boundary.
++ */
++static void scl_view_results(void)
++{
++	groups++;
++	uint32_t expected[79];
++	for (uint32_t selector = 2; selector <= 3; ++selector) {
++		for (unsigned latch = 0; latch < 2; ++latch) {
++			reset_scl(); scl_expected_selector = selector;
++			check(crystalhd_flea_scl_port_probe_view(&hardware, adapter.generation,
++			      &research_owner, latch, selector) == BC_STS_CMD_CANCELLED &&
++			      hardware.research_mfd_deliberate_abort && !fatal_stops &&
++			      scl_reads == (latch ? 79U : 37U) && pci_reads == (latch ? 30U : 12U) &&
++			      scl_writes == (latch ? 2U : 0U) && !scl_values[3] && state_unchanged(),
++			      "views2/3 preserve complete read-only/latch budgets with a frozen explicit target");
++			const unsigned count = scl_expected_reads(latch, expected);
++			check(count == scl_reads && !memcmp(expected, scl_read_offsets, count * sizeof(expected[0])),
++			      "view qualification has the independent unchanged literal address order");
++			if (latch)
++				check(scl_write_offsets[0] == 0x540880 && scl_write_offsets[1] == 0x540880 &&
++				      scl_write_values[0] == selector && !scl_write_values[1],
++				      "new qualification changes precisely zero to literal2/3 to original zero");
++			check_scl_no_other_targets();
++			check(run_close() == BC_STS_SUCCESS && !hardware.dev_started && !fatal_stops,
++			      "new target qualification still needs actual checked stock retirement");
++		}
++		for (unsigned bit = 0; bit < 32; ++bit) {
++			reset_scl(); scl_expected_selector = selector; scl_values[3] = selector;
++			scl_values[5] = 1U << bit;
++			struct { uint32_t before, words[6], after; } out = {0x12345678, {0}, 0xabcdef01};
++			scl_probe_active = true;
++			const BC_STATUS result = crystalhd_flea_scl_port_sample_view(&hardware,
++				adapter.generation, &research_owner, out.words, selector);
++			scl_probe_active = false;
++			check(result == BC_STS_SUCCESS && scl_reads == 16 && !scl_writes &&
++			      out.before == 0x12345678 && out.after == 0xabcdef01 && out.words[3] == selector &&
++			      out.words[5] == ((1U << bit) ^ (11U * 0x01010101U)),
++			      "all view2/3 DATA bits are opaque inside an exactly six-word canary destination");
++			check_scl_no_other_targets();
++		}
++	}
++}
++
++static void scl_view_admission_results(void)
++{
++	groups++;
++	const uint32_t invalid[] = {0, 4, UINT32_MAX, 0x30061000};
++	for (unsigned n = 0; n < ARRAY_SIZE(invalid); ++n) {
++		reset_scl(); uint32_t words[6] = {0};
++		check(crystalhd_flea_scl_port_sample_view(&hardware, adapter.generation,
++		      &research_owner, words, invalid[n]) == BC_STS_INV_ARG && no_effects() && !pci_reads,
++		      "invalid frozen sample targets refuse before any register or PCI effects");
++		for (unsigned latch = 0; latch < 2; ++latch) {
++			reset_scl();
++			check(crystalhd_flea_scl_port_probe_view(&hardware, adapter.generation,
++			      &research_owner, latch, invalid[n]) == BC_STS_INV_ARG && no_effects() && !pci_reads,
++			      "invalid literal qualification targets have no private zero-to-one fallback");
++		}
++		reset_mfd_scl(); uint32_t snapshot[4] = {0};
++		check(crystalhd_flea_mfd_scl_sample_view(&hardware, adapter.generation,
++		      &research_owner, snapshot, invalid[n]) == BC_STS_INV_ARG && no_effects() && !pci_reads,
++		      "invalid combined sample targets reject before shared guards");
++		reset_mfd_scl();
++		check(crystalhd_flea_mfd_scl_probe_view(&hardware, adapter.generation,
++		      &research_owner, colour_selected, invalid[n]) == BC_STS_INV_ARG && no_effects() && !pci_reads,
++		      "invalid combined target refuses before MFD setup, isolation or START");
++	}
++	for (uint32_t selector = 2; selector <= 3; ++selector) {
++		reset_mfd_scl(); uint32_t status = 0;
++		check(run_mfd_scl_guard(selector, false, &status) == BC_STS_INV_ARG && no_effects(),
++		      "legacy combined guard retains exact selector0/1 admission rather than widening silently");
++		reset_mfd_scl();
++		check(crystalhd_flea_mfd_scl_sample_view(&hardware, adapter.generation,
++		      &research_owner, NULL, selector) == BC_STS_INV_ARG && no_effects(),
++		      "new view sample refuses NULL owned destinations before any effects");
++		for (unsigned fault = 0; fault < 21; ++fault) {
++			reset_mfd_scl(); scl_expected_selector = selector;
++			struct crystalhd_hw *hw = &hardware; u64 generation = adapter.generation;
++			const void *owner = &research_owner;
++			switch (fault) {
++			case 0: hw = NULL; break; case 1: hardware.adp = NULL; break;
++			case 2: adapter.pdev = NULL; break; case 3: generation = 0; break;
++			case 4: owner = NULL; break; case 5: generation++; break;
++			case 6: owner = &hardware; break; case 7: hardware.pfnReadDevRegister = NULL; break;
++			case 8: hardware.pfnWriteDevRegister = NULL; break; case 9: adapter.present = 0; break;
++			case 10: adapter.hw_accessible = false; break; case 11: hardware.dma_fault = true; break;
++			case 12: adapter.cmds.state = 1; break; case 13: adapter.cfg_users = 1; break;
++			case 14: hardware.RxCaptureState = 1; break; case 15: hardware.FwCmdCnt = 1; break;
++			case 16: hardware.tx_actq->head = NULL; break; case 17: hardware.rx_freeq->count = 1; break;
++			case 18: hardware.rx_rdyq->tail = &hardware.rx_actq->head; break;
++			case 19: hardware.fwcmd_poisoned = true; break; case 20: adapter.cmds.session_module_pinned = false; break;
++			}
++			check(crystalhd_flea_mfd_scl_probe_view(hw, generation, owner, colour_selected, selector) !=
++			      BC_STS_CMD_CANCELLED && no_effects() && !pci_reads && !pci_clears && !fatal_stops,
++			      "new views retain all exact module/generation/owner/queue/context admission gates");
++			check(crystalhd_flea_scl_port_probe_view(hw, generation, owner, true, selector) !=
++			      BC_STS_CMD_CANCELLED && no_effects() && !pci_reads && !pci_clears && !fatal_stops,
++			      "new qualification targets share the same zero-effect context refusal contracts");
++		}
++	}
++}
++
++static void mfd_scl_view_results(void)
++{
++	groups++;
++	uint32_t expected_reads[1079];
++	check(mfd_scl_expected_reads(expected_reads) == 1079,
++	      "new views reuse the independently literal unchanged phase-address oracle");
++	const uint32_t colours[] = {0x00405ac3, 0x00b2d32b};
++	for (uint32_t selector = 2; selector <= 3; ++selector) {
++		for (unsigned n = 0; n < 4; ++n) {
++			reset_mfd_scl(); scl_expected_selector = selector; colour_selected = colours[n % 2];
++			colour_initial_stride = n < 2 ? 0 : 0x00800080;
++			mfd_scl_pre_data = UINT32_MAX; mfd_scl_data = 0x30061000;
++			check(crystalhd_flea_mfd_scl_probe_view(&hardware, adapter.generation, &research_owner,
++			      colour_selected, selector) == BC_STS_CMD_CANCELLED && !fatal_stops &&
++			      colour_reads == 1079 && pci_reads == 303 && colour_writes == 42 &&
++			      colour_starts == 1 && colour_pulses == 16 && colour_delays == 32 &&
++			      mfd_scl_target_writes == 44 && mfd_scl_selector_writes == 2 &&
++			      mfd_scl_pre_observations == 1 && mfd_scl_observations == 17 && !scl_values[3],
++			      "both new views, colours and strides preserve1079REG/303PCI/44writes/one+17DATA");
++			check(!memcmp(expected_reads, colour_read_offsets, sizeof(expected_reads)),
++			      "view2/3 full trace does not introduce any address/data follows or extra register reads");
++			const uint32_t setup[] = {13, colours[n % 2], 8, 0, 3, 0, 0, 15, 8};
++			for (unsigned i = 0; i < 9; ++i)
++				check(mfd_scl_write_offsets[i] == colour_offsets[i] && mfd_scl_write_values[i] == setup[i],
++				      "new selectors leave all nine proven MFD setup literals unchanged");
++			check(mfd_scl_write_offsets[9] == 0x540880 && mfd_scl_write_values[9] == selector &&
++			      mfd_scl_write_read_counts[9] == 155 && mfd_scl_write_offsets[10] == 0x540030 &&
++			      mfd_scl_write_values[10] == 1 && mfd_scl_write_read_counts[10] == 195,
++			      "literal target selection, one prebaseline and fresh guards precede sole START at unchanged boundaries");
++			for (unsigned i = 11; i < 43; ++i)
++				check(mfd_scl_write_offsets[i] == 0x540074 && mfd_scl_write_values[i] == (i & 1 ? 9U : 8U),
++				      "view selection does not change any of the sixteen guarded pulse pairs");
++			check(mfd_scl_write_offsets[43] == 0x540880 && !mfd_scl_write_values[43] &&
++			      mfd_scl_write_read_counts[43] == 1070 && state_unchanged() &&
++			      !dram_reads && !dram_writes && !fpga_reads && !fpga_writes && !cmac_writes &&
++			      !arm_run_writes && !heartbeats && hardware.research_mfd_deliberate_abort,
++			      "only final guarded zero restoration follows the pulse budget; metadata and every other target remain untouched");
++			check(run_close() == BC_STS_SUCCESS && !hardware.dev_started && !fatal_stops,
++			      "new combined views retain actual stock cleanup and post-stop PCI containment");
++		}
++		const uint32_t opaque[] = {0, 1, UINT32_MAX, 0x30061000, 0x00540000, 0x00050000};
++		for (unsigned n = 0; n < ARRAY_SIZE(opaque); ++n) {
++			reset_mfd_scl(); scl_expected_selector = selector; colour_starts = 1;
++			scl_values[3] = selector; mfd_scl_data = opaque[n];
++			struct { uint32_t before, words[4], after; } out = {0x12345678, {0}, 0xabcdef01};
++			colour_probe_active = mfd_scl_active = true;
++			const BC_STATUS result = crystalhd_flea_mfd_scl_sample_view(&hardware,
++				adapter.generation, &research_owner, out.words, selector);
++			colour_probe_active = mfd_scl_active = false;
++			check(result == BC_STS_SUCCESS && colour_reads == 20 && out.words[0] == opaque[n] &&
++			      !out.words[1] && !out.words[2] && !out.words[3] && out.before == 0x12345678 &&
++			      out.after == 0xabcdef01 && !dev_writes && !dram_reads && !fpga_reads,
++			      "every32bit DATA remains opaque in new view samples with unchanged canaries and no follows");
++		}
++		const unsigned status_positions[] = {9, 11, 20};
++		for (unsigned point = 0; point < ARRAY_SIZE(status_positions); ++point) {
++			for (unsigned bit = 0; bit < 8; ++bit) {
++				reset_mfd_scl(); scl_expected_selector = selector; colour_starts = 1;
++				scl_values[3] = selector; colour_fault_read = status_positions[point];
++				colour_fault_value = 1U << bit;
++				struct { uint32_t before, words[4], after; } out = {0x12345678, {0}, 0xabcdef01};
++				colour_probe_active = mfd_scl_active = true;
++				const BC_STATUS result = crystalhd_flea_mfd_scl_sample_view(&hardware,
++					adapter.generation, &research_owner, out.words, selector);
++				colour_probe_active = mfd_scl_active = false;
++				check(result == BC_STS_SUCCESS && colour_reads == 20 &&
++				      out.words[point == 0 ? 2 : point == 1 ? 1 : 3] == (1U << bit) &&
++				      out.before == 0x12345678 && out.after == 0xabcdef01 && !dev_writes,
++				      "new view samples separately retain every transient pre/main/post low-eight status bit");
++			}
++		}
++	}
++}
++
++static void scl_view_download_results(void)
++{
++	groups++;
++	const uint32_t colours[] = {0x00405ac3, 0x00b2d32b};
++	for (uint32_t selector = 2; selector <= 3; ++selector) {
++		for (unsigned mode = 0; mode < 3; ++mode) {
++			for (unsigned n = 0; n < (mode == 2 ? 2U : 1U); ++n) {
++				if (mode == 2) reset_mfd_scl(); else reset_scl();
++				scl_expected_selector = selector; colour_selected = colours[n];
++				hardware.research_staging_probe = true;
++				hardware.research_scl_port_probe = mode != 2;
++				hardware.research_scl_port_latch = mode == 1;
++				hardware.research_mfd_scl_probe = mode == 2;
++				hardware.research_mfd_colour_value = mode == 2 ? colour_selected : 0;
++				hardware.research_scl_selector = selector;
++				check(crystalhd_flea_download_fw(&hardware, (const uint8_t *)firmware.words,
++				      sizeof(firmware.words)) == BC_STS_CMD_CANCELLED &&
++				      (mode == 2 ? mfd_scl_calls == 1 && !scl_calls : scl_calls == 1 && !mfd_scl_calls) &&
++				      !colour_calls && !mfd_calls && dram_writes == 3 && dram_reads == 3 &&
++				      !memcmp(card_prefix, expected_image, sizeof(card_prefix)) && card_suffix == expected_image[24] &&
++				      !hardware.research_staging_probe && !hardware.research_scl_port_probe &&
++				      !hardware.research_scl_port_latch && !hardware.research_mfd_scl_probe &&
++				      !hardware.research_scl_selector && !hardware.research_mfd_colour_value &&
++				      !hardware.research_mfd_generation && !hardware.research_mfd_owner &&
++				      !cmac_writes && !arm_run_writes && !heartbeats,
++				      "loader captures then consumes selector2/3 before effects and calls exactly one explicit-parameter helper");
++				check(mode == 2 ? mfd_scl_write_values[9] == selector && mfd_scl_write_values[43] == 0 :
++				      (mode == 0 ? scl_writes == 0 : scl_write_values[0] == selector && scl_write_values[1] == 0),
++				      "consumed zero field is never reread as a selected target or fallback to selector1");
++			}
++		}
++	}
++	const uint32_t invalid[] = {0, 4, UINT32_MAX, 0x30061000};
++	for (unsigned mode = 0; mode < 3; ++mode) {
++		for (unsigned n = 0; n < ARRAY_SIZE(invalid); ++n) {
++			if (mode == 2) reset_mfd_scl(); else reset_scl();
++			hardware.research_staging_probe = true;
++			hardware.research_scl_port_probe = mode != 2;
++			hardware.research_scl_port_latch = mode == 1;
++			hardware.research_mfd_scl_probe = mode == 2;
++			hardware.research_mfd_colour_value = mode == 2 ? colour_selected : 0;
++			hardware.research_scl_selector = invalid[n];
++			check(crystalhd_flea_download_fw(&hardware, (const uint8_t *)firmware.words,
++			      sizeof(firmware.words)) == BC_STS_INV_ARG && no_effects() && !pci_reads && !pci_clears &&
++			      !scl_calls && !mfd_scl_calls && !hardware.research_scl_selector &&
++			      !hardware.research_scl_port_probe && !hardware.research_scl_port_latch &&
++			      !hardware.research_mfd_scl_probe && !hardware.research_mfd_colour_value,
++			      "every invalid private selector is consumed and refused before any ordinary loader or target effects");
++		}
++	}
++	/* No opt-in means the scalar is unused, like the preexisting colour value. */
++	for (unsigned n = 0; n < ARRAY_SIZE(invalid); ++n) {
++		reset(); hardware.research_scl_selector = invalid[n];
++		check(crystalhd_flea_download_fw(&hardware, (const uint8_t *)firmware.words,
++		      sizeof(firmware.words)) == BC_STS_SUCCESS && !scl_calls && !mfd_scl_calls &&
++		      !pci_clears && !scl_writes && !mfd_scl_target_writes && cmac_writes == 4 && arm_run_writes == 1 &&
++		      !hardware.research_scl_selector,
++		      "an unused scalar cannot enable new probing or reject an ordinary no-optin stock download");
++	}
++	for (uint32_t selector = 1; selector <= 3; ++selector) {
++		reset_mfd_scl(); hardware.research_staging_probe = hardware.research_mfd_scl_probe = true;
++		hardware.research_scl_selector = selector; hardware.research_mfd_colour_value = colour_selected;
++		check(crystalhd_flea_download_fw(&hardware, NULL, sizeof(firmware.words)) == BC_STS_INV_ARG &&
++		      no_effects() && !pci_reads && !hardware.research_scl_selector &&
++		      !hardware.research_staging_probe && !hardware.research_mfd_scl_probe &&
++		      !hardware.research_mfd_colour_value,
++		      "even image preflight refusal consumes every captured one-shot selector without effects");
++	}
++}
++
++static void scl_view_frozen_parameter_results(void)
++{
++	groups++;
++	for (uint32_t selector = 1; selector <= 3; ++selector) {
++		reset_scl(); scl_expected_selector = selector; scl_mutate_field_read = 1;
++		check(crystalhd_flea_scl_port_probe_view(&hardware, adapter.generation,
++		      &research_owner, true, selector) == BC_STS_CMD_CANCELLED && scl_field_mutated &&
++		      hardware.research_scl_selector == UINT32_MAX && scl_writes == 2 &&
++		      scl_write_values[0] == selector && !scl_write_values[1],
++		      "qualification never rereads a changed private field to retarget its frozen argument");
++		reset_mfd_scl(); scl_expected_selector = selector; scl_mutate_field_read = 1;
++		check(crystalhd_flea_mfd_scl_probe_view(&hardware, adapter.generation,
++		      &research_owner, colour_selected, selector) == BC_STS_CMD_CANCELLED && scl_field_mutated &&
++		      hardware.research_scl_selector == UINT32_MAX && mfd_scl_target_writes == 44 &&
++		      mfd_scl_write_values[9] == selector && !mfd_scl_write_values[43],
++		      "combined baseline/START/pulses/restoration all use the immutable explicit selector");
++	}
++	reset_scl(); hardware.research_scl_selector = 3;
++	check(run_scl(true) == BC_STS_CMD_CANCELLED && scl_write_values[0] == 1 && !scl_write_values[1],
++	      "legacy qualification wrapper remains literal1 regardless of an unused private selector");
++	reset_mfd_scl(); hardware.research_scl_selector = 2;
++	check(run_mfd_scl() == BC_STS_CMD_CANCELLED && mfd_scl_write_values[9] == 1 && !mfd_scl_write_values[43],
++	      "legacy combined wrapper remains literal1 regardless of an unused private selector");
++}
++
++static void scl_view_fault_campaigns(void)
++{
++	/* Reuse the existing every-position fault inputs without duplicating their
++	 * oracle; explicit targets and both colours are separately set here.
++	 * The original27 groups above still execute with literal selector1.
++	 */
++	for (uint32_t selector = 2; selector <= 3; ++selector) {
++		scl_campaign_selector = selector;
++		scl_fault_results();
++		const uint32_t colours[] = {0x00405ac3, 0x00b2d32b};
++		for (unsigned n = 0; n < ARRAY_SIZE(colours); ++n) {
++			scl_campaign_colour = colours[n];
++			mfd_scl_error_results();
++			mfd_scl_fault_results();
++		}
++	}
++	scl_campaign_selector = scl_campaign_colour = 0;
++}
++
+ int main(void)
+ {
+ 	reset();
+@@ -2931,6 +3287,15 @@ int main(void)
+ 	mfd_scl_error_results();
+ 	mfd_scl_fault_results();
+ 	mfd_scl_download_results();
++	const unsigned legacy_checks = checks;
++	check(groups == 27 && legacy_checks == 14555522,
++	      "all27 legacy groups retain their exact prior device-free check count before new view coverage");
++	scl_view_results();
++	scl_view_admission_results();
++	mfd_scl_view_results();
++	scl_view_download_results();
++	scl_view_frozen_parameter_results();
++	scl_view_fault_campaigns();
+ 	printf("Firmware download safety passed (%u groups, %u checks, %u failures)\n",
+ 	       groups, checks, failures);
+ 	return failures ? EXIT_FAILURE : EXIT_SUCCESS;
+diff --git a/tests/fw-download.sh b/tests/fw-download.sh
+index 3c31589..e55c3d8 100755
+--- a/tests/fw-download.sh
++++ b/tests/fw-download.sh
+@@ -13,7 +13,10 @@ cleanup()
+ 		"$test_dir/scl-port-guard.h" "$test_dir/scl-port-sample.h" \
+ 		"$test_dir/scl-port-probe.h" "$test_dir/mfd-scl-guard.h" \
+ 		"$test_dir/mfd-scl-sample.h" "$test_dir/mfd-colour-core.h" \
+-		"$test_dir/mfd-scl-probe.h"
++		"$test_dir/mfd-scl-probe.h" "$test_dir/mfd-scl-guard-view.h" \
++		"$test_dir/mfd-scl-sample-view.h" "$test_dir/mfd-colour-core-view.h" \
++		"$test_dir/mfd-scl-probe-view.h" "$test_dir/scl-port-sample-view.h" \
++		"$test_dir/scl-port-probe-view.h"
+ 	rmdir "$test_dir"
+ }
+ trap cleanup EXIT
+@@ -52,18 +55,30 @@ extract_function crystalhd_flea_mfd_colour_guard \
+ 	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-colour-guard-function.h"
+ extract_function crystalhd_flea_mfd_scl_guard \
+ 	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-scl-guard.h"
++extract_function crystalhd_flea_mfd_scl_guard_view \
++	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-scl-guard-view.h"
+ extract_function crystalhd_flea_mfd_scl_sample \
+ 	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-scl-sample.h"
++extract_function crystalhd_flea_mfd_scl_sample_view \
++	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-scl-sample-view.h"
+ extract_function crystalhd_flea_mfd_colour_probe_core \
+ 	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-colour-core.h"
++extract_function crystalhd_flea_mfd_colour_probe_core_view \
++	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-colour-core-view.h"
+ extract_function crystalhd_flea_mfd_scl_probe \
+ 	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-scl-probe.h"
++extract_function crystalhd_flea_mfd_scl_probe_view \
++	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-scl-probe-view.h"
+ extract_function crystalhd_flea_scl_port_sample \
+ 	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/scl-port-sample.h"
++extract_function crystalhd_flea_scl_port_sample_view \
++	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/scl-port-sample-view.h"
+ extract_function crystalhd_flea_scl_port_guard \
+ 	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/scl-port-guard.h"
+ extract_function crystalhd_flea_scl_port_probe \
+ 	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/scl-port-probe.h"
++extract_function crystalhd_flea_scl_port_probe_view \
++	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/scl-port-probe-view.h"
+ extract_function crystalhd_flea_research_pci_guard \
+ 	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/pci-guard-function.h"
+ extract_function crystalhd_hw_close \
