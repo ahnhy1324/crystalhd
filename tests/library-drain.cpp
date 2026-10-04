@@ -425,9 +425,10 @@ struct SclViewFixture {
     }
 };
 
-// Passive, fixed configuration reads only. 0x50/0x80 pin this board's prior
-// native MFD/SCL observations, not universal revision defaults. Raw remap and
-// colour values are opaque; matching brackets do not establish ownership.
+// Passive, fixed configuration reads only. MFD 0x50/SCL 0x80 and TEST_MODE 4
+// pin this board's observed profile, not universal defaults. Saturation bit 2
+// remains set; BVB test/pulse/state bits remain clear, without target writes.
+// Remap/colour are opaque; matching brackets do not establish ownership.
 static const uint32_t kMfdAdmissionAddresses[10] = {
     BCHP_MFD_REVISION_ID, BCHP_MFD_FEEDER_CNTL, BCHP_MFD_FIXED_COLOUR,
     BCHP_MFD_DATA_MODE, BCHP_MFD_RANGE_EXP_REMAP_CNTL, BCHP_MFD_TEST_MODE_CNTL,
@@ -463,7 +464,7 @@ static bool ReadMfdAdmission(HANDLE handle, MfdAdmissionSnapshot *snapshot,
                 snapshot->failure = MfdAdmissionFailure::Revision;
             else if ((field == 6 || field == 9) && raw != 0x80)
                 snapshot->failure = MfdAdmissionFailure::Revision;
-            else if ((field == 1 || field == 3 || field == 5) && raw)
+            else if (((field == 1 || field == 3) && raw) || (field == 5 && raw != 4))
                 snapshot->failure = MfdAdmissionFailure::Mode;
             else if (field == 7 && raw) snapshot->failure = MfdAdmissionFailure::EngineStatus;
         }
@@ -492,9 +493,9 @@ struct MfdAdmissionObserver {
         if (report) {
             const char *name = stage ? "first-output-after-release-and-owned-write" : "after-OPEN/pre-START";
             const char *const failures[] = {"none", "argument", "read-status", "revision",
-                "reserved-bits", "mode-not-zero", "observed-engine-status", "tuple-unstable"};
+                "reserved-bits", "mode-not-profile", "observed-engine-status", "tuple-unstable"};
             std::printf("MFD admission: stage=%s reads=%u total-reads=%u measured=%u api-status=%d "
-                "failure=%s result=%s raw-stable=%s board-profile=MFD50/SCL80 target-writes=0 non-atomic=yes "
+                "failure=%s result=%s raw-stable=%s board-profile=MFD50/SCL80/TEST4 target-writes=0 non-atomic=yes "
                 "API-success-not-transport-certificate=yes ownership/source-lease/completion-certified=no\n",
                 name, snapshot.reads, reads, snapshot.measured, snapshot.status,
                 failures[static_cast<unsigned>(snapshot.failure)], ok ? "PASS" : "FAIL",
@@ -522,8 +523,8 @@ struct MfdAdmissionFixture {
     unsigned calls = 0, fail_at = 20;
     bool valid = true;
     BC_STATUS status = BC_STS_ERROR;
-    uint32_t raw[20] = {0x50, 0, 0x405ac3, 0, 0x21, 0, 0x80, 0, 0x50, 0x80,
-                       0x50, 0, 0x405ac3, 0, 0x21, 0, 0x80, 0, 0x50, 0x80};
+    uint32_t raw[20] = {0x50, 0, 0x405ac3, 0, 0x21, 4, 0x80, 0, 0x50, 0x80,
+                       0x50, 0, 0x405ac3, 0, 0x21, 4, 0x80, 0, 0x50, 0x80};
     static BC_STATUS Read(HANDLE handle, uint32_t address, uint32_t *value) {
         auto *fixture = static_cast<MfdAdmissionFixture *>(handle);
         const uint32_t expected[] = {0x540000, 0x540004, 0x540008, 0x540044, 0x54004c,
@@ -2043,7 +2044,8 @@ static bool SelfTest()
         if (field == 0 || field == 6 || field == 8 || field == 9)
             invalid = {0U, 1U, 0xffffU, (field == 0 || field == 8) ? 0x51U : 0x81U};
         if (field == 1 || field == 3 || field == 5 || field == 7)
-            for (unsigned bit = 0; bit < widths[field]; ++bit) invalid.push_back(1U << bit);
+            for (unsigned bit = 0; bit < widths[field]; ++bit)
+                invalid.push_back((field == 5 ? 4U : 0U) ^ (1U << bit));
         for (uint32_t raw : invalid) {
             MfdAdmissionFixture fixture; fixture.raw[position] = raw;
             MfdAdmissionSnapshot snapshot;
@@ -2065,6 +2067,16 @@ static bool SelfTest()
                 fixture.calls == 20 && snapshot.failure == MfdAdmissionFailure::Unstable,
                 "MFD admissible repeat changes reject only after the complete snapshot without retargeting");
         }
+    }
+    {
+        MfdAdmissionFixture live;
+        live.raw[2] = live.raw[12] = 0x108080; live.raw[4] = live.raw[14] = 0x108;
+        MfdAdmissionSnapshot snapshot;
+        check(ReadMfdAdmission(&live, &snapshot, MfdAdmissionFixture::Read) && live.valid && live.calls == 20,
+            "MFD observed native colour/remap with TEST4 is admitted without interpreting or changing saturation");
+        live.calls = 0; live.raw[5] = live.raw[15] = 0;
+        check(!ReadMfdAdmission(&live, &snapshot, MfdAdmissionFixture::Read) && live.valid && live.calls == 6 &&
+            snapshot.failure == MfdAdmissionFailure::Mode, "MFD former TEST0 profile rejects without writes or later reads");
     }
     {
         MfdAdmissionFixture fixture; MfdAdmissionObserver disabled;
