@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="590" viewBox="0 0 1240 590">
+<rect width="1240" height="590" fill="#111827"/>
+<g fill="#edf3ff" font-family="sans-serif">
+<text x="28" y="40" font-size="25">BCM70015: native MFD configuration, no target writes</text>
+<text x="28" y="70" font-size="14" fill="#b6c4d9">Progressive MPEG-2 640×360 · 180 pictures · unscaled YUY2 · installed module and library unchanged</text>
+<rect x="28" y="96" width="570" height="95" rx="10" fill="#1e293b"/>
+<rect x="644" y="96" width="568" height="95" rx="10" fill="#1e293b"/>
+<text x="46" y="124" font-size="18">After OPEN / before START</text>
+<text x="46" y="153" font-size="22" fill="#ffcc80" font-family="monospace">FIXED_COLOUR 00108080</text>
+<text x="46" y="178" font-size="13" fill="#b6c4d9">Two matching ten-word tuples · 20 logical register reads</text>
+<path d="M606 144h26m-8-7 8 7-8 7" fill="none" stroke="#73d5f4" stroke-width="3"/>
+<text x="662" y="124" font-size="18">First output: release → successful owned-copy Write</text>
+<text x="662" y="153" font-size="22" fill="#ffcc80" font-family="monospace">FIXED_COLOUR 00909070</text>
+<text x="662" y="178" font-size="13" fill="#b6c4d9">Two matching ten-word tuples · 20 more logical reads</text>
+<text x="28" y="222" font-size="16">Other sampled fields matched the observed board profile at both stages:</text>
+<rect x="28" y="238" width="1184" height="144" rx="8" fill="#1e293b"/>
+<g font-family="monospace" font-size="17">
+<text x="46" y="267">MFD REV / closing REV = 00000050</text>
+<text x="644" y="267">SCL REV / closing REV = 00000080</text>
+<text x="46" y="299">FEEDER_CNTL = 00000000</text>
+<text x="644" y="299">DATA_MODE = 00000000</text>
+<text x="46" y="331">RANGE_EXP_REMAP = 00000108</text>
+<text x="644" y="331">SCL BVB_IN_STATUS = 00000000</text>
+<text x="46" y="363" fill="#73d5f4">TEST_MODE = 00000004: saturation on; BVB test / ACCEPT bits clear</text>
+</g>
+<text x="28" y="412" font-size="15" fill="#86e7ad">All 180 delivered pictures match the frozen native capture; EOS, cleanup and resources pass.</text>
+<text x="28" y="439" font-size="13" fill="#b6c4d9">Four complete sessions pass: baseline, recovery after the initial guard rejection, revised observer, MPEG-2 recovery.</text>
+<text x="28" y="464" font-size="13" fill="#b6c4d9">Final independent H.264 recovery also matches its full frozen capture. The initial TEST0 guard stopped at read 6, before START.</text>
+<text x="28" y="497" font-size="15" fill="#ffcc80">The interstage colour change shows why the pre-START value is not a later restoration ticket.</text>
+<text x="28" y="524" font-size="13" fill="#b6c4d9">Equal tuples are not atomicity, transport, clock, ownership, source-lease, routing or standalone-output certificates.</text>
+<text x="28" y="550" font-size="13" fill="#b6c4d9">No pointer following, status clear, FIFO/command access, geometry, test-mode, clock or other target writes.</text>
+<text x="28" y="576" font-size="12" fill="#b6c4d9">Measured prototype source a82c4356 · board-profile pins MFD50 / SCL80 / TEST4 are observations, not universal defaults.</text>
+</g>
+</svg>
