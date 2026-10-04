@@ -17,6 +17,7 @@ extern bc_dil_glob_s *bc_dil_glob_ptr;
 static unsigned checks, failures, calls, reads, writes;
 static DTS_LIB_CONTEXT *observed;
 static BC_OUTPUT_FORMAT previous_mode;
+static bool previous_software_uyvy;
 static BC_STATUS read_status, write_status;
 static unsigned syscall_failure;
 static uint32_t register_value, written_value;
@@ -51,7 +52,9 @@ extern "C" int __wrap_ioctl(int fd, unsigned long code, ...)
     Check(data->u.regAcc.Offset == (flea ? 0x00502100U : 0x00000d00U),
           "access only the chip's existing color-control register");
     Check(observed->b422Mode == previous_mode,
-          "do not publish requested layout before register write succeeds");
+          "do not publish hardware source layout before register write succeeds");
+    Check(observed->softwareUyvy == previous_software_uyvy,
+          "do not publish software packing before register write succeeds");
     if (read) {
         ++reads;
         Check(data->u.regAcc.Value == 0, "pooled read request has no stale value");
@@ -80,7 +83,8 @@ struct Fixture {
         context.Sig = LIB_CTX_SIG;
         context.DevHandle = 99;
         context.DevId = device;
-        context.b422Mode = OUTPUT_MODE422_UYVY;
+        context.b422Mode = device == BC_PCI_DEVID_FLEA
+            ? OUTPUT_MODE422_YUY2 : OUTPUT_MODE422_UYVY;
         context.pIoDataFreeHd = &pooled;
         pthread_mutexattr_t attr;
         pthread_mutexattr_init(&attr);
@@ -91,6 +95,7 @@ struct Fixture {
     }
     void Prepare() {
         previous_mode = context.b422Mode;
+        previous_software_uyvy = context.softwareUyvy;
         calls = reads = writes = syscall_failure = 0;
         read_status = write_status = BC_STS_SUCCESS;
         register_value = 0xa5b57c7fU;
@@ -111,8 +116,7 @@ struct Fixture {
 static uint32_t ExpectedRegister(uint32_t device, BC_OUTPUT_FORMAT mode)
 {
     if (device == BC_PCI_DEVID_FLEA)
-        return (register_value & 0x7cU) |
-               (mode == OUTPUT_MODE422_YUY2 ? 2U : 0U);
+        return (register_value & 0x7cU) | 2U;
     return (register_value & ~0x00110000U) |
            (mode == OUTPUT_MODE420 ? 0U : 0x00010000U) |
            (mode == OUTPUT_MODE422_UYVY ? 0x00100000U : 0U);
@@ -130,9 +134,13 @@ static void SuccessfulModes(uint32_t device)
         Check(reads == 1 && writes == 1 && calls == 2,
               "successful transaction performs exactly one read and write");
         Check(written_value == ExpectedRegister(device, mode),
-              "preserve existing chip-specific register encoding");
-        Check(fixture.context.b422Mode == mode,
-              "successful register write commits the requested capture layout");
+              "Flea uses the known YUY2 source; Link retains its register encoding");
+        Check(fixture.context.b422Mode == (device == BC_PCI_DEVID_FLEA
+                  ? OUTPUT_MODE422_YUY2 : mode),
+              "successful write commits actual hardware source layout");
+        Check(fixture.context.softwareUyvy == (device == BC_PCI_DEVID_FLEA
+                  ? mode == OUTPUT_MODE422_UYVY : previous_software_uyvy),
+              "requested UYVY is separate from Flea hardware source and leaves Link unchanged");
         fixture.PoolReturned();
     }
 }
@@ -148,43 +156,114 @@ static void RejectedModes(uint32_t device)
         Check(DtsSetColorSpace(&fixture.context, mode) == BC_STS_INV_ARG,
               "unsupported or invalid color mode is rejected");
         Check(calls == 0, "invalid mode never accesses registers");
-        Check(fixture.context.b422Mode == previous_mode,
-              "rejected mode preserves the prior capture layout");
+        Check(fixture.context.b422Mode == previous_mode &&
+                  fixture.context.softwareUyvy == previous_software_uyvy,
+              "rejected mode preserves source and requested software packing");
         fixture.PoolReturned();
-        fixture.context.b422Mode = OUTPUT_MODE422_UYVY;
+        fixture.context.softwareUyvy = true;
     }
 }
 
 static void RegisterFailures(uint32_t device)
 {
+    for (bool requested_before : {false, true}) {
+        if (device == BC_PCI_DEVID_LINK && requested_before) continue;
+        for (BC_OUTPUT_FORMAT mode : {OUTPUT_MODE422_YUY2, OUTPUT_MODE422_UYVY}) {
+            for (bool write : {false, true}) {
+                // Every non-success driver enum, including the negative last
+                // status, must preserve both fields at either transaction step.
+                for (int raw_status = -1; raw_status <= BC_STS_PWR_MGMT; ++raw_status) {
+                    if (raw_status == BC_STS_SUCCESS) continue;
+                    Fixture fixture(device);
+                    fixture.context.softwareUyvy = requested_before;
+                    fixture.Prepare();
+                    const BC_STATUS status = static_cast<BC_STATUS>(raw_status);
+                    if (write) write_status = status;
+                    else read_status = status;
+                    Check(DtsSetColorSpace(&fixture.context, mode) == status,
+                          "every register driver failure propagates unchanged");
+                    Check(reads == 1 && writes == (write ? 1U : 0U),
+                          "a failed read never writes; a failed write is attempted once");
+                    Check(fixture.context.b422Mode == previous_mode &&
+                              fixture.context.softwareUyvy == requested_before,
+                          "every failed transaction retains both source and software intent");
+                    fixture.PoolReturned();
+                    fixture.Prepare();
+                    Check(DtsSetColorSpace(&fixture.context, mode) == BC_STS_SUCCESS &&
+                              fixture.context.b422Mode == (device == BC_PCI_DEVID_FLEA
+                                  ? OUTPUT_MODE422_YUY2 : mode) &&
+                              fixture.context.softwareUyvy == (device == BC_PCI_DEVID_FLEA
+                                  ? mode == OUTPUT_MODE422_UYVY : requested_before) &&
+                              written_value == ExpectedRegister(device, mode),
+                          "retry commits only after a successful pooled register transaction");
+                }
+            }
+        }
+    }
     for (bool write : {false, true}) {
-        for (unsigned failure = 0; failure != 3; ++failure) {
+        for (bool requested_before : {false, true}) {
+            if (device == BC_PCI_DEVID_LINK && requested_before) continue;
             Fixture fixture(device);
-            const BC_STATUS status = failure == 0 ? BC_STS_IO_ERROR : BC_STS_TIMEOUT;
-            if (failure == 2) syscall_failure = write ? 2 : 1;
-            else if (write) write_status = status;
-            else read_status = status;
-            const BC_STATUS expected = failure == 2 ? BC_STS_ERROR : status;
-            Check(DtsSetColorSpace(&fixture.context, OUTPUT_MODE422_YUY2) == expected,
-                  "register RetSts and syscall errors propagate unchanged");
+            fixture.context.softwareUyvy = requested_before;
+            fixture.Prepare();
+            syscall_failure = write ? 2 : 1;
+            Check(DtsSetColorSpace(&fixture.context, OUTPUT_MODE422_UYVY) == BC_STS_ERROR,
+                  "read and write syscall errors propagate unchanged");
             Check(reads == 1 && writes == (write ? 1U : 0U),
                   "failed register read never causes a write");
-            Check(fixture.context.b422Mode == previous_mode,
-                  "failed register transaction preserves the prior capture layout");
+            Check(fixture.context.b422Mode == previous_mode &&
+                      fixture.context.softwareUyvy == requested_before,
+                  "syscall failure preserves source and software intent");
             fixture.PoolReturned();
-            fixture.Prepare();
-            Check(DtsSetColorSpace(&fixture.context, OUTPUT_MODE422_YUY2) == BC_STS_SUCCESS &&
-                      fixture.context.b422Mode == OUTPUT_MODE422_YUY2 &&
-                      written_value == ExpectedRegister(device, OUTPUT_MODE422_YUY2),
-                  "a successful retry reuses pooled storage and commits normally");
         }
     }
     Fixture fixture(device);
     fixture.context.pIoDataFreeHd = nullptr;
     Check(DtsSetColorSpace(&fixture.context, OUTPUT_MODE422_YUY2) == BC_STS_INSUFF_RES &&
-              fixture.context.b422Mode == previous_mode && calls == 0,
+              fixture.context.b422Mode == previous_mode &&
+              fixture.context.softwareUyvy == previous_software_uyvy && calls == 0,
           "ioctl-pool exhaustion preserves layout without register access");
     fixture.context.pIoDataFreeHd = &fixture.pooled;
+}
+
+static void CaptureAdmission()
+{
+    for (uint32_t state : {BC_DEC_STATE_CLOSE, BC_DEC_STATE_STOP, BC_DEC_STATE_START}) {
+        Fixture fixture(BC_PCI_DEVID_FLEA);
+        fixture.context.State = state;
+        Check(DtsSetColorSpace(&fixture.context, OUTPUT_MODE422_UYVY) == BC_STS_SUCCESS &&
+                  calls == 2 && fixture.context.b422Mode == OUTPUT_MODE422_YUY2 &&
+                  fixture.context.softwareUyvy,
+              "clean CLOSE/STOP/START permit selection before delayed capture registration");
+    }
+    for (unsigned fault = 0; fault < 8; ++fault) {
+        for (BC_OUTPUT_FORMAT mode : {OUTPUT_MODE422_YUY2, OUTPUT_MODE422_UYVY}) {
+            Fixture fixture(BC_PCI_DEVID_FLEA);
+            fixture.context.State = BC_DEC_STATE_START;
+            fixture.context.softwareUyvy = true;
+            if (fault == 0) fixture.context.ProcOutPending = true;
+            if (fault == 1) fixture.context.CancelWaiting = true;
+            if (fault == 2) fixture.context.bMapOutBufDone = true;
+            if (fault == 3) fixture.context.bMapOutBufDirty = true;
+            if (fault == 4) fixture.context.txQuiescing = true;
+            if (fault == 5) fixture.context.State = BC_DEC_STATE_PAUSE;
+            if (fault == 6) fixture.context.State = BC_DEC_STATE_FLUSH;
+            if (fault == 7) fixture.context.State = 0xffffffffU;
+            fixture.Prepare();
+            Check(DtsSetColorSpace(&fixture.context, mode) == BC_STS_BUSY && calls == 0,
+                  "each active/ambiguous capture guard rejects before any register access");
+            Check(fixture.context.b422Mode == previous_mode && fixture.context.softwareUyvy,
+                  "live same-mode and changed-mode rejection preserve both fields");
+            fixture.PoolReturned();
+        }
+    }
+    Fixture link(BC_PCI_DEVID_LINK);
+    link.context.State = BC_DEC_STATE_PAUSE;
+    link.context.ProcOutPending = link.context.CancelWaiting = true;
+    link.context.bMapOutBufDone = link.context.bMapOutBufDirty = true;
+    link.context.txQuiescing = true;
+    Check(DtsSetColorSpace(&link.context, OUTPUT_MODE422_YUY2) == BC_STS_SUCCESS && calls == 2,
+          "the new Flea admission policy does not change the legacy Link setter");
 }
 
 static void InternalCompatibility(uint32_t device)
@@ -194,7 +273,7 @@ static void InternalCompatibility(uint32_t device)
         ? DtsSetFleaIn422Mode : DtsSetLinkIn422Mode;
     Check(helper(&fixture.context) == BC_STS_SUCCESS &&
               written_value == ExpectedRegister(device, previous_mode),
-          "existing internal helper signature still programs the cached mode");
+          "existing internal helper retains its chip-specific source-programming contract");
     fixture.Prepare();
     read_status = BC_STS_IO_ERROR;
     Check(helper(&fixture.context) == BC_STS_IO_ERROR && writes == 0,
@@ -213,9 +292,11 @@ int main()
         RegisterFailures(device);
         InternalCompatibility(device);
     }
+    CaptureAdmission();
     Fixture fixture(0xffff);
     Check(DtsSetColorSpace(&fixture.context, OUTPUT_MODE422_YUY2) == BC_STS_NOT_IMPL &&
-              fixture.context.b422Mode == previous_mode && calls == 0,
+              fixture.context.b422Mode == previous_mode &&
+              fixture.context.softwareUyvy == previous_software_uyvy && calls == 0,
           "unknown hardware cannot report successful color programming");
     Check(DtsSetColorSpace(nullptr, OUTPUT_MODE422_YUY2) == BC_STS_INV_ARG && calls == 0,
           "invalid device handle never accesses registers");

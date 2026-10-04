@@ -224,14 +224,32 @@ DtsSetOutputColorSpace(HANDLE hDevice, BC_OUTPUT_FORMAT mode)
 	 * Callers must still select the format before registering capture buffers.
 	 */
 	DtsLock(Ctx);
+	if (Ctx->DevId == BC_PCI_DEVID_FLEA) {
+		if (mode != OUTPUT_MODE422_YUY2 && mode != OUTPUT_MODE422_UYVY) {
+			DtsUnLock(Ctx);
+			return BC_STS_INV_ARG;
+		}
+		/* Freeze the source/request through mapping and each output lease.
+		 * STOP alone is insufficient when a failed unmap left registrations.
+		 */
+		if (Ctx->ProcOutPending || Ctx->CancelWaiting || Ctx->txQuiescing ||
+			Ctx->bMapOutBufDone || Ctx->bMapOutBufDirty ||
+			(Ctx->State != BC_DEC_STATE_CLOSE &&
+			 Ctx->State != BC_DEC_STATE_START && Ctx->State != BC_DEC_STATE_STOP)) {
+			DtsUnLock(Ctx);
+			return BC_STS_BUSY;
+		}
+	}
 	if (Ctx->DevId == BC_PCI_DEVID_LINK)
 		sts = DtsProgramLinkColorSpace(hDevice, mode);
 	else if (Ctx->DevId == BC_PCI_DEVID_FLEA)
-		sts = DtsProgramFleaColorSpace(hDevice, mode);
+		sts = DtsProgramFleaColorSpace(hDevice, OUTPUT_MODE422_YUY2);
 	else
 		sts = BC_STS_NOT_IMPL;
-	if (sts == BC_STS_SUCCESS)
-		Ctx->b422Mode = mode;
+	if (sts == BC_STS_SUCCESS) {
+		Ctx->b422Mode = Ctx->DevId == BC_PCI_DEVID_FLEA ? OUTPUT_MODE422_YUY2 : mode;
+		Ctx->softwareUyvy = Ctx->DevId == BC_PCI_DEVID_FLEA && mode == OUTPUT_MODE422_UYVY;
+	}
 	DtsUnLock(Ctx);
 	return sts;
 }
@@ -1527,7 +1545,11 @@ BC_STATUS DtsCopyFormat(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *Vout,
 	/* Preserve the legacy hardware-transfer metadata in DWORD units. */
 	Vout->YBuffDoneSz = Vin->YBuffDoneSz;
 	Vout->UVBuffDoneSz = Vin->UVBuffDoneSz;
-	const BC_OUTPUT_FORMAT source = Ctx->b422Mode;
+	/* Fetch has already converted a requested Flea UYVY lease. MODE still
+	 * chooses its own destination, so consume the actual returned layout.
+	 */
+	const BC_OUTPUT_FORMAT source = Ctx->softwareUyvy
+		? static_cast<BC_OUTPUT_FORMAT>(Vin->b422Mode) : Ctx->b422Mode;
 	const unsigned target = Vout->b422Mode;
 	if ((source != OUTPUT_MODE420_NV12 && source != OUTPUT_MODE422_YUY2 &&
 		 source != OUTPUT_MODE422_UYVY) ||

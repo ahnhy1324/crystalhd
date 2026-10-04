@@ -50,6 +50,22 @@ for bits in $build_bits; do
     make -C "$build_dir/examples" LEGACY_CPU="$legacy" clean
     make -C "$build_dir/linux_lib/libcrystalhd" LEGACY_CPU="$legacy" CXX="$cxx -m$bits"
     make -C "$build_dir/examples" LEGACY_CPU="$legacy" CXX="$cxx -m$bits"
+    # A private context change must rebuild every reader, not leave mixed ABI
+    # objects in the DSO. This operates only on the disposable source copy.
+    dependency_dir=$build_dir/linux_lib/libcrystalhd
+    dependency_header=$dependency_dir/libcrystalhd_priv.h
+    for dependency_object in "$dependency_dir"/*.o; do
+        grep -q 'libcrystalhd_priv.h' "${dependency_object%.o}.d"
+    done
+    touch "$dependency_header"
+    make -C "$dependency_dir" LEGACY_CPU="$legacy" CXX="$cxx -m$bits"
+    for dependency_object in "$dependency_dir"/*.o; do
+        if [ ! "$dependency_object" -nt "$dependency_header" ]; then
+            echo "private-header change left a stale object: $dependency_object" >&2
+            exit 1
+        fi
+    done
+    printf '%s-bit private-header incremental rebuild passed\n' "$bits"
     cpu_flags=$(make -s --no-print-directory -C "$build_dir/linux_lib/libcrystalhd" \
         LEGACY_CPU="$legacy" CXX="$cxx -m$bits" print-cpu-flags)
     if [ "$legacy" -eq 1 ]; then
@@ -82,7 +98,8 @@ for bits in $build_bits; do
             copy|planar) set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_int_if.cpp" ;;
             format)
                 set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_int_if.cpp" \
-                    "$build_dir/linux_lib/libcrystalhd/libcrystalhd_priv.cpp" ;;
+                    "$build_dir/linux_lib/libcrystalhd/libcrystalhd_priv.cpp" \
+                    "$build_dir/linux_lib/libcrystalhd/libcrystalhd_if.cpp" ;;
             status|color)
                 set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_if.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_priv.cpp" \

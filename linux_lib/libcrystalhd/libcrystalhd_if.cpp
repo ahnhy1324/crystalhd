@@ -1696,6 +1696,8 @@ DtsProcOutput(
 
 		Ctx->bEOS = FALSE;
 		pOut->PoutFlags |= OutBuffs.PoutFlags;
+		if (!(pOut->PoutFlags & BC_POUT_FLAGS_MODE))
+			pOut->b422Mode = OutBuffs.b422Mode;
 		/* Copying the discontinuity count */
 		if(OutBuffs.discCnt)
 			pOut->discCnt = OutBuffs.discCnt;
@@ -1771,7 +1773,6 @@ DtsProcOutput(
 		/* Merge in and out flags */
 		OutBuffs.PoutFlags |= pOut->PoutFlags;
 		width = Ctx->HWOutPicWidth;
-		OutBuffs.b422Mode = Ctx->b422Mode;
 		pOut->AppCallBack(pOut->hnd,
 					width,
 					OutBuffs.PicInfo.height,
@@ -1782,7 +1783,6 @@ DtsProcOutput(
 	if (pOut->PoutFlags & BC_POUT_FLAGS_MODE) {
 		sts = DtsCopyFormat(Ctx,pOut,&OutBuffs);
 	} else {
-		pOut->b422Mode = Ctx->b422Mode;
 		if(Ctx->b422Mode) {
 			sts = DtsCopyRawDataToOutBuff(Ctx,pOut,&OutBuffs);
 		}else{

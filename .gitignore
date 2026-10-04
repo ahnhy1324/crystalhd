@@ -11,6 +11,7 @@
 #
 .*
 *.o
+/linux_lib/libcrystalhd/*.d
 *.o.*
 *.a
 *.s
