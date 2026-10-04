@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="570" viewBox="0 0 1240 570">
+<rect width="1240" height="570" fill="#101923"/>
+<g font-family="sans-serif" fill="#e5edf5">
+<text x="28" y="39" font-size="23">BCM70015: selected SCL debug views differ in native playback</text>
+<text x="28" y="69" font-size="14" fill="#acbace">Original module/library; MPEG-2 640×360 progressive / 180 pictures, unscaled YUY2. One selector per fresh native session.</text>
+<text x="28" y="100" font-size="13" fill="#acbace">Save CTRL 0 after OPEN / before START, select 2 or 3 once. Sample only after release and successful owned-copy Write.</text>
+<text x="28" y="166" font-size="19">Selector 2</text>
+<text x="28" y="194" font-size="13" fill="#58b7a1">PASS · 39 reads / 2 writes*</text>
+<rect x="268" y="135" width="145" height="103" rx="5" fill="#29303b" stroke="#667485"/>
+<text x="284" y="166" font-size="15">Pre-boot #223</text>
+<text x="284" y="196" font-family="monospace" font-size="16">DATA 00000000</text>
+<text x="284" y="222" font-size="11" fill="#acbace">different source/session</text>
+<text x="431" y="193" font-size="22">→</text>
+<rect x="470" y="135" width="239" height="103" rx="5" fill="#17303b" stroke="#6d9aaa"/>
+<text x="486" y="162" font-size="14">Native: first released picture</text>
+<text x="486" y="194" font-family="monospace" font-size="19">DATA 08000000</text>
+<text x="486" y="222" font-size="12" fill="#acbace">CTRL 2 · two equal passes</text>
+<text x="728" y="193" font-size="22">→</text>
+<rect x="767" y="135" width="239" height="103" rx="5" fill="#17303b" stroke="#6d9aaa"/>
+<text x="783" y="162" font-size="14">Native: picture 179 of 180</text>
+<text x="783" y="194" font-family="monospace" font-size="19">DATA 08000000</text>
+<text x="783" y="222" font-size="12" fill="#acbace">CTRL 2 · two equal passes</text>
+<text x="1026" y="193" font-size="22">→</text>
+<rect x="1064" y="135" width="148" height="103" rx="5" fill="#17303b" stroke="#58b7a1"/>
+<text x="1080" y="163" font-size="15">Restore CTRL 0</text>
+<text x="1080" y="193" font-size="14">before picture 180</text>
+<text x="1080" y="222" font-size="13" fill="#58b7a1">180 frames + EOS</text>
+<text x="28" y="300" font-size="19">Selector 3</text>
+<text x="28" y="328" font-size="13" fill="#58b7a1">PASS · 39 reads / 2 writes*</text>
+<rect x="268" y="269" width="145" height="103" rx="5" fill="#29303b" stroke="#667485"/>
+<text x="284" y="300" font-size="15">Pre-boot #223</text>
+<text x="284" y="330" font-family="monospace" font-size="16">DATA 00000000</text>
+<text x="284" y="356" font-size="11" fill="#acbace">different source/session</text>
+<text x="431" y="327" font-size="22">→</text>
+<rect x="470" y="269" width="239" height="103" rx="5" fill="#17303b" stroke="#6d9aaa"/>
+<text x="486" y="296" font-size="14">Native: first released picture</text>
+<text x="486" y="328" font-family="monospace" font-size="19">DATA 28a08000</text>
+<text x="486" y="356" font-size="12" fill="#acbace">CTRL 3 · two equal passes</text>
+<text x="728" y="327" font-size="22">→</text>
+<rect x="767" y="269" width="239" height="103" rx="5" fill="#17303b" stroke="#6d9aaa"/>
+<text x="783" y="296" font-size="14">Native: picture 179 of 180</text>
+<text x="783" y="328" font-family="monospace" font-size="19">DATA 28a08000</text>
+<text x="783" y="356" font-size="12" fill="#acbace">CTRL 3 · two equal passes</text>
+<text x="1026" y="327" font-size="22">→</text>
+<rect x="1064" y="269" width="148" height="103" rx="5" fill="#17303b" stroke="#58b7a1"/>
+<text x="1080" y="297" font-size="15">Restore CTRL 0</text>
+<text x="1080" y="327" font-size="14">before picture 180</text>
+<text x="1080" y="356" font-size="13" fill="#58b7a1">180 frames + EOS</text>
+<text x="28" y="424" font-size="13" fill="#acbace">Every measured REV=0x80 / BVB STATUS=0; pre-START TOP=0x0c / ENABLE=0. Restoration readback CTRL=0 / REV=0x80.</text>
+<text x="28" y="450" font-size="13" fill="#acbace">Six sessions pass full capture pixels, EOS and resources: native baseline, two probes, two MPEG-2 recoveries, final H.264 recovery.</text>
+<text x="28" y="476" font-size="13" fill="#acbace">*39 logical register-read API calls and two selector-write API attempts per probe; ordinary decoder I/O is not counted.</text>
+<text x="28" y="502" font-size="13" fill="#acbace">Different raw contexts do not prove cause, routing or activation. Equal passes are not atomic or transport certificates.</text>
+<text x="28" y="528" font-size="13" fill="#acbace">Active-firmware noninterference remains unproved. No power/clock/idle, raw-source lease, standalone output or completion proof.</text>
+<text x="28" y="552" font-size="12" fill="#acbace">Measured prototype source 62a4ab76; test-mux only: no geometry, ENABLE, status-clear, pointer, reset or clock target writes.</text>
+</g>
+</svg>

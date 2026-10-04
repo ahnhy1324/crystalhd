@@ -32,6 +32,7 @@ extern "C" {
 // Optional probe-only ABI from libcrystalhd_int_if.h. Avoid pulling its
 // unrelated register-map dependencies into this direct-library test.
 extern "C" BC_STATUS DtsDevRegisterRead(HANDLE handle, uint32_t offset, uint32_t *value);
+extern "C" BC_STATUS DtsDevRegisterWr(HANDLE handle, uint32_t offset, uint32_t value);
 
 struct ChromaConfiguration {
     uint32_t lac = 0, sampling = 0;
@@ -192,6 +193,238 @@ struct SclReadFixture {
     }
 };
 
+// An explicitly uncertain active-firmware test-mux experiment. Separate API
+// calls do not establish selector ownership or atomicity; a firmware race can
+// remain even after a matching readback. Only TP_ADDR is ever written here.
+enum class SclViewFailure { None, Argument, Api, Revision, Reserved, Admission, Selector, EngineStatus };
+enum class SclViewField { Revision, InitialTop, InitialEnable, SavedControl, SelectedControl,
+                          RestoredControl, Status, Data };
+struct SclViewTrace {
+    uint32_t raw[12] = {};
+    unsigned reads = 0, measured = 0;
+};
+struct SclViewProbe {
+    typedef BC_STATUS (*Reader)(HANDLE, uint32_t, uint32_t *);
+    typedef BC_STATUS (*Writer)(HANDLE, uint32_t, uint32_t);
+    unsigned selector = 0, milestones = 0, reads = 0, writes = 0;
+    bool begun = false, dirty = false, selected = false, restore_attempted = false;
+    bool restored = false, failed = false, access_lost = false;
+    HANDLE owner = nullptr;
+    BC_STATUS api_status = BC_STS_SUCCESS;
+    SclViewFailure failure = SclViewFailure::None;
+    bool Enabled() const { return selector != 0; }
+    bool Reject(SclViewFailure why, bool lost = true) {
+        failed = true;
+        access_lost |= lost;
+        if (failure == SclViewFailure::None || lost) failure = why;
+        return false;
+    }
+    bool Read(HANDLE handle, SclViewTrace *trace, unsigned index, uint32_t address,
+              SclViewField field, Reader reader, bool cleanup = false) {
+        uint32_t raw = 0;
+        ++reads; ++trace->reads;
+        api_status = reader(handle, address, &raw);
+        if (api_status != BC_STS_SUCCESS) return Reject(SclViewFailure::Api);
+        trace->raw[index] = raw;
+        ++trace->measured; // Invalid measured words are printed, unread tails are not.
+        switch (field) {
+        case SclViewField::Revision:
+            return raw == 0x80U || Reject(SclViewFailure::Revision);
+        case SclViewField::InitialTop:
+            if (raw & ~0xeU) return Reject(SclViewFailure::Reserved);
+            return raw == 0xcU || Reject(SclViewFailure::Admission);
+        case SclViewField::InitialEnable:
+            if (raw & ~1U) return Reject(SclViewFailure::Reserved);
+            return raw == 0 || Reject(SclViewFailure::Admission);
+        case SclViewField::SavedControl:
+        case SclViewField::SelectedControl:
+        case SclViewField::RestoredControl:
+            if (raw & ~3U) return Reject(SclViewFailure::Reserved);
+            return raw == (field == SclViewField::SelectedControl ? selector : 0U) ||
+                Reject(field == SclViewField::SavedControl ? SclViewFailure::Admission : SclViewFailure::Selector);
+        case SclViewField::Status:
+            if (raw & ~0xffU) return Reject(SclViewFailure::Reserved);
+            if (raw) { Reject(SclViewFailure::EngineStatus, false); return cleanup; }
+            return true;
+        case SclViewField::Data:
+            return true; // All 32 bits are opaque, never an address or enum oracle.
+        }
+        return Reject(SclViewFailure::Argument);
+    }
+    void Report(const char *stage, const SclViewTrace &trace, const uint32_t *addresses,
+                const char *const *names, unsigned count, unsigned pass_fields,
+                bool report) const {
+        if (!report) return;
+        const char *const failures[] = {"none", "argument", "api-status", "revision",
+            "reserved-bits", "admission", "selector-ownership-lost", "observed-engine-status"};
+        std::printf("SCL view: stage=%s selector=%u reads=%u total-reads=%u target-write-attempts=%u "
+            "measured=%u api-status=%d failure=%s experiment-result=%s restored-observed=%s "
+            "api-calls-not-bus-certificate=yes atomic=no active-FW-race/safety-unproved=yes "
+            "power/clock/source/lease/completion-certified=no\n", stage, selector, trace.reads,
+            reads, writes, trace.measured, api_status, failures[static_cast<unsigned>(failure)],
+            failed ? "FAIL" : (restored && milestones == 3 ? "PASS" : "INCOMPLETE"),
+            restored ? "yes" : "no");
+        for (unsigned index = 0; index < count; ++index) {
+            std::printf("SCL view raw: stage=%s pass=%u %s@%08x=", stage,
+                pass_fields ? index / pass_fields : 0, names[index % (pass_fields ? pass_fields : count)],
+                addresses[index % (pass_fields ? pass_fields : count)]);
+            if (index < trace.measured) std::printf("%08x", trace.raw[index]);
+            else std::printf("NOT-READ");
+            std::printf("\n");
+        }
+        if (pass_fields && count == pass_fields * 2)
+            std::printf("SCL view repeats: stage=%s raw-stable=%s (opaque numeric equality only)\n",
+                stage, trace.measured == count ?
+                (!std::memcmp(trace.raw, trace.raw + pass_fields, pass_fields * sizeof(uint32_t)) ? "yes" : "no") : "NOT-READ");
+        std::fflush(stdout);
+    }
+    bool Begin(HANDLE handle, Reader reader = DtsDevRegisterRead,
+               Writer writer = DtsDevRegisterWr, bool report = true) {
+        if (!Enabled()) return true;
+        if (failed) return false;
+        if (begun || failed || !handle || !reader || !writer || (selector != 2 && selector != 3))
+            return Reject(SclViewFailure::Argument);
+        begun = true; owner = handle; // One attempt, before any experiment I/O.
+        const uint32_t addresses[] = {BCHP_SCL_HD_REVISION_ID, BCHP_SCL_HD_TOP_CONTROL,
+            BCHP_SCL_HD_ENABLE, BCHP_SCL_HD_TEST_PORT_CONTROL, BCHP_SCL_HD_BVB_IN_STATUS,
+            BCHP_SCL_HD_REVISION_ID};
+        const char *const names[] = {"rev", "top", "enable", "ctrl", "status", "closing-rev"};
+        const SclViewField fields[] = {SclViewField::Revision, SclViewField::InitialTop,
+            SclViewField::InitialEnable, SclViewField::SavedControl, SclViewField::Status, SclViewField::Revision};
+        SclViewTrace trace;
+        bool ok = true;
+        for (unsigned index = 0; index < 12 && ok; ++index)
+            ok = Read(handle, &trace, index, addresses[index % 6], fields[index % 6], reader);
+        Report("after-OPEN/pre-START", trace, addresses, names, 12, 6, report);
+        if (!ok) return false;
+        dirty = true; ++writes; // A failed API return cannot prove the write did not occur.
+        api_status = writer(handle, BCHP_SCL_HD_TEST_PORT_CONTROL, selector);
+        SclViewTrace readback;
+        if (api_status != BC_STS_SUCCESS) ok = Reject(SclViewFailure::Api);
+        else ok = Read(handle, &readback, 0, BCHP_SCL_HD_TEST_PORT_CONTROL, SclViewField::SelectedControl, reader);
+        const uint32_t control[] = {BCHP_SCL_HD_TEST_PORT_CONTROL}; const char *const control_name[] = {"ctrl"};
+        Report("select-readback", readback, control, control_name, 1, 0, report);
+        selected = ok;
+        return ok;
+    }
+    bool Observe(HANDLE handle, unsigned milestone, Reader reader = DtsDevRegisterRead,
+                 bool report = true) {
+        if (!Enabled()) return true;
+        if (failed) return false;
+        if (!selected || handle != owner || !reader || milestone >= 2 ||
+            (milestones & (1U << milestone))) return Reject(SclViewFailure::Argument);
+        milestones |= 1U << milestone;
+        const uint32_t addresses[] = {BCHP_SCL_HD_REVISION_ID, BCHP_SCL_HD_TEST_PORT_CONTROL,
+            BCHP_SCL_HD_TEST_PORT_DATA, BCHP_SCL_HD_BVB_IN_STATUS, BCHP_SCL_HD_REVISION_ID};
+        const char *const names[] = {"rev", "ctrl", "data", "status", "closing-rev"};
+        const SclViewField fields[] = {SclViewField::Revision, SclViewField::SelectedControl,
+            SclViewField::Data, SclViewField::Status, SclViewField::Revision};
+        SclViewTrace trace;
+        bool ok = true;
+        for (unsigned index = 0; index < 10 && ok; ++index)
+            ok = Read(handle, &trace, index, addresses[index % 5], fields[index % 5], reader);
+        Report(milestone ? "penultimate-179-after-release-and-owned-write" :
+               "first-output-after-release-and-owned-write", trace, addresses, names, 10, 5, report);
+        return ok;
+    }
+    bool AfterDelivered(HANDLE handle, unsigned frame, bool released, bool owned_written,
+                        Reader reader = DtsDevRegisterRead, Writer writer = DtsDevRegisterWr,
+                        bool report = true) {
+        if (!Enabled()) return true;
+        if (!released || !owned_written) return false; // Never touch the device before these host barriers.
+        if (frame != 1 && frame != 179) return !failed;
+        if (!Observe(handle, frame == 1 ? 0 : 1, reader, report)) return false;
+        return frame != 179 || Restore(handle, reader, writer, report);
+    }
+    bool Restore(HANDLE handle, Reader reader = DtsDevRegisterRead,
+                 Writer writer = DtsDevRegisterWr, bool report = true) {
+        if (!Enabled()) return true;
+        if (restored || restore_attempted || !dirty || access_lost) return !failed;
+        if (handle != owner || !handle || !reader || !writer) return Reject(SclViewFailure::Argument);
+        restore_attempted = true; // No retry, including a failed cleanup guard.
+        const uint32_t addresses[] = {BCHP_SCL_HD_REVISION_ID, BCHP_SCL_HD_TEST_PORT_CONTROL,
+            BCHP_SCL_HD_BVB_IN_STATUS, BCHP_SCL_HD_REVISION_ID};
+        const char *const names[] = {"rev", "ctrl", "status", "closing-rev"};
+        const SclViewField fields[] = {SclViewField::Revision, SclViewField::SelectedControl,
+            SclViewField::Status, SclViewField::Revision};
+        SclViewTrace guard;
+        bool ok = true;
+        for (unsigned index = 0; index < 4 && ok; ++index)
+            ok = Read(handle, &guard, index, addresses[index], fields[index], reader, true);
+        Report("restore-guard", guard, addresses, names, 4, 0, report);
+        if (!ok) return false;
+        ++writes;
+        api_status = writer(handle, BCHP_SCL_HD_TEST_PORT_CONTROL, 0);
+        SclViewTrace verification;
+        if (api_status != BC_STS_SUCCESS) ok = Reject(SclViewFailure::Api);
+        else {
+            ok = Read(handle, &verification, 0, BCHP_SCL_HD_TEST_PORT_CONTROL, SclViewField::RestoredControl, reader);
+            if (ok) ok = Read(handle, &verification, 1, BCHP_SCL_HD_REVISION_ID, SclViewField::Revision, reader);
+        }
+        const uint32_t verified[] = {BCHP_SCL_HD_TEST_PORT_CONTROL, BCHP_SCL_HD_REVISION_ID};
+        const char *const verified_names[] = {"ctrl", "rev"};
+        restored = ok;
+        if (restored) { dirty = false; selected = false; }
+        Report("restore-readback", verification, verified, verified_names, 2, 0, report);
+        return ok && !failed;
+    }
+};
+
+struct SclViewFixture {
+    struct Event { bool write; uint32_t address, raw; };
+    std::vector<Event> events;
+    unsigned calls = 0, data_reads = 0, write_calls = 0;
+    size_t fail_at = 41;
+    BC_STATUS status = BC_STS_ERROR;
+    bool valid = true, dirty_at_write = true;
+    SclViewProbe *probe = nullptr;
+    explicit SclViewFixture(unsigned selector = 2) {
+        const uint32_t pre[] = {0x540800, 0x540804, 0x540854, 0x540880, 0x5408a4, 0x540800};
+        const uint32_t initial[] = {0x80, 0xc, 0, 0, 0, 0x80};
+        for (unsigned index = 0; index < 12; ++index)
+            events.push_back(Event{false, pre[index % 6], initial[index % 6]});
+        events.push_back(Event{true, 0x540880, selector});
+        events.push_back(Event{false, 0x540880, selector});
+        const uint32_t observe[] = {0x540800, 0x540880, 0x540884, 0x5408a4, 0x540800};
+        const uint32_t active[] = {0x80, selector, 0xffffffffU, 0, 0x80};
+        for (unsigned index = 0; index < 20; ++index)
+            events.push_back(Event{false, observe[index % 5], active[index % 5]});
+        events.push_back(Event{false, 0x540800, 0x80});
+        events.push_back(Event{false, 0x540880, selector});
+        events.push_back(Event{false, 0x5408a4, 0});
+        events.push_back(Event{false, 0x540800, 0x80});
+        events.push_back(Event{true, 0x540880, 0});
+        events.push_back(Event{false, 0x540880, 0});
+        events.push_back(Event{false, 0x540800, 0x80});
+    }
+    static BC_STATUS Read(HANDLE handle, uint32_t address, uint32_t *value) {
+        auto *fixture = static_cast<SclViewFixture *>(handle);
+        const unsigned index = fixture->calls++;
+        if (index >= fixture->events.size()) { fixture->valid = false; return BC_STS_ERROR; }
+        const Event &event = fixture->events[index];
+        fixture->valid &= !event.write && event.address == address && value;
+        fixture->data_reads += address == 0x540884;
+        if (value) *value = index == fixture->fail_at ? 0xdeadbeefU : event.raw;
+        return index == fixture->fail_at ? fixture->status : BC_STS_SUCCESS;
+    }
+    static BC_STATUS Write(HANDLE handle, uint32_t address, uint32_t value) {
+        auto *fixture = static_cast<SclViewFixture *>(handle);
+        const unsigned index = fixture->calls++;
+        ++fixture->write_calls;
+        fixture->dirty_at_write &= fixture->probe && fixture->probe->dirty;
+        if (index >= fixture->events.size()) { fixture->valid = false; return BC_STS_ERROR; }
+        const Event &event = fixture->events[index];
+        fixture->valid &= event.write && event.address == address && event.raw == value;
+        return index == fixture->fail_at ? fixture->status : BC_STS_SUCCESS;
+    }
+    bool Exercise(SclViewProbe *subject) {
+        probe = subject;
+        return subject->Begin(this, Read, Write, false) &&
+            subject->Observe(this, 0, Read, false) && subject->Observe(this, 1, Read, false) &&
+            subject->Restore(this, Read, Write, false);
+    }
+};
+
 static volatile std::sig_atomic_t interrupted;
 static void Interrupt(int) { interrupted = 1; }
 static const unsigned kMaximumPackets = 10000;
@@ -248,6 +481,7 @@ struct Options {
     const char *capture_path = nullptr;
     bool observe_chroma = false;
     bool observe_scl_config = false;
+    unsigned observe_scl_view = 0;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
 };
 
@@ -276,6 +510,12 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
     if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-scl-config")) {
         options->observe_scl_config = true;
         arguments.pop_back();
+    }
+    if (arguments.size() >= 3 && !std::strcmp(arguments[arguments.size() - 2], "--observe-scl-view")) {
+        const char *selector = arguments.back();
+        if (std::strcmp(selector, "2") && std::strcmp(selector, "3")) return false;
+        options->observe_scl_view = selector[0] - '0';
+        arguments.resize(arguments.size() - 2);
     }
     if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-chroma")) {
         options->observe_chroma = true;
@@ -308,7 +548,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         arguments.resize(arguments.size() - 2);
     }
     if (arguments.size() == 2 && !std::strcmp(arguments[1], "--self-test")) {
-        if (options->capture_path || options->observe_chroma || options->observe_scl_config || options->scaler_test || options->mpeg1_via_mpeg2 ||
+        if (options->capture_path || options->observe_chroma || options->observe_scl_config || options->observe_scl_view || options->scaler_test || options->mpeg1_via_mpeg2 ||
             options->h263_via_divx || options->open_only) return false;
         options->mode = Mode::SelfTest;
         return true;
@@ -334,13 +574,19 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
          options->mpeg1_via_mpeg2 || options->h263_via_divx || options->open_only ||
          options->observe_chroma || (options->scale_width != 0 &&
          options->scale_width != 320 && options->scale_width != 640))) return false;
+    if (options->observe_scl_view &&
+        (!hardware || !options->capture_path || !options->scaler_test || options->scale_width ||
+         options->expected != 180 || options->iterations != 1 ||
+         options->output_format != OUTPUT_MODE422_YUY2 || options->observe_scl_config ||
+         options->observe_chroma || options->mpeg1_via_mpeg2 || options->h263_via_divx ||
+         options->open_only)) return false;
     return !options->capture_path ||
         (hardware && options->scaler_test && !options->open_only && options->iterations == 1);
 }
 
 static bool SclInputAdmitted(const Options &options, const Input &input)
 {
-    return !options.observe_scl_config ||
+    return (!options.observe_scl_config && !options.observe_scl_view) ||
         (options.expected == 180 && input.codec == AV_CODEC_ID_MPEG2VIDEO &&
          input.subtype == BC_MSUBTYPE_MPEG2VIDEO && input.progressive &&
          input.width == 640 && input.height == 360 && input.packets.size() == 180);
@@ -1368,6 +1614,259 @@ static bool SelfTest()
     check(FreshBeforeFlush(false) && !FreshBeforeFlush(true),
           "pre-flush EOS must belong to the current drain");
 
+    for (unsigned selector : {2U, 3U}) {
+        SclViewFixture fixture(selector);
+        SclViewProbe view; view.selector = selector;
+        check(fixture.Exercise(&view) && fixture.calls == 41 && fixture.valid &&
+              fixture.dirty_at_write && fixture.write_calls == 2 && fixture.data_reads == 4 &&
+              view.reads == 39 && view.writes == 2 && view.milestones == 3 &&
+              view.restored && !view.dirty && !view.failed && !view.access_lost,
+              "SCL view exact independent 39R/2W four opaque DATA script for each selector");
+        const unsigned completed = fixture.calls;
+        check(view.Restore(&fixture, SclViewFixture::Read, SclViewFixture::Write, false) &&
+              fixture.calls == completed, "SCL view restoration never retries");
+        // Changes in opaque DATA alone are accepted, with no target following.
+        for (unsigned data_index : {16U, 21U, 26U, 31U}) {
+            SclViewFixture changed(selector); changed.events[data_index].raw = 0x30061000U;
+            SclViewProbe subject; subject.selector = selector;
+            check(changed.Exercise(&subject) && changed.valid && changed.calls == 41,
+                  "SCL view changed opaque DATA never becomes an address or error");
+        }
+        for (unsigned position = 0; position < 41; ++position) {
+            for (int code = -1; code <= BC_STS_PWR_MGMT; ++code) {
+                if (code == BC_STS_SUCCESS) continue;
+                SclViewFixture failing(selector); failing.fail_at = position;
+                failing.status = static_cast<BC_STATUS>(code);
+                struct { uint32_t before = 0x12345678; SclViewProbe value;
+                         uint32_t after = 0x87654321; } guarded;
+                guarded.value.selector = selector;
+                check(!failing.Exercise(&guarded.value) && failing.valid &&
+                      failing.calls == position + 1 && guarded.value.failed && guarded.value.access_lost &&
+                      guarded.value.failure == SclViewFailure::Api && guarded.value.api_status == code &&
+                      guarded.before == 0x12345678 && guarded.after == 0x87654321 &&
+                      failing.dirty_at_write && guarded.value.reads + guarded.value.writes == failing.calls,
+                      "SCL view every API status at every R/W position stops exactly once with canaries");
+                const unsigned calls = failing.calls;
+                check(!guarded.value.Observe(&failing, 0, SclViewFixture::Read, false) &&
+                      !guarded.value.Begin(&failing, SclViewFixture::Read, SclViewFixture::Write, false) &&
+                      !guarded.value.Restore(&failing, SclViewFixture::Read, SclViewFixture::Write, false) &&
+                      failing.calls == calls && guarded.value.failure == SclViewFailure::Api,
+                      "SCL view API/access failure latches all later experiment I/O including blind restore");
+            }
+        }
+        for (unsigned position = 0; position < 41; ++position) {
+            SclViewFixture baseline(selector);
+            const auto event = baseline.events[position];
+            if (event.write || event.address == 0x540884) continue;
+            std::vector<uint32_t> invalid;
+            if (event.address == 0x540800) invalid = {0U, 0x81U, 0xffffU, 0x10080U, 0xffffffffU};
+            else if (event.address == 0x540804) invalid = {0U, 2U, 8U, 1U, 0xffffffffU};
+            else if (event.address == 0x540854) invalid = {1U, 2U, 0xffffffffU};
+            else if (event.address == 0x540880) {
+                for (uint32_t raw : {0U, 1U, 2U, 3U, 4U, 0xffffffffU})
+                    if (raw != event.raw) invalid.push_back(raw);
+            }
+            else invalid = {0x100U, 0xffffffffU};
+            for (uint32_t raw : invalid) {
+                SclViewFixture rejected(selector); rejected.events[position].raw = raw;
+                SclViewProbe subject; subject.selector = selector;
+                check(!rejected.Exercise(&subject) && rejected.valid &&
+                      rejected.calls == position + 1 && subject.access_lost && subject.failed,
+                      "SCL view revision/reserved/selector/admission mutation stops at measured scalar");
+                const unsigned calls = rejected.calls;
+                check(!subject.Restore(&rejected, SclViewFixture::Read, SclViewFixture::Write, false) &&
+                      rejected.calls == calls, "SCL view malformed or changed selector prohibits blind restoration");
+            }
+        }
+        // Known error bits do not certify loss of register access. Only the
+        // separate fresh cleanup guard can authorize one restoration attempt.
+        for (unsigned position : {4U, 10U, 17U, 22U, 27U, 32U, 36U}) {
+            for (unsigned bit = 0; bit < 8; ++bit) {
+                SclViewFixture failing(selector); failing.events[position].raw = 1U << bit;
+                SclViewProbe subject; subject.selector = selector;
+                check(!failing.Exercise(&subject) && failing.valid && failing.calls ==
+                    (position == 36 ? 41U : position + 1) && subject.failed && !subject.access_lost &&
+                    subject.failure == SclViewFailure::EngineStatus,
+                    "SCL view each defined status bit remains FAIL without declaring access loss");
+                unsigned calls = failing.calls;
+                check(!subject.Observe(&failing, 0, SclViewFixture::Read, false) &&
+                    !subject.Begin(&failing, SclViewFixture::Read, SclViewFixture::Write, false) &&
+                    failing.calls == calls && !subject.access_lost &&
+                    subject.failure == SclViewFailure::EngineStatus,
+                    "SCL view repeated failed calls preserve known-status class with zero I/O");
+                if (position >= 14 && position < 34) {
+                    failing.events.erase(failing.events.begin() + calls, failing.events.begin() + 34);
+                    check(!subject.Restore(&failing, SclViewFixture::Read, SclViewFixture::Write, false) &&
+                        subject.restored && !subject.dirty && failing.valid &&
+                        failing.calls == calls + 7 && failing.write_calls == 2,
+                        "SCL view guarded restore after known error succeeds but never converts failure into PASS");
+                } else {
+                    check(!subject.Restore(&failing, SclViewFixture::Read, SclViewFixture::Write, false) &&
+                        failing.calls == calls, "SCL view pre-write status error or completed restore never adds cleanup I/O");
+                }
+            }
+        }
+        // Early native failure after selection may restore before any DATA.
+        SclViewFixture early(selector); SclViewProbe subject; subject.selector = selector; early.probe = &subject;
+        check(subject.Begin(&early, SclViewFixture::Read, SclViewFixture::Write, false), "SCL view early native failure setup");
+        early.events.erase(early.events.begin() + 14, early.events.begin() + 34);
+        check(subject.Restore(&early, SclViewFixture::Read, SclViewFixture::Write, false) &&
+            early.valid && early.calls == 21 && early.data_reads == 0 && subject.reads == 19,
+            "SCL view native failure finalizer has guarded restore but no extra DATA");
+        for (unsigned stage = 0; stage < 2; ++stage) {
+            SclViewFixture delivery(selector); SclViewProbe delivered; delivered.selector = selector;
+            delivery.probe = &delivered;
+            check(delivered.Begin(&delivery, SclViewFixture::Read, SclViewFixture::Write, false),
+                  "SCL view delivery ordering setup");
+            if (stage) check(delivered.AfterDelivered(&delivery, 1, true, true,
+                SclViewFixture::Read, SclViewFixture::Write, false), "first milestone before penultimate");
+            const unsigned calls = delivery.calls;
+            for (unsigned frame : {0U, 2U, 178U, 180U})
+                check(delivered.AfterDelivered(&delivery, frame, true, true,
+                    SclViewFixture::Read, SclViewFixture::Write, false) && delivery.calls == calls,
+                    "SCL view excludes every non-milestone without diagnostic I/O");
+            for (const std::pair<bool, bool> barrier : {std::make_pair(false, false),
+                    std::make_pair(false, true), std::make_pair(true, false)})
+                check(!delivered.AfterDelivered(&delivery, stage ? 179 : 1, barrier.first, barrier.second,
+                    SclViewFixture::Read, SclViewFixture::Write, false) && delivery.calls == calls && !delivered.failed,
+                    "SCL view requires release and successful owned publication before milestone I/O");
+            check(delivered.AfterDelivered(&delivery, stage ? 179 : 1, true, true,
+                SclViewFixture::Read, SclViewFixture::Write, false) && delivery.valid &&
+                delivery.calls == (stage ? 41U : 24U) && delivered.restored == (stage != 0),
+                "SCL view penultimate restores immediately, first milestone only samples");
+        }
+        // A native early exit may permit cleanup, but cleanup access/identity
+        // losses must stop its own sequence without a restoration retry.
+        for (unsigned position = 14; position < 21; ++position) {
+            SclViewFixture cleanup(selector); cleanup.events.erase(cleanup.events.begin() + 14, cleanup.events.begin() + 34);
+            cleanup.fail_at = position; SclViewProbe abandoned; abandoned.selector = selector; cleanup.probe = &abandoned;
+            check(abandoned.Begin(&cleanup, SclViewFixture::Read, SclViewFixture::Write, false) &&
+                !abandoned.Restore(&cleanup, SclViewFixture::Read, SclViewFixture::Write, false) &&
+                cleanup.valid && cleanup.calls == position + 1 && abandoned.access_lost,
+                "early native cleanup API loss stops without further read/write");
+            const unsigned calls = cleanup.calls;
+            check(!abandoned.Restore(&cleanup, SclViewFixture::Read, SclViewFixture::Write, false) &&
+                cleanup.calls == calls, "early native cleanup never retries a failed restoration");
+        }
+        for (unsigned control : {0U, 1U, 2U, 3U, 4U, 0xffffffffU}) {
+            if (control == selector) continue;
+            SclViewFixture cleanup(selector); cleanup.events.erase(cleanup.events.begin() + 14, cleanup.events.begin() + 34);
+            cleanup.events[15].raw = control;
+            SclViewProbe abandoned; abandoned.selector = selector; cleanup.probe = &abandoned;
+            check(abandoned.Begin(&cleanup, SclViewFixture::Read, SclViewFixture::Write, false) &&
+                !abandoned.Restore(&cleanup, SclViewFixture::Read, SclViewFixture::Write, false) &&
+                cleanup.calls == 16 && cleanup.write_calls == 1 && abandoned.access_lost && cleanup.valid,
+                "fresh cleanup current CTRL not ours prohibits blind restore");
+        }
+        {
+            SclViewFixture identity(selector); SclViewProbe subject; subject.selector = selector; identity.probe = &subject;
+            check(subject.Begin(&identity, SclViewFixture::Read, SclViewFixture::Write, false), "SCL view owner setup");
+            SclViewFixture other(selector);
+            check(!subject.Observe(&other, 0, SclViewFixture::Read, false) &&
+                !subject.Restore(&identity, SclViewFixture::Read, SclViewFixture::Write, false) &&
+                other.calls == 0 && identity.calls == 14 && subject.access_lost,
+                "SCL view changed handle loses access without touching either context");
+        }
+    }
+    {
+        SclViewFixture fixture;
+        SclViewProbe disabled;
+        check(disabled.Begin(nullptr, nullptr, nullptr, false) &&
+              disabled.Observe(nullptr, 99, nullptr, false) &&
+              disabled.AfterDelivered(nullptr, 1, false, false, nullptr, nullptr, false) &&
+              disabled.Restore(nullptr, nullptr, nullptr, false) && fixture.calls == 0 &&
+              disabled.reads == 0 && disabled.writes == 0,
+              "default-off SCL view is a pure zero-I/O no-op");
+        for (unsigned selector : {1U, 4U, UINT_MAX}) {
+            SclViewProbe invalid; invalid.selector = selector;
+            check(!invalid.Begin(&fixture, SclViewFixture::Read, SclViewFixture::Write, false) &&
+                  fixture.calls == 0, "SCL view rejects invalid selectors before all I/O");
+        }
+        for (unsigned argument = 0; argument < 3; ++argument) {
+            SclViewProbe invalid; invalid.selector = 2;
+            check(!invalid.Begin(argument == 0 ? nullptr : &fixture,
+                  argument == 1 ? nullptr : SclViewFixture::Read,
+                  argument == 2 ? nullptr : SclViewFixture::Write, false) && fixture.calls == 0,
+                  "SCL view rejects missing handle/API callbacks without reads or writes");
+        }
+    }
+    {
+        // Check the actual raw reporter, not just the counters: an API failure
+        // writes a poisoned out-parameter, which must remain NOT-READ in logs.
+        FILE *record = std::tmpfile();
+        const int saved_stdout = dup(STDOUT_FILENO);
+        std::fflush(stdout);
+        const bool redirected = record && saved_stdout >= 0 &&
+            dup2(fileno(record), STDOUT_FILENO) >= 0;
+        bool rejected = false;
+        if (redirected) {
+            SclViewFixture fixture; fixture.fail_at = 0;
+            SclViewProbe view; view.selector = 2; fixture.probe = &view;
+            rejected = !view.Begin(&fixture, SclViewFixture::Read, SclViewFixture::Write, true) &&
+                fixture.calls == 1 && view.reads == 1 && view.writes == 0;
+            std::fflush(stdout);
+        }
+        const bool stdout_restored = saved_stdout >= 0 && dup2(saved_stdout, STDOUT_FILENO) >= 0;
+        if (saved_stdout >= 0) close(saved_stdout);
+        char text[4096] = {};
+        size_t bytes = 0;
+        if (record) {
+            std::rewind(record);
+            bytes = std::fread(text, 1, sizeof(text) - 1, record);
+            std::fclose(record);
+        }
+        check(redirected && stdout_restored && rejected && bytes &&
+            std::strstr(text, "measured=0") && std::strstr(text, "rev@00540800=NOT-READ") &&
+            !std::strstr(text, "deadbeef") && !std::strstr(text, "raw-stable=yes"),
+            "SCL view failed read output parameter is never published as measured raw or stable");
+    }
+    for (const char *selector : {"2", "3"}) {
+        Options admitted;
+        check(ParseArguments({"probe", "--hardware", "fixture", "180", "30", "1",
+            "--scaler-test", "0", "--observe-scl-view", selector, "--capture-yuy2", "new"}, &admitted) &&
+            admitted.observe_scl_view == static_cast<unsigned>(selector[0] - '0') &&
+            !admitted.observe_scl_config && !admitted.observe_chroma,
+            "SCL view admits only explicit selector two or three native unscaled capture scope");
+    }
+    for (const std::vector<const char *> &arguments : std::vector<std::vector<const char *>>{
+        {"probe", "--self-test", "--observe-scl-view", "2"},
+        {"probe", "--preflight", "fixture", "180", "--scaler-test", "0", "--observe-scl-view", "2", "--capture-yuy2", "new"},
+        {"probe", "--hardware", "fixture", "179", "--scaler-test", "0", "--observe-scl-view", "2", "--capture-yuy2", "new"},
+        {"probe", "--hardware", "fixture", "180", "--scaler-test", "320", "--observe-scl-view", "2", "--capture-yuy2", "new"},
+        {"probe", "--hardware", "fixture", "180", "--scaler-test", "640", "--observe-scl-view", "2", "--capture-yuy2", "new"},
+        {"probe", "--hardware", "fixture", "180", "--scaler-test", "0", "--observe-scl-view", "2"},
+        {"probe", "--hardware", "fixture", "180", "30", "2", "--scaler-test", "0", "--observe-scl-view", "2", "--capture-yuy2", "new"},
+        {"probe", "--hardware", "fixture", "180", "--scaler-test", "0", "--observe-scl-view", "2", "--capture-uyvy", "new"},
+        {"probe", "--hardware", "fixture", "180", "--scaler-test", "0", "--observe-chroma", "--observe-scl-view", "2", "--capture-yuy2", "new"},
+        {"probe", "--hardware", "fixture", "180", "--scaler-test", "0", "--observe-scl-config", "--observe-scl-view", "2", "--capture-yuy2", "new"},
+        {"probe", "--hardware", "fixture", "180", "--scaler-test", "0", "--observe-scl-view", "2", "--observe-scl-config", "--capture-yuy2", "new"},
+        {"probe", "--hardware", "fixture", "180", "--scaler-test", "0", "--mpeg1-via-mpeg2", "--observe-scl-view", "2", "--capture-yuy2", "new"},
+        {"probe", "--hardware", "fixture", "180", "--scaler-test", "0", "--h263-via-divx", "--open-only", "--observe-scl-view", "2", "--capture-yuy2", "new"},
+        {"probe", "--hardware", "fixture", "180", "--scaler-test", "0", "--observe-scl-view", "2", "--observe-scl-view", "3", "--capture-yuy2", "new"}}) {
+        Options invalid; check(!ParseArguments(arguments, &invalid), "SCL view rejects mixed/default/alternate/repeated/invalid scopes");
+    }
+    for (const char *selector : {"", "0", "1", "4", "-2", "+2", "02", "2x", " 2", "4294967296"}) {
+        Options invalid;
+        check(!ParseArguments({"probe", "--hardware", "fixture", "180", "--scaler-test", "0",
+            "--observe-scl-view", selector, "--capture-yuy2", "new"}, &invalid), "SCL view literal selector admission");
+    }
+    {
+        Options view; view.observe_scl_view = 2; view.expected = 180;
+        Input native; native.codec = AV_CODEC_ID_MPEG2VIDEO; native.subtype = BC_MSUBTYPE_MPEG2VIDEO;
+        native.progressive = true; native.width = 640; native.height = 360; native.packets.resize(180);
+        check(SclInputAdmitted(view, native), "SCL view exact native input shape admitted after load");
+        for (unsigned field = 0; field < 7; ++field) {
+            Options changed = view; Input altered = native;
+            if (field == 0) altered.codec = AV_CODEC_ID_H264;
+            if (field == 1) altered.subtype = BC_MSUBTYPE_H264;
+            if (field == 2) altered.progressive = false;
+            if (field == 3) altered.width = 638;
+            if (field == 4) altered.height = 358;
+            if (field == 5) altered.packets.pop_back();
+            if (field == 6) changed.expected = 179;
+            check(!SclInputAdmitted(changed, altered), "SCL view input codec/shape/count mismatches refuse before device open");
+        }
+    }
     std::printf("Library drain hardware-free self-test: %u checks %s\n",
                 checks, ok ? "passed" : "failed");
     return ok;
@@ -1539,6 +2038,7 @@ struct Audit {
     bool observe_chroma = false;
     unsigned expected = 0;
     SclObserver scl;
+    SclViewProbe scl_view;
     GChecksum *pixels = nullptr;
     PixelCapture *capture = nullptr;
     ~Audit() { if (pixels) g_checksum_free(pixels); }
@@ -1589,6 +2089,9 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                 valid = audit->scl.Observe(device->handle, SclStage::FirstReleased);
             if (!marker && valid && released && audit->frames == audit->expected)
                 valid = audit->scl.Observe(device->handle, SclStage::LastReleased);
+            if (!marker && valid && released)
+                valid = audit->scl_view.AfterDelivered(device->handle, audit->frames,
+                                                      released, audit->capture != nullptr);
             if (!marker && valid && released && audit->capture && audit->frames == 1)
                 valid = PackingState(device->handle, "first-output");
             if (!marker && valid && released && audit->observe_chroma && audit->frames == 1)
@@ -1599,12 +2102,14 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                     audit->iteration, audit->frames - 1,
                     static_cast<unsigned long long>(output.PicInfo.timeStamp));
             if (!valid) {
-                if (audit->scl.failed)
+                if (audit->scl_view.failed)
+                    std::fprintf(stderr, "SCL test-view experiment failed; guarded restoration if eligible and ordinary decoder cleanup follow\n");
+                else if (audit->scl.failed)
                     std::fprintf(stderr, "SCL raw configuration observation failed; ordinary decoder cleanup follows\n");
                 else
                     std::fprintf(stderr, "Invalid progressive picture geometry/data/token: %llu\n",
                                  static_cast<unsigned long long>(output.PicInfo.timeStamp));
-                if (audit->pixels && !audit->scl.failed)
+                if (audit->pixels && !audit->scl.failed && !audit->scl_view.failed)
                     std::fprintf(stderr, "Scaler picture: got=%ux%u expected=%ux%u "
                                  "flags=%x words=%u packed422=%u\n",
                                  output.PicInfo.width, output.PicInfo.height,
@@ -1659,6 +2164,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.observe_chroma = options.observe_chroma;
     audit.expected = expected;
     audit.scl.enabled = options.observe_scl_config;
+    audit.scl_view.selector = options.observe_scl_view;
     if (options.scaler_test) {
         if (!ScalerGeometry(input.width, input.height, options.scale_width,
                             &audit.output_width, &audit.output_height)) return false;
@@ -1710,6 +2216,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     if (ok) ok = Status("DtsSetColorSpace", DtsSetColorSpace(device.handle, options.output_format));
     if (ok && options.capture_path) ok = PackingState(device.handle, "selected-before-start");
     if (ok) ok = audit.scl.Observe(device.handle, SclStage::PreStart);
+    if (ok) ok = audit.scl_view.Begin(device.handle);
     if (ok) device.started = ok = Status("DtsStartDecoder", DtsStartDecoder(device.handle));
     if (ok && options.capture_path) ok = PackingState(device.handle, "started");
     if (ok) ok = Status("DtsStartCapture", DtsStartCapture(device.handle));
@@ -1755,6 +2262,10 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
          audit.frames == expected && audit.pending.empty();
     // Delivery EOS barrier only, sampled before ordinary STOP/CLOSE.
     if (ok) ok = audit.scl.Observe(device.handle, SclStage::EosBarrier);
+    // A failed experiment remains failed even if guarded restoration succeeds.
+    // Never issue cleanup experiment I/O after an access/selector-loss latch.
+    const bool view_restored = audit.scl_view.Restore(device.handle);
+    ok = ok && view_restored;
     const bool closed = device.Close();
     ok = ok && closed;
     const bool captured = capture.Finish(ok);
@@ -1786,13 +2297,15 @@ int main(int argc, char **argv)
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
             "[--scaler-test WIDTH_OR_0] [--mpeg1-via-mpeg2 | --h263-via-divx] "
-            "[--open-only] [--observe-chroma | --observe-scl-config] "
+            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-view 2_OR_3] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
-    if ((options.observe_chroma || options.observe_scl_config) && !CanReadChromaConfiguration()) {
-        if (options.observe_scl_config)
+    if ((options.observe_chroma || options.observe_scl_config || options.observe_scl_view) && !CanReadChromaConfiguration()) {
+        if (options.observe_scl_view)
+            std::fprintf(stderr, "--observe-scl-view requires CAP_SYS_RAWIO; no fixture/capture/device was opened\n");
+        else if (options.observe_scl_config)
             std::fprintf(stderr, "--observe-scl-config requires CAP_SYS_RAWIO; no fixture/capture/device was opened\n");
         else
             std::fprintf(stderr, "--observe-chroma requires CAP_SYS_RAWIO; no device was opened\n");
@@ -1814,7 +2327,7 @@ int main(int argc, char **argv)
         return 2;
     }
     if (!SclInputAdmitted(options, input)) {
-        std::fprintf(stderr, "--observe-scl-config requires native progressive MPEG2 "
+        std::fprintf(stderr, "SCL observation requires native progressive MPEG2 "
                              "640x360 with 180 packets/expected frames; no device was opened\n");
         phase1_progress_close(&progress);
         return 2;
