@@ -51,6 +51,42 @@ MAX_COMMAND_BUFFER_BRIDGE_BYTES = 40 * 1024
 MAX_COMMAND_BUFFER_BRIDGE_RELOCATIONS = 2171
 MAX_INNER_DESCRIPTOR_REGIONS = 48
 MAX_INNER_DESCRIPTOR_BYTES = 4096
+MAX_INNER_DISPATCH_REGIONS = 32
+MAX_INNER_DISPATCH_BYTES = 4096
+MAX_INNER_DISPATCH_RELOCATIONS = 64
+# Complete selected code/table plus its original ELF ownership receipts.
+# This is a conditional base-model dispatcher, not a vendor ISA decoder.
+_INNER_DISPATCH_REGIONS = (
+    ("inner_header", 0x79dd8, 52, "ba0c0bb760f1de121932856585ac9d8f15bdf2c4cf99473409eaa25006c9ab02"),
+    ("section_2", 0xcea80, 40, "5794ebe11bc39a839b8758c911658c8567b44497bc64395c089a25fdcc567c77"),
+    ("section_3", 0xceaa8, 40, "821702340e61bb1f94b2a4ab88be730bec8c3e06f838e7581b93f219c6134ba1"),
+    ("section_4", 0xcead0, 40, "c405d1994af5b53637a49a1f6b0cd82b6d0d1823c5aadffb8516afca6e36c2d7"),
+    ("section_15", 0xcec88, 40, "3d32cc7f94c9558edbacaac16df747a2ceecbca375ef4bcfe5f196759acc87f9"),
+    ("section_18", 0xced00, 40, "52bc01729f0ef82c6a846aeee08b028581c4871ce94aa90bf0b6d8756eaf2958"),
+    ("section_25", 0xcee18, 40, "9c04ce1900f898b52104d10d6a58ababb8e3715a91b42dbdb3ff434219fc2ff9"),
+    ("section_47", 0xcf188, 40, "32c1f7e2e9001d6499e8e5f6adaf10c7c54c394e0f63263afdcea79b711bb874"),
+    ("section_65", 0xcf458, 40, "4031ba9e8ef1d4954843bec4e668ce8e05cc688690897ec7523318aaf1a29ea9"),
+    ("section_66", 0xcf480, 40, "0b5026352c2a92bee3fb12529019146bc141787a70abc5367d876bd3dae29d90"),
+    ("section_69", 0xcf4f8, 40, "63e3ee452c1c646084e7455b715c393c21783cbea04a547326a9e3ab32334bdd"),
+    ("core_code", 0x7a61c, 2172, "fae87bb7e239a8566f4aac20cf3207798b558c64d99bb161fab5aff77e02faa0"),
+    ("core_relocations", 0xc9844, 636, "7ce105781f164014affad86d233e5b70d143225016e54aa67380e7e0acc8b52e"),
+    ("prefix_dma_symbol", 0xc7b1c, 16, "8940fb41b14c4dc6c00c7a485a8146e0f8211e6b33bb1d02760999806b34de21"),
+    ("prefix_dma_name", 0xc34af, 24, "bc24020c5929d40d07bd62daa3060f51bc6326f10cb34cde20978edb3ba9f859"),
+    ("h264p_symbol", 0xc7e9c, 16, "01716c473e0f86487553be67b1f8ded3f21f34efc4558b9a321fdb7caee6c2ac"),
+    ("h264p_name", 0xc3a4e, 20, "05fff25a856594a60b9266604f0aa1f10f8b89d572358d7ed4e57038e01bbe57"),
+    ("h264_symbol", 0xc7c5c, 16, "ffa9ceff483a1a757cb9c7264705e5a2692e51fcbdd3287fe2c3b4244699b261"),
+    ("h264_name", 0xc36ce, 24, "d7d9010847b630bd9ccebc7a92ae3292f975779451372c64adc5e0db5d958ea7"),
+    ("mpeg_symbol", 0xc7ffc, 16, "75b9f505f3cdda277ff91be65423820c4e1f40437db4e24bd28f91ea4ba86aed"),
+    ("mpeg_name", 0xc3bda, 24, "a2d0f727f0f9778a4905796a8e0a98c099e01969263420e863fa272be2410e94"),
+    ("vc1_symbol", 0xc80cc, 16, "f7b9d4bd54f38fdc421b7eb7057060fc49ade50d52ba956131073af3179d5e0e"),
+    ("vc1_name", 0xc3cd4, 23, "01addd91906748ec17d56571303131ea03ec7ac511eafd15edf61ef9099e6e84"),
+    ("avs_symbol", 0xc8f6c, 16, "112c750ce372c305fbd801ff074bd1c36e589cdf7444c7c7d426a220c39dc1b5"),
+    ("avs_name", 0xc4aca, 23, "f0ec8d1f5f67da694fd13980052b60ae686c5487ed9878fdc62856371fddd031"),
+    ("mp4_symbol", 0xc8a2c, 16, "01116be15674a96da81b6e1ff6fe01334c5653d2bb30944a400467849f1f71b3"),
+    ("mp4_name", 0xc454b, 23, "1c1df361c76477fa96f32dffb82938b49c108835a2148b218d5e6210f1379f1a"),
+    ("h263_symbol", 0xc89ac, 16, "4ca780a94ec799b86373281f449f4224f41395559e65612550e6ec23853e59fd"),
+    ("h263_name", 0xc44b6, 24, "ec1d1b3409777428d265ef4d88da5ca3889578fb218e7c5973c6f7aeace1a264"),
+)
 MAX_MFD_SOURCE_REGIONS = 10
 MAX_MFD_SOURCE_BYTES = 1280
 MAX_STOCK_HOST_COMMAND_REGIONS = 16
@@ -1336,6 +1372,145 @@ def _arc_metadata_map(payload, images, image_sections):
                 "MetaWare -core8 and GNU ELF flag interpretations use different namespaces; their relationship is unresolved.",
                 "Extension records declare ASCII names and fields, not instruction semantics or a complete ISA.",
                 "Stored metadata does not establish silicon architecture, a call graph or codec capabilities."]}
+
+
+def _inner_dispatch_map(payload):
+    """Fixed byte-selector projection; no device access or ISA/runtime certificate."""
+    if len(payload) != BUNDLED_SIZE - TRAILER_SIZE:
+        raise FormatError("inner-dispatch payload size does not match the baseline")
+    regions = _INNER_DISPATCH_REGIONS
+    total = sum(size for _, _, size, _ in regions)
+    if (len(regions) > MAX_INNER_DISPATCH_REGIONS or total > MAX_INNER_DISPATCH_BYTES or
+            636 // 12 > MAX_INNER_DISPATCH_RELOCATIONS):
+        raise FormatError("inner-dispatch validation budget exceeded")
+    contents, positions, validated = {}, {}, []
+    # Complete selected code and RELA table are pinned BEFORE any interpretation.
+    for role, offset, size, digest in regions:
+        raw = bounded(payload, offset, size, "inner-dispatch region")
+        if hashlib.sha256(raw).hexdigest() != digest:
+            raise FormatError(f"inner-dispatch region {role} does not match the baseline")
+        contents[role], positions[role] = raw, offset
+        validated.append({"role": role, "blob_file_offset": offset, "size": size, "sha256": digest})
+    base, end = 0x79dd8, 0xcfbb0
+    header = struct.unpack("<16sHHIIIIIHHHHHH", contents["inner_header"])
+    sections = {index: struct.unpack("<10I", contents[f"section_{index}"])
+                for index in (2, 3, 4, 15, 18, 25, 47, 65, 66, 69)}
+    for index, section in sections.items():
+        if (positions[f"section_{index}"] != base + header[6] + index * 40 or
+                base + section[4] + section[5] > end):
+            raise FormatError("inner-dispatch section ownership does not match the baseline")
+    code, symbols, names, rela = (sections[index] for index in (3, 66, 65, 69))
+    if (code[1:4] != (1, 6, 0x23e0) or code[5] != len(contents["core_code"]) or
+            base + code[4] != positions["core_code"] or
+            symbols[1] != 2 or symbols[6] != 65 or symbols[9] != 16 or names[1] != 3 or
+            rela[1] != 4 or rela[6:10] != (66, 3, 4, 12) or
+            base + rela[4] != positions["core_relocations"] or
+            rela[5] != len(contents["core_relocations"])):
+        raise FormatError("inner-dispatch code/symbol/RELA ownership is incoherent")
+    records = [struct.unpack_from("<IIi", contents["core_relocations"], i)
+               for i in range(0, rela[5], 12)]
+
+    def word(address):
+        delta = address - code[3]
+        if delta < 0 or delta + 4 > code[5]:
+            raise FormatError("inner-dispatch instruction is outside selected code")
+        return struct.unpack_from("<I", contents["core_code"], delta)[0]
+
+    def branch_target(address, link):
+        instruction = word(address)
+        if instruction & 0xf8000000 != (0x28000000 if link else 0x20000000):
+            raise FormatError("inner-dispatch selected branch opcode does not match")
+        displacement = (instruction >> 7) & 0xfffff
+        if displacement & 0x80000:
+            displacement -= 0x100000
+        return address + 4 + displacement * 4
+
+    # Under STATUS next-word-PC semantics: lr@28C8 yields (PC+4)/4,
+    # then +3+selector targets the ten branch words at 28D8..28FC.
+    table = []
+    labels = ("H264/H264P", "MPEG", "diagnostic", "H263", "VC1", "diagnostic",
+              "diagnostic", "diagnostic", "MP4", "AVS")
+    expected = (0x2900, 0x2954, 0x29e4, 0x29c8, 0x2974,
+                0x29e4, 0x29e4, 0x29e4, 0x29ac, 0x2990)
+    for selector, (label, target) in enumerate(zip(labels, expected)):
+        address = 0x28d8 + 4 * selector
+        if branch_target(address, False) != target:
+            raise FormatError("inner-dispatch selected table target does not match")
+        table.append({"internal_selector": selector, "table_elf_virtual_address": address,
+                      "target_elf_virtual_address": target, "selected_path": label})
+    # No original relocation touches the local context call or selector sequence.
+    if (branch_target(0x2868, True) != 0x23e0 or
+            any(a == 0x2868 or 0x28bc <= a < 0x2900 for a, _, _ in records)):
+        raise FormatError("inner-dispatch local/table relocation inventory differs")
+    calls = []
+    for role, address, target in (
+            ("prefix_dma", 0x2840, 0x2160), ("h264p", 0x291c, 0x43834),
+            ("h264", 0x2938, 0x2e3c), ("mpeg", 0x2958, 0x441e4),
+            ("vc1", 0x2974, 0x1e1e8), ("avs", 0x2990, 0x10000),
+            ("mp4", 0x29ac, 0x45e04), ("h263", 0x29c8, 0xe97c)):
+        matches = [(index, record) for index, record in enumerate(records) if record[0] == address]
+        if len(matches) != 1:
+            raise FormatError("inner-dispatch selected call relocation is not unique")
+        index, record = matches[0]
+        symbol = struct.unpack("<IIIBBH", contents[f"{role}_symbol"])
+        destination = sections[symbol[5]]
+        if (record[1] & 255 != 6 or record[2] != 0 or
+                base + symbols[4] + (record[1] >> 8) * 16 != positions[f"{role}_symbol"] or
+                symbol[1] != target or symbol[3:5] != (0x12, 0) or
+                destination[1] != 1 or not destination[2] & 4 or
+                not destination[3] <= target < target + symbol[2] <= destination[3] + destination[5] or
+                base + names[4] + symbol[0] != positions[f"{role}_name"] or
+                symbol[0] + len(contents[f"{role}_name"]) > names[5] or
+                branch_target(address, True) != target):
+            raise FormatError("inner-dispatch selected call/symbol ownership differs")
+        delta = target + record[2] - address - 4
+        original = word(address)
+        patched = (original & 0xf800007f) | ((delta << 5) & 0x07ffff80)
+        if delta & 3 or not -(1 << 21) <= delta < (1 << 21) or patched != original:
+            raise FormatError("inner-dispatch fixed type-6 arithmetic differs")
+        calls.append({"target": contents[f"{role}_name"][:-1].decode("ascii"),
+                      "call_elf_virtual_address": address, "target_elf_virtual_address": target,
+                      "relocation_record_blob_file_offset": positions["core_relocations"] + index * 12,
+                      "symbol_record_blob_file_offset": positions[f"{role}_symbol"],
+                      "vendor_type": 6, "addend": 0, "original_word": original,
+                      "word_preserved_under_uniform_code_translation": True})
+    return {
+        "device_observed": False, "basis": "pinned original inner ELF bytes",
+        "interpretation": "conditional GNU ARC base model; STATUS next-word-PC and uniform code translation assumed",
+        "validated_regions": validated, "validated_byte_count": total,
+        "relocation_record_count": len(records),
+        "prefix_context_link": {
+            "packet_codec_byte_offset": 0, "packet_channel_byte_offset": 4,
+            "prefix_local_destination": 0x3fffc014, "prefix_copy_bytes": 48,
+            "cached_channel_local_address": 0x3fffc094, "cached_codec_local_address": 0x3fffc095,
+            "comparison_load_elf_virtual_addresses": [0x2848, 0x284c, 0x2858, 0x285c],
+            "mismatch_call_elf_virtual_address": 0x2868, "context_entry_elf_virtual_address": 0x23e0,
+            "new_channel_load_elf_virtual_address": 0x2764,
+            "new_codec_load_elf_virtual_address": 0x2768,
+            "cache_store_elf_virtual_addresses": [0x276c, 0x2774],
+            "explicit_failure_status_protocol_validated": False,
+            "caller_checks_context_status": False, "cache_update_proves_restore_success": False,
+            "same_context_generation_validated": False,
+            "invalid_channel_ge_16_path_elf_virtual_address": 0x275c,
+            "unsupported_restore_path_elf_virtual_address": 0x2748},
+        "selector": {
+            "source": "cached codec byte, not a direct packet load or packet+184 SiU byte",
+            "load_elf_virtual_address": 0x28bc, "local_address": 0x3fffc095,
+            "unsigned_upper_bound": 9, "above_bound_target_elf_virtual_address": 0x29e4,
+            "status_read_elf_virtual_address": 0x28c8, "status_add_word_count": 3,
+            "table_first_elf_virtual_address": 0x28d8, "table_bytes": 40,
+            "byte_domain_size": 256, "table": table,
+            "selected_h264_subselection_elf_virtual_addresses": [0x2900, 0x2910, 0x291c, 0x2938],
+            "host_open_enum_equivalence_validated": False,
+            "diagnostic_is_hardware_codec_rejection": False},
+        "selected_calls": calls,
+        "limitations": [
+            "Selected static branch/type-6 arithmetic does not validate vendor ISA, runtime overlays or applied relocation.",
+            "Prefix DMA visibility, saved/restored codec state and opaque logging/MMIO/callee completion remain assumptions.",
+            "Invalid channel and unsupported restore paths can still update the cache if their opaque callees return.",
+            "The caller does not check context-switch status; cached selector equality is not successful context restoration.",
+            "The context predicate compares only channel/selector bytes, not generation or retained-frame ownership.",
+            "Internal selector paths do not establish host OPEN IDs, codec support or a parser-independent backend API."]}
 
 
 def _inner_descriptor_map(payload, images):
@@ -6442,6 +6617,10 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         result["command_buffer_bridge"] = _command_buffer_bridge_map(payload, images)
     if inner_descriptor:
         result["inner_descriptor"] = _inner_descriptor_map(payload, images)
+        # Enrich only the explicit public option. Other proofs use the original
+        # private map's conservative preflight union and remain unchanged.
+        pointer_path = result["inner_descriptor"]["paths"]["record_pointer_and_boundary"]
+        pointer_path["conditional_inner_dispatch"] = _inner_dispatch_map(payload)
     if scaler_fir:
         result["scaler_fir"] = _scaler_fir_map(payload)
     return result
