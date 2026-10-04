@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="440" viewBox="0 0 1120 440" role="img" aria-labelledby="title description">
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="660" viewBox="0 0 1120 660" role="img" aria-labelledby="title description">
   <title id="title">Conditional stock OPEN allocation and CABAC ring publication</title>
-  <desc id="description">Seven common-allocation segments place H2C before the driver context H08. The final H24 segment is not the CABAC ring. Dedicated allocation has no driver-relative equation. Publication is conditional and provides no live identity or retention certificate.</desc>
-  <rect width="1120" height="440" fill="#f8fafc"/>
+  <desc id="description">Seven common-allocation segments place H2C before the driver context H08. The final H24 segment is not the CABAC ring. Dedicated allocation has no driver-relative equation. Selected activation and deactivation copy saved driver state to and from ARC local working state; unchanged saved cursor words do not exclude unsaved local work. Publication is conditional and provides no live identity or retention certificate.</desc>
+  <rect width="1120" height="660" fill="#f8fafc"/>
   <g font-family="sans-serif" fill="#0f172a">
     <text x="32" y="34" font-size="22" font-weight="bold">Ordinary OPEN: CABAC ring is not the final segment</text>
     <text x="32" y="61" font-size="14">All field offsets are hexadecimal. Static stock bytes + synthetic A32 execution; not device memory contents.</text>
@@ -33,5 +33,21 @@
     <text x="32" y="349" font-size="15">Builder frame is 228 bytes (hex): its stack +25C is caller +34, not caller +2C.</text>
     <text x="32" y="382" font-size="15">Unchecked translation status, aliasing, allocation failure or wrap can invalidate the address relation.</text>
     <text x="32" y="410" font-size="15">No claim of active worklist identity, hardware completion, source ownership or reusable reconstruction API.</text>
+    <path d="M32 431 H1088" stroke="#cbd5e1"/>
+    <text x="32" y="459" font-size="18" font-weight="bold">Saved state is not live working state</text>
+    <rect x="32" y="486" width="355" height="70" rx="6" fill="#e0f2fe" stroke="#94a3b8"/>
+    <rect x="733" y="486" width="355" height="70" rx="6" fill="#ffedd5" stroke="#94a3b8"/>
+    <g font-size="16" text-anchor="middle">
+      <text x="209" y="511" font-weight="bold">Saved driver context D (DRAM)</text>
+      <text x="209" y="538">+544 / +548 / +54C / +550</text>
+      <text x="910" y="511" font-weight="bold">ARC local working context</text>
+      <text x="910" y="538">core_ls +60 + matching offsets</text>
+      <text x="560" y="498">Activate: copy 5BC bytes</text>
+      <text x="560" y="552">Deactivate: copy back 5BC bytes</text>
+    </g>
+    <path d="M405 514 H715 M707 507 L715 514 L707 521 M715 533 H405 M413 526 L405 533 L413 540" fill="none" stroke="#475569" stroke-width="2"/>
+    <text x="32" y="588" font-size="15">Selected constructor writes [R, R+N, R, R]; START resets +54C and +550 to R.</text>
+    <text x="32" y="614" font-size="15">GetCabacWorklist updates local +54C. Unchanged saved DRAM words do not exclude unsaved local work.</text>
+    <text x="32" y="640" font-size="15">Conditional stock paths: same channel, preserved operands, successful copy and visibility remain premises.</text>
   </g>
 </svg>
