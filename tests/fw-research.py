@@ -8020,6 +8020,99 @@ class FirmwareOpenReplyMetadataTests(unittest.TestCase):
         self.assertEqual(self.arc_value(4, 0xbe60), 0x528)
         self.assertEqual(self.arc_displacement(4, 0xbe6c), 4)
 
+    def test_cabac_saved_state_constructor_reset_and_copy_provenance(self):
+        # Static stock-source regression, not an ARC interpreter or a device
+        # observation. No native sample values or local-memory reads are used.
+        functions = (
+            (624, "Core_ChanInitialize", 16, 0x266f8, 636, "11aeb52ef9f2a3c8ab99cf099c75eade7a69abe991e3561a05f423e54b1b4d71"),
+            (625, "Core_StartChannel", 16, 0x26974, 556, "8fe220a7487341e1975615f11a7553681f25ef618556f6f03838a87327d8be4b"),
+            (602, "System_Activate", 4, 0x9f90, 292, "9530baaafd18492433c0f9fdca77cfcd8d0ad1aa982e221303d6cd54de17521e"),
+            (601, "Core_CopyDramToLsram", 4, 0x9e74, 284, "a78e06a80f25a603981e888fa35ccf9e811dca10acdc4d71b919bd8902f88a1e"),
+            (600, "System_Deactivate", 4, 0x9d48, 300, "f185b940f905ee5c4e28f097434d8757b3e5e9a5ccba6fe47422caf25e892e20"),
+            (599, "Core_CopyLsramToDram", 4, 0x9c3c, 268, "32f163266b8f614b9e46b94bc4a9b20863606b0cbad567b3b6a496f5d7866c64"),
+            (570, "Core_GetCabacWorklist", 4, 0x8614, 324, "02b7f103c04f61afb2f0bcc74caab124a8ee1916d9cf87758054b1dc129f1472"),
+        )
+        for index, name, section, start, size, digest in functions:
+            with self.subTest(function=name):
+                _, symbol, actual_name = self.symbol(index)
+                self.assertEqual((actual_name, symbol[1:]), (name, (start, size, 0x12, 0, section)))
+                owner = self.sections[section]
+                self.assertEqual((owner[1], owner[2] & 6), (1, 6))
+                self.assertTrue(owner[3] <= start < start + size <= owner[3] + owner[5])
+                offset = self.arc_offset(section, start)
+                self.assertEqual(hashlib.sha256(self.payload[offset:offset + size]).hexdigest(), digest)
+
+        # Pin opcodes AND register operands before using signed displacements.
+        # Constructor: r19=D, r17=incoming R; [fp+16]=N, r1=D+0x600.
+        words = {
+            16: {0x2672c: 0x62600000, 0x2675c: 0x62238e00, 0x267a8: 0x4029fc00,
+                 0x26820: 0x080d8010, 0x26824: 0x1000a344, 0x2682c: 0x1000a34c,
+                 0x26830: 0x40002200, 0x26834: 0x10008148, 0x26838: 0x1000a350,
+                 0x26998: 0x61df7c00, 0x269a0: 0x40277f08, 0x269a4: 0x80007e05,
+                 0x269a8: 0x40208000, 0x269ac: 0x0a008000, 0x269bc: 0x41e87c00,
+                 0x26a84: 0x08078144, 0x26a94: 0x1007814c, 0x26a98: 0x10078150},
+            4: {0x9fa8: 0x80007e05, 0x9fb4: 0x41e07c00, 0x9fbc: 0x08078010,
+                0x9fc0: 0x605f7c00, 0x9fc8: 0x61df7c00, 0x9fd0: 0x2fffd420,
+                0x9fd4: 0x40277e3c, 0x9d60: 0x607f7c00, 0x9d80: 0x80007e05,
+                0x9d84: 0x41a07c00, 0x9d98: 0x08268010, 0x9d9c: 0x605f7c00,
+                0x9da4: 0x2fffd2a0, 0x9da8: 0x4001fe3c,
+                0x8614: 0x607f7c00, 0x861c: 0x0821818c, 0x8620: 0x08a18188,
+                0x8634: 0x08818184, 0x8654: 0x08018180,
+                0x873c: 0x10018188, 0x8744: 0x10018188},
+        }
+        for section, sites in words.items():
+            for address, expected in sites.items():
+                with self.subTest(section=section, instruction=hex(address)):
+                    self.assertEqual(self.word(self.arc_offset(section, address)), expected)
+        # Original relocation records, including local literals and cross-
+        # section copy callees. Same-section copy calls have no owned RELA.
+        for offset, source, index, kind, addend in (
+                (0x72a74, 0x24aa4, 624, 6, 0), (0x72bf4, 0x24eb4, 625, 6, 0),
+                (0x733f8, 0x2699c, 27, 4, 0x700), (0x6db78, 0x8618, 621, 4, 0x600),
+                (0x6db84, 0x8734, 621, 4, 0x200), (0x6df2c, 0x9cb0, 645, 6, 0),
+                (0x6df50, 0x9d14, 645, 6, 0), (0x6dff8, 0x9efc, 646, 6, 0),
+                (0x6e004, 0x9f18, 641, 6, 0)):
+            self.assertEqual(struct.unpack_from("<IIi", self.payload, offset),
+                             (source, index << 8 | kind, addend))
+        relocations = self.sections[39]
+        self.assertEqual((relocations[1], relocations[5:8], relocations[9]), (4, (3132, 35, 4), 12))
+        relocated = [self.word(self.elf_base + relocations[4] + offset)
+                     for offset in range(0, relocations[5], 12)]
+        self.assertNotIn(0x9da4, relocated)
+        self.assertNotIn(0x9fd0, relocated)
+        initialized = [self.arc_value(16, 0x267a8) + self.arc_displacement(16, address)
+                       for address in (0x26824, 0x26834, 0x2682c, 0x26838)]
+        self.assertEqual(initialized, [0x544, 0x548, 0x54c, 0x550])  # R, R+N, R, R.
+        self.assertEqual(self.arc_value(16, 0x269bc) + self.arc_displacement(16, 0x26a84), initialized[0])
+        self.assertEqual([self.arc_value(16, 0x269bc) + self.arc_displacement(16, p)
+                          for p in (0x26a94, 0x26a98)], initialized[2:])  # START resets both to R.
+
+        # Both selected calls pass the same channel-table D and 0x5bc bytes,
+        # but in opposite directions. Their delay slots supply local base+60.
+        table = self.arc_value(16, 0x26998) + self.arc_displacement(16, 0x269a0)
+        for base, load in ((0x9fb4, 0x9fbc), (0x9d84, 0x9d98)):
+            self.assertEqual(self.arc_value(4, base) + self.arc_displacement(4, load), table)
+        for call, target in ((0x9fd0, 0x9e74), (0x9da4, 0x9c3c)):
+            opcode = words[4][call]
+            displacement = (opcode >> 7 & 0xfffff) - 0x100000
+            self.assertEqual(call + 4 + displacement * 4, target)
+        local = self.arc_value(4, 0x9fc8) + self.arc_displacement(4, 0x9fd4)
+        self.assertEqual(local, self.arc_value(4, 0x9d60) + self.arc_displacement(4, 0x9da8))
+        self.assertEqual((local, self.arc_value(4, 0x9fc0), self.arc_value(4, 0x9d9c)),
+                         (0x3fffcdac, 0x5bc, 0x5bc))
+        _, core, name = self.symbol(621)
+        self.assertEqual((name, core[1:]), ("core_ls", (0x3fffcd70, 1528, 0x11, 0, 29)))
+        self.assertEqual(local + 0x5bc, core[1] + core[2])
+        working = self.arc_value(4, 0x8614)
+        self.assertEqual([working + self.arc_displacement(4, p)
+                          for p in (0x8654, 0x8634, 0x8620, 0x861c)],
+                         [local + offset for offset in initialized])
+        for address in (0x873c, 0x8744):
+            self.assertEqual(working + self.arc_displacement(4, address), local + 0x54c)
+        # Selected GetCabac stores target local +54c, not the saved DRAM D.
+        # Successful visible same-channel copy and callee preservation remain
+        # premises. Unchanged saved words do not rule out unsaved local work.
+
     def test_scope_and_named_assumptions_exclude_runtime_queue_or_plane_proofs(self):
         result = self.mapping()
         self.assertEqual(result["validation_scope"], {
