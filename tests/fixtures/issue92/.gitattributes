@@ -1,2 +1,3 @@
 fw-staging.patch -whitespace
 mfd-latch.patch -whitespace
+mfd-colour.patch -whitespace
