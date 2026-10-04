@@ -5,6 +5,7 @@
 #include <bc_dts_types.h>
 #include <libcrystalhd_if.h>
 #include "crystalhd_ioctl_limits.h"
+#include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_mfd.h"
 #include "../filters/gst/gst-plugin-1.0/gstcrystalhd-input.h"
 extern "C" {
 #include <libavformat/avformat.h>
@@ -17,9 +18,11 @@ extern "C" {
 #include <cstring>
 #include <dirent.h>
 #include <fcntl.h>
+#include <linux/capability.h>
 #include <set>
 #include <string>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -28,6 +31,47 @@ extern "C" {
 // Optional probe-only ABI from libcrystalhd_int_if.h. Avoid pulling its
 // unrelated register-map dependencies into this direct-library test.
 extern "C" BC_STATUS DtsDevRegisterRead(HANDLE handle, uint32_t offset, uint32_t *value);
+
+struct ChromaConfiguration {
+    uint32_t lac = 0, sampling = 0;
+};
+
+// Two named configuration reads only; no FIFO/status, pointer or write access.
+// Separate reads do not certify atomicity, fetch errors or a source-surface lease.
+static BC_STATUS ReadChromaConfiguration(HANDLE handle, ChromaConfiguration *config,
+    BC_STATUS (*read_register)(HANDLE, uint32_t, uint32_t *) = DtsDevRegisterRead)
+{
+    const BC_STATUS status = read_register(handle, BCHP_MFD_LAC_CNTL, &config->lac);
+    if (status != BC_STS_SUCCESS) return status;
+    return read_register(handle, BCHP_MFD_CHROMA_SAMPLING_CNTL, &config->sampling);
+}
+
+static bool CanReadChromaConfiguration()
+{
+    __user_cap_header_struct header = {_LINUX_CAPABILITY_VERSION_3, 0};
+    __user_cap_data_struct capabilities[2] = {};
+    return syscall(SYS_capget, &header, capabilities) == 0 &&
+        (capabilities[CAP_SYS_RAWIO / 32].effective & (1U << (CAP_SYS_RAWIO % 32)));
+}
+
+struct ChromaReadFixture {
+    unsigned calls = 0;
+    bool addresses_valid = true;
+    BC_STATUS status[2] = {BC_STS_SUCCESS, BC_STS_SUCCESS};
+    uint32_t values[2] = {};
+    static BC_STATUS Read(HANDLE handle, uint32_t address, uint32_t *value) {
+        auto *fixture = static_cast<ChromaReadFixture *>(handle);
+        const uint32_t addresses[] = {BCHP_MFD_LAC_CNTL, BCHP_MFD_CHROMA_SAMPLING_CNTL};
+        const unsigned index = fixture->calls++;
+        if (index >= 2) {
+            fixture->addresses_valid = false;
+            return BC_STS_ERROR;
+        }
+        fixture->addresses_valid &= address == addresses[index];
+        *value = fixture->values[index];
+        return fixture->status[index];
+    }
+};
 
 static volatile std::sig_atomic_t interrupted;
 static void Interrupt(int) { interrupted = 1; }
@@ -82,6 +126,7 @@ struct Options {
     bool h263_via_divx = false;
     bool open_only = false;
     const char *capture_path = nullptr;
+    bool observe_chroma = false;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
 };
 
@@ -106,6 +151,10 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
             ? OUTPUT_MODE422_UYVY : OUTPUT_MODE422_YUY2;
         options->capture_path = path;
         arguments.resize(arguments.size() - 2);
+    }
+    if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-chroma")) {
+        options->observe_chroma = true;
+        arguments.pop_back();
     }
     if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--open-only")) {
         options->open_only = true;
@@ -134,7 +183,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         arguments.resize(arguments.size() - 2);
     }
     if (arguments.size() == 2 && !std::strcmp(arguments[1], "--self-test")) {
-        if (options->capture_path || options->scaler_test || options->mpeg1_via_mpeg2 ||
+        if (options->capture_path || options->observe_chroma || options->scaler_test || options->mpeg1_via_mpeg2 ||
             options->h263_via_divx || options->open_only) return false;
         options->mode = Mode::SelfTest;
         return true;
@@ -151,6 +200,9 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         return false;
     options->mode = preflight ? Mode::Preflight : Mode::Hardware;
     options->path = arguments[2];
+    if (options->observe_chroma &&
+        (!hardware || !options->capture_path || !options->scaler_test || options->scale_width))
+        return false;
     return !options->capture_path ||
         (hardware && options->scaler_test && !options->open_only && options->iterations == 1);
 }
@@ -503,7 +555,7 @@ static bool SelfTest()
     check(ParseArguments({"probe", "--hardware", "fixture", "12"}, &options) &&
           options.mode == Mode::Hardware && options.expected == 12 &&
           options.seconds == 30 && options.iterations == 1 &&
-          options.output_format == OUTPUT_MODE422_YUY2,
+          options.output_format == OUTPUT_MODE422_YUY2 && !options.observe_chroma,
           "legacy hardware arguments");
     options = Options{};
     check(ParseArguments({"probe", "--hardware", "fixture", "12", "9", "1000"},
@@ -578,6 +630,51 @@ static bool SelfTest()
     check(!ParseArguments({"probe", "--hardware", "fixture", "12", "--scaler-test", "320",
                           "--capture-yuy2", "a.raw", "--capture-uyvy", "b.raw"}, &options),
           "mixed capture formats are rejected rather than silently overriding a request");
+    for (const char *capture : {"--capture-yuy2", "--capture-uyvy"}) {
+        options = Options{};
+        check(ParseArguments({"probe", "--hardware", "fixture", "30", "--scaler-test", "0",
+                              "--observe-chroma", capture, "owned.raw"}, &options) &&
+              options.observe_chroma && options.capture_path && options.scale_width == 0,
+              "chroma observation requires an explicit native capture");
+        options = Options{};
+        check(ParseArguments({"probe", "--hardware", "fixture", "30", "--scaler-test", "0",
+                              "--mpeg1-via-mpeg2", "--observe-chroma", capture, "owned.raw"}, &options) &&
+              options.observe_chroma && options.mpeg1_via_mpeg2,
+              "chroma observation preserves the MPEG-1 research gate");
+    }
+    for (const std::vector<const char *> &invalid : {
+             std::vector<const char *>{"probe", "--self-test", "--observe-chroma"},
+             {"probe", "--hardware", "fixture", "30", "--observe-chroma"},
+             {"probe", "--hardware", "fixture", "30", "--scaler-test", "0", "--observe-chroma"},
+             {"probe", "--preflight", "fixture", "30", "--scaler-test", "0", "--observe-chroma", "--capture-yuy2", "owned.raw"},
+             {"probe", "--hardware", "fixture", "30", "--scaler-test", "320", "--observe-chroma", "--capture-yuy2", "owned.raw"},
+             {"probe", "--hardware", "fixture", "30", "9", "2", "--scaler-test", "0", "--observe-chroma", "--capture-yuy2", "owned.raw"},
+             {"probe", "--hardware", "fixture", "30", "--scaler-test", "0", "--observe-chroma", "--observe-chroma", "--capture-yuy2", "owned.raw"},
+             {"probe", "--hardware", "fixture", "30", "--scaler-test", "0", "--observe-chroma", "--mpeg1-via-mpeg2", "--capture-yuy2", "owned.raw"},
+             {"probe", "--hardware", "fixture", "30", "--scaler-test", "0", "--capture-yuy2", "owned.raw", "--observe-chroma"}}) {
+        options = Options{};
+        check(!ParseArguments(invalid, &options), "invalid chroma observation scope or placement");
+    }
+    for (uint32_t raw : {0U, 0xffffffffU, 0x10U, 0x8U, 1U}) {
+        ChromaReadFixture fixture;
+        fixture.values[0] = raw;
+        fixture.values[1] = ~raw;
+        ChromaConfiguration config;
+        check(ReadChromaConfiguration(&fixture, &config, ChromaReadFixture::Read) == BC_STS_SUCCESS &&
+              fixture.calls == 2 && fixture.addresses_valid && config.lac == raw &&
+              config.sampling == ~raw, "two fixed reads preserve every raw bit pattern");
+    }
+    for (int raw = -1; raw <= BC_STS_PWR_MGMT; ++raw) {
+        if (raw == BC_STS_SUCCESS) continue;
+        for (unsigned failed_read : {0U, 1U}) {
+            ChromaReadFixture fixture;
+            fixture.status[failed_read] = static_cast<BC_STATUS>(raw);
+            ChromaConfiguration config;
+            check(ReadChromaConfiguration(&fixture, &config, ChromaReadFixture::Read) == raw &&
+                  fixture.calls == failed_read + 1 && fixture.addresses_valid,
+                  "chroma read failure stops without retries or another register");
+        }
+    }
     options = Options{};
     check(ParseArguments({"probe", "--preflight", "fixture", "30",
                           "--mpeg1-via-mpeg2"}, &options) &&
@@ -1110,6 +1207,26 @@ static bool PackingState(HANDLE handle, const char *stage)
     return true;
 }
 
+static bool ChromaState(HANDLE handle, const char *stage)
+{
+    ChromaConfiguration config;
+    if (!Status("DtsDevRegisterRead(chroma configuration)", ReadChromaConfiguration(handle, &config)))
+        return false;
+    std::printf("Chroma state: stage=%s lac-register=0x%08x lac-raw=0x%08x "
+                "sampling-register=0x%08x sampling-raw=0x%08x reposition=%u "
+                "vert-position=%u interpolation=%u\n",
+                stage, BCHP_MFD_LAC_CNTL, config.lac, BCHP_MFD_CHROMA_SAMPLING_CNTL,
+                config.sampling,
+                (config.sampling & BCHP_MFD_CHROMA_SAMPLING_CNTL_CHROMA_REPOSITION_ENABLE_MASK) >>
+                    BCHP_MFD_CHROMA_SAMPLING_CNTL_CHROMA_REPOSITION_ENABLE_SHIFT,
+                (config.lac & BCHP_MFD_LAC_CNTL_CHROMA_VERT_POSITION_MASK) >>
+                    BCHP_MFD_LAC_CNTL_CHROMA_VERT_POSITION_SHIFT,
+                (config.lac & BCHP_MFD_LAC_CNTL_CHROMA_INTERPOLATION_MASK) >>
+                    BCHP_MFD_LAC_CNTL_CHROMA_INTERPOLATION_SHIFT);
+    std::fflush(stdout);
+    return true;
+}
+
 struct OutputLease {
     HANDLE handle;
     bool active = true;
@@ -1133,6 +1250,7 @@ struct Audit {
     Phase1Progress *progress = nullptr;
     unsigned output_width = 0, output_height = 0;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
+    bool observe_chroma = false;
     GChecksum *pixels = nullptr;
     PixelCapture *capture = nullptr;
     ~Audit() { if (pixels) g_checksum_free(pixels); }
@@ -1180,6 +1298,8 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
             }
             if (!marker && valid && released && audit->capture && audit->frames == 1)
                 valid = PackingState(device->handle, "first-output");
+            if (!marker && valid && released && audit->observe_chroma && audit->frames == 1)
+                valid = ChromaState(device->handle, "first-output-after-release");
             if (!marker && valid && released && audit->progress)
                 phase1_progress_write(audit->progress,
                     "probe=library-drain iteration=%u frame-index=%u token=%llu\n",
@@ -1200,6 +1320,7 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                    !audit->packing_format_observed) {
             audit->packing_format_observed = true;
             if (!PackingState(device->handle, "first-format-change")) return false;
+            if (audit->observe_chroma && !ChromaState(device->handle, "first-format-change")) return false;
         } else if (result != BC_STS_FMT_CHANGE && result != BC_STS_NO_DATA &&
                    result != BC_STS_BUSY && result != BC_STS_TIMEOUT) {
             return Status("DtsProcOutputNoCopy", result);
@@ -1237,6 +1358,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.output_width = input.width;
     audit.output_height = input.height;
     audit.output_format = options.output_format;
+    audit.observe_chroma = options.observe_chroma;
     if (options.scaler_test) {
         if (!ScalerGeometry(input.width, input.height, options.scale_width,
                             &audit.output_width, &audit.output_height)) return false;
@@ -1361,10 +1483,15 @@ int main(int argc, char **argv)
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
             "[--scaler-test WIDTH_OR_0] [--mpeg1-via-mpeg2 | --h263-via-divx] "
-            "[--open-only] [--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n", argv[0]);
+            "[--open-only] [--observe-chroma] "
+            "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
+    if (options.observe_chroma && !CanReadChromaConfiguration()) {
+        std::fprintf(stderr, "--observe-chroma requires CAP_SYS_RAWIO; no device was opened\n");
+        return 2;
+    }
     Phase1Progress progress{};
     if (!phase1_progress_open(&progress)) {
         std::fprintf(stderr, "Could not open Phase 1 progress record\n");
