@@ -5274,7 +5274,7 @@ def _ppb_bank_contract(payload):
                               "stripe_exponent_expression": "(init request word3+5)&255",
                               "alignment_mask_core_byte_offset": 27,
                               "alignment_masks_for_request_word2": [63, 127, 255], "default_alignment_mask": 63,
-                              "metadata_extra_saved_context_byte_offset": 82,
+                              "metadata_extra_saved_context_byte_offset": 0x82,
                               "metadata_extra_open_request_byte_offset": 52}},
         "bank_layout": {"arc_local_base": 0x3fffd170, "bank_count_address": 0x3fffd23c,
                         "bank_bytes_address": 0x3fffd238, "entry_bytes": 16,
