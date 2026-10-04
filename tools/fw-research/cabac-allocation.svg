@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="440" viewBox="0 0 1120 440" role="img" aria-labelledby="title description">
+  <title id="title">Conditional stock OPEN allocation and CABAC ring publication</title>
+  <desc id="description">Seven common-allocation segments place H2C before the driver context H08. The final H24 segment is not the CABAC ring. Dedicated allocation has no driver-relative equation. Publication is conditional and provides no live identity or retention certificate.</desc>
+  <rect width="1120" height="440" fill="#f8fafc"/>
+  <g font-family="sans-serif" fill="#0f172a">
+    <text x="32" y="34" font-size="22" font-weight="bold">Ordinary OPEN: CABAC ring is not the final segment</text>
+    <text x="32" y="61" font-size="14">All field offsets are hexadecimal. Static stock bytes + synthetic A32 execution; not device memory contents.</text>
+    <text x="32" y="92" font-size="15">Common auxiliary allocation; valid distinct outputs, successful translation, no wrap.</text>
+    <text x="32" y="115" font-size="14">Schematic: zero-sized / separately allocated segments are absent. Ring H30 and driver H0C must be positive.</text>
+    <g stroke="#94a3b8">
+      <rect x="32" y="139" width="150" height="68" fill="#e2e8f0"/>
+      <rect x="182" y="139" width="150" height="68" fill="#e2e8f0"/>
+      <rect x="332" y="139" width="150" height="68" fill="#dcfce7"/>
+      <rect x="482" y="139" width="150" height="68" fill="#e0f2fe"/>
+      <rect x="632" y="139" width="150" height="68" fill="#e2e8f0"/>
+      <rect x="782" y="139" width="150" height="68" fill="#e2e8f0"/>
+      <rect x="932" y="139" width="150" height="68" fill="#fff7ed"/>
+    </g>
+    <g font-size="16" text-anchor="middle">
+      <text x="107" y="164">H18</text><text x="107" y="191">H1C × H20</text>
+      <text x="257" y="164">H10</text><text x="257" y="191">H14 bytes</text>
+      <text x="407" y="164" font-weight="bold">H2C: CABAC</text><text x="407" y="191">H30 bytes</text>
+      <text x="557" y="164" font-weight="bold">H08: D</text><text x="557" y="191">H0C bytes</text>
+      <text x="707" y="164">H3C</text><text x="707" y="191">H40 bytes</text>
+      <text x="857" y="164">H34</text><text x="857" y="191">H38 bytes</text>
+      <text x="1007" y="164">H24: final</text><text x="1007" y="191">H28 bytes</text>
+    </g>
+    <text x="32" y="239" font-size="18" font-weight="bold">H2C = D − H30</text>
+    <text x="332" y="239" font-size="17">H24 = D + H0C + H40 + H38 — a different segment</text>
+    <text x="32" y="273" font-size="16">Dedicated auxiliary provider: H2C = translated auxiliary base + H14; no driver-relative equation.</text>
+    <path d="M32 291 H1088" stroke="#cbd5e1"/>
+    <text x="32" y="321" font-size="17" font-weight="bold">Publication: H2C → caller stack +34 → OPEN packet +38 → context D+544</text>
+    <text x="32" y="349" font-size="15">Builder frame is 228 bytes (hex): its stack +25C is caller +34, not caller +2C.</text>
+    <text x="32" y="382" font-size="15">Unchecked translation status, aliasing, allocation failure or wrap can invalidate the address relation.</text>
+    <text x="32" y="410" font-size="15">No claim of active worklist identity, hardware completion, source ownership or reusable reconstruction API.</text>
+  </g>
+</svg>
