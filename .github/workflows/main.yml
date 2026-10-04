@@ -113,6 +113,26 @@ jobs:
             --preflight "$RUNNER_TEMP/drain.h264" 179 || probe_status=$?
           test "$probe_status" -eq 2
 
+      - name: Verify native scaler stimuli without hardware
+        run: |
+          mkdir "$RUNNER_TEMP/scaler-samples"
+          sh tests/generate-scaler-samples.sh "$RUNNER_TEMP/scaler-samples" arithmetic
+          sh tests/generate-scaler-samples.sh "$RUNNER_TEMP/scaler-samples" spatial
+          for scaler_width in 0 640 320; do
+            LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" tests/library-drain-test \
+              --preflight "$RUNNER_TEMP/scaler-samples/arithmetic.m2v" 32 \
+              --scaler-test "$scaler_width"
+          done
+          for scaler_width in 0 320; do
+            LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" tests/library-drain-test \
+              --preflight "$RUNNER_TEMP/scaler-samples/spatial.m2v" 20 \
+              --scaler-test "$scaler_width"
+          done
+          if sh tests/generate-scaler-samples.sh "$RUNNER_TEMP/scaler-samples" spatial; then
+            echo 'scaler generator unexpectedly overwrote a fixture' >&2
+            exit 1
+          fi
+
       - name: Verify MPEG-1 research admission without hardware
         run: |
           ffmpeg -nostdin -hide_banner -loglevel error -xerror -n \
