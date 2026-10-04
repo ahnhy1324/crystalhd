@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="466" viewBox="0 0 880 466" role="img" aria-labelledby="title desc">
+  <title id="title">Measured MPEG-1 chroma edge and sample-position reference</title>
+  <desc id="desc">Actual BCM70015 captures, first frame and first Cb row, progressive 352 by 288. Chroma samples 35 through 53 are shown. The decoded planar reference and native MPEG-2 card values are identical in this window. The MPEG-1 card and explicitly resited FFmpeg Lanczos values are identical in this window, not throughout the frame. Native MPEG-1 30-I and 90-I/P/B luma matched software throughout. Sequential MFD configuration observations are not write causality, atomic readback, general pixel equivalence or a source lease.</desc>
+  <rect width="880" height="466" fill="#ffffff"/>
+  <g font-family="sans-serif" font-size="14" fill="#334155">
+  <text x="34" y="33" font-size="20" font-weight="600">MPEG-1 chroma: sample position changes the reference</text>
+  <text x="34" y="59">Measured first-frame Cb edge · 352 × 288 · first chroma row</text>
+  <path d="M 74 309.0 H 802" stroke="#e2e8f0"/>
+  <text x="61" y="314.0" text-anchor="end">16</text>
+  <path d="M 74 274.7 H 802" stroke="#e2e8f0"/>
+  <text x="61" y="279.7" text-anchor="end">32</text>
+  <path d="M 74 206.0 H 802" stroke="#e2e8f0"/>
+  <text x="61" y="211.0" text-anchor="end">64</text>
+  <path d="M 74 137.3 H 802" stroke="#e2e8f0"/>
+  <text x="61" y="142.3" text-anchor="end">96</text>
+  <path d="M 74 103.0 H 802" stroke="#e2e8f0"/>
+  <text x="61" y="108.0" text-anchor="end">112</text>
+  <text x="74.0" y="334" text-anchor="middle">35</text>
+  <text x="195.3" y="334" text-anchor="middle">38</text>
+  <text x="316.7" y="334" text-anchor="middle">41</text>
+  <text x="438.0" y="334" text-anchor="middle">44</text>
+  <text x="559.3" y="334" text-anchor="middle">47</text>
+  <text x="680.7" y="334" text-anchor="middle">50</text>
+  <text x="802.0" y="334" text-anchor="middle">53</text>
+  <path d="M 74 103 V 309 H 802" fill="none" stroke="#64748b"/>
+  <text x="29" y="199" transform="rotate(-90 29 199)" text-anchor="middle">Cb byte value</text>
+  <text x="438" y="357" text-anchor="middle">Chroma sample index (two luma pixels per sample)</text>
+  <polyline points="74.0,274.7 114.4,274.7 154.9,274.7 195.3,274.7 235.8,274.7 276.2,274.7 316.7,274.7 357.1,276.8 397.6,270.4 438.0,141.6 478.4,135.2 518.9,137.3 559.3,137.3 599.8,137.3 640.2,137.3 680.7,137.3 721.1,137.3 761.6,137.3 802.0,137.3" fill="none" stroke="#334155" stroke-width="2.5"/>
+  <polyline points="74.0,274.7 114.4,274.7 154.9,274.7 195.3,274.7 235.8,274.7 276.2,274.7 316.7,274.7 357.1,272.5 397.6,285.4 438.0,169.5 478.4,128.8 518.9,137.3 559.3,137.3 599.8,137.3 640.2,137.3 680.7,137.3 721.1,137.3 761.6,137.3 802.0,137.3" fill="none" stroke="#dc2626" stroke-width="3.5"/>
+  <polyline points="74.0,274.7 114.4,274.7 154.9,274.7 195.3,274.7 235.8,274.7 276.2,274.7 316.7,274.7 357.1,272.5 397.6,285.4 438.0,169.5 478.4,128.8 518.9,137.3 559.3,137.3 599.8,137.3 640.2,137.3 680.7,137.3 721.1,137.3 761.6,137.3 802.0,137.3" fill="none" stroke="#08916c" stroke-width="2" stroke-dasharray="7 5"/>
+  <path d="M 34 382 h 25" stroke="#334155" stroke-width="2.5"/><text x="69" y="387">Decoded planar / native MPEG-2 (this window)</text>
+  <path d="M 474 382 h 25" stroke="#dc2626" stroke-width="3.5"/><text x="509" y="387">Card MPEG-1</text>
+  <path d="M 34 411 h 25" stroke="#08916c" stroke-width="2" stroke-dasharray="7 5"/><text x="69" y="416">FFmpeg Lanczos · horizontal chroma center → left</text>
+  <text x="34" y="445" font-size="12">MFD sampling readback: MPEG-1 0x1, MPEG-2 0x0. Association only; no bit-toggle causality proved.</text>
+  </g>
+</svg>
