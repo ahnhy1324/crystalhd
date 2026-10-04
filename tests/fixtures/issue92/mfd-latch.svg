@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="430" viewBox="0 0 960 430">
+  <title>BCM70015 pre-boot MFD latch observations</title>
+  <desc>Two fresh exclusive stock-loader sessions observed chroma sampling control
+    values zero, one, zero. Each session attempted two literal writes. Revision
+    remained 0x50, GISB error status zero, and ARM bridge control 0x400f0.
+    Ordered readbacks are not elapsed-time measurements or a rendered picture.</desc>
+  <rect width="960" height="430" fill="#f8fafc"/>
+  <g font-family="sans-serif" fill="#172033">
+    <text x="36" y="38" font-size="23" font-weight="600">MFD chroma sampling: write, observe, restore</text>
+    <text x="36" y="65" font-size="14">BCM70015 · 0x00540024 bit 0 · fresh stock-loader sessions, before ARM run</text>
+    <g font-size="14" text-anchor="middle">
+      <text x="250" y="103">Original read</text>
+      <text x="500" y="103">Opposite-bit readback</text>
+      <text x="750" y="103">Restored readback</text>
+    </g>
+    <g stroke="#cbd5e1" stroke-width="1" stroke-dasharray="3 5">
+      <path d="M250 115V310 M500 115V310 M750 115V310"/>
+    </g>
+    <text x="36" y="170" font-size="16">Session 1</text>
+    <text x="36" y="280" font-size="16">Session 2</text>
+    <g fill="none" stroke="#2563eb" stroke-width="3">
+      <path d="M250 185H375V145H625V185H750"/>
+      <path d="M250 295H375V255H625V295H750"/>
+    </g>
+    <g fill="#2563eb">
+      <circle cx="250" cy="185" r="5"/><circle cx="500" cy="145" r="5"/><circle cx="750" cy="185" r="5"/>
+      <circle cx="250" cy="295" r="5"/><circle cx="500" cy="255" r="5"/><circle cx="750" cy="295" r="5"/>
+    </g>
+    <g text-anchor="middle" font-family="monospace" font-size="16">
+      <text x="250" y="211">0</text><text x="500" y="135">1</text><text x="750" y="211">0</text>
+      <text x="250" y="321">0</text><text x="500" y="245">1</text><text x="750" y="321">0</text>
+    </g>
+    <text x="36" y="353" font-size="14">Both sessions: 2 target write attempts; revision 0x50; GISB error status 0; ARM bridge 0x400f0.</text>
+    <text x="36" y="380" font-size="14">Four native H.264 controls: 180/180 frames each, EOS/cleanup PASS, identical frozen pixels.</text>
+    <text x="36" y="409" font-size="12" fill="#475569">Empirical latch/readback only. Shared transport, ordered samples, not engine execution, global idle or a source lease.</text>
+  </g>
+</svg>

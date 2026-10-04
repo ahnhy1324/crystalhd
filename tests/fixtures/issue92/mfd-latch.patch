@@ -1,0 +1,835 @@
+diff --git a/driver/linux/crystalhd_fleafuncs.c b/driver/linux/crystalhd_fleafuncs.c
+index f98e1a2..9a77d6b 100644
+--- a/driver/linux/crystalhd_fleafuncs.c
++++ b/driver/linux/crystalhd_fleafuncs.c
+@@ -31,6 +31,10 @@
+ #include <asm/tsc.h>
+ #include <asm/msr.h>
+ #include "70015/magnum/basemodules/chp/70015/rdb/a0/bchp_misc3.h"
++#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
++#include "70015/magnum/basemodules/chp/70015/rdb/a0/bchp_mfd.h"
++#include "70015/magnum/basemodules/chp/70015/rdb/a0/bchp_sun_gisb_arb.h"
++#endif
+ #include "crystalhd_hw.h"
+ #include "crystalhd_fleafuncs.h"
+ #include "crystalhd_lnx.h"
+@@ -1171,6 +1175,82 @@ void crystalhd_flea_update_temperature(struct crystalhd_hw *hw)
+ 	return;
+ }
+ 
++#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
++/* Empirical latch test only: no source address, feed command or engine start.
++ * RDB describes the bit, not its access/restore semantics. Two literal writes
++ * are deliberately bounded; readbacks do not certify every internal master.
++ */
++static BC_STATUS crystalhd_flea_mfd_latch_probe(struct crystalhd_hw *hw,
++					     uint64_t generation, const void *owner)
++{
++	const uint32_t bit =
++		BCHP_MFD_CHROMA_SAMPLING_CNTL_CHROMA_REPOSITION_ENABLE_MASK;
++	const uint32_t error_mask = BCHP_SUN_GISB_ARB_ERR_CAP_STATUS_valid_MASK |
++		BCHP_SUN_GISB_ARB_ERR_CAP_STATUS_tea_MASK |
++		BCHP_SUN_GISB_ARB_ERR_CAP_STATUS_timeout_MASK;
++	struct crystalhd_adp *adp;
++	struct crystalhd_cmd *ctx;
++	uint32_t revision[3], sampling[3], error[3], bridge[3];
++	uint32_t opposite;
++	BC_STATUS sts = BC_STS_SUCCESS;
++
++	if (!hw || !hw->adp || !hw->adp->pdev || !owner || !generation ||
++	    !hw->pfnReadDevRegister || !hw->pfnWriteDevRegister)
++		return BC_STS_INV_ARG;
++	adp = hw->adp;
++	ctx = &adp->cmds;
++	lockdep_assert_held_write(&adp->user_lock);
++	if (!READ_ONCE(adp->present) || !adp->hw_accessible ||
++	    adp->generation != generation ||
++	    adp->pdev->device != BC_PCI_DEVID_FLEA || !adp->i2o_addr ||
++	    adp->pci_i2o_len < FLEA_GISB_INDIRECT_DATA + sizeof(uint32_t) ||
++	    ctx->adp != adp || ctx->hw_ctx != hw ||
++	    ctx->session_owner != owner || !ctx->session_module_pinned ||
++	    ctx->state != BC_LINK_INVALID || adp->cfg_users ||
++	    READ_ONCE(hw->dma_fault))
++		return BC_STS_BUSY;
++
++	revision[0] = hw->pfnReadDevRegister(adp, BCHP_MFD_REVISION_ID);
++	sampling[0] = hw->pfnReadDevRegister(adp, BCHP_MFD_CHROMA_SAMPLING_CNTL);
++	error[0] = hw->pfnReadDevRegister(adp, BCHP_SUN_GISB_ARB_ERR_CAP_STATUS);
++	bridge[0] = hw->pfnReadDevRegister(adp, BCHP_ARMCR4_BRIDGE_REG_BRIDGE_CTL);
++	if (revision[0] != 0x50 || (sampling[0] & ~bit) ||
++	    (error[0] & error_mask) || (bridge[0] & ARM_RUN_REQ_BIT) ||
++	    !READ_ONCE(adp->present) || READ_ONCE(hw->dma_fault)) {
++		dev_info(&adp->pdev->dev,
++			 "issue92 mfd-latch: writes=0 admission-rejected revision=%08x sampling=%08x gisb=%08x bridge=%08x\n",
++			 revision[0], sampling[0], error[0], bridge[0]);
++		return BC_STS_IO_ERROR;
++	}
++	opposite = sampling[0] ^ bit;
++	hw->pfnWriteDevRegister(adp, BCHP_MFD_CHROMA_SAMPLING_CNTL, opposite);
++	sampling[1] = hw->pfnReadDevRegister(adp, BCHP_MFD_CHROMA_SAMPLING_CNTL);
++	revision[1] = hw->pfnReadDevRegister(adp, BCHP_MFD_REVISION_ID);
++	error[1] = hw->pfnReadDevRegister(adp, BCHP_SUN_GISB_ARB_ERR_CAP_STATUS);
++	bridge[1] = hw->pfnReadDevRegister(adp, BCHP_ARMCR4_BRIDGE_REG_BRIDGE_CTL);
++	/* Always attempt literal restoration after the first attempted write,
++	 * including a mismatching readback or changed diagnostic guard.
++	 */
++	hw->pfnWriteDevRegister(adp, BCHP_MFD_CHROMA_SAMPLING_CNTL, sampling[0]);
++	sampling[2] = hw->pfnReadDevRegister(adp, BCHP_MFD_CHROMA_SAMPLING_CNTL);
++	revision[2] = hw->pfnReadDevRegister(adp, BCHP_MFD_REVISION_ID);
++	error[2] = hw->pfnReadDevRegister(adp, BCHP_SUN_GISB_ARB_ERR_CAP_STATUS);
++	bridge[2] = hw->pfnReadDevRegister(adp, BCHP_ARMCR4_BRIDGE_REG_BRIDGE_CTL);
++	if (sampling[1] != opposite || sampling[2] != sampling[0] ||
++	    revision[1] != 0x50 || revision[2] != 0x50 ||
++	    ((error[1] | error[2]) & error_mask) ||
++	    ((bridge[1] | bridge[2]) & ARM_RUN_REQ_BIT) ||
++	    !READ_ONCE(adp->present) || READ_ONCE(hw->dma_fault))
++		sts = BC_STS_IO_ERROR;
++	dev_info(&adp->pdev->dev,
++		 "issue92 mfd-latch: writes=2 status=%u sampling=%08x/%08x/%08x expected-toggle=%08x revision=%08x/%08x/%08x gisb=%08x/%08x/%08x bridge=%08x/%08x/%08x\n",
++		 sts, sampling[0], sampling[1], sampling[2], opposite,
++		 revision[0], revision[1], revision[2], error[0], error[1], error[2],
++		 bridge[0], bridge[1], bridge[2]);
++	return sts;
++}
++#endif
++
+ /**
+ * crystalhd_flea_download_fw - Write data to DRAM area.
+ * @hw: Hardware context.
+@@ -1194,6 +1274,9 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 	/*uint32_t HBCnt=0; */
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+ 	bool staging_probe = hw && hw->research_staging_probe;
++	bool mfd_latch_probe = hw && hw->research_mfd_latch_probe;
++	uint64_t mfd_generation = hw ? hw->research_mfd_generation : 0;
++	const void *mfd_owner = hw ? hw->research_mfd_owner : NULL;
+ 	uint32_t bridge_before = 0, bridge_after = 0, observed = 0;
+ 	/* Fixed 8x8 planar YUV420: Y[64], Cb[16], Cr[16], little-endian DWORDs. */
+ 	static const uint32_t pattern[24] = {
+@@ -1212,8 +1295,12 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 	bool bSecure = true; // Default production cards. Can be false only for internal Broadcom dev cards
+ 
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+-	if (hw)
++	if (hw) {
+ 		hw->research_staging_probe = false;
++		hw->research_mfd_latch_probe = false;
++		hw->research_mfd_generation = 0;
++		hw->research_mfd_owner = NULL;
++	}
+ #endif
+ 
+ /*
+@@ -1237,6 +1324,8 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 		return BC_STS_INV_ARG;
+ 
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
++	if (mfd_latch_probe && (!staging_probe || !mfd_owner || !mfd_generation))
++		return BC_STS_INV_ARG;
+ 	if (staging_probe && (!hw->pfnDevDRAMRead ||
+ 	    buffSz - FLEA_FW_SIG_LEN_IN_BYTES - LENGTH_FIELD_SIZE < sizeof(pattern)))
+ 		return BC_STS_INV_ARG;
+@@ -1393,6 +1482,11 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 		if (pattern_status != BC_STS_SUCCESS)
+ 			return pattern_status;
+ 	}
++	if (mfd_latch_probe) {
++		sts = crystalhd_flea_mfd_latch_probe(hw, mfd_generation, mfd_owner);
++		if (sts != BC_STS_SUCCESS)
++			return sts;
++	}
+ #endif
+ /* -- Step 5. Write the signature to CMAC register. */
+ /*
+diff --git a/driver/linux/crystalhd_hw.h b/driver/linux/crystalhd_hw.h
+index c16acb8..4da1072 100644
+--- a/driver/linux/crystalhd_hw.h
++++ b/driver/linux/crystalhd_hw.h
+@@ -403,6 +403,9 @@ struct crystalhd_hw {
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+ 	/* Temporary loader observation; consumed before the first transfer. */
+ 	bool research_staging_probe;
++	bool research_mfd_latch_probe;
++	uint64_t research_mfd_generation;
++	const void *research_mfd_owner;
+ #endif
+ 	struct tx_dma_pkt		tx_pkt_pool[DMA_ENGINE_CNT];
+ 	spinlock_t		lock;
+diff --git a/driver/linux/crystalhd_fw_research.c b/driver/linux/crystalhd_fw_research.c
+index 83b193c..d28fd2d 100644
+--- a/driver/linux/crystalhd_fw_research.c
++++ b/driver/linux/crystalhd_fw_research.c
+@@ -1054,9 +1054,18 @@ static void crystalhd_fw_research_run_internal(u64 generation,
+ 	result->download_attempted = 1;
+ 	ctx->hw_ctx->research_staging_probe =
+ 		request->selector == CRYSTALHD_FW_RESEARCH_VERSION_ONLY;
++#ifdef CRYSTALHD_MFD_LATCH_PROBE
++	ctx->hw_ctx->research_mfd_latch_probe =
++		request->selector == CRYSTALHD_FW_RESEARCH_VERSION_ONLY;
++	ctx->hw_ctx->research_mfd_generation = generation;
++	ctx->hw_ctx->research_mfd_owner = &crystalhd_fw_research_owner;
++#endif
+ 	sts = crystalhd_fw_download_locked(ctx, &crystalhd_fw_research_owner,
+ 					  firmware->data, firmware->size);
+ 	ctx->hw_ctx->research_staging_probe = false;
++	ctx->hw_ctx->research_mfd_latch_probe = false;
++	ctx->hw_ctx->research_mfd_generation = 0;
++	ctx->hw_ctx->research_mfd_owner = NULL;
+ 	result->download_status = sts;
+ 	rc = crystalhd_status_to_errno(sts);
+ 	if (rc)
+diff --git a/tests/fw-download.c b/tests/fw-download.c
+index 6d25343..56388dd 100644
+--- a/tests/fw-download.c
++++ b/tests/fw-download.c
+@@ -14,6 +14,11 @@ struct _BC_DTS_PROC_OUT;
+ #include "bc_dts_defs.h"
+ #include "crystalhd_ioctl_limits.h"
+ 
++/* The consolidated Flea register header marks the SUN header included while
++ * exposing only TIMER. Include these full RDB blocks first.
++ */
++#include "bchp_mfd.h"
++#include "bchp_sun_gisb_arb.h"
+ #include "FleaDefs.h"
+ #include "bcm_70012_regs.h"
+ #define CRYSTALHD_ENABLE_FW_RESEARCH
+@@ -39,12 +44,40 @@ struct _BC_DTS_PROC_OUT;
+ #define Hst2CpuMbx1 0x00100f00U
+ #define Cpu2HstMbx1 0x00100f04U
+ #define BC_FWIMG_ST_ADDR 0U
++#define BC_PCI_DEVID_FLEA 0x1615U
++#define BC_LINK_INVALID 0U
++#define READ_ONCE(value) (value)
++#define lockdep_assert_held_write(lock) \
++	check(*(lock), "MFD helper requires the exclusive user lock")
++
++typedef uint64_t u64;
+ 
+ struct device { int unused; };
+-struct pci_dev { struct device dev; };
+-struct crystalhd_adp { struct pci_dev *pdev; };
++struct pci_dev { struct device dev; uint16_t device; };
++struct crystalhd_hw;
++struct crystalhd_adp;
++struct crystalhd_cmd {
++	struct crystalhd_adp *adp;
++	struct crystalhd_hw *hw_ctx;
++	const void *session_owner;
++	bool session_module_pinned;
++	unsigned int state;
++};
++struct crystalhd_adp {
++	struct pci_dev *pdev;
++	struct crystalhd_cmd cmds;
++	unsigned int present, cfg_users;
++	bool hw_accessible, user_lock;
++	u64 generation;
++	void *i2o_addr;
++	uint32_t pci_i2o_len;
++};
+ struct crystalhd_hw {
+ 	bool research_staging_probe;
++	bool research_mfd_latch_probe;
++	u64 research_mfd_generation;
++	const void *research_mfd_owner;
++	bool dma_fault;
+ 	struct crystalhd_adp *adp;
+ 	uint32_t (*pfnReadDevRegister)(struct crystalhd_adp *, uint32_t);
+ 	void (*pfnWriteDevRegister)(struct crystalhd_adp *, uint32_t, uint32_t);
+@@ -107,6 +140,42 @@ static struct pci_dev pci;
+ static struct crystalhd_adp adapter;
+ static struct crystalhd_hw hardware;
+ static struct image firmware, firmware_before;
++static unsigned char research_owner;
++static unsigned mfd_calls, mfd_target_reads, mfd_target_writes;
++static unsigned mfd_error_reads, mfd_revision_reads, mfd_bridge_reads;
++static bool mfd_probe_active;
++static uint32_t mfd_initial, mfd_current;
++static bool mfd_toggle_mismatch, mfd_restore_mismatch;
++static uint32_t mfd_error_by_stage[3], mfd_revision_by_stage[3];
++static uint32_t mfd_bridge_by_stage[3];
++static unsigned mfd_error_fail_at;
++static uint32_t mfd_error_fail_value;
++enum mfd_context_fault {
++	MFD_CONTEXT_OK,
++	MFD_CONTEXT_DMA_FAULT,
++	MFD_CONTEXT_REMOVED,
++};
++static enum mfd_context_fault mfd_context_fault;
++static unsigned int mfd_context_fault_stage;
++static uint32_t mfd_context_fault_offset;
++static bool mfd_context_fault_fired;
++struct mfd_access {
++	bool write;
++	uint32_t offset, value;
++};
++static struct mfd_access mfd_accesses[64];
++static unsigned mfd_access_count;
++static void check(bool condition, const char *message);
++
++static void record_mfd_access(bool write, uint32_t offset, uint32_t value)
++{
++	check(mfd_access_count < sizeof(mfd_accesses) / sizeof(mfd_accesses[0]),
++	      "MFD helper uses a bounded sequence of fixed register accesses");
++	if (mfd_access_count < sizeof(mfd_accesses) / sizeof(mfd_accesses[0]))
++		mfd_accesses[mfd_access_count++] = (struct mfd_access){
++			.write = write, .offset = offset, .value = value,
++		};
++}
+ 
+ static void check(bool condition, const char *message)
+ {
+@@ -129,6 +198,41 @@ static uint32_t read_device(struct crystalhd_adp *adp, uint32_t offset)
+ {
+ 	check(adp == &adapter, "Flea read uses the admitted adapter");
+ 	dev_reads++;
++	if (mfd_probe_active) {
++		uint32_t value = 0;
++		unsigned int stage = mfd_target_writes < 2 ? mfd_target_writes : 2;
++
++		if (offset == BCHP_MFD_CHROMA_SAMPLING_CNTL) {
++			mfd_target_reads++;
++			value = mfd_current;
++			if ((stage == 1 && mfd_toggle_mismatch) ||
++			    (stage == 2 && mfd_restore_mismatch))
++				value ^= 1U;
++		} else if (offset == BCHP_SUN_GISB_ARB_ERR_CAP_STATUS) {
++			mfd_error_reads++;
++			value = mfd_error_reads == mfd_error_fail_at ?
++				mfd_error_fail_value : mfd_error_by_stage[stage];
++		} else if (offset == BCHP_MFD_REVISION_ID) {
++			mfd_revision_reads++;
++			value = mfd_revision_by_stage[stage];
++		} else if (offset == BCHP_ARMCR4_BRIDGE_REG_BRIDGE_CTL) {
++			mfd_bridge_reads++;
++			value = mfd_bridge_by_stage[stage];
++		} else {
++			check(false, "MFD helper reads only its four fixed register addresses");
++		}
++		record_mfd_access(false, offset, value);
++		if (mfd_context_fault != MFD_CONTEXT_OK &&
++		    !mfd_context_fault_fired && stage == mfd_context_fault_stage &&
++		    offset == mfd_context_fault_offset) {
++			mfd_context_fault_fired = true;
++			if (mfd_context_fault == MFD_CONTEXT_DMA_FAULT)
++				hardware.dma_fault = true;
++			else
++				adapter.present = 0;
++		}
++		return value;
++	}
+ 	if (offset == BCHP_ARMCR4_BRIDGE_REG_BRIDGE_CTL)
+ 		return bridge_reads++ == 0 ? bridge_initial :
+ 			bridge_reads == 2 ? bridge_final : bridge_restored;
+@@ -143,6 +247,18 @@ static void write_device(struct crystalhd_adp *adp, uint32_t offset,
+ {
+ 	check(adp == &adapter, "Flea write uses the admitted adapter");
+ 	dev_writes++;
++	if (mfd_probe_active) {
++		record_mfd_access(true, offset, value);
++		check(offset == BCHP_MFD_CHROMA_SAMPLING_CNTL && value <= 1,
++		      "MFD helper writes only a literal zero or one to CHROMA_SAMPLING");
++		check(!cmac_writes && !arm_run_writes && !heartbeats,
++		      "MFD writes precede CMAC, ARM request and heartbeat");
++		if (offset == BCHP_MFD_CHROMA_SAMPLING_CNTL) {
++			mfd_target_writes++;
++			mfd_current = value;
++		}
++		return;
++	}
+ 	if (offset <= BCHP_SCRUB_CTRL_BI_CMAC_127_96 &&
+ 	    offset >= BCHP_SCRUB_CTRL_BI_CMAC_31_0) {
+ 		if (cmac_writes < 4) {
+@@ -266,6 +382,33 @@ static bool crystalhd_flea_detect_fw_alive(struct crystalhd_hw *hw)
+ 	return heartbeat_ok;
+ }
+ 
++/* Rename only the extracted function's symbol so the wrapper can observe the
++ * call boundary without replacing any production probe logic.
++ */
++#define crystalhd_flea_mfd_latch_probe extracted_mfd_latch_probe
++#include "mfd-latch-function.h"
++#undef crystalhd_flea_mfd_latch_probe
++
++static BC_STATUS crystalhd_flea_mfd_latch_probe(struct crystalhd_hw *hw,
++					     u64 generation, const void *owner)
++{
++	BC_STATUS status;
++
++	mfd_calls++;
++	if (dram_writes)
++		check(dram_writes == 3 && dram_reads == 3 &&
++		      !memcmp(card_prefix, expected_image, sizeof(card_prefix)) &&
++		      card_suffix == expected_image[24] &&
++		      !cmac_writes && !arm_run_writes && !heartbeats &&
++		      !hw->research_staging_probe && !hw->research_mfd_latch_probe &&
++		      !hw->research_mfd_generation && !hw->research_mfd_owner,
++		      "MFD helper follows verified prefix restoration with all private fields consumed");
++	mfd_probe_active = true;
++	status = extracted_mfd_latch_probe(hw, generation, owner);
++	mfd_probe_active = false;
++	return status;
++}
++
+ #include "fw-download-functions.h"
+ 
+ static uint32_t patterned_word(size_t index)
+@@ -276,9 +419,17 @@ static uint32_t patterned_word(size_t index)
+ static void reset(void)
+ {
+ 	memset(&pci, 0, sizeof(pci));
+-	adapter = (struct crystalhd_adp){ .pdev = &pci };
++	pci.device = BC_PCI_DEVID_FLEA;
++	adapter = (struct crystalhd_adp){
++		.pdev = &pci, .present = 1, .hw_accessible = true,
++		.generation = 0x1020304050607080ULL,
++		.i2o_addr = &adapter, .pci_i2o_len = 0x10000,
++		.user_lock = true,
++	};
+ 	hardware = (struct crystalhd_hw){
+ 		.adp = &adapter,
++		.research_mfd_generation = adapter.generation,
++		.research_mfd_owner = &research_owner,
+ 		.pfnReadDevRegister = read_device,
+ 		.pfnWriteDevRegister = write_device,
+ 		.pfnReadFPGARegister = read_fpga,
+@@ -291,6 +442,11 @@ static void reset(void)
+ 		.FleaRxPicDelAddr = 0x44444444,
+ 		.FleaFLLUpdateAddr = 0x55555555,
+ 	};
++	adapter.cmds = (struct crystalhd_cmd){
++		.adp = &adapter, .hw_ctx = &hardware,
++		.session_owner = &research_owner, .session_module_pinned = true,
++		.state = BC_LINK_INVALID,
++	};
+ 	memset(&firmware, 0, sizeof(firmware));
+ 	firmware.guard_before = 0x12345678;
+ 	firmware.guard_after = 0x87654321;
+@@ -323,6 +479,23 @@ static void reset(void)
+ 	dram_status = BC_STS_SUCCESS;
+ 	heartbeat_ok = true;
+ 	link_result = LINK_SUCCESS;
++	mfd_calls = mfd_target_reads = mfd_target_writes = 0;
++	mfd_error_reads = mfd_revision_reads = mfd_bridge_reads = 0;
++	mfd_probe_active = false;
++	mfd_initial = mfd_current = 0;
++	mfd_toggle_mismatch = mfd_restore_mismatch = false;
++	memset(mfd_error_by_stage, 0, sizeof(mfd_error_by_stage));
++	for (unsigned int n = 0; n < 3; n++)
++		mfd_revision_by_stage[n] = 0x50;
++	memset(mfd_bridge_by_stage, 0, sizeof(mfd_bridge_by_stage));
++	mfd_error_fail_at = 0;
++	mfd_error_fail_value = 0;
++	mfd_context_fault = MFD_CONTEXT_OK;
++	mfd_context_fault_stage = 0;
++	mfd_context_fault_offset = 0;
++	mfd_context_fault_fired = false;
++	mfd_access_count = 0;
++	memset(mfd_accesses, 0, sizeof(mfd_accesses));
+ }
+ 
+ static bool no_effects(void)
+@@ -683,9 +856,18 @@ static void sized_images(void)
+ 
+ static BC_STATUS run_staging(void)
+ {
++	BC_STATUS status;
++
+ 	hardware.research_staging_probe = true;
+-	return crystalhd_flea_download_fw(&hardware,
++	hardware.research_mfd_latch_probe = true;
++	status = crystalhd_flea_download_fw(&hardware,
+ 		(const uint8_t *)firmware.words, sizeof(firmware.words));
++	if (status != BC_STS_SUCCESS)
++		check(!mfd_calls && !mfd_access_count &&
++		      !hardware.research_mfd_latch_probe &&
++		      !hardware.research_mfd_generation && !hardware.research_mfd_owner,
++		      "all failed staging gates consume the MFD flag without calling its helper");
++	return status;
+ }
+ 
+ static void staging_results(void)
+@@ -694,9 +876,17 @@ static void staging_results(void)
+ 	reset();
+ 	check(crystalhd_flea_download_fw(&hardware,
+ 	      (const uint8_t *)firmware.words, sizeof(firmware.words)) ==
+-	      BC_STS_SUCCESS && !dram_reads && bridge_reads == 1,
++	      BC_STS_SUCCESS && !dram_reads && bridge_reads == 1 &&
++	      !mfd_calls && !mfd_access_count,
+ 	      "default-off download adds no readback or admission reads");
+ 	reset();
++	hardware.research_staging_probe = true;
++	check(crystalhd_flea_download_fw(&hardware,
++	      (const uint8_t *)firmware.words, sizeof(firmware.words)) ==
++	      BC_STS_SUCCESS && dram_reads == 3 && dram_writes == 3 &&
++	      bridge_reads == 4 && !mfd_calls && !mfd_access_count,
++	      "staging-only download preserves its existing behavior with MFD disabled");
++	reset();
+ 	check(run_staging() == BC_STS_SUCCESS && dram_reads == 3 &&
+ 	      dram_writes == 3 && bridge_reads == 4 &&
+ 	      card_first == expected_image[0] && !hardware.research_staging_probe &&
+@@ -707,9 +897,11 @@ static void staging_results(void)
+ 	      "matched staging read preserves ordinary authenticated boot");
+ 	reset();
+ 	hardware.research_staging_probe = true;
++	hardware.research_mfd_latch_probe = true;
+ 	check(crystalhd_flea_download_fw(&hardware,
+ 	      (const uint8_t *)firmware.words, 96 + 16 + 4 - 4) ==
+-	      BC_STS_INV_ARG && no_effects() && !hardware.research_staging_probe,
++	      BC_STS_INV_ARG && no_effects() && !hardware.research_staging_probe &&
++	      !hardware.research_mfd_latch_probe && !mfd_calls,
+ 	      "short valid payload rejects before hardware or pattern access");
+ 	reset();
+ 	hardware.pfnDevDRAMRead = NULL;
+@@ -796,6 +988,300 @@ static void staging_results(void)
+ 	      "restore error wins over pattern error without bypassing restoration");
+ }
+ 
++static BC_STATUS run_mfd_download(void)
++{
++	hardware.research_staging_probe = true;
++	hardware.research_mfd_latch_probe = true;
++	return crystalhd_flea_download_fw(&hardware,
++		(const uint8_t *)firmware.words, sizeof(firmware.words));
++}
++
++static void check_mfd_accesses(unsigned int expected_writes)
++{
++	unsigned int writes = 0;
++
++	for (unsigned int n = 0; n < mfd_access_count; n++) {
++		const struct mfd_access *access = &mfd_accesses[n];
++
++		if (access->write) {
++			check(access->offset == BCHP_MFD_CHROMA_SAMPLING_CNTL &&
++			      access->value == (writes ? mfd_initial : mfd_initial ^ 1U),
++			      "only opposite-literal and original-literal writes are admitted");
++			writes++;
++		} else {
++			check(access->offset == BCHP_SUN_GISB_ARB_ERR_CAP_STATUS ||
++			      access->offset == BCHP_MFD_REVISION_ID ||
++			      access->offset == BCHP_ARMCR4_BRIDGE_REG_BRIDGE_CTL ||
++			      access->offset == BCHP_MFD_CHROMA_SAMPLING_CNTL,
++			      "each MFD observation uses the fixed guard or target address");
++		}
++		check(access->offset != BCHP_SUN_GISB_ARB_ERR_CAP_CLR,
++		      "MFD probe never reads or writes the error-clear register");
++	}
++	check(writes == expected_writes && mfd_target_writes == expected_writes,
++	      "the MFD probe performs the exact expected number of target writes");
++	check(!memcmp(&firmware, &firmware_before, sizeof(firmware)),
++	      "the MFD probe never changes the pinned host firmware image");
++}
++
++static void mfd_admission_results(void)
++{
++	groups++;
++	reset();
++	hardware.research_mfd_latch_probe = true;
++	check(crystalhd_flea_download_fw(&hardware,
++	      (const uint8_t *)firmware.words, sizeof(firmware.words)) ==
++	      BC_STS_INV_ARG && no_effects() && !mfd_calls &&
++	      !hardware.research_mfd_latch_probe &&
++	      !hardware.research_mfd_generation && !hardware.research_mfd_owner,
++	      "MFD without staging rejects before effects and consumes all private fields");
++	for (unsigned int fault = 0; fault < 10; fault++) {
++		const uint8_t *buffer;
++
++		reset();
++		hardware.research_staging_probe = true;
++		hardware.research_mfd_latch_probe = true;
++		buffer = (const uint8_t *)firmware.words;
++		switch (fault) {
++		case 0: buffer = NULL; break;
++		case 1: buffer++; break;
++		case 2: hardware.adp = NULL; break;
++		case 3: adapter.pdev = NULL; break;
++		case 4: hardware.pfnReadDevRegister = NULL; break;
++		case 5: hardware.pfnWriteDevRegister = NULL; break;
++		case 6: hardware.pfnDevDRAMWrite = NULL; break;
++		case 7: hardware.pfnDevDRAMRead = NULL; break;
++		case 8: hardware.research_mfd_generation = 0; break;
++		case 9: hardware.research_mfd_owner = NULL; break;
++		}
++		check(crystalhd_flea_download_fw(&hardware, buffer,
++		      sizeof(firmware.words)) == BC_STS_INV_ARG && no_effects() &&
++		      !mfd_calls && !hardware.research_staging_probe &&
++		      !hardware.research_mfd_latch_probe &&
++		      !hardware.research_mfd_generation && !hardware.research_mfd_owner,
++		      "early downloader rejection consumes all one-shot MFD fields without MMIO");
++	}
++	for (unsigned int fault = 0; fault < 21; fault++) {
++		struct crystalhd_hw *hw;
++		u64 generation;
++		const void *owner;
++
++		reset();
++		hw = &hardware;
++		generation = adapter.generation;
++		owner = &research_owner;
++		switch (fault) {
++		case 0: hw = NULL; break;
++		case 1: hardware.adp = NULL; break;
++		case 2: adapter.pdev = NULL; break;
++		case 3: hardware.pfnReadDevRegister = NULL; break;
++		case 4: hardware.pfnWriteDevRegister = NULL; break;
++		case 5: adapter.cmds.hw_ctx = NULL; break;
++		case 6: adapter.cmds.adp = NULL; break;
++		case 7: adapter.present = 0; break;
++		case 8: adapter.hw_accessible = false; break;
++		case 9: generation ^= 1ULL; break;
++		case 10: pci.device = 0x1612; break;
++		case 11: adapter.cfg_users = 1; break;
++		case 12: adapter.i2o_addr = NULL; break;
++		case 13: adapter.pci_i2o_len = 0xffff; break;
++		case 14: owner = NULL; break;
++		case 15: owner = &firmware; break;
++		case 16: adapter.cmds.session_owner = NULL; break;
++		case 17: adapter.cmds.session_module_pinned = false; break;
++		case 18: adapter.cmds.state = 1; break;
++		case 19: hardware.dma_fault = true; break;
++		case 20: generation = 0; break;
++		}
++		check(crystalhd_flea_mfd_latch_probe(hw, generation, owner) !=
++		      BC_STS_SUCCESS && no_effects() && !mfd_access_count &&
++		      state_unchanged(),
++		      "every failed MFD context/ownership admission rejects before MMIO");
++	}
++}
++
++static void mfd_register_admission_results(void)
++{
++	static const uint32_t bad_revisions[] = { 0, 0x51, 0x10050, UINT32_MAX };
++	static const uint32_t bad_targets[] = { 2, 3, 0x80000000, UINT32_MAX };
++	static const uint32_t error_bits[] = { 1, 0x800, 0x1000 };
++
++	groups++;
++	check(BCHP_MFD_REVISION_ID == 0x540000 &&
++	      BCHP_MFD_CHROMA_SAMPLING_CNTL == 0x540024 &&
++	      BCHP_ARMCR4_BRIDGE_REG_BRIDGE_CTL == 0xe0004 &&
++	      BCHP_SUN_GISB_ARB_ERR_CAP_STATUS == 0x4000d4 &&
++	      ARM_RUN_REQ_BIT == 2,
++	      "RDB declarations bind each MFD target and guard to its fixed address");
++	for (unsigned int n = 0; n < sizeof(bad_revisions) / sizeof(bad_revisions[0]); n++) {
++		reset();
++		mfd_revision_by_stage[0] = bad_revisions[n];
++		check(crystalhd_flea_mfd_latch_probe(&hardware, adapter.generation,
++		      &research_owner) != BC_STS_SUCCESS && !dev_writes &&
++		      !mfd_target_writes && state_unchanged(),
++		      "zero, unexpected and reserved revision values reject before target writes");
++		check_mfd_accesses(0);
++	}
++	for (unsigned int n = 0; n < sizeof(bad_targets) / sizeof(bad_targets[0]); n++) {
++		reset();
++		mfd_current = bad_targets[n];
++		check(crystalhd_flea_mfd_latch_probe(&hardware, adapter.generation,
++		      &research_owner) != BC_STS_SUCCESS && !dev_writes &&
++		      !mfd_target_writes && state_unchanged(),
++		      "target values containing any reserved bit reject before writes");
++		check_mfd_accesses(0);
++	}
++	for (unsigned int n = 0; n < sizeof(error_bits) / sizeof(error_bits[0]); n++) {
++		reset();
++		mfd_error_fail_at = 1;
++		mfd_error_fail_value = error_bits[n];
++		check(crystalhd_flea_mfd_latch_probe(&hardware, adapter.generation,
++		      &research_owner) != BC_STS_SUCCESS && !dev_writes &&
++		      !mfd_target_writes && state_unchanged(),
++		      "valid, TEA or timeout captured before a write stops the probe");
++		check_mfd_accesses(0);
++	}
++	reset();
++	mfd_bridge_by_stage[0] = ARM_RUN_REQ_BIT;
++	check(crystalhd_flea_mfd_latch_probe(&hardware, adapter.generation,
++	      &research_owner) != BC_STS_SUCCESS && !dev_writes &&
++	      !mfd_target_writes && state_unchanged(),
++	      "an initially asserted ARM request prevents any target write");
++	check_mfd_accesses(0);
++	for (unsigned int fault = 0; fault < 6; fault++) {
++		reset();
++		if (fault == 0)
++			mfd_revision_by_stage[0] = 0;
++		else if (fault == 1)
++			mfd_current = 2;
++		else if (fault < 5)
++			mfd_error_by_stage[0] = error_bits[fault - 2];
++		else
++			mfd_bridge_by_stage[0] = ARM_RUN_REQ_BIT;
++		check(run_mfd_download() == BC_STS_IO_ERROR && mfd_calls == 1 &&
++		      !mfd_target_writes && !cmac_writes && !arm_run_writes &&
++		      !heartbeats && !hardware.research_staging_probe &&
++		      !hardware.research_mfd_latch_probe &&
++		      !hardware.research_mfd_generation && !hardware.research_mfd_owner,
++		      "initial MFD register admission faults prevent authentication and start");
++		check_mfd_accesses(0);
++	}
++}
++
++static void mfd_latch_results(void)
++{
++	static const uint32_t error_bits[] = { 1, 0x800, 0x1000 };
++
++	groups++;
++	reset();
++	for (unsigned int n = 0; n < 3; n++) {
++		mfd_error_by_stage[n] = 0x2;
++		mfd_bridge_by_stage[n] = 0x4;
++	}
++	check(crystalhd_flea_mfd_latch_probe(&hardware, adapter.generation,
++	      &research_owner) == BC_STS_SUCCESS && mfd_target_writes == 2 &&
++	      mfd_current == mfd_initial,
++	      "unmasked diagnostic bits do not change the fixed error/run admission masks");
++	check_mfd_accesses(2);
++	for (unsigned int original = 0; original < 2; original++) {
++		reset();
++		mfd_initial = mfd_current = original;
++		check(run_mfd_download() == BC_STS_SUCCESS && mfd_calls == 1 &&
++		      mfd_target_reads == 3 && mfd_target_writes == 2 &&
++		      mfd_current == original && cmac_writes == 4 &&
++		      arm_run_writes == 1 && heartbeats == 1 &&
++		      !hardware.research_staging_probe &&
++		      !hardware.research_mfd_latch_probe &&
++		      !hardware.research_mfd_generation && !hardware.research_mfd_owner &&
++		      !memcmp(card_prefix, expected_image, sizeof(card_prefix)) &&
++		      card_suffix == expected_image[24],
++		      "both 0-to-1-to-0 and 1-to-0-to-1 probes restore and authenticate normally");
++		check_mfd_accesses(2);
++		check(mfd_error_reads == 3 && mfd_revision_reads == 3 &&
++		      mfd_bridge_reads == 3,
++		      "successful probe observes all initial, post-write and post-restore guards");
++		dram_writes = dram_reads = bridge_reads = 0;
++		cmac_writes = arm_run_writes = heartbeats = flea_status_reads = 0;
++		check(crystalhd_flea_download_fw(&hardware,
++		      (const uint8_t *)firmware.words, sizeof(firmware.words)) ==
++		      BC_STS_SUCCESS && mfd_calls == 1 && mfd_target_writes == 2,
++		      "a second download cannot replay the consumed MFD probe flag");
++	}
++	for (unsigned int stage = 1; stage < 3; stage++) {
++		for (unsigned int fault = 0; fault < 6; fault++) {
++			reset();
++			if (fault == 0) {
++				mfd_toggle_mismatch = stage == 1;
++				mfd_restore_mismatch = stage == 2;
++			} else if (fault <= 3) {
++				mfd_error_by_stage[stage] = error_bits[fault - 1];
++			} else if (fault == 4) {
++				mfd_revision_by_stage[stage] = 0;
++			} else {
++				mfd_bridge_by_stage[stage] = ARM_RUN_REQ_BIT;
++			}
++			check(run_mfd_download() != BC_STS_SUCCESS && mfd_calls == 1 &&
++			      mfd_target_writes == 2 && mfd_current == mfd_initial &&
++			      !cmac_writes && !arm_run_writes && !heartbeats &&
++			      !hardware.research_staging_probe &&
++			      !hardware.research_mfd_latch_probe &&
++			      !hardware.research_mfd_generation && !hardware.research_mfd_owner &&
++			      !memcmp(&firmware, &firmware_before, sizeof(firmware)) &&
++			      !memcmp(card_prefix, expected_image, sizeof(card_prefix)) &&
++			      card_suffix == expected_image[24],
++			      "post-write/restore mismatch or guard fault always restores and prevents CMAC/start");
++			check_mfd_accesses(2);
++		}
++	}
++}
++
++static void mfd_async_context_results(void)
++{
++	static const uint32_t read_offsets[] = {
++		BCHP_MFD_REVISION_ID,
++		BCHP_MFD_CHROMA_SAMPLING_CNTL,
++		BCHP_SUN_GISB_ARB_ERR_CAP_STATUS,
++		BCHP_ARMCR4_BRIDGE_REG_BRIDGE_CTL,
++	};
++
++	groups++;
++	for (unsigned int original = 0; original < 2; original++) {
++		for (unsigned int stage = 0; stage < 3; stage++) {
++			for (unsigned int fault = MFD_CONTEXT_DMA_FAULT;
++			     fault <= MFD_CONTEXT_REMOVED; fault++) {
++				for (unsigned int read = 0;
++				     read < sizeof(read_offsets) / sizeof(read_offsets[0]); read++) {
++					unsigned int expected_writes = stage ? 2 : 0;
++
++					reset();
++					mfd_initial = mfd_current = original;
++					mfd_context_fault = (enum mfd_context_fault)fault;
++					mfd_context_fault_stage = stage;
++					mfd_context_fault_offset = read_offsets[read];
++					check(run_mfd_download() == BC_STS_IO_ERROR &&
++					      mfd_calls == 1 && mfd_context_fault_fired &&
++					      mfd_target_writes == expected_writes &&
++					      mfd_current == original &&
++					      !cmac_writes && !arm_run_writes && !heartbeats &&
++					      !hardware.research_staging_probe &&
++					      !hardware.research_mfd_latch_probe &&
++					      !hardware.research_mfd_generation &&
++					      !hardware.research_mfd_owner &&
++					      !memcmp(card_prefix, expected_image, sizeof(card_prefix)) &&
++					      card_suffix == expected_image[24],
++					      "DMA fault/removal during each read bundle rejects and preserves restoration/start bounds");
++					check(mfd_target_reads == (stage ? 3U : 1U) &&
++					      mfd_revision_reads == (stage ? 3U : 1U) &&
++					      mfd_error_reads == (stage ? 3U : 1U) &&
++					      mfd_bridge_reads == (stage ? 3U : 1U),
++					      "asynchronous context faults are detected with otherwise matching register bundles");
++					check_mfd_accesses(expected_writes);
++				}
++			}
++		}
++	}
++}
++
+ int main(void)
+ {
+ 	reset();
+@@ -806,6 +1292,10 @@ int main(void)
+ 	link_results();
+ 	sized_images();
+ 	staging_results();
++	mfd_admission_results();
++	mfd_register_admission_results();
++	mfd_latch_results();
++	mfd_async_context_results();
+ 	printf("Firmware download safety passed (%u groups, %u checks, %u failures)\n",
+ 	       groups, checks, failures);
+ 	return failures ? EXIT_FAILURE : EXIT_SUCCESS;
+diff --git a/tests/fw-download.sh b/tests/fw-download.sh
+index 73b5df9..8e7bafb 100755
+--- a/tests/fw-download.sh
++++ b/tests/fw-download.sh
+@@ -7,7 +7,7 @@ test_dir=$(mktemp -d "${TMPDIR:-/tmp}/crystalhd-fw-download.XXXXXX")
+ cleanup()
+ {
+ 	rm -f "$test_dir/check" "$test_dir/flea.h" "$test_dir/link.h" \
+-		"$test_dir/fw-download-functions.h"
++		"$test_dir/fw-download-functions.h" "$test_dir/mfd-latch-function.h"
+ 	rmdir "$test_dir"
+ }
+ trap cleanup EXIT
+@@ -19,7 +19,7 @@ extract_function()
+ 	source_file=$2
+ 	output_file=$3
+ 	awk -v name="$function_name" '
+-		$0 ~ "^BC_STATUS " name "\\(" { candidate = 1; header = "" }
++		$0 ~ "^(static[[:space:]]+)?BC_STATUS " name "\\(" { candidate = 1; header = "" }
+ 		candidate {
+ 			header = header $0 "\n"
+ 			if (/;[[:space:]]*$/) { candidate = 0; next }
+@@ -38,6 +38,8 @@ extract_function()
+ 	' "$source_file" > "$output_file"
+ }
+ 
++extract_function crystalhd_flea_mfd_latch_probe \
++	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-latch-function.h"
+ extract_function crystalhd_flea_download_fw \
+ 	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/flea.h"
+ extract_function crystalhd_link_download_fw \
+@@ -85,6 +87,7 @@ for sanitize in no yes; do
+ 		-DLINK_BLOB_SIZE="$link_blob_size" \
+ 		-I"$repo_dir/include" -I"$repo_dir/include/flea" \
+ 		-I"$repo_dir/include/link" -I"$repo_dir/driver/linux" \
++		-I"$repo_dir/include/flea/70015/magnum/basemodules/chp/70015/rdb/a0" \
+ 		-I"$test_dir" "$repo_dir/tests/fw-download.c" \
+ 		-o "$test_dir/check"
+ 	printf 'Firmware download: sanitizers=%s\n' "$sanitize"

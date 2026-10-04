@@ -36,4 +36,8 @@ git -C "$test_dir" apply --check \
 	"$repo_dir/tests/fixtures/issue92/fw-staging.patch"
 git -C "$test_dir" apply \
 	"$repo_dir/tests/fixtures/issue92/fw-staging.patch"
+git -C "$test_dir" apply --check \
+	"$repo_dir/tests/fixtures/issue92/mfd-latch.patch"
+git -C "$test_dir" apply \
+	"$repo_dir/tests/fixtures/issue92/mfd-latch.patch"
 sh "$test_dir/tests/fw-download.sh"
