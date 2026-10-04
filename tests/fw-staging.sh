@@ -9,6 +9,9 @@ test_dir=$(mktemp -d "${TMPDIR:-/tmp}/crystalhd-fw-staging.XXXXXX")
 cleanup()
 {
 	rm -f "$test_dir/driver/linux/crystalhd_hw.h" \
+		"$test_dir/driver/linux/crystalhd_hw.c" \
+		"$test_dir/driver/linux/crystalhd_cmds.c" \
+		"$test_dir/driver/linux/crystalhd_fleafuncs.h" \
 		"$test_dir/driver/linux/crystalhd_fw_research.c" \
 		"$test_dir/driver/linux/crystalhd_fleafuncs.c" \
 		"$test_dir/driver/linux/crystalhd_linkfuncs.c" \
@@ -23,7 +26,8 @@ trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
 mkdir -p "$test_dir/driver/linux" "$test_dir/tests"
-for name in FleaDefs.h crystalhd_hw.h crystalhd_fw_research.c crystalhd_fleafuncs.c \
+for name in FleaDefs.h crystalhd_hw.h crystalhd_hw.c crystalhd_cmds.c \
+	crystalhd_fleafuncs.h crystalhd_fw_research.c crystalhd_fleafuncs.c \
 	crystalhd_linkfuncs.c crystalhd_lnx.c; do
 	cp "$repo_dir/driver/linux/$name" "$test_dir/driver/linux/$name"
 done
@@ -40,4 +44,8 @@ git -C "$test_dir" apply --check \
 	"$repo_dir/tests/fixtures/issue92/mfd-latch.patch"
 git -C "$test_dir" apply \
 	"$repo_dir/tests/fixtures/issue92/mfd-latch.patch"
+git -C "$test_dir" apply --check \
+	"$repo_dir/tests/fixtures/issue92/mfd-colour.patch"
+git -C "$test_dir" apply \
+	"$repo_dir/tests/fixtures/issue92/mfd-colour.patch"
 sh "$test_dir/tests/fw-download.sh"
