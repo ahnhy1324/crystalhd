@@ -15,8 +15,11 @@ extern "C" {
 #include <cstdlib>
 #include <cstring>
 #include <dirent.h>
+#include <fcntl.h>
 #include <set>
+#include <string>
 #include <sys/stat.h>
+#include <unistd.h>
 #include <utility>
 #include <vector>
 #include "phase1-progress.h"
@@ -27,6 +30,7 @@ static const unsigned kMaximumPackets = 10000;
 static const unsigned kMaximumIterations = 1000;
 static const uint64_t kTokenStep = 100000;
 static const unsigned long kRssGrowthLimitKiB = 32UL * 1024UL;
+static const uint64_t kMaximumCaptureBytes = 256ULL * 1024 * 1024;
 
 struct Deadline {
     gint64 end;
@@ -72,10 +76,18 @@ struct Options {
     bool mpeg1_via_mpeg2 = false;
     bool h263_via_divx = false;
     bool open_only = false;
+    const char *capture_path = nullptr;
 };
 
 static bool ParseArguments(std::vector<const char *> arguments, Options *options)
 {
+    if (arguments.size() >= 3 &&
+        !std::strcmp(arguments[arguments.size() - 2], "--capture-yuy2")) {
+        const char *path = arguments.back();
+        if (!*path || !std::strcmp(path, "-")) return false;
+        options->capture_path = path;
+        arguments.resize(arguments.size() - 2);
+    }
     if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--open-only")) {
         options->open_only = true;
         arguments.pop_back();
@@ -103,7 +115,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         arguments.resize(arguments.size() - 2);
     }
     if (arguments.size() == 2 && !std::strcmp(arguments[1], "--self-test")) {
-        if (options->scaler_test || options->mpeg1_via_mpeg2 ||
+        if (options->capture_path || options->scaler_test || options->mpeg1_via_mpeg2 ||
             options->h263_via_divx || options->open_only) return false;
         options->mode = Mode::SelfTest;
         return true;
@@ -120,7 +132,8 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         return false;
     options->mode = preflight ? Mode::Preflight : Mode::Hardware;
     options->path = arguments[2];
-    return true;
+    return !options->capture_path ||
+        (hardware && options->scaler_test && !options->open_only && options->iterations == 1);
 }
 
 // Test-only MPEG-1 admission through the existing algorithm-1 channel. Do not
@@ -206,6 +219,120 @@ static bool HashActivePixels(GChecksum *checksum, const BC_DTS_PROC_OUT &output,
     g_checksum_update(checksum, output.Ybuff, static_cast<gssize>(bytes));
     return true;
 }
+
+static bool CaptureBudget(unsigned width, unsigned height, unsigned expected,
+                          uint64_t *frame_bytes, uint64_t *total_bytes)
+{
+    if (!frame_bytes || !total_bytes || !width || width > 1920 || (width & 1) || !height || height > 1088 ||
+        (height & 1) || !expected || expected > kMaximumPackets)
+        return false;
+    *frame_bytes = static_cast<uint64_t>(width) * height * 2;
+    *total_bytes = *frame_bytes * expected;
+    return *total_bytes <= kMaximumCaptureBytes;
+}
+
+struct CapturedFrame {
+    std::vector<uint8_t> pixels;
+    uint64_t token = 0;
+    uint32_t picture_number = 0, width = 0, height = 0, flags = 0;
+    uint32_t chroma_format = 0, output_flags = 0, aspect_ratio = 0, colour_primaries = 0;
+};
+
+// This copies only a validated host output lease. No pointer survives release.
+static bool CopyCapturedPixels(const BC_DTS_PROC_OUT &output, unsigned width,
+                               unsigned height, uint64_t limit, CapturedFrame *frame)
+{
+    uint64_t bytes = 0, total = 0;
+    if (!frame || !CaptureBudget(width, height, 1, &bytes, &total) || bytes > limit ||
+        !output.Ybuff || output.b422Mode != OUTPUT_MODE422_YUY2 ||
+        !(output.PoutFlags & BC_POUT_FLAGS_PIB_VALID) ||
+        (output.PoutFlags & BC_POUT_FLAGS_ENCRYPTED) ||
+        (output.PicInfo.flags & (VDEC_FLAG_INTERLACED_SRC | VDEC_FLAG_EOS)) ||
+        output.PicInfo.width != width || output.PicInfo.height != height ||
+        static_cast<uint64_t>(output.YBuffDoneSz) * 4 < bytes)
+        return false;
+    try {
+        frame->pixels.assign(output.Ybuff, output.Ybuff + static_cast<size_t>(bytes));
+    } catch (...) {
+        return false;
+    }
+    frame->token = output.PicInfo.timeStamp;
+    frame->picture_number = output.PicInfo.picture_number;
+    frame->width = width;
+    frame->height = height;
+    frame->flags = output.PicInfo.flags;
+    frame->chroma_format = output.PicInfo.chroma_format;
+    frame->output_flags = output.PoutFlags;
+    frame->aspect_ratio = output.PicInfo.aspect_ratio;
+    frame->colour_primaries = output.PicInfo.colour_primaries;
+    return true;
+}
+
+struct PixelCapture {
+    FILE *file = nullptr;
+    const char *path = nullptr;
+    unsigned expected = 0, frames = 0;
+    uint64_t frame_bytes = 0, total_bytes = 0, written = 0;
+    bool report;
+    explicit PixelCapture(bool report_values = true) : report(report_values) {}
+    PixelCapture(const PixelCapture &) = delete;
+    PixelCapture &operator=(const PixelCapture &) = delete;
+    ~PixelCapture() { if (file) std::fclose(file); }
+    bool Open(const char *destination, unsigned width, unsigned height, unsigned count) {
+        if (file || path) return false;
+        if (!destination) return true;
+        if (!CaptureBudget(width, height, count, &frame_bytes, &total_bytes)) {
+            if (report) std::fprintf(stderr, "YUY2 capture exceeds geometry/frame/256-MiB bounds\n");
+            return false;
+        }
+        const int fd = open(destination, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+        if (fd < 0) {
+            if (report) std::fprintf(stderr, "Cannot exclusively create YUY2 capture '%s': %s\n",
+                         destination, std::strerror(errno));
+            return false;
+        }
+        path = destination;
+        expected = count;
+        file = fdopen(fd, "wb");
+        if (!file) {
+            close(fd);
+            if (report) std::fprintf(stderr, "Failed YUY2 capture retained at '%s' (empty)\n", path);
+            return false;
+        }
+        return true;
+    }
+    bool Write(const CapturedFrame &frame) {
+        if (!file || frames >= expected || frame.pixels.size() != frame_bytes ||
+            written > total_bytes || frame_bytes > total_bytes - written)
+            return false;
+        const size_t bytes = std::fwrite(frame.pixels.data(), 1, frame.pixels.size(), file);
+        written += bytes;
+        if (bytes != frame.pixels.size()) return false;
+        if (report) std::printf("Captured YUY2: frame-index=%u token=%llu picture-number=%u "
+                    "geometry=%ux%u flags=%x chroma-format=%x output-flags=%x "
+                    "aspect-ratio=%u colour-primaries=%u\n", frames,
+                    static_cast<unsigned long long>(frame.token), frame.picture_number,
+                    frame.width, frame.height, frame.flags, frame.chroma_format,
+                    frame.output_flags, frame.aspect_ratio, frame.colour_primaries);
+        ++frames;
+        return true;
+    }
+    bool Finish(bool completed) {
+        if (!path) return true;
+        bool closed = false;
+        if (file) {
+            closed = std::fclose(file) == 0;
+            file = nullptr;
+        }
+        const bool ok = completed && closed && frames == expected && written == total_bytes;
+        if (report) std::printf("YUY2 capture: frames=%u/%u bytes=%llu/%llu result=%s\n",
+                    frames, expected, static_cast<unsigned long long>(written),
+                    static_cast<unsigned long long>(total_bytes), ok ? "PASS" : "FAIL");
+        if (!ok && report)
+            std::fprintf(stderr, "Failed/partial YUY2 capture retained at '%s'; do not use as evidence\n", path);
+        return ok;
+    }
+};
 
 struct Resources {
     unsigned long rss_kib = 0;
@@ -365,6 +492,34 @@ static bool SelfTest()
     options = Options{};
     check(!ParseArguments({"probe", "--self-test", "--scaler-test", "320"}, &options),
           "self-test does not accept hardware options");
+    for (const char *width : {"0", "320", "640"}) {
+        options = Options{};
+        check(ParseArguments({"probe", "--hardware", "fixture", "12", "9", "1",
+                              "--scaler-test", width, "--capture-yuy2", "owned.raw"}, &options) &&
+              options.mode == Mode::Hardware && options.scaler_test &&
+              options.iterations == 1 && options.capture_path &&
+              !std::strcmp(options.capture_path, "owned.raw"),
+              "single-run scaler capture is an explicit trailing option");
+    }
+    options = Options{};
+    check(ParseArguments({"probe", "--hardware", "fixture", "12", "--scaler-test", "320",
+                          "--capture-yuy2", "path with spaces.raw"}, &options),
+          "capture path is one argument without shell interpretation");
+    for (const std::vector<const char *> &invalid : {
+             std::vector<const char *>{"probe", "--self-test", "--capture-yuy2", "owned.raw"},
+             {"probe", "--preflight", "fixture", "12", "--scaler-test", "320", "--capture-yuy2", "owned.raw"},
+             {"probe", "--hardware", "fixture", "12", "--capture-yuy2", "owned.raw"},
+             {"probe", "--hardware", "fixture", "12", "9", "2", "--scaler-test", "320", "--capture-yuy2", "owned.raw"},
+             {"probe", "--hardware", "fixture", "12", "--h263-via-divx", "--open-only", "--capture-yuy2", "owned.raw"},
+             {"probe", "--hardware", "fixture", "12", "--scaler-test", "320", "--h263-via-divx", "--open-only", "--capture-yuy2", "owned.raw"},
+             {"probe", "--hardware", "fixture", "12", "--scaler-test", "320", "--capture-yuy2", ""},
+             {"probe", "--hardware", "fixture", "12", "--scaler-test", "320", "--capture-yuy2", "-"},
+             {"probe", "--hardware", "fixture", "12", "--scaler-test", "320", "--capture-yuy2"},
+             {"probe", "--hardware", "fixture", "12", "--capture-yuy2", "owned.raw", "--scaler-test", "320"},
+             {"probe", "--hardware", "fixture", "12", "--scaler-test", "320", "--capture-yuy2", "a.raw", "--capture-yuy2", "b.raw"}}) {
+        options = Options{};
+        check(!ParseArguments(invalid, &options), "invalid capture mode/count/path/placement rejected");
+    }
     options = Options{};
     check(ParseArguments({"probe", "--preflight", "fixture", "30",
                           "--mpeg1-via-mpeg2"}, &options) &&
@@ -552,6 +707,165 @@ static bool SelfTest()
     check(!HashActivePixels(checksum, picture, 2, 2), "missing pixel lease rejected");
     g_checksum_free(checksum); g_checksum_free(reference);
 
+    uint64_t frame_bytes = 0, total_bytes = 0;
+    check(CaptureBudget(640, 360, 180, &frame_bytes, &total_bytes) &&
+          frame_bytes == 460800 && total_bytes == 82944000,
+          "capture byte budget follows exact active geometry and expected frames");
+    check(CaptureBudget(128, 2, kMaximumPackets, &frame_bytes, &total_bytes) &&
+          total_bytes == 5120000,
+          "maximum frame count remains bounded");
+    for (const std::vector<unsigned> &invalid : {
+             std::vector<unsigned>{0, 2, 1}, {2, 0, 1}, {3, 2, 1}, {2, 3, 1},
+             {1922, 2, 1}, {2, 1090, 1}, {2, 2, 0}, {2, 2, kMaximumPackets + 1},
+             {1920, 1088, 65}, {UINT_MAX, UINT_MAX, UINT_MAX}})
+        check(!CaptureBudget(invalid[0], invalid[1], invalid[2], &frame_bytes, &total_bytes),
+              "capture rejects malformed geometry, frame overflow and disk budget excess");
+    picture = BC_DTS_PROC_OUT{};
+    picture.Ybuff = pixels; picture.YBuffDoneSz = 3;
+    picture.b422Mode = OUTPUT_MODE422_YUY2;
+    picture.PoutFlags = BC_POUT_FLAGS_PIB_VALID;
+    picture.PicInfo.width = 2; picture.PicInfo.height = 2;
+    picture.PicInfo.timeStamp = 12300000; picture.PicInfo.picture_number = 7;
+    picture.PicInfo.chroma_format = 0x422;
+    picture.PicInfo.aspect_ratio = 1; picture.PicInfo.colour_primaries = 5;
+    CapturedFrame frame;
+    check(CopyCapturedPixels(picture, 2, 2, 8, &frame) && frame.pixels.size() == 8 &&
+          frame.pixels == std::vector<uint8_t>(pixels, pixels + 8) &&
+          frame.token == 12300000 && frame.picture_number == 7 &&
+          frame.width == 2 && frame.height == 2 && frame.flags == 0 &&
+          frame.chroma_format == 0x422 && frame.output_flags == BC_POUT_FLAGS_PIB_VALID &&
+          frame.aspect_ratio == 1 && frame.colour_primaries == 5,
+          "capture owns exactly active pixels and frozen value-only metadata");
+    pixels[0] = 99; picture.PicInfo.timeStamp = 0; picture.Ybuff = nullptr;
+    check(frame.pixels[0] == 0 && frame.token == 12300000,
+          "owned capture survives source mutation, pointer retirement and metadata reuse");
+    pixels[0] = 0; picture.Ybuff = pixels;
+    check(!CopyCapturedPixels(picture, 2, 2, 7, &frame) &&
+          !CopyCapturedPixels(picture, 2, 2, 8, nullptr) &&
+          !CopyCapturedPixels(picture, 4, 2, 16, &frame),
+          "capture validates destination budget and exact source geometry before copying");
+    for (unsigned fault = 0; fault < 7; ++fault) {
+        BC_DTS_PROC_OUT invalid = picture;
+        if (fault == 0) invalid.Ybuff = nullptr;
+        if (fault == 1) invalid.YBuffDoneSz = 1;
+        if (fault == 2) invalid.b422Mode = OUTPUT_MODE422_UYVY;
+        if (fault == 3) invalid.PoutFlags = 0;
+        if (fault == 4) invalid.PoutFlags |= BC_POUT_FLAGS_ENCRYPTED;
+        if (fault == 5) invalid.PicInfo.flags |= VDEC_FLAG_INTERLACED_SRC;
+        if (fault == 6) invalid.PicInfo.flags |= VDEC_FLAG_EOS;
+        check(!CopyCapturedPixels(invalid, 2, 2, 8, &frame),
+              "capture rejects missing, short, wrong-format, invalid, encrypted, interlaced or EOS data");
+    }
+    check(!CaptureBudget(2, 2, 1, nullptr, &total_bytes) &&
+          !CaptureBudget(2, 2, 1, &frame_bytes, nullptr),
+          "capture budget rejects missing result storage");
+
+    // These tests own this private directory and remove only their exact files.
+    char capture_directory[] = "/tmp/crystalhd-yuy2-selftest.XXXXXX";
+    char *created_directory = mkdtemp(capture_directory);
+    check(created_directory != nullptr, "capture filesystem test directory created");
+    if (created_directory) {
+        const std::string base = std::string(created_directory) + "/";
+        const std::string complete_path = base + "complete.raw";
+        const std::string short_path = base + "short.raw";
+        const std::string oversized_path = base + "oversized.raw";
+        const std::string failed_path = base + "failed.raw";
+        const std::string destructor_path = base + "destructor.raw";
+        const std::string budget_path = base + "budget.raw";
+        const std::string alias_path = base + "alias.raw";
+        const std::string dangling_path = base + "dangling.raw";
+        const std::string missing_path = base + "missing.raw";
+        const auto closed_fd = [](int fd) {
+            errno = 0;
+            return fd >= 0 && fcntl(fd, F_GETFD) == -1 && errno == EBADF;
+        };
+        const auto exact_file = [&frame](const std::string &path, unsigned count) {
+            FILE *read = std::fopen(path.c_str(), "rb");
+            if (!read) return false;
+            bool valid = true;
+            uint8_t data[8];
+            for (unsigned index = 0; index < count; ++index)
+                valid = std::fread(data, 1, sizeof(data), read) == sizeof(data) &&
+                        !std::memcmp(data, frame.pixels.data(), sizeof(data)) && valid;
+            valid = std::fgetc(read) == EOF && !std::ferror(read) && valid;
+            return std::fclose(read) == 0 && valid;
+        };
+        PixelCapture complete(false);
+        const bool opened = complete.Open(complete_path.c_str(), 2, 2, 2);
+        check(opened && complete.file, "exclusive new capture opened");
+        if (opened) {
+            const int fd = fileno(complete.file);
+            struct stat info{};
+            check(fstat(fd, &info) == 0 && S_ISREG(info.st_mode) && !(info.st_mode & 0077) &&
+                  (fcntl(fd, F_GETFD) & FD_CLOEXEC), "capture is private regular close-on-exec file");
+            check(!complete.Open(budget_path.c_str(), 2, 2, 1),
+                  "open capture cannot replace its owned descriptor");
+            check(complete.Write(frame) && complete.Write(frame) && !complete.Write(frame),
+                  "capture enforces exact frame count without appending an excess frame");
+            check(complete.Finish(true) && !complete.file && closed_fd(fd),
+                  "successful capture closes descriptor before postflight");
+            check(exact_file(complete_path, 2), "raw capture contains only exact active frames");
+            PixelCapture existing(false);
+            check(!existing.Open(complete_path.c_str(), 2, 2, 1) && !existing.file &&
+                  exact_file(complete_path, 2), "existing capture is never truncated or overwritten");
+            check(symlink("complete.raw", alias_path.c_str()) == 0,
+                  "capture symlink refusal fixture created");
+            PixelCapture alias(false);
+            check(!alias.Open(alias_path.c_str(), 2, 2, 1) && !alias.file &&
+                  exact_file(complete_path, 2), "capture refuses symlink without changing its target");
+        }
+        check(symlink("missing.raw", dangling_path.c_str()) == 0,
+              "dangling capture symlink refusal fixture created");
+        PixelCapture dangling(false);
+        struct stat info{};
+        check(!dangling.Open(dangling_path.c_str(), 2, 2, 1) && !dangling.file &&
+              lstat(missing_path.c_str(), &info) == -1 && errno == ENOENT,
+              "capture refuses dangling symlink without creating its target");
+        PixelCapture budget(false);
+        check(!budget.Open(budget_path.c_str(), 1920, 1088, 65) && !budget.file &&
+              lstat(budget_path.c_str(), &info) == -1 && errno == ENOENT,
+              "over-budget capture refuses before creating any output");
+        PixelCapture short_capture(false);
+        const bool short_opened = short_capture.Open(short_path.c_str(), 2, 2, 2);
+        check(short_opened, "short-count capture fixture opened");
+        if (short_opened) {
+            const int fd = fileno(short_capture.file);
+            check(short_capture.Write(frame) && !short_capture.Finish(true) &&
+                  closed_fd(fd) && exact_file(short_path, 1),
+                  "short-count capture fails, closes and retains only its actual frame");
+        }
+        PixelCapture oversized(false);
+        const bool oversized_opened = oversized.Open(oversized_path.c_str(), 2, 2, 1);
+        check(oversized_opened, "oversized-frame capture fixture opened");
+        if (oversized_opened) {
+            const int fd = fileno(oversized.file);
+            CapturedFrame extra = frame;
+            extra.pixels.push_back(99);
+            check(!oversized.Write(extra) && !oversized.Finish(false) && closed_fd(fd) &&
+                  exact_file(oversized_path, 0), "oversized frame writes nothing and capture closes failed");
+        }
+        PixelCapture failed(false);
+        const bool failed_opened = failed.Open(failed_path.c_str(), 2, 2, 1);
+        check(failed_opened, "failed-run capture fixture opened");
+        if (failed_opened) {
+            const int fd = fileno(failed.file);
+            check(failed.Write(frame) && !failed.Finish(false) && closed_fd(fd) &&
+                  exact_file(failed_path, 1), "full capture remains failed when its decoder run failed");
+        }
+        int destructor_fd = -1;
+        {
+            PixelCapture abandoned(false);
+            const bool abandoned_opened = abandoned.Open(destructor_path.c_str(), 2, 2, 1);
+            check(abandoned_opened, "abandoned capture fixture opened");
+            if (abandoned_opened) destructor_fd = fileno(abandoned.file);
+        }
+        check(closed_fd(destructor_fd), "capture destructor closes an unfinished descriptor");
+        for (const std::string &path : {complete_path, short_path, oversized_path, failed_path,
+                                       destructor_path, alias_path, dangling_path})
+            check(unlink(path.c_str()) == 0 || errno == ENOENT, "owned capture fixture removed");
+        check(rmdir(created_directory) == 0, "owned capture filesystem test directory removed");
+    }
+
     check(Token(0, 0) == 100000 && Token(0, 9999) < Token(1, 0) &&
           Token(998, 9999) < Token(999, 0), "generation token ranges");
     unsigned long value = 0;
@@ -691,6 +1005,20 @@ static bool Status(const char *operation, BC_STATUS status)
     return false;
 }
 
+struct OutputLease {
+    HANDLE handle;
+    bool active = true;
+    explicit OutputLease(HANDLE value) : handle(value) {}
+    OutputLease(const OutputLease &) = delete;
+    OutputLease &operator=(const OutputLease &) = delete;
+    ~OutputLease() { if (active) Release(); }
+    bool Release() {
+        if (!active) return false;
+        active = false;
+        return Status("DtsReleaseOutputBuffs", DtsReleaseOutputBuffs(handle, nullptr, FALSE));
+    }
+};
+
 struct Audit {
     unsigned frames = 0;
     bool marker = false, eos = false;
@@ -700,6 +1028,7 @@ struct Audit {
     Phase1Progress *progress = nullptr;
     unsigned output_width = 0, output_height = 0;
     GChecksum *pixels = nullptr;
+    PixelCapture *capture = nullptr;
     ~Audit() { if (pixels) g_checksum_free(pixels); }
 };
 
@@ -715,6 +1044,8 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
         const bool marker = result == BC_STS_SUCCESS &&
             (output.PicInfo.flags & VDEC_FLAG_EOS) != 0;
         if (result == BC_STS_SUCCESS) {
+            OutputLease lease(device->handle);
+            CapturedFrame captured;
             audit->marker |= marker;
             bool valid = true;
             if (!marker) {
@@ -728,11 +1059,19 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                     audit->pending.erase(output.PicInfo.timeStamp) == 1;
                 if (valid && audit->pixels)
                     valid = HashActivePixels(audit->pixels, output, width, height);
+                if (valid && audit->capture)
+                    valid = CopyCapturedPixels(output, audit->output_width, audit->output_height,
+                                               audit->capture->frame_bytes, &captured);
                 if (valid) ++audit->frames;
             }
             // Every successful NoCopy fetch owns a lease, even invalid output.
-            const bool released = Status("DtsReleaseOutputBuffs",
-                DtsReleaseOutputBuffs(device->handle, nullptr, FALSE));
+            const bool released = lease.Release();
+            // File I/O uses only the owned copy, after the lease was released.
+            if (!marker && valid && released && audit->capture &&
+                !audit->capture->Write(captured)) {
+                std::fprintf(stderr, "YUY2 capture write/budget failure\n");
+                valid = false;
+            }
             if (!marker && valid && released && audit->progress)
                 phase1_progress_write(audit->progress,
                     "probe=library-drain iteration=%u frame-index=%u token=%llu\n",
@@ -791,6 +1130,10 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
         audit.pixels = g_checksum_new(G_CHECKSUM_SHA256);
         if (!audit.pixels) return false;
     }
+    PixelCapture capture;
+    if (!capture.Open(options.capture_path, audit.output_width, audit.output_height, expected))
+        return false;
+    audit.capture = options.capture_path ? &capture : nullptr;
     const uint32_t mode = DTS_PLAYBACK_MODE | DTS_LOAD_FILE_PLAY_FW | DTS_SKIP_TX_CHK_CPB |
         DTS_PLAYBACK_DROP_RPT_MODE | DTS_SINGLE_THREADED_MODE |
         DTS_DFLT_RESOLUTION(vdecRESOLUTION_1080p23_976);
@@ -870,6 +1213,8 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
          audit.frames == expected && audit.pending.empty();
     const bool closed = device.Close();
     ok = ok && closed;
+    const bool captured = capture.Finish(ok);
+    ok = ok && captured;
     std::printf("Library drain: iteration=%u/%u frames=%u/%u pending=%zu "
         "%s-EOS=%s output-marker=%s ready=%u cleanup=%s result=%s\n",
         iteration, iterations, audit.frames, expected, audit.pending.size(),
@@ -896,7 +1241,7 @@ int main(int argc, char **argv)
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
             "[--scaler-test WIDTH_OR_0] [--mpeg1-via-mpeg2 | --h263-via-divx] "
-            "[--open-only]\n", argv[0]);
+            "[--open-only] [--capture-yuy2 NEW_PATH]\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
