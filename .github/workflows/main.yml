@@ -42,6 +42,9 @@ jobs:
       - name: Validate legacy i686 without SSE
         run: make legacy-cpu-check
 
+      - name: Compare stock A32 allocation against QEMU
+        run: make fw-qemu-check
+
       - name: Build and test
         env:
           # Hosted Node must also find Ubuntu's apt-installed node-ws.
