@@ -85,6 +85,16 @@ struct Options {
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
 };
 
+static uint32_t ProbeDeviceMode(const Options &options)
+{
+    uint32_t mode = DTS_PLAYBACK_MODE | DTS_LOAD_FILE_PLAY_FW | DTS_SKIP_TX_CHK_CPB |
+        DTS_PLAYBACK_DROP_RPT_MODE | DTS_DFLT_RESOLUTION(vdecRESOLUTION_1080p23_976);
+    // Native-width controls must avoid the single-thread 1280-pixel preset.
+    if (!options.scaler_test || options.scale_width)
+        mode |= DTS_SINGLE_THREADED_MODE;
+    return mode;
+}
+
 static bool ParseArguments(std::vector<const char *> arguments, Options *options)
 {
     if (arguments.size() >= 3 &&
@@ -480,6 +490,16 @@ static bool SelfTest()
           "invalid numbers");
 
     Options options;
+    const uint32_t legacy_mode = ProbeDeviceMode(options);
+    check((legacy_mode & DTS_SINGLE_THREADED_MODE) != 0,
+          "ordinary probe retains its single-thread mode");
+    Options native_mode;
+    native_mode.scaler_test = true;
+    check(ProbeDeviceMode(native_mode) == (legacy_mode & ~DTS_SINGLE_THREADED_MODE),
+          "native-width control disables only the scaling preset mode");
+    native_mode.scale_width = 320;
+    check(ProbeDeviceMode(native_mode) == legacy_mode,
+          "explicit scaled control retains mode and width override");
     check(ParseArguments({"probe", "--hardware", "fixture", "12"}, &options) &&
           options.mode == Mode::Hardware && options.expected == 12 &&
           options.seconds == 30 && options.iterations == 1 &&
@@ -1228,9 +1248,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
                       options.output_format))
         return false;
     audit.capture = options.capture_path ? &capture : nullptr;
-    const uint32_t mode = DTS_PLAYBACK_MODE | DTS_LOAD_FILE_PLAY_FW | DTS_SKIP_TX_CHK_CPB |
-        DTS_PLAYBACK_DROP_RPT_MODE | DTS_SINGLE_THREADED_MODE |
-        DTS_DFLT_RESOLUTION(vdecRESOLUTION_1080p23_976);
+    const uint32_t mode = ProbeDeviceMode(options);
     bool ok = Status("DtsDeviceOpen", DtsDeviceOpen(&device.handle, mode));
     BC_INFO_CRYSTAL version = {};
     if (ok) ok = Status("DtsCrystalHDVersion", DtsCrystalHDVersion(device.handle, &version));

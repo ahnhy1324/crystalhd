@@ -282,7 +282,7 @@ typedef struct _DTS_LIB_CONTEXT{
 
 	char			FwBinFile[MAX_PATH+1];	/* Firmware Bin file place holder */
 
-	BC_OUTPUT_FORMAT b422Mode;				/* 422 Mode Identifier for Link */
+	BC_OUTPUT_FORMAT b422Mode;				/* Hardware capture/PIB layout. */
 	/* Flea keeps its capture/PIB source YUY2; UYVY is a host-output request. */
 	bool softwareUyvy;
 	uint32_t		HWOutPicWidth;

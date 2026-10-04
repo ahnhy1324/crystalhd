@@ -29,6 +29,7 @@ SRCFILES := libcrystalhd_if.cpp \
 	libcrystalhd_fwload_if.cpp \
 	libcrystalhd_parser.cpp
 OBJFILES := $(SRCFILES:.cpp=.o)
+DEPFILES := $(OBJFILES:.o=.d)
 PUBLIC_HEADERS := libcrystalhd_if.h \
 	$(ROOTDIR)/include/bc_dts_defs.h \
 	$(ROOTDIR)/include/bc_dts_types.h \
@@ -41,7 +42,9 @@ $(BCLIB): $(OBJFILES)
 	$(CXX) $(LDFLAGS) -o $@ $(OBJFILES) $(LDLIBS) $(CRYSTALHD_CPU_FLAGS)
 
 %.o: %.cpp
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CRYSTALHD_CPU_FLAGS) -c $< -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CRYSTALHD_CPU_FLAGS) -MMD -MP -c $< -o $@
+
+$(OBJFILES): Makefile
 
 $(BCLIB_NAME) $(BCLIB_SONAME): $(BCLIB)
 	ln -sfn $(BCLIB) $@
@@ -52,7 +55,7 @@ libcrystalhd.pc: libcrystalhd.pc.in
 		-e 's|@includedir@|$(INCLUDEDIR)|g' $< > $@
 
 clean:
-	rm -f $(BCLIB) $(BCLIB_SONAME) $(BCLIB_NAME) $(OBJFILES) libcrystalhd.pc $(CRYSTALHD_CPU_STAMP) $(CRYSTALHD_CPU_STAMP).tmp
+	rm -f $(BCLIB) $(BCLIB_SONAME) $(BCLIB_NAME) $(OBJFILES) $(DEPFILES) libcrystalhd.pc $(CRYSTALHD_CPU_STAMP) $(CRYSTALHD_CPU_STAMP).tmp
 
 install: all
 	install -D -m 0755 $(BCLIB) $(DESTDIR)$(LIBDIR)/$(BCLIB)
@@ -82,3 +85,5 @@ uninstall:
 
 include $(ROOTDIR)/cpu.mk
 $(OBJFILES) $(BCLIB): $(CRYSTALHD_BUILD_DEPS)
+
+-include $(DEPFILES)
