@@ -537,6 +537,242 @@ struct MfdAdmissionFixture {
     }
 };
 
+// An explicitly uncertain native-path experiment, not a firmware-control
+// lease. Only FIXED_COLOUR and FEEDER_CNTL bit 3 are target-written; equality
+// cannot exclude a firmware race between API calls. No source pointers follow.
+enum class MfdColourFailure { None, Argument, Api, Revision, Reserved, ExpectedValue, EngineStatus, Unstable };
+struct MfdColourTrace { uint32_t raw[20] = {}; unsigned reads = 0, measured = 0; };
+struct MfdColourProbe {
+    typedef SclViewProbe::Reader Reader;
+    typedef SclViewProbe::Writer Writer;
+    unsigned stimulus = 0, reads = 0, writes = 0;
+    bool begun = false, first_attempted = false, observed = false, seeded = false;
+    bool colour_dirty = false, control_dirty = false, selected = false;
+    bool restore_attempted = false, restored = false, failed = false, access_lost = false;
+    HANDLE owner = nullptr;
+    uint32_t saved_colour = 0, saved_remap = 0;
+    BC_STATUS api_status = BC_STS_SUCCESS;
+    MfdColourFailure failure = MfdColourFailure::None;
+    bool Enabled() const { return stimulus != 0; }
+    uint32_t Colour() const { return stimulus == 1 ? 0x405ac3U : 0xb2d32bU; }
+    bool Reject(MfdColourFailure why, bool lost = true) {
+        failed = true; access_lost |= lost;
+        if (failure == MfdColourFailure::None || lost) failure = why;
+        return false;
+    }
+    void Report(const char *stage, const MfdColourTrace &trace, const uint32_t *addresses,
+                const char *const *names, unsigned count, bool report, unsigned pass_fields = 0) const {
+        if (!report) return;
+        const char *const failures[] = {"none", "argument", "api-status", "revision", "reserved-bits",
+            "expected-value-lost", "observed-engine-status", "tuple-unstable"};
+        std::printf("MFD colour: stage=%s stimulus=%c reads=%u total-reads=%u target-write-attempts=%u "
+            "measured=%u api-status=%d failure=%s experiment-result=%s restored-observed=%s "
+            "API-calls-not-bus-certificate=yes atomic=no active-FW-race/safety-unproved=yes "
+            "clock/source/lease/routing/completion-certified=no\n", stage, stimulus == 1 ? 'a' : 'b',
+            trace.reads, reads, writes, trace.measured, api_status, failures[static_cast<unsigned>(failure)],
+            failed ? "FAIL" : restored && observed ? "PASS" : "INCOMPLETE", restored ? "yes" : "no");
+        for (unsigned index = 0; index < count; ++index) {
+            const unsigned field = pass_fields ? index % pass_fields : index;
+            std::printf("MFD colour raw: stage=%s pass=%u %s@%08x=", stage,
+                pass_fields ? index / pass_fields : 0, names[field], addresses[field]);
+            if (index < trace.measured) std::printf("%08x", trace.raw[index]); else std::printf("NOT-READ");
+            std::printf("\n");
+        }
+        if (pass_fields)
+            std::printf("MFD colour repeats: stage=%s raw-stable=%s (non-atomic numeric comparison)\n", stage,
+                trace.measured == count ? (!std::memcmp(trace.raw, trace.raw + pass_fields,
+                    pass_fields * sizeof(uint32_t)) ? "yes" : "no") : "NOT-READ");
+        std::fflush(stdout);
+    }
+    bool Admission(HANDLE handle, const char *stage, Reader reader, bool report, bool save) {
+        MfdAdmissionSnapshot snapshot;
+        const bool ok = ReadMfdAdmission(handle, &snapshot, reader);
+        reads += snapshot.reads; api_status = snapshot.status;
+        if (!ok) {
+            const MfdColourFailure errors[] = {MfdColourFailure::None, MfdColourFailure::Argument,
+                MfdColourFailure::Api, MfdColourFailure::Revision, MfdColourFailure::Reserved,
+                MfdColourFailure::ExpectedValue, MfdColourFailure::EngineStatus, MfdColourFailure::Unstable};
+            Reject(errors[static_cast<unsigned>(snapshot.failure)], snapshot.failure != MfdAdmissionFailure::EngineStatus);
+        } else if (save) { saved_colour = snapshot.raw[2]; saved_remap = snapshot.raw[4]; seeded = true; }
+        MfdColourTrace trace; std::memcpy(trace.raw, snapshot.raw, sizeof(trace.raw));
+        trace.reads = snapshot.reads; trace.measured = snapshot.measured;
+        Report(stage, trace, kMfdAdmissionAddresses, kMfdAdmissionNames, 20, report, 10);
+        if (save && seeded && report) {
+            std::printf("MFD colour saved-current: colour=%08x remap=%08x pre-START-value-not-used=yes\n",
+                saved_colour, saved_remap); std::fflush(stdout);
+        }
+        return ok;
+    }
+    bool Read(HANDLE handle, MfdColourTrace *trace, unsigned index, uint32_t address,
+              uint32_t mask, uint32_t expected, Reader reader, bool status = false, bool cleanup = false) {
+        if (access_lost) return false;
+        if (!handle || handle != owner || !trace || index >= 20 || !reader) return Reject(MfdColourFailure::Argument);
+        uint32_t raw = 0; ++reads; ++trace->reads;
+        api_status = reader(handle, address, &raw);
+        if (api_status != BC_STS_SUCCESS) return Reject(MfdColourFailure::Api);
+        trace->raw[index] = raw; ++trace->measured;
+        if (raw & ~mask) return Reject(MfdColourFailure::Reserved);
+        if (status && raw) { Reject(MfdColourFailure::EngineStatus, false); return cleanup; }
+        return raw == expected || Reject(address == BCHP_MFD_REVISION_ID || address == BCHP_SCL_HD_REVISION_ID ?
+            MfdColourFailure::Revision : MfdColourFailure::ExpectedValue);
+    }
+    bool Guard(HANDLE handle, const char *stage, uint32_t control, Reader reader, bool report, bool cleanup = false) {
+        const uint32_t masks[] = {0xffff, 0xf, 0xffffff, 1, 0x3ff, 0xf, 0xffff, 0xff, 0xffff, 0xffff};
+        const uint32_t expected[] = {0x50, control, Colour(), 0, saved_remap, 4, 0x80, 0, 0x50, 0x80};
+        MfdColourTrace trace; bool ok = true;
+        for (unsigned index = 0; index < 10 && ok; ++index)
+            ok = Read(handle, &trace, index, kMfdAdmissionAddresses[index], masks[index], expected[index],
+                reader, index == 7, cleanup);
+        Report(stage, trace, kMfdAdmissionAddresses, kMfdAdmissionNames, 10, report);
+        return ok;
+    }
+    bool Write(HANDLE handle, uint32_t address, uint32_t raw, Writer writer, bool report) {
+        if (access_lost) return false;
+        if (!handle || handle != owner || !writer) return Reject(MfdColourFailure::Argument);
+        ++writes;
+        if (report) { std::printf("MFD colour target-write: address=%08x value=%08x attempt=%u\n", address, raw, writes); std::fflush(stdout); }
+        api_status = writer(handle, address, raw);
+        const bool ok = api_status == BC_STS_SUCCESS || Reject(MfdColourFailure::Api);
+        if (report) { std::printf("MFD colour write-return: address=%08x api-status=%d result=%s\n",
+            address, api_status, ok ? "SUCCESS" : "FAIL"); std::fflush(stdout); }
+        return ok;
+    }
+    bool Readback(HANDLE handle, const char *stage, uint32_t address, uint32_t expected,
+                  Reader reader, bool report) {
+        MfdColourTrace trace;
+        const bool ok = Read(handle, &trace, 0, address, address == BCHP_MFD_FEEDER_CNTL ? 0xf : 0xffffff,
+            expected, reader);
+        const char *const names[] = {address == BCHP_MFD_FEEDER_CNTL ? "ctrl" : "fixed-colour"};
+        Report(stage, trace, &address, names, 1, report);
+        return ok;
+    }
+    bool PreStart(HANDLE handle, Reader reader = DtsDevRegisterRead, bool report = true) {
+        if (!Enabled()) return true;
+        if (failed) return false;
+        if (begun || !handle || !reader || stimulus > 2) return Reject(MfdColourFailure::Argument);
+        begun = true; owner = handle; // One attempt, before I/O.
+        return Admission(handle, "after-OPEN/pre-START", reader, report, false);
+    }
+    bool First(HANDLE handle, Reader reader, Writer writer, bool report) {
+        if (failed) return false;
+        if (!begun || first_attempted || handle != owner || !reader || !writer) return Reject(MfdColourFailure::Argument);
+        first_attempted = true;
+        if (!Admission(handle, "first-output-after-release-and-owned-write", reader, report, true)) return false;
+        colour_dirty = true; // Even a failed write return cannot prove it did not occur.
+        if (!Write(handle, BCHP_MFD_FIXED_COLOUR, Colour(), writer, report) ||
+            !Readback(handle, "injected-colour-readback", BCHP_MFD_FIXED_COLOUR, Colour(), reader, report) ||
+            !Guard(handle, "pre-enable-guard", 0, reader, report)) return false;
+        control_dirty = true;
+        selected = Write(handle, BCHP_MFD_FEEDER_CNTL, 8, writer, report) &&
+            Readback(handle, "selected-control-readback", BCHP_MFD_FEEDER_CNTL, 8, reader, report);
+        return selected;
+    }
+    bool Restore(HANDLE handle, Reader reader = DtsDevRegisterRead, Writer writer = DtsDevRegisterWr, bool report = true) {
+        if (!Enabled()) return true;
+        if (restored || restore_attempted || (!colour_dirty && !control_dirty) || access_lost) return !failed;
+        if (!seeded || !handle || handle != owner || !reader || !writer) return Reject(MfdColourFailure::Argument);
+        restore_attempted = true;
+        if (!Guard(handle, "restore-guard", control_dirty ? 8 : 0, reader, report, true)) return false;
+        if (control_dirty) {
+            if (!Write(handle, BCHP_MFD_FEEDER_CNTL, 0, writer, report) ||
+                !Readback(handle, "restored-control-readback", BCHP_MFD_FEEDER_CNTL, 0, reader, report)) return false;
+            control_dirty = false;
+        }
+        if (!Readback(handle, "fresh-colour-before-restore", BCHP_MFD_FIXED_COLOUR, Colour(), reader, report)) return false;
+        if (!Write(handle, BCHP_MFD_FIXED_COLOUR, saved_colour, writer, report) ||
+            !Readback(handle, "restored-colour-readback", BCHP_MFD_FIXED_COLOUR, saved_colour, reader, report)) return false;
+        MfdColourTrace tail;
+        bool ok = Read(handle, &tail, 0, BCHP_MFD_REVISION_ID, 0xffff, 0x50, reader);
+        if (ok) ok = Read(handle, &tail, 1, BCHP_SCL_HD_REVISION_ID, 0xffff, 0x80, reader);
+        const uint32_t addresses[] = {BCHP_MFD_REVISION_ID, BCHP_SCL_HD_REVISION_ID};
+        const char *const names[] = {"mfd-rev", "scl-rev"};
+        if (ok) { colour_dirty = false; selected = false; restored = true; }
+        Report("restoration-closing-revisions", tail, addresses, names, 2, report);
+        return ok && !failed;
+    }
+    bool AfterDelivered(HANDLE handle, unsigned frame, bool released, bool written,
+                        Reader reader = DtsDevRegisterRead, Writer writer = DtsDevRegisterWr, bool report = true) {
+        if (!Enabled()) return true;
+        if (failed) return false;
+        if (!released || !written) return false;
+        if (frame == 1) return First(handle, reader, writer, report);
+        if (frame != 90) return true;
+        if (!selected || observed || handle != owner || !reader || !writer) return Reject(MfdColourFailure::Argument);
+        observed = true;
+        return Guard(handle, "frame-90-after-release-and-owned-write", 8, reader, report) &&
+            Restore(handle, reader, writer, report);
+    }
+};
+
+struct MfdColourFixture {
+    struct Event { bool write; uint32_t address, raw; };
+    std::vector<Event> events;
+    unsigned calls = 0, write_calls = 0;
+    size_t fail_at = SIZE_MAX;
+    BC_STATUS status = BC_STS_ERROR;
+    bool valid = true;
+    MfdColourProbe *probe = nullptr;
+    explicit MfdColourFixture(unsigned stimulus = 1, uint32_t saved = 0x909070) {
+        const uint32_t colour = stimulus == 1 ? 0x405ac3 : 0xb2d32b;
+        Tuple(0, 0x108080, 2); Tuple(0, saved, 2);
+        events.push_back({true, 0x540008, colour}); events.push_back({false, 0x540008, colour});
+        Tuple(0, colour, 1);
+        events.push_back({true, 0x540004, 8}); events.push_back({false, 0x540004, 8});
+        Tuple(8, colour, 1); Tuple(8, colour, 1);
+        events.push_back({true, 0x540004, 0}); events.push_back({false, 0x540004, 0});
+        events.push_back({false, 0x540008, colour}); events.push_back({true, 0x540008, saved});
+        events.push_back({false, 0x540008, saved}); events.push_back({false, 0x540000, 0x50});
+        events.push_back({false, 0x540800, 0x80});
+    }
+    void Tuple(uint32_t control, uint32_t colour, unsigned passes) {
+        const uint32_t addresses[] = {0x540000, 0x540004, 0x540008, 0x540044, 0x54004c,
+            0x540074, 0x540800, 0x5408a4, 0x540000, 0x540800};
+        const uint32_t values[] = {0x50, control, colour, 0, 0x108, 4, 0x80, 0, 0x50, 0x80};
+        for (unsigned pass = 0; pass < passes; ++pass)
+            for (unsigned field = 0; field < 10; ++field) events.push_back({false, addresses[field], values[field]});
+    }
+    static BC_STATUS Read(HANDLE handle, uint32_t address, uint32_t *value) {
+        auto *fixture = static_cast<MfdColourFixture *>(handle); const unsigned index = fixture->calls++;
+        if (index >= fixture->events.size()) { fixture->valid = false; return BC_STS_ERROR; }
+        const auto &event = fixture->events[index];
+        fixture->valid &= !event.write && event.address == address && value;
+        *value = index == fixture->fail_at ? 0xdeadbeefU : event.raw;
+        return index == fixture->fail_at ? fixture->status : BC_STS_SUCCESS;
+    }
+    static BC_STATUS Write(HANDLE handle, uint32_t address, uint32_t value) {
+        auto *fixture = static_cast<MfdColourFixture *>(handle); const unsigned index = fixture->calls++;
+        if (index >= fixture->events.size()) { fixture->valid = false; return BC_STS_ERROR; }
+        const auto &event = fixture->events[index]; ++fixture->write_calls;
+        fixture->valid &= event.write && event.address == address && event.raw == value && fixture->probe &&
+            fixture->probe->colour_dirty && (address != 0x540004 || fixture->probe->control_dirty);
+        return index == fixture->fail_at ? fixture->status : BC_STS_SUCCESS;
+    }
+    bool Exercise(MfdColourProbe *subject, bool report = false) {
+        probe = subject;
+        return subject->PreStart(this, Read, report) &&
+            subject->AfterDelivered(this, 1, true, true, Read, Write, report) &&
+            subject->AfterDelivered(this, 90, true, true, Read, Write, report);
+    }
+};
+
+struct PackingReadFixture {
+    unsigned reads = 0, writes = 0;
+    bool valid = true;
+    BC_STATUS status = BC_STS_SUCCESS;
+    static BC_STATUS Read(HANDLE handle, uint32_t address, uint32_t *value) {
+        auto *fixture = static_cast<PackingReadFixture *>(handle); ++fixture->reads;
+        fixture->valid &= address == 0x502100 && value;
+        *value = fixture->status == BC_STS_SUCCESS ? 0x16 : 0xdeadbeefU;
+        return fixture->status;
+    }
+    static BC_STATUS Write(HANDLE handle, uint32_t, uint32_t) {
+        ++static_cast<PackingReadFixture *>(handle)->writes; return BC_STS_ERROR;
+    }
+};
+
+static bool PackingState(HANDLE handle, const char *stage, MfdColourProbe *colour = nullptr,
+    SclViewProbe *view = nullptr, SclViewProbe::Reader reader = DtsDevRegisterRead, bool report = true);
+
 static volatile std::sig_atomic_t interrupted;
 static void Interrupt(int) { interrupted = 1; }
 static const unsigned kMaximumPackets = 10000;
@@ -595,6 +831,7 @@ struct Options {
     bool observe_scl_config = false;
     unsigned observe_scl_view = 0;
     bool observe_mfd_config = false;
+    unsigned inject_mfd_colour = 0;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
 };
 
@@ -627,6 +864,11 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
     if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-mfd-config")) {
         options->observe_mfd_config = true;
         arguments.pop_back();
+    }
+    if (arguments.size() >= 3 && !std::strcmp(arguments[arguments.size() - 2], "--inject-mfd-colour")) {
+        if (std::strcmp(arguments.back(), "a") && std::strcmp(arguments.back(), "b")) return false;
+        options->inject_mfd_colour = arguments.back()[0] == 'a' ? 1 : 2;
+        arguments.resize(arguments.size() - 2);
     }
     if (arguments.size() >= 3 && !std::strcmp(arguments[arguments.size() - 2], "--observe-scl-view")) {
         const char *selector = arguments.back();
@@ -665,7 +907,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         arguments.resize(arguments.size() - 2);
     }
     if (arguments.size() == 2 && !std::strcmp(arguments[1], "--self-test")) {
-        if (options->capture_path || options->observe_chroma || options->observe_scl_config || options->observe_scl_view || options->observe_mfd_config || options->scaler_test || options->mpeg1_via_mpeg2 ||
+        if (options->capture_path || options->observe_chroma || options->observe_scl_config || options->observe_scl_view || options->observe_mfd_config || options->inject_mfd_colour || options->scaler_test || options->mpeg1_via_mpeg2 ||
             options->h263_via_divx || options->open_only) return false;
         options->mode = Mode::SelfTest;
         return true;
@@ -702,13 +944,18 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
          options->expected != 180 || options->iterations != 1 || options->output_format != OUTPUT_MODE422_YUY2 ||
          options->observe_scl_config || options->observe_scl_view || options->observe_chroma ||
          options->mpeg1_via_mpeg2 || options->h263_via_divx || options->open_only)) return false;
+    if (options->inject_mfd_colour &&
+        (!hardware || !options->capture_path || !options->scaler_test || options->scale_width ||
+         options->expected != 180 || options->iterations != 1 || options->output_format != OUTPUT_MODE422_YUY2 ||
+         options->observe_mfd_config || options->observe_scl_config || options->observe_scl_view || options->observe_chroma ||
+         options->mpeg1_via_mpeg2 || options->h263_via_divx || options->open_only)) return false;
     return !options->capture_path ||
         (hardware && options->scaler_test && !options->open_only && options->iterations == 1);
 }
 
 static bool SclInputAdmitted(const Options &options, const Input &input)
 {
-    return (!options.observe_scl_config && !options.observe_scl_view && !options.observe_mfd_config) ||
+    return (!options.observe_scl_config && !options.observe_scl_view && !options.observe_mfd_config && !options.inject_mfd_colour) ||
         (options.expected == 180 && input.codec == AV_CODEC_ID_MPEG2VIDEO &&
          input.subtype == BC_MSUBTYPE_MPEG2VIDEO && input.progressive &&
          input.width == 640 && input.height == 360 && input.packets.size() == 180);
@@ -717,7 +964,7 @@ static bool SclInputAdmitted(const Options &options, const Input &input)
 static bool NeedsRawIo(const Options &options)
 {
     return options.observe_chroma || options.observe_scl_config ||
-        options.observe_scl_view || options.observe_mfd_config;
+        options.observe_scl_view || options.observe_mfd_config || options.inject_mfd_colour;
 }
 
 // Test-only MPEG-1 admission through the existing algorithm-1 channel. Do not
@@ -2185,6 +2432,294 @@ static bool SelfTest()
                 "MFD codec/subtype/progressive/geometry/packet/expected mismatch rejected, default unchanged");
         }
     }
+    for (unsigned stimulus : {1U, 2U}) {
+        MfdColourFixture normal(stimulus);
+        MfdColourProbe complete; complete.stimulus = stimulus;
+        check(normal.events.size() == 81 && normal.Exercise(&complete) && normal.valid && normal.calls == 81 &&
+            normal.write_calls == 4 && complete.reads == 77 && complete.writes == 4 && complete.restored &&
+            !complete.colour_dirty && !complete.control_dirty && complete.saved_colour == 0x909070 &&
+            complete.saved_remap == 0x108, "MFD colour independent literal normal oracle is 77R/4W and restores first-output current colour");
+        check(complete.Restore(&normal, MfdColourFixture::Read, MfdColourFixture::Write, false) && normal.calls == 81,
+            "MFD colour restoration finalizer never repeats successful target writes");
+        for (unsigned position = 0; position < 81; ++position) {
+            for (int code = -1; code <= BC_STS_PWR_MGMT; ++code) {
+                if (code == BC_STS_SUCCESS) continue;
+                MfdColourFixture fixture(stimulus); fixture.fail_at = position; fixture.status = static_cast<BC_STATUS>(code);
+                struct { uint32_t before = 0x12345678; MfdColourProbe probe; uint32_t after = 0x87654321; } guarded;
+                guarded.probe.stimulus = stimulus;
+                check(!fixture.Exercise(&guarded.probe) && fixture.valid && fixture.calls == position + 1 &&
+                    guarded.probe.failed && guarded.probe.access_lost && guarded.probe.api_status == code &&
+                    guarded.probe.failure == MfdColourFailure::Api && guarded.before == 0x12345678 && guarded.after == 0x87654321,
+                    "MFD colour all27 API failures at all81 positions stop, preserve status and canaries, dirty before writes");
+                const unsigned calls = fixture.calls;
+                check(!guarded.probe.Restore(&fixture, MfdColourFixture::Read, MfdColourFixture::Write, false) &&
+                    !guarded.probe.PreStart(&fixture, MfdColourFixture::Read, false) &&
+                    !guarded.probe.AfterDelivered(&fixture, 1, true, true, MfdColourFixture::Read, MfdColourFixture::Write, false) &&
+                    !guarded.probe.AfterDelivered(&fixture, 90, true, true, MfdColourFixture::Read, MfdColourFixture::Write, false) &&
+                    fixture.calls == calls, "MFD colour API loss forbids retries, future reads and blind restoration");
+            }
+            const auto &event = normal.events[position];
+            if (event.write) continue;
+            unsigned width = event.address == 0x540008 ? 24 : event.address == 0x540004 || event.address == 0x540074 ? 4 :
+                event.address == 0x540044 ? 1 : event.address == 0x54004c ? 10 : event.address == 0x5408a4 ? 8 : 16;
+            for (unsigned bit = width; bit < 32; ++bit) {
+                MfdColourFixture fixture(stimulus); fixture.events[position].raw |= 1U << bit;
+                MfdColourProbe subject; subject.stimulus = stimulus;
+                check(!fixture.Exercise(&subject) && fixture.valid && fixture.calls == position + 1 && subject.access_lost &&
+                    subject.failure == MfdColourFailure::Reserved &&
+                    !subject.Restore(&fixture, MfdColourFixture::Read, MfdColourFixture::Write, false) && fixture.calls == position + 1,
+                    "MFD colour every reserved bit at every named read closes access without cleanup I/O");
+            }
+            if (event.address == 0x5408a4) continue; // Known-status cleanup has its own phase oracle below.
+            for (unsigned bit = 0; bit < (event.address == 0x540004 || event.address == 0x540074 ? 4U : 1U); ++bit) {
+                MfdColourFixture fixture(stimulus); fixture.events[position].raw ^= 1U << bit;
+                MfdColourProbe subject; subject.stimulus = stimulus;
+                const unsigned stop = position < 40 && (event.address == 0x540008 || event.address == 0x54004c) ?
+                    (position < 20 ? 20U : 40U) : position + 1;
+                check(!fixture.Exercise(&subject) && fixture.valid && fixture.calls == stop && subject.access_lost &&
+                    !subject.Restore(&fixture, MfdColourFixture::Read, MfdColourFixture::Write, false) && fixture.calls == stop,
+                    "MFD colour board revision/data/test/remap/control/colour mutation stops without reassertion");
+            }
+        }
+        for (unsigned position : {7U, 17U, 27U, 37U, 49U, 61U, 71U}) {
+            for (unsigned bit = 0; bit < 8; ++bit) {
+                MfdColourFixture fixture(stimulus); fixture.events[position].raw = 1U << bit;
+                MfdColourProbe subject; subject.stimulus = stimulus;
+                check(!fixture.Exercise(&subject) && fixture.valid && subject.failed && !subject.access_lost &&
+                    subject.failure == MfdColourFailure::EngineStatus && fixture.calls == (position == 71 ? 81U : position + 1),
+                    "MFD colour defined status stays FAIL, not an invented transport loss");
+                const unsigned stopped = fixture.calls;
+                check(!subject.AfterDelivered(&fixture, 90, true, true, MfdColourFixture::Read, MfdColourFixture::Write, false) &&
+                    !subject.PreStart(&fixture, MfdColourFixture::Read, false) && fixture.calls == stopped && !subject.access_lost &&
+                    subject.failure == MfdColourFailure::EngineStatus, "MFD repeated failed normal calls preserve eligible status class");
+                if (position == 49 || position == 61) {
+                    fixture.events.erase(fixture.events.begin() + stopped, fixture.events.begin() + 64);
+                    if (position == 49) {
+                        fixture.events[stopped + 1].raw = 0; // Full fresh guard expects control never attempted.
+                        fixture.events.erase(fixture.events.begin() + stopped + 10, fixture.events.begin() + stopped + 12);
+                    }
+                    // Repeat the known bit in the fresh cleanup guard; closing revision checks still required.
+                    fixture.events[stopped + 7].raw = 1U << bit;
+                    check(!subject.Restore(&fixture, MfdColourFixture::Read, MfdColourFixture::Write, false) && fixture.valid &&
+                        fixture.calls == fixture.events.size() && subject.restored && !subject.access_lost &&
+                        subject.reads == (position == 49 ? 63U : 75U) && subject.writes == (position == 49 ? 2U : 4U),
+                        "MFD fresh known-status guard allows phase-aware restore yet overall experiment remains FAIL");
+                } else check(!subject.Restore(&fixture, MfdColourFixture::Read, MfdColourFixture::Write, false) &&
+                    fixture.calls == stopped, "MFD status before seed/no dirty or completed restoration adds no cleanup I/O");
+            }
+        }
+        // A native early failure, not a register failure, may perform one cleanup guard with no frame90 observation.
+        for (unsigned fault = 0; fault < 17; ++fault) {
+            MfdColourFixture fixture(stimulus); MfdColourProbe subject; subject.stimulus = stimulus; fixture.probe = &subject;
+            check(subject.PreStart(&fixture, MfdColourFixture::Read, false) &&
+                subject.AfterDelivered(&fixture, 1, true, true, MfdColourFixture::Read, MfdColourFixture::Write, false),
+                "MFD early native cleanup selected setup");
+            fixture.events.erase(fixture.events.begin() + 54, fixture.events.begin() + 64);
+            fixture.fail_at = 54 + fault;
+            check(!subject.Restore(&fixture, MfdColourFixture::Read, MfdColourFixture::Write, false) && fixture.valid &&
+                fixture.calls == 55 + fault && subject.access_lost && subject.failed,
+                "MFD every early native cleanup API failure stops at its own fresh guard/write/readback");
+            const unsigned calls = fixture.calls;
+            check(!subject.Restore(&fixture, MfdColourFixture::Read, MfdColourFixture::Write, false) && fixture.calls == calls,
+                "MFD early cleanup cannot be retried");
+        }
+        {
+            MfdColourFixture fixture(stimulus, 0x123456); MfdColourProbe subject; subject.stimulus = stimulus;
+            check(fixture.Exercise(&subject) && fixture.valid && subject.saved_colour == 0x123456 && fixture.events[77].raw == 0x123456,
+                "MFD colour restore uses sampled current value, not hardcoded909070 or preSTART108080");
+        }
+        {
+            MfdColourFixture fixture(stimulus); fixture.events[76].raw ^= 1;
+            MfdColourProbe subject; subject.stimulus = stimulus;
+            check(!fixture.Exercise(&subject) && fixture.valid && fixture.calls == 77 && subject.writes == 3 && subject.access_lost &&
+                !subject.Restore(&fixture, MfdColourFixture::Read, MfdColourFixture::Write, false) && fixture.calls == 77,
+                "MFD fresh colour loss after disabling control prevents overwriting firmware's new value");
+        }
+        {
+            MfdColourFixture fixture(stimulus); MfdColourProbe subject; subject.stimulus = stimulus; fixture.probe = &subject;
+            check(subject.PreStart(&fixture, MfdColourFixture::Read, false), "MFD host publication ordering preSTART setup");
+            for (unsigned frame : {0U, 2U, 89U, 91U, 179U, 180U})
+                check(subject.AfterDelivered(&fixture, frame, true, true, MfdColourFixture::Read, MfdColourFixture::Write, false) &&
+                    fixture.calls == 20, "MFD no I/O at FMT/EOS/last/other ordinals");
+            for (const auto &barrier : {std::make_pair(false, false), std::make_pair(false, true), std::make_pair(true, false)})
+                check(!subject.AfterDelivered(&fixture, 1, barrier.first, barrier.second, MfdColourFixture::Read, MfdColourFixture::Write, false) &&
+                    fixture.calls == 20 && !subject.failed, "MFD cannot write before release and owned capture Write");
+            check(subject.AfterDelivered(&fixture, 1, true, true, MfdColourFixture::Read, MfdColourFixture::Write, false) && fixture.calls == 54,
+                "MFD first eligible owned picture alone seeds and selects colour");
+            for (const auto &barrier : {std::make_pair(false, false), std::make_pair(false, true), std::make_pair(true, false)})
+                check(!subject.AfterDelivered(&fixture, 90, barrier.first, barrier.second, MfdColourFixture::Read, MfdColourFixture::Write, false) &&
+                    fixture.calls == 54 && !subject.failed, "MFD frame90 must also be released and stored before custom observation/restore");
+            check(subject.AfterDelivered(&fixture, 90, true, true, MfdColourFixture::Read, MfdColourFixture::Write, false) && fixture.valid &&
+                fixture.calls == 81 && subject.restored, "MFD restore immediately at90 before later native output/EOS");
+            check(!subject.AfterDelivered(&fixture, 90, true, true, MfdColourFixture::Read, MfdColourFixture::Write, false) && fixture.calls == 81,
+                "MFD repeated milestone refuses without retarget/retry");
+        }
+        for (unsigned stage : {0U, 1U, 2U}) {
+            MfdColourFixture fixture(stimulus), other(stimulus); MfdColourProbe subject; subject.stimulus = stimulus; fixture.probe = &subject;
+            if (stage) check(subject.PreStart(&fixture, MfdColourFixture::Read, false), "MFD owner setup");
+            if (stage == 2) check(subject.AfterDelivered(&fixture, 1, true, true, MfdColourFixture::Read, MfdColourFixture::Write, false), "MFD selected owner setup");
+            const unsigned calls = fixture.calls;
+            check(!subject.AfterDelivered(&other, stage == 2 ? 90 : 1, true, true, MfdColourFixture::Read, MfdColourFixture::Write, false) &&
+                !subject.Restore(&fixture, MfdColourFixture::Read, MfdColourFixture::Write, false) && other.calls == 0 && fixture.calls == calls,
+                "MFD missing admission/changed HANDLE excludes all custom I/O and blind restore");
+        }
+    }
+    for (unsigned stimulus : {1U, 2U}) {
+        // The known pre-enable status failure leaves only colour dirty. This
+        // independently removes all CTRL writes and the frame90 observation.
+        for (unsigned position = 50; position < 65; ++position)
+            for (int code = -1; code <= BC_STS_PWR_MGMT; ++code) {
+                if (code == BC_STS_SUCCESS) continue;
+                MfdColourFixture fixture(stimulus); fixture.events[49].raw = 1;
+                fixture.events.erase(fixture.events.begin() + 50, fixture.events.begin() + 64);
+                fixture.events[51].raw = 0;
+                fixture.events.erase(fixture.events.begin() + 60, fixture.events.begin() + 62);
+                fixture.fail_at = position; fixture.status = static_cast<BC_STATUS>(code);
+                MfdColourProbe subject; subject.stimulus = stimulus;
+                check(!fixture.Exercise(&subject) && fixture.valid && fixture.calls == 50 && !subject.access_lost &&
+                    subject.colour_dirty && !subject.control_dirty, "MFD colour-only cleanup begins from a real known-status pre-enable rejection");
+                check(!subject.Restore(&fixture, MfdColourFixture::Read, MfdColourFixture::Write, false) && fixture.valid &&
+                    fixture.calls == position + 1 && subject.access_lost && subject.api_status == code && subject.failure == MfdColourFailure::Api,
+                    "MFD every colour-only fresh-guard/reread/write/closing API position rejects all27 statuses without enabling control");
+                const unsigned calls = fixture.calls;
+                check(!subject.Restore(&fixture, MfdColourFixture::Read, MfdColourFixture::Write, false) && fixture.calls == calls,
+                    "MFD failed colour-only restoration never retries");
+            }
+        {
+            MfdColourFixture fixture(stimulus); fixture.events[49].raw = 1;
+            fixture.events.erase(fixture.events.begin() + 50, fixture.events.begin() + 64);
+            fixture.events[51].raw = 0; fixture.events.erase(fixture.events.begin() + 60, fixture.events.begin() + 62);
+            fixture.events[60].raw ^= 1;
+            MfdColourProbe subject; subject.stimulus = stimulus;
+            check(!fixture.Exercise(&subject) && !subject.access_lost && fixture.calls == 50 &&
+                !subject.Restore(&fixture, MfdColourFixture::Read, MfdColourFixture::Write, false) && fixture.valid &&
+                fixture.calls == 61 && subject.writes == 1 && subject.access_lost,
+                "MFD colour-only cleanup also fresh-checks candidate before overwriting a firmware rewrite");
+        }
+        {
+            MfdColourFixture fixture(stimulus); MfdColourProbe subject; subject.stimulus = stimulus; fixture.probe = &subject;
+            check(subject.PreStart(&fixture, MfdColourFixture::Read, false) &&
+                subject.AfterDelivered(&fixture, 1, true, true, MfdColourFixture::Read, MfdColourFixture::Write, false),
+                "MFD native failure cleanup success selected setup");
+            fixture.events.erase(fixture.events.begin() + 54, fixture.events.begin() + 64);
+            check(subject.Restore(&fixture, MfdColourFixture::Read, MfdColourFixture::Write, false) && fixture.valid &&
+                fixture.calls == 71 && subject.reads == 67 && subject.writes == 4 && subject.restored && !subject.observed,
+                "MFD early non-access native failure permits one fresh restoration but no fabricated frame90 sample");
+        }
+        {
+            MfdColourFixture fixture(stimulus); fixture.events[24].raw = fixture.events[34].raw = 0x109;
+            MfdColourProbe subject; subject.stimulus = stimulus;
+            check(!fixture.Exercise(&subject) && fixture.valid && fixture.calls == 47 && subject.saved_remap == 0x109 &&
+                subject.writes == 1 && subject.access_lost, "MFD guards compare captured current remap, not a hardcoded or preSTART value");
+        }
+    }
+    for (unsigned position : {0U, 40U, 41U, 49U, 52U, 61U, 74U, 76U, 77U, 80U}) {
+        FILE *record = std::tmpfile(); const int saved_stdout = dup(STDOUT_FILENO); std::fflush(stdout);
+        const bool redirected = record && saved_stdout >= 0 && dup2(fileno(record), STDOUT_FILENO) >= 0;
+        bool rejected = false;
+        if (redirected) {
+            MfdColourFixture fixture; fixture.fail_at = position; MfdColourProbe subject; subject.stimulus = 1;
+            rejected = !fixture.Exercise(&subject, true) && fixture.valid && fixture.calls == position + 1;
+            std::fflush(stdout);
+        }
+        const bool restored = saved_stdout >= 0 && dup2(saved_stdout, STDOUT_FILENO) >= 0;
+        if (saved_stdout >= 0) close(saved_stdout);
+        char text[32768] = {}; size_t bytes = 0;
+        if (record) { std::rewind(record); bytes = std::fread(text, 1, sizeof(text) - 1, record); std::fclose(record); }
+        const bool write_failed = position == 40 || position == 52 || position == 74 || position == 77;
+        check(redirected && restored && rejected && bytes && !std::strstr(text, "deadbeef") &&
+            (write_failed ? std::strstr(text, "api-status=-1 result=FAIL") != nullptr :
+                (std::strstr(text, "experiment-result=FAIL") && std::strstr(text, "NOT-READ"))),
+            "MFD actual reporter distinguishes failed write attempts and never publishes poisoned/unread register words");
+    }
+    {
+        MfdColourFixture fixture; MfdColourProbe subject; subject.stimulus = 1; subject.owner = &fixture;
+        struct { uint32_t before = 0x12345678; MfdColourTrace trace; uint32_t after = 0x87654321; } guarded;
+        check(subject.Read(&fixture, &guarded.trace, 19, 0x540000, 0xffff, 0x50, MfdColourFixture::Read) &&
+            guarded.trace.raw[19] == 0x50 && guarded.before == 0x12345678 && guarded.after == 0x87654321 && fixture.valid,
+            "MFD trace final DWORD remains within independently poisoned canaries");
+        check(!subject.Read(&fixture, &guarded.trace, 20, 0x540000, 0xffff, 0x50, MfdColourFixture::Read) &&
+            fixture.calls == 1 && guarded.before == 0x12345678 && guarded.after == 0x87654321,
+            "MFD trace index overflow rejects before API/output write");
+        MfdColourProbe disabled;
+        check(disabled.PreStart(nullptr, nullptr, false) && disabled.AfterDelivered(nullptr, 90, false, false, nullptr, nullptr, false) &&
+            disabled.Restore(nullptr, nullptr, nullptr, false) && !disabled.reads && !disabled.writes,
+            "MFD active default-off is zero-I/O and does not require host capture");
+        for (unsigned stimulus : {3U, UINT_MAX}) {
+            MfdColourFixture fixture; MfdColourProbe invalid; invalid.stimulus = stimulus;
+            check(!invalid.PreStart(&fixture, MfdColourFixture::Read, false) && fixture.calls == 0,
+                "MFD invalid stimulus refuses before diagnostic read/write");
+        }
+        for (int code = -1; code <= BC_STS_PWR_MGMT; ++code) {
+            if (code == BC_STS_SUCCESS) continue;
+            for (bool control_dirty : {false, true}) {
+                PackingReadFixture fixture; fixture.status = static_cast<BC_STATUS>(code);
+                MfdColourProbe colour; colour.stimulus = 1; colour.owner = &fixture; colour.seeded = true;
+                colour.colour_dirty = true; colour.control_dirty = control_dirty;
+                SclViewProbe view; view.selector = 2; view.owner = &fixture; view.dirty = true;
+                check(!PackingState(&fixture, "injected-failure", &colour, &view, PackingReadFixture::Read, false) &&
+                    fixture.valid && fixture.reads == 1 && colour.access_lost && view.access_lost &&
+                    colour.api_status == code && view.api_status == code && colour.failure == MfdColourFailure::Api && view.failure == SclViewFailure::Api,
+                    "Actual packing helper all27 read failures latch both enabled dirty experiments accurately");
+                check(!colour.Restore(&fixture, PackingReadFixture::Read, PackingReadFixture::Write, false) &&
+                    !view.Restore(&fixture, PackingReadFixture::Read, PackingReadFixture::Write, false) &&
+                    !PackingState(&fixture, "no-retry", &colour, &view, PackingReadFixture::Read, false) &&
+                    fixture.reads == 1 && fixture.writes == 0, "Packing access loss prevents all subsequent custom probes/restoration");
+            }
+        }
+        PackingReadFixture success;
+        check(PackingState(&success, "ordinary", nullptr, nullptr, PackingReadFixture::Read, false) && success.valid && success.reads == 1,
+            "Ordinary successful packing helper remains unchanged and target-read-only");
+    }
+    for (const char *name : {"a", "b"}) {
+        const std::vector<const char *> valid = {"probe", "--hardware", "fixture", "180", "30", "1",
+            "--scaler-test", "0", "--inject-mfd-colour", name, "--capture-yuy2", "new"};
+        Options admitted;
+        check(ParseArguments(valid, &admitted) && admitted.inject_mfd_colour == (name[0] == 'a' ? 1U : 2U) &&
+            NeedsRawIo(admitted) && !admitted.observe_mfd_config && !admitted.observe_scl_config && !admitted.observe_scl_view && !admitted.observe_chroma,
+            "MFD colour literal a/b one native unscaled YUY2 capture requires CAP before fixture/device");
+        for (const char *invalid : {"", "A", "B", "0", "1", "2", "c", "405ac3", "b2d32b", " a"}) {
+            auto arguments = valid; arguments[9] = invalid; Options rejected;
+            check(!ParseArguments(arguments, &rejected), "MFD colour accepts no arbitrary register value or alternate stimulus spelling");
+        }
+        for (unsigned field = 0; field < 10; ++field) {
+            auto arguments = valid;
+            if (field == 0) arguments[1] = "--preflight";
+            if (field == 1) arguments[3] = "179";
+            if (field == 2) arguments[5] = "2";
+            if (field == 3) arguments[7] = "320";
+            if (field == 4) arguments[7] = "640";
+            if (field == 5) arguments[10] = "--capture-uyvy";
+            if (field == 6) arguments.resize(10);
+            if (field == 7) arguments.insert(arguments.begin() + 8, "--mpeg1-via-mpeg2");
+            if (field == 8) arguments.insert(arguments.begin() + 8, "--h263-via-divx");
+            if (field == 9) arguments.insert(arguments.begin() + 8, "--open-only");
+            Options rejected; check(!ParseArguments(arguments, &rejected), "MFD colour excludes other native shapes/codecs/repeats/noncapture/preflight scope");
+        }
+        for (const std::vector<const char *> &mixed : std::vector<std::vector<const char *>>{
+                {"--observe-chroma"}, {"--observe-scl-config"}, {"--observe-scl-view", "2"},
+                {"--observe-mfd-config"}, {"--inject-mfd-colour", "a"}})
+            for (unsigned where : {8U, 10U}) {
+                auto arguments = valid; arguments.insert(arguments.begin() + where, mixed.begin(), mixed.end());
+                Options rejected; check(!ParseArguments(arguments, &rejected), "MFD colour rejects every observer mixture/order/duplicate");
+            }
+        Options rejected;
+        check(!ParseArguments({"probe", "--self-test", "--inject-mfd-colour", name}, &rejected), "MFD colour self-test mix rejects");
+        Input native; native.codec = AV_CODEC_ID_MPEG2VIDEO; native.subtype = BC_MSUBTYPE_MPEG2VIDEO;
+        native.progressive = true; native.width = 640; native.height = 360; native.packets.resize(180);
+        check(SclInputAdmitted(admitted, native), "MFD colour native input profile admitted after load before capture/device");
+        for (unsigned field = 0; field < 7; ++field) {
+            Options changed = admitted; Input altered = native;
+            if (field == 0) altered.codec = AV_CODEC_ID_H264;
+            if (field == 1) altered.subtype = BC_MSUBTYPE_H264;
+            if (field == 2) altered.progressive = false;
+            if (field == 3) altered.width = 638;
+            if (field == 4) altered.height = 358;
+            if (field == 5) altered.packets.pop_back();
+            if (field == 6) changed.expected = 179;
+            check(!SclInputAdmitted(changed, altered) && SclInputAdmitted(Options{}, altered), "MFD colour profile mismatches reject while default remains unchanged");
+        }
+    }
     std::printf("Library drain hardware-free self-test: %u checks %s\n",
                 checks, ok ? "passed" : "failed");
     return ok;
@@ -2297,13 +2832,19 @@ static bool Status(const char *operation, BC_STATUS status)
 }
 
 // Named packing-control observation only; never follow device pointers.
-static bool PackingState(HANDLE handle, const char *stage)
+static bool PackingState(HANDLE handle, const char *stage, MfdColourProbe *colour,
+                         SclViewProbe *view, SclViewProbe::Reader reader, bool report)
 {
+    if ((colour && colour->Enabled() && colour->failed) || (view && view->Enabled() && view->failed)) return false;
     uint32_t control = 0;
-    if (!Status("DtsDevRegisterRead(packing)",
-                DtsDevRegisterRead(handle, CRYSTALHD_FLEA_COLOR_REGISTER, &control)))
+    const BC_STATUS status = reader(handle, CRYSTALHD_FLEA_COLOR_REGISTER, &control);
+    if (status != BC_STS_SUCCESS) {
+        if (colour && colour->Enabled()) { colour->api_status = status; colour->Reject(MfdColourFailure::Api); }
+        if (view && view->Enabled()) { view->api_status = status; view->Reject(SclViewFailure::Api); }
+        if (report) Status("DtsDevRegisterRead(packing)", status);
         return false;
-    std::printf("Packing state: stage=%s register=0x%08x raw=0x%08x yuy2-bit=%u\n",
+    }
+    if (report) std::printf("Packing state: stage=%s register=0x%08x raw=0x%08x yuy2-bit=%u\n",
                 stage, CRYSTALHD_FLEA_COLOR_REGISTER, control,
                 (control & CRYSTALHD_FLEA_COLOR_YUY2) != 0);
     std::fflush(stdout);
@@ -2358,6 +2899,7 @@ struct Audit {
     SclObserver scl;
     SclViewProbe scl_view;
     MfdAdmissionObserver mfd;
+    MfdColourProbe mfd_colour;
     GChecksum *pixels = nullptr;
     PixelCapture *capture = nullptr;
     ~Audit() { if (pixels) g_checksum_free(pixels); }
@@ -2414,8 +2956,11 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
             if (!marker && valid && released)
                 valid = audit->mfd.AfterDelivered(device->handle, audit->frames,
                                                  released, audit->capture != nullptr);
+            if (!marker && valid && released)
+                valid = audit->mfd_colour.AfterDelivered(device->handle, audit->frames,
+                                                        released, audit->capture != nullptr);
             if (!marker && valid && released && audit->capture && audit->frames == 1)
-                valid = PackingState(device->handle, "first-output");
+                valid = PackingState(device->handle, "first-output", &audit->mfd_colour, &audit->scl_view);
             if (!marker && valid && released && audit->observe_chroma && audit->frames == 1)
                 valid = ChromaState(device->handle, "first-output-after-release");
             if (!marker && valid && released && audit->progress)
@@ -2424,7 +2969,9 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                     audit->iteration, audit->frames - 1,
                     static_cast<unsigned long long>(output.PicInfo.timeStamp));
             if (!valid) {
-                if (audit->mfd.failed)
+                if (audit->mfd_colour.failed)
+                    std::fprintf(stderr, "MFD colour experiment failed; guarded restoration if eligible and ordinary decoder cleanup follow\n");
+                else if (audit->mfd.failed)
                     std::fprintf(stderr, "MFD passive admission failed; ordinary decoder cleanup follows\n");
                 else if (audit->scl_view.failed)
                     std::fprintf(stderr, "SCL test-view experiment failed; guarded restoration if eligible and ordinary decoder cleanup follow\n");
@@ -2433,7 +2980,7 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                 else
                     std::fprintf(stderr, "Invalid progressive picture geometry/data/token: %llu\n",
                                  static_cast<unsigned long long>(output.PicInfo.timeStamp));
-                if (audit->pixels && !audit->scl.failed && !audit->scl_view.failed && !audit->mfd.failed)
+                if (audit->pixels && !audit->scl.failed && !audit->scl_view.failed && !audit->mfd.failed && !audit->mfd_colour.failed)
                     std::fprintf(stderr, "Scaler picture: got=%ux%u expected=%ux%u "
                                  "flags=%x words=%u packed422=%u\n",
                                  output.PicInfo.width, output.PicInfo.height,
@@ -2446,7 +2993,7 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
             audit->packing_format_observed = true;
             // FMT_CHANGE is an API notification, not a lease/retirement proof.
             if (!audit->scl.Observe(device->handle, SclStage::FormatChange)) return false;
-            if (!PackingState(device->handle, "first-format-change")) return false;
+            if (!PackingState(device->handle, "first-format-change", &audit->mfd_colour, &audit->scl_view)) return false;
             if (audit->observe_chroma && !ChromaState(device->handle, "first-format-change")) return false;
         } else if (result != BC_STS_FMT_CHANGE && result != BC_STS_NO_DATA &&
                    result != BC_STS_BUSY && result != BC_STS_TIMEOUT) {
@@ -2490,6 +3037,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.scl.enabled = options.observe_scl_config;
     audit.scl_view.selector = options.observe_scl_view;
     audit.mfd.enabled = options.observe_mfd_config;
+    audit.mfd_colour.stimulus = options.inject_mfd_colour;
     if (options.scaler_test) {
         if (!ScalerGeometry(input.width, input.height, options.scale_width,
                             &audit.output_width, &audit.output_height)) return false;
@@ -2539,14 +3087,15 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
         return ok;
     }
     if (ok) ok = Status("DtsSetColorSpace", DtsSetColorSpace(device.handle, options.output_format));
-    if (ok && options.capture_path) ok = PackingState(device.handle, "selected-before-start");
+    if (ok && options.capture_path) ok = PackingState(device.handle, "selected-before-start", &audit.mfd_colour, &audit.scl_view);
     if (ok) ok = audit.scl.Observe(device.handle, SclStage::PreStart);
     if (ok) ok = audit.scl_view.Begin(device.handle);
     if (ok) ok = audit.mfd.Observe(device.handle, 0);
+    if (ok) ok = audit.mfd_colour.PreStart(device.handle);
     if (ok) device.started = ok = Status("DtsStartDecoder", DtsStartDecoder(device.handle));
-    if (ok && options.capture_path) ok = PackingState(device.handle, "started");
+    if (ok && options.capture_path) ok = PackingState(device.handle, "started", &audit.mfd_colour, &audit.scl_view);
     if (ok) ok = Status("DtsStartCapture", DtsStartCapture(device.handle));
-    if (ok && options.capture_path) ok = PackingState(device.handle, "capture-before-input");
+    if (ok && options.capture_path) ok = PackingState(device.handle, "capture-before-input", &audit.mfd_colour, &audit.scl_view);
     size_t packet_index = 0;
     for (Packet &packet : input.packets) {
         if (!ok) break;
@@ -2557,9 +3106,9 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
         if (ok) audit.pending.insert(token);
         ++packet_index;
         if (ok && options.capture_path && packet_index == 1)
-            ok = PackingState(device.handle, "first-input-accepted");
+            ok = PackingState(device.handle, "first-input-accepted", &audit.mfd_colour, &audit.scl_view);
     }
-    if (ok && options.capture_path) ok = PackingState(device.handle, "all-input-accepted");
+    if (ok && options.capture_path) ok = PackingState(device.handle, "all-input-accepted", &audit.mfd_colour, &audit.scl_view);
     if (ok) {
         ok = WaitInput(&device, input, &audit, GST_CRYSTALHD_EOS_RESERVATION,
                        deadline);
@@ -2570,7 +3119,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
         }
         if (ok)
             ok = Status("DtsFlushInput(0)", DtsFlushInput(device.handle, 0));
-        if (ok && options.capture_path) ok = PackingState(device.handle, "flush-input-returned");
+        if (ok && options.capture_path) ok = PackingState(device.handle, "flush-input-returned", &audit.mfd_colour, &audit.scl_view);
     }
     // A complete frame count is deliberately NOT the termination condition.
     while (ok && !deadline.expired()) {
@@ -2591,7 +3140,8 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     // A failed experiment remains failed even if guarded restoration succeeds.
     // Never issue cleanup experiment I/O after an access/selector-loss latch.
     const bool view_restored = audit.scl_view.Restore(device.handle);
-    ok = ok && view_restored;
+    const bool colour_restored = audit.mfd_colour.Restore(device.handle);
+    ok = ok && view_restored && colour_restored;
     const bool closed = device.Close();
     ok = ok && closed;
     const bool captured = capture.Finish(ok);
@@ -2623,13 +3173,15 @@ int main(int argc, char **argv)
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
             "[--scaler-test WIDTH_OR_0] [--mpeg1-via-mpeg2 | --h263-via-divx] "
-            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-view 2_OR_3 | --observe-mfd-config] "
+            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-view 2_OR_3 | --observe-mfd-config | --inject-mfd-colour a_OR_b] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
     if (NeedsRawIo(options) && !CanReadChromaConfiguration()) {
-        if (options.observe_mfd_config)
+        if (options.inject_mfd_colour)
+            std::fprintf(stderr, "--inject-mfd-colour requires CAP_SYS_RAWIO; no fixture/capture/device was opened\n");
+        else if (options.observe_mfd_config)
             std::fprintf(stderr, "--observe-mfd-config requires CAP_SYS_RAWIO; no fixture/capture/device was opened\n");
         else if (options.observe_scl_view)
             std::fprintf(stderr, "--observe-scl-view requires CAP_SYS_RAWIO; no fixture/capture/device was opened\n");
