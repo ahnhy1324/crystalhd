@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="760" viewBox="0 0 1240 760">
+<rect width="1240" height="760" fill="#101923"/>
+<g font-family="sans-serif" fill="#e5edf5">
+<text x="28" y="38" font-size="23">BCM70015: native scaling changes SCL configuration</text>
+<text x="28" y="66" font-size="14" fill="#acbace">Same MPEG-2 640×360 / 180-frame fixture; default-off, fixed-register observations in the normal decoder-owned session.</text>
+<text x="28" y="91" font-size="13" fill="#acbace">Cells show raw SRC / DEST words, ENABLE and BVB STATUS. BVB input word equals SRC in every measured pass.</text>
+<text x="330" y="119" text-anchor="middle" font-size="12" fill="#acbace">pre-START</text>
+<text x="511" y="119" text-anchor="middle" font-size="12" fill="#acbace">first FMT API return</text>
+<text x="692" y="119" text-anchor="middle" font-size="12" fill="#acbace">first released output</text>
+<text x="873" y="119" text-anchor="middle" font-size="12" fill="#acbace">last released output</text>
+<text x="1054" y="119" text-anchor="middle" font-size="12" fill="#acbace">delivery EOS barrier</text>
+<text x="28" y="160" font-size="16">native width 0</text>
+<text x="28" y="184" font-size="13" fill="#58b7a1">PASS · 80 reads</text>
+<text x="28" y="207" font-size="12" fill="#acbace">180 captured · EOS</text>
+<rect x="249" y="136" width="162" height="96" rx="5" fill="#17303b" stroke="#6d9aaa"/>
+<text x="261" y="157" font-family="monospace" font-size="13">SRC 02d000f0</text>
+<text x="261" y="177" font-family="monospace" font-size="13">DST 02d000f0</text>
+<text x="261" y="197" font-family="monospace" font-size="13">EN 0 / STAT 0x0</text>
+<text x="261" y="218" font-size="11" fill="#acbace">two equal 8-read passes</text>
+<rect x="430" y="136" width="162" height="96" rx="5" fill="#17303b" stroke="#6d9aaa"/>
+<text x="442" y="157" font-family="monospace" font-size="13">SRC 02800168</text>
+<text x="442" y="177" font-family="monospace" font-size="13">DST 02800168</text>
+<text x="442" y="197" font-family="monospace" font-size="13">EN 0 / STAT 0x0</text>
+<text x="442" y="218" font-size="11" fill="#acbace">two equal 8-read passes</text>
+<rect x="611" y="136" width="162" height="96" rx="5" fill="#17303b" stroke="#6d9aaa"/>
+<text x="623" y="157" font-family="monospace" font-size="13">SRC 02800168</text>
+<text x="623" y="177" font-family="monospace" font-size="13">DST 02800168</text>
+<text x="623" y="197" font-family="monospace" font-size="13">EN 1 / STAT 0x0</text>
+<text x="623" y="218" font-size="11" fill="#acbace">two equal 8-read passes</text>
+<rect x="792" y="136" width="162" height="96" rx="5" fill="#17303b" stroke="#6d9aaa"/>
+<text x="804" y="157" font-family="monospace" font-size="13">SRC 02800168</text>
+<text x="804" y="177" font-family="monospace" font-size="13">DST 02800168</text>
+<text x="804" y="197" font-family="monospace" font-size="13">EN 0 / STAT 0x0</text>
+<text x="804" y="218" font-size="11" fill="#acbace">two equal 8-read passes</text>
+<rect x="973" y="136" width="162" height="96" rx="5" fill="#17303b" stroke="#6d9aaa"/>
+<text x="985" y="157" font-family="monospace" font-size="13">SRC 02800168</text>
+<text x="985" y="177" font-family="monospace" font-size="13">DST 02800168</text>
+<text x="985" y="197" font-family="monospace" font-size="13">EN 0 / STAT 0x0</text>
+<text x="985" y="218" font-size="11" fill="#acbace">two equal 8-read passes</text>
+<text x="28" y="275" font-size="16">identity width 640</text>
+<text x="28" y="299" font-size="13" fill="#58b7a1">PASS · 80 reads</text>
+<text x="28" y="322" font-size="12" fill="#acbace">180 captured · EOS</text>
+<rect x="249" y="251" width="162" height="96" rx="5" fill="#17303b" stroke="#6d9aaa"/>
+<text x="261" y="272" font-family="monospace" font-size="13">SRC 02d000f0</text>
+<text x="261" y="292" font-family="monospace" font-size="13">DST 02d000f0</text>
+<text x="261" y="312" font-family="monospace" font-size="13">EN 0 / STAT 0x0</text>
+<text x="261" y="333" font-size="11" fill="#acbace">two equal 8-read passes</text>
+<rect x="430" y="251" width="162" height="96" rx="5" fill="#17303b" stroke="#6d9aaa"/>
+<text x="442" y="272" font-family="monospace" font-size="13">SRC 02800168</text>
+<text x="442" y="292" font-family="monospace" font-size="13">DST 02800168</text>
+<text x="442" y="312" font-family="monospace" font-size="13">EN 0 / STAT 0x0</text>
+<text x="442" y="333" font-size="11" fill="#acbace">two equal 8-read passes</text>
+<rect x="611" y="251" width="162" height="96" rx="5" fill="#17303b" stroke="#6d9aaa"/>
+<text x="623" y="272" font-family="monospace" font-size="13">SRC 02800168</text>
+<text x="623" y="292" font-family="monospace" font-size="13">DST 02800168</text>
+<text x="623" y="312" font-family="monospace" font-size="13">EN 0 / STAT 0x0</text>
+<text x="623" y="333" font-size="11" fill="#acbace">two equal 8-read passes</text>
+<rect x="792" y="251" width="162" height="96" rx="5" fill="#17303b" stroke="#6d9aaa"/>
+<text x="804" y="272" font-family="monospace" font-size="13">SRC 02800168</text>
+<text x="804" y="292" font-family="monospace" font-size="13">DST 02800168</text>
+<text x="804" y="312" font-family="monospace" font-size="13">EN 0 / STAT 0x0</text>
+<text x="804" y="333" font-size="11" fill="#acbace">two equal 8-read passes</text>
+<rect x="973" y="251" width="162" height="96" rx="5" fill="#17303b" stroke="#6d9aaa"/>
+<text x="985" y="272" font-family="monospace" font-size="13">SRC 02800168</text>
+<text x="985" y="292" font-family="monospace" font-size="13">DST 02800168</text>
+<text x="985" y="312" font-family="monospace" font-size="13">EN 0 / STAT 0x0</text>
+<text x="985" y="333" font-size="11" fill="#acbace">two equal 8-read passes</text>
+<text x="28" y="390" font-size="16">initial width 320</text>
+<text x="28" y="414" font-size="13" fill="#f0a093">FAIL · 55 reads</text>
+<text x="28" y="437" font-size="12" fill="#acbace">179 captured / 180 hashed</text>
+<rect x="249" y="366" width="162" height="96" rx="5" fill="#17303b" stroke="#6d9aaa"/>
+<text x="261" y="387" font-family="monospace" font-size="13">SRC 02d000f0</text>
+<text x="261" y="407" font-family="monospace" font-size="13">DST 02d000f0</text>
+<text x="261" y="427" font-family="monospace" font-size="13">EN 0 / STAT 0x0</text>
+<text x="261" y="448" font-size="11" fill="#acbace">two equal 8-read passes</text>
+<rect x="430" y="366" width="162" height="96" rx="5" fill="#17303b" stroke="#6d9aaa"/>
+<text x="442" y="387" font-family="monospace" font-size="13">SRC 02800168</text>
+<text x="442" y="407" font-family="monospace" font-size="13">DST 014000b4</text>
+<text x="442" y="427" font-family="monospace" font-size="13">EN 0 / STAT 0x0</text>
+<text x="442" y="448" font-size="11" fill="#acbace">two equal 8-read passes</text>
+<rect x="611" y="366" width="162" height="96" rx="5" fill="#17303b" stroke="#6d9aaa"/>
+<text x="623" y="387" font-family="monospace" font-size="13">SRC 02800168</text>
+<text x="623" y="407" font-family="monospace" font-size="13">DST 014000b4</text>
+<text x="623" y="427" font-family="monospace" font-size="13">EN 1 / STAT 0x0</text>
+<text x="623" y="448" font-size="11" fill="#acbace">two equal 8-read passes</text>
+<rect x="792" y="366" width="162" height="96" rx="5" fill="#432b30" stroke="#f0a093"/>
+<text x="804" y="387" font-family="monospace" font-size="13">SRC 02800168</text>
+<text x="804" y="407" font-family="monospace" font-size="13">DST 014000b4</text>
+<text x="804" y="427" font-family="monospace" font-size="13">EN 1 / STAT 0x5</text>
+<text x="804" y="448" font-size="11" fill="#f0a093">7 reads; tail NOT-READ</text>
+<rect x="973" y="366" width="162" height="96" rx="5" fill="#29303b" stroke="#667485"/>
+<text x="1054" y="408" text-anchor="middle" font-size="14" fill="#acbace">NOT REACHED</text>
+<text x="1054" y="432" text-anchor="middle" font-size="12" fill="#acbace">no barrier sample</text>
+<text x="28" y="505" font-size="16">revised width 320</text>
+<text x="28" y="529" font-size="13" fill="#f0a093">FAIL · 55 reads</text>
+<text x="28" y="552" font-size="12" fill="#acbace">180 captured / 180 hashed</text>
+<rect x="249" y="481" width="162" height="96" rx="5" fill="#17303b" stroke="#6d9aaa"/>
+<text x="261" y="502" font-family="monospace" font-size="13">SRC 02d000f0</text>
+<text x="261" y="522" font-family="monospace" font-size="13">DST 02d000f0</text>
+<text x="261" y="542" font-family="monospace" font-size="13">EN 0 / STAT 0x0</text>
+<text x="261" y="563" font-size="11" fill="#acbace">two equal 8-read passes</text>
+<rect x="430" y="481" width="162" height="96" rx="5" fill="#17303b" stroke="#6d9aaa"/>
+<text x="442" y="502" font-family="monospace" font-size="13">SRC 02800168</text>
+<text x="442" y="522" font-family="monospace" font-size="13">DST 014000b4</text>
+<text x="442" y="542" font-family="monospace" font-size="13">EN 0 / STAT 0x0</text>
+<text x="442" y="563" font-size="11" fill="#acbace">two equal 8-read passes</text>
+<rect x="611" y="481" width="162" height="96" rx="5" fill="#17303b" stroke="#6d9aaa"/>
+<text x="623" y="502" font-family="monospace" font-size="13">SRC 02800168</text>
+<text x="623" y="522" font-family="monospace" font-size="13">DST 014000b4</text>
+<text x="623" y="542" font-family="monospace" font-size="13">EN 1 / STAT 0x0</text>
+<text x="623" y="563" font-size="11" fill="#acbace">two equal 8-read passes</text>
+<rect x="792" y="481" width="162" height="96" rx="5" fill="#432b30" stroke="#f0a093"/>
+<text x="804" y="502" font-family="monospace" font-size="13">SRC 02800168</text>
+<text x="804" y="522" font-family="monospace" font-size="13">DST 014000b4</text>
+<text x="804" y="542" font-family="monospace" font-size="13">EN 1 / STAT 0x1</text>
+<text x="804" y="563" font-size="11" fill="#f0a093">7 reads; tail NOT-READ</text>
+<rect x="973" y="481" width="162" height="96" rx="5" fill="#29303b" stroke="#667485"/>
+<text x="1054" y="523" text-anchor="middle" font-size="14" fill="#acbace">NOT REACHED</text>
+<text x="1054" y="547" text-anchor="middle" font-size="12" fill="#acbace">no barrier sample</text>
+<text x="28" y="616" font-size="13" fill="#acbace">Opening REV=0x80 / TOP=0x0c throughout. Closing REV=0x80 for completed passes; not read after failed STATUS.</text>
+<text x="28" y="640" font-size="13" fill="#acbace">Initial STATUS 0x5 = SHORT_SOURCE | SHORT_LINE; revised 0x1 = SHORT_LINE. Both stop, remain FAIL; cause/timing unproved.</text>
+<text x="28" y="664" font-size="13" fill="#acbace">Source 8b10f217: observe before owned-copy Write. Revised 8902564d: Write first, then observe; failure thresholds unchanged.</text>
+<text x="28" y="688" font-size="13" fill="#acbace">Both 320 runs hash 180 delivered pictures to the frozen oracle; revised full file matches. Neither reaches the delivery EOS barrier.</text>
+<text x="28" y="712" font-size="13" fill="#acbace">Eight unobserved controls and two observed controls pass. All twelve clean up; original module/files preserved, kernel check passes.</text>
+<text x="28" y="736" font-size="13" fill="#acbace">Equal raw passes are not atomic/transport/clock certificates. No raw-source lease, independent routing or all-consumer completion proof.</text>
+</g>
+</svg>
