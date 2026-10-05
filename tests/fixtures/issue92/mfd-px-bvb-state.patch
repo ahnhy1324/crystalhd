@@ -1,0 +1,971 @@
+diff --git a/driver/linux/crystalhd_fleafuncs.c b/driver/linux/crystalhd_fleafuncs.c
+index 9764351..3bc2c0d 100644
+--- a/driver/linux/crystalhd_fleafuncs.c
++++ b/driver/linux/crystalhd_fleafuncs.c
+@@ -2366,7 +2366,7 @@ static BC_STATUS crystalhd_flea_joint_attempt(struct crystalhd_hw *hw,
+ 
+ /* One non-atomic bundle: never infer same-cycle propagation or beat counts. */
+ static BC_STATUS crystalhd_flea_joint_observe_view(struct crystalhd_hw *hw,
+-		const uint32_t *expected, bool after_start, uint32_t *bundle, bool px_rd_sm)
++		const uint32_t *expected, bool after_start, uint32_t *bundle, unsigned int view)
+ {
+ 	static const uint32_t addresses[7] = {
+ 		BCHP_MFD_TEST_PORT_DATA, BCHP_MFD_BVB_SAMPLE_DATA, BCHP_MFD_FEED_STATUS,
+@@ -2381,6 +2381,9 @@ static BC_STATUS crystalhd_flea_joint_observe_view(struct crystalhd_hw *hw,
+ 	BC_STATUS sts;
+ 	unsigned int i;
+ 
++	/* Fixed caller views: 0 BVB_OUT, 1 PX_RD_SM, 2 PX_RD_BVB. */
++	if (view > 2)
++		return BC_STS_INV_ARG;
+ 	if (!bundle || !crystalhd_flea_joint_current(hw))
+ 		return BC_STS_IO_ERROR;
+ 	sts = crystalhd_flea_joint_sample(hw, hw->research_joint_generation,
+@@ -2392,8 +2395,9 @@ static BC_STATUS crystalhd_flea_joint_observe_view(struct crystalhd_hw *hw,
+ 			return BC_STS_IO_ERROR;
+ 		observed[i] = hw->pfnReadDevRegister(hw->adp, addresses[i]);
+ 		if (!crystalhd_flea_joint_current(hw) || observed[i] == 0xffffffff ||
+-		    (observed[i] & (i == 0 && px_rd_sm ?
+-		     BCHP_MFD_TEST_PORT_DATA_PX_RD_SM_reserved0_MASK : reserved[i])))
++		    (observed[i] & (i == 0 && view ?
++		     (view == 1 ? BCHP_MFD_TEST_PORT_DATA_PX_RD_SM_reserved0_MASK :
++		      BCHP_MFD_TEST_PORT_DATA_PX_RD_BVB_reserved0_MASK) : reserved[i])))
+ 			return BC_STS_IO_ERROR;
+ 	}
+ 	sts = crystalhd_flea_joint_sample(hw, hw->research_joint_generation,
+@@ -2413,7 +2417,7 @@ static BC_STATUS crystalhd_flea_joint_observe(struct crystalhd_hw *hw,
+ }
+ 
+ static BC_STATUS crystalhd_flea_joint_probe_view(struct crystalhd_hw *hw,
+-		uint64_t generation, const void *owner, bool request_feed, bool px_rd_sm)
++		uint64_t generation, const void *owner, bool request_feed, unsigned int view)
+ {
+ 	/* STRIDE precedes PACKED CTRL. Raw sizes/window are a layout hypothesis. */
+ 	static const unsigned int words[15] = { 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 18, 20, 21, 22, 23 };
+@@ -2425,7 +2429,10 @@ static BC_STATUS crystalhd_flea_joint_probe_view(struct crystalhd_hw *hw,
+ 	BC_STATUS sts;
+ 	unsigned int i, j, observations = 0;
+ 	bool error = false, last = false;
++	const char *view_name = view == 2 ? "px_rd_bvb" : view == 1 ? "px_rd_sm" : "bvb_out";
+ 
++	if (view > 2)
++		return BC_STS_INV_ARG;
+ 	if (!hw || crystalhd_hw_research_joint_pending(hw) || hw->research_mfd_pci_isolated ||
+ 	    hw->research_mfd_deliberate_abort || hw->research_scl_config_dirty ||
+ 	    hw->research_scl_reset_corroborated || hw->research_scl_duty_generation || hw->research_scl_duty_owner ||
+@@ -2454,19 +2461,20 @@ static BC_STATUS crystalhd_flea_joint_probe_view(struct crystalhd_hw *hw,
+ 	for (i = 0; i < ARRAY_SIZE(first); i++)
+ 		dev_info(&hw->adp->pdev->dev,
+ 			 "issue92 joint: phase=cold word=%u first=%08x second=%08x\n", i, first[i], second[i]);
+-	/* Only the separately admitted view changes: SOFT_INPUT=8, PX_RD_SM=3.
++	/* Only the separately admitted view changes: SOFT_INPUT=8 plus
++	 * TP_ADDR PX_RD_SM=3 or PX_RD_BVB=4.
+ 	 * Encoding does not certify a passive mux or operational pixel counts.
+ 	 */
+ 	for (i = 0; i < ARRAY_SIZE(words); i++)
+ 		if (crystalhd_flea_joint_attempt(hw, words[i],
+-				i == 7 && px_rd_sm ? 11 : targets[i], expected) != BC_STS_SUCCESS)
++				i == 7 && view ? (view == 1 ? 11 : 12) : targets[i], expected) != BC_STS_SUCCESS)
+ 			goto quarantine;
+-	if ((px_rd_sm ? crystalhd_flea_joint_observe_view(hw, expected, false, bundle, true) :
++	if ((view ? crystalhd_flea_joint_observe_view(hw, expected, false, bundle, view) :
+ 	     crystalhd_flea_joint_observe(hw, expected, false, bundle)) != BC_STS_SUCCESS)
+ 		goto quarantine;
+ 	for (i = 0; i < ARRAY_SIZE(bundle); i++)
+ 		dev_info(&hw->adp->pdev->dev, "issue92 joint: phase=pre-start word=%u raw=%08x view=%s\n",
+-			 i, bundle[i], px_rd_sm ? "px_rd_sm" : "bvb_out");
++			 i, bundle[i], view_name);
+ 	error = bundle[4] || bundle[6] || bundle[7] || bundle[8] || bundle[9] || bundle[10];
+ 	if (request_feed && !error) {
+ 		if (!crystalhd_flea_joint_current(hw) || hw->research_joint_attempts != 15)
+@@ -2477,22 +2485,23 @@ static BC_STATUS crystalhd_flea_joint_probe_view(struct crystalhd_hw *hw,
+ 		if (!crystalhd_flea_joint_current(hw))
+ 			goto quarantine;
+ 		for (i = 0; i < 16; i++) {
+-			if ((px_rd_sm ? crystalhd_flea_joint_observe_view(hw, expected, true, bundle, true) :
++			if ((view ? crystalhd_flea_joint_observe_view(hw, expected, true, bundle, view) :
+ 			     crystalhd_flea_joint_observe(hw, expected, true, bundle)) != BC_STS_SUCCESS)
+ 				goto quarantine;
+ 			observations++;
+ 			for (j = 0; j < ARRAY_SIZE(bundle); j++)
+ 				dev_info(&hw->adp->pdev->dev,
+ 					 "issue92 joint: phase=active observation=%u word=%u raw=%08x view=%s\n",
+-					 i, j, bundle[j], px_rd_sm ? "px_rd_sm" : "bvb_out");
++					 i, j, bundle[j], view_name);
+ 			error = bundle[4] || bundle[6] || bundle[7] || bundle[8] || bundle[9] || bundle[10];
+ 			/* Stop host observation on any named sampled terminal marker.
+ 			 * These levels are not fresh/completed-transfer certificates.
+ 			 */
+-			/* PX_RD_SM bits 25:24 are count bits, not BVB picture sync.
+-			 * No generator state/count/BUF_RD_DONE terminates observation.
++			/* Only view0 uses BVB_OUT picture sync. Both PX views have
++			 * unrelated fields here. No PX state/count/end/stop bit
++			 * terminates observation; DBUF indices are never followed.
+ 			 */
+-			last = (!px_rd_sm && (bundle[0] & BCHP_MFD_TEST_PORT_DATA_BVB_OUT_PICTURE_SYNC_MASK) ==
++			last = (!view && (bundle[0] & BCHP_MFD_TEST_PORT_DATA_BVB_OUT_PICTURE_SYNC_MASK) ==
+ 				(BCHP_MFD_TEST_PORT_DATA_BVB_OUT_PICTURE_SYNC_LAST_PIXEL <<
+ 				 BCHP_MFD_TEST_PORT_DATA_BVB_OUT_PICTURE_SYNC_SHIFT)) ||
+ 				((bundle[1] & BCHP_MFD_BVB_SAMPLE_DATA_PICTURE_SYNC_MASK) ==
+@@ -2507,7 +2516,7 @@ static BC_STATUS crystalhd_flea_joint_probe_view(struct crystalhd_hw *hw,
+ 		 "issue92 joint: attempts=%u start-attempted=%u active-observations=%u accept-writes=0 outcome=%s view=%s raw-observations-only\n",
+ 		 hw->research_joint_attempts, hw->research_joint_start_attempted, observations,
+ 		 error ? "observed_engine_error" : last ? "sampled_terminal" : request_feed ? "bounded_observation" : "configuration_only",
+-		 px_rd_sm ? "px_rd_sm" : "bvb_out");
++		 view_name);
+ 	hw->research_mfd_deliberate_abort = true;
+ 	return BC_STS_CMD_CANCELLED;
+ 
+@@ -3673,6 +3682,8 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 	bool joint_config_only_probe = hw && hw->research_joint_config_probe;
+ 	bool joint_feed_probe = hw && hw->research_joint_feed_probe;
+ 	const bool joint_px_rd_sm_probe = hw && hw->research_joint_px_rd_sm_probe;
++	const bool joint_px_rd_bvb_probe = hw && hw->research_joint_px_rd_bvb_probe;
++	const unsigned int joint_view = joint_px_rd_bvb_probe ? 2 : joint_px_rd_sm_probe ? 1 : 0;
+ 	bool joint_probe = joint_config_only_probe || joint_feed_probe;
+ 	bool mfd_reset_probe = hw && hw->research_mfd_reset_probe;
+ 	bool mfd_hsize_reset_probe = hw && hw->research_mfd_hsize_reset_probe;
+@@ -3722,6 +3733,7 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 		hw->research_joint_config_probe = false;
+ 		hw->research_joint_feed_probe = false;
+ 		hw->research_joint_px_rd_sm_probe = false;
++		hw->research_joint_px_rd_bvb_probe = false;
+ 		hw->research_mfd_reset_probe = false;
+ 		hw->research_mfd_hsize_reset_probe = false;
+ 		hw->research_mfd_packed_pattern = 0;
+@@ -3756,7 +3768,8 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 		return BC_STS_INV_ARG;
+ 
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+-	if (joint_px_rd_sm_probe && !joint_probe)
++	if (((joint_px_rd_sm_probe || joint_px_rd_bvb_probe) && !joint_probe) ||
++	    (joint_px_rd_sm_probe && joint_px_rd_bvb_probe))
+ 		return BC_STS_INV_ARG;
+ 	if (mfd_packed_window_probe && !mfd_packed_probe)
+ 		return BC_STS_INV_ARG;
+@@ -4020,8 +4033,8 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 		if (mfd_reset_probe)
+ 			return crystalhd_flea_mfd_reset_probe(hw, mfd_generation, mfd_owner);
+ 		if (joint_probe)
+-			return joint_px_rd_sm_probe ?
+-				crystalhd_flea_joint_probe_view(hw, mfd_generation, mfd_owner, joint_feed_probe, true) :
++			return joint_view ?
++				crystalhd_flea_joint_probe_view(hw, mfd_generation, mfd_owner, joint_feed_probe, joint_view) :
+ 				crystalhd_flea_joint_probe(hw, mfd_generation, mfd_owner, joint_feed_probe);
+ 		if (mfd_hsize_reset_probe)
+ 			return crystalhd_flea_mfd_hsize_probe(hw, mfd_generation, mfd_owner);
+diff --git a/driver/linux/crystalhd_fw_research.c b/driver/linux/crystalhd_fw_research.c
+index 909f971..7613b4c 100644
+--- a/driver/linux/crystalhd_fw_research.c
++++ b/driver/linux/crystalhd_fw_research.c
+@@ -76,8 +76,8 @@ static const u8 crystalhd_fw_research_owner;
+ #endif
+ 
+ /* Research-only wire values: eC011_VIDEO_ALG_H261/H263/MPEG1 in 7411d.h. */
+-#if defined(CRYSTALHD_JOINT_CONFIG_RESET_PROBE) || defined(CRYSTALHD_JOINT_FEED_PROBE) || defined(CRYSTALHD_JOINT_PX_CONFIG_RESET_PROBE) || defined(CRYSTALHD_JOINT_PX_FEED_PROBE)
+-#if (defined(CRYSTALHD_JOINT_CONFIG_RESET_PROBE) + defined(CRYSTALHD_JOINT_FEED_PROBE) + defined(CRYSTALHD_JOINT_PX_CONFIG_RESET_PROBE) + defined(CRYSTALHD_JOINT_PX_FEED_PROBE)) != 1
++#if defined(CRYSTALHD_JOINT_CONFIG_RESET_PROBE) || defined(CRYSTALHD_JOINT_FEED_PROBE) || defined(CRYSTALHD_JOINT_PX_CONFIG_RESET_PROBE) || defined(CRYSTALHD_JOINT_PX_FEED_PROBE) || defined(CRYSTALHD_JOINT_BVB_CONFIG_RESET_PROBE) || defined(CRYSTALHD_JOINT_BVB_FEED_PROBE)
++#if (defined(CRYSTALHD_JOINT_CONFIG_RESET_PROBE) + defined(CRYSTALHD_JOINT_FEED_PROBE) + defined(CRYSTALHD_JOINT_PX_CONFIG_RESET_PROBE) + defined(CRYSTALHD_JOINT_PX_FEED_PROBE) + defined(CRYSTALHD_JOINT_BVB_CONFIG_RESET_PROBE) + defined(CRYSTALHD_JOINT_BVB_FEED_PROBE)) != 1
+ #error "Joint view/configuration/START profiles must be built separately"
+ #endif
+ #if defined(CRYSTALHD_SCL_ENABLE_RESET_PROBE) || defined(CRYSTALHD_SCL_SIZE_RESET_PROBE) || defined(CRYSTALHD_SCL_CONFIG_PROBE) || defined(CRYSTALHD_MFD_RESET_CONTROLS_PROBE) || defined(CRYSTALHD_MFD_HSIZE_RESET_PROBE) || defined(CRYSTALHD_MFD_LATCH_PROBE) || defined(CRYSTALHD_MFD_FIXED_COLOUR_PROBE) || defined(CRYSTALHD_SCL_PORT_PROBE) || defined(CRYSTALHD_SCL_PORT_LATCH) || defined(CRYSTALHD_MFD_SCL_STATUS_PROBE) || defined(CRYSTALHD_MFD_PACKED_SOURCE_PROBE) || defined(CRYSTALHD_MFD_PACKED_WINDOW_PROBE) || defined(CRYSTALHD_MFD_PACKED_OBSERVED_GEOMETRY_PROBE) || defined(CRYSTALHD_MFD_PACKED_HSIZE4_PROBE) || defined(CRYSTALHD_MFD_PACKED_NORMAL_PROBE) || defined(CRYSTALHD_MFD_PACKED_SCL_INPUT_PROBE)
+@@ -1094,7 +1094,7 @@ static void crystalhd_fw_research_run_internal(u64 generation,
+ 		return;
+ 	}
+ #endif
+-#if defined(CRYSTALHD_JOINT_CONFIG_RESET_PROBE) || defined(CRYSTALHD_JOINT_FEED_PROBE) || defined(CRYSTALHD_JOINT_PX_CONFIG_RESET_PROBE) || defined(CRYSTALHD_JOINT_PX_FEED_PROBE)
++#if defined(CRYSTALHD_JOINT_CONFIG_RESET_PROBE) || defined(CRYSTALHD_JOINT_FEED_PROBE) || defined(CRYSTALHD_JOINT_PX_CONFIG_RESET_PROBE) || defined(CRYSTALHD_JOINT_PX_FEED_PROBE) || defined(CRYSTALHD_JOINT_BVB_CONFIG_RESET_PROBE) || defined(CRYSTALHD_JOINT_BVB_FEED_PROBE)
+ 	if (request->selector != CRYSTALHD_FW_RESEARCH_VERSION_ONLY ||
+ 	    state || controller || image || packet || heap_packet || clock || uart) {
+ 		result->status = -EINVAL;
+@@ -1273,6 +1273,18 @@ static void crystalhd_fw_research_run_internal(u64 generation,
+ 	ctx->hw_ctx->research_mfd_generation = generation;
+ 	ctx->hw_ctx->research_mfd_owner = &crystalhd_fw_research_owner;
+ #endif
++#ifdef CRYSTALHD_JOINT_BVB_CONFIG_RESET_PROBE
++	ctx->hw_ctx->research_joint_config_probe = true;
++	ctx->hw_ctx->research_joint_px_rd_bvb_probe = true;
++	ctx->hw_ctx->research_mfd_generation = generation;
++	ctx->hw_ctx->research_mfd_owner = &crystalhd_fw_research_owner;
++#endif
++#ifdef CRYSTALHD_JOINT_BVB_FEED_PROBE
++	ctx->hw_ctx->research_joint_feed_probe = true;
++	ctx->hw_ctx->research_joint_px_rd_bvb_probe = true;
++	ctx->hw_ctx->research_mfd_generation = generation;
++	ctx->hw_ctx->research_mfd_owner = &crystalhd_fw_research_owner;
++#endif
+ #ifdef CRYSTALHD_MFD_HSIZE_RESET_PROBE
+ 	ctx->hw_ctx->research_mfd_hsize_reset_probe = true;
+ 	ctx->hw_ctx->research_mfd_generation = generation;
+@@ -1295,6 +1307,7 @@ static void crystalhd_fw_research_run_internal(u64 generation,
+ 	ctx->hw_ctx->research_joint_config_probe = false;
+ 	ctx->hw_ctx->research_joint_feed_probe = false;
+ 	ctx->hw_ctx->research_joint_px_rd_sm_probe = false;
++	ctx->hw_ctx->research_joint_px_rd_bvb_probe = false;
+ 	ctx->hw_ctx->research_mfd_reset_probe = false;
+ 	ctx->hw_ctx->research_mfd_hsize_reset_probe = false;
+ 	ctx->hw_ctx->research_mfd_packed_pattern = 0;
+diff --git a/driver/linux/crystalhd_hw.h b/driver/linux/crystalhd_hw.h
+index c8f1150..3d594ce 100644
+--- a/driver/linux/crystalhd_hw.h
++++ b/driver/linux/crystalhd_hw.h
+@@ -420,6 +420,7 @@ struct crystalhd_hw {
+ 	bool research_joint_feed_probe;
+ 	/* Transient view choice; consumed before loader activity, not a duty. */
+ 	bool research_joint_px_rd_sm_probe;
++	bool research_joint_px_rd_bvb_probe;
+ 	bool research_mfd_reset_probe;
+ 	bool research_mfd_hsize_reset_probe;
+ 	uint32_t research_mfd_packed_pattern;
+diff --git a/tests/device-lifetime.c b/tests/device-lifetime.c
+index 839e3d8..626da29 100644
+--- a/tests/device-lifetime.c
++++ b/tests/device-lifetime.c
+@@ -74,6 +74,7 @@ struct crystalhd_hw {
+ 	uint32_t research_mfd_hsize_saved[20];
+ 	bool research_joint_config_probe, research_joint_feed_probe;
+ 	bool research_joint_px_rd_sm_probe;
++	bool research_joint_px_rd_bvb_probe;
+ 	bool research_joint_pending, research_joint_original_sampled;
+ 	bool research_joint_reset_corroborated, research_joint_start_attempted;
+ 	unsigned int research_joint_attempts;
+@@ -1324,7 +1325,7 @@ static void assert_observer_retained(struct crystalhd_adp *adp,
+ 	assert(!hw->research_mfd_hsize_reset_probe);
+ 	assert(!hw->research_scl_enable_reset_probe);
+ 	assert(!hw->research_joint_config_probe && !hw->research_joint_feed_probe);
+-	assert(!hw->research_joint_px_rd_sm_probe);
++	assert(!hw->research_joint_px_rd_sm_probe && !hw->research_joint_px_rd_bvb_probe);
+ 	assert(hw->research_joint_pending == (joint && joint->pending));
+ 	assert(hw->research_joint_original_sampled == (joint && joint->original));
+ 	assert(hw->research_joint_reset_corroborated == (joint && joint->corroborated));
+diff --git a/tests/fw-download.c b/tests/fw-download.c
+index 015aac3..410e385 100644
+--- a/tests/fw-download.c
++++ b/tests/fw-download.c
+@@ -116,6 +116,7 @@ struct crystalhd_hw {
+ 	bool research_scl_enable_reset_probe;
+ 	bool research_joint_config_probe, research_joint_feed_probe;
+ 	bool research_joint_px_rd_sm_probe;
++	bool research_joint_px_rd_bvb_probe;
+ 	bool research_joint_pending, research_joint_original_sampled;
+ 	bool research_joint_reset_corroborated, research_joint_start_attempted;
+ 	uint32_t research_joint_attempts, research_joint_saved[25];
+@@ -361,14 +362,18 @@ static const uint32_t joint_cold[25] = {
+ static const unsigned joint_words[15]={2,3,4,5,6,7,8,9,10,11,18,20,21,22,23};
+ static const uint32_t joint_targets[15]={0,0x405ac3,4,1,3,0,0,15,0,13,0x40002,0x40002,0x40002,1,3};
+ static const uint32_t joint_px_targets[15]={0,0x405ac3,4,1,3,0,0,11,0,13,0x40002,0x40002,0x40002,1,3};
++static const uint32_t joint_bvb_targets[15]={0,0x405ac3,4,1,3,0,0,12,0,13,0x40002,0x40002,0x40002,1,3};
+ static const uint32_t joint_raw_addresses[7]={0x540080,0x540078,0x540050,0x540070,0x54006c,0x540884,0x5408a4};
+ static bool joint_active, joint_stop, joint_reset_model, joint_no_io, joint_pending_cycle, joint_px;
++static bool joint_bvb;
+ static unsigned joint_reads,joint_writes,joint_count,joint_targets_count,joint_raw_reads;
+ static unsigned joint_fault_read,joint_fault_write,joint_async_read,joint_async_write,joint_async_kind;
+ static unsigned joint_pci_async,joint_pci_failure_reads,joint_logs[4],joint_summaries;
+ static unsigned joint_clock_event,joint_mutate_at,joint_mutate_word,joint_batch_fault;
+ static unsigned joint_view_write_at,joint_view_read_at;
+ static bool joint_view_value;
++static unsigned joint_bvb_view_read_at,joint_bvb_view_write_at,joint_bvb_view_mask;
++static unsigned joint_bvb_status_read_at;
+ static unsigned joint_reset_drift_word;
+ static uint32_t joint_reset_drift_bits, joint_mutate_bits;
+ static uint32_t joint_fault_value,joint_bank[25],joint_script[17][7];
+@@ -633,8 +638,13 @@ static uint32_t joint_read(uint32_t address)
+ 	joint_reads++;if(joint_reads==joint_fault_read)value=joint_fault_value;
+ 	joint_record('R',address,value);
+ 	if(joint_reads==joint_mutate_at)joint_bank[joint_mutate_word]^=joint_mutate_bits;
++	if(joint_reads==joint_bvb_status_read_at){joint_bank[13]^=5;joint_bank[24]^=0xc0;}
+ 	if(joint_reads==joint_async_read)config_context_fault(joint_async_kind);
+ 	if(joint_reads==joint_view_read_at)hardware.research_joint_px_rd_sm_probe=joint_view_value;
++	if(joint_reads==joint_bvb_view_read_at) {
++		hardware.research_joint_px_rd_sm_probe=(joint_bvb_view_mask&1)!=0;
++		hardware.research_joint_px_rd_bvb_probe=(joint_bvb_view_mask&2)!=0;
++	}
+ 	return value;
+ }
+ static void joint_write(uint32_t address,uint32_t value)
+@@ -653,7 +663,8 @@ static void joint_write(uint32_t address,uint32_t value)
+ 		      hardware.research_joint_generation==adapter.generation&&hardware.research_joint_owner==&research_owner&&
+ 		      hardware.research_joint_attempts==n+1&&n<16,
+ 		      "unified duty and attempt counter precede every ambiguous void target callback");
+-		check((n<15&&address==joint_addresses[joint_words[n]]&&value==(joint_px?joint_px_targets[n]:joint_targets[n]))||
++		check((n<15&&address==joint_addresses[joint_words[n]]&&value==
++		      (joint_bvb?joint_bvb_targets[n]:joint_px?joint_px_targets[n]:joint_targets[n]))||
+ 		      (n==15&&address==0x540030&&value==1&&hardware.research_joint_start_attempted),
+ 		      "literal joint target stream has no pulse, retarget, pointer, TOP, clock or source write");
+ 		if(joint_writes!=joint_fault_write)for(unsigned i=0;i<25;i++)if(address==joint_addresses[i])joint_bank[i]=value;
+@@ -662,6 +673,10 @@ static void joint_write(uint32_t address,uint32_t value)
+ 		"pre-isolation writes are only official loader setup");
+ 	if(joint_writes==joint_async_write)config_context_fault(joint_async_kind);
+ 	if(joint_writes==joint_view_write_at)hardware.research_joint_px_rd_sm_probe=joint_view_value;
++	if(joint_writes==joint_bvb_view_write_at) {
++		hardware.research_joint_px_rd_sm_probe=(joint_bvb_view_mask&1)!=0;
++		hardware.research_joint_px_rd_bvb_probe=(joint_bvb_view_mask&2)!=0;
++	}
+ }
+ 
+ static uint32_t read_config(uint32_t offset)
+@@ -1027,19 +1042,31 @@ static void packed_compare(void)
+ 		      "every real packed R/W/PIO event matches the separately literal-built ordered oracle");
+ }
+ 
++/* Independent host publication premise; do not reuse the driver guard. */
++static bool joint_bvb_log_current(void)
++{
++	return config_current()&&hardware.adp==&adapter&&adapter.pdev&&hardware.dev_started&&
++		hardware.pfnReadDevRegister&&hardware.pfnWriteDevRegister&&adapter.cmds.adp==&adapter&&
++		adapter.cmds.hw_ctx==&hardware&&adapter.cmds.state==BC_LINK_INVALID&&
++		adapter.cmds.session_module_pinned&&adapter.cmds.session_owner==&research_owner&&
++		hardware.research_joint_pending&&hardware.research_joint_original_sampled&&
++		hardware.research_mfd_pci_isolated&&hardware.research_joint_attempts<=16&&
++		hardware.research_joint_generation==adapter.generation&&hardware.research_joint_owner==&research_owner;
++}
++
+ static void test_log(const char *message, ...)
+ {
+ 	if(joint_active&&strstr(message,"issue92 joint: phase=cold")) {
+ 		va_list args;va_start(args,message);unsigned word=va_arg(args,unsigned);
+ 		uint32_t first=va_arg(args,uint32_t),second=va_arg(args,uint32_t);
+-		check(config_current()&&!fatal_stops&&word==joint_logs[0]&&word<25&&first==second&&
++		check(config_current()&&(!joint_bvb||joint_bvb_log_current())&&!fatal_stops&&word==joint_logs[0]&&word<25&&first==second&&
+ 		      first==joint_bank[word]&&hardware.research_joint_pending,
+ 		      "joint cold logs publish only complete equal current saved controls");
+ 		joint_logs[0]++;va_end(args);
+ 	} else if(joint_active&&strstr(message,"issue92 joint: phase=pre-powerdown-retire")) {
+ 		va_list args;va_start(args,message);unsigned word=va_arg(args,unsigned);
+ 		uint32_t first=va_arg(args,uint32_t),second=va_arg(args,uint32_t);
+-		check(config_current()&&!fatal_stops&&!size_clock_disabled&&word==joint_logs[3]&&word<25&&
++		check(config_current()&&(!joint_bvb||joint_bvb_log_current())&&!fatal_stops&&!size_clock_disabled&&word==joint_logs[3]&&word<25&&
+ 		      first==second&&first==hardware.research_joint_saved[word],
+ 		      "joint retirement never publishes a partial, stale or subset proof");
+ 		joint_logs[3]++;va_end(args);
+@@ -1047,12 +1074,12 @@ static void test_log(const char *message, ...)
+ 		bool active=strstr(message,"phase=active")!=NULL;
+ 		va_list args;va_start(args,message);unsigned ordinal=active?va_arg(args,unsigned):0;
+ 		unsigned word=va_arg(args,unsigned);uint32_t raw=va_arg(args,uint32_t);
+-		check(config_current()&&!fatal_stops&&word==(active?joint_logs[2]:joint_logs[1])%11&&word<11&&
++		check(config_current()&&(!joint_bvb||joint_bvb_log_current())&&!fatal_stops&&word==(active?joint_logs[2]:joint_logs[1])%11&&word<11&&
+ 		      ordinal<16&&raw!=UINT32_MAX&&hardware.research_joint_pending,
+ 		      "joint raw rows are complete current opaque observations, not accepted-transfer counts");
+-		if(joint_px) {
++		if(joint_px||joint_bvb) {
+ 			const char *view=va_arg(args,const char *);
+-			check(strstr(message,"view=%s")&&view&&!strcmp(view,"px_rd_sm"),
++			check(strstr(message,"view=%s")&&view&&!strcmp(view,joint_bvb?"px_rd_bvb":"px_rd_sm"),
+ 			      "PX raw observations explicitly name their union instead of reusing BVB decoders");
+ 			/* Literal offsets in the two33-word guards plus7-word bundle.
+ 			 * Four status witnesses are distinct, never an OR/currentbank value.
+@@ -1069,13 +1096,13 @@ static void test_log(const char *message, ...)
+ 	} else if(joint_active&&strstr(message,"issue92 joint: attempts=")) {
+ 		va_list args;va_start(args,message);unsigned attempts=va_arg(args,unsigned),start=va_arg(args,unsigned);
+ 		unsigned observations=va_arg(args,unsigned);const char *outcome=va_arg(args,const char *);
+-		check(config_current()&&!fatal_stops&&attempts==joint_targets_count&&attempts<=16&&
++		check(config_current()&&(!joint_bvb||joint_bvb_log_current())&&!fatal_stops&&attempts==joint_targets_count&&attempts<=16&&
+ 		      start==hardware.research_joint_start_attempted&&observations==joint_logs[2]/11&&
+ 		      outcome&&strstr(message,"accept-writes=0")&&strstr(message,"raw-observations-only"),
+ 		      "joint summary reports actual attempts and observations without completion claims");
+-		if(joint_px) {
++		if(joint_px||joint_bvb) {
+ 			const char *view=va_arg(args,const char *);
+-			check(strstr(message,"view=%s")&&view&&!strcmp(view,"px_rd_sm"),
++			check(strstr(message,"view=%s")&&view&&!strcmp(view,joint_bvb?"px_rd_bvb":"px_rd_sm"),
+ 			      "PX summary keeps an explicit raw union label");
+ 		}
+ 		joint_outcome=outcome;
+@@ -2210,6 +2237,8 @@ static uint32_t patterned_word(size_t index)
+ static void reset(void)
+ {
+ 	joint_active=joint_stop=joint_reset_model=joint_no_io=joint_pending_cycle=joint_px=false;
++	joint_bvb=false;joint_bvb_view_read_at=joint_bvb_view_write_at=joint_bvb_view_mask=0;
++	joint_bvb_status_read_at=0;
+ 	joint_outcome=NULL;
+ 	joint_reads=joint_writes=joint_count=joint_targets_count=joint_raw_reads=0;
+ 	joint_fault_read=joint_fault_write=joint_async_read=joint_async_write=joint_async_kind=0;
+@@ -9233,6 +9262,527 @@ static void joint_px_scope_results(void)
+ 	      "default-off stock firmware path remains unchanged and never performs PX experimental targets");
+ }
+ 
++/* These literal scripts exercise the new union and host control flow only;
++ * state names, count fields and a mocked reset are not silicon certificates.
++ */
++static void joint_bvb_fixture(void)
++{
++	joint_fixture();joint_bvb=true;
++	for(unsigned row=0;row<17;row++) {
++		const uint32_t raw[7]={0x2a2bffff,0x00040168,1,0,0,0x89abcdef,0};
++		memcpy(joint_script[row],raw,sizeof(raw));
++	}
++}
++static BC_STATUS joint_bvb_run(bool feed)
++{
++	return crystalhd_flea_joint_probe_view(&hardware,adapter.generation,&research_owner,feed,2);
++}
++static bool joint_bvb_filled(const uint32_t *values,unsigned count,uint32_t sentinel)
++{
++	for(unsigned i=0;i<count;i++)if(values[i]!=sentinel)return false;
++	return true;
++}
++static void joint_bvb_clean_results(void)
++{
++	groups++;
++	for(unsigned feed=0;feed<2;feed++) {
++		joint_bvb_fixture();
++		check(joint_bvb_run(feed)==BC_STS_CMD_CANCELLED&&joint_reads==(feed?1812U:644U)&&
++		      joint_targets_count==(feed?16U:15U)&&pci_reads==(feed?306U:114U)&&pci_clears==1&&
++		      joint_raw_reads==(feed?119U:7U)&&joint_logs[0]==25&&joint_logs[1]==11&&
++		      joint_logs[2]==(feed?176U:0U)&&joint_summaries==1&&!fatal_stops&&
++		      hardware.research_joint_start_attempted==(bool)feed&&hardware.research_joint_pending&&
++		      !memcmp(hardware.research_joint_saved,joint_cold,sizeof(joint_cold))&&joint_bank[9]==12&&
++		      !dram_reads&&!dram_writes&&!fpga_reads&&!fpga_writes&&!cmac_writes&&!arm_run_writes,
++		      "PX_RD_BVB clean host budgets preserve soleSTART/unified25control duty and never claim accepted output");
++		check(joint_outcome&&!strcmp(joint_outcome,feed?"bounded_observation":"configuration_only"),
++		      "PX_RD_BVB CSM raw field is diagnostic rather than a processing result");
++		unsigned n=0;uint32_t bank[25];memcpy(bank,joint_cold,sizeof(bank));
++		joint_guard_oracle(&n,bank);
++		const uint32_t a[6]={0x540030,0x540800,0x540804,0x540854,0x540880,0x5408a4};
++		const uint32_t v[6]={0,0x80,0xc,0,0,0};
++		for(unsigned i=0;i<6;i++)joint_expected(&n,'R',a[i],v[i]);
++		joint_sample_oracle(&n,bank);joint_sample_oracle(&n,bank);
++		for(unsigned i=0;i<15;i++) {
++			joint_expected(&n,'W',joint_addresses[joint_words[i]],joint_bvb_targets[i]);
++			bank[joint_words[i]]=joint_bvb_targets[i];joint_sample_oracle(&n,bank);
++		}
++		joint_observe_oracle(&n,bank,0);
++		if(feed) {
++			joint_expected(&n,'W',0x540030,1);bank[1]=1;
++			for(unsigned row=1;row<17;row++)joint_observe_oracle(&n,bank,row);
++		}
++		check(n==joint_count,"entire PX literal event stream differs from BVB_OUT only at targetslot7 value12");
++		unsigned reads=joint_reads,writes=joint_writes,pcis=pci_reads;
++		check(joint_bvb_run(feed)==BC_STS_BUSY&&joint_reads==reads&&joint_writes==writes&&pci_reads==pcis,
++		      "PX_RD_BVB same-context replay has zero further register/PCI callbacks");
++	}
++}
++static void joint_bvb_probe_fault_results(void)
++{
++	groups++;
++	for(unsigned feed=0;feed<2;feed++) {
++		const unsigned bound=feed?1812:644,pcibound=feed?306:114;
++		for(unsigned at=1;at<=bound;at++)for(unsigned kind=0;kind<8;kind++) {
++			joint_bvb_fixture();if(kind){joint_async_read=at;joint_async_kind=kind;}
++			else joint_fault_read=at;
++			unsigned ceiling=at+3;if(kind>=6&&at<=10&&ceiling<10)ceiling=10;
++			check(size_refused(joint_bvb_run(feed))&&joint_reads<=ceiling&&!joint_summaries&&
++			      !hardware.research_joint_reset_corroborated&&joint_logs[0]%25==0&&joint_logs[1]%11==0&&
++			      joint_logs[2]%11==0&&(!(kind>=6&&at<=10)||(!joint_targets_count&&!pci_clears&&!joint_logs[0])),
++			      "every PX read poison/currentness position fails without partial tuples, blind retry or stale fullresult");
++		}
++		for(unsigned at=1;at<=(feed?16U:15U);at++)for(unsigned kind=0;kind<8;kind++) {
++			joint_bvb_fixture();if(kind){joint_async_write=at;joint_async_kind=kind;}else joint_fault_write=at;
++			bool visible=kind||(at<=15&&joint_cold[joint_words[at-1]]!=joint_bvb_targets[at-1]);
++			BC_STATUS result=joint_bvb_run(feed);
++			check(hardware.research_joint_pending&&hardware.research_joint_attempts>=at&&
++			      (visible?(result==BC_STS_IO_ERROR&&fatal_stops==1&&joint_writes==at&&
++			        hardware.research_joint_attempts==at&&!joint_summaries):
++			       (result==BC_STS_CMD_CANCELLED&&!fatal_stops&&joint_targets_count==(feed?16U:15U))),
++			      "PX_RD_BVB attempted-state precedes voidwrites; detectable loss quarantines and indistinguishable writes remain inconclusive");
++		}
++		for(unsigned at=1;at<=pcibound;at++)for(unsigned kind=0;kind<8;kind++) {
++			joint_bvb_fixture();if(kind){joint_pci_async=at;joint_async_kind=kind;}else pci_fail_at=at;
++			check(joint_bvb_run(feed)==BC_STS_IO_ERROR&&fatal_stops==1&&!joint_summaries&&
++			      (kind||joint_reads==joint_pci_failure_reads),
++			      "every clean PX PCI transport/binding position refuses without later access on transport failure");
++		}
++	}
++}
++static void joint_bvb_raw_results(void)
++{
++	groups++;
++	const uint32_t masks[7]={0xc0000000,0xfc000000,0xdfffe000,0xfffffffc,0xfffffff8,0,0xffffff00};
++	for(unsigned word=0;word<7;word++)for(unsigned bit=0;bit<32;bit++) {
++		joint_bvb_fixture();check(joint_bvb_run(false)==BC_STS_CMD_CANCELLED,"PX_RD_BVB raw fixture is an actual configured duty");
++		joint_raw_reads=0;memset(joint_script,0,sizeof(joint_script));joint_script[0][word]=1U<<bit;
++		struct{uint32_t before,v[11],after;}out;memset(&out,0xa5,sizeof(out));
++		uint32_t expected[25];memcpy(expected,joint_bank,sizeof(expected));
++		BC_STATUS result=crystalhd_flea_joint_observe_view(&hardware,expected,false,out.v,2);
++		bool reserved=(masks[word]&(1U<<bit))!=0;
++		check(result==(reserved?BC_STS_IO_ERROR:BC_STS_SUCCESS)&&out.before==0xa5a5a5a5&&out.after==0xa5a5a5a5&&
++		      (reserved?joint_bvb_filled(out.v,11,0xa5a5a5a5):out.v[word]==(1U<<bit)),
++		      "independent literal sevenword masks admit PX bits0..29 and reject only reserved bits without output publication");
++	}
++	for(unsigned word=0;word<7;word++) {
++		joint_bvb_fixture();check(joint_bvb_run(false)==BC_STS_CMD_CANCELLED,"allones raw premise is configured");
++		joint_raw_reads=0;joint_script[0][word]=UINT32_MAX;
++		struct{uint32_t before,v[11],after;}out;memset(&out,0x3c,sizeof(out));
++		uint32_t expected[25];memcpy(expected,joint_bank,sizeof(expected));
++		check(crystalhd_flea_joint_observe_view(&hardware,expected,false,out.v,2)==BC_STS_IO_ERROR&&
++		      out.before==0x3c3c3c3c&&out.after==0x3c3c3c3c&&joint_bvb_filled(out.v,11,0x3c3c3c3c),
++		      "allones even opaque SCL DATA is unavailable, never a measured or partially published raw tuple");
++	}
++	for(unsigned at=1;at<=73;at++)for(unsigned kind=0;kind<8;kind++) {
++		joint_bvb_fixture();check(joint_bvb_run(false)==BC_STS_CMD_CANCELLED,"direct raw fault starts after legitimate setup");
++		const unsigned base=joint_reads;
++		if(kind){joint_async_read=base+at;joint_async_kind=kind;}else joint_fault_read=base+at;
++		struct{uint32_t before,v[11],after;}out;memset(&out,0x5a,sizeof(out));
++		uint32_t expected[25];memcpy(expected,joint_bank,sizeof(expected));
++		check(crystalhd_flea_joint_observe_view(&hardware,expected,false,out.v,2)==BC_STS_IO_ERROR&&
++		      out.before==0x5a5a5a5a&&out.after==0x5a5a5a5a&&joint_bvb_filled(out.v,11,0x5a5a5a5a),
++		      "all73 composite observation faults retain canaries and suppress publication, not instantaneous batched cancellation claims");
++	}
++	for(unsigned invalid=0;invalid<3;invalid++) {
++		joint_bvb_fixture();check(joint_bvb_run(false)==BC_STS_CMD_CANCELLED,"argument raw fixture is configured");
++		uint32_t expected[25],out[11];memcpy(expected,joint_bank,sizeof(expected));memset(out,0xa5,sizeof(out));
++		unsigned count=joint_count;
++		if(invalid==2)adapter.cmds.session_owner=&hardware;
++		check(crystalhd_flea_joint_observe_view(invalid==0?NULL:&hardware,expected,false,invalid==1?NULL:out,2)==
++		      BC_STS_IO_ERROR&&joint_count==count&&joint_bvb_filled(out,11,0xa5a5a5a5),
++		      "null/binding-loss raw calls reject before I/O");
++	}
++}
++static void joint_bvb_terminal_results(void)
++{
++	groups++;
++	const uint32_t isolated[]={0x02000000,0x04000000,0x08000000,0x30000000,0x38000000,
++		0x07e00000,0x001f8000,0x4000,0x2000,0x1000,0x800,0x400,0x200,0x100,0x80,
++		0x40,0x20,0x18,4,2,1};
++	for(unsigned pattern=0;pattern<ARRAY_SIZE(isolated);pattern++)for(unsigned ordinal=0;ordinal<17;ordinal++) {
++		joint_bvb_fixture();for(unsigned row=0;row<17;row++)joint_script[row][0]=0;
++		joint_script[ordinal][0]=isolated[pattern];
++		check(joint_bvb_run(true)==BC_STS_CMD_CANCELLED&&joint_logs[2]==176&&joint_raw_reads==119&&
++		      joint_targets_count==16&&joint_outcome&&!strcmp(joint_outcome,"bounded_observation"),
++		      "isolated old BVB sync, CSM/indices/end/FIFO/stop flags never stop preSTART or any activeordinal");
++	}
++	for(unsigned state=0;state<8;state++)for(unsigned indices=0;indices<2;indices++) {
++		joint_bvb_fixture();for(unsigned row=0;row<17;row++)
++			joint_script[row][0]=(state<<27)|(indices?0x07ffffffU:0);
++		check(joint_bvb_run(true)==BC_STS_CMD_CANCELLED&&joint_logs[2]==176&&joint_raw_reads==119&&
++		      joint_targets_count==16&&joint_outcome&&!strcmp(joint_outcome,"bounded_observation"),
++		      "all CSM encodings including unnamed6/7 and opaque indices/end/stop bits remain opaque and never terminate observation");
++	}
++	for(unsigned marker=0;marker<2;marker++)for(unsigned error=0;error<3;error++) {
++		joint_bvb_fixture();if(marker==0)joint_script[0][1]|=0x02000000;else joint_script[0][3]=2;
++		if(error==1)joint_script[0][4]=1;else if(error==2)joint_script[0][6]=0x80;
++		check(joint_bvb_run(true)==BC_STS_CMD_CANCELLED&&joint_targets_count==(error?15U:16U)&&
++		      joint_logs[2]==(error?0U:176U)&&hardware.research_joint_start_attempted==!error,
++		      "legal preSTART terminal levels are baseline raw, but defined errors still forbid soleSTART");
++	}
++	for(unsigned ordinal=0;ordinal<16;ordinal++)for(unsigned marker=0;marker<2;marker++)for(unsigned error=0;error<3;error++) {
++		joint_bvb_fixture();unsigned row=ordinal+1;
++		if(marker==0)joint_script[row][1]|=0x02000000;else joint_script[row][3]=2;
++		if(error==1)joint_script[row][4]=1;else if(error==2)joint_script[row][6]=0x80;
++		check(joint_bvb_run(true)==BC_STS_CMD_CANCELLED&&joint_logs[2]==(ordinal+1)*11&&
++		      joint_raw_reads==(ordinal+2)*7&&joint_targets_count==16&&joint_summaries==1&&
++		      joint_outcome&&!strcmp(joint_outcome,error?"observed_engine_error":"sampled_terminal"),
++		      "only independent sampleLAST/EOF terminates after its complete bundle; error outcome takes precedence");
++	}
++	for(unsigned before=0;before<2;before++)for(unsigned word=4;word<=6;word+=2)
++	for(unsigned bit=0;bit<(word==4?3U:8U);bit++) {
++		joint_bvb_fixture();joint_script[before?0:1][word]=1U<<bit;
++		check(joint_bvb_run(true)==BC_STS_CMD_CANCELLED&&!fatal_stops&&
++		      joint_targets_count==(before?15U:16U)&&joint_logs[2]==(before?0U:11U)&&
++		      joint_outcome&&!strcmp(joint_outcome,"observed_engine_error"),
++		      "every feeder/SCL defined bit including6/7 remains sticky diagnostic error rather than access loss");
++	}
++	for(unsigned active=0;active<2;active++)for(unsigned after=0;after<2;after++)
++	for(unsigned field=0;field<2;field++)for(unsigned bit=0;bit<(field?8U:3U);bit++) {
++		joint_bvb_fixture();joint_mutate_at=active?(after?684:644):(after?611:571);
++		joint_mutate_word=field?24:13;joint_mutate_bits=1U<<bit;
++		check(joint_bvb_run(true)==BC_STS_CMD_CANCELLED&&!fatal_stops&&joint_targets_count==(active?16U:15U)&&
++		      joint_logs[2]==(active?11U:0U)&&joint_outcome&&!strcmp(joint_outcome,"observed_engine_error"),
++		      "distinct before/after controlguard status is classified without OR being labelled a raw observation");
++	}
++}
++static void joint_bvb_pending_results(void)
++{
++	groups++;
++	for(unsigned feed=0;feed<2;feed++) {
++		unsigned bound=feed?918:342;
++		joint_bvb_fixture();joint_pending_cycle=true;
++		pci_pending[0]=pci_pending[1]=pci_pending[2]=PCI_EXP_DEVSTA_TRPND;
++		check(joint_bvb_run(feed)==BC_STS_CMD_CANCELLED&&pci_reads==bound&&sleeps==bound/3&&
++		      joint_reads==(feed?1812U:644U)&&joint_targets_count==(feed?16U:15U),
++		      "PX_RD_BVB inherits bounded logical pending rechecks, not a devicefetch/acceptedbeat fence");
++		for(unsigned at=1;at<=bound;at++)for(unsigned kind=0;kind<8;kind++) {
++			joint_bvb_fixture();joint_pending_cycle=true;
++			pci_pending[0]=pci_pending[1]=pci_pending[2]=PCI_EXP_DEVSTA_TRPND;
++			if(kind){joint_pci_async=at;joint_async_kind=kind;}else pci_fail_at=at;
++			check(joint_bvb_run(feed)==BC_STS_IO_ERROR&&!joint_summaries&&
++			      (kind||joint_reads==joint_pci_failure_reads),
++			      "all expanded PX PCI callback transport/currentness slots retain fault state without later transport-lost bank reads");
++		}
++		joint_bvb_fixture();for(unsigned n=0;n<4;n++)pci_pending[n]=PCI_EXP_DEVSTA_TRPND;
++		check(joint_bvb_run(feed)==BC_STS_IO_ERROR&&pci_reads==8&&!joint_targets_count&&!joint_logs[0],
++		      "unresolved PCIpending prevents any PX target or complete saved tuple publication");
++	}
++}
++static void joint_bvb_prepare_stop(bool feed)
++{
++	joint_bvb_fixture();check(joint_bvb_run(feed)==BC_STS_CMD_CANCELLED,"PX_RD_BVB retirement starts from real configured duty");
++	joint_reads=joint_writes=joint_count=joint_raw_reads=0;pci_reads=pci_command_reads=pci_pending_reads=0;
++	memset(joint_logs,0,sizeof(joint_logs));joint_summaries=0;size_batches=0;
++	joint_stop=joint_reset_model=true;
++}
++static void joint_bvb_retire_results(void)
++{
++	groups++;
++	for(unsigned feed=0;feed<2;feed++) {
++		joint_bvb_prepare_stop(feed);
++		check(crystalhd_hw_close(&hardware)==BC_STS_SUCCESS&&joint_reads==75&&joint_writes==21&&pci_reads==15&&
++		      joint_logs[3]==25&&joint_clock_event&&!crystalhd_hw_research_joint_pending(&hardware)&&
++		      !memcmp(joint_bank,joint_cold,sizeof(joint_bank)),
++		      "PX_RD_BVB exact saved25 corroboration precedes stock powerdown and dutyclearing follows fullstop/finalPCI");
++		for(unsigned at=1;at<=75;at++)for(unsigned kind=0;kind<8;kind++) {
++			joint_bvb_prepare_stop(feed);if(kind){joint_async_read=at;joint_async_kind=kind;}else joint_fault_read=at;
++			check(crystalhd_hw_close(&hardware)!=BC_STS_SUCCESS&&hardware.research_joint_pending&&hardware.dev_started&&
++			      !memcmp(hardware.research_joint_saved,joint_cold,sizeof(joint_cold)),
++			      "every PX stockstop/readback poison or binding loss retains indivisible saved25 and backing");
++		}
++		for(unsigned at=1;at<=21;at++)for(unsigned kind=1;kind<8;kind++) {
++			joint_bvb_prepare_stop(feed);joint_async_write=at;joint_async_kind=kind;
++			check(crystalhd_hw_close(&hardware)!=BC_STS_SUCCESS&&hardware.research_joint_pending&&joint_writes==at,
++			      "all actual stockstop writeboundaries stop after detected loss without custom live restore");
++		}
++		for(unsigned pending=0;pending<2;pending++)for(unsigned at=1;at<=(pending?45U:15U);at++)for(unsigned kind=0;kind<8;kind++) {
++			joint_bvb_prepare_stop(feed);joint_pending_cycle=pending;
++			if(pending)pci_pending[0]=pci_pending[1]=pci_pending[2]=PCI_EXP_DEVSTA_TRPND;
++			if(kind){joint_pci_async=at;joint_async_kind=kind;}else pci_fail_at=at;
++			check(crystalhd_hw_close(&hardware)!=BC_STS_SUCCESS&&hardware.research_joint_pending,
++			      "clean/expanded finalPCI failures including cmds binding loss cannot clear PX duty after reset tuple");
++		}
++		for(unsigned batch=1;batch<=4;batch++)for(unsigned kind=1;kind<8;kind++) {
++			joint_bvb_prepare_stop(feed);joint_batch_fault=batch;joint_async_kind=kind;
++			check(crystalhd_hw_close(&hardware)!=BC_STS_SUCCESS&&hardware.research_joint_pending&&size_batches==batch,
++			      "opaque existing stockcallee boundary failure retains PX duty, not an internal cancellation certificate");
++		}
++	}
++}
++static void joint_bvb_reset_mismatch_results(void)
++{
++	groups++;
++	for(unsigned feed=0;feed<2;feed++)for(unsigned word=0;word<25;word++)
++	for(unsigned bit=0;bit<32;bit++)for(unsigned saved=0;saved<2;saved++) {
++		joint_bvb_prepare_stop(feed);
++		if(saved)hardware.research_joint_saved[word]^=1U<<bit;
++		else{joint_reset_drift_word=word;joint_reset_drift_bits=1U<<bit;}
++		check(crystalhd_hw_close(&hardware)!=BC_STS_SUCCESS&&hardware.research_joint_pending&&
++		      !hardware.research_joint_reset_corroborated&&!joint_clock_event&&!joint_logs[3],
++		      "every saved/observed25 bit mismatch including selector12 or colour refuses indivisible retirement");
++	}
++	for(unsigned feed=0;feed<2;feed++)for(unsigned failure=0;failure<4;failure++) {
++		joint_bvb_prepare_stop(feed);if(failure==0)joint_reset_model=false;
++		else if(failure==1)size_reset_stuck=true;else if(failure==2)size_idle_stuck=true;else size_cke_stuck=true;
++		check(crystalhd_hw_close(&hardware)!=BC_STS_SUCCESS&&hardware.research_joint_pending&&
++		      (failure>=3||!joint_clock_event),
++		      "retained selector12/size/reset/idle/CKE failures stay retained, never blindly restored or retried");
++	}
++}
++static BC_STATUS joint_bvb_download(bool feed)
++{
++	hardware.research_joint_px_rd_bvb_probe=true;
++	return joint_download(feed);
++}
++static void joint_bvb_loader_results(void)
++{
++	groups++;
++	for(unsigned feed=0;feed<2;feed++) {
++		joint_bvb_fixture();check(joint_bvb_download(feed)==BC_STS_CMD_CANCELLED&&joint_reads==(feed?1826U:658U)&&
++		      joint_writes==(feed?21U:20U)&&joint_targets_count==(feed?16U:15U)&&dram_reads==1&&dram_writes==1&&
++		      !hardware.research_joint_px_rd_bvb_probe&&!hardware.research_joint_config_probe&&!hardware.research_joint_feed_probe&&
++		      !hardware.research_staging_probe&&!hardware.research_mfd_generation&&!hardware.research_mfd_owner&&
++		      hardware.research_joint_pending&&!memcmp(card_prefix,expected_image,96)&&
++		      !cmac_writes&&!arm_run_writes&&!heartbeats,
++		      "actual PX loader captures/consumes view before effects and stages only unchanged official firmware");
++		clear_config_capture(&adapter.cmds);
++		check(!hardware.research_joint_px_rd_bvb_probe&&hardware.research_joint_pending&&
++		      hardware.research_joint_original_sampled&&!memcmp(hardware.research_joint_saved,joint_cold,sizeof(joint_cold)),
++		      "transient view cleanup cannot erase persistent joint source/control duty");
++		for(unsigned at=1;at<=(feed?1826U:658U);at++)for(unsigned kind=0;kind<8;kind++) {
++			joint_bvb_fixture();if(kind){joint_async_read=at;joint_async_kind=kind;}else joint_fault_read=at;
++			check(size_refused(joint_bvb_download(feed))&&!joint_summaries&&!cmac_writes&&!arm_run_writes&&!heartbeats&&
++			      !hardware.research_joint_px_rd_bvb_probe&&!hardware.research_joint_config_probe&&!hardware.research_joint_feed_probe&&
++			      joint_logs[0]%25==0&&joint_logs[1]%11==0&&joint_logs[2]%11==0,
++			      "all loader direct read poison and completebinding faultslots consume flags and suppress incomplete raw results");
++		}
++		for(unsigned at=1;at<=(feed?21U:20U);at++)for(unsigned kind=1;kind<8;kind++) {
++			joint_bvb_fixture();joint_async_write=at;joint_async_kind=kind;
++			check(size_refused(joint_bvb_download(feed))&&joint_writes==at&&!joint_summaries&&
++			      !cmac_writes&&!arm_run_writes&&!heartbeats,
++			      "all stockfive plus PX15/16 target callbackloss slots forbid subsequent writes/FWboot");
++		}
++		for(unsigned direction=0;direction<2;direction++)for(unsigned status=1;status<=27;status++)for(unsigned kind=0;kind<8;kind++) {
++			joint_bvb_fixture();if(direction){read_status=(BC_STATUS)status;config_pio_read_fault=kind;}
++			else{dram_status=(BC_STATUS)status;config_pio_write_fault=kind;}
++			BC_STATUS result=joint_bvb_download(feed);
++			check(result==(kind?BC_STS_IO_ERROR:(BC_STATUS)status)&&joint_reads==13&&!pci_clears&&!joint_targets_count&&
++			      !joint_logs[0]&&!config_staging_logs&&!cmac_writes&&!arm_run_writes,
++			      "all27 PIO statuses/poison/currentness faults prohibit extra bridge reads/stale staging/PX setup");
++		}
++		joint_bvb_fixture();read_mismatch=true;
++		check(joint_bvb_download(feed)==BC_STS_IO_ERROR&&!pci_clears&&!joint_targets_count&&!joint_logs[0],
++		      "official firmware prefix mismatch prevents PX binding/configuration entirely");
++	}
++}
++static void joint_bvb_version_gate(unsigned selector,unsigned nonstate,struct packed_gate_result *result,bool feed)
++{
++	const struct crystalhd_fw_research_request request_value={.selector=selector};
++	const struct crystalhd_fw_research_request *request=&request_value;
++	const void *state=(nonstate&1)?&hardware:NULL,*controller=(nonstate&2)?&hardware:NULL;
++	const void *image=(nonstate&4)?&hardware:NULL,*packet=(nonstate&8)?&hardware:NULL,*heap_packet=(nonstate&16)?&hardware:NULL;
++	const void *clock=(nonstate&32)?&hardware:NULL,*uart=(nonstate&64)?&hardware:NULL;result->status=0;
++	if(feed) {
++#define CRYSTALHD_JOINT_BVB_FEED_PROBE
++#include "joint-version-gate.h"
++#undef CRYSTALHD_JOINT_BVB_FEED_PROBE
++	} else {
++#define CRYSTALHD_JOINT_BVB_CONFIG_RESET_PROBE
++#include "joint-version-gate.h"
++#undef CRYSTALHD_JOINT_BVB_CONFIG_RESET_PROBE
++	}
++}
++static void joint_bvb_admission_results(void)
++{
++	groups++;
++	for(unsigned feed=0;feed<2;feed++)for(unsigned invalid=0;invalid<7;invalid++) {
++		joint_bvb_fixture();hardware.research_staging_probe=hardware.research_joint_px_rd_bvb_probe=true;
++		hardware.research_joint_feed_probe=feed;hardware.research_joint_config_probe=!feed;
++		struct crystalhd_hw *hw=&hardware;const uint8_t *image=(const uint8_t *)firmware.words;
++		uint32_t length=sizeof(firmware.words);
++		if(invalid==0)hw=NULL;else if(invalid==1)hardware.adp=NULL;else if(invalid==2)adapter.pdev=NULL;
++		else if(invalid==3)image=NULL;else if(invalid==4)length=0;
++		else if(invalid==5)length=CRYSTALHD_FLEA_MIN_FIRMWARE_SIZE-1;
++		else hardware.pfnDevDRAMWrite=NULL;
++		check(crystalhd_flea_download_fw(hw,image,length)==BC_STS_INV_ARG&&
++		      !joint_count&&!pci_reads&&!dram_writes&&!joint_targets_count&&
++		      (!hw||!hardware.research_joint_px_rd_bvb_probe),
++		      "malformedpayload/NULL context fails before first effect and consumes view whenever hw exists");
++	}
++	for(unsigned feed=0;feed<2;feed++)for(unsigned fault=0;fault<10;fault++) {
++		joint_bvb_fixture();hardware.research_staging_probe=hardware.research_joint_px_rd_bvb_probe=true;
++		hardware.research_joint_feed_probe=feed;hardware.research_joint_config_probe=!feed;
++		if(fault==0)adapter.cmds.adp=NULL;else if(fault==1)adapter.cmds.state=1;
++		else if(fault==2)adapter.cmds.hw_ctx=NULL;else if(fault==3)adapter.cmds.session_owner=NULL;
++		else if(fault==4)adapter.cmds.session_module_pinned=false;
++		else if(fault==5)hardware.pfnReadDevRegister=NULL;else if(fault==6)hardware.pfnWriteDevRegister=NULL;
++		else if(fault==7)adapter.hw_accessible=false;else if(fault==8)adapter.present=0;else hardware.dma_fault=true;
++		check(size_refused(crystalhd_flea_download_fw(&hardware,(const uint8_t *)firmware.words,sizeof(firmware.words)))&&
++		      !pci_clears&&!dram_writes&&!joint_targets_count&&!joint_logs[0]&&!config_staging_logs&&
++		      !hardware.research_joint_px_rd_bvb_probe,
++		      "missing completebinding/callback/access premises cannot proceed to official staging or an isolated target");
++	}
++	joint_fixture();check(joint_run(false)==BC_STS_CMD_CANCELLED,"legacy observe ignores mutable view but remains BVB_OUT");
++	joint_raw_reads=0;joint_script[0][0]=0x20000000;hardware.research_joint_px_rd_bvb_probe=true;
++	uint32_t expected[25],out[11];memcpy(expected,joint_bank,sizeof(expected));memset(out,0xa5,sizeof(out));
++	check(crystalhd_flea_joint_observe(&hardware,expected,false,out)==BC_STS_IO_ERROR&&
++	      joint_bvb_filled(out,11,0xa5a5a5a5),
++	      "legacy literalfalse observe retains BVB reservedmask even when unused view metadata says true");
++}
++static void configure_joint_bvb(struct crystalhd_cmd *ctx,u64 generation,bool feed)
++{
++	if(feed) {
++#define CRYSTALHD_JOINT_BVB_FEED_PROBE
++#define crystalhd_fw_research_owner research_owner
++#include "joint-bvb-feed-setup.h"
++#undef crystalhd_fw_research_owner
++#undef CRYSTALHD_JOINT_BVB_FEED_PROBE
++	} else {
++#define CRYSTALHD_JOINT_BVB_CONFIG_RESET_PROBE
++#define crystalhd_fw_research_owner research_owner
++#include "joint-bvb-config-setup.h"
++#undef crystalhd_fw_research_owner
++#undef CRYSTALHD_JOINT_BVB_CONFIG_RESET_PROBE
++	}
++}
++static void joint_bvb_scope_results(void)
++{
++	groups++;
++	for(unsigned feed=0;feed<2;feed++) {
++		for(unsigned selector=0;selector<32;selector++)for(unsigned option=0;option<128;option++) {
++			joint_bvb_fixture();struct packed_gate_result result={0};joint_bvb_version_gate(selector,option,&result,feed);
++			check(result.status==((selector==CRYSTALHD_FW_RESEARCH_VERSION_ONLY&&!option)?0:-EINVAL)&&
++			      !joint_count&&!pci_reads&&!dram_writes,"both actual PX VERSION-only gates reject all inspection routes before I/O");
++		}
++		joint_bvb_fixture();configure_joint_bvb(&adapter.cmds,adapter.generation,feed);
++		check(hardware.research_joint_px_rd_bvb_probe&&hardware.research_joint_feed_probe==(bool)feed&&
++		      hardware.research_joint_config_probe==!feed&&hardware.research_mfd_generation==adapter.generation&&
++		      hardware.research_mfd_owner==&research_owner&&!hardware.research_joint_pending,
++		      "actual PX optin setup captures exact profile/view binding without manufacturing persistent duty");
++		for(unsigned conflict=0;conflict<21;conflict++) {
++			joint_bvb_fixture();hardware.research_staging_probe=hardware.research_joint_px_rd_bvb_probe=true;
++			hardware.research_joint_feed_probe=feed;hardware.research_joint_config_probe=!feed;
++			switch(conflict) {
++			case 0:hardware.research_joint_feed_probe=hardware.research_joint_config_probe=true;break;
++			case 1:hardware.research_scl_config_probe=true;break;case 2:hardware.research_scl_size_reset_probe=true;break;
++			case 3:hardware.research_scl_enable_reset_probe=true;break;case 4:hardware.research_mfd_reset_probe=true;break;
++			case 5:hardware.research_mfd_hsize_reset_probe=true;break;case 6:hardware.research_mfd_latch_probe=true;break;
++			case 7:hardware.research_mfd_colour_probe=true;break;case 8:hardware.research_mfd_scl_probe=true;break;
++			case 9:hardware.research_scl_port_probe=true;break;case 10:hardware.research_scl_port_latch=true;break;
++			case 11:hardware.research_mfd_packed_probe=true;break;case 12:hardware.research_mfd_packed_window_probe=true;break;
++			case 13:hardware.research_mfd_packed_observed_geometry_probe=true;break;
++			case 14:hardware.research_mfd_packed_hsize4_probe=true;break;case 15:hardware.research_mfd_packed_normal_probe=true;break;
++			case 16:hardware.research_mfd_packed_scl_input_probe=true;break;case 17:hardware.research_mfd_packed_pattern=1;break;
++			case 18:hardware.research_mfd_colour_value=0x405ac3;break;case 19:hardware.research_scl_selector=3;break;
++			default:hardware.research_joint_px_rd_sm_probe=true;break;
++			}
++			check(crystalhd_flea_download_fw(&hardware,(const uint8_t *)firmware.words,sizeof(firmware.words))==BC_STS_INV_ARG&&
++			      !joint_count&&!pci_reads&&!dram_writes&&!hardware.research_joint_px_rd_bvb_probe,
++			      "every foreign flag/scalar or mixed joint profile rejects before loader effects and consumes view");
++		}
++		for(unsigned invalid=0;invalid<3;invalid++) {
++			joint_bvb_fixture();hardware.research_joint_px_rd_bvb_probe=true;
++			hardware.research_staging_probe=true;hardware.research_joint_feed_probe=feed;hardware.research_joint_config_probe=!feed;
++			if(!invalid)hardware.research_staging_probe=false;else if(invalid==1)hardware.research_mfd_owner=NULL;
++			else hardware.research_mfd_generation=0;
++			check(crystalhd_flea_download_fw(&hardware,(const uint8_t *)firmware.words,sizeof(firmware.words))==BC_STS_INV_ARG&&
++			      !joint_count&&!pci_reads&&!dram_writes&&!hardware.research_joint_px_rd_bvb_probe,
++			      "PX_RD_BVB requires staging, generation and owner before every loader effect");
++		}
++	}
++	joint_bvb_fixture();hardware.research_staging_probe=hardware.research_joint_px_rd_bvb_probe=true;
++	check(crystalhd_flea_download_fw(&hardware,(const uint8_t *)firmware.words,sizeof(firmware.words))==BC_STS_INV_ARG&&
++	      !joint_count&&!pci_reads&&!dram_writes&&!hardware.research_joint_px_rd_bvb_probe,
++	      "view without exact config/feed request is rejected before hardware and cannot enable itself");
++	joint_fixture();hardware.research_joint_px_rd_bvb_probe=true;
++	check(joint_run(false)==BC_STS_CMD_CANCELLED&&joint_bank[9]==15,
++	      "legacy literalfalse wrapper ignores an unused transient view field instead of reading consumed metadata");
++	reset();check(crystalhd_flea_download_fw(&hardware,(const uint8_t *)firmware.words,sizeof(firmware.words))==BC_STS_SUCCESS&&
++	      !hardware.research_joint_px_rd_bvb_probe&&!hardware.research_joint_pending&&
++	      cmac_writes==4&&arm_run_writes==1&&heartbeats==1,
++	      "default-off stock firmware path remains unchanged and never performs PX experimental targets");
++}
++
++static void joint_bvb_view_results(void)
++{
++	groups++;
++	check(BCHP_MFD_TEST_PORT_CNTL_ADDR_SEL_MASK==8&&BCHP_MFD_TEST_PORT_CNTL_TP_ADDR_PX_RD_BVB==4&&
++	      BCHP_MFD_TEST_PORT_DATA_PX_RD_BVB_reserved0_MASK==0xc0000000&&
++	      BCHP_MFD_TEST_PORT_DATA_PX_RD_BVB_CSM_CUR_STATE_MASK==0x38000000&&
++	      BCHP_MFD_TEST_PORT_DATA_PX_RD_BVB_CSM_CUR_STATE_SHIFT==27&&
++	      BCHP_MFD_TEST_PORT_DATA_PX_RD_BVB_DBUF_WR_ADDR_MASK==0x07e00000&&
++	      BCHP_MFD_TEST_PORT_DATA_PX_RD_BVB_DBUF_RD_ADDR_MASK==0x001f8000,
++	      "primary PX_RD_BVB encodings match independent literals, not memory addresses or transfer counts");
++	const unsigned invalid[]={3,4,7,12,UINT32_MAX};
++	for(unsigned n=0;n<ARRAY_SIZE(invalid);n++)for(unsigned feed=0;feed<2;feed++) {
++		joint_bvb_fixture();uint32_t values[11];memset(values,0xa5,sizeof(values));
++		check(crystalhd_flea_joint_probe_view(&hardware,adapter.generation,&research_owner,feed,invalid[n])==BC_STS_INV_ARG&&
++		      crystalhd_flea_joint_observe_view(&hardware,joint_cold,false,values,invalid[n])==BC_STS_INV_ARG&&
++		      crystalhd_flea_joint_probe_view(NULL,0,NULL,feed,invalid[n])==BC_STS_INV_ARG&&
++		      crystalhd_flea_joint_observe_view(NULL,NULL,false,NULL,invalid[n])==BC_STS_INV_ARG&&
++		      !joint_count&&!pci_reads&&!pci_clears&&!joint_targets_count&&!hardware.research_joint_pending&&
++		      joint_bvb_filled(values,11,0xa5a5a5a5),
++		      "invalid numeric views reject before context access, containment or target attempts and never publish");
++	}
++	for(unsigned feed=0;feed<2;feed++) {
++		joint_bvb_fixture();check(joint_bvb_run(feed)==BC_STS_CMD_CANCELLED,"invalid replay-view fixture owns a real duty");
++		unsigned reads=joint_reads,writes=joint_writes,pcis=pci_reads;
++		check(crystalhd_flea_joint_probe_view(&hardware,adapter.generation,&research_owner,feed,3)==BC_STS_INV_ARG&&
++		      joint_reads==reads&&joint_writes==writes&&pci_reads==pcis&&hardware.research_joint_pending,
++		      "invalid view replay cannot clear duty or issue callbacks even after prior deliberate abort");
++	}
++	joint_bvb_fixture();check(joint_bvb_run(false)==BC_STS_CMD_CANCELLED,"distinct publication fixture is configured");
++	joint_raw_reads=0;joint_bank[13]=1;joint_bank[24]=0x40;
++	joint_script[0][4]=2;joint_script[0][6]=8;joint_bvb_status_read_at=joint_reads+39;
++	uint32_t expected[25];memcpy(expected,joint_bank,sizeof(expected));
++	struct {uint32_t before,values[11],after;} out;memset(&out,0xa5,sizeof(out));
++	const uint32_t literal[11]={0x2a2bffff,0x40168,1,0,2,0x89abcdef,8,1,4,0x40,0x80};
++	check(crystalhd_flea_joint_observe_view(&hardware,expected,false,out.values,2)==BC_STS_SUCCESS&&
++	      out.before==0xa5a5a5a5&&out.after==0xa5a5a5a5&&!memcmp(out.values,literal,sizeof(literal)),
++	      "all11 published BVB words preserve independent raw and four different before/after status witnesses, never ORs");
++}
++
++static void joint_bvb_capture_results(void)
++{
++	groups++;
++	const unsigned reads[]={1,10,11,12,13,14,76,300,571,644,1000,1826};
++	const unsigned writes[]={1,5,6,8,12,19,20,21};
++	for(unsigned view=0;view<3;view++)for(unsigned feed=0;feed<2;feed++)for(unsigned mask=0;mask<4;mask++)
++	for(unsigned direction=0;direction<2;direction++) {
++		const unsigned *slots=direction?writes:reads;
++		const unsigned length=direction?ARRAY_SIZE(writes):ARRAY_SIZE(reads);
++		const unsigned limit=direction?(feed?21:20):(feed?1826:658);
++		for(unsigned index=0;index<length;index++) {
++			if(slots[index]>limit)continue;
++			if(view==2)joint_bvb_fixture();else if(view==1)joint_px_fixture();else joint_fixture();
++			joint_bvb_view_mask=mask;
++			if(direction)joint_bvb_view_write_at=slots[index];else joint_bvb_view_read_at=slots[index];
++			BC_STATUS result=view==2?joint_bvb_download(feed):view==1?joint_px_download(feed):joint_download(feed);
++			check(result==BC_STS_CMD_CANCELLED&&joint_bank[9]==(view==2?12U:view==1?11U:15U)&&
++			      joint_reads==(feed?1826U:658U)&&joint_writes==(feed?21U:20U)&&
++			      hardware.research_joint_px_rd_sm_probe==((mask&1)!=0)&&
++			      hardware.research_joint_px_rd_bvb_probe==((mask&2)!=0)&&
++			      hardware.research_joint_pending&&!cmac_writes&&!arm_run_writes,
++			      "postcapture callback may clear/switch/both-set transient views but never retarget captured selector0/1/2");
++			clear_config_capture(&adapter.cmds);
++			check(!hardware.research_joint_px_rd_sm_probe&&!hardware.research_joint_px_rd_bvb_probe&&
++			      hardware.research_joint_pending&&!memcmp(hardware.research_joint_saved,joint_cold,sizeof(joint_cold)),
++			      "dispatcher clears both callback-mutated one-shot flags without discarding saved25 duty");
++		}
++	}
++	for(unsigned feed=0;feed<2;feed++)for(unsigned flags=1;flags<4;flags++) {
++		joint_bvb_fixture();hardware.research_staging_probe=true;
++		hardware.research_joint_px_rd_sm_probe=(flags&1)!=0;hardware.research_joint_px_rd_bvb_probe=(flags&2)!=0;
++		if(flags==3){hardware.research_joint_feed_probe=feed;hardware.research_joint_config_probe=!feed;}
++		check(crystalhd_flea_download_fw(&hardware,(const uint8_t *)firmware.words,sizeof(firmware.words))==BC_STS_INV_ARG&&
++		      !joint_count&&!pci_reads&&!pci_clears&&!dram_writes&&!hardware.research_joint_px_rd_sm_probe&&
++		      !hardware.research_joint_px_rd_bvb_probe&&!hardware.research_joint_pending,
++		      "orphan or contradictory captured views refuse before loader/session effects and consume both flags");
++	}
++}
++
+ int main(void)
+ {
+ 	reset();
+@@ -9327,6 +9877,12 @@ int main(void)
+ 	joint_px_pending_results();joint_px_retire_results();joint_px_reset_mismatch_results();
+ 	joint_px_loader_results();joint_px_scope_results();
+ 	joint_px_admission_results();joint_px_capture_results();
++	const unsigned bvb_baseline_checks=checks;
++	check(groups==169&&bvb_baseline_checks==663049204,"all169 prior groups retain exact pre-PX_RD_BVB check count");
++	joint_bvb_clean_results();joint_bvb_probe_fault_results();joint_bvb_raw_results();joint_bvb_terminal_results();
++	joint_bvb_pending_results();joint_bvb_retire_results();joint_bvb_reset_mismatch_results();
++	joint_bvb_loader_results();joint_bvb_scope_results();joint_bvb_admission_results();
++	joint_bvb_view_results();joint_bvb_capture_results();
+ 	printf("Firmware download safety passed (%u groups, %u checks, %u failures)\n",
+ 	       groups, checks, failures);
+ 	return failures ? EXIT_FAILURE : EXIT_SUCCESS;
+diff --git a/tests/fw-download.sh b/tests/fw-download.sh
+index a0996e3..fb4fc8f 100755
+--- a/tests/fw-download.sh
++++ b/tests/fw-download.sh
+@@ -42,7 +42,7 @@ cleanup()
+ 	for name in pair probe post build-config setup; do
+ 		rm -f "$test_dir/mfd-hsize-$name.h"
+ 	done
+-	for name in arrays binding current sample attempt observe_view observe probe_view probe retire pending build-config version-gate config-setup feed-setup px-config-setup px-feed-setup; do
++	for name in arrays binding current sample attempt observe_view observe probe_view probe retire pending build-config version-gate config-setup feed-setup px-config-setup px-feed-setup bvb-config-setup bvb-feed-setup; do
+ 		rm -f "$test_dir/joint-$name.h"
+ 	done
+ 	rmdir "$test_dir"
+@@ -131,11 +131,13 @@ awk '
+ 		if(/^#endif$/ && --depth==0){copying=0;if(block ~ /request->selector/){printf "%s",block;found++}}}
+ 	END {if(found!=1||copying)exit 1}
+ ' "$repo_dir/driver/linux/crystalhd_fw_research.c" > "$test_dir/joint-version-gate.h"
+-for mode in config feed px-config px-feed; do
++for mode in config feed px-config px-feed bvb-config bvb-feed; do
+ 	macro=CRYSTALHD_JOINT_CONFIG_RESET_PROBE
+ 	if [ "$mode" = feed ]; then macro=CRYSTALHD_JOINT_FEED_PROBE; fi
+ 	if [ "$mode" = px-config ]; then macro=CRYSTALHD_JOINT_PX_CONFIG_RESET_PROBE; fi
+ 	if [ "$mode" = px-feed ]; then macro=CRYSTALHD_JOINT_PX_FEED_PROBE; fi
++	if [ "$mode" = bvb-config ]; then macro=CRYSTALHD_JOINT_BVB_CONFIG_RESET_PROBE; fi
++	if [ "$mode" = bvb-feed ]; then macro=CRYSTALHD_JOINT_BVB_FEED_PROBE; fi
+ 	awk -v macro="$macro" '
+ 		$0=="#ifdef " macro {copying=1;found++}
+ 		copying {print}
+@@ -145,6 +147,7 @@ for mode in config feed px-config px-feed; do
+ 	"${CC:-cc}" -E -P -x c -D"$macro" "$test_dir/joint-build-config.h" > /dev/null
+ 	for conflict in CRYSTALHD_JOINT_CONFIG_RESET_PROBE CRYSTALHD_JOINT_FEED_PROBE \
+ 		CRYSTALHD_JOINT_PX_CONFIG_RESET_PROBE CRYSTALHD_JOINT_PX_FEED_PROBE \
++		CRYSTALHD_JOINT_BVB_CONFIG_RESET_PROBE CRYSTALHD_JOINT_BVB_FEED_PROBE \
+ 		CRYSTALHD_SCL_ENABLE_RESET_PROBE CRYSTALHD_SCL_SIZE_RESET_PROBE CRYSTALHD_SCL_CONFIG_PROBE \
+ 		CRYSTALHD_MFD_RESET_CONTROLS_PROBE CRYSTALHD_MFD_HSIZE_RESET_PROBE CRYSTALHD_MFD_LATCH_PROBE \
+ 		CRYSTALHD_MFD_FIXED_COLOUR_PROBE CRYSTALHD_SCL_PORT_PROBE CRYSTALHD_SCL_PORT_LATCH \
+diff --git a/tests/fw-probe.c b/tests/fw-probe.c
+index 68ad0f6..e340819 100644
+--- a/tests/fw-probe.c
++++ b/tests/fw-probe.c
+@@ -75,6 +75,7 @@ struct crystalhd_hw {
+     bool research_scl_config_probe, research_scl_size_reset_probe, research_scl_enable_reset_probe;
+     bool research_joint_config_probe, research_joint_feed_probe;
+     bool research_joint_px_rd_sm_probe;
++    bool research_joint_px_rd_bvb_probe;
+     bool research_mfd_reset_probe, research_mfd_hsize_reset_probe, research_mfd_scl_probe;
+     bool research_scl_port_probe, research_scl_port_latch;
+     u32 research_mfd_packed_pattern, research_mfd_colour_value, research_scl_selector;

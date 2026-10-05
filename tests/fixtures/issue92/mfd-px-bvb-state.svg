@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="580" viewBox="0 0 1080 580" role="img" aria-labelledby="title desc">
+  <title id="title">Fixed-colour BVB FIFO and pixel-stop contrast</title>
+  <desc id="desc">Two configuration-only controls and two separately qualified sole-START trials sample the PX_RD_BVB view. Before START the raw tap is 00080020; every active tap in 32 complete non-atomic bundles is 00080044. The CSM field remains zero, named IDLE in the RDB. FIFO_EMPTY changes from 1 to 0; FIFO_FULL and PIXEL_STOP change from 0 to 1. Opaque DBUF indices remain WR0 and RD16. These are raw sampled fields, not accepted transfer, continuous state, completion or source ownership. All four paired saved25 retirements and eight 180-frame full-byte native controls passed.</desc>
+  <rect width="1080" height="580" fill="#f5f7fb"/>
+  <g font-family="DejaVu Sans, sans-serif" fill="#16263b">
+    <text x="36" y="44" font-size="24" font-weight="bold">Fixed-colour BVB FIFO / pixel-stop contrast</text>
+    <text x="36" y="73" font-size="14">PX_RD_BVB selector 0x0c · two config controls + two separate sole-START trials · default OFF</text>
+    <rect x="36" y="98" width="488" height="107" rx="11" fill="#fff" stroke="#bbc7d8"/>
+    <rect x="556" y="98" width="488" height="107" rx="11" fill="#fff" stroke="#bbc7d8"/>
+    <text x="56" y="127" font-size="15" font-weight="bold">BEFORE START</text>
+    <text x="56" y="162" font-size="24" font-family="DejaVu Sans Mono, monospace">raw tap = 00080020</text>
+    <text x="56" y="187" font-size="13" fill="#53657a">Same tuple in both config controls and both pre-START bundles</text>
+    <text x="576" y="127" font-size="15" font-weight="bold">AFTER ONE START ATTEMPT</text>
+    <text x="576" y="162" font-size="24" font-family="DejaVu Sans Mono, monospace">raw tap = 00080044</text>
+    <text x="576" y="187" font-size="13" fill="#53657a">16 complete bundles per trial; repeated in the fresh session</text>
+    <rect x="36" y="224" width="1008" height="203" rx="11" fill="#fff" stroke="#bbc7d8"/>
+    <path d="M36 267h1008M548 224v203M728 224v203" stroke="#d4dce7"/>
+    <text x="56" y="252" font-size="15" font-weight="bold">RDB field (sampled level only)</text>
+    <text x="577" y="252" font-size="15" font-weight="bold">Before</text>
+    <text x="756" y="252" font-size="15" font-weight="bold">Active samples</text>
+    <text x="56" y="293" font-size="15">CSM_CUR_STATE</text>
+    <text x="577" y="293" font-size="15">0 · IDLE label</text>
+    <text x="756" y="293" font-size="15">0 · IDLE label</text>
+    <text x="56" y="323" font-size="15">FIFO_EMPTY</text>
+    <text x="577" y="323" font-size="15">1</text>
+    <text x="756" y="323" font-size="15">0</text>
+    <text x="56" y="353" font-size="15">FIFO_FULL / PIXEL_STOP</text>
+    <text x="577" y="353" font-size="15">0 / 0</text>
+    <text x="756" y="353" font-size="15" font-weight="bold" fill="#96551a">1 / 1</text>
+    <text x="56" y="383" font-size="15">DBUF_WR_ADDR / DBUF_RD_ADDR</text>
+    <text x="577" y="383" font-size="15">0 / 16</text>
+    <text x="756" y="383" font-size="15">0 / 16</text>
+    <text x="56" y="412" font-size="12" fill="#53657a">DBUF fields are opaque indices, never followed. No tap field terminates the PX observation loop.</text>
+    <rect x="36" y="444" width="1008" height="64" rx="9" fill="#e4eef8"/>
+    <text x="54" y="469" font-size="14">Separate words: BVB_SAMPLE = 00040168; FEED_STATUS = 00000001; remaining sampled words = 0.</text>
+    <text x="54" y="493" font-size="14">4 exact paired saved25 retirements · 8 native controls / 1,440 full-byte frames · EOS and cleanup pass</text>
+    <text x="36" y="540" font-size="15" font-weight="bold">A repeated field contrast—not accepted transfer, SCL output, completion or a source/sink lease.</text>
+    <text x="36" y="565" font-size="12" fill="#53657a">Bounds describe host attempts and sampled bundles, not physical transactions or autonomous device activity.</text>
+  </g>
+</svg>

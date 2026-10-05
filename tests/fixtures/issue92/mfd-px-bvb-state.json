@@ -1,0 +1,344 @@
+{
+  "schema": 1,
+  "issue": 92,
+  "experiment": "fixed-colour MFD/SCL PX_RD_BVB state contrast",
+  "default_enabled": false,
+  "baseline_commit": "81b8e80e335740d3c968be9dbbb3c30b32ac9740",
+  "prepared_baseline": "18 prior issue92 overlays",
+  "derived_patch_sha256": "e4fd58080d6ac61dab233d65970d6a57eb8d318812354fb28ba38c8072ba8596",
+  "protocol_sha256": "0336d2966f67858ff83c61bd1f50d60cf1c7b1876ae7636b403359e896304f29",
+  "register_definition": "include/flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_mfd.h",
+  "view": {
+    "configuration_target_index": 7,
+    "selector_hex": "0000000c",
+    "encoding": "SOFT_INPUT=8, TP_ADDR.PX_RD_BVB=4",
+    "word0_reserved_mask_hex": "c0000000",
+    "word0_terminal_interpretation": false,
+    "DBUF_fields_followed": false
+  },
+  "profiles": [
+    {
+      "macro": "CRYSTALHD_JOINT_BVB_CONFIG_RESET_PROBE",
+      "module_sha256": "c25a1f3548dfc8a368cdff0d09d8d34f88c090225e94d764f2f3296842a7ef01",
+      "target_attempts_max": 15,
+      "START_attempts": 0
+    },
+    {
+      "macro": "CRYSTALHD_JOINT_BVB_FEED_PROBE",
+      "module_sha256": "9e9909f221403bda38b2eba5f29f58ba4e0d4601612e6d7259ccf2fcc8f46ab7",
+      "target_attempts_max": 16,
+      "START_attempts_max": 1,
+      "active_bundles_max": 16
+    }
+  ],
+  "original_controls_hex": [
+    "00000050",
+    "00000000",
+    "00800080",
+    "00108080",
+    "00000780",
+    "00000436",
+    "00000010",
+    "00000000",
+    "00000000",
+    "00000008",
+    "00000004",
+    "00000000",
+    "00000000",
+    "00000000",
+    "00000080",
+    "0000000c",
+    "00000000",
+    "00000000",
+    "02d000f0",
+    "00000000",
+    "02d000f0",
+    "02d000f0",
+    "00000000",
+    "00000000",
+    "00000000"
+  ],
+  "observation_word_order": [
+    "MFD_TEST_PORT_DATA_PX_RD_BVB",
+    "MFD_BVB_SAMPLE_DATA",
+    "MFD_FEED_STATUS",
+    "MFD_FEEDER_BVB_STATUS",
+    "MFD_FEEDER_ERROR_INTERRUPT_STATUS",
+    "SCL_HD_TEST_PORT_DATA",
+    "SCL_HD_BVB_IN_STATUS_direct",
+    "MFD_FEEDER_ERROR_INTERRUPT_STATUS_before",
+    "MFD_FEEDER_ERROR_INTERRUPT_STATUS_after",
+    "SCL_HD_BVB_IN_STATUS_before",
+    "SCL_HD_BVB_IN_STATUS_after"
+  ],
+  "trials": [
+    {
+      "name": "config-a",
+      "invocation_utc": "2026-10-05 22:32:13 UTC",
+      "kernel_sha256": "326f3e6f9a3a59b336fb0b69510a324a4be642698dc3b01d521385bf8af11746",
+      "paired_saved25_exactly_retired": true,
+      "pre_start_raw_hex": [
+        "00080020",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000"
+      ],
+      "target_attempts": 15,
+      "START_attempts": 0,
+      "active_bundles": 0,
+      "outcome": "configuration_only"
+    },
+    {
+      "name": "config-repeat",
+      "invocation_utc": "2026-10-05 22:34:24 UTC",
+      "kernel_sha256": "d871f076a06b04622c49f2ab5d68271260d48f29ffc6f8d1d117882c3589261f",
+      "paired_saved25_exactly_retired": true,
+      "pre_start_raw_hex": [
+        "00080020",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000"
+      ],
+      "target_attempts": 15,
+      "START_attempts": 0,
+      "active_bundles": 0,
+      "outcome": "configuration_only"
+    },
+    {
+      "name": "feed-a",
+      "invocation_utc": "2026-10-05 22:38:47 UTC",
+      "kernel_sha256": "196afe514c27f36387aa56d876d3a82247db85f19019868881ebdbcbe5aa1daf",
+      "paired_saved25_exactly_retired": true,
+      "pre_start_raw_hex": [
+        "00080020",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000"
+      ],
+      "target_attempts": 16,
+      "START_attempts": 1,
+      "active_bundles": 16,
+      "outcome": "bounded_observation",
+      "all_active_bundles_identical": true,
+      "active_raw_hex": [
+        "00080044",
+        "00040168",
+        "00000001",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000"
+      ]
+    },
+    {
+      "name": "feed-repeat",
+      "invocation_utc": "2026-10-05 22:41:05 UTC",
+      "kernel_sha256": "da0fbfb4c6ce5e73c9f4837b42741f5c7ab8377809053a18e58b8815f8a5edd3",
+      "paired_saved25_exactly_retired": true,
+      "pre_start_raw_hex": [
+        "00080020",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000"
+      ],
+      "target_attempts": 16,
+      "START_attempts": 1,
+      "active_bundles": 16,
+      "outcome": "bounded_observation",
+      "all_active_bundles_identical": true,
+      "active_raw_hex": [
+        "00080044",
+        "00040168",
+        "00000001",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000"
+      ]
+    }
+  ],
+  "harness_terminal_each": {
+    "process_exit": 1,
+    "status": -5,
+    "download_status": 20,
+    "cleanup_attempted": true,
+    "cleanup_status": 0,
+    "retained": false,
+    "command_count": 0,
+    "stderr_bytes": 0,
+    "firmware_hash_valid": true,
+    "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+    "interpretation": "intentional pre-CMAC loader abort, not successful firmware startup or firmware codec rejection"
+  },
+  "word0_fields": {
+    "CSM_CUR_STATE": {
+      "mask_hex": "38000000",
+      "shift": 27,
+      "before": 0,
+      "active": 0,
+      "RDB_name": "IDLE"
+    },
+    "DBUF_WR_ADDR": {
+      "mask_hex": "07e00000",
+      "shift": 21,
+      "before": 0,
+      "active": 0,
+      "interpretation": "opaque index, never followed"
+    },
+    "DBUF_RD_ADDR": {
+      "mask_hex": "001f8000",
+      "shift": 15,
+      "before": 16,
+      "active": 16,
+      "interpretation": "opaque index, never followed"
+    },
+    "FIFO_EMPTY": {
+      "mask_hex": "00000020",
+      "before": 1,
+      "active": 0
+    },
+    "FIFO_FULL": {
+      "mask_hex": "00000040",
+      "before": 0,
+      "active": 1
+    },
+    "PIXEL_STOP": {
+      "mask_hex": "00000004",
+      "before": 0,
+      "active": 1
+    },
+    "other_unreserved_bits": "zero in these sampled words",
+    "interpretation": "non-atomic raw RDB field labels, not accepted transfer, continuous state or fresh completion"
+  },
+  "native_controls": {
+    "geometry": "640x360",
+    "packing": "YUY2",
+    "runs": 8,
+    "total_frames": 1440,
+    "frames_each": 180,
+    "bytes_each": 82944000,
+    "full_byte_compare_each": true,
+    "raw_sha256_each": "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+    "firmware_EOS_each": true,
+    "pending_each": 0,
+    "ready_each": 0,
+    "cleanup_each": "PASS",
+    "stderr_bytes_each": 0,
+    "FDs_each": "3/3",
+    "threads_each": "1/1",
+    "logs": [
+      {
+        "name": "resume-stock-h264",
+        "sha256": "dae1fefd211851618197d2d994a08f38f864de9b05e9bb2df4a25ddf6b011111"
+      },
+      {
+        "name": "baseline-config-module-h264",
+        "sha256": "71be333b7a48f35db9bb635fbf36be280e1774a1fabeb17b26216a2646e666b8"
+      },
+      {
+        "name": "recovery-after-config-a",
+        "sha256": "7c209b90d94108de91379f3124eb54dfe8a37b18dafd9c89104642fc65f6d051"
+      },
+      {
+        "name": "recovery-after-config-repeat",
+        "sha256": "6f214f0640dc11e6be59906f101c6511ffd2ae363ae799ff0b9afa57df80f450"
+      },
+      {
+        "name": "baseline-feed-module-h264",
+        "sha256": "a94fb8deb6c6c6d7aa88455e2651f19d276fc815041e53ce8977da609484da11"
+      },
+      {
+        "name": "recovery-after-feed-a",
+        "sha256": "c382f873ca89eb56956cea00969d8d9c75bfce90fcd2f743a30fa5c63e9743aa"
+      },
+      {
+        "name": "recovery-after-feed-repeat",
+        "sha256": "250c8d5b1638e44676a60d396d258a39eba2d316840eb8d05af433a4fbfe4b7f"
+      },
+      {
+        "name": "final-stock-recovery-h264",
+        "sha256": "15299a3f33f5605cd02400392b3f41168300ec6103f0a2d0a1dc1b6dec83db5f"
+      }
+    ]
+  },
+  "host_tests": {
+    "strict_and_ASan_UBSan_each": {
+      "groups": 181,
+      "checks": 895452899,
+      "failures": 0
+    },
+    "exact_previous_gate": {
+      "groups": 169,
+      "checks": 663049204
+    },
+    "root_complete_stdout_sha256": "ea1332bd5822973a0fb72bc614f7b733d92f11fc2561f1c052332fc5eaf64e10",
+    "lifetime_stdout_sha256": "0757761725772769029780fe311fd7e5ec5f7b82873c04349afe466486341b96",
+    "session_CLI_stdout_sha256": "407d03a93c23ad773dd5c8a59200882561af6b3986ab2af130d32273aedb0732",
+    "stderr_bytes": 0,
+    "compile_Werror": {
+      "kernel": "6.17.0-41-generic",
+      "configuration": true,
+      "feed": true,
+      "research_disabled": true
+    },
+    "review": "independent root, peer and Astra"
+  },
+  "restoration": {
+    "stock_module_srcversion": "1D01F9BFBB5CCDC75C46312",
+    "refcount": 0,
+    "research_device_absent": true,
+    "PCI_command_hex": "0506",
+    "PCI_devsta_hex": "0009",
+    "seven_installed_files_unchanged": true
+  },
+  "scope": {
+    "sampled_FIFO_pixel_stop_contrast": true,
+    "all_original_controls_corroborated": true,
+    "accepted_transfer": false,
+    "SCL_output": false,
+    "completion": false,
+    "source_or_sink_lease": false,
+    "passive_mux": false,
+    "all_consumer_quiescence": false,
+    "chip_incapability": false,
+    "original_goal_complete": false,
+    "host_bounds": "logical callbacks/attempts and complete sampled bundles; not physical transactions or device-autonomous activity"
+  },
+  "timestamps": "invocation_utc is the command-invocation timestamp, not a first kernel row or atomic snapshot"
+}
