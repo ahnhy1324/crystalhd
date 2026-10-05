@@ -1,0 +1,166 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="850" viewBox="0 0 1280 850" role="img" aria-labelledby="title desc">
+<title id="title">Measured pre-boot MFD TEST_MODE contrast</title>
+<desc id="desc">Four fresh TEST_MODE0 probes without software pulses yielded seventeen flat sequential raw Y/C observations each. A repeated Y332/C408; B repeated Y688/C612. A′ and B′ matched their original raw series exactly. Previous TEST_MODE8 HSIZE4 probes yielded eight changing observations, ending with PICTURE_SYNC LAST_PIXEL at ordinal7. The comparison does not establish accepted transfers, autonomous fetch bounds, a source lease, routing or processing completion.</desc>
+<metadata>BCM70015; normal-profile A/B/A′/B′ on 2026-10-05 at 14:24:54/14:26:38/14:27:49/14:28:57 KST. Frozen host helper SHA256 e9086ff146cf62a0e27e13a8e2f9af5d0f46bb7dd8f931a86051716902888fd4. Previous pulsed HSIZE4 reference: #231. A source DWORDs aa425531 bb646653 cc867775 dda88897; B source DWORDs 55bdaace 449b99ac 3379888a 22577768. Normal A sample/tap 00053198/04053198; B 000ac264/040ac264. Five MPEG-2 controls: 180 frames, 20736000 bytes each, SHA256 7278bf6c89d602a34e4a8cf8261da45c0889bb0645fdb1fcb13810378f8fcb32. H.264 control: 180 frames, 82944000 bytes, SHA256 3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1.</metadata>
+<rect width="1280" height="850" fill="#f7f9fc"/>
+<g font-family="sans-serif" fill="#192c44">
+<text x="40" y="43" font-size="26" font-weight="bold">Packed MFD: TEST_MODE0 versus the pulsed profile</text>
+<text x="40" y="72" font-size="15">BCM70015 · isolated pre-CMAC experiment · four fresh probes: A, B, A′, B′ · staged firmware was never booted</text>
+<text x="40" y="99" font-size="14">Mode contrast from #231: TEST_MODE8 → 0; omit every W9/W8 host pulse pair. Sole START; no SCL writes.</text>
+<rect x="40" y="116" width="1200" height="63" rx="8" fill="#e7edf7"/>
+<text x="56" y="141" font-size="14">Same empirical geometry phases (0x780,0x436) → (4,0x436) → (4,1), LINE0=0, STRIDE0 and CTRL5; not reset-default or unit proof.</text>
+<text x="56" y="165" font-size="14">Same 96-byte prefix: 16 reference bytes + 80 padding bytes. Checked MASTER0 is NOT a local-DDR fetch bound.</text>
+<line x1="42" y1="203" x2="86" y2="203" stroke="#1764aa" stroke-width="3"/>
+<text x="96" y="208" font-size="14">A / A′</text>
+<line x1="244" y1="203" x2="288" y2="203" stroke="#b6541d" stroke-width="3"/>
+<text x="298" y="208" font-size="14">B / B′</text>
+<line x1="476" y1="203" x2="520" y2="203" stroke="#7587a0" stroke-width="3"/>
+<text x="530" y="208" font-size="14">solid + dots: TEST0, pulse0</text>
+<line x1="848" y1="203" x2="892" y2="203" stroke="#7587a0" stroke-width="2" stroke-dasharray="5 5"/>
+<text x="902" y="208" font-size="14">dashed: pulsed TEST8 (#231)</text>
+<text x="82" y="249" font-size="18" font-weight="bold">Y field (10-bit)</text>
+<line x1="82" y1="460" x2="602" y2="460" stroke="#d8e0eb"/>
+<text x="74" y="465" text-anchor="end" font-size="12">0</text>
+<line x1="82" y1="412.314" x2="602" y2="412.314" stroke="#d8e0eb"/>
+<text x="74" y="417.314" text-anchor="end" font-size="12">256</text>
+<line x1="82" y1="364.627" x2="602" y2="364.627" stroke="#d8e0eb"/>
+<text x="74" y="369.627" text-anchor="end" font-size="12">512</text>
+<line x1="82" y1="316.941" x2="602" y2="316.941" stroke="#d8e0eb"/>
+<text x="74" y="321.941" text-anchor="end" font-size="12">768</text>
+<line x1="82" y1="270" x2="602" y2="270" stroke="#d8e0eb"/>
+<text x="74" y="275" text-anchor="end" font-size="12">1020</text>
+<line x1="82" y1="460" x2="82" y2="466" stroke="#7d8ca2"/>
+<text x="82" y="485" text-anchor="middle" font-size="12">0</text>
+<line x1="212" y1="460" x2="212" y2="466" stroke="#7d8ca2"/>
+<text x="212" y="485" text-anchor="middle" font-size="12">4</text>
+<line x1="309.5" y1="460" x2="309.5" y2="466" stroke="#7d8ca2"/>
+<text x="309.5" y="485" text-anchor="middle" font-size="12">7</text>
+<line x1="342" y1="460" x2="342" y2="466" stroke="#7d8ca2"/>
+<text x="342" y="485" text-anchor="middle" font-size="12">8</text>
+<line x1="472" y1="460" x2="472" y2="466" stroke="#7d8ca2"/>
+<text x="472" y="485" text-anchor="middle" font-size="12">12</text>
+<line x1="602" y1="460" x2="602" y2="466" stroke="#7d8ca2"/>
+<text x="602" y="485" text-anchor="middle" font-size="12">16</text>
+<text x="342" y="509" text-anchor="middle" font-size="13">Observation ordinal — NOT elapsed time or accepted transfers</text>
+<polyline data-series="pulsed-A-Y" points="82,423.49 114.5,410.824 147,398.157 179.5,385.49 212,423.49 244.5,410.824 277,398.157 309.5,385.49" fill="none" stroke="#1764aa" stroke-width="2" stroke-dasharray="5 5" opacity="0.55"/>
+<polyline data-series="normal-A-Y" points="82,398.157 114.5,398.157 147,398.157 179.5,398.157 212,398.157 244.5,398.157 277,398.157 309.5,398.157 342,398.157 374.5,398.157 407,398.157 439.5,398.157 472,398.157 504.5,398.157 537,398.157 569.5,398.157 602,398.157" fill="none" stroke="#1764aa" stroke-width="2.7"/>
+<circle data-series="normal-A-Y" data-ordinal="0" data-value="332" cx="82" cy="398.157" r="3.1" fill="#1764aa"><title>A Y ordinal 0: 332; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-Y" data-ordinal="1" data-value="332" cx="114.5" cy="398.157" r="3.1" fill="#1764aa"><title>A Y ordinal 1: 332; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-Y" data-ordinal="2" data-value="332" cx="147" cy="398.157" r="3.1" fill="#1764aa"><title>A Y ordinal 2: 332; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-Y" data-ordinal="3" data-value="332" cx="179.5" cy="398.157" r="3.1" fill="#1764aa"><title>A Y ordinal 3: 332; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-Y" data-ordinal="4" data-value="332" cx="212" cy="398.157" r="3.1" fill="#1764aa"><title>A Y ordinal 4: 332; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-Y" data-ordinal="5" data-value="332" cx="244.5" cy="398.157" r="3.1" fill="#1764aa"><title>A Y ordinal 5: 332; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-Y" data-ordinal="6" data-value="332" cx="277" cy="398.157" r="3.1" fill="#1764aa"><title>A Y ordinal 6: 332; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-Y" data-ordinal="7" data-value="332" cx="309.5" cy="398.157" r="3.1" fill="#1764aa"><title>A Y ordinal 7: 332; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-Y" data-ordinal="8" data-value="332" cx="342" cy="398.157" r="3.1" fill="#1764aa"><title>A Y ordinal 8: 332; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-Y" data-ordinal="9" data-value="332" cx="374.5" cy="398.157" r="3.1" fill="#1764aa"><title>A Y ordinal 9: 332; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-Y" data-ordinal="10" data-value="332" cx="407" cy="398.157" r="3.1" fill="#1764aa"><title>A Y ordinal 10: 332; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-Y" data-ordinal="11" data-value="332" cx="439.5" cy="398.157" r="3.1" fill="#1764aa"><title>A Y ordinal 11: 332; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-Y" data-ordinal="12" data-value="332" cx="472" cy="398.157" r="3.1" fill="#1764aa"><title>A Y ordinal 12: 332; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-Y" data-ordinal="13" data-value="332" cx="504.5" cy="398.157" r="3.1" fill="#1764aa"><title>A Y ordinal 13: 332; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-Y" data-ordinal="14" data-value="332" cx="537" cy="398.157" r="3.1" fill="#1764aa"><title>A Y ordinal 14: 332; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-Y" data-ordinal="15" data-value="332" cx="569.5" cy="398.157" r="3.1" fill="#1764aa"><title>A Y ordinal 15: 332; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-Y" data-ordinal="16" data-value="332" cx="602" cy="398.157" r="3.1" fill="#1764aa"><title>A Y ordinal 16: 332; PICTURE_SYNC0</title></circle>
+<circle data-series="pulsed-A-Y" data-ordinal="7" cx="309.5" cy="385.49" r="4.5" fill="#1764aa" stroke="#8f2136" stroke-width="1.7"><title>Previous pulsed A Y ordinal 7: 400; LAST_PIXEL2</title></circle>
+<polyline data-series="pulsed-B-Y" points="82,306.51 114.5,319.176 147,331.843 179.5,344.51 212,306.51 244.5,319.176 277,331.843 309.5,344.51" fill="none" stroke="#b6541d" stroke-width="2" stroke-dasharray="5 5" opacity="0.55"/>
+<polyline data-series="normal-B-Y" points="82,331.843 114.5,331.843 147,331.843 179.5,331.843 212,331.843 244.5,331.843 277,331.843 309.5,331.843 342,331.843 374.5,331.843 407,331.843 439.5,331.843 472,331.843 504.5,331.843 537,331.843 569.5,331.843 602,331.843" fill="none" stroke="#b6541d" stroke-width="2.7"/>
+<circle data-series="normal-B-Y" data-ordinal="0" data-value="688" cx="82" cy="331.843" r="3.1" fill="#b6541d"><title>B Y ordinal 0: 688; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-Y" data-ordinal="1" data-value="688" cx="114.5" cy="331.843" r="3.1" fill="#b6541d"><title>B Y ordinal 1: 688; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-Y" data-ordinal="2" data-value="688" cx="147" cy="331.843" r="3.1" fill="#b6541d"><title>B Y ordinal 2: 688; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-Y" data-ordinal="3" data-value="688" cx="179.5" cy="331.843" r="3.1" fill="#b6541d"><title>B Y ordinal 3: 688; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-Y" data-ordinal="4" data-value="688" cx="212" cy="331.843" r="3.1" fill="#b6541d"><title>B Y ordinal 4: 688; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-Y" data-ordinal="5" data-value="688" cx="244.5" cy="331.843" r="3.1" fill="#b6541d"><title>B Y ordinal 5: 688; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-Y" data-ordinal="6" data-value="688" cx="277" cy="331.843" r="3.1" fill="#b6541d"><title>B Y ordinal 6: 688; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-Y" data-ordinal="7" data-value="688" cx="309.5" cy="331.843" r="3.1" fill="#b6541d"><title>B Y ordinal 7: 688; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-Y" data-ordinal="8" data-value="688" cx="342" cy="331.843" r="3.1" fill="#b6541d"><title>B Y ordinal 8: 688; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-Y" data-ordinal="9" data-value="688" cx="374.5" cy="331.843" r="3.1" fill="#b6541d"><title>B Y ordinal 9: 688; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-Y" data-ordinal="10" data-value="688" cx="407" cy="331.843" r="3.1" fill="#b6541d"><title>B Y ordinal 10: 688; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-Y" data-ordinal="11" data-value="688" cx="439.5" cy="331.843" r="3.1" fill="#b6541d"><title>B Y ordinal 11: 688; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-Y" data-ordinal="12" data-value="688" cx="472" cy="331.843" r="3.1" fill="#b6541d"><title>B Y ordinal 12: 688; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-Y" data-ordinal="13" data-value="688" cx="504.5" cy="331.843" r="3.1" fill="#b6541d"><title>B Y ordinal 13: 688; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-Y" data-ordinal="14" data-value="688" cx="537" cy="331.843" r="3.1" fill="#b6541d"><title>B Y ordinal 14: 688; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-Y" data-ordinal="15" data-value="688" cx="569.5" cy="331.843" r="3.1" fill="#b6541d"><title>B Y ordinal 15: 688; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-Y" data-ordinal="16" data-value="688" cx="602" cy="331.843" r="3.1" fill="#b6541d"><title>B Y ordinal 16: 688; PICTURE_SYNC0</title></circle>
+<circle data-series="pulsed-B-Y" data-ordinal="7" cx="309.5" cy="344.51" r="4.5" fill="#b6541d" stroke="#8f2136" stroke-width="1.7"><title>Previous pulsed B Y ordinal 7: 620; LAST_PIXEL2</title></circle>
+<text x="708" y="249" font-size="18" font-weight="bold">Chroma field (10-bit)</text>
+<line x1="708" y1="460" x2="1228" y2="460" stroke="#d8e0eb"/>
+<text x="700" y="465" text-anchor="end" font-size="12">0</text>
+<line x1="708" y1="412.314" x2="1228" y2="412.314" stroke="#d8e0eb"/>
+<text x="700" y="417.314" text-anchor="end" font-size="12">256</text>
+<line x1="708" y1="364.627" x2="1228" y2="364.627" stroke="#d8e0eb"/>
+<text x="700" y="369.627" text-anchor="end" font-size="12">512</text>
+<line x1="708" y1="316.941" x2="1228" y2="316.941" stroke="#d8e0eb"/>
+<text x="700" y="321.941" text-anchor="end" font-size="12">768</text>
+<line x1="708" y1="270" x2="1228" y2="270" stroke="#d8e0eb"/>
+<text x="700" y="275" text-anchor="end" font-size="12">1020</text>
+<line x1="708" y1="460" x2="708" y2="466" stroke="#7d8ca2"/>
+<text x="708" y="485" text-anchor="middle" font-size="12">0</text>
+<line x1="838" y1="460" x2="838" y2="466" stroke="#7d8ca2"/>
+<text x="838" y="485" text-anchor="middle" font-size="12">4</text>
+<line x1="935.5" y1="460" x2="935.5" y2="466" stroke="#7d8ca2"/>
+<text x="935.5" y="485" text-anchor="middle" font-size="12">7</text>
+<line x1="968" y1="460" x2="968" y2="466" stroke="#7d8ca2"/>
+<text x="968" y="485" text-anchor="middle" font-size="12">8</text>
+<line x1="1098" y1="460" x2="1098" y2="466" stroke="#7d8ca2"/>
+<text x="1098" y="485" text-anchor="middle" font-size="12">12</text>
+<line x1="1228" y1="460" x2="1228" y2="466" stroke="#7d8ca2"/>
+<text x="1228" y="485" text-anchor="middle" font-size="12">16</text>
+<text x="968" y="509" text-anchor="middle" font-size="13">Observation ordinal — NOT elapsed time or accepted transfers</text>
+<polyline data-series="pulsed-A-C" points="708,396.667 740.5,333.333 773,384 805.5,320.667 838,396.667 870.5,333.333 903,384 935.5,320.667" fill="none" stroke="#1764aa" stroke-width="2" stroke-dasharray="5 5" opacity="0.55"/>
+<polyline data-series="normal-A-C" points="708,384 740.5,384 773,384 805.5,384 838,384 870.5,384 903,384 935.5,384 968,384 1000.5,384 1033,384 1065.5,384 1098,384 1130.5,384 1163,384 1195.5,384 1228,384" fill="none" stroke="#1764aa" stroke-width="2.7"/>
+<circle data-series="normal-A-C" data-ordinal="0" data-value="408" cx="708" cy="384" r="3.1" fill="#1764aa"><title>A C ordinal 0: 408; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-C" data-ordinal="1" data-value="408" cx="740.5" cy="384" r="3.1" fill="#1764aa"><title>A C ordinal 1: 408; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-C" data-ordinal="2" data-value="408" cx="773" cy="384" r="3.1" fill="#1764aa"><title>A C ordinal 2: 408; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-C" data-ordinal="3" data-value="408" cx="805.5" cy="384" r="3.1" fill="#1764aa"><title>A C ordinal 3: 408; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-C" data-ordinal="4" data-value="408" cx="838" cy="384" r="3.1" fill="#1764aa"><title>A C ordinal 4: 408; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-C" data-ordinal="5" data-value="408" cx="870.5" cy="384" r="3.1" fill="#1764aa"><title>A C ordinal 5: 408; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-C" data-ordinal="6" data-value="408" cx="903" cy="384" r="3.1" fill="#1764aa"><title>A C ordinal 6: 408; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-C" data-ordinal="7" data-value="408" cx="935.5" cy="384" r="3.1" fill="#1764aa"><title>A C ordinal 7: 408; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-C" data-ordinal="8" data-value="408" cx="968" cy="384" r="3.1" fill="#1764aa"><title>A C ordinal 8: 408; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-C" data-ordinal="9" data-value="408" cx="1000.5" cy="384" r="3.1" fill="#1764aa"><title>A C ordinal 9: 408; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-C" data-ordinal="10" data-value="408" cx="1033" cy="384" r="3.1" fill="#1764aa"><title>A C ordinal 10: 408; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-C" data-ordinal="11" data-value="408" cx="1065.5" cy="384" r="3.1" fill="#1764aa"><title>A C ordinal 11: 408; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-C" data-ordinal="12" data-value="408" cx="1098" cy="384" r="3.1" fill="#1764aa"><title>A C ordinal 12: 408; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-C" data-ordinal="13" data-value="408" cx="1130.5" cy="384" r="3.1" fill="#1764aa"><title>A C ordinal 13: 408; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-C" data-ordinal="14" data-value="408" cx="1163" cy="384" r="3.1" fill="#1764aa"><title>A C ordinal 14: 408; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-C" data-ordinal="15" data-value="408" cx="1195.5" cy="384" r="3.1" fill="#1764aa"><title>A C ordinal 15: 408; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-A-C" data-ordinal="16" data-value="408" cx="1228" cy="384" r="3.1" fill="#1764aa"><title>A C ordinal 16: 408; PICTURE_SYNC0</title></circle>
+<circle data-series="pulsed-A-C" data-ordinal="7" cx="935.5" cy="320.667" r="4.5" fill="#1764aa" stroke="#8f2136" stroke-width="1.7"><title>Previous pulsed A C ordinal 7: 748; LAST_PIXEL2</title></circle>
+<polyline data-series="pulsed-B-C" points="708,333.333 740.5,396.667 773,346 805.5,409.333 838,333.333 870.5,396.667 903,346 935.5,409.333" fill="none" stroke="#b6541d" stroke-width="2" stroke-dasharray="5 5" opacity="0.55"/>
+<polyline data-series="normal-B-C" points="708,346 740.5,346 773,346 805.5,346 838,346 870.5,346 903,346 935.5,346 968,346 1000.5,346 1033,346 1065.5,346 1098,346 1130.5,346 1163,346 1195.5,346 1228,346" fill="none" stroke="#b6541d" stroke-width="2.7"/>
+<circle data-series="normal-B-C" data-ordinal="0" data-value="612" cx="708" cy="346" r="3.1" fill="#b6541d"><title>B C ordinal 0: 612; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-C" data-ordinal="1" data-value="612" cx="740.5" cy="346" r="3.1" fill="#b6541d"><title>B C ordinal 1: 612; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-C" data-ordinal="2" data-value="612" cx="773" cy="346" r="3.1" fill="#b6541d"><title>B C ordinal 2: 612; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-C" data-ordinal="3" data-value="612" cx="805.5" cy="346" r="3.1" fill="#b6541d"><title>B C ordinal 3: 612; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-C" data-ordinal="4" data-value="612" cx="838" cy="346" r="3.1" fill="#b6541d"><title>B C ordinal 4: 612; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-C" data-ordinal="5" data-value="612" cx="870.5" cy="346" r="3.1" fill="#b6541d"><title>B C ordinal 5: 612; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-C" data-ordinal="6" data-value="612" cx="903" cy="346" r="3.1" fill="#b6541d"><title>B C ordinal 6: 612; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-C" data-ordinal="7" data-value="612" cx="935.5" cy="346" r="3.1" fill="#b6541d"><title>B C ordinal 7: 612; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-C" data-ordinal="8" data-value="612" cx="968" cy="346" r="3.1" fill="#b6541d"><title>B C ordinal 8: 612; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-C" data-ordinal="9" data-value="612" cx="1000.5" cy="346" r="3.1" fill="#b6541d"><title>B C ordinal 9: 612; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-C" data-ordinal="10" data-value="612" cx="1033" cy="346" r="3.1" fill="#b6541d"><title>B C ordinal 10: 612; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-C" data-ordinal="11" data-value="612" cx="1065.5" cy="346" r="3.1" fill="#b6541d"><title>B C ordinal 11: 612; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-C" data-ordinal="12" data-value="612" cx="1098" cy="346" r="3.1" fill="#b6541d"><title>B C ordinal 12: 612; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-C" data-ordinal="13" data-value="612" cx="1130.5" cy="346" r="3.1" fill="#b6541d"><title>B C ordinal 13: 612; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-C" data-ordinal="14" data-value="612" cx="1163" cy="346" r="3.1" fill="#b6541d"><title>B C ordinal 14: 612; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-C" data-ordinal="15" data-value="612" cx="1195.5" cy="346" r="3.1" fill="#b6541d"><title>B C ordinal 15: 612; PICTURE_SYNC0</title></circle>
+<circle data-series="normal-B-C" data-ordinal="16" data-value="612" cx="1228" cy="346" r="3.1" fill="#b6541d"><title>B C ordinal 16: 612; PICTURE_SYNC0</title></circle>
+<circle data-series="pulsed-B-C" data-ordinal="7" cx="935.5" cy="409.333" r="4.5" fill="#b6541d" stroke="#8f2136" stroke-width="1.7"><title>Previous pulsed B C ordinal 7: 272; LAST_PIXEL2</title></circle>
+<text x="40" y="540" font-size="14">Normal samples match reference pair index2 ×4: A Y332/C408, B Y688/C612. Flat samples do not establish a transfer sequence.</text>
+<rect x="40" y="552" width="1200" height="107" rx="8" fill="#e7edf7"/>
+<text x="56" y="574" font-size="13" font-weight="bold">Sampled profile</text>
+<text x="274" y="574" font-size="13" font-weight="bold">SAMPLE / TAP</text>
+<text x="591" y="574" font-size="13" font-weight="bold">Observations / host pairs / target attempts</text>
+<text x="997" y="574" font-size="13" font-weight="bold">Stop / PICTURE_SYNC</text>
+<text x="56" y="598" font-size="14">TEST0 A / A′</text><text x="274" y="598" font-size="14" font-family="monospace">00053198 / 04053198</text><text x="591" y="598" font-size="14">17 / 0 / 10</text><text x="997" y="598" font-size="14">host-budget / all0</text>
+<text x="56" y="622" font-size="14">TEST0 B / B′</text><text x="274" y="622" font-size="14" font-family="monospace">000ac264 / 040ac264</text><text x="591" y="622" font-size="14">17 / 0 / 10</text><text x="997" y="622" font-size="14">host-budget / all0</text>
+<text x="56" y="646" font-size="14">TEST8 reference (#231)</text><text x="274" y="646" font-size="14">changing fields, eight samples</text><text x="591" y="646" font-size="14">8 / 7 / 24</text><text x="997" y="646" font-size="14">LAST_PIXEL2 at7</text>
+<text x="40" y="689" font-size="14">Normal: READY1 / ACCEPT0, FEED.LINE_COUNT2, LAST_LINE0, EOL0, EOF0, feeder-error bits0 in all 68 raw bundles.</text>
+<text x="40" y="715" font-size="14">A′=A and B′=B raw series exactly. No LAST/EOF was sampled in the normal profile; each diagnostic remains INCONCLUSIVE.</text>
+<text x="40" y="745" font-size="14">Four intentional pre-CMAC aborts: download20/status−5, stock cleanup0, retained=false, no firmware commands.</text>
+<text x="40" y="773" font-size="14">Six separate native controls PASS: five MPEG-2 + one H.264, each full 180 frames, canonical full pixels, EOS and resources.</text>
+<text x="40" y="801" font-size="14">Sequential observations are not atomic snapshots. The 96-byte prefix is NOT a source extent or autonomous-read limit.</text>
+<text x="40" y="829" font-size="14">Pulse/handshake semantics, source namespace/units/runtime lease, accepted sink output, routing and completion remain unproved.
+</text>
+</g>
+</svg>
