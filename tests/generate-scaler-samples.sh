@@ -4,7 +4,7 @@
 # Each picture is duplicated to distinguish reproducible pixels from startup.
 set -eu
 if [ "$#" -ne 2 ] || [ ! -d "$1" ]; then
-    echo "usage: $0 EXISTING_OUTPUT_DIRECTORY arithmetic|spatial" >&2
+    echo "usage: $0 EXISTING_OUTPUT_DIRECTORY arithmetic|spatial|nonlinear" >&2
     exit 2
 fi
 scaler_output=$1
@@ -21,6 +21,12 @@ case "$scaler_kind" in
         # Same-parity decoded patches must match before comparing responses.
         scaler_frames=20
         scaler_luma='128+48*eq(X,if(lt(N,4),128,if(lt(N,8),256,if(lt(N,12),320,if(lt(N,16),384,512))))+mod(floor(N/2),2))'
+        ;;
+    nonlinear)
+        # Fresh horizontal contrasts. Moderate levels avoid 8-bit saturation.
+        # Twelve pictures, each duplicated; actual decoded controls are the oracle.
+        scaler_frames=24
+        scaler_luma='if(lt(N,2),96,if(lt(N,4),160,if(lt(N,6),96+64*gte(X,286),if(lt(N,8),160-64*gte(X,287),if(lt(N,10),112+32*gte(X,288),if(lt(N,12),96+64*eq(X,286),if(lt(N,14),160-64*eq(X,287),if(lt(N,16),96+64*between(X,286,289),if(lt(N,18),160-64*between(X,288,295),if(lt(N,20),96+64*gte(mod(X,16),8),if(lt(N,22),112+32*gte(mod(X,16),8),96+32*gte(X,280)+32*gte(X,288)-32*gte(X,296)-32*gte(X,312))))))))))))'
         ;;
     *)
         echo "unknown scaler stimulus: $scaler_kind" >&2
