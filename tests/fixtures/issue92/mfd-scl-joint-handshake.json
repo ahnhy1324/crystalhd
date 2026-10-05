@@ -1,0 +1,352 @@
+{
+  "schema": 1,
+  "experiment": "joint-fixed-colour-MFD-SCL-single-START",
+  "device_family": "BCM70015",
+  "production_default": "disabled",
+  "fixture_patch_sha256": "2d362f4ccaff1daaf92dc7748fc68f12c34b578b383983475a67427a623a03f8",
+  "preregistration_sha256": "8342319cca89ec0b17567d7f49b089ddbb2947421838826be2635bfdf7f4186c",
+  "tested_module_sha256": {
+    "configuration_only": "43cc490b155d9c681ed0a034eeee25bbbd79d1be9826085ed2688e93ed3b8e00",
+    "single_START": "1d41da4860ccd6e8229c34b3aa4a7a37b79d68c6140f47e9903fceaba3e29649"
+  },
+  "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+  "control_field_order": [
+    "MFD_REVISION_ID",
+    "MFD_PIC_FEED_CMD",
+    "MFD_STRIDE",
+    "MFD_FIXED_COLOUR",
+    "MFD_DISP_HSIZE",
+    "MFD_VERT_WINDOW",
+    "MFD_LAC_CNTL",
+    "MFD_CHROMA_SAMPLING_CNTL",
+    "MFD_DATA_MODE",
+    "MFD_TEST_PORT_CNTL",
+    "MFD_TEST_MODE_CNTL",
+    "MFD_FEEDER_CNTL",
+    "MFD_REPEAT_CNTL",
+    "MFD_ERROR_STATUS",
+    "SCL_REVISION_ID",
+    "SCL_TOP_CONTROL",
+    "SCL_VERT_CONTROL",
+    "SCL_HORIZ_CONTROL",
+    "SCL_BVB_IN_SIZE",
+    "SCL_PIC_OFFSET",
+    "SCL_SRC_PIC_SIZE",
+    "SCL_DEST_PIC_SIZE",
+    "SCL_ENABLE",
+    "SCL_TEST_PORT_CONTROL",
+    "SCL_BVB_IN_STATUS"
+  ],
+  "observed_original_control_tuple_hex": [
+    "00000050",
+    "00000000",
+    "00800080",
+    "00108080",
+    "00000780",
+    "00000436",
+    "00000010",
+    "00000000",
+    "00000000",
+    "00000008",
+    "00000004",
+    "00000000",
+    "00000000",
+    "00000000",
+    "00000080",
+    "0000000c",
+    "00000000",
+    "00000000",
+    "02d000f0",
+    "00000000",
+    "02d000f0",
+    "02d000f0",
+    "00000000",
+    "00000000",
+    "00000000"
+  ],
+  "configuration_target_order": [
+    {
+      "field": "MFD_STRIDE",
+      "value_hex": "00000000"
+    },
+    {
+      "field": "MFD_FIXED_COLOUR",
+      "value_hex": "00405ac3"
+    },
+    {
+      "field": "MFD_DISP_HSIZE",
+      "value_hex": "00000004"
+    },
+    {
+      "field": "MFD_VERT_WINDOW",
+      "value_hex": "00000001"
+    },
+    {
+      "field": "MFD_LAC_CNTL",
+      "value_hex": "00000003"
+    },
+    {
+      "field": "MFD_CHROMA_SAMPLING_CNTL",
+      "value_hex": "00000000"
+    },
+    {
+      "field": "MFD_DATA_MODE",
+      "value_hex": "00000000"
+    },
+    {
+      "field": "MFD_TEST_PORT_CNTL",
+      "value_hex": "0000000f"
+    },
+    {
+      "field": "MFD_TEST_MODE_CNTL",
+      "value_hex": "00000000"
+    },
+    {
+      "field": "MFD_FEEDER_CNTL",
+      "value_hex": "0000000d"
+    },
+    {
+      "field": "SCL_BVB_IN_SIZE",
+      "value_hex": "00040002"
+    },
+    {
+      "field": "SCL_SRC_PIC_SIZE",
+      "value_hex": "00040002"
+    },
+    {
+      "field": "SCL_DEST_PIC_SIZE",
+      "value_hex": "00040002"
+    },
+    {
+      "field": "SCL_ENABLE",
+      "value_hex": "00000001"
+    },
+    {
+      "field": "SCL_TEST_PORT_CONTROL",
+      "value_hex": "00000003"
+    }
+  ],
+  "raw_bundle_order": [
+    "MFD_BVB_OUT_TAP",
+    "MFD_BVB_SAMPLE_DATA",
+    "MFD_FEED_STATUS",
+    "MFD_FEEDER_BVB_STATUS",
+    "MFD_ERROR_STATUS",
+    "SCL_SELECTOR_3_DATA",
+    "SCL_BVB_IN_STATUS",
+    "pre_MFD_ERROR_STATUS",
+    "post_MFD_ERROR_STATUS",
+    "pre_SCL_BVB_IN_STATUS",
+    "post_SCL_BVB_IN_STATUS"
+  ],
+  "pre_start_bundle_hex": [
+    "00000000",
+    "00000000",
+    "00000000",
+    "00000000",
+    "00000000",
+    "00000000",
+    "00000000",
+    "00000000",
+    "00000000",
+    "00000000",
+    "00000000"
+  ],
+  "active_unique_bundle_hex": [
+    "04040168",
+    "00040168",
+    "00000001",
+    "00000000",
+    "00000000",
+    "00000000",
+    "00000000",
+    "00000000",
+    "00000000",
+    "00000000",
+    "00000000"
+  ],
+  "physical_trials": [
+    {
+      "id": "config-a",
+      "profile": "CRYSTALHD_JOINT_CONFIG_RESET_PROBE",
+      "utc": "2026-10-05T17:42:04Z",
+      "kernel_sha256": "0a99f6105ecf89c986fb497dd87014bc32b8ade8865f885e7b87bd7aa4e3ba46",
+      "configuration_attempts": 15,
+      "start_attempts": 0,
+      "active_complete_bundles": 0,
+      "outcome": "configuration_only",
+      "cold_and_retirement_pairs_equal_to_original": true
+    },
+    {
+      "id": "config-repeat",
+      "profile": "CRYSTALHD_JOINT_CONFIG_RESET_PROBE",
+      "utc": "2026-10-05T17:43:34Z",
+      "kernel_sha256": "630303308dace7aec8a5301f8c56969d479c91cf2613c22ca9a5231eca5299c3",
+      "configuration_attempts": 15,
+      "start_attempts": 0,
+      "active_complete_bundles": 0,
+      "outcome": "configuration_only",
+      "cold_and_retirement_pairs_equal_to_original": true
+    },
+    {
+      "id": "feed-a",
+      "profile": "CRYSTALHD_JOINT_FEED_PROBE",
+      "utc": "2026-10-05T17:46:53Z",
+      "kernel_sha256": "32297d3ce4725b243e80c1074934fa29b73c185a074b660c141108c8d65cf368",
+      "configuration_attempts": 15,
+      "start_attempts": 1,
+      "active_complete_bundles": 16,
+      "every_active_bundle_equals_unique": true,
+      "outcome": "bounded_observation",
+      "cold_and_retirement_pairs_equal_to_original": true
+    },
+    {
+      "id": "feed-repeat",
+      "profile": "CRYSTALHD_JOINT_FEED_PROBE",
+      "utc": "2026-10-05T17:49:29Z",
+      "kernel_sha256": "8961f1ed6994cad369fa988c5fd6f8a14d990c6d632419ed4430fc72b149507a",
+      "configuration_attempts": 15,
+      "start_attempts": 1,
+      "active_complete_bundles": 16,
+      "every_active_bundle_equals_unique": true,
+      "outcome": "bounded_observation",
+      "cold_and_retirement_pairs_equal_to_original": true
+    }
+  ],
+  "each_trial_terminal": {
+    "cli_exit_status": 1,
+    "status": -5,
+    "download_status": 20,
+    "deliberate_pre_CMAC_abort": true,
+    "cleanup_attempted": true,
+    "cleanup_status": 0,
+    "retained": false,
+    "command_count": 0,
+    "stderr_bytes": 0,
+    "software_ACCEPT_writes": 0,
+    "original_control_pairs_before_powerdown": 25
+  },
+  "decoded_sampled_levels": {
+    "READY": 1,
+    "ACCEPT": 0,
+    "LUMA": 256,
+    "CHROMA": 360,
+    "COLOUR_SYNC": 0,
+    "LINE_SYNC": 0,
+    "PICTURE_SYNC": 0,
+    "LINE_COUNT": 1,
+    "LAST_LINE": 0,
+    "BVB_EOL": 0,
+    "BVB_EOF": 0,
+    "SCL_DEBUG": 0,
+    "SCL_ERRORS": 0
+  },
+  "sampled_colour_correspondence": {
+    "programmed_8bit_fields": {
+      "luma": 64,
+      "Cb": 90,
+      "Cr": 195
+    },
+    "sampled_10bit_fields": {
+      "luma": 256,
+      "chroma": 360
+    },
+    "inference": "first-phase luma/Cb values numerically match the programmed values shifted left2; Cr phase and accepted transfer were not observed"
+  },
+  "software_tests": {
+    "firmware_download": {
+      "strict_and_asan_ubsan_each": {
+        "groups": 158,
+        "checks": 433871792,
+        "failures": 0
+      },
+      "old_exact_baseline": {
+        "groups": 148,
+        "checks": 272163382
+      },
+      "matching_independent_runs": 2,
+      "stdout_sha256": "499a44df0751a48a47478a6cb5fc4f4edfebad0c7692b564f1e0fad2965a4fe4"
+    },
+    "lifetime": {
+      "new_independent_joint_routes_each_mode": 90,
+      "old_default_and_research_routes_preserved": true,
+      "stdout_sha256": "0757761725772769029780fe311fd7e5ec5f7b82873c04349afe466486341b96"
+    },
+    "research_session_and_cli": {
+      "strict_and_asan_ubsan_each": {
+        "session_checks": 342493,
+        "cli_checks": 6637054
+      },
+      "matching_independent_runs": 2,
+      "stdout_sha256": "407d03a93c23ad773dd5c8a59200882561af6b3986ab2af130d32273aedb0732"
+    },
+    "all_stderr_bytes": 0
+  },
+  "logical_callback_model": {
+    "configuration_only": {
+      "REG_reads": 644,
+      "target_writes": 15,
+      "clean_PCI_reads": 114,
+      "pending_PCI_reads_max": 342
+    },
+    "single_START": {
+      "REG_reads_max": 1812,
+      "target_writes_max": 16,
+      "clean_PCI_reads_max": 306,
+      "pending_PCI_reads_max": 918
+    },
+    "loader_additional": {
+      "REG_reads": 14,
+      "stock_writes": 5,
+      "stock_payload_write": 1,
+      "stock_prefix_read": 1
+    },
+    "clean_stop_close": {
+      "REG_reads": 75,
+      "stock_writes": 21,
+      "clean_PCI_reads": 15,
+      "pending_PCI_reads_max": 45,
+      "pending_total_sleeps": 18,
+      "opaque_stock_callee_boundaries": 4
+    },
+    "not_physical_bus_counts_or_autonomous_bounds": true
+  },
+  "native_controls": {
+    "runs": 8,
+    "frames_each": 180,
+    "total_frames": 1440,
+    "bytes_each": 82944000,
+    "sha256_each": "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+    "every_full_byte_comparison_passed": true,
+    "every_EOS_and_cleanup_passed": true,
+    "experimental_module_controls": true,
+    "final_installed_module_control": true,
+    "stderr_bytes": 0
+  },
+  "restoration": {
+    "installed_module_loaded": true,
+    "module_refcount": 0,
+    "research_device_absent": true,
+    "installed_files_unchanged": true,
+    "PCI_command_hex": "0506",
+    "PCI_devsta_hex": "0009",
+    "reboot": false,
+    "persistent_PCI_policy_change": false,
+    "final_checked_PCI_matches_baseline": true,
+    "bus_master_temporarily_cleared": true
+  },
+  "interpretation": {
+    "established": "repeatable START-associated MFD debug-level contrast with exact control retirement and native recovery",
+    "accepted_transfer": false,
+    "processed_pixels": false,
+    "downstream_routing": false,
+    "completed_transfer": false,
+    "source_lease": false,
+    "functional_clock_proof": false,
+    "all_consumer_fence": false,
+    "absence_of_intervening_ACCEPT_pulses": false,
+    "raw_geometry_proves_pixel_units": false,
+    "zero_SCL_selector_data_proves_idle": false,
+    "issue92_original_definition_of_done_complete": false
+  }
+}
