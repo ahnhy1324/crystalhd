@@ -1,0 +1,241 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1280" height="1290" viewBox="0 0 1280 1290">
+<rect width="1280" height="1290" fill="#101923"/>
+<text x="36" y="44" fill="#dbe7f4" font-size="29" font-family="DejaVu Sans, sans-serif">BCM70015 · fresh native scaler model test</text>
+<text x="36" y="77" fill="#ffba70" font-size="21" font-family="DejaVu Sans, sans-serif">Neither frozen model family is exact: H0 0/30 · H1 0/30 global candidates.</text>
+<text x="36" y="105" fill="#dbe7f4" font-size="16" font-family="DejaVu Sans, sans-serif">12 fresh pictures × 272 samples; all 30 OLD ramp-only mappings kept. No post-hoc refitting.</text>
+<text x="36" y="132" fill="#dbe7f4" font-size="16" font-family="DejaVu Sans, sans-serif">H0: hypothetical signed/1024 FIR. H1: same FIR + min/max clamp of the SAME 16 input samples.</text>
+<text x="36" y="164" fill="#dbe7f4" font-size="17" font-family="DejaVu Sans, sans-serif">Actual native reference · 640×360 · frame 18</text>
+<text x="656" y="164" fill="#dbe7f4" font-size="17" font-family="DejaVu Sans, sans-serif">Actual native scaled output · 320×180 · frame 18</text>
+<image x="36" y="178" width="480" height="270" xlink:href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAeAAAAEOCAIAAADe+FMwAAAACXBIWXMAAAAAAAAAAQCEeRdzAAAGdklEQVR4nO3UoREAIBADQfqkP+pEIN8zJzZ6RdStPXbGGIZhmP9m1Q4xDMMwbwLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNQLNMAwTNRcb2YQHcH6fQAAAAABJRU5ErkJggg=="/>
+<image x="656" y="178" width="480" height="270" xlink:href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAeAAAAEOCAIAAADe+FMwAAAACXBIWXMAAAAAAAAAAQCEeRdzAAAHUklEQVR4nO3UsQ3CABAEQfp0TFlOqRPkFZIrQCcxG74m+Ogex63n1Xmer2/n1efIMAzD/MzU47i1/zTDMMw/mDLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmTLQDMMwc6YMNMMwzJwpA80wDDNnykAzDMPMmXoDF9kZJdgvcPgAAAAASUVORK5CYII="/>
+<text x="36" y="474" fill="#a5b8cf" font-size="15" font-family="DejaVu Sans, sans-serif">Both displayed at 480×270 using nearest-neighbor; generated from full owned native captures.</text>
+<text x="36" y="510" fill="#dbe7f4" font-size="21" font-family="DejaVu Sans, sans-serif">Every global candidate · absolute error sum</text>
+<rect x="37" y="528" width="13" height="13" fill="#54b6e8"/><rect x="91" y="528" width="13" height="13" fill="#f5c365"/>
+<text x="55" y="540" fill="#dbe7f4" font-size="13" font-family="DejaVu Sans, sans-serif">H0</text>
+<text x="109" y="540" fill="#dbe7f4" font-size="13" font-family="DejaVu Sans, sans-serif">H1</text>
+<text x="170" y="540" fill="#a5b8cf" font-size="13" font-family="DejaVu Sans, sans-serif">P phase · F/R orientation · O source offset · bias 512</text>
+<text x="36" y="576" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">01 P0 F O-7</text>
+<rect x="188" y="566" width="152.69" height="6" fill="#54b6e8"/>
+<rect x="188" y="573" width="104.74" height="6" fill="#f5c365"/>
+<text x="490" y="577" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">2143 / 1470</text>
+<text x="36" y="594" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">02 P0 F O-6</text>
+<rect x="188" y="584" width="152.76" height="6" fill="#54b6e8"/>
+<rect x="188" y="591" width="104.95" height="6" fill="#f5c365"/>
+<text x="490" y="595" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">2144 / 1473</text>
+<text x="36" y="612" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">03 P0 R O-8</text>
+<rect x="188" y="602" width="152.69" height="6" fill="#54b6e8"/>
+<rect x="188" y="609" width="104.74" height="6" fill="#f5c365"/>
+<text x="490" y="613" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">2143 / 1470</text>
+<text x="36" y="630" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">04 P0 R O-7</text>
+<rect x="188" y="620" width="152.76" height="6" fill="#54b6e8"/>
+<rect x="188" y="627" width="105.02" height="6" fill="#f5c365"/>
+<text x="490" y="631" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">2144 / 1474</text>
+<text x="36" y="648" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">05 P1 F O-7</text>
+<rect x="188" y="638" width="151.05" height="6" fill="#54b6e8"/>
+<rect x="188" y="645" width="103.17" height="6" fill="#f5c365"/>
+<text x="490" y="649" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">2120 / 1448</text>
+<text x="36" y="666" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">06 P1 F O-6</text>
+<rect x="188" y="656" width="184.97" height="6" fill="#54b6e8"/>
+<rect x="188" y="663" width="137.16" height="6" fill="#f5c365"/>
+<text x="490" y="667" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">2596 / 1925</text>
+<text x="36" y="684" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">07 P1 R O-8</text>
+<rect x="188" y="674" width="185.11" height="6" fill="#54b6e8"/>
+<rect x="188" y="681" width="137.09" height="6" fill="#f5c365"/>
+<text x="490" y="685" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">2598 / 1924</text>
+<text x="36" y="702" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">08 P1 R O-7</text>
+<rect x="188" y="692" width="151.19" height="6" fill="#54b6e8"/>
+<rect x="188" y="699" width="103.53" height="6" fill="#f5c365"/>
+<text x="490" y="703" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">2122 / 1453</text>
+<text x="36" y="720" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">09 P2 F O-7</text>
+<rect x="188" y="710" width="180.69" height="6" fill="#54b6e8"/>
+<rect x="188" y="717" width="133.02" height="6" fill="#f5c365"/>
+<text x="490" y="721" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">2536 / 1867</text>
+<text x="36" y="738" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">10 P2 F O-6</text>
+<rect x="188" y="728" width="209.55" height="6" fill="#54b6e8"/>
+<rect x="188" y="735" width="169.36" height="6" fill="#f5c365"/>
+<text x="490" y="739" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">2941 / 2377</text>
+<text x="36" y="756" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">11 P2 R O-8</text>
+<rect x="188" y="746" width="209.62" height="6" fill="#54b6e8"/>
+<rect x="188" y="753" width="169.22" height="6" fill="#f5c365"/>
+<text x="490" y="757" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">2942 / 2375</text>
+<text x="36" y="774" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">12 P2 R O-7</text>
+<rect x="188" y="764" width="180.76" height="6" fill="#54b6e8"/>
+<rect x="188" y="771" width="133.17" height="6" fill="#f5c365"/>
+<text x="490" y="775" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">2537 / 1869</text>
+<text x="36" y="792" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">13 P3 F O-7</text>
+<rect x="188" y="782" width="193.02" height="6" fill="#54b6e8"/>
+<rect x="188" y="789" width="158.60" height="6" fill="#f5c365"/>
+<text x="490" y="793" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">2709 / 2226</text>
+<text x="36" y="810" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">14 P3 F O-6</text>
+<rect x="188" y="800" width="259.35" height="6" fill="#54b6e8"/>
+<rect x="188" y="807" width="211.68" height="6" fill="#f5c365"/>
+<text x="490" y="811" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">3640 / 2971</text>
+<text x="36" y="828" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">15 P3 R O-8</text>
+<rect x="188" y="818" width="259.35" height="6" fill="#54b6e8"/>
+<rect x="188" y="825" width="211.68" height="6" fill="#f5c365"/>
+<text x="490" y="829" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">3640 / 2971</text>
+<text x="36" y="846" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">16 P3 R O-7</text>
+<rect x="188" y="836" width="193.02" height="6" fill="#54b6e8"/>
+<rect x="188" y="843" width="158.46" height="6" fill="#f5c365"/>
+<text x="490" y="847" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">2709 / 2224</text>
+<text x="36" y="864" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">17 P4 F O-7</text>
+<rect x="188" y="854" width="199.93" height="6" fill="#54b6e8"/>
+<rect x="188" y="861" width="158.25" height="6" fill="#f5c365"/>
+<text x="490" y="865" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">2806 / 2221</text>
+<text x="36" y="882" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">18 P4 R O-7</text>
+<rect x="188" y="872" width="199.93" height="6" fill="#54b6e8"/>
+<rect x="188" y="879" width="158.25" height="6" fill="#f5c365"/>
+<text x="490" y="883" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">2806 / 2221</text>
+<text x="36" y="900" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">19 P5 F O-8</text>
+<rect x="188" y="890" width="259.35" height="6" fill="#54b6e8"/>
+<rect x="188" y="897" width="211.68" height="6" fill="#f5c365"/>
+<text x="490" y="901" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">3640 / 2971</text>
+<text x="36" y="918" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">20 P5 F O-7</text>
+<rect x="188" y="908" width="193.02" height="6" fill="#54b6e8"/>
+<rect x="188" y="915" width="158.46" height="6" fill="#f5c365"/>
+<text x="490" y="919" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">2709 / 2224</text>
+<text x="36" y="936" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">21 P5 R O-7</text>
+<rect x="188" y="926" width="193.02" height="6" fill="#54b6e8"/>
+<rect x="188" y="933" width="158.60" height="6" fill="#f5c365"/>
+<text x="490" y="937" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">2709 / 2226</text>
+<text x="36" y="954" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">22 P5 R O-6</text>
+<rect x="188" y="944" width="259.35" height="6" fill="#54b6e8"/>
+<rect x="188" y="951" width="211.68" height="6" fill="#f5c365"/>
+<text x="490" y="955" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">3640 / 2971</text>
+<text x="36" y="972" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">23 P6 F O-8</text>
+<rect x="188" y="962" width="209.62" height="6" fill="#54b6e8"/>
+<rect x="188" y="969" width="169.22" height="6" fill="#f5c365"/>
+<text x="490" y="973" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">2942 / 2375</text>
+<text x="36" y="990" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">24 P6 F O-7</text>
+<rect x="188" y="980" width="180.76" height="6" fill="#54b6e8"/>
+<rect x="188" y="987" width="133.17" height="6" fill="#f5c365"/>
+<text x="490" y="991" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">2537 / 1869</text>
+<text x="36" y="1008" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">25 P6 R O-7</text>
+<rect x="188" y="998" width="180.69" height="6" fill="#54b6e8"/>
+<rect x="188" y="1005" width="133.02" height="6" fill="#f5c365"/>
+<text x="490" y="1009" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">2536 / 1867</text>
+<text x="36" y="1026" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">26 P6 R O-6</text>
+<rect x="188" y="1016" width="209.55" height="6" fill="#54b6e8"/>
+<rect x="188" y="1023" width="169.36" height="6" fill="#f5c365"/>
+<text x="490" y="1027" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">2941 / 2377</text>
+<text x="36" y="1044" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">27 P7 F O-8</text>
+<rect x="188" y="1034" width="185.11" height="6" fill="#54b6e8"/>
+<rect x="188" y="1041" width="137.09" height="6" fill="#f5c365"/>
+<text x="490" y="1045" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">2598 / 1924</text>
+<text x="36" y="1062" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">28 P7 F O-7</text>
+<rect x="188" y="1052" width="151.19" height="6" fill="#54b6e8"/>
+<rect x="188" y="1059" width="103.53" height="6" fill="#f5c365"/>
+<text x="490" y="1063" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">2122 / 1453</text>
+<text x="36" y="1080" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">29 P7 R O-7</text>
+<rect x="188" y="1070" width="151.05" height="6" fill="#54b6e8"/>
+<rect x="188" y="1077" width="103.17" height="6" fill="#f5c365"/>
+<text x="490" y="1081" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">2120 / 1448</text>
+<text x="36" y="1098" fill="#dbe7f4" font-size="12" font-family="DejaVu Sans, sans-serif">30 P7 R O-6</text>
+<rect x="188" y="1088" width="184.97" height="6" fill="#54b6e8"/>
+<rect x="188" y="1095" width="137.16" height="6" fill="#f5c365"/>
+<text x="490" y="1099" fill="#b9c8dc" font-size="11" font-family="DejaVu Sans, sans-serif">2596 / 1925</text>
+<text x="188" y="1125" fill="#a5b8cf" font-size="11" font-family="DejaVu Sans, sans-serif">0</text>
+<text x="444" y="1125" fill="#a5b8cf" font-size="11" font-family="DejaVu Sans, sans-serif">4000</text>
+<text x="654" y="510" fill="#dbe7f4" font-size="21" font-family="DejaVu Sans, sans-serif">One fixed diagnostic candidate</text>
+<text x="654" y="539" fill="#a5b8cf" font-size="14" font-family="DejaVu Sans, sans-serif">Candidate 01: P0 forward, O−7, bias 512; not selected as a fit.</text>
+<text x="654" y="575" fill="#dbe7f4" font-size="17" font-family="DejaVu Sans, sans-serif">Frame 4 · rising edge</text>
+<path d="M710 760H1180" stroke="#2a3b4c" stroke-width="1"/>
+<text x="668" y="765" fill="#a5b8cf" font-size="12" font-family="DejaVu Sans, sans-serif">80</text>
+<path d="M710 726H1180" stroke="#2a3b4c" stroke-width="1"/>
+<text x="668" y="731" fill="#a5b8cf" font-size="12" font-family="DejaVu Sans, sans-serif">100</text>
+<path d="M710 692H1180" stroke="#2a3b4c" stroke-width="1"/>
+<text x="668" y="697" fill="#a5b8cf" font-size="12" font-family="DejaVu Sans, sans-serif">120</text>
+<path d="M710 658H1180" stroke="#2a3b4c" stroke-width="1"/>
+<text x="668" y="663" fill="#a5b8cf" font-size="12" font-family="DejaVu Sans, sans-serif">140</text>
+<path d="M710 624H1180" stroke="#2a3b4c" stroke-width="1"/>
+<text x="668" y="629" fill="#a5b8cf" font-size="12" font-family="DejaVu Sans, sans-serif">160</text>
+<path d="M710 590H1180" stroke="#2a3b4c" stroke-width="1"/>
+<text x="668" y="595" fill="#a5b8cf" font-size="12" font-family="DejaVu Sans, sans-serif">180</text>
+<path d="M710.00,732.80L729.58,732.80L749.17,732.80L768.75,732.80L788.33,732.80L807.92,732.80L827.50,732.80L847.08,732.80L866.67,732.80L886.25,731.10L905.83,743.00L925.42,641.00L945.00,627.40L964.58,622.30L984.17,624.00L1003.75,624.00L1023.33,624.00L1042.92,624.00L1062.50,624.00L1082.08,624.00L1101.67,624.00L1121.25,624.00L1140.83,624.00L1160.42,624.00L1180.00,624.00" fill="none" stroke="#54b6e8" stroke-width="2"/>
+<path d="M710.00,732.80L729.58,732.80L749.17,732.80L768.75,732.80L788.33,732.80L807.92,732.80L827.50,732.80L847.08,732.80L866.67,732.80L886.25,731.10L905.83,732.80L925.42,641.00L945.00,627.40L964.58,622.30L984.17,624.00L1003.75,624.00L1023.33,624.00L1042.92,624.00L1062.50,624.00L1082.08,624.00L1101.67,624.00L1121.25,624.00L1140.83,624.00L1160.42,624.00L1180.00,624.00" fill="none" stroke="#f5c365" stroke-width="2"/>
+<path d="M710.00,732.80L729.58,732.80L749.17,732.80L768.75,732.80L788.33,732.80L807.92,732.80L827.50,732.80L847.08,732.80L866.67,732.80L886.25,732.80L905.83,719.20L925.42,635.90L945.00,624.00L964.58,624.00L984.17,624.00L1003.75,624.00L1023.33,624.00L1042.92,624.00L1062.50,624.00L1082.08,624.00L1101.67,624.00L1121.25,624.00L1140.83,624.00L1160.42,624.00L1180.00,624.00" fill="none" stroke="#fc7982" stroke-width="2"/>
+<circle cx="710.00" cy="732.80" r="2.5" fill="#fc7982"/>
+<circle cx="729.58" cy="732.80" r="2.5" fill="#fc7982"/>
+<circle cx="749.17" cy="732.80" r="2.5" fill="#fc7982"/>
+<circle cx="768.75" cy="732.80" r="2.5" fill="#fc7982"/>
+<circle cx="788.33" cy="732.80" r="2.5" fill="#fc7982"/>
+<circle cx="807.92" cy="732.80" r="2.5" fill="#fc7982"/>
+<circle cx="827.50" cy="732.80" r="2.5" fill="#fc7982"/>
+<circle cx="847.08" cy="732.80" r="2.5" fill="#fc7982"/>
+<circle cx="866.67" cy="732.80" r="2.5" fill="#fc7982"/>
+<circle cx="886.25" cy="732.80" r="2.5" fill="#fc7982"/>
+<circle cx="905.83" cy="719.20" r="2.5" fill="#fc7982"/>
+<circle cx="925.42" cy="635.90" r="2.5" fill="#fc7982"/>
+<circle cx="945.00" cy="624.00" r="2.5" fill="#fc7982"/>
+<circle cx="964.58" cy="624.00" r="2.5" fill="#fc7982"/>
+<circle cx="984.17" cy="624.00" r="2.5" fill="#fc7982"/>
+<circle cx="1003.75" cy="624.00" r="2.5" fill="#fc7982"/>
+<circle cx="1023.33" cy="624.00" r="2.5" fill="#fc7982"/>
+<circle cx="1042.92" cy="624.00" r="2.5" fill="#fc7982"/>
+<circle cx="1062.50" cy="624.00" r="2.5" fill="#fc7982"/>
+<circle cx="1082.08" cy="624.00" r="2.5" fill="#fc7982"/>
+<circle cx="1101.67" cy="624.00" r="2.5" fill="#fc7982"/>
+<circle cx="1121.25" cy="624.00" r="2.5" fill="#fc7982"/>
+<circle cx="1140.83" cy="624.00" r="2.5" fill="#fc7982"/>
+<circle cx="1160.42" cy="624.00" r="2.5" fill="#fc7982"/>
+<circle cx="1180.00" cy="624.00" r="2.5" fill="#fc7982"/>
+<text x="710" y="783" fill="#a5b8cf" font-size="13" font-family="DejaVu Sans, sans-serif">Output x 132</text>
+<text x="1135" y="783" fill="#a5b8cf" font-size="13" font-family="DejaVu Sans, sans-serif">156</text>
+<text x="654" y="830" fill="#dbe7f4" font-size="17" font-family="DejaVu Sans, sans-serif">Frame 18 · periodic bars</text>
+<path d="M710 1015H1180" stroke="#2a3b4c" stroke-width="1"/>
+<text x="668" y="1020" fill="#a5b8cf" font-size="12" font-family="DejaVu Sans, sans-serif">80</text>
+<path d="M710 981H1180" stroke="#2a3b4c" stroke-width="1"/>
+<text x="668" y="986" fill="#a5b8cf" font-size="12" font-family="DejaVu Sans, sans-serif">100</text>
+<path d="M710 947H1180" stroke="#2a3b4c" stroke-width="1"/>
+<text x="668" y="952" fill="#a5b8cf" font-size="12" font-family="DejaVu Sans, sans-serif">120</text>
+<path d="M710 913H1180" stroke="#2a3b4c" stroke-width="1"/>
+<text x="668" y="918" fill="#a5b8cf" font-size="12" font-family="DejaVu Sans, sans-serif">140</text>
+<path d="M710 879H1180" stroke="#2a3b4c" stroke-width="1"/>
+<text x="668" y="884" fill="#a5b8cf" font-size="12" font-family="DejaVu Sans, sans-serif">160</text>
+<path d="M710 845H1180" stroke="#2a3b4c" stroke-width="1"/>
+<text x="668" y="850" fill="#a5b8cf" font-size="12" font-family="DejaVu Sans, sans-serif">180</text>
+<path d="M710.00,969.10L724.69,984.40L739.38,986.10L754.06,998.00L768.75,897.70L783.44,880.70L798.13,879.00L812.81,868.80L827.50,969.10L842.19,984.40L856.88,986.10L871.56,998.00L886.25,897.70L900.94,880.70L915.63,879.00L930.31,868.80L945.00,969.10L959.69,984.40L974.38,986.10L989.06,998.00L1003.75,897.70L1018.44,880.70L1033.13,879.00L1047.81,868.80L1062.50,969.10L1077.19,984.40L1091.88,986.10L1106.56,998.00L1121.25,897.70L1135.94,880.70L1150.63,879.00L1165.31,868.80L1180.00,969.10" fill="none" stroke="#54b6e8" stroke-width="2"/>
+<path d="M710.00,969.10L724.69,984.40L739.38,986.10L754.06,987.80L768.75,897.70L783.44,880.70L798.13,879.00L812.81,879.00L827.50,969.10L842.19,984.40L856.88,986.10L871.56,987.80L886.25,897.70L900.94,880.70L915.63,879.00L930.31,879.00L945.00,969.10L959.69,984.40L974.38,986.10L989.06,987.80L1003.75,897.70L1018.44,880.70L1033.13,879.00L1047.81,879.00L1062.50,969.10L1077.19,984.40L1091.88,986.10L1106.56,987.80L1121.25,897.70L1135.94,880.70L1150.63,879.00L1165.31,879.00L1180.00,969.10" fill="none" stroke="#f5c365" stroke-width="2"/>
+<path d="M710.00,974.20L724.69,987.80L739.38,987.80L754.06,974.20L768.75,892.60L783.44,879.00L798.13,879.00L812.81,892.60L827.50,974.20L842.19,987.80L856.88,987.80L871.56,974.20L886.25,892.60L900.94,879.00L915.63,879.00L930.31,892.60L945.00,974.20L959.69,987.80L974.38,987.80L989.06,974.20L1003.75,892.60L1018.44,879.00L1033.13,879.00L1047.81,892.60L1062.50,974.20L1077.19,987.80L1091.88,987.80L1106.56,974.20L1121.25,892.60L1135.94,879.00L1150.63,879.00L1165.31,892.60L1180.00,974.20" fill="none" stroke="#fc7982" stroke-width="2"/>
+<circle cx="710.00" cy="974.20" r="2.5" fill="#fc7982"/>
+<circle cx="724.69" cy="987.80" r="2.5" fill="#fc7982"/>
+<circle cx="739.38" cy="987.80" r="2.5" fill="#fc7982"/>
+<circle cx="754.06" cy="974.20" r="2.5" fill="#fc7982"/>
+<circle cx="768.75" cy="892.60" r="2.5" fill="#fc7982"/>
+<circle cx="783.44" cy="879.00" r="2.5" fill="#fc7982"/>
+<circle cx="798.13" cy="879.00" r="2.5" fill="#fc7982"/>
+<circle cx="812.81" cy="892.60" r="2.5" fill="#fc7982"/>
+<circle cx="827.50" cy="974.20" r="2.5" fill="#fc7982"/>
+<circle cx="842.19" cy="987.80" r="2.5" fill="#fc7982"/>
+<circle cx="856.88" cy="987.80" r="2.5" fill="#fc7982"/>
+<circle cx="871.56" cy="974.20" r="2.5" fill="#fc7982"/>
+<circle cx="886.25" cy="892.60" r="2.5" fill="#fc7982"/>
+<circle cx="900.94" cy="879.00" r="2.5" fill="#fc7982"/>
+<circle cx="915.63" cy="879.00" r="2.5" fill="#fc7982"/>
+<circle cx="930.31" cy="892.60" r="2.5" fill="#fc7982"/>
+<circle cx="945.00" cy="974.20" r="2.5" fill="#fc7982"/>
+<circle cx="959.69" cy="987.80" r="2.5" fill="#fc7982"/>
+<circle cx="974.38" cy="987.80" r="2.5" fill="#fc7982"/>
+<circle cx="989.06" cy="974.20" r="2.5" fill="#fc7982"/>
+<circle cx="1003.75" cy="892.60" r="2.5" fill="#fc7982"/>
+<circle cx="1018.44" cy="879.00" r="2.5" fill="#fc7982"/>
+<circle cx="1033.13" cy="879.00" r="2.5" fill="#fc7982"/>
+<circle cx="1047.81" cy="892.60" r="2.5" fill="#fc7982"/>
+<circle cx="1062.50" cy="974.20" r="2.5" fill="#fc7982"/>
+<circle cx="1077.19" cy="987.80" r="2.5" fill="#fc7982"/>
+<circle cx="1091.88" cy="987.80" r="2.5" fill="#fc7982"/>
+<circle cx="1106.56" cy="974.20" r="2.5" fill="#fc7982"/>
+<circle cx="1121.25" cy="892.60" r="2.5" fill="#fc7982"/>
+<circle cx="1135.94" cy="879.00" r="2.5" fill="#fc7982"/>
+<circle cx="1150.63" cy="879.00" r="2.5" fill="#fc7982"/>
+<circle cx="1165.31" cy="892.60" r="2.5" fill="#fc7982"/>
+<circle cx="1180.00" cy="974.20" r="2.5" fill="#fc7982"/>
+<text x="710" y="1038" fill="#a5b8cf" font-size="13" font-family="DejaVu Sans, sans-serif">Output x 120</text>
+<text x="1135" y="1038" fill="#a5b8cf" font-size="13" font-family="DejaVu Sans, sans-serif">152</text>
+<text x="654" y="1074" fill="#dbe7f4" font-size="14" font-family="DejaVu Sans, sans-serif">Blue H0 · yellow H1 · coral actual native samples</text>
+<text x="654" y="1101" fill="#a5b8cf" font-size="14" font-family="DejaVu Sans, sans-serif">All 60 scores and complete row profiles are in the JSON.</text>
+<text x="36" y="1174" fill="#dbe7f4" font-size="16" font-family="DejaVu Sans, sans-serif">Controls: 10 native sessions, 708 full frames; EOS / retirement / cleanup / stderr all passed.</text>
+<text x="36" y="1201" fill="#dbe7f4" font-size="15" font-family="DejaVu Sans, sans-serif">First input: model-admission FAIL (39 transverse differences, max 1); no scaled trial. Revised source admitted.</text>
+<text x="36" y="1228" fill="#dbe7f4" font-size="15" font-family="DejaVu Sans, sans-serif">No custom target writes, extra observer reads or installation changes. H.264 controls remained byte-exact.</text>
+<text x="36" y="1256" fill="#ffba70" font-size="15" font-family="DejaVu Sans, sans-serif">Limits: no active-bank, pre-SCL-plane, signedness, fixed-point, deringing equation or standalone proof.</text>
+</svg>
