@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="650" viewBox="0 0 1240 650" role="img" aria-labelledby="title desc">
+  <title id="title">Native MFD debug-address calibration</title>
+  <desc id="desc">Two native MPEG-2 observer sessions measured matching REV 50, TEST_PORT_CNTL 8, REV 50 triples twice at each of two stages. ADDR_SEL 1 names the SOFT_INPUT address-source enum; TP_ADDR is raw zero. Six complete native sessions delivered 1080 frames matching retained full captures. No pixel-source, view-identity, admission, ownership, freshness or standalone claim.</desc>
+  <rect width="1240" height="650" fill="#111827"/>
+  <g fill="#edf3ff" font-family="sans-serif">
+    <text x="28" y="40" font-size="25">Native MFD debug-address calibration</text>
+    <text x="28" y="68" font-size="14" fill="#b6c4d9">BCM70015 · two observed MPEG-2 sessions · progressive 640×360 · unscaled native YUY2</text>
+    <rect x="28" y="94" width="568" height="197" rx="10" fill="#1e293b"/>
+    <rect x="644" y="94" width="568" height="197" rx="10" fill="#1e293b"/>
+    <text x="46" y="122" font-size="18">After OPEN / before START</text>
+    <text x="662" y="122" font-size="18">First native output</text>
+    <text x="662" y="146" font-size="14" fill="#b6c4d9">After release + successful owned-copy Write</text>
+    <g font-size="13" fill="#b6c4d9" font-family="monospace">
+      <text x="162" y="169">REV</text><text x="279" y="169">CNTL</text><text x="400" y="169">REV</text>
+      <text x="778" y="169">REV</text><text x="895" y="169">CNTL</text><text x="1016" y="169">REV</text>
+    </g>
+    <g font-size="18" font-family="monospace" fill="#ffcc80">
+      <text x="46" y="199">pass 0  00000050 · 00000008 · 00000050</text>
+      <text x="46" y="232">pass 1  00000050 · 00000008 · 00000050</text>
+      <text x="662" y="199">pass 0  00000050 · 00000008 · 00000050</text>
+      <text x="662" y="232">pass 1  00000050 · 00000008 · 00000050</text>
+    </g>
+    <text x="46" y="268" font-size="13" fill="#b6c4d9">6 logical reads · same paired triples in A and repeat</text>
+    <text x="662" y="268" font-size="13" fill="#b6c4d9">6 logical reads · same paired triples in A and repeat</text>
+    <path d="M607 196h25m-8-7 8 7-8 7" fill="none" stroke="#73d5f4" stroke-width="3"/>
+    <text x="28" y="321" font-size="14" font-family="monospace" fill="#b6c4d9">Read whitelist: REV @ 00540000 · TEST_PORT_CNTL @ 0054007c · REV @ 00540000</text>
+    <rect x="28" y="340" width="1184" height="114" rx="10" fill="#1e293b"/>
+    <text x="46" y="370" font-size="18" font-family="monospace">TEST_PORT_CNTL = 00000008</text>
+    <text x="46" y="403" font-size="18" fill="#73d5f4">ADDR_SEL bit 3 = 1</text>
+    <text x="46" y="431" font-size="14" fill="#b6c4d9">Address-source enum: SOFT_INPUT</text>
+    <text x="494" y="403" font-size="18" fill="#73d5f4">TP_ADDR bits 2:0 = 0</text>
+    <text x="494" y="431" font-size="14" fill="#b6c4d9">Raw numeric field; no certified view identity</text>
+    <text x="935" y="403" font-size="18" fill="#86e7ad">12 reads / session</text>
+    <text x="935" y="431" font-size="14" fill="#b6c4d9">0 custom writes · 0 data reads</text>
+    <text x="28" y="486" font-size="16" fill="#86e7ad">Native pixels: 640×360 YUY2 · 6 sessions × 180 frames = 1080 complete host frames</text>
+    <text x="28" y="515" font-size="14">5 MPEG-2 captures + final H.264 recovery: each 82,944,000 bytes, byte-exact against its retained reference.</text>
+    <text x="28" y="543" font-size="14">All six: firmware EOS · pending 0 · ready 0 · cleanup PASS · fds 3→3 · threads 1→1 · stderr empty.</text>
+    <text x="28" y="574" font-size="13" fill="#b6c4d9">Bounded observer: 2 stages; at most 12 logical reads. Eight inherited native packing reads per session remain separate.</text>
+    <text x="28" y="601" font-size="13" fill="#ffcc80">Equal sequential tuples do not prove atomicity, pixel source, admission, selector ownership, freshness or a source lease.</text>
+    <text x="28" y="628" font-size="12" fill="#b6c4d9">Measured source ed90a684 · no selector writes, TEST_PORT_DATA reads or pointer following · original issue #92 remains incomplete.</text>
+  </g>
+</svg>

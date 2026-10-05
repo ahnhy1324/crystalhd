@@ -1,0 +1,104 @@
+{
+  "schema": "issue92-native-mfd-debug-address-measured-v1",
+  "issue": 92,
+  "device": "BCM70015",
+  "purpose": "Debug-address calibration during ordinary native decoding.",
+  "source": {
+    "base_commit": "42a090a2dd93c806a3265b7ebe784b8b42a77c1a",
+    "probe": "tests/library-drain.cpp",
+    "probe_sha256": "ed90a684eb5d7dc9a1de07ec6bb58fd8fa0a319a436c03b0d3e0aa4e493cb13c",
+    "mfd_RDB_sha256": "016806aea47410c9598bf301c202739fb690e45e521f035716215e97187155d8",
+    "protocol_sha256": "dc01cf119b80783ec5a8e841c64711314f352f0ec1469b35cc765dbc3a2787a9",
+    "stock_control_binary_sha256": "7a2456e5c369ac7e78c9b39dfc2f5b370306a8fbdd0b7677d1996baf6c089596",
+    "observer_strict_binary_sha256": "98f908a09ed036605d62fdde8cae966b9edfcdf42fbf442e50e6ad82090358ac",
+    "observer_asan_ubsan_binary_sha256": "b3391758b202438840700329be78a5069ef7c44ea1215c993f20d5f2c7b1f794"
+  },
+  "hardware_free_validation": {
+    "unchanged_base_checks": 93552,
+    "new_checks": 2424,
+    "strict": {"exit": 0, "checks": 95976, "stderr_bytes": 0},
+    "asan_ubsan": {"exit": 0, "checks": 95976, "stderr_bytes": 0},
+    "strict_and_asan_stdout_sha256": "16f01ea5ca34f994c8d70d4a23a026f6b5f5578bc15459408fa00c1e8c61fbda",
+    "capability_negative_test": {"exit": 2, "capture_created": false, "stdout_bytes": 0},
+    "capability_negative_stderr_sha256": "0bc18b798e78ab526ba7bbaef362d235dde6828374f8ac5a6ec278aa2e014271"
+  },
+  "stock_state": {
+    "loaded_module_srcversion": "1D01F9BFBB5CCDC75C46312",
+    "final_module_refcount": 0,
+    "installed_module_file_sha256": "aa414dec6c2692d16dd5962ffd9e28f953a3dfad210863ae263be43d915ae1c0",
+    "installed_library_sha256": "9ab57299517a7d4ee466d6f91541fe5e66c48988912391ca73e03ef10c074be6",
+    "installed_gstreamer_plugin_sha256": "0c130fe1e8c95260d8c48b272b31d5de2424867ee0f0355996c337bcc1ab07dc",
+    "installed_firmware_file_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+    "retained_seven_file_manifest_sha256": "32a0e5847b202fd3f74bca5fa11fbe40b7e55b90b985cbac3cf3cd8efa91738b",
+    "current_manifest_entries_matching": 7,
+    "pci_command_hex": "0506",
+    "pci_device_status_hex": "0009",
+    "scope": "Retained seven-file manifest matched after the sessions. File hashes do not identify the loaded module or certify the whole host unchanged."
+  },
+  "inputs": {
+    "mpeg2": {"name": "mpeg2.m2v", "sha256": "32d8ca6ddf8ad529ae3875ee9b7e904630c633bfef6d74ba40d7b1040d20820b", "bytes": 1777511, "codec": "MPEG2", "progressive": true, "width": 640, "height": 360, "packets": 180},
+    "h264": {"name": "drain.h264", "sha256": "767d0fc307052fe995ca0921aaf01b48b4e6477698188e1e7a4e42da690f304e", "bytes": 787883, "codec": "H264", "width": 640, "height": 360, "packets": 180}
+  },
+  "native_capture": {
+    "requested_format": "YUY2", "width": 640, "height": 360, "bytes_per_frame": 460800,
+    "frames_per_session": 180, "bytes_per_session": 82944000,
+    "scaler_requested_width": 0, "iterations_per_session": 1,
+    "capture_creation": "Explicit fresh path; O_EXCL capture before device open.",
+    "requested_software_deadline_seconds_per_session": 30,
+    "deadline_scope": "Userspace logical deadline; neither measured elapsed time nor a hard wall-clock or physical bound.",
+    "all_six": {"process_exit": 0, "firmware_EOS": true, "output_marker": false, "pending": 0, "ready": 0, "cleanup": "PASS", "capture": "PASS", "fd_thread_checks": "PASS", "stderr_bytes": 0},
+    "all_six_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "capture_metadata": {
+    "record_count_per_session": 180, "ordered_frame_index_range_inclusive": [0, 179], "ordered_picture_number_range_inclusive": [3, 182], "all_indices_and_picture_numbers_once_in_order": true,
+    "unique_tokens_per_session": 180, "complete_token_set": "100000*n for n=1..180; delivery order may differ from input order",
+    "all_six": {"requested_format": "YUY2", "geometry": [640, 360], "flags_hex": "0", "chroma_format_hex": "1", "output_flags_hex": "20000"},
+    "mpeg2": {"subtype": 2, "aspect_ratio_raw": 15, "colour_primaries_raw": 0, "all_five_record_sequences_equal": true, "record_lines_sha256": "5b17ee9b338b16239a3a6fcfb4c28c0a3c5bce0633406f5960c24592cbc58759"},
+    "h264": {"subtype": 3, "aspect_ratio_raw": 1, "colour_primaries_raw": 33686016, "record_lines_sha256": "37422853c7e2c13849b7339d2da91c8ecf86962b4fc937680b5c27c71f57ea09"},
+    "record_hash_encoding": "Exact Captured packed output record lines, including each trailing newline; metadata values remain opaque."
+  },
+  "observer_bounds": {
+    "option": "--observe-mfd-address", "requires": "CAP_SYS_RAWIO before fixture/progress/capture/device actions",
+    "stage_addresses_hex": ["00540000", "0054007c", "00540000", "00540000", "0054007c", "00540000"],
+    "stage_fields": ["MFD_REVISION_ID", "MFD_TEST_PORT_CNTL", "MFD_REVISION_ID"],
+    "reads_per_stage": 6, "stages_per_session": 2, "maximum_reads_per_session": 12,
+    "expected_revision_hex": "00000050", "control_reserved_mask_hex": "fffffff0", "accepted_control_words": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    "custom_target_writes": 0, "test_port_data_reads": 0, "pointer_following": false,
+    "inherited_packing_register_hex": "00502100", "inherited_packing_reads_per_session": 8,
+    "failure_policy": "Sticky rejection at the first argument/order/current-handle/API/scalar/tuple/publication failure; no later observer I/O. Ordinary decoder cleanup remains required."
+  },
+  "observed_sessions": [
+    {"id": "observed-a", "stages": [
+      {"stage": "after-OPEN/pre-START", "reads": 6, "api_status": 0, "result": "PASS", "tuples_hex": [["00000050", "00000008", "00000050"], ["00000050", "00000008", "00000050"]]},
+      {"stage": "first-output-after-release-and-owned-write", "reads": 6, "api_status": 0, "result": "PASS", "tuples_hex": [["00000050", "00000008", "00000050"], ["00000050", "00000008", "00000050"]]}
+    ]},
+    {"id": "observed-repeat", "stages": [
+      {"stage": "after-OPEN/pre-START", "reads": 6, "api_status": 0, "result": "PASS", "tuples_hex": [["00000050", "00000008", "00000050"], ["00000050", "00000008", "00000050"]]},
+      {"stage": "first-output-after-release-and-owned-write", "reads": 6, "api_status": 0, "result": "PASS", "tuples_hex": [["00000050", "00000008", "00000050"], ["00000050", "00000008", "00000050"]]}
+    ]}
+  ],
+  "observed_address_fields": {"control_hex": "00000008", "ADDR_SEL": 1, "address_source_enum": "SOFT_INPUT", "TP_ADDR": 0},
+  "native_sessions": [
+    {"id": "baseline-native", "input": "mpeg2", "binary": "stock", "cmp_to_retained_gold_exit": 0, "observer_reads": 0, "rss_kib_before_after": [33636, 35152], "peak_rss_kib": 35152, "stdout_sha256": "f2fc8bf84fda861e76d3c6567bf677930659e7961bdd3cd567eb4a13e9e7ab3e"},
+    {"id": "observed-a", "input": "mpeg2", "binary": "observer", "cmp_to_retained_gold_exit": 0, "observer_reads": 12, "rss_kib_before_after": [33760, 35212], "peak_rss_kib": 35212, "stdout_sha256": "040c5783223446f38568399bd1bf1c409240438bb130d24148568840dea872ce"},
+    {"id": "recovery-after-a", "input": "mpeg2", "binary": "stock", "cmp_to_retained_gold_exit": 0, "observer_reads": 0, "rss_kib_before_after": [33552, 35068], "peak_rss_kib": 35068, "stdout_sha256": "36d55f295bd951e4d613c73274c2e8b34c538b69b270fc510f2b3a6d312bf6a7"},
+    {"id": "observed-repeat", "input": "mpeg2", "binary": "observer", "cmp_to_retained_gold_exit": 0, "observer_reads": 12, "rss_kib_before_after": [33716, 35204], "peak_rss_kib": 35204, "stdout_sha256": "2357a5fd35459dabd38bd181c9b49c0481d808cb7f8580a4900723792cf6dd42"},
+    {"id": "recovery-after-repeat", "input": "mpeg2", "binary": "stock", "cmp_to_retained_gold_exit": 0, "observer_reads": 0, "rss_kib_before_after": [33640, 35128], "peak_rss_kib": 35128, "stdout_sha256": "9bdc22dd73854b3eb1cb1a84fb0fba017beda6023748a0d786db2a5e6b5455cd"},
+    {"id": "final-h264", "input": "h264", "binary": "stock", "cmp_to_retained_gold_exit": 0, "observer_reads": 0, "rss_kib_before_after": [33656, 35100], "peak_rss_kib": 35100, "stdout_sha256": "0bd14a01469e7a821a3eaa6387308ad18f6cd9480a636870b07915dca6f859ef"}
+  ],
+  "resource_counts_all_six": {"fds_before_after": [3, 3], "threads_before_after": [1, 1]},
+  "complete_raw_sha256": {
+    "all_five_mpeg2_and_retained_gold": "3928bc19ad693b91edfbbd2270d3f69d5383b6c87b322e0e7bea81931a8836dd",
+    "final_h264_and_retained_gold": "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1"
+  },
+  "totals": {"native_sessions": 6, "frames": 1080, "raw_bytes": 497664000, "observed_sessions": 2, "observer_reads": 24, "inherited_packing_reads": 48, "custom_target_writes": 0, "test_port_data_reads": 0},
+  "kernel_log": {"sha256": "7af4bf9c7ee242bba1fa8ca502fa42201cf28b109af7b169d81c2eb91a9a235f", "bytes": 1650, "scoped_fatal_pattern_matches": 0, "scope": "Retained six-session interval and its scoped fatal-pattern scan only."},
+  "retained_native_preview": {"asset": "native-mfd-frame.png", "sha256": "2c848ef2b6c68c52bce70452cb41fef3bc5a788dd8bd5cebd2d9807619e94867", "geometry": [640, 360], "root_comparison_to_observed_first_frame_exit": 0},
+  "limits": [
+    "ADDR_SEL names the debug-address source enum only. SOFT_INPUT is not a pixel-input declaration; TP_ADDR is a raw numeric field, not a certified view identity.",
+    "Sequential equality and successful API reads do not certify atomicity, selector ownership, freshness, transport, pixel source, source-surface lease or independent admission.",
+    "Zero writes and twelve reads describe the custom observer; ordinary native decoder operations and eight inherited packing reads per session remain separate.",
+    "No selector write, TEST_PORT_DATA read or pointer following. No raw-input, standalone MFD/scaler/CSC/DNR, non-native reuse, clock or whole-silicon capability result."
+  ],
+  "original_issue92_complete": false
+}

@@ -713,6 +713,171 @@ struct MfdAdmissionFixture {
     }
 };
 
+// Debug-address calibration only. The fixed tuple excludes TEST_PORT_DATA and
+// all target writes. Matching sequential words cannot establish atomicity,
+// selector ownership, pixel-source identity, admission or freshness.
+enum class MfdAddressFailure {
+    None, Argument, Read, Revision, Reserved, Unavailable, Owner, Order, Publication, Unstable
+};
+struct MfdAddressSnapshot {
+    uint32_t raw[6] = {};
+    unsigned reads = 0, measured = 0;
+    BC_STATUS status = BC_STS_SUCCESS;
+    MfdAddressFailure failure = MfdAddressFailure::None;
+    bool Stable() const {
+        return measured == 6 && !std::memcmp(raw, raw + 3, 3 * sizeof(uint32_t));
+    }
+};
+static bool ReadMfdAddress(const HANDLE *current, HANDLE owner, MfdAddressSnapshot *snapshot,
+    BC_STATUS (*reader)(HANDLE, uint32_t, uint32_t *) = DtsDevRegisterRead)
+{
+    if (!snapshot) return false;
+    *snapshot = MfdAddressSnapshot{};
+    if (!current || !*current || !owner || !reader) {
+        snapshot->failure = MfdAddressFailure::Argument; return false;
+    }
+    const uint32_t addresses[3] = {
+        BCHP_MFD_REVISION_ID, BCHP_MFD_TEST_PORT_CNTL, BCHP_MFD_REVISION_ID
+    };
+    for (unsigned index = 0; index < 6; ++index) {
+        if (!*current || *current != owner) {
+            snapshot->failure = MfdAddressFailure::Owner; return false;
+        }
+        uint32_t raw = 0;
+        ++snapshot->reads;
+        snapshot->status = reader(owner, addresses[index % 3], &raw);
+        if (snapshot->status != BC_STS_SUCCESS) {
+            snapshot->failure = MfdAddressFailure::Read; return false;
+        }
+        if (!*current || *current != owner) {
+            snapshot->failure = MfdAddressFailure::Owner; return false;
+        }
+        snapshot->raw[index] = raw;
+        ++snapshot->measured;
+        if (raw == 0xffffffffU) snapshot->failure = MfdAddressFailure::Unavailable;
+        else if (index % 3 != 1 && raw != 0x50U)
+            snapshot->failure = MfdAddressFailure::Revision;
+        else if (index % 3 == 1 && (raw & 0xfffffff0U))
+            snapshot->failure = MfdAddressFailure::Reserved;
+        else if (index >= 3 && raw != snapshot->raw[index - 3])
+            snapshot->failure = MfdAddressFailure::Unstable;
+        if (snapshot->failure != MfdAddressFailure::None) return false;
+    }
+    return true;
+}
+struct MfdAddressObserver {
+    typedef BC_STATUS (*Reader)(HANDLE, uint32_t, uint32_t *);
+    bool enabled = false, failed = false;
+    HANDLE owner = nullptr;
+    unsigned attempted = 0, reads = 0, last_frame = 0;
+    MfdAddressSnapshot snapshot;
+    bool Reject(MfdAddressFailure why) {
+        failed = true; snapshot.failure = why; return false;
+    }
+    void Report(unsigned stage) const {
+        const char *name = stage ? "first-output-after-release-and-owned-write" : "after-OPEN/pre-START";
+        const char *const failures[] = {"none", "argument", "read-status", "revision",
+            "reserved-bits", "all-ones-unavailable", "current-handle-loss", "order",
+            "release-or-owned-write", "unequal-tuples"};
+        const char *const fields[] = {"rev", "test-port-cntl", "closing-rev"};
+        const uint32_t addresses[] = {BCHP_MFD_REVISION_ID, BCHP_MFD_TEST_PORT_CNTL, BCHP_MFD_REVISION_ID};
+        std::printf("MFD debug address: stage=%s reads=%u total-reads=%u measured=%u "
+            "api-status=%d failure=%s result=%s raw-stable=%s target-writes=0 data-reads=0 "
+            "atomic=no address-source-enum-only=yes "
+            "pixel-source/view-identity/admission/ownership/freshness-certified=no\n",
+            name, snapshot.reads, reads, snapshot.measured, snapshot.status,
+            failures[static_cast<unsigned>(snapshot.failure)], failed ? "FAIL" : "PASS",
+            snapshot.measured == 6 ? (snapshot.Stable() ? "yes" : "no") : "NOT-READ");
+        for (unsigned index = 0; index < 6; ++index) {
+            std::printf("MFD debug address raw: stage=%s pass=%u %s@%08x=",
+                name, index / 3, fields[index % 3], addresses[index % 3]);
+            if (index < snapshot.measured) {
+                const uint32_t raw = snapshot.raw[index];
+                std::printf("%08x", raw);
+                if (index % 3 == 1 && !(raw & 0xfffffff0U)) {
+                    const unsigned source = (raw >> 3) & 1U;
+                    std::printf(" ADDR_SEL=%u address-source-enum=%s TP_ADDR=%u",
+                        source, source ? "SOFT_INPUT" : "PIN_INPUT", raw & 7U);
+                }
+            } else std::printf("NOT-READ");
+            std::printf("\n");
+        }
+        std::fflush(stdout);
+    }
+    bool Observe(const HANDLE *current, unsigned stage, bool released, bool written,
+        Reader reader = DtsDevRegisterRead, bool report = true) {
+        if (!enabled) return true;
+        if (failed) return false;
+        if (!current || !*current || !reader) return Reject(MfdAddressFailure::Argument);
+        if (stage > 1 || (stage == 0 ? attempted != 0 : attempted != 1))
+            return Reject(MfdAddressFailure::Order);
+        if (stage == 1 && (!released || !written)) return Reject(MfdAddressFailure::Publication);
+        if (stage == 0 && (released || written)) return Reject(MfdAddressFailure::Order);
+        if (stage == 0) owner = *current;
+        if (*current != owner) return Reject(MfdAddressFailure::Owner);
+        attempted |= 1U << stage;
+        const bool ok = ReadMfdAddress(current, owner, &snapshot, reader);
+        reads += snapshot.reads;
+        failed = !ok;
+        if (report) Report(stage);
+        return ok;
+    }
+    bool PreStart(const HANDLE *current, Reader reader = DtsDevRegisterRead, bool report = true) {
+        return Observe(current, 0, false, false, reader, report);
+    }
+    bool AfterDelivered(const HANDLE *current, unsigned frame, bool released, bool written,
+        Reader reader = DtsDevRegisterRead, bool report = true) {
+        if (!enabled) return true;
+        if (failed) return false;
+        if (!current || !*current || !reader) return Reject(MfdAddressFailure::Argument);
+        if (!owner || *current != owner) return Reject(MfdAddressFailure::Owner);
+        if (!released || !written) return Reject(MfdAddressFailure::Publication);
+        if (frame == 0 || frame > 180 || frame != last_frame + 1 ||
+            (frame == 1 ? attempted != 1 : attempted != 3)) return Reject(MfdAddressFailure::Order);
+        if (frame == 1 && !Observe(current, 1, released, written, reader, report)) return false;
+        last_frame = frame;
+        return true;
+    }
+    bool Finish(bool native_ok, bool report = true) const {
+        if (!enabled) return native_ok;
+        const bool diagnostic_ok = !failed && attempted == 3 && reads == 12 && last_frame == 180;
+        if (report) {
+            std::printf("MFD debug address finish: native-result=%s diagnostic-result=%s "
+                "stages=%u/2 reads=%u/12 target-writes=0 data-reads=0 "
+                "pixel-source/view-identity/admission/ownership/freshness-certified=no\n",
+                native_ok ? "PASS" : "FAIL", diagnostic_ok ? "PASS" : "FAIL",
+                (attempted & 1U) + ((attempted >> 1) & 1U), reads);
+            std::fflush(stdout);
+        }
+        return native_ok && diagnostic_ok;
+    }
+};
+struct MfdAddressFixture {
+    uint32_t raw[12] = {0x50, 0, 0x50, 0x50, 0, 0x50,
+                       0x50, 15, 0x50, 0x50, 15, 0x50};
+    unsigned calls = 0, fail_at = 12, lose_at = 12;
+    BC_STATUS status = BC_STS_ERROR;
+    bool valid = true;
+    HANDLE current = this, replacement = nullptr;
+    static BC_STATUS Read(HANDLE handle, uint32_t address, uint32_t *value) {
+        auto *fixture = static_cast<MfdAddressFixture *>(handle);
+        const unsigned index = fixture->calls++;
+        const uint32_t expected[] = {0x00540000, 0x0054007c, 0x00540000};
+        if (index >= 12 || !value) { fixture->valid = false; return BC_STS_ERROR; }
+        fixture->valid &= address == expected[index % 3];
+        *value = index == fixture->fail_at ? 0xdeadbeefU : fixture->raw[index];
+        if (index == fixture->lose_at) fixture->current = fixture->replacement;
+        return index == fixture->fail_at ? fixture->status : BC_STS_SUCCESS;
+    }
+    bool Exercise(MfdAddressObserver *observer, bool report = false) {
+        observer->enabled = true;
+        if (!observer->PreStart(&current, Read, report)) return false;
+        for (unsigned frame = 1; frame <= 180; ++frame)
+            if (!observer->AfterDelivered(&current, frame, true, true, Read, report)) return false;
+        return observer->Finish(true, report);
+    }
+};
+
 // An explicitly uncertain native-path experiment, not a firmware-control
 // lease. Only FIXED_COLOUR and FEEDER_CNTL bit 3 are target-written; equality
 // cannot exclude a firmware race between API calls. No source pointers follow.
@@ -1144,6 +1309,7 @@ struct Options {
     bool observe_scl_filter_map = false;
     unsigned observe_scl_view = 0;
     bool observe_mfd_config = false;
+    bool observe_mfd_address = false;
     unsigned inject_mfd_colour = 0;
     unsigned scl_status_test = 0;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
@@ -1170,6 +1336,10 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
             ? OUTPUT_MODE422_UYVY : OUTPUT_MODE422_YUY2;
         options->capture_path = path;
         arguments.resize(arguments.size() - 2);
+    }
+    if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-mfd-address")) {
+        options->observe_mfd_address = true;
+        arguments.pop_back();
     }
     if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-scl-filter-map")) {
         options->observe_scl_filter_map = true;
@@ -1230,7 +1400,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         arguments.resize(arguments.size() - 2);
     }
     if (arguments.size() == 2 && !std::strcmp(arguments[1], "--self-test")) {
-        if (options->capture_path || options->observe_chroma || options->observe_scl_config || options->observe_scl_filter_map || options->observe_scl_view || options->observe_mfd_config || options->inject_mfd_colour || options->scl_status_test || options->scaler_test || options->mpeg1_via_mpeg2 ||
+        if (options->capture_path || options->observe_chroma || options->observe_scl_config || options->observe_scl_filter_map || options->observe_scl_view || options->observe_mfd_config || options->observe_mfd_address || options->inject_mfd_colour || options->scl_status_test || options->scaler_test || options->mpeg1_via_mpeg2 ||
             options->h263_via_divx || options->open_only) return false;
         options->mode = Mode::SelfTest;
         return true;
@@ -1247,6 +1417,13 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         return false;
     options->mode = preflight ? Mode::Preflight : Mode::Hardware;
     options->path = arguments[2];
+    if (options->observe_mfd_address &&
+        (!hardware || !options->capture_path || !options->scaler_test || options->scale_width ||
+         options->expected != 180 || options->iterations != 1 ||
+         options->output_format != OUTPUT_MODE422_YUY2 || options->observe_chroma ||
+         options->observe_scl_config || options->observe_scl_filter_map || options->observe_scl_view ||
+         options->observe_mfd_config || options->inject_mfd_colour || options->scl_status_test ||
+         options->mpeg1_via_mpeg2 || options->h263_via_divx || options->open_only)) return false;
     if (options->observe_scl_filter_map &&
         (!hardware || !options->capture_path || !options->scaler_test ||
          options->expected != 180 || options->iterations != 1 ||
@@ -1292,7 +1469,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
 
 static bool SclInputAdmitted(const Options &options, const Input &input)
 {
-    return (!options.observe_scl_config && !options.observe_scl_filter_map && !options.observe_scl_view && !options.observe_mfd_config && !options.inject_mfd_colour && !options.scl_status_test) ||
+    return (!options.observe_scl_config && !options.observe_scl_filter_map && !options.observe_scl_view && !options.observe_mfd_config && !options.observe_mfd_address && !options.inject_mfd_colour && !options.scl_status_test) ||
         (options.expected == 180 && input.codec == AV_CODEC_ID_MPEG2VIDEO &&
          input.subtype == BC_MSUBTYPE_MPEG2VIDEO && input.progressive &&
          input.width == 640 && input.height == 360 && input.packets.size() == 180);
@@ -1301,7 +1478,7 @@ static bool SclInputAdmitted(const Options &options, const Input &input)
 static bool NeedsRawIo(const Options &options)
 {
     return options.observe_chroma || options.observe_scl_config || options.observe_scl_filter_map ||
-        options.observe_scl_view || options.observe_mfd_config || options.inject_mfd_colour || options.scl_status_test;
+        options.observe_scl_view || options.observe_mfd_config || options.observe_mfd_address || options.inject_mfd_colour || options.scl_status_test;
 }
 
 // Test-only MPEG-1 admission through the existing algorithm-1 channel. Do not
@@ -1621,6 +1798,275 @@ static bool FreshBeforeFlush(bool observed_eos)
 
 #include "library-scl-filter-map-test.h"
 
+template<class Check> static void MfdAddressSelfTest(const Check &check)
+{
+    check(BCHP_MFD_REVISION_ID == 0x00540000U && BCHP_MFD_TEST_PORT_CNTL == 0x0054007cU &&
+        BCHP_MFD_TEST_PORT_CNTL_reserved0_MASK == 0xfffffff0U &&
+        BCHP_MFD_TEST_PORT_CNTL_ADDR_SEL_MASK == 8U && BCHP_MFD_TEST_PORT_CNTL_ADDR_SEL_SHIFT == 3 &&
+        BCHP_MFD_TEST_PORT_CNTL_TP_ADDR_MASK == 7U && BCHP_MFD_TEST_PORT_CNTL_TP_ADDR_SHIFT == 0 &&
+        BCHP_MFD_TEST_PORT_CNTL_ADDR_SEL_PIN_INPUT == 0 &&
+        BCHP_MFD_TEST_PORT_CNTL_ADDR_SEL_SOFT_INPUT == 1,
+        "MFD debug address whitelist and numeric address-source fields match independent literals");
+    for (uint32_t control = 0; control < 16; ++control) {
+        MfdAddressFixture fixture;
+        fixture.raw[1] = fixture.raw[4] = control;
+        fixture.raw[7] = fixture.raw[10] = 15U - control;
+        MfdAddressObserver subject;
+        check(fixture.Exercise(&subject) && fixture.valid && fixture.calls == 12 &&
+            subject.reads == 12 && subject.attempted == 3 && subject.last_frame == 180 &&
+            subject.owner == &fixture && !subject.failed && subject.snapshot.Stable() &&
+            !subject.Finish(false, false),
+            "MFD debug address all 16 controls at both stages allow opaque interstage changes and require full native success");
+    }
+    for (unsigned position = 0; position < 12; ++position) {
+        for (int code = -1; code <= BC_STS_PWR_MGMT; ++code) {
+            if (code == BC_STS_SUCCESS) continue;
+            MfdAddressFixture fixture; fixture.fail_at = position; fixture.status = static_cast<BC_STATUS>(code);
+            MfdAddressObserver subject; subject.enabled = true;
+            if (position >= 6) check(subject.PreStart(&fixture.current, MfdAddressFixture::Read, false),
+                "MFD debug address second-stage API fault setup");
+            const bool accepted = position < 6 ? subject.PreStart(&fixture.current, MfdAddressFixture::Read, false) :
+                subject.AfterDelivered(&fixture.current, 1, true, true, MfdAddressFixture::Read, false);
+            check(!accepted && subject.failed && fixture.valid && fixture.calls == position + 1 &&
+                subject.reads == position + 1 && subject.snapshot.reads == position % 6 + 1 &&
+                subject.snapshot.measured == position % 6 && subject.snapshot.status == code &&
+                subject.snapshot.failure == MfdAddressFailure::Read && !subject.Finish(true, false),
+                "MFD debug address all 27 failing API statuses at all 12 read ordinals stop at the exact read");
+            bool unread_zero = true;
+            for (unsigned unread = position % 6; unread < 6; ++unread)
+                unread_zero &= subject.snapshot.raw[unread] == 0;
+            check(unread_zero, "MFD debug address failed API poison and unread words remain unpublished");
+            MfdAddressFixture other;
+            check(!subject.PreStart(&fixture.current, MfdAddressFixture::Read, false) &&
+                !subject.AfterDelivered(&fixture.current, 1, true, true, MfdAddressFixture::Read, false) &&
+                !subject.AfterDelivered(&other.current, 2, true, true, MfdAddressFixture::Read, false) &&
+                fixture.calls == position + 1 && other.calls == 0,
+                "MFD debug address API failure is sticky with no retry, later-stage or changed-owner I/O");
+        }
+        std::vector<uint32_t> invalid = {0xffffffffU};
+        if (position % 3 == 1) {
+            for (unsigned bit = 4; bit < 32; ++bit) invalid.push_back(1U << bit);
+        } else {
+            invalid.insert(invalid.end(), {0U, 1U, 0xffffU, 0x51U});
+            for (unsigned bit = 0; bit < 32; ++bit) invalid.push_back(0x50U ^ (1U << bit));
+        }
+        for (uint32_t raw : invalid) {
+            MfdAddressFixture fixture; fixture.raw[position] = raw;
+            MfdAddressObserver subject; subject.enabled = true;
+            if (position >= 6) check(subject.PreStart(&fixture.current, MfdAddressFixture::Read, false),
+                "MFD debug address second-stage scalar fault setup");
+            const bool accepted = position < 6 ? subject.PreStart(&fixture.current, MfdAddressFixture::Read, false) :
+                subject.AfterDelivered(&fixture.current, 1, true, true, MfdAddressFixture::Read, false);
+            const auto expected = raw == 0xffffffffU ? MfdAddressFailure::Unavailable :
+                position % 3 == 1 ? MfdAddressFailure::Reserved : MfdAddressFailure::Revision;
+            check(!accepted && subject.failed && fixture.valid && fixture.calls == position + 1 &&
+                subject.reads == position + 1 && subject.snapshot.measured == position % 6 + 1 &&
+                subject.snapshot.failure == expected && !subject.Finish(true, false),
+                "MFD debug address all-ones/every reserved bit/every revision bit stops at each ordinal");
+            check(!subject.AfterDelivered(&fixture.current, 1, true, true, MfdAddressFixture::Read, false) &&
+                !subject.PreStart(&fixture.current, MfdAddressFixture::Read, false) && fixture.calls == position + 1,
+                "MFD debug address scalar failure prevents all subsequent diagnostic I/O");
+        }
+        for (bool change : {false, true}) {
+            MfdAddressFixture fixture, other; fixture.lose_at = position;
+            fixture.replacement = change ? static_cast<HANDLE>(&other) : nullptr;
+            MfdAddressObserver subject; subject.enabled = true;
+            if (position >= 6) check(subject.PreStart(&fixture.current, MfdAddressFixture::Read, false),
+                "MFD debug address second-stage current-handle fault setup");
+            const bool accepted = position < 6 ? subject.PreStart(&fixture.current, MfdAddressFixture::Read, false) :
+                subject.AfterDelivered(&fixture.current, 1, true, true, MfdAddressFixture::Read, false);
+            check(!accepted && subject.failed && fixture.valid && fixture.calls == position + 1 &&
+                subject.reads == position + 1 && subject.snapshot.measured == position % 6 &&
+                subject.snapshot.failure == MfdAddressFailure::Owner && other.calls == 0,
+                "MFD debug address null or replaced current HANDLE during every callback excludes the next read");
+            fixture.current = &fixture;
+            check(!subject.PreStart(&fixture.current, MfdAddressFixture::Read, false) &&
+                !subject.AfterDelivered(&fixture.current, 1, true, true, MfdAddressFixture::Read, false) &&
+                fixture.calls == position + 1 && other.calls == 0,
+                "MFD debug address current-handle loss remains sticky after apparent handle recovery");
+        }
+    }
+    for (unsigned position : {1U, 4U, 7U, 10U}) {
+        for (unsigned bit = 0; bit < 4; ++bit) {
+            MfdAddressFixture fixture; fixture.raw[position] ^= 1U << bit;
+            MfdAddressObserver subject; subject.enabled = true;
+            if (position >= 6) check(subject.PreStart(&fixture.current, MfdAddressFixture::Read, false),
+                "MFD debug address second-stage unequal tuple setup");
+            const bool accepted = position < 6 ? subject.PreStart(&fixture.current, MfdAddressFixture::Read, false) :
+                subject.AfterDelivered(&fixture.current, 1, true, true, MfdAddressFixture::Read, false);
+            const unsigned stopped = position < 6 ? 5 : 11;
+            check(!accepted && subject.failed && fixture.valid && fixture.calls == stopped &&
+                subject.reads == stopped && subject.snapshot.measured == 5 &&
+                subject.snapshot.failure == MfdAddressFailure::Unstable && !subject.snapshot.Stable(),
+                "MFD debug address every unreserved bit at either control ordinal rejects at the first differing repeat");
+            check(!subject.AfterDelivered(&fixture.current, 1, true, true, MfdAddressFixture::Read, false) &&
+                fixture.calls == stopped && !subject.Finish(true, false),
+                "MFD debug address unequal tuples cause no closing or followup diagnostic read");
+        }
+    }
+    {
+        MfdAddressFixture fixture;
+        struct { uint32_t before = 0x12345678; MfdAddressSnapshot value;
+                 uint32_t after = 0x87654321; } guarded;
+        check(ReadMfdAddress(&fixture.current, &fixture, &guarded.value, MfdAddressFixture::Read) &&
+            fixture.valid && fixture.calls == 6 && guarded.value.Stable() &&
+            guarded.before == 0x12345678 && guarded.after == 0x87654321,
+            "MFD debug address complete six-word tuple stays within poisoned canaries");
+        fixture.calls = 0;
+        HANDLE missing = nullptr;
+        check(!ReadMfdAddress(&fixture.current, &fixture, nullptr, MfdAddressFixture::Read) &&
+            !ReadMfdAddress(nullptr, &fixture, &guarded.value, MfdAddressFixture::Read) &&
+            !ReadMfdAddress(&missing, &fixture, &guarded.value, MfdAddressFixture::Read) &&
+            !ReadMfdAddress(&fixture.current, nullptr, &guarded.value, MfdAddressFixture::Read) &&
+            !ReadMfdAddress(&fixture.current, &fixture, &guarded.value, nullptr) && fixture.calls == 0,
+            "MFD debug address null snapshot/current/handle/owner/callback has zero I/O");
+        MfdAddressObserver disabled;
+        check(disabled.Observe(nullptr, UINT_MAX, false, false, nullptr, false) &&
+            disabled.AfterDelivered(nullptr, UINT_MAX, false, false, nullptr, false) &&
+            disabled.Finish(true, false) && !disabled.Finish(false, false) && !disabled.reads,
+            "MFD debug address disabled mode is a zero-I/O no-op preserving native result");
+        for (unsigned invalid = 0; invalid < 8; ++invalid) {
+            MfdAddressObserver subject; subject.enabled = true;
+            check(!subject.Observe(invalid == 0 ? nullptr : invalid == 1 ? &missing : &fixture.current,
+                    invalid == 3 ? 2U : invalid == 4 ? UINT_MAX : invalid == 5 ? 1U : 0U,
+                    invalid == 6, invalid == 7, invalid == 2 ? nullptr : MfdAddressFixture::Read, false) &&
+                subject.failed && fixture.calls == 0 &&
+                !subject.PreStart(&fixture.current, MfdAddressFixture::Read, false) && fixture.calls == 0,
+                "MFD debug address invalid initial arguments/stage/order latch before I/O");
+        }
+        for (unsigned phase = 0; phase < 3; ++phase) {
+            for (unsigned invalid = 0; invalid < 10; ++invalid) {
+                MfdAddressFixture owner, other; MfdAddressObserver subject; subject.enabled = true;
+                if (phase) check(subject.PreStart(&owner.current, MfdAddressFixture::Read, false),
+                    "MFD debug address delivery admission failure setup");
+                if (phase == 2) check(subject.AfterDelivered(&owner.current, 1, true, true, MfdAddressFixture::Read, false),
+                    "MFD debug address post-sample failure setup");
+                const unsigned stopped = owner.calls;
+                HANDLE missing_handle = nullptr;
+                const HANDLE *current = invalid == 0 ? nullptr : invalid == 1 ? &missing_handle :
+                    invalid == 2 ? &other.current : &owner.current;
+                const unsigned frame = invalid == 5 ? 0 : invalid == 6 ? 181 :
+                    invalid == 7 ? 3 : invalid == 8 && phase == 2 ? 1 : phase == 2 ? 2 : 1;
+                const bool accepted = invalid == 8 && phase != 2 ?
+                    subject.Observe(&owner.current, phase ? 0 : 1, false, false, MfdAddressFixture::Read, false) :
+                    subject.AfterDelivered(current, frame, invalid != 3, invalid != 4,
+                        invalid == 9 ? nullptr : MfdAddressFixture::Read, false);
+                check(!accepted && subject.failed && owner.calls == stopped && other.calls == 0 &&
+                    !subject.AfterDelivered(&owner.current, phase == 2 ? 2 : 1, true, true, MfdAddressFixture::Read, false) &&
+                    owner.calls == stopped && !subject.Finish(true, false),
+                    "MFD debug address missing owner/current/release/write/ordinal/duplicate rejection is sticky at every phase");
+            }
+        }
+        for (const auto &barrier : {std::make_pair(false, false), std::make_pair(false, true), std::make_pair(true, false)}) {
+            MfdAddressFixture owner; MfdAddressObserver subject; subject.enabled = true;
+            check(subject.PreStart(&owner.current, MfdAddressFixture::Read, false) &&
+                !subject.AfterDelivered(&owner.current, 1, barrier.first, barrier.second, MfdAddressFixture::Read, false) &&
+                subject.failed && subject.snapshot.failure == MfdAddressFailure::Publication && owner.calls == 6 &&
+                !subject.AfterDelivered(&owner.current, 1, true, true, MfdAddressFixture::Read, false) && owner.calls == 6,
+                "MFD debug address every incomplete release/write barrier latches without any output-stage I/O");
+        }
+        MfdAddressFixture partial; MfdAddressObserver subject; subject.enabled = true;
+        check(!subject.Finish(true, false) && subject.PreStart(&partial.current, MfdAddressFixture::Read, false) &&
+            !subject.Finish(true, false) &&
+            subject.AfterDelivered(&partial.current, 1, true, true, MfdAddressFixture::Read, false) &&
+            !subject.Finish(true, false) && partial.calls == 12,
+            "MFD debug address finish requires both stages and full 180 delivery without performing I/O");
+    }
+    for (unsigned scenario = 0; scenario < 18; ++scenario) {
+        FILE *record = std::tmpfile(); const int saved_stdout = dup(STDOUT_FILENO);
+        std::fflush(stdout);
+        const bool redirected = record && saved_stdout >= 0 && dup2(fileno(record), STDOUT_FILENO) >= 0;
+        bool expected_result = false;
+        if (redirected) {
+            MfdAddressFixture fixture; MfdAddressObserver subject; subject.enabled = true;
+            fixture.raw[1] = fixture.raw[4] = scenario < 16 ? scenario : 0;
+            if (scenario == 16) fixture.fail_at = 1;
+            if (scenario == 17) fixture.raw[4] = 1;
+            expected_result = subject.PreStart(&fixture.current, MfdAddressFixture::Read) == (scenario < 16);
+            std::fflush(stdout);
+        }
+        const bool restored = saved_stdout >= 0 && dup2(saved_stdout, STDOUT_FILENO) >= 0;
+        if (saved_stdout >= 0) close(saved_stdout);
+        char text[8192] = {}; size_t bytes = 0;
+        if (record) { std::rewind(record); bytes = std::fread(text, 1, sizeof(text) - 1, record); std::fclose(record); }
+        char fields[96] = {};
+        std::snprintf(fields, sizeof(fields), "ADDR_SEL=%u address-source-enum=%s TP_ADDR=%u",
+            scenario >> 3, scenario < 8 ? "PIN_INPUT" : "SOFT_INPUT", scenario & 7U);
+        check(redirected && restored && expected_result && bytes &&
+            std::strstr(text, "target-writes=0 data-reads=0") &&
+            std::strstr(text, "pixel-source/view-identity/admission/ownership/freshness-certified=no") &&
+            !std::strstr(text, "deadbeef") && !std::strstr(text, "selected-active-view") &&
+            (scenario < 16 ? (std::strstr(text, fields) && std::strstr(text, "reads=6") &&
+                std::strstr(text, "raw-stable=yes")) : (std::strstr(text, "result=FAIL") &&
+                std::strstr(text, "closing-rev@00540000=NOT-READ") &&
+                std::strstr(text, scenario == 16 ? "failure=read-status" : "failure=unequal-tuples"))),
+            "MFD debug address actual report exposes numeric fields/address-source-only labels and suppresses poison/unread words");
+    }
+    {
+        const std::vector<const char *> valid = {"probe", "--hardware", "fixture", "180", "30", "1",
+            "--scaler-test", "0", "--observe-mfd-address", "--capture-yuy2", "new"};
+        Options admitted;
+        check(ParseArguments(valid, &admitted) && admitted.observe_mfd_address && NeedsRawIo(admitted) &&
+            admitted.iterations == 1 && !NeedsRawIo(Options{}),
+            "MFD debug address opt-in native capture requires CAP_SYS_RAWIO before any fixture/progress/capture/device action");
+        Options implicit;
+        check(ParseArguments({"probe", "--hardware", "fixture", "180", "--scaler-test", "0",
+            "--observe-mfd-address", "--capture-yuy2", "new"}, &implicit) && implicit.iterations == 1,
+            "MFD debug address implicit single iteration remains admitted");
+        for (unsigned field = 0; field < 16; ++field) {
+            auto arguments = valid;
+            if (field == 0) arguments[1] = "--preflight";
+            if (field == 1) arguments[3] = "179";
+            if (field == 2) arguments[5] = "2";
+            if (field == 3) arguments[7] = "320";
+            if (field == 4) arguments[7] = "640";
+            if (field == 5) arguments[9] = "--capture-uyvy";
+            if (field == 6) arguments.resize(9);
+            if (field == 7) arguments[10] = "";
+            if (field == 8) arguments[10] = "-";
+            if (field == 9) arguments.erase(arguments.begin() + 6, arguments.begin() + 8);
+            if (field == 10) arguments.insert(arguments.begin() + 8, "--mpeg1-via-mpeg2");
+            if (field == 11) arguments.insert(arguments.begin() + 8, "--h263-via-divx");
+            if (field == 12) arguments.insert(arguments.begin() + 8, "--open-only");
+            if (field == 13) std::swap(arguments[8], arguments[9]);
+            if (field == 14) arguments.resize(10);
+            if (field == 15) arguments.insert(arguments.end(), {"--capture-yuy2", "another"});
+            Options rejected;
+            check(!ParseArguments(arguments, &rejected), "MFD debug address rejects other modes/counts/scaling/capture paths/placement before actions");
+        }
+        for (const auto &mixed : std::vector<std::vector<const char *>>{
+                {"--observe-chroma"}, {"--observe-scl-config"}, {"--observe-scl-filter-map"},
+                {"--observe-scl-view", "2"}, {"--observe-scl-view", "3"}, {"--observe-mfd-config"},
+                {"--observe-mfd-address"}, {"--inject-mfd-colour", "a"}, {"--inject-mfd-colour", "b"},
+                {"--scl-status-test", "observe"}, {"--scl-status-test", "clear"}}) {
+            for (unsigned where : {8U, 9U}) {
+                auto arguments = valid; arguments.insert(arguments.begin() + where, mixed.begin(), mixed.end());
+                Options rejected; check(!ParseArguments(arguments, &rejected),
+                    "MFD debug address every other diagnostic/duplicate is rejected in both orders");
+            }
+        }
+        Options rejected;
+        check(!ParseArguments({"probe", "--self-test", "--observe-mfd-address"}, &rejected),
+            "MFD debug address option cannot be combined with self-test");
+        Input native; native.codec = AV_CODEC_ID_MPEG2VIDEO; native.subtype = BC_MSUBTYPE_MPEG2VIDEO;
+        native.progressive = true; native.width = 640; native.height = 360; native.packets.resize(180);
+        check(SclInputAdmitted(admitted, native), "MFD debug address exact native progressive 640x360/180 packet profile admitted");
+        for (unsigned field = 0; field < 8; ++field) {
+            Options changed = admitted; Input altered = native;
+            if (field == 0) altered.codec = AV_CODEC_ID_H264;
+            if (field == 1) altered.subtype = BC_MSUBTYPE_H264;
+            if (field == 2) altered.progressive = false;
+            if (field == 3) altered.width = 638;
+            if (field == 4) altered.height = 358;
+            if (field == 5) altered.packets.pop_back();
+            if (field == 6) altered.packets.emplace_back();
+            if (field == 7) changed.expected = 179;
+            check(!SclInputAdmitted(changed, altered) && SclInputAdmitted(Options{}, altered),
+                "MFD debug address rejects codec/subtype/progressive/shape/packet/expected mismatch while default admission remains intact");
+        }
+    }
+}
+
 static bool SelfTest()
 {
     bool ok = true;
@@ -1634,6 +2080,7 @@ static bool SelfTest()
     };
 
     SclFilterMapSelfTest(check);
+    MfdAddressSelfTest(check);
 
     unsigned number = 0;
     check(Number("1", 1, &number) && number == 1, "minimum number");
@@ -3443,6 +3890,7 @@ struct Audit {
     SclFilterMapObserver scl_filter_map;
     SclViewProbe scl_view;
     MfdAdmissionObserver mfd;
+    MfdAddressObserver mfd_address;
     MfdColourProbe mfd_colour;
     SclStatusTest scl_status;
     GChecksum *pixels = nullptr;
@@ -3484,11 +3932,14 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
             }
             // Every successful NoCopy fetch owns a lease, even invalid output.
             const bool released = lease.Release();
+            bool owned_written = false;
             // File I/O uses only the owned copy, after the lease was released.
-            if (!marker && valid && released && audit->capture &&
-                !audit->capture->Write(captured)) {
-                std::fprintf(stderr, "%s capture write/budget failure\n", PackedName(audit->output_format));
-                valid = false;
+            if (!marker && valid && released && audit->capture) {
+                owned_written = audit->capture->Write(captured);
+                if (!owned_written) {
+                    std::fprintf(stderr, "%s capture write/budget failure\n", PackedName(audit->output_format));
+                    valid = false;
+                }
             }
             // Preserve an already delivered owned copy before diagnostic failure.
             if (!marker && valid && released)
@@ -3504,6 +3955,9 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
             if (!marker && valid && released)
                 valid = audit->mfd.AfterDelivered(device->handle, audit->frames,
                                                  released, audit->capture != nullptr);
+            if (!marker && valid && released)
+                valid = audit->mfd_address.AfterDelivered(&device->handle, audit->frames,
+                                                         released, owned_written);
             if (!marker && valid && released)
                 valid = audit->mfd_colour.AfterDelivered(device->handle, audit->frames,
                                                         released, audit->capture != nullptr);
@@ -3528,6 +3982,8 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                     std::fprintf(stderr, "MFD colour experiment failed; guarded restoration if eligible and ordinary decoder cleanup follow\n");
                 else if (audit->mfd.failed)
                     std::fprintf(stderr, "MFD passive admission failed; ordinary decoder cleanup follows\n");
+                else if (audit->mfd_address.failed)
+                    std::fprintf(stderr, "MFD debug address observation failed; no further observer I/O, ordinary decoder cleanup follows\n");
                 else if (audit->scl_view.failed)
                     std::fprintf(stderr, "SCL test-view experiment failed; guarded restoration if eligible and ordinary decoder cleanup follow\n");
                 else if (audit->scl.failed)
@@ -3535,7 +3991,7 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                 else
                     std::fprintf(stderr, "Invalid progressive picture geometry/data/token: %llu\n",
                                  static_cast<unsigned long long>(output.PicInfo.timeStamp));
-                if (audit->pixels && !audit->scl.failed && !audit->scl_filter_map.fatal && !audit->scl_view.failed && !audit->mfd.failed && !audit->mfd_colour.failed && !audit->scl_status.fatal)
+                if (audit->pixels && !audit->scl.failed && !audit->scl_filter_map.fatal && !audit->scl_view.failed && !audit->mfd.failed && !audit->mfd_address.failed && !audit->mfd_colour.failed && !audit->scl_status.fatal)
                     std::fprintf(stderr, "Scaler picture: got=%ux%u expected=%ux%u "
                                  "flags=%x words=%u packed422=%u\n",
                                  output.PicInfo.width, output.PicInfo.height,
@@ -3593,6 +4049,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.scl_filter_map.enabled = options.observe_scl_filter_map;
     audit.scl_view.selector = options.observe_scl_view;
     audit.mfd.enabled = options.observe_mfd_config;
+    audit.mfd_address.enabled = options.observe_mfd_address;
     audit.mfd_colour.stimulus = options.inject_mfd_colour;
     audit.scl_status.mode = options.scl_status_test;
     if (options.scaler_test) {
@@ -3649,6 +4106,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     if (ok) ok = audit.scl.Observe(device.handle, SclStage::PreStart);
     if (ok) ok = audit.scl_view.Begin(device.handle);
     if (ok) ok = audit.mfd.Observe(device.handle, 0);
+    if (ok) ok = audit.mfd_address.PreStart(&device.handle);
     if (ok) ok = audit.mfd_colour.PreStart(device.handle);
     if (ok) device.started = ok = Status("DtsStartDecoder", DtsStartDecoder(device.handle));
     if (ok && options.capture_path) ok = PackingState(device.handle, "started", &audit.mfd_colour, &audit.scl_view);
@@ -3709,6 +4167,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     ok = ok && captured;
     ok = audit.scl_filter_map.Finish(ok);
     ok = audit.scl_status.Finish(ok);
+    ok = audit.mfd_address.Finish(ok);
     std::printf("Library drain: iteration=%u/%u frames=%u/%u pending=%zu "
         "%s-EOS=%s output-marker=%s ready=%u cleanup=%s result=%s\n",
         iteration, iterations, audit.frames, expected, audit.pending.size(),
@@ -3736,13 +4195,15 @@ int main(int argc, char **argv)
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
             "[--scaler-test WIDTH_OR_0] [--mpeg1-via-mpeg2 | --h263-via-divx] "
-            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
+            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
     if (NeedsRawIo(options) && !CanReadChromaConfiguration()) {
-        if (options.observe_scl_filter_map)
+        if (options.observe_mfd_address)
+            std::fprintf(stderr, "--observe-mfd-address requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
+        else if (options.observe_scl_filter_map)
             std::fprintf(stderr, "--observe-scl-filter-map requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
         else if (options.scl_status_test)
             std::fprintf(stderr, "--scl-status-test requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
