@@ -19,10 +19,14 @@ cleanup()
 		"$test_dir/driver/linux/crystalhd_linkfuncs.c" \
 		"$test_dir/driver/linux/crystalhd_lnx.c" \
 		"$test_dir/driver/linux/FleaDefs.h" \
+		"$test_dir/driver/linux/Kbuild" \
+		"$test_dir/driver/linux/crystalhd_fw_if.h" \
 		"$test_dir/tests/fw-download.c" "$test_dir/tests/fw-download.sh" \
 		"$test_dir/tests/device-lifetime.c" "$test_dir/tests/device-lifetime.sh" \
 		"$test_dir/tests/device-access.c" \
-		"$test_dir/include" "$test_dir/firmware"
+		"$test_dir/tests/fw-probe.c" "$test_dir/tests/fw-probe.sh" \
+		"$test_dir/tests/fw-probe-cli.c" \
+		"$test_dir/include" "$test_dir/firmware" "$test_dir/tools"
 	rmdir "$test_dir/driver/linux" "$test_dir/driver" \
 		"$test_dir/tests" "$test_dir"
 }
@@ -33,7 +37,7 @@ mkdir -p "$test_dir/driver/linux" "$test_dir/tests"
 for name in FleaDefs.h crystalhd_hw.h crystalhd_hw.c crystalhd_cmds.c \
 	crystalhd_cmds.h crystalhd_lnx.h \
 	crystalhd_fleafuncs.h crystalhd_fw_research.c crystalhd_fleafuncs.c \
-	crystalhd_linkfuncs.c crystalhd_lnx.c; do
+	crystalhd_linkfuncs.c crystalhd_lnx.c Kbuild crystalhd_fw_if.h; do
 	cp "$repo_dir/driver/linux/$name" "$test_dir/driver/linux/$name"
 done
 cp "$repo_dir/tests/fw-download.c" "$test_dir/tests/fw-download.c"
@@ -41,8 +45,12 @@ cp "$repo_dir/tests/fw-download.sh" "$test_dir/tests/fw-download.sh"
 cp "$repo_dir/tests/device-lifetime.c" "$test_dir/tests/device-lifetime.c"
 cp "$repo_dir/tests/device-lifetime.sh" "$test_dir/tests/device-lifetime.sh"
 cp "$repo_dir/tests/device-access.c" "$test_dir/tests/device-access.c"
+cp "$repo_dir/tests/fw-probe.c" "$test_dir/tests/fw-probe.c"
+cp "$repo_dir/tests/fw-probe.sh" "$test_dir/tests/fw-probe.sh"
+cp "$repo_dir/tests/fw-probe-cli.c" "$test_dir/tests/fw-probe-cli.c"
 ln -s "$repo_dir/include" "$test_dir/include"
 ln -s "$repo_dir/firmware" "$test_dir/firmware"
+ln -s "$repo_dir/tools" "$test_dir/tools"
 
 git -C "$test_dir" apply --check \
 	"$repo_dir/tests/fixtures/issue92/fw-staging.patch"
@@ -108,5 +116,10 @@ git -C "$test_dir" apply --check \
 	"$repo_dir/tests/fixtures/issue92/scl-enable-reset.patch"
 git -C "$test_dir" apply \
 	"$repo_dir/tests/fixtures/issue92/scl-enable-reset.patch"
+git -C "$test_dir" apply --check \
+	"$repo_dir/tests/fixtures/issue92/mfd-scl-joint-handshake.patch"
+git -C "$test_dir" apply \
+	"$repo_dir/tests/fixtures/issue92/mfd-scl-joint-handshake.patch"
 sh "$test_dir/tests/fw-download.sh"
 sh "$test_dir/tests/device-lifetime.sh"
+sh "$test_dir/tests/fw-probe.sh"

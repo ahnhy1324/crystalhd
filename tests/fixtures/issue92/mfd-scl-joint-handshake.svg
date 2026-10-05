@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="530" viewBox="0 0 1080 530" role="img" aria-labelledby="title desc">
+  <title id="title">Joint MFD/SCL single-START debug contrast</title>
+  <desc id="desc">Two configuration-only controls and two separately recovered single-START trials. All pre-START bundles were zero. Each START trial sampled 16 identical MFD READY-one, ACCEPT-zero debug bundles. All original 25 controls were restored before powerdown. Eight native H264 controls matched 1440 frames. No accepted transfer or scaler output is established.</desc>
+  <rect width="1080" height="530" fill="#f8fafc"/>
+  <g font-family="DejaVu Sans, sans-serif" fill="#0f172a">
+    <text x="32" y="42" font-size="25" font-weight="bold">BCM70015: joint MFD/SCL START contrast</text>
+    <text x="32" y="69" font-size="14" fill="#475569">2 configuration-only controls → 2 separate single-START trials; no software ACCEPT writes</text>
+    <rect x="32" y="99" width="296" height="230" rx="12" fill="#e2e8f0" stroke="#94a3b8"/>
+    <rect x="392" y="99" width="296" height="230" rx="12" fill="#fef3c7" stroke="#d97706"/>
+    <rect x="752" y="99" width="296" height="230" rx="12" fill="#dcfce7" stroke="#16a34a"/>
+    <text x="50" y="129" font-size="17" font-weight="bold">Before START</text>
+    <text x="410" y="129" font-size="17" font-weight="bold">After one START attempt</text>
+    <text x="770" y="129" font-size="17" font-weight="bold">Checked stock shutdown</text>
+    <text x="50" y="169" font-size="24" font-weight="bold">READY 0 / ACCEPT 0</text>
+    <text x="410" y="169" font-size="24" font-weight="bold">READY 1 / ACCEPT 0</text>
+    <text x="770" y="169" font-size="24" font-weight="bold">25 originals restored</text>
+    <g font-size="13" font-family="DejaVu Sans Mono, monospace">
+      <text x="50" y="203">MFD tap:    0x00000000</text>
+      <text x="50" y="229">MFD sample: 0x00000000</text>
+      <text x="50" y="255">FEED:       0x00000000</text>
+      <text x="410" y="203">MFD tap:    0x04040168</text>
+      <text x="410" y="229">MFD sample: 0x00040168</text>
+      <text x="410" y="255">FEED:       0x00000001</text>
+      <text x="770" y="203">Two complete 25-word tuples</text>
+      <text x="770" y="229">Before stock powerdown</text>
+      <text x="770" y="255">Cleanup 0 / retained false</text>
+    </g>
+    <g font-size="12" fill="#475569">
+      <text x="50" y="291">After all 15 configuration attempts</text>
+      <text x="50" y="311">All 11 debug/status words were zero</text>
+      <text x="410" y="291">16 identical bundles in each trial</text>
+      <text x="410" y="311">Sampled LUMA 256 / CHROMA 360</text>
+      <text x="770" y="291">Includes colour, STRIDE and SCL ENABLE</text>
+      <text x="770" y="311">Duty cleared only after final checks</text>
+    </g>
+    <path d="M344 214h31l-8-8m8 8-8 8M704 214h31l-8-8m8 8-8 8" fill="none" stroke="#475569" stroke-width="2"/>
+    <rect x="32" y="350" width="1016" height="75" rx="10" fill="#ffffff" stroke="#cbd5e1"/>
+    <text x="50" y="380" font-size="18" font-weight="bold">Native H.264 recovery: 8 × 180 frames, every full-byte comparison passed</text>
+    <text x="50" y="405" font-size="14" fill="#475569">EOS and cleanup passed; installed module restored; installed files unchanged; final PCI checks match baseline.</text>
+    <text x="32" y="456" font-size="13" fill="#92400e">No ACCEPT-high sample, EOF or verified SCL output; pulses between reads remain possible.</text>
+    <text x="32" y="480" font-size="13" fill="#92400e">Non-atomic debug levels do not prove transferred pixels, completion, functional clocks or a source lease.</text>
+    <text x="32" y="504" font-size="13" fill="#92400e">Zero SCL selector-3 data does not establish idle state. Issue #92 remains open.</text>
+  </g>
+</svg>

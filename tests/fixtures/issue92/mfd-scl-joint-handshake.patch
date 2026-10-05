@@ -1,0 +1,1896 @@
+diff --git a/driver/linux/crystalhd_cmds.c b/driver/linux/crystalhd_cmds.c
+index ff0f012..e319dda 100644
+--- a/driver/linux/crystalhd_cmds.c
++++ b/driver/linux/crystalhd_cmds.c
+@@ -2455,7 +2455,8 @@ BC_STATUS crystalhd_delete_cmd_context(struct crystalhd_cmd *ctx)
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+ 	if (ctx->hw_ctx && (ctx->hw_ctx->research_scl_config_dirty ||
+ 	    ctx->hw_ctx->research_mfd_reset_pending ||
+-	    ctx->hw_ctx->research_mfd_hsize_dirty))
++	    ctx->hw_ctx->research_mfd_hsize_dirty ||
++	    crystalhd_hw_research_joint_pending(ctx->hw_ctx)))
+ 		return BC_STS_IO_ERROR;
+ #endif
+ 
+diff --git a/driver/linux/crystalhd_fleafuncs.c b/driver/linux/crystalhd_fleafuncs.c
+index 7a759d0..eb5ee29 100644
+--- a/driver/linux/crystalhd_fleafuncs.c
++++ b/driver/linux/crystalhd_fleafuncs.c
+@@ -47,6 +47,7 @@
+ bool crystalhd_flea_core_reset(struct crystalhd_hw *hw);
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+ static bool crystalhd_flea_scl_size_current(struct crystalhd_hw *hw);
++static bool crystalhd_flea_joint_current(struct crystalhd_hw *hw);
+ static bool crystalhd_flea_research_stop_current(struct crystalhd_hw *hw);
+ #endif
+ void crystalhd_flea_disable_interrupts(struct crystalhd_hw *hw);
+@@ -98,7 +99,8 @@ bool crystalhd_flea_core_reset(struct crystalhd_hw *hw)
+ 		regVal = hw->pfnReadDevRegister(hw->adp, BCHP_MISC3_RESET_CTRL);
+ 
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+-		if ((hw->research_scl_config_dirty || hw->research_mfd_reset_pending || hw->research_mfd_hsize_dirty) &&
++		if ((hw->research_scl_config_dirty || hw->research_mfd_reset_pending || hw->research_mfd_hsize_dirty ||
++	     crystalhd_hw_research_joint_pending(hw)) &&
+ 		    (!crystalhd_flea_research_stop_current(hw) || regVal == 0xffffffff))
+ 			return false;
+ #endif
+@@ -1981,6 +1983,8 @@ static bool crystalhd_flea_mfd_reset_current(struct crystalhd_hw *hw)
+ 
+ static bool crystalhd_flea_research_stop_current(struct crystalhd_hw *hw)
+ {
++	if (crystalhd_hw_research_joint_pending(hw))
++		return crystalhd_flea_joint_current(hw);
+ 	if ((hw->research_mfd_hsize_dirty && !hw->research_mfd_reset_pending) ||
+ 	    (!hw->research_mfd_hsize_dirty &&
+ 	     (hw->research_mfd_hsize_request_sampled || hw->research_mfd_hsize_reset_corroborated)))
+@@ -2233,6 +2237,292 @@ static BC_STATUS crystalhd_flea_mfd_reset_post(struct crystalhd_hw *hw)
+ 	return BC_STS_SUCCESS;
+ }
+ 
++/* Fixed control-only namespace. No pointer, coefficient or pixel-port access.
++ * All 10 programmed MFD controls (including colour and STRIDE) and all five
++ * SCL controls are included in the indivisible reset reference.
++ */
++static const uint32_t crystalhd_joint_addresses[25] = {
++	BCHP_MFD_REVISION_ID, BCHP_MFD_PIC_FEED_CMD, BCHP_MFD_STRIDE,
++	BCHP_MFD_FIXED_COLOUR, BCHP_MFD_DISP_HSIZE, BCHP_MFD_PICTURE0_DISP_VERT_WINDOW,
++	BCHP_MFD_LAC_CNTL, BCHP_MFD_CHROMA_SAMPLING_CNTL, BCHP_MFD_DATA_MODE,
++	BCHP_MFD_TEST_PORT_CNTL, BCHP_MFD_TEST_MODE_CNTL, BCHP_MFD_FEEDER_CNTL,
++	BCHP_MFD_FEEDER_TIMEOUT_REPEAT_PIC_CNTL, BCHP_MFD_FEEDER_ERROR_INTERRUPT_STATUS,
++	BCHP_SCL_HD_REVISION_ID, BCHP_SCL_HD_TOP_CONTROL, BCHP_SCL_HD_VERT_CONTROL,
++	BCHP_SCL_HD_HORIZ_CONTROL, BCHP_SCL_HD_BVB_IN_SIZE, BCHP_SCL_HD_PIC_OFFSET,
++	BCHP_SCL_HD_SRC_PIC_SIZE, BCHP_SCL_HD_DEST_PIC_SIZE, BCHP_SCL_HD_ENABLE,
++	BCHP_SCL_HD_TEST_PORT_CONTROL, BCHP_SCL_HD_BVB_IN_STATUS,
++};
++static const uint32_t crystalhd_joint_reserved[25] = {
++	0xffff0000, 0xfffffffe, 0, 0xff000000, 0xffffe000, 0xe000e000,
++	0xfffff820, 0xfffffffe, 0xfffffffe, 0xfffffff0, 0xfffffff0, 0xfffffff0,
++	0xfc000000, 0xfffffff8, BCHP_SCL_HD_REVISION_ID_reserved0_MASK,
++	BCHP_SCL_HD_TOP_CONTROL_reserved0_MASK | BCHP_SCL_HD_TOP_CONTROL_reserved1_MASK,
++	BCHP_SCL_HD_VERT_CONTROL_reserved0_MASK | BCHP_SCL_HD_VERT_CONTROL_reserved1_MASK,
++	BCHP_SCL_HD_HORIZ_CONTROL_reserved0_MASK,
++	BCHP_SCL_HD_BVB_IN_SIZE_reserved0_MASK | BCHP_SCL_HD_BVB_IN_SIZE_reserved1_MASK,
++	BCHP_SCL_HD_PIC_OFFSET_reserved0_MASK | BCHP_SCL_HD_PIC_OFFSET_reserved1_MASK,
++	BCHP_SCL_HD_SRC_PIC_SIZE_reserved0_MASK | BCHP_SCL_HD_SRC_PIC_SIZE_reserved1_MASK,
++	BCHP_SCL_HD_DEST_PIC_SIZE_reserved0_MASK | BCHP_SCL_HD_DEST_PIC_SIZE_reserved1_MASK,
++	BCHP_SCL_HD_ENABLE_reserved0_MASK, BCHP_SCL_HD_TEST_PORT_CONTROL_reserved0_MASK,
++	BCHP_SCL_HD_BVB_IN_STATUS_reserved0_MASK,
++};
++
++static bool crystalhd_flea_joint_binding(struct crystalhd_hw *hw,
++		uint64_t generation, const void *owner)
++{
++	return hw && hw->adp && hw->adp->pdev && generation && owner &&
++		hw->pfnReadDevRegister && hw->pfnWriteDevRegister && hw->dev_started &&
++		READ_ONCE(hw->adp->present) && hw->adp->hw_accessible && !READ_ONCE(hw->dma_fault) &&
++		hw->adp->generation == generation && hw->adp->cmds.adp == hw->adp &&
++		hw->adp->cmds.hw_ctx == hw && hw->adp->cmds.session_module_pinned &&
++		hw->adp->cmds.session_owner == owner && hw->adp->cmds.state == BC_LINK_INVALID;
++}
++
++static bool crystalhd_flea_joint_current(struct crystalhd_hw *hw)
++{
++	return hw && hw->research_joint_pending && hw->research_joint_original_sampled &&
++		hw->research_mfd_pci_isolated && hw->research_joint_attempts <= 16 &&
++		!hw->research_scl_config_dirty && !hw->research_scl_reset_corroborated &&
++		!hw->research_scl_duty_generation && !hw->research_scl_duty_owner &&
++		!hw->research_mfd_reset_pending && !hw->research_mfd_reset_cold_sampled &&
++		!hw->research_mfd_reset_post_sampled && !hw->research_mfd_reset_generation &&
++		!hw->research_mfd_reset_owner && !hw->research_mfd_hsize_dirty &&
++		!hw->research_mfd_hsize_request_sampled && !hw->research_mfd_hsize_reset_corroborated &&
++		crystalhd_flea_joint_binding(hw, hw->research_joint_generation, hw->research_joint_owner);
++}
++
++/* expected=NULL admits a paired reserved-clean cold profile, not defaults.
++ * After START, command and ENABLE may self-change; defined error flags remain
++ * separate raw observations. No incomplete or stale tuple is published.
++ */
++static BC_STATUS crystalhd_flea_joint_sample(struct crystalhd_hw *hw,
++		uint64_t generation, const void *owner, const uint32_t *expected,
++		bool after_start, bool observe_status, uint32_t *values)
++{
++	uint32_t observed[25];
++	unsigned int i;
++	BC_STATUS sts;
++
++	if (!values || !crystalhd_flea_joint_binding(hw, generation, owner) ||
++	    (expected && !crystalhd_flea_joint_current(hw)))
++		return BC_STS_IO_ERROR;
++	sts = crystalhd_flea_mfd_colour_guard(hw, generation, owner);
++	if (sts != BC_STS_SUCCESS || !crystalhd_flea_joint_binding(hw, generation, owner))
++		return BC_STS_IO_ERROR;
++	for (i = 0; i < ARRAY_SIZE(observed); i++) {
++		if (!crystalhd_flea_joint_binding(hw, generation, owner) ||
++		    (expected && !crystalhd_flea_joint_current(hw)))
++			return BC_STS_IO_ERROR;
++		observed[i] = hw->pfnReadDevRegister(hw->adp, crystalhd_joint_addresses[i]);
++		if (!crystalhd_flea_joint_binding(hw, generation, owner) ||
++		    (expected && !crystalhd_flea_joint_current(hw)) || observed[i] == 0xffffffff ||
++		    (observed[i] & crystalhd_joint_reserved[i]))
++			return BC_STS_IO_ERROR;
++		if (expected && !((after_start && (i == 1 || i == 22)) ||
++		    (observe_status && (i == 13 || i == 24))) && observed[i] != expected[i])
++			return BC_STS_IO_ERROR;
++	}
++	/* STRIDE interpretation follows the observed CTRL, including partial setup. */
++	if ((observed[11] & 1) && (observed[2] & 0xffff0000))
++		return BC_STS_IO_ERROR;
++	if (!expected) {
++		static const uint32_t cold_scl[11] = {
++			0x80, 0x0c, 0, 0, 0x02d000f0, 0, 0x02d000f0,
++			0x02d000f0, 0, 0, 0,
++		};
++		if (observed[0] != 0x50 || observed[1] || observed[11] || observed[13] ||
++		    observed[2] != 0x00800080 || observed[4] != 0x780 || observed[5] != 0x436 ||
++		    (observed[10] != 0 && observed[10] != 4) ||
++		    (observed[12] & 0x01000000) || memcmp(observed + 14, cold_scl, sizeof(cold_scl)))
++			return BC_STS_IO_ERROR;
++	}
++	sts = crystalhd_flea_mfd_colour_guard(hw, generation, owner);
++	if (sts != BC_STS_SUCCESS || !crystalhd_flea_joint_binding(hw, generation, owner) ||
++	    (expected && !crystalhd_flea_joint_current(hw)))
++		return BC_STS_IO_ERROR;
++	memcpy(values, observed, sizeof(observed));
++	return BC_STS_SUCCESS;
++}
++
++/* All target addresses/literals are frozen in this caller, not userspace. */
++static BC_STATUS crystalhd_flea_joint_attempt(struct crystalhd_hw *hw,
++		unsigned int word, uint32_t value, uint32_t *expected)
++{
++	uint32_t observed[25];
++
++	if (!expected || word >= 25 || !crystalhd_flea_joint_current(hw) ||
++	    hw->research_joint_reset_corroborated || hw->research_joint_start_attempted ||
++	    hw->research_joint_attempts >= 15)
++		return BC_STS_IO_ERROR;
++	/* Arm before the void callback; a missing readback never licenses retry. */
++	hw->research_joint_attempts++;
++	hw->pfnWriteDevRegister(hw->adp, crystalhd_joint_addresses[word], value);
++	if (!crystalhd_flea_joint_current(hw))
++		return BC_STS_IO_ERROR;
++	expected[word] = value;
++	return crystalhd_flea_joint_sample(hw, hw->research_joint_generation,
++			hw->research_joint_owner, expected, false, false, observed);
++}
++
++/* One non-atomic bundle: never infer same-cycle propagation or beat counts. */
++static BC_STATUS crystalhd_flea_joint_observe(struct crystalhd_hw *hw,
++		const uint32_t *expected, bool after_start, uint32_t *bundle)
++{
++	static const uint32_t addresses[7] = {
++		BCHP_MFD_TEST_PORT_DATA, BCHP_MFD_BVB_SAMPLE_DATA, BCHP_MFD_FEED_STATUS,
++		BCHP_MFD_FEEDER_BVB_STATUS, BCHP_MFD_FEEDER_ERROR_INTERRUPT_STATUS,
++		BCHP_SCL_HD_TEST_PORT_DATA, BCHP_SCL_HD_BVB_IN_STATUS,
++	};
++	static const uint32_t reserved[7] = {
++		0xf0000000, 0xfc000000, 0xdfffe000, 0xfffffffc, 0xfffffff8, 0,
++		BCHP_SCL_HD_BVB_IN_STATUS_reserved0_MASK,
++	};
++	uint32_t before[25], after[25], observed[11];
++	BC_STATUS sts;
++	unsigned int i;
++
++	if (!bundle || !crystalhd_flea_joint_current(hw))
++		return BC_STS_IO_ERROR;
++	sts = crystalhd_flea_joint_sample(hw, hw->research_joint_generation,
++			hw->research_joint_owner, expected, after_start, true, before);
++	if (sts != BC_STS_SUCCESS)
++		return sts;
++	for (i = 0; i < ARRAY_SIZE(addresses); i++) {
++		if (!crystalhd_flea_joint_current(hw))
++			return BC_STS_IO_ERROR;
++		observed[i] = hw->pfnReadDevRegister(hw->adp, addresses[i]);
++		if (!crystalhd_flea_joint_current(hw) || observed[i] == 0xffffffff ||
++		    (observed[i] & reserved[i]))
++			return BC_STS_IO_ERROR;
++	}
++	sts = crystalhd_flea_joint_sample(hw, hw->research_joint_generation,
++			hw->research_joint_owner, expected, after_start, true, after);
++	if (sts != BC_STS_SUCCESS || !crystalhd_flea_joint_current(hw))
++		return BC_STS_IO_ERROR;
++	observed[7] = before[13]; observed[8] = after[13];
++	observed[9] = before[24]; observed[10] = after[24];
++	memcpy(bundle, observed, sizeof(observed));
++	return BC_STS_SUCCESS;
++}
++
++static BC_STATUS crystalhd_flea_joint_probe(struct crystalhd_hw *hw,
++		uint64_t generation, const void *owner, bool request_feed)
++{
++	/* STRIDE precedes PACKED CTRL. Raw sizes/window are a layout hypothesis. */
++	static const unsigned int words[15] = { 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 18, 20, 21, 22, 23 };
++	static const uint32_t targets[15] = {
++		0, 0x00405ac3, 4, 1, 3, 0, 0, 15, 0, 13,
++		0x00040002, 0x00040002, 0x00040002, 1, 3,
++	};
++	uint32_t first[25], second[25], expected[25], bundle[11];
++	BC_STATUS sts;
++	unsigned int i, j, observations = 0;
++	bool error = false, last = false;
++
++	if (!hw || crystalhd_hw_research_joint_pending(hw) || hw->research_mfd_pci_isolated ||
++	    hw->research_mfd_deliberate_abort || hw->research_scl_config_dirty ||
++	    hw->research_scl_reset_corroborated || hw->research_scl_duty_generation || hw->research_scl_duty_owner ||
++	    hw->research_mfd_reset_pending || hw->research_mfd_reset_cold_sampled ||
++	    hw->research_mfd_reset_post_sampled || hw->research_mfd_reset_generation || hw->research_mfd_reset_owner ||
++	    hw->research_mfd_hsize_dirty || hw->research_mfd_hsize_request_sampled || hw->research_mfd_hsize_reset_corroborated)
++		return BC_STS_BUSY;
++	sts = crystalhd_flea_scl_config_guard(hw, generation, owner);
++	if (sts != BC_STS_SUCCESS || !crystalhd_flea_joint_binding(hw, generation, owner))
++		return sts == BC_STS_SUCCESS ? BC_STS_IO_ERROR : sts;
++	hw->research_mfd_pci_isolated = true;
++	pci_clear_master(hw->adp->pdev);
++	sts = crystalhd_flea_joint_sample(hw, generation, owner, NULL, false, false, first);
++	if (sts != BC_STS_SUCCESS)
++		goto quarantine;
++	sts = crystalhd_flea_joint_sample(hw, generation, owner, NULL, false, false, second);
++	if (sts != BC_STS_SUCCESS || memcmp(first, second, sizeof(first)) ||
++	    !crystalhd_flea_joint_binding(hw, generation, owner))
++		goto quarantine;
++	memcpy(hw->research_joint_saved, first, sizeof(first));
++	memcpy(expected, first, sizeof(first));
++	hw->research_joint_generation = generation;
++	hw->research_joint_owner = owner;
++	hw->research_joint_original_sampled = true;
++	hw->research_joint_pending = true;
++	for (i = 0; i < ARRAY_SIZE(first); i++)
++		dev_info(&hw->adp->pdev->dev,
++			 "issue92 joint: phase=cold word=%u first=%08x second=%08x\n", i, first[i], second[i]);
++	for (i = 0; i < ARRAY_SIZE(words); i++)
++		if (crystalhd_flea_joint_attempt(hw, words[i], targets[i], expected) != BC_STS_SUCCESS)
++			goto quarantine;
++	if (crystalhd_flea_joint_observe(hw, expected, false, bundle) != BC_STS_SUCCESS)
++		goto quarantine;
++	for (i = 0; i < ARRAY_SIZE(bundle); i++)
++		dev_info(&hw->adp->pdev->dev, "issue92 joint: phase=pre-start word=%u raw=%08x\n", i, bundle[i]);
++	error = bundle[4] || bundle[6] || bundle[7] || bundle[8] || bundle[9] || bundle[10];
++	if (request_feed && !error) {
++		if (!crystalhd_flea_joint_current(hw) || hw->research_joint_attempts != 15)
++			goto quarantine;
++		hw->research_joint_start_attempted = true;
++		hw->research_joint_attempts++;
++		hw->pfnWriteDevRegister(hw->adp, BCHP_MFD_PIC_FEED_CMD, 1);
++		if (!crystalhd_flea_joint_current(hw))
++			goto quarantine;
++		for (i = 0; i < 16; i++) {
++			if (crystalhd_flea_joint_observe(hw, expected, true, bundle) != BC_STS_SUCCESS)
++				goto quarantine;
++			observations++;
++			for (j = 0; j < ARRAY_SIZE(bundle); j++)
++				dev_info(&hw->adp->pdev->dev,
++					 "issue92 joint: phase=active observation=%u word=%u raw=%08x\n", i, j, bundle[j]);
++			error = bundle[4] || bundle[6] || bundle[7] || bundle[8] || bundle[9] || bundle[10];
++			/* Stop host observation on any named sampled terminal marker.
++			 * These levels are not fresh/completed-transfer certificates.
++			 */
++			last = ((bundle[0] & BCHP_MFD_TEST_PORT_DATA_BVB_OUT_PICTURE_SYNC_MASK) ==
++				(BCHP_MFD_TEST_PORT_DATA_BVB_OUT_PICTURE_SYNC_LAST_PIXEL <<
++				 BCHP_MFD_TEST_PORT_DATA_BVB_OUT_PICTURE_SYNC_SHIFT)) ||
++				((bundle[1] & BCHP_MFD_BVB_SAMPLE_DATA_PICTURE_SYNC_MASK) ==
++				(BCHP_MFD_BVB_SAMPLE_DATA_PICTURE_SYNC_LAST_PIXEL <<
++				 BCHP_MFD_BVB_SAMPLE_DATA_PICTURE_SYNC_SHIFT)) ||
++				(bundle[3] & BCHP_MFD_FEEDER_BVB_STATUS_EOF_MASK);
++			if (error || last)
++				break;
++		}
++	}
++	dev_info(&hw->adp->pdev->dev,
++		 "issue92 joint: attempts=%u start-attempted=%u active-observations=%u accept-writes=0 outcome=%s raw-observations-only\n",
++		 hw->research_joint_attempts, hw->research_joint_start_attempted, observations,
++		 error ? "observed_engine_error" : last ? "sampled_terminal" : request_feed ? "bounded_observation" : "configuration_only");
++	hw->research_mfd_deliberate_abort = true;
++	return BC_STS_CMD_CANCELLED;
++
++quarantine:
++	crystalhd_hw_dma_fatal_stop(hw);
++	return BC_STS_IO_ERROR;
++}
++
++/* Before stock powerdown: corroborate every saved control together. Never
++ * live-restore a subset, clear status, or substitute this for a consumer fence.
++ */
++static BC_STATUS crystalhd_flea_joint_retire(struct crystalhd_hw *hw)
++{
++	uint32_t first[25], second[25];
++	unsigned int i;
++	BC_STATUS sts;
++
++	if (!crystalhd_flea_joint_current(hw) || hw->research_joint_reset_corroborated)
++		return BC_STS_IO_ERROR;
++	sts = crystalhd_flea_joint_sample(hw, hw->research_joint_generation,
++			hw->research_joint_owner, hw->research_joint_saved, false, false, first);
++	if (sts != BC_STS_SUCCESS)
++		return sts;
++	sts = crystalhd_flea_joint_sample(hw, hw->research_joint_generation,
++			hw->research_joint_owner, hw->research_joint_saved, false, false, second);
++	if (sts != BC_STS_SUCCESS || memcmp(first, second, sizeof(first)) || !crystalhd_flea_joint_current(hw))
++		return BC_STS_IO_ERROR;
++	for (i = 0; i < ARRAY_SIZE(first); i++)
++		dev_info(&hw->adp->pdev->dev,
++			 "issue92 joint: phase=pre-powerdown-retire word=%u first=%08x second=%08x\n", i, first[i], second[i]);
++	hw->research_joint_reset_corroborated = true;
++	return BC_STS_SUCCESS;
++}
++
+ static BC_STATUS crystalhd_flea_mfd_packed_input_guard(struct crystalhd_hw *hw,
+ 		uint64_t generation, const void *owner, uint32_t ctrl,
+ 		uint32_t stride, uint32_t test, uint32_t hsize, uint32_t window,
+@@ -3355,10 +3645,13 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 	bool scl_config_only_probe = hw && hw->research_scl_config_probe;
+ 	bool scl_size_reset_probe = hw && hw->research_scl_size_reset_probe;
+ 	bool scl_enable_reset_probe = hw && hw->research_scl_enable_reset_probe;
++	bool joint_config_only_probe = hw && hw->research_joint_config_probe;
++	bool joint_feed_probe = hw && hw->research_joint_feed_probe;
++	bool joint_probe = joint_config_only_probe || joint_feed_probe;
+ 	bool mfd_reset_probe = hw && hw->research_mfd_reset_probe;
+ 	bool mfd_hsize_reset_probe = hw && hw->research_mfd_hsize_reset_probe;
+ 	bool scl_config_probe = scl_config_only_probe || scl_size_reset_probe || mfd_reset_probe ||
+-		mfd_hsize_reset_probe || scl_enable_reset_probe;
++		mfd_hsize_reset_probe || scl_enable_reset_probe || joint_probe;
+ 	uint32_t packed_pattern = hw ? hw->research_mfd_packed_pattern : 0;
+ 	bool mfd_scl_probe = hw && hw->research_mfd_scl_probe;
+ 	bool scl_port_probe = hw && hw->research_scl_port_probe;
+@@ -3367,6 +3660,8 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 	uint32_t mfd_colour = hw ? hw->research_mfd_colour_value : 0;
+ 	uint64_t mfd_generation = hw ? hw->research_mfd_generation : 0;
+ 	const void *mfd_owner = hw ? hw->research_mfd_owner : NULL;
++	bool (*probe_current)(struct crystalhd_hw *, uint64_t, const void *) =
++		joint_probe ? crystalhd_flea_joint_binding : crystalhd_flea_mfd_packed_input_current;
+ 	uint32_t bridge_before = 0, bridge_after = 0, observed = 0;
+ 	/* Fixed 8x8 planar YUV420: Y[64], Cb[16], Cr[16], little-endian DWORDs. */
+ 	static const uint32_t pattern[24] = {
+@@ -3398,6 +3693,8 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 		hw->research_scl_config_probe = false;
+ 		hw->research_scl_size_reset_probe = false;
+ 		hw->research_scl_enable_reset_probe = false;
++		hw->research_joint_config_probe = false;
++		hw->research_joint_feed_probe = false;
+ 		hw->research_mfd_reset_probe = false;
+ 		hw->research_mfd_hsize_reset_probe = false;
+ 		hw->research_mfd_packed_pattern = 0;
+@@ -3455,7 +3752,11 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 	if ((mfd_latch_probe || mfd_colour_probe || mfd_scl_probe || scl_port_probe || mfd_packed_probe || scl_config_probe) &&
+ 	    (!staging_probe || !mfd_owner || !mfd_generation))
+ 		return BC_STS_INV_ARG;
+-	if (hw->research_mfd_pci_isolated || hw->research_mfd_deliberate_abort ||
++	if (crystalhd_hw_research_joint_pending(hw) ||
++	    (joint_probe && (joint_config_only_probe == joint_feed_probe ||
++	     scl_config_only_probe || scl_size_reset_probe || scl_enable_reset_probe ||
++	     mfd_reset_probe || mfd_hsize_reset_probe)) ||
++	    hw->research_mfd_pci_isolated || hw->research_mfd_deliberate_abort ||
+ 	    hw->research_scl_config_dirty || hw->research_scl_reset_corroborated ||
+ 	    hw->research_scl_duty_generation || hw->research_scl_duty_owner ||
+ 	    hw->research_mfd_reset_pending || hw->research_mfd_reset_cold_sampled ||
+@@ -3488,6 +3789,8 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 		sts = crystalhd_flea_scl_config_guard(hw, mfd_generation, mfd_owner);
+ 		if (sts != BC_STS_SUCCESS)
+ 			return sts;
++		if (joint_probe && !probe_current(hw, mfd_generation, mfd_owner))
++			return BC_STS_IO_ERROR;
+ 	} else if (mfd_scl_probe || mfd_packed_scl_input_probe) {
+ 		uint32_t scl_status;
+ 
+@@ -3499,7 +3802,7 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 		if (sts != BC_STS_SUCCESS)
+ 			return sts;
+ 		if (mfd_packed_scl_input_probe &&
+-		    !crystalhd_flea_mfd_packed_input_current(hw, mfd_generation, mfd_owner))
++		    !probe_current(hw, mfd_generation, mfd_owner))
+ 			return BC_STS_IO_ERROR;
+ 		if (scl_status) {
+ 			dev_info(&hw->adp->pdev->dev,
+@@ -3530,15 +3833,15 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 		/* Enable Scrubbing */
+ 		regVal = hw->pfnReadDevRegister(hw->adp, BCHP_SCRUB_CTRL_SCRUB_ENABLE);
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+-		if (scl_enable_reset_probe && (regVal == 0xffffffff ||
+-		    !crystalhd_flea_mfd_packed_input_current(hw, mfd_generation, mfd_owner)))
++		if ((scl_enable_reset_probe || joint_probe) && (regVal == 0xffffffff ||
++		    !probe_current(hw, mfd_generation, mfd_owner)))
+ 			return BC_STS_IO_ERROR;
+ #endif
+ 		regVal |= SCRUB_ENABLE_BIT;
+ 		hw->pfnWriteDevRegister(hw->adp, BCHP_SCRUB_CTRL_SCRUB_ENABLE, regVal);
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+-		if (scl_enable_reset_probe &&
+-		    !crystalhd_flea_mfd_packed_input_current(hw, mfd_generation, mfd_owner))
++		if ((scl_enable_reset_probe || joint_probe) &&
++		    !probe_current(hw, mfd_generation, mfd_owner))
+ 			return BC_STS_IO_ERROR;
+ #endif
+ 
+@@ -3546,8 +3849,8 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 		regVal |= DRAM_SCRAM_ENABLE_BIT;
+ 		hw->pfnWriteDevRegister(hw->adp, BCHP_SCRUB_CTRL_SCRUB_ENABLE, regVal);
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+-		if (scl_enable_reset_probe &&
+-		    !crystalhd_flea_mfd_packed_input_current(hw, mfd_generation, mfd_owner))
++		if ((scl_enable_reset_probe || joint_probe) &&
++		    !probe_current(hw, mfd_generation, mfd_owner))
+ 			return BC_STS_IO_ERROR;
+ #endif
+ 
+@@ -3560,8 +3863,8 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 		{
+ 			regVal = hw->pfnReadDevRegister(hw->adp, BCHP_WRAP_MISC_INTR2_PCI_STATUS);
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+-			if (scl_enable_reset_probe && (regVal == 0xffffffff ||
+-			    !crystalhd_flea_mfd_packed_input_current(hw, mfd_generation, mfd_owner)))
++			if ((scl_enable_reset_probe || joint_probe) && (regVal == 0xffffffff ||
++			    !probe_current(hw, mfd_generation, mfd_owner)))
+ 				return BC_STS_IO_ERROR;
+ #endif
+ 
+@@ -3584,8 +3887,8 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 	regVal &= 0x00FFFFFF; /*Mask off the reserved bits.[24-31] */
+ 	hw->pfnWriteDevRegister(hw->adp, BCHP_WRAP_MISC_INTR2_PCI_CLEAR, regVal);
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+-	if (scl_enable_reset_probe &&
+-	    !crystalhd_flea_mfd_packed_input_current(hw, mfd_generation, mfd_owner))
++	if ((scl_enable_reset_probe || joint_probe) &&
++	    !probe_current(hw, mfd_generation, mfd_owner))
+ 		return BC_STS_IO_ERROR;
+ #endif
+ 
+@@ -3596,14 +3899,14 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 
+ 	hw->pfnWriteDevRegister(hw->adp, BCHP_SCRUB_CTRL_BORCH_END_ADDRESS, borchStachAddr);
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+-	if (scl_enable_reset_probe &&
+-	    !crystalhd_flea_mfd_packed_input_current(hw, mfd_generation, mfd_owner))
++	if ((scl_enable_reset_probe || joint_probe) &&
++	    !probe_current(hw, mfd_generation, mfd_owner))
+ 		return BC_STS_IO_ERROR;
+ #endif
+ 	hw->pfnWriteDevRegister(hw->adp, BCHP_SCRUB_CTRL_STARCH_END_ADDRESS, borchStachAddr);
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+-	if (scl_enable_reset_probe &&
+-	    !crystalhd_flea_mfd_packed_input_current(hw, mfd_generation, mfd_owner))
++	if ((scl_enable_reset_probe || joint_probe) &&
++	    !probe_current(hw, mfd_generation, mfd_owner))
+ 		return BC_STS_IO_ERROR;
+ #endif
+ 
+@@ -3634,7 +3937,7 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 		bridge_before = hw->pfnReadDevRegister(hw->adp,
+ 			BCHP_ARMCR4_BRIDGE_REG_BRIDGE_CTL);
+ 		if (scl_config_probe &&
+-		    !crystalhd_flea_mfd_packed_input_current(hw, mfd_generation, mfd_owner))
++		    !probe_current(hw, mfd_generation, mfd_owner))
+ 			return BC_STS_IO_ERROR;
+ 		if (bridge_before & ARM_RUN_REQ_BIT)
+ 			return BC_STS_BUSY;
+@@ -3652,7 +3955,7 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 			buffSz / 4, (const uint32_t *)pBuffer);
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+ 	if (scl_config_probe &&
+-	    !crystalhd_flea_mfd_packed_input_current(hw, mfd_generation, mfd_owner))
++	    !probe_current(hw, mfd_generation, mfd_owner))
+ 		return BC_STS_IO_ERROR;
+ #endif
+ 	if (sts != BC_STS_SUCCESS) {
+@@ -3666,7 +3969,7 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 		sts = hw->pfnDevDRAMRead(hw, FW_DOWNLOAD_START_ADDR, 1,
+ 				       &observed);
+ 		if (scl_config_probe) {
+-			if (!crystalhd_flea_mfd_packed_input_current(hw, mfd_generation, mfd_owner))
++			if (!probe_current(hw, mfd_generation, mfd_owner))
+ 				return BC_STS_IO_ERROR;
+ 			if (sts != BC_STS_SUCCESS)
+ 				return sts;
+@@ -3674,7 +3977,7 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 		bridge_after = hw->pfnReadDevRegister(hw->adp,
+ 			BCHP_ARMCR4_BRIDGE_REG_BRIDGE_CTL);
+ 		if (scl_config_probe &&
+-		    !crystalhd_flea_mfd_packed_input_current(hw, mfd_generation, mfd_owner))
++		    !probe_current(hw, mfd_generation, mfd_owner))
+ 			return BC_STS_IO_ERROR;
+ 		dev_info(&hw->adp->pdev->dev,
+ 			 "issue92 staging: words=1 status=%u expected=%08x observed=%08x bridge=%08x/%08x\n",
+@@ -3687,6 +3990,8 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 			return BC_STS_IO_ERROR;
+ 		if (mfd_reset_probe)
+ 			return crystalhd_flea_mfd_reset_probe(hw, mfd_generation, mfd_owner);
++		if (joint_probe)
++			return crystalhd_flea_joint_probe(hw, mfd_generation, mfd_owner, joint_feed_probe);
+ 		if (mfd_hsize_reset_probe)
+ 			return crystalhd_flea_mfd_hsize_probe(hw, mfd_generation, mfd_owner);
+ 		if (scl_size_reset_probe)
+@@ -3982,7 +4287,8 @@ static bool crystalhd_flea_stop_read(struct crystalhd_hw *hw,
+ #endif
+ 	*value = hw->pfnReadDevRegister(hw->adp, address);
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+-	if ((hw->research_scl_config_dirty || hw->research_mfd_reset_pending || hw->research_mfd_hsize_dirty) &&
++	if ((hw->research_scl_config_dirty || hw->research_mfd_reset_pending || hw->research_mfd_hsize_dirty ||
++	     crystalhd_hw_research_joint_pending(hw)) &&
+ 	    (!crystalhd_flea_research_stop_current(hw) || *value == 0xffffffff))
+ 		return false;
+ #endif
+@@ -4010,6 +4316,7 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
+ 
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+ 	if (!crystalhd_flea_research_stop_current(hw) ||
++	    (crystalhd_hw_research_joint_pending(hw) && hw->research_joint_reset_corroborated) ||
+ 	    (hw->research_scl_config_dirty && hw->research_scl_reset_corroborated) ||
+ 	    (hw->research_mfd_hsize_dirty &&
+ 	     (!hw->research_mfd_hsize_request_sampled || hw->research_mfd_hsize_reset_corroborated)) ||
+@@ -4081,7 +4388,8 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
+ 			return false;
+ 
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+-		if ((hw->research_scl_config_dirty || hw->research_mfd_reset_pending || hw->research_mfd_hsize_dirty) &&
++		if ((hw->research_scl_config_dirty || hw->research_mfd_reset_pending || hw->research_mfd_hsize_dirty ||
++	     crystalhd_hw_research_joint_pending(hw)) &&
+ 		    (!crystalhd_flea_research_stop_current(hw) || regVal == 0xffffffff))
+ 			return false;
+ #endif
+@@ -4103,6 +4411,9 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
+ 
+ 	/*First Disable the AVD and ARM before disabling the DRAM*/
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
++	if (crystalhd_hw_research_joint_pending(hw) &&
++	    crystalhd_flea_joint_retire(hw) != BC_STS_SUCCESS)
++		return false;
+ 	if (hw->research_scl_config_dirty &&
+ 	    crystalhd_flea_scl_size_retire(hw) != BC_STS_SUCCESS)
+ 		return false;
+@@ -4170,7 +4481,8 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
+ 
+ 	/* * Enable DDR clock, DM and READ_ENABLE pads power down and force into the power down */
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+-	if ((hw->research_scl_config_dirty || hw->research_mfd_reset_pending || hw->research_mfd_hsize_dirty) &&
++	if ((hw->research_scl_config_dirty || hw->research_mfd_reset_pending || hw->research_mfd_hsize_dirty ||
++	     crystalhd_hw_research_joint_pending(hw)) &&
+ 	    (regVal & BCHP_DDR23_CTL_REGS_0_CTL_STATUS_clke_MASK))
+ 		return false;
+ #endif
+@@ -4267,6 +4579,9 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
+ 
+ 	crystalhd_flea_set_next_power_state(hw, FLEA_EVT_STOP_DEVICE);
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
++	if (crystalhd_hw_research_joint_pending(hw) &&
++	    (!hw->research_joint_reset_corroborated || !crystalhd_flea_joint_current(hw)))
++		return false;
+ 	if (hw->research_scl_config_dirty &&
+ 	    (!hw->research_scl_reset_corroborated || !crystalhd_flea_scl_size_current(hw)))
+ 		return false;
+diff --git a/driver/linux/crystalhd_fw_research.c b/driver/linux/crystalhd_fw_research.c
+index 291972e..74a7f04 100644
+--- a/driver/linux/crystalhd_fw_research.c
++++ b/driver/linux/crystalhd_fw_research.c
+@@ -76,6 +76,15 @@ static const u8 crystalhd_fw_research_owner;
+ #endif
+ 
+ /* Research-only wire values: eC011_VIDEO_ALG_H261/H263/MPEG1 in 7411d.h. */
++#if defined(CRYSTALHD_JOINT_CONFIG_RESET_PROBE) || defined(CRYSTALHD_JOINT_FEED_PROBE)
++#if defined(CRYSTALHD_JOINT_CONFIG_RESET_PROBE) && defined(CRYSTALHD_JOINT_FEED_PROBE)
++#error "Joint configuration retirement must be tested separately from START"
++#endif
++#if defined(CRYSTALHD_SCL_ENABLE_RESET_PROBE) || defined(CRYSTALHD_SCL_SIZE_RESET_PROBE) || defined(CRYSTALHD_SCL_CONFIG_PROBE) || defined(CRYSTALHD_MFD_RESET_CONTROLS_PROBE) || defined(CRYSTALHD_MFD_HSIZE_RESET_PROBE) || defined(CRYSTALHD_MFD_LATCH_PROBE) || defined(CRYSTALHD_MFD_FIXED_COLOUR_PROBE) || defined(CRYSTALHD_SCL_PORT_PROBE) || defined(CRYSTALHD_SCL_PORT_LATCH) || defined(CRYSTALHD_MFD_SCL_STATUS_PROBE) || defined(CRYSTALHD_MFD_PACKED_SOURCE_PROBE) || defined(CRYSTALHD_MFD_PACKED_WINDOW_PROBE) || defined(CRYSTALHD_MFD_PACKED_OBSERVED_GEOMETRY_PROBE) || defined(CRYSTALHD_MFD_PACKED_HSIZE4_PROBE) || defined(CRYSTALHD_MFD_PACKED_NORMAL_PROBE) || defined(CRYSTALHD_MFD_PACKED_SCL_INPUT_PROBE)
++#error "Joint fixed-colour hypothesis cannot combine other peripheral experiments"
++#endif
++#endif
++
+ #define CRYSTALHD_FW_RESEARCH_ALGORITHM_H261 2U
+ #define CRYSTALHD_FW_RESEARCH_ALGORITHM_H263 3U
+ #define CRYSTALHD_FW_RESEARCH_ALGORITHM_MPEG1 5U
+@@ -1085,6 +1094,13 @@ static void crystalhd_fw_research_run_internal(u64 generation,
+ 		return;
+ 	}
+ #endif
++#if defined(CRYSTALHD_JOINT_CONFIG_RESET_PROBE) || defined(CRYSTALHD_JOINT_FEED_PROBE)
++	if (request->selector != CRYSTALHD_FW_RESEARCH_VERSION_ONLY ||
++	    state || controller || image || packet || heap_packet || clock || uart) {
++		result->status = -EINVAL;
++		return;
++	}
++#endif
+ #ifdef CRYSTALHD_SCL_SIZE_RESET_PROBE
+ 	/* A fixed pre-boot size-only experiment, never a codec or state request. */
+ 	if (request->selector != CRYSTALHD_FW_RESEARCH_VERSION_ONLY ||
+@@ -1235,6 +1251,16 @@ static void crystalhd_fw_research_run_internal(u64 generation,
+ 	ctx->hw_ctx->research_mfd_generation = generation;
+ 	ctx->hw_ctx->research_mfd_owner = &crystalhd_fw_research_owner;
+ #endif
++#ifdef CRYSTALHD_JOINT_CONFIG_RESET_PROBE
++	ctx->hw_ctx->research_joint_config_probe = true;
++	ctx->hw_ctx->research_mfd_generation = generation;
++	ctx->hw_ctx->research_mfd_owner = &crystalhd_fw_research_owner;
++#endif
++#ifdef CRYSTALHD_JOINT_FEED_PROBE
++	ctx->hw_ctx->research_joint_feed_probe = true;
++	ctx->hw_ctx->research_mfd_generation = generation;
++	ctx->hw_ctx->research_mfd_owner = &crystalhd_fw_research_owner;
++#endif
+ #ifdef CRYSTALHD_MFD_HSIZE_RESET_PROBE
+ 	ctx->hw_ctx->research_mfd_hsize_reset_probe = true;
+ 	ctx->hw_ctx->research_mfd_generation = generation;
+@@ -1254,6 +1280,8 @@ static void crystalhd_fw_research_run_internal(u64 generation,
+ 	ctx->hw_ctx->research_scl_config_probe = false;
+ 	ctx->hw_ctx->research_scl_size_reset_probe = false;
+ 	ctx->hw_ctx->research_scl_enable_reset_probe = false;
++	ctx->hw_ctx->research_joint_config_probe = false;
++	ctx->hw_ctx->research_joint_feed_probe = false;
+ 	ctx->hw_ctx->research_mfd_reset_probe = false;
+ 	ctx->hw_ctx->research_mfd_hsize_reset_probe = false;
+ 	ctx->hw_ctx->research_mfd_packed_pattern = 0;
+diff --git a/driver/linux/crystalhd_hw.c b/driver/linux/crystalhd_hw.c
+index 880045c..1d77e6a 100644
+--- a/driver/linux/crystalhd_hw.c
++++ b/driver/linux/crystalhd_hw.c
+@@ -35,6 +35,15 @@
+ 
+ #define OFFSETOF(_s_, _m_) ((size_t)(unsigned long)&(((_s_ *)0)->_m_))
+ 
++#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
++bool crystalhd_hw_research_joint_pending(const struct crystalhd_hw *hw)
++{
++	return hw && (hw->research_joint_pending || hw->research_joint_original_sampled ||
++		hw->research_joint_reset_corroborated || hw->research_joint_start_attempted ||
++		hw->research_joint_attempts || hw->research_joint_generation || hw->research_joint_owner);
++}
++#endif
++
+ BC_STATUS crystalhd_hw_fw_cmd_enter(struct crystalhd_hw *hw)
+ {
+ 	unsigned long flags;
+@@ -352,6 +361,7 @@ BC_STATUS crystalhd_hw_close(struct crystalhd_hw *hw)
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+ 	    && !hw->research_mfd_pci_isolated && !hw->research_scl_config_dirty
+ 	    && !hw->research_mfd_reset_pending && !hw->research_mfd_hsize_dirty
++	    && !crystalhd_hw_research_joint_pending(hw)
+ #endif
+ 	   )
+ 		return BC_STS_SUCCESS;
+@@ -377,6 +387,37 @@ BC_STATUS crystalhd_hw_close(struct crystalhd_hw *hw)
+ #endif
+ 
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
++	if (crystalhd_hw_research_joint_pending(hw)) {
++		/* One duty: no partial discharge and no register reads after stop. */
++		if (!hw->research_joint_pending || !hw->research_joint_original_sampled ||
++		    !hw->research_joint_reset_corroborated || !hw->dev_started ||
++		    !hw->research_mfd_pci_isolated || !hw->research_joint_generation ||
++		    !hw->research_joint_owner || hw->research_joint_attempts > 16 ||
++		    !hw->pfnReadDevRegister || !hw->pfnWriteDevRegister ||
++		    !hw->adp || !hw->adp->pdev || !READ_ONCE(hw->adp->present) ||
++		    !hw->adp->hw_accessible || READ_ONCE(hw->dma_fault) ||
++		    hw->adp->generation != hw->research_joint_generation ||
++		    hw->adp->cmds.adp != hw->adp || hw->adp->cmds.state != BC_LINK_INVALID ||
++		    hw->adp->cmds.hw_ctx != hw || !hw->adp->cmds.session_module_pinned ||
++		    hw->adp->cmds.session_owner != hw->research_joint_owner ||
++		    hw->research_scl_config_dirty || hw->research_scl_reset_corroborated ||
++		    hw->research_scl_duty_generation || hw->research_scl_duty_owner ||
++		    hw->research_mfd_reset_pending || hw->research_mfd_reset_generation ||
++		    hw->research_mfd_reset_owner || hw->research_mfd_reset_cold_sampled ||
++		    hw->research_mfd_reset_post_sampled || hw->research_mfd_hsize_dirty ||
++		    hw->research_mfd_hsize_request_sampled || hw->research_mfd_hsize_reset_corroborated) {
++			crystalhd_hw_dma_fatal_stop(hw);
++			return BC_STS_IO_ERROR;
++		}
++		hw->research_joint_pending = false;
++		hw->research_joint_original_sampled = false;
++		hw->research_joint_reset_corroborated = false;
++		hw->research_joint_start_attempted = false;
++		hw->research_joint_attempts = 0;
++		hw->research_joint_generation = 0;
++		hw->research_joint_owner = NULL;
++		memset(hw->research_joint_saved, 0, sizeof(hw->research_joint_saved));
++	}
+ 	if (hw->research_scl_config_dirty &&
+ 	    (hw->research_mfd_reset_pending || hw->research_mfd_hsize_dirty)) {
+ 		crystalhd_hw_dma_fatal_stop(hw);
+@@ -646,7 +687,8 @@ void crystalhd_hw_retire_rx_quiesced(struct crystalhd_hw *hw)
+ 		return;
+ 
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+-	if (hw->research_scl_config_dirty || hw->research_mfd_reset_pending || hw->research_mfd_hsize_dirty)
++	if (hw->research_scl_config_dirty || hw->research_mfd_reset_pending || hw->research_mfd_hsize_dirty ||
++	    crystalhd_hw_research_joint_pending(hw))
+ 		return;
+ #endif
+ 
+@@ -849,7 +891,8 @@ BC_STATUS crystalhd_hw_free_dma_rings(struct crystalhd_hw *hw)
+ 		return BC_STS_INV_ARG;
+ 	}
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+-	if (hw->research_scl_config_dirty || hw->research_mfd_reset_pending || hw->research_mfd_hsize_dirty)
++	if (hw->research_scl_config_dirty || hw->research_mfd_reset_pending || hw->research_mfd_hsize_dirty ||
++	    crystalhd_hw_research_joint_pending(hw))
+ 		return BC_STS_IO_ERROR;
+ #endif
+ 	if (READ_ONCE(hw->dma_fault) && !hw->adp->dma_terminal_quiesced &&
+diff --git a/driver/linux/crystalhd_hw.h b/driver/linux/crystalhd_hw.h
+index 7c323e4..4de0e6a 100644
+--- a/driver/linux/crystalhd_hw.h
++++ b/driver/linux/crystalhd_hw.h
+@@ -416,6 +416,8 @@ struct crystalhd_hw {
+ 	bool research_scl_config_probe;
+ 	bool research_scl_size_reset_probe;
+ 	bool research_scl_enable_reset_probe;
++	bool research_joint_config_probe;
++	bool research_joint_feed_probe;
+ 	bool research_mfd_reset_probe;
+ 	bool research_mfd_hsize_reset_probe;
+ 	uint32_t research_mfd_packed_pattern;
+@@ -450,6 +452,15 @@ struct crystalhd_hw {
+ 	bool research_mfd_hsize_request_sampled;
+ 	bool research_mfd_hsize_reset_corroborated;
+ 	uint32_t research_mfd_hsize_saved[20];
++	/* Indivisible fixed MFD/SCL configuration and attempted-START duty. */
++	bool research_joint_pending;
++	bool research_joint_original_sampled;
++	bool research_joint_reset_corroborated;
++	bool research_joint_start_attempted;
++	unsigned int research_joint_attempts;
++	uint64_t research_joint_generation;
++	const void *research_joint_owner;
++	uint32_t research_joint_saved[25];
+ #endif
+ 	struct tx_dma_pkt		tx_pkt_pool[DMA_ENGINE_CNT];
+ 	spinlock_t		lock;
+@@ -728,6 +739,9 @@ BC_STATUS crystalhd_hw_stop_capture_locked(struct crystalhd_hw *hw, bool unmap);
+  * barrier. Rings/queues remain allocated; no hardware/IRQ callback runs here.
+  */
+ void crystalhd_hw_retire_rx_quiesced(struct crystalhd_hw *hw);
++#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
++bool crystalhd_hw_research_joint_pending(const struct crystalhd_hw *hw);
++#endif
+ bool crystalhd_hw_ack_fault_interrupt(struct crystalhd_hw *hw);
+ void crystalhd_hw_dma_fatal_stop(struct crystalhd_hw *hw);
+ BC_STATUS crystalhd_hw_suspend(struct crystalhd_hw *hw);
+diff --git a/driver/linux/crystalhd_lnx.c b/driver/linux/crystalhd_lnx.c
+index 964f928..6faab99 100644
+--- a/driver/linux/crystalhd_lnx.c
++++ b/driver/linux/crystalhd_lnx.c
+@@ -1159,7 +1159,8 @@ static bool chd_dec_quiesce_terminal_dma(struct crystalhd_adp *adp)
+ 	/* Host PCI containment cannot retire an unresolved on-card config. */
+ 	if (adp->cmds.hw_ctx && (adp->cmds.hw_ctx->research_scl_config_dirty ||
+ 	    adp->cmds.hw_ctx->research_mfd_reset_pending ||
+-	    adp->cmds.hw_ctx->research_mfd_hsize_dirty))
++	    adp->cmds.hw_ctx->research_mfd_hsize_dirty ||
++	    crystalhd_hw_research_joint_pending(adp->cmds.hw_ctx)))
+ 		return false;
+ #endif
+ 	return drained;
+@@ -1185,7 +1186,8 @@ static bool chd_dec_session_dma_absent(struct crystalhd_adp *adp)
+ 		adp->elem_pool_head || adp->ua_map_free_head;
+ 	if (hw) {
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+-		if (hw->research_scl_config_dirty || hw->research_mfd_reset_pending || hw->research_mfd_hsize_dirty)
++		if (hw->research_scl_config_dirty || hw->research_mfd_reset_pending || hw->research_mfd_hsize_dirty ||
++		    crystalhd_hw_research_joint_pending(hw))
+ 			return false;
+ #endif
+ 		resources |= !ctx->adp || hw->rx_pkt_pool_head ||
+@@ -1244,7 +1246,8 @@ static bool chd_dec_fail_closed(struct crystalhd_adp *adp, int error)
+ 	/* A delete refusal must not be classified as successful retirement. */
+ 	if (adp->cmds.hw_ctx && (adp->cmds.hw_ctx->research_scl_config_dirty ||
+ 	    adp->cmds.hw_ctx->research_mfd_reset_pending ||
+-	    adp->cmds.hw_ctx->research_mfd_hsize_dirty))
++	    adp->cmds.hw_ctx->research_mfd_hsize_dirty ||
++	    crystalhd_hw_research_joint_pending(adp->cmds.hw_ctx)))
+ 		safe = false;
+ #endif
+ 	if (!safe) {
+@@ -1301,7 +1304,8 @@ quarantine:
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+ 		if (pinfo->cmds.hw_ctx && (pinfo->cmds.hw_ctx->research_scl_config_dirty ||
+ 		    pinfo->cmds.hw_ctx->research_mfd_reset_pending ||
+-		    pinfo->cmds.hw_ctx->research_mfd_hsize_dirty)) {
++		    pinfo->cmds.hw_ctx->research_mfd_hsize_dirty ||
++		    crystalhd_hw_research_joint_pending(pinfo->cmds.hw_ctx))) {
+ 			safe = false;
+ 			goto quarantine;
+ 		}
+@@ -1507,7 +1511,8 @@ int chd_dec_pci_suspend(struct pci_dev *pdev, pm_message_t state)
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+ 	if (adp->cmds.hw_ctx && (adp->cmds.hw_ctx->research_scl_config_dirty ||
+ 	    adp->cmds.hw_ctx->research_mfd_reset_pending ||
+-	    adp->cmds.hw_ctx->research_mfd_hsize_dirty)) {
++	    adp->cmds.hw_ctx->research_mfd_hsize_dirty ||
++	    crystalhd_hw_research_joint_pending(adp->cmds.hw_ctx))) {
+ 		rc = -EIO;
+ 		goto fail_closed;
+ 	}
+diff --git a/tests/device-lifetime.c b/tests/device-lifetime.c
+index 18ac047..6154369 100644
+--- a/tests/device-lifetime.c
++++ b/tests/device-lifetime.c
+@@ -72,6 +72,13 @@ struct crystalhd_hw {
+ 	bool research_mfd_hsize_reset_probe, research_mfd_hsize_dirty;
+ 	bool research_mfd_hsize_request_sampled, research_mfd_hsize_reset_corroborated;
+ 	uint32_t research_mfd_hsize_saved[20];
++	bool research_joint_config_probe, research_joint_feed_probe;
++	bool research_joint_pending, research_joint_original_sampled;
++	bool research_joint_reset_corroborated, research_joint_start_attempted;
++	unsigned int research_joint_attempts;
++	uint64_t research_joint_generation;
++	const void *research_joint_owner;
++	uint32_t research_joint_saved[25];
+ #endif
+ 	void *rx_freeq, *rx_actq, *rx_rdyq, *tx_actq, *tx_freeq;
+ 	void *rx_pkt_pool_head, *rx_fallback_head;
+@@ -130,6 +137,9 @@ struct crystalhd_adp {
+ 	bool hw_accessible;
+ };
+ #include "lifetime-binding.h"
++#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
++#include "lifetime-joint.h"
++#endif
+ 
+ enum allocation_kind { ADAPTER, HARDWARE, IODATA, BINDING, DIO_POOL, ELEM_POOL };
+ struct allocation { void *ptr; enum allocation_kind kind; };
+@@ -201,7 +211,8 @@ static void assert_quiesced(void)
+ 	assert(!g_adp_info->cmds.hw_ctx ||
+ 	       (!g_adp_info->cmds.hw_ctx->research_scl_config_dirty &&
+ 	        !g_adp_info->cmds.hw_ctx->research_mfd_reset_pending &&
+-	        !g_adp_info->cmds.hw_ctx->research_mfd_hsize_dirty));
++	        !g_adp_info->cmds.hw_ctx->research_mfd_hsize_dirty &&
++	        !crystalhd_hw_research_joint_pending(g_adp_info->cmds.hw_ctx)));
+ #endif
+ 	if (g_adp_info->dma_terminal_quiesced)
+ 		assert(!master && dma_drained);
+@@ -298,7 +309,8 @@ static void crystalhd_v4l2_unregister(struct crystalhd_adp *adp)
+ 		if (adp->cmds.hw_ctx &&
+ 		    (adp->cmds.hw_ctx->research_scl_config_dirty ||
+ 		     adp->cmds.hw_ctx->research_mfd_reset_pending ||
+-		     adp->cmds.hw_ctx->research_mfd_hsize_dirty))
++		     adp->cmds.hw_ctx->research_mfd_hsize_dirty ||
++		     crystalhd_hw_research_joint_pending(adp->cmds.hw_ctx)))
+ 			assert(adp->dma_terminal_quiesced == dma_drained);
+ 		else
+ #endif
+@@ -430,7 +442,8 @@ static struct pci_dev *pci_dev_get(struct pci_dev *dev)
+ 	if (g_adp_info->cmds.hw_ctx &&
+ 	    (g_adp_info->cmds.hw_ctx->research_scl_config_dirty ||
+ 	     g_adp_info->cmds.hw_ctx->research_mfd_reset_pending ||
+-	     g_adp_info->cmds.hw_ctx->research_mfd_hsize_dirty))
++	     g_adp_info->cmds.hw_ctx->research_mfd_hsize_dirty ||
++	     crystalhd_hw_research_joint_pending(g_adp_info->cmds.hw_ctx)))
+ 		assert(g_adp_info->dma_terminal_quiesced == dma_drained);
+ 	else
+ #endif
+@@ -1234,7 +1247,39 @@ enum retained_duty {
+ 	RETAIN_MFD_HSIZE_ORPHAN,
+ 	RETAIN_SCL_ENABLE_BOUND,
+ 	RETAIN_SCL_ENABLE_ORPHAN,
++	RETAIN_JOINT_BOUND,
++	RETAIN_JOINT_ORPHAN,
++	RETAIN_JOINT_PENDING_ONLY,
++	RETAIN_JOINT_ORIGINAL_ONLY,
++	RETAIN_JOINT_CORROBORATED_ONLY,
++	RETAIN_JOINT_START_ONLY,
++	RETAIN_JOINT_ATTEMPTS_ONLY,
++	RETAIN_JOINT_GENERATION_ONLY,
++	RETAIN_JOINT_OWNER_ONLY,
++};
++
++struct joint_duty_case {
++	const char *prefix;
++	bool pending, original, corroborated, start, generation, owner;
++	unsigned int attempts;
+ };
++static const struct joint_duty_case joint_duty_cases[] = {
++	{ "joint-bound-", true, true, false, true, true, true, 16 },
++	{ "joint-orphan-", true, true, false, true, false, false, 16 },
++	{ "joint-pending-only-", true, false, false, false, false, false, 0 },
++	{ "joint-original-only-", false, true, false, false, false, false, 0 },
++	{ "joint-corroborated-only-", false, false, true, false, false, false, 0 },
++	{ "joint-start-only-", false, false, false, true, false, false, 0 },
++	{ "joint-attempts-only-", false, false, false, false, false, false, 16 },
++	{ "joint-generation-only-", false, false, false, false, true, false, 0 },
++	{ "joint-owner-only-", false, false, false, false, false, true, 0 },
++};
++static const struct joint_duty_case *joint_case(enum retained_duty duty)
++{
++	if (duty < RETAIN_JOINT_BOUND || duty > RETAIN_JOINT_OWNER_ONLY)
++		return NULL;
++	return &joint_duty_cases[duty - RETAIN_JOINT_BOUND];
++}
+ 
+ static uint32_t saved_hsize_canary(unsigned int word)
+ {
+@@ -1249,9 +1294,16 @@ static void assert_observer_retained(struct crystalhd_adp *adp,
+ 	bool geometry_dirty = duty == RETAIN_MFD_HSIZE_DIRTY || duty == RETAIN_MFD_HSIZE_ORPHAN;
+ 	bool mfd_pending = duty == RETAIN_MFD_OBSERVER || geometry_dirty;
+ 	bool enable_orphan = duty == RETAIN_SCL_ENABLE_ORPHAN;
++	const struct joint_duty_case *joint = joint_case(duty);
+ 
+ 	assert(adp->cmds.adp == adp && adp->cmds.hw_ctx == hw);
+-	if (mfd_pending) {
++	if (joint) {
++		assert(!hw->research_scl_config_dirty && !hw->research_scl_reset_corroborated);
++		assert(!hw->research_scl_duty_generation && !hw->research_scl_duty_owner);
++		assert(!hw->research_mfd_reset_pending && !hw->research_mfd_reset_probe);
++		assert(!hw->research_mfd_reset_cold_sampled && !hw->research_mfd_reset_post_sampled);
++		assert(!hw->research_mfd_reset_generation && !hw->research_mfd_reset_owner);
++	} else if (mfd_pending) {
+ 		assert(hw->research_mfd_reset_pending == (duty != RETAIN_MFD_HSIZE_ORPHAN));
+ 		assert(!hw->research_mfd_reset_probe);
+ 		assert(hw->research_mfd_reset_cold_sampled == (which != 0));
+@@ -1270,6 +1322,18 @@ static void assert_observer_retained(struct crystalhd_adp *adp,
+ 	}
+ 	assert(!hw->research_mfd_hsize_reset_probe);
+ 	assert(!hw->research_scl_enable_reset_probe);
++	assert(!hw->research_joint_config_probe && !hw->research_joint_feed_probe);
++	assert(hw->research_joint_pending == (joint && joint->pending));
++	assert(hw->research_joint_original_sampled == (joint && joint->original));
++	assert(hw->research_joint_reset_corroborated == (joint && joint->corroborated));
++	assert(hw->research_joint_start_attempted == (joint && joint->start));
++	assert(hw->research_joint_attempts == (joint ? joint->attempts : 0));
++	assert(hw->research_joint_generation == (joint && joint->generation ? chd_device_generation : 0));
++	assert(hw->research_joint_owner == (joint && joint->owner ?
++	       (playback ? (const void *)&lifetime_owner : (const void *)&stream_token) : NULL));
++	assert(crystalhd_hw_research_joint_pending(hw) == (joint != NULL));
++	for (word = 0; word < ARRAY_SIZE(hw->research_joint_saved); word++)
++		assert(hw->research_joint_saved[word] == (joint ? (0x6a740000U | word) : 0));
+ 	assert(hw->research_mfd_hsize_dirty == geometry_dirty);
+ 	assert(hw->research_mfd_hsize_request_sampled == (geometry_dirty && which != 0));
+ 	assert(hw->research_mfd_hsize_reset_corroborated ==
+@@ -1319,6 +1383,7 @@ static void test_retained_observer(unsigned int which, enum retained_duty duty)
+ 	bool geometry_dirty = duty == RETAIN_MFD_HSIZE_DIRTY || duty == RETAIN_MFD_HSIZE_ORPHAN;
+ 	bool mfd_pending = duty == RETAIN_MFD_OBSERVER || geometry_dirty;
+ 	bool enable_duty = duty == RETAIN_SCL_ENABLE_BOUND || duty == RETAIN_SCL_ENABLE_ORPHAN;
++	const struct joint_duty_case *joint = joint_case(duty);
+ 
+ 	assert(which < ARRAY_SIZE(dirty_cases));
+ 	reset();
+@@ -1341,7 +1406,19 @@ static void test_retained_observer(unsigned int which, enum retained_duty duty)
+ 		assert(chd_dec_session_dma_absent(adp));
+ 		up_write(&chd_device_lock);
+ 	}
+-	if (mfd_pending) {
++	if (joint) {
++		hw->research_joint_pending = joint->pending;
++		hw->research_joint_original_sampled = joint->original;
++		hw->research_joint_reset_corroborated = joint->corroborated;
++		hw->research_joint_start_attempted = joint->start;
++		hw->research_joint_attempts = joint->attempts;
++		hw->research_joint_generation = joint->generation ? chd_device_generation : 0;
++		hw->research_joint_owner = joint->owner ?
++			(playback ? (const void *)&lifetime_owner : (const void *)&stream_token) : NULL;
++		/* Host canaries test retained backing, never a silicon reset tuple. */
++		for (word = 0; word < ARRAY_SIZE(hw->research_joint_saved); word++)
++			hw->research_joint_saved[word] = 0x6a740000U | word;
++	} else if (mfd_pending) {
+ 		hw->research_mfd_reset_pending = duty != RETAIN_MFD_HSIZE_ORPHAN;
+ 		hw->research_mfd_reset_cold_sampled = which != 0;
+ 		/* Even a recorded post tuple cannot bypass the rest of stock stop. */
+@@ -1452,7 +1529,10 @@ static void test_retained_observer(unsigned int which, enum retained_duty duty)
+ 		assert(command_reads + status_reads == reads && pci_gets == 1);
+ 		assert_observer_retained(adp, hw, playback, duty, which);
+ 	}
+-	if (enable_duty)
++	if (joint)
++		printf("Device lifetime research: %s%s passed (unified host duty retained, not consumer/reset proof)\n",
++		       joint->prefix, dirty_cases[which]);
++	else if (enable_duty)
+ 		printf("Device lifetime research: scl-enable-%s-retained %s passed (host duty, not consumer/reset proof)\n",
+ 		       duty == RETAIN_SCL_ENABLE_ORPHAN ? "orphan" : "bound", dirty_cases[which]);
+ 	else if (geometry_dirty)
+@@ -1473,6 +1553,14 @@ int main(int argc, char **argv)
+ 	if (argc == 2) {
+ 		unsigned int which;
+ 		for (which = 0; which < ARRAY_SIZE(dirty_cases); which++) {
++			for (unsigned int j = 0; j < ARRAY_SIZE(joint_duty_cases); j++) {
++				const char *prefix = joint_duty_cases[j].prefix;
++				if (!strncmp(argv[1], prefix, strlen(prefix)) &&
++				    !strcmp(argv[1] + strlen(prefix), dirty_cases[which])) {
++					test_retained_observer(which, RETAIN_JOINT_BOUND + j);
++					return 0;
++				}
++			}
+ 			if (!strncmp(argv[1], "enable-", 7) &&
+ 			    !strcmp(argv[1] + 7, dirty_cases[which])) {
+ 				test_retained_observer(which, RETAIN_SCL_ENABLE_BOUND);
+diff --git a/tests/device-lifetime.sh b/tests/device-lifetime.sh
+index 26048fc..e865310 100644
+--- a/tests/device-lifetime.sh
++++ b/tests/device-lifetime.sh
+@@ -11,13 +11,20 @@ cleanup()
+         "$lifetime_test_dir/lifetime-owner.h" \
+         "$lifetime_test_dir/lifetime-pm-command.h" "$lifetime_test_dir/lifetime-pm.h" \
+         "$lifetime_test_dir/access-check" "$lifetime_test_dir/access-binding.h" \
+-        "$lifetime_test_dir/access-functions.h" "$lifetime_test_dir/probe-admission.h"
++        "$lifetime_test_dir/access-functions.h" "$lifetime_test_dir/probe-admission.h" \
++        "$lifetime_test_dir/lifetime-joint.h"
+     rmdir "$lifetime_test_dir"
+ }
+ trap cleanup EXIT
+ trap 'exit 1' HUP INT TERM
+ 
+ # Exercise the production removal/close paths, including their resource helpers.
++awk '
++    /^bool crystalhd_hw_research_joint_pending\(/ { copying = 1; found++ }
++    copying { print }
++    copying && /^}/ { copying = 0 }
++    END { if (found != 1 || copying) exit 1 }
++' "$repo_dir/driver/linux/crystalhd_hw.c" > "$lifetime_test_dir/lifetime-joint.h"
+ awk '
+     /^struct crystalhd_file \{/ { copying = 1; found++ }
+     copying { print }
+@@ -176,7 +183,10 @@ for lifetime_sanitize in no yes; do
+                     UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+                     "$lifetime_test_dir/check" "mfd-$lifetime_pending_case"
+             done
+-            for lifetime_geometry_prefix in hsize hsize-orphan enable enable-orphan; do
++            for lifetime_geometry_prefix in hsize hsize-orphan enable enable-orphan \
++                joint-bound joint-orphan joint-pending-only joint-original-only \
++                joint-corroborated-only joint-start-only joint-attempts-only \
++                joint-generation-only joint-owner-only; do
+                 for lifetime_geometry_case in empty-inventory delete cached-proof fail-closed \
+                     remove late-pci-proof empty-host-queues pm-invalid pm-suspended pm-no-iodata; do
+                     ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+diff --git a/tests/fw-download.c b/tests/fw-download.c
+index 7a6a25a..600f80d 100644
+--- a/tests/fw-download.c
++++ b/tests/fw-download.c
+@@ -114,6 +114,12 @@ struct crystalhd_hw {
+ 	bool research_scl_config_probe;
+ 	bool research_scl_size_reset_probe;
+ 	bool research_scl_enable_reset_probe;
++	bool research_joint_config_probe, research_joint_feed_probe;
++	bool research_joint_pending, research_joint_original_sampled;
++	bool research_joint_reset_corroborated, research_joint_start_attempted;
++	uint32_t research_joint_attempts, research_joint_saved[25];
++	u64 research_joint_generation;
++	const void *research_joint_owner;
+ 	bool research_mfd_reset_probe;
+ 	bool research_mfd_hsize_reset_probe;
+ 	bool research_mfd_hsize_dirty;
+@@ -334,6 +340,40 @@ static unsigned size_count;
+ static BC_STATUS size_real_suspend(struct crystalhd_hw *hw);
+ static void config_context_fault(unsigned kind);
+ 
++/* Independent literal joint namespace; no pointer is read or followed. */
++static const uint32_t joint_addresses[25] = {
++	0x540000,0x540030,0x540010,0x540008,0x540014,0x540018,0x54000c,
++	0x540024,0x540044,0x54007c,0x540074,0x540004,0x540064,0x54006c,
++	0x540800,0x540804,0x540808,0x54080c,0x540810,0x540814,
++	0x540818,0x54081c,0x540854,0x540880,0x5408a4,
++};
++static const uint32_t joint_masks[25] = {
++	0xffff0000,0xfffffffe,0,0xff000000,0xffffe000,0xe000e000,0xfffff820,
++	0xfffffffe,0xfffffffe,0xfffffff0,0xfffffff0,0xfffffff0,0xfc000000,0xfffffff8,
++	0xffff0000,0xfffffff1,0xfffffe08,0xffffff00,0xf800f800,0xf800f800,
++	0xf800f800,0xf800f800,0xfffffffe,0xfffffffc,0xffffff00,
++};
++static const uint32_t joint_cold[25] = {
++	0x50,0,0x00800080,0x108080,0x780,0x436,0x10,0,0,8,4,0,0,0,
++	0x80,0xc,0,0,0x02d000f0,0,0x02d000f0,0x02d000f0,0,0,0,
++};
++static const unsigned joint_words[15]={2,3,4,5,6,7,8,9,10,11,18,20,21,22,23};
++static const uint32_t joint_targets[15]={0,0x405ac3,4,1,3,0,0,15,0,13,0x40002,0x40002,0x40002,1,3};
++static const uint32_t joint_raw_addresses[7]={0x540080,0x540078,0x540050,0x540070,0x54006c,0x540884,0x5408a4};
++static bool joint_active, joint_stop, joint_reset_model, joint_no_io, joint_pending_cycle;
++static unsigned joint_reads,joint_writes,joint_count,joint_targets_count,joint_raw_reads;
++static unsigned joint_fault_read,joint_fault_write,joint_async_read,joint_async_write,joint_async_kind;
++static unsigned joint_pci_async,joint_pci_failure_reads,joint_logs[4],joint_summaries;
++static unsigned joint_clock_event,joint_mutate_at,joint_mutate_word,joint_batch_fault;
++static unsigned joint_reset_drift_word;
++static uint32_t joint_reset_drift_bits;
++static uint32_t joint_fault_value,joint_bank[25],joint_script[17][7];
++static const char *joint_outcome;
++static struct {char kind;uint32_t address,value;} joint_trace[8192];
++static uint32_t joint_read(uint32_t address);
++static void joint_write(uint32_t address,uint32_t value);
++static bool crystalhd_flea_joint_current(struct crystalhd_hw *hw);
++
+ /* Literal synthetic control words exercise read/cleanup control flow, not an
+  * MFD reset, source lifetime or consumer-retirement certificate.
+  */
+@@ -541,6 +581,81 @@ static void config_context_fault(unsigned kind)
+ 	else if (kind == 3) adapter.generation++;
+ 	else if (kind == 4) adapter.cmds.session_owner = &hardware;
+ 	else if (kind == 5) adapter.hw_accessible = false;
++	else if (kind == 6) adapter.cmds.adp = NULL;
++	else if (kind == 7) adapter.cmds.state = 1;
++}
++
++static void joint_record(char kind,uint32_t address,uint32_t value)
++{
++	check(joint_count<ARRAY_SIZE(joint_trace),"joint logical trace stays inside its fixed storage");
++	if(joint_count<ARRAY_SIZE(joint_trace)) {
++		joint_trace[joint_count].kind=kind;joint_trace[joint_count].address=address;
++		joint_trace[joint_count++].value=value;
++	}
++}
++static uint32_t joint_read(uint32_t address)
++{
++	uint32_t value=0;bool known=false;
++	check(!fatal_stops&&!joint_no_io,"joint has no custom read after quarantine/checked PCI loss");
++	for(unsigned n=0;n<25;n++)if(address==joint_addresses[n]){value=joint_bank[n];known=true;break;}
++	for(unsigned n=0;n<7;n++)if(address==joint_raw_addresses[n] && (n<4||n==5)) {
++		unsigned ordinal=joint_raw_reads/7;
++		check(ordinal<17,"joint opaque script bounds observations independently of hardware geometry");
++		value=joint_script[ordinal<17?ordinal:16][n];known=true;break;
++	}
++	/* The two status callbacks belong to the same scripted seven-word bundle. */
++	if(address==0x54006c||address==0x5408a4) {
++		unsigned ordinal=joint_raw_reads/7;
++		if(joint_raw_reads%7==(address==0x54006c?4U:6U))value=joint_script[ordinal<17?ordinal:16][address==0x54006c?4:6];
++	}
++	if(joint_stop&&address==0x502200){value=size_reset_stuck?1:0;known=true;size_reset_reads++;}
++	if(joint_stop&&address==BCHP_DDR23_CTL_REGS_0_CTL_STATUS) {
++		value=size_clock_disabled?(size_cke_stuck?0x73:0x71):(size_idle_stuck?0x72:0x73);known=true;
++	}
++	if(!known)switch(address) {
++	case 0x4000d4:break;case 0xe0004:value=0x400f0;break;
++	case 0x70004:value=0x03000000;break;
++	case BCHP_SCRUB_CTRL_SCRUB_ENABLE:break;
++	case BCHP_WRAP_MISC_INTR2_PCI_STATUS:value=SCRAM_KEY_DONE_INT_BIT;break;
++	case BCHP_DDR23_CTL_REGS_0_PARAMS2:case BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG:
++	case BCHP_CLK_PLL1_CTRL:check(joint_stop,"only existing stock-stop addresses accompany joint retirement");break;
++	default:check(false,"joint reads literal controls/raw bundle/stock scalars only, never source pointers");
++	}
++	if(address>=0x540000&&address<=0x5408a4)check(!size_clock_disabled,"no joint bank access after stock powerdown");
++	if(address==joint_raw_addresses[joint_raw_reads%7] &&
++	   (joint_raw_reads%7!=4&&joint_raw_reads%7!=6))joint_raw_reads++;
++	else if(joint_raw_reads%7==4&&address==0x54006c)joint_raw_reads++;
++	else if(joint_raw_reads%7==6&&address==0x5408a4)joint_raw_reads++;
++	joint_reads++;if(joint_reads==joint_fault_read)value=joint_fault_value;
++	joint_record('R',address,value);
++	if(joint_reads==joint_mutate_at)joint_bank[joint_mutate_word]^=1;
++	if(joint_reads==joint_async_read)config_context_fault(joint_async_kind);
++	return value;
++}
++static void joint_write(uint32_t address,uint32_t value)
++{
++	check(!fatal_stops&&!joint_no_io,"joint has no target write after detected loss");
++	joint_writes++;joint_record('W',address,value);
++	if(joint_stop) {
++		check(address<0x540000||address>0x5408a4,"joint cleanup never live-restores a bank target");
++		if(address==0x502200&&joint_reset_model){memcpy(joint_bank,joint_cold,sizeof(joint_bank));
++			if(joint_reset_drift_bits)joint_bank[joint_reset_drift_word]^=joint_reset_drift_bits;}
++		if(address==0x70004){check(hardware.research_joint_reset_corroborated&&joint_logs[3]==25,
++			"complete joint pair precedes stock powerdown");size_clock_disabled=true;joint_clock_event=joint_count;}
++	} else if(hardware.research_mfd_pci_isolated) {
++		unsigned n=joint_targets_count++;
++		check(hardware.research_joint_pending&&hardware.research_joint_original_sampled&&
++		      hardware.research_joint_generation==adapter.generation&&hardware.research_joint_owner==&research_owner&&
++		      hardware.research_joint_attempts==n+1&&n<16,
++		      "unified duty and attempt counter precede every ambiguous void target callback");
++		check((n<15&&address==joint_addresses[joint_words[n]]&&value==joint_targets[n])||
++		      (n==15&&address==0x540030&&value==1&&hardware.research_joint_start_attempted),
++		      "literal joint target stream has no pulse, retarget, pointer, TOP, clock or source write");
++		if(joint_writes!=joint_fault_write)for(unsigned i=0;i<25;i++)if(address==joint_addresses[i])joint_bank[i]=value;
++	} else check(address==BCHP_SCRUB_CTRL_SCRUB_ENABLE||address==BCHP_WRAP_MISC_INTR2_PCI_CLEAR||
++		address==BCHP_SCRUB_CTRL_BORCH_END_ADDRESS||address==BCHP_SCRUB_CTRL_STARCH_END_ADDRESS,
++		"pre-isolation writes are only official loader setup");
++	if(joint_writes==joint_async_write)config_context_fault(joint_async_kind);
+ }
+ 
+ static uint32_t read_config(uint32_t offset)
+@@ -908,7 +1023,40 @@ static void packed_compare(void)
+ 
+ static void test_log(const char *message, ...)
+ {
+-	if(hsize_active&&strstr(message,"mfd-hsize-reset: phase=")) {
++	if(joint_active&&strstr(message,"issue92 joint: phase=cold")) {
++		va_list args;va_start(args,message);unsigned word=va_arg(args,unsigned);
++		uint32_t first=va_arg(args,uint32_t),second=va_arg(args,uint32_t);
++		check(config_current()&&!fatal_stops&&word==joint_logs[0]&&word<25&&first==second&&
++		      first==joint_bank[word]&&hardware.research_joint_pending,
++		      "joint cold logs publish only complete equal current saved controls");
++		joint_logs[0]++;va_end(args);
++	} else if(joint_active&&strstr(message,"issue92 joint: phase=pre-powerdown-retire")) {
++		va_list args;va_start(args,message);unsigned word=va_arg(args,unsigned);
++		uint32_t first=va_arg(args,uint32_t),second=va_arg(args,uint32_t);
++		check(config_current()&&!fatal_stops&&!size_clock_disabled&&word==joint_logs[3]&&word<25&&
++		      first==second&&first==hardware.research_joint_saved[word],
++		      "joint retirement never publishes a partial, stale or subset proof");
++		joint_logs[3]++;va_end(args);
++	} else if(joint_active&&(strstr(message,"issue92 joint: phase=pre-start")||strstr(message,"issue92 joint: phase=active"))) {
++		bool active=strstr(message,"phase=active")!=NULL;
++		va_list args;va_start(args,message);unsigned ordinal=active?va_arg(args,unsigned):0;
++		unsigned word=va_arg(args,unsigned);uint32_t raw=va_arg(args,uint32_t);
++		check(config_current()&&!fatal_stops&&word==(active?joint_logs[2]:joint_logs[1])%11&&word<11&&
++		      ordinal<16&&raw!=UINT32_MAX&&hardware.research_joint_pending,
++		      "joint raw rows are complete current opaque observations, not accepted-transfer counts");
++		joint_logs[active?2:1]++;va_end(args);
++	} else if(joint_active&&strstr(message,"issue92 joint: attempts=")) {
++		va_list args;va_start(args,message);unsigned attempts=va_arg(args,unsigned),start=va_arg(args,unsigned);
++		unsigned observations=va_arg(args,unsigned);const char *outcome=va_arg(args,const char *);
++		check(config_current()&&!fatal_stops&&attempts==joint_targets_count&&attempts<=16&&
++		      start==hardware.research_joint_start_attempted&&observations==joint_logs[2]/11&&
++		      outcome&&strstr(message,"accept-writes=0")&&strstr(message,"raw-observations-only"),
++		      "joint summary reports actual attempts and observations without completion claims");
++		joint_outcome=outcome;
++		joint_summaries++;va_end(args);
++	} else if(joint_active&&strstr(message,"issue92 staging:")) {
++		check(config_current()&&!fatal_stops,"joint staging log requires current original prefix");config_staging_logs++;
++	} else if(hsize_active&&strstr(message,"mfd-hsize-reset: phase=")) {
+ 		va_list args;va_start(args,message);
+ 		const char *phase=va_arg(args,const char *);unsigned word=va_arg(args,unsigned);
+ 		uint32_t first=va_arg(args,uint32_t),second=va_arg(args,uint32_t);
+@@ -1116,6 +1264,7 @@ static int pci_read_config_word(struct pci_dev *device, unsigned offset,
+ 		      "close verifies PCI only after successful stock suspend when started");
+ 	}
+ 	pci_reads++;
++	if(joint_active&&pci_reads==joint_pci_async)config_context_fault(joint_async_kind);
+ 	if(hsize_active&&hsize_pci_count<ARRAY_SIZE(hsize_pci_offsets))
+ 		hsize_pci_offsets[hsize_pci_count++]=offset;
+ 	if(reset_controls_active && pci_reads==reset_controls_pci_async)
+@@ -1123,6 +1272,7 @@ static int pci_read_config_word(struct pci_dev *device, unsigned offset,
+ 	if(size_active && pci_reads==size_pci_async_at)config_context_fault(size_async_kind);
+ 	if (config_active && pci_reads==config_pci_async_at) config_context_fault(config_async_kind);
+ 	if (pci_reads == pci_fail_at) {
++		if(joint_active){joint_pci_failure_reads=joint_reads;joint_no_io=true;}
+ 		if(reset_controls_active)reset_controls_pci_failed_reads=reset_controls_reads;
+ 		if(size_active)size_pci_failure_reads=size_reads;
+ 		config_pci_failed=config_active;
+@@ -1145,7 +1295,8 @@ static int pci_read_config_word(struct pci_dev *device, unsigned offset,
+ 	} else {
+ 		check(offset == pci_capability + PCI_EXP_DEVSTA,
+ 		      "PCI guard reads only COMMAND and the known PCIe device status");
+-		const unsigned pending_index=((config_active && config_pending_cycle) ||
++		const unsigned pending_index=((joint_active && joint_pending_cycle) ||
++			(config_active && config_pending_cycle) ||
+ 			(reset_controls_active && reset_controls_pending_cycle)) ? pci_pending_reads%4 :
+ 			pci_pending_reads<ARRAY_SIZE(pci_pending)?pci_pending_reads:ARRAY_SIZE(pci_pending)-1;
+ 		*value = pci_pending[pending_index];
+@@ -1188,6 +1339,7 @@ static void crystalhd_hw_dma_fatal_stop(struct crystalhd_hw *hw)
+ 
+ static BC_STATUS crystalhd_hw_suspend(struct crystalhd_hw *hw)
+ {
++	if(joint_active&&joint_stop)return size_real_suspend(hw);
+ 	if(reset_controls_active && reset_controls_real_stop)return size_real_suspend(hw);
+ 	if(size_active && size_real_stop)return size_real_suspend(hw);
+ 	check(hw == &hardware && hw->dev_started,
+@@ -1315,6 +1467,7 @@ static uint32_t read_device(struct crystalhd_adp *adp, uint32_t offset)
+ {
+ 	check(adp == &adapter, "Flea read uses the admitted adapter");
+ 	dev_reads++;
++	if(joint_active)return joint_read(offset);
+ 	if(reset_controls_active)return reset_controls_read(offset);
+ 	if(size_active)return size_read(offset);
+ 	if (config_active) return read_config(offset);
+@@ -1414,6 +1567,7 @@ static void write_device(struct crystalhd_adp *adp, uint32_t offset,
+ {
+ 	check(adp == &adapter, "Flea write uses the admitted adapter");
+ 	dev_writes++;
++	if(joint_active){joint_write(offset,value);return;}
+ 	if(reset_controls_active){reset_controls_write(offset,value);return;}
+ 	if(size_active){size_write(offset,value);return;}
+ 	if (config_active) {
+@@ -1513,7 +1667,7 @@ static BC_STATUS write_dram(struct crystalhd_hw *hw, uint32_t offset,
+ 	check(hw == &hardware && offset == FW_DOWNLOAD_START_ADDR && words,
+ 	      "Flea DRAM write receives the exact image and start address");
+ 	dram_writes++;
+-	if (config_active || reset_controls_active) {
++	if (config_active || reset_controls_active || joint_active) {
+ 		check(dram_writes==1 && !hardware.research_mfd_pci_isolated && buffer==expected_image,
+ 		      "cold-config stages only the original official payload, never a synthetic source prefix");
+ 		config_context_fault(config_pio_write_fault);
+@@ -1590,7 +1744,7 @@ static BC_STATUS read_dram(struct crystalhd_hw *hw, uint32_t offset,
+ 	      cmac_writes == 0 && arm_run_writes == 0,
+ 	      "probe read follows normal write and precedes authentication/start");
+ 	dram_reads++;
+-	if (config_active || reset_controls_active) config_context_fault(config_pio_read_fault);
++	if (config_active || reset_controls_active || joint_active) config_context_fault(config_pio_read_fault);
+ 	BC_STATUS status = dram_writes == 1 ? read_status :
+ 		dram_writes == 2 ? pattern_read_status : restore_read_status;
+ 	bool mismatch = dram_writes == 1 ? read_mismatch :
+@@ -1599,7 +1753,7 @@ static BC_STATUS read_dram(struct crystalhd_hw *hw, uint32_t offset,
+ 		memcpy(buffer, card_prefix, words * sizeof(*buffer));
+ 		if (mismatch)
+ 			buffer[dram_writes == 1 ? 0 : mismatch_index] ^= 1U;
+-	} else if (config_active || reset_controls_active) memset(buffer,0xa5,words*sizeof(*buffer));
++	} else if (config_active || reset_controls_active || joint_active) memset(buffer,0xa5,words*sizeof(*buffer));
+ 	return status;
+ }
+ 
+@@ -1662,6 +1816,9 @@ static bool crystalhd_flea_detect_fw_alive(struct crystalhd_hw *hw)
+ #undef crystalhd_flea_mfd_latch_probe
+ 
+ #include "pci-guard-function.h"
++#include "joint-pending.h"
++#include "joint-binding.h"
++#include "joint-current.h"
+ #include "size-scl_size_current.h"
+ #include "mfd-reset-current.h"
+ #include "hw-close-function.h"
+@@ -1672,6 +1829,12 @@ static bool crystalhd_flea_detect_fw_alive(struct crystalhd_hw *hw)
+ #include "mfd-packed-input-scl-guard.h"
+ #include "scl-config-guard.h"
+ #include "scl-config-sample.h"
++#include "joint-arrays.h"
++#include "joint-sample.h"
++#include "joint-attempt.h"
++#include "joint-observe.h"
++#include "joint-probe.h"
++#include "joint-retire.h"
+ #include "mfd-reset-sample.h"
+ #include "mfd-reset-pair.h"
+ #include "mfd-hsize-pair.h"
+@@ -1716,6 +1879,7 @@ static BC_STATUS crystalhd_flea_mfd_reset_probe(struct crystalhd_hw *hw,u64 gene
+ static void size_batch(void)
+ {
+ 	size_batches++;
++	if(joint_active&&size_batches==joint_batch_fault)config_context_fault(joint_async_kind);
+ 	if(reset_controls_active && size_batches==reset_controls_batch_fault)
+ 		config_context_fault(reset_controls_async_kind);
+ 	if(size_batches==size_batch_fault)config_context_fault(size_async_kind);
+@@ -2017,6 +2181,14 @@ static uint32_t patterned_word(size_t index)
+ 
+ static void reset(void)
+ {
++	joint_active=joint_stop=joint_reset_model=joint_no_io=joint_pending_cycle=false;
++	joint_outcome=NULL;
++	joint_reads=joint_writes=joint_count=joint_targets_count=joint_raw_reads=0;
++	joint_fault_read=joint_fault_write=joint_async_read=joint_async_write=joint_async_kind=0;
++	joint_pci_async=joint_pci_failure_reads=joint_summaries=joint_clock_event=0;
++	joint_mutate_at=joint_mutate_word=joint_batch_fault=0;
++	joint_reset_drift_word=0;joint_reset_drift_bits=0;
++	joint_fault_value=UINT32_MAX;memset(joint_logs,0,sizeof(joint_logs));
+ 	hsize_active=hsize_write_ignored=hsize_reset_model=false;
+ 	hsize_logs[0]=hsize_logs[1]=hsize_logs[2]=hsize_calls=hsize_targets=hsize_summaries=0;
+ 	hsize_post_match=hsize_post_mismatch=hsize_drift_word=0;hsize_drift_bits=0;
+@@ -8130,6 +8302,432 @@ static void hsize_scope_results(void)
+ 	      "default-off original firmware boot is unchanged and does not execute new observer");
+ }
+ 
++static void joint_fixture(void)
++{
++	reset();joint_active=true;queues[2].count=0;hardware.pfnStopDevice=crystalhd_flea_stop_device;
++	memcpy(joint_bank,joint_cold,sizeof(joint_bank));memset(joint_trace,0,sizeof(joint_trace));
++	for(unsigned n=0;n<17;n++) {
++		const uint32_t raw[7]={0x04053198,0x00053198,2,0,0,0x12345678,0};
++		memcpy(joint_script[n],raw,sizeof(raw));
++	}
++}
++static BC_STATUS joint_run(bool feed)
++{return crystalhd_flea_joint_probe(&hardware,adapter.generation,&research_owner,feed);}
++static void joint_expected(unsigned *n,char kind,uint32_t address,uint32_t value)
++{
++	check(*n<joint_count,"literal joint trace has the next independently requested event");
++	if(*n<joint_count)check(joint_trace[*n].kind==kind&&joint_trace[*n].address==address&&
++		joint_trace[*n].value==value,"joint literal event kind/address/value matches independent order");
++	(*n)++;
++}
++static void joint_guard_oracle(unsigned *n,const uint32_t *bank)
++{
++	const uint32_t a[4]={0x540000,0x4000d4,0xe0004,0x540064};
++	const uint32_t v[4]={0x50,0,0x400f0,bank[12]};
++	for(unsigned i=0;i<4;i++)joint_expected(n,'R',a[i],v[i]);
++}
++static void joint_sample_oracle(unsigned *n,const uint32_t *bank)
++{
++	joint_guard_oracle(n,bank);
++	for(unsigned i=0;i<25;i++)joint_expected(n,'R',joint_addresses[i],bank[i]);
++	joint_guard_oracle(n,bank);
++}
++static void joint_observe_oracle(unsigned *n,const uint32_t *bank,unsigned ordinal)
++{
++	joint_sample_oracle(n,bank);
++	for(unsigned i=0;i<7;i++)joint_expected(n,'R',joint_raw_addresses[i],joint_script[ordinal][i]);
++	joint_sample_oracle(n,bank);
++}
++static void joint_clean_results(void)
++{
++	groups++;
++	for(unsigned feed=0;feed<2;feed++) {
++		joint_fixture();check(joint_run(feed)==BC_STS_CMD_CANCELLED,"joint actual helper deliberately aborts pre-CMAC");
++		check(joint_reads==(feed?1812U:644U)&&joint_targets_count==(feed?16U:15U)&&
++		      pci_reads==(feed?306U:114U)&&pci_clears==1&&joint_raw_reads==(feed?119U:7U)&&
++		      joint_logs[0]==25&&joint_logs[1]==11&&joint_logs[2]==(feed?176U:0U)&&joint_summaries==1&&
++		      hardware.research_joint_pending&&!hardware.research_joint_reset_corroborated&&
++		      hardware.research_joint_start_attempted==(bool)feed&&hardware.research_mfd_deliberate_abort&&
++		      !memcmp(hardware.research_joint_saved,joint_cold,sizeof(joint_cold))&&
++		      !dram_reads&&!dram_writes&&!fpga_reads&&!fpga_writes&&!cmac_writes&&!arm_run_writes,
++		      "joint clean logical budgets leave one persistent duty, never native processing success");
++		check(joint_outcome&&!strcmp(joint_outcome,feed?"bounded_observation":"configuration_only"),
++		      "clean joint outcome is bounded/configuration-only, never processing PASS");
++		unsigned n=0;uint32_t bank[25];memcpy(bank,joint_cold,sizeof(bank));
++		joint_guard_oracle(&n,bank);
++		const uint32_t a[6]={0x540030,0x540800,0x540804,0x540854,0x540880,0x5408a4};
++		const uint32_t v[6]={0,0x80,0xc,0,0,0};
++		for(unsigned i=0;i<6;i++)joint_expected(&n,'R',a[i],v[i]);
++		joint_sample_oracle(&n,bank);joint_sample_oracle(&n,bank);
++		for(unsigned i=0;i<15;i++) {
++			joint_expected(&n,'W',joint_addresses[joint_words[i]],joint_targets[i]);
++			bank[joint_words[i]]=joint_targets[i];joint_sample_oracle(&n,bank);
++		}
++		joint_observe_oracle(&n,bank,0);
++		if(feed){joint_expected(&n,'W',0x540030,1);bank[1]=1;
++			for(unsigned i=1;i<17;i++)joint_observe_oracle(&n,bank,i);}
++		check(n==joint_count,"joint entire direct REG stream equals independent literal oracle");
++		unsigned reads=joint_reads,writes=joint_writes;
++		check(joint_run(feed)==BC_STS_BUSY&&joint_reads==reads&&joint_writes==writes,
++		      "joint replay is refused without further custom I/O");
++	}
++}
++static void joint_probe_fault_results(void)
++{
++	groups++;
++	for(unsigned feed=0;feed<2;feed++) {
++		unsigned bound=feed?1812:644;
++		for(unsigned at=1;at<=bound;at++)for(unsigned kind=0;kind<8;kind++) {
++			joint_fixture();if(kind){joint_async_read=at;joint_async_kind=kind;}
++			else{joint_fault_read=at;joint_fault_value=UINT32_MAX;}
++			BC_STATUS status=joint_run(feed);
++			/* The inherited initial cold batch qualifies cmds.adp/state only
++			 * at its outer joint boundary; it may finish 10 reads, never a target.
++			 */
++			unsigned ceiling=at+3;
++			if(kind>=6&&at<=10&&ceiling<10)ceiling=10;
++			bool ok=size_refused(status)&&joint_reads<=ceiling&&!joint_summaries&&
++			      !hardware.research_joint_reset_corroborated&&joint_targets_count<=16&&
++			      (!(kind>=6&&at<=10)||(!joint_targets_count&&!pci_clears&&!joint_logs[0]));
++			if(!ok)fprintf(stderr,"joint read diagnostic feed=%u at=%u kind=%u status=%u reads=%u targets=%u summaries=%u\n",
++				feed,at,kind,status,joint_reads,joint_targets_count,joint_summaries);
++			check(ok,"every joint direct read poison/currentness fault refuses without retry or full-result publication");
++		}
++		for(unsigned at=1;at<=(feed?16U:15U);at++)for(unsigned kind=0;kind<8;kind++) {
++			joint_fixture();if(kind){joint_async_write=at;joint_async_kind=kind;}else joint_fault_write=at;
++			bool visible=kind||(at<=15&&joint_cold[joint_words[at-1]]!=joint_targets[at-1]);
++			BC_STATUS status=joint_run(feed);
++			check(hardware.research_joint_pending&&
++			      (visible?(status==BC_STS_IO_ERROR&&fatal_stops==1&&joint_writes==at&&
++			        hardware.research_joint_attempts==at&&!joint_summaries):
++			       (status==BC_STS_CMD_CANCELLED&&!fatal_stops&&joint_targets_count==(feed?16U:15U))),
++			      "detected write loss refuses; indistinguishable same-value/START0 attempt stays inconclusive under duty");
++		}
++		for(unsigned at=1;at<=(feed?306U:114U);at++) {
++			joint_fixture();pci_fail_at=at;
++			check(joint_run(feed)==BC_STS_IO_ERROR&&fatal_stops==1&&joint_reads==joint_pci_failure_reads&&
++			      !joint_summaries,"every checked PCI failure forbids subsequent joint bank access");
++		}
++	}
++}
++static void joint_sample_results(void)
++{
++	groups++;
++	for(unsigned word=0;word<25;word++)for(unsigned bit=0;bit<32;bit++)if(joint_masks[word]&(1U<<bit)) {
++		joint_fixture();joint_bank[word]|=1U<<bit;
++		struct{uint32_t before,v[25],after;}out;memset(&out,0xa5,sizeof(out));
++		check(crystalhd_flea_joint_sample(&hardware,adapter.generation,&research_owner,NULL,false,false,out.v)==BC_STS_IO_ERROR&&
++		      out.before==0xa5a5a5a5&&out.after==0xa5a5a5a5&&out.v[0]==0xa5a5a5a5,
++		      "every reserved joint bit fails without touching output or canaries");
++	}
++	for(unsigned word=0;word<25;word++) {
++		joint_fixture();joint_bank[word]=UINT32_MAX;uint32_t values[25];memset(values,0x3c,sizeof(values));
++		check(crystalhd_flea_joint_sample(&hardware,adapter.generation,&research_owner,NULL,false,false,values)==BC_STS_IO_ERROR&&
++		      values[0]==0x3c3c3c3c,"all-ones joint control observations never become complete samples");
++	}
++	joint_fixture();uint32_t values[25];
++	check(crystalhd_flea_joint_sample(&hardware,adapter.generation,&research_owner,NULL,false,false,values)==BC_STS_SUCCESS&&
++	      joint_reads==33&&!memcmp(values,joint_cold,sizeof(values)),"cold sample returns only complete qualified control-only25tuple");
++	unsigned reads=joint_reads;
++	check(crystalhd_flea_joint_sample(&hardware,adapter.generation,&research_owner,NULL,false,false,NULL)==BC_STS_IO_ERROR&&
++	      joint_reads==reads,"null output sample refuses before any I/O");
++	joint_fixture();joint_bank[10]=0;
++	check(joint_run(false)==BC_STS_CMD_CANCELLED&&hardware.research_joint_saved[10]==0,
++	      "cold TEST0 is explicitly admitted as well as observedTEST4, not an arbitrary scalar mask");
++}
++static void joint_prepare_stop(bool feed)
++{
++	joint_fixture();check(joint_run(feed)==BC_STS_CMD_CANCELLED,"retirement starts from an actual owned joint configuration");
++	joint_reads=joint_writes=joint_count=joint_raw_reads=0;pci_reads=pci_command_reads=pci_pending_reads=0;
++	memset(joint_logs,0,sizeof(joint_logs));joint_summaries=0;size_batches=0;
++	joint_stop=joint_reset_model=true;
++}
++static void joint_pending_results(void)
++{
++	groups++;
++	for(unsigned feed=0;feed<2;feed++) {
++		const unsigned bound=feed?918:342;
++		joint_fixture();joint_pending_cycle=true;
++		pci_pending[0]=pci_pending[1]=pci_pending[2]=PCI_EXP_DEVSTA_TRPND;
++		check(joint_run(feed)==BC_STS_CMD_CANCELLED&&pci_reads==bound&&sleeps==bound/3&&
++		      joint_reads==(feed?1812U:644U)&&joint_targets_count==(feed?16U:15U),
++		      "bounded pending rechecks compose342/918 logical PCI callbacks, not physical fences or bus counts");
++		for(unsigned at=1;at<=bound;at++) {
++			joint_fixture();joint_pending_cycle=true;
++			pci_pending[0]=pci_pending[1]=pci_pending[2]=PCI_EXP_DEVSTA_TRPND;pci_fail_at=at;
++			check(joint_run(feed)==BC_STS_IO_ERROR&&pci_reads==at&&fatal_stops==1&&
++			      joint_reads==joint_pci_failure_reads&&!joint_summaries,
++			      "every expanded pending transport failure forbids later joint REG/target callbacks");
++		}
++		joint_fixture();for(unsigned n=0;n<4;n++)pci_pending[n]=PCI_EXP_DEVSTA_TRPND;
++		check(joint_run(feed)==BC_STS_IO_ERROR&&pci_reads==8&&!joint_targets_count&&!joint_logs[0],
++		      "unresolved pending rejects before saved publication or any custom target attempt");
++		joint_prepare_stop(feed);joint_pending_cycle=true;sleeps=0;
++		pci_pending[0]=pci_pending[1]=pci_pending[2]=PCI_EXP_DEVSTA_TRPND;
++		check(crystalhd_hw_close(&hardware)==BC_STS_SUCCESS&&pci_reads==45&&sleeps==18&&
++		      joint_reads==75&&joint_writes==21&&!crystalhd_hw_research_joint_pending(&hardware),
++		      "stock stop/final containment completes its bounded pending rechecks before joint duty discharge");
++		for(unsigned at=1;at<=45;at++)for(unsigned kind=0;kind<8;kind++) {
++			joint_prepare_stop(feed);joint_pending_cycle=true;
++			pci_pending[0]=pci_pending[1]=pci_pending[2]=PCI_EXP_DEVSTA_TRPND;
++			if(kind){joint_pci_async=at;joint_async_kind=kind;}else pci_fail_at=at;
++			check(crystalhd_hw_close(&hardware)!=BC_STS_SUCCESS&&hardware.research_joint_pending&&
++			      (!kind||!hardware.research_joint_reset_corroborated||joint_logs[3]==25),
++			      "every expanded stop PCI transport/binding loss retains unified duty, even after complete tuple corroboration");
++		}
++	}
++}
++static void joint_retire_results(void)
++{
++	groups++;
++	for(unsigned feed=0;feed<2;feed++) {
++		joint_prepare_stop(feed);
++		check(crystalhd_hw_close(&hardware)==BC_STS_SUCCESS&&joint_reads==75&&joint_writes==21&&
++		      pci_reads==15&&joint_logs[3]==25&&joint_clock_event&&!crystalhd_hw_research_joint_pending(&hardware)&&
++		      !memcmp(joint_bank,joint_cold,sizeof(joint_bank)),
++		      "actual stock stop observes entire original joint tuple before powerdown then clears duty after finalPCI");
++		for(unsigned at=1;at<=75;at++)for(unsigned kind=0;kind<8;kind++) {
++			joint_prepare_stop(feed);if(kind){joint_async_read=at;joint_async_kind=kind;}else joint_fault_read=at;
++			check(crystalhd_hw_close(&hardware)!=BC_STS_SUCCESS&&hardware.research_joint_pending&&hardware.dev_started,
++			      "every stop read poison/binding loss retains indivisible joint duty and backing");
++		}
++		for(unsigned at=1;at<=21;at++)for(unsigned kind=1;kind<8;kind++) {
++			joint_prepare_stop(feed);joint_async_write=at;joint_async_kind=kind;
++			check(crystalhd_hw_close(&hardware)!=BC_STS_SUCCESS&&hardware.research_joint_pending&&joint_writes==at,
++			      "every stock-stop callback loss prevents subsequent writes and joint discharge");
++		}
++		for(unsigned at=1;at<=15;at++)for(unsigned kind=0;kind<8;kind++) {
++			joint_prepare_stop(feed);if(kind){joint_pci_async=at;joint_async_kind=kind;}else pci_fail_at=at;
++			check(crystalhd_hw_close(&hardware)!=BC_STS_SUCCESS&&hardware.research_joint_pending,
++			      "every pre-powerdown and finalPCI loss, including cmds.adp/state, retains joint duty");
++		}
++		for(unsigned batch=1;batch<=4;batch++)for(unsigned kind=1;kind<8;kind++) {
++			joint_prepare_stop(feed);joint_batch_fault=batch;joint_async_kind=kind;
++			check(crystalhd_hw_close(&hardware)!=BC_STS_SUCCESS&&hardware.research_joint_pending&&size_batches==batch,
++			      "opaque stock-callee loss stops at its checked boundary without claiming internal instantaneous cancellation");
++		}
++	}
++}
++static void joint_reset_mismatch_results(void)
++{
++	groups++;
++	for(unsigned word=0;word<25;word++)for(unsigned bit=0;bit<32;bit++)for(unsigned saved=0;saved<2;saved++) {
++		joint_prepare_stop(false);
++		if(saved)hardware.research_joint_saved[word]^=1U<<bit;
++		else{joint_reset_drift_word=word;joint_reset_drift_bits=1U<<bit;}
++		check(crystalhd_hw_close(&hardware)!=BC_STS_SUCCESS&&hardware.research_joint_pending&&
++		      !hardware.research_joint_reset_corroborated&&!joint_clock_event&&!joint_logs[3],
++		      "every saved/observed25word bit mismatch refuses complete retirement, including retained colour");
++	}
++	for(unsigned failure=0;failure<4;failure++) {
++		joint_prepare_stop(false);if(failure==0)joint_reset_model=false;
++		else if(failure==1)size_reset_stuck=true;else if(failure==2)size_idle_stuck=true;else size_cke_stuck=true;
++		check(crystalhd_hw_close(&hardware)!=BC_STS_SUCCESS&&hardware.research_joint_pending,
++		      "retained configuration and bounded stock-stop failures cannot become reset certificates");
++		if(failure<3)check(!joint_clock_event,"missing original joint tuple refuses before first stock powerdown");
++	}
++}
++static void joint_terminal_results(void)
++{
++	groups++;
++	for(unsigned marker=0;marker<3;marker++)for(unsigned error=0;error<3;error++) {
++		joint_fixture();
++		if(marker==0)joint_script[0][0]|=0x02000000;
++		else if(marker==1)joint_script[0][1]|=0x02000000;else joint_script[0][3]=2;
++		if(error==1)joint_script[0][4]=1;else if(error==2)joint_script[0][6]=0x80;
++		check(joint_run(true)==BC_STS_CMD_CANCELLED&&joint_targets_count==(error?15U:16U)&&
++		      hardware.research_joint_start_attempted==!error&&joint_logs[2]==(error?0U:176U)&&
++		      joint_outcome&&!strcmp(joint_outcome,error?"observed_engine_error":"bounded_observation"),
++		      "legal pre-START terminal-labelled levels remain baseline raws; only defined prebaseline errors forbid START");
++	}
++	for(unsigned ordinal=0;ordinal<16;ordinal++)for(unsigned marker=0;marker<3;marker++)for(unsigned error=0;error<3;error++) {
++		joint_fixture();unsigned row=ordinal+1;
++		if(marker==0)joint_script[row][0]|=0x02000000;
++		else if(marker==1)joint_script[row][1]|=0x02000000;else joint_script[row][3]=2;
++		if(error==1)joint_script[row][4]=1;else if(error==2)joint_script[row][6]=0x80;
++		check(joint_run(true)==BC_STS_CMD_CANCELLED&&joint_logs[2]==(ordinal+1)*11&&
++		      joint_raw_reads==(ordinal+2)*7&&joint_targets_count==16&&joint_summaries==1&&
++		      joint_outcome&&!strcmp(joint_outcome,error?"observed_engine_error":"sampled_terminal"),
++		      "each scripted LAST/EOF terminal with or without error stops before the next observation, never proves completion");
++	}
++	for(unsigned bit=0;bit<8;bit++)for(unsigned before=0;before<2;before++) {
++		joint_fixture();joint_script[before?0:1][6]=1U<<bit;
++		check(joint_run(true)==BC_STS_CMD_CANCELLED&&joint_targets_count==(before?15U:16U)&&
++		      joint_logs[2]==(before?0U:11U)&&joint_summaries==1&&joint_outcome&&
++		      !strcmp(joint_outcome,"observed_engine_error"),
++		      "all eight defined SCL flags, including bits6/7, stop START or the next active bundle");
++	}
++	for(unsigned bit=0;bit<3;bit++) {
++		joint_fixture();joint_script[0][4]=1U<<bit;
++		check(joint_run(true)==BC_STS_CMD_CANCELLED&&joint_targets_count==15&&!hardware.research_joint_start_attempted&&
++		      joint_outcome&&!strcmp(joint_outcome,"observed_engine_error"),
++		      "defined pre-start feeder errors prevent the sole START opportunity");
++	}
++	joint_fixture();for(unsigned row=1;row<17;row++)joint_script[row][2]|=0x20000000;
++	check(joint_run(true)==BC_STS_CMD_CANCELLED&&joint_logs[2]==176,
++	      "LAST_LINE alone is a raw observation, not the preregistered LAST_PIXEL/EOF terminal");
++	joint_fixture();
++	for(unsigned row=0;row<17;row++) {
++		joint_script[row][0]=((row&1)?0x04000000U:0)|((row&2)?0x08000000U:0)|row;
++		joint_script[row][1]=(row*71U)&0x000fffff;
++		joint_script[row][2]=row&0xfff;
++		joint_script[row][3]=row&1;
++		joint_script[row][5]=0x87654321^row;
++	}
++	check(joint_run(true)==BC_STS_CMD_CANCELLED&&joint_logs[2]==176&&joint_raw_reads==119&&
++	      joint_outcome&&!strcmp(joint_outcome,"bounded_observation"),
++	      "legal changing opaque data and READY/ACCEPT levels control only the bounded observation flow, not a source/output model");
++}
++static void joint_retention_results(void)
++{
++	groups++;
++	for(unsigned scalar=0;scalar<8;scalar++)for(unsigned terminal=0;terminal<2;terminal++) {
++		joint_fixture();if(scalar==0){hardware.research_joint_pending=true;hardware.research_joint_original_sampled=true;
++			hardware.research_joint_generation=adapter.generation;hardware.research_joint_owner=&research_owner;}
++		else if(scalar==1)hardware.research_joint_pending=true;
++		else if(scalar==2)hardware.research_joint_original_sampled=true;
++		else if(scalar==3)hardware.research_joint_reset_corroborated=true;
++		else if(scalar==4)hardware.research_joint_start_attempted=true;
++		else if(scalar==5)hardware.research_joint_attempts=1;
++		else if(scalar==6)hardware.research_joint_generation=adapter.generation;
++		else hardware.research_joint_owner=&research_owner;
++		adapter.dma_terminal_quiesced=terminal;hardware.research_joint_saved[3]=0x55aa55aa;
++		struct crystalhd_hw saved=hardware;unsigned count=joint_count;
++		crystalhd_hw_retire_rx_quiesced(&hardware);
++		check(crystalhd_hw_free_dma_rings(&hardware)==BC_STS_IO_ERROR&&!size_free_calls&&joint_count==count&&
++		      !memcmp(&saved,&hardware,sizeof(saved)),"bound and scalar-orphan joint duties veto RX/free even empty inventory/cachedquiescence");
++	}
++	joint_fixture();hardware.research_joint_saved[3]=0x55aa55aa;
++	check(!crystalhd_hw_research_joint_pending(&hardware),"saved-array bytes alone do not invent a live joint duty");
++	for(unsigned loss=1;loss<8;loss++) {
++		joint_prepare_stop(false);config_context_fault(loss);unsigned count=joint_count;
++		check(crystalhd_hw_close(&hardware)!=BC_STS_SUCCESS&&hardware.research_joint_pending&&joint_count==count,
++		      "lost joint binding refuses before stockstop or any new probe access");
++	}
++	joint_fixture();check(joint_run(false)==BC_STS_CMD_CANCELLED,"binding premise uses actual configured joint duty");
++	hardware.pfnReadDevRegister=NULL;
++	check(!crystalhd_flea_joint_current(&hardware),"missing readcallback invalidates currentness without executing corrupted callback");
++	hardware.pfnReadDevRegister=read_device;hardware.pfnWriteDevRegister=NULL;
++	check(!crystalhd_flea_joint_current(&hardware),"missing writecallback invalidates currentness without arbitrary pointer-corruption execution");
++}
++
++static BC_STATUS joint_download(bool feed)
++{
++	hardware.research_staging_probe=true;hardware.research_joint_feed_probe=feed;
++	hardware.research_joint_config_probe=!feed;
++	return crystalhd_flea_download_fw(&hardware,(const uint8_t *)firmware.words,sizeof(firmware.words));
++}
++static void joint_loader_results(void)
++{
++	groups++;
++	for(unsigned feed=0;feed<2;feed++) {
++		joint_fixture();check(joint_download(feed)==BC_STS_CMD_CANCELLED&&joint_reads==(feed?1826U:658U)&&
++		      joint_writes==(feed?21U:20U)&&joint_targets_count==(feed?16U:15U)&&dram_reads==1&&dram_writes==1&&
++		      !hardware.research_joint_config_probe&&!hardware.research_joint_feed_probe&&
++		      !hardware.research_staging_probe&&!hardware.research_mfd_generation&&!hardware.research_mfd_owner&&
++		      hardware.research_joint_pending&&!memcmp(card_prefix,expected_image,96)&&
++		      !cmac_writes&&!arm_run_writes&&!heartbeats,
++		      "actual joint loader consumes one-shots, stages official firmware only, never authenticates/runs trial");
++		clear_config_capture(&adapter.cmds);check(hardware.research_joint_pending&&hardware.research_joint_original_sampled,
++		      "post-call transient cleanup cannot erase unified duty");
++		for(unsigned at=1;at<=(feed?1826U:658U);at++)for(unsigned kind=0;kind<8;kind++) {
++			joint_fixture();if(kind){joint_async_read=at;joint_async_kind=kind;}else joint_fault_read=at;
++			check(size_refused(joint_download(feed))&&!joint_summaries&&!cmac_writes&&!arm_run_writes&&!heartbeats&&
++			      !hardware.research_joint_config_probe&&!hardware.research_joint_feed_probe,
++			      "each loader read poison/complete-binding loss rejects without firmware boot or full joint result");
++		}
++		for(unsigned at=1;at<=(feed?21U:20U);at++)for(unsigned kind=1;kind<8;kind++) {
++			joint_fixture();joint_async_write=at;joint_async_kind=kind;
++			check(size_refused(joint_download(feed))&&joint_writes==at&&!joint_summaries&&!cmac_writes&&!arm_run_writes,
++			      "official5 and custom15/16 write-boundary losses prevent subsequent loader/target writes");
++		}
++		for(unsigned direction=0;direction<2;direction++)for(unsigned status=1;status<=27;status++)for(unsigned kind=0;kind<8;kind++) {
++			joint_fixture();if(direction){read_status=(BC_STATUS)status;config_pio_read_fault=kind;}
++			else{dram_status=(BC_STATUS)status;config_pio_write_fault=kind;}
++			BC_STATUS result=joint_download(feed);
++			check(result==(kind?BC_STS_IO_ERROR:(BC_STATUS)status)&&joint_reads==13&&!pci_clears&&!joint_targets_count&&
++			      !joint_logs[0]&&!config_staging_logs&&!cmac_writes&&!arm_run_writes,
++			      "each PIO API failure/poison/binding loss forbids extra bridge reads, raw logs and joint setup");
++		}
++	}
++}
++static void joint_version_gate(unsigned selector,unsigned nonstate,struct packed_gate_result *result)
++{
++	const struct crystalhd_fw_research_request request_value={.selector=selector};
++	const struct crystalhd_fw_research_request *request=&request_value;
++	const void *state=(nonstate&1)?&hardware:NULL,*controller=(nonstate&2)?&hardware:NULL;
++	const void *image=(nonstate&4)?&hardware:NULL,*packet=(nonstate&8)?&hardware:NULL,*heap_packet=(nonstate&16)?&hardware:NULL;
++	const void *clock=(nonstate&32)?&hardware:NULL,*uart=(nonstate&64)?&hardware:NULL;result->status=0;
++#define CRYSTALHD_JOINT_CONFIG_RESET_PROBE
++#include "joint-version-gate.h"
++#undef CRYSTALHD_JOINT_CONFIG_RESET_PROBE
++}
++static void configure_joint(struct crystalhd_cmd *ctx,u64 generation,bool feed)
++{
++	if(feed) {
++#define CRYSTALHD_JOINT_FEED_PROBE
++#define crystalhd_fw_research_owner research_owner
++#include "joint-feed-setup.h"
++#undef crystalhd_fw_research_owner
++#undef CRYSTALHD_JOINT_FEED_PROBE
++	} else {
++#define CRYSTALHD_JOINT_CONFIG_RESET_PROBE
++#define crystalhd_fw_research_owner research_owner
++#include "joint-config-setup.h"
++#undef crystalhd_fw_research_owner
++#undef CRYSTALHD_JOINT_CONFIG_RESET_PROBE
++	}
++}
++static void joint_scope_results(void)
++{
++	groups++;
++	for(unsigned selector=0;selector<32;selector++)for(unsigned option=0;option<128;option++) {
++		joint_fixture();struct packed_gate_result result={0};joint_version_gate(selector,option,&result);
++		check(result.status==((selector==CRYSTALHD_FW_RESEARCH_VERSION_ONLY&&!option)?0:-EINVAL)&&
++		      !joint_count&&!pci_reads&&!dram_writes,"actual VERSION-only gate rejects all inspection routes before loader I/O");
++	}
++	for(unsigned feed=0;feed<2;feed++) {
++		joint_fixture();configure_joint(&adapter.cmds,adapter.generation,feed);
++		check(hardware.research_joint_feed_probe==(bool)feed&&hardware.research_joint_config_probe==!feed&&
++		      hardware.research_mfd_generation==adapter.generation&&hardware.research_mfd_owner==&research_owner,
++		      "actual opt-in setup captures exact exclusive profile owner/generation");
++		for(unsigned conflict=0;conflict<17;conflict++) {
++			joint_fixture();hardware.research_staging_probe=true;hardware.research_joint_feed_probe=feed;
++			hardware.research_joint_config_probe=!feed;
++			if(conflict==0)hardware.research_joint_feed_probe=hardware.research_joint_config_probe=true;
++			else if(conflict==1)hardware.research_scl_config_probe=true;
++			else if(conflict==2)hardware.research_scl_size_reset_probe=true;
++			else if(conflict==3)hardware.research_scl_enable_reset_probe=true;
++			else if(conflict==4)hardware.research_mfd_reset_probe=true;
++			else if(conflict==5)hardware.research_mfd_hsize_reset_probe=true;
++			else if(conflict==6)hardware.research_mfd_latch_probe=true;
++			else if(conflict==7)hardware.research_mfd_colour_probe=true;
++			else if(conflict==8)hardware.research_mfd_scl_probe=true;
++			else if(conflict==9)hardware.research_scl_port_probe=true;
++			else if(conflict==10)hardware.research_scl_port_latch=true;
++			else if(conflict==11)hardware.research_mfd_packed_probe=true;
++			else if(conflict==12)hardware.research_mfd_packed_window_probe=true;
++			else if(conflict==13)hardware.research_mfd_packed_observed_geometry_probe=true;
++			else if(conflict==14)hardware.research_mfd_packed_hsize4_probe=true;
++			else if(conflict==15)hardware.research_mfd_packed_normal_probe=true;
++			else hardware.research_mfd_packed_scl_input_probe=true;
++			check(crystalhd_flea_download_fw(&hardware,(const uint8_t *)firmware.words,sizeof(firmware.words))==BC_STS_INV_ARG&&
++			      !joint_count&&!pci_reads&&!dram_writes,"every conflicting one-shot profile rejects before loader effects");
++		}
++		for(unsigned invalid=0;invalid<3;invalid++) {
++			joint_fixture();hardware.research_staging_probe=true;hardware.research_joint_feed_probe=feed;
++			hardware.research_joint_config_probe=!feed;
++			if(invalid==0)hardware.research_staging_probe=false;
++			else if(invalid==1)hardware.research_mfd_owner=NULL;else hardware.research_mfd_generation=0;
++			check(crystalhd_flea_download_fw(&hardware,(const uint8_t *)firmware.words,sizeof(firmware.words))==BC_STS_INV_ARG&&
++			      !joint_count&&!pci_reads&&!dram_writes,"staging/owner/generation are required before joint loader admission");
++		}
++	}
++	reset();check(crystalhd_flea_download_fw(&hardware,(const uint8_t *)firmware.words,sizeof(firmware.words))==BC_STS_SUCCESS&&
++	      !hardware.research_joint_pending&&cmac_writes==4&&arm_run_writes==1&&heartbeats==1,
++	      "default-off normal firmware boot remains unchanged without joint execution");
++}
++
+ int main(void)
+ {
+ 	reset();
+@@ -8213,6 +8811,11 @@ int main(void)
+ 	check(groups==139&&enable_baseline_checks==267996955,"all139 prior groups retain exact pre-ENABLE check count");
+ 	enable_clean_results();enable_fault_results();enable_sample_results();enable_pending_results();
+ 	enable_admission_results();enable_stop_results();enable_retention_results();enable_loader_results();enable_scope_results();
++	const unsigned joint_baseline_checks=checks;
++	check(groups==148&&joint_baseline_checks==272163382,"all148 prior groups retain exact pre-joint check count");
++	joint_clean_results();joint_probe_fault_results();joint_sample_results();
++	joint_pending_results();joint_retire_results();joint_reset_mismatch_results();joint_terminal_results();joint_retention_results();
++	joint_loader_results();joint_scope_results();
+ 	printf("Firmware download safety passed (%u groups, %u checks, %u failures)\n",
+ 	       groups, checks, failures);
+ 	return failures ? EXIT_FAILURE : EXIT_SUCCESS;
+diff --git a/tests/fw-download.sh b/tests/fw-download.sh
+index 727d484..84c5506 100755
+--- a/tests/fw-download.sh
++++ b/tests/fw-download.sh
+@@ -42,6 +42,9 @@ cleanup()
+ 	for name in pair probe post build-config setup; do
+ 		rm -f "$test_dir/mfd-hsize-$name.h"
+ 	done
++	for name in arrays binding current sample attempt observe probe retire pending build-config version-gate config-setup feed-setup; do
++		rm -f "$test_dir/joint-$name.h"
++	done
+ 	rmdir "$test_dir"
+ }
+ trap cleanup EXIT
+@@ -113,8 +116,54 @@ for name in pair probe post; do
+ 	extract_function "crystalhd_flea_mfd_hsize_$name" \
+ 		"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-hsize-$name.h"
+ done
++awk '
++	/^#if defined\(CRYSTALHD_JOINT_CONFIG_RESET_PROBE\) \|\| defined\(CRYSTALHD_JOINT_FEED_PROBE\)/ { copying=1; block=""; depth=0 }
++	copying {
++		block=block $0 "\n"; if(/^#if/)depth++;
++		if(/^#endif$/ && --depth==0){copying=0;
++			if(block ~ /Joint configuration retirement/){printf "%s",block;found++}}
++	}
++	END {if(found!=1||copying)exit 1}
++' "$repo_dir/driver/linux/crystalhd_fw_research.c" > "$test_dir/joint-build-config.h"
++awk '
++	/^#if defined\(CRYSTALHD_JOINT_CONFIG_RESET_PROBE\) \|\| defined\(CRYSTALHD_JOINT_FEED_PROBE\)/ { copying=1; block=""; depth=0 }
++	copying {block=block $0 "\n";if(/^#if/)depth++;
++		if(/^#endif$/ && --depth==0){copying=0;if(block ~ /request->selector/){printf "%s",block;found++}}}
++	END {if(found!=1||copying)exit 1}
++' "$repo_dir/driver/linux/crystalhd_fw_research.c" > "$test_dir/joint-version-gate.h"
++for mode in config feed; do
++	macro=CRYSTALHD_JOINT_CONFIG_RESET_PROBE
++	if [ "$mode" = feed ]; then macro=CRYSTALHD_JOINT_FEED_PROBE; fi
++	awk -v macro="$macro" '
++		$0=="#ifdef " macro {copying=1;found++}
++		copying {print}
++		copying&&/^#endif$/{copying=0}
++		END{if(found!=1||copying)exit 1}
++	' "$repo_dir/driver/linux/crystalhd_fw_research.c" > "$test_dir/joint-$mode-setup.h"
++	"${CC:-cc}" -E -P -x c -D"$macro" "$test_dir/joint-build-config.h" > /dev/null
++	for conflict in CRYSTALHD_JOINT_CONFIG_RESET_PROBE CRYSTALHD_JOINT_FEED_PROBE \
++		CRYSTALHD_SCL_ENABLE_RESET_PROBE CRYSTALHD_SCL_SIZE_RESET_PROBE CRYSTALHD_SCL_CONFIG_PROBE \
++		CRYSTALHD_MFD_RESET_CONTROLS_PROBE CRYSTALHD_MFD_HSIZE_RESET_PROBE CRYSTALHD_MFD_LATCH_PROBE \
++		CRYSTALHD_MFD_FIXED_COLOUR_PROBE CRYSTALHD_SCL_PORT_PROBE CRYSTALHD_SCL_PORT_LATCH \
++		CRYSTALHD_MFD_SCL_STATUS_PROBE CRYSTALHD_MFD_PACKED_SOURCE_PROBE CRYSTALHD_MFD_PACKED_WINDOW_PROBE \
++		CRYSTALHD_MFD_PACKED_OBSERVED_GEOMETRY_PROBE CRYSTALHD_MFD_PACKED_HSIZE4_PROBE \
++		CRYSTALHD_MFD_PACKED_NORMAL_PROBE CRYSTALHD_MFD_PACKED_SCL_INPUT_PROBE; do
++		if [ "$conflict" = "$macro" ]; then continue; fi
++		if "${CC:-cc}" -E -P -x c -D"$macro" -D"$conflict" "$test_dir/joint-build-config.h" > /dev/null 2>&1; then exit 1; fi
++	done
++done
+ extract_function crystalhd_flea_research_stop_current \
+ 	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-reset-stop-current.h"
++extract_function crystalhd_hw_research_joint_pending "$repo_dir/driver/linux/crystalhd_hw.c" "$test_dir/joint-pending.h"
++for name in binding current sample attempt observe probe retire; do
++	extract_function "crystalhd_flea_joint_$name" "$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/joint-$name.h"
++done
++awk '
++	/^static const uint32_t crystalhd_joint_addresses\[25\]/ { copying=1; found++ }
++	copying { print }
++	copying && /^};$/ { arrays++; if(arrays==2) copying=0 }
++	END { if(found!=1 || arrays!=2 || copying) exit 1 }
++' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$test_dir/joint-arrays.h"
+ extract_function crystalhd_hw_retire_rx_quiesced \
+ 	"$repo_dir/driver/linux/crystalhd_hw.c" "$test_dir/mfd-reset-hw-retire-rx.h"
+ extract_function crystalhd_flea_mfd_packed_input_guard \
+@@ -242,7 +291,7 @@ awk '
+ 	END { if (found != 1 || copying) exit 1 }
+ ' "$repo_dir/driver/linux/crystalhd_fw_research.c" > "$test_dir/mfd-reset-build-config.h"
+ awk '
+-	/^#if defined\(CRYSTALHD_SCL_ENABLE_RESET_PROBE\)/ { copying=1; found++ }
++	/^#if defined\(CRYSTALHD_SCL_ENABLE_RESET_PROBE\) &&/ { copying=1; found++ }
+ 	copying { print }
+ 	copying && /^#endif$/ { copying=0 }
+ 	END { if (found != 1 || copying) exit 1 }
+diff --git a/tests/fw-probe.c b/tests/fw-probe.c
+index 11ece9d..468fab8 100644
+--- a/tests/fw-probe.c
++++ b/tests/fw-probe.c
+@@ -67,6 +67,18 @@ struct crystalhd_hw {
+     BC_STATUS (*pfnDevDRAMRead)(struct crystalhd_hw *, u32, u32, u32 *);
+     u32 (*pfnReadDevRegister)(struct crystalhd_adp *, u32);
+     void *pfnWriteDevRegister;
++    /* Private one-shots cleared by the actual expanded research dispatcher. */
++    bool research_staging_probe, research_mfd_latch_probe, research_mfd_colour_probe;
++    bool research_mfd_packed_probe, research_mfd_packed_window_probe;
++    bool research_mfd_packed_observed_geometry_probe, research_mfd_packed_hsize4_probe;
++    bool research_mfd_packed_normal_probe, research_mfd_packed_scl_input_probe;
++    bool research_scl_config_probe, research_scl_size_reset_probe, research_scl_enable_reset_probe;
++    bool research_joint_config_probe, research_joint_feed_probe;
++    bool research_mfd_reset_probe, research_mfd_hsize_reset_probe, research_mfd_scl_probe;
++    bool research_scl_port_probe, research_scl_port_latch;
++    u32 research_mfd_packed_pattern, research_mfd_colour_value, research_scl_selector;
++    u64 research_mfd_generation;
++    const void *research_mfd_owner;
+ };
+ struct crystalhd_cmd {
+     struct crystalhd_adp *adp;

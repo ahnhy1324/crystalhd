@@ -5,3 +5,4 @@ scl-port.patch -whitespace
 mfd-scl.patch -whitespace
 scl-views.patch -whitespace
 scl-enable-reset.patch -whitespace
+mfd-scl-joint-handshake.patch -whitespace
