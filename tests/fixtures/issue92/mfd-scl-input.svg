@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" role="img" aria-labelledby="title desc">
+<title id="title">Measured packed-normal MFD and SCL selector2 observations</title>
+<desc id="desc">Four fresh pre-CMAC probes A, B, A′ and B′ each recorded seventeen flat MFD raw bundles and three SCL selector2 tuples, before START and at MFD observation ordinals zero and sixteen. All twelve SCL tuples had zero DATA, direct STATUS, pre-guard STATUS and post-guard STATUS. Selector restoration readback was zero. Repeated MFD raw series matched exactly. Each diagnostic remains INCONCLUSIVE; these observations do not establish accepted output, routing, a source lease, processing completion, clock state or an ENABLE cause.</desc>
+<metadata>BCM70015; A/B/A′/B′ on 2026-10-05 at 15:39:31/15:42:36/15:44:58/15:46:16 KST. Frozen host helper SHA256 b4388a40abec418bfeb5b10524e270e3b9ae0569a8ad28c987556d0c89e27d71. A source DWORDs aa425531 bb646653 cc867775 dda88897; B source DWORDs 55bdaace 449b99ac 3379888a 22577768. A sample/tap 00053198/04053198; B 000ac264/040ac264; common FEED/BVB/FEEDER 00000002/00000000/00000000. SCL tuples retain separate DATA/direct STATUS/pre-guard STATUS/post-guard STATUS words. Each probe: 17 MFD bundles, 3 SCL tuples, 10 MFD target attempts, 2 SCL target attempts, 0 software pulses, intentional download20/status−5, cleanup0, retained=false, command_count0. Five MPEG-2 controls: 180 frames, 20736000 bytes each, SHA256 7278bf6c89d602a34e4a8cf8261da45c0889bb0645fdb1fcb13810378f8fcb32. H.264 control: 180 frames, 82944000 bytes, SHA256 3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1.</metadata>
+<rect width="1280" height="800" fill="#f7f9fc"/>
+<g font-family="sans-serif" fill="#192c44">
+<text x="40" y="43" font-size="25" font-weight="bold">Packed-normal MFD + SCL selector 2: measured raw state</text>
+<text x="40" y="71" font-size="15">Four fresh A/B/A′/B′ probes · isolated pre-CMAC profile · staged firmware was never booted</text>
+<rect x="40" y="91" width="1200" height="67" rx="8" fill="#e7edf7"/>
+<text x="56" y="117" font-size="14">Same empirical geometry (0x780,0x436) → (4,0x436) → (4,1); LINE0=0, STRIDE0, CTRL5, TEST0. Sole START; no host pulses.</text>
+<text x="56" y="143" font-size="14">Fresh SCL guard pins: REV80 / TOP0c / ENABLE0 / selector0 / STATUS0. No custom SCL ENABLE/geometry, clock or status-clear target writes.</text>
+
+<text x="40" y="185" font-size="16" font-weight="bold">Three sampled milestones per probe — observation ordinals, not elapsed time or accepted transfers</text>
+<line x1="142" y1="222" x2="1142" y2="222" stroke="#8193ad" stroke-width="2"/>
+<path d="M1134 216 L1145 222 L1134 228" fill="none" stroke="#8193ad" stroke-width="2"/>
+<circle cx="142" cy="222" r="7" fill="#1764aa"/>
+<circle cx="454" cy="222" r="7" fill="#1764aa"/>
+<circle cx="956" cy="222" r="7" fill="#1764aa"/>
+<text x="142" y="208" text-anchor="middle" font-size="14" font-weight="bold">pre-START</text>
+<text x="454" y="208" text-anchor="middle" font-size="14" font-weight="bold">MFD ordinal 0</text>
+<text x="956" y="208" text-anchor="middle" font-size="14" font-weight="bold">MFD ordinal 16</text>
+<text x="302" y="247" text-anchor="middle" font-size="13">START once</text>
+<text x="703" y="247" text-anchor="middle" font-size="13">17 MFD bundles: ordinals 0…16</text>
+<text x="1137" y="247" text-anchor="middle" font-size="13">restore readback 0</text>
+<text x="40" y="275" font-size="14">Selector 2 was qualified during the three snapshots; one selection attempt and one guarded restoration attempt.</text>
+
+<rect x="40" y="294" width="1200" height="139" rx="8" fill="#ffffff" stroke="#d5deeb"/>
+<text x="56" y="318" font-size="15" font-weight="bold">MFD raw bundles — hexadecimal SAMPLE / TAP; all 17 rows per probe are flat</text>
+<text x="56" y="346" font-size="13" font-weight="bold">Probes</text>
+<text x="225" y="346" font-size="13" font-weight="bold">SAMPLE / TAP</text>
+<text x="570" y="346" font-size="13" font-weight="bold">Y / C fields</text>
+<text x="760" y="346" font-size="13" font-weight="bold">FEED / BVB / FEEDER</text>
+<text x="56" y="374" font-size="15" fill="#1764aa">A / A′</text>
+<text x="225" y="374" font-size="15" font-family="monospace">00053198 / 04053198</text>
+<text x="570" y="374" font-size="15">332 / 408</text>
+<text x="760" y="374" font-size="15" font-family="monospace">00000002 / 00000000 / 00000000</text>
+<text x="56" y="401" font-size="15" fill="#b6541d">B / B′</text>
+<text x="225" y="401" font-size="15" font-family="monospace">000ac264 / 040ac264</text>
+<text x="570" y="401" font-size="15">688 / 612</text>
+<text x="760" y="401" font-size="15" font-family="monospace">00000002 / 00000000 / 00000000</text>
+<text x="40" y="455" font-size="14">A′=A and B′=B raw series exactly. READY1 / ACCEPT0; LAST_PIXEL, LAST_LINE, EOL, EOF and feeder-error bits all 0.</text>
+
+<rect x="40" y="476" width="1200" height="181" rx="8" fill="#e7edf7"/>
+<text x="56" y="501" font-size="15" font-weight="bold">SCL selector 2 — each of four probes has this same three-tuple record (12 tuples total)</text>
+<text x="56" y="524" font-size="13">Read provenance: pre-guard STATUS → opaque DATA → direct STATUS → post-guard STATUS; separate, non-atomic reads.</text>
+<text x="56" y="550" font-size="13" font-weight="bold">Separate raw word (hex)</text>
+<text x="440" y="550" text-anchor="middle" font-size="13" font-weight="bold">pre-START</text>
+<text x="730" y="550" text-anchor="middle" font-size="13" font-weight="bold">ordinal 0</text>
+<text x="1020" y="550" text-anchor="middle" font-size="13" font-weight="bold">ordinal 16</text>
+<text x="56" y="573" font-size="14">Pre-guard STATUS</text>
+<text x="440" y="573" text-anchor="middle" font-family="monospace" font-size="15">00000000</text>
+<text x="730" y="573" text-anchor="middle" font-family="monospace" font-size="15">00000000</text>
+<text x="1020" y="573" text-anchor="middle" font-family="monospace" font-size="15">00000000</text>
+<text x="56" y="596" font-size="14">Opaque DATA</text>
+<text x="440" y="596" text-anchor="middle" font-family="monospace" font-size="15">00000000</text>
+<text x="730" y="596" text-anchor="middle" font-family="monospace" font-size="15">00000000</text>
+<text x="1020" y="596" text-anchor="middle" font-family="monospace" font-size="15">00000000</text>
+<text x="56" y="619" font-size="14">Direct STATUS</text>
+<text x="440" y="619" text-anchor="middle" font-family="monospace" font-size="15">00000000</text>
+<text x="730" y="619" text-anchor="middle" font-family="monospace" font-size="15">00000000</text>
+<text x="1020" y="619" text-anchor="middle" font-family="monospace" font-size="15">00000000</text>
+<text x="56" y="642" font-size="14">Post-guard STATUS</text>
+<text x="440" y="642" text-anchor="middle" font-family="monospace" font-size="15">00000000</text>
+<text x="730" y="642" text-anchor="middle" font-family="monospace" font-size="15">00000000</text>
+<text x="1020" y="642" text-anchor="middle" font-family="monospace" font-size="15">00000000</text>
+
+<text x="40" y="683" font-size="14" font-weight="bold" fill="#8c5816">Each probe: 10 MFD + 2 SCL host target attempts, 0 pulses, stop=host-budget; diagnostic INCONCLUSIVE.</text>
+<text x="40" y="708" font-size="14">Four intentional pre-CMAC aborts: download20/status−5, stock cleanup0, retained=false, firmware commands0.</text>
+<text x="40" y="733" font-size="14">Six separate native controls PASS: five MPEG-2 + one H.264, each full 180 frames, canonical full pixels, EOS and resources.</text>
+<text x="40" y="758" font-size="14">Sequential observations are not atomic snapshots. Mux/read timing may perturb; MASTER0 and the 96-byte prefix do not bound local fetches.</text>
+<text x="40" y="783" font-size="14">Opaque words do not prove accepted output, routing, source extent/lease, completion, clock state or an ENABLE cause.</text>
+</g>
+</svg>

@@ -1,0 +1,1361 @@
+diff --git a/driver/linux/crystalhd_fleafuncs.c b/driver/linux/crystalhd_fleafuncs.c
+index c5ecf51..be2ce83 100644
+--- a/driver/linux/crystalhd_fleafuncs.c
++++ b/driver/linux/crystalhd_fleafuncs.c
+@@ -1449,7 +1449,7 @@ static BC_STATUS crystalhd_flea_mfd_packed_guard_core(struct crystalhd_hw *hw,
+ 		dev_info(&hw->adp->pdev->dev,
+ 			 "issue92 packed-source: post-pulse-attempt test=%08x admitted=8-or-9 latch/edge-unproved=yes\n", test_raw);
+ 	if (window_profile == 4 && test_raw != test &&
+-	    READ_ONCE(hw->adp->present) && !READ_ONCE(hw->dma_fault) &&
++	    READ_ONCE(hw->adp->present) && hw->adp->hw_accessible && !READ_ONCE(hw->dma_fault) &&
+ 	    hw->adp->generation == generation && hw->adp->cmds.session_owner == owner)
+ 		dev_info(&hw->adp->pdev->dev,
+ 			 "issue92 packed-normal-handshake: TEST mismatch raw=%08x required=%08x expected-CTRL=%08x transport/atomicity-unproved=yes\n",
+@@ -1480,9 +1480,128 @@ static BC_STATUS crystalhd_flea_mfd_packed_guard(struct crystalhd_hw *hw,
+ 						stride, test, 0, 0, 0);
+ }
+ 
+-static BC_STATUS crystalhd_flea_mfd_packed_probe_core(struct crystalhd_hw *hw,
++/* Input-view qualification does not certify a passive mux, downstream route
++ * or autonomous fetch extent. Preserve phase pins and all raw status samples.
++ */
++static bool crystalhd_flea_mfd_packed_input_current(struct crystalhd_hw *hw,
++		uint64_t generation, const void *owner)
++{
++	return READ_ONCE(hw->adp->present) && hw->adp->hw_accessible && !READ_ONCE(hw->dma_fault) &&
++		hw->adp->generation == generation && hw->adp->cmds.session_owner == owner;
++}
++
++/* New-mode-only counterpart with the same phase-aware address order. Check
++ * currentness before reporting a raw mismatch; legacy batched guards remain
++ * unchanged. Neither variant makes the register bundle an atomic snapshot.
++ */
++static BC_STATUS crystalhd_flea_mfd_packed_input_scl_guard(struct crystalhd_hw *hw,
+ 		uint64_t generation, const void *owner, uint32_t selector,
+-		uint32_t window_profile)
++		bool before_feed, uint32_t *status)
++{
++	static const uint32_t addresses[] = {
++		BCHP_SCL_HD_REVISION_ID, BCHP_SCL_HD_TOP_CONTROL,
++		BCHP_SCL_HD_ENABLE, BCHP_SCL_HD_TEST_PORT_CONTROL,
++		BCHP_SCL_HD_BVB_IN_STATUS,
++	};
++	uint32_t expected[] = { 0x80, 0x0c, 0, selector, 0 };
++	uint32_t value;
++	unsigned int i;
++	BC_STATUS sts;
++
++	if (!status || (selector != 0 && selector != 2))
++		return BC_STS_INV_ARG;
++	*status = 0;
++	sts = crystalhd_flea_mfd_colour_guard(hw, generation, owner);
++	if (sts != BC_STS_SUCCESS)
++		return hw && hw->research_mfd_pci_isolated ? BC_STS_IO_ERROR : sts;
++	if (!crystalhd_flea_mfd_packed_input_current(hw, generation, owner))
++		return BC_STS_IO_ERROR;
++	if (before_feed) {
++		value = hw->pfnReadDevRegister(hw->adp, BCHP_MFD_PIC_FEED_CMD);
++		if (!crystalhd_flea_mfd_packed_input_current(hw, generation, owner))
++			return BC_STS_IO_ERROR;
++		if (value)
++			return hw->research_mfd_pci_isolated ? BC_STS_IO_ERROR : BC_STS_BUSY;
++	}
++	for (i = 0; i < ARRAY_SIZE(addresses); i++) {
++		value = hw->pfnReadDevRegister(hw->adp, addresses[i]);
++		if (!crystalhd_flea_mfd_packed_input_current(hw, generation, owner))
++			return BC_STS_IO_ERROR;
++		if (i + 1 == ARRAY_SIZE(addresses)) {
++			if (value & BCHP_SCL_HD_BVB_IN_STATUS_reserved0_MASK) {
++				dev_info(&hw->adp->pdev->dev,
++					 "issue92 packed-scl-input: guard-reject address=%08x reserved-status=%08x\n",
++					 addresses[i], value);
++				return BC_STS_IO_ERROR;
++			}
++			*status = value;
++		} else if (value != expected[i]) {
++			dev_info(&hw->adp->pdev->dev,
++				 "issue92 packed-scl-input: guard-reject address=%08x expected=%08x observed=%08x\n",
++				 addresses[i], expected[i], value);
++			return BC_STS_IO_ERROR;
++		}
++	}
++	return BC_STS_SUCCESS;
++}
++
++static BC_STATUS crystalhd_flea_mfd_packed_input_guard(struct crystalhd_hw *hw,
++		uint64_t generation, const void *owner, uint32_t ctrl,
++		uint32_t stride, uint32_t test, uint32_t hsize, uint32_t window,
++		uint32_t scl_selector, bool before_feed, uint32_t *scl_status)
++{
++	BC_STATUS sts;
++
++	if (!scl_status || (scl_selector != 0 && scl_selector != 2))
++		return BC_STS_INV_ARG;
++	sts = crystalhd_flea_mfd_packed_guard_core(hw, generation, owner, ctrl,
++						stride, test, 4, hsize, window);
++	if (sts != BC_STS_SUCCESS)
++		return hw && hw->research_mfd_pci_isolated ? BC_STS_IO_ERROR : sts;
++	if (!READ_ONCE(hw->adp->present) || !hw->adp->hw_accessible ||
++	    READ_ONCE(hw->dma_fault) || hw->adp->generation != generation ||
++	    hw->adp->cmds.session_owner != owner)
++		return BC_STS_IO_ERROR;
++	sts = crystalhd_flea_mfd_packed_input_scl_guard(hw, generation, owner,
++						     scl_selector, before_feed, scl_status);
++	if (sts != BC_STS_SUCCESS)
++		return sts;
++	if (!READ_ONCE(hw->adp->present) || !hw->adp->hw_accessible ||
++	    READ_ONCE(hw->dma_fault) || hw->adp->generation != generation ||
++	    hw->adp->cmds.session_owner != owner)
++		return BC_STS_IO_ERROR;
++	return BC_STS_SUCCESS;
++}
++
++/* DATA, direct STATUS, pre-guard STATUS, post-guard STATUS. All DATA bits are
++ * opaque; the three status words remain separate non-atomic observations.
++ */
++static BC_STATUS crystalhd_flea_mfd_packed_input_sample(struct crystalhd_hw *hw,
++		uint64_t generation, const void *owner, bool before_feed,
++		uint32_t snapshot[4])
++{
++	BC_STATUS sts;
++
++	if (!snapshot)
++		return BC_STS_INV_ARG;
++	sts = crystalhd_flea_mfd_packed_input_guard(hw, generation, owner,
++			5, 0, 0, 4, 1, 2, before_feed, &snapshot[2]);
++	if (sts != BC_STS_SUCCESS)
++		return sts;
++	snapshot[0] = hw->pfnReadDevRegister(hw->adp, BCHP_SCL_HD_TEST_PORT_DATA);
++	if (!crystalhd_flea_mfd_packed_input_current(hw, generation, owner))
++		return BC_STS_IO_ERROR;
++	snapshot[1] = hw->pfnReadDevRegister(hw->adp, BCHP_SCL_HD_BVB_IN_STATUS);
++	if (!crystalhd_flea_mfd_packed_input_current(hw, generation, owner) ||
++	    (snapshot[1] & BCHP_SCL_HD_BVB_IN_STATUS_reserved0_MASK))
++		return BC_STS_IO_ERROR;
++	return crystalhd_flea_mfd_packed_input_guard(hw, generation, owner,
++			5, 0, 0, 4, 1, 2, before_feed, &snapshot[3]);
++}
++
++static BC_STATUS crystalhd_flea_mfd_packed_probe_core_view(struct crystalhd_hw *hw,
++		uint64_t generation, const void *owner, uint32_t selector,
++		uint32_t window_profile, bool observe_scl_input)
+ {
+ 	static const uint32_t patterns[2][24] = {
+ 		{ 0xaa425531, 0xbb646653, 0xcc867775, 0xdda88897,
+@@ -1517,21 +1636,34 @@ static BC_STATUS crystalhd_flea_mfd_packed_probe_core(struct crystalhd_hw *hw,
+ 	uint32_t observed[24], stride, test, ctrl = 0, hsize = 0, window = 0;
+ 	const uint32_t cold_hsize = window_profile >= 2 ? 0x780 : 0;
+ 	const uint32_t cold_window = window_profile >= 2 ? 0x436 : 0;
+-	uint32_t sample, tap, feed, bvb, feeder;
++	uint32_t sample, tap, feed, bvb, feeder = 0;
++	uint32_t scl_status = 0, scl_snapshot[4], scl_selector = 0;
+ 	bool sample_last = false, tap_last = false, eof = false;
+-	unsigned int i, pulses = 0;
++	bool started = false, scl_attempted = false, scl_error = false;
++	unsigned int i, pulses = 0, observations = 0, scl_observations = 0, mfd_attempts = 0;
+ 	BC_STATUS sts;
+ 
+-	if (window_profile > 4 || selector < 1 || selector > 2 || !hw || !hw->pfnDevDRAMWrite ||
++	if ((observe_scl_input && window_profile != 4) ||
++	    window_profile > 4 || selector < 1 || selector > 2 || !hw || !hw->pfnDevDRAMWrite ||
+ 	    !hw->pfnDevDRAMRead || !hw->adp || !hw->adp->mem_addr ||
+ 	    hw->adp->pci_mem_len <
+ 	    ~BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_BASE_ADDR_MASK + 1U)
+ 		return BC_STS_INV_ARG;
+ 	if (hw->research_mfd_pci_isolated || hw->research_mfd_deliberate_abort)
+ 		return BC_STS_BUSY;
+-	sts = crystalhd_flea_mfd_colour_guard(hw, generation, owner);
++	sts = observe_scl_input ?
++		crystalhd_flea_mfd_packed_input_scl_guard(hw, generation, owner, 0, true, &scl_status) :
++		crystalhd_flea_mfd_colour_guard(hw, generation, owner);
+ 	if (sts != BC_STS_SUCCESS)
+ 		return sts;
++	if (observe_scl_input && !crystalhd_flea_mfd_packed_input_current(hw, generation, owner))
++		return BC_STS_IO_ERROR;
++	if (observe_scl_input && scl_status) {
++		dev_info(&hw->adp->pdev->dev,
++			 "issue92 packed-scl-input: cold-admission status=%08x required=0 no-custom-writes=yes\n",
++			 scl_status);
++		return BC_STS_BUSY;
++	}
+ 	adp = hw->adp;
+ 	if (hw->pfnReadDevRegister(adp, BCHP_MFD_PIC_FEED_CMD) != 0 ||
+ 	    hw->pfnReadDevRegister(adp, BCHP_MFD_PICTURE0_LINE_ADDR_0) != 0 ||
+@@ -1547,6 +1679,8 @@ static BC_STATUS crystalhd_flea_mfd_packed_probe_core(struct crystalhd_hw *hw,
+ 	for (i = 1; i < ARRAY_SIZE(controls); i++) {
+ 		uint32_t value = hw->pfnReadDevRegister(adp, controls[i].address);
+ 
++		if (observe_scl_input && !crystalhd_flea_mfd_packed_input_current(hw, generation, owner))
++			return BC_STS_IO_ERROR;
+ 		if (window_profile && (i == 1 || i == 2)) {
+ 			if (window_profile >= 2)
+ 				dev_info(&adp->pdev->dev,
+@@ -1580,38 +1714,52 @@ static BC_STATUS crystalhd_flea_mfd_packed_probe_core(struct crystalhd_hw *hw,
+ 	if (window_profile && (!READ_ONCE(adp->present) || READ_ONCE(hw->dma_fault) ||
+ 	    adp->generation != generation || adp->cmds.session_owner != owner))
+ 		return BC_STS_IO_ERROR;
++	if (observe_scl_input && !crystalhd_flea_mfd_packed_input_current(hw, generation, owner))
++		return BC_STS_IO_ERROR;
+ 	hw->research_mfd_pci_isolated = true; /* Before the attempted PCI update. */
+ 	pci_clear_master(adp->pdev);
+-	sts = window_profile ?
++	sts = observe_scl_input ?
++		crystalhd_flea_mfd_packed_input_guard(hw, generation, owner, ctrl, stride, test,
++						    hsize, window, scl_selector, true, &scl_status) : window_profile ?
+ 		crystalhd_flea_mfd_packed_guard_core(hw, generation, owner, ctrl, stride, test,
+ 						window_profile, hsize, window) :
+ 		crystalhd_flea_mfd_packed_guard(hw, generation, owner, ctrl, stride, test);
+ 	if (sts != BC_STS_SUCCESS)
+ 		goto quarantine;
++	if (observe_scl_input && scl_status) goto scl_failure;
+ 	sts = hw->pfnDevDRAMWrite(hw, FW_DOWNLOAD_START_ADDR, 24, patterns[selector - 1]);
+ 	if (sts != BC_STS_SUCCESS)
+ 		goto quarantine;
+-	sts = window_profile ?
++	sts = observe_scl_input ?
++		crystalhd_flea_mfd_packed_input_guard(hw, generation, owner, ctrl, stride, test,
++						    hsize, window, scl_selector, true, &scl_status) : window_profile ?
+ 		crystalhd_flea_mfd_packed_guard_core(hw, generation, owner, ctrl, stride, test,
+ 						window_profile, hsize, window) :
+ 		crystalhd_flea_mfd_packed_guard(hw, generation, owner, ctrl, stride, test);
+ 	if (sts != BC_STS_SUCCESS)
+ 		goto quarantine;
++	if (observe_scl_input && scl_status) goto scl_failure;
+ 	sts = hw->pfnDevDRAMRead(hw, FW_DOWNLOAD_START_ADDR, 24, observed);
+ 	if (sts != BC_STS_SUCCESS)
+ 		goto quarantine;
++	if (observe_scl_input && !crystalhd_flea_mfd_packed_input_current(hw, generation, owner))
++		goto mismatch;
+ 	if (memcmp(observed, patterns[selector - 1], sizeof(observed)))
+ 		goto mismatch;
+ 	dev_info(&adp->pdev->dev,
+ 		 "issue92 packed-source: pattern=%u prefix=96 nominal=16 padding=80 word0=%08x word1=%08x word2=%08x word3=%08x padding-last=%08x namespace/stride/fetch-extent-unproved=yes master=0\n",
+ 		 selector, observed[0], observed[1], observed[2], observed[3], observed[23]);
+ 	for (i = 0; i < ARRAY_SIZE(controls); i++) {
+-		sts = window_profile ?
++		sts = observe_scl_input ?
++			crystalhd_flea_mfd_packed_input_guard(hw, generation, owner, ctrl, stride, test,
++							    hsize, window, scl_selector, true, &scl_status) : window_profile ?
+ 			crystalhd_flea_mfd_packed_guard_core(hw, generation, owner, ctrl, stride, test,
+ 							window_profile, hsize, window) :
+ 			crystalhd_flea_mfd_packed_guard(hw, generation, owner, ctrl, stride, test);
+ 		if (sts != BC_STS_SUCCESS)
+ 			goto quarantine;
++		if (observe_scl_input && scl_status) goto scl_failure;
++		mfd_attempts++;
+ 		hw->pfnWriteDevRegister(adp, controls[i].address, controls[i].value);
+ 		if (!READ_ONCE(adp->present) || READ_ONCE(hw->dma_fault) ||
+ 		    adp->generation != generation || adp->cmds.session_owner != owner)
+@@ -1624,16 +1772,23 @@ static BC_STATUS crystalhd_flea_mfd_packed_probe_core(struct crystalhd_hw *hw,
+ 		if (i == 7) test = controls[i].value;
+ 		if (i == 8) ctrl = 5;
+ 	}
+-	sts = window_profile ?
++	sts = observe_scl_input ?
++		crystalhd_flea_mfd_packed_input_guard(hw, generation, owner, ctrl, stride, test,
++						    hsize, window, scl_selector, true, &scl_status) : window_profile ?
+ 		crystalhd_flea_mfd_packed_guard_core(hw, generation, owner, ctrl, stride, test,
+ 						window_profile, hsize, window) :
+ 		crystalhd_flea_mfd_packed_guard(hw, generation, owner, ctrl, stride, test);
+ 	if (sts != BC_STS_SUCCESS)
+ 		goto quarantine;
++	if (observe_scl_input && scl_status) goto scl_failure;
+ 	sample = hw->pfnReadDevRegister(adp, BCHP_MFD_BVB_SAMPLE_DATA);
++	if (observe_scl_input && !crystalhd_flea_mfd_packed_input_current(hw, generation, owner))
++		goto mismatch;
+ 	if (sample & 0xfc000000)
+ 		goto mismatch;
+ 	tap = hw->pfnReadDevRegister(adp, BCHP_MFD_TEST_PORT_DATA);
++	if (observe_scl_input && !crystalhd_flea_mfd_packed_input_current(hw, generation, owner))
++		goto mismatch;
+ 	if (tap & 0xf0000000)
+ 		goto mismatch;
+ 	dev_info(&adp->pdev->dev, "issue92 packed-source: pre-start sample=%08x tap=%08x\n", sample, tap);
+@@ -1641,34 +1796,74 @@ static BC_STATUS crystalhd_flea_mfd_packed_probe_core(struct crystalhd_hw *hw,
+ 		dev_info(&adp->pdev->dev,
+ 			 "issue92 packed-window: profile hsize=%08x vertical=%08x END-units/fetch-extent-unproved=yes\n",
+ 			 hsize, window);
+-	sts = window_profile ?
++	sts = observe_scl_input ?
++		crystalhd_flea_mfd_packed_input_guard(hw, generation, owner, ctrl, stride, test,
++						    hsize, window, scl_selector, true, &scl_status) : window_profile ?
+ 		crystalhd_flea_mfd_packed_guard_core(hw, generation, owner, ctrl, stride, test,
+ 						window_profile, hsize, window) :
+ 		crystalhd_flea_mfd_packed_guard(hw, generation, owner, ctrl, stride, test);
+ 	if (sts != BC_STS_SUCCESS)
+ 		goto quarantine;
++	if (observe_scl_input && scl_status) goto scl_failure;
++	if (observe_scl_input) {
++		/* Dirty before the only attempted change; readback is part of the
++		 * fresh combined guard. Access/config loss never causes blind restore.
++		 */
++		scl_attempted = true;
++		scl_selector = 2;
++		hw->pfnWriteDevRegister(adp, BCHP_SCL_HD_TEST_PORT_CONTROL, 2);
++		sts = crystalhd_flea_mfd_packed_input_guard(hw, generation, owner, ctrl,
++				stride, test, hsize, window, scl_selector, true, &scl_status);
++		if (sts != BC_STS_SUCCESS) goto quarantine;
++		if (scl_status) goto scl_failure;
++		sts = crystalhd_flea_mfd_packed_input_sample(hw, generation, owner, true,
++							 scl_snapshot);
++		if (sts != BC_STS_SUCCESS) goto quarantine;
++		scl_observations++;
++		dev_info(&adp->pdev->dev,
++			 "issue92 packed-scl-input: pre-START data=%08x status=%08x pre-guard-status=%08x post-guard-status=%08x opaque/non-atomic=yes\n",
++			 scl_snapshot[0], scl_snapshot[1], scl_snapshot[2], scl_snapshot[3]);
++		scl_status = scl_snapshot[1] | scl_snapshot[2] | scl_snapshot[3];
++		if (scl_status) goto scl_failure;
++	}
+ 	if (window_profile == 4)
+ 		dev_info(&adp->pdev->dev,
+ 			 "issue92 packed-normal-handshake: sole-START planned; software-pulses=0 observation/time/target-bounds-NOT-fetch-or-accepted-bounds=yes\n");
++	mfd_attempts++;
+ 	hw->pfnWriteDevRegister(adp, BCHP_MFD_PIC_FEED_CMD, 1);
++	started = true;
+ 	for (i = 0; i <= 16; i++) {
+-		sts = window_profile ?
++		sts = observe_scl_input ?
++			crystalhd_flea_mfd_packed_input_guard(hw, generation, owner, ctrl, stride, test,
++							    hsize, window, scl_selector, false, &scl_status) : window_profile ?
+ 			crystalhd_flea_mfd_packed_guard_core(hw, generation, owner, ctrl, stride, test,
+ 							window_profile, hsize, window) :
+ 			crystalhd_flea_mfd_packed_guard(hw, generation, owner, ctrl, stride, test);
+ 		if (sts != BC_STS_SUCCESS)
+ 			goto quarantine;
++		if (observe_scl_input && scl_status) goto scl_failure;
+ 		sample = hw->pfnReadDevRegister(adp, BCHP_MFD_BVB_SAMPLE_DATA);
++		if (observe_scl_input && !crystalhd_flea_mfd_packed_input_current(hw, generation, owner))
++			goto mismatch;
+ 		if (sample & 0xfc000000) goto mismatch;
+ 		tap = hw->pfnReadDevRegister(adp, BCHP_MFD_TEST_PORT_DATA);
++		if (observe_scl_input && !crystalhd_flea_mfd_packed_input_current(hw, generation, owner))
++			goto mismatch;
+ 		if (tap & 0xf0000000) goto mismatch;
+ 		feed = hw->pfnReadDevRegister(adp, BCHP_MFD_FEED_STATUS);
++		if (observe_scl_input && !crystalhd_flea_mfd_packed_input_current(hw, generation, owner))
++			goto mismatch;
+ 		if (feed & (BCHP_MFD_FEED_STATUS_reserved0_MASK |
+ 			    BCHP_MFD_FEED_STATUS_reserved1_MASK)) goto mismatch;
+ 		bvb = hw->pfnReadDevRegister(adp, BCHP_MFD_FEEDER_BVB_STATUS);
++		if (observe_scl_input && !crystalhd_flea_mfd_packed_input_current(hw, generation, owner))
++			goto mismatch;
+ 		if (bvb & ~3U) goto mismatch;
+ 		feeder = hw->pfnReadDevRegister(adp, BCHP_MFD_FEEDER_ERROR_INTERRUPT_STATUS);
+ 		if (feeder & ~7U) goto mismatch;
++		if (observe_scl_input && !crystalhd_flea_mfd_packed_input_current(hw, generation, owner))
++			goto mismatch;
++		observations++;
+ 		dev_info(&adp->pdev->dev, window_profile == 4 ?
+ 			 "issue92 packed-normal-handshake: observation=%u host-pulses=%u sample=%08x tap=%08x feed=%08x bvb=%08x feeder=%08x READY-is-not-ACCEPT=yes\n" :
+ 			 "issue92 packed-source: observation=%u host-pulses=%u sample=%08x tap=%08x feed=%08x bvb=%08x feeder=%08x READY-is-not-ACCEPT=yes\n",
+@@ -1686,6 +1881,18 @@ static BC_STATUS crystalhd_flea_mfd_packed_probe_core(struct crystalhd_hw *hw,
+ 				 i, sample_last, tap_last, eof,
+ 				 !!(feed & BCHP_MFD_FEED_STATUS_LAST_LINE_MASK));
+ 		}
++		if (observe_scl_input && !feeder && !sample_last && !tap_last && !eof &&
++		    (i == 0 || i == 16)) {
++			sts = crystalhd_flea_mfd_packed_input_sample(hw, generation, owner, false,
++								 scl_snapshot);
++			if (sts != BC_STS_SUCCESS) goto quarantine;
++			scl_observations++;
++			dev_info(&adp->pdev->dev,
++				 "issue92 packed-scl-input: observation=%u data=%08x status=%08x pre-guard-status=%08x post-guard-status=%08x opaque/non-atomic=yes\n",
++				 i, scl_snapshot[0], scl_snapshot[1], scl_snapshot[2], scl_snapshot[3]);
++			scl_status = scl_snapshot[1] | scl_snapshot[2] | scl_snapshot[3];
++			if (scl_status) goto scl_failure;
++		}
+ 		if (i == 16 || feeder || (window_profile && (sample_last || tap_last || eof)))
+ 			break;
+ 		if (window_profile == 4) {
+@@ -1710,22 +1917,55 @@ static BC_STATUS crystalhd_flea_mfd_packed_probe_core(struct crystalhd_hw *hw,
+ 		pulses++;
+ 		udelay(10);
+ 	}
+-	sts = window_profile ?
++finish:
++	sts = observe_scl_input ?
++		crystalhd_flea_mfd_packed_input_guard(hw, generation, owner, ctrl, stride, test,
++						    hsize, window, scl_selector, !started, &scl_status) : window_profile ?
+ 		crystalhd_flea_mfd_packed_guard_core(hw, generation, owner, ctrl, stride, test,
+ 						window_profile, hsize, window) :
+ 		crystalhd_flea_mfd_packed_guard(hw, generation, owner, ctrl, stride, test);
+ 	if (sts != BC_STS_SUCCESS) goto quarantine;
+-	dev_info(&adp->pdev->dev, window_profile == 4 ?
++	if (observe_scl_input) {
++		if (scl_status) {
++			scl_error = true;
++			dev_info(&adp->pdev->dev,
++				 "issue92 packed-scl-input: final-guard status=%08x diagnostic=FAIL\n", scl_status);
++		}
++		if (scl_attempted) {
++			hw->pfnWriteDevRegister(adp, BCHP_SCL_HD_TEST_PORT_CONTROL, 0);
++			scl_selector = 0;
++			sts = crystalhd_flea_mfd_packed_input_guard(hw, generation, owner, ctrl,
++					stride, test, hsize, window, scl_selector, !started, &scl_status);
++			if (sts != BC_STS_SUCCESS) goto quarantine;
++			if (scl_status) {
++				scl_error = true;
++				dev_info(&adp->pdev->dev,
++					 "issue92 packed-scl-input: restored-guard status=%08x diagnostic=FAIL\n", scl_status);
++			}
++			dev_info(&adp->pdev->dev,
++				 "issue92 packed-scl-input: selector-restoration readback=0 observed-only=yes\n");
++		}
++		dev_info(&adp->pdev->dev,
++			 "issue92 packed-scl-input: summary MFD-observations=%u SCL-tuples=%u host-pulses=0 MFD-target-attempts=%u SCL-target-attempts=%u diagnostic=%s accepted/route/source-extent/completion=UNPROVED mux/timing-perturbation-unproved=yes\n",
++			 observations, scl_observations, mfd_attempts,
++			 scl_attempted ? 2 : 0, scl_error || feeder ? "FAIL" : "INCONCLUSIVE");
++	} else dev_info(&adp->pdev->dev, window_profile == 4 ?
+ 		 "issue92 packed-normal-handshake: summary observations=%u host-pulses=%u writes=%u observed-status-bits=%08x diagnostic=%s source/accepted-extent/completion=UNPROVED\n" :
+ 		 "issue92 packed-source: summary observations=%u host-pulses=%u writes=%u observed-status-bits=%08x diagnostic=%s source-correspondence=UNPROVED\n",
+ 		 i + 1, pulses, 10 + 2 * pulses, feeder, feeder ? "FAIL" : "INCONCLUSIVE");
+-	if (window_profile)
++	if (window_profile && (!observe_scl_input || observations))
+ 		dev_info(&adp->pdev->dev,
+ 			 "issue92 packed-window: stop=%s sample-last=%u tap-last=%u eof=%u pulses=%u not-accepted-count=yes\n",
+-			 feeder ? "feeder-status" : (sample_last || tap_last || eof) ?
++			 scl_error ? "scl-status" : feeder ? "feeder-status" : (sample_last || tap_last || eof) ?
+ 			 "terminal-labelled" : "host-budget", sample_last, tap_last, eof, pulses);
+ 	hw->research_mfd_deliberate_abort = true;
+ 	return BC_STS_CMD_CANCELLED;
++scl_failure:
++	scl_error = true;
++	dev_info(&adp->pdev->dev,
++		 "issue92 packed-scl-input: classified-status-OR=%08x diagnostic=FAIL not-a-raw-register-word=yes START-attempted=%u\n",
++		 scl_status, started);
++	goto finish;
+ mismatch:
+ 	sts = BC_STS_IO_ERROR;
+ quarantine:
+@@ -1733,6 +1973,15 @@ quarantine:
+ 	return sts;
+ }
+ 
++/* Literal legacy wrapper preserves every old profile's register trace. */
++static BC_STATUS crystalhd_flea_mfd_packed_probe_core(struct crystalhd_hw *hw,
++		uint64_t generation, const void *owner, uint32_t selector,
++		uint32_t window_profile)
++{
++	return crystalhd_flea_mfd_packed_probe_core_view(hw, generation, owner,
++						     selector, window_profile, false);
++}
++
+ static BC_STATUS crystalhd_flea_mfd_packed_probe(struct crystalhd_hw *hw,
+ 		uint64_t generation, const void *owner, uint32_t selector)
+ {
+@@ -1770,6 +2019,13 @@ static BC_STATUS crystalhd_flea_mfd_packed_normal_probe(struct crystalhd_hw *hw,
+ 	return crystalhd_flea_mfd_packed_probe_core(hw, generation, owner, selector, 4);
+ }
+ 
++static BC_STATUS crystalhd_flea_mfd_packed_normal_input_probe(struct crystalhd_hw *hw,
++		uint64_t generation, const void *owner, uint32_t selector)
++{
++	return crystalhd_flea_mfd_packed_probe_core_view(hw, generation, owner,
++						     selector, 4, true);
++}
++
+ static BC_STATUS crystalhd_flea_mfd_colour_probe_core_view(struct crystalhd_hw *hw,
+ 						   uint64_t generation, const void *owner,
+ 						   uint32_t colour, bool observe_scl,
+@@ -2407,6 +2663,7 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 	bool mfd_packed_observed_geometry_probe = hw && hw->research_mfd_packed_observed_geometry_probe;
+ 	bool mfd_packed_hsize4_probe = hw && hw->research_mfd_packed_hsize4_probe;
+ 	bool mfd_packed_normal_probe = hw && hw->research_mfd_packed_normal_probe;
++	bool mfd_packed_scl_input_probe = hw && hw->research_mfd_packed_scl_input_probe;
+ 	uint32_t packed_pattern = hw ? hw->research_mfd_packed_pattern : 0;
+ 	bool mfd_scl_probe = hw && hw->research_mfd_scl_probe;
+ 	bool scl_port_probe = hw && hw->research_scl_port_probe;
+@@ -2442,6 +2699,7 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 		hw->research_mfd_packed_observed_geometry_probe = false;
+ 		hw->research_mfd_packed_hsize4_probe = false;
+ 		hw->research_mfd_packed_normal_probe = false;
++		hw->research_mfd_packed_scl_input_probe = false;
+ 		hw->research_mfd_packed_pattern = 0;
+ 		hw->research_mfd_scl_probe = false;
+ 		hw->research_mfd_colour_value = 0;
+@@ -2484,6 +2742,9 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 	if (mfd_packed_normal_probe && (!mfd_packed_hsize4_probe ||
+ 	    !mfd_packed_observed_geometry_probe || !mfd_packed_window_probe || !mfd_packed_probe))
+ 		return BC_STS_INV_ARG;
++	if (mfd_packed_scl_input_probe && (!mfd_packed_normal_probe || !mfd_packed_hsize4_probe ||
++	    !mfd_packed_observed_geometry_probe || !mfd_packed_window_probe || !mfd_packed_probe))
++		return BC_STS_INV_ARG;
+ 	if (mfd_packed_probe && (!hw->adp->mem_addr ||
+ 	    hw->adp->pci_mem_len <
+ 	    ~BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_BASE_ADDR_MASK + 1U))
+@@ -2506,13 +2767,19 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 	if (staging_probe && (!hw->pfnDevDRAMRead ||
+ 	    buffSz - FLEA_FW_SIG_LEN_IN_BYTES - LENGTH_FIELD_SIZE < sizeof(pattern)))
+ 		return BC_STS_INV_ARG;
+-	if (mfd_scl_probe) {
++	if (mfd_scl_probe || mfd_packed_scl_input_probe) {
+ 		uint32_t scl_status;
+ 
+-		sts = crystalhd_flea_mfd_scl_guard_view(hw, mfd_generation, mfd_owner,
+-						 0, true, &scl_status);
++		sts = mfd_packed_scl_input_probe ?
++			crystalhd_flea_mfd_packed_input_scl_guard(hw, mfd_generation, mfd_owner,
++							       0, true, &scl_status) :
++			crystalhd_flea_mfd_scl_guard_view(hw, mfd_generation, mfd_owner,
++							 0, true, &scl_status);
+ 		if (sts != BC_STS_SUCCESS)
+ 			return sts;
++		if (mfd_packed_scl_input_probe &&
++		    !crystalhd_flea_mfd_packed_input_current(hw, mfd_generation, mfd_owner))
++			return BC_STS_IO_ERROR;
+ 		if (scl_status) {
+ 			dev_info(&hw->adp->pdev->dev,
+ 				 "issue92 mfd-scl: early-admission-rejected status=%08x required=0\n",
+@@ -2645,6 +2912,9 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 		if ((bridge_after & ARM_RUN_REQ_BIT) ||
+ 		    observed != ((const uint32_t *)pBuffer)[0])
+ 			return BC_STS_IO_ERROR;
++		if (mfd_packed_scl_input_probe)
++			return crystalhd_flea_mfd_packed_normal_input_probe(hw, mfd_generation,
++								 mfd_owner, packed_pattern);
+ 		if (mfd_packed_normal_probe)
+ 			return crystalhd_flea_mfd_packed_normal_probe(hw, mfd_generation,
+ 							 mfd_owner, packed_pattern);
+diff --git a/driver/linux/crystalhd_fw_research.c b/driver/linux/crystalhd_fw_research.c
+index f32a74d..e11e101 100644
+--- a/driver/linux/crystalhd_fw_research.c
++++ b/driver/linux/crystalhd_fw_research.c
+@@ -49,6 +49,9 @@
+ #if defined(CRYSTALHD_MFD_PACKED_NORMAL_PROBE) && (!defined(CRYSTALHD_MFD_PACKED_HSIZE4_PROBE) || !defined(CRYSTALHD_MFD_PACKED_OBSERVED_GEOMETRY_PROBE) || !defined(CRYSTALHD_MFD_PACKED_WINDOW_PROBE) || !defined(CRYSTALHD_MFD_PACKED_SOURCE_PROBE))
+ #error "Normal-handshake contrast requires HSIZE4, observed-geometry, packed-window and packed-source probes"
+ #endif
++#if defined(CRYSTALHD_MFD_PACKED_SCL_INPUT_PROBE) && (!defined(CRYSTALHD_MFD_PACKED_NORMAL_PROBE) || !defined(CRYSTALHD_MFD_PACKED_HSIZE4_PROBE) || !defined(CRYSTALHD_MFD_PACKED_OBSERVED_GEOMETRY_PROBE) || !defined(CRYSTALHD_MFD_PACKED_WINDOW_PROBE) || !defined(CRYSTALHD_MFD_PACKED_SOURCE_PROBE))
++#error "Packed SCL input observation requires the complete packed-normal profile"
++#endif
+ 
+ static const u8 crystalhd_fw_research_owner;
+ 
+@@ -1169,6 +1172,9 @@ static void crystalhd_fw_research_run_internal(u64 generation,
+ #endif
+ #ifdef CRYSTALHD_MFD_PACKED_NORMAL_PROBE
+ 	ctx->hw_ctx->research_mfd_packed_normal_probe = true;
++#endif
++#ifdef CRYSTALHD_MFD_PACKED_SCL_INPUT_PROBE
++	ctx->hw_ctx->research_mfd_packed_scl_input_probe = true;
+ #endif
+ 	ctx->hw_ctx->research_mfd_generation = generation;
+ 	ctx->hw_ctx->research_mfd_owner = &crystalhd_fw_research_owner;
+@@ -1183,6 +1189,7 @@ static void crystalhd_fw_research_run_internal(u64 generation,
+ 	ctx->hw_ctx->research_mfd_packed_observed_geometry_probe = false;
+ 	ctx->hw_ctx->research_mfd_packed_hsize4_probe = false;
+ 	ctx->hw_ctx->research_mfd_packed_normal_probe = false;
++	ctx->hw_ctx->research_mfd_packed_scl_input_probe = false;
+ 	ctx->hw_ctx->research_mfd_packed_pattern = 0;
+ 	ctx->hw_ctx->research_mfd_scl_probe = false;
+ 	ctx->hw_ctx->research_mfd_colour_value = 0;
+diff --git a/driver/linux/crystalhd_hw.h b/driver/linux/crystalhd_hw.h
+index 1c5f8fe..b4b07b7 100644
+--- a/driver/linux/crystalhd_hw.h
++++ b/driver/linux/crystalhd_hw.h
+@@ -412,6 +412,7 @@ struct crystalhd_hw {
+ 	bool research_mfd_packed_observed_geometry_probe;
+ 	bool research_mfd_packed_hsize4_probe;
+ 	bool research_mfd_packed_normal_probe;
++	bool research_mfd_packed_scl_input_probe;
+ 	uint32_t research_mfd_packed_pattern;
+ 	uint32_t research_mfd_colour_value;
+ 	bool research_mfd_scl_probe;
+diff --git a/tests/fw-download.c b/tests/fw-download.c
+index 974d513..96ab904 100644
+--- a/tests/fw-download.c
++++ b/tests/fw-download.c
+@@ -102,6 +102,7 @@ struct crystalhd_hw {
+ 	bool research_mfd_packed_observed_geometry_probe;
+ 	bool research_mfd_packed_hsize4_probe;
+ 	bool research_mfd_packed_normal_probe;
++	bool research_mfd_packed_scl_input_probe;
+ 	uint32_t research_mfd_packed_pattern;
+ 	bool research_mfd_scl_probe;
+ 	bool research_scl_port_probe;
+@@ -279,6 +280,13 @@ static bool packed_window, packed_campaign_window;
+ static bool packed_observed, packed_campaign_observed;
+ static bool packed_hsize4, packed_campaign_hsize4;
+ static bool packed_normal, packed_campaign_normal;
++static bool packed_input, packed_campaign_input, packed_input_fixture;
++static unsigned packed_scl_writes, packed_scl_writes_at_fault, packed_scl_data_reads;
++static unsigned packed_input_summaries, packed_input_logs;
++static bool packed_input_fail;
++static u64 packed_input_generation;
++static unsigned packed_input_reject_logs, packed_prefix_logs;
++static struct { uint32_t before, data[3], after; } packed_input_script;
+ /* Opaque external inputs, never computed from width, source or production
+  * state. A script supplies one sequential five-word observation bundle.
+  */
+@@ -324,8 +332,10 @@ static void packed_late_fault(void)
+ 		if (packed_async_kind == 1) hardware.dma_fault = true;
+ 		else if (packed_async_kind == 2) adapter.present = 0;
+ 		else if (packed_async_kind == 3) adapter.generation++;
+-		else adapter.cmds.session_owner = NULL;
++		else if (packed_async_kind == 4) adapter.cmds.session_owner = NULL;
++		else adapter.hw_accessible = false;
+ 		packed_writes_at_fault = packed_writes;
++		packed_scl_writes_at_fault = packed_scl_writes;
+ 	}
+ }
+ 
+@@ -335,7 +345,18 @@ static uint32_t read_packed(uint32_t offset)
+ 	unsigned n = 0;
+ 	check(!packed_pci_failed, "packed PCI failure stops every later custom register access");
+ 	while (n < ARRAY_SIZE(packed_offsets) && packed_offsets[n] != offset) n++;
+-	if (n < ARRAY_SIZE(packed_offsets)) value = packed_registers[n];
++	if (packed_input && offset >= 0x540800) {
++		unsigned field=0;
++		while(field<ARRAY_SIZE(scl_offsets) && scl_offsets[field]!=offset)field++;
++		check(field<ARRAY_SIZE(scl_offsets),"input observer reads only six literal SCL registers, not a pointer");
++		if(field<ARRAY_SIZE(scl_offsets))value=scl_values[field];
++		if(field==5) {
++			check(packed_scl_data_reads<3 && packed_input_script.before==0x19cafe81 &&
++			      packed_input_script.after==0x81face19,"three opaque SCL DATA words have fixed bounds and canaries");
++			if(packed_scl_data_reads>=3)abort();
++			value=packed_input_script.data[packed_scl_data_reads++];
++		}
++	} else if (n < ARRAY_SIZE(packed_offsets)) value = packed_registers[n];
+ 	else switch (offset) {
+ 	case 0x540000: value = 0x50; break;
+ 	case 0x4000d4: case 0xe0004: case 0x540064: case 0x54001c: break;
+@@ -378,6 +399,7 @@ static uint32_t read_packed(uint32_t offset)
+ 		value = packed_fault_value;
+ 		packed_trace[packed_count-1].value = value;
+ 		packed_writes_at_fault = packed_writes;
++		packed_scl_writes_at_fault = packed_scl_writes;
+ 		packed_io_at_fault = packed_count;
+ 	}
+ 	packed_late_fault();
+@@ -389,6 +411,12 @@ static void write_packed(uint32_t offset, uint32_t value)
+ 	check(hardware.research_mfd_pci_isolated && !(pci_command & PCI_COMMAND_MASTER) &&
+ 	      !packed_pci_failed && !cmac_writes && !arm_run_writes && !heartbeats,
+ 	      "packed targets are written only with persistent guarded MASTER0 before any firmware run");
++	if(packed_input && offset==0x540880) {
++		check(packed_scl_writes<2 && value==(packed_scl_writes?0U:2U),
++		      "input view has exactly one selector2 attempt and eligible restore0, no other SCL write");
++		scl_values[3]=value;packed_record('W',offset,value);packed_scl_writes++;
++		packed_late_fault();return;
++	}
+ 	unsigned n = 0;
+ 	while (n < ARRAY_SIZE(packed_offsets) && packed_offsets[n] != offset) n++;
+ 	check(n < ARRAY_SIZE(packed_offsets), "packed writes never LINE0/LINE1/FIXED/SCL/clock/security targets");
+@@ -424,8 +452,79 @@ static void packed_expect_guard(uint32_t ctrl,uint32_t stride,uint32_t test)
+ 	}
+ }
+ 
++static void packed_expect_scl_guard(uint32_t selector,bool before)
++{
++	packed_expect('R',0x540000,0x50);packed_expect('R',0x4000d4,0);
++	packed_expect('R',0xe0004,0);packed_expect('R',0x540064,0);
++	if(before)packed_expect('R',0x540030,0);
++	packed_expect('R',0x540800,0x80);packed_expect('R',0x540804,0x0c);
++	packed_expect('R',0x540854,0);packed_expect('R',0x540880,selector);
++	packed_expect('R',0x5408a4,0);
++}
++
++static void packed_expect_input_guard(uint32_t ctrl,uint32_t stride,uint32_t test,
++		uint32_t selector,bool before)
++{
++	packed_expect_guard(ctrl,stride,test);packed_expect_scl_guard(selector,before);
++}
++
++static void packed_expect_input_sample(bool before,unsigned tuple)
++{
++	packed_expect_input_guard(5,0,0,2,before);
++	packed_expect('R',0x540884,packed_input_script.data[tuple]);packed_expect('R',0x5408a4,0);
++	packed_expect_input_guard(5,0,0,2,before);
++}
++
++static void packed_input_oracle(unsigned error_ordinal,uint32_t error)
++{
++	packed_expected_count=0;packed_expected_hsize=0x780;packed_expected_window=0x436;
++	packed_expect_scl_guard(0,true);
++	packed_expect('R',0x540030,0);packed_expect('R',0x54001c,0);
++	packed_expect('R',0x540004,0);packed_expect('R',0x54006c,0);
++	packed_expect('R',0x540010,packed_initial_stride);packed_expect('R',0x540074,packed_initial_test);
++	packed_initial_test_event=packed_expected_count;packed_prep_first_event=packed_expected_count+1;
++	const uint32_t prep[]={0x540014,0x540018,0x54000c,0x540024,0x540044,0x54007c,0x540074,0x540004};
++	for(unsigned n=0;n<8;n++)packed_expect('R',prep[n],n==0?0x780U:n==1?0x436U:n==6?packed_initial_test:0);
++	packed_expect_input_guard(0,packed_initial_stride,packed_initial_test,0,true);packed_expect('D',0,24);
++	packed_expect_input_guard(0,packed_initial_stride,packed_initial_test,0,true);packed_expect('d',0,24);
++	uint32_t stride=packed_initial_stride,test=packed_initial_test,ctrl=0;
++	const uint32_t values[]={0,4,1,3,0,0,15,0,5};
++	for(unsigned n=0;n<9;n++) {
++		packed_expect_input_guard(ctrl,stride,test,0,true);
++		packed_expect('W',packed_offsets[n],values[n]);packed_expect('R',packed_offsets[n],values[n]);
++		if(n==0)stride=0;
++		if(n==1)packed_expected_hsize=4;
++		if(n==2)packed_expected_window=1;
++		if(n==7)test=0;
++		if(n==8)ctrl=5;
++	}
++	packed_expect_input_guard(5,0,0,0,true);packed_expect('R',0x540078,0);packed_expect('R',0x540080,0);
++	packed_expect_input_guard(5,0,0,0,true);packed_expect('W',0x540880,2);
++	packed_expect_input_guard(5,0,0,2,true);packed_expect_input_sample(true,0);
++	packed_expect('W',0x540030,1);
++	unsigned tuple=1;
++	for(unsigned n=0;n<17;n++) {
++		packed_expect_input_guard(5,0,0,2,false);
++		const unsigned terminal=n==packed_terminal_ordinal?packed_terminal_bits:0;
++		uint32_t sample=packed_script_word(n,0),tap=packed_script_word(n,1);
++		if(terminal&2U)sample=(sample&~0x03000000U)|0x02000000U;
++		if(terminal&4U)tap=(tap&~0x03000000U)|0x02000000U;
++		const uint32_t feed=(terminal&8U)?0x20000000U:packed_script_word(n,2);
++		const uint32_t bvb=(terminal&1U)?2U:packed_script_word(n,3);
++		const uint32_t feeder=n==error_ordinal?error:packed_script_word(n,4);
++		packed_expect('R',0x540078,sample);packed_expect('R',0x540080,tap);
++		packed_expect('R',0x540050,feed);packed_expect('R',0x540070,bvb);packed_expect('R',0x54006c,feeder);
++		const bool stop=feeder || ((sample>>24)&3)==2 || ((tap>>24)&3)==2 || (bvb&2U);
++		if(!stop && (n==0 || n==16))packed_expect_input_sample(false,tuple++);
++		if(stop || n==16)break;
++	}
++	packed_expect_input_guard(5,0,0,2,false);packed_expect('W',0x540880,0);
++	packed_expect_input_guard(5,0,0,0,false);
++}
++
+ static void packed_oracle(unsigned error_ordinal,uint32_t error)
+ {
++	if(packed_input){packed_input_oracle(error_ordinal,error);return;}
+ 	packed_expected_count=0;
+ 	packed_expected_hsize=packed_observed?0x780U:0;
+ 	packed_expected_window=packed_observed?0x436U:0;
+@@ -496,7 +595,54 @@ static void packed_compare(void)
+ 
+ static void test_log(const char *message, ...)
+ {
+-	if (strstr(message,"packed-source: summary") || strstr(message,"packed-normal-handshake: summary")) {
++	if(strstr(message,"packed-scl-input: summary")) {
++		va_list args;va_start(args,message);
++		const unsigned observations=va_arg(args,unsigned),tuples=va_arg(args,unsigned);
++		const unsigned mfd=va_arg(args,unsigned),scl=va_arg(args,unsigned);
++		const char *diagnostic=va_arg(args,const char *);
++		packed_input_summaries++;packed_input_fail=!strcmp(diagnostic,"FAIL");
++		check(observations==packed_observations && tuples==packed_input_logs && mfd==packed_writes &&
++		      scl==packed_scl_writes && !packed_pulses && mfd<=10 && scl<=2 &&
++		      strstr(message,"accepted/route/source-extent/completion=UNPROVED"),
++		      "input summary uses actual target/tuple counts, not an unexecuted setup index or accepted transfer model");
++		va_end(args);
++	} else if(strstr(message,"packed-scl-input: pre-START data=") || strstr(message,"packed-scl-input: observation=")) {
++		va_list args;va_start(args,message);
++		const bool before=strstr(message,"pre-START")!=NULL;
++		const unsigned ordinal=before?UINT32_MAX:va_arg(args,unsigned);
++		const uint32_t data=va_arg(args,uint32_t),status=va_arg(args,uint32_t);
++		const uint32_t pre=va_arg(args,uint32_t),post=va_arg(args,uint32_t);
++		const unsigned guard=before?20U:19U;
++		check(packed_scl_data_reads && packed_input_logs<3 && packed_count>=guard+3 &&
++		      data==packed_trace[packed_count-guard-2].value &&
++		      packed_trace[packed_count-1].value==post && packed_trace[packed_count-guard-1].value==status &&
++		      packed_trace[packed_count-guard-3].value==pre &&
++		      adapter.present && adapter.hw_accessible && !hardware.dma_fault &&
++		      adapter.generation==packed_input_generation && adapter.cmds.session_owner==&research_owner &&
++		      (before?!packed_starts:packed_starts==1 && (ordinal==0 || ordinal==16)) &&
++		      strstr(message,"opaque/non-atomic=yes"),
++		      "three separate raw STATUS words and opaque DATA are reported only at admitted current-context milestones");
++		packed_input_logs++;va_end(args);
++	} else if(strstr(message,"packed-scl-input: guard-reject")) {
++		packed_input_reject_logs++;
++		check(adapter.present && adapter.hw_accessible && !hardware.dma_fault &&
++		      adapter.generation==packed_input_generation && adapter.cmds.session_owner==&research_owner,
++		      "input guard rejection never reports stale raw scalars after context loss");
++	} else if(strstr(message,"packed-source: pattern=")) {
++		if(packed_input) {
++			packed_prefix_logs++;
++			check(adapter.present && adapter.hw_accessible && !hardware.dma_fault &&
++			      adapter.generation==packed_input_generation && adapter.cmds.session_owner==&research_owner &&
++			      !pattern_mismatch,"source-prefix raw log is suppressed after successful PIO with context loss or mismatch");
++		}
++	} else if(strstr(message,"packed-scl-input: cold-admission")) {
++		check(adapter.present && adapter.hw_accessible && !hardware.dma_fault &&
++		      adapter.generation==packed_input_generation && adapter.cmds.session_owner==&research_owner,
++		      "cold status rejection is reported only while the frozen context is current");
++	} else if(strstr(message,"packed-scl-input: classified-status-OR=")) {
++		check(strstr(message,"not-a-raw-register-word=yes")!=NULL,
++		      "software status classification is explicitly not a raw register sample");
++	} else if (strstr(message,"packed-source: summary") || strstr(message,"packed-normal-handshake: summary")) {
+ 		va_list args; va_start(args,message);
+ 		const unsigned observations=va_arg(args,unsigned),pulses=va_arg(args,unsigned),writes=va_arg(args,unsigned);
+ 		const uint32_t bits=va_arg(args,uint32_t);
+@@ -519,7 +665,7 @@ static void test_log(const char *message, ...)
+ 		      packed_trace[packed_count-1].value==packed_test_mismatch_raw &&
+ 		      packed_trace[packed_count-3].address==0x540004 &&
+ 		      packed_trace[packed_count-3].value==packed_test_mismatch_ctrl &&
+-		      adapter.present && !hardware.dma_fault && adapter.cmds.session_owner==&research_owner &&
++		      adapter.present && adapter.hw_accessible && !hardware.dma_fault && adapter.cmds.session_owner==&research_owner &&
+ 		      strstr(message,"transport/atomicity-unproved=yes"),
+ 		      "normal TEST mismatch labels the already-read raw/expected CTRL only while host context is still valid");
+ 		va_end(args);
+@@ -568,6 +714,8 @@ static int pci_read_config_word(struct pci_dev *device, unsigned offset,
+ 	pci_reads++;
+ 	if (pci_reads == pci_fail_at) {
+ 		packed_pci_failed = packed_active;
++		packed_writes_at_fault=packed_writes;
++		packed_scl_writes_at_fault=packed_scl_writes;
+ 		colour_pci_failed = colour_probe_active;
+ 		scl_pci_failed = scl_probe_active;
+ 		mfd_scl_writes_at_fault = mfd_scl_target_writes;
+@@ -786,7 +934,7 @@ static uint32_t read_device(struct crystalhd_adp *adp, uint32_t offset)
+ 		return value;
+ 	}
+ 	if (colour_probe_active) return read_colour(offset);
+-	if (mfd_scl_fixture && offset >= 0x540800) {
++	if ((mfd_scl_fixture || packed_input_fixture) && offset >= 0x540800) {
+ 		unsigned field = 0;
+ 		while (field < ARRAY_SIZE(scl_offsets) && scl_offsets[field] != offset) field++;
+ 		check(field < 5, "early combined admission reads only identity/control/status, never DATA");
+@@ -1082,6 +1230,11 @@ static bool crystalhd_flea_detect_fw_alive(struct crystalhd_hw *hw)
+ #include "mfd-colour-guard-function.h"
+ #include "mfd-packed-guard-core.h"
+ #include "mfd-packed-guard.h"
++#include "mfd-packed-input-current.h"
++#include "mfd-packed-input-scl-guard.h"
++#include "mfd-packed-input-guard.h"
++#include "mfd-packed-input-sample.h"
++#include "mfd-packed-core-view.h"
+ #include "mfd-packed-core.h"
+ #define crystalhd_flea_mfd_packed_probe extracted_mfd_packed_probe
+ #include "mfd-packed-probe.h"
+@@ -1190,6 +1343,28 @@ static BC_STATUS crystalhd_flea_mfd_packed_normal_probe(struct crystalhd_hw *hw,
+ 	packed_active=false;
+ 	return status;
+ }
++#define crystalhd_flea_mfd_packed_normal_input_probe extracted_mfd_packed_normal_input_probe
++#include "mfd-packed-normal-input-probe.h"
++#undef crystalhd_flea_mfd_packed_normal_input_probe
++
++static BC_STATUS crystalhd_flea_mfd_packed_normal_input_probe(struct crystalhd_hw *hw,
++		u64 generation, const void *owner, uint32_t selector)
++{
++	packed_calls++;
++	if(packed_fixture)
++		check(dram_writes==1 && dram_reads==1 && !memcmp(card_prefix,expected_image,96) &&
++		      !hw->research_mfd_packed_probe && !hw->research_mfd_packed_window_probe &&
++		      !hw->research_mfd_packed_observed_geometry_probe && !hw->research_mfd_packed_hsize4_probe &&
++		      !hw->research_mfd_packed_normal_probe && !hw->research_mfd_packed_scl_input_probe &&
++		      !hw->research_mfd_packed_pattern && !hw->research_staging_probe &&
++		      !hw->research_mfd_generation && !hw->research_mfd_owner,
++		      "input downloader consumes all flags before real helper and stock-prefix admission");
++	packed_input_generation=generation;
++	packed_input=packed_normal=packed_hsize4=packed_observed=packed_window=packed_active=true;
++	const BC_STATUS status=extracted_mfd_packed_normal_input_probe(hw,generation,owner,selector);
++	packed_active=false;
++	return status;
++}
+ #include "scl-port-guard.h"
+ #include "scl-port-sample-view.h"
+ #include "scl-port-sample.h"
+@@ -1334,6 +1509,13 @@ static void reset(void)
+ 	packed_observed=false;
+ 	packed_hsize4=false;
+ 	packed_normal=false;
++	packed_input=packed_input_fixture=false;
++	packed_scl_writes=packed_scl_writes_at_fault=packed_scl_data_reads=0;
++	packed_input_summaries=packed_input_logs=packed_input_reject_logs=packed_prefix_logs=0;
++	packed_input_fail=false;packed_input_generation=0x1020304050607080ULL;
++	packed_input_script.before=0x19cafe81;packed_input_script.after=0x81face19;
++	packed_input_script.data[0]=0xdeadbeef;packed_input_script.data[1]=0x08000000;
++	packed_input_script.data[2]=0x11223344;
+ 	packed_normal_script.before=0x51ca7e11;packed_normal_script.after=0x18ace711;
+ 	for(unsigned n=0;n<17;n++) {
+ 		packed_normal_script.raw[n][0]=0x0010aa55;
+@@ -3742,16 +3924,20 @@ static void scl_view_fault_campaigns(void)
+ static void reset_packed(unsigned selector)
+ {
+ 	reset();queues[2].count=0;packed_selector=selector;
+-	packed_normal=packed_campaign_normal;
++	packed_input=packed_campaign_input;
++	packed_normal=packed_campaign_normal || packed_input;
+ 	packed_hsize4=packed_campaign_hsize4 || packed_normal;
+ 	packed_observed=packed_campaign_observed || packed_hsize4;
+ 	packed_window=packed_campaign_window || packed_observed;
+ 	if(packed_observed){packed_registers[1]=0x780;packed_registers[2]=0x436;}
++	if(packed_input)scl_values[1]=0xc;
+ 	memcpy(card_prefix,expected_image,96);card_suffix=expected_image[24];
+ }
+ 
+ static BC_STATUS run_packed(void)
+ {
++	if(packed_input)
++		return crystalhd_flea_mfd_packed_normal_input_probe(&hardware,adapter.generation,&research_owner,packed_selector);
+ 	if(packed_normal)
+ 		return crystalhd_flea_mfd_packed_normal_probe(&hardware,adapter.generation,&research_owner,packed_selector);
+ 	if(packed_hsize4)
+@@ -3766,6 +3952,8 @@ static BC_STATUS run_packed(void)
+ static BC_STATUS run_packed_admission(struct crystalhd_hw *hw, u64 generation,
+ 		const void *owner, uint32_t selector)
+ {
++	if(packed_input)
++		return crystalhd_flea_mfd_packed_normal_input_probe(hw,generation,owner,selector);
+ 	if(packed_normal)
+ 		return crystalhd_flea_mfd_packed_normal_probe(hw,generation,owner,selector);
+ 	if(packed_hsize4)
+@@ -4923,6 +5111,383 @@ static void packed_normal_campaigns(void)
+ 	packed_campaign_normal=false;
+ }
+ 
++/* SCL DATA is an externally supplied word, not a model of the MFD source,
++ * width or silicon state. Every clean event is built from literal addresses.
++ */
++static void packed_input_results(void)
++{
++	groups++;
++	for(unsigned pattern=1;pattern<=2;pattern++)for(unsigned pre=0;pre<4;pre++) {
++		reset_packed(pattern);packed_initial_stride=packed_registers[0]=(pre&1)?0x00800080:0;
++		packed_initial_test=packed_registers[7]=(pre&2)?4:0;packed_oracle(UINT32_MAX,0);
++		check(packed_expected_count==897 && run_packed()==BC_STS_CMD_CANCELLED &&
++		      packed_count==897 && packed_reads==883 && pci_reads==234 && packed_writes==10 &&
++		      packed_scl_writes==2 && !scl_values[3] && packed_starts==1 && !packed_pulses &&
++		      packed_delays==16 && packed_observations==17 && packed_scl_data_reads==3 &&
++		      packed_input_logs==3 && packed_input_summaries==1 && !packed_input_fail &&
++		      !fatal_stops && packed_retained() && hardware.research_mfd_deliberate_abort &&
++		      dram_writes==1 && dram_reads==1 && !cmac_writes && !arm_run_writes && !heartbeats,
++		      "clean input view has exactly883 REG/234 immediate-clear PCI/12 targets/2 PIO and three opaque tuples, no flow proof");
++		packed_compare();
++		check(!memcmp(card_prefix,packed_words[pattern-1],16) && card_suffix==expected_image[24] &&
++		      !memcmp(&firmware,&firmware_before,sizeof(firmware)),"input source remains held and original firmware never boots altered");
++		for(unsigned n=4;n<24;n++)check(card_prefix[n]==(pattern==1?0x12121212U:0xededededU),
++		      "held padding is not a certified fetch bound");
++		const unsigned before=packed_count;check(run_packed()==BC_STS_BUSY && packed_count==before,
++		      "isolated observer cannot replay or retarget an existing source");
++		close_probe_active=close_started_snapshot=true;
++		check(crystalhd_hw_close(&hardware)==BC_STS_SUCCESS && !hardware.dev_started &&
++		      suspend_calls==1 && packed_count==before,"retirement remains stock stop/reset plus checked PCI containment, not local drain proof");
++		close_probe_active=false;
++	}
++	/* A bounded fourth pending observation is legal;234 is only the clean
++	 * immediate-clear count, not the maximum of the polling PCI helper.
++	 */
++	reset_packed(1);pci_pending[0]=pci_pending[1]=pci_pending[2]=PCI_EXP_DEVSTA_TRPND;
++	check(run_packed()==BC_STS_CMD_CANCELLED && packed_reads==883 && pci_reads==240 &&
++	      sleeps==3 && packed_writes==10 && packed_scl_writes==2,
++	      "transient TRPND clearing on the fourth observation keeps clean REG trace while adding six PCI reads and three bounded waits");
++}
++
++static void packed_input_scripts(void)
++{
++	groups++;
++	for(unsigned pattern=1;pattern<=2;pattern++)for(unsigned variant=0;variant<5;variant++) {
++		reset_packed(pattern);
++		for(unsigned k=0;k<3;k++)packed_input_script.data[k]=variant==0?0:variant==1?UINT32_MAX:
++			variant==2?0x80abc123:0xabcdef01U^(k*0x12345678U);
++		for(unsigned n=0;n<17;n++)if(variant>=3) {
++			packed_normal_script.raw[n][0]=((variant==3?1U:3U)<<24)|((571U-9U*n)<<10)|(11U+31U*n);
++			packed_normal_script.raw[n][1]=((variant==3?1U:3U)<<24)|0x04000000|((41U+7U*n)<<10)|(712U-11U*n);
++			packed_normal_script.raw[n][2]=0x20000000|(17U+n);
++			packed_normal_script.raw[n][3]=n&1;
++		}
++		uint32_t data[3];memcpy(data,packed_input_script.data,sizeof(data));packed_oracle(UINT32_MAX,0);
++		check(run_packed()==BC_STS_CMD_CANCELLED && packed_reads==883 && packed_observations==17 &&
++		      packed_scl_data_reads==3 && !packed_input_fail && !fatal_stops && !packed_pulses &&
++		      !memcmp(data,packed_input_script.data,sizeof(data)),
++		      "zero/allones/flat/unrelated changing DATA and FIRST/raw3/EOL/LAST_LINE remain legal opaque scripts");
++		packed_compare();
++	}
++}
++
++static void packed_input_terminals(void)
++{
++	groups++;
++	for(unsigned pattern=1;pattern<=2;pattern++)for(unsigned ordinal=0;ordinal<=16;ordinal++)
++	for(unsigned bits=0;bits<=7;bits++)for(unsigned error=0;error<4;error++)if(bits || error) {
++		reset_packed(pattern);packed_terminal_ordinal=ordinal;packed_terminal_bits=bits;
++		if(error){packed_error_ordinal=ordinal;packed_error=1U<<(error-1);}
++		/* Exact LAST2 replaces FIRST1; it never becomes enum3 by OR. */
++		for(unsigned n=0;n<17;n++){packed_normal_script.raw[n][0]|=0x01000000;packed_normal_script.raw[n][1]|=0x01000000;}
++		packed_oracle(packed_error_ordinal,packed_error);
++		check(run_packed()==BC_STS_CMD_CANCELLED && packed_reads==419+24*ordinal+40*(ordinal>0) &&
++		      pci_reads==114+6*ordinal+12*(ordinal>0) && packed_writes==10 && packed_scl_writes==2 &&
++		      packed_scl_data_reads==(ordinal?2U:1U) && packed_input_logs==packed_scl_data_reads &&
++		      packed_observations==ordinal+1 && packed_delays==ordinal && !packed_pulses &&
++		      packed_input_fail==(error!=0) && !fatal_stops,
++		      "sampled exact-LAST/EOF/feeder stops future observations including SCL DATA; final/restoration guards remain and feeder wins diagnosticFAIL");
++		packed_compare();
++	}
++	for(unsigned ordinal=0;ordinal<=16;ordinal++) {
++		reset_packed(1);packed_terminal_ordinal=ordinal;packed_terminal_bits=8;packed_oracle(UINT32_MAX,0);
++		check(run_packed()==BC_STS_CMD_CANCELLED && packed_observations==17 && packed_scl_data_reads==3 &&
++		      packed_reads==883 && !packed_input_fail,"LAST_LINE alone does not imply terminal or suppress later raw observations");
++		packed_compare();
++	}
++}
++
++static void packed_input_arguments(void)
++{
++	groups++;
++	for(unsigned profile=0;profile<=5;profile++)if(profile!=4) {
++		reset_packed(1);packed_active=true;
++		check(crystalhd_flea_mfd_packed_probe_core_view(&hardware,adapter.generation,&research_owner,1,profile,true)==BC_STS_INV_ARG &&
++		      no_effects() && !pci_reads && !packed_count,"input bool cannot widen old profiles or create a new geometry fallback");packed_active=false;
++	}
++	reset_packed(1);packed_active=true;uint32_t status=0;
++	check(crystalhd_flea_mfd_packed_input_sample(&hardware,adapter.generation,&research_owner,true,NULL)==BC_STS_INV_ARG && !packed_count,
++	      "null tuple is refused before any IO");
++	check(crystalhd_flea_mfd_packed_input_guard(&hardware,adapter.generation,&research_owner,0,0,0,0x780,0x436,0,true,NULL)==BC_STS_INV_ARG && !packed_count,
++	      "null guard status is refused before IO");
++	const uint32_t bad[]={1,3,UINT32_MAX};
++	for(unsigned n=0;n<ARRAY_SIZE(bad);n++)check(crystalhd_flea_mfd_packed_input_guard(&hardware,adapter.generation,&research_owner,
++	      0,0,0,0x780,0x436,bad[n],true,&status)==BC_STS_INV_ARG && !packed_count,
++	      "input guard admits only literal0/2 selectors, never caller-selected debug views");
++	packed_active=false;
++	packed_admission_results();
++}
++
++static void packed_input_faults(void)
++{
++	groups++;
++	reset_packed(1);packed_oracle(UINT32_MAX,0);struct packed_event full[1024];
++	const unsigned total=packed_expected_count;memcpy(full,packed_expected,total*sizeof(*full));
++	for(unsigned pattern=1;pattern<=2;pattern++) {
++		for(unsigned event=1;event<=total;event++)if(full[event-1].kind=='R' && full[event-1].address!=0x540884) {
++			reset_packed(pattern);packed_fault_at=event;
++			const BC_STATUS status=run_packed();
++			check(status!=BC_STS_CMD_CANCELLED && packed_count==event &&
++			      packed_writes==packed_writes_at_fault && packed_scl_writes==packed_scl_writes_at_fault &&
++			      !hardware.research_mfd_deliberate_abort && !cmac_writes && !arm_run_writes,
++			      "poison at every rejectable REG scalar stops targets/restore and unread reports; DATA has no rejection mask");
++			check(hardware.research_mfd_pci_isolated?fatal_stops==1:!fatal_stops && !pci_clears && !dram_writes,
++			      "preadmission poison has no isolation/source effects; isolated failure retains backing");
++		}
++		for(unsigned fail=1;fail<=234;fail++) {
++			reset_packed(pattern);pci_fail_at=fail;
++			check(run_packed()==BC_STS_IO_ERROR && pci_reads==fail && fatal_stops==1 &&
++			      !hardware.research_mfd_deliberate_abort && packed_writes==packed_writes_at_fault &&
++			      packed_scl_writes==packed_scl_writes_at_fault,
++			      "every clean-profile PCI transport position fails closed without blind restore or retry");
++		}
++		for(unsigned event=1;event<=total;event++)for(unsigned kind=1;kind<=5;kind++) {
++			reset_packed(pattern);packed_async_at=event;packed_async_kind=kind;
++			check(run_packed()!=BC_STS_CMD_CANCELLED && !hardware.research_mfd_deliberate_abort &&
++			      packed_writes==packed_writes_at_fault && packed_scl_writes==packed_scl_writes_at_fault &&
++			      !cmac_writes && !arm_run_writes && !packed_input_summaries,
++			      "loss at each REG/PIO/target boundary prevents subsequent writes/restoration/certification after guard detection");
++			if(full[event-1].address>=0x540800 && full[event-1].kind=='R')
++				check(packed_count==event,"new SCL scalar loss stops before the next scalar, unlike inherited batched shared guards");
++			if(event<=24)check(!pci_clears && !dram_writes,"cold loss cannot isolate PCI or stage a pattern");
++		}
++		for(int status=-1;status<=26;status++)if(status)for(unsigned api=0;api<2;api++) {
++			reset_packed(pattern);if(api)pattern_read_status=(BC_STATUS)status;else pattern_write_status=(BC_STATUS)status;
++			check(run_packed()==(BC_STATUS)status && fatal_stops==1 && !packed_writes && !packed_scl_writes &&
++			      dram_writes==1 && dram_reads==api && !packed_prefix_logs,"all27 staged PIO statuses quarantine before targets or prefix report");
++		}
++		for(unsigned n=0;n<24;n++) {
++			reset_packed(pattern);pattern_mismatch=true;mismatch_index=n;
++			check(run_packed()==BC_STS_IO_ERROR && fatal_stops==1 && !packed_writes && !packed_scl_writes && !packed_prefix_logs,
++			      "every nominal/padding mismatch prevents all engine targets and raw prefix logging");
++		}
++	}
++}
++
++/* Build a defined-flag exit independently from the normal literal prefix.
++ * A complete readable four-word tuple precedes classification; valid low8
++ * flags are sticky FAIL but still permit a newly guarded selector restore.
++ */
++static void packed_input_flag_oracle(const struct packed_event *full,unsigned event,uint32_t flag)
++{
++	unsigned end=event;
++	if(event==347 || event==349)end=369;
++	if(event==413 || event==415)end=434;
++	if(event==837 || event==839)end=858;
++	if(event>=877)end=897;
++	packed_expected_count=end;memcpy(packed_expected,full,end*sizeof(*full));packed_expected[event-1].value=flag;
++	if(event==10 || end==897)return;
++	uint32_t ctrl=0,stride=0,test=0,selector=0;bool started=false;
++	packed_expected_hsize=0x780;packed_expected_window=0x436;
++	for(unsigned n=0;n<end;n++)if(full[n].kind=='W')switch(full[n].address) {
++	case 0x540010:stride=full[n].value;break;case 0x540014:packed_expected_hsize=full[n].value;break;
++	case 0x540018:packed_expected_window=full[n].value;break;case 0x540074:test=full[n].value;break;
++	case 0x540004:ctrl=full[n].value;break;case 0x540880:selector=full[n].value;break;
++	case 0x540030:started=true;break;default:break;
++	}
++	packed_expect_input_guard(ctrl,stride,test,selector,!started);
++	if(selector){packed_expect('W',0x540880,0);packed_expect_input_guard(ctrl,stride,test,0,!started);}
++}
++
++static void packed_input_status_results(void)
++{
++	groups++;
++	reset_packed(1);packed_oracle(UINT32_MAX,0);struct packed_event full[1024];const unsigned total=packed_expected_count;
++	memcpy(full,packed_expected,total*sizeof(*full));
++	for(unsigned pattern=1;pattern<=2;pattern++)for(unsigned event=1;event<=total;event++)
++	if(full[event-1].kind=='R' && full[event-1].address==0x5408a4)for(unsigned bit=0;bit<8;bit++) {
++		reset_packed(pattern);packed_fault_at=event;packed_fault_value=1U<<bit;
++		packed_input_flag_oracle(full,event,1U<<bit);
++		check(run_packed()==(event==10?BC_STS_BUSY:BC_STS_CMD_CANCELLED) && !fatal_stops &&
++		      packed_input_summaries==(event==10?0U:1U) && packed_input_fail==(event!=10) &&
++		      (event>369 || !packed_starts) && packed_scl_writes==(event<307?0U:2U),
++		      "each defined low8 flag at every cold/setup/tuple/final status remains raw/stickyFAIL; baseline never STARTs");
++		packed_compare();
++		if(event==44)check(packed_reads==64 && pci_reads==12 && !packed_writes && !dram_writes,
++		      "first isolated status exit has zero target and PIO attempts, not an unexecuted setup count");
++		if(event==65)check(packed_reads==84 && pci_reads==18 && !packed_writes && dram_writes==1 && !dram_reads,
++		      "post-source-write status exit reports only the actually attempted PIO and zero MFD targets");
++	}
++}
++
++static void packed_input_register_results(void)
++{
++	groups++;
++	reset_packed(1);packed_oracle(UINT32_MAX,0);struct packed_event full[1024];const unsigned total=packed_expected_count;
++	memcpy(full,packed_expected,total*sizeof(*full));
++	for(unsigned event=1;event<=total;event++)if(full[event-1].kind=='R' && full[event-1].address>=0x540800 &&
++	    full[event-1].address!=0x540884)for(unsigned bit=0;bit<32;bit++) {
++		if(full[event-1].address==0x5408a4 && bit<8)continue; /* separate defined-flag campaign */
++		reset_packed(1);packed_fault_at=event;packed_fault_value=full[event-1].value^(1U<<bit);
++		check(run_packed()==BC_STS_IO_ERROR && packed_count==event && !hardware.research_mfd_deliberate_abort &&
++		      packed_writes==packed_writes_at_fault && packed_scl_writes==packed_scl_writes_at_fault,
++		      "every SCL identity/profile/selector bit and reserved-status bit is exact pinned, without DATA semantics");
++	}
++	const unsigned pio_read=66;
++	for(unsigned kind=1;kind<=5;kind++) {
++		reset_packed(1);packed_async_at=pio_read;packed_async_kind=kind;pattern_mismatch=true;mismatch_index=0;
++		check(run_packed()==BC_STS_IO_ERROR && packed_count==pio_read && !packed_prefix_logs && !packed_writes &&
++		      !packed_scl_writes && fatal_stops==1,"SUCCESS PIO read plus poisoned prefix/context loss never publishes raw source or targets");
++	}
++	/* TEST mismatch and inaccessible context can coincide in the inherited
++	 * packed guard: only its failure-only currentness-qualified log changes.
++	 */
++	for(unsigned event=1;event<=total;event++)if(full[event-1].kind=='R' && full[event-1].address==0x540074 &&
++	    event>=3 && full[event-3].address==0x540004) {
++		reset_packed(1);packed_fault_at=packed_async_at=event;packed_fault_value=2;packed_async_kind=5;
++		check(run_packed()==BC_STS_IO_ERROR && packed_count==event && !packed_test_mismatch_logs &&
++		      packed_writes==packed_writes_at_fault && packed_scl_writes==packed_scl_writes_at_fault,
++		      "inaccessible TEST mismatch cannot leak a stale raw guard diagnostic or allow targets");
++	}
++}
++
++static void packed_input_sample_results(void)
++{
++	groups++;
++	for(unsigned before=0;before<2;before++) {
++		reset_packed(1);packed_registers[1]=4;packed_registers[2]=1;packed_registers[8]=5;scl_values[3]=2;
++		packed_active=true;struct {uint32_t first,raw[4],last;} out={0xfeca19ab,{0xa5a5a5a5,0xa5a5a5a5,0xa5a5a5a5,0xa5a5a5a5},0xba91acef};
++		check(crystalhd_flea_mfd_packed_input_sample(&hardware,adapter.generation,&research_owner,before!=0,out.raw)==BC_STS_SUCCESS &&
++		      packed_reads==(before?42U:40U) && !pci_reads && !packed_writes && !packed_scl_writes &&
++		      out.raw[0]==packed_input_script.data[0] && !out.raw[1] && !out.raw[2] && !out.raw[3] &&
++		      out.first==0xfeca19ab && out.last==0xba91acef,"actual direct sample fills only four owned scalars between unchanged canaries");
++		packed_active=false;
++	}
++	for(unsigned event=1;event<=42;event++) {
++		reset_packed(1);packed_registers[1]=4;packed_registers[2]=1;packed_registers[8]=5;scl_values[3]=2;
++		packed_active=true;uint32_t words[6]={0xfeca19ab,0xa5a5a5a5,0xa5a5a5a5,0xa5a5a5a5,0xa5a5a5a5,0xba91acef};
++		packed_async_at=event;packed_async_kind=5;
++		check(crystalhd_flea_mfd_packed_input_sample(&hardware,adapter.generation,&research_owner,true,words+1)==BC_STS_IO_ERROR &&
++		      words[0]==0xfeca19ab && words[5]==0xba91acef && !packed_writes && !packed_scl_writes,
++		      "partial direct sample on access loss preserves canaries and never writes/restores or reports unread tuple words");
++		packed_active=false;
++	}
++}
++
++static void packed_input_combined_faults(void)
++{
++	groups++;
++	reset_packed(1);packed_oracle(UINT32_MAX,0);struct packed_event full[1024];const unsigned total=packed_expected_count;
++	memcpy(full,packed_expected,total*sizeof(*full));
++	for(unsigned event=1;event<=total;event++)if(full[event-1].kind=='R' && full[event-1].address>=0x540800 &&
++	    full[event-1].address!=0x540884)for(unsigned kind=1;kind<=5;kind++) {
++		reset_packed(1);packed_fault_at=packed_async_at=event;packed_fault_value=UINT32_MAX;packed_async_kind=kind;
++		check(run_packed()==BC_STS_IO_ERROR && packed_count==event && !packed_input_reject_logs &&
++		      packed_writes==packed_writes_at_fault && packed_scl_writes==packed_scl_writes_at_fault &&
++		      !packed_input_summaries,"combined configuration/reserved plus context loss stops without stale raw guard-reject or blind restore");
++	}
++	/* Both selector-changing guard boundaries end in STATUS, not a fresh
++	 * pointer fetch. Scalar loss there must forbid the following write.
++	 */
++	const unsigned boundaries[]={306,877};
++	for(unsigned n=0;n<ARRAY_SIZE(boundaries);n++)for(unsigned kind=3;kind<=5;kind++) {
++		reset_packed(1);packed_async_at=boundaries[n];packed_async_kind=kind;
++		check(run_packed()==BC_STS_IO_ERROR && packed_count==boundaries[n] &&
++		      packed_scl_writes==(n?1U:0U),"GEN/owner/access loss on final SCL guard status forbids select2/restore0");
++	}
++}
++
++static void configure_packed_input(struct crystalhd_cmd *ctx,
++		const struct crystalhd_fw_research_request *request,u64 generation,uint32_t pattern)
++{
++#define CRYSTALHD_MFD_PACKED_SOURCE_PROBE
++#define CRYSTALHD_MFD_PACKED_WINDOW_PROBE
++#define CRYSTALHD_MFD_PACKED_OBSERVED_GEOMETRY_PROBE
++#define CRYSTALHD_MFD_PACKED_HSIZE4_PROBE
++#define CRYSTALHD_MFD_PACKED_NORMAL_PROBE
++#define CRYSTALHD_MFD_PACKED_SCL_INPUT_PROBE
++#define CRYSTALHD_MFD_PACKED_PATTERN pattern
++#define crystalhd_fw_research_owner research_owner
++#include "packed-source-config.h"
++#undef crystalhd_fw_research_owner
++#undef CRYSTALHD_MFD_PACKED_PATTERN
++#undef CRYSTALHD_MFD_PACKED_SCL_INPUT_PROBE
++#undef CRYSTALHD_MFD_PACKED_NORMAL_PROBE
++#undef CRYSTALHD_MFD_PACKED_HSIZE4_PROBE
++#undef CRYSTALHD_MFD_PACKED_OBSERVED_GEOMETRY_PROBE
++#undef CRYSTALHD_MFD_PACKED_WINDOW_PROBE
++#undef CRYSTALHD_MFD_PACKED_SOURCE_PROBE
++}
++
++static void packed_input_scope_results(void)
++{
++	groups++;
++	for(unsigned pattern=1;pattern<=2;pattern++)for(unsigned deps=0;deps<31;deps++) {
++		reset_packed(pattern);hardware.research_staging_probe=hardware.research_mfd_packed_scl_input_probe=true;
++		hardware.research_mfd_packed_probe=(deps&1)!=0;hardware.research_mfd_packed_window_probe=(deps&2)!=0;
++		hardware.research_mfd_packed_observed_geometry_probe=(deps&4)!=0;hardware.research_mfd_packed_hsize4_probe=(deps&8)!=0;
++		hardware.research_mfd_packed_normal_probe=(deps&16)!=0;hardware.research_mfd_packed_pattern=pattern;
++		check(crystalhd_flea_download_fw(&hardware,(const uint8_t *)firmware.words,sizeof(firmware.words))==BC_STS_INV_ARG &&
++		      no_effects() && !pci_reads && !packed_calls && !hardware.research_mfd_packed_scl_input_probe &&
++		      !hardware.research_mfd_packed_probe && !hardware.research_mfd_packed_window_probe &&
++		      !hardware.research_mfd_packed_observed_geometry_probe && !hardware.research_mfd_packed_hsize4_probe &&
++		      !hardware.research_mfd_packed_normal_probe && !hardware.research_mfd_packed_pattern &&
++		      !hardware.research_staging_probe && !hardware.research_mfd_generation && !hardware.research_mfd_owner,
++		      "all31 incomplete input dependency sets consume every flag before loader/PCI/REG/PIO effects");
++	}
++	for(unsigned pattern=1;pattern<=2;pattern++) {
++		reset_packed(pattern);const struct crystalhd_fw_research_request req={.selector=1};struct crystalhd_hw expected=hardware;
++		expected.research_mfd_packed_probe=expected.research_mfd_packed_window_probe=true;
++		expected.research_mfd_packed_observed_geometry_probe=expected.research_mfd_packed_hsize4_probe=true;
++		expected.research_mfd_packed_normal_probe=expected.research_mfd_packed_scl_input_probe=true;
++		expected.research_mfd_packed_pattern=pattern;
++		configure_packed_input(&adapter.cmds,&req,adapter.generation,pattern);
++		check(!memcmp(&hardware,&expected,sizeof(expected)) && no_effects(),"actual extracted config sets only the complete six-flag VERSION opt-in");
++		configure_packed_disabled(&adapter.cmds,&req,adapter.generation,pattern);
++		check(!memcmp(&hardware,&expected,sizeof(expected)) && no_effects(),"disabled configuration is unchanged despite the new scalar flag");
++		hardware.research_staging_probe=true;
++		packed_fixture=packed_input_fixture=true;packed_oracle(UINT32_MAX,0);
++		const BC_STATUS loader_status=crystalhd_flea_download_fw(&hardware,(const uint8_t *)firmware.words,sizeof(firmware.words));
++		check(loader_status==BC_STS_CMD_CANCELLED &&
++		      packed_calls==1 && packed_reads==883 && packed_scl_writes==2 && dram_writes==2 && dram_reads==2 &&
++		      !cmac_writes && !arm_run_writes && !heartbeats,"actual loader stages stock prefix then captured input helper and deliberate abort, never auth/run");
++		packed_compare();
++	}
++	for(unsigned conflict=0;conflict<6;conflict++) {
++		reset_packed(1);const struct crystalhd_fw_research_request req={.selector=1};
++		configure_packed_input(&adapter.cmds,&req,adapter.generation,1);hardware.research_staging_probe=true;
++		switch(conflict){case 0:hardware.research_mfd_latch_probe=true;break;
++		case 1:hardware.research_mfd_colour_probe=true;hardware.research_mfd_colour_value=0x405ac3;break;
++		case 2:hardware.research_mfd_scl_probe=true;hardware.research_mfd_colour_value=0x405ac3;hardware.research_scl_selector=2;break;
++		case 3:hardware.research_scl_port_probe=true;hardware.research_scl_selector=2;break;
++		case 4:hardware.research_scl_port_latch=true;break;default:hardware.research_mfd_packed_pattern=3;break;}
++		check(crystalhd_flea_download_fw(&hardware,(const uint8_t *)firmware.words,sizeof(firmware.words))==BC_STS_INV_ARG &&
++		      no_effects() && !pci_reads && !pci_clears && !packed_calls && !hardware.research_mfd_packed_scl_input_probe &&
++		      !hardware.research_mfd_generation && !hardware.research_mfd_owner,
++		      "complete input opt-in still refuses each conflicting runtime experiment or invalid pattern before effects");
++	}
++	for(int status=-1;status<=26;status++)if(status)for(unsigned api=0;api<2;api++) {
++		reset_packed(1);const struct crystalhd_fw_research_request req={.selector=1};
++		configure_packed_input(&adapter.cmds,&req,adapter.generation,1);hardware.research_staging_probe=true;packed_input_fixture=true;
++		if(api)read_status=(BC_STATUS)status;else dram_status=(BC_STATUS)status;
++		check(crystalhd_flea_download_fw(&hardware,(const uint8_t *)firmware.words,sizeof(firmware.words))==(BC_STATUS)status &&
++		      !packed_calls && !pci_clears && !packed_writes && !packed_scl_writes && !cmac_writes && !arm_run_writes,
++		      "all27 original staging PIO failure statuses stop before the new helper and never authenticate/run");
++	}
++	packed_campaign_input=false;
++	for(unsigned profile=0;profile<=4;profile++) {
++		packed_campaign_normal=profile==4;packed_campaign_hsize4=profile==3;packed_campaign_observed=profile==2;
++		packed_campaign_window=profile==1;reset_packed(1);hardware.research_mfd_packed_scl_input_probe=true;packed_oracle(UINT32_MAX,0);
++		check(run_packed()==BC_STS_CMD_CANCELLED && !packed_scl_writes && !packed_scl_data_reads &&
++		      packed_reads==(profile==4?424U:profile?744U:618U),"literal old wrappers ignore an unused input flag and retain exact old trace");packed_compare();
++	}
++	packed_campaign_normal=packed_campaign_hsize4=packed_campaign_observed=packed_campaign_window=false;
++	reset();hardware.research_mfd_packed_pattern=UINT32_MAX;
++	check(crystalhd_flea_download_fw(&hardware,(const uint8_t *)firmware.words,sizeof(firmware.words))==BC_STS_SUCCESS &&
++	      !packed_calls && dram_writes==1 && !dram_reads && cmac_writes==4 && arm_run_writes==1,
++	      "ordinary default-off context still boots original signed firmware without a peripheral observer");
++	packed_campaign_input=true;
++}
++
++static void packed_input_campaigns(void)
++{
++	packed_campaign_input=true;
++	packed_input_results();packed_input_scripts();packed_input_terminals();packed_input_arguments();
++	packed_input_faults();packed_input_status_results();packed_input_register_results();packed_input_sample_results();
++	packed_input_combined_faults();packed_input_scope_results();
++	packed_campaign_input=false;
++}
++
+ int main(void)
+ {
+ 	reset();
+@@ -4979,6 +5544,9 @@ int main(void)
+ 	const unsigned hsize4_checks=checks;
+ 	check(groups==78 && hsize4_checks==207227391,"all78 legacy groups retain the exact pre-normal check count");
+ 	packed_normal_campaigns();
++	const unsigned normal_checks=checks;
++	check(groups==89 && normal_checks==222487526,"all89 prior groups retain their exact pre-input check count");
++	packed_input_campaigns();
+ 	printf("Firmware download safety passed (%u groups, %u checks, %u failures)\n",
+ 	       groups, checks, failures);
+ 	return failures ? EXIT_FAILURE : EXIT_SUCCESS;
+diff --git a/tests/fw-download.sh b/tests/fw-download.sh
+index f605eae..09af128 100755
+--- a/tests/fw-download.sh
++++ b/tests/fw-download.sh
+@@ -22,6 +22,9 @@ cleanup()
+ 		"$test_dir/mfd-packed-guard-core.h" "$test_dir/mfd-packed-window-probe.h" \
+ 		"$test_dir/mfd-packed-observed-window-probe.h" \
+ 		"$test_dir/mfd-packed-hsize4-probe.h" "$test_dir/mfd-packed-normal-probe.h" \
++		"$test_dir/mfd-packed-input-current.h" "$test_dir/mfd-packed-input-scl-guard.h" \
++		"$test_dir/mfd-packed-input-guard.h" "$test_dir/mfd-packed-input-sample.h" \
++		"$test_dir/mfd-packed-core-view.h" "$test_dir/mfd-packed-normal-input-probe.h" \
+ 		"$test_dir/packed-source-config.h"
+ 	rmdir "$test_dir"
+ }
+@@ -34,7 +37,7 @@ extract_function()
+ 	source_file=$2
+ 	output_file=$3
+ 	awk -v name="$function_name" '
+-		$0 ~ "^(static[[:space:]]+)?BC_STATUS " name "\\(" { candidate = 1; header = "" }
++		$0 ~ "^(static[[:space:]]+)?(BC_STATUS|bool) " name "\\(" { candidate = 1; header = "" }
+ 		candidate {
+ 			header = header $0 "\n"
+ 			if (/;[[:space:]]*$/) { candidate = 0; next }
+@@ -65,6 +68,18 @@ extract_function crystalhd_flea_mfd_packed_guard_core \
+ 	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-packed-guard-core.h"
+ extract_function crystalhd_flea_mfd_packed_probe_core \
+ 	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-packed-core.h"
++extract_function crystalhd_flea_mfd_packed_input_current \
++	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-packed-input-current.h"
++extract_function crystalhd_flea_mfd_packed_input_scl_guard \
++	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-packed-input-scl-guard.h"
++extract_function crystalhd_flea_mfd_packed_input_guard \
++	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-packed-input-guard.h"
++extract_function crystalhd_flea_mfd_packed_input_sample \
++	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-packed-input-sample.h"
++extract_function crystalhd_flea_mfd_packed_probe_core_view \
++	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-packed-core-view.h"
++extract_function crystalhd_flea_mfd_packed_normal_input_probe \
++	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-packed-normal-input-probe.h"
+ extract_function crystalhd_flea_mfd_packed_probe \
+ 	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-packed-probe.h"
+ extract_function crystalhd_flea_mfd_packed_window_probe \
+@@ -186,6 +201,34 @@ for pattern in 1 2; do
+ 		fi
+ 	done
+ done
++for pattern in 1 2; do
++	set -- -DCRYSTALHD_MFD_PACKED_SOURCE_PROBE -DCRYSTALHD_MFD_PACKED_WINDOW_PROBE \
++		-DCRYSTALHD_MFD_PACKED_OBSERVED_GEOMETRY_PROBE -DCRYSTALHD_MFD_PACKED_HSIZE4_PROBE \
++		-DCRYSTALHD_MFD_PACKED_NORMAL_PROBE -DCRYSTALHD_MFD_PACKED_SCL_INPUT_PROBE
++	"${CC:-cc}" -E -P -x c "$@" -DCRYSTALHD_MFD_PACKED_PATTERN="$pattern" \
++		"$test_dir/packed-config.h" > /dev/null
++	for conflict in CRYSTALHD_MFD_LATCH_PROBE CRYSTALHD_MFD_FIXED_COLOUR_PROBE \
++		CRYSTALHD_SCL_PORT_PROBE CRYSTALHD_SCL_PORT_LATCH CRYSTALHD_MFD_SCL_STATUS_PROBE; do
++		if "${CC:-cc}" -E -P -x c "$@" -DCRYSTALHD_MFD_PACKED_PATTERN="$pattern" \
++			-D"$conflict" "$test_dir/packed-config.h" > /dev/null 2>&1; then exit 1; fi
++	done
++done
++for dependencies in $(seq 0 30); do
++	set -- -DCRYSTALHD_MFD_PACKED_SCL_INPUT_PROBE
++	if [ "$((dependencies & 1))" -ne 0 ]; then set -- "$@" -DCRYSTALHD_MFD_PACKED_SOURCE_PROBE; fi
++	if [ "$((dependencies & 2))" -ne 0 ]; then set -- "$@" -DCRYSTALHD_MFD_PACKED_WINDOW_PROBE; fi
++	if [ "$((dependencies & 4))" -ne 0 ]; then set -- "$@" -DCRYSTALHD_MFD_PACKED_OBSERVED_GEOMETRY_PROBE; fi
++	if [ "$((dependencies & 8))" -ne 0 ]; then set -- "$@" -DCRYSTALHD_MFD_PACKED_HSIZE4_PROBE; fi
++	if [ "$((dependencies & 16))" -ne 0 ]; then set -- "$@" -DCRYSTALHD_MFD_PACKED_NORMAL_PROBE; fi
++	if "${CC:-cc}" -E -P -x c "$@" "$test_dir/packed-config.h" > /dev/null 2>&1; then exit 1; fi
++done
++for pattern in 0 3 4294967295; do
++	if "${CC:-cc}" -E -P -x c -DCRYSTALHD_MFD_PACKED_SOURCE_PROBE \
++		-DCRYSTALHD_MFD_PACKED_WINDOW_PROBE -DCRYSTALHD_MFD_PACKED_OBSERVED_GEOMETRY_PROBE \
++		-DCRYSTALHD_MFD_PACKED_HSIZE4_PROBE -DCRYSTALHD_MFD_PACKED_NORMAL_PROBE \
++		-DCRYSTALHD_MFD_PACKED_SCL_INPUT_PROBE -DCRYSTALHD_MFD_PACKED_PATTERN="$pattern" \
++		"$test_dir/packed-config.h" > /dev/null 2>&1; then exit 1; fi
++done
+ for dependencies in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
+ 	set --
+ 	if [ "$((dependencies & 1))" -ne 0 ]; then set -- "$@" -DCRYSTALHD_MFD_PACKED_SOURCE_PROBE; fi
