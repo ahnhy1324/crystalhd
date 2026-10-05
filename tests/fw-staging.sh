@@ -76,4 +76,8 @@ git -C "$test_dir" apply --check \
 	"$repo_dir/tests/fixtures/issue92/mfd-normal-handshake.patch"
 git -C "$test_dir" apply \
 	"$repo_dir/tests/fixtures/issue92/mfd-normal-handshake.patch"
+git -C "$test_dir" apply --check \
+	"$repo_dir/tests/fixtures/issue92/mfd-scl-input.patch"
+git -C "$test_dir" apply \
+	"$repo_dir/tests/fixtures/issue92/mfd-scl-input.patch"
 sh "$test_dir/tests/fw-download.sh"
