@@ -770,6 +770,142 @@ struct PackingReadFixture {
     }
 };
 
+// Empirical status-clear test only. The RDB names CLEAR and its bit masks,
+// but does not specify W1C timing, concurrent set/clear priority or persistence.
+enum class SclStatusFailure { None, Argument, Api, Revision, Reserved, Profile, Unstable };
+struct SclStatusTrace { uint32_t raw[6] = {}; unsigned measured = 0, reads = 0; };
+struct SclStatusTest {
+    unsigned mode = 0, stages = 0, reads = 0, writes = 0;
+    uint32_t pre_status = 0;
+    bool fatal = false, diagnostic_failed = false, clear_attempted = false;
+    HANDLE owner = nullptr;
+    BC_STATUS api_status = BC_STS_SUCCESS;
+    SclStatusFailure failure = SclStatusFailure::None;
+    bool Enabled() const { return mode != 0; }
+    bool Reject(SclStatusFailure why) { fatal = diagnostic_failed = true; failure = why; return false; }
+    bool Sample(HANDLE handle, unsigned stage, SclViewProbe::Reader reader, bool report) {
+        if (!Enabled()) return true;
+        if (fatal) return false;
+        if (!handle || !reader || mode > 2 || stage > 2 || stages != ((1U << stage) - 1) ||
+            (stage && handle != owner)) return Reject(SclStatusFailure::Argument);
+        if (!stage) owner = handle;
+        stages |= 1U << stage; // One attempt, before the first API call.
+        SclStatusTrace trace; bool ok = true;
+        const uint32_t addresses[] = {BCHP_SCL_HD_REVISION_ID, BCHP_SCL_HD_BVB_IN_STATUS, BCHP_SCL_HD_REVISION_ID};
+        const char *const names[] = {"rev", "status", "closing-rev"};
+        for (unsigned index = 0; index < 6 && ok; ++index) {
+            uint32_t raw = 0; ++reads; ++trace.reads;
+            api_status = reader(handle, addresses[index % 3], &raw);
+            if (api_status != BC_STS_SUCCESS) ok = Reject(SclStatusFailure::Api);
+            else {
+                trace.raw[index] = raw; ++trace.measured;
+                if (raw & ~(index % 3 == 1 ? 0xffU : 0xffffU)) ok = Reject(SclStatusFailure::Reserved);
+                else if (index % 3 != 1) { if (raw != 0x80) ok = Reject(SclStatusFailure::Revision); }
+                else {
+                    diagnostic_failed |= raw != 0;
+                    if ((!stage && raw != 0 && raw != 1 && raw != 5) ||
+                        (stage && (raw & ~pre_status))) ok = Reject(SclStatusFailure::Profile);
+                }
+            }
+        }
+        if (ok && !stage && std::memcmp(trace.raw, trace.raw + 3, 3 * sizeof(uint32_t)))
+            ok = Reject(SclStatusFailure::Unstable);
+        if (ok && !stage) pre_status = trace.raw[1];
+        if (report) {
+            const char *const phases[] = {"last-output-after-release-and-owned-write/pre", "immediate", "complete-EOS-delivery-barrier"};
+            const char *const failures[] = {"none", "argument", "api-status", "revision", "reserved-bits", "unadmitted-status", "pre-unstable"};
+            std::printf("SCL status test: mode=%s stage=%s reads=%u total-reads=%u target-write-attempts=%u "
+                "measured=%u api-status=%d failure=%s diagnostic=%s raw-stable=%s "
+                "board-profile=REV80 API-success-not-transport-certificate=yes non-atomic=yes clear-semantics-unproved=yes\n",
+                mode == 1 ? "observe" : "clear", phases[stage], trace.reads, reads, writes, trace.measured,
+                api_status, failures[static_cast<unsigned>(failure)], diagnostic_failed ? "FAIL" : "INCOMPLETE",
+                trace.measured == 6 ? (std::memcmp(trace.raw, trace.raw + 3, 3 * sizeof(uint32_t)) ? "no" : "yes") : "NOT-READ");
+            for (unsigned index = 0; index < 6; ++index) {
+                std::printf("SCL status raw: stage=%s pass=%u %s@%08x=", phases[stage], index / 3, names[index % 3], addresses[index % 3]);
+                if (index < trace.measured) std::printf("%08x", trace.raw[index]); else std::printf("NOT-READ");
+                std::printf("\n");
+            }
+            std::fflush(stdout);
+        }
+        return ok;
+    }
+    bool AfterDelivered(HANDLE handle, unsigned frame, bool released, bool written,
+        SclViewProbe::Reader reader = DtsDevRegisterRead, SclViewProbe::Writer writer = DtsDevRegisterWr, bool report = true) {
+        if (!Enabled()) return true;
+        if (fatal) return false;
+        if (frame != 180) return true;
+        if (!released || !written) return Reject(SclStatusFailure::Argument);
+        if (mode > 2 || (mode == 2 && !writer)) return Reject(SclStatusFailure::Argument);
+        if (!Sample(handle, 0, reader, report)) return false;
+        if (mode == 2 && pre_status) {
+            clear_attempted = true; ++writes; // A failed return does not prove no write occurred.
+            if (report) { std::printf("SCL status clear attempt: address=005408a0 value=%08x attempts=%u\n", pre_status, writes); std::fflush(stdout); }
+            api_status = writer(handle, BCHP_SCL_HD_BVB_IN_STATUS_CLEAR, pre_status);
+            if (report) { std::printf("SCL status clear return: api-status=%d\n", api_status); std::fflush(stdout); }
+            if (api_status != BC_STS_SUCCESS) return Reject(SclStatusFailure::Api);
+        } else if (report) {
+            std::printf("SCL status action: %s pre-status=%08x empirical-clear-success=no\n", mode == 2 ? "NO_ACTION" : "OBSERVE_ONLY", pre_status);
+            std::fflush(stdout);
+        }
+        return Sample(handle, 1, reader, report);
+    }
+    bool Eos(HANDLE handle, bool complete, SclViewProbe::Reader reader = DtsDevRegisterRead, bool report = true) {
+        if (!Enabled()) return true;
+        return complete && !fatal && Sample(handle, 2, reader, report);
+    }
+    bool DiagnosticOkay() const { return !Enabled() || (stages == 7 && !fatal && !diagnostic_failed); }
+    bool Finish(bool native_success, bool report = true) const {
+        const bool aggregate = native_success && DiagnosticOkay();
+        if (Enabled() && report) {
+            std::printf("SCL status final: native-full-delivery/EOS/capture/cleanup=%s diagnostic=%s aggregate=%s "
+                "reads=%u target-write-attempts=%u action=%s fresh-work/stale-only/source-lease/completion-certified=no\n",
+                native_success ? "PASS" : "FAIL", DiagnosticOkay() ? "PASS" : "FAIL", aggregate ? "PASS" : "FAIL",
+                reads, writes, clear_attempted ? "ONE_ATTEMPT" : mode == 2 ? "NO_ACTION" : "OBSERVE_ONLY");
+            std::fflush(stdout);
+        }
+        return aggregate;
+    }
+};
+struct SclStatusFixture {
+    struct Event { bool write; uint32_t address, raw; };
+    std::vector<Event> events;
+    unsigned calls = 0, write_calls = 0;
+    size_t fail_at = SIZE_MAX;
+    BC_STATUS status = BC_STS_ERROR;
+    bool valid = true;
+    SclStatusTest *probe = nullptr;
+    SclStatusFixture(unsigned mode = 2, uint32_t pre = 1) {
+        Tuple(pre, pre);
+        if (mode == 2 && pre) events.push_back({true, 0x5408a0, pre});
+        Tuple(0, 0); Tuple(0, 0);
+    }
+    void Tuple(uint32_t first, uint32_t second) {
+        for (uint32_t raw : {first, second}) {
+            events.push_back({false, 0x540800, 0x80}); events.push_back({false, 0x5408a4, raw});
+            events.push_back({false, 0x540800, 0x80});
+        }
+    }
+    static BC_STATUS Read(HANDLE handle, uint32_t address, uint32_t *value) {
+        auto *fixture = static_cast<SclStatusFixture *>(handle); const unsigned index = fixture->calls++;
+        if (index >= fixture->events.size()) { fixture->valid = false; return BC_STS_ERROR; }
+        const auto &event = fixture->events[index]; fixture->valid &= !event.write && address == event.address && value;
+        *value = index == fixture->fail_at ? 0xdeadbeefU : event.raw;
+        return index == fixture->fail_at ? fixture->status : BC_STS_SUCCESS;
+    }
+    static BC_STATUS Write(HANDLE handle, uint32_t address, uint32_t raw) {
+        auto *fixture = static_cast<SclStatusFixture *>(handle); const unsigned index = fixture->calls++; ++fixture->write_calls;
+        if (index >= fixture->events.size()) { fixture->valid = false; return BC_STS_ERROR; }
+        const auto &event = fixture->events[index]; fixture->valid &= event.write && address == event.address && raw == event.raw &&
+            fixture->probe && fixture->probe->clear_attempted && fixture->probe->writes == 1;
+        return index == fixture->fail_at ? fixture->status : BC_STS_SUCCESS;
+    }
+    bool Exercise(SclStatusTest *subject, bool report = false) {
+        probe = subject;
+        return subject->AfterDelivered(this, 180, true, true, Read, Write, report) &&
+               subject->Eos(this, true, Read, report);
+    }
+};
+
 static bool PackingState(HANDLE handle, const char *stage, MfdColourProbe *colour = nullptr,
     SclViewProbe *view = nullptr, SclViewProbe::Reader reader = DtsDevRegisterRead, bool report = true);
 
@@ -832,6 +968,7 @@ struct Options {
     unsigned observe_scl_view = 0;
     bool observe_mfd_config = false;
     unsigned inject_mfd_colour = 0;
+    unsigned scl_status_test = 0;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
 };
 
@@ -860,6 +997,11 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
     if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-scl-config")) {
         options->observe_scl_config = true;
         arguments.pop_back();
+    }
+    if (arguments.size() >= 3 && !std::strcmp(arguments[arguments.size() - 2], "--scl-status-test")) {
+        if (std::strcmp(arguments.back(), "observe") && std::strcmp(arguments.back(), "clear")) return false;
+        options->scl_status_test = !std::strcmp(arguments.back(), "observe") ? 1 : 2;
+        arguments.resize(arguments.size() - 2);
     }
     if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-mfd-config")) {
         options->observe_mfd_config = true;
@@ -907,7 +1049,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         arguments.resize(arguments.size() - 2);
     }
     if (arguments.size() == 2 && !std::strcmp(arguments[1], "--self-test")) {
-        if (options->capture_path || options->observe_chroma || options->observe_scl_config || options->observe_scl_view || options->observe_mfd_config || options->inject_mfd_colour || options->scaler_test || options->mpeg1_via_mpeg2 ||
+        if (options->capture_path || options->observe_chroma || options->observe_scl_config || options->observe_scl_view || options->observe_mfd_config || options->inject_mfd_colour || options->scl_status_test || options->scaler_test || options->mpeg1_via_mpeg2 ||
             options->h263_via_divx || options->open_only) return false;
         options->mode = Mode::SelfTest;
         return true;
@@ -949,13 +1091,18 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
          options->expected != 180 || options->iterations != 1 || options->output_format != OUTPUT_MODE422_YUY2 ||
          options->observe_mfd_config || options->observe_scl_config || options->observe_scl_view || options->observe_chroma ||
          options->mpeg1_via_mpeg2 || options->h263_via_divx || options->open_only)) return false;
+    if (options->scl_status_test &&
+        (!hardware || !options->capture_path || !options->scaler_test || options->scale_width != 320 ||
+         options->expected != 180 || options->iterations != 1 || options->output_format != OUTPUT_MODE422_YUY2 ||
+         options->observe_mfd_config || options->inject_mfd_colour || options->observe_scl_config || options->observe_scl_view ||
+         options->observe_chroma || options->mpeg1_via_mpeg2 || options->h263_via_divx || options->open_only)) return false;
     return !options->capture_path ||
         (hardware && options->scaler_test && !options->open_only && options->iterations == 1);
 }
 
 static bool SclInputAdmitted(const Options &options, const Input &input)
 {
-    return (!options.observe_scl_config && !options.observe_scl_view && !options.observe_mfd_config && !options.inject_mfd_colour) ||
+    return (!options.observe_scl_config && !options.observe_scl_view && !options.observe_mfd_config && !options.inject_mfd_colour && !options.scl_status_test) ||
         (options.expected == 180 && input.codec == AV_CODEC_ID_MPEG2VIDEO &&
          input.subtype == BC_MSUBTYPE_MPEG2VIDEO && input.progressive &&
          input.width == 640 && input.height == 360 && input.packets.size() == 180);
@@ -964,7 +1111,7 @@ static bool SclInputAdmitted(const Options &options, const Input &input)
 static bool NeedsRawIo(const Options &options)
 {
     return options.observe_chroma || options.observe_scl_config ||
-        options.observe_scl_view || options.observe_mfd_config || options.inject_mfd_colour;
+        options.observe_scl_view || options.observe_mfd_config || options.inject_mfd_colour || options.scl_status_test;
 }
 
 // Test-only MPEG-1 admission through the existing algorithm-1 channel. Do not
@@ -2720,6 +2867,208 @@ static bool SelfTest()
             check(!SclInputAdmitted(changed, altered) && SclInputAdmitted(Options{}, altered), "MFD colour profile mismatches reject while default remains unchanged");
         }
     }
+    for (unsigned mode : {1U, 2U}) for (uint32_t pre : {0U, 1U, 5U}) {
+        SclStatusFixture fixture(mode, pre); SclStatusTest subject; subject.mode = mode;
+        check(fixture.Exercise(&subject) && fixture.valid && subject.stages == 7 && subject.reads == 18 &&
+            subject.writes == (mode == 2 && pre ? 1U : 0U) && subject.pre_status == pre &&
+            subject.diagnostic_failed == (pre != 0) && !subject.fatal && subject.Finish(true, false) == (pre == 0),
+            "SCL status independent literal18R/optional1W oracle preserves sticky diagnostic failure and native success separation");
+        for (unsigned position = 0; position < fixture.events.size(); ++position) {
+            for (int code = -1; code <= BC_STS_PWR_MGMT; ++code) {
+                if (code == BC_STS_SUCCESS) continue;
+                SclStatusFixture failing(mode, pre); failing.fail_at = position; failing.status = static_cast<BC_STATUS>(code);
+                struct { uint32_t before = 0x12345678; SclStatusTest value; uint32_t after = 0x87654321; } guarded;
+                guarded.value.mode = mode;
+                check(!failing.Exercise(&guarded.value) && failing.valid && failing.calls == position + 1 &&
+                    guarded.value.fatal && guarded.value.failure == SclStatusFailure::Api && guarded.value.api_status == code &&
+                    guarded.before == 0x12345678 && guarded.after == 0x87654321 &&
+                    guarded.value.writes == failing.write_calls && guarded.value.clear_attempted == (failing.write_calls != 0),
+                    "SCL status every19/18 API position and all27 failures stop exactly once, discard poison, preserve canaries/attempt status");
+                check(!guarded.value.AfterDelivered(&failing, 180, true, true, SclStatusFixture::Read, SclStatusFixture::Write, false) &&
+                    !guarded.value.Eos(&failing, true, SclStatusFixture::Read, false) &&
+                    !guarded.value.Sample(&failing, 2, SclStatusFixture::Read, false) && failing.calls == position + 1 &&
+                    !guarded.value.Finish(true, false), "SCL status access loss forbids all later probe reads/writes, cleanup probes and retries");
+            }
+            if (fixture.events[position].write) continue;
+            const bool status = fixture.events[position].address == 0x5408a4;
+            for (unsigned bit = status ? 8 : 16; bit < 32; ++bit) {
+                SclStatusFixture invalid(mode, pre); invalid.events[position].raw |= 1U << bit;
+                SclStatusTest value; value.mode = mode;
+                check(!invalid.Exercise(&value) && invalid.valid && invalid.calls == position + 1 &&
+                    value.failure == SclStatusFailure::Reserved && value.fatal &&
+                    !value.Eos(&invalid, true, SclStatusFixture::Read, false) && invalid.calls == position + 1,
+                    "SCL status every reserved bit at every read position is fatal, without additional custom I/O");
+            }
+            if (!status) for (uint32_t revision : {0U, 0x7fU, 0x81U, 0xffffU}) {
+                SclStatusFixture invalid(mode, pre); invalid.events[position].raw = revision;
+                SclStatusTest value; value.mode = mode;
+                check(!invalid.Exercise(&value) && invalid.valid && invalid.calls == position + 1 &&
+                    value.failure == SclStatusFailure::Revision, "SCL status every opening/closing observed-board revision is pinned80");
+            }
+            if (status) for (unsigned bit = 0; bit < 8; ++bit) {
+                if ((pre & (1U << bit)) && position >= 6) continue;
+                if (position < 6 && (1U << bit) == 1) continue;
+                SclStatusFixture invalid(mode, pre); invalid.events[position].raw = 1U << bit;
+                SclStatusTest value; value.mode = mode;
+                check(!invalid.Exercise(&value) && invalid.valid && invalid.calls == position + 1 &&
+                    value.failure == SclStatusFailure::Profile && value.api_status == BC_STS_SUCCESS,
+                    "SCL status unsupported pre bits or newly unseeded post/EOS bits are profile loss, not invented transport errors");
+            }
+        }
+        if (pre) {
+            SclStatusFixture mixed(mode, pre); const unsigned offset = mode == 2 ? 1 : 0;
+            mixed.events[7 + offset].raw = pre; mixed.events[10 + offset].raw = 0;
+            mixed.events[13 + offset].raw = pre == 5 ? 4 : 0; mixed.events[16 + offset].raw = pre;
+            SclStatusTest value; value.mode = mode;
+            check(mixed.Exercise(&value) && mixed.valid && !value.fatal && value.pre_status == pre &&
+                value.diagnostic_failed && !value.Finish(true, false),
+                "SCL post/EOS subsets may differ; pre bitmask immutable and original diagnosticFAIL cannot be absolved by zero");
+        }
+        for (uint32_t immediate0 : {0U, 1U, 4U, 5U}) for (uint32_t immediate1 : {0U, 1U, 4U, 5U})
+            for (uint32_t eos0 : {0U, 1U, 4U, 5U}) for (uint32_t eos1 : {0U, 1U, 4U, 5U}) {
+                if ((immediate0 | immediate1 | eos0 | eos1) & ~pre) continue;
+                SclStatusFixture mixed(mode, pre); const unsigned offset = mode == 2 && pre ? 1 : 0;
+                mixed.events[7 + offset].raw = immediate0; mixed.events[10 + offset].raw = immediate1;
+                mixed.events[13 + offset].raw = eos0; mixed.events[16 + offset].raw = eos1;
+                SclStatusTest value; value.mode = mode;
+                check(mixed.Exercise(&value) && mixed.valid && !value.fatal && value.pre_status == pre &&
+                    value.Finish(true, false) == (pre == 0), "Every allowed immediate/EOS subset combination remains numeric data, never an error-absolution rule");
+            }
+    }
+    for (uint32_t first : {0U, 1U, 5U}) for (uint32_t second : {0U, 1U, 5U}) {
+        if (first == second) continue;
+        SclStatusFixture unstable(2, first); unstable.events[4].raw = second; SclStatusTest value; value.mode = 2;
+        check(!unstable.Exercise(&value) && unstable.valid && unstable.calls == 6 && !unstable.write_calls &&
+            value.failure == SclStatusFailure::Unstable && value.fatal,
+            "SCL status pre repeat mismatch rejects after complete bracket, before any clear write");
+    }
+    for (uint32_t pre : {2U, 3U, 4U, 6U, 7U, 8U, 0xffU}) {
+        SclStatusFixture invalid(2, pre); SclStatusTest value; value.mode = 2;
+        check(!invalid.Exercise(&value) && invalid.calls == 2 && !invalid.write_calls &&
+            value.failure == SclStatusFailure::Profile, "SCL pre profile admits exactly0/1/5, never a cached or arbitrary clear mask");
+    }
+    {
+        SclStatusFixture fixture; SclStatusTest value; value.mode = 2; fixture.probe = &value;
+        for (unsigned frame : {0U, 1U, 90U, 179U, 181U})
+            check(value.AfterDelivered(&fixture, frame, true, true, SclStatusFixture::Read, SclStatusFixture::Write, false) && !fixture.calls,
+                "SCL status no nonlast/FMT/EOS-marker frame attempts");
+        for (const auto &barrier : {std::pair<bool, bool>{false, false}, {false, true}, {true, false}}) {
+            SclStatusFixture invalid; SclStatusTest rejected; rejected.mode = 2; invalid.probe = &rejected;
+            check(!rejected.AfterDelivered(&invalid, 180, barrier.first, barrier.second, SclStatusFixture::Read, SclStatusFixture::Write, false) &&
+                !invalid.calls && !rejected.stages && rejected.fatal &&
+                !rejected.AfterDelivered(&invalid, 180, true, true, SclStatusFixture::Read, SclStatusFixture::Write, false) && !invalid.calls,
+                "SCL final output release/ownedWrite loss is sticky before admission, with no later retry on that probe");
+        }
+        check(!value.Eos(&fixture, false, SclStatusFixture::Read, false) && !fixture.calls,
+            "SCL incomplete native barrier cannot fabricate an EOS snapshot");
+        check(value.AfterDelivered(&fixture, 180, true, true, SclStatusFixture::Read, SclStatusFixture::Write, false) && fixture.calls == 13 &&
+            !value.Eos(&fixture, false, SclStatusFixture::Read, false) && fixture.calls == 13 && value.stages == 3,
+            "SCL status ordinary deadline/input/output failure after clear causes no EOS or cleanup probe I/O");
+        SclStatusFixture other;
+        check(!value.Eos(&other, true, SclStatusFixture::Read, false) && !other.calls && fixture.calls == 13 && value.fatal,
+            "SCL status wrong-handle EOS refuses before hardware and latches all future custom I/O");
+        check(!value.Eos(&fixture, true, SclStatusFixture::Read, false) && fixture.calls == 13, "SCL status owner loss never retries original owner");
+    }
+    for (unsigned phase : {0U, 1U, 2U}) {
+        SclStatusFixture fixture; SclStatusTest value; value.mode = 2; fixture.probe = &value;
+        if (phase) check(value.AfterDelivered(&fixture, 180, true, true, SclStatusFixture::Read, SclStatusFixture::Write, false), "SCL order test setup");
+        if (phase == 2) check(value.Eos(&fixture, true, SclStatusFixture::Read, false), "SCL completed EOS test setup");
+        const unsigned calls = fixture.calls;
+        check(!(phase ? value.AfterDelivered(&fixture, 180, true, true, SclStatusFixture::Read, SclStatusFixture::Write, false) :
+            value.Eos(&fixture, true, SclStatusFixture::Read, false)) && fixture.calls == calls && value.fatal,
+            "SCL status wrong phase/repeated last/repeated completed observation refuses without repeat clear");
+    }
+    {
+        SclStatusFixture fixture; SclStatusTest value; value.mode = 2;
+        check(fixture.Exercise(&value) && !value.Eos(&fixture, true, SclStatusFixture::Read, false) && fixture.calls == 19 && value.fatal,
+            "SCL status repeated actual EOS refuses without further reads");
+        for (unsigned invalid : {0U, 1U, 2U}) {
+            SclStatusFixture untouched; SclStatusTest rejected; rejected.mode = 2; untouched.probe = &rejected;
+            check(!rejected.AfterDelivered(invalid == 0 ? nullptr : &untouched, 180, true, true,
+                invalid == 1 ? nullptr : SclStatusFixture::Read,
+                invalid == 2 ? nullptr : SclStatusFixture::Write, false) &&
+                !untouched.calls && rejected.fatal,
+                "SCL status null handle/reader/writer rejects before effects");
+        }
+    }
+    {
+        SclStatusTest disabled;
+        check(disabled.AfterDelivered(nullptr, 180, false, false, nullptr, nullptr, false) &&
+            disabled.Eos(nullptr, false, nullptr, false) && disabled.Sample(nullptr, 99, nullptr, false) &&
+            disabled.Finish(true, false) && !disabled.Finish(false, false) && !disabled.reads && !disabled.writes,
+            "Default SCL status path is a pure no-op and preserves native result");
+        for (unsigned mode : {3U, UINT_MAX}) {
+            SclStatusFixture fixture; SclStatusTest invalid; invalid.mode = mode;
+            check(!invalid.AfterDelivered(&fixture, 180, true, true, SclStatusFixture::Read, SclStatusFixture::Write, false) && !fixture.calls,
+                "SCL status invalid modes refuse before any effect");
+        }
+    }
+    for (unsigned position = 0; position <= 19; ++position) {
+        FILE *record = std::tmpfile(); const int saved_stdout = dup(STDOUT_FILENO); std::fflush(stdout);
+        const bool redirected = record && saved_stdout >= 0 && dup2(fileno(record), STDOUT_FILENO) >= 0;
+        bool accepted = false;
+        if (redirected) {
+            SclStatusFixture fixture; fixture.fail_at = position; SclStatusTest value; value.mode = 2;
+            accepted = fixture.Exercise(&value, true);
+            (void)value.Finish(true); std::fflush(stdout);
+        }
+        const bool restored = saved_stdout >= 0 && dup2(saved_stdout, STDOUT_FILENO) >= 0;
+        if (saved_stdout >= 0) close(saved_stdout);
+        char text[8192] = {}; size_t bytes = 0;
+        if (record) { std::rewind(record); bytes = std::fread(text, 1, sizeof(text) - 1, record); std::fclose(record); }
+        check(redirected && restored && bytes && !std::strstr(text, "deadbeef") &&
+            std::strstr(text, "native-full-delivery/EOS/capture/cleanup=PASS diagnostic=FAIL aggregate=FAIL") &&
+            (position == 19 ? accepted : !accepted) && (position == 6 || position == 19 || std::strstr(text, "NOT-READ")),
+            "SCL actual raw reporter never prints poison/unread zeros and separates complete native success from sticky diagnosticFAIL");
+    }
+    for (const char *name : {"observe", "clear"}) {
+        const std::vector<const char *> valid = {"probe", "--hardware", "fixture", "180", "30", "1",
+            "--scaler-test", "320", "--scl-status-test", name, "--capture-yuy2", "new"};
+        Options admitted;
+        check(ParseArguments(valid, &admitted) && admitted.scl_status_test == (!std::strcmp(name, "observe") ? 1U : 2U) && NeedsRawIo(admitted),
+            "SCL status literal observe/clear native320 YUY2 onecapture admission requires CAP before fixture/progress/device");
+        for (const char *invalid : {"", "0", "1", "2", "Observe", "CLEAR", "all", "5", " clear"}) {
+            auto arguments = valid; arguments[9] = invalid; Options rejected;
+            check(!ParseArguments(arguments, &rejected), "SCL status no arbitrary mask/alternate mode spelling");
+        }
+        for (unsigned field = 0; field < 10; ++field) {
+            auto arguments = valid;
+            if (field == 0) arguments[1] = "--preflight";
+            if (field == 1) arguments[3] = "179";
+            if (field == 2) arguments[5] = "2";
+            if (field == 3) arguments[7] = "0";
+            if (field == 4) arguments[7] = "640";
+            if (field == 5) arguments[10] = "--capture-uyvy";
+            if (field == 6) arguments.resize(10);
+            if (field == 7) arguments.insert(arguments.begin() + 8, "--mpeg1-via-mpeg2");
+            if (field == 8) arguments.insert(arguments.begin() + 8, "--h263-via-divx");
+            if (field == 9) arguments.insert(arguments.begin() + 8, "--open-only");
+            Options rejected; check(!ParseArguments(arguments, &rejected), "SCL status strict320/native/hardware180/oneYUY2capture scope only");
+        }
+        for (const std::vector<const char *> &mixed : std::vector<std::vector<const char *>>{
+                {"--observe-chroma"}, {"--observe-scl-config"}, {"--observe-scl-view", "2"},
+                {"--observe-mfd-config"}, {"--inject-mfd-colour", "a"}, {"--scl-status-test", "observe"}})
+            for (unsigned where : {8U, 10U}) {
+                auto arguments = valid; arguments.insert(arguments.begin() + where, mixed.begin(), mixed.end()); Options rejected;
+                check(!ParseArguments(arguments, &rejected), "SCL status excludes every other observer/injection, both orders and duplicate mode");
+            }
+        Options rejected;
+        check(!ParseArguments({"probe", "--self-test", "--scl-status-test", name}, &rejected), "SCL status self-test mix rejects");
+        Input native; native.codec = AV_CODEC_ID_MPEG2VIDEO; native.subtype = BC_MSUBTYPE_MPEG2VIDEO;
+        native.progressive = true; native.width = 640; native.height = 360; native.packets.resize(180);
+        check(SclInputAdmitted(admitted, native), "SCL status exact native input shape admitted before capture/device");
+        for (unsigned field = 0; field < 7; ++field) {
+            Input changed = native; Options options = admitted;
+            if (field == 0) changed.codec = AV_CODEC_ID_H264;
+            if (field == 1) changed.subtype = BC_MSUBTYPE_H264;
+            if (field == 2) changed.progressive = false;
+            if (field == 3) changed.width = 638;
+            if (field == 4) changed.height = 358;
+            if (field == 5) changed.packets.pop_back();
+            if (field == 6) options.expected = 179;
+            check(!SclInputAdmitted(options, changed) && SclInputAdmitted(Options{}, changed), "SCL status input refusal leaves default admission unchanged");
+        }
+    }
     std::printf("Library drain hardware-free self-test: %u checks %s\n",
                 checks, ok ? "passed" : "failed");
     return ok;
@@ -2900,6 +3249,7 @@ struct Audit {
     SclViewProbe scl_view;
     MfdAdmissionObserver mfd;
     MfdColourProbe mfd_colour;
+    SclStatusTest scl_status;
     GChecksum *pixels = nullptr;
     PixelCapture *capture = nullptr;
     ~Audit() { if (pixels) g_checksum_free(pixels); }
@@ -2959,6 +3309,9 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
             if (!marker && valid && released)
                 valid = audit->mfd_colour.AfterDelivered(device->handle, audit->frames,
                                                         released, audit->capture != nullptr);
+            if (!marker && valid && released)
+                valid = audit->scl_status.AfterDelivered(device->handle, audit->frames,
+                                                        released, audit->capture != nullptr);
             if (!marker && valid && released && audit->capture && audit->frames == 1)
                 valid = PackingState(device->handle, "first-output", &audit->mfd_colour, &audit->scl_view);
             if (!marker && valid && released && audit->observe_chroma && audit->frames == 1)
@@ -2969,7 +3322,9 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                     audit->iteration, audit->frames - 1,
                     static_cast<unsigned long long>(output.PicInfo.timeStamp));
             if (!valid) {
-                if (audit->mfd_colour.failed)
+                if (audit->scl_status.fatal)
+                    std::fprintf(stderr, "SCL status test lost admission; no further probe I/O, ordinary decoder cleanup follows\n");
+                else if (audit->mfd_colour.failed)
                     std::fprintf(stderr, "MFD colour experiment failed; guarded restoration if eligible and ordinary decoder cleanup follow\n");
                 else if (audit->mfd.failed)
                     std::fprintf(stderr, "MFD passive admission failed; ordinary decoder cleanup follows\n");
@@ -2980,7 +3335,7 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                 else
                     std::fprintf(stderr, "Invalid progressive picture geometry/data/token: %llu\n",
                                  static_cast<unsigned long long>(output.PicInfo.timeStamp));
-                if (audit->pixels && !audit->scl.failed && !audit->scl_view.failed && !audit->mfd.failed && !audit->mfd_colour.failed)
+                if (audit->pixels && !audit->scl.failed && !audit->scl_view.failed && !audit->mfd.failed && !audit->mfd_colour.failed && !audit->scl_status.fatal)
                     std::fprintf(stderr, "Scaler picture: got=%ux%u expected=%ux%u "
                                  "flags=%x words=%u packed422=%u\n",
                                  output.PicInfo.width, output.PicInfo.height,
@@ -3038,6 +3393,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.scl_view.selector = options.observe_scl_view;
     audit.mfd.enabled = options.observe_mfd_config;
     audit.mfd_colour.stimulus = options.inject_mfd_colour;
+    audit.scl_status.mode = options.scl_status_test;
     if (options.scaler_test) {
         if (!ScalerGeometry(input.width, input.height, options.scale_width,
                             &audit.output_width, &audit.output_height)) return false;
@@ -3137,6 +3493,9 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
          audit.frames == expected && audit.pending.empty();
     // Delivery EOS barrier only, sampled before ordinary STOP/CLOSE.
     if (ok) ok = audit.scl.Observe(device.handle, SclStage::EosBarrier);
+    // Only an actual native delivery barrier admits the last status sample.
+    // Its diagnostic result cannot retroactively erase delivered native data.
+    if (ok) (void)audit.scl_status.Eos(device.handle, true);
     // A failed experiment remains failed even if guarded restoration succeeds.
     // Never issue cleanup experiment I/O after an access/selector-loss latch.
     const bool view_restored = audit.scl_view.Restore(device.handle);
@@ -3146,6 +3505,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     ok = ok && closed;
     const bool captured = capture.Finish(ok);
     ok = ok && captured;
+    ok = audit.scl_status.Finish(ok);
     std::printf("Library drain: iteration=%u/%u frames=%u/%u pending=%zu "
         "%s-EOS=%s output-marker=%s ready=%u cleanup=%s result=%s\n",
         iteration, iterations, audit.frames, expected, audit.pending.size(),
@@ -3173,13 +3533,15 @@ int main(int argc, char **argv)
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
             "[--scaler-test WIDTH_OR_0] [--mpeg1-via-mpeg2 | --h263-via-divx] "
-            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-view 2_OR_3 | --observe-mfd-config | --inject-mfd-colour a_OR_b] "
+            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-view 2_OR_3 | --observe-mfd-config | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
     if (NeedsRawIo(options) && !CanReadChromaConfiguration()) {
-        if (options.inject_mfd_colour)
+        if (options.scl_status_test)
+            std::fprintf(stderr, "--scl-status-test requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
+        else if (options.inject_mfd_colour)
             std::fprintf(stderr, "--inject-mfd-colour requires CAP_SYS_RAWIO; no fixture/capture/device was opened\n");
         else if (options.observe_mfd_config)
             std::fprintf(stderr, "--observe-mfd-config requires CAP_SYS_RAWIO; no fixture/capture/device was opened\n");
