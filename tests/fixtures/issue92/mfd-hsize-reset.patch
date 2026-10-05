@@ -1,0 +1,1377 @@
+diff --git a/driver/linux/crystalhd_fleafuncs.c b/driver/linux/crystalhd_fleafuncs.c
+index 77913d0..64d61c0 100644
+--- a/driver/linux/crystalhd_fleafuncs.c
++++ b/driver/linux/crystalhd_fleafuncs.c
+@@ -98,7 +98,7 @@ bool crystalhd_flea_core_reset(struct crystalhd_hw *hw)
+ 		regVal = hw->pfnReadDevRegister(hw->adp, BCHP_MISC3_RESET_CTRL);
+ 
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+-		if ((hw->research_scl_config_dirty || hw->research_mfd_reset_pending) &&
++		if ((hw->research_scl_config_dirty || hw->research_mfd_reset_pending || hw->research_mfd_hsize_dirty) &&
+ 		    (!crystalhd_flea_research_stop_current(hw) || regVal == 0xffffffff))
+ 			return false;
+ #endif
+@@ -1771,7 +1771,9 @@ static BC_STATUS crystalhd_flea_scl_size_reset_probe(struct crystalhd_hw *hw,
+ 
+ 	if (hw && (hw->research_mfd_pci_isolated || hw->research_mfd_deliberate_abort ||
+ 	    hw->research_scl_config_dirty || hw->research_scl_reset_corroborated ||
+-	    hw->research_scl_duty_generation || hw->research_scl_duty_owner))
++	    hw->research_scl_duty_generation || hw->research_scl_duty_owner ||
++	    hw->research_mfd_hsize_dirty || hw->research_mfd_hsize_request_sampled ||
++	    hw->research_mfd_hsize_reset_corroborated))
+ 		return BC_STS_BUSY;
+ 	sts = crystalhd_flea_scl_config_guard(hw, generation, owner);
+ 	if (sts != BC_STS_SUCCESS)
+@@ -1876,6 +1878,10 @@ static bool crystalhd_flea_mfd_reset_current(struct crystalhd_hw *hw)
+ 
+ static bool crystalhd_flea_research_stop_current(struct crystalhd_hw *hw)
+ {
++	if ((hw->research_mfd_hsize_dirty && !hw->research_mfd_reset_pending) ||
++	    (!hw->research_mfd_hsize_dirty &&
++	     (hw->research_mfd_hsize_request_sampled || hw->research_mfd_hsize_reset_corroborated)))
++		return false;
+ 	if (hw->research_mfd_reset_pending)
+ 		return crystalhd_flea_mfd_reset_current(hw);
+ 	return !hw->research_scl_config_dirty || crystalhd_flea_scl_size_current(hw);
+@@ -1966,7 +1972,8 @@ static BC_STATUS crystalhd_flea_mfd_reset_probe(struct crystalhd_hw *hw,
+ 	    hw->research_scl_duty_generation || hw->research_scl_duty_owner ||
+ 	    hw->research_mfd_reset_pending || hw->research_mfd_reset_cold_sampled ||
+ 	    hw->research_mfd_reset_post_sampled || hw->research_mfd_reset_generation ||
+-	    hw->research_mfd_reset_owner)
++	    hw->research_mfd_reset_owner || hw->research_mfd_hsize_dirty ||
++	    hw->research_mfd_hsize_request_sampled || hw->research_mfd_hsize_reset_corroborated)
+ 		return BC_STS_BUSY;
+ 	sts = crystalhd_flea_scl_config_guard(hw, generation, owner);
+ 	if (sts != BC_STS_SUCCESS)
+@@ -1990,6 +1997,120 @@ static BC_STATUS crystalhd_flea_mfd_reset_probe(struct crystalhd_hw *hw,
+ 	return BC_STS_CMD_CANCELLED;
+ }
+ 
++/* Same bounded register observations as #236; this label distinguishes the
++ * configuration contrast. Report a complete equal pair before classifying
++ * its relationship to the saved tuple. Never read a pixel/debug DATA port.
++ */
++static BC_STATUS crystalhd_flea_mfd_hsize_pair(struct crystalhd_hw *hw,
++		const char *phase, uint32_t *values)
++{
++	uint32_t first[20], second[20];
++	BC_STATUS sts;
++	unsigned int i;
++
++	if (!values)
++		return BC_STS_INV_ARG;
++	sts = crystalhd_flea_mfd_reset_sample(hw, first);
++	if (sts != BC_STS_SUCCESS)
++		return sts;
++	sts = crystalhd_flea_mfd_reset_sample(hw, second);
++	if (sts != BC_STS_SUCCESS)
++		return sts;
++	if (!crystalhd_flea_mfd_reset_current(hw) || memcmp(first, second, sizeof(first)))
++		return BC_STS_IO_ERROR;
++	for (i = 0; i < ARRAY_SIZE(first); i++)
++		dev_info(&hw->adp->pdev->dev,
++			 "issue92 mfd-hsize-reset: phase=%s word=%u first=%08x second=%08x\n",
++			 phase, i, first[i], second[i]);
++	memcpy(values, first, sizeof(first));
++	return BC_STS_SUCCESS;
++}
++
++/* One defined-field configuration write, not an active source experiment.
++ * The saved observation and retained dirty duty do not certify source
++ * ownership, fetch extent, all-consumer quiescence or a pixel/output route.
++ */
++static BC_STATUS crystalhd_flea_mfd_hsize_probe(struct crystalhd_hw *hw,
++		uint64_t generation, const void *owner)
++{
++	uint32_t cold[20], request[20], expected[20];
++	BC_STATUS sts;
++
++	if (!hw || hw->research_mfd_pci_isolated || hw->research_mfd_deliberate_abort ||
++	    hw->research_scl_config_dirty || hw->research_scl_reset_corroborated ||
++	    hw->research_scl_duty_generation || hw->research_scl_duty_owner ||
++	    hw->research_mfd_reset_pending || hw->research_mfd_reset_cold_sampled ||
++	    hw->research_mfd_reset_post_sampled || hw->research_mfd_reset_generation ||
++	    hw->research_mfd_reset_owner || hw->research_mfd_hsize_dirty ||
++	    hw->research_mfd_hsize_request_sampled || hw->research_mfd_hsize_reset_corroborated)
++		return BC_STS_BUSY;
++	sts = crystalhd_flea_scl_config_guard(hw, generation, owner);
++	if (sts != BC_STS_SUCCESS)
++		return sts;
++	if (!crystalhd_flea_mfd_packed_input_current(hw, generation, owner))
++		return BC_STS_IO_ERROR;
++	hw->research_mfd_pci_isolated = true;
++	pci_clear_master(hw->adp->pdev);
++	hw->research_mfd_reset_generation = generation;
++	hw->research_mfd_reset_owner = owner;
++	hw->research_mfd_reset_pending = true;
++	sts = crystalhd_flea_mfd_hsize_pair(hw, "cold", cold);
++	if (sts != BC_STS_SUCCESS)
++		goto quarantine;
++	hw->research_mfd_reset_cold_sampled = true;
++	/* Exact observed raw admission, not a claimed unit or silicon default. */
++	if (cold[5] != 0x780)
++		return BC_STS_BUSY; /* No configuration write or dirty duty yet. */
++	memcpy(hw->research_mfd_hsize_saved, cold, sizeof(cold));
++	memcpy(expected, cold, sizeof(cold));
++	expected[5] = 4;
++	/* Arm before the void write callback, even if its effect is unreadable. */
++	hw->research_mfd_hsize_dirty = true;
++	if (!crystalhd_flea_mfd_reset_current(hw))
++		goto quarantine;
++	hw->pfnWriteDevRegister(hw->adp, BCHP_MFD_DISP_HSIZE, 4);
++	if (!crystalhd_flea_mfd_reset_current(hw))
++		goto quarantine;
++	sts = crystalhd_flea_mfd_hsize_pair(hw, "request", request);
++	if (sts != BC_STS_SUCCESS || memcmp(request, expected, sizeof(request)) ||
++	    !crystalhd_flea_mfd_reset_current(hw))
++		goto quarantine;
++	hw->research_mfd_hsize_request_sampled = true;
++	dev_info(&hw->adp->pdev->dev,
++		 "issue92 mfd-hsize-reset: mfd-writes=1 target=00540014 value=00000004 scl-writes=0 feed-starts=0 source-pattern-writes=0 data-reads=0 dirty-duty=retained\n");
++	hw->research_mfd_deliberate_abort = true;
++	return BC_STS_CMD_CANCELLED;
++
++quarantine:
++	crystalhd_hw_dma_fatal_stop(hw);
++	return BC_STS_IO_ERROR;
++}
++
++static BC_STATUS crystalhd_flea_mfd_hsize_post(struct crystalhd_hw *hw)
++{
++	uint32_t post[20];
++	BC_STATUS sts;
++
++	if (!crystalhd_flea_mfd_reset_current(hw) || !hw->research_mfd_hsize_dirty ||
++	    !hw->research_mfd_reset_cold_sampled || hw->research_mfd_reset_post_sampled ||
++	    !hw->research_mfd_hsize_request_sampled || hw->research_mfd_hsize_reset_corroborated)
++		return BC_STS_IO_ERROR;
++	sts = crystalhd_flea_mfd_hsize_pair(hw, "pre-clock-reset", post);
++	if (sts != BC_STS_SUCCESS)
++		return sts;
++	if (memcmp(post, hw->research_mfd_hsize_saved, sizeof(post)) ||
++	    !crystalhd_flea_mfd_reset_current(hw)) {
++		dev_info(&hw->adp->pdev->dev,
++			 "issue92 mfd-hsize-reset: original-tuple=no dirty-duty=retained\n");
++		return BC_STS_IO_ERROR;
++	}
++	hw->research_mfd_reset_post_sampled = true;
++	hw->research_mfd_hsize_reset_corroborated = true;
++	dev_info(&hw->adp->pdev->dev,
++		 "issue92 mfd-hsize-reset: original-tuple=yes dirty-duty=retained awaiting-complete-stock-stop\n");
++	return BC_STS_SUCCESS;
++}
++
+ /* After checked existing core reset/DDR idle, before existing powerdown.
+  * Cross-phase values may differ: no presumed defaults or completion fence.
+  */
+@@ -1997,6 +2118,8 @@ static BC_STATUS crystalhd_flea_mfd_reset_post(struct crystalhd_hw *hw)
+ {
+ 	BC_STATUS sts;
+ 
++	if (hw && hw->research_mfd_hsize_dirty)
++		return crystalhd_flea_mfd_hsize_post(hw);
+ 	if (!crystalhd_flea_mfd_reset_current(hw) ||
+ 	    !hw->research_mfd_reset_cold_sampled || hw->research_mfd_reset_post_sampled)
+ 		return BC_STS_IO_ERROR;
+@@ -3129,7 +3252,9 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 	bool scl_config_only_probe = hw && hw->research_scl_config_probe;
+ 	bool scl_size_reset_probe = hw && hw->research_scl_size_reset_probe;
+ 	bool mfd_reset_probe = hw && hw->research_mfd_reset_probe;
+-	bool scl_config_probe = scl_config_only_probe || scl_size_reset_probe || mfd_reset_probe;
++	bool mfd_hsize_reset_probe = hw && hw->research_mfd_hsize_reset_probe;
++	bool scl_config_probe = scl_config_only_probe || scl_size_reset_probe || mfd_reset_probe ||
++		mfd_hsize_reset_probe;
+ 	uint32_t packed_pattern = hw ? hw->research_mfd_packed_pattern : 0;
+ 	bool mfd_scl_probe = hw && hw->research_mfd_scl_probe;
+ 	bool scl_port_probe = hw && hw->research_scl_port_probe;
+@@ -3169,6 +3294,7 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 		hw->research_scl_config_probe = false;
+ 		hw->research_scl_size_reset_probe = false;
+ 		hw->research_mfd_reset_probe = false;
++		hw->research_mfd_hsize_reset_probe = false;
+ 		hw->research_mfd_packed_pattern = 0;
+ 		hw->research_mfd_scl_probe = false;
+ 		hw->research_mfd_colour_value = 0;
+@@ -3230,8 +3356,11 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 	    hw->research_mfd_reset_pending || hw->research_mfd_reset_cold_sampled ||
+ 	    hw->research_mfd_reset_post_sampled || hw->research_mfd_reset_generation ||
+ 	    hw->research_mfd_reset_owner ||
++	    hw->research_mfd_hsize_dirty || hw->research_mfd_hsize_request_sampled ||
++	    hw->research_mfd_hsize_reset_corroborated ||
+ 	    (scl_config_only_probe && scl_size_reset_probe) ||
+ 	    (mfd_reset_probe && (scl_config_only_probe || scl_size_reset_probe)) ||
++	    (mfd_hsize_reset_probe && (scl_config_only_probe || scl_size_reset_probe || mfd_reset_probe)) ||
+ 	    (scl_config_probe && (mfd_latch_probe || mfd_colour_probe || mfd_scl_probe ||
+ 	     scl_port_probe || scl_port_latch || mfd_packed_probe ||
+ 	     mfd_packed_window_probe || mfd_packed_observed_geometry_probe ||
+@@ -3416,6 +3545,8 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 			return BC_STS_IO_ERROR;
+ 		if (mfd_reset_probe)
+ 			return crystalhd_flea_mfd_reset_probe(hw, mfd_generation, mfd_owner);
++		if (mfd_hsize_reset_probe)
++			return crystalhd_flea_mfd_hsize_probe(hw, mfd_generation, mfd_owner);
+ 		if (scl_size_reset_probe)
+ 			return crystalhd_flea_scl_size_reset_probe(hw, mfd_generation, mfd_owner);
+ 		if (scl_config_probe)
+@@ -3707,7 +3838,7 @@ static bool crystalhd_flea_stop_read(struct crystalhd_hw *hw,
+ #endif
+ 	*value = hw->pfnReadDevRegister(hw->adp, address);
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+-	if ((hw->research_scl_config_dirty || hw->research_mfd_reset_pending) &&
++	if ((hw->research_scl_config_dirty || hw->research_mfd_reset_pending || hw->research_mfd_hsize_dirty) &&
+ 	    (!crystalhd_flea_research_stop_current(hw) || *value == 0xffffffff))
+ 		return false;
+ #endif
+@@ -3736,6 +3867,8 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+ 	if (!crystalhd_flea_research_stop_current(hw) ||
+ 	    (hw->research_scl_config_dirty && hw->research_scl_reset_corroborated) ||
++	    (hw->research_mfd_hsize_dirty &&
++	     (!hw->research_mfd_hsize_request_sampled || hw->research_mfd_hsize_reset_corroborated)) ||
+ 	    (hw->research_mfd_reset_pending &&
+ 	     (!hw->research_mfd_reset_cold_sampled || hw->research_mfd_reset_post_sampled)))
+ 		return false;
+@@ -3804,7 +3937,7 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
+ 			return false;
+ 
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+-		if ((hw->research_scl_config_dirty || hw->research_mfd_reset_pending) &&
++		if ((hw->research_scl_config_dirty || hw->research_mfd_reset_pending || hw->research_mfd_hsize_dirty) &&
+ 		    (!crystalhd_flea_research_stop_current(hw) || regVal == 0xffffffff))
+ 			return false;
+ #endif
+@@ -3893,7 +4026,7 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
+ 
+ 	/* * Enable DDR clock, DM and READ_ENABLE pads power down and force into the power down */
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+-	if ((hw->research_scl_config_dirty || hw->research_mfd_reset_pending) &&
++	if ((hw->research_scl_config_dirty || hw->research_mfd_reset_pending || hw->research_mfd_hsize_dirty) &&
+ 	    (regVal & BCHP_DDR23_CTL_REGS_0_CTL_STATUS_clke_MASK))
+ 		return false;
+ #endif
+@@ -3996,6 +4129,10 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
+ 	if (hw->research_mfd_reset_pending &&
+ 	    (!hw->research_mfd_reset_post_sampled || !crystalhd_flea_mfd_reset_current(hw)))
+ 		return false;
++	if (hw->research_mfd_hsize_dirty &&
++	    (!hw->research_mfd_hsize_request_sampled || !hw->research_mfd_hsize_reset_corroborated ||
++	     !hw->research_mfd_reset_post_sampled || !crystalhd_flea_mfd_reset_current(hw)))
++		return false;
+ #endif
+ 	return true;
+ }
+diff --git a/driver/linux/crystalhd_hw.h b/driver/linux/crystalhd_hw.h
+index 6f7ae44..5993527 100644
+--- a/driver/linux/crystalhd_hw.h
++++ b/driver/linux/crystalhd_hw.h
+@@ -416,6 +416,7 @@ struct crystalhd_hw {
+ 	bool research_scl_config_probe;
+ 	bool research_scl_size_reset_probe;
+ 	bool research_mfd_reset_probe;
++	bool research_mfd_hsize_reset_probe;
+ 	uint32_t research_mfd_packed_pattern;
+ 	uint32_t research_mfd_colour_value;
+ 	bool research_mfd_scl_probe;
+@@ -441,6 +442,13 @@ struct crystalhd_hw {
+ 	bool research_mfd_reset_post_sampled;
+ 	uint64_t research_mfd_reset_generation;
+ 	const void *research_mfd_reset_owner;
++	/* A separate programmed-geometry duty, not an observer or surface lease.
++	 * Keep the captured tuple until exact reset corroboration AND stock stop.
++	 */
++	bool research_mfd_hsize_dirty;
++	bool research_mfd_hsize_request_sampled;
++	bool research_mfd_hsize_reset_corroborated;
++	uint32_t research_mfd_hsize_saved[20];
+ #endif
+ 	struct tx_dma_pkt		tx_pkt_pool[DMA_ENGINE_CNT];
+ 	spinlock_t		lock;
+diff --git a/driver/linux/crystalhd_hw.c b/driver/linux/crystalhd_hw.c
+index 06ff7cc..880045c 100644
+--- a/driver/linux/crystalhd_hw.c
++++ b/driver/linux/crystalhd_hw.c
+@@ -338,10 +338,20 @@ BC_STATUS crystalhd_hw_close(struct crystalhd_hw *hw)
+ 	if (READ_ONCE(hw->dma_fault))
+ 		return BC_STS_IO_ERROR;
+ 
++#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
++	/* An orphan geometry duty cannot borrow an observer's retirement. */
++	if ((hw->research_mfd_hsize_dirty && !hw->research_mfd_reset_pending) ||
++	    (!hw->research_mfd_hsize_dirty &&
++	     (hw->research_mfd_hsize_request_sampled || hw->research_mfd_hsize_reset_corroborated))) {
++		crystalhd_hw_dma_fatal_stop(hw);
++		return BC_STS_IO_ERROR;
++	}
++#endif
++
+ 	if (!hw->dev_started
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+ 	    && !hw->research_mfd_pci_isolated && !hw->research_scl_config_dirty
+-	    && !hw->research_mfd_reset_pending
++	    && !hw->research_mfd_reset_pending && !hw->research_mfd_hsize_dirty
+ #endif
+ 	   )
+ 		return BC_STS_SUCCESS;
+@@ -367,7 +377,8 @@ BC_STATUS crystalhd_hw_close(struct crystalhd_hw *hw)
+ #endif
+ 
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+-	if (hw->research_scl_config_dirty && hw->research_mfd_reset_pending) {
++	if (hw->research_scl_config_dirty &&
++	    (hw->research_mfd_reset_pending || hw->research_mfd_hsize_dirty)) {
+ 		crystalhd_hw_dma_fatal_stop(hw);
+ 		return BC_STS_IO_ERROR;
+ 	}
+@@ -392,6 +403,8 @@ BC_STATUS crystalhd_hw_close(struct crystalhd_hw *hw)
+ 	if (hw->research_mfd_reset_pending) {
+ 		/* Scalars only after stock stop: the tuple is not a consumer fence. */
+ 		if (!hw->dev_started || !hw->research_mfd_pci_isolated ||
++		    (hw->research_mfd_hsize_dirty &&
++		     (!hw->research_mfd_hsize_request_sampled || !hw->research_mfd_hsize_reset_corroborated)) ||
+ 		    !hw->research_mfd_reset_cold_sampled || !hw->research_mfd_reset_post_sampled ||
+ 		    !hw->research_mfd_reset_generation || !hw->research_mfd_reset_owner ||
+ 		    !hw->adp || !hw->adp->pdev ||
+@@ -410,6 +423,13 @@ BC_STATUS crystalhd_hw_close(struct crystalhd_hw *hw)
+ 		hw->research_mfd_reset_post_sampled = false;
+ 		hw->research_mfd_reset_generation = 0;
+ 		hw->research_mfd_reset_owner = NULL;
++		/* This retires host configuration bookkeeping only. No active feed
++		 * was submitted; it is not a source/downstream completion token.
++		 */
++		hw->research_mfd_hsize_dirty = false;
++		hw->research_mfd_hsize_request_sampled = false;
++		hw->research_mfd_hsize_reset_corroborated = false;
++		memset(hw->research_mfd_hsize_saved, 0, sizeof(hw->research_mfd_hsize_saved));
+ 	}
+ #endif
+ 
+@@ -626,7 +646,7 @@ void crystalhd_hw_retire_rx_quiesced(struct crystalhd_hw *hw)
+ 		return;
+ 
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+-	if (hw->research_scl_config_dirty || hw->research_mfd_reset_pending)
++	if (hw->research_scl_config_dirty || hw->research_mfd_reset_pending || hw->research_mfd_hsize_dirty)
+ 		return;
+ #endif
+ 
+@@ -829,7 +849,7 @@ BC_STATUS crystalhd_hw_free_dma_rings(struct crystalhd_hw *hw)
+ 		return BC_STS_INV_ARG;
+ 	}
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+-	if (hw->research_scl_config_dirty || hw->research_mfd_reset_pending)
++	if (hw->research_scl_config_dirty || hw->research_mfd_reset_pending || hw->research_mfd_hsize_dirty)
+ 		return BC_STS_IO_ERROR;
+ #endif
+ 	if (READ_ONCE(hw->dma_fault) && !hw->adp->dma_terminal_quiesced &&
+diff --git a/driver/linux/crystalhd_cmds.c b/driver/linux/crystalhd_cmds.c
+index d07fa28..ff0f012 100644
+--- a/driver/linux/crystalhd_cmds.c
++++ b/driver/linux/crystalhd_cmds.c
+@@ -2454,7 +2454,8 @@ BC_STATUS crystalhd_delete_cmd_context(struct crystalhd_cmd *ctx)
+ 
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+ 	if (ctx->hw_ctx && (ctx->hw_ctx->research_scl_config_dirty ||
+-	    ctx->hw_ctx->research_mfd_reset_pending))
++	    ctx->hw_ctx->research_mfd_reset_pending ||
++	    ctx->hw_ctx->research_mfd_hsize_dirty))
+ 		return BC_STS_IO_ERROR;
+ #endif
+ 
+diff --git a/driver/linux/crystalhd_lnx.c b/driver/linux/crystalhd_lnx.c
+index c979d5d..964f928 100644
+--- a/driver/linux/crystalhd_lnx.c
++++ b/driver/linux/crystalhd_lnx.c
+@@ -1158,7 +1158,8 @@ static bool chd_dec_quiesce_terminal_dma(struct crystalhd_adp *adp)
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+ 	/* Host PCI containment cannot retire an unresolved on-card config. */
+ 	if (adp->cmds.hw_ctx && (adp->cmds.hw_ctx->research_scl_config_dirty ||
+-	    adp->cmds.hw_ctx->research_mfd_reset_pending))
++	    adp->cmds.hw_ctx->research_mfd_reset_pending ||
++	    adp->cmds.hw_ctx->research_mfd_hsize_dirty))
+ 		return false;
+ #endif
+ 	return drained;
+@@ -1184,7 +1185,7 @@ static bool chd_dec_session_dma_absent(struct crystalhd_adp *adp)
+ 		adp->elem_pool_head || adp->ua_map_free_head;
+ 	if (hw) {
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+-		if (hw->research_scl_config_dirty || hw->research_mfd_reset_pending)
++		if (hw->research_scl_config_dirty || hw->research_mfd_reset_pending || hw->research_mfd_hsize_dirty)
+ 			return false;
+ #endif
+ 		resources |= !ctx->adp || hw->rx_pkt_pool_head ||
+@@ -1242,7 +1243,8 @@ static bool chd_dec_fail_closed(struct crystalhd_adp *adp, int error)
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+ 	/* A delete refusal must not be classified as successful retirement. */
+ 	if (adp->cmds.hw_ctx && (adp->cmds.hw_ctx->research_scl_config_dirty ||
+-	    adp->cmds.hw_ctx->research_mfd_reset_pending))
++	    adp->cmds.hw_ctx->research_mfd_reset_pending ||
++	    adp->cmds.hw_ctx->research_mfd_hsize_dirty))
+ 		safe = false;
+ #endif
+ 	if (!safe) {
+@@ -1298,7 +1300,8 @@ quarantine:
+ 			dev_err(chddev(), "cmd delete :%d\n", sts);
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+ 		if (pinfo->cmds.hw_ctx && (pinfo->cmds.hw_ctx->research_scl_config_dirty ||
+-		    pinfo->cmds.hw_ctx->research_mfd_reset_pending)) {
++		    pinfo->cmds.hw_ctx->research_mfd_reset_pending ||
++		    pinfo->cmds.hw_ctx->research_mfd_hsize_dirty)) {
+ 			safe = false;
+ 			goto quarantine;
+ 		}
+@@ -1503,7 +1506,8 @@ int chd_dec_pci_suspend(struct pci_dev *pdev, pm_message_t state)
+ 	chd_dec_free_iodata(adp, temp, false);
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+ 	if (adp->cmds.hw_ctx && (adp->cmds.hw_ctx->research_scl_config_dirty ||
+-	    adp->cmds.hw_ctx->research_mfd_reset_pending)) {
++	    adp->cmds.hw_ctx->research_mfd_reset_pending ||
++	    adp->cmds.hw_ctx->research_mfd_hsize_dirty)) {
+ 		rc = -EIO;
+ 		goto fail_closed;
+ 	}
+diff --git a/driver/linux/crystalhd_fw_research.c b/driver/linux/crystalhd_fw_research.c
+index 4ffb09c..5d4b12e 100644
+--- a/driver/linux/crystalhd_fw_research.c
++++ b/driver/linux/crystalhd_fw_research.c
+@@ -67,6 +67,10 @@ static const u8 crystalhd_fw_research_owner;
+ #error "MFD reset-control observation must be built without other peripheral experiments"
+ #endif
+ 
++#if defined(CRYSTALHD_MFD_HSIZE_RESET_PROBE) && (defined(CRYSTALHD_MFD_RESET_CONTROLS_PROBE) || defined(CRYSTALHD_SCL_SIZE_RESET_PROBE) || defined(CRYSTALHD_SCL_CONFIG_PROBE) || defined(CRYSTALHD_MFD_LATCH_PROBE) || defined(CRYSTALHD_MFD_FIXED_COLOUR_PROBE) || defined(CRYSTALHD_SCL_PORT_PROBE) || defined(CRYSTALHD_SCL_PORT_LATCH) || defined(CRYSTALHD_MFD_SCL_STATUS_PROBE) || defined(CRYSTALHD_MFD_PACKED_SOURCE_PROBE) || defined(CRYSTALHD_MFD_PACKED_WINDOW_PROBE) || defined(CRYSTALHD_MFD_PACKED_OBSERVED_GEOMETRY_PROBE) || defined(CRYSTALHD_MFD_PACKED_HSIZE4_PROBE) || defined(CRYSTALHD_MFD_PACKED_NORMAL_PROBE) || defined(CRYSTALHD_MFD_PACKED_SCL_INPUT_PROBE))
++#error "MFD HSIZE/reset contrast must be built without other peripheral experiments"
++#endif
++
+ /* Research-only wire values: eC011_VIDEO_ALG_H261/H263/MPEG1 in 7411d.h. */
+ #define CRYSTALHD_FW_RESEARCH_ALGORITHM_H261 2U
+ #define CRYSTALHD_FW_RESEARCH_ALGORITHM_H263 3U
+@@ -1059,7 +1063,7 @@ static void crystalhd_fw_research_run_internal(u64 generation,
+ 		result->status = -EINVAL;
+ 		return;
+ 	}
+-#if defined(CRYSTALHD_MFD_SCL_STATUS_PROBE) || defined(CRYSTALHD_MFD_PACKED_SOURCE_PROBE) || defined(CRYSTALHD_SCL_CONFIG_PROBE) || defined(CRYSTALHD_MFD_RESET_CONTROLS_PROBE)
++#if defined(CRYSTALHD_MFD_SCL_STATUS_PROBE) || defined(CRYSTALHD_MFD_PACKED_SOURCE_PROBE) || defined(CRYSTALHD_SCL_CONFIG_PROBE) || defined(CRYSTALHD_MFD_RESET_CONTROLS_PROBE) || defined(CRYSTALHD_MFD_HSIZE_RESET_PROBE)
+ 	/* This volatile pre-boot mode never reaches a decoder command or any
+ 	 * of the firmware/state inspection routes in the ordinary harness.
+ 	 */
+@@ -1213,6 +1217,11 @@ static void crystalhd_fw_research_run_internal(u64 generation,
+ 	ctx->hw_ctx->research_mfd_reset_probe = true;
+ 	ctx->hw_ctx->research_mfd_generation = generation;
+ 	ctx->hw_ctx->research_mfd_owner = &crystalhd_fw_research_owner;
++#endif
++#ifdef CRYSTALHD_MFD_HSIZE_RESET_PROBE
++	ctx->hw_ctx->research_mfd_hsize_reset_probe = true;
++	ctx->hw_ctx->research_mfd_generation = generation;
++	ctx->hw_ctx->research_mfd_owner = &crystalhd_fw_research_owner;
+ #endif
+ 	sts = crystalhd_fw_download_locked(ctx, &crystalhd_fw_research_owner,
+ 					  firmware->data, firmware->size);
+@@ -1228,6 +1237,7 @@ static void crystalhd_fw_research_run_internal(u64 generation,
+ 	ctx->hw_ctx->research_scl_config_probe = false;
+ 	ctx->hw_ctx->research_scl_size_reset_probe = false;
+ 	ctx->hw_ctx->research_mfd_reset_probe = false;
++	ctx->hw_ctx->research_mfd_hsize_reset_probe = false;
+ 	ctx->hw_ctx->research_mfd_packed_pattern = 0;
+ 	ctx->hw_ctx->research_mfd_scl_probe = false;
+ 	ctx->hw_ctx->research_mfd_colour_value = 0;
+diff --git a/tests/fw-download.c b/tests/fw-download.c
+index 652682d..c72a4eb 100644
+--- a/tests/fw-download.c
++++ b/tests/fw-download.c
+@@ -114,6 +114,11 @@ struct crystalhd_hw {
+ 	bool research_scl_config_probe;
+ 	bool research_scl_size_reset_probe;
+ 	bool research_mfd_reset_probe;
++	bool research_mfd_hsize_reset_probe;
++	bool research_mfd_hsize_dirty;
++	bool research_mfd_hsize_request_sampled;
++	bool research_mfd_hsize_reset_corroborated;
++	uint32_t research_mfd_hsize_saved[20];
+ 	bool research_mfd_reset_pending;
+ 	bool research_mfd_reset_cold_sampled;
+ 	bool research_mfd_reset_post_sampled;
+@@ -338,6 +343,12 @@ static unsigned reset_controls_logs[2], reset_controls_summaries, reset_controls
+ static unsigned reset_controls_clock_event, reset_controls_batch_fault;
+ static unsigned reset_controls_mutate_at, reset_controls_mutate_field;
+ static uint32_t reset_controls_fault_value, reset_controls_bank[20];
++static bool hsize_active, hsize_write_ignored, hsize_reset_model;
++static unsigned hsize_logs[3], hsize_calls, hsize_targets, hsize_summaries;
++static unsigned hsize_post_match, hsize_post_mismatch, hsize_drift_word;
++static unsigned hsize_pci_count, hsize_pci_offsets[256];
++static uint16_t hsize_pci_values[256];
++static uint32_t hsize_drift_bits;
+ static const uint32_t reset_controls_addresses[20] = {
+ 	0x540000,0x540030,0x540004,0x54001c,0x540010,0x540014,0x540018,
+ 	0x54000c,0x540024,0x540044,0x540064,0x540074,0x54007c,0x54006c,
+@@ -355,6 +366,7 @@ static const uint32_t reset_controls_cold[20] = {
+ static struct { char kind; uint32_t address, value; } reset_controls_trace[2048];
+ static uint32_t reset_controls_read(uint32_t address);
+ static void reset_controls_write(uint32_t address, uint32_t value);
++static bool config_current(void);
+ 
+ static void reset_controls_record(char kind, uint32_t address, uint32_t value)
+ {
+@@ -378,6 +390,11 @@ static uint32_t reset_controls_read(uint32_t address)
+ 	}
+ 	if(reset_controls_stop && address==0x502200) {
+ 		value=size_reset_stuck?1:0;size_reset_reads++;known=true;
++		/* Explicit synthetic reset scenario, never a silicon reset oracle. */
++		if(hsize_active&&hsize_reset_model&&!value) {
++			memcpy(reset_controls_bank,reset_controls_cold,sizeof(reset_controls_bank));
++			if(hsize_drift_bits)reset_controls_bank[hsize_drift_word]^=hsize_drift_bits;
++		}
+ 	}
+ 	if(reset_controls_stop && address==BCHP_DDR23_CTL_REGS_0_CTL_STATUS) {
+ 		value=reset_controls_clock_disabled?(size_cke_stuck?0x73:0x71):(size_idle_stuck?0x72:0x73);
+@@ -408,13 +425,24 @@ static void reset_controls_write(uint32_t address,uint32_t value)
+ 	check(!fatal_stops,"MFD reset observer has no write after quarantine");
+ 	reset_controls_writes++;reset_controls_record('W',address,value);
+ 	if(reset_controls_stop) {
++		if(hsize_active)check(address<0x540000||address>0x5408a4,
++		      "cleanup never retries/restores HSIZE or writes another MFD/SCL target, including failure paths");
+ 		if(address==0x70004) {
+ 			check(!hardware.research_mfd_reset_pending ||
+-			      (hardware.research_mfd_reset_post_sampled&&reset_controls_logs[1]==20),
++			      (hardware.research_mfd_reset_post_sampled&&
++			       (hardware.research_mfd_hsize_dirty?hsize_logs[2]:reset_controls_logs[1])==20),
+ 			      "actual stock clock powerdown follows two complete current post-reset MFD tuples");
+ 			if(!reset_controls_clock_event)reset_controls_clock_event=reset_controls_count;
+ 			reset_controls_clock_disabled=true;size_bank[12]=value;
+ 		}
++	} else if(hsize_active&&address==0x540014) {
++		check(value==4&&!hsize_targets&&hardware.research_mfd_hsize_dirty&&
++		      hardware.research_mfd_reset_pending&&hardware.research_mfd_reset_cold_sampled&&
++		      !hardware.research_mfd_hsize_request_sampled&&config_current()&&
++		      !memcmp(hardware.research_mfd_hsize_saved,reset_controls_bank,sizeof(reset_controls_bank)),
++		      "sole literal HSIZE attempt is armed dirty before callback and preserves complete saved cold tuple");
++		hsize_targets++;
++		if(!hsize_write_ignored)reset_controls_bank[5]=4;
+ 	} else check(address==BCHP_SCRUB_CTRL_SCRUB_ENABLE||address==BCHP_WRAP_MISC_INTR2_PCI_CLEAR||
+ 		address==BCHP_SCRUB_CTRL_BORCH_END_ADDRESS||address==BCHP_SCRUB_CTRL_STARCH_END_ADDRESS,
+ 		"MFD reset read-only profile permits only official loader targets before cleanup");
+@@ -870,7 +898,26 @@ static void packed_compare(void)
+ 
+ static void test_log(const char *message, ...)
+ {
+-	if(reset_controls_active && strstr(message,"mfd-reset-controls: phase=")) {
++	if(hsize_active&&strstr(message,"mfd-hsize-reset: phase=")) {
++		va_list args;va_start(args,message);
++		const char *phase=va_arg(args,const char *);unsigned word=va_arg(args,unsigned);
++		uint32_t first=va_arg(args,uint32_t),second=va_arg(args,uint32_t);
++		unsigned index=!strcmp(phase,"cold")?0:(!strcmp(phase,"request")?1:2);
++		check((index<2||!strcmp(phase,"pre-clock-reset"))&&config_current()&&!fatal_stops&&
++		      word==hsize_logs[index]&&word<20&&first==second&&first!=UINT32_MAX&&
++		      first==reset_controls_bank[word==19?0:word]&&!reset_controls_clock_disabled,
++		      "HSIZE pair publishes only a complete equal current tuple, including valid post mismatch");
++		hsize_logs[index]++;va_end(args);
++	} else if(hsize_active&&strstr(message,"mfd-hsize-reset: mfd-writes=")) {
++		check(config_current()&&!fatal_stops&&hsize_logs[0]==20&&hsize_logs[1]==20&&hsize_targets==1&&
++		      strstr(message,"target=00540014 value=00000004 scl-writes=0 feed-starts=0 source-pattern-writes=0 data-reads=0"),
++		      "HSIZE summary truthfully distinguishes one configuration attempt from active output/source evidence");
++		hsize_summaries++;
++	} else if(hsize_active&&strstr(message,"mfd-hsize-reset: original-tuple=")) {
++		check(config_current()&&!fatal_stops&&hsize_logs[2]==20&&hardware.research_mfd_hsize_dirty&&
++		      !reset_controls_clock_disabled,"post classification follows a complete current pair before clocks");
++		if(strstr(message,"original-tuple=yes"))hsize_post_match++;else hsize_post_mismatch++;
++	} else if(reset_controls_active && strstr(message,"mfd-reset-controls: phase=")) {
+ 		va_list args;va_start(args,message);
+ 		const char *phase=va_arg(args,const char *);unsigned word=va_arg(args,unsigned);
+ 		uint32_t first=va_arg(args,uint32_t),second=va_arg(args,uint32_t);
+@@ -1047,6 +1094,8 @@ static int pci_read_config_word(struct pci_dev *device, unsigned offset,
+ 		      "close verifies PCI only after successful stock suspend when started");
+ 	}
+ 	pci_reads++;
++	if(hsize_active&&hsize_pci_count<ARRAY_SIZE(hsize_pci_offsets))
++		hsize_pci_offsets[hsize_pci_count++]=offset;
+ 	if(reset_controls_active && pci_reads==reset_controls_pci_async)
+ 		config_context_fault(reset_controls_async_kind);
+ 	if(size_active && pci_reads==size_pci_async_at)config_context_fault(size_async_kind);
+@@ -1081,6 +1130,7 @@ static int pci_read_config_word(struct pci_dev *device, unsigned offset,
+ 		pci_pending_reads++;
+ 	}
+ 	if (config_active && pci_reads==config_pci_value_at) *value=config_pci_value;
++	if(hsize_active&&hsize_pci_count)hsize_pci_values[hsize_pci_count-1]=*value;
+ 	return 0;
+ }
+ 
+@@ -1602,6 +1652,20 @@ static bool crystalhd_flea_detect_fw_alive(struct crystalhd_hw *hw)
+ #include "scl-config-sample.h"
+ #include "mfd-reset-sample.h"
+ #include "mfd-reset-pair.h"
++#include "mfd-hsize-pair.h"
++#define crystalhd_flea_mfd_hsize_probe extracted_mfd_hsize_probe
++#include "mfd-hsize-probe.h"
++#undef crystalhd_flea_mfd_hsize_probe
++static BC_STATUS crystalhd_flea_mfd_hsize_probe(struct crystalhd_hw *hw,u64 generation,const void *owner)
++{
++	hsize_calls++;
++	if(dram_writes)check(dram_writes==1&&dram_reads==1&&!hw->research_mfd_hsize_reset_probe&&
++		!hw->research_staging_probe&&!hw->research_mfd_generation&&!hw->research_mfd_owner&&
++		!memcmp(card_prefix,expected_image,96)&&!cmac_writes&&!arm_run_writes,
++		"actual loader stages official image and consumes transient HSIZE flag/binding before probe");
++	return extracted_mfd_hsize_probe(hw,generation,owner);
++}
++#include "mfd-hsize-post.h"
+ #define crystalhd_flea_mfd_reset_probe extracted_mfd_reset_probe
+ #include "mfd-reset-probe.h"
+ #undef crystalhd_flea_mfd_reset_probe
+@@ -1927,6 +1991,11 @@ static uint32_t patterned_word(size_t index)
+ 
+ static void reset(void)
+ {
++	hsize_active=hsize_write_ignored=hsize_reset_model=false;
++	hsize_logs[0]=hsize_logs[1]=hsize_logs[2]=hsize_calls=hsize_targets=hsize_summaries=0;
++	hsize_post_match=hsize_post_mismatch=hsize_drift_word=0;hsize_drift_bits=0;
++	hsize_pci_count=0;memset(hsize_pci_offsets,0,sizeof(hsize_pci_offsets));
++	memset(hsize_pci_values,0,sizeof(hsize_pci_values));
+ 	reset_controls_active=reset_controls_stop=reset_controls_real_stop=false;
+ 	reset_controls_clock_disabled=reset_controls_pending_cycle=false;
+ 	reset_controls_reads=reset_controls_writes=reset_controls_count=0;
+@@ -7243,6 +7312,448 @@ static void reset_controls_scope_results(void)
+ 		cmac_writes==4&&arm_run_writes==1&&heartbeats==1,"ordinary default-off original firmware download remains unchanged");
+ }
+ 
++static void hsize_fixture(void)
++{reset_controls_fixture();hsize_active=true;}
++static BC_STATUS run_hsize(void)
++{return crystalhd_flea_mfd_hsize_probe(&hardware,adapter.generation,&research_owner);}
++static bool hsize_held(void)
++{return hardware.research_mfd_hsize_dirty&&hardware.research_mfd_reset_pending&&
++	 hardware.research_mfd_reset_generation==0x1020304050607080ULL&&
++	 hardware.research_mfd_reset_owner==&research_owner;}
++static void hsize_sample_oracle(unsigned *n,const uint32_t *words)
++{
++	reset_controls_guard_oracle(n);
++	for(unsigned word=0;word<20;word++)reset_controls_expect(n,'R',reset_controls_addresses[word],words[word]);
++	reset_controls_guard_oracle(n);
++}
++static void hsize_clean_results(void)
++{
++	groups++;hsize_fixture();
++	check(run_hsize()==BC_STS_CMD_CANCELLED&&reset_controls_reads==170&&reset_controls_writes==1&&
++	      pci_reads==24&&hsize_targets==1&&hsize_held()&&hardware.research_mfd_reset_cold_sampled&&
++	      hardware.research_mfd_hsize_request_sampled&&!hardware.research_mfd_hsize_reset_corroborated&&
++	      !hardware.research_mfd_reset_post_sampled&&hsize_logs[0]==20&&hsize_logs[1]==20&&
++	      !hsize_logs[2]&&hsize_summaries==1&&!memcmp(hardware.research_mfd_hsize_saved,reset_controls_cold,80),
++	      "actual HSIZE helper retains saved cold20 and dirty duty after one guarded literal request");
++	uint32_t request[20];memcpy(request,reset_controls_cold,sizeof(request));request[5]=4;
++	unsigned n=0;reset_controls_guard_oracle(&n);hsize_sample_oracle(&n,reset_controls_cold);
++	hsize_sample_oracle(&n,reset_controls_cold);reset_controls_expect(&n,'W',0x540014,4);
++	hsize_sample_oracle(&n,request);hsize_sample_oracle(&n,request);
++	check(n==171&&n==reset_controls_count&&!dram_reads&&!dram_writes&&!fpga_reads&&!fpga_writes&&
++	      !cmac_writes&&!arm_run_writes&&!heartbeats,"independent literal171-event oracle has170REG/1target and no hidden source/START/SCL work");
++	for(unsigned pci_word=0;pci_word<24;pci_word++)check(hsize_pci_offsets[pci_word]==(pci_word%3==1?0x4aU:4U)&&
++	      hsize_pci_values[pci_word]==(pci_word%3==1?0U:2U),
++	      "eight clean PCI guards match separately literal COMMAND/DEVSTA/COMMAND values and order");
++	const unsigned events=reset_controls_count,pcis=pci_reads;
++	check(run_hsize()==BC_STS_BUSY&&reset_controls_count==events&&pci_reads==pcis,
++	      "same-context replay cannot retry or restore the void-write attempt");
++}
++static void hsize_pair_results(void)
++{
++	groups++;
++	for(unsigned at=1;at<=80;at++)for(unsigned kind=0;kind<=5;kind++) {
++		hsize_fixture();hardware.research_mfd_reset_pending=hardware.research_mfd_pci_isolated=true;
++		hardware.research_mfd_reset_generation=adapter.generation;hardware.research_mfd_reset_owner=&research_owner;
++		pci_command&=~PCI_COMMAND_MASTER;
++		struct {uint32_t before,words[20],after;} out={.before=0x1199face,.after=0x9922face};
++		memset(out.words,0xa5,sizeof(out.words));
++		if(kind){reset_controls_async_read=at;reset_controls_async_kind=kind;}else reset_controls_fault_read=at;
++		check(crystalhd_flea_mfd_hsize_pair(&hardware,"cold",out.words)!=BC_STS_SUCCESS&&
++		      out.before==0x1199face&&out.after==0x9922face&&!hsize_logs[0]&&!hsize_targets,
++		      "all paired read poison/context positions preserve output canaries and suppress incomplete raw rows");
++		for(unsigned word=0;word<20;word++)check(out.words[word]==0xa5a5a5a5,
++		      "failed pair publishes none of its20 caller words");
++	}
++	hsize_fixture();check(crystalhd_flea_mfd_hsize_pair(&hardware,"cold",NULL)==BC_STS_INV_ARG&&no_effects(),
++	      "null pair output rejects without callback");
++	hsize_fixture();hardware.research_mfd_reset_pending=hardware.research_mfd_pci_isolated=true;
++	hardware.research_mfd_reset_generation=adapter.generation;hardware.research_mfd_reset_owner=&research_owner;
++	pci_command&=~PCI_COMMAND_MASTER;
++	struct {uint32_t before,words[20],after;} out={.before=0x1199face,.after=0x9922face};
++	check(crystalhd_flea_mfd_hsize_pair(&hardware,"cold",out.words)==BC_STS_SUCCESS&&
++	      out.before==0x1199face&&out.after==0x9922face&&!memcmp(out.words,reset_controls_cold,80),
++	      "successful paired output publishes all20 literal words within caller canaries");
++	hsize_fixture();reset_controls_mutate_at=50;reset_controls_mutate_field=3;
++	check(run_hsize()==BC_STS_IO_ERROR&&!hsize_logs[0]&&!hsize_targets&&reset_controls_pending(),
++	      "within-cold equal-pair loss cannot seed saved tuple or attempt HSIZE");
++}
++static void hsize_profile_results(void)
++{
++	groups++;
++	for(unsigned word=0;word<20;word++)for(unsigned bit=0;bit<32;bit++) {
++		hsize_fixture();uint32_t value=reset_controls_cold[word]^(1U<<bit);
++		bool invalid=(value&reset_controls_reserved[word])||word==0||word==19||word==1||word==2||word==13||
++			(word==10&&(value&0x01000000));
++		if(word==19){reset_controls_fault_read=40;reset_controls_fault_value=value;}else reset_controls_bank[word]=value;
++		BC_STATUS status=run_hsize();
++		check(invalid?status!=BC_STS_CMD_CANCELLED:(word==5?status==BC_STS_BUSY:status==BC_STS_CMD_CANCELLED),
++		      "cold reserved/revision/command/error pins reject; HSIZE requires exact780, other defined raw values are saved");
++		check((invalid||word==5)?(!hsize_targets&&!hardware.research_mfd_hsize_dirty):
++		      (hsize_targets==1&&hardware.research_mfd_hsize_saved[word]==value),
++		      "unqualified cold does not arm dirty or write; qualified non-HSIZE data is preserved, not normalized");
++	}
++	for(unsigned word=0;word<20;word++) {
++		hsize_fixture();if(word==19){reset_controls_fault_read=40;}else reset_controls_bank[word]=UINT32_MAX;
++		check(reset_controls_refused(run_hsize())&&!hsize_targets&&!hsize_logs[0],
++		      "allones including opaque address/stride are never logged as complete cold measurements");
++	}
++	for(unsigned word=3;word<19;word++) {
++		if(word==5||word==13)continue;
++		hsize_fixture();reset_controls_mutate_at=91;reset_controls_mutate_field=word;
++		check(run_hsize()==BC_STS_IO_ERROR&&hsize_held()&&hsize_targets==1&&
++		      !hardware.research_mfd_hsize_request_sampled,
++		      "complete legal request drift outside soleHSIZE field retains original saved tuple and fails");
++	}
++	hsize_fixture();hsize_write_ignored=true;
++	check(run_hsize()==BC_STS_IO_ERROR&&hsize_held()&&hsize_targets==1&&hsize_logs[1]==20&&!hsize_summaries,
++	      "unobserved void-write effect logs the retained780 request but never retries or invents successful request");
++	hsize_fixture();reset_controls_mutate_at=130;reset_controls_mutate_field=3;
++	check(run_hsize()==BC_STS_IO_ERROR&&hsize_held()&&!hsize_logs[1]&&hsize_targets==1,
++	      "request-phase pair drift retains dirty evidence and publishes no partial pair");
++	hsize_fixture();reset_controls_bank[5]=0x781;
++	check(run_hsize()==BC_STS_BUSY&&!hardware.research_mfd_hsize_dirty&&!hsize_targets&&
++	      hardware.research_mfd_reset_cold_sampled&&hsize_logs[0]==20,
++	      "complete defined non780 cold HSIZE logs harmless refusal before dirty/write");
++	reset_controls_stop=reset_controls_real_stop=true;
++	check(crystalhd_hw_close(&hardware)==BC_STS_SUCCESS&&!hardware.research_mfd_reset_pending&&
++	      !hsize_targets&&reset_controls_logs[1]==20,
++	      "pre-write cold-profile refusal retains only observer duty and follows its checked ordinary cleanup");
++}
++static void hsize_probe_faults(void)
++{
++	groups++;
++	for(unsigned at=1;at<=170;at++)for(unsigned kind=0;kind<=5;kind++) {
++		hsize_fixture();if(kind){reset_controls_async_read=at;reset_controls_async_kind=kind;}else reset_controls_fault_read=at;
++		check(reset_controls_refused(run_hsize())&&hsize_targets<2&&!hsize_summaries,
++		      "all170 real REG failure/currentness slots refuse without retry or claimed successful request");
++		check(at<=90?!hardware.research_mfd_hsize_dirty:hsize_held(),
++		      "dirty arming follows cold pair and survives every detected post-attempt access loss");
++	}
++	for(unsigned at=1;at<=24;at++)for(unsigned kind=0;kind<=5;kind++) {
++		hsize_fixture();if(kind){reset_controls_pci_async=at;reset_controls_async_kind=kind;}else pci_fail_at=at;
++		check(reset_controls_refused(run_hsize())&&!hsize_summaries&&hsize_targets<2,
++		      "all24 checked clean PCI callback positions fail closed without clearing master back on");
++		if(!kind)check(reset_controls_reads==reset_controls_pci_failed_reads,
++		      "failed PCI transport has no later REG read");
++	}
++	for(unsigned kind=1;kind<=5;kind++) {
++		hsize_fixture();reset_controls_async_write=1;reset_controls_async_kind=kind;
++		check(run_hsize()==BC_STS_IO_ERROR&&hsize_held()&&hsize_targets==1&&reset_controls_reads==90&&
++		      !hsize_logs[1]&&!hardware.research_mfd_hsize_request_sampled,
++		      "void target callback context loss retains dirty-before-write and forbids all subsequent probe reads");
++	}
++}
++static void hsize_admission_results(void)
++{
++	groups++;
++	for(unsigned fault=0;fault<47;fault++) {
++		hsize_fixture();struct crystalhd_hw *hw=&hardware;u64 generation=adapter.generation;const void *owner=&research_owner;
++		switch(fault) {
++		case 0:hw=NULL;break;case 1:hardware.adp=NULL;break;case 2:adapter.pdev=NULL;break;
++		case 3:generation=0;break;case 4:owner=NULL;break;case 5:hardware.pfnReadDevRegister=NULL;break;
++		case 6:hardware.pfnWriteDevRegister=NULL;break;case 7:adapter.present=0;break;case 8:adapter.hw_accessible=false;break;
++		case 9:generation++;break;case 10:pci.device=0x1612;break;case 11:adapter.i2o_addr=NULL;break;
++		case 12:adapter.pci_i2o_len=FLEA_GISB_INDIRECT_DATA+3;break;case 13:adapter.cmds.adp=NULL;break;
++		case 14:adapter.cmds.hw_ctx=NULL;break;case 15:owner=&hardware;break;case 16:adapter.cmds.session_module_pinned=false;break;
++		case 17:adapter.cmds.state=1;break;case 18:adapter.cfg_users=1;break;case 19:hardware.dev_started=false;break;
++		case 20:hardware.dma_fault=true;break;case 21:hardware.RxCaptureState=1;break;case 22:hardware.fwcmd_pending=true;break;
++		case 23:hardware.fwcmd_poisoned=true;break;case 24:hardware.FwCmdCnt=1;break;case 25:hardware.tx_actq=NULL;break;
++		case 26:hardware.rx_actq=NULL;break;case 27:hardware.rx_rdyq=NULL;break;case 28:hardware.rx_freeq=NULL;break;
++		case 29:hardware.TxList0Sts=1;break;case 30:hardware.TxList1Sts=1;break;case 31:hardware.rx_list_sts[0]=1;break;
++		case 32:hardware.rx_list_sts[1]=1;break;case 33:hardware.tx_pkt_pool[0].list_tag=1;break;case 34:hardware.tx_pkt_pool[1].list_tag=1;break;
++		default: {
++			const unsigned index[]={1,3,4,2};struct crystalhd_dioq *q=&queues[index[(fault-35)/3]];
++			if((fault-35)%3==0)q->count=1;else if((fault-35)%3==1)q->head=&hardware;else q->tail=&hardware;break;
++		}}
++		check(reset_controls_refused(crystalhd_flea_mfd_hsize_probe(hw,generation,owner))&&
++		      !reset_controls_count&&!pci_reads&&!hsize_targets&&!hardware.research_mfd_hsize_dirty,
++		      "all47 actual inherited guards reject HSIZE before hardware effects/dirty arming");
++	}
++	for(unsigned flag=0;flag<14;flag++) {
++		hsize_fixture();
++		if(flag==0)hardware.research_mfd_pci_isolated=true;else if(flag==1)hardware.research_mfd_deliberate_abort=true;
++		else if(flag==2)hardware.research_scl_config_dirty=true;else if(flag==3)hardware.research_scl_reset_corroborated=true;
++		else if(flag==4)hardware.research_scl_duty_generation=1;else if(flag==5)hardware.research_scl_duty_owner=&hardware;
++		else if(flag==6)hardware.research_mfd_reset_pending=true;else if(flag==7)hardware.research_mfd_reset_cold_sampled=true;
++		else if(flag==8)hardware.research_mfd_reset_post_sampled=true;else if(flag==9)hardware.research_mfd_reset_generation=1;
++		else if(flag==10)hardware.research_mfd_reset_owner=&hardware;else if(flag==11)hardware.research_mfd_hsize_dirty=true;
++		else if(flag==12)hardware.research_mfd_hsize_request_sampled=true;else hardware.research_mfd_hsize_reset_corroborated=true;
++		check(run_hsize()==BC_STS_BUSY&&!reset_controls_count&&!pci_reads,
++		      "all14 stale persistent contexts refuse helper replay before I/O");
++	}
++	for(unsigned field=0;field<25;field++) {
++		hsize_fixture();check(run_hsize()==BC_STS_CMD_CANCELLED,"post admission fixture uses actual bound dirty request");
++		struct crystalhd_hw *hw=&hardware;
++		if(field==0)hw=NULL;else if(field==1)hardware.adp=NULL;else if(field==2)adapter.pdev=NULL;
++		else if(field==3)hardware.pfnReadDevRegister=NULL;else if(field==4)hardware.pfnWriteDevRegister=NULL;
++		else if(field==5)hardware.research_mfd_reset_pending=false;else if(field==6)hardware.research_mfd_reset_generation=0;
++		else if(field==7)hardware.research_mfd_reset_owner=NULL;else if(field==8)hardware.research_mfd_pci_isolated=false;
++		else if(field==9)hardware.research_scl_config_dirty=true;else if(field==10)hardware.research_scl_reset_corroborated=true;
++		else if(field==11)hardware.research_scl_duty_generation=1;else if(field==12)hardware.research_scl_duty_owner=&hardware;
++		else if(field==13)adapter.present=0;else if(field==14)adapter.hw_accessible=false;else if(field==15)hardware.dma_fault=true;
++		else if(field==16)adapter.generation++;else if(field==17)adapter.cmds.hw_ctx=NULL;
++		else if(field==18)adapter.cmds.session_module_pinned=false;else if(field==19)adapter.cmds.session_owner=&hardware;
++		else if(field==20)hardware.research_mfd_hsize_dirty=false;else if(field==21)hardware.research_mfd_reset_cold_sampled=false;
++		else if(field==22)hardware.research_mfd_reset_post_sampled=true;else if(field==23)hardware.research_mfd_hsize_request_sampled=false;
++		else hardware.research_mfd_hsize_reset_corroborated=true;
++		const unsigned events=reset_controls_count,pcis=pci_reads;
++		check(crystalhd_flea_mfd_hsize_post(hw)==BC_STS_IO_ERROR&&reset_controls_count==events&&pci_reads==pcis,
++		      "all25 post binding/phase losses reject without new reads or corroboration");
++	}
++}
++static void hsize_pending_results(void)
++{
++	groups++;hsize_fixture();reset_controls_pending_cycle=true;
++	pci_pending[0]=pci_pending[1]=pci_pending[2]=PCI_EXP_DEVSTA_TRPND;
++	check(run_hsize()==BC_STS_CMD_CANCELLED&&reset_controls_reads==170&&pci_reads==72&&hsize_targets==1,
++	      "eight isolated guards compose at most72 pending-poll callbacks, not a physical bus or fetch bound");
++	for(unsigned at=1;at<=72;at++)for(unsigned kind=0;kind<=5;kind++) {
++		hsize_fixture();reset_controls_pending_cycle=true;
++		pci_pending[0]=pci_pending[1]=pci_pending[2]=PCI_EXP_DEVSTA_TRPND;
++		if(kind){reset_controls_pci_async=at;reset_controls_async_kind=kind;}else pci_fail_at=at;
++		check(run_hsize()==BC_STS_IO_ERROR&&hsize_targets<2&&!hsize_summaries,
++		      "every expanded pending-poll PCI failure/currentness slot refuses without reassertion");
++		if(!kind)check(reset_controls_reads==reset_controls_pci_failed_reads,
++		      "expanded PCI transport loss forbids another REG read");
++	}
++	hsize_fixture();for(unsigned n=0;n<4;n++)pci_pending[n]=PCI_EXP_DEVSTA_TRPND;
++	check(run_hsize()==BC_STS_IO_ERROR&&pci_reads==8&&!hsize_targets&&!hsize_logs[0]&&
++	      !hardware.research_mfd_hsize_dirty,"unresolved transaction pending refuses before a complete cold pair or target attempt");
++}
++static void hsize_prepare_stop(void)
++{
++	hsize_fixture();check(run_hsize()==BC_STS_CMD_CANCELLED,"HSIZE stop fixture originates in actual request");
++	reset_controls_reads=reset_controls_writes=reset_controls_count=0;
++	pci_reads=pci_command_reads=pci_pending_reads=0;size_batches=0;
++	hsize_pci_count=0;dev_reads=dev_writes=sleeps=0;
++	reset_controls_stop=reset_controls_real_stop=hsize_reset_model=true;
++}
++static void hsize_stop_oracle(void)
++{
++	/* Literal old stock-stop order is reused without a new clock value. */
++	reset_controls_stop_oracle();
++}
++static void hsize_stop_results(void)
++{
++	groups++;hsize_prepare_stop();
++	check(crystalhd_hw_close(&hardware)==BC_STS_SUCCESS&&reset_controls_reads==89&&reset_controls_writes==21&&
++	      pci_reads==15&&!hardware.research_mfd_hsize_dirty&&!hardware.research_mfd_reset_pending&&
++	      !hardware.research_mfd_hsize_request_sampled&&!hardware.research_mfd_hsize_reset_corroborated&&
++	      hsize_logs[2]==20&&hsize_post_match==1&&!hsize_post_mismatch&&!hardware.dev_started,
++	      "actual complete stop+equal saved post pair+finalPCI clears only configuration bookkeeping duty");
++	for(unsigned word=0;word<20;word++)check(!hardware.research_mfd_hsize_saved[word],
++	      "saved cold tuple zeroes only after successful complete retirement");
++	hsize_stop_oracle();
++	for(unsigned pci_word=0;pci_word<15;pci_word++)check(hsize_pci_offsets[pci_word]==(pci_word%3==1?0x4aU:4U)&&
++	      hsize_pci_values[pci_word]==(pci_word%3==1?0U:2U),
++	      "postpair and final containment use five clean literal PCI triples after checked stop");
++	for(unsigned at=1;at<=89;at++)for(unsigned kind=0;kind<=5;kind++) {
++		hsize_prepare_stop();if(kind){reset_controls_async_read=at;reset_controls_async_kind=kind;}else reset_controls_fault_read=at;
++		check(crystalhd_hw_close(&hardware)!=BC_STS_SUCCESS&&hsize_held()&&hardware.dev_started&&
++		      !memcmp(hardware.research_mfd_hsize_saved,reset_controls_cold,80),
++		      "every reset/postpair/remaining-stop REG failure retains original saved tuple and dirty duty");
++	}
++	for(unsigned at=1;at<=21;at++)for(unsigned kind=1;kind<=5;kind++) {
++		hsize_prepare_stop();reset_controls_async_write=at;reset_controls_async_kind=kind;
++		check(crystalhd_hw_close(&hardware)!=BC_STS_SUCCESS&&hsize_held()&&reset_controls_writes==at,
++		      "every existing stock-stop void-write context loss stops the sequence and cannot discharge duty");
++	}
++	for(unsigned at=1;at<=15;at++)for(unsigned kind=0;kind<=5;kind++) {
++		hsize_prepare_stop();if(kind){reset_controls_pci_async=at;reset_controls_async_kind=kind;}else pci_fail_at=at;
++		check(crystalhd_hw_close(&hardware)!=BC_STS_SUCCESS&&hsize_held(),
++		      "all post/reset and finalPCI access-currentness failures retain dirty backing");
++	}
++	for(unsigned batch=1;batch<=4;batch++)for(unsigned kind=1;kind<=5;kind++) {
++		hsize_prepare_stop();reset_controls_batch_fault=batch;reset_controls_async_kind=kind;
++		check(crystalhd_hw_close(&hardware)!=BC_STS_SUCCESS&&hsize_held()&&size_batches==batch,
++		      "opaque stock batch boundary loss cannot discharge dirty duty");
++	}
++	for(unsigned fault=0;fault<3;fault++) {
++		hsize_prepare_stop();if(!fault)size_reset_stuck=true;else if(fault==1)size_idle_stuck=true;else size_cke_stuck=true;
++		check(crystalhd_hw_close(&hardware)!=BC_STS_SUCCESS&&hsize_held(),
++		      "actual reset/DDRidle/CKE bounded timeouts retain dirty state rather than certifying reset");
++		check(fault==0?size_reset_reads==1001:(fault==1?size_ddr_reads==100:size_cke_reads==100),
++		      "actual stock poll ceilings remain fixed");
++	}
++}
++static void hsize_post_results(void)
++{
++	groups++;
++	for(unsigned word=0;word<20;word++)for(unsigned bit=0;bit<32;bit++) {
++		hsize_prepare_stop();hsize_drift_word=word==19?0:word;hsize_drift_bits=1U<<bit;
++		uint32_t value=reset_controls_cold[word]^(1U<<bit);
++		bool invalid=(value&reset_controls_reserved[word])||word==0||word==19||word==1||word==2||word==13||
++			(word==10&&(value&0x01000000));
++		check(crystalhd_hw_close(&hardware)!=BC_STS_SUCCESS&&hsize_held()&&!reset_controls_clock_event&&
++		      !hardware.research_mfd_hsize_reset_corroborated&&!hardware.research_mfd_reset_post_sampled,
++		      "every post-reset saved-tuple difference retains duty before clock powerdown");
++		check(invalid?!hsize_logs[2]:(hsize_logs[2]==20&&hsize_post_mismatch==1),
++		      "invalid post scalars are unreported; complete equal defined drift is reported then refused without normalization");
++	}
++	hsize_prepare_stop();hsize_reset_model=false;
++	check(crystalhd_hw_close(&hardware)!=BC_STS_SUCCESS&&hsize_held()&&hsize_logs[2]==20&&hsize_post_mismatch==1&&
++	      !reset_controls_clock_event&&reset_controls_bank[5]==4,
++	      "retained literal4 is a fully measured post mismatch, never a reset corroboration or blind restore");
++	hsize_prepare_stop();reset_controls_mutate_at=42;reset_controls_mutate_field=3;
++	check(crystalhd_hw_close(&hardware)!=BC_STS_SUCCESS&&hsize_held()&&!hsize_logs[2]&&!reset_controls_clock_event,
++	      "post pair instability publishes no raw complete pair and retains duty");
++	hsize_prepare_stop();hardware.research_mfd_hsize_saved[3]^=1;
++	check(crystalhd_hw_close(&hardware)!=BC_STS_SUCCESS&&hsize_held()&&hsize_logs[2]==20&&hsize_post_mismatch==1,
++	      "corrupted saved identity cannot be replaced by a model-derived expected reset tuple");
++}
++static void hsize_retention_results(void)
++{
++	groups++;
++	for(unsigned pending=0;pending<2;pending++)for(unsigned request=0;request<2;request++)
++	for(unsigned corroborated=0;corroborated<2;corroborated++)for(unsigned terminal=0;terminal<2;terminal++) {
++		hsize_fixture();hardware.research_mfd_hsize_dirty=true;hardware.research_mfd_reset_pending=pending;
++		hardware.research_mfd_hsize_request_sampled=request;hardware.research_mfd_hsize_reset_corroborated=corroborated;
++		adapter.dma_terminal_quiesced=terminal;memcpy(hardware.research_mfd_hsize_saved,reset_controls_cold,80);
++		struct crystalhd_hw before=hardware;struct crystalhd_cmd ctx=adapter.cmds;
++		crystalhd_hw_retire_rx_quiesced(&hardware);
++		check(crystalhd_hw_free_dma_rings(&hardware)==BC_STS_IO_ERROR&&!size_free_calls&&
++		      !memcmp(&before,&hardware,sizeof(before))&&!memcmp(&ctx,&adapter.cmds,sizeof(ctx))&&no_effects(),
++		      "actual RX/free veto dirty independently of pending/proof flags and empty terminal inventory");
++	}
++	for(unsigned fault=0;fault<11;fault++) {
++		hsize_prepare_stop();
++		if(fault==0)hardware.research_mfd_reset_pending=false;
++		else if(fault==1)hardware.research_mfd_hsize_dirty=false;
++		else if(fault==2)hardware.research_mfd_hsize_request_sampled=false;
++		else if(fault==3)hardware.research_mfd_hsize_reset_corroborated=true;
++		else if(fault==4)hardware.dev_started=false;
++		else if(fault==5)hardware.research_mfd_reset_generation++;
++		else if(fault==6)hardware.research_mfd_reset_owner=&hardware;
++		else if(fault==7)adapter.hw_accessible=false;
++		else if(fault==8)adapter.cmds.session_module_pinned=false;
++		else if(fault==9)adapter.cmds.hw_ctx=NULL;
++		else hardware.research_mfd_reset_post_sampled=true;
++		check(crystalhd_hw_close(&hardware)!=BC_STS_SUCCESS&&!reset_controls_count&&
++		      pci_reads==(fault==4?3U:0U)&&
++		      !memcmp(hardware.research_mfd_hsize_saved,reset_controls_cold,80),
++		      "stale/orphan/proof-loss close has no bank/write activity and retains saved data; absent started context may checkPCI only");
++	}
++	hsize_prepare_stop();check(crystalhd_hw_close(&hardware)==BC_STS_SUCCESS,"actual full successful retirement permits later host free");
++	crystalhd_hw_retire_rx_quiesced(&hardware);
++	check(size_free_calls==1&&crystalhd_hw_free_dma_rings(&hardware)==BC_STS_SUCCESS&&size_free_calls==5,
++	      "host backing retires only after exact post corroboration plus complete checked stop");
++	hsize_fixture();hardware.research_mfd_hsize_dirty=true;
++	check(!crystalhd_flea_research_stop_current(&hardware),"orphan dirty cannot borrow ordinary stock-stop validity");
++}
++static BC_STATUS download_hsize(void)
++{
++	hardware.research_staging_probe=hardware.research_mfd_hsize_reset_probe=true;
++	return crystalhd_flea_download_fw(&hardware,(const uint8_t *)firmware.words,sizeof(firmware.words));
++}
++static void hsize_loader_results(void)
++{
++	groups++;hsize_fixture();
++	check(download_hsize()==BC_STS_CMD_CANCELLED&&reset_controls_reads==184&&reset_controls_writes==6&&
++	      hsize_calls==1&&hsize_targets==1&&dram_writes==1&&dram_reads==1&&hsize_held()&&
++	      !hardware.research_mfd_hsize_reset_probe&&!hardware.research_staging_probe&&
++	      !hardware.research_mfd_generation&&!hardware.research_mfd_owner&&!memcmp(card_prefix,expected_image,96)&&
++	      !cmac_writes&&!arm_run_writes&&!heartbeats,
++	      "actual loader consumes HSIZE request, stages only official firmware, aborts preCMAC and retains independent duty");
++	clear_config_capture(&adapter.cmds);
++	check(hsize_held()&&hardware.research_mfd_hsize_request_sampled&&
++	      !memcmp(hardware.research_mfd_hsize_saved,reset_controls_cold,80),
++	      "actual one-shot flag reset cannot erase dirty binding or saved cold tuple");
++	for(unsigned status=1;status<=27;status++)for(unsigned direction=0;direction<2;direction++)for(unsigned kind=0;kind<=5;kind++) {
++		hsize_fixture();if(direction){read_status=(BC_STATUS)status;config_pio_read_fault=kind;}
++		else{dram_status=(BC_STATUS)status;config_pio_write_fault=kind;}
++		check(download_hsize()==(kind?BC_STS_IO_ERROR:(BC_STATUS)status)&&reset_controls_reads==13&&
++		      !pci_clears&&!hsize_calls&&!hsize_targets&&!hsize_logs[0]&&!config_staging_logs&&
++		      !hardware.research_mfd_hsize_dirty&&!cmac_writes&&!arm_run_writes,
++		      "every unsuccessful official PIO status/current loss forbids subsequent bridge/read/poisoned staging log and HSIZE write");
++	}
++	for(unsigned at=1;at<=184;at++)for(unsigned kind=1;kind<=5;kind++) {
++		hsize_fixture();reset_controls_async_read=at;reset_controls_async_kind=kind;
++		check(reset_controls_refused(download_hsize())&&!hsize_summaries&&
++		      !hardware.research_mfd_hsize_reset_probe&&!hardware.research_mfd_generation&&!hardware.research_mfd_owner&&
++		      !cmac_writes&&!arm_run_writes&&!heartbeats,"all early-loader/staging/probe REG context slots consume one-shot and prevent FW boot");
++	}
++	for(unsigned direction=0;direction<2;direction++)for(unsigned kind=1;kind<=5;kind++) {
++		hsize_fixture();if(direction)config_pio_read_fault=kind;else config_pio_write_fault=kind;
++		check(download_hsize()==BC_STS_IO_ERROR&&reset_controls_reads==13&&!pci_clears&&
++		      !config_staging_logs&&!hsize_calls&&!hsize_targets,
++		      "even successful official PIO followed by context loss cannot publish staging or proceed to a write");
++	}
++	hsize_fixture();read_mismatch=true;
++	check(download_hsize()==BC_STS_IO_ERROR&&!hsize_calls&&!hsize_targets&&!pci_clears,
++	      "official image readback mismatch cannot start a configuration duty");
++}
++static void configure_hsize(struct crystalhd_cmd *ctx,u64 generation)
++{
++#define crystalhd_fw_research_owner research_owner
++#define CRYSTALHD_MFD_HSIZE_RESET_PROBE
++#include "mfd-hsize-setup.h"
++#undef CRYSTALHD_MFD_HSIZE_RESET_PROBE
++#undef crystalhd_fw_research_owner
++}
++static void hsize_version_gate(unsigned selector,unsigned nonstate,struct packed_gate_result *result)
++{
++	const struct crystalhd_fw_research_request request_value={.selector=selector};
++	const struct crystalhd_fw_research_request *request=&request_value;
++	const void *state=(nonstate&1)?&hardware:NULL,*controller=(nonstate&2)?&hardware:NULL;
++	const void *image=(nonstate&4)?&hardware:NULL,*packet=(nonstate&8)?&hardware:NULL;
++	const void *heap_packet=(nonstate&16)?&hardware:NULL,*clock=(nonstate&32)?&hardware:NULL,*uart=(nonstate&64)?&hardware:NULL;
++	result->status=0;
++#define CRYSTALHD_MFD_HSIZE_RESET_PROBE
++#include "packed-version-gate.h"
++#undef CRYSTALHD_MFD_HSIZE_RESET_PROBE
++}
++static void hsize_scope_results(void)
++{
++	groups++;
++	for(unsigned selector=0;selector<16;selector++)for(unsigned nonstate=0;nonstate<128;nonstate++) {
++		hsize_fixture();struct packed_gate_result result={0};hsize_version_gate(selector,nonstate,&result);
++		check(result.status==((selector==CRYSTALHD_FW_RESEARCH_VERSION_ONLY&&!nonstate)?0:-EINVAL)&&no_effects(),
++		      "new actual VERSION gate rejects every inspection/side route before session/loader effects");
++	}
++	hsize_fixture();configure_hsize(&adapter.cmds,adapter.generation);
++	check(hardware.research_mfd_hsize_reset_probe&&hardware.research_mfd_generation==adapter.generation&&
++	      hardware.research_mfd_owner==&research_owner&&!hardware.research_mfd_hsize_dirty&&!hardware.research_mfd_reset_pending,
++	      "actual compile setup seeds transient request only, never dirty/corroboration evidence");
++	for(unsigned flag=0;flag<18;flag++) {
++		hsize_fixture();hardware.research_staging_probe=hardware.research_mfd_hsize_reset_probe=true;
++		switch(flag) {
++		case 0:hardware.research_mfd_latch_probe=true;break;case 1:hardware.research_mfd_colour_probe=true;break;
++		case 2:hardware.research_mfd_scl_probe=true;break;case 3:hardware.research_scl_port_probe=true;break;
++		case 4:hardware.research_scl_port_latch=true;break;case 5:hardware.research_mfd_packed_probe=true;break;
++		case 6:hardware.research_mfd_packed_window_probe=true;break;case 7:hardware.research_mfd_packed_observed_geometry_probe=true;break;
++		case 8:hardware.research_mfd_packed_hsize4_probe=true;break;case 9:hardware.research_mfd_packed_normal_probe=true;break;
++		case 10:hardware.research_mfd_packed_scl_input_probe=true;break;case 11:hardware.research_scl_config_probe=true;break;
++		case 12:hardware.research_scl_size_reset_probe=true;break;case 13:hardware.research_mfd_reset_probe=true;break;
++		case 14:hardware.research_mfd_packed_pattern=1;break;case 15:hardware.research_mfd_colour_value=0x405ac3;break;
++		case 16:hardware.research_scl_selector=1;break;default:hardware.research_mfd_reset_pending=true;break;
++		}
++		check(crystalhd_flea_download_fw(&hardware,(const uint8_t *)firmware.words,sizeof(firmware.words))==BC_STS_INV_ARG&&
++		      no_effects()&&!pci_reads&&!hardware.research_mfd_hsize_reset_probe,
++		      "each foreign flag/scalar conflicts before staging and consumes HSIZE transient flag");
++	}
++	for(unsigned missing=0;missing<3;missing++) {
++		hsize_fixture();hardware.research_staging_probe=hardware.research_mfd_hsize_reset_probe=true;
++		if(!missing)hardware.research_staging_probe=false;else if(missing==1)hardware.research_mfd_generation=0;
++		else hardware.research_mfd_owner=NULL;
++		check(crystalhd_flea_download_fw(&hardware,(const uint8_t *)firmware.words,sizeof(firmware.words))==BC_STS_INV_ARG&&
++		      no_effects()&&!pci_reads,"new mode requires staging/current generation/owner before any I/O");
++	}
++	for(unsigned field=0;field<3;field++) {
++		hsize_fixture();if(!field)hardware.research_mfd_hsize_dirty=true;else if(field==1)hardware.research_mfd_hsize_request_sampled=true;
++		else hardware.research_mfd_hsize_reset_corroborated=true;
++		check(run_hsize()==BC_STS_BUSY&&no_effects()&&!pci_reads,"every stale HSIZE duty/proof flag rejects direct replay before I/O");
++		check(run_reset_controls()==BC_STS_BUSY&&no_effects()&&!pci_reads,
++		      "old read-only observer cannot borrow a new HSIZE dirty/proof context");
++		check(crystalhd_flea_scl_size_reset_probe(&hardware,adapter.generation,&research_owner)==BC_STS_BUSY&&no_effects(),
++		      "old size consumer refuses new orphan/proof duty before I/O");
++		check(download_hsize()==BC_STS_INV_ARG&&no_effects()&&!pci_reads,
++		      "actual loader cannot erase persistent HSIZE flags before admission");
++	}
++	reset();check(crystalhd_flea_download_fw(&hardware,(const uint8_t *)firmware.words,sizeof(firmware.words))==BC_STS_SUCCESS&&
++	      !hsize_calls&&!hardware.research_mfd_hsize_dirty&&cmac_writes==4&&arm_run_writes==1&&heartbeats==1,
++	      "default-off original firmware boot is unchanged and does not execute new observer");
++}
++
+ int main(void)
+ {
+ 	reset();
+@@ -7317,6 +7828,11 @@ int main(void)
+ 	reset_controls_profile_results();reset_controls_probe_faults();
+ 	reset_controls_stop_results();reset_controls_retention_results();reset_controls_pending_results();
+ 	reset_controls_admission_results();reset_controls_loader_results();reset_controls_scope_results();
++	const unsigned reset_checks=checks;
++	check(groups==128&&reset_checks==265219908,"all128 prior groups retain exact pre-HSIZE-reset check count");
++	hsize_clean_results();hsize_pair_results();hsize_profile_results();hsize_probe_faults();hsize_admission_results();
++	hsize_pending_results();
++	hsize_stop_results();hsize_post_results();hsize_retention_results();hsize_loader_results();hsize_scope_results();
+ 	printf("Firmware download safety passed (%u groups, %u checks, %u failures)\n",
+ 	       groups, checks, failures);
+ 	return failures ? EXIT_FAILURE : EXIT_SUCCESS;
+diff --git a/tests/fw-download.sh b/tests/fw-download.sh
+index cccd983..8ff0648 100755
+--- a/tests/fw-download.sh
++++ b/tests/fw-download.sh
+@@ -36,6 +36,9 @@ cleanup()
+ 	for name in current sample pair probe post stop-current hw-retire-rx build-config version-gate setup; do
+ 		rm -f "$test_dir/mfd-reset-$name.h"
+ 	done
++	for name in pair probe post build-config setup; do
++		rm -f "$test_dir/mfd-hsize-$name.h"
++	done
+ 	rmdir "$test_dir"
+ }
+ trap cleanup EXIT
+@@ -98,6 +101,10 @@ for name in current sample pair probe post; do
+ 	extract_function "crystalhd_flea_mfd_reset_$name" \
+ 		"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-reset-$name.h"
+ done
++for name in pair probe post; do
++	extract_function "crystalhd_flea_mfd_hsize_$name" \
++		"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-hsize-$name.h"
++done
+ extract_function crystalhd_flea_research_stop_current \
+ 	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-reset-stop-current.h"
+ extract_function crystalhd_hw_retire_rx_quiesced \
+@@ -226,6 +233,26 @@ awk '
+ 	copying && /^#endif$/ { copying=0 }
+ 	END { if (found != 1 || copying) exit 1 }
+ ' "$repo_dir/driver/linux/crystalhd_fw_research.c" > "$test_dir/mfd-reset-build-config.h"
++awk '
++	/^#if defined\(CRYSTALHD_MFD_HSIZE_RESET_PROBE\)/ { copying=1; found++ }
++	copying { print }
++	copying && /^#endif$/ { copying=0 }
++	END { if (found != 1 || copying) exit 1 }
++' "$repo_dir/driver/linux/crystalhd_fw_research.c" > "$test_dir/mfd-hsize-build-config.h"
++awk '
++	/^#ifdef CRYSTALHD_MFD_HSIZE_RESET_PROBE$/ { copying=1; block=""; depth=0 }
++	copying {
++		block=block $0 "\n"
++		if (/^#if/) depth++
++		if (/^#endif$/ && --depth == 0) {
++			copying=0
++			if (block ~ /ctx->hw_ctx->research_mfd_hsize_reset_probe =/) { printf "%s",block; found++ }
++		}
++	}
++	END { if (found != 1 || copying) exit 1 }
++' "$repo_dir/driver/linux/crystalhd_fw_research.c" > "$test_dir/mfd-hsize-setup.h"
++"${CC:-cc}" -E -P -x c -DCRYSTALHD_MFD_HSIZE_RESET_PROBE \
++	-include "$test_dir/mfd-hsize-build-config.h" "$test_dir/packed-config.h" > /dev/null
+ for block in setup; do
+ 	mfd_block_file="$test_dir/mfd-reset-$block.h"
+ 	awk -v selected="$block" '
+@@ -267,7 +294,13 @@ for conflict in CRYSTALHD_MFD_LATCH_PROBE CRYSTALHD_MFD_FIXED_COLOUR_PROBE \
+ 	if "${CC:-cc}" -E -P -x c -DCRYSTALHD_MFD_RESET_CONTROLS_PROBE "$@" \
+ 		-include "$test_dir/mfd-reset-build-config.h" -include "$test_dir/scl-size-build-config.h" \
+ 		"$test_dir/packed-config.h" > /dev/null 2>&1; then exit 1; fi
++	if "${CC:-cc}" -E -P -x c -DCRYSTALHD_MFD_HSIZE_RESET_PROBE "$@" \
++		-include "$test_dir/mfd-hsize-build-config.h" -include "$test_dir/scl-size-build-config.h" \
++		"$test_dir/packed-config.h" > /dev/null 2>&1; then exit 1; fi
+ done
++if "${CC:-cc}" -E -P -x c -DCRYSTALHD_MFD_HSIZE_RESET_PROBE -DCRYSTALHD_MFD_RESET_CONTROLS_PROBE \
++	-include "$test_dir/mfd-hsize-build-config.h" -include "$test_dir/mfd-reset-build-config.h" \
++	"$test_dir/packed-config.h" > /dev/null 2>&1; then exit 1; fi
+ "${CC:-cc}" -E -P -x c -DCRYSTALHD_SCL_SIZE_RESET_PROBE \
+ 	-include "$test_dir/scl-size-build-config.h" "$test_dir/packed-config.h" > /dev/null
+ "${CC:-cc}" -E -P -x c -DCRYSTALHD_SCL_CONFIG_PROBE "$test_dir/packed-config.h" > /dev/null
+diff --git a/tests/device-lifetime.c b/tests/device-lifetime.c
+index cd05038..2b51aea 100644
+--- a/tests/device-lifetime.c
++++ b/tests/device-lifetime.c
+@@ -68,6 +68,9 @@ struct crystalhd_hw {
+ 	bool research_mfd_reset_cold_sampled, research_mfd_reset_post_sampled;
+ 	uint64_t research_mfd_reset_generation;
+ 	const void *research_mfd_reset_owner;
++	bool research_mfd_hsize_reset_probe, research_mfd_hsize_dirty;
++	bool research_mfd_hsize_request_sampled, research_mfd_hsize_reset_corroborated;
++	uint32_t research_mfd_hsize_saved[20];
+ #endif
+ 	void *rx_freeq, *rx_actq, *rx_rdyq, *tx_actq, *tx_freeq;
+ 	void *rx_pkt_pool_head, *rx_fallback_head;
+@@ -196,7 +199,8 @@ static void assert_quiesced(void)
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+ 	assert(!g_adp_info->cmds.hw_ctx ||
+ 	       (!g_adp_info->cmds.hw_ctx->research_scl_config_dirty &&
+-	        !g_adp_info->cmds.hw_ctx->research_mfd_reset_pending));
++	        !g_adp_info->cmds.hw_ctx->research_mfd_reset_pending &&
++	        !g_adp_info->cmds.hw_ctx->research_mfd_hsize_dirty));
+ #endif
+ 	if (g_adp_info->dma_terminal_quiesced)
+ 		assert(!master && dma_drained);
+@@ -292,7 +296,8 @@ static void crystalhd_v4l2_unregister(struct crystalhd_adp *adp)
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+ 		if (adp->cmds.hw_ctx &&
+ 		    (adp->cmds.hw_ctx->research_scl_config_dirty ||
+-		     adp->cmds.hw_ctx->research_mfd_reset_pending))
++		     adp->cmds.hw_ctx->research_mfd_reset_pending ||
++		     adp->cmds.hw_ctx->research_mfd_hsize_dirty))
+ 			assert(adp->dma_terminal_quiesced == dma_drained);
+ 		else
+ #endif
+@@ -423,7 +428,8 @@ static struct pci_dev *pci_dev_get(struct pci_dev *dev)
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
+ 	if (g_adp_info->cmds.hw_ctx &&
+ 	    (g_adp_info->cmds.hw_ctx->research_scl_config_dirty ||
+-	     g_adp_info->cmds.hw_ctx->research_mfd_reset_pending))
++	     g_adp_info->cmds.hw_ctx->research_mfd_reset_pending ||
++	     g_adp_info->cmds.hw_ctx->research_mfd_hsize_dirty))
+ 		assert(g_adp_info->dma_terminal_quiesced == dma_drained);
+ 	else
+ #endif
+@@ -1220,13 +1226,30 @@ static void test_empty_preopened_context(void)
+ }
+ 
+ #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
++enum retained_duty {
++	RETAIN_SCL_DIRTY,
++	RETAIN_MFD_OBSERVER,
++	RETAIN_MFD_HSIZE_DIRTY,
++	RETAIN_MFD_HSIZE_ORPHAN,
++};
++
++static uint32_t saved_hsize_canary(unsigned int word)
++{
++	return 0x6d660000U | word; /* Host receipt canary, not an observed MFD tuple. */
++}
++
+ static void assert_observer_retained(struct crystalhd_adp *adp,
+ 				    struct crystalhd_hw *hw, bool playback,
+-				    bool mfd_pending, unsigned int which)
++				    enum retained_duty duty, unsigned int which)
+ {
++	unsigned int word;
++	bool geometry_dirty = duty >= RETAIN_MFD_HSIZE_DIRTY;
++	bool mfd_pending = duty != RETAIN_SCL_DIRTY;
++
+ 	assert(adp->cmds.adp == adp && adp->cmds.hw_ctx == hw);
+ 	if (mfd_pending) {
+-		assert(hw->research_mfd_reset_pending && !hw->research_mfd_reset_probe);
++		assert(hw->research_mfd_reset_pending == (duty != RETAIN_MFD_HSIZE_ORPHAN));
++		assert(!hw->research_mfd_reset_probe);
+ 		assert(hw->research_mfd_reset_cold_sampled == (which != 0));
+ 		assert(hw->research_mfd_reset_post_sampled == (which == 2 || which == 8));
+ 		assert(hw->research_mfd_reset_generation == chd_device_generation);
+@@ -1241,6 +1264,14 @@ static void assert_observer_retained(struct crystalhd_adp *adp,
+ 		assert(!hw->research_mfd_reset_cold_sampled && !hw->research_mfd_reset_post_sampled);
+ 		assert(!hw->research_mfd_reset_generation && !hw->research_mfd_reset_owner);
+ 	}
++	assert(!hw->research_mfd_hsize_reset_probe);
++	assert(hw->research_mfd_hsize_dirty == geometry_dirty);
++	assert(hw->research_mfd_hsize_request_sampled == (geometry_dirty && which != 0));
++	assert(hw->research_mfd_hsize_reset_corroborated ==
++	       (geometry_dirty && (which == 2 || which == 8)));
++	for (word = 0; word < ARRAY_SIZE(hw->research_mfd_hsize_saved); word++)
++		assert(hw->research_mfd_hsize_saved[word] ==
++		       (geometry_dirty ? saved_hsize_canary(word) : 0));
+ 	assert(!released[ADAPTER] && !released[HARDWARE] &&
+ 	       !released[DIO_POOL] && !released[ELEM_POOL]);
+ 	assert(!dma_frees && !stream_releases && !module_puts);
+@@ -1271,14 +1302,17 @@ static const char *const dirty_cases[] = {
+  * through exit. Never clear the duty or invent a successful reset for cleanup.
+  * These execute actual control-flow gates, not physical halt/corroboration.
+  * Pending MFD observations retain context/backing, not a silicon consumer lease. */
+-static void test_retained_observer(unsigned int which, bool mfd_pending)
++static void test_retained_observer(unsigned int which, enum retained_duty duty)
+ {
+ 	struct crystalhd_adp *adp;
+ 	struct crystalhd_hw *hw;
+ 	struct file first = {0};
+ 	crystalhd_ioctl_data *iodata;
+ 	unsigned int reads, clears;
++	unsigned int word;
+ 	bool playback = which != 0;
++	bool mfd_pending = duty != RETAIN_SCL_DIRTY;
++	bool geometry_dirty = duty >= RETAIN_MFD_HSIZE_DIRTY;
+ 
+ 	assert(which < ARRAY_SIZE(dirty_cases));
+ 	reset();
+@@ -1302,7 +1336,7 @@ static void test_retained_observer(unsigned int which, bool mfd_pending)
+ 		up_write(&chd_device_lock);
+ 	}
+ 	if (mfd_pending) {
+-		hw->research_mfd_reset_pending = true;
++		hw->research_mfd_reset_pending = duty != RETAIN_MFD_HSIZE_ORPHAN;
+ 		hw->research_mfd_reset_cold_sampled = which != 0;
+ 		/* Even a recorded post tuple cannot bypass the rest of stock stop. */
+ 		hw->research_mfd_reset_post_sampled = which == 2 || which == 8;
+@@ -1313,6 +1347,14 @@ static void test_retained_observer(unsigned int which, bool mfd_pending)
+ 		hw->research_scl_duty_generation = chd_device_generation;
+ 		hw->research_scl_duty_owner = &stream_token;
+ 	}
++	if (geometry_dirty) {
++		hw->research_mfd_hsize_dirty = true;
++		hw->research_mfd_hsize_request_sampled = which != 0;
++		/* Recorded reset observations are not a standalone retirement token. */
++		hw->research_mfd_hsize_reset_corroborated = which == 2 || which == 8;
++		for (word = 0; word < ARRAY_SIZE(hw->research_mfd_hsize_saved); word++)
++			hw->research_mfd_hsize_saved[word] = saved_hsize_canary(word);
++	}
+ 	switch (which) {
+ 	case 0: /* No pin and no host DMA inventory cannot retire a dirty context. */
+ 		down_write(&chd_device_lock);
+@@ -1346,7 +1388,7 @@ static void test_retained_observer(unsigned int which, bool mfd_pending)
+ 		assert(!chd_dec_fail_closed(adp, -EIO));
+ 		assert(command_reads + status_reads == reads);
+ 		assert(chd_dec_close(NULL, &first) == 0 && !first.private_data);
+-		assert_observer_retained(adp, hw, true, mfd_pending, which);
++		assert_observer_retained(adp, hw, true, duty, which);
+ 		chd_dec_pci_remove(&pci);
+ 		break;
+ 	case 4:
+@@ -1377,7 +1419,7 @@ static void test_retained_observer(unsigned int which, bool mfd_pending)
+ 		assert(!adp->present && adp->cmds.cin_wait_exit && adp->hw_accessible);
+ 		assert(chd_dma_quarantine == adp && pci.data == adp && g_adp_info == adp);
+ 		assert(adp->cmds.state == (which == 7 ? BC_LINK_INVALID : BC_LINK_SUSPEND));
+-		assert_observer_retained(adp, hw, true, mfd_pending, which);
++		assert_observer_retained(adp, hw, true, duty, which);
+ 		chd_dec_pci_remove(&pci);
+ 		break;
+ 	case 9:
+@@ -1392,7 +1434,7 @@ static void test_retained_observer(unsigned int which, bool mfd_pending)
+ 		break;
+ 	default: abort();
+ 	}
+-	assert_observer_retained(adp, hw, playback, mfd_pending, which);
++	assert_observer_retained(adp, hw, playback, duty, which);
+ 	if (which >= 2 && which <= 8) {
+ 		assert(chd_dma_quarantine == adp && pci.refs == 1 && pci_gets == 1);
+ 		assert(!g_adp_info && !pci.data && !frontend_live && !chdev_live && !class_live);
+@@ -1402,9 +1444,12 @@ static void test_retained_observer(unsigned int which, bool mfd_pending)
+ 		reads = command_reads + status_reads;
+ 		chd_dec_pci_remove(&pci);
+ 		assert(command_reads + status_reads == reads && pci_gets == 1);
+-		assert_observer_retained(adp, hw, playback, mfd_pending, which);
++		assert_observer_retained(adp, hw, playback, duty, which);
+ 	}
+-	if (mfd_pending)
++	if (geometry_dirty)
++		printf("Device lifetime research: mfd-hsize-%s-retained %s passed (host backing, not consumer/reset proof)\n",
++		       duty == RETAIN_MFD_HSIZE_ORPHAN ? "orphan" : "dirty", dirty_cases[which]);
++	else if (mfd_pending)
+ 		printf("Device lifetime research: observations-pending-retained %s passed (host context/backing, not consumer proof)\n",
+ 		       dirty_cases[which]);
+ 	else
+@@ -1420,12 +1465,22 @@ int main(int argc, char **argv)
+ 		unsigned int which;
+ 		for (which = 0; which < ARRAY_SIZE(dirty_cases); which++) {
+ 			if (!strcmp(argv[1], dirty_cases[which])) {
+-				test_retained_observer(which, false);
++				test_retained_observer(which, RETAIN_SCL_DIRTY);
+ 				return 0;
+ 			}
+ 			if (!strncmp(argv[1], "mfd-", 4) &&
+ 			    !strcmp(argv[1] + 4, dirty_cases[which])) {
+-				test_retained_observer(which, true);
++				test_retained_observer(which, RETAIN_MFD_OBSERVER);
++				return 0;
++			}
++			if (!strncmp(argv[1], "hsize-", 6) &&
++			    !strcmp(argv[1] + 6, dirty_cases[which])) {
++				test_retained_observer(which, RETAIN_MFD_HSIZE_DIRTY);
++				return 0;
++			}
++			if (!strncmp(argv[1], "hsize-orphan-", 13) &&
++			    !strcmp(argv[1] + 13, dirty_cases[which])) {
++				test_retained_observer(which, RETAIN_MFD_HSIZE_ORPHAN);
+ 				return 0;
+ 			}
+ 		}
+diff --git a/tests/device-lifetime.sh b/tests/device-lifetime.sh
+index cd2897f..b084ea3 100644
+--- a/tests/device-lifetime.sh
++++ b/tests/device-lifetime.sh
+@@ -176,6 +176,14 @@ for lifetime_sanitize in no yes; do
+                     UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+                     "$lifetime_test_dir/check" "mfd-$lifetime_pending_case"
+             done
++            for lifetime_geometry_prefix in hsize hsize-orphan; do
++                for lifetime_geometry_case in empty-inventory delete cached-proof fail-closed \
++                    remove late-pci-proof empty-host-queues pm-invalid pm-suspended pm-no-iodata; do
++                    ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
++                        UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
++                        "$lifetime_test_dir/check" "$lifetime_geometry_prefix-$lifetime_geometry_case"
++                done
++            done
+         fi
+     done
+     "${CC:-cc}" ${CFLAGS:-} -std=c11 -O1 -g -Wall -Wextra -Werror \
