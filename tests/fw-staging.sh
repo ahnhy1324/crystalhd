@@ -124,6 +124,10 @@ git -C "$test_dir" apply --check \
 	"$repo_dir/tests/fixtures/issue92/mfd-px-read-state.patch"
 git -C "$test_dir" apply \
 	"$repo_dir/tests/fixtures/issue92/mfd-px-read-state.patch"
+git -C "$test_dir" apply --check \
+	"$repo_dir/tests/fixtures/issue92/mfd-px-bvb-state.patch"
+git -C "$test_dir" apply \
+	"$repo_dir/tests/fixtures/issue92/mfd-px-bvb-state.patch"
 sh "$test_dir/tests/fw-download.sh"
 sh "$test_dir/tests/device-lifetime.sh"
 sh "$test_dir/tests/fw-probe.sh"

@@ -7,3 +7,4 @@ scl-views.patch -whitespace
 scl-enable-reset.patch -whitespace
 mfd-scl-joint-handshake.patch -whitespace
 mfd-px-read-state.patch -whitespace
+mfd-px-bvb-state.patch -whitespace
