@@ -68,4 +68,8 @@ git -C "$test_dir" apply --check \
 	"$repo_dir/tests/fixtures/issue92/mfd-packed-window.patch"
 git -C "$test_dir" apply \
 	"$repo_dir/tests/fixtures/issue92/mfd-packed-window.patch"
+git -C "$test_dir" apply --check \
+	"$repo_dir/tests/fixtures/issue92/mfd-hsize4.patch"
+git -C "$test_dir" apply \
+	"$repo_dir/tests/fixtures/issue92/mfd-hsize4.patch"
 sh "$test_dir/tests/fw-download.sh"
