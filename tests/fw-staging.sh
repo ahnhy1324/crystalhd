@@ -96,5 +96,9 @@ git -C "$test_dir" apply --check \
 	"$repo_dir/tests/fixtures/issue92/scl-size-reset.patch"
 git -C "$test_dir" apply \
 	"$repo_dir/tests/fixtures/issue92/scl-size-reset.patch"
+git -C "$test_dir" apply --check \
+	"$repo_dir/tests/fixtures/issue92/mfd-reset-controls.patch"
+git -C "$test_dir" apply \
+	"$repo_dir/tests/fixtures/issue92/mfd-reset-controls.patch"
 sh "$test_dir/tests/fw-download.sh"
 sh "$test_dir/tests/device-lifetime.sh"
