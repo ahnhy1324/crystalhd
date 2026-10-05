@@ -193,6 +193,182 @@ struct SclReadFixture {
     }
 };
 
+// Read-only native-path map, not an active-bank, arithmetic or transport
+// certificate. The fixed whitelist excludes TEST/DATA, CLEAR and scratch.
+// Both sequential tuples are retained; matching cannot prove atomicity.
+static const unsigned kSclFilterMapFields = 216;
+enum class SclFilterMapFailure {
+    None, Argument, Read, Revision, Reserved, Unavailable, Admission, Order, Unstable
+};
+static uint32_t SclFilterMapAddress(unsigned field)
+{
+    if (field < 22) return BCHP_SCL_HD_REVISION_ID + field * 4;
+    if (field == 22) return BCHP_SCL_HD_BVB_IN_STATUS;
+    if (field < 215) return BCHP_SCL_HD_VERT_FIR_COEFF_PHASE0_00_01 + (field - 23) * 4;
+    return field == 215 ? BCHP_SCL_HD_REVISION_ID : 0;
+}
+static uint32_t SclFilterMapMask(unsigned field)
+{
+    // Nonreserved RDB fields, in REV..ENABLE address order.
+    static const uint32_t control_masks[22] = {
+        0x0000ffffU, 0x0000000eU, 0x000001f7U, 0x000000ffU,
+        0x07ff07ffU, 0x07ff07ffU, 0x07ff07ffU, 0x07ff07ffU,
+        0x003f0000U, 0xfffffff8U, 0x03fffff8U, 0x001fc000U,
+        0xffffc000U, 0xffffc000U, 0xffffffffU, 0x7fffffffU,
+        0x3ffffffcU, 0x3ffffffcU, 0x07ff0000U, 0x07ff0000U,
+        0x07ff0000U, 0x00000001U
+    };
+    if (field < 22) return control_masks[field];
+    if (field == 22) return 0xffU;
+    if (field < 215)
+        return BCHP_SCL_HD_VERT_FIR_COEFF_PHASE0_00_01_COEFF_0_MASK |
+               BCHP_SCL_HD_VERT_FIR_COEFF_PHASE0_00_01_COEFF_1_MASK;
+    return field == 215 ? 0xffffU : 0;
+}
+static unsigned SclFilterMapEven(uint32_t raw)
+{
+    return (raw & BCHP_SCL_HD_VERT_FIR_COEFF_PHASE0_00_01_COEFF_0_MASK) >>
+        BCHP_SCL_HD_VERT_FIR_COEFF_PHASE0_00_01_COEFF_0_SHIFT;
+}
+static unsigned SclFilterMapOdd(uint32_t raw)
+{
+    return (raw & BCHP_SCL_HD_VERT_FIR_COEFF_PHASE0_00_01_COEFF_1_MASK) >>
+        BCHP_SCL_HD_VERT_FIR_COEFF_PHASE0_00_01_COEFF_1_SHIFT;
+}
+static SclFilterMapFailure SclFilterMapScalarFailure(unsigned field, uint32_t raw)
+{
+    if (field >= kSclFilterMapFields) return SclFilterMapFailure::Argument;
+    // Even a full-width field cannot distinguish all-ones from an inaccessible
+    // read portal. This is conservative admission, not a claimed illegal value.
+    if (raw == 0xffffffffU) return SclFilterMapFailure::Unavailable;
+    if (field == 0 || field == 215)
+        return raw == 0x80U ? SclFilterMapFailure::None : SclFilterMapFailure::Revision;
+    return raw & ~SclFilterMapMask(field) ?
+        SclFilterMapFailure::Reserved : SclFilterMapFailure::None;
+}
+struct SclFilterMapSnapshot {
+    uint32_t raw[2][kSclFilterMapFields] = {};
+    unsigned reads = 0, measured = 0;
+    BC_STATUS status = BC_STS_SUCCESS;
+    SclFilterMapFailure failure = SclFilterMapFailure::None;
+    bool Complete() const { return measured == 2 * kSclFilterMapFields; }
+    bool Stable() const {
+        return Complete() && !std::memcmp(raw[0], raw[1], sizeof(raw[0]));
+    }
+    bool StatusObserved() const {
+        return (measured > 22 && raw[0][22]) ||
+               (measured > kSclFilterMapFields + 22 && raw[1][22]);
+    }
+};
+static bool ReadSclFilterMap(HANDLE handle, SclFilterMapSnapshot *snapshot,
+    BC_STATUS (*reader)(HANDLE, uint32_t, uint32_t *) = DtsDevRegisterRead)
+{
+    if (!snapshot) return false;
+    *snapshot = SclFilterMapSnapshot{};
+    if (!handle || !reader) {
+        snapshot->failure = SclFilterMapFailure::Argument;
+        return false;
+    }
+    for (unsigned pass = 0; pass < 2; ++pass) {
+        for (unsigned field = 0; field < kSclFilterMapFields; ++field) {
+            uint32_t raw = 0;
+            ++snapshot->reads;
+            snapshot->status = reader(handle, SclFilterMapAddress(field), &raw);
+            if (snapshot->status != BC_STS_SUCCESS) {
+                snapshot->failure = SclFilterMapFailure::Read;
+                return false; // A callback's poisoned output is NOT-READ.
+            }
+            snapshot->raw[pass][field] = raw;
+            ++snapshot->measured;
+            snapshot->failure = SclFilterMapScalarFailure(field, raw);
+            if (snapshot->failure != SclFilterMapFailure::None) return false;
+        }
+    }
+    return true;
+}
+struct SclFilterMapObserver {
+    typedef BC_STATUS (*Reader)(HANDLE, uint32_t, uint32_t *);
+    bool enabled = false, attempted = false, failed = false, fatal = false;
+    HANDLE owner = nullptr;
+    SclFilterMapSnapshot snapshot;
+    bool Reject(SclFilterMapFailure why) {
+        failed = fatal = true;
+        snapshot.failure = why;
+        return false;
+    }
+    void Report() const {
+        const char *const names[22] = {"rev", "top", "vert", "horiz", "bvb-size",
+            "pic-offset", "src-size", "dest-size", "vpan", "v-offset", "v-step",
+            "hpan", "hy-offset", "hc-offset", "h-phase", "h-step", "region0-delta",
+            "region2-delta", "region0-end", "region1-end", "region2-end", "enable"};
+        const char *const failures[] = {"none", "argument", "read-status", "revision",
+            "reserved-bits", "all-ones-unavailable", "admission", "order", "unequal-tuples"};
+        std::printf("SCL filter map: stage=first-output-after-release-and-owned-write "
+            "attempted=%s reads=%u measured=%u api-status=%d failure=%s raw-stable=%s "
+            "observed-status=%s diagnostic=%s fatal=%s target-writes=0 "
+            "atomic=no transport-certified=no active-bank/source/lease/arithmetic-certified=no\n",
+            attempted ? "yes" : "no", snapshot.reads, snapshot.measured, snapshot.status,
+            failures[static_cast<unsigned>(snapshot.failure)],
+            snapshot.Complete() ? (snapshot.Stable() ? "yes" : "no") : "NOT-READ",
+            snapshot.StatusObserved() ? "yes" : "no", failed ? "FAIL" : "PASS", fatal ? "yes" : "no");
+        for (unsigned pass = 0; pass < 2; ++pass) {
+            for (unsigned field = 0; field < kSclFilterMapFields; ++field) {
+                std::printf("SCL filter raw: pass=%u field=%u address=%08x ",
+                    pass, field, SclFilterMapAddress(field));
+                if (field < 22) std::printf("name=%s ", names[field]);
+                else if (field == 22 || field == 215)
+                    std::printf("name=%s ", field == 22 ? "status" : "closing-rev");
+                else {
+                    const unsigned word = field - 23;
+                    const unsigned bank = word < 32 ? 0 : word < 64 ? 1 : word < 128 ? 2 : 3;
+                    const unsigned local = word - (bank == 0 ? 0 : bank == 1 ? 32 : bank == 2 ? 64 : 128);
+                    const unsigned pairs = bank < 2 ? 4 : 8;
+                    const char *const banks[] = {"VY", "VC", "HY", "HC"};
+                    std::printf("bank=%s phase=%u even-tap=%u ", banks[bank], local / pairs,
+                        (local % pairs) * 2);
+                }
+                if (pass * kSclFilterMapFields + field < snapshot.measured) {
+                    const uint32_t raw = snapshot.raw[pass][field];
+                    std::printf("raw=%08x", raw);
+                    if (field >= 23 && field < 215)
+                        std::printf(" even12=%u odd12=%u", SclFilterMapEven(raw), SclFilterMapOdd(raw));
+                } else std::printf("raw=NOT-READ");
+                std::printf("\n");
+            }
+        }
+        std::fflush(stdout);
+    }
+    bool AfterDelivered(HANDLE handle, unsigned frame, bool released, bool owned_written,
+        Reader reader = DtsDevRegisterRead, bool report = true) {
+        if (!enabled) return true;
+        if (fatal) return false;
+        if (!reader) return Reject(SclFilterMapFailure::Argument);
+        if (!handle || !owner || handle != owner || !released || !owned_written)
+            return Reject(SclFilterMapFailure::Admission);
+        if (!frame || (!attempted && frame != 1) || (attempted && frame == 1))
+            return Reject(SclFilterMapFailure::Order);
+        if (attempted) return true; // No retries or later-stage reads.
+        attempted = true;
+        const bool read_ok = ReadSclFilterMap(handle, &snapshot, reader);
+        fatal = !read_ok;
+        failed = fatal || !snapshot.Stable() || snapshot.StatusObserved();
+        if (read_ok && !snapshot.Stable()) snapshot.failure = SclFilterMapFailure::Unstable;
+        if (report) Report();
+        return !fatal; // Status/inequality cannot erase delivered native frames.
+    }
+    bool Finish(bool native_ok, bool report = true) const {
+        if (!enabled) return native_ok;
+        const bool diagnostic_ok = attempted && !failed && !fatal;
+        if (report) {
+            std::printf("SCL filter finish: native-result=%s diagnostic-result=%s reads=%u "
+                "target-writes=0 standalone/arithmetic-certified=no\n",
+                native_ok ? "PASS" : "FAIL", diagnostic_ok ? "PASS" : "FAIL", snapshot.reads);
+            std::fflush(stdout);
+        }
+        return native_ok && diagnostic_ok;
+    }
+};
+
 // An explicitly uncertain active-firmware test-mux experiment. Separate API
 // calls do not establish selector ownership or atomicity; a firmware race can
 // remain even after a matching readback. Only TP_ADDR is ever written here.
@@ -965,6 +1141,7 @@ struct Options {
     const char *capture_path = nullptr;
     bool observe_chroma = false;
     bool observe_scl_config = false;
+    bool observe_scl_filter_map = false;
     unsigned observe_scl_view = 0;
     bool observe_mfd_config = false;
     unsigned inject_mfd_colour = 0;
@@ -993,6 +1170,10 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
             ? OUTPUT_MODE422_UYVY : OUTPUT_MODE422_YUY2;
         options->capture_path = path;
         arguments.resize(arguments.size() - 2);
+    }
+    if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-scl-filter-map")) {
+        options->observe_scl_filter_map = true;
+        arguments.pop_back();
     }
     if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-scl-config")) {
         options->observe_scl_config = true;
@@ -1049,7 +1230,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         arguments.resize(arguments.size() - 2);
     }
     if (arguments.size() == 2 && !std::strcmp(arguments[1], "--self-test")) {
-        if (options->capture_path || options->observe_chroma || options->observe_scl_config || options->observe_scl_view || options->observe_mfd_config || options->inject_mfd_colour || options->scl_status_test || options->scaler_test || options->mpeg1_via_mpeg2 ||
+        if (options->capture_path || options->observe_chroma || options->observe_scl_config || options->observe_scl_filter_map || options->observe_scl_view || options->observe_mfd_config || options->inject_mfd_colour || options->scl_status_test || options->scaler_test || options->mpeg1_via_mpeg2 ||
             options->h263_via_divx || options->open_only) return false;
         options->mode = Mode::SelfTest;
         return true;
@@ -1066,6 +1247,15 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         return false;
     options->mode = preflight ? Mode::Preflight : Mode::Hardware;
     options->path = arguments[2];
+    if (options->observe_scl_filter_map &&
+        (!hardware || !options->capture_path || !options->scaler_test ||
+         options->expected != 180 || options->iterations != 1 ||
+         options->output_format != OUTPUT_MODE422_YUY2 ||
+         options->mpeg1_via_mpeg2 || options->h263_via_divx || options->open_only ||
+         options->observe_chroma || options->observe_scl_config || options->observe_scl_view ||
+         options->observe_mfd_config || options->inject_mfd_colour || options->scl_status_test ||
+         (options->scale_width != 0 && options->scale_width != 320 && options->scale_width != 640)))
+        return false;
     if (options->observe_chroma &&
         (!hardware || !options->capture_path || !options->scaler_test || options->scale_width))
         return false;
@@ -1102,7 +1292,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
 
 static bool SclInputAdmitted(const Options &options, const Input &input)
 {
-    return (!options.observe_scl_config && !options.observe_scl_view && !options.observe_mfd_config && !options.inject_mfd_colour && !options.scl_status_test) ||
+    return (!options.observe_scl_config && !options.observe_scl_filter_map && !options.observe_scl_view && !options.observe_mfd_config && !options.inject_mfd_colour && !options.scl_status_test) ||
         (options.expected == 180 && input.codec == AV_CODEC_ID_MPEG2VIDEO &&
          input.subtype == BC_MSUBTYPE_MPEG2VIDEO && input.progressive &&
          input.width == 640 && input.height == 360 && input.packets.size() == 180);
@@ -1110,7 +1300,7 @@ static bool SclInputAdmitted(const Options &options, const Input &input)
 
 static bool NeedsRawIo(const Options &options)
 {
-    return options.observe_chroma || options.observe_scl_config ||
+    return options.observe_chroma || options.observe_scl_config || options.observe_scl_filter_map ||
         options.observe_scl_view || options.observe_mfd_config || options.inject_mfd_colour || options.scl_status_test;
 }
 
@@ -1429,6 +1619,8 @@ static bool FreshBeforeFlush(bool observed_eos)
     return !observed_eos;
 }
 
+#include "library-scl-filter-map-test.h"
+
 static bool SelfTest()
 {
     bool ok = true;
@@ -1440,6 +1632,8 @@ static bool SelfTest()
             ok = false;
         }
     };
+
+    SclFilterMapSelfTest(check);
 
     unsigned number = 0;
     check(Number("1", 1, &number) && number == 1, "minimum number");
@@ -3246,6 +3440,7 @@ struct Audit {
     bool observe_chroma = false;
     unsigned expected = 0;
     SclObserver scl;
+    SclFilterMapObserver scl_filter_map;
     SclViewProbe scl_view;
     MfdAdmissionObserver mfd;
     MfdColourProbe mfd_colour;
@@ -3296,6 +3491,9 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                 valid = false;
             }
             // Preserve an already delivered owned copy before diagnostic failure.
+            if (!marker && valid && released)
+                valid = audit->scl_filter_map.AfterDelivered(device->handle, audit->frames,
+                                                           released, audit->capture != nullptr);
             if (!marker && valid && released && audit->frames == 1)
                 valid = audit->scl.Observe(device->handle, SclStage::FirstReleased);
             if (!marker && valid && released && audit->frames == audit->expected)
@@ -3322,7 +3520,9 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                     audit->iteration, audit->frames - 1,
                     static_cast<unsigned long long>(output.PicInfo.timeStamp));
             if (!valid) {
-                if (audit->scl_status.fatal)
+                if (audit->scl_filter_map.fatal)
+                    std::fprintf(stderr, "SCL filter map lost admission; no further map I/O, ordinary decoder cleanup follows\n");
+                else if (audit->scl_status.fatal)
                     std::fprintf(stderr, "SCL status test lost admission; no further probe I/O, ordinary decoder cleanup follows\n");
                 else if (audit->mfd_colour.failed)
                     std::fprintf(stderr, "MFD colour experiment failed; guarded restoration if eligible and ordinary decoder cleanup follow\n");
@@ -3335,7 +3535,7 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                 else
                     std::fprintf(stderr, "Invalid progressive picture geometry/data/token: %llu\n",
                                  static_cast<unsigned long long>(output.PicInfo.timeStamp));
-                if (audit->pixels && !audit->scl.failed && !audit->scl_view.failed && !audit->mfd.failed && !audit->mfd_colour.failed && !audit->scl_status.fatal)
+                if (audit->pixels && !audit->scl.failed && !audit->scl_filter_map.fatal && !audit->scl_view.failed && !audit->mfd.failed && !audit->mfd_colour.failed && !audit->scl_status.fatal)
                     std::fprintf(stderr, "Scaler picture: got=%ux%u expected=%ux%u "
                                  "flags=%x words=%u packed422=%u\n",
                                  output.PicInfo.width, output.PicInfo.height,
@@ -3390,6 +3590,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.observe_chroma = options.observe_chroma;
     audit.expected = expected;
     audit.scl.enabled = options.observe_scl_config;
+    audit.scl_filter_map.enabled = options.observe_scl_filter_map;
     audit.scl_view.selector = options.observe_scl_view;
     audit.mfd.enabled = options.observe_mfd_config;
     audit.mfd_colour.stimulus = options.inject_mfd_colour;
@@ -3407,6 +3608,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.capture = options.capture_path ? &capture : nullptr;
     const uint32_t mode = ProbeDeviceMode(options);
     bool ok = Status("DtsDeviceOpen", DtsDeviceOpen(&device.handle, mode));
+    if (ok && audit.scl_filter_map.enabled) audit.scl_filter_map.owner = device.handle;
     BC_INFO_CRYSTAL version = {};
     if (ok) ok = Status("DtsCrystalHDVersion", DtsCrystalHDVersion(device.handle, &version));
     if (ok && version.device != 1) {
@@ -3505,6 +3707,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     ok = ok && closed;
     const bool captured = capture.Finish(ok);
     ok = ok && captured;
+    ok = audit.scl_filter_map.Finish(ok);
     ok = audit.scl_status.Finish(ok);
     std::printf("Library drain: iteration=%u/%u frames=%u/%u pending=%zu "
         "%s-EOS=%s output-marker=%s ready=%u cleanup=%s result=%s\n",
@@ -3533,13 +3736,15 @@ int main(int argc, char **argv)
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
             "[--scaler-test WIDTH_OR_0] [--mpeg1-via-mpeg2 | --h263-via-divx] "
-            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-view 2_OR_3 | --observe-mfd-config | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
+            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
     if (NeedsRawIo(options) && !CanReadChromaConfiguration()) {
-        if (options.scl_status_test)
+        if (options.observe_scl_filter_map)
+            std::fprintf(stderr, "--observe-scl-filter-map requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
+        else if (options.scl_status_test)
             std::fprintf(stderr, "--scl-status-test requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
         else if (options.inject_mfd_colour)
             std::fprintf(stderr, "--inject-mfd-colour requires CAP_SYS_RAWIO; no fixture/capture/device was opened\n");
