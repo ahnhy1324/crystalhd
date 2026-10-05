@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="910" viewBox="0 0 1280 910" role="img" aria-labelledby="title desc">
+<title id="title">BCM70015 measured packed-source component correspondence</title>
+<desc id="desc">Four fresh pre-boot probes A, B, A repeat, B repeat. Every one of 68 sampled luma and chroma pairs equals the nominal little-endian source octets multiplied by four. Repeated raw series are identical. READY is one but ACCEPT, EOF and LAST_LINE are zero in recorded samples. These observations do not establish source extent, completion, a runtime lease or standalone processing.</desc>
+<style>text{font-family:DejaVu Sans,sans-serif;fill:#17283d}.heading{font-size:27px;font-weight:700}.panel{font-size:16px;font-weight:600}.body{font-size:17px}.small{font-size:14px}.axis{font-size:13px;fill:#52657d}.mono{font-family:DejaVu Sans Mono,monospace;font-size:16px}.grid{stroke:#dce4ed;stroke-width:1}</style>
+<rect width="1280" height="910" fill="#f7f9fc"/>
+<text x="44" y="48" class="heading">BCM70015: nonconstant packed input appears in MFD samples</text>
+<text x="44" y="79" class="body">Real-card measurements · 2026-10-05 · four fresh pre-boot probes: A → B → A′ → B′</text>
+<rect x="34" y="101" width="1212" height="98" rx="8" fill="#eaf0f7"/>
+<text x="52" y="126" class="small">Nominal 16-byte YUY2 input · 96-byte PIO write/readback · remaining 80 bytes are padding, not a fetch bound</text>
+<text x="52" y="154" class="mono" fill="#2b66c7">A: 31 55 42 aa 53 66 64 bb 75 77 86 cc 97 88 a8 dd</text>
+<text x="52" y="180" class="mono" fill="#bb5b12">B: ce aa bd 55 ac 99 9b 44 8a 88 79 33 68 77 57 22</text>
+<text x="82" y="241" class="panel">Luma: expected versus sampled 10-bit values</text>
+<path d="M 82 467 H 602" class="grid"/><text x="70" y="472" text-anchor="end" class="axis">0</text>
+<path d="M 82 400.3333333333333 H 602" class="grid"/><text x="70" y="405.3333333333333" text-anchor="end" class="axis">340</text>
+<path d="M 82 333.66666666666663 H 602" class="grid"/><text x="70" y="338.66666666666663" text-anchor="end" class="axis">680</text>
+<path d="M 82 267 H 602" class="grid"/><text x="70" y="272" text-anchor="end" class="axis">1020</text>
+<path d="M 82 267 V 467" class="grid"/><text x="82" y="491" text-anchor="middle" class="axis">0</text>
+<path d="M 212 267 V 467" class="grid"/><text x="212" y="491" text-anchor="middle" class="axis">4</text>
+<path d="M 342 267 V 467" class="grid"/><text x="342" y="491" text-anchor="middle" class="axis">8</text>
+<path d="M 472 267 V 467" class="grid"/><text x="472" y="491" text-anchor="middle" class="axis">12</text>
+<path d="M 602 267 V 467" class="grid"/><text x="602" y="491" text-anchor="middle" class="axis">16</text>
+<polyline points="82,428.5686274509804 114.5,415.2352941176471 147,401.9019607843137 179.5,388.5686274509804 212,375.2352941176471 244.5,361.9019607843137 277,348.5686274509804 309.5,335.2352941176471 342,428.5686274509804 374.5,415.2352941176471 407,401.9019607843137 439.5,388.5686274509804 472,375.2352941176471 504.5,361.9019607843137 537,348.5686274509804 569.5,335.2352941176471 602,428.5686274509804" fill="none" stroke="#2b66c7" stroke-width="2.2" stroke-dasharray="6 4"/>
+<circle cx="82" cy="428.5686274509804" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="114.5" cy="415.2352941176471" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="147" cy="401.9019607843137" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="179.5" cy="388.5686274509804" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="212" cy="375.2352941176471" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="244.5" cy="361.9019607843137" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="277" cy="348.5686274509804" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="309.5" cy="335.2352941176471" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="342" cy="428.5686274509804" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="374.5" cy="415.2352941176471" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="407" cy="401.9019607843137" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="439.5" cy="388.5686274509804" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="472" cy="375.2352941176471" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="504.5" cy="361.9019607843137" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="537" cy="348.5686274509804" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="569.5" cy="335.2352941176471" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="602" cy="428.5686274509804" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<polyline points="82,305.4313725490196 114.5,318.7647058823529 147,332.0980392156863 179.5,345.4313725490196 212,358.7647058823529 244.5,372.0980392156863 277,385.4313725490196 309.5,398.7647058823529 342,305.4313725490196 374.5,318.7647058823529 407,332.0980392156863 439.5,345.4313725490196 472,358.7647058823529 504.5,372.0980392156863 537,385.4313725490196 569.5,398.7647058823529 602,305.4313725490196" fill="none" stroke="#bb5b12" stroke-width="2.2" stroke-dasharray="6 4"/>
+<circle cx="82" cy="305.4313725490196" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="114.5" cy="318.7647058823529" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="147" cy="332.0980392156863" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="179.5" cy="345.4313725490196" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="212" cy="358.7647058823529" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="244.5" cy="372.0980392156863" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="277" cy="385.4313725490196" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="309.5" cy="398.7647058823529" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="342" cy="305.4313725490196" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="374.5" cy="318.7647058823529" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="407" cy="332.0980392156863" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="439.5" cy="345.4313725490196" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="472" cy="358.7647058823529" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="504.5" cy="372.0980392156863" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="537" cy="385.4313725490196" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="569.5" cy="398.7647058823529" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="602" cy="305.4313725490196" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<text x="342" y="515" text-anchor="middle" class="small">Snapshot ordinal / number of attempted host pulse pairs</text>
+<text x="708" y="241" class="panel">Chroma: expected versus sampled 10-bit values</text>
+<path d="M 708 467 H 1228" class="grid"/><text x="696" y="472" text-anchor="end" class="axis">0</text>
+<path d="M 708 400.3333333333333 H 1228" class="grid"/><text x="696" y="405.3333333333333" text-anchor="end" class="axis">340</text>
+<path d="M 708 333.66666666666663 H 1228" class="grid"/><text x="696" y="338.66666666666663" text-anchor="end" class="axis">680</text>
+<path d="M 708 267 H 1228" class="grid"/><text x="696" y="272" text-anchor="end" class="axis">1020</text>
+<path d="M 708 267 V 467" class="grid"/><text x="708" y="491" text-anchor="middle" class="axis">0</text>
+<path d="M 838 267 V 467" class="grid"/><text x="838" y="491" text-anchor="middle" class="axis">4</text>
+<path d="M 968 267 V 467" class="grid"/><text x="968" y="491" text-anchor="middle" class="axis">8</text>
+<path d="M 1098 267 V 467" class="grid"/><text x="1098" y="491" text-anchor="middle" class="axis">12</text>
+<path d="M 1228 267 V 467" class="grid"/><text x="1228" y="491" text-anchor="middle" class="axis">16</text>
+<polyline points="708,400.3333333333333 740.5,333.66666666666663 773,387 805.5,320.33333333333337 838,373.6666666666667 870.5,307 903,360.3333333333333 935.5,293.66666666666663 968,400.3333333333333 1000.5,333.66666666666663 1033,387 1065.5,320.33333333333337 1098,373.6666666666667 1130.5,307 1163,360.3333333333333 1195.5,293.66666666666663 1228,400.3333333333333" fill="none" stroke="#2b66c7" stroke-width="2.2" stroke-dasharray="6 4"/>
+<circle cx="708" cy="400.3333333333333" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="740.5" cy="333.66666666666663" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="773" cy="387" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="805.5" cy="320.33333333333337" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="838" cy="373.6666666666667" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="870.5" cy="307" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="903" cy="360.3333333333333" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="935.5" cy="293.66666666666663" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="968" cy="400.3333333333333" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="1000.5" cy="333.66666666666663" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="1033" cy="387" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="1065.5" cy="320.33333333333337" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="1098" cy="373.6666666666667" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="1130.5" cy="307" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="1163" cy="360.3333333333333" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="1195.5" cy="293.66666666666663" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<circle cx="1228" cy="400.3333333333333" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/>
+<polyline points="708,333.66666666666663 740.5,400.3333333333333 773,347 805.5,413.6666666666667 838,360.3333333333333 870.5,427 903,373.6666666666667 935.5,440.3333333333333 968,333.66666666666663 1000.5,400.3333333333333 1033,347 1065.5,413.6666666666667 1098,360.3333333333333 1130.5,427 1163,373.6666666666667 1195.5,440.3333333333333 1228,333.66666666666663" fill="none" stroke="#bb5b12" stroke-width="2.2" stroke-dasharray="6 4"/>
+<circle cx="708" cy="333.66666666666663" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="740.5" cy="400.3333333333333" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="773" cy="347" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="805.5" cy="413.6666666666667" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="838" cy="360.3333333333333" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="870.5" cy="427" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="903" cy="373.6666666666667" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="935.5" cy="440.3333333333333" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="968" cy="333.66666666666663" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="1000.5" cy="400.3333333333333" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="1033" cy="347" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="1065.5" cy="413.6666666666667" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="1098" cy="360.3333333333333" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="1130.5" cy="427" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="1163" cy="373.6666666666667" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="1195.5" cy="440.3333333333333" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<circle cx="1228" cy="333.66666666666663" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/>
+<text x="968" y="515" text-anchor="middle" class="small">Snapshot ordinal / number of attempted host pulse pairs</text>
+
+<path d="M 66 551 H 114" stroke="#2b66c7" stroke-width="2.2" stroke-dasharray="6 4"/><circle cx="90" cy="551" r="4.3" fill="white" stroke="#2b66c7" stroke-width="2"/><text x="127" y="556" class="small">A: dashed input byte × 4, circles measured</text>
+<path d="M 491 551 H 539" stroke="#bb5b12" stroke-width="2.2" stroke-dasharray="6 4"/><circle cx="515" cy="551" r="4.3" fill="white" stroke="#bb5b12" stroke-width="2"/><text x="552" y="556" class="small">B: dashed input byte × 4, circles measured</text>
+<text x="44" y="591" class="body">68 / 68 sampled Y/C pairs match · A′ and B′ duplicate their original full raw series</text>
+<text x="44" y="622" class="small">Each probe: 17 observations, 16 attempted host pulse pairs, one START; all feeder error samples = 0.</text>
+<text x="44" y="647" class="small">Post-W9 TEST readback = 8 on all 64 attempts; pulse/latch semantics and accepted-transfer counts remain unproved.</text>
+<rect x="34" y="667" width="1212" height="142" rx="8" fill="#fff2dd"/>
+<text x="52" y="697" class="panel">What remains unproved</text>
+<text x="52" y="724" class="body">READY = 1, ACCEPT = 0 · LINE_COUNT = 1, LAST_LINE = 0 · EOF = 0 in recorded samples</text>
+<text x="52" y="751" class="small">The component sequence repeats after eight snapshots; EOL is sampled at ordinals 8 and 16.</text>
+<text x="52" y="777" class="small">Zero-address namespace units, fetch extent, source lifetime, downstream routing and completion are not established.</text>
+<text x="44" y="840" class="small">All four probes aborted before CMAC / ARM run / firmware commands; cleanup succeeded with no retained resources.</text>
+<text x="44" y="865" class="small">Sequential CSR samples are non-atomic; plotted fields are not a video capture or an accepted-transfer count.</text>
+<text x="44" y="890" class="small">Controls: five 180-frame MPEG-2 downsamples and one 180-frame H.264 capture; all full pixels matched prior baselines.</text>
+</svg>
