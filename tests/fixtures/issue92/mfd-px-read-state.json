@@ -63,7 +63,7 @@
   "configuration_trials": [
     {
       "name": "config-a",
-      "utc": "2026-10-05 18:38:36 UTC",
+      "invocation_utc": "2026-10-05 18:38:36 UTC",
       "kernel_sha256": "64187c0292b3594aa75a2aed81a23845f82334a8803a44c2e52f5ae916f0c712",
       "paired_saved25_exactly_retired": true,
       "pre_start_raw_hex": [
@@ -88,7 +88,7 @@
     },
     {
       "name": "config-repeat",
-      "utc": "2026-10-05 18:39:41 UTC",
+      "invocation_utc": "2026-10-05 18:39:41 UTC",
       "kernel_sha256": "75f4c2e6d5011a941847053b3eafdc74258fe183684f249ab4597c909f0c3328",
       "paired_saved25_exactly_retired": true,
       "pre_start_raw_hex": [
@@ -115,7 +115,7 @@
   "feed_trials": [
     {
       "name": "feed-a",
-      "utc": "2026-10-05 18:41:39 UTC",
+      "invocation_utc": "2026-10-05 18:41:39 UTC",
       "kernel_sha256": "0a680316d8eda35522b4445bfb0c1d5f95d4fd8233d386b769b08a6bf345736e",
       "paired_saved25_exactly_retired": true,
       "pre_start_raw_hex": [
@@ -165,7 +165,7 @@
     },
     {
       "name": "feed-repeat",
-      "utc": "2026-10-05 18:43:57 UTC",
+      "invocation_utc": "2026-10-05 18:43:57 UTC",
       "kernel_sha256": "684da980d93b62d084f493120605415fa720e700c7b9ac702ade58b2319168e8",
       "paired_saved25_exactly_retired": true,
       "pre_start_raw_hex": [
