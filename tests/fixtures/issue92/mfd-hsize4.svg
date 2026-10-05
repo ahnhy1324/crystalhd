@@ -1,0 +1,185 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="850" viewBox="0 0 1280 850" role="img" aria-labelledby="title desc">
+<title id="title">Measured pre-boot packed MFD HSIZE contrast</title>
+<desc id="desc">Four fresh HSIZE4 probes yielded eight sequential source-matching Y/C observations each, with PICTURE_SYNC LAST_PIXEL at ordinal 7. HSIZE8 END1 references yielded sixteen observations and LAST_PIXEL at ordinal 15. The raw source-field cycles contain four versus eight values, each repeated twice. These are not accepted-transfer, source-lease or completion certificates.</desc>
+<metadata>BCM70015; HSIZE4 A/B/A′/B′ on 2026-10-05 at 12:59:21/13:01:43/13:04:47/13:06:28 KST. HSIZE8 END1 reference: #230. A source DWORDs aa425531 bb646653 cc867775 dda88897; B source DWORDs 55bdaace 449b99ac 3379888a 22577768. Five MPEG-2 controls: 180 frames, 20736000 bytes each, SHA256 7278bf6c89d602a34e4a8cf8261da45c0889bb0645fdb1fcb13810378f8fcb32. One H.264 control: 180 frames, 82944000 bytes, SHA256 3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1.</metadata>
+<rect width="1280" height="850" fill="#f7f9fc"/>
+<g font-family="sans-serif" fill="#192c44">
+<text x="40" y="43" font-size="26" font-weight="bold">Packed MFD: HSIZE4 versus HSIZE8 raw profiles</text>
+<text x="40" y="72" font-size="15">BCM70015 · isolated pre-boot experiment · signed payload staged but never booted · four fresh probes: A, B, A′, B′</text>
+<text x="40" y="99" font-size="14">Only MFD setup contrast from #230: HSIZE literal 8 → 4. END remains 1; no accepted-output or completion inference.</text>
+<rect x="40" y="116" width="1200" height="63" rx="8" fill="#e7edf7"/>
+<text x="56" y="141" font-size="14">HSIZE4 guards pin empirical raw pairs (0x780,0x436) → (4,0x436) → (4,1); reset-default and field-unit semantics remain unproved.</text>
+<text x="56" y="165" font-size="14">Same 96-byte prefix: 16 reference bytes + 80 padding bytes, NOT a fetch bound. LINE0=0, STRIDE0, CTRL5 remain unchanged.</text>
+<line x1="42" y1="203" x2="86" y2="203" stroke="#1764aa" stroke-width="3"/>
+<text x="96" y="208" font-size="14">A / A′</text>
+<line x1="244" y1="203" x2="288" y2="203" stroke="#b6541d" stroke-width="3"/>
+<text x="298" y="208" font-size="14">B / B′</text>
+<line x1="476" y1="203" x2="520" y2="203" stroke="#7587a0" stroke-width="3"/>
+<text x="530" y="208" font-size="14">solid + dots: HSIZE4</text>
+<line x1="802" y1="203" x2="846" y2="203" stroke="#7587a0" stroke-width="2" stroke-dasharray="5 5"/>
+<text x="856" y="208" font-size="14">dashed: HSIZE8 END1 reference (#230)</text>
+<text x="82" y="249" font-size="18" font-weight="bold">Y field (10-bit)</text>
+<line x1="82" y1="460" x2="602" y2="460" stroke="#d8e0eb"/>
+<text x="74" y="465" text-anchor="end" font-size="12">0</text>
+<line x1="82" y1="412.314" x2="602" y2="412.314" stroke="#d8e0eb"/>
+<text x="74" y="417.314" text-anchor="end" font-size="12">256</text>
+<line x1="82" y1="364.627" x2="602" y2="364.627" stroke="#d8e0eb"/>
+<text x="74" y="369.627" text-anchor="end" font-size="12">512</text>
+<line x1="82" y1="316.941" x2="602" y2="316.941" stroke="#d8e0eb"/>
+<text x="74" y="321.941" text-anchor="end" font-size="12">768</text>
+<line x1="82" y1="270" x2="602" y2="270" stroke="#d8e0eb"/>
+<text x="74" y="275" text-anchor="end" font-size="12">1020</text>
+<line x1="82" y1="460" x2="82" y2="466" stroke="#7d8ca2"/>
+<text x="82" y="485" text-anchor="middle" font-size="12">0</text>
+<line x1="220.667" y1="460" x2="220.667" y2="466" stroke="#7d8ca2"/>
+<text x="220.667" y="485" text-anchor="middle" font-size="12">4</text>
+<line x1="324.667" y1="460" x2="324.667" y2="466" stroke="#7d8ca2"/>
+<text x="324.667" y="485" text-anchor="middle" font-size="12">7</text>
+<line x1="359.333" y1="460" x2="359.333" y2="466" stroke="#7d8ca2"/>
+<text x="359.333" y="485" text-anchor="middle" font-size="12">8</text>
+<line x1="498" y1="460" x2="498" y2="466" stroke="#7d8ca2"/>
+<text x="498" y="485" text-anchor="middle" font-size="12">12</text>
+<line x1="602" y1="460" x2="602" y2="466" stroke="#7d8ca2"/>
+<text x="602" y="485" text-anchor="middle" font-size="12">15</text>
+<text x="342" y="509" text-anchor="middle" font-size="13">Observation ordinal / logged host pulse-pair attempts</text>
+<polyline data-series="HSIZE8-A-Y" points="82,423.49 116.667,410.824 151.333,398.157 186,385.49 220.667,372.824 255.333,360.157 290,347.49 324.667,334.824 359.333,423.49 394,410.824 428.667,398.157 463.333,385.49 498,372.824 532.667,360.157 567.333,347.49 602,334.824" fill="none" stroke="#1764aa" stroke-width="2" stroke-dasharray="5 5" opacity="0.6"/>
+<polyline data-series="HSIZE4-A-Y" points="82,423.49 116.667,410.824 151.333,398.157 186,385.49 220.667,423.49 255.333,410.824 290,398.157 324.667,385.49" fill="none" stroke="#1764aa" stroke-width="2.7"/>
+<circle data-series="HSIZE4-A-Y" data-ordinal="0" cx="82" cy="423.49" r="3.4" fill="#1764aa" stroke="#1764aa" stroke-width="0.5"><title>A Y ordinal0: 196; PICTURE_SYNC=1</title></circle>
+<circle data-series="HSIZE4-A-Y" data-ordinal="1" cx="116.667" cy="410.824" r="3.4" fill="#1764aa" stroke="#1764aa" stroke-width="0.5"><title>A Y ordinal1: 264; PICTURE_SYNC=0</title></circle>
+<circle data-series="HSIZE4-A-Y" data-ordinal="2" cx="151.333" cy="398.157" r="3.4" fill="#1764aa" stroke="#1764aa" stroke-width="0.5"><title>A Y ordinal2: 332; PICTURE_SYNC=0</title></circle>
+<circle data-series="HSIZE4-A-Y" data-ordinal="3" cx="186" cy="385.49" r="3.4" fill="#1764aa" stroke="#1764aa" stroke-width="0.5"><title>A Y ordinal3: 400; PICTURE_SYNC=0</title></circle>
+<circle data-series="HSIZE4-A-Y" data-ordinal="4" cx="220.667" cy="423.49" r="3.4" fill="#1764aa" stroke="#1764aa" stroke-width="0.5"><title>A Y ordinal4: 196; PICTURE_SYNC=0</title></circle>
+<circle data-series="HSIZE4-A-Y" data-ordinal="5" cx="255.333" cy="410.824" r="3.4" fill="#1764aa" stroke="#1764aa" stroke-width="0.5"><title>A Y ordinal5: 264; PICTURE_SYNC=0</title></circle>
+<circle data-series="HSIZE4-A-Y" data-ordinal="6" cx="290" cy="398.157" r="3.4" fill="#1764aa" stroke="#1764aa" stroke-width="0.5"><title>A Y ordinal6: 332; PICTURE_SYNC=0</title></circle>
+<circle data-series="HSIZE4-A-Y" data-ordinal="7" cx="324.667" cy="385.49" r="5.5" fill="#1764aa" stroke="#8f2136" stroke-width="2"><title>A Y ordinal7: 400; PICTURE_SYNC=2</title></circle>
+<polyline data-series="HSIZE8-B-Y" points="82,306.51 116.667,319.176 151.333,331.843 186,344.51 220.667,357.176 255.333,369.843 290,382.51 324.667,395.176 359.333,306.51 394,319.176 428.667,331.843 463.333,344.51 498,357.176 532.667,369.843 567.333,382.51 602,395.176" fill="none" stroke="#b6541d" stroke-width="2" stroke-dasharray="5 5" opacity="0.6"/>
+<polyline data-series="HSIZE4-B-Y" points="82,306.51 116.667,319.176 151.333,331.843 186,344.51 220.667,306.51 255.333,319.176 290,331.843 324.667,344.51" fill="none" stroke="#b6541d" stroke-width="2.7"/>
+<circle data-series="HSIZE4-B-Y" data-ordinal="0" cx="82" cy="306.51" r="3.4" fill="#b6541d" stroke="#b6541d" stroke-width="0.5"><title>B Y ordinal0: 824; PICTURE_SYNC=1</title></circle>
+<circle data-series="HSIZE4-B-Y" data-ordinal="1" cx="116.667" cy="319.176" r="3.4" fill="#b6541d" stroke="#b6541d" stroke-width="0.5"><title>B Y ordinal1: 756; PICTURE_SYNC=0</title></circle>
+<circle data-series="HSIZE4-B-Y" data-ordinal="2" cx="151.333" cy="331.843" r="3.4" fill="#b6541d" stroke="#b6541d" stroke-width="0.5"><title>B Y ordinal2: 688; PICTURE_SYNC=0</title></circle>
+<circle data-series="HSIZE4-B-Y" data-ordinal="3" cx="186" cy="344.51" r="3.4" fill="#b6541d" stroke="#b6541d" stroke-width="0.5"><title>B Y ordinal3: 620; PICTURE_SYNC=0</title></circle>
+<circle data-series="HSIZE4-B-Y" data-ordinal="4" cx="220.667" cy="306.51" r="3.4" fill="#b6541d" stroke="#b6541d" stroke-width="0.5"><title>B Y ordinal4: 824; PICTURE_SYNC=0</title></circle>
+<circle data-series="HSIZE4-B-Y" data-ordinal="5" cx="255.333" cy="319.176" r="3.4" fill="#b6541d" stroke="#b6541d" stroke-width="0.5"><title>B Y ordinal5: 756; PICTURE_SYNC=0</title></circle>
+<circle data-series="HSIZE4-B-Y" data-ordinal="6" cx="290" cy="331.843" r="3.4" fill="#b6541d" stroke="#b6541d" stroke-width="0.5"><title>B Y ordinal6: 688; PICTURE_SYNC=0</title></circle>
+<circle data-series="HSIZE4-B-Y" data-ordinal="7" cx="324.667" cy="344.51" r="5.5" fill="#b6541d" stroke="#8f2136" stroke-width="2"><title>B Y ordinal7: 620; PICTURE_SYNC=2</title></circle>
+<text x="708" y="249" font-size="18" font-weight="bold">Alternating chroma field (10-bit)</text>
+<line x1="708" y1="460" x2="1228" y2="460" stroke="#d8e0eb"/>
+<text x="700" y="465" text-anchor="end" font-size="12">0</text>
+<line x1="708" y1="412.314" x2="1228" y2="412.314" stroke="#d8e0eb"/>
+<text x="700" y="417.314" text-anchor="end" font-size="12">256</text>
+<line x1="708" y1="364.627" x2="1228" y2="364.627" stroke="#d8e0eb"/>
+<text x="700" y="369.627" text-anchor="end" font-size="12">512</text>
+<line x1="708" y1="316.941" x2="1228" y2="316.941" stroke="#d8e0eb"/>
+<text x="700" y="321.941" text-anchor="end" font-size="12">768</text>
+<line x1="708" y1="270" x2="1228" y2="270" stroke="#d8e0eb"/>
+<text x="700" y="275" text-anchor="end" font-size="12">1020</text>
+<line x1="708" y1="460" x2="708" y2="466" stroke="#7d8ca2"/>
+<text x="708" y="485" text-anchor="middle" font-size="12">0</text>
+<line x1="846.667" y1="460" x2="846.667" y2="466" stroke="#7d8ca2"/>
+<text x="846.667" y="485" text-anchor="middle" font-size="12">4</text>
+<line x1="950.667" y1="460" x2="950.667" y2="466" stroke="#7d8ca2"/>
+<text x="950.667" y="485" text-anchor="middle" font-size="12">7</text>
+<line x1="985.333" y1="460" x2="985.333" y2="466" stroke="#7d8ca2"/>
+<text x="985.333" y="485" text-anchor="middle" font-size="12">8</text>
+<line x1="1124" y1="460" x2="1124" y2="466" stroke="#7d8ca2"/>
+<text x="1124" y="485" text-anchor="middle" font-size="12">12</text>
+<line x1="1228" y1="460" x2="1228" y2="466" stroke="#7d8ca2"/>
+<text x="1228" y="485" text-anchor="middle" font-size="12">15</text>
+<text x="968" y="509" text-anchor="middle" font-size="13">Observation ordinal / logged host pulse-pair attempts</text>
+<polyline data-series="HSIZE8-A-C" points="708,396.667 742.667,333.333 777.333,384 812,320.667 846.667,371.333 881.333,308 916,358.667 950.667,295.333 985.333,396.667 1020,333.333 1054.667,384 1089.333,320.667 1124,371.333 1158.667,308 1193.333,358.667 1228,295.333" fill="none" stroke="#1764aa" stroke-width="2" stroke-dasharray="5 5" opacity="0.6"/>
+<polyline data-series="HSIZE4-A-C" points="708,396.667 742.667,333.333 777.333,384 812,320.667 846.667,396.667 881.333,333.333 916,384 950.667,320.667" fill="none" stroke="#1764aa" stroke-width="2.7"/>
+<circle data-series="HSIZE4-A-C" data-ordinal="0" cx="708" cy="396.667" r="3.4" fill="#1764aa" stroke="#1764aa" stroke-width="0.5"><title>A C ordinal0: 340; PICTURE_SYNC=1</title></circle>
+<circle data-series="HSIZE4-A-C" data-ordinal="1" cx="742.667" cy="333.333" r="3.4" fill="#1764aa" stroke="#1764aa" stroke-width="0.5"><title>A C ordinal1: 680; PICTURE_SYNC=0</title></circle>
+<circle data-series="HSIZE4-A-C" data-ordinal="2" cx="777.333" cy="384" r="3.4" fill="#1764aa" stroke="#1764aa" stroke-width="0.5"><title>A C ordinal2: 408; PICTURE_SYNC=0</title></circle>
+<circle data-series="HSIZE4-A-C" data-ordinal="3" cx="812" cy="320.667" r="3.4" fill="#1764aa" stroke="#1764aa" stroke-width="0.5"><title>A C ordinal3: 748; PICTURE_SYNC=0</title></circle>
+<circle data-series="HSIZE4-A-C" data-ordinal="4" cx="846.667" cy="396.667" r="3.4" fill="#1764aa" stroke="#1764aa" stroke-width="0.5"><title>A C ordinal4: 340; PICTURE_SYNC=0</title></circle>
+<circle data-series="HSIZE4-A-C" data-ordinal="5" cx="881.333" cy="333.333" r="3.4" fill="#1764aa" stroke="#1764aa" stroke-width="0.5"><title>A C ordinal5: 680; PICTURE_SYNC=0</title></circle>
+<circle data-series="HSIZE4-A-C" data-ordinal="6" cx="916" cy="384" r="3.4" fill="#1764aa" stroke="#1764aa" stroke-width="0.5"><title>A C ordinal6: 408; PICTURE_SYNC=0</title></circle>
+<circle data-series="HSIZE4-A-C" data-ordinal="7" cx="950.667" cy="320.667" r="5.5" fill="#1764aa" stroke="#8f2136" stroke-width="2"><title>A C ordinal7: 748; PICTURE_SYNC=2</title></circle>
+<polyline data-series="HSIZE8-B-C" points="708,333.333 742.667,396.667 777.333,346 812,409.333 846.667,358.667 881.333,422 916,371.333 950.667,434.667 985.333,333.333 1020,396.667 1054.667,346 1089.333,409.333 1124,358.667 1158.667,422 1193.333,371.333 1228,434.667" fill="none" stroke="#b6541d" stroke-width="2" stroke-dasharray="5 5" opacity="0.6"/>
+<polyline data-series="HSIZE4-B-C" points="708,333.333 742.667,396.667 777.333,346 812,409.333 846.667,333.333 881.333,396.667 916,346 950.667,409.333" fill="none" stroke="#b6541d" stroke-width="2.7"/>
+<circle data-series="HSIZE4-B-C" data-ordinal="0" cx="708" cy="333.333" r="3.4" fill="#b6541d" stroke="#b6541d" stroke-width="0.5"><title>B C ordinal0: 680; PICTURE_SYNC=1</title></circle>
+<circle data-series="HSIZE4-B-C" data-ordinal="1" cx="742.667" cy="396.667" r="3.4" fill="#b6541d" stroke="#b6541d" stroke-width="0.5"><title>B C ordinal1: 340; PICTURE_SYNC=0</title></circle>
+<circle data-series="HSIZE4-B-C" data-ordinal="2" cx="777.333" cy="346" r="3.4" fill="#b6541d" stroke="#b6541d" stroke-width="0.5"><title>B C ordinal2: 612; PICTURE_SYNC=0</title></circle>
+<circle data-series="HSIZE4-B-C" data-ordinal="3" cx="812" cy="409.333" r="3.4" fill="#b6541d" stroke="#b6541d" stroke-width="0.5"><title>B C ordinal3: 272; PICTURE_SYNC=0</title></circle>
+<circle data-series="HSIZE4-B-C" data-ordinal="4" cx="846.667" cy="333.333" r="3.4" fill="#b6541d" stroke="#b6541d" stroke-width="0.5"><title>B C ordinal4: 680; PICTURE_SYNC=0</title></circle>
+<circle data-series="HSIZE4-B-C" data-ordinal="5" cx="881.333" cy="396.667" r="3.4" fill="#b6541d" stroke="#b6541d" stroke-width="0.5"><title>B C ordinal5: 340; PICTURE_SYNC=0</title></circle>
+<circle data-series="HSIZE4-B-C" data-ordinal="6" cx="916" cy="346" r="3.4" fill="#b6541d" stroke="#b6541d" stroke-width="0.5"><title>B C ordinal6: 612; PICTURE_SYNC=0</title></circle>
+<circle data-series="HSIZE4-B-C" data-ordinal="7" cx="950.667" cy="409.333" r="5.5" fill="#b6541d" stroke="#8f2136" stroke-width="2"><title>B C ordinal7: 272; PICTURE_SYNC=2</title></circle>
+<text x="40" y="540" font-size="14">HSIZE4: first four source Y/C octets ×4, repeated twice (32 observations total). HSIZE8: eight-value cycles, repeated twice.</text>
+<text x="40" y="568" font-size="17" font-weight="bold">PICTURE_SYNC labels agree in SAMPLE and TAP; repeated raw series match exactly (A′=A, B′=B)</text>
+<text x="40" y="609" font-size="14">HSIZE8</text>
+<rect data-sync="HSIZE8" data-ordinal="0" x="133" y="590" width="34" height="27" rx="4" fill="#bad4f0" stroke="#92a3b9"/>
+<text x="150" y="609" text-anchor="middle" font-size="13">1</text>
+<rect data-sync="HSIZE8" data-ordinal="1" x="195" y="590" width="34" height="27" rx="4" fill="#fff" stroke="#92a3b9"/>
+<text x="212" y="609" text-anchor="middle" font-size="13">0</text>
+<rect data-sync="HSIZE8" data-ordinal="2" x="257" y="590" width="34" height="27" rx="4" fill="#fff" stroke="#92a3b9"/>
+<text x="274" y="609" text-anchor="middle" font-size="13">0</text>
+<rect data-sync="HSIZE8" data-ordinal="3" x="319" y="590" width="34" height="27" rx="4" fill="#fff" stroke="#92a3b9"/>
+<text x="336" y="609" text-anchor="middle" font-size="13">0</text>
+<rect data-sync="HSIZE8" data-ordinal="4" x="381" y="590" width="34" height="27" rx="4" fill="#fff" stroke="#92a3b9"/>
+<text x="398" y="609" text-anchor="middle" font-size="13">0</text>
+<rect data-sync="HSIZE8" data-ordinal="5" x="443" y="590" width="34" height="27" rx="4" fill="#fff" stroke="#92a3b9"/>
+<text x="460" y="609" text-anchor="middle" font-size="13">0</text>
+<rect data-sync="HSIZE8" data-ordinal="6" x="505" y="590" width="34" height="27" rx="4" fill="#fff" stroke="#92a3b9"/>
+<text x="522" y="609" text-anchor="middle" font-size="13">0</text>
+<rect data-sync="HSIZE8" data-ordinal="7" x="567" y="590" width="34" height="27" rx="4" fill="#fff" stroke="#92a3b9"/>
+<text x="584" y="609" text-anchor="middle" font-size="13">0</text>
+<rect data-sync="HSIZE8" data-ordinal="8" x="629" y="590" width="34" height="27" rx="4" fill="#fff" stroke="#92a3b9"/>
+<text x="646" y="609" text-anchor="middle" font-size="13">0</text>
+<rect data-sync="HSIZE8" data-ordinal="9" x="691" y="590" width="34" height="27" rx="4" fill="#fff" stroke="#92a3b9"/>
+<text x="708" y="609" text-anchor="middle" font-size="13">0</text>
+<rect data-sync="HSIZE8" data-ordinal="10" x="753" y="590" width="34" height="27" rx="4" fill="#fff" stroke="#92a3b9"/>
+<text x="770" y="609" text-anchor="middle" font-size="13">0</text>
+<rect data-sync="HSIZE8" data-ordinal="11" x="815" y="590" width="34" height="27" rx="4" fill="#fff" stroke="#92a3b9"/>
+<text x="832" y="609" text-anchor="middle" font-size="13">0</text>
+<rect data-sync="HSIZE8" data-ordinal="12" x="877" y="590" width="34" height="27" rx="4" fill="#fff" stroke="#92a3b9"/>
+<text x="894" y="609" text-anchor="middle" font-size="13">0</text>
+<rect data-sync="HSIZE8" data-ordinal="13" x="939" y="590" width="34" height="27" rx="4" fill="#fff" stroke="#92a3b9"/>
+<text x="956" y="609" text-anchor="middle" font-size="13">0</text>
+<rect data-sync="HSIZE8" data-ordinal="14" x="1001" y="590" width="34" height="27" rx="4" fill="#fff" stroke="#92a3b9"/>
+<text x="1018" y="609" text-anchor="middle" font-size="13">0</text>
+<rect data-sync="HSIZE8" data-ordinal="15" x="1063" y="590" width="34" height="27" rx="4" fill="#f6b7c2" stroke="#92a3b9"/>
+<text x="1080" y="609" text-anchor="middle" font-size="13">2</text>
+<text x="40" y="644" font-size="14">HSIZE4</text>
+<rect data-sync="HSIZE4" data-ordinal="0" x="133" y="625" width="34" height="27" rx="4" fill="#bad4f0" stroke="#92a3b9"/>
+<text x="150" y="644" text-anchor="middle" font-size="13">1</text>
+<rect data-sync="HSIZE4" data-ordinal="1" x="195" y="625" width="34" height="27" rx="4" fill="#fff" stroke="#92a3b9"/>
+<text x="212" y="644" text-anchor="middle" font-size="13">0</text>
+<rect data-sync="HSIZE4" data-ordinal="2" x="257" y="625" width="34" height="27" rx="4" fill="#fff" stroke="#92a3b9"/>
+<text x="274" y="644" text-anchor="middle" font-size="13">0</text>
+<rect data-sync="HSIZE4" data-ordinal="3" x="319" y="625" width="34" height="27" rx="4" fill="#fff" stroke="#92a3b9"/>
+<text x="336" y="644" text-anchor="middle" font-size="13">0</text>
+<rect data-sync="HSIZE4" data-ordinal="4" x="381" y="625" width="34" height="27" rx="4" fill="#fff" stroke="#92a3b9"/>
+<text x="398" y="644" text-anchor="middle" font-size="13">0</text>
+<rect data-sync="HSIZE4" data-ordinal="5" x="443" y="625" width="34" height="27" rx="4" fill="#fff" stroke="#92a3b9"/>
+<text x="460" y="644" text-anchor="middle" font-size="13">0</text>
+<rect data-sync="HSIZE4" data-ordinal="6" x="505" y="625" width="34" height="27" rx="4" fill="#fff" stroke="#92a3b9"/>
+<text x="522" y="644" text-anchor="middle" font-size="13">0</text>
+<rect data-sync="HSIZE4" data-ordinal="7" x="567" y="625" width="34" height="27" rx="4" fill="#f6b7c2" stroke="#92a3b9"/>
+<text x="584" y="644" text-anchor="middle" font-size="13">2</text>
+<rect data-sync="HSIZE4" data-ordinal="8" x="629" y="625" width="34" height="27" rx="4" fill="#edf1f7" stroke="#92a3b9"/>
+<text x="646" y="644" text-anchor="middle" font-size="13">—</text>
+<rect data-sync="HSIZE4" data-ordinal="9" x="691" y="625" width="34" height="27" rx="4" fill="#edf1f7" stroke="#92a3b9"/>
+<text x="708" y="644" text-anchor="middle" font-size="13">—</text>
+<rect data-sync="HSIZE4" data-ordinal="10" x="753" y="625" width="34" height="27" rx="4" fill="#edf1f7" stroke="#92a3b9"/>
+<text x="770" y="644" text-anchor="middle" font-size="13">—</text>
+<rect data-sync="HSIZE4" data-ordinal="11" x="815" y="625" width="34" height="27" rx="4" fill="#edf1f7" stroke="#92a3b9"/>
+<text x="832" y="644" text-anchor="middle" font-size="13">—</text>
+<rect data-sync="HSIZE4" data-ordinal="12" x="877" y="625" width="34" height="27" rx="4" fill="#edf1f7" stroke="#92a3b9"/>
+<text x="894" y="644" text-anchor="middle" font-size="13">—</text>
+<rect data-sync="HSIZE4" data-ordinal="13" x="939" y="625" width="34" height="27" rx="4" fill="#edf1f7" stroke="#92a3b9"/>
+<text x="956" y="644" text-anchor="middle" font-size="13">—</text>
+<rect data-sync="HSIZE4" data-ordinal="14" x="1001" y="625" width="34" height="27" rx="4" fill="#edf1f7" stroke="#92a3b9"/>
+<text x="1018" y="644" text-anchor="middle" font-size="13">—</text>
+<rect data-sync="HSIZE4" data-ordinal="15" x="1063" y="625" width="34" height="27" rx="4" fill="#edf1f7" stroke="#92a3b9"/>
+<text x="1080" y="644" text-anchor="middle" font-size="13">—</text>
+<text x="150" y="681" font-size="13">0=normal, 1=FIRST_PIXEL, 2=LAST_PIXEL. HSIZE4 stops at ordinal 7; later ordinals are NOT READ.</text>
+<rect x="40" y="695" width="1200" height="82" rx="8" fill="#e7edf7"/>
+<text x="56" y="719" font-size="14">HSIZE8 reference: 16 observations / 15 host pairs / 40 target attempts. HSIZE4: 8 / 7 / 24. These are NOT accepted counts.</text>
+<text x="56" y="743" font-size="14">Both profiles: READY1 / ACCEPT0, FEED.LINE_COUNT2, LAST_LINE0, feeder-error bits0; EOF was not observed.</text>
+<text x="56" y="767" font-size="14">EOL only at ordinal 8 (HSIZE8) or 4 (HSIZE4). All 28 HSIZE4 post-W9 readbacks were 8; pulse/latch semantics remain unproved.</text>
+<text x="40" y="804" font-size="14">Four fresh pre-CMAC aborts and stock cleanups succeeded; six separate full 180-frame, full-pixel and EOS native controls PASS.</text>
+<text x="40" y="832" font-size="14">Sequential observations are not atomic snapshots. Source namespace/units/extent/runtime lease, accepted output and completion remain unproved.</text>
+</g>
+</svg>

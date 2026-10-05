@@ -1,0 +1,616 @@
+diff --git a/driver/linux/crystalhd_fleafuncs.c b/driver/linux/crystalhd_fleafuncs.c
+index cdf81eeb164636625d8dadda1fda8e27aa0c07b8..877ff4d9f23f5e9259b3d482dc3c5a84f4a03747 100644
+--- a/driver/linux/crystalhd_fleafuncs.c
++++ b/driver/linux/crystalhd_fleafuncs.c
+@@ -1394,6 +1394,7 @@ static BC_STATUS crystalhd_flea_mfd_scl_sample(struct crystalhd_hw *hw,
+  * WINDOW1 keeps that eight-pixel reference, not a height or fetch contract.
+  * Profile2 admits only the separately observed cold pair 0x780/0x436;
+  * neither this pair nor the legacy zero pair is a reset-default contract.
++ * Profile3 changes only the HSIZE literal to 4, not a size/fetch guarantee.
+  * Never restore this live prefix, authenticate it or run firmware afterwards.
+  */
+ static BC_STATUS crystalhd_flea_mfd_packed_guard_core(struct crystalhd_hw *hw,
+@@ -1409,14 +1410,19 @@ static BC_STATUS crystalhd_flea_mfd_packed_guard_core(struct crystalhd_hw *hw,
+ 	    ~BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_BASE_ADDR_MASK + 1U)
+ 		return BC_STS_INV_ARG;
+ 	/* Internal frozen profiles: 0=END0, 1=zero-cold WINDOW1,
+-	 * 2=observed-pair WINDOW1. Never accept independently mixed scalars.
++	 * 2=observed-pair WINDOW1, 3=observed-pair HSIZE4.
++	 * Never accept independently mixed scalars.
+ 	 */
+-	if (window_profile > 2)
++	if (window_profile > 3)
+ 		return BC_STS_INV_ARG;
+ 	if (window_profile == 2 &&
+ 	    !((hsize == 0x780 && window == 0x436) ||
+ 	      (hsize == 8 && window == 0x436) || (hsize == 8 && window == 1)))
+ 		return BC_STS_INV_ARG;
++	if (window_profile == 3 &&
++	    !((hsize == 0x780 && window == 0x436) ||
++	      (hsize == 4 && window == 0x436) || (hsize == 4 && window == 1)))
++		return BC_STS_INV_ARG;
+ 	if (window_profile == 1 && ((hsize != 0 && hsize != 8) || window > 1 ||
+ 	    (window == 1 && hsize != 8)))
+ 		return BC_STS_INV_ARG;
+@@ -1485,7 +1491,7 @@ static BC_STATUS crystalhd_flea_mfd_packed_probe_core(struct crystalhd_hw *hw,
+ 	 */
+ 	const struct { uint32_t address, value, mask; } controls[] = {
+ 		{ BCHP_MFD_STRIDE, 0, 0xffffffff },
+-		{ BCHP_MFD_DISP_HSIZE, 8, 0x1fff },
++		{ BCHP_MFD_DISP_HSIZE, window_profile == 3 ? 4 : 8, 0x1fff },
+ 		{ BCHP_MFD_PICTURE0_DISP_VERT_WINDOW, window_profile ? 1 : 0, 0x1fff1fff },
+ 		{ BCHP_MFD_LAC_CNTL, 3, 0x7df },
+ 		{ BCHP_MFD_CHROMA_SAMPLING_CNTL, 0, 1 },
+@@ -1496,14 +1502,14 @@ static BC_STATUS crystalhd_flea_mfd_packed_probe_core(struct crystalhd_hw *hw,
+ 	};
+ 	struct crystalhd_adp *adp;
+ 	uint32_t observed[24], stride, test, ctrl = 0, hsize = 0, window = 0;
+-	const uint32_t cold_hsize = window_profile == 2 ? 0x780 : 0;
+-	const uint32_t cold_window = window_profile == 2 ? 0x436 : 0;
++	const uint32_t cold_hsize = window_profile >= 2 ? 0x780 : 0;
++	const uint32_t cold_window = window_profile >= 2 ? 0x436 : 0;
+ 	uint32_t sample, tap, feed, bvb, feeder;
+ 	bool sample_last = false, tap_last = false, eof = false;
+ 	unsigned int i, pulses = 0;
+ 	BC_STATUS sts;
+ 
+-	if (window_profile > 2 || selector < 1 || selector > 2 || !hw || !hw->pfnDevDRAMWrite ||
++	if (window_profile > 3 || selector < 1 || selector > 2 || !hw || !hw->pfnDevDRAMWrite ||
+ 	    !hw->pfnDevDRAMRead || !hw->adp || !hw->adp->mem_addr ||
+ 	    hw->adp->pci_mem_len <
+ 	    ~BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_BASE_ADDR_MASK + 1U)
+@@ -1529,7 +1535,7 @@ static BC_STATUS crystalhd_flea_mfd_packed_probe_core(struct crystalhd_hw *hw,
+ 		uint32_t value = hw->pfnReadDevRegister(adp, controls[i].address);
+ 
+ 		if (window_profile && (i == 1 || i == 2)) {
+-			if (window_profile == 2)
++			if (window_profile >= 2)
+ 				dev_info(&adp->pdev->dev,
+ 					 "issue92 packed-observed-window: cold-%s raw=%08x required=%08x observed-profile-NOT-reset-default=yes API-transport/atomicity-unproved=yes\n",
+ 					 i == 1 ? "hsize" : "vertical", value,
+@@ -1600,7 +1606,7 @@ static BC_STATUS crystalhd_flea_mfd_packed_probe_core(struct crystalhd_hw *hw,
+ 		if (hw->pfnReadDevRegister(adp, controls[i].address) != controls[i].value)
+ 			goto mismatch;
+ 		if (i == 0) stride = 0;
+-		if (i == 1) hsize = 8;
++		if (i == 1) hsize = window_profile == 3 ? 4 : 8;
+ 		if (i == 2) window = window_profile ? 1 : 0;
+ 		if (i == 7) test = 8;
+ 		if (i == 8) ctrl = 5;
+@@ -1730,6 +1736,12 @@ static BC_STATUS crystalhd_flea_mfd_packed_observed_window_probe(struct crystalh
+ 	return crystalhd_flea_mfd_packed_probe_core(hw, generation, owner, selector, 2);
+ }
+ 
++static BC_STATUS crystalhd_flea_mfd_packed_hsize4_probe(struct crystalhd_hw *hw,
++		uint64_t generation, const void *owner, uint32_t selector)
++{
++	return crystalhd_flea_mfd_packed_probe_core(hw, generation, owner, selector, 3);
++}
++
+ static BC_STATUS crystalhd_flea_mfd_colour_probe_core_view(struct crystalhd_hw *hw,
+ 						   uint64_t generation, const void *owner,
+ 						   uint32_t colour, bool observe_scl,
+@@ -2365,6 +2377,7 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 	bool mfd_packed_probe = hw && hw->research_mfd_packed_probe;
+ 	bool mfd_packed_window_probe = hw && hw->research_mfd_packed_window_probe;
+ 	bool mfd_packed_observed_geometry_probe = hw && hw->research_mfd_packed_observed_geometry_probe;
++	bool mfd_packed_hsize4_probe = hw && hw->research_mfd_packed_hsize4_probe;
+ 	uint32_t packed_pattern = hw ? hw->research_mfd_packed_pattern : 0;
+ 	bool mfd_scl_probe = hw && hw->research_mfd_scl_probe;
+ 	bool scl_port_probe = hw && hw->research_scl_port_probe;
+@@ -2398,6 +2411,7 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 		hw->research_mfd_packed_probe = false;
+ 		hw->research_mfd_packed_window_probe = false;
+ 		hw->research_mfd_packed_observed_geometry_probe = false;
++		hw->research_mfd_packed_hsize4_probe = false;
+ 		hw->research_mfd_packed_pattern = 0;
+ 		hw->research_mfd_scl_probe = false;
+ 		hw->research_mfd_colour_value = 0;
+@@ -2434,6 +2448,9 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 		return BC_STS_INV_ARG;
+ 	if (mfd_packed_observed_geometry_probe && (!mfd_packed_window_probe || !mfd_packed_probe))
+ 		return BC_STS_INV_ARG;
++	if (mfd_packed_hsize4_probe && (!mfd_packed_observed_geometry_probe ||
++	    !mfd_packed_window_probe || !mfd_packed_probe))
++		return BC_STS_INV_ARG;
+ 	if (mfd_packed_probe && (!hw->adp->mem_addr ||
+ 	    hw->adp->pci_mem_len <
+ 	    ~BCHP_MISC2_DIRECT_WINDOW_CONTROL_DIRECT_WINDOW_BASE_ADDR_MASK + 1U))
+@@ -2595,6 +2612,9 @@ BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw *hw,
+ 		if ((bridge_after & ARM_RUN_REQ_BIT) ||
+ 		    observed != ((const uint32_t *)pBuffer)[0])
+ 			return BC_STS_IO_ERROR;
++		if (mfd_packed_hsize4_probe)
++			return crystalhd_flea_mfd_packed_hsize4_probe(hw, mfd_generation,
++							 mfd_owner, packed_pattern);
+ 		if (mfd_packed_observed_geometry_probe)
+ 			return crystalhd_flea_mfd_packed_observed_window_probe(hw, mfd_generation,
+ 								    mfd_owner, packed_pattern);
+diff --git a/driver/linux/crystalhd_fw_research.c b/driver/linux/crystalhd_fw_research.c
+index bd06cc7d86c145bafb51d0ebfe79e94f696daf26..845d4cfdb79a09664eec9ef6eaa8db8ed190be3f 100644
+--- a/driver/linux/crystalhd_fw_research.c
++++ b/driver/linux/crystalhd_fw_research.c
+@@ -43,6 +43,9 @@
+ #if defined(CRYSTALHD_MFD_PACKED_OBSERVED_GEOMETRY_PROBE) && (!defined(CRYSTALHD_MFD_PACKED_WINDOW_PROBE) || !defined(CRYSTALHD_MFD_PACKED_SOURCE_PROBE))
+ #error "Observed-geometry hypothesis requires both packed-window and packed-source probes"
+ #endif
++#if defined(CRYSTALHD_MFD_PACKED_HSIZE4_PROBE) && (!defined(CRYSTALHD_MFD_PACKED_OBSERVED_GEOMETRY_PROBE) || !defined(CRYSTALHD_MFD_PACKED_WINDOW_PROBE) || !defined(CRYSTALHD_MFD_PACKED_SOURCE_PROBE))
++#error "HSIZE4 hypothesis requires observed-geometry, packed-window and packed-source probes"
++#endif
+ 
+ static const u8 crystalhd_fw_research_owner;
+ 
+@@ -1157,6 +1160,9 @@ static void crystalhd_fw_research_run_internal(u64 generation,
+ #endif
+ #ifdef CRYSTALHD_MFD_PACKED_OBSERVED_GEOMETRY_PROBE
+ 	ctx->hw_ctx->research_mfd_packed_observed_geometry_probe = true;
++#endif
++#ifdef CRYSTALHD_MFD_PACKED_HSIZE4_PROBE
++	ctx->hw_ctx->research_mfd_packed_hsize4_probe = true;
+ #endif
+ 	ctx->hw_ctx->research_mfd_generation = generation;
+ 	ctx->hw_ctx->research_mfd_owner = &crystalhd_fw_research_owner;
+@@ -1169,6 +1175,7 @@ static void crystalhd_fw_research_run_internal(u64 generation,
+ 	ctx->hw_ctx->research_mfd_packed_probe = false;
+ 	ctx->hw_ctx->research_mfd_packed_window_probe = false;
+ 	ctx->hw_ctx->research_mfd_packed_observed_geometry_probe = false;
++	ctx->hw_ctx->research_mfd_packed_hsize4_probe = false;
+ 	ctx->hw_ctx->research_mfd_packed_pattern = 0;
+ 	ctx->hw_ctx->research_mfd_scl_probe = false;
+ 	ctx->hw_ctx->research_mfd_colour_value = 0;
+diff --git a/driver/linux/crystalhd_hw.h b/driver/linux/crystalhd_hw.h
+index 0eb78c9233482b04468ebd251f2ab684fdf81164..9d366d5f2c01d096cb3e7c25519cecb8e80b73a0 100644
+--- a/driver/linux/crystalhd_hw.h
++++ b/driver/linux/crystalhd_hw.h
+@@ -410,6 +410,7 @@ struct crystalhd_hw {
+ 	bool research_mfd_packed_probe;
+ 	bool research_mfd_packed_window_probe;
+ 	bool research_mfd_packed_observed_geometry_probe;
++	bool research_mfd_packed_hsize4_probe;
+ 	uint32_t research_mfd_packed_pattern;
+ 	uint32_t research_mfd_colour_value;
+ 	bool research_mfd_scl_probe;
+diff --git a/tests/fw-download.c b/tests/fw-download.c
+index 395699671675b2a3cfd68336a5b5351fe079304e..f9905e12bbdde1b6adbfedeb6d6e04ee9f7138a0 100644
+--- a/tests/fw-download.c
++++ b/tests/fw-download.c
+@@ -100,6 +100,7 @@ struct crystalhd_hw {
+ 	bool research_mfd_packed_probe;
+ 	bool research_mfd_packed_window_probe;
+ 	bool research_mfd_packed_observed_geometry_probe;
++	bool research_mfd_packed_hsize4_probe;
+ 	uint32_t research_mfd_packed_pattern;
+ 	bool research_mfd_scl_probe;
+ 	bool research_scl_port_probe;
+@@ -273,6 +274,7 @@ static bool packed_summary_fail;
+ static bool packed_active, packed_fixture, packed_pci_failed, packed_no_further_io;
+ static bool packed_window, packed_campaign_window;
+ static bool packed_observed, packed_campaign_observed;
++static bool packed_hsize4, packed_campaign_hsize4;
+ static unsigned packed_terminal_ordinal, packed_terminal_bits;
+ static uint32_t packed_expected_hsize, packed_expected_window;
+ static unsigned packed_initial_test_event, packed_prep_first_event;
+@@ -416,11 +418,12 @@ static void packed_oracle(unsigned error_ordinal,uint32_t error)
+ 	uint32_t stride=packed_initial_stride,test=packed_initial_test,ctrl=0;
+ 	for(unsigned n=0;n<9;n++) {
+ 		packed_expect_guard(ctrl,stride,test);
+-		const uint32_t value=packed_window && n==2 ? 1U : packed_setup[n];
++		const uint32_t value=packed_hsize4 && n==1 ? 4U :
++			packed_window && n==2 ? 1U : packed_setup[n];
+ 		packed_expect('W',packed_offsets[n],value);
+ 		packed_expect('R',packed_offsets[n],value);
+ 		if(n==0)stride=0;
+-		if(n==1)packed_expected_hsize=8;
++		if(n==1)packed_expected_hsize=packed_hsize4?4U:8U;
+ 		if(n==2)packed_expected_window=packed_window?1U:0U;
+ 		if(n==7)test=8;
+ 		if(n==8)ctrl=5;
+@@ -1037,6 +1040,7 @@ static BC_STATUS crystalhd_flea_mfd_packed_probe(struct crystalhd_hw *hw,
+ 		check(dram_writes==1 && dram_reads==1 && !memcmp(card_prefix,expected_image,96) &&
+ 		      !hw->research_mfd_packed_probe && !hw->research_mfd_packed_pattern &&
+ 		      !hw->research_mfd_packed_observed_geometry_probe &&
++		      !hw->research_mfd_packed_hsize4_probe &&
+ 		      !hw->research_staging_probe && !hw->research_mfd_generation && !hw->research_mfd_owner,
+ 		      "actual downloader enters the real packed helper before old planar writes/restores and consumes flags");
+ 	packed_active=true;
+@@ -1057,6 +1061,7 @@ static BC_STATUS crystalhd_flea_mfd_packed_window_probe(struct crystalhd_hw *hw,
+ 		check(dram_writes==1 && dram_reads==1 && !memcmp(card_prefix,expected_image,96) &&
+ 		      !hw->research_mfd_packed_probe && !hw->research_mfd_packed_window_probe &&
+ 		      !hw->research_mfd_packed_observed_geometry_probe &&
++		      !hw->research_mfd_packed_hsize4_probe &&
+ 		      !hw->research_mfd_packed_pattern && !hw->research_staging_probe &&
+ 		      !hw->research_mfd_generation && !hw->research_mfd_owner,
+ 		      "window downloader consumes every one-shot flag before entering the real helper with stock prefix");
+@@ -1078,6 +1083,7 @@ static BC_STATUS crystalhd_flea_mfd_packed_observed_window_probe(struct crystalh
+ 		check(dram_writes==1 && dram_reads==1 && !memcmp(card_prefix,expected_image,96) &&
+ 		      !hw->research_mfd_packed_probe && !hw->research_mfd_packed_window_probe &&
+ 		      !hw->research_mfd_packed_observed_geometry_probe && !hw->research_mfd_packed_pattern &&
++		      !hw->research_mfd_packed_hsize4_probe &&
+ 		      !hw->research_staging_probe && !hw->research_mfd_generation && !hw->research_mfd_owner,
+ 		      "observed-pair helper is entered only after consuming every private opt-in and staging stock payload");
+ 	packed_observed=packed_window=packed_active=true;
+@@ -1085,6 +1091,26 @@ static BC_STATUS crystalhd_flea_mfd_packed_observed_window_probe(struct crystalh
+ 	packed_active=false;
+ 	return status;
+ }
++#define crystalhd_flea_mfd_packed_hsize4_probe extracted_mfd_packed_hsize4_probe
++#include "mfd-packed-hsize4-probe.h"
++#undef crystalhd_flea_mfd_packed_hsize4_probe
++
++static BC_STATUS crystalhd_flea_mfd_packed_hsize4_probe(struct crystalhd_hw *hw,
++		u64 generation, const void *owner, uint32_t selector)
++{
++	packed_calls++;
++	if(packed_fixture)
++		check(dram_writes==1 && dram_reads==1 && !memcmp(card_prefix,expected_image,96) &&
++		      !hw->research_mfd_packed_probe && !hw->research_mfd_packed_window_probe &&
++		      !hw->research_mfd_packed_observed_geometry_probe && !hw->research_mfd_packed_hsize4_probe &&
++		      !hw->research_mfd_packed_pattern && !hw->research_staging_probe &&
++		      !hw->research_mfd_generation && !hw->research_mfd_owner,
++		      "HSIZE4 downloader enters only after stock staging and consumes every captured opt-in");
++	packed_hsize4=packed_observed=packed_window=packed_active=true;
++	BC_STATUS status=extracted_mfd_packed_hsize4_probe(hw,generation,owner,selector);
++	packed_active=false;
++	return status;
++}
+ #include "scl-port-guard.h"
+ #include "scl-port-sample-view.h"
+ #include "scl-port-sample.h"
+@@ -1227,6 +1253,7 @@ static void reset(void)
+ 	packed_active=packed_fixture=packed_pci_failed=packed_no_further_io=false;
+ 	packed_window=false;
+ 	packed_observed=false;
++	packed_hsize4=false;
+ 	packed_terminal_ordinal=UINT32_MAX;packed_terminal_bits=0;
+ 	packed_expected_hsize=packed_expected_window=0;
+ 	packed_initial_test_event=packed_prep_first_event=0;
+@@ -3627,7 +3654,8 @@ static void scl_view_fault_campaigns(void)
+ static void reset_packed(unsigned selector)
+ {
+ 	reset();queues[2].count=0;packed_selector=selector;
+-	packed_observed=packed_campaign_observed;
++	packed_hsize4=packed_campaign_hsize4;
++	packed_observed=packed_campaign_observed || packed_hsize4;
+ 	packed_window=packed_campaign_window || packed_observed;
+ 	if(packed_observed){packed_registers[1]=0x780;packed_registers[2]=0x436;}
+ 	memcpy(card_prefix,expected_image,96);card_suffix=expected_image[24];
+@@ -3635,6 +3663,8 @@ static void reset_packed(unsigned selector)
+ 
+ static BC_STATUS run_packed(void)
+ {
++	if(packed_hsize4)
++		return crystalhd_flea_mfd_packed_hsize4_probe(&hardware,adapter.generation,&research_owner,packed_selector);
+ 	if(packed_observed)
+ 		return crystalhd_flea_mfd_packed_observed_window_probe(&hardware,adapter.generation,&research_owner,packed_selector);
+ 	if (packed_window)
+@@ -3645,6 +3675,8 @@ static BC_STATUS run_packed(void)
+ static BC_STATUS run_packed_admission(struct crystalhd_hw *hw, u64 generation,
+ 		const void *owner, uint32_t selector)
+ {
++	if(packed_hsize4)
++		return crystalhd_flea_mfd_packed_hsize4_probe(hw,generation,owner,selector);
+ 	if(packed_observed)
+ 		return crystalhd_flea_mfd_packed_observed_window_probe(hw,generation,owner,selector);
+ 	return packed_window ? crystalhd_flea_mfd_packed_window_probe(hw,generation,owner,selector) :
+@@ -4028,13 +4060,13 @@ static void packed_window_results(void)
+ 		check(run_packed()==BC_STS_CMD_CANCELLED && packed_calls==1 && packed_reads==744 &&
+ 		      packed_count==788 && packed_writes==42 && pci_reads==189 && packed_starts==1 &&
+ 		      packed_pulses==16 && packed_delays==32 && packed_observations==17 &&
+-		      packed_registers[1]==8 && packed_registers[2]==1 && packed_registers[0]==0 &&
++		      packed_registers[1]==(packed_hsize4?4U:8U) && packed_registers[2]==1 && packed_registers[0]==0 &&
+ 		      packed_cold_hsize_logs==1 && packed_cold_window_logs==1 && packed_marker_logs==17 &&
+ 		      dram_writes==1 && dram_reads==1 && !fatal_stops && packed_retained() &&
+ 		      hardware.research_mfd_deliberate_abort && packed_summary_count==1 &&
+ 		      !packed_summary_fail && packed_pulse_log_count==16 && !cmac_writes &&
+ 		      !arm_run_writes && !heartbeats && !fpga_reads && !fpga_writes,
+-		      "WINDOW1 changes only END while pinning the exact selected cold tuple then HSIZE8/WINDOW1 through every phase");
++		      "the exact selected width/window profile preserves its full budget without assuming a terminal ordinal");
+ 		packed_compare();
+ 		check(!memcmp(card_prefix,packed_words[selector-1],16) && card_suffix==expected_image[24] &&
+ 		      !memcmp(&firmware,&firmware_before,sizeof(firmware)),
+@@ -4284,7 +4316,7 @@ static void packed_observed_phase_results(void)
+ 		      "profile2 rejects zero-profile phases, mixed scalars and near values before all register access");
+ 		packed_active=false;
+ 	}
+-	const uint32_t invalid_profiles[]={3,UINT32_MAX};
++	const uint32_t invalid_profiles[]={4,UINT32_MAX};
+ 	for(unsigned n=0;n<ARRAY_SIZE(invalid_profiles);n++) {
+ 		reset_packed(1);packed_active=true;
+ 		check(crystalhd_flea_mfd_packed_guard_core(&hardware,adapter.generation,&research_owner,
+@@ -4340,11 +4372,13 @@ static void packed_observed_download_results(void)
+ 		reset_packed(selector);packed_fixture=true;
+ 		hardware.research_staging_probe=hardware.research_mfd_packed_probe=true;
+ 		hardware.research_mfd_packed_window_probe=hardware.research_mfd_packed_observed_geometry_probe=true;
++		hardware.research_mfd_packed_hsize4_probe=packed_campaign_hsize4;
+ 		hardware.research_mfd_packed_pattern=selector;
+ 		check(crystalhd_flea_download_fw(&hardware,(const uint8_t *)firmware.words,sizeof(firmware.words))==BC_STS_CMD_CANCELLED &&
+ 		      packed_calls==1 && packed_reads==744 && packed_writes==42 && pci_reads==189 &&
+ 		      dram_writes==2 && dram_reads==2 && !hardware.research_mfd_packed_probe &&
+ 		      !hardware.research_mfd_packed_window_probe && !hardware.research_mfd_packed_observed_geometry_probe &&
++		      !hardware.research_mfd_packed_hsize4_probe &&
+ 		      !hardware.research_mfd_packed_pattern && !hardware.research_staging_probe &&
+ 		      !hardware.research_mfd_generation && !hardware.research_mfd_owner &&
+ 		      hardware.research_mfd_deliberate_abort && packed_retained() && !cmac_writes &&
+@@ -4356,6 +4390,7 @@ static void packed_observed_download_results(void)
+ 		reset_packed(selector);
+ 		hardware.research_staging_probe=hardware.research_mfd_packed_probe=true;
+ 		hardware.research_mfd_packed_window_probe=hardware.research_mfd_packed_observed_geometry_probe=true;
++		hardware.research_mfd_packed_hsize4_probe=packed_campaign_hsize4;
+ 		hardware.research_mfd_packed_pattern=selector;
+ 		switch(fault) {
+ 		case 0:hardware.research_mfd_packed_probe=false;break;
+@@ -4384,6 +4419,7 @@ static void packed_observed_download_results(void)
+ 		      !dev_reads && !dev_writes && !dram_writes && !dram_reads && !packed_calls &&
+ 		      !hardware.research_mfd_packed_probe && !hardware.research_mfd_packed_window_probe &&
+ 		      !hardware.research_mfd_packed_observed_geometry_probe && !hardware.research_mfd_packed_pattern &&
++		      !hardware.research_mfd_packed_hsize4_probe &&
+ 		      !hardware.research_staging_probe && !hardware.research_mfd_generation && !hardware.research_mfd_owner,
+ 		      "observed requires both source and window opt-ins and consumes all flags even on pre-loader conflict/context refusal");
+ 	}
+@@ -4392,6 +4428,7 @@ static void packed_observed_download_results(void)
+ 		reset_packed(selector);packed_fixture=true;
+ 		hardware.research_staging_probe=hardware.research_mfd_packed_probe=true;
+ 		hardware.research_mfd_packed_window_probe=hardware.research_mfd_packed_observed_geometry_probe=true;
++		hardware.research_mfd_packed_hsize4_probe=packed_campaign_hsize4;
+ 		hardware.research_mfd_packed_pattern=selector;
+ 		if(step==0)dram_status=(BC_STATUS)status;
+ 		if(step==1)read_status=(BC_STATUS)status;
+@@ -4401,7 +4438,8 @@ static void packed_observed_download_results(void)
+ 		      !cmac_writes && !arm_run_writes && !heartbeats && !packed_starts &&
+ 		      dram_writes==(step<2?1U:2U) && dram_reads==(step==0?0U:step==3?2U:1U) &&
+ 		      !hardware.research_mfd_packed_observed_geometry_probe && !hardware.research_mfd_packed_window_probe &&
+-		      !hardware.research_mfd_packed_probe && !hardware.research_mfd_packed_pattern,
++		      !hardware.research_mfd_packed_probe && !hardware.research_mfd_packed_pattern &&
++		      !hardware.research_mfd_packed_hsize4_probe,
+ 		      "both observed patterns preserve all27 PIO status failures at every stock/staged source operation with no authenticated boot");
+ 	}
+ }
+@@ -4417,6 +4455,143 @@ static void packed_observed_results(void)
+ 	packed_campaign_observed=false;
+ }
+ 
++static void packed_hsize4_phase_results(void)
++{
++	groups++;
++	const uint32_t valid[][2]={{0x780,0x436},{4,0x436},{4,1}};
++	for(unsigned selector=1;selector<=2;selector++)for(unsigned n=0;n<ARRAY_SIZE(valid);n++) {
++		reset_packed(selector);packed_registers[1]=valid[n][0];packed_registers[2]=valid[n][1];
++		packed_active=true;
++		check(crystalhd_flea_mfd_packed_guard_core(&hardware,adapter.generation,&research_owner,
++		      0,0,0,3,valid[n][0],valid[n][1])==BC_STS_SUCCESS && packed_reads==10 &&
++		      !pci_reads && !packed_writes && !dram_writes && !dram_reads,
++		      "profile3 admits exactly the independent cold, HSIZE4, and END1 pairs without changing them");
++		packed_active=false;
++	}
++	const uint32_t invalid[][2]={{0,0},{4,0},{8,0x436},{8,1},{0,0x436},{0x780,0},
++		{0x780,1},{0x780,0x435},{0x781,0x436},{3,0x436},{5,0x436},{4,2},
++		{4,UINT32_MAX},{UINT32_MAX,0x436},{0x1780,0x436},{0x780,0x1436}};
++	for(unsigned n=0;n<ARRAY_SIZE(invalid);n++) {
++		reset_packed(1);packed_active=true;
++		check(crystalhd_flea_mfd_packed_guard_core(&hardware,adapter.generation,&research_owner,
++		      0,0,0,3,invalid[n][0],invalid[n][1])==BC_STS_INV_ARG &&
++		      no_effects() && !pci_reads && !pci_clears && !packed_count,
++		      "profile3 rejects zero, HSIZE8, mixed, near and out-of-range pairs before any IO");
++		packed_active=false;
++	}
++	const uint32_t unknown[]={4,UINT32_MAX};
++	for(unsigned n=0;n<ARRAY_SIZE(unknown);n++) {
++		reset_packed(1);packed_active=true;
++		check(crystalhd_flea_mfd_packed_guard_core(&hardware,adapter.generation,&research_owner,
++		      0,0,0,unknown[n],0x780,0x436)==BC_STS_INV_ARG && !packed_count && no_effects(),
++		      "a profile above3 has no guard fallback or register effects");
++		check(crystalhd_flea_mfd_packed_probe_core(&hardware,adapter.generation,&research_owner,
++		      1,unknown[n])==BC_STS_INV_ARG && !packed_count && no_effects(),
++		      "a profile above3 has no probe fallback or source effects");
++		packed_active=false;
++	}
++	for(unsigned n=1;n<ARRAY_SIZE(valid);n++) {
++		reset_packed(1);packed_active=true;
++		check(crystalhd_flea_mfd_packed_guard_core(&hardware,adapter.generation,&research_owner,
++		      0,0,0,2,valid[n][0],valid[n][1])==BC_STS_INV_ARG && !packed_count && no_effects(),
++		      "old profile2 never widens to admit the new HSIZE4 intermediate or final phase");
++		packed_active=false;
++	}
++	/* Test the old literal wrapper with an unused new flag, not the loader
++	 * which deliberately rejects an incomplete opt-in dependency set.
++	 */
++	packed_campaign_hsize4=false;packed_campaign_observed=true;
++	for(unsigned selector=1;selector<=2;selector++) {
++		reset_packed(selector);hardware.research_mfd_packed_hsize4_probe=true;
++		packed_oracle(UINT32_MAX,0);
++		check(crystalhd_flea_mfd_packed_observed_window_probe(&hardware,adapter.generation,
++		      &research_owner,selector)==BC_STS_CMD_CANCELLED && packed_registers[1]==8 &&
++		      packed_reads==744 && packed_writes==42 && packed_pulses==16,
++		      "legacy observed wrapper remains literal2/HSIZE8 regardless of an unused new private flag");
++		packed_compare();
++	}
++	packed_campaign_observed=false;packed_campaign_hsize4=true;
++}
++
++/* Execute the actual packed-source configuration block with symbolic values
++ * for the separately compile-checked A/B constants; this is not the complete
++ * kernel entry or a real firmware transaction.
++ */
++static void configure_hsize4(struct crystalhd_cmd *ctx,
++		const struct crystalhd_fw_research_request *request,u64 generation,uint32_t pattern)
++{
++#define CRYSTALHD_MFD_PACKED_SOURCE_PROBE
++#define CRYSTALHD_MFD_PACKED_WINDOW_PROBE
++#define CRYSTALHD_MFD_PACKED_OBSERVED_GEOMETRY_PROBE
++#define CRYSTALHD_MFD_PACKED_HSIZE4_PROBE
++#define CRYSTALHD_MFD_PACKED_PATTERN pattern
++#define crystalhd_fw_research_owner research_owner
++#include "packed-source-config.h"
++#undef crystalhd_fw_research_owner
++#undef CRYSTALHD_MFD_PACKED_PATTERN
++#undef CRYSTALHD_MFD_PACKED_HSIZE4_PROBE
++#undef CRYSTALHD_MFD_PACKED_OBSERVED_GEOMETRY_PROBE
++#undef CRYSTALHD_MFD_PACKED_WINDOW_PROBE
++#undef CRYSTALHD_MFD_PACKED_SOURCE_PROBE
++}
++
++static void configure_packed_disabled(struct crystalhd_cmd *ctx,
++		const struct crystalhd_fw_research_request *request,u64 generation,uint32_t pattern)
++{
++	(void)ctx;(void)request;(void)generation;(void)pattern;
++#include "packed-source-config.h"
++}
++
++static void packed_hsize4_scope_results(void)
++{
++	groups++;
++	for(unsigned selector=1;selector<=2;selector++)for(unsigned deps=0;deps<7;deps++) {
++		reset_packed(selector);
++		hardware.research_staging_probe=hardware.research_mfd_packed_hsize4_probe=true;
++		hardware.research_mfd_packed_probe=(deps&1U)!=0;
++		hardware.research_mfd_packed_window_probe=(deps&2U)!=0;
++		hardware.research_mfd_packed_observed_geometry_probe=(deps&4U)!=0;
++		hardware.research_mfd_packed_pattern=selector;
++		check(crystalhd_flea_download_fw(&hardware,(const uint8_t *)firmware.words,sizeof(firmware.words))==BC_STS_INV_ARG &&
++		      no_effects() && !pci_reads && !pci_clears && !packed_calls &&
++		      !hardware.research_mfd_packed_hsize4_probe && !hardware.research_mfd_packed_observed_geometry_probe &&
++		      !hardware.research_mfd_packed_window_probe && !hardware.research_mfd_packed_probe &&
++		      !hardware.research_mfd_packed_pattern && !hardware.research_staging_probe &&
++		      !hardware.research_mfd_generation && !hardware.research_mfd_owner,
++		      "all7 incomplete HSIZE4 dependency subsets consume every private flag before loader or probe IO");
++	}
++	for(unsigned selector=1;selector<=2;selector++) {
++		reset_packed(selector);
++		const struct crystalhd_fw_research_request request={.selector=1};
++		struct crystalhd_hw expected;
++		memcpy(&expected,&hardware,sizeof(expected));
++		expected.research_mfd_packed_probe=expected.research_mfd_packed_window_probe=true;
++		expected.research_mfd_packed_observed_geometry_probe=expected.research_mfd_packed_hsize4_probe=true;
++		expected.research_mfd_packed_pattern=selector;
++		expected.research_mfd_generation=adapter.generation;
++		expected.research_mfd_owner=&research_owner;
++		configure_hsize4(&adapter.cmds,&request,adapter.generation,selector);
++		check(!memcmp(&hardware,&expected,sizeof(expected)) && no_effects() && !pci_reads,
++		      "actual configuration block sets only the four opt-ins, frozen pattern and owner/generation fields");
++		memcpy(&expected,&hardware,sizeof(expected));
++		configure_packed_disabled(&adapter.cmds,&request,adapter.generation,selector);
++		check(!memcmp(&hardware,&expected,sizeof(expected)) && no_effects(),
++		      "default-disabled actual packed configuration block is a complete no-op");
++		struct packed_gate_result gate={123};
++		packed_version_gate(0,0,&gate);
++		check(gate.status==-EINVAL,"HSIZE4 requires SOURCE, whose actual early gate excludes any non-VERSION operation");
++	}
++}
++
++static void packed_hsize4_results(void)
++{
++	packed_campaign_hsize4=true;
++	packed_window_results();packed_window_terminal_results();packed_window_register_results();
++	packed_hsize4_phase_results();packed_window_fault_campaigns();packed_observed_download_results();
++	packed_hsize4_scope_results();
++	packed_campaign_hsize4=false;
++}
++
+ int main(void)
+ {
+ 	reset();
+@@ -4467,6 +4642,9 @@ int main(void)
+ 	const unsigned window_checks=checks;
+ 	check(groups==59 && window_checks==122177080,"all59 legacy groups retain the exact preobserved check count");
+ 	packed_observed_results();
++	const unsigned observed_checks=checks;
++	check(groups==68 && observed_checks==164699332,"all68 legacy groups retain their exact preHSIZE4 check count");
++	packed_hsize4_results();
+ 	printf("Firmware download safety passed (%u groups, %u checks, %u failures)\n",
+ 	       groups, checks, failures);
+ 	return failures ? EXIT_FAILURE : EXIT_SUCCESS;
+diff --git a/tests/fw-download.sh b/tests/fw-download.sh
+index a2869df2229c4d194dfef7d0d4b881c00bf6c1dd..7d5f349fc16275958cca833f74e64979d6ae0bbe 100755
+--- a/tests/fw-download.sh
++++ b/tests/fw-download.sh
+@@ -20,7 +20,8 @@ cleanup()
+ 		"$test_dir/mfd-packed-probe.h" "$test_dir/packed-config.h" \
+ 		"$test_dir/packed-version-gate.h" "$test_dir/mfd-packed-core.h" \
+ 		"$test_dir/mfd-packed-guard-core.h" "$test_dir/mfd-packed-window-probe.h" \
+-		"$test_dir/mfd-packed-observed-window-probe.h"
++		"$test_dir/mfd-packed-observed-window-probe.h" \
++		"$test_dir/mfd-packed-hsize4-probe.h" "$test_dir/packed-source-config.h"
+ 	rmdir "$test_dir"
+ }
+ trap cleanup EXIT
+@@ -69,6 +70,8 @@ extract_function crystalhd_flea_mfd_packed_window_probe \
+ 	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-packed-window-probe.h"
+ extract_function crystalhd_flea_mfd_packed_observed_window_probe \
+ 	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-packed-observed-window-probe.h"
++extract_function crystalhd_flea_mfd_packed_hsize4_probe \
++	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-packed-hsize4-probe.h"
+ extract_function crystalhd_flea_mfd_scl_guard \
+ 	"$repo_dir/driver/linux/crystalhd_fleafuncs.c" "$test_dir/mfd-scl-guard.h"
+ extract_function crystalhd_flea_mfd_scl_guard_view \
+@@ -118,6 +121,18 @@ awk '
+ 	copying && /^#endif$/ { copying = 0 }
+ 	END { if (found != 1 || copying) exit 1 }
+ ' "$repo_dir/driver/linux/crystalhd_fw_research.c" > "$test_dir/packed-version-gate.h"
++awk '
++	/^#ifdef CRYSTALHD_MFD_PACKED_SOURCE_PROBE$/ { copying=1; block=""; depth=0 }
++	copying {
++		block=block $0 "\n"
++		if (/^#if/) depth++
++		if (/^#endif$/ && --depth == 0) {
++			copying=0
++			if (block ~ /ctx->hw_ctx->research_mfd_packed_probe =/) { printf "%s",block; found++ }
++		}
++	}
++	END { if (found != 1 || copying) exit 1 }
++' "$repo_dir/driver/linux/crystalhd_fw_research.c" > "$test_dir/packed-source-config.h"
+ for pattern in 1 2; do
+ 	"${CC:-cc}" -E -P -x c -DCRYSTALHD_MFD_PACKED_SOURCE_PROBE \
+ 		-DCRYSTALHD_MFD_PACKED_PATTERN="$pattern" "$test_dir/packed-config.h" > /dev/null
+@@ -127,6 +142,10 @@ for pattern in 1 2; do
+ 	"${CC:-cc}" -E -P -x c -DCRYSTALHD_MFD_PACKED_SOURCE_PROBE \
+ 		-DCRYSTALHD_MFD_PACKED_WINDOW_PROBE -DCRYSTALHD_MFD_PACKED_OBSERVED_GEOMETRY_PROBE \
+ 		-DCRYSTALHD_MFD_PACKED_PATTERN="$pattern" "$test_dir/packed-config.h" > /dev/null
++	"${CC:-cc}" -E -P -x c -DCRYSTALHD_MFD_PACKED_SOURCE_PROBE \
++		-DCRYSTALHD_MFD_PACKED_WINDOW_PROBE -DCRYSTALHD_MFD_PACKED_OBSERVED_GEOMETRY_PROBE \
++		-DCRYSTALHD_MFD_PACKED_HSIZE4_PROBE -DCRYSTALHD_MFD_PACKED_PATTERN="$pattern" \
++		"$test_dir/packed-config.h" > /dev/null
+ 	for conflict in CRYSTALHD_MFD_LATCH_PROBE CRYSTALHD_MFD_FIXED_COLOUR_PROBE \
+ 		CRYSTALHD_SCL_PORT_PROBE CRYSTALHD_SCL_PORT_LATCH CRYSTALHD_MFD_SCL_STATUS_PROBE; do
+ 		if "${CC:-cc}" -E -P -x c -DCRYSTALHD_MFD_PACKED_SOURCE_PROBE \
+@@ -145,8 +164,28 @@ for pattern in 1 2; do
+ 			"$test_dir/packed-config.h" > /dev/null 2>&1; then
+ 			exit 1
+ 		fi
++		if "${CC:-cc}" -E -P -x c -DCRYSTALHD_MFD_PACKED_SOURCE_PROBE \
++			-DCRYSTALHD_MFD_PACKED_WINDOW_PROBE -DCRYSTALHD_MFD_PACKED_OBSERVED_GEOMETRY_PROBE \
++			-DCRYSTALHD_MFD_PACKED_HSIZE4_PROBE -DCRYSTALHD_MFD_PACKED_PATTERN="$pattern" \
++			-D"$conflict" "$test_dir/packed-config.h" > /dev/null 2>&1; then
++			exit 1
++		fi
+ 	done
+ done
++for dependencies in '' source window observed 'source window' 'source observed' 'window observed'; do
++	set --
++	for dependency in $dependencies; do
++		case "$dependency" in
++			source) set -- "$@" -DCRYSTALHD_MFD_PACKED_SOURCE_PROBE;;
++			window) set -- "$@" -DCRYSTALHD_MFD_PACKED_WINDOW_PROBE;;
++			observed) set -- "$@" -DCRYSTALHD_MFD_PACKED_OBSERVED_GEOMETRY_PROBE;;
++		esac
++	done
++	if "${CC:-cc}" -E -P -x c -DCRYSTALHD_MFD_PACKED_HSIZE4_PROBE "$@" \
++		"$test_dir/packed-config.h" > /dev/null 2>&1; then
++		exit 1
++	fi
++done
+ if "${CC:-cc}" -E -P -x c -DCRYSTALHD_MFD_PACKED_WINDOW_PROBE \
+ 	"$test_dir/packed-config.h" > /dev/null 2>&1; then
+ 	exit 1
+@@ -177,6 +216,12 @@ for pattern in 0 3 4294967295; do
+ 		> /dev/null 2>&1; then
+ 		exit 1
+ 	fi
++	if "${CC:-cc}" -E -P -x c -DCRYSTALHD_MFD_PACKED_SOURCE_PROBE \
++		-DCRYSTALHD_MFD_PACKED_WINDOW_PROBE -DCRYSTALHD_MFD_PACKED_OBSERVED_GEOMETRY_PROBE \
++		-DCRYSTALHD_MFD_PACKED_HSIZE4_PROBE -DCRYSTALHD_MFD_PACKED_PATTERN="$pattern" \
++		"$test_dir/packed-config.h" > /dev/null 2>&1; then
++		exit 1
++	fi
+ done
+ cat "$test_dir/flea.h" "$test_dir/link.h" > \
+ 	"$test_dir/fw-download-functions.h"
