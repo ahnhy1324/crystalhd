@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="640" viewBox="0 0 1200 640" role="img" aria-labelledby="title desc">
+  <title id="title">Native SCL status: observation and single-clear matched pairs</title>
+  <desc id="desc">Two fresh observation sessions sampled status five at the last delivered frame, immediately and at the complete EOS delivery barrier. Two fresh clear sessions each wrote the observed mask five once and sampled zero immediately and at EOS. Every diagnostic session delivered all 180 baseline-identical scaled frames. Original diagnostic failure remains failure; no general clear semantics, fresh-work or source-lifetime claim.</desc>
+  <rect width="1200" height="640" fill="#101827"/>
+  <g font-family="sans-serif" fill="#e7edf7">
+    <text x="36" y="48" font-size="26">Native SCL: sampled status after one clear attempt</text>
+    <text x="36" y="80" font-size="17" fill="#b3bfd2">BCM70015 · MPEG-2 640×360 → 320×180 YUY2 · two fresh matched pairs</text>
+    <text x="445" y="132" font-size="17">Last output</text>
+    <text x="445" y="155" font-size="14" fill="#b3bfd2">after release + owned copy write</text>
+    <text x="733" y="132" font-size="17">Immediate</text>
+    <text x="980" y="132" font-size="17">Complete EOS</text>
+    <text x="980" y="155" font-size="14" fill="#b3bfd2">before ordinary STOP/CLOSE</text>
+    <path d="M 472 225 H 1048 M 472 340 H 1048" stroke="#53617a" stroke-width="3"/>
+    <rect x="36" y="190" width="324" height="84" rx="10" fill="#1f2b40"/>
+    <text x="52" y="219" font-size="20">Observe × 2 sessions</text>
+    <text x="52" y="249" font-size="16" fill="#b3bfd2">18 reads / 0 target writes each</text>
+    <rect x="36" y="305" width="324" height="84" rx="10" fill="#1f2b40"/>
+    <text x="52" y="334" font-size="20">Clear × 2 sessions</text>
+    <text x="52" y="364" font-size="16" fill="#b3bfd2">18 reads / 1 target write each</text>
+    <g fill="#a46120" stroke="#f4b25d" stroke-width="2">
+      <circle cx="472" cy="225" r="34"/><circle cx="760" cy="225" r="34"/><circle cx="1048" cy="225" r="34"/>
+      <circle cx="472" cy="340" r="34"/>
+    </g>
+    <g fill="#15554b" stroke="#65d7bd" stroke-width="2">
+      <circle cx="760" cy="340" r="34"/><circle cx="1048" cy="340" r="34"/>
+    </g>
+    <g font-family="monospace" text-anchor="middle" font-size="22">
+      <text x="472" y="233">5 / 5</text><text x="760" y="233">5 / 5</text><text x="1048" y="233">5 / 5</text>
+      <text x="472" y="348">5 / 5</text><text x="760" y="348">0 / 0</text><text x="1048" y="348">0 / 0</text>
+    </g>
+    <text x="578" y="304" font-family="monospace" font-size="15" fill="#65d7bd">W 5408a0 = 5 once</text>
+    <text x="36" y="428" font-size="16" fill="#b3bfd2">Each node: two status samples, each bracketed by REV 0x80; non-atomic observations.</text>
+    <rect x="36" y="457" width="1128" height="104" rx="10" fill="#1f2b40"/>
+    <text x="52" y="487" font-size="20" fill="#65d7bd">All 4 diagnostic captures: native pixels / 180 frames / EOS / cleanup PASS</text>
+    <text x="52" y="517" font-size="18" fill="#f4b25d">Diagnostic + aggregate: FAIL retained, including after sampled status becomes zero</text>
+    <text x="52" y="545" font-size="15" fill="#b3bfd2">20,736,000 bytes each, byte-identical to the frozen normal downscale; no missing frame.</text>
+    <text x="36" y="595" font-size="16">Not proved: universal W1C or timing, stale-only cause, fresh-work fault absence, raw-source lease.</text>
+    <text x="36" y="620" font-size="14" fill="#b3bfd2">Test-only opt-in; no production clear, retry, geometry, clock, plane-address or firmware changes.</text>
+  </g>
+</svg>
