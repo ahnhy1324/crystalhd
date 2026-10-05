@@ -11,6 +11,8 @@ cleanup()
 	rm -f "$test_dir/driver/linux/crystalhd_hw.h" \
 		"$test_dir/driver/linux/crystalhd_hw.c" \
 		"$test_dir/driver/linux/crystalhd_cmds.c" \
+		"$test_dir/driver/linux/crystalhd_cmds.h" \
+		"$test_dir/driver/linux/crystalhd_lnx.h" \
 		"$test_dir/driver/linux/crystalhd_fleafuncs.h" \
 		"$test_dir/driver/linux/crystalhd_fw_research.c" \
 		"$test_dir/driver/linux/crystalhd_fleafuncs.c" \
@@ -18,6 +20,8 @@ cleanup()
 		"$test_dir/driver/linux/crystalhd_lnx.c" \
 		"$test_dir/driver/linux/FleaDefs.h" \
 		"$test_dir/tests/fw-download.c" "$test_dir/tests/fw-download.sh" \
+		"$test_dir/tests/device-lifetime.c" "$test_dir/tests/device-lifetime.sh" \
+		"$test_dir/tests/device-access.c" \
 		"$test_dir/include" "$test_dir/firmware"
 	rmdir "$test_dir/driver/linux" "$test_dir/driver" \
 		"$test_dir/tests" "$test_dir"
@@ -27,12 +31,16 @@ trap 'exit 1' HUP INT TERM
 
 mkdir -p "$test_dir/driver/linux" "$test_dir/tests"
 for name in FleaDefs.h crystalhd_hw.h crystalhd_hw.c crystalhd_cmds.c \
+	crystalhd_cmds.h crystalhd_lnx.h \
 	crystalhd_fleafuncs.h crystalhd_fw_research.c crystalhd_fleafuncs.c \
 	crystalhd_linkfuncs.c crystalhd_lnx.c; do
 	cp "$repo_dir/driver/linux/$name" "$test_dir/driver/linux/$name"
 done
 cp "$repo_dir/tests/fw-download.c" "$test_dir/tests/fw-download.c"
 cp "$repo_dir/tests/fw-download.sh" "$test_dir/tests/fw-download.sh"
+cp "$repo_dir/tests/device-lifetime.c" "$test_dir/tests/device-lifetime.c"
+cp "$repo_dir/tests/device-lifetime.sh" "$test_dir/tests/device-lifetime.sh"
+cp "$repo_dir/tests/device-access.c" "$test_dir/tests/device-access.c"
 ln -s "$repo_dir/include" "$test_dir/include"
 ln -s "$repo_dir/firmware" "$test_dir/firmware"
 
@@ -84,4 +92,9 @@ git -C "$test_dir" apply --check \
 	"$repo_dir/tests/fixtures/issue92/scl-cold-config.patch"
 git -C "$test_dir" apply \
 	"$repo_dir/tests/fixtures/issue92/scl-cold-config.patch"
+git -C "$test_dir" apply --check \
+	"$repo_dir/tests/fixtures/issue92/scl-size-reset.patch"
+git -C "$test_dir" apply \
+	"$repo_dir/tests/fixtures/issue92/scl-size-reset.patch"
 sh "$test_dir/tests/fw-download.sh"
+sh "$test_dir/tests/device-lifetime.sh"
