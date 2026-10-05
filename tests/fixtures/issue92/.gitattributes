@@ -4,3 +4,4 @@ mfd-colour.patch -whitespace
 scl-port.patch -whitespace
 mfd-scl.patch -whitespace
 scl-views.patch -whitespace
+scl-enable-reset.patch -whitespace
