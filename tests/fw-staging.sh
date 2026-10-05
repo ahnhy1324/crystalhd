@@ -80,4 +80,8 @@ git -C "$test_dir" apply --check \
 	"$repo_dir/tests/fixtures/issue92/mfd-scl-input.patch"
 git -C "$test_dir" apply \
 	"$repo_dir/tests/fixtures/issue92/mfd-scl-input.patch"
+git -C "$test_dir" apply --check \
+	"$repo_dir/tests/fixtures/issue92/scl-cold-config.patch"
+git -C "$test_dir" apply \
+	"$repo_dir/tests/fixtures/issue92/scl-cold-config.patch"
 sh "$test_dir/tests/fw-download.sh"
