@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="530" viewBox="0 0 1080 530" role="img" aria-labelledby="title desc">
+  <title id="title">Fixed-colour feeder state contrast</title>
+  <desc id="desc">Two configuration-only trials and two separate single-START trials use the PX_RD_SM diagnostic view. All pre-START words are zero. Every active raw tap is 00001000, whose RDB state field is 1, named SEND_FIXED_COLOUR. This is a sampled state label, not progress, accepted pixels or completion. All 25 original controls are exactly corroborated before powerdown, and eight native controls totaling 1440 frames match byte for byte.</desc>
+  <rect width="1080" height="530" fill="#f5f7fb"/>
+  <g font-family="DejaVu Sans, sans-serif" fill="#16263b">
+    <text x="36" y="45" font-size="24" font-weight="bold">Fixed-colour feeder state contrast</text>
+    <text x="36" y="74" font-size="14">PX_RD_SM view • two config controls + two separate sole-START trials • production default OFF</text>
+    <rect x="36" y="101" width="296" height="253" rx="12" fill="#fff" stroke="#bbc7d8"/>
+    <rect x="392" y="101" width="296" height="253" rx="12" fill="#fff" stroke="#bbc7d8"/>
+    <rect x="748" y="101" width="296" height="253" rx="12" fill="#fff" stroke="#bbc7d8"/>
+    <text x="56" y="132" font-size="16" font-weight="bold">BEFORE START</text>
+    <text x="56" y="169" font-size="21" font-family="DejaVu Sans Mono, monospace">raw tap = 00000000</text>
+    <text x="56" y="199" font-size="15">RSM_CUR_STATE field = 0</text>
+    <text x="56" y="224" font-size="15">RDB name: IDLE</text>
+    <text x="56" y="264" font-size="14">All 11 observed words = 0</text>
+    <text x="56" y="289" font-size="14">Selector = 0x0b (SOFT + PX_RD_SM)</text>
+    <text x="56" y="330" font-size="12" fill="#53657a">A zero field does not certify inactivity.</text>
+    <path d="M344 209h34m-9-7 9 7-9 7" stroke="#496986" stroke-width="2" fill="none"/>
+    <text x="339" y="188" font-size="11">1 START</text>
+    <text x="412" y="132" font-size="16" font-weight="bold">AFTER START</text>
+    <text x="412" y="169" font-size="21" font-family="DejaVu Sans Mono, monospace">raw tap = 00001000</text>
+    <text x="412" y="199" font-size="15">RSM_CUR_STATE field = 1</text>
+    <text x="412" y="224" font-size="14">RDB name: SEND_FIXED_COLOUR</text>
+    <text x="412" y="264" font-size="14">Same raw word in 16 × 2 bundles</text>
+    <text x="412" y="289" font-size="14">Other PX fields = 0 (raw labels)</text>
+    <text x="412" y="330" font-size="12" fill="#53657a">No READY/ACCEPT decoding in this view.</text>
+    <path d="M700 209h34m-9-7 9 7-9 7" stroke="#496986" stroke-width="2" fill="none"/>
+    <text x="700" y="188" font-size="11">reset</text>
+    <text x="768" y="132" font-size="16" font-weight="bold">RETIREMENT / RECOVERY</text>
+    <text x="768" y="169" font-size="21">25 originals match</text>
+    <text x="768" y="199" font-size="15">Two exact tuples before powerdown</text>
+    <text x="768" y="224" font-size="15">Then full stop + final PCI/binding</text>
+    <text x="768" y="264" font-size="14">All four cleanup results = 0</text>
+    <text x="768" y="289" font-size="14">Installed stock module restored</text>
+    <text x="768" y="330" font-size="12" fill="#53657a">No force unload or ambiguous START retry.</text>
+    <rect x="36" y="372" width="1008" height="61" rx="9" fill="#e4eef8"/>
+    <text x="54" y="398" font-size="15">Separate non-atomic words: BVB_SAMPLE = 00040168, FEED_STATUS = 00000001; other words = 0.</text>
+    <text x="54" y="420" font-size="14">8 native controls × 180 frames = 1,440 full-byte matches • 640×360 YUY2 • EOS and cleanup pass</text>
+    <text x="36" y="467" font-size="15" font-weight="bold">Sampled state label—not proof of progress, accepted pixels, SCL output, completion or a source lease.</text>
+    <text x="36" y="494" font-size="13" fill="#53657a">Numeric state/field names come from the local RDB. Host sampling bounds do not bound autonomous device activity.</text>
+    <text x="36" y="517" font-size="12" fill="#53657a">Issue #92 remains open. No README/HISTORY/TODO changes; no reboot or installed-file changes.</text>
+  </g>
+</svg>

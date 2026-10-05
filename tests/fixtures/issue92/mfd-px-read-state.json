@@ -1,0 +1,431 @@
+{
+  "schema": 1,
+  "issue": 92,
+  "experiment": "fixed-colour MFD/SCL PX_RD_SM state contrast",
+  "default_enabled": false,
+  "baseline_commit": "9362cadc923d3c5ceed155f6f518f6013d2a8c53",
+  "prepared_baseline": "17 prior issue92 overlays",
+  "derived_patch_sha256": "eaebd6b6dcf709760a4af7dbafd29a94b163f488ac15f2ec8e48a4b56e2660f8",
+  "protocol_sha256": "4fa76af16271b4af2840b02c282646e0c66c6da1ab475579966f31645a6a328a",
+  "register_definition": "include/flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_mfd.h",
+  "changes_from_joint_handshake": {
+    "configuration_target_index": 7,
+    "register": "MFD_TEST_PORT_CNTL",
+    "value_hex": "0000000b",
+    "encoding": "SOFT_INPUT=8, TP_ADDR.PX_RD_SM=3",
+    "word0_view": "PX_RD_SM",
+    "word0_reserved_mask_hex": "c0000000",
+    "word0_terminal_interpretation": false,
+    "retirement": "unchanged exact paired saved25 + full stockstop + final PCI/current binding"
+  },
+  "profiles": [
+    {
+      "macro": "CRYSTALHD_JOINT_PX_CONFIG_RESET_PROBE",
+      "module_sha256": "ac33e8b9c946a38e9b7befd9c7b3a7b34027f132512248276c289f3d7f51873e",
+      "target_attempts_max": 15,
+      "start_attempts": 0
+    },
+    {
+      "macro": "CRYSTALHD_JOINT_PX_FEED_PROBE",
+      "module_sha256": "3adeabd2217bf3d8e55a310cf81b2fed9e3b323496adbf2b41bc5b4a8c5b7e6e",
+      "target_attempts_max": 16,
+      "start_attempts_max": 1,
+      "active_bundles_max": 16
+    }
+  ],
+  "original_controls_hex": [
+    "00000050",
+    "00000000",
+    "00800080",
+    "00108080",
+    "00000780",
+    "00000436",
+    "00000010",
+    "00000000",
+    "00000000",
+    "00000008",
+    "00000004",
+    "00000000",
+    "00000000",
+    "00000000",
+    "00000080",
+    "0000000c",
+    "00000000",
+    "00000000",
+    "02d000f0",
+    "00000000",
+    "02d000f0",
+    "02d000f0",
+    "00000000",
+    "00000000",
+    "00000000"
+  ],
+  "configuration_trials": [
+    {
+      "name": "config-a",
+      "invocation_utc": "2026-10-05 18:38:36 UTC",
+      "kernel_sha256": "64187c0292b3594aa75a2aed81a23845f82334a8803a44c2e52f5ae916f0c712",
+      "paired_saved25_exactly_retired": true,
+      "pre_start_raw_hex": [
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000"
+      ],
+      "attempts": 15,
+      "start_attempted": 0,
+      "observations": 0,
+      "accept_writes": 0,
+      "outcome": "configuration_only",
+      "view": "px_rd_sm"
+    },
+    {
+      "name": "config-repeat",
+      "invocation_utc": "2026-10-05 18:39:41 UTC",
+      "kernel_sha256": "75f4c2e6d5011a941847053b3eafdc74258fe183684f249ab4597c909f0c3328",
+      "paired_saved25_exactly_retired": true,
+      "pre_start_raw_hex": [
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000"
+      ],
+      "attempts": 15,
+      "start_attempted": 0,
+      "observations": 0,
+      "accept_writes": 0,
+      "outcome": "configuration_only",
+      "view": "px_rd_sm"
+    }
+  ],
+  "feed_trials": [
+    {
+      "name": "feed-a",
+      "invocation_utc": "2026-10-05 18:41:39 UTC",
+      "kernel_sha256": "0a680316d8eda35522b4445bfb0c1d5f95d4fd8233d386b769b08a6bf345736e",
+      "paired_saved25_exactly_retired": true,
+      "pre_start_raw_hex": [
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000"
+      ],
+      "attempts": 16,
+      "start_attempted": 1,
+      "observations": 16,
+      "accept_writes": 0,
+      "outcome": "bounded_observation",
+      "view": "px_rd_sm",
+      "active_bundle_hex": [
+        "00001000",
+        "00040168",
+        "00000001",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000"
+      ],
+      "every_complete_bundle_identical": true,
+      "px_raw0_fields": {
+        "RSM_CUR_STATE": 1,
+        "RDB_name": "SEND_FIXED_COLOUR",
+        "BUF_READY": 0,
+        "NUM_ACTIVE_PIXEL": 0,
+        "INIT_PIX_OFFSET": 0,
+        "DBUF_RD_ON": 0,
+        "RD_PIXEL_CNT": 0,
+        "BUF_RD_DONE": 0
+      },
+      "scope": "numeric field labels only; not progress, processed counts or completion"
+    },
+    {
+      "name": "feed-repeat",
+      "invocation_utc": "2026-10-05 18:43:57 UTC",
+      "kernel_sha256": "684da980d93b62d084f493120605415fa720e700c7b9ac702ade58b2319168e8",
+      "paired_saved25_exactly_retired": true,
+      "pre_start_raw_hex": [
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000"
+      ],
+      "attempts": 16,
+      "start_attempted": 1,
+      "observations": 16,
+      "accept_writes": 0,
+      "outcome": "bounded_observation",
+      "view": "px_rd_sm",
+      "active_bundle_hex": [
+        "00001000",
+        "00040168",
+        "00000001",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000"
+      ],
+      "every_complete_bundle_identical": true,
+      "px_raw0_fields": {
+        "RSM_CUR_STATE": 1,
+        "RDB_name": "SEND_FIXED_COLOUR",
+        "BUF_READY": 0,
+        "NUM_ACTIVE_PIXEL": 0,
+        "INIT_PIX_OFFSET": 0,
+        "DBUF_RD_ON": 0,
+        "RD_PIXEL_CNT": 0,
+        "BUF_RD_DONE": 0
+      },
+      "scope": "numeric field labels only; not progress, processed counts or completion"
+    }
+  ],
+  "harness_results": {
+    "trials": 4,
+    "JSON_sha256": "dd4f57b4581a9ea7243f7c01f9025c8953201e87b09243f78b723f20144c0f94",
+    "status": -5,
+    "download_status": 20,
+    "firmware_hash_valid": true,
+    "cleanup_attempted": true,
+    "cleanup_status": 0,
+    "retained": false,
+    "command_count": 0,
+    "stderr_bytes": 0,
+    "meaning": "expected deliberate pre-CMAC abort after fixed probe; not successful firmware startup"
+  },
+  "tests": {
+    "strict_and_asan_ubsan": {
+      "groups": 169,
+      "checks": 663049204,
+      "failures": 0,
+      "independent_matching_runs": 2,
+      "stdout_sha256": "f83db2f7173fe53478496ba2015bc399cf94d519bae9763fadc7ce69df3f582b",
+      "stderr_bytes": 0
+    },
+    "unchanged_prior_gate": {
+      "groups": 158,
+      "checks": 433871792
+    },
+    "device_lifetime_and_access": {
+      "default_routes_each_mode": 60,
+      "research_routes_each_mode": 60,
+      "joint_retention_routes_each_mode": 90,
+      "access_scenarios": 33,
+      "access_checks": 148,
+      "failures": 0,
+      "independent_matching_runs": 2
+    },
+    "session_CLI": {
+      "session_checks_each_mode": 342493,
+      "CLI_checks_each_mode": 6637054,
+      "strict_and_sanitizers": true,
+      "independent_matching_runs": 2,
+      "stderr_bytes": 0
+    },
+    "kernel6_17_Werror_builds": [
+      "PX configuration",
+      "PX feed",
+      "research disabled"
+    ]
+  },
+  "logical_callback_bounds": {
+    "configuration": {
+      "reg_reads": 644,
+      "custom_attempts": 15,
+      "clean_pci": 114,
+      "pending_pci_max": 342
+    },
+    "feed": {
+      "reg_reads_max": 1812,
+      "custom_attempts_max": 16,
+      "clean_pci_max": 306,
+      "pending_pci_max": 918
+    },
+    "loader_additional": {
+      "reg_reads": 14,
+      "stock_reg_writes": 5,
+      "payload_pio_writes": 1,
+      "prefix_pio_reads": 1
+    },
+    "clean_stop": {
+      "reg_reads": 75,
+      "stock_reg_writes": 21,
+      "clean_pci": 15,
+      "pending_pci_max": 45,
+      "pending_sleeps_total": 18,
+      "checked_opaque_stock_boundaries": 4
+    },
+    "scope": "logical model callbacks; not physical transactions, device-autonomous bounds or consumer fences"
+  },
+  "native_controls": {
+    "runs": [
+      {
+        "name": "baseline-stock-h264",
+        "frames": 180,
+        "bytes": 82944000,
+        "full_byte_comparison": true,
+        "sha256": "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+        "eos": true,
+        "pending": 0,
+        "ready": 0,
+        "cleanup": "PASS",
+        "stderr_bytes": 0,
+        "resources": "fds3/3 threads1/1"
+      },
+      {
+        "name": "baseline-config-module-h264",
+        "frames": 180,
+        "bytes": 82944000,
+        "full_byte_comparison": true,
+        "sha256": "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+        "eos": true,
+        "pending": 0,
+        "ready": 0,
+        "cleanup": "PASS",
+        "stderr_bytes": 0,
+        "resources": "fds3/3 threads1/1"
+      },
+      {
+        "name": "recovery-after-config-a",
+        "frames": 180,
+        "bytes": 82944000,
+        "full_byte_comparison": true,
+        "sha256": "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+        "eos": true,
+        "pending": 0,
+        "ready": 0,
+        "cleanup": "PASS",
+        "stderr_bytes": 0,
+        "resources": "fds3/3 threads1/1"
+      },
+      {
+        "name": "recovery-after-config-repeat",
+        "frames": 180,
+        "bytes": 82944000,
+        "full_byte_comparison": true,
+        "sha256": "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+        "eos": true,
+        "pending": 0,
+        "ready": 0,
+        "cleanup": "PASS",
+        "stderr_bytes": 0,
+        "resources": "fds3/3 threads1/1"
+      },
+      {
+        "name": "baseline-feed-module-h264",
+        "frames": 180,
+        "bytes": 82944000,
+        "full_byte_comparison": true,
+        "sha256": "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+        "eos": true,
+        "pending": 0,
+        "ready": 0,
+        "cleanup": "PASS",
+        "stderr_bytes": 0,
+        "resources": "fds3/3 threads1/1"
+      },
+      {
+        "name": "recovery-after-feed-a",
+        "frames": 180,
+        "bytes": 82944000,
+        "full_byte_comparison": true,
+        "sha256": "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+        "eos": true,
+        "pending": 0,
+        "ready": 0,
+        "cleanup": "PASS",
+        "stderr_bytes": 0,
+        "resources": "fds3/3 threads1/1"
+      },
+      {
+        "name": "recovery-after-feed-repeat",
+        "frames": 180,
+        "bytes": 82944000,
+        "full_byte_comparison": true,
+        "sha256": "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+        "eos": true,
+        "pending": 0,
+        "ready": 0,
+        "cleanup": "PASS",
+        "stderr_bytes": 0,
+        "resources": "fds3/3 threads1/1"
+      },
+      {
+        "name": "final-stock-recovery-h264",
+        "frames": 180,
+        "bytes": 82944000,
+        "full_byte_comparison": true,
+        "sha256": "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+        "eos": true,
+        "pending": 0,
+        "ready": 0,
+        "cleanup": "PASS",
+        "stderr_bytes": 0,
+        "resources": "fds3/3 threads1/1"
+      }
+    ],
+    "total_frames": 1440,
+    "format": "640x360 YUY2",
+    "scope": "native recovery controls, not FHD, application, seek/rate or audio-sync validation"
+  },
+  "restoration": {
+    "installed_module_restored": true,
+    "stock_srcversion": "1D01F9BFBB5CCDC75C46312",
+    "refcount": 0,
+    "research_node_absent": true,
+    "PCI_command_hex": "0506",
+    "PCI_devsta_hex": "0009",
+    "final_PCI_matches_baseline": true,
+    "PCI_bus_master_temporarily_cleared": true,
+    "seven_installed_files_unchanged": true,
+    "README_HISTORY_TODO_unchanged": true,
+    "no_reboot_or_install_change": true
+  },
+  "observed": "Two separate sole-START trials sampled PX RSM_CUR_STATE=1 in all 16 complete bundles; each prior bundle was zero. Independent sample/status words remained raw non-atomic observations.",
+  "not_established": [
+    "passive-mux guarantee",
+    "pixel-count units",
+    "progress between samples",
+    "BVB accepted transfer",
+    "SCL routing or output",
+    "fresh completion",
+    "functional clock",
+    "source lease",
+    "all-consumer fence"
+  ],
+  "original_issue_done": false
+}
