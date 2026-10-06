@@ -259,6 +259,27 @@ void compose(AnnexB &output, const uint8_t mask[BC_RAW_FRAME_MASK_BYTES])
     output.nal(0x21, b);
 }
 
+void translate(AnnexB &output, uint32_t slot,
+               int32_t mv_x_qpel, int32_t mv_y_qpel)
+{
+    Bits b(output.builder->rbsp);
+    b.ue(0); b.ue(0); b.ue(0);
+    b.u(output.builder->committed_frames & 15u, 4);
+    b.u(1, 1); b.ue(0); // One active L0 reference; no per-MB ref_idx.
+    b.u(1, 1); b.ue(2); b.ue(slot); b.ue(3);
+    b.u(0, 1); b.se(0); b.ue(1);
+    for (unsigned mb = 0; mb < BC_RAW_FRAME_MASK_BYTES; ++mb) {
+        b.ue(0); b.ue(0);
+        // First MB predicts zero. Same-reference spatial prediction carries
+        // this uniform vector through every remaining 16x16 macroblock.
+        b.se(mb == 0 ? mv_x_qpel : 0);
+        b.se(mb == 0 ? mv_y_qpel : 0);
+        b.ue(0);
+    }
+    b.finish();
+    output.nal(0x21, b);
+}
+
 BC_STATUS publish(AnnexB &output, uint32_t slot,
                   const uint8_t **au, uint32_t *bytes)
 {
@@ -346,6 +367,25 @@ DRVIFLIB_API BC_STATUS DtsRawFramePrepareCompose(BC_RAW_FRAME_BUILDER *builder,
     AnnexB output(builder);
     aud(output, false);
     compose(output, choices);
+    return publish(output, kCompose, au, bytes);
+}
+
+DRVIFLIB_API BC_STATUS DtsRawFramePrepareTranslate(BC_RAW_FRAME_BUILDER *builder,
+                                    uint32_t slot,
+                                    int32_t mv_x_qpel, int32_t mv_y_qpel,
+                                    const uint8_t **au, uint32_t *bytes)
+{
+    const BC_STATUS status = prepare_status(builder, au, bytes);
+    if (status != BC_STS_SUCCESS)
+        return status;
+    if (slot > 1 || mv_x_qpel < -3 || mv_x_qpel > 3 ||
+        mv_y_qpel < -3 || mv_y_qpel > 3)
+        return BC_STS_INV_ARG;
+    if (builder->slots != 3)
+        return BC_STS_ERR_USAGE;
+    AnnexB output(builder);
+    aud(output, false);
+    translate(output, slot, mv_x_qpel, mv_y_qpel);
     return publish(output, kCompose, au, bytes);
 }
 

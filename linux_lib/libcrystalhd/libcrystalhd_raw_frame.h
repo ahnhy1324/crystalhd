@@ -70,6 +70,18 @@ DRVIFLIB_API BC_STATUS DtsRawFramePrepareCompose(BC_RAW_FRAME_BUILDER *builder,
                                   const uint8_t *mask, uint32_t mask_bytes,
                                   const uint8_t **au, uint32_t *bytes);
 
+/* Translate requires both committed slots and selects one long-term slot
+ * (0 or 1) for the whole picture. Motion components are H264 quarter-luma-
+ * sample units, each in [-3,3]; positive components select larger reference
+ * coordinates. Standard H264 interpolation and edge extension apply.
+ * This is a coded P picture, with the same pending/commit/poison contract
+ * as the other Prepare operations, not a scaler or raw-surface operation.
+ */
+DRVIFLIB_API BC_STATUS DtsRawFramePrepareTranslate(BC_RAW_FRAME_BUILDER *builder,
+                                    uint32_t slot,
+                                    int32_t mv_x_qpel, int32_t mv_y_qpel,
+                                    const uint8_t **au, uint32_t *bytes);
+
 /* Finish requires a pending AU and the ACTUAL complete DtsProcInput result.
  * Only SUCCESS commits frame/reference state. Every other result poisons
  * the builder and is returned unchanged, even if some bytes were queued.
