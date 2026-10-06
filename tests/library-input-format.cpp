@@ -150,6 +150,59 @@ static void Rejected(BC_INPUT_FORMAT *bad) {
     if (bad) Check(!std::memcmp(&input,bad,sizeof input), "failed setup does not mutate caller format");
 }
 static void NullFormat() { Rejected(nullptr); }
+static void NullScaleFlea() {
+    Fixture f; f.Valid(); f.context.EnableScaling=0x0c00c001;
+    const Snapshot before(f);
+    Check(DtsSetScaleParams(&f.context,nullptr)==BC_STS_INV_ARG,
+          "NULL Flea scaling parameters reject without dereferencing the caller");
+    before.Same(f);
+}
+static void NullScaleOtherDevices() {
+    for(uint32_t device:{static_cast<uint32_t>(BC_PCI_DEVID_LINK),UINT_MAX}) {
+        Fixture f(device); f.context.EnableScaling=0x0c00c001;
+        const Snapshot before(f);
+        Check(DtsSetScaleParams(&f.context,nullptr)==BC_STS_INV_ARG,
+              "NULL Link and unknown-device scaling parameters retain rejection");
+        before.Same(f);
+    }
+}
+static void InvalidScaleHandle() {
+    Fixture f; f.Valid(); f.context.EnableScaling=0x0c00c001;
+    const Snapshot before(f);
+    BC_SCALING_PARAMS params={}; params.sWidth=192;
+    const BC_SCALING_PARAMS caller=params;
+    Check(DtsSetScaleParams(nullptr,&params)==BC_STS_INV_ARG,
+          "NULL scaler handle rejects before modifying caller or live context");
+    Check(DtsSetScaleParams(nullptr,nullptr)==BC_STS_INV_ARG,
+          "NULL scaler handle and parameters reject together");
+    f.context.Sig=0;
+    Check(DtsSetScaleParams(&f.context,&params)==BC_STS_INV_ARG,
+          "wrong-signature scaler handle rejects before reading parameters");
+    Check(DtsSetScaleParams(&f.context,nullptr)==BC_STS_INV_ARG,
+          "wrong-signature scaler handle and NULL parameters reject together");
+    f.context.Sig=LIB_CTX_SIG;
+    Check(!std::memcmp(&caller,&params,sizeof params),"invalid scaler handles preserve caller bytes");
+    before.Same(f);
+}
+static void LegacyScaleFields() {
+    Fixture f; f.Valid();
+    struct Width { uint32_t requested, encoded; };
+    const Width widths[]={{0,0x50050001},{127,0x50050001},{1921,0x50050001},
+        {UINT_MAX,0x50050001},{128,0x08008001},{129,0x08108101},
+        {192,0x0c00c001},{1919,0x77f77f01},{1920,0x78078001}};
+    for(const auto &width:widths) for(bool opaque:{false,true}) {
+        BC_SCALING_PARAMS params={}; params.sWidth=width.requested;
+        params.sHeight=opaque?UINT_MAX:0; params.DNR=opaque?UINT_MAX:0;
+        const BC_SCALING_PARAMS caller=params;
+        Snapshot expected(f); expected.scaling=width.encoded;
+        Check(DtsSetScaleParams(&f.context,&params)==BC_STS_SUCCESS &&
+              f.context.EnableScaling==width.encoded,
+              "legacy width boundaries/fallback and cached encoding stay unchanged");
+        Check(!std::memcmp(&caller,&params,sizeof params),
+              "height/DNR remain ignored and all caller parameter bytes stay unchanged");
+        expected.Same(f);
+    }
+}
 static void NullMetadata() {
     auto f = Format(BC_MSUBTYPE_AVC1, {}); f.metaDataSz = 9;
     Rejected(&f);
@@ -477,7 +530,12 @@ int main() {
     const rlimit no_core={0,0};
     if(setrlimit(RLIMIT_CORE,&no_core)) return 2;
     struct Case { const char *name; void (*run)(); };
-    const Case cases[]={{"NULL input format",NullFormat},{"nonzero NULL metadata",NullMetadata},
+    const Case cases[]={{"NULL input format",NullFormat},
+        {"NULL Flea scaling parameters",NullScaleFlea},
+        {"NULL other-device scaling parameters",NullScaleOtherDevices},
+        {"invalid scaler handles",InvalidScaleHandle},
+        {"legacy scaler width and ignored fields",LegacyScaleFields},
+        {"nonzero NULL metadata",NullMetadata},
         {"WMV3 missing metadata",MissingWmv},{"WMV3 missing replacement metadata",MissingWmvReplacement},
         {"WMV3 short metadata",ShortWmv},
         {"malloc failure atomicity",MallocFailure},{"converter allocation failure atomicity",AlignedFailure},
