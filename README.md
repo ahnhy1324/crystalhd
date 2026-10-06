@@ -205,6 +205,12 @@ against maintained LTS, stable and mainline kernel APIs. Linux 5.15 coverage
 is an API compilation check, not BCM70012 or BCM70015 hardware certification;
 device-free tests do not establish hardware playback.
 
+The opt-in [raw-frame library API](linux_lib/libcrystalhd/libcrystalhd_raw_frame.h)
+uploads 256x96 YUV420P images and composes tiles from two retained references
+through a native H.264 stream. It requires a fresh, correctly configured
+decoder session and caller-managed stream rate; it is not standalone MFD
+processing or a raw device-surface API. `make raw-frame-check` tests the host API.
+
 ## Licensing
 
 Existing file notices remain authoritative in this mixed-license codebase;

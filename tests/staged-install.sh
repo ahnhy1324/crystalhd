@@ -52,6 +52,7 @@ test "$(readlink "$stage_dir/usr/lib/libcrystalhd.so")" = \
     libcrystalhd.so.3
 test -f "$stage_dir/usr/lib/pkgconfig/libcrystalhd.pc"
 test -f "$stage_dir/usr/include/libcrystalhd/libcrystalhd_if.h"
+test -f "$stage_dir/usr/include/libcrystalhd/libcrystalhd_raw_frame.h"
 test -f "$stage_dir/usr/include/libcrystalhd/bc_dts_defs.h"
 test -f "$stage_dir/usr/include/libcrystalhd/bc_dts_types.h"
 test -f "$stage_dir/usr/include/libcrystalhd/libcrystalhd_version.h"

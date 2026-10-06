@@ -10,7 +10,7 @@ PYTHON3 ?= python3
 DRIVER_ARGS := KVER=$(KVER) KDIR=$(KDIR) DESTDIR=$(DESTDIR)
 USER_ARGS := PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 
-.PHONY: all driver library library-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check l0s-check command-pm-check fw-command-check fw-download-check fw-research-check fw-qemu-check fw-probe-check fw-probe-tool tx-admission-check h264-stream-check rx-ownership-check flea-rx-metadata-check flea-dram-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check architecture-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check clean
+.PHONY: all driver library library-check raw-frame-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check l0s-check command-pm-check fw-command-check fw-download-check fw-research-check fw-qemu-check fw-probe-check fw-probe-tool tx-admission-check h264-stream-check rx-ownership-check flea-rx-metadata-check flea-dram-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check architecture-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check clean
 
 all: driver library gstreamer vaapi examples
 
@@ -25,10 +25,11 @@ library:
 library-check:
 	@set -eu; lib_test_dir=$$(mktemp -d /tmp/crystalhd-library-check.XXXXXX); \
 	trap 'rm -f "$$lib_test_dir/check"; rmdir "$$lib_test_dir"' EXIT HUP INT TERM; \
-	for lib_test in tx-ring flush tx-flush eos copy planar format input mpeg4-input input-format status color clock devmem device-handle capture fwload fw-version fwcmds; do \
+	for lib_test in tx-ring flush tx-flush eos copy planar format input mpeg4-input input-format status color clock devmem device-handle capture fwload fw-version fwcmds raw-frame; do \
 		test_extra=; \
 		test_sources="linux_lib/libcrystalhd/libcrystalhd_priv.cpp linux_lib/libcrystalhd/libcrystalhd_if.cpp"; \
 		case $$lib_test in \
+			raw-frame) test_wrap=-Wl,--wrap=calloc; test_sources=linux_lib/libcrystalhd/libcrystalhd_raw_frame.cpp ;; \
 			copy|planar) test_wrap=; test_sources=linux_lib/libcrystalhd/libcrystalhd_int_if.cpp ;; \
 			format) test_wrap=; test_sources="linux_lib/libcrystalhd/libcrystalhd_int_if.cpp linux_lib/libcrystalhd/libcrystalhd_priv.cpp linux_lib/libcrystalhd/libcrystalhd_if.cpp" ;; \
 			status|color) test_wrap=-Wl,--wrap=ioctl; \
@@ -79,6 +80,9 @@ library-check:
 
 gstreamer: library
 	$(MAKE) -C filters/gst/gst-plugin-1.0
+
+raw-frame-check:
+	CC="$(CC)" CXX="$(CXX)" sh ./tests/library-raw-frame.sh
 
 # Optional direct-library hardware probe. Building never opens the device;
 # running requires explicit --hardware (or device-free --preflight).
@@ -180,7 +184,7 @@ phase1-check: library-drain-test tests/phase1-oracle.tsv
 	sh tests/phase1-release-gate.sh --self-test
 	sh tests/phase1-release-gate.sh manifest-check tests/phase1-oracle.tsv
 
-check: uapi-check dma-check l0s-check architecture-check pib-check library-check fw-research-check all
+check: uapi-check dma-check l0s-check architecture-check pib-check library-check raw-frame-check fw-research-check all
 	$(MAKE) -C filters/gst/gst-plugin-1.0 check
 	$(MAKE) -C filters/vaapi check
 	$(MAKE) -C browser check

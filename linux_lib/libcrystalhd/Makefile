@@ -27,10 +27,12 @@ SRCFILES := libcrystalhd_if.cpp \
 	libcrystalhd_priv.cpp \
 	libcrystalhd_fwdiag_if.cpp \
 	libcrystalhd_fwload_if.cpp \
-	libcrystalhd_parser.cpp
+	libcrystalhd_parser.cpp \
+	libcrystalhd_raw_frame.cpp
 OBJFILES := $(SRCFILES:.cpp=.o)
 DEPFILES := $(OBJFILES:.o=.d)
 PUBLIC_HEADERS := libcrystalhd_if.h \
+	libcrystalhd_raw_frame.h \
 	$(ROOTDIR)/include/bc_dts_defs.h \
 	$(ROOTDIR)/include/bc_dts_types.h \
 	$(ROOTDIR)/include/libcrystalhd_version.h
