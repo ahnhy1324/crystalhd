@@ -9755,5 +9755,587 @@ class NativeSourceShapeFixtureTests(unittest.TestCase):
         self.assertIn("do not certify current frame, bank extent, generation or source ownership", text["32", "484"])
 
 
+class FirmwarePpbSavedContextTests(unittest.TestCase):
+    """Pinned saved-context provenance and observer guards, not a live lease."""
+    ARM = (
+        ("root_getter", 0x898, 8, "fed8d9727528a2abbf8b8b5c258b5d558e3192d5fc3232bc4a7f0a1c91cd6e38"),
+        ("open_wrapper", 0x8a0, 0x2f8, "852df88584df06c581c4e32fec35d020233fd042a9c5a4579cdfbce26a535f12"),
+        ("sm_open", 0xa2a4, 0x110, "152b7de5dac90649b746ae70ed0c9a8709c324785cbca4e56ef040cd02982338"),
+        ("controller_create", 0xe8b0, 0x44c, "5a39a3cd8e72b709a02706b0d432eabb56aa7488d90929fd5330ab6d0bd14c45"),
+        ("channel_open", 0xf7e4, 0x408, "723911a2a94585093da0b4caebd2ba2a20b2c8bc87c4e91dd42646ae95a3a092"),
+        ("malloc_wrapper", 0x20510, 0x1c, "f5b42fe2871ad003de5020485b5ea214874abbdb87e2dbf0ceb22a1c590b9489"),
+        ("malloc_manager", 0x7194, 0xc4, "38ba97a660f9b366122dcd5026e19c0611a5ca1b5ebd23f0bb7a99d78cb86675"),
+        ("small_heap_init", 0x2578, 0xa0, "708f312582aa7e95b2aeba557528aad7791470d9e0219451d0b22c15f814e246"),
+        ("variable_malloc", 0x2d30, 0x44, "eefb0ec02f6d9889205afdade868a50321ce22ea9af931645ff8a7c2db08d989"),
+        ("context_config", 0x252a4, 0x6b0, "7619bc9a6eff1b1ba1c3ea8e8f719eb8ce064f3cd15ff65a584f5c7e165fc357"),
+        ("context_allocate", 0x25c18, 0x540, "b413d045432e9927c877cbc76c507d9d2868cd41632c54f92ca782d35236d376"),
+        ("arc_open_builder", 0x27480, 0x144, "c356d9c46eee35ea6dafb60e7e1ef49cf37c77726e4ba14e5e192f9cc2c50f91"),
+        ("virtual_to_physical", 0x1fe6c, 0x9c, "bb0e8f8634a6ae4fb7029ec72f0a1e8c524e7e25f7285105430c4987473f75e2"),
+        ("manager_publish", 0x250bc, 0x144, "fa480a332eccac24ca614e9e6f710a64a8cb917421549715f83ed06936d10bf4"),
+        ("owned_video_regions", 0x28310, 0x53c, "f0c0e9c39268d575a87c292eaeabc3704c015535c93c1456e256910ca53c1134"),
+        ("manager_create", 0x2b3f0, 0x1b4, "3e3c9c3b797ebeb13fc6c1ef116a617973f4f50e41730e82bf350b0f8f125b8e"),
+        ("manager_allocate", 0x2b628, 0x1a0, "ce3360c94599082eace9edf99b103215c332a13ae17b9980cdb542a3cbedb2d6"),
+        ("map_create", 0x200d8, 0x13c, "681b71b44ebdca366432f0a0df8b8e685321deb4991ac2c83096d925ca7848a3"),
+        ("main_map_create", 0x294ec, 0x244, "f7a2df49ccbb0ba7663fca21285d437c3ca231a5f351ce063d41bb2d6d9ffe70"),
+        ("child_map_create", 0x2906c, 0x378, "affcb72dd72784f9c6329eba4fee513e9c70a6b861c2780de5825aaf4dee6868"))
+    ARC = (
+        ("Core_CopyDramToLsram", 4, 0x9e74, 0x9f90, 0x34d18, "a78e06a80f25a603981e888fa35ccf9e811dca10acdc4d71b919bd8902f88a1e"),
+        ("System_Activate", 4, 0x9f90, 0xa0b4, 0x34e34, "9530baaafd18492433c0f9fdca77cfcd8d0ad1aa982e221303d6cd54de17521e"),
+        ("CmdChannelOpen", 16, 0x24788, 0x24bb4, 0x4731c, "299ddffe5d7c502e0d0df9be965842c76f7de59cd09b30c65ed00fb807a49e22"),
+        ("Core_ChanInitialize", 16, 0x266f8, 0x26974, 0x4928c, "11aeb52ef9f2a3c8ab99cf099c75eade7a69abe991e3561a05f423e54b1b4d71"),
+        ("Core_CopyLsramToDram", 4, 0x9c3c, 0x9d48, 0x34ae0, "32f163266b8f614b9e46b94bc4a9b20863606b0cbad567b3b6a496f5d7866c64"),
+        ("System_Deactivate", 4, 0x9d48, 0x9e74, 0x34bec, "f185b940f905ee5c4e28f097434d8757b3e5e9a5ccba6fe47422caf25e892e20"),
+        ("System_ChannelSwap", 4, 0xa0b4, 0xa13c, 0x34f58, "8315bb7a6c172ee672fcc71f07e09dadca1d5b5135d752f967d175f1c17f4942"),
+        ("H264_Deactivate", 5, 0x10258, 0x10270, 0x3b0fc, "053a80d9cb4f28d91a3f4bcea39772d24496d9adeba423be64c87e083454845e"),
+        ("H264_Activate", 5, 0x10270, 0x10408, 0x3b114, "fb737971e94e0175cb4745c697466240bce61ca705ad13d03e100bac9a9b832f"),
+        ("Platform_DrvContextSize", 16, 0x3b304, 0x3b30c, 0x5de98, "837494e6a5e29cf8ca42cf997921cc319edae871aebc286e75b44e30c933dd7b"))
+    METADATA = (
+        ("elf_header", 0x2ea60, 52, "23799a2426f4a4d638beb46ecaf49047463bf78b1527bcb1880f6473ea02c380"),
+        ("section_headers", 0x79540, 2200, "5ba0754ef57c2d51ba8362ac7c9778b6d3f77a72466f9a09588337a8d99ea7d6"),
+        ("section_names", 0x79098, 1191, "f54ad2922e3d4a39bdb26a36a249301a78dae5e6b4e190d1d84ea03427f64a86"),
+        ("symbol_table", 0x69b70, 13392, "d148d757c8d16a65a1ed1f52957317867986847e5e626a551eaafcaf6fcc1ccb"),
+        ("symbol_names", 0x67a95, 8410, "4a9e326f9ad7c3be6015519586e7decab7a5647be27b7bc00578f1ef2f281b4a"))
+    DATA = (
+        ("arm_init_context", 0x54c, 0x34c, "807fac6ec7a10ccde3cda20dd535ff9462b00f82ccb4cdc71c575b6cf94ac109"),
+        ("video_heap_parameters", 0x7534, 0x70, "1ef4bebb542793521b81d76f3625db33c657dcde88d5a77cb070de87b62877ff"),
+        ("root_literal", 0x6fc, 4, "5d41a43f0a6983f407fc72552a64a4ea2e7bd6565d4df18496b2c7c102017755"),
+        ("malloc_literals", 0x72a8, 12, "44f11a135d90efd7906904d4f248c0219fa3901d81fcb4b5b5247079263d40f5"),
+        ("video_heap_literals", 0x76b4, 8, "03aa7bce575c23277ee32aabcdb77e2d8a42ccebb63fc4e5ec6305d9fdd69ec8"),
+        ("h264_context_table", 0x2e5c4, 560, "6babb2cd1d41212ccac94e58ee075d920f698690849df269ed4a5da122f913bb"),
+        ("flat_mpu_setup", 0x2ca94, 0xb4, "58896ddaa10dad5a760055218f23d398f4b28c0a7dc6a0b9f695b25dc862da52"))
+    SPANS = (("core_word", 0, 4), ("metadata_extra_word", 0x80, 4),
+             ("producer_pool_value", 0x21c, 4), ("metadata_pool_value", 0x33c, 4),
+             ("ppb_flags", 0x354, 68), ("bank_descriptors", 0x3fc, 144),
+             ("bank_bytes_and_count_word", 0x48c, 8), ("reader_pool_value", 0x530, 4))
+
+    @classmethod
+    def setUpClass(cls):
+        cls.data = MAP.read_firmware(BLOB)
+        cls.payload = cls.data[:-MAP.TRAILER_SIZE]
+        cls.elf_base = 0x2ea60
+        header = struct.unpack_from("<16sHHIIIIIHHHHHH", cls.payload, cls.elf_base)
+        cls.sections = [struct.unpack_from("<10I", cls.payload, cls.elf_base + header[6] + index * 40)
+                        for index in range(header[12])]
+        table = cls.sections[35]
+        strings = cls.sections[table[6]]
+        cls.names = cls.payload[cls.elf_base + strings[4]:cls.elf_base + strings[4] + strings[5]]
+        cls.symbols = [struct.unpack_from("<IIIBBH", cls.payload, cls.elf_base + table[4] + position)
+                       for position in range(0, table[5], 16)]
+
+    symbol_name = FirmwarePpbSourceProvenanceTests.symbol_name
+    file_offset = FirmwarePpbSourceProvenanceTests.file_offset
+    word = FirmwarePpbSourceProvenanceTests.word
+
+    def test_independent_all42_regions_hashes_body_counts_and_original_arc_symbols(self):
+        regions = self.METADATA + self.ARM + tuple((name, offset, end - start, digest)
+                                                  for name, _, start, end, offset, digest in self.ARC) + self.DATA
+        self.assertEqual((len(regions), sum(size for _, _, size, _ in regions)), (42, 41849))
+        self.assertEqual(MAP._PPB_SAVED_REGIONS, regions)
+        self.assertEqual(MAP._PPB_SAVED_ARM_REGIONS, self.ARM)
+        self.assertEqual(MAP._PPB_SAVED_ARC_BODIES, self.ARC)
+        for role, offset, size, digest in regions:
+            with self.subTest(region=role):
+                self.assertEqual(hashlib.sha256(self.payload[offset:offset + size]).hexdigest(), digest)
+        report = MAP._ppb_saved_context_bridge(self.payload)
+        self.assertEqual(report["basis"], {"model": "saved-arc-context-source-bridge-v1", "conditional": True,
+                                           "region_count": 42, "validated_bytes": 41849, "complete_arm_body_count": 20})
+        self.assertEqual(report["validated_regions"], [{"role": role, "blob_file_offset": offset,
+                                                       "size": size, "sha256": digest}
+                                                      for role, offset, size, digest in regions])
+        expected = []
+        for name, section, start, end, offset, digest in self.ARC:
+            self.assertEqual(self.file_offset(section, start), offset)
+            self.assertLessEqual(end, self.sections[section][3] + self.sections[section][5])
+            matches = [index for index, symbol in enumerate(self.symbols)
+                       if self.symbol_name(index) == name and symbol[1:3] == (start, end - start) and
+                       symbol[3] & 15 == 2 and symbol[5] == section]
+            self.assertEqual(len(matches), 1)
+            expected.append({"name": name, "section_index": section, "symbol_index": matches[0],
+                             "elf_virtual_address": start, "size": end - start,
+                             "blob_file_offset": offset, "sha256": digest})
+        self.assertEqual(report["arc_bodies"], expected)
+
+    def test_object_windows_four_literal_full_object_envelopes_and_exact_end(self):
+        for kind, size in (("H", 0xa84c), ("C", 0x378), ("Q", 0x1f4), ("M", 0x64)):
+            for pointer in (0xd53dc, 0xd53e0, 0x116000 - size):
+                with self.subTest(kind=kind, pointer=pointer):
+                    self.assertEqual(MAP._ppb_context_object_window(pointer, kind), {
+                        "kind": kind, "pointer": pointer, "bytes": size, "end_exclusive": pointer + size,
+                        "alignment_bytes": 4, "observer_guards_only": True, "native_allocator_proven": False})
+            for pointer in (0xd53d8, 0xd53dd, 0x116000 - size + 4, 0x116000, 0xfffffffc):
+                with self.subTest(kind=kind, pointer=pointer), self.assertRaises(MAP.FormatError):
+                    MAP._ppb_context_object_window(pointer, kind)
+
+    def test_object_windows_strict_u32_kind_schema_and_boolean_refusal(self):
+        for pointer in (-1, 0x100000000, True, False, 1.0, "0xd53dc", None, [], {}):
+            with self.subTest(pointer=pointer), self.assertRaises(MAP.FormatError):
+                MAP._ppb_context_object_window(pointer, "H")
+        for kind in (None, True, False, 0, b"H", "h", "", "HC", "D", [], {}):
+            with self.subTest(kind=kind), self.assertRaises(MAP.FormatError):
+                MAP._ppb_context_object_window(0xd53dc, kind)
+        class StringSubclass(str):
+            pass
+        with self.assertRaises(MAP.FormatError):
+            MAP._ppb_context_object_window(0xd53dc, StringSubclass("H"))
+
+    def test_saved_windows_all_alignment_skips_minimum_full_slice_and_literal_spans(self):
+        for low in range(4):
+            physical, skip = 0x120000 + low, (4 - low) % 4
+            for remaining in (0x177cc, 0x3f940):
+                submitted = remaining + skip
+                expected = {"physical": physical, "submitted_bytes": submitted,
+                            "video_base": 0x116068, "video_bytes": 0x400000, "video_end_exclusive": 0x516068,
+                            "alignment_skip": skip, "context_address": physical + skip, "context_bytes": remaining,
+                            "context_end_exclusive": physical + submitted, "saved_core_bytes": 0x5bc,
+                            "read_spans": [{"role": role, "offset": offset, "address": physical + skip + offset,
+                                            "bytes": size} for role, offset, size in self.SPANS],
+                            "total_read_bytes": 240, "observed_inputs_only": True,
+                            "model_no_native_certification": True, "saved_may_be_stale": True, "non_atomic": True}
+                with self.subTest(low=low, remaining=remaining):
+                    self.assertEqual(MAP._ppb_saved_context_window(physical, submitted, 0x116068, 0x400000), expected)
+                    self.assertEqual((physical + skip) % 4, 0)
+                    self.assertEqual(physical + skip + remaining, physical + submitted)
+                    for span in expected["read_spans"]:
+                        self.assertLessEqual(span["offset"] + span["bytes"], 0x5bc)
+                    with self.assertRaises(MAP.FormatError):
+                        MAP._ppb_saved_context_window(physical, submitted - 1 if remaining == 0x177cc else skip,
+                                                      0x116068, 0x400000)
+        for physical, size, base, extent in ((0x116068, 0x177cc, 0x116068, 0x177cc),
+                                           (0x3ffc000 - 0x177cc, 0x177cc, 0x116068, 0x3ffc000 - 0x116068),
+                                           (0x116069, 0x177cf, 0x116069, 0x177cf)):
+            with self.subTest(physical=physical):
+                result = MAP._ppb_saved_context_window(physical, size, base, extent)
+                self.assertEqual(result["context_end_exclusive"], base + extent)
+                self.assertLessEqual(result["context_end_exclusive"], 0x3ffc000)
+
+    def test_saved_windows_reject_all_bad_u32s_overflow_and_declared_slice_undercoverage(self):
+        ordinary = [0x120000, 0x3f940, 0x116068, 0x400000]
+        for index in range(4):
+            for invalid in (-1, 0x100000000, True, False, 1.0, "0", None, [], {}):
+                changed = list(ordinary)
+                changed[index] = invalid
+                with self.subTest(index=index, value=invalid), self.assertRaises(MAP.FormatError):
+                    MAP._ppb_saved_context_window(*changed)
+        invalid = ((0x116067, 0x3f940, 0x116067, 0x400000),
+                   (0x116064, 0x3f940, 0x116068, 0x400000),
+                   (0x120000, 0x177cb, 0x116068, 0x400000),
+                   (0x120001, 0x177cc, 0x116068, 0x400000),
+                   (0x120000, 0x3f940, 0x116068, 0),
+                   (0x120000, 0x3f940, 0x116068, 0x120000 - 0x116068),
+                   (0x120000, 0x3f940, 0x120000, 0x3f93f),
+                   (0x3ffc000 - 0x177cc, 0x177cc + 1, 0x116068, 0x3ffc000 - 0x116068),
+                   (0xffffffff, 0x3f940, 0x116068, 0xffffffff),
+                   (0x120000, 0xffffffff, 0x116068, 0x400000),
+                   (0x120000, 0x3f940, 0xfffffffc, 8),
+                   (0x120000, 0x3f940, 0x116068, 0x3ffc001 - 0x116068))
+        for arguments in invalid:
+            with self.subTest(arguments=arguments), self.assertRaises(MAP.FormatError):
+                MAP._ppb_saved_context_window(*arguments)
+
+    def test_helpers_and_saved_report_are_pure_detached_and_explicitly_not_active_certificates(self):
+        mutable = bytearray(self.payload)
+        before = bytes(mutable)
+        arguments = [0x120001, 0x3f943, 0x116068, 0x400000]
+        with mock.patch("builtins.open", side_effect=AssertionError("saved model opened a file")), \
+                mock.patch.object(MAP.os, "open", side_effect=AssertionError("saved model opened a device")), \
+                mock.patch.object(subprocess, "Popen", side_effect=AssertionError("saved model executed a process")):
+            report = MAP._ppb_saved_context_bridge(mutable)
+            first = MAP._ppb_saved_context_window(*arguments)
+            second = MAP._ppb_saved_context_window(*arguments)
+            MAP._ppb_context_object_window(0xd53dc, "H")
+        self.assertEqual(bytes(mutable), before)
+        self.assertEqual(arguments, [0x120001, 0x3f943, 0x116068, 0x400000])
+        self.assertEqual(first, second)
+        first["read_spans"][0]["address"] = 0
+        self.assertEqual(second, MAP._ppb_saved_context_window(*arguments))
+        self.assertEqual(json.loads(json.dumps(report)), report)
+        self.assertEqual(report["validation_scope"], {
+            "original_section_qualified_bodies": True, "observer_guards_only": True,
+            "device_observed": False, "native_allocator_proven": False, "current_active_context_proven": False,
+            "source_lease_proven": False, "source_generation_proven": False, "source_extent_proven": False,
+            "runtime_relocation_validated": False, "ARC_local_DRAM_alias_proven": False})
+        self.assertIn("Saved D can be old while active", " ".join(report["limitations"]))
+        self.assertIn("non-atomic", " ".join(report["limitations"]))
+        self.assertIn("outside saved D", " ".join(report["limitations"]))
+
+    def test_sixteen_arm_words_fifteen_bl_targets_and_typed_root_layout(self):
+        words = ((0x7dc, 0xe2840008), (0xf8cc, 0xe30a084c), (0xf980, 0xe5845064), (0xfbb0, 0xe58a4000),
+                 (0x25108, 0xe2841e1a), (0x2b440, 0xe30001f4), (0x2b46c, 0xe5849000),
+                 (0x2b470, 0xe584b010), (0x2b47c, 0xe5847014), (0x2b550, 0xe5cd000d),
+                 (0x2910c, 0xe3a00064), (0x291b4, 0xe5840040), (0x25f04, 0xe5840224),
+                 (0x25fbc, 0xe5801000), (0x72ac, 0xd5384), (0x72b0, 0x116000))
+        calls = ((0x7e0, 0xe8b0), (0xa318, 0xf7e4), (0xe8e0, 0x20510), (0xf8d0, 0x20510),
+                 (0xfa6c, 0x252a4), (0xfb74, 0x27480), (0x25110, 0x2b3f0), (0x2b444, 0x20510),
+                 (0x2b570, 0x200d8), (0x20150, 0x2906c), (0x2017c, 0x294ec), (0x29110, 0x20510),
+                 (0x2b698, 0x1f5d4), (0x25ed8, 0x2b628), (0x25efc, 0x1fe6c))
+        report = MAP._ppb_saved_context_bridge(self.payload)
+        for address, word in words:
+            self.assertEqual(struct.unpack_from("<I", self.payload, address)[0], word)
+        self.assertEqual(report["critical_arm_words"], [{"blob_file_offset": address, "instruction": word}
+                                                       for address, word in words])
+        for site, target in calls:
+            word = struct.unpack_from("<I", self.payload, site)[0]
+            displacement = word & 0xffffff
+            if displacement >= 0x800000:
+                displacement -= 0x1000000
+            self.assertEqual(word >> 24, 0xeb)
+            self.assertEqual(site + 8 + displacement * 4, target)
+            self.assertTrue(any(offset <= site < offset + size for _, offset, size, _ in self.ARM + self.DATA))
+        self.assertEqual(report["arm_calls"], [{"call_blob_file_offset": site, "target_blob_file_offset": target}
+                                             for site, target in calls])
+        self.assertEqual(report["roots"], {"working_base": 0xd3a00, "working_stride": 0x1cc, "slot_count": 4,
+            "working_handle_offset": 0x20, "controller_root_word_address": 0xd3a08,
+            "controller_root_is_pointer_value": True, "handle_controller_offset": 0x64,
+            "handle_publication_store": 0xfbb0, "controller_publication_store": 0xecf0})
+        objects = report["objects"]
+        self.assertEqual(objects["declared_small_heap_bytes"], {"H": 0xa84c, "C": 0x378, "Q": 0x1f4, "M": 0x64})
+        self.assertEqual(objects["allocation_call_sites"], {"H": 0xf8d0, "C": 0xe8e0, "Q": 0x2b444, "M": 0x29110})
+        self.assertEqual((objects["payload_min"], objects["end_exclusive"]), (0xd53dc, 0x116000))
+        self.assertEqual((objects["G_address"], objects["G_bytes"], objects["G_identity_base"],
+                          objects["G_inclusive_virtual_bounds"]), (0x116004, 100, 0x116004, [0x116068, 0x3ffc000]))
+
+    def test_original_arc_calls_open_normalization_and_chunked_save_restore_words(self):
+        calls = ((16, 0x24a14, 0x3b304, False), (16, 0x24aa4, 0x266f8, True),
+                 (4, 0x9da4, 0x9c3c, True), (4, 0x9e00, 0x10258, True),
+                 (4, 0x9fd0, 0x9e74, True), (4, 0xa02c, 0x10270, True), (4, 0xa11c, 0x9f90, True))
+        report = MAP._ppb_saved_context_bridge(self.payload)
+        for section, site, target, delay in calls:
+            word = self.word(section, site)
+            displacement = (word >> 7) & 0xfffff
+            if displacement >= 0x80000:
+                displacement -= 0x100000
+            self.assertEqual(word & 0xf800007f, 0x28000020 if delay else 0x28000000)
+            self.assertEqual(site + 4 + displacement * 4, target)
+            self.assertTrue(any(sec == section and start <= site < end for _, sec, start, end, _, _ in self.ARC))
+        self.assertEqual(report["arc_calls"], [{"section_index": section, "call_elf_virtual_address": site,
+            "original_target_elf_value": target, "normal_delay_slot": delay} for section, site, target, delay in calls])
+        words = {16: {0x249f4: 0x0a290010, 0x249f8: 0x67e8fa03, 0x249fc: 0x200002a1,
+                       0x24a00: 0x0aa90014, 0x24a04: 0x4228fe01, 0x24a08: 0x67e8fa03,
+                       0x24a0c: 0x27fffea2, 0x24a10: 0x52aafe01, 0x24aa8: 0x08cd81f4,
+                       0x26750: 0x603f7c00, 0x26754: 0x000005bc, 0x26758: 0x2fc73c20,
+                       0x2675c: 0x62238e00, 0x26798: 0x10002600, 0x3b304: 0x380f8020, 0x3b308: 0x401ffeec},
+                 4: {0x9c84: 0x621f7c00, 0x9c88: 0x30051a80, 0x9cbc: 0x57e8fa80,
+                     0x9cc0: 0x61fffe80, 0x9cfc: 0x27fff282, 0x9d14: 0x2ff6cca0, 0x9d1c: 0x2ff6c880,
+                     0x9da8: 0x4001fe3c, 0x9e60: 0x70007e04, 0x9e64: 0x1086800c,
+                     0x9fd4: 0x40277e3c, 0xa08c: 0x68007e04, 0xa090: 0x1087800c}}
+        for section, entries in words.items():
+            for address, word in entries.items():
+                self.assertEqual(self.word(section, address), word)
+        self.assertEqual([struct.unpack_from("<I", self.payload, 0x2e5c4 + 28 * index)[0] for index in range(4)],
+                         [0x3f940] * 4)
+        physical = report["physical_context"]
+        self.assertEqual((physical["H_physical_offset"], physical["H_submitted_bytes_offset"],
+                          physical["H_imported_heap_offset"], physical["H_selected_map_offset"]), (8, 12, 0xcc, 0x224))
+        self.assertTrue(physical["default_requires_imported_heap_zero"])
+        self.assertTrue(physical["selected_default_map_is_G"])
+        self.assertEqual(physical["open_packet_offsets"], [0x10, 0x14])
+        self.assertEqual(physical["normalization_sites"], [0x249f4, 0x24a00, 0x24a04, 0x24a10])
+        self.assertEqual(physical["normalization_equation"], "D = P + ((-P) & 3); remaining = N - ((-P) & 3)")
+        self.assertEqual((physical["minimum_remaining_bytes_under_base_model"], physical["ordinary_h264_submitted_bytes"]),
+                         (0x177cc, 0x3f940))
+        saved = report["saved_core"]
+        self.assertEqual((saved["bytes"], saved["active_ARC_local_address"], saved["channel_table_D_store"]),
+                         (0x5bc, 0x3fffcdac, 0x26798))
+        self.assertEqual((saved["restore_call"], saved["restore_destination_delay_slot"],
+                          saved["save_call"], saved["save_source_delay_slot"], saved["save_precedes_h264_save_call"]),
+                         (0x9fd0, 0x9fd4, 0x9da4, 0x9da8, 0x9e00))
+        self.assertEqual((saved["DMA_chunk_max_bytes"], saved["DMA_final_sync_site"]), (128, 0x9d1c))
+        self.assertEqual(words[4][0x9cbc] & 511, 128)
+        self.assertEqual(saved["fixed_scalar_spans"], [{"role": role, "offset": offset, "bytes": size}
+                                                       for role, offset, size in self.SPANS])
+        self.assertEqual(sum(span["bytes"] for span in saved["fixed_scalar_spans"]), 240)
+
+    def test_every_region_sample_tamper_refuses_before_interpretation_and_repinned_bad_calls_refuse(self):
+        regions = self.METADATA + self.ARM + tuple((name, offset, end - start, digest)
+                                                  for name, _, start, end, offset, digest in self.ARC) + self.DATA
+        with mock.patch.object(MAP, "_bootstrap_word", side_effect=AssertionError("word interpreted before all pins")):
+            for role, offset, size, _ in regions:
+                for delta in set((0, size // 2, size - 1)):
+                    changed = bytearray(self.payload)
+                    changed[offset + delta] ^= 1
+                    with self.subTest(region=role, delta=delta), self.assertRaises(MAP.FormatError):
+                        MAP._ppb_saved_context_bridge(changed)
+        for offset, message in ((0xa318, "ARM BL"), (self.file_offset(4, 0x9da4), "ARC call")):
+            changed = bytearray(self.payload)
+            changed[offset] ^= 0x80
+            repinned = tuple((role, start, size, hashlib.sha256(changed[start:start + size]).hexdigest())
+                             for role, start, size, _ in regions)
+            with self.subTest(offset=hex(offset)), mock.patch.object(MAP, "_PPB_SAVED_REGIONS", repinned), \
+                    self.assertRaisesRegex(MAP.FormatError, message):
+                MAP._ppb_saved_context_bridge(changed)
+
+    def test_budget_size_and_global_sha_override_refusal_precedes_saved_context_evaluation(self):
+        for field, value in (("MAX_PPB_SAVED_REGIONS", 41), ("MAX_PPB_SAVED_BYTES", 41848)):
+            with self.subTest(field=field), mock.patch.object(MAP, field, value), \
+                    self.assertRaisesRegex(MAP.FormatError, "budget"):
+                MAP._ppb_saved_context_bridge(self.payload)
+        for invalid in (self.payload[:-1], self.payload + b"\0"):
+            with self.assertRaises(MAP.FormatError):
+                MAP._ppb_saved_context_bridge(invalid)
+        for offset in (0, 0xa318, 0x34ae0, len(self.data) - 1):
+            changed = bytearray(self.data)
+            changed[offset] ^= 1
+            with self.subTest(offset=hex(offset)), \
+                    mock.patch.object(MAP, "_ppb_saved_context_bridge",
+                                      side_effect=AssertionError("saved context parsed before identity admission")), \
+                    self.assertRaisesRegex(MAP.FormatError, "exact bundled"):
+                MAP.analyze(changed, expected_sha256=hashlib.sha256(changed).hexdigest(), ppb_saved_context=True)
+
+    def test_old_options_never_invoke_bridge_and_new_option_is_purely_additive(self):
+        options = ("references", "all_symbols", "bootstrap", "picture_output", "arc_metadata", "csc_command",
+                   "command_buffer_bridge", "inner_descriptor", "scaler_fir", "ppb_handoff", "ppb_source")
+        cases = [{}] + [{name: True} for name in options] + [dict.fromkeys(options, True)]
+        for flags in cases:
+            with self.subTest(flags=flags):
+                with mock.patch.object(MAP, "_ppb_saved_context_bridge",
+                                       side_effect=AssertionError("saved context evaluated without opt-in")):
+                    plain = MAP.analyze(self.data, **flags)
+                self.assertNotIn("ppb_saved_context_bridge", plain)
+                enriched = MAP.analyze(self.data, ppb_saved_context=True, **flags)
+                self.assertEqual(enriched.pop("ppb_saved_context_bridge"), MAP._ppb_saved_context_bridge(self.payload))
+                self.assertEqual(enriched, plain)
+        with self.assertRaises(MAP.FormatError):
+            analyze_fixture(fixture(), ppb_saved_context=True)
+
+    def test_three_original_cli_goldens_new_option_reproducibility_and_no_private_path(self):
+        for arguments, digest in (
+                ([], "15068c07a81a510e02435b6203b1cf5e424152e37ff456b1da9c12b77c15799e"),
+                (["--references", "--symbol", "ReadLine"], "2a491f4b9033395cdbc688810319ea159973a296d7828ac65153bc93d45b588f"),
+                (["--all-symbols"], "15af1023987b5f2aee1e9a5560f749560bf33f729252ca3fcb9f41358f49e5aa")):
+            command = [sys.executable, "-B", str(TOOL), str(BLOB)] + arguments
+            plain = subprocess.run(command, capture_output=True, timeout=20)
+            extra = subprocess.run(command + ["--ppb-saved-context"], capture_output=True, timeout=20)
+            with self.subTest(arguments=arguments):
+                self.assertEqual((plain.returncode, extra.returncode), (0, 0), (plain.stderr, extra.stderr))
+                self.assertEqual((plain.stderr, extra.stderr), (b"", b""))
+                self.assertEqual(hashlib.sha256(plain.stdout).hexdigest(), digest)
+                report = json.loads(extra.stdout)
+                self.assertEqual(report.pop("ppb_saved_context_bridge"), MAP._ppb_saved_context_bridge(self.payload))
+                self.assertEqual(report, json.loads(plain.stdout))
+                self.assertNotIn(str(ROOT).encode(), extra.stdout)
+        command = [sys.executable, "-B", str(TOOL), str(BLOB), "--ppb-saved-context"]
+        first = subprocess.run(command, capture_output=True, timeout=20)
+        second = subprocess.run(command, capture_output=True, timeout=20)
+        self.assertEqual((first.returncode, second.returncode, first.stderr, second.stderr), (0, 0, b"", b""))
+        self.assertEqual(first.stdout, second.stdout)
+        self.assertEqual(hashlib.sha256(BLOB.read_bytes()).hexdigest(),
+                         "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9")
+
+
+class NativeSavedContextFixtureTests(unittest.TestCase):
+    """Native saved scalars and graph bounds, without live ownership claims."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.raw = (ROOT / "tests/fixtures/issue92/native-saved-context.json").read_bytes()
+        cls.observed = json.loads(cls.raw)
+
+    def test_pinned_historical_provenance_read_plan_and_complete_native_controls(self):
+        observed = self.observed
+        self.assertEqual(hashlib.sha256(self.raw).hexdigest(),
+                         "2bb01fc2a339c27afe6f4b3718fb2d1c157f8b7f492e9dec4fafccc7c1ecbefb")
+        self.assertEqual(set(observed), {"schema_version", "kind", "firmware_sha256", "observer_source_sha256",
+                         "observer_binary_sha256", "input", "reads", "snapshots", "trials", "controls",
+                         "comparison", "certified"})
+        self.assertEqual((observed["schema_version"], observed["kind"]), (1, "native-rooted-saved-arc-context"))
+        self.assertEqual(observed["firmware_sha256"],
+                         "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9")
+        # These identify the executed snapshot, not a future observer revision.
+        self.assertEqual(observed["observer_source_sha256"],
+                         "0ddc8ff3df48e9e3c994e2dc68499d516152e0976f18e1fd0a3ac5f92cf98229")
+        self.assertEqual(observed["observer_binary_sha256"],
+                         "58dd99019561d68d4dbd5be503b78edce2c007d57a1fd4f6e2947963c809b6a0")
+        self.assertEqual(observed["input"], {
+            "codec": "H264", "progressive": True, "width": 256, "height": 96, "packets": 180,
+            "submitted_bytes": 124832,
+            "submitted_sha256": "1363a87c8f59fab6187cd13653a3ba8a41fd994066d30c24be1c2b09d675666e"})
+        plan = observed["reads"]
+        self.assertEqual(plan["flag"], "--observe-ppb-context")
+        self.assertEqual(plan["stages"], ["after-OPEN/pre-START", "first-output-after-release-and-owned-write",
+                                         "delivery-EOS-before-STOP"])
+        self.assertEqual((plan["passes"], plan["graph_calls"], plan["graph_bytes"]), (2, 31, 156))
+        self.assertEqual([int(value, 16) for value in plan["context_offsets_hex"]],
+                         [0, 0x80, 0x21c, 0x33c, 0x354, 0x3fc, 0x48c, 0x530])
+        self.assertEqual(plan["context_span_bytes"], [4, 4, 4, 4, 68, 144, 8, 4])
+        self.assertEqual((len(plan["context_span_bytes"]), sum(plan["context_span_bytes"])), (8, 240))
+        self.assertEqual((plan["per_pass_calls"], plan["per_pass_bytes"]),
+                         (2 * plan["graph_calls"] + 8, 2 * plan["graph_bytes"] + 240))
+        self.assertEqual((plan["per_pass_calls"], plan["per_pass_bytes"]), (70, 552))
+        self.assertEqual((plan["per_trial_calls"], plan["per_trial_bytes"]),
+                         (len(plan["stages"]) * plan["passes"] * 70, len(plan["stages"]) * plan["passes"] * 552))
+        self.assertEqual((plan["per_trial_calls"], plan["per_trial_bytes"]), (420, 3312))
+        for key in ("frozen_graph_recheck_after_each_pass", "no_bank_or_pool_pointer_following",
+                    "no_source_plane_access", "no_diagnostic_target_writes", "non_atomic"):
+            self.assertIs(plan[key], True)
+        self.assertEqual([trial["id"] for trial in observed["trials"]], ["A", "B"])
+        for trial in observed["trials"]:
+            self.assertEqual((trial["frames"], trial["reads"], trial["bytes_read"], trial["capture_bytes"]),
+                             (180, 420, 3312, 180 * 256 * 96 * 2))
+            self.assertEqual(trial["capture_sha256"],
+                             "1ba4af890ad878a5472777c873f1f86f070264ebfc33994ba719b22ea5df9068")
+            self.assertIs(trial["frozen_stock_graph_checks_passed"], True)
+        self.assertEqual([(item["position"], item["codec"], item["width"], item["height"], item["frames"],
+                           item["capture_sha256"]) for item in observed["controls"]], [
+            ("before", "MPEG2", 640, 360, 32, "021b6736caed04600c4801ca1b0e30dc4a48b60985e2dff02d38bea7c2aa9244"),
+            ("after", "H264", 128, 96, 180, "d72c16b7eb12d844fb6a5805c2d33a120874237ac5f1cf3608d4bebe186ee7cd")])
+        for item in observed["controls"]:
+            self.assertEqual(item["capture_bytes"], item["frames"] * item["width"] * item["height"] * 2)
+        sessions = observed["trials"] + observed["controls"]
+        self.assertEqual((sum(item["frames"] for item in sessions), sum(item["capture_bytes"] for item in sessions)),
+                         (572, 36864000))
+        for item in sessions:
+            for key in ("whole_capture_equal", "firmware_eos", "cleanup"):
+                self.assertIs(item[key], True)
+            self.assertEqual((item["pending"], item["ready"], item["stderr_bytes"],
+                              item["exit_code"], item["new_kernel_errors"]), (0, 0, 0, 0, 0))
+            self.assertEqual((item["fd_before_after"], item["threads_before_after"]), ([3, 3], [1, 1]))
+        self.assertEqual(observed["certified"], {
+            "rooted_saved_scalar_observations": True, "whole_native_outputs": True,
+            "current_live_state": False, "allocator_integrity": False, "active_frame_extent": False,
+            "source_lease": False, "generation": False, "cache_ready": False,
+            "all_consumer_completion": False, "standalone_processing": False})
+        for key, value in observed["certified"].items():
+            self.assertIs(value, key in ("rooted_saved_scalar_observations", "whole_native_outputs"))
+        self.assertNotIn(b"/home/", self.raw)
+        self.assertNotIn(b"/tmp/", self.raw)
+
+    def test_exact_sixty_word_order_object_envelopes_and_twelve_saved_not_live_snapshots(self):
+        observed = self.observed
+        self.assertEqual(len(observed["snapshots"]), 1)
+        snapshot = observed["snapshots"][0]
+        fields = snapshot["fields_hex"]
+        expected_fields = {
+            "C": 0xd83a4, "H": 0xdb58c, "Q": 0xd93b0, "M": 0xd95fc,
+            "P": 0x33dc000, "N": 0x3f940, "D": 0x33dc000,
+            "video-base": 0xa34000, "video-bytes": 0x35c7940,
+            "core-flags": 0, "word80": 0, "producer-pool": 0x33dc794,
+            "metadata-pool": 0x33f1878, "bank-bytes": 0x618000, "bank-count": 6,
+            "reader-pool": 0x33dc794}
+        self.assertEqual(set(fields), set(expected_fields))
+        for key, expected in expected_fields.items():
+            self.assertRegex(fields[key], r"^[0-9a-f]{8}$")
+            self.assertEqual(int(fields[key], 16), expected)
+        values = {key: int(value, 16) for key, value in fields.items()}
+        before = json.dumps(snapshot, sort_keys=True)
+        for kind, size in (("H", 0xa84c), ("C", 0x378), ("Q", 0x1f4), ("M", 0x64)):
+            pointer = values[kind]
+            self.assertEqual(MAP._ppb_context_object_window(pointer, kind), {
+                "kind": kind, "pointer": pointer, "bytes": size, "end_exclusive": pointer + size,
+                "alignment_bytes": 4, "observer_guards_only": True, "native_allocator_proven": False})
+            self.assertEqual(pointer % 4, 0)
+            self.assertGreaterEqual(pointer, 0xd53dc)
+            self.assertLessEqual(pointer + size, 0x116000)
+        window = MAP._ppb_saved_context_window(values["P"], values["N"], values["video-base"], values["video-bytes"])
+        self.assertEqual((window["alignment_skip"], window["context_address"], window["context_bytes"],
+                          window["context_end_exclusive"], window["video_end_exclusive"], window["saved_core_bytes"]),
+                         (0, values["D"], values["N"], values["P"] + values["N"],
+                          values["video-base"] + values["video-bytes"], 0x5bc))
+        self.assertEqual(window["read_spans"], [
+            {"role": role, "offset": offset, "address": values["D"] + offset, "bytes": length}
+            for role, offset, length in FirmwarePpbSavedContextTests.SPANS])
+        self.assertEqual(window["total_read_bytes"], 240)
+        for key in ("observed_inputs_only", "model_no_native_certification", "saved_may_be_stale", "non_atomic"):
+            self.assertIs(window[key], True)
+        self.assertGreaterEqual(values["N"], 0x177cc)
+        self.assertLessEqual(window["context_end_exclusive"], window["video_end_exclusive"])
+        flags = snapshot["packed_descriptor_flags_hex"]
+        banks = snapshot["bank_records_hex"]
+        self.assertEqual((len(flags), len(banks)), (17, 9))
+        for word in flags + [word for record in banks for word in record]:
+            self.assertRegex(word, r"^[0-9a-f]{8}$")
+        self.assertTrue(all(len(record) == 4 for record in banks))
+        bank_words = [[int(word, 16) for word in record] for record in banks]
+        bases = [0xa34000, 0x104c000, 0x1664000, 0x1c7c000, 0x2294000, 0x28ac000]
+        self.assertEqual(bank_words, [[base, 0, 0, 0] for base in bases] + [[0, 0, 0, 0]] * 3)
+        raw_words = [values[key] for key in ("core-flags", "word80", "producer-pool", "metadata-pool")]
+        raw_words += [int(word, 16) for word in flags]
+        raw_words += [word for record in bank_words for word in record]
+        raw_words += [values[key] for key in ("bank-bytes", "bank-count", "reader-pool")]
+        expected_words = [0, 0, 0x33dc794, 0x33f1878] + [0] * 17
+        expected_words += [word for base in bases for word in (base, 0, 0, 0)] + [0] * 12
+        expected_words += [0x618000, 6, 0x33dc794]
+        self.assertEqual((len(raw_words), raw_words), (60, expected_words))
+        raw = struct.pack("<60I", *raw_words)
+        position = 0
+        expected_chunks = [expected_words[:1], expected_words[1:2], expected_words[2:3], expected_words[3:4],
+                           expected_words[4:21], expected_words[21:57], expected_words[57:59], expected_words[59:60]]
+        for span, expected in zip(window["read_spans"], expected_chunks):
+            chunk = raw[position:position + span["bytes"]]
+            self.assertEqual(list(struct.unpack("<" + "I" * len(expected), chunk)), expected)
+            position += span["bytes"]
+        self.assertEqual(position, len(raw))
+        self.assertEqual(struct.unpack("<34H", raw[16:84]), (0,) * 34)
+        # Arithmetic consistency is not an active bank/allocator certificate.
+        self.assertEqual([base - bases[0] for base in bases], [index * values["bank-bytes"] for index in range(6)])
+        self.assertEqual(sum(base != 0 for base, _, _, _ in bank_words), values["bank-count"])
+        self.assertEqual(sum(right - left for left, right in zip(bases, bases[1:])), 5 * values["bank-bytes"])
+        self.assertEqual(values["producer-pool"], values["reader-pool"])
+        self.assertEqual(values["producer-pool"] - values["D"], 0x794)
+        self.assertEqual(values["metadata-pool"] - values["D"], 0x15878)
+        self.assertEqual(json.dumps(snapshot, sort_keys=True), before)
+        references = []
+        for trial in observed["trials"]:
+            self.assertEqual(trial["snapshot_indices_by_stage"], [[0, 0], [0, 0], [0, 0]])
+            for stage in trial["snapshot_indices_by_stage"]:
+                self.assertEqual(len(stage), observed["reads"]["passes"])
+                for index in stage:
+                    self.assertIs(type(index), int)
+                    references.append(observed["snapshots"][index])
+        self.assertEqual(len(references), 12)
+        self.assertTrue(all(item == snapshot for item in references))
+        self.assertEqual(observed["comparison"], {
+            "snapshots": 12, "all_saved_fields_equal": True, "descriptor_flag_u16_count": 34,
+            "all_saved_descriptor_flags_zero": True, "bank_records": 9, "nonzero_saved_bank_bases": 6,
+            "consecutive_saved_base_step_hex": "00618000", "stop_refresh_observed": False})
+        self.assertIs(observed["comparison"]["stop_refresh_observed"], False)
+        self.assertNotIn("after-STOP", observed["reads"]["stages"])
+
+    def test_svg_accessible_values_derive_from_saved_fixture_and_limit_certification(self):
+        import xml.etree.ElementTree as ET
+
+        raw = (ROOT / "tests/fixtures/issue92/native-saved-context.svg").read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(),
+                         "a724f1397e3a082c042e5368a31760d0bfde1e770756e38abc4ebf618809aa26")
+        svg, ns = ET.fromstring(raw), "{http://www.w3.org/2000/svg}"
+        self.assertEqual((svg.get("width"), svg.get("height"), svg.get("viewBox")),
+                         ("1040", "530", "0 0 1040 530"))
+        self.assertEqual((svg.get("role"), svg.get("aria-labelledby")), ("img", "title desc"))
+        self.assertEqual(svg.find(ns + "title").get("id"), "title")
+        self.assertEqual(svg.find(ns + "desc").get("id"), "desc")
+        self.assertEqual(svg.find(ns + "title").text, "BCM70015 rooted saved ARC context observations")
+        self.assertIn("two non-atomic passes", svg.find(ns + "desc").text)
+        self.assertIn("No current live state, active frame extent, source lease, generation or standalone processing is certified",
+                      svg.find(ns + "desc").text)
+        observed, fields = self.observed, self.observed["snapshots"][0]["fields_hex"]
+        text = {(node.get("x"), node.get("y")): node.text for node in svg.findall(".//" + ns + "text")}
+        self.assertEqual(len(text), 18)
+        self.assertEqual(text["32", "72"],
+                         f"Native H.264 · {observed['input']['width']} × {observed['input']['height']} · "
+                         f"{observed['input']['packets']} frames per trial · unscaled owned YUY2 output")
+        self.assertEqual(text["48", "151"], f"H {fields['H']} → D {fields['D']} · N {fields['N']} · "
+                         f"video base {fields['video-base']} / bytes {fields['video-bytes']}")
+        self.assertEqual(text["32", "207"], f"Two trials × three stages × two passes = "
+                         f"{observed['comparison']['snapshots']} matching saved snapshots")
+        self.assertEqual([text[x, "250"] for x in ("182", "520", "858")],
+                         ["After OPEN / before START", "First owned output / released", "Delivery EOS / before STOP"])
+        for x in ("182", "520", "858"):
+            self.assertEqual(text[x, "278"], f"{observed['comparison']['descriptor_flag_u16_count']} saved flags = 0")
+        self.assertEqual(text["32", "327"], f"Saved bank count {int(fields['bank-count'], 16)} · "
+                         f"saved size / consecutive base step 0x{int(fields['bank-bytes'], 16):x}")
+        bases = [row[0] for row in observed["snapshots"][0]["bank_records_hex"] if int(row[0], 16)]
+        self.assertEqual(text["32", "355"], "  ".join(bases))
+        self.assertIn("metadata-extra word remain zero; no bank/pool pointers followed", text["32", "383"])
+        frames = sum(item["frames"] for item in observed["trials"] + observed["controls"])
+        self.assertEqual(text["32", "425"], f"{frames} / {frames} frames: whole-pixel controls, firmware EOS and cleanup passed")
+        plan = observed["reads"]
+        self.assertEqual(text["32", "452"], f"Each observed trial: {plan['per_trial_calls']} reads / "
+                         f"{plan['per_trial_bytes']:,} B · no source-plane access or diagnostic target writes")
+        self.assertEqual(text["32", "489"], "Saved scalars may be stale. STOP refresh was not observed in these trials.")
+        self.assertEqual(text["32", "514"],
+                         "No live state, active extent, source lease, generation or standalone processing is certified.")
+        self.assertNotIn(b"/home/", raw)
+        self.assertNotIn(b"/tmp/", raw)
+
+
 if __name__ == "__main__":
     unittest.main()
