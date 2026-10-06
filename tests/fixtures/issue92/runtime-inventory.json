@@ -1,0 +1,70 @@
+{
+  "schema": "issue92-native-runtime-query-inventory-v1",
+  "device": "BCM70015",
+  "option": "--observe-runtime-inventory",
+  "purpose": "Record firmware-reported revisions and existing qualified status observations inside an ordinary native decode session.",
+  "base_commit": "34bfa0643caf4cbdd09ba0d07dd1ea156fa19d90",
+  "source_sha256": {
+    "tests/library-drain.cpp": "69dc3a87d6991d9d645999bbc019db0fd209293ebc82bf400d11f440a4c622c5",
+    "tests/library-fw-version.cpp": "721bbe16ba184e02be5c3c0161f064defbdcff121cc369d5f43b095c72640ba4",
+    "Makefile": "2525c54b344818007493645d497ca31c88a3b6dc474bd6b362b5a9659bde6440",
+    "tests/userspace32.sh": "4ec0240778e8ef7fc6d186201988dec3af71413eff68e6f4b76739fbcbe29997"
+  },
+  "protocol_sha256": "f5dc0ad5df304c8a441051d686ab665c8e6b24a84a25945777d998dcf86f783b",
+  "verification_receipt_sha256": "02fb497a5966a25ad47ab0a81835e92b1d6315a7b1bc5819265bd50b444ee368",
+  "software_tests": {
+    "drain_strict_and_asan_ubsan": {"exit_each": 0, "checks_each": 96116, "new_checks": 140, "stderr_bytes_each": 0},
+    "production_runtime_api": {"native_checks": 1039, "asan_ubsan_checks": 1051, "i686_checks": 1039, "no_sse_pentium2_qemu_checks": 1039, "new_checks_each": 750, "exit_each": 0},
+    "runtime_api_boundary": "Real DtsGetFWVersion and DtsFWVersion; allocation/release/driver mocks, unexpected ioctl aborts. Marshalling and error handling, not physical transport proof.",
+    "capability_negative": {"exit": 2, "capture_created": false, "fixture_progress_capture_device_actions": 0}
+  },
+  "native_input": {"codec": "MPEG2", "width": 640, "height": 360, "progressive": true, "frames_and_packets": 180, "sha256": "32d8ca6ddf8ad529ae3875ee9b7e904630c633bfef6d74ba40d7b1040d20820b"},
+  "query": {
+    "API": "DtsGetFWVersion(flag=1)",
+    "stage": "after-OPEN/pre-START",
+    "queries_per_observed_session": 1,
+    "extra_download_or_INIT": 0,
+    "two_replies_hex": [["00013600", "00150323", "00070015"], ["00013600", "00150323", "00070015"]],
+    "field_order": ["streamSwVersion", "decoderSwVersion", "chipHwVersion"],
+    "provenance": "Successful runtime GET_VERSION return, not file metadata or DtsCrystalHDVersion compile-time constants.",
+    "passive": false,
+    "reply_header_match_certified": false
+  },
+  "existing_status_observer": {
+    "tuple_addresses_hex": ["00540000", "00540004", "00540008", "00540044", "0054004c", "00540074", "00540800", "005408a4", "00540000", "00540800"],
+    "fields": ["MFD_REV", "FEEDER_CNTL", "FIXED_COLOUR", "DATA_MODE", "RANGE_EXP_REMAP", "TEST_MODE", "SCL_REV", "SCL_BVB_IN_STATUS", "closing_MFD_REV", "closing_SCL_REV"],
+    "two_passes_per_stage": true,
+    "stages": ["after-OPEN/pre-START", "first-output-after-release-and-owned-write"],
+    "reads_per_session": 40,
+    "board_profile": "MFD50/SCL80/TEST4",
+    "paired_tuples_equal": true,
+    "between_repeats_equal": true,
+    "first_output_fixed_colour_hex": "00909070",
+    "pre_start_fixed_colour_hex": "00108080",
+    "sampled_scl_status_hex": "00000000",
+    "target_config_writes": 0,
+    "data_port_reads_and_pointer_following": false,
+    "inherited_packing_reads_per_session": 8,
+    "packing_raw_hex": ["00000006", "00000006", "00000006", "00000006", "00000006", "00000006", "00000016", "00000016"]
+  },
+  "sessions": [
+    {"id": "baseline-native", "codec": "MPEG2", "binary": "retained-stock", "stdout_sha256": "b311a48f417b5aaebb3e0e7d38e908674168c8aee700cf5d92df629f58353e74", "rss_kib": [33632, 35144]},
+    {"id": "observed-a", "codec": "MPEG2", "binary": "inventory", "stdout_sha256": "bbe6ffaccee4936ad99c25fee537109b04f7b745c180dd282143ee97dcd4ee58", "rss_kib": [33792, 35276]},
+    {"id": "recovery-a", "codec": "MPEG2", "binary": "retained-stock", "stdout_sha256": "b8567e2b01b78c35a56c7084e6bbaf916effb2548a439d25588423545223abde", "rss_kib": [33736, 35260]},
+    {"id": "observed-repeat", "codec": "MPEG2", "binary": "inventory", "stdout_sha256": "8ec436b5d05229d8ab13dc3d3a6d34fbdb4992e4e1caaf5d6f49b05b1a572967", "rss_kib": [33716, 35192]},
+    {"id": "recovery-repeat", "codec": "MPEG2", "binary": "retained-stock", "stdout_sha256": "19d603c3abd5bd7707121061d8fa60aa7d255fc8778babceb9117f885482fcb9", "rss_kib": [33744, 35260]},
+    {"id": "final-h264", "codec": "H264", "binary": "retained-stock", "stdout_sha256": "154cc412bf4b9b633309d3e77d284b98331868c8faf6bc393a16bc2babd4f6fc", "rss_kib": [33892, 35332]}
+  ],
+  "all_six_native_results": {"exit": 0, "frames": 180, "capture_bytes": 82944000, "full_oracle_cmp": 0, "firmware_eos": true, "pending": 0, "ready": 0, "cleanup": "PASS", "stderr_bytes": 0, "frame_indices": "0..179", "picture_numbers": "3..182", "unique_tokens": 180, "fds": [3, 3], "threads": [1, 1]},
+  "raw_hashes": {"five_mpeg2": "3928bc19ad693b91edfbbd2270d3f69d5383b6c87b322e0e7bea81931a8836dd", "h264": "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1"},
+  "native_preview": {"asset": "native-mfd-frame.png", "sha256": "2c848ef2b6c68c52bce70452cb41fef3bc5a788dd8bd5cebd2d9807619e94867", "scope": "Existing preview of the identical native MPEG2 oracle; not standalone output."},
+  "first_wrapper_discrepancy": "Baseline decoder exit0; unprivileged comparison of root-owned capture returned2. Privileged comparison of that same file passed; no hardware rerun.",
+  "restoration": {"stock_module_srcversion": "1D01F9BFBB5CCDC75C46312", "module_refcount": 0, "installed_seven_manifest_matches": 7, "module_replaced": false, "installed_files_changed": false, "readme_history_todo_changed": false},
+  "limits": [
+    "GET_VERSION is a command/doorbell transaction, not passive MMIO. Normal decoder writes remain; zero target writes applies only to the observer.",
+    "API-successful raw revision/status words are not transport, atomicity, freshness, source/sink lease, accepted raw output or completion certificates.",
+    "Observed RSS increases remain disclosed. FD/thread checks and native recovery do not prove zero memory growth or all-consumer quiescence.",
+    "Standalone MFD/scaler/CSC/DNR and practical non-native backend reuse remain unproved. Original issue92 remains incomplete."
+  ],
+  "original_issue92_complete": false
+}

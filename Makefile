@@ -48,8 +48,9 @@ library-check:
 				test_wrap="$$test_wrap -Wl,--wrap=malloc,--wrap=free,--wrap=perror"; \
 				test_sources=linux_lib/libcrystalhd/libcrystalhd_fwload_if.cpp ;; \
 			fw-version) test_wrap=-Wl,--wrap=fopen,--wrap=fseek,--wrap=ftell,--wrap=fread,--wrap=__fread_chk; \
-				test_wrap="$$test_wrap -Wl,--wrap=fclose,--wrap=malloc,--wrap=free"; \
-				test_sources=linux_lib/libcrystalhd/libcrystalhd_if.cpp ;; \
+				test_wrap="$$test_wrap -Wl,--wrap=fclose,--wrap=malloc,--wrap=free,--wrap=ioctl"; \
+				test_sources=linux_lib/libcrystalhd/libcrystalhd_if.cpp; \
+				test_extra=linux_lib/libcrystalhd/libcrystalhd_fwcmds.cpp ;; \
 			fwcmds) test_wrap=-Wl,--wrap=ioctl,--wrap=usleep; \
 				test_sources="linux_lib/libcrystalhd/libcrystalhd_if.cpp linux_lib/libcrystalhd/libcrystalhd_fwcmds.cpp linux_lib/libcrystalhd/libcrystalhd_priv.cpp" ;; \
 			input|mpeg4-input) test_wrap=-Wl,--wrap=ioctl,--wrap=txBufPush,--wrap=usleep; \
