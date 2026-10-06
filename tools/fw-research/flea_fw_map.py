@@ -89,6 +89,12 @@ _INNER_DISPATCH_REGIONS = (
 )
 MAX_MFD_SOURCE_REGIONS = 10
 MAX_MFD_SOURCE_BYTES = 1280
+_ARM_PPB_HANDOFF_REGIONS = (
+    ("acquire", 0xd624, 176, "e6ff28c676a32fe6219c53e6f40f2f23589e6f7f1f7235e4a46c95baf619907a"),
+    ("peek", 0xd718, 104, "013bcc90b5e7d904f03f9787cc7e820978a711eba2fb37c95a63a7b8324c374d"),
+    ("release", 0xd5a4, 128, "8276e18c409aa706a5b3e92b880887c4157256253d7be40312e28a7464b9c812"),
+    ("translate", 0x1fdac, 192, "08d03815210fc1e069068765847cc4c5d847bd5df744f223f9851ee985e05d28"),
+)
 MAX_STOCK_HOST_COMMAND_REGIONS = 16
 MAX_STOCK_HOST_COMMAND_BYTES = 16 * 1024
 MAX_STOCK_HOST_COMMAND_CFG_STATES = 4096
@@ -5987,6 +5993,88 @@ def _scaler_fir_map(payload):
             "No file/device access or firmware execution occurs in this private mapper; no hardware capability is advertised."]}
 
 
+def _arm_ppb_metadata_handoff(payload):
+    """Exact stock A32 metadata handoff, not a raw-surface ownership API."""
+    if len(payload) != BUNDLED_SIZE - TRAILER_SIZE:
+        raise FormatError("ARM PPB handoff payload size does not match")
+    total = sum(size for _, _, size, _ in _ARM_PPB_HANDOFF_REGIONS)
+    if len(_ARM_PPB_HANDOFF_REGIONS) > 4 or total > 600:
+        raise FormatError("ARM PPB handoff validation budget exceeded")
+    regions = []
+    for role, offset, size, digest in _ARM_PPB_HANDOFF_REGIONS:
+        data = bounded(payload, offset, size, "ARM PPB handoff body")
+        if hashlib.sha256(data).hexdigest() != digest:
+            raise FormatError(f"ARM PPB handoff {role} body does not match")
+        regions.append({"role": role, "blob_file_offset": offset,
+                        "bytes": size, "sha256": digest})
+    calls = []
+    for site, target in ((0xd69c, 0x1fdac), (0xd6ac, 0x203c4),
+                         (0xd774, 0x1fdac), (0xd5d4, 0x203c4),
+                         (0xd5f8, 0x203c4), (0xd618, 0x203c4)):
+        branch = _a32_branch(payload, site, link=True)
+        if branch["target_blob_file_offset"] != target:
+            raise FormatError("ARM PPB handoff call target does not match")
+        calls.append({"site": site, "target": target})
+    return {
+        "isa": "A32", "regions": regions, "validated_bytes": total,
+        "calls": calls, "device_observed": False,
+        "record": {"virtual_metadata_word_offset": 0,
+                   "physical_metadata_word_offset": 4,
+                   "source_plane_layout_validated": False},
+        "ring": {"read_word_offset": 0, "write_word_offset": 4,
+                 "first_data_byte_offset": 8, "index_range": [2, 63],
+                 "slot_expression": "ring + 4*index",
+                 "next_index": "index+1, replacing 64 with 2"},
+        "acquire": {"entry": 0xd624, "ring_handle_offset": 0x250,
+                    "null_ring_returns_without_access": True,
+                    "empty_ring_returns_without_output": True,
+                    "null_output_still_consumes_nonempty": True,
+                    "output_physical_store": 0xd68c,
+                    "translation_call": 0xd69c, "translation_status_checked": False,
+                    "read_index_publication": 0xd6c8,
+                    "invalid_index_rejected": False,
+                    "status_return_contract_validated": False},
+        "peek": {"entry": 0xd718, "ring_handle_offset": 0x250,
+                 "null_ring_guard": False, "empty_ring_leaves_output": True,
+                 "translation_call": 0xd774, "translation_status_checked": False,
+                 "read_index_modified": False, "invalid_index_rejected": False,
+                 "status_return_contract_validated": False},
+        "release": {"entry": 0xd5a4, "ring_handle_offset": 0x254,
+                    "null_ring_guard": False, "null_record_guard": False,
+                    "record_word_offset": 4, "data_publication": 0xd608,
+                    "index_publication": 0xd61c,
+                    "invalid_index_response": "log and continue",
+                    "full_ring_response": "log and continue",
+                    "duplicate_release_guard": False,
+                    "source_release_ack_or_completion_validated": False},
+        "translation": {"entry": 0x1fdac, "map_handle_offset": 0x224,
+                        "candidate": "u32(word(map+0x28) + physical - word(map+0x30))",
+                        "inclusive_virtual_bounds_offsets": [0x18, 0x1c],
+                        "first_candidate_store": 0x1fdcc,
+                        "candidate_written_before_bounds_check": True,
+                        "metadata_extent_checked": False, "alignment_checked": False,
+                        "list_head_pointer_offset": 4, "node_next_offset": 0,
+                        "linked_candidate_store": 0x1fe24,
+                        "failure_status": 2, "success_status": 0,
+                        "failure_preserves_last_unvalidated_candidate": True,
+                        "native_list_step_bound_validated": False},
+        "scope": {
+            "complete_selected_body_pins": True,
+            "conditional_metadata_translation": True,
+            "public_PPB_layout_equivalence": False,
+            "raw_source_lease": False, "runtime_context_identity": False,
+            "all_consumer_completion": False, "generation_safe_reuse": False,
+            "standalone_processing": False,
+        },
+        "conditions": [
+            "A32 execution uses the pinned bodies and returning ABI-preserving log calls.",
+            "Handle, output, ring and mapping storage is valid and disjoint unless an explicit counterexample supplies an alias.",
+            "Ring/header/index words remain stable during each serialized call; concurrent producer/consumer visibility is not proved.",
+            "The translated value identifies metadata only; neither that value nor a queue index establishes source extent or retention.",
+        ],
+    }
+
+
 def _picture_output_map(payload, images):
     """Pure fixed A32 evidence; callers must pin the exact bundled SHA/size."""
     if len(payload) != BUNDLED_SIZE - TRAILER_SIZE:
@@ -6521,7 +6609,7 @@ def parse_elf(payload, base, wanted, symbol_budget, string_budget,
 def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
             references=False, all_symbols=False, bootstrap=False, picture_output=False,
             arc_metadata=False, csc_command=False, command_buffer_bridge=False, inner_descriptor=False,
-            scaler_fir=False):
+            scaler_fir=False, ppb_handoff=False):
     if len(data) < 24 or len(data) > MAX_FIRMWARE_SIZE or len(data) % 4:
         raise FormatError("invalid BCM70015 firmware size")
     sha256 = hashlib.sha256(data).hexdigest()
@@ -6541,6 +6629,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         raise FormatError("--inner-descriptor requires the exact bundled firmware SHA-256 and size")
     if scaler_fir and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
         raise FormatError("--scaler-fir requires the exact bundled firmware SHA-256 and size")
+    if ppb_handoff and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
+        raise FormatError("--ppb-handoff requires the exact bundled firmware SHA-256 and size")
     payload = data[:-TRAILER_SIZE]
     length_slot = struct.unpack_from("<I", data, len(payload))[0]
     if length_slot != 16:
@@ -6623,6 +6713,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         pointer_path["conditional_inner_dispatch"] = _inner_dispatch_map(payload)
     if scaler_fir:
         result["scaler_fir"] = _scaler_fir_map(payload)
+    if ppb_handoff:
+        result["arm_ppb_metadata_handoff"] = _arm_ppb_metadata_handoff(payload)
     return result
 
 
@@ -6656,6 +6748,8 @@ def main(argv=None):
         "validate two fixed pre-relocation descriptor field paths; bundled firmware only, conditional ARC interpretation"))
     parser.add_argument("--scaler-fir", action="store_true", help=(
         "validate fixed stock A32 scaler routes and FIR tables; bundled firmware only, not hardware coefficient format proof"))
+    parser.add_argument("--ppb-handoff", action="store_true", help=(
+        "validate stock A32 metadata acquire/peek/return bodies; not a raw-surface lease"))
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-fA-F]{64}", args.expect_sha256):
         parser.error("--expect-sha256 must be 64 hexadecimal digits")
@@ -6663,7 +6757,7 @@ def main(argv=None):
         report = analyze(read_firmware(args.firmware), args.symbol or DEFAULT_SYMBOLS,
                          args.expect_sha256.lower(), args.references, args.all_symbols, args.bootstrap,
                          args.picture_output, args.arc_metadata, args.csc_command, args.command_buffer_bridge,
-                         args.inner_descriptor, args.scaler_fir)
+                         args.inner_descriptor, args.scaler_fir, args.ppb_handoff)
     except (OSError, FormatError) as error:
         print(f"flea_fw_map: {error}", file=sys.stderr)
         return 1

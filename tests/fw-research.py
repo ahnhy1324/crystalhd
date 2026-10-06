@@ -1296,6 +1296,83 @@ class FirmwareBootstrapTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(BLOB.read_bytes()).hexdigest(), MAP.BUNDLED_SHA256)
 
 
+class FirmwareArmPpbHandoffTests(unittest.TestCase):
+    REGIONS = (
+        ("acquire", 0xd624, 176, "e6ff28c676a32fe6219c53e6f40f2f23589e6f7f1f7235e4a46c95baf619907a"),
+        ("peek", 0xd718, 104, "013bcc90b5e7d904f03f9787cc7e820978a711eba2fb37c95a63a7b8324c374d"),
+        ("release", 0xd5a4, 128, "8276e18c409aa706a5b3e92b880887c4157256253d7be40312e28a7464b9c812"),
+        ("translate", 0x1fdac, 192, "08d03815210fc1e069068765847cc4c5d847bd5df744f223f9851ee985e05d28"),
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        cls.payload = MAP.read_firmware(BLOB)[:-MAP.TRAILER_SIZE]
+
+    def test_exact_metadata_contract_and_limits(self):
+        report = MAP._arm_ppb_metadata_handoff(self.payload)
+        self.assertEqual(MAP._ARM_PPB_HANDOFF_REGIONS, self.REGIONS)
+        self.assertEqual(report["validated_bytes"], 600)
+        self.assertEqual([(r["role"], r["blob_file_offset"], r["bytes"], r["sha256"])
+                          for r in report["regions"]], list(self.REGIONS))
+        self.assertEqual(report["ring"]["index_range"], [2, 63])
+        self.assertEqual(report["record"]["physical_metadata_word_offset"], 4)
+        self.assertEqual(report["acquire"]["ring_handle_offset"], 0x250)
+        self.assertEqual(report["release"]["ring_handle_offset"], 0x254)
+        self.assertTrue(report["acquire"]["null_output_still_consumes_nonempty"])
+        self.assertFalse(report["acquire"]["translation_status_checked"])
+        self.assertFalse(report["peek"]["null_ring_guard"])
+        self.assertFalse(report["peek"]["read_index_modified"])
+        self.assertEqual(report["release"]["full_ring_response"], "log and continue")
+        self.assertEqual(report["release"]["invalid_index_response"], "log and continue")
+        self.assertTrue(report["translation"]["candidate_written_before_bounds_check"])
+        self.assertFalse(report["scope"]["raw_source_lease"])
+        self.assertFalse(report["scope"]["public_PPB_layout_equivalence"])
+        self.assertFalse(report["scope"]["all_consumer_completion"])
+        self.assertFalse(report["scope"]["generation_safe_reuse"])
+
+    def test_every_selected_body_byte_is_pinned(self):
+        for role, offset, size, _ in self.REGIONS:
+            for delta in range(size):
+                with self.subTest(role=role, byte=delta):
+                    changed = bytearray(self.payload)
+                    changed[offset + delta] ^= 1
+                    with self.assertRaises(MAP.FormatError):
+                        MAP._arm_ppb_metadata_handoff(changed)
+
+    def test_wrong_size_and_call_target_fail(self):
+        for payload in (self.payload[:-1], self.payload + b"\0"):
+            with self.assertRaises(MAP.FormatError):
+                MAP._arm_ppb_metadata_handoff(payload)
+        changed = bytearray(self.payload)
+        changed[0xd69c] ^= 1
+        regions = [(role, offset, size,
+                    hashlib.sha256(changed[offset:offset + size]).hexdigest())
+                   for role, offset, size, _ in self.REGIONS]
+        with mock.patch.object(MAP, "_ARM_PPB_HANDOFF_REGIONS", regions):
+            with self.assertRaises(MAP.FormatError):
+                MAP._arm_ppb_metadata_handoff(changed)
+
+    def test_opt_in_does_not_change_existing_output(self):
+        data = MAP.read_firmware(BLOB)
+        for picture_output in (False, True):
+            plain = MAP.analyze(data, picture_output=picture_output)
+            extra = MAP.analyze(data, picture_output=picture_output, ppb_handoff=True)
+            self.assertEqual(extra.pop("arm_ppb_metadata_handoff"),
+                             MAP._arm_ppb_metadata_handoff(self.payload))
+            self.assertEqual(extra, plain)
+        with self.assertRaises(MAP.FormatError):
+            analyze_fixture(fixture(), ppb_handoff=True)
+
+    def test_cli_option(self):
+        result = subprocess.run([sys.executable, "-B", str(TOOL), str(BLOB), "--ppb-handoff"],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                timeout=15, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, b"")
+        self.assertEqual(json.loads(result.stdout)["arm_ppb_metadata_handoff"],
+                         MAP._arm_ppb_metadata_handoff(self.payload))
+
+
 class FirmwarePictureOutputTests(unittest.TestCase):
     FIR_REGIONS = (
         (0x21ac, 716, "cc9fc5e53343bac1fa521854cc209f7a2d39ed406800d62e3f1f810d19edabe7"),
