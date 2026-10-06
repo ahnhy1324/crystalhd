@@ -323,6 +323,8 @@ static BC_STATUS DtsAcquireOutput(DTS_LIB_CONTEXT *Ctx)
 		sts = BC_STS_DEC_NOT_STARTED;
 	else if (Ctx->CancelWaiting)
 		sts = BC_STS_IO_USER_ABORT;
+	else if (Ctx->outputPhase != DTS_OUTPUT_ACTIVE)
+		sts = BC_STS_BUSY;
 	else if (Ctx->ProcOutPending)
 		sts = BC_STS_BUSY;
 	else
@@ -335,7 +337,83 @@ static void DtsDecPend(DTS_LIB_CONTEXT	*Ctx)
 	DtsLock(Ctx);
 	if(Ctx->ProcOutPending)
 		Ctx->ProcOutPending--;
+	if (!Ctx->ProcOutPending && Ctx->outputPhase == DTS_OUTPUT_RETURNED)
+		Ctx->outputPhase = DTS_OUTPUT_IDLE;
 	DtsUnLock(Ctx);
+}
+
+/* The phase protects the complete public call, not just one FETCH packet.
+ * Pending can become zero before post-fetch checks or an internal refetch. */
+BC_STATUS DtsBeginOutputCall(DTS_LIB_CONTEXT *Ctx)
+{
+	if (!Ctx)
+		return BC_STS_INV_ARG;
+	DtsLock(Ctx);
+	BC_STATUS status = BC_STS_SUCCESS;
+	if (Ctx->State == BC_DEC_STATE_CLOSE)
+		status = BC_STS_DEC_NOT_OPEN;
+	else if (Ctx->State != BC_DEC_STATE_START && Ctx->State != BC_DEC_STATE_PAUSE)
+		status = BC_STS_DEC_NOT_STARTED;
+	else if (Ctx->CancelWaiting)
+		status = BC_STS_IO_USER_ABORT;
+	else if (Ctx->outputPhase != DTS_OUTPUT_IDLE || Ctx->ProcOutPending)
+		status = BC_STS_BUSY;
+	else
+		Ctx->outputPhase = DTS_OUTPUT_ACTIVE;
+	DtsUnLock(Ctx);
+	return status;
+}
+
+BC_STATUS DtsBeginOutputRelease(DTS_LIB_CONTEXT *Ctx)
+{
+	if (!Ctx)
+		return BC_STS_INV_ARG;
+	DtsLock(Ctx);
+	const bool returned = Ctx->outputPhase == DTS_OUTPUT_RETURNED && Ctx->ProcOutPending;
+	if (returned)
+		Ctx->outputPhase = DTS_OUTPUT_ACTIVE;
+	DtsUnLock(Ctx);
+	return returned ? BC_STS_SUCCESS : BC_STS_BUSY;
+}
+
+/* Invoke only after the call's last context/buffer access. Repost failures
+ * retain pending, but the failed public call handed out no continuing borrow. */
+void DtsFinishOutputCall(DTS_LIB_CONTEXT *Ctx)
+{
+	DtsLock(Ctx);
+	if (Ctx->outputPhase == DTS_OUTPUT_ACTIVE)
+		Ctx->outputPhase = Ctx->ProcOutPending ? DTS_OUTPUT_RETIRE_ONLY : DTS_OUTPUT_IDLE;
+	DtsUnLock(Ctx);
+}
+
+BC_STATUS DtsPublishOutput(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *output, BC_STATUS status)
+{
+	DtsLock(Ctx);
+	if (Ctx->outputPhase != DTS_OUTPUT_ACTIVE) {
+		output->Ybuff = output->UVbuff = NULL;
+		DtsUnLock(Ctx);
+		return BC_STS_ERROR;
+	}
+	if (status == BC_STS_SUCCESS && !Ctx->ProcOutPending)
+		status = BC_STS_IO_XFR_ERROR;
+	if (status == BC_STS_SUCCESS && Ctx->ProcOutPending && !Ctx->CancelWaiting) {
+		Ctx->outputPhase = DTS_OUTPUT_RETURNED;
+		DtsUnLock(Ctx);
+		return status;
+	}
+	const bool canceled_borrow = status == BC_STS_SUCCESS && Ctx->ProcOutPending;
+	DtsUnLock(Ctx);
+	if (canceled_borrow) {
+		/* Cancellation won the final publication race. Keep ACTIVE while
+		 * reposting; a failed ACK becomes retirement-only at the last access. */
+		DtsRelRxBuff(Ctx, &Ctx->pOutData->u.RxBuffs, FALSE);
+		output->Ybuff = output->UVbuff = NULL;
+		status = BC_STS_IO_USER_ABORT;
+	}
+	if (status != BC_STS_SUCCESS)
+		output->Ybuff = output->UVbuff = NULL;
+	DtsFinishOutputCall(Ctx);
+	return status;
 }
 
 void DtsGetFrameRate(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut)
@@ -1408,6 +1486,11 @@ BC_STATUS DtsRelRxBuff(DTS_LIB_CONTEXT *Ctx, BC_DEC_YUV_BUFFS *buff, BOOL SkipAd
 		DebugLog_Trace(LDIL_DBG,"DtsRelRxBuff: Invalid Arguments\n");
 		return BC_STS_INV_ARG;
 	}
+	DtsLock(Ctx);
+	const bool residual = Ctx->outputPhase == DTS_OUTPUT_RETIRE_ONLY;
+	DtsUnLock(Ctx);
+	if (residual)
+		return BC_STS_BUSY;
 
 	if(SkipAddBuff){
 		DtsDecPend(Ctx);
@@ -1500,7 +1583,7 @@ BC_STATUS DtsPrepareOutputPacking(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *output,
 //              repost retains the pending count for teardown, not for a
 //              rejected caller to release or a new fetch to reuse.
 //------------------------------------------------------------------------
-BC_STATUS DtsFetchOutInterruptible(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, uint32_t dwTimeout)
+BC_STATUS DtsFetchOutInCall(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, uint32_t dwTimeout)
 {
 	BC_STATUS sts = BC_STS_SUCCESS;
 
@@ -1563,6 +1646,20 @@ BC_STATUS DtsFetchOutInterruptible(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut, 
 	return sts;
 }
 //------------------------------------------------------------------------
+// The old private entry point also owns a complete call phase. Public output
+// loops use InCall so one phase spans internal drop/repost/refetch operations.
+BC_STATUS DtsFetchOutInterruptible(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *output, uint32_t timeout)
+{
+	if (!Ctx || !output)
+		return BC_STS_INV_ARG;
+	BC_STATUS status = DtsBeginOutputCall(Ctx);
+	if (status != BC_STS_SUCCESS)
+		return status;
+	output->Ybuff = output->UVbuff = NULL;
+	status = DtsFetchOutInCall(Ctx, output, timeout);
+	return DtsPublishOutput(Ctx, output, status);
+}
+
 // Name: DtsCancelFetchOutInt
 // Description: Cancel Pending ProcOut Request..
 //------------------------------------------------------------------------
@@ -1572,7 +1669,15 @@ BC_STATUS DtsCancelFetchOutInt(DTS_LIB_CONTEXT *Ctx)
 	uint32_t cnt;
 
 	DtsLock(Ctx);
-	if (!Ctx->ProcOutPending) {
+	/* Only the caller that owns false->true may clear the cancellation flag.
+	 * Refuse before fast success too: an older waiter can still access Ctx. */
+	if (Ctx->CancelWaiting) {
+		DtsUnLock(Ctx);
+		return BC_STS_BUSY;
+	}
+	if (Ctx->outputPhase == DTS_OUTPUT_RETIRE_ONLY ||
+	    (!Ctx->ProcOutPending && Ctx->outputPhase == DTS_OUTPUT_IDLE)) {
+		Ctx->CancelWaiting = 0;
 		DtsUnLock(Ctx);
 		return BC_STS_SUCCESS;
 	}
@@ -1585,7 +1690,11 @@ BC_STATUS DtsCancelFetchOutInt(DTS_LIB_CONTEXT *Ctx)
 
 	do{
 		usleep(100 * 1000);
-		pend = DtsIsPend(Ctx);
+		DtsLock(Ctx);
+		pend = Ctx->outputPhase == DTS_OUTPUT_ACTIVE ||
+			Ctx->outputPhase == DTS_OUTPUT_RETURNED ||
+			(Ctx->ProcOutPending && Ctx->outputPhase != DTS_OUTPUT_RETIRE_ONLY);
+		DtsUnLock(Ctx);
 	}while( (pend) && (cnt--) );
 
 	if(pend){
@@ -1616,9 +1725,16 @@ BC_STATUS DtsUnmapYUVBuffs(DTS_LIB_CONTEXT *Ctx)
 		return BC_STS_INV_ARG;
 
 	DtsLock(Ctx);
-	if (!Ctx->bMapOutBufDirty) {
+	if (Ctx->outputPhase == DTS_OUTPUT_ACTIVE ||
+	    Ctx->outputPhase == DTS_OUTPUT_RETURNED || Ctx->CancelWaiting ||
+	    (Ctx->ProcOutPending && Ctx->outputPhase != DTS_OUTPUT_RETIRE_ONLY)) {
 		DtsUnLock(Ctx);
-		return BC_STS_SUCCESS;
+		return BC_STS_BUSY;
+	}
+	if (!Ctx->bMapOutBufDirty) {
+		const bool residual = Ctx->outputPhase == DTS_OUTPUT_RETIRE_ONLY && Ctx->ProcOutPending;
+		DtsUnLock(Ctx);
+		return residual ? BC_STS_BUSY : BC_STS_SUCCESS;
 	}
 
 	pIocData = DtsAllocIoctlData(Ctx);
@@ -1636,6 +1752,10 @@ BC_STATUS DtsUnmapYUVBuffs(DTS_LIB_CONTEXT *Ctx)
 	if (sts == BC_STS_SUCCESS) {
 		Ctx->bMapOutBufDone = false;
 		Ctx->bMapOutBufDirty = false;
+		if (Ctx->outputPhase == DTS_OUTPUT_RETIRE_ONLY) {
+			Ctx->ProcOutPending = 0;
+			Ctx->outputPhase = DTS_OUTPUT_IDLE;
+		}
 	}
 	DtsUnLock(Ctx);
 	return sts;
@@ -2724,7 +2844,8 @@ static bool DtsFleaMpeg4EosReady(DTS_LIB_CONTEXT *Ctx,
 		 Ctx->VidParams.MediaSubType == BC_MSUBTYPE_DIVX311) &&
 		Ctx->State == BC_DEC_STATE_START && Ctx->bEOSCheck && !Ctx->bEOS &&
 		Ctx->eosTxComplete && !Ctx->txDmaFault && !Ctx->txPending &&
-		!Ctx->ProcOutPending && Ctx->txBytesRetired >= Ctx->eosTxFence &&
+		!Ctx->ProcOutPending && Ctx->outputPhase == DTS_OUTPUT_IDLE && !Ctx->CancelWaiting &&
+		Ctx->txBytesRetired >= Ctx->eosTxFence &&
 		DtsTxFreeSize((HANDLE)Ctx) == Ctx->circBuf.totalSize;
 	*fence = Ctx->eosTxFence;
 	*generation = Ctx->eosDrainGeneration;
@@ -2743,7 +2864,8 @@ static bool DtsCompleteFleaMpeg4Eos(DTS_LIB_CONTEXT *Ctx,
 		 Ctx->VidParams.MediaSubType == BC_MSUBTYPE_DIVX311) &&
 		Ctx->State == BC_DEC_STATE_START && Ctx->bEOSCheck && !Ctx->bEOS &&
 		Ctx->eosTxComplete && !Ctx->txDmaFault && !Ctx->txPending &&
-		!Ctx->ProcOutPending && Ctx->eosTxFence == fence &&
+		!Ctx->ProcOutPending && Ctx->outputPhase == DTS_OUTPUT_IDLE && !Ctx->CancelWaiting &&
+		Ctx->eosTxFence == fence &&
 		Ctx->eosDrainGeneration == generation &&
 		Ctx->outputProgress == progress &&
 		Ctx->txBytesRetired >= Ctx->eosTxFence &&

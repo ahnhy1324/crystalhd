@@ -164,9 +164,13 @@ Description:
     Close the handle to the decoder device.
 
     Must be called once when the application closes the decoder after use.
-    For a valid handle owned by this process, waits for the TX worker before
-    consuming the handle, even if a teardown error is returned. Do not retry
-    that consumed handle. An unresponsive driver can delay this call.
+    Finish output calls and surrender each successful NoCopy borrow once. After
+    a failed output or admitted Release, retry Stop until cleanup succeeds;
+    Stop never consumes the handle. Then call DeviceClose once. An ordinary
+    DeviceClose error can still report an already-consumed handle: never retry
+    it from status alone. Its defensive output-retention check is not a handle
+    ownership query. TX is joined before consumption; an unresponsive driver
+    can delay this call.
 
 Parameters:
 
@@ -602,8 +606,12 @@ Description:
     This function will clean up any pending operations and stop the decoder.
     Internal state is still maintained and the decoder can be restarted.
     Any pending pictures will be dropped.
-    Failed TX quiescence leaves input/start/resume blocked. Retry Stop or a
-    destructive Flush, or use DeviceClose to join TX and consume the handle.
+    Failed TX/output quiescence leaves input/start/resume blocked; Stop never
+    consumes the handle. Finish output calls and surrender any successful
+    NoCopy borrow once. Failed output or admitted Release may leave only
+    library retirement responsibility, never a caller borrow: do not Release
+    for the failed output or retry Release. Retry Stop until cleanup succeeds,
+    then call DeviceClose once. Only a confirmed unmap retires that residual.
 
 Parameters:
 
@@ -868,6 +876,10 @@ Description:
     == NOTE ====
      1) DtsReleaseOutputBuffs() interface must be called to release the buffers
         back to DIL if return Status is BC_STS_SUCCESS.
+        Any non-SUCCESS NoCopy return grants no new pointer borrow; do not
+        Release for that failed call. Only a successful return grants a borrow,
+        and its single owner surrenders it exactly once. A rejected competing
+        call does not alter a borrow obtained by an earlier successful call.
 
      2) Only this interface supports PIB and full 100% output encryption/Scrambling.
 
@@ -904,7 +916,15 @@ Function name:
 
 Description:
 
-    Release Buffers acquired during ProcOutputNoCopy() interface.
+    Release buffers acquired by a successful ProcOutputNoCopy() call.
+    The single current borrow owner calls this exactly once, without racing
+    another Release. That admitted invocation ends the borrow regardless of
+    the driver's returned status, including BUSY. Do not access the pointers
+    or retry Release afterwards. A failed repost is retained for lifecycle
+    cleanup and only a confirmed destructive unmap retires that residual.
+    A call with no current borrow or an invalid handle cannot surrender a
+    different owner's output. The historical fChange=TRUE no-op is not
+    admission. Do not infer admission solely from a returned status code.
 
 Parameters:
 

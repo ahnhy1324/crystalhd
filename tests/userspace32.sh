@@ -172,6 +172,7 @@ for bits in $build_bits; do
                 section_wrap=-Wl,--wrap=pthread_mutex_lock
                 if [ "$section" = flush ]; then
                     section_wrap="$section_wrap -Wl,--wrap=ioctl,--wrap=usleep"
+                    section_wrap="$section_wrap -Wl,--wrap=DtsReleaseInterface,--wrap=DtsFinishOutputCall,--wrap=DtsPublishOutput"
                 fi ;;
             tx-flush)
                 set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_if.cpp" \

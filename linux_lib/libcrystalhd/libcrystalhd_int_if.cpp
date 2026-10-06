@@ -232,7 +232,8 @@ DtsSetOutputColorSpace(HANDLE hDevice, BC_OUTPUT_FORMAT mode)
 		/* Freeze the source/request through mapping and each output lease.
 		 * STOP alone is insufficient when a failed unmap left registrations.
 		 */
-		if (Ctx->ProcOutPending || Ctx->CancelWaiting || Ctx->txQuiescing ||
+		if (Ctx->ProcOutPending || Ctx->outputPhase != DTS_OUTPUT_IDLE ||
+			Ctx->CancelWaiting || Ctx->txQuiescing ||
 			Ctx->bMapOutBufDone || Ctx->bMapOutBufDirty ||
 			(Ctx->State != BC_DEC_STATE_CLOSE &&
 			 Ctx->State != BC_DEC_STATE_START && Ctx->State != BC_DEC_STATE_STOP)) {

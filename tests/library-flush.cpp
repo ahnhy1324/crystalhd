@@ -17,6 +17,7 @@
 #include <thread>
 #include <vector>
 #include <unistd.h>
+#include <sys/resource.h>
 #include "7411d.h"
 #include "libcrystalhd_if.h"
 #include "libcrystalhd_int_if.h"
@@ -30,7 +31,7 @@ static std::condition_variable changed;
 static bool release_output, lock_checked, completed, output_lock_blocked;
 static unsigned cancellation_sleeps, firmware_flush_mode, stop_calls;
 static bool pending_at_stop;
-static unsigned failures;
+static unsigned failures, checks;
 static bool allow_output_io, admission_probe, resume_at_stop;
 static bool admission_waiting, resume_admission, admission_done;
 static unsigned fetch_calls, add_calls;
@@ -42,6 +43,58 @@ static BC_STATUS mock_flush_status = BC_STS_SUCCESS;
 static BC_STATUS mock_stop_status = BC_STS_SUCCESS;
 static BC_STATUS mock_close_status = BC_STS_SUCCESS;
 static unsigned close_calls;
+/* Held-owner cases keep a successful NoCopy borrow across the real retry
+ * loop. Separate deterministic CPU threads exercise active-call windows. */
+static bool held_owner_case;
+static unsigned unmap_calls, activate_calls, start_calls, interface_calls;
+static unsigned pause_calls;
+static BC_STATUS mock_pause_status = BC_STS_SUCCESS;
+static bool pending_at_unmap, pending_at_interface;
+static BC_STATUS mock_unmap_status = BC_STS_SUCCESS;
+static bool mock_unmap_syscall_failure;
+enum PhaseWindow { WINDOW_NONE, WINDOW_EMPTY_CTX_LOCK, WINDOW_FINALIZER, WINDOW_PUBLISH };
+static thread_local PhaseWindow phase_window;
+static bool phase_window_reached, resume_phase_window, phase_actor_done;
+static bool cancel_releases_publish;
+static thread_local bool pause_cancel_owner;
+static bool cancel_owner_reached, resume_cancel_owner;
+static unsigned unmap_fail_once_at;
+
+static void wait_phase_window()
+{
+    phase_window = WINDOW_NONE;
+    std::unique_lock<std::mutex> lock(gate);
+    phase_window_reached = true;
+    changed.notify_all();
+    if (!changed.wait_for(lock, std::chrono::seconds(2), [] { return resume_phase_window; }))
+        std::abort();
+}
+extern "C" void __real_DtsFinishOutputCall(DTS_LIB_CONTEXT *);
+extern "C" void __wrap_DtsFinishOutputCall(DTS_LIB_CONTEXT *context)
+{
+    if (phase_window == WINDOW_FINALIZER)
+        wait_phase_window();
+    __real_DtsFinishOutputCall(context);
+}
+extern "C" BC_STATUS __real_DtsPublishOutput(DTS_LIB_CONTEXT *, BC_DTS_PROC_OUT *, BC_STATUS);
+extern "C" BC_STATUS __wrap_DtsPublishOutput(DTS_LIB_CONTEXT *context,
+                                            BC_DTS_PROC_OUT *output, BC_STATUS status)
+{
+    if (phase_window == WINDOW_PUBLISH)
+        wait_phase_window();
+    return __real_DtsPublishOutput(context, output, status);
+}
+
+extern "C" BC_STATUS __wrap_DtsReleaseInterface(DTS_LIB_CONTEXT *context)
+{
+    if (!held_owner_case || context != observed)
+        std::abort();
+    ++interface_calls;
+    pending_at_interface = DtsIsPend(context);
+    /* Never consume/free a live stack fixture. Only record the production
+     * DeviceClose's interface-release call boundary. */
+    return BC_STS_SUCCESS;
+}
 struct FetchReply {
     BC_STATUS status;
     BC_DEC_OUT_BUFF output;
@@ -63,6 +116,10 @@ static uint8_t frame_storage[8][32];
 extern "C" int __real_pthread_mutex_lock(pthread_mutex_t *mutex);
 extern "C" int __wrap_pthread_mutex_lock(pthread_mutex_t *mutex)
 {
+    if (phase_window == WINDOW_EMPTY_CTX_LOCK && observed &&
+        mutex == &observed->thLock && fetch_calls &&
+        observed->outputPhase == DTS_OUTPUT_ACTIVE && !observed->ProcOutPending)
+        wait_phase_window();
     if (delayed_output_lock && observed && mutex == &observed->thLock &&
         --delayed_output_lock == 0) {
         std::unique_lock<std::mutex> lock(gate);
@@ -76,6 +133,7 @@ extern "C" int __wrap_pthread_mutex_lock(pthread_mutex_t *mutex)
 
 static void check(bool condition, const char *message)
 {
+    ++checks;
     if (!condition) {
         std::fprintf(stderr, "FAIL: %s\n", message);
         ++failures;
@@ -86,7 +144,26 @@ extern "C" int __wrap_usleep(useconds_t microseconds)
 {
     if (microseconds != 100000)
         return 0;
-    ++cancellation_sleeps;
+    __sync_add_and_fetch(&cancellation_sleeps, 1);
+    if (pause_cancel_owner) {
+        pause_cancel_owner = false;
+        std::unique_lock<std::mutex> lock(gate);
+        cancel_owner_reached = true;
+        changed.notify_all();
+        if (!changed.wait_for(lock, std::chrono::seconds(2), [] { return resume_cancel_owner; }))
+            std::abort();
+        return 0;
+    }
+    if (cancel_releases_publish) {
+        std::unique_lock<std::mutex> lock(gate);
+        resume_phase_window = true;
+        changed.notify_all();
+        if (!changed.wait_for(lock, std::chrono::seconds(2), [] { return phase_actor_done; }))
+            std::abort();
+        return 0;
+    }
+    if (held_owner_case)
+        return 0;
     std::unique_lock<std::mutex> lock(gate);
     release_output = true;
     changed.notify_all();
@@ -109,6 +186,22 @@ extern "C" int __wrap_usleep(useconds_t microseconds)
 
 extern "C" int __wrap_ioctl(int, unsigned long code, ...)
 {
+    if (held_owner_case && code == BCM_IOC_FLUSH_RX_CAP) {
+        va_list args;
+        va_start(args, code);
+        BC_IOCTL_DATA *data = va_arg(args, BC_IOCTL_DATA *);
+        va_end(args);
+        ++unmap_calls;
+        pending_at_unmap = DtsIsPend(observed);
+        check(data->u.FlushRxCap.bDiscardOnly == FALSE,
+              "destructive unmap is distinguished from discard-only");
+        data->RetSts = unmap_calls == unmap_fail_once_at ? BC_STS_IO_ERROR : mock_unmap_status;
+        if (mock_unmap_syscall_failure) {
+            errno = EFAULT;
+            return -1;
+        }
+        return 0;
+    }
     if (allow_output_io && (code == BCM_IOC_FETCH_RXBUFF || code == BCM_IOC_ADD_RXBUFFS)) {
         va_list args;
         va_start(args, code);
@@ -151,7 +244,14 @@ BC_STATUS DtsFWDecFlushChannel(HANDLE, uint32_t mode)
     firmware_flush_mode = mode;
     return mock_flush_status;
 }
-BC_STATUS DtsFWPauseVideo(HANDLE, uint32_t) { return BC_STS_SUCCESS; }
+BC_STATUS DtsFWPauseVideo(HANDLE, uint32_t)
+{ ++pause_calls; return mock_pause_status; }
+BC_STATUS DtsFWActivateDecoder(HANDLE)
+{ ++activate_calls; return BC_STS_SUCCESS; }
+BC_STATUS DtsFWStartVideo(HANDLE, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t)
+{ ++start_calls; return BC_STS_SUCCESS; }
+BC_STATUS DtsSetProgressive(HANDLE, uint32_t)
+{ std::abort(); }
 BC_STATUS DtsFWCloseChannel(HANDLE, uint32_t)
 {
     ++close_calls;
@@ -209,6 +309,10 @@ static void reset_output_mocks()
     callback_buffers.clear();
     copy_calls = callback_calls = 0;
     mock_copy_status = BC_STS_SUCCESS;
+    mock_unmap_status = BC_STS_SUCCESS;
+    mock_unmap_syscall_failure = false;
+    unmap_fail_once_at = 0;
+    cancel_releases_publish = false;
     allow_copy = false;
 }
 
@@ -719,8 +823,833 @@ static void test_cleanup_errors(unsigned mode, unsigned errors)
           "shared decoder ownership follows confirmed channel close");
 }
 
+
+static void test_returned_nocopy_held(unsigned operation, bool release_first)
+{
+    OutputContext fixture;
+    BC_IOCTL_DATA control_data = {};
+    prepare_scripted_output(fixture, BC_PCI_DEVID_FLEA);
+    fixture.context.pIoDataFreeHd = &control_data;
+    fixture.context.OpMode = DTS_PLAYBACK_MODE;
+    fixture.context.bMapOutBufDone = true;
+    fixture.context.bMapOutBufDirty = true;
+    DtsSetDecStat(true, fixture.context.ProcessID);
+    DtsSetOPMode(1);
+    fetch_replies.push_back(make_frame(0, 7, 1));
+    BC_DTS_PROC_OUT output = make_public_output(fixture, 0);
+    const BC_STATUS fetched = DtsProcOutputNoCopy(&fixture.context, 0, &output);
+    check(fetched == BC_STS_SUCCESS && output.Ybuff == frame_storage[0] &&
+          fixture.context.ProcOutPending == 1 && fetch_calls == 1 &&
+          add_calls == 0 && fixture.context.outputPhase == DTS_OUTPUT_RETURNED,
+          "actual successful NoCopy return transfers one host output owner");
+    const uint8_t *const borrowed = output.Ybuff;
+    if (release_first) {
+        const BC_STATUS released = DtsReleaseOutputBuffs(&fixture.context, NULL, FALSE);
+        check(released == BC_STS_SUCCESS && fixture.context.ProcOutPending == 0 &&
+              add_calls == 1, "released control retires actual NoCopy owner once");
+    }
+
+    held_owner_case = true;
+    unmap_calls = activate_calls = start_calls = interface_calls = 0;
+    pending_at_unmap = pending_at_interface = pending_at_stop = false;
+    const BC_STATUS stopped =
+        operation == 0 ? DtsStopDecoder(&fixture.context) :
+        operation == 1 ? DtsCloseDecoder(&fixture.context) :
+        operation == 2 ? DtsDeviceClose(&fixture.context) :
+                         DtsUnmapYUVBuffs(&fixture.context);
+    const unsigned stop_polls = cancellation_sleeps;
+    const uint32_t after_state = fixture.context.State;
+    const bool after_quiescing = fixture.context.txQuiescing;
+    const bool after_dirty = fixture.context.bMapOutBufDirty;
+    const bool after_done = fixture.context.bMapOutBufDone;
+    const bool after_pending = fixture.context.ProcOutPending;
+    const unsigned after_stop = stop_calls;
+    const unsigned after_close = close_calls;
+    const unsigned after_unmap = unmap_calls;
+    const unsigned after_interface = interface_calls;
+    const bool pending_fw_stop = pending_at_stop;
+
+    BC_STATUS restarted = BC_STS_DEC_NOT_OPEN;
+    if (operation == 0 && !release_first) {
+        /* Restart uses real admission/state logic. Its FW stubs only record
+         * entry and this fixture deliberately disables the progressive ioctl. */
+        fixture.context.VidParams.Progressive = FALSE;
+        restarted = DtsStartDecoder(&fixture.context);
+    }
+    const unsigned adds_before_release = add_calls;
+    BC_STATUS late_release = BC_STS_SUCCESS;
+    if (!release_first) {
+        late_release = DtsReleaseOutputBuffs(&fixture.context, NULL, FALSE);
+        check(late_release == BC_STS_SUCCESS && fixture.context.ProcOutPending == 0 &&
+              add_calls == adds_before_release + 1 &&
+              reposted_buffers.back() == frame_storage[0],
+              "late caller release reposts exact previously returned host buffer");
+    }
+    std::printf("held-nocopy operation=%u release_first=%d no_fetch_thread=1 "
+                "fetched=%d stop=%d polls=%u pending=%d "
+                "fw_stop=%u pending_at_fw_stop=%d fw_close=%u "
+                "destructive_unmap=%u pending_at_unmap=%d interface_release=%u "
+                "pending_at_interface=%d state=%u tx_quiescing=%d dirty=%d done=%d "
+                "restart=%d activate=%u start=%u late_release=%d late_add=%u "
+                "borrowed_pointer_unchanged=%d\n",
+                operation, release_first, fetched, stopped, stop_polls,
+                after_pending, after_stop, pending_fw_stop, after_close,
+                after_unmap, pending_at_unmap, after_interface,
+                pending_at_interface, after_state, after_quiescing,
+                after_dirty, after_done, restarted, activate_calls, start_calls,
+                late_release, add_calls - adds_before_release, output.Ybuff == borrowed);
+    if (release_first) {
+        check(stopped == BC_STS_SUCCESS && stop_polls == 0 &&
+              after_stop == 1 && !pending_fw_stop && after_unmap == 1 &&
+              !pending_at_unmap && !after_dirty && !after_done,
+              "normal released control completes existing stop/unmap without cancellation");
+    } else {
+        check(after_pending && output.Ybuff == borrowed,
+              "held lease survives until explicit caller release, not a fetch thread completion");
+        if (operation != 3)
+            check(stopped == BC_STS_TIMEOUT && stop_polls == (operation == 2 ? 63U : 21U),
+                  "unreleased actual output reaches the bounded production cancellation timeout");
+        else
+            check(stopped != BC_STS_SUCCESS,
+                  "destructive unmap must refuse a still-held output owner");
+        check(after_stop == 0 && after_close == 0,
+              "held-output refusal must not enter firmware stop/close");
+        check(after_unmap == 0 && after_dirty && after_done,
+              "held-output refusal must retain the registered capture set");
+        check(after_interface == 0,
+              "DeviceClose must not consume the interface while a returned owner is live");
+        if (operation != 3)
+            check(after_quiescing && after_state != BC_DEC_STATE_STOP &&
+                  after_state != BC_DEC_STATE_CLOSE,
+                  "timeout must not publish reusable STOP/CLOSE admission");
+        check(fixture.context.Sig == LIB_CTX_SIG && fixture.context.DevHandle == 99 &&
+              fixture.context.ProcessID == getpid() &&
+              fixture.globals.g_bDecOpened &&
+              fixture.globals.g_nProcID == fixture.context.ProcessID &&
+              DtsGetOPMode() == 1,
+              "held refusal retains live context metadata and shared decoder/mode ownership");
+        if (operation == 0)
+            check(restarted == BC_STS_BUSY && activate_calls == 0 && start_calls == 0,
+                  "restart must not proceed while the returned NoCopy lease is still live");
+    }
+
+    if (!release_first) {
+        const BC_STATUS retried =
+            operation == 0 ? DtsStopDecoder(&fixture.context) :
+            operation == 1 ? DtsCloseDecoder(&fixture.context) :
+            operation == 2 ? DtsDeviceClose(&fixture.context) :
+                             DtsUnmapYUVBuffs(&fixture.context);
+        check(retried == BC_STS_SUCCESS && unmap_calls == 1 &&
+              !fixture.context.bMapOutBufDone && !fixture.context.bMapOutBufDirty &&
+              !fixture.context.ProcOutPending,
+              "explicit caller release enables successful retry and exactly one destructive unmap");
+        check(stop_calls == (operation == 3 ? 0U : 1U) &&
+              close_calls == (operation == 1 || operation == 2 ? 1U : 0U) &&
+              interface_calls == (operation == 2 ? 1U : 0U) &&
+              !pending_at_unmap && !pending_at_interface,
+              "retry enters stop/close/interface only after actual returned-owner release");
+        if (operation == 1 || operation == 2)
+            check(fixture.context.State == BC_DEC_STATE_CLOSE &&
+                  !fixture.globals.g_bDecOpened && fixture.globals.g_nProcID == 0,
+                  "successful close retry retires only this decoder's shared ownership");
+        if (operation == 2)
+            check(DtsGetOPMode() == 0, "successful DeviceClose retry clears playback mode");
+        std::printf("released-retry operation=%u status=%d fw_stop=%u fw_close=%u "
+                    "unmap=%u interface=%u pending=%d state=%u mode=%u\n",
+                    operation, retried, stop_calls, close_calls, unmap_calls,
+                    interface_calls, fixture.context.ProcOutPending,
+                    fixture.context.State, DtsGetOPMode());
+    }
+    held_owner_case = false;
+}
+
+static void test_input_only_flush_keeps_owner()
+{
+    OutputContext fixture;
+    BC_IOCTL_DATA control_data = {};
+    prepare_scripted_output(fixture, BC_PCI_DEVID_FLEA);
+    fixture.context.pIoDataFreeHd = &control_data;
+    fixture.context.bMapOutBufDone = fixture.context.bMapOutBufDirty = true;
+    fetch_replies.push_back(make_frame(0, 7, 1));
+    BC_DTS_PROC_OUT output = make_public_output(fixture, 0);
+    check(DtsProcOutputNoCopy(&fixture.context, 0, &output) == BC_STS_SUCCESS &&
+          fixture.context.ProcOutPending, "input-only test acquires a real NoCopy owner");
+    held_owner_case = true;
+    unmap_calls = activate_calls = start_calls = interface_calls = 0;
+    const BC_STATUS flushed = DtsFlushInput(&fixture.context, 3);
+    const BC_STATUS restarted = DtsStartDecoder(&fixture.context);
+    const BC_STATUS unmapped = DtsUnmapYUVBuffs(&fixture.context);
+    check(flushed == BC_STS_SUCCESS && fixture.context.State == BC_DEC_STATE_FLUSH &&
+          !fixture.context.txQuiescing && fixture.context.ProcOutPending,
+          "input-only flush preserves pending output independently of TX quiescence");
+    check(restarted == BC_STS_BUSY && unmapped == BC_STS_BUSY &&
+          activate_calls == 0 && start_calls == 0 && unmap_calls == 0 &&
+          cancellation_sleeps == 0 && fixture.context.bMapOutBufDirty &&
+          fixture.context.bMapOutBufDone,
+          "held output blocks Start and unmap even after op3 clears the TX barrier");
+    check(DtsReleaseOutputBuffs(&fixture.context, NULL, FALSE) == BC_STS_SUCCESS &&
+          !fixture.context.ProcOutPending && add_calls == 1,
+          "op3 owner releases normally without destructive cleanup");
+    check(DtsStopDecoder(&fixture.context) == BC_STS_SUCCESS &&
+          stop_calls == 1 && unmap_calls == 1,
+          "op3 cleanup succeeds after actual owner release");
+    std::printf("input-only-op3 flush=%d held_start=%d held_unmap=%d release_add=%u "
+                "retry_stop=%u unmap=%u\n", flushed, restarted, unmapped,
+                add_calls, stop_calls, unmap_calls);
+    held_owner_case = false;
+}
+
+static void test_cancel_wait_admission()
+{
+    OutputContext fixture;
+    held_owner_case = true;
+    fixture.context.State = BC_DEC_STATE_STOP;
+    fixture.context.CancelWaiting = 1;
+    activate_calls = start_calls = unmap_calls = interface_calls = 0;
+    check(!fixture.context.ProcOutPending && !fixture.context.bMapOutBufDirty &&
+          DtsStartDecoder(&fixture.context) == BC_STS_BUSY &&
+          DtsUnmapYUVBuffs(&fixture.context) == BC_STS_BUSY &&
+          activate_calls == 0 && start_calls == 0 && unmap_calls == 0,
+          "cancellation-in-progress alone blocks Start and unmap, including clean map");
+    fixture.context.CancelWaiting = 0;
+    fixture.context.VidParams.Progressive = FALSE;
+    check(DtsStartDecoder(&fixture.context) == BC_STS_SUCCESS &&
+          activate_calls == 1 && start_calls == 1 &&
+          DtsUnmapYUVBuffs(&fixture.context) == BC_STS_SUCCESS && unmap_calls == 0,
+          "cleared cancellation admits normal Start and a clean no-op unmap");
+    held_owner_case = false;
+}
+
+static void test_cancel_timeout_first_error()
+{
+    OutputContext fixture;
+    BC_IOCTL_DATA control_data = {};
+    prepare_scripted_output(fixture, BC_PCI_DEVID_FLEA);
+    fixture.context.pIoDataFreeHd = &control_data;
+    fixture.context.bMapOutBufDone = fixture.context.bMapOutBufDirty = true;
+    fetch_replies.push_back(make_frame(0, 7, 1));
+    BC_DTS_PROC_OUT output = make_public_output(fixture, 0);
+    check(DtsProcOutputNoCopy(&fixture.context, 0, &output) == BC_STS_SUCCESS,
+          "first-error test acquires returned NoCopy owner before stop");
+    fixture.context.DevId = BC_PCI_DEVID_LINK;
+    fixture.context.hw_paused = true;
+    mock_pause_status = BC_STS_FW_CMD_ERR;
+    pause_calls = unmap_calls = activate_calls = start_calls = interface_calls = 0;
+    held_owner_case = true;
+    const BC_STATUS status = DtsStopDecoder(&fixture.context);
+    check(status == BC_STS_FW_CMD_ERR && pause_calls == 1 &&
+          cancellation_sleeps == 21 && stop_calls == 0 && unmap_calls == 0 &&
+          fixture.context.txQuiescing && fixture.context.ProcOutPending &&
+          fixture.context.bMapOutBufDirty && fixture.context.bMapOutBufDone,
+          "cancellation failure preserves an earlier firmware error and held ownership");
+    mock_pause_status = BC_STS_SUCCESS;
+    check(DtsReleaseOutputBuffs(&fixture.context, NULL, FALSE) == BC_STS_SUCCESS &&
+          DtsStopDecoder(&fixture.context) == BC_STS_SUCCESS &&
+          stop_calls == 1 && unmap_calls == 1,
+          "first-error refusal remains retryable after actual owner release");
+    std::printf("first-error-stop status=%d polls=%u pause=%u retry_stop=%u unmap=%u\n",
+                status, cancellation_sleeps, pause_calls, stop_calls, unmap_calls);
+    held_owner_case = false;
+}
+
+
+static void test_failed_internal_repost_teardown(bool packing, bool no_copy,
+                                                 AddOutcome outcome, bool device_close)
+{
+    OutputContext fixture;
+    BC_IOCTL_DATA control_data = {};
+    prepare_scripted_output(fixture, BC_PCI_DEVID_FLEA);
+    fixture.context.pIoDataFreeHd = &control_data;
+    fixture.context.OpMode = DTS_PLAYBACK_MODE;
+    fixture.context.bMapOutBufDone = fixture.context.bMapOutBufDirty = true;
+    DtsSetDecStat(true, fixture.context.ProcessID);
+    DtsSetOPMode(1);
+    fetch_replies.push_back(make_frame(0, 7, 1));
+    add_replies.push_back(make_add_reply(outcome));
+    if (packing) {
+        fixture.context.softwareUyvy = true;
+        fixture.context.b422Mode = OUTPUT_MODE422_YUY2;
+        /* Actual fetched metadata has separate UV extent and therefore
+         * violates packed-YUY2 admission before any pixel conversion. */
+    } else {
+        cancel_after_fetch = true;
+    }
+    BC_DTS_PROC_OUT output = make_public_output(fixture, 0);
+    const BC_STATUS produced = no_copy ?
+        DtsProcOutputNoCopy(&fixture.context, 0, &output) :
+        DtsProcOutput(&fixture.context, 0, &output);
+    const BC_STATUS expected = packing ? add_result(outcome) : BC_STS_IO_USER_ABORT;
+    check(produced == expected && produced != BC_STS_SUCCESS &&
+          fetch_calls == 1 && add_calls == 1 && fixture.context.ProcOutPending == 1,
+          "actual failed internal repost returns failure and retains teardown-only pending");
+    check(fixture.context.outputPhase == DTS_OUTPUT_RETIRE_ONLY,
+          "failed public output finalizes retirement-only after its last context access");
+    if (packing)
+        check(output.Ybuff == NULL && output.UVbuff == NULL,
+              "failed packing cannot hand a successful caller-owned buffer to NoCopy/copy caller");
+    const unsigned old_adds = add_calls;
+    check(DtsReleaseOutputBuffs(&fixture.context, NULL, FALSE) == BC_STS_BUSY &&
+          add_calls == old_adds && fixture.context.ProcOutPending &&
+          fixture.context.outputPhase == DTS_OUTPUT_RETIRE_ONLY,
+          "failed-output caller cannot surrender/repost an orphan as if it held a returned loan");
+    /* Model only the cancellation owner's final flag reset, not lease
+     * release or pending decrement. The rejected caller must NOT Release. */
+    fixture.context.CancelWaiting = 0;
+    held_owner_case = true;
+    unmap_calls = activate_calls = start_calls = interface_calls = 0;
+    pending_at_unmap = pending_at_interface = pending_at_stop = false;
+    const BC_STATUS teardown = device_close ? DtsDeviceClose(&fixture.context) :
+                                             DtsStopDecoder(&fixture.context);
+    std::printf("orphan-repost packing=%d no_copy=%d outcome=%u device_close=%d "
+                "output_status=%d cleanup=%d polls=%u fw_stop=%u fw_close=%u "
+                "unmap=%u interface=%u pending=%d state=%u dirty=%d done=%d adds=%u "
+                "caller_release=0\n", packing, no_copy, outcome, device_close,
+                produced, teardown, cancellation_sleeps, stop_calls, close_calls,
+                unmap_calls, interface_calls, fixture.context.ProcOutPending,
+                fixture.context.State, fixture.context.bMapOutBufDirty,
+                fixture.context.bMapOutBufDone, add_calls);
+    check(teardown == BC_STS_SUCCESS && stop_calls == 1 && unmap_calls == 1 &&
+          fixture.context.ProcOutPending == 0 && !fixture.context.bMapOutBufDirty &&
+          !fixture.context.bMapOutBufDone,
+          "failed internal repost must retire through acknowledged destructive cleanup");
+    check(fixture.context.outputPhase == DTS_OUTPUT_IDLE,
+          "only successful destructive unmap ACK returns residual phase to idle");
+    check(add_calls == 1 && interface_calls == (device_close ? 1U : 0U) &&
+          close_calls == (device_close ? 1U : 0U),
+          "orphan teardown must not require/retry caller Release and must retain normal close path");
+    held_owner_case = false;
+}
+
+
+static void initialize_phase_capture(OutputContext &fixture, BC_IOCTL_DATA &control)
+{
+    prepare_scripted_output(fixture, BC_PCI_DEVID_FLEA);
+    fixture.context.pIoDataFreeHd = &control;
+    fixture.context.OpMode = DTS_PLAYBACK_MODE;
+    fixture.context.bMapOutBufDone = fixture.context.bMapOutBufDirty = true;
+    DtsSetDecStat(true, fixture.context.ProcessID);
+    DtsSetOPMode(1);
+    unmap_calls = activate_calls = start_calls = interface_calls = 0;
+    pending_at_unmap = pending_at_interface = pending_at_stop = false;
+}
+
+static void test_one_shot_release_failure(AddOutcome outcome)
+{
+    OutputContext fixture;
+    BC_IOCTL_DATA control = {};
+    initialize_phase_capture(fixture, control);
+    fetch_replies.push_back(make_frame(0, 7, 1));
+    BC_DTS_PROC_OUT output = make_public_output(fixture, 0);
+    check(DtsProcOutputNoCopy(&fixture.context, 0, &output) == BC_STS_SUCCESS &&
+          fixture.context.outputPhase == DTS_OUTPUT_RETURNED,
+          "release-failure case obtains actual returned owner");
+    check(DtsReleaseOutputBuffs(NULL, NULL, FALSE) == BC_STS_INV_ARG &&
+          fixture.context.outputPhase == DTS_OUTPUT_RETURNED && add_calls == 0 &&
+          DtsReleaseOutputBuffs(&fixture.context, NULL, TRUE) == BC_STS_SUCCESS &&
+          fixture.context.outputPhase == DTS_OUTPUT_RETURNED && add_calls == 0,
+          "invalid handle and legacy non-admitted no-op cannot surrender returned owner");
+    add_replies.push_back(make_add_reply(outcome));
+    const BC_STATUS released = DtsReleaseOutputBuffs(&fixture.context, NULL, FALSE);
+    check(released == add_result(outcome) && add_calls == 1 &&
+          fixture.context.ProcOutPending && fixture.context.outputPhase == DTS_OUTPUT_RETIRE_ONLY,
+          "admitted one-shot release ends borrow and leaves only residual on failed ACK");
+    /* No pointer access follows surrender, even though the output struct
+     * still contains its old values. This is not a renewed caller borrow. */
+    check(DtsReleaseOutputBuffs(&fixture.context, NULL, FALSE) == BC_STS_BUSY &&
+          add_calls == 1 && fixture.context.outputPhase == DTS_OUTPUT_RETIRE_ONLY,
+          "one-shot Release cannot retry an ambiguous ADD or consume another owner");
+    held_owner_case = true;
+    const BC_STATUS stopped = DtsStopDecoder(&fixture.context);
+    check(stopped == BC_STS_SUCCESS && unmap_calls == 1 && stop_calls == 1 &&
+          cancellation_sleeps == 0 && !fixture.context.ProcOutPending &&
+          fixture.context.outputPhase == DTS_OUTPUT_IDLE,
+          "failed admitted Release recovers only through real destructive unmap ACK");
+    std::printf("one-shot-release outcome=%u status=%d cleanup=%d adds=%u unmap=%u phase=%u\n",
+                outcome, released, stopped, add_calls, unmap_calls, fixture.context.outputPhase);
+    held_owner_case = false;
+}
+
+static void test_unmap_failure_retains_orphan(bool syscall_failure, bool allocation_failure)
+{
+    OutputContext fixture;
+    BC_IOCTL_DATA control = {};
+    initialize_phase_capture(fixture, control);
+    fixture.context.softwareUyvy = true;
+    fixture.context.b422Mode = OUTPUT_MODE422_YUY2;
+    fetch_replies.push_back(make_frame(0, 7, 1));
+    add_replies.push_back(make_add_reply(ADD_STATUS_FAILURE));
+    BC_DTS_PROC_OUT output = make_public_output(fixture, 0);
+    check(DtsProcOutputNoCopy(&fixture.context, 0, &output) == BC_STS_IO_ERROR &&
+          fixture.context.outputPhase == DTS_OUTPUT_RETIRE_ONLY,
+          "unmap-failure case reaches actual internal repost orphan");
+    mock_unmap_status = BC_STS_IO_ERROR;
+    mock_unmap_syscall_failure = syscall_failure;
+    if (allocation_failure)
+        fixture.context.pIoDataFreeHd = NULL;
+    held_owner_case = true;
+    const BC_STATUS stopped = DtsStopDecoder(&fixture.context);
+    const BC_STATUS expected = allocation_failure ? BC_STS_INSUFF_RES :
+                               syscall_failure ? BC_STS_ERROR : BC_STS_IO_ERROR;
+    check(stopped == expected && fixture.context.outputPhase == DTS_OUTPUT_RETIRE_ONLY &&
+          fixture.context.ProcOutPending && fixture.context.bMapOutBufDirty &&
+          fixture.context.txQuiescing && fixture.context.State == BC_DEC_STATE_FLUSH &&
+          unmap_calls == (allocation_failure ? 0U : 1U),
+          "failed or unavailable unmap ACK retains residual, registration and teardown barrier");
+    check(DtsStartDecoder(&fixture.context) == BC_STS_BUSY &&
+          DtsReleaseOutputBuffs(&fixture.context, NULL, FALSE) == BC_STS_BUSY &&
+          add_calls == 1 && activate_calls == 0 && start_calls == 0,
+          "ambiguous cleanup allows neither restart nor illegal caller Release");
+    const BC_STATUS closed = DtsDeviceClose(&fixture.context);
+    check(closed == BC_STS_BUSY && interface_calls == 0 &&
+          fixture.context.outputPhase == DTS_OUTPUT_RETIRE_ONLY &&
+          fixture.context.ProcOutPending && fixture.context.bMapOutBufDirty &&
+          fixture.context.txQuiescing && fixture.context.State == BC_DEC_STATE_FLUSH &&
+          fixture.context.Sig == LIB_CTX_SIG && fixture.context.DevHandle == 99 &&
+          fixture.globals.g_bDecOpened && DtsGetOPMode() == 1,
+          "DeviceClose cannot consume residual context or shared ownership without unmap ACK");
+    mock_unmap_status = BC_STS_SUCCESS;
+    mock_unmap_syscall_failure = false;
+    if (allocation_failure)
+        fixture.context.pIoDataFreeHd = &control;
+    const unsigned before_ack = unmap_calls;
+    const BC_STATUS recovered = DtsDeviceClose(&fixture.context);
+    check(recovered == BC_STS_SUCCESS && unmap_calls == before_ack + 1 &&
+          interface_calls == 1 && !pending_at_interface &&
+          fixture.context.outputPhase == DTS_OUTPUT_IDLE &&
+          !fixture.context.ProcOutPending && !fixture.context.bMapOutBufDirty &&
+          fixture.context.State == BC_DEC_STATE_CLOSE && !fixture.globals.g_bDecOpened &&
+          DtsGetOPMode() == 0 && add_calls == 1,
+          "later actual unmap ACK alone discharges orphan before normal close/interface consumption");
+    std::printf("unmap-orphan syscall=%d allocation=%d stop=%d close=%d recovery=%d "
+                "unmaps=%u adds=%u phase=%u\n",
+                syscall_failure, allocation_failure, stopped, closed, recovered,
+                unmap_calls, add_calls, fixture.context.outputPhase);
+    held_owner_case = false;
+}
+
+static void test_active_context_window(PhaseWindow window, bool no_copy)
+{
+    OutputContext fixture;
+    BC_IOCTL_DATA control = {};
+    initialize_phase_capture(fixture, control);
+    fixture.context.DevId = BC_PCI_DEVID_LINK;
+    fixture.context.bEOSCheck = true;
+    mock_fetch_status = window == WINDOW_FINALIZER ? BC_STS_TIMEOUT : BC_STS_IO_ERROR;
+    phase_window_reached = resume_phase_window = phase_actor_done = false;
+    BC_STATUS produced = BC_STS_ERROR;
+    std::thread actor([&] {
+        phase_window = window;
+        BC_DTS_PROC_OUT output = make_public_output(fixture, 0);
+        produced = no_copy ? DtsProcOutputNoCopy(&fixture.context, 0, &output) :
+                             DtsProcOutput(&fixture.context, 0, &output);
+        std::lock_guard<std::mutex> lock(gate);
+        phase_actor_done = true;
+        changed.notify_all();
+    });
+    {
+        std::unique_lock<std::mutex> lock(gate);
+        if (!changed.wait_for(lock, std::chrono::seconds(2), [] { return phase_window_reached; }))
+            std::abort();
+    }
+    check(fixture.context.outputPhase == DTS_OUTPUT_ACTIVE &&
+          !fixture.context.ProcOutPending && fetch_calls == 1,
+          "whole call remains ACTIVE after early DecPend0 and through outer last-context finalizer");
+    held_owner_case = true;
+    const BC_STATUS closed = DtsDeviceClose(&fixture.context);
+    check(closed == BC_STS_TIMEOUT && cancellation_sleeps == 63 &&
+          stop_calls == 0 && close_calls == 0 && unmap_calls == 0 &&
+          interface_calls == 0 && fixture.context.outputPhase == DTS_OUTPUT_ACTIVE &&
+          fixture.context.bMapOutBufDirty && fixture.globals.g_bDecOpened &&
+          DtsGetOPMode() == 1,
+          "DeviceClose cannot free ACTIVE call merely because its pending packet is already zero");
+    check(DtsUnmapYUVBuffs(&fixture.context) == BC_STS_BUSY &&
+          DtsReleaseOutputBuffs(&fixture.context, NULL, FALSE) == BC_STS_BUSY &&
+          unmap_calls == 0 && add_calls == 0 && fixture.context.outputPhase == DTS_OUTPUT_ACTIVE,
+          "wrong Release/unmap refusal cannot alter another still-active call lifetime");
+    {
+        std::lock_guard<std::mutex> lock(gate);
+        resume_phase_window = true;
+        changed.notify_all();
+    }
+    actor.join();
+    const BC_STATUS expected = mock_fetch_status == BC_STS_TIMEOUT ? BC_STS_NO_DATA : mock_fetch_status;
+    check(produced == expected && fixture.context.outputPhase == DTS_OUTPUT_IDLE &&
+          !fixture.context.ProcOutPending,
+          "failure path retires whole ACTIVE call only after its last context access");
+    check(DtsDeviceClose(&fixture.context) == BC_STS_SUCCESS &&
+          stop_calls == 1 && close_calls == 1 && unmap_calls == 1 && interface_calls == 1,
+          "retry consumes the interface only after entire failed output call returns");
+    std::printf("active-window kind=%u no_copy=%d close=%d output=%d polls=%u retry_interface=%u\n",
+                window, no_copy, closed, produced, cancellation_sleeps, interface_calls);
+    held_owner_case = false;
+}
+
+static void test_drop_refetch_exclusion(bool no_copy)
+{
+    OutputContext fixture;
+    BC_IOCTL_DATA control = {};
+    initialize_phase_capture(fixture, control);
+    fetch_replies.push_back(make_frame(0, 7, 1));
+    fetch_replies.push_back(make_frame(1, 8, 1));
+    add_replies.push_back(make_add_reply(ADD_SUCCEEDS));
+    add_replies.push_back(make_add_reply(ADD_SUCCEEDS));
+    phase_window_reached = resume_phase_window = phase_actor_done = false;
+    BC_STATUS produced = BC_STS_ERROR;
+    BC_DTS_PROC_OUT output = make_public_output(fixture, 1);
+    std::thread actor([&] {
+        phase_window = WINDOW_EMPTY_CTX_LOCK;
+        produced = no_copy ? DtsProcOutputNoCopy(&fixture.context, 0, &output) :
+                             DtsProcOutput(&fixture.context, 0, &output);
+        std::lock_guard<std::mutex> lock(gate);
+        phase_actor_done = true;
+        changed.notify_all();
+    });
+    {
+        std::unique_lock<std::mutex> lock(gate);
+        if (!changed.wait_for(lock, std::chrono::seconds(2), [] { return phase_window_reached; }))
+            std::abort();
+    }
+    check(fixture.context.outputPhase == DTS_OUTPUT_ACTIVE && !fixture.context.ProcOutPending &&
+          fetch_calls == 1 && add_calls == 1,
+          "DropFrames gap keeps ACTIVE across acknowledged repost before internal refetch");
+    BC_DTS_PROC_OUT competing = make_public_output(fixture, 0);
+    check(DtsProcOutputNoCopy(&fixture.context, 0, &competing) == BC_STS_BUSY &&
+          DtsProcOutput(&fixture.context, 0, &competing) == BC_STS_BUSY &&
+          DtsReleaseOutputBuffs(&fixture.context, NULL, FALSE) == BC_STS_BUSY &&
+          fetch_calls == 1 && add_calls == 1 && fixture.context.outputPhase == DTS_OUTPUT_ACTIVE,
+          "competing public callers cannot steal the shared buffer between internal refetches");
+    {
+        std::lock_guard<std::mutex> lock(gate);
+        resume_phase_window = true;
+        changed.notify_all();
+    }
+    actor.join();
+    check(produced == BC_STS_SUCCESS && fetch_calls == 2 && output.DropFrames == 0 &&
+          output.PicInfo.picture_number == 8,
+          "the same admitted call internally refetches and delivers only its undropped frame");
+    if (no_copy)
+        check(fixture.context.outputPhase == DTS_OUTPUT_RETURNED &&
+              DtsReleaseOutputBuffs(&fixture.context, NULL, FALSE) == BC_STS_SUCCESS,
+              "NoCopy refetch returns exactly one caller borrow that can be surrendered once");
+    check(add_calls == 2 && fixture.context.outputPhase == DTS_OUTPUT_IDLE &&
+          !fixture.context.ProcOutPending,
+          "two internal frames have exactly one acknowledged repost each");
+    std::printf("drop-refetch no_copy=%d output=%d fetch=%u add=%u phase=%u\n",
+                no_copy, produced, fetch_calls, add_calls, fixture.context.outputPhase);
+}
+
+static void test_cancel_wins_publication(AddOutcome outcome)
+{
+    OutputContext fixture;
+    BC_IOCTL_DATA control = {};
+    initialize_phase_capture(fixture, control);
+    fetch_replies.push_back(make_frame(0, 7, 1));
+    add_replies.push_back(make_add_reply(outcome));
+    phase_window_reached = resume_phase_window = phase_actor_done = false;
+    BC_STATUS produced = BC_STS_ERROR;
+    BC_DTS_PROC_OUT output = make_public_output(fixture, 0);
+    std::thread actor([&] {
+        phase_window = WINDOW_PUBLISH;
+        produced = DtsProcOutputNoCopy(&fixture.context, 0, &output);
+        std::lock_guard<std::mutex> lock(gate);
+        phase_actor_done = true;
+        changed.notify_all();
+    });
+    {
+        std::unique_lock<std::mutex> lock(gate);
+        if (!changed.wait_for(lock, std::chrono::seconds(2), [] { return phase_window_reached; }))
+            std::abort();
+    }
+    check(fixture.context.outputPhase == DTS_OUTPUT_ACTIVE && fixture.context.ProcOutPending &&
+          fetch_calls == 1 && add_calls == 0,
+          "successful NoCopy work is not a RETURNED borrow before atomic final publication");
+    check(DtsReleaseOutputBuffs(&fixture.context, NULL, FALSE) == BC_STS_BUSY &&
+          add_calls == 0 && fixture.context.outputPhase == DTS_OUTPUT_ACTIVE,
+          "prepublication Release cannot surrender another still-active output");
+    held_owner_case = cancel_releases_publish = true;
+    const BC_STATUS stopped = DtsStopDecoder(&fixture.context);
+    actor.join();
+    cancel_releases_publish = false;
+    check(stopped == BC_STS_SUCCESS && produced == BC_STS_IO_USER_ABORT &&
+          output.Ybuff == NULL && output.UVbuff == NULL &&
+          cancellation_sleeps == 1 && add_calls == 1 && unmap_calls == 1 &&
+          fixture.context.outputPhase == DTS_OUTPUT_IDLE && !fixture.context.ProcOutPending,
+          "cancellation wins publication, reposts once and retires residual only through cleanup ACK");
+    check(DtsReleaseOutputBuffs(&fixture.context, NULL, FALSE) == BC_STS_BUSY && add_calls == 1,
+          "canceled late success cannot manufacture a caller-owned/releasable buffer");
+    std::printf("cancel-publication outcome=%u output=%d stop=%d polls=%u adds=%u unmap=%u phase=%u\n",
+                outcome, produced, stopped, cancellation_sleeps,
+                add_calls, unmap_calls, fixture.context.outputPhase);
+    held_owner_case = false;
+}
+
+
+static void test_release_active_last_access(BC_STATUS status, bool syscall_failure)
+{
+    OutputContext fixture;
+    BC_IOCTL_DATA control = {};
+    initialize_phase_capture(fixture, control);
+    fetch_replies.push_back(make_frame(0, 7, 1));
+    BC_DTS_PROC_OUT output = make_public_output(fixture, 0);
+    check(DtsProcOutputNoCopy(&fixture.context, 0, &output) == BC_STS_SUCCESS &&
+          fixture.context.outputPhase == DTS_OUTPUT_RETURNED,
+          "release-race starts with a genuine returned NoCopy borrow");
+    add_replies.push_back(AddReply{status, syscall_failure});
+    phase_window_reached = resume_phase_window = phase_actor_done = false;
+    BC_STATUS released = BC_STS_ERROR;
+    std::thread actor([&] {
+        phase_window = WINDOW_FINALIZER;
+        released = DtsReleaseOutputBuffs(&fixture.context, NULL, FALSE);
+        std::lock_guard<std::mutex> lock(gate);
+        phase_actor_done = true;
+        changed.notify_all();
+    });
+    {
+        std::unique_lock<std::mutex> lock(gate);
+        if (!changed.wait_for(lock, std::chrono::seconds(2), [] { return phase_window_reached; }))
+            std::abort();
+    }
+    const bool acknowledged = !syscall_failure && status == BC_STS_SUCCESS;
+    check(fixture.context.outputPhase == DTS_OUTPUT_ACTIVE &&
+          fixture.context.ProcOutPending == !acknowledged && add_calls == 1,
+          "admitted one-shot Release retains ACTIVE through last access even after ADD ACK clears pending");
+    check(DtsReleaseOutputBuffs(&fixture.context, NULL, FALSE) == BC_STS_BUSY &&
+          add_calls == 1 && fixture.context.outputPhase == DTS_OUTPUT_ACTIVE,
+          "a rejected competing Release cannot surrender or retire the active owner's call");
+    held_owner_case = true;
+    const BC_STATUS closed = DtsDeviceClose(&fixture.context);
+    check(closed == BC_STS_TIMEOUT && unmap_calls == 0 && interface_calls == 0 &&
+          stop_calls == 0 && close_calls == 0 &&
+          fixture.context.outputPhase == DTS_OUTPUT_ACTIVE,
+          "DeviceClose cannot unmap/free while admitted Release still has context work");
+    {
+        std::lock_guard<std::mutex> lock(gate);
+        resume_phase_window = true;
+        changed.notify_all();
+    }
+    actor.join();
+    const BC_STATUS expected = syscall_failure ? BC_STS_ERROR : status;
+    check(released == expected && fixture.context.outputPhase ==
+              (acknowledged ? DTS_OUTPUT_IDLE : DTS_OUTPUT_RETIRE_ONLY) &&
+          fixture.context.ProcOutPending == !acknowledged,
+          "Release publishes IDLE or retirement-only only after its last context access");
+    check(DtsReleaseOutputBuffs(&fixture.context, NULL, FALSE) == BC_STS_BUSY && add_calls == 1,
+          "borrow ends at admitted invocation for every driver status, including BUSY");
+    check(DtsDeviceClose(&fixture.context) == BC_STS_SUCCESS && interface_calls == 1 &&
+          unmap_calls == 1 && !fixture.context.ProcOutPending &&
+          fixture.context.outputPhase == DTS_OUTPUT_IDLE && add_calls == 1,
+          "release-race cleanup consumes only after whole-call completion and actual unmap ACK");
+    std::printf("release-active status=%d syscall=%d output=%d close=%d polls=%u phase=%u\n",
+                status, syscall_failure, released, closed,
+                cancellation_sleeps, fixture.context.outputPhase);
+    held_owner_case = false;
+}
+
+static void test_failed_nocopy_pointer_outputs(bool next_fetch_failure, AddOutcome outcome)
+{
+    OutputContext fixture;
+    BC_IOCTL_DATA control = {};
+    initialize_phase_capture(fixture, control);
+    fetch_replies.push_back(make_frame(0, 7, 1));
+    if (next_fetch_failure) {
+        add_replies.push_back(make_add_reply(ADD_SUCCEEDS));
+        fetch_replies.push_back(make_fetch_error(BC_STS_IO_ERROR));
+    } else {
+        add_replies.push_back(make_add_reply(outcome));
+    }
+    BC_DTS_PROC_OUT output = make_public_output(fixture, 1);
+    output.Ybuff = output.UVbuff = frame_storage[7]; // Reused output record, not an admitted borrow.
+    const BC_STATUS produced = DtsProcOutputNoCopy(&fixture.context, 0, &output);
+    const BC_STATUS expected = next_fetch_failure ? BC_STS_IO_ERROR : add_result(outcome);
+    check(produced == expected && produced != BC_STS_SUCCESS &&
+          output.Ybuff == NULL && output.UVbuff == NULL &&
+          fetch_calls == (next_fetch_failure ? 2U : 1U) && add_calls == 1,
+          "failed NoCopy drop/refetch exposes no previously reposted or failed-repost pointer");
+    check(fixture.context.outputPhase ==
+              (next_fetch_failure ? DTS_OUTPUT_IDLE : DTS_OUTPUT_RETIRE_ONLY) &&
+          fixture.context.ProcOutPending == !next_fetch_failure,
+          "failed refetch leaves idle, failed repost leaves only library retirement");
+    held_owner_case = true;
+    check(DtsReleaseOutputBuffs(&fixture.context, NULL, FALSE) == BC_STS_BUSY && add_calls == 1,
+          "failed NoCopy caller must not Release or retry an old buffer");
+    check(DtsStopDecoder(&fixture.context) == BC_STS_SUCCESS && unmap_calls == 1 &&
+          fixture.context.outputPhase == DTS_OUTPUT_IDLE && !fixture.context.ProcOutPending,
+          "pointer rejection and residual cleanup remain independently correct");
+    held_owner_case = false;
+}
+
+static void test_empty_publish_and_public_flush()
+{
+    OutputContext fixture;
+    unmap_calls = 0;
+    BC_DTS_PROC_OUT output = make_public_output(fixture, 0);
+    output.Ybuff = output.UVbuff = frame_storage[7];
+    check(DtsBeginOutputCall(&fixture.context) == BC_STS_SUCCESS,
+          "empty-publication test admits a whole active call");
+    check(DtsPublishOutput(&fixture.context, &output, BC_STS_SUCCESS) != BC_STS_SUCCESS &&
+          output.Ybuff == NULL && output.UVbuff == NULL &&
+          fixture.context.outputPhase == DTS_OUTPUT_IDLE,
+          "SUCCESS without a pending fetched packet cannot manufacture a returned borrow");
+    for (DTS_OUTPUT_PHASE phase : {DTS_OUTPUT_ACTIVE, DTS_OUTPUT_RETURNED, DTS_OUTPUT_RETIRE_ONLY}) {
+        fixture.context.outputPhase = phase;
+        fixture.context.ProcOutPending = phase != DTS_OUTPUT_ACTIVE;
+        fixture.context.bMapOutBufDirty = fixture.context.bMapOutBufDone = false;
+        check(DtsFlushRxCapture(&fixture.context, FALSE) == BC_STS_BUSY &&
+              fixture.context.outputPhase == phase && unmap_calls == 0,
+              "public false-flush clean-map path cannot bypass active/returned/residual lifetime");
+    }
+    fixture.context.outputPhase = DTS_OUTPUT_IDLE;
+    fixture.context.ProcOutPending = 0;
+    check(DtsFlushRxCapture(&fixture.context, FALSE) == BC_STS_SUCCESS && unmap_calls == 0,
+          "original truly idle clean-map no-op is preserved");
+}
+
+static void test_device_close_returned_error_dominance()
+{
+    OutputContext fixture;
+    BC_IOCTL_DATA control = {};
+    prepare_scripted_output(fixture, BC_PCI_DEVID_FLEA);
+    fixture.context.pIoDataFreeHd = &control;
+    fixture.context.OpMode = DTS_PLAYBACK_MODE;
+    fixture.context.bMapOutBufDone = fixture.context.bMapOutBufDirty = true;
+    DtsSetDecStat(true, fixture.context.ProcessID);
+    DtsSetOPMode(1);
+    fetch_replies.push_back(make_frame(0, 7, 1));
+    BC_DTS_PROC_OUT output = make_public_output(fixture, 0);
+    check(DtsProcOutputNoCopy(&fixture.context, 0, &output) == BC_STS_SUCCESS &&
+          fixture.context.outputPhase == DTS_OUTPUT_RETURNED,
+          "DeviceClose error-dominance test acquires an actual returned borrow");
+    fixture.context.DevId = BC_PCI_DEVID_LINK;
+    fixture.context.hw_paused = true;
+    mock_pause_status = BC_STS_FW_CMD_ERR;
+    pause_calls = unmap_calls = interface_calls = 0;
+    held_owner_case = true;
+    const BC_STATUS closed = DtsDeviceClose(&fixture.context);
+    check(closed == BC_STS_TIMEOUT && pause_calls == 1 && cancellation_sleeps == 63 &&
+          stop_calls == 0 && close_calls == 0 && unmap_calls == 0 && interface_calls == 0,
+          "final returned-owner cancellation timeout dominates an earlier pause error");
+    check(fixture.context.Sig == LIB_CTX_SIG && fixture.context.DevHandle == 99 &&
+          fixture.context.ProcessID == getpid() && fixture.context.ProcOutPending &&
+          fixture.context.outputPhase == DTS_OUTPUT_RETURNED &&
+          fixture.context.bMapOutBufDone && fixture.context.bMapOutBufDirty &&
+          fixture.globals.g_bDecOpened &&
+          fixture.globals.g_nProcID == fixture.context.ProcessID && DtsGetOPMode() == 1 &&
+          output.Ybuff == frame_storage[0],
+          "output-retention dominance preserves exact context, mapping and shared ownership");
+    mock_pause_status = BC_STS_SUCCESS;
+    check(DtsReleaseOutputBuffs(&fixture.context, NULL, FALSE) == BC_STS_SUCCESS &&
+          add_calls == 1 && DtsDeviceClose(&fixture.context) == BC_STS_SUCCESS &&
+          stop_calls == 1 && close_calls == 1 && unmap_calls == 1 && interface_calls == 1 &&
+          !fixture.context.ProcOutPending && fixture.context.outputPhase == DTS_OUTPUT_IDLE &&
+          !fixture.globals.g_bDecOpened && DtsGetOPMode() == 0,
+          "returned owner releases once before a successful DeviceClose retry");
+    std::printf("returned-error-dominance close=%d pause=%u polls=%u unmap=%u interface=%u\n",
+                closed, pause_calls, cancellation_sleeps, unmap_calls, interface_calls);
+    held_owner_case = false;
+}
+
+static void test_transient_unmap_ack_on_builtin_retry()
+{
+    OutputContext fixture;
+    BC_IOCTL_DATA control = {};
+    initialize_phase_capture(fixture, control);
+    fixture.context.softwareUyvy = true;
+    fixture.context.b422Mode = OUTPUT_MODE422_YUY2;
+    fetch_replies.push_back(make_frame(0, 7, 1));
+    add_replies.push_back(make_add_reply(ADD_STATUS_FAILURE));
+    BC_DTS_PROC_OUT output = make_public_output(fixture, 0);
+    check(DtsProcOutputNoCopy(&fixture.context, 0, &output) == BC_STS_IO_ERROR &&
+          fixture.context.outputPhase == DTS_OUTPUT_RETIRE_ONLY,
+          "transient retry starts from an actual library-only residual");
+    held_owner_case = true;
+    unmap_fail_once_at = 1;
+    const BC_STATUS closed = DtsDeviceClose(&fixture.context);
+    check(closed == BC_STS_IO_ERROR && stop_calls == 2 && unmap_calls == 2 &&
+          close_calls == 1 && interface_calls == 1 && !pending_at_interface &&
+          fixture.context.outputPhase == DTS_OUTPUT_IDLE && !fixture.context.ProcOutPending &&
+          !fixture.context.bMapOutBufDirty && !fixture.globals.g_bDecOpened &&
+          DtsGetOPMode() == 0,
+          "built-in confirmed ACK retry consumes normally while preserving the first ordinary error");
+    std::printf("transient-ACK DeviceClose=%d stop=%u unmap=%u interface=%u phase=%u\n",
+                closed, stop_calls, unmap_calls, interface_calls, fixture.context.outputPhase);
+    held_owner_case = false;
+}
+
+static void test_serialized_cancel_owner(AddOutcome outcome)
+{
+    OutputContext fixture;
+    BC_IOCTL_DATA control = {};
+    initialize_phase_capture(fixture, control);
+    fetch_replies.push_back(make_frame(0, 7, 1));
+    add_replies.push_back(make_add_reply(outcome));
+    phase_window_reached = resume_phase_window = phase_actor_done = false;
+    cancel_owner_reached = resume_cancel_owner = false;
+    BC_STATUS produced = BC_STS_ERROR, canceled = BC_STS_ERROR;
+    BC_DTS_PROC_OUT output = make_public_output(fixture, 0);
+    std::thread actor([&] {
+        phase_window = WINDOW_PUBLISH;
+        produced = DtsProcOutputNoCopy(&fixture.context, 0, &output);
+        std::lock_guard<std::mutex> lock(gate);
+        phase_actor_done = true;
+        changed.notify_all();
+    });
+    {
+        std::unique_lock<std::mutex> lock(gate);
+        if (!changed.wait_for(lock, std::chrono::seconds(2), [] { return phase_window_reached; }))
+            std::abort();
+    }
+    held_owner_case = true;
+    std::thread cancel_owner([&] {
+        pause_cancel_owner = true;
+        canceled = DtsCancelFetchOutInt(&fixture.context);
+    });
+    {
+        std::unique_lock<std::mutex> lock(gate);
+        if (!changed.wait_for(lock, std::chrono::seconds(2), [] { return cancel_owner_reached; }))
+            std::abort();
+    }
+    check(DtsCancelFetchOutInt(&fixture.context) == BC_STS_BUSY &&
+          fixture.context.CancelWaiting && fixture.context.outputPhase == DTS_OUTPUT_ACTIVE &&
+          add_calls == 0,
+          "second cancellation cannot clear another caller's owned flag");
+    {
+        std::lock_guard<std::mutex> lock(gate);
+        resume_phase_window = true;
+        changed.notify_all();
+    }
+    actor.join();
+    check(produced == BC_STS_IO_USER_ABORT && output.Ybuff == NULL &&
+          output.UVbuff == NULL && fixture.context.CancelWaiting &&
+          fixture.context.outputPhase ==
+              (outcome == ADD_SUCCEEDS ? DTS_OUTPUT_IDLE : DTS_OUTPUT_RETIRE_ONLY),
+          "late publication still sees the first cancel owner's flag after second-call refusal");
+    const BC_STATUS closed = DtsDeviceClose(&fixture.context);
+    check(closed == BC_STS_BUSY && interface_calls == 0 && unmap_calls == 0 &&
+          fixture.context.CancelWaiting && fixture.globals.g_bDecOpened && DtsGetOPMode() == 1,
+          "DeviceClose retains context while first cancellation still accesses it, even in IDLE phase");
+    {
+        std::lock_guard<std::mutex> lock(gate);
+        resume_cancel_owner = true;
+        changed.notify_all();
+    }
+    cancel_owner.join();
+    check(canceled == BC_STS_SUCCESS && !fixture.context.CancelWaiting &&
+          cancellation_sleeps == 1,
+          "only serialized cancel owner clears its flag at its final context access");
+    check(DtsDeviceClose(&fixture.context) == BC_STS_SUCCESS &&
+          interface_calls == 1 && unmap_calls == 1 && add_calls == 1 &&
+          fixture.context.outputPhase == DTS_OUTPUT_IDLE && !fixture.context.ProcOutPending,
+          "retry consumes only after cancellation owner and any residual have retired");
+    std::printf("serialized-cancel outcome=%u output=%d first=%d close_busy=%d polls=%u interface=%u\n",
+                outcome, produced, canceled, closed, cancellation_sleeps, interface_calls);
+    held_owner_case = false;
+}
+
 int main()
 {
+    const rlimit no_core = {0, 0};
+    if (setrlimit(RLIMIT_CORE, &no_core) != 0)
+        return 2;
     test_flush(2, true);
     test_flush(4, true);
     test_flush(2, false);
@@ -767,6 +1696,42 @@ int main()
     for (unsigned mode : {0U, 1U, 2U, 4U})
         for (unsigned errors = 0; errors < 8; ++errors)
             test_cleanup_errors(mode, errors);
+    std::printf("original-flush-regression failures=%u\n", failures);
+    test_returned_nocopy_held(0, true);
+    for (unsigned operation = 0; operation < 4; ++operation)
+        test_returned_nocopy_held(operation, false);
+    test_input_only_flush_keeps_owner();
+    test_cancel_wait_admission();
+    test_cancel_timeout_first_error();
+    for (bool packing : {false, true})
+        for (bool no_copy : {false, true})
+            for (AddOutcome outcome : {ADD_STATUS_FAILURE, ADD_SYSCALL_FAILURE})
+                for (bool device_close : {false, true})
+                    test_failed_internal_repost_teardown(packing, no_copy, outcome, device_close);
+    for (AddOutcome outcome : {ADD_STATUS_FAILURE, ADD_SYSCALL_FAILURE})
+        test_one_shot_release_failure(outcome);
+    test_unmap_failure_retains_orphan(false, false);
+    test_unmap_failure_retains_orphan(true, false);
+    test_unmap_failure_retains_orphan(false, true);
+    for (bool no_copy : {false, true}) {
+        test_active_context_window(WINDOW_EMPTY_CTX_LOCK, no_copy);
+        test_active_context_window(WINDOW_FINALIZER, no_copy);
+        test_drop_refetch_exclusion(no_copy);
+    }
+    for (AddOutcome outcome : {ADD_SUCCEEDS, ADD_STATUS_FAILURE, ADD_SYSCALL_FAILURE})
+        test_cancel_wins_publication(outcome);
+    test_failed_nocopy_pointer_outputs(true, ADD_SUCCEEDS);
+    test_failed_nocopy_pointer_outputs(false, ADD_STATUS_FAILURE);
+    test_failed_nocopy_pointer_outputs(false, ADD_SYSCALL_FAILURE);
+    test_empty_publish_and_public_flush();
+    test_device_close_returned_error_dominance();
+    test_transient_unmap_ack_on_builtin_retry();
+    for (BC_STATUS status : {BC_STS_SUCCESS, BC_STS_IO_ERROR, BC_STS_BUSY})
+        test_release_active_last_access(status, false);
+    test_release_active_last_access(BC_STS_SUCCESS, true);
+    for (AddOutcome outcome : {ADD_SUCCEEDS, ADD_STATUS_FAILURE, ADD_SYSCALL_FAILURE})
+        test_serialized_cancel_owner(outcome);
+    std::printf("held-nocopy-regression checks=%u failures=%u\n", checks, failures);
     if (failures)
         return 1;
     std::puts("PASS: production output ownership and flush ordering checks");

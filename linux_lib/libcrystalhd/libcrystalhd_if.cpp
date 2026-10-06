@@ -101,6 +101,36 @@ static void DtsResetTxTracking(DTS_LIB_CONTEXT *Ctx, bool clearFault)
 	DtsUnLock(Ctx);
 }
 
+/* Keep the entire public call active, including every early return after a
+ * failed FETCH, post-repost status/EOS checks, and internal DropFrames loops. */
+class DtsOutputCall {
+	DTS_LIB_CONTEXT *context;
+	BC_STATUS status;
+	bool active;
+	BC_DTS_PROC_OUT *failed_borrow;
+public:
+	explicit DtsOutputCall(DTS_LIB_CONTEXT *ctx, bool release = false,
+		BC_DTS_PROC_OUT *borrow = NULL) :
+		context(ctx), status(release ? DtsBeginOutputRelease(ctx) : DtsBeginOutputCall(ctx)),
+		active(status == BC_STS_SUCCESS), failed_borrow(borrow) {}
+	~DtsOutputCall() {
+		if (active) {
+			if (failed_borrow)
+				failed_borrow->Ybuff = failed_borrow->UVbuff = NULL;
+			DtsFinishOutputCall(context);
+		}
+	}
+	BC_STATUS Status() const { return status; }
+	BC_STATUS Publish(BC_DTS_PROC_OUT *output, BC_STATUS result) {
+		result = DtsPublishOutput(context, output, result);
+		active = false;
+		return result;
+	}
+private:
+	DtsOutputCall(const DtsOutputCall &);
+	DtsOutputCall &operator=(const DtsOutputCall &);
+};
+
 #if (!__STDC_WANT_SECURE_LIB__)
 inline bool memcpy_s(void *dest, size_t sizeInBytes, void *src, size_t count)
 {
@@ -693,7 +723,14 @@ DtsDeviceClose(
 		}
 	}
 
-	DtsCancelFetchOutInt(Ctx);
+	const BC_STATUS output_sts = DtsCancelFetchOutInt(Ctx);
+	if (output_sts != BC_STS_SUCCESS)
+		return output_sts;
+	DtsLock(Ctx);
+	const bool output_retained = Ctx->ProcOutPending || Ctx->outputPhase != DTS_OUTPUT_IDLE;
+	DtsUnLock(Ctx);
+	if (output_retained)
+		return BC_STS_BUSY;
 	/* Unmask the mode */
 	globMode = DtsGetOPMode( );
 
@@ -989,7 +1026,11 @@ DtsStartDecoder(
 
 	if (!DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
-	if (DtsTxIsQuiescing(Ctx))
+	DtsLock(Ctx);
+	const bool output_blocked = Ctx->txQuiescing ||
+		Ctx->ProcOutPending || Ctx->CancelWaiting || Ctx->outputPhase != DTS_OUTPUT_IDLE;
+	DtsUnLock(Ctx);
+	if (output_blocked)
 		return BC_STS_BUSY;
 
 	if (Ctx->State == BC_DEC_STATE_CLOSE) {
@@ -1321,6 +1362,8 @@ DtsStopDecoder(
 	 */
 	txBufFlush(&Ctx->circBuf);
 	cleanup_sts = DtsCancelFetchOutInt(Ctx);
+	if (cleanup_sts != BC_STS_SUCCESS)
+		return sts == BC_STS_SUCCESS ? cleanup_sts : sts;
 	if (sts == BC_STS_SUCCESS)
 		sts = cleanup_sts;
 
@@ -1329,6 +1372,8 @@ DtsStopDecoder(
 		sts = cleanup_sts;
 
 	cleanup_sts = DtsFlushRxCapture(hDevice, false);
+	if (cleanup_sts != BC_STS_SUCCESS)
+		return sts == BC_STS_SUCCESS ? cleanup_sts : sts;
 	if (sts == BC_STS_SUCCESS)
 		sts = cleanup_sts;
 
@@ -1577,6 +1622,12 @@ DtsFlushRxCapture(
 		return Ctx->bMapOutBufDirty ? BC_STS_ERROR : BC_STS_SUCCESS;
 
 	DtsLock(Ctx);
+	if (!bDiscardOnly && (Ctx->outputPhase != DTS_OUTPUT_IDLE ||
+	    Ctx->ProcOutPending || Ctx->CancelWaiting)) {
+		Sts = DtsUnmapYUVBuffs(Ctx);
+		DtsUnLock(Ctx);
+		return Sts;
+	}
 	if (!Ctx->bMapOutBufDirty)
 	{
 		DtsUnLock(Ctx);
@@ -1588,12 +1639,12 @@ DtsFlushRxCapture(
 		DtsUnLock(Ctx);
 		return BC_STS_DEC_NOT_OPEN;
 	}
-
 	if (!bDiscardOnly) {
 		Sts = DtsUnmapYUVBuffs(Ctx);
 		DtsUnLock(Ctx);
 		return Sts;
 	}
+
 
 	if(!(pIocData = DtsAllocIoctlData(Ctx))) {
 		DtsUnLock(Ctx);
@@ -1640,6 +1691,9 @@ DtsProcOutput(
 		DebugLog_Trace(LDIL_DBG,"DtsProcOutput: Invalid Arg!!\n");
 		return BC_STS_INV_ARG;
 	}
+	DtsOutputCall output_call(Ctx);
+	if (output_call.Status() != BC_STS_SUCCESS)
+		return output_call.Status();
 
 	if(!(Ctx->FixFlags & DTS_LOAD_FILE_PLAY_FW)){
 		if(!(Ctx->RegCfg.DbgOptions & BC_BIT(6))){
@@ -1655,7 +1709,7 @@ DtsProcOutput(
 	{
 		memset(&OutBuffs,0,sizeof(OutBuffs));
 
-		sts = DtsFetchOutInterruptible(Ctx,&OutBuffs,milliSecWait);
+		sts = DtsFetchOutInCall(Ctx,&OutBuffs,milliSecWait);
 
 		if(sts != BC_STS_SUCCESS)
 		{
@@ -1844,6 +1898,9 @@ DtsProcOutputNoCopy(
 	if(!pOut){
 		return BC_STS_INV_ARG;
 	}
+	DtsOutputCall output_call(Ctx, false, pOut);
+	if (output_call.Status() != BC_STS_SUCCESS)
+		return output_call.Status();
 	/* Init device params */
 	if(Ctx->DevId == BC_PCI_DEVID_LINK){
 		pOut->bPibEnc = TRUE;
@@ -1853,8 +1910,9 @@ DtsProcOutputNoCopy(
 	pOut->b422Mode = Ctx->b422Mode;
 
 	for (;;) {
+		pOut->Ybuff = pOut->UVbuff = NULL;
 
-		if( (sts = DtsFetchOutInterruptible(Ctx,pOut,milliSecWait)) != BC_STS_SUCCESS){
+		if( (sts = DtsFetchOutInCall(Ctx,pOut,milliSecWait)) != BC_STS_SUCCESS){
 			DebugLog_Trace(LDIL_DBG,"DtsProcOutput: No Active Channels\n");
 				/* In case of a peek..*/
 			if((sts == BC_STS_TIMEOUT) && !(milliSecWait) ){
@@ -1877,6 +1935,7 @@ DtsProcOutputNoCopy(
 
 		if( (sts == BC_STS_SUCCESS) && (pOut->PoutFlags & BC_POUT_FLAGS_FMT_CHANGE) ){
 			DtsRelRxBuff(Ctx,&Ctx->pOutData->u.RxBuffs,TRUE);
+			pOut->Ybuff = pOut->UVbuff = NULL;
 			sts = BC_STS_FMT_CHANGE;
 			break;
 		}
@@ -1884,6 +1943,7 @@ DtsProcOutputNoCopy(
 		if(pOut->DropFrames){
 			/* We need to release the buffers even if we fail to copy..*/
 			sts = DtsRelRxBuff(Ctx,&Ctx->pOutData->u.RxBuffs,FALSE);
+			pOut->Ybuff = pOut->UVbuff = NULL;
 
 			if(sts != BC_STS_SUCCESS)
 			{
@@ -1898,7 +1958,7 @@ DtsProcOutputNoCopy(
 	}
 
 
-	return sts;
+	return output_call.Publish(pOut, sts);
 }
 
 DRVIFLIB_API BC_STATUS
@@ -1913,6 +1973,9 @@ DtsReleaseOutputBuffs(
 
 	if(fChange)
 		return BC_STS_SUCCESS;
+	DtsOutputCall release_call(Ctx, true);
+	if (release_call.Status() != BC_STS_SUCCESS)
+		return release_call.Status();
 
 	return DtsRelRxBuff(Ctx, &Ctx->pOutData->u.RxBuffs, FALSE);
 }

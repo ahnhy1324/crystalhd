@@ -209,6 +209,13 @@ BC_STATUS txBufFree(pTXBUFFER txBuf);
 // TX Thread function
 void * txThreadProc(void *ctx);
 
+typedef enum _DTS_OUTPUT_PHASE {
+    DTS_OUTPUT_IDLE = 0,
+    DTS_OUTPUT_ACTIVE,
+    DTS_OUTPUT_RETURNED,
+    DTS_OUTPUT_RETIRE_ONLY
+} DTS_OUTPUT_PHASE;
+
 typedef struct _DTS_LIB_CONTEXT{
 	uint32_t				Sig;			/* Mazic number */
 	uint32_t				State;			/* DIL's Run State */
@@ -234,6 +241,7 @@ typedef struct _DTS_LIB_CONTEXT{
 	/* Proc Output Related */
 	BOOL			ProcOutPending;	/* To avoid muliple ProcOuts */
 	BOOL			CancelWaiting;	/* Notify FetchOut to signal */
+	DTS_OUTPUT_PHASE outputPhase; /* Whole call/returned borrow/residual lifetime. */
 
 	/* pOutData is dedicated for ProcOut() use only. Every other
 	 * Interface should use the memory from IocData pool. This
@@ -361,6 +369,11 @@ void DtsReleaseMemPools(DTS_LIB_CONTEXT *Ctx);
 BC_STATUS DtsAddOutBuff(DTS_LIB_CONTEXT *Ctx, PVOID buff, uint32_t BuffSz, uint32_t flags);
 BC_STATUS DtsRelRxBuff(DTS_LIB_CONTEXT *Ctx, BC_DEC_YUV_BUFFS *buff,BOOL SkipAddBuff);
 BC_STATUS DtsFetchOutInterruptible(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *DecOut, uint32_t dwTimeout);
+BC_STATUS DtsBeginOutputCall(DTS_LIB_CONTEXT *Ctx);
+BC_STATUS DtsBeginOutputRelease(DTS_LIB_CONTEXT *Ctx);
+void DtsFinishOutputCall(DTS_LIB_CONTEXT *Ctx);
+BC_STATUS DtsPublishOutput(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *output, BC_STATUS status);
+BC_STATUS DtsFetchOutInCall(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *output, uint32_t timeout);
 BC_STATUS DtsPrepareOutputPacking(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *output,
 	uint32_t allocationBytes);
 BC_STATUS DtsCancelFetchOutInt(DTS_LIB_CONTEXT *Ctx);
