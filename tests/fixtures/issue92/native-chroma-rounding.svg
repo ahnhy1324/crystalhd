@@ -1,0 +1,430 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="944" viewBox="0 0 1080 944" font-size="12" fill="#222" role="img" aria-labelledby="title desc">
+<title id="title">Measured unscaled chroma rounding holdout, first completed capture only</title>
+<desc id="desc">Six discrete Cb/Cr row-profile plots show actual first-capture bytes, source-row marks and three frozen finite candidate predictions. Full-buffer residuals include all 180 frames. No repeat-session, final-control, general pixel-accuracy or intrinsic silicon-filter claim.</desc>
+<metadata>{&quot;scope&quot;:&quot;Finite unscaled held-out carrier output chain; not a general or intrinsic filter claim&quot;,&quot;capture&quot;:&quot;chroma-before.yuy2&quot;,&quot;raw_sha256&quot;:&quot;46d6687822290cb1d898b64c65f88ba332122870752d9360d6ce7dd3aae2cea5&quot;,&quot;native_result_sha256&quot;:&quot;597bdfbea65f6e02b7da3af3b96f3c3d6eba537e60a836a9a9786206619e6a7f&quot;,&quot;source&quot;:&quot;ipcm-chroma-rounding.yuv420&quot;,&quot;source_sha256&quot;:&quot;0de40a4d07914ace26fb86da7f1ffed08bcf75a91381341e5fb197cb7e0e1b6c&quot;,&quot;manifest_sha256&quot;:&quot;b1faa1365467b338deb87fc33032f0b51bbe68318aeaabe4e97c8a8cc68ae2ac&quot;,&quot;spec_sha256&quot;:&quot;e9bc30c9845a30f10bcd901f458d1aa597b0a08ad037aa840bc8273cc9a2659d&quot;,&quot;renderer_sha256&quot;:&quot;c6534baf3fd65c9d0e4819d9afbc19f1d6607a5ccb1f8a259c8627ec9448d17e&quot;,&quot;frames&quot;:180,&quot;raw_bytes&quot;:8847360,&quot;plotted_frames&quot;:[8,18,24],&quot;source_mark_mapping&quot;:&quot;source chroma q placed at output-index y=2q for indexing only, not a physical center claim&quot;,&quot;residuals&quot;:[{&quot;rule&quot;:&quot;nearest-ties-down&quot;,&quot;compared_bytes&quot;:8847360,&quot;differing_bytes&quot;:73728,&quot;max_abs_difference&quot;:1,&quot;differing_lanes&quot;:{&quot;Y&quot;:0,&quot;Cb&quot;:36864,&quot;Cr&quot;:36864},&quot;prediction_sha256&quot;:&quot;cc78f7e532e072fe8e3ccde04eeece51837c8ac451549a44181290930899550e&quot;},{&quot;rule&quot;:&quot;nearest-ties-up&quot;,&quot;compared_bytes&quot;:8847360,&quot;differing_bytes&quot;:0,&quot;max_abs_difference&quot;:0,&quot;differing_lanes&quot;:{&quot;Y&quot;:0,&quot;Cb&quot;:0,&quot;Cr&quot;:0},&quot;prediction_sha256&quot;:&quot;46d6687822290cb1d898b64c65f88ba332122870752d9360d6ce7dd3aae2cea5&quot;},{&quot;rule&quot;:&quot;nearest-ties-even&quot;,&quot;compared_bytes&quot;:8847360,&quot;differing_bytes&quot;:36864,&quot;max_abs_difference&quot;:1,&quot;differing_lanes&quot;:{&quot;Y&quot;:0,&quot;Cb&quot;:18432,&quot;Cr&quot;:18432},&quot;prediction_sha256&quot;:&quot;5b57bbe5fe30c398666d6feca3caa77d2fd3e00afd8fad15f71c8589aa95025d&quot;}],&quot;exact_candidates&quot;:[&quot;nearest-ties-up&quot;],&quot;other_sessions&quot;:&quot;not included or asserted complete&quot;}</metadata>
+<style>text{font-family:Arial,Helvetica,sans-serif}.small{font-size:10px}.hash{font-family:monospace;font-size:11px}.axis{stroke:#aaa;stroke-width:1}.grid{stroke:#e9e9e9;stroke-width:1}.source{fill:white;stroke:#777;stroke-width:1.1}</style><rect width="1080" height="944" fill="white"/>
+<text x="28" y="32" font-size="23" font-weight="bold">Unscaled chroma holdout — measured first-capture output</text>
+<text x="28" y="54" >Finite unscaled held-out carrier output chain · 256×96 YUY2 · 180 frames · chroma-before only</text>
+<text x="28" y="76" font-size="15" font-weight="bold" fill="#20553b">Finite held-out family: nearest-ties-up is the unique full-byte match</text>
+<text x="28" y="98" >Complete 8,847,360-byte comparison: D 73,728 differing / max 1   ·   U 0 differing / max 0   ·   E 36,864 differing / max 1</text>
+<text x="28" y="119" >180/EOS · pending=ready=0 · normal cleanup · fds 3/3 · threads 1/1 · no frames or edges discarded</text>
+<text x="28" y="140" >No general pixel accuracy, scaled-output, intrinsic-filter or raw-API certification. Repeat and final control not included.</text>
+<text x="28" y="162" >A actual black dot · D down orange square · U up blue circle · E even purple triangle · ◇ planar source row</text>
+<rect x="28" y="180" width="502" height="158" fill="#fafafa" stroke="#ddd" rx="4"/>
+<text x="40" y="198" font-weight="bold">Interior half tie · Cb · frame/motif 8</text>
+<text x="40" y="213" class="small">Source baseline128; q17=130 (+2)</text>
+<line x1="68" x2="510" y1="297" y2="297" class="grid"/>
+<text x="61" y="300" class="small" text-anchor="end">127</text>
+<line x1="68" x2="510" y1="278.5" y2="278.5" class="grid"/>
+<text x="61" y="281.5" class="small" text-anchor="end">128</text>
+<line x1="68" x2="510" y1="260" y2="260" class="grid"/>
+<text x="61" y="263" class="small" text-anchor="end">129</text>
+<line x1="68" x2="510" y1="241.5" y2="241.5" class="grid"/>
+<text x="61" y="244.5" class="small" text-anchor="end">130</text>
+<line x1="68" x2="510" y1="223" y2="223" class="grid"/>
+<text x="61" y="226" class="small" text-anchor="end">131</text>
+<line x1="68" x2="510" y1="297" y2="297" class="axis"/>
+<text x="68" y="309" class="small" text-anchor="middle">30</text>
+<text x="117.11111111111111" y="309" class="small" text-anchor="middle">31</text>
+<text x="166.22222222222223" y="309" class="small" text-anchor="middle">32</text>
+<text x="215.33333333333334" y="309" class="small" text-anchor="middle">33</text>
+<text x="264.44444444444446" y="309" class="small" text-anchor="middle">34</text>
+<text x="313.55555555555554" y="309" class="small" text-anchor="middle">35</text>
+<text x="362.6666666666667" y="309" class="small" text-anchor="middle">36</text>
+<text x="411.77777777777777" y="309" class="small" text-anchor="middle">37</text>
+<text x="460.8888888888889" y="309" class="small" text-anchor="middle">38</text>
+<text x="510" y="309" class="small" text-anchor="middle">39</text>
+<polyline points="68,278.5 117.11111111111111,278.5 166.22222222222223,278.5 215.33333333333334,278.5 264.44444444444446,260 313.55555555555554,260 362.6666666666667,278.5 411.77777777777777,278.5 460.8888888888889,278.5 510,278.5" fill="none" stroke="#c85b12" stroke-width="1.4" stroke-dasharray="3 2"/>
+<polyline points="68,278.5 117.11111111111111,278.5 166.22222222222223,278.5 215.33333333333334,260 264.44444444444446,241.5 313.55555555555554,241.5 362.6666666666667,260 411.77777777777777,278.5 460.8888888888889,278.5 510,278.5" fill="none" stroke="#176db1" stroke-width="1.4"/>
+<polyline points="68,278.5 117.11111111111111,278.5 166.22222222222223,278.5 215.33333333333334,278.5 264.44444444444446,241.5 313.55555555555554,241.5 362.6666666666667,278.5 411.77777777777777,278.5 460.8888888888889,278.5 510,278.5" fill="none" stroke="#8757a6" stroke-width="1.4" stroke-dasharray="6 2"/>
+<polyline points="68,278.5 117.11111111111111,278.5 166.22222222222223,278.5 215.33333333333334,260 264.44444444444446,241.5 313.55555555555554,241.5 362.6666666666667,260 411.77777777777777,278.5 460.8888888888889,278.5 510,278.5" fill="none" stroke="#222" stroke-width="1"/>
+<path d="M68 274.5 L72 278.5 L68 282.5 L64 278.5 Z" class="source"/>
+<path d="M166.22222222222223 274.5 L170.22222222222223 278.5 L166.22222222222223 282.5 L162.22222222222223 278.5 Z" class="source"/>
+<path d="M264.44444444444446 237.5 L268.44444444444446 241.5 L264.44444444444446 245.5 L260.44444444444446 241.5 Z" class="source"/>
+<path d="M362.6666666666667 274.5 L366.6666666666667 278.5 L362.6666666666667 282.5 L358.6666666666667 278.5 Z" class="source"/>
+<path d="M460.8888888888889 274.5 L464.8888888888889 278.5 L460.8888888888889 282.5 L456.8888888888889 278.5 Z" class="source"/>
+<rect x="65" y="275.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="68" cy="278.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M68 274 L72 281.5 L64 281.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="68" cy="278.5" r="1.7" fill="#222"/>
+<rect x="114.11111111111111" y="275.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="117.11111111111111" cy="278.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M117.11111111111111 274 L121.11111111111111 281.5 L113.11111111111111 281.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="117.11111111111111" cy="278.5" r="1.7" fill="#222"/>
+<rect x="163.22222222222223" y="275.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="166.22222222222223" cy="278.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M166.22222222222223 274 L170.22222222222223 281.5 L162.22222222222223 281.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="166.22222222222223" cy="278.5" r="1.7" fill="#222"/>
+<rect x="212.33333333333334" y="275.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="215.33333333333334" cy="260" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M215.33333333333334 274 L219.33333333333334 281.5 L211.33333333333334 281.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="215.33333333333334" cy="260" r="1.7" fill="#222"/>
+<rect x="261.44444444444446" y="257" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="264.44444444444446" cy="241.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M264.44444444444446 237 L268.44444444444446 244.5 L260.44444444444446 244.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="264.44444444444446" cy="241.5" r="1.7" fill="#222"/>
+<rect x="310.55555555555554" y="257" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="313.55555555555554" cy="241.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M313.55555555555554 237 L317.55555555555554 244.5 L309.55555555555554 244.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="313.55555555555554" cy="241.5" r="1.7" fill="#222"/>
+<rect x="359.6666666666667" y="275.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="362.6666666666667" cy="260" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M362.6666666666667 274 L366.6666666666667 281.5 L358.6666666666667 281.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="362.6666666666667" cy="260" r="1.7" fill="#222"/>
+<rect x="408.77777777777777" y="275.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="411.77777777777777" cy="278.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M411.77777777777777 274 L415.77777777777777 281.5 L407.77777777777777 281.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="411.77777777777777" cy="278.5" r="1.7" fill="#222"/>
+<rect x="457.8888888888889" y="275.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="460.8888888888889" cy="278.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M460.8888888888889 274 L464.8888888888889 281.5 L456.8888888888889 281.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="460.8888888888889" cy="278.5" r="1.7" fill="#222"/>
+<rect x="507" y="275.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="510" cy="278.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M510 274 L514 281.5 L506 281.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="510" cy="278.5" r="1.7" fill="#222"/>
+<text x="40" y="319" class="small">Output row y; source ◇ at y=2q is index mapping, not a physical center.</text>
+<text x="40" y="332" class="small">Overlapping points: A=D 6/10 · A=U 10/10 · A=E 8/10 · D=U=E 6/10</text>
+<rect x="550" y="180" width="502" height="158" fill="#fafafa" stroke="#ddd" rx="4"/>
+<text x="562" y="198" font-weight="bold">Interior half tie · Cr · frame/motif 8</text>
+<text x="562" y="213" class="small">Source baseline127; q29=125 (−2)</text>
+<line x1="590" x2="1032" y1="297" y2="297" class="grid"/>
+<text x="583" y="300" class="small" text-anchor="end">124</text>
+<line x1="590" x2="1032" y1="278.5" y2="278.5" class="grid"/>
+<text x="583" y="281.5" class="small" text-anchor="end">125</text>
+<line x1="590" x2="1032" y1="260" y2="260" class="grid"/>
+<text x="583" y="263" class="small" text-anchor="end">126</text>
+<line x1="590" x2="1032" y1="241.5" y2="241.5" class="grid"/>
+<text x="583" y="244.5" class="small" text-anchor="end">127</text>
+<line x1="590" x2="1032" y1="223" y2="223" class="grid"/>
+<text x="583" y="226" class="small" text-anchor="end">128</text>
+<line x1="590" x2="1032" y1="297" y2="297" class="axis"/>
+<text x="590" y="309" class="small" text-anchor="middle">54</text>
+<text x="639.1111111111111" y="309" class="small" text-anchor="middle">55</text>
+<text x="688.2222222222222" y="309" class="small" text-anchor="middle">56</text>
+<text x="737.3333333333334" y="309" class="small" text-anchor="middle">57</text>
+<text x="786.4444444444445" y="309" class="small" text-anchor="middle">58</text>
+<text x="835.5555555555555" y="309" class="small" text-anchor="middle">59</text>
+<text x="884.6666666666667" y="309" class="small" text-anchor="middle">60</text>
+<text x="933.7777777777778" y="309" class="small" text-anchor="middle">61</text>
+<text x="982.8888888888889" y="309" class="small" text-anchor="middle">62</text>
+<text x="1032" y="309" class="small" text-anchor="middle">63</text>
+<polyline points="590,241.5 639.1111111111111,241.5 688.2222222222222,241.5 737.3333333333334,260 786.4444444444445,278.5 835.5555555555555,278.5 884.6666666666667,260 933.7777777777778,241.5 982.8888888888889,241.5 1032,241.5" fill="none" stroke="#c85b12" stroke-width="1.4" stroke-dasharray="3 2"/>
+<polyline points="590,241.5 639.1111111111111,241.5 688.2222222222222,241.5 737.3333333333334,241.5 786.4444444444445,260 835.5555555555555,260 884.6666666666667,241.5 933.7777777777778,241.5 982.8888888888889,241.5 1032,241.5" fill="none" stroke="#176db1" stroke-width="1.4"/>
+<polyline points="590,241.5 639.1111111111111,241.5 688.2222222222222,241.5 737.3333333333334,260 786.4444444444445,260 835.5555555555555,260 884.6666666666667,260 933.7777777777778,241.5 982.8888888888889,241.5 1032,241.5" fill="none" stroke="#8757a6" stroke-width="1.4" stroke-dasharray="6 2"/>
+<polyline points="590,241.5 639.1111111111111,241.5 688.2222222222222,241.5 737.3333333333334,241.5 786.4444444444445,260 835.5555555555555,260 884.6666666666667,241.5 933.7777777777778,241.5 982.8888888888889,241.5 1032,241.5" fill="none" stroke="#222" stroke-width="1"/>
+<path d="M590 237.5 L594 241.5 L590 245.5 L586 241.5 Z" class="source"/>
+<path d="M688.2222222222222 237.5 L692.2222222222222 241.5 L688.2222222222222 245.5 L684.2222222222222 241.5 Z" class="source"/>
+<path d="M786.4444444444445 274.5 L790.4444444444445 278.5 L786.4444444444445 282.5 L782.4444444444445 278.5 Z" class="source"/>
+<path d="M884.6666666666667 237.5 L888.6666666666667 241.5 L884.6666666666667 245.5 L880.6666666666667 241.5 Z" class="source"/>
+<path d="M982.8888888888889 237.5 L986.8888888888889 241.5 L982.8888888888889 245.5 L978.8888888888889 241.5 Z" class="source"/>
+<rect x="587" y="238.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="590" cy="241.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M590 237 L594 244.5 L586 244.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="590" cy="241.5" r="1.7" fill="#222"/>
+<rect x="636.1111111111111" y="238.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="639.1111111111111" cy="241.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M639.1111111111111 237 L643.1111111111111 244.5 L635.1111111111111 244.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="639.1111111111111" cy="241.5" r="1.7" fill="#222"/>
+<rect x="685.2222222222222" y="238.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="688.2222222222222" cy="241.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M688.2222222222222 237 L692.2222222222222 244.5 L684.2222222222222 244.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="688.2222222222222" cy="241.5" r="1.7" fill="#222"/>
+<rect x="734.3333333333334" y="257" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="737.3333333333334" cy="241.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M737.3333333333334 255.5 L741.3333333333334 263 L733.3333333333334 263 Z" fill="none" stroke="#8757a6"/>
+<circle cx="737.3333333333334" cy="241.5" r="1.7" fill="#222"/>
+<rect x="783.4444444444445" y="275.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="786.4444444444445" cy="260" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M786.4444444444445 255.5 L790.4444444444445 263 L782.4444444444445 263 Z" fill="none" stroke="#8757a6"/>
+<circle cx="786.4444444444445" cy="260" r="1.7" fill="#222"/>
+<rect x="832.5555555555555" y="275.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="835.5555555555555" cy="260" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M835.5555555555555 255.5 L839.5555555555555 263 L831.5555555555555 263 Z" fill="none" stroke="#8757a6"/>
+<circle cx="835.5555555555555" cy="260" r="1.7" fill="#222"/>
+<rect x="881.6666666666667" y="257" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="884.6666666666667" cy="241.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M884.6666666666667 255.5 L888.6666666666667 263 L880.6666666666667 263 Z" fill="none" stroke="#8757a6"/>
+<circle cx="884.6666666666667" cy="241.5" r="1.7" fill="#222"/>
+<rect x="930.7777777777778" y="238.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="933.7777777777778" cy="241.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M933.7777777777778 237 L937.7777777777778 244.5 L929.7777777777778 244.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="933.7777777777778" cy="241.5" r="1.7" fill="#222"/>
+<rect x="979.8888888888889" y="238.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="982.8888888888889" cy="241.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M982.8888888888889 237 L986.8888888888889 244.5 L978.8888888888889 244.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="982.8888888888889" cy="241.5" r="1.7" fill="#222"/>
+<rect x="1029" y="238.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="1032" cy="241.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M1032 237 L1036 244.5 L1028 244.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="1032" cy="241.5" r="1.7" fill="#222"/>
+<text x="562" y="319" class="small">Output row y; source ◇ at y=2q is index mapping, not a physical center.</text>
+<text x="562" y="332" class="small">Overlapping points: A=D 6/10 · A=U 10/10 · A=E 8/10 · D=U=E 6/10</text>
+<rect x="28" y="350" width="502" height="158" fill="#fafafa" stroke="#ddd" rx="4"/>
+<text x="40" y="368" font-weight="bold">Top boundary q0 · Cb · frame/motif 18</text>
+<text x="40" y="383" class="small">Source baseline128; q0=130 (+2)</text>
+<line x1="68" x2="510" y1="467" y2="467" class="grid"/>
+<text x="61" y="470" class="small" text-anchor="end">127</text>
+<line x1="68" x2="510" y1="448.5" y2="448.5" class="grid"/>
+<text x="61" y="451.5" class="small" text-anchor="end">128</text>
+<line x1="68" x2="510" y1="430" y2="430" class="grid"/>
+<text x="61" y="433" class="small" text-anchor="end">129</text>
+<line x1="68" x2="510" y1="411.5" y2="411.5" class="grid"/>
+<text x="61" y="414.5" class="small" text-anchor="end">130</text>
+<line x1="68" x2="510" y1="393" y2="393" class="grid"/>
+<text x="61" y="396" class="small" text-anchor="end">131</text>
+<line x1="68" x2="510" y1="467" y2="467" class="axis"/>
+<text x="68" y="479" class="small" text-anchor="middle">0</text>
+<text x="131.14285714285714" y="479" class="small" text-anchor="middle">1</text>
+<text x="194.28571428571428" y="479" class="small" text-anchor="middle">2</text>
+<text x="257.42857142857144" y="479" class="small" text-anchor="middle">3</text>
+<text x="320.57142857142856" y="479" class="small" text-anchor="middle">4</text>
+<text x="383.7142857142857" y="479" class="small" text-anchor="middle">5</text>
+<text x="446.85714285714283" y="479" class="small" text-anchor="middle">6</text>
+<text x="510" y="479" class="small" text-anchor="middle">7</text>
+<polyline points="68,411.5 131.14285714285714,430 194.28571428571428,448.5 257.42857142857144,448.5 320.57142857142856,448.5 383.7142857142857,448.5 446.85714285714283,448.5 510,448.5" fill="none" stroke="#c85b12" stroke-width="1.4" stroke-dasharray="3 2"/>
+<polyline points="68,411.5 131.14285714285714,411.5 194.28571428571428,430 257.42857142857144,448.5 320.57142857142856,448.5 383.7142857142857,448.5 446.85714285714283,448.5 510,448.5" fill="none" stroke="#176db1" stroke-width="1.4"/>
+<polyline points="68,411.5 131.14285714285714,411.5 194.28571428571428,448.5 257.42857142857144,448.5 320.57142857142856,448.5 383.7142857142857,448.5 446.85714285714283,448.5 510,448.5" fill="none" stroke="#8757a6" stroke-width="1.4" stroke-dasharray="6 2"/>
+<polyline points="68,411.5 131.14285714285714,411.5 194.28571428571428,430 257.42857142857144,448.5 320.57142857142856,448.5 383.7142857142857,448.5 446.85714285714283,448.5 510,448.5" fill="none" stroke="#222" stroke-width="1"/>
+<path d="M68 407.5 L72 411.5 L68 415.5 L64 411.5 Z" class="source"/>
+<path d="M194.28571428571428 444.5 L198.28571428571428 448.5 L194.28571428571428 452.5 L190.28571428571428 448.5 Z" class="source"/>
+<path d="M320.57142857142856 444.5 L324.57142857142856 448.5 L320.57142857142856 452.5 L316.57142857142856 448.5 Z" class="source"/>
+<path d="M446.85714285714283 444.5 L450.85714285714283 448.5 L446.85714285714283 452.5 L442.85714285714283 448.5 Z" class="source"/>
+<rect x="65" y="408.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="68" cy="411.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M68 407 L72 414.5 L64 414.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="68" cy="411.5" r="1.7" fill="#222"/>
+<rect x="128.14285714285714" y="427" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="131.14285714285714" cy="411.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M131.14285714285714 407 L135.14285714285714 414.5 L127.14285714285714 414.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="131.14285714285714" cy="411.5" r="1.7" fill="#222"/>
+<rect x="191.28571428571428" y="445.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="194.28571428571428" cy="430" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M194.28571428571428 444 L198.28571428571428 451.5 L190.28571428571428 451.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="194.28571428571428" cy="430" r="1.7" fill="#222"/>
+<rect x="254.42857142857144" y="445.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="257.42857142857144" cy="448.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M257.42857142857144 444 L261.42857142857144 451.5 L253.42857142857144 451.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="257.42857142857144" cy="448.5" r="1.7" fill="#222"/>
+<rect x="317.57142857142856" y="445.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="320.57142857142856" cy="448.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M320.57142857142856 444 L324.57142857142856 451.5 L316.57142857142856 451.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="320.57142857142856" cy="448.5" r="1.7" fill="#222"/>
+<rect x="380.7142857142857" y="445.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="383.7142857142857" cy="448.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M383.7142857142857 444 L387.7142857142857 451.5 L379.7142857142857 451.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="383.7142857142857" cy="448.5" r="1.7" fill="#222"/>
+<rect x="443.85714285714283" y="445.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="446.85714285714283" cy="448.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M446.85714285714283 444 L450.85714285714283 451.5 L442.85714285714283 451.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="446.85714285714283" cy="448.5" r="1.7" fill="#222"/>
+<rect x="507" y="445.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="510" cy="448.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M510 444 L514 451.5 L506 451.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="510" cy="448.5" r="1.7" fill="#222"/>
+<text x="40" y="489" class="small">Output row y; source ◇ at y=2q is index mapping, not a physical center.</text>
+<text x="40" y="502" class="small">Overlapping points: A=D 6/8 · A=U 8/8 · A=E 7/8 · D=U=E 6/8</text>
+<rect x="550" y="350" width="502" height="158" fill="#fafafa" stroke="#ddd" rx="4"/>
+<text x="562" y="368" font-weight="bold">Top boundary q0 · Cr · frame/motif 18</text>
+<text x="562" y="383" class="small">Source baseline127; q0=125 (−2)</text>
+<line x1="590" x2="1032" y1="467" y2="467" class="grid"/>
+<text x="583" y="470" class="small" text-anchor="end">124</text>
+<line x1="590" x2="1032" y1="448.5" y2="448.5" class="grid"/>
+<text x="583" y="451.5" class="small" text-anchor="end">125</text>
+<line x1="590" x2="1032" y1="430" y2="430" class="grid"/>
+<text x="583" y="433" class="small" text-anchor="end">126</text>
+<line x1="590" x2="1032" y1="411.5" y2="411.5" class="grid"/>
+<text x="583" y="414.5" class="small" text-anchor="end">127</text>
+<line x1="590" x2="1032" y1="393" y2="393" class="grid"/>
+<text x="583" y="396" class="small" text-anchor="end">128</text>
+<line x1="590" x2="1032" y1="467" y2="467" class="axis"/>
+<text x="590" y="479" class="small" text-anchor="middle">0</text>
+<text x="653.1428571428571" y="479" class="small" text-anchor="middle">1</text>
+<text x="716.2857142857143" y="479" class="small" text-anchor="middle">2</text>
+<text x="779.4285714285714" y="479" class="small" text-anchor="middle">3</text>
+<text x="842.5714285714286" y="479" class="small" text-anchor="middle">4</text>
+<text x="905.7142857142858" y="479" class="small" text-anchor="middle">5</text>
+<text x="968.8571428571429" y="479" class="small" text-anchor="middle">6</text>
+<text x="1032" y="479" class="small" text-anchor="middle">7</text>
+<polyline points="590,448.5 653.1428571428571,448.5 716.2857142857143,430 779.4285714285714,411.5 842.5714285714286,411.5 905.7142857142858,411.5 968.8571428571429,411.5 1032,411.5" fill="none" stroke="#c85b12" stroke-width="1.4" stroke-dasharray="3 2"/>
+<polyline points="590,448.5 653.1428571428571,430 716.2857142857143,411.5 779.4285714285714,411.5 842.5714285714286,411.5 905.7142857142858,411.5 968.8571428571429,411.5 1032,411.5" fill="none" stroke="#176db1" stroke-width="1.4"/>
+<polyline points="590,448.5 653.1428571428571,430 716.2857142857143,430 779.4285714285714,411.5 842.5714285714286,411.5 905.7142857142858,411.5 968.8571428571429,411.5 1032,411.5" fill="none" stroke="#8757a6" stroke-width="1.4" stroke-dasharray="6 2"/>
+<polyline points="590,448.5 653.1428571428571,430 716.2857142857143,411.5 779.4285714285714,411.5 842.5714285714286,411.5 905.7142857142858,411.5 968.8571428571429,411.5 1032,411.5" fill="none" stroke="#222" stroke-width="1"/>
+<path d="M590 444.5 L594 448.5 L590 452.5 L586 448.5 Z" class="source"/>
+<path d="M716.2857142857143 407.5 L720.2857142857143 411.5 L716.2857142857143 415.5 L712.2857142857143 411.5 Z" class="source"/>
+<path d="M842.5714285714286 407.5 L846.5714285714286 411.5 L842.5714285714286 415.5 L838.5714285714286 411.5 Z" class="source"/>
+<path d="M968.8571428571429 407.5 L972.8571428571429 411.5 L968.8571428571429 415.5 L964.8571428571429 411.5 Z" class="source"/>
+<rect x="587" y="445.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="590" cy="448.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M590 444 L594 451.5 L586 451.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="590" cy="448.5" r="1.7" fill="#222"/>
+<rect x="650.1428571428571" y="445.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="653.1428571428571" cy="430" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M653.1428571428571 425.5 L657.1428571428571 433 L649.1428571428571 433 Z" fill="none" stroke="#8757a6"/>
+<circle cx="653.1428571428571" cy="430" r="1.7" fill="#222"/>
+<rect x="713.2857142857143" y="427" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="716.2857142857143" cy="411.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M716.2857142857143 425.5 L720.2857142857143 433 L712.2857142857143 433 Z" fill="none" stroke="#8757a6"/>
+<circle cx="716.2857142857143" cy="411.5" r="1.7" fill="#222"/>
+<rect x="776.4285714285714" y="408.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="779.4285714285714" cy="411.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M779.4285714285714 407 L783.4285714285714 414.5 L775.4285714285714 414.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="779.4285714285714" cy="411.5" r="1.7" fill="#222"/>
+<rect x="839.5714285714286" y="408.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="842.5714285714286" cy="411.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M842.5714285714286 407 L846.5714285714286 414.5 L838.5714285714286 414.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="842.5714285714286" cy="411.5" r="1.7" fill="#222"/>
+<rect x="902.7142857142858" y="408.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="905.7142857142858" cy="411.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M905.7142857142858 407 L909.7142857142858 414.5 L901.7142857142858 414.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="905.7142857142858" cy="411.5" r="1.7" fill="#222"/>
+<rect x="965.8571428571429" y="408.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="968.8571428571429" cy="411.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M968.8571428571429 407 L972.8571428571429 414.5 L964.8571428571429 414.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="968.8571428571429" cy="411.5" r="1.7" fill="#222"/>
+<rect x="1029" y="408.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="1032" cy="411.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M1032 407 L1036 414.5 L1028 414.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="1032" cy="411.5" r="1.7" fill="#222"/>
+<text x="562" y="489" class="small">Output row y; source ◇ at y=2q is index mapping, not a physical center.</text>
+<text x="562" y="502" class="small">Overlapping points: A=D 6/8 · A=U 8/8 · A=E 7/8 · D=U=E 6/8</text>
+<rect x="28" y="520" width="502" height="158" fill="#fafafa" stroke="#ddd" rx="4"/>
+<text x="40" y="538" font-weight="bold">Bottom boundary q47 · Cb · frame/motif 24</text>
+<text x="40" y="553" class="small">Source baseline128; q47=130 (+2)</text>
+<line x1="68" x2="510" y1="637" y2="637" class="grid"/>
+<text x="61" y="640" class="small" text-anchor="end">127</text>
+<line x1="68" x2="510" y1="618.5" y2="618.5" class="grid"/>
+<text x="61" y="621.5" class="small" text-anchor="end">128</text>
+<line x1="68" x2="510" y1="600" y2="600" class="grid"/>
+<text x="61" y="603" class="small" text-anchor="end">129</text>
+<line x1="68" x2="510" y1="581.5" y2="581.5" class="grid"/>
+<text x="61" y="584.5" class="small" text-anchor="end">130</text>
+<line x1="68" x2="510" y1="563" y2="563" class="grid"/>
+<text x="61" y="566" class="small" text-anchor="end">131</text>
+<line x1="68" x2="510" y1="637" y2="637" class="axis"/>
+<text x="68" y="649" class="small" text-anchor="middle">88</text>
+<text x="131.14285714285714" y="649" class="small" text-anchor="middle">89</text>
+<text x="194.28571428571428" y="649" class="small" text-anchor="middle">90</text>
+<text x="257.42857142857144" y="649" class="small" text-anchor="middle">91</text>
+<text x="320.57142857142856" y="649" class="small" text-anchor="middle">92</text>
+<text x="383.7142857142857" y="649" class="small" text-anchor="middle">93</text>
+<text x="446.85714285714283" y="649" class="small" text-anchor="middle">94</text>
+<text x="510" y="649" class="small" text-anchor="middle">95</text>
+<polyline points="68,618.5 131.14285714285714,618.5 194.28571428571428,618.5 257.42857142857144,618.5 320.57142857142856,618.5 383.7142857142857,618.5 446.85714285714283,600 510,581.5" fill="none" stroke="#c85b12" stroke-width="1.4" stroke-dasharray="3 2"/>
+<polyline points="68,618.5 131.14285714285714,618.5 194.28571428571428,618.5 257.42857142857144,618.5 320.57142857142856,618.5 383.7142857142857,600 446.85714285714283,581.5 510,581.5" fill="none" stroke="#176db1" stroke-width="1.4"/>
+<polyline points="68,618.5 131.14285714285714,618.5 194.28571428571428,618.5 257.42857142857144,618.5 320.57142857142856,618.5 383.7142857142857,618.5 446.85714285714283,581.5 510,581.5" fill="none" stroke="#8757a6" stroke-width="1.4" stroke-dasharray="6 2"/>
+<polyline points="68,618.5 131.14285714285714,618.5 194.28571428571428,618.5 257.42857142857144,618.5 320.57142857142856,618.5 383.7142857142857,600 446.85714285714283,581.5 510,581.5" fill="none" stroke="#222" stroke-width="1"/>
+<path d="M68 614.5 L72 618.5 L68 622.5 L64 618.5 Z" class="source"/>
+<path d="M194.28571428571428 614.5 L198.28571428571428 618.5 L194.28571428571428 622.5 L190.28571428571428 618.5 Z" class="source"/>
+<path d="M320.57142857142856 614.5 L324.57142857142856 618.5 L320.57142857142856 622.5 L316.57142857142856 618.5 Z" class="source"/>
+<path d="M446.85714285714283 577.5 L450.85714285714283 581.5 L446.85714285714283 585.5 L442.85714285714283 581.5 Z" class="source"/>
+<rect x="65" y="615.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="68" cy="618.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M68 614 L72 621.5 L64 621.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="68" cy="618.5" r="1.7" fill="#222"/>
+<rect x="128.14285714285714" y="615.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="131.14285714285714" cy="618.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M131.14285714285714 614 L135.14285714285714 621.5 L127.14285714285714 621.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="131.14285714285714" cy="618.5" r="1.7" fill="#222"/>
+<rect x="191.28571428571428" y="615.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="194.28571428571428" cy="618.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M194.28571428571428 614 L198.28571428571428 621.5 L190.28571428571428 621.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="194.28571428571428" cy="618.5" r="1.7" fill="#222"/>
+<rect x="254.42857142857144" y="615.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="257.42857142857144" cy="618.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M257.42857142857144 614 L261.42857142857144 621.5 L253.42857142857144 621.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="257.42857142857144" cy="618.5" r="1.7" fill="#222"/>
+<rect x="317.57142857142856" y="615.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="320.57142857142856" cy="618.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M320.57142857142856 614 L324.57142857142856 621.5 L316.57142857142856 621.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="320.57142857142856" cy="618.5" r="1.7" fill="#222"/>
+<rect x="380.7142857142857" y="615.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="383.7142857142857" cy="600" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M383.7142857142857 614 L387.7142857142857 621.5 L379.7142857142857 621.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="383.7142857142857" cy="600" r="1.7" fill="#222"/>
+<rect x="443.85714285714283" y="597" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="446.85714285714283" cy="581.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M446.85714285714283 577 L450.85714285714283 584.5 L442.85714285714283 584.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="446.85714285714283" cy="581.5" r="1.7" fill="#222"/>
+<rect x="507" y="578.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="510" cy="581.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M510 577 L514 584.5 L506 584.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="510" cy="581.5" r="1.7" fill="#222"/>
+<text x="40" y="659" class="small">Output row y; source ◇ at y=2q is index mapping, not a physical center.</text>
+<text x="40" y="672" class="small">Overlapping points: A=D 6/8 · A=U 8/8 · A=E 7/8 · D=U=E 6/8</text>
+<rect x="550" y="520" width="502" height="158" fill="#fafafa" stroke="#ddd" rx="4"/>
+<text x="562" y="538" font-weight="bold">Bottom boundary q47 · Cr · frame/motif 24</text>
+<text x="562" y="553" class="small">Source baseline127; q47=125 (−2)</text>
+<line x1="590" x2="1032" y1="637" y2="637" class="grid"/>
+<text x="583" y="640" class="small" text-anchor="end">124</text>
+<line x1="590" x2="1032" y1="618.5" y2="618.5" class="grid"/>
+<text x="583" y="621.5" class="small" text-anchor="end">125</text>
+<line x1="590" x2="1032" y1="600" y2="600" class="grid"/>
+<text x="583" y="603" class="small" text-anchor="end">126</text>
+<line x1="590" x2="1032" y1="581.5" y2="581.5" class="grid"/>
+<text x="583" y="584.5" class="small" text-anchor="end">127</text>
+<line x1="590" x2="1032" y1="563" y2="563" class="grid"/>
+<text x="583" y="566" class="small" text-anchor="end">128</text>
+<line x1="590" x2="1032" y1="637" y2="637" class="axis"/>
+<text x="590" y="649" class="small" text-anchor="middle">88</text>
+<text x="653.1428571428571" y="649" class="small" text-anchor="middle">89</text>
+<text x="716.2857142857143" y="649" class="small" text-anchor="middle">90</text>
+<text x="779.4285714285714" y="649" class="small" text-anchor="middle">91</text>
+<text x="842.5714285714286" y="649" class="small" text-anchor="middle">92</text>
+<text x="905.7142857142858" y="649" class="small" text-anchor="middle">93</text>
+<text x="968.8571428571429" y="649" class="small" text-anchor="middle">94</text>
+<text x="1032" y="649" class="small" text-anchor="middle">95</text>
+<polyline points="590,581.5 653.1428571428571,581.5 716.2857142857143,581.5 779.4285714285714,581.5 842.5714285714286,581.5 905.7142857142858,600 968.8571428571429,618.5 1032,618.5" fill="none" stroke="#c85b12" stroke-width="1.4" stroke-dasharray="3 2"/>
+<polyline points="590,581.5 653.1428571428571,581.5 716.2857142857143,581.5 779.4285714285714,581.5 842.5714285714286,581.5 905.7142857142858,581.5 968.8571428571429,600 1032,618.5" fill="none" stroke="#176db1" stroke-width="1.4"/>
+<polyline points="590,581.5 653.1428571428571,581.5 716.2857142857143,581.5 779.4285714285714,581.5 842.5714285714286,581.5 905.7142857142858,600 968.8571428571429,600 1032,618.5" fill="none" stroke="#8757a6" stroke-width="1.4" stroke-dasharray="6 2"/>
+<polyline points="590,581.5 653.1428571428571,581.5 716.2857142857143,581.5 779.4285714285714,581.5 842.5714285714286,581.5 905.7142857142858,581.5 968.8571428571429,600 1032,618.5" fill="none" stroke="#222" stroke-width="1"/>
+<path d="M590 577.5 L594 581.5 L590 585.5 L586 581.5 Z" class="source"/>
+<path d="M716.2857142857143 577.5 L720.2857142857143 581.5 L716.2857142857143 585.5 L712.2857142857143 581.5 Z" class="source"/>
+<path d="M842.5714285714286 577.5 L846.5714285714286 581.5 L842.5714285714286 585.5 L838.5714285714286 581.5 Z" class="source"/>
+<path d="M968.8571428571429 614.5 L972.8571428571429 618.5 L968.8571428571429 622.5 L964.8571428571429 618.5 Z" class="source"/>
+<rect x="587" y="578.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="590" cy="581.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M590 577 L594 584.5 L586 584.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="590" cy="581.5" r="1.7" fill="#222"/>
+<rect x="650.1428571428571" y="578.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="653.1428571428571" cy="581.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M653.1428571428571 577 L657.1428571428571 584.5 L649.1428571428571 584.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="653.1428571428571" cy="581.5" r="1.7" fill="#222"/>
+<rect x="713.2857142857143" y="578.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="716.2857142857143" cy="581.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M716.2857142857143 577 L720.2857142857143 584.5 L712.2857142857143 584.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="716.2857142857143" cy="581.5" r="1.7" fill="#222"/>
+<rect x="776.4285714285714" y="578.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="779.4285714285714" cy="581.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M779.4285714285714 577 L783.4285714285714 584.5 L775.4285714285714 584.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="779.4285714285714" cy="581.5" r="1.7" fill="#222"/>
+<rect x="839.5714285714286" y="578.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="842.5714285714286" cy="581.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M842.5714285714286 577 L846.5714285714286 584.5 L838.5714285714286 584.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="842.5714285714286" cy="581.5" r="1.7" fill="#222"/>
+<rect x="902.7142857142858" y="597" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="905.7142857142858" cy="581.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M905.7142857142858 595.5 L909.7142857142858 603 L901.7142857142858 603 Z" fill="none" stroke="#8757a6"/>
+<circle cx="905.7142857142858" cy="581.5" r="1.7" fill="#222"/>
+<rect x="965.8571428571429" y="615.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="968.8571428571429" cy="600" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M968.8571428571429 595.5 L972.8571428571429 603 L964.8571428571429 603 Z" fill="none" stroke="#8757a6"/>
+<circle cx="968.8571428571429" cy="600" r="1.7" fill="#222"/>
+<rect x="1029" y="615.5" width="6" height="6" fill="none" stroke="#c85b12"/>
+<circle cx="1032" cy="618.5" r="3.8" fill="none" stroke="#176db1"/>
+<path d="M1032 614 L1036 621.5 L1028 621.5 Z" fill="none" stroke="#8757a6"/>
+<circle cx="1032" cy="618.5" r="1.7" fill="#222"/>
+<text x="562" y="659" class="small">Output row y; source ◇ at y=2q is index mapping, not a physical center.</text>
+<text x="562" y="672" class="small">Overlapping points: A=D 6/8 · A=U 8/8 · A=E 7/8 · D=U=E 6/8</text>
+<text x="28" y="704" >Discrete measured samples; connecting segments are visual guides. Overlapping predictions share the same coordinates.</text>
+<text x="28" y="724" >Residual counts are whole-buffer, not cropped profile ROIs; Y / Cb / Cr differing bytes: D=0/36,864/36,864 · U=0/0/0 · E=0/18,432/18,432</text>
+<text x="28" y="751" class="hash" xml:space="preserve">RAW chroma-before       SHA256 46d6687822290cb1d898b64c65f88ba332122870752d9360d6ce7dd3aae2cea5</text>
+<text x="28" y="769" class="hash" xml:space="preserve">SOURCE planar420        SHA256 0de40a4d07914ace26fb86da7f1ffed08bcf75a91381341e5fb197cb7e0e1b6c</text>
+<text x="28" y="787" class="hash" xml:space="preserve">D frozen prediction     SHA256 cc78f7e532e072fe8e3ccde04eeece51837c8ac451549a44181290930899550e</text>
+<text x="28" y="805" class="hash" xml:space="preserve">U frozen prediction     SHA256 46d6687822290cb1d898b64c65f88ba332122870752d9360d6ce7dd3aae2cea5</text>
+<text x="28" y="823" class="hash" xml:space="preserve">E frozen prediction     SHA256 5b57bbe5fe30c398666d6feca3caa77d2fd3e00afd8fad15f71c8589aa95025d</text>
+<text x="28" y="841" class="hash" xml:space="preserve">Manifest                SHA256 b1faa1365467b338deb87fc33032f0b51bbe68318aeaabe4e97c8a8cc68ae2ac</text>
+<text x="28" y="859" class="hash" xml:space="preserve">Spec                    SHA256 e9bc30c9845a30f10bcd901f458d1aa597b0a08ad037aa840bc8273cc9a2659d</text>
+<text x="28" y="877" class="hash" xml:space="preserve">Measured root result    SHA256 597bdfbea65f6e02b7da3af3b96f3c3d6eba537e60a836a9a9786206619e6a7f</text>
+<text x="28" y="917" class="small">First capture only. Finite unscaled held-out carrier output chain; no intrinsic/general filter or full pixel-accuracy claim.</text>
+</svg>
