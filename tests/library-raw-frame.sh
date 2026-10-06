@@ -19,7 +19,7 @@ cleanup()
         return
     fi
     if [ "$keep_outputs" -eq 0 ]; then
-        for name in checker mirror extreme; do
+        for name in checker mirror extreme translate; do
             rm -f "$raw_test_dir/emitted/$name.h264" \
                 "$raw_test_dir/emitted/$name.yuv420" \
                 "$raw_test_dir/emitted/$name.output-chain.yuy2" \
@@ -59,7 +59,8 @@ printf '%s\n' '#include "libcrystalhd_raw_frame.h"' \
     '_Static_assert(BC_RAW_FRAME_MASK_BYTES == 96, "mask");' \
     'int main(void) {' \
     'BC_RAW_FRAME_BUILDER *b = 0; BC_RAW_FRAME_PLANES p = {{0,0,0},{256,128,128},{24576,6144,6144}};' \
-    '(void)b; (void)p; return 0; }' |
+    'BC_STATUS (*translate)(BC_RAW_FRAME_BUILDER *,uint32_t,int32_t,int32_t,const uint8_t **,uint32_t *) = DtsRawFramePrepareTranslate;' \
+    '(void)b; (void)p; (void)translate; return 0; }' |
     "$cc" ${CPPFLAGS:-} ${CFLAGS:-} -std=c11 -Wall -Wextra -Werror -D__LINUX_USER__ \
         -I"$repo_dir/include" -I"$repo_dir/linux_lib/libcrystalhd" \
         -x c - -c -o "$raw_test_dir/header-c.o"
@@ -109,7 +110,7 @@ planar_sha=$(sha256sum "$output_dir/checker.yuv420"); planar_sha=${planar_sha%% 
 [ "$checker_sha" = 08d2859e37449c591b746b478e83dc26948e6deaa299dd7d26b97c2ffc47654c ]
 [ "$planar_sha" = 58591b2dd3ef391873e684b004a8464e6ff6c6abe72c6d299ec2ff709882cb76 ]
 
-for name in checker mirror extreme; do
+for name in checker mirror extreme translate; do
     ffmpeg -nostdin -hide_banner -loglevel error -threads 1 -hwaccel none \
         -noautorotate -err_detect explode -xerror -i "$output_dir/$name.h264" \
         -map 0:v:0 -an -sn -dn -fps_mode passthrough -threads 1 \
@@ -136,5 +137,6 @@ refusal=0
 printf 'Existing-output refusal: actual exit=%s (expected1)\n' "$refusal"
 sha256sum "$output_dir/checker.h264" "$output_dir/checker.yuv420" \
     "$output_dir/checker.output-chain.yuy2" "$output_dir/mirror.h264" \
-    "$output_dir/extreme.h264"
+    "$output_dir/extreme.h264" "$output_dir/translate.h264" \
+    "$output_dir/translate.yuv420" "$output_dir/translate.output-chain.yuy2"
 printf 'PASS: native/Werror, ASan/UBSan, C header, Pentium2/no-SSE, full strict decode and output refusal\n'
