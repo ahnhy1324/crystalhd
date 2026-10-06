@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Hardware-free execution of pinned stock A32 allocation and OPEN bodies.
+"""Hardware-free execution of pinned stock A32 allocation and metadata bodies.
 
 Guest execution is restricted to exact bodies; literals are pinned separately.
-Allocator, clear, transport and translation calls use synthetic contracts.
-Allocation uses a Python reference; OPEN uses a complete packet/page oracle.
+Allocation/OPEN callees use synthetic contracts; handoff logging is synthetic.
+Allocation uses a Python reference; OPEN and handoff use complete page oracles.
+Metadata handoff executes the stock physical-to-virtual helper in bounded RAM.
 This does not emulate the card, ARC, firmware boot, DMA or payload ownership.
 """
 import hashlib
@@ -34,6 +35,36 @@ CALLEES = (0x1f5d4, 0x2b628, 0x1fe6c, 0x203c4)
 OPEN_START, OPEN_END, OPEN_SP = 0x27480, 0x275c4, 0x300300
 OPEN_DIGEST = "c356d9c46eee35ea6dafb60e7e1ef49cf37c77726e4ba14e5e192f9cc2c50f91"
 OPEN_LITERAL = (0x27610, bytes.fromhex("02007673"))
+METADATA_BODIES = (
+    ("release", 0xd5a4, 0xd624, "8276e18c409aa706a5b3e92b880887c4157256253d7be40312e28a7464b9c812"),
+    ("acquire", 0xd624, 0xd6d4, "e6ff28c676a32fe6219c53e6f40f2f23589e6f7f1f7235e4a46c95baf619907a"),
+    ("peek", 0xd718, 0xd780, "013bcc90b5e7d904f03f9787cc7e820978a711eba2fb37c95a63a7b8324c374d"),
+    ("translate", 0x1fdac, 0x1fe6c, "08d03815210fc1e069068765847cc4c5d847bd5df744f223f9851ee985e05d28"),
+)
+METADATA_LITERALS = (
+    (0xd780, b"BXVD_PMQM_P_ReleasePicture: PictureRelease Q is corrupted %d\0"),
+    (0xd7c0, b"BXVD_PMQM_P_ReleasePicture: PictureRelease Q is full %d\0"),
+    (0xd7f8, b"\nrelease ptr offset:%d, addr 0x%x\0"),
+    (0xd81c, b"get PPB :pstDispElem->pPPBPhysical:0x%x,pstDispElem->pPPB:0x%x \0"),
+)
+METADATA_CALLS = {
+    0xd5d4: 0x203c4, 0xd5f8: 0x203c4, 0xd618: 0x203c4,
+    0xd69c: 0x1fdac, 0xd6ac: 0x203c4, 0xd774: 0x1fdac,
+}
+META_DEL, META_REL, META_RECORD = 0x400100, 0x401100, 0x500100
+META_MAP, META_HEAD, META_SP = 0x600100, 0x600400, 0x300800
+META_PAGES = (Model.H, 0x300000, 0x400000, 0x401000, 0x500000, 0x600000)
+
+
+class MetadataRAM(tuple):
+    """Immutable trusted CPU page copy, not an authenticated owner/generation."""
+    def __new__(cls, pages, nodes):
+        if set(pages) != set(META_PAGES) or any(
+                type(page) not in (bytes, bytearray) or len(page) != 4096
+                for page in pages.values()):
+            raise ValueError("invalid metadata replay pages")
+        return tuple.__new__(cls, (tuple((base, bytes(pages[base])) for base in META_PAGES),
+                                  tuple(tuple(node) for node in nodes)))
 
 
 def data_member(address):
@@ -196,6 +227,10 @@ def elf(payload, pages, start=Model.START, end=Model.END,
             raise ValueError("stock OPEN literal changed")
         code[address - RETURN:address - RETURN + len(expected)] = expected
     segments = [(RETURN, bytes(code), 5)] + [(base, bytes(page), 6) for base, page in pages.items()]
+    return segment_elf(segments, start)
+
+
+def segment_elf(segments, start):
     image = bytearray(4096)
     image[:16] = b"\x7fELF\x01\x01\x01" + bytes(9)
     struct.pack_into("<HHIIIIIHHHHHH", image, 16, 2, 40, 1, start, 52,
@@ -242,7 +277,7 @@ def execute(options=None, budget=512, expected_signal=None):
 
 
 def emulate(image, pages, registers, slices, callees, callee, budget,
-            expected_signal=None, clobber_flags=0):
+            expected_signal=None, clobber_flags=0, real_callees=(), call_edges=None):
     """Single-step only admitted stock slices; synthetic callees never execute."""
     qemu = shutil.which(os.environ.get("QEMU_ARM", "qemu-arm"))
     if not qemu:
@@ -307,32 +342,41 @@ def emulate(image, pages, registers, slices, callees, callee, budget,
                 for index, value in enumerate(registers):
                     rsp.register(index, value)
                 preserved, entry_stack = registers[4:12], registers[13]
-                calls, stub_status = [], []
+                calls, stub_status, real_status, real_returns = [], [], [], []
                 steps, last_pc = 0, None
                 while True:
                     registers = rsp.registers()
                     pc = registers[15]
+                    if real_returns and pc == real_returns[-1][0]:
+                        _, target = real_returns.pop()
+                        real_status.append((target, registers[0]))
                     if pc == RETURN:
                         if expected_signal is not None:
                             raise ValueError("expected guest signal did not occur")
-                        if registers[4:12] != preserved or registers[13] != entry_stack:
+                        if real_returns or registers[4:12] != preserved or registers[13] != entry_stack:
                             raise ValueError("stock callee-saved ABI changed")
                         observed = {base: rsp.memory(base, size=4096) for base in pages}
                         return dict(status=registers[0], calls=calls,
-                                    pages=observed, initial=pages, steps=steps, stub_status=stub_status)
-                    if pc in callees:
+                                    pages=observed, initial=pages, steps=steps,
+                                    stub_status=stub_status, real_status=real_status)
+                    if pc in callees or pc in real_callees:
                         if last_pc is None or registers[14] != last_pc + 4:
-                            raise ValueError("unexpected synthetic call ABI")
+                            raise ValueError("unexpected pinned call ABI")
+                        if call_edges is not None and call_edges.get(last_pc) != pc:
+                            raise ValueError("outside pinned call-target allowlist")
                         args = tuple(registers[:4])
                         calls.append((last_pc, pc, args))
-                        result = callee(rsp, pc, args, registers[13])
-                        stub_status.append((pc, result))
-                        for index, value in ((0, result), (1, 0xd1d1d1d1), (2, 0xd2d2d2d2),
-                                             (3, 0xd3d3d3d3), (12, 0xdcdcdcdc), (15, registers[14])):
-                            rsp.register(index, value)
-                        rsp.register(25, flags | clobber_flags)
-                        last_pc = None
-                        continue
+                        if pc in real_callees:
+                            real_returns.append((registers[14], pc))
+                        else:
+                            result = callee(rsp, pc, args, registers[13])
+                            stub_status.append((pc, result))
+                            for index, value in ((0, result), (1, 0xd1d1d1d1), (2, 0xd2d2d2d2),
+                                                 (3, 0xd3d3d3d3), (12, 0xdcdcdcdc), (15, registers[14])):
+                                rsp.register(index, value)
+                            rsp.register(25, flags | clobber_flags)
+                            last_pc = None
+                            continue
                     if pc & 3 or not any(low <= pc < high for low, high in slices):
                         raise ValueError("outside pinned executable slices")
                     if steps >= budget:
@@ -409,6 +453,125 @@ def execute_open(mode=1, algorithm=10, arguments=None, transport=0,
                      clobber_flags=0xf0000000)
     actual.update(captured, reply=reply, arguments=arguments, registers=registers,
                   frame=frame, request=request, response=response)
+    return actual
+
+
+def metadata_elf(payload, pages, start):
+    """Only four complete stock bodies and four data strings enter the guest."""
+    code_base = 0x8000
+    code = bytearray(struct.pack("<I", 0xe7f000f0) * (0x20000 // 4))
+    for name, low, high, digest in METADATA_BODIES:
+        body = payload[low:high]
+        if hashlib.sha256(body).hexdigest() != digest:
+            raise ValueError(f"stock metadata {name} body changed")
+        code[low - code_base:high - code_base] = body
+    for address, expected in METADATA_LITERALS:
+        if payload[address:address + len(expected)] != expected:
+            raise ValueError("stock metadata literal changed")
+        code[address - code_base:address - code_base + len(expected)] = expected
+    segments = [(code_base, bytes(code), 5)]
+    segments.extend((base, bytes(page), 6) for base, page in pages.items())
+    return segment_elf(segments, start)
+
+
+def execute_metadata(kind, read=None, write=None, null_ring=False, null_output=False,
+                     translation="direct", token=0x710030, logger_status=0,
+                     budget=256, payload=None, expected_signal=None, previous=None):
+    """Stock metadata tokens only: no record/plane payload is dereferenced.
+
+    Queue, map nodes, output pair and stack are disjoint bounded host RAM.
+    Invalid indices have deliberately mapped header/adjacent-word targets.
+    Only logging is synthetic; the actual stock translation helper executes.
+    """
+    if previous is not None and (type(previous) is not MetadataRAM or kind != "release" or
+                                 read is not None or write is not None or null_ring or null_output or
+                                 translation != "direct" or token != 0x710030):
+        raise ValueError("invalid metadata replay arguments")
+    read, write = 2 if read is None else read, 3 if write is None else write
+    indices = set(range(2, 64)) | {0, 1, 64, 0xffffffff}
+    if kind not in {name for name, _, _, _ in METADATA_BODIES} or \
+            type(read) is not int or read not in indices or \
+            type(write) is not int or write not in indices or \
+            type(null_ring) is not bool or type(null_output) is not bool or \
+            type(token) is not int or not 0 <= token <= 0xffffffff or \
+            type(logger_status) is not int or not 0 <= logger_status <= 0xffffffff or \
+            translation not in ("direct", "linked", "linked_failure", "wrap"):
+        raise ValueError("invalid synthetic metadata arguments")
+    if type(budget) is not int or not 1 <= budget <= 512:
+        raise ValueError("invalid instruction budget")
+    pages = {base: bytearray(b"\xa5" * 4096) for base in META_PAGES}
+    def word(address, value):
+        struct.pack_into("<I", pages[address & ~4095], address & 4095, value & 0xffffffff)
+    word(Model.H + 0x224, META_MAP)
+    word(Model.H + 0x250, 0 if null_ring and kind != "release" else META_DEL)
+    word(Model.H + 0x254, 0 if null_ring and kind == "release" else META_REL)
+    for ring in (META_DEL, META_REL):
+        word(ring, read)
+        word(ring + 4, write)
+        for index in range(2, 64):
+            word(ring + index * 4, 0x730000 + index * 0x101)
+    # A malformed index0/1 really reads a header, not a fabricated data slot.
+    if read not in (0, 1):
+        word((META_DEL + read * 4) & 0xffffffff, token)
+    word(META_RECORD, 0x44440000)
+    word(META_RECORD + 4, token)
+    nodes = [(META_MAP, 0x810000, 0x710000, 0x810000, 0x8100ff)]
+    if translation.startswith("linked"):
+        nodes = [(META_MAP, 0x820000, 0x710000, 0x820100, 0x8201ff),
+                 (META_MAP + 0x100, 0x830000, 0x710000,
+                  0x830100 if translation == "linked_failure" else 0x830000, 0x8301ff)]
+        if translation == "linked_failure":
+            nodes.append((META_MAP + 0x200, 0x840000, 0x710000, 0x840100, 0x8401ff))
+    elif translation == "wrap":
+        nodes = [(META_MAP, 0xfffffff0, 0, 0, 0xff)]
+    for index, (address, virtual, physical, low, high) in enumerate(nodes):
+        word(address, nodes[index + 1][0] if index + 1 < len(nodes) else 0)
+        word(address + 4, META_HEAD if len(nodes) > 1 else 0)
+        for offset, value in ((0x18, low), (0x1c, high), (0x28, virtual), (0x30, physical)):
+            word(address + offset, value)
+    word(META_HEAD, META_MAP)
+    if previous is not None:
+        # Do not reinitialize a single byte of the previous observed context,
+        # ring, mapping, output pair or stack. Only caller registers are fresh.
+        pages = {base: bytearray(page) for base, page in previous[0]}
+        if set(pages) != set(META_PAGES) or any(len(page) != 4096 for page in pages.values()):
+            raise ValueError("invalid metadata replay pages")
+        def load(address):
+            return struct.unpack_from("<I", pages[address & ~4095], address & 4095)[0]
+        if any(load(Model.H + offset) != value
+               for offset, value in ((0x224, META_MAP), (0x250, META_DEL), (0x254, META_REL))) or \
+                any(not 2 <= load(ring + offset) < 64
+                    for ring in (META_DEL, META_REL) for offset in (0, 4)):
+            raise ValueError("invalid metadata replay context")
+        read, write, token = load(META_REL), load(META_REL + 4), load(META_RECORD + 4)
+        nodes = list(previous[1])
+    registers = [0xabc00000 + index for index in range(16)]
+    registers[:2] = [Model.H, 0 if null_output else META_RECORD]
+    if kind == "translate":
+        registers[:3] = [META_MAP, token, 0 if null_output else META_RECORD]
+    start = next(low for name, low, _, _ in METADATA_BODIES if name == kind)
+    registers[13:16] = [META_SP, RETURN, start]
+    image = metadata_elf(Model.payload if payload is None else payload, pages, start)
+    publication = []
+    def log(rsp, pc, args, stack):
+        if pc != 0x203c4:
+            raise ValueError("unexpected metadata logging target")
+        publication.append(dict(args=args, stack=stack,
+                                delivery=rsp.memory(META_DEL, size=256),
+                                release=rsp.memory(META_REL, size=256),
+                                output=rsp.memory(META_RECORD, size=8)))
+        return logger_status
+    actual = emulate(image, pages, registers,
+                     tuple((low, high) for _, low, high, _ in METADATA_BODIES),
+                     (0x203c4,), log, budget, expected_signal,
+                     clobber_flags=0xf0000000,
+                     real_callees=(0x1fdac,) if kind != "translate" else (),
+                     call_edges=METADATA_CALLS)
+    actual.update(kind=kind, read=read, write=write, null_ring=null_ring,
+                  null_output=null_output, token=token, nodes=nodes,
+                  registers=registers, publication=publication)
+    if "pages" in actual:
+        actual["snapshot"] = MetadataRAM(actual["pages"], nodes)
     return actual
 
 
@@ -562,6 +725,224 @@ class FirmwareQemuTests(unittest.TestCase):
                 spawn.assert_not_called()
         with self.assertRaisesRegex(ValueError, "instruction budget exceeded"):
             execute_open(budget=1)
+
+    def check_metadata_pages(self, actual):
+        """Independent byte-footprint oracle, including all RAM padding."""
+        expected = {base: bytearray(page) for base, page in actual["initial"].items()}
+        def word(address, value):
+            struct.pack_into("<I", expected[address & ~4095], address & 4095, value & 0xffffffff)
+        def load(address):
+            return struct.unpack_from("<I", actual["initial"][address & ~4095], address & 4095)[0]
+        def save(address, values):
+            for index, value in enumerate(values):
+                word(address + index * 4, value)
+        kind, registers = actual["kind"], actual["registers"]
+        if kind == "release":
+            save(META_SP - 32, registers[4:11] + [RETURN])
+            next_index = (actual["write"] + 1) & 0xffffffff
+            if next_index == 64:
+                next_index = 2
+            word((META_REL + actual["write"] * 4) & 0xffffffff, actual["token"])
+            word(META_REL + 4, next_index)
+        else:
+            count = 3 if kind == "translate" else 6
+            saved = registers[4:6] if kind == "translate" else registers[4:9]
+            save(META_SP - count * 4, saved + [RETURN])
+            entered = kind == "translate" or (not actual["null_ring"] and
+                                               actual["read"] != actual["write"])
+            if entered and not actual["null_output"]:
+                physical = actual["token"] if kind == "translate" else load(
+                    (META_DEL + actual["read"] * 4) & 0xffffffff)
+                if kind != "translate":
+                    word(META_RECORD + 4, physical)
+                    save(META_SP - 36, [META_RECORD, actual["read"],
+                                        0xd6a0 if kind == "acquire" else 0xd778])
+                # The helper writes each candidate before checking bounds.
+                # Failure retains the last translated token, never a null.
+                for _, virtual, origin, low, high in actual["nodes"]:
+                    translated = (virtual + physical - origin) & 0xffffffff
+                    if low <= translated <= high:
+                        break
+                word(META_RECORD, translated)
+            if kind == "acquire" and entered:
+                next_index = (actual["read"] + 1) & 0xffffffff
+                word(META_DEL, 2 if next_index == 64 else next_index)
+        self.assertEqual(actual["pages"], {base: bytes(page) for base, page in expected.items()})
+        return actual
+
+    def test_metadata_acquire_peek_complete_pages_and_call_edges(self):
+        for kind in ("acquire", "peek"):
+            for read in (2, 17, 63):
+                with self.subTest(kind=kind, read=read):
+                    actual = self.check_metadata_pages(execute_metadata(kind, read=read, write=23))
+                    helper_site = 0xd69c if kind == "acquire" else 0xd774
+                    expected_calls = [(helper_site, 0x1fdac)]
+                    if kind == "acquire":
+                        expected_calls.append((0xd6ac, 0x203c4))
+                    self.assertEqual([(site, target) for site, target, _ in actual["calls"]], expected_calls)
+                    self.assertEqual(actual["calls"][0][2][:3], (META_MAP, 0x710030, META_RECORD))
+                    self.assertEqual(actual["real_status"], [(0x1fdac, 0)])
+                    self.assertEqual(struct.unpack_from("<2I", actual["pages"][0x500000], 0x100),
+                                     (0x810030, 0x710030))
+                    if kind == "acquire":
+                        log = actual["publication"][0]
+                        self.assertEqual(log["args"][:3], (0xd81c, 0x710030, 0x810030))
+                        self.assertEqual(struct.unpack_from("<I", log["delivery"])[0], read)
+                        self.assertEqual(log["stack"], META_SP - 24)
+                    else:
+                        self.assertEqual(actual["publication"], [])
+
+    def test_metadata_empty_null_and_null_output_counterexamples(self):
+        # Early-return r0 values are incidental, not a success-status ABI.
+        for kind in ("acquire", "peek"):
+            with self.subTest(kind=kind, case="empty"):
+                actual = self.check_metadata_pages(execute_metadata(kind, read=9, write=9))
+                self.assertEqual((actual["status"], actual["calls"]), (Model.H, []))
+            with self.subTest(kind=kind, case="null-output"):
+                actual = self.check_metadata_pages(execute_metadata(kind, null_output=True))
+                self.assertEqual(actual["calls"], [])
+                # NULL output consumes a nonempty acquire, but not a peek.
+                self.assertEqual(struct.unpack_from("<I", actual["pages"][0x400000], 0x100)[0],
+                                 3 if kind == "acquire" else 2)
+        actual = self.check_metadata_pages(execute_metadata("acquire", null_ring=True))
+        self.assertEqual((actual["status"], actual["calls"]), (Model.H, []))
+        for kind, pc, options in (("peek", 0xd728, dict(null_ring=True)),
+                                  ("release", 0xd5b4, dict(null_ring=True)),
+                                  ("release", 0xd604, dict(null_output=True)),
+                                  ("translate", 0x1fdcc, dict(null_output=True))):
+            with self.subTest(kind=kind, options=options):
+                actual = execute_metadata(kind, expected_signal=11, **options)
+                self.assertEqual((actual["signal"], actual["pc"]), (11, pc))
+
+    def test_stock_metadata_translation_inclusive_linked_failure_and_u32(self):
+        cases = (("direct", 0x710000, 0x810000, 0),
+                 ("direct", 0x7100ff, 0x8100ff, 0),
+                 ("direct", 0x70ffff, 0x80ffff, 2),
+                 ("direct", 0x710100, 0x810100, 2),
+                 ("linked", 0x710030, 0x830030, 0),
+                 ("linked_failure", 0x710030, 0x840030, 2),
+                 ("wrap", 0x30, 0x20, 0))
+        for translation, token, expected, status in cases:
+            for kind in ("translate", "acquire", "peek"):
+                with self.subTest(kind=kind, translation=translation, token=token):
+                    actual = self.check_metadata_pages(execute_metadata(
+                        kind, translation=translation, token=token, logger_status=7))
+                    output = struct.unpack_from("<2I", actual["pages"][0x500000], 0x100)
+                    self.assertEqual(output, (expected, token))
+                    if kind == "translate":
+                        self.assertEqual((actual["status"], actual["calls"]), (status, []))
+                    else:
+                        self.assertEqual(actual["real_status"], [(0x1fdac, status)])
+                        self.assertEqual(actual["status"], 7 if kind == "acquire" else status)
+                        # Translation rejection does not veto acquire's consume.
+                        self.assertEqual(struct.unpack_from("<I", actual["pages"][0x400000], 0x100)[0],
+                                         3 if kind == "acquire" else 2)
+
+    def test_metadata_invalid_acquire_peek_indices_are_not_hard_guards(self):
+        for kind in ("acquire", "peek"):
+            for read in (0, 1, 64, 0xffffffff):
+                with self.subTest(kind=kind, read=read):
+                    actual = self.check_metadata_pages(execute_metadata(kind, read=read, write=9))
+                    self.assertEqual(actual["calls"][0][1], 0x1fdac)
+                    self.assertEqual(len(actual["real_status"]), 1)
+                    self.assertEqual(len(actual["publication"]), 1 if kind == "acquire" else 0)
+
+    def test_metadata_release_publish_order_wrap_full_invalid_and_repeat(self):
+        cases = ((2, 3, ()), (23, 63, ()), (2, 63, (0xd5f8,)),
+                 (3, 2, (0xd5f8,)), (9, 0, (0xd5d4,)),
+                 (9, 1, (0xd5d4,)), (9, 64, (0xd5d4,)),
+                 (9, 0xffffffff, (0xd5d4,)))
+        for read, write, warnings in cases:
+            with self.subTest(read=read, write=write):
+                actual = self.check_metadata_pages(execute_metadata("release", read=read, write=write,
+                                                                   logger_status=0xabcdef01))
+                self.assertEqual([(site, target) for site, target, _ in actual["calls"]],
+                                 [(site, 0x203c4) for site in (*warnings, 0xd618)])
+                self.assertEqual(actual["real_status"], [])
+                if warnings == (0xd5d4,):
+                    self.assertEqual(actual["calls"][0][2][:2], (0xd780, write))
+                if warnings == (0xd5f8,):
+                    self.assertEqual(actual["calls"][0][2][:2], (0xd7c0, read))
+                self.assertEqual(actual["calls"][-1][2][:3],
+                                 (0xd7f8, (write - 2) & 0xffffffff, 0x710030))
+                last = actual["publication"][-1]
+                if 2 <= write < 64:
+                    self.assertEqual(struct.unpack_from("<I", last["release"], write * 4)[0], 0x710030)
+                    self.assertEqual(struct.unpack_from("<I", last["release"], 4)[0], write)
+                # Logger return values are not a release acknowledgement.
+                self.assertEqual(actual["status"], 0xabcdef01)
+
+    def test_metadata_joined_acquire_and_duplicate_release_preserve_ram(self):
+        acquired = self.check_metadata_pages(execute_metadata("acquire"))
+        self.assertEqual(struct.unpack_from("<2I", acquired["pages"][0x500000], 0x100),
+                         (0x810030, 0x710030))
+        before = acquired
+        for slot in (3, 4):
+            actual = self.check_metadata_pages(execute_metadata("release", previous=before["snapshot"]))
+            self.assertEqual({base: bytes(page) for base, page in actual["initial"].items()}, before["pages"])
+            self.assertEqual(actual["calls"][-1][2][:3], (0xd7f8, slot - 2, 0x710030))
+            self.assertEqual(struct.unpack_from("<2I", actual["pages"][0x401000], 0x100),
+                             (2, slot + 1))
+            for published in range(3, slot + 1):
+                self.assertEqual(struct.unpack_from("<I", actual["pages"][0x401000],
+                                                   0x100 + published * 4)[0], 0x710030)
+            self.assertEqual(actual["pages"][Model.H], acquired["pages"][Model.H])
+            self.assertEqual(actual["pages"][0x600000], acquired["pages"][0x600000])
+            self.assertEqual(actual["pages"][0x400000], acquired["pages"][0x400000])
+            self.assertEqual(actual["pages"][0x500000], acquired["pages"][0x500000])
+            before = actual
+        # Same RAM context and token was returned twice; no one-shot guard.
+        self.assertEqual(struct.unpack_from("<2I", before["pages"][0x500000], 0x100),
+                         (0x810030, 0x710030))
+        with self.assertRaises(TypeError):
+            before["snapshot"][0][0][1][0] = 0
+        for prior in (dict(before["pages"]), tuple(before["snapshot"]), None):
+            args = dict(previous=prior)
+            if prior is None:
+                args = dict(previous=before["snapshot"], write=4)
+            with self.subTest(args=args.keys()), mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaisesRegex(ValueError, "metadata replay arguments"):
+                    execute_metadata("release", **args)
+                spawn.assert_not_called()
+        changed = {base: bytearray(page) for base, page in before["pages"].items()}
+        struct.pack_into("<I", changed[Model.H], 0x250, 0)
+        with mock.patch.object(subprocess, "Popen") as spawn:
+            with self.assertRaisesRegex(ValueError, "metadata replay context"):
+                execute_metadata("release", previous=MetadataRAM(changed, before["nodes"]))
+            spawn.assert_not_called()
+
+    def test_metadata_fuses_inputs_budget_and_target_allowlist(self):
+        for _, start, end, _ in METADATA_BODIES:
+            for offset in (start, start + (end - start) // 2, end - 1):
+                changed = bytearray(Model.payload)
+                changed[offset] ^= 1
+                with self.subTest(offset=offset), mock.patch.object(subprocess, "Popen") as spawn:
+                    with self.assertRaisesRegex(ValueError, "stock metadata .* body changed"):
+                        execute_metadata("acquire", payload=changed)
+                    spawn.assert_not_called()
+        for address, data in METADATA_LITERALS:
+            for offset in (address, address + len(data) - 1):
+                changed = bytearray(Model.payload)
+                changed[offset] ^= 1
+                with self.subTest(offset=offset), mock.patch.object(subprocess, "Popen") as spawn:
+                    with self.assertRaisesRegex(ValueError, "stock metadata literal changed"):
+                        execute_metadata("peek", payload=changed)
+                    spawn.assert_not_called()
+        for options in (dict(kind="bad"), dict(read=True), dict(read=65), dict(write=-1),
+                        dict(write=128), dict(null_ring=1), dict(null_output=1),
+                        dict(token=-1), dict(token=1 << 32), dict(logger_status=True),
+                        dict(translation="omit"), dict(budget=0), dict(budget=513), dict(budget=True)):
+            args = dict(kind="acquire")
+            args.update(options)
+            with self.subTest(options=options), mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaisesRegex(ValueError, "invalid"):
+                    execute_metadata(**args)
+                spawn.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "instruction budget exceeded"):
+            execute_metadata("acquire", budget=1)
+        with mock.patch.dict(METADATA_CALLS, {0xd69c: 0x203c4}):
+            with self.assertRaisesRegex(ValueError, "call-target allowlist"):
+                execute_metadata("acquire")
 
 
 class ProtocolTests(unittest.TestCase):
