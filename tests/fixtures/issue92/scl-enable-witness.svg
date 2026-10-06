@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="560" viewBox="0 0 1200 560" fill="#e5edf6">
+<style>text{font-family:system-ui,sans-serif}.small{font-size:16px;fill:#b5c3d4}.mono{font-family:monospace;font-size:20px}.mono-ok{font-family:monospace;font-size:20px;fill:#82d5ad}.mono-unknown{font-family:monospace;font-size:20px;fill:#efc37d}.title{font-size:27px;font-weight:700}.box{fill:#172438;stroke:#465a76;stroke-width:2}</style>
+<rect width="1200" height="560" fill="#0c1523"/>
+<text x="40" y="48" class="title">ENABLE sampled high; the input-debug contrast persists</text>
+<text x="40" y="78" class="small">BCM70015 · two fresh sole-START trials · 16 active bundles per trial · no new access callbacks</text>
+<rect x="40" y="115" width="310" height="185" rx="12" class="box"/>
+<text x="60" y="148" class="mono">MFD fixed-colour profile</text>
+<text x="60" y="186" class="mono">FIFO_FULL = 1</text>
+<text x="60" y="218" class="mono">PIXEL_STOP = 1</text>
+<text x="60" y="267" class="small">Sampled levels, not progress</text>
+<path d="M350 205 H420" style="stroke:#efc37d;stroke-width:3;stroke-dasharray:7 6;fill:none"/>
+<rect x="420" y="115" width="365" height="185" rx="12" class="box"/>
+<text x="440" y="148" class="mono">SCL input2 observation</text>
+<text x="440" y="186" class="mono-ok">ENABLE guards = 1 / 1</text>
+<text x="440" y="218" class="mono">INPUT_VIEW2 = 0</text>
+<text x="440" y="267" class="small">Opaque buffer status / index fields</text>
+<path d="M785 205 H850" style="stroke:#efc37d;stroke-width:3;stroke-dasharray:7 6;fill:none"/>
+<rect x="850" y="115" width="310" height="185" rx="12" class="box"/>
+<text x="870" y="148" class="mono">Independent raw output</text>
+<text x="870" y="192" class="mono-unknown">Not established</text>
+<text x="870" y="236" class="small">Acceptance, routing and</text>
+<text x="870" y="260" class="small">completion remain unproved</text>
+<text x="40" y="322" class="small">Boxes compare observations; links are hypotheses, not measured routing or transfers.</text>
+<text x="40" y="339" class="small">All 64 active guard ENABLE values were 1. These are sequential bracketing observations:</text>
+<text x="40" y="365" class="small">they do not certify ENABLE at the direct DATA-read instant or continuously between samples.</text>
+<rect x="40" y="401" width="1120" height="112" rx="12" class="box"/>
+<text x="60" y="435" class="mono-ok">Recovery: 8 native controls · 1,440 full-byte oracle-matched frames</text>
+<text x="60" y="467" class="small">Two config-only trials and both feed trials retired the original paired saved25 controls.</text>
+<text x="60" y="492" class="small">Native EOS / cleanup passed. Stock module restored; README, HISTORY and installed files unchanged.</text>
+<text x="40" y="543" class="small">Software model: old raw11 aliases EN11 / EN00 / EN01 / EN10; the new success-only witnesses distinguish them.</text>
+</svg>
