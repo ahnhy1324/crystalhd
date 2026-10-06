@@ -52,5 +52,11 @@ The userspace integrations in this update are experimental. See
 - Hardware-tested H.264 Constrained Baseline, Main, and High decoding on a
   BCM70015 with Ubuntu kernel 6.17.0-41-generic.
 
+## October 2026 library addition
+
+Added an opt-in raw-frame uploader and two-reference tile compositor using a
+native H.264 carrier, without changing the existing library ABI or default
+decode paths. This does not expose standalone MFD processing.
+
 See [README.md](README.md) for current build, installation, playback, and test
 instructions. This file is only the project history.
