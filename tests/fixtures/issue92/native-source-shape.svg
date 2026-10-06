@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="510" viewBox="0 0 1040 510" role="img" aria-labelledby="title desc">
+  <title id="title">BCM70015 native H264 cached source shape</title>
+  <desc id="desc">Two 180-frame observations passed complete pixel comparison, EOS and cleanup. Cached dimensions were 256 by 96 and cached NMby times16 was96 for both planes. At first output both trials changed metadata addresses between sequential passes; trial B also changed source addresses. No frame identity, allocation extent, source lease or standalone processing is certified.</desc>
+  <rect width="1040" height="510" fill="#0f172a"/>
+  <g font-family="sans-serif" fill="#e2e8f0">
+    <text x="32" y="42" font-size="24">Native H264: cached geometry and changing addresses</text>
+    <text x="32" y="70" font-size="14" fill="#94a3b8">Fixed ARM cache only · two sequential passes · no pointer following or source-plane access</text>
+    <rect x="32" y="92" width="304" height="82" rx="8" fill="#1e293b"/>
+    <rect x="352" y="92" width="304" height="82" rx="8" fill="#1e293b"/>
+    <rect x="672" y="92" width="336" height="82" rx="8" fill="#1e293b"/>
+    <text x="48" y="120" font-size="14" fill="#94a3b8">Cached P+14/+18 and P+2c/+30</text>
+    <text x="48" y="153" font-size="26">256 × 96</text>
+    <text x="368" y="120" font-size="14" fill="#94a3b8">Cached NMby values × 16</text>
+    <text x="368" y="153" font-size="26">Y: 96 · C: 96</text>
+    <text x="688" y="120" font-size="14" fill="#94a3b8">Cached C − Y address difference</text>
+    <text x="688" y="153" font-size="26">0x6000 = 24,576 B</text>
+    <text x="32" y="205" font-size="16">First delivered output: two non-atomic passes</text>
+    <text x="48" y="236" font-size="13" fill="#94a3b8">Trial / pass</text>
+    <text x="180" y="236" font-size="13" fill="#94a3b8">Metadata virtual = physical</text>
+    <text x="500" y="236" font-size="13" fill="#94a3b8">Cached Y source</text>
+    <text x="750" y="236" font-size="13" fill="#94a3b8">Cached C source</text>
+    <path d="M32 246H1008 M32 307H1008 M32 367H1008" stroke="#334155"/>
+    <g font-family="monospace" font-size="16">
+      <text x="48" y="269">A / 0</text><text x="180" y="269" fill="#fbbf24">033f195c</text><text x="500" y="269">00a4c000</text><text x="750" y="269">00a52000</text>
+      <text x="48" y="294">A / 1</text><text x="180" y="294" fill="#fbbf24">033f1a40</text><text x="500" y="294">00a4c000</text><text x="750" y="294">00a52000</text>
+      <text x="48" y="330">B / 0</text><text x="180" y="330" fill="#fbbf24">033f1a40</text><text x="500" y="330" fill="#fbbf24">00a4c000</text><text x="750" y="330" fill="#fbbf24">00a52000</text>
+      <text x="48" y="355">B / 1</text><text x="180" y="355" fill="#fbbf24">033f1b24</text><text x="500" y="355" fill="#fbbf24">00a58000</text><text x="750" y="355" fill="#fbbf24">00a5e000</text>
+    </g>
+    <text x="32" y="399" font-size="14">EOS in both trials: metadata 033f195c · Y 00b0c000 · C 00b12000; both passes equal</text>
+    <text x="32" y="426" font-size="14" fill="#86efac">572 / 572 frames passed whole-pixel controls, firmware EOS and cleanup</text>
+    <text x="32" y="451" font-size="13" fill="#94a3b8">Each observed trial: 240 fixed reads / 1,920 B · mode / format / field / selector = 2 / 1 / 1 / 0</text>
+    <text x="32" y="484" font-size="14" fill="#fbbf24">These cache observations do not certify current frame, bank extent, generation or source ownership.</text>
+  </g>
+</svg>

@@ -960,37 +960,53 @@ struct MfdAddressFixture {
 enum class ArmMetadataFailure { None, Argument, Owner, Order, Barrier, Budget, Read };
 struct ArmMetadataObserver {
     typedef BC_STATUS (*Reader)(HANDLE, uint32_t *, uint32_t, uint32_t);
-    bool enabled = false, failed = false;
+    bool enabled = false, failed = false, source_shape = false, owner_source_shape = false;
     HANDLE owner = nullptr;
     unsigned next_stage = 0, reads = 0, bytes = 0, measured = 0;
-    uint32_t raw[2][4][8] = {};
+    uint32_t raw[2][4][20] = {};
     BC_STATUS status = BC_STS_SUCCESS;
     ArmMetadataFailure failure = ArmMetadataFailure::None;
-    bool Stable() const { return measured == 40 && !std::memcmp(raw[0], raw[1], sizeof(raw[0])); }
+    unsigned SpanCount() const { return source_shape ? 10 : 5; }
+    unsigned StageReads() const { return 8 * SpanCount(); }
+    unsigned TotalBytes() const { return source_shape ? 1920 : 768; }
+    bool Stable() const { return measured == StageReads() && !std::memcmp(raw[0], raw[1], sizeof(raw[0])); }
     bool Reject(ArmMetadataFailure why) { failed = true; failure = why; return false; }
     void Report(unsigned stage) const {
         const char *const stages[] = {"after-OPEN/pre-START", "first-output-after-release-and-owned-write", "delivery-EOS-before-STOP"};
         const char *const failures[] = {"none", "argument", "current-handle-loss", "order", "delivery-barrier", "budget", "read-status"};
-        std::printf("ARM metadata: stage=%s reads=%u/120 bytes=%u/768 measured=%u/40 api-status=%d failure=%s "
+        const char *label = source_shape ? "ARM source-shape" : "ARM metadata";
+        std::printf("%s: stage=%s reads=%u/%u bytes=%u/%u measured=%u/%u api-status=%d failure=%s "
             "passes=%s cached-source-is-current-input=unproven exact-frame/lease/generation/cache-ready/all-consumers-certified=no\n",
-            stages[stage], reads, bytes, measured, status, failures[static_cast<unsigned>(failure)],
-            measured == 40 ? (Stable() ? "observed-stable,non-atomic" : "observed-different,non-atomic") : "INCOMPLETE");
-        const char *const names[] = {"c4", "d0", "cached-meta-virtual", "cached-meta-physical", "e8-opaque",
+            label, stages[stage], reads, StageReads() * 3, bytes, TotalBytes(), measured, StageReads(), status,
+            failures[static_cast<unsigned>(failure)],
+            measured == StageReads() ? (Stable() ? "observed-stable,non-atomic" : "observed-different,non-atomic") : "INCOMPLETE");
+        const char *const metadata_names[] = {"c4", "d0", "cached-meta-virtual", "cached-meta-physical", "e8-opaque",
             "cached-source+34", "cached-source+38", "180-acquire/reuse"};
-        const unsigned spans[] = {0, 1, 2, 2, 2, 3, 3, 4};
+        const char *const shape_names[] = {"c4", "d0", "cached-meta-virtual", "cached-meta-physical", "e8-opaque",
+            "cached-picture+08", "cached-picture+14", "cached-picture+18", "cached-picture+24", "cached-picture+28",
+            "cached-picture+2c", "cached-picture+30", "cached-source+34", "cached-source+38",
+            "cached-picture+54", "cached-picture+58", "cached-picture+5c", "cached-picture+6c", "cached-picture+70",
+            "180-acquire/reuse"};
+        const unsigned metadata_spans[] = {0, 1, 2, 2, 2, 3, 3, 4};
+        const unsigned shape_spans[] = {0, 1, 2, 2, 2, 3, 4, 4, 5, 5, 5, 5, 6, 6, 7, 7, 7, 8, 8, 9};
+        const char *const *names = source_shape ? shape_names : metadata_names;
+        const unsigned *spans = source_shape ? shape_spans : metadata_spans;
+        const unsigned words = source_shape ? 20 : 8;
         for (unsigned pass = 0; pass < 2; ++pass) for (unsigned slot = 0; slot < 4; ++slot) {
-            std::printf("ARM metadata raw: stage=%s pass=%u slot=%u", stages[stage], pass, slot);
-            for (unsigned word = 0; word < 8; ++word) {
+            std::printf("%s raw: stage=%s pass=%u slot=%u", label, stages[stage], pass, slot);
+            for (unsigned word = 0; word < words; ++word) {
                 std::printf(" %s=", names[word]);
-                if (pass * 20 + slot * 5 + spans[word] < measured) std::printf("%08x", raw[pass][slot][word]);
+                if (pass * 4 * SpanCount() + slot * SpanCount() + spans[word] < measured) std::printf("%08x", raw[pass][slot][word]);
                 else std::printf("NOT-READ");
             }
-            if (pass * 20 + slot * 5 + 4 < measured) {
+            if (pass * 4 * SpanCount() + slot * SpanCount() + SpanCount() - 1 < measured) {
                 const uint32_t *words = raw[pass][slot];
-                const unsigned adjacent = (words[0] >> 8) & 255U, branch = words[7] & 255U;
+                const unsigned adjacent = (words[0] >> 8) & 255U, branch = words[source_shape ? 19 : 7] & 255U;
                 std::printf(" active=%u adjacent-c5=%u started=%u branch-byte=%u branch-selector-if-active-and-started=%s",
                     words[0] & 255U, adjacent, (words[1] >> 16) & 255U, branch,
                     branch == 1 || adjacent == 0 ? "FRESH-dequeue" : "CACHE-copy");
+                if (source_shape) std::printf(" mode-byte=%u format-byte=%u field-byte=%u table-selector-byte=%u",
+                    words[5] & 255U, words[8] >> 24, words[9] & 255U, words[16] & 255U);
             }
             std::printf("\n");
         }
@@ -1001,21 +1017,28 @@ struct ArmMetadataObserver {
         if (!enabled) return true;
         if (failed) return false;
         if (!current || !*current || !reader) return Reject(ArmMetadataFailure::Argument);
+        if (next_stage && source_shape != owner_source_shape) return Reject(ArmMetadataFailure::Argument);
         if (stage > 2 || stage != next_stage) return Reject(ArmMetadataFailure::Order);
         if (barrier != (stage != 0)) return Reject(ArmMetadataFailure::Barrier);
-        if (reads > 120 - 40) return Reject(ArmMetadataFailure::Budget);
-        if (stage == 0) owner = *current;
+        if (reads > StageReads() * 2) return Reject(ArmMetadataFailure::Budget);
+        if (stage == 0) { owner = *current; owner_source_shape = source_shape; }
         if (!owner || *current != owner) return Reject(ArmMetadataFailure::Owner);
         ++next_stage; // Each stage is attempted once, including failed reads.
         measured = 0; std::memset(raw, 0, sizeof(raw));
-        const uint32_t offsets[] = {0xc4, 0xd0, 0xe0, 0x120, 0x180};
-        const unsigned counts[] = {1, 1, 3, 2, 1};
+        const uint32_t metadata_offsets[] = {0xc4, 0xd0, 0xe0, 0x120, 0x180};
+        const unsigned metadata_counts[] = {1, 1, 3, 2, 1};
+        // P is the separately cached 140-byte picture at slot+ec. These
+        // aligned reads never dereference P's source/metadata address words.
+        const uint32_t shape_offsets[] = {0xc4, 0xd0, 0xe0, 0xf4, 0x100, 0x110, 0x120, 0x140, 0x158, 0x180};
+        const unsigned shape_counts[] = {1, 1, 3, 1, 2, 4, 2, 3, 2, 1};
+        const uint32_t *offsets = source_shape ? shape_offsets : metadata_offsets;
+        const unsigned *counts = source_shape ? shape_counts : metadata_counts;
         bool ok = true;
         for (unsigned pass = 0; pass < 2 && ok; ++pass) for (unsigned slot = 0; slot < 4 && ok; ++slot) {
             unsigned word = 0;
-            for (unsigned span = 0; span < 5 && ok; ++span) {
+            for (unsigned span = 0; span < SpanCount() && ok; ++span) {
                 if (!*current || *current != owner) { ok = Reject(ArmMetadataFailure::Owner); break; }
-                uint32_t values[3] = {};
+                uint32_t values[4] = {};
                 ++reads; bytes += counts[span] * 4;
                 status = reader(owner, values, counts[span] * 4, 0xd3a00U + slot * 0x1ccU + offsets[span]);
                 if (!*current || *current != owner) ok = Reject(ArmMetadataFailure::Owner);
@@ -1030,10 +1053,12 @@ struct ArmMetadataObserver {
     }
     bool Finish(bool native_ok, bool report = true) const {
         if (!enabled) return native_ok;
-        const bool complete = !failed && next_stage == 3 && reads == 120 && bytes == 768;
+        const bool complete = !failed && source_shape == owner_source_shape && next_stage == 3 &&
+            reads == StageReads() * 3 && bytes == TotalBytes();
         if (report) {
-            std::printf("ARM metadata finish: native-result=%s observation-result=%s stages=%u/3 reads=%u/120 bytes=%u/768\n",
-                native_ok ? "PASS" : "FAIL", complete ? "PASS" : "FAIL", next_stage, reads, bytes);
+            std::printf("%s finish: native-result=%s observation-result=%s stages=%u/3 reads=%u/%u bytes=%u/%u\n",
+                source_shape ? "ARM source-shape" : "ARM metadata", native_ok ? "PASS" : "FAIL",
+                complete ? "PASS" : "FAIL", next_stage, reads, StageReads() * 3, bytes, TotalBytes());
             std::fflush(stdout);
         }
         return native_ok && complete;
@@ -1042,19 +1067,27 @@ struct ArmMetadataObserver {
 struct ArmMetadataFixture {
     HANDLE current = this, replacement = nullptr;
     unsigned calls = 0, fail_at = 120, lose_at = 120;
-    bool valid = true, different = false, all_ones = false;
+    bool valid = true, different = false, all_ones = false, source_shape = false;
     static BC_STATUS Read(HANDLE handle, uint32_t *values, uint32_t bytes, uint32_t address) {
         auto *fixture = static_cast<ArmMetadataFixture *>(handle);
-        const unsigned position = fixture->calls++, span = position % 5, slot = position % 20 / 5;
-        const uint32_t starts[] = {0xd3ac4, 0xd3ad0, 0xd3ae0, 0xd3b20, 0xd3b80};
-        const unsigned lengths[] = {4, 4, 12, 8, 4}, first[] = {0, 1, 2, 5, 7};
-        if (position >= 120 || !values || bytes != lengths[span]) { fixture->valid = false; return BC_STS_ERROR; }
+        const unsigned count = fixture->source_shape ? 10 : 5, per_stage = count * 8;
+        const unsigned position = fixture->calls++, span = position % count, slot = position % (count * 4) / count;
+        const uint32_t metadata_starts[] = {0xd3ac4, 0xd3ad0, 0xd3ae0, 0xd3b20, 0xd3b80};
+        const unsigned metadata_lengths[] = {4, 4, 12, 8, 4}, metadata_first[] = {0, 1, 2, 5, 7};
+        const uint32_t shape_starts[] = {0xd3ac4, 0xd3ad0, 0xd3ae0, 0xd3af4, 0xd3b00,
+            0xd3b10, 0xd3b20, 0xd3b40, 0xd3b58, 0xd3b80};
+        const unsigned shape_lengths[] = {4, 4, 12, 4, 8, 16, 8, 12, 8, 4};
+        const unsigned shape_first[] = {0, 1, 2, 5, 6, 8, 12, 14, 17, 19};
+        const uint32_t *starts = fixture->source_shape ? shape_starts : metadata_starts;
+        const unsigned *lengths = fixture->source_shape ? shape_lengths : metadata_lengths;
+        const unsigned *first = fixture->source_shape ? shape_first : metadata_first;
+        if (position >= per_stage * 3 || !values || bytes != lengths[span]) { fixture->valid = false; return BC_STS_ERROR; }
         fixture->valid &= address == starts[span] + slot * 460 &&
             reinterpret_cast<uintptr_t>(values) % alignof(uint32_t) == 0;
         for (unsigned word = 0; word < bytes / 4; ++word)
-            values[word] = fixture->all_ones ? 0xffffffffU : position < 40 ? 0 :
-                ((position / 40) << 24) | (slot << 8) | (first[span] + word + 1);
-        if (fixture->different && position % 40 >= 20) values[0] ^= 0x80000000U;
+            values[word] = fixture->all_ones ? 0xffffffffU : position < per_stage ? 0 :
+                ((position / per_stage) << 24) | (slot << 8) | (first[span] + word + 1);
+        if (fixture->different && position % per_stage >= count * 4) values[0] ^= 0x80000000U;
         if (position == fixture->lose_at) fixture->current = fixture->replacement;
         return position == fixture->fail_at ? BC_STS_ERROR : BC_STS_SUCCESS;
     }
@@ -1670,6 +1703,7 @@ struct Options {
     bool observe_mfd_framing = false;
     bool observe_runtime_inventory = false;
     bool observe_arm_metadata = false;
+    bool observe_arm_source_shape = false;
     unsigned inject_mfd_colour = 0;
     unsigned scl_status_test = 0;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
@@ -1697,8 +1731,10 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         options->capture_path = path;
         arguments.resize(arguments.size() - 2);
     }
-    if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-arm-metadata")) {
-        options->observe_arm_metadata = true;
+    if (arguments.size() >= 2 && (!std::strcmp(arguments.back(), "--observe-arm-metadata") ||
+                                 !std::strcmp(arguments.back(), "--observe-arm-source-shape"))) {
+        options->observe_arm_source_shape = !std::strcmp(arguments.back(), "--observe-arm-source-shape");
+        options->observe_arm_metadata = !options->observe_arm_source_shape;
         arguments.pop_back();
     }
     if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-runtime-inventory")) {
@@ -1772,7 +1808,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         arguments.resize(arguments.size() - 2);
     }
     if (arguments.size() == 2 && !std::strcmp(arguments[1], "--self-test")) {
-        if (options->capture_path || options->observe_arm_metadata || options->observe_runtime_inventory || options->observe_chroma || options->observe_scl_config || options->observe_scl_filter_map || options->observe_scl_view || options->observe_mfd_config || options->observe_mfd_address || options->observe_mfd_framing || options->inject_mfd_colour || options->scl_status_test || options->scaler_test || options->mpeg1_via_mpeg2 ||
+        if (options->capture_path || options->observe_arm_metadata || options->observe_arm_source_shape || options->observe_runtime_inventory || options->observe_chroma || options->observe_scl_config || options->observe_scl_filter_map || options->observe_scl_view || options->observe_mfd_config || options->observe_mfd_address || options->observe_mfd_framing || options->inject_mfd_colour || options->scl_status_test || options->scaler_test || options->mpeg1_via_mpeg2 ||
             options->h263_via_divx || options->open_only) return false;
         options->mode = Mode::SelfTest;
         return true;
@@ -1789,7 +1825,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         return false;
     options->mode = preflight ? Mode::Preflight : Mode::Hardware;
     options->path = arguments[2];
-    if (options->observe_arm_metadata &&
+    if ((options->observe_arm_metadata || options->observe_arm_source_shape) &&
         (!hardware || !options->capture_path || !options->scaler_test || options->scale_width ||
          options->expected != 180 || options->iterations != 1 || options->output_format != OUTPUT_MODE422_YUY2 ||
          options->observe_chroma || options->observe_scl_config || options->observe_scl_filter_map ||
@@ -1871,7 +1907,7 @@ static bool SclInputAdmitted(const Options &options, const Input &input)
 
 static bool NeedsRawIo(const Options &options)
 {
-    return options.observe_arm_metadata || options.observe_runtime_inventory || options.observe_chroma || options.observe_scl_config || options.observe_scl_filter_map ||
+    return options.observe_arm_metadata || options.observe_arm_source_shape || options.observe_runtime_inventory || options.observe_chroma || options.observe_scl_config || options.observe_scl_filter_map ||
         options.observe_scl_view || options.observe_mfd_config || options.observe_mfd_address || options.observe_mfd_framing || options.inject_mfd_colour || options.scl_status_test;
 }
 
@@ -1898,7 +1934,7 @@ static bool ArmMetadataInputShape(const Options &options, const Input &input)
 }
 static bool ArmMetadataInputAdmitted(const Options &options, const Input &input)
 {
-    return !options.observe_arm_metadata || (ArmMetadataInputShape(options, input) &&
+    return (!options.observe_arm_metadata && !options.observe_arm_source_shape) || (ArmMetadataInputShape(options, input) &&
         SubmittedPacketDigestMatches(input, 124832, "1363a87c8f59fab6187cd13653a3ba8a41fd994066d30c24be1c2b09d675666e"));
 }
 
@@ -2646,6 +2682,124 @@ template<class Check> static void ArmMetadataSelfTest(const Check &check)
     }
 }
 
+template<class Check> static void ArmSourceShapeSelfTest(const Check &check)
+{
+    ArmMetadataObserver disabled; disabled.source_shape = true;
+    check(disabled.Observe(nullptr, 9, true, nullptr, false) && disabled.Finish(true, false) && !disabled.reads,
+        "ARM source-shape disabled path adds no I/O or owner/barrier constraints");
+    for (unsigned variant = 0; variant < 3; ++variant) {
+        ArmMetadataFixture fixture; fixture.source_shape = true; fixture.fail_at = fixture.lose_at = 240;
+        fixture.different = variant == 1; fixture.all_ones = variant == 2;
+        ArmMetadataObserver subject; subject.enabled = subject.source_shape = true;
+        for (unsigned stage = 0; stage < 3; ++stage) {
+            check(subject.Observe(&fixture.current, stage, stage != 0, ArmMetadataFixture::Read, false) &&
+                fixture.valid && fixture.calls == (stage + 1) * 80 && subject.reads == fixture.calls &&
+                subject.bytes == (stage + 1) * 640 && subject.measured == 80 && subject.Stable() == !fixture.different,
+                "ARM source-shape reads exactly ten fixed aligned spans/four slots/two non-atomic passes without rejecting raw values");
+            for (unsigned word = 0; word < 20; ++word)
+                check(subject.raw[0][0][word] == (fixture.all_ones ? 0xffffffffU : stage ? (stage << 24) | (word + 1) : 0),
+                    "ARM source-shape raw words preserve all twenty separate field locations and stage values");
+        }
+        check(subject.Finish(true, false) && !subject.Finish(false, false) && fixture.calls == 240,
+            "ARM source-shape completion requires three barriers/240reads/1920bytes and native success, without additional I/O");
+    }
+    for (unsigned position = 0; position < 240; ++position) for (unsigned fault = 0; fault < 3; ++fault) {
+        ArmMetadataFixture fixture, other; fixture.source_shape = true;
+        fixture.fail_at = fault == 0 ? position : 240; fixture.lose_at = fault ? position : 240;
+        fixture.replacement = fault == 2 ? other.current : nullptr;
+        ArmMetadataObserver subject; subject.enabled = subject.source_shape = true;
+        bool result = true;
+        for (unsigned stage = 0; stage < 3 && result; ++stage)
+            result = subject.Observe(&fixture.current, stage, stage != 0, ArmMetadataFixture::Read, false);
+        check(!result && fixture.valid && subject.failed && fixture.calls == position + 1 &&
+            subject.failure == (fault ? ArmMetadataFailure::Owner : ArmMetadataFailure::Read) &&
+            !subject.Observe(&fixture.current, 0, false, ArmMetadataFixture::Read, false) &&
+            !subject.Observe(&other.current, 2, true, ArmMetadataFixture::Read, false) &&
+            !subject.Finish(true, false) && fixture.calls == position + 1 && !other.calls,
+            "ARM source-shape all read/handle-loss/replacement positions fail sticky and never use another owner's device");
+    }
+    for (unsigned invalid = 0; invalid < 7; ++invalid) {
+        ArmMetadataFixture fixture; fixture.source_shape = true; fixture.fail_at = fixture.lose_at = 240;
+        ArmMetadataObserver subject; subject.enabled = subject.source_shape = true;
+        if (invalid >= 4) check(subject.Observe(&fixture.current, 0, false, ArmMetadataFixture::Read, false),
+            "ARM source-shape invalid-stage setup");
+        if (invalid == 3) subject.reads = 161;
+        if (invalid == 6) subject.source_shape = false;
+        check(!subject.Observe(&fixture.current, invalid == 0 ? 3 : invalid == 4 ? 0 : invalid >= 5 ? 1 : 0,
+            invalid == 1 || invalid == 6, invalid == 2 ? nullptr : ArmMetadataFixture::Read, false) &&
+            subject.failed && fixture.calls == (invalid >= 4 ? 80U : 0U),
+            "ARM source-shape rejects wrong order/barrier/null reader/budget and mid-session plan changes before I/O");
+    }
+    const std::vector<const char *> valid = {"probe", "--hardware", "fixture", "180", "30", "1",
+        "--scaler-test", "0", "--observe-arm-source-shape", "--capture-yuy2", "new"};
+    Options admitted;
+    check(ParseArguments(valid, &admitted) && admitted.observe_arm_source_shape && !admitted.observe_arm_metadata && NeedsRawIo(admitted),
+        "ARM source-shape is separately opted in and requires CAP_SYS_RAWIO before fixture/progress/capture/device");
+    const std::vector<std::vector<const char *>> forbidden = {{"--observe-arm-metadata"}, {"--observe-arm-source-shape"},
+        {"--observe-runtime-inventory"}, {"--observe-mfd-framing"}, {"--observe-mfd-config"}, {"--observe-mfd-address"},
+        {"--observe-scl-config"}, {"--observe-scl-filter-map"}, {"--observe-scl-view", "2"}, {"--observe-chroma"},
+        {"--inject-mfd-colour", "a"}, {"--scl-status-test", "observe"}, {"--open-only"}, {"--mpeg1-via-mpeg2"}, {"--h263-via-divx"}};
+    for (const auto &extra : forbidden) for (unsigned order = 0; order < 2; ++order) {
+        auto arguments = valid; const auto where = order ? arguments.end() - 2 : arguments.begin() + 8;
+        arguments.insert(where, extra.begin(), extra.end()); Options rejected;
+        check(!ParseArguments(arguments, &rejected), "ARM source-shape refuses all mixed/duplicate diagnostics in either order");
+    }
+    for (unsigned invalid = 0; invalid < 9; ++invalid) {
+        auto arguments = valid;
+        if (invalid == 0) arguments[1] = "--preflight";
+        if (invalid == 1) arguments[3] = "179";
+        if (invalid == 2) arguments[5] = "2";
+        if (invalid == 3) arguments[7] = "128";
+        if (invalid == 4) arguments[9] = "--capture-uyvy";
+        if (invalid == 5) arguments[10] = "-";
+        if (invalid == 6) arguments.resize(9);
+        if (invalid == 7) arguments[8] = "--observe-arm-source-shape=0";
+        if (invalid == 8) arguments.erase(arguments.begin() + 6, arguments.begin() + 8);
+        Options rejected;
+        check(!ParseArguments(arguments, &rejected), "ARM source-shape refuses preflight/unpinned frame count/repeat/scaling/packing/missing capture or scaler");
+    }
+    Input native; native.codec = AV_CODEC_ID_H264; native.subtype = BC_MSUBTYPE_H264;
+    native.progressive = true; native.width = 256; native.height = 96; native.packets.resize(180);
+    check(ArmMetadataInputShape(admitted, native) && !ArmMetadataInputAdmitted(admitted, native) &&
+        ArmMetadataInputAdmitted(Options{}, native) && SclInputAdmitted(admitted, native),
+        "ARM source-shape shares exact H264 digest admission without broadening other observers or the default path");
+    for (unsigned field = 0; field < 7; ++field) {
+        Input altered = native; Options changed = admitted;
+        if (field == 0) altered.width = 128;
+        if (field == 1) altered.height = 48;
+        if (field == 2) altered.progressive = false;
+        if (field == 3) altered.codec = AV_CODEC_ID_MPEG2VIDEO;
+        if (field == 4) altered.subtype = BC_MSUBTYPE_MPEG2VIDEO;
+        if (field == 5) altered.packets.pop_back();
+        if (field == 6) changed.expected = 179;
+        check(!ArmMetadataInputShape(changed, altered) && !ArmMetadataInputAdmitted(changed, altered),
+            "ARM source-shape shape mismatches refuse before capture and device");
+    }
+    FILE *record = std::tmpfile(); const int saved = dup(STDOUT_FILENO);
+    std::fflush(stdout);
+    const bool redirected = record && saved >= 0 && dup2(fileno(record), STDOUT_FILENO) >= 0;
+    if (redirected) {
+        ArmMetadataFixture fixture; fixture.source_shape = fixture.all_ones = true; fixture.fail_at = fixture.lose_at = 240;
+        ArmMetadataObserver subject; subject.enabled = subject.source_shape = true;
+        subject.Observe(&fixture.current, 0, false, ArmMetadataFixture::Read);
+        fixture.fail_at = 83;
+        subject.Observe(&fixture.current, 1, true, ArmMetadataFixture::Read);
+    }
+    std::fflush(stdout);
+    const bool restored = saved >= 0 && dup2(saved, STDOUT_FILENO) >= 0;
+    if (saved >= 0) close(saved);
+    char text[32768] = {}; size_t bytes = 0;
+    if (record) { std::rewind(record); bytes = std::fread(text, 1, sizeof(text) - 1, record); std::fclose(record); }
+    check(redirected && restored && bytes && std::strstr(text, "ARM source-shape raw:") &&
+        std::strstr(text, "bytes=640/1920") && std::strstr(text, "measured=3/80") &&
+        std::strstr(text, "cached-picture+14=ffffffff") && std::strstr(text, "cached-picture+54=ffffffff") &&
+        std::strstr(text, "cached-picture+08=NOT-READ") && std::strstr(text, "e8-opaque=ffffffff") &&
+        std::strstr(text, "mode-byte=255 format-byte=255 field-byte=255 table-selector-byte=255") &&
+        std::strstr(text, "cached-source-is-current-input=unproven") &&
+        std::strstr(text, "lease/generation/cache-ready/all-consumers-certified=no"),
+        "ARM source-shape reports raw/cache fields separately, marks incomplete spans and never certifies source identity or lease");
+}
+
 template<class Check> static void MfdFramingSelfTest(const Check &check)
 {
     const uint32_t addresses[] = {0x00540000, 0x00540078, 0x00540050, 0x00540070, 0x00540000};
@@ -3040,6 +3194,7 @@ static bool SelfTest()
     SclFilterMapSelfTest(check);
     MfdAddressSelfTest(check);
     ArmMetadataSelfTest(check);
+    ArmSourceShapeSelfTest(check);
     MfdFramingSelfTest(check);
     RuntimeInventorySelfTest(check);
 
@@ -5023,7 +5178,8 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.scl_view.selector = options.observe_scl_view;
     audit.mfd.enabled = options.observe_mfd_config || options.observe_runtime_inventory;
     audit.runtime_inventory.enabled = options.observe_runtime_inventory;
-    audit.arm_metadata.enabled = options.observe_arm_metadata;
+    audit.arm_metadata.enabled = options.observe_arm_metadata || options.observe_arm_source_shape;
+    audit.arm_metadata.source_shape = options.observe_arm_source_shape;
     audit.mfd_address.enabled = options.observe_mfd_address;
     audit.mfd_framing.enabled = options.observe_mfd_framing;
     audit.mfd_colour.stimulus = options.inject_mfd_colour;
@@ -5178,13 +5334,15 @@ int main(int argc, char **argv)
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
             "[--scaler-test WIDTH_OR_0] [--mpeg1-via-mpeg2 | --h263-via-divx] "
-            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
+            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
     if (NeedsRawIo(options) && !CanReadChromaConfiguration()) {
-        if (options.observe_arm_metadata)
+        if (options.observe_arm_source_shape)
+            std::fprintf(stderr, "--observe-arm-source-shape requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
+        else if (options.observe_arm_metadata)
             std::fprintf(stderr, "--observe-arm-metadata requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
         else if (options.observe_runtime_inventory)
             std::fprintf(stderr, "--observe-runtime-inventory requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
