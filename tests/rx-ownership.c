@@ -58,7 +58,7 @@ struct crystalhd_hw {
     struct crystalhd_hw_stats stats;
     uint64_t rx_cancel_epoch;
     int lock, rx_lock, fetch_sem;
-    bool hw_pause_issued, dma_fault;
+    bool hw_pause_issued, dma_fault, WakeUpDecodeDone;
     uint32_t rx_pkt_tag_seed, rx_list_post_index, DrvTotalFrmCaptured;
     uint32_t FleaFLLUpdateAddr;
     uint32_t rx_list_sts[DMA_ENGINE_CNT];
@@ -111,7 +111,9 @@ static bool checking_quiesced_retire;
 static unsigned quiesced_releases, quiesced_downs;
 static uint64_t quiesced_epoch;
 static unsigned dram_write_calls, firmware_alive_checks;
+static unsigned wake_transition_calls;
 static uint32_t dram_write_address, dram_write_dwords, dram_write_value;
+static BC_STATUS dram_write_status;
 static unsigned interrupt_after;
 static unsigned fail_post_call;
 static BC_STATUS map_status, translate_status, post_status, queue_status;
@@ -604,6 +606,15 @@ static bool crystalhd_flea_detect_fw_alive(struct crystalhd_hw *hw)
     firmware_alive_checks++;
     return firmware_alive;
 }
+/* Stub only the existing state-transition boundary, not hardware readiness. */
+static void crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
+                                               enum FLEA_STATE_CH_EVENT event)
+{
+    assert(hw == &hardware && event == FLEA_EVT_FLL_CHANGE);
+    assert(hw->FleaPowerState != FLEA_PS_ACTIVE && !dram_write_calls);
+    wake_transition_calls++;
+    hw->FleaPowerState = FLEA_PS_ACTIVE;
+}
 static BC_STATUS record_dram_write(struct crystalhd_hw *hw, uint32_t address,
                                    uint32_t dwords, const uint32_t *value)
 {
@@ -612,7 +623,7 @@ static BC_STATUS record_dram_write(struct crystalhd_hw *hw, uint32_t address,
     dram_write_address = address;
     dram_write_dwords = dwords;
     dram_write_value = *value;
-    return BC_STS_SUCCESS;
+    return dram_write_status;
 }
 static BC_STATUS pause_capture(struct crystalhd_hw *hw, bool pause)
 {
@@ -815,6 +826,8 @@ static void reset(uint32_t device)
     quiesced_releases = quiesced_downs = 0;
     quiesced_epoch = 0;
     dram_write_calls = firmware_alive_checks = 0;
+    wake_transition_calls = 0;
+    dram_write_status = BC_STS_SUCCESS;
     dram_write_address = dram_write_dwords = dram_write_value = 0;
     map_status = translate_status = post_status = queue_status = BC_STS_SUCCESS;
     wait_flush_status = BC_STS_ERROR;
@@ -2070,6 +2083,141 @@ static void free_count_consumer_cases(uint32_t device)
           "combined-count owners remain destructively releasable exactly once");
     inventory(0, 0, 0);
     drain();
+}
+static BC_STATUS fll_error(unsigned index)
+{
+    /* All defined non-SUCCESS statuses, including the negative ERROR. */
+    assert(index < 27);
+    return index == 26 ? BC_STS_ERROR : (BC_STATUS)(index + 1);
+}
+static void fll_publication_cases(void)
+{
+    for (unsigned error = 0; error < 27; error++) {
+        reset(BC_PCI_DEVID_FLEA);
+        context.state = BC_LINK_INIT;
+        check(submit(&context, map_private(false)) == BC_STS_SUCCESS,
+              "prepare an owned free buffer for fallible FLL publication");
+        dram_write_status = fll_error(error);
+        check(crystalhd_flea_publish_fll(&hardware, false) == dram_write_status &&
+              dram_write_calls == 1 && dram_write_address == 0x5f110000 &&
+              dram_write_dwords == 1 && dram_write_value == 1 &&
+              !hardware.lock && !firmware_alive_checks,
+              "actual publisher preserves every failed status and writes one counted DWORD once");
+        inventory(0, 0, 1);
+        check(!unmaps[0] && !hardware.dma_fault && hardware.fetch_sem == 1,
+              "failed publication does not release RX ownership or latch a fabricated DMA fault");
+        dram_write_status = BC_STS_SUCCESS;
+        check(crystalhd_flea_publish_fll(&hardware, false) == BC_STS_SUCCESS &&
+              dram_write_calls == 2 && dram_write_value == 1 && !hardware.lock,
+              "an explicit publisher retry succeeds without duplicating ownership");
+        drain();
+    }
+
+    for (unsigned initially_done = 0; initially_done < 2; initially_done++) {
+        for (unsigned error = 0; error < 27; error++) {
+            reset(BC_PCI_DEVID_FLEA);
+            hardware.WakeUpDecodeDone = initially_done;
+            dram_write_status = fll_error(error);
+            check(!crystalhd_flea_wake_up_hw(&hardware) &&
+                  !hardware.WakeUpDecodeDone && dram_write_calls == 1 &&
+                  !wake_transition_calls && !hardware.lock && !firmware_alive_checks,
+                  "failed actual wake clears even an old readiness flag without retrying publication");
+            check(!crystalhd_flea_notify_event(&hardware, BC_EVENT_START_CAPTURE) &&
+                  !hardware.WakeUpDecodeDone && dram_write_calls == 2,
+                  "START_CAPTURE event propagates the actual wake failure");
+            dram_write_status = BC_STS_SUCCESS;
+            check(crystalhd_flea_notify_event(&hardware, BC_EVENT_START_CAPTURE) &&
+                  hardware.WakeUpDecodeDone && dram_write_calls == 3 &&
+                  !hardware.lock,
+                  "an explicit START_CAPTURE retry publishes before reporting wake success");
+            check(crystalhd_flea_notify_event(&hardware, BC_EVENT_SYS_SHUT_DOWN) &&
+                  dram_write_calls == 3,
+                  "unhandled notification retains its no-publication success behavior");
+            inventory(0, 0, 0);
+        }
+    }
+
+    reset(BC_PCI_DEVID_FLEA);
+    firmware_alive = false;
+    dram_write_status = BC_STS_IO_ERROR;
+    check(crystalhd_flea_publish_fll(&hardware, true) == BC_STS_SUCCESS &&
+          firmware_alive_checks == 1 && !dram_write_calls,
+          "dead-firmware cleanup is an intentional successful no-op, not a wake publication");
+    hardware.FleaPowerState = FLEA_PS_LP_COMPLETE;
+    check(!crystalhd_flea_wake_up_hw(&hardware) && wake_transition_calls == 1 &&
+          dram_write_calls == 1 && !hardware.WakeUpDecodeDone,
+          "wake requests the existing state transition but a failed publication still prevents success");
+    dram_write_status = BC_STS_SUCCESS;
+    check(crystalhd_flea_wake_up_hw(&hardware) && wake_transition_calls == 1 &&
+          dram_write_calls == 2 && hardware.WakeUpDecodeDone,
+          "state-transition boundary is not repeated once ACTIVE on explicit publication retry");
+}
+static void fll_capture_and_owner_cases(void)
+{
+    for (unsigned direct = 0; direct < 2; direct++) {
+        for (unsigned busy = 0; busy < 2; busy++) {
+            reset(BC_PCI_DEVID_FLEA);
+            post_status = busy ? BC_STS_BUSY : BC_STS_SUCCESS;
+            dram_write_status = BC_STS_IO_ERROR;
+            hardware.pfnNotifyFLLChange = crystalhd_flea_notify_fll_change;
+            check((direct ? submit(&context, map_private(false)) : add(0)) ==
+                      BC_STS_SUCCESS && dram_write_calls == 1 && !unmaps[0],
+                  "void notifier failure preserves successful active or BUSY free-queue owner transfer");
+            inventory(busy ? 0 : 1, 0, busy ? 1 : 0);
+            check(dram_write_value == busy && !hardware.lock && !hardware.dma_fault,
+                  "FLL notification uses current free count without reclaiming the transferred packet");
+            drain();
+        }
+
+        for (unsigned error = 0; error < 27; error++) {
+            reset(BC_PCI_DEVID_FLEA);
+            context.state = BC_LINK_INIT;
+            check((direct ? submit(&context, map_private(false)) : add(0)) ==
+                      BC_STS_SUCCESS,
+                  "register a deferred RX owner before actual capture-start notification");
+            context.state |= BC_LINK_FMT_CHG;
+            hardware.pfnNotifyHardware = crystalhd_flea_notify_event;
+            hardware.WakeUpDecodeDone = true;
+            dram_write_status = fll_error(error);
+            check(start_capture(direct, 0, 0) == BC_STS_IO_ERROR &&
+                  context.state == (BC_LINK_INIT | BC_LINK_FMT_CHG) &&
+                  !hardware.WakeUpDecodeDone && dram_write_calls == 1 &&
+                  !post_calls && !unmaps[0] && hardware.fetch_sem == 1,
+                  "actual start caller returns IO_ERROR without publishing CAP_EN or posting retained owners");
+            inventory(0, 0, 1);
+            dram_write_status = BC_STS_SUCCESS;
+            check(start_capture(direct, 0, 0) == BC_STS_SUCCESS &&
+                  context.state == BC_LINK_READY && hardware.WakeUpDecodeDone &&
+                  dram_write_calls == 2 && post_calls == 1 && !unmaps[0],
+                  "explicit capture-start retry posts the original registration only after publication succeeds");
+            inventory(1, 0, 0);
+            drain();
+
+            reset(BC_PCI_DEVID_FLEA);
+            check(add(0) == BC_STS_SUCCESS && add(1) == BC_STS_SUCCESS &&
+                  add(2) == BC_STS_SUCCESS,
+                  "prepare active, ready and free RX owners for an actual restart failure");
+            complete(0);
+            hardware.pfnNotifyHardware = crystalhd_flea_notify_event;
+            hardware.WakeUpDecodeDone = true;
+            dram_write_status = fll_error(error);
+            unsigned posts_before = post_calls;
+            check(flush_capture(&context, direct, 1) == BC_STS_IO_ERROR &&
+                  context.state == BC_LINK_READY && !hardware.WakeUpDecodeDone &&
+                  dram_write_calls == 1 && post_calls == posts_before &&
+                  !unmaps[0] && !unmaps[1] && !unmaps[2] && hardware.fetch_sem == 1,
+                  "actual discard restart propagates FLL failure after recycling without releasing or reposting owners");
+            inventory(0, 0, 3);
+            dram_write_status = BC_STS_SUCCESS;
+            check(flush_capture(&context, direct, 1) == BC_STS_SUCCESS &&
+                  hardware.WakeUpDecodeDone && dram_write_calls == 2 &&
+                  post_calls == posts_before + 2 && !unmaps[0] &&
+                  !unmaps[1] && !unmaps[2],
+                  "explicit discard retry restarts original RX owners after successful publication");
+            inventory(2, 0, 1);
+            drain();
+        }
+    }
 }
 static void format_case(uint32_t device, unsigned failure)
 {
@@ -3500,6 +3648,8 @@ int main(void)
         invalid_command_arguments(devices[i]);
         invalid_capture_start_arguments(devices[i]);
     }
+    fll_publication_cases();
+    fll_capture_and_owner_cases();
     printf("RX ownership: %u scenarios, %u checks, %u failures\n", groups, checks, failures);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

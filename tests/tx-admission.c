@@ -250,6 +250,7 @@ static struct {
         TX_INPUT_BUFFER_INFO payload;
         BC_STATUS status;
         unsigned copied_words, reads, writes, wakes;
+        bool wake_allowed, wake_success;
     } flea;
     struct {
         bool enabled;
@@ -850,10 +851,12 @@ static BC_STATUS FleaWrite(struct crystalhd_hw *hw, uint32_t address,
 
 static bool crystalhd_flea_wake_up_hw(struct crystalhd_hw *hw)
 {
-    (void)hw;
+    Check(hw == &hardware, "FIFO wake targets its own hardware context");
     run.flea.wakes++;
-    Check(false, "FIFO tests use the wake-completed ACTIVE path, not a wake-up substitute");
-    return false;
+    Check(run.flea.wake_allowed,
+          "only the explicit FIFO wake-boundary tests may request a wake");
+    hw->WakeUpDecodeDone = run.flea.wake_success;
+    return run.flea.wake_success;
 }
 
 #include "tx-admission-flea.h"
@@ -2161,6 +2164,79 @@ static void FleaBlockedPost(TX_INPUT_BUFFER_INFO before)
           "notification rejection neither wakes hardware nor adds locks, faults, WRAP writes or FIFO reservations");
 }
 
+static void FleaWakeAdmission(void)
+{
+    for (unsigned low_power = 0; low_power < 2; low_power++) {
+        for (unsigned single = 0; single < 2; single++) {
+            TX_INPUT_BUFFER_INFO before = FleaNotificationReset();
+            struct tx_dma_pkt unposted = *packet0;
+            uint32_t empty = UINT32_MAX, tag = 0xfeedbabe;
+            uint8_t flags = 0;
+
+            hardware.WakeUpDecodeDone = false;
+            hardware.FleaPowerState = low_power ? FLEA_PS_LP_COMPLETE : FLEA_PS_ACTIVE;
+            hardware.SingleThreadAppFIFOEmpty = single;
+            run.flea.wake_allowed = true;
+            Check(crystalhd_flea_check_input_full(&hardware, run.transfer_size,
+                      &empty, false, &flags) && !empty && !flags &&
+                  run.flea.wakes == 1 && !hardware.WakeUpDecodeDone &&
+                  memcmp(&before, &hardware.TxFwInputBuffInfo, sizeof(before)) == 0 &&
+                  !hardware.EmptyCnt && hardware.SingleThreadAppFIFOEmpty == !!single,
+                  "failed wake blocks the actual FIFO despite cached space or a single-thread reservation");
+            hardware.pfnCheckInputFIFO = crystalhd_flea_check_input_full;
+            request.tx_buffer = (struct crystalhd_tx_buffer){
+                .bytes = run.transfer_size, .cookie = &request,
+                .ops = &crystalhd_dio_tx_buffer_ops,
+            };
+            for (unsigned retry = 0; retry < 3; retry++) {
+                Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer,
+                          OpaqueComplete, &opaque_cookie, &tag, 0) == BC_STS_BUSY &&
+                      tag == 0xfeedbabe && run.flea.wakes == retry + 2 &&
+                      hardware.stats.cin_busy == retry + 1 &&
+                      !run.queue_fetches && !run.queue_adds && !run.descriptors &&
+                      !run.starts && !run.callback_calls && !QueueHead(&activeq) &&
+                      QueueHead(&freeq) == packet0 && !QueueNext(&freeq) &&
+                      !memcmp(packet0, &unposted, sizeof(unposted)) &&
+                      !hardware.tx_list_post_index && !hardware.lock &&
+                      !hardware.dma_fault && !hardware.WakeUpDecodeDone &&
+                      !run.flea.reads && !run.flea.writes,
+                      "each explicit failed-wake post is BUSY before descriptor or queue ownership admission");
+            }
+            /* A successful boundary is not a silicon readiness certificate. */
+            run.flea.wake_success = true;
+            hardware.FleaPowerState = FLEA_PS_ACTIVE;
+            Check(!crystalhd_flea_check_input_full(&hardware, run.transfer_size,
+                      &empty, false, &flags) && empty == before.DramBuffSzInBytes &&
+                  flags == 0x80 && run.flea.wakes == 5 && hardware.WakeUpDecodeDone,
+                  "explicit successful wake retry resumes the existing cached FIFO admission policy");
+            run.mapped = true;
+            request.uinfo.xfr_len = run.transfer_size;
+            Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer,
+                      OpaqueComplete, &opaque_cookie, &tag, 0) == BC_STS_SUCCESS &&
+                  tag == 0x100 && run.starts == 1 && run.flea.wakes == 5,
+                  "actual TX post can transfer ownership after, but not before, successful wake");
+            Complete();
+            Check(run.callback_calls == 1 &&
+                  run.seen_callback_context == &opaque_cookie &&
+                  run.seen_callback_status == BC_STS_SUCCESS,
+                  "successful retry completes the exact TX owner once");
+            run.mapped = false;
+            Balanced();
+        }
+    }
+
+    /* Preserve the pre-existing non-posting buffer-size query shortcut. */
+    FleaNotificationReset();
+    hardware.WakeUpDecodeDone = false;
+    uint32_t empty = UINT32_MAX;
+    uint8_t flags = 0x04;
+    Check(!crystalhd_flea_check_input_full(&hardware, run.transfer_size, &empty,
+               false, &flags) && empty == 2 * 1024 * 1024 && !flags &&
+          !run.flea.wakes && !hardware.WakeUpDecodeDone && !run.descriptors &&
+          !run.starts && !run.queue_fetches && !run.queue_adds,
+          "status-only FIFO query retains its no-wake shortcut without posting TX");
+}
+
 static void FleaNotificationGuard(void)
 {
     static const BC_STATUS errors[] = {
@@ -2882,6 +2958,7 @@ int main(void)
     FleaPreparationFifoPolicy();
     QueueApiCompatibility();
     LinkWithoutPreparation();
+    FleaWakeAdmission();
     printf("TX admission: %u checks, %u failures\n", checks, failures);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

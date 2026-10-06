@@ -31,14 +31,14 @@ awk '
 
 # Keep state values, buffer layouts and ownership functions tied to the driver.
 awk '
-    /^enum (_crystalhd_state|FLEA_POWER_STATES|BRCM_EVENT)[[:space:]]*\{/ ||
+    /^enum (_crystalhd_state|FLEA_POWER_STATES|FLEA_STATE_CH_EVENT|BRCM_EVENT)[[:space:]]*\{/ ||
     /^struct (dma_descriptor|dma_desc_mem|crystalhd_rx_buffer_ops|crystalhd_rx_buffer|crystalhd_rx_metadata|crystalhd_rx_dma_pkt|crystalhd_rx_completion|crystalhd_hw_stats|crystalhd_dio_user_info)[[:space:]]*\{/ {
 		copying = 1; found++
 	}
     copying { print }
     copying && /^};/ { copying = 0 }
     /^#define[[:space:]]+DMA_ENGINE_CNT[[:space:]]/ { print }
-	END { if (found != 12 || copying) exit 1 }
+	END { if (found != 13 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.h" \
     "$repo_dir/driver/linux/FleaDefs.h" "$repo_dir/driver/linux/crystalhd_hw.h" \
     "$repo_dir/driver/linux/crystalhd_misc.h" > "$rx_test_dir/rx-types.h"
@@ -112,10 +112,19 @@ awk '
 ' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" \
     "$repo_dir/driver/linux/crystalhd_linkfuncs.c" > "$rx_test_dir/rx-post.h"
 awk '
-    /^void crystalhd_flea_notify_fll_change\(/ { copying = 1; found++ }
+    /^bool[[:space:]]*$/ { split_signature = $0; awaiting_name = 1; next }
+    awaiting_name {
+        if (/^crystalhd_flea_wake_up_hw\(/) {
+            print split_signature; copying = 1; found++
+        }
+        awaiting_name = 0
+    }
+    /^static BC_STATUS crystalhd_flea_publish_fll\(/ ||
+    /^void crystalhd_flea_notify_fll_change\(/ ||
+    /^bool crystalhd_flea_notify_event\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 1 || copying) exit 1 }
+    END { if (found != 4 || copying || awaiting_name) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > \
     "$rx_test_dir/rx-flea-fll.h"
 awk '
