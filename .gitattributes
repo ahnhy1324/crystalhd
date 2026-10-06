@@ -4,3 +4,4 @@
 Makefile text eol=lf
 **/Makefile text eol=lf
 scripts/* text eol=lf
+tests/fixtures/issue92/scl-input-enabled.patch -whitespace

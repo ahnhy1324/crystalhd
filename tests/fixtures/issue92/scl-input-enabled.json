@@ -1,0 +1,161 @@
+{
+  "schema": 1,
+  "issue": 92,
+  "experiment": "enabled-SCL-input-view2-with-fixed-colour-MFD-PX_RD_BVB",
+  "device_family": "BCM70015",
+  "production_default": "disabled",
+  "source": {
+    "expanded_baseline_commit": "42a090a2dd93c806a3265b7ebe784b8b42a77c1a",
+    "existing_overlays": 19,
+    "new_overlay": 20,
+    "publication_base_commit": "4bd955bd4bb334b3c7df6c2efccb2cd63048515b",
+    "fixture_patch_sha256": "efaa0524f03ad391498c67abb6a2eab7b6e007f42072761525c09ee795cf6118",
+    "preregistration_sha256": "4cfa1907e95cdd12398bd75ceba5ea4bc5bafce7923501bcf2976c005e117c19",
+    "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+    "frozen_file_sha256": {
+      "driver/linux/crystalhd_fleafuncs.c": "660ac8ecd39b20bcf008d976f5f0e8d051db295a4ce302a69ae9e52578bcf5fb",
+      "driver/linux/crystalhd_fw_research.c": "78fc02a29d0aa9790944c3bf485a491857c4430e691ccd5871188b838fa4debb",
+      "driver/linux/crystalhd_hw.h": "73b686fe330f2d0aacf7bcec75617846de20c55873644d329e0508d0595daaf6",
+      "tests/fw-download.c": "55237aa7c718facecd687b7bb4145e909082308305b584f81bf9fdc882b6872f",
+      "tests/fw-download.sh": "260a83bcfb8c5bb4f84fade774ddabb086b7b4db54979277986235891cff0c3a",
+      "tests/fw-probe.c": "9c058868605a0d50edf40b3f31f73ca56f03486e93eef1d330cabf4efeb40ee5",
+      "tests/device-lifetime.c": "aa5e37d63ab5b3751b55d2f7dd43a15dd35cb8029f8a317625178de12787ff48"
+    }
+  },
+  "only_configuration_contrast": {
+    "relative_to": "previous frozen joint PX_RD_BVB /SCL-view3 profile",
+    "configuration_target_slot": 14,
+    "control_tuple_word": 23,
+    "register": "SCL_HD_TEST_PORT_CONTROL",
+    "address_hex": "00540880",
+    "previous_value": 3,
+    "new_value": 2,
+    "MFD_TEST_PORT_CNTL_unchanged_hex": "0000000c",
+    "raw_size_words_unchanged_hex": "00040002",
+    "SCL_ENABLE_request_unchanged": 1
+  },
+  "configuration_target_words": [2,3,4,5,6,7,8,9,10,11,18,20,21,22,23],
+  "configuration_target_values_hex": ["00000000","00405ac3","00000004","00000001","00000003","00000000","00000000","0000000c","00000000","0000000d","00040002","00040002","00040002","00000001","00000002"],
+  "control_tuple_fields": [
+    "MFD_REVISION_ID","MFD_PIC_FEED_CMD","MFD_STRIDE","MFD_FIXED_COLOUR",
+    "MFD_DISP_HSIZE","MFD_PICTURE0_DISP_VERT_WINDOW","MFD_LAC_CNTL",
+    "MFD_CHROMA_SAMPLING_CNTL","MFD_DATA_MODE","MFD_TEST_PORT_CNTL",
+    "MFD_TEST_MODE_CNTL","MFD_FEEDER_CNTL","MFD_REPEAT_CNTL","MFD_ERROR_STATUS",
+    "SCL_REVISION_ID","SCL_TOP_CONTROL","SCL_VERT_CONTROL","SCL_HORIZ_CONTROL",
+    "SCL_BVB_IN_SIZE","SCL_PIC_OFFSET","SCL_SRC_PIC_SIZE","SCL_DEST_PIC_SIZE",
+    "SCL_ENABLE","SCL_TEST_PORT_CONTROL","SCL_BVB_IN_STATUS"
+  ],
+  "saved_cold_and_pre_powerdown_retire_each_hex": [
+    "00000050","00000000","00800080","00108080","00000780","00000436",
+    "00000010","00000000","00000000","00000008","00000004","00000000",
+    "00000000","00000000","00000080","0000000c","00000000","00000000",
+    "02d000f0","00000000","02d000f0","02d000f0","00000000","00000000","00000000"
+  ],
+  "control_pair_verification": "Every cold and pre-powerdown-retire phase contains ordinals0..24, first==second; all eight phase pairs equal the same saved tuple. This is empirical control reversion, not an all-consumer fence or active-bank certificate.",
+  "bundle_word_fields": [
+    "MFD_PX_RD_BVB_TEST_PORT_DATA","MFD_BVB_SAMPLE_DATA","MFD_FEED_STATUS",
+    "MFD_FEEDER_BVB_STATUS","MFD_ERROR_STATUS","SCL_INPUT_VIEW2_DATA",
+    "SCL_BVB_IN_STATUS","MFD_error_before","MFD_error_after","SCL_error_before","SCL_error_after"
+  ],
+  "raw_bundles": {
+    "pre_start_each_hex": ["00080020","00000000","00000000","00000000","00000000","00000000","00000000","00000000","00000000","00000000","00000000"],
+    "feed_active_each_hex": ["00080044","00040168","00000001","00000000","00000000","00000000","00000000","00000000","00000000","00000000","00000000"],
+    "feed_active_ordinals_each": [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15],
+    "two_feed_series_176_words_each_equal": true,
+    "provenance": "Eleven separate non-atomic raw words include distinct direct/before/after error witnesses; no OR is represented as raw. Observation ordinals are not elapsed time or accepted-transfer counts."
+  },
+  "sampled_fields": {
+    "MFD_PX_RD_BVB": {
+      "CSM_raw_before_after": [0,0], "FIFO_EMPTY_before_after": [1,0],
+      "FIFO_FULL_before_after": [0,1], "PIXEL_STOP_before_after": [0,1],
+      "scope": "RDB field labels only; CSM0 does not certify whole-engine idle. READY/ACCEPT decoding from the different BVB_OUT union is not applicable."
+    },
+    "SCL_INPUT_VIEW2": {
+      "DATA_before_and_all_active_hex": "00000000",
+      "IB_WR_STATUS_1": {"mask_hex":"f8000000","shift":27,"raw":0},
+      "IB_WR_LINE_ADDR": {"mask_hex":"07ff0000","shift":16,"raw":0},
+      "IB_WR_STATUS_0": {"mask_hex":"0000f000","shift":12,"raw":0},
+      "IB_RD_LINE_ADDR": {"mask_hex":"00000fff","shift":0,"raw":0},
+      "scope": "Opaque numeric status/index fields; no state enums, memory-address following, units or acceptance inference."
+    }
+  },
+  "trials": [
+    {"id":"config-a","kernel_first_row_utc":"2026-10-06T00:21:30Z","kernel_rows":65,"kernel_sha256":"75c3020d541624e1030378aac8359e531517a63cd4254219cb87adf288309272","target_attempts":15,"START_attempts":0,"active_bundles":0,"outcome":"configuration_only"},
+    {"id":"config-repeat","kernel_first_row_utc":"2026-10-06T00:22:47Z","kernel_rows":65,"kernel_sha256":"e5fa9c9b3feb719f9b2459f0f63839c484a3f8a32ff74114b05c53ee9c98ca2a","target_attempts":15,"START_attempts":0,"active_bundles":0,"outcome":"configuration_only"},
+    {"id":"feed-a","kernel_first_row_utc":"2026-10-06T00:32:45Z","kernel_rows":241,"kernel_sha256":"6b54d812ed7516300a00f0a6c4b638b76e06fa55689c7a7b79e86d6393293240","target_attempts":16,"START_attempts":1,"active_bundles":16,"outcome":"bounded_observation"},
+    {"id":"feed-repeat","kernel_first_row_utc":"2026-10-06T00:34:52Z","kernel_rows":241,"kernel_sha256":"61bd953aee683660606340820887f041af35a6a9fe122f7bcd8ed59f56158adf","target_attempts":16,"START_attempts":1,"active_bundles":16,"outcome":"bounded_observation"}
+  ],
+  "each_trial_result": {
+    "generation":"1","cli_exit":1,"status":-5,"download_status":20,
+    "firmware_hash_valid":true,"deliberate_pre_CMAC_abort":true,"command_count":0,
+    "cleanup_attempted":true,"cleanup_status":0,"retained":false,"stderr_bytes":0,
+    "software_ACCEPT_writes":0,"kernel_cleanup_PCI_guard":0,
+    "json_sha256":"dd4f57b4581a9ea7243f7c01f9025c8953201e87b09243f78b723f20144c0f94",
+    "interpretation":"Intentional pre-CMAC abort, not successful firmware boot, decoder-command execution or raw-processing completion."
+  },
+  "builds": {
+    "qualified_flag_channel":"KCFLAGS; actual frozen compiler commands contain -Werror, research enable and the separate selected profile macro",
+    "configuration":{"macro":"CRYSTALHD_JOINT_BVB_SCL_INPUT_CONFIG_RESET_PROBE","module_sha256":"ba0e45a24a5bf51e6840d998e6c12d12302ced087119e49757d15dd37775162b","compiler_command_sha256":"3a0128ca219c55f62f733ef452e5479cd4ba60eed1f1f43298111c20fc2995da"},
+    "feed":{"macro":"CRYSTALHD_JOINT_BVB_SCL_INPUT_FEED_PROBE","module_sha256":"8a91498833e6269b7442c521119ceac7e6012dc5ceb5e070770c64bbaaf3dc4f","compiler_command_sha256":"cfaf7f99eeb0e4d6333a5a53f7ea9b331aca91f5de460bf305574ac9eaef2948"},
+    "module_srcversion":"AE3CFE52EB9C83660C340DD",
+    "feature_disabled_module_sha256":"8cff27b6c34c6f424c4da5982970f485a0c6237bea72b773bfe70f1e97170666",
+    "ignored_EXTRA_CFLAGS_attempt":{"qualifying":false,"loaded":false,"both_module_sha256":"80c5a6a9e17061047a3cb2321b8d8b6a7ca42d9f3d59b9857c9c7743efbbd16d","reason":"Flags were ignored; both binaries identical. Rebuilt and checked actual KCFLAGS before physical use."}
+  },
+  "hardware_free_tests": {
+    "root_and_peer_FW_script_exit":0,"strict_and_ASan_UBSan_groups_each":194,
+    "checks_each":1140044704,"failures_each":0,"stderr_bytes":0,
+    "stdout_sha256":"d6ade946a366da02af1346dd5672b9db4bd8043b2fd613ab2176f189fd52a4cf",
+    "old_exact_gate":{"groups":181,"checks":895452899},
+    "lifetime_session_CLI_scripts_exit":0,"compatibility_stderr_bytes":0,
+    "lifetime_stdout_sha256":"0757761725772769029780fe311fd7e5ec5f7b82873c04349afe466486341b96",
+    "session_CLI_stdout_sha256":"407d03a93c23ad773dd5c8a59200882561af6b3986ab2af130d32273aedb0732",
+    "maintained_20_overlay_staging":{"actual_exit":0,"stdout_bytes":36865,"stdout_sha256":"13bef1236bed7afd09cae645f111ce5f2e608fda1954c0de8f935e19c42e98a8","stderr_bytes":0,"FW_each":"194 groups /1140044704 checks /0 failures","device_access_each":"33 scenarios /148 checks /0 failures","firmware_probe_checks_each":342493,"CLI_checks_each":6637054},
+    "compatibility":"Whole stdout byte-identical to prior frozen receipts; model execution is not physical qualification.",
+    "first_model_script":{"qualifying":false,"script_exit":1,"executables_each":"193 groups /1131338828 checks /0 failures","reason":"Four newly extracted header names omitted from cleanup; final corrected whole script passed.","stdout_sha256":"d9c2256ae324cb5199a895795599da913c62947d78007b7d8562f2734a780ca8"}
+  },
+  "native_controls": {
+    "codec":"stock native H264","geometry":"640x360","packing":"YUY2","requested_scale_width":0,
+    "input_sha256":"767d0fc307052fe995ca0921aaf01b48b4e6477698188e1e7a4e42da690f304e",
+    "binary_sha256":"7a2456e5c369ac7e78c9b39dfc2f5b370306a8fbdd0b7677d1996baf6c089596",
+    "sessions": [
+      {"id":"stock-before-config","log_sha256":"c38469771ca07127c3c4a7f5ae3a79f700168e675d1efda829f4a21e6481260d","rss_kib_initial_final":[33780,35224],"rss_delta_kib":1444},
+      {"id":"config-module-native","log_sha256":"d4062cbeead4bf9ff5dee167da67522c05744127f9838c6b48183d2dc40cea34","rss_kib_initial_final":[33736,35180],"rss_delta_kib":1444},
+      {"id":"recovery-after-config-a","log_sha256":"8e4b38c3cdf80b2a6211792cd376ec14a3aed819cde7ec9f37d4779d4ffec315","rss_kib_initial_final":[33716,35184],"rss_delta_kib":1468},
+      {"id":"recovery-after-config-repeat","log_sha256":"394572f2c11203f4f3da4f42bf67f5d79b479ba3e7539aff52d669a20721dd7f","rss_kib_initial_final":[33752,35196],"rss_delta_kib":1444},
+      {"id":"feed-module-native","log_sha256":"97462307426d2dca018d9d7f94dd4e3ae5d8c2a5102be2b923831c7d51425213","rss_kib_initial_final":[33812,35256],"rss_delta_kib":1444},
+      {"id":"recovery-after-feed-a","log_sha256":"80c7beb390af7aa9c7a48766504777958ca909628f363ecea35bfa4664e786a0","rss_kib_initial_final":[33856,35300],"rss_delta_kib":1444},
+      {"id":"recovery-after-feed-repeat","log_sha256":"e453af0019e7248fcbc0bb5c908db5f08346a05b2f5184626ae159ac3132ac5c","rss_kib_initial_final":[33768,35176],"rss_delta_kib":1408},
+      {"id":"final-stock-native","log_sha256":"88baf72f65b7a345d852f2e2cec7b6cbf2f0415b0658a5988241a72660e41a4a","rss_kib_initial_final":[33884,34976],"rss_delta_kib":1092}
+    ],
+    "frames_each":180,"total_frames":1440,"bytes_each":82944000,
+    "whole_byte_cmp_to_frozen_gold_each":0,
+    "raw_sha256_each":"3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+    "metadata_each":"indices0..179, pictures3..182, 180 unique tokens; 640x360/flags0/chroma-format1",
+    "actual_exit_each":0,"firmware_EOS_each":true,"pending_each":0,"ready_each":0,
+    "cleanup_each":"PASS","fds_each":[3,3],"threads_each":[1,1],"stderr_bytes_each":0,
+    "scope":"Native recovery controls, not standalone MFD/SCL output or proof of zero memory growth."
+  },
+  "nonqualifying_partial_journal": {
+    "session":"feed-a","initial_rows":184,"final_rows":241,
+    "initial_sha256":"2b298674bb79d70f53805a8a793d76ca22bb48eed4f0c15d6f684521461f6201",
+    "initial_qualifying":false,"reason":"Journal catch-up lag; initial record lacks the complete retirement phase.",
+    "initial_is_exact_final_prefix":true,"same_invocation_recaptured":true,"extra_physical_attempt":false
+  },
+  "restoration": {
+    "receipt_sha256":"b4b5d5be6eafc7b6b82e5486bf4abfde5127d4a14c45f98161164416f3c278d2",
+    "stock_module_restored":true,"stock_srcversion":"1D01F9BFBB5CCDC75C46312",
+    "module_refcount":0,"research_device_absent":true,
+    "MASTER_temporarily_cleared_during_trials":true,
+    "final_PCI_command_hex":"0506","final_PCI_device_status_hex":"0009",
+    "final_PCI_fields_match_baseline":true,"seven_installed_files_manifest":"all seven OK",
+    "no_forced_unload":true,"no_live_custom_restore":true,
+    "scope":"Scoped control/native restoration receipt, not an AER or all-consumer quiescence certificate."
+  },
+  "scope": {
+    "established":"Repeatable START-associated MFD debug-level contrast; enabled SCL input-view2 DATA remained zero at every sampled point.",
+    "SCL_accepted_input":false,"SCL_output":false,"processing_completion":false,
+    "source_or_sink_lease":false,"passive_mux":false,"clock_or_ENABLE_cause":false,
+    "chip_incapability":false,"original_issue_complete":false,
+    "limits":"Sequential observations are not atomic snapshots. Mux selection and added read timing may perturb behavior. MASTER0 and host callback/attempt bounds do not bound autonomous local activity or identify a sink."
+  }
+}

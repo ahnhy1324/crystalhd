@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+<title id="title">Enabled SCL input debug view remains zero after one MFD START</title>
+<desc id="desc">Measured BCM70015 preboot fixed-colour configuration: two configuration-only and two single-START sessions. MFD PX_RD_BVB raw changes from 00080020 to 00080044; all sixteen active bundles per feed have SCL input-view2 DATA zero. Saved twenty-five-word paired controls returned exactly before stock powerdown. Eight native recovery controls passed whole-byte capture, EOS and scoped resources. Input acceptance, output, source or sink leases and processing completion remain unproved.</desc>
+<style>text{font-family:Arial,sans-serif;fill:#e8edf5}.muted{fill:#adbad0}.mono{font-family:monospace}.small{font-size:13px}.body{font-size:16px}.label{font-size:14px}.box{fill:#162333;stroke:#41556c;stroke-width:1.5}.rule{stroke:#41556c;stroke-width:1}.accent{fill:#eeb568}.good{fill:#9cd8ba}</style>
+<rect width="1280" height="720" fill="#0c1521"/>
+<text x="30" y="39" font-size="24">BCM70015: enabled SCL input view2, one MFD START</text>
+<text x="30" y="66" class="label muted">Measured pre-CMAC trials · 2026-10-06 · two fresh configuration controls + two fresh feed sessions</text>
+<text x="30" y="93" class="label">Relative to the prior joint profile, only SCL TP_ADDR changes 3 → 2; MFD PX_RD_BVB selector0x0c unchanged.</text>
+<text x="30" y="116" class="small muted">FIXED=0x405ac3 · CTRL=0x0d · STRIDE=0 · HSIZE raw4 / WINDOW raw1 · SCL three size words0x00040002 / ENABLE request1</text>
+<rect x="30" y="143" width="427" height="172" rx="8" class="box"/>
+<text x="50" y="174" class="body">Before START — every session</text>
+<text x="50" y="207" class="mono" font-size="23">MFD raw 00080020</text>
+<text x="50" y="236" class="mono body">SAMPLE 00000000 · FEED 00000000</text>
+<text x="50" y="267" class="mono body">SCL input2 DATA 00000000</text>
+<text x="50" y="294" class="small muted">One complete 11-word baseline; not a current-transfer terminal.</text>
+<path d="M477 224h114" fill="none" stroke="#eeb568" stroke-width="2"/>
+<path d="M580 216l12 8-12 8" fill="none" stroke="#eeb568" stroke-width="2"/>
+<text x="534" y="187" text-anchor="middle" class="label accent">sole host START</text>
+<text x="534" y="252" text-anchor="middle" class="small muted">no ACCEPT writes</text>
+<rect x="612" y="143" width="638" height="172" rx="8" class="box"/>
+<text x="632" y="174" class="body">After START — each feed, ordinals0…15</text>
+<text x="632" y="207" class="mono" font-size="23">MFD raw 00080044</text>
+<text x="632" y="236" class="mono body">SAMPLE 00040168 · FEED 00000001</text>
+<text x="632" y="267" class="mono body">SCL input2 DATA 00000000</text>
+<text x="632" y="294" class="small muted">All16 bundles equal; repeated feed series byte-exact. No sampled LAST/EOF.</text>
+<text x="30" y="345" class="body">Raw field labels, not transfer or state guarantees</text>
+<text x="30" y="374" class="mono label">MFD: FIFO_EMPTY 1→0 · FIFO_FULL 0→1 · PIXEL_STOP 0→1 · CSM raw0→0</text>
+<text x="30" y="399" class="mono label">SCL: IB_WR_STATUS_1=0 · IB_WR_LINE_ADDR=0 · IB_WR_STATUS_0=0 · IB_RD_LINE_ADDR=0</text>
+<text x="30" y="422" class="small muted">SCL status/index words are opaque; no state enums or address following. PX_RD_BVB is not the READY/ACCEPT union.</text>
+<line x1="30" y1="441" x2="1250" y2="441" class="rule"/>
+<text x="30" y="469" class="label muted">First kernel row (UTC)</text><text x="289" y="469" class="label muted">Profile</text><text x="580" y="469" class="label muted">Target attempts / START / active bundles</text><text x="1048" y="469" class="label muted">Outcome</text>
+<text x="30" y="497" class="mono label">00:21:30 / 00:22:47</text><text x="289" y="497" class="label">config / repeat</text><text x="580" y="497" class="mono body">15 / 0 / 0 each</text><text x="1048" y="497" class="label">configuration_only</text>
+<text x="30" y="525" class="mono label">00:32:45 / 00:34:52</text><text x="289" y="525" class="label">feed / repeat</text><text x="580" y="525" class="mono body">16 / 1 / 16 each</text><text x="1048" y="525" class="label">bounded_observation</text>
+<text x="30" y="555" class="small">Four deliberate pre-CMAC aborts: status−5 / download20 / commands0 / cleanup0 / retainedfalse; no START retry or live restore.</text>
+<text x="30" y="578" class="small">Each cold25 and pre-powerdown-retire25 pair matched exactly; saved controls equal across all four sessions.</text>
+<text x="30" y="601" class="small good">Eight separate native controls: full180 frames each / 1,440 total; 82,944,000B each byte-equal to frozen gold; EOS / cleanup / fds / threads PASS.</text>
+<text x="30" y="624" class="small muted">Stock module/ref0 restored; final PCI fields match baseline after temporary MASTER clear. Raw evidence and RSS deltas are in the companion JSON.</text>
+<line x1="30" y1="639" x2="1250" y2="639" class="rule"/>
+<text x="30" y="663" class="small accent">Enabled input-view2 zero does not establish acceptance, routing, output, completion, source/sink leases or chip incapability.</text>
+<text x="30" y="685" class="small muted">Sequential observations are not atomic snapshots; mux/read timing may perturb. Ordinals and host attempt bounds are not elapsed time or accepted counts.</text>
+<text x="30" y="707" class="small muted">MASTER0 does not bound local autonomous activity; control reversion is not an all-consumer fence. Original issue92 goal remains unmet.</text>
+</svg>
