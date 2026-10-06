@@ -133,9 +133,10 @@ for bits in $build_bits; do
                 section_wrap=-Wl,--wrap=fopen,--wrap=fseek,--wrap=ftell,--wrap=fread,--wrap=__fread_chk,--wrap=fclose
                 section_wrap="$section_wrap -Wl,--wrap=malloc,--wrap=free,--wrap=perror" ;;
             fw-version)
-                set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_if.cpp"
+                set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_if.cpp" \
+                    "$build_dir/linux_lib/libcrystalhd/libcrystalhd_fwcmds.cpp"
                 section_wrap=-Wl,--wrap=fopen,--wrap=fseek,--wrap=ftell,--wrap=fread,--wrap=__fread_chk
-                section_wrap="$section_wrap -Wl,--wrap=fclose,--wrap=malloc,--wrap=free" ;;
+                section_wrap="$section_wrap -Wl,--wrap=fclose,--wrap=malloc,--wrap=free,--wrap=ioctl" ;;
             fwcmds)
                 set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_if.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_fwcmds.cpp" \

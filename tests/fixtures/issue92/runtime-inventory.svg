@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="650" viewBox="0 0 1240 650" role="img" aria-labelledby="title desc">
+  <title id="title">Runtime revisions queried during native playback</title>
+  <desc id="desc">Two MPEG2 sessions returned identical runtime GET_VERSION words 00013600, 00150323 and 00070015, with forty existing qualified MFD/SCL reads each. A six-session baseline, query, recovery, repeat, recovery and H264 control sequence delivered 1080 full-byte oracle-matched frames with firmware EOS and cleanup. Query is not passive MMIO; standalone raw processing remains unproved.</desc>
+  <rect width="1240" height="650" fill="#111827"/>
+  <g font-family="sans-serif" fill="#edf3ff">
+    <text x="28" y="42" font-size="25">Runtime revision inventory in an owned native session</text>
+    <text x="28" y="72" font-size="15" fill="#b6c4d9">BCM70015 · MPEG-2 640×360 · default-off query · no extra firmware download or INIT</text>
+    <rect x="28" y="96" width="1184" height="196" rx="10" fill="#1e293b"/>
+    <text x="48" y="129" font-size="18">After OPEN, before START: one successful GET_VERSION in A and repeat</text>
+    <g font-family="monospace" font-size="17" fill="#ffcc80">
+      <text x="48" y="174">streamSwVersion</text><text x="425" y="174">decoderSwVersion</text><text x="833" y="174">chipHwVersion</text>
+      <text x="48" y="208">00013600 = 00013600</text><text x="425" y="208">00150323 = 00150323</text><text x="833" y="208">00070015 = 00070015</text>
+    </g>
+    <text x="48" y="260" font-size="14" fill="#b6c4d9">Runtime-reported opaque words, not compile-time constants · command/doorbell transaction, not passive MMIO</text>
+    <text x="28" y="330" font-size="18">Complete native-control sequence — 180 frames, full-byte match, firmware EOS and cleanup each</text>
+    <path d="M126 377H1110" stroke="#6983a8" stroke-width="3"/>
+    <g fill="#102f30" stroke="#70d8b2" stroke-width="2">
+      <circle cx="126" cy="377" r="25"/><circle cx="323" cy="377" r="25"/><circle cx="520" cy="377" r="25"/>
+      <circle cx="717" cy="377" r="25"/><circle cx="914" cy="377" r="25"/><circle cx="1110" cy="377" r="25"/>
+    </g>
+    <g font-size="14" text-anchor="middle" fill="#70d8b2">
+      <text x="126" y="383">PASS</text><text x="323" y="383">PASS</text><text x="520" y="383">PASS</text>
+      <text x="717" y="383">PASS</text><text x="914" y="383">PASS</text><text x="1110" y="383">PASS</text>
+    </g>
+    <g font-size="15" text-anchor="middle">
+      <text x="126" y="431">Baseline</text><text x="323" y="431">Query A</text><text x="520" y="431">Recovery</text>
+      <text x="717" y="431">Query repeat</text><text x="914" y="431">Recovery</text><text x="1110" y="431">H.264 control</text>
+    </g>
+    <text x="28" y="487" font-size="16">Per query session: 1 query + 40 MFD/SCL READs across 2 stages; 8 inherited packing READs remain separate.</text>
+    <text x="28" y="520" font-size="15" fill="#b6c4d9">MFD REV 50 · SCL REV 80 · TEST4 · sampled SCL status 0 · no diagnostic target write or DATA-port read</text>
+    <text x="28" y="563" font-size="15" fill="#b6c4d9">6 × 180 = 1,080 native frames · FD 3→3 / threads 1→1 · RSS increased 1,440–1,524 KiB</text>
+    <text x="28" y="599" font-size="15" fill="#ffcc80">Not a source/sink lease, transport/freshness certificate or standalone MFD/scaler/CSC/DNR result.</text>
+    <text x="28" y="627" font-size="13" fill="#b6c4d9">Raw records and scoped evidence: runtime-inventory.json · original issue92 remains incomplete</text>
+  </g>
+</svg>

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
-/* Hardware-free firmware version parsing and ownership checks against the
- * production public API. File operations are deterministic and in memory.
+/* Hardware-free file parsing and runtime version marshalling against the
+ * production public API. File and driver operations are deterministic mocks.
  */
 #include <algorithm>
 #include <climits>
@@ -44,6 +44,22 @@ static size_t file_position;
 static void *live_allocation;
 static std::vector<uint8_t> file_data;
 static DTS_LIB_CONTEXT context;
+static bool runtime_call;
+static bool runtime_allocation_fails;
+static bool runtime_borrowed;
+static unsigned runtime_allocation_calls;
+static unsigned runtime_release_calls;
+static unsigned runtime_driver_calls;
+static BC_STATUS runtime_driver_status;
+static uint32_t runtime_response_status;
+static uint32_t runtime_versions[3];
+static uint32_t runtime_first_sequence;
+static BC_FW_CMD runtime_command;
+static struct {
+	uint32_t before;
+	BC_IOCTL_DATA data;
+	uint32_t after;
+} runtime_envelope;
 
 static void Check(bool condition, const char *message)
 {
@@ -215,9 +231,61 @@ extern "C" BC_STATUS DtsGetFirmwareFiles(DTS_LIB_CONTEXT *)
 	std::abort();
 }
 
-BC_STATUS DtsFWVersion(HANDLE, uint32_t *, uint32_t *, uint32_t *)
+extern "C" int __wrap_ioctl(int, unsigned long, ...)
 {
+	std::fputs("unexpected ioctl in hardware-free version test\n", stderr);
 	std::abort();
+}
+
+BC_IOCTL_DATA *DtsAllocIoctlData(DTS_LIB_CONTEXT *ctx)
+{
+	Check(runtime_call && ctx == &context,
+	      "runtime allocation uses the validated context");
+	++runtime_allocation_calls;
+	Check(!runtime_borrowed, "runtime query borrows at most one ioctl object");
+	if (runtime_allocation_fails)
+		return nullptr;
+	std::memset(&runtime_envelope.data, 0, sizeof(runtime_envelope.data));
+	runtime_borrowed = true;
+	return &runtime_envelope.data;
+}
+
+void DtsRelIoctlData(DTS_LIB_CONTEXT *ctx, BC_IOCTL_DATA *data)
+{
+	Check(runtime_call && ctx == &context && runtime_borrowed &&
+		      data == &runtime_envelope.data,
+	      "runtime query returns its exact borrowed object once");
+	++runtime_release_calls;
+	runtime_borrowed = false;
+}
+
+BC_STATUS DtsDrvCmd(DTS_LIB_CONTEXT *ctx, DWORD code, BOOL async,
+		   BC_IOCTL_DATA *data, BOOL release)
+{
+	Check(runtime_call && ctx == &context && runtime_borrowed &&
+		      data == &runtime_envelope.data,
+	      "runtime command uses its live borrowed ioctl object");
+	Check(code == BCM_IOC_FW_CMD && async == TRUE && release == FALSE,
+	      "runtime query requests the existing firmware-command driver path");
+	++runtime_driver_calls;
+	runtime_command = data->u.fwCmd;
+	bool exact = runtime_command.flags == 0 && runtime_command.add_data == 0;
+	for (unsigned word = 0; word < BC_MAX_FW_CMD_BUFF_SZ; ++word) {
+		const uint32_t expected = word == 0 ? uint32_t(eCMD_C011_GET_VERSION) :
+			word == 1 ? runtime_first_sequence + runtime_driver_calls : 0U;
+		exact &= runtime_command.cmd[word] == expected &&
+			 runtime_command.rsp[word] == 0;
+	}
+	Check(exact, "GET_VERSION carries only its command and one sequence increment");
+	C011RspGetVersion *response =
+		reinterpret_cast<C011RspGetVersion *>(data->u.fwCmd.rsp);
+	response->command = eCMD_C011_GET_VERSION;
+	response->sequence = runtime_command.cmd[1];
+	response->status = runtime_response_status;
+	response->streamSwVersion = runtime_versions[0];
+	response->decoderSwVersion = runtime_versions[1];
+	response->chipHwVersion = runtime_versions[2];
+	return runtime_driver_status;
 }
 
 static void Reset(size_t size)
@@ -467,6 +535,155 @@ static void CheckFailures()
 	}
 }
 
+struct RuntimeOutputs {
+	uint32_t before;
+	uint32_t values[3];
+	uint32_t after;
+};
+
+static RuntimeOutputs RuntimeSentinels()
+{
+	return {0x1234abcdU, {0xaaaaaaaaU, 0xbbbbbbbbU, 0xccccccccU},
+		0x9876fedcU};
+}
+
+static void ResetRuntime(uint32_t sequence = 40U)
+{
+	Reset(0);
+	runtime_call = false;
+	runtime_allocation_fails = false;
+	runtime_borrowed = false;
+	runtime_allocation_calls = runtime_release_calls = runtime_driver_calls = 0;
+	runtime_driver_status = BC_STS_SUCCESS;
+	runtime_response_status = 0;
+	runtime_versions[0] = 0x010203U;
+	runtime_versions[1] = 0x10203040U;
+	runtime_versions[2] = 0x12345678U;
+	runtime_first_sequence = context.fwcmdseq = sequence;
+	std::memset(&runtime_command, 0xa5, sizeof(runtime_command));
+	runtime_envelope.before = 0x76543210U;
+	runtime_envelope.after = 0xfedcba98U;
+}
+
+static BC_STATUS RuntimeQuery(HANDLE handle, uint32_t *stream,
+			      uint32_t *decoder, uint32_t *hardware)
+{
+	track_call = runtime_call = true;
+	const BC_STATUS status = DtsGetFWVersion(handle, stream, decoder, hardware,
+					       nullptr, 1);
+	track_call = runtime_call = false;
+	return status;
+}
+
+static BC_STATUS RuntimeQuery(RuntimeOutputs *outputs)
+{
+	return RuntimeQuery(&context, &outputs->values[0], &outputs->values[1],
+			    &outputs->values[2]);
+}
+
+static void CheckRuntimeOwnership(unsigned allocations, unsigned commands,
+				  unsigned releases, const RuntimeOutputs &outputs)
+{
+	Check(runtime_allocation_calls == allocations &&
+		      runtime_driver_calls == commands && runtime_release_calls == releases &&
+		      !runtime_borrowed,
+	      "runtime query balances the exact allocation, command and release counts");
+	Check(context.fwcmdseq == runtime_first_sequence + commands,
+	      "runtime query consumes one sequence only after successful allocation");
+	Check(runtime_envelope.before == 0x76543210U &&
+		      runtime_envelope.after == 0xfedcba98U &&
+		      outputs.before == 0x1234abcdU && outputs.after == 0x9876fedcU,
+	      "runtime query preserves envelope and caller-output canaries");
+	Check(!open_calls && !seek_calls && !tell_calls && !read_calls &&
+		      !close_calls && !allocation_calls && !free_calls && !live_allocation,
+	      "runtime flag bypasses all firmware file and heap operations");
+}
+
+static void CheckRuntimeSuccess()
+{
+	ResetRuntime();
+	for (unsigned query = 0; query < 2; ++query) {
+		RuntimeOutputs outputs = RuntimeSentinels();
+		Check(RuntimeQuery(&outputs) == BC_STS_SUCCESS &&
+			      !std::memcmp(outputs.values, runtime_versions, sizeof(runtime_versions)),
+		      "public runtime query publishes all three exact response values");
+		CheckRuntimeOwnership(query + 1, query + 1, query + 1, outputs);
+	}
+	for (unsigned kind = 0; kind < 2; ++kind) {
+		ResetRuntime(UINT32_MAX);
+		std::fill(runtime_versions, runtime_versions + 3, kind ? UINT32_MAX : 0U);
+		RuntimeOutputs outputs = RuntimeSentinels();
+		Check(RuntimeQuery(&outputs) == BC_STS_SUCCESS &&
+			      !std::memcmp(outputs.values, runtime_versions, sizeof(runtime_versions)),
+		      "runtime marshalling preserves raw zero and full-width values without file parsing");
+		CheckRuntimeOwnership(1, 1, 1, outputs);
+	}
+}
+
+static void CheckRuntimeFailures()
+{
+	for (int status = BC_STS_ERROR; status <= BC_STS_PWR_MGMT; ++status) {
+		if (status == BC_STS_SUCCESS)
+			continue;
+		ResetRuntime();
+		runtime_driver_status = static_cast<BC_STATUS>(status);
+		RuntimeOutputs outputs = RuntimeSentinels();
+		const RuntimeOutputs before = outputs;
+		Check(RuntimeQuery(&outputs) == runtime_driver_status &&
+			      !std::memcmp(&outputs, &before, sizeof(outputs)),
+		      "every non-success driver status preserves all caller outputs despite response data");
+		CheckRuntimeOwnership(1, 1, 1, outputs);
+	}
+	for (unsigned bit = 0; bit < 32; ++bit) {
+		ResetRuntime();
+		runtime_response_status = uint32_t(1) << bit;
+		RuntimeOutputs outputs = RuntimeSentinels();
+		const RuntimeOutputs before = outputs;
+		Check(RuntimeQuery(&outputs) == BC_STS_FW_CMD_ERR &&
+			      !std::memcmp(&outputs, &before, sizeof(outputs)),
+		      "each nonzero firmware status bit rejects poisoned version values without publication");
+		CheckRuntimeOwnership(1, 1, 1, outputs);
+	}
+	ResetRuntime();
+	runtime_allocation_fails = true;
+	RuntimeOutputs outputs = RuntimeSentinels();
+	const RuntimeOutputs before = outputs;
+	Check(RuntimeQuery(&outputs) == BC_STS_INSUFF_RES &&
+		      !std::memcmp(&outputs, &before, sizeof(outputs)),
+	      "empty ioctl pool rejects before sequence, driver command or output publication");
+	CheckRuntimeOwnership(1, 0, 0, outputs);
+}
+
+static void CheckRuntimeArguments()
+{
+	for (unsigned missing = 1; missing < 8; ++missing) {
+		ResetRuntime();
+		RuntimeOutputs outputs = RuntimeSentinels();
+		const RuntimeOutputs before = outputs;
+		Check(RuntimeQuery(&context, missing & 1 ? nullptr : &outputs.values[0],
+				   missing & 2 ? nullptr : &outputs.values[1],
+				   missing & 4 ? nullptr : &outputs.values[2]) == BC_STS_INV_ARG &&
+			      !std::memcmp(&outputs, &before, sizeof(outputs)),
+		      "every null runtime-output combination rejects without changing other outputs");
+		CheckRuntimeOwnership(0, 0, 0, outputs);
+	}
+	for (unsigned invalid = 0; invalid < 3; ++invalid) {
+		ResetRuntime();
+		DTS_LIB_CONTEXT foreign = {};
+		foreign.Sig = LIB_CTX_SIG;
+		if (invalid == 2)
+			context.Sig = 0;
+		HANDLE handle = invalid == 0 ? nullptr : invalid == 1 ? &foreign : &context;
+		RuntimeOutputs outputs = RuntimeSentinels();
+		const RuntimeOutputs before = outputs;
+		Check(RuntimeQuery(handle, &outputs.values[0], &outputs.values[1],
+				   &outputs.values[2]) == BC_STS_INV_ARG &&
+			      !std::memcmp(&outputs, &before, sizeof(outputs)),
+		      "null, foreign and invalid-signature runtime handles reject before driver effects");
+		CheckRuntimeOwnership(0, 0, 0, outputs);
+	}
+}
+
 int main()
 {
 	CheckInvalidArguments();
@@ -477,6 +694,9 @@ int main()
 	CheckMalformedMetadata();
 	CheckFailures();
 	CleanupLeak();
+	CheckRuntimeSuccess();
+	CheckRuntimeFailures();
+	CheckRuntimeArguments();
 	std::printf("Library firmware version: %u checks, %u failures\n",
 		    checks, failures);
 	return failures ? 1 : 0;

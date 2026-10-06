@@ -713,6 +713,81 @@ struct MfdAdmissionFixture {
     }
 };
 
+// One query on the already initialized native owner. GET_VERSION sends a
+// command/doorbell; it is not a passive snapshot or a firmware side-effect
+// certificate. No extra download, INIT or target-configuration write is added.
+struct RuntimeInventoryObserver {
+    using Query = BC_STATUS (*)(HANDLE, uint32_t *, uint32_t *, uint32_t *, char *, uint32_t);
+    bool enabled = false, attempted = false, failed = false, measured = false;
+    unsigned queries = 0;
+    HANDLE owner = nullptr;
+    BC_STATUS status = BC_STS_SUCCESS;
+    uint32_t raw[3] = {};
+    bool Observe(const HANDLE *current, Query query = DtsGetFWVersion, bool report = true) {
+        if (!enabled) return true;
+        if (failed) return false;
+        attempted = true;
+        if (!current || !*current || !query || queries) {
+            failed = true;
+        } else {
+            owner = *current;
+            uint32_t reply[3] = {};
+            ++queries;
+            status = query(owner, &reply[0], &reply[1], &reply[2], nullptr, 1);
+            failed = status != BC_STS_SUCCESS || !*current || *current != owner;
+            if (!failed) {
+                std::memcpy(raw, reply, sizeof(raw));
+                measured = true;
+            }
+        }
+        if (report) {
+            std::printf("Runtime inventory: stage=after-OPEN/pre-START queries=%u api-status=%d result=%s "
+                "source=firmware-reported-GET_VERSION passive=no target-config-writes=0 "
+                "extra-download/INIT=0 reply-header-match/transport-certified=no\n",
+                queries, status, failed ? "FAIL" : "PASS");
+            const char *const names[] = {"stream-sw", "decoder-sw", "chip-hw"};
+            for (unsigned field = 0; field < 3; ++field) {
+                std::printf("Runtime inventory raw: %s=", names[field]);
+                if (measured && !failed) std::printf("%08x", raw[field]);
+                else std::printf("NOT-READ");
+                std::printf("\n");
+            }
+            std::fflush(stdout);
+        }
+        return !failed;
+    }
+    bool Finish(bool native_ok, const MfdAdmissionObserver &mfd, bool report = true) const {
+        if (!enabled) return native_ok;
+        const bool diagnostic_ok = attempted && !failed && measured && queries == 1 &&
+            mfd.enabled && !mfd.failed && mfd.attempted == 3 && mfd.reads == 40;
+        if (report) {
+            std::printf("Runtime inventory finish: native-result=%s diagnostic-result=%s queries=%u/1 "
+                "MFD/SCL-status-reads=%u/40 standalone/source-lease/completion-certified=no\n",
+                native_ok ? "PASS" : "FAIL", diagnostic_ok ? "PASS" : "FAIL", queries, mfd.reads);
+            std::fflush(stdout);
+        }
+        return native_ok && diagnostic_ok;
+    }
+};
+
+struct RuntimeInventoryFixture {
+    HANDLE current = this;
+    unsigned queries = 0;
+    BC_STATUS status = BC_STS_SUCCESS;
+    bool valid = true, lose_owner = false;
+    HANDLE replacement = nullptr;
+    uint32_t raw[3] = {0x01360000, 0x02030004, 0x00007015};
+    static BC_STATUS Query(HANDLE handle, uint32_t *stream, uint32_t *decoder,
+                          uint32_t *chip, char *filename, uint32_t flag) {
+        auto *fixture = static_cast<RuntimeInventoryFixture *>(handle);
+        ++fixture->queries;
+        fixture->valid &= stream && decoder && chip && !filename && flag == 1 && fixture->queries == 1;
+        *stream = fixture->raw[0]; *decoder = fixture->raw[1]; *chip = fixture->raw[2];
+        if (fixture->lose_owner) fixture->current = fixture->replacement;
+        return fixture->status;
+    }
+};
+
 // Debug-address calibration only. The fixed tuple excludes TEST_PORT_DATA and
 // all target writes. Matching sequential words cannot establish atomicity,
 // selector ownership, pixel-source identity, admission or freshness.
@@ -1310,6 +1385,7 @@ struct Options {
     unsigned observe_scl_view = 0;
     bool observe_mfd_config = false;
     bool observe_mfd_address = false;
+    bool observe_runtime_inventory = false;
     unsigned inject_mfd_colour = 0;
     unsigned scl_status_test = 0;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
@@ -1336,6 +1412,10 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
             ? OUTPUT_MODE422_UYVY : OUTPUT_MODE422_YUY2;
         options->capture_path = path;
         arguments.resize(arguments.size() - 2);
+    }
+    if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-runtime-inventory")) {
+        options->observe_runtime_inventory = true;
+        arguments.pop_back();
     }
     if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-mfd-address")) {
         options->observe_mfd_address = true;
@@ -1400,7 +1480,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         arguments.resize(arguments.size() - 2);
     }
     if (arguments.size() == 2 && !std::strcmp(arguments[1], "--self-test")) {
-        if (options->capture_path || options->observe_chroma || options->observe_scl_config || options->observe_scl_filter_map || options->observe_scl_view || options->observe_mfd_config || options->observe_mfd_address || options->inject_mfd_colour || options->scl_status_test || options->scaler_test || options->mpeg1_via_mpeg2 ||
+        if (options->capture_path || options->observe_runtime_inventory || options->observe_chroma || options->observe_scl_config || options->observe_scl_filter_map || options->observe_scl_view || options->observe_mfd_config || options->observe_mfd_address || options->inject_mfd_colour || options->scl_status_test || options->scaler_test || options->mpeg1_via_mpeg2 ||
             options->h263_via_divx || options->open_only) return false;
         options->mode = Mode::SelfTest;
         return true;
@@ -1417,6 +1497,13 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         return false;
     options->mode = preflight ? Mode::Preflight : Mode::Hardware;
     options->path = arguments[2];
+    if (options->observe_runtime_inventory &&
+        (!hardware || !options->capture_path || !options->scaler_test || options->scale_width ||
+         options->expected != 180 || options->iterations != 1 ||
+         options->output_format != OUTPUT_MODE422_YUY2 || options->observe_chroma ||
+         options->observe_scl_config || options->observe_scl_filter_map || options->observe_scl_view ||
+         options->observe_mfd_config || options->observe_mfd_address || options->inject_mfd_colour ||
+         options->scl_status_test || options->mpeg1_via_mpeg2 || options->h263_via_divx || options->open_only)) return false;
     if (options->observe_mfd_address &&
         (!hardware || !options->capture_path || !options->scaler_test || options->scale_width ||
          options->expected != 180 || options->iterations != 1 ||
@@ -1469,7 +1556,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
 
 static bool SclInputAdmitted(const Options &options, const Input &input)
 {
-    return (!options.observe_scl_config && !options.observe_scl_filter_map && !options.observe_scl_view && !options.observe_mfd_config && !options.observe_mfd_address && !options.inject_mfd_colour && !options.scl_status_test) ||
+    return (!options.observe_runtime_inventory && !options.observe_scl_config && !options.observe_scl_filter_map && !options.observe_scl_view && !options.observe_mfd_config && !options.observe_mfd_address && !options.inject_mfd_colour && !options.scl_status_test) ||
         (options.expected == 180 && input.codec == AV_CODEC_ID_MPEG2VIDEO &&
          input.subtype == BC_MSUBTYPE_MPEG2VIDEO && input.progressive &&
          input.width == 640 && input.height == 360 && input.packets.size() == 180);
@@ -1477,7 +1564,7 @@ static bool SclInputAdmitted(const Options &options, const Input &input)
 
 static bool NeedsRawIo(const Options &options)
 {
-    return options.observe_chroma || options.observe_scl_config || options.observe_scl_filter_map ||
+    return options.observe_runtime_inventory || options.observe_chroma || options.observe_scl_config || options.observe_scl_filter_map ||
         options.observe_scl_view || options.observe_mfd_config || options.observe_mfd_address || options.inject_mfd_colour || options.scl_status_test;
 }
 
@@ -2067,6 +2154,144 @@ template<class Check> static void MfdAddressSelfTest(const Check &check)
     }
 }
 
+template<class Check> static void RuntimeInventorySelfTest(const Check &check)
+{
+    const BC_STATUS errors[] = {BC_STS_ERROR, BC_STS_IO_ERROR, BC_STS_FW_CMD_ERR,
+        BC_STS_TIMEOUT, BC_STS_INV_ARG, BC_STS_BUSY, BC_STS_ERR_USAGE};
+    MfdAdmissionObserver complete;
+    complete.enabled = true; complete.attempted = 3; complete.reads = 40;
+    for (unsigned scenario = 0; scenario < 11; ++scenario) {
+        RuntimeInventoryFixture fixture;
+        RuntimeInventoryFixture other_owner;
+        if (scenario < 7) fixture.status = errors[scenario];
+        fixture.lose_owner = scenario == 7 || scenario == 8;
+        if (scenario == 8) fixture.replacement = &other_owner;
+        if (scenario == 9) std::memset(fixture.raw, 0, sizeof(fixture.raw));
+        if (scenario == 10) fixture.raw[1] = 0xffffffffU;
+        RuntimeInventoryObserver observer; observer.enabled = true;
+        const bool ok = observer.Observe(&fixture.current, RuntimeInventoryFixture::Query, false);
+        check(ok == (scenario >= 9) && fixture.valid && fixture.queries == 1 && observer.queries == 1 &&
+            observer.measured == ok && observer.failed == !ok &&
+            (ok ? !std::memcmp(observer.raw, fixture.raw, sizeof(fixture.raw)) :
+                observer.raw[0] == 0 && observer.raw[1] == 0 && observer.raw[2] == 0),
+            "runtime inventory publishes only a successful current-owner reply; opaque words are not capability proof");
+        check(observer.Finish(true, complete, false) == ok && !observer.Finish(false, complete, false),
+            "runtime inventory finish requires native recovery/delivery as well as all diagnostic stages");
+        auto incomplete = complete; incomplete.reads = 39;
+        check(!observer.Finish(true, incomplete, false), "runtime inventory requires all forty existing MFD/SCL reads");
+        for (unsigned field = 0; field < 3; ++field) {
+            incomplete = complete;
+            if (field == 0) incomplete.failed = true;
+            if (field == 1) incomplete.attempted = 1;
+            if (field == 2) incomplete.enabled = false;
+            check(!observer.Finish(true, incomplete, false), "runtime inventory cannot erase MFD/SCL failure or missing stage");
+        }
+        RuntimeInventoryFixture other;
+        check(!observer.Observe(&fixture.current, RuntimeInventoryFixture::Query, false) &&
+            !observer.Observe(&other.current, RuntimeInventoryFixture::Query, false) &&
+            fixture.queries == 1 && other.queries == 0 && !observer.Finish(true, complete, false),
+            "runtime inventory duplicate or failure is sticky; no later query on original or changed owner");
+    }
+    for (unsigned argument = 0; argument < 3; ++argument) {
+        RuntimeInventoryFixture fixture;
+        if (argument == 1) fixture.current = nullptr;
+        RuntimeInventoryObserver observer; observer.enabled = true;
+        check(!observer.Observe(argument == 0 ? nullptr : &fixture.current,
+            argument == 2 ? nullptr : RuntimeInventoryFixture::Query, false) && observer.failed &&
+            observer.attempted && !observer.queries && !fixture.queries,
+            "runtime inventory validates handle and query before device action");
+        fixture.current = &fixture;
+        check(!observer.Observe(&fixture.current, RuntimeInventoryFixture::Query, false) && !fixture.queries,
+            "runtime inventory cannot retry rejected arguments");
+    }
+    RuntimeInventoryObserver disabled;
+    check(disabled.Observe(nullptr, nullptr, false) && disabled.Finish(true, complete, false) &&
+        !disabled.Finish(false, complete, false) && !disabled.attempted && !disabled.queries,
+        "runtime inventory is default-off and does not alter ordinary native success/failure");
+    for (unsigned scenario = 0; scenario < 3; ++scenario) {
+        RuntimeInventoryFixture fixture;
+        if (scenario == 1) fixture.status = BC_STS_IO_ERROR;
+        if (scenario == 2) fixture.lose_owner = true;
+        if (scenario) for (auto &raw : fixture.raw) raw = 0xdeadbeefU;
+        RuntimeInventoryObserver observer; observer.enabled = true;
+        FILE *record = std::tmpfile();
+        std::fflush(stdout);
+        const int saved_stdout = dup(STDOUT_FILENO);
+        const bool redirected = record && saved_stdout >= 0 && dup2(fileno(record), STDOUT_FILENO) >= 0;
+        bool result = false;
+        if (redirected) {
+            result = observer.Observe(&fixture.current, RuntimeInventoryFixture::Query);
+            std::fflush(stdout);
+        }
+        const bool restored = saved_stdout >= 0 && dup2(saved_stdout, STDOUT_FILENO) >= 0;
+        if (saved_stdout >= 0) close(saved_stdout);
+        char text[2048] = {}; size_t bytes = 0;
+        if (record) { std::rewind(record); bytes = std::fread(text, 1, sizeof(text) - 1, record); std::fclose(record); }
+        check(redirected && restored && bytes && fixture.valid && fixture.queries == 1 &&
+            result == (scenario == 0) && !std::strstr(text, "deadbeef") &&
+            std::strstr(text, "source=firmware-reported-GET_VERSION passive=no target-config-writes=0") &&
+            std::strstr(text, "extra-download/INIT=0 reply-header-match/transport-certified=no") &&
+            (scenario == 0 ? (std::strstr(text, "result=PASS") && std::strstr(text, "stream-sw=01360000") &&
+                std::strstr(text, "decoder-sw=02030004") && std::strstr(text, "chip-hw=00007015")) :
+                (std::strstr(text, "result=FAIL") && std::strstr(text, "stream-sw=NOT-READ") &&
+                 std::strstr(text, "decoder-sw=NOT-READ") && std::strstr(text, "chip-hw=NOT-READ"))),
+            "runtime inventory actual report distinguishes query provenance and suppresses failed/owner-lost reply poison");
+    }
+    const std::vector<const char *> valid = {"probe", "--hardware", "fixture", "180", "30", "1",
+        "--scaler-test", "0", "--observe-runtime-inventory", "--capture-yuy2", "new"};
+    Options admitted;
+    check(ParseArguments(valid, &admitted) && admitted.observe_runtime_inventory && NeedsRawIo(admitted),
+        "runtime inventory uses exact opt-in native capture profile with capability gate before any action");
+    for (unsigned field = 0; field < 12; ++field) {
+        auto arguments = valid;
+        if (field == 0) arguments[1] = "--preflight";
+        if (field == 1) arguments[3] = "179";
+        if (field == 2) arguments[5] = "2";
+        if (field == 3) arguments[7] = "320";
+        if (field == 4) arguments[9] = "--capture-uyvy";
+        if (field == 5) arguments.resize(9);
+        if (field == 6) arguments[10] = "";
+        if (field == 7) arguments[10] = "-";
+        if (field == 8) arguments.erase(arguments.begin() + 6, arguments.begin() + 8);
+        if (field == 9) std::swap(arguments[8], arguments[9]);
+        if (field == 10) arguments.resize(10);
+        if (field == 11) arguments.insert(arguments.end(), {"--capture-yuy2", "another"});
+        Options rejected;
+        check(!ParseArguments(arguments, &rejected), "runtime inventory rejects incompatible mode/count/scaling/capture before action");
+    }
+    for (const auto &mixed : std::vector<std::vector<const char *>>{
+            {"--observe-chroma"}, {"--observe-scl-config"}, {"--observe-scl-filter-map"},
+            {"--observe-scl-view", "2"}, {"--observe-scl-view", "3"}, {"--observe-mfd-config"},
+            {"--observe-mfd-address"}, {"--observe-runtime-inventory"}, {"--inject-mfd-colour", "a"},
+            {"--inject-mfd-colour", "b"}, {"--scl-status-test", "observe"}, {"--scl-status-test", "clear"},
+            {"--mpeg1-via-mpeg2"}, {"--h263-via-divx"}, {"--open-only"}}) {
+        for (unsigned where : {8U, 9U}) {
+            auto arguments = valid; arguments.insert(arguments.begin() + where, mixed.begin(), mixed.end());
+            Options rejected;
+            check(!ParseArguments(arguments, &rejected), "runtime inventory cannot combine or duplicate diagnostic/hidden-codec options");
+        }
+    }
+    Options rejected;
+    check(!ParseArguments({"probe", "--self-test", "--observe-runtime-inventory"}, &rejected),
+        "runtime inventory cannot access hardware in self-test mode");
+    Input native; native.codec = AV_CODEC_ID_MPEG2VIDEO; native.subtype = BC_MSUBTYPE_MPEG2VIDEO;
+    native.progressive = true; native.width = 640; native.height = 360; native.packets.resize(180);
+    check(SclInputAdmitted(admitted, native), "runtime inventory exact native fixture admitted");
+    for (unsigned field = 0; field < 8; ++field) {
+        Options changed = admitted; Input altered = native;
+        if (field == 0) altered.codec = AV_CODEC_ID_H264;
+        if (field == 1) altered.subtype = BC_MSUBTYPE_H264;
+        if (field == 2) altered.progressive = false;
+        if (field == 3) altered.width = 638;
+        if (field == 4) altered.height = 358;
+        if (field == 5) altered.packets.pop_back();
+        if (field == 6) altered.packets.emplace_back();
+        if (field == 7) changed.expected = 179;
+        check(!SclInputAdmitted(changed, altered) && SclInputAdmitted(Options{}, altered),
+            "runtime inventory cannot broaden native fixture admission or change default behavior");
+    }
+}
+
 static bool SelfTest()
 {
     bool ok = true;
@@ -2081,6 +2306,7 @@ static bool SelfTest()
 
     SclFilterMapSelfTest(check);
     MfdAddressSelfTest(check);
+    RuntimeInventorySelfTest(check);
 
     unsigned number = 0;
     check(Number("1", 1, &number) && number == 1, "minimum number");
@@ -3890,6 +4116,7 @@ struct Audit {
     SclFilterMapObserver scl_filter_map;
     SclViewProbe scl_view;
     MfdAdmissionObserver mfd;
+    RuntimeInventoryObserver runtime_inventory;
     MfdAddressObserver mfd_address;
     MfdColourProbe mfd_colour;
     SclStatusTest scl_status;
@@ -4048,7 +4275,8 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.scl.enabled = options.observe_scl_config;
     audit.scl_filter_map.enabled = options.observe_scl_filter_map;
     audit.scl_view.selector = options.observe_scl_view;
-    audit.mfd.enabled = options.observe_mfd_config;
+    audit.mfd.enabled = options.observe_mfd_config || options.observe_runtime_inventory;
+    audit.runtime_inventory.enabled = options.observe_runtime_inventory;
     audit.mfd_address.enabled = options.observe_mfd_address;
     audit.mfd_colour.stimulus = options.inject_mfd_colour;
     audit.scl_status.mode = options.scl_status_test;
@@ -4105,6 +4333,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     if (ok && options.capture_path) ok = PackingState(device.handle, "selected-before-start", &audit.mfd_colour, &audit.scl_view);
     if (ok) ok = audit.scl.Observe(device.handle, SclStage::PreStart);
     if (ok) ok = audit.scl_view.Begin(device.handle);
+    if (ok) ok = audit.runtime_inventory.Observe(&device.handle);
     if (ok) ok = audit.mfd.Observe(device.handle, 0);
     if (ok) ok = audit.mfd_address.PreStart(&device.handle);
     if (ok) ok = audit.mfd_colour.PreStart(device.handle);
@@ -4168,6 +4397,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     ok = audit.scl_filter_map.Finish(ok);
     ok = audit.scl_status.Finish(ok);
     ok = audit.mfd_address.Finish(ok);
+    ok = audit.runtime_inventory.Finish(ok, audit.mfd);
     std::printf("Library drain: iteration=%u/%u frames=%u/%u pending=%zu "
         "%s-EOS=%s output-marker=%s ready=%u cleanup=%s result=%s\n",
         iteration, iterations, audit.frames, expected, audit.pending.size(),
@@ -4195,13 +4425,15 @@ int main(int argc, char **argv)
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
             "[--scaler-test WIDTH_OR_0] [--mpeg1-via-mpeg2 | --h263-via-divx] "
-            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
+            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-runtime-inventory | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
     if (NeedsRawIo(options) && !CanReadChromaConfiguration()) {
-        if (options.observe_mfd_address)
+        if (options.observe_runtime_inventory)
+            std::fprintf(stderr, "--observe-runtime-inventory requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
+        else if (options.observe_mfd_address)
             std::fprintf(stderr, "--observe-mfd-address requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
         else if (options.observe_scl_filter_map)
             std::fprintf(stderr, "--observe-scl-filter-map requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
