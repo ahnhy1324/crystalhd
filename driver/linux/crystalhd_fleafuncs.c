@@ -868,24 +868,31 @@ invalidate:
 	hw->TxFwInputBuffInfo.DramBuffSzInBytes = 0;
 }
 
-/* was HWFleaNotifyFllChange */
-void crystalhd_flea_notify_fll_change(struct crystalhd_hw *hw, bool bCleanupContext)
+static BC_STATUS crystalhd_flea_publish_fll(struct crystalhd_hw *hw,
+					  bool bCleanupContext)
 {
 	unsigned long flags = 0;
 	uint32_t freeListLen = 0;
+	BC_STATUS sts;
 	/*
 	* When we are doing the cleanup we should update DRAM only if the
 	* firmware is running. So Detect the heart beat.
 	*/
 	if(bCleanupContext && (!crystalhd_flea_detect_fw_alive(hw)))
-		return;
+		return BC_STS_SUCCESS;
 
 	freeListLen = crystalhd_hw_count_free_rx_pkts(hw);
 	spin_lock_irqsave(&hw->lock, flags);
-	hw->pfnDevDRAMWrite(hw, hw->FleaFLLUpdateAddr, 1, &freeListLen);
+	sts = hw->pfnDevDRAMWrite(hw, hw->FleaFLLUpdateAddr, 1, &freeListLen);
 	spin_unlock_irqrestore(&hw->lock, flags);
 
-	return;
+	return sts;
+}
+
+/* Keep the void notifier ABI: RX queue ownership has already transferred. */
+void crystalhd_flea_notify_fll_change(struct crystalhd_hw *hw, bool bCleanupContext)
+{
+	crystalhd_flea_publish_fll(hw, bCleanupContext);
 }
 
 
@@ -1708,7 +1715,10 @@ crystalhd_flea_wake_up_hw(struct crystalhd_hw *hw)
 
 	/* Now notify HW of the number of entries in the Free List */
 	/* This starts up the channel bitmap delivery */
-	crystalhd_flea_notify_fll_change(hw, false);
+	if (crystalhd_flea_publish_fll(hw, false) != BC_STS_SUCCESS) {
+		hw->WakeUpDecodeDone = false;
+		return false;
+	}
 
 	hw->WakeUpDecodeDone = true;
 
@@ -1732,8 +1742,12 @@ bool crystalhd_flea_check_input_full(struct crystalhd_hw *hw, uint32_t needed_sz
 	{
 		/* Only wake up the HW if we are either being called from a single threaded app - like FP */
 		/* or if we are not checking for the input buffer size as just a test */
-		if(*flags == 0)
-			crystalhd_flea_wake_up_hw(hw);
+		if(*flags == 0) {
+			if (!crystalhd_flea_wake_up_hw(hw)) {
+				*flags = 0;
+				return true; /* Publication failed: do not admit TX. */
+			}
+		}
 		else {
 			*empty_sz = 2 * 1024 * 1024; /* FW Buffer size */
 			/**DramAddrOut=0; */
@@ -3147,8 +3161,7 @@ bool crystalhd_flea_notify_event(struct crystalhd_hw *hw, enum BRCM_EVENT EventC
 	{
 		case BC_EVENT_START_CAPTURE:
 		{
-			crystalhd_flea_wake_up_hw(hw);
-			break;
+			return crystalhd_flea_wake_up_hw(hw);
 		}
 		default:
 			break;
