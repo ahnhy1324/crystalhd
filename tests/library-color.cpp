@@ -236,7 +236,7 @@ static void CaptureAdmission()
                   fixture.context.softwareUyvy,
               "clean CLOSE/STOP/START permit selection before delayed capture registration");
     }
-    for (unsigned fault = 0; fault < 8; ++fault) {
+    for (unsigned fault = 0; fault < 11; ++fault) {
         for (BC_OUTPUT_FORMAT mode : {OUTPUT_MODE422_YUY2, OUTPUT_MODE422_UYVY}) {
             Fixture fixture(BC_PCI_DEVID_FLEA);
             fixture.context.State = BC_DEC_STATE_START;
@@ -249,11 +249,18 @@ static void CaptureAdmission()
             if (fault == 5) fixture.context.State = BC_DEC_STATE_PAUSE;
             if (fault == 6) fixture.context.State = BC_DEC_STATE_FLUSH;
             if (fault == 7) fixture.context.State = 0xffffffffU;
+            if (fault == 8) fixture.context.outputPhase = DTS_OUTPUT_ACTIVE;
+            if (fault == 9) fixture.context.outputPhase = DTS_OUTPUT_RETURNED;
+            if (fault == 10) fixture.context.outputPhase = DTS_OUTPUT_RETIRE_ONLY;
             fixture.Prepare();
             Check(DtsSetColorSpace(&fixture.context, mode) == BC_STS_BUSY && calls == 0,
                   "each active/ambiguous capture guard rejects before any register access");
             Check(fixture.context.b422Mode == previous_mode && fixture.context.softwareUyvy,
                   "live same-mode and changed-mode rejection preserve both fields");
+            if (fault >= 8)
+                Check(fixture.context.ProcOutPending == 0 &&
+                          fixture.context.outputPhase != DTS_OUTPUT_IDLE,
+                      "pending zero does not permit changing a non-idle output lifetime");
             fixture.PoolReturned();
         }
     }

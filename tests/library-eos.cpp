@@ -806,7 +806,8 @@ static void test_flea_mpeg4_idle_fallback(unsigned scenario)
     detection.status_limit = 20;
     // 0: eligible; 1: RLL; 2: active RX/FLL short; 3: leased output;
     // 4: failed TX DMA; 5: output progress; 6: under one second;
-    // 7: status-error gap; 8: suspend gap; 9: in-flight output timeout.
+    // 7: status-error gap; 8: suspend gap; 9: in-flight output timeout;
+    // 10..12: non-idle output lifetime with pending zero; 13: cancellation only.
     switch (scenario) {
     case 1:
         detection.status.drvRLL = 1;
@@ -838,6 +839,18 @@ static void test_flea_mpeg4_idle_fallback(unsigned scenario)
         detection.allow_output = true;
         detection.timeout_during_dma = true;
         break;
+    case 10:
+        fixture.context.outputPhase = DTS_OUTPUT_ACTIVE;
+        break;
+    case 11:
+        fixture.context.outputPhase = DTS_OUTPUT_RETURNED;
+        break;
+    case 12:
+        fixture.context.outputPhase = DTS_OUTPUT_RETIRE_ONLY;
+        break;
+    case 13:
+        fixture.context.CancelWaiting = true;
+        break;
     default:
         break;
     }
@@ -856,6 +869,14 @@ static void test_flea_mpeg4_idle_fallback(unsigned scenario)
     check(eos == expected,
           expected ? "only a fully idle MPEG-4 fence completes fallback EOS"
                    : "unsafe MPEG-4 state cannot complete fallback EOS");
+    if (scenario >= 10 && scenario <= 12)
+        check(fixture.context.ProcOutPending == 0 &&
+                  fixture.context.outputPhase != DTS_OUTPUT_IDLE,
+              "non-idle whole-call lifetime cannot be inferred from pending zero");
+    if (scenario == 13)
+        check(fixture.context.ProcOutPending == 0 &&
+                  fixture.context.outputPhase == DTS_OUTPUT_IDLE && fixture.context.CancelWaiting,
+              "an owned cancellation alone prevents idle EOS publication");
     if (scenario == 4)
         check(fixture.context.txDmaFault && !fixture.context.eosTxComplete,
               "failed DMA poisons the session and invalidates fence completion");
@@ -994,7 +1015,7 @@ int main()
     for (unsigned scenario = 0; scenario < 5; ++scenario)
         test_idle_detection(BC_PCI_DEVID_FLEA, scenario);
     test_idle_detection(BC_PCI_DEVID_LINK, 2);
-    for (unsigned scenario = 0; scenario < 10; ++scenario)
+    for (unsigned scenario = 0; scenario < 14; ++scenario)
         test_flea_mpeg4_idle_fallback(scenario);
     test_new_input_disarms_flea_fallback();
     for (uint32_t device : {BC_PCI_DEVID_FLEA, BC_PCI_DEVID_LINK})
