@@ -1941,6 +1941,11 @@ DtsSendData( HANDLE  hDevice ,
 			DtsUnLock(Ctx);
 			return BC_STS_IO_USER_ABORT;
 		}
+		/* No amount of consumer progress can make this enqueue fit. */
+		if (ulSizeInBytes > Ctx->circBuf.totalSize) {
+			DtsUnLock(Ctx);
+			return BC_STS_INSUFF_RES;
+		}
 		if (ulSizeInBytes <= DtsTxFreeSize(hDevice)) {
 			const BC_STATUS sts = txBufPush(&Ctx->circBuf, pUserData, ulSizeInBytes);
 			if (sts == BC_STS_SUCCESS)
@@ -2109,10 +2114,12 @@ DtsAlignSendData( HANDLE  hDevice ,
 		if (Ctx->VidParams.StreamType == BC_STREAM_TYPE_ES)
 		{
 			// SPES Mode
-			ulDeliverBytes = ulRestBytes;
+			ulDeliverBytes = ulRestBytes > ALIGN_BUF_SIZE ? ALIGN_BUF_SIZE : ulRestBytes;
 			if (timeStamp)
 			{
 				sts = DtsSendSPESPkt(hDevice, timeStamp, encrypted);
+				if (sts != BC_STS_SUCCESS)
+					return sts;
 			}
 			timeStamp = 0;
 
@@ -2133,6 +2140,8 @@ DtsAlignSendData( HANDLE  hDevice ,
 			if (Ctx->DevId == BC_PCI_DEVID_LINK && timeStamp)
 			{
 				sts = DtsSendSPESPkt(hDevice, timeStamp, encrypted);
+				if (sts != BC_STS_SUCCESS)
+					return sts;
 				timeStamp = 0;
 				bAddPTS =0;
 			}
