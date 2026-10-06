@@ -1,0 +1,270 @@
+{
+  "schema": 1,
+  "issue": 92,
+  "kind": "native ARM working-slot observations",
+  "scope": "Fixed scalar cache observations during normal H264 decode. Sequential reads are non-atomic; cached metadata and cached picture-source words are not a joined source identity, extent, generation or lease.",
+  "measurement_date_utc": "2026-10-06",
+  "baseline": {
+    "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+    "installed_library_sha256": "6d14b856ebf8522ce7776743a61b9e3390f1f16ed89a74e71d604cb59b31216c",
+    "module_srcversion": "1D01F9BFBB5CCDC75C46312",
+    "harness_source_sha256": "57a2be595fb163f87f25a6ae65f98c6f78a8780933c939c5413d9af13862565e",
+    "harness_binary_sha256": "560416772f2bb5f09f1c2714657838aceb3fdf7b571480c60afe7e6b1f0a4283"
+  },
+  "input": {
+    "codec": "H264",
+    "width": 256,
+    "height": 96,
+    "progressive": true,
+    "packets": 180,
+    "submitted_bytes": 124832,
+    "sha256": "1363a87c8f59fab6187cd13653a3ba8a41fd994066d30c24be1c2b09d675666e"
+  },
+  "reads": {
+    "slot_base_hex": "000d3a00",
+    "slot_stride_hex": "000001cc",
+    "slots": 4,
+    "span_offsets_hex": [
+      "000000c4",
+      "000000d0",
+      "000000e0",
+      "00000120",
+      "00000180"
+    ],
+    "span_bytes": [
+      4,
+      4,
+      12,
+      8,
+      4
+    ],
+    "passes": 2,
+    "stages": [
+      "after-OPEN/pre-START",
+      "first-output-after-release-and-owned-write",
+      "delivery-EOS-before-STOP"
+    ],
+    "fields": [
+      "c4",
+      "d0",
+      "cached-meta-virtual",
+      "cached-meta-physical",
+      "e8-opaque",
+      "cached-source+34",
+      "cached-source+38",
+      "180-acquire/reuse"
+    ],
+    "per_trial_calls": 120,
+    "per_trial_bytes": 768
+  },
+  "trials": [
+    {
+      "bytes_read": 768,
+      "capture_bytes": 8847360,
+      "capture_sha256": "1ba4af890ad878a5472777c873f1f86f070264ebfc33994ba719b22ea5df9068",
+      "cleanup": "PASS",
+      "fds": "3/3",
+      "frames": 180,
+      "full_pixel_cmp": true,
+      "id": "A",
+      "kernel_after_sha256": "5a2ad693bf10de43e4ed5b884fc184fb385b5eb984d3679037237cdec0efeda4",
+      "kernel_before_sha256": "6f3d40e609b287c31b1b8244aba169809ecc005cd17aa28bfc7976d93540a779",
+      "native_eos": true,
+      "native_exit": 0,
+      "native_log_sha256": "6f7c0da2954c52ad4880bffcac7fea76690ef572f9bc2c868399b9ee726520e9",
+      "pending": 0,
+      "reads": 120,
+      "ready": 0,
+      "samples": [
+        {
+          "passes_equal": true,
+          "raw_hex": [
+            [
+              "00000001 00000200 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000"
+            ],
+            [
+              "00000001 00000200 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000"
+            ]
+          ],
+          "stage": 0
+        },
+        {
+          "passes_equal": true,
+          "raw_hex": [
+            [
+              "00010101 00010200 033f195c 033f195c 00000000 00a40000 00a46000 00000001",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000"
+            ],
+            [
+              "00010101 00010200 033f195c 033f195c 00000000 00a40000 00a46000 00000001",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000"
+            ]
+          ],
+          "stage": 1
+        },
+        {
+          "passes_equal": true,
+          "raw_hex": [
+            [
+              "00010101 00010200 033f195c 033f195c 00000000 00b0c000 00b12000 00000001",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000"
+            ],
+            [
+              "00010101 00010200 033f195c 033f195c 00000000 00b0c000 00b12000 00000001",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000"
+            ]
+          ],
+          "stage": 2
+        }
+      ],
+      "scoped_kernel": "PASS",
+      "stderr_bytes": 0,
+      "threads": "1/1"
+    },
+    {
+      "bytes_read": 768,
+      "capture_bytes": 8847360,
+      "capture_sha256": "1ba4af890ad878a5472777c873f1f86f070264ebfc33994ba719b22ea5df9068",
+      "cleanup": "PASS",
+      "fds": "3/3",
+      "frames": 180,
+      "full_pixel_cmp": true,
+      "id": "B",
+      "kernel_after_sha256": "f1f648e6d04362d544c6eaf7a8e0e24ef1dc0fa0ff5472c2187edb1b0f9f5e95",
+      "kernel_before_sha256": "5a2ad693bf10de43e4ed5b884fc184fb385b5eb984d3679037237cdec0efeda4",
+      "native_eos": true,
+      "native_exit": 0,
+      "native_log_sha256": "050085f0aafbbf43ad49ab623986e1465bd6ad97f5ab4a0dd42f3f9c8680cad5",
+      "pending": 0,
+      "reads": 120,
+      "ready": 0,
+      "samples": [
+        {
+          "passes_equal": true,
+          "raw_hex": [
+            [
+              "00000001 00000200 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000"
+            ],
+            [
+              "00000001 00000200 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000"
+            ]
+          ],
+          "stage": 0
+        },
+        {
+          "passes_equal": false,
+          "raw_hex": [
+            [
+              "00010101 00010200 033f195c 033f195c 00000000 00a40000 00a46000 00000001",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000"
+            ],
+            [
+              "00010101 00010200 033f1a40 033f1a40 00000000 00a4c000 00a52000 00000001",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000"
+            ]
+          ],
+          "stage": 1
+        },
+        {
+          "passes_equal": true,
+          "raw_hex": [
+            [
+              "00010101 00010200 033f195c 033f195c 00000000 00b0c000 00b12000 00000001",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000"
+            ],
+            [
+              "00010101 00010200 033f195c 033f195c 00000000 00b0c000 00b12000 00000001",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000",
+              "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000"
+            ]
+          ],
+          "stage": 2
+        }
+      ],
+      "scoped_kernel": "PASS",
+      "stderr_bytes": 0,
+      "threads": "1/1"
+    }
+  ],
+  "controls": [
+    {
+      "id": "MPEG2-before",
+      "frames": 32,
+      "width": 640,
+      "height": 360,
+      "input_sha256": "cbfc9fc4d5d376179d4357e3e909903e50a1636781745e42522652f7e49780a3",
+      "capture_bytes": 14745600,
+      "capture_sha256": "021b6736caed04600c4801ca1b0e30dc4a48b60985e2dff02d38bea7c2aa9244",
+      "full_pixel_cmp": true,
+      "native_exit": 0,
+      "native_eos": true,
+      "pending": 0,
+      "ready": 0,
+      "cleanup": "PASS",
+      "fds": "3/3",
+      "threads": "1/1",
+      "stderr_bytes": 0,
+      "scoped_kernel": "PASS"
+    },
+    {
+      "id": "H264-after",
+      "frames": 180,
+      "width": 128,
+      "height": 96,
+      "input_sha256": "b0586373f4b2f4ec773bd9845d33907bba3f5033c61a61dadd6e6ed8c4733559",
+      "capture_bytes": 4423680,
+      "capture_sha256": "d72c16b7eb12d844fb6a5805c2d33a120874237ac5f1cf3608d4bebe186ee7cd",
+      "full_pixel_cmp": true,
+      "native_exit": 0,
+      "native_eos": true,
+      "pending": 0,
+      "ready": 0,
+      "cleanup": "PASS",
+      "fds": "3/3",
+      "threads": "1/1",
+      "stderr_bytes": 0,
+      "scoped_kernel": "PASS"
+    }
+  ],
+  "limits": {
+    "pointers_followed": false,
+    "source_plane_contents_read": false,
+    "source_plane_writes": false,
+    "custom_target_configuration_writes": false,
+    "firmware_patched": false,
+    "installation_changed": false,
+    "observed_pass_equality_is_atomic": false,
+    "exact_output_frame_binding": false,
+    "source_extent_authenticated": false,
+    "generation_authenticated": false,
+    "all_consumer_completion_authenticated": false,
+    "standalone_raw_backend_proved": false
+  }
+}
