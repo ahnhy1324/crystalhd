@@ -1,0 +1,284 @@
+{
+  "schema_version": 1,
+  "kind": "native-fixed-arm-source-shape",
+  "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+  "observer_source_sha256": "ae3ebef4c114b577b17ae58c016e644246521ee2583ff2e60022a05bb178835a",
+  "observer_binary_sha256": "0d31a2a1800e976551263de9a0c2d8320be6a5045a8b57268e1581f184351702",
+  "input": {
+    "codec": "H264",
+    "progressive": true,
+    "width": 256,
+    "height": 96,
+    "packets": 180,
+    "submitted_bytes": 124832,
+    "submitted_sha256": "1363a87c8f59fab6187cd13653a3ba8a41fd994066d30c24be1c2b09d675666e"
+  },
+  "reads": {
+    "flag": "--observe-arm-source-shape",
+    "slot_base_hex": "000d3a00",
+    "slot_stride_hex": "000001cc",
+    "slots": 4,
+    "passes": 2,
+    "span_offsets_hex": [
+      "c4",
+      "d0",
+      "e0",
+      "f4",
+      "100",
+      "110",
+      "120",
+      "140",
+      "158",
+      "180"
+    ],
+    "span_bytes": [
+      4,
+      4,
+      12,
+      4,
+      8,
+      16,
+      8,
+      12,
+      8,
+      4
+    ],
+    "fields": [
+      "c4",
+      "d0",
+      "cached-meta-virtual",
+      "cached-meta-physical",
+      "e8-opaque",
+      "cached-picture+08",
+      "cached-picture+14",
+      "cached-picture+18",
+      "cached-picture+24",
+      "cached-picture+28",
+      "cached-picture+2c",
+      "cached-picture+30",
+      "cached-source+34",
+      "cached-source+38",
+      "cached-picture+54",
+      "cached-picture+58",
+      "cached-picture+5c",
+      "cached-picture+6c",
+      "cached-picture+70",
+      "180-acquire/reuse"
+    ],
+    "stages": [
+      "after-OPEN/pre-START",
+      "first-output-after-release-and-owned-write",
+      "delivery-EOS-before-STOP"
+    ],
+    "per_trial_calls": 240,
+    "per_trial_bytes": 1920,
+    "no_pointer_following": true,
+    "no_source_plane_access": true,
+    "no_diagnostic_target_writes": true,
+    "non_atomic": true
+  },
+  "trials": [
+    {
+      "id": "A",
+      "frames": 180,
+      "reads": 240,
+      "bytes_read": 1920,
+      "capture_bytes": 8847360,
+      "capture_sha256": "1ba4af890ad878a5472777c873f1f86f070264ebfc33994ba719b22ea5df9068",
+      "whole_capture_equal": true,
+      "firmware_eos": true,
+      "pending": 0,
+      "ready": 0,
+      "cleanup": true,
+      "fd_before_after": [
+        3,
+        3
+      ],
+      "threads_before_after": [
+        1,
+        1
+      ],
+      "stderr_bytes": 0,
+      "exit_code": 0,
+      "new_kernel_errors": 0,
+      "inactive_slots_all_zero": true,
+      "slot0_stages": [
+        [
+          ["00000001", "00000200", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000"],
+          ["00000001", "00000200", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000"]
+        ],
+        [
+          ["00010101", "00010200", "033f195c", "033f195c", "00000000", "00000002", "00000100", "00000060", "01000000", "00020201", "00000100", "00000060", "00a4c000", "00a52000", "00000006", "00000006", "00010000", "00000000", "00000000", "00000001"],
+          ["00010101", "00010200", "033f1a40", "033f1a40", "00000000", "00000002", "00000100", "00000060", "01000000", "00020201", "00000100", "00000060", "00a4c000", "00a52000", "00000006", "00000006", "00010000", "00000000", "00000000", "00000001"]
+        ],
+        [
+          ["00010101", "00010200", "033f195c", "033f195c", "00000000", "00000002", "00000100", "00000060", "01000000", "00020201", "00000100", "00000060", "00b0c000", "00b12000", "00000006", "00000006", "00010000", "00000000", "00000000", "00000001"],
+          ["00010101", "00010200", "033f195c", "033f195c", "00000000", "00000002", "00000100", "00000060", "01000000", "00020201", "00000100", "00000060", "00b0c000", "00b12000", "00000006", "00000006", "00010000", "00000000", "00000000", "00000001"]
+        ]
+      ],
+      "passes_equal": [
+        true,
+        false,
+        true
+      ]
+    },
+    {
+      "id": "B",
+      "frames": 180,
+      "reads": 240,
+      "bytes_read": 1920,
+      "capture_bytes": 8847360,
+      "capture_sha256": "1ba4af890ad878a5472777c873f1f86f070264ebfc33994ba719b22ea5df9068",
+      "whole_capture_equal": true,
+      "firmware_eos": true,
+      "pending": 0,
+      "ready": 0,
+      "cleanup": true,
+      "fd_before_after": [
+        3,
+        3
+      ],
+      "threads_before_after": [
+        1,
+        1
+      ],
+      "stderr_bytes": 0,
+      "exit_code": 0,
+      "new_kernel_errors": 0,
+      "inactive_slots_all_zero": true,
+      "slot0_stages": [
+        [
+          ["00000001", "00000200", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000"],
+          ["00000001", "00000200", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000"]
+        ],
+        [
+          ["00010101", "00010200", "033f1a40", "033f1a40", "00000000", "00000002", "00000100", "00000060", "01000000", "00020201", "00000100", "00000060", "00a4c000", "00a52000", "00000006", "00000006", "00010000", "00000000", "00000000", "00000001"],
+          ["00010101", "00010200", "033f1b24", "033f1b24", "00000000", "00000002", "00000100", "00000060", "01000000", "00020201", "00000100", "00000060", "00a58000", "00a5e000", "00000006", "00000006", "00010000", "00000000", "00000000", "00000001"]
+        ],
+        [
+          ["00010101", "00010200", "033f195c", "033f195c", "00000000", "00000002", "00000100", "00000060", "01000000", "00020201", "00000100", "00000060", "00b0c000", "00b12000", "00000006", "00000006", "00010000", "00000000", "00000000", "00000001"],
+          ["00010101", "00010200", "033f195c", "033f195c", "00000000", "00000002", "00000100", "00000060", "01000000", "00020201", "00000100", "00000060", "00b0c000", "00b12000", "00000006", "00000006", "00010000", "00000000", "00000000", "00000001"]
+        ]
+      ],
+      "passes_equal": [
+        true,
+        false,
+        true
+      ]
+    }
+  ],
+  "controls": [
+    {
+      "position": "before",
+      "codec": "MPEG2",
+      "width": 640,
+      "height": 360,
+      "frames": 32,
+      "capture_bytes": 14745600,
+      "capture_sha256": "021b6736caed04600c4801ca1b0e30dc4a48b60985e2dff02d38bea7c2aa9244",
+      "whole_capture_equal": true,
+      "firmware_eos": true,
+      "pending": 0,
+      "ready": 0,
+      "cleanup": true,
+      "fd_before_after": [
+        3,
+        3
+      ],
+      "threads_before_after": [
+        1,
+        1
+      ],
+      "stderr_bytes": 0,
+      "exit_code": 0,
+      "new_kernel_errors": 0
+    },
+    {
+      "position": "after",
+      "codec": "H264",
+      "width": 128,
+      "height": 96,
+      "frames": 180,
+      "capture_bytes": 4423680,
+      "capture_sha256": "d72c16b7eb12d844fb6a5805c2d33a120874237ac5f1cf3608d4bebe186ee7cd",
+      "whole_capture_equal": true,
+      "firmware_eos": true,
+      "pending": 0,
+      "ready": 0,
+      "cleanup": true,
+      "fd_before_after": [
+        3,
+        3
+      ],
+      "threads_before_after": [
+        1,
+        1
+      ],
+      "stderr_bytes": 0,
+      "exit_code": 0,
+      "new_kernel_errors": 0
+    }
+  ],
+  "comparison": {
+    "cached_dimensions": [
+      256,
+      96
+    ],
+    "cached_nmby": [
+      6,
+      6
+    ],
+    "cached_nmby_times16": [
+      96,
+      96
+    ],
+    "cached_mode_format_field_selector": [
+      2,
+      1,
+      1,
+      0
+    ],
+    "cached_offsets": [
+      0,
+      0
+    ],
+    "source_pair_delta_hex": "00006000",
+    "metadata_step_hex": "000000e4",
+    "candidate_geometry": {
+      "metadata_mb": [
+        16,
+        6
+      ],
+      "prefix_mb": [
+        16,
+        6
+      ],
+      "config": [
+        5,
+        63,
+        false
+      ],
+      "pitch": 256,
+      "y_stripe_height": 96,
+      "chroma_stripe_height": 96,
+      "y_bytes": 24576,
+      "frame_bytes": 49152,
+      "conditional_vendor_mul16": true,
+      "native_config_observed": false,
+      "native_bank_extent_observed": false
+    },
+    "conditional_mfd_zero_offset_prediction": true,
+    "native_mfd_registers_observed": false
+  },
+  "certified": {
+    "cached_scalar_observations": true,
+    "whole_native_outputs": true,
+    "current_frame_identity": false,
+    "active_arc_context": false,
+    "allocation_extent": false,
+    "source_lease": false,
+    "generation": false,
+    "all_consumer_completion": false,
+    "standalone_processing": false
+  }
+}

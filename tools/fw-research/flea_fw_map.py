@@ -655,6 +655,27 @@ _PPB_BANK_METADATA = (
 _PPB_BANK_REGIONS = _PPB_BANK_METADATA + tuple(
     (name, offset, end - start, digest)
     for name, _, start, end, offset, digest in _PPB_BANK_BODIES)
+# Ordinary H264 producer bodies, qualified by their original outer ELF section.
+_PPB_SOURCE_BODIES = (
+    ("PopulatePPB", 5, 0xf2b0, 0xf760, 0x3a154, "4d8a71519ab56a688c61948d5aec9bc15da67ee3525df3d638fc478895dceff6"),
+    ("EndOfPicture", 5, 0xf760, 0xfa5c, 0x3a604, "c03df07328dffba01e10fe02a5a705c8be04c07bd81992d37852628f2a69a17b"),
+    ("H264_DecodePicture", 5, 0xfda4, 0x10258, 0x3ac48, "c58523f87b6082fdfe61674df64a591baad1f20ee0025c826a9fbcc3d8a6d598"),
+    ("H264_StartOfPicture", 5, 0xd8bc, 0xdb60, 0x38760, "20a9f69edef44edfcc5506a8f061ec6f5150944dbb5cce2822b03fc5e45da5b8"),
+    ("H264_IsCFP2", 5, 0xdb60, 0xdc1c, 0x38a04, "a42b7f1e8892b5707149d84aeed42d5115d6ebcffdb18480a4c10674c0af6c79"),
+    ("H264_ParseSPS", 16, 0x2aee4, 0x2b658, 0x4da78, "7604f8afb6bd6c75ae532d5599b0068f48d94a8574405d5347c92e687be169c4"),
+    ("H264_ActivateSPS", 16, 0x2b658, 0x2b724, 0x4e1ec, "7d875e642ba9f2ee2230f7298f48ae8ebc3cdaa1983035bfb6e50773da43c33a"),
+    ("ParseSlice", 3, 0x7590, 0x7d68, 0x32434, "dee4395033ddbf46b0fdc32a68d502ef020efc95ac7fbca45c84ec4175478208"),
+    ("Core_PopulatePPB", 4, 0x9344, 0x9548, 0x341e8, "2b3cde5b8b4eef00eedd2c7fa4829324f428f7cb89d01eee685db5a5f6de6805"),
+)
+_PPB_SOURCE_REGIONS = _PPB_BANK_REGIONS + tuple(
+    (name, offset, end - start, digest)
+    for name, _, start, end, offset, digest in _PPB_SOURCE_BODIES) + (
+    ("h264_slice_relocations", 0x6d410, 1572, "bd97fd812ccaf604c9c028d73fc8ddfdb2e36ff64ea4694fe6a61c1444e6c00e"),
+    ("h264_picture_relocations", 0x6e670, 4596, "dc14dd531617af502be4f2e96dc41f6d88dff82f386ebd506ca3805ebe8a33fb"),
+)
+MAX_PPB_SOURCE_REGIONS = 64
+MAX_PPB_SOURCE_BYTES = 96 * 1024
+MAX_PPB_SOURCE_RELOCATIONS = 2685
 # Fixed stock host contract only. These hashes are independent local fuses;
 # the public firmware identity remains unchanged and this helper is test-only.
 _STOCK_HOST_COMMAND_REGIONS = (
@@ -5042,6 +5063,206 @@ def _ppb_bank_geometry(width, height, stripe_exponent, alignment_mask, metadata_
             "extra_bytes": extra_bytes, "frame_bytes": total, "conditional_vendor_mul16": True}
 
 
+def _ppb_source_geometry_join(metadata_mb, prefix_mb, metadata_config, allocation_config):
+    """Compare supplied snapshots, not native frame identity or ownership."""
+    for dimensions in (metadata_mb, prefix_mb):
+        if (not isinstance(dimensions, (tuple, list)) or len(dimensions) != 2 or
+                any(type(value) is not int or not 0 <= value <= 255 for value in dimensions)):
+            raise FormatError("PPB source dimensions require two u8 macroblock values")
+    for config in (metadata_config, allocation_config):
+        if (not isinstance(config, (tuple, list)) or len(config) != 3 or
+                type(config[0]) is not int or not 0 <= config[0] < 32 or
+                type(config[1]) is not int or not 0 <= config[1] <= 255 or type(config[2]) is not bool):
+            raise FormatError("PPB source config requires stripe shift, byte mask and boolean extra")
+    metadata = _ppb_bank_geometry(*(value * 16 for value in metadata_mb), *metadata_config)
+    allocation = _ppb_bank_geometry(*(value * 16 for value in prefix_mb), *allocation_config)
+    return {"metadata_mb_dimensions": list(metadata_mb), "prefix_mb_dimensions": list(prefix_mb),
+            "metadata_config": list(metadata_config), "allocation_config": list(allocation_config),
+            "metadata_geometry": metadata, "allocation_geometry": allocation,
+            "dimensions_equal": list(metadata_mb) == list(prefix_mb),
+            "config_equal": list(metadata_config) == list(allocation_config),
+            "conditional_geometry_equal": metadata == allocation,
+            "observed_inputs_only": True, "model_no_native_certification": True}
+
+
+def _ppb_source_frame_record(pool, index):
+    """Bound a supplied frame-record equation; these are model-only guards."""
+    pool = _ppb_bank_u32(pool, "source pool")
+    if type(index) is not int or not 0 <= index <= 62:
+        raise FormatError("PPB source model frame index must be 0..62")
+    record = pool + 284 * index
+    if record + 283 > 0xffffffff:
+        raise FormatError("PPB source model complete frame record overflows u32")
+    return {"pool": pool, "index": index, "stride_bytes": 284, "record_address": record,
+            "prefix_address": record, "prefix_bytes": 56, "metadata_address": record + 56,
+            "metadata_bytes": 228, "metadata_source_words_address": record + 60,
+            "metadata_source_words_bytes": 8, "metadata_chroma_offset_address": record + 64,
+            "metadata_chroma_offset_bytes": 4, "record_last_byte": record + 283,
+            "overflow_guard_is_model_only": True, "firmware_index_or_overflow_guard_proven": False,
+            "model_no_native_certification": True}
+
+
+def _ppb_source_provenance(payload):
+    """Pinned ordinary H264 source equations; never native lease certification."""
+    total = sum(size for _, _, size, _ in _PPB_SOURCE_REGIONS)
+    if (len(payload) != BUNDLED_SIZE - TRAILER_SIZE or
+            len(_PPB_SOURCE_REGIONS) > MAX_PPB_SOURCE_REGIONS or total > MAX_PPB_SOURCE_BYTES or
+            MAX_PPB_SOURCE_RELOCATIONS < 2685):
+        raise FormatError("PPB source validation size/budget does not match")
+    validated = []
+    for role, offset, size, digest in _PPB_SOURCE_REGIONS:
+        if hashlib.sha256(bounded(payload, offset, size, "PPB source region")).hexdigest() != digest:
+            raise FormatError(f"PPB source region {role} does not match the baseline")
+        validated.append({"role": role, "blob_file_offset": offset, "size": size, "sha256": digest})
+    bank = _ppb_bank_contract(payload)
+    # Independently resolve numeric symbol indexes in the original section map.
+    base = 0x2ea60
+    sections = [struct.unpack_from("<10I", payload, 0x79540 + i * 40) for i in range(55)]
+    section_names, symbol_names = payload[0x79098:0x7953f], payload[0x67a95:0x69b6f]
+
+    def string(table, offset):
+        if offset >= len(table) or table.find(b"\0", offset) < 0:
+            raise FormatError("PPB source original string offset does not match")
+        return table[offset:table.index(b"\0", offset)].decode("ascii")
+
+    mappings = list(bank["containing_sections"])
+    for index, name, address, offset, size in (
+            (3, ".h264_critical_code_slice", 0x63d4, 0x2818, 0x1bb8),
+            (5, ".h264_critical_code_picture", 0xc158, 0x859c, 0x42b0)):
+        section = sections[index]
+        if (string(section_names, section[0]) != name or
+                (section[1], section[3], section[4], section[5]) != (1, address, offset, size)):
+            raise FormatError("PPB source containing section does not match")
+        mappings.append({"section_index": index, "name": name, "elf_virtual_address": address,
+                         "elf_file_offset": offset, "blob_file_offset": base + offset, "size": size,
+                         "blob_minus_elf_address": base + offset - address})
+    symbols = [struct.unpack_from("<IIIBBH", payload, offset)
+               for offset in range(0x69b70, 0x69b70 + 13392, 16)]
+    bodies = []
+    for name, index, start, end, offset, digest in _PPB_SOURCE_BODIES:
+        section = sections[index]
+        matches = [i for i, s in enumerate(symbols) if string(symbol_names, s[0]) == name and
+                   s[1:3] == (start, end - start) and s[3] & 15 == 2 and s[5] == index]
+        if (len(matches) != 1 or not section[3] <= start < end <= section[3] + section[5] or
+                base + section[4] + start - section[3] != offset):
+            raise FormatError(f"PPB source section-qualified body {name} does not match")
+        bodies.append({"name": name, "section_index": index, "symbol_index": matches[0],
+                       "elf_virtual_address": start, "size": end - start,
+                       "blob_file_offset": offset, "sha256": digest})
+    expected = {0x6f3cc: (5, 0xf730, 585, "Core_PopulatePPB", 4, 0x9344),
+                0x6f69c: (5, 0x100ec, 671, "H264_ParseSPS", 16, 0x2aee4),
+                0x6d80c: (3, 0x7840, 659, "H264_StartOfPicture", 5, 0xd8bc),
+                0x6d458: (3, 0x64b0, 672, "H264_ActivateSPS", 16, 0x2b658),
+                0x74730: (16, 0x2b5ac, 790, "memcpy", 2, 0x5550),
+                0x7479c: (16, 0x2b6f4, 641, "Core_LocalCopy", 2, 0x52e0)}
+    dependencies, count = [], 0
+    for index, owner, offset, size in ((38, 3, 0x6d410, 1572), (40, 5, 0x6e670, 4596),
+                                       (51, 16, 0x72780, 26052)):
+        if (sections[index][1], base + sections[index][4], sections[index][5], sections[index][6],
+                sections[index][7], sections[index][9]) != (4, offset, size, 35, owner, 12):
+            raise FormatError("PPB source original relocation section does not match")
+        for cursor in range(offset, offset + size, 12):
+            count += 1
+            location, info, addend = struct.unpack_from("<IIi", payload, cursor)
+            symbol_index, kind = info >> 8, info & 255
+            if count > MAX_PPB_SOURCE_RELOCATIONS or symbol_index >= len(symbols) or kind not in (0, 4, 6, 7):
+                raise FormatError("PPB source relocation budget/kind/index does not match")
+            if cursor not in expected:
+                continue
+            symbol = symbols[symbol_index]
+            name = string(symbol_names, symbol[0])
+            if ((owner, location, symbol_index, name, symbol[5], symbol[1]) != expected[cursor] or
+                    kind != 6 or addend != 0 or symbol[3] & 15 != 2 or
+                    not sections[owner][3] <= location <= sections[owner][3] + sections[owner][5] - 4):
+                raise FormatError("PPB source selected numeric relocation does not match")
+            target = sections[symbol[5]]
+            if not target[3] <= symbol[1] < target[3] + target[5]:
+                raise FormatError("PPB source original relocation target is outside its section")
+            dependencies.append({"source_section_index": owner, "elf_virtual_address": location,
+                                 "relocation_record_blob_file_offset": cursor, "type": kind,
+                                 "symbol_index": symbol_index, "symbol": name, "addend": addend,
+                                 "target_section_index": symbol[5], "original_target_elf_value": symbol[1],
+                                 "original_target_blob_file_offset": base + target[4] + symbol[1] - target[3],
+                                 "runtime_application_validated": False})
+    if count != 2685 or len(dependencies) != len(expected):
+        raise FormatError("PPB source complete relocation receipt does not match")
+    calls = []
+    for owner, index, site, callee, target, delay in (
+            ("ParseSlice", 3, 0x7840, "H264_StartOfPicture", 0xd8bc, True),
+            ("PopulatePPB", 5, 0xf730, "Core_PopulatePPB", 0x9344, True),
+            ("EndOfPicture", 5, 0xf998, "PopulatePPB", 0xf2b0, False),
+            ("H264_DecodePicture", 5, 0x100ec, "H264_ParseSPS", 0x2aee4, False),
+            ("H264_DecodePicture", 5, 0x10164, "EndOfPicture", 0xf760, False),
+            ("Core_PopulatePPB", 4, 0x94f4, "VideoParameters", 0x80dc, True),
+            ("H264_ParseSPS", 16, 0x2b5ac, "memcpy", 0x5550, True),
+            ("H264_ActivateSPS", 16, 0x2b6f4, "Core_LocalCopy", 0x52e0, True)):
+        if not any(name == owner and sec == index and start <= site < end
+                   for name, sec, start, end, _, _ in _PPB_SOURCE_BODIES):
+            raise FormatError("PPB source call is outside its section-qualified body")
+        offset = base + sections[index][4] + site - sections[index][3]
+        word = struct.unpack_from("<I", payload, offset)[0]
+        displacement = (word >> 7) & 0xfffff
+        displacement -= (1 << 20) if displacement & (1 << 19) else 0
+        if word & 0xf800007f != (0x28000020 if delay else 0x28000000) or site + 4 + 4 * displacement != target:
+            raise FormatError("PPB source original direct call does not match")
+        calls.append({"owner": owner, "section_index": index, "call_elf_virtual_address": site,
+                      "call_blob_file_offset": offset, "callee": callee, "direct_target_elf_virtual_address": target,
+                      "normal_delay_slot": delay})
+    return {
+        "basis": {"model": "ordinary-h264-ppb-source-v1", "conditional": True,
+                  "outer_blob_file_offset": base, "complete_body_count": len(bodies), "code_bytes": 8668,
+                  "reused_bank_complete_body_count": 35, "region_count": len(validated), "validated_bytes": total,
+                  "address_spaces": "Original ELF, blob-file, ARC-local and host DRAM addresses remain distinct."},
+        "validated_regions": validated, "containing_sections": mappings, "producer_bodies": bodies,
+        "original_relocations": {"complete_table_record_count": count, "selected_records": dependencies,
+                                 "numeric_original_records_not_runtime_relocation_proof": True}, "calls": calls,
+        "ordinary_path": {"core_flag_address": 0x3fffcdac, "required_core_flag_mask": 1,
+                          "start_guard_elf_virtual_addresses": [0xd8ec, 0xd8f4, 0xd8fc],
+                          "end_guard_elf_virtual_addresses": [0x10158, 0x1015c, 0x10160],
+                          "current_flags_address": 0x3fffc8b8, "flags_zero_store": 0xff28,
+                          "excluded_current_flags_mask": 0x10, "ordinary_populate_call": 0xf998,
+                          "ordinary_branch_guard_elf_virtual_addresses": [0xf988, 0xf98c],
+                          "cfp2_populate_call": 0xf990, "cfp2_requires_current_and_prior_bit0": True,
+                          "cfp2_guard_elf_range": [0xdba0, 0xdc04],
+                          "cfp2_flag_or": 0xdc04, "cfp2_delay_slot_flag_store": 0xdc0c,
+                          "cfp2_delay_slot_store_before_callee": True,
+                          "empty_picture_path_excluded": True},
+        "dimensions": {"active_sps_base": 0x3fffc430, "width_mb_address": 0x3fffc469,
+                       "normalized_height_mb_address": 0x3fffc454, "pixel_dimension_shift": 4,
+                       "metadata_mb_reads": [0xf300, 0xf30c], "metadata_pixel_stores": [0xf310, 0xf324],
+                       "prefix_mb_reads": [0x10188, 0x10194], "prefix_pixel_stores": [0x10190, 0x101a0],
+                       "prefix_height_normal_delay_slot": True,
+                       "metadata_geometry_call": 0x94f4, "height_load_in_normal_delay_slot": 0x94f8,
+                       "metadata_chroma_offset_store": 0x9518,
+                       "metadata_chroma_offset_is_pre_display_relative": True,
+                       "same_dimensions_preserved_required": True,
+                       "same_geometry_config_preserved_required": True,
+                       "conditional_join_requires": ["dimensions_equal", "config_equal", "conditional_geometry_equal"]},
+        "publication": {"metadata_staging_address": 0x3fffd004, "metadata_bytes": 228,
+                        "metadata_clear_call": 0xf2f8, "metadata_flags_delay_slot_store": 0xf734,
+                        "flags_store_before_core_populate": True, "frame_record_bytes": 284,
+                        "frame_prefix_bytes": 56, "prefix_local_copy_call": 0xa784,
+                        "prefix_dma_write_call": 0xa7a8, "metadata_local_copy_call": 0xa7c4,
+                        "metadata_dma_write_call": 0xa7d4, "dma_sync_call": 0xa800,
+                        "producer_pool_pointer_address": 0x3fffcfc8, "reader_pool_pointer_address": 0x3fffd2dc,
+                        "metadata_pool_pointer_address": 0x3fffd0e8,
+                        "runtime_pool_identity_validated": False},
+        "conditions": {"sps_copy_bytes": 296, "sps_parse_copy_call": 0x2b5ac,
+                       "sps_activate_dma_read_call": 0x2b6dc, "sps_activate_dma_sync_call": 0x2b6e4,
+                       "sps_activate_local_copy_call": 0x2b6f4, "sps_scratch_address": 0x30051c80,
+                       "activation": bank["context_initialization"]["activation"],
+                       "geometry_config": bank["context_initialization"]["init_geometry"],
+                       "preservation_required": ["Same initialized channel, active SPS and geometry config across both reads.",
+                                                 "Scratch, DMA and opaque local-copy/clear callees complete coherently.",
+                                                 "Disjoint valid frame/metadata/context spans; no concurrent unmodeled mutation."]},
+        "validation_scope": {"original_section_qualified_bodies": True, "original_numeric_relocations": True,
+                             "observed_inputs_only": True, "model_no_native_certification": True,
+                             "runtime_relocation": False, "vendor_ISA": False, "device_observed": False,
+                             "native_frame_identity": False, "source_plane_extent": False,
+                             "source_plane_lease": False, "generation_safe_reuse": False,
+                             "cache_or_dma_completion": False, "all_consumers": False}}
+
+
 def _ppb_bank_state(bank_bases, bank_bytes, descriptor_limit=34, stripe_exponent=5,
                     alignment_mask=63, metadata_extra=False):
     """Bounded original constructor projection; not a device buffer allocator."""
@@ -6636,7 +6857,7 @@ def parse_elf(payload, base, wanted, symbol_budget, string_budget,
 def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
             references=False, all_symbols=False, bootstrap=False, picture_output=False,
             arc_metadata=False, csc_command=False, command_buffer_bridge=False, inner_descriptor=False,
-            scaler_fir=False, ppb_handoff=False):
+            scaler_fir=False, ppb_handoff=False, ppb_source=False):
     if len(data) < 24 or len(data) > MAX_FIRMWARE_SIZE or len(data) % 4:
         raise FormatError("invalid BCM70015 firmware size")
     sha256 = hashlib.sha256(data).hexdigest()
@@ -6658,6 +6879,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         raise FormatError("--scaler-fir requires the exact bundled firmware SHA-256 and size")
     if ppb_handoff and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
         raise FormatError("--ppb-handoff requires the exact bundled firmware SHA-256 and size")
+    if ppb_source and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
+        raise FormatError("--ppb-source requires the exact bundled firmware SHA-256 and size")
     payload = data[:-TRAILER_SIZE]
     length_slot = struct.unpack_from("<I", data, len(payload))[0]
     if length_slot != 16:
@@ -6742,6 +6965,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         result["scaler_fir"] = _scaler_fir_map(payload)
     if ppb_handoff:
         result["arm_ppb_metadata_handoff"] = _arm_ppb_metadata_handoff(payload)
+    if ppb_source:
+        result["ppb_source_provenance"] = _ppb_source_provenance(payload)
     return result
 
 
@@ -6777,6 +7002,8 @@ def main(argv=None):
         "validate fixed stock A32 scaler routes and FIR tables; bundled firmware only, not hardware coefficient format proof"))
     parser.add_argument("--ppb-handoff", action="store_true", help=(
         "validate stock A32 metadata acquire/peek/return bodies; not a raw-surface lease"))
+    parser.add_argument("--ppb-source", action="store_true", help=(
+        "validate conditional ordinary H264 source equations; bundled firmware only, not a source-plane lease"))
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-fA-F]{64}", args.expect_sha256):
         parser.error("--expect-sha256 must be 64 hexadecimal digits")
@@ -6784,7 +7011,7 @@ def main(argv=None):
         report = analyze(read_firmware(args.firmware), args.symbol or DEFAULT_SYMBOLS,
                          args.expect_sha256.lower(), args.references, args.all_symbols, args.bootstrap,
                          args.picture_output, args.arc_metadata, args.csc_command, args.command_buffer_bridge,
-                         args.inner_descriptor, args.scaler_fir, args.ppb_handoff)
+                         args.inner_descriptor, args.scaler_fir, args.ppb_handoff, args.ppb_source)
     except (OSError, FormatError) as error:
         print(f"flea_fw_map: {error}", file=sys.stderr)
         return 1

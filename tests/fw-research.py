@@ -9090,5 +9090,670 @@ class BlockAverageGateTests(unittest.TestCase):
         # read-clear behavior, a source-surface lease or actual completion.
 
 
+class FirmwarePpbSourceProvenanceTests(unittest.TestCase):
+    """Original byte provenance and conditional arithmetic, not a live lease."""
+
+    BODIES = (
+        ("PopulatePPB", 5, 0xf2b0, 0xf760, 0x3a154,
+         "4d8a71519ab56a688c61948d5aec9bc15da67ee3525df3d638fc478895dceff6"),
+        ("EndOfPicture", 5, 0xf760, 0xfa5c, 0x3a604,
+         "c03df07328dffba01e10fe02a5a705c8be04c07bd81992d37852628f2a69a17b"),
+        ("H264_DecodePicture", 5, 0xfda4, 0x10258, 0x3ac48,
+         "c58523f87b6082fdfe61674df64a591baad1f20ee0025c826a9fbcc3d8a6d598"),
+        ("H264_StartOfPicture", 5, 0xd8bc, 0xdb60, 0x38760,
+         "20a9f69edef44edfcc5506a8f061ec6f5150944dbb5cce2822b03fc5e45da5b8"),
+        ("H264_IsCFP2", 5, 0xdb60, 0xdc1c, 0x38a04,
+         "a42b7f1e8892b5707149d84aeed42d5115d6ebcffdb18480a4c10674c0af6c79"),
+        ("H264_ParseSPS", 16, 0x2aee4, 0x2b658, 0x4da78,
+         "7604f8afb6bd6c75ae532d5599b0068f48d94a8574405d5347c92e687be169c4"),
+        ("H264_ActivateSPS", 16, 0x2b658, 0x2b724, 0x4e1ec,
+         "7d875e642ba9f2ee2230f7298f48ae8ebc3cdaa1983035bfb6e50773da43c33a"),
+        ("ParseSlice", 3, 0x7590, 0x7d68, 0x32434,
+         "dee4395033ddbf46b0fdc32a68d502ef020efc95ac7fbca45c84ec4175478208"),
+        ("Core_PopulatePPB", 4, 0x9344, 0x9548, 0x341e8,
+         "2b3cde5b8b4eef00eedd2c7fa4829324f428f7cb89d01eee685db5a5f6de6805"))
+    RELOCATION_TABLES = (
+        (38, 3, 0x6d410, 1572, "bd97fd812ccaf604c9c028d73fc8ddfdb2e36ff64ea4694fe6a61c1444e6c00e"),
+        (40, 5, 0x6e670, 4596, "dc14dd531617af502be4f2e96dc41f6d88dff82f386ebd506ca3805ebe8a33fb"),
+        (51, 16, 0x72780, 26052, "8c1c3eb2f61ad26f9278028b0aa9a596650345df13b1dd0d6d806cf677b9bba9"))
+    CALLS = (("ParseSlice", 3, 0x7840, "H264_StartOfPicture", 0xd8bc, True),
+             ("PopulatePPB", 5, 0xf730, "Core_PopulatePPB", 0x9344, True),
+             ("EndOfPicture", 5, 0xf998, "PopulatePPB", 0xf2b0, False),
+             ("H264_DecodePicture", 5, 0x100ec, "H264_ParseSPS", 0x2aee4, False),
+             ("H264_DecodePicture", 5, 0x10164, "EndOfPicture", 0xf760, False),
+             ("Core_PopulatePPB", 4, 0x94f4, "VideoParameters", 0x80dc, True),
+             ("H264_ParseSPS", 16, 0x2b5ac, "memcpy", 0x5550, True),
+             ("H264_ActivateSPS", 16, 0x2b6f4, "Core_LocalCopy", 0x52e0, True))
+
+    @classmethod
+    def setUpClass(cls):
+        cls.data = MAP.read_firmware(BLOB)
+        cls.payload = cls.data[:-MAP.TRAILER_SIZE]
+        cls.elf_base = 0x2ea60
+        header = struct.unpack_from("<16sHHIIIIIHHHHHH", cls.payload, cls.elf_base)
+        cls.sections = [struct.unpack_from("<10I", cls.payload,
+                                          cls.elf_base + header[6] + index * 40)
+                        for index in range(header[12])]
+        table = cls.sections[35]
+        strings = cls.sections[table[6]]
+        cls.names = cls.payload[cls.elf_base + strings[4]:cls.elf_base + strings[4] + strings[5]]
+        cls.symbols = [struct.unpack_from("<IIIBBH", cls.payload, cls.elf_base + table[4] + position)
+                       for position in range(0, table[5], 16)]
+
+    def symbol_name(self, index):
+        offset = self.symbols[index][0]
+        return self.names[offset:self.names.index(b"\0", offset)].decode("ascii")
+
+    def file_offset(self, section, address):
+        entry = self.sections[section]
+        self.assertTrue(entry[3] <= address < entry[3] + entry[5])
+        return self.elf_base + entry[4] + address - entry[3]
+
+    def word(self, section, address):
+        return struct.unpack_from("<I", self.payload, self.file_offset(section, address))[0]
+
+    def test_independent_arc_complete_body_hashes_symbols_sections_and_report_manifest(self):
+        report = MAP._ppb_source_provenance(self.payload)
+        self.assertEqual(MAP._PPB_SOURCE_BODIES, self.BODIES)
+        self.assertEqual(sum(end - start for _, _, start, end, _, _ in self.BODIES), 8668)
+        expected = []
+        for name, section, start, end, offset, digest in self.BODIES:
+            with self.subTest(body=name):
+                self.assertEqual(self.file_offset(section, start), offset)
+                self.assertLessEqual(end, self.sections[section][3] + self.sections[section][5])
+                self.assertEqual(hashlib.sha256(self.payload[offset:offset + end - start]).hexdigest(), digest)
+                matches = [index for index, symbol in enumerate(self.symbols)
+                           if self.symbol_name(index) == name and
+                           symbol[1:3] == (start, end - start) and
+                           symbol[3] & 15 == 2 and symbol[5] == section]
+                self.assertEqual(len(matches), 1)
+                expected.append({"name": name, "section_index": section, "symbol_index": matches[0],
+                                 "elf_virtual_address": start, "size": end - start,
+                                 "blob_file_offset": offset, "sha256": digest})
+        self.assertEqual(report["producer_bodies"], expected)
+        basis = report["basis"]
+        self.assertEqual((basis["model"], basis["outer_blob_file_offset"], basis["complete_body_count"],
+                          basis["code_bytes"], basis["reused_bank_complete_body_count"],
+                          basis["region_count"], basis["validated_bytes"]),
+                         ("ordinary-h264-ppb-source-v1", 0x2ea60, 9, 8668, 35, 55, 86097))
+        self.assertTrue(basis["conditional"])
+        self.assertEqual([(entry["role"], entry["blob_file_offset"], entry["size"], entry["sha256"])
+                          for entry in report["validated_regions"][-11:]],
+                         [(name, offset, end - start, digest)
+                          for name, _, start, end, offset, digest in self.BODIES] +
+                         [("h264_slice_relocations", 0x6d410, 1572, self.RELOCATION_TABLES[0][4]),
+                          ("h264_picture_relocations", 0x6e670, 4596, self.RELOCATION_TABLES[1][4])])
+        self.assertEqual([entry["section_index"] for entry in report["containing_sections"]], [2, 4, 16, 3, 5])
+        for entry in report["containing_sections"]:
+            original = self.sections[entry["section_index"]]
+            self.assertEqual((entry["elf_virtual_address"], entry["elf_file_offset"], entry["size"]),
+                             (original[3], original[4], original[5]))
+            self.assertEqual(entry["blob_minus_elf_address"], self.elf_base + original[4] - original[3])
+
+    def test_exact_producer_dimensions_normal_delays_and_prefix_metadata_publication(self):
+        words = {
+            5: {0xf300: 0x08078469, 0xf30c: 0x08078454, 0xf310: 0x100714a0,
+                0xf324: 0x100710a4, 0xf730: 0x2ff38220, 0xf734: 0x10070094,
+                0xff28: 0x108cacb8, 0xdc04: 0x68007e10, 0xdc08: 0x28311fa0,
+                0xdc0c: 0x108200b8, 0x10188: 0x08008469, 0x10194: 0x08008454,
+                0x10190: 0x100b8080, 0x1019c: 0x2fff17a0, 0x101a0: 0x100b8084},
+            4: {0x94f4: 0x2ffd7ca0, 0x94f8: 0x082780a4, 0x9518: 0x1007809c,
+                0xa784: 0x2ff56b20, 0xa788: 0x605ffe38,
+                0xa7a8: 0x2ff57a20, 0xa7ac: 0x605ffe38,
+                0xa7c4: 0x2ff56320, 0xa7c8: 0x605ffee4,
+                0xa7d4: 0x2ff574a0, 0xa7d8: 0x605ffee4, 0xa800: 0x2ff56c00}}
+        for section, entries in words.items():
+            for address, word in entries.items():
+                with self.subTest(section=section, address=hex(address)):
+                    self.assertEqual(self.word(section, address), word)
+        report = MAP._ppb_source_provenance(self.payload)
+        dimensions = report["dimensions"]
+        self.assertEqual((dimensions["width_mb_address"], dimensions["normalized_height_mb_address"],
+                          dimensions["pixel_dimension_shift"]), (0x3fffc469, 0x3fffc454, 4))
+        self.assertEqual(dimensions["metadata_mb_reads"], [0xf300, 0xf30c])
+        self.assertEqual(dimensions["metadata_pixel_stores"], [0xf310, 0xf324])
+        self.assertEqual(dimensions["prefix_mb_reads"], [0x10188, 0x10194])
+        self.assertEqual(dimensions["prefix_pixel_stores"], [0x10190, 0x101a0])
+        self.assertTrue(dimensions["prefix_height_normal_delay_slot"])
+        self.assertEqual(words[5][0x1019c] & 0xf800007f, 0x28000020)
+        self.assertEqual(dimensions["conditional_join_requires"],
+                         ["dimensions_equal", "config_equal", "conditional_geometry_equal"])
+        self.assertTrue(dimensions["same_dimensions_preserved_required"])
+        self.assertTrue(dimensions["same_geometry_config_preserved_required"])
+        self.assertTrue(dimensions["metadata_chroma_offset_is_pre_display_relative"])
+        self.assertEqual((dimensions["metadata_geometry_call"], dimensions["height_load_in_normal_delay_slot"],
+                          dimensions["metadata_chroma_offset_store"]), (0x94f4, 0x94f8, 0x9518))
+        publication = report["publication"]
+        self.assertEqual((publication["metadata_bytes"], publication["frame_record_bytes"],
+                          publication["frame_prefix_bytes"]), (228, 284, 56))
+        self.assertTrue(publication["flags_store_before_core_populate"])
+        self.assertEqual(publication["metadata_flags_delay_slot_store"], 0xf734)
+        self.assertEqual((publication["prefix_local_copy_call"], publication["prefix_dma_write_call"],
+                          publication["metadata_local_copy_call"], publication["metadata_dma_write_call"],
+                          publication["dma_sync_call"]), (0xa784, 0xa7a8, 0xa7c4, 0xa7d4, 0xa800))
+        for call, size in ((0xa784, 56), (0xa7a8, 56), (0xa7c4, 228), (0xa7d4, 228)):
+            self.assertEqual(words[4][call] & 0xf800007f, 0x28000020)
+            self.assertEqual(words[4][call + 4] & 511, size)
+        self.assertEqual(words[4][0xa800] & 0xf800007f, 0x28000000)
+        ordinary = report["ordinary_path"]
+        self.assertEqual((ordinary["excluded_current_flags_mask"], ordinary["flags_zero_store"],
+                          ordinary["cfp2_flag_or"], ordinary["cfp2_delay_slot_flag_store"]),
+                         (0x10, 0xff28, 0xdc04, 0xdc0c))
+        self.assertTrue(ordinary["cfp2_delay_slot_store_before_callee"])
+        self.assertTrue(ordinary["empty_picture_path_excluded"])
+
+    def test_original_rela_numeric_symbols_and_all_eight_section_qualified_direct_calls(self):
+        report = MAP._ppb_source_provenance(self.payload)
+        expected = {0x6d458: (3, 0x64b0, 672, "H264_ActivateSPS", 16, 0x2b658),
+                    0x6d80c: (3, 0x7840, 659, "H264_StartOfPicture", 5, 0xd8bc),
+                    0x6f3cc: (5, 0xf730, 585, "Core_PopulatePPB", 4, 0x9344),
+                    0x6f69c: (5, 0x100ec, 671, "H264_ParseSPS", 16, 0x2aee4),
+                    0x74730: (16, 0x2b5ac, 790, "memcpy", 2, 0x5550),
+                    0x7479c: (16, 0x2b6f4, 641, "Core_LocalCopy", 2, 0x52e0)}
+        receipts, count = [], 0
+        for section, owner, offset, size, digest in self.RELOCATION_TABLES:
+            table = self.sections[section]
+            self.assertEqual((table[1], self.elf_base + table[4], table[5], table[6], table[7], table[9]),
+                             (4, offset, size, 35, owner, 12))
+            self.assertEqual(hashlib.sha256(self.payload[offset:offset + size]).hexdigest(), digest)
+            for position in range(offset, offset + size, 12):
+                count += 1
+                address, info, addend = struct.unpack_from("<IIi", self.payload, position)
+                self.assertLess(info >> 8, len(self.symbols))
+                self.assertIn(info & 255, (0, 4, 6, 7))
+                if position not in expected:
+                    continue
+                index = info >> 8
+                symbol = self.symbols[index]
+                self.assertEqual((owner, address, index, self.symbol_name(index), symbol[5], symbol[1]),
+                                 expected[position])
+                self.assertEqual((info & 255, addend, symbol[3] & 15), (6, 0, 2))
+                receipts.append({"source_section_index": owner, "elf_virtual_address": address,
+                                 "relocation_record_blob_file_offset": position, "type": 6,
+                                 "symbol_index": index, "symbol": self.symbol_name(index), "addend": 0,
+                                 "target_section_index": symbol[5], "original_target_elf_value": symbol[1],
+                                 "original_target_blob_file_offset": self.file_offset(symbol[5], symbol[1]),
+                                 "runtime_application_validated": False})
+        self.assertEqual(count, 2685)
+        self.assertEqual(report["original_relocations"], {
+            "complete_table_record_count": 2685, "selected_records": receipts,
+            "numeric_original_records_not_runtime_relocation_proof": True})
+        calls = []
+        for owner, section, address, callee, target, delay in self.CALLS:
+            word = self.word(section, address)
+            displacement = (word >> 7) & 0xfffff
+            if displacement >= 0x80000:
+                displacement -= 0x100000
+            self.assertEqual(word & 0xf800007f, 0x28000020 if delay else 0x28000000)
+            self.assertEqual(address + 4 + 4 * displacement, target)
+            self.assertTrue(any(name == owner and sec == section and start <= address < end
+                                for name, sec, start, end, _, _ in self.BODIES))
+            calls.append({"owner": owner, "section_index": section, "call_elf_virtual_address": address,
+                          "call_blob_file_offset": self.file_offset(section, address), "callee": callee,
+                          "direct_target_elf_virtual_address": target, "normal_delay_slot": delay})
+        self.assertEqual(report["calls"], calls)
+        self.assertNotIn(0x64b0, [call["call_elf_virtual_address"] for call in calls])
+
+    def test_private_body_fuses_tamper_and_refused_call_even_with_rehashed_test_registry(self):
+        regions = [(name, offset, end - start) for name, _, start, end, offset, _ in self.BODIES]
+        regions += [("slice RELA", 0x6d410, 1572), ("picture RELA", 0x6e670, 4596)]
+        with mock.patch.object(MAP, "_ppb_bank_contract",
+                               side_effect=AssertionError("source pins failed to precede bank interpretation")):
+            for name, offset, size in regions:
+                for delta in (0, size // 2, size - 1):
+                    changed = bytearray(self.payload)
+                    changed[offset + delta] ^= 1
+                    with self.subTest(region=name, byte=delta), self.assertRaises(MAP.FormatError):
+                        MAP._ppb_source_provenance(changed)
+        changed = bytearray(self.payload)
+        changed[self.file_offset(3, 0x7840)] ^= 0x80
+        repinned = tuple((role, offset, size, hashlib.sha256(changed[offset:offset + size]).hexdigest())
+                         for role, offset, size, _ in MAP._PPB_SOURCE_REGIONS)
+        with mock.patch.object(MAP, "_PPB_SOURCE_REGIONS", repinned), \
+                self.assertRaisesRegex(MAP.FormatError, "direct call"):
+            MAP._ppb_source_provenance(changed)
+        for invalid in (self.payload[:-1], self.payload + b"\0"):
+            with self.assertRaises(MAP.FormatError):
+                MAP._ppb_source_provenance(invalid)
+
+    def test_source_report_pure_immutable_conditional_scope_and_bounded_budgets(self):
+        mutable = bytearray(self.payload)
+        before = bytes(mutable)
+        with mock.patch("builtins.open", side_effect=AssertionError("source model opened a file")), \
+                mock.patch.object(MAP.os, "open", side_effect=AssertionError("source model opened a device")), \
+                mock.patch.object(subprocess, "Popen", side_effect=AssertionError("source model executed a process")):
+            report = MAP._ppb_source_provenance(mutable)
+        self.assertEqual(bytes(mutable), before)
+        self.assertEqual(json.loads(json.dumps(report)), report)
+        self.assertEqual(report["validation_scope"], {
+            "original_section_qualified_bodies": True, "original_numeric_relocations": True,
+            "observed_inputs_only": True, "model_no_native_certification": True,
+            "runtime_relocation": False, "vendor_ISA": False, "device_observed": False,
+            "native_frame_identity": False, "source_plane_extent": False,
+            "source_plane_lease": False, "generation_safe_reuse": False,
+            "cache_or_dma_completion": False, "all_consumers": False})
+        publication = report["publication"]
+        self.assertEqual((publication["producer_pool_pointer_address"], publication["reader_pool_pointer_address"],
+                          publication["metadata_pool_pointer_address"]), (0x3fffcfc8, 0x3fffd2dc, 0x3fffd0e8))
+        self.assertFalse(publication["runtime_pool_identity_validated"])
+        self.assertEqual(report["conditions"]["sps_copy_bytes"], 296)
+        self.assertEqual(len(report["conditions"]["preservation_required"]), 3)
+        for budget, value in (("MAX_PPB_SOURCE_REGIONS", 54), ("MAX_PPB_SOURCE_BYTES", 86096),
+                              ("MAX_PPB_SOURCE_RELOCATIONS", 2684)):
+            with self.subTest(budget=budget), mock.patch.object(MAP, budget, value), \
+                    self.assertRaisesRegex(MAP.FormatError, "budget"):
+                MAP._ppb_source_provenance(self.payload)
+
+    @staticmethod
+    def geometry(width, height, exponent, mask, extra):
+        unit = 2 ** exponent
+
+        def stripe(rows):
+            count = (rows + unit - 1) // unit
+            return min((count if count % 2 else count + 1) * unit, 1120)
+
+        pitch = (width + mask) & ~mask
+        y_height, c_height = stripe(height), stripe(height // 2)
+        y_bytes = ((pitch * y_height + 4095) // 4096) * 4096
+        chroma_bytes = pitch * c_height
+        ordinary_bytes = ((y_bytes + chroma_bytes + 4095) // 4096) * 4096
+        extra_bytes = 6 * (width // 16) * (height // 16) if extra else 0
+        return {"pitch": pitch, "y_stripe_height": y_height,
+                "chroma_stripe_height": c_height, "y_bytes": y_bytes,
+                "chroma_bytes": chroma_bytes, "extra_offset": ordinary_bytes if extra else 0,
+                "extra_bytes": extra_bytes,
+                "frame_bytes": ((ordinary_bytes + extra_bytes + 4095) // 4096) * 4096,
+                "conditional_vendor_mul16": True}
+
+    def test_join_256x96_literal_geometry_and_conditional_scope(self):
+        result = MAP._ppb_source_geometry_join((16, 6), (16, 6), (5, 63, False), (5, 63, False))
+        expected = self.geometry(256, 96, 5, 63, False)
+        self.assertEqual((expected["pitch"], expected["y_bytes"], expected["frame_bytes"]),
+                         (256, 0x6000, 0xc000))
+        self.assertEqual(result, {
+            "metadata_mb_dimensions": [16, 6], "prefix_mb_dimensions": [16, 6],
+            "metadata_config": [5, 63, False], "allocation_config": [5, 63, False],
+            "metadata_geometry": expected, "allocation_geometry": expected,
+            "dimensions_equal": True, "config_equal": True,
+            "conditional_geometry_equal": True, "observed_inputs_only": True,
+            "model_no_native_certification": True})
+
+    def test_join_dimension_config_divergence_is_not_hidden_by_equal_geometry(self):
+        cases = (((16, 6), (15, 6), (5, 63, False), (5, 63, False)),
+                 ((16, 6), (16, 8), (5, 63, False), (5, 63, False)),
+                 ((16, 6), (16, 6), (5, 63, False), (5, 127, False)),
+                 ((16, 6), (16, 6), (5, 63, False), (5, 63, True)),
+                 ((40, 30), (40, 30), (4, 63, True), (5, 63, True)))
+        for metadata, prefix, config, allocated in cases:
+            with self.subTest(metadata=metadata, prefix=prefix, config=config, allocated=allocated):
+                result = MAP._ppb_source_geometry_join(metadata, prefix, config, allocated)
+                meta_geometry = self.geometry(*(value * 16 for value in metadata), *config)
+                allocation_geometry = self.geometry(*(value * 16 for value in prefix), *allocated)
+                self.assertEqual(result["metadata_geometry"], meta_geometry)
+                self.assertEqual(result["allocation_geometry"], allocation_geometry)
+                self.assertIs(result["dimensions_equal"], metadata == prefix)
+                self.assertIs(result["config_equal"], config == allocated)
+                self.assertIs(result["conditional_geometry_equal"], meta_geometry == allocation_geometry)
+        collision = MAP._ppb_source_geometry_join((16, 6), (15, 6), (5, 63, False), (5, 63, False))
+        self.assertFalse(collision["dimensions_equal"])
+        self.assertTrue(collision["conditional_geometry_equal"])
+        extra = MAP._ppb_source_geometry_join((16, 6), (16, 6), (5, 63, False), (5, 63, True))
+        self.assertEqual((extra["allocation_geometry"]["extra_offset"],
+                          extra["allocation_geometry"]["extra_bytes"],
+                          extra["allocation_geometry"]["frame_bytes"]), (0xc000, 576, 0xd000))
+
+    def test_join_rejects_malformed_dimensions_configs_and_bool_numbers(self):
+        arguments = [(16, 6), (16, 6), (5, 63, False), (5, 63, False)]
+        invalid_dimensions = (None, True, 16, "16,6", b"\x10\x06", {0: 16, 1: 6},
+                              (), (16,), (16, 6, 0), (True, 6), (16, False),
+                              (-1, 6), (256, 6), (16, 256), (16.0, 6), (16, None))
+        invalid_configs = (None, True, 5, "5,63,False", b"\x05\x3f\x00", {}, (),
+                           (5, 63), (5, 63, False, 0), (True, 63, False),
+                           (-1, 63, False), (32, 63, False), (5, True, False),
+                           (5, -1, False), (5, 256, False), (5, 63, 0),
+                           (5, 63, 1), (5, 63, None), (5.0, 63, False))
+        for position in range(4):
+            for invalid in invalid_dimensions if position < 2 else invalid_configs:
+                changed = list(arguments)
+                changed[position] = invalid
+                with self.subTest(position=position, invalid=invalid), self.assertRaises(MAP.FormatError):
+                    MAP._ppb_source_geometry_join(*changed)
+
+    def test_join_zero_boundary_byte_dimensions_and_detached_mutation_free_outputs(self):
+        for dimensions in ((0, 0), (1, 1), (255, 255)):
+            with self.subTest(dimensions=dimensions):
+                result = MAP._ppb_source_geometry_join(dimensions, dimensions,
+                                                      (5, 63, False), (5, 63, False))
+                self.assertEqual(result["metadata_geometry"],
+                                 self.geometry(*(value * 16 for value in dimensions), 5, 63, False))
+        arguments = [[16, 6], [16, 6], [5, 63, False], [5, 63, False]]
+        before = json.loads(json.dumps(arguments))
+        first = MAP._ppb_source_geometry_join(*arguments)
+        second = MAP._ppb_source_geometry_join(*arguments)
+        self.assertEqual(arguments, before)
+        self.assertEqual(first, second)
+        for key in ("metadata_mb_dimensions", "prefix_mb_dimensions", "metadata_config", "allocation_config"):
+            first[key][0] = 0
+        first["metadata_geometry"]["pitch"] = 0
+        self.assertEqual(arguments, before)
+        self.assertEqual(second, MAP._ppb_source_geometry_join(*arguments))
+        self.assertEqual(json.loads(json.dumps(second)), second)
+
+    def test_frame_record_literal_layout_all63_indexes_and_full_extent_boundary(self):
+        for pool in (0, 0x100000, 0x3fffb000):
+            for index in range(63):
+                address = pool + 284 * index
+                with self.subTest(pool=pool, index=index):
+                    self.assertEqual(MAP._ppb_source_frame_record(pool, index), {
+                        "pool": pool, "index": index, "stride_bytes": 284,
+                        "record_address": address, "prefix_address": address, "prefix_bytes": 56,
+                        "metadata_address": address + 56, "metadata_bytes": 228,
+                        "metadata_source_words_address": address + 60, "metadata_source_words_bytes": 8,
+                        "metadata_chroma_offset_address": address + 64, "metadata_chroma_offset_bytes": 4,
+                        "record_last_byte": address + 283,
+                        "overflow_guard_is_model_only": True,
+                        "firmware_index_or_overflow_guard_proven": False,
+                        "model_no_native_certification": True})
+        for index in (0, 1, 62):
+            pool = 0xffffffff - 284 * index - 283
+            with self.subTest(index=index):
+                result = MAP._ppb_source_frame_record(pool, index)
+                self.assertEqual(result["record_last_byte"], 0xffffffff)
+                with self.assertRaises(MAP.FormatError):
+                    MAP._ppb_source_frame_record(pool + 1, index)
+
+    def test_frame_record_rejects_invalid_scalars_and_does_not_wrap(self):
+        for pool in (-1, 0x100000000, True, False, 1.0, "0", None, [], {}):
+            with self.subTest(pool=pool), self.assertRaises(MAP.FormatError):
+                MAP._ppb_source_frame_record(pool, 0)
+        for index in (-1, 63, 0x100000000, True, False, 1.0, "0", None, [], {}):
+            with self.subTest(index=index), self.assertRaises(MAP.FormatError):
+                MAP._ppb_source_frame_record(0, index)
+        for pool, index in ((0xffffffff, 0), (0xffffff00, 0), (0xfffff000, 62)):
+            with self.subTest(pool=pool, index=index), self.assertRaises(MAP.FormatError):
+                MAP._ppb_source_frame_record(pool, index)
+
+    def test_arm_source_shape_bodies_direct_overwrite_and_distinct_cache_copy_sizes(self):
+        bodies = (
+            (0xd880, 0xac, "1268e39236294a083ef06179d884a898c15b72addc5aa96c776b60af51de40e9"),
+            (0xd92c, 0x98, "323e1cba92e813dac4a152a1842b7e66194f996866f3d022f8188058cf534bd4"),
+            (0xd9c4, 0x304, "0d652779dea5a38e907b68643ecb3b34bc02313492d6d35705bd7b7becbf2f4c"),
+            (0xded4, 0x120, "a754d48cdd63ac3cc688d6ade94948f174d43525af4cd28b751d4f15dbbe8456"),
+            (0xdff4, 0x11c, "a326dea03d2672e92d1f5bc959f75dc6bf639ed3da003c8cfa96ad9f1ab5625b"),
+            (0x86c4, 0x154, "b2ea5deaf55f154c6b9824abf9393955eb0d99196fa61b7ed914628a14cbedb2"))
+        for offset, size, digest in bodies:
+            with self.subTest(body=hex(offset)):
+                self.assertEqual(hashlib.sha256(self.payload[offset:offset + size]).hexdigest(), digest)
+        words = {
+            0xd8cc: 0xe5950014, 0xd8d0: 0xe1a00220, 0xd8d4: 0xe5840054,
+            0xd8d8: 0xe5950018, 0xd8dc: 0xe1a00220, 0xd8e0: 0xe5840058,
+            0xd8e4: 0xe595000c, 0xd8e8: 0xe584002c,
+            0xd8ec: 0xe5950010, 0xd8f0: 0xe5840030,
+            0xd91c: 0xe5c4705c, 0xd924: 0xe5c40027,
+            0xe19c: 0xe5950004, 0xe1a0: 0xe5840034,
+            0xe1a4: 0xe5950008, 0xe1a8: 0xe5840038,
+            0x86b0: 0xe28400e0, 0x86b4: 0xe28d1014, 0x86b8: 0xe3a0200c,
+            0x86bc: 0xeb006011, 0x86c0: 0xea000054,
+            0x86cc: 0xe28400ec, 0x86d0: 0xe3a0208c,
+            0x86d4: 0xe28d1020, 0x86d8: 0xeb00600a,
+            0x8744: 0xe28400ec, 0x8748: 0xe3a0208c,
+            0x874c: 0xe28d1020, 0x8750: 0xeb005fec}
+        for address, word in words.items():
+            with self.subTest(address=hex(address)):
+                self.assertEqual(struct.unpack_from("<I", self.payload, address)[0], word)
+        self.assertEqual([(words[address] & 0xfff, words[address + 4] & 0xfff)
+                          for address in (0xe19c, 0xe1a4)], [(4, 0x34), (8, 0x38)])
+        self.assertEqual([(words[address] >> 7) & 31 for address in (0xd8d0, 0xd8dc)], [4, 4])
+        self.assertEqual((words[0x86b0] & 0xfff, words[0x86b8] & 255), (0xe0, 12))
+        for start in (0x86cc, 0x8744):
+            self.assertEqual((words[start] & 0xfff, words[start + 4] & 255), (0xec, 140))
+        # Original metadata cache copies and final source-offset overwrite do
+        # not certify runtime identity, source extent or simultaneous sampling.
+
+    def test_new_opt_in_is_additive_and_never_evaluated_by_old_options(self):
+        options = ("references", "all_symbols", "bootstrap", "picture_output", "arc_metadata",
+                   "csc_command", "command_buffer_bridge", "inner_descriptor", "scaler_fir", "ppb_handoff")
+        cases = [{}] + [{name: True} for name in options] + [dict.fromkeys(options, True)]
+        for flags in cases:
+            with self.subTest(flags=flags):
+                with mock.patch.object(MAP, "_ppb_source_provenance",
+                                       side_effect=AssertionError("source helper evaluated without opt-in")):
+                    plain = MAP.analyze(self.data, **flags)
+                self.assertNotIn("ppb_source_provenance", plain)
+                enriched = MAP.analyze(self.data, ppb_source=True, **flags)
+                self.assertEqual(enriched.pop("ppb_source_provenance"),
+                                 MAP._ppb_source_provenance(self.payload))
+                self.assertEqual(enriched, plain)
+        with self.assertRaises(MAP.FormatError):
+            analyze_fixture(fixture(), ppb_source=True)
+
+    def test_whole_baseline_identity_cannot_be_overridden_for_source_option(self):
+        for offset in (0, 0xd624, 0x341e8, len(self.data) - 1):
+            changed = bytearray(self.data)
+            changed[offset] ^= 1
+            digest = hashlib.sha256(changed).hexdigest()
+            with self.subTest(offset=offset):
+                with mock.patch.object(MAP, "_ppb_source_provenance",
+                                       side_effect=AssertionError("private body parsing preceded baseline gate")):
+                    with self.assertRaisesRegex(MAP.FormatError, "exact bundled"):
+                        MAP.analyze(changed, expected_sha256=digest, ppb_source=True)
+        with self.assertRaises(MAP.FormatError):
+            MAP.analyze(self.data[:-4], expected_sha256=hashlib.sha256(self.data[:-4]).hexdigest(),
+                        ppb_source=True)
+
+    def test_default_cli_exact_hashes_and_new_option_reproducibility(self):
+        for arguments, digest in (
+                ([], "15068c07a81a510e02435b6203b1cf5e424152e37ff456b1da9c12b77c15799e"),
+                (["--references", "--symbol", "ReadLine"],
+                 "2a491f4b9033395cdbc688810319ea159973a296d7828ac65153bc93d45b588f"),
+                (["--all-symbols"],
+                 "15af1023987b5f2aee1e9a5560f749560bf33f729252ca3fcb9f41358f49e5aa")):
+            command = [sys.executable, "-B", str(TOOL), str(BLOB)] + arguments
+            plain = subprocess.run(command, capture_output=True, timeout=20)
+            extra = subprocess.run(command + ["--ppb-source"], capture_output=True, timeout=20)
+            with self.subTest(arguments=arguments):
+                self.assertEqual(plain.returncode, 0, plain.stderr)
+                self.assertEqual(plain.stderr, b"")
+                self.assertEqual(hashlib.sha256(plain.stdout).hexdigest(), digest)
+                self.assertEqual(extra.returncode, 0, extra.stderr)
+                self.assertEqual(extra.stderr, b"")
+                report = json.loads(extra.stdout)
+                self.assertEqual(report.pop("ppb_source_provenance"),
+                                 MAP._ppb_source_provenance(self.payload))
+                self.assertEqual(report, json.loads(plain.stdout))
+                self.assertNotIn(str(ROOT).encode(), extra.stdout)
+        command = [sys.executable, "-B", str(TOOL), str(BLOB), "--ppb-source"]
+        first = subprocess.run(command, capture_output=True, timeout=20)
+        second = subprocess.run(command, capture_output=True, timeout=20)
+        self.assertEqual((first.returncode, second.returncode), (0, 0))
+        self.assertEqual(first.stderr, b"")
+        self.assertEqual(second.stderr, b"")
+        self.assertEqual(first.stdout, second.stdout)
+        self.assertEqual(hashlib.sha256(BLOB.read_bytes()).hexdigest(),
+                         "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9")
+
+
+class NativeSourceShapeFixtureTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.path = ROOT / "tests/fixtures/issue92/native-source-shape.json"
+        cls.raw = cls.path.read_bytes()
+        cls.observed = json.loads(cls.raw)
+
+    def test_fixed_read_plan_native_controls_and_finite_observation_scope(self):
+        observed = self.observed
+        self.assertEqual(hashlib.sha256(self.raw).hexdigest(),
+                         "c8a8526c5b218c84df17246515567a15a268a2d03c75885bbad4e48a2ccbf784")
+        self.assertEqual((observed["schema_version"], observed["kind"]), (1, "native-fixed-arm-source-shape"))
+        self.assertEqual(observed["firmware_sha256"],
+                         "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9")
+        self.assertEqual(observed["observer_source_sha256"],
+                         "ae3ebef4c114b577b17ae58c016e644246521ee2583ff2e60022a05bb178835a")
+        self.assertEqual(observed["observer_binary_sha256"],
+                         "0d31a2a1800e976551263de9a0c2d8320be6a5045a8b57268e1581f184351702")
+        self.assertEqual(observed["input"], {
+            "codec": "H264", "progressive": True, "width": 256, "height": 96, "packets": 180,
+            "submitted_bytes": 124832,
+            "submitted_sha256": "1363a87c8f59fab6187cd13653a3ba8a41fd994066d30c24be1c2b09d675666e"})
+        plan = observed["reads"]
+        self.assertEqual((plan["flag"], int(plan["slot_base_hex"], 16), int(plan["slot_stride_hex"], 16),
+                          plan["slots"], plan["passes"]), ("--observe-arm-source-shape", 0xd3a00, 0x1cc, 4, 2))
+        self.assertEqual([int(value, 16) for value in plan["span_offsets_hex"]],
+                         [0xc4, 0xd0, 0xe0, 0xf4, 0x100, 0x110, 0x120, 0x140, 0x158, 0x180])
+        self.assertEqual(plan["span_bytes"], [4, 4, 12, 4, 8, 16, 8, 12, 8, 4])
+        self.assertEqual(plan["fields"], ["c4", "d0", "cached-meta-virtual", "cached-meta-physical", "e8-opaque",
+                         "cached-picture+08", "cached-picture+14", "cached-picture+18", "cached-picture+24",
+                         "cached-picture+28", "cached-picture+2c", "cached-picture+30", "cached-source+34",
+                         "cached-source+38", "cached-picture+54", "cached-picture+58", "cached-picture+5c",
+                         "cached-picture+6c", "cached-picture+70", "180-acquire/reuse"])
+        self.assertEqual(plan["stages"], ["after-OPEN/pre-START", "first-output-after-release-and-owned-write",
+                                           "delivery-EOS-before-STOP"])
+        self.assertEqual((plan["per_trial_calls"], plan["per_trial_bytes"]),
+                         (3 * 2 * 4 * len(plan["span_bytes"]), 3 * 2 * 4 * sum(plan["span_bytes"])))
+        self.assertEqual((plan["per_trial_calls"], plan["per_trial_bytes"]), (240, 1920))
+        for key in ("no_pointer_following", "no_source_plane_access", "no_diagnostic_target_writes", "non_atomic"):
+            self.assertIs(plan[key], True)
+        self.assertEqual([trial["id"] for trial in observed["trials"]], ["A", "B"])
+        for trial in observed["trials"]:
+            self.assertEqual((trial["frames"], trial["reads"], trial["bytes_read"], trial["capture_bytes"]),
+                             (180, 240, 1920, 180 * 256 * 96 * 2))
+            self.assertEqual(trial["capture_sha256"],
+                             "1ba4af890ad878a5472777c873f1f86f070264ebfc33994ba719b22ea5df9068")
+            self.assertIs(trial["inactive_slots_all_zero"], True)
+        self.assertEqual([(control["position"], control["codec"], control["width"], control["height"],
+                           control["frames"], control["capture_sha256"]) for control in observed["controls"]], [
+            ("before", "MPEG2", 640, 360, 32, "021b6736caed04600c4801ca1b0e30dc4a48b60985e2dff02d38bea7c2aa9244"),
+            ("after", "H264", 128, 96, 180, "d72c16b7eb12d844fb6a5805c2d33a120874237ac5f1cf3608d4bebe186ee7cd")])
+        for control in observed["controls"]:
+            self.assertEqual(control["capture_bytes"], control["frames"] * control["width"] * control["height"] * 2)
+        sessions = observed["trials"] + observed["controls"]
+        self.assertEqual((sum(item["frames"] for item in sessions), sum(item["capture_bytes"] for item in sessions)),
+                         (572, 36864000))
+        for native in sessions:
+            self.assertEqual((native["whole_capture_equal"], native["firmware_eos"], native["cleanup"]),
+                             (True, True, True))
+            self.assertEqual((native["pending"], native["ready"], native["stderr_bytes"],
+                              native["exit_code"], native["new_kernel_errors"]), (0, 0, 0, 0, 0))
+            self.assertEqual((native["fd_before_after"], native["threads_before_after"]), ([3, 3], [1, 1]))
+        self.assertEqual(observed["certified"], {
+            "cached_scalar_observations": True, "whole_native_outputs": True,
+            "current_frame_identity": False, "active_arc_context": False, "allocation_extent": False,
+            "source_lease": False, "generation": False, "all_consumer_completion": False,
+            "standalone_processing": False})
+
+    def test_raw_field_order_pass_differences_and_conditional_zero_offset_arithmetic(self):
+        observed = self.observed
+        snapshots = {}
+        picture_offsets = {5: 8, 6: 0x14, 7: 0x18, 8: 0x24, 9: 0x28, 10: 0x2c, 11: 0x30,
+                           12: 0x34, 13: 0x38, 14: 0x54, 15: 0x58, 16: 0x5c, 17: 0x6c, 18: 0x70}
+        payload = MAP.read_firmware(BLOB)[:-MAP.TRAILER_SIZE]
+        rows = tuple(struct.unpack_from("<3I", payload, 0x2cccc + 12 * index) for index in range(3))
+        self.assertEqual(rows, ((0, 64, 6), (1, 128, 7), (2, 256, 8)))
+        for trial in observed["trials"]:
+            snapshots[trial["id"]] = []
+            self.assertEqual(len(trial["slot0_stages"]), 3)
+            for stage, passes in enumerate(trial["slot0_stages"]):
+                self.assertEqual(len(passes), 2)
+                parsed = []
+                for raw in passes:
+                    self.assertEqual(len(raw), 20)
+                    for word in raw:
+                        self.assertRegex(word, r"^[0-9a-f]{8}$")
+                    words = [int(value, 16) for value in raw]
+                    parsed.append(words)
+                    self.assertEqual(words[2], words[3])  # Two observed scalars, not a mapping certificate.
+                    if stage == 0:
+                        self.assertEqual(words, [1, 0x200] + [0] * 18)
+                        continue
+                    self.assertEqual(words[:2], [0x10101, 0x10200])
+                    self.assertEqual([words[index] for index in (4, 5, 6, 7, 8, 9, 10, 11, 14, 15, 16, 17, 18, 19)],
+                                     [0, 2, 256, 96, 0x01000000, 0x00020201, 256, 96, 6, 6, 0x00010000, 0, 0, 1])
+                    record = bytearray(116)
+                    for index, offset in picture_offsets.items():
+                        struct.pack_into("<I", record, offset, words[index])
+                    self.assertEqual((record[8], record[0x27], record[0x28], record[0x5c]), (2, 1, 1, 0))
+                    before = bytes(record)
+                    predicted = MAP._mfd_source_model(record, rows)
+                    self.assertEqual(predicted, {"writes": [[0x540010, 0x00400040], [0x540028, 6], [0x54002c, 6],
+                                                           [0x54001c, words[12]], [0x540020, words[13]]],
+                                                 "return_value": 0})
+                    self.assertEqual(bytes(record), before)
+                    self.assertEqual(words[13] - words[12], 0x6000)
+                self.assertIs(trial["passes_equal"][stage], parsed[0] == parsed[1])
+                snapshots[trial["id"]].append(parsed)
+            self.assertEqual(trial["passes_equal"], [True, False, True])
+        for trial, first_pairs in (("A", [(0x033f195c, 0xa4c000, 0xa52000), (0x033f1a40, 0xa4c000, 0xa52000)]),
+                                   ("B", [(0x033f1a40, 0xa4c000, 0xa52000), (0x033f1b24, 0xa58000, 0xa5e000)])):
+            for words, expected in zip(snapshots[trial][1], first_pairs):
+                self.assertEqual((words[2], words[12], words[13]), expected)
+            changed = [index for index, values in enumerate(zip(*snapshots[trial][1])) if values[0] != values[1]]
+            self.assertEqual(changed, [2, 3] if trial == "A" else [2, 3, 12, 13])
+            self.assertEqual(snapshots[trial][1][1][2] - snapshots[trial][1][0][2], 228)
+            for words in snapshots[trial][2]:
+                self.assertEqual((words[2], words[12], words[13]), (0x033f195c, 0xb0c000, 0xb12000))
+        self.assertNotEqual(snapshots["A"][1][0][12:14], snapshots["A"][2][0][12:14])
+        self.assertEqual(snapshots["A"][1][0][2:4], snapshots["A"][2][0][2:4])
+        comparison = observed["comparison"]
+        self.assertEqual((comparison["cached_dimensions"], comparison["cached_nmby"], comparison["cached_nmby_times16"],
+                          comparison["cached_mode_format_field_selector"], comparison["cached_offsets"]),
+                         ([256, 96], [6, 6], [96, 96], [2, 1, 1, 0], [0, 0]))
+        self.assertEqual((int(comparison["source_pair_delta_hex"], 16), int(comparison["metadata_step_hex"], 16)),
+                         (0x6000, 228))
+        candidate = comparison["candidate_geometry"]
+        self.assertEqual((candidate["metadata_mb"], candidate["prefix_mb"], candidate["config"]),
+                         ([16, 6], [16, 6], [5, 63, False]))
+        geometry = MAP._ppb_source_geometry_join(candidate["metadata_mb"], candidate["prefix_mb"],
+                                                 candidate["config"], candidate["config"])["metadata_geometry"]
+        for key in ("pitch", "y_stripe_height", "chroma_stripe_height", "y_bytes", "frame_bytes", "conditional_vendor_mul16"):
+            self.assertEqual(candidate[key], geometry[key])
+        self.assertEqual((candidate["pitch"], candidate["y_bytes"], candidate["frame_bytes"]), (256, 0x6000, 0xc000))
+        self.assertFalse(candidate["native_config_observed"])
+        self.assertFalse(candidate["native_bank_extent_observed"])
+        self.assertTrue(comparison["conditional_mfd_zero_offset_prediction"])
+        self.assertFalse(comparison["native_mfd_registers_observed"])
+        self.assertTrue(observed["reads"]["non_atomic"])
+
+    def test_svg_values_derive_from_raw_passes_and_do_not_publish_a_native_lease(self):
+        import xml.etree.ElementTree as ET
+
+        raw = (ROOT / "tests/fixtures/issue92/native-source-shape.svg").read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(),
+                         "ed3fd29d784bf5d47ae60faa0eb907495c2e354f42a673fc7e50e47b8152d12c")
+        svg, ns = ET.fromstring(raw), "{http://www.w3.org/2000/svg}"
+        self.assertEqual((svg.get("width"), svg.get("height"), svg.get("viewBox")),
+                         ("1040", "510", "0 0 1040 510"))
+        self.assertEqual((svg.get("role"), svg.get("aria-labelledby")), ("img", "title desc"))
+        self.assertIn("cached source shape", svg.find(ns + "title").text)
+        self.assertIn("No frame identity, allocation extent, source lease or standalone processing is certified",
+                      svg.find(ns + "desc").text)
+        text = {(node.get("x"), node.get("y")): node.text for node in svg.findall(".//" + ns + "text")}
+        observed = self.observed
+        for trial, ys in zip(observed["trials"], (("269", "294"), ("330", "355"))):
+            for number, (row, y) in enumerate(zip(trial["slot0_stages"][1], ys)):
+                self.assertEqual(text["48", y], f"{trial['id']} / {number}")
+                for x, index in (("180", 2), ("500", 12), ("750", 13)):
+                    self.assertEqual(text[x, y], row[index])
+        first = [int(word, 16) for word in observed["trials"][0]["slot0_stages"][1][0]]
+        self.assertEqual(text["48", "153"], f"{first[6]} × {first[7]}")
+        self.assertEqual(text["368", "153"], f"Y: {first[14] * 16} · C: {first[15] * 16}")
+        delta = first[13] - first[12]
+        self.assertEqual(text["688", "153"], f"0x{delta:x} = {delta:,} B")
+        final = observed["trials"][0]["slot0_stages"][2][0]
+        self.assertEqual(text["32", "399"],
+                         f"EOS in both trials: metadata {final[2]} · Y {final[12]} · C {final[13]}; both passes equal")
+        for trial in observed["trials"]:
+            self.assertEqual(trial["slot0_stages"][2], [final, final])
+        frames = sum(item["frames"] for item in observed["trials"] + observed["controls"])
+        self.assertEqual(text["32", "426"],
+                         f"{frames} / {frames} frames passed whole-pixel controls, firmware EOS and cleanup")
+        plan = observed["reads"]
+        mode_fields = " / ".join(str(value) for value in observed["comparison"]["cached_mode_format_field_selector"])
+        self.assertEqual(text["32", "451"],
+                         f"Each observed trial: {plan['per_trial_calls']} fixed reads / {plan['per_trial_bytes']:,} B · "
+                         f"mode / format / field / selector = {mode_fields}")
+        self.assertIn("two non-atomic passes", text["32", "205"])
+        self.assertIn("do not certify current frame, bank extent, generation or source ownership", text["32", "484"])
+
+
 if __name__ == "__main__":
     unittest.main()
