@@ -55,17 +55,31 @@ for bits in $build_bits; do
     dependency_dir=$build_dir/linux_lib/libcrystalhd
     dependency_header=$dependency_dir/libcrystalhd_priv.h
     for dependency_object in "$dependency_dir"/*.o; do
+        case "$dependency_object" in
+            */libcrystalhd_raw_frame.o)
+                # The opt-in serializer reads public types, not the context.
+                grep -q 'libcrystalhd_raw_frame.h' "${dependency_object%.o}.d"
+                continue ;;
+        esac
         grep -q 'libcrystalhd_priv.h' "${dependency_object%.o}.d"
     done
     touch "$dependency_header"
     make -C "$dependency_dir" LEGACY_CPU="$legacy" CXX="$cxx -m$bits"
     for dependency_object in "$dependency_dir"/*.o; do
+        case "$dependency_object" in */libcrystalhd_raw_frame.o) continue ;; esac
         if [ ! "$dependency_object" -nt "$dependency_header" ]; then
             echo "private-header change left a stale object: $dependency_object" >&2
             exit 1
         fi
     done
     printf '%s-bit private-header incremental rebuild passed\n' "$bits"
+    touch "$dependency_dir/libcrystalhd_raw_frame.h"
+    make -C "$dependency_dir" LEGACY_CPU="$legacy" CXX="$cxx -m$bits"
+    test "$dependency_dir/libcrystalhd_raw_frame.o" -nt \
+        "$dependency_dir/libcrystalhd_raw_frame.h"
+    test "$dependency_dir/libcrystalhd.so.3.6" -nt \
+        "$dependency_dir/libcrystalhd_raw_frame.h"
+    printf '%s-bit raw-frame public-header incremental rebuild passed\n' "$bits"
     cpu_flags=$(make -s --no-print-directory -C "$build_dir/linux_lib/libcrystalhd" \
         LEGACY_CPU="$legacy" CXX="$cxx -m$bits" print-cpu-flags)
     if [ "$legacy" -eq 1 ]; then
