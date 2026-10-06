@@ -1,0 +1,179 @@
+{
+  "schema": 1,
+  "issue": 92,
+  "experiment": "preserve already-sampled SCL_ENABLE guard witnesses",
+  "device_family": "BCM70015",
+  "production_default": "disabled",
+  "source": {
+    "base_commit": "07e4f197b2451325f90fc6c586d58fd58372459c",
+    "patch_sha256": "e59aca7031db6114511068008a9e1536a73653c853fd6afa41e5e3cb12871efc",
+    "protocol_sha256": "c545a5cd58d78738dcb2b20a6f5f63224247c8cb47f1f572928dde82883319ac",
+    "expanded_fleafuncs_sha256": "fa3a7b103e9d3bcef00c5a70556f6acb2ec82a9b9fd5e21eac277612ca41fd82"
+  },
+  "change": {
+    "additional_MMIO": 0,
+    "additional_target_writes": 0,
+    "I_O_scope": "No new source-level access callbacks; timing and physical transaction equivalence are not certified.",
+    "legacy_bundle_words": 11,
+    "witness_source": "before[22], after[22] from complete current 25-word guard samples",
+    "success_only": true,
+    "terminal_and_retirement_rules": "unchanged"
+  },
+  "modules": {
+    "configuration_sha256": "49fc624f4a047eb66adfc548485a98b0e238739d96d13d60ff4426f4cdde37fb",
+    "feed_sha256": "0ec176fc8f4794b2631e2a75f0f9ca9917acf55c5af1a55c956930e4440b6f7e",
+    "qualified_build": "W=1/-Werror; research=1, V4L2=1; separate profile macros"
+  },
+  "trials": [
+    {
+      "id": "config-a",
+      "kernel_sha256": "991fe50ea99000f2c20bfb0492b27ec470b21759e021b8b8920ea73e946db30b",
+      "kernel_rows": 64,
+      "START": 0,
+      "active_bundles": 0,
+      "enable_pre_guard": [
+        1,
+        1
+      ],
+      "enable_active_guards": [],
+      "saved25_retired25": "each paired exact; unchanged from qualified input2 profile",
+      "cleanup_status": 0,
+      "retained": false
+    },
+    {
+      "id": "config-repeat",
+      "kernel_sha256": "4d3056f57348ee184af9bbad2958e6068929de8ca32c26f75c60a13a4e7c1e16",
+      "kernel_rows": 64,
+      "START": 0,
+      "active_bundles": 0,
+      "enable_pre_guard": [
+        1,
+        1
+      ],
+      "enable_active_guards": [],
+      "saved25_retired25": "each paired exact; unchanged from qualified input2 profile",
+      "cleanup_status": 0,
+      "retained": false
+    },
+    {
+      "id": "feed-a",
+      "kernel_sha256": "5bb589c893be4d0d8fa09acaa3cefabf40be2efe2c3735abc7c8f04f8d5332d4",
+      "kernel_rows": 256,
+      "START": 1,
+      "active_bundles": 16,
+      "enable_pre_guard": [
+        1,
+        1
+      ],
+      "enable_active_guards": "16 pairs of [1,1]",
+      "saved25_retired25": "each paired exact; unchanged from qualified input2 profile",
+      "cleanup_status": 0,
+      "retained": false
+    },
+    {
+      "id": "feed-repeat",
+      "kernel_sha256": "be19d1ee8a0833da202a141e7ad6412e978fbdba8da80f52eb5cbc17ee2016ad",
+      "kernel_rows": 256,
+      "START": 1,
+      "active_bundles": 16,
+      "enable_pre_guard": [
+        1,
+        1
+      ],
+      "enable_active_guards": "16 pairs of [1,1]",
+      "saved25_retired25": "each paired exact; unchanged from qualified input2 profile",
+      "cleanup_status": 0,
+      "retained": false
+    }
+  ],
+  "active_raw_bundle_hex": [
+    "00080044",
+    "00040168",
+    "00000001",
+    "00000000",
+    "00000000",
+    "00000000",
+    "00000000",
+    "00000000",
+    "00000000",
+    "00000000",
+    "00000000"
+  ],
+  "observed": {
+    "active_bundles": 32,
+    "active_ENABLE_guard_values": 64,
+    "all_ENABLE_guards": 1,
+    "MFD_PX_RD_BVB": {
+      "FIFO_FULL": 1,
+      "PIXEL_STOP": 1
+    },
+    "SCL_input_view2": 0,
+    "scope": "Labelled sampled fields only; selector2 is opaque input-buffer status/index, not pixel data or ACCEPT."
+  },
+  "hardware_free": {
+    "staging_script_exit": 0,
+    "strict_and_asan_ubsan_each": {
+      "groups": 195,
+      "checks": 1141002281,
+      "failures": 0
+    },
+    "new_trace_pairs": [
+      [
+        1,
+        1
+      ],
+      [
+        0,
+        0
+      ],
+      [
+        0,
+        1
+      ],
+      [
+        1,
+        0
+      ]
+    ],
+    "old_raw11_equivalent": true,
+    "new_witness_distinguishes": true,
+    "failure_publication": "complete raw11 and witness canaries unchanged"
+  },
+  "native_controls": {
+    "sessions": 8,
+    "frames_each": 180,
+    "total_frames": 1440,
+    "bytes_each": 82944000,
+    "sha256_each": "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+    "full_byte_oracle_cmp_each": 0,
+    "firmware_EOS_each": true,
+    "pending_each": 0,
+    "ready_each": 0,
+    "cleanup_each": "PASS",
+    "fds_each": [
+      3,
+      3
+    ],
+    "threads_each": [
+      1,
+      1
+    ],
+    "scope": "Native recovery, not standalone raw output or zero-RSS-growth proof."
+  },
+  "restoration": {
+    "stock_srcversion": "1D01F9BFBB5CCDC75C46312",
+    "module_refcount": 0,
+    "PCI_command_hex": "0506",
+    "PCI_device_status_hex": "0009",
+    "seven_installed_files": "unchanged"
+  },
+  "conclusion": "Sampled ENABLE=0 is ruled out at the two guard points around each observed active bundle; the FIFO-level/input-debug contrast persists.",
+  "not_established": [
+    "ENABLE at the direct DATA-read instant or continuously between samples",
+    "BVB acceptance or missing-acceptance causality",
+    "sink routing/framing/ownership",
+    "standalone output/completion",
+    "chip incapability",
+    "original issue completion"
+  ]
+}
