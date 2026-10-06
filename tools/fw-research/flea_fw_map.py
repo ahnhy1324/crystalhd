@@ -5379,6 +5379,8 @@ def _ppb_bank_step(contract, state, operation, **args):
     an ARC interpreter, device command, whole-function or asynchronous model.
     The private dictionary checks are schema consistency, not authentication of
     an external caller's proof or state; no public API uses these helpers.
+    reference_drop is post-guard; no_display applies its selected frame guards,
+    without proving scheduler reachability or complete opaque callee effects.
     """
     if (not isinstance(contract, dict) or not isinstance(contract.get("basis"), dict) or
             not isinstance(contract.get("validation_scope"), dict) or
@@ -5391,6 +5393,7 @@ def _ppb_bank_step(contract, state, operation, **args):
               "video_address": ({"index"}, set()), "deallocate": ({"index"}, set()),
               "release": ({"index"}, set()), "start": (set(), set()), "stop_selected": (set(), set()),
               "reference_drop": ({"index", "caller"}, set()),
+              "no_display": ({"frame"}, set()),
               "assignment_reference": ({"index", "frame_flags"}, set()),
               "display_publish": ({"index", "record"}, {"discarded"}),
               "empty_picture": (set(), set()), "constructor": ({"base", "count", "bank_bytes"}, set()),
@@ -5568,6 +5571,30 @@ def _ppb_bank_step(contract, state, operation, **args):
         result = drop(value, "release") if value < 34 else False
     elif operation == "reference_drop":
         result = drop(args["index"], args["caller"])
+    elif operation == "no_display":
+        value = frame(args["frame"])
+        original = current["frame_flags"][value]
+        updated = original & 0x77ff
+        if original & 0x0200:
+            updated |= 0x4000
+        elif current["assigned"][value] != 99:
+            drop(current["assigned"][value], "no_display")
+        current["frame_flags"][value] = updated
+        event("no_display_frame_flag", frame=value, value=updated)
+        word = current["frame_word124"][value]
+        if word:
+            current["frame_word124"][value] = 0
+            event("frame_word124_clear", frame=value, value=0,
+                  field_address=u32(current["frame_pool"] + 284 * value + 124), dma_and_sync_assumed=True)
+            event("opaque_frame_metadata_release", frame=value, callee="Core_ReleaseUD", argument=word,
+                  complete_callee_effects_modeled=False)
+        # The state has no frame+280 field: do not invent its contents, branch
+        # outcome, conditional ReleaseOffsetMeta call or following zero store.
+        event("opaque_frame_offset_metadata", frame=value,
+              field_address=u32(current["frame_pool"] + 284 * value + 280),
+              conditional_nonzero_field=280, callee="Core_ReleaseOffsetMeta", field_contents_modeled=False,
+              complete_callee_effects_modeled=False)
+        result = None
     elif operation == "assignment_reference":
         ppb, flags = index(args["index"]), args["frame_flags"]
         if type(flags) is not int or not 0 <= flags <= 65535:

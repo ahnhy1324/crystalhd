@@ -5468,6 +5468,127 @@ class FirmwarePpbBankContractTests(unittest.TestCase):
         with self.assertRaises(MAP.FormatError):
             MAP._ppb_bank_step(contract, state, "reference_drop", index=0, caller="decoder_completed")
 
+    def test_no_display_sentinel_updates_frame_flags_preserving_all_published_ppbs(self):
+        contract = MAP._ppb_bank_contract(self.payload)
+        state = MAP._ppb_bank_state([0x100000], 0x40000)
+        state["flags"][17] = 0xb800  # Stale live/published snapshot elsewhere is not selected.
+        state["banks"][0].update(mask=1, stride=0x2000, geometry=self.packed_geometry(64, 32, 1))
+        for original in (0, 0x8800, 0x8801, 0xffff, 0x1234, *(1 << bit for bit in range(16))):
+            state["frame_flags"][62] = original
+            result = MAP._ppb_bank_step(contract, state, "no_display", frame=62)
+            expected = original & ~((1 << 15) | (1 << 11))
+            if original & (1 << 9):
+                expected |= 1 << 14
+            with self.subTest(frame_flags=hex(original)):
+                self.assertEqual(result["state"]["frame_flags"][62], expected)
+                self.assertEqual(result["state"]["flags"], state["flags"])
+                self.assertEqual(result["state"]["banks"], state["banks"])
+                self.assertEqual(result["state"]["assigned"], state["assigned"])
+                self.assertEqual(result["state"]["ppb_frames"], state["ppb_frames"])
+                self.assertEqual([event["kind"] for event in result["events"]],
+                                 ["no_display_frame_flag", "opaque_frame_offset_metadata"])
+                self.assertIsNone(result["result"])
+
+    def test_no_display_pending_frame_bypasses_mapped_ppb_drop(self):
+        contract = MAP._ppb_bank_contract(self.payload)
+        state = MAP._ppb_bank_state([0x100000], 0x40000)
+        state["flags"][0], state["assigned"][0], state["frame_flags"][0] = 0xb800, 0, 0x8a01
+        state["banks"][0].update(mask=1, stride=0x2000, geometry=self.packed_geometry(64, 32, 1))
+        result = MAP._ppb_bank_step(contract, state, "no_display", frame=0)
+        expected = dict(state, frame_flags=[0x4201] + [0] * 62)
+        self.assertEqual(result["state"], expected)
+        self.assertEqual(result["events"][0], {"kind": "no_display_frame_flag", "frame": 0, "value": 0x4201})
+        self.assertFalse(any(event["kind"] == "reference_drop" for event in result["events"]))
+        # The pending guard bypasses even an assignment outside modeled PPB storage.
+        state["assigned"][0] = 255
+        self.assertEqual(MAP._ppb_bank_step(contract, state, "no_display", frame=0)["state"]["assigned"][0], 255)
+
+    def test_no_display_assigned_published_snapshot_conditional_free_and_remaining_hold(self):
+        contract = MAP._ppb_bank_contract(self.payload)
+        # Injected mappings are conditional inputs, not scheduler reachability
+        # witnesses, a reachable firmware bug, or a global ownership proof.
+        for flag, dropped, freed in ((0xb800, 0x9800, True), (0xf800, 0xd800, False)):
+            state = MAP._ppb_bank_state([0x100000], 0x40000)
+            state["flags"][0], state["assigned"][62], state["frame_flags"][62] = flag, 0, 0x8801
+            state["banks"][0].update(mask=1, stride=0x2000, geometry=self.packed_geometry(64, 32, 1))
+            result = MAP._ppb_bank_step(contract, state, "no_display", frame=62)
+            with self.subTest(flag=hex(flag)):
+                self.assertEqual(result["events"][0], {"kind": "reference_drop", "index": 0,
+                                                       "caller": "no_display", "clear_mask": 0x2000, "value": dropped})
+                self.assertEqual(result["state"]["flags"][0], 0 if freed else dropped)
+                self.assertEqual(result["state"]["banks"][0]["mask"], 0 if freed else 1)
+                self.assertEqual(result["state"]["frame_flags"][62], 1)
+                self.assertEqual(result["state"]["assigned"], state["assigned"])
+                self.assertEqual(result["state"]["ppb_frames"], state["ppb_frames"])
+                self.assertEqual([event["kind"] for event in result["events"]],
+                                 (["reference_drop", "metadata_release", "bank_mask", "bank_empty", "flag"]
+                                  if freed else ["reference_drop"]) +
+                                 ["no_display_frame_flag", "opaque_frame_offset_metadata"])
+                if freed:
+                    self.assertEqual(result["state"]["banks"][0],
+                                     {"base": 0x100000, "mask": 0, "stride": 0, "geometry": 0})
+
+    def test_no_display_ancillary_word_clear_precedes_opaque_callee_and_wraps_u32(self):
+        contract = MAP._ppb_bank_contract(self.payload)
+        state = MAP._ppb_bank_state([0x100000], 0x40000)
+        state["frame_pool"], state["frame_word124"][62], state["frame_flags"][62] = 0xfffffff0, 0xffffffff, 0x8801
+        state_before, contract_before = json.dumps(state, sort_keys=True), json.dumps(contract, sort_keys=True)
+        result = MAP._ppb_bank_step(contract, state, "no_display", frame=62)
+        self.assertEqual(set(result["state"]), set(state))
+        expected_words = [0] * 63
+        self.assertEqual(result["state"]["frame_word124"], expected_words)
+        self.assertEqual(result["events"][1:3], [
+            {"kind": "frame_word124_clear", "frame": 62, "value": 0,
+             "field_address": (0xfffffff0 + 284 * 62 + 124) % (1 << 32), "dma_and_sync_assumed": True},
+            {"kind": "opaque_frame_metadata_release", "frame": 62, "callee": "Core_ReleaseUD",
+             "argument": 0xffffffff, "complete_callee_effects_modeled": False}])
+        self.assertEqual(result["events"][-1], {
+            "kind": "opaque_frame_offset_metadata", "frame": 62,
+            "field_address": (0xfffffff0 + 284 * 62 + 280) % (1 << 32),
+            "conditional_nonzero_field": 280, "callee": "Core_ReleaseOffsetMeta",
+            "field_contents_modeled": False, "complete_callee_effects_modeled": False})
+        self.assertEqual(json.dumps(state, sort_keys=True), state_before)
+        self.assertEqual(json.dumps(contract, sort_keys=True), contract_before)
+
+    def test_no_display_malformed_inputs_and_event_budgets_refuse_purely(self):
+        contract = MAP._ppb_bank_contract(self.payload)
+        state = MAP._ppb_bank_state([0x100000], 0x40000)
+        state["flags"][0], state["assigned"][0], state["frame_word124"][0] = 0xb800, 0, 1
+        state["banks"][0].update(mask=1, stride=0x2000, geometry=self.packed_geometry(64, 32, 1))
+        state_before, contract_before = json.dumps(state, sort_keys=True), json.dumps(contract, sort_keys=True)
+        result = MAP._ppb_bank_step(contract, state, "no_display", frame=0)
+        count = len(result["events"])
+        for maximum in range(count):
+            with self.subTest(maximum=maximum), mock.patch.object(MAP, "MAX_PPB_BANK_MODEL_STEPS", maximum), \
+                    self.assertRaisesRegex(MAP.FormatError, "budget"):
+                MAP._ppb_bank_step(contract, state, "no_display", frame=0)
+        with mock.patch.object(MAP, "MAX_PPB_BANK_MODEL_STEPS", count):
+            self.assertEqual(MAP._ppb_bank_step(contract, state, "no_display", frame=0), result)
+        for arguments in ({}, {"frame": 0, "index": 0}, *({"frame": value} for value in (-1, 63, 255, True, None))):
+            with self.subTest(arguments=arguments), self.assertRaises(MAP.FormatError):
+                MAP._ppb_bank_step(contract, state, "no_display", **arguments)
+        for assigned in (34, 98, 100, 255):
+            changed = MAP._ppb_bank_copy_state(state)
+            changed["assigned"][0] = assigned
+            before = json.dumps(changed, sort_keys=True)
+            with self.subTest(assigned=assigned), self.assertRaisesRegex(MAP.FormatError, "bounded model storage"):
+                MAP._ppb_bank_step(contract, changed, "no_display", frame=0)
+            self.assertEqual(json.dumps(changed, sort_keys=True), before)
+        for key, invalid in (("frame_flags", -1), ("frame_flags", 65536), ("frame_flags", True),
+                             ("frame_word124", -1), ("frame_word124", 0x100000000),
+                             ("assigned", 256), ("assigned", True)):
+            changed = MAP._ppb_bank_copy_state(state)
+            changed[key][0] = invalid
+            with self.subTest(key=key, invalid=invalid), self.assertRaises(MAP.FormatError):
+                MAP._ppb_bank_step(contract, changed, "no_display", frame=0)
+        for invalid in (-1, 0x100000000, True):
+            with self.subTest(frame_pool=invalid), self.assertRaises(MAP.FormatError):
+                MAP._ppb_bank_step(contract, dict(state, frame_pool=invalid), "no_display", frame=0)
+        with self.assertRaisesRegex(MAP.FormatError, "state fields"):
+            MAP._ppb_bank_step(contract, dict(state, frame_word280=[0] * 63), "no_display", frame=0)
+        self.assertEqual(json.dumps(state, sort_keys=True), state_before)
+        self.assertEqual(json.dumps(contract, sort_keys=True), contract_before)
+
     def test_release_repeat_and_allocate_release_reuse_stale_release_aba(self):
         contract = MAP._ppb_bank_contract(self.payload)
         state = MAP._ppb_bank_state([0x100000], 0x40000)
