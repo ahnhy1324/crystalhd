@@ -1,0 +1,443 @@
+{
+  "schema": 1,
+  "issue": 92,
+  "experiment": "native direct feeder framing contrast",
+  "device_family": "BCM70015",
+  "production_default": "disabled",
+  "source": {
+    "base_commit": "ea845d919fbdaed5be2bd19740691fcab98e073c",
+    "code_commit": "207f508ef741fd48138d836fd77c60e4500e7dd1",
+    "cpp_sha256": "eb3103461cbb87e196e869235f23f8ed4234acc8e073291ec13ff1745c0dda9f",
+    "protocol_sha256": "fac149173201fb116c8d16e8d3c08e2eff0b69a1ee072d4b6ab41aeb1c90372c",
+    "strict_binary_sha256": "b1aeaab61c6e9fcaa8617a49875aab17b94ee261c5c32e6f7506bbc9161f1dca",
+    "sanitizer_binary_sha256": "8b44f1cc65087a24eae79fc6ec35051e6ece2bc735a97e3770d7eb68c49ec7ad"
+  },
+  "input": {
+    "MPEG2": {
+      "name": "mpeg2.m2v",
+      "sha256": "32d8ca6ddf8ad529ae3875ee9b7e904630c633bfef6d74ba40d7b1040d20820b",
+      "progressive": true,
+      "width": 640,
+      "height": 360,
+      "packets": 180
+    },
+    "H264_recovery": {
+      "name": "drain.h264",
+      "sha256": "767d0fc307052fe995ca0921aaf01b48b4e6477698188e1e7a4e42da690f304e"
+    }
+  },
+  "diagnostic": {
+    "addresses_hex": [
+      "00540000",
+      "00540078",
+      "00540050",
+      "00540070",
+      "00540000"
+    ],
+    "passes_per_stage": 2,
+    "stages": 3,
+    "API_reads_per_observed_session": 30,
+    "target_writes": 0,
+    "selector_writes": 0,
+    "test_port_data_reads": 0,
+    "firmware_queries": 0,
+    "pointer_following": false,
+    "normal_decoder_operations": "Inherited OPEN/packing/START/capture/compressed-input/drain/release/STOP/CLOSE remain ordinary hardware operations; the entire session is not passive or write-free.",
+    "inherited_packing_API_reads_maximum": 8,
+    "non_atomic": true
+  },
+  "observations": [
+    {
+      "id": "observed-a",
+      "API_reads": 30,
+      "log_sha256": "924fe8976058c9082649017f2a92e93efa9021b6c1e4c4522fbb9684d1b124de",
+      "snapshots": [
+        {
+          "stage": "after-OPEN/pre-START",
+          "after_delivered_frames": 0,
+          "raw_passes_hex": [
+            [
+              "00000050",
+              "00000000",
+              "00000000",
+              "00000000",
+              "00000050"
+            ],
+            [
+              "00000050",
+              "00000000",
+              "00000000",
+              "00000000",
+              "00000050"
+            ]
+          ],
+          "decoded": [
+            {
+              "picture_sync": 0,
+              "line_sync": 0,
+              "colour_phase": 0,
+              "luma": 0,
+              "chroma": 0,
+              "last_line": 0,
+              "line_count": 0,
+              "EOF": 0,
+              "EOL": 0
+            },
+            {
+              "picture_sync": 0,
+              "line_sync": 0,
+              "colour_phase": 0,
+              "luma": 0,
+              "chroma": 0,
+              "last_line": 0,
+              "line_count": 0,
+              "EOF": 0,
+              "EOL": 0
+            }
+          ],
+          "raw_equal": true
+        },
+        {
+          "stage": "frame1-after-release-and-owned-write",
+          "after_delivered_frames": 1,
+          "raw_passes_hex": [
+            [
+              "00000050",
+              "000b4089",
+              "0000003c",
+              "00000003",
+              "00000050"
+            ],
+            [
+              "00000050",
+              "001b819d",
+              "0000003e",
+              "00000001",
+              "00000050"
+            ]
+          ],
+          "decoded": [
+            {
+              "picture_sync": 0,
+              "line_sync": 0,
+              "colour_phase": 0,
+              "luma": 720,
+              "chroma": 137,
+              "last_line": 0,
+              "line_count": 60,
+              "EOF": 1,
+              "EOL": 1
+            },
+            {
+              "picture_sync": 0,
+              "line_sync": 0,
+              "colour_phase": 1,
+              "luma": 736,
+              "chroma": 413,
+              "last_line": 0,
+              "line_count": 62,
+              "EOF": 0,
+              "EOL": 1
+            }
+          ],
+          "raw_equal": false
+        },
+        {
+          "stage": "frame90-after-release-and-owned-write",
+          "after_delivered_frames": 90,
+          "raw_passes_hex": [
+            [
+              "00000050",
+              "000910d8",
+              "00000008",
+              "00000003",
+              "00000050"
+            ],
+            [
+              "00000050",
+              "000910d8",
+              "00000008",
+              "00000000",
+              "00000050"
+            ]
+          ],
+          "decoded": [
+            {
+              "picture_sync": 0,
+              "line_sync": 0,
+              "colour_phase": 0,
+              "luma": 580,
+              "chroma": 216,
+              "last_line": 0,
+              "line_count": 8,
+              "EOF": 1,
+              "EOL": 1
+            },
+            {
+              "picture_sync": 0,
+              "line_sync": 0,
+              "colour_phase": 0,
+              "luma": 580,
+              "chroma": 216,
+              "last_line": 0,
+              "line_count": 8,
+              "EOF": 0,
+              "EOL": 0
+            }
+          ],
+          "raw_equal": false
+        }
+      ]
+    },
+    {
+      "id": "observed-repeat",
+      "API_reads": 30,
+      "log_sha256": "d45258f4d0c150a50e9afebb41b184e367a6c830d1e91ba35b37c841a516d543",
+      "snapshots": [
+        {
+          "stage": "after-OPEN/pre-START",
+          "after_delivered_frames": 0,
+          "raw_passes_hex": [
+            [
+              "00000050",
+              "00000000",
+              "00000000",
+              "00000000",
+              "00000050"
+            ],
+            [
+              "00000050",
+              "00000000",
+              "00000000",
+              "00000000",
+              "00000050"
+            ]
+          ],
+          "decoded": [
+            {
+              "picture_sync": 0,
+              "line_sync": 0,
+              "colour_phase": 0,
+              "luma": 0,
+              "chroma": 0,
+              "last_line": 0,
+              "line_count": 0,
+              "EOF": 0,
+              "EOL": 0
+            },
+            {
+              "picture_sync": 0,
+              "line_sync": 0,
+              "colour_phase": 0,
+              "luma": 0,
+              "chroma": 0,
+              "last_line": 0,
+              "line_count": 0,
+              "EOF": 0,
+              "EOL": 0
+            }
+          ],
+          "raw_equal": true
+        },
+        {
+          "stage": "frame1-after-release-and-owned-write",
+          "after_delivered_frames": 1,
+          "raw_passes_hex": [
+            [
+              "00000050",
+              "001291b8",
+              "00000008",
+              "00000003",
+              "00000050"
+            ],
+            [
+              "00000050",
+              "000293c0",
+              "0000000a",
+              "00000001",
+              "00000050"
+            ]
+          ],
+          "decoded": [
+            {
+              "picture_sync": 0,
+              "line_sync": 0,
+              "colour_phase": 1,
+              "luma": 164,
+              "chroma": 440,
+              "last_line": 0,
+              "line_count": 8,
+              "EOF": 1,
+              "EOL": 1
+            },
+            {
+              "picture_sync": 0,
+              "line_sync": 0,
+              "colour_phase": 0,
+              "luma": 164,
+              "chroma": 960,
+              "last_line": 0,
+              "line_count": 10,
+              "EOF": 0,
+              "EOL": 1
+            }
+          ],
+          "raw_equal": false
+        },
+        {
+          "stage": "frame90-after-release-and-owned-write",
+          "after_delivered_frames": 90,
+          "raw_passes_hex": [
+            [
+              "00000050",
+              "001d2248",
+              "0000007a",
+              "00000003",
+              "00000050"
+            ],
+            [
+              "00000050",
+              "000d2040",
+              "0000007c",
+              "00000001",
+              "00000050"
+            ]
+          ],
+          "decoded": [
+            {
+              "picture_sync": 0,
+              "line_sync": 0,
+              "colour_phase": 1,
+              "luma": 840,
+              "chroma": 584,
+              "last_line": 0,
+              "line_count": 122,
+              "EOF": 1,
+              "EOL": 1
+            },
+            {
+              "picture_sync": 0,
+              "line_sync": 0,
+              "colour_phase": 0,
+              "luma": 840,
+              "chroma": 64,
+              "last_line": 0,
+              "line_count": 124,
+              "EOF": 0,
+              "EOL": 1
+            }
+          ],
+          "raw_equal": false
+        }
+      ]
+    }
+  ],
+  "preboot_reference": {
+    "source": "scl-enable-witness.json (#247)",
+    "sample_data_hex": "00040168",
+    "feed_status_hex": "00000001",
+    "bvb_status_hex": "00000000",
+    "decoded": {
+      "picture_sync": 0,
+      "line_sync": 0,
+      "colour_phase": 0,
+      "luma": 256,
+      "chroma": 360,
+      "last_line": 0,
+      "line_count": 1,
+      "EOF": 0,
+      "EOL": 0
+    },
+    "scope": "Different native/preboot state, stimulus and configuration; not a controlled root-cause discriminator."
+  },
+  "controls": {
+    "sessions": 6,
+    "frames": 1080,
+    "frames_each": 180,
+    "bytes_each": 82944000,
+    "MPEG2_sha256": "3928bc19ad693b91edfbbd2270d3f69d5383b6c87b322e0e7bea81931a8836dd",
+    "H264_sha256": "3aace3af0e846833059e2f07739e558ce64cb68dac9baf07ef5569f905e714e1",
+    "all_full_byte_cmp": 0,
+    "all_process_exit": 0,
+    "all_firmware_EOS": true,
+    "all_pending": 0,
+    "all_ready": 0,
+    "all_cleanup": "PASS",
+    "all_stderr_bytes": 0,
+    "all_fds": [
+      3,
+      3
+    ],
+    "all_threads": [
+      1,
+      1
+    ],
+    "metadata": "Frame indices0..179 and picture numbers3..182 ordered; exact180 unique valid tokens. Token output order is not monotonic.",
+    "rss_scope": "All recorded RSS deltas are positive; no zero-growth or leak-freedom claim.",
+    "runs": [
+      {
+        "id": "baseline-native",
+        "codec": "MPEG2",
+        "log_sha256": "cfd17f1096e56cda7c7403dd241c04a5db0a9078c09b2a4f87d08cde8e71916a",
+        "rss_delta_kib": 1488
+      },
+      {
+        "id": "observed-a",
+        "codec": "MPEG2",
+        "log_sha256": "924fe8976058c9082649017f2a92e93efa9021b6c1e4c4522fbb9684d1b124de",
+        "rss_delta_kib": 1320
+      },
+      {
+        "id": "recovery-after-a",
+        "codec": "MPEG2",
+        "log_sha256": "f07e9b9390c96598596cfaabd0a45b6109e8b173f4103a6075ae47c18233e8be",
+        "rss_delta_kib": 1488
+      },
+      {
+        "id": "observed-repeat",
+        "codec": "MPEG2",
+        "log_sha256": "d45258f4d0c150a50e9afebb41b184e367a6c830d1e91ba35b37c841a516d543",
+        "rss_delta_kib": 1232
+      },
+      {
+        "id": "recovery-after-repeat",
+        "codec": "MPEG2",
+        "log_sha256": "fcee0b1d7587f7da49955b7be879ec1825515bfc314e7861fb9f723bb910b923",
+        "rss_delta_kib": 1452
+      },
+      {
+        "id": "final-h264",
+        "codec": "H264",
+        "log_sha256": "0a53edd1c18756984f733b79df1599ea65fc02a1adca2d5a79c07d5b3e9597f1",
+        "rss_delta_kib": 1444
+      }
+    ]
+  },
+  "hardware_free": {
+    "strict_and_ASan_UBSan_each": {
+      "checks": 100351,
+      "exit": 0,
+      "stderr_bytes": 0
+    },
+    "previous_checks": 96116,
+    "focused_added_checks": 4235,
+    "stdout_byte_cmp": 0,
+    "capability_negative_exit": 2,
+    "capability_negative_progress_or_capture_created": false
+  },
+  "system": {
+    "stock_module_srcversion": "1D01F9BFBB5CCDC75C46312",
+    "module_replacement": false,
+    "installed_7_file_manifest": "unchanged",
+    "final_module_refcount": 0,
+    "final_PCI_COMMAND_hex": "0506",
+    "final_PCI_DEVSTA_hex": "0009"
+  },
+  "finding": "Normal native completion coexists with changing sampled payload/colour-phase/count/EOL/EOF fields. All observed active picture-sync, line-sync and last-line bits are also zero, so those zero values alone do not identify the preboot case.",
+  "limits": [
+    "A successful native output does not establish MFD participation, source/sink ownership or raw routing.",
+    "Sparse sequential snapshots do not establish freshness, accepted beats, continuous activation or standalone completion.",
+    "Geometry/framing mismatch versus downstream backpressure remains unresolved; no adaptive additional samples or sessions."
+  ],
+  "original_issue92_definition_of_done_met": false
+}
