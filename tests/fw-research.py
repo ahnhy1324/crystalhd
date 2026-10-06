@@ -1372,6 +1372,122 @@ class FirmwareArmPpbHandoffTests(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)["arm_ppb_metadata_handoff"],
                          MAP._arm_ppb_metadata_handoff(self.payload))
 
+    def test_native_arm_metadata_fixture_receipts_and_fixed_read_schedule(self):
+        raw = (ROOT / "tests/fixtures/issue92/native-arm-metadata.json").read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(),
+                         "f284a5ea6fda81531849d01dd34efb0c5b7d27fd8941d3b6c73d034c5d82666f")
+        observed = json.loads(raw)
+        self.assertEqual((observed["schema"], observed["issue"], observed["kind"]),
+                         (1, 92, "native ARM working-slot observations"))
+        self.assertEqual(observed["baseline"]["firmware_sha256"],
+                         "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9")
+        self.assertEqual(observed["baseline"]["harness_source_sha256"],
+                         "57a2be595fb163f87f25a6ae65f98c6f78a8780933c939c5413d9af13862565e")
+        self.assertEqual(observed["input"], {
+            "codec": "H264", "width": 256, "height": 96, "progressive": True,
+            "packets": 180, "submitted_bytes": 124832,
+            "sha256": "1363a87c8f59fab6187cd13653a3ba8a41fd994066d30c24be1c2b09d675666e"})
+        reads = observed["reads"]
+        self.assertEqual((int(reads["slot_base_hex"], 16), int(reads["slot_stride_hex"], 16),
+                          reads["slots"], reads["passes"]), (0xd3a00, 0x1cc, 4, 2))
+        self.assertEqual([int(offset, 16) for offset in reads["span_offsets_hex"]],
+                         [0xc4, 0xd0, 0xe0, 0x120, 0x180])
+        self.assertEqual(reads["span_bytes"], [4, 4, 12, 8, 4])
+        self.assertEqual(reads["stages"], ["after-OPEN/pre-START",
+                         "first-output-after-release-and-owned-write", "delivery-EOS-before-STOP"])
+        self.assertEqual(reads["fields"], ["c4", "d0", "cached-meta-virtual", "cached-meta-physical",
+                         "e8-opaque", "cached-source+34", "cached-source+38", "180-acquire/reuse"])
+        self.assertEqual(reads["per_trial_calls"], 3 * 2 * 4 * 5)
+        self.assertEqual(reads["per_trial_bytes"], 3 * 2 * 4 * sum(reads["span_bytes"]))
+        self.assertEqual([trial["id"] for trial in observed["trials"]], ["A", "B"])
+        for trial in observed["trials"]:
+            with self.subTest(trial=trial["id"]):
+                self.assertEqual((trial["frames"], trial["reads"], trial["bytes_read"]), (180, 120, 768))
+                self.assertEqual(trial["capture_bytes"], 180 * 256 * 96 * 2)
+                self.assertEqual(trial["capture_sha256"],
+                                 "1ba4af890ad878a5472777c873f1f86f070264ebfc33994ba719b22ea5df9068")
+        self.assertEqual([(control["id"], control["frames"], control["width"], control["height"],
+                           control["capture_sha256"]) for control in observed["controls"]], [
+            ("MPEG2-before", 32, 640, 360, "021b6736caed04600c4801ca1b0e30dc4a48b60985e2dff02d38bea7c2aa9244"),
+            ("H264-after", 180, 128, 96, "d72c16b7eb12d844fb6a5805c2d33a120874237ac5f1cf3608d4bebe186ee7cd")])
+        for control in observed["controls"]:
+            self.assertEqual(control["capture_bytes"], control["frames"] * control["width"] * control["height"] * 2)
+        for native in observed["trials"] + observed["controls"]:
+            with self.subTest(native=native["id"]):
+                self.assertIs(native["full_pixel_cmp"], True)
+                self.assertIs(native["native_eos"], True)
+                self.assertEqual((native["native_exit"], native["pending"], native["ready"], native["stderr_bytes"]), (0, 0, 0, 0))
+                self.assertEqual((native["cleanup"], native["scoped_kernel"], native["fds"], native["threads"]),
+                                 ("PASS", "PASS", "3/3", "1/1"))
+        self.assertEqual(observed["limits"], {name: False for name in (
+            "pointers_followed", "source_plane_contents_read", "source_plane_writes",
+            "custom_target_configuration_writes", "firmware_patched", "installation_changed",
+            "observed_pass_equality_is_atomic", "exact_output_frame_binding", "source_extent_authenticated",
+            "generation_authenticated", "all_consumer_completion_authenticated", "standalone_raw_backend_proved")})
+
+    def test_native_arm_metadata_fixture_raw_passes_and_svg_preserve_identity_limits(self):
+        import xml.etree.ElementTree as ET
+
+        fixture = (ROOT / "tests/fixtures/issue92/native-arm-metadata.json").read_bytes()
+        observed = json.loads(fixture)
+        parsed = {}
+        for trial in observed["trials"]:
+            self.assertEqual([sample["stage"] for sample in trial["samples"]], [0, 1, 2])
+            parsed[trial["id"]] = []
+            for sample in trial["samples"]:
+                self.assertEqual(len(sample["raw_hex"]), 2)
+                passes = []
+                for raw_pass in sample["raw_hex"]:
+                    self.assertEqual(len(raw_pass), 4)
+                    words = []
+                    for slot in raw_pass:
+                        fields = slot.split()
+                        self.assertEqual(len(fields), 8)
+                        for field in fields:
+                            self.assertRegex(field, r"^[0-9a-f]{8}$")
+                        words.append([int(field, 16) for field in fields])
+                    self.assertEqual(words[1:], [[0] * 8 for _ in range(3)])
+                    self.assertEqual(words[0][2], words[0][3])  # Observed V/P scalars coincide; no mapping proof.
+                    passes.append(words)
+                self.assertIs(sample["passes_equal"], passes[0] == passes[1])
+                parsed[trial["id"]].append(passes)
+        self.assertEqual([sample["passes_equal"] for sample in observed["trials"][0]["samples"]], [True, True, True])
+        self.assertEqual([sample["passes_equal"] for sample in observed["trials"][1]["samples"]], [True, False, True])
+        for trial in parsed.values():
+            self.assertEqual(trial[0][0][0], [1, 0x200, 0, 0, 0, 0, 0, 0])
+            first, final = trial[1][0][0], trial[2][0][0]
+            self.assertEqual((first[0] & 255, first[0] >> 8 & 255, first[1] >> 16 & 255, first[7] & 255), (1, 1, 1, 1))
+            self.assertEqual(first[2:4], final[2:4])
+            self.assertNotEqual(first[5:7], final[5:7])  # Same cached pair does not join source identity.
+        before, after = parsed["B"][1][0][0], parsed["B"][1][1][0]
+        self.assertEqual([index for index, pair in enumerate(zip(before, after)) if pair[0] != pair[1]], [2, 3, 5, 6])
+        # Differences between sequential passes do not prove each pass is torn.
+        self.assertIs(observed["limits"]["observed_pass_equality_is_atomic"], False)
+        self.assertIs(observed["limits"]["standalone_raw_backend_proved"], False)
+        svg_bytes = (ROOT / "tests/fixtures/issue92/native-arm-metadata.svg").read_bytes()
+        self.assertEqual(hashlib.sha256(svg_bytes).hexdigest(),
+                         "7eee55e8f96d97155dc7ca746d22c8f9924b61b8a52c7160baac6ae9ca2d41aa")
+        svg, ns = ET.fromstring(svg_bytes), "{http://www.w3.org/2000/svg}"
+        self.assertEqual((svg.get("role"), svg.get("aria-labelledby")), ("img", "title desc"))
+        self.assertTrue(svg.find(ns + "title").text)
+        self.assertIn("do not certify atomicity", svg.find(ns + "desc").text)
+        metadata = json.loads(svg.find(ns + "metadata").text)
+        self.assertEqual((metadata["fixture"], metadata["fixtureSHA256"]),
+                         ("native-arm-metadata.json", hashlib.sha256(fixture).hexdigest()))
+        text = {(node.get("x"), node.get("y")): node.text for node in svg.findall(ns + "text")}
+        for trial, ys in (("A", ("177", "198", "219")), ("B", ("301", "322", "343"))):
+            for stage, x in enumerate(("155", "478", "801")):
+                if trial == "B" and stage == 1:
+                    continue
+                words = parsed[trial][stage][0][0]
+                for y, label, word in zip(ys, ("meta V/P  ", "src +34   ", "src +38   "), (2, 5, 6)):
+                    self.assertEqual(text[x, y], f"{label}{words[word]:08x}")
+        for pass_index, ys in enumerate((("300", "316"), ("334", "350"))):
+            words = parsed["B"][1][pass_index][0]
+            self.assertEqual(text["478", ys[0]], f"p{pass_index} meta V/P {words[2]:08x}")
+            self.assertEqual(text["478", ys[1]], f"   +34/+38  {words[5]:08x} / {words[6]:08x}")
+        self.assertIn("Changed passes do not prove torn individual reads", text["28", "438"])
+
 
 class FirmwarePictureOutputTests(unittest.TestCase):
     FIR_REGIONS = (

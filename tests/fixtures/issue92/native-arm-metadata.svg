@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="470" viewBox="0 0 1120 470" role="img" aria-labelledby="title desc">
+<title id="title">Native ARM cache observations in two H264 sessions</title>
+<desc id="desc">Both native 180-frame captures match the full frozen pixel oracle. Trial B changes cached metadata and source words between two sequential passes. Repeated metadata addresses coexist with changed cached sources. These observations do not certify atomicity, exact frame identity, source extent, generation, ownership, or all-consumer completion.</desc>
+<metadata id="measurement">{"fixture":"native-arm-metadata.json","fixtureSHA256":"f284a5ea6fda81531849d01dd34efb0c5b7d27fd8941d3b6c73d034c5d82666f","scope":"Fixed private cache scalars only; no source-plane reads or standalone processing."}</metadata>
+<style>text{font-family:system-ui,sans-serif;fill:#16253b}.mono{font-family:monospace;font-size:13px}.small{font-size:13px}.head{font-size:15px;font-weight:600}.muted{fill:#4b5c72}</style>
+<rect width="1120" height="470" rx="14" fill="#f3f6fa"/>
+<rect width="1120" height="82" rx="14" fill="#16253b"/>
+<text x="28" y="32" style="fill:#fff;font-size:22px;font-weight:600">Native ARM working-slot observations</text>
+<text x="28" y="58" style="fill:#cbd9ea;font-size:14px">BCM70015 · progressive H264 256×96 · 120 fixed reads / 768 bytes per session</text>
+<text class="head" x="155" y="111">Pre-START</text>
+<text class="head" x="478" y="111">After first released output</text>
+<text class="head" x="801" y="111">Delivery EOS before STOP</text>
+<rect x="20" y="128" width="1080" height="112" rx="8" fill="#fff"/>
+<text class="head" x="37" y="157">Trial A</text>
+<text class="small muted" x="37" y="178">slot 0</text>
+<text class="small muted" x="155" y="152">Both passes equal (non-atomic)</text>
+<text class="mono" x="155" y="177">meta V/P  00000000</text>
+<text class="mono" x="155" y="198">src +34   00000000</text>
+<text class="mono" x="155" y="219">src +38   00000000</text>
+<text class="small muted" x="478" y="152">Both passes equal (non-atomic)</text>
+<text class="mono" x="478" y="177">meta V/P  033f195c</text>
+<text class="mono" x="478" y="198">src +34   00a40000</text>
+<text class="mono" x="478" y="219">src +38   00a46000</text>
+<text class="small muted" x="801" y="152">Both passes equal (non-atomic)</text>
+<text class="mono" x="801" y="177">meta V/P  033f195c</text>
+<text class="mono" x="801" y="198">src +34   00b0c000</text>
+<text class="mono" x="801" y="219">src +38   00b12000</text>
+<rect x="20" y="252" width="1080" height="112" rx="8" fill="#fff"/>
+<text class="head" x="37" y="281">Trial B</text>
+<text class="small muted" x="37" y="302">slot 0</text>
+<text class="small muted" x="155" y="276">Both passes equal (non-atomic)</text>
+<text class="mono" x="155" y="301">meta V/P  00000000</text>
+<text class="mono" x="155" y="322">src +34   00000000</text>
+<text class="mono" x="155" y="343">src +38   00000000</text>
+<rect x="468" y="262" width="306" height="94" rx="6" fill="#fff2d5"/>
+<text class="small" x="478" y="279">Sequential passes differ</text>
+<text class="mono" x="478" y="300">p0 meta V/P 033f195c</text>
+<text class="mono" x="478" y="316">   +34/+38  00a40000 / 00a46000</text>
+<text class="mono" x="478" y="334">p1 meta V/P 033f1a40</text>
+<text class="mono" x="478" y="350">   +34/+38  00a4c000 / 00a52000</text>
+<text class="small muted" x="801" y="276">Both passes equal (non-atomic)</text>
+<text class="mono" x="801" y="301">meta V/P  033f195c</text>
+<text class="mono" x="801" y="322">src +34   00b0c000</text>
+<text class="mono" x="801" y="343">src +38   00b12000</text>
+<text class="small" x="28" y="390">180/180 frames per trial · full 8,847,360-byte pixel comparison PASS · EOS and cleanup PASS</text>
+<text class="small muted" x="28" y="414">Private cached-source +34/+38 words shown, not certified current MFD inputs. Slots 1–3: all measured words zero.</text>
+<text class="small muted" x="28" y="438">Equal passes are not atomic. Changed passes do not prove torn individual reads. No frame/extent/generation/lease proof.</text>
+</svg>

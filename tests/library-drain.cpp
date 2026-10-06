@@ -33,6 +33,7 @@ extern "C" {
 // unrelated register-map dependencies into this direct-library test.
 extern "C" BC_STATUS DtsDevRegisterRead(HANDLE handle, uint32_t offset, uint32_t *value);
 extern "C" BC_STATUS DtsDevRegisterWr(HANDLE handle, uint32_t offset, uint32_t value);
+extern "C" BC_STATUS DtsDevMemRd(HANDLE handle, uint32_t *buffer, uint32_t bytes, uint32_t offset);
 
 struct ChromaConfiguration {
     uint32_t lac = 0, sampling = 0;
@@ -953,6 +954,118 @@ struct MfdAddressFixture {
     }
 };
 
+// Fixed ARM working-slot scalars only. No observed word selects an address;
+// DtsDevMemRd may use its normal window selector, but no target is written.
+// Cache pairs and cached source-record words have separate firmware stores.
+enum class ArmMetadataFailure { None, Argument, Owner, Order, Barrier, Budget, Read };
+struct ArmMetadataObserver {
+    typedef BC_STATUS (*Reader)(HANDLE, uint32_t *, uint32_t, uint32_t);
+    bool enabled = false, failed = false;
+    HANDLE owner = nullptr;
+    unsigned next_stage = 0, reads = 0, bytes = 0, measured = 0;
+    uint32_t raw[2][4][8] = {};
+    BC_STATUS status = BC_STS_SUCCESS;
+    ArmMetadataFailure failure = ArmMetadataFailure::None;
+    bool Stable() const { return measured == 40 && !std::memcmp(raw[0], raw[1], sizeof(raw[0])); }
+    bool Reject(ArmMetadataFailure why) { failed = true; failure = why; return false; }
+    void Report(unsigned stage) const {
+        const char *const stages[] = {"after-OPEN/pre-START", "first-output-after-release-and-owned-write", "delivery-EOS-before-STOP"};
+        const char *const failures[] = {"none", "argument", "current-handle-loss", "order", "delivery-barrier", "budget", "read-status"};
+        std::printf("ARM metadata: stage=%s reads=%u/120 bytes=%u/768 measured=%u/40 api-status=%d failure=%s "
+            "passes=%s cached-source-is-current-input=unproven exact-frame/lease/generation/cache-ready/all-consumers-certified=no\n",
+            stages[stage], reads, bytes, measured, status, failures[static_cast<unsigned>(failure)],
+            measured == 40 ? (Stable() ? "observed-stable,non-atomic" : "observed-different,non-atomic") : "INCOMPLETE");
+        const char *const names[] = {"c4", "d0", "cached-meta-virtual", "cached-meta-physical", "e8-opaque",
+            "cached-source+34", "cached-source+38", "180-acquire/reuse"};
+        const unsigned spans[] = {0, 1, 2, 2, 2, 3, 3, 4};
+        for (unsigned pass = 0; pass < 2; ++pass) for (unsigned slot = 0; slot < 4; ++slot) {
+            std::printf("ARM metadata raw: stage=%s pass=%u slot=%u", stages[stage], pass, slot);
+            for (unsigned word = 0; word < 8; ++word) {
+                std::printf(" %s=", names[word]);
+                if (pass * 20 + slot * 5 + spans[word] < measured) std::printf("%08x", raw[pass][slot][word]);
+                else std::printf("NOT-READ");
+            }
+            if (pass * 20 + slot * 5 + 4 < measured) {
+                const uint32_t *words = raw[pass][slot];
+                const unsigned adjacent = (words[0] >> 8) & 255U, branch = words[7] & 255U;
+                std::printf(" active=%u adjacent-c5=%u started=%u branch-byte=%u branch-selector-if-active-and-started=%s",
+                    words[0] & 255U, adjacent, (words[1] >> 16) & 255U, branch,
+                    branch == 1 || adjacent == 0 ? "FRESH-dequeue" : "CACHE-copy");
+            }
+            std::printf("\n");
+        }
+        std::fflush(stdout);
+    }
+    bool Observe(const HANDLE *current, unsigned stage, bool barrier,
+        Reader reader = DtsDevMemRd, bool report = true) {
+        if (!enabled) return true;
+        if (failed) return false;
+        if (!current || !*current || !reader) return Reject(ArmMetadataFailure::Argument);
+        if (stage > 2 || stage != next_stage) return Reject(ArmMetadataFailure::Order);
+        if (barrier != (stage != 0)) return Reject(ArmMetadataFailure::Barrier);
+        if (reads > 120 - 40) return Reject(ArmMetadataFailure::Budget);
+        if (stage == 0) owner = *current;
+        if (!owner || *current != owner) return Reject(ArmMetadataFailure::Owner);
+        ++next_stage; // Each stage is attempted once, including failed reads.
+        measured = 0; std::memset(raw, 0, sizeof(raw));
+        const uint32_t offsets[] = {0xc4, 0xd0, 0xe0, 0x120, 0x180};
+        const unsigned counts[] = {1, 1, 3, 2, 1};
+        bool ok = true;
+        for (unsigned pass = 0; pass < 2 && ok; ++pass) for (unsigned slot = 0; slot < 4 && ok; ++slot) {
+            unsigned word = 0;
+            for (unsigned span = 0; span < 5 && ok; ++span) {
+                if (!*current || *current != owner) { ok = Reject(ArmMetadataFailure::Owner); break; }
+                uint32_t values[3] = {};
+                ++reads; bytes += counts[span] * 4;
+                status = reader(owner, values, counts[span] * 4, 0xd3a00U + slot * 0x1ccU + offsets[span]);
+                if (!*current || *current != owner) ok = Reject(ArmMetadataFailure::Owner);
+                else if (status != BC_STS_SUCCESS) ok = Reject(ArmMetadataFailure::Read);
+                if (!ok) break;
+                std::memcpy(raw[pass][slot] + word, values, counts[span] * sizeof(uint32_t));
+                word += counts[span]; ++measured;
+            }
+        }
+        if (report) Report(stage);
+        return ok;
+    }
+    bool Finish(bool native_ok, bool report = true) const {
+        if (!enabled) return native_ok;
+        const bool complete = !failed && next_stage == 3 && reads == 120 && bytes == 768;
+        if (report) {
+            std::printf("ARM metadata finish: native-result=%s observation-result=%s stages=%u/3 reads=%u/120 bytes=%u/768\n",
+                native_ok ? "PASS" : "FAIL", complete ? "PASS" : "FAIL", next_stage, reads, bytes);
+            std::fflush(stdout);
+        }
+        return native_ok && complete;
+    }
+};
+struct ArmMetadataFixture {
+    HANDLE current = this, replacement = nullptr;
+    unsigned calls = 0, fail_at = 120, lose_at = 120;
+    bool valid = true, different = false, all_ones = false;
+    static BC_STATUS Read(HANDLE handle, uint32_t *values, uint32_t bytes, uint32_t address) {
+        auto *fixture = static_cast<ArmMetadataFixture *>(handle);
+        const unsigned position = fixture->calls++, span = position % 5, slot = position % 20 / 5;
+        const uint32_t starts[] = {0xd3ac4, 0xd3ad0, 0xd3ae0, 0xd3b20, 0xd3b80};
+        const unsigned lengths[] = {4, 4, 12, 8, 4}, first[] = {0, 1, 2, 5, 7};
+        if (position >= 120 || !values || bytes != lengths[span]) { fixture->valid = false; return BC_STS_ERROR; }
+        fixture->valid &= address == starts[span] + slot * 460 &&
+            reinterpret_cast<uintptr_t>(values) % alignof(uint32_t) == 0;
+        for (unsigned word = 0; word < bytes / 4; ++word)
+            values[word] = fixture->all_ones ? 0xffffffffU : position < 40 ? 0 :
+                ((position / 40) << 24) | (slot << 8) | (first[span] + word + 1);
+        if (fixture->different && position % 40 >= 20) values[0] ^= 0x80000000U;
+        if (position == fixture->lose_at) fixture->current = fixture->replacement;
+        return position == fixture->fail_at ? BC_STS_ERROR : BC_STS_SUCCESS;
+    }
+    bool Exercise(ArmMetadataObserver *observer) {
+        observer->enabled = true;
+        for (unsigned stage = 0; stage < 3; ++stage)
+            if (!observer->Observe(&current, stage, stage != 0, Read, false)) return false;
+        return observer->Finish(true, false);
+    }
+};
+
 // Native framing observations only: the revision pin is an observed board
 // profile, not a universal reset value. Sequential passes may differ; sync,
 // line counts and EOL/EOF are raw fields, not accepted-transfer/completion proof.
@@ -1556,6 +1669,7 @@ struct Options {
     bool observe_mfd_address = false;
     bool observe_mfd_framing = false;
     bool observe_runtime_inventory = false;
+    bool observe_arm_metadata = false;
     unsigned inject_mfd_colour = 0;
     unsigned scl_status_test = 0;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
@@ -1582,6 +1696,10 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
             ? OUTPUT_MODE422_UYVY : OUTPUT_MODE422_YUY2;
         options->capture_path = path;
         arguments.resize(arguments.size() - 2);
+    }
+    if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-arm-metadata")) {
+        options->observe_arm_metadata = true;
+        arguments.pop_back();
     }
     if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-runtime-inventory")) {
         options->observe_runtime_inventory = true;
@@ -1654,7 +1772,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         arguments.resize(arguments.size() - 2);
     }
     if (arguments.size() == 2 && !std::strcmp(arguments[1], "--self-test")) {
-        if (options->capture_path || options->observe_runtime_inventory || options->observe_chroma || options->observe_scl_config || options->observe_scl_filter_map || options->observe_scl_view || options->observe_mfd_config || options->observe_mfd_address || options->observe_mfd_framing || options->inject_mfd_colour || options->scl_status_test || options->scaler_test || options->mpeg1_via_mpeg2 ||
+        if (options->capture_path || options->observe_arm_metadata || options->observe_runtime_inventory || options->observe_chroma || options->observe_scl_config || options->observe_scl_filter_map || options->observe_scl_view || options->observe_mfd_config || options->observe_mfd_address || options->observe_mfd_framing || options->inject_mfd_colour || options->scl_status_test || options->scaler_test || options->mpeg1_via_mpeg2 ||
             options->h263_via_divx || options->open_only) return false;
         options->mode = Mode::SelfTest;
         return true;
@@ -1671,6 +1789,13 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         return false;
     options->mode = preflight ? Mode::Preflight : Mode::Hardware;
     options->path = arguments[2];
+    if (options->observe_arm_metadata &&
+        (!hardware || !options->capture_path || !options->scaler_test || options->scale_width ||
+         options->expected != 180 || options->iterations != 1 || options->output_format != OUTPUT_MODE422_YUY2 ||
+         options->observe_chroma || options->observe_scl_config || options->observe_scl_filter_map ||
+         options->observe_scl_view || options->observe_mfd_config || options->observe_mfd_address ||
+         options->observe_mfd_framing || options->observe_runtime_inventory || options->inject_mfd_colour ||
+         options->scl_status_test || options->mpeg1_via_mpeg2 || options->h263_via_divx || options->open_only)) return false;
     if (options->observe_mfd_framing &&
         (!hardware || !options->capture_path || !options->scaler_test || options->scale_width ||
          options->expected != 180 || options->iterations != 1 ||
@@ -1746,8 +1871,35 @@ static bool SclInputAdmitted(const Options &options, const Input &input)
 
 static bool NeedsRawIo(const Options &options)
 {
-    return options.observe_runtime_inventory || options.observe_chroma || options.observe_scl_config || options.observe_scl_filter_map ||
+    return options.observe_arm_metadata || options.observe_runtime_inventory || options.observe_chroma || options.observe_scl_config || options.observe_scl_filter_map ||
         options.observe_scl_view || options.observe_mfd_config || options.observe_mfd_address || options.observe_mfd_framing || options.inject_mfd_colour || options.scl_status_test;
+}
+
+static bool SubmittedPacketDigestMatches(const Input &input, size_t expected_bytes, const char *expected_sha)
+{
+    if (!expected_sha || !expected_bytes || expected_bytes > 124832 || input.packets.size() > 180) return false;
+    GChecksum *checksum = g_checksum_new(G_CHECKSUM_SHA256);
+    if (!checksum) return false;
+    size_t total = 0;
+    bool ok = true;
+    for (const Packet &packet : input.packets) {
+        if (!packet.size || packet.size > packet.data.size() || packet.size > expected_bytes - total) { ok = false; break; }
+        g_checksum_update(checksum, packet.data.data(), static_cast<gssize>(packet.size));
+        total += packet.size;
+    }
+    ok = ok && total == expected_bytes && !std::strcmp(g_checksum_get_string(checksum), expected_sha);
+    g_checksum_free(checksum);
+    return ok;
+}
+static bool ArmMetadataInputShape(const Options &options, const Input &input)
+{
+    return options.expected == 180 && input.codec == AV_CODEC_ID_H264 && input.subtype == BC_MSUBTYPE_H264 &&
+        input.progressive && input.width == 256 && input.height == 96 && input.packets.size() == 180;
+}
+static bool ArmMetadataInputAdmitted(const Options &options, const Input &input)
+{
+    return !options.observe_arm_metadata || (ArmMetadataInputShape(options, input) &&
+        SubmittedPacketDigestMatches(input, 124832, "1363a87c8f59fab6187cd13653a3ba8a41fd994066d30c24be1c2b09d675666e"));
 }
 
 // Test-only MPEG-1 admission through the existing algorithm-1 channel. Do not
@@ -2336,6 +2488,164 @@ template<class Check> static void MfdAddressSelfTest(const Check &check)
     }
 }
 
+template<class Check> static void ArmMetadataSelfTest(const Check &check)
+{
+    for (unsigned variant = 0; variant < 3; ++variant) {
+        ArmMetadataFixture fixture; fixture.different = variant == 1; fixture.all_ones = variant == 2;
+        ArmMetadataObserver subject; subject.enabled = true;
+        for (unsigned stage = 0; stage < 3; ++stage) {
+            check(subject.Observe(&fixture.current, stage, stage != 0, ArmMetadataFixture::Read, false) &&
+                fixture.valid && fixture.calls == (stage + 1) * 40 && subject.reads == fixture.calls &&
+                subject.bytes == (stage + 1) * 256 && subject.measured == 40 && subject.Stable() == !fixture.different &&
+                subject.raw[0][0][0] == (fixture.all_ones ? 0xffffffffU : stage ? (stage << 24) | 1U : 0),
+                "ARM fixed four-slot/two-pass tuples retain distinct stages, zero/stale/all-ones and unequal observations without rejection");
+        }
+        check(subject.Finish(true, false) && !subject.Finish(false, false) && fixture.calls == 120,
+            "ARM observations require all three stages and native success; finish adds no I/O");
+    }
+    for (unsigned position = 0; position < 120; ++position) for (unsigned fault = 0; fault < 3; ++fault) {
+        ArmMetadataFixture fixture, other;
+        fixture.fail_at = fault == 0 ? position : 120;
+        fixture.lose_at = fault ? position : 120;
+        fixture.replacement = fault == 2 ? static_cast<HANDLE>(&other) : nullptr;
+        ArmMetadataObserver subject;
+        check(!fixture.Exercise(&subject) && fixture.valid && fixture.calls == position + 1 &&
+            subject.reads == position + 1 && subject.measured == position % 40 &&
+            subject.failure == (fault ? ArmMetadataFailure::Owner : ArmMetadataFailure::Read) &&
+            !subject.Observe(&fixture.current, 0, false, ArmMetadataFixture::Read, false) &&
+            !subject.Observe(&other.current, 2, true, ArmMetadataFixture::Read, false) &&
+            fixture.calls == position + 1 && other.calls == 0,
+            "ARM every API failure/current-handle-null/replacement ordinal stops exactly and latches zero future I/O");
+    }
+    for (unsigned prior = 0; prior < 4; ++prior) {
+        ArmMetadataFixture fixture; ArmMetadataObserver subject; subject.enabled = true;
+        for (unsigned stage = 0; stage < prior; ++stage)
+            check(subject.Observe(&fixture.current, stage, stage != 0, ArmMetadataFixture::Read, false), "ARM ordered admission setup");
+        check(!subject.Observe(&fixture.current, prior ? prior - 1 : 1, prior != 1, ArmMetadataFixture::Read, false) &&
+            subject.failure == ArmMetadataFailure::Order && fixture.calls == prior * 40,
+            "ARM duplicate/out-of-order stages refuse without reads, including after the full budget");
+    }
+    for (unsigned invalid = 0; invalid < 7; ++invalid) {
+        ArmMetadataFixture fixture, other; ArmMetadataObserver subject; subject.enabled = true;
+        HANDLE missing = nullptr;
+        if (invalid == 3) subject.reads = 81;
+        if (invalid >= 5) check(subject.Observe(&fixture.current, 0, false, ArmMetadataFixture::Read, false), "ARM first barrier setup");
+        if (invalid == 6) fixture.current = &other;
+        check(!subject.Observe(invalid == 0 ? nullptr : invalid == 1 ? &missing : &fixture.current,
+            invalid >= 5 ? 1 : 0, invalid == 4 || invalid == 6,
+            invalid == 2 ? nullptr : ArmMetadataFixture::Read, false) && subject.failed &&
+            fixture.calls == (invalid >= 5 ? 40U : 0U),
+            "ARM null arguments, budget, wrong publication barriers and interstage owner change refuse before reads");
+    }
+    ArmMetadataObserver disabled;
+    check(disabled.Observe(nullptr, 999, true, nullptr, false) && disabled.Finish(true, false) &&
+        !disabled.Finish(false, false) && disabled.reads == 0 && disabled.next_stage == 0,
+        "ARM default-disabled has zero calls and leaves ordinary native success unchanged");
+    {
+        ArmMetadataFixture fixture; ArmMetadataObserver subject; subject.enabled = true;
+        check(subject.Observe(&fixture.current, 0, false, ArmMetadataFixture::Read, false) &&
+            subject.Observe(&fixture.current, 1, true, ArmMetadataFixture::Read, false) &&
+            !subject.Observe(&fixture.current, 2, false, ArmMetadataFixture::Read, false) &&
+            subject.failure == ArmMetadataFailure::Barrier && fixture.calls == 80 && !subject.Finish(true, false),
+            "ARM final sample requires a complete delivery EOS barrier and performs no I/O without it");
+    }
+    {
+        FILE *record = std::tmpfile(); const int saved = dup(STDOUT_FILENO);
+        std::fflush(stdout);
+        const bool redirected = record && saved >= 0 && dup2(fileno(record), STDOUT_FILENO) >= 0;
+        if (redirected) {
+            ArmMetadataFixture fixture; ArmMetadataObserver subject; subject.enabled = true;
+            subject.Observe(&fixture.current, 0, false, ArmMetadataFixture::Read);
+            fixture.different = true;
+            subject.Observe(&fixture.current, 1, true, ArmMetadataFixture::Read);
+        }
+        std::fflush(stdout);
+        const bool restored = saved >= 0 && dup2(saved, STDOUT_FILENO) >= 0;
+        if (saved >= 0) close(saved);
+        char text[16384] = {}; size_t bytes = 0;
+        if (record) { std::rewind(record); bytes = std::fread(text, 1, sizeof(text) - 1, record); std::fclose(record); }
+        check(redirected && restored && bytes && std::strstr(text, "observed-stable,non-atomic") &&
+            std::strstr(text, "observed-different,non-atomic") && std::strstr(text, "cached-meta-virtual=") &&
+            std::strstr(text, "e8-opaque=") && std::strstr(text, "cached-source+34=") &&
+            std::strstr(text, "cached-source-is-current-input=unproven") && std::strstr(text, "started=0") &&
+            std::strstr(text, "branch-selector-if-active-and-started=FRESH-dequeue") &&
+            std::strstr(text, "branch-selector-if-active-and-started=CACHE-copy"),
+            "ARM compact reports distinguish cached metadata/source/opaque/branch scalars and informational non-atomic stability");
+    }
+    const std::vector<const char *> valid = {"probe", "--hardware", "fixture", "180", "30", "1",
+        "--scaler-test", "0", "--observe-arm-metadata", "--capture-yuy2", "new"};
+    Options admitted;
+    check(ParseArguments(valid, &admitted) && admitted.observe_arm_metadata && NeedsRawIo(admitted) && !NeedsRawIo(Options{}),
+        "ARM explicit hardware/native/unscaled/one YUY2 capture requires raw-I/O capability");
+    Options implicit;
+    check(ParseArguments({"probe", "--hardware", "fixture", "180", "--scaler-test", "0", "--observe-arm-metadata",
+        "--capture-yuy2", "new"}, &implicit) && implicit.iterations == 1, "ARM implicit single iteration admits the same bounded profile");
+    for (unsigned field = 0; field < 12; ++field) {
+        auto arguments = valid;
+        if (field == 0) arguments[1] = "--preflight";
+        if (field == 1) arguments[3] = "179";
+        if (field == 2) arguments[5] = "2";
+        if (field == 3) arguments[7] = "320";
+        if (field == 4) arguments[9] = "--capture-uyvy";
+        if (field == 5) arguments.resize(9);
+        if (field == 6) arguments.erase(arguments.begin() + 6, arguments.begin() + 8);
+        if (field == 7) arguments[10] = "";
+        if (field == 8) arguments[10] = "-";
+        if (field == 9) arguments[8] = "--observe-arm-metadata=0";
+        if (field == 10) arguments.insert(arguments.begin() + 9, "0xd3a00");
+        if (field == 11) arguments.insert(arguments.end(), {"--capture-yuy2", "another"});
+        Options rejected; check(!ParseArguments(arguments, &rejected), "ARM parser rejects unsupported mode/count/scaling/capture/slot/address syntax before actions");
+    }
+    for (const auto &mixed : std::vector<std::vector<const char *>>{{"--observe-chroma"}, {"--observe-scl-config"},
+        {"--observe-scl-filter-map"}, {"--observe-scl-view", "2"}, {"--observe-mfd-config"}, {"--observe-mfd-address"},
+        {"--observe-mfd-framing"}, {"--observe-runtime-inventory"}, {"--observe-arm-metadata"}, {"--inject-mfd-colour", "a"},
+        {"--scl-status-test", "observe"}, {"--mpeg1-via-mpeg2"}, {"--h263-via-divx"}, {"--open-only"}})
+        for (unsigned where : {8U, 9U}) {
+            auto arguments = valid; arguments.insert(arguments.begin() + where, mixed.begin(), mixed.end());
+            Options rejected; check(!ParseArguments(arguments, &rejected), "ARM excludes all other diagnostics/injection/legacy/open-only and duplicates in both orders");
+        }
+    Options rejected;
+    check(!ParseArguments({"probe", "--self-test", "--observe-arm-metadata"}, &rejected), "ARM observer cannot mix with self-test");
+    Input native; native.codec = AV_CODEC_ID_H264; native.subtype = BC_MSUBTYPE_H264;
+    native.progressive = true; native.width = 256; native.height = 96; native.packets.resize(180);
+    check(ArmMetadataInputShape(admitted, native) && SclInputAdmitted(admitted, native) &&
+        !ArmMetadataInputAdmitted(admitted, native), "ARM shape admission is separate from old MPEG2-only gates and requires the fixed input digest before capture/device");
+    for (unsigned field = 0; field < 8; ++field) {
+        Input altered = native; Options changed = admitted;
+        if (field == 0) altered.codec = AV_CODEC_ID_MPEG2VIDEO;
+        if (field == 1) altered.subtype = BC_MSUBTYPE_MPEG2VIDEO;
+        if (field == 2) altered.progressive = false;
+        if (field == 3) altered.width = 254;
+        if (field == 4) altered.height = 94;
+        if (field == 5) altered.packets.pop_back();
+        if (field == 6) altered.packets.emplace_back();
+        if (field == 7) changed.expected = 179;
+        check(!ArmMetadataInputShape(changed, altered) && !ArmMetadataInputAdmitted(changed, altered) &&
+            ArmMetadataInputAdmitted(Options{}, altered) && SclInputAdmitted(Options{}, altered), "ARM shape mismatches refuse while disabled/default admission is unchanged");
+    }
+    for (unsigned packet = 0; packet < 180; ++packet) {
+        native.packets[packet].size = packet ? 1 : 124653;
+        native.packets[packet].data.resize(native.packets[packet].size, 0);
+    }
+    check(!ArmMetadataInputAdmitted(admitted, native), "ARM exact shape/byte count with a noncanonical digest refuses before capture/device");
+    Input canonical; canonical.packets.resize(2);
+    canonical.packets[0].data = {'a', 0xee}; canonical.packets[0].size = 1;
+    canonical.packets[1].data = {'b', 'c', 0xff}; canonical.packets[1].size = 2;
+    const char *abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    check(SubmittedPacketDigestMatches(canonical, 3, abc), "ARM digest hashes concatenated submitted packet.size bytes, excluding padding, against canonical abc SHA256");
+    check(!SubmittedPacketDigestMatches(canonical, 4, abc) && !SubmittedPacketDigestMatches(canonical, 3, nullptr),
+        "ARM digest requires exact submitted total and a supplied private-test digest");
+    for (unsigned fault = 0; fault < 6; ++fault) {
+        Input changed = canonical;
+        if (fault == 0) changed.packets[0].size = 0;
+        if (fault == 1) changed.packets[0].size = 3;
+        if (fault == 2) changed.packets[0].size = 2;
+        if (fault == 3) changed.packets[0].data[0] = 'x';
+        if (fault == 4) changed.packets.resize(181);
+        check(!SubmittedPacketDigestMatches(changed, fault == 5 ? 124833 : 3, abc), "ARM digest rejects zero/out-of-storage/excess/changed bytes, packet and byte budgets");
+    }
+}
+
 template<class Check> static void MfdFramingSelfTest(const Check &check)
 {
     const uint32_t addresses[] = {0x00540000, 0x00540078, 0x00540050, 0x00540070, 0x00540000};
@@ -2729,6 +3039,7 @@ static bool SelfTest()
 
     SclFilterMapSelfTest(check);
     MfdAddressSelfTest(check);
+    ArmMetadataSelfTest(check);
     MfdFramingSelfTest(check);
     RuntimeInventorySelfTest(check);
 
@@ -4541,6 +4852,7 @@ struct Audit {
     SclViewProbe scl_view;
     MfdAdmissionObserver mfd;
     RuntimeInventoryObserver runtime_inventory;
+    ArmMetadataObserver arm_metadata;
     MfdAddressObserver mfd_address;
     MfdFramingObserver mfd_framing;
     MfdColourProbe mfd_colour;
@@ -4594,6 +4906,8 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                 }
             }
             // Preserve an already delivered owned copy before diagnostic failure.
+            if (!marker && valid && released && audit->frames == 1)
+                valid = audit->arm_metadata.Observe(&device->handle, 1, released && owned_written);
             if (!marker && valid && released)
                 valid = audit->scl_filter_map.AfterDelivered(device->handle, audit->frames,
                                                            released, audit->capture != nullptr);
@@ -4641,6 +4955,8 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                     std::fprintf(stderr, "MFD debug address observation failed; no further observer I/O, ordinary decoder cleanup follows\n");
                 else if (audit->mfd_framing.failed)
                     std::fprintf(stderr, "MFD framing observation failed; no further observer I/O, ordinary decoder cleanup follows\n");
+                else if (audit->arm_metadata.failed)
+                    std::fprintf(stderr, "ARM metadata observation failed; no further observer I/O, ordinary decoder cleanup follows\n");
                 else if (audit->scl_view.failed)
                     std::fprintf(stderr, "SCL test-view experiment failed; guarded restoration if eligible and ordinary decoder cleanup follow\n");
                 else if (audit->scl.failed)
@@ -4648,7 +4964,7 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                 else
                     std::fprintf(stderr, "Invalid progressive picture geometry/data/token: %llu\n",
                                  static_cast<unsigned long long>(output.PicInfo.timeStamp));
-                if (audit->pixels && !audit->scl.failed && !audit->scl_filter_map.fatal && !audit->scl_view.failed && !audit->mfd.failed && !audit->mfd_address.failed && !audit->mfd_framing.failed && !audit->mfd_colour.failed && !audit->scl_status.fatal)
+                if (audit->pixels && !audit->scl.failed && !audit->scl_filter_map.fatal && !audit->scl_view.failed && !audit->mfd.failed && !audit->mfd_address.failed && !audit->mfd_framing.failed && !audit->arm_metadata.failed && !audit->mfd_colour.failed && !audit->scl_status.fatal)
                     std::fprintf(stderr, "Scaler picture: got=%ux%u expected=%ux%u "
                                  "flags=%x words=%u packed422=%u\n",
                                  output.PicInfo.width, output.PicInfo.height,
@@ -4707,6 +5023,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.scl_view.selector = options.observe_scl_view;
     audit.mfd.enabled = options.observe_mfd_config || options.observe_runtime_inventory;
     audit.runtime_inventory.enabled = options.observe_runtime_inventory;
+    audit.arm_metadata.enabled = options.observe_arm_metadata;
     audit.mfd_address.enabled = options.observe_mfd_address;
     audit.mfd_framing.enabled = options.observe_mfd_framing;
     audit.mfd_colour.stimulus = options.inject_mfd_colour;
@@ -4768,6 +5085,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     if (ok) ok = audit.mfd.Observe(device.handle, 0);
     if (ok) ok = audit.mfd_address.PreStart(&device.handle);
     if (ok) ok = audit.mfd_framing.PreStart(&device.handle);
+    if (ok) ok = audit.arm_metadata.Observe(&device.handle, 0, false);
     if (ok) ok = audit.mfd_colour.PreStart(device.handle);
     if (ok) device.started = ok = Status("DtsStartDecoder", DtsStartDecoder(device.handle));
     if (ok && options.capture_path) ok = PackingState(device.handle, "started", &audit.mfd_colour, &audit.scl_view);
@@ -4813,6 +5131,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     ok = ok && !deadline.expired() && audit.eos && audit.ready == 0 &&
          audit.frames == expected && audit.pending.empty();
     // Delivery EOS barrier only, sampled before ordinary STOP/CLOSE.
+    if (ok) ok = audit.arm_metadata.Observe(&device.handle, 2, true);
     if (ok) ok = audit.scl.Observe(device.handle, SclStage::EosBarrier);
     // Only an actual native delivery barrier admits the last status sample.
     // Its diagnostic result cannot retroactively erase delivered native data.
@@ -4830,6 +5149,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     ok = audit.scl_status.Finish(ok);
     ok = audit.mfd_address.Finish(ok);
     ok = audit.mfd_framing.Finish(ok);
+    ok = audit.arm_metadata.Finish(ok);
     ok = audit.runtime_inventory.Finish(ok, audit.mfd);
     std::printf("Library drain: iteration=%u/%u frames=%u/%u pending=%zu "
         "%s-EOS=%s output-marker=%s ready=%u cleanup=%s result=%s\n",
@@ -4858,13 +5178,15 @@ int main(int argc, char **argv)
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
             "[--scaler-test WIDTH_OR_0] [--mpeg1-via-mpeg2 | --h263-via-divx] "
-            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
+            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
     if (NeedsRawIo(options) && !CanReadChromaConfiguration()) {
-        if (options.observe_runtime_inventory)
+        if (options.observe_arm_metadata)
+            std::fprintf(stderr, "--observe-arm-metadata requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
+        else if (options.observe_runtime_inventory)
             std::fprintf(stderr, "--observe-runtime-inventory requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
         else if (options.observe_mfd_framing)
             std::fprintf(stderr, "--observe-mfd-framing requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
@@ -4904,6 +5226,12 @@ int main(int argc, char **argv)
     if (!SclInputAdmitted(options, input)) {
         std::fprintf(stderr, "Raw observation requires native progressive MPEG2 "
                              "640x360 with 180 packets/expected frames; no device was opened\n");
+        phase1_progress_close(&progress);
+        return 2;
+    }
+    if (!ArmMetadataInputAdmitted(options, input)) {
+        std::fprintf(stderr, "ARM metadata observation requires the pinned progressive H264 256x96/180-packet input: "
+            "124832 submitted bytes and fixed SHA256; no capture or device was opened\n");
         phase1_progress_close(&progress);
         return 2;
     }
