@@ -14,18 +14,67 @@
 extern bc_dil_glob_s *bc_dil_glob_ptr;
 static unsigned failures;
 static std::vector<std::vector<uint8_t> > packets;
+// Explicit CPU-only fault injection. Off by default for all legacy framing
+// cases; no ioctl/worker/device is reachable. Attempts are not acceptance.
+static struct {
+    DTS_LIB_CONTEXT *context = nullptr;
+    bool consume_after_push = false;
+    bool allow_metadata_retry = false;
+    unsigned waits = 0, metadata_retries = 0, cancel_after_push = 0;
+    BC_STATUS first_marker_status = BC_STS_SUCCESS;
+    std::vector<uint32_t> attempts;
+    std::vector<std::vector<uint8_t> > accepted;
+    std::vector<uint8_t> consumed;
+} transport;
 static void check(bool value, const char *message)
 {
     if (!value) { std::fprintf(stderr, "FAIL: %s\n", message); ++failures; }
 }
 extern "C" BC_STATUS __real_txBufPush(pTXBUFFER, uint8_t *, uint32_t);
+static void consume_ring(pTXBUFFER ring)
+{
+    const uint32_t size = ring->busySize;
+    if (!size) return;
+    std::vector<uint8_t> output(size);
+    if (txBufPop(ring, output.data(), size) != BC_STS_SUCCESS) std::abort();
+    transport.consumed.insert(transport.consumed.end(), output.begin(), output.end());
+}
 extern "C" BC_STATUS __wrap_txBufPush(pTXBUFFER ring, uint8_t *bytes, uint32_t size)
 {
+    if (transport.context) {
+        if (ring != &transport.context->circBuf) std::abort();
+        transport.attempts.push_back(size);
+        if (transport.attempts.size() == 1 && transport.first_marker_status != BC_STS_SUCCESS)
+            return transport.first_marker_status; // Rejected marker: NO ring push.
+        const BC_STATUS status = __real_txBufPush(ring, bytes, size);
+        if (status == BC_STS_SUCCESS) {
+            transport.accepted.emplace_back(bytes, bytes + size);
+            if (transport.consume_after_push) consume_ring(ring);
+            if (transport.cancel_after_push == transport.accepted.size())
+                transport.context->State = BC_DEC_STATE_STOP;
+        }
+        return status;
+    }
     packets.emplace_back(bytes, bytes + size);
     return __real_txBufPush(ring, bytes, size);
 }
 extern "C" int __wrap_ioctl(int, unsigned long, ...) { std::abort(); }
-extern "C" int __wrap_usleep(useconds_t) { std::abort(); }
+extern "C" int __wrap_usleep(useconds_t duration)
+{
+    if (!transport.context) std::abort();
+    if (duration == 2000 && transport.allow_metadata_retry) {
+        ++transport.metadata_retries; return 0;
+    }
+    if (duration != 5000) std::abort();
+    ++transport.waits;
+    transport.context->State = BC_DEC_STATE_STOP;
+    // A formerly impossible >ring enqueue exits via the real admission check,
+    // not a timeout, actual sleep or fabricated transport success.
+    return 0;
+}
+// This internal implementation helper has C++ linkage (not declared in the
+// public C header); exercise its actual production symbol directly.
+BC_STATUS DtsAlignSendData(HANDLE, uint8_t *, uint32_t, uint64_t, BOOL);
 BC_STATUS DtsFWDecFlushChannel(HANDLE, uint32_t) { std::abort(); }
 BC_STATUS DtsFWPauseVideo(HANDLE, uint32_t) { std::abort(); }
 BC_STATUS DtsFWCloseChannel(HANDLE, uint32_t) { std::abort(); }
@@ -374,14 +423,228 @@ static void WmvBFrameMetadata()
     }
 }
 
+struct TransportFixture : Fixture {
+    DTS_INPUT_MDATA metadata[8] = {};
+    explicit TransportFixture(bool link_pes = false) : Fixture(4) {
+        context.DevId = link_pes ? BC_PCI_DEVID_LINK : BC_PCI_DEVID_FLEA;
+        context.VidParams.MediaSubType = BC_MSUBTYPE_H264;
+        context.VidParams.StreamType = link_pes ? BC_STREAM_TYPE_PES : BC_STREAM_TYPE_ES;
+        context.PESConvParams.m_bAddSpsPps = false;
+        context.PESConvParams.m_bIsAdd_SCode_CodeIn = false;
+        context.MdataPoolPtr = metadata;
+        context.MDPendHead = context.MDPendTail = DTS_MDATA_PEND_LINK((&context));
+        for (DTS_INPUT_MDATA &entry : metadata) {
+            entry.flink = context.MDFreeHead; context.MDFreeHead = &entry;
+        }
+        transport.context = &context;
+        transport.consume_after_push = transport.allow_metadata_retry = false;
+        transport.waits = transport.metadata_retries = transport.cancel_after_push = 0;
+        transport.first_marker_status = BC_STS_SUCCESS;
+        transport.attempts.clear(); transport.accepted.clear(); transport.consumed.clear();
+    }
+    ~TransportFixture() {
+        transport.context = nullptr;
+        DtsClrPendMdataList(&context);
+    }
+    unsigned free_metadata() const {
+        const DTS_INPUT_MDATA *at = context.MDFreeHead;
+        unsigned count = 0;
+        while (at && count < 9) { ++count; at = at->flink; }
+        return count;
+    }
+    bool no_pending_metadata() {
+        return context.MDPendHead == DTS_MDATA_PEND_LINK((&context)) &&
+               context.MDPendTail == DTS_MDATA_PEND_LINK((&context));
+    }
+};
+
+static Bytes transport_bytes(uint32_t size)
+{
+    Bytes bytes(size);
+    for (uint32_t i = 0; i < size; ++i) bytes[i] = static_cast<uint8_t>((i*37U+(i>>8)*13U+91U)%251U);
+    return bytes;
+}
+static Bytes accepted_bytes()
+{
+    Bytes all;
+    for (const Bytes &part : transport.accepted) all.insert(all.end(), part.begin(), part.end());
+    return all;
+}
+static std::vector<uint32_t> expected_chunks(const uint8_t *data, uint32_t size)
+{
+    std::vector<uint32_t> chunks;
+    while (size) {
+        uint32_t chunk = size < ALIGN_BUF_SIZE ? size : ALIGN_BUF_SIZE;
+        const unsigned odd = reinterpret_cast<uintptr_t>(data) % 4;
+        // Preserve the historical unaligned first-copy footprint; the new
+        // invariant is that subsequent aligned chunks are also bounded.
+        if (odd && size > ALIGN_BUF_SIZE) chunk = ALIGN_BUF_SIZE-odd;
+        chunks.push_back(chunk); data += chunk; size -= chunk;
+    }
+    return chunks;
+}
+static void BoundedEsChunks()
+{
+    for (uint32_t size : {ALIGN_BUF_SIZE-1U, uint32_t(ALIGN_BUF_SIZE), ALIGN_BUF_SIZE+1U,
+                          ALIGN_BUF_SIZE+3U, CIRC_TX_BUF_SIZE-1U, uint32_t(CIRC_TX_BUF_SIZE),
+                          CIRC_TX_BUF_SIZE+1U, 2U*CIRC_TX_BUF_SIZE-1U,
+                          2U*CIRC_TX_BUF_SIZE, 2U*CIRC_TX_BUF_SIZE+17U}) {
+        for (unsigned offset = 0; offset < 4; ++offset) {
+            TransportFixture f;
+            transport.consume_after_push = true;
+            // Keep this fault-injection fixture explicitly finite, including
+            // under 32-bit fortified memcpy range analysis.
+            if (size > 3U*CIRC_TX_BUF_SIZE) std::abort();
+            const Bytes expected = transport_bytes(size);
+            Bytes storage(size+8, 0xd7);
+            uint8_t *aligned = storage.data() + ((4-reinterpret_cast<uintptr_t>(storage.data())%4)%4);
+            uint8_t *data = aligned+offset;
+            std::memcpy(data, expected.data(), size);
+            const Bytes original = storage;
+            const BC_STATUS status = DtsAlignSendData(&f.context, data, size, 0, false);
+            check(status == BC_STS_SUCCESS, "large aligned/unaligned ES accepts complete input");
+            check(transport.waits == 0, "bounded ES never waits for an impossible enqueue");
+            check(transport.attempts == expected_chunks(data,size), "exact ordered ES chunks bounded at512KiB");
+            check(accepted_bytes() == expected && transport.consumed == expected,
+                  "actual real ring pushes/pops preserve every ES byte in order");
+            check(storage == original, "ES chunk alignment never changes caller samples or canaries");
+            check(f.context.txBytesEnqueued == size && f.context.circBuf.busySize == 0 &&
+                  f.context.circBuf.freeSize == CIRC_TX_BUF_SIZE, "whole acceptance counters and empty ring agree");
+            std::printf("ES chunks: bytes=%u alignment=%u status=%u waits=%u attempts=%zu accepted=%zu\n",
+                        size,offset,status,transport.waits,transport.attempts.size(),accepted_bytes().size());
+        }
+    }
+}
+
+static void EsRingPressureAndCancellation()
+{
+    for (uint32_t existing : {ALIGN_BUF_SIZE-5U,CIRC_TX_BUF_SIZE-16U,uint32_t(CIRC_TX_BUF_SIZE)}) {
+        TransportFixture f;
+        const Bytes prefix = transport_bytes(existing),expected = transport_bytes(CIRC_TX_BUF_SIZE+19U);
+        check(__real_txBufPush(&f.context.circBuf,const_cast<uint8_t *>(prefix.data()),existing)==BC_STS_SUCCESS,
+              "real ring prefill establishes near/full capacity case");
+        transport.consume_after_push = true;
+        Bytes input = expected;
+        const BC_STATUS status = DtsAlignSendData(&f.context,input.data(),input.size(),0,false);
+        if (existing > ALIGN_BUF_SIZE) {
+            check(status==BC_STS_IO_USER_ABORT && transport.waits==1 && transport.attempts.empty() &&
+                  transport.accepted.empty() && f.context.txBytesEnqueued==0 &&
+                  f.context.circBuf.busySize==existing,"near-full/full ring first wait cancels without accepting a prefix");
+            continue;
+        }
+        Bytes complete = prefix; complete.insert(complete.end(),expected.begin(),expected.end());
+        check(status == BC_STS_SUCCESS && transport.waits == 0,
+              "near-capacity ring makes bounded progress without an impossible wait");
+        check(accepted_bytes() == expected && transport.consumed == complete &&
+              f.context.txBytesEnqueued == expected.size(), "ring wrap preserves prefilling and complete new byte ordering");
+    }
+    {
+        TransportFixture f; Bytes existing(CIRC_TX_BUF_SIZE,0x35),input(ALIGN_BUF_SIZE+1U,0x67);
+        check(__real_txBufPush(&f.context.circBuf,existing.data(),existing.size())==BC_STS_SUCCESS,"full real ring before cancellation");
+        check(DtsAlignSendData(&f.context,input.data(),input.size(),0,false)==BC_STS_IO_USER_ABORT &&
+              transport.waits==1 && transport.attempts.empty() && transport.accepted.empty() &&
+              f.context.txBytesEnqueued==0 && f.context.circBuf.busySize==existing.size(),
+              "first5mswait cancellation rejects all unaccepted bytes without timeout/hang");
+    }
+    {
+        TransportFixture f; Bytes input = transport_bytes(2U*CIRC_TX_BUF_SIZE+17U);
+        transport.consume_after_push = true; transport.cancel_after_push = 1;
+        check(DtsAlignSendData(&f.context,input.data(),input.size(),0,false)==BC_STS_IO_USER_ABORT,
+              "stop after one accepted chunk never reports whole input success");
+        check(transport.waits==0 && transport.accepted.size()==1 &&
+              transport.accepted[0]==Bytes(input.begin(),input.begin()+ALIGN_BUF_SIZE) &&
+              f.context.txBytesEnqueued==ALIGN_BUF_SIZE,"canceled prefix is exactly one bounded accepted chunk");
+        const size_t attempts = transport.attempts.size();
+        check(DtsAlignSendData(&f.context,input.data(),input.size(),0,false)==BC_STS_IO_USER_ABORT &&
+              transport.attempts.size()==attempts,"already stopped input makes no further push");
+    }
+    for (uint32_t size : {CIRC_TX_BUF_SIZE+1U,UINT32_MAX}) {
+        TransportFixture f; uint8_t byte=0x41;
+        check(DtsSendData(&f.context,&byte,size,0,false)==BC_STS_INSUFF_RES && transport.waits==0 &&
+              transport.attempts.empty() && transport.accepted.empty() && f.context.txBytesEnqueued==0,
+              "direct greater-than-ring enqueue rejects INSUFF_RES before waiting or reading input");
+    }
+    for (bool quiescing : {false,true}) {
+        TransportFixture f; uint8_t byte=0x41;
+        if (quiescing) f.context.txQuiescing=true; else f.context.State=BC_DEC_STATE_STOP;
+        check(DtsSendData(&f.context,&byte,UINT32_MAX,0,false)==BC_STS_IO_USER_ABORT &&
+              transport.waits==0 && transport.attempts.empty(),"closed admission takes precedence over oversized capacity rejection");
+    }
+}
+
+static void SpesAdmissionFailures()
+{
+    for (bool link_pes : {false,true}) {
+        for (BC_STATUS injected : {BC_STS_BUSY,BC_STS_INSUFF_RES,BC_STS_IO_ERROR,
+                                   BC_STS_IO_USER_ABORT,BC_STS_INV_ARG,BC_STS_TIMEOUT}) {
+            TransportFixture f(link_pes);
+            transport.first_marker_status=injected;
+            Bytes input=transport_bytes(32);
+            const BC_STATUS actual=DtsAlignSendData(&f.context,input.data(),input.size(),66,false);
+            check(actual==injected,"first rejected SPES marker status is not overwritten by ES/LinkPES payload");
+            check(transport.attempts.size()==1 && transport.attempts[0]==sizeof(BC_SEQ_HDR_FORMAT) &&
+                  transport.accepted.empty() && f.context.txBytesEnqueued==0 &&
+                  f.context.circBuf.busySize==0,"failed marker has exactly one unaccepted attempt and no payload bytes");
+            check(f.free_metadata()==8 && f.no_pending_metadata() && transport.waits==0 &&
+                  transport.metadata_retries==0,"failed marker restores free metadata without pending ownership");
+            std::printf("SPES failure: link-pes=%u injected=%u actual=%u attempts=%zu accepted=%zu\n",
+                        link_pes,injected,actual,transport.attempts.size(),accepted_bytes().size());
+        }
+        {
+            TransportFixture f(link_pes);
+            f.context.MDFreeHead=nullptr; // Valid pool, genuinely no free/pending entry.
+            transport.allow_metadata_retry=true;
+            Bytes input=transport_bytes(32);
+            const BC_STATUS actual=DtsAlignSendData(&f.context,input.data(),input.size(),66,false);
+            check(actual==BC_STS_BUSY && transport.metadata_retries==20 && transport.waits==0 &&
+                  transport.attempts.empty() && transport.accepted.empty() && f.context.txBytesEnqueued==0,
+                  "actual empty metadata pool exhausts20retry attempts and refuses all payload");
+            check(!f.context.MDFreeHead && f.no_pending_metadata(),"empty metadata pool does not invent/leak an owner");
+            std::printf("SPES empty pool: link-pes=%u actual=%u retries=%u push-attempts=%zu\n",
+                        link_pes,actual,transport.metadata_retries,transport.attempts.size());
+        }
+        {
+            TransportFixture f(link_pes); Bytes input=transport_bytes(32);
+            check(DtsAlignSendData(&f.context,input.data(),input.size(),66,false)==BC_STS_SUCCESS &&
+                  transport.attempts.size()==2 && transport.accepted.size()==2,
+                  "normal positive timestamp accepts marker followed by one payload packet");
+            if (transport.accepted.size()==2) {
+                const uint32_t sequence=f.context.InMdataTag&DTS_MDATA_MAX_TAG;
+                const Bytes marker={0,0,1,0xbd,7,0x40,static_cast<uint8_t>(sequence),
+                    static_cast<uint8_t>(sequence>>8),0x0a,0,0,0};
+                check(transport.accepted[0]==marker &&
+                      (link_pes ? payload(transport.accepted[1]) : transport.accepted[1])==input,
+                      "normal marker bytes and ordered ES/LinkPES payload remain exact");
+                check(f.free_metadata()==7 && !f.no_pending_metadata() &&
+                      f.context.MDPendHead==f.context.MDPendTail && f.context.MDPendHead->appTimeStamp==66,
+                      "accepted marker holds exactly one correctly timestamped metadata owner");
+                check(DtsClrPendMdataList(&f.context)==BC_STS_SUCCESS && f.free_metadata()==8 &&
+                      f.no_pending_metadata(),"normal pending marker returns safely to free pool");
+            }
+        }
+    }
+}
+
+static void TransportAdmission()
+{
+    BoundedEsChunks(); EsRingPressureAndCancellation(); SpesAdmissionFailures();
+}
+
 int main(int argc, char **argv)
 {
-    if (argc > 2 || (argc == 2 && std::strcmp(argv[1], "--framing"))) return 2;
+    if (argc > 2 || (argc == 2 && std::strcmp(argv[1], "--framing") &&
+                     std::strcmp(argv[1], "--transport-only"))) return 2;
+    if (argc == 2 && !std::strcmp(argv[1], "--transport-only")) {
+        TransportAdmission();
+        if (failures) { std::fprintf(stderr,"%u transport checks failed\n",failures); return 1; }
+        std::puts("PASS: CPU fault injection, bounded real ES ring progress and exact SPES failure admission");
+        return 0;
+    }
     Framing();
     WmvBFrameMetadata();
     AnnexBScannerBounds();
     // --framing omits the separate SPS detector regression.
-    if (argc == 1) DetectorBounds();
+    if (argc == 1) { DetectorBounds(); TransportAdmission(); }
     if (failures) { std::fprintf(stderr, "%u input checks failed\n", failures); return 1; }
     std::puts("PASS: actual AVC1/WMV3 input timestamps, framing, SPS detection and bounded Annex-B scanning");
 }
