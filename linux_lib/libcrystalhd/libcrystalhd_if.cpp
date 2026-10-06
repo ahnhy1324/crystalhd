@@ -3292,6 +3292,8 @@ DRVIFLIB_API BC_STATUS DtsSetScaleParams(HANDLE hDevice, PBC_SCALING_PARAMS pSca
 {
 	DTS_LIB_CONTEXT *Ctx = NULL;
 	DTS_GET_CTX(hDevice, Ctx);
+	if (!pScaleParams)
+		return BC_STS_INV_ARG;
 	uint32_t ScaledWidth = 0;
 
 	if (Ctx->DevId == BC_PCI_DEVID_FLEA) {
