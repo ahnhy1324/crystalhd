@@ -129,6 +129,14 @@ SOURCE_CALLS = {0xe144: 0xd880, 0xe154: 0xd92c, 0xe168: 0xd9c4,
 SOURCE_HELPERS = (0xd92c, 0xd9c4, 0xdcc8, 0xdd4c, 0xdff4)
 SOURCE_H, SOURCE_C, SOURCE_META = 0x400000, 0x400600, 0x401100
 SOURCE_PICTURE, SOURCE_MAP, SOURCE_STACK = 0x500100, 0x600100, 0x300800
+SOURCE_MODE_BODIES = (
+    (0xded4, 0xdff4, "a754d48cdd63ac3cc688d6ade94948f174d43525af4cd28b751d4f15dbbe8456"),
+    (0xdff4, 0xe110, "a326dea03d2672e92d1f5bc959f75dc6bf639ed3da003c8cfa96ad9f1ab5625b"),
+)
+SOURCE_MODE_CALLS = {0xe03c: 0xded4, 0xe0ac: 0xded4, 0xe0f0: 0xded4,
+                     0xdf7c: 0x203c4, 0xdf98: 0x203c4,
+                     0xdfc0: 0x203c4, 0xdfdc: 0x203c4}
+SOURCE_MODE_LATCH = 0xd247a
 
 
 class MetadataRAM(tuple):
@@ -1163,6 +1171,103 @@ def execute_source_producer(null=False, cleared=True, budget=256, payload=None):
     return actual
 
 
+def execute_source_mode(flags=0, span=256, kind=0, latch=0xff, budget=256, payload=None):
+    """Execute stock DFF4/DED4 selection and its shared alternating byte.
+
+    The metadata words are synthetic CPU inputs, not authenticated geometry.
+    Only logging is substituted. No field timing, IRQ, planes or lease is
+    inferred from the selected bytes or the scalar return register.
+    """
+    if any(type(value) is not int or not 0 <= value <= 0xffffffff
+           for value in (flags, span, kind)) or type(latch) is not int or not 0 <= latch <= 255:
+        raise ValueError("invalid synthetic source mode inputs")
+    if type(budget) is not int or not 1 <= budget <= 256:
+        raise ValueError("invalid instruction budget")
+    payload = Model.payload if payload is None else payload
+    if type(payload) not in (bytes, bytearray):
+        raise ValueError("invalid source mode payload")
+    code = {base: bytearray(struct.pack("<I", 0xe7f000f0) * 1024)
+            for base in (0xd000, 0xe000)}
+    for low, high, digest in SOURCE_MODE_BODIES:
+        if hashlib.sha256(payload[low:high]).hexdigest() != digest:
+            raise ValueError("stock source mode body changed")
+        cursor = low
+        while cursor < high:
+            end = min(high, (cursor & ~4095) + 4096)
+            code[cursor & ~4095][cursor & 4095:(cursor & 4095) + end - cursor] = payload[cursor:end]
+            cursor = end
+    if payload[0xe25c:0xe260] != struct.pack("<I", SOURCE_MODE_LATCH):
+        raise ValueError("stock source mode literal changed")
+    struct.pack_into("<I", code[0xe000], 0x25c, SOURCE_MODE_LATCH)
+    for site, target in SOURCE_MODE_CALLS.items():
+        word = struct.unpack_from("<I", payload, site)[0]
+        displacement = (word & 0xffffff) << 2
+        if displacement & 0x2000000:
+            displacement -= 0x4000000
+        if word & 0xff000000 != 0xeb000000 or site + 8 + displacement != target:
+            raise ValueError("stock source mode call target changed")
+    pages = {base: bytearray(b"\xa5" * 4096)
+             for base in (0x300000, 0x401000, 0x500000, 0xd2000)}
+    struct.pack_into("<I", pages[0x401000], 0x100, flags)
+    struct.pack_into("<I", pages[0x401000], 0x10c, span)
+    struct.pack_into("<I", pages[0x401000], 0x124, kind)
+    pages[0xd2000][SOURCE_MODE_LATCH & 4095] = latch
+    expected = {base: bytearray(page) for base, page in pages.items()}
+    # Independent branch oracle over metadata words, not another ISA executor.
+    selected = bool(flags & 4) if kind == 0 else \
+        not 720 < span <= 1280 and (bool(flags & 12) or kind == 4)
+    mode, field, status = 2, 1, 1
+    expected_latch_writes = []
+    if selected:
+        low = flags & 3
+        if low == 2:
+            mode, field, status = 0, 0, 0
+        elif low == 3:
+            mode, field, status = 1, 0, 0
+        elif low == 1:
+            if latch == 255:
+                latch = 0 if flags & 16 else 1
+                expected_latch_writes.append(latch)
+            mode, field, status = (1 if latch == 0 else 0), 0, 0
+            latch = 1 if latch == 0 else 0
+            expected_latch_writes.append(latch)
+    expected[0x500000][0x108], expected[0x500000][0x128] = mode, field
+    expected[0xd2000][SOURCE_MODE_LATCH & 4095] = latch
+    registers = [0xabc00000 + index for index in range(16)]
+    registers[:3] = [SOURCE_H, SOURCE_META, SOURCE_PICTURE]
+    registers[13:16] = [SOURCE_STACK, RETURN, 0xdff4]
+    image = segment_elf([(base, bytes(page), 5) for base, page in code.items()] +
+                        [(base, bytes(page), 6) for base, page in pages.items()], 0xdff4)
+    pushes = {0xdff4: (4, 5, 6, 7, 8, 14), 0xded4: (4, 5, 6, 14)}
+    latch_writes = []
+    def instruction(rsp, pc, regs):
+        if pc in pushes:
+            saved = [regs[index] for index in pushes[pc]]
+            struct.pack_into("<" + "I" * len(saved), expected[0x300000],
+                             (regs[13] - len(saved) * 4) & 4095, *saved)
+        if pc in (0xdf70, 0xdf8c, 0xdfb8, 0xdfd4):
+            position = len(latch_writes)
+            if regs[1] != SOURCE_MODE_LATCH or position >= len(expected_latch_writes) or \
+                    regs[0] != expected_latch_writes[position]:
+                raise ValueError("outside ordered source mode latch contract")
+            latch_writes.append(regs[0])
+    def log(rsp, pc, args, stack):
+        if pc != 0x203c4 or stack != SOURCE_STACK - 40:
+            raise ValueError("unexpected source mode logging contract")
+        return 0
+    actual = emulate(image, pages, registers,
+                     tuple((low, high) for low, high, _ in SOURCE_MODE_BODIES),
+                     (0x203c4,), log, budget, clobber_flags=0xf0000000,
+                     real_callees=(0xded4,), call_edges=SOURCE_MODE_CALLS, instruction=instruction)
+    expected = {base: bytes(page) for base, page in expected.items()}
+    if actual["pages"] != expected or actual["status"] != status or \
+            latch_writes != expected_latch_writes:
+        raise ValueError("source mode full-page/selection oracle changed")
+    actual.update(expected=expected, mode=mode, field=field, latch=latch,
+                  latch_writes=latch_writes, selected=selected)
+    return actual
+
+
 class FirmwareQemuTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -1960,6 +2065,92 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(connection.sent, [])
 
 
+class FirmwareSourceModeQemuTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        FirmwareQemuTests.setUpClass()
+
+    def check(self, actual):
+        self.assertEqual(actual["pages"], actual["expected"])
+        self.assertEqual(actual["pages"][0x401000], bytes(actual["initial"][0x401000]))
+        self.assertEqual(actual["real_status"],
+                         [(0xded4, actual["status"])] if actual["selected"] else [])
+        self.assertLessEqual(actual["steps"], 112)
+        return actual
+
+    def test_actual_mode_thresholds_and_metadata_flags(self):
+        # The +0c word's dimensions/units are not authenticated by this replay.
+        for span in (720, 721, 1280, 1281):
+            for kind in (0, 1, 4):
+                for flags in (0, 4, 8, 12):
+                    with self.subTest(span=span, kind=kind, flags=flags):
+                        actual = self.check(execute_source_mode(flags, span, kind))
+                        selected = bool(flags & 4) if kind == 0 else \
+                            (span in (720, 1281) and (bool(flags & 12) or kind == 4))
+                        self.assertEqual(actual["selected"], selected)
+                        self.assertEqual((actual["mode"], actual["field"], actual["latch"]), (2, 1, 255))
+        for flags, mode in ((6, 0), (7, 1)):
+            actual = self.check(execute_source_mode(flags))
+            self.assertEqual((actual["mode"], actual["field"], actual["latch"]), (mode, 0, 255))
+
+    def test_actual_shared_latch_initialization_and_alternation(self):
+        for flags, first in ((5, 0), (21, 1)):
+            latch = 255
+            for position in range(4):
+                with self.subTest(flags=flags, position=position):
+                    actual = self.check(execute_source_mode(flags, latch=latch))
+                    self.assertEqual((actual["mode"], actual["field"]), (first ^ (position & 1), 0))
+                    self.assertEqual(len(actual["latch_writes"]), 2 if position == 0 else 1)
+                    latch = actual["latch"]
+        # Preserve a pre-existing latch through the non-selection branch.
+        for latch in (0, 1, 2, 254):
+            actual = self.check(execute_source_mode(5, 721, 1, latch))
+            self.assertEqual((actual["mode"], actual["field"], actual["latch_writes"], actual["latch"]),
+                             (2, 1, [], latch))
+        actual = self.check(execute_source_mode(5, latch=2))
+        self.assertEqual((actual["mode"], actual["field"], actual["latch_writes"]), (0, 0, [0]))
+
+    def test_mode_pins_inputs_budget_and_latch_target(self):
+        for low, high, _ in SOURCE_MODE_BODIES:
+            for offset in (low, high - 1):
+                changed = bytearray(Model.payload)
+                changed[offset] ^= 1
+                with self.subTest(offset=offset), mock.patch.object(subprocess, "Popen") as spawn:
+                    with self.assertRaisesRegex(ValueError, "stock source mode body"):
+                        execute_source_mode(payload=changed)
+                    spawn.assert_not_called()
+        changed = bytearray(Model.payload)
+        changed[0xe25c] ^= 1
+        with mock.patch.object(subprocess, "Popen") as spawn:
+            with self.assertRaisesRegex(ValueError, "stock source mode literal"):
+                execute_source_mode(payload=changed)
+            spawn.assert_not_called()
+        with mock.patch.dict(SOURCE_MODE_CALLS, {0xe03c: 0x203c4}), \
+                mock.patch.object(subprocess, "Popen") as spawn:
+            with self.assertRaisesRegex(ValueError, "stock source mode call target"):
+                execute_source_mode()
+            spawn.assert_not_called()
+        for options in ({"flags": True}, {"flags": -1}, {"span": 1 << 32}, {"kind": 0.0},
+                        {"latch": True}, {"latch": 256}, {"budget": True}, {"budget": 0},
+                        {"budget": 257}, {"payload": []}):
+            with self.subTest(options=options), mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaises(ValueError):
+                    execute_source_mode(**options)
+                spawn.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "instruction budget exceeded"):
+            execute_source_mode(budget=1)
+        original = RSP.registers
+        def outside(rsp):
+            regs = original(rsp)
+            if regs[15] == 0xdf8c:
+                regs[1] = SOURCE_MODE_LATCH + 1
+            return regs
+        with mock.patch.object(RSP, "registers", outside):
+            with self.assertRaisesRegex(ValueError, "outside ordered source mode latch"):
+                execute_source_mode(5)
+
+
 if __name__ == "__main__":
     unittest.main(defaultTest=("FirmwareQemuTests", "FirmwarePictureQemuTests",
-                               "FirmwareMfdSourceQemuTests", "FirmwareSourceProducerQemuTests", "ProtocolTests"))
+                               "FirmwareMfdSourceQemuTests", "FirmwareSourceProducerQemuTests",
+                               "FirmwareSourceModeQemuTests", "ProtocolTests"))
