@@ -12228,5 +12228,222 @@ class FirmwareArcGetterProjectionTests(unittest.TestCase):
             project_arc_getter(self.payload, 0, flags, rows, 1)
 
 
+def project_arc_publication(payload, index, bank, flags, banks, budget=256):
+    """Logical b004..b054 fragment after descriptor/bank selection.
+
+    Selection, capacity, geometry, stack/callees and native extension semantics
+    remain premises, not execution results. Synthetic RAM stores cannot grant
+    a physical plane lease or certify visibility, lifetime or pipeline timing.
+    """
+    if type(payload) not in (bytes, bytearray) or len(payload) != MAP.BUNDLED_SIZE - MAP.TRAILER_SIZE:
+        raise ValueError("invalid ARC publication payload")
+    for low, high, digest in (
+            (0x35c34, 0x35f24, "749dd3f410d7ccabe322d3be1f972f68edea06623bac913614b3535024eac134"),
+            (0x67a25, 0x67a95, "50144f0baa420310c9ac35d5739a4e90af2f13e07bb65daa87894472f695ed00")):
+        if hashlib.sha256(payload[low:high]).hexdigest() != digest:
+            raise ValueError("stock ARC publication source changed")
+    if type(index) is not int or not 0 <= index < 34 or \
+            type(bank) is not int or not 0 <= bank < 9 or \
+            type(flags) not in (bytes, bytearray) or len(flags) != 68 or \
+            type(banks) not in (bytes, bytearray) or len(banks) != 144 or \
+            type(budget) is not int or not 1 <= budget <= 256:
+        raise ValueError("invalid synthetic ARC publication inputs")
+    if struct.unpack_from("<H", flags, index * 2)[0] & 0x8000:
+        raise ValueError("unmet selected free-descriptor premise")
+    code = bytes(payload[0x35ea8:0x35ef8])
+    page = bytearray(b"\xa5" * 4096)
+    page[0x100:0x144], page[0x1a8:0x238] = flags, banks
+    initial = bytes(page)
+    registers = [0xabc00000 + i for i in range(64)]
+    registers[13], registers[14], registers[16] = 0x3fffd170, bank, index
+    expected_registers = list(registers)
+    mask = struct.unpack_from("<I", banks, bank * 16 + 4)[0]
+    free = next((slot for slot in range(32) if not mask & (1 << slot)), None)
+    expected_writes = [] if free is None else [
+        (0xb040, 0x3fffd1ac + bank * 16, 4, mask | (1 << free)),
+        (0xb050, 0x3fffd100 + index * 2, 2, 0xe800 | bank | (free << 4))]
+    expected = bytearray(page)
+    for _, address, size, value in expected_writes:
+        expected[address - 0x3fffd000:address - 0x3fffd000 + size] = value.to_bytes(size, "little")
+    pc, z, n, writes, reads, visited = 0xb004, False, True, [], [], []
+    def word(address):
+        if address & 3 or not 0xb004 <= address < 0xb054:
+            raise ValueError("outside pinned ARC publication code")
+        return struct.unpack_from("<I", code, address - 0xb004)[0]
+    while pc != 0xb054:
+        if len(visited) >= budget:
+            raise ValueError("ARC publication instruction budget exceeded")
+        instruction = word(pc)
+        visited.append(pc)
+        major = instruction >> 27
+        a, b, c = ((instruction >> shift) & 63 for shift in (21, 15, 9))
+        short = (instruction & 511) - (512 if instruction & 256 else 0)
+        length = 4
+        def operand(register):
+            nonlocal length
+            if register in (61, 63):
+                return short & 0xffffffff
+            if register == 62:
+                length = 8
+                return word(pc + 4)
+            return registers[register]
+        next_pc = pc + 4
+        if major in (8, 10, 12, 13, 16):
+            left, right = operand(b), operand(c)
+            immediate = b in (61, 63) or c in (61, 63)
+            condition = 0 if immediate else instruction & 31
+            set_flags = 61 in (b, c) if immediate else bool(instruction & 256)
+            if condition or set_flags and major != 12:
+                raise ValueError("unsupported ARC publication arithmetic")
+            if major == 8:
+                result = left + right
+            elif major == 10:
+                result = left - right
+            elif major == 12:
+                result = left & right
+            elif major == 13:
+                result = left | right
+            else:
+                result = left << (right & 31)
+            result &= 0xffffffff
+            if set_flags:
+                z, n = result == 0, bool(result & 0x80000000)
+            if a < 61:
+                registers[a] = result
+            next_pc = pc + length
+        elif major == 1:
+            if (instruction >> 10) & 3 or instruction & 0x7200 or a >= 61:
+                raise ValueError("unsupported ARC publication load")
+            address = (operand(b) + short) & 0xffffffff
+            if address != 0x3fffd1ac + bank * 16:
+                raise ValueError("outside ARC publication bitmap read")
+            reads.append((pc, address, 4))
+            registers[a] = struct.unpack_from("<I", page, address - 0x3fffd000)[0]
+            next_pc = pc + length
+        elif major == 2:
+            size = {0: 4, 2: 2}.get((instruction >> 22) & 3)
+            if size is None or instruction & 0x07200000:
+                raise ValueError("unsupported ARC publication store")
+            address = (operand(b) + short) & 0xffffffff
+            value = operand(c) & ((1 << (size * 8)) - 1)
+            store = (pc, address, size, value)
+            if len(writes) >= len(expected_writes) or store != expected_writes[len(writes)]:
+                raise ValueError("outside ordered ARC publication store contract")
+            page[address - 0x3fffd000:address - 0x3fffd000 + size] = value.to_bytes(size, "little")
+            writes.append(store)
+            next_pc = pc + length
+        elif major == 4:
+            condition = instruction & 31
+            if condition not in (1, 2) or instruction & 0x60:
+                raise ValueError("unsupported ARC publication branch")
+            displacement = (instruction >> 7) & 0xfffff
+            if displacement & 0x80000:
+                displacement -= 1 << 20
+            if z if condition == 1 else not z:
+                next_pc = pc + 4 + displacement * 4
+        else:
+            raise ValueError("unsupported ARC publication opcode")
+        pc = next_pc
+    if free is None:
+        raise ValueError("full bitmap cannot reach publication")
+    for register, value in ((0, mask | (1 << free)), (1, 1 << free), (2, 0xe800 | bank | (free << 4)),
+            (3, 0x3fffd170 + bank * 16), (13, 0x3fffd170 + index * 2),
+            (14, bank | (free << 4)), (18, index * 2)):
+        expected_registers[register] = value
+    if bytes(page) != bytes(expected) or registers != expected_registers or \
+            writes != expected_writes or reads != [(0xb014, 0x3fffd1ac + bank * 16, 4)] or (z, n) != (True, False):
+        raise ValueError("ARC publication full-page/register oracle changed")
+    return {"flags": bytes(page[0x100:0x144]), "banks": bytes(page[0x1a8:0x238]),
+            "initial": initial, "page": bytes(page), "writes": writes, "reads": reads,
+            "visited": visited, "slot": free, "full_allocator_executed": False,
+            "physical_lease_certified": False, "vendor_extensions_certified": False,
+            "native_execution": False}
+
+
+class FirmwareArcPublicationProjectionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        raw = MAP.read_firmware(BLOB)
+        if len(raw) != MAP.BUNDLED_SIZE or hashlib.sha256(raw).hexdigest() != MAP.BUNDLED_SHA256:
+            raise ValueError("bundled firmware changed")
+        cls.payload = raw[:-MAP.TRAILER_SIZE]
+
+    @staticmethod
+    def images(bank, index, mask, base=0x920000, stride=0x12345):
+        flags, rows = bytearray(b"\x55" * 68), bytearray(b"\xa5" * 144)
+        struct.pack_into("<H", flags, index * 2, 0x0400)
+        struct.pack_into("<4I", rows, bank * 16, base, mask, stride, 0x11223344)
+        return flags, rows
+
+    def test_selected_publication_all_banks_first_free_slots_and_descriptors(self):
+        for bank in range(9):
+            for slot in range(32):
+                for index in (0, 17, 33):
+                    with self.subTest(bank=bank, slot=slot, index=index):
+                        mask = (1 << slot) - 1
+                        flags, rows = self.images(bank, index, mask)
+                        original = (bytes(flags), bytes(rows))
+                        result = project_arc_publication(self.payload, index, bank, flags, rows)
+                        self.assertEqual(result["slot"], slot)
+                        self.assertEqual(result["writes"], [
+                            (0xb040, 0x3fffd1ac + bank * 16, 4, mask | (1 << slot)),
+                            (0xb050, 0x3fffd100 + index * 2, 2, 0xe800 | bank | (slot << 4))])
+                        self.assertEqual(project_arc_getter(self.payload, index, result["flags"], result["banks"])["address"],
+                                         0x920000 + slot * 0x12345)
+                        self.assertEqual((bytes(flags), bytes(rows)), original)
+                        self.assertNotIn(0xb04c, result["visited"])
+                        for key in ("full_allocator_executed", "physical_lease_certified",
+                                    "vendor_extensions_certified", "native_execution"):
+                            self.assertFalse(result[key])
+
+    def test_sparse_bitmap_saved_copy_and_zero_wrapped_address(self):
+        for mask, slot in ((0xaaaaaaaa, 0), (0x55555555, 1), (0x7fffffff, 31), (0xfffffffe, 0)):
+            with self.subTest(mask=mask):
+                flags, rows = self.images(8, 33, mask, base=0xffffffff, stride=1)
+                saved_flags, saved_rows = bytes(flags), bytes(rows)
+                result = project_arc_publication(self.payload, 33, 8, flags, rows)
+                self.assertEqual(result["slot"], slot)
+                self.assertEqual(project_arc_getter(self.payload, 33, saved_flags, saved_rows)["address"], 0)
+                self.assertEqual(project_arc_getter(self.payload, 33, result["flags"], result["banks"])["address"],
+                                 (0xffffffff + slot) & 0xffffffff)
+                # Explicit fixture copy only; no DMA or save/restore body executed.
+                saved_flags, saved_rows = result["flags"], result["banks"]
+                self.assertEqual(project_arc_getter(self.payload, 33, saved_flags, saved_rows)["address"],
+                                 (0xffffffff + slot) & 0xffffffff)
+
+    def test_source_premise_input_and_full_bitmap_budget_refusals(self):
+        flags, rows = self.images(0, 0, 0)
+        for offset in (0x35c34, 0x35ea8, 0x35ef7, 0x35f23, 0x67a25, 0x67a94):
+            changed = bytearray(self.payload)
+            changed[offset] ^= 1
+            with self.subTest(offset=offset), self.assertRaisesRegex(ValueError, "stock ARC publication source"):
+                project_arc_publication(changed, 0, 0, flags, rows)
+        for payload in (None, [], self.payload[:-1], self.payload + b"\0"):
+            with self.assertRaisesRegex(ValueError, "invalid ARC publication payload"):
+                project_arc_publication(payload, 0, 0, flags, rows)
+        for index, bank in ((True, 0), (-1, 0), (34, 0), (0, True), (0, -1), (0, 9)):
+            with self.assertRaisesRegex(ValueError, "invalid synthetic"):
+                project_arc_publication(self.payload, index, bank, flags, rows)
+        for malformed in (b"", bytes(67), bytes(69), list(flags)):
+            with self.assertRaisesRegex(ValueError, "invalid synthetic"):
+                project_arc_publication(self.payload, 0, 0, malformed, rows)
+        for malformed in (b"", bytes(143), bytes(145), list(rows)):
+            with self.assertRaisesRegex(ValueError, "invalid synthetic"):
+                project_arc_publication(self.payload, 0, 0, flags, malformed)
+        for budget in (True, 0, 257):
+            with self.assertRaisesRegex(ValueError, "invalid synthetic"):
+                project_arc_publication(self.payload, 0, 0, flags, rows, budget)
+        live = bytearray(flags)
+        struct.pack_into("<H", live, 0, 0xe800)
+        with self.assertRaisesRegex(ValueError, "free-descriptor premise"):
+            project_arc_publication(self.payload, 0, 0, live, rows)
+        for mask, budget in ((0, 1), (0xffffffff, 256)):
+            flags, rows = self.images(0, 0, mask)
+            original = (bytes(flags), bytes(rows))
+            with self.assertRaisesRegex(ValueError, "instruction budget exceeded"):
+                project_arc_publication(self.payload, 0, 0, flags, rows, budget)
+            self.assertEqual((bytes(flags), bytes(rows)), original)
+
+
 if __name__ == "__main__":
     unittest.main()
