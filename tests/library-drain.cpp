@@ -2126,6 +2126,8 @@ enum class AvdCodePrefixFailure { None, Argument, Mode, Owner, Order, Budget, Ap
 struct AvdCodePrefixObserver {
     typedef PpbContextObserver::Reader MemReader;
     typedef AvdCpuMapObserver::Reader RegReader;
+    explicit AvdCodePrefixObserver(bool platform = false) : platform_code(platform) {}
+    bool PlatformCode() const { return platform_code; }
     bool enabled = false, conflicting_mode = false, failed = false, attempted = false;
     unsigned reads = 0, bytes = 0, mem_reads = 0, mem_bytes = 0, reg_reads = 0;
     uint32_t raw[2][28] = {}, fields[2][9] = {}, manager[2] = {}, config[2][10] = {}, addresses[2] = {};
@@ -2153,7 +2155,19 @@ struct AvdCodePrefixObserver {
         if (chosen + 112U > p + span || chosen > UINT32_MAX) return false;
         *target = static_cast<uint32_t>(chosen); return true;
     }
+    static bool PlatformProfile(const PpbContextGraph &g, const uint32_t *f, uint32_t cc,
+                                const uint32_t *cpu, unsigned window, uint32_t *target) {
+        uint32_t catalog = 0;
+        if (!Profile(g, f, cc, cpu, window, &catalog)) return false;
+        // Fixed stock function offsets, not an address obtained from its bytes.
+        const uint64_t offset = window ? 0x4a06cU : 0x3a77cU;
+        if (offset + 112U > f[6U + window] ||
+            static_cast<uint64_t>(catalog) + offset + 112U > static_cast<uint64_t>(f[1]) + f[2] ||
+            static_cast<uint64_t>(catalog) + offset > UINT32_MAX) return false;
+        *target = static_cast<uint32_t>(catalog + offset); return true;
+    }
 private:
+    const bool platform_code;
     PpbContextGraph authority;
     PpbContextObserver *expected_witness = nullptr;
     const HANDLE *current = nullptr;
@@ -2285,7 +2299,8 @@ public:
             ok = Witness() && Scalars(before, &cc, cpu);
             if (ok && have_profile && (cc != frozen_manager || std::memcmp(before, frozen_fields, sizeof(before)) ||
                 std::memcmp(cpu, frozen_cpu, sizeof(cpu)))) ok = Reject(AvdCodePrefixFailure::Changed);
-            if (ok) ok = Profile(authority, before, cc, cpu, window, &window_target) || Reject(AvdCodePrefixFailure::Profile);
+            if (ok) ok = (platform_code ? PlatformProfile(authority, before, cc, cpu, window, &window_target) :
+                Profile(authority, before, cc, cpu, window, &window_target)) || Reject(AvdCodePrefixFailure::Profile);
             if (ok && !have_profile) {
                 std::memcpy(frozen_fields, before, sizeof(before)); frozen_manager = cc;
                 std::memcpy(frozen_cpu, cpu, sizeof(cpu)); have_profile = true;
@@ -2306,6 +2321,7 @@ public:
         return ok;
     }
     void Report() const {
+        if (platform_code) std::printf("AVD code prefix profile: Platform_Initialize fixed112 outer+3a77c inner+4a06c; literal-values-are-not-followed\n");
         std::printf("AVD code prefix: stage=after-OPEN/pre-START reads=%u/298 bytes=%u/1792 mem-reads=%u/258 mem-bytes=%u/1632 reg-reads=%u/40 api-status=%d failure=%u\n",
             reads, bytes, mem_reads, mem_bytes, reg_reads, api_status, static_cast<unsigned>(failure));
         for (unsigned window = 0; window < 2; ++window) {
@@ -2948,6 +2964,7 @@ struct Options {
     bool observe_avd_cpu_map = false;
     bool observe_avd_code_arena = false;
     bool observe_avd_code_prefix = false;
+    bool observe_avd_platform_code = false;
     bool observe_avd_cache_count = false;
     unsigned inject_mfd_colour = 0;
     unsigned scl_status_test = 0;
@@ -3047,8 +3064,10 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         options->observe_avd_code_arena = true;
         arguments.pop_back();
     }
-    if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-avd-code-prefix")) {
+    if (arguments.size() >= 2 && (!std::strcmp(arguments.back(), "--observe-avd-code-prefix") ||
+                                !std::strcmp(arguments.back(), "--observe-avd-platform-code"))) {
         options->observe_avd_code_prefix = true;
+        options->observe_avd_platform_code = !std::strcmp(arguments.back(), "--observe-avd-platform-code");
         arguments.pop_back();
     }
     if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-runtime-inventory")) {
@@ -6331,9 +6350,10 @@ struct AvdCodePrefixFixture {
     HANDLE current = this, replacement = nullptr;
     BC_STATUS status = BC_STS_ERROR;
     AvdCodePrefixObserver *subject = nullptr;
+    bool platform_code = false;
     PpbContextFixture graph;
     uint32_t fields[2][2][9] = {}, manager[2][2] = {}, config[2][2][10] = {}, raw[2][28] = {};
-    AvdCodePrefixFixture() {
+    explicit AvdCodePrefixFixture(bool platform = false) : platform_code(platform) {
         graph.video_graph = true;
         const uint32_t code[] = {0x1300000,0x1300000,0x100000,0xaa000001,0x1300000,0x1390000,0x70000,0x50000,0x1370000};
         const uint32_t cpu[] = {0x50,0,0x1390000,0x50000,0xffffffff,0x1300000,0x70000,0,0,0x50};
@@ -6364,7 +6384,8 @@ struct AvdCodePrefixFixture {
         } else if (position == 63 || position == 76) {
             f->valid &= address == 0xd540c && size == 4; *out = f->manager[window][phase];
         } else if (position == 74) {
-            ++f->prefixes; f->valid &= address == (window ? 0x1390000U : 0x1300000U) && size == 112;
+            const uint32_t offset = f->platform_code ? (window ? 0x4a06cU : 0x3a77cU) : 0U;
+            ++f->prefixes; f->valid &= address == (window ? 0x1390000U : 0x1300000U) + offset && size == 112;
             if (size == 112) std::memcpy(out, f->raw[window], 112);
         } else {
             const unsigned field = (position < 62 ? position : position - 87U) % 31U;
@@ -6478,8 +6499,9 @@ template<class Check> static void AvdCodePrefixSelfTest(const Check &check)
             check(c.observer.complete[window] && !std::memcmp(c.observer.raw[window], c.fixture.raw[window], 112) &&
                 c.observer.addresses[window] == (window ? 0x1390000U : 0x1300000U),
                 "code prefix publication contains detached data only after all closing witnesses match");
-        if (variant == 2) stable = c.observer;
     }
+    AvdCodePrefixFixture stable_fixture;
+    check(stable_fixture.Exercise(&stable), "code prefix stable observer retains its constructor-selected vector profile");
     for (unsigned at = 0; at < 298; ++at) {
         const unsigned position = at % 149, window = at / 149;
         const bool graph_call = position < 62 || position >= 87;
@@ -6675,6 +6697,117 @@ template<class Check> static void AvdCodePrefixSelfTest(const Check &check)
     native.progressive = true; native.width = 256; native.height = 96; native.packets.resize(180);
     check(!AvdCodePrefixInputAdmitted(admitted, native) && AvdCodePrefixInputAdmitted(Options{}, native),
         "code prefix geometry alone does not bypass the fixed submitted-byte hash and default path remains unchanged");
+}
+
+template<class Check> static void AvdPlatformCodeSelfTest(const Check &check)
+{
+    const uint32_t targets[] = {0x133a77cU, 0x13da06cU};
+    for (unsigned pattern = 0; pattern < 3; ++pattern) {
+        AvdCodePrefixFixture f(true); AvdCodePrefixObserver o(true);
+        for (unsigned window = 0; window < 2; ++window) for (unsigned word = 0; word < 28; ++word)
+            f.raw[window][word] = pattern == 0 ? 0U : pattern == 1 ? UINT32_MAX : window * 256U + word;
+        check(f.Exercise(&o) && f.valid && o.PlatformCode() && f.calls == 298 && f.prefixes == 2 &&
+            o.reads == 298 && o.bytes == 1792 && o.mem_reads == 258 && o.mem_bytes == 1632 && o.reg_reads == 40,
+            "platform code retains separate graph/scalar/CPU brackets and the original finite budget");
+        for (unsigned window = 0; window < 2; ++window)
+            check(f.trace[window * 149U + 74U].address == targets[window] &&
+                f.trace[window * 149U + 74U].bytes == 112U && o.addresses[window] == targets[window] &&
+                !std::memcmp(o.raw[window], f.raw[window], 112),
+                "platform fixed stock offsets publish opaque bytes without following any loaded literal");
+        check(!o.Finish(false, false), "platform observation success never hides a native decode failure");
+    }
+    for (unsigned at = 0; at < 298; ++at) {
+        for (int code = -1; code <= BC_STS_PWR_MGMT; ++code) {
+            if (code == BC_STS_SUCCESS) continue;
+            AvdCodePrefixFixture f(true); f.fail_at = at; f.status = static_cast<BC_STATUS>(code);
+            AvdCodePrefixObserver o(true);
+            check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && o.failure == AvdCodePrefixFailure::Api &&
+                o.api_status == code && !o.complete[at / 149U] &&
+                !o.Observe(&f.current, 0, false, AvdCodePrefixFixture::Memory, AvdCodePrefixFixture::Register, false) &&
+                f.calls == at + 1 && !o.Finish(true, false),
+                "platform every callback API error refuses poisoned bytes, publication and retry");
+        }
+        for (bool replacement : {false, true}) {
+            AvdCodePrefixFixture f(true), other(true); f.lose_at = at; f.replacement = replacement ? &other : nullptr;
+            AvdCodePrefixObserver o(true);
+            check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && other.calls == 0 &&
+                o.failure == AvdCodePrefixFailure::Owner && !o.complete[at / 149U] && !o.Finish(true, false),
+                "platform every callback requires the same native owner before publication");
+        }
+        for (unsigned mutation : {0U,1U,2U,3U,4U,5U,6U,7U,8U,9U,10U,28U}) {
+            AvdCodePrefixFixture f(true); f.mutate_at = at; f.mutation = mutation;
+            AvdCodePrefixObserver o(true);
+            const unsigned position = at % 149U;
+            if (mutation == 7 && position >= 62U && position < 87U) {
+                check(f.Exercise(&o) && f.valid && f.calls == 298 && !o.failed && o.Finish(true, false),
+                    "platform clearing an already absent child witness is a no-op, not a graph fault");
+                continue;
+            }
+            check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && o.failed && !o.Finish(true, false) &&
+                active_code_prefix == nullptr,
+                "platform callback state, publication and reentrant tampering cannot broaden the fixed profile");
+        }
+    }
+    for (unsigned window = 0; window < 2; ++window) {
+        AvdCodePrefixFixture f(true); AvdCodePrefixObserver o(true);
+        const uint32_t short_code = (window ? 0x4a06cU : 0x3a77cU) + 108U;
+        for (unsigned w = 0; w < 2; ++w) for (unsigned phase = 0; phase < 2; ++phase) {
+            f.fields[w][phase][6U + window] = short_code;
+            f.config[w][phase][window ? 3U : 6U] = short_code;
+            if (!window) f.fields[w][phase][8] = f.fields[w][phase][4] + short_code;
+        }
+        check(!f.Exercise(&o) && f.valid && f.prefixes == window && f.calls == window * 149U + 74U &&
+            o.failure == AvdCodePrefixFailure::Profile && !o.complete[window],
+            "platform whole112-byte target must fit the qualified code extent before reading");
+    }
+    AvdCodePrefixFixture report_fixture(true); AvdCodePrefixObserver report_subject(true);
+    check(report_fixture.Exercise(&report_subject), "platform report setup");
+    FILE *log = std::tmpfile(); const int saved = log ? dup(STDOUT_FILENO) : -1;
+    const bool redirected = saved >= 0 && dup2(fileno(log), STDOUT_FILENO) >= 0;
+    if (redirected) report_subject.Report();
+    std::fflush(stdout);
+    if (saved >= 0) { (void)dup2(saved, STDOUT_FILENO); close(saved); }
+    char text[4096] = {}; size_t length = 0;
+    if (log) { std::rewind(log); length = std::fread(text, 1, sizeof(text) - 1, log); std::fclose(log); }
+    check(redirected && length && std::strstr(text, "Platform_Initialize fixed112 outer+3a77c inner+4a06c") &&
+        std::strstr(text, "literal-values-are-not-followed") && std::strstr(text, "address=0133a77c bytes=112") &&
+        std::strstr(text, "address=013da06c bytes=112") && std::strstr(text, "stock-comparison=separate"),
+        "platform report identifies the fixed profile and keeps comparison separate from admission");
+    const std::vector<const char *> valid = {"probe","--hardware","fixture","180","30","1","--scaler-test","0",
+        "--observe-avd-platform-code","--capture-yuy2","new"};
+    Options admitted;
+    check(ParseArguments(valid, &admitted) && admitted.observe_avd_code_prefix && admitted.observe_avd_platform_code &&
+        !AvdCodePrefixConflicts(admitted) && NeedsRawIo(admitted),
+        "platform exclusive opt-in inherits exact hardware, capture, input and early CAP requirements");
+    const std::vector<std::vector<const char *>> forbidden = {{"--observe-avd-platform-code"},{"--observe-avd-code-prefix"},
+        {"--observe-avd-cache-count"},{"--observe-avd-code-arena"},{"--observe-avd-cpu-map"},{"--observe-avd-memory"},
+        {"--observe-video-staging"},{"--observe-video-prefix"},{"--observe-video-graph"},{"--observe-ppb-context"},{"--observe-ppb-stop"},
+        {"--observe-ppb-metadata"},{"--observe-ppb-return"},{"--observe-arm-metadata"},{"--observe-arm-source-shape"},
+        {"--observe-runtime-inventory"},{"--observe-mfd-framing"},{"--observe-mfd-config"},{"--observe-mfd-address"},
+        {"--observe-scl-config"},{"--observe-scl-filter-map"},{"--observe-scl-view","2"},{"--observe-chroma"},
+        {"--inject-mfd-colour","a"},{"--scl-status-test","observe"},{"--open-only"},{"--mpeg1-via-mpeg2"},
+        {"--h263-via-divx"},{"--scaler-test","0"},{"--capture-yuy2","other"}};
+    for (const auto &extra : forbidden) for (unsigned order = 0; order < 2; ++order) {
+        auto args = valid; args.insert(order ? args.end() - 2 : args.begin() + 8, extra.begin(), extra.end()); Options o;
+        check(!ParseArguments(args, &o), "platform duplicate/mixed modes reject in either argument order");
+    }
+    for (unsigned fault = 0; fault < 10; ++fault) {
+        auto args = valid;
+        if (fault == 0) args[1] = "--preflight";
+        if (fault == 1) args[1] = "--self-test";
+        if (fault == 2) args[3] = "179";
+        if (fault == 3) args[5] = "2";
+        if (fault == 4) args[7] = "128";
+        if (fault == 5) args[8] = "--observe-avd-platform-code=0";
+        if (fault == 6) args[9] = "--capture-uyvy";
+        if (fault == 7) args[10] = "-";
+        if (fault == 8) args[10] = "";
+        if (fault == 9) args.resize(9);
+        Options o; check(!ParseArguments(args, &o), "platform exact syntax cannot widen the native read experiment");
+    }
+    Input input; input.codec = AV_CODEC_ID_H264; input.subtype = BC_MSUBTYPE_H264;
+    input.progressive = true; input.width = 256; input.height = 96; input.packets.resize(180);
+    check(!AvdCodePrefixInputAdmitted(admitted, input), "platform input geometry cannot bypass the pinned packet digest");
 }
 
 template<class Check> static void MfdFramingSelfTest(const Check &check)
@@ -7086,6 +7219,7 @@ static bool SelfTest()
     AvdCacheCountSelfTest(check);
     AvdCodeArenaSelfTest(check);
     AvdCodePrefixSelfTest(check);
+    AvdPlatformCodeSelfTest(check);
     PpbStopLifecycleSelfTest(check);
     MfdFramingSelfTest(check);
     RuntimeInventorySelfTest(check);
@@ -8916,6 +9050,7 @@ struct OutputLease {
 };
 
 struct Audit {
+    explicit Audit(bool platform_code = false) : avd_code_prefix(platform_code) {}
     unsigned frames = 0;
     bool marker = false, eos = false, packing_format_observed = false;
     uint32_t ready = 0;
@@ -9111,7 +9246,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
 {
     Deadline deadline(seconds);
     Device device;
-    Audit audit;
+    Audit audit(options.observe_avd_platform_code);
     audit.iteration = iteration;
     audit.progress = progress;
     audit.output_width = input.width;
@@ -9324,7 +9459,7 @@ int main(int argc, char **argv)
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
             "[--scaler-test WIDTH_OR_0] [--mpeg1-via-mpeg2 | --h263-via-divx] "
-            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --observe-ppb-metadata | --observe-ppb-return | --observe-video-prefix | --observe-video-graph | --observe-video-staging | --observe-avd-memory | --observe-avd-cpu-map | --observe-avd-code-arena | --observe-avd-code-prefix | --observe-avd-cache-count | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
+            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --observe-ppb-metadata | --observe-ppb-return | --observe-video-prefix | --observe-video-graph | --observe-video-staging | --observe-avd-memory | --observe-avd-cpu-map | --observe-avd-code-arena | --observe-avd-code-prefix | --observe-avd-platform-code | --observe-avd-cache-count | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n", argv[0]);
         return 2;
     }
@@ -9332,6 +9467,8 @@ int main(int argc, char **argv)
     if (NeedsRawIo(options) && !CanReadChromaConfiguration()) {
         if (options.observe_avd_cache_count)
             std::fprintf(stderr, "--observe-avd-cache-count requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
+        else if (options.observe_avd_platform_code)
+            std::fprintf(stderr, "--observe-avd-platform-code requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
         else if (options.observe_avd_code_prefix)
             std::fprintf(stderr, "--observe-avd-code-prefix requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
         else if (options.observe_avd_code_arena)
