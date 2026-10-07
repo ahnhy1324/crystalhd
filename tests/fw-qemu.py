@@ -2302,6 +2302,260 @@ class FirmwareArcJumpFixupQemuTests(unittest.TestCase):
             self.replay(0)
 
 
+class FirmwareArcAbsoluteFixupQemuTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        FirmwareQemuTests.setUpClass()
+
+    STOCK = {
+        "outer": (0x2ea60, 55, 21, 51, 0x3a77c, 0x117000,
+                  "23799a2426f4a4d638beb46ecaf49047463bf78b1527bcb1880f6473ea02c380",
+                  "c1e8779fa461bca4540f84c6070d4ca7537ecf90b78151c03e5398d94047a51e",
+                  "9b2cb2c2ffff0061b23014ff1c86c8ab34b5c8cf8a2c8df87af82982b61bd808",
+                  (2044, 2045, 2046, 2047, 2048, 2050)),
+        "inner": (0x79dd8, 112, 52, 108, 0x4a06c, 0x1a7000,
+                  "ba0c0bb760f1de121932856585ac9d8f15bdf2c4cf99473409eaa25006c9ab02",
+                  "6f0476162f7b1ccc431e5f7e7950489be5d8de203307e21f8cefc00aa820defb",
+                  "0faf555f865a248528a614bbc799a9684ce7be3da22c7af2379fa32f13342930",
+                  (584, 585, 586, 587, 588, 590)),
+    }
+
+    def source(self, payload=None):
+        payload = Model.payload if payload is None else payload
+        if type(payload) not in (bytes, bytearray) or len(payload) != len(Model.payload):
+            raise ValueError("invalid absolute fixup payload")
+        for low, high, digest in (
+                (0x29ba4, 0x29f0c, "a16234af9a41e55fc175f60479b9df107c0a27309b20e3f2dca85f6b5c94659a"),
+                (0x29f0c, 0x29ff4, "f8f201970f79dfbf324ed53e604e275e6e21ae275d149e7f40b1889a6a4f2fdd"),
+                (0x2a3e0, 0x2a474, "96cc839896d7faf6c824c290eb157456c1551d0a4d2ce74c3ada498d626fbac1"),
+                (0x2a474, 0x2a530, "f06cc1f536bffd156569e2ec905edb1a91350a29d488a40011c6db27ca98749d")):
+            if hashlib.sha256(payload[low:high]).hexdigest() != digest:
+                raise ValueError("stock absolute fixup/setup source changed")
+        if hashlib.sha256(payload).hexdigest() != "d3b27ebc127f66e093fd4712c32e1539ea36d5470ec70937519f62c486a5a33d":
+            raise ValueError("stock absolute fixup ELF source changed")
+        return bytes(payload)
+
+    def stock(self, kind, payload=None):
+        if type(kind) is not str or kind not in self.STOCK:
+            raise ValueError("invalid absolute fixup stock selection")
+        payload = self.source(payload)
+        blob, count, prefix, ri, start, _, header_sha, prefix_sha, raw_sha, rows = self.STOCK[kind]
+        header = struct.unpack_from("<16sHHIIIIIHHHHHH", payload, blob)
+        self.assertEqual(hashlib.sha256(payload[blob:blob + 52]).hexdigest(), header_sha)
+        self.assertEqual((header[1], header[2], header[11:]), (2, 45, (40, count, count - 1)))
+        sections = [struct.unpack_from("<10I", payload, blob + header[6] + index * 40)
+                    for index in range(count)]
+        prefix_bytes = payload[blob + header[6]:blob + header[6] + prefix * 40]
+        self.assertEqual(hashlib.sha256(prefix_bytes).hexdigest(), prefix_sha)
+        rela = sections[ri]
+        self.assertEqual((rela[1], rela[9]), (4, 12))
+        symbols = sections[rela[6]]
+        self.assertEqual((symbols[1], symbols[9]), (2, 16))
+        records = [struct.unpack_from("<IIi", payload, blob + rela[4] + row * 12) for row in rows]
+        selected = [struct.unpack_from("<IIIBBH", payload, blob + symbols[4] + (info >> 8) * 16)
+                    for site, info, addend in records]
+        code = sections[rela[7]]
+        raw_at = blob + code[4] + start - code[3]
+        raw = payload[raw_at:raw_at + 112]
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), raw_sha)
+        self.assertEqual([info & 255 for site, info, addend in records], [4] * 6)
+        for (site, info, addend), symbol in zip(records, selected):
+            owner = sections[symbol[5]]
+            self.assertEqual(owner[2] & 6, 2)  # Allocated, non-executable data; some owners are read-only.
+            self.assertLess(symbol[5], prefix)
+            self.assertTrue(owner[3] <= symbol[1] < owner[3] + owner[5])
+            self.assertEqual(struct.unpack_from("<I", raw, site - start)[0], symbol[1] + addend)
+        strings = sections[symbols[6]]
+        name = blob + strings[4] + selected[-1][0]
+        self.assertEqual(payload[name:name + 15], b"platform_build\0")
+        self.assertEqual(selected[-1][2:5], (4, 17, 0))
+        return sections, records, selected, raw
+
+    def setup(self, kind, base, payload=None):
+        # Actual section placement then symbol rebase. P is parser+8 from the
+        # first stack input, not the separate loader output boundary. Only an
+        # original section prefix and null + six symbols are executed; no full
+        # loader, native data origin, code arena, LOCAL alias or lease is proved.
+        if type(base) is not int or not 0 <= base <= 0xffffffff:
+            raise ValueError("invalid synthetic data placement base")
+        sections, records, selected, raw = self.stock(kind, payload)
+        payload = self.source(payload)
+        count = self.STOCK[kind][2]
+        context, symbols, sp = 0x220000, 0x240100, 0x300800
+        pages = {address: bytearray(b"\xa5" * 4096) for address in (context, context + 4096, 0x240000, 0x300000)}
+        def put(address, data, target=pages):
+            while data:
+                size = min(len(data), 4096 - (address & 4095))
+                target[address & ~4095][address & 4095:(address & 4095) + size] = data[:size]
+                data, address = data[size:], address + size
+        def word(address, value, target=pages):
+            put(address, struct.pack("<I", value), target)
+        word(context + 4, 0)  # Original 27d64 code-origin argument.
+        word(context + 8, base)  # A scalar fixture, never dereferenced.
+        put(context + 0x3c, struct.pack("<H", count))
+        for index, section in enumerate(sections):
+            put(context + 0x40 + index * 40, struct.pack("<10I", *section))
+        word(context + 0x1a40, symbols)
+        word(context + 0x1a44, 7)
+        put(symbols, bytes(16) + b"".join(struct.pack("<IIIBBH", *record) for record in selected))
+        registers = [0xabc00000 + index for index in range(16)]
+        registers[0], registers[13:15] = context, [sp, RETURN]
+        code = bytearray(struct.pack("<I", 0xe7f000f0) * 1024)
+        code[0x3e0:0x530] = payload[0x2a3e0:0x2a530]
+        expected = {address: bytearray(page) for address, page in pages.items()}
+        placements = {}
+        for index, section in enumerate(sections[1:count], 1):
+            va = section[3]
+            value = (va + (0 if section[2] & 4 else base)) & 0xffffffff if \
+                (va or section[1] == 1) and va < 0x30000000 else 0
+            placements[index] = value
+            word(context + 0x1840 + index * 4, value, expected)
+        put(sp - 8, struct.pack("<II", registers[4], RETURN), expected)
+        def forbidden(*args):
+            raise AssertionError("unexpected absolute fixup/setup callee")
+        def run(start, end):
+            registers[15] = start
+            image = segment_elf([(0x2a000, bytes(code), 5)] +
+                                [(address, bytes(page), 6) for address, page in pages.items()], start)
+            return emulate(image, pages, registers, ((start, end),), (), forbidden, 5000)
+        placed = run(0x2a474, 0x2a530)
+        self.assertEqual(placed["pages"], {address: bytes(page) for address, page in expected.items()})
+        self.assertEqual(placed["calls"], [])
+        pages = {address: bytearray(page) for address, page in placed["pages"].items()}
+        put(sp - 16, struct.pack("<4I", *registers[4:7], RETURN), expected)
+        for index, record in enumerate(selected, 1):
+            value = (placements[record[5]] + record[1] - sections[record[5]][3]) & 0xffffffff
+            word(symbols + index * 16 + 4, value, expected)
+        rebased = run(0x2a3e0, 0x2a474)
+        self.assertEqual(rebased["pages"], {address: bytes(page) for address, page in expected.items()})
+        self.assertEqual(rebased["calls"], [])
+        resolved = [struct.unpack_from("<I", rebased["pages"][0x240000], 0x114 + index * 16)[0]
+                    for index in range(6)]
+        self.assertEqual(resolved, [(base + record[1]) & 0xffffffff for record in selected])
+        return records, resolved, raw
+
+    def replay(self, symbol, addend=0, raw=None, offset=4, payload=None, budget=128):
+        if any(type(value) is not int or not 0 <= value <= 0xffffffff for value in (symbol, addend)) or \
+                type(offset) is not int or offset not in range(0, 109, 4) or \
+                type(budget) is not int or not 1 <= budget <= 128:
+            raise ValueError("invalid synthetic absolute fixup")
+        raw = bytes(range(112)) if raw is None else raw
+        if type(raw) is not bytes or len(raw) != 112:
+            raise ValueError("invalid synthetic absolute prefix")
+        payload = self.source(payload)
+        base, sp = 0x220100, 0x300800
+        pages = {address: bytearray(b"\xa5" * 4096) for address in (0x220000, 0x300000)}
+        pages[0x220000][0x100:0x170] = raw
+        struct.pack_into("<I", pages[0x300000], sp & 4095, addend)
+        registers = [0xabc00000 + index for index in range(16)]
+        registers[:4] = [base + offset, 0x01200000 + offset, symbol, 4]
+        registers[13:16] = [sp, RETURN, 0x29ba4]
+        value = (symbol + addend) & 0xffffffff
+        expected = {address: bytearray(page) for address, page in pages.items()}
+        struct.pack_into("<I", expected[0x220000], 0x100 + offset, value)
+        struct.pack_into("<13I", expected[0x300000], sp - 52 - 0x300000, *registers[:12], RETURN)
+        struct.pack_into("<7I", expected[0x300000], sp - 80 - 0x300000, 1, 0, 2, 1, 0, 3, 2)
+        expected_stores = [(base + offset + index, byte) for index, byte in enumerate(struct.pack("<I", value))]
+        stores, visited = [], []
+        def forbidden(*args):
+            raise AssertionError("unexpected absolute fixup callee")
+        def instruction(rsp, pc, regs):
+            visited.append(pc)
+            operands = {0x29c9c: (regs[4] + regs[10], regs[6]),
+                        0x29ca4: (regs[4] + regs[11], regs[0]),
+                        0x29cb0: (regs[4] + regs[0], regs[1]),
+                        0x29cbc: (regs[4] + regs[0], regs[1])}
+            if pc in operands:
+                address, byte = operands[pc]
+                observed = (address, byte & 255)
+                if len(stores) >= 4 or observed != expected_stores[len(stores)]:
+                    raise ValueError("outside ordered absolute fixup store contract")
+                stores.append(observed)
+        code = bytearray(struct.pack("<I", 0xe7f000f0) * 1024)
+        code[0xba4:0xff4] = payload[0x29ba4:0x29ff4]
+        image = segment_elf([(0x29000, bytes(code), 5)] +
+                            [(address, bytes(page), 6) for address, page in pages.items()], 0x29ba4)
+        actual = emulate(image, pages, registers, ((0x29ba4, 0x29c48), (0x29c98, 0x29cc4),
+                         (0x29f00, 0x29f0c)), (), forbidden, budget, instruction=instruction)
+        self.assertEqual(actual["status"], 3)  # Incidental offset, not completion/success.
+        self.assertEqual(actual["pages"], {address: bytes(page) for address, page in expected.items()})
+        self.assertEqual(actual["calls"], [])
+        self.assertEqual(stores, expected_stores)
+        self.assertIn(0x29c20, visited)
+        self.assertNotIn(0x29c24, visited)
+        return actual
+
+    def test_stock_data_symbols_after_actual_placement_rebase_and_absolute_fixups(self):
+        literal_sites = {"outer": (0x3a790, 0x3a798, 0x3a7a4, 0x3a7b0, 0x3a7b8, 0x3a7e0),
+                         "inner": (0x4a080, 0x4a088, 0x4a098, 0x4a0a4, 0x4a0ac, 0x4a0cc)}
+        for kind in self.STOCK:
+            sections, original, selected, raw = self.stock(kind)
+            self.assertEqual([site for site, info, addend in original], list(literal_sites[kind]))
+            self.assertEqual([addend for site, info, addend in original],
+                             [0, 0, 0, 20060 if kind == "outer" else 4804, 0, 0])
+            self.assertEqual(selected[-1][1], 0x77134 if kind == "outer" else 0x516f8)
+            for base in (self.STOCK[kind][5], 0, 0x03300000):
+                with self.subTest(kind=kind, base=base):
+                    records, resolved, current = self.setup(kind, base)
+                    start = self.STOCK[kind][4]
+                    expected = bytearray(raw)
+                    for (site, info, addend), symbol in zip(records, resolved):
+                        actual = self.replay(symbol, addend, current, site - start)
+                        current = actual["pages"][0x220000][0x100:0x170]
+                        struct.pack_into("<I", expected, site - start,
+                                         (base + struct.unpack_from("<I", raw, site - start)[0]) & 0xffffffff)
+                        self.assertEqual(current, bytes(expected))
+                    # All non-type-4 bytes, including the two type-6 call words,
+                    # remain untouched. This is a fixture bridge, not full caller,
+                    # native loaded code, ARC execution, engine or lease proof.
+
+    def test_absolute_word_addition_wrap_and_all_four_bytes(self):
+        for symbol, addend, offset in ((0xffffffff, 1, 0), (0x80000000, 0x80000000, 56),
+                                       (0x12345678, 0xabcdef01, 108), (0, 0, 4)):
+            with self.subTest(symbol=symbol, addend=addend):
+                self.replay(symbol, addend, bytes(b"\xa5" * 112), offset)
+
+    def test_source_input_budget_and_pre_store_refusals(self):
+        for offset in (0x29ba4, 0x29c20, 0x29cbc, 0x29f0b, 0x29f0c, 0x29ff3,
+                       0x2a3e0, 0x2a473, 0x2a474, 0x2a52f, 0x2ea60, 0x79dd8,
+                       0x79540, 0xcea30, 0x6cf30, 0xc959c, 0x78798, 0xcdb4c,
+                       0x69b00, 0xc5177, 0x5d374, 0xc18cd):
+            changed = bytearray(Model.payload)
+            changed[offset] ^= 1
+            with self.subTest(offset=offset), mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaisesRegex(ValueError, "stock absolute fixup"):
+                    self.setup("outer" if offset < 0x79dd8 else "inner", 0, changed)
+                spawn.assert_not_called()
+        for options in (dict(symbol=True), dict(symbol=-1), dict(symbol=1 << 32),
+                        dict(addend=True), dict(addend=-1), dict(addend=1 << 32),
+                        dict(offset=True), dict(offset=1), dict(offset=112), dict(raw=b""),
+                        dict(raw=bytearray(112)), dict(payload=[]), dict(payload=Model.payload[:-1]),
+                        dict(budget=True), dict(budget=0), dict(budget=129)):
+            args = dict(symbol=0)
+            args.update(options)
+            with self.subTest(options=options), mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaises(ValueError):
+                    self.replay(**args)
+                spawn.assert_not_called()
+        for kind, base in ((False, 0), ("missing", 0), ("outer", True), ("inner", -1),
+                           ("outer", 1 << 32)):
+            with mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaises(ValueError):
+                    self.setup(kind, base)
+                spawn.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "instruction budget exceeded"):
+            self.replay(0, budget=1)
+        original = RSP.registers
+        def corrupt(rsp):
+            registers = original(rsp)
+            if registers[15] == 0x29c9c:
+                registers[4] += 4
+            return registers
+        with mock.patch.object(RSP, "registers", corrupt), \
+                self.assertRaisesRegex(ValueError, "ordered absolute fixup store"):
+            self.replay(0)
+
+
 class FirmwareMfdSourceQemuTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -3153,7 +3407,7 @@ class FirmwareStopResultQemuTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(defaultTest=("FirmwareQemuTests", "FirmwarePictureQemuTests", "FirmwareArmArcReturnQemuTests", "FirmwareCpuMapQemuTests", "FirmwareArcJumpFixupQemuTests",
+    unittest.main(defaultTest=("FirmwareQemuTests", "FirmwarePictureQemuTests", "FirmwareArmArcReturnQemuTests", "FirmwareCpuMapQemuTests", "FirmwareArcJumpFixupQemuTests", "FirmwareArcAbsoluteFixupQemuTests",
                                "FirmwareMfdSourceQemuTests", "FirmwareSourceProducerQemuTests",
                                "FirmwareSourceModeQemuTests", "FirmwareIrqStatusQemuTests",
                                "FirmwareLogCommandQemuTests", "FirmwareChannelGuardQemuTests",
