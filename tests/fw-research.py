@@ -13159,5 +13159,394 @@ class FirmwareArcChannelSelectionProjectionTests(unittest.TestCase):
             project_arc_channel_selection(self.payload, flags, 0)
 
 
+def project_arc_saved_copy(payload, source, replacement=None, lane=0, status_high=0, budget=8192, stuck=False):
+    """Joined logical stock copy/local-copy/sync/write execution.
+
+    All five pages, DMA statuses and byte transfers are synthetic fixtures.
+    A queued transfer retires only at the sync routine's supplied idle read.
+    Optional source replacement before the second local copy is not atomic
+    snapshotting. LP is logical and named shifts are assumed; no native DMA,
+    host alias, engine completion, visibility, timing or lease is certified.
+    """
+    if type(payload) not in (bytes, bytearray) or len(payload) != MAP.BUNDLED_SIZE - MAP.TRAILER_SIZE:
+        raise ValueError("invalid ARC saved copy payload")
+    regions = ((0x9c3c, 0x9d48, 0x34ae0, "32f163266b8f614b9e46b94bc4a9b20863606b0cbad567b3b6a496f5d7866c64"),
+        (0x52e0, 0x530c, 0x30184, "3fb685da3f0e68b3867763ac19bef9a8911c9f0cc15e9c967c0db2470c8532c4"),
+        (0x5364, 0x537c, 0x30208, "09eba93bd6a061b8c12b296f37ada07113ed0f451a9d73bc16f87e2adaadae0b"),
+        (0x537c, 0x53c8, 0x30220, "0fd491e26ea119ad36ccc54950a0deddea7ec8f4a81ddddf2b6d80066df3a049"))
+    for low, high, offset, digest in regions:
+        if hashlib.sha256(payload[offset:offset + high - low]).hexdigest() != digest:
+            raise ValueError("stock ARC saved copy body changed")
+    if hashlib.sha256(payload[0x67a25:0x67a95]).hexdigest() != \
+            "50144f0baa420310c9ac35d5739a4e90af2f13e07bb65daa87894472f695ed00":
+        raise ValueError("stock ARC saved copy extension declarations changed")
+    edges = {0x9ca4: (0x5364, 644, 0x6df20), 0x9cb0: (0x537c, 645, 0x6df2c),
+             0x9cd0: (0x52e0, 641, 0x6df38), 0x9d00: (0x5364, 644, 0x6df44),
+             0x9d14: (0x537c, 645, 0x6df50), 0x9d1c: (0x5364, 644, 0x6df5c)}
+    for site, (target, symbol, offset) in edges.items():
+        if bytes(payload[offset:offset + 12]) != struct.pack("<IIi", site, symbol << 8 | 6, 0):
+            raise ValueError("stock ARC saved copy relocation changed")
+        word = struct.unpack_from("<I", payload, 0x34ae0 + site - 0x9c3c)[0]
+        displacement = (word >> 7) & 0xfffff
+        displacement -= 1 << 20 if displacement & 0x80000 else 0
+        if word >> 27 != 5 or site + 4 + 4 * displacement != target:
+            raise ValueError("stock ARC saved copy call changed")
+    if type(source) not in (bytes, bytearray) or not 0 <= len(source) <= 0x5bc or \
+            replacement is not None and (type(replacement) not in (bytes, bytearray) or
+                len(source) <= 128 or len(replacement) != len(source)) or \
+            type(lane) is not int or lane not in (0, 1) or \
+            type(status_high) is not int or not 0 <= status_high <= 0xffffffff or status_high & 15 or \
+            type(budget) is not int or not 1 <= budget <= 8192 or type(stuck) is not bool:
+        raise ValueError("invalid synthetic ARC saved copy inputs")
+    source = bytes(source)
+    replacement = None if replacement is None else bytes(replacement)
+    src, dst, stack, dma = 0x3fffcdac, 0x500100, 0x400800, 0x30051800
+    pages = {base: bytearray(b"\xa5" * 4096) for base in
+             (0x3fffc000, 0x3fffd000, 0x400000, 0x30051000, 0x500000)}
+    def copy_bytes(destination, address, data):
+        for index, value in enumerate(data):
+            location = address + index
+            base, offset = location & ~4095, location & 4095
+            if base not in destination:
+                raise ValueError("outside synthetic ARC saved copy byte fixture")
+            destination[base][offset] = value
+    def bytes_at(memory, address, count):
+        return bytes(memory[(address + i) & ~4095][(address + i) & 4095] for i in range(count))
+    copy_bytes(pages, src, source)
+    initial = {base: bytes(page) for base, page in pages.items()}
+    registers = [0xabc00000 + index for index in range(64)]
+    registers[0:3], registers[28], registers[31], registers[60] = [src, dst, len(source)], stack, 0x400000, 0
+    expected_registers = list(registers)
+    expected = {base: bytearray(page) for base, page in pages.items()}
+    expected_stores, expected_calls, expected_status, expected_transfers = [], [], [], []
+    chunks = [min(128, len(source) - offset) for offset in range(0, len(source), 128)]
+    def expect_store(pc, address, value):
+        expected_stores.append((pc, address, 4, value))
+        copy_bytes(expected, address, value.to_bytes(4, "little"))
+    expect_store(0x9c3c, stack + 4, registers[31])
+    expect_store(0x9c40, stack, registers[27])
+    for index in range(7):
+        expect_store(0x9c4c + index * 4, stack - 28 + index * 4, registers[13 + index])
+    def expect_sync(site):
+        expected_calls.append(("sync", site))
+        expected_status.extend(((0x536c, status_high | 15), (0x536c, status_high)))
+    def expect_write(site, index):
+        stage, destination, count = 0x30051a80 + 128 * (index % 2), dst + 128 * index, chunks[index]
+        expected_calls.append(("write", site, stage, destination, count))
+        expected_status.extend(((0x538c, status_high | 3), (0x538c, status_high | lane),
+                                (0x539c, status_high | lane)))
+        for pc, offset, value in zip((0x53b8, 0x53bc, 0x53c0) if lane else (0x53a8, 0x53ac, 0x53b0),
+                                     (16, 20, 24) if lane else (0, 4, 8), (destination, stage, count)):
+            expect_store(pc, dma + offset, value)
+        copy_bytes(expected, destination, bytes_at(expected, stage, count))
+        expected_transfers.append((stage, destination, count))
+    for index, count in enumerate(chunks):
+        if index:
+            expect_sync(0x9ca4)
+            expect_write(0x9cb0, index - 1)
+        if index == 1 and replacement is not None:
+            copy_bytes(expected, src, replacement)
+        stage = 0x30051a80 + 128 * (index % 2)
+        expected_calls.append(("copy", 0x9cd0, src + 128 * index, stage, count))
+        for offset in range(0, count // 4 * 4, 4):
+            value = int.from_bytes(bytes_at(expected, src + 128 * index + offset, 4), "little")
+            expect_store(0x5300, stage + offset, value)
+    expect_sync(0x9d00)
+    if chunks:
+        expect_write(0x9d14, len(chunks) - 1)
+        expect_sync(0x9d1c)
+    expected_registers[0], expected_registers[1] = status_high, dma
+    if chunks:
+        expected_registers[2:5] = [chunks[-1], status_high | lane, dma]
+    expected_flags = (True, False, True, False) if chunks else (True, False, True, True)
+    stack_reads = {address for _, address, _, _ in expected_stores[:9]}
+    pc, pending, call_site, loop_start, loop_end = 0x9c3c, None, None, None, None
+    visited, reads, stores, calls, status_reads, transfers = [], [], [], [], [], []
+    pending_transfer, retirements, pending_at_copy = None, [], []
+    z, n, carry, overflow = False, True, True, True
+    helper, status_index, copy_count = None, 0, 0
+    def word(address):
+        if address & 3:
+            raise ValueError("unaligned ARC saved copy instruction")
+        for low, high, offset, _ in regions:
+            if low <= address < high:
+                return struct.unpack_from("<I", payload, offset + address - low)[0]
+        raise ValueError("outside pinned ARC saved copy code")
+    while pc != 0x1000000:
+        if len(visited) >= budget:
+            raise ValueError("ARC saved copy instruction budget exceeded")
+        if pc in (0x52e0, 0x5364, 0x537c):
+            helper, status_index = pc, 0
+            if pc == 0x52e0:
+                if pending_transfer is not None and max(registers[1], pending_transfer[0]) < \
+                        min(registers[1] + registers[2], pending_transfer[0] + pending_transfer[2]):
+                    raise ValueError("ARC saved copy reuses pending stage bytes")
+                pending_at_copy.append(pending_transfer)
+                copy_count += 1
+                if copy_count == 2 and replacement is not None:
+                    copy_bytes(pages, src, replacement)
+                event = ("copy", call_site, *registers[:3])
+            elif pc == 0x537c:
+                event = ("write", call_site, *registers[:3])
+            else:
+                event = ("sync", call_site)
+            if len(calls) >= len(expected_calls) or event != expected_calls[len(calls)]:
+                raise ValueError("outside ordered ARC saved copy call contract")
+            calls.append(event)
+        instruction = word(pc)
+        visited.append(pc)
+        major = instruction >> 27
+        a, b, c = ((instruction >> shift) & 63 for shift in (21, 15, 9))
+        short = (instruction & 511) - (512 if instruction & 256 else 0)
+        length = 4
+        def operand(register):
+            nonlocal length
+            if register in (61, 63):
+                return short & 0xffffffff
+            if register == 62:
+                length = 8
+                return word(pc + 4)
+            return registers[register]
+        next_pc, branch = pc + 4, pending
+        pending = None
+        if major in (8, 10, 12, 16, 18):
+            left, right = operand(b), operand(c)
+            immediate = b in (61, 63) or c in (61, 63)
+            condition = 0 if immediate else instruction & 31
+            set_flags = 61 in (b, c) if immediate else bool(instruction & 256)
+            if condition not in (0, 1, 9, 12):
+                raise ValueError("unsupported ARC saved copy arithmetic condition")
+            take = {0: True, 1: z, 9: not z and n == overflow, 12: z or n != overflow}[condition]
+            if take:
+                if major == 8:
+                    result = (left + right) & 0xffffffff
+                elif major == 10:
+                    result = (left - right) & 0xffffffff
+                elif major == 12:
+                    result = left & right
+                elif major == 16:
+                    result = (left << (right & 31)) & 0xffffffff
+                else:
+                    result = ((left - (1 << 32) if left & 0x80000000 else left) >> (right & 31)) & 0xffffffff
+                if set_flags:
+                    z, n = result == 0, bool(result & 0x80000000)
+                    if major == 8:
+                        carry = left + right > 0xffffffff
+                        overflow = bool(~(left ^ right) & (left ^ result) & 0x80000000)
+                    elif major == 10:
+                        carry = left < right
+                        overflow = bool((left ^ right) & (left ^ result) & 0x80000000)
+                    elif major in (16, 18):
+                        raise ValueError("unsupported ARC saved copy extension flags")
+                if a < 61:
+                    registers[a] = result & 0xffffff if a == 60 else result
+            next_pc = pc + length
+        elif major == 1:
+            if a >= 61 or (instruction >> 10) & 3 or instruction & 0x2200 or \
+                    instruction & 0x1000 and pc != 0x9d44:
+                raise ValueError("unsupported ARC saved copy load")
+            address = (operand(b) + short) & 0xffffffff
+            if instruction & 0x4000:
+                if pc not in (0x536c, 0x538c, 0x539c) or address != dma + 64:
+                    raise ValueError("outside synthetic ARC saved copy status read")
+                if helper == 0x5364:
+                    value = status_high | (15 if stuck or not status_index else 0)
+                elif helper == 0x537c:
+                    value = status_high | (3 if stuck or not status_index else lane)
+                else:
+                    raise ValueError("outside ARC saved copy status fixture")
+                status_reads.append((pc, value))
+                status_index += 1
+                if helper == 0x5364 and not value & 15 and pending_transfer is not None:
+                    stage, destination, count = pending_transfer
+                    copy_bytes(pages, destination, bytes_at(pages, stage, count))
+                    retirements.append((pc, *pending_transfer))
+                    pending_transfer = None
+            elif address in stack_reads and pc in tuple(range(0x9d20, 0x9d40, 4)) + (0x9d44,):
+                value = int.from_bytes(bytes_at(pages, address, 4), "little")
+            elif pc == 0x52f8 and address & 3 == 0 and src <= address <= src + len(source) - 4:
+                value = int.from_bytes(bytes_at(pages, address, 4), "little")
+            else:
+                raise ValueError("outside synthetic ARC saved copy read")
+            reads.append((pc, address, 4))
+            registers[a] = value
+            if instruction & 0x1000:
+                registers[b] = address
+            next_pc = pc + length
+        elif major == 2:
+            if (instruction >> 22) & 3 or instruction & 0x03200000:
+                raise ValueError("unsupported ARC saved copy store")
+            address, value = (operand(b) + short) & 0xffffffff, operand(c)
+            event = (pc, address, 4, value)
+            if len(stores) >= len(expected_stores) or event != expected_stores[len(stores)]:
+                raise ValueError("outside ordered ARC saved copy store contract")
+            if bool(instruction & 0x04000000) != (pc in (0x53a8, 0x53ac, 0x53b0, 0x53b8, 0x53bc, 0x53c0)):
+                raise ValueError("outside ARC saved copy store addressing contract")
+            if pc in (0x53b0, 0x53c0) and pending_transfer is not None:
+                raise ValueError("ARC saved copy overwrites a pending DMA fixture")
+            copy_bytes(pages, address, value.to_bytes(4, "little"))
+            stores.append(event)
+            if pc in (0x53b0, 0x53c0):
+                stage, destination, count = registers[0:3]
+                transfer = (stage, destination, count)
+                if len(transfers) >= len(expected_transfers) or transfer != expected_transfers[len(transfers)]:
+                    raise ValueError("outside synthetic ARC saved copy DMA contract")
+                pending_transfer = transfer
+                transfers.append(transfer)
+            next_pc = pc + length
+        elif major in (4, 5, 6):
+            condition, delay = instruction & 31, (instruction >> 5) & 3
+            if condition not in (0, 1, 2) or delay not in (0, 1) or branch is not None:
+                raise ValueError("unsupported ARC saved copy branch")
+            displacement = (instruction >> 7) & 0xfffff
+            displacement -= 1 << 20 if displacement & 0x80000 else 0
+            target = pc + 4 + 4 * displacement
+            take = {0: True, 1: z, 2: not z}[condition]
+            if major == 6:
+                if condition or delay:
+                    raise ValueError("unsupported ARC saved copy loop")
+                loop_start, loop_end = pc + 4, target
+            else:
+                if major == 5:
+                    if condition or pc not in edges or target != edges[pc][0]:
+                        raise ValueError("outside ARC saved copy call target contract")
+                    registers[31], call_site = (pc + 4 + 4 * delay) >> 2, pc
+                if delay:
+                    pending = target if take else pc + 8
+                elif take:
+                    next_pc = target
+        elif major == 7:
+            condition, delay = instruction & 31, (instruction >> 5) & 3
+            if b != 31 or condition not in (0, 1) or delay not in (0, 1) or branch is not None:
+                raise ValueError("unsupported ARC saved copy return")
+            target = (registers[31] & 0xffffff) << 2
+            take = not condition or z
+            if delay:
+                pending = target if take else pc + 8
+            elif take:
+                next_pc = target
+        else:
+            raise ValueError("unsupported ARC saved copy opcode")
+        if branch is not None:
+            next_pc = branch
+        elif next_pc == loop_end:
+            count = registers[60]
+            registers[60] = (count - 1) & 0xffffff
+            if count != 1:
+                next_pc = loop_start
+        pc = next_pc
+    final_pages = {base: bytes(page) for base, page in pages.items()}
+    if final_pages != {base: bytes(page) for base, page in expected.items()} or registers != expected_registers or \
+            (z, n, carry, overflow) != expected_flags or stores != expected_stores or calls != expected_calls or \
+            status_reads != expected_status or transfers != expected_transfers or pending_transfer is not None or \
+            retirements != [(0x536c, *transfer) for transfer in expected_transfers]:
+        raise ValueError("ARC saved copy whole-page/register/flags/trace oracle changed")
+    return {"initial": initial, "pages": final_pages, "source": bytes_at(pages, src, len(source)),
+            "destination": bytes_at(pages, dst, len(source)), "registers": registers,
+            "flags": (z, n, carry, overflow), "visited": visited, "reads": reads, "stores": stores,
+            "calls": calls, "status_reads": status_reads, "transfers": transfers,
+            "retirements": retirements, "pending_at_copy": pending_at_copy,
+            "native_execution": False, "dma_effects_are_synthetic": True, "atomic_snapshot_certified": False,
+            "vendor_extensions_certified": False, "pipeline_timing_certified": False,
+            "engine_completion_certified": False, "physical_lease_certified": False}
+
+
+class FirmwareArcSavedCopyProjectionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        raw = MAP.read_firmware(BLOB)
+        if len(raw) != MAP.BUNDLED_SIZE or hashlib.sha256(raw).hexdigest() != MAP.BUNDLED_SHA256:
+            raise ValueError("bundled firmware changed")
+        cls.payload = raw[:-MAP.TRAILER_SIZE]
+
+    def test_word_aligned_sizes_both_dma_lanes_statuses_and_complete_oracles(self):
+        for size in (0, 4, 124, 128, 132, 256, 0x5bc):
+            source = bytes((13 * index + 37) % 256 for index in range(size))
+            for lane in (0, 1):
+                for status in (0, 0x80000000):
+                    with self.subTest(size=size, lane=lane, status=status):
+                        result = project_arc_saved_copy(self.payload, source, lane=lane, status_high=status)
+                        self.assertEqual(result["destination"], source)
+                        self.assertEqual(result["source"], source)
+                        self.assertEqual(result["registers"][0], status)
+                        self.assertEqual(result["registers"][13:60], [0x400800 if index == 28 else
+                            0x400000 if index == 31 else 0xabc00000 + index for index in range(13, 60)])
+                        self.assertEqual(len(result["pages"]), 5)
+                        chunks = (size + 127) // 128
+                        self.assertEqual(sum(call[0] == "sync" for call in result["calls"]), chunks + 1)
+                        self.assertEqual(len(result["transfers"]), chunks)
+                        self.assertEqual(result["retirements"], [(0x536c, *transfer) for transfer in result["transfers"]])
+                        self.assertEqual(result["pending_at_copy"],
+                                         [None] + result["transfers"][:-1] if chunks else [])
+                        self.assertEqual(result["registers"][4], 0x30051800 if size else 0xabc00004)
+                        for key in ("native_execution", "atomic_snapshot_certified", "vendor_extensions_certified",
+                                    "pipeline_timing_certified", "engine_completion_certified", "physical_lease_certified"):
+                            self.assertFalse(result[key])
+                        self.assertTrue(result["dma_effects_are_synthetic"])
+        common = project_arc_saved_copy(self.payload, bytes([0x55]) * 0x5bc)
+        self.assertEqual([transfer[2] for transfer in common["transfers"]], [128] * 11 + [60])
+        self.assertEqual([transfer[0] for transfer in common["transfers"]], [0x30051a80, 0x30051b00] * 6)
+
+    def test_unwritten_tail_and_source_change_are_not_atomic_saved_images(self):
+        for lane in (0, 1):
+            tail = project_arc_saved_copy(self.payload, bytes([0x55]) * 129, lane=lane)
+            self.assertEqual(tail["destination"], bytes([0x55]) * 128 + b"\xa5")
+            self.assertNotEqual(tail["destination"][-1], tail["source"][-1])
+            self.assertEqual(tail["transfers"][-1][2], 1)
+            self.assertEqual(tail["visited"].count(0x5300), 32)
+            changed = project_arc_saved_copy(self.payload, bytes([0x55]) * 0x5bc,
+                                             bytes([0xaa]) * 0x5bc, lane=lane)
+            self.assertEqual(changed["destination"], bytes([0x55]) * 128 + bytes([0xaa]) * (0x5bc - 128))
+            self.assertEqual(changed["source"], bytes([0xaa]) * 0x5bc)
+            self.assertFalse(changed["atomic_snapshot_certified"])
+
+    def test_source_typed_inputs_budget_stuck_status_and_pre_read_store_refusals(self):
+        source, replacement = bytearray([0x55] * 132), bytearray([0xaa] * 132)
+        before = (bytes(source), bytes(replacement))
+        project_arc_saved_copy(self.payload, source, replacement)
+        self.assertEqual((bytes(source), bytes(replacement)), before)
+        for offset in (0x34ae0, 0x34b67, 0x34beb, 0x30184, 0x301af, 0x30208, 0x3021f,
+                       0x30220, 0x3026b, 0x67a25, 0x67a94, 0x6df20, 0x6df5b):
+            changed = bytearray(self.payload)
+            changed[offset] ^= 1
+            with self.subTest(offset=offset), self.assertRaisesRegex(ValueError, "stock ARC saved copy"):
+                project_arc_saved_copy(changed, source)
+        for payload in (None, [], self.payload[:-1], self.payload + b"\0"):
+            with self.assertRaisesRegex(ValueError, "invalid ARC saved copy payload"):
+                project_arc_saved_copy(payload, source)
+        for field, values in (("source", (None, [], bytes(0x5bd))),
+                              ("replacement", ([], bytes(131))), ("lane", (True, -1, 2)),
+                              ("status_high", (True, -1, 1 << 32, 1)), ("budget", (True, 0, 8193)),
+                              ("stuck", (0, 1, None))):
+            for value in values:
+                args = {"source": source, field: value}
+                with self.subTest(field=field, value=value), self.assertRaisesRegex(ValueError, "invalid synthetic"):
+                    project_arc_saved_copy(self.payload, **args)
+        with self.assertRaisesRegex(ValueError, "invalid synthetic"):
+            project_arc_saved_copy(self.payload, bytes(128), bytes(128))
+        with self.assertRaisesRegex(ValueError, "instruction budget exceeded"):
+            project_arc_saved_copy(self.payload, source, budget=1)
+        original = struct.unpack_from
+        for size in (0, 4, 0x5bc):
+            polls = []
+            def count_poll(fmt, data, position=0):
+                if fmt == "<I" and data is self.payload and position == 0x30210:
+                    polls.append(position)
+                return original(fmt, data, position)
+            with self.subTest(stuck_size=size), mock.patch.object(struct, "unpack_from", count_poll):
+                with self.assertRaisesRegex(ValueError, "instruction budget exceeded"):
+                    project_arc_saved_copy(self.payload, bytes(size), budget=512, stuck=True)
+                self.assertGreater(len(polls), 1)
+        for site, offset, mask, message in ((0x536c, 0x30208 + 8, 1 << 15, "status read"),
+                                            (0x5300, 0x30184 + 32, 1 << 15, "store contract"),
+                                            (0x9c98, 0x34ae0 + 0x5c, 1 << 21, "reuses pending stage")):
+            def corrupt(fmt, data, position=0):
+                value = original(fmt, data, position)
+                return (value[0] ^ mask,) if fmt == "<I" and data is self.payload and position == offset else value
+            with self.subTest(site=site), mock.patch.object(struct, "unpack_from", corrupt), \
+                    self.assertRaisesRegex(ValueError, message):
+                project_arc_saved_copy(self.payload, source)
+
+
 if __name__ == "__main__":
     unittest.main()
