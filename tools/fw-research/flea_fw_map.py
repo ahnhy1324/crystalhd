@@ -676,6 +676,55 @@ _PPB_SOURCE_REGIONS = _PPB_BANK_REGIONS + tuple(
 MAX_PPB_SOURCE_REGIONS = 64
 MAX_PPB_SOURCE_BYTES = 96 * 1024
 MAX_PPB_SOURCE_RELOCATIONS = 2685
+# Saved DRAM context provenance, not an alias for the active ARC-local core.
+_PPB_SAVED_ARM_REGIONS = (
+    ("root_getter", 0x898, 0x8, "fed8d9727528a2abbf8b8b5c258b5d558e3192d5fc3232bc4a7f0a1c91cd6e38"),
+    ("open_wrapper", 0x8a0, 0x2f8, "852df88584df06c581c4e32fec35d020233fd042a9c5a4579cdfbce26a535f12"),
+    ("sm_open", 0xa2a4, 0x110, "152b7de5dac90649b746ae70ed0c9a8709c324785cbca4e56ef040cd02982338"),
+    ("controller_create", 0xe8b0, 0x44c, "5a39a3cd8e72b709a02706b0d432eabb56aa7488d90929fd5330ab6d0bd14c45"),
+    ("channel_open", 0xf7e4, 0x408, "723911a2a94585093da0b4caebd2ba2a20b2c8bc87c4e91dd42646ae95a3a092"),
+    ("malloc_wrapper", 0x20510, 0x1c, "f5b42fe2871ad003de5020485b5ea214874abbdb87e2dbf0ceb22a1c590b9489"),
+    ("malloc_manager", 0x7194, 0xc4, "38ba97a660f9b366122dcd5026e19c0611a5ca1b5ebd23f0bb7a99d78cb86675"),
+    ("small_heap_init", 0x2578, 0xa0, "708f312582aa7e95b2aeba557528aad7791470d9e0219451d0b22c15f814e246"),
+    ("variable_malloc", 0x2d30, 0x44, "eefb0ec02f6d9889205afdade868a50321ce22ea9af931645ff8a7c2db08d989"),
+    ("context_config", 0x252a4, 0x6b0, "7619bc9a6eff1b1ba1c3ea8e8f719eb8ce064f3cd15ff65a584f5c7e165fc357"),
+    ("context_allocate", 0x25c18, 0x540, "b413d045432e9927c877cbc76c507d9d2868cd41632c54f92ca782d35236d376"),
+    ("arc_open_builder", 0x27480, 0x144, "c356d9c46eee35ea6dafb60e7e1ef49cf37c77726e4ba14e5e192f9cc2c50f91"),
+    ("virtual_to_physical", 0x1fe6c, 0x9c, "bb0e8f8634a6ae4fb7029ec72f0a1e8c524e7e25f7285105430c4987473f75e2"),
+    ("manager_publish", 0x250bc, 0x144, "fa480a332eccac24ca614e9e6f710a64a8cb917421549715f83ed06936d10bf4"),
+    ("owned_video_regions", 0x28310, 0x53c, "f0c0e9c39268d575a87c292eaeabc3704c015535c93c1456e256910ca53c1134"),
+    ("manager_create", 0x2b3f0, 0x1b4, "3e3c9c3b797ebeb13fc6c1ef116a617973f4f50e41730e82bf350b0f8f125b8e"),
+    ("manager_allocate", 0x2b628, 0x1a0, "ce3360c94599082eace9edf99b103215c332a13ae17b9980cdb542a3cbedb2d6"),
+    ("map_create", 0x200d8, 0x13c, "681b71b44ebdca366432f0a0df8b8e685321deb4991ac2c83096d925ca7848a3"),
+    ("main_map_create", 0x294ec, 0x244, "f7a2df49ccbb0ba7663fca21285d437c3ca231a5f351ce063d41bb2d6d9ffe70"),
+    ("child_map_create", 0x2906c, 0x378, "affcb72dd72784f9c6329eba4fee513e9c70a6b861c2780de5825aaf4dee6868"),
+)
+_PPB_SAVED_ARC_BODIES = tuple(body for body in _PPB_BANK_BODIES if body[0] in (
+    "CmdChannelOpen", "Core_ChanInitialize", "System_Activate", "Core_CopyDramToLsram")) + (
+    ("Core_CopyLsramToDram", 4, 0x9c3c, 0x9d48, 0x34ae0, "32f163266b8f614b9e46b94bc4a9b20863606b0cbad567b3b6a496f5d7866c64"),
+    ("System_Deactivate", 4, 0x9d48, 0x9e74, 0x34bec, "f185b940f905ee5c4e28f097434d8757b3e5e9a5ccba6fe47422caf25e892e20"),
+    ("System_ChannelSwap", 4, 0xa0b4, 0xa13c, 0x34f58, "8315bb7a6c172ee672fcc71f07e09dadca1d5b5135d752f967d175f1c17f4942"),
+    ("H264_Deactivate", 5, 0x10258, 0x10270, 0x3b0fc, "053a80d9cb4f28d91a3f4bcea39772d24496d9adeba423be64c87e083454845e"),
+    ("H264_Activate", 5, 0x10270, 0x10408, 0x3b114, "fb737971e94e0175cb4745c697466240bce61ca705ad13d03e100bac9a9b832f"),
+    ("Platform_DrvContextSize", 16, 0x3b304, 0x3b30c, 0x5de98, "837494e6a5e29cf8ca42cf997921cc319edae871aebc286e75b44e30c933dd7b"),
+)
+_PPB_SAVED_REGIONS = _PPB_BANK_METADATA[:5] + _PPB_SAVED_ARM_REGIONS + tuple(
+    (name, offset, end - start, digest) for name, _, start, end, offset, digest in _PPB_SAVED_ARC_BODIES) + (
+    ("arm_init_context", 0x54c, 0x34c, "807fac6ec7a10ccde3cda20dd535ff9462b00f82ccb4cdc71c575b6cf94ac109"),
+    ("video_heap_parameters", 0x7534, 0x70, "1ef4bebb542793521b81d76f3625db33c657dcde88d5a77cb070de87b62877ff"),
+    ("root_literal", 0x6fc, 4, "5d41a43f0a6983f407fc72552a64a4ea2e7bd6565d4df18496b2c7c102017755"),
+    ("malloc_literals", 0x72a8, 12, "44f11a135d90efd7906904d4f248c0219fa3901d81fcb4b5b5247079263d40f5"),
+    ("video_heap_literals", 0x76b4, 8, "03aa7bce575c23277ee32aabcdb77e2d8a42ccebb63fc4e5ec6305d9fdd69ec8"),
+    ("h264_context_table", 0x2e5c4, 560, "6babb2cd1d41212ccac94e58ee075d920f698690849df269ed4a5da122f913bb"),
+    ("flat_mpu_setup", 0x2ca94, 0xb4, "58896ddaa10dad5a760055218f23d398f4b28c0a7dc6a0b9f695b25dc862da52"),
+)
+MAX_PPB_SAVED_REGIONS = 64
+MAX_PPB_SAVED_BYTES = 64 * 1024
+_PPB_CONTEXT_OBJECT_BYTES = {"H": 0xa84c, "C": 0x378, "Q": 0x1f4, "M": 0x64}
+_PPB_SAVED_SCALARS = (("core_word", 0, 4), ("metadata_extra_word", 0x80, 4),
+    ("producer_pool_value", 0x21c, 4), ("metadata_pool_value", 0x33c, 4),
+    ("ppb_flags", 0x354, 68), ("bank_descriptors", 0x3fc, 144),
+    ("bank_bytes_and_count_word", 0x48c, 8), ("reader_pool_value", 0x530, 4))
 # Fixed stock host contract only. These hashes are independent local fuses;
 # the public firmware identity remains unchanged and this helper is test-only.
 _STOCK_HOST_COMMAND_REGIONS = (
@@ -5063,6 +5112,158 @@ def _ppb_bank_geometry(width, height, stripe_exponent, alignment_mask, metadata_
             "extra_bytes": extra_bytes, "frame_bytes": total, "conditional_vendor_mul16": True}
 
 
+def _ppb_context_object_window(pointer, kind):
+    """Observer-only full-object guard, not proof of a live malloc allocation."""
+    pointer = _ppb_bank_u32(pointer, "context object pointer")
+    if type(kind) is not str or kind not in _PPB_CONTEXT_OBJECT_BYTES:
+        raise FormatError("PPB context object kind must be H, C, Q or M")
+    size = _PPB_CONTEXT_OBJECT_BYTES[kind]
+    if pointer & 3 or pointer < 0xd53dc or pointer + size > 0x116000:
+        raise FormatError("PPB context object is outside the declared small-heap envelope")
+    return {"kind": kind, "pointer": pointer, "bytes": size, "end_exclusive": pointer + size,
+            "alignment_bytes": 4, "observer_guards_only": True, "native_allocator_proven": False}
+
+
+def _ppb_saved_context_window(physical, submitted_bytes, video_base, video_bytes):
+    """Normalize a supplied declared slice; never follow a pool/plane value."""
+    physical, submitted_bytes, video_base, video_bytes = (
+        _ppb_bank_u32(value, "saved context input")
+        for value in (physical, submitted_bytes, video_base, video_bytes))
+    video_end, submitted_end = video_base + video_bytes, physical + submitted_bytes
+    skip = (-physical) & 3
+    if (not video_bytes or not 0x116068 <= video_base < video_end <= 0x3ffc000 or
+            not video_base <= physical < submitted_end <= video_end or submitted_bytes < skip + 0x177cc):
+        raise FormatError("PPB saved context is outside the declared video slice or minimum size")
+    context, remaining = physical + skip, submitted_bytes - skip
+    spans = [{"role": role, "offset": offset, "address": context + offset, "bytes": size}
+             for role, offset, size in _PPB_SAVED_SCALARS]
+    if remaining < 0x5bc or any(span["offset"] + span["bytes"] > 0x5bc for span in spans):
+        raise FormatError("PPB saved scalar span exceeds the saved core")
+    return {"physical": physical, "submitted_bytes": submitted_bytes, "video_base": video_base,
+            "video_bytes": video_bytes, "video_end_exclusive": video_end, "alignment_skip": skip,
+            "context_address": context, "context_bytes": remaining, "context_end_exclusive": submitted_end,
+            "saved_core_bytes": 0x5bc, "read_spans": spans, "total_read_bytes": sum(s["bytes"] for s in spans),
+            "observed_inputs_only": True, "model_no_native_certification": True,
+            "saved_may_be_stale": True, "non_atomic": True}
+
+
+def _ppb_saved_context_bridge(payload):
+    """Bounded static ARM-to-saved-ARC provenance, not active device state."""
+    total = sum(size for _, _, size, _ in _PPB_SAVED_REGIONS)
+    if (len(payload) != BUNDLED_SIZE - TRAILER_SIZE or len(_PPB_SAVED_REGIONS) > MAX_PPB_SAVED_REGIONS or
+            total > MAX_PPB_SAVED_BYTES):
+        raise FormatError("PPB saved-context validation size/budget does not match")
+    validated = []
+    for role, offset, size, digest in _PPB_SAVED_REGIONS:
+        if hashlib.sha256(bounded(payload, offset, size, "PPB saved-context region")).hexdigest() != digest:
+            raise FormatError(f"PPB saved-context region {role} does not match the baseline")
+        validated.append({"role": role, "blob_file_offset": offset, "size": size, "sha256": digest})
+    # Resolve original symbols by section, address, size and function type; not name alone.
+    base = 0x2ea60
+    header = struct.unpack_from("<16sHHIIIIIHHHHHH", payload, base)
+    if header[2] != 45 or header[6] != 0x4aae0 or header[11:] != (40, 55, 54):
+        raise FormatError("PPB saved-context original ELF header does not match")
+    sections = [struct.unpack_from("<10I", payload, 0x79540 + i * 40) for i in range(55)]
+    names, strings = payload[0x79098:0x7953f], payload[0x67a95:0x69b6f]
+    def string(table, offset):
+        if offset >= len(table) or table.find(b"\0", offset) < 0:
+            raise FormatError("PPB saved-context original string offset does not match")
+        return table[offset:table.index(b"\0", offset)].decode("ascii")
+    for index, name, address, offset in ((4, ".core_critical_code_picture", 0x7f8c, 0x43d0),
+            (5, ".h264_critical_code_picture", 0xc158, 0x859c), (16, ".text", 0x23d74, 0x17ea8)):
+        section = sections[index]
+        if string(names, section[0]) != name or (section[1], section[3], section[4]) != (1, address, offset):
+            raise FormatError("PPB saved-context containing section does not match")
+    symbols = [struct.unpack_from("<IIIBBH", payload, p) for p in range(0x69b70, 0x6cfc0, 16)]
+    bodies = []
+    for name, index, start, end, offset, digest in _PPB_SAVED_ARC_BODIES:
+        section = sections[index]
+        matches = [i for i, s in enumerate(symbols) if string(strings, s[0]) == name and
+                   s[1:3] == (start, end - start) and s[3] & 15 == 2 and s[5] == index]
+        if (len(matches) != 1 or not section[3] <= start < end <= section[3] + section[5] or
+                base + section[4] + start - section[3] != offset):
+            raise FormatError(f"PPB saved-context section-qualified body {name} does not match")
+        bodies.append({"name": name, "section_index": index, "symbol_index": matches[0],
+                       "elf_virtual_address": start, "size": end - start, "blob_file_offset": offset, "sha256": digest})
+    words = ((0x7dc, 0xe2840008), (0xf8cc, 0xe30a084c), (0xf980, 0xe5845064), (0xfbb0, 0xe58a4000),
+        (0x25108, 0xe2841e1a), (0x2b440, 0xe30001f4), (0x2b46c, 0xe5849000), (0x2b470, 0xe584b010),
+        (0x2b47c, 0xe5847014), (0x2b550, 0xe5cd000d), (0x2910c, 0xe3a00064), (0x291b4, 0xe5840040),
+        (0x25f04, 0xe5840224), (0x25fbc, 0xe5801000), (0x72ac, 0xd5384), (0x72b0, 0x116000))
+    if any(_bootstrap_word(payload, p) != word for p, word in words):
+        raise FormatError("PPB saved-context critical ARM word does not match")
+    calls = []
+    for site, target in ((0x7e0, 0xe8b0), (0xa318, 0xf7e4), (0xe8e0, 0x20510), (0xf8d0, 0x20510), (0xfa6c, 0x252a4),
+            (0xfb74, 0x27480), (0x25110, 0x2b3f0), (0x2b444, 0x20510), (0x2b570, 0x200d8),
+            (0x20150, 0x2906c), (0x2017c, 0x294ec), (0x29110, 0x20510),
+            (0x2b698, 0x1f5d4), (0x25ed8, 0x2b628), (0x25efc, 0x1fe6c)):
+        word = _bootstrap_word(payload, site)
+        displacement = word & 0xffffff
+        displacement -= (1 << 24) if displacement & (1 << 23) else 0
+        if word & 0xff000000 != 0xeb000000 or site + 8 + 4 * displacement != target:
+            raise FormatError("PPB saved-context original ARM BL does not match")
+        calls.append({"call_blob_file_offset": site, "target_blob_file_offset": target})
+    arc_calls = []
+    for index, site, target, delay in ((16, 0x24a14, 0x3b304, False), (16, 0x24aa4, 0x266f8, True),
+            (4, 0x9da4, 0x9c3c, True), (4, 0x9e00, 0x10258, True),
+            (4, 0x9fd0, 0x9e74, True), (4, 0xa02c, 0x10270, True), (4, 0xa11c, 0x9f90, True)):
+        offset = base + sections[index][4] + site - sections[index][3]
+        word = _bootstrap_word(payload, offset)
+        displacement = (word >> 7) & 0xfffff
+        displacement -= (1 << 20) if displacement & (1 << 19) else 0
+        if word & 0xf800007f != (0x28000020 if delay else 0x28000000) or site + 4 + 4 * displacement != target:
+            raise FormatError("PPB saved-context original ARC call does not match")
+        arc_calls.append({"section_index": index, "call_elf_virtual_address": site,
+                          "original_target_elf_value": target, "normal_delay_slot": delay})
+    if [_bootstrap_word(payload, 0x2e5c4 + 28 * i) for i in range(4)] != [0x3f940] * 4:
+        raise FormatError("PPB saved-context H264 profile table does not match")
+    return {"basis": {"model": "saved-arc-context-source-bridge-v1", "conditional": True,
+                      "region_count": len(validated), "validated_bytes": total, "complete_arm_body_count": 20},
+        "validated_regions": validated, "arc_bodies": bodies, "arm_calls": calls, "arc_calls": arc_calls,
+        "critical_arm_words": [{"blob_file_offset": p, "instruction": word} for p, word in words],
+        "roots": {"working_base": 0xd3a00, "working_stride": 0x1cc, "slot_count": 4,
+                  "working_handle_offset": 0x20, "controller_root_word_address": 0xd3a08,
+                  "controller_root_is_pointer_value": True, "handle_controller_offset": 0x64,
+                  "handle_publication_store": 0xfbb0, "controller_publication_store": 0xecf0},
+        "objects": {"declared_small_heap_bytes": dict(_PPB_CONTEXT_OBJECT_BYTES),
+                    "allocation_call_sites": {"H": 0xf8d0, "C": 0xe8e0, "Q": 0x2b444, "M": 0x29110},
+                    "payload_min": 0xd53dc, "end_exclusive": 0x116000,
+                    "C_manager_pointer_offset": 0x1a0, "Q_controller_offset": 0,
+                    "Q_map_pointer_offset": 8, "Q_video_bytes_offset": 0x10, "Q_video_virtual_offset": 0x14,
+                    "C_video_tuple_offsets": [0x1d4, 0x1d8, 0x1dc], "M_video_tuple_offsets": [0x28, 0x30, 0x34],
+                    "M_inclusive_virtual_bounds_offsets": [0x18, 0x1c], "M_route_word_offset": 0x40,
+                    "stack_settings_byte5_store": 0x2b550, "child_M_route_word_under_conditions": 1,
+                    "G_address": 0x116004, "G_bytes": 0x64, "G_identity_base": 0x116004,
+                    "G_inclusive_virtual_bounds": [0x116068, 0x3ffc000]},
+        "physical_context": {"H_physical_offset": 8, "H_submitted_bytes_offset": 0xc,
+                    "H_imported_heap_offset": 0xcc, "default_requires_imported_heap_zero": True,
+                    "H_selected_map_offset": 0x224, "selected_default_map_is_G": True,
+                    "translation_equation": "P = G[0x30] + V - G[0x28]", "physical_slice_store": 0x25fbc,
+                    "open_packet_offsets": [0x10, 0x14], "open_packet_stores": [0x274ec, 0x274f4],
+                    "normalization_sites": [0x249f4, 0x24a00, 0x24a04, 0x24a10],
+                    "normalization_equation": "D = P + ((-P) & 3); remaining = N - ((-P) & 3)",
+                    "minimum_remaining_bytes_under_base_model": 0x177cc, "ordinary_h264_submitted_bytes": 0x3f940,
+                    "profile_table_offsets": [0x2e5c4 + 28 * i for i in range(4)],
+                    "length_output_pointer_site": 0xfa3c, "length_output_store": 0x25730},
+        "saved_core": {"bytes": 0x5bc, "active_ARC_local_address": 0x3fffcdac,
+                    "channel_table_D_store": 0x26798, "initial_core_clear_call": 0x26758,
+                    "restore_call": 0x9fd0, "restore_destination_delay_slot": 0x9fd4,
+                    "active_bit_set_sites": [0xa08c, 0xa090],
+                    "save_call": 0x9da4, "save_source_delay_slot": 0x9da8,
+                    "save_precedes_h264_save_call": 0x9e00, "active_bit_clear_sites": [0x9e60, 0x9e64],
+                    "DMA_chunk_max_bytes": 128, "DMA_final_sync_site": 0x9d1c,
+                    "fixed_scalar_spans": [{"role": role, "offset": off, "bytes": size} for role, off, size in _PPB_SAVED_SCALARS]},
+        "validation_scope": {"original_section_qualified_bodies": True, "observer_guards_only": True,
+                    "device_observed": False, "native_allocator_proven": False, "current_active_context_proven": False,
+                    "source_lease_proven": False, "source_generation_proven": False, "source_extent_proven": False,
+                    "runtime_relocation_validated": False, "ARC_local_DRAM_alias_proven": False},
+        "required_conditions": ["Selected default/no-import path, valid unchanged typed objects and initialized maps.",
+                    "Malloc/heap invariants and opaque callees preserved; full envelopes alone do not certify allocations.",
+                    "Low ARM malloc namespace has no pointer rebase; native DRAM identity needs its address-domain premise."],
+        "limitations": ["Saved D can be old while active; chunked DMA and host reads are non-atomic.",
+                    "Stable passes do not prove a lease, generation, current context or source-plane extent.",
+                    "Common-header geometry exponent/mask are outside saved D; no pool or plane value is followed."]}
+
+
 def _ppb_source_geometry_join(metadata_mb, prefix_mb, metadata_config, allocation_config):
     """Compare supplied snapshots, not native frame identity or ownership."""
     for dimensions in (metadata_mb, prefix_mb):
@@ -6857,7 +7058,7 @@ def parse_elf(payload, base, wanted, symbol_budget, string_budget,
 def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
             references=False, all_symbols=False, bootstrap=False, picture_output=False,
             arc_metadata=False, csc_command=False, command_buffer_bridge=False, inner_descriptor=False,
-            scaler_fir=False, ppb_handoff=False, ppb_source=False):
+            scaler_fir=False, ppb_handoff=False, ppb_source=False, ppb_saved_context=False):
     if len(data) < 24 or len(data) > MAX_FIRMWARE_SIZE or len(data) % 4:
         raise FormatError("invalid BCM70015 firmware size")
     sha256 = hashlib.sha256(data).hexdigest()
@@ -6881,6 +7082,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         raise FormatError("--ppb-handoff requires the exact bundled firmware SHA-256 and size")
     if ppb_source and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
         raise FormatError("--ppb-source requires the exact bundled firmware SHA-256 and size")
+    if ppb_saved_context and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
+        raise FormatError("--ppb-saved-context requires the exact bundled firmware SHA-256 and size")
     payload = data[:-TRAILER_SIZE]
     length_slot = struct.unpack_from("<I", data, len(payload))[0]
     if length_slot != 16:
@@ -6967,6 +7170,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         result["arm_ppb_metadata_handoff"] = _arm_ppb_metadata_handoff(payload)
     if ppb_source:
         result["ppb_source_provenance"] = _ppb_source_provenance(payload)
+    if ppb_saved_context:
+        result["ppb_saved_context_bridge"] = _ppb_saved_context_bridge(payload)
     return result
 
 
@@ -7004,6 +7209,8 @@ def main(argv=None):
         "validate stock A32 metadata acquire/peek/return bodies; not a raw-surface lease"))
     parser.add_argument("--ppb-source", action="store_true", help=(
         "validate conditional ordinary H264 source equations; bundled firmware only, not a source-plane lease"))
+    parser.add_argument("--ppb-saved-context", action="store_true", help=(
+        "validate the conditional saved ARC context bridge; bundled firmware only, not active state or a lease"))
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-fA-F]{64}", args.expect_sha256):
         parser.error("--expect-sha256 must be 64 hexadecimal digits")
@@ -7011,7 +7218,7 @@ def main(argv=None):
         report = analyze(read_firmware(args.firmware), args.symbol or DEFAULT_SYMBOLS,
                          args.expect_sha256.lower(), args.references, args.all_symbols, args.bootstrap,
                          args.picture_output, args.arc_metadata, args.csc_command, args.command_buffer_bridge,
-                         args.inner_descriptor, args.scaler_fir, args.ppb_handoff, args.ppb_source)
+                         args.inner_descriptor, args.scaler_fir, args.ppb_handoff, args.ppb_source, args.ppb_saved_context)
     except (OSError, FormatError) as error:
         print(f"flea_fw_map: {error}", file=sys.stderr)
         return 1

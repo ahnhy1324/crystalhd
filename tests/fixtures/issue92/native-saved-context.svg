@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="530" viewBox="0 0 1040 530" role="img" aria-labelledby="title desc">
+  <title id="title">BCM70015 rooted saved ARC context observations</title>
+  <desc id="desc">Two native H.264 trials, three stages and two non-atomic passes each. All twelve saved-context scalar snapshots match. No current live state, active frame extent, source lease, generation or standalone processing is certified.</desc>
+  <rect width="1040" height="530" fill="#101922"/>
+  <g font-family="sans-serif" fill="#e7edf2">
+    <text x="32" y="42" font-size="24">Saved ARC context: a valid graph is not a live-state lease</text>
+    <text x="32" y="72" font-size="15" fill="#b7c7d4">Native H.264 · 256 × 96 · 180 frames per trial · unscaled owned YUY2 output</text>
+    <rect x="32" y="94" width="976" height="82" rx="8" fill="#203342"/>
+    <text x="48" y="122" font-size="15">Rooted stock graph: bounded H / C / Q / M objects, frozen and checked before + after reads</text>
+    <text x="48" y="151" font-size="17" font-family="monospace">H 000db58c → D 033dc000 · N 0003f940 · video base 00a34000 / bytes 035c7940</text>
+    <text x="32" y="207" font-size="17">Two trials × three stages × two passes = 12 matching saved snapshots</text>
+    <g fill="#213846">
+      <rect x="32" y="225" width="300" height="69" rx="8"/>
+      <rect x="370" y="225" width="300" height="69" rx="8"/>
+      <rect x="708" y="225" width="300" height="69" rx="8"/>
+    </g>
+    <g font-size="16" text-anchor="middle">
+      <text x="182" y="250">After OPEN / before START</text>
+      <text x="520" y="250">First owned output / released</text>
+      <text x="858" y="250">Delivery EOS / before STOP</text>
+      <text x="182" y="278" fill="#94ddbd">34 saved flags = 0</text>
+      <text x="520" y="278" fill="#94ddbd">34 saved flags = 0</text>
+      <text x="858" y="278" fill="#94ddbd">34 saved flags = 0</text>
+    </g>
+    <text x="32" y="327" font-size="16">Saved bank count 6 · saved size / consecutive base step 0x618000</text>
+    <text x="32" y="355" font-size="17" font-family="monospace">00a34000  0104c000  01664000  01c7c000  02294000  028ac000</text>
+    <text x="32" y="383" font-size="15" fill="#b7c7d4">Other saved bank words and metadata-extra word remain zero; no bank/pool pointers followed.</text>
+    <text x="32" y="425" font-size="17" fill="#94ddbd">572 / 572 frames: whole-pixel controls, firmware EOS and cleanup passed</text>
+    <text x="32" y="452" font-size="15">Each observed trial: 420 reads / 3,312 B · no source-plane access or diagnostic target writes</text>
+    <text x="32" y="489" font-size="16" fill="#f4cf86">Saved scalars may be stale. STOP refresh was not observed in these trials.</text>
+    <text x="32" y="514" font-size="14" fill="#f4cf86">No live state, active extent, source lease, generation or standalone processing is certified.</text>
+  </g>
+</svg>

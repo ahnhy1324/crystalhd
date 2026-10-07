@@ -1099,6 +1099,224 @@ struct ArmMetadataFixture {
     }
 };
 
+// Default-only rooted saved ARC context scalars. Every object is bounded by
+// its stock declaration before reading; pool/bank words never select a target.
+// A coherent-looking saved copy is not current state, ownership or an ABA guard.
+struct PpbContextGraph { uint32_t words[39] = {}; };
+enum class PpbContextFailure { None, Argument, Owner, Order, Budget, Read, Object, Profile, Map, Slice, Changed };
+struct PpbContextObserver {
+    typedef BC_STATUS (*Reader)(HANDLE, uint32_t *, uint32_t, uint32_t);
+    bool enabled = false, failed = false, admitted = false;
+    HANDLE owner = nullptr;
+    unsigned next_stage = 0, reads = 0, bytes = 0, measured = 0;
+    BC_STATUS status = BC_STS_SUCCESS;
+    PpbContextFailure failure = PpbContextFailure::None;
+    PpbContextGraph authority, graph[2];
+    uint32_t raw[2][60] = {};
+    bool complete[2] = {};
+    static bool Object(uint32_t pointer, unsigned kind) {
+        const uint32_t sizes[] = {0xa84c, 0x378, 0x1f4, 0x64};
+        return kind < 4 && !(pointer & 3U) && pointer >= 0xd53dcU &&
+            static_cast<uint64_t>(pointer) + sizes[kind] <= 0x116000U;
+    }
+    static bool Disjoint(const uint32_t *pointers, unsigned count) {
+        const uint32_t sizes[] = {0xa84c, 0x378, 0x1f4, 0x64};
+        if (!pointers || count > 4) return false;
+        for (unsigned i = 0; i < count; ++i) {
+            if (!Object(pointers[i], i)) return false;
+            for (unsigned j = 0; j < i; ++j)
+                if (pointers[i] < static_cast<uint64_t>(pointers[j]) + sizes[j] &&
+                    pointers[j] < static_cast<uint64_t>(pointers[i]) + sizes[i]) return false;
+        }
+        return true;
+    }
+    static bool Equal(const PpbContextGraph &a, const PpbContextGraph &b) {
+        // Working flags are phase-changing qualifiers, not allocator authority.
+        if (a.words[0] != b.words[0]) return false;
+        for (unsigned slot = 0; slot < 4; ++slot)
+            if (a.words[1 + slot * 3] != b.words[1 + slot * 3]) return false;
+        return !std::memcmp(a.words + 13, b.words + 13, 26 * sizeof(uint32_t));
+    }
+    bool Reject(PpbContextFailure why) { failed = true; failure = why; return false; }
+    bool Read(const HANDLE *current, Reader reader, uint32_t address, unsigned count, uint32_t *values) {
+        if (failed) return false;
+        if (!current || !*current || *current != owner) return Reject(PpbContextFailure::Owner);
+        if (!reader || !values || !count || count > 36 || (address & 3U) ||
+            static_cast<uint64_t>(address) + count * 4U > 0x4000000U) return Reject(PpbContextFailure::Argument);
+        if (reads >= 420 || bytes > 3312 - count * 4U) return Reject(PpbContextFailure::Budget);
+        ++reads; bytes += count * 4U;
+        status = reader(owner, values, count * 4U, address);
+        if (!*current || *current != owner) return Reject(PpbContextFailure::Owner);
+        if (status != BC_STS_SUCCESS) return Reject(PpbContextFailure::Read);
+        ++measured; return true;
+    }
+    bool Graph(const HANDLE *current, unsigned stage, Reader reader, PpbContextGraph *out,
+               const PpbContextGraph *frozen) {
+        uint32_t *v = out->words;
+        if (!Read(current, reader, 0xd3a08, 1, v)) return false;
+        for (unsigned slot = 0; slot < 4; ++slot) {
+            const uint32_t base = 0xd3a00U + slot * 0x1ccU;
+            if (!Read(current, reader, base + 0x20, 1, v + 1 + slot * 3) ||
+                !Read(current, reader, base + 0xc4, 1, v + 2 + slot * 3) ||
+                !Read(current, reader, base + 0xd0, 1, v + 3 + slot * 3)) return false;
+            if ((v[2 + slot * 3] & 255U) != (slot == 0 ? 1U : 0U)) return Reject(PpbContextFailure::Profile);
+            if (frozen && v[1 + slot * 3] != frozen->words[1 + slot * 3]) return Reject(PpbContextFailure::Changed);
+        }
+        if ((v[3] & 255U) || ((v[3] >> 16) & 255U) != (stage ? 1U : 0U)) return Reject(PpbContextFailure::Profile);
+        if (frozen && v[0] != frozen->words[0]) return Reject(PpbContextFailure::Changed);
+        const uint32_t h = frozen ? frozen->words[1] : v[1], c = frozen ? frozen->words[0] : v[0];
+        uint32_t objects[] = {h, c, 0, 0};
+        if (!Disjoint(objects, 2)) return Reject(PpbContextFailure::Object);
+        if (!Read(current, reader, h, 1, v + 13) || !Read(current, reader, h + 8, 2, v + 14) ||
+            !Read(current, reader, h + 0x64, 1, v + 16) || !Read(current, reader, h + 0xcc, 1, v + 17) ||
+            !Read(current, reader, h + 0x224, 1, v + 18)) return false;
+        if (frozen && std::memcmp(v + 13, frozen->words + 13, 6 * sizeof(uint32_t))) return Reject(PpbContextFailure::Changed);
+        if (v[13] || v[15] != 0x3f940U || v[16] != c || v[17] || v[18] != 0x116004U) return Reject(PpbContextFailure::Profile);
+        if (!Read(current, reader, c + 8, 1, v + 19) || !Read(current, reader, c + 0x1a0, 1, v + 20) ||
+            !Read(current, reader, c + 0x1d4, 3, v + 21)) return false;
+        if (frozen && std::memcmp(v + 19, frozen->words + 19, 5 * sizeof(uint32_t))) return Reject(PpbContextFailure::Changed);
+        if (v[19] != 0x116004U) return Reject(PpbContextFailure::Profile);
+        objects[2] = frozen ? frozen->words[20] : v[20];
+        if (!Disjoint(objects, 3)) return Reject(PpbContextFailure::Object);
+        const uint32_t q = objects[2];
+        if (!Read(current, reader, q, 1, v + 24) || !Read(current, reader, q + 8, 1, v + 25) ||
+            !Read(current, reader, q + 0x10, 2, v + 26)) return false;
+        if (frozen && std::memcmp(v + 24, frozen->words + 24, 4 * sizeof(uint32_t))) return Reject(PpbContextFailure::Changed);
+        if (v[24] != c || v[26] != v[23] || v[27] != v[21]) return Reject(PpbContextFailure::Map);
+        objects[3] = frozen ? frozen->words[25] : v[25];
+        if (!Disjoint(objects, 4)) return Reject(PpbContextFailure::Object);
+        const uint32_t m = objects[3];
+        if (!Read(current, reader, m + 0x18, 2, v + 28) || !Read(current, reader, m + 0x28, 1, v + 30) ||
+            !Read(current, reader, m + 0x30, 2, v + 31) || !Read(current, reader, m + 0x40, 1, v + 33) ||
+            !Read(current, reader, 0x11601c, 2, v + 34) || !Read(current, reader, 0x11602c, 1, v + 36) ||
+            !Read(current, reader, 0x116034, 2, v + 37)) return false;
+        if (frozen && !Equal(*out, *frozen)) return Reject(PpbContextFailure::Changed);
+        const uint32_t defaults[] = {0x116068, 0x3ffc000, 0x116004, 0x116004, 0x3ffc000 - 0x116004};
+        const uint64_t video_end = static_cast<uint64_t>(v[21]) + v[23];
+        if (std::memcmp(v + 34, defaults, sizeof(defaults)) || !v[23] || (v[21] & 4095U) || (v[23] & 3U) ||
+            v[21] != v[22] || v[21] < defaults[0] || video_end > defaults[1] ||
+            v[28] != v[21] || v[29] != video_end || v[30] != v[21] || v[31] != v[22] ||
+            v[32] != v[23] || v[33] != 1) return Reject(PpbContextFailure::Map);
+        const uint64_t submitted_end = static_cast<uint64_t>(v[14]) + v[15];
+        const uint32_t skip = (0U - v[14]) & 3U;
+        if (!v[14] || v[14] < v[22] || submitted_end > video_end || v[15] < skip ||
+            v[15] - skip < 0x177ccU || static_cast<uint64_t>(v[14]) + skip + 0x5bcU > submitted_end)
+            return Reject(PpbContextFailure::Slice);
+        return true;
+    }
+    void Report(unsigned stage) const {
+        const char *const stages[] = {"after-OPEN/pre-START", "first-output-after-release-and-owned-write", "delivery-EOS-before-STOP"};
+        const char *const failures[] = {"none", "argument", "current-handle-loss", "order", "budget", "read-status",
+            "object-envelope/alias", "default-profile", "map-tuple", "context-slice", "authority-changed"};
+        std::printf("PPB saved context: stage=%s reads=%u/420 bytes=%u/3312 measured=%u/140 failure=%s api-status=%d "
+            "saved-copy-is-current=unproven atomic/allocator-integrity/lease/generation/cache-ready/all-consumers-certified=no\n",
+            stages[stage], reads, bytes, measured, failures[static_cast<unsigned>(failure)], status);
+        for (unsigned pass = 0; pass < 2; ++pass) {
+            if (!complete[pass]) { std::printf("PPB saved context raw: stage=%s pass=%u INCOMPLETE\n", stages[stage], pass); continue; }
+            const uint32_t *g = graph[pass].words, *r = raw[pass];
+            std::printf("PPB saved context raw: stage=%s pass=%u C=%08x H=%08x Q=%08x M=%08x P=%08x N=%08x "
+                "D=%08x video-base=%08x video-bytes=%08x core-flags=%08x word80=%08x producer-pool=%08x "
+                "metadata-pool=%08x bank-bytes=%08x bank-count=%08x reader-pool=%08x flags=",
+                stages[stage], pass, g[0], g[1], g[20], g[25], g[14], g[15], g[14] + ((0U - g[14]) & 3U),
+                g[22], g[23], r[0], r[1], r[2], r[3], r[57], r[58], r[59]);
+            for (unsigned word = 4; word < 21; ++word) std::printf("%s%08x", word == 4 ? "" : ",", r[word]);
+            std::printf(" banks=");
+            for (unsigned word = 21; word < 57; ++word) std::printf("%s%08x", word == 21 ? "" : ",", r[word]);
+            std::printf("\n");
+        }
+        if (complete[0] && complete[1]) std::printf("PPB saved context comparison: stage=%s saved-fields=%s,non-atomic\n",
+            stages[stage], std::memcmp(raw[0], raw[1], sizeof(raw[0])) ? "observed-different" : "observed-stable");
+        std::fflush(stdout);
+    }
+    bool Observe(const HANDLE *current, unsigned stage, bool barrier, Reader reader = DtsDevMemRd, bool report = true) {
+        if (!enabled) return true;
+        if (failed) return false;
+        if (!current || !*current || !reader) return Reject(PpbContextFailure::Argument);
+        if (stage > 2 || stage != next_stage || barrier != (stage != 0)) return Reject(PpbContextFailure::Order);
+        if (reads > 280 || bytes > 2208) return Reject(PpbContextFailure::Budget);
+        if (!stage) owner = *current;
+        if (!owner || *current != owner) return Reject(PpbContextFailure::Owner);
+        ++next_stage; measured = 0; std::memset(raw, 0, sizeof(raw)); complete[0] = complete[1] = false;
+        const uint32_t offsets[] = {0, 0x80, 0x21c, 0x33c, 0x354, 0x3fc, 0x48c, 0x530};
+        const unsigned counts[] = {1, 1, 1, 1, 17, 36, 2, 1};
+        bool ok = true;
+        for (unsigned pass = 0; pass < 2 && ok; ++pass) {
+            graph[pass] = PpbContextGraph{};
+            ok = Graph(current, stage, reader, &graph[pass], admitted ? &authority : nullptr);
+            if (!ok) break;
+            if (!admitted) { authority = graph[pass]; admitted = true; }
+            const uint32_t d = authority.words[14] + ((0U - authority.words[14]) & 3U);
+            unsigned word = 0;
+            for (unsigned span = 0; span < 8 && ok; ++span) {
+                ok = Read(current, reader, d + offsets[span], counts[span], raw[pass] + word);
+                word += counts[span];
+            }
+            PpbContextGraph after;
+            if (ok) ok = Graph(current, stage, reader, &after, &authority);
+            complete[pass] = ok;
+        }
+        if (report) Report(stage);
+        return ok;
+    }
+    bool Finish(bool native_ok, bool report = true) const {
+        if (!enabled) return native_ok;
+        const bool ok = !failed && admitted && next_stage == 3 && reads == 420 && bytes == 3312;
+        if (report) std::printf("PPB saved context finish: native-result=%s observation-result=%s stages=%u/3 reads=%u/420 bytes=%u/3312\n",
+            native_ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL", next_stage, reads, bytes);
+        return native_ok && ok;
+    }
+};
+struct PpbContextFixture {
+    HANDLE current = this, replacement = nullptr;
+    unsigned calls = 0, fail_at = 420, lose_at = 420, change_at = 420;
+    uint32_t changed_address = 0, changed_value = 0;
+    uint32_t physical = 0x1000000;
+    bool valid = true, different = false, all_ones = false;
+    uint32_t Address(unsigned at) const {
+        const uint32_t graph[] = {0xd3a08,
+            0xd3a20,0xd3ac4,0xd3ad0,0xd3bec,0xd3c90,0xd3c9c,0xd3db8,0xd3e5c,0xd3e68,0xd3f84,0xd4028,0xd4034,
+            0xd6000,0xd6008,0xd6064,0xd60cc,0xd6224,0xd5408,0xd55a0,0xd55d4,
+            0xd5800,0xd5808,0xd5810,0xd5a18,0xd5a28,0xd5a30,0xd5a40,0x11601c,0x11602c,0x116034};
+        const uint32_t core[] = {0,0x80,0x21c,0x33c,0x354,0x3fc,0x48c,0x530};
+        return at < 31 ? graph[at] : at < 39 ? physical + ((0U - physical) & 3U) + core[at - 31] : graph[at - 39];
+    }
+    static unsigned Count(unsigned at) {
+        const unsigned graph[] = {1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1,1,3,1,1,2,2,1,2,1,2,1,2};
+        const unsigned core[] = {1,1,1,1,17,36,2,1};
+        return at < 31 ? graph[at] : at < 39 ? core[at - 31] : graph[at - 39];
+    }
+    uint32_t Word(uint32_t address, unsigned position) const {
+        if (position >= change_at && address == changed_address) return changed_value;
+        if (address == 0xd3a08) return 0xd5400;
+        for (unsigned slot = 0; slot < 4; ++slot) {
+            const uint32_t base = 0xd3a00 + slot * 0x1cc;
+            if (address == base + 0x20) return slot ? 0 : 0xd6000;
+            if (address == base + 0xc4) return slot ? 0 : 0x101;
+            if (address == base + 0xd0) return slot ? 0 : 0x200 | (position >= 140 ? 0x10000 : 0);
+        }
+        const uint32_t locations[] = {0xd6000,0xd6008,0xd600c,0xd6064,0xd60cc,0xd6224,
+            0xd5408,0xd55a0,0xd55d4,0xd55d8,0xd55dc,0xd5800,0xd5808,0xd5810,0xd5814,
+            0xd5a18,0xd5a1c,0xd5a28,0xd5a30,0xd5a34,0xd5a40,0x11601c,0x116020,0x11602c,0x116034,0x116038};
+        const uint32_t values[] = {0,physical,0x3f940,0xd5400,0,0x116004,
+            0x116004,0xd5800,0x200000,0x200000,0x1000000,0xd5400,0xd5a00,0x1000000,0x200000,
+            0x200000,0x1200000,0x200000,0x200000,0x1000000,1,0x116068,0x3ffc000,0x116004,0x116004,0x3ee5ffc};
+        for (unsigned word = 0; word < sizeof(locations) / sizeof(locations[0]); ++word)
+            if (address == locations[word]) return values[word];
+        return all_ones ? 0xffffffffU : 0x5a000000U | ((position / 140) << 16) | (address & 65535U) |
+            (different && position % 140 >= 70 ? 0x80000000U : 0);
+    }
+    static BC_STATUS Read(HANDLE handle, uint32_t *values, uint32_t bytes, uint32_t address) {
+        auto *f = static_cast<PpbContextFixture *>(handle);
+        const unsigned position = f->calls++, at = position % 70;
+        f->valid &= position < 420 && values && address == f->Address(at) && bytes == Count(at) * 4U &&
+            reinterpret_cast<uintptr_t>(values) % alignof(uint32_t) == 0;
+        if (!f->valid) return BC_STS_ERROR;
+        for (unsigned word = 0; word < bytes / 4; ++word) values[word] = f->Word(address + word * 4, position);
+        if (position == f->lose_at) f->current = f->replacement;
+        return position == f->fail_at ? BC_STS_BUSY : BC_STS_SUCCESS;
+    }
+};
+
 // Native framing observations only: the revision pin is an observed board
 // profile, not a universal reset value. Sequential passes may differ; sync,
 // line counts and EOL/EOF are raw fields, not accepted-transfer/completion proof.
@@ -1704,6 +1922,7 @@ struct Options {
     bool observe_runtime_inventory = false;
     bool observe_arm_metadata = false;
     bool observe_arm_source_shape = false;
+    bool observe_ppb_context = false;
     unsigned inject_mfd_colour = 0;
     unsigned scl_status_test = 0;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
@@ -1732,9 +1951,11 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         arguments.resize(arguments.size() - 2);
     }
     if (arguments.size() >= 2 && (!std::strcmp(arguments.back(), "--observe-arm-metadata") ||
-                                 !std::strcmp(arguments.back(), "--observe-arm-source-shape"))) {
+                                 !std::strcmp(arguments.back(), "--observe-arm-source-shape") ||
+                                 !std::strcmp(arguments.back(), "--observe-ppb-context"))) {
+        options->observe_ppb_context = !std::strcmp(arguments.back(), "--observe-ppb-context");
         options->observe_arm_source_shape = !std::strcmp(arguments.back(), "--observe-arm-source-shape");
-        options->observe_arm_metadata = !options->observe_arm_source_shape;
+        options->observe_arm_metadata = !options->observe_arm_source_shape && !options->observe_ppb_context;
         arguments.pop_back();
     }
     if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-runtime-inventory")) {
@@ -1808,7 +2029,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         arguments.resize(arguments.size() - 2);
     }
     if (arguments.size() == 2 && !std::strcmp(arguments[1], "--self-test")) {
-        if (options->capture_path || options->observe_arm_metadata || options->observe_arm_source_shape || options->observe_runtime_inventory || options->observe_chroma || options->observe_scl_config || options->observe_scl_filter_map || options->observe_scl_view || options->observe_mfd_config || options->observe_mfd_address || options->observe_mfd_framing || options->inject_mfd_colour || options->scl_status_test || options->scaler_test || options->mpeg1_via_mpeg2 ||
+        if (options->capture_path || options->observe_arm_metadata || options->observe_arm_source_shape || options->observe_ppb_context || options->observe_runtime_inventory || options->observe_chroma || options->observe_scl_config || options->observe_scl_filter_map || options->observe_scl_view || options->observe_mfd_config || options->observe_mfd_address || options->observe_mfd_framing || options->inject_mfd_colour || options->scl_status_test || options->scaler_test || options->mpeg1_via_mpeg2 ||
             options->h263_via_divx || options->open_only) return false;
         options->mode = Mode::SelfTest;
         return true;
@@ -1825,7 +2046,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         return false;
     options->mode = preflight ? Mode::Preflight : Mode::Hardware;
     options->path = arguments[2];
-    if ((options->observe_arm_metadata || options->observe_arm_source_shape) &&
+    if ((options->observe_arm_metadata || options->observe_arm_source_shape || options->observe_ppb_context) &&
         (!hardware || !options->capture_path || !options->scaler_test || options->scale_width ||
          options->expected != 180 || options->iterations != 1 || options->output_format != OUTPUT_MODE422_YUY2 ||
          options->observe_chroma || options->observe_scl_config || options->observe_scl_filter_map ||
@@ -1907,7 +2128,7 @@ static bool SclInputAdmitted(const Options &options, const Input &input)
 
 static bool NeedsRawIo(const Options &options)
 {
-    return options.observe_arm_metadata || options.observe_arm_source_shape || options.observe_runtime_inventory || options.observe_chroma || options.observe_scl_config || options.observe_scl_filter_map ||
+    return options.observe_arm_metadata || options.observe_arm_source_shape || options.observe_ppb_context || options.observe_runtime_inventory || options.observe_chroma || options.observe_scl_config || options.observe_scl_filter_map ||
         options.observe_scl_view || options.observe_mfd_config || options.observe_mfd_address || options.observe_mfd_framing || options.inject_mfd_colour || options.scl_status_test;
 }
 
@@ -1934,7 +2155,7 @@ static bool ArmMetadataInputShape(const Options &options, const Input &input)
 }
 static bool ArmMetadataInputAdmitted(const Options &options, const Input &input)
 {
-    return (!options.observe_arm_metadata && !options.observe_arm_source_shape) || (ArmMetadataInputShape(options, input) &&
+    return (!options.observe_arm_metadata && !options.observe_arm_source_shape && !options.observe_ppb_context) || (ArmMetadataInputShape(options, input) &&
         SubmittedPacketDigestMatches(input, 124832, "1363a87c8f59fab6187cd13653a3ba8a41fd994066d30c24be1c2b09d675666e"));
 }
 
@@ -2800,6 +3021,153 @@ template<class Check> static void ArmSourceShapeSelfTest(const Check &check)
         "ARM source-shape reports raw/cache fields separately, marks incomplete spans and never certifies source identity or lease");
 }
 
+template<class Check> static void PpbContextSelfTest(const Check &check)
+{
+    PpbContextObserver disabled;
+    check(disabled.Observe(nullptr, 9, true, nullptr, false) && disabled.Finish(true, false) && !disabled.reads,
+        "PPB saved context default disabled path adds no I/O or owner constraints");
+    const uint32_t sizes[] = {0xa84c,0x378,0x1f4,0x64};
+    for (unsigned kind = 0; kind < 4; ++kind) {
+        check(PpbContextObserver::Object(0xd53dc, kind) && PpbContextObserver::Object(0x116000 - sizes[kind], kind),
+            "PPB complete declared object allows exact lower/last-exclusive heap boundaries");
+        for (uint32_t pointer : {0U,0xd53d8U,0xd53ddU,0x116004U - sizes[kind],0xfffffffcU,0xa40000U})
+            check(!PpbContextObserver::Object(pointer, kind), "PPB object guards refuse null/misaligned/crossed/wrapped/source-plane candidates");
+    }
+    check(!PpbContextObserver::Object(0xd6000,4) && !PpbContextObserver::Disjoint(nullptr,4), "PPB malformed object kinds/null storage refuse");
+    for (unsigned variant = 0; variant < 3; ++variant) {
+        PpbContextFixture fixture; fixture.different = variant == 1; fixture.all_ones = variant == 2;
+        PpbContextObserver subject; subject.enabled = true;
+        for (unsigned stage = 0; stage < 3; ++stage) {
+            check(subject.Observe(&fixture.current,stage,stage != 0,PpbContextFixture::Read,false) && fixture.valid &&
+                fixture.calls == (stage + 1) * 140 && subject.reads == fixture.calls &&
+                subject.bytes == (stage + 1) * 1104 && subject.measured == 140 && subject.complete[0] && subject.complete[1],
+                "PPB rooted default graph/exact fixed saved-core spans/frozen rechecks consume140calls1104B per ordered stage");
+            check((!std::memcmp(subject.raw[0],subject.raw[1],sizeof(subject.raw[0]))) == !fixture.different,
+                "PPB saved core permits stale/all-ones/different data without promoting it to an active allocation certificate");
+        }
+        check(subject.Finish(true,false) && !subject.Finish(false,false) && fixture.calls == 420,
+            "PPB completion requires all420calls3312bytes and genuine native success without extra reads");
+    }
+    for (uint32_t physical : {0x1000000U,0x1000001U,0x1000002U,0x1000003U,0x200000U,0x11c06c0U}) {
+        PpbContextFixture fixture; fixture.physical = physical;
+        PpbContextObserver subject; subject.enabled = true; bool result = true;
+        for (unsigned stage = 0; stage < 3 && result; ++stage)
+            result = subject.Observe(&fixture.current,stage,stage != 0,PpbContextFixture::Read,false);
+        check(result && fixture.valid && subject.Finish(true,false) && fixture.calls == 420 &&
+            subject.authority.words[14] == physical,
+            "PPB all four upward-alignment residues and complete submitted slice at exact video boundaries keep only normalized fixed targets");
+    }
+    for (unsigned position = 0; position < 420; ++position) for (unsigned fault = 0; fault < 3; ++fault) {
+        PpbContextFixture fixture,other;
+        fixture.fail_at = fault ? 420 : position; fixture.lose_at = fault ? position : 420;
+        fixture.replacement = fault == 2 ? other.current : nullptr;
+        PpbContextObserver subject; subject.enabled = true;
+        bool result = true;
+        for (unsigned stage = 0; stage < 3 && result; ++stage)
+            result = subject.Observe(&fixture.current,stage,stage != 0,PpbContextFixture::Read,false);
+        check(!result && fixture.valid && subject.failed && fixture.calls == position + 1 &&
+            subject.failure == (fault ? PpbContextFailure::Owner : PpbContextFailure::Read) &&
+            !subject.Observe(&fixture.current,0,false,PpbContextFixture::Read,false) &&
+            !subject.Observe(&other.current,2,true,PpbContextFixture::Read,false) && !subject.Finish(true,false) &&
+            fixture.calls == position + 1 && !other.calls,
+            "PPB every busy/error/owner-loss/replacement position is sticky and cannot read a foreign owner");
+        uint32_t ignored = 0;
+        check(!subject.Read(&other.current,PpbContextFixture::Read,0xd3a08,1,&ignored) && !other.calls,
+            "PPB direct internal read helper also refuses after sticky failure");
+    }
+    const uint32_t links[] = {0xd3a08,0xd3a20,0xd6008,0xd600c,0xd6064,0xd60cc,0xd6224,
+        0xd5408,0xd55a0,0xd55d4,0xd55d8,0xd55dc,0xd5800,0xd5808,0xd5810,0xd5814,
+        0xd5a18,0xd5a1c,0xd5a28,0xd5a30,0xd5a34,0xd5a40,0x11601c,0x116020,0x11602c,0x116034,0x116038};
+    for (uint32_t address : links) for (unsigned change : {39U,70U,140U,280U}) {
+        PpbContextFixture fixture; fixture.changed_address = address; fixture.change_at = change;
+        fixture.changed_value = fixture.Word(address,0) ^ 4U;
+        PpbContextObserver subject; subject.enabled = true; bool result = true;
+        for (unsigned stage = 0; stage < 3 && result; ++stage)
+            result = subject.Observe(&fixture.current,stage,stage != 0,PpbContextFixture::Read,false);
+        check(!result && fixture.valid && subject.failed && subject.failure == PpbContextFailure::Changed &&
+            fixture.calls < 420 && !subject.Finish(true,false),
+            "PPB every authority field change during frozen recheck/later pass/stage refuses without retargeting");
+    }
+    const uint32_t invalid[][2] = {
+        {0xd3a08,0},{0xd3a20,0xa40000},{0xd3ac4,0},{0xd3ad0,0x10200},{0xd3c90,1},
+        {0xd3a20,0xd5400},{0xd6000,1},{0xd6008,0},{0xd6008,0xfffffffc},{0xd6008,0x1ffffc},
+        {0xd6008,0x11fff00},{0xd600c,0x3f93f},{0xd6064,0xd5800},{0xd60cc,1},{0xd6224,0xa40000},
+        {0xd5408,0xd5800},{0xd55a0,0xd6000},{0xd55d4,0x200004},{0xd55d8,0x300000},
+        {0xd55dc,0},{0xd55dc,0xfffffff0},{0xd55dc,0x1000001},{0xd5800,0xd6000},
+        {0xd5808,0xd5800},{0xd5810,0x1000004},{0xd5814,0x300000},{0xd5a18,0x200004},
+        {0xd5a1c,0x1200004},{0xd5a28,0x300000},{0xd5a30,0x300000},{0xd5a34,0x1000004},
+        {0xd5a40,0},{0x11601c,0x116004},{0x116020,0x4000000},{0x11602c,0x116068},
+        {0x116034,0x200000},{0x116038,0x3ee6000}};
+    for (const auto &changed : invalid) {
+        PpbContextFixture fixture; fixture.change_at = 0; fixture.changed_address = changed[0]; fixture.changed_value = changed[1];
+        PpbContextObserver subject; subject.enabled = true;
+        check(!subject.Observe(&fixture.current,0,false,PpbContextFixture::Read,false) && fixture.valid && subject.failed &&
+            fixture.calls <= 31 && !subject.complete[0] && !subject.Finish(true,false),
+            "PPB invalid rooted profiles/object aliases/map geometry/full context slices refuse before all saved-core reads");
+    }
+    for (unsigned invalid_stage = 0; invalid_stage < 7; ++invalid_stage) {
+        PpbContextFixture fixture; PpbContextObserver subject; subject.enabled = true;
+        if (invalid_stage >= 4) check(subject.Observe(&fixture.current,0,false,PpbContextFixture::Read,false),"PPB stage refusal setup");
+        if (invalid_stage == 2) subject.reads = 281;
+        if (invalid_stage == 3) subject.bytes = 2209;
+        check(!subject.Observe(&fixture.current,invalid_stage == 0 ? 3 : invalid_stage == 4 ? 0 : invalid_stage >= 5 ? 1 : 0,
+            invalid_stage == 1 || invalid_stage == 6,invalid_stage == 6 ? nullptr : PpbContextFixture::Read,false) &&
+            subject.failed && fixture.calls == (invalid_stage >= 4 ? 140U : 0U),
+            "PPB stage order/barrier/budget/null reader rejects before reads");
+    }
+    const std::vector<const char *> valid = {"probe","--hardware","fixture","180","30","1","--scaler-test","0",
+        "--observe-ppb-context","--capture-yuy2","new"};
+    Options admitted;
+    check(ParseArguments(valid,&admitted) && admitted.observe_ppb_context && !admitted.observe_arm_metadata &&
+        !admitted.observe_arm_source_shape && NeedsRawIo(admitted),"PPB observer is separately opted in with CAP_SYS_RAWIO admission");
+    const std::vector<std::vector<const char *>> forbidden = {{"--observe-ppb-context"},{"--observe-arm-metadata"},{"--observe-arm-source-shape"},
+        {"--observe-runtime-inventory"},{"--observe-mfd-framing"},{"--observe-mfd-config"},{"--observe-mfd-address"},
+        {"--observe-scl-config"},{"--observe-scl-filter-map"},{"--observe-scl-view","2"},{"--observe-chroma"},
+        {"--inject-mfd-colour","a"},{"--scl-status-test","observe"},{"--open-only"},{"--mpeg1-via-mpeg2"},{"--h263-via-divx"}};
+    for (const auto &extra : forbidden) for (unsigned order = 0; order < 2; ++order) {
+        auto arguments = valid; arguments.insert(order ? arguments.end()-2 : arguments.begin()+8,extra.begin(),extra.end()); Options rejected;
+        check(!ParseArguments(arguments,&rejected),"PPB observer refuses all mixed or duplicate experiments in either order");
+    }
+    for (unsigned fault = 0; fault < 9; ++fault) {
+        auto arguments = valid;
+        if (fault == 0) arguments[1] = "--preflight";
+        if (fault == 1) arguments[3] = "179";
+        if (fault == 2) arguments[5] = "2";
+        if (fault == 3) arguments[7] = "128";
+        if (fault == 4) arguments[9] = "--capture-uyvy";
+        if (fault == 5) arguments[10] = "-";
+        if (fault == 6) arguments.resize(9);
+        if (fault == 7) arguments[8] = "--observe-ppb-context=0";
+        if (fault == 8) arguments.erase(arguments.begin()+6,arguments.begin()+8);
+        Options rejected;
+        check(!ParseArguments(arguments,&rejected),"PPB observer refuses preflight/framecount/repeat/scaling/packing/capture and ambiguous option syntax");
+    }
+    Input native; native.codec = AV_CODEC_ID_H264; native.subtype = BC_MSUBTYPE_H264; native.progressive = true;
+    native.width = 256; native.height = 96; native.packets.resize(180);
+    check(ArmMetadataInputShape(admitted,native) && !ArmMetadataInputAdmitted(admitted,native) &&
+        ArmMetadataInputAdmitted(Options{},native),"PPB exact shape still requires original submitted-byte SHA before capture/device");
+    FILE *record = std::tmpfile(); const int saved = dup(STDOUT_FILENO);
+    std::fflush(stdout);
+    const bool redirected = record && saved >= 0 && dup2(fileno(record),STDOUT_FILENO) >= 0;
+    if (redirected) {
+        PpbContextFixture fixture; fixture.all_ones = true;
+        PpbContextObserver subject; subject.enabled = true;
+        subject.Observe(&fixture.current,0,false,PpbContextFixture::Read);
+        fixture.fail_at = 141;
+        subject.Observe(&fixture.current,1,true,PpbContextFixture::Read);
+    }
+    std::fflush(stdout);
+    const bool restored = saved >= 0 && dup2(saved,STDOUT_FILENO) >= 0;
+    if (saved >= 0) close(saved);
+    char text[16384] = {}; size_t length = 0;
+    if (record) { std::rewind(record); length = std::fread(text,1,sizeof(text)-1,record); std::fclose(record); }
+    check(redirected && restored && length && std::strstr(text,"reads=140/420 bytes=1104/3312 measured=140/140") &&
+        std::strstr(text,"bank-count=ffffffff") && std::strstr(text,"P=01000000 N=0003f940 D=01000000") &&
+        std::strstr(text,"saved-copy-is-current=unproven") && std::strstr(text,"allocator-integrity/lease/generation") &&
+        std::strstr(text,"saved-fields=observed-stable,non-atomic") && std::strstr(text,"pass=0 INCOMPLETE"),
+        "PPB reports frozen graph/raw saved fields only after complete passes and marks failed snapshots incomplete without lifetime certification");
+}
+
 template<class Check> static void MfdFramingSelfTest(const Check &check)
 {
     const uint32_t addresses[] = {0x00540000, 0x00540078, 0x00540050, 0x00540070, 0x00540000};
@@ -3195,6 +3563,7 @@ static bool SelfTest()
     MfdAddressSelfTest(check);
     ArmMetadataSelfTest(check);
     ArmSourceShapeSelfTest(check);
+    PpbContextSelfTest(check);
     MfdFramingSelfTest(check);
     RuntimeInventorySelfTest(check);
 
@@ -5008,6 +5377,7 @@ struct Audit {
     MfdAdmissionObserver mfd;
     RuntimeInventoryObserver runtime_inventory;
     ArmMetadataObserver arm_metadata;
+    PpbContextObserver ppb_context;
     MfdAddressObserver mfd_address;
     MfdFramingObserver mfd_framing;
     MfdColourProbe mfd_colour;
@@ -5063,6 +5433,8 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
             // Preserve an already delivered owned copy before diagnostic failure.
             if (!marker && valid && released && audit->frames == 1)
                 valid = audit->arm_metadata.Observe(&device->handle, 1, released && owned_written);
+            if (!marker && valid && released && audit->frames == 1)
+                valid = audit->ppb_context.Observe(&device->handle, 1, released && owned_written);
             if (!marker && valid && released)
                 valid = audit->scl_filter_map.AfterDelivered(device->handle, audit->frames,
                                                            released, audit->capture != nullptr);
@@ -5110,6 +5482,8 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                     std::fprintf(stderr, "MFD debug address observation failed; no further observer I/O, ordinary decoder cleanup follows\n");
                 else if (audit->mfd_framing.failed)
                     std::fprintf(stderr, "MFD framing observation failed; no further observer I/O, ordinary decoder cleanup follows\n");
+                else if (audit->ppb_context.failed)
+                    std::fprintf(stderr, "PPB saved context observation failed; no new pointer targets or retries, ordinary decoder cleanup follows\n");
                 else if (audit->arm_metadata.failed)
                     std::fprintf(stderr, "ARM metadata observation failed; no further observer I/O, ordinary decoder cleanup follows\n");
                 else if (audit->scl_view.failed)
@@ -5119,7 +5493,7 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                 else
                     std::fprintf(stderr, "Invalid progressive picture geometry/data/token: %llu\n",
                                  static_cast<unsigned long long>(output.PicInfo.timeStamp));
-                if (audit->pixels && !audit->scl.failed && !audit->scl_filter_map.fatal && !audit->scl_view.failed && !audit->mfd.failed && !audit->mfd_address.failed && !audit->mfd_framing.failed && !audit->arm_metadata.failed && !audit->mfd_colour.failed && !audit->scl_status.fatal)
+                if (audit->pixels && !audit->scl.failed && !audit->scl_filter_map.fatal && !audit->scl_view.failed && !audit->mfd.failed && !audit->mfd_address.failed && !audit->mfd_framing.failed && !audit->arm_metadata.failed && !audit->ppb_context.failed && !audit->mfd_colour.failed && !audit->scl_status.fatal)
                     std::fprintf(stderr, "Scaler picture: got=%ux%u expected=%ux%u "
                                  "flags=%x words=%u packed422=%u\n",
                                  output.PicInfo.width, output.PicInfo.height,
@@ -5180,6 +5554,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.runtime_inventory.enabled = options.observe_runtime_inventory;
     audit.arm_metadata.enabled = options.observe_arm_metadata || options.observe_arm_source_shape;
     audit.arm_metadata.source_shape = options.observe_arm_source_shape;
+    audit.ppb_context.enabled = options.observe_ppb_context;
     audit.mfd_address.enabled = options.observe_mfd_address;
     audit.mfd_framing.enabled = options.observe_mfd_framing;
     audit.mfd_colour.stimulus = options.inject_mfd_colour;
@@ -5242,6 +5617,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     if (ok) ok = audit.mfd_address.PreStart(&device.handle);
     if (ok) ok = audit.mfd_framing.PreStart(&device.handle);
     if (ok) ok = audit.arm_metadata.Observe(&device.handle, 0, false);
+    if (ok) ok = audit.ppb_context.Observe(&device.handle, 0, false);
     if (ok) ok = audit.mfd_colour.PreStart(device.handle);
     if (ok) device.started = ok = Status("DtsStartDecoder", DtsStartDecoder(device.handle));
     if (ok && options.capture_path) ok = PackingState(device.handle, "started", &audit.mfd_colour, &audit.scl_view);
@@ -5288,6 +5664,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
          audit.frames == expected && audit.pending.empty();
     // Delivery EOS barrier only, sampled before ordinary STOP/CLOSE.
     if (ok) ok = audit.arm_metadata.Observe(&device.handle, 2, true);
+    if (ok) ok = audit.ppb_context.Observe(&device.handle, 2, true);
     if (ok) ok = audit.scl.Observe(device.handle, SclStage::EosBarrier);
     // Only an actual native delivery barrier admits the last status sample.
     // Its diagnostic result cannot retroactively erase delivered native data.
@@ -5306,6 +5683,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     ok = audit.mfd_address.Finish(ok);
     ok = audit.mfd_framing.Finish(ok);
     ok = audit.arm_metadata.Finish(ok);
+    ok = audit.ppb_context.Finish(ok);
     ok = audit.runtime_inventory.Finish(ok, audit.mfd);
     std::printf("Library drain: iteration=%u/%u frames=%u/%u pending=%zu "
         "%s-EOS=%s output-marker=%s ready=%u cleanup=%s result=%s\n",
@@ -5334,13 +5712,15 @@ int main(int argc, char **argv)
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
             "[--scaler-test WIDTH_OR_0] [--mpeg1-via-mpeg2 | --h263-via-divx] "
-            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
+            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
     if (NeedsRawIo(options) && !CanReadChromaConfiguration()) {
-        if (options.observe_arm_source_shape)
+        if (options.observe_ppb_context)
+            std::fprintf(stderr, "--observe-ppb-context requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
+        else if (options.observe_arm_source_shape)
             std::fprintf(stderr, "--observe-arm-source-shape requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
         else if (options.observe_arm_metadata)
             std::fprintf(stderr, "--observe-arm-metadata requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
