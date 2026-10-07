@@ -2072,6 +2072,236 @@ class FirmwareCpuMapQemuTests(unittest.TestCase):
                 self.assertIn((0x20598, wait), actual["stub_status"])
 
 
+class FirmwareArcJumpFixupQemuTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        FirmwareQemuTests.setUpClass()
+
+    def replay(self, symbol, addend=0, raw=None, offset=4, payload=None, budget=128):
+        # Execute A32 type 5, not ARC instructions or the symbol-resolution
+        # caller. Supplied symbol/place scalars do not identify native memory.
+        if any(type(value) is not int or not 0 <= value <= 0xffffffff
+               for value in (symbol, addend)) or type(offset) is not int or \
+                offset not in range(0, 109, 4) or type(budget) is not int or not 1 <= budget <= 128:
+            raise ValueError("invalid synthetic jump fixup")
+        raw = bytes(range(112)) if raw is None else raw
+        if type(raw) is not bytes or len(raw) != 112:
+            raise ValueError("invalid synthetic vector prefix")
+        payload = Model.payload if payload is None else payload
+        if type(payload) not in (bytes, bytearray) or len(payload) != len(Model.payload):
+            raise ValueError("invalid jump fixup payload")
+        for low, high, digest in (
+                (0x29ba4, 0x29f0c, "a16234af9a41e55fc175f60479b9df107c0a27309b20e3f2dca85f6b5c94659a"),
+                (0x29f0c, 0x29ff4, "f8f201970f79dfbf324ed53e604e275e6e21ae275d149e7f40b1889a6a4f2fdd")):
+            if hashlib.sha256(payload[low:high]).hexdigest() != digest:
+                raise ValueError("stock jump fixup body/literals changed")
+        base, sp, place = 0x220100, 0x300800, 0x01200000 + offset
+        pages = {address: bytearray(b"\xa5" * 4096) for address in (0x220000, 0x300000)}
+        pages[0x220000][0x100:0x170] = raw
+        struct.pack_into("<I", pages[0x300000], sp & 4095, addend)
+        registers = [0xabc00000 + index for index in range(16)]
+        registers[:4] = [base + offset, place, symbol, 5]
+        registers[13:16] = [sp, RETURN, 0x29ba4]
+        value = (symbol + addend) & 0xffffffff
+        old = struct.unpack_from("<I", raw, offset)[0]
+        patched = (old & 0xff000000) | ((value >> 2) & 0xffffff)
+        expected = {address: bytearray(page) for address, page in pages.items()}
+        struct.pack_into("<I", expected[0x220000], 0x100 + offset, patched)
+        frame = sp - 80
+        struct.pack_into("<13I", expected[0x300000], sp - 52 - 0x300000,
+                         *registers[:12], RETURN)
+        struct.pack_into("<7I", expected[0x300000], frame - 0x300000, 1, 0, 2, 1, 0, 3, 2)
+        signed = value if value < 0x80000000 else value - (1 << 32)
+        diagnostic = "range" if not -(1 << 26) <= signed < (1 << 26) else "alignment" if value & 3 else None
+        expected_stores = [(base + offset + index, byte)
+                           for index, byte in enumerate(struct.pack("<I", patched))]
+        edges = {0x29ce0: 0x22d60, 0x29cec: 0x232e8,
+                 0x29d04: 0x22d60, 0x29d10: 0x232e8}
+        logs, stores, visited = [], [], []
+        def contract(rsp, pc, args, stack):
+            self.assertEqual(stack, frame)
+            self.assertIsNotNone(diagnostic)
+            self.assertEqual(pc, (0x22d60, 0x232e8)[len(logs)])
+            self.assertEqual(args[0], 0x29f0c if pc == 0x22d60 else
+                             0x29f14 if diagnostic == "range" else 0x29f34)
+            if pc == 0x232e8:
+                self.assertEqual(args[1], place)
+            logs.append((pc, args[:2]))
+            return 19  # Opaque logging status must not veto the patch.
+        def instruction(rsp, pc, regs):
+            visited.append(pc)
+            if pc in (0x29d28, 0x29d30, 0x29d3c, 0x29d48):
+                address, byte = {0x29d28: (regs[4] + regs[10], regs[5]),
+                                 0x29d30: (regs[4] + regs[11], regs[0]),
+                                 0x29d3c: (regs[4] + regs[0], regs[1]),
+                                 0x29d48: (regs[4] + regs[0], regs[1])}[pc]
+                observed = (address, byte & 255)
+                if len(stores) >= 4 or observed != expected_stores[len(stores)]:
+                    raise ValueError("outside ordered jump fixup store contract")
+                stores.append(observed)
+        code = bytearray(struct.pack("<I", 0xe7f000f0) * (4096 // 4))
+        code[0xba4:0xff4] = payload[0x29ba4:0x29ff4]
+        slices = ((0x29ba4, 0x29c48), (0x29cc4, 0x29d50), (0x29f00, 0x29f0c))
+        image = segment_elf([(0x29000, bytes(code), 5)] +
+                            [(address, bytes(page), 6) for address, page in pages.items()], 0x29ba4)
+        actual = emulate(image, pages, registers, slices, (0x22d60, 0x232e8), contract,
+                         budget, clobber_flags=0xf0000000, call_edges=edges, instruction=instruction)
+        self.assertEqual(actual["status"], 3)  # Incidental offset register, not a success status.
+        self.assertEqual(actual["pages"], {address: bytes(page) for address, page in expected.items()})
+        self.assertEqual(stores, expected_stores)
+        expected_calls = [] if diagnostic is None else [(0x29ce0, 0x22d60), (0x29cec, 0x232e8)] if \
+            diagnostic == "range" else [(0x29d04, 0x22d60), (0x29d10, 0x232e8)]
+        self.assertEqual([(site, target) for site, target, args in actual["calls"]], expected_calls)
+        self.assertEqual(len(logs), 0 if diagnostic is None else 2)
+        self.assertIn(0x29c24, visited)
+        if diagnostic == "range":
+            self.assertNotIn(0x29cf4, visited)  # Range diagnostics skip the alignment check.
+        return actual
+
+    def test_signed_range_alignment_wrapping_and_preserved_upper_byte(self):
+        cases = ((0, 0), (0x1234560, 4), (0xfffffffc, 8),
+                 (0xfc000000, 0), (0xfbffffff, 0), (0x3fffffc, 0),
+                 (0x3ffffff, 0), (0x4000000, 0), (0x80000000, 0),
+                 (0xffffffff, 0), (1, 0), (2, 0), (3, 0))
+        for index, (symbol, addend) in enumerate(cases):
+            raw = bytes(((word * 17 + index * 29) & 255) for word in range(112))
+            with self.subTest(symbol=symbol, addend=addend):
+                self.replay(symbol, addend, raw, offset=4 if index % 2 else 108)
+
+    def setup_vector_symbols(self, sections, selected):
+        # Actual placement and rebase bodies, with original section-table bytes,
+        # an explicitly limited section prefix (17 outer / 48 inner), and a
+        # selected synthetic symbol table (null + 8 records). Every referenced
+        # section is included; this is not full-table/loader/native execution.
+        payload = Model.payload
+        slices = ((0x2a3e0, 0x2a474), (0x2a474, 0x2a530))
+        for (low, high), digest in zip(slices, (
+                "96cc839896d7faf6c824c290eb157456c1551d0a4d2ce74c3ada498d626fbac1",
+                "f06cc1f536bffd156569e2ec905edb1a91350a29d488a40011c6db27ca98749d")):
+            self.assertEqual(hashlib.sha256(payload[low:high]).hexdigest(), digest)
+        context, symbols, sp = 0x220000, 0x240100, 0x300800
+        pages = {address: bytearray(b"\xa5" * 4096) for address in (
+            context, context + 4096, 0x240000, 0x300000)}
+        def put(address, data, destination=pages):
+            while data:
+                size = min(len(data), 4096 - (address & 4095))
+                destination[address & ~4095][address & 4095:(address & 4095) + size] = data[:size]
+                data, address = data[size:], address + size
+        def word(address, value, destination=pages):
+            put(address, struct.pack("<I", value), destination)
+        word(context + 4, 0)  # Stock 27d64 supplies this code-origin scalar.
+        word(context + 8, 0x03300000)  # Synthetic data-placement base, not native INST.
+        count = max(record[5] for record in selected) + 1
+        self.assertIn(count, (17, 48))
+        put(context + 0x3c, struct.pack("<H", count))
+        for index, section in enumerate(sections):
+            put(context + 0x40 + index * 40, struct.pack("<10I", *section))
+        word(context + 0x1a40, symbols)
+        word(context + 0x1a44, 9)
+        put(symbols, bytes(16) + b"".join(struct.pack("<IIIBBH", *record) for record in selected))
+        registers = [0xabc00000 + index for index in range(16)]
+        registers[0], registers[13:15] = context, [sp, RETURN]
+        code = bytearray(struct.pack("<I", 0xe7f000f0) * (4096 // 4))
+        code[0x3e0:0x530] = payload[0x2a3e0:0x2a530]
+        placements = {}
+        expected = {address: bytearray(page) for address, page in pages.items()}
+        for index, section in enumerate(sections[1:count], 1):
+            va = section[3]
+            value = 0
+            if (va or section[1] == 1) and va < 0x30000000:
+                value = va + (0 if section[2] & 4 else 0x03300000)
+            placements[index] = value
+            word(context + 0x1840 + index * 4, value, expected)
+        put(sp - 8, struct.pack("<II", registers[4], RETURN), expected)
+        def unexpected(*args):
+            raise AssertionError("unexpected section/symbol setup callee")
+        def run(start, allowed):
+            registers[15] = start
+            image = segment_elf([(0x2a000, bytes(code), 5)] +
+                                [(address, bytes(page), 6) for address, page in pages.items()], start)
+            return emulate(image, pages, registers, allowed, (), unexpected, 5000)
+        placed = run(0x2a474, (slices[1],))
+        self.assertEqual(placed["pages"], {address: bytes(page) for address, page in expected.items()})
+        pages = {address: bytearray(page) for address, page in placed["pages"].items()}
+        # The next call consumes the actual, fully checked first call's pages.
+        put(sp - 16, struct.pack("<4I", *registers[4:7], RETURN), expected)
+        resolved = []
+        for index, record in enumerate(selected, 1):
+            value, section = record[1], record[5]
+            if 0 < section < 128 and value < 0x30000000:
+                value = (placements[section] + value - sections[section][3]) & 0xffffffff
+            resolved.append(value)
+            word(symbols + index * 16 + 4, value, expected)
+        rebased = run(0x2a3e0, (slices[0],))
+        self.assertEqual(rebased["pages"], {address: bytes(page) for address, page in expected.items()})
+        self.assertEqual(placed["calls"], [])
+        self.assertEqual(rebased["calls"], [])
+        return [struct.unpack_from("<I", rebased["pages"][0x240000], 0x100 + index * 16 + 4)[0]
+                for index in range(1, 9)]
+
+    def test_stock_vectors_after_actual_section_placement_and_selected_symbol_rebase(self):
+        # Coupled setup + type-5 execution, not the full relocation caller,
+        # firmware boot, runtime bytes or native code ownership.
+        for blob, vector_sha, section_count, rela_index in (
+                (0x2ea60, "32a14b701c27c29f9abea1a1ef032525f0f5591907ebfaa8c4d6720205e4626c", 55, 36),
+                (0x79dd8, "bc5228bf1fe9710059488a5f06361357aa92f8721048ff957f3fd43c5f0123e3", 112, 67)):
+            header = struct.unpack_from("<16sHHIIIIIHHHHHH", Model.payload, blob)
+            self.assertEqual((header[1], header[2], header[11], header[12]), (2, 45, 40, section_count))
+            sections = [struct.unpack_from("<10I", Model.payload, blob + header[6] + index * 40)
+                        for index in range(section_count)]
+            vector, rela = sections[1], sections[rela_index]
+            self.assertEqual((vector[1:4], vector[5]), ((1, 6, 0), 112))
+            self.assertEqual((rela[1], rela[5], rela[7], rela[9]), (4, 96, 1, 12))
+            raw = Model.payload[blob + vector[4]:blob + vector[4] + 112]
+            self.assertEqual(hashlib.sha256(raw).hexdigest(), vector_sha)
+            records = [struct.unpack_from("<IIi", Model.payload, blob + rela[4] + index * 12)
+                       for index in range(8)]
+            self.assertEqual([offset for offset, info, addend in records], list(range(4, 64, 8)))
+            self.assertEqual([(info & 255, addend) for offset, info, addend in records], [(5, 0)] * 8)
+            symbols = sections[rela[6]]
+            self.assertEqual((symbols[1], symbols[9]), (2, 16))
+            selected = [struct.unpack_from("<IIIBBH", Model.payload,
+                                          blob + symbols[4] + (info >> 8) * 16)
+                        for offset, info, addend in records]
+            resolved = self.setup_vector_symbols(sections, selected)
+            self.assertEqual(resolved, [record[1] for record in selected])
+            for (offset, info, addend), value in zip(records, resolved):
+                with self.subTest(blob=blob, offset=offset):
+                    actual = self.replay(value, addend, raw, offset)
+                    self.assertEqual(actual["pages"][0x220000][0x100:0x170], raw)
+
+    def test_source_and_input_refusals_before_guest_start(self):
+        for offset in (0x29ba4, 0x29c24, 0x29d48, 0x29f0b, 0x29f0c, 0x29ff3):
+            changed = bytearray(Model.payload)
+            changed[offset] ^= 1
+            with self.subTest(offset=offset), mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaisesRegex(ValueError, "stock jump fixup body/literals changed"):
+                    self.replay(0, payload=changed)
+                spawn.assert_not_called()
+        for options in (dict(symbol=True), dict(symbol=-1), dict(symbol=1 << 32),
+                        dict(addend=True), dict(addend=-1), dict(addend=1 << 32),
+                        dict(offset=True), dict(offset=1), dict(offset=112), dict(raw=b""),
+                        dict(raw=bytearray(112)), dict(payload=[]), dict(payload=Model.payload[:-1]),
+                        dict(budget=True), dict(budget=0), dict(budget=129)):
+            arguments = dict(symbol=0)
+            arguments.update(options)
+            with self.subTest(options=options), mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaises(ValueError):
+                    self.replay(**arguments)
+                spawn.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "instruction budget exceeded"):
+            self.replay(0, budget=1)
+        original = RSP.registers
+        def corrupt(rsp):
+            registers = original(rsp)
+            if registers[15] == 0x29d28:
+                registers[4] += 4
+            return registers
+        with mock.patch.object(RSP, "registers", corrupt), \
+                self.assertRaisesRegex(ValueError, "ordered jump fixup store"):
+            self.replay(0)
+
+
 class FirmwareMfdSourceQemuTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -2923,7 +3153,7 @@ class FirmwareStopResultQemuTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(defaultTest=("FirmwareQemuTests", "FirmwarePictureQemuTests", "FirmwareArmArcReturnQemuTests", "FirmwareCpuMapQemuTests",
+    unittest.main(defaultTest=("FirmwareQemuTests", "FirmwarePictureQemuTests", "FirmwareArmArcReturnQemuTests", "FirmwareCpuMapQemuTests", "FirmwareArcJumpFixupQemuTests",
                                "FirmwareMfdSourceQemuTests", "FirmwareSourceProducerQemuTests",
                                "FirmwareSourceModeQemuTests", "FirmwareIrqStatusQemuTests",
                                "FirmwareLogCommandQemuTests", "FirmwareChannelGuardQemuTests",
