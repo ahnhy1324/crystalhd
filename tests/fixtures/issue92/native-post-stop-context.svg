@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="550" viewBox="0 0 1040 550" role="img" aria-labelledby="title desc">
+  <title id="title">BCM70015 post-host-STOP saved context comparison</title>
+  <desc id="desc">Two native H.264 trials with four stages and two non-atomic passes each. Saved words at offsets 0 and 490 changed after the host STOP returned. Byte 490 remains bank count 6; adjacent byte 491 becomes disposition 10. No ARC completion, current state, source lease or pure pre-STOP staleness is certified.</desc>
+  <rect width="1040" height="550" fill="#101922"/>
+  <g font-family="sans-serif" fill="#e7edf2">
+    <text x="32" y="42" font-size="24">STOP comparison: two changed saved words, not a completion token</text>
+    <text x="32" y="72" font-size="15" fill="#b7c7d4">Two H.264 trials · 256 × 96 · 180 frames each · 16 non-atomic saved snapshots</text>
+    <rect x="32" y="99" width="976" height="169" rx="8" fill="#203342"/>
+    <text x="48" y="127" font-size="16">Saved field</text>
+    <text x="424" y="127" font-size="16">OPEN / first output / EOS</text>
+    <text x="764" y="127" font-size="16">Host STOP returned</text>
+    <g font-family="monospace" font-size="18">
+      <text x="48" y="165">D + 000 · raw word</text>
+      <text x="424" y="165">00000000</text>
+      <text x="764" y="165" fill="#f4cf86">fffffffe</text>
+      <text x="48" y="199">D + 490 · packed word</text>
+      <text x="424" y="199">00000006</text>
+      <text x="764" y="199" fill="#f4cf86">00000a06</text>
+    </g>
+    <text x="48" y="242" font-size="16">Same frozen D 033dc000 · all stage pairs match in both trials</text>
+    <text x="32" y="305" font-size="18">Packed word 00000a06: separate source-typed bytes</text>
+    <rect x="32" y="324" width="466" height="67" rx="8" fill="#213846"/>
+    <rect x="522" y="324" width="486" height="67" rx="8" fill="#213846"/>
+    <text x="48" y="350" font-size="16">Byte 490 · bank count</text>
+    <text x="48" y="378" font-size="19" fill="#94ddbd">6 → 6</text>
+    <text x="538" y="350" font-size="16">Byte 491 · adjacent disposition flags</text>
+    <text x="538" y="378" font-size="19" fill="#f4cf86">0 → 10 (0x0a)</text>
+    <text x="32" y="422" font-size="15">34 saved descriptor flags remain zero; nine bank records unchanged. No bank/pool pointers followed.</text>
+    <text x="32" y="452" font-size="17" fill="#94ddbd">572 / 572 frames: whole-pixel controls, firmware EOS and cleanup passed</text>
+    <text x="32" y="479" font-size="15">Each observed trial: 560 reads / 4,416 B · no source-plane access or diagnostic target writes</text>
+    <text x="32" y="514" font-size="15" fill="#f4cf86">Raw word fffffffe can be a picture-disposition sentinel; it is not a STOP reply.</text>
+    <text x="32" y="538" font-size="14" fill="#f4cf86">No ARC ACK, guaranteed refresh, current state, source lease or pure pre-STOP staleness is certified.</text>
+  </g>
+</svg>

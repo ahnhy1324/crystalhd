@@ -725,6 +725,38 @@ _PPB_SAVED_SCALARS = (("core_word", 0, 4), ("metadata_extra_word", 0x80, 4),
     ("producer_pool_value", 0x21c, 4), ("metadata_pool_value", 0x33c, 4),
     ("ppb_flags", 0x354, 68), ("bank_descriptors", 0x3fc, 144),
     ("bank_bytes_and_count_word", 0x48c, 8), ("reader_pool_value", 0x530, 4))
+# Separate STOP proof: the saved-context option's receipts/output stay frozen.
+_PPB_STOP_ARM_REGIONS = (
+    ("host_stop_handler", 0x4288, 0x3a8, "0fa6a9603dd61c135d027f33708dbcada8df969107fe9ef5f9f7c728d205851a"),
+    ("slot_stop_wrapper", 0x125c, 0x88, "7412ad146fa32d0f03d2a11f08758cd8c29b27a0de198dffb43cfa48a9394bb6"),
+    ("decoder_stop", 0xef10, 0xac, "dac38f265061167d8a22a7b3e49e128209206062e6138f41fed094c2d0a9b601"),
+    ("arc_stop_builder", 0x27750, 0x8c, "f95765626233c26ccf54e514bbd6c17216122da1bf71820dc6ecd45e386c9ff9"),
+    ("arc_transport", 0x2705c, 0x16c, "bd461670f479a8e1f005d75357912eee0b0b61d875c6c87c7a10f79d9303d6f8"),
+    ("decoder_close", 0xf6e4, 0x100, "be21c591f9cbeeca67dd5479d1388eed2edf80be4977f0ce9353a535311d79b1"),
+    ("stop_stats", 0x24edc, 0x110, "5e3a2ec79931b1e7d4d992654a6816139d6a233188475c6a52e516166e426651"),
+    ("stop_noop", 0xe548, 4, "379bec29dccd0a93c94826144d7ef6e42fab64ef195a3b8313a16926f66f388f"),
+    ("stop_command_literal", 0x27ab0, 4, "38c07ee2c1401fe213b333a1fbb4ba7d716c9d5df5df4077fbb53a3daa977748"),
+)
+_PPB_STOP_ARC_BODIES = tuple(body for body in _PPB_BANK_BODIES if body[0] in ("Core_Command", "Core_StopChannel"))
+# Record file offset, source section/site, numeric symbol and qualified target, delay, independent fuse.
+_PPB_STOP_RELOCATIONS = (
+    (0x6df2c, 4, 0x9cb0, 645, "Dma_Write", 2, 0x537c, True, "b39012686f2223e97d55705f4bb04c90aedf7bde8a3517d7e429ec51d53f9f76"),
+    (0x6df50, 4, 0x9d14, 645, "Dma_Write", 2, 0x537c, True, "f8eed0bf46a2a18366e47560ee74ade1406689f55cb8643698d7c0001aa08f26"),
+    (0x6df5c, 4, 0x9d1c, 644, "Dma_Sync", 2, 0x5364, False, "e561ecfa8bbc419599bab9149fae953092f5d0aef821a58263c5a865830da0f7"),
+    (0x72f48, 16, 0x25910, 626, "Core_StopChannel", 16, 0x26ba0, True, "bb77d155fa95c33c19658c64f20878e0b02df728e6d73eb05009015eb9f8146d"),
+    (0x72f90, 16, 0x259cc, 645, "Dma_Write", 2, 0x537c, True, "092699e130227a0c95120f05d44cee1d633e6fef9f0f9d00b9bc93b584e2154b"),
+    (0x72f9c, 16, 0x259d4, 644, "Dma_Sync", 2, 0x5364, False, "78784bb8f3350392888e392b7aa756a88a58ca1686660f0955a9b7e037695657"),
+    (0x72fa8, 16, 0x259d8, 556, "Arc_FlushWrites", 4, 0x8090, False, "1c0ff9fd1768c937382661b97481d5ef95dfe9325e5f71b9fa02dd37d637ec59"),
+    (0x72fb4, 16, 0x259ec, 801, "Platform_DeliverResponse", 4, 0xbdc4, False, "201fb50630e864fa1a685323781ec31d823593e1e4886d1eed937b16cd5c7b33"),
+    (0x73518, 16, 0x26db4, 600, "System_Deactivate", 4, 0x9d48, True, "a569d6cf02f8665150c1f1d56903de2bc4e9d24c17b5c50eb30d03bd2da891a7"),
+)
+_PPB_STOP_REGIONS = _PPB_SAVED_REGIONS + _PPB_STOP_ARM_REGIONS + tuple(
+    (name, offset, end - start, digest) for name, _, start, end, offset, digest in _PPB_STOP_ARC_BODIES) + tuple(
+    (f"stop_relocation_{record:x}", record, 12, digest) for record, *_, digest in _PPB_STOP_RELOCATIONS)
+MAX_PPB_STOP_REGIONS = 64
+MAX_PPB_STOP_BYTES = 64 * 1024
+MAX_PPB_STOP_RELOCATIONS = 9
+MAX_PPB_STOP_RESPONSE_BYTES = 252
 # Fixed stock host contract only. These hashes are independent local fuses;
 # the public firmware identity remains unchanged and this helper is test-only.
 _STOCK_HOST_COMMAND_REGIONS = (
@@ -5264,6 +5296,121 @@ def _ppb_saved_context_bridge(payload):
                     "Common-header geometry exponent/mask are outside saved D; no pool or plane value is followed."]}
 
 
+def _ppb_stop_response(payload, busy):
+    """Observed STOP words cannot certify the internal backend transaction."""
+    if (type(payload) not in (bytes, bytearray) or len(payload) != 252 or
+            MAX_PPB_STOP_RESPONSE_BYTES < 252 or type(busy) is not int or not 0 <= busy <= 255):
+        raise FormatError("PPB STOP model requires exactly 252 bytes and a strict u8 busy byte")
+    command, status = struct.unpack_from("<II", payload)
+    request = struct.pack("<II", 0x73760006, 0) + bytes(244)
+    return {"observed_words": [command, status], "busy_byte": busy,
+            "stop_command_matches": command == 0x73760006, "zero_status_word": status == 0,
+            "busy_zero": busy == 0, "channel_zero_request_equals_success_record": payload == request,
+            "unacknowledged_request_collision": payload == request and busy == 0,
+            "completion_certified": False, "backend_success_proven": False, "backend_failure_proven": False,
+            "observed_inputs_only": True, "model_no_native_certification": True}
+
+
+def _ppb_stop_context_bridge(payload):
+    """Conditional STOP-to-save ordering, including the outer status mask."""
+    total = sum(size for _, _, size, _ in _PPB_STOP_REGIONS)
+    if (len(payload) != BUNDLED_SIZE - TRAILER_SIZE or len(_PPB_STOP_REGIONS) > MAX_PPB_STOP_REGIONS or
+            total > MAX_PPB_STOP_BYTES or len(_PPB_STOP_RELOCATIONS) > MAX_PPB_STOP_RELOCATIONS):
+        raise FormatError("PPB STOP context validation size/budget does not match")
+    validated = []
+    for role, offset, size, digest in _PPB_STOP_REGIONS:
+        if hashlib.sha256(bounded(payload, offset, size, "PPB STOP context region")).hexdigest() != digest:
+            raise FormatError(f"PPB STOP context region {role} does not match the baseline")
+        validated.append({"role": role, "blob_file_offset": offset, "size": size, "sha256": digest})
+    saved = _ppb_saved_context_bridge(payload)
+    base = 0x2ea60
+    sections = [struct.unpack_from("<10I", payload, 0x79540 + i * 40) for i in range(55)]
+    names = payload[0x67a95:0x69b6f]
+    symbols = [struct.unpack_from("<IIIBBH", payload, p) for p in range(0x69b70, 0x6cfc0, 16)]
+    def name(symbol):
+        offset = symbol[0]
+        if offset >= len(names) or names.find(b"\0", offset) < 0:
+            raise FormatError("PPB STOP original symbol name does not match")
+        return names[offset:names.index(b"\0", offset)].decode("ascii")
+    bodies = list(saved["arc_bodies"])
+    for label, index, start, end, offset, digest in _PPB_STOP_ARC_BODIES:
+        section = sections[index]
+        matches = [i for i, s in enumerate(symbols) if name(s) == label and
+                   s[1:3] == (start, end - start) and s[3] & 15 == 2 and s[5] == index]
+        if (len(matches) != 1 or not section[3] <= start < end <= section[3] + section[5] or
+                base + section[4] + start - section[3] != offset):
+            raise FormatError(f"PPB STOP section-qualified body {label} does not match")
+        bodies.append({"name": label, "section_index": index, "symbol_index": matches[0],
+                       "elf_virtual_address": start, "size": end - start, "blob_file_offset": offset, "sha256": digest})
+    relocations = []
+    for record, owner, site, symbol_index, label, target_section, target, delay, _ in _PPB_STOP_RELOCATIONS:
+        table = sections[39 if owner == 4 else 51]
+        location, info, addend = struct.unpack_from("<IIi", payload, record)
+        symbol = symbols[symbol_index]
+        source = sections[owner]
+        offset = base + source[4] + site - source[3]
+        word = _bootstrap_word(payload, offset)
+        displacement = (word >> 7) & 0xfffff
+        displacement -= (1 << 20) if displacement & (1 << 19) else 0
+        if ((table[1], table[6], table[7], table[9]) != (4, 35, owner, 12) or
+                not base + table[4] <= record <= base + table[4] + table[5] - 12 or
+                (record - base - table[4]) % 12 or (location, info, addend) != (site, symbol_index << 8 | 6, 0) or
+                (name(symbol), symbol[5], symbol[1], symbol[3] & 15) != (label, target_section, target, 2) or
+                not any(b["section_index"] == owner and b["elf_virtual_address"] <= site <=
+                        b["elf_virtual_address"] + b["size"] - 4 for b in bodies) or
+                not sections[target_section][3] <= target < sections[target_section][3] + sections[target_section][5] or
+                word & 0xf800007f != (0x28000020 if delay else 0x28000000) or site + 4 + 4 * displacement != target):
+            raise FormatError("PPB STOP selected numeric RELA/direct call does not match")
+        relocations.append({"record_blob_file_offset": record, "source_section_index": owner,
+            "call_elf_virtual_address": site, "type": 6, "addend": 0, "symbol_index": symbol_index,
+            "symbol": label, "target_section_index": target_section, "original_target_elf_value": target,
+            "normal_delay_slot": delay, "runtime_application_validated": False})
+    words = ((0x4408, 0xe5c590d2), (0xef98, 0xe5d40004), (0xefac, 0xe3a00000), (0xefb8, 0xeaffffe1),
+        (0x27798, 0xe5890000), (0x2779c, 0xe5897004), (0x277bc, 0xe1a08000), (0x277d4, 0xe1a00008),
+        (0x270f4, 0xe5c4008c), (0x27170, 0xe5c4008c), (0x271b4, 0xe5c4008c), (0x27ab0, 0x73760006))
+    if any(_bootstrap_word(payload, p) != word for p, word in words):
+        raise FormatError("PPB STOP critical A32 word does not match")
+    calls = []
+    for site, target in ((0x4410, 0x125c), (0x128c, 0xef10), (0xef54, 0x24edc), (0xef84, 0xe548),
+            (0xef94, 0x27750), (0x277b8, 0x2705c), (0xf778, 0x26158), (0xf7d8, 0x2056c)):
+        word = _bootstrap_word(payload, site)
+        displacement = word & 0xffffff
+        displacement -= (1 << 24) if displacement & (1 << 23) else 0
+        if word & 0xff000000 != 0xeb000000 or site + 8 + 4 * displacement != target:
+            raise FormatError("PPB STOP original A32 BL does not match")
+        calls.append({"call_blob_file_offset": site, "target_blob_file_offset": target})
+    return {"basis": {"model": "post-host-stop-saved-context-v1", "conditional": True,
+                "region_count": len(validated), "validated_bytes": total},
+        "validated_regions": validated, "arc_bodies": bodies, "arm_calls": calls, "reused_arc_calls": saved["arc_calls"],
+        "critical_arm_words": [{"blob_file_offset": p, "instruction": word} for p, word in words],
+        "original_numeric_relocations": relocations,
+        "conditional_arc_success_order": [0x25910, 0x26db4, 0x9da4, 0x9d1c, 0x259cc, 0x259d4, 0x259d8, 0x259ec],
+        "status_mask": {"internal_stop_command": 0x73760006, "builder_transport_call": 0x277b8,
+                "discarded_builder_return_call": 0xef94, "overwriting_load": 0xef98, "outer_zero_return_site": 0xefac,
+                "request_channel_word_offset": 4, "reply_status_word_offset": 4, "busy_clear_is_success_only": False,
+                "channel_zero_counterexample": _ppb_stop_response(struct.pack("<II", 0x73760006, 0) + bytes(244), 0)},
+        "direct_stop_graph_lifetime": {"working_active_byte_offset": 0xc4, "working_started_byte_offset": 0xd2,
+                "started_clear_store": 0x4408, "handle_publication_offset": 0x20,
+                "selected_direct_stop_unpublishes_graph": False, "close_context_release_call": 0xf778,
+                "close_handle_free_call": 0xf7d8, "opaque_callee_preservation_required": True,
+                "native_allocation_lifetime_certified": False},
+        "candidate": {"stage": "host-STOP-returned/pre-CLOSE", "conditional_arc_acknowledged": False,
+                "same_handle_and_frozen_H_C_Q_M_P_N_and_map_tuples_required": True,
+                "slot0_active_low_byte": 1, "slot0_started_byte": 0, "other_slots_active_low_byte": 0,
+                "graph_calls_each": 31, "graph_bytes_each": 156, "saved_scalar_calls_each": 8, "saved_scalar_bytes_each": 240,
+                "passes_per_stage": 2, "stage_count": 4, "per_pass_calls": 70, "per_pass_bytes": 552,
+                "total_calls": 560, "total_bytes": 4416, "saved_scalar_spans": saved["saved_core"]["fixed_scalar_spans"],
+                "command_buffer_or_plane_or_guessed_MMIO_reads": False, "observed_stability_is_atomic": False},
+        "validation_scope": {"original_section_qualified_bodies": True, "selected_numeric_RELA": True,
+                "device_observed": False, "backend_stop_completion_proven": False, "guaranteed_saved_refresh": False,
+                "current_live_descriptors_proven": False, "source_lease_proven": False, "source_generation_proven": False},
+        "limitations": ["Outer ARM STOP success can mask internal timeout, echo or backend failure.",
+                "Channel-zero unacknowledged STOP request and zero-success reply can be byte-identical, even with busy zero.",
+                "ARC-success ordering assumes coherent DMA and original call edges; numerical RELA receipts are not runtime certification.",
+                "STOP changes references/descriptors, so a later D difference is not pure pre-STOP staleness evidence.",
+                "Direct source lifetime excludes opaque aliasing/mutation; envelopes and stable passes certify no live allocation or lease."]}
+
+
 def _ppb_source_geometry_join(metadata_mb, prefix_mb, metadata_config, allocation_config):
     """Compare supplied snapshots, not native frame identity or ownership."""
     for dimensions in (metadata_mb, prefix_mb):
@@ -7058,7 +7205,7 @@ def parse_elf(payload, base, wanted, symbol_budget, string_budget,
 def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
             references=False, all_symbols=False, bootstrap=False, picture_output=False,
             arc_metadata=False, csc_command=False, command_buffer_bridge=False, inner_descriptor=False,
-            scaler_fir=False, ppb_handoff=False, ppb_source=False, ppb_saved_context=False):
+            scaler_fir=False, ppb_handoff=False, ppb_source=False, ppb_saved_context=False, ppb_stop_context=False):
     if len(data) < 24 or len(data) > MAX_FIRMWARE_SIZE or len(data) % 4:
         raise FormatError("invalid BCM70015 firmware size")
     sha256 = hashlib.sha256(data).hexdigest()
@@ -7084,6 +7231,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         raise FormatError("--ppb-source requires the exact bundled firmware SHA-256 and size")
     if ppb_saved_context and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
         raise FormatError("--ppb-saved-context requires the exact bundled firmware SHA-256 and size")
+    if ppb_stop_context and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
+        raise FormatError("--ppb-stop-context requires the exact bundled firmware SHA-256 and size")
     payload = data[:-TRAILER_SIZE]
     length_slot = struct.unpack_from("<I", data, len(payload))[0]
     if length_slot != 16:
@@ -7172,6 +7321,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         result["ppb_source_provenance"] = _ppb_source_provenance(payload)
     if ppb_saved_context:
         result["ppb_saved_context_bridge"] = _ppb_saved_context_bridge(payload)
+    if ppb_stop_context:
+        result["ppb_stop_context_bridge"] = _ppb_stop_context_bridge(payload)
     return result
 
 
@@ -7211,6 +7362,8 @@ def main(argv=None):
         "validate conditional ordinary H264 source equations; bundled firmware only, not a source-plane lease"))
     parser.add_argument("--ppb-saved-context", action="store_true", help=(
         "validate the conditional saved ARC context bridge; bundled firmware only, not active state or a lease"))
+    parser.add_argument("--ppb-stop-context", action="store_true", help=(
+        "validate conditional STOP/save ordering and status masking; not backend completion or a lease"))
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-fA-F]{64}", args.expect_sha256):
         parser.error("--expect-sha256 must be 64 hexadecimal digits")
@@ -7218,7 +7371,8 @@ def main(argv=None):
         report = analyze(read_firmware(args.firmware), args.symbol or DEFAULT_SYMBOLS,
                          args.expect_sha256.lower(), args.references, args.all_symbols, args.bootstrap,
                          args.picture_output, args.arc_metadata, args.csc_command, args.command_buffer_bridge,
-                         args.inner_descriptor, args.scaler_fir, args.ppb_handoff, args.ppb_source, args.ppb_saved_context)
+                         args.inner_descriptor, args.scaler_fir, args.ppb_handoff, args.ppb_source,
+                         args.ppb_saved_context, args.ppb_stop_context)
     except (OSError, FormatError) as error:
         print(f"flea_fw_map: {error}", file=sys.stderr)
         return 1
