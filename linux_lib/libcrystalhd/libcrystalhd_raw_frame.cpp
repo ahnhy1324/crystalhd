@@ -8,11 +8,14 @@
 struct BC_RAW_FRAME_BUILDER {
     uint32_t magic;
     uint32_t committed_frames;
+    uint32_t committed_reference_frames;
     uint32_t slots;
     uint32_t pending_slot;
     uint32_t pending_bytes;
     bool pending;
     bool aborted;
+    bool pending_reference;
+    bool last_non_reference;
     uint8_t au[BC_RAW_FRAME_AU_CAPACITY];
     uint8_t rbsp[BC_RAW_FRAME_AU_CAPACITY];
 };
@@ -209,7 +212,7 @@ void upload(AnnexB &output, uint32_t slot, const BC_RAW_FRAME_PLANES &frame)
     const bool first = builder->committed_frames == 0;
     Bits b(builder->rbsp);
     b.ue(0); b.ue(2); b.ue(0);
-    b.u(builder->committed_frames & 15u, 4);
+    b.u(builder->committed_reference_frames & 15u, 4);
     if (first) {
         b.ue(0); b.u(0, 1); b.u(1, 1);
     } else {
@@ -242,32 +245,36 @@ void upload(AnnexB &output, uint32_t slot, const BC_RAW_FRAME_PLANES &frame)
     output.nal(first ? 0x65 : 0x21, b);
 }
 
-void compose(AnnexB &output, const uint8_t mask[BC_RAW_FRAME_MASK_BYTES])
+void compose(AnnexB &output, const uint8_t mask[BC_RAW_FRAME_MASK_BYTES], bool reference)
 {
     Bits b(output.builder->rbsp);
     b.ue(0); b.ue(0); b.ue(0);
-    b.u(output.builder->committed_frames & 15u, 4);
+    b.u(output.builder->committed_reference_frames & 15u, 4);
     b.u(1, 1); b.ue(1);
     b.u(1, 1); b.ue(2); b.ue(0); b.ue(2); b.ue(1); b.ue(3);
-    b.u(0, 1); b.se(0); b.ue(1);
+    if (reference)
+        b.u(0, 1);
+    b.se(0); b.ue(1);
     for (unsigned mb = 0; mb < BC_RAW_FRAME_MASK_BYTES; ++mb) {
         b.ue(0); b.ue(0);
         b.u(1u - mask[mb], 1); // te(v) for two active L0 references.
         b.se(0); b.se(0); b.ue(0);
     }
     b.finish();
-    output.nal(0x21, b);
+    output.nal(reference ? 0x21 : 0x01, b);
 }
 
 void translate(AnnexB &output, uint32_t slot,
-               int32_t mv_x_qpel, int32_t mv_y_qpel)
+               int32_t mv_x_qpel, int32_t mv_y_qpel, bool reference)
 {
     Bits b(output.builder->rbsp);
     b.ue(0); b.ue(0); b.ue(0);
-    b.u(output.builder->committed_frames & 15u, 4);
+    b.u(output.builder->committed_reference_frames & 15u, 4);
     b.u(1, 1); b.ue(0); // One active L0 reference; no per-MB ref_idx.
     b.u(1, 1); b.ue(2); b.ue(slot); b.ue(3);
-    b.u(0, 1); b.se(0); b.ue(1);
+    if (reference)
+        b.u(0, 1);
+    b.se(0); b.ue(1);
     for (unsigned mb = 0; mb < BC_RAW_FRAME_MASK_BYTES; ++mb) {
         b.ue(0); b.ue(0);
         // First MB predicts zero. Same-reference spatial prediction carries
@@ -277,17 +284,18 @@ void translate(AnnexB &output, uint32_t slot,
         b.ue(0);
     }
     b.finish();
-    output.nal(0x21, b);
+    output.nal(reference ? 0x21 : 0x01, b);
 }
 
 BC_STATUS publish(AnnexB &output, uint32_t slot,
-                  const uint8_t **au, uint32_t *bytes)
+                  const uint8_t **au, uint32_t *bytes, bool reference = true)
 {
     if (!output.good || output.size == 0)
         return BC_STS_INSUFF_RES;
     BC_RAW_FRAME_BUILDER *builder = output.builder;
     builder->pending_slot = slot;
     builder->pending_bytes = output.size;
+    builder->pending_reference = reference;
     builder->pending = true;
     *au = builder->au;
     *bytes = output.size;
@@ -347,16 +355,16 @@ DRVIFLIB_API BC_STATUS DtsRawFramePrepareUpload(BC_RAW_FRAME_BUILDER *builder,
     return publish(output, slot, au, bytes);
 }
 
-DRVIFLIB_API BC_STATUS DtsRawFramePrepareCompose(BC_RAW_FRAME_BUILDER *builder,
-                                  const uint8_t *mask, uint32_t mask_bytes,
-                                  const uint8_t **au, uint32_t *bytes)
+static BC_STATUS prepare_compose(BC_RAW_FRAME_BUILDER *builder,
+                                const uint8_t *mask, uint32_t mask_bytes,
+                                const uint8_t **au, uint32_t *bytes, bool reference)
 {
     const BC_STATUS status = prepare_status(builder, au, bytes);
     if (status != BC_STS_SUCCESS)
         return status;
     if (mask == NULL || mask_bytes != BC_RAW_FRAME_MASK_BYTES)
         return BC_STS_INV_ARG;
-    if (builder->slots != 3)
+    if (builder->slots != 3 || (!reference && builder->last_non_reference))
         return BC_STS_ERR_USAGE;
     uint8_t choices[BC_RAW_FRAME_MASK_BYTES];
     for (unsigned mb = 0; mb < BC_RAW_FRAME_MASK_BYTES; ++mb) {
@@ -366,14 +374,27 @@ DRVIFLIB_API BC_STATUS DtsRawFramePrepareCompose(BC_RAW_FRAME_BUILDER *builder,
     }
     AnnexB output(builder);
     aud(output, false);
-    compose(output, choices);
-    return publish(output, kCompose, au, bytes);
+    compose(output, choices, reference);
+    return publish(output, kCompose, au, bytes, reference);
 }
 
-DRVIFLIB_API BC_STATUS DtsRawFramePrepareTranslate(BC_RAW_FRAME_BUILDER *builder,
-                                    uint32_t slot,
-                                    int32_t mv_x_qpel, int32_t mv_y_qpel,
-                                    const uint8_t **au, uint32_t *bytes)
+DRVIFLIB_API BC_STATUS DtsRawFramePrepareCompose(BC_RAW_FRAME_BUILDER *builder,
+                                  const uint8_t *mask, uint32_t mask_bytes,
+                                  const uint8_t **au, uint32_t *bytes)
+{
+    return prepare_compose(builder, mask, mask_bytes, au, bytes, true);
+}
+
+DRVIFLIB_API BC_STATUS DtsRawFramePrepareComposeNonReference(BC_RAW_FRAME_BUILDER *builder,
+                                  const uint8_t *mask, uint32_t mask_bytes,
+                                  const uint8_t **au, uint32_t *bytes)
+{
+    return prepare_compose(builder, mask, mask_bytes, au, bytes, false);
+}
+
+static BC_STATUS prepare_translate(BC_RAW_FRAME_BUILDER *builder, uint32_t slot,
+                                  int32_t mv_x_qpel, int32_t mv_y_qpel,
+                                  const uint8_t **au, uint32_t *bytes, bool reference)
 {
     const BC_STATUS status = prepare_status(builder, au, bytes);
     if (status != BC_STS_SUCCESS)
@@ -381,12 +402,26 @@ DRVIFLIB_API BC_STATUS DtsRawFramePrepareTranslate(BC_RAW_FRAME_BUILDER *builder
     if (slot > 1 || mv_x_qpel < -3 || mv_x_qpel > 3 ||
         mv_y_qpel < -3 || mv_y_qpel > 3)
         return BC_STS_INV_ARG;
-    if (builder->slots != 3)
+    if (builder->slots != 3 || (!reference && builder->last_non_reference))
         return BC_STS_ERR_USAGE;
     AnnexB output(builder);
     aud(output, false);
-    translate(output, slot, mv_x_qpel, mv_y_qpel);
-    return publish(output, kCompose, au, bytes);
+    translate(output, slot, mv_x_qpel, mv_y_qpel, reference);
+    return publish(output, kCompose, au, bytes, reference);
+}
+
+DRVIFLIB_API BC_STATUS DtsRawFramePrepareTranslate(BC_RAW_FRAME_BUILDER *builder,
+                                    uint32_t slot, int32_t mv_x_qpel, int32_t mv_y_qpel,
+                                    const uint8_t **au, uint32_t *bytes)
+{
+    return prepare_translate(builder, slot, mv_x_qpel, mv_y_qpel, au, bytes, true);
+}
+
+DRVIFLIB_API BC_STATUS DtsRawFramePrepareTranslateNonReference(BC_RAW_FRAME_BUILDER *builder,
+                                    uint32_t slot, int32_t mv_x_qpel, int32_t mv_y_qpel,
+                                    const uint8_t **au, uint32_t *bytes)
+{
+    return prepare_translate(builder, slot, mv_x_qpel, mv_y_qpel, au, bytes, false);
 }
 
 DRVIFLIB_API BC_STATUS DtsRawFrameFinish(BC_RAW_FRAME_BUILDER *builder, BC_STATUS input_status)
@@ -401,14 +436,19 @@ DRVIFLIB_API BC_STATUS DtsRawFrameFinish(BC_RAW_FRAME_BUILDER *builder, BC_STATU
         builder->aborted = true;
         builder->pending = false;
         builder->pending_bytes = 0;
+        builder->pending_reference = false;
         return input_status;
     }
     if (builder->pending_slot < 2)
         builder->slots |= 1u << builder->pending_slot;
     ++builder->committed_frames;
+    if (builder->pending_reference)
+        ++builder->committed_reference_frames;
+    builder->last_non_reference = !builder->pending_reference;
     builder->pending = false;
     builder->pending_bytes = 0;
     builder->pending_slot = kCompose;
+    builder->pending_reference = false;
     return BC_STS_SUCCESS;
 }
 
@@ -437,6 +477,7 @@ DRVIFLIB_API BC_STATUS DtsRawFrameDiscard(BC_RAW_FRAME_BUILDER *builder)
     builder->pending = false;
     builder->pending_bytes = 0;
     builder->pending_slot = kCompose;
+    builder->pending_reference = false;
     return BC_STS_SUCCESS;
 }
 
@@ -448,6 +489,7 @@ DRVIFLIB_API BC_STATUS DtsRawFrameAbort(BC_RAW_FRAME_BUILDER *builder)
     builder->pending = false;
     builder->pending_bytes = 0;
     builder->pending_slot = kCompose;
+    builder->pending_reference = false;
     return BC_STS_SUCCESS;
 }
 } // extern "C"

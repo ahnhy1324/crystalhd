@@ -19,7 +19,7 @@ cleanup()
         return
     fi
     if [ "$keep_outputs" -eq 0 ]; then
-        for name in checker mirror extreme translate; do
+        for name in checker mirror extreme translate mixed; do
             rm -f "$raw_test_dir/emitted/$name.h264" \
                 "$raw_test_dir/emitted/$name.yuv420" \
                 "$raw_test_dir/emitted/$name.output-chain.yuy2" \
@@ -60,7 +60,9 @@ printf '%s\n' '#include "libcrystalhd_raw_frame.h"' \
     'int main(void) {' \
     'BC_RAW_FRAME_BUILDER *b = 0; BC_RAW_FRAME_PLANES p = {{0,0,0},{256,128,128},{24576,6144,6144}};' \
     'BC_STATUS (*translate)(BC_RAW_FRAME_BUILDER *,uint32_t,int32_t,int32_t,const uint8_t **,uint32_t *) = DtsRawFramePrepareTranslate;' \
-    '(void)b; (void)p; (void)translate; return 0; }' |
+    'BC_STATUS (*compose_nr)(BC_RAW_FRAME_BUILDER *,const uint8_t *,uint32_t,const uint8_t **,uint32_t *) = DtsRawFramePrepareComposeNonReference;' \
+    'BC_STATUS (*translate_nr)(BC_RAW_FRAME_BUILDER *,uint32_t,int32_t,int32_t,const uint8_t **,uint32_t *) = DtsRawFramePrepareTranslateNonReference;' \
+    '(void)b; (void)p; (void)translate; (void)compose_nr; (void)translate_nr; return 0; }' |
     "$cc" ${CPPFLAGS:-} ${CFLAGS:-} -std=c11 -Wall -Wextra -Werror -D__LINUX_USER__ \
         -I"$repo_dir/include" -I"$repo_dir/linux_lib/libcrystalhd" \
         -x c - -c -o "$raw_test_dir/header-c.o"
@@ -109,8 +111,20 @@ checker_sha=$(sha256sum "$output_dir/checker.h264"); checker_sha=${checker_sha%%
 planar_sha=$(sha256sum "$output_dir/checker.yuv420"); planar_sha=${planar_sha%% *}
 [ "$checker_sha" = 08d2859e37449c591b746b478e83dc26948e6deaa299dd7d26b97c2ffc47654c ]
 [ "$planar_sha" = 58591b2dd3ef391873e684b004a8464e6ff6c6abe72c6d299ec2ff709882cb76 ]
+mirror_sha=$(sha256sum "$output_dir/mirror.h264"); mirror_sha=${mirror_sha%% *}
+extreme_sha=$(sha256sum "$output_dir/extreme.h264"); extreme_sha=${extreme_sha%% *}
+translate_sha=$(sha256sum "$output_dir/translate.h264"); translate_sha=${translate_sha%% *}
+[ "$mirror_sha" = 0902137124297aa6b38632dc38a584787c3e55db00b1ff08b5717466a391db6f ]
+[ "$extreme_sha" = 71d191412774614610d513719a4ce59b50cbda5aa9433568181d052d839c677d ]
+[ "$translate_sha" = abc3eb782808c3a746d1f5eafd4bf37fefae255b7c1b19777c5fa53cb491c534 ]
+mixed_sha=$(sha256sum "$output_dir/mixed.h264"); mixed_sha=${mixed_sha%% *}
+mixed_planar_sha=$(sha256sum "$output_dir/mixed.yuv420"); mixed_planar_sha=${mixed_planar_sha%% *}
+mixed_packed_sha=$(sha256sum "$output_dir/mixed.output-chain.yuy2"); mixed_packed_sha=${mixed_packed_sha%% *}
+[ "$mixed_sha" = 958d296e8bff4a0f88d07a2d9b13d2296a7df0726bbc60d64fbd0cb906076222 ]
+[ "$mixed_planar_sha" = 26b694283c0e1800a05ef6535d19202331d155c594bac057197c8e94b4d4c323 ]
+[ "$mixed_packed_sha" = 0bf4e31a8a63709f033946bb6bfcbdfcea565ceb5f8ffb962570b838db09666d ]
 
-for name in checker mirror extreme translate; do
+for name in checker mirror extreme translate mixed; do
     ffmpeg -nostdin -hide_banner -loglevel error -threads 1 -hwaccel none \
         -noautorotate -err_detect explode -xerror -i "$output_dir/$name.h264" \
         -map 0:v:0 -an -sn -dn -fps_mode passthrough -threads 1 \
@@ -124,9 +138,9 @@ for name in checker mirror extreme translate; do
         2> "$output_dir/$name.ffprobe.log"
     [ ! -s "$output_dir/$name.ffprobe.log" ]
     awk -F, -v name="$name" '
-        { f=NR-1; isI=(f==0 || f==1 || (name=="extreme" ? f==4 : f==90));
+        { f=NR-1; isI=(f==0 || f==1 || (name=="extreme" ? f==4 : name=="mixed" ? f==32 : f==90));
           if (NF!=4 || $1!=(f==0) || $2!=256 || $3!=96 || $4!=(isI ? "I" : "P")) exit 1 }
-        END { if (NR!=(name=="extreme" ? 6 : 180)) exit 1 }
+        END { if (NR!=(name=="extreme" ? 6 : name=="mixed" ? 64 : 180)) exit 1 }
     ' "$output_dir/$name.ffprobe.csv"
     printf '%s: strict FFmpeg whole planar cmp + measured frame/key/type PASS\n' "$name"
 done
@@ -138,5 +152,6 @@ printf 'Existing-output refusal: actual exit=%s (expected1)\n' "$refusal"
 sha256sum "$output_dir/checker.h264" "$output_dir/checker.yuv420" \
     "$output_dir/checker.output-chain.yuy2" "$output_dir/mirror.h264" \
     "$output_dir/extreme.h264" "$output_dir/translate.h264" \
-    "$output_dir/translate.yuv420" "$output_dir/translate.output-chain.yuy2"
+    "$output_dir/translate.yuv420" "$output_dir/translate.output-chain.yuy2" \
+    "$output_dir/mixed.h264" "$output_dir/mixed.yuv420" "$output_dir/mixed.output-chain.yuy2"
 printf 'PASS: native/Werror, ASan/UBSan, C header, Pentium2/no-SSE, full strict decode and output refusal\n'
