@@ -82,6 +82,23 @@ DRVIFLIB_API BC_STATUS DtsRawFramePrepareTranslate(BC_RAW_FRAME_BUILDER *builder
                                     int32_t mv_x_qpel, int32_t mv_y_qpel,
                                     const uint8_t **au, uint32_t *bytes);
 
+/* NonReference variants have the same mask, motion and both-slot prerequisites
+ * as Compose/Translate, but emit a non-reference coded P picture. They neither
+ * replace nor retire either committed long-term slot. Only successful Finish
+ * advances the committed AU count; reference frame_num advances only for a reference
+ * picture. With fixed POC type2, a second consecutive committed non-reference
+ * picture returns ERR_USAGE before publication. A discarded pending reference
+ * does not reset that guard. This is a bounded producer profile, not a device
+ * buffer-retention API. The existing pending/commit/poison contract applies.
+ */
+DRVIFLIB_API BC_STATUS DtsRawFramePrepareComposeNonReference(BC_RAW_FRAME_BUILDER *builder,
+                                  const uint8_t *mask, uint32_t mask_bytes,
+                                  const uint8_t **au, uint32_t *bytes);
+DRVIFLIB_API BC_STATUS DtsRawFramePrepareTranslateNonReference(BC_RAW_FRAME_BUILDER *builder,
+                                    uint32_t slot,
+                                    int32_t mv_x_qpel, int32_t mv_y_qpel,
+                                    const uint8_t **au, uint32_t *bytes);
+
 /* Finish requires a pending AU and the ACTUAL complete DtsProcInput result.
  * Only SUCCESS commits frame/reference state. Every other result poisons
  * the builder and is returned unchanged, even if some bytes were queued.

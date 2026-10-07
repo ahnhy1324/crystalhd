@@ -287,12 +287,13 @@ static void Pps(const Bytes &bytes)
 
 struct Parser {
     unsigned frame = 0, max_long_index = 0, short_count = 0;
+    unsigned non_reference_frames = 0, poc = 0;
     bool loaded[2] = {false, false};
     Bytes slots[2];
     size_t frame_bit=0,active_count_bit=0,slot_bit=0;
     std::vector<size_t> motion_marks;
     Bytes Read(const Bytes &au, bool upload, unsigned slot, const uint8_t *mask,
-               bool translation = false, int qx = 0, int qy = 0) {
+               bool translation = false, int qx = 0, int qy = 0, bool non_reference = false) {
         const std::vector<Nalu> ns = Nalus(au);
         Require(ns.size() == (frame ? 2U : 4U), "exact AU NAL count");
         Require(ns[0].header == 9 && ns[0].rbsp == Bytes{uint8_t(upload ? 0x10 : 0x30)}, "matching AUD");
@@ -301,11 +302,13 @@ struct Parser {
             Require(upload && slot == 0 && ns[1].header == 0x67 && ns[2].header == 0x68, "initial slot0 IDR headers");
             Sps(ns[1].rbsp); Pps(ns[2].rbsp); vcl = 3;
         }
-        Require(ns[vcl].header == (frame ? 0x21U : 0x65U), "reference VCL header/IDR only first");
+        Require(!non_reference || (!upload && frame >= 2), "NR picture follows both source uploads");
+        Require(ns[vcl].header == (non_reference ? 0x01U : frame ? 0x21U : 0x65U),
+                "exact reference/non-reference VCL header/IDR only first");
         Reader r(ns[vcl].rbsp);
         Require(r.UE() == 0 && r.UE() == (upload ? 2U : 0U) && r.UE() == 0, "one whole-picture slice");
         frame_bit=r.bit; motion_marks.clear();
-        Require(r.U(4) == frame % 16, "global contiguous frame_num including replacement");
+        Require(r.U(4) == (frame-non_reference_frames) % 16, "reference-only frame_num including replacement");
         Bytes decoded;
         if (upload) {
             if (!frame) {
@@ -338,7 +341,8 @@ struct Parser {
             Require(r.UE() == (translation ? slot : 0U), "first selected LT picture");
             if (!translation) Require(r.UE() == 2 && r.UE() == 1, "compose second reference LT1");
             Require(r.UE() == 3, "explicit L0 reorder end");
-            Require(r.U(1) == 0 && r.SE() == 0 && r.UE() == 1, "P sliding marking/zero QP/deblock disabled");
+            if (!non_reference) Require(r.U(1) == 0, "reference P sliding marking");
+            Require(r.SE() == 0 && r.UE() == 1, "zero QP/deblock disabled, NR marking absent");
             std::vector<Neighbour> cache(64*24, Neighbour{-2,0,0,false});
             unsigned cases[4]={0,0,0,0}, fallbacks=0;
             for (unsigned mb = 0; mb < 96; ++mb) {
@@ -369,10 +373,12 @@ struct Parser {
                         "complete uniform-vector predictor cases including every row start");
                 decoded=Motion(slots[slot],qx,qy);
             } else decoded = Assemble(slots[0], slots[1], mask);
-            short_count = 1; // maxrefs3 sliding window retains both long sources.
+            if (!non_reference) short_count = 1; // Sliding window retains both long sources.
         }
         Require(unsigned(loaded[0])+unsigned(loaded[1])+short_count <= 3, "finite reference capacity");
+        poc = 2*(frame-non_reference_frames) - unsigned(non_reference);
         r.End(); ++frame;
+        non_reference_frames += unsigned(non_reference);
         return decoded;
     }
 };
@@ -464,6 +470,16 @@ static BC_STATUS Translate(Builder &b, unsigned slot, int qx, int qy,
                            const uint8_t **au, uint32_t *bytes)
 {
     return DtsRawFramePrepareTranslate(b.value,slot,qx,qy,au,bytes);
+}
+static BC_STATUS ComposeNonReference(Builder &b, const uint8_t *mask, uint32_t count,
+                                     const uint8_t **au, uint32_t *bytes)
+{
+    return DtsRawFramePrepareComposeNonReference(b.value,mask,count,au,bytes);
+}
+static BC_STATUS TranslateNonReference(Builder &b, unsigned slot, int qx, int qy,
+                                       const uint8_t **au, uint32_t *bytes)
+{
+    return DtsRawFramePrepareTranslateNonReference(b.value,slot,qx,qy,au,bytes);
 }
 static BC_STATUS Accept(Builder &b, const uint8_t *au, uint32_t bytes,
                         BC_STATUS status = BC_STS_SUCCESS, uint64_t timestamp = 1234567000,
@@ -870,6 +886,141 @@ static void TranslationValidation()
     ErrorOutputs(Translate(b,0,0,0,&out,&count),BC_STS_IO_USER_ABORT,out,count,"Abort poisons translations");
 }
 
+static void BothSources(Builder &b, Parser *parser = nullptr)
+{
+    for (unsigned slot=0;slot<2;++slot) {
+        Planes planes(Source(slot)); const uint8_t *au=nullptr; uint32_t bytes=0;
+        Check(Upload(b,slot,planes,&au,&bytes)==BC_STS_SUCCESS,"NR prerequisite source upload");
+        if (parser) Check(parser->Read(Bytes(au,au+bytes),true,slot,nullptr)==Source(slot),
+                          "independent NR prerequisite source/ref syntax");
+        Check(Accept(b,au,bytes)==BC_STS_SUCCESS,"NR prerequisites commit only actual input SUCCESS");
+    }
+}
+
+static BC_STATUS NonReference(Builder &b, bool translation, const uint8_t *mask,
+                              const uint8_t **au, uint32_t *bytes)
+{
+    return translation ? TranslateNonReference(b,1,-3,3,au,bytes) :
+                         ComposeNonReference(b,mask,96,au,bytes);
+}
+
+static void NonReferenceValidation()
+{
+    const uint8_t *out=reinterpret_cast<const uint8_t *>(uintptr_t(0x4321));
+    uint32_t count=0xdeadbeefU; uint8_t mask[96]={};
+    ErrorOutputs(DtsRawFramePrepareComposeNonReference(nullptr,mask,96,&out,&count),
+                 BC_STS_INV_ARG,out,count,"NULL NR compose builder preserves sentinels");
+    ErrorOutputs(DtsRawFramePrepareTranslateNonReference(nullptr,0,0,0,&out,&count),
+                 BC_STS_INV_ARG,out,count,"NULL NR translation builder preserves sentinels");
+    for (bool translation : {false,true}) {
+        Builder b; Parser parser;
+        Check(NonReference(b,translation,mask,nullptr,&count)==BC_STS_INV_ARG && count==0xdeadbeefU &&
+              NonReference(b,translation,mask,&out,nullptr)==BC_STS_INV_ARG &&
+              out==reinterpret_cast<const uint8_t *>(uintptr_t(0x4321)),"NR NULL outputs preserve other output");
+        ErrorOutputs(NonReference(b,translation,mask,&out,&count),BC_STS_ERR_USAGE,out,count,
+                     "NR cannot precede initial reference IDR");
+        Planes first(Source(0)); const uint8_t *au=nullptr; uint32_t bytes=0;
+        Check(Upload(b,0,first,&au,&bytes)==BC_STS_SUCCESS,"prepare initial reference for NR prerequisites");
+        ErrorOutputs(NonReference(b,translation,mask,&out,&count),BC_STS_BUSY,out,count,
+                     "pending reference blocks NR without state changes");
+        Check(parser.Read(Bytes(au,au+bytes),true,0,nullptr)==Source(0) && Accept(b,au,bytes)==BC_STS_SUCCESS,
+              "NR first reference prerequisite commits");
+        ErrorOutputs(NonReference(b,translation,mask,&out,&count),BC_STS_ERR_USAGE,out,count,
+                     "NR requires both committed long-term sources");
+        Planes second(Source(1));
+        Check(Upload(b,1,second,&au,&bytes)==BC_STS_SUCCESS &&
+              parser.Read(Bytes(au,au+bytes),true,1,nullptr)==Source(1) && Accept(b,au,bytes)==BC_STS_SUCCESS,
+              "NR second reference prerequisite commits");
+        if (translation) {
+            for (unsigned slot : {2U,UINT32_MAX})
+                ErrorOutputs(TranslateNonReference(b,slot,0,0,&out,&count),BC_STS_INV_ARG,out,count,
+                             "NR translation rejects invalid source slot");
+            for (int bad : {INT_MIN,-4,4,INT_MAX}) {
+                ErrorOutputs(TranslateNonReference(b,0,bad,0,&out,&count),BC_STS_INV_ARG,out,count,
+                             "NR translation rejects invalid horizontal MV");
+                ErrorOutputs(TranslateNonReference(b,1,0,bad,&out,&count),BC_STS_INV_ARG,out,count,
+                             "NR translation rejects invalid vertical MV");
+            }
+        } else {
+            for (uint32_t size : {0U,95U,97U,UINT32_MAX})
+                ErrorOutputs(ComposeNonReference(b,mask,size,&out,&count),BC_STS_INV_ARG,out,count,
+                             "NR compose requires exactly96 mask entries");
+            ErrorOutputs(ComposeNonReference(b,nullptr,96,&out,&count),BC_STS_INV_ARG,out,count,"NR NULL mask");
+            for (unsigned index : {0U,47U,95U}) {
+                for (uint8_t bad : {uint8_t(2),uint8_t(255)}) {
+                    mask[index]=bad;
+                    ErrorOutputs(ComposeNonReference(b,mask,96,&out,&count),BC_STS_INV_ARG,out,count,
+                                 "NR rejects bad reference indices before publication");
+                }
+                mask[index]=0;
+            }
+        }
+        Check(NonReference(b,translation,mask,&au,&bytes)==BC_STS_SUCCESS,"prepare first bounded NR P picture");
+        const Bytes saved(au,au+bytes); const uint8_t *stable=au; const uint32_t stable_size=bytes;
+        ErrorOutputs(ComposeNonReference(b,mask,96,&out,&count),BC_STS_BUSY,out,count,"pending NR blocks NR compose");
+        ErrorOutputs(TranslateNonReference(b,0,0,0,&out,&count),BC_STS_BUSY,out,count,"pending NR blocks NR translate");
+        ErrorOutputs(Compose(b,mask,96,&out,&count),BC_STS_BUSY,out,count,"pending NR blocks reference compose");
+        ErrorOutputs(Translate(b,0,0,0,&out,&count),BC_STS_BUSY,out,count,"pending NR blocks reference translate");
+        ErrorOutputs(Upload(b,0,first,&out,&count),BC_STS_BUSY,out,count,"pending NR blocks upload");
+        if (!translation) std::fill(mask,mask+96,1);
+        Check(au==stable && bytes==stable_size && Bytes(au,au+bytes)==saved,
+              "pending NR owns copied mask and survives rejected prepares");
+        std::fill(mask,mask+96,0);
+        const Parser before=parser;
+        const Bytes expected=translation ? Motion(Source(1),-3,3) : Source(0);
+        Check(parser.Read(saved,false,1,mask,translation,-3,3,true)==expected && parser.poc==3,
+              "NR exact header/absent marking/frame_num2/POC3 and full literal pixels");
+        for (bool header_mutation : {false,true}) {
+            Bytes bad=header_mutation ? saved : FlipVclBit(saved,parser.frame_bit);
+            if (header_mutation) bad[10]=0x21;
+            bool refused=false;
+            try { Parser independent=before; independent.Read(bad,false,1,mask,translation,-3,3,true); }
+            catch (const char *) { refused=true; }
+            Check(refused,"independent NR parser rejects reference-bit/frame-number adversaries");
+        }
+        Check(DtsRawFrameDiscard(b.value)==BC_STS_SUCCESS,"discard pending NR before any transmission");
+        parser=before;
+        Check(NonReference(b,translation,mask,&au,&bytes)==BC_STS_SUCCESS && Bytes(au,au+bytes)==saved,
+              "discard NR preserves AU/reference counts and permits identical reprepare");
+        Check(parser.Read(Bytes(au,au+bytes),false,1,mask,translation,-3,3,true)==expected &&
+              Accept(b,au,bytes,BC_STS_SUCCESS,translation ? UINT64_MAX : uint64_t(0))==BC_STS_SUCCESS,
+              "NR actual Submit forwards exact AU/full token and commits once");
+        ErrorOutputs(ComposeNonReference(b,mask,96,&out,&count),BC_STS_ERR_USAGE,out,count,"second committed NR compose refused");
+        ErrorOutputs(TranslateNonReference(b,0,0,0,&out,&count),BC_STS_ERR_USAGE,out,count,"cross-operation consecutive NR refused");
+        Check(Translate(b,0,1,-1,&au,&bytes)==BC_STS_SUCCESS && DtsRawFrameDiscard(b.value)==BC_STS_SUCCESS,
+              "a prepared/discarded reference cannot reset committed NR guard");
+        ErrorOutputs(NonReference(b,translation,mask,&out,&count),BC_STS_ERR_USAGE,out,count,"discarded reference leaves NR guard intact");
+        Check(Translate(b,0,1,-1,&au,&bytes)==BC_STS_SUCCESS &&
+              parser.Read(Bytes(au,au+bytes),false,0,nullptr,true,1,-1)==Motion(Source(0),1,-1) &&
+              parser.poc==4 && Accept(b,au,bytes)==BC_STS_SUCCESS,
+              "reference after NR reuses frame_num2/POC4 and resets guard only on SUCCESS");
+        Check(NonReference(b,translation,mask,&au,&bytes)==BC_STS_SUCCESS &&
+              DtsRawFrameAbort(b.value)==BC_STS_SUCCESS && DtsRawFrameAbort(b.value)==BC_STS_SUCCESS,
+              "Abort pending NR is idempotent and never commits either count");
+        ErrorOutputs(NonReference(b,translation,mask,&out,&count),BC_STS_IO_USER_ABORT,out,count,"Abort poisons NR prepares");
+        ErrorOutputs(Compose(b,mask,96,&out,&count),BC_STS_IO_USER_ABORT,out,count,"Abort NR also poisons old reference API");
+    }
+    for (bool translation : {false,true}) {
+        for (BC_STATUS status : {BC_STS_BUSY,BC_STS_IO_ERROR,BC_STS_IO_USER_ABORT,
+                                BC_STS_INV_ARG,BC_STS_TIMEOUT,BC_STS_INSUFF_RES}) {
+            Builder b; BothSources(b); const uint8_t *au=nullptr; uint32_t bytes=0;
+            Check(NonReference(b,translation,mask,&au,&bytes)==BC_STS_SUCCESS && Accept(b,au,bytes,status)==status,
+                  "NR Submit returns every actual nonSUCCESS unchanged");
+            ErrorOutputs(ComposeNonReference(b,mask,96,&out,&count),BC_STS_IO_USER_ABORT,out,count,"NR failure poisons compose");
+            ErrorOutputs(TranslateNonReference(b,0,0,0,&out,&count),BC_STS_IO_USER_ABORT,out,count,"NR failure poisons translate");
+            ErrorOutputs(DtsRawFramePrepareUpload(b.value,0,nullptr,&out,&count),BC_STS_IO_USER_ABORT,out,count,
+                         "NR failure blocks reference upload");
+            const unsigned calls=submit.calls;
+            Check(DtsRawFrameSubmit(b.value,nullptr,1)==BC_STS_IO_USER_ABORT && submit.calls==calls &&
+                  DtsRawFrameDiscard(b.value)==BC_STS_IO_USER_ABORT,"NR failure cannot retry or recover through Discard");
+        }
+        Builder manual; BothSources(manual); const uint8_t *au=nullptr; uint32_t bytes=0;
+        Check(NonReference(manual,translation,mask,&au,&bytes)==BC_STS_SUCCESS &&
+              DtsRawFrameFinish(manual.value,BC_STS_IO_ERROR)==BC_STS_IO_ERROR &&
+              DtsRawFrameDiscard(manual.value)==BC_STS_IO_USER_ABORT,"manual failed NR Finish also poisons state");
+    }
+}
+
 struct Stream { Bytes coded, planar; unsigned maximum_au = 0; };
 static void Append(Bytes *target, const Bytes &part) { target->insert(target->end(), part.begin(), part.end()); }
 static Stream Checker(bool mirror)
@@ -1018,6 +1169,56 @@ static Stream Translations()
     return stream;
 }
 
+static Stream MixedReferences()
+{
+    Builder b; Parser parser; Stream stream;
+    const Bytes sources[]={Source(0),Source(1),Source(2)};
+    unsigned nr_compose=0,nr_translate=0,previous_poc=0;
+    for (unsigned f=0;f<64;++f) {
+        const bool upload=f==0 || f==1 || f==32;
+        const bool non_reference=!upload && f%2==0;
+        const bool translation=!upload && f%4!=2 && f%4!=3;
+        const unsigned slot=upload ? (f==1 ? 1 : 0) : (f/4)%2;
+        const unsigned source_index=upload ? (f==0 ? 0 : f==1 ? 1 : 2) :
+            (slot==1 ? 1 : f<32 ? 0 : 2);
+        const int qx=static_cast<int>(f%7)-3,qy=static_cast<int>((3*f)%7)-3;
+        uint8_t mask[96];
+        for (unsigned mb=0;mb<96;++mb) mask[mb]=static_cast<uint8_t>((mb%16+mb/16+(f/4)%2)&1);
+        const uint8_t *au=nullptr; uint32_t bytes=0;
+        BC_STATUS status;
+        if (upload) {
+            Planes planes(sources[source_index],11);
+            status=Upload(b,slot,planes,&au,&bytes);
+        } else if (translation) {
+            status=non_reference ? TranslateNonReference(b,slot,qx,qy,&au,&bytes) :
+                                   Translate(b,slot,qx,qy,&au,&bytes);
+            nr_translate+=unsigned(non_reference);
+        } else {
+            status=non_reference ? ComposeNonReference(b,mask,96,&au,&bytes) : Compose(b,mask,96,&au,&bytes);
+            nr_compose+=unsigned(non_reference);
+        }
+        Check(status==BC_STS_SUCCESS,"mixed reference/NR stream public Prepare succeeds");
+        Require(au && bytes && bytes<=BC_RAW_FRAME_AU_CAPACITY,"mixed AU is complete and bounded");
+        const Bytes encoded(au,au+bytes);
+        const Bytes expected=upload ? sources[source_index] : translation ? Motion(sources[source_index],qx,qy) :
+            Assemble(sources[f<32 ? 0 : 2],sources[1],mask);
+        Check(parser.Read(encoded,upload,slot,mask,translation,qx,qy,non_reference)==expected,
+              "mixed independent header/marking/MV/LTR reader matches every literal source pixel");
+        if (f) Check(parser.poc>previous_poc,"mixed POC2 strictly increases across NR and reference wraps");
+        previous_poc=parser.poc;
+        Check(Accept(b,au,bytes,BC_STS_SUCCESS,uint64_t(f)*10000000/30)==BC_STS_SUCCESS,
+              "mixed Submit commits exact pending mode and monotonic caller token");
+        Append(&stream.coded,encoded); Append(&stream.planar,expected);
+        stream.maximum_au=std::max(stream.maximum_au,bytes);
+    }
+    Check(parser.frame==64 && parser.non_reference_frames==30 && nr_compose==16 && nr_translate==14 &&
+          parser.frame-parser.non_reference_frames==34 && parser.poc==66 && stream.planar.size()==2359296,
+          "mixed64 outputs/30NR/34references/two reference wraps/finalPOC66/full oracle extent");
+    std::printf("mixed: frames=64 I=0,1,32 key=0 references=34 NR=30 composeNR=%u translateNR=%u bytes=%zu maxAU=%u planar=%zu\n",
+                nr_compose,nr_translate,stream.coded.size(),stream.maximum_au,stream.planar.size());
+    return stream;
+}
+
 static void Emit(const std::string &directory, const char *name, const Stream &stream)
 {
     const std::string base = directory+"/"+name;
@@ -1033,12 +1234,14 @@ int main(int argc, char **argv)
     }
     try {
         if (argc == 3) Require(mkdir(argv[2], 0700) == 0, "refuse existing output directory");
-        Validation(); SubmitFailures(); PredictorTests(); InterpolationTests(); TranslationValidation();
+        Validation(); SubmitFailures(); PredictorTests(); InterpolationTests(); TranslationValidation(); NonReferenceValidation();
         const Stream checker = Checker(false), mirror = Checker(true), extreme = Extreme();
         const Stream translate = Translations();
+        const Stream mixed = MixedReferences();
         if (argc == 3) {
             Emit(argv[2], "checker", checker); Emit(argv[2], "mirror", mirror); Emit(argv[2], "extreme", extreme);
             Emit(argv[2], "translate", translate);
+            Emit(argv[2], "mixed", mixed);
         }
     } catch (const char *message) { Check(false, message); }
     if (failures) { std::fprintf(stderr, "%u/%u raw-frame checks failed\n", failures, checks); return 1; }
