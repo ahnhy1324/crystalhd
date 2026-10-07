@@ -2251,7 +2251,299 @@ class FirmwareIrqStatusQemuTests(unittest.TestCase):
                     execute_irq_status()
 
 
+LOG_COMMAND_CALLS = {
+    0x279a4: 0x206e4, 0x279b4: 0x206e4, 0x279d4: 0x20708, 0x279f0: 0x2705c,
+    0x2707c: 0x206a0, 0x2708c: 0x206a4, 0x270a0: 0x206a4, 0x270a8: 0x20690,
+    0x270b8: 0x20708, 0x270c8: 0x25024, 0x270d0: 0x203c4, 0x270e0: 0x20598,
+    0x27104: 0x203c4, 0x27110: 0x25010, 0x2712c: 0x20708, 0x2714c: 0x203c4,
+    0x2717c: 0x22d60, 0x27188: 0x232e8, 0x27194: 0x203c4, 0x271a4: 0x203c4,
+    0x271bc: 0x20690,
+}
+
+
+def execute_log_command(busy=0, wait=0, response=True, command=0x73760009, inner=0,
+                        arguments=bytes(range(40)), budget=256, payload=None):
+    """Real builder/transport with a synchronous synthetic response fixture.
+
+    Critical sections, memory helpers, publication, event/response retrieval
+    and logging are typed CPU contracts. No ARC, UART, mailbox or DMA runs;
+    response fixtures do not establish native completion or public routing.
+    """
+    if type(busy) is not int or busy not in (0, 1) or type(response) is not bool or any(
+            type(value) is not int or not 0 <= value <= 0xffffffff for value in (wait, command, inner)) or \
+            type(arguments) not in (bytes, bytearray) or len(arguments) != 40 or \
+            type(budget) is not int or not 1 <= budget <= 256:
+        raise ValueError("invalid synthetic LogCmd inputs")
+    payload = Model.payload if payload is None else payload
+    if type(payload) not in (bytes, bytearray) or len(payload) != len(Model.payload):
+        raise ValueError("invalid LogCmd payload")
+    code = bytearray(struct.pack("<I", 0xe7f000f0) * 1024)
+    for low, high, digest in (
+            (0x2797c, 0x27a14, "e5ef979a912e2365861f8287096ac726a7ae387cd6aa741a3c97d0de7a97c0d7"),
+            (0x2705c, 0x271c8, "bd461670f479a8e1f005d75357912eee0b0b61d875c6c87c7a10f79d9303d6f8")):
+        if hashlib.sha256(payload[low:high]).hexdigest() != digest:
+            raise ValueError("stock LogCmd body changed")
+        code[low - 0x27000:high - 0x27000] = payload[low:high]
+    for address, value in ((0x27abc, 0x73760009), (0x272a4, 0x220009)):
+        if payload[address:address + 4] != struct.pack("<I", value):
+            raise ValueError("stock LogCmd literal changed")
+        struct.pack_into("<I", code, address - 0x27000, value)
+    for site, target in LOG_COMMAND_CALLS.items():
+        word = struct.unpack_from("<I", payload, site)[0]
+        displacement = word & 0xffffff
+        if displacement & 0x800000:
+            displacement -= 1 << 24
+        if word >> 24 != 0xeb or site + 8 + displacement * 4 != target:
+            raise ValueError("stock LogCmd call target changed")
+    head, channel, source, stack = 0x400000, 0x400600, 0x500100, 0x300800
+    shared, event = 0x401100, 0x400900
+    frame, request, reply = stack - 544, stack - 544 + 260, stack - 544 + 8
+    arguments = bytes(arguments)
+    packet = struct.pack("<I", 0x73760009) + arguments + bytes(208)
+    returned = struct.pack("<II", command, inner) + bytes(244)
+    pages = {base: bytearray(b"\xa5" * 4096) for base in (0x300000, head, 0x401000, 0x500000)}
+    for offset, value in ((0x64, channel), (0x88, event), (0x94, shared),
+            (0x118, 0x11223344), (0x1cc, 0x55667788), (0x114, 0x99aabbcc)):
+        struct.pack_into("<I", pages[head], offset, value)
+    pages[head][0x8c] = busy
+    pages[0x500000][0x100:0x128] = arguments
+    registers = [0xabc00000 + index for index in range(16)]
+    registers[:2], registers[13:16] = [head, source], [stack, RETURN, 0x2797c]
+    expected = {base: bytearray(page) for base, page in pages.items()}
+    struct.pack_into("<8I", expected[0x300000], (stack - 32) & 4095, *registers[4:11], RETURN)
+    struct.pack_into("<I", expected[0x300000], frame & 4095, 15000)
+    expected[0x300000][request & 4095:(request & 4095) + 252] = packet
+    expected[0x300000][reply & 4095:(reply & 4095) + 252] = bytes(252)
+    struct.pack_into("<10I", expected[0x300000], (frame - 40) & 4095,
+                     request, reply, head, 0, request, source, reply,
+                     registers[11], 0xdcdcdcdc, 0x279f4)
+    final_busy = 1 if busy or wait != 5 and not response else 0
+    status = 0x220009 if busy else 5 if wait == 5 else 9 if not response else \
+        2 if command != 0x73760009 or inner else wait
+    expected[head][0x8c] = final_busy
+    if not busy:
+        expected[0x401000][0x100:0x1fc] = returned
+        if wait != 5 and response:
+            expected[0x300000][reply & 4095:(reply & 4095) + 252] = returned
+    expected_events = [] if busy else ["clear", "publish", "wait"]
+    if not busy and wait != 5:
+        expected_events += ["response"]
+        if response and command == 0x73760009 and not inner:
+            expected_events += ["clear"]
+    events, zeros, critical, stores = [], [], [], []
+    def instruction(rsp, pc, regs):
+        if pc == 0x279f0:
+            if tuple(regs[:4]) != (head, channel, request, reply) or regs[13] != frame or \
+                    rsp.memory(request, size=252) != packet or rsp.memory(reply, size=252) != bytes(252) or \
+                    rsp.memory(frame, size=4) != struct.pack("<I", 15000):
+                raise ValueError("unexpected LogCmd transport entry")
+        if pc in (0x2709c, 0x270f4, 0x27144, 0x27170, 0x271b4):
+            value = 1 if pc == 0x2709c else 0
+            if regs[4] != head or regs[0] != value:
+                raise ValueError("outside LogCmd busy-store contract")
+            stores.append((pc, head + 0x8c, value))
+    def callee(rsp, pc, args, sp):
+        if pc == 0x206e4:
+            destination = request if not zeros else reply
+            if len(zeros) >= 2 or sp != frame or args[:3] != (destination, 0, 252):
+                raise ValueError("unexpected LogCmd clear contract")
+            zeros.append(destination)
+            rsp.memory(destination, bytes(252))
+            return destination
+        if pc == 0x20708:
+            allowed = ((request + 4, source, 40),) if sp == frame else \
+                ((shared, request, 252), (reply, shared, 252)) if sp == frame - 40 else ()
+            if args[:3] not in allowed:
+                raise ValueError("unexpected LogCmd copy contract")
+            rsp.memory(args[0], rsp.memory(args[1], size=args[2]))
+            return args[0]
+        if sp != frame - 40:
+            raise ValueError("unexpected LogCmd callee stack")
+        if pc in (0x206a0, 0x206a4):
+            wanted = [0x206a0, 0x206a4]
+            if len(critical) >= 2 or pc != wanted[len(critical)]:
+                raise ValueError("unexpected LogCmd critical sequence")
+            critical.append(pc)
+        elif pc == 0x20690:
+            if args[0] != event:
+                raise ValueError("unexpected LogCmd event-clear contract")
+            events.append("clear")
+        elif pc == 0x25024:
+            if args[:3] != (head, 0x11223344, 0x55667788) or rsp.memory(shared, size=252) != packet:
+                raise ValueError("unexpected LogCmd publication contract")
+            rsp.memory(shared, returned)
+            events.append("publish")
+        elif pc == 0x20598:
+            if args[:2] != (event, 15000):
+                raise ValueError("unexpected LogCmd wait contract")
+            events.append("wait")
+            return wait
+        elif pc == 0x25010:
+            if args[:2] != (head, 0x99aabbcc):
+                raise ValueError("unexpected LogCmd response contract")
+            events.append("response")
+            return int(response)
+        elif pc not in (0x203c4, 0x22d60, 0x232e8):
+            raise ValueError("unexpected LogCmd callee")
+        return 0
+    image = segment_elf([(0x27000, bytes(code), 5)] +
+                        [(base, bytes(page), 6) for base, page in pages.items()], 0x2797c)
+    actual = emulate(image, pages, registers, ((0x2797c, 0x27a14), (0x2705c, 0x271c8)),
+                     tuple(set(LOG_COMMAND_CALLS.values()) - {0x2705c}), callee, budget,
+                     clobber_flags=0xf0000000, real_callees=(0x2705c,),
+                     call_edges=LOG_COMMAND_CALLS, instruction=instruction)
+    expected = {base: bytes(page) for base, page in expected.items()}
+    expected_stores = [] if busy else [(0x2709c, head + 0x8c, 1)] + (
+        [(0x270f4, head + 0x8c, 0)] if wait == 5 else [] if not response else
+        [(0x27144 if command != 0x73760009 else 0x27170 if inner else 0x271b4, head + 0x8c, 0)])
+    if actual["pages"] != expected or actual["status"] != status or events != expected_events or \
+            zeros != [request, reply] or critical != [0x206a0, 0x206a4] or stores != expected_stores or \
+            actual["real_status"] != [(0x2705c, status)]:
+        raise ValueError("LogCmd full-page/status/sequence oracle changed")
+    actual.update(expected=expected, events=events, busy_stores=stores,
+                  native_execution=False, native_completion=False, public_route=False)
+    return actual
+
+
+def execute_debug_setup(null=False, sequence=0x11223344, budget=32, payload=None):
+    """Actual public DEBUG_SETUP handler with opaque logging, no inner transport."""
+    if type(null) is not bool or type(sequence) is not int or not 0 <= sequence <= 0xffffffff or \
+            type(budget) is not int or not 1 <= budget <= 32:
+        raise ValueError("invalid synthetic DEBUG_SETUP inputs")
+    payload = Model.payload if payload is None else payload
+    if type(payload) not in (bytes, bytearray) or len(payload) != len(Model.payload):
+        raise ValueError("invalid DEBUG_SETUP payload")
+    if hashlib.sha256(payload[0x5a08:0x5a50]).hexdigest() != \
+            "673964a3755f740065759f742aa1c90185cfe4fa982d3c9cc81287cd6ac03e25" or \
+            payload[0x5b64:0x5b68] != struct.pack("<I", 0x2d4cc):
+        raise ValueError("stock DEBUG_SETUP source changed")
+    code = bytearray(struct.pack("<I", 0xe7f000f0) * 1024)
+    code[0xa08:0xa50], code[0xb64:0xb68] = payload[0x5a08:0x5a50], payload[0x5b64:0x5b68]
+    pages = {base: bytearray(b"\xa5" * 4096) for base in (0x300000, 0x400000)}
+    packet, stack = 0x400100, 0x300800
+    struct.pack_into("<II", pages[0x400000], 0x114, 0x73763006, sequence)
+    registers = [0xabc00000 + index for index in range(16)]
+    registers[0], registers[13:16] = 0 if null else packet, [stack, RETURN, 0x5a08]
+    expected = {base: bytearray(page) for base, page in pages.items()}
+    struct.pack_into("<4I", expected[0x300000], (stack - 16) & 4095, *registers[4:7], RETURN)
+    if not null:
+        struct.pack_into("<II", expected[0x400000], 0x218, sequence, 0)
+    def instruction(rsp, pc, regs):
+        if pc in (0x5a28, 0x5a30) and (regs[4], regs[0]) != \
+                (packet + 0x114, 0 if pc == 0x5a28 else sequence):
+            raise ValueError("outside DEBUG_SETUP reply-store contract")
+    def log(rsp, pc, args, sp):
+        if pc != 0x203c4 or sp != stack - 16 or args[0] != (0x2d4cc if null else 0x5b34) or \
+                null and args[1] != 0:
+            raise ValueError("unexpected DEBUG_SETUP logging contract")
+        return 0xffffffff
+    image = segment_elf([(0x5000, bytes(code), 5)] +
+                        [(base, bytes(page), 6) for base, page in pages.items()], 0x5a08)
+    actual = emulate(image, pages, registers, ((0x5a08, 0x5a50),), (0x203c4,), log, budget,
+                     clobber_flags=0xf0000000, call_edges={0x5a20: 0x203c4, 0x5a44: 0x203c4},
+                     instruction=instruction)
+    expected = {base: bytes(page) for base, page in expected.items()}
+    if actual["pages"] != expected or actual["status"] != (2 if null else 0) or \
+            [(site, target) for site, target, _ in actual["calls"]] != [(0x5a44 if null else 0x5a20, 0x203c4)]:
+        raise ValueError("DEBUG_SETUP full-page/status oracle changed")
+    actual.update(expected=expected, inner_transport_executed=False, native_execution=False)
+    return actual
+
+
+class FirmwareLogCommandQemuTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        Model.setUpClass()
+
+    def test_actual_builder_transport_status_and_busy_state(self):
+        cases = ((0, 0, True, 0x73760009, 0, 0, 0), (0, 5, True, 0x73760009, 0, 5, 0),
+                 (0, 0, True, 0x73760009, 10, 2, 0), (0, 0, True, 0x73760008, 0, 2, 0),
+                 (0, 0, False, 0x73760009, 0, 9, 1), (0, 1, True, 0x73760009, 0, 1, 0),
+                 (1, 0, True, 0x73760009, 0, 0x220009, 1))
+        for busy, wait, response, command, inner, status, remaining in cases:
+            with self.subTest(busy=busy, wait=wait, response=response, command=hex(command), inner=inner):
+                result = execute_log_command(busy, wait, response, command, inner)
+                self.assertEqual(result["status"], status)
+                self.assertEqual(result["pages"][0x400000][0x8c], remaining)
+                self.assertEqual(result["pages"], result["expected"])
+                self.assertFalse(result["native_execution"])
+                self.assertFalse(result["native_completion"])
+                self.assertFalse(result["public_route"])
+
+    def test_public_selector_fallback_and_actual_ack_only_handler(self):
+        # Original outer ARC file offsets, not native execution/relocation.
+        for low, size, digest in (
+                (0x48290, 168, "2ec27c972f444832140ade71a15191b1a08a46cd98433349d7761490845527e5"),
+                (0x4839c, 516, "6bce8ec0e12cbc0b5e9193c6a4d88d84e3ab156ae47df80743073ac2529c508b")):
+            self.assertEqual(hashlib.sha256(Model.payload[low:low + size]).hexdigest(), digest)
+        for site, target, condition, delay in (
+                (0x25740, 0x9d48, 0, 0), (0x2574c, 0x9f90, 2, 0),
+                (0x25760, 0x274c8, 0, 1), (0x25768, 0x29ae0, 0, 1),
+                (0x25778, 0x274c8, 0, 1), (0x25950, 0x256fc, 0, 1)):
+            offset = 0x48290 + site - 0x256fc
+            word = struct.unpack_from("<I", Model.payload, offset)[0]
+            displacement = (word >> 7) & 0xfffff
+            if displacement & 0x80000:
+                displacement -= 1 << 20
+            self.assertEqual((word >> 27, word & 31, (word >> 5) & 3,
+                              site + 4 + displacement * 4), (5, condition, delay, target))
+        self.assertEqual(struct.unpack_from("<I", Model.payload, 0x48290 + 0x54)[0], 0x08078423)
+        # The save/reactivate calls precede this log-enable load, but both
+        # post-gate arms call logging. None is an admitted native refresh API.
+        selector = FW.FirmwareStockHostCommandTests()
+        selector.payload = Model.payload
+        for command in (0x73760008, 0x73760009):
+            self.assertEqual(selector.execute_selector(command), 0x60b8)
+        self.assertEqual(selector.execute_selector(0x73763006), 0x62ac)
+        for null in (False, True):
+            for sequence in (0, 0x11223344, 0xffffffff):
+                with self.subTest(null=null, sequence=sequence):
+                    result = execute_debug_setup(null, sequence)
+                    self.assertEqual(result["pages"], result["expected"])
+                    self.assertFalse(result["inner_transport_executed"])
+
+    def test_source_input_budget_and_runtime_store_refusals(self):
+        for offset in (0x2797c, 0x27a13, 0x2705c, 0x271c7, 0x27abc, 0x272a4):
+            payload = bytearray(Model.payload)
+            payload[offset] ^= 1
+            with self.subTest(offset=offset), mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaisesRegex(ValueError, "stock LogCmd"):
+                    execute_log_command(payload=payload)
+                spawn.assert_not_called()
+        for options in ({"busy": True}, {"busy": 2}, {"response": 1}, {"wait": -1},
+                {"command": 1 << 32}, {"inner": True}, {"arguments": bytes(39)},
+                {"arguments": bytes(41)}, {"arguments": list(range(40))}, {"budget": True},
+                {"budget": 0}, {"budget": 257}, {"payload": Model.payload[:-1]}):
+            with self.subTest(options=tuple(options)), mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaisesRegex(ValueError, "invalid"):
+                    execute_log_command(**options)
+                spawn.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "instruction budget exceeded"):
+            execute_log_command(budget=1)
+        with self.assertRaisesRegex(ValueError, "instruction budget exceeded"):
+            execute_debug_setup(budget=1)
+        for offset in (0x5a08, 0x5a4f, 0x5b64):
+            payload = bytearray(Model.payload)
+            payload[offset] ^= 1
+            with mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaisesRegex(ValueError, "stock DEBUG_SETUP"):
+                    execute_debug_setup(payload=payload)
+                spawn.assert_not_called()
+        original = RSP.registers
+        for pc, field, match in ((0x279f0, 2, "transport entry"), (0x2709c, 4, "busy-store"),
+                                 (0x5a28, 0, "reply-store")):
+            def corrupt(rsp):
+                registers = original(rsp)
+                if registers[15] == pc:
+                    registers[field] ^= 1
+                return registers
+            with self.subTest(pc=hex(pc)), mock.patch.object(RSP, "registers", corrupt):
+                with self.assertRaisesRegex(ValueError, match):
+                    (execute_debug_setup if pc == 0x5a28 else execute_log_command)()
+
+
 if __name__ == "__main__":
     unittest.main(defaultTest=("FirmwareQemuTests", "FirmwarePictureQemuTests",
                                "FirmwareMfdSourceQemuTests", "FirmwareSourceProducerQemuTests",
-                               "FirmwareSourceModeQemuTests", "FirmwareIrqStatusQemuTests", "ProtocolTests"))
+                               "FirmwareSourceModeQemuTests", "FirmwareIrqStatusQemuTests",
+                               "FirmwareLogCommandQemuTests", "ProtocolTests"))
