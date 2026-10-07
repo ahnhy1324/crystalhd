@@ -2608,8 +2608,142 @@ class FirmwareChannelGuardQemuTests(unittest.TestCase):
         # No allocation, firmware OPEN/START, ARC save, IRQ or native route was executed.
 
 
+def execute_stop_result(inner=0, mode=0, budget=128, payload=None):
+    """Actual ef10 wrapper with a supplied synthetic inner STOP result.
+
+    Entered-decoder/started state and helper effects are explicit fixtures.
+    Neither the STOP builder/transport nor engines or native cleanup execute.
+    """
+    payload = Model.payload if payload is None else payload
+    if type(payload) not in (bytes, bytearray) or len(payload) != FW.MAP.BUNDLED_SIZE - FW.MAP.TRAILER_SIZE:
+        raise ValueError("invalid STOP wrapper payload")
+    if type(inner) is not int or not 0 <= inner <= 0xffffffff or \
+            type(mode) is not int or mode not in (0, 1) or \
+            type(budget) is not int or not 1 <= budget <= 128:
+        raise ValueError("invalid synthetic STOP wrapper inputs")
+    for low, high, digest in (
+            (0xef10, 0xefbc, "dac38f265061167d8a22a7b3e49e128209206062e6138f41fed094c2d0a9b601"),
+            (0x27750, 0x277dc, "f95765626233c26ccf54e514bbd6c17216122da1bf71820dc6ecd45e386c9ff9")):
+        if hashlib.sha256(payload[low:high]).hexdigest() != digest:
+            raise ValueError("stock STOP wrapper/builder source changed")
+    edges = {0xef54: 0x24edc, 0xef6c: 0x206a0, 0xef84: 0xe548,
+             0xef88: 0x206a4, 0xef94: 0x27750}
+    for site, target in edges.items():
+        word = struct.unpack_from("<I", payload, site)[0]
+        displacement = word & 0xffffff
+        if displacement & 0x800000:
+            displacement -= 1 << 24
+        if word >> 24 != 0xeb or site + 8 + displacement * 4 != target:
+            raise ValueError("stock STOP wrapper call target changed")
+    handle, context, stack = 0x400000, 0x500000, 0x300800
+    pages = {base: bytearray(b"\xa5" * 4096) for base in (0x300000, handle, context)}
+    struct.pack_into("<I", pages[handle], 0, 1)
+    pages[handle][4], pages[handle][0x60], pages[handle][0x230] = mode, 1, 1
+    for offset, value in ((0x64, context), (0x254, 0x500900), (0x258, 0x500a00)):
+        struct.pack_into("<I", pages[handle], offset, value)
+    struct.pack_into("<I", pages[context], 0x368, 0x500800)
+    registers = [0xabc00000 + index for index in range(16)]
+    registers[0], registers[13:16] = handle, [stack, RETURN, 0xef10]
+    expected = {base: bytearray(page) for base, page in pages.items()}
+    struct.pack_into("<4I", expected[0x300000], 0x7f0, *registers[4:7], RETURN)
+    expected[handle][0x231], expected[handle][0x60] = 0, 0
+    if not mode:
+        expected[handle][0x261] = 2
+    expected_stores = [(0xef74, handle + 0x231, 0)] + \
+        ([(0xefa8, handle + 0x261, 2)] if not mode else []) + [(0xefb0, handle + 0x60, 0)]
+    calls, stores, critical = [], [], 0
+    def instruction(rsp, pc, regs):
+        if pc in (0xef74, 0xefa8, 0xefb0):
+            offset = {0xef74: 0x231, 0xefa8: 0x261, 0xefb0: 0x60}[pc]
+            store = (pc, regs[4] + offset, regs[0] & 255)
+            if len(stores) >= len(expected_stores) or store != expected_stores[len(stores)]:
+                raise ValueError("outside ordered STOP wrapper store contract")
+            stores.append(store)
+    def callee(rsp, pc, args, sp):
+        nonlocal critical
+        if sp != stack - 16 or len(calls) >= len(edges) or pc != tuple(edges.values())[len(calls)]:
+            raise ValueError("outside STOP wrapper helper order/stack contract")
+        calls.append(pc)
+        if pc == 0x24edc and args[:2] != (0x500800, handle) or \
+                pc == 0xe548 and args[:3] != (handle, 0x500900, 0x500a00) or \
+                pc == 0x27750 and (args[:2] != (context, 1) or critical):
+            raise ValueError("outside STOP wrapper helper argument contract")
+        if pc == 0x206a0:
+            if critical:
+                raise ValueError("nested STOP wrapper critical fixture")
+            critical = 1
+        if pc == 0xe548 and critical != 1 or pc == 0x206a4 and critical != 1:
+            raise ValueError("unbalanced STOP wrapper critical fixture")
+        if pc == 0x206a4:
+            critical = 0
+        return inner if pc == 0x27750 else 0
+    segments = [(0xe000, bytes(payload[0xe000:0xf000]), 5),
+                (0xf000, bytes(payload[0xf000:0x10000]), 5)]
+    segments += [(base, bytes(page), 6) for base, page in pages.items()]
+    actual = emulate(segment_elf(segments, 0xef10), pages, registers, ((0xef10, 0xefbc),),
+                     tuple(edges.values()), callee, budget, call_edges=edges, instruction=instruction)
+    if actual["status"] or critical or calls != list(edges.values()) or stores != expected_stores or \
+            actual["pages"] != {base: bytes(page) for base, page in expected.items()}:
+        raise ValueError("STOP wrapper full-page/status/helper oracle changed")
+    actual.update(inner_result_fixture=inner, stores=stores, inner_transport_executed=False,
+                  native_execution=False, engine_completion_certified=False,
+                  channel_cleanup_certified=False, physical_lease_certified=False)
+    return actual
+
+
+class FirmwareStopResultQemuTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        Model.setUpClass()
+
+    def test_inner_failure_is_overwritten_and_started_flag_cleared(self):
+        for inner in (0, 2, 5, 0x220009, 0xffffffff):
+            for mode in (0, 1):
+                with self.subTest(inner=inner, mode=mode):
+                    result = execute_stop_result(inner, mode)
+                    self.assertEqual((result["status"], result["pages"][0x400000][0x60]), (0, 0))
+                    self.assertEqual(result["pages"][0x400000][0x261], 0xa5 if mode else 2)
+                    self.assertEqual(result["stub_status"][-1], (0x27750, inner))
+                    for key in ("inner_transport_executed", "native_execution", "engine_completion_certified",
+                                "channel_cleanup_certified", "physical_lease_certified"):
+                        self.assertFalse(result[key])
+
+    def test_source_inputs_budget_and_pre_store_refusals(self):
+        for offset in (0xef10, 0xef98, 0xefbb, 0x27750, 0x277db):
+            changed = bytearray(Model.payload)
+            changed[offset] ^= 1
+            with self.subTest(offset=offset), mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaisesRegex(ValueError, "stock STOP wrapper/builder source"):
+                    execute_stop_result(payload=changed)
+                spawn.assert_not_called()
+        for payload in ([], Model.payload[:-1], Model.payload + b"\0"):
+            with mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaisesRegex(ValueError, "invalid STOP wrapper payload"):
+                    execute_stop_result(payload=payload)
+                spawn.assert_not_called()
+        for field, values in (("inner", (True, -1, 1 << 32)), ("mode", (True, -1, 2)),
+                              ("budget", (True, 0, 129))):
+            for value in values:
+                with self.subTest(field=field, value=value), mock.patch.object(subprocess, "Popen") as spawn:
+                    with self.assertRaisesRegex(ValueError, "invalid synthetic STOP"):
+                        execute_stop_result(**{field: value})
+                    spawn.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "instruction budget exceeded"):
+            execute_stop_result(budget=1)
+        original = RSP.registers
+        def corrupt(rsp):
+            registers = original(rsp)
+            if registers[15] == 0xefb0:
+                registers[4] ^= 1
+            return registers
+        with mock.patch.object(RSP, "registers", corrupt), \
+                self.assertRaisesRegex(ValueError, "ordered STOP wrapper store"):
+            execute_stop_result()
+
+
 if __name__ == "__main__":
     unittest.main(defaultTest=("FirmwareQemuTests", "FirmwarePictureQemuTests",
                                "FirmwareMfdSourceQemuTests", "FirmwareSourceProducerQemuTests",
                                "FirmwareSourceModeQemuTests", "FirmwareIrqStatusQemuTests",
-                               "FirmwareLogCommandQemuTests", "FirmwareChannelGuardQemuTests", "ProtocolTests"))
+                               "FirmwareLogCommandQemuTests", "FirmwareChannelGuardQemuTests",
+                               "FirmwareStopResultQemuTests", "ProtocolTests"))
