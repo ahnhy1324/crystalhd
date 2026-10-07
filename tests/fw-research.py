@@ -11555,5 +11555,291 @@ class NativeFixedMetadataFixtureTests(unittest.TestCase):
             self.assertNotIn(private_path, raw)
 
 
+class FirmwarePpbReturnHeaderTests(unittest.TestCase):
+    """Bounded routing scalars and sequential samples without cause certification."""
+    ROLES = ["initial_read", "initial_write", "first_single_write", "second_single_write", "final_read", "final_write"]
+    RETURN_READS = [("return_initial", 0x15778, 8), ("return_write_first", 0x1577c, 4),
+                    ("return_write_second", 0x1577c, 4), ("return_final", 0x15778, 8)]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.data = BLOB.read_bytes()
+        cls.payload = cls.data[:-20]
+        cls.fixed = MAP._ppb_fixed_metadata_bridge(cls.payload)
+        cls.report = MAP._ppb_return_header_bridge(cls.payload)
+
+    def test_window_exact_native_handle_whole_pool_and_ordered_read_budget(self):
+        window = MAP._ppb_return_header_window(0xdb58c, 0x33dc000, 0x3f940, 0xa34000, 0x35c7940)
+        self.assertEqual(window["handle_window"], MAP._ppb_context_object_window(0xdb58c, "H"))
+        self.assertEqual(window["handle_route_span"],
+                         {"role": "handle_route_words", "offset": 0x250, "address": 0xdb7dc, "bytes": 8})
+        fixed = window["fixed_window"]
+        expected = [{"role": "delivery_indices", "offset": 0x15678, "address": 0x33f1678, "bytes": 8}]
+        expected += [{"role": role, "offset": offset, "address": 0x33dc000 + offset, "bytes": size}
+                     for role, offset, size in self.RETURN_READS]
+        expected += [{"role": "metadata_prefix", "slot": slot, "offset": 0x15878 + 228 * slot,
+                      "address": 0x33f1878 + 228 * slot, "bytes": 72} for slot in range(34)]
+        self.assertEqual(fixed["read_spans"], expected)
+        self.assertEqual(fixed["whole_envelopes"], MAP._ppb_fixed_metadata_window(
+            0x33dc000, 0x3f940, 0xa34000, 0x35c7940)["whole_envelopes"])
+        self.assertEqual((len(expected), sum(span["bytes"] for span in expected)), (39, 2480))
+        self.assertEqual((fixed["read_calls"], fixed["total_read_bytes"], window["read_calls"],
+                          window["total_read_bytes"], window["max_read_bytes"]), (39, 2480, 40, 2488, 72))
+        self.assertEqual((2 * 31 + window["read_calls"], 2 * 156 + window["total_read_bytes"]), (102, 2800))
+        self.assertEqual((102 * 2 * 4, 2800 * 2 * 4), (816, 22400))
+        self.assertEqual([span["bytes"] for span in expected[1:5]], [8, 4, 4, 8])
+        self.assertEqual(expected[-1]["address"] + 72, 0x33f3624)
+        self.assertTrue(window["no_observed_pointer_following"])
+
+    def test_window_full_handle_bounds_normalization_minimum_and_strict_u32_inputs(self):
+        class IntegerSubclass(int):
+            pass
+        ordinary = [0xdb58c, 0x33dc000, 0x3f940, 0xa34000, 0x35c7940]
+        for index in range(5):
+            for bad in (True, False, -1, 0x100000000, 1.0, "1", None, [], {}, IntegerSubclass(1)):
+                values = list(ordinary)
+                values[index] = bad
+                with self.subTest(index=index, bad=bad), self.assertRaises(MAP.FormatError):
+                    MAP._ppb_return_header_window(*values)
+        for handle in (0xd53dc, 0x116000 - 0xa84c):
+            for residue in range(4):
+                physical, skip = 0x200000 + residue, (-residue) & 3
+                window = MAP._ppb_return_header_window(handle, physical, 0x177cc + skip, physical, 0x177cc + skip)
+                self.assertEqual((window["fixed_window"]["alignment_skip"], window["fixed_window"]["context_bytes"]),
+                                 (skip, 0x177cc))
+                self.assertLessEqual(window["handle_route_span"]["address"] + 8, window["handle_window"]["end_exclusive"])
+                for span in window["fixed_window"]["whole_envelopes"] + window["fixed_window"]["read_spans"]:
+                    self.assertEqual(span["address"] % 4, 0)
+                    self.assertLessEqual(span["address"] + span["bytes"], physical + 0x177cc + skip)
+                with self.assertRaises(MAP.FormatError):
+                    MAP._ppb_return_header_window(handle, physical, 0x177cb + skip, physical, 0x177cc + skip)
+        for handle in (0, 0xd53d8, 0xd53dd, 0x116000 - 0xa84c + 4, 0xffffffff):
+            with self.subTest(handle=handle), self.assertRaises(MAP.FormatError):
+                MAP._ppb_return_header_window(handle, *ordinary[1:])
+        for args in ((0xdb58c, 0xffffffff, 0x177cc, 0x116068, 0xffffffff),
+                     (0xdb58c, 0x33dc000, 0x3f940, 0xa34000, 0x33dc000 - 0xa34000),
+                     (0xdb58c, 0x33dc000, 0x3f940, 0xa34000, 0xffffffff)):
+            with self.subTest(args=args), self.assertRaises(MAP.FormatError):
+                MAP._ppb_return_header_window(*args)
+
+    def test_six_samples_preserved_with_zero_all_ones_and_differences_uncertified(self):
+        routes, words = [0, 0xffffffff], [4, 0, 5, 0xffffffff, 6, 7]
+        result = MAP._ppb_return_header_observation(struct.pack("<2I", *routes), struct.pack("<6I", *words))
+        self.assertEqual(result, {"route_words": routes, "return_samples": words, "return_sample_roles": self.ROLES,
+            "route_zero_indices": [0], "route_all_ones_indices": [1], "routes_differ": True,
+            "return_zero_indices": [1], "return_all_ones_indices": [3], "return_read_samples_equal": False,
+            "return_write_samples_equal": False, "observed_inputs_only": True, "model_no_native_certification": True,
+            "non_atomic": True, "certified": dict.fromkeys(("routing_identity", "metadata_validity", "current_state",
+                "source_lease", "generation", "backend_completion", "atomic_64bit_read", "request_width_cause", "zero_cause"), False)})
+        same = MAP._ppb_return_header_observation(bytes(8), struct.pack("<6I", 2, 63, 63, 63, 2, 63))
+        self.assertEqual((same["routes_differ"], same["return_read_samples_equal"], same["return_write_samples_equal"]),
+                         (False, True, True))
+        self.assertTrue(all(value is False for value in same["certified"].values()))
+
+    def test_each_u32_sample_is_scalar_only_never_normalized_or_followed(self):
+        for value in (0, 1, 2, 63, 64, 0x33f1778, 0x80000000, 0xffffffff):
+            for position in range(6):
+                words = [0x10203040] * 6
+                words[position] = value
+                with mock.patch.object(MAP.os, "open", side_effect=AssertionError("followed a scalar")):
+                    result = MAP._ppb_return_header_observation(struct.pack("<2I", value, value), struct.pack("<6I", *words))
+                self.assertEqual(result["return_samples"], words)
+                self.assertEqual(result["route_words"], [value, value])
+                self.assertEqual(result["return_zero_indices"], [position] if value == 0 else [])
+                self.assertEqual(result["return_all_ones_indices"], [position] if value == 0xffffffff else [])
+                self.assertTrue(all(flag is False for flag in result["certified"].values()))
+
+    def test_observation_strict_exact_builtin_bytes_and_detached_mutation_free_outputs(self):
+        class BytesSubclass(bytes):
+            pass
+        class BytearraySubclass(bytearray):
+            pass
+        for length, other, first in ((8, bytes(24), True), (24, bytes(8), False)):
+            for bad in (None, True, False, "0" * length, [], tuple(bytes(length)), memoryview(bytes(length)),
+                        bytes(length - 1), bytes(length + 1), BytesSubclass(bytes(length)), BytearraySubclass(bytes(length))):
+                args = (bad, other) if first else (other, bad)
+                with self.subTest(length=length, type=type(bad).__name__), self.assertRaises(MAP.FormatError):
+                    MAP._ppb_return_header_observation(*args)
+        routes, samples = bytearray(struct.pack("<2I", 0x33f1678, 0x33f1778)), bytearray(struct.pack("<6I", 2, 3, 4, 5, 6, 7))
+        before = (bytes(routes), bytes(samples))
+        with mock.patch("builtins.open", side_effect=AssertionError("opened a file")), \
+                mock.patch.object(MAP.os, "open", side_effect=AssertionError("opened a device")), \
+                mock.patch.object(subprocess, "Popen", side_effect=AssertionError("ran a process")):
+            result = MAP._ppb_return_header_observation(routes, samples)
+        self.assertEqual((bytes(routes), bytes(samples)), before)
+        result["route_words"][0] = result["return_samples"][0] = 0
+        result["return_sample_roles"][0] = "changed"
+        result["certified"]["source_lease"] = True
+        again = MAP._ppb_return_header_observation(*before)
+        self.assertEqual((again["route_words"], again["return_samples"], again["return_sample_roles"]),
+                         ([0x33f1678, 0x33f1778], [2, 3, 4, 5, 6, 7], self.ROLES))
+        self.assertIs(again["certified"]["source_lease"], False)
+
+    def test_bridge_reuses_complete_manifest_and_independent_exact_route_load_fuses(self):
+        report = self.report
+        self.assertEqual(report["basis"], {"model": "fixed-return-header-observation-v1", "conditional": True,
+            "region_count": 59, "validated_bytes": 78001, "complete_relocation_records": 2516})
+        self.assertEqual(report["validated_regions"], self.fixed["validated_regions"])
+        self.assertEqual(report["reused_fixed_metadata_source"], {key: self.fixed[key]
+                         for key in ("arc_bodies", "relocations", "publication", "layout")})
+        expected = []
+        for role, address, word, offset, body, size, digest in (
+                ("acquire", 0xd638, 0xe5976250, 0x250, 0xd624, 176,
+                 "e6ff28c676a32fe6219c53e6f40f2f23589e6f7f1f7235e4a46c95baf619907a"),
+                ("release", 0xd5b0, 0xe5986254, 0x254, 0xd5a4, 128,
+                 "8276e18c409aa706a5b3e92b880887c4157256253d7be40312e28a7464b9c812")):
+            self.assertEqual(struct.unpack_from("<I", self.payload, address)[0], word)
+            self.assertEqual(hashlib.sha256(self.payload[body:body + size]).hexdigest(), digest)
+            self.assertTrue(body <= address < body + size)
+            self.assertEqual(word & 0xfff, offset)
+            expected.append({"role": role, "blob_file_offset": address, "instruction": word, "handle_word_offset": offset})
+        self.assertEqual(report["critical_arm_words"], expected)
+        self.assertEqual(report["handle_route"], {"kind": "H", "whole_object_bytes": 0xa84c, "offset": 0x250, "bytes": 8,
+            "word_offsets": [0x250, 0x254], "word_roles": ["acquire_route_word", "return_route_word"],
+            "full_small_heap_guard_required": True, "frozen_owner_graph_required": True,
+            "route_contents_followed": False, "runtime_routing_identity_proven": False})
+
+    def test_driver_source_bytes_to_dwords_and_locked_sequential_readl_not_atomic64(self):
+        refs = (("linux_lib/libcrystalhd/libcrystalhd_int_if.cpp", 813, 891,
+                 "c178668effc5b15880b4778a0e55f1aa55f58f81ee8c19981f8c5f9381549f4c"),
+                ("driver/linux/crystalhd_cmds.c", 487, 504,
+                 "294fd7617729bb0e2d6ba16dbce5ba76fcf978965a057b2f92efb2f92ede3340"),
+                ("driver/linux/crystalhd_fleafuncs.c", 368, 407,
+                 "9b6c4278ce25c9278c1d420034a8ee330f7ba637beae0d0240a75a5d88d07d61"))
+        sources = []
+        for path, first, last, digest in refs:
+            raw = b"".join((ROOT / path).read_bytes().splitlines(keepends=True)[first - 1:last])
+            self.assertEqual(hashlib.sha256(raw).hexdigest(), digest)
+            sources.append(raw.decode("ascii"))
+        library, command, driver = sources
+        for anchor in ("size_in_dword = BuffSz / 4;", "pMemAccessRd->NumDwords = size_in_dword;",
+                       "memset(pXferBuff,'a',BuffSz);", "memcpy(Buffer,pXferBuff,BuffSz);"):
+            self.assertIn(anchor, library)
+        self.assertIn("NumDwords > (idata->add_cdata_sz / 4)", command)
+        self.assertIn("pfnDevDRAMRead", command)
+        self.assertIn("crystalhd_valid_dram_range(start_off, dw_cnt)", driver)
+        self.assertIn("for (n = 0; n < count; n++, addr += 4)", driver)
+        read = "rd_buff[ix + n] = readl(hw->adp->mem_addr + (addr & ~mask));"
+        self.assertLess(driver.index("spin_lock_irqsave"), driver.index("pfnWriteDevRegister"))
+        self.assertLess(driver.index("pfnWriteDevRegister"), driver.index(read))
+        self.assertLess(driver.index(read), driver.index("spin_unlock_irqrestore"))
+        self.assertEqual(self.report["transport"], {"api_length_unit": "bytes", "driver_length_unit": "DWORDs",
+            "pair_api_bytes": 8, "pair_driver_dwords": 2, "pair_sequential_readl_calls": 2, "readl_address_step_bytes": 4,
+            "host_window_locked_per_burst": True, "firmware_words_locked": False, "atomic_64bit_read": False,
+            "successful_api_certifies_firmware_value": False, "request_width_cause_certified": False,
+            "runtime_source_validation": False})
+
+    def test_exact_scheduled_reads_and_all_routing_cause_completion_limits_false(self):
+        self.assertEqual(self.report["return_reads"], [{"role": role, "context_offset": offset, "bytes": size}
+                                                    for role, offset, size in self.RETURN_READS])
+        self.assertEqual(self.report["observation"], {"flag": "--observe-ppb-return", "stages": 4, "passes_per_stage": 2,
+            "ordered_pass": ["graph_before", "handle_route_words", "delivery_indices", "return_initial", "return_write_first",
+                             "return_write_second", "return_final", "metadata_prefixes", "graph_after"],
+            "graph_calls_each": 31, "graph_bytes_each": 156, "handle_calls_per_pass": 1, "handle_bytes_per_pass": 8,
+            "fixed_calls_per_pass": 39, "fixed_bytes_per_pass": 2480, "per_pass_calls": 102, "per_pass_bytes": 2800,
+            "trial_calls": 816, "trial_bytes": 22400, "max_read_bytes": 72, "pool_and_plane_pointer_following": False,
+            "diagnostic_target_writes": False, "non_atomic": True})
+        self.assertEqual(self.report["validation_scope"], dict(self.fixed["validation_scope"], runtime_routing_identity=False,
+            metadata_validity=False, atomic_64bit_read=False, request_width_cause=False, zero_cause=False))
+        limits = " ".join(self.report["limitations"])
+        for phrase in ("routing scalars only", "two sequential driver readl", "not an atomic 64-bit", "all six return DWORD samples",
+                       "do not attribute a zero index", "not generation tokens", "not ARC completion"):
+            self.assertIn(phrase, limits)
+        self.assertNotIn("/home/", json.dumps(self.report))
+        self.assertNotIn("/tmp/", json.dumps(self.report))
+
+    def test_bridge_and_windows_pure_mutation_free_and_detached(self):
+        mutable = bytearray(self.payload)
+        before = bytes(mutable)
+        with mock.patch("builtins.open", side_effect=AssertionError("opened a file")), \
+                mock.patch.object(MAP.os, "open", side_effect=AssertionError("opened a device")), \
+                mock.patch.object(subprocess, "Popen", side_effect=AssertionError("ran a process")):
+            report = MAP._ppb_return_header_bridge(mutable)
+            window = MAP._ppb_return_header_window(0xdb58c, 0x33dc000, 0x3f940, 0xa34000, 0x35c7940)
+        self.assertEqual((bytes(mutable), report), (before, self.report))
+        report["reused_fixed_metadata_source"]["layout"]["metadata_record_count"] = 0
+        report["validated_regions"][0]["sha256"] = "changed"
+        report["critical_arm_words"][0]["instruction"] = 0
+        report["limitations"].append("changed")
+        self.assertEqual(MAP._ppb_return_header_bridge(self.payload), self.report)
+        window["handle_window"]["pointer"] = window["fixed_window"]["read_spans"][1]["address"] = 0
+        again = MAP._ppb_return_header_window(0xdb58c, 0x33dc000, 0x3f940, 0xa34000, 0x35c7940)
+        self.assertEqual((again["handle_window"]["pointer"], again["fixed_window"]["read_spans"][1]["address"]),
+                         (0xdb58c, 0x33f1778))
+
+    def test_payload_schema_reused_budgets_body_tamper_and_independent_word_tamper_refuse(self):
+        class BytesSubclass(bytes):
+            pass
+        for bad in (None, False, memoryview(self.payload), list(self.payload), b"", self.payload[:-1],
+                    self.payload + b"\0", BytesSubclass(self.payload)):
+            with self.subTest(type=type(bad).__name__), self.assertRaises(MAP.FormatError):
+                MAP._ppb_return_header_bridge(bad)
+        for name, value in (("MAX_PPB_FIXED_METADATA_REGIONS", 58), ("MAX_PPB_FIXED_METADATA_BYTES", 78000),
+                            ("MAX_PPB_FIXED_METADATA_CALLS", 8), ("MAX_PPB_BANK_RELOCATIONS", 2515)):
+            with self.subTest(name=name), mock.patch.object(MAP, name, value), self.assertRaises(MAP.FormatError):
+                MAP._ppb_return_header_bridge(self.payload)
+        for address in (0xd624, 0xd5a4, 0x4928c, 0x6e520):
+            changed = bytearray(self.payload)
+            changed[address] ^= 1
+            with self.subTest(address=hex(address)), self.assertRaises(MAP.FormatError):
+                MAP._ppb_return_header_bridge(changed)
+        for address in (0xd638, 0xd5b0):
+            for mask in (1, 0x1000, 0x10000000):
+                changed = bytearray(self.payload)
+                struct.pack_into("<I", changed, address, struct.unpack_from("<I", changed, address)[0] ^ mask)
+                with self.subTest(address=hex(address), mask=mask), \
+                        mock.patch.object(MAP, "_ppb_fixed_metadata_bridge", return_value=self.fixed), \
+                        self.assertRaisesRegex(MAP.FormatError, "handle-route load"):
+                    MAP._ppb_return_header_bridge(changed)
+
+    def test_exact_stock_only_public_admission_before_helper_and_old_options_additive(self):
+        for address in (0, 0xd638, 0xd5b0, len(self.data) - 1):
+            changed = bytearray(self.data)
+            changed[address] ^= 1
+            with self.subTest(address=hex(address)), \
+                    mock.patch.object(MAP, "_ppb_return_header_bridge", side_effect=AssertionError("early sidecar")), \
+                    self.assertRaisesRegex(MAP.FormatError, "exact bundled"):
+                MAP.analyze(changed, expected_sha256=hashlib.sha256(changed).hexdigest(), ppb_return_header=True)
+        with self.assertRaises(MAP.FormatError):
+            analyze_fixture(fixture(), ppb_return_header=True)
+        options = ("references", "all_symbols", "bootstrap", "picture_output", "arc_metadata", "csc_command",
+                   "command_buffer_bridge", "inner_descriptor", "scaler_fir", "ppb_handoff", "ppb_source",
+                   "ppb_saved_context", "ppb_stop_context", "ppb_fixed_metadata")
+        for flags in [{}] + [{name: True} for name in options] + [dict.fromkeys(options, True)]:
+            with self.subTest(flags=flags):
+                with mock.patch.object(MAP, "_ppb_return_header_bridge", side_effect=AssertionError("not opted in")):
+                    plain = MAP.analyze(self.data, **flags)
+                self.assertNotIn("ppb_return_header_bridge", plain)
+                enriched = MAP.analyze(self.data, ppb_return_header=True, **flags)
+                self.assertEqual(enriched.pop("ppb_return_header_bridge"), self.report)
+                self.assertEqual(enriched, plain)
+
+    def test_default_stop_fixed_cli_goldens_and_new_option_reproducibility_and_refusal(self):
+        for arguments, digest in (([], "15068c07a81a510e02435b6203b1cf5e424152e37ff456b1da9c12b77c15799e"),
+                (["--references", "--symbol", "ReadLine"], "2a491f4b9033395cdbc688810319ea159973a296d7828ac65153bc93d45b588f"),
+                (["--all-symbols"], "15af1023987b5f2aee1e9a5560f749560bf33f729252ca3fcb9f41358f49e5aa"),
+                (["--ppb-saved-context"], "b45c10f1f34e9742dc871ca27902d36bfb14c3747a3eb81c996378c44b51bc94"),
+                (["--ppb-stop-context"], "0adcec782d675327197413c3b5c2f890234e80d4a62036fa63c22fb19312f371"),
+                (["--ppb-fixed-metadata"], "4af33115bcee9b1a8fa93c7fdd2fdd7a1e3afc231a35b2075dd9dda58251dc09")):
+            result = subprocess.run([sys.executable, "-B", str(TOOL), str(BLOB)] + arguments, capture_output=True, timeout=20)
+            with self.subTest(arguments=arguments):
+                self.assertEqual((result.returncode, result.stderr), (0, b""))
+                self.assertEqual(hashlib.sha256(result.stdout).hexdigest(), digest)
+        command = [sys.executable, "-B", str(TOOL), str(BLOB), "--ppb-return-header"]
+        a, b = (subprocess.run(command, capture_output=True, timeout=20) for _ in range(2))
+        self.assertEqual((a.returncode, b.returncode, a.stderr, b.stderr), (0, 0, b"", b""))
+        self.assertEqual(a.stdout, b.stdout)
+        enriched = json.loads(a.stdout)
+        self.assertEqual(enriched.pop("ppb_return_header_bridge"), self.report)
+        self.assertEqual(enriched, MAP.analyze(self.data))
+        with mock.patch.object(MAP, "read_firmware", return_value=fixture()), \
+                mock.patch.object(sys, "stdout", new_callable=io.StringIO) as stdout, \
+                mock.patch.object(sys, "stderr", new_callable=io.StringIO) as stderr:
+            self.assertEqual(MAP.main([str(BLOB), "--ppb-return-header", "--expect-sha256",
+                                      hashlib.sha256(fixture()).hexdigest()]), 1)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("exact bundled", stderr.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
