@@ -145,6 +145,10 @@ tx-admission-check:
 h264-stream-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/h264-stream.sh
 
+.PHONY: h264-reference-check
+h264-reference-check:
+	$(PYTHON3) -B tests/h264-reference-lifecycle.py --self-test
+
 rx-ownership-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/rx-ownership.sh
 
@@ -185,7 +189,7 @@ phase1-check: library-drain-test tests/phase1-oracle.tsv
 	sh tests/phase1-release-gate.sh --self-test
 	sh tests/phase1-release-gate.sh manifest-check tests/phase1-oracle.tsv
 
-check: uapi-check dma-check l0s-check architecture-check pib-check library-check raw-frame-check fw-research-check all
+check: uapi-check dma-check l0s-check architecture-check pib-check library-check raw-frame-check h264-reference-check fw-research-check all
 	$(MAKE) -C filters/gst/gst-plugin-1.0 check
 	$(MAKE) -C filters/vaapi check
 	$(MAKE) -C browser check
