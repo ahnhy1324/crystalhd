@@ -1891,6 +1891,95 @@ class FirmwarePictureQemuTests(unittest.TestCase):
                          (2, 4, PICTURE_TOKEN, PICTURE_TOKEN))
 
 
+class FirmwareArmArcReturnQemuTests(unittest.TestCase):
+    """Actual ARM publication bytes enter the conditional ARC consumer.
+
+    Queue addresses and scheduling are synthetic and separate in the two
+    replays. Only the observed header/token DWORDs cross this boundary; no
+    pointer translation, native shared queue, DMA order or source lease is
+    inferred. ARC retirement remains restricted to its zero-helper domain.
+    """
+    @classmethod
+    def setUpClass(cls):
+        FirmwareQemuTests.setUpClass()
+
+    def published(self, index, token):
+        arm = execute_metadata("release", read=index, write=index, token=token)
+        FirmwareQemuTests.check_metadata_pages(self, arm)
+        offset = META_REL & 4095
+        queue = arm["pages"][META_REL & ~4095][offset:offset + 256]
+        read, write = struct.unpack_from("<II", queue)
+        observed = struct.unpack_from("<I", queue, read * 4)[0]
+        self.assertEqual((read, write, observed),
+                         (index, 2 if index == 63 else index + 1, token))
+        # Feed the actual publication, never a repaired or translated token.
+        return (read, write, observed), arm
+
+    def test_published_exact_addresses_reference_hold_and_retirement(self):
+        for index in (0, 33):
+            for read in (2, 63):
+                wire, arm = self.published(read, 0x500100 + index * 228)
+                published_pages = dict(arm["pages"])
+                snapshot = arm["snapshot"]
+                for bank in (0, 8):
+                    for slot in (0, 31):
+                        for mask in (1 << slot, 0xffffffff):
+                            for flag in (0xa800, 0xe800):
+                                selected = flag | bank | (slot << 4)
+                                flags, banks = bytearray(68), bytearray(144)
+                                struct.pack_into("<H", flags, index * 2, selected)
+                                struct.pack_into("<4I", banks, bank * 16,
+                                                 0x920000, mask, 0x12345, 0x11223344)
+                                for lane in (0, 1):
+                                    with self.subTest(index=index, read=read, bank=bank,
+                                                      slot=slot, mask=mask, flag=flag, lane=lane):
+                                        arc = FW.project_arc_return_release(
+                                            Model.payload, *wire, flags, banks, lane=lane)
+                                        self.assertTrue(arc["consumed"])
+                                        self.assertEqual(arc["matched_index"], index)
+                                        self.assertEqual(struct.unpack_from("<I",
+                                            arc["pages"][0x600000], 0x100)[0], wire[1])
+                                        final = struct.unpack_from("<H",
+                                            arc["pages"][0x3fffd000], 0x100 + index * 2)[0]
+                                        self.assertEqual(final, selected & 0xcfff if flag & 0x4000 else 0)
+                                        retained = struct.unpack_from("<I",
+                                            arc["pages"][0x3fffd000], 0x1ac + bank * 16)[0]
+                                        self.assertEqual(retained,
+                                            mask if flag & 0x4000 else mask & ~(1 << slot))
+                                        self.assertEqual(arc["calls"],
+                                            [(0x516c, 0x4d10), (0x517c, 0xba98), (0x51a4, 0x907c)])
+                                        self.assertFalse(arc["native_execution"])
+                                        self.assertFalse(arc["physical_lease_certified"])
+                                        self.assertFalse(arc["engine_completion_certified"])
+                self.assertEqual(arm["pages"], published_pages)
+                self.assertEqual(arm["snapshot"], snapshot)
+
+    def test_published_opaque_tokens_are_not_translated_or_dereferenced(self):
+        # The nonidentity ARM map used by this fixture must not silently
+        # convert 0x710100 to the ARC pool's 0x500100 comparison scalar.
+        for token in (0, 0x500102, 0x500100 + 34 * 228, 0x710100, 0xffffffff):
+            wire, arm = self.published(2, token)
+            published_pages = dict(arm["pages"])
+            snapshot = arm["snapshot"]
+            flags, banks = bytes(68), bytes(144)
+            with self.subTest(token=token):
+                arc = FW.project_arc_return_release(Model.payload, *wire, flags, banks)
+                self.assertTrue(arc["consumed"])
+                self.assertIsNone(arc["matched_index"])
+                self.assertEqual(arc["pages"][0x3fffd000][0x100:0x144], flags)
+                self.assertEqual(arc["pages"][0x3fffd000][0x1a8:0x238], banks)
+                self.assertNotIn(0x907c, arc["visited"])
+                self.assertEqual(arc["registers"][0], 19 if token else 0)
+                self.assertEqual(arc["calls"], [(0x516c, 0x4d10)] +
+                    ([(0x517c, 0xba98)] if token else []))
+                self.assertEqual(struct.unpack_from("<I",
+                    arc["pages"][0x30000000], 0xfbc)[0], 19 if token else 0xa5a5a5a5)
+                self.assertEqual(struct.unpack_from("<I",
+                    arc["pages"][0x600000], 0x100)[0], wire[1])
+                self.assertEqual(arm["pages"], published_pages)
+                self.assertEqual(arm["snapshot"], snapshot)
+
+
 class FirmwareMfdSourceQemuTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -2742,7 +2831,7 @@ class FirmwareStopResultQemuTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(defaultTest=("FirmwareQemuTests", "FirmwarePictureQemuTests",
+    unittest.main(defaultTest=("FirmwareQemuTests", "FirmwarePictureQemuTests", "FirmwareArmArcReturnQemuTests",
                                "FirmwareMfdSourceQemuTests", "FirmwareSourceProducerQemuTests",
                                "FirmwareSourceModeQemuTests", "FirmwareIrqStatusQemuTests",
                                "FirmwareLogCommandQemuTests", "FirmwareChannelGuardQemuTests",
