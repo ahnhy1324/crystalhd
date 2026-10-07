@@ -1108,21 +1108,31 @@ struct PpbContextObserver {
     typedef BC_STATUS (*Reader)(HANDLE, uint32_t *, uint32_t, uint32_t);
     bool enabled = false, post_stop = false, metadata_pool = false, failed = false, admitted = false;
     bool owner_post_stop = false, owner_metadata_pool = false;
+    bool return_header = false, owner_return_header = false;
     HANDLE owner = nullptr;
     unsigned next_stage = 0, reads = 0, bytes = 0, measured = 0;
     BC_STATUS status = BC_STS_SUCCESS;
     PpbContextFailure failure = PpbContextFailure::None;
     PpbContextGraph authority, graph[2];
     uint32_t raw[2][60] = {};
-    uint32_t pool_raw[2][616] = {};
+    uint32_t pool_raw[2][620] = {}, route_raw[2][2] = {};
     bool complete[2] = {};
     unsigned Stages() const { return post_stop ? 4U : 3U; }
-    unsigned StageReads() const { return metadata_pool ? 196U : 140U; }
-    unsigned StageBytes() const { return metadata_pool ? 5552U : 1104U; }
+    unsigned StageReads() const { return return_header ? 204U : metadata_pool ? 196U : 140U; }
+    unsigned StageBytes() const { return return_header ? 5600U : metadata_pool ? 5552U : 1104U; }
     unsigned ReadLimit() const { return Stages() * StageReads(); }
     unsigned ByteLimit() const { return Stages() * StageBytes(); }
-    static bool PoolSpan(unsigned span, uint32_t *offset, unsigned *count) {
-        if (span >= 36 || !offset || !count) return false;
+    static bool PoolSpan(unsigned span, uint32_t *offset, unsigned *count, bool bracket = false) {
+        if (span >= (bracket ? 39U : 36U) || !offset || !count) return false;
+        if (bracket) {
+            // Four consecutive requests compare grouping/timing only: the
+            // 8-byte request itself uses two sequential 32-bit device reads.
+            const uint32_t offsets[] = {0x15678,0x15778,0x1577c,0x1577c,0x15778};
+            const unsigned counts[] = {2,2,1,1,2};
+            *offset = span < 5 ? offsets[span] : 0x15878U + (span - 5) * 0xe4U;
+            *count = span < 5 ? counts[span] : 18U;
+            return true;
+        }
         *offset = span < 2 ? 0x15678U + span * 0x100U : 0x15878U + (span - 2) * 0xe4U;
         *count = span < 2 ? 2U : 18U;
         return true;
@@ -1232,28 +1242,35 @@ struct PpbContextObserver {
         const char *const failures[] = {"none", "argument", "current-handle-loss", "order", "budget", "read-status",
             "object-envelope/alias", "default-profile", "map-tuple", "context-slice", "authority-changed"};
         if (metadata_pool) {
-            std::printf("PPB fixed metadata: stage=%s reads=%u/%u bytes=%u/%u measured=%u/196 failure=%s api-status=%d "
+            const char *label = return_header ? "PPB return header" : "PPB fixed metadata";
+            std::printf("%s: stage=%s reads=%u/%u bytes=%u/%u measured=%u/%u failure=%s api-status=%d "
                 "non-atomic current-state/allocator/extent/lease/generation/ARC-completion-certified=no\n",
-                stages[stage], reads, ReadLimit(), bytes, ByteLimit(), measured, failures[static_cast<unsigned>(failure)], status);
+                label, stages[stage], reads, ReadLimit(), bytes, ByteLimit(), measured, StageReads(), failures[static_cast<unsigned>(failure)], status);
             for (unsigned pass = 0; pass < 2; ++pass) {
-                if (!complete[pass]) { std::printf("PPB fixed metadata raw: stage=%s pass=%u INCOMPLETE\n", stages[stage], pass); continue; }
+                if (!complete[pass]) { std::printf("%s raw: stage=%s pass=%u INCOMPLETE\n", label, stages[stage], pass); continue; }
                 const uint32_t *g = graph[pass].words, *r = pool_raw[pass];
                 const uint32_t d = g[14] + ((0U - g[14]) & 3U);
-                std::printf("PPB fixed metadata raw: stage=%s pass=%u C=%08x H=%08x Q=%08x M=%08x P=%08x N=%08x "
+                std::printf("%s raw: stage=%s pass=%u C=%08x H=%08x Q=%08x M=%08x P=%08x N=%08x "
                     "D=%08x video-base=%08x video-bytes=%08x delivery-read=%08x delivery-write=%08x "
-                    "return-read=%08x return-write=%08x\n", stages[stage], pass, g[0], g[1], g[20], g[25],
+                    "return-read=%08x return-write=%08x", label, stages[stage], pass, g[0], g[1], g[20], g[25],
                     g[14], g[15], d, g[22], g[23], r[0], r[1], r[2], r[3]);
+                if (return_header) std::printf(" route-acquire=%08x route-return=%08x return-write-single0=%08x "
+                    "return-write-single1=%08x return-read-after=%08x return-write-after=%08x",
+                    route_raw[pass][0], route_raw[pass][1], r[4], r[5], r[6], r[7]);
+                std::printf("\n");
                 for (unsigned slot = 0; slot < 34; ++slot) {
-                    std::printf("PPB fixed metadata slot: stage=%s pass=%u slot=%u fixed-address=%08x words=",
-                        stages[stage], pass, slot, d + 0x15878U + slot * 0xe4U);
+                    std::printf("%s slot: stage=%s pass=%u slot=%u fixed-address=%08x words=",
+                        label, stages[stage], pass, slot, d + 0x15878U + slot * 0xe4U);
                     for (unsigned word = 0; word < 18; ++word)
-                        std::printf("%s%08x", word ? "," : "", r[4 + slot * 18 + word]);
+                        std::printf("%s%08x", word ? "," : "", r[(return_header ? 8U : 4U) + slot * 18 + word]);
                     std::printf("\n");
                 }
             }
-            if (complete[0] && complete[1]) std::printf("PPB fixed metadata comparison: stage=%s fields=%s,non-atomic "
-                "queued-return-is-consumption=unproven slot-address-is-generation=no\n", stages[stage],
-                std::memcmp(pool_raw[0], pool_raw[1], sizeof(pool_raw[0])) ? "observed-different" : "observed-stable");
+            if (complete[0] && complete[1]) std::printf("%s comparison: stage=%s fields=%s,non-atomic "
+                "queued-return-is-consumption=unproven slot-address-is-generation=no\n", label, stages[stage],
+                std::memcmp(pool_raw[0], pool_raw[1], (return_header ? 620U : 616U) * sizeof(uint32_t)) ||
+                (return_header && std::memcmp(route_raw[0], route_raw[1], sizeof(route_raw[0]))) ? "observed-different" : "observed-stable");
+            if (return_header) std::printf("PPB return header scope: request-grouping/timing-only atomic8B/routing-identity/zero-cause-certified=no\n");
             std::fflush(stdout); return;
         }
         std::printf("PPB saved context: stage=%s reads=%u/%u bytes=%u/%u measured=%u/140 failure=%s api-status=%d "
@@ -1285,14 +1302,16 @@ struct PpbContextObserver {
         if (!enabled) return true;
         if (failed) return false;
         if (!current || !*current || !reader) return Reject(PpbContextFailure::Argument);
-        if ((metadata_pool && !post_stop) || (next_stage &&
-            (post_stop != owner_post_stop || metadata_pool != owner_metadata_pool))) return Reject(PpbContextFailure::Argument);
+        if ((metadata_pool && !post_stop) || (return_header && !metadata_pool) || (next_stage &&
+            (post_stop != owner_post_stop || metadata_pool != owner_metadata_pool || return_header != owner_return_header)))
+            return Reject(PpbContextFailure::Argument);
         if (stage >= Stages() || stage != next_stage || barrier != (stage != 0)) return Reject(PpbContextFailure::Order);
         if (reads > ReadLimit() - StageReads() || bytes > ByteLimit() - StageBytes()) return Reject(PpbContextFailure::Budget);
-        if (!stage) { owner = *current; owner_post_stop = post_stop; owner_metadata_pool = metadata_pool; }
+        if (!stage) { owner = *current; owner_post_stop = post_stop; owner_metadata_pool = metadata_pool; owner_return_header = return_header; }
         if (!owner || *current != owner) return Reject(PpbContextFailure::Owner);
         ++next_stage; measured = 0; std::memset(raw, 0, sizeof(raw)); complete[0] = complete[1] = false;
         std::memset(pool_raw, 0, sizeof(pool_raw));
+        std::memset(route_raw, 0, sizeof(route_raw));
         const uint32_t offsets[] = {0, 0x80, 0x21c, 0x33c, 0x354, 0x3fc, 0x48c, 0x530};
         const unsigned counts[] = {1, 1, 1, 1, 17, 36, 2, 1};
         bool ok = true;
@@ -1304,10 +1323,13 @@ struct PpbContextObserver {
             const uint32_t d = authority.words[14] + ((0U - authority.words[14]) & 3U);
             unsigned word = 0;
             if (metadata_pool && !PoolWindow(authority)) { ok = Reject(PpbContextFailure::Slice); break; }
-            for (unsigned span = 0; span < (metadata_pool ? 36U : 8U) && ok; ++span) {
+            // The route operands are informational, addressed only from H;
+            // they never select a ring/pool target. Read before fixed spans.
+            if (return_header) ok = Read(current, reader, authority.words[1] + 0x250U, 2, route_raw[pass]);
+            for (unsigned span = 0; span < (return_header ? 39U : metadata_pool ? 36U : 8U) && ok; ++span) {
                 uint32_t offset = offsets[metadata_pool ? 0 : span];
                 unsigned count = counts[metadata_pool ? 0 : span];
-                if (metadata_pool && !PoolSpan(span, &offset, &count)) { ok = Reject(PpbContextFailure::Argument); break; }
+                if (metadata_pool && !PoolSpan(span, &offset, &count, return_header)) { ok = Reject(PpbContextFailure::Argument); break; }
                 ok = Read(current, reader, d + offset, count, (metadata_pool ? pool_raw[pass] : raw[pass]) + word);
                 word += count;
             }
@@ -1320,10 +1342,10 @@ struct PpbContextObserver {
     }
     bool Finish(bool native_ok, bool report = true) const {
         if (!enabled) return native_ok;
-        const bool ok = !failed && admitted && owner_post_stop == post_stop && owner_metadata_pool == metadata_pool &&
+        const bool ok = !failed && admitted && owner_post_stop == post_stop && owner_metadata_pool == metadata_pool && owner_return_header == return_header &&
             next_stage == Stages() && reads == ReadLimit() && bytes == ByteLimit();
         if (report) std::printf("PPB %s finish: native-result=%s observation-result=%s stages=%u/%u reads=%u/%u bytes=%u/%u\n",
-            metadata_pool ? "fixed metadata" : "saved context", native_ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
+            return_header ? "return header" : metadata_pool ? "fixed metadata" : "saved context", native_ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
             next_stage, Stages(), reads, ReadLimit(), bytes, ByteLimit());
         return native_ok && ok;
     }
@@ -1333,13 +1355,21 @@ struct PpbContextFixture {
     unsigned calls = 0, fail_at = 420, lose_at = 420, change_at = 420;
     uint32_t changed_address = 0, changed_value = 0;
     uint32_t physical = 0x1000000;
-    bool valid = true, different = false, all_ones = false, post_stop = false, metadata_pool = false;
+    bool valid = true, different = false, all_ones = false, post_stop = false, metadata_pool = false, return_header = false;
     uint32_t Address(unsigned at) const {
         const uint32_t graph[] = {0xd3a08,
             0xd3a20,0xd3ac4,0xd3ad0,0xd3bec,0xd3c90,0xd3c9c,0xd3db8,0xd3e5c,0xd3e68,0xd3f84,0xd4028,0xd4034,
             0xd6000,0xd6008,0xd6064,0xd60cc,0xd6224,0xd5408,0xd55a0,0xd55d4,
             0xd5800,0xd5808,0xd5810,0xd5a18,0xd5a28,0xd5a30,0xd5a40,0x11601c,0x11602c,0x116034};
         const uint32_t core[] = {0,0x80,0x21c,0x33c,0x354,0x3fc,0x48c,0x530};
+        if (return_header) {
+            if (at < 31) return graph[at];
+            if (at >= 71) return graph[at - 71];
+            if (at == 31) return 0xd6250;
+            const uint32_t headers[] = {0x15678,0x15778,0x1577c,0x1577c,0x15778};
+            const uint32_t offset = at < 37 ? headers[at - 32] : 0x15878U + (at - 37) * 228U;
+            return physical + ((0U - physical) & 3U) + offset;
+        }
         if (metadata_pool) {
             if (at < 31) return graph[at];
             if (at >= 67) return graph[at - 67];
@@ -1348,9 +1378,15 @@ struct PpbContextFixture {
         }
         return at < 31 ? graph[at] : at < 39 ? physical + ((0U - physical) & 3U) + core[at - 31] : graph[at - 39];
     }
-    static unsigned Count(unsigned at, bool metadata = false) {
+    static unsigned Count(unsigned at, bool metadata = false, bool bracket = false) {
         const unsigned graph[] = {1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1,1,3,1,1,2,2,1,2,1,2,1,2};
         const unsigned core[] = {1,1,1,1,17,36,2,1};
+        if (bracket) {
+            if (at < 31) return graph[at];
+            if (at >= 71) return graph[at - 71];
+            const unsigned headers[] = {2,2,2,1,1,2};
+            return at < 37 ? headers[at - 31] : 18;
+        }
         if (metadata) {
             if (at < 31) return graph[at];
             if (at >= 67) return graph[at - 67];
@@ -1366,7 +1402,8 @@ struct PpbContextFixture {
             if (address == base + 0x20) return slot ? 0 : 0xd6000;
             if (address == base + 0xc4) return slot ? 0 : 0x101;
             if (address == base + 0xd0) return slot ? 0 : 0x200 |
-                ((position / (metadata_pool ? 196U : 140U) == 1 || position / (metadata_pool ? 196U : 140U) == 2) ? 0x10000 : 0);
+                ((position / (return_header ? 204U : metadata_pool ? 196U : 140U) == 1 ||
+                  position / (return_header ? 204U : metadata_pool ? 196U : 140U) == 2) ? 0x10000 : 0);
         }
         const uint32_t locations[] = {0xd6000,0xd6008,0xd600c,0xd6064,0xd60cc,0xd6224,
             0xd5408,0xd55a0,0xd55d4,0xd55d8,0xd55dc,0xd5800,0xd5808,0xd5810,0xd5814,
@@ -1376,15 +1413,15 @@ struct PpbContextFixture {
             0x200000,0x1200000,0x200000,0x200000,0x1000000,1,0x116068,0x3ffc000,0x116004,0x116004,0x3ee5ffc};
         for (unsigned word = 0; word < sizeof(locations) / sizeof(locations[0]); ++word)
             if (address == locations[word]) return values[word];
-        const unsigned stage_reads = metadata_pool ? 196U : 140U;
+        const unsigned stage_reads = return_header ? 204U : metadata_pool ? 196U : 140U;
         return all_ones ? 0xffffffffU : 0x5a000000U | ((position / stage_reads) << 16) | (address & 65535U) |
             (different && position % stage_reads >= stage_reads / 2 ? 0x80000000U : 0);
     }
     static BC_STATUS Read(HANDLE handle, uint32_t *values, uint32_t bytes, uint32_t address) {
         auto *f = static_cast<PpbContextFixture *>(handle);
-        const unsigned position = f->calls++, at = position % (f->metadata_pool ? 98U : 70U);
-        f->valid &= position < (f->metadata_pool ? 784U : f->post_stop ? 560U : 420U) && values &&
-            address == f->Address(at) && bytes == Count(at, f->metadata_pool) * 4U &&
+        const unsigned position = f->calls++, at = position % (f->return_header ? 102U : f->metadata_pool ? 98U : 70U);
+        f->valid &= position < (f->return_header ? 816U : f->metadata_pool ? 784U : f->post_stop ? 560U : 420U) && values &&
+            address == f->Address(at) && bytes == Count(at, f->metadata_pool, f->return_header) * 4U &&
             reinterpret_cast<uintptr_t>(values) % alignof(uint32_t) == 0;
         if (!f->valid) return BC_STS_ERROR;
         for (unsigned word = 0; word < bytes / 4; ++word) values[word] = f->Word(address + word * 4, position);
@@ -2001,6 +2038,7 @@ struct Options {
     bool observe_ppb_context = false;
     bool observe_ppb_stop = false;
     bool observe_ppb_metadata = false;
+    bool observe_ppb_return = false;
     unsigned inject_mfd_colour = 0;
     unsigned scl_status_test = 0;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
@@ -2032,8 +2070,10 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
                                  !std::strcmp(arguments.back(), "--observe-arm-source-shape") ||
                                  !std::strcmp(arguments.back(), "--observe-ppb-context") ||
                                  !std::strcmp(arguments.back(), "--observe-ppb-stop") ||
-                                 !std::strcmp(arguments.back(), "--observe-ppb-metadata"))) {
-        options->observe_ppb_metadata = !std::strcmp(arguments.back(), "--observe-ppb-metadata");
+                                 !std::strcmp(arguments.back(), "--observe-ppb-metadata") ||
+                                 !std::strcmp(arguments.back(), "--observe-ppb-return"))) {
+        options->observe_ppb_return = !std::strcmp(arguments.back(), "--observe-ppb-return");
+        options->observe_ppb_metadata = options->observe_ppb_return || !std::strcmp(arguments.back(), "--observe-ppb-metadata");
         options->observe_ppb_stop = options->observe_ppb_metadata || !std::strcmp(arguments.back(), "--observe-ppb-stop");
         options->observe_ppb_context = options->observe_ppb_stop || !std::strcmp(arguments.back(), "--observe-ppb-context");
         options->observe_arm_source_shape = !std::strcmp(arguments.back(), "--observe-arm-source-shape");
@@ -3531,6 +3571,162 @@ template<class Check> static void PpbFixedMetadataSelfTest(const Check &check)
         "PPB report exposes fixed raw words/indexheaders without ownership/generation or ARC completion claims");
 }
 
+template<class Check> static void PpbReturnHeaderSelfTest(const Check &check)
+{
+    PpbContextObserver disabled; disabled.return_header = disabled.metadata_pool = disabled.post_stop = true;
+    check(disabled.Observe(nullptr, 9, true, nullptr, false) && disabled.Finish(true, false) && !disabled.reads,
+        "PPB return-header configuration alone performs no I/O");
+    unsigned total = 0;
+    const uint32_t headers[] = {0x15678,0x15778,0x1577c,0x1577c,0x15778};
+    const unsigned counts[] = {2,2,1,1,2};
+    for (unsigned span = 0; span < 39; ++span) {
+        uint32_t offset = 0; unsigned count = 0;
+        check(PpbContextObserver::PoolSpan(span, &offset, &count, true) &&
+            offset == (span < 5 ? headers[span] : 0x15878U + (span - 5) * 228U) &&
+            count == (span < 5 ? counts[span] : 18U) && offset + count * 4U <= 0x176c0U,
+            "PPB return-header request order is8B/4B/4B/8B followed by34 fixed scalar prefixes");
+        total += count * 4;
+    }
+    uint32_t offset = 0; unsigned count = 0;
+    check(total == 2480 && !PpbContextObserver::PoolSpan(39, &offset, &count, true) &&
+        !PpbContextObserver::PoolSpan(0, nullptr, &count, true) && !PpbContextObserver::PoolSpan(0, &offset, nullptr, true),
+        "PPB return-header fixed spans are39 requests2480B excluding record-selected targets");
+    for (unsigned variant = 0; variant < 5; ++variant) {
+        PpbContextFixture fixture; fixture.post_stop = fixture.metadata_pool = fixture.return_header = true;
+        fixture.fail_at = fixture.lose_at = fixture.change_at = 816;
+        fixture.different = variant == 1; fixture.all_ones = variant == 2;
+        if (variant == 3) { fixture.change_at = 0; fixture.changed_address = 0xd6250; fixture.changed_value = 0xffffffffU; }
+        if (variant == 4) { fixture.change_at = 34; fixture.changed_address = 0x101577c; fixture.changed_value = 0; }
+        PpbContextObserver subject; subject.enabled = subject.post_stop = subject.metadata_pool = subject.return_header = true;
+        check(subject.ReadLimit() == 816 && subject.ByteLimit() == 22400,
+            "PPB return-header profile has exactly816calls22400B including two rooted handle scalars");
+        for (unsigned stage = 0; stage < 4; ++stage) {
+            check(subject.Observe(&fixture.current, stage, stage != 0, PpbContextFixture::Read, false) && fixture.valid &&
+                fixture.calls == (stage + 1) * 204 && subject.bytes == (stage + 1) * 5600 && subject.measured == 204 &&
+                subject.complete[0] && subject.complete[1] && subject.Finish(true, false) == (stage == 3),
+                "PPB rooted route pair precedes fixed spans with graph guards before and after each pass");
+            if (variant == 1) check(std::memcmp(subject.route_raw[0], subject.route_raw[1], sizeof(subject.route_raw[0])) != 0 &&
+                std::memcmp(subject.pool_raw[0], subject.pool_raw[1], sizeof(subject.pool_raw[0])) != 0,
+                "PPB route and metadata differences are preserved without routing identity or coherence gating");
+            if (variant == 2) check(subject.route_raw[0][0] == 0xffffffffU && subject.pool_raw[0][7] == 0xffffffffU,
+                "PPB all-ones route and all six return header words remain informational");
+            if (variant == 3) check(subject.route_raw[0][0] == 0xffffffffU && subject.route_raw[0][1] != 0xffffffffU,
+                "PPB route operands neither select targets nor require equality");
+            if (variant == 4) check(subject.pool_raw[0][4] == 0 && subject.pool_raw[0][5] == 0 && subject.pool_raw[0][7] == 0 &&
+                (stage || subject.pool_raw[0][3] != 0),
+                "PPB grouped and single return samples are separately retained without zero normalization");
+        }
+        check(!subject.Finish(false, false), "PPB return observations cannot override native failure");
+    }
+    for (uint32_t physical : {0x1000000U,0x1000001U,0x1000002U,0x1000003U,0x200000U,0x11c06c0U}) {
+        PpbContextFixture fixture; fixture.physical = physical;
+        fixture.post_stop = fixture.metadata_pool = fixture.return_header = true;
+        fixture.fail_at = fixture.lose_at = fixture.change_at = 816;
+        PpbContextObserver subject; subject.enabled = subject.post_stop = subject.metadata_pool = subject.return_header = true;
+        bool result = true;
+        for (unsigned stage = 0; stage < 4 && result; ++stage)
+            result = subject.Observe(&fixture.current, stage, stage != 0, PpbContextFixture::Read, false);
+        check(result && fixture.valid && subject.Finish(true, false),
+            "PPB return schedule admits all physical alignment residues and exact declared envelope limits");
+    }
+    for (unsigned position = 0; position < 816; ++position) for (unsigned fault = 0; fault < 3; ++fault) {
+        PpbContextFixture fixture, other; fixture.post_stop = fixture.metadata_pool = fixture.return_header = true;
+        fixture.change_at = 816; fixture.fail_at = fault ? 816 : position; fixture.lose_at = fault ? position : 816;
+        fixture.replacement = fault == 2 ? other.current : nullptr;
+        PpbContextObserver subject; subject.enabled = subject.post_stop = subject.metadata_pool = subject.return_header = true;
+        bool result = true;
+        for (unsigned stage = 0; stage < 4 && result; ++stage)
+            result = subject.Observe(&fixture.current, stage, stage != 0, PpbContextFixture::Read, false);
+        check(!result && fixture.valid && subject.failed && fixture.calls == position + 1 &&
+            subject.failure == (fault ? PpbContextFailure::Owner : PpbContextFailure::Read) &&
+            !subject.Observe(&fixture.current, 3, true, PpbContextFixture::Read, false) &&
+            !subject.Observe(&other.current, 0, false, PpbContextFixture::Read, false) &&
+            fixture.calls == position + 1 && !other.calls && !subject.Finish(true, false),
+            "PPB all816 read/owner-loss/replacement faults latch with no retry or foreign I/O");
+    }
+    const uint32_t links[] = {0xd3a08,0xd3a20,0xd6000,0xd6008,0xd600c,0xd6064,0xd60cc,0xd6224,
+        0xd5408,0xd55a0,0xd55d4,0xd55d8,0xd55dc,0xd5800,0xd5808,0xd5810,0xd5814,
+        0xd5a18,0xd5a1c,0xd5a28,0xd5a30,0xd5a34,0xd5a40,0x11601c,0x116020,0x11602c,0x116034,0x116038};
+    for (uint32_t address : links) for (unsigned position : {71U,102U,173U,204U,408U,612U,683U,714U,785U}) {
+        PpbContextFixture fixture; fixture.post_stop = fixture.metadata_pool = fixture.return_header = true;
+        fixture.fail_at = fixture.lose_at = 816; fixture.change_at = position; fixture.changed_address = address; fixture.changed_value = 0xa40000;
+        PpbContextObserver subject; subject.enabled = subject.post_stop = subject.metadata_pool = subject.return_header = true;
+        bool result = true;
+        for (unsigned stage = 0; stage < 4 && result; ++stage)
+            result = subject.Observe(&fixture.current, stage, stage != 0, PpbContextFixture::Read, false);
+        check(!result && fixture.valid && subject.failed && subject.failure == PpbContextFailure::Changed &&
+            fixture.calls <= position + 31 && !subject.Finish(true, false),
+            "PPB route/header observations cannot bypass any frozen authority-edge change");
+    }
+    for (unsigned fault = 0; fault < 9; ++fault) {
+        PpbContextFixture fixture; fixture.post_stop = fixture.metadata_pool = fixture.return_header = true;
+        fixture.fail_at = fixture.lose_at = fixture.change_at = 816;
+        PpbContextObserver subject; subject.enabled = subject.post_stop = subject.metadata_pool = subject.return_header = true;
+        check(subject.Observe(&fixture.current, 0, false, PpbContextFixture::Read, false), "PPB return-header refusal setup");
+        if (fault == 0) subject.return_header = false;
+        if (fault == 1) subject.metadata_pool = false;
+        if (fault == 2) subject.post_stop = false;
+        if (fault == 3) subject.reads = 613;
+        if (fault == 4) subject.bytes = 16801;
+        const PpbContextFailure reasons[] = {PpbContextFailure::Argument,PpbContextFailure::Argument,PpbContextFailure::Argument,
+            PpbContextFailure::Budget,PpbContextFailure::Budget,PpbContextFailure::Order,PpbContextFailure::Order,
+            PpbContextFailure::Order,PpbContextFailure::Argument};
+        check(!subject.Observe(&fixture.current, fault == 5 ? 0 : fault == 6 ? 4 : 1, fault != 7,
+            fault == 8 ? nullptr : PpbContextFixture::Read, false) && subject.failed && subject.failure == reasons[fault] && fixture.calls == 204,
+            "PPB return profile cannot mutate schedule or bypass order/barrier/budget/reader checks");
+    }
+    const std::vector<const char *> valid = {"probe","--hardware","fixture","180","30","1","--scaler-test","0",
+        "--observe-ppb-return","--capture-yuy2","new"};
+    Options admitted;
+    check(ParseArguments(valid, &admitted) && admitted.observe_ppb_return && admitted.observe_ppb_metadata && admitted.observe_ppb_stop &&
+        admitted.observe_ppb_context && !admitted.observe_arm_metadata && NeedsRawIo(admitted),
+        "PPB return flag implies metadata/STOP/rooted authority and CAP-gated exact-input native profile");
+    for (const auto &extra : std::vector<std::vector<const char *>>{{"--observe-ppb-return"},{"--observe-ppb-metadata"},{"--observe-ppb-stop"},
+            {"--observe-ppb-context"},{"--observe-arm-metadata"},{"--observe-arm-source-shape"},{"--observe-runtime-inventory"},
+            {"--observe-mfd-framing"},{"--observe-mfd-config"},{"--observe-mfd-address"},{"--observe-scl-config"},
+            {"--observe-scl-filter-map"},{"--observe-scl-view","2"},{"--observe-chroma"},{"--inject-mfd-colour","a"},
+            {"--scl-status-test","observe"},{"--open-only"},{"--mpeg1-via-mpeg2"},{"--h263-via-divx"}})
+        for (unsigned order = 0; order < 2; ++order) {
+            auto arguments = valid; arguments.insert(order ? arguments.end() - 2 : arguments.begin() + 8, extra.begin(), extra.end());
+            Options rejected; check(!ParseArguments(arguments, &rejected), "PPB return-header refuses duplicate/mixed experiments in either order");
+        }
+    for (unsigned fault = 0; fault < 9; ++fault) {
+        auto arguments = valid;
+        if (fault == 0) arguments[1] = "--preflight";
+        if (fault == 1) arguments[3] = "179";
+        if (fault == 2) arguments[5] = "2";
+        if (fault == 3) arguments[7] = "128";
+        if (fault == 4) arguments[9] = "--capture-uyvy";
+        if (fault == 5) arguments[10] = "-";
+        if (fault == 6) arguments.resize(9);
+        if (fault == 7) arguments[8] = "--observe-ppb-return=0";
+        if (fault == 8) arguments.erase(arguments.begin() + 6, arguments.begin() + 8);
+        Options rejected; check(!ParseArguments(arguments, &rejected), "PPB return-header admission rejects altered input/scaler/capture before I/O");
+    }
+    FILE *record = std::tmpfile(); const int saved = dup(STDOUT_FILENO);
+    std::fflush(stdout);
+    const bool redirected = record && saved >= 0 && dup2(fileno(record), STDOUT_FILENO) >= 0;
+    if (redirected) {
+        PpbContextFixture fixture; fixture.post_stop = fixture.metadata_pool = fixture.return_header = fixture.all_ones = true;
+        fixture.fail_at = fixture.lose_at = fixture.change_at = 816;
+        PpbContextObserver subject; subject.enabled = subject.post_stop = subject.metadata_pool = subject.return_header = true;
+        for (unsigned stage = 0; stage < 4; ++stage) subject.Observe(&fixture.current, stage, stage != 0, PpbContextFixture::Read, stage == 3);
+        subject.Finish(true);
+    }
+    std::fflush(stdout);
+    const bool restored = saved >= 0 && dup2(saved, STDOUT_FILENO) >= 0;
+    if (saved >= 0) close(saved);
+    char text[32768] = {}; size_t length = 0;
+    if (record) { std::rewind(record); length = std::fread(text, 1, sizeof(text) - 1, record); std::fclose(record); }
+    check(redirected && restored && length && std::strstr(text, "reads=816/816 bytes=22400/22400 measured=204/204") &&
+        std::strstr(text, "route-acquire=ffffffff route-return=ffffffff return-write-single0=ffffffff return-write-single1=ffffffff") &&
+        std::strstr(text, "return-read-after=ffffffff return-write-after=ffffffff") &&
+        std::strstr(text, "slot=33 fixed-address=010175dc words=ffffffff") &&
+        std::strstr(text, "atomic8B/routing-identity/zero-cause-certified=no") &&
+        std::strstr(text, "PPB return header finish: native-result=PASS observation-result=PASS stages=4/4 reads=816/816 bytes=22400/22400"),
+        "PPB return report retains every independent word and states request grouping is not atomicity or cause proof");
+}
+
 template<class Check> static void MfdFramingSelfTest(const Check &check)
 {
     const uint32_t addresses[] = {0x00540000, 0x00540078, 0x00540050, 0x00540070, 0x00540000};
@@ -3931,6 +4127,7 @@ static bool SelfTest()
     PpbContextSelfTest(check);
     PpbStopContextSelfTest(check);
     PpbFixedMetadataSelfTest(check);
+    PpbReturnHeaderSelfTest(check);
     PpbStopLifecycleSelfTest(check);
     MfdFramingSelfTest(check);
     RuntimeInventorySelfTest(check);
@@ -5957,6 +6154,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.ppb_context.enabled = options.observe_ppb_context;
     audit.ppb_context.post_stop = options.observe_ppb_stop;
     audit.ppb_context.metadata_pool = options.observe_ppb_metadata;
+    audit.ppb_context.return_header = options.observe_ppb_return;
     audit.mfd_address.enabled = options.observe_mfd_address;
     audit.mfd_framing.enabled = options.observe_mfd_framing;
     audit.mfd_colour.stimulus = options.inject_mfd_colour;
@@ -6125,13 +6323,15 @@ int main(int argc, char **argv)
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
             "[--scaler-test WIDTH_OR_0] [--mpeg1-via-mpeg2 | --h263-via-divx] "
-            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --observe-ppb-metadata | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
+            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --observe-ppb-metadata | --observe-ppb-return | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
     if (NeedsRawIo(options) && !CanReadChromaConfiguration()) {
-        if (options.observe_ppb_metadata)
+        if (options.observe_ppb_return)
+            std::fprintf(stderr, "--observe-ppb-return requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
+        else if (options.observe_ppb_metadata)
             std::fprintf(stderr, "--observe-ppb-metadata requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
         else if (options.observe_ppb_stop)
             std::fprintf(stderr, "--observe-ppb-stop requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");

@@ -5549,6 +5549,90 @@ def _ppb_fixed_metadata_bridge(payload):
                         "Host STOP success is not ARC completion; queued returns and matching sequential reads do not establish consumption."]}
 
 
+def _ppb_return_header_window(handle, physical, submitted_bytes, video_base, video_bytes):
+    """Model bounded handle scalars and fixed headers; never follow route values."""
+    owner = _ppb_context_object_window(handle, "H")
+    fixed = _ppb_fixed_metadata_window(physical, submitted_bytes, video_base, video_bytes)
+    context = fixed["context_address"]
+    spans = [fixed["read_spans"][0]]
+    spans += [{"role": role, "offset": offset, "address": context + offset, "bytes": size}
+              for role, offset, size in (("return_initial", 0x15778, 8),
+                  ("return_write_first", 0x1577c, 4), ("return_write_second", 0x1577c, 4),
+                  ("return_final", 0x15778, 8))]
+    spans += fixed["read_spans"][2:]
+    fixed.update(read_spans=spans, read_calls=39, total_read_bytes=2480)
+    return {"handle_window": owner,
+            "handle_route_span": {"role": "handle_route_words", "offset": 0x250,
+                                  "address": handle + 0x250, "bytes": 8},
+            "fixed_window": fixed, "read_calls": 40, "total_read_bytes": 2488,
+            "max_read_bytes": 72, "no_observed_pointer_following": True,
+            "observed_inputs_only": True, "model_no_native_certification": True, "non_atomic": True}
+
+
+def _ppb_return_header_observation(route_bytes, return_bytes):
+    """Detach six sequential samples without interpreting their routing or cause."""
+    if (type(route_bytes) not in (bytes, bytearray) or len(route_bytes) != 8 or
+            type(return_bytes) not in (bytes, bytearray) or len(return_bytes) != 24):
+        raise FormatError("PPB return observation requires exactly 8 route bytes and 24 sample bytes")
+    routes, samples = list(struct.unpack("<2I", route_bytes)), list(struct.unpack("<6I", return_bytes))
+    return {"route_words": routes, "return_samples": samples,
+            "return_sample_roles": ["initial_read", "initial_write", "first_single_write",
+                                    "second_single_write", "final_read", "final_write"],
+            "route_zero_indices": [index for index, word in enumerate(routes) if word == 0],
+            "route_all_ones_indices": [index for index, word in enumerate(routes) if word == 0xffffffff],
+            "routes_differ": routes[0] != routes[1],
+            "return_zero_indices": [index for index, word in enumerate(samples) if word == 0],
+            "return_all_ones_indices": [index for index, word in enumerate(samples) if word == 0xffffffff],
+            "return_read_samples_equal": samples[0] == samples[4],
+            "return_write_samples_equal": len({samples[index] for index in (1, 2, 3, 5)}) == 1,
+            "observed_inputs_only": True, "model_no_native_certification": True, "non_atomic": True,
+            "certified": dict.fromkeys(("routing_identity", "metadata_validity", "current_state", "source_lease",
+                "generation", "backend_completion", "atomic_64bit_read", "request_width_cause", "zero_cause"), False)}
+
+
+def _ppb_return_header_bridge(payload):
+    """Reuse the stock fixed-pool proof for a separately opted-in scalar schedule."""
+    fixed = _ppb_fixed_metadata_bridge(payload)
+    words = (("acquire", 0xd638, 0xe5976250, 0x250), ("release", 0xd5b0, 0xe5986254, 0x254))
+    critical = []
+    for role, address, word, offset in words:
+        if _bootstrap_word(payload, address) != word:
+            raise FormatError("PPB return header handle-route load does not match")
+        critical.append({"role": role, "blob_file_offset": address, "instruction": word,
+                         "handle_word_offset": offset})
+    return {"basis": dict(fixed["basis"], model="fixed-return-header-observation-v1"),
+        "validated_regions": fixed["validated_regions"], "critical_arm_words": critical,
+        "reused_fixed_metadata_source": {"arc_bodies": fixed["arc_bodies"], "relocations": fixed["relocations"],
+                                       "publication": fixed["publication"], "layout": fixed["layout"]},
+        "handle_route": {"kind": "H", "whole_object_bytes": 0xa84c, "offset": 0x250, "bytes": 8,
+                         "word_offsets": [0x250, 0x254], "word_roles": ["acquire_route_word", "return_route_word"],
+                         "full_small_heap_guard_required": True, "frozen_owner_graph_required": True,
+                         "route_contents_followed": False, "runtime_routing_identity_proven": False},
+        "return_reads": [{"role": role, "context_offset": offset, "bytes": size}
+                         for role, offset, size in (("return_initial", 0x15778, 8),
+                             ("return_write_first", 0x1577c, 4), ("return_write_second", 0x1577c, 4),
+                             ("return_final", 0x15778, 8))],
+        "observation": {"flag": "--observe-ppb-return", "stages": 4, "passes_per_stage": 2,
+            "ordered_pass": ["graph_before", "handle_route_words", "delivery_indices", "return_initial",
+                "return_write_first", "return_write_second", "return_final", "metadata_prefixes", "graph_after"],
+            "graph_calls_each": 31, "graph_bytes_each": 156, "handle_calls_per_pass": 1, "handle_bytes_per_pass": 8,
+            "fixed_calls_per_pass": 39, "fixed_bytes_per_pass": 2480, "per_pass_calls": 102, "per_pass_bytes": 2800,
+            "trial_calls": 816, "trial_bytes": 22400, "max_read_bytes": 72,
+            "pool_and_plane_pointer_following": False, "diagnostic_target_writes": False, "non_atomic": True},
+        "transport": {"api_length_unit": "bytes", "driver_length_unit": "DWORDs", "pair_api_bytes": 8,
+            "pair_driver_dwords": 2, "pair_sequential_readl_calls": 2, "readl_address_step_bytes": 4,
+            "host_window_locked_per_burst": True, "firmware_words_locked": False,
+            "atomic_64bit_read": False, "successful_api_certifies_firmware_value": False,
+            "request_width_cause_certified": False, "runtime_source_validation": False},
+        "validation_scope": dict(fixed["validation_scope"], runtime_routing_identity=False,
+            metadata_validity=False, atomic_64bit_read=False, request_width_cause=False, zero_cause=False),
+        "conditions": fixed["conditions"],
+        "limitations": fixed["limitations"] + [
+            "H+0x250/H+0x254 are observed routing scalars only; zero, all-ones or differing values do not establish pointer identity or validity.",
+            "An 8-byte API request performs two sequential driver readl operations, not an atomic 64-bit firmware snapshot.",
+            "Preserve all six return DWORD samples separately; equal or differing samples do not attribute a zero index or request-width cause."]}
+
+
 def _ppb_source_geometry_join(metadata_mb, prefix_mb, metadata_config, allocation_config):
     """Compare supplied snapshots, not native frame identity or ownership."""
     for dimensions in (metadata_mb, prefix_mb):
@@ -7344,7 +7428,7 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
             references=False, all_symbols=False, bootstrap=False, picture_output=False,
             arc_metadata=False, csc_command=False, command_buffer_bridge=False, inner_descriptor=False,
             scaler_fir=False, ppb_handoff=False, ppb_source=False, ppb_saved_context=False, ppb_stop_context=False,
-            ppb_fixed_metadata=False):
+            ppb_fixed_metadata=False, ppb_return_header=False):
     if len(data) < 24 or len(data) > MAX_FIRMWARE_SIZE or len(data) % 4:
         raise FormatError("invalid BCM70015 firmware size")
     sha256 = hashlib.sha256(data).hexdigest()
@@ -7374,6 +7458,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         raise FormatError("--ppb-stop-context requires the exact bundled firmware SHA-256 and size")
     if ppb_fixed_metadata and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
         raise FormatError("--ppb-fixed-metadata requires the exact bundled firmware SHA-256 and size")
+    if ppb_return_header and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
+        raise FormatError("--ppb-return-header requires the exact bundled firmware SHA-256 and size")
     payload = data[:-TRAILER_SIZE]
     length_slot = struct.unpack_from("<I", data, len(payload))[0]
     if length_slot != 16:
@@ -7466,6 +7552,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         result["ppb_stop_context_bridge"] = _ppb_stop_context_bridge(payload)
     if ppb_fixed_metadata:
         result["ppb_fixed_metadata_bridge"] = _ppb_fixed_metadata_bridge(payload)
+    if ppb_return_header:
+        result["ppb_return_header_bridge"] = _ppb_return_header_bridge(payload)
     return result
 
 
@@ -7509,6 +7597,8 @@ def main(argv=None):
         "validate conditional STOP/save ordering and status masking; not backend completion or a lease"))
     parser.add_argument("--ppb-fixed-metadata", action="store_true", help=(
         "validate fixed per-picture metadata publications and ring headers; not source ownership or a lease"))
+    parser.add_argument("--ppb-return-header", action="store_true", help=(
+        "validate bounded handle-route and sequential return-header observations; not routing or completion proof"))
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-fA-F]{64}", args.expect_sha256):
         parser.error("--expect-sha256 must be 64 hexadecimal digits")
@@ -7517,7 +7607,7 @@ def main(argv=None):
                          args.expect_sha256.lower(), args.references, args.all_symbols, args.bootstrap,
                          args.picture_output, args.arc_metadata, args.csc_command, args.command_buffer_bridge,
                          args.inner_descriptor, args.scaler_fir, args.ppb_handoff, args.ppb_source,
-                         args.ppb_saved_context, args.ppb_stop_context, args.ppb_fixed_metadata)
+                         args.ppb_saved_context, args.ppb_stop_context, args.ppb_fixed_metadata, args.ppb_return_header)
     except (OSError, FormatError) as error:
         print(f"flea_fw_map: {error}", file=sys.stderr)
         return 1
