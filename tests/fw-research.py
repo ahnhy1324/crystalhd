@@ -13926,5 +13926,486 @@ class FirmwareArcCompletionOwnerProjectionTests(unittest.TestCase):
                                              bytes(range(capacity)), bytes(16))
 
 
+def project_arc_return_release(payload, read_index, write_index, token, flags, banks,
+                               lane=0, status_high=0, metadata=(0, 0), budget=1024, stuck=False):
+    """Joined original return-token, address-scan and zero-helper retirement path.
+
+    Entry is the selected Core_Run fragment, not the scheduler prologue. Exit
+    is BEFORE its timer read at 51b4, not a function return. All RAM, DMA status
+    and eight-byte transfer effects are synthetic; polling has only an external
+    instruction budget. Exact metadata addresses carry no generation identity.
+    Named shifts/LP are logical assumptions, not native timing or source leases.
+    """
+    if type(payload) not in (bytes, bytearray) or len(payload) != MAP.BUNDLED_SIZE - MAP.TRAILER_SIZE:
+        raise ValueError("invalid ARC return release payload")
+    header = (b"\x7fELF\x01\x01\x01" + bytes(9), 2, 45, 1, 0x3a678, 52, 0x4aae0,
+              0, 52, 32, 18, 40, 55, 54)
+    sections = {2: (9, 1, 6, 0x4000, 0x444, 0x23d4, 0, 0, 0x4000, 1),
+        4: (61, 1, 6, 0x7f8c, 0x43d0, 0x41cc, 0, 0, 4, 1),
+        34: (0x280, 3, 0, 0, 0x39035, 0x20da, 0, 0, 1, 1),
+        35: (0x288, 2, 0, 0, 0x3b110, 0x3450, 34, 0x20d, 4, 16),
+        37: (0x29d, 4, 0, 0, 0x3e5c0, 1008, 35, 2, 4, 12),
+        54: (0x49d, 3, 0, 0, 0x4a638, 0x4a7, 0, 0, 1, 1)}
+    symbols = ((578, (4016, 0x907c, 328, 18, 0, 4), b"Core_DeallocatePPB\0"),
+        (612, (4684, 0xba98, 48, 18, 0, 4), b"Core_PPB_From_Address\0"),
+        (637, (5131, 0x4d10, 180, 18, 0, 2), b"Core_CircBuffer_Get\0"),
+        (638, (5151, 0x4dc4, 1032, 18, 0, 2), b"Core_Run\0"))
+    section_names = ((9, b".core_critical_code_slice\0"), (61, b".core_critical_code_picture\0"))
+    if struct.unpack_from("<16sHHIIIIIHHHHHH", payload, 0x2ea60) != header or any(
+            struct.unpack_from("<10I", payload, 0x79540 + 40 * index) != record
+            for index, record in sections.items()) or any(
+            struct.unpack_from("<IIIBBH", payload, 0x69b70 + 16 * index) != record or
+            payload[0x67a95 + record[0]:0x67a95 + record[0] + len(name)] != name
+            for index, record, name in symbols) or any(
+            payload[0x79098 + offset:0x79098 + offset + len(name)] != name
+            for offset, name in section_names):
+        raise ValueError("stock ARC return release source mapping changed")
+    regions = ((0x4d10, 0x4dc4, 0x2fbb4, "4e0746e00040cedaee3d0275eaa7c1a14fa9f4dc056a60511dfd9b423a901a90"),
+        (0xba98, 0xbac8, 0x3693c, "edfdd3c4305efa139464b9e1b9fa67614ee6ff684e96de4156f63564261609b0"),
+        (0x907c, 0x91c4, 0x33f20, "2117ff7294daa5e9da4d290f92d28b28ae3a04b927491427e7f7885c1e90b1bf"),
+        (0x4dc4, 0x51cc, 0x2fc68, "26e570670d39d004b02634814b88d8b510d6294eb268f08599d25c02e22403f3"))
+    for low, high, offset, digest in regions:
+        if hashlib.sha256(payload[offset:offset + high - low]).hexdigest() != digest:
+            raise ValueError("stock ARC return release body changed")
+    if hashlib.sha256(payload[0x67a25:0x67a95]).hexdigest() != \
+            "50144f0baa420310c9ac35d5739a4e90af2f13e07bb65daa87894472f695ed00":
+        raise ValueError("stock ARC return release declarations changed")
+    edges = {0x516c: 0x4d10, 0x517c: 0xba98, 0x51a4: 0x907c}
+    for site, symbol, blob in ((0x517c, 612, 0x6d2b4), (0x51a4, 578, 0x6d2cc)):
+        if payload[blob:blob + 12] != struct.pack("<IIi", site, (symbol << 8) | 6, 0):
+            raise ValueError("stock ARC return release relocation changed")
+    if any(type(value) is not int or not 0 <= value <= 0xffffffff
+           for value in (read_index, write_index, token, status_high)) or status_high & 15 or \
+            type(flags) not in (bytes, bytearray) or len(flags) != 68 or \
+            type(banks) not in (bytes, bytearray) or len(banks) != 144 or \
+            type(lane) is not int or lane not in (0, 1) or \
+            type(budget) is not int or not 1 <= budget <= 1024 or type(stuck) is not bool:
+        raise ValueError("invalid synthetic ARC return release inputs")
+    if type(metadata) is not tuple or len(metadata) != 2 or any(type(value) is not int or value for value in metadata):
+        raise ValueError("outside zero metadata-helper domain")
+    pool, ring, stage, dma, stack, diagnostic = 0x500100, 0x600100, 0x30051a80, 0x30051800, 0x400800, 0x30000fbc
+    valid = read_index != write_index and 2 <= read_index <= 63 and 2 <= write_index <= 63
+    returned = token if valid else 0
+    matched = next((index for index in range(34) if returned and returned == pool + 228 * index), None)
+    flag = struct.unpack_from("<H", flags, 2 * matched)[0] & 0xcfff if matched is not None else 0
+    admitted = bool(flag & 0x8000) and not flag & 0x6000
+    bank, slot = flag & 15, (flag >> 4) & 31
+    if admitted and not flag & 0x400 and bank >= 9:
+        raise ValueError("outside modeled ARC bank storage, not a firmware guard")
+    pages = {base: bytearray(b"\xa5" * 4096) for base in
+             (0x3fffd000, 0x400000, 0x500000, 0x501000, 0x600000, 0x30051000, 0x30000000)}
+    def put(memory, address, size, value):
+        base, offset = address & ~4095, address & 4095
+        if base not in memory or offset + size > 4096 or address & (size - 1):
+            raise ValueError("outside synthetic ARC return release RAM")
+        memory[base][offset:offset + size] = (value & ((1 << (8 * size)) - 1)).to_bytes(size, "little")
+    pages[0x3fffd000][0x100:0x144], pages[0x3fffd000][0x1a8:0x238] = flags, banks
+    for address, value in ((0x3fffd0e8, pool), (0x3fffd2d4, ring), (ring, read_index),
+                           (ring + 4, write_index), (dma + 64, status_high)):
+        put(pages, address, 4, value)
+    if valid:
+        put(pages, ring + 4 * read_index, 4, token)
+    if matched is not None:
+        for offset in (68, 224):
+            put(pages, pool + 228 * matched + offset, 4, 0)
+    initial = {base: bytes(page) for base, page in pages.items()}
+    expected = {base: bytearray(page) for base, page in initial.items()}
+    registers = [0xabc00000 + index for index in range(64)]
+    registers[13], registers[21], registers[28], registers[31], registers[60] = \
+        0x30000f00, 0x3fffd370, stack, 0x400000, 0
+    expected_registers = list(registers)
+    expected_stores = []
+    def expect_store(pc, address, size, value):
+        value &= (1 << (8 * size)) - 1
+        expected_stores.append((pc, address, size, value))
+        put(expected, address, size, value)
+    def subtraction(left, right):
+        result = (left - right) & 0xffffffff
+        return result == 0, bool(result & 0x80000000), left < right, \
+            bool((left ^ right) & (left ^ result) & 0x80000000)
+    for pc, address, value in zip((0x4d54, 0x4d58, 0x4d5c) if lane else (0x4d44, 0x4d48, 0x4d4c),
+            (dma + 48, dma + 52, dma + 56) if lane else (dma + 32, dma + 36, dma + 40), (ring, stage, 8)):
+        expect_store(pc, address, 4, value)
+    expected[stage & ~4095][stage & 4095:(stage & 4095) + 8] = struct.pack("<II", read_index, write_index)
+    next_read = 2 if read_index == 63 else read_index + 1
+    if valid:
+        expect_store(0x4dbc, ring, 4, next_read)
+        get_flags = subtraction(read_index + 1, 64)
+    else:
+        if read_index == write_index:
+            get_flags = subtraction(read_index, write_index)
+        elif read_index < 2 or read_index & 0x80000000:
+            get_flags = subtraction(read_index, 2)
+        elif read_index > 63:
+            get_flags = subtraction(read_index, 63)
+        elif write_index < 2 or write_index & 0x80000000:
+            get_flags = subtraction(write_index, 2)
+        else:
+            get_flags = subtraction(write_index, 63)
+    expected_registers[:4] = [returned, ring, next_read if valid else read_index, stage]
+    expected_registers[31] = 0x5174 >> 2
+    expected_flags = (returned == 0, bool(returned & 0x80000000), *get_flags[2:])
+    expected_calls = [(0x516c, 0x4d10)]
+    if returned:
+        expected_calls.append((0x517c, 0xba98))
+        expected_registers[31], expected_registers[60] = 0x5180 >> 2, 34 - matched if matched is not None else 0
+        expected_registers[2:4] = [pool + 228 * (matched if matched is not None else 34),
+                                   matched if matched is not None else 0xffffffff]
+        expected_flags = subtraction(matched if matched is not None else 0xffffffff, 0)
+        if matched is None:
+            expected_registers[0] = 19
+            expect_store(0x51b0, diagnostic, 4, 19)
+        else:
+            address = 0x3fffd100 + matched * 2
+            expected_registers[0:4] = [18, flag, 0x3fffd170 + matched * 2, matched]
+            expect_store(0x51a8, address, 2, flag)
+            expected_calls.append((0x51a4, 0x907c))
+            expected_registers[31] = 0x51ac >> 2
+            for pc, address, value in ((0x907c, stack + 4, 0x51ac >> 2),
+                                      (0x9080, stack, registers[27])):
+                expect_store(pc, address, 4, value)
+            for pc, register in ((0x908c, 13), (0x9090, 14), (0x9094, 15), (0x9098, 16),
+                                  (0x909c, 17), (0x90b8, 18), (0x90c8, 19)):
+                expect_store(pc, stack - 44 + 16 + (register - 13) * 4, 4, registers[register])
+            if flag & 0x6000:
+                expected_flags = (False, False, False, False)
+            elif not flag & 0x8000:
+                expected_flags = (flag == 0, False, False, False)
+            else:
+                expected_registers[1] = pool + 228 * matched
+                if flag & 0x400:
+                    expected_flags = (False, False, False, False)
+                else:
+                    before_mask = struct.unpack_from("<I", banks, bank * 16 + 4)[0]
+                    after_mask = before_mask & ~(1 << slot)
+                    expected_registers[1:3] = [before_mask, 0x3fffd170 + bank * 16]
+                    expect_store(0x918c, 0x3fffd1ac + bank * 16, 4, after_mask)
+                    if not after_mask:
+                        expect_store(0x9190, 0x3fffd1b4 + bank * 16, 4, 0)
+                        expect_store(0x9194, 0x3fffd1b0 + bank * 16, 4, 0)
+                    expected_flags = (after_mask == 0, bool(after_mask & 0x80000000), False, False)
+                expect_store(0x9198, 0x3fffd100 + matched * 2, 2, 0)
+            expect_store(0x51b0, diagnostic, 4, 18)
+    expected_status = [(0x4d24, status_high | 12), (0x4d24, status_high | (4 * lane)),
+                       (0x4d34, status_high | (4 * lane)), (0x4d60, status_high | 15), (0x4d60, status_high)]
+    record = pool + 228 * matched if matched is not None else None
+    windows = [(stack - 44, stack + 8), (0x3fffd0e8, 0x3fffd0ec), (0x3fffd2d4, 0x3fffd2d8),
+               (0x3fffd100, 0x3fffd144), (0x3fffd1a8, 0x3fffd238), (stage, stage + 8)]
+    if valid:
+        windows.append((ring + 4 * read_index, ring + 4 * read_index + 4))
+    if record is not None:
+        windows += [(record + offset, record + offset + 4) for offset in (68, 224)]
+    pc, pending, loop_start, loop_end = 0x516c, None, None, None
+    z, n, carry, overflow = False, True, True, True
+    visited, reads, stores, calls, status_reads, transfer = [], [], [], [], [], None
+    polls = {0x4d24: 0, 0x4d60: 0}
+    def word(address):
+        if address & 3 or 0x4dc4 <= address < 0x51cc and not 0x516c <= address < 0x51b4:
+            raise ValueError("outside selected ARC return caller fragment")
+        for low, high, offset, _ in regions:
+            if low <= address < high:
+                return struct.unpack_from("<I", payload, offset + address - low)[0]
+        raise ValueError("outside pinned ARC return release code")
+    while pc != 0x51b4:
+        if len(visited) >= budget:
+            raise ValueError("ARC return release instruction budget exceeded")
+        instruction = word(pc)
+        visited.append(pc)
+        major = instruction >> 27
+        a, b, c = ((instruction >> shift) & 63 for shift in (21, 15, 9))
+        short = (instruction & 511) - (512 if instruction & 256 else 0)
+        length = 4
+        def operand(register):
+            nonlocal length
+            if register in (61, 63):
+                return short & 0xffffffff
+            if register == 62:
+                length = 8
+                return word(pc + 4)
+            return registers[register]
+        def condition(code):
+            if code not in (0, 1, 2, 3, 9, 11):
+                raise ValueError("unsupported ARC return release condition")
+            return {0: True, 1: z, 2: not z, 3: not n, 9: not z and n == overflow, 11: n != overflow}[code]
+        next_pc, branch = pc + 4, pending
+        pending = None
+        if major in (8, 10, 12, 14, 16, 18, 3):
+            left, right = operand(b), 0 if major == 3 else operand(c)
+            immediate = b in (61, 63) or major != 3 and c in (61, 63)
+            take = condition(0 if immediate else instruction & 31)
+            set_flags = (b == 61 or major != 3 and c == 61) if immediate else bool(instruction & 256)
+            if take:
+                if major == 8:
+                    result = (left + right) & 0xffffffff
+                elif major == 10:
+                    result = (left - right) & 0xffffffff
+                elif major == 12:
+                    result = left & right
+                elif major == 14:
+                    result = left & ~right & 0xffffffff
+                elif major == 16:
+                    result = (left << (right & 31)) & 0xffffffff
+                elif major == 18:
+                    result = ((left - (1 << 32) if left & 0x80000000 else left) >> (right & 31)) & 0xffffffff
+                else:
+                    if c != 6:
+                        raise ValueError("unsupported ARC return release single operation")
+                    result = ((left & 0xffff) - (65536 if left & 0x8000 else 0)) & 0xffffffff
+                if set_flags:
+                    z, n = result == 0, bool(result & 0x80000000)
+                    if major == 8:
+                        carry = left + right > 0xffffffff
+                        overflow = bool(~(left ^ right) & (left ^ result) & 0x80000000)
+                    elif major == 10:
+                        carry = left < right
+                        overflow = bool((left ^ right) & (left ^ result) & 0x80000000)
+                    elif major in (16, 18):
+                        raise ValueError("unsupported ARC return release shift flags")
+                if a < 61:
+                    registers[a] = result & 0xffffff if a == 60 else result
+            next_pc = pc + length
+        elif major in (0, 1):
+            size = 4 if major == 0 else {0: 4, 2: 2}.get((instruction >> 10) & 3)
+            if size is None or a >= 61 or major == 1 and instruction & 0x2200 or \
+                    major == 1 and instruction & 0x1000 and pc != 0x91c0:
+                raise ValueError("unsupported ARC return release load")
+            address = (operand(b) + (operand(c) if major == 0 else short)) & 0xffffffff
+            if major == 1 and instruction & 0x4000:
+                if pc not in (0x4d24, 0x4d34, 0x4d60) or address != dma + 64:
+                    raise ValueError("outside synthetic ARC return DMA status read")
+                if pc == 0x4d34:
+                    value = status_high | (4 * lane)
+                else:
+                    value = status_high | (12 if pc == 0x4d24 and not polls[pc] else
+                        4 * lane if pc == 0x4d24 else 15 if stuck or not polls[pc] else 0)
+                    polls[pc] += 1
+                status_reads.append((pc, value))
+                if pc == 0x4d60 and not value & 15:
+                    if transfer != (ring, stage, 8):
+                        raise ValueError("outside pending ARC return DMA fixture")
+                    put(pages, stage, 4, int.from_bytes(pages[ring & ~4095][ring & 4095:(ring & 4095) + 4], "little"))
+                    put(pages, stage + 4, 4, int.from_bytes(pages[ring & ~4095][(ring & 4095) + 4:(ring & 4095) + 8], "little"))
+                    transfer = None
+            else:
+                if address & (size - 1) or not any(start <= address and address + size <= end for start, end in windows) or \
+                        stage <= address < stage + 8 and transfer is not None:
+                    raise ValueError("outside synthetic ARC return release read")
+                value = int.from_bytes(pages[address & ~4095][address & 4095:(address & 4095) + size], "little")
+            registers[a] = value
+            reads.append((pc, address, size))
+            if major == 1 and instruction & 0x1000:
+                registers[b] = address
+            next_pc = pc + length
+        elif major == 2:
+            size = {0: 4, 2: 2}.get((instruction >> 22) & 3)
+            if size is None or instruction & 0x03200000:
+                raise ValueError("unsupported ARC return release store")
+            address, value = (operand(b) + short) & 0xffffffff, operand(c) & ((1 << (8 * size)) - 1)
+            event = (pc, address, size, value)
+            if len(stores) >= len(expected_stores) or event != expected_stores[len(stores)] or \
+                    bool(instruction & 0x04000000) != (pc in (0x4d44, 0x4d48, 0x4d4c, 0x4d54, 0x4d58, 0x4d5c, 0x51b0)):
+                raise ValueError("outside ordered ARC return release store contract")
+            put(pages, address, size, value)
+            stores.append(event)
+            if pc in (0x4d4c, 0x4d5c):
+                if transfer is not None:
+                    raise ValueError("ARC return DMA fixture already pending")
+                transfer = (registers[1], registers[3], registers[0])
+            next_pc = pc + length
+        elif major in (4, 5, 6, 7):
+            take, delay = condition(instruction & 31), (instruction >> 5) & 3
+            if delay not in (0, 1, 2) or branch is not None:
+                raise ValueError("unsupported ARC return release branch")
+            if major == 7:
+                if b != 31 or instruction & 0x100:
+                    raise ValueError("unsupported ARC return release return")
+                target = (registers[31] & 0xffffff) << 2
+            else:
+                displacement = (instruction >> 7) & 0xfffff
+                displacement -= 1 << 20 if displacement & 0x80000 else 0
+                target = pc + 4 + 4 * displacement
+            if major == 6:
+                if delay or instruction & 31:
+                    raise ValueError("unsupported ARC return release loop")
+                loop_start, loop_end = pc + 4, target
+            else:
+                if major == 5:
+                    event = (pc, target)
+                    if not take or edges.get(pc) != target or len(calls) >= len(expected_calls) or event != expected_calls[len(calls)]:
+                        raise ValueError("outside selected ARC return release call edge")
+                    calls.append(event)
+                    registers[31] = (pc + 4 + 4 * delay) >> 2
+                if delay == 1:
+                    pending = target if take else pc + 8
+                elif delay == 2:
+                    if take:
+                        pending = target
+                    else:
+                        next_pc = pc + 8
+                elif take:
+                    next_pc = target
+        else:
+            raise ValueError("outside zero metadata-helper opcode domain")
+        if branch is not None:
+            next_pc = branch
+        elif next_pc == loop_end:
+            count = registers[60]
+            registers[60] = (count - 1) & 0xffffff
+            if count != 1:
+                next_pc = loop_start
+        pc = next_pc
+    final_pages = {base: bytes(page) for base, page in pages.items()}
+    if final_pages != {base: bytes(page) for base, page in expected.items()} or registers != expected_registers or \
+            (z, n, carry, overflow) != expected_flags or stores != expected_stores or \
+            calls != expected_calls or status_reads != expected_status or transfer is not None:
+        raise ValueError("ARC return release full-page/register/flags/trace oracle changed")
+    return {"initial": initial, "pages": final_pages, "registers": registers, "flags": (z, n, carry, overflow),
+            "reads": reads, "stores": stores, "calls": calls, "status_reads": status_reads, "visited": visited,
+            "entry": 0x516c, "exit_before": pc, "consumed": valid, "matched_index": matched,
+            "cleared_mask": 0x3000 if matched is not None else 0, "whole_core_run_executed": False,
+            "native_execution": False, "dma_effects_are_synthetic": True, "metadata_helpers_executed": False,
+            "vendor_extensions_certified": False, "pipeline_timing_certified": False,
+            "generation_certified": False, "physical_lease_certified": False, "engine_completion_certified": False}
+
+
+class FirmwareArcReturnReleaseProjectionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        raw = MAP.read_firmware(BLOB)
+        if len(raw) != MAP.BUNDLED_SIZE or hashlib.sha256(raw).hexdigest() != MAP.BUNDLED_SHA256:
+            raise ValueError("bundled firmware changed")
+        cls.payload = raw[:-MAP.TRAILER_SIZE]
+
+    def test_known_exact_address_reference_mask_and_bank_retirement(self):
+        for index in (0, 33):
+            for bank in (0, 8):
+                for slot in (0, 31):
+                    for mask in (1 << slot, 0xffffffff):
+                        for flag in (0xa800, 0xe800, 0xa400, 0):
+                            flags, banks = bytearray(68), bytearray(144)
+                            selected = flag | bank | (slot << 4)
+                            struct.pack_into("<H", flags, 2 * index, selected)
+                            struct.pack_into("<4I", banks, bank * 16, 0x920000, mask, 0x12345, 0x11223344)
+                            for lane in (0, 1):
+                                result = project_arc_return_release(self.payload, 63, 2, 0x500100 + index * 228,
+                                    flags, banks, lane=lane, status_high=0x80000000)
+                                final_flag = struct.unpack_from("<H", result["pages"][0x3fffd000], 0x100 + index * 2)[0]
+                                admitted = bool(selected & 0x8000) and not selected & 0x4000
+                                self.assertEqual(final_flag, 0 if admitted else selected & 0xcfff)
+                                self.assertEqual(result["matched_index"], index)
+                                self.assertEqual(result["registers"][0], 18)
+                                self.assertEqual(result["registers"][60], 34 - index)
+                                self.assertEqual(result["exit_before"], 0x51b4)
+                                self.assertEqual(struct.unpack_from("<I", result["pages"][0x600000], 0x100)[0], 2)
+                                self.assertEqual(result["calls"], [(0x516c, 0x4d10), (0x517c, 0xba98), (0x51a4, 0x907c)])
+                                caller_store = next(event for event in result["stores"] if event[0] == 0x51a8)
+                                first_stack = next(event for event in result["stores"] if event[0] == 0x907c)
+                                self.assertLess(result["stores"].index(caller_store), result["stores"].index(first_stack))
+                                self.assertEqual(caller_store[3], selected & 0xcfff)
+                                if selected & 0x4000:
+                                    self.assertFalse(any(pc in (0x918c, 0x9198) for pc, _, _, _ in result["stores"]))
+                                for key in ("native_execution", "whole_core_run_executed", "metadata_helpers_executed",
+                                            "vendor_extensions_certified", "pipeline_timing_certified", "generation_certified",
+                                            "physical_lease_certified", "engine_completion_certified"):
+                                    self.assertFalse(result[key])
+
+    def test_empty_invalid_unknown_and_address_without_generation_token(self):
+        flags, banks = bytes(68), bytes(144)
+        for read, write in ((2, 2), (0xffffffff, 0xffffffff), (0, 3), (1, 3), (64, 3),
+                            (0x80000000, 3), (2, 0), (2, 64), (2, 0xffffffff)):
+            result = project_arc_return_release(self.payload, read, write, 0x500100, flags, banks)
+            self.assertFalse(result["consumed"])
+            self.assertEqual(result["calls"], [(0x516c, 0x4d10)])
+            self.assertEqual(result["registers"][0], 0)
+            self.assertFalse(any(pc == 0x51b0 for pc, _, _, _ in result["stores"]))
+        for read in (2, 62, 63):
+            for token in (0, 0x500102, 0x500100 + 34 * 228, 0xffffffff):
+                result = project_arc_return_release(self.payload, read, 3 if read != 3 else 4, token, flags, banks)
+                self.assertTrue(result["consumed"])
+                self.assertIsNone(result["matched_index"])
+                self.assertEqual(result["registers"][0], 19 if token else 0)
+                self.assertEqual(result["registers"][60], 0)
+                self.assertFalse(any(pc == 0x907c for pc in result["visited"]))
+                self.assertEqual(result["pages"][0x3fffd000][0x100:0x144], flags)
+        # Identical admitted bytes with different external generation stories
+        # cannot be distinguished by the actual pointer-equality scan.
+        first = project_arc_return_release(self.payload, 2, 3, 0x500100, flags, banks)
+        second = project_arc_return_release(self.payload, 2, 3, 0x500100, flags, banks)
+        self.assertEqual((first["pages"], first["registers"]), (second["pages"], second["registers"]))
+        self.assertEqual(first["matched_index"], 0)
+        self.assertFalse(first["generation_certified"])
+
+    def test_source_namespace_relocations_inputs_budgets_and_pre_effect_faults(self):
+        flags, banks = bytearray(68), bytearray(144)
+        struct.pack_into("<H", flags, 0, 0xa800)
+        struct.pack_into("<4I", banks, 0, 0x920000, 1, 0x12345, 0x11223344)
+        before = bytes(flags), bytes(banks)
+        args = {"read_index": 2, "write_index": 3, "token": 0x500100, "flags": flags, "banks": banks}
+        project_arc_return_release(self.payload, **args)
+        self.assertEqual((bytes(flags), bytes(banks)), before)
+        for bank in (9, 15):
+            for base_flag in (0xa800, 0xe800, 0xa400):
+                invalid_flags = bytearray(flags)
+                struct.pack_into("<H", invalid_flags, 0, base_flag | bank)
+                if base_flag == 0xa800:
+                    with self.assertRaisesRegex(ValueError, "outside modeled ARC bank storage"):
+                        project_arc_return_release(self.payload, **dict(args, flags=invalid_flags))
+                else:
+                    result = project_arc_return_release(self.payload, **dict(args, flags=invalid_flags))
+                    self.assertEqual(result["pages"][0x3fffd000][0x1a8:0x238], banks)
+                    self.assertFalse(any(pc == 0x918c for pc, _, _, _ in result["stores"]))
+                    self.assertEqual(struct.unpack_from("<H", result["pages"][0x3fffd000], 0x100)[0],
+                                     0xc800 | bank if base_flag == 0xe800 else 0)
+        offsets = [0x2ea60 + offset for offset in (0, 18, 32, 50)]
+        offsets += [0x2fbb4, 0x2fc0e, 0x2fc67, 0x3693c, 0x36954, 0x3696b, 0x33f20, 0x33fc4, 0x34067,
+                    0x2fc68, 0x2fe6c, 0x3006f, 0x67a25, 0x67a5d, 0x67a94,
+                    0x6d2b4, 0x6d2b8, 0x6d2bc, 0x6d2cc, 0x6d2d0, 0x6d2d4]
+        offsets += [0x79540 + 40 * index + 4 * field for index in (2, 4, 34, 35, 37, 54) for field in range(10)]
+        offsets += [0x69b70 + 16 * index + field for index in (578, 612, 637, 638) for field in (0, 4, 8, 12, 13, 14)]
+        offsets += [0x67a95 + name for name in (4016, 4032, 4684, 4703, 5131, 5149, 5151, 5158)]
+        offsets += [offset + position for offset, length in ((0x790a1, 25), (0x790d5, 27))
+                    for position in (0, length - 2, length - 1)]
+        for offset in offsets:
+            changed = bytearray(self.payload)
+            changed[offset] ^= 1
+            with self.subTest(offset=offset), self.assertRaisesRegex(ValueError, "stock ARC return release"):
+                project_arc_return_release(changed, **args)
+        for payload in (None, [], self.payload[:-1], self.payload + b"\0"):
+            with self.assertRaisesRegex(ValueError, "invalid ARC return release payload"):
+                project_arc_return_release(payload, **args)
+        for name in ("read_index", "write_index", "token", "status_high"):
+            for value in (True, -1, 1 << 32, 0.0):
+                with self.subTest(name=name, value=value), self.assertRaisesRegex(ValueError, "invalid synthetic"):
+                    project_arc_return_release(self.payload, **dict(args, **{name: value}))
+        for name, values in (("flags", ([], bytes(67))), ("banks", ([], bytes(143))),
+                ("lane", (True, -1, 2)), ("status_high", (1, 4)), ("budget", (True, 0, 1025)), ("stuck", (0, 1))):
+            for value in values:
+                with self.assertRaisesRegex(ValueError, "invalid synthetic"):
+                    project_arc_return_release(self.payload, **dict(args, **{name: value}))
+        for metadata in ([0, 0], (True, 0), (0, 1), (1, 0)):
+            with self.assertRaisesRegex(ValueError, "zero metadata-helper"):
+                project_arc_return_release(self.payload, **dict(args, metadata=metadata))
+        with self.assertRaisesRegex(ValueError, "instruction budget exceeded"):
+            project_arc_return_release(self.payload, **dict(args, budget=1))
+        original = struct.unpack_from
+        polls = []
+        def count_poll(fmt, data, position=0):
+            if fmt == "<I" and data is self.payload and position == 0x2fc04:
+                polls.append(position)
+            return original(fmt, data, position)
+        with mock.patch.object(struct, "unpack_from", count_poll), self.assertRaisesRegex(ValueError, "instruction budget exceeded"):
+            project_arc_return_release(self.payload, **dict(args, budget=512, stuck=True))
+        self.assertGreater(len(polls), 1)
+        for offset, mask, message in ((0x2fc04, 1 << 15, "status read"),
+                (0x2fc60, 1 << 15, "store contract"), (0x30020, 1 << 7, "call edge"),
+                (0x3004c, 1 << 15, "store contract")):
+            def corrupt(fmt, data, position=0):
+                value = original(fmt, data, position)
+                return (value[0] ^ mask,) if fmt == "<I" and data is self.payload and position == offset else value
+            with self.subTest(offset=offset), mock.patch.object(struct, "unpack_from", corrupt), \
+                    self.assertRaisesRegex(ValueError, message):
+                project_arc_return_release(self.payload, **args)
+
+
 if __name__ == "__main__":
     unittest.main()
