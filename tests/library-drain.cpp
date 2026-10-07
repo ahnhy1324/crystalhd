@@ -1787,6 +1787,141 @@ public:
     }
 };
 
+struct AvdCacheCountObserver;
+static thread_local AvdCacheCountObserver *active_cache_count = nullptr;
+enum class AvdCacheCountFailure { None, Argument, Mode, Owner, Order, Barrier, Budget, Api, Revision, Gisb, Reentrant };
+static uint32_t AvdCacheCountAddress(unsigned field)
+{
+    const uint32_t addresses[] = {BCHP_MFD_REVISION_ID, BCHP_SUN_GISB_ARB_ERR_CAP_STATUS,
+        BCHP_DECODE_CPUREGS_0_REG_CPU_ICACHE_MISS, BCHP_DECODE_CPUREGS2_0_REG_CPU_ICACHE_MISS,
+        BCHP_SUN_GISB_ARB_ERR_CAP_STATUS, BCHP_MFD_REVISION_ID};
+    return field < 6 ? addresses[field] : 0;
+}
+// Two named counters only. Values, changes and wrap are opaque observations,
+// not a rate, reset, running-core, instruction-execution or namespace proof.
+struct AvdCacheCountObserver {
+    typedef AvdCpuMapObserver::Reader Reader;
+    bool enabled = false, conflicting_mode = false, failed = false;
+    unsigned reads = 0, bytes = 0, next_stage = 0;
+    uint32_t raw[3][2][6] = {};
+    unsigned measured[3][2] = {};
+    bool complete[3][2] = {};
+    BC_STATUS api_status = BC_STS_SUCCESS;
+    AvdCacheCountFailure failure = AvdCacheCountFailure::None;
+private:
+    HANDLE owner = nullptr;
+    const HANDLE *owner_current = nullptr;
+    bool sealed = false, sticky = false;
+    unsigned actual_reads = 0, actual_stage = 0;
+    uint32_t published[3][2][6] = {};
+    unsigned actual_measured[3][2] = {};
+    bool published_complete[3][2] = {};
+    uint32_t rejected_address = 0, rejected_raw = 0;
+    bool rejected_raw_valid = false;
+    bool Reject(AvdCacheCountFailure why) {
+        if (!sticky) failure = why;
+        sticky = failed = true;
+        return false;
+    }
+    bool StateReady() const {
+        return reads == actual_reads && bytes == actual_reads * 4U && next_stage == actual_stage &&
+            !std::memcmp(raw, published, sizeof(raw)) &&
+            !std::memcmp(measured, actual_measured, sizeof(measured)) &&
+            !std::memcmp(complete, published_complete, sizeof(complete));
+    }
+    bool Ready(const HANDLE *current) {
+        if (sticky) return false;
+        if (!sealed || !enabled || conflicting_mode || active_cache_count != this)
+            return Reject(AvdCacheCountFailure::Mode);
+        if (current != owner_current || !*current || *current != owner)
+            return Reject(AvdCacheCountFailure::Owner);
+        if (failed || !StateReady()) return Reject(AvdCacheCountFailure::Budget);
+        return true;
+    }
+public:
+    void Report(unsigned stage) const {
+        if (stage > 2) return;
+        const char *const stages[] = {"after-OPEN/pre-START", "first-output-after-release-and-owned-write", "delivery-EOS-before-STOP"};
+        std::printf("AVD cache count: stage=%s reads=%u/36 bytes=%u/144 api-status=%d failure=%u\n",
+            stages[stage], actual_reads, actual_reads * 4U, api_status, static_cast<unsigned>(failure));
+        for (unsigned pass = 0; pass < 2; ++pass) {
+            std::printf("AVD cache count raw: stage=%s pass=%u", stages[stage], pass);
+            if (published_complete[stage][pass]) {
+                for (unsigned field = 0; field < 6; ++field)
+                    std::printf(" %08x=%08x", AvdCacheCountAddress(field), published[stage][pass][field]);
+            } else std::printf(" INCOMPLETE measured=%u/6", actual_measured[stage][pass]);
+            std::printf("\n");
+        }
+        if (rejected_raw_valid) std::printf("AVD cache count rejected guard: address=%08x raw=%08x\n", rejected_address, rejected_raw);
+        std::printf("AVD cache count scope: two-named-counter-scalars only; target-writes=0 error-clear-writes=0 pointer-follow=0 "
+            "post-cleanup-reads=0 atomic/rate/reset/clock/ISA/execution/current-alias/lease/completion-certified=no\n");
+        std::fflush(stdout);
+    }
+    bool Observe(const HANDLE *current, unsigned stage, bool barrier,
+        Reader reader = DtsDevRegisterRead, bool report = true) {
+        if (sticky) return false;
+        if (active_cache_count) {
+            active_cache_count->Reject(AvdCacheCountFailure::Reentrant);
+            return Reject(AvdCacheCountFailure::Reentrant);
+        }
+        if (!enabled && !sealed && !failed) return true;
+        if (!enabled || conflicting_mode) return Reject(AvdCacheCountFailure::Mode);
+        if (!current || !*current || !reader) return Reject(AvdCacheCountFailure::Argument);
+        if (stage > 2 || stage != actual_stage) return Reject(AvdCacheCountFailure::Order);
+        if (barrier != (stage != 0)) return Reject(AvdCacheCountFailure::Barrier);
+        if (failed || !StateReady() || actual_reads != stage * 12U) return Reject(AvdCacheCountFailure::Budget);
+        if (!sealed) { owner = *current; owner_current = current; sealed = true; }
+        struct Route {
+            AvdCacheCountObserver *previous;
+            explicit Route(AvdCacheCountObserver *next) : previous(active_cache_count) { active_cache_count = next; }
+            ~Route() { active_cache_count = previous; }
+        } route(this);
+        bool ok = Ready(current);
+        for (unsigned pass = 0; pass < 2 && ok; ++pass) {
+            uint32_t pending[6] = {};
+            for (unsigned field = 0; field < 6 && ok; ++field) {
+                if (!Ready(current)) { ok = false; break; }
+                const unsigned ordinal = stage * 12U + pass * 6U + field;
+                if (actual_reads != ordinal || actual_reads >= 36U) { ok = Reject(AvdCacheCountFailure::Budget); break; }
+                uint32_t value = 0;
+                ++actual_reads; reads = actual_reads; bytes = actual_reads * 4U;
+                const BC_STATUS status = reader(owner, AvdCacheCountAddress(field), &value);
+                api_status = status;
+                if (status != BC_STS_SUCCESS) { ok = Reject(AvdCacheCountFailure::Api); break; }
+                if (!Ready(current)) { ok = false; break; }
+                ++actual_measured[stage][pass]; measured[stage][pass] = actual_measured[stage][pass];
+                if ((field == 0 || field == 5) ? value != 0x50U : (field == 1 || field == 4) && value != 0) {
+                    rejected_address = AvdCacheCountAddress(field); rejected_raw = value; rejected_raw_valid = true;
+                    ok = Reject(field == 0 || field == 5 ? AvdCacheCountFailure::Revision : AvdCacheCountFailure::Gisb);
+                }
+                pending[field] = value;
+            }
+            if (ok) {
+                std::memcpy(published[stage][pass], pending, sizeof(pending));
+                std::memcpy(raw[stage][pass], pending, sizeof(pending));
+                published_complete[stage][pass] = complete[stage][pass] = true;
+            }
+        }
+        if (ok) { ++actual_stage; next_stage = actual_stage; }
+        if (report) Report(stage);
+        return ok;
+    }
+    bool Finish(bool native_ok, bool report = true) const {
+        if (!sealed && !enabled && !sticky && !failed) return native_ok;
+        bool observed = !sticky && !failed && sealed && enabled && !conflicting_mode &&
+            StateReady() && actual_stage == 3 && actual_reads == 36;
+        for (unsigned stage = 0; stage < 3; ++stage) for (unsigned pass = 0; pass < 2; ++pass)
+            observed = observed && published_complete[stage][pass] && actual_measured[stage][pass] == 6;
+        if (report) {
+            std::printf("AVD cache count finish: native-result=%s observation-result=%s stages=%u/3 reads=%u/36 bytes=%u/144 "
+                "rate/reset/clock/ISA/execution/current-alias/lease/completion-certified=no\n",
+                native_ok ? "PASS" : "FAIL", observed ? "PASS" : "FAIL", actual_stage, actual_reads, actual_reads * 4U);
+            std::fflush(stdout);
+        }
+        return native_ok && observed;
+    }
+};
+
 struct AvdCodeArenaObserver;
 static thread_local AvdCodeArenaObserver *active_code_arena = nullptr;
 enum class AvdCodeArenaFailure { None, Argument, Mode, Owner, Order, Budget, Api, Graph, Guard, Reentrant };
@@ -2813,6 +2948,7 @@ struct Options {
     bool observe_avd_cpu_map = false;
     bool observe_avd_code_arena = false;
     bool observe_avd_code_prefix = false;
+    bool observe_avd_cache_count = false;
     unsigned inject_mfd_colour = 0;
     unsigned scl_status_test = 0;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
@@ -2820,7 +2956,7 @@ struct Options {
 
 static bool AvdMemoryConflicts(const Options &o)
 {
-    return o.observe_avd_code_prefix || o.observe_avd_code_arena || o.observe_avd_cpu_map || o.observe_chroma || o.observe_scl_config || o.observe_scl_filter_map || o.observe_scl_view ||
+    return o.observe_avd_cache_count || o.observe_avd_code_prefix || o.observe_avd_code_arena || o.observe_avd_cpu_map || o.observe_chroma || o.observe_scl_config || o.observe_scl_filter_map || o.observe_scl_view ||
         o.observe_mfd_config || o.observe_mfd_address || o.observe_mfd_framing || o.observe_runtime_inventory ||
         o.observe_arm_metadata || o.observe_arm_source_shape || o.observe_ppb_context || o.observe_ppb_stop ||
         o.observe_ppb_metadata || o.observe_ppb_return || o.observe_video_prefix || o.observe_video_graph ||
@@ -2845,6 +2981,12 @@ static bool AvdCodePrefixConflicts(const Options &o)
     Options other = o;
     other.observe_avd_code_prefix = false;
     return o.observe_avd_code_arena || o.observe_avd_cpu_map || o.observe_avd_memory || AvdMemoryConflicts(other);
+}
+static bool AvdCacheCountConflicts(const Options &o)
+{
+    Options other = o;
+    other.observe_avd_cache_count = false;
+    return o.observe_avd_memory || AvdMemoryConflicts(other);
 }
 
 static uint32_t ProbeDeviceMode(const Options &options)
@@ -2887,6 +3029,10 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         options->observe_ppb_context = options->observe_video_staging || options->observe_video_graph || options->observe_video_prefix || options->observe_ppb_stop || !std::strcmp(arguments.back(), "--observe-ppb-context");
         options->observe_arm_source_shape = !std::strcmp(arguments.back(), "--observe-arm-source-shape");
         options->observe_arm_metadata = !options->observe_arm_source_shape && !options->observe_ppb_context;
+        arguments.pop_back();
+    }
+    if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-avd-cache-count")) {
+        options->observe_avd_cache_count = true;
         arguments.pop_back();
     }
     if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-avd-memory")) {
@@ -2976,7 +3122,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         arguments.resize(arguments.size() - 2);
     }
     if (arguments.size() == 2 && !std::strcmp(arguments[1], "--self-test")) {
-        if (options->observe_avd_code_prefix || options->observe_avd_code_arena || options->observe_avd_cpu_map || options->observe_avd_memory || options->capture_path || options->observe_arm_metadata || options->observe_arm_source_shape || options->observe_ppb_context || options->observe_runtime_inventory || options->observe_chroma || options->observe_scl_config || options->observe_scl_filter_map || options->observe_scl_view || options->observe_mfd_config || options->observe_mfd_address || options->observe_mfd_framing || options->inject_mfd_colour || options->scl_status_test || options->scaler_test || options->mpeg1_via_mpeg2 ||
+        if (options->observe_avd_cache_count || options->observe_avd_code_prefix || options->observe_avd_code_arena || options->observe_avd_cpu_map || options->observe_avd_memory || options->capture_path || options->observe_arm_metadata || options->observe_arm_source_shape || options->observe_ppb_context || options->observe_runtime_inventory || options->observe_chroma || options->observe_scl_config || options->observe_scl_filter_map || options->observe_scl_view || options->observe_mfd_config || options->observe_mfd_address || options->observe_mfd_framing || options->inject_mfd_colour || options->scl_status_test || options->scaler_test || options->mpeg1_via_mpeg2 ||
             options->h263_via_divx || options->open_only) return false;
         options->mode = Mode::SelfTest;
         return true;
@@ -3005,6 +3151,9 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
     if (options->observe_avd_code_prefix && (!hardware || !options->capture_path || !options->scaler_test ||
         options->scale_width || options->expected != 180 || options->iterations != 1 ||
         options->output_format != OUTPUT_MODE422_YUY2 || AvdCodePrefixConflicts(*options))) return false;
+    if (options->observe_avd_cache_count && (!hardware || !options->capture_path || !options->scaler_test ||
+        options->scale_width || options->expected != 180 || options->iterations != 1 ||
+        options->output_format != OUTPUT_MODE422_YUY2 || AvdCacheCountConflicts(*options))) return false;
     if ((options->observe_arm_metadata || options->observe_arm_source_shape || options->observe_ppb_context) &&
         (!hardware || !options->capture_path || !options->scaler_test || options->scale_width ||
          options->expected != 180 || options->iterations != 1 || options->output_format != OUTPUT_MODE422_YUY2 ||
@@ -3087,7 +3236,7 @@ static bool SclInputAdmitted(const Options &options, const Input &input)
 
 static bool NeedsRawIo(const Options &options)
 {
-    return options.observe_avd_code_prefix || options.observe_avd_code_arena || options.observe_avd_cpu_map || options.observe_avd_memory || options.observe_arm_metadata || options.observe_arm_source_shape || options.observe_ppb_context || options.observe_runtime_inventory || options.observe_chroma || options.observe_scl_config || options.observe_scl_filter_map ||
+    return options.observe_avd_cache_count || options.observe_avd_code_prefix || options.observe_avd_code_arena || options.observe_avd_cpu_map || options.observe_avd_memory || options.observe_arm_metadata || options.observe_arm_source_shape || options.observe_ppb_context || options.observe_runtime_inventory || options.observe_chroma || options.observe_scl_config || options.observe_scl_filter_map ||
         options.observe_scl_view || options.observe_mfd_config || options.observe_mfd_address || options.observe_mfd_framing || options.inject_mfd_colour || options.scl_status_test;
 }
 
@@ -3144,6 +3293,11 @@ static bool AvdCodeArenaInputAdmitted(const Options &options, const Input &input
 static bool AvdCodePrefixInputAdmitted(const Options &options, const Input &input)
 {
     return !options.observe_avd_code_prefix || (AvdCpuMapInputShape(options, input) &&
+        SubmittedPacketDigestMatches(input, 124832, "1363a87c8f59fab6187cd13653a3ba8a41fd994066d30c24be1c2b09d675666e"));
+}
+static bool AvdCacheCountInputAdmitted(const Options &options, const Input &input)
+{
+    return !options.observe_avd_cache_count || (AvdCpuMapInputShape(options, input) &&
         SubmittedPacketDigestMatches(input, 124832, "1363a87c8f59fab6187cd13653a3ba8a41fd994066d30c24be1c2b09d675666e"));
 }
 
@@ -5767,6 +5921,233 @@ struct AvdCodeArenaFixture {
     }
 };
 
+struct AvdCacheCountFixture {
+    HANDLE current = this, replacement = nullptr;
+    AvdCacheCountObserver *subject = nullptr;
+    unsigned calls = 0, fail_at = UINT_MAX, lose_at = UINT_MAX, mutate_at = UINT_MAX, mutation = 0;
+    BC_STATUS status = BC_STS_BUSY;
+    bool valid = true;
+    uint32_t values[36] = {};
+    AvdCacheCountFixture() {
+        for (unsigned at = 0; at < 36; ++at) {
+            const unsigned field = at % 6;
+            values[at] = field == 0 || field == 5 ? 0x50U :
+                field == 1 || field == 4 ? 0U : 0xf0000000U + at;
+        }
+    }
+    static BC_STATUS Read(HANDLE handle, uint32_t address, uint32_t *out) {
+        auto *f = static_cast<AvdCacheCountFixture *>(handle);
+        const unsigned at = f->calls++;
+        const uint32_t literal[] = {0x540000,0x4000d4,0x800f28,0x800fa8,0x4000d4,0x540000};
+        f->valid &= at < 36 && out && address == literal[at % 6] &&
+            reinterpret_cast<uintptr_t>(out) % alignof(uint32_t) == 0 && active_cache_count == f->subject;
+        if (!f->valid) return BC_STS_ERROR;
+        *out = at == f->fail_at ? 0xdeadbeefU : f->values[at];
+        if (at == f->lose_at) f->current = f->replacement;
+        if (at == f->mutate_at) {
+            auto *o = f->subject;
+            const unsigned stage = at / 12, pass = at % 12 / 6;
+            if (f->mutation == 0) o->enabled = false;
+            if (f->mutation == 1) o->conflicting_mode = true;
+            if (f->mutation == 2) ++o->reads;
+            if (f->mutation == 3) o->bytes = UINT_MAX;
+            if (f->mutation == 4) ++o->next_stage;
+            if (f->mutation == 5) o->complete[stage][pass] = true;
+            if (f->mutation == 6) ++o->measured[stage][pass];
+            if (f->mutation == 7) o->raw[stage][pass][at % 6] = 0xdeadbeef;
+            if (f->mutation == 8) o->failed = true;
+            if (f->mutation == 9) active_cache_count = nullptr;
+            if (f->mutation == 10) {
+                AvdCacheCountObserver nested;
+                (void)nested.Observe(&f->current, stage, stage != 0, Read, false);
+            }
+        }
+        return at == f->fail_at ? f->status : BC_STS_SUCCESS;
+    }
+    bool Exercise(AvdCacheCountObserver *o) {
+        subject = o; o->enabled = true;
+        for (unsigned stage = 0; stage < 3; ++stage)
+            if (!o->Observe(&current, stage, stage != 0, Read, false)) return false;
+        return o->Finish(true, false);
+    }
+};
+
+template<class Check> static void AvdCacheCountSelfTest(const Check &check)
+{
+    const uint32_t literal[] = {0x540000,0x4000d4,0x800f28,0x800fa8,0x4000d4,0x540000};
+    for (unsigned field = 0; field < 6; ++field)
+        check(AvdCacheCountAddress(field) == literal[field], "AVD cache count fixed literal six-register order");
+    check(!AvdCacheCountAddress(6) && BCHP_DECODE_CPUREGS_0_REG_CPU_ICACHE_MISS_Count_MASK == 0xffffffffU &&
+        BCHP_DECODE_CPUREGS_0_REG_CPU_ICACHE_MISS_Count_SHIFT == 0,
+        "AVD cache count RDB names full-width Count, not watchdog/FIFO/configuration");
+    AvdCacheCountObserver disabled;
+    check(disabled.Observe(nullptr, 99, true, nullptr, false) && disabled.Finish(true, false) &&
+        !disabled.Finish(false, false) && !disabled.reads && !disabled.bytes && !active_cache_count,
+        "AVD cache count default off preserves native failure without observer I/O");
+    AvdCacheCountObserver stable;
+    for (unsigned variant = 0; variant < 4; ++variant) {
+        struct Canary { uint32_t before = 0x12345678; AvdCacheCountFixture fixture;
+            AvdCacheCountObserver observer; uint32_t after = 0x87654321; } c;
+        for (unsigned at = 0; at < 36; ++at) if (at % 6 == 2 || at % 6 == 3)
+            c.fixture.values[at] = variant == 0 ? 0U : variant == 1 ? UINT_MAX :
+                variant == 2 ? (at % 12 < 6 ? UINT_MAX : 0U) : at * 0x1020301U;
+        check(c.fixture.Exercise(&c.observer) && c.fixture.valid && c.fixture.calls == 36 &&
+            c.observer.reads == 36 && c.observer.bytes == 144 && c.observer.next_stage == 3 &&
+            c.before == 0x12345678 && c.after == 0x87654321 && !active_cache_count &&
+            !c.observer.Finish(false, false),
+            "AVD cache count full literal 36/144 trace accepts zero/ones/wrap/different values without rate proof");
+        for (unsigned stage = 0; stage < 3; ++stage) for (unsigned pass = 0; pass < 2; ++pass)
+            check(c.observer.complete[stage][pass] && c.observer.measured[stage][pass] == 6 &&
+                !std::memcmp(c.observer.raw[stage][pass], c.fixture.values + stage * 12 + pass * 6, 24),
+                "AVD cache count complete detached tuple follows both closing guards");
+        if (variant == 3) stable = c.observer;
+    }
+    for (unsigned at = 0; at < 36; ++at) {
+        const unsigned stage = at / 12, pass = at % 12 / 6, field = at % 6;
+        for (int code = -1; code <= BC_STS_PWR_MGMT; ++code) {
+            if (code == BC_STS_SUCCESS) continue;
+            AvdCacheCountFixture f; f.fail_at = at; f.status = static_cast<BC_STATUS>(code); AvdCacheCountObserver o;
+            check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && o.failure == AvdCacheCountFailure::Api &&
+                o.api_status == code && !o.complete[stage][pass] && o.measured[stage][pass] == field &&
+                !o.raw[stage][pass][field] && !o.Finish(true, false) && !active_cache_count,
+                "AVD cache count every non-success status refuses poison and partial tuples at all callbacks");
+            o.failed = false; o.enabled = false;
+            check(!o.Observe(&f.current, stage, stage != 0, AvdCacheCountFixture::Read, false) &&
+                f.calls == at + 1 && !o.Finish(true, false),
+                "AVD cache count private failure remains sticky after public failure/mode edits");
+        }
+        for (bool replace : {false, true}) {
+            AvdCacheCountFixture f, other; f.lose_at = at; f.replacement = replace ? static_cast<HANDLE>(&other) : nullptr;
+            AvdCacheCountObserver o;
+            check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && !other.calls &&
+                o.failure == AvdCacheCountFailure::Owner && !o.complete[stage][pass] && !active_cache_count,
+                "AVD cache count every lost/replaced owner refuses publication without following new handle");
+            f.current = &f;
+            check(!o.Observe(&f.current, stage, stage != 0, AvdCacheCountFixture::Read, false) && f.calls == at + 1,
+                "AVD cache count restored owner cannot retry a failed observation");
+        }
+        for (unsigned mutation = 0; mutation < 11; ++mutation) {
+            AvdCacheCountFixture f; f.mutate_at = at; f.mutation = mutation; AvdCacheCountObserver o;
+            check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && o.complete[stage][pass] == (mutation == 5) &&
+                !o.Finish(true, false) && !active_cache_count,
+                "AVD cache count callback mode/state/public-completion/route/reentrant mutations are sticky before next I/O");
+        }
+        if (field == 1 || field == 4) for (unsigned bit = 0; bit < 32; ++bit) {
+            AvdCacheCountFixture f; f.values[at] = 1U << bit; AvdCacheCountObserver o;
+            check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && o.failure == AvdCacheCountFailure::Gisb &&
+                !o.complete[stage][pass] && !o.Finish(true, false),
+                "AVD cache count every opening/closing GISB bit rejects without clearing or retry");
+        }
+        if (field == 0 || field == 5) for (uint32_t value : {0U,0x51U,0x10050U,UINT_MAX}) {
+            AvdCacheCountFixture f; f.values[at] = value; AvdCacheCountObserver o;
+            check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && o.failure == AvdCacheCountFailure::Revision &&
+                !o.complete[stage][pass], "AVD cache count every revision guard requires exact observed pin50");
+        }
+    }
+    for (unsigned fault = 0; fault < 12; ++fault) {
+        AvdCacheCountFixture f; AvdCacheCountObserver o; o.enabled = true; bool ok = false;
+        if (fault == 0) ok = o.Observe(nullptr,0,false,AvdCacheCountFixture::Read,false);
+        if (fault == 1) { f.current = nullptr; ok = o.Observe(&f.current,0,false,AvdCacheCountFixture::Read,false); }
+        if (fault == 2) ok = o.Observe(&f.current,0,false,nullptr,false);
+        if (fault == 3) ok = o.Observe(&f.current,3,true,AvdCacheCountFixture::Read,false);
+        if (fault == 4) ok = o.Observe(&f.current,1,true,AvdCacheCountFixture::Read,false);
+        if (fault == 5) ok = o.Observe(&f.current,0,true,AvdCacheCountFixture::Read,false);
+        if (fault == 6) o.reads = 1;
+        if (fault == 7) o.bytes = UINT_MAX;
+        if (fault == 8) o.next_stage = 1;
+        if (fault == 9) o.complete[0][0] = true;
+        if (fault == 10) o.conflicting_mode = true;
+        if (fault == 11) o.raw[0][0][0] = 0x50;
+        if (fault >= 6) ok = o.Observe(&f.current,0,false,AvdCacheCountFixture::Read,false);
+        check(!ok && !f.calls && o.failed && !o.Finish(true,false) && !active_cache_count,
+            "AVD cache count malformed initial argument/order/barrier/budget/publication has zero I/O");
+    }
+    for (unsigned fault = 0; fault < 10; ++fault) {
+        AvdCacheCountFixture f, other; AvdCacheCountObserver o; o.enabled = true; f.subject = &o;
+        check(o.Observe(&f.current,0,false,AvdCacheCountFixture::Read,false), "AVD cache count first-stage setup");
+        HANDLE alternate_current = f.current;
+        if (fault == 0) o.enabled = false;
+        if (fault == 1) o.conflicting_mode = true;
+        if (fault == 2) o.reads = 36;
+        if (fault == 3) o.bytes = 144;
+        if (fault == 4) f.current = &other;
+        const unsigned stage = fault == 5 ? 0U : fault == 6 ? 2U : 1U;
+        const HANDLE *current = fault == 9 ? &alternate_current : &f.current;
+        if (fault == 8) o.complete[2][1] = true;
+        check(!o.Observe(current,stage,fault != 7,AvdCacheCountFixture::Read,false) && f.calls == 12 &&
+            !other.calls && !o.Finish(true,false) && !active_cache_count,
+            "AVD cache count private owner/current/stage/barrier/budget seal rejects subsequent changes before I/O");
+    }
+    AvdCacheCountObserver healthy = stable;
+    AvdCacheCountFixture duplicate; duplicate.subject = &stable;
+    for (unsigned stage = 0; stage < 4; ++stage)
+        check(!stable.Observe(&duplicate.current,stage,stage != 0,AvdCacheCountFixture::Read,false) && !duplicate.calls,
+            "AVD cache count finished profile cannot duplicate or add post-cleanup observations");
+    AvdCacheCountFixture bad; bad.fail_at = 5; AvdCacheCountObserver rejected;
+    check(!bad.Exercise(&rejected), "AVD cache count partial report setup");
+    rejected.complete[0][0] = true; rejected.raw[0][0][2] = 0xdeadbeef;
+    FILE *log = std::tmpfile(); const int saved = log ? dup(STDOUT_FILENO) : -1;
+    const bool redirected = saved >= 0 && dup2(fileno(log),STDOUT_FILENO) >= 0;
+    if (redirected) { rejected.Report(0); stable.enabled = false; stable.Report(2); stable.enabled = true;
+        healthy.Finish(true); healthy.Finish(false); }
+    std::fflush(stdout);
+    if (saved >= 0) { (void)dup2(saved,STDOUT_FILENO); close(saved); }
+    char text[4096] = {}; size_t length = 0;
+    if (log) { std::rewind(log); length = std::fread(text,1,sizeof(text)-1,log); std::fclose(log); }
+    check(redirected && length && std::strstr(text,"pass=0 INCOMPLETE measured=5/6") &&
+        !std::strstr(text,"deadbeef") && std::strstr(text,"00800f28=") && std::strstr(text,"00800fa8=") &&
+        std::strstr(text,"post-cleanup-reads=0") &&
+        std::strstr(text,"native-result=PASS observation-result=PASS stages=3/3 reads=36/36 bytes=144/144") &&
+        std::strstr(text,"native-result=FAIL observation-result=PASS") &&
+        std::strstr(text,"rate/reset/clock/ISA/execution/current-alias/lease/completion-certified=no"),
+        "AVD cache count report uses only detached private complete tuples, never forged public or poisoned partial data");
+    const std::vector<const char *> valid = {"probe","--hardware","fixture","180","30","1","--scaler-test","0",
+        "--observe-avd-cache-count","--capture-yuy2","new"};
+    Options admitted;
+    check(ParseArguments(valid,&admitted) && admitted.observe_avd_cache_count && !AvdCacheCountConflicts(admitted) &&
+        NeedsRawIo(admitted) && !NeedsRawIo(Options{}), "AVD cache count exact new opt-in requires early CAP admission");
+    const std::vector<std::vector<const char *>> forbidden = {{"--observe-avd-cache-count"},{"--observe-avd-code-prefix"},
+        {"--observe-avd-code-arena"},{"--observe-avd-cpu-map"},{"--observe-avd-memory"},{"--observe-video-staging"},
+        {"--observe-video-prefix"},{"--observe-video-graph"},{"--observe-ppb-context"},{"--observe-ppb-stop"},
+        {"--observe-ppb-metadata"},{"--observe-ppb-return"},{"--observe-arm-metadata"},{"--observe-arm-source-shape"},
+        {"--observe-runtime-inventory"},{"--observe-mfd-framing"},{"--observe-mfd-config"},{"--observe-mfd-address"},
+        {"--observe-scl-config"},{"--observe-scl-filter-map"},{"--observe-scl-view","2"},{"--observe-chroma"},
+        {"--inject-mfd-colour","a"},{"--scl-status-test","observe"},{"--open-only"},{"--mpeg1-via-mpeg2"},
+        {"--h263-via-divx"},{"--scaler-test","0"},{"--capture-yuy2","other"}};
+    for (const auto &extra : forbidden) for (unsigned order = 0; order < 2; ++order) {
+        auto args = valid; args.insert(order ? args.end()-2 : args.begin()+8,extra.begin(),extra.end()); Options o;
+        check(!ParseArguments(args,&o), "AVD cache count duplicate/mixed observer modes reject both parser orders");
+    }
+    for (unsigned fault = 0; fault < 10; ++fault) {
+        auto args = valid;
+        if (fault == 0) args[1] = "--preflight";
+        if (fault == 1) args[1] = "--self-test";
+        if (fault == 2) args[3] = "179";
+        if (fault == 3) args[5] = "2";
+        if (fault == 4) args[7] = "128";
+        if (fault == 5) args[8] = "--observe-avd-cache-count=0";
+        if (fault == 6) args[9] = "--capture-uyvy";
+        if (fault == 7) args[10] = "-";
+        if (fault == 8) args[10] = "";
+        if (fault == 9) args.resize(9);
+        Options o; check(!ParseArguments(args,&o), "AVD cache count hardware/unscaled/180/one/fresh-capture constraints");
+    }
+    for (unsigned fault = 0; fault < 8; ++fault) {
+        Input in; in.codec = AV_CODEC_ID_H264; in.subtype = BC_MSUBTYPE_H264; in.progressive = true;
+        in.width = 256; in.height = 96; in.packets.resize(180); Options o = admitted;
+        if (fault == 0) in.codec = AV_CODEC_ID_MPEG2VIDEO;
+        if (fault == 1) in.subtype = BC_MSUBTYPE_MPEG2VIDEO;
+        if (fault == 2) in.progressive = false;
+        if (fault == 3) in.width = 128;
+        if (fault == 4) in.height = 48;
+        if (fault == 5) in.packets.resize(179);
+        if (fault == 6) in.metadata.push_back(0);
+        if (fault == 7) o.expected = 179;
+        check(!AvdCacheCountInputAdmitted(o,in) && AvdCacheCountInputAdmitted(Options{},in),
+            "AVD cache count malformed/unpinned input cannot admit capture/device actions; defaults unaffected");
+    }
+}
+
 template<class Check> static void AvdCodeArenaSelfTest(const Check &check)
 {
     const uint32_t registers[] = {0x540000,0x4000d4,0x800f0c,0x800f34,0x800f38,0x800f8c,0x800fb4,0x800fb8,0x4000d4,0x540000};
@@ -6702,6 +7083,7 @@ static bool SelfTest()
     VideoStagingSelfTest(check);
     AvdMemorySelfTest(check);
     AvdCpuMapSelfTest(check);
+    AvdCacheCountSelfTest(check);
     AvdCodeArenaSelfTest(check);
     AvdCodePrefixSelfTest(check);
     PpbStopLifecycleSelfTest(check);
@@ -8553,6 +8935,7 @@ struct Audit {
     PpbContextObserver ppb_context;
     AvdMemoryObserver avd_memory;
     AvdCpuMapObserver avd_cpu_map;
+    AvdCacheCountObserver avd_cache_count;
     AvdCodeArenaObserver avd_code_arena;
     AvdCodePrefixObserver avd_code_prefix;
     MfdAddressObserver mfd_address;
@@ -8616,6 +8999,8 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                 valid = audit->avd_memory.Observe(&device->handle, 1, released && owned_written);
             if (!marker && valid && released && audit->frames == 1)
                 valid = audit->avd_cpu_map.Observe(&device->handle, 1, released && owned_written);
+            if (!marker && valid && released && audit->frames == 1)
+                valid = audit->avd_cache_count.Observe(&device->handle, 1, released && owned_written);
             if (!marker && valid && released)
                 valid = audit->scl_filter_map.AfterDelivered(device->handle, audit->frames,
                                                            released, audit->capture != nullptr);
@@ -8663,6 +9048,8 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                     std::fprintf(stderr, "MFD debug address observation failed; no further observer I/O, ordinary decoder cleanup follows\n");
                 else if (audit->mfd_framing.failed)
                     std::fprintf(stderr, "MFD framing observation failed; no further observer I/O, ordinary decoder cleanup follows\n");
+                else if (audit->avd_cache_count.failed)
+                    std::fprintf(stderr, "AVD cache count observation failed; no further observer I/O, ordinary decoder cleanup follows\n");
                 else if (audit->avd_memory.failed)
                     std::fprintf(stderr, "AVD memory inventory failed; no further observer I/O or error clearing, ordinary decoder cleanup follows\n");
                 else if (audit->avd_cpu_map.failed)
@@ -8678,7 +9065,7 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                 else
                     std::fprintf(stderr, "Invalid progressive picture geometry/data/token: %llu\n",
                                  static_cast<unsigned long long>(output.PicInfo.timeStamp));
-                if (audit->pixels && !audit->avd_cpu_map.failed && !audit->avd_memory.failed && !audit->scl.failed && !audit->scl_filter_map.fatal && !audit->scl_view.failed && !audit->mfd.failed && !audit->mfd_address.failed && !audit->mfd_framing.failed && !audit->arm_metadata.failed && !audit->ppb_context.failed && !audit->mfd_colour.failed && !audit->scl_status.fatal)
+                if (audit->pixels && !audit->avd_cache_count.failed && !audit->avd_cpu_map.failed && !audit->avd_memory.failed && !audit->scl.failed && !audit->scl_filter_map.fatal && !audit->scl_view.failed && !audit->mfd.failed && !audit->mfd_address.failed && !audit->mfd_framing.failed && !audit->arm_metadata.failed && !audit->ppb_context.failed && !audit->mfd_colour.failed && !audit->scl_status.fatal)
                     std::fprintf(stderr, "Scaler picture: got=%ux%u expected=%ux%u "
                                  "flags=%x words=%u packed422=%u\n",
                                  output.PicInfo.width, output.PicInfo.height,
@@ -8750,6 +9137,8 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.avd_memory.conflicting_mode = AvdMemoryConflicts(options);
     audit.avd_cpu_map.enabled = options.observe_avd_cpu_map;
     audit.avd_cpu_map.conflicting_mode = AvdCpuMapConflicts(options);
+    audit.avd_cache_count.enabled = options.observe_avd_cache_count;
+    audit.avd_cache_count.conflicting_mode = AvdCacheCountConflicts(options);
     audit.avd_code_arena.enabled = options.observe_avd_code_arena;
     audit.avd_code_arena.conflicting_mode = AvdCodeArenaConflicts(options);
     audit.avd_code_prefix.enabled = options.observe_avd_code_prefix;
@@ -8819,6 +9208,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     if (ok) ok = audit.ppb_context.Observe(&device.handle, 0, false);
     if (ok) ok = audit.avd_memory.Observe(&device.handle, 0, false);
     if (ok) ok = audit.avd_cpu_map.Observe(&device.handle, 0, false);
+    if (ok) ok = audit.avd_cache_count.Observe(&device.handle, 0, false);
     if (ok) ok = audit.avd_code_arena.Observe(&device.handle);
     if (ok) ok = audit.avd_code_prefix.Observe(&device.handle);
     if (ok) ok = audit.mfd_colour.PreStart(device.handle);
@@ -8870,6 +9260,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     if (ok) ok = audit.ppb_context.Observe(&device.handle, 2, true);
     if (ok) ok = audit.avd_memory.Observe(&device.handle, 2, true);
     if (ok) ok = audit.avd_cpu_map.Observe(&device.handle, 2, true);
+    if (ok) ok = audit.avd_cache_count.Observe(&device.handle, 2, true);
     if (ok) ok = audit.scl.Observe(device.handle, SclStage::EosBarrier);
     // Only an actual native delivery barrier admits the last status sample.
     // Its diagnostic result cannot retroactively erase delivered native data.
@@ -8902,6 +9293,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     ok = audit.ppb_context.Finish(ok);
     ok = audit.avd_memory.Finish(ok);
     ok = audit.avd_cpu_map.Finish(ok);
+    ok = audit.avd_cache_count.Finish(ok);
     ok = audit.avd_code_arena.Finish(ok);
     ok = audit.avd_code_prefix.Finish(ok);
     ok = audit.runtime_inventory.Finish(ok, audit.mfd);
@@ -8932,13 +9324,15 @@ int main(int argc, char **argv)
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
             "[--scaler-test WIDTH_OR_0] [--mpeg1-via-mpeg2 | --h263-via-divx] "
-            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --observe-ppb-metadata | --observe-ppb-return | --observe-video-prefix | --observe-video-graph | --observe-video-staging | --observe-avd-memory | --observe-avd-cpu-map | --observe-avd-code-arena | --observe-avd-code-prefix | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
+            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --observe-ppb-metadata | --observe-ppb-return | --observe-video-prefix | --observe-video-graph | --observe-video-staging | --observe-avd-memory | --observe-avd-cpu-map | --observe-avd-code-arena | --observe-avd-code-prefix | --observe-avd-cache-count | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
     if (NeedsRawIo(options) && !CanReadChromaConfiguration()) {
-        if (options.observe_avd_code_prefix)
+        if (options.observe_avd_cache_count)
+            std::fprintf(stderr, "--observe-avd-cache-count requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
+        else if (options.observe_avd_code_prefix)
             std::fprintf(stderr, "--observe-avd-code-prefix requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
         else if (options.observe_avd_code_arena)
             std::fprintf(stderr, "--observe-avd-code-arena requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
@@ -9033,6 +9427,12 @@ int main(int argc, char **argv)
     }
     if (!AvdCodePrefixInputAdmitted(options, input)) {
         std::fprintf(stderr, "AVD code prefix inventory requires the pinned progressive H264 256x96/180-packet input: "
+            "124832 submitted bytes and fixed SHA256; no capture or device was opened\n");
+        phase1_progress_close(&progress);
+        return 2;
+    }
+    if (!AvdCacheCountInputAdmitted(options, input)) {
+        std::fprintf(stderr, "AVD cache count inventory requires the pinned progressive H264 256x96/180-packet input: "
             "124832 submitted bytes and fixed SHA256; no capture or device was opened\n");
         phase1_progress_close(&progress);
         return 2;
