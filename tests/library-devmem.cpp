@@ -38,6 +38,7 @@ static bool track_allocations;
 static bool fail_allocation;
 static Operation expected_operation;
 static IoctlResult ioctl_result;
+static BC_STATUS ioctl_failure_status;
 static uint32_t expected_bytes;
 static uint32_t expected_offset;
 static const uint8_t *expected_payload;
@@ -123,7 +124,11 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
 		return -1;
 	}
 	if (ioctl_result == IOCTL_STATUS_ERROR) {
-		data->RetSts = BC_STS_IO_ERROR;
+		// Even a driver that filled its private transfer buffer before failing
+		// must not make those bytes visible to the caller as a successful read.
+		if (expected_operation == READ_MEMORY)
+			std::memset(payload, 0xde, expected_bytes);
+		data->RetSts = ioctl_failure_status;
 		return 0;
 	}
 
@@ -159,6 +164,7 @@ static void BeginCall(Operation operation, uint32_t bytes, uint32_t offset,
 	fail_allocation = false;
 	expected_operation = operation;
 	ioctl_result = IOCTL_SUCCESS;
+	ioctl_failure_status = BC_STS_IO_ERROR;
 	expected_bytes = bytes;
 	expected_offset = operation == PUSH_FIRMWARE ? 0 : offset;
 	expected_payload = payload;
@@ -268,13 +274,14 @@ static void CheckAllocationFailure(DTS_LIB_CONTEXT *context,
 }
 
 static void CheckIoctlFailure(DTS_LIB_CONTEXT *context, Operation operation,
-			      IoctlResult result)
+			      IoctlResult result, BC_STATUS driver_status = BC_STS_IO_ERROR)
 {
 	std::vector<uint32_t> storage(6U, 0x87654321U);
 	const std::vector<uint32_t> before = storage;
 	BeginCall(operation, 16U, 0x2000U,
 		  reinterpret_cast<const uint8_t *>(storage.data() + 1));
 	ioctl_result = result;
+	ioctl_failure_status = driver_status;
 	BC_STATUS status = Call(operation, context, storage.data() + 1, 16U);
 	Check(status == BC_STS_ERROR, "ioctl failure returns an error");
 	Check(allocation_calls == 1 && ioctl_calls == 1,
@@ -307,6 +314,10 @@ int main()
 		CheckAllocationFailure(&context, operation);
 		CheckIoctlFailure(&context, operation, IOCTL_SYSCALL_ERROR);
 		CheckIoctlFailure(&context, operation, IOCTL_STATUS_ERROR);
+		for (int status = BC_STS_INV_ARG; status <= BC_STS_PWR_MGMT; ++status)
+			CheckIoctlFailure(&context, operation, IOCTL_STATUS_ERROR,
+					 static_cast<BC_STATUS>(status));
+		CheckIoctlFailure(&context, operation, IOCTL_STATUS_ERROR, BC_STS_ERROR);
 	}
 
 	std::printf("Library device memory: %u checks, %u failures\n",
