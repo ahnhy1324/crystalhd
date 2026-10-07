@@ -13548,5 +13548,383 @@ class FirmwareArcSavedCopyProjectionTests(unittest.TestCase):
                 project_arc_saved_copy(self.payload, source)
 
 
+def project_arc_completion_owner(payload, engine, outstanding, owners, tags, queue_counts,
+                                 active=255, status=0, selector=0, budget=256):
+    """Logical execution of the two original shared completion monitors.
+
+    Queued owners and status words are synthetic entry premises, not native
+    coherent queues or hardware completions. The saved channel slice begins
+    at common+60; this fixture checks that neither monitor touches it or the
+    active-channel byte. Named shifts are assumed, not vendor-certified.
+    """
+    if type(payload) not in (bytes, bytearray) or len(payload) != MAP.BUNDLED_SIZE - MAP.TRAILER_SIZE:
+        raise ValueError("invalid ARC completion owner payload")
+    # Original ELF namespace receipts; fixed code hashes alone do not bind a symbol.
+    header = (b"\x7fELF\x01\x01\x01" + bytes(9), 2, 45, 1, 0x3a678, 52, 0x4aae0,
+              0, 52, 32, 18, 40, 55, 54)
+    sections = {2: (9, 1, 6, 0x4000, 0x444, 0x23d4, 0, 0, 0x4000, 1),
+                34: (0x280, 3, 0, 0, 0x39035, 0x20da, 0, 0, 1, 1),
+                35: (0x288, 2, 0, 0, 0x3b110, 0x3450, 34, 0x20d, 4, 16),
+                54: (0x49d, 3, 0, 0, 0x4a638, 0x4a7, 0, 0, 1, 1)}
+    symbols = ((633, (5065, 0x4100, 232, 18, 0, 2), b"SystemCore_MonitorCABAC\0"),
+               (634, (5089, 0x41e8, 164, 18, 0, 2), b"SystemCore_MonitorIL\0"))
+    if struct.unpack_from("<16sHHIIIIIHHHHHH", payload, 0x2ea60) != header or any(
+            struct.unpack_from("<10I", payload, 0x79540 + 40 * index) != record
+            for index, record in sections.items()) or any(
+            struct.unpack_from("<IIIBBH", payload, 0x69b70 + 16 * index) != record or
+            payload[0x67a95 + record[0]:0x67a95 + record[0] + len(name)] != name
+            for index, record, name in symbols) or \
+            payload[0x790a1:0x790a1 + 26] != b".core_critical_code_slice\0":
+        raise ValueError("stock ARC completion owner source mapping changed")
+    regions = ((0x4100, 0x41e8, 0x2efa4, "2d12bf32e38c9aca4db74e35ec4434026083a9230aeb0ebd950e1fcceffb82fa"),
+               (0x41e8, 0x428c, 0x2f08c, "201e15dcc371f4367107ca43b8c71e16ccc281b351cfbf2db4dcbdbbf8276685"))
+    for low, high, offset, digest in regions:
+        if hashlib.sha256(payload[offset:offset + high - low]).hexdigest() != digest:
+            raise ValueError("stock ARC completion owner body changed")
+    if hashlib.sha256(payload[0x67a25:0x67a95]).hexdigest() != \
+            "50144f0baa420310c9ac35d5739a4e90af2f13e07bb65daa87894472f695ed00":
+        raise ValueError("stock ARC completion owner declarations changed")
+    if type(engine) is not str or engine not in ("cabac", "il"):
+        raise ValueError("invalid synthetic ARC completion owner engine")
+    capacity = 3 if engine == "cabac" else 2
+    if type(outstanding) is not int or not 0 <= outstanding <= capacity or \
+            type(owners) not in (bytes, bytearray) or len(owners) != capacity or any(owner >= 16 for owner in owners) or \
+            type(tags) not in (bytes, bytearray) or len(tags) != capacity or \
+            type(queue_counts) not in (bytes, bytearray) or len(queue_counts) != 16 or \
+            any(count > capacity for count in queue_counts) or \
+            type(active) is not int or not (0 <= active < 16 or active == 255) or \
+            type(status) is not int or not 0 <= status <= 0xffffffff or \
+            type(selector) is not int or selector not in (0, 4) or engine == "cabac" and selector != 0 or \
+            type(budget) is not int or not 1 <= budget <= 256:
+        raise ValueError("invalid synthetic ARC completion owner inputs")
+    common, rows, stack = 0x3fffcd70, 0x3fffd368, 0x400800
+    status_address = 0x30002718 if engine == "cabac" else 0x30000f00 + selector
+    pages = {base: bytearray(b"\xa5" * 4096) for base in
+             (0x3fffc000, 0x3fffd000, 0x400000, status_address & ~4095)}
+    def put(memory, address, size, value):
+        base, offset = address & ~4095, address & 4095
+        memory[base][offset:offset + size] = (value & ((1 << (8 * size)) - 1)).to_bytes(size, "little")
+    opaque = [0x11223344, 0x55667788, 0x99aabbcc]
+    put(pages, common + 31, 1, active)
+    put(pages, status_address, 4, status)
+    if engine == "cabac":
+        for offset, value in zip((0, 4, 8), opaque):
+            put(pages, common + offset, 4, value)
+        for offset, value in zip((12, 13, 14, 15, 16, 17, 18), (*tags, *owners, outstanding)):
+            put(pages, common + offset, 1, value)
+    else:
+        for offset, value in zip((19, 20, 21, 22, 23, 25), (outstanding, *tags, *owners, selector)):
+            put(pages, common + offset, 1, value)
+    queue_offset = 40 if engine == "cabac" else 36
+    for owner, count in enumerate(queue_counts):
+        put(pages, rows + 32 * owner + queue_offset, 1, count)
+    initial = {base: bytes(page) for base, page in pages.items()}
+    expected = {base: bytearray(page) for base, page in initial.items()}
+    registers = [0xabc00000 + index for index in range(64)]
+    registers[28], registers[31], registers[60] = stack, 0x400000, 0
+    expected_registers = list(registers)
+    expected_stores, completed = [], []
+    def expect_store(pc, address, size, value):
+        value &= (1 << (size * 8)) - 1
+        expected_stores.append((pc, address, size, value))
+        put(expected, address, size, value)
+    counts, queued_owners, queued_tags, remaining = list(queue_counts), list(owners), list(tags), outstanding
+    if engine == "cabac":
+        for pc, register, address in ((0x4104, 15, stack - 4), (0x4108, 13, stack - 12),
+                                      (0x410c, 14, stack - 8)):
+            expect_store(pc, address, 4, registers[register])
+        expected_registers[3:12] = [*opaque[:2], tags[2], opaque[2], owners[1], owners[2],
+                                   0x30002700, tags[1], owners[0]]
+        occupied = ((status >> 2) & 3) + bool(status & 1)
+        while occupied < remaining:
+            owner, count = queued_owners[0], counts[queued_owners[0]]
+            expected_registers[2] = 32 * owner
+            if count == 3:
+                break
+            address = rows + 32 * owner + 37 + count
+            expected_registers[2] = address
+            expect_store(0x4154, address, 1, queued_tags[0])
+            counts[owner] += 1
+            expect_store(0x415c, rows + 32 * owner + 40, 1, counts[owner])
+            remaining -= 1
+            expect_store(0x4164, common + 18, 1, remaining)
+            completed.append((owner, queued_tags[0], count))
+            opaque = [opaque[1], opaque[2], opaque[2]]
+            queued_owners = [queued_owners[1], queued_owners[2], queued_owners[2]]
+            queued_tags = [queued_tags[1], queued_tags[2], queued_tags[2]]
+        expected_registers[0:2] = [3 if occupied < remaining else occupied, remaining]
+        expected_registers[3:12] = [opaque[0], opaque[1], tags[2], opaque[2], queued_owners[1],
+            owners[2], 0x30002700, queued_tags[1], queued_owners[0]]
+        for pc, offset, size, value in ((0x41bc, 16, 1, queued_owners[1]), (0x41c0, 0, 4, opaque[0]),
+                (0x41c4, 4, 4, opaque[1]), (0x41c8, 13, 1, queued_tags[1]),
+                (0x41cc, 15, 1, queued_owners[0]), (0x41d0, 12, 1, queued_tags[0])):
+            expect_store(pc, common + offset, size, value)
+        expected_flags = (True, False, False, False) if occupied < remaining else \
+                         (occupied == remaining, False, False, False)
+    else:
+        expected_registers[4], expected_registers[8] = outstanding, common
+        if not outstanding:
+            expected_flags = (True, False, True, True)
+        else:
+            owner, count = owners[0], counts[owners[0]]
+            expected_registers[0], expected_registers[3], expected_registers[7] = owner * 32, count, rows + owner * 32
+            if count == 2:
+                expected_flags = (True, False, False, False)
+            else:
+                expected_registers[1:3] = [status_address, selector]
+                expected_registers[6] = status
+                if status & 0x80000000:
+                    expected_flags = (False, True, True, False)
+                else:
+                    tag_address, value_address = rows + 32 * owner + 32 + count, rows + 32 * owner + 34 + count
+                    expected_registers[0:7] = [(selector + 4) & 4, tag_address, selector, count + 1,
+                                              outstanding - 1, tags[0], status]
+                    for pc, address, value in ((0x4254, tag_address, tags[0]),
+                            (0x4258, value_address, status), (0x4264, rows + 32 * owner + 36, count + 1),
+                            (0x4268, common + 20, tags[1]), (0x4274, common + 19, outstanding - 1),
+                            (0x4278, common + 22, owners[1]), (0x4288, common + 25, (selector + 4) & 4)):
+                        expect_store(pc, address, 1, value)
+                    completed.append((owner, tags[0], count))
+                    # The later decrement is SUB without .F; MOV.F status retains C/V.
+                    expected_flags = (status == 0, False, True, False)
+    low, high, offset, _ = regions[0 if engine == "cabac" else 1]
+    pc, pending, z, n, carry, overflow = low, None, False, True, True, True
+    visited, reads, stores = [], [], []
+    allowed_reads = {(common + offset, size) for offset, size in
+        ((0, 4), (4, 4), (8, 4), (12, 1), (13, 1), (14, 1), (15, 1), (16, 1), (17, 1), (18, 1))} \
+        if engine == "cabac" else {(common + offset, 1) for offset in (19, 20, 21, 22, 23, 25)}
+    allowed_reads |= {(rows + 32 * owner + queue_offset, 1) for owner in owners}
+    if engine == "cabac":
+        allowed_reads |= {(stack - delta, 4) for delta in (4, 8, 12)}
+    def word(address):
+        if address & 3 or not low <= address < high:
+            raise ValueError("outside pinned ARC completion owner code")
+        return struct.unpack_from("<I", payload, offset + address - low)[0]
+    while pc != 0x1000000:
+        if len(visited) >= budget:
+            raise ValueError("ARC completion owner instruction budget exceeded")
+        instruction = word(pc)
+        visited.append(pc)
+        major = instruction >> 27
+        a, b, c = ((instruction >> shift) & 63 for shift in (21, 15, 9))
+        short = (instruction & 511) - (512 if instruction & 256 else 0)
+        length = 4
+        def operand(register):
+            nonlocal length
+            if register in (61, 63):
+                return short & 0xffffffff
+            if register == 62:
+                length = 8
+                return word(pc + 4)
+            return registers[register]
+        def condition(code):
+            if code not in (0, 1, 2, 4, 6, 10, 11):
+                raise ValueError("unsupported ARC completion owner condition")
+            return {0: True, 1: z, 2: not z, 4: n, 6: not carry, 10: n == overflow, 11: n != overflow}[code]
+        next_pc, branch = pc + 4, pending
+        pending = None
+        if major in (8, 10, 12, 13, 16, 17):
+            left, right = operand(b), operand(c)
+            immediate = b in (61, 63) or c in (61, 63)
+            take = condition(0 if immediate else instruction & 31)
+            set_flags = 61 in (b, c) if immediate else bool(instruction & 256)
+            if take:
+                if major == 8:
+                    result = (left + right) & 0xffffffff
+                elif major == 10:
+                    result = (left - right) & 0xffffffff
+                elif major == 12:
+                    result = left & right
+                elif major == 13:
+                    result = left | right
+                elif major == 16:
+                    result = (left << (right & 31)) & 0xffffffff
+                else:
+                    result = left >> (right & 31)
+                if set_flags:
+                    z, n = result == 0, bool(result & 0x80000000)
+                    if major == 8:
+                        carry = left + right > 0xffffffff
+                        overflow = bool(~(left ^ right) & (left ^ result) & 0x80000000)
+                    elif major == 10:
+                        carry = left < right
+                        overflow = bool((left ^ right) & (left ^ result) & 0x80000000)
+                    elif major in (16, 17):
+                        raise ValueError("unsupported ARC completion owner shift flags")
+                if a < 61:
+                    registers[a] = result
+            next_pc = pc + length
+        elif major == 1:
+            size = {0: 4, 1: 1}.get((instruction >> 10) & 3)
+            if a >= 61 or size is None or instruction & 0x3000:
+                raise ValueError("unsupported ARC completion owner load")
+            address = (operand(b) + short) & 0xffffffff
+            if instruction & 0x4000:
+                if size != 4 or pc not in (0x4180, 0x422c) or address != status_address:
+                    raise ValueError("outside synthetic ARC completion status read")
+            elif (address, size) not in allowed_reads:
+                raise ValueError("outside synthetic ARC completion owner read")
+            base, index = address & ~4095, address & 4095
+            value = int.from_bytes(pages[base][index:index + size], "little")
+            if instruction & 0x200 and value & (1 << (8 * size - 1)):
+                value |= 0xffffffff ^ ((1 << (8 * size)) - 1)
+            registers[a] = value
+            reads.append((pc, address, size))
+            next_pc = pc + length
+        elif major == 2:
+            size = {0: 4, 1: 1}.get((instruction >> 22) & 3)
+            if size is None or instruction & 0x03200000:
+                raise ValueError("unsupported ARC completion owner store")
+            address, value = (operand(b) + short) & 0xffffffff, operand(c) & ((1 << (8 * size)) - 1)
+            event = (pc, address, size, value)
+            if len(stores) >= len(expected_stores) or event != expected_stores[len(stores)]:
+                raise ValueError("outside ordered ARC completion owner store contract")
+            put(pages, address, size, value)
+            stores.append(event)
+            next_pc = pc + length
+        elif major in (4, 7):
+            take, delay = condition(instruction & 31), (instruction >> 5) & 3
+            if delay not in (0, 1) or branch is not None:
+                raise ValueError("unsupported ARC completion owner branch")
+            if major == 4:
+                displacement = (instruction >> 7) & 0xfffff
+                displacement -= 1 << 20 if displacement & 0x80000 else 0
+                target = pc + 4 + 4 * displacement
+            else:
+                if b != 31 or instruction & 0x100:
+                    raise ValueError("unsupported ARC completion owner return")
+                target = (registers[31] & 0xffffff) << 2
+            if delay:
+                pending = target if take else pc + 8
+            elif take:
+                next_pc = target
+        else:
+            raise ValueError("unsupported ARC completion owner opcode")
+        pc = branch if branch is not None else next_pc
+    final_pages = {base: bytes(page) for base, page in pages.items()}
+    if final_pages != {base: bytes(page) for base, page in expected.items()} or registers != expected_registers or \
+            (z, n, carry, overflow) != expected_flags or stores != expected_stores:
+        raise ValueError("ARC completion owner whole-page/register/flags/trace oracle changed")
+    return {"initial": initial, "pages": final_pages, "registers": registers, "flags": (z, n, carry, overflow),
+            "reads": reads, "stores": stores, "visited": visited, "completed": completed,
+            "status_address": status_address, "native_execution": False, "statuses_are_synthetic": True,
+            "vendor_extensions_certified": False, "pipeline_timing_certified": False,
+            "engine_completion_certified": False, "physical_lease_certified": False,
+            "native_queue_coherence_certified": False}
+
+
+class FirmwareArcCompletionOwnerProjectionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        raw = MAP.read_firmware(BLOB)
+        if len(raw) != MAP.BUNDLED_SIZE or hashlib.sha256(raw).hexdigest() != MAP.BUNDLED_SHA256:
+            raise ValueError("bundled firmware changed")
+        cls.payload = raw[:-MAP.TRAILER_SIZE]
+
+    def test_cabac_queued_owners_not_active_channel_complete_with_full_oracles(self):
+        for active in (0, 7, 15, 255):
+            for outstanding in range(4):
+                for status_low in range(16):
+                    for high in (0, 0xfffffff0):
+                        result = project_arc_completion_owner(self.payload, "cabac", outstanding,
+                            bytes((2, 4, 2)), bytes((0x11, 0x80, 0xfe)), bytes(16), active, high | status_low)
+                        completed = max(0, outstanding - (((status_low >> 2) & 3) + bool(status_low & 1)))
+                        self.assertEqual([row[0] for row in result["completed"]], [2, 4, 2][:completed])
+                        self.assertEqual(result["pages"][0x3fffc000][0xd8f], active)
+                        self.assertEqual(result["pages"][0x3fffc000][0xdac:], result["initial"][0x3fffc000][0xdac:])
+                        self.assertEqual(result["pages"][0x3fffd000][0x390 + 32 * 2], [2, 4, 2][:completed].count(2))
+                        self.assertEqual(result["pages"][0x3fffd000][0x390 + 32 * 4], [2, 4, 2][:completed].count(4))
+                        self.assertEqual(sum(pc == 0x4180 for pc, _, _ in result["reads"]), completed + 1)
+                        self.assertEqual(result["registers"][13:64], [0x400800 if index == 28 else
+                            0x400000 if index == 31 else 0 if index == 60 else 0xabc00000 + index for index in range(13, 64)])
+        for owner in range(16):
+            queues = bytearray(16)
+            queues[owner] = 2
+            boundary = project_arc_completion_owner(self.payload, "cabac", 3,
+                bytes((owner, (owner + 1) % 16, owner)), bytes((255, 0, 128)), queues,
+                active=(owner + 8) % 16)
+            self.assertEqual(boundary["completed"], [(owner, 255, 2), ((owner + 1) % 16, 0, 0)])
+            self.assertEqual(boundary["pages"][0x3fffc000][0xd82], 1)
+
+    def test_il_queued_owners_backpressure_and_inactive_owner_nonprogress(self):
+        for engine in ("cabac", "il"):
+            capacity = 3 if engine == "cabac" else 2
+            owners, tags = bytes([5] * capacity), bytes(range(0x80, 0x80 + capacity))
+            for count in range(capacity + 1):
+                queues = bytearray(16)
+                queues[5] = count
+                for outstanding in range(capacity + 1):
+                    for selector in ((0,) if engine == "cabac" else (0, 4)):
+                        for status in ((0,) if engine == "cabac" else (0, 0x7fffffff, 0x80000000, 0xffffffff)):
+                            result = project_arc_completion_owner(self.payload, engine, outstanding,
+                                owners, tags, queues, active=1, status=status, selector=selector)
+                            number = min(outstanding, capacity - count) if engine == "cabac" else \
+                                int(bool(outstanding) and count < capacity and not status & 0x80000000)
+                            self.assertEqual(len(result["completed"]), number)
+                            self.assertEqual(result["pages"][0x3fffc000][0xd8f], 1)
+                            self.assertEqual(result["pages"][0x3fffc000][0xdac:], result["initial"][0x3fffc000][0xdac:])
+                            for key in ("native_execution", "vendor_extensions_certified", "pipeline_timing_certified",
+                                        "engine_completion_certified", "physical_lease_certified", "native_queue_coherence_certified"):
+                                self.assertFalse(result[key])
+                            self.assertTrue(result["statuses_are_synthetic"])
+            full = bytearray(16)
+            full[5] = capacity
+            first = project_arc_completion_owner(self.payload, engine, capacity, owners, tags, full, active=1)
+            second = project_arc_completion_owner(self.payload, engine, capacity, owners, tags, full, active=1)
+            self.assertFalse(first["completed"])
+            self.assertEqual(first["pages"], second["pages"])
+            count_offset = 0xd82 if engine == "cabac" else 0xd83
+            self.assertEqual(first["pages"][0x3fffc000][count_offset], capacity)
+            # Fixed trusted inputs demonstrate nonprogress, not native reachability or a bug.
+        for owner in range(16):
+            queues = bytearray(16)
+            queues[owner] = 1
+            result = project_arc_completion_owner(self.payload, "il", 2, bytes((owner, (owner + 1) % 16)),
+                bytes((255, 128)), queues, active=(owner + 8) % 16, status=0x7fffff80, selector=4)
+            self.assertEqual(result["completed"], [(owner, 255, 1)])
+            self.assertEqual(result["pages"][0x3fffd000][0x38b + 32 * owner], 0x80)
+            self.assertEqual(result["pages"][0x3fffc000][0xd86], (owner + 1) % 16)
+
+    def test_source_strict_inputs_budgets_and_pre_effect_access_refusals(self):
+        args = {"engine": "cabac", "outstanding": 3, "owners": bytearray((2, 4, 2)),
+                "tags": bytearray((0x11, 0x80, 0xfe)), "queue_counts": bytearray(16), "active": 1}
+        before = tuple(bytes(args[name]) for name in ("owners", "tags", "queue_counts"))
+        project_arc_completion_owner(self.payload, **args)
+        self.assertEqual(before, tuple(bytes(args[name]) for name in ("owners", "tags", "queue_counts")))
+        mapping_offsets = [0x2ea60, 0x2ea80, 0x2ea8e, 0x2ea90, 0x790a1, 0x790b9]
+        mapping_offsets += [0x79540 + 40 * index + 4 * field for index in (2, 34, 35, 54) for field in range(10)]
+        mapping_offsets += [0x69b70 + 16 * index + field for index in (633, 634) for field in (0, 4, 8, 12, 13, 14)]
+        mapping_offsets += [0x67a95 + offset for offset in (5065, 5075, 5087, 5089, 5099, 5108)]
+        for offset in mapping_offsets + [0x2efa4, 0x2f017, 0x2f08b, 0x2f08c, 0x2f0de, 0x2f12f, 0x67a25, 0x67a94]:
+            changed = bytearray(self.payload)
+            changed[offset] ^= 1
+            with self.subTest(offset=offset), self.assertRaisesRegex(ValueError, "stock ARC completion"):
+                project_arc_completion_owner(changed, **args)
+        for field, values in (("engine", (None, "CABAC", 1)), ("outstanding", (True, -1, 4)),
+                ("owners", ([], bytes((2, 4)), bytes((2, 4, 16)))), ("tags", ([], bytes(2))),
+                ("queue_counts", ([], bytes(15), bytes([4] * 16))), ("active", (True, -1, 16, 256)),
+                ("status", (True, -1, 1 << 32)), ("selector", (True, 1, 4)), ("budget", (True, 0, 257))):
+            for value in values:
+                with self.subTest(field=field, value=value), self.assertRaisesRegex(ValueError, "invalid synthetic"):
+                    project_arc_completion_owner(self.payload, **dict(args, **{field: value}))
+        for payload in (None, [], self.payload[:-1], self.payload + b"\0"):
+            with self.assertRaisesRegex(ValueError, "invalid ARC completion owner payload"):
+                project_arc_completion_owner(payload, **args)
+        with self.assertRaisesRegex(ValueError, "instruction budget exceeded"):
+            project_arc_completion_owner(self.payload, **dict(args, budget=1))
+        original = struct.unpack_from
+        for engine, site, blob, message in (("cabac", 0x4180, 0x2f024, "status read"),
+                ("cabac", 0x411c, 0x2efc0, "owner read"), ("cabac", 0x4154, 0x2eff8, "store contract"),
+                ("il", 0x422c, 0x2f0d0, "status read"), ("il", 0x4254, 0x2f0f8, "store contract")):
+            def corrupt(fmt, data, position=0):
+                value = original(fmt, data, position)
+                return (value[0] ^ (1 << 15),) if fmt == "<I" and data is self.payload and position == blob else value
+            capacity = 3 if engine == "cabac" else 2
+            with self.subTest(site=site), mock.patch.object(struct, "unpack_from", corrupt), \
+                    self.assertRaisesRegex(ValueError, message):
+                project_arc_completion_owner(self.payload, engine, capacity, bytes([2] * capacity),
+                                             bytes(range(capacity)), bytes(16))
+
+
 if __name__ == "__main__":
     unittest.main()
