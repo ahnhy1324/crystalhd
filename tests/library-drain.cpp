@@ -1220,10 +1220,15 @@ struct PpbContextObserver {
             if (!complete[pass]) { std::printf("PPB saved context raw: stage=%s pass=%u INCOMPLETE\n", stages[stage], pass); continue; }
             const uint32_t *g = graph[pass].words, *r = raw[pass];
             std::printf("PPB saved context raw: stage=%s pass=%u C=%08x H=%08x Q=%08x M=%08x P=%08x N=%08x "
-                "D=%08x video-base=%08x video-bytes=%08x core-flags=%08x word80=%08x producer-pool=%08x "
-                "metadata-pool=%08x bank-bytes=%08x bank-count=%08x reader-pool=%08x flags=",
+                "D=%08x video-base=%08x video-bytes=%08x %s=%08x word80=%08x producer-pool=%08x "
+                "metadata-pool=%08x bank-bytes=%08x %s=%08x reader-pool=%08x",
                 stages[stage], pass, g[0], g[1], g[20], g[25], g[14], g[15], g[14] + ((0U - g[14]) & 3U),
-                g[22], g[23], r[0], r[1], r[2], r[3], r[57], r[58], r[59]);
+                g[22], g[23], post_stop ? "saved-core-word0" : "core-flags", r[0], r[1], r[2], r[3],
+                r[57], post_stop ? "bank-word490" : "bank-count", r[58], r[59]);
+            // Keep the older profile's raw labels stable. The STOP profile
+            // distinguishes the count byte from its adjacent disposition byte.
+            if (post_stop) std::printf(" bank-count-u8=%u adjacent-disposition-u8=%u", r[58] & 255U, (r[58] >> 8) & 255U);
+            std::printf(" flags=");
             for (unsigned word = 4; word < 21; ++word) std::printf("%s%08x", word == 4 ? "" : ",", r[word]);
             std::printf(" banks=");
             for (unsigned word = 21; word < 57; ++word) std::printf("%s%08x", word == 21 ? "" : ",", r[word]);
@@ -3296,7 +3301,8 @@ template<class Check> static void PpbStopContextSelfTest(const Check &check)
     char text[16384] = {}; size_t length = 0;
     if (record) { std::rewind(record); length = std::fread(text, 1, sizeof(text) - 1, record); std::fclose(record); }
     check(redirected && restored && length && std::strstr(text, "stage=host-STOP-returned-before-CLOSE reads=560/560 bytes=4416/4416") &&
-        std::strstr(text, "stages=4/4 reads=560/560 bytes=4416/4416") && std::strstr(text, "bank-count=ffffffff") &&
+        std::strstr(text, "stages=4/4 reads=560/560 bytes=4416/4416") && std::strstr(text, "bank-word490=ffffffff") &&
+        std::strstr(text, "saved-core-word0=ffffffff") && std::strstr(text, "bank-count-u8=255 adjacent-disposition-u8=255") &&
         std::strstr(text, "saved-copy-is-current=unproven") && std::strstr(text, "atomic/allocator-integrity/lease/generation/cache-ready/all-consumers-certified=no"),
         "PPB stopped-stage report pins the560read4416byte profile while retaining saved-copy and lifetime limitations");
 }

@@ -1,0 +1,273 @@
+{
+  "schema_version": 1,
+  "kind": "native-post-stop-saved-arc-context",
+  "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+  "observer_source_sha256": "62f8d280761b27317ba5502f6f22ced417cb7c28bfb1c33ec835c1d40f71cf2e",
+  "observer_binary_sha256": "c2c3aa1623b15fb974fddaabbd8c505f0f0021bf4639d99c3fd5fbe54d8623de",
+  "input": {
+    "codec": "H264",
+    "progressive": true,
+    "width": 256,
+    "height": 96,
+    "packets": 180,
+    "submitted_bytes": 124832,
+    "submitted_sha256": "1363a87c8f59fab6187cd13653a3ba8a41fd994066d30c24be1c2b09d675666e"
+  },
+  "reads": {
+    "flag": "--observe-ppb-stop",
+    "stages": ["after-OPEN/pre-START", "first-output-after-release-and-owned-write", "delivery-EOS-before-STOP", "host-STOP-returned-before-CLOSE"],
+    "passes": 2,
+    "graph_calls": 31,
+    "graph_bytes": 156,
+    "frozen_graph_recheck_after_each_pass": true,
+    "context_offsets_hex": ["0", "80", "21c", "33c", "354", "3fc", "48c", "530"],
+    "context_span_bytes": [4, 4, 4, 4, 68, 144, 8, 4],
+    "per_pass_calls": 70,
+    "per_pass_bytes": 552,
+    "per_trial_calls": 560,
+    "per_trial_bytes": 4416,
+    "no_bank_or_pool_pointer_following": true,
+    "no_source_plane_access": true,
+    "no_diagnostic_target_writes": true,
+    "non_atomic": true
+  },
+  "snapshots": [
+    {
+      "fields_hex": {
+        "C": "000d83a4",
+        "H": "000db58c",
+        "Q": "000d93b0",
+        "M": "000d95fc",
+        "P": "033dc000",
+        "N": "0003f940",
+        "D": "033dc000",
+        "video-base": "00a34000",
+        "video-bytes": "035c7940",
+        "saved-core-word0": "00000000",
+        "word80": "00000000",
+        "producer-pool": "033dc794",
+        "metadata-pool": "033f1878",
+        "bank-bytes": "00618000",
+        "bank-word490": "00000006",
+        "reader-pool": "033dc794"
+      },
+      "packed_descriptor_flags_hex": ["00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000"],
+      "bank_records_hex": [
+        ["00a34000", "00000000", "00000000", "00000000"],
+        ["0104c000", "00000000", "00000000", "00000000"],
+        ["01664000", "00000000", "00000000", "00000000"],
+        ["01c7c000", "00000000", "00000000", "00000000"],
+        ["02294000", "00000000", "00000000", "00000000"],
+        ["028ac000", "00000000", "00000000", "00000000"],
+        ["00000000", "00000000", "00000000", "00000000"],
+        ["00000000", "00000000", "00000000", "00000000"],
+        ["00000000", "00000000", "00000000", "00000000"]
+      ],
+      "typed_observations": {
+        "bank_count_u8": 6,
+        "adjacent_disposition_u8": 0
+      }
+    },
+    {
+      "fields_hex": {
+        "C": "000d83a4",
+        "H": "000db58c",
+        "Q": "000d93b0",
+        "M": "000d95fc",
+        "P": "033dc000",
+        "N": "0003f940",
+        "D": "033dc000",
+        "video-base": "00a34000",
+        "video-bytes": "035c7940",
+        "saved-core-word0": "fffffffe",
+        "word80": "00000000",
+        "producer-pool": "033dc794",
+        "metadata-pool": "033f1878",
+        "bank-bytes": "00618000",
+        "bank-word490": "00000a06",
+        "reader-pool": "033dc794"
+      },
+      "packed_descriptor_flags_hex": ["00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000"],
+      "bank_records_hex": [
+        ["00a34000", "00000000", "00000000", "00000000"],
+        ["0104c000", "00000000", "00000000", "00000000"],
+        ["01664000", "00000000", "00000000", "00000000"],
+        ["01c7c000", "00000000", "00000000", "00000000"],
+        ["02294000", "00000000", "00000000", "00000000"],
+        ["028ac000", "00000000", "00000000", "00000000"],
+        ["00000000", "00000000", "00000000", "00000000"],
+        ["00000000", "00000000", "00000000", "00000000"],
+        ["00000000", "00000000", "00000000", "00000000"]
+      ],
+      "typed_observations": {
+        "bank_count_u8": 6,
+        "adjacent_disposition_u8": 10
+      }
+    }
+  ],
+  "trials": [
+    {
+      "id": "A",
+      "frames": 180,
+      "reads": 560,
+      "bytes_read": 4416,
+      "capture_bytes": 8847360,
+      "capture_sha256": "1ba4af890ad878a5472777c873f1f86f070264ebfc33994ba719b22ea5df9068",
+      "whole_capture_equal": true,
+      "firmware_eos": true,
+      "pending": 0,
+      "ready": 0,
+      "cleanup": true,
+      "fd_before_after": [3, 3],
+      "threads_before_after": [1, 1],
+      "stderr_bytes": 0,
+      "exit_code": 0,
+      "new_kernel_errors": 0,
+      "snapshot_indices_by_stage": [
+        [0, 0],
+        [0, 0],
+        [0, 0],
+        [1, 1]
+      ],
+      "frozen_stock_graph_checks_passed": true,
+      "host_stop_api_status": 0
+    },
+    {
+      "id": "B",
+      "frames": 180,
+      "reads": 560,
+      "bytes_read": 4416,
+      "capture_bytes": 8847360,
+      "capture_sha256": "1ba4af890ad878a5472777c873f1f86f070264ebfc33994ba719b22ea5df9068",
+      "whole_capture_equal": true,
+      "firmware_eos": true,
+      "pending": 0,
+      "ready": 0,
+      "cleanup": true,
+      "fd_before_after": [3, 3],
+      "threads_before_after": [1, 1],
+      "stderr_bytes": 0,
+      "exit_code": 0,
+      "new_kernel_errors": 0,
+      "snapshot_indices_by_stage": [
+        [0, 0],
+        [0, 0],
+        [0, 0],
+        [1, 1]
+      ],
+      "frozen_stock_graph_checks_passed": true,
+      "host_stop_api_status": 0
+    }
+  ],
+  "controls": [
+    {
+      "position": "before",
+      "codec": "MPEG2",
+      "width": 640,
+      "height": 360,
+      "frames": 32,
+      "capture_bytes": 14745600,
+      "capture_sha256": "021b6736caed04600c4801ca1b0e30dc4a48b60985e2dff02d38bea7c2aa9244",
+      "whole_capture_equal": true,
+      "firmware_eos": true,
+      "pending": 0,
+      "ready": 0,
+      "cleanup": true,
+      "fd_before_after": [3, 3],
+      "threads_before_after": [1, 1],
+      "stderr_bytes": 0,
+      "exit_code": 0,
+      "new_kernel_errors": 0
+    },
+    {
+      "position": "after",
+      "codec": "H264",
+      "width": 128,
+      "height": 96,
+      "frames": 180,
+      "capture_bytes": 4423680,
+      "capture_sha256": "d72c16b7eb12d844fb6a5805c2d33a120874237ac5f1cf3608d4bebe186ee7cd",
+      "whole_capture_equal": true,
+      "firmware_eos": true,
+      "pending": 0,
+      "ready": 0,
+      "cleanup": true,
+      "fd_before_after": [3, 3],
+      "threads_before_after": [1, 1],
+      "stderr_bytes": 0,
+      "exit_code": 0,
+      "new_kernel_errors": 0
+    }
+  ],
+  "comparison": {
+    "snapshots": 16,
+    "passes_equal_by_stage": [true, true, true, true],
+    "initial_three_stages_equal": true,
+    "post_stop_changed_word_offsets_hex": ["0", "490"],
+    "descriptor_flag_u16_count": 34,
+    "all_saved_descriptor_flags_zero": true,
+    "bank_records": 9,
+    "nonzero_saved_bank_bases": 6,
+    "consecutive_saved_base_step_hex": "00618000",
+    "bank_count_u8_before_after": [6, 6],
+    "adjacent_disposition_u8_before_after": [0, 10],
+    "host_stop_returns_only": true
+  },
+  "certified": {
+    "rooted_saved_scalar_observations": true,
+    "whole_native_outputs": true,
+    "current_live_state": false,
+    "allocator_integrity": false,
+    "active_frame_extent": false,
+    "source_lease": false,
+    "generation": false,
+    "cache_ready": false,
+    "all_consumer_completion": false,
+    "standalone_processing": false,
+    "backend_stop_completion": false,
+    "guaranteed_saved_refresh": false,
+    "pure_pre_stop_staleness": false
+  },
+  "source_field_receipts": [
+    {
+      "name": "Core_ChanInitialize",
+      "section_index": 16,
+      "elf_virtual_address": 157432,
+      "blob_file_offset": 299660,
+      "size": 636,
+      "sha256": "11aeb52ef9f2a3c8ab99cf099c75eade7a69abe991e3561a05f423e54b1b4d71"
+    },
+    {
+      "name": "Core_Disposition",
+      "section_index": 4,
+      "elf_virtual_address": 35324,
+      "blob_file_offset": 211104,
+      "size": 1244,
+      "sha256": "8366e22667d7f84556832d06e3ff9e66afb0254b02d984b4a71802dcb6cf3714"
+    },
+    {
+      "name": "Core_SetPIF_Abandon",
+      "section_index": 16,
+      "elf_virtual_address": 155276,
+      "blob_file_offset": 297504,
+      "size": 52,
+      "sha256": "6819353c27b6e0422fb86a832fdc6d04d325af270712d0e0e5a8b9c2c5aaba0c"
+    },
+    {
+      "name": "Core_AttemptDecode",
+      "section_index": 4,
+      "elf_virtual_address": 41560,
+      "blob_file_offset": 217340,
+      "size": 1516,
+      "sha256": "02d9516500364df9de2e00eef06024988f55cac6afe09c3b34fdf6613d1d9cfd"
+    },
+    {
+      "name": "Core_PopulatePPB",
+      "section_index": 4,
+      "elf_virtual_address": 37700,
+      "blob_file_offset": 213480,
+      "size": 516,
+      "sha256": "2b3cde5b8b4eef00eedd2c7fa4829324f428f7cb89d01eee685db5a5f6de6805"
+    }
+  ]
+}

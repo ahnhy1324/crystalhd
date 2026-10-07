@@ -10714,5 +10714,250 @@ class FirmwarePpbStopContextTests(unittest.TestCase):
             self.assertIs(second["validation_scope"][key], False)
 
 
+class NativePostStopContextFixtureTests(unittest.TestCase):
+    """Typed saved-word changes after host STOP, not an inner ACK or lease."""
+    BODIES = (
+        ("Core_ChanInitialize", 624, 16, 0x266f8, 0x4928c, 636,
+         "11aeb52ef9f2a3c8ab99cf099c75eade7a69abe991e3561a05f423e54b1b4d71"),
+        ("Core_Disposition", 574, 4, 0x89fc, 0x338a0, 1244,
+         "8366e22667d7f84556832d06e3ff9e66afb0254b02d984b4a71802dcb6cf3714"),
+        ("Core_SetPIF_Abandon", 572, 16, 0x25e8c, 0x48a20, 52,
+         "6819353c27b6e0422fb86a832fdc6d04d325af270712d0e0e5a8b9c2c5aaba0c"),
+        ("Core_AttemptDecode", 606, 4, 0xa258, 0x350fc, 1516,
+         "02d9516500364df9de2e00eef06024988f55cac6afe09c3b34fdf6613d1d9cfd"),
+        ("Core_PopulatePPB", 585, 4, 0x9344, 0x341e8, 516,
+         "2b3cde5b8b4eef00eedd2c7fa4829324f428f7cb89d01eee685db5a5f6de6805"))
+
+    @classmethod
+    def setUpClass(cls):
+        FirmwarePpbSavedContextTests.setUpClass.__func__(cls)
+        cls.raw = (ROOT / "tests/fixtures/issue92/native-post-stop-context.json").read_bytes()
+        cls.observed = json.loads(cls.raw)
+
+    symbol_name = FirmwarePpbSourceProvenanceTests.symbol_name
+    file_offset = FirmwarePpbSourceProvenanceTests.file_offset
+    word = FirmwarePpbSourceProvenanceTests.word
+
+    def test_frozen_native_provenance_four_stage_plan_complete_controls_and_source_typed_receipts(self):
+        observed = self.observed
+        self.assertEqual(hashlib.sha256(self.raw).hexdigest(),
+                         "15552957e5b2708ab18a18daf6182b6d6033aaf0ce458acbeca44ff51ced46a9")
+        self.assertEqual(set(observed), {"schema_version", "kind", "firmware_sha256", "observer_source_sha256",
+            "observer_binary_sha256", "input", "reads", "snapshots", "trials", "controls", "comparison",
+            "certified", "source_field_receipts"})
+        self.assertEqual((observed["schema_version"], observed["kind"]), (1, "native-post-stop-saved-arc-context"))
+        self.assertEqual(observed["firmware_sha256"],
+                         "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9")
+        # Executed-source and binary identities are historical, not future source-file fuses.
+        self.assertEqual(observed["observer_source_sha256"],
+                         "62f8d280761b27317ba5502f6f22ced417cb7c28bfb1c33ec835c1d40f71cf2e")
+        self.assertEqual(observed["observer_binary_sha256"],
+                         "c2c3aa1623b15fb974fddaabbd8c505f0f0021bf4639d99c3fd5fbe54d8623de")
+        self.assertEqual(observed["input"], {
+            "codec": "H264", "progressive": True, "width": 256, "height": 96, "packets": 180,
+            "submitted_bytes": 124832,
+            "submitted_sha256": "1363a87c8f59fab6187cd13653a3ba8a41fd994066d30c24be1c2b09d675666e"})
+        plan = observed["reads"]
+        self.assertEqual(plan["flag"], "--observe-ppb-stop")
+        self.assertEqual(plan["stages"], ["after-OPEN/pre-START", "first-output-after-release-and-owned-write",
+                                         "delivery-EOS-before-STOP", "host-STOP-returned-before-CLOSE"])
+        self.assertEqual((plan["passes"], plan["graph_calls"], plan["graph_bytes"]), (2, 31, 156))
+        self.assertEqual([int(value, 16) for value in plan["context_offsets_hex"]],
+                         [0, 0x80, 0x21c, 0x33c, 0x354, 0x3fc, 0x48c, 0x530])
+        self.assertEqual(plan["context_span_bytes"], [4, 4, 4, 4, 68, 144, 8, 4])
+        self.assertEqual((len(plan["context_span_bytes"]), sum(plan["context_span_bytes"])), (8, 240))
+        self.assertEqual((plan["per_pass_calls"], plan["per_pass_bytes"]),
+                         (2 * plan["graph_calls"] + 8, 2 * plan["graph_bytes"] + 240))
+        self.assertEqual((plan["per_trial_calls"], plan["per_trial_bytes"]), (4 * 2 * 70, 4 * 2 * 552))
+        self.assertEqual((plan["per_trial_calls"], plan["per_trial_bytes"]), (560, 4416))
+        for key in ("frozen_graph_recheck_after_each_pass", "no_bank_or_pool_pointer_following",
+                    "no_source_plane_access", "no_diagnostic_target_writes", "non_atomic"):
+            self.assertIs(plan[key], True)
+        self.assertEqual([trial["id"] for trial in observed["trials"]], ["A", "B"])
+        for trial in observed["trials"]:
+            self.assertEqual((trial["frames"], trial["reads"], trial["bytes_read"], trial["capture_bytes"]),
+                             (180, 560, 4416, 180 * 256 * 96 * 2))
+            self.assertEqual(trial["capture_sha256"],
+                             "1ba4af890ad878a5472777c873f1f86f070264ebfc33994ba719b22ea5df9068")
+            self.assertIs(type(trial["host_stop_api_status"]), int)
+            self.assertEqual(trial["host_stop_api_status"], 0)
+            self.assertIs(trial["frozen_stock_graph_checks_passed"], True)
+        self.assertEqual([(item["position"], item["codec"], item["width"], item["height"], item["frames"],
+                           item["capture_sha256"]) for item in observed["controls"]], [
+            ("before", "MPEG2", 640, 360, 32, "021b6736caed04600c4801ca1b0e30dc4a48b60985e2dff02d38bea7c2aa9244"),
+            ("after", "H264", 128, 96, 180, "d72c16b7eb12d844fb6a5805c2d33a120874237ac5f1cf3608d4bebe186ee7cd")])
+        for item in observed["controls"]:
+            self.assertEqual(item["capture_bytes"], item["frames"] * item["width"] * item["height"] * 2)
+        sessions = observed["trials"] + observed["controls"]
+        self.assertEqual((sum(item["frames"] for item in sessions), sum(item["capture_bytes"] for item in sessions)),
+                         (572, 36864000))
+        for item in sessions:
+            for key in ("whole_capture_equal", "firmware_eos", "cleanup"):
+                self.assertIs(item[key], True)
+            self.assertEqual((item["pending"], item["ready"], item["stderr_bytes"], item["exit_code"],
+                              item["new_kernel_errors"]), (0, 0, 0, 0, 0))
+            self.assertEqual((item["fd_before_after"], item["threads_before_after"]), ([3, 3], [1, 1]))
+        expected_receipts = []
+        for name, index, section, address, offset, size, digest in self.BODIES:
+            self.assertEqual(self.file_offset(section, address), offset)
+            self.assertLessEqual(address + size, self.sections[section][3] + self.sections[section][5])
+            symbol = self.symbols[index]
+            self.assertEqual((self.symbol_name(index), symbol[1], symbol[2], symbol[3] & 15, symbol[5]),
+                             (name, address, size, 2, section))
+            self.assertEqual(hashlib.sha256(self.payload[offset:offset + size]).hexdigest(), digest)
+            expected_receipts.append({"name": name, "section_index": section, "elf_virtual_address": address,
+                                      "blob_file_offset": offset, "size": size, "sha256": digest})
+        self.assertEqual(observed["source_field_receipts"], expected_receipts)
+        # Literal STB/LDB and common-word operations establish widths/possible meanings,
+        # not a native address-domain identity or a STOP acknowledgement.
+        for section, address, word in ((16, 0x26874, 0x10411c90), (4, 0xae64, 0x08a684cc),
+                (4, 0x8ac0, 0x104890cd), (16, 0x25eac, 0x0801003c),
+                (16, 0x25eb0, 0x68007e02), (16, 0x25eb4, 0x70007e01), (16, 0x25ebc, 0x1001003c)):
+            self.assertEqual(self.word(section, address), word)
+        self.assertEqual(((0xffffffff | 2) & ~1) & 0xffffffff, 0xfffffffe)
+        self.assertEqual(observed["certified"], {
+            "rooted_saved_scalar_observations": True, "whole_native_outputs": True,
+            "current_live_state": False, "allocator_integrity": False, "active_frame_extent": False,
+            "source_lease": False, "generation": False, "cache_ready": False, "all_consumer_completion": False,
+            "standalone_processing": False, "backend_stop_completion": False,
+            "guaranteed_saved_refresh": False, "pure_pre_stop_staleness": False})
+        for key, value in observed["certified"].items():
+            self.assertIs(value, key in ("rooted_saved_scalar_observations", "whole_native_outputs"))
+        self.assertNotIn(b"/home/", self.raw)
+        self.assertNotIn(b"/tmp/", self.raw)
+
+    def test_all_sixty_raw_words_sixteen_stage_refs_and_only_typed_word_zero_and_490_change(self):
+        observed = self.observed
+        self.assertEqual(len(observed["snapshots"]), 2)
+        bases = [0xa34000, 0x104c000, 0x1664000, 0x1c7c000, 0x2294000, 0x28ac000]
+        common = {"C": 0xd83a4, "H": 0xdb58c, "Q": 0xd93b0, "M": 0xd95fc,
+            "P": 0x33dc000, "N": 0x3f940, "D": 0x33dc000, "video-base": 0xa34000,
+            "video-bytes": 0x35c7940, "word80": 0, "producer-pool": 0x33dc794,
+            "metadata-pool": 0x33f1878, "bank-bytes": 0x618000, "reader-pool": 0x33dc794}
+        raw_by_snapshot = []
+        for number, snapshot in enumerate(observed["snapshots"]):
+            fields = snapshot["fields_hex"]
+            expected = dict(common, **{"saved-core-word0": 0 if number == 0 else 0xfffffffe,
+                                      "bank-word490": 6 if number == 0 else 0xa06})
+            self.assertEqual(set(fields), set(expected))
+            for key, value in expected.items():
+                self.assertRegex(fields[key], r"^[0-9a-f]{8}$")
+                self.assertEqual(int(fields[key], 16), value)
+            for kind, size in (("H", 0xa84c), ("C", 0x378), ("Q", 0x1f4), ("M", 0x64)):
+                guard = MAP._ppb_context_object_window(common[kind], kind)
+                self.assertEqual((guard["pointer"], guard["bytes"], guard["end_exclusive"]),
+                                 (common[kind], size, common[kind] + size))
+                self.assertIs(guard["native_allocator_proven"], False)
+            window = MAP._ppb_saved_context_window(common["P"], common["N"], common["video-base"], common["video-bytes"])
+            self.assertEqual((window["context_address"], window["context_bytes"], window["total_read_bytes"]),
+                             (common["D"], common["N"], 240))
+            self.assertIs(window["model_no_native_certification"], True)
+            self.assertIs(window["saved_may_be_stale"], True)
+            flags, records = snapshot["packed_descriptor_flags_hex"], snapshot["bank_records_hex"]
+            self.assertEqual(flags, ["00000000"] * 17)
+            self.assertEqual(records, [[f"{base:08x}", "00000000", "00000000", "00000000"] for base in bases] +
+                             [["00000000"] * 4] * 3)
+            for word in flags + [word for record in records for word in record]:
+                self.assertRegex(word, r"^[0-9a-f]{8}$")
+            words = [expected[key] for key in ("saved-core-word0", "word80", "producer-pool", "metadata-pool")]
+            words += [int(word, 16) for word in flags] + [int(word, 16) for record in records for word in record]
+            words += [expected[key] for key in ("bank-bytes", "bank-word490", "reader-pool")]
+            literal = [0 if number == 0 else 0xfffffffe, 0, 0x33dc794, 0x33f1878] + [0] * 17
+            literal += [word for base in bases for word in (base, 0, 0, 0)] + [0] * 12
+            literal += [0x618000, 6 if number == 0 else 0xa06, 0x33dc794]
+            self.assertEqual((len(words), words), (60, literal))
+            raw = struct.pack("<60I", *words)
+            self.assertEqual(struct.unpack("<34H", raw[16:84]), (0,) * 34)
+            typed = snapshot["typed_observations"]
+            self.assertEqual(typed, {"bank_count_u8": 6, "adjacent_disposition_u8": 0 if number == 0 else 10})
+            for value in typed.values():
+                self.assertIs(type(value), int)
+                self.assertTrue(0 <= value <= 255)
+            packed = struct.pack("<I", words[58])
+            self.assertEqual((packed[0], packed[1]), (typed["bank_count_u8"], typed["adjacent_disposition_u8"]))
+            self.assertEqual(packed[2:], b"\0\0")
+            self.assertEqual(sum(bool(int(record[0], 16)) for record in records), typed["bank_count_u8"])
+            self.assertEqual([base - bases[0] for base in bases], [index * words[57] for index in range(6)])
+            if number == 1:
+                self.assertNotEqual(words[58], typed["bank_count_u8"])
+                # 180 % 34 also equals 10 by coincidence. The pinned disposition
+                # store establishes this byte's type; no frame-counter inference.
+                self.assertEqual(self.word(4, 0x8ac0), 0x104890cd)
+                self.assertEqual(words[0], 0xfffffffe)  # Saved raw sentinel, not the STOP command/reply.
+                self.assertNotEqual(words[0], 0x73760006)
+            raw_by_snapshot.append(words)
+        changed = [index for index, pair in enumerate(zip(*raw_by_snapshot)) if pair[0] != pair[1]]
+        self.assertEqual(changed, [0, 58])
+        offsets = [offset + index * 4 for _, offset, size in FirmwarePpbSavedContextTests.SPANS
+                   for index in range(size // 4)]
+        self.assertEqual(len(offsets), 60)
+        self.assertEqual([offsets[index] for index in changed], [0, 0x490])
+        references = []
+        for trial in observed["trials"]:
+            self.assertEqual(trial["snapshot_indices_by_stage"], [[0, 0], [0, 0], [0, 0], [1, 1]])
+            for number, pair in enumerate(trial["snapshot_indices_by_stage"]):
+                self.assertEqual(len(pair), 2)
+                self.assertTrue(all(type(index) is int for index in pair))
+                self.assertEqual(raw_by_snapshot[pair[0]], raw_by_snapshot[pair[1]])
+                self.assertEqual(pair, [int(number == 3)] * 2)
+                references += pair
+        self.assertEqual((len(references), references.count(0), references.count(1)), (16, 12, 4))
+        self.assertEqual(observed["comparison"], {
+            "snapshots": 16, "passes_equal_by_stage": [True] * 4, "initial_three_stages_equal": True,
+            "post_stop_changed_word_offsets_hex": ["0", "490"], "descriptor_flag_u16_count": 34,
+            "all_saved_descriptor_flags_zero": True, "bank_records": 9, "nonzero_saved_bank_bases": 6,
+            "consecutive_saved_base_step_hex": "00618000", "bank_count_u8_before_after": [6, 6],
+            "adjacent_disposition_u8_before_after": [0, 10], "host_stop_returns_only": True})
+        self.assertIs(observed["comparison"]["host_stop_returns_only"], True)
+
+    def test_svg_accessibility_all_numeric_values_from_raw_typed_fields_and_strict_limits(self):
+        import xml.etree.ElementTree as ET
+
+        raw = (ROOT / "tests/fixtures/issue92/native-post-stop-context.svg").read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(),
+                         "129aedc154b43af3c135c579da007885877f4d0593d8ced2a159ca4a2d69e227")
+        svg, ns = ET.fromstring(raw), "{http://www.w3.org/2000/svg}"
+        self.assertEqual((svg.get("width"), svg.get("height"), svg.get("viewBox")),
+                         ("1040", "550", "0 0 1040 550"))
+        self.assertEqual((svg.get("role"), svg.get("aria-labelledby")), ("img", "title desc"))
+        self.assertEqual((svg.find(ns + "title").get("id"), svg.find(ns + "desc").get("id")), ("title", "desc"))
+        self.assertEqual(svg.find(ns + "title").text, "BCM70015 post-host-STOP saved context comparison")
+        self.assertIn("two non-atomic passes", svg.find(ns + "desc").text)
+        self.assertIn("No ARC completion, current state, source lease or pure pre-STOP staleness is certified",
+                      svg.find(ns + "desc").text)
+        text = {(node.get("x"), node.get("y")): node.text for node in svg.findall(".//" + ns + "text")}
+        self.assertEqual(len(text), 22)
+        observed = self.observed
+        first, last = observed["snapshots"]
+        self.assertEqual(text["32", "72"], f"Two H.264 trials · {observed['input']['width']} × "
+                         f"{observed['input']['height']} · {observed['input']['packets']} frames each · "
+                         f"{observed['comparison']['snapshots']} non-atomic saved snapshots")
+        self.assertEqual((text["48", "165"], text["48", "199"]), ("D + 000 · raw word", "D + 490 · packed word"))
+        for x, snapshot in (("424", first), ("764", last)):
+            self.assertEqual(text[x, "165"], snapshot["fields_hex"]["saved-core-word0"])
+            self.assertEqual(text[x, "199"], snapshot["fields_hex"]["bank-word490"])
+        self.assertEqual(text["48", "242"], f"Same frozen D {first['fields_hex']['D']} · all stage pairs match in both trials")
+        self.assertEqual(text["32", "305"], f"Packed word {last['fields_hex']['bank-word490']}: separate source-typed bytes")
+        self.assertEqual((text["48", "350"], text["538", "350"]),
+                         ("Byte 490 · bank count", "Byte 491 · adjacent disposition flags"))
+        a, b = first["typed_observations"], last["typed_observations"]
+        self.assertEqual(text["48", "378"], f"{a['bank_count_u8']} → {b['bank_count_u8']}")
+        self.assertEqual(text["538", "378"], f"{a['adjacent_disposition_u8']} → "
+                         f"{b['adjacent_disposition_u8']} (0x{b['adjacent_disposition_u8']:02x})")
+        self.assertEqual(text["32", "422"], f"{observed['comparison']['descriptor_flag_u16_count']} saved "
+                         "descriptor flags remain zero; nine bank records unchanged. No bank/pool pointers followed.")
+        frames = sum(item["frames"] for item in observed["trials"] + observed["controls"])
+        self.assertEqual(text["32", "452"], f"{frames} / {frames} frames: whole-pixel controls, firmware EOS and cleanup passed")
+        plan = observed["reads"]
+        self.assertEqual(text["32", "479"], f"Each observed trial: {plan['per_trial_calls']} reads / "
+                         f"{plan['per_trial_bytes']:,} B · no source-plane access or diagnostic target writes")
+        self.assertEqual(text["32", "514"], f"Raw word {last['fields_hex']['saved-core-word0']} can be a "
+                         "picture-disposition sentinel; it is not a STOP reply.")
+        self.assertEqual(text["32", "538"], "No ARC ACK, guaranteed refresh, current state, source lease "
+                         "or pure pre-STOP staleness is certified.")
+        self.assertNotIn(b"/home/", raw)
+        self.assertNotIn(b"/tmp/", raw)
+
+
 if __name__ == "__main__":
     unittest.main()
