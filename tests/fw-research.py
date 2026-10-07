@@ -12904,5 +12904,260 @@ class FirmwareArcInitializationProjectionTests(unittest.TestCase):
             project_arc_initialization(self.payload, 1, 0x18000, 0x920000)
 
 
+def project_arc_channel_selection(payload, flags, current, capacity=16, budget=256):
+    """Logical projection of the complete, read-only System_ChannelSelect body.
+
+    Capacity, channel records and the computed running count are synthetic
+    entry premises, not firmware bounds or coherent native channel state.
+    The named ASL extension is assumed; no engine completion, save freshness,
+    host alias, interrupt timing or physical source lease is certified.
+    """
+    if type(payload) not in (bytes, bytearray) or len(payload) != MAP.BUNDLED_SIZE - MAP.TRAILER_SIZE:
+        raise ValueError("invalid ARC channel selection payload")
+    body = bytes(payload[0x2ef08:0x2efa4])
+    if hashlib.sha256(body).hexdigest() != \
+            "a3fd6b8c952b53e5eecd49bc4992498633cf7ebbd9baabe87d94e8680c9df9e7":
+        raise ValueError("stock ARC channel selection body changed")
+    if hashlib.sha256(payload[0x67a25:0x67a95]).hexdigest() != \
+            "50144f0baa420310c9ac35d5739a4e90af2f13e07bb65daa87894472f695ed00":
+        raise ValueError("stock ARC extension declarations changed")
+    if type(flags) not in (bytes, bytearray) or len(flags) != 32 or \
+            type(capacity) is not int or not 1 <= capacity <= 16 or \
+            type(current) is not int or not (0 <= current < capacity or current == 255) or \
+            type(budget) is not int or not 1 <= budget <= 256:
+        raise ValueError("invalid synthetic ARC channel selection inputs")
+    channel_flags = struct.unpack("<16H", flags)
+    ready = [index for index in range(capacity) if channel_flags[index] & 3 == 3]
+    count = len(ready)
+    if not count:
+        selected = 255
+    elif count == 1 and current != 255:
+        selected = current  # The actual shortcut does not inspect this record.
+    else:
+        order = list(range(capacity)) if current == 255 else \
+            [(current + offset) % capacity for offset in range(1, capacity + 1)]
+        selected = next(index for index in order if index in ready)
+    pages = {base: bytearray(b"\xa5" * 4096) for base in (0x3fffc000, 0x3fffd000)}
+    pages[0x3fffc000][0xd8e:0xd90] = bytes((capacity, current))
+    pages[0x3fffd000][0x36a] = count
+    for index, value in enumerate(channel_flags):
+        struct.pack_into("<H", pages[0x3fffd000], 0x374 + 32 * index, value)
+    initial = {base: bytes(page) for base, page in pages.items()}
+    registers = [0xabc00000 + index for index in range(64)]
+    registers[31] = 0x400000  # ARC blink contains a word address.
+    expected_registers = list(registers)
+    expected_registers[0], expected_registers[5] = selected, 0x3fffd368
+    if count:
+        expected_registers[3], expected_registers[4] = current, 0x3fffcd70
+        if count != 1 or current == 255:
+            expected_registers[1], expected_registers[2] = 3, capacity
+    expected_flags = (True, False, True, True) if not count else \
+        (False, True, True, False) if count == 1 and current != 255 else (True, False, False, False)
+    allowed_reads = {(0x3fffd36a, 1), (0x3fffcd8e, 1), (0x3fffcd8f, 1)} | \
+        {(0x3fffd374 + 32 * index, 2) for index in range(capacity)}
+    reads, visited = [], []
+    pc, pending_branch = 0x4064, None
+    z, n, carry, overflow = False, True, True, True
+    def word(address):
+        if address & 3 or not 0x4064 <= address < 0x4100:
+            raise ValueError("outside pinned ARC channel selection code")
+        return struct.unpack_from("<I", body, address - 0x4064)[0]
+    def load(address, size):
+        if (address, size) not in allowed_reads:
+            raise ValueError("outside synthetic ARC channel selection RAM")
+        reads.append((address, size))
+        base, offset = address & ~4095, address & 4095
+        return int.from_bytes(pages[base][offset:offset + size], "little")
+    while pc != 0x1000000:
+        if len(visited) >= budget:
+            raise ValueError("ARC channel selection instruction budget exceeded")
+        instruction = word(pc)
+        visited.append(pc)
+        major = instruction >> 27
+        a, b, c = ((instruction >> shift) & 63 for shift in (21, 15, 9))
+        short = (instruction & 511) - (512 if instruction & 256 else 0)
+        length = 4
+        def operand(register):
+            nonlocal length
+            if register in (61, 63):
+                return short & 0xffffffff
+            if register == 62:
+                length = 8
+                return word(pc + 4)
+            return registers[register]
+        next_branch = pending_branch
+        pending_branch = None
+        if major in (8, 10, 12, 16):
+            left, right = operand(b), operand(c)
+            immediate = b in (61, 63) or c in (61, 63)
+            condition = 0 if immediate else instruction & 31
+            set_flags = 61 in (b, c) if immediate else bool(instruction & 256)
+            if condition not in (0, 1, 2):
+                raise ValueError("unsupported ARC channel selection condition")
+            take = {0: True, 1: z, 2: not z}[condition]
+            if take:
+                if major == 8:
+                    result = (left + right) & 0xffffffff
+                elif major == 10:
+                    result = (left - right) & 0xffffffff
+                elif major == 12:
+                    result = left & right
+                else:
+                    result = (left << (right & 31)) & 0xffffffff
+                if set_flags:
+                    z, n = result == 0, bool(result & 0x80000000)
+                    if major == 8:
+                        carry = left + right > 0xffffffff
+                        overflow = bool(~(left ^ right) & (left ^ result) & 0x80000000)
+                    elif major == 10:
+                        carry = left < right
+                        overflow = bool((left ^ right) & (left ^ result) & 0x80000000)
+                    elif major == 16:
+                        raise ValueError("unsupported ARC channel selection shift flags")
+                if a < 61:
+                    registers[a] = result
+            next_pc = pc + length
+        elif major == 1:
+            if instruction & 0x7200 or a >= 61:
+                raise ValueError("unsupported ARC channel selection load addressing")
+            size = {1: 1, 2: 2}.get((instruction >> 10) & 3)
+            if size is None:
+                raise ValueError("unsupported ARC channel selection load size")
+            address = (operand(b) + short) & 0xffffffff
+            registers[a] = load(address, size)
+            next_pc = pc + length
+        elif major in (4, 7):
+            condition, delay = instruction & 31, (instruction >> 5) & 3
+            if condition not in (0, 1, 2) or delay not in (0, 1, 2) or next_branch is not None:
+                raise ValueError("unsupported ARC channel selection branch")
+            take = {0: True, 1: z, 2: not z}[condition]
+            if major == 4:
+                if delay == 2:
+                    raise ValueError("unsupported ARC channel selection branch delay")
+                displacement = (instruction >> 7) & 0xfffff
+                if displacement & 0x80000:
+                    displacement -= 1 << 20
+                target = pc + 4 + displacement * 4
+            else:
+                if b != 31 or instruction & 0x100:
+                    raise ValueError("unsupported ARC channel selection return")
+                target = (registers[31] & 0xffffff) << 2
+            next_pc = pc + 4
+            if delay == 1:
+                pending_branch = target if take else pc + 8
+            elif delay == 2:
+                if take:
+                    pending_branch = target
+                else:
+                    next_pc = pc + 8  # .jd skips the delay instruction on a false condition.
+            elif take:
+                next_pc = target
+        else:
+            raise ValueError("unsupported ARC channel selection opcode")
+        pc = next_branch if next_branch is not None else next_pc
+    final_pages = {base: bytes(page) for base, page in pages.items()}
+    if registers != expected_registers or (z, n, carry, overflow) != expected_flags or final_pages != initial:
+        raise ValueError("ARC channel selection immutable-page/register/flags oracle changed")
+    return {"channel": registers[0], "running_count": count, "initial": initial, "pages": final_pages,
+            "reads": reads, "visited": visited, "registers": registers, "flags": (z, n, carry, overflow),
+            "native_execution": False, "vendor_extensions_certified": False,
+            "pipeline_timing_certified": False, "physical_lease_certified": False,
+            "channel_state_coherence_certified": False, "engine_completion_certified": False}
+
+
+class FirmwareArcChannelSelectionProjectionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        raw = MAP.read_firmware(BLOB)
+        if len(raw) != MAP.BUNDLED_SIZE or hashlib.sha256(raw).hexdigest() != MAP.BUNDLED_SHA256:
+            raise ValueError("bundled firmware changed")
+        cls.payload = raw[:-MAP.TRAILER_SIZE]
+
+    def test_all_eight_channel_masks_ready_current_and_no_current(self):
+        cases, maximum = 0, 0
+        for mask in range(256):
+            ready = [index for index in range(8) if mask & (1 << index)]
+            flags = bytearray(struct.pack("<16H", *(0xa5a3 if index in ready else 0xa5a0
+                                                     for index in range(16))))
+            for current in ready + [255]:
+                before = bytes(flags)
+                result = project_arc_channel_selection(self.payload, flags, current, 8)
+                order = list(range(8)) if current == 255 else list(range(current + 1, 8)) + list(range(current + 1))
+                expected = 255 if not ready else current if len(ready) == 1 and current != 255 else \
+                    next(index for index in order if index in ready)
+                with self.subTest(mask=mask, current=current):
+                    self.assertEqual(result["channel"], expected)
+                    self.assertEqual(result["running_count"], len(ready))
+                    self.assertEqual(result["pages"], result["initial"])
+                    self.assertEqual(bytes(flags), before)
+                    self.assertEqual(result["registers"][6:], [0x400000 if index == 31 else 0xabc00000 + index
+                                                               for index in range(6, 64)])
+                    self.assertNotIn(0x4068, result["visited"])
+                    self.assertNotIn(0x4084, result["visited"])
+                    self.assertEqual(0x4078 in result["visited"], not ready)
+                    for key in ("native_execution", "vendor_extensions_certified", "pipeline_timing_certified",
+                                "physical_lease_certified", "channel_state_coherence_certified",
+                                "engine_completion_certified"):
+                        self.assertFalse(result[key])
+                cases += 1
+                maximum = max(maximum, len(result["visited"]))
+        self.assertEqual(cases, 1280)
+        self.assertLessEqual(maximum, 101)
+
+    def test_sixteen_channel_wrap_and_incoherent_single_current_counterexample(self):
+        flags = struct.pack("<16H", *(3 if index in (0, 15) else index & 1 for index in range(16)))
+        for current, selected in ((14, 15), (15, 0), (0, 15), (255, 0)):
+            result = project_arc_channel_selection(self.payload, flags, current)
+            self.assertEqual(result["channel"], selected)
+            self.assertEqual(result["flags"], (True, False, False, False))
+            self.assertIn((0x3fffd374 + 32 * selected, 2), result["reads"])
+        flags = struct.pack("<16H", *([0] * 15 + [3]))
+        shortcut = project_arc_channel_selection(self.payload, flags, 0)
+        self.assertEqual(shortcut["channel"], 0)  # Current record is NOT ready.
+        self.assertEqual(shortcut["reads"], [(0x3fffd36a, 1), (0x3fffcd8f, 1)])
+        self.assertEqual(shortcut["flags"], (False, True, True, False))
+        self.assertIn(0x4098, shortcut["visited"])
+        self.assertFalse(shortcut["channel_state_coherence_certified"])
+        excluded = project_arc_channel_selection(self.payload, flags, 255, 1)
+        self.assertEqual((excluded["channel"], excluded["running_count"]), (255, 0))
+        self.assertEqual(excluded["flags"], (True, False, True, True))
+        self.assertEqual(excluded["reads"], [(0x3fffd36a, 1)])
+
+    def test_source_types_budget_immutable_inputs_and_pre_read_refusals(self):
+        flags = bytearray(struct.pack("<16H", *([3] * 16)))
+        payload = bytearray(self.payload)
+        before = (bytes(payload), bytes(flags))
+        project_arc_channel_selection(payload, flags, 15)
+        self.assertEqual((bytes(payload), bytes(flags)), before)
+        for offset in (0x2ef08, 0x2ef54, 0x2efa3, 0x67a25, 0x67a94):
+            changed = bytearray(self.payload)
+            changed[offset] ^= 1
+            with self.subTest(offset=offset), self.assertRaisesRegex(ValueError, "stock ARC"):
+                project_arc_channel_selection(changed, flags, 0)
+        for payload in (None, [], self.payload[:-1], self.payload + b"\0"):
+            with self.assertRaisesRegex(ValueError, "invalid ARC channel selection payload"):
+                project_arc_channel_selection(payload, flags, 0)
+        for field, values in (("flags", (None, [], bytes(31), bytes(33))),
+                              ("current", (True, -1, 16, 256, 0.0)),
+                              ("capacity", (True, 0, 17, 1.0)), ("budget", (True, 0, 257, 1.0))):
+            for value in values:
+                args = {"flags": flags, "current": 0, field: value}
+                with self.subTest(field=field, value=value), self.assertRaisesRegex(ValueError, "invalid synthetic"):
+                    project_arc_channel_selection(self.payload, **args)
+        with self.assertRaisesRegex(ValueError, "invalid synthetic"):
+            project_arc_channel_selection(self.payload, flags, 1, 1)
+        with self.assertRaisesRegex(ValueError, "instruction budget exceeded"):
+            project_arc_channel_selection(self.payload, flags, 0, budget=1)
+        original, body = struct.unpack_from, bytes(self.payload[0x2ef08:0x2efa4])
+        def corrupt(fmt, data, offset=0):
+            value = original(fmt, data, offset)
+            if fmt == "<I" and data == body and offset == 0x406c - 0x4064:
+                return (value[0] ^ (1 << 15),)
+            return value
+        with mock.patch.object(struct, "unpack_from", corrupt), \
+                self.assertRaisesRegex(ValueError, "outside synthetic ARC channel selection RAM"):
+            project_arc_channel_selection(self.payload, flags, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
