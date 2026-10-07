@@ -107,6 +107,17 @@ PICTURE_CALLS.update({
 PICTURE_TAILS = {0x7970: 0x203c4, 0x79a4: 0x203c4}
 PICTURE_ROOT, PICTURE_TOKEN = 0xd3a00, 0x710100
 PICTURE_PAGES = META_PAGES + (0xd3000, 0xd2000, 0x10502000, 0x10540000, 0x10541000)
+MFD_SOURCE_BODIES = (
+    (0x1918, 0x1ad8, "78f4221d3656a86e50dce4fcd833856b9b941db1054b75778e760c18affe328f"),
+    (0x1e8e8, 0x1e8f4, "127fb56c30f3496c824443348ca74b9236add85c1381d8d0fae5bf61c0a9d927"),
+)
+MFD_SOURCE_ROWS = ((0, 64, 6), (1, 128, 7), (2, 256, 8))
+MFD_SOURCE_WORDS = {0x1b28: 0x2cccc, 0x1b2c: 0x2ce70, 0x1b48: 0x540010,
+                    0x1b4c: 0x540028, 0x1b50: 0x54002c, 0x1b6c: 0x54001c, 0x1b70: 0x540020}
+MFD_SOURCE_CALLS = {0x1960: 0x203c4, 0x1990: 0x203c4, 0x1a7c: 0x203c4,
+                    0x19a0: 0x1e8e8, 0x19b0: 0x1e8e8, 0x19c0: 0x1e8e8,
+                    0x1abc: 0x1e8e8, 0x1acc: 0x1e8e8}
+MFD_CONTEXT, MFD_RECORD, MFD_STACK = 0x400000, 0x400100, 0x300800
 
 
 class MetadataRAM(tuple):
@@ -944,6 +955,87 @@ def execute_picture(kind="picture", mode=2, single_field=False, active=1, starte
     return actual
 
 
+def execute_mfd_source(record, budget=256, payload=None):
+    """Stock address arithmetic and HAL stores in three synthetic RAM pages.
+
+    Selector/format/mode/field admission is replay-only, not native legality.
+    Context[0]=0 makes fixed HAL offsets guest-RAM addresses. Line-address
+    scalars, including zero/wrapped values, are never followed. The sole
+    synthetic callee is logging; no MFD engine, completion or lease is modeled.
+    """
+    if type(record) not in (bytes, bytearray) or len(record) != 116 or \
+            record[0x5c] > 2 or record[0x27] not in (1, 2, 3) or \
+            record[8] not in (0, 1, 2) or record[0x28] not in (0, 1):
+        raise ValueError("invalid synthetic MFD record")
+    if type(budget) is not int or not 1 <= budget <= 256:
+        raise ValueError("invalid instruction budget")
+    record = bytes(record)
+    payload = Model.payload if payload is None else payload
+    if type(payload) not in (bytes, bytearray):
+        raise ValueError("invalid MFD source payload")
+    code = {0x1000: bytearray(struct.pack("<I", 0xe7f000f0) * 1024),
+            0x1e000: bytearray(struct.pack("<I", 0xe7f000f0) * 1024),
+            0x2c000: bytearray(b"\xa5" * 4096)}
+    for low, high, digest in MFD_SOURCE_BODIES:
+        if hashlib.sha256(payload[low:high]).hexdigest() != digest:
+            raise ValueError("stock MFD source body changed")
+        code[low & ~4095][low & 4095:high & 4095] = payload[low:high]
+    table = struct.pack("<9I", *(value for row in MFD_SOURCE_ROWS for value in row))
+    if payload[0x2cccc:0x2ccf0] != table:
+        raise ValueError("stock MFD source table changed")
+    code[0x2c000][0xccc:0xcf0] = table
+    for address, value in MFD_SOURCE_WORDS.items():
+        if payload[address:address + 4] != struct.pack("<I", value):
+            raise ValueError("stock MFD source literal changed")
+        struct.pack_into("<I", code[0x1000], address & 4095, value)
+    for site, target in MFD_SOURCE_CALLS.items():
+        instruction = struct.unpack_from("<I", payload, site)[0]
+        displacement = (instruction & 0xffffff) << 2
+        if displacement & 0x2000000:
+            displacement -= 0x4000000
+        if instruction & 0xff000000 != 0xeb000000 or site + 8 + displacement != target:
+            raise ValueError("stock MFD source call target changed")
+    pages = {base: bytearray(b"\xa5" * 4096) for base in (0x300000, 0x400000, 0x540000)}
+    struct.pack_into("<I", pages[0x400000], 0, 0)
+    pages[0x400000][0x100:0x174] = record
+    registers = [0xabc00000 + index for index in range(16)]
+    registers[:2] = [MFD_CONTEXT, MFD_RECORD]
+    registers[13:16] = [MFD_STACK, RETURN, 0x1918]
+    image = segment_elf([(base, bytes(page), 4 if base == 0x2c000 else 5)
+                         for base, page in code.items()] +
+                        [(base, bytes(page), 6) for base, page in pages.items()], 0x1918)
+    # Existing independently tested arithmetic oracle, not a second ISA loop.
+    oracle = FW.MAP._mfd_source_model(record, MFD_SOURCE_ROWS)
+    expected = {base: bytearray(page) for base, page in pages.items()}
+    struct.pack_into("<5I", expected[0x300000], (MFD_STACK - 20) & 4095,
+                     *registers[4:8], RETURN)
+    row = MFD_SOURCE_ROWS[record[0x5c]]
+    struct.pack_into("<5I", expected[0x300000], (MFD_STACK - 40) & 4095,
+                     row[2], record[0x28], *row)
+    for address, value in oracle["writes"]:
+        struct.pack_into("<I", expected[0x540000], address - 0x540000, value)
+    writes = []
+    def instruction(rsp, pc, regs):
+        if pc == 0x1e8ec:
+            position = len(writes)
+            if regs[0] != MFD_CONTEXT or regs[3] != 0 or position >= len(oracle["writes"]) or \
+                    [regs[1], regs[2]] != oracle["writes"][position]:
+                raise ValueError("outside ordered MFD register-write contract")
+            writes.append([regs[1], regs[2]])
+    def log(rsp, pc, args, stack):
+        if pc != 0x203c4 or stack != MFD_STACK - 40:
+            raise ValueError("unexpected MFD logging contract")
+        return 0
+    actual = emulate(image, pages, registers, ((0x1918, 0x1ad8), (0x1e8e8, 0x1e8f4)),
+                     (0x203c4,), log, budget, clobber_flags=0xf0000000,
+                     real_callees=(0x1e8e8,), call_edges=MFD_SOURCE_CALLS, instruction=instruction)
+    expected = {base: bytes(page) for base, page in expected.items()}
+    if actual["pages"] != expected or actual["status"] != oracle["return_value"] or writes != oracle["writes"]:
+        raise ValueError("MFD full-page/arithmetic oracle changed")
+    actual.update(expected=expected, writes=writes, record=record)
+    return actual
+
+
 class FirmwareQemuTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -1518,6 +1610,113 @@ class FirmwarePictureQemuTests(unittest.TestCase):
                          (2, 4, PICTURE_TOKEN, PICTURE_TOKEN))
 
 
+class FirmwareMfdSourceQemuTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        FirmwareQemuTests.setUpClass()
+
+    def check(self, actual):
+        self.assertEqual(actual["pages"], actual["expected"])
+        self.assertEqual(actual["pages"][0x400000], bytes(actual["initial"][0x400000]))
+        self.assertEqual(actual["real_status"], [(0x1e8e8, MFD_CONTEXT)] * len(actual["writes"]))
+        self.assertLessEqual(actual["steps"], 116)
+        self.assertEqual([target for _, target, _ in actual["calls"] if target != 0x203c4],
+                         [0x1e8e8] * len(actual["writes"]))
+        return actual
+
+    def test_actual_mfd_selector_mode_format_field_matrix(self):
+        count = 0
+        for selector in range(3):
+            for mode in range(3):
+                for form in (1, 2, 3):
+                    for field in (0, 1):
+                        with self.subTest(selector=selector, mode=mode, form=form, field=field):
+                            record = FW.FirmwareMfdSourceTests.record(
+                                selector, mode, form, field, offset_6c=3, offset_70=5)
+                            before = bytes(record)
+                            actual = self.check(execute_mfd_source(record))
+                            self.assertEqual(record, before)
+                            oracle = FW.MAP._mfd_source_model(before, ((0, 64, 6), (1, 128, 7), (2, 256, 8)))
+                            self.assertEqual((actual["writes"], actual["status"]),
+                                             (oracle["writes"], oracle["return_value"]))
+                            self.assertEqual([site for site, target, _ in actual["calls"] if target == 0x1e8e8],
+                                             [0x19a0, 0x19b0, 0x19c0] + ([] if form == 3 else [0x1abc, 0x1acc]))
+                            count += 1
+        self.assertEqual(count, 54)
+
+    def test_actual_mfd_zero_wrap_and_partial_format(self):
+        record = FW.FirmwareMfdSourceTests.record
+        zero = self.check(execute_mfd_source(bytes(record(mode=2, y=0, c=0, yn=0, cn=0))))
+        self.assertEqual((zero["steps"], zero["status"], zero["writes"]), (106, 0, [
+            [0x540010, 0x00400040], [0x540028, 0], [0x54002c, 0], [0x54001c, 0], [0x540020, 0]]))
+        field = self.check(execute_mfd_source(record(1, 1, 1, 1, 3, 5)))
+        self.assertEqual((field["steps"], field["status"], field["writes"]), (116, 0, [
+            [0x540010, 0x00800100], [0x540028, 40], [0x54002c, 20],
+            [0x54001c, 0x1184], [0x540020, 0x8104]]))
+        wrapped = self.check(execute_mfd_source(record(2, 0, 2, 0, 0xffffffff, 0xfffffffe)))
+        self.assertEqual((wrapped["steps"], wrapped["status"]), (106, 0))
+        self.assertEqual(wrapped["writes"][-2:], [[0x54001c, 0xfffd8ffe], [0x540020, 0xffff3ffe]])
+        partial = self.check(execute_mfd_source(record(form=3)))
+        self.assertEqual((partial["steps"], partial["status"], len(partial["writes"])), (78, 8, 3))
+        self.assertEqual(partial["pages"][0x540000][0x1c:0x24], b"\xa5" * 8)
+        # Form3's partial-register effect is not a valid native input claim.
+        for form in (1, 2):
+            for offset in (0x7fffffff, 0x80000000, 0xfffffffd, 0xffffffff):
+                with self.subTest(form=form, offset=offset):
+                    self.check(execute_mfd_source(record(2, 1, form, 1, offset, offset,
+                                                       y=0xfffffff0, c=0xfffffffc, yn=0xffffffff, cn=0x80000001)))
+
+    def test_mfd_source_pins_admission_budget_and_store_bounds(self):
+        valid = FW.FirmwareMfdSourceTests.record()
+        for low, high, _ in MFD_SOURCE_BODIES:
+            for offset in (low, high - 1):
+                changed = bytearray(Model.payload)
+                changed[offset] ^= 1
+                with self.subTest(offset=offset), mock.patch.object(subprocess, "Popen") as spawn:
+                    with self.assertRaisesRegex(ValueError, "stock MFD source body"):
+                        execute_mfd_source(valid, payload=changed)
+                    spawn.assert_not_called()
+        for offset in (*MFD_SOURCE_WORDS, 0x2cccc, 0x2ccef):
+            changed = bytearray(Model.payload)
+            changed[offset] ^= 1
+            with self.subTest(offset=offset), mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaisesRegex(ValueError, "stock MFD source (literal|table)"):
+                    execute_mfd_source(valid, payload=changed)
+                spawn.assert_not_called()
+        class BytesSubclass(bytes):
+            pass
+        malformed = [b"", bytes(115), bytes(117), list(valid), BytesSubclass(valid)]
+        for offset, value in ((0x5c, 3), (0x27, 0), (0x27, 4), (8, 3), (0x28, 2)):
+            changed = bytearray(valid)
+            changed[offset] = value
+            malformed.append(changed)
+        for record in malformed:
+            with self.subTest(record=type(record)), mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaisesRegex(ValueError, "invalid synthetic MFD record"):
+                    execute_mfd_source(record)
+                spawn.assert_not_called()
+        for budget in (0, True, 257):
+            with self.subTest(budget=budget), mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaisesRegex(ValueError, "invalid instruction budget"):
+                    execute_mfd_source(valid, budget=budget)
+                spawn.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "instruction budget exceeded"):
+            execute_mfd_source(valid, budget=1)
+        with mock.patch.dict(MFD_SOURCE_CALLS, {0x19a0: 0x203c4}), mock.patch.object(subprocess, "Popen") as spawn:
+            with self.assertRaisesRegex(ValueError, "stock MFD source call target"):
+                execute_mfd_source(valid)
+            spawn.assert_not_called()
+        original = RSP.registers
+        def outside(rsp):
+            regs = original(rsp)
+            if regs[15] == 0x1e8ec:
+                regs[3] = 0x900000
+            return regs
+        with mock.patch.object(RSP, "registers", outside):
+            with self.assertRaisesRegex(ValueError, "outside ordered MFD register-write"):
+                execute_mfd_source(valid)
+
+
 class ProtocolTests(unittest.TestCase):
     class Connection:
         def __init__(self, response=b""):
@@ -1555,4 +1754,5 @@ class ProtocolTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(defaultTest=("FirmwareQemuTests", "FirmwarePictureQemuTests", "ProtocolTests"))
+    unittest.main(defaultTest=("FirmwareQemuTests", "FirmwarePictureQemuTests",
+                               "FirmwareMfdSourceQemuTests", "ProtocolTests"))
