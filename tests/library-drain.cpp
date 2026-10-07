@@ -1109,17 +1109,21 @@ struct PpbContextObserver {
     bool enabled = false, post_stop = false, metadata_pool = false, failed = false, admitted = false;
     bool owner_post_stop = false, owner_metadata_pool = false;
     bool return_header = false, owner_return_header = false;
+    bool video_prefix = false, owner_video_prefix = false;
+    bool video_graph = false, owner_video_graph = false;
     HANDLE owner = nullptr;
     unsigned next_stage = 0, reads = 0, bytes = 0, measured = 0;
     BC_STATUS status = BC_STS_SUCCESS;
     PpbContextFailure failure = PpbContextFailure::None;
+    unsigned changed_word = 39;
+    uint32_t changed_expected = 0, changed_observed = 0;
     PpbContextGraph authority, graph[2];
     uint32_t raw[2][60] = {};
     uint32_t pool_raw[2][620] = {}, route_raw[2][2] = {};
     bool complete[2] = {};
-    unsigned Stages() const { return post_stop ? 4U : 3U; }
-    unsigned StageReads() const { return return_header ? 204U : metadata_pool ? 196U : 140U; }
-    unsigned StageBytes() const { return return_header ? 5600U : metadata_pool ? 5552U : 1104U; }
+    unsigned Stages() const { return (video_graph || owner_video_graph || video_prefix || owner_video_prefix) ? 3U : post_stop ? 4U : 3U; }
+    unsigned StageReads() const { return owner_video_graph ? 62U : owner_video_prefix ? 126U : video_graph ? 62U : video_prefix ? 126U : return_header ? 204U : metadata_pool ? 196U : 140U; }
+    unsigned StageBytes() const { return owner_video_graph ? 312U : owner_video_prefix ? 880U : video_graph ? 312U : video_prefix ? 880U : return_header ? 5600U : metadata_pool ? 5552U : 1104U; }
     unsigned ReadLimit() const { return Stages() * StageReads(); }
     unsigned ByteLimit() const { return Stages() * StageBytes(); }
     static bool PoolSpan(unsigned span, uint32_t *offset, unsigned *count, bool bracket = false) {
@@ -1145,6 +1149,15 @@ struct PpbContextObserver {
         return g.words[15] >= skip + 0x177ccU && d >= g.words[22] &&
             d + 0x176c0U <= submitted_end && submitted_end <= video_end && video_end <= 0x3ffc000U;
     }
+    static bool PrefixWindow(const PpbContextGraph &g) {
+        const uint64_t base = g.words[22], end = base + g.words[23];
+        const uint64_t p = g.words[14], d = p + ((0U - g.words[14]) & 3U);
+        // Only the allocation's fixed front 128 bytes. No picture/pool word
+        // selects this target; the span does not establish live pixel layout.
+        return base && !(base & 4095U) && base == g.words[21] && g.words[23] >= 128U &&
+            base + 128U <= d && d <= end && p >= base &&
+            p + g.words[15] <= end && d + 0x5bcU <= p + g.words[15] && end <= 0x3ffc000U;
+    }
     static bool Object(uint32_t pointer, unsigned kind) {
         const uint32_t sizes[] = {0xa84c, 0x378, 0x1f4, 0x64};
         return kind < 4 && !(pointer & 3U) && pointer >= 0xd53dcU &&
@@ -1169,8 +1182,28 @@ struct PpbContextObserver {
         return !std::memcmp(a.words + 13, b.words + 13, 26 * sizeof(uint32_t));
     }
     bool Reject(PpbContextFailure why) { failed = true; failure = why; return false; }
+    bool RejectChanged(const PpbContextGraph &observed, const PpbContextGraph &frozen,
+                       unsigned first, unsigned count) {
+        // Diagnose only the range already collected and compared. This never
+        // issues another read or uses a changed value as a pointer target.
+        for (unsigned word = first; word < first + count && word < 39; ++word) {
+            if (observed.words[word] == frozen.words[word]) continue;
+            changed_word = word;
+            changed_expected = frozen.words[word];
+            changed_observed = observed.words[word];
+            break;
+        }
+        return Reject(PpbContextFailure::Changed);
+    }
+    bool VideoModeReady() const {
+        return (!video_prefix && !owner_video_prefix && !video_graph && !owner_video_graph) ||
+            (enabled && video_prefix == owner_video_prefix && video_graph == owner_video_graph &&
+             video_prefix != video_graph && !post_stop && !metadata_pool && !return_header &&
+             !owner_post_stop && !owner_metadata_pool && !owner_return_header);
+    }
     bool Read(const HANDLE *current, Reader reader, uint32_t address, unsigned count, uint32_t *values) {
         if (failed) return false;
+        if (!VideoModeReady()) return Reject(PpbContextFailure::Argument);
         if (!current || !*current || *current != owner) return Reject(PpbContextFailure::Owner);
         if (!reader || !values || !count || count > 36 || (address & 3U) ||
             static_cast<uint64_t>(address) + count * 4U > 0x4000000U) return Reject(PpbContextFailure::Argument);
@@ -1178,6 +1211,7 @@ struct PpbContextObserver {
         ++reads; bytes += count * 4U;
         status = reader(owner, values, count * 4U, address);
         if (!*current || *current != owner) return Reject(PpbContextFailure::Owner);
+        if (!VideoModeReady()) return Reject(PpbContextFailure::Argument);
         if (status != BC_STS_SUCCESS) return Reject(PpbContextFailure::Read);
         ++measured; return true;
     }
@@ -1191,29 +1225,29 @@ struct PpbContextObserver {
                 !Read(current, reader, base + 0xc4, 1, v + 2 + slot * 3) ||
                 !Read(current, reader, base + 0xd0, 1, v + 3 + slot * 3)) return false;
             if ((v[2 + slot * 3] & 255U) != (slot == 0 ? 1U : 0U)) return Reject(PpbContextFailure::Profile);
-            if (frozen && v[1 + slot * 3] != frozen->words[1 + slot * 3]) return Reject(PpbContextFailure::Changed);
+            if (frozen && v[1 + slot * 3] != frozen->words[1 + slot * 3]) return RejectChanged(*out, *frozen, 1 + slot * 3, 1);
         }
         if ((v[3] & 255U) || ((v[3] >> 16) & 255U) != ((stage == 1 || stage == 2) ? 1U : 0U))
             return Reject(PpbContextFailure::Profile);
-        if (frozen && v[0] != frozen->words[0]) return Reject(PpbContextFailure::Changed);
+        if (frozen && v[0] != frozen->words[0]) return RejectChanged(*out, *frozen, 0, 1);
         const uint32_t h = frozen ? frozen->words[1] : v[1], c = frozen ? frozen->words[0] : v[0];
         uint32_t objects[] = {h, c, 0, 0};
         if (!Disjoint(objects, 2)) return Reject(PpbContextFailure::Object);
         if (!Read(current, reader, h, 1, v + 13) || !Read(current, reader, h + 8, 2, v + 14) ||
             !Read(current, reader, h + 0x64, 1, v + 16) || !Read(current, reader, h + 0xcc, 1, v + 17) ||
             !Read(current, reader, h + 0x224, 1, v + 18)) return false;
-        if (frozen && std::memcmp(v + 13, frozen->words + 13, 6 * sizeof(uint32_t))) return Reject(PpbContextFailure::Changed);
+        if (frozen && std::memcmp(v + 13, frozen->words + 13, 6 * sizeof(uint32_t))) return RejectChanged(*out, *frozen, 13, 6);
         if (v[13] || v[15] != 0x3f940U || v[16] != c || v[17] || v[18] != 0x116004U) return Reject(PpbContextFailure::Profile);
         if (!Read(current, reader, c + 8, 1, v + 19) || !Read(current, reader, c + 0x1a0, 1, v + 20) ||
             !Read(current, reader, c + 0x1d4, 3, v + 21)) return false;
-        if (frozen && std::memcmp(v + 19, frozen->words + 19, 5 * sizeof(uint32_t))) return Reject(PpbContextFailure::Changed);
+        if (frozen && std::memcmp(v + 19, frozen->words + 19, 5 * sizeof(uint32_t))) return RejectChanged(*out, *frozen, 19, 5);
         if (v[19] != 0x116004U) return Reject(PpbContextFailure::Profile);
         objects[2] = frozen ? frozen->words[20] : v[20];
         if (!Disjoint(objects, 3)) return Reject(PpbContextFailure::Object);
         const uint32_t q = objects[2];
         if (!Read(current, reader, q, 1, v + 24) || !Read(current, reader, q + 8, 1, v + 25) ||
             !Read(current, reader, q + 0x10, 2, v + 26)) return false;
-        if (frozen && std::memcmp(v + 24, frozen->words + 24, 4 * sizeof(uint32_t))) return Reject(PpbContextFailure::Changed);
+        if (frozen && std::memcmp(v + 24, frozen->words + 24, 4 * sizeof(uint32_t))) return RejectChanged(*out, *frozen, 24, 4);
         if (v[24] != c || v[26] != v[23] || v[27] != v[21]) return Reject(PpbContextFailure::Map);
         objects[3] = frozen ? frozen->words[25] : v[25];
         if (!Disjoint(objects, 4)) return Reject(PpbContextFailure::Object);
@@ -1222,7 +1256,7 @@ struct PpbContextObserver {
             !Read(current, reader, m + 0x30, 2, v + 31) || !Read(current, reader, m + 0x40, 1, v + 33) ||
             !Read(current, reader, 0x11601c, 2, v + 34) || !Read(current, reader, 0x11602c, 1, v + 36) ||
             !Read(current, reader, 0x116034, 2, v + 37)) return false;
-        if (frozen && !Equal(*out, *frozen)) return Reject(PpbContextFailure::Changed);
+        if (frozen && !Equal(*out, *frozen)) return RejectChanged(*out, *frozen, 13, 26);
         const uint32_t defaults[] = {0x116068, 0x3ffc000, 0x116004, 0x116004, 0x3ffc000 - 0x116004};
         const uint64_t video_end = static_cast<uint64_t>(v[21]) + v[23];
         if (std::memcmp(v + 34, defaults, sizeof(defaults)) || !v[23] || (v[21] & 4095U) || (v[23] & 3U) ||
@@ -1241,6 +1275,50 @@ struct PpbContextObserver {
             "delivery-EOS-before-STOP", "host-STOP-returned-before-CLOSE"};
         const char *const failures[] = {"none", "argument", "current-handle-loss", "order", "budget", "read-status",
             "object-envelope/alias", "default-profile", "map-tuple", "context-slice", "authority-changed"};
+        if (owner_video_graph) {
+            std::printf("Video allocation graph: stage=%s reads=%u/%u bytes=%u/%u failure=%s api-status=%d\n",
+                stages[stage], reads, ReadLimit(), bytes, ByteLimit(), failures[static_cast<unsigned>(failure)], status);
+            if (failure == PpbContextFailure::Changed && changed_word < 39)
+                std::printf("Video allocation graph authority delta: word=%u frozen=%08x observed=%08x "
+                    "already-collected-first-difference only; no retry or changed-target read\n",
+                    changed_word, changed_expected, changed_observed);
+            for (unsigned pass = 0; pass < 2; ++pass) {
+                if (!complete[pass]) {
+                    std::printf("Video allocation graph raw: stage=%s pass=%u INCOMPLETE\n", stages[stage], pass);
+                    continue;
+                }
+                std::printf("Video allocation graph raw: stage=%s pass=%u words=", stages[stage], pass);
+                for (unsigned word = 0; word < 39; ++word)
+                    std::printf("%s%08x", word ? "," : "", graph[pass].words[word]);
+                std::printf("\n");
+            }
+            std::printf("Video allocation graph scope: rooted graph only; prefix/context/pool/ring/plane-target-reads=0; "
+                "non-atomic allocator-integrity/pixel-layout/lease/generation/completion-certified=no\n");
+            std::fflush(stdout);
+            return;
+        }
+        if (owner_video_prefix) {
+            std::printf("Video allocation prefix: stage=%s reads=%u/%u bytes=%u/%u failure=%s api-status=%d\n",
+                stages[stage], reads, ReadLimit(), bytes, ByteLimit(), failures[static_cast<unsigned>(failure)], status);
+            if (failure == PpbContextFailure::Changed && changed_word < 39)
+                std::printf("Video allocation prefix authority delta: word=%u frozen=%08x observed=%08x "
+                    "already-collected-first-difference only; no retry or changed-target read\n",
+                    changed_word, changed_expected, changed_observed);
+            for (unsigned pass = 0; pass < 2; ++pass) {
+                if (!complete[pass]) {
+                    std::printf("Video allocation prefix raw: stage=%s pass=%u INCOMPLETE\n", stages[stage], pass);
+                    continue;
+                }
+                std::printf("Video allocation prefix raw: stage=%s pass=%u address=%08x bytes=128 words=",
+                    stages[stage], pass, authority.words[22]);
+                for (unsigned word = 0; word < 32; ++word)
+                    std::printf("%s%08x", word ? "," : "", raw[pass][word]);
+                std::printf("\n");
+            }
+            std::printf("Video allocation prefix scope: non-atomic raw bytes; pixel-layout/lease/generation/completion-certified=no\n");
+            std::fflush(stdout);
+            return;
+        }
         if (metadata_pool) {
             const char *label = return_header ? "PPB return header" : "PPB fixed metadata";
             std::printf("%s: stage=%s reads=%u/%u bytes=%u/%u measured=%u/%u failure=%s api-status=%d "
@@ -1299,15 +1377,18 @@ struct PpbContextObserver {
         std::fflush(stdout);
     }
     bool Observe(const HANDLE *current, unsigned stage, bool barrier, Reader reader = DtsDevMemRd, bool report = true) {
-        if (!enabled) return true;
         if (failed) return false;
+        if (!enabled) return (owner_video_prefix || owner_video_graph) ? Reject(PpbContextFailure::Argument) : true;
         if (!current || !*current || !reader) return Reject(PpbContextFailure::Argument);
-        if ((metadata_pool && !post_stop) || (return_header && !metadata_pool) || (next_stage &&
-            (post_stop != owner_post_stop || metadata_pool != owner_metadata_pool || return_header != owner_return_header)))
+        if ((metadata_pool && !post_stop) || (return_header && !metadata_pool) ||
+            ((video_prefix || video_graph) && (post_stop || metadata_pool || return_header)) ||
+            (video_prefix && video_graph) || (next_stage &&
+            (post_stop != owner_post_stop || metadata_pool != owner_metadata_pool || return_header != owner_return_header ||
+             video_prefix != owner_video_prefix || video_graph != owner_video_graph)))
             return Reject(PpbContextFailure::Argument);
         if (stage >= Stages() || stage != next_stage || barrier != (stage != 0)) return Reject(PpbContextFailure::Order);
         if (reads > ReadLimit() - StageReads() || bytes > ByteLimit() - StageBytes()) return Reject(PpbContextFailure::Budget);
-        if (!stage) { owner = *current; owner_post_stop = post_stop; owner_metadata_pool = metadata_pool; owner_return_header = return_header; }
+        if (!stage) { owner = *current; owner_post_stop = post_stop; owner_metadata_pool = metadata_pool; owner_return_header = return_header; owner_video_prefix = video_prefix; owner_video_graph = video_graph; }
         if (!owner || *current != owner) return Reject(PpbContextFailure::Owner);
         ++next_stage; measured = 0; std::memset(raw, 0, sizeof(raw)); complete[0] = complete[1] = false;
         std::memset(pool_raw, 0, sizeof(pool_raw));
@@ -1320,13 +1401,20 @@ struct PpbContextObserver {
             ok = Graph(current, stage, reader, &graph[pass], admitted ? &authority : nullptr);
             if (!ok) break;
             if (!admitted) { authority = graph[pass]; admitted = true; }
+            // This separate mode stops at the rooted graph. In particular it
+            // never reads allocation prefixes, saved context, rings or planes.
+            if (video_graph) { complete[pass] = true; continue; }
             const uint32_t d = authority.words[14] + ((0U - authority.words[14]) & 3U);
             unsigned word = 0;
             if (metadata_pool && !PoolWindow(authority)) { ok = Reject(PpbContextFailure::Slice); break; }
             // The route operands are informational, addressed only from H;
             // they never select a ring/pool target. Read before fixed spans.
             if (return_header) ok = Read(current, reader, authority.words[1] + 0x250U, 2, route_raw[pass]);
-            for (unsigned span = 0; span < (return_header ? 39U : metadata_pool ? 36U : 8U) && ok; ++span) {
+            if (video_prefix) {
+                ok = PrefixWindow(authority) ? Read(current, reader, authority.words[22], 32, raw[pass]) :
+                    Reject(PpbContextFailure::Slice);
+            }
+            for (unsigned span = 0; span < (video_prefix ? 0U : return_header ? 39U : metadata_pool ? 36U : 8U) && ok; ++span) {
                 uint32_t offset = offsets[metadata_pool ? 0 : span];
                 unsigned count = counts[metadata_pool ? 0 : span];
                 if (metadata_pool && !PoolSpan(span, &offset, &count, return_header)) { ok = Reject(PpbContextFailure::Argument); break; }
@@ -1341,11 +1429,12 @@ struct PpbContextObserver {
         return ok;
     }
     bool Finish(bool native_ok, bool report = true) const {
-        if (!enabled) return native_ok;
-        const bool ok = !failed && admitted && owner_post_stop == post_stop && owner_metadata_pool == metadata_pool && owner_return_header == return_header &&
+        if (!enabled && !owner_video_prefix && !owner_video_graph) return native_ok;
+        const bool ok = !failed && admitted && VideoModeReady() && owner_post_stop == post_stop && owner_metadata_pool == metadata_pool && owner_return_header == return_header &&
+            owner_video_prefix == video_prefix && owner_video_graph == video_graph &&
             next_stage == Stages() && reads == ReadLimit() && bytes == ByteLimit();
         if (report) std::printf("PPB %s finish: native-result=%s observation-result=%s stages=%u/%u reads=%u/%u bytes=%u/%u\n",
-            return_header ? "return header" : metadata_pool ? "fixed metadata" : "saved context", native_ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
+            owner_video_graph ? "video graph" : owner_video_prefix ? "video prefix" : return_header ? "return header" : metadata_pool ? "fixed metadata" : "saved context", native_ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
             next_stage, Stages(), reads, ReadLimit(), bytes, ByteLimit());
         return native_ok && ok;
     }
@@ -1356,12 +1445,15 @@ struct PpbContextFixture {
     uint32_t changed_address = 0, changed_value = 0;
     uint32_t physical = 0x1000000;
     bool valid = true, different = false, all_ones = false, post_stop = false, metadata_pool = false, return_header = false;
+    bool video_prefix = false, prefix_zero = false, video_graph = false;
     uint32_t Address(unsigned at) const {
         const uint32_t graph[] = {0xd3a08,
             0xd3a20,0xd3ac4,0xd3ad0,0xd3bec,0xd3c90,0xd3c9c,0xd3db8,0xd3e5c,0xd3e68,0xd3f84,0xd4028,0xd4034,
             0xd6000,0xd6008,0xd6064,0xd60cc,0xd6224,0xd5408,0xd55a0,0xd55d4,
             0xd5800,0xd5808,0xd5810,0xd5a18,0xd5a28,0xd5a30,0xd5a40,0x11601c,0x11602c,0x116034};
         const uint32_t core[] = {0,0x80,0x21c,0x33c,0x354,0x3fc,0x48c,0x530};
+        if (video_graph) return graph[at];
+        if (video_prefix) return at < 31 ? graph[at] : at == 31 ? 0x200000U : graph[at - 32];
         if (return_header) {
             if (at < 31) return graph[at];
             if (at >= 71) return graph[at - 71];
@@ -1378,9 +1470,11 @@ struct PpbContextFixture {
         }
         return at < 31 ? graph[at] : at < 39 ? physical + ((0U - physical) & 3U) + core[at - 31] : graph[at - 39];
     }
-    static unsigned Count(unsigned at, bool metadata = false, bool bracket = false) {
+    static unsigned Count(unsigned at, bool metadata = false, bool bracket = false, bool prefix = false, bool graph_only = false) {
         const unsigned graph[] = {1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1,1,3,1,1,2,2,1,2,1,2,1,2};
         const unsigned core[] = {1,1,1,1,17,36,2,1};
+        if (graph_only) return graph[at];
+        if (prefix) return at < 31 ? graph[at] : at == 31 ? 32U : graph[at - 32];
         if (bracket) {
             if (at < 31) return graph[at];
             if (at >= 71) return graph[at - 71];
@@ -1402,8 +1496,8 @@ struct PpbContextFixture {
             if (address == base + 0x20) return slot ? 0 : 0xd6000;
             if (address == base + 0xc4) return slot ? 0 : 0x101;
             if (address == base + 0xd0) return slot ? 0 : 0x200 |
-                ((position / (return_header ? 204U : metadata_pool ? 196U : 140U) == 1 ||
-                  position / (return_header ? 204U : metadata_pool ? 196U : 140U) == 2) ? 0x10000 : 0);
+                ((position / (video_graph ? 62U : video_prefix ? 126U : return_header ? 204U : metadata_pool ? 196U : 140U) == 1 ||
+                  position / (video_graph ? 62U : video_prefix ? 126U : return_header ? 204U : metadata_pool ? 196U : 140U) == 2) ? 0x10000 : 0);
         }
         const uint32_t locations[] = {0xd6000,0xd6008,0xd600c,0xd6064,0xd60cc,0xd6224,
             0xd5408,0xd55a0,0xd55d4,0xd55d8,0xd55dc,0xd5800,0xd5808,0xd5810,0xd5814,
@@ -1413,15 +1507,16 @@ struct PpbContextFixture {
             0x200000,0x1200000,0x200000,0x200000,0x1000000,1,0x116068,0x3ffc000,0x116004,0x116004,0x3ee5ffc};
         for (unsigned word = 0; word < sizeof(locations) / sizeof(locations[0]); ++word)
             if (address == locations[word]) return values[word];
-        const unsigned stage_reads = return_header ? 204U : metadata_pool ? 196U : 140U;
+        if (video_prefix && prefix_zero && address >= 0x200000U && address < 0x200080U) return 0;
+        const unsigned stage_reads = video_graph ? 62U : video_prefix ? 126U : return_header ? 204U : metadata_pool ? 196U : 140U;
         return all_ones ? 0xffffffffU : 0x5a000000U | ((position / stage_reads) << 16) | (address & 65535U) |
             (different && position % stage_reads >= stage_reads / 2 ? 0x80000000U : 0);
     }
     static BC_STATUS Read(HANDLE handle, uint32_t *values, uint32_t bytes, uint32_t address) {
         auto *f = static_cast<PpbContextFixture *>(handle);
-        const unsigned position = f->calls++, at = position % (f->return_header ? 102U : f->metadata_pool ? 98U : 70U);
-        f->valid &= position < (f->return_header ? 816U : f->metadata_pool ? 784U : f->post_stop ? 560U : 420U) && values &&
-            address == f->Address(at) && bytes == Count(at, f->metadata_pool, f->return_header) * 4U &&
+        const unsigned position = f->calls++, at = position % (f->video_graph ? 31U : f->video_prefix ? 63U : f->return_header ? 102U : f->metadata_pool ? 98U : 70U);
+        f->valid &= position < (f->video_graph ? 186U : f->video_prefix ? 378U : f->return_header ? 816U : f->metadata_pool ? 784U : f->post_stop ? 560U : 420U) && values &&
+            address == f->Address(at) && bytes == Count(at, f->metadata_pool, f->return_header, f->video_prefix, f->video_graph) * 4U &&
             reinterpret_cast<uintptr_t>(values) % alignof(uint32_t) == 0;
         if (!f->valid) return BC_STS_ERROR;
         for (unsigned word = 0; word < bytes / 4; ++word) values[word] = f->Word(address + word * 4, position);
@@ -2039,6 +2134,8 @@ struct Options {
     bool observe_ppb_stop = false;
     bool observe_ppb_metadata = false;
     bool observe_ppb_return = false;
+    bool observe_video_prefix = false;
+    bool observe_video_graph = false;
     unsigned inject_mfd_colour = 0;
     unsigned scl_status_test = 0;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
@@ -2071,11 +2168,15 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
                                  !std::strcmp(arguments.back(), "--observe-ppb-context") ||
                                  !std::strcmp(arguments.back(), "--observe-ppb-stop") ||
                                  !std::strcmp(arguments.back(), "--observe-ppb-metadata") ||
-                                 !std::strcmp(arguments.back(), "--observe-ppb-return"))) {
+                                 !std::strcmp(arguments.back(), "--observe-ppb-return") ||
+                                 !std::strcmp(arguments.back(), "--observe-video-prefix") ||
+                                 !std::strcmp(arguments.back(), "--observe-video-graph"))) {
+        options->observe_video_prefix = !std::strcmp(arguments.back(), "--observe-video-prefix");
+        options->observe_video_graph = !std::strcmp(arguments.back(), "--observe-video-graph");
         options->observe_ppb_return = !std::strcmp(arguments.back(), "--observe-ppb-return");
         options->observe_ppb_metadata = options->observe_ppb_return || !std::strcmp(arguments.back(), "--observe-ppb-metadata");
         options->observe_ppb_stop = options->observe_ppb_metadata || !std::strcmp(arguments.back(), "--observe-ppb-stop");
-        options->observe_ppb_context = options->observe_ppb_stop || !std::strcmp(arguments.back(), "--observe-ppb-context");
+        options->observe_ppb_context = options->observe_video_graph || options->observe_video_prefix || options->observe_ppb_stop || !std::strcmp(arguments.back(), "--observe-ppb-context");
         options->observe_arm_source_shape = !std::strcmp(arguments.back(), "--observe-arm-source-shape");
         options->observe_arm_metadata = !options->observe_arm_source_shape && !options->observe_ppb_context;
         arguments.pop_back();
@@ -3727,6 +3828,401 @@ template<class Check> static void PpbReturnHeaderSelfTest(const Check &check)
         "PPB return report retains every independent word and states request grouping is not atomicity or cause proof");
 }
 
+template<class Check> static void VideoPrefixSelfTest(const Check &check)
+{
+    PpbContextObserver disabled; disabled.video_prefix = true;
+    PpbContextFixture untouched; untouched.video_prefix = true;
+    check(disabled.Observe(&untouched.current, 99, false, PpbContextFixture::Read, false) &&
+        disabled.Finish(true, false) && !untouched.calls, "video prefix opt-in configuration alone adds no I/O");
+    for (unsigned values = 0; values < 3; ++values) {
+        PpbContextFixture fixture; fixture.video_prefix = true;
+        fixture.all_ones = values == 1; fixture.prefix_zero = values == 2;
+        PpbContextObserver subject; subject.enabled = subject.video_prefix = true;
+        check(subject.StageReads() == 126 && subject.StageBytes() == 880 && subject.Stages() == 3 &&
+            subject.ReadLimit() == 378 && subject.ByteLimit() == 2640, "video prefix freezes six target reads in three stages");
+        for (unsigned stage = 0; stage < 3; ++stage) {
+            check(subject.Observe(&fixture.current, stage, stage != 0, PpbContextFixture::Read, false) && fixture.valid &&
+                fixture.calls == (stage + 1) * 126 && subject.bytes == (stage + 1) * 880 &&
+                subject.complete[0] && subject.complete[1], "video prefix graph brackets each fixed 128-byte request");
+            if (values) for (unsigned pass = 0; pass < 2; ++pass)
+                for (unsigned word = 0; word < 32; ++word)
+                    check(subject.raw[pass][word] == (values == 1 ? 0xffffffffU : 0U),
+                        "video prefix preserves zero and all-ones as raw words, not pixel certificates");
+        }
+        check(subject.Finish(true, false) && !subject.Finish(false, false), "video prefix cannot override native pixel/EOS/cleanup failure");
+    }
+    PpbContextGraph boundary;
+    boundary.words[21] = boundary.words[22] = 0x200000;
+    boundary.words[23] = 128 + 0x5bc;
+    boundary.words[14] = 0x200080; boundary.words[15] = 0x5bc;
+    check(PpbContextObserver::PrefixWindow(boundary), "video prefix allows exact span/context boundary without following a plane word");
+    for (unsigned skip = 0; skip < 4; ++skip) {
+        PpbContextGraph aligned = boundary;
+        aligned.words[14] -= skip; aligned.words[15] += skip;
+        check(PpbContextObserver::PrefixWindow(aligned), "video prefix safely normalizes the context's four alignment residues");
+        --aligned.words[15];
+        check(!PpbContextObserver::PrefixWindow(aligned), "video prefix requires the full normalized saved-core extent");
+    }
+    for (unsigned fault = 0; fault < 7; ++fault) {
+        PpbContextGraph changed = boundary;
+        if (fault == 0) changed.words[21] = changed.words[22] = 0;
+        if (fault == 1) ++changed.words[22];
+        if (fault == 2) changed.words[23] = 127;
+        if (fault == 3) --changed.words[14];
+        if (fault == 4) changed.words[23] = 0xffffffffU;
+        if (fault == 5) changed.words[14] = 0xffffffffU;
+        if (fault == 6) ++changed.words[21];
+        check(!PpbContextObserver::PrefixWindow(changed), "video prefix rejects crossed, wrapped, unaligned and foreign envelope values");
+    }
+    for (unsigned kind = 0; kind < 2; ++kind) for (unsigned at = 0; at < 378; ++at) {
+        PpbContextFixture fixture; fixture.video_prefix = true;
+        if (kind) fixture.lose_at = at; else fixture.fail_at = at;
+        PpbContextObserver subject; subject.enabled = subject.video_prefix = true;
+        bool ok = true;
+        for (unsigned stage = 0; stage < 3 && ok; ++stage)
+            ok = subject.Observe(&fixture.current, stage, stage != 0, PpbContextFixture::Read, false);
+        const unsigned calls = fixture.calls;
+        check(!ok && subject.failed && calls == at + 1 && fixture.valid &&
+            !subject.Finish(true, false) && !subject.Observe(&fixture.current, 0, false, PpbContextFixture::Read, false) &&
+            fixture.calls == calls, "video prefix every read and owner loss is sticky with no subsequent I/O");
+        check(!subject.complete[(at % 126) / 63], "video prefix never publishes a partially bracketed pass");
+    }
+    struct ModeFixture : PpbContextFixture {
+        PpbContextObserver *subject = nullptr;
+        unsigned at = 0, field = 0;
+        static BC_STATUS Read(HANDLE handle, uint32_t *values, uint32_t bytes, uint32_t address) {
+            auto *fixture = static_cast<ModeFixture *>(handle);
+            const BC_STATUS status = PpbContextFixture::Read(handle, values, bytes, address);
+            if (fixture->calls == fixture->at + 1) {
+                if (fixture->field == 0) fixture->subject->video_prefix = false;
+                if (fixture->field == 1) fixture->subject->post_stop = true;
+                if (fixture->field == 2) fixture->subject->metadata_pool = true;
+                if (fixture->field == 3) fixture->subject->return_header = true;
+                if (fixture->field == 4) fixture->subject->video_graph = true;
+            }
+            return status;
+        }
+    };
+    for (unsigned field = 0; field < 5; ++field) for (unsigned at : {0U,30U,31U,32U,62U,63U,94U,125U,126U,251U,377U}) {
+        ModeFixture fixture; fixture.video_prefix = true; fixture.at = at; fixture.field = field;
+        PpbContextObserver subject; subject.enabled = subject.video_prefix = true; fixture.subject = &subject;
+        bool ok = true;
+        for (unsigned stage = 0; stage < 3 && ok; ++stage)
+            ok = subject.Observe(&fixture.current, stage, stage != 0, ModeFixture::Read, false);
+        check(!ok && subject.failure == PpbContextFailure::Argument && fixture.calls == at + 1 &&
+            !subject.complete[(at % 126) / 63] && subject.owner_video_prefix &&
+            subject.StageReads() == 126 && subject.StageBytes() == 880 && subject.Stages() == 3,
+            "video prefix mode cannot change inside a reader callback or relabel its frozen scope");
+    }
+    PpbContextFixture changed; changed.video_prefix = true; changed.change_at = 32;
+    changed.changed_address = 0xd55d8; changed.changed_value = 0x200004;
+    PpbContextObserver guarded; guarded.enabled = guarded.video_prefix = true;
+    check(!guarded.Observe(&changed.current, 0, false, PpbContextFixture::Read, false) &&
+        guarded.failure == PpbContextFailure::Changed && !guarded.complete[0] && !guarded.complete[1] &&
+        guarded.changed_word == 22 && guarded.changed_expected == 0x200000 && guarded.changed_observed == 0x200004,
+        "video prefix post-read graph mismatch discards collected data before publication");
+    const uint32_t authority_addresses[] = {0xd3a08,0xd3a20,0xd3bec,0xd3db8,0xd3f84,
+        0xd6000,0xd6008,0xd600c,0xd6064,0xd60cc,0xd6224,
+        0xd5408,0xd55a0,0xd55d4,0xd55d8,0xd55dc,0xd5800,0xd5808,0xd5810,0xd5814,
+        0xd5a18,0xd5a1c,0xd5a28,0xd5a30,0xd5a34,0xd5a40,0x11601c,0x116020,0x11602c,0x116034,0x116038};
+    const unsigned authority_words[] = {0,1,4,7,10,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,
+        28,29,30,31,32,33,34,35,36,37,38};
+    for (unsigned edge = 0; edge < 31; ++edge) for (unsigned position : {32U,126U}) {
+        PpbContextFixture fixture; fixture.video_prefix = true;
+        fixture.change_at = position; fixture.changed_address = authority_addresses[edge];
+        const uint32_t expected = fixture.Word(fixture.changed_address, 0);
+        fixture.changed_value = expected ^ 4U;
+        PpbContextObserver subject; subject.enabled = subject.video_prefix = true;
+        if (position == 126)
+            check(subject.Observe(&fixture.current, 0, false, PpbContextFixture::Read, false),
+                "video prefix changed-authority diagnosis setup preserves the initial bracket");
+        const unsigned stage = position == 126 ? 1U : 0U;
+        check(!subject.Observe(&fixture.current, stage, stage != 0, PpbContextFixture::Read, false) &&
+            fixture.valid && subject.failure == PpbContextFailure::Changed &&
+            subject.changed_word == authority_words[edge] && subject.changed_expected == expected &&
+            subject.changed_observed == fixture.changed_value && fixture.calls <= position + 31 &&
+            !subject.complete[0] && !subject.complete[1],
+            "video prefix records only an already-collected authority difference without another target read");
+        const unsigned calls = fixture.calls;
+        check(!subject.Observe(&fixture.current, stage, stage != 0, PpbContextFixture::Read, false) &&
+            fixture.calls == calls && subject.changed_word == authority_words[edge] &&
+            subject.changed_expected == expected && subject.changed_observed == fixture.changed_value,
+            "video prefix failure and its diagnostic stay frozen without retries");
+    }
+    FILE *record = std::tmpfile(); const int saved = dup(STDOUT_FILENO);
+    std::fflush(stdout);
+    const bool redirected = record && saved >= 0 && dup2(fileno(record), STDOUT_FILENO) >= 0;
+    if (redirected) guarded.Report(0);
+    std::fflush(stdout);
+    const bool restored = saved >= 0 && dup2(saved, STDOUT_FILENO) >= 0;
+    if (saved >= 0) close(saved);
+    char diagnostic[2048] = {}; size_t diagnostic_length = 0;
+    if (record) { std::rewind(record); diagnostic_length = std::fread(diagnostic, 1, sizeof(diagnostic) - 1, record); std::fclose(record); }
+    check(redirected && restored && diagnostic_length &&
+        std::strstr(diagnostic, "authority delta: word=22 frozen=00200000 observed=00200004") &&
+        std::strstr(diagnostic, "already-collected-first-difference only; no retry or changed-target read") &&
+        std::strstr(diagnostic, "pass=0 INCOMPLETE") && std::strstr(diagnostic, "pass=1 INCOMPLETE") &&
+        !std::strstr(diagnostic, " bytes=128 words="),
+        "video prefix report identifies a rejected field without publishing an incomplete target or claiming its cause");
+    const std::vector<const char *> valid = {"probe","--hardware","fixture","180","30","1","--scaler-test","0",
+        "--observe-video-prefix","--capture-yuy2","new"};
+    Options admitted;
+    check(ParseArguments(valid, &admitted) && admitted.observe_video_prefix && admitted.observe_ppb_context &&
+        !admitted.observe_ppb_stop && !admitted.observe_ppb_metadata && !admitted.observe_ppb_return &&
+        !admitted.observe_arm_metadata && NeedsRawIo(admitted), "video prefix uses the pinned native input and raw-I/O authority gate");
+    for (const char *extra : {"--observe-video-prefix", "--observe-ppb-context", "--observe-ppb-return", "--observe-chroma", "--observe-mfd-config"}) {
+        for (unsigned order = 0; order < 2; ++order) {
+            auto arguments = valid; arguments.insert(arguments.begin() + (order ? 9 : 8), extra);
+            Options rejected;
+            check(!ParseArguments(arguments, &rejected), "video prefix rejects duplicate/mixed experiments in both orders");
+        }
+    }
+    for (unsigned fault = 0; fault < 7; ++fault) {
+        auto arguments = valid;
+        if (fault == 0) arguments[1] = "--preflight";
+        if (fault == 1) arguments[3] = "179";
+        if (fault == 2) arguments[5] = "2";
+        if (fault == 3) arguments[7] = "128";
+        if (fault == 4) arguments[8] = "--observe-video-prefix=0";
+        if (fault == 5) arguments[9] = "--capture-uyvy";
+        if (fault == 6) arguments.resize(9);
+        Options rejected;
+        check(!ParseArguments(arguments, &rejected), "video prefix rejects altered preflight/count/repeat/scaler/packing/capture syntax");
+    }
+}
+
+template<class Check> static void VideoGraphSelfTest(const Check &check)
+{
+    PpbContextObserver disabled; disabled.video_graph = true;
+    PpbContextFixture untouched; untouched.video_graph = true;
+    check(disabled.Observe(nullptr, 99, true, nullptr, false) && disabled.Finish(true, false) &&
+        !disabled.reads && !untouched.calls, "video graph default-off mode adds no I/O or owner constraints");
+    const uint32_t addresses[] = {0xd3a08,
+        0xd3a20,0xd3ac4,0xd3ad0,0xd3bec,0xd3c90,0xd3c9c,0xd3db8,0xd3e5c,0xd3e68,0xd3f84,0xd4028,0xd4034,
+        0xd6000,0xd6008,0xd6064,0xd60cc,0xd6224,0xd5408,0xd55a0,0xd55d4,
+        0xd5800,0xd5808,0xd5810,0xd5a18,0xd5a28,0xd5a30,0xd5a40,0x11601c,0x11602c,0x116034};
+    const unsigned counts[] = {1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1,1,3,1,1,2,2,1,2,1,2,1,2};
+    const uint32_t expected[] = {0xd5400,0xd6000,0x101,0x200,0,0,0,0,0,0,0,0,0,
+        0,0x1000000,0x3f940,0xd5400,0,0x116004,0x116004,0xd5800,0x200000,0x200000,0x1000000,
+        0xd5400,0xd5a00,0x1000000,0x200000,0x200000,0x1200000,0x200000,0x200000,0x1000000,1,
+        0x116068,0x3ffc000,0x116004,0x116004,0x3ee5ffc};
+    struct TraceFixture : PpbContextFixture {
+        uint32_t addresses[186] = {}, lengths[186] = {};
+        static BC_STATUS Read(HANDLE handle, uint32_t *values, uint32_t bytes, uint32_t address) {
+            auto *fixture = static_cast<TraceFixture *>(handle);
+            if (fixture->calls < 186) { fixture->addresses[fixture->calls] = address; fixture->lengths[fixture->calls] = bytes; }
+            return PpbContextFixture::Read(handle, values, bytes, address);
+        }
+    };
+    TraceFixture clean; clean.video_graph = true;
+    PpbContextObserver stable; stable.enabled = stable.video_graph = true;
+    check(stable.Stages() == 3 && stable.StageReads() == 62 && stable.StageBytes() == 312 &&
+        stable.ReadLimit() == 186 && stable.ByteLimit() == 936 && !stable.Finish(true, false),
+        "video graph has exactly two 31-read/156-byte passes per stage and no target spans");
+    for (unsigned stage = 0; stage < 3; ++stage) {
+        check(stable.Observe(&clean.current, stage, stage != 0, TraceFixture::Read, false) && clean.valid &&
+            clean.calls == (stage + 1) * 62 && stable.reads == clean.calls && stable.bytes == (stage + 1) * 312 &&
+            stable.measured == 62 && stable.complete[0] && stable.complete[1],
+            "video graph publishes two complete rooted passes only after ordered native barriers");
+        for (unsigned pass = 0; pass < 2; ++pass) for (unsigned word = 0; word < 39; ++word)
+            check(stable.graph[pass].words[word] == (word == 3 && stage ? 0x10200U : expected[word]),
+                "video graph retains all 39 graph words, including phase flags, in literal field order");
+        for (unsigned pass = 0; pass < 2; ++pass) {
+            for (uint32_t word : stable.raw[pass]) check(!word, "video graph never fills prefix or saved-context storage");
+            for (uint32_t word : stable.pool_raw[pass]) check(!word, "video graph never fills pool or ring storage");
+            for (uint32_t word : stable.route_raw[pass]) check(!word, "video graph never reads route operands");
+        }
+    }
+    unsigned total = 0;
+    for (unsigned at = 0; at < 186; ++at) {
+        total += clean.lengths[at];
+        check(clean.addresses[at] == addresses[at % 31] && clean.lengths[at] == counts[at % 31] * 4U,
+            "video graph exact 186-callback trace contains only qualified rooted object and fixed heap words");
+    }
+    check(total == 936 && stable.Finish(true, false) && !stable.Finish(false, false) && clean.calls == 186,
+        "video graph finish requires every pass and native output/EOS/cleanup success without extra I/O");
+    for (unsigned fault = 0; fault < 3; ++fault) {
+        PpbContextObserver altered = stable;
+        if (fault == 0) altered.enabled = false;
+        if (fault == 1) altered.video_graph = false;
+        if (fault == 2) altered.video_prefix = true;
+        check(!altered.Finish(true, false) && altered.ReadLimit() == 186 && altered.ByteLimit() == 936,
+            "video graph finish cannot bypass its frozen mode or relabel its read budget");
+    }
+    struct StatusFixture : PpbContextFixture {
+        BC_STATUS result = BC_STS_ERROR;
+        static BC_STATUS Read(HANDLE handle, uint32_t *values, uint32_t bytes, uint32_t address) {
+            auto *fixture = static_cast<StatusFixture *>(handle);
+            const BC_STATUS status = PpbContextFixture::Read(handle, values, bytes, address);
+            if (fixture->calls == fixture->fail_at + 1) {
+                for (unsigned word = 0; word < bytes / 4; ++word) values[word] = 0xdeadbeefU;
+                return fixture->result;
+            }
+            return status;
+        }
+    };
+    for (int code = -1; code <= BC_STS_PWR_MGMT; ++code) {
+        if (code == BC_STS_SUCCESS) continue;
+        for (unsigned at = 0; at < 186; ++at) {
+            StatusFixture fixture; fixture.video_graph = true; fixture.fail_at = at; fixture.result = static_cast<BC_STATUS>(code);
+            PpbContextObserver subject; subject.enabled = subject.video_graph = true;
+            bool ok = true;
+            for (unsigned stage = 0; stage < 3 && ok; ++stage)
+                ok = subject.Observe(&fixture.current, stage, stage != 0, StatusFixture::Read, false);
+            const unsigned calls = fixture.calls;
+            check(!ok && subject.failed && fixture.valid && calls == at + 1 && subject.measured == at % 62 &&
+                subject.failure == PpbContextFailure::Read && subject.status == code && !subject.complete[(at % 62) / 31] &&
+                !subject.Finish(true, false) && !subject.Observe(&fixture.current, 0, false, StatusFixture::Read, false) &&
+                fixture.calls == calls, "video graph all 27 API failures at every callback are unpublished, exact and sticky");
+        }
+    }
+    for (unsigned kind = 0; kind < 2; ++kind) for (unsigned at = 0; at < 186; ++at) {
+        PpbContextFixture fixture, foreign; fixture.video_graph = true; fixture.lose_at = at;
+        fixture.replacement = kind ? foreign.current : nullptr;
+        PpbContextObserver subject; subject.enabled = subject.video_graph = true;
+        bool ok = true;
+        for (unsigned stage = 0; stage < 3 && ok; ++stage)
+            ok = subject.Observe(&fixture.current, stage, stage != 0, PpbContextFixture::Read, false);
+        const unsigned calls = fixture.calls;
+        check(!ok && subject.failure == PpbContextFailure::Owner && calls == at + 1 && fixture.valid &&
+            !subject.complete[(at % 62) / 31] && !subject.Finish(true, false) &&
+            !subject.Observe(&foreign.current, 0, false, PpbContextFixture::Read, false) && fixture.calls == calls && !foreign.calls,
+            "video graph every current-handle null/replacement stops without foreign reads or publication");
+    }
+    struct ModeFixture : PpbContextFixture {
+        PpbContextObserver *subject = nullptr;
+        unsigned at = 0, field = 0;
+        static BC_STATUS Read(HANDLE handle, uint32_t *values, uint32_t bytes, uint32_t address) {
+            auto *fixture = static_cast<ModeFixture *>(handle);
+            const BC_STATUS status = PpbContextFixture::Read(handle, values, bytes, address);
+            if (fixture->calls == fixture->at + 1) {
+                if (fixture->field == 0) fixture->subject->video_graph = false;
+                if (fixture->field == 1) fixture->subject->video_prefix = true;
+                if (fixture->field == 2) fixture->subject->post_stop = true;
+                if (fixture->field == 3) fixture->subject->metadata_pool = true;
+                if (fixture->field == 4) fixture->subject->return_header = true;
+                if (fixture->field == 5) fixture->subject->enabled = false;
+            }
+            return status;
+        }
+    };
+    for (unsigned field = 0; field < 6; ++field) for (unsigned at = 0; at < 186; ++at) {
+        ModeFixture fixture; fixture.video_graph = true; fixture.at = at; fixture.field = field;
+        PpbContextObserver subject; subject.enabled = subject.video_graph = true; fixture.subject = &subject;
+        bool ok = true;
+        for (unsigned stage = 0; stage < 3 && ok; ++stage)
+            ok = subject.Observe(&fixture.current, stage, stage != 0, ModeFixture::Read, false);
+        const unsigned calls = fixture.calls;
+        check(!ok && subject.failure == PpbContextFailure::Argument && calls == at + 1 && subject.owner_video_graph &&
+            !subject.complete[(at % 62) / 31] && subject.StageReads() == 62 && subject.StageBytes() == 312 &&
+            subject.Stages() == 3 && !subject.Finish(true, false) &&
+            !subject.Observe(&fixture.current, 0, false, ModeFixture::Read, false) && fixture.calls == calls,
+            "video graph callbacks cannot disable observation, mix targets or change its frozen scope/budget");
+    }
+    const uint32_t authority_addresses[] = {0xd3a08,0xd3a20,0xd3bec,0xd3db8,0xd3f84,
+        0xd6000,0xd6008,0xd600c,0xd6064,0xd60cc,0xd6224,
+        0xd5408,0xd55a0,0xd55d4,0xd55d8,0xd55dc,0xd5800,0xd5808,0xd5810,0xd5814,
+        0xd5a18,0xd5a1c,0xd5a28,0xd5a30,0xd5a34,0xd5a40,0x11601c,0x116020,0x11602c,0x116034,0x116038};
+    const unsigned authority_words[] = {0,1,4,7,10,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,
+        28,29,30,31,32,33,34,35,36,37,38};
+    PpbContextObserver rejected;
+    for (unsigned edge = 0; edge < 31; ++edge) for (unsigned position : {31U,62U}) {
+        PpbContextFixture fixture; fixture.video_graph = true; fixture.change_at = position;
+        fixture.changed_address = authority_addresses[edge];
+        const uint32_t original = fixture.Word(fixture.changed_address, 0);
+        fixture.changed_value = original ^ 4U;
+        PpbContextObserver subject; subject.enabled = subject.video_graph = true;
+        if (position == 62) check(subject.Observe(&fixture.current, 0, false, PpbContextFixture::Read, false),
+            "video graph authority diagnosis begins from complete frozen initial passes");
+        const unsigned stage = position == 62 ? 1U : 0U;
+        check(!subject.Observe(&fixture.current, stage, stage != 0, PpbContextFixture::Read, false) && fixture.valid &&
+            subject.failure == PpbContextFailure::Changed && subject.changed_word == authority_words[edge] &&
+            subject.changed_expected == original && subject.changed_observed == fixture.changed_value &&
+            fixture.calls <= position + 31 && !subject.complete[1] && subject.complete[0] == (position == 31),
+            "video graph each frozen authority edge refuses in next pass or next stage using only collected words");
+        const unsigned calls = fixture.calls;
+        check(!subject.Finish(true, false) && !subject.Observe(&fixture.current, stage, stage != 0, PpbContextFixture::Read, false) &&
+            fixture.calls == calls && subject.changed_word == authority_words[edge],
+            "video graph rejected authority is never retried or used as a replacement target");
+        if (edge == 14 && position == 62) rejected = subject;
+    }
+    for (unsigned fault = 0; fault < 11; ++fault) {
+        PpbContextFixture fixture; fixture.video_graph = true;
+        PpbContextObserver subject; subject.enabled = subject.video_graph = true;
+        if (fault >= 6) check(subject.Observe(&fixture.current, 0, false, PpbContextFixture::Read, false), "video graph ordering setup");
+        if (fault == 2) subject.reads = 125;
+        if (fault == 3) subject.bytes = 625;
+        if (fault == 4) subject.video_prefix = true;
+        if (fault == 5) subject.metadata_pool = subject.post_stop = true;
+        if (fault == 10) subject.enabled = false;
+        const unsigned stage = fault == 0 ? 3U : fault == 6 ? 0U : fault >= 7 ? 1U : 0U;
+        const bool barrier = fault == 1 || fault == 8 || fault == 9;
+        check(!subject.Observe(fault == 9 ? nullptr : &fixture.current, stage, barrier,
+            fault == 8 ? nullptr : PpbContextFixture::Read, false) && fixture.calls == (fault >= 6 ? 62U : 0U) &&
+            !subject.Finish(true, false), "video graph malformed stage/barrier/budget/null/mixed modes reject before I/O");
+    }
+    FILE *record = std::tmpfile(); const int saved = dup(STDOUT_FILENO);
+    std::fflush(stdout);
+    const bool redirected = record && saved >= 0 && dup2(fileno(record), STDOUT_FILENO) >= 0;
+    if (redirected) {
+        stable.Report(2); stable.Finish(true);
+        rejected.Report(1); rejected.video_graph = false; rejected.Report(1); rejected.Finish(true);
+    }
+    std::fflush(stdout);
+    const bool restored = saved >= 0 && dup2(saved, STDOUT_FILENO) >= 0;
+    if (saved >= 0) close(saved);
+    char text[8192] = {}; size_t length = 0;
+    if (record) { std::rewind(record); length = std::fread(text, 1, sizeof(text) - 1, record); std::fclose(record); }
+    check(redirected && restored && length &&
+        std::strstr(text, "Video allocation graph raw: stage=delivery-EOS-before-STOP pass=0 words=000d5400,000d6000,00000101,00010200") &&
+        std::strstr(text, "authority delta: word=22 frozen=00200000 observed=00200004") &&
+        std::strstr(text, "already-collected-first-difference only; no retry or changed-target read") &&
+        std::strstr(text, "Video allocation graph raw: stage=first-output-after-release-and-owned-write pass=0 INCOMPLETE") &&
+        std::strstr(text, "prefix/context/pool/ring/plane-target-reads=0") &&
+        std::strstr(text, "PPB video graph finish: native-result=PASS observation-result=PASS stages=3/3 reads=186/186 bytes=936/936") &&
+        std::strstr(text, "observation-result=FAIL") && !std::strstr(text, "Video allocation prefix") &&
+        !std::strstr(text, "PPB saved context") && !std::strstr(text, " bytes=128 words="),
+        "video graph report stays graph-only/frozen, hides incomplete words and separates native success from observational failure");
+    const std::vector<const char *> valid = {"probe","--hardware","fixture","180","30","1","--scaler-test","0",
+        "--observe-video-graph","--capture-yuy2","new"};
+    Options admitted;
+    check(ParseArguments(valid, &admitted) && admitted.observe_video_graph && admitted.observe_ppb_context &&
+        !admitted.observe_video_prefix && !admitted.observe_ppb_stop && !admitted.observe_ppb_metadata && !admitted.observe_ppb_return &&
+        !admitted.observe_arm_metadata && !admitted.observe_arm_source_shape && NeedsRawIo(admitted) && !NeedsRawIo(Options{}),
+        "video graph has a separate exact option requiring the pre-action CAP_SYS_RAWIO gate");
+    const std::vector<std::vector<const char *>> forbidden = {{"--observe-video-graph"},{"--observe-video-prefix"},
+        {"--observe-ppb-context"},{"--observe-ppb-stop"},{"--observe-ppb-metadata"},{"--observe-ppb-return"},
+        {"--observe-arm-metadata"},{"--observe-arm-source-shape"},{"--observe-runtime-inventory"},{"--observe-mfd-framing"},
+        {"--observe-mfd-config"},{"--observe-mfd-address"},{"--observe-scl-config"},{"--observe-scl-filter-map"},
+        {"--observe-scl-view","2"},{"--observe-chroma"},{"--inject-mfd-colour","a"},{"--scl-status-test","observe"},
+        {"--open-only"},{"--mpeg1-via-mpeg2"},{"--h263-via-divx"},{"--scaler-test","0"}};
+    for (const auto &extra : forbidden) for (unsigned order = 0; order < 2; ++order) {
+        auto arguments = valid;
+        arguments.insert(order ? arguments.end() - 2 : arguments.begin() + 8, extra.begin(), extra.end());
+        Options invalid;
+        check(!ParseArguments(arguments, &invalid), "video graph duplicates and all other experiments reject in both orders");
+    }
+    for (unsigned fault = 0; fault < 10; ++fault) {
+        auto arguments = valid;
+        if (fault == 0) arguments[1] = "--preflight";
+        if (fault == 1) arguments[1] = "--self-test";
+        if (fault == 2) arguments[3] = "179";
+        if (fault == 3) arguments[5] = "2";
+        if (fault == 4) arguments[7] = "128";
+        if (fault == 5) arguments[8] = "--observe-video-graph=0";
+        if (fault == 6) arguments[9] = "--capture-uyvy";
+        if (fault == 7) arguments[10] = "-";
+        if (fault == 8) arguments[10] = "";
+        if (fault == 9) arguments.resize(9);
+        Options invalid;
+        check(!ParseArguments(arguments, &invalid), "video graph requires native hardware/count/one iteration/unscaled fresh YUY2 capture syntax");
+    }
+    Input native; native.codec = AV_CODEC_ID_H264; native.subtype = BC_MSUBTYPE_H264;
+    native.progressive = true; native.width = 256; native.height = 96; native.packets.resize(180);
+    check(ArmMetadataInputShape(admitted, native) && !ArmMetadataInputAdmitted(admitted, native) &&
+        ArmMetadataInputAdmitted(Options{}, native), "video graph shape alone cannot bypass the exact frozen input byte digest");
+}
+
 template<class Check> static void MfdFramingSelfTest(const Check &check)
 {
     const uint32_t addresses[] = {0x00540000, 0x00540078, 0x00540050, 0x00540070, 0x00540000};
@@ -4128,6 +4624,8 @@ static bool SelfTest()
     PpbStopContextSelfTest(check);
     PpbFixedMetadataSelfTest(check);
     PpbReturnHeaderSelfTest(check);
+    VideoPrefixSelfTest(check);
+    VideoGraphSelfTest(check);
     PpbStopLifecycleSelfTest(check);
     MfdFramingSelfTest(check);
     RuntimeInventorySelfTest(check);
@@ -6155,6 +6653,8 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.ppb_context.post_stop = options.observe_ppb_stop;
     audit.ppb_context.metadata_pool = options.observe_ppb_metadata;
     audit.ppb_context.return_header = options.observe_ppb_return;
+    audit.ppb_context.video_prefix = options.observe_video_prefix;
+    audit.ppb_context.video_graph = options.observe_video_graph;
     audit.mfd_address.enabled = options.observe_mfd_address;
     audit.mfd_framing.enabled = options.observe_mfd_framing;
     audit.mfd_colour.stimulus = options.inject_mfd_colour;
@@ -6323,13 +6823,17 @@ int main(int argc, char **argv)
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
             "[--scaler-test WIDTH_OR_0] [--mpeg1-via-mpeg2 | --h263-via-divx] "
-            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --observe-ppb-metadata | --observe-ppb-return | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
+            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --observe-ppb-metadata | --observe-ppb-return | --observe-video-prefix | --observe-video-graph | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
     if (NeedsRawIo(options) && !CanReadChromaConfiguration()) {
-        if (options.observe_ppb_return)
+        if (options.observe_video_graph)
+            std::fprintf(stderr, "--observe-video-graph requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
+        else if (options.observe_video_prefix)
+            std::fprintf(stderr, "--observe-video-prefix requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
+        else if (options.observe_ppb_return)
             std::fprintf(stderr, "--observe-ppb-return requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
         else if (options.observe_ppb_metadata)
             std::fprintf(stderr, "--observe-ppb-metadata requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
