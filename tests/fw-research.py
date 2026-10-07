@@ -14407,5 +14407,124 @@ class FirmwareArcReturnReleaseProjectionTests(unittest.TestCase):
                 project_arc_return_release(self.payload, **args)
 
 
+class FirmwareArcCacheCountResetTests(unittest.TestCase):
+    """Stock interior fragment algebra, not native execution or a host alias proof."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.data = MAP.read_firmware(BLOB)
+        if len(cls.data) != 864276 or hashlib.sha256(cls.data).hexdigest() != \
+                "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9":
+            raise ValueError("unexpected stock cache-count reset firmware")
+        cls.fragment = cls.data[0x7aa5c:0x7aa6c]
+
+    @staticmethod
+    def _reset_fragment(fragment, registers, page):
+        # Admit the complete three-instruction fragment, including its LIMM,
+        # before effects. This is deliberately not a general ARC interpreter.
+        if not isinstance(fragment, bytes) or len(fragment) != 16 or \
+                hashlib.sha256(fragment).hexdigest() != \
+                "2999a82caf8c10a90915136a46cb05034f6ed687fc9e37276801c0bed4e5f249":
+            raise ValueError("unexpected stock cache-count reset fragment")
+        words = struct.unpack("<4I", fragment)
+        if words != (0x52492400, 0x623f7c00, 0x30000f00, 0x1408a428):
+            raise ValueError("unexpected stock cache-count reset words")
+        sub, mov, literal, store = words
+        fields = lambda word: ((word >> 27) & 31, (word >> 21) & 63,
+                               (word >> 15) & 63, (word >> 9) & 63, word & 511)
+        if fields(sub) != (10, 18, 18, 18, 0) or fields(mov) != (12, 17, 62, 62, 0) or \
+                fields(store) != (2, 32, 17, 18, 40) or not store & (1 << 26):
+            raise ValueError("unexpected stock cache-count reset operands")
+        if len(registers) != 64 or len(page) != 4096:
+            raise ValueError("invalid synthetic cache-count reset storage")
+        _, destination, left, right, _ = fields(sub)
+        registers[destination] = (registers[left] - registers[right]) & 0xffffffff
+        registers[fields(mov)[1]] = literal
+        _, _, base, value, displacement = fields(store)
+        displacement = displacement - 512 if displacement & 256 else displacement
+        address = (registers[base] + displacement) & 0xffffffff
+        struct.pack_into("<I", page, address - 0x30000f00, registers[value])
+        return (0x2820, 0x2830, address, 4, registers[value])
+
+    def test_section_symbol_and_original_absolute_relocations(self):
+        data, base = self.data, 0x79dd8
+        self.assertEqual(data[base:base + 7], b"\x7fELF\x01\x01\x01")
+        header = struct.unpack_from("<HHIIIIIHHHHHH", data, base + 16)
+        self.assertEqual(header, (2, 45, 1, 0x49f68, 52, 0x54c58, 0, 52, 32, 19, 40, 112, 111))
+        sections = [struct.unpack_from("<10I", data, base + header[5] + 40 * i)
+                    for i in range(header[11])]
+        self.assertEqual(sections[3], (35, 1, 6, 0x23e0, 0x844, 0x87c, 0, 0, 4, 1))
+        self.assertEqual(sections[65], (1429, 3, 0, 0, 296078, 12741, 0, 0, 1, 1))
+        self.assertEqual(sections[66], (1437, 2, 0, 0, 308820, 17216, 65, 584, 4, 16))
+        self.assertEqual(sections[69], (1489, 4, 0, 0, 326252, 636, 66, 3, 4, 12))
+        self.assertEqual(sections[111], (2758, 3, 0, 0, 344456, 2768, 0, 0, 1, 1))
+        section_name = base + sections[111][4] + sections[3][0]
+        self.assertEqual(data[section_name:section_name + 20], b".core_critical_code\0")
+        self.assertEqual(base + sections[3][4] + 0x2820 - sections[3][3], 0x7aa5c)
+        symbol_offset = base + sections[66][4] + 119 * 16
+        self.assertEqual(symbol_offset, 0xc5b9c)
+        record = data[symbol_offset:symbol_offset + 16]
+        self.assertEqual(hashlib.sha256(record).hexdigest(),
+                         "3e61fa1da0f9ed312a9acf4417f41979c491d9235ab36819254a87d84a4c7a72")
+        symbol = struct.unpack("<IIIBBH", record)
+        self.assertEqual(symbol, (596, 0x27dc, 0x320, 2, 0, 3))
+        name = base + sections[65][4] + symbol[0]
+        self.assertEqual(data[name:name + 21], b"Decode_DecodePicture\0")
+        self.assertLess(symbol[1], 0x2820)
+        self.assertLessEqual(0x2830, symbol[1] + symbol[2])
+        self.assertEqual(hashlib.sha256(data[0x7aa18:0x7ad38]).hexdigest(),
+                         "248a9584218110d4f1c584fcbebe2dcdc42974aeafb56e73e237b4153d2666c5")
+        self.assertEqual([i for i, section in enumerate(sections)
+                          if section[1] in (4, 9) and section[7] == 3], [69])
+        rela = data[base + sections[69][4]:base + sections[69][4] + sections[69][5]]
+        self.assertEqual(hashlib.sha256(rela).hexdigest(),
+                         "7ce105781f164014affad86d233e5b70d143225016e54aa67380e7e0acc8b52e")
+        records = list(struct.iter_unpack("<IIi", rela))
+        self.assertEqual(len(records), 53)
+        for address, info, addend in records:
+            # ET_EXEC r_offset is already an absolute VM address; do not add sh_addr.
+            self.assertGreaterEqual(address, 0x23e0)
+            self.assertLess(address, 0x2c5c)
+            self.assertFalse(address < 0x2830 and address + 4 > 0x2820)
+        self.assertIn((0x2834, (50 << 8) | 4, 276), records)
+        self.assertIn((0x2840, (623 << 8) | 6, 0), records)
+
+    def test_decoded_interior_fragment_changes_only_two_registers_and_one_dword(self):
+        for initial in (0, 1, 0xffffffff, 0x93e47a21):
+            registers = [((index + 1) * 0x1234567) & 0xffffffff for index in range(64)]
+            registers[18] = initial
+            expected_registers = registers.copy()
+            expected_registers[17:19] = [0x30000f00, 0]
+            page = bytearray((index * 29 + 7) & 255 for index in range(4096))
+            expected_page = page.copy()
+            expected_page[40:44] = bytes(4)
+            self.assertEqual(self._reset_fragment(self.fragment, registers, page),
+                             (0x2820, 0x2830, 0x30000f28, 4, 0))
+            self.assertEqual(registers, expected_registers)
+            self.assertEqual(page, expected_page)
+
+    def test_changed_words_and_digest_collision_fail_before_synthetic_effects(self):
+        invalid = [None, [], b"", self.fragment[:-1], self.fragment + b"\0"]
+        for index in range(16):
+            changed = bytearray(self.fragment)
+            changed[index] ^= 1
+            invalid.append(bytes(changed))
+        for fragment in invalid:
+            registers, page = [0x12345678] * 64, bytearray(b"\xa5" * 4096)
+            before = registers.copy(), page.copy()
+            with self.assertRaisesRegex(ValueError, "unexpected stock cache-count reset"):
+                self._reset_fragment(fragment, registers, page)
+            self.assertEqual((registers, page), before)
+        with mock.patch.object(hashlib, "sha256") as digest:
+            digest.return_value.hexdigest.return_value = \
+                "2999a82caf8c10a90915136a46cb05034f6ed687fc9e37276801c0bed4e5f249"
+            for fragment in invalid[5:]:
+                registers, page = [0x12345678] * 64, bytearray(b"\xa5" * 4096)
+                with self.assertRaisesRegex(ValueError, "unexpected stock cache-count reset words"):
+                    self._reset_fragment(fragment, registers, page)
+                self.assertEqual(registers, [0x12345678] * 64)
+                self.assertEqual(page, bytearray(b"\xa5" * 4096))
+
+
 if __name__ == "__main__":
     unittest.main()
