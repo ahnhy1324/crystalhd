@@ -868,6 +868,64 @@ static void PreservedReplyTransport(void)
     DestroyHardware();
 }
 
+static void SingletonChannelRouting(void)
+{
+    BC_FW_CMD command;
+    TX_INPUT_BUFFER_INFO expected_input;
+
+    InitTransfer(&command, eCMD_C011_DEC_CHAN_OPEN, true);
+    response_words[3] = 0;
+    response_words[11] = 0x12500;
+    Check(crystalhd_flea_do_fw_cmd(&hardware, &command) == BC_STS_SUCCESS &&
+          hardware.channelNum == 0 && hardware.TxBuffInfoAddr == 0x12500,
+          "first raw OPEN binds the singleton input route");
+    command.cmd[0] = response_words[0] = eCMD_C011_DEC_CHAN_START_VIDEO;
+    response_words[5] = 0x12300;
+    response_words[6] = 0x12400;
+    transfer_reads = 0;
+    Check(crystalhd_flea_do_fw_cmd(&hardware, &command) == BC_STS_SUCCESS &&
+          hardware.pib_del_Q_addr == 0x12300 && hardware.pib_rel_Q_addr == 0x12400,
+          "first raw START binds the singleton picture queues");
+
+    memset(&hardware.TxFwInputBuffInfo, 0x5a, sizeof(hardware.TxFwInputBuffInfo));
+    expected_input = hardware.TxFwInputBuffInfo;
+    expected_input.DramBuffAdd = expected_input.DramBuffSzInBytes = 0;
+    expected_input.Flags = expected_input.HostXferSzInBytes = expected_input.SeqNum = 0;
+    hardware.PwrDwnTxIntr = hardware.PwrDwnPiQIntr = true;
+    hardware.SingleThreadAppFIFOEmpty = true;
+    hardware.EmptyCnt = 123;
+    command.cmd[0] = response_words[0] = eCMD_C011_DEC_CHAN_OPEN;
+    response_words[3] = 1;
+    response_words[11] = 0x22500;
+    transfer_reads = 0;
+    Check(crystalhd_flea_do_fw_cmd(&hardware, &command) == BC_STS_SUCCESS &&
+          hardware.channelNum == 1 && hardware.TxBuffInfoAddr == 0x22500 &&
+          !memcmp(&hardware.TxFwInputBuffInfo, &expected_input, sizeof(expected_input)) &&
+          !hardware.PwrDwnTxIntr && !hardware.PwrDwnPiQIntr &&
+          !hardware.SingleThreadAppFIFOEmpty && !hardware.EmptyCnt,
+          "another raw OPEN replaces input routing and clears cached input/power state");
+    Check(hardware.pib_del_Q_addr == 0x12300 && hardware.pib_rel_Q_addr == 0x12400,
+          "OPEN alone leaves the previous picture queues, not an isolated channel map");
+    command.cmd[0] = response_words[0] = eCMD_C011_DEC_CHAN_START_VIDEO;
+    response_words[5] = 0x22300;
+    response_words[6] = 0x22400;
+    transfer_reads = 0;
+    Check(crystalhd_flea_do_fw_cmd(&hardware, &command) == BC_STS_SUCCESS &&
+          hardware.pib_del_Q_addr == 0x22300 && hardware.pib_rel_Q_addr == 0x22400,
+          "another raw START replaces picture routing even without a submitted access unit");
+
+    command.cmd[0] = response_words[0] = eCMD_C011_DEC_CHAN_CLOSE;
+    command.cmd[2] = 1;
+    transfer_reads = 0;
+    Check(crystalhd_flea_do_fw_cmd(&hardware, &command) == BC_STS_SUCCESS &&
+          hardware.channelNum == 1 && hardware.TxBuffInfoAddr == 0x22500 &&
+          hardware.pib_del_Q_addr == 0x22300 && hardware.pib_rel_Q_addr == 0x22400,
+          "raw CLOSE does not automatically restore the prior host input/picture bindings");
+    Check(!hardware.fwcmd_poisoned && !hardware.fwcmd_pending && !hardware.FwCmdCnt,
+          "synthetic successful transport completes without certifying native two-channel cleanup");
+    DestroyHardware();
+}
+
 static void CommandPublicationFailure(void)
 {
     BC_STATUS (*const execute[])(struct crystalhd_hw *, BC_FW_CMD *) = {
@@ -997,6 +1055,7 @@ int main(void)
     ReplyRangeAndFirmwareStatus();
     ReplyAdmissionAndWaitFailure();
     PreservedReplyTransport();
+    SingletonChannelRouting();
     CommandPublicationFailure();
     UnpostedCountState();
     printf("Firmware command recovery: %u checks, %u failures (no hardware)\n",

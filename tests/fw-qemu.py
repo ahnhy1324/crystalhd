@@ -2542,8 +2542,74 @@ class FirmwareLogCommandQemuTests(unittest.TestCase):
                     (execute_debug_setup if pc == 0x5a28 else execute_log_command)()
 
 
+class FirmwareChannelGuardQemuTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        Model.setUpClass()
+
+    def test_selected_channel_guard_not_global_other_slot_occupancy(self):
+        # Original guard only: reaching f884 stops before allocation/configuration.
+        self.assertEqual(hashlib.sha256(Model.payload[0xf7e4:0xfbec]).hexdigest(),
+                         "723911a2a94585093da0b4caebd2ba2a20b2c8bc87c4e91dd42646ae95a3a092")
+        self.assertEqual(struct.unpack_from("<I", Model.payload, 0xa314)[0], 0xe1a02007)
+        self.assertEqual(struct.unpack_from("<I", Model.payload, 0xf7f4)[0], 0xe1a06002)
+        class Boundary(Exception):
+            pass
+        for slot, other, occupied in ((1, 0, False), (0, 1, False), (1, 0, True), (16, 0, False)):
+            with self.subTest(slot=slot, other=other, occupied=occupied):
+                pages = {base: bytearray(b"\xa5" * 4096) for base in
+                         (0x300000, 0x400000, 0x401000, 0x402000)}
+                pages[0x400000][0x36c] = 0
+                struct.pack_into("<I", pages[0x400000], 0x19c, 0x402100)
+                pages[0x402000][0x100:0x140] = bytes(64)
+                struct.pack_into("<I", pages[0x402000], 0x100 + other * 4, 0x600100)
+                if slot < 16:
+                    struct.pack_into("<I", pages[0x402000], 0x100 + slot * 4, 0x600200 if occupied else 0)
+                registers = [0xabc00000 + index for index in range(16)]
+                registers[:4] = [0x400000, 0x401100, slot, 0x401200]
+                registers[13:16] = [0x300800, RETURN, 0xf7e4]
+                segments = [(0xe000, Model.payload[0xe000:0xf000], 5),
+                            (0xf000, Model.payload[0xf000:0x11000], 5)]
+                segments += [(base, bytes(page), 6) for base, page in pages.items()]
+                calls, boundary = [], []
+                def callee(rsp, pc, args, sp):
+                    calls.append(pc)  # Logging is an opaque synthetic contract.
+                    return 0
+                def instruction(rsp, pc, regs):
+                    if pc == 0xf83c and (regs[10], regs[0]) != (0x401100, 0):
+                        raise ValueError("outside channel-guard output store contract")
+                    if pc == 0xf884:
+                        boundary.append({"registers": list(regs), "pages": {
+                            base: rsp.memory(base, size=4096) for base in pages}})
+                        raise Boundary()
+                try:
+                    actual = emulate(segment_elf(segments, 0xf7e4), pages, registers,
+                                     ((0xf7e4, 0xf888),), (0x22d60, 0x232e8), callee, 80,
+                                     call_edges={0xf81c: 0x22d60, 0xf824: 0x232e8,
+                                                 0xf868: 0x22d60, 0xf874: 0x232e8},
+                                     instruction=instruction)
+                except Boundary:
+                    self.assertTrue(slot < 16 and not occupied)
+                    self.assertEqual(len(boundary), 1)
+                    actual = boundary[0]
+                    expected_registers = list(registers)
+                    expected_registers[0], expected_registers[4:11] = 0, [0, 0x400000, slot, 0x401200, 0, 0, 0x401100]
+                    expected_registers[13], expected_registers[15] = 0x3007a0, 0xf884
+                    self.assertEqual(actual["registers"], expected_registers)
+                else:
+                    self.assertTrue(slot >= 16 or occupied)
+                    self.assertEqual(actual["status"], 2)  # Full return ABI checked by emulate.
+                expected = {base: bytearray(page) for base, page in pages.items()}
+                struct.pack_into("<I", expected[0x401000], 0x100, 0)
+                struct.pack_into("<9I", expected[0x300000], 0x7dc, *registers[4:12], RETURN)
+                self.assertEqual(actual["pages"], {base: bytes(page) for base, page in expected.items()})
+                self.assertEqual(calls, [0x22d60, 0x232e8] if occupied else [])
+                self.assertEqual(len(boundary), 1 if slot < 16 and not occupied else 0)
+        # No allocation, firmware OPEN/START, ARC save, IRQ or native route was executed.
+
+
 if __name__ == "__main__":
     unittest.main(defaultTest=("FirmwareQemuTests", "FirmwarePictureQemuTests",
                                "FirmwareMfdSourceQemuTests", "FirmwareSourceProducerQemuTests",
                                "FirmwareSourceModeQemuTests", "FirmwareIrqStatusQemuTests",
-                               "FirmwareLogCommandQemuTests", "ProtocolTests"))
+                               "FirmwareLogCommandQemuTests", "FirmwareChannelGuardQemuTests", "ProtocolTests"))
