@@ -14526,5 +14526,178 @@ class FirmwareArcCacheCountResetTests(unittest.TestCase):
                 self.assertEqual(page, bytearray(b"\xa5" * 4096))
 
 
+class FirmwareArcMp4ControlWordTests(unittest.TestCase):
+    """Fixed stock interior arithmetic; no native MMIO, polling or raw-input API."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.data = MAP.read_firmware(BLOB)
+        if len(cls.data) != 864276 or hashlib.sha256(cls.data).hexdigest() != \
+                "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9":
+            raise ValueError("unexpected stock MP4 control firmware")
+        cls.fragment = cls.data[0xbd8c9:0xbd909]
+
+    @staticmethod
+    def _control_word(fragment, prefix, registers, stores):
+        if not isinstance(fragment, bytes) or len(fragment) != 64 or \
+                hashlib.sha256(fragment).hexdigest() != \
+                "e9ac0bc9b3b4097221ac3674d4566eca108a1420ec430898fa2c4e979eaa703b":
+            raise ValueError("unexpected stock MP4 control fragment")
+        words = struct.unpack("<16I", fragment)
+        if words != (0x080286aa, 0x50820800, 0x57e07a01, 0x601ffe01,
+                     0x50000001, 0x40000000, 0x40007e02, 0x80007e07,
+                     0x68207c00, 0x1001, 0x080286ad, 0x60ff7c00,
+                     0x30000100, 0x80007e0d, 0x68000200, 0x14038000):
+            raise ValueError("unexpected stock MP4 control words")
+        if type(prefix) is not bytes or len(prefix) != 360 or type(registers) is not list or \
+                len(registers) != 64 or any(type(value) is not int or not 0 <= value <= 0xffffffff
+                                          for value in registers) or \
+                registers[5] != 0x3fffc2b0 or type(stores) is not list:
+            raise ValueError("invalid synthetic MP4 control storage")
+        # Exactly 14 admitted instructions and two non-instruction LIMM words.
+        # This local algebra is not a general interpreter or an ABI invocation.
+        visited, zero = [], False
+        for index in (0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 13, 14, 15):
+            word = words[index]
+            major = word >> 27
+            a, b, c = ((word >> shift) & 63 for shift in (21, 15, 9))
+            short = (word & 511) - (512 if word & 256 else 0)
+            visited.append(0x460c8 + index * 4)
+            if major == 1:
+                address = registers[b] + short
+                byte = prefix[address - 0x3fffc2b0]
+                registers[a] = (byte - 256 if byte & 128 else byte) & 0xffffffff
+            elif major == 2:
+                # ST.DI is a bypass-cache qualifier. Record a typed synthetic
+                # store only; never dereference the ARC-local destination.
+                stores.append(("ARC-local", registers[b] + short, 4, registers[c]))
+            else:
+                def operand(register):
+                    if register in (61, 63):
+                        return short & 0xffffffff
+                    if register == 62:
+                        return words[index + 1]
+                    return registers[register]
+                immediate = b in (61, 63) or c in (61, 63)
+                if not immediate and word & 31 == 1 and not zero:
+                    continue
+                left, right = operand(b), operand(c)
+                if major == 8:
+                    result = (left + right) & 0xffffffff
+                elif major == 10:
+                    result = (left - right) & 0xffffffff
+                elif major == 12:
+                    result = left & right
+                elif major == 13:
+                    result = left | right
+                else:  # The two source-pinned ASL immediates, 7 and 13.
+                    result = (left << right) & 0xffffffff
+                if 61 in (b, c):
+                    zero = result == 0
+                if a < 61:
+                    registers[a] = result
+        return tuple(visited), 0x46108
+
+    def test_stock_owner_symbol_and_unmodified_relocation_sites(self):
+        data, base = self.data, 0x79dd8
+        header = struct.unpack_from("<HHIIIIIHHHHHH", data, base + 16)
+        self.assertEqual(header, (2, 45, 1, 0x49f68, 52, 0x54c58, 0, 52, 32, 19, 40, 112, 111))
+        sections = [struct.unpack_from("<10I", data, base + header[5] + 40 * i)
+                    for i in range(header[11])]
+        self.assertEqual(sections[47], (1176, 1, 4194310, 266088, 256401, 37544, 0, 0, 4, 1))
+        self.assertEqual(sections[65], (1429, 3, 0, 0, 296078, 12741, 0, 0, 1, 1))
+        self.assertEqual(sections[66], (1437, 2, 0, 0, 308820, 17216, 65, 584, 4, 16))
+        self.assertEqual(sections[108], (2718, 4, 0, 0, 336332, 7788, 66, 47, 4, 12))
+        self.assertEqual(sections[111], (2758, 3, 0, 0, 344456, 2768, 0, 0, 1, 1))
+        name = base + sections[111][4] + sections[47][0]
+        self.assertEqual(data[name:name + 6], b".text\0")
+        record_offset = base + sections[66][4] + 916 * 16
+        self.assertEqual(record_offset, 0xc8d6c)
+        record = data[record_offset:record_offset + 16]
+        self.assertEqual(hashlib.sha256(record).hexdigest(),
+                         "28f84cabb3a188357f0b1be91ba434bff573d88a10d1386bb9d69ac8621aa7ba")
+        symbol = struct.unpack("<IIIBBH", record)
+        self.assertEqual(symbol, (9660, 0x460b4, 260, 18, 0, 47))
+        name = base + sections[65][4] + symbol[0]
+        self.assertEqual(data[name:name + 16], b"MP4_Frame_Setup\0")
+        self.assertEqual(base + sections[47][4] + 0x460c8 - sections[47][3], 0xbd8c9)
+        self.assertEqual(hashlib.sha256(data[0xbd8b5:0xbd9b9]).hexdigest(),
+                         "b3655bc85bee8d80301e4109de980307b3f49fd6afe3d0b08c2d0a7d065bec13")
+        self.assertEqual([i for i, section in enumerate(sections)
+                          if section[1] in (4, 9) and section[7] == 47], [108])
+        rela = data[base + sections[108][4]:base + sections[108][4] + sections[108][5]]
+        self.assertEqual(hashlib.sha256(rela).hexdigest(),
+                         "1a45adc1f169c6122d5c94d13a0c88fafd50e16e6052727b2b78fc84a50e65da")
+        records = list(struct.iter_unpack("<IIi", rela))
+        self.assertEqual(len(records), 649)
+        self.assertEqual([record for record in records if 0x460b4 <= record[0] < 0x461b8],
+                         [(0x460b8, 0x3604, 1280), (0x460c4, 0x3604, 1792)])
+        # These original ET_EXEC r_offsets are absolute VM addresses.
+        self.assertFalse(any(address < 0x46108 and address + 4 > 0x460c8
+                             for address, _, _ in records))
+
+    def test_all_byte_pairs_control_bits_and_register_preservation(self):
+        initial = [((index + 1) * 0x1234567) & 0xffffffff for index in range(64)]
+        initial[5] = 0x3fffc2b0
+        expected_pcs = tuple(0x460c8 + 4 * index for index in
+                            (0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 13, 14, 15))
+        prefix = bytearray((index * 29 + 7) & 255 for index in range(360))
+        for first in range(256):
+            for second in range(256):
+                prefix[170], prefix[173] = first, second
+                original = bytes(prefix)
+                registers, stores = initial.copy(), []
+                self.assertEqual(self._control_word(self.fragment, original, registers, stores),
+                                 (expected_pcs, 0x46108))
+                signed_second = second - 256 if second & 128 else second
+                result = (((2 if first == 1 else 4) << 7) | 0x1001 | (signed_second << 13)) & 0xffffffff
+                expected = initial.copy()
+                expected[0], expected[1], expected[4], expected[7] = \
+                    result, ((2 if first == 1 else 4) << 7) | 0x1001, 0, 0x30000100
+                self.assertEqual(registers, expected)
+                self.assertEqual(stores, [("ARC-local", 0x30000100, 4, result)])
+                self.assertEqual((result & 0x1000, result & 0x800, result & 1), (0x1000, 0, 1))
+                self.assertEqual(original, bytes(prefix))
+
+    def test_source_changes_and_digest_collisions_refuse_before_effects(self):
+        invalid = [None, [], b"", self.fragment[:-1], self.fragment + b"\0"]
+        for index in range(64):
+            changed = bytearray(self.fragment)
+            changed[index] ^= 1
+            invalid.append(bytes(changed))
+        for collision in (False, True):
+            with ExitStack() as stack:
+                if collision:
+                    digest = stack.enter_context(mock.patch.object(hashlib, "sha256"))
+                    digest.return_value.hexdigest.return_value = \
+                        "e9ac0bc9b3b4097221ac3674d4566eca108a1420ec430898fa2c4e979eaa703b"
+                for fragment in invalid:
+                    registers, stores = [0x12345678] * 64, []
+                    registers[5] = 0x3fffc2b0
+                    before = registers.copy()
+                    with self.assertRaisesRegex(ValueError, "unexpected stock MP4 control"):
+                        self._control_word(fragment, bytes(360), registers, stores)
+                    self.assertEqual(registers, before)
+                    self.assertEqual(stores, [])
+        valid = [0x12345678] * 64
+        valid[5] = 0x3fffc2b0
+        bad_registers = []
+        for index, value in ((0, True), (0, -1), (0, 1 << 32), (5, 0x3fffc2b4)):
+            changed = valid.copy()
+            changed[index] = value
+            bad_registers.append(changed)
+        for argument, values in ((0, (None, [], bytes(359), bytes(361), bytearray(360))),
+                                 (1, (None, [], tuple(valid), *bad_registers)), (2, (None, ()) )):
+            for value in values:
+                args = [bytes(360), valid.copy(), []]
+                args[argument] = value
+                before_registers = args[1].copy() if type(args[1]) is list else args[1]
+                with self.assertRaisesRegex(ValueError, "invalid synthetic MP4 control storage"):
+                    self._control_word(self.fragment, *args)
+                self.assertEqual(args[1], before_registers)
+                if type(args[2]) is list:
+                    self.assertEqual(args[2], [])
+
+
 if __name__ == "__main__":
     unittest.main()
