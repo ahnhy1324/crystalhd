@@ -12445,5 +12445,283 @@ class FirmwareArcPublicationProjectionTests(unittest.TestCase):
             self.assertEqual((bytes(flags), bytes(rows)), original)
 
 
+def project_arc_deallocator(payload, index, flags, banks, metadata=(0, 0), budget=128):
+    """Logical stock deallocator, limited to zero metadata-helper fields.
+
+    Synthetic pool/stack/local pages are not native aliases. Named extension
+    shifts remain an ISA assumption; no native pipeline, relocation, visibility,
+    frame lifetime or lease is certified. The return scalar is not a status ACK.
+    """
+    if type(payload) not in (bytes, bytearray) or len(payload) != MAP.BUNDLED_SIZE - MAP.TRAILER_SIZE:
+        raise ValueError("invalid ARC deallocator payload")
+    for low, high, digest in (
+            (0x33f20, 0x34068, "2117ff7294daa5e9da4d290f92d28b28ae3a04b927491427e7f7885c1e90b1bf"),
+            (0x67a25, 0x67a95, "50144f0baa420310c9ac35d5739a4e90af2f13e07bb65daa87894472f695ed00")):
+        if hashlib.sha256(payload[low:high]).hexdigest() != digest:
+            raise ValueError("stock ARC deallocator source changed")
+    if type(index) is not int or not 0 <= index < 34 or \
+            type(flags) not in (bytes, bytearray) or len(flags) != 68 or \
+            type(banks) not in (bytes, bytearray) or len(banks) != 144 or \
+            type(budget) is not int or not 1 <= budget <= 128:
+        raise ValueError("invalid synthetic ARC deallocator inputs")
+    if type(metadata) is not tuple or len(metadata) != 2 or any(type(value) is not int or value for value in metadata):
+        raise ValueError("outside zero metadata-helper domain")
+    flag = struct.unpack_from("<H", flags, index * 2)[0]
+    admitted = bool(flag & 0x8000) and not flag & 0x6000
+    bank, slot = flag & 15, (flag >> 4) & 31
+    if admitted and not flag & 0x400 and bank >= 9:
+        raise ValueError("outside modeled ARC bank storage, not a native guard")
+    body = bytes(payload[0x33f20:0x34068])
+    pages = {base: bytearray(b"\xa5" * 4096) for base in (0x300000, 0x3fffd000, 0x500000, 0x501000)}
+    record, stack = 0x500100 + 228 * index, 0x300800
+    pages[0x3fffd000][0x100:0x144], pages[0x3fffd000][0x1a8:0x238] = flags, banks
+    def put(address, size, value, destination):
+        base, offset = address & ~4095, address & 4095
+        if base not in destination or offset + size > 4096 or address & (size - 1):
+            raise ValueError("outside synthetic ARC deallocator RAM")
+        destination[base][offset:offset + size] = value.to_bytes(size, "little")
+    put(0x3fffd0e8, 4, 0x500100, pages)
+    for offset in (68, 224):
+        put(record + offset, 4, 0, pages)
+    initial = {base: bytes(page) for base, page in pages.items()}
+    registers = [0xabc00000 + i for i in range(64)]
+    registers[0], registers[28], registers[31] = index, stack, 0x400000
+    preserved = registers[4:60]
+    expected = {base: bytearray(page) for base, page in pages.items()}
+    expected_stores = [(0x907c, stack + 4, 4, registers[31]), (0x9080, stack, 4, registers[27])]
+    for pc, register in ((0x908c, 13), (0x9090, 14), (0x9094, 15), (0x9098, 16),
+                         (0x909c, 17), (0x90b8, 18), (0x90c8, 19)):
+        expected_stores.append((pc, stack - 44 + 16 + (register - 13) * 4, 4, registers[register]))
+    if admitted:
+        if not flag & 0x400:
+            mask = struct.unpack_from("<I", banks, bank * 16 + 4)[0] & ~(1 << slot)
+            expected_stores.append((0x918c, 0x3fffd1ac + bank * 16, 4, mask))
+            if not mask:
+                expected_stores.extend(((0x9190, 0x3fffd1b4 + bank * 16, 4, 0),
+                                        (0x9194, 0x3fffd1b0 + bank * 16, 4, 0)))
+        expected_stores.append((0x9198, 0x3fffd100 + index * 2, 2, 0))
+    for _, address, size, value in expected_stores:
+        put(address, size, value, expected)
+    windows = ((stack - 44, stack + 8), (0x3fffd0e8, 0x3fffd0ec),
+               (0x3fffd100, 0x3fffd144), (0x3fffd1a8, 0x3fffd238),
+               (record + 68, record + 72), (record + 224, record + 228))
+    pc, pending, z, n = 0x907c, None, False, True
+    visited, stores, reads = [], [], []
+    def word(address):
+        if address & 3 or not 0x907c <= address < 0x91c4:
+            raise ValueError("outside pinned ARC deallocator code")
+        return struct.unpack_from("<I", body, address - 0x907c)[0]
+    while pc != 0x1000000:
+        if len(visited) >= budget:
+            raise ValueError("ARC deallocator instruction budget exceeded")
+        instruction = word(pc)
+        visited.append(pc)
+        major = instruction >> 27
+        a, b, c = ((instruction >> shift) & 63 for shift in (21, 15, 9))
+        short = (instruction & 511) - (512 if instruction & 256 else 0)
+        length = 4
+        def operand(register):
+            nonlocal length
+            if register in (61, 63):
+                return short & 0xffffffff
+            if register == 62:
+                length = 8
+                return word(pc + 4)
+            return registers[register]
+        next_pc, branch = pc + 4, pending
+        pending = None
+        if major in (8, 10, 12, 14, 16, 18, 3):
+            left, right = operand(b), 0 if major == 3 else operand(c)
+            immediate = b in (61, 63) or major != 3 and c in (61, 63)
+            condition = 0 if immediate else instruction & 31
+            set_flags = (b == 61 or major != 3 and c == 61) if immediate else bool(instruction & 256)
+            if condition or set_flags and major not in (12, 14, 3):
+                raise ValueError("unsupported ARC deallocator arithmetic")
+            if major == 8:
+                result = left + right
+            elif major == 10:
+                result = left - right
+            elif major == 12:
+                result = left & right
+            elif major == 14:
+                result = left & ~right
+            elif major == 16:
+                result = left << (right & 31)
+            elif major == 18:
+                result = (left - (1 << 32) if left & 0x80000000 else left) >> (right & 31)
+            else:
+                if c != 6:
+                    raise ValueError("unsupported ARC deallocator single operation")
+                result = (left & 0xffff) - ((1 << 16) if left & 0x8000 else 0)
+            result &= 0xffffffff
+            if set_flags:
+                z, n = result == 0, bool(result & 0x80000000)
+            if a < 61:
+                registers[a] = result
+            next_pc = pc + length
+        elif major == 1:
+            size = {0: 4, 2: 2}.get((instruction >> 10) & 3)
+            if size is None or instruction & 0x6200 or a >= 61 or \
+                    instruction & 0x1000 and pc != 0x91c0:
+                raise ValueError("unsupported ARC deallocator load")
+            address = (operand(b) + short) & 0xffffffff
+            base, offset = address & ~4095, address & 4095
+            if base not in pages or offset + size > 4096 or address & (size - 1) or not any(
+                    start <= address and address + size <= end for start, end in windows):
+                raise ValueError("outside synthetic ARC deallocator read")
+            reads.append((pc, address, size))
+            registers[a] = int.from_bytes(pages[base][offset:offset + size], "little")
+            if instruction & 0x1000:
+                registers[b] = address
+            next_pc = pc + length
+        elif major == 2:
+            size = {0: 4, 2: 2}.get((instruction >> 22) & 3)
+            if size is None or instruction & 0x07200000:
+                raise ValueError("unsupported ARC deallocator store")
+            address = (operand(b) + short) & 0xffffffff
+            value = operand(c) & ((1 << (size * 8)) - 1)
+            store = (pc, address, size, value)
+            if len(stores) >= len(expected_stores) or store != expected_stores[len(stores)]:
+                raise ValueError("outside ordered ARC deallocator store contract")
+            put(address, size, value, pages)
+            stores.append(store)
+            next_pc = pc + length
+        elif major == 4:
+            condition, delay = instruction & 31, (instruction >> 5) & 3
+            if condition not in (1, 2, 3) or delay not in (0, 1):
+                raise ValueError("unsupported ARC deallocator branch")
+            displacement = (instruction >> 7) & 0xfffff
+            if displacement & 0x80000:
+                displacement -= 1 << 20
+            if {1: z, 2: not z, 3: not n}[condition]:
+                target = pc + 4 + displacement * 4
+                if delay:
+                    pending = target
+                else:
+                    next_pc = target
+        elif major == 7:
+            if b != 31 or instruction & 0x11f or (instruction >> 5) & 3 != 1:
+                raise ValueError("unsupported ARC deallocator return")
+            pending = (registers[31] & 0xffffff) << 2
+        else:
+            raise ValueError("outside zero metadata-helper opcode domain")
+        if branch is not None:
+            next_pc = branch
+        pc = next_pc
+    expected = {base: bytes(page) for base, page in expected.items()}
+    if registers[4:60] != preserved or {base: bytes(page) for base, page in pages.items()} != expected or \
+            stores != expected_stores:
+        raise ValueError("ARC deallocator full-page/ABI oracle changed")
+    return {"flags": bytes(pages[0x3fffd000][0x100:0x144]),
+            "banks": bytes(pages[0x3fffd000][0x1a8:0x238]), "initial": initial,
+            "pages": expected, "stores": stores, "reads": reads, "visited": visited,
+            "return_scalar": registers[0], "native_execution": False,
+            "physical_lease_certified": False, "vendor_extensions_certified": False,
+            "metadata_helpers_executed": False}
+
+
+class FirmwareArcDeallocatorProjectionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        raw = MAP.read_firmware(BLOB)
+        if len(raw) != MAP.BUNDLED_SIZE or hashlib.sha256(raw).hexdigest() != MAP.BUNDLED_SHA256:
+            raise ValueError("bundled firmware changed")
+        cls.payload = raw[:-MAP.TRAILER_SIZE]
+
+    @staticmethod
+    def images(bank=0, slot=0, index=0, flag=0x8800, mask=None):
+        flags, rows = bytearray(68), bytearray(144)
+        struct.pack_into("<H", flags, index * 2, flag | bank | (slot << 4))
+        struct.pack_into("<4I", rows, bank * 16, 0x920000, (1 << slot) if mask is None else mask,
+                         0x12345, 0x11223344)
+        return flags, rows
+
+    def test_whole_body_guards_last_slot_other_slots_and_no_video(self):
+        for bank in range(9):
+            for slot in range(32):
+                for index in (0, 33):
+                    for flag, mask in ((0xe800, 1 << slot), (0x8800, 1 << slot),
+                                       (0x8800, 0xffffffff), (0x8400, 1 << slot), (0, 1 << slot)):
+                        with self.subTest(bank=bank, slot=slot, index=index, flag=hex(flag), mask=hex(mask)):
+                            flags, rows = self.images(bank, slot, index, flag, mask)
+                            original = bytes(flags), bytes(rows)
+                            result = project_arc_deallocator(self.payload, index, flags, rows)
+                            row = struct.unpack_from("<4I", result["banks"], bank * 16)
+                            admitted = bool(flag & 0x8000) and not flag & 0x6000
+                            remaining = mask & ~(1 << slot)
+                            self.assertEqual(row, (0x920000, remaining, 0x12345 if remaining else 0,
+                                                   0x11223344 if remaining else 0)
+                                             if admitted and not flag & 0x400 else struct.unpack_from("<4I", rows, bank * 16))
+                            self.assertEqual(struct.unpack_from("<H", result["flags"], index * 2)[0],
+                                             0 if admitted else flag | bank | (slot << 4))
+                            self.assertEqual((bytes(flags), bytes(rows)), original)
+                            self.assertEqual(result["visited"][-2:], [0x91bc, 0x91c0])
+                            if admitted and not flag & 0x400:
+                                self.assertEqual(result["stores"][9][0], 0x918c)
+                                self.assertLess(result["visited"].index(0x9188), result["visited"].index(0x918c))
+                            for key in ("native_execution", "physical_lease_certified",
+                                        "vendor_extensions_certified", "metadata_helpers_executed"):
+                                self.assertFalse(result[key])
+
+    def test_publication_reference_premise_cleanup_and_stale_saved_copy(self):
+        flags, rows = self.images(flag=0, mask=0)
+        published = project_arc_publication(self.payload, 0, 0, flags, rows)
+        saved_flags, saved_rows = published["flags"], published["banks"]
+        blocked = project_arc_deallocator(self.payload, 0, saved_flags, saved_rows)
+        self.assertEqual((blocked["flags"], blocked["banks"]), (saved_flags, saved_rows))
+        # Caller reference-drop fixture only; no scheduler/reference-drop body executed.
+        released = bytearray(saved_flags)
+        struct.pack_into("<H", released, 0, struct.unpack_from("<H", released)[0] & ~0x6000)
+        freed = project_arc_deallocator(self.payload, 0, released, saved_rows)
+        self.assertEqual(freed["banks"][:16], struct.pack("<4I", 0x920000, 0, 0, 0))
+        self.assertEqual(freed["flags"][:2], bytes(2))
+        self.assertEqual(project_arc_getter(self.payload, 0, saved_flags, saved_rows)["address"], 0x920000)
+        self.assertEqual(project_arc_getter(self.payload, 0, freed["flags"], freed["banks"])["address"], 0)
+        saved_flags, saved_rows = freed["flags"], freed["banks"]  # Synthetic copy, not save DMA.
+        self.assertEqual(project_arc_getter(self.payload, 0, saved_flags, saved_rows)["address"], 0)
+
+    def test_source_input_helper_domain_budget_and_store_refusals(self):
+        flags, rows = self.images()
+        for offset in (0x33f20, 0x34067, 0x33f20 + 0x918c - 0x907c, 0x67a25, 0x67a94):
+            changed = bytearray(self.payload)
+            changed[offset] ^= 1
+            with self.subTest(offset=offset), self.assertRaisesRegex(ValueError, "stock ARC deallocator source"):
+                project_arc_deallocator(changed, 0, flags, rows)
+        for payload in (None, [], self.payload[:-1], self.payload + b"\0"):
+            with self.assertRaisesRegex(ValueError, "invalid ARC deallocator payload"):
+                project_arc_deallocator(payload, 0, flags, rows)
+        for index in (True, -1, 34, 0.0):
+            with self.assertRaisesRegex(ValueError, "invalid synthetic"):
+                project_arc_deallocator(self.payload, index, flags, rows)
+        for malformed in (b"", bytes(67), bytes(69), list(flags)):
+            with self.assertRaisesRegex(ValueError, "invalid synthetic"):
+                project_arc_deallocator(self.payload, 0, malformed, rows)
+        for malformed in (b"", bytes(143), bytes(145), list(rows)):
+            with self.assertRaisesRegex(ValueError, "invalid synthetic"):
+                project_arc_deallocator(self.payload, 0, flags, malformed)
+        for metadata in ((1, 0), (0, 1), (True, 0), (0,), [0, 0]):
+            with self.assertRaisesRegex(ValueError, "zero metadata-helper domain"):
+                project_arc_deallocator(self.payload, 0, flags, rows, metadata)
+        for budget in (True, 0, 129):
+            with self.assertRaisesRegex(ValueError, "invalid synthetic"):
+                project_arc_deallocator(self.payload, 0, flags, rows, budget=budget)
+        with self.assertRaisesRegex(ValueError, "instruction budget exceeded"):
+            project_arc_deallocator(self.payload, 0, flags, rows, budget=1)
+        outside = bytearray(flags)
+        struct.pack_into("<H", outside, 0, 0x8809)
+        with self.assertRaisesRegex(ValueError, "modeled ARC bank storage"):
+            project_arc_deallocator(self.payload, 0, outside, rows)
+        original = struct.unpack_from
+        body = bytes(self.payload[0x33f20:0x34068])
+        def corrupt(fmt, data, offset=0):
+            value = original(fmt, data, offset)
+            if fmt == "<I" and data == body and offset == 0x918c - 0x907c:
+                return (value[0] ^ (1 << 15),)  # Wrong decoded store base, before any write.
+            return value
+        with mock.patch.object(struct, "unpack_from", corrupt), \
+                self.assertRaisesRegex(ValueError, "ordered ARC deallocator store"):
+            project_arc_deallocator(self.payload, 0, flags, rows)
+
+
 if __name__ == "__main__":
     unittest.main()
