@@ -210,6 +210,9 @@ uploads 256x96 YUV420P images, composes tiles from two retained references,
 and applies bounded quarter-pixel translation through native H.264. It requires
 a fresh, correctly configured decoder session and caller-managed stream rate;
 it is not standalone MFD processing or a raw device-surface API.
+Non-reference composition and translation leave both source slots unchanged;
+the fixed POC2 profile permits at most one non-reference AU between committed
+reference AUs.
 `make raw-frame-check` tests the host API.
 
 ## Licensing

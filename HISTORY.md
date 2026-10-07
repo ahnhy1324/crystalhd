@@ -55,8 +55,9 @@ The userspace integrations in this update are experimental. See
 ## October 2026 library addition
 
 Added an opt-in raw-frame uploader, two-reference tile compositor and bounded
-quarter-pixel translator using native H.264, without changing the library ABI
-or default decode paths. This does not expose standalone MFD processing.
+quarter-pixel translator using native H.264, including bounded non-reference
+composition and translation. Existing library ABI and default decode paths
+are preserved; this does not expose standalone MFD processing.
 
 See [README.md](README.md) for current build, installation, playback, and test
 instructions. This file is only the project history.
