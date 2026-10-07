@@ -10959,5 +10959,367 @@ class NativePostStopContextFixtureTests(unittest.TestCase):
         self.assertNotIn(b"/tmp/", raw)
 
 
+class FirmwarePpbFixedMetadataTests(unittest.TestCase):
+    """Fixed original-layout publications, not a live descriptor/source lease."""
+    BODIES = (
+        ("Core_Run", 638, 2, 0x4dc4, 0x51cc, 0x2fc68, "26e570670d39d004b02634814b88d8b510d6294eb268f08599d25c02e22403f3"),
+        ("Core_CircBuffer_Get", 637, 2, 0x4d10, 0x4dc4, 0x2fbb4, "4e0746e00040cedaee3d0275eaa7c1a14fa9f4dc056a60511dfd9b423a901a90"),
+        ("VideoParameters", 60, 4, 0x80dc, 0x8218, 0x32f80, "e4525894db6bffca8c049ff0607d87d17f98cfea965b3f2af785de31b7b82a74"),
+        ("Core_DeallocatePPB", 578, 4, 0x907c, 0x91c4, 0x33f20, "2117ff7294daa5e9da4d290f92d28b28ae3a04b927491427e7f7885c1e90b1bf"),
+        ("Core_AttemptDecode", 606, 4, 0xa258, 0xa844, 0x350fc, "02d9516500364df9de2e00eef06024988f55cac6afe09c3b34fdf6613d1d9cfd"),
+        ("Core_CircBuffer_Put", 70, 4, 0xb554, 0xb610, 0x363f8, "b2b2c7a2b5d695d0e732f54fdc87cd1ced68f62814469793999d46cd518e9375"),
+        ("Core_AttemptDisplay", 611, 4, 0xb610, 0xba98, 0x364b4, "7451b2344541e6428f8cf4e7da1df523acea2739bc40c4c881561e6441ca29c4"),
+        ("Core_PPB_From_Address", 612, 4, 0xba98, 0xbac8, 0x3693c, "edfdd3c4305efa139464b9e1b9fa67614ee6ff684e96de4156f63564261609b0"),
+        ("Platform_DeliverPicture", 802, 4, 0xbdec, 0xbe38, 0x36c90, "3e32bb1c023229ce130c2b8184586eb92dddf88eefca2b54948347e5b7b1b21a"),
+        ("Core_ChanInitialize", 624, 16, 0x266f8, 0x26974, 0x4928c, "11aeb52ef9f2a3c8ab99cf099c75eade7a69abe991e3561a05f423e54b1b4d71"),
+        ("Platform_DrvContextSize", 824, 16, 0x3b304, 0x3b30c, 0x5de98, "837494e6a5e29cf8ca42cf997921cc319edae871aebc286e75b44e30c933dd7b"),
+        ("Core_PopulatePPB", 585, 4, 0x9344, 0x9548, 0x341e8, "2b3cde5b8b4eef00eedd2c7fa4829324f428f7cb89d01eee685db5a5f6de6805"))
+    TABLES = (
+        (37, 2, "slice_relocations", 0x6d020, 1008, 84, "31d0234e0f31d3ed02cee74f82a66c64f897a69575888b83336f9fcabfe631a7"),
+        (39, 4, "picture_relocations", 0x6da34, 3132, 261, "5c8ac2c91e08eeabe4567c2d908d2a7841c700b6a77c01b9329e727bf7eaf091"),
+        (51, 16, "text_relocations", 0x72780, 26052, 2171, "8c1c3eb2f61ad26f9278028b0aa9a596650345df13b1dd0d6d806cf677b9bba9"))
+    CALLS = (
+        (0x6e4d8, 4, 0xb6b8, 646, "Dma_Read", 2, 0x53c8, True, 0x2ff3a1a0),
+        (0x6e4e4, 4, 0xb6c0, 644, "Dma_Sync", 2, 0x5364, True, 0x2ff39420),
+        (0x6e520, 4, 0xb8fc, 645, "Dma_Write", 2, 0x537c, True, 0x2ff34fa0),
+        (0x6e52c, 4, 0xb904, 644, "Dma_Sync", 2, 0x5364, False, 0x2ff34b80),
+        (0x6e538, 4, 0xb938, 645, "Dma_Write", 2, 0x537c, True, 0x2ff34820),
+        (0x6e544, 4, 0xb940, 644, "Dma_Sync", 2, 0x5364, False, 0x2ff34400),
+        (0x6e550, 4, 0xb988, 802, "Platform_DeliverPicture", 4, 0xbdec, False, 0x28008c00),
+        (0x6d2b4, 2, 0x517c, 612, "Core_PPB_From_Address", 4, 0xba98, False, 0x280d2300),
+        (0x6d2cc, 2, 0x51a4, 578, "Core_DeallocatePPB", 4, 0x907c, True, 0x2807daa0))
+    WORDS = (
+        (16, 0x26748, 0x42807c00), (16, 0x2674c, 0x5bc), (16, 0x2676c, 0x41a02800),
+        (16, 0x267b0, 0x10009b30), (16, 0x268d8, 0x679ffe21), (16, 0x268dc, 0x10060000),
+        (16, 0x268e0, 0x40007c00), (16, 0x268e4, 0x150e4), (16, 0x268e8, 0x1001013c),
+        (16, 0x268ec, 0x10000644), (16, 0x26910, 0x10000644), (16, 0x26924, 0x40407c00),
+        (16, 0x26928, 0x14ee4), (16, 0x2692c, 0x10008524), (16, 0x26938, 0x40407c00),
+        (16, 0x2693c, 0x14fe4), (16, 0x26958, 0x10008528), (16, 0x3b308, 0x401ffeec),
+        (4, 0xb8fc, 0x2ff34fa0), (4, 0xb900, 0x605ffee4), (4, 0xb904, 0x2ff34b80),
+        (4, 0xb980, 0x2fff7a20), (4, 0xb984, 0x40292800), (4, 0xb988, 0x28008c00),
+        (4, 0xb99c, 0x68007c00), (4, 0xb9a0, 0x1000), (4, 0xb9a4, 0x10808190))
+
+    @classmethod
+    def setUpClass(cls):
+        FirmwarePpbSavedContextTests.setUpClass.__func__(cls)
+        cls.saved_regions = (FirmwarePpbSavedContextTests.METADATA + FirmwarePpbSavedContextTests.ARM +
+            tuple((name, offset, end - start, digest)
+                  for name, _, start, end, offset, digest in FirmwarePpbSavedContextTests.ARC) +
+            FirmwarePpbSavedContextTests.DATA)
+        cls.regions = tuple(dict.fromkeys(cls.saved_regions + tuple(
+            (name, offset, end - start, digest) for name, _, _, start, end, offset, digest in cls.BODIES) +
+            tuple((role, offset, size, digest) for _, _, role, offset, size, _, digest in cls.TABLES) +
+            FirmwareArmPpbHandoffTests.REGIONS))
+        cls.report = MAP._ppb_fixed_metadata_bridge(cls.payload)
+
+    symbol_name = FirmwarePpbSourceProvenanceTests.symbol_name
+    file_offset = FirmwarePpbSourceProvenanceTests.file_offset
+    word = FirmwarePpbSourceProvenanceTests.word
+
+    def repinned(self, payload):
+        stack = ExitStack()
+        for name, regions in (("_PPB_FIXED_METADATA_REGIONS", self.regions),
+                              ("_PPB_SAVED_REGIONS", self.saved_regions)):
+            stack.enter_context(mock.patch.object(MAP, name, tuple(
+                (role, offset, size, hashlib.sha256(payload[offset:offset + size]).hexdigest())
+                for role, offset, size, _ in regions)))
+        return stack
+
+    def test_fixed_windows_all_alignment_residues_exact_minimum_and_whole_envelopes(self):
+        for physical in (0x116068, 0x200000, 0x33dc000, 0x3ffc000 - 0x177cc):
+            for residue in range(4):
+                p = physical + residue
+                skip = (4 - residue) % 4
+                n = 0x177cc + skip
+                if p + n > 0x3ffc000:
+                    continue
+                window = MAP._ppb_fixed_metadata_window(p, n, 0x116068, 0x3ffc000 - 0x116068)
+                d = p + skip
+                spans = [{"role": role, "offset": offset, "address": d + offset, "bytes": 8}
+                         for role, offset in (("delivery_indices", 0x15678), ("return_indices", 0x15778))]
+                spans += [{"role": "metadata_prefix", "slot": index, "offset": 0x15878 + 228 * index,
+                           "address": d + 0x15878 + 228 * index, "bytes": 72} for index in range(34)]
+                self.assertEqual(window, {"context_address": d, "context_bytes": 0x177cc,
+                    "context_end_exclusive": p + n, "alignment_skip": skip,
+                    "whole_envelopes": [{"role": role, "offset": offset, "address": d + offset, "bytes": size}
+                        for role, offset, size in (("delivery_ring", 0x15678, 256),
+                            ("return_ring", 0x15778, 256), ("metadata_pool", 0x15878, 7752))],
+                    "read_spans": spans, "read_calls": 36, "total_read_bytes": 2464, "max_read_bytes": 72,
+                    "no_observed_pointer_following": True, "source_plane_access": False, "observed_inputs_only": True,
+                    "model_no_native_certification": True, "non_atomic": True, "current_state_certified": False,
+                    "source_lease_certified": False, "generation_certified": False})
+                self.assertTrue(all(span["address"] % 4 == 0 and span["bytes"] <= 72 for span in spans))
+                self.assertEqual((len(spans), sum(span["bytes"] for span in spans)), (36, 2464))
+                self.assertEqual(spans[-1]["address"] + 72, d + 0x17624)
+                self.assertEqual(window["whole_envelopes"][-1]["address"] + 7752, d + 0x176c0)
+                with self.assertRaises(MAP.FormatError):
+                    MAP._ppb_fixed_metadata_window(p, n - 1, 0x116068, 0x3ffc000 - 0x116068)
+        actual = MAP._ppb_fixed_metadata_window(0x33dc000, 0x3f940, 0xa34000, 0x35c7940)
+        self.assertEqual([span["address"] for span in actual["read_spans"][:3]],
+                         [0x33f1678, 0x33f1778, 0x33f1878])
+        self.assertEqual(actual["read_spans"][3]["address"], 0x33f195c)
+
+    def test_strict_u32_inputs_video_bounds_overflow_and_no_pool_pointer_argument(self):
+        class IntegerSubclass(int):
+            pass
+        valid = (0x200000, 0x177cc, 0x116068, 0x3ffc000 - 0x116068)
+        for field in range(4):
+            for invalid in (False, True, -1, 0x100000000, 0.0, "1", None, [], {}, IntegerSubclass(1)):
+                values = list(valid)
+                values[field] = invalid
+                with self.subTest(field=field, value=invalid), self.assertRaises(MAP.FormatError):
+                    MAP._ppb_fixed_metadata_window(*values)
+        for values in ((0, 0x177cc, 0, 0x4000000), (0x116064, 0x177cc, 0x116068, 0x200000),
+                       (0x200000, 0, 0x116068, 0x300000), (0x200000, 0x177cc, 0x116068, 0),
+                       (0x200000, 0x177cc, 0x116068, 0x200000 - 0x116068),
+                       (0xfffffff0, 0x177cc, 0x116068, 0xffffffff),
+                       (0x3ffc000 - 0x177c8, 0x177cc, 0x116068, 0x3ffc000 - 0x116068),
+                       (0x200000, 0x177cc, 0x116068, 0x3ffc004 - 0x116068)):
+            with self.subTest(values=values), self.assertRaises(MAP.FormatError):
+                MAP._ppb_fixed_metadata_window(*values)
+        exact = MAP._ppb_fixed_metadata_window(0x200001, 0x177cf, 0x200001, 0x177cf)
+        self.assertEqual((exact["context_address"], exact["context_end_exclusive"]), (0x200004, 0x2177d0))
+
+    def test_helpers_and_bridge_are_pure_detached_and_strict_payload_types(self):
+        class BytesSubclass(bytes):
+            pass
+        for invalid in (None, memoryview(self.payload), list(self.payload), b"", self.payload[:-1],
+                        self.payload + b"\0", BytesSubclass(self.payload)):
+            with self.subTest(type=type(invalid).__name__), self.assertRaises(MAP.FormatError):
+                MAP._ppb_fixed_metadata_bridge(invalid)
+        mutable = bytearray(self.payload)
+        before = bytes(mutable)
+        with mock.patch("builtins.open", side_effect=AssertionError("opened a file")), \
+                mock.patch.object(MAP.os, "open", side_effect=AssertionError("opened a device")), \
+                mock.patch.object(subprocess, "Popen", side_effect=AssertionError("executed a process")):
+            first = MAP._ppb_fixed_metadata_bridge(mutable)
+            window = MAP._ppb_fixed_metadata_window(0x200000, 0x177cc, 0x200000, 0x177cc)
+        self.assertEqual((bytes(mutable), first), (before, self.report))
+        first["layout"]["metadata_pool_offset"] = 0
+        first["relocations"][0]["symbol"] = "changed"
+        self.assertEqual(MAP._ppb_fixed_metadata_bridge(self.payload), self.report)
+        window["read_spans"][0]["address"] = 0
+        window["whole_envelopes"][0]["bytes"] = 0
+        next_window = MAP._ppb_fixed_metadata_window(0x200000, 0x177cc, 0x200000, 0x177cc)
+        self.assertEqual((next_window["read_spans"][0]["address"], next_window["whole_envelopes"][0]["bytes"]),
+                         (0x215678, 256))
+
+    def test_independent_all59_region_fuses_and12_section_qualified_bodies(self):
+        self.assertEqual((len(self.regions), sum(size for _, _, size, _ in self.regions)), (59, 78001))
+        self.assertEqual(MAP._PPB_FIXED_METADATA_REGIONS, self.regions)
+        self.assertEqual(MAP._PPB_FIXED_METADATA_BODIES,
+                         tuple((name, sec, start, end, offset, digest)
+                               for name, _, sec, start, end, offset, digest in self.BODIES))
+        for role, offset, size, digest in self.regions:
+            with self.subTest(role=role):
+                self.assertEqual(hashlib.sha256(self.payload[offset:offset + size]).hexdigest(), digest)
+        self.assertEqual(self.report["basis"], {"model": "fixed-dram-metadata-publication-v1", "conditional": True,
+            "region_count": 59, "validated_bytes": 78001, "complete_relocation_records": 2516})
+        self.assertEqual(self.report["validated_regions"], [{"role": role, "blob_file_offset": offset,
+            "size": size, "sha256": digest} for role, offset, size, digest in self.regions])
+        expected = []
+        for name, index, sec, start, end, offset, digest in self.BODIES:
+            self.assertEqual(self.file_offset(sec, start), offset)
+            self.assertLessEqual(end, self.sections[sec][3] + self.sections[sec][5])
+            symbol = self.symbols[index]
+            self.assertEqual((self.symbol_name(index), symbol[1], symbol[2], symbol[3] & 15, symbol[5]),
+                             (name, start, end - start, 2, sec))
+            expected.append({"name": name, "section_index": sec, "symbol_index": index,
+                "elf_virtual_address": start, "size": end - start, "blob_file_offset": offset, "sha256": digest})
+        self.assertEqual(self.report["arc_bodies"], expected)
+
+    def test_complete_original_rela_tables_nine_numeric_edges_and_direct_call_delay_bits(self):
+        self.assertEqual(MAP._PPB_FIXED_METADATA_CALLS, tuple(item[:-1] for item in self.CALLS))
+        for index, owner, _, offset, size, count, digest in self.TABLES:
+            table = self.sections[index]
+            self.assertEqual((table[1], table[6], table[7], table[9]), (4, 35, owner, 12))
+            self.assertEqual((self.elf_base + table[4], table[5], table[5] // 12), (offset, size, count))
+            self.assertEqual(hashlib.sha256(self.payload[offset:offset + size]).hexdigest(), digest)
+        self.assertEqual(sum(item[5] for item in self.TABLES), 2516)
+        expected = []
+        for record, owner, site, index, name, target_sec, target, delay, word in self.CALLS:
+            table = self.sections[37 if owner == 2 else 39]
+            self.assertTrue(self.elf_base + table[4] <= record < self.elf_base + table[4] + table[5])
+            self.assertEqual((record - self.elf_base - table[4]) % 12, 0)
+            self.assertEqual(struct.unpack_from("<IIi", self.payload, record), (site, index * 256 + 6, 0))
+            self.assertEqual((self.symbol_name(index), self.symbols[index][1], self.symbols[index][5]),
+                             (name, target, target_sec))
+            self.assertEqual(self.word(owner, site), word)
+            displacement = (word >> 7) & 0xfffff
+            displacement -= 1 << 20 if displacement & 0x80000 else 0
+            self.assertEqual((word & 0xf800007f, site + 4 + 4 * displacement),
+                             (0x28000020 if delay else 0x28000000, target))
+            expected.append({"owner": "Core_Run" if owner == 2 else "Core_AttemptDisplay",
+                "elf_virtual_address": site, "blob_file_offset": self.file_offset(owner, site),
+                "relocation_record_blob_file_offset": record, "type": 6, "symbol_index": index, "symbol": name,
+                "symbol_elf_value": target, "addend": 0, "original_target_elf_value": target,
+                "original_target_is_u32": True, "target_section_index": target_sec,
+                "original_target_blob_file_offset": self.file_offset(target_sec, target),
+                "runtime_application_validated": False, "source_section_index": owner,
+                "instruction": word, "normal_delay_slot": delay})
+        self.assertEqual(self.report["relocations"], expected)
+
+    def test_all27_original_words_layout_equations_and_publication_after_sync_before_display_bit(self):
+        expected = []
+        for sec, address, word in self.WORDS:
+            self.assertEqual(self.word(sec, address), word)
+            expected.append({"section_index": sec, "elf_virtual_address": address,
+                "blob_file_offset": self.file_offset(sec, address), "instruction_or_literal": word})
+        self.assertEqual((len(expected), self.report["critical_words"]), (27, expected))
+        layout = self.report["layout"]
+        self.assertEqual(layout, {"normalized_D_equation": "P + ((-P) & 3)", "saved_core_bytes": 0x5bc,
+            "driver_context_bytes": 472, "frame_records_offset": 0x794, "frame_record_bytes": 284,
+            "frame_record_count": 63, "frame_records_end_exclusive": 0x4d78, "delivery_ring_offset": 0x15678,
+            "return_ring_offset": 0x15778, "ring_bytes": 256, "metadata_pool_offset": 0x15878,
+            "metadata_record_bytes": 228, "metadata_record_count": 34, "metadata_pool_end_exclusive": 0x176c0,
+            "minimum_remaining_bytes": 0x177cc, "constructor_clears_each_metadata_word_offset": 0x44,
+            "constructor_clears_whole_pool": False})
+        self.assertEqual((0x5bc + (236 << 1), 0x794 + 63 * 284, 0x15878 + 34 * 228),
+                         (0x794, 0x4d78, 0x176c0))
+        self.assertEqual(self.report["publication"], {"whole_metadata_DMA_write_site": 0xb8fc,
+            "whole_metadata_DMA_sync_site": 0xb904, "frame_ancillary_clear_DMA_site": 0xb938,
+            "frame_ancillary_clear_sync_site": 0xb940, "delivery_queue_put_site": 0xb980,
+            "delivery_notify_site": 0xb988, "display_descriptor_bit_set_site": 0xb9a4,
+            "display_descriptor_bit": 0x1000, "display_bit_set_after_notify": True, "queued_return_is_consumption": False})
+        self.assertLess(0xb904, 0xb940)
+        self.assertLess(0xb940, 0xb980)
+        self.assertLess(0xb988, 0xb9a4)
+
+    def test_ring_headers_read_targets_budget_and_explicit_non_generation_lease_limits(self):
+        handoff = self.report["arm_handoff"]
+        self.assertEqual(handoff, MAP._arm_ppb_metadata_handoff(self.payload))
+        self.assertEqual((handoff["ring"]["index_range"], handoff["record"]["physical_metadata_word_offset"]),
+                         ([2, 63], 4))
+        # Put loads the two indices, writes the data slot, then publishes W;
+        # Get reads W/R separately. First8B are indices, not pointer entries.
+        for sec, address, word in ((4, 0xb588, 0x605ffe08), (4, 0xb594, 0x08268000),
+                (4, 0xb59c, 0x09a68004), (4, 0xb5e8, 0x10001e00), (4, 0xb5ec, 0x10081c04),
+                (2, 0x4d6c, 0x08018004), (2, 0x4d70, 0x08418000)):
+            self.assertEqual(self.word(sec, address), word)
+        self.assertEqual(self.report["observation"], {"flag": "--observe-ppb-metadata", "stages": 4,
+            "passes_per_stage": 2, "fixed_calls_per_pass": 36, "fixed_bytes_per_pass": 2464,
+            "graph_calls_per_pass": 62, "graph_bytes_per_pass": 312, "trial_calls": 784,
+            "trial_bytes": 22208, "max_read_bytes": 72, "pool_and_plane_pointer_following": False,
+            "target_writes": False, "non_atomic": True})
+        self.assertEqual(((36 + 62) * 2 * 4, (2464 + 312) * 2 * 4), (784, 22208))
+        self.assertEqual(self.report["validation_scope"], {"original_section_qualified_bodies": True,
+            "observer_guards_only": True, "device_observed": False, "runtime_relocation_validated": False,
+            "current_live_state": False, "allocator_integrity": False, "active_frame_extent": False,
+            "source_lease": False, "generation": False, "all_consumer_completion": False,
+            "backend_stop_completion": False, "standalone_processing": False})
+        limits = " ".join(self.report["limitations"])
+        for phrase in ("opaque callees", "not the saved core", "partially updated", "not generation tokens",
+                       "not the active ARC descriptor", "not ARC completion", "do not establish consumption"):
+            self.assertIn(phrase, limits)
+        # Display bit alone is not the native deallocation blocker mask.
+        self.assertEqual(self.word(4, 0x90c0), 0x6000)
+        self.assertEqual(0x1000 & 0x6000, 0)
+        self.assertNotIn("/home/", json.dumps(self.report))
+        self.assertNotIn("/tmp/", json.dumps(self.report))
+
+    def test_all_region_first_middle_last_tamper_refuses_before_dependent_interpretation(self):
+        with mock.patch.object(MAP, "_ppb_saved_context_bridge", side_effect=AssertionError("early interpretation")), \
+                mock.patch.object(MAP, "_arm_ppb_metadata_handoff", side_effect=AssertionError("early handoff")):
+            for role, offset, size, _ in self.regions:
+                for delta in sorted(set((0, size // 2, size - 1))):
+                    changed = bytearray(self.payload)
+                    changed[offset + delta] ^= 1
+                    with self.subTest(role=role, delta=delta), self.assertRaises(MAP.FormatError):
+                        MAP._ppb_fixed_metadata_bridge(changed)
+
+    def test_repinned_all_critical_words_direct_calls_and_numeric_rela_fields_refuse(self):
+        for sec, address, word in self.WORDS:
+            changed = bytearray(self.payload)
+            struct.pack_into("<I", changed, self.file_offset(sec, address), word ^ 1)
+            with self.subTest(critical=hex(address)), self.repinned(changed), self.assertRaises(MAP.FormatError):
+                MAP._ppb_fixed_metadata_bridge(changed)
+        for record, owner, site, index, _, _, _, _, word in self.CALLS:
+            for mask in (0x80, 0x20, 0x08000000):
+                changed = bytearray(self.payload)
+                struct.pack_into("<I", changed, self.file_offset(owner, site), word ^ mask)
+                with self.subTest(call=hex(site), mask=mask), self.repinned(changed), self.assertRaises(MAP.FormatError):
+                    MAP._ppb_fixed_metadata_bridge(changed)
+            for field, value in ((0, site + 4), (4, index << 8 | 7), (4, (index + 1) << 8 | 6), (8, 1)):
+                changed = bytearray(self.payload)
+                struct.pack_into("<I", changed, record + field, value)
+                with self.subTest(record=hex(record), field=field), self.repinned(changed), self.assertRaises(MAP.FormatError):
+                    MAP._ppb_fixed_metadata_bridge(changed)
+
+    def test_repinned_original_symbol_section_owner_and_name_only_duplicates_refuse(self):
+        symbols = self.elf_base + self.sections[35][4]
+        for field, fmt, value in ((4, "<I", 0x4dc8), (8, "<I", 1036), (12, "<B", 0x10), (14, "<H", 4)):
+            changed = bytearray(self.payload)
+            struct.pack_into(fmt, changed, symbols + 638 * 16 + field, value)
+            with self.subTest(symbol_field=field), self.repinned(changed), self.assertRaises(MAP.FormatError):
+                MAP._ppb_fixed_metadata_bridge(changed)
+        changed = bytearray(self.payload)
+        changed[symbols:symbols + 16] = changed[symbols + 638 * 16:symbols + 639 * 16]
+        with self.repinned(changed), self.assertRaisesRegex(MAP.FormatError, "qualified body"):
+            MAP._ppb_fixed_metadata_bridge(changed)
+        for index, _, _, _, _, _, _ in self.TABLES:
+            for field, value in ((1, 9), (6, 34), (7, 5), (9, 8)):
+                changed = bytearray(self.payload)
+                struct.pack_into("<I", changed, 0x79540 + index * 40 + field * 4, value)
+                with self.subTest(section=index, field=field), self.repinned(changed), self.assertRaises(MAP.FormatError):
+                    MAP._ppb_fixed_metadata_bridge(changed)
+
+    def test_budgets_exact_stock_only_admission_and_cli_override_cannot_repin(self):
+        self.assertEqual((MAP.MAX_PPB_FIXED_METADATA_REGIONS, MAP.MAX_PPB_FIXED_METADATA_BYTES,
+                          MAP.MAX_PPB_FIXED_METADATA_CALLS), (64, 98304, 9))
+        for field, value in (("MAX_PPB_FIXED_METADATA_REGIONS", 58), ("MAX_PPB_FIXED_METADATA_BYTES", 78000),
+                             ("MAX_PPB_FIXED_METADATA_CALLS", 8), ("MAX_PPB_BANK_RELOCATIONS", 2515)):
+            with self.subTest(field=field), mock.patch.object(MAP, field, value), self.assertRaises(MAP.FormatError):
+                MAP._ppb_fixed_metadata_bridge(self.payload)
+        for offset in (0, 0xd624, 0x364b4, 0x6e520, len(self.data) - 1):
+            changed = bytearray(self.data)
+            changed[offset] ^= 1
+            with self.subTest(offset=hex(offset)), \
+                    mock.patch.object(MAP, "_ppb_fixed_metadata_bridge", side_effect=AssertionError("early sidecar")), \
+                    self.assertRaisesRegex(MAP.FormatError, "exact bundled"):
+                MAP.analyze(changed, expected_sha256=hashlib.sha256(changed).hexdigest(), ppb_fixed_metadata=True)
+        with self.assertRaises(MAP.FormatError):
+            analyze_fixture(fixture(), ppb_fixed_metadata=True)
+        with mock.patch.object(MAP, "read_firmware", return_value=fixture()), \
+                mock.patch.object(sys, "stdout", new_callable=io.StringIO) as stdout, \
+                mock.patch.object(sys, "stderr", new_callable=io.StringIO) as stderr:
+            self.assertEqual(MAP.main([str(BLOB), "--ppb-fixed-metadata", "--expect-sha256",
+                                       hashlib.sha256(fixture()).hexdigest()]), 1)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("exact bundled", stderr.getvalue())
+
+    def test_old_options_cli_goldens_and_new_opt_in_are_additive_and_reproducible(self):
+        options = ("references", "all_symbols", "bootstrap", "picture_output", "arc_metadata", "csc_command",
+                   "command_buffer_bridge", "inner_descriptor", "scaler_fir", "ppb_handoff", "ppb_source",
+                   "ppb_saved_context", "ppb_stop_context")
+        for flags in [{}] + [{name: True} for name in options] + [dict.fromkeys(options, True)]:
+            with self.subTest(flags=flags):
+                with mock.patch.object(MAP, "_ppb_fixed_metadata_bridge", side_effect=AssertionError("not opted in")):
+                    plain = MAP.analyze(self.data, **flags)
+                self.assertNotIn("ppb_fixed_metadata_bridge", plain)
+                enriched = MAP.analyze(self.data, ppb_fixed_metadata=True, **flags)
+                self.assertEqual(enriched.pop("ppb_fixed_metadata_bridge"), self.report)
+                self.assertEqual(enriched, plain)
+        for arguments, digest in (([], "15068c07a81a510e02435b6203b1cf5e424152e37ff456b1da9c12b77c15799e"),
+                (["--references", "--symbol", "ReadLine"], "2a491f4b9033395cdbc688810319ea159973a296d7828ac65153bc93d45b588f"),
+                (["--all-symbols"], "15af1023987b5f2aee1e9a5560f749560bf33f729252ca3fcb9f41358f49e5aa"),
+                (["--ppb-saved-context"], "b45c10f1f34e9742dc871ca27902d36bfb14c3747a3eb81c996378c44b51bc94"),
+                (["--ppb-stop-context"], "0adcec782d675327197413c3b5c2f890234e80d4a62036fa63c22fb19312f371")):
+            result = subprocess.run([sys.executable, "-B", str(TOOL), str(BLOB)] + arguments,
+                                    capture_output=True, timeout=20)
+            with self.subTest(arguments=arguments):
+                self.assertEqual((result.returncode, result.stderr), (0, b""))
+                self.assertEqual(hashlib.sha256(result.stdout).hexdigest(), digest)
+        command = [sys.executable, "-B", str(TOOL), str(BLOB), "--ppb-fixed-metadata"]
+        first = subprocess.run(command, capture_output=True, timeout=20)
+        second = subprocess.run(command, capture_output=True, timeout=20)
+        self.assertEqual((first.returncode, second.returncode, first.stderr, second.stderr), (0, 0, b"", b""))
+        self.assertEqual(first.stdout, second.stdout)
+        self.assertEqual(hashlib.sha256(first.stdout).hexdigest(),
+                         "4af33115bcee9b1a8fa93c7fdd2fdd7a1e3afc231a35b2075dd9dda58251dc09")
+        enriched = json.loads(first.stdout)
+        self.assertEqual(enriched.pop("ppb_fixed_metadata_bridge"), self.report)
+        self.assertEqual(enriched, MAP.analyze(self.data))
+
+
 if __name__ == "__main__":
     unittest.main()

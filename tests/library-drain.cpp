@@ -1099,24 +1099,42 @@ struct ArmMetadataFixture {
     }
 };
 
-// Default-only rooted saved ARC context scalars. Every object is bounded by
+// Default-only rooted ARC-context diagnostics. Every object is bounded by
 // its stock declaration before reading; pool/bank words never select a target.
-// A coherent-looking saved copy is not current state, ownership or an ABA guard.
+// Saved scalars and separate fixed metadata prefixes do not certify a lease.
 struct PpbContextGraph { uint32_t words[39] = {}; };
 enum class PpbContextFailure { None, Argument, Owner, Order, Budget, Read, Object, Profile, Map, Slice, Changed };
 struct PpbContextObserver {
     typedef BC_STATUS (*Reader)(HANDLE, uint32_t *, uint32_t, uint32_t);
-    bool enabled = false, post_stop = false, failed = false, admitted = false;
+    bool enabled = false, post_stop = false, metadata_pool = false, failed = false, admitted = false;
+    bool owner_post_stop = false, owner_metadata_pool = false;
     HANDLE owner = nullptr;
     unsigned next_stage = 0, reads = 0, bytes = 0, measured = 0;
     BC_STATUS status = BC_STS_SUCCESS;
     PpbContextFailure failure = PpbContextFailure::None;
     PpbContextGraph authority, graph[2];
     uint32_t raw[2][60] = {};
+    uint32_t pool_raw[2][616] = {};
     bool complete[2] = {};
     unsigned Stages() const { return post_stop ? 4U : 3U; }
-    unsigned ReadLimit() const { return Stages() * 140U; }
-    unsigned ByteLimit() const { return Stages() * 1104U; }
+    unsigned StageReads() const { return metadata_pool ? 196U : 140U; }
+    unsigned StageBytes() const { return metadata_pool ? 5552U : 1104U; }
+    unsigned ReadLimit() const { return Stages() * StageReads(); }
+    unsigned ByteLimit() const { return Stages() * StageBytes(); }
+    static bool PoolSpan(unsigned span, uint32_t *offset, unsigned *count) {
+        if (span >= 36 || !offset || !count) return false;
+        *offset = span < 2 ? 0x15678U + span * 0x100U : 0x15878U + (span - 2) * 0xe4U;
+        *count = span < 2 ? 2U : 18U;
+        return true;
+    }
+    static bool PoolWindow(const PpbContextGraph &g) {
+        const uint64_t p = g.words[14], skip = (0U - g.words[14]) & 3U, d = p + skip;
+        const uint64_t submitted_end = p + g.words[15], video_end = static_cast<uint64_t>(g.words[22]) + g.words[23];
+        // Guard both complete 256-byte rings and the entire 34*228-byte pool,
+        // not merely the 72-byte prefixes selected for this observation.
+        return g.words[15] >= skip + 0x177ccU && d >= g.words[22] &&
+            d + 0x176c0U <= submitted_end && submitted_end <= video_end && video_end <= 0x3ffc000U;
+    }
     static bool Object(uint32_t pointer, unsigned kind) {
         const uint32_t sizes[] = {0xa84c, 0x378, 0x1f4, 0x64};
         return kind < 4 && !(pointer & 3U) && pointer >= 0xd53dcU &&
@@ -1213,6 +1231,31 @@ struct PpbContextObserver {
             "delivery-EOS-before-STOP", "host-STOP-returned-before-CLOSE"};
         const char *const failures[] = {"none", "argument", "current-handle-loss", "order", "budget", "read-status",
             "object-envelope/alias", "default-profile", "map-tuple", "context-slice", "authority-changed"};
+        if (metadata_pool) {
+            std::printf("PPB fixed metadata: stage=%s reads=%u/%u bytes=%u/%u measured=%u/196 failure=%s api-status=%d "
+                "non-atomic current-state/allocator/extent/lease/generation/ARC-completion-certified=no\n",
+                stages[stage], reads, ReadLimit(), bytes, ByteLimit(), measured, failures[static_cast<unsigned>(failure)], status);
+            for (unsigned pass = 0; pass < 2; ++pass) {
+                if (!complete[pass]) { std::printf("PPB fixed metadata raw: stage=%s pass=%u INCOMPLETE\n", stages[stage], pass); continue; }
+                const uint32_t *g = graph[pass].words, *r = pool_raw[pass];
+                const uint32_t d = g[14] + ((0U - g[14]) & 3U);
+                std::printf("PPB fixed metadata raw: stage=%s pass=%u C=%08x H=%08x Q=%08x M=%08x P=%08x N=%08x "
+                    "D=%08x video-base=%08x video-bytes=%08x delivery-read=%08x delivery-write=%08x "
+                    "return-read=%08x return-write=%08x\n", stages[stage], pass, g[0], g[1], g[20], g[25],
+                    g[14], g[15], d, g[22], g[23], r[0], r[1], r[2], r[3]);
+                for (unsigned slot = 0; slot < 34; ++slot) {
+                    std::printf("PPB fixed metadata slot: stage=%s pass=%u slot=%u fixed-address=%08x words=",
+                        stages[stage], pass, slot, d + 0x15878U + slot * 0xe4U);
+                    for (unsigned word = 0; word < 18; ++word)
+                        std::printf("%s%08x", word ? "," : "", r[4 + slot * 18 + word]);
+                    std::printf("\n");
+                }
+            }
+            if (complete[0] && complete[1]) std::printf("PPB fixed metadata comparison: stage=%s fields=%s,non-atomic "
+                "queued-return-is-consumption=unproven slot-address-is-generation=no\n", stages[stage],
+                std::memcmp(pool_raw[0], pool_raw[1], sizeof(pool_raw[0])) ? "observed-different" : "observed-stable");
+            std::fflush(stdout); return;
+        }
         std::printf("PPB saved context: stage=%s reads=%u/%u bytes=%u/%u measured=%u/140 failure=%s api-status=%d "
             "saved-copy-is-current=unproven atomic/allocator-integrity/lease/generation/cache-ready/all-consumers-certified=no\n",
             stages[stage], reads, ReadLimit(), bytes, ByteLimit(), measured, failures[static_cast<unsigned>(failure)], status);
@@ -1242,11 +1285,14 @@ struct PpbContextObserver {
         if (!enabled) return true;
         if (failed) return false;
         if (!current || !*current || !reader) return Reject(PpbContextFailure::Argument);
+        if ((metadata_pool && !post_stop) || (next_stage &&
+            (post_stop != owner_post_stop || metadata_pool != owner_metadata_pool))) return Reject(PpbContextFailure::Argument);
         if (stage >= Stages() || stage != next_stage || barrier != (stage != 0)) return Reject(PpbContextFailure::Order);
-        if (reads > ReadLimit() - 140U || bytes > ByteLimit() - 1104U) return Reject(PpbContextFailure::Budget);
-        if (!stage) owner = *current;
+        if (reads > ReadLimit() - StageReads() || bytes > ByteLimit() - StageBytes()) return Reject(PpbContextFailure::Budget);
+        if (!stage) { owner = *current; owner_post_stop = post_stop; owner_metadata_pool = metadata_pool; }
         if (!owner || *current != owner) return Reject(PpbContextFailure::Owner);
         ++next_stage; measured = 0; std::memset(raw, 0, sizeof(raw)); complete[0] = complete[1] = false;
+        std::memset(pool_raw, 0, sizeof(pool_raw));
         const uint32_t offsets[] = {0, 0x80, 0x21c, 0x33c, 0x354, 0x3fc, 0x48c, 0x530};
         const unsigned counts[] = {1, 1, 1, 1, 17, 36, 2, 1};
         bool ok = true;
@@ -1257,9 +1303,13 @@ struct PpbContextObserver {
             if (!admitted) { authority = graph[pass]; admitted = true; }
             const uint32_t d = authority.words[14] + ((0U - authority.words[14]) & 3U);
             unsigned word = 0;
-            for (unsigned span = 0; span < 8 && ok; ++span) {
-                ok = Read(current, reader, d + offsets[span], counts[span], raw[pass] + word);
-                word += counts[span];
+            if (metadata_pool && !PoolWindow(authority)) { ok = Reject(PpbContextFailure::Slice); break; }
+            for (unsigned span = 0; span < (metadata_pool ? 36U : 8U) && ok; ++span) {
+                uint32_t offset = offsets[metadata_pool ? 0 : span];
+                unsigned count = counts[metadata_pool ? 0 : span];
+                if (metadata_pool && !PoolSpan(span, &offset, &count)) { ok = Reject(PpbContextFailure::Argument); break; }
+                ok = Read(current, reader, d + offset, count, (metadata_pool ? pool_raw[pass] : raw[pass]) + word);
+                word += count;
             }
             PpbContextGraph after;
             if (ok) ok = Graph(current, stage, reader, &after, &authority);
@@ -1270,9 +1320,11 @@ struct PpbContextObserver {
     }
     bool Finish(bool native_ok, bool report = true) const {
         if (!enabled) return native_ok;
-        const bool ok = !failed && admitted && next_stage == Stages() && reads == ReadLimit() && bytes == ByteLimit();
-        if (report) std::printf("PPB saved context finish: native-result=%s observation-result=%s stages=%u/%u reads=%u/%u bytes=%u/%u\n",
-            native_ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL", next_stage, Stages(), reads, ReadLimit(), bytes, ByteLimit());
+        const bool ok = !failed && admitted && owner_post_stop == post_stop && owner_metadata_pool == metadata_pool &&
+            next_stage == Stages() && reads == ReadLimit() && bytes == ByteLimit();
+        if (report) std::printf("PPB %s finish: native-result=%s observation-result=%s stages=%u/%u reads=%u/%u bytes=%u/%u\n",
+            metadata_pool ? "fixed metadata" : "saved context", native_ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
+            next_stage, Stages(), reads, ReadLimit(), bytes, ByteLimit());
         return native_ok && ok;
     }
 };
@@ -1281,18 +1333,29 @@ struct PpbContextFixture {
     unsigned calls = 0, fail_at = 420, lose_at = 420, change_at = 420;
     uint32_t changed_address = 0, changed_value = 0;
     uint32_t physical = 0x1000000;
-    bool valid = true, different = false, all_ones = false, post_stop = false;
+    bool valid = true, different = false, all_ones = false, post_stop = false, metadata_pool = false;
     uint32_t Address(unsigned at) const {
         const uint32_t graph[] = {0xd3a08,
             0xd3a20,0xd3ac4,0xd3ad0,0xd3bec,0xd3c90,0xd3c9c,0xd3db8,0xd3e5c,0xd3e68,0xd3f84,0xd4028,0xd4034,
             0xd6000,0xd6008,0xd6064,0xd60cc,0xd6224,0xd5408,0xd55a0,0xd55d4,
             0xd5800,0xd5808,0xd5810,0xd5a18,0xd5a28,0xd5a30,0xd5a40,0x11601c,0x11602c,0x116034};
         const uint32_t core[] = {0,0x80,0x21c,0x33c,0x354,0x3fc,0x48c,0x530};
+        if (metadata_pool) {
+            if (at < 31) return graph[at];
+            if (at >= 67) return graph[at - 67];
+            const uint32_t offset = at < 33 ? 0x15678U + (at - 31) * 256U : 0x15878U + (at - 33) * 228U;
+            return physical + ((0U - physical) & 3U) + offset;
+        }
         return at < 31 ? graph[at] : at < 39 ? physical + ((0U - physical) & 3U) + core[at - 31] : graph[at - 39];
     }
-    static unsigned Count(unsigned at) {
+    static unsigned Count(unsigned at, bool metadata = false) {
         const unsigned graph[] = {1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1,1,3,1,1,2,2,1,2,1,2,1,2};
         const unsigned core[] = {1,1,1,1,17,36,2,1};
+        if (metadata) {
+            if (at < 31) return graph[at];
+            if (at >= 67) return graph[at - 67];
+            return at < 33 ? 2 : 18;
+        }
         return at < 31 ? graph[at] : at < 39 ? core[at - 31] : graph[at - 39];
     }
     uint32_t Word(uint32_t address, unsigned position) const {
@@ -1302,7 +1365,8 @@ struct PpbContextFixture {
             const uint32_t base = 0xd3a00 + slot * 0x1cc;
             if (address == base + 0x20) return slot ? 0 : 0xd6000;
             if (address == base + 0xc4) return slot ? 0 : 0x101;
-            if (address == base + 0xd0) return slot ? 0 : 0x200 | (position >= 140 && position < 420 ? 0x10000 : 0);
+            if (address == base + 0xd0) return slot ? 0 : 0x200 |
+                ((position / (metadata_pool ? 196U : 140U) == 1 || position / (metadata_pool ? 196U : 140U) == 2) ? 0x10000 : 0);
         }
         const uint32_t locations[] = {0xd6000,0xd6008,0xd600c,0xd6064,0xd60cc,0xd6224,
             0xd5408,0xd55a0,0xd55d4,0xd55d8,0xd55dc,0xd5800,0xd5808,0xd5810,0xd5814,
@@ -1312,13 +1376,15 @@ struct PpbContextFixture {
             0x200000,0x1200000,0x200000,0x200000,0x1000000,1,0x116068,0x3ffc000,0x116004,0x116004,0x3ee5ffc};
         for (unsigned word = 0; word < sizeof(locations) / sizeof(locations[0]); ++word)
             if (address == locations[word]) return values[word];
-        return all_ones ? 0xffffffffU : 0x5a000000U | ((position / 140) << 16) | (address & 65535U) |
-            (different && position % 140 >= 70 ? 0x80000000U : 0);
+        const unsigned stage_reads = metadata_pool ? 196U : 140U;
+        return all_ones ? 0xffffffffU : 0x5a000000U | ((position / stage_reads) << 16) | (address & 65535U) |
+            (different && position % stage_reads >= stage_reads / 2 ? 0x80000000U : 0);
     }
     static BC_STATUS Read(HANDLE handle, uint32_t *values, uint32_t bytes, uint32_t address) {
         auto *f = static_cast<PpbContextFixture *>(handle);
-        const unsigned position = f->calls++, at = position % 70;
-        f->valid &= position < (f->post_stop ? 560U : 420U) && values && address == f->Address(at) && bytes == Count(at) * 4U &&
+        const unsigned position = f->calls++, at = position % (f->metadata_pool ? 98U : 70U);
+        f->valid &= position < (f->metadata_pool ? 784U : f->post_stop ? 560U : 420U) && values &&
+            address == f->Address(at) && bytes == Count(at, f->metadata_pool) * 4U &&
             reinterpret_cast<uintptr_t>(values) % alignof(uint32_t) == 0;
         if (!f->valid) return BC_STS_ERROR;
         for (unsigned word = 0; word < bytes / 4; ++word) values[word] = f->Word(address + word * 4, position);
@@ -1934,6 +2000,7 @@ struct Options {
     bool observe_arm_source_shape = false;
     bool observe_ppb_context = false;
     bool observe_ppb_stop = false;
+    bool observe_ppb_metadata = false;
     unsigned inject_mfd_colour = 0;
     unsigned scl_status_test = 0;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
@@ -1964,8 +2031,10 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
     if (arguments.size() >= 2 && (!std::strcmp(arguments.back(), "--observe-arm-metadata") ||
                                  !std::strcmp(arguments.back(), "--observe-arm-source-shape") ||
                                  !std::strcmp(arguments.back(), "--observe-ppb-context") ||
-                                 !std::strcmp(arguments.back(), "--observe-ppb-stop"))) {
-        options->observe_ppb_stop = !std::strcmp(arguments.back(), "--observe-ppb-stop");
+                                 !std::strcmp(arguments.back(), "--observe-ppb-stop") ||
+                                 !std::strcmp(arguments.back(), "--observe-ppb-metadata"))) {
+        options->observe_ppb_metadata = !std::strcmp(arguments.back(), "--observe-ppb-metadata");
+        options->observe_ppb_stop = options->observe_ppb_metadata || !std::strcmp(arguments.back(), "--observe-ppb-stop");
         options->observe_ppb_context = options->observe_ppb_stop || !std::strcmp(arguments.back(), "--observe-ppb-context");
         options->observe_arm_source_shape = !std::strcmp(arguments.back(), "--observe-arm-source-shape");
         options->observe_arm_metadata = !options->observe_arm_source_shape && !options->observe_ppb_context;
@@ -3307,6 +3376,161 @@ template<class Check> static void PpbStopContextSelfTest(const Check &check)
         "PPB stopped-stage report pins the560read4416byte profile while retaining saved-copy and lifetime limitations");
 }
 
+template<class Check> static void PpbFixedMetadataSelfTest(const Check &check)
+{
+    PpbContextObserver disabled; disabled.metadata_pool = disabled.post_stop = true;
+    check(disabled.Observe(nullptr, 9, true, nullptr, false) && disabled.Finish(true, false) && !disabled.reads,
+        "PPB fixed metadata configuration alone has no I/O");
+    unsigned calls = 0, total = 0;
+    for (unsigned span = 0; span < 36; ++span) {
+        uint32_t offset = 0; unsigned count = 0;
+        check(PpbContextObserver::PoolSpan(span, &offset, &count) &&
+            offset == (span < 2 ? 0x15678U + span * 256U : 0x15878U + (span - 2) * 228U) &&
+            count == (span < 2 ? 2U : 18U) && !(offset & 3U) && offset + count * 4U <= 0x176c0U,
+            "PPB fixed spans are two index headers and34 scalar prefixes, never pool-selected targets");
+        ++calls; total += count * 4;
+    }
+    uint32_t offset = 0; unsigned count = 0;
+    check(calls == 36 && total == 2464 && !PpbContextObserver::PoolSpan(36, &offset, &count) &&
+        !PpbContextObserver::PoolSpan(0, nullptr, &count) && !PpbContextObserver::PoolSpan(0, &offset, nullptr),
+        "PPB span count and byte cap exclude whole records, source planes and malformed destinations");
+    for (unsigned variant = 0; variant < 3; ++variant) {
+        PpbContextFixture fixture; fixture.post_stop = fixture.metadata_pool = true;
+        fixture.fail_at = fixture.lose_at = fixture.change_at = 784;
+        fixture.different = variant == 1; fixture.all_ones = variant == 2;
+        PpbContextObserver subject; subject.enabled = subject.post_stop = subject.metadata_pool = true;
+        check(subject.Stages() == 4 && subject.ReadLimit() == 784 && subject.ByteLimit() == 22208,
+            "PPB fixed metadata profile has exactly784reads22208bytes");
+        for (unsigned stage = 0; stage < 4; ++stage) {
+            check(subject.Observe(&fixture.current, stage, stage != 0, PpbContextFixture::Read, false) && fixture.valid &&
+                fixture.calls == (stage + 1) * 196 && subject.bytes == (stage + 1) * 5552 && subject.measured == 196 &&
+                subject.complete[0] && subject.complete[1] && PpbContextObserver::PoolWindow(subject.authority),
+                "PPB fixed metadata uses graph before/after every pass and a whole pool envelope");
+            check((!std::memcmp(subject.pool_raw[0], subject.pool_raw[1], sizeof(subject.pool_raw[0]))) == !fixture.different &&
+                subject.Finish(true, false) == (stage == 3),
+                "PPB uninitialized/all-ones/different pool values remain informative, not a lifetime gate");
+        }
+        check(!subject.Finish(false, false), "PPB complete metadata sampling cannot override failed native cleanup");
+    }
+    for (uint32_t physical : {0x1000000U,0x1000001U,0x1000002U,0x1000003U,0x200000U,0x11c06c0U}) {
+        PpbContextFixture fixture; fixture.physical = physical; fixture.post_stop = fixture.metadata_pool = true;
+        fixture.fail_at = fixture.lose_at = fixture.change_at = 784;
+        PpbContextObserver subject; subject.enabled = subject.post_stop = subject.metadata_pool = true; bool result = true;
+        for (unsigned stage = 0; stage < 4 && result; ++stage)
+            result = subject.Observe(&fixture.current, stage, stage != 0, PpbContextFixture::Read, false);
+        check(result && fixture.valid && subject.Finish(true, false),
+            "PPB every normalization residue and exact video slice boundaries keep fixed metadata addresses");
+    }
+    PpbContextGraph envelope;
+    envelope.words[14] = envelope.words[22] = 0x200000;
+    envelope.words[15] = envelope.words[23] = 0x177cc;
+    check(PpbContextObserver::PoolWindow(envelope), "PPB full metadata envelope fits exact minimum remaining slice");
+    for (unsigned fault = 0; fault < 5; ++fault) {
+        PpbContextGraph bad = envelope;
+        if (fault == 0) --bad.words[15];
+        if (fault == 1) --bad.words[23];
+        if (fault == 2) ++bad.words[22];
+        if (fault == 3) bad.words[14] = 0xfffffff0U;
+        if (fault == 4) bad.words[23] = 0xffffffffU;
+        check(!PpbContextObserver::PoolWindow(bad), "PPB complete pool range rejects crossed/wrapped or short declared windows");
+    }
+    for (unsigned position = 0; position < 784; ++position) for (unsigned fault = 0; fault < 3; ++fault) {
+        PpbContextFixture fixture, other; fixture.post_stop = fixture.metadata_pool = true;
+        fixture.change_at = 784; fixture.fail_at = fault ? 784 : position; fixture.lose_at = fault ? position : 784;
+        fixture.replacement = fault == 2 ? other.current : nullptr;
+        PpbContextObserver subject; subject.enabled = subject.post_stop = subject.metadata_pool = true; bool result = true;
+        for (unsigned stage = 0; stage < 4 && result; ++stage)
+            result = subject.Observe(&fixture.current, stage, stage != 0, PpbContextFixture::Read, false);
+        check(!result && fixture.valid && subject.failed && fixture.calls == position + 1 &&
+            subject.failure == (fault ? PpbContextFailure::Owner : PpbContextFailure::Read) &&
+            !subject.Observe(&fixture.current, 3, true, PpbContextFixture::Read, false) &&
+            !subject.Observe(&other.current, 0, false, PpbContextFixture::Read, false) &&
+            fixture.calls == position + 1 && !other.calls && !subject.Finish(true, false),
+            "PPB all784 read/owner-loss/replacement failures latch without retry or foreign-owner I/O");
+    }
+    const uint32_t links[] = {0xd3a08,0xd3a20,0xd6000,0xd6008,0xd600c,0xd6064,0xd60cc,0xd6224,
+        0xd5408,0xd55a0,0xd55d4,0xd55d8,0xd55dc,0xd5800,0xd5808,0xd5810,0xd5814,
+        0xd5a18,0xd5a1c,0xd5a28,0xd5a30,0xd5a34,0xd5a40,0x11601c,0x116020,0x11602c,0x116034,0x116038};
+    for (uint32_t address : links) for (unsigned position : {67U,98U,165U,196U,392U,588U,655U,686U,753U}) {
+        PpbContextFixture fixture; fixture.post_stop = fixture.metadata_pool = true;
+        fixture.fail_at = fixture.lose_at = 784; fixture.change_at = position; fixture.changed_address = address;
+        fixture.changed_value = 0xa40000;
+        PpbContextObserver subject; subject.enabled = subject.post_stop = subject.metadata_pool = true; bool result = true;
+        for (unsigned stage = 0; stage < 4 && result; ++stage)
+            result = subject.Observe(&fixture.current, stage, stage != 0, PpbContextFixture::Read, false);
+        check(!result && fixture.valid && subject.failed && subject.failure == PpbContextFailure::Changed &&
+            fixture.calls <= position + 31 && !subject.Finish(true, false),
+            "PPB every authority edge mutation across all passes/stages refuses without pool retargeting");
+    }
+    for (unsigned fault = 0; fault < 8; ++fault) {
+        PpbContextFixture fixture; fixture.post_stop = fixture.metadata_pool = true;
+        fixture.fail_at = fixture.lose_at = fixture.change_at = 784;
+        PpbContextObserver subject; subject.enabled = subject.post_stop = subject.metadata_pool = true;
+        check(subject.Observe(&fixture.current, 0, false, PpbContextFixture::Read, false), "PPB fixed metadata refusal setup");
+        if (fault == 0) subject.metadata_pool = false;
+        if (fault == 1) subject.post_stop = false;
+        if (fault == 2) subject.reads = 589;
+        if (fault == 3) subject.bytes = 16657;
+        const PpbContextFailure reasons[] = {PpbContextFailure::Argument,PpbContextFailure::Argument,
+            PpbContextFailure::Budget,PpbContextFailure::Budget,PpbContextFailure::Order,PpbContextFailure::Order,
+            PpbContextFailure::Order,PpbContextFailure::Argument};
+        check(!subject.Observe(&fixture.current, fault == 4 ? 0 : fault == 5 ? 4 : 1, fault != 6,
+            fault == 7 ? nullptr : PpbContextFixture::Read, false) && subject.failed && subject.failure == reasons[fault] && fixture.calls == 196,
+            "PPB frozen profile/order/barrier/budget/reader constraints fail before further I/O");
+    }
+    const std::vector<const char *> valid = {"probe","--hardware","fixture","180","30","1","--scaler-test","0",
+        "--observe-ppb-metadata","--capture-yuy2","new"};
+    Options admitted;
+    check(ParseArguments(valid, &admitted) && admitted.observe_ppb_metadata && admitted.observe_ppb_stop &&
+        admitted.observe_ppb_context && !admitted.observe_arm_metadata && NeedsRawIo(admitted),
+        "PPB fixed metadata requires a separate exact-input CAP-gated native profile");
+    for (const auto &extra : std::vector<std::vector<const char *>>{{"--observe-ppb-metadata"},{"--observe-ppb-stop"},
+            {"--observe-ppb-context"},{"--observe-arm-metadata"},{"--observe-arm-source-shape"},{"--observe-runtime-inventory"},
+            {"--observe-mfd-framing"},{"--observe-mfd-config"},{"--observe-mfd-address"},{"--observe-scl-config"},
+            {"--observe-scl-filter-map"},{"--observe-scl-view","2"},{"--observe-chroma"},{"--inject-mfd-colour","a"},
+            {"--scl-status-test","observe"},{"--open-only"},{"--mpeg1-via-mpeg2"},{"--h263-via-divx"}})
+        for (unsigned order = 0; order < 2; ++order) {
+            auto arguments = valid; arguments.insert(order ? arguments.end() - 2 : arguments.begin() + 8, extra.begin(), extra.end());
+            Options rejected; check(!ParseArguments(arguments, &rejected), "PPB fixed metadata refuses duplicate/mixed experiments in either order");
+        }
+    for (unsigned fault = 0; fault < 9; ++fault) {
+        auto arguments = valid;
+        if (fault == 0) arguments[1] = "--preflight";
+        if (fault == 1) arguments[3] = "179";
+        if (fault == 2) arguments[5] = "2";
+        if (fault == 3) arguments[7] = "128";
+        if (fault == 4) arguments[9] = "--capture-uyvy";
+        if (fault == 5) arguments[10] = "-";
+        if (fault == 6) arguments.resize(9);
+        if (fault == 7) arguments[8] = "--observe-ppb-metadata=0";
+        if (fault == 8) arguments.erase(arguments.begin() + 6, arguments.begin() + 8);
+        Options rejected; check(!ParseArguments(arguments, &rejected), "PPB fixed metadata preserves scaler/input/capture admission before device I/O");
+    }
+    FILE *record = std::tmpfile(); const int saved = dup(STDOUT_FILENO);
+    std::fflush(stdout);
+    const bool redirected = record && saved >= 0 && dup2(fileno(record), STDOUT_FILENO) >= 0;
+    if (redirected) {
+        PpbContextFixture fixture; fixture.post_stop = fixture.metadata_pool = fixture.all_ones = true;
+        fixture.fail_at = fixture.lose_at = fixture.change_at = 784;
+        PpbContextObserver subject; subject.enabled = subject.post_stop = subject.metadata_pool = true;
+        for (unsigned stage = 0; stage < 4; ++stage)
+            subject.Observe(&fixture.current, stage, stage != 0, PpbContextFixture::Read, stage == 3);
+        subject.Finish(true);
+    }
+    std::fflush(stdout);
+    const bool restored = saved >= 0 && dup2(saved, STDOUT_FILENO) >= 0;
+    if (saved >= 0) close(saved);
+    char text[32768] = {}; size_t length = 0;
+    if (record) { std::rewind(record); length = std::fread(text, 1, sizeof(text) - 1, record); std::fclose(record); }
+    check(redirected && restored && length && std::strstr(text, "reads=784/784 bytes=22208/22208 measured=196/196") &&
+        std::strstr(text, "slot=33 fixed-address=010175dc words=ffffffff") &&
+        std::strstr(text, "return-read=ffffffff return-write=ffffffff") &&
+        std::strstr(text, "fields=observed-stable,non-atomic") && std::strstr(text, "slot-address-is-generation=no") &&
+        std::strstr(text, "current-state/allocator/extent/lease/generation/ARC-completion-certified=no") &&
+        std::strstr(text, "stages=4/4 reads=784/784 bytes=22208/22208"),
+        "PPB report exposes fixed raw words/indexheaders without ownership/generation or ARC completion claims");
+}
+
 template<class Check> static void MfdFramingSelfTest(const Check &check)
 {
     const uint32_t addresses[] = {0x00540000, 0x00540078, 0x00540050, 0x00540070, 0x00540000};
@@ -3706,6 +3930,7 @@ static bool SelfTest()
     ArmSourceShapeSelfTest(check);
     PpbContextSelfTest(check);
     PpbStopContextSelfTest(check);
+    PpbFixedMetadataSelfTest(check);
     PpbStopLifecycleSelfTest(check);
     MfdFramingSelfTest(check);
     RuntimeInventorySelfTest(check);
@@ -5731,6 +5956,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.arm_metadata.source_shape = options.observe_arm_source_shape;
     audit.ppb_context.enabled = options.observe_ppb_context;
     audit.ppb_context.post_stop = options.observe_ppb_stop;
+    audit.ppb_context.metadata_pool = options.observe_ppb_metadata;
     audit.mfd_address.enabled = options.observe_mfd_address;
     audit.mfd_framing.enabled = options.observe_mfd_framing;
     audit.mfd_colour.stimulus = options.inject_mfd_colour;
@@ -5899,13 +6125,15 @@ int main(int argc, char **argv)
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
             "[--scaler-test WIDTH_OR_0] [--mpeg1-via-mpeg2 | --h263-via-divx] "
-            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
+            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --observe-ppb-metadata | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
     if (NeedsRawIo(options) && !CanReadChromaConfiguration()) {
-        if (options.observe_ppb_stop)
+        if (options.observe_ppb_metadata)
+            std::fprintf(stderr, "--observe-ppb-metadata requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
+        else if (options.observe_ppb_stop)
             std::fprintf(stderr, "--observe-ppb-stop requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
         else if (options.observe_ppb_context)
             std::fprintf(stderr, "--observe-ppb-context requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");

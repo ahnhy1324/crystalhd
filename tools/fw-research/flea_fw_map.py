@@ -757,6 +757,29 @@ MAX_PPB_STOP_REGIONS = 64
 MAX_PPB_STOP_BYTES = 64 * 1024
 MAX_PPB_STOP_RELOCATIONS = 9
 MAX_PPB_STOP_RESPONSE_BYTES = 252
+# Separate fixed, per-picture DRAM publications; never follow a saved pool word.
+_PPB_FIXED_METADATA_BODIES = tuple(body for body in _PPB_BANK_BODIES if body[0] in (
+    "Core_Run", "Core_CircBuffer_Get", "VideoParameters", "Core_DeallocatePPB", "Core_AttemptDecode",
+    "Core_CircBuffer_Put", "Core_AttemptDisplay", "Core_PPB_From_Address", "Platform_DeliverPicture",
+    "Core_ChanInitialize")) + tuple(body for body in _PPB_SAVED_ARC_BODIES if body[0] == "Platform_DrvContextSize") + tuple(
+    body for body in _PPB_SOURCE_BODIES if body[0] == "Core_PopulatePPB")
+_PPB_FIXED_METADATA_REGIONS = tuple(dict.fromkeys(_PPB_SAVED_REGIONS + tuple(
+    (name, offset, end - start, digest) for name, _, start, end, offset, digest in _PPB_FIXED_METADATA_BODIES) +
+    tuple(region for region in _PPB_BANK_METADATA if region[0] in (
+        "slice_relocations", "picture_relocations", "text_relocations")) + _ARM_PPB_HANDOFF_REGIONS))
+_PPB_FIXED_METADATA_CALLS = (
+    (0x6e4d8, 4, 0xb6b8, 646, "Dma_Read", 2, 0x53c8, True),
+    (0x6e4e4, 4, 0xb6c0, 644, "Dma_Sync", 2, 0x5364, True),
+    (0x6e520, 4, 0xb8fc, 645, "Dma_Write", 2, 0x537c, True),
+    (0x6e52c, 4, 0xb904, 644, "Dma_Sync", 2, 0x5364, False),
+    (0x6e538, 4, 0xb938, 645, "Dma_Write", 2, 0x537c, True),
+    (0x6e544, 4, 0xb940, 644, "Dma_Sync", 2, 0x5364, False),
+    (0x6e550, 4, 0xb988, 802, "Platform_DeliverPicture", 4, 0xbdec, False),
+    (0x6d2b4, 2, 0x517c, 612, "Core_PPB_From_Address", 4, 0xba98, False),
+    (0x6d2cc, 2, 0x51a4, 578, "Core_DeallocatePPB", 4, 0x907c, True))
+MAX_PPB_FIXED_METADATA_REGIONS = 64
+MAX_PPB_FIXED_METADATA_BYTES = 96 * 1024
+MAX_PPB_FIXED_METADATA_CALLS = 9
 # Fixed stock host contract only. These hashes are independent local fuses;
 # the public firmware identity remains unchanged and this helper is test-only.
 _STOCK_HOST_COMMAND_REGIONS = (
@@ -5411,6 +5434,121 @@ def _ppb_stop_context_bridge(payload):
                 "Direct source lifetime excludes opaque aliasing/mutation; envelopes and stable passes certify no live allocation or lease."]}
 
 
+def _ppb_fixed_metadata_window(physical, submitted_bytes, video_base, video_bytes):
+    """Fixed original-layout scalar targets, not metadata-derived addresses."""
+    window = _ppb_saved_context_window(physical, submitted_bytes, video_base, video_bytes)
+    context = window["context_address"]
+    envelopes = [{"role": role, "offset": offset, "address": context + offset, "bytes": size}
+                 for role, offset, size in (("delivery_ring", 0x15678, 256),
+                                           ("return_ring", 0x15778, 256), ("metadata_pool", 0x15878, 34 * 228))]
+    if any(item["address"] + item["bytes"] > window["context_end_exclusive"] for item in envelopes):
+        raise FormatError("PPB complete fixed metadata envelope exceeds the declared slice")
+    spans = [{"role": role, "offset": offset, "address": context + offset, "bytes": 8}
+             for role, offset in (("delivery_indices", 0x15678), ("return_indices", 0x15778))]
+    spans += [{"role": "metadata_prefix", "slot": slot, "offset": 0x15878 + 228 * slot,
+               "address": context + 0x15878 + 228 * slot, "bytes": 72} for slot in range(34)]
+    return {"context_address": context, "context_bytes": window["context_bytes"],
+            "context_end_exclusive": window["context_end_exclusive"], "alignment_skip": window["alignment_skip"],
+            "whole_envelopes": envelopes, "read_spans": spans, "read_calls": 36, "total_read_bytes": 2464,
+            "max_read_bytes": 72, "no_observed_pointer_following": True, "source_plane_access": False,
+            "observed_inputs_only": True, "model_no_native_certification": True, "non_atomic": True,
+            "current_state_certified": False, "source_lease_certified": False, "generation_certified": False}
+
+
+def _ppb_fixed_metadata_bridge(payload):
+    """Conditional publication/return layout outside the periodically saved core."""
+    total = sum(size for _, _, size, _ in _PPB_FIXED_METADATA_REGIONS)
+    if (type(payload) not in (bytes, bytearray) or len(payload) != BUNDLED_SIZE - TRAILER_SIZE or
+            len(_PPB_FIXED_METADATA_REGIONS) > MAX_PPB_FIXED_METADATA_REGIONS or total > MAX_PPB_FIXED_METADATA_BYTES or
+            len(_PPB_FIXED_METADATA_CALLS) > MAX_PPB_FIXED_METADATA_CALLS):
+        raise FormatError("PPB fixed metadata size/type/budget does not match")
+    regions = []
+    for role, offset, size, digest in _PPB_FIXED_METADATA_REGIONS:
+        if hashlib.sha256(bounded(payload, offset, size, "PPB fixed metadata region")).hexdigest() != digest:
+            raise FormatError(f"PPB fixed metadata region {role} does not match")
+        regions.append({"role": role, "blob_file_offset": offset, "size": size, "sha256": digest})
+    saved = _ppb_saved_context_bridge(payload)
+    handoff = _arm_ppb_metadata_handoff(payload)
+    mappings, dependencies, relocation_count = _ppb_bank_elf_context(payload)
+    sections = [struct.unpack_from("<10I", payload, 0x79540 + index * 40) for index in range(55)]
+    names = payload[0x67a95:0x69b6f]
+    symbols = [struct.unpack_from("<IIIBBH", payload, cursor) for cursor in range(0x69b70, 0x6cfc0, 16)]
+    bodies = []
+    for name, section_index, start, end, offset, digest in _PPB_FIXED_METADATA_BODIES:
+        section = sections[section_index]
+        matches = [index for index, symbol in enumerate(symbols) if symbol[0] < len(names) and
+                   names[symbol[0]:].split(b"\0", 1)[0] == name.encode("ascii") and
+                   symbol[1:3] == (start, end - start) and symbol[3] & 15 == 2 and symbol[5] == section_index]
+        if (len(matches) != 1 or not section[3] <= start < end <= section[3] + section[5] or
+                0x2ea60 + section[4] + start - section[3] != offset):
+            raise FormatError(f"PPB fixed metadata qualified body {name} does not match")
+        bodies.append({"name": name, "section_index": section_index, "symbol_index": matches[0],
+                       "elf_virtual_address": start, "size": end - start, "blob_file_offset": offset, "sha256": digest})
+    words = ((16, 0x26748, 0x42807c00), (16, 0x2674c, 0x5bc), (16, 0x2676c, 0x41a02800),
+        (16, 0x267b0, 0x10009b30), (16, 0x268d8, 0x679ffe21), (16, 0x268dc, 0x10060000),
+        (16, 0x268e0, 0x40007c00), (16, 0x268e4, 0x150e4), (16, 0x268e8, 0x1001013c),
+        (16, 0x268ec, 0x10000644), (16, 0x26910, 0x10000644), (16, 0x26924, 0x40407c00),
+        (16, 0x26928, 0x14ee4), (16, 0x2692c, 0x10008524), (16, 0x26938, 0x40407c00),
+        (16, 0x2693c, 0x14fe4), (16, 0x26958, 0x10008528), (16, 0x3b308, 0x401ffeec),
+        (4, 0xb8fc, 0x2ff34fa0), (4, 0xb900, 0x605ffee4), (4, 0xb904, 0x2ff34b80),
+        (4, 0xb980, 0x2fff7a20), (4, 0xb984, 0x40292800), (4, 0xb988, 0x28008c00),
+        (4, 0xb99c, 0x68007c00), (4, 0xb9a0, 0x1000), (4, 0xb9a4, 0x10808190))
+    critical = []
+    for section_index, address, word in words:
+        offset = 0x2ea60 + sections[section_index][4] + address - sections[section_index][3]
+        if _bootstrap_word(payload, offset) != word:
+            raise FormatError("PPB fixed metadata critical original word does not match")
+        critical.append({"section_index": section_index, "elf_virtual_address": address,
+                         "blob_file_offset": offset, "instruction_or_literal": word})
+    calls = []
+    for record, source_section, site, index, name, target_section, target, delay in _PPB_FIXED_METADATA_CALLS:
+        matches = [item for item in dependencies if item["relocation_record_blob_file_offset"] == record and
+                   item["elf_virtual_address"] == site and item["type"] == 6 and item["symbol_index"] == index and
+                   item["symbol"] == name and item["addend"] == 0 and item["target_section_index"] == target_section and
+                   item["original_target_elf_value"] == target and
+                   item["blob_file_offset"] == 0x2ea60 + sections[source_section][4] + site - sections[source_section][3]]
+        if len(matches) != 1:
+            raise FormatError("PPB fixed metadata numeric relocation edge does not match")
+        word = _bootstrap_word(payload, matches[0]["blob_file_offset"])
+        displacement = (word >> 7) & 0xfffff
+        displacement -= (1 << 20) if displacement & (1 << 19) else 0
+        if word & 0xf800007f != (0x28000020 if delay else 0x28000000) or site + 4 + 4 * displacement != target:
+            raise FormatError("PPB fixed metadata original ARC call does not match")
+        calls.append(dict(matches[0], source_section_index=source_section, instruction=word, normal_delay_slot=delay))
+    return {"basis": {"model": "fixed-dram-metadata-publication-v1", "conditional": True,
+                      "region_count": len(regions), "validated_bytes": total, "complete_relocation_records": relocation_count},
+        "validated_regions": regions, "arc_bodies": bodies, "section_mappings": mappings,
+        "critical_words": critical, "relocations": calls, "arm_handoff": handoff,
+        "layout": {"normalized_D_equation": "P + ((-P) & 3)", "saved_core_bytes": 0x5bc,
+                   "driver_context_bytes": 236 << 1, "frame_records_offset": 0x794,
+                   "frame_record_bytes": 284, "frame_record_count": 63, "frame_records_end_exclusive": 0x4d78,
+                   "delivery_ring_offset": 0x15678, "return_ring_offset": 0x15778, "ring_bytes": 256,
+                   "metadata_pool_offset": 0x15878, "metadata_record_bytes": 228, "metadata_record_count": 34,
+                   "metadata_pool_end_exclusive": 0x176c0, "minimum_remaining_bytes": 0x177cc,
+                   "constructor_clears_each_metadata_word_offset": 0x44, "constructor_clears_whole_pool": False},
+        "observation": {"flag": "--observe-ppb-metadata", "stages": 4, "passes_per_stage": 2,
+                        "fixed_calls_per_pass": 36, "fixed_bytes_per_pass": 2464,
+                        "graph_calls_per_pass": 62, "graph_bytes_per_pass": 312,
+                        "trial_calls": 784, "trial_bytes": 22208, "max_read_bytes": 72,
+                        "pool_and_plane_pointer_following": False, "target_writes": False, "non_atomic": True},
+        "publication": {"whole_metadata_DMA_write_site": 0xb8fc, "whole_metadata_DMA_sync_site": 0xb904,
+                        "frame_ancillary_clear_DMA_site": 0xb938, "frame_ancillary_clear_sync_site": 0xb940,
+                        "delivery_queue_put_site": 0xb980, "delivery_notify_site": 0xb988,
+                        "display_descriptor_bit_set_site": 0xb9a4, "display_descriptor_bit": 0x1000,
+                        "display_bit_set_after_notify": True, "queued_return_is_consumption": False},
+        "validation_scope": {"original_section_qualified_bodies": True, "observer_guards_only": True,
+                             "device_observed": False, "runtime_relocation_validated": False,
+                             "current_live_state": False, "allocator_integrity": False, "active_frame_extent": False,
+                             "source_lease": False, "generation": False, "all_consumer_completion": False,
+                             "backend_stop_completion": False, "standalone_processing": False},
+        "conditions": saved["required_conditions"],
+        "limitations": ["Fixed layout assumes successful original constructor and preservation by opaque callees.",
+                        "Metadata prefixes are separately DMA-published, not the saved core; old or partially updated fields can survive.",
+                        "Presentation marker +3c, ancillary words +40/+44, recycled addresses and ring indices are not generation tokens.",
+                        "Picture metadata flags are not the active ARC descriptor bitmap; neither proves a raw-source lease.",
+                        "Host STOP success is not ARC completion; queued returns and matching sequential reads do not establish consumption."]}
+
+
 def _ppb_source_geometry_join(metadata_mb, prefix_mb, metadata_config, allocation_config):
     """Compare supplied snapshots, not native frame identity or ownership."""
     for dimensions in (metadata_mb, prefix_mb):
@@ -7205,7 +7343,8 @@ def parse_elf(payload, base, wanted, symbol_budget, string_budget,
 def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
             references=False, all_symbols=False, bootstrap=False, picture_output=False,
             arc_metadata=False, csc_command=False, command_buffer_bridge=False, inner_descriptor=False,
-            scaler_fir=False, ppb_handoff=False, ppb_source=False, ppb_saved_context=False, ppb_stop_context=False):
+            scaler_fir=False, ppb_handoff=False, ppb_source=False, ppb_saved_context=False, ppb_stop_context=False,
+            ppb_fixed_metadata=False):
     if len(data) < 24 or len(data) > MAX_FIRMWARE_SIZE or len(data) % 4:
         raise FormatError("invalid BCM70015 firmware size")
     sha256 = hashlib.sha256(data).hexdigest()
@@ -7233,6 +7372,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         raise FormatError("--ppb-saved-context requires the exact bundled firmware SHA-256 and size")
     if ppb_stop_context and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
         raise FormatError("--ppb-stop-context requires the exact bundled firmware SHA-256 and size")
+    if ppb_fixed_metadata and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
+        raise FormatError("--ppb-fixed-metadata requires the exact bundled firmware SHA-256 and size")
     payload = data[:-TRAILER_SIZE]
     length_slot = struct.unpack_from("<I", data, len(payload))[0]
     if length_slot != 16:
@@ -7323,6 +7464,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         result["ppb_saved_context_bridge"] = _ppb_saved_context_bridge(payload)
     if ppb_stop_context:
         result["ppb_stop_context_bridge"] = _ppb_stop_context_bridge(payload)
+    if ppb_fixed_metadata:
+        result["ppb_fixed_metadata_bridge"] = _ppb_fixed_metadata_bridge(payload)
     return result
 
 
@@ -7364,6 +7507,8 @@ def main(argv=None):
         "validate the conditional saved ARC context bridge; bundled firmware only, not active state or a lease"))
     parser.add_argument("--ppb-stop-context", action="store_true", help=(
         "validate conditional STOP/save ordering and status masking; not backend completion or a lease"))
+    parser.add_argument("--ppb-fixed-metadata", action="store_true", help=(
+        "validate fixed per-picture metadata publications and ring headers; not source ownership or a lease"))
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-fA-F]{64}", args.expect_sha256):
         parser.error("--expect-sha256 must be 64 hexadecimal digits")
@@ -7372,7 +7517,7 @@ def main(argv=None):
                          args.expect_sha256.lower(), args.references, args.all_symbols, args.bootstrap,
                          args.picture_output, args.arc_metadata, args.csc_command, args.command_buffer_bridge,
                          args.inner_descriptor, args.scaler_fir, args.ppb_handoff, args.ppb_source,
-                         args.ppb_saved_context, args.ppb_stop_context)
+                         args.ppb_saved_context, args.ppb_stop_context, args.ppb_fixed_metadata)
     except (OSError, FormatError) as error:
         print(f"flea_fw_map: {error}", file=sys.stderr)
         return 1
