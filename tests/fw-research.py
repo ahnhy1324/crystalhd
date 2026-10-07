@@ -11962,5 +11962,271 @@ class NativeReturnHeaderFixtureTests(unittest.TestCase):
         self.assertNotIn("/home/", raw.decode())
 
 
+def project_arc_getter(payload, index, flags, banks, budget=256):
+    """Bounded logical ARC4 projection of the pinned, read-only getter.
+
+    Synthetic local RAM is not a host alias or a physical plane lease. ISA
+    effects follow ARC4 base instructions and assume documented shifts for
+    the named extension opcodes; their native semantics are not certified.
+    LP_COUNT writes at
+    the final two-word instruction take effect after the current end decision;
+    this abstraction does not certify pipeline cycles, trace/count fidelity,
+    interrupts, relocated execution or native register/DRAM visibility.
+    """
+    if type(payload) not in (bytes, bytearray) or len(payload) != MAP.BUNDLED_SIZE - MAP.TRAILER_SIZE:
+        raise ValueError("invalid ARC getter payload")
+    body = bytes(payload[0x35f24:0x35fa0])
+    if hashlib.sha256(body).hexdigest() != "fd889611f1240599a758bb10fe64b35cd82f723f9c65027736b4ca5766280c26":
+        raise ValueError("stock ARC getter body changed")
+    declarations = bytes(payload[0x67a25:0x67a95])
+    if hashlib.sha256(declarations).hexdigest() != "50144f0baa420310c9ac35d5739a4e90af2f13e07bb65daa87894472f695ed00":
+        raise ValueError("stock ARC extension declarations changed")
+    if type(index) is not int or not 0 <= index < 34 or \
+            type(flags) not in (bytes, bytearray) or len(flags) != 68 or \
+            type(banks) not in (bytes, bytearray) or len(banks) != 144 or \
+            type(budget) is not int or not 1 <= budget <= 256:
+        raise ValueError("invalid synthetic ARC getter inputs")
+    pages = {base: bytearray(b"\xa5" * 4096) for base in (0x3fffc000, 0x3fffd000)}
+    pages[0x3fffd000][0x100:0x144] = flags
+    pages[0x3fffd000][0x1a8:0x238] = banks
+    initial = {base: bytes(page) for base, page in pages.items()}
+    registers = [0xabc00000 + i for i in range(64)]
+    registers[0], registers[31], registers[60] = index, 0x400000, 0
+    saved = registers[4:60]
+    pc, loop_start, loop_end, pending_branch = 0xb080, None, None, None
+    z, n, carry, overflow = False, True, True, True
+    reads, visited, late_count = [], [], []
+    def word(address):
+        if address & 3 or not 0xb080 <= address < 0xb0fc:
+            raise ValueError("outside pinned ARC getter code")
+        return struct.unpack_from("<I", body, address - 0xb080)[0]
+    def load(address, size):
+        base, offset = address & ~4095, address & 4095
+        # These extents are fixture admission, not native getter bounds guards.
+        if base not in pages or offset + size > 4096 or address & (size - 1) or not any(
+                start <= address and address + size <= end
+                for start, end in ((0x3fffd100, 0x3fffd144), (0x3fffd1a8, 0x3fffd238))):
+            raise ValueError("outside synthetic ARC getter RAM")
+        reads.append((address, size))
+        return int.from_bytes(pages[base][offset:offset + size], "little")
+    while pc != 0x1000000:
+        if len(visited) >= budget:
+            raise ValueError("ARC getter instruction budget exceeded")
+        instruction = word(pc)
+        visited.append(pc)
+        major = instruction >> 27
+        a, b, c = ((instruction >> shift) & 63 for shift in (21, 15, 9))
+        short = (instruction & 511) - (512 if instruction & 256 else 0)
+        length = 4
+        def operand(register):
+            nonlocal length
+            if register in (61, 63):
+                return short & 0xffffffff
+            if register == 62:
+                length = 8
+                return word(pc + 4)
+            return registers[register]
+        if major in (8, 10, 12, 16, 18):
+            left, right = operand(b), operand(c)
+            immediate = b in (61, 63) or c in (61, 63)
+            condition = 0 if immediate else instruction & 31
+            set_flags = 61 in (b, c) if immediate else bool(instruction & 256)
+        elif major == 3:
+            if c != 2:
+                raise ValueError("unsupported ARC getter single operation")
+            left, right = operand(b), 0
+            immediate = b in (61, 63)
+            condition = 0 if immediate else instruction & 31
+            set_flags = b == 61 if immediate else bool(instruction & 256)
+        else:
+            condition, set_flags = (instruction & 31 if major in (4, 6, 7) else 0), False
+        if condition not in (0, 1, 2, 5):
+            raise ValueError("unsupported ARC getter condition")
+        take = {0: True, 1: z, 2: not z, 5: carry}[condition]
+        next_pc = pc + length
+        delayed_count = None
+        branch = pending_branch
+        pending_branch = None
+        if major in (8, 10, 12, 16, 18, 3):
+            if take:
+                if major == 8:
+                    result = (left + right) & 0xffffffff
+                elif major == 10:
+                    result = (left - right) & 0xffffffff
+                elif major == 12:
+                    result = left & right
+                elif major == 16:
+                    result = (left << (right & 31)) & 0xffffffff
+                elif major == 18:
+                    signed = left - (1 << 32) if left & 0x80000000 else left
+                    result = (signed >> (right & 31)) & 0xffffffff
+                else:
+                    result = left >> 1
+                if set_flags:
+                    z, n = result == 0, bool(result & 0x80000000)
+                    if major == 8:
+                        carry = left + right > 0xffffffff
+                        overflow = bool(~(left ^ right) & (left ^ result) & 0x80000000)
+                    elif major == 10:
+                        carry = left < right  # ARC C/LO is borrow, unlike ARM C.
+                        overflow = bool((left ^ right) & (left ^ result) & 0x80000000)
+                    elif major == 3:
+                        carry = bool(left & 1)  # LSR.F preserves V, not C.
+                if a < 61:
+                    if a == 60:
+                        if next_pc == loop_end:
+                            delayed_count = result & 0xffffff
+                            late_count.append(pc)
+                        else:
+                            registers[a] = result & 0xffffff
+                    else:
+                        registers[a] = result
+        elif major == 1:
+            if instruction & ((1 << 9) | (1 << 12) | (1 << 13) | (1 << 14)) or a >= 61:
+                raise ValueError("unsupported ARC getter load addressing")
+            size = {0: 4, 2: 2}.get((instruction >> 10) & 3)
+            if size is None:
+                raise ValueError("unsupported ARC getter load size")
+            address = (operand(b) + short) & 0xffffffff
+            next_pc = pc + length
+            registers[a] = load(address, size)
+        elif major in (4, 6):
+            displacement = (instruction >> 7) & 0xfffff
+            if displacement & 0x80000:
+                displacement -= 1 << 20
+            target = pc + 4 + displacement * 4
+            delay = (instruction >> 5) & 3
+            if major == 6:
+                if delay or not take:
+                    raise ValueError("unsupported ARC getter loop setup")
+                loop_start, loop_end = pc + 4, target
+            elif take:
+                if delay == 1:
+                    pending_branch = target
+                elif delay == 0:
+                    next_pc = target
+                else:
+                    raise ValueError("unsupported ARC getter branch delay")
+        elif major == 7:
+            if not take or b != 31 or instruction & 0x160:
+                raise ValueError("unsupported ARC getter return")
+            next_pc = (registers[31] & 0xffffff) << 2
+        else:
+            raise ValueError("unsupported ARC getter opcode")
+        if branch is not None:
+            next_pc = branch
+        elif next_pc == loop_end:
+            count = registers[60]
+            registers[60] = (count - 1) & 0xffffff
+            if count != 1:
+                next_pc = loop_start
+        if delayed_count is not None:
+            registers[60] = delayed_count
+        pc = next_pc
+    if registers[4:60] != saved or registers[31] != 0x400000 or \
+            {base: bytes(page) for base, page in pages.items()} != initial:
+        raise ValueError("ARC getter immutable-page/ABI oracle changed")
+    return {"address": registers[0], "pages": initial, "reads": reads,
+            "visited": visited, "late_count_writes": late_count,
+            "flags": (z, n, carry, overflow), "physical_lease_certified": False,
+            "vendor_extensions_certified": False,
+            "pipeline_timing_certified": False, "native_execution": False}
+
+
+class FirmwareArcGetterProjectionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        raw = MAP.read_firmware(BLOB)
+        if len(raw) != MAP.BUNDLED_SIZE or hashlib.sha256(raw).hexdigest() != MAP.BUNDLED_SHA256:
+            raise ValueError("bundled firmware changed")
+        cls.payload = raw[:-MAP.TRAILER_SIZE]
+
+    @staticmethod
+    def images(bank=0, slot=0, index=0, base=0x920000, mask=None, stride=0x12345, flag=0xe800):
+        flags, rows = bytearray(68), bytearray(144)
+        struct.pack_into("<H", flags, index * 2, flag | bank | (slot << 4))
+        struct.pack_into("<4I", rows, bank * 16, base, (1 << slot) if mask is None else mask, stride, 0)
+        return flags, rows
+
+    def test_selected_getter_all_banks_slots_and_wrapped_products(self):
+        for bank in range(9):
+            for slot in range(32):
+                for stride in (0, 1, 0x12345, 0x80000000, 0xffffffff):
+                    with self.subTest(bank=bank, slot=slot, stride=stride):
+                        flags, rows = self.images(bank, slot, 33, base=0xfffffff0, stride=stride)
+                        result = project_arc_getter(self.payload, 33, flags, rows)
+                        self.assertEqual(result["address"], (0xfffffff0 + slot * stride) & 0xffffffff)
+                        self.assertNotIn(0xb088, result["visited"])
+                        self.assertNotIn(0xb098, result["visited"])
+                        self.assertNotIn(0xb0f0, result["visited"])
+                        self.assertFalse(result["physical_lease_certified"])
+                        self.assertFalse(result["vendor_extensions_certified"])
+                        self.assertFalse(result["pipeline_timing_certified"])
+                        self.assertFalse(result["native_execution"])
+
+    def test_flags_bitmap_and_real_delay_slot_refuse_address(self):
+        for flags, rows in (self.images(flag=0), self.images(mask=0)):
+            result = project_arc_getter(self.payload, 0, flags, rows)
+            self.assertEqual(result["address"], 0)
+            self.assertEqual(result["visited"][-3:], [0xb0a0, 0xb0a4, 0xb0f8])
+            self.assertFalse(result["late_count_writes"])
+            self.assertEqual(result["flags"], (True, False, True, True))
+        flags, rows = self.images(slot=0)
+        result = project_arc_getter(self.payload, 0, flags, rows)
+        self.assertEqual(result["flags"], (True, False, False, True))
+        self.assertTrue(result["late_count_writes"])
+
+    def test_saved_and_working_images_need_explicit_copy(self):
+        # Synthetic copies, not actual DMA or System_Activate/Deactivate execution.
+        saved_flags, saved_rows = bytes(68), bytearray(144)
+        struct.pack_into("<I", saved_rows, 0, 0x920000)
+        live_flags, live_rows = self.images(slot=7)
+        self.assertEqual(project_arc_getter(self.payload, 0, saved_flags, saved_rows)["address"], 0)
+        self.assertEqual(project_arc_getter(self.payload, 0, live_flags, live_rows)["address"], 0x99f6e3)
+        self.assertEqual(project_arc_getter(self.payload, 0, saved_flags, saved_rows)["address"], 0)
+        saved_flags, saved_rows = bytes(live_flags), bytes(live_rows)
+        self.assertEqual(project_arc_getter(self.payload, 0, saved_flags, saved_rows)["address"], 0x99f6e3)
+        freed_flags, freed_rows = bytes(68), bytearray(144)
+        struct.pack_into("<I", freed_rows, 0, 0x920000)
+        self.assertEqual((freed_flags, freed_rows), (bytes(68), bytearray(struct.pack("<I", 0x920000) + bytes(140))))
+        self.assertEqual(project_arc_getter(self.payload, 0, freed_flags, freed_rows)["address"], 0)
+
+    def test_source_input_and_budget_refusals(self):
+        flags, rows = self.images()
+        for payload in (None, [], self.payload[:-1], self.payload + b"\0"):
+            with self.assertRaisesRegex(ValueError, "invalid ARC getter payload"):
+                project_arc_getter(payload, 0, flags, rows)
+        self.assertEqual(project_arc_getter(bytearray(self.payload), 0, flags, rows)["address"], 0x920000)
+        for offset in (0x35f24, 0x35f9f):
+            changed = bytearray(self.payload)
+            changed[offset] ^= 1
+            with self.subTest(offset=offset), self.assertRaisesRegex(ValueError, "stock ARC getter body"):
+                project_arc_getter(changed, 0, flags, rows)
+        for offset in range(0x67a25, 0x67a95):
+            changed = bytearray(self.payload)
+            changed[offset] ^= 1
+            with self.subTest(offset=offset), self.assertRaisesRegex(ValueError, "stock ARC extension"):
+                project_arc_getter(changed, 0, flags, rows)
+        for bank in range(9, 16):
+            outside = bytearray(flags)
+            struct.pack_into("<H", outside, 0, 0xe800 | bank)
+            with self.subTest(bank=bank), self.assertRaisesRegex(ValueError, "outside synthetic ARC getter RAM"):
+                project_arc_getter(self.payload, 0, outside, rows)
+        for index in (True, -1, 34, 0.0):
+            with self.subTest(index=index), self.assertRaisesRegex(ValueError, "invalid synthetic"):
+                project_arc_getter(self.payload, index, flags, rows)
+        for malformed in (b"", bytes(67), bytes(69), list(flags)):
+            with self.assertRaisesRegex(ValueError, "invalid synthetic"):
+                project_arc_getter(self.payload, 0, malformed, rows)
+        for malformed in (b"", bytes(143), bytes(145), list(rows)):
+            with self.assertRaisesRegex(ValueError, "invalid synthetic"):
+                project_arc_getter(self.payload, 0, flags, malformed)
+        for budget in (True, 0, 257):
+            with self.assertRaisesRegex(ValueError, "invalid synthetic"):
+                project_arc_getter(self.payload, 0, flags, rows, budget)
+        with self.assertRaisesRegex(ValueError, "instruction budget exceeded"):
+            project_arc_getter(self.payload, 0, flags, rows, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
