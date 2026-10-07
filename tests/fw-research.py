@@ -11321,5 +11321,239 @@ class FirmwarePpbFixedMetadataTests(unittest.TestCase):
         self.assertEqual(enriched, MAP.analyze(self.data))
 
 
+class NativeFixedMetadataFixtureTests(unittest.TestCase):
+    """Published fingerprints and raw indices, not live-record or lease certificates."""
+    REFERENCES = ([[0, 0], [1, 2], [3, 3], [3, 3]], [[4, 4], [5, 6], [3, 3], [3, 3]])
+    RING_FIELDS = ("delivery-read", "delivery-write", "return-read", "return-write")
+    RINGS = ((2, 2, 2, 2), (4, 0x11, 4, 0), (6, 0x1c, 5, 6), (0x3b,) * 4,
+             (2, 2, 2, 2), (4, 0x11, 4, 4), (7, 0x1d, 6, 6))
+
+    @classmethod
+    def setUpClass(cls):
+        cls.raw = (ROOT / "tests/fixtures/issue92/native-fixed-metadata.json").read_bytes()
+        cls.observed = json.loads(cls.raw)
+
+    def test_native_pins_whole_outputs_controls_and_complete_fixed_window_schedule(self):
+        observed = self.observed
+        self.assertEqual(hashlib.sha256(self.raw).hexdigest(),
+                         "2e7c2d6bf09088ad190a2f7e26e00f5b592328689ef09e7274c1e41aa81efda9")
+        self.assertEqual(set(observed), {"schema_version", "kind", "firmware_sha256", "observer_source_sha256",
+            "observer_binary_sha256", "input", "reads", "fingerprint_encoding", "snapshots", "trials",
+            "controls", "comparison", "certified"})
+        self.assertEqual((observed["schema_version"], observed["kind"]), (1, "native-fixed-ppb-metadata"))
+        self.assertEqual(observed["firmware_sha256"],
+                         "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9")
+        self.assertEqual(observed["observer_source_sha256"],
+                         "6f55dc33594652228e1d826d2aab15812510456da0233fce4402f42c761c70ab")
+        self.assertEqual(observed["observer_binary_sha256"],
+                         "ddf4b7cb6dbe5756b5659c7da14d21364cc6830d25f05855162c5b3e4c7823b6")
+        self.assertEqual(observed["input"], {"codec": "H264", "progressive": True, "width": 256, "height": 96,
+            "packets": 180, "submitted_bytes": 124832,
+            "submitted_sha256": "1363a87c8f59fab6187cd13653a3ba8a41fd994066d30c24be1c2b09d675666e"})
+        plan = observed["reads"]
+        self.assertEqual(plan, {"flag": "--observe-ppb-metadata", "stages": ["after-OPEN/pre-START",
+            "first-output-after-release-and-owned-write", "delivery-EOS-before-STOP", "host-STOP-returned-before-CLOSE"],
+            "passes": 2, "graph_calls_per_check": 31, "graph_bytes_per_check": 156,
+            "fixed_calls_per_pass": 36, "fixed_bytes_per_pass": 2464, "per_pass_calls": 98, "per_pass_bytes": 2776,
+            "per_trial_calls": 784, "per_trial_bytes": 22208, "max_read_bytes": 72,
+            "ring_offsets_hex": ["15678", "15778"], "ring_read_bytes": 8, "whole_ring_bytes": 256,
+            "metadata_pool_offset_hex": "15878", "metadata_stride_bytes": 228, "metadata_slots": 34,
+            "metadata_prefix_bytes": 72, "whole_pool_end_offset_hex": "176c0", "minimum_context_bytes": 0x177cc,
+            "frozen_graph_recheck_after_each_pass": True, "no_observed_pointer_following": True,
+            "no_source_plane_access": True, "no_diagnostic_target_writes": True, "non_atomic": True})
+        self.assertEqual((2 * 31 + 36, 2 * 156 + 2464, 4 * 2 * 98, 4 * 2 * 2776), (98, 2776, 784, 22208))
+        window = MAP._ppb_fixed_metadata_window(0x33dc000, 0x3f940, 0xa34000, 0x35c7940)
+        spans = [{"role": role, "offset": offset, "address": 0x33dc000 + offset, "bytes": 8}
+                 for role, offset in (("delivery_indices", 0x15678), ("return_indices", 0x15778))]
+        spans += [{"role": "metadata_prefix", "slot": slot, "offset": 0x15878 + 228 * slot,
+                   "address": 0x33dc000 + 0x15878 + 228 * slot, "bytes": 72} for slot in range(34)]
+        self.assertEqual(window["read_spans"], spans)
+        self.assertEqual((window["read_calls"], window["total_read_bytes"], window["max_read_bytes"]), (36, 2464, 72))
+        self.assertEqual(window["whole_envelopes"], [{"role": role, "offset": offset,
+            "address": 0x33dc000 + offset, "bytes": size} for role, offset, size in
+            (("delivery_ring", 0x15678, 256), ("return_ring", 0x15778, 256), ("metadata_pool", 0x15878, 34 * 228))])
+        self.assertEqual((spans[3]["address"], spans[-1]["address"] + 72), (0x33f195c, 0x33f3624))
+        self.assertEqual(window["whole_envelopes"][-1]["address"] + 34 * 228, 0x33f36c0)
+        for residue in range(4):
+            physical, skip = 0x33dc000 + residue, (-residue) & 3
+            minimal = MAP._ppb_fixed_metadata_window(physical, 0x177cc + skip, physical, 0x177cc + skip)
+            self.assertEqual((minimal["alignment_skip"], minimal["context_bytes"]), (skip, 0x177cc))
+            for span in minimal["whole_envelopes"] + minimal["read_spans"]:
+                self.assertEqual(span["address"] % 4, 0)
+                self.assertLessEqual(span["address"] + span["bytes"], physical + 0x177cc + skip)
+            with self.assertRaises(MAP.FormatError):
+                MAP._ppb_fixed_metadata_window(physical, 0x177cb + skip, physical, 0x177cc + skip)
+        self.assertTrue(all(0x33dc000 <= span["address"] < span["address"] + span["bytes"] <= 0x33dc000 + 0x3f940
+                            for span in spans))
+        self.assertEqual([item["id"] for item in observed["trials"]], ["A", "B"])
+        expected_captures = [(180, 8847360, "1ba4af890ad878a5472777c873f1f86f070264ebfc33994ba719b22ea5df9068")] * 2
+        expected_captures += [(32, 14745600, "021b6736caed04600c4801ca1b0e30dc4a48b60985e2dff02d38bea7c2aa9244"),
+                             (180, 4423680, "d72c16b7eb12d844fb6a5805c2d33a120874237ac5f1cf3608d4bebe186ee7cd")]
+        sessions = observed["trials"] + observed["controls"]
+        for item, expected in zip(sessions, expected_captures):
+            self.assertEqual((item["frames"], item["capture_bytes"], item["capture_sha256"]), expected)
+            for key in ("whole_capture_equal", "firmware_eos", "cleanup"):
+                self.assertIs(item[key], True)
+            for key in ("pending", "ready", "stderr_bytes", "exit_code", "new_kernel_errors"):
+                self.assertEqual(item[key], 0)
+            self.assertEqual((item["fd_before_after"], item["threads_before_after"]), ([3, 3], [1, 1]))
+        self.assertEqual((sum(item["frames"] for item in sessions), sum(item["capture_bytes"] for item in sessions)),
+                         (572, 36864000))
+        for trial, references in zip(observed["trials"], self.REFERENCES):
+            self.assertEqual((trial["reads"], trial["bytes_read"], trial["snapshot_indices_by_stage"]),
+                             (784, 22208, references))
+            self.assertIs(trial["frozen_stock_graph_checks_passed"], True)
+            self.assertEqual(trial["host_stop_api_status"], 0)
+        self.assertEqual([(item["position"], item["codec"], item["width"], item["height"])
+                          for item in observed["controls"]], [("before", "MPEG2", 640, 360), ("after", "H264", 128, 96)])
+        for item in sessions:
+            width, height = (256, 96) if "id" in item else (item["width"], item["height"])
+            self.assertEqual(item["capture_bytes"], item["frames"] * width * height * 2)
+
+    def test_fingerprint_changes_raw_zero_indices_geometry_and_explicit_uncertified_limits(self):
+        observed, slots = self.observed, list(range(34))
+        self.assertEqual(observed["fingerprint_encoding"], {"algorithm": "SHA-256", "words": "little-endian unsigned 32-bit",
+            "per_slot_bytes": 72, "fixed_read_payload_order": "delivery header, return header, metadata prefixes in slot order",
+            "fixed_read_payload_bytes": 2464, "raw_metadata_prefixes_published": False, "residual_payloads_are_not_public": True})
+        snapshots = observed["snapshots"]
+        self.assertEqual(len(snapshots), 7)
+        roots = {"C": "000d83a4", "H": "000db58c", "Q": "000d93b0", "M": "000d95fc", "P": "033dc000",
+                 "N": "0003f940", "D": "033dc000", "video-base": "00a34000", "video-bytes": "035c7940"}
+        geometry = [[], list(range(19)), [slot for slot in slots if slot not in (1, 30)],
+                    [slot for slot in slots if slot != 1], [], [slot for slot in range(20) if slot != 16],
+                    [slot for slot in slots if slot != 31]]
+        for number, snapshot in enumerate(snapshots):
+            self.assertEqual(set(snapshot), {"fields_hex", "metadata_prefix_sha256_by_slot", "fixed_read_payload_sha256",
+                                            "observed_geometry_256x96_slots", "word44_zero_slots"})
+            self.assertEqual(snapshot["fields_hex"], dict(roots, **{key: f"{value:08x}"
+                             for key, value in zip(self.RING_FIELDS, self.RINGS[number])}))
+            for value in snapshot["fields_hex"].values():
+                self.assertRegex(value, r"^[0-9a-f]{8}$")
+            self.assertEqual(len(snapshot["metadata_prefix_sha256_by_slot"]), 34)
+            for digest in snapshot["metadata_prefix_sha256_by_slot"] + [snapshot["fixed_read_payload_sha256"]]:
+                self.assertRegex(digest, r"^[0-9a-f]{64}$")
+            self.assertEqual(snapshot["observed_geometry_256x96_slots"], geometry[number])
+            self.assertEqual(snapshot["word44_zero_slots"], [slot for slot in slots if number != 6 or slot != 11])
+            for key in ("observed_geometry_256x96_slots", "word44_zero_slots"):
+                self.assertTrue(all(type(slot) is int and 0 <= slot < 34 for slot in snapshot[key]))
+                self.assertEqual(snapshot[key], sorted(set(snapshot[key])))
+        # Payloads are withheld: their SHA pins support equality comparisons,
+        # not reconstruction of concatenated payloads or record validity.
+        self.assertEqual(len({json.dumps(snapshot, sort_keys=True) for snapshot in snapshots}), 7)
+        self.assertEqual(len({snapshot["fixed_read_payload_sha256"] for snapshot in snapshots}), 7)
+        changed, references, outliers, nonzero44 = {}, [], [], []
+        for trial in observed["trials"]:
+            changed[trial["id"]] = []
+            for stage, pair in enumerate(trial["snapshot_indices_by_stage"]):
+                self.assertEqual(len(pair), 2)
+                self.assertTrue(all(type(index) is int and 0 <= index < 7 for index in pair))
+                a, b = (snapshots[index]["metadata_prefix_sha256_by_slot"] for index in pair)
+                changed[trial["id"]].append([slot for slot in slots if a[slot] != b[slot]])
+                for pass_number, index in enumerate(pair):
+                    references.append(index)
+                    snapshot = snapshots[index]
+                    for key in self.RING_FIELDS:
+                        if not 2 <= int(snapshot["fields_hex"][key], 16) <= 63:
+                            outliers.append({"trial": trial["id"], "stage": stage, "pass": pass_number,
+                                             "field": key, "raw_hex": snapshot["fields_hex"][key]})
+                    nonzero44 += [(trial["id"], stage, pass_number, slot) for slot in slots
+                                  if slot not in snapshot["word44_zero_slots"]]
+        comparison = observed["comparison"]
+        self.assertEqual(changed, {"A": [[], [1, 2] + list(range(18, 34)), [], []],
+                                  "B": [[], [2, 11, 16] + list(range(20, 34)), [], []]})
+        self.assertEqual(comparison["changed_slots_between_passes"], changed)
+        self.assertEqual((len(changed["A"][1]), len(changed["B"][1])), (18, 17))
+        self.assertEqual((len(references), len(set(references)), len(references) * 4, len(references) * 34 * (72 // 4)),
+                         (16, 7, 64, 9792))
+        self.assertEqual((comparison["snapshot_references"], comparison["unique_snapshots"],
+                          comparison["ring_dwords_recorded"], comparison["metadata_dwords_fingerprinted"]), (16, 7, 64, 9792))
+        late = [index for trial in observed["trials"] for pair in trial["snapshot_indices_by_stage"][2:] for index in pair]
+        self.assertEqual(late, [3] * 8)
+        self.assertTrue(all(snapshots[index] == snapshots[late[0]] for index in late))
+        self.assertIs(comparison["eos_snapshots_equal_between_trials"], True)
+        self.assertIs(comparison["eos_and_post_stop_snapshots_equal_in_both_trials"], True)
+        self.assertEqual(comparison["observed_geometry_256x96_slot_count_at_eos"], len(geometry[3]))
+        self.assertEqual(nonzero44, [("B", 1, 1, 11)])
+        self.assertEqual(sum(len(snapshots[index]["word44_zero_slots"]) for index in references), 543)
+        self.assertIs(comparison["all_word44_observations_zero"], not nonzero44)
+        self.assertEqual(outliers, [{"trial": "A", "stage": 1, "pass": 0, "field": "return-write", "raw_hex": "00000000"}])
+        self.assertEqual(comparison["raw_out_of_source_index_range"], outliers)
+        self.assertEqual(comparison["out_of_range_cause"], "unattributed")
+        self.assertEqual(observed["certified"], {"rooted_fixed_scalar_observations": True, "whole_native_outputs": True,
+            "current_live_state": False, "allocator_integrity": False, "active_frame_extent": False,
+            "source_lease": False, "generation": False, "cache_ready": False, "all_consumer_completion": False,
+            "standalone_processing": False, "backend_stop_completion": False, "valid_metadata_records": False,
+            "ring_anomaly_cause": False})
+        for private_path in (b"/home/", b"/tmp/"):
+            self.assertNotIn(private_path, self.raw)
+
+    def test_accessible_svg_all272_cells_numeric_text_and_unattributed_zero_match_fixture(self):
+        import xml.etree.ElementTree as ET
+
+        raw = (ROOT / "tests/fixtures/issue92/native-fixed-metadata.svg").read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(),
+                         "5b994af9d69bb6f3c2d9899bc93aef7b0e8ebdbb612117d246433c412e064123")
+        svg, ns = ET.fromstring(raw), "{http://www.w3.org/2000/svg}"
+        self.assertEqual((svg.get("width"), svg.get("height"), svg.get("viewBox")), ("1120", "650", "0 0 1120 650"))
+        self.assertEqual((svg.get("role"), svg.get("aria-labelledby")), ("img", "title desc"))
+        self.assertEqual((svg.find(ns + "title").get("id"), svg.find(ns + "desc").get("id")), ("title", "desc"))
+        self.assertEqual(svg.find(ns + "title").text, "BCM70015 fixed metadata publication comparison")
+        desc = svg.find(ns + "desc").text
+        for phrase in ("two non-atomic passes", "18 slots in A and 17 in B", "zero is preserved without cause attribution",
+                       "no current record, ARC completion, generation, extent or source lease is certified"):
+            self.assertIn(phrase, desc)
+        text_nodes = svg.findall(".//" + ns + "text")
+        text = {(node.get("x"), node.get("y")): node.text for node in text_nodes}
+        self.assertEqual((len(text_nodes), len(text)), (46, 46))
+        observed, plan = self.observed, self.observed["reads"]
+        self.assertEqual(text["32", "72"], f"Two H.264 trials · {observed['input']['width']} × "
+                         f"{observed['input']['height']} · {observed['input']['packets']} frames each · "
+                         f"{observed['comparison']['snapshot_references']} non-atomic snapshots")
+        self.assertEqual(text["320", "97"], f"Metadata slots 0–{plan['metadata_slots'] - 1} · "
+                         f"fingerprint of each fixed {plan['metadata_prefix_bytes']}-byte prefix")
+        for slot in (0, 5, 10, 15, 20, 25, 30, 33):
+            self.assertEqual(text[str(328 + 20 * slot), "120"], str(slot))
+        groups = [group for group in svg.findall(".//" + ns + "g") if group.get("data-trial") is not None]
+        self.assertEqual([(group.get("data-trial"), group.get("data-stage")) for group in groups],
+                         [(trial, str(stage)) for stage in range(4) for trial in ("A", "B")])
+        cells = 0
+        for group in groups:
+            trial, stage = group.get("data-trial"), int(group.get("data-stage"))
+            row = stage * 2 + (trial == "B")
+            pair = observed["trials"][trial == "B"]["snapshot_indices_by_stage"][stage]
+            a, b = (observed["snapshots"][index]["metadata_prefix_sha256_by_slot"] for index in pair)
+            changed = [slot for slot in range(34) if a[slot] != b[slot]]
+            rects = group.findall(ns + "rect")
+            self.assertEqual(len(rects), 34)
+            for slot, rect in enumerate(rects):
+                yes = slot in changed
+                self.assertEqual(rect.attrib, {"data-slot": str(slot), "data-changed": "yes" if yes else "no",
+                    "x": str(320 + 20 * slot), "y": str(138 + 28 * row), "width": "16", "height": "18", "rx": "2",
+                    "fill": "#2469b2" if yes else "#edf0f5", "stroke": "#c4cedc"})
+                cells += 1
+            y = str(151 + 28 * row)
+            self.assertEqual(text["32", y], ("OPEN / pre-START", "First output, released", "Delivery EOS", "Host STOP returned")[stage])
+            self.assertEqual((text["278", y], text["1032", y]), (trial, str(len(changed))))
+        self.assertEqual(cells, 272)
+        for trial, y in zip(observed["trials"], ("451", "477")):
+            parts = []
+            for pass_number, index in enumerate(trial["snapshot_indices_by_stage"][1]):
+                fields = observed["snapshots"][index]["fields_hex"]
+                d, w, r, q = (int(fields[key], 16) for key in self.RING_FIELDS)
+                parts.append(f"pass{pass_number} D {d:02x}/{w:02x}, R {r:02x}/{q:02x}")
+            self.assertEqual(text["32", y], f"{trial['id']}: " + " → ".join(parts))
+        self.assertEqual(text["32", "508"], "One raw R write index 0 is outside normal source indices 2–63; its cause is unattributed.")
+        self.assertEqual(text["32", "539"], "EOS and post-STOP: eight matching late snapshots; all four ring words 3b.")
+        frames = sum(item["frames"] for item in observed["trials"] + observed["controls"])
+        self.assertEqual(text["32", "568"], f"{frames} / {frames} frames: whole-output controls, firmware EOS and cleanup passed.")
+        self.assertEqual(text["32", "595"], f"Each observed trial: {plan['per_trial_calls']} reads / "
+                         f"{plan['per_trial_bytes']:,} B · max {plan['max_read_bytes']} B · residual payloads are not published")
+        self.assertEqual(text["628", "391"], "Equal fingerprints, not a validity certificate")
+        self.assertEqual(text["32", "628"], "No current-record, ARC-completion, generation, extent or source-lease certification. "
+                         "No source-plane pointers followed.")
+        for private_path in (b"/home/", b"/tmp/"):
+            self.assertNotIn(private_path, raw)
+
+
 if __name__ == "__main__":
     unittest.main()
