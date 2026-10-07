@@ -1983,6 +1983,223 @@ public:
     }
 };
 
+struct AvdCodePrefixObserver;
+static thread_local AvdCodePrefixObserver *active_code_prefix = nullptr;
+enum class AvdCodePrefixFailure { None, Argument, Mode, Owner, Order, Budget, Api, Graph, Guard, Reentrant, Profile, Changed };
+// Two separately bracketed, fixed-catalog windows in a qualified owned arena.
+// These premises authorize this bounded test read, not a native source lease.
+struct AvdCodePrefixObserver {
+    typedef PpbContextObserver::Reader MemReader;
+    typedef AvdCpuMapObserver::Reader RegReader;
+    bool enabled = false, conflicting_mode = false, failed = false, attempted = false;
+    unsigned reads = 0, bytes = 0, mem_reads = 0, mem_bytes = 0, reg_reads = 0;
+    uint32_t raw[2][28] = {}, fields[2][9] = {}, manager[2] = {}, config[2][10] = {}, addresses[2] = {};
+    bool complete[2] = {};
+    BC_STATUS api_status = BC_STS_SUCCESS;
+    AvdCodePrefixFailure failure = AvdCodePrefixFailure::None;
+    PpbContextObserver *witness = nullptr;
+    static bool Profile(const PpbContextGraph &g, const uint32_t *f, uint32_t cc,
+                        const uint32_t *cpu, unsigned window, uint32_t *target) {
+        if (!f || !cpu || !target || window > 1 || !PpbContextObserver::Object(g.words[0], 1) ||
+            cc != g.words[19] || g.words[19] != 0x116004U || (f[3] & 255U) != 1U ||
+            f[2] != 0x100000U || !f[0] || !f[1] || ((f[0] | f[1]) & 4095U)) return false;
+        const uint64_t v = f[0], p = f[1], span = f[2], outer = f[4], inner = f[5];
+        if (v < g.words[34] || v + span > g.words[35] || v < g.words[36] ||
+            (v < static_cast<uint64_t>(g.words[21]) + g.words[23] && g.words[21] < v + span) ||
+            (p < static_cast<uint64_t>(g.words[22]) + g.words[23] && g.words[22] < p + span) ||
+            v + span > static_cast<uint64_t>(g.words[36]) + g.words[38] ||
+            p != static_cast<uint64_t>(g.words[37]) + v - g.words[36] ||
+            p + span > static_cast<uint64_t>(g.words[37]) + g.words[38] || p + span > 0x4000000U ||
+            outer != p || inner != p + 0x90000U || f[6] < 112U || f[7] < 112U ||
+            outer + f[6] > inner || inner + f[7] > p + span || outer + f[6] != f[8] ||
+            cpu[0] != 0x50U || cpu[9] != 0x50U || cpu[1] || cpu[8] ||
+            cpu[2] != inner || cpu[3] != f[7] || cpu[5] != outer || cpu[6] != f[6]) return false;
+        const uint64_t chosen = window ? inner : outer;
+        if (chosen + 112U > p + span || chosen > UINT32_MAX) return false;
+        *target = static_cast<uint32_t>(chosen); return true;
+    }
+private:
+    PpbContextGraph authority;
+    PpbContextObserver *expected_witness = nullptr;
+    const HANDLE *current = nullptr;
+    HANDLE owner = nullptr;
+    MemReader mem_reader = nullptr;
+    RegReader reg_reader = nullptr;
+    bool sealed = false, have_authority = false, witness_seeded = false, qualified = false;
+    bool have_profile = false;
+    unsigned witness_calls = 0, witness_bytes = 0, finished = 0;
+    uint32_t window_target = 0;
+    uint32_t frozen_fields[9] = {}, frozen_manager = 0, frozen_cpu[10] = {};
+    bool Reject(AvdCodePrefixFailure why) {
+        if (!failed) failure = why;
+        failed = true; return false;
+    }
+    bool Ready() {
+        if (failed) return false;
+        if (witness != expected_witness) return Reject(AvdCodePrefixFailure::Graph);
+        if (!sealed || !enabled || conflicting_mode || active_code_prefix != this) return Reject(AvdCodePrefixFailure::Mode);
+        if (!current || !*current || *current != owner) return Reject(AvdCodePrefixFailure::Owner);
+        if (complete[0] != (finished >= 1) || complete[1] != (finished >= 2)) return Reject(AvdCodePrefixFailure::Order);
+        return true;
+    }
+    static bool ChildMode(const PpbContextObserver &child) {
+        return child.enabled && child.video_graph && child.owner_video_graph &&
+            !child.post_stop && !child.owner_post_stop && !child.metadata_pool && !child.owner_metadata_pool &&
+            !child.return_header && !child.owner_return_header && !child.video_prefix && !child.owner_video_prefix &&
+            !child.video_staging && !child.owner_video_staging;
+    }
+    bool ChildReady(unsigned size) {
+        if (!witness || witness != expected_witness || witness->failed || !ChildMode(*witness) || witness->owner != owner ||
+            witness->next_stage != 1 || witness->active_stage != 0 || witness->reads != witness_calls + 1 ||
+            witness->stage_reads != witness_calls + 1 || witness->bytes != witness_bytes + size ||
+            witness->stage_bytes != witness_bytes + size || witness->measured != witness_calls || witness->complete[1] ||
+            witness->complete[0] != (witness_calls >= 31) || witness->admitted != (witness_seeded || witness_calls >= 31))
+            return Reject(AvdCodePrefixFailure::Graph);
+        if (witness->admitted && !have_authority) {
+            if (witness_seeded || witness_calls != 31 || !PpbContextObserver::Equal(witness->authority, witness->graph[0]) ||
+                !PpbContextObserver::Object(witness->authority.words[0], 1)) return Reject(AvdCodePrefixFailure::Graph);
+            authority = witness->authority; have_authority = true;
+        }
+        if (witness->admitted && !PpbContextObserver::Equal(witness->authority, authority)) return Reject(AvdCodePrefixFailure::Graph);
+        if (!witness->admitted) for (uint32_t word : witness->authority.words)
+            if (word) return Reject(AvdCodePrefixFailure::Graph);
+        return true;
+    }
+    BC_STATUS Call(HANDLE handle, uint32_t address, uint32_t *values, unsigned size, bool reg) {
+        if (!Ready()) return BC_STS_ERROR;
+        if (handle != owner || !values || !size || (size & 3U) || (address & 3U)) {
+            Reject(AvdCodePrefixFailure::Argument); return BC_STS_ERROR;
+        }
+        const unsigned position = reads % 149U;
+        const bool graph_call = position < 62U || position >= 87U;
+        const bool config_call = (position >= 64U && position < 74U) || (position >= 77U && position < 87U);
+        if (size > 112U || reads >= 298U || bytes > 1792U - size) { Reject(AvdCodePrefixFailure::Budget); return BC_STS_ERROR; }
+        if (reg != config_call || (graph_call && (reg || !ChildReady(size))) || (!graph_call && witness) ||
+            ((position == 62U || position == 75U) && (address != authority.words[0] + 0x1acU || size != 36U)) ||
+            ((position == 63U || position == 76U) && (address != authority.words[0] + 0xcU || size != 4U)) ||
+            (reg && (address != AvdCpuMapAddress(position < 74U ? position - 64U : position - 77U) || size != 4U)) ||
+            (position == 74U && (reg || !qualified || address != window_target || size != 112U))) {
+            Reject(AvdCodePrefixFailure::Order); return BC_STS_ERROR;
+        }
+        const unsigned old_reads = reads, old_bytes = bytes, old_mem_reads = mem_reads, old_mem_bytes = mem_bytes, old_reg_reads = reg_reads;
+        ++reads; bytes += size;
+        if (reg) ++reg_reads; else { ++mem_reads; mem_bytes += size; }
+        api_status = reg ? reg_reader(owner, address, values) : mem_reader(owner, values, size, address);
+        if (api_status != BC_STS_SUCCESS) { Reject(AvdCodePrefixFailure::Api); return api_status; }
+        if (!Ready()) return BC_STS_ERROR;
+        if (reads != old_reads + 1 || bytes != old_bytes + size || mem_reads != old_mem_reads + (reg ? 0U : 1U) ||
+            mem_bytes != old_mem_bytes + (reg ? 0U : size) || reg_reads != old_reg_reads + (reg ? 1U : 0U)) {
+            Reject(AvdCodePrefixFailure::Budget); return BC_STS_ERROR;
+        }
+        if (graph_call && address == 0xd3a08U && have_authority && values[0] != authority.words[0]) {
+            Reject(AvdCodePrefixFailure::Graph); return BC_STS_ERROR;
+        }
+        if (graph_call && !ChildReady(size)) return BC_STS_ERROR;
+        if (graph_call) { ++witness_calls; witness_bytes += size; }
+        return BC_STS_SUCCESS;
+    }
+    static BC_STATUS Memory(HANDLE handle, uint32_t *values, uint32_t size, uint32_t address) {
+        return active_code_prefix ? active_code_prefix->Call(handle, address, values, size, false) : BC_STS_ERROR;
+    }
+    static BC_STATUS Register(HANDLE handle, uint32_t address, uint32_t *value) {
+        return active_code_prefix ? active_code_prefix->Call(handle, address, value, 4, true) : BC_STS_ERROR;
+    }
+    bool Witness() {
+        PpbContextObserver graph; graph.enabled = graph.video_graph = true;
+        if (have_authority) { graph.admitted = true; graph.authority = authority; }
+        witness = expected_witness = &graph; witness_seeded = have_authority; witness_calls = witness_bytes = 0;
+        const bool observed = graph.Observe(current, 0, false, Memory, false);
+        witness = expected_witness = nullptr;
+        if (!observed || !Ready() || graph.failed || !ChildMode(graph) || graph.owner != owner || graph.next_stage != 1 ||
+            graph.reads != 62 || graph.bytes != 312 || graph.measured != 62 || !graph.complete[0] || !graph.complete[1] ||
+            !graph.admitted || !have_authority || !PpbContextObserver::Equal(authority, graph.authority) ||
+            !PpbContextObserver::Equal(authority, graph.graph[0]) || !PpbContextObserver::Equal(authority, graph.graph[1]))
+            return Reject(AvdCodePrefixFailure::Graph);
+        return true;
+    }
+    bool Scalars(uint32_t *scalar, uint32_t *cc, uint32_t *cpu) {
+        if (Memory(owner, scalar, 36, authority.words[0] + 0x1acU) != BC_STS_SUCCESS ||
+            Memory(owner, cc, 4, authority.words[0] + 0xcU) != BC_STS_SUCCESS) return false;
+        for (unsigned field = 0; field < 10; ++field) {
+            if (Register(owner, AvdCpuMapAddress(field), cpu + field) != BC_STS_SUCCESS) return false;
+            if ((field == 0 || field == 9) ? cpu[field] != 0x50U : (field == 1 || field == 8) && cpu[field])
+                return Reject(AvdCodePrefixFailure::Guard);
+        }
+        return true;
+    }
+public:
+    bool Observe(const HANDLE *handle, unsigned stage = 0, bool barrier = false,
+        MemReader memory_reader = DtsDevMemRd, RegReader register_reader = DtsDevRegisterRead, bool report = true) {
+        if (failed) return false;
+        if (!enabled && !sealed) return true;
+        if (active_code_prefix) { active_code_prefix->Reject(AvdCodePrefixFailure::Reentrant); return Reject(AvdCodePrefixFailure::Reentrant); }
+        if (!enabled || conflicting_mode) return Reject(AvdCodePrefixFailure::Mode);
+        if (!handle || !*handle || !memory_reader || !register_reader) return Reject(AvdCodePrefixFailure::Argument);
+        if (attempted || stage || barrier) return Reject(AvdCodePrefixFailure::Order);
+        if (reads || bytes || mem_reads || mem_bytes || reg_reads || complete[0] || complete[1]) return Reject(AvdCodePrefixFailure::Budget);
+        attempted = sealed = true; current = handle; owner = *handle; mem_reader = memory_reader; reg_reader = register_reader;
+        struct Route {
+            AvdCodePrefixObserver *previous;
+            explicit Route(AvdCodePrefixObserver *next) : previous(active_code_prefix) { active_code_prefix = next; }
+            ~Route() { active_code_prefix = previous; }
+        } route(this);
+        bool ok = true;
+        for (unsigned window = 0; window < 2 && ok; ++window) {
+            qualified = false;
+            uint32_t before[9] = {}, after[9] = {}, cc = 0, after_cc = 0, cpu[10] = {}, after_cpu[10] = {}, prefix[28] = {};
+            ok = Witness() && Scalars(before, &cc, cpu);
+            if (ok && have_profile && (cc != frozen_manager || std::memcmp(before, frozen_fields, sizeof(before)) ||
+                std::memcmp(cpu, frozen_cpu, sizeof(cpu)))) ok = Reject(AvdCodePrefixFailure::Changed);
+            if (ok) ok = Profile(authority, before, cc, cpu, window, &window_target) || Reject(AvdCodePrefixFailure::Profile);
+            if (ok && !have_profile) {
+                std::memcpy(frozen_fields, before, sizeof(before)); frozen_manager = cc;
+                std::memcpy(frozen_cpu, cpu, sizeof(cpu)); have_profile = true;
+            }
+            if (ok) { qualified = true; ok = Memory(owner, prefix, 112, window_target) == BC_STS_SUCCESS; }
+            if (ok) ok = Scalars(after, &after_cc, after_cpu);
+            if (ok && (cc != after_cc || std::memcmp(before, after, sizeof(before)) || std::memcmp(cpu, after_cpu, sizeof(cpu))))
+                ok = Reject(AvdCodePrefixFailure::Changed);
+            if (ok) ok = Witness();
+            if (ok && (reads != (window + 1U) * 149U || bytes != (window + 1U) * 896U)) ok = Reject(AvdCodePrefixFailure::Budget);
+            if (ok) {
+                std::memcpy(raw[window], prefix, sizeof(prefix)); std::memcpy(fields[window], before, sizeof(before));
+                manager[window] = cc; std::memcpy(config[window], cpu, sizeof(cpu)); addresses[window] = window_target;
+                complete[window] = true; ++finished;
+            }
+        }
+        if (report) Report();
+        return ok;
+    }
+    void Report() const {
+        std::printf("AVD code prefix: stage=after-OPEN/pre-START reads=%u/298 bytes=%u/1792 mem-reads=%u/258 mem-bytes=%u/1632 reg-reads=%u/40 api-status=%d failure=%u\n",
+            reads, bytes, mem_reads, mem_bytes, reg_reads, api_status, static_cast<unsigned>(failure));
+        for (unsigned window = 0; window < 2; ++window) {
+            std::printf("AVD code prefix raw: window=%s", window ? "inner-catalog90000" : "outer-catalog0");
+            if (window < finished && complete[window]) {
+                std::printf(" C=%08x C+08=%08x C+0c=%08x address=%08x bytes=112 ownership-u8=%u words=",
+                    authority.words[0], authority.words[19], manager[window], addresses[window], fields[window][3] & 255U);
+                for (unsigned word = 0; word < 28; ++word) std::printf("%s%08x", word ? "," : "", raw[window][word]);
+                std::printf(" global+18=%08x global+1c=%08x global+28=%08x global+30=%08x global+34=%08x",
+                    authority.words[34], authority.words[35], authority.words[36], authority.words[37], authority.words[38]);
+                for (unsigned word = 0; word < 9; ++word) std::printf(" C+%03x=%08x", 0x1ac + word * 4, fields[window][word]);
+                for (unsigned field = 0; field < 10; ++field) std::printf(" %08x=%08x", AvdCpuMapAddress(field), config[window][field]);
+            } else std::printf(" INCOMPLETE");
+            std::printf("\n");
+        }
+        std::printf("AVD code prefix scope: two separately bracketed raw inventory reads; fixed-owned-arena+catalog targets only; after-START-target-reads=0 plane/bank-target-reads=0 target-writes=0 "
+            "stock-comparison=separate atomic/native-alias/allocation-generation/lease/completion-certified=no\n");
+        std::fflush(stdout);
+    }
+    bool Finish(bool native_ok, bool report = true) const {
+        if (!sealed && !enabled && !failed) return native_ok;
+        const bool observed = !failed && sealed && enabled && !conflicting_mode && attempted && have_authority && have_profile && finished == 2 &&
+            complete[0] && complete[1] && reads == 298 && bytes == 1792 && mem_reads == 258 && mem_bytes == 1632 && reg_reads == 40;
+        if (report) std::printf("AVD code prefix finish: native-result=%s observation-result=%s reads=%u/298 bytes=%u/1792 "
+            "native-alias/allocation-generation/lease-certified=no\n", native_ok ? "PASS" : "FAIL", observed ? "PASS" : "FAIL", reads, bytes);
+        return native_ok && observed;
+    }
+};
+
 enum class MfdFramingFailure { None, Argument, Read, Revision, Reserved, Unavailable, Owner, Order, Publication };
 struct MfdFramingSnapshot {
     uint32_t raw[10] = {};
@@ -2595,6 +2812,7 @@ struct Options {
     bool observe_avd_memory = false;
     bool observe_avd_cpu_map = false;
     bool observe_avd_code_arena = false;
+    bool observe_avd_code_prefix = false;
     unsigned inject_mfd_colour = 0;
     unsigned scl_status_test = 0;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
@@ -2602,7 +2820,7 @@ struct Options {
 
 static bool AvdMemoryConflicts(const Options &o)
 {
-    return o.observe_avd_code_arena || o.observe_avd_cpu_map || o.observe_chroma || o.observe_scl_config || o.observe_scl_filter_map || o.observe_scl_view ||
+    return o.observe_avd_code_prefix || o.observe_avd_code_arena || o.observe_avd_cpu_map || o.observe_chroma || o.observe_scl_config || o.observe_scl_filter_map || o.observe_scl_view ||
         o.observe_mfd_config || o.observe_mfd_address || o.observe_mfd_framing || o.observe_runtime_inventory ||
         o.observe_arm_metadata || o.observe_arm_source_shape || o.observe_ppb_context || o.observe_ppb_stop ||
         o.observe_ppb_metadata || o.observe_ppb_return || o.observe_video_prefix || o.observe_video_graph ||
@@ -2621,6 +2839,12 @@ static bool AvdCodeArenaConflicts(const Options &o)
     Options other = o;
     other.observe_avd_code_arena = false;
     return o.observe_avd_memory || o.observe_avd_cpu_map || AvdMemoryConflicts(other);
+}
+static bool AvdCodePrefixConflicts(const Options &o)
+{
+    Options other = o;
+    other.observe_avd_code_prefix = false;
+    return o.observe_avd_code_arena || o.observe_avd_cpu_map || o.observe_avd_memory || AvdMemoryConflicts(other);
 }
 
 static uint32_t ProbeDeviceMode(const Options &options)
@@ -2675,6 +2899,10 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
     }
     if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-avd-code-arena")) {
         options->observe_avd_code_arena = true;
+        arguments.pop_back();
+    }
+    if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-avd-code-prefix")) {
+        options->observe_avd_code_prefix = true;
         arguments.pop_back();
     }
     if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-runtime-inventory")) {
@@ -2748,7 +2976,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         arguments.resize(arguments.size() - 2);
     }
     if (arguments.size() == 2 && !std::strcmp(arguments[1], "--self-test")) {
-        if (options->observe_avd_code_arena || options->observe_avd_cpu_map || options->observe_avd_memory || options->capture_path || options->observe_arm_metadata || options->observe_arm_source_shape || options->observe_ppb_context || options->observe_runtime_inventory || options->observe_chroma || options->observe_scl_config || options->observe_scl_filter_map || options->observe_scl_view || options->observe_mfd_config || options->observe_mfd_address || options->observe_mfd_framing || options->inject_mfd_colour || options->scl_status_test || options->scaler_test || options->mpeg1_via_mpeg2 ||
+        if (options->observe_avd_code_prefix || options->observe_avd_code_arena || options->observe_avd_cpu_map || options->observe_avd_memory || options->capture_path || options->observe_arm_metadata || options->observe_arm_source_shape || options->observe_ppb_context || options->observe_runtime_inventory || options->observe_chroma || options->observe_scl_config || options->observe_scl_filter_map || options->observe_scl_view || options->observe_mfd_config || options->observe_mfd_address || options->observe_mfd_framing || options->inject_mfd_colour || options->scl_status_test || options->scaler_test || options->mpeg1_via_mpeg2 ||
             options->h263_via_divx || options->open_only) return false;
         options->mode = Mode::SelfTest;
         return true;
@@ -2774,6 +3002,9 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
     if (options->observe_avd_code_arena && (!hardware || !options->capture_path || !options->scaler_test ||
         options->scale_width || options->expected != 180 || options->iterations != 1 ||
         options->output_format != OUTPUT_MODE422_YUY2 || AvdCodeArenaConflicts(*options))) return false;
+    if (options->observe_avd_code_prefix && (!hardware || !options->capture_path || !options->scaler_test ||
+        options->scale_width || options->expected != 180 || options->iterations != 1 ||
+        options->output_format != OUTPUT_MODE422_YUY2 || AvdCodePrefixConflicts(*options))) return false;
     if ((options->observe_arm_metadata || options->observe_arm_source_shape || options->observe_ppb_context) &&
         (!hardware || !options->capture_path || !options->scaler_test || options->scale_width ||
          options->expected != 180 || options->iterations != 1 || options->output_format != OUTPUT_MODE422_YUY2 ||
@@ -2856,7 +3087,7 @@ static bool SclInputAdmitted(const Options &options, const Input &input)
 
 static bool NeedsRawIo(const Options &options)
 {
-    return options.observe_avd_code_arena || options.observe_avd_cpu_map || options.observe_avd_memory || options.observe_arm_metadata || options.observe_arm_source_shape || options.observe_ppb_context || options.observe_runtime_inventory || options.observe_chroma || options.observe_scl_config || options.observe_scl_filter_map ||
+    return options.observe_avd_code_prefix || options.observe_avd_code_arena || options.observe_avd_cpu_map || options.observe_avd_memory || options.observe_arm_metadata || options.observe_arm_source_shape || options.observe_ppb_context || options.observe_runtime_inventory || options.observe_chroma || options.observe_scl_config || options.observe_scl_filter_map ||
         options.observe_scl_view || options.observe_mfd_config || options.observe_mfd_address || options.observe_mfd_framing || options.inject_mfd_colour || options.scl_status_test;
 }
 
@@ -2908,6 +3139,11 @@ static bool AvdCpuMapInputAdmitted(const Options &options, const Input &input)
 static bool AvdCodeArenaInputAdmitted(const Options &options, const Input &input)
 {
     return !options.observe_avd_code_arena || (AvdCpuMapInputShape(options, input) &&
+        SubmittedPacketDigestMatches(input, 124832, "1363a87c8f59fab6187cd13653a3ba8a41fd994066d30c24be1c2b09d675666e"));
+}
+static bool AvdCodePrefixInputAdmitted(const Options &options, const Input &input)
+{
+    return !options.observe_avd_code_prefix || (AvdCpuMapInputShape(options, input) &&
         SubmittedPacketDigestMatches(input, 124832, "1363a87c8f59fab6187cd13653a3ba8a41fd994066d30c24be1c2b09d675666e"));
 }
 
@@ -5706,6 +5942,360 @@ template<class Check> static void AvdCodeArenaSelfTest(const Check &check)
         "code arena exact input-byte digest is mandatory while default path remains unchanged");
 }
 
+struct AvdCodePrefixFixture {
+    struct Trace { bool reg; uint32_t address, bytes; } trace[298] = {};
+    unsigned calls = 0, prefixes = 0, fail_at = 298, lose_at = 298, mutate_at = 298, mutation = 0;
+    unsigned graph_change_after = 298;
+    bool valid = true;
+    HANDLE current = this, replacement = nullptr;
+    BC_STATUS status = BC_STS_ERROR;
+    AvdCodePrefixObserver *subject = nullptr;
+    PpbContextFixture graph;
+    uint32_t fields[2][2][9] = {}, manager[2][2] = {}, config[2][2][10] = {}, raw[2][28] = {};
+    AvdCodePrefixFixture() {
+        graph.video_graph = true;
+        const uint32_t code[] = {0x1300000,0x1300000,0x100000,0xaa000001,0x1300000,0x1390000,0x70000,0x50000,0x1370000};
+        const uint32_t cpu[] = {0x50,0,0x1390000,0x50000,0xffffffff,0x1300000,0x70000,0,0,0x50};
+        for (unsigned window = 0; window < 2; ++window) {
+            for (unsigned phase = 0; phase < 2; ++phase) {
+                std::memcpy(fields[window][phase], code, sizeof(code)); manager[window][phase] = 0x116004;
+                std::memcpy(config[window][phase], cpu, sizeof(cpu));
+            }
+            for (unsigned word = 0; word < 28; ++word) raw[window][word] = 0x12345678U + window * 256U + word;
+        }
+    }
+    static BC_STATUS Read(AvdCodePrefixFixture *f, bool reg, uint32_t *out, unsigned size, uint32_t address) {
+        const unsigned index = f->calls++, position = index % 149U, window = index / 149U;
+        const bool config_call = (position >= 64 && position < 74) || (position >= 77 && position < 87);
+        const unsigned phase = position >= 75 ? 1U : 0U;
+        const uint32_t cpu[] = {0x540000,0x4000d4,0x800f0c,0x800f34,0x800f38,0x800f8c,0x800fb4,0x800fb8,0x4000d4,0x540000};
+        const uint32_t addresses[] = {0xd3a08,0xd3a20,0xd3ac4,0xd3ad0,0xd3bec,0xd3c90,0xd3c9c,0xd3db8,0xd3e5c,0xd3e68,0xd3f84,0xd4028,0xd4034,
+            0xd6000,0xd6008,0xd6064,0xd60cc,0xd6224,0xd5408,0xd55a0,0xd55d4,0xd5800,0xd5808,0xd5810,0xd5a18,0xd5a28,0xd5a30,0xd5a40,0x11601c,0x11602c,0x116034};
+        const unsigned counts[] = {1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1,1,3,1,1,2,2,1,2,1,2,1,2};
+        if (index >= 298 || !out || !size || size > 112 || (size & 3U)) { f->valid = false; return BC_STS_ERROR; }
+        f->trace[index] = {reg,address,size}; f->valid &= reg == config_call;
+        if (config_call) {
+            const unsigned field = position < 74 ? position - 64 : position - 77;
+            f->valid &= address == cpu[field] && size == 4; *out = f->config[window][phase][field];
+        } else if (position == 62 || position == 75) {
+            f->valid &= address == 0xd55ac && size == 36;
+            if (size == 36) std::memcpy(out, f->fields[window][phase], 36);
+        } else if (position == 63 || position == 76) {
+            f->valid &= address == 0xd540c && size == 4; *out = f->manager[window][phase];
+        } else if (position == 74) {
+            ++f->prefixes; f->valid &= address == (window ? 0x1390000U : 0x1300000U) && size == 112;
+            if (size == 112) std::memcpy(out, f->raw[window], 112);
+        } else {
+            const unsigned field = (position < 62 ? position : position - 87U) % 31U;
+            f->valid &= address == addresses[field] && size == counts[field] * 4;
+            for (unsigned word = 0; word < size / 4; ++word) out[word] = f->graph.Word(address + word * 4U, 0);
+            if (index >= f->graph_change_after && address == 0xd3a08) *out ^= 4U;
+        }
+        if (index == f->fail_at) for (unsigned word = 0; word < size / 4; ++word) out[word] = 0xdeadbeefU;
+        if (index == f->lose_at) f->current = f->replacement;
+        if (index == f->mutate_at && f->subject) {
+            auto *o = f->subject;
+            if (f->mutation == 0) o->enabled = false;
+            if (f->mutation == 1) o->conflicting_mode = true;
+            if (f->mutation == 2) ++o->reads;
+            if (f->mutation == 3) ++o->bytes;
+            if (f->mutation == 4) ++o->mem_reads;
+            if (f->mutation == 5) ++o->mem_bytes;
+            if (f->mutation == 6) ++o->reg_reads;
+            if (f->mutation == 7) o->witness = nullptr;
+            if (f->mutation == 8) active_code_prefix = nullptr;
+            if (f->mutation == 9) { AvdCodePrefixObserver nested; nested.enabled = true; (void)nested.Observe(&f->current, 0, false, Memory, Register, false); }
+            if (f->mutation == 10) o->complete[index / 149] = true;
+            if (f->mutation == 28) o->witness = reinterpret_cast<PpbContextObserver *>(0x123);
+            if (o->witness) {
+                if (f->mutation == 11) o->witness->video_graph = o->witness->owner_video_graph = false;
+                if (f->mutation == 12) o->witness->enabled = false;
+                if (f->mutation == 13) o->witness->owner = nullptr;
+                if (f->mutation == 14) ++o->witness->reads;
+                if (f->mutation == 15) ++o->witness->bytes;
+                if (f->mutation == 16) ++o->witness->measured;
+                if (f->mutation == 17) o->witness->authority.words[0] ^= 4U;
+                if (f->mutation == 18) { o->witness->authority.words[0] ^= 4U; o->witness->graph[0].words[0] ^= 4U; }
+                if (f->mutation == 19) o->witness->admitted = !o->witness->admitted;
+                if (f->mutation == 20) o->witness->owner_video_prefix = true;
+                if (f->mutation == 21) o->witness->metadata_pool = true;
+                if (f->mutation == 22) o->witness->owner_video_staging = true;
+                if (f->mutation == 23) ++o->witness->next_stage;
+                if (f->mutation == 24) ++o->witness->active_stage;
+                if (f->mutation == 25) ++o->witness->stage_reads;
+                if (f->mutation == 26) ++o->witness->stage_bytes;
+                if (f->mutation == 27) o->witness->complete[1] = true;
+                if (f->mutation == 29) o->witness->post_stop = true;
+                if (f->mutation == 30) o->witness->owner_post_stop = true;
+                if (f->mutation == 31) o->witness->return_header = true;
+                if (f->mutation == 32) o->witness->owner_return_header = true;
+                if (f->mutation == 33) o->witness->video_prefix = true;
+                if (f->mutation == 34) o->witness->owner_metadata_pool = true;
+                if (f->mutation == 35) o->witness->video_staging = true;
+                if (f->mutation == 36) o->witness->owner_video_graph = false;
+                if (f->mutation == 37) o->witness->failed = true;
+            }
+        }
+        return index == f->fail_at ? f->status : BC_STS_SUCCESS;
+    }
+    static BC_STATUS Memory(HANDLE handle, uint32_t *out, uint32_t size, uint32_t address) {
+        return Read(static_cast<AvdCodePrefixFixture *>(handle), false, out, size, address);
+    }
+    static BC_STATUS Register(HANDLE handle, uint32_t address, uint32_t *out) {
+        return Read(static_cast<AvdCodePrefixFixture *>(handle), true, out, 4, address);
+    }
+    bool Exercise(AvdCodePrefixObserver *o) {
+        subject = o; o->enabled = true;
+        return o->Observe(&current, 0, false, Memory, Register, false) && o->Finish(true, false);
+    }
+};
+
+template<class Check> static void AvdCodePrefixSelfTest(const Check &check)
+{
+    const uint32_t graph_addresses[] = {0xd3a08,0xd3a20,0xd3ac4,0xd3ad0,0xd3bec,0xd3c90,0xd3c9c,0xd3db8,0xd3e5c,0xd3e68,0xd3f84,0xd4028,0xd4034,
+        0xd6000,0xd6008,0xd6064,0xd60cc,0xd6224,0xd5408,0xd55a0,0xd55d4,0xd5800,0xd5808,0xd5810,0xd5a18,0xd5a28,0xd5a30,0xd5a40,0x11601c,0x11602c,0x116034};
+    const unsigned graph_counts[] = {1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1,1,3,1,1,2,2,1,2,1,2,1,2};
+    const uint32_t registers[] = {0x540000,0x4000d4,0x800f0c,0x800f34,0x800f38,0x800f8c,0x800fb4,0x800fb8,0x4000d4,0x540000};
+    AvdCodePrefixObserver disabled;
+    check(disabled.Observe(nullptr, 99, true, nullptr, nullptr, false) && disabled.Finish(true, false) &&
+        !disabled.Finish(false, false) && disabled.reads == 0 && active_code_prefix == nullptr,
+        "code prefix defaults off with no I/O and preserves native failure");
+    AvdCodePrefixObserver stable;
+    for (unsigned variant = 0; variant < 4; ++variant) {
+        struct Canary { uint32_t before = 0x12345678; AvdCodePrefixFixture fixture; AvdCodePrefixObserver observer; uint32_t after = 0x87654321; } c;
+        for (unsigned window = 0; window < 2; ++window) {
+            for (unsigned word = 0; word < 28; ++word)
+                c.fixture.raw[window][word] = variant == 0 ? 0U : variant == 1 ? UINT32_MAX : 0x12340000U + window * 256U + word;
+            for (unsigned phase = 0; phase < 2; ++phase) {
+                c.fixture.config[window][phase][4] = variant == 0 ? 0U : variant == 1 ? UINT32_MAX : 0x10000003U;
+                c.fixture.config[window][phase][7] = variant == 2 ? 1U : 0U;
+            }
+        }
+        check(c.fixture.Exercise(&c.observer) && c.fixture.valid && c.fixture.calls == 298 && c.fixture.prefixes == 2 &&
+            c.observer.reads == 298 && c.observer.bytes == 1792 && c.observer.mem_reads == 258 && c.observer.mem_bytes == 1632 &&
+            c.observer.reg_reads == 40 && c.before == 0x12345678 && c.after == 0x87654321 && active_code_prefix == nullptr &&
+            !c.observer.Finish(false, false), "code prefix literal 298/1792 accepts arbitrary raw prefix bytes/GIO without content or alias certification");
+        unsigned all_bytes = 0, mem_calls = 0, mem_bytes = 0, reg_calls = 0, prefix_calls = 0;
+        for (unsigned index = 0; index < 298; ++index) {
+            const unsigned position = index % 149, window = index / 149;
+            const bool reg = (position >= 64 && position < 74) || (position >= 77 && position < 87);
+            const unsigned graph_field = (position < 62 ? position : position - 87U) % 31U;
+            const uint32_t address = reg ? registers[position < 74 ? position - 64 : position - 77] :
+                position == 62 || position == 75 ? 0xd55acU : position == 63 || position == 76 ? 0xd540cU :
+                position == 74 ? (window ? 0x1390000U : 0x1300000U) : graph_addresses[graph_field];
+            const unsigned size = reg || position == 63 || position == 76 ? 4U : position == 62 || position == 75 ? 36U :
+                position == 74 ? 112U : graph_counts[graph_field] * 4U;
+            check(c.fixture.trace[index].reg == reg && c.fixture.trace[index].address == address && c.fixture.trace[index].bytes == size,
+                "code prefix independent ordinal trace brackets each single112-byte fixed-catalog read with its own scalars and graph witnesses");
+            all_bytes += size;
+            if (reg) ++reg_calls; else { ++mem_calls; mem_bytes += size; }
+            if (position == 74) ++prefix_calls;
+        }
+        check(all_bytes == 1792 && mem_calls == 258 && mem_bytes == 1632 && reg_calls == 40 && prefix_calls == 2,
+            "code prefix independent total includes exactly224 target bytes and no post-START reads");
+        for (unsigned window = 0; window < 2; ++window)
+            check(c.observer.complete[window] && !std::memcmp(c.observer.raw[window], c.fixture.raw[window], 112) &&
+                c.observer.addresses[window] == (window ? 0x1390000U : 0x1300000U),
+                "code prefix publication contains detached data only after all closing witnesses match");
+        if (variant == 2) stable = c.observer;
+    }
+    for (unsigned at = 0; at < 298; ++at) {
+        const unsigned position = at % 149, window = at / 149;
+        const bool graph_call = position < 62 || position >= 87;
+        for (int code = -1; code <= BC_STS_PWR_MGMT; ++code) {
+            if (code == BC_STS_SUCCESS) continue;
+            AvdCodePrefixFixture f; f.fail_at = at; f.status = static_cast<BC_STATUS>(code); AvdCodePrefixObserver o;
+            check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && o.failure == AvdCodePrefixFailure::Api && o.api_status == code &&
+                !o.complete[window] && o.raw[window][0] == 0 && !o.Finish(true, false) && active_code_prefix == nullptr,
+                "code prefix every non-success API status at all298 callbacks rejects poison and incomplete publication");
+            o.enabled = false;
+            check(!o.Observe(&f.current, 0, false, AvdCodePrefixFixture::Memory, AvdCodePrefixFixture::Register, false) && f.calls == at + 1,
+                "code prefix API failures stay sticky without retry or further reads");
+        }
+        for (bool replace : {false, true}) {
+            AvdCodePrefixFixture f, other; f.lose_at = at; f.replacement = replace ? static_cast<HANDLE>(&other) : nullptr;
+            AvdCodePrefixObserver o;
+            check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && other.calls == 0 && o.failure == AvdCodePrefixFailure::Owner &&
+                !o.complete[window] && active_code_prefix == nullptr, "code prefix each callback rejects lost/replaced native owner before publication/follow");
+        }
+        for (unsigned mutation = 0; mutation <= 10; ++mutation) {
+            if (mutation == 7 && !graph_call) continue;
+            AvdCodePrefixFixture f; f.mutate_at = at; f.mutation = mutation; AvdCodePrefixObserver o;
+            check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && o.failed && !o.Finish(true, false) && active_code_prefix == nullptr,
+                "code prefix callback parent mode/counter/child/adapter/reentrant/publication faults cannot bypass sealed state");
+        }
+        if (graph_call) for (unsigned mutation = 11; mutation <= 37; ++mutation) {
+            AvdCodePrefixFixture f; f.mutate_at = at; f.mutation = mutation; AvdCodePrefixObserver o;
+            check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && o.failed && !o.Finish(true, false) && active_code_prefix == nullptr,
+                "code prefix nested callbacks require exact child modes/owner/ordinal and reject paired public authority tamper before follow");
+        }
+        if ((position >= 64 && position < 74) || (position >= 77 && position < 87)) {
+            const unsigned phase = position >= 77, field = phase ? position - 77 : position - 64;
+            if (field == 1 || field == 8) for (unsigned bit = 0; bit < 32; ++bit) {
+                AvdCodePrefixFixture f; f.config[window][phase][field] = 1U << bit; AvdCodePrefixObserver o;
+                check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && o.failure == AvdCodePrefixFailure::Guard && !o.complete[window],
+                    "code prefix every opening/closing GISB bit is fatal without error-clear writes or retry");
+            }
+            if (field == 0 || field == 9) for (uint32_t value : {0U, 0x51U, 0x10050U, UINT32_MAX}) {
+                AvdCodePrefixFixture f; f.config[window][phase][field] = value; AvdCodePrefixObserver o;
+                check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && o.failure == AvdCodePrefixFailure::Guard,
+                    "code prefix each revision bracket requires exact50 rather than matching low bits");
+            }
+        }
+    }
+    for (unsigned window = 0; window < 2; ++window) for (unsigned fault = 0; fault < 32; ++fault) {
+        AvdCodePrefixFixture f; AvdCodePrefixObserver o;
+        for (unsigned phase = 0; phase < 2; ++phase) {
+            uint32_t *s = f.fields[window][phase], *c = f.config[window][phase];
+            if (fault == 0) s[0] = 0;
+            if (fault == 1) s[0] = 0xfffff000U;
+            if (fault == 2) s[0] ^= 4;
+            if (fault == 3) s[0] = 0x116000;
+            if (fault == 4) s[1] = 0;
+            if (fault == 5) s[1] = 0xfffff000U;
+            if (fault == 6) s[1] ^= 4;
+            if (fault == 7) s[2] = 0;
+            if (fault == 8) s[2] -= 4;
+            if (fault == 9) s[2] += 4;
+            if (fault == 10) s[3] &= ~255U;
+            if (fault == 11) s[3] = 2;
+            if (fault == 12) s[3] = UINT32_MAX;
+            if (fault == 13) s[4] += 4;
+            if (fault == 14) s[5] += 4;
+            if (fault == 15) s[6] = 111;
+            if (fault == 16) s[7] = 111;
+            if (fault == 17) s[6] = 0x90004;
+            if (fault == 18) s[7] = 0x70004;
+            if (fault == 19) ++s[8];
+            if (fault == 20) s[6] = UINT32_MAX;
+            if (fault == 21) s[7] = UINT32_MAX;
+            if (fault == 22) f.manager[window][phase] = 0;
+            if (fault == 23) f.manager[window][phase] ^= 4;
+            if (fault == 24) c[2] += 4;
+            if (fault == 25) c[3] += 4;
+            if (fault == 26) c[5] += 4;
+            if (fault == 27) c[6] += 4;
+            if (fault == 28) { s[0] += 4096; s[1] += 8192; }
+            if (fault >= 29) {
+                const uint32_t base = fault == 29 ? 0x200000U : fault == 30 ? 0x1f0000U : 0x1180000U;
+                s[0] = s[1] = s[4] = base; s[5] = base + 0x90000U; s[8] = base + s[6];
+                c[2] = s[5]; c[5] = s[4];
+            }
+        }
+        check(!f.Exercise(&o) && f.valid && f.prefixes == window && f.calls == window * 149 + 74 &&
+            o.failure == (window ? AvdCodePrefixFailure::Changed : AvdCodePrefixFailure::Profile) && !o.complete[window],
+            "code prefix unsafe ownership/size/map/overflow/envelope/catalog/CPU or full/partial video overlap refuses before any affected prefix");
+    }
+    for (unsigned fault = 0; fault < 3; ++fault) {
+        AvdCodePrefixFixture f; AvdCodePrefixObserver o;
+        for (unsigned phase = 0; phase < 2; ++phase) {
+            uint32_t *s = f.fields[1][phase], *c = f.config[1][phase];
+            if (fault == 0) {
+                for (unsigned word : {0U,1U,4U,5U,8U}) s[word] += 4096U;
+                c[2] += 4096U; c[5] += 4096U;
+            }
+            if (fault == 1) s[3] ^= 0x10000U;
+            if (fault == 2) c[4] ^= 4U;
+        }
+        check(!f.Exercise(&o) && f.valid && f.calls == 223 && f.prefixes == 1 && o.complete[0] && !o.complete[1] &&
+            o.failure == AvdCodePrefixFailure::Changed && o.addresses[1] == 0,
+            "code prefix private first-opening seal rejects coherent valid reallocation, adjacent owner bits and rawGIO changes before second target");
+    }
+    for (unsigned window = 0; window < 2; ++window) for (unsigned field = 0; field < 20; ++field) {
+        AvdCodePrefixFixture f; AvdCodePrefixObserver o;
+        if (field < 9) f.fields[window][1][field] ^= 4U;
+        else if (field == 9) f.manager[window][1] ^= 4U;
+        else f.config[window][1][field - 10] ^= 4U;
+        check(!f.Exercise(&o) && f.valid && f.prefixes == window + 1 && !o.complete[window] && !o.Finish(true, false),
+            "code prefix every post-read scalar/CPU delta prevents publication and stops the next prefix");
+    }
+    for (unsigned at : {31U,87U,118U,149U,180U,236U,267U}) {
+        AvdCodePrefixFixture f; f.graph_change_after = at; AvdCodePrefixObserver o;
+        check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && f.prefixes == (at < 74 ? 0U : at < 223 ? 1U : 2U) &&
+            !o.complete[at / 149], "code prefix frozen rootC changes reject immediately without a changed pointer follow or second prefix");
+    }
+    for (unsigned fault = 0; fault < 14; ++fault) {
+        AvdCodePrefixFixture f; AvdCodePrefixObserver o; o.enabled = true; bool ok = false;
+        if (fault == 0) ok = o.Observe(nullptr, 0, false, AvdCodePrefixFixture::Memory, AvdCodePrefixFixture::Register, false);
+        if (fault == 1) { f.current = nullptr; ok = o.Observe(&f.current, 0, false, AvdCodePrefixFixture::Memory, AvdCodePrefixFixture::Register, false); }
+        if (fault == 2) ok = o.Observe(&f.current, 0, false, nullptr, AvdCodePrefixFixture::Register, false);
+        if (fault == 3) ok = o.Observe(&f.current, 0, false, AvdCodePrefixFixture::Memory, nullptr, false);
+        if (fault == 4) ok = o.Observe(&f.current, 1, false, AvdCodePrefixFixture::Memory, AvdCodePrefixFixture::Register, false);
+        if (fault == 5) ok = o.Observe(&f.current, 0, true, AvdCodePrefixFixture::Memory, AvdCodePrefixFixture::Register, false);
+        if (fault == 6) o.conflicting_mode = true;
+        if (fault == 7) ++o.reads;
+        if (fault == 8) ++o.bytes;
+        if (fault == 9) ++o.mem_reads;
+        if (fault == 10) ++o.mem_bytes;
+        if (fault == 11) ++o.reg_reads;
+        if (fault == 12) o.reads = UINT_MAX;
+        if (fault == 13) o.complete[0] = true;
+        if (fault >= 6) ok = o.Observe(&f.current, 0, false, AvdCodePrefixFixture::Memory, AvdCodePrefixFixture::Register, false);
+        check(!ok && o.failed && f.calls == 0 && f.prefixes == 0 && active_code_prefix == nullptr,
+            "code prefix initial argument/barrier/budget/publication/mixed-mode faults are rejected before all I/O");
+    }
+    for (unsigned stage : {0U,1U,2U}) {
+        AvdCodePrefixFixture f; AvdCodePrefixObserver duplicate = stable;
+        check(!duplicate.Observe(&f.current, stage, stage != 0, AvdCodePrefixFixture::Memory, AvdCodePrefixFixture::Register, false) &&
+            f.calls == 0 && f.prefixes == 0 && !duplicate.Finish(true, false),
+            "code prefix duplicate/later-stage calls cannot issue any post-START I/O");
+    }
+    AvdCodePrefixFixture forged_fixture; forged_fixture.mutate_at = 75; forged_fixture.mutation = 10;
+    AvdCodePrefixObserver forged;
+    check(!forged_fixture.Exercise(&forged) && forged.complete[0] && !forged.Finish(true, false),
+        "code prefix spoofed public complete flag cannot certify a privately unfinished closing bracket");
+    AvdCodePrefixFixture rejected_fixture; rejected_fixture.fail_at = 75; AvdCodePrefixObserver rejected;
+    check(!rejected_fixture.Exercise(&rejected), "code prefix incomplete first closing bracket setup");
+    FILE *log = std::tmpfile(); const int saved = log ? dup(STDOUT_FILENO) : -1;
+    const bool redirected = saved >= 0 && dup2(fileno(log), STDOUT_FILENO) >= 0;
+    if (redirected) { stable.Report(); stable.Finish(true); stable.Finish(false); rejected.Report(); forged.Report(); }
+    std::fflush(stdout);
+    if (saved >= 0) { (void)dup2(saved, STDOUT_FILENO); close(saved); }
+    char text[8192] = {}; size_t length = 0;
+    if (log) { std::rewind(log); length = std::fread(text, 1, sizeof(text) - 1, log); std::fclose(log); }
+    check(redirected && length && std::strstr(text, "reads=298/298 bytes=1792/1792 mem-reads=258/258 mem-bytes=1632/1632 reg-reads=40/40") &&
+        std::strstr(text, "address=01300000 bytes=112") && std::strstr(text, "address=01390000 bytes=112") &&
+        std::strstr(text, "window=outer-catalog0 INCOMPLETE") && !std::strstr(text, "deadbeef") &&
+        !std::strstr(text, "address=00000000 bytes=112") &&
+        std::strstr(text, "native-result=PASS observation-result=PASS") && std::strstr(text, "native-result=FAIL observation-result=PASS") &&
+        std::strstr(text, "stock-comparison=separate") && std::strstr(text, "after-START-target-reads=0") &&
+        std::strstr(text, "atomic/native-alias/allocation-generation/lease/completion-certified=no"),
+        "code prefix saved-only report separates complete raw bytes, stock comparison and all uncertified native lifetimes");
+    const std::vector<const char *> valid = {"probe","--hardware","fixture","180","30","1","--scaler-test","0",
+        "--observe-avd-code-prefix","--capture-yuy2","new"};
+    Options admitted;
+    check(ParseArguments(valid, &admitted) && admitted.observe_avd_code_prefix && !AvdCodePrefixConflicts(admitted) &&
+        NeedsRawIo(admitted) && !NeedsRawIo(Options{}), "code prefix separate opt-in requires CAP before all fixture/capture/device actions");
+    const std::vector<std::vector<const char *>> forbidden = {{"--observe-avd-code-prefix"},{"--observe-avd-code-arena"},{"--observe-avd-cpu-map"},{"--observe-avd-memory"},
+        {"--observe-video-staging"},{"--observe-video-prefix"},{"--observe-video-graph"},{"--observe-ppb-context"},{"--observe-ppb-stop"},
+        {"--observe-ppb-metadata"},{"--observe-ppb-return"},{"--observe-arm-metadata"},{"--observe-arm-source-shape"},{"--observe-runtime-inventory"},
+        {"--observe-mfd-framing"},{"--observe-mfd-config"},{"--observe-mfd-address"},{"--observe-scl-config"},{"--observe-scl-filter-map"},
+        {"--observe-scl-view","2"},{"--observe-chroma"},{"--inject-mfd-colour","a"},{"--scl-status-test","observe"},{"--open-only"},
+        {"--mpeg1-via-mpeg2"},{"--h263-via-divx"},{"--scaler-test","0"},{"--capture-yuy2","other"}};
+    for (const auto &extra : forbidden) for (unsigned order = 0; order < 2; ++order) {
+        auto args = valid; args.insert(order ? args.end() - 2 : args.begin() + 8, extra.begin(), extra.end()); Options o;
+        check(!ParseArguments(args, &o), "code prefix duplicate/mixed modes reject in either argument order");
+    }
+    for (unsigned fault = 0; fault < 10; ++fault) {
+        auto args = valid;
+        if (fault == 0) args[1] = "--preflight";
+        if (fault == 1) args[1] = "--self-test";
+        if (fault == 2) args[3] = "179";
+        if (fault == 3) args[5] = "2";
+        if (fault == 4) args[7] = "128";
+        if (fault == 5) args[8] = "--observe-avd-code-prefix=0";
+        if (fault == 6) args[9] = "--capture-uyvy";
+        if (fault == 7) args[10] = "-";
+        if (fault == 8) args[10] = "";
+        if (fault == 9) args.resize(9);
+        Options o; check(!ParseArguments(args, &o), "code prefix exact hardware/scaler0/180/one-iteration/freshYUY2 syntax cannot broaden");
+    }
+    Input native; native.codec = AV_CODEC_ID_H264; native.subtype = BC_MSUBTYPE_H264;
+    native.progressive = true; native.width = 256; native.height = 96; native.packets.resize(180);
+    check(!AvdCodePrefixInputAdmitted(admitted, native) && AvdCodePrefixInputAdmitted(Options{}, native),
+        "code prefix geometry alone does not bypass the fixed submitted-byte hash and default path remains unchanged");
+}
+
 template<class Check> static void MfdFramingSelfTest(const Check &check)
 {
     const uint32_t addresses[] = {0x00540000, 0x00540078, 0x00540050, 0x00540070, 0x00540000};
@@ -6113,6 +6703,7 @@ static bool SelfTest()
     AvdMemorySelfTest(check);
     AvdCpuMapSelfTest(check);
     AvdCodeArenaSelfTest(check);
+    AvdCodePrefixSelfTest(check);
     PpbStopLifecycleSelfTest(check);
     MfdFramingSelfTest(check);
     RuntimeInventorySelfTest(check);
@@ -7963,6 +8554,7 @@ struct Audit {
     AvdMemoryObserver avd_memory;
     AvdCpuMapObserver avd_cpu_map;
     AvdCodeArenaObserver avd_code_arena;
+    AvdCodePrefixObserver avd_code_prefix;
     MfdAddressObserver mfd_address;
     MfdFramingObserver mfd_framing;
     MfdColourProbe mfd_colour;
@@ -8160,6 +8752,8 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.avd_cpu_map.conflicting_mode = AvdCpuMapConflicts(options);
     audit.avd_code_arena.enabled = options.observe_avd_code_arena;
     audit.avd_code_arena.conflicting_mode = AvdCodeArenaConflicts(options);
+    audit.avd_code_prefix.enabled = options.observe_avd_code_prefix;
+    audit.avd_code_prefix.conflicting_mode = AvdCodePrefixConflicts(options);
     audit.mfd_address.enabled = options.observe_mfd_address;
     audit.mfd_framing.enabled = options.observe_mfd_framing;
     audit.mfd_colour.stimulus = options.inject_mfd_colour;
@@ -8226,6 +8820,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     if (ok) ok = audit.avd_memory.Observe(&device.handle, 0, false);
     if (ok) ok = audit.avd_cpu_map.Observe(&device.handle, 0, false);
     if (ok) ok = audit.avd_code_arena.Observe(&device.handle);
+    if (ok) ok = audit.avd_code_prefix.Observe(&device.handle);
     if (ok) ok = audit.mfd_colour.PreStart(device.handle);
     if (ok) device.started = ok = Status("DtsStartDecoder", DtsStartDecoder(device.handle));
     if (ok && options.capture_path) ok = PackingState(device.handle, "started", &audit.mfd_colour, &audit.scl_view);
@@ -8308,6 +8903,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     ok = audit.avd_memory.Finish(ok);
     ok = audit.avd_cpu_map.Finish(ok);
     ok = audit.avd_code_arena.Finish(ok);
+    ok = audit.avd_code_prefix.Finish(ok);
     ok = audit.runtime_inventory.Finish(ok, audit.mfd);
     std::printf("Library drain: iteration=%u/%u frames=%u/%u pending=%zu "
         "%s-EOS=%s output-marker=%s ready=%u cleanup=%s result=%s\n",
@@ -8336,13 +8932,15 @@ int main(int argc, char **argv)
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
             "[--scaler-test WIDTH_OR_0] [--mpeg1-via-mpeg2 | --h263-via-divx] "
-            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --observe-ppb-metadata | --observe-ppb-return | --observe-video-prefix | --observe-video-graph | --observe-video-staging | --observe-avd-memory | --observe-avd-cpu-map | --observe-avd-code-arena | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
+            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --observe-ppb-metadata | --observe-ppb-return | --observe-video-prefix | --observe-video-graph | --observe-video-staging | --observe-avd-memory | --observe-avd-cpu-map | --observe-avd-code-arena | --observe-avd-code-prefix | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
     if (NeedsRawIo(options) && !CanReadChromaConfiguration()) {
-        if (options.observe_avd_code_arena)
+        if (options.observe_avd_code_prefix)
+            std::fprintf(stderr, "--observe-avd-code-prefix requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
+        else if (options.observe_avd_code_arena)
             std::fprintf(stderr, "--observe-avd-code-arena requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
         else if (options.observe_avd_cpu_map)
             std::fprintf(stderr, "--observe-avd-cpu-map requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
@@ -8429,6 +9027,12 @@ int main(int argc, char **argv)
     }
     if (!AvdCodeArenaInputAdmitted(options, input)) {
         std::fprintf(stderr, "AVD code arena inventory requires the pinned progressive H264 256x96/180-packet input: "
+            "124832 submitted bytes and fixed SHA256; no capture or device was opened\n");
+        phase1_progress_close(&progress);
+        return 2;
+    }
+    if (!AvdCodePrefixInputAdmitted(options, input)) {
+        std::fprintf(stderr, "AVD code prefix inventory requires the pinned progressive H264 256x96/180-packet input: "
             "124832 submitted bytes and fixed SHA256; no capture or device was opened\n");
         phase1_progress_close(&progress);
         return 2;
