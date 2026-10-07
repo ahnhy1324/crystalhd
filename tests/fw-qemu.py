@@ -6,6 +6,8 @@ Guest execution is restricted to exact bodies; literals are pinned separately.
 Allocation/OPEN callees use synthetic contracts; handoff logging is synthetic.
 Allocation uses a Python reference; OPEN and handoff use complete page oracles.
 Metadata handoff executes the stock physical-to-virtual helper in bounded RAM.
+Cached-picture replay uses synthetic critical-region events, not privileged
+IRQ/FIQ execution, DMA/barrier visibility, hardware completion or a source lease.
 This does not emulate the card, ARC, firmware boot, DMA or payload ownership.
 """
 import hashlib
@@ -54,6 +56,57 @@ METADATA_CALLS = {
 META_DEL, META_REL, META_RECORD = 0x400100, 0x401100, 0x500100
 META_MAP, META_HEAD, META_SP = 0x600100, 0x600400, 0x300800
 META_PAGES = (Model.H, 0x300000, 0x400000, 0x401000, 0x500000, 0x600000)
+PICTURE_BODIES = (
+    ("picture", 0x834c, 0x8838, "e2e7a336ede34b0f3f170cc26476debb81ad4cd0eb3862dd1ab3968db7ee07a3"),
+    ("format", 0x78dc, 0x79a8, "2b48db9af14d92ab297a738cae94fbb693c6af39b6a2929a47097b7ac079fa91"),
+    ("irq", 0x888c, 0x8948, "110a0aa7e8d7845c6ba5854114808d7cc9e067dd2bcac1a746e4a159d15d6ba5"),
+)
+# Complete source guards are pinned but never executed as privileged guest code.
+PICTURE_GUARDS = (
+    ("root", 0x898, 0x8a0, "fed8d9727528a2abbf8b8b5c258b5d558e3192d5fc3232bc4a7f0a1c91cd6e38"),
+    ("register", 0x703c, 0x70e4, "dea84781aa0e00184e96726f8cdc0a49537ca4c0672651a8556a11b03c10b1a9"),
+    ("callback", 0x6ea0, 0x6ed4, "9e6b69c108f5f1af4178bd069f394176b9675f22e5720791fe13c24e126e6a8f"),
+    ("dispatch", 0x6ef0, 0x6ff0, "fd586631b4c4ff1f065091fc0f186c347b8ec40153b707fb222b0b08abc69bd8"),
+    ("vector", 0xdc, 0x104, "df4d1d05de497d003188ba999b398feac2c881623b2001d1eac3a90ca125f5ca"),
+    ("fiq", 0xaca8, 0xacc0, "33d7831d5e75d2f71c0d2a606324a3c671d9b92f411f88ef37f7f1f998d20cd3"),
+    ("connect", 0xacc0, 0xacf4, "ed00d52610e5f39c9326dd13d1979bd4c26ee12d33efcd1d551535e03be9af1f"),
+    ("enter", 0x70f0, 0x710c, "634493d235864f16a147dbab7f542737ceb548b4de4b5c9b3061374ad5e39c16"),
+    ("leave", 0x710c, 0x7128, "283d962a1f5d6f22c247aacc0d8d4160aef713663d6d8e3d250420ad4b64dc4f"),
+    ("mask", 0x2c9d0, 0x2c9e0, "e4d1a1a0d51cd562d39febd6431be6cce67332c2a9880ed1d2ba840d67b5f490"),
+    ("unmask", 0x2c9c0, 0x2c9d0, "5c0ec99d0b92780b3ec42f42d11b203cdbe8779d35eec0b4027390642343b00b"),
+    ("kick", 0x7898, 0x78dc, "a052564dac821c66bd2dc31e7869422086e7a4d93020b8a29833e5390dff748e"),
+    ("producer", 0xe110, 0xe248, "7d82037ed0f6b4d0ab23aace8b9247f7073ff243e6ad8cde6ee53326895e93d2"),
+    ("mode", 0xded4, 0xdff4, "a754d48cdd63ac3cc688d6ade94948f174d43525af4cd28b751d4f15dbbe8456"),
+    ("choose", 0xdff4, 0xe110, "a326dea03d2672e92d1f5bc959f75dc6bf639ed3da003c8cfa96ad9f1ab5625b"),
+)
+PICTURE_WORDS = {
+    0x6fc: 0xd3a00, 0x7128: 0xd2000, 0x7144: 0x888c, 0x7174: 0xd1ffc, 0xadc8: 0xd2248,
+    0x79b0: 0x10502000, 0x7a2c: 0x10540000, 0x8964: 0x10541000, 0x8990: 0xd2210,
+    0x7060: 0xe3a00001, 0x7074: 0xe3a00013, 0x6ebc: 0xe7841100,
+    0x6fb0: 0xe12fff32, 0x2c9d0: 0xf10c0080, 0x2c9c0: 0xf1080080,
+    0x2c9d4: 0xf57ff06f, 0x2c9d8: 0xf57ff04f, 0x2c9dc: 0xe12fff1e,
+    0x8778: 0xe5801100, 0x88b8: 0xe5d400d2, 0x88c4: 0xe5d400c4,
+    0x88d4: 0xe5d40180, 0x8938: 0xe5950008, 0x893c: 0xe28410e0,
+}
+PICTURE_CALLS = dict(METADATA_CALLS)
+PICTURE_CALLS.update({
+    0x8368: 0x70f0, 0x836c: 0x898, 0x83a4: 0x710c, 0x83ac: 0xaf18,
+    0x83d8: 0x203c4, 0x83e8: 0x20708, 0x8424: 0x20708, 0x8434: 0x203c4,
+    0x8440: 0x203c4, 0x8450: 0x206e4, 0x845c: 0xd624, 0x8470: 0x206e4,
+    0x8480: 0xe110, 0x84c8: 0x20708, 0x84dc: 0x1bfc, 0x84f8: 0x82d0,
+    0x8518: 0x1f8c, 0x85e8: 0x206e4, 0x85f8: 0xe110, 0x8608: 0x203c4,
+    0x8614: 0x82d0, 0x8634: 0x1f8c, 0x8650: 0x78dc, 0x8678: 0xaf18,
+    0x8694: 0x7bd4, 0x86a0: 0x7898, 0x86bc: 0x20708, 0x86c8: 0xaf18, 0x86d8: 0x20708,
+    0x8710: 0x7bd4, 0x871c: 0x7898, 0x8734: 0x20708, 0x8750: 0x20708,
+    0x8768: 0x7bd4, 0x8798: 0xaf18, 0x87a4: 0xaf18, 0x87b0: 0x7898,
+    0x87c4: 0x20708, 0x881c: 0x77e0, 0x882c: 0xaf18, 0x8830: 0x710c,
+    0x7980: 0x203c4, 0x7990: 0x203c4, 0x8898: 0xaf18, 0x88a0: 0xaf18,
+    0x88a4: 0x898, 0x88b4: 0x203c4, 0x88e4: 0xaf18, 0x890c: 0x203c4,
+    0x892c: 0x203c4, 0x8934: 0xaf18, 0x8940: 0xd5a4,
+})
+PICTURE_TAILS = {0x7970: 0x203c4, 0x79a4: 0x203c4}
+PICTURE_ROOT, PICTURE_TOKEN = 0xd3a00, 0x710100
+PICTURE_PAGES = META_PAGES + (0xd3000, 0xd2000, 0x10502000, 0x10540000, 0x10541000)
 
 
 class MetadataRAM(tuple):
@@ -277,8 +330,14 @@ def execute(options=None, budget=512, expected_signal=None):
 
 
 def emulate(image, pages, registers, slices, callees, callee, budget,
-            expected_signal=None, clobber_flags=0, real_callees=(), call_edges=None):
+            expected_signal=None, clobber_flags=0, real_callees=(), call_edges=None,
+            tail_edges=None, instruction=None):
     """Single-step only admitted stock slices; synthetic callees never execute."""
+    if tail_edges is not None and (type(tail_edges) is not dict or
+            any(type(site) is not int or type(target) is not int or
+                (site, target) not in ((0x7970, 0x203c4), (0x79a4, 0x203c4)) or target not in callees
+                for site, target in tail_edges.items()) or 0x78dc not in real_callees):
+        raise ValueError("invalid pinned tail edges")
     qemu = shutil.which(os.environ.get("QEMU_ARM", "qemu-arm"))
     if not qemu:
         raise ValueError("fw-qemu-check requires qemu-arm (or QEMU_ARM=/path/to/qemu-arm)")
@@ -360,9 +419,13 @@ def emulate(image, pages, registers, slices, callees, callee, budget,
                                     pages=observed, initial=pages, steps=steps,
                                     stub_status=stub_status, real_status=real_status)
                     if pc in callees or pc in real_callees:
-                        if last_pc is None or registers[14] != last_pc + 4:
+                        tail = tail_edges is not None and tail_edges.get(last_pc) == pc
+                        if tail and (not real_returns or real_returns[-1][1] != 0x78dc or
+                                     registers[14] != real_returns[-1][0]):
+                            raise ValueError("unexpected pinned tail LR")
+                        if last_pc is None or (not tail and registers[14] != last_pc + 4):
                             raise ValueError("unexpected pinned call ABI")
-                        if call_edges is not None and call_edges.get(last_pc) != pc:
+                        if call_edges is not None and not tail and call_edges.get(last_pc) != pc:
                             raise ValueError("outside pinned call-target allowlist")
                         args = tuple(registers[:4])
                         calls.append((last_pc, pc, args))
@@ -381,6 +444,8 @@ def emulate(image, pages, registers, slices, callees, callee, budget,
                         raise ValueError("outside pinned executable slices")
                     if steps >= budget:
                         raise ValueError("stock instruction budget exceeded")
+                    if instruction is not None:
+                        instruction(rsp, pc, registers)
                     stop = rsp.packet("s")
                     steps += 1
                     if not stop.startswith(("S05", "T05")):
@@ -572,6 +637,310 @@ def execute_metadata(kind, read=None, write=None, null_ring=False, null_output=F
                   registers=registers, publication=publication)
     if "pages" in actual:
         actual["snapshot"] = MetadataRAM(actual["pages"], nodes)
+    return actual
+
+
+class PictureRAM(tuple):
+    """Detached synthetic slot-0 RAM, not native ownership or a generation."""
+    def __new__(cls, pages, picture):
+        if set(pages) != set(PICTURE_PAGES) or any(
+                type(page) not in (bytes, bytearray) or len(page) != 4096
+                for page in pages.values()) or type(picture) not in (bytes, bytearray) or len(picture) != 140:
+            raise ValueError("invalid picture replay pages")
+        return tuple.__new__(cls, (tuple((base, bytes(pages[base])) for base in PICTURE_PAGES), bytes(picture)))
+
+
+def picture_elf(payload, pages, start):
+    """Complete pinned scheduler/IRQ/format and metadata bodies only execute."""
+    code_base = 0x7000
+    code = bytearray(struct.pack("<I", 0xe7f000f0) * (0x21000 // 4))
+    for name, low, high, digest in PICTURE_BODIES + METADATA_BODIES + PICTURE_GUARDS:
+        body = payload[low:high]
+        if hashlib.sha256(body).hexdigest() != digest:
+            raise ValueError(f"stock picture {name} body changed")
+        if (name, low, high, digest) not in PICTURE_GUARDS:
+            code[low - code_base:high - code_base] = body
+    for address, value in PICTURE_WORDS.items():
+        if payload[address:address + 4] != struct.pack("<I", value):
+            raise ValueError("stock picture control/literal changed")
+        if code_base <= address < code_base + len(code):
+            code[address - code_base:address - code_base + 4] = struct.pack("<I", value)
+    for site, target in {**PICTURE_CALLS, **PICTURE_TAILS, 0xf0: 0x6ef0,
+                         0x7064: 0xacc0, 0x7078: 0x6ea0, 0x70f4: 0x2c9d0, 0x7120: 0x2c9c0}.items():
+        word = struct.unpack_from("<I", payload, site)[0]
+        displacement = (word & 0xffffff) << 2
+        if displacement & 0x2000000:
+            displacement -= 0x4000000
+        if word & 0xff000000 != (0xea000000 if site in (*PICTURE_TAILS, 0x7120) else 0xeb000000) or \
+                (site + 8 + displacement) & 0xffffffff != target:
+            raise ValueError("stock picture call target changed")
+    for address, expected in METADATA_LITERALS:
+        if payload[address:address + len(expected)] != expected:
+            raise ValueError("stock picture metadata literal changed")
+        code[address - code_base:address - code_base + len(expected)] = expected
+    return segment_elf([(code_base, bytes(code), 5)] +
+                       [(base, bytes(page), 6) for base, page in pages.items()], start)
+
+
+def execute_picture(kind="picture", mode=2, single_field=False, active=1, started=1,
+                    configured=False, cached_physical=True, metadata_flags=0,
+                    refresh=False, phase=0, route=0, empty=False, format_change=False,
+                    previous=None, budget=512, payload=None):
+    """Actual slot-0 instructions with bounded, explicitly opaque CPU contracts.
+
+    E110 supplies a synthetic 140-byte picture; MFD setup/build/kick and RX-list
+    publication are contracts, not engines. CPSID/CPSIE are separately pinned:
+    enter/leave events do not emulate IRQ/FIQ exclusion or barrier visibility.
+    IRQ is invoked only after a scheduler return, never asynchronously. Fixed
+    MMIO-numbered pages are ordinary guest RAM. No plane scalar is dereferenced.
+    Strict input/window admission is a replay guard, not a native validation.
+    """
+    defaults = (2, False, 1, 1, False, True, 0, False, 0, 0, False, False)
+    options = (mode, single_field, active, started, configured, cached_physical,
+               metadata_flags, refresh, phase, route, empty, format_change)
+    if type(kind) is not str or kind not in ("picture", "irq") or type(mode) is not int or mode not in (0, 1, 2) or \
+            any(type(value) is not bool for value in
+                (single_field, configured, cached_physical, refresh, empty, format_change)) or \
+            any(type(value) is not int or not 0 <= value <= 255 for value in (active, started)) or \
+            any(type(value) is not int or value not in (0, 1) for value in (phase, route)) or \
+            type(metadata_flags) is not int or metadata_flags not in (0, 0x100) or \
+            (previous is not None and (type(previous) is not PictureRAM or options != defaults)):
+        raise ValueError("invalid synthetic picture arguments")
+    if type(budget) is not int or not 1 <= budget <= 512:
+        raise ValueError("invalid instruction budget")
+    payload = Model.payload if payload is None else payload
+    if type(payload) not in (bytes, bytearray):
+        raise ValueError("invalid picture payload")
+    pages = {base: bytearray(b"\xa5" * 4096) for base in PICTURE_PAGES}
+    def put(address, data, destination=pages):
+        base, offset = address & ~4095, address & 4095
+        if base not in destination or offset + len(data) > 4096:
+            raise ValueError("outside picture RAM")
+        destination[base][offset:offset + len(data)] = data
+    def word(address, value, destination=pages):
+        put(address, struct.pack("<I", value), destination)
+    def get(address, size=4, source=pages):
+        base, offset = address & ~4095, address & 4095
+        if base not in source or offset + size > 4096:
+            raise ValueError("outside picture RAM")
+        return bytes(source[base][offset:offset + size])
+    def load(address, source=pages):
+        return struct.unpack("<I", get(address, source=source))[0]
+    picture = bytearray((index * 17 + 3) & 255 for index in range(140))
+    picture[8], picture[0x1d] = mode, 1
+    for offset, value in ((0x14, 256), (0x18, 96), (0x34, 0x920000), (0x38, 0x930000)):
+        struct.pack_into("<I", picture, offset, value)
+    for offset, value in ((0x224, META_MAP), (0x250, META_DEL), (0x254, META_REL)):
+        word(Model.H + offset, value)
+    for ring in (META_DEL, META_REL):
+        word(ring, 2)
+        word(ring + 4, 2 if ring == META_REL or empty else 3)
+        word(ring + 8, PICTURE_TOKEN)
+    word(META_MAP, 0)
+    for offset, value in ((0x18, 0x500000), (0x1c, 0x500fff), (0x28, 0x500000), (0x30, 0x710000)):
+        word(META_MAP + offset, value)
+    word(META_RECORD, metadata_flags)
+    word(PICTURE_ROOT + 0x20, Model.H)
+    for offset, value in ((0xc4, active), (0xd2, started), (0xc5, int(configured)),
+                          (0x180, route), (0x181, phase), (0x178, int(refresh)),
+                          (0x1cc, 0), (0x1cd, int(single_field))):
+        put(PICTURE_ROOT + offset, bytes([value]))
+    put(PICTURE_ROOT + 0xe0, struct.pack("<3I", META_RECORD,
+                                      PICTURE_TOKEN if cached_physical else 0, 0xdec0adde))
+    put(PICTURE_ROOT + 0xec, picture)
+    if format_change:
+        word(PICTURE_ROOT + 0x100, 128)
+    if previous is not None:
+        pages.clear()
+        pages.update((base, bytearray(page)) for base, page in previous[0])
+        picture = bytearray(previous[1])
+    if any(load(Model.H + offset) != value for offset, value in
+           ((0x224, META_MAP), (0x250, META_DEL), (0x254, META_REL))) or \
+            load(PICTURE_ROOT + 0x20) != Model.H or \
+            any(not 2 <= load(ring + offset) < 64 for ring in (META_DEL, META_REL) for offset in (0, 4)) or \
+            (load(META_DEL) != load(META_DEL + 4) and
+             load(META_DEL + load(META_DEL) * 4) != PICTURE_TOKEN) or \
+            any(load(META_MAP + offset) != value for offset, value in
+                ((0, 0), (0x18, 0x500000), (0x1c, 0x500fff), (0x28, 0x500000), (0x30, 0x710000))) or \
+            load(META_RECORD) not in (0, 0x100) or \
+            load(PICTURE_ROOT + 0xe0) != META_RECORD or \
+            load(PICTURE_ROOT + 0xe4) not in (0, PICTURE_TOKEN) or \
+            any(get(PICTURE_ROOT + offset, 1)[0] not in (0, 1)
+                for offset in (0xc5, 0x178, 0x180, 0x181, 0x1cd)) or \
+            picture[8] not in (0, 1, 2) or len(picture) != 140 or picture[0x1d] != 1 or \
+            struct.unpack_from("<2I", picture, 0x14) != (256, 96) or \
+            struct.unpack_from("<2I", picture, 0x34) != (0x920000, 0x930000):
+        raise ValueError("invalid picture replay context")
+    start = 0x834c if kind == "picture" else 0x888c
+    image = picture_elf(payload, pages, start)
+    expected = {base: bytearray(page) for base, page in pages.items()}
+    registers = [0xabc00000 + index for index in range(16)]
+    registers[:2] = [0, 0x100]
+    registers[13:16] = [META_SP, RETURN, start]
+    frame = META_SP - 200
+    events, publication, depth = [], [], 0
+    pushes = {0x834c: (4, 5, 6, 7, 8, 9, 14), 0x78dc: (4, 5, 6, 14),
+              0xd624: (4, 5, 6, 7, 8, 14), 0x1fdac: (4, 5, 14),
+              0x888c: (4, 5, 6, 14), 0xd5a4: (4, 5, 6, 7, 8, 9, 10, 14)}
+    def instruction(rsp, pc, regs):
+        if pc in pushes:
+            values = [regs[index] for index in pushes[pc]]
+            put(regs[13] - len(values) * 4, struct.pack("<" + "I" * len(values), *values), expected)
+        if pc in (0x835c, 0x8360):
+            word(frame + (0x10 if pc == 0x835c else 0x0c), 0, expected)
+        if pc in (0x850c, 0x8628):
+            put(frame, struct.pack("<2I", frame + 0x10, frame + 0x0c), expected)
+        if pc in (0x8688, 0x8708, 0x8764):
+            word(frame, 1 if pc == 0x8688 else 0, expected)
+        if pc == 0xd624:
+            if tuple(regs[:2]) != (Model.H, frame + 0x14):
+                raise ValueError("unexpected picture acquire")
+            if load(META_DEL) != load(META_DEL + 4):
+                put(frame + 0x14, struct.pack("<2I", META_RECORD, PICTURE_TOKEN), expected)
+                read = load(META_DEL)
+                word(META_DEL, 2 if read == 63 else read + 1, expected)
+        if pc == 0xd5a4:
+            if tuple(regs[:2]) != (Model.H, PICTURE_ROOT + 0xe0):
+                raise ValueError("unexpected picture release")
+            write = load(META_REL + 4)
+            word(META_REL + write * 4, load(PICTURE_ROOT + 0xe4), expected)
+            word(META_REL + 4, 2 if write == 63 else write + 1, expected)
+    def contract(rsp, pc, args, stack):
+        nonlocal depth
+        if pc == 0x70f0:
+            if depth != 0 or kind != "picture":
+                raise ValueError("unexpected critical enter")
+            depth = 1
+            events.append(("enter",))
+        elif pc == 0x710c:
+            if depth != 1:
+                raise ValueError("unexpected critical leave")
+            depth = 0
+            events.append(("leave", rsp.memory(PICTURE_ROOT + 0xe0, size=12),
+                           rsp.memory(PICTURE_ROOT + 0x180, size=2)))
+        elif pc == 0x898:
+            return PICTURE_ROOT
+        elif pc in (0x206e4, 0x20708):
+            destination, source, size = args[:3]
+            pairs = {(frame + 0x14, PICTURE_ROOT + 0xe0, 12),
+                     (frame + 0x20, PICTURE_ROOT + 0xec, 140),
+                     (PICTURE_ROOT + 0xec, frame + 0x20, 140),
+                     (PICTURE_ROOT + 0xe0, frame + 0x14, 12)}
+            if pc == 0x206e4:
+                if source != 0 or (destination, size) not in ((frame + 0x14, 12), (frame + 0x20, 140)):
+                    raise ValueError("unexpected picture clear")
+                data = bytes(size)
+            else:
+                if (destination, source, size) not in pairs:
+                    raise ValueError("unexpected picture copy")
+                data = get(source, size, expected)
+                if rsp.memory(source, size=size) != data:
+                    raise ValueError("unexpected picture copy source")
+            rsp.memory(destination, data)
+            put(destination, data, expected)
+            return destination
+        elif pc == 0xe110:
+            if args[:3] not in ((Model.H, META_RECORD, frame + 0x20), (Model.H, 0, frame + 0x20)):
+                raise ValueError("unexpected picture producer")
+            rsp.memory(frame + 0x20, picture)
+            put(frame + 0x20, picture, expected)
+            if args[1] == 0:
+                put(frame + 0x28, b"\x02", expected)
+                word(frame + 0x34, 1920, expected)
+                word(frame + 0x38, 1080, expected)
+        elif pc == 0x1bfc:
+            if args != (PICTURE_ROOT, 0, frame + 0x14, frame + 0x20):
+                raise ValueError("unexpected picture setup")
+        elif pc == 0x82d0:
+            p = get(frame + 0x20, 140, expected)
+            width, height = struct.unpack_from("<2I", p, 0x14)
+            if args[:2] != (width, height if p[8] == 2 else height // 2):
+                raise ValueError("unexpected picture dimensions")
+        elif pc == 0x1f8c:
+            if args != (PICTURE_ROOT, frame + 0x14, frame + 0x20, 0) or \
+                    rsp.memory(stack, size=8) != struct.pack("<2I", frame + 0x10, frame + 0x0c):
+                raise ValueError("unexpected picture pipeline")
+        elif pc == 0x7bd4:
+            if args[:3] != (frame + 0x14, frame + 0x20, 0) or args[3] not in (0, 1):
+                raise ValueError("unexpected picture builder")
+            events.append(("build", args[3], load(frame, expected), get(frame + 0x14, 12, expected),
+                           get(frame + 0x20, 140, expected)))
+        elif pc == 0x7898:
+            if depth != 1 or args[:2] not in ((0, 0), (1, 0)):
+                raise ValueError("kick outside synthetic critical region")
+            events.append(("kick", args[0], rsp.memory(PICTURE_ROOT + 0xe0, size=12),
+                           rsp.memory(PICTURE_ROOT + 0x180, size=2)))
+        elif pc == 0x77e0:
+            if args[0] != PICTURE_ROOT + 0x188 or depth != 1:
+                raise ValueError("unexpected picture RX publication")
+            events.append(("rx-publish",))
+        elif pc == 0x203c4:
+            if args[0] == 0xd7f8:
+                write = load(META_REL + 4)
+                if rsp.memory(META_REL + 4) != struct.pack("<I", write) or \
+                        rsp.memory(META_REL + write * 4) != get(PICTURE_ROOT + 0xe4):
+                    raise ValueError("release payload/index ordering changed")
+            publication.append((args, rsp.memory(META_DEL, size=256), rsp.memory(META_REL, size=256)))
+        elif pc != 0xaf18:
+            raise ValueError("unexpected picture opaque helper")
+        return 0
+    active, started = (get(PICTURE_ROOT + offset, 1)[0] for offset in (0xc4, 0xd2))
+    configured, refresh, route, phase, single_field = (
+        get(PICTURE_ROOT + offset, 1)[0] for offset in (0xc5, 0x178, 0x180, 0x181, 0x1cd))
+    usable = active != 0 and started == 1
+    fresh = route == 1 or not configured
+    physical = (PICTURE_TOKEN if load(META_DEL) != load(META_DEL + 4) else 0) if fresh else load(PICTURE_ROOT + 0xe4)
+    if kind == "picture" and usable and physical:
+        tag = load(META_RECORD) == 0x100
+        cached = configured and (tag or not refresh)
+        p = get(PICTURE_ROOT + 0xec, 140) if cached else bytes(picture)
+        if tag and not configured:
+            p = bytearray(p)
+            p[8] = 2
+            struct.pack_into("<2I", p, 0x14, 1920, 1080)
+        same_format = (p[0x14:0x1c] == get(PICTURE_ROOT + 0x100, 8) and
+                       p[0x1d] == get(PICTURE_ROOT + 0x109, 1)[0] and
+                       (p[8] == 2) == (get(PICTURE_ROOT + 0xf4, 1)[0] == 2))
+        configured = configured if cached else (1 if tag else (configured if same_format else 0))
+        put(PICTURE_ROOT + 0xc5, b"\x01", expected)
+        tuple_bytes = struct.pack("<3I", META_RECORD, physical, 0) if fresh else get(PICTURE_ROOT + 0xe0, 12)
+        put(PICTURE_ROOT + 0xe0, tuple_bytes, expected)
+        if not configured:
+            put(PICTURE_ROOT + 0xec, p, expected)
+            put(PICTURE_ROOT + 0xc6, b"\0", expected)
+            put(PICTURE_ROOT + 0x178, b"\0", expected)
+            put(PICTURE_ROOT + 0x180, b"\0", expected)
+        else:
+            put(PICTURE_ROOT + 0xc6, b"\x01", expected)
+            put(PICTURE_ROOT + 0x178, b"\x01", expected)
+            if tag:
+                put(PICTURE_ROOT + 0x180, b"\x01", expected)
+            else:
+                put(PICTURE_ROOT + 0xec, p, expected)
+                word(0x10502100, load(0x10502100) | 2, expected)
+                put(PICTURE_ROOT + 0x180, bytes([1 if p[8] == 2 or single_field or phase else 0]), expected)
+                if p[8] != 2:
+                    put(PICTURE_ROOT + 0x181, bytes([0 if single_field or phase else 1]), expected)
+        put(PICTURE_ROOT + 0x1a8, b"\0", expected)
+    if kind == "irq":
+        word(0x10541208, 0xc3, expected)
+        word(0xd2214, 0, expected)
+    actual = emulate(image, pages, registers,
+                     ((0x834c, 0x8520), (0x85dc, 0x8838), (0x78dc, 0x79a8), (0x888c, 0x8948)) +
+                     tuple((low, high) for _, low, high, _ in METADATA_BODIES),
+                     (0x70f0, 0x710c, 0x898, 0x203c4, 0x20708, 0x206e4, 0xe110,
+                      0x1bfc, 0x82d0, 0x1f8c, 0x7bd4, 0x7898, 0x77e0, 0xaf18),
+                     contract, budget, clobber_flags=0xf0000000,
+                     real_callees=(0x78dc, 0xd624, 0xd5a4, 0x1fdac),
+                     call_edges=PICTURE_CALLS, tail_edges=PICTURE_TAILS, instruction=instruction)
+    if depth != 0 or actual["pages"] != {base: bytes(page) for base, page in expected.items()}:
+        differences = [hex(base + offset) for base, page in expected.items()
+                       for offset, (wanted, got) in enumerate(zip(page, actual["pages"][base]))
+                       if wanted != got][:8]
+        raise ValueError("picture full-page/critical oracle changed: " + ",".join(differences))
+    actual.update(kind=kind, events=events, publication=publication,
+                  expected={base: bytes(page) for base, page in expected.items()},
+                  snapshot=PictureRAM(actual["pages"], picture))
     return actual
 
 
@@ -945,6 +1314,210 @@ class FirmwareQemuTests(unittest.TestCase):
                 execute_metadata("acquire")
 
 
+class FirmwarePictureQemuTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        FirmwareQemuTests.setUpClass()
+
+    def check(self, actual):
+        self.assertEqual(actual["pages"], actual["expected"])
+        for base in (Model.H, 0x400000, 0x500000, 0x600000, 0x10540000):
+            if base != 0x400000 or actual["kind"] == "irq":
+                self.assertEqual(actual["pages"][base], bytes(actual["initial"][base]))
+        return actual
+
+    def state(self, actual):
+        page = actual["pages"][0xd3000]
+        return tuple(page[0xa00 + offset] for offset in (0xc5, 0x178, 0x180, 0x181))
+
+    def test_progressive_preroll_cached_kick_then_irq_return(self):
+        first = self.check(execute_picture())
+        idle_irq = self.check(execute_picture("irq", previous=first["snapshot"]))
+        cached = self.check(execute_picture(previous=idle_irq["snapshot"]))
+        returned = self.check(execute_picture("irq", previous=cached["snapshot"]))
+        self.assertEqual([first["steps"], idle_irq["steps"], cached["steps"], returned["steps"]],
+                         [223, 39, 121, 70])
+        self.assertEqual(self.state(first), (1, 0, 0, 0))
+        self.assertEqual(self.state(cached), (1, 1, 1, 0))
+        self.assertEqual([(site, target) for site, target, _ in first["calls"]], [
+            (0x8368, 0x70f0), (0x836c, 0x898), (0x8440, 0x203c4), (0x8450, 0x206e4),
+            (0x845c, 0xd624), (0xd69c, 0x1fdac), (0xd6ac, 0x203c4), (0x85e8, 0x206e4),
+            (0x85f8, 0xe110), (0x8608, 0x203c4), (0x84dc, 0x1bfc), (0x8614, 0x82d0),
+            (0x8634, 0x1f8c), (0x8650, 0x78dc), (0x7970, 0x203c4), (0x86c8, 0xaf18),
+            (0x86d8, 0x20708), (0x8710, 0x7bd4), (0x871c, 0x7898), (0x8734, 0x20708),
+            (0x881c, 0x77e0), (0x8830, 0x710c)])
+        self.assertEqual([(site, target) for site, target, _ in cached["calls"]], [
+            (0x8368, 0x70f0), (0x836c, 0x898), (0x83d8, 0x203c4), (0x83e8, 0x20708),
+            (0x84c8, 0x20708), (0x84dc, 0x1bfc), (0x8614, 0x82d0), (0x8634, 0x1f8c),
+            (0x8750, 0x20708), (0x8768, 0x7bd4), (0x87b0, 0x7898), (0x87c4, 0x20708),
+            (0x881c, 0x77e0), (0x8830, 0x710c)])
+        for actual, kick_mode in ((first, 1), (cached, 0)):
+            self.assertEqual([event[0] for event in actual["events"]],
+                             ["enter", "build", "kick", "rx-publish", "leave"])
+            self.assertEqual(actual["events"][2][1], kick_mode)
+            self.assertEqual(actual["events"][1][3][:8], struct.pack("<2I", META_RECORD, PICTURE_TOKEN))
+        # The real first kick precedes cache publication. Delivery of this
+        # synthetic IRQ is deferred until leave, not simulated during the kick.
+        self.assertEqual(first["events"][2][2][-4:], struct.pack("<I", 0xdec0adde))
+        self.assertEqual(first["events"][-1][1][-4:], bytes(4))
+        self.assertEqual(cached["events"][2][3], b"\0\0")
+        self.assertEqual(cached["events"][-1][2], b"\x01\0")
+        self.assertEqual(idle_irq["real_status"], [])
+        self.assertEqual(returned["real_status"], [(0xd5a4, 0)])
+        self.assertEqual(struct.unpack_from("<3I", returned["pages"][0x401000], 0x100),
+                         (2, 3, PICTURE_TOKEN))
+        self.assertEqual(struct.unpack_from("<2I", returned["pages"][0x400000], 0x100), (3, 3))
+        self.assertEqual(first["real_status"], [(0x1fdac, 0), (0xd624, 0), (0x78dc, 0)])
+
+    def test_field_modes_phase_and_single_field_routes(self):
+        for mode in (0, 1):
+            for single in (False, True):
+                with self.subTest(mode=mode, single=single):
+                    before = None
+                    gates = (0, 1) if single else (0, 0, 1)
+                    phases = (0, 0) if single else (0, 1, 0)
+                    for index, (gate, phase) in enumerate(zip(gates, phases)):
+                        actual = self.check(execute_picture(mode=mode, single_field=single) if before is None else
+                                            execute_picture(previous=before["snapshot"]))
+                        self.assertEqual(self.state(actual), (1, int(index != 0), gate, phase))
+                        self.assertEqual(actual["events"][2][1], 1 if index == 0 else 0)
+                        builder = actual["events"][1]
+                        self.assertEqual((builder[1:3], builder[4][8]), ((1 if index == 0 else 0, 0), mode))
+                        irq = self.check(execute_picture("irq", previous=actual["snapshot"]))
+                        self.assertEqual(irq["real_status"], [(0xd5a4, 0)] if gate else [])
+                        self.assertEqual(struct.unpack_from("<I", irq["pages"][0x401000], 0x104)[0],
+                                         3 if gate else 2)
+                        before = irq
+                    self.assertEqual(struct.unpack_from("<I", before["pages"][0x400000], 0x100)[0], 3)
+
+    def test_active_started_empty_and_zero_cached_physical_guards(self):
+        for options in (dict(active=0), dict(started=0), dict(started=2),
+                        dict(empty=True), dict(configured=True, cached_physical=False)):
+            with self.subTest(options=options):
+                actual = self.check(execute_picture(**options))
+                self.assertEqual([event[0] for event in actual["events"]], ["enter", "leave"])
+                self.assertNotIn(0xd5a4, [target for _, target, _ in actual["calls"]])
+                self.assertEqual(actual["pages"][0xd3000], bytes(actual["initial"][0xd3000]))
+                irq = self.check(execute_picture("irq", previous=actual["snapshot"]))
+                self.assertEqual(irq["real_status"], [])
+        # Nonzero active is the native byte guard, not a model-only ==1 guard.
+        actual = self.check(execute_picture(active=2))
+        self.assertEqual(self.state(actual), (1, 0, 0, 0))
+
+    def test_tagged_empty_picture_branch_is_not_a_lease(self):
+        for configured in (False, True):
+            with self.subTest(configured=configured):
+                actual = self.check(execute_picture(metadata_flags=0x100, configured=configured))
+                builder = actual["events"][1]
+                self.assertEqual(builder[1:3], (0, 1))
+                self.assertEqual(self.state(actual), (1, 1, 1, 0))
+                self.assertEqual(actual["events"][2][1], 1)
+                if not configured:
+                    self.assertEqual(builder[4][8], 2)
+                    self.assertEqual(struct.unpack_from("<2I", builder[4], 0x14), (1920, 1080))
+                    self.assertIn((0x8480, 0xe110, (Model.H, 0, META_SP - 168, 0xd3d3d3d3)), actual["calls"])
+                irq = self.check(execute_picture("irq", previous=actual["snapshot"]))
+                self.assertEqual(irq["real_status"], [(0xd5a4, 0)])
+                self.assertEqual(irq["pages"][0x500000], actual["pages"][0x500000])
+
+    def test_real_format_gate_and_pinned_tail_return(self):
+        for changed in (False, True):
+            with self.subTest(changed=changed):
+                actual = self.check(execute_picture(configured=True, route=1, refresh=True, format_change=changed))
+                sites = [site for site, _, _ in actual["calls"]]
+                self.assertIn(0x8650, sites)
+                self.assertIn(0x79a4 if changed else 0x7970, sites)
+                self.assertEqual(self.state(actual), (1, 0, 0, 0) if changed else (1, 1, 1, 0))
+                self.assertEqual(actual["events"][2][1], 1 if changed else 0)
+        original = RSP.registers
+        def wrong_lr(rsp):
+            regs = original(rsp)
+            if regs[15] == 0x203c4 and regs[14] == 0x8654:
+                regs[14] = RETURN
+            return regs
+        with mock.patch.object(RSP, "registers", wrong_lr):
+            with self.assertRaisesRegex(ValueError, "pinned tail LR"):
+                execute_picture(configured=True, route=1, refresh=True)
+        for register, value, message in ((13, 0x900000, "outside picture RAM"),
+                                         (15, 0x8520, "outside pinned executable slices")):
+            def outside(rsp):
+                regs = original(rsp)
+                if regs[15] == 0x834c:
+                    regs[register] = value
+                return regs
+            with self.subTest(register=register), mock.patch.object(RSP, "registers", outside):
+                with self.assertRaisesRegex(ValueError, message):
+                    execute_picture()
+        for tails in ({0x7970: 0xaf18}, {0x796c: 0x203c4}, {True: 0x203c4}, []):
+            with self.subTest(tails=tails), mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaisesRegex(ValueError, "invalid pinned tail"):
+                    emulate(b"", {}, [], (), (0x203c4,), lambda *args: 0, 1,
+                            real_callees=(0x78dc,), tail_edges=tails)
+                spawn.assert_not_called()
+
+    def test_picture_source_pins_and_refusals_before_spawn(self):
+        for _, low, high, _ in PICTURE_BODIES + PICTURE_GUARDS + METADATA_BODIES:
+            for offset in (low, high - 1):
+                changed = bytearray(Model.payload)
+                changed[offset] ^= 1
+                with self.subTest(offset=offset), mock.patch.object(subprocess, "Popen") as spawn:
+                    with self.assertRaisesRegex(ValueError, "stock picture .* body changed"):
+                        execute_picture(payload=changed)
+                    spawn.assert_not_called()
+        for offset in (0x6fc, 0x7128, 0x7144, 0x7174, 0xadc8, 0x79b0, 0x7a2c, 0x8964, 0x8990):
+            changed = bytearray(Model.payload)
+            changed[offset] ^= 1
+            with self.subTest(offset=offset), mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaisesRegex(ValueError, "stock picture control/literal"):
+                    execute_picture(payload=changed)
+                spawn.assert_not_called()
+        for options in (dict(kind="bad"), dict(mode=True), dict(mode=3), dict(active=True),
+                        dict(started=-1), dict(single_field=1), dict(configured=1), dict(route=True),
+                        dict(phase=2), dict(refresh=1), dict(format_change=1), dict(empty=1),
+                        dict(cached_physical=1), dict(metadata_flags=True), dict(metadata_flags=1),
+                        dict(budget=0), dict(budget=True), dict(budget=513), dict(payload="bad")):
+            with self.subTest(options=options), mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaisesRegex(ValueError, "invalid"):
+                    execute_picture(**options)
+                spawn.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "instruction budget exceeded"):
+            execute_picture(budget=1)
+        with mock.patch.dict(PICTURE_CALLS, {0x8650: 0x203c4}), mock.patch.object(subprocess, "Popen") as spawn:
+            with self.assertRaisesRegex(ValueError, "stock picture call target"):
+                execute_picture()
+            spawn.assert_not_called()
+
+    def test_snapshot_detached_bounds_and_no_owner_generation_guard(self):
+        actual = self.check(execute_picture())
+        snapshot = actual["snapshot"]
+        with self.assertRaises(TypeError):
+            snapshot[0][0][1][0] = 0
+        for previous in (dict(actual["pages"]), tuple(snapshot)):
+            with self.subTest(previous=type(previous)), mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaisesRegex(ValueError, "invalid synthetic picture arguments"):
+                    execute_picture(previous=previous)
+                spawn.assert_not_called()
+        for address in (Model.H + 0x224, Model.H + 0x254, META_MAP, PICTURE_ROOT + 0xe0):
+            pages = {base: bytearray(page) for base, page in actual["pages"].items()}
+            struct.pack_into("<I", pages[address & ~4095], address & 4095, 0x900000)
+            unsafe = PictureRAM(pages, snapshot[1])
+            with self.subTest(address=address), mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaisesRegex(ValueError, "picture replay context"):
+                    execute_picture(previous=unsafe)
+                spawn.assert_not_called()
+        pages = {base: bytearray(page) for base, page in actual["pages"].items()}
+        detached = PictureRAM(pages, bytearray(snapshot[1]))
+        pages[0xd3000][0xa00 + 0xc4] = 0
+        self.assertEqual(detached, snapshot)
+        # The IRQ can return the same scalar again; no one-shot/generation
+        # guard is invented by this replay or by the stock release helper.
+        cached = self.check(execute_picture(previous=detached))
+        returned = self.check(execute_picture("irq", previous=cached["snapshot"]))
+        repeated = self.check(execute_picture("irq", previous=returned["snapshot"]))
+        self.assertEqual(struct.unpack_from("<4I", repeated["pages"][0x401000], 0x100),
+                         (2, 4, PICTURE_TOKEN, PICTURE_TOKEN))
+
+
 class ProtocolTests(unittest.TestCase):
     class Connection:
         def __init__(self, response=b""):
@@ -982,4 +1555,4 @@ class ProtocolTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(defaultTest=("FirmwareQemuTests", "ProtocolTests"))
+    unittest.main(defaultTest=("FirmwareQemuTests", "FirmwarePictureQemuTests", "ProtocolTests"))
