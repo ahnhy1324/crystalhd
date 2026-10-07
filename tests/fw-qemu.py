@@ -2556,6 +2556,191 @@ class FirmwareArcAbsoluteFixupQemuTests(unittest.TestCase):
             self.replay(0)
 
 
+class FirmwareArcStartupRelocationQemuTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        FirmwareQemuTests.setUpClass()
+
+    STOCK = {
+        "outer": (0x2ea60, 55, 22, 51, 0x3a678, 0x117000, 778,
+                  "06a116e27f03fe546f51d46fa7bedc8afa57952be8def9eba1502821d4b631e4",
+                  "0744ee69ef473208f61db3a3bb733d9401dcee7594c3d05a705fe6c7306cb67d",
+                  (2038, 2039, 2040, 2041, 2042, 2043),
+                  (834, 833, 835, 836), (0x3fffe000, 0x71000, 0x77138, 0x7878c),
+                  (31, 18, 21, 21)),
+        "inner": (0x79dd8, 112, 53, 108, 0x49f68, 0x1a7000, 1024,
+                  "412db67a0f1eeeae21ff904616e0634d251ca85c6f5dcc3009532a8cc7ae9d13",
+                  "f5504982f6a38615cbf5486ef6067bc5b0b85f308dfc871e10c15e12c666cdbe",
+                  (578, 579, 580, 581, 582, 583),
+                  (1073, 1072, 1074, 1075), (0x3fffd000, 0x50000, 0x51800, 0x5d670),
+                  (62, 49, 52, 52)),
+    }
+
+    def stock(self, kind, payload=None):
+        if type(kind) is not str or kind not in self.STOCK:
+            raise ValueError("invalid startup selection")
+        payload = FirmwareArcAbsoluteFixupQemuTests.source(self, payload)
+        blob, count, prefix, ri, start, _, si, digest, prefix_sha, rows, indices, values, owners = self.STOCK[kind]
+        header = struct.unpack_from("<16sHHIIIIIHHHHHH", payload, blob)
+        self.assertEqual((header[1:5], header[11:]), ((2, 45, 1, start), (40, count, count - 1)))
+        sections = [struct.unpack_from("<10I", payload, blob + header[6] + index * 40)
+                    for index in range(count)]
+        self.assertEqual(hashlib.sha256(payload[blob + header[6]:blob + header[6] + prefix * 40]).hexdigest(), prefix_sha)
+        rela = sections[ri]
+        self.assertEqual((rela[1], rela[7], rela[9]), (4, 16 if kind == "outer" else 47, 12))
+        symbols, code = sections[rela[6]], sections[rela[7]]
+        self.assertEqual((symbols[1], symbols[9]), (2, 16))
+        strings = sections[symbols[6]]
+        def symbol(index):
+            return struct.unpack_from("<IIIBBH", payload, blob + symbols[4] + index * 16)
+        def name(record):
+            at = blob + strings[4] + record[0]
+            return payload[at:payload.index(b"\0", at)]
+        entry = symbol(si)
+        self.assertEqual((name(entry), entry[1:]), (b"_start", (start, 0, 18, 0, rela[7])))
+        records = [struct.unpack_from("<IIi", payload, blob + rela[4] + row * 12) for row in rows]
+        self.assertEqual([site - start for site, info, addend in records], [108, 120, 128, 140, 144, 152])
+        self.assertEqual([(info & 255, addend) for site, info, addend in records], [(4, 0)] * 4 + [(6, 0)] * 2)
+        self.assertEqual([info >> 8 for site, info, addend in records[:4]], list(indices))
+        selected = [symbol(index) for index in indices]
+        self.assertEqual([name(record) for record in selected], [b"_estack", b"_SDA_BASE_", b"_fbss", b"_ebss"])
+        self.assertEqual([record[1] for record in selected], list(values))
+        self.assertEqual([record[2:] for record in selected], [(0, 16, 0, owner) for owner in owners])
+        self.assertEqual([name(symbol(info >> 8)) for site, info, addend in records[4:]], [b"memset", b"main"])
+        for owner in owners:
+            self.assertEqual(sections[owner][1:3], (8, 3))  # Original NOBITS, allocated and writable.
+        self.assertGreaterEqual(owners[0], prefix)  # High stack owner is outside the executed prefix.
+        self.assertEqual(values[0], sections[owners[0]][3] + sections[owners[0]][5])
+        self.assertEqual(sections[owners[1]][5], 0)  # Zero-sized GP owner still has a low VA.
+        self.assertEqual(values[2:], (sections[owners[2]][3], sections[owners[2]][3] + sections[owners[2]][5]))
+        self.assertEqual(values[3] - values[2], 5716 if kind == "outer" else 48752)
+        at = blob + code[4] + start - code[3]
+        raw = payload[at:at + 164]
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), digest)
+        self.assertEqual([struct.unpack_from("<I", raw, offset)[0] for offset in (108, 120, 128, 140)], list(values))
+        return sections, records[:4], selected, raw
+
+    def setup(self, kind, base, payload=None, poison_high_owner=False, budget=5000):
+        if type(base) is not int or not 0 <= base <= 0xffffffff or \
+                type(poison_high_owner) is not bool or type(budget) is not int or not 1 <= budget <= 5000:
+            raise ValueError("invalid synthetic startup setup")
+        sections, records, selected, raw = self.stock(kind, payload)
+        payload = FirmwareArcAbsoluteFixupQemuTests.source(self, payload)
+        count = self.STOCK[kind][2]
+        context, symbols, sp = 0x220000, 0x240100, 0x300800
+        pages = {address: bytearray(b"\xa5" * 4096) for address in (context, context + 4096, 0x240000, 0x300000)}
+        def put(address, data, target=pages):
+            while data:
+                size = min(len(data), 4096 - (address & 4095))
+                target[address & ~4095][address & 4095:(address & 4095) + size] = data[:size]
+                data, address = data[size:], address + size
+        def word(address, value, target=pages):
+            put(address, struct.pack("<I", value), target)
+        word(context + 4, 0)  # Original caller's code-origin scalar, not a native alias.
+        word(context + 8, base)  # P from the first stack input; a non-dereferenced fixture scalar.
+        put(context + 0x3c, struct.pack("<H", count))
+        for index, section in enumerate(sections):
+            put(context + 0x40 + index * 40, struct.pack("<10I", *section))
+        if poison_high_owner:
+            # Trusted counterfactual RAM fixture, not altered firmware. The high
+            # symbol's owner descriptor is excluded and must never be consulted.
+            put(context + 0x40 + selected[0][5] * 40, b"\xff" * 40)
+        word(context + 0x1a40, symbols)
+        word(context + 0x1a44, 5)
+        put(symbols, bytes(16) + b"".join(struct.pack("<IIIBBH", *record) for record in selected))
+        registers = [0xabc00000 + index for index in range(16)]
+        registers[0], registers[13:15] = context, [sp, RETURN]
+        code = bytearray(struct.pack("<I", 0xe7f000f0) * 1024)
+        code[0x3e0:0x530] = payload[0x2a3e0:0x2a530]
+        expected = {address: bytearray(page) for address, page in pages.items()}
+        placements = {}
+        for index, section in enumerate(sections[1:count], 1):
+            va = section[3]
+            placements[index] = (va + (0 if section[2] & 4 else base)) & 0xffffffff if \
+                (va or section[1] == 1) and va < 0x30000000 else 0
+            word(context + 0x1840 + index * 4, placements[index], expected)
+        put(sp - 8, struct.pack("<II", registers[4], RETURN), expected)
+        def forbidden(*args):
+            raise AssertionError("unexpected startup setup callee")
+        def run(start, end):
+            registers[15] = start
+            image = segment_elf([(0x2a000, bytes(code), 5)] +
+                                [(address, bytes(page), 6) for address, page in pages.items()], start)
+            return emulate(image, pages, registers, ((start, end),), (), forbidden, budget)
+        placed = run(0x2a474, 0x2a530)
+        self.assertEqual(placed["pages"], {address: bytes(page) for address, page in expected.items()})
+        self.assertEqual(placed["calls"], [])
+        pages = {address: bytearray(page) for address, page in placed["pages"].items()}
+        put(sp - 16, struct.pack("<4I", *registers[4:7], RETURN), expected)
+        for index, record in enumerate(selected, 1):
+            value = record[1] if record[1] >= 0x30000000 else \
+                (placements[record[5]] + record[1] - sections[record[5]][3]) & 0xffffffff
+            word(symbols + index * 16 + 4, value, expected)
+        rebased = run(0x2a3e0, 0x2a474)
+        self.assertEqual(rebased["pages"], {address: bytes(page) for address, page in expected.items()})
+        self.assertEqual(rebased["calls"], [])
+        resolved = [struct.unpack_from("<I", rebased["pages"][0x240000], 0x114 + index * 16)[0]
+                    for index in range(4)]
+        self.assertEqual(resolved, [selected[0][1]] + [(base + record[1]) & 0xffffffff for record in selected[1:]])
+        return records, resolved, raw
+
+    def test_stock_startup_literals_after_actual_setup_and_absolute_fixups(self):
+        fixup = FirmwareArcAbsoluteFixupQemuTests()
+        for kind in self.STOCK:
+            for base in (0, self.STOCK[kind][5], 0x03300000):
+                with self.subTest(kind=kind, base=base):
+                    records, resolved, original = self.setup(kind, base)
+                    current, expected = original[52:], bytearray(original[52:])
+                    for (site, info, addend), value in zip(records, resolved):
+                        offset = site - self.STOCK[kind][4] - 52
+                        actual = fixup.replay(value, addend, current, offset)
+                        current = actual["pages"][0x220000][0x100:0x170]
+                        struct.pack_into("<I", expected, offset, value)
+                        self.assertEqual(current, bytes(expected))
+                    self.assertEqual(struct.unpack_from("<I", current, 88)[0] -
+                                     struct.unpack_from("<I", current, 76)[0], 5716 if kind == "outer" else 48752)
+                    # Original ARC startup and its memset/main type-6 words are
+                    # not executed. This joins ARM helpers, not boot/LOCAL access.
+
+    def test_high_stack_symbol_ignores_excluded_owner_descriptor(self):
+        for kind in self.STOCK:
+            with self.subTest(kind=kind):
+                records, resolved, raw = self.setup(kind, 0x03300000, poison_high_owner=True)
+                self.assertEqual(resolved[0], struct.unpack_from("<I", raw, 108)[0])
+                self.assertEqual(resolved[1:], [0x03300000 + value for value in self.STOCK[kind][11][1:]])
+
+    def test_source_input_budget_and_pre_store_refusals(self):
+        for offset in (0x2a3e0, 0x2a473, 0x2a474, 0x2a52f, 0x2ea60, 0x79dd8,
+                       0x5d20c, 0x5d20c + 163, 0xc1769, 0xc1769 + 163,
+                       0x79540 + 21 * 40, 0xcea30 + 52 * 40):
+            changed = bytearray(Model.payload)
+            changed[offset] ^= 1
+            with self.subTest(offset=offset), mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaises(ValueError):
+                    self.setup("outer", 0, changed)
+                spawn.assert_not_called()
+        for options in (dict(kind=True), dict(kind="missing"), dict(base=True), dict(base=-1),
+                        dict(base=1 << 32), dict(poison_high_owner=1), dict(budget=True),
+                        dict(budget=0), dict(budget=5001), dict(payload=[]), dict(payload=Model.payload[:-1])):
+            args = dict(kind="outer", base=0)
+            args.update(options)
+            with self.subTest(options=options), mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaises(ValueError):
+                    self.setup(**args)
+                spawn.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "instruction budget exceeded"):
+            self.setup("outer", 0, budget=1)
+        original = RSP.registers
+        def corrupt(rsp):
+            registers = original(rsp)
+            if registers[15] == 0x29c9c:
+                registers[4] += 4
+            return registers
+        with mock.patch.object(RSP, "registers", corrupt), \
+                self.assertRaisesRegex(ValueError, "ordered absolute fixup store"):
+            FirmwareArcAbsoluteFixupQemuTests().replay(0, raw=bytes(112), offset=56)
+
+
 class FirmwareMfdSourceQemuTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -3407,7 +3592,7 @@ class FirmwareStopResultQemuTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(defaultTest=("FirmwareQemuTests", "FirmwarePictureQemuTests", "FirmwareArmArcReturnQemuTests", "FirmwareCpuMapQemuTests", "FirmwareArcJumpFixupQemuTests", "FirmwareArcAbsoluteFixupQemuTests",
+    unittest.main(defaultTest=("FirmwareQemuTests", "FirmwarePictureQemuTests", "FirmwareArmArcReturnQemuTests", "FirmwareCpuMapQemuTests", "FirmwareArcJumpFixupQemuTests", "FirmwareArcAbsoluteFixupQemuTests", "FirmwareArcStartupRelocationQemuTests",
                                "FirmwareMfdSourceQemuTests", "FirmwareSourceProducerQemuTests",
                                "FirmwareSourceModeQemuTests", "FirmwareIrqStatusQemuTests",
                                "FirmwareLogCommandQemuTests", "FirmwareChannelGuardQemuTests",
