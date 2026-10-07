@@ -1106,7 +1106,7 @@ struct PpbContextGraph { uint32_t words[39] = {}; };
 enum class PpbContextFailure { None, Argument, Owner, Order, Budget, Read, Object, Profile, Map, Slice, Changed };
 struct PpbContextObserver {
     typedef BC_STATUS (*Reader)(HANDLE, uint32_t *, uint32_t, uint32_t);
-    bool enabled = false, failed = false, admitted = false;
+    bool enabled = false, post_stop = false, failed = false, admitted = false;
     HANDLE owner = nullptr;
     unsigned next_stage = 0, reads = 0, bytes = 0, measured = 0;
     BC_STATUS status = BC_STS_SUCCESS;
@@ -1114,6 +1114,9 @@ struct PpbContextObserver {
     PpbContextGraph authority, graph[2];
     uint32_t raw[2][60] = {};
     bool complete[2] = {};
+    unsigned Stages() const { return post_stop ? 4U : 3U; }
+    unsigned ReadLimit() const { return Stages() * 140U; }
+    unsigned ByteLimit() const { return Stages() * 1104U; }
     static bool Object(uint32_t pointer, unsigned kind) {
         const uint32_t sizes[] = {0xa84c, 0x378, 0x1f4, 0x64};
         return kind < 4 && !(pointer & 3U) && pointer >= 0xd53dcU &&
@@ -1143,7 +1146,7 @@ struct PpbContextObserver {
         if (!current || !*current || *current != owner) return Reject(PpbContextFailure::Owner);
         if (!reader || !values || !count || count > 36 || (address & 3U) ||
             static_cast<uint64_t>(address) + count * 4U > 0x4000000U) return Reject(PpbContextFailure::Argument);
-        if (reads >= 420 || bytes > 3312 - count * 4U) return Reject(PpbContextFailure::Budget);
+        if (reads >= ReadLimit() || bytes > ByteLimit() - count * 4U) return Reject(PpbContextFailure::Budget);
         ++reads; bytes += count * 4U;
         status = reader(owner, values, count * 4U, address);
         if (!*current || *current != owner) return Reject(PpbContextFailure::Owner);
@@ -1162,7 +1165,8 @@ struct PpbContextObserver {
             if ((v[2 + slot * 3] & 255U) != (slot == 0 ? 1U : 0U)) return Reject(PpbContextFailure::Profile);
             if (frozen && v[1 + slot * 3] != frozen->words[1 + slot * 3]) return Reject(PpbContextFailure::Changed);
         }
-        if ((v[3] & 255U) || ((v[3] >> 16) & 255U) != (stage ? 1U : 0U)) return Reject(PpbContextFailure::Profile);
+        if ((v[3] & 255U) || ((v[3] >> 16) & 255U) != ((stage == 1 || stage == 2) ? 1U : 0U))
+            return Reject(PpbContextFailure::Profile);
         if (frozen && v[0] != frozen->words[0]) return Reject(PpbContextFailure::Changed);
         const uint32_t h = frozen ? frozen->words[1] : v[1], c = frozen ? frozen->words[0] : v[0];
         uint32_t objects[] = {h, c, 0, 0};
@@ -1205,12 +1209,13 @@ struct PpbContextObserver {
         return true;
     }
     void Report(unsigned stage) const {
-        const char *const stages[] = {"after-OPEN/pre-START", "first-output-after-release-and-owned-write", "delivery-EOS-before-STOP"};
+        const char *const stages[] = {"after-OPEN/pre-START", "first-output-after-release-and-owned-write",
+            "delivery-EOS-before-STOP", "host-STOP-returned-before-CLOSE"};
         const char *const failures[] = {"none", "argument", "current-handle-loss", "order", "budget", "read-status",
             "object-envelope/alias", "default-profile", "map-tuple", "context-slice", "authority-changed"};
-        std::printf("PPB saved context: stage=%s reads=%u/420 bytes=%u/3312 measured=%u/140 failure=%s api-status=%d "
+        std::printf("PPB saved context: stage=%s reads=%u/%u bytes=%u/%u measured=%u/140 failure=%s api-status=%d "
             "saved-copy-is-current=unproven atomic/allocator-integrity/lease/generation/cache-ready/all-consumers-certified=no\n",
-            stages[stage], reads, bytes, measured, failures[static_cast<unsigned>(failure)], status);
+            stages[stage], reads, ReadLimit(), bytes, ByteLimit(), measured, failures[static_cast<unsigned>(failure)], status);
         for (unsigned pass = 0; pass < 2; ++pass) {
             if (!complete[pass]) { std::printf("PPB saved context raw: stage=%s pass=%u INCOMPLETE\n", stages[stage], pass); continue; }
             const uint32_t *g = graph[pass].words, *r = raw[pass];
@@ -1232,8 +1237,8 @@ struct PpbContextObserver {
         if (!enabled) return true;
         if (failed) return false;
         if (!current || !*current || !reader) return Reject(PpbContextFailure::Argument);
-        if (stage > 2 || stage != next_stage || barrier != (stage != 0)) return Reject(PpbContextFailure::Order);
-        if (reads > 280 || bytes > 2208) return Reject(PpbContextFailure::Budget);
+        if (stage >= Stages() || stage != next_stage || barrier != (stage != 0)) return Reject(PpbContextFailure::Order);
+        if (reads > ReadLimit() - 140U || bytes > ByteLimit() - 1104U) return Reject(PpbContextFailure::Budget);
         if (!stage) owner = *current;
         if (!owner || *current != owner) return Reject(PpbContextFailure::Owner);
         ++next_stage; measured = 0; std::memset(raw, 0, sizeof(raw)); complete[0] = complete[1] = false;
@@ -1260,9 +1265,9 @@ struct PpbContextObserver {
     }
     bool Finish(bool native_ok, bool report = true) const {
         if (!enabled) return native_ok;
-        const bool ok = !failed && admitted && next_stage == 3 && reads == 420 && bytes == 3312;
-        if (report) std::printf("PPB saved context finish: native-result=%s observation-result=%s stages=%u/3 reads=%u/420 bytes=%u/3312\n",
-            native_ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL", next_stage, reads, bytes);
+        const bool ok = !failed && admitted && next_stage == Stages() && reads == ReadLimit() && bytes == ByteLimit();
+        if (report) std::printf("PPB saved context finish: native-result=%s observation-result=%s stages=%u/%u reads=%u/%u bytes=%u/%u\n",
+            native_ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL", next_stage, Stages(), reads, ReadLimit(), bytes, ByteLimit());
         return native_ok && ok;
     }
 };
@@ -1271,7 +1276,7 @@ struct PpbContextFixture {
     unsigned calls = 0, fail_at = 420, lose_at = 420, change_at = 420;
     uint32_t changed_address = 0, changed_value = 0;
     uint32_t physical = 0x1000000;
-    bool valid = true, different = false, all_ones = false;
+    bool valid = true, different = false, all_ones = false, post_stop = false;
     uint32_t Address(unsigned at) const {
         const uint32_t graph[] = {0xd3a08,
             0xd3a20,0xd3ac4,0xd3ad0,0xd3bec,0xd3c90,0xd3c9c,0xd3db8,0xd3e5c,0xd3e68,0xd3f84,0xd4028,0xd4034,
@@ -1292,7 +1297,7 @@ struct PpbContextFixture {
             const uint32_t base = 0xd3a00 + slot * 0x1cc;
             if (address == base + 0x20) return slot ? 0 : 0xd6000;
             if (address == base + 0xc4) return slot ? 0 : 0x101;
-            if (address == base + 0xd0) return slot ? 0 : 0x200 | (position >= 140 ? 0x10000 : 0);
+            if (address == base + 0xd0) return slot ? 0 : 0x200 | (position >= 140 && position < 420 ? 0x10000 : 0);
         }
         const uint32_t locations[] = {0xd6000,0xd6008,0xd600c,0xd6064,0xd60cc,0xd6224,
             0xd5408,0xd55a0,0xd55d4,0xd55d8,0xd55dc,0xd5800,0xd5808,0xd5810,0xd5814,
@@ -1308,7 +1313,7 @@ struct PpbContextFixture {
     static BC_STATUS Read(HANDLE handle, uint32_t *values, uint32_t bytes, uint32_t address) {
         auto *f = static_cast<PpbContextFixture *>(handle);
         const unsigned position = f->calls++, at = position % 70;
-        f->valid &= position < 420 && values && address == f->Address(at) && bytes == Count(at) * 4U &&
+        f->valid &= position < (f->post_stop ? 560U : 420U) && values && address == f->Address(at) && bytes == Count(at) * 4U &&
             reinterpret_cast<uintptr_t>(values) % alignof(uint32_t) == 0;
         if (!f->valid) return BC_STS_ERROR;
         for (unsigned word = 0; word < bytes / 4; ++word) values[word] = f->Word(address + word * 4, position);
@@ -1923,6 +1928,7 @@ struct Options {
     bool observe_arm_metadata = false;
     bool observe_arm_source_shape = false;
     bool observe_ppb_context = false;
+    bool observe_ppb_stop = false;
     unsigned inject_mfd_colour = 0;
     unsigned scl_status_test = 0;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
@@ -1952,8 +1958,10 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
     }
     if (arguments.size() >= 2 && (!std::strcmp(arguments.back(), "--observe-arm-metadata") ||
                                  !std::strcmp(arguments.back(), "--observe-arm-source-shape") ||
-                                 !std::strcmp(arguments.back(), "--observe-ppb-context"))) {
-        options->observe_ppb_context = !std::strcmp(arguments.back(), "--observe-ppb-context");
+                                 !std::strcmp(arguments.back(), "--observe-ppb-context") ||
+                                 !std::strcmp(arguments.back(), "--observe-ppb-stop"))) {
+        options->observe_ppb_stop = !std::strcmp(arguments.back(), "--observe-ppb-stop");
+        options->observe_ppb_context = options->observe_ppb_stop || !std::strcmp(arguments.back(), "--observe-ppb-context");
         options->observe_arm_source_shape = !std::strcmp(arguments.back(), "--observe-arm-source-shape");
         options->observe_arm_metadata = !options->observe_arm_source_shape && !options->observe_ppb_context;
         arguments.pop_back();
@@ -3168,6 +3176,131 @@ template<class Check> static void PpbContextSelfTest(const Check &check)
         "PPB reports frozen graph/raw saved fields only after complete passes and marks failed snapshots incomplete without lifetime certification");
 }
 
+template<class Check> static void PpbStopContextSelfTest(const Check &check)
+{
+    PpbContextObserver disabled; disabled.post_stop = true;
+    check(disabled.Observe(nullptr, 3, true, nullptr, false) && disabled.Finish(true, false) && !disabled.reads,
+        "PPB post-STOP configuration alone is disabled and adds no device I/O");
+    for (unsigned variant = 0; variant < 3; ++variant) {
+        PpbContextFixture fixture; fixture.post_stop = true;
+        fixture.fail_at = fixture.lose_at = fixture.change_at = 560;
+        fixture.different = variant == 1; fixture.all_ones = variant == 2;
+        PpbContextObserver subject; subject.enabled = subject.post_stop = true;
+        check(subject.Stages() == 4 && subject.ReadLimit() == 560 && subject.ByteLimit() == 4416,
+            "PPB explicit post-STOP profile adds exactly one140read1104byte stage");
+        for (unsigned stage = 0; stage < 4; ++stage) {
+            check(subject.Observe(&fixture.current, stage, stage != 0, PpbContextFixture::Read, false) && fixture.valid &&
+                fixture.calls == (stage + 1) * 140 && subject.bytes == (stage + 1) * 1104 &&
+                subject.complete[0] && subject.complete[1] && subject.measured == 140,
+                "PPB fourth stage keeps frozen graph/D only and admits the stopped qualifier without certifying refresh");
+            check(subject.Finish(true, false) == (stage == 3), "PPB post-STOP finish requires all four stages, not EOS alone");
+        }
+        check(!subject.Finish(false, false) && fixture.calls == 560,
+            "PPB complete saved observation cannot override native decode/cleanup failure");
+    }
+    for (unsigned position = 0; position < 560; ++position) for (unsigned fault = 0; fault < 3; ++fault) {
+        PpbContextFixture fixture, other; fixture.post_stop = true;
+        fixture.change_at = 560; fixture.fail_at = fault ? 560 : position; fixture.lose_at = fault ? position : 560;
+        fixture.replacement = fault == 2 ? other.current : nullptr;
+        PpbContextObserver subject; subject.enabled = subject.post_stop = true;
+        bool result = true;
+        for (unsigned stage = 0; stage < 4 && result; ++stage)
+            result = subject.Observe(&fixture.current, stage, stage != 0, PpbContextFixture::Read, false);
+        uint32_t ignored = 0;
+        check(!result && fixture.valid && subject.failed && fixture.calls == position + 1 &&
+            subject.failure == (fault ? PpbContextFailure::Owner : PpbContextFailure::Read) &&
+            !subject.Observe(&fixture.current, 3, true, PpbContextFixture::Read, false) &&
+            !subject.Read(&other.current, PpbContextFixture::Read, 0xd3a08, 1, &ignored) &&
+            fixture.calls == position + 1 && !other.calls && !subject.Finish(true, false),
+            "PPB all560 read/owner failures including post-STOP latch and never retry or retarget");
+    }
+    const uint32_t links[] = {0xd3a08,0xd3a20,0xd6000,0xd6008,0xd600c,0xd6064,0xd60cc,0xd6224,
+        0xd5408,0xd55a0,0xd55d4,0xd55d8,0xd55dc,0xd5800,0xd5808,0xd5810,0xd5814,
+        0xd5a18,0xd5a1c,0xd5a28,0xd5a30,0xd5a34,0xd5a40,0x11601c,0x116020,0x11602c,0x116034,0x116038};
+    for (uint32_t address : links) for (unsigned position : {420U, 459U, 490U, 529U}) {
+        PpbContextFixture fixture; fixture.post_stop = true;
+        fixture.fail_at = fixture.lose_at = 560; fixture.change_at = position; fixture.changed_address = address;
+        fixture.changed_value = 0xa40000;
+        PpbContextObserver subject; subject.enabled = subject.post_stop = true; bool result = true;
+        for (unsigned stage = 0; stage < 4 && result; ++stage)
+            result = subject.Observe(&fixture.current, stage, stage != 0, PpbContextFixture::Read, false);
+        check(!result && fixture.valid && subject.failed && subject.failure == PpbContextFailure::Changed &&
+            fixture.calls <= position + 31 && !subject.Finish(true, false),
+            "PPB every authority edge rejects post-STOP loss before following any changed pointer");
+    }
+    for (unsigned fault = 0; fault < 8; ++fault) {
+        PpbContextFixture fixture; fixture.post_stop = true; fixture.fail_at = fixture.lose_at = fixture.change_at = 560;
+        PpbContextObserver subject; subject.enabled = subject.post_stop = true;
+        for (unsigned stage = 0; stage < 3; ++stage)
+            check(subject.Observe(&fixture.current, stage, stage != 0, PpbContextFixture::Read, false), "PPB post-STOP refusal setup");
+        if (fault == 0 || fault == 1) {
+            fixture.change_at = 420; fixture.changed_address = fault ? 0xd3ad0 : 0xd3ac4;
+            fixture.changed_value = fault ? 0x10200 : 0;
+        }
+        if (fault == 4) subject.reads = 421;
+        if (fault == 5) subject.bytes = 3313;
+        const PpbContextFailure reasons[] = {PpbContextFailure::Profile,PpbContextFailure::Profile,
+            PpbContextFailure::Order,PpbContextFailure::Order,PpbContextFailure::Budget,PpbContextFailure::Budget,
+            PpbContextFailure::Order,PpbContextFailure::Argument};
+        check(!subject.Observe(&fixture.current, fault == 2 ? 2 : fault == 3 ? 4 : 3, fault != 6,
+            fault == 7 ? nullptr : PpbContextFixture::Read, false) && subject.failed && subject.failure == reasons[fault] &&
+            fixture.calls == (fault < 2 ? fault ? 433U : 424U : 420U),
+            "PPB stopped-stage active/started qualifiers, order, budget, barrier and reader are enforced");
+    }
+    std::vector<const char *> valid = {"probe","--hardware","fixture","180","30","1","--scaler-test","0",
+        "--observe-ppb-stop","--capture-yuy2","new"};
+    Options admitted;
+    check(ParseArguments(valid, &admitted) && admitted.observe_ppb_stop && admitted.observe_ppb_context &&
+        !admitted.observe_arm_metadata && !admitted.observe_arm_source_shape && NeedsRawIo(admitted),
+        "PPB host-STOP observation requires its own explicit CAP-gated profile");
+    for (const auto &extra : std::vector<std::vector<const char *>>{{"--observe-ppb-stop"},{"--observe-ppb-context"},
+            {"--observe-arm-metadata"},{"--observe-arm-source-shape"},{"--observe-runtime-inventory"},{"--observe-mfd-framing"},
+            {"--observe-mfd-config"},{"--observe-mfd-address"},{"--observe-scl-config"},{"--observe-scl-filter-map"},
+            {"--observe-scl-view","2"},{"--observe-chroma"},{"--inject-mfd-colour","a"},{"--scl-status-test","observe"},
+            {"--open-only"},{"--mpeg1-via-mpeg2"},{"--h263-via-divx"}})
+        for (unsigned order = 0; order < 2; ++order) {
+            auto arguments = valid; arguments.insert(order ? arguments.end() - 2 : arguments.begin() + 8, extra.begin(), extra.end());
+            Options rejected; check(!ParseArguments(arguments, &rejected), "PPB post-STOP refuses duplicate/mixed experiments in either order");
+        }
+    for (unsigned fault = 0; fault < 8; ++fault) {
+        auto arguments = valid;
+        if (fault == 0) arguments[1] = "--preflight";
+        if (fault == 1) arguments[3] = "179";
+        if (fault == 2) arguments[5] = "2";
+        if (fault == 3) arguments[7] = "128";
+        if (fault == 4) arguments[9] = "--capture-uyvy";
+        if (fault == 5) arguments[10] = "-";
+        if (fault == 6) arguments.resize(9);
+        if (fault == 7) arguments[8] = "--observe-ppb-stop=0";
+        Options rejected; check(!ParseArguments(arguments, &rejected), "PPB post-STOP keeps exact native-input/capture preconditions");
+    }
+    Input native; native.codec = AV_CODEC_ID_H264; native.subtype = BC_MSUBTYPE_H264; native.progressive = true;
+    native.width = 256; native.height = 96; native.packets.resize(180);
+    check(ArmMetadataInputShape(admitted, native) && !ArmMetadataInputAdmitted(admitted, native),
+        "PPB post-STOP cannot open capture/device with shape-only input missing its original submitted-byte digest");
+    FILE *record = std::tmpfile(); const int saved = dup(STDOUT_FILENO);
+    std::fflush(stdout);
+    const bool redirected = record && saved >= 0 && dup2(fileno(record), STDOUT_FILENO) >= 0;
+    if (redirected) {
+        PpbContextFixture fixture; fixture.post_stop = fixture.all_ones = true;
+        fixture.fail_at = fixture.lose_at = fixture.change_at = 560;
+        PpbContextObserver subject; subject.enabled = subject.post_stop = true;
+        for (unsigned stage = 0; stage < 3; ++stage)
+            subject.Observe(&fixture.current, stage, stage != 0, PpbContextFixture::Read, false);
+        subject.Observe(&fixture.current, 3, true, PpbContextFixture::Read);
+        subject.Finish(true);
+    }
+    std::fflush(stdout);
+    const bool restored = saved >= 0 && dup2(saved, STDOUT_FILENO) >= 0;
+    if (saved >= 0) close(saved);
+    char text[16384] = {}; size_t length = 0;
+    if (record) { std::rewind(record); length = std::fread(text, 1, sizeof(text) - 1, record); std::fclose(record); }
+    check(redirected && restored && length && std::strstr(text, "stage=host-STOP-returned-before-CLOSE reads=560/560 bytes=4416/4416") &&
+        std::strstr(text, "stages=4/4 reads=560/560 bytes=4416/4416") && std::strstr(text, "bank-count=ffffffff") &&
+        std::strstr(text, "saved-copy-is-current=unproven") && std::strstr(text, "atomic/allocator-integrity/lease/generation/cache-ready/all-consumers-certified=no"),
+        "PPB stopped-stage report pins the560read4416byte profile while retaining saved-copy and lifetime limitations");
+}
+
 template<class Check> static void MfdFramingSelfTest(const Check &check)
 {
     const uint32_t addresses[] = {0x00540000, 0x00540078, 0x00540050, 0x00540070, 0x00540000};
@@ -3547,6 +3680,8 @@ template<class Check> static void RuntimeInventorySelfTest(const Check &check)
     }
 }
 
+template<class Check> static void PpbStopLifecycleSelfTest(const Check &check);
+
 static bool SelfTest()
 {
     bool ok = true;
@@ -3564,6 +3699,8 @@ static bool SelfTest()
     ArmMetadataSelfTest(check);
     ArmSourceShapeSelfTest(check);
     PpbContextSelfTest(check);
+    PpbStopContextSelfTest(check);
+    PpbStopLifecycleSelfTest(check);
     MfdFramingSelfTest(check);
     RuntimeInventorySelfTest(check);
 
@@ -5280,6 +5417,14 @@ static bool Load(const char *path, unsigned expected, Deadline *deadline, Input 
 struct Device {
     HANDLE handle = nullptr;
     bool opened = false, started = false;
+    BC_STATUS Stop(BC_STATUS (*stopper)(HANDLE) = DtsStopDecoder) {
+        if (!started) return BC_STS_SUCCESS;
+        if (!handle || !stopper) return BC_STS_INV_ARG;
+        // Match ordinary Close: even a failed STOP is consumed once. The
+        // optional observation must not add a second STOP during cleanup.
+        started = false;
+        return stopper(handle);
+    }
     bool Close() {
         bool ok = true;
         const auto record = [&](const char *operation, BC_STATUS status) {
@@ -5288,7 +5433,7 @@ struct Device {
                 ok = false;
             }
         };
-        if (started) record("DtsStopDecoder", DtsStopDecoder(handle));
+        if (started) record("DtsStopDecoder", Stop());
         started = false;
         if (opened) record("DtsCloseDecoder", DtsCloseDecoder(handle));
         opened = false;
@@ -5298,6 +5443,30 @@ struct Device {
     }
     ~Device() { if (handle) Close(); }
 };
+
+template<class Check> static void PpbStopLifecycleSelfTest(const Check &check)
+{
+    struct Fixture {
+        unsigned calls = 0;
+        BC_STATUS result = BC_STS_SUCCESS;
+        static BC_STATUS Stop(HANDLE handle) { auto *f = static_cast<Fixture *>(handle); ++f->calls; return f->result; }
+    };
+    for (BC_STATUS result : {BC_STS_SUCCESS, BC_STS_BUSY, BC_STS_ERROR}) {
+        Fixture fixture; fixture.result = result;
+        Device device; device.handle = &fixture; device.started = true;
+        check(device.Stop(Fixture::Stop) == result && fixture.calls == 1 && !device.started &&
+            device.Stop(Fixture::Stop) == BC_STS_SUCCESS && fixture.calls == 1,
+            "PPB explicit host STOP forwards success/failure once without retry or an implicit ARC ACK");
+        device.handle = nullptr;
+        check(device.Close() && fixture.calls == 1, "PPB STOP consumption leaves ordinary cleanup no duplicate STOP");
+    }
+    Fixture fixture; Device idle; idle.handle = &fixture;
+    check(idle.Stop(Fixture::Stop) == BC_STS_SUCCESS && !fixture.calls, "PPB unopened/idle STOP helper adds no call");
+    idle.started = true;
+    check(idle.Stop(nullptr) == BC_STS_INV_ARG && idle.started && !fixture.calls,
+        "PPB malformed STOP callback is refused before consuming the started state");
+    idle.started = false; idle.handle = nullptr;
+}
 
 static bool Status(const char *operation, BC_STATUS status)
 {
@@ -5555,6 +5724,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.arm_metadata.enabled = options.observe_arm_metadata || options.observe_arm_source_shape;
     audit.arm_metadata.source_shape = options.observe_arm_source_shape;
     audit.ppb_context.enabled = options.observe_ppb_context;
+    audit.ppb_context.post_stop = options.observe_ppb_stop;
     audit.mfd_address.enabled = options.observe_mfd_address;
     audit.mfd_framing.enabled = options.observe_mfd_framing;
     audit.mfd_colour.stimulus = options.inject_mfd_colour;
@@ -5674,6 +5844,17 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     const bool view_restored = audit.scl_view.Restore(device.handle);
     const bool colour_restored = audit.mfd_colour.Restore(device.handle);
     ok = ok && view_restored && colour_restored;
+    if (ok && audit.ppb_context.post_stop) {
+        // ARM can discard internal STOP failures. This barrier means only that
+        // the host API returned success; neither refresh nor ARC ACK is proven.
+        ok = !deadline.expired() && device.handle && device.opened && device.started;
+        if (ok) {
+            const BC_STATUS stopped = device.Stop();
+            std::printf("PPB host STOP: api-status=%d inner-ARC-completion=unproven saved-refresh=unproven\n", stopped);
+            ok = Status("DtsStopDecoder", stopped);
+            if (ok) ok = !deadline.expired() && audit.ppb_context.Observe(&device.handle, 3, true);
+        }
+    }
     const bool closed = device.Close();
     ok = ok && closed;
     const bool captured = capture.Finish(ok);
@@ -5712,13 +5893,15 @@ int main(int argc, char **argv)
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
             "[--scaler-test WIDTH_OR_0] [--mpeg1-via-mpeg2 | --h263-via-divx] "
-            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
+            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
     if (NeedsRawIo(options) && !CanReadChromaConfiguration()) {
-        if (options.observe_ppb_context)
+        if (options.observe_ppb_stop)
+            std::fprintf(stderr, "--observe-ppb-stop requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
+        else if (options.observe_ppb_context)
             std::fprintf(stderr, "--observe-ppb-context requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
         else if (options.observe_arm_source_shape)
             std::fprintf(stderr, "--observe-arm-source-shape requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
