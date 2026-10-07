@@ -13,11 +13,15 @@ if not __debug__:
     raise SystemExit("assertion-enabled Python is required")
 
 import argparse
+import base64
 import hashlib
 import json
 import os
 from pathlib import Path
+import struct
 import subprocess
+import xml.etree.ElementTree as ET
+import zlib
 
 
 WIDTH, HEIGHT, FRAMES = 256, 96, 12
@@ -361,6 +365,89 @@ def decode(payload):
     return subprocess.run(command, input=payload, capture_output=True, timeout=TIMEOUT)
 
 
+def check_native_fixture(checks, outputs, planar):
+    """Validate saved finite results and native luma thumbnails without a device."""
+    folder = Path(__file__).resolve().parent / "fixtures/issue92"
+    raw = (folder / "native-coded-reference.json").read_bytes()
+    svg = (folder / "native-coded-reference.svg").read_bytes()
+    checks.require(hashlib.sha256(raw).hexdigest() ==
+                   "e232ef1b0f3fa68cfa32abe700715534f3e8b2900446df4c039342f968d0362e", "native receipt pin")
+    checks.require(hashlib.sha256(svg).hexdigest() ==
+                   "af11d8eef735be03bbc0a995f5c0977d470b0c781bb61d54964b73f214d2a595", "native visual pin")
+    data = json.loads(raw)
+    checks.require((data["schema_version"], data["kind"]) ==
+                   (1, "native-coded-reference-lifecycle"), "native receipt schema")
+    checks.require(data["frame_num"] == list(FRAME_NUM) and data["poc"] == list(range(FRAMES)) and
+                   data["nal_headers_hex"] == [format(n, "02x") for n in NAL_HEADERS] and
+                   data["reference"] == [i % 2 == 0 for i in range(FRAMES)], "native input syntax")
+    for variant, (name, payload), (label, explicit, retire, size, digest) in zip(
+            data["variants"], outputs, VARIANTS):
+        checks.require((variant["name"], name, variant["input_bytes"], variant["input_sha256"]) ==
+                       (label, "lifecycle-" + label + ".h264", len(payload), digest), "native stimulus receipt")
+        checks.require(variant["frame6_mmco"] == ([2, 6] if explicit else [6]) and
+                       variant["frame10_mmco"] == ([2] if retire else []), "native MMCO receipt")
+    checks.require(len(data["variants"]) == len(outputs) == 3, "three native variants")
+    oracle = data["oracle"]
+    checks.require((oracle["planar_bytes"], oracle["planar_sha256"], oracle["packed_bytes"],
+                    oracle["packed_sha256"]) == (len(planar), ORACLE_SHA256, 589824, PACKED_SHA256), "native oracle receipt")
+    checks.require(oracle["preselected_before_native_capture"] is True and
+                   oracle["same_pixels_for_all_valid_variants"] is True, "positive pixel inference boundary")
+    controls = (("before", 32, 14745600, "021b6736caed04600c4801ca1b0e30dc4a48b60985e2dff02d38bea7c2aa9244"),
+                ("a", 12, 589824, PACKED_SHA256), ("b", 12, 589824, PACKED_SHA256),
+                ("c", 12, 589824, PACKED_SHA256),
+                ("after", 180, 4423680, "d72c16b7eb12d844fb6a5805c2d33a120874237ac5f1cf3608d4bebe186ee7cd"))
+    checks.require(len(data["sessions"]) == 5, "five normal native sessions")
+    for session, expected in zip(data["sessions"], controls):
+        checks.require(tuple(session[k] for k in ("id", "frames", "capture_bytes", "capture_sha256")) ==
+                       expected, "whole native capture pins")
+        checks.require(all(session[k] is True for k in ("whole_capture_equal", "firmware_eos", "cleanup")) and
+                       all(session[k] == 0 for k in ("exit_code", "pending", "ready", "stderr_bytes", "new_kernel_errors")),
+                       "native output EOS and cleanup")
+        checks.require((session["fd_before_after"], session["threads_before_after"], session["kernel_normal_lines"]) ==
+                       ([3, 3], [1, 1], 3), "native resource and kernel receipts")
+    checks.require((sum(s["frames"] for s in data["sessions"]), sum(s["capture_bytes"] for s in data["sessions"])) ==
+                   (248, 20938752), "native total frames and bytes")
+    checks.require(all(data["summary"][k] is False for k in
+                       ("added_ppb_or_dram_observer", "diagnostic_target_writes", "invalid_reference_stream_sent")),
+                   "normal native input boundary")
+    tree = ET.fromstring(svg)
+    ns = {"svg": "http://www.w3.org/2000/svg"}
+    groups = tree.findall("svg:g", ns)
+    pictures = [g for g in groups if "data-frame" in g.attrib]
+    checks.require(len(pictures) == len(data["thumbnails"]) == 4, "four native luma pictures")
+    for group, thumbnail in zip(pictures, data["thumbnails"]):
+        index = int(group.attrib["data-frame"])
+        y = planar[index*FRAME_BYTES:index*FRAME_BYTES+WIDTH*HEIGHT]
+        checks.require(index == thumbnail["frame"] and hashlib.sha256(y).hexdigest() ==
+                       group.attrib["data-luma-sha256"] == thumbnail["luma_sha256"], "native whole luma provenance")
+        uri = group.find("svg:image", ns).attrib["href"]
+        checks.require(uri.startswith("data:image/png;base64,"), "embedded native PNG only")
+        png = base64.b64decode(uri.split(",", 1)[1], validate=True)
+        checks.require(len(png) == thumbnail["png_bytes"] and hashlib.sha256(png).hexdigest() ==
+                       group.attrib["data-png-sha256"] == thumbnail["png_sha256"], "native thumbnail byte pin")
+        checks.require(png[:8] == b"\x89PNG\r\n\x1a\n", "PNG signature")
+        offset, chunks = 8, []
+        while offset < len(png):
+            size = struct.unpack_from(">I", png, offset)[0]
+            kind, body = png[offset+4:offset+8], png[offset+8:offset+8+size]
+            checks.require(zlib.crc32(kind+body) & 0xffffffff == struct.unpack_from(">I", png, offset+8+size)[0],
+                           "PNG chunk CRC")
+            chunks.append((kind, body))
+            offset += size+12
+        checks.require(offset == len(png) and [k for k, _ in chunks] == [b"IHDR", b"IDAT", b"IEND"] and
+                       chunks[0][1] == struct.pack(">IIBBBBB", 128, 48, 8, 0, 0, 0, 0) and chunks[-1][1] == b"", "bounded gray PNG")
+        expected = b"".join(b"\0" + y[row*WIDTH:row*WIDTH+WIDTH:2] for row in range(0, HEIGHT, 2))
+        checks.require(zlib.decompress(chunks[1][1]) == expected, "every displayed native luma sample")
+    timeline = [g for g in groups if "data-au" in g.attrib]
+    checks.require([(int(g.attrib["data-au"]), int(g.attrib["data-frame-num"]), int(g.attrib["data-poc"]),
+                     g.attrib["data-reference"]) for g in timeline] ==
+                   [(i, FRAME_NUM[i], i, str(i % 2 == 0).lower()) for i in range(FRAMES)], "visual input timeline")
+    text = " ".join(tree.itertext())
+    checks.require("do not prove retirement/freeing" in text and "physical/raw-source lease" in text and
+                   any("identical pixels" in s for s in data["limits"]), "native visual inference limits")
+    checks.require(not any(p in raw.decode()+svg.decode() for p in ("/home/", "/tmp/", "file://")), "public-safe receipts")
+
+
 def validate():
     checks = Checks()
     a, b, c = oracle_source(0), oracle_source(2), oracle_source(7)
@@ -431,6 +518,7 @@ def validate():
         negative_receipts.append({"retire": retire, "ffmpeg_exit": decoded.returncode,
                                   "missing_reference_diagnostic": retire, "last_pattern": "C" if retire else "B",
                                   "hardware_candidate": False})
+    check_native_fixture(checks, outputs, expected)
     summary = {"self_checks": checks.count, "valid_cpu_frames": 3*FRAMES, "variants": receipts,
                "nal_headers": [format(n, "02x") for n in NAL_HEADERS], "frame_num": FRAME_NUM,
                "poc": list(range(FRAMES)), "reference": [i % 2 == 0 for i in range(FRAMES)],
