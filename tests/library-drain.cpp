@@ -7,6 +7,11 @@
 #include "crystalhd_ioctl_limits.h"
 #include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_mfd.h"
 #include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_scl_hd.h"
+#include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_sun_gisb_arb.h"
+#include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_decode_cpuimem_0.h"
+#include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_decode_cpudmem_0.h"
+#include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_decode_cpuimem2_0.h"
+#include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_decode_cpudmem2_0.h"
 #include "../filters/gst/gst-plugin-1.0/gstcrystalhd-input.h"
 extern "C" {
 #include <libavformat/avformat.h>
@@ -1571,6 +1576,109 @@ struct PpbContextFixture {
 // Native framing observations only: the revision pin is an observed board
 // profile, not a universal reset value. Sequential passes may differ; sync,
 // line counts and EOL/EOF are raw fields, not accepted-transfer/completion proof.
+// Fixed named memory-window front DWORDs only. The register backend has no
+// independent bus-ACK result; zero GISB guards do not authenticate a RAM alias.
+enum class AvdMemoryFailure { None, Argument, Mode, Owner, Order, Barrier, Budget, Api, Revision, Gisb };
+static uint32_t AvdMemoryAddress(unsigned field)
+{
+    const uint32_t addresses[] = {BCHP_MFD_REVISION_ID, BCHP_SUN_GISB_ARB_ERR_CAP_STATUS,
+        BCHP_DECODE_CPUIMEM_0_CPUIMEM_REG, BCHP_DECODE_CPUDMEM_0_CPUDMEM_REG,
+        BCHP_DECODE_CPUIMEM2_0_CPUIMEM_REG, BCHP_DECODE_CPUDMEM2_0_CPUDMEM_REG,
+        BCHP_SUN_GISB_ARB_ERR_CAP_STATUS, BCHP_MFD_REVISION_ID};
+    return field < 8 ? addresses[field] : 0;
+}
+struct AvdMemoryObserver {
+    typedef BC_STATUS (*Reader)(HANDLE, uint32_t, uint32_t *);
+    bool enabled = false, conflicting_mode = false, failed = false;
+    unsigned reads = 0, bytes = 0, next_stage = 0;
+    uint32_t raw[3][2][8] = {};
+    unsigned measured[3][2] = {};
+    bool complete[3][2] = {};
+    BC_STATUS api_status = BC_STS_SUCCESS;
+    AvdMemoryFailure failure = AvdMemoryFailure::None;
+    uint32_t rejected_address = 0, rejected_raw = 0;
+    bool rejected_raw_valid = false;
+private:
+    HANDLE owner = nullptr;
+    bool sealed = false;
+    bool ModeReady() const { return sealed && enabled && !conflicting_mode; }
+    bool Reject(AvdMemoryFailure why) {
+        if (!failed) failure = why;
+        failed = true;
+        return false;
+    }
+public:
+    void Report(unsigned stage) const {
+        if (stage > 2) return;
+        const char *const stages[] = {"after-OPEN/pre-START", "first-output-after-release-and-owned-write", "delivery-EOS-before-STOP"};
+        const char *const failures[] = {"none", "argument", "mode", "current-handle-loss", "order", "native-barrier", "budget", "api-status", "revision", "GISB-error"};
+        std::printf("AVD memory inventory: stage=%s reads=%u/48 bytes=%u/192 api-status=%d failure=%s\n",
+            stages[stage], reads, bytes, api_status, failures[static_cast<unsigned>(failure)]);
+        for (unsigned pass = 0; pass < 2; ++pass) {
+            std::printf("AVD memory inventory raw: stage=%s pass=%u", stages[stage], pass);
+            if (complete[stage][pass]) {
+                for (unsigned field = 0; field < 8; ++field)
+                    std::printf(" %08x=%08x", AvdMemoryAddress(field), raw[stage][pass][field]);
+            } else std::printf(" INCOMPLETE measured=%u/8", measured[stage][pass]);
+            std::printf("\n");
+        }
+        if (rejected_raw_valid) std::printf("AVD memory inventory rejected guard: address=%08x raw=%08x\n", rejected_address, rejected_raw);
+        std::printf("AVD memory inventory scope: named-front-DWORDs only; target-writes=0 error-clear-writes=0 pointer-follow=0 "
+            "atomic/alias/current-context/pixels/lease/completion-certified=no\n");
+        std::fflush(stdout);
+    }
+    bool Observe(const HANDLE *current, unsigned stage, bool barrier,
+        Reader reader = DtsDevRegisterRead, bool report = true) {
+        if (failed) return false;
+        if (!enabled && !sealed) return true;
+        if (!enabled || conflicting_mode) return Reject(AvdMemoryFailure::Mode);
+        if (!current || !*current || !reader) return Reject(AvdMemoryFailure::Argument);
+        if (stage > 2 || stage != next_stage) return Reject(AvdMemoryFailure::Order);
+        if (barrier != (stage != 0)) return Reject(AvdMemoryFailure::Barrier);
+        if (reads != stage * 16U || bytes != stage * 64U) return Reject(AvdMemoryFailure::Budget);
+        if (!sealed) { owner = *current; sealed = true; }
+        if (*current != owner) return Reject(AvdMemoryFailure::Owner);
+        bool ok = true;
+        for (unsigned pass = 0; pass < 2 && ok; ++pass) {
+            for (unsigned field = 0; field < 8 && ok; ++field) {
+                if (!ModeReady()) { ok = Reject(AvdMemoryFailure::Mode); break; }
+                if (!*current || *current != owner) { ok = Reject(AvdMemoryFailure::Owner); break; }
+                if (reads >= 48 || bytes > 192U - 4U) { ok = Reject(AvdMemoryFailure::Budget); break; }
+                uint32_t value = 0;
+                ++reads; bytes += 4;
+                api_status = reader(owner, AvdMemoryAddress(field), &value);
+                if (api_status != BC_STS_SUCCESS) { ok = Reject(AvdMemoryFailure::Api); break; }
+                if (!ModeReady()) { ok = Reject(AvdMemoryFailure::Mode); break; }
+                if (!*current || *current != owner) { ok = Reject(AvdMemoryFailure::Owner); break; }
+                const unsigned ordinal = stage * 16U + pass * 8U + field + 1U;
+                if (reads != ordinal || bytes != ordinal * 4U) { ok = Reject(AvdMemoryFailure::Budget); break; }
+                raw[stage][pass][field] = value;
+                ++measured[stage][pass];
+                if ((field == 0 || field == 7) ? value != 0x50U : (field == 1 || field == 6) && value != 0) {
+                    rejected_address = AvdMemoryAddress(field); rejected_raw = value; rejected_raw_valid = true;
+                    ok = Reject(field == 0 || field == 7 ? AvdMemoryFailure::Revision : AvdMemoryFailure::Gisb);
+                }
+            }
+            if (ok) complete[stage][pass] = true;
+        }
+        if (ok) ++next_stage;
+        if (report) Report(stage);
+        return ok;
+    }
+    bool Finish(bool native_ok, bool report = true) const {
+        if (!sealed && !enabled && !failed) return native_ok;
+        bool observed = !failed && ModeReady() && next_stage == 3 && reads == 48 && bytes == 192;
+        for (unsigned stage = 0; stage < 3; ++stage) for (unsigned pass = 0; pass < 2; ++pass)
+            observed = observed && complete[stage][pass] && measured[stage][pass] == 8;
+        if (report) {
+            std::printf("AVD memory inventory finish: native-result=%s observation-result=%s stages=%u/3 reads=%u/48 bytes=%u/192 "
+                "alias/current-context/lease/completion-certified=no\n", native_ok ? "PASS" : "FAIL", observed ? "PASS" : "FAIL", next_stage, reads, bytes);
+            std::fflush(stdout);
+        }
+        return native_ok && observed;
+    }
+};
+
 enum class MfdFramingFailure { None, Argument, Read, Revision, Reserved, Unavailable, Owner, Order, Publication };
 struct MfdFramingSnapshot {
     uint32_t raw[10] = {};
@@ -2180,10 +2288,20 @@ struct Options {
     bool observe_video_prefix = false;
     bool observe_video_graph = false;
     bool observe_video_staging = false;
+    bool observe_avd_memory = false;
     unsigned inject_mfd_colour = 0;
     unsigned scl_status_test = 0;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
 };
+
+static bool AvdMemoryConflicts(const Options &o)
+{
+    return o.observe_chroma || o.observe_scl_config || o.observe_scl_filter_map || o.observe_scl_view ||
+        o.observe_mfd_config || o.observe_mfd_address || o.observe_mfd_framing || o.observe_runtime_inventory ||
+        o.observe_arm_metadata || o.observe_arm_source_shape || o.observe_ppb_context || o.observe_ppb_stop ||
+        o.observe_ppb_metadata || o.observe_ppb_return || o.observe_video_prefix || o.observe_video_graph ||
+        o.observe_video_staging || o.inject_mfd_colour || o.scl_status_test || o.open_only || o.mpeg1_via_mpeg2 || o.h263_via_divx;
+}
 
 static uint32_t ProbeDeviceMode(const Options &options)
 {
@@ -2225,6 +2343,10 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         options->observe_ppb_context = options->observe_video_staging || options->observe_video_graph || options->observe_video_prefix || options->observe_ppb_stop || !std::strcmp(arguments.back(), "--observe-ppb-context");
         options->observe_arm_source_shape = !std::strcmp(arguments.back(), "--observe-arm-source-shape");
         options->observe_arm_metadata = !options->observe_arm_source_shape && !options->observe_ppb_context;
+        arguments.pop_back();
+    }
+    if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-avd-memory")) {
+        options->observe_avd_memory = true;
         arguments.pop_back();
     }
     if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-runtime-inventory")) {
@@ -2298,7 +2420,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         arguments.resize(arguments.size() - 2);
     }
     if (arguments.size() == 2 && !std::strcmp(arguments[1], "--self-test")) {
-        if (options->capture_path || options->observe_arm_metadata || options->observe_arm_source_shape || options->observe_ppb_context || options->observe_runtime_inventory || options->observe_chroma || options->observe_scl_config || options->observe_scl_filter_map || options->observe_scl_view || options->observe_mfd_config || options->observe_mfd_address || options->observe_mfd_framing || options->inject_mfd_colour || options->scl_status_test || options->scaler_test || options->mpeg1_via_mpeg2 ||
+        if (options->observe_avd_memory || options->capture_path || options->observe_arm_metadata || options->observe_arm_source_shape || options->observe_ppb_context || options->observe_runtime_inventory || options->observe_chroma || options->observe_scl_config || options->observe_scl_filter_map || options->observe_scl_view || options->observe_mfd_config || options->observe_mfd_address || options->observe_mfd_framing || options->inject_mfd_colour || options->scl_status_test || options->scaler_test || options->mpeg1_via_mpeg2 ||
             options->h263_via_divx || options->open_only) return false;
         options->mode = Mode::SelfTest;
         return true;
@@ -2315,6 +2437,9 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         return false;
     options->mode = preflight ? Mode::Preflight : Mode::Hardware;
     options->path = arguments[2];
+    if (options->observe_avd_memory && (!hardware || !options->capture_path || !options->scaler_test ||
+        options->scale_width || options->expected != 180 || options->iterations != 1 ||
+        options->output_format != OUTPUT_MODE422_YUY2 || AvdMemoryConflicts(*options))) return false;
     if ((options->observe_arm_metadata || options->observe_arm_source_shape || options->observe_ppb_context) &&
         (!hardware || !options->capture_path || !options->scaler_test || options->scale_width ||
          options->expected != 180 || options->iterations != 1 || options->output_format != OUTPUT_MODE422_YUY2 ||
@@ -2397,7 +2522,7 @@ static bool SclInputAdmitted(const Options &options, const Input &input)
 
 static bool NeedsRawIo(const Options &options)
 {
-    return options.observe_arm_metadata || options.observe_arm_source_shape || options.observe_ppb_context || options.observe_runtime_inventory || options.observe_chroma || options.observe_scl_config || options.observe_scl_filter_map ||
+    return options.observe_avd_memory || options.observe_arm_metadata || options.observe_arm_source_shape || options.observe_ppb_context || options.observe_runtime_inventory || options.observe_chroma || options.observe_scl_config || options.observe_scl_filter_map ||
         options.observe_scl_view || options.observe_mfd_config || options.observe_mfd_address || options.observe_mfd_framing || options.inject_mfd_colour || options.scl_status_test;
 }
 
@@ -2425,6 +2550,15 @@ static bool ArmMetadataInputShape(const Options &options, const Input &input)
 static bool ArmMetadataInputAdmitted(const Options &options, const Input &input)
 {
     return (!options.observe_arm_metadata && !options.observe_arm_source_shape && !options.observe_ppb_context) || (ArmMetadataInputShape(options, input) &&
+        SubmittedPacketDigestMatches(input, 124832, "1363a87c8f59fab6187cd13653a3ba8a41fd994066d30c24be1c2b09d675666e"));
+}
+static bool AvdMemoryInputShape(const Options &options, const Input &input)
+{
+    return ArmMetadataInputShape(options, input) && input.metadata.empty();
+}
+static bool AvdMemoryInputAdmitted(const Options &options, const Input &input)
+{
+    return !options.observe_avd_memory || (AvdMemoryInputShape(options, input) &&
         SubmittedPacketDigestMatches(input, 124832, "1363a87c8f59fab6187cd13653a3ba8a41fd994066d30c24be1c2b09d675666e"));
 }
 
@@ -4531,6 +4665,208 @@ template<class Check> static void VideoStagingSelfTest(const Check &check)
         "video staging retains the old exact-input digest, not just geometry/packet count admission");
 }
 
+struct AvdMemoryFixture {
+    uint32_t raw[48] = {};
+    unsigned calls = 0, fail_at = 48, lose_at = 48, mutate_at = 48, mutation = 0;
+    BC_STATUS status = BC_STS_ERROR;
+    bool valid = true;
+    HANDLE current = this, replacement = nullptr;
+    AvdMemoryObserver *subject = nullptr;
+    AvdMemoryFixture() {
+        for (unsigned index = 0; index < 48; ++index)
+            raw[index] = index % 8 == 0 || index % 8 == 7 ? 0x50U :
+                index % 8 == 1 || index % 8 == 6 ? 0U : 0x12000000U + index;
+    }
+    static BC_STATUS Read(HANDLE handle, uint32_t address, uint32_t *value) {
+        auto *f = static_cast<AvdMemoryFixture *>(handle);
+        const unsigned index = f->calls++;
+        const uint32_t expected[] = {0x540000, 0x4000d4, 0x846000, 0x848000, 0x856000, 0x858000, 0x4000d4, 0x540000};
+        if (index >= 48 || !value) { f->valid = false; return BC_STS_ERROR; }
+        f->valid &= address == expected[index % 8];
+        *value = index == f->fail_at ? 0xdeadbeefU : f->raw[index];
+        if (index == f->lose_at) f->current = f->replacement;
+        if (index == f->mutate_at && f->subject) {
+            if (f->mutation == 0) f->subject->enabled = false;
+            if (f->mutation == 1) f->subject->conflicting_mode = true;
+            if (f->mutation == 2) ++f->subject->reads;
+            if (f->mutation == 3) ++f->subject->bytes;
+        }
+        return index == f->fail_at ? f->status : BC_STS_SUCCESS;
+    }
+    bool Exercise(AvdMemoryObserver *o) {
+        subject = o; o->enabled = true;
+        for (unsigned stage = 0; stage < 3; ++stage)
+            if (!o->Observe(&current, stage, stage != 0, Read, false)) return false;
+        return o->Finish(true, false);
+    }
+};
+
+template<class Check> static void AvdMemorySelfTest(const Check &check)
+{
+    const uint32_t addresses[] = {0x540000, 0x4000d4, 0x846000, 0x848000, 0x856000, 0x858000, 0x4000d4, 0x540000};
+    for (unsigned field = 0; field < 8; ++field)
+        check(AvdMemoryAddress(field) == addresses[field] && addresses[field] != 0x4000c8,
+            "AVD inventory independent eight-word whitelist excludes error-clear and adjacent/window-END words");
+    check(AvdMemoryAddress(8) == 0 && BCHP_SUN_GISB_ARB_ERR_CAP_CLR_clear_MASK == 1 &&
+        BCHP_SUN_GISB_ARB_ERR_CAP_STATUS_valid_MASK == 1 && BCHP_SUN_GISB_ARB_ERR_CAP_STATUS_timeout_MASK == 0x1000 &&
+        BCHP_DECODE_CPUIMEM_0_CPUIMEM_REG_Addr_MASK == 0xffffffffU &&
+        BCHP_DECODE_CPUDMEM_0_CPUDMEM_REG_Addr_MASK == 0xffffffffU,
+        "AVD inventory named RDB field receipts do not turn opaque words into pointers or native ACKs");
+    AvdMemoryObserver disabled;
+    check(disabled.Observe(nullptr, 99, true, nullptr, false) && disabled.Finish(true, false) &&
+        !disabled.Finish(false, false) && disabled.reads == 0 && disabled.bytes == 0,
+        "AVD inventory defaults off with zero observer I/O and preserves native failure");
+    AvdMemoryObserver stable;
+    for (unsigned variant = 0; variant < 3; ++variant) {
+        struct Canary { uint32_t before = 0x12345678; AvdMemoryFixture fixture; AvdMemoryObserver observer; uint32_t after = 0x87654321; } c;
+        for (unsigned index = 0; index < 48; ++index) if (index % 8 >= 2 && index % 8 <= 5)
+            c.fixture.raw[index] = variant == 0 ? 0U : variant == 1 ? 0xffffffffU : 0x80000000U ^ (index * 0x1020301U);
+        check(c.fixture.Exercise(&c.observer) && c.fixture.valid && c.fixture.calls == 48 && c.observer.reads == 48 &&
+            c.observer.bytes == 192 && c.observer.next_stage == 3 && !c.observer.failed &&
+            c.before == 0x12345678 && c.after == 0x87654321 && !c.observer.Finish(false, false),
+            "AVD inventory literal 48/192 trace admits zero/all-ones/changing opaque memory and preserves canaries/native result");
+        for (unsigned stage = 0; stage < 3; ++stage) for (unsigned pass = 0; pass < 2; ++pass) {
+            check(c.observer.complete[stage][pass] && c.observer.measured[stage][pass] == 8 &&
+                !std::memcmp(c.observer.raw[stage][pass], c.fixture.raw + stage * 16 + pass * 8, 32),
+                "AVD inventory complete tuple is published only after both closing guards");
+        }
+        if (variant == 2) stable = c.observer;
+    }
+    for (unsigned at = 0; at < 48; ++at) {
+        const unsigned stage = at / 16, pass = at % 16 / 8, field = at % 8;
+        for (int code = -1; code <= BC_STS_PWR_MGMT; ++code) {
+            if (code == BC_STS_SUCCESS) continue;
+            AvdMemoryFixture f; f.fail_at = at; f.status = static_cast<BC_STATUS>(code);
+            AvdMemoryObserver o;
+            check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && o.reads == at + 1 && o.bytes == (at + 1) * 4 &&
+                o.failure == AvdMemoryFailure::Api && o.api_status == code && o.measured[stage][pass] == field &&
+                !o.complete[stage][pass] && o.raw[stage][pass][field] == 0 && !o.Finish(true, false),
+                "AVD inventory every non-success API status at all 48 callbacks excludes poison/unread/partial publications");
+            o.enabled = false;
+            check(!o.Observe(&f.current, 0, false, AvdMemoryFixture::Read, false) && f.calls == at + 1 &&
+                !o.Finish(true, false), "AVD inventory API failure remains sticky even after mode disable");
+        }
+        for (bool replace : {false, true}) {
+            AvdMemoryFixture f, other; f.lose_at = at; f.replacement = replace ? static_cast<HANDLE>(&other) : nullptr;
+            AvdMemoryObserver o;
+            check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && other.calls == 0 &&
+                o.failure == AvdMemoryFailure::Owner && o.measured[stage][pass] == field &&
+                o.raw[stage][pass][field] == 0 && !o.complete[stage][pass],
+                "AVD inventory current handle null/replacement during each callback is never published or followed");
+            f.current = &f;
+            check(!o.Observe(&f.current, stage, stage != 0, AvdMemoryFixture::Read, false) && f.calls == at + 1,
+                "AVD inventory restored handle cannot retry a lost-owner observation");
+        }
+        for (unsigned mutation = 0; mutation < 4; ++mutation) {
+            AvdMemoryFixture f; f.mutate_at = at; f.mutation = mutation; AvdMemoryObserver o;
+            check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && o.failed &&
+                o.failure == (mutation < 2 ? AvdMemoryFailure::Mode : AvdMemoryFailure::Budget) &&
+                o.measured[stage][pass] == field && !o.complete[stage][pass] && o.raw[stage][pass][field] == 0,
+                "AVD inventory callback mode/conflicting-profile/counter mutation fails before value publication");
+        }
+        if (field == 1 || field == 6) for (unsigned bit = 0; bit < 32; ++bit) {
+            AvdMemoryFixture f; f.raw[at] = 1U << bit; AvdMemoryObserver o;
+            check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && o.failure == AvdMemoryFailure::Gisb &&
+                o.rejected_raw_valid && o.rejected_address == 0x4000d4 && o.rejected_raw == (1U << bit) &&
+                o.measured[stage][pass] == field + 1 && !o.complete[stage][pass] && !o.Finish(true, false),
+                "AVD inventory any GISB bit including reserved bits is fatal raw diagnosis without clear or retry");
+        }
+        if (field == 0 || field == 7) for (uint32_t value : {0U, 0x51U, 0x10050U, 0xffffffffU}) {
+            AvdMemoryFixture f; f.raw[at] = value; AvdMemoryObserver o;
+            check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && o.failure == AvdMemoryFailure::Revision &&
+                o.rejected_raw_valid && o.rejected_raw == value && !o.complete[stage][pass],
+                "AVD inventory both revisions in every pass require exact 50 including reserved bits");
+        }
+    }
+    for (unsigned fault = 0; fault < 9; ++fault) {
+        AvdMemoryFixture f; AvdMemoryObserver o; o.enabled = true;
+        bool ok = false;
+        if (fault == 0) ok = o.Observe(nullptr, 0, false, AvdMemoryFixture::Read, false);
+        if (fault == 1) ok = o.Observe(&f.current, 0, false, nullptr, false);
+        if (fault == 2) ok = o.Observe(&f.current, 3, true, AvdMemoryFixture::Read, false);
+        if (fault == 3) ok = o.Observe(&f.current, 1, true, AvdMemoryFixture::Read, false);
+        if (fault == 4) ok = o.Observe(&f.current, 0, true, AvdMemoryFixture::Read, false);
+        if (fault == 5) { o.reads = 1; ok = o.Observe(&f.current, 0, false, AvdMemoryFixture::Read, false); }
+        if (fault == 6) { o.bytes = 1; ok = o.Observe(&f.current, 0, false, AvdMemoryFixture::Read, false); }
+        if (fault == 7) { o.bytes = UINT_MAX; ok = o.Observe(&f.current, 0, false, AvdMemoryFixture::Read, false); }
+        if (fault == 8) { o.conflicting_mode = true; ok = o.Observe(&f.current, 0, false, AvdMemoryFixture::Read, false); }
+        check(!ok && o.failed && f.calls == 0 && !o.Finish(true, false),
+            "AVD inventory bad initial argument/order/barrier/budget/mixed profile performs no observer I/O");
+    }
+    for (unsigned fault = 0; fault < 5; ++fault) {
+        AvdMemoryFixture f; AvdMemoryObserver o; o.enabled = true;
+        check(o.Observe(&f.current, 0, false, AvdMemoryFixture::Read, false), "AVD inventory stage0 setup");
+        if (fault == 0) o.enabled = false;
+        if (fault == 1) o.conflicting_mode = true;
+        if (fault == 2) o.reads = 48;
+        if (fault == 3) o.bytes = 192;
+        check(!o.Observe(&f.current, 1, fault != 4, AvdMemoryFixture::Read, false) && f.calls == 16 &&
+            !o.Finish(true, false), "AVD inventory sealed mode/budget/first-release-and-owned-write barrier cannot be bypassed");
+    }
+    AvdMemoryFixture rejected_fixture; rejected_fixture.fail_at = 10;
+    AvdMemoryObserver rejected; check(!rejected_fixture.Exercise(&rejected), "AVD inventory reporter API failure setup");
+    FILE *log = std::tmpfile(); const int saved = log ? dup(STDOUT_FILENO) : -1;
+    const bool redirected = saved >= 0 && dup2(fileno(log), STDOUT_FILENO) >= 0;
+    if (redirected) { stable.enabled = false; stable.Report(0); stable.Report(2); stable.enabled = true;
+        stable.Finish(true); stable.Finish(false); rejected.Report(0); }
+    std::fflush(stdout);
+    if (saved >= 0) { (void)dup2(saved, STDOUT_FILENO); close(saved); }
+    char text[8192] = {}; size_t length = 0;
+    if (log) { std::rewind(log); length = std::fread(text, 1, sizeof(text) - 1, log); std::fclose(log); }
+    check(redirected && length && std::strstr(text, "00846000=") && std::strstr(text, "pass=1 INCOMPLETE measured=2/8") &&
+        !std::strstr(text, "deadbeef") && std::strstr(text, "native-result=PASS observation-result=PASS stages=3/3 reads=48/48 bytes=192/192") &&
+        std::strstr(text, "native-result=FAIL observation-result=PASS") && std::strstr(text, "error-clear-writes=0 pointer-follow=0") &&
+        std::strstr(text, "atomic/alias/current-context/pixels/lease/completion-certified=no"),
+        "AVD inventory frozen reporter publishes only complete passes and separates native failure without bus/alias/lease claims");
+    const std::vector<const char *> valid = {"probe","--hardware","fixture","180","30","1","--scaler-test","0",
+        "--observe-avd-memory","--capture-yuy2","new"};
+    Options admitted;
+    check(ParseArguments(valid, &admitted) && admitted.observe_avd_memory && !AvdMemoryConflicts(admitted) &&
+        NeedsRawIo(admitted) && !NeedsRawIo(Options{}), "AVD inventory exact separate opt-in uses CAP_SYS_RAWIO before all actions");
+    const std::vector<std::vector<const char *>> forbidden = {{"--observe-avd-memory"},{"--observe-video-staging"},{"--observe-video-prefix"},{"--observe-video-graph"},
+        {"--observe-ppb-context"},{"--observe-ppb-stop"},{"--observe-ppb-metadata"},{"--observe-ppb-return"},{"--observe-arm-metadata"},
+        {"--observe-arm-source-shape"},{"--observe-runtime-inventory"},{"--observe-mfd-framing"},{"--observe-mfd-config"},{"--observe-mfd-address"},
+        {"--observe-scl-config"},{"--observe-scl-filter-map"},{"--observe-scl-view","2"},{"--observe-chroma"},{"--inject-mfd-colour","a"},
+        {"--scl-status-test","observe"},{"--open-only"},{"--mpeg1-via-mpeg2"},{"--h263-via-divx"},{"--scaler-test","0"},{"--capture-yuy2","other"}};
+    for (const auto &extra : forbidden) for (unsigned order = 0; order < 2; ++order) {
+        auto args = valid; args.insert(order ? args.end() - 2 : args.begin() + 8, extra.begin(), extra.end()); Options o;
+        check(!ParseArguments(args, &o), "AVD inventory all duplicate/mixed options reject in either order");
+    }
+    for (unsigned fault = 0; fault < 10; ++fault) {
+        auto args = valid;
+        if (fault == 0) args[1] = "--preflight";
+        if (fault == 1) args[1] = "--self-test";
+        if (fault == 2) args[3] = "179";
+        if (fault == 3) args[5] = "2";
+        if (fault == 4) args[7] = "128";
+        if (fault == 5) args[8] = "--observe-avd-memory=0";
+        if (fault == 6) args[9] = "--capture-uyvy";
+        if (fault == 7) args[10] = "-";
+        if (fault == 8) args[10] = "";
+        if (fault == 9) args.resize(9);
+        Options o; check(!ParseArguments(args, &o), "AVD inventory requires native/unscaled/180/one-iteration/fresh YUY2 syntax");
+    }
+    Input native; native.codec = AV_CODEC_ID_H264; native.subtype = BC_MSUBTYPE_H264;
+    native.progressive = true; native.width = 256; native.height = 96; native.packets.resize(180);
+    check(AvdMemoryInputShape(admitted, native) && !AvdMemoryInputAdmitted(admitted, native) &&
+        AvdMemoryInputAdmitted(Options{}, native), "AVD inventory admits neither geometry-only nor unpinned submitted bytes");
+    for (unsigned fault = 0; fault < 7; ++fault) {
+        Input wrong; wrong.codec = AV_CODEC_ID_H264; wrong.subtype = BC_MSUBTYPE_H264;
+        wrong.progressive = true; wrong.width = 256; wrong.height = 96; wrong.packets.resize(180);
+        Options o = admitted;
+        if (fault == 0) wrong.codec = AV_CODEC_ID_MPEG2VIDEO;
+        if (fault == 1) wrong.subtype = BC_MSUBTYPE_MPEG2VIDEO;
+        if (fault == 2) wrong.progressive = false;
+        if (fault == 3) wrong.width = 128;
+        if (fault == 4) wrong.height = 48;
+        if (fault == 5) wrong.packets.resize(179);
+        if (fault == 6) o.expected = 179;
+        check(!AvdMemoryInputShape(o, wrong), "AVD inventory rejects hidden codec/interlace/geometry/packet-count changes");
+    }
+    native.metadata.push_back(0);
+    check(!AvdMemoryInputShape(admitted, native), "AVD inventory pinned native source has no extra metadata");
+}
+
 template<class Check> static void MfdFramingSelfTest(const Check &check)
 {
     const uint32_t addresses[] = {0x00540000, 0x00540078, 0x00540050, 0x00540070, 0x00540000};
@@ -4935,6 +5271,7 @@ static bool SelfTest()
     VideoPrefixSelfTest(check);
     VideoGraphSelfTest(check);
     VideoStagingSelfTest(check);
+    AvdMemorySelfTest(check);
     PpbStopLifecycleSelfTest(check);
     MfdFramingSelfTest(check);
     RuntimeInventorySelfTest(check);
@@ -6782,6 +7119,7 @@ struct Audit {
     RuntimeInventoryObserver runtime_inventory;
     ArmMetadataObserver arm_metadata;
     PpbContextObserver ppb_context;
+    AvdMemoryObserver avd_memory;
     MfdAddressObserver mfd_address;
     MfdFramingObserver mfd_framing;
     MfdColourProbe mfd_colour;
@@ -6839,6 +7177,8 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                 valid = audit->arm_metadata.Observe(&device->handle, 1, released && owned_written);
             if (!marker && valid && released && audit->frames == 1)
                 valid = audit->ppb_context.Observe(&device->handle, 1, released && owned_written);
+            if (!marker && valid && released && audit->frames == 1)
+                valid = audit->avd_memory.Observe(&device->handle, 1, released && owned_written);
             if (!marker && valid && released)
                 valid = audit->scl_filter_map.AfterDelivered(device->handle, audit->frames,
                                                            released, audit->capture != nullptr);
@@ -6886,6 +7226,8 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                     std::fprintf(stderr, "MFD debug address observation failed; no further observer I/O, ordinary decoder cleanup follows\n");
                 else if (audit->mfd_framing.failed)
                     std::fprintf(stderr, "MFD framing observation failed; no further observer I/O, ordinary decoder cleanup follows\n");
+                else if (audit->avd_memory.failed)
+                    std::fprintf(stderr, "AVD memory inventory failed; no further observer I/O or error clearing, ordinary decoder cleanup follows\n");
                 else if (audit->ppb_context.failed)
                     std::fprintf(stderr, "PPB saved context observation failed; no new pointer targets or retries, ordinary decoder cleanup follows\n");
                 else if (audit->arm_metadata.failed)
@@ -6897,7 +7239,7 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                 else
                     std::fprintf(stderr, "Invalid progressive picture geometry/data/token: %llu\n",
                                  static_cast<unsigned long long>(output.PicInfo.timeStamp));
-                if (audit->pixels && !audit->scl.failed && !audit->scl_filter_map.fatal && !audit->scl_view.failed && !audit->mfd.failed && !audit->mfd_address.failed && !audit->mfd_framing.failed && !audit->arm_metadata.failed && !audit->ppb_context.failed && !audit->mfd_colour.failed && !audit->scl_status.fatal)
+                if (audit->pixels && !audit->avd_memory.failed && !audit->scl.failed && !audit->scl_filter_map.fatal && !audit->scl_view.failed && !audit->mfd.failed && !audit->mfd_address.failed && !audit->mfd_framing.failed && !audit->arm_metadata.failed && !audit->ppb_context.failed && !audit->mfd_colour.failed && !audit->scl_status.fatal)
                     std::fprintf(stderr, "Scaler picture: got=%ux%u expected=%ux%u "
                                  "flags=%x words=%u packed422=%u\n",
                                  output.PicInfo.width, output.PicInfo.height,
@@ -6965,6 +7307,8 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.ppb_context.video_prefix = options.observe_video_prefix;
     audit.ppb_context.video_graph = options.observe_video_graph;
     audit.ppb_context.video_staging = options.observe_video_staging;
+    audit.avd_memory.enabled = options.observe_avd_memory;
+    audit.avd_memory.conflicting_mode = AvdMemoryConflicts(options);
     audit.mfd_address.enabled = options.observe_mfd_address;
     audit.mfd_framing.enabled = options.observe_mfd_framing;
     audit.mfd_colour.stimulus = options.inject_mfd_colour;
@@ -7028,6 +7372,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     if (ok) ok = audit.mfd_framing.PreStart(&device.handle);
     if (ok) ok = audit.arm_metadata.Observe(&device.handle, 0, false);
     if (ok) ok = audit.ppb_context.Observe(&device.handle, 0, false);
+    if (ok) ok = audit.avd_memory.Observe(&device.handle, 0, false);
     if (ok) ok = audit.mfd_colour.PreStart(device.handle);
     if (ok) device.started = ok = Status("DtsStartDecoder", DtsStartDecoder(device.handle));
     if (ok && options.capture_path) ok = PackingState(device.handle, "started", &audit.mfd_colour, &audit.scl_view);
@@ -7075,6 +7420,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     // Delivery EOS barrier only, sampled before ordinary STOP/CLOSE.
     if (ok) ok = audit.arm_metadata.Observe(&device.handle, 2, true);
     if (ok) ok = audit.ppb_context.Observe(&device.handle, 2, true);
+    if (ok) ok = audit.avd_memory.Observe(&device.handle, 2, true);
     if (ok) ok = audit.scl.Observe(device.handle, SclStage::EosBarrier);
     // Only an actual native delivery barrier admits the last status sample.
     // Its diagnostic result cannot retroactively erase delivered native data.
@@ -7105,6 +7451,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     ok = audit.mfd_framing.Finish(ok);
     ok = audit.arm_metadata.Finish(ok);
     ok = audit.ppb_context.Finish(ok);
+    ok = audit.avd_memory.Finish(ok);
     ok = audit.runtime_inventory.Finish(ok, audit.mfd);
     std::printf("Library drain: iteration=%u/%u frames=%u/%u pending=%zu "
         "%s-EOS=%s output-marker=%s ready=%u cleanup=%s result=%s\n",
@@ -7133,13 +7480,15 @@ int main(int argc, char **argv)
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
             "[--scaler-test WIDTH_OR_0] [--mpeg1-via-mpeg2 | --h263-via-divx] "
-            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --observe-ppb-metadata | --observe-ppb-return | --observe-video-prefix | --observe-video-graph | --observe-video-staging | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
+            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --observe-ppb-metadata | --observe-ppb-return | --observe-video-prefix | --observe-video-graph | --observe-video-staging | --observe-avd-memory | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
     if (NeedsRawIo(options) && !CanReadChromaConfiguration()) {
-        if (options.observe_video_staging)
+        if (options.observe_avd_memory)
+            std::fprintf(stderr, "--observe-avd-memory requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
+        else if (options.observe_video_staging)
             std::fprintf(stderr, "--observe-video-staging requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
         else if (options.observe_video_graph)
             std::fprintf(stderr, "--observe-video-graph requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
@@ -7202,6 +7551,12 @@ int main(int argc, char **argv)
     }
     if (!ArmMetadataInputAdmitted(options, input)) {
         std::fprintf(stderr, "ARM metadata observation requires the pinned progressive H264 256x96/180-packet input: "
+            "124832 submitted bytes and fixed SHA256; no capture or device was opened\n");
+        phase1_progress_close(&progress);
+        return 2;
+    }
+    if (!AvdMemoryInputAdmitted(options, input)) {
+        std::fprintf(stderr, "AVD memory inventory requires the pinned progressive H264 256x96/180-packet input: "
             "124832 submitted bytes and fixed SHA256; no capture or device was opened\n");
         phase1_progress_close(&progress);
         return 2;
