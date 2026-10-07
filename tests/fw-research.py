@@ -12723,5 +12723,186 @@ class FirmwareArcDeallocatorProjectionTests(unittest.TestCase):
             project_arc_deallocator(self.payload, 0, flags, rows)
 
 
+def project_arc_initialization(payload, count, bank_bytes, pool_base, budget=160):
+    """Logical 26890..268c8 fragment, with explicit constructor-entry inputs.
+
+    Bank selection/sizing and the preceding SUB.F are premises, not executed.
+    The nine-row fixture bound is not a constructor guard. This base-ISA loop
+    abstraction certifies no native pipeline, save DMA, plane or source lease.
+    """
+    if type(payload) not in (bytes, bytearray) or len(payload) != MAP.BUNDLED_SIZE - MAP.TRAILER_SIZE:
+        raise ValueError("invalid ARC initialization payload")
+    if hashlib.sha256(payload[0x4928c:0x49508]).hexdigest() != \
+            "11aeb52ef9f2a3c8ab99cf099c75eade7a69abe991e3561a05f423e54b1b4d71":
+        raise ValueError("stock ARC constructor source changed")
+    if type(count) is not int or not 0 <= count <= 9 or any(
+            type(value) is not int or not 0 <= value <= 0xffffffff for value in (bank_bytes, pool_base)) or \
+            type(budget) is not int or not 1 <= budget <= 160:
+        raise ValueError("invalid synthetic ARC initialization inputs")
+    code = bytes(payload[0x49424:0x4945c])
+    page = bytearray(b"\xa5" * 4096)
+    initial = bytes(page)
+    registers = [0xabc00000 + i for i in range(64)]
+    registers[2], registers[3], registers[14] = 0x3fffd1ac, 0, count
+    registers[18], registers[22] = bank_bytes, pool_base
+    expected_registers = list(registers)
+    expected_registers[4], expected_registers[60] = 0x3fffd1f0, 0
+    expected_registers[22] = (pool_base + count * bank_bytes) & 0xffffffff
+    if count:
+        expected_registers[0] = 0x3fffd1ac + 16 * count
+    expected, expected_stores = bytearray(page), []
+    for bank in range(count):
+        offset, base = 0x1a8 + 16 * bank, (pool_base + bank * bank_bytes) & 0xffffffff
+        struct.pack_into("<4I", expected, offset, base, 0, 0, 0)
+        expected_stores.extend((pc, 0x3fffd000 + offset + delta, 4, value) for pc, delta, value in (
+            (0x2689c, 0, base), (0x268a4, 4, 0), (0x268a8, 8, 0), (0x268ac, 12, 0)))
+    expected[0x100:0x144] = bytes(68)
+    expected_stores.extend((0x268c0, 0x3fffd100 + 2 * index, 2, 0) for index in range(34))
+    # Entry NZCV from SUB.F 0,r14,0 at 26870, for the bounded unsigned count.
+    z, carry = count == 0, False
+    pc, loop_start, loop_end, stores, visited = 0x26890, None, None, [], []
+    while pc != 0x268c8:
+        if len(visited) >= budget:
+            raise ValueError("ARC initialization instruction budget exceeded")
+        if pc & 3 or not 0x26890 <= pc < 0x268c8:
+            raise ValueError("outside pinned ARC initialization code")
+        instruction = struct.unpack_from("<I", code, pc - 0x26890)[0]
+        visited.append(pc)
+        major = instruction >> 27
+        a, b, c = ((instruction >> shift) & 63 for shift in (21, 15, 9))
+        short = (instruction & 511) - (512 if instruction & 256 else 0)
+        def operand(register):
+            if register in (61, 63):
+                return short & 0xffffffff
+            if register == 62:
+                raise ValueError("outside ARC initialization operand domain")
+            return registers[register]
+        next_pc = pc + 4
+        if major in (8, 12):
+            immediate = b in (61, 63) or c in (61, 63)
+            condition = 0 if immediate else instruction & 31
+            set_flags = 61 in (b, c) if immediate else bool(instruction & 256)
+            if condition not in (0, 13) or set_flags or a >= 61:
+                raise ValueError("unsupported ARC initialization arithmetic")
+            if not condition or not carry and not z:
+                left, right = operand(b), operand(c)
+                result = (left + right) & 0xffffffff if major == 8 else left & right
+                registers[a] = result & 0xffffff if a == 60 else result
+        elif major == 6:
+            condition = instruction & 31
+            if condition not in (0, 13) or instruction & 0x60:
+                raise ValueError("unsupported ARC initialization loop setup")
+            displacement = (instruction >> 7) & 0xfffff
+            if displacement & 0x80000:
+                displacement -= 1 << 20
+            target = pc + 4 + displacement * 4
+            if not condition or not carry and not z:
+                loop_start, loop_end = pc + 4, target
+            else:
+                next_pc = target  # False LPcc branches; it does not enter a zero-count loop.
+        elif major == 2:
+            size = {0: 4, 2: 2}.get((instruction >> 22) & 3)
+            if size is None or instruction & 0x07200000:
+                raise ValueError("unsupported ARC initialization store")
+            address = (operand(b) + short) & 0xffffffff
+            value = operand(c) & ((1 << (size * 8)) - 1)
+            store = (pc, address, size, value)
+            if len(stores) >= len(expected_stores) or store != expected_stores[len(stores)]:
+                raise ValueError("outside ordered ARC initialization store contract")
+            offset = address - 0x3fffd000
+            if not 0 <= offset <= 4096 - size or address & (size - 1):
+                raise ValueError("outside synthetic ARC initialization RAM")
+            page[offset:offset + size] = value.to_bytes(size, "little")
+            stores.append(store)
+        else:
+            raise ValueError("unsupported ARC initialization opcode")
+        if next_pc == loop_end:
+            old_count = registers[60]
+            registers[60] = (old_count - 1) & 0xffffff
+            if old_count != 1:
+                next_pc = loop_start
+        pc = next_pc
+    if bytes(page) != bytes(expected) or registers != expected_registers or stores != expected_stores:
+        raise ValueError("ARC initialization full-page/register oracle changed")
+    return {"initial": initial, "page": bytes(page), "flags": bytes(page[0x100:0x144]),
+            "banks": bytes(page[0x1a8:0x238]), "stores": stores, "visited": visited,
+            "registers": registers, "whole_constructor_executed": False,
+            "native_execution": False, "pipeline_timing_certified": False,
+            "save_dma_executed": False, "physical_lease_certified": False}
+
+
+class FirmwareArcInitializationProjectionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        raw = MAP.read_firmware(BLOB)
+        if len(raw) != MAP.BUNDLED_SIZE or hashlib.sha256(raw).hexdigest() != MAP.BUNDLED_SHA256:
+            raise ValueError("bundled firmware changed")
+        cls.payload = raw[:-MAP.TRAILER_SIZE]
+
+    def test_conditional_zero_loop_all_banks_wrap_and_all_flags(self):
+        for count in range(10):
+            for bank_bytes in (0, 0x18000, 0xffffffff):
+                for base in (0, 0x920000, 0xfffffff0):
+                    with self.subTest(count=count, bank_bytes=bank_bytes, base=base):
+                        result = project_arc_initialization(self.payload, count, bank_bytes, base)
+                        self.assertEqual(result["flags"], bytes(68))
+                        self.assertEqual(result["banks"][16 * count:], b"\xa5" * (144 - 16 * count))
+                        for bank in range(count):
+                            self.assertEqual(struct.unpack_from("<4I", result["banks"], 16 * bank),
+                                             ((base + bank * bank_bytes) & 0xffffffff, 0, 0, 0))
+                        self.assertEqual(len(result["stores"]), 4 * count + 34)
+                        self.assertEqual(result["visited"].count(0x268c0), 34)
+                        self.assertEqual(result["visited"].count(0x2689c), count)
+                        self.assertEqual(result["registers"][0], 0x3fffd1ac + 16 * count if count else 0xabc00000)
+                        for key in ("whole_constructor_executed", "native_execution", "pipeline_timing_certified",
+                                    "save_dma_executed", "physical_lease_certified"):
+                            self.assertFalse(result[key])
+
+    def test_initialized_and_last_slot_freed_images_are_indistinguishable(self):
+        initialized = project_arc_initialization(self.payload, 9, 0x18000, 0x920000)
+        rows = bytearray(initialized["banks"])
+        # Selected allocator geometry premise, not execution of its sizing path.
+        struct.pack_into("<2I", rows, 8, 0x12345, 0x11223344)
+        published = project_arc_publication(self.payload, 0, 0, initialized["flags"], rows)
+        released = bytearray(published["flags"])
+        struct.pack_into("<H", released, 0, struct.unpack_from("<H", released)[0] & ~0x6000)
+        freed = project_arc_deallocator(self.payload, 0, released, published["banks"])
+        self.assertEqual((freed["flags"], freed["banks"]), (initialized["flags"], initialized["banks"]))
+        for flags, banks in ((initialized["flags"], initialized["banks"]), (freed["flags"], freed["banks"])):
+            self.assertEqual(project_arc_getter(self.payload, 0, flags, banks)["address"], 0)
+
+    def test_source_inputs_budget_and_decoded_store_refusals(self):
+        for offset in (0x4928c, 0x49424, 0x4945b, 0x49507):
+            changed = bytearray(self.payload)
+            changed[offset] ^= 1
+            with self.subTest(offset=offset), self.assertRaisesRegex(ValueError, "constructor source"):
+                project_arc_initialization(changed, 1, 0x18000, 0x920000)
+        for payload in (None, [], self.payload[:-1], self.payload + b"\0"):
+            with self.assertRaisesRegex(ValueError, "invalid ARC initialization payload"):
+                project_arc_initialization(payload, 1, 0x18000, 0x920000)
+        for count in (True, -1, 10, 1.0):
+            with self.assertRaisesRegex(ValueError, "invalid synthetic"):
+                project_arc_initialization(self.payload, count, 0x18000, 0x920000)
+        for name in ("bank_bytes", "pool_base"):
+            for value in (True, -1, 1 << 32, 0.0):
+                args = {"count": 1, "bank_bytes": 0x18000, "pool_base": 0x920000, name: value}
+                with self.subTest(name=name, value=value), self.assertRaisesRegex(ValueError, "invalid synthetic"):
+                    project_arc_initialization(self.payload, **args)
+        for budget in (True, 0, 161):
+            with self.assertRaisesRegex(ValueError, "invalid synthetic"):
+                project_arc_initialization(self.payload, 1, 0x18000, 0x920000, budget)
+        with self.assertRaisesRegex(ValueError, "instruction budget exceeded"):
+            project_arc_initialization(self.payload, 1, 0x18000, 0x920000, 1)
+        original, code = struct.unpack_from, bytes(self.payload[0x49424:0x4945c])
+        def corrupt(fmt, data, offset=0):
+            value = original(fmt, data, offset)
+            if fmt == "<I" and data == code and offset == 0x2689c - 0x26890:
+                return (value[0] ^ (1 << 15),)
+            return value
+        with mock.patch.object(struct, "unpack_from", corrupt), \
+                self.assertRaisesRegex(ValueError, "ordered ARC initialization store"):
+            project_arc_initialization(self.payload, 1, 0x18000, 0x920000)
+
+
 if __name__ == "__main__":
     unittest.main()
