@@ -118,6 +118,17 @@ MFD_SOURCE_CALLS = {0x1960: 0x203c4, 0x1990: 0x203c4, 0x1a7c: 0x203c4,
                     0x19a0: 0x1e8e8, 0x19b0: 0x1e8e8, 0x19c0: 0x1e8e8,
                     0x1abc: 0x1e8e8, 0x1acc: 0x1e8e8}
 MFD_CONTEXT, MFD_RECORD, MFD_STACK = 0x400000, 0x400100, 0x300800
+SOURCE_BODIES = (
+    (0xe110, 0xe248, "7d82037ed0f6b4d0ab23aace8b9247f7073ff243e6ad8cde6ee53326895e93d2"),
+    (0xd880, 0xd92c, "1268e39236294a083ef06179d884a898c15b72addc5aa96c776b60af51de40e9"),
+    (0x1fdac, 0x1fe6c, "08d03815210fc1e069068765847cc4c5d847bd5df744f223f9851ee985e05d28"),
+)
+SOURCE_CALLS = {0xe144: 0xd880, 0xe154: 0xd92c, 0xe168: 0xd9c4,
+                0xe178: 0xdcc8, 0xe188: 0xdd4c, 0xe198: 0xdff4,
+                0xd8b8: 0x1fdac, 0xd8c8: 0x1fdac}
+SOURCE_HELPERS = (0xd92c, 0xd9c4, 0xdcc8, 0xdd4c, 0xdff4)
+SOURCE_H, SOURCE_C, SOURCE_META = 0x400000, 0x400600, 0x401100
+SOURCE_PICTURE, SOURCE_MAP, SOURCE_STACK = 0x500100, 0x600100, 0x300800
 
 
 class MetadataRAM(tuple):
@@ -1036,6 +1047,122 @@ def execute_mfd_source(record, budget=256, payload=None):
     return actual
 
 
+def execute_source_producer(null=False, cleared=True, budget=256, payload=None):
+    """Real E110/D880/translation; geometry/format helpers are CPU contracts.
+
+    Physical and translated Y/C scalars are deliberately unmapped. This proves
+    their selected copy ordering, not planes, a complete native PIB or a lease.
+    The returned register is a scalar, not a completion/status acknowledgement.
+    """
+    if type(null) is not bool or type(cleared) is not bool:
+        raise ValueError("invalid synthetic source arguments")
+    if type(budget) is not int or not 1 <= budget <= 256:
+        raise ValueError("invalid instruction budget")
+    payload = Model.payload if payload is None else payload
+    if type(payload) not in (bytes, bytearray):
+        raise ValueError("invalid source payload")
+    code = {base: bytearray(struct.pack("<I", 0xe7f000f0) * 1024)
+            for base in (0xd000, 0xe000, 0x1f000)}
+    for low, high, digest in SOURCE_BODIES:
+        if hashlib.sha256(payload[low:high]).hexdigest() != digest:
+            raise ValueError("stock source producer body changed")
+        code[low & ~4095][low & 4095:high & 4095] = payload[low:high]
+    table = bytes(range(10)) + bytes(6)
+    if payload[0xe2e0:0xe2e4] != struct.pack("<I", 0x2dcf6) or \
+            payload[0x2dcf6:0x2dd06] != table:
+        raise ValueError("stock source producer table/literal changed")
+    code[0xe000][0x2e0:0x2e4] = struct.pack("<I", 0x2dcf6)
+    table_page = bytearray(b"\xa5" * 4096)
+    table_page[0xcf6:0xd06] = table
+    for site, target in SOURCE_CALLS.items():
+        word = struct.unpack_from("<I", payload, site)[0]
+        displacement = (word & 0xffffff) << 2
+        if displacement & 0x2000000:
+            displacement -= 0x4000000
+        if word & 0xff000000 != 0xeb000000 or site + 8 + displacement != target:
+            raise ValueError("stock source producer call target changed")
+    pages = {base: bytearray(b"\xa5" * 4096)
+             for base in (0x300000, 0x400000, 0x401000, 0x500000, 0x600000)}
+    def put(address, data, destination=pages):
+        base, offset = address & ~4095, address & 4095
+        if base not in destination or offset + len(data) > 4096:
+            raise ValueError("outside source producer RAM")
+        destination[base][offset:offset + len(data)] = data
+    def word(address, value, destination=pages):
+        put(address, struct.pack("<I", value), destination)
+    for address, value in ((SOURCE_H + 0x64, SOURCE_C), (SOURCE_H + 0x228, SOURCE_MAP),
+            (SOURCE_C + 0x20c, 10), (SOURCE_META + 4, 0x920040), (SOURCE_META + 8, 0x920100),
+            (SOURCE_META + 0x0c, 0x11112222), (SOURCE_META + 0x10, 0x33334444),
+            (SOURCE_META + 0x14, 256), (SOURCE_META + 0x18, 96),
+            (SOURCE_META + 0x20, 2), (SOURCE_META + 0x24, 0x31),
+            (SOURCE_MAP + 4, 0), (SOURCE_MAP + 0x18, 0x940000),
+            (SOURCE_MAP + 0x1c, 0x940fff), (SOURCE_MAP + 0x28, 0x940000),
+            (SOURCE_MAP + 0x30, 0x920000)):
+        word(address, value)
+    fill = 0 if cleared else 0xa5
+    put(SOURCE_PICTURE, bytes([fill]) * 140)
+    expected = {base: bytearray(page) for base, page in pages.items()}
+    if null:
+        for offset, value in ((0, 0), (1, 1), (8, 0), (0x1c, 2), (0x1d, 0), (0x1e, 0),
+                (0x24, 0), (0x25, 0), (0x26, 0), (0x27, 2), (0x28, 0), (0x29, 2),
+                (0x2a, 2), (0x40, 0), (0x41, 0), (0x50, 0), (0x5c, 0)):
+            put(SOURCE_PICTURE + offset, bytes([value]), expected)
+        for offset, value in ((4, 0), (0x20, 0), (0x34, 0), (0x38, 0), (0x44, 0),
+                              (0x74, 8), (0x78, 8), (0x7c, 0), (0x80, 0)):
+            word(SOURCE_PICTURE + offset, value, expected)
+    else:
+        for offset, value in ((1, 0), (8, 2), (0x1e, 0x31), (0x26, 0),
+                              (0x27, 1), (0x28, 0), (0x5c, 0)):
+            put(SOURCE_PICTURE + offset, bytes([value]), expected)
+        for offset, value in ((4, SOURCE_MAP), (0x14, 256), (0x18, 96),
+                (0x2c, 0x11112222), (0x30, 0x33334444), (0x34, 0x920040),
+                (0x38, 0x920100), (0x54, 16), (0x58, 6), (0x6c, 0), (0x70, 0)):
+            word(SOURCE_PICTURE + offset, value, expected)
+    registers = [0xabc00000 + index for index in range(16)]
+    registers[:3] = [SOURCE_H, 0 if null else SOURCE_META, SOURCE_PICTURE]
+    registers[13:16] = [SOURCE_STACK, RETURN, 0xe110]
+    image = segment_elf([(base, bytes(page), 5) for base, page in code.items()] +
+                        [(0x2d000, bytes(table_page), 4)] +
+                        [(base, bytes(page), 6) for base, page in pages.items()], 0xe110)
+    translations, before_copy = [], []
+    pushes = {0xe110: (4, 5, 6, 14), 0xd880: (4, 5, 6, 7, 8, 14), 0x1fdac: (4, 5, 14)}
+    def instruction(rsp, pc, regs):
+        if pc in pushes:
+            saved = [regs[index] for index in pushes[pc]]
+            put(regs[13] - 4 * len(saved), struct.pack("<" + "I" * len(saved), *saved), expected)
+        if pc == 0x1fdcc:
+            wanted = ((SOURCE_PICTURE + 0x34, 0x940040), (SOURCE_PICTURE + 0x38, 0x940100))
+            if len(translations) >= 2 or (regs[2], regs[0]) != wanted[len(translations)]:
+                raise ValueError("outside ordered source translation contract")
+            translations.append((regs[2], regs[0]))
+        if pc == 0xe19c:
+            before_copy.extend(struct.unpack("<2I", rsp.memory(SOURCE_PICTURE + 0x34, size=8)))
+    def contract(rsp, pc, args, stack):
+        if pc not in SOURCE_HELPERS or args[:2] != (SOURCE_H, SOURCE_META) or \
+                args[2 if pc != 0xd9c4 else 3] != SOURCE_PICTURE or \
+                (pc == 0xd9c4 and args[2] != 0) or stack != SOURCE_STACK - 16:
+            raise ValueError("unexpected source geometry/format contract")
+        if pc == 0xd92c:
+            rsp.memory(SOURCE_PICTURE + 0x14, struct.pack("<2I", 256, 96))
+        if pc == 0xdff4:
+            rsp.memory(SOURCE_PICTURE + 8, b"\x02")
+            rsp.memory(SOURCE_PICTURE + 0x28, b"\0")
+            rsp.memory(SOURCE_PICTURE + 0x6c, bytes(8))
+        return 0
+    actual = emulate(image, pages, registers, tuple((low, high) for low, high, _ in SOURCE_BODIES),
+                     SOURCE_HELPERS, contract, budget, clobber_flags=0xf0000000,
+                     real_callees=(0xd880, 0x1fdac), call_edges=SOURCE_CALLS, instruction=instruction)
+    expected = {base: bytes(page) for base, page in expected.items()}
+    if actual["pages"] != expected or actual["status"] != (0 if null else 0x920100) or \
+            translations != ([] if null else [(SOURCE_PICTURE + 0x34, 0x940040),
+                                               (SOURCE_PICTURE + 0x38, 0x940100)]) or \
+            before_copy != ([] if null else [0x940040, 0x940100]):
+        raise ValueError("source producer full-page/copy oracle changed")
+    actual.update(expected=expected, picture=actual["pages"][0x500000][0x100:0x18c],
+                  before_copy=before_copy, translations=translations)
+    return actual
+
+
 class FirmwareQemuTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -1717,6 +1844,86 @@ class FirmwareMfdSourceQemuTests(unittest.TestCase):
                 execute_mfd_source(valid)
 
 
+class FirmwareSourceProducerQemuTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        FirmwareQemuTests.setUpClass()
+
+    def test_actual_producer_restores_physical_words_before_mfd(self):
+        for cleared in (False, True):
+            with self.subTest(cleared=cleared):
+                actual = execute_source_producer(cleared=cleared)
+                self.assertEqual(actual["pages"], actual["expected"])
+                self.assertEqual(actual["before_copy"], [0x940040, 0x940100])
+                self.assertEqual(struct.unpack_from("<2I", actual["picture"], 0x34), (0x920040, 0x920100))
+                self.assertEqual(actual["status"], 0x920100)
+                self.assertEqual(actual["real_status"], [(0x1fdac, 0), (0x1fdac, 0), (0xd880, 1)])
+                for base in (0x400000, 0x401000, 0x600000):
+                    self.assertEqual(actual["pages"][base], bytes(actual["initial"][base]))
+                mfd = execute_mfd_source(actual["picture"][:116])
+                self.assertEqual(mfd["writes"], [[0x540010, 0x00800040], [0x540028, 16],
+                                                [0x54002c, 6], [0x54001c, 0x920040], [0x540020, 0x920100]])
+
+    def test_actual_null_producer_preserves_unwritten_caller_fields(self):
+        for cleared in (False, True):
+            with self.subTest(cleared=cleared):
+                actual = execute_source_producer(null=True, cleared=cleared)
+                self.assertEqual((actual["steps"], actual["status"], actual["calls"]), (44, 0, []))
+                self.assertEqual(actual["picture"][0x34:0x3c], bytes(8))
+                fill = 0 if cleared else 0xa5
+                for low in (0x14, 0x54, 0x6c):
+                    self.assertEqual(actual["picture"][low:low + 8], bytes([fill]) * 8)
+                if cleared:
+                    self.assertEqual(execute_mfd_source(actual["picture"][:116])["writes"][-2:],
+                                     [[0x54001c, 0], [0x540020, 0]])
+
+    def test_source_producer_pins_admission_and_translation_bounds(self):
+        for low, high, _ in SOURCE_BODIES:
+            for offset in (low, high - 1):
+                changed = bytearray(Model.payload)
+                changed[offset] ^= 1
+                with self.subTest(offset=offset), mock.patch.object(subprocess, "Popen") as spawn:
+                    with self.assertRaisesRegex(ValueError, "stock source producer body"):
+                        execute_source_producer(payload=changed)
+                    spawn.assert_not_called()
+        for offset in (0xe2e0, 0x2dcf6, 0x2dd05):
+            changed = bytearray(Model.payload)
+            changed[offset] ^= 1
+            with self.subTest(offset=offset), mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaisesRegex(ValueError, "stock source producer table/literal"):
+                    execute_source_producer(payload=changed)
+                spawn.assert_not_called()
+        for options in (dict(null=0), dict(cleared=1), dict(payload="bad"),
+                        dict(budget=True), dict(budget=0), dict(budget=257)):
+            with self.subTest(options=options), mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaisesRegex(ValueError, "invalid"):
+                    execute_source_producer(**options)
+                spawn.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "instruction budget exceeded"):
+            execute_source_producer(budget=1)
+        with mock.patch.dict(SOURCE_CALLS, {0xe144: 0xd92c}), mock.patch.object(subprocess, "Popen") as spawn:
+            with self.assertRaisesRegex(ValueError, "stock source producer call target"):
+                execute_source_producer()
+            spawn.assert_not_called()
+        original = RSP.registers
+        def outside(rsp):
+            regs = original(rsp)
+            if regs[15] == 0x1fdcc:
+                regs[2] = 0x900000
+            return regs
+        with mock.patch.object(RSP, "registers", outside):
+            with self.assertRaisesRegex(ValueError, "outside ordered source translation"):
+                execute_source_producer()
+        def wrong_argument(rsp):
+            regs = original(rsp)
+            if regs[15] == 0xd9c4:
+                regs[2] = 1
+            return regs
+        with mock.patch.object(RSP, "registers", wrong_argument):
+            with self.assertRaisesRegex(ValueError, "source geometry/format contract"):
+                execute_source_producer()
+
+
 class ProtocolTests(unittest.TestCase):
     class Connection:
         def __init__(self, response=b""):
@@ -1755,4 +1962,4 @@ class ProtocolTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(defaultTest=("FirmwareQemuTests", "FirmwarePictureQemuTests",
-                               "FirmwareMfdSourceQemuTests", "ProtocolTests"))
+                               "FirmwareMfdSourceQemuTests", "FirmwareSourceProducerQemuTests", "ProtocolTests"))
