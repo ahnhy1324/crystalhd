@@ -1980,6 +1980,98 @@ class FirmwareArmArcReturnQemuTests(unittest.TestCase):
                 self.assertEqual(arm["snapshot"], snapshot)
 
 
+class FirmwareCpuMapQemuTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        FirmwareQemuTests.setUpClass()
+
+    def test_stock_cpu_base_size_and_io_stores_in_guest_ram(self):
+        # This executes the setup body, not booting ARC or emulating MMIO.
+        # Event/log calls are opaque contracts; all I/O-numbered pages are RAM.
+        payload = Model.payload
+        slices = ((0x288d4, 0x28a10), (0x25010, 0x25034))
+        for (low, high), digest in zip(slices, (
+                "1454bc00f56dd3178cc35adca8cd16f0f123eb59a2f6dcfaf491791176fd6331",
+                "c08d4a86aa8353d7e2000f5eb14ebca387b3ebdfd46aa951902c54137acf7599")):
+            self.assertEqual(hashlib.sha256(payload[low:high]).hexdigest(), digest)
+        context, bridge, sp, io = 0x220000, 0x230000, 0x300800, 0x10000000
+        offsets = (0xe8, 0xec, 0xf0, 0xf4, 0xf8, 0xfc, 0x100, 0x104, 0x118, 0x11c)
+        self.assertEqual(tuple(struct.unpack_from("<I", payload, 0xcfc04 + off - 0xa0)[0]
+                              for off in offsets),
+                         (0x800f0c, 0x800f34, 0x800f38, 0x800f8c, 0x800fb4,
+                          0x800fb8, 0x851010, 0x855000, 0x800f80, 0x800f9c))
+        self.assertEqual(payload[0x28af0:0x28af4], struct.pack("<I", 0x0ee6b280))
+        stores = ((0x800f8c, 0x03300000), (0x800fb4, 0x70000),
+                  (0x800f0c, 0x03390000), (0x800f34, 0x71000),
+                  (0x800fb8, 0x10000000), (0x800f38, 0x10000000),
+                  (0x800f80, 0x0ee6b280), (0x851010, 1),
+                  (0x855000, 0), (0x851010, 0))
+        edges = {site: 0x25024 for site in (
+            0x288ec, 0x288fc, 0x2890c, 0x2891c, 0x2892c, 0x2893c,
+            0x28954, 0x28994, 0x289a4, 0x289b4)}
+        edges.update({0x28944: 0x20690, 0x289c0: 0x20598, 0x289d0: 0x25010,
+                      0x289e8: 0x203c4, 0x289fc: 0x203c4, 0x28a04: 0x20690})
+        for wait in (0, 5, 4):
+            with self.subTest(wait=wait):
+                pages = {base: bytearray(b"\xa5" * 4096) for base in (
+                    context, bridge, 0x300000, 0x10800000, 0x10851000, 0x10855000)}
+                def put(address, value, destination=pages):
+                    struct.pack_into("<I", destination[address & ~4095], address & 4095, value)
+                put(context + 4, bridge)
+                put(bridge, io)
+                put(context + 0x44, 0)  # Select the stock direct-reset branch.
+                put(context + 0x48, 0)
+                put(context + 0x88, context + 0x88)  # Opaque event handle, never dereferenced.
+                for off, value in ((0x1bc, 0x03300000), (0x1c4, 0x70000),
+                                   (0x1c0, 0x03390000), (0x1c8, 0x71000)):
+                    put(context + off, value)
+                for off in offsets:
+                    put(context + off, struct.unpack_from("<I", payload, 0xcfc04 + off - 0xa0)[0])
+                put(io + 0x800f9c, 0x11223344)
+                code = bytearray(struct.pack("<I", 0xe7f000f0) * (0xa000 // 4))
+                for low, high in slices:
+                    code[low - 0x20000:high - 0x20000] = payload[low:high]
+                code[0x8af0:0x8af4] = payload[0x28af0:0x28af4]
+                registers = [0xabc00000 + index for index in range(16)]
+                registers[0] = context
+                registers[13:16] = [sp, RETURN, 0x288d4]
+                expected = {base: bytearray(page) for base, page in pages.items()}
+                for offset, value in stores:
+                    put(io + offset, value, expected)
+                struct.pack_into("<4I", expected[0x300000], sp - 16 - 0x300000,
+                                 *registers[4:7], RETURN)
+                events, writes, reads = [], [], []
+                def contract(rsp, pc, args, stack):
+                    self.assertIn(pc, (0x203c4, 0x20690, 0x20598))
+                    events.append((pc, args))
+                    if pc == 0x20598:
+                        self.assertEqual(args[:2], (context + 0x88, 20000))
+                        return wait
+                    return 0
+                def instruction(rsp, pc, regs):
+                    if pc == 0x2502c:
+                        writes.append((regs[3] + regs[1], regs[2]))
+                    if pc == 0x2501c:
+                        reads.append(regs[0] + regs[1])
+                image = segment_elf([(0x20000, bytes(code), 5)] +
+                                    [(base, bytes(page), 6) for base, page in pages.items()], 0x288d4)
+                actual = emulate(image, pages, registers, slices,
+                                 (0x203c4, 0x20690, 0x20598), contract, 256,
+                                 clobber_flags=0xf0000000, real_callees=(0x25010, 0x25024),
+                                 call_edges=edges, instruction=instruction)
+                self.assertEqual(actual["status"], wait)
+                self.assertEqual(actual["pages"], {base: bytes(page) for base, page in expected.items()})
+                self.assertEqual(writes, [(io + offset, value) for offset, value in stores])
+                self.assertEqual(reads, [io + 0x800f9c])
+                self.assertEqual([pc for pc, args in events],
+                                 [0x20690, 0x20598, 0x203c4] + ([] if wait == 5 else [0x20690]))
+                self.assertEqual(len([call for call in actual["calls"] if call[1] == 0x25024]), 10)
+                self.assertEqual(len([call for call in actual["real_status"] if call[0] == 0x25010]), 1)
+                # A non-timeout error is logged on the success branch, but the
+                # original wait status still reaches the caller unchanged.
+                self.assertIn((0x20598, wait), actual["stub_status"])
+
+
 class FirmwareMfdSourceQemuTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -2831,7 +2923,7 @@ class FirmwareStopResultQemuTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(defaultTest=("FirmwareQemuTests", "FirmwarePictureQemuTests", "FirmwareArmArcReturnQemuTests",
+    unittest.main(defaultTest=("FirmwareQemuTests", "FirmwarePictureQemuTests", "FirmwareArmArcReturnQemuTests", "FirmwareCpuMapQemuTests",
                                "FirmwareMfdSourceQemuTests", "FirmwareSourceProducerQemuTests",
                                "FirmwareSourceModeQemuTests", "FirmwareIrqStatusQemuTests",
                                "FirmwareLogCommandQemuTests", "FirmwareChannelGuardQemuTests",
