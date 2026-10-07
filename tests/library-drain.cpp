@@ -1787,6 +1787,202 @@ public:
     }
 };
 
+struct AvdCodeArenaObserver;
+static thread_local AvdCodeArenaObserver *active_code_arena = nullptr;
+enum class AvdCodeArenaFailure { None, Argument, Mode, Owner, Order, Budget, Api, Graph, Guard, Reentrant };
+// A pre-START scalar inventory. Reported code bases never select a read target.
+struct AvdCodeArenaObserver {
+    typedef PpbContextObserver::Reader MemReader;
+    typedef AvdCpuMapObserver::Reader RegReader;
+    bool enabled = false, conflicting_mode = false, failed = false, attempted = false;
+    unsigned reads = 0, bytes = 0, mem_reads = 0, mem_bytes = 0, reg_reads = 0;
+    uint32_t fields[2][9] = {}, manager[2] = {}, config[2][10] = {};
+    bool complete[2] = {};
+    BC_STATUS api_status = BC_STS_SUCCESS;
+    AvdCodeArenaFailure failure = AvdCodeArenaFailure::None;
+    PpbContextObserver *witness = nullptr;
+private:
+    PpbContextGraph authority;
+    PpbContextObserver *expected_witness = nullptr;
+    const HANDLE *current = nullptr;
+    HANDLE owner = nullptr;
+    MemReader mem_reader = nullptr;
+    RegReader reg_reader = nullptr;
+    bool sealed = false, have_authority = false, witness_seeded = false;
+    unsigned witness_calls = 0, witness_bytes = 0;
+    bool Reject(AvdCodeArenaFailure why) {
+        if (!failed) failure = why;
+        failed = true;
+        return false;
+    }
+    bool Ready() {
+        if (failed) return false;
+        if (witness != expected_witness) return Reject(AvdCodeArenaFailure::Graph);
+        if (!sealed || !enabled || conflicting_mode || active_code_arena != this) return Reject(AvdCodeArenaFailure::Mode);
+        if (!current || !*current || *current != owner) return Reject(AvdCodeArenaFailure::Owner);
+        return true;
+    }
+    static bool ChildMode(const PpbContextObserver &child) {
+        return child.enabled && child.video_graph && child.owner_video_graph &&
+            !child.post_stop && !child.owner_post_stop && !child.metadata_pool && !child.owner_metadata_pool &&
+            !child.return_header && !child.owner_return_header && !child.video_prefix && !child.owner_video_prefix &&
+            !child.video_staging && !child.owner_video_staging;
+    }
+    bool ChildReady(unsigned count_bytes) {
+        if (!witness || witness != expected_witness || witness->failed || !ChildMode(*witness) || witness->owner != owner ||
+            witness->next_stage != 1 || witness->active_stage != 0 ||
+            witness->reads != witness_calls + 1 || witness->stage_reads != witness_calls + 1 ||
+            witness->bytes != witness_bytes + count_bytes || witness->stage_bytes != witness_bytes + count_bytes ||
+            witness->measured != witness_calls || witness->complete[1] ||
+            witness->complete[0] != (witness_calls >= 31) ||
+            witness->admitted != (witness_seeded || witness_calls >= 31))
+            return Reject(AvdCodeArenaFailure::Graph);
+        if (witness->admitted && !have_authority) {
+            // The old observer admitted graph[0] between callbacks 31 and 32.
+            // Seal that authority before callback 32 can alter both public copies.
+            if (witness_seeded || witness_calls != 31 ||
+                !PpbContextObserver::Equal(witness->authority, witness->graph[0]) ||
+                !PpbContextObserver::Object(witness->authority.words[0], 1))
+                return Reject(AvdCodeArenaFailure::Graph);
+            authority = witness->authority; have_authority = true;
+        }
+        if (witness->admitted && !PpbContextObserver::Equal(witness->authority, authority))
+            return Reject(AvdCodeArenaFailure::Graph);
+        if (!witness->admitted) for (uint32_t word : witness->authority.words)
+            if (word) return Reject(AvdCodeArenaFailure::Graph);
+        return true;
+    }
+    BC_STATUS Call(HANDLE handle, uint32_t address, uint32_t *values, uint32_t count_bytes, bool reg) {
+        if (!Ready()) return BC_STS_ERROR;
+        if (handle != owner || !values || !count_bytes || (count_bytes & 3U) || (address & 3U)) {
+            Reject(AvdCodeArenaFailure::Argument); return BC_STS_ERROR;
+        }
+        const unsigned position = reads % 136U;
+        const bool graph_call = position < 62U || position >= 74U;
+        if (count_bytes > 36U || reads >= 272U || bytes > 1408U - count_bytes) {
+            Reject(AvdCodeArenaFailure::Budget); return BC_STS_ERROR;
+        }
+        if (reg != (position >= 64U && position < 74U) ||
+            (graph_call && (reg || !ChildReady(count_bytes))) ||
+            (!graph_call && witness) ||
+            (position == 62U && (address != authority.words[0] + 0x1acU || count_bytes != 36U)) ||
+            (position == 63U && (address != authority.words[0] + 0xcU || count_bytes != 4U)) ||
+            (reg && (address != AvdCpuMapAddress(position - 64U) || count_bytes != 4U))) {
+            Reject(AvdCodeArenaFailure::Order); return BC_STS_ERROR;
+        }
+        const unsigned old_reads = reads, old_bytes = bytes, old_mem_reads = mem_reads;
+        const unsigned old_mem_bytes = mem_bytes, old_reg_reads = reg_reads;
+        ++reads; bytes += count_bytes;
+        if (reg) ++reg_reads; else { ++mem_reads; mem_bytes += count_bytes; }
+        api_status = reg ? reg_reader(owner, address, values) : mem_reader(owner, values, count_bytes, address);
+        if (api_status != BC_STS_SUCCESS) { Reject(AvdCodeArenaFailure::Api); return api_status; }
+        if (!Ready()) return BC_STS_ERROR;
+        if (reads != old_reads + 1 || bytes != old_bytes + count_bytes ||
+            mem_reads != old_mem_reads + (reg ? 0U : 1U) || mem_bytes != old_mem_bytes + (reg ? 0U : count_bytes) ||
+            reg_reads != old_reg_reads + (reg ? 1U : 0U)) {
+            Reject(AvdCodeArenaFailure::Budget); return BC_STS_ERROR;
+        }
+        if (graph_call && address == 0xd3a08U && have_authority && values[0] != authority.words[0]) {
+            Reject(AvdCodeArenaFailure::Graph); return BC_STS_ERROR;
+        }
+        if (graph_call && !ChildReady(count_bytes)) return BC_STS_ERROR;
+        if (graph_call) { ++witness_calls; witness_bytes += count_bytes; }
+        return BC_STS_SUCCESS;
+    }
+    static BC_STATUS Memory(HANDLE handle, uint32_t *values, uint32_t count_bytes, uint32_t address) {
+        return active_code_arena ? active_code_arena->Call(handle, address, values, count_bytes, false) : BC_STS_ERROR;
+    }
+    static BC_STATUS Register(HANDLE handle, uint32_t address, uint32_t *value) {
+        return active_code_arena ? active_code_arena->Call(handle, address, value, 4, true) : BC_STS_ERROR;
+    }
+    bool Witness() {
+        PpbContextObserver graph;
+        graph.enabled = graph.video_graph = true;
+        if (have_authority) { graph.admitted = true; graph.authority = authority; }
+        witness = expected_witness = &graph; witness_seeded = have_authority; witness_calls = witness_bytes = 0;
+        const bool observed = graph.Observe(current, 0, false, Memory, false);
+        witness = expected_witness = nullptr;
+        if (!observed || !Ready() || graph.failed || !ChildMode(graph) || graph.owner != owner ||
+            graph.next_stage != 1 || graph.reads != 62 || graph.bytes != 312 || graph.measured != 62 ||
+            !graph.complete[0] || !graph.complete[1] || !graph.admitted ||
+            !PpbContextObserver::Equal(graph.authority, graph.graph[0]) ||
+            !PpbContextObserver::Equal(graph.authority, graph.graph[1]) ||
+            (have_authority && !PpbContextObserver::Equal(authority, graph.authority)))
+            return Reject(AvdCodeArenaFailure::Graph);
+        if (!have_authority) { authority = graph.authority; have_authority = true; }
+        return PpbContextObserver::Object(authority.words[0], 1) || Reject(AvdCodeArenaFailure::Graph);
+    }
+public:
+    bool Observe(const HANDLE *handle, unsigned stage = 0, bool barrier = false,
+        MemReader memory_reader = DtsDevMemRd, RegReader register_reader = DtsDevRegisterRead, bool report = true) {
+        if (failed) return false;
+        if (!enabled && !sealed) return true;
+        if (active_code_arena) {
+            active_code_arena->Reject(AvdCodeArenaFailure::Reentrant);
+            return Reject(AvdCodeArenaFailure::Reentrant);
+        }
+        if (!enabled || conflicting_mode) return Reject(AvdCodeArenaFailure::Mode);
+        if (!handle || !*handle || !memory_reader || !register_reader) return Reject(AvdCodeArenaFailure::Argument);
+        if (attempted || stage || barrier) return Reject(AvdCodeArenaFailure::Order);
+        if (reads || bytes || mem_reads || mem_bytes || reg_reads) return Reject(AvdCodeArenaFailure::Budget);
+        attempted = sealed = true; current = handle; owner = *handle;
+        mem_reader = memory_reader; reg_reader = register_reader;
+        struct Route {
+            AvdCodeArenaObserver *previous;
+            explicit Route(AvdCodeArenaObserver *next) : previous(active_code_arena) { active_code_arena = next; }
+            ~Route() { active_code_arena = previous; }
+        } route(this);
+        bool ok = true;
+        for (unsigned pass = 0; pass < 2 && ok; ++pass) {
+            ok = Witness();
+            uint32_t scalar[9] = {}, code_manager = 0, registers[10] = {};
+            if (ok) ok = Memory(owner, scalar, 36, authority.words[0] + 0x1acU) == BC_STS_SUCCESS;
+            if (ok) ok = Memory(owner, &code_manager, 4, authority.words[0] + 0xcU) == BC_STS_SUCCESS;
+            for (unsigned field = 0; field < 10 && ok; ++field) {
+                ok = Register(owner, AvdCpuMapAddress(field), registers + field) == BC_STS_SUCCESS;
+                if (ok && ((field == 0 || field == 9) ? registers[field] != 0x50U :
+                    (field == 1 || field == 8) && registers[field] != 0)) ok = Reject(AvdCodeArenaFailure::Guard);
+            }
+            if (ok) ok = Witness();
+            if (ok && (reads != (pass + 1U) * 136U || bytes != (pass + 1U) * 704U))
+                ok = Reject(AvdCodeArenaFailure::Budget);
+            if (ok) {
+                std::memcpy(fields[pass], scalar, sizeof(scalar)); manager[pass] = code_manager;
+                std::memcpy(config[pass], registers, sizeof(registers)); complete[pass] = true;
+            }
+        }
+        if (report) Report();
+        return ok;
+    }
+    void Report() const {
+        std::printf("AVD code arena: stage=after-OPEN/pre-START reads=%u/272 bytes=%u/1408 mem-reads=%u/252 mem-bytes=%u/1328 reg-reads=%u/20 api-status=%d failure=%u\n",
+            reads, bytes, mem_reads, mem_bytes, reg_reads, api_status, static_cast<unsigned>(failure));
+        for (unsigned pass = 0; pass < 2; ++pass) {
+            std::printf("AVD code arena raw: pass=%u", pass);
+            if (complete[pass]) {
+                std::printf(" C=%08x C+0c=%08x", authority.words[0], manager[pass]);
+                std::printf(" C+08=%08x global+18=%08x global+1c=%08x global+28=%08x global+30=%08x global+34=%08x",
+                    authority.words[19], authority.words[34], authority.words[35], authority.words[36], authority.words[37], authority.words[38]);
+                for (unsigned word = 0; word < 9; ++word) std::printf(" C+%03x=%08x", 0x1ac + word * 4, fields[pass][word]);
+                std::printf(" ownership-u8=%u adjacent-upper24=%06x", fields[pass][3] & 255U, fields[pass][3] >> 8);
+                for (unsigned field = 0; field < 10; ++field) std::printf(" %08x=%08x", AvdCpuMapAddress(field), config[pass][field]);
+            } else std::printf(" INCOMPLETE");
+            std::printf("\n");
+        }
+        std::printf("AVD code arena scope: pre-START authority/scalars only; code-prefix/plane/bank-target-reads=0 target-writes=0 pointer-follow-from-code-fields=0 "
+            "atomic/allocation-generation/code-window/alias/lease/completion-certified=no\n");
+        std::fflush(stdout);
+    }
+    bool Finish(bool native_ok, bool report = true) const {
+        if (!sealed && !enabled && !failed) return native_ok;
+        const bool observed = !failed && sealed && enabled && !conflicting_mode && attempted && have_authority &&
+            complete[0] && complete[1] && reads == 272 && bytes == 1408 && mem_reads == 252 && mem_bytes == 1328 && reg_reads == 20;
+        if (report) std::printf("AVD code arena finish: native-result=%s observation-result=%s reads=%u/272 bytes=%u/1408 "
+            "code-window/allocation-generation/lease-certified=no\n", native_ok ? "PASS" : "FAIL", observed ? "PASS" : "FAIL", reads, bytes);
+        return native_ok && observed;
+    }
+};
+
 enum class MfdFramingFailure { None, Argument, Read, Revision, Reserved, Unavailable, Owner, Order, Publication };
 struct MfdFramingSnapshot {
     uint32_t raw[10] = {};
@@ -2398,6 +2594,7 @@ struct Options {
     bool observe_video_staging = false;
     bool observe_avd_memory = false;
     bool observe_avd_cpu_map = false;
+    bool observe_avd_code_arena = false;
     unsigned inject_mfd_colour = 0;
     unsigned scl_status_test = 0;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
@@ -2405,7 +2602,7 @@ struct Options {
 
 static bool AvdMemoryConflicts(const Options &o)
 {
-    return o.observe_avd_cpu_map || o.observe_chroma || o.observe_scl_config || o.observe_scl_filter_map || o.observe_scl_view ||
+    return o.observe_avd_code_arena || o.observe_avd_cpu_map || o.observe_chroma || o.observe_scl_config || o.observe_scl_filter_map || o.observe_scl_view ||
         o.observe_mfd_config || o.observe_mfd_address || o.observe_mfd_framing || o.observe_runtime_inventory ||
         o.observe_arm_metadata || o.observe_arm_source_shape || o.observe_ppb_context || o.observe_ppb_stop ||
         o.observe_ppb_metadata || o.observe_ppb_return || o.observe_video_prefix || o.observe_video_graph ||
@@ -2417,6 +2614,13 @@ static bool AvdCpuMapConflicts(const Options &o)
     Options other = o;
     other.observe_avd_cpu_map = false;
     return o.observe_avd_memory || AvdMemoryConflicts(other);
+}
+
+static bool AvdCodeArenaConflicts(const Options &o)
+{
+    Options other = o;
+    other.observe_avd_code_arena = false;
+    return o.observe_avd_memory || o.observe_avd_cpu_map || AvdMemoryConflicts(other);
 }
 
 static uint32_t ProbeDeviceMode(const Options &options)
@@ -2467,6 +2671,10 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
     }
     if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-avd-cpu-map")) {
         options->observe_avd_cpu_map = true;
+        arguments.pop_back();
+    }
+    if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-avd-code-arena")) {
+        options->observe_avd_code_arena = true;
         arguments.pop_back();
     }
     if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-runtime-inventory")) {
@@ -2540,7 +2748,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         arguments.resize(arguments.size() - 2);
     }
     if (arguments.size() == 2 && !std::strcmp(arguments[1], "--self-test")) {
-        if (options->observe_avd_cpu_map || options->observe_avd_memory || options->capture_path || options->observe_arm_metadata || options->observe_arm_source_shape || options->observe_ppb_context || options->observe_runtime_inventory || options->observe_chroma || options->observe_scl_config || options->observe_scl_filter_map || options->observe_scl_view || options->observe_mfd_config || options->observe_mfd_address || options->observe_mfd_framing || options->inject_mfd_colour || options->scl_status_test || options->scaler_test || options->mpeg1_via_mpeg2 ||
+        if (options->observe_avd_code_arena || options->observe_avd_cpu_map || options->observe_avd_memory || options->capture_path || options->observe_arm_metadata || options->observe_arm_source_shape || options->observe_ppb_context || options->observe_runtime_inventory || options->observe_chroma || options->observe_scl_config || options->observe_scl_filter_map || options->observe_scl_view || options->observe_mfd_config || options->observe_mfd_address || options->observe_mfd_framing || options->inject_mfd_colour || options->scl_status_test || options->scaler_test || options->mpeg1_via_mpeg2 ||
             options->h263_via_divx || options->open_only) return false;
         options->mode = Mode::SelfTest;
         return true;
@@ -2563,6 +2771,9 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
     if (options->observe_avd_cpu_map && (!hardware || !options->capture_path || !options->scaler_test ||
         options->scale_width || options->expected != 180 || options->iterations != 1 ||
         options->output_format != OUTPUT_MODE422_YUY2 || AvdCpuMapConflicts(*options))) return false;
+    if (options->observe_avd_code_arena && (!hardware || !options->capture_path || !options->scaler_test ||
+        options->scale_width || options->expected != 180 || options->iterations != 1 ||
+        options->output_format != OUTPUT_MODE422_YUY2 || AvdCodeArenaConflicts(*options))) return false;
     if ((options->observe_arm_metadata || options->observe_arm_source_shape || options->observe_ppb_context) &&
         (!hardware || !options->capture_path || !options->scaler_test || options->scale_width ||
          options->expected != 180 || options->iterations != 1 || options->output_format != OUTPUT_MODE422_YUY2 ||
@@ -2645,7 +2856,7 @@ static bool SclInputAdmitted(const Options &options, const Input &input)
 
 static bool NeedsRawIo(const Options &options)
 {
-    return options.observe_avd_cpu_map || options.observe_avd_memory || options.observe_arm_metadata || options.observe_arm_source_shape || options.observe_ppb_context || options.observe_runtime_inventory || options.observe_chroma || options.observe_scl_config || options.observe_scl_filter_map ||
+    return options.observe_avd_code_arena || options.observe_avd_cpu_map || options.observe_avd_memory || options.observe_arm_metadata || options.observe_arm_source_shape || options.observe_ppb_context || options.observe_runtime_inventory || options.observe_chroma || options.observe_scl_config || options.observe_scl_filter_map ||
         options.observe_scl_view || options.observe_mfd_config || options.observe_mfd_address || options.observe_mfd_framing || options.inject_mfd_colour || options.scl_status_test;
 }
 
@@ -2692,6 +2903,11 @@ static bool AvdCpuMapInputShape(const Options &options, const Input &input)
 static bool AvdCpuMapInputAdmitted(const Options &options, const Input &input)
 {
     return !options.observe_avd_cpu_map || (AvdCpuMapInputShape(options, input) &&
+        SubmittedPacketDigestMatches(input, 124832, "1363a87c8f59fab6187cd13653a3ba8a41fd994066d30c24be1c2b09d675666e"));
+}
+static bool AvdCodeArenaInputAdmitted(const Options &options, const Input &input)
+{
+    return !options.observe_avd_code_arena || (AvdCpuMapInputShape(options, input) &&
         SubmittedPacketDigestMatches(input, 124832, "1363a87c8f59fab6187cd13653a3ba8a41fd994066d30c24be1c2b09d675666e"));
 }
 
@@ -5214,6 +5430,282 @@ template<class Check> static void AvdCpuMapSelfTest(const Check &check)
     check(!AvdCpuMapInputShape(admitted, native), "AVD CPU map pinned native source has no extra metadata");
 }
 
+struct AvdCodeArenaFixture {
+    struct Trace { bool reg; uint32_t address, bytes; } trace[272] = {};
+    unsigned calls = 0, fail_at = 272, lose_at = 272, mutate_at = 272, mutation = 0;
+    unsigned change_at = 272;
+    uint32_t changed_address = 0, changed_mask = 4;
+    BC_STATUS status = BC_STS_ERROR;
+    bool valid = true;
+    HANDLE current = this, replacement = nullptr;
+    AvdCodeArenaObserver *subject = nullptr;
+    PpbContextFixture graph;
+    uint32_t fields[2][9] = {}, manager[2] = {}, config[2][10] = {};
+    AvdCodeArenaFixture() {
+        graph.video_graph = true;
+        for (unsigned pass = 0; pass < 2; ++pass) {
+            manager[pass] = 0xa0000000U + pass;
+            for (unsigned word = 0; word < 9; ++word) fields[pass][word] = 0x90000000U + pass * 0x100U + word;
+            for (unsigned field = 0; field < 10; ++field)
+                config[pass][field] = field == 0 || field == 9 ? 0x50U : field == 1 || field == 8 ? 0U : 0x80000001U + pass * 10U + field;
+        }
+    }
+    static BC_STATUS Read(AvdCodeArenaFixture *f, bool reg, uint32_t *out, uint32_t bytes, uint32_t address) {
+        const unsigned index = f->calls++, position = index % 136U, pass = index / 136U;
+        const uint32_t registers[] = {0x540000,0x4000d4,0x800f0c,0x800f34,0x800f38,0x800f8c,0x800fb4,0x800fb8,0x4000d4,0x540000};
+        const uint32_t addresses[] = {0xd3a08,0xd3a20,0xd3ac4,0xd3ad0,0xd3bec,0xd3c90,0xd3c9c,0xd3db8,0xd3e5c,0xd3e68,0xd3f84,0xd4028,0xd4034,
+            0xd6000,0xd6008,0xd6064,0xd60cc,0xd6224,0xd5408,0xd55a0,0xd55d4,0xd5800,0xd5808,0xd5810,0xd5a18,0xd5a28,0xd5a30,0xd5a40,0x11601c,0x11602c,0x116034};
+        const unsigned counts[] = {1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1,1,3,1,1,2,2,1,2,1,2,1,2};
+        if (index >= 272 || !out || !bytes || bytes > 36 || (bytes & 3U)) { f->valid = false; return BC_STS_ERROR; }
+        f->trace[index] = {reg, address, bytes};
+        const bool expected_reg = position >= 64U && position < 74U;
+        f->valid &= reg == expected_reg;
+        if (expected_reg) {
+            f->valid &= address == registers[position - 64U] && bytes == 4;
+            *out = f->config[pass][position - 64U];
+        } else if (position == 62U) {
+            f->valid &= address == 0xd55ac && bytes == 36;
+            if (bytes == 36) std::memcpy(out, f->fields[pass], 36);
+        } else if (position == 63U) {
+            f->valid &= address == 0xd540c && bytes == 4; *out = f->manager[pass];
+        } else {
+            const unsigned at = (position < 62U ? position : position - 74U) % 31U;
+            f->valid &= address == addresses[at] && bytes == counts[at] * 4U;
+            for (unsigned word = 0; word < bytes / 4; ++word) out[word] = f->graph.Word(address + word * 4U, 0);
+        }
+        if (index == f->change_at) for (unsigned word = 0; word < bytes / 4; ++word)
+            if (address + word * 4U == f->changed_address) out[word] ^= f->changed_mask;
+        if (index == f->fail_at) for (unsigned word = 0; word < bytes / 4; ++word) out[word] = 0xdeadbeefU;
+        if (index == f->lose_at) f->current = f->replacement;
+        if (index == f->mutate_at && f->subject) {
+            auto *o = f->subject;
+            if (f->mutation == 0) o->enabled = false;
+            if (f->mutation == 1) o->conflicting_mode = true;
+            if (f->mutation == 2) ++o->reads;
+            if (f->mutation == 3) ++o->bytes;
+            if (f->mutation == 4) ++o->mem_reads;
+            if (f->mutation == 5) ++o->mem_bytes;
+            if (f->mutation == 6) ++o->reg_reads;
+            if (f->mutation == 7) o->witness = nullptr;
+            if (f->mutation == 8) active_code_arena = nullptr;
+            if (f->mutation == 9) { AvdCodeArenaObserver nested; nested.enabled = true; (void)nested.Observe(&f->current, 0, false, Memory, Register, false); }
+            if (o->witness) {
+                if (f->mutation == 10) o->witness->video_graph = o->witness->owner_video_graph = false;
+                if (f->mutation == 11) o->witness->enabled = false;
+                if (f->mutation == 12) o->witness->post_stop = true;
+                if (f->mutation == 13) ++o->witness->reads;
+                if (f->mutation == 14) ++o->witness->bytes;
+                if (f->mutation == 15) o->witness->authority.words[0] ^= 4U;
+                if (f->mutation == 16) o->witness->admitted = !o->witness->admitted;
+                if (f->mutation == 17) { o->witness->authority.words[0] ^= 4U; o->witness->graph[0].words[0] ^= 4U; }
+                if (f->mutation == 18) o->witness->owner_video_graph = false;
+                if (f->mutation == 19) o->witness->owner_post_stop = true;
+                if (f->mutation == 20) o->witness->metadata_pool = true;
+                if (f->mutation == 21) o->witness->owner_metadata_pool = true;
+                if (f->mutation == 22) o->witness->return_header = true;
+                if (f->mutation == 23) o->witness->owner_return_header = true;
+                if (f->mutation == 24) o->witness->video_prefix = true;
+                if (f->mutation == 25) o->witness->owner_video_prefix = true;
+                if (f->mutation == 26) o->witness->video_staging = true;
+                if (f->mutation == 27) o->witness->owner_video_staging = true;
+                if (f->mutation == 28) ++o->witness->stage_reads;
+                if (f->mutation == 29) ++o->witness->stage_bytes;
+                if (f->mutation == 30) ++o->witness->measured;
+                if (f->mutation == 31) ++o->witness->next_stage;
+                if (f->mutation == 32) ++o->witness->active_stage;
+                if (f->mutation == 33) o->witness->owner = nullptr;
+                if (f->mutation == 34) o->witness->complete[1] = true;
+            }
+        }
+        return index == f->fail_at ? f->status : BC_STS_SUCCESS;
+    }
+    static BC_STATUS Memory(HANDLE handle, uint32_t *out, uint32_t bytes, uint32_t address) {
+        return Read(static_cast<AvdCodeArenaFixture *>(handle), false, out, bytes, address);
+    }
+    static BC_STATUS Register(HANDLE handle, uint32_t address, uint32_t *out) {
+        return Read(static_cast<AvdCodeArenaFixture *>(handle), true, out, 4, address);
+    }
+    bool Exercise(AvdCodeArenaObserver *o) {
+        subject = o; o->enabled = true;
+        return o->Observe(&current, 0, false, Memory, Register, false) && o->Finish(true, false);
+    }
+};
+
+template<class Check> static void AvdCodeArenaSelfTest(const Check &check)
+{
+    const uint32_t registers[] = {0x540000,0x4000d4,0x800f0c,0x800f34,0x800f38,0x800f8c,0x800fb4,0x800fb8,0x4000d4,0x540000};
+    const uint32_t graph_addresses[] = {0xd3a08,0xd3a20,0xd3ac4,0xd3ad0,0xd3bec,0xd3c90,0xd3c9c,0xd3db8,0xd3e5c,0xd3e68,0xd3f84,0xd4028,0xd4034,
+        0xd6000,0xd6008,0xd6064,0xd60cc,0xd6224,0xd5408,0xd55a0,0xd55d4,0xd5800,0xd5808,0xd5810,0xd5a18,0xd5a28,0xd5a30,0xd5a40,0x11601c,0x11602c,0x116034};
+    const unsigned graph_counts[] = {1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1,1,3,1,1,2,2,1,2,1,2,1,2};
+    AvdCodeArenaObserver disabled;
+    check(disabled.Observe(nullptr, 99, true, nullptr, nullptr, false) && disabled.Finish(true, false) &&
+        !disabled.Finish(false, false) && disabled.reads == 0 && active_code_arena == nullptr,
+        "code arena defaults off, performs no I/O and preserves native failure");
+    AvdCodeArenaObserver stable;
+    for (unsigned variant = 0; variant < 4; ++variant) {
+        struct Canary { uint32_t before = 0x12345678; AvdCodeArenaFixture fixture; AvdCodeArenaObserver observer; uint32_t after = 0x87654321; } c;
+        for (unsigned pass = 0; pass < 2; ++pass) {
+            c.fixture.manager[pass] = variant == 0 ? 0U : variant == 1 ? UINT32_MAX : 0x80000001U + pass;
+            for (unsigned word = 0; word < 9; ++word)
+                c.fixture.fields[pass][word] = variant == 0 ? 0U : variant == 1 ? UINT32_MAX : 0xa5000000U + pass * 256U + word;
+            for (unsigned field = 2; field < 8; ++field)
+                c.fixture.config[pass][field] = variant == 0 ? 0U : variant == 1 ? UINT32_MAX : 0x10000003U + pass * 16U + field;
+        }
+        check(c.fixture.Exercise(&c.observer) && c.fixture.valid && c.fixture.calls == 272 && c.observer.reads == 272 &&
+            c.observer.bytes == 1408 && c.observer.mem_reads == 252 && c.observer.mem_bytes == 1328 && c.observer.reg_reads == 20 &&
+            c.before == 0x12345678 && c.after == 0x87654321 && active_code_arena == nullptr && !c.observer.Finish(false, false),
+            "code arena exact 272/1408 accepts opaque zero/ones/low bits and changed scalar tuples without following them");
+        unsigned expected_bytes = 0, mem_calls = 0, mem_bytes = 0, reg_calls = 0;
+        for (unsigned index = 0; index < 272; ++index) {
+            const unsigned position = index % 136U;
+            const bool reg = position >= 64 && position < 74;
+            const unsigned graph_field = (position < 62 ? position : position - 74U) % 31U;
+            const uint32_t address = reg ? registers[position - 64] : position == 62 ? 0xd55acU :
+                position == 63 ? 0xd540cU : graph_addresses[graph_field];
+            const unsigned bytes = reg || position == 63 ? 4U : position == 62 ? 36U : graph_counts[graph_field] * 4U;
+            check(c.fixture.trace[index].reg == reg && c.fixture.trace[index].address == address && c.fixture.trace[index].bytes == bytes,
+                "code arena literal ordinal trace contains only two graph witnesses, fixed C scalars and ten CPU config words");
+            expected_bytes += bytes;
+            if (reg) ++reg_calls; else { ++mem_calls; mem_bytes += bytes; }
+        }
+        check(expected_bytes == 1408 && mem_calls == 252 && mem_bytes == 1328 && reg_calls == 20,
+            "code arena independent call/byte sum matches sealed MEM and REG budgets");
+        for (unsigned pass = 0; pass < 2; ++pass)
+            check(c.observer.complete[pass] && c.observer.manager[pass] == c.fixture.manager[pass] &&
+                !std::memcmp(c.observer.fields[pass], c.fixture.fields[pass], 36) &&
+                !std::memcmp(c.observer.config[pass], c.fixture.config[pass], 40),
+                "code arena publishes a detached complete tuple only after its closing graph witness");
+        if (variant == 2) stable = c.observer;
+    }
+    for (unsigned at = 0; at < 272; ++at) {
+        const unsigned pass = at / 136U, position = at % 136U;
+        const bool graph_call = position < 62 || position >= 74;
+        for (int code = -1; code <= BC_STS_PWR_MGMT; ++code) {
+            if (code == BC_STS_SUCCESS) continue;
+            AvdCodeArenaFixture f; f.fail_at = at; f.status = static_cast<BC_STATUS>(code); AvdCodeArenaObserver o;
+            check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && o.failure == AvdCodeArenaFailure::Api &&
+                o.api_status == code && !o.complete[pass] && o.manager[pass] == 0 && o.fields[pass][0] == 0 &&
+                o.config[pass][0] == 0 && !o.Finish(true, false) && active_code_arena == nullptr,
+                "code arena all non-success callback statuses reject poison and prevent incomplete tuple publication");
+            o.enabled = false;
+            check(!o.Observe(&f.current, 0, false, AvdCodeArenaFixture::Memory, AvdCodeArenaFixture::Register, false) &&
+                f.calls == at + 1 && !o.Finish(true, false), "code arena failure remains sticky despite mode disable or attempted retry");
+        }
+        for (bool replace : {false, true}) {
+            AvdCodeArenaFixture f, other; f.lose_at = at; f.replacement = replace ? static_cast<HANDLE>(&other) : nullptr;
+            AvdCodeArenaObserver o;
+            check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && other.calls == 0 &&
+                o.failure == AvdCodeArenaFailure::Owner && !o.complete[pass] && active_code_arena == nullptr,
+                "code arena each callback rejects owner loss/replacement before publishing or using a new owner");
+        }
+        for (unsigned mutation = 0; mutation < 10; ++mutation) {
+            if (mutation == 7 && !graph_call) continue;
+            AvdCodeArenaFixture f; f.mutate_at = at; f.mutation = mutation; AvdCodeArenaObserver o;
+            check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && o.failed && !o.complete[pass] &&
+                active_code_arena == nullptr, "code arena callback mode/counters/adapter/child identity/reentrancy cannot bypass sealed guards");
+        }
+        if (graph_call) for (unsigned mutation = 10; mutation <= 34; ++mutation) {
+            AvdCodeArenaFixture f; f.mutate_at = at; f.mutation = mutation; AvdCodeArenaObserver o;
+            check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && o.failed && !o.complete[pass] &&
+                active_code_arena == nullptr,
+                "code arena every nested callback rejects graph-mode clearing, mixed modes, public authority-pair tamper and child ordinal faults");
+        }
+        if (position >= 64 && position < 74) {
+            const unsigned field = position - 64;
+            if (field == 1 || field == 8) for (unsigned bit = 0; bit < 32; ++bit) {
+                AvdCodeArenaFixture f; f.config[pass][field] = 1U << bit; AvdCodeArenaObserver o;
+                check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && o.failure == AvdCodeArenaFailure::Guard &&
+                    !o.complete[pass], "code arena every GISB bit fails without error clear, retries or raw tuple publication");
+            }
+            if (field == 0 || field == 9) for (uint32_t value : {0U, 0x51U, 0x10050U, UINT32_MAX}) {
+                AvdCodeArenaFixture f; f.config[pass][field] = value; AvdCodeArenaObserver o;
+                check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && o.failure == AvdCodeArenaFailure::Guard &&
+                    !o.complete[pass], "code arena each opening/closing revision requires exact pin 50");
+            }
+        }
+    }
+    for (unsigned at : {31U, 74U, 105U, 136U, 167U, 210U, 241U}) {
+        AvdCodeArenaFixture f; f.change_at = at; f.changed_address = 0xd3a08; AvdCodeArenaObserver o;
+        check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && !o.complete[at / 136] && active_code_arena == nullptr,
+            "code arena changed current C is refused by the preseeded original graph before following its replacement");
+    }
+    for (unsigned fault = 0; fault < 13; ++fault) {
+        AvdCodeArenaFixture f; AvdCodeArenaObserver o; o.enabled = true; bool ok = false;
+        if (fault == 0) ok = o.Observe(nullptr, 0, false, AvdCodeArenaFixture::Memory, AvdCodeArenaFixture::Register, false);
+        if (fault == 1) { f.current = nullptr; ok = o.Observe(&f.current, 0, false, AvdCodeArenaFixture::Memory, AvdCodeArenaFixture::Register, false); }
+        if (fault == 2) ok = o.Observe(&f.current, 0, false, nullptr, AvdCodeArenaFixture::Register, false);
+        if (fault == 3) ok = o.Observe(&f.current, 0, false, AvdCodeArenaFixture::Memory, nullptr, false);
+        if (fault == 4) ok = o.Observe(&f.current, 1, false, AvdCodeArenaFixture::Memory, AvdCodeArenaFixture::Register, false);
+        if (fault == 5) ok = o.Observe(&f.current, 0, true, AvdCodeArenaFixture::Memory, AvdCodeArenaFixture::Register, false);
+        if (fault == 6) o.conflicting_mode = true;
+        if (fault == 7) ++o.reads;
+        if (fault == 8) ++o.bytes;
+        if (fault == 9) ++o.mem_reads;
+        if (fault == 10) ++o.mem_bytes;
+        if (fault == 11) ++o.reg_reads;
+        if (fault == 12) o.reads = UINT_MAX;
+        if (fault >= 6) ok = o.Observe(&f.current, 0, false, AvdCodeArenaFixture::Memory, AvdCodeArenaFixture::Register, false);
+        check(!ok && o.failed && f.calls == 0 && !o.Finish(true, false) && active_code_arena == nullptr,
+            "code arena malformed initial owner/readers/stage/barrier/counters/conflicting mode reject before I/O");
+    }
+    AvdCodeArenaFixture completed_fixture; AvdCodeArenaObserver completed;
+    check(completed_fixture.Exercise(&completed), "code arena complete order setup");
+    for (unsigned stage : {0U, 1U, 2U})
+        check(!completed.Observe(&completed_fixture.current, stage, stage != 0, AvdCodeArenaFixture::Memory, AvdCodeArenaFixture::Register, false) &&
+            completed_fixture.calls == 272 && !completed.Finish(true, false),
+            "code arena is pre-START-only; duplicates and later playback cannot add any scalar/pointer reads");
+    AvdCodeArenaFixture rejected_fixture; rejected_fixture.fail_at = 73; AvdCodeArenaObserver rejected;
+    check(!rejected_fixture.Exercise(&rejected), "code arena reporter failed closing guard setup");
+    FILE *log = std::tmpfile(); const int saved = log ? dup(STDOUT_FILENO) : -1;
+    const bool redirected = saved >= 0 && dup2(fileno(log), STDOUT_FILENO) >= 0;
+    if (redirected) { stable.Report(); stable.Finish(true); stable.Finish(false); rejected.Report(); }
+    std::fflush(stdout);
+    if (saved >= 0) { (void)dup2(saved, STDOUT_FILENO); close(saved); }
+    char text[8192] = {}; size_t length = 0;
+    if (log) { std::rewind(log); length = std::fread(text, 1, sizeof(text) - 1, log); std::fclose(log); }
+    check(redirected && length && std::strstr(text, "reads=272/272 bytes=1408/1408 mem-reads=252/252 mem-bytes=1328/1328 reg-reads=20/20") &&
+        std::strstr(text, "C+08=") && std::strstr(text, "global+18=") && std::strstr(text, "global+34=") &&
+        std::strstr(text, "C+1ac=") && std::strstr(text, "C+1cc=") && std::strstr(text, "ownership-u8=3 adjacent-upper24=a50000") &&
+        std::strstr(text, "pass=0 INCOMPLETE") && !std::strstr(text, "deadbeef") &&
+        std::strstr(text, "native-result=PASS observation-result=PASS") && std::strstr(text, "native-result=FAIL observation-result=PASS") &&
+        std::strstr(text, "pointer-follow-from-code-fields=0") && std::strstr(text, "allocation-generation/code-window/alias/lease/completion-certified=no"),
+        "code arena saved-only report separates complete raw authority/scalars from native result and all uncertified mappings/lifetimes");
+    const std::vector<const char *> valid = {"probe","--hardware","fixture","180","30","1","--scaler-test","0",
+        "--observe-avd-code-arena","--capture-yuy2","new"};
+    Options admitted;
+    check(ParseArguments(valid, &admitted) && admitted.observe_avd_code_arena && !AvdCodeArenaConflicts(admitted) &&
+        NeedsRawIo(admitted) && !NeedsRawIo(Options{}), "code arena distinct opt-in requires CAP_SYS_RAWIO before fixture/capture/device actions");
+    const std::vector<std::vector<const char *>> forbidden = {{"--observe-avd-code-arena"},{"--observe-avd-cpu-map"},{"--observe-avd-memory"},
+        {"--observe-video-staging"},{"--observe-video-prefix"},{"--observe-video-graph"},{"--observe-ppb-context"},{"--observe-ppb-stop"},
+        {"--observe-ppb-metadata"},{"--observe-ppb-return"},{"--observe-arm-metadata"},{"--observe-arm-source-shape"},
+        {"--observe-runtime-inventory"},{"--observe-mfd-framing"},{"--observe-mfd-config"},{"--observe-mfd-address"},
+        {"--observe-scl-config"},{"--observe-scl-filter-map"},{"--observe-scl-view","2"},{"--observe-chroma"},
+        {"--inject-mfd-colour","a"},{"--scl-status-test","observe"},{"--open-only"},{"--mpeg1-via-mpeg2"},
+        {"--h263-via-divx"},{"--scaler-test","0"},{"--capture-yuy2","other"}};
+    for (const auto &extra : forbidden) for (unsigned order = 0; order < 2; ++order) {
+        auto args = valid; args.insert(order ? args.end() - 2 : args.begin() + 8, extra.begin(), extra.end()); Options o;
+        check(!ParseArguments(args, &o), "code arena duplicate/mixed profiles are rejected in either argument order");
+    }
+    for (unsigned fault = 0; fault < 10; ++fault) {
+        auto args = valid;
+        if (fault == 0) args[1] = "--preflight";
+        if (fault == 1) args[1] = "--self-test";
+        if (fault == 2) args[3] = "179";
+        if (fault == 3) args[5] = "2";
+        if (fault == 4) args[7] = "128";
+        if (fault == 5) args[8] = "--observe-avd-code-arena=0";
+        if (fault == 6) args[9] = "--capture-uyvy";
+        if (fault == 7) args[10] = "-";
+        if (fault == 8) args[10] = "";
+        if (fault == 9) args.resize(9);
+        Options o; check(!ParseArguments(args, &o), "code arena requires hardware/unscaled/180/one-iteration/fresh YUY2 syntax");
+    }
+    Input native; native.codec = AV_CODEC_ID_H264; native.subtype = BC_MSUBTYPE_H264;
+    native.progressive = true; native.width = 256; native.height = 96; native.packets.resize(180);
+    check(!AvdCodeArenaInputAdmitted(admitted, native) && AvdCodeArenaInputAdmitted(Options{}, native),
+        "code arena exact input-byte digest is mandatory while default path remains unchanged");
+}
+
 template<class Check> static void MfdFramingSelfTest(const Check &check)
 {
     const uint32_t addresses[] = {0x00540000, 0x00540078, 0x00540050, 0x00540070, 0x00540000};
@@ -5620,6 +6112,7 @@ static bool SelfTest()
     VideoStagingSelfTest(check);
     AvdMemorySelfTest(check);
     AvdCpuMapSelfTest(check);
+    AvdCodeArenaSelfTest(check);
     PpbStopLifecycleSelfTest(check);
     MfdFramingSelfTest(check);
     RuntimeInventorySelfTest(check);
@@ -7469,6 +7962,7 @@ struct Audit {
     PpbContextObserver ppb_context;
     AvdMemoryObserver avd_memory;
     AvdCpuMapObserver avd_cpu_map;
+    AvdCodeArenaObserver avd_code_arena;
     MfdAddressObserver mfd_address;
     MfdFramingObserver mfd_framing;
     MfdColourProbe mfd_colour;
@@ -7664,6 +8158,8 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.avd_memory.conflicting_mode = AvdMemoryConflicts(options);
     audit.avd_cpu_map.enabled = options.observe_avd_cpu_map;
     audit.avd_cpu_map.conflicting_mode = AvdCpuMapConflicts(options);
+    audit.avd_code_arena.enabled = options.observe_avd_code_arena;
+    audit.avd_code_arena.conflicting_mode = AvdCodeArenaConflicts(options);
     audit.mfd_address.enabled = options.observe_mfd_address;
     audit.mfd_framing.enabled = options.observe_mfd_framing;
     audit.mfd_colour.stimulus = options.inject_mfd_colour;
@@ -7729,6 +8225,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     if (ok) ok = audit.ppb_context.Observe(&device.handle, 0, false);
     if (ok) ok = audit.avd_memory.Observe(&device.handle, 0, false);
     if (ok) ok = audit.avd_cpu_map.Observe(&device.handle, 0, false);
+    if (ok) ok = audit.avd_code_arena.Observe(&device.handle);
     if (ok) ok = audit.mfd_colour.PreStart(device.handle);
     if (ok) device.started = ok = Status("DtsStartDecoder", DtsStartDecoder(device.handle));
     if (ok && options.capture_path) ok = PackingState(device.handle, "started", &audit.mfd_colour, &audit.scl_view);
@@ -7810,6 +8307,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     ok = audit.ppb_context.Finish(ok);
     ok = audit.avd_memory.Finish(ok);
     ok = audit.avd_cpu_map.Finish(ok);
+    ok = audit.avd_code_arena.Finish(ok);
     ok = audit.runtime_inventory.Finish(ok, audit.mfd);
     std::printf("Library drain: iteration=%u/%u frames=%u/%u pending=%zu "
         "%s-EOS=%s output-marker=%s ready=%u cleanup=%s result=%s\n",
@@ -7838,13 +8336,15 @@ int main(int argc, char **argv)
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
             "[--scaler-test WIDTH_OR_0] [--mpeg1-via-mpeg2 | --h263-via-divx] "
-            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --observe-ppb-metadata | --observe-ppb-return | --observe-video-prefix | --observe-video-graph | --observe-video-staging | --observe-avd-memory | --observe-avd-cpu-map | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
+            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --observe-ppb-metadata | --observe-ppb-return | --observe-video-prefix | --observe-video-graph | --observe-video-staging | --observe-avd-memory | --observe-avd-cpu-map | --observe-avd-code-arena | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
     if (NeedsRawIo(options) && !CanReadChromaConfiguration()) {
-        if (options.observe_avd_cpu_map)
+        if (options.observe_avd_code_arena)
+            std::fprintf(stderr, "--observe-avd-code-arena requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
+        else if (options.observe_avd_cpu_map)
             std::fprintf(stderr, "--observe-avd-cpu-map requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
         else if (options.observe_avd_memory)
             std::fprintf(stderr, "--observe-avd-memory requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
@@ -7923,6 +8423,12 @@ int main(int argc, char **argv)
     }
     if (!AvdCpuMapInputAdmitted(options, input)) {
         std::fprintf(stderr, "AVD CPU map requires the pinned progressive H264 256x96/180-packet input: "
+            "124832 submitted bytes and fixed SHA256; no capture or device was opened\n");
+        phase1_progress_close(&progress);
+        return 2;
+    }
+    if (!AvdCodeArenaInputAdmitted(options, input)) {
+        std::fprintf(stderr, "AVD code arena inventory requires the pinned progressive H264 256x96/180-packet input: "
             "124832 submitted bytes and fixed SHA256; no capture or device was opened\n");
         phase1_progress_close(&progress);
         return 2;
