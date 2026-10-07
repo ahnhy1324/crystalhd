@@ -11841,5 +11841,126 @@ class FirmwarePpbReturnHeaderTests(unittest.TestCase):
         self.assertIn("exact bundled", stderr.getvalue())
 
 
+class NativeReturnHeaderFixtureTests(unittest.TestCase):
+    """Pinned sequential observations, not an atomic or physical-frame lease."""
+    REFERENCES = ([[0, 0], [1, 2], [3, 3], [3, 3]], [[4, 4], [5, 6], [7, 7], [7, 7]])
+    RETURN_FIELDS = ("return-read", "return-write", "return-write-single0", "return-write-single1",
+                     "return-read-after", "return-write-after")
+    ROUTE_FIELDS = ("route-acquire", "route-return")
+    RETURNS = (2, 4, 6, 59, 2, 3, 5, 59)
+
+    @classmethod
+    def setUpClass(cls):
+        cls.raw = (ROOT / "tests/fixtures/issue92/native-return-header.json").read_bytes()
+        cls.observed = json.loads(cls.raw)
+
+    def test_provenance_fixed_request_schedule_and_whole_native_outputs(self):
+        data = self.observed
+        self.assertEqual(hashlib.sha256(self.raw).hexdigest(),
+                         "28935581c4c961dd8847a5105d3893fda037dc811a43f412a371577b4f5cab15")
+        self.assertEqual((data["schema_version"], data["kind"]), (1, "native-ppb-return-header"))
+        self.assertEqual(data["observer_source_sha256"], "7fd129da07d2857572958eb00034f9c96e54d988bc795944160535e5d4260c0b")
+        self.assertEqual(data["observer_binary_sha256"], "5a8ac11a80a3434270148a03b05d64cf799810a810544adf363929f92c3cb1fc")
+        self.assertEqual(data["mapper_source_sha256"], "a61650df1adbdb88d3e7a27565d18610fc5b20406c1936a3cb842185b93732dc")
+        cli = subprocess.run([sys.executable, "-B", str(TOOL), str(BLOB), "--ppb-return-header"], capture_output=True, timeout=20)
+        self.assertEqual((cli.returncode, cli.stderr), (0, b""))
+        self.assertEqual(hashlib.sha256(cli.stdout).hexdigest(), data["mapper_cli_report_sha256"])
+        plan = data["reads"]
+        self.assertEqual((plan["flag"], plan["handle_route_offset_hex"], plan["handle_route_bytes"]),
+                         ("--observe-ppb-return", "250", 8))
+        self.assertEqual((plan["fixed_calls_per_pass"], plan["fixed_bytes_per_pass"], plan["per_pass_calls"],
+                          plan["per_pass_bytes"], plan["per_trial_calls"], plan["per_trial_bytes"]),
+                         (39, 2480, 102, 2800, 816, 22400))
+        self.assertEqual((plan["return_request_offsets_hex"], plan["return_request_bytes"]),
+                         (["15778", "1577c", "1577c", "15778"], [8, 4, 4, 8]))
+        self.assertEqual((2 * 31 + 1 + 39, 2 * 156 + 8 + 2480), (102, 2800))
+        self.assertIs(plan["observed_route_contents_followed"], False)
+        window = MAP._ppb_return_header_window(0xdb58c, 0x33dc000, 0x3f940, 0xa34000, 0x35c7940)
+        self.assertEqual((window["read_calls"], window["total_read_bytes"], window["max_read_bytes"]), (40, 2488, 72))
+        self.assertEqual(window["handle_route_span"]["address"], 0xdb7dc)
+        self.assertEqual([(s["offset"], s["bytes"]) for s in window["fixed_window"]["read_spans"][:5]],
+                         [(0x15678, 8), (0x15778, 8), (0x1577c, 4), (0x1577c, 4), (0x15778, 8)])
+        sessions = data["trials"] + data["controls"]
+        expected = [(180, 8847360, "1ba4af890ad878a5472777c873f1f86f070264ebfc33994ba719b22ea5df9068")] * 2
+        expected += [(32, 14745600, "021b6736caed04600c4801ca1b0e30dc4a48b60985e2dff02d38bea7c2aa9244"),
+                     (180, 4423680, "d72c16b7eb12d844fb6a5805c2d33a120874237ac5f1cf3608d4bebe186ee7cd")]
+        for item, capture in zip(sessions, expected):
+            self.assertEqual((item["frames"], item["capture_bytes"], item["capture_sha256"]), capture)
+            for key in ("whole_capture_equal", "firmware_eos", "cleanup"):
+                self.assertIs(item[key], True)
+            for key in ("pending", "ready", "stderr_bytes", "exit_code", "new_kernel_errors"):
+                self.assertEqual(item[key], 0)
+            self.assertEqual((item["fd_before_after"], item["threads_before_after"]), ([3, 3], [1, 1]))
+        self.assertEqual((sum(s["frames"] for s in sessions), sum(s["capture_bytes"] for s in sessions)), (572, 36864000))
+        for trial, refs in zip(data["trials"], self.REFERENCES):
+            self.assertEqual((trial["reads"], trial["bytes_read"], trial["snapshot_indices_by_stage"]), (816, 22400, refs))
+        self.assertNotIn("/home/", self.raw.decode())
+        self.assertNotIn("/tmp/", self.raw.decode())
+        self.assertIs(data["fingerprint_encoding"]["raw_metadata_prefixes_published"], False)
+        self.assertEqual(data["fingerprint_encoding"]["observed_read_payload_bytes"], 2488)
+        self.assertTrue(all(flag is False for key, flag in data["certified"].items()
+                            if key not in ("rooted_fixed_scalar_observations", "whole_native_outputs")))
+
+    def test_detached_fingerprints_and_all_six_preserved_return_words(self):
+        data = self.observed
+        self.assertEqual(len(data["snapshots"]), 8)
+        for index, snapshot in enumerate(data["snapshots"]):
+            fields = snapshot["fields_hex"]
+            self.assertEqual([int(fields[k], 16) for k in self.RETURN_FIELDS], [self.RETURNS[index]] * 6)
+            self.assertEqual([int(fields[k], 16) for k in self.ROUTE_FIELDS],
+                             [0, 0] if index in (0, 4) else [0x33f1678, 0x33f1778])
+            observed = MAP._ppb_return_header_observation(
+                struct.pack("<2I", *[int(fields[k], 16) for k in self.ROUTE_FIELDS]),
+                struct.pack("<6I", *[int(fields[k], 16) for k in self.RETURN_FIELDS]))
+            self.assertEqual(observed["return_zero_indices"], [])
+            self.assertTrue(observed["return_read_samples_equal"] and observed["return_write_samples_equal"])
+            self.assertEqual(len(snapshot["metadata_prefix_sha256_by_slot"]), 34)
+            for digest in snapshot["metadata_prefix_sha256_by_slot"] + [snapshot["observed_read_payload_sha256"]]:
+                self.assertRegex(digest, r"^[0-9a-f]{64}$")
+        comparison = data["comparison"]
+        self.assertEqual((comparison["snapshot_references"], comparison["unique_snapshots"],
+                          comparison["metadata_dwords_fingerprinted"], comparison["ring_dwords_recorded"],
+                          comparison["handle_route_dwords_recorded"]), (16, 8, 9792, 128, 32))
+        zero = 0
+        for trial, refs in zip(data["trials"], self.REFERENCES):
+            changed = []
+            for first, second in refs:
+                x, y = (data["snapshots"][i] for i in (first, second))
+                changed.append([slot for slot, pair in enumerate(zip(x["metadata_prefix_sha256_by_slot"],
+                                    y["metadata_prefix_sha256_by_slot"])) if pair[0] != pair[1]])
+                zero += len(x["word44_zero_slots"]) + len(y["word44_zero_slots"])
+            self.assertEqual(changed, comparison["changed_slots_between_passes"][trial["id"]])
+        self.assertEqual((zero, comparison["word44_observations_zero"], comparison["word44_observations_nonzero"]), (539, 539, 5))
+        self.assertEqual(comparison["cross_trial_eos_changed_metadata_words"],
+                         [{"slot": 3, "offsets_hex": ["34"]}, {"slot": 30, "offsets_hex": ["34"]}])
+        late_a, late_b = (data["snapshots"][i]["metadata_prefix_sha256_by_slot"] for i in (3, 7))
+        self.assertEqual([i for i, pair in enumerate(zip(late_a, late_b)) if pair[0] != pair[1]], [3, 30])
+        self.assertIs(comparison["earlier_zero_observation_reproduced"], False)
+        self.assertEqual(comparison["earlier_zero_cause"], "unattributed")
+
+    def test_svg_contains_every_independent_request_value_without_certification(self):
+        import xml.etree.ElementTree as ET
+        raw = (ROOT / "tests/fixtures/issue92/native-return-header.svg").read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), "f78c6d68a65680d3965b833127af754b7376e493abfc54bbcb39ea6c308a25f7")
+        tree = ET.fromstring(raw)
+        ns = {"svg": "http://www.w3.org/2000/svg"}
+        groups = [g for g in tree.findall(".//svg:g", ns) if "data-trial" in g.attrib]
+        self.assertEqual(len(groups), 16)
+        for group in groups:
+            trial = 0 if group.attrib["data-trial"] == "A" else 1
+            stage, which = int(group.attrib["data-stage"]), int(group.attrib["data-pass"])
+            index = self.REFERENCES[trial][stage][which]
+            self.assertEqual(int(group.attrib["data-snapshot"]), index)
+            value = f"{self.RETURNS[index]:02x}"
+            cells = group.findall("svg:rect", ns)
+            self.assertEqual([(c.attrib["data-request"], c.attrib["data-value"]) for c in cells],
+                             [("0", value + " / " + value), ("1", value), ("2", value), ("3", value + " / " + value)])
+        text = " ".join(tree.itertext())
+        for phrase in ("not an atomic snapshot", "96 / 96", "Five +44", "slots 3 and 30", "cause remains unattributed",
+                       "572 / 572", "816 reads / 22,400 B", "two sequential readl", "source lease certified"):
+            self.assertIn(phrase, text)
+        self.assertNotIn("/home/", raw.decode())
+
+
 if __name__ == "__main__":
     unittest.main()
