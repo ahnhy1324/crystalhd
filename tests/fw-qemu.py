@@ -1268,6 +1268,55 @@ def execute_source_mode(flags=0, span=256, kind=0, latch=0xff, budget=256, paylo
     return actual
 
 
+def execute_irq_status(status=0x100, budget=512, **picture_options):
+    """Counterexample over the real callback, not a native interrupt source.
+
+    Change only the entry L2-status register of the existing serial replay.
+    Observe release and actual ACK stores without weakening its stock-body,
+    full-page, ABI or callee guards. Status and a returned token certify no
+    source generation, payload ownership or all-consumer completion.
+    """
+    if type(status) is not int or not 0 <= status <= 0xffffffff:
+        raise ValueError("invalid synthetic IRQ status")
+    original = emulate
+    trace = []
+    def entry(image, pages, registers, *args, **kwargs):
+        if registers[15] != 0x888c or kwargs.get("instruction") is None:
+            raise ValueError("unexpected IRQ replay entry")
+        selected = list(registers)
+        selected[1] = status
+        observer = kwargs["instruction"]
+        def instruction(rsp, pc, regs):
+            observer(rsp, pc, regs)
+            if pc == 0xd5a4:
+                trace.append(("release",))
+            if pc in (0x88f8, 0x8914):
+                value = 0x100 if pc == 0x88f8 else 0xc3
+                if regs[4] != 0x10541000 or regs[0] != value:
+                    raise ValueError("outside ordered IRQ ACK contract")
+                write = struct.unpack("<I", rsp.memory(META_REL + 4))[0]
+                trace.append(("ack", 0x10541208, value, write))
+        kwargs["instruction"] = instruction
+        return original(image, pages, selected, *args, **kwargs)
+    # Test-only, process-local injection; existing replay remains byte-exact.
+    with mock.patch.dict(globals(), {"emulate": entry}):
+        actual = execute_picture("irq", budget=budget, **picture_options)
+    initial = actual["initial"]
+    root = initial[PICTURE_ROOT & ~4095]
+    base = PICTURE_ROOT & 4095
+    release = root[base + 0xd2] == 1 and root[base + 0xc4] != 0 and root[base + 0x180] == 1
+    write = struct.unpack_from("<I", initial[0x401000], (META_REL + 4) & 4095)[0]
+    if release:
+        write = 2 if write == 63 else write + 1
+    expected = ([("release",)] if release else []) + \
+        ([("ack", 0x10541208, 0x100, write)] if status & 0x100 else []) + \
+        [("ack", 0x10541208, 0xc3, write)]
+    if trace != expected:
+        raise ValueError("IRQ release-before-ACK oracle changed")
+    actual.update(interrupt_status=status, trace=trace)
+    return actual
+
+
 class FirmwareQemuTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -2150,7 +2199,59 @@ class FirmwareSourceModeQemuTests(unittest.TestCase):
                 execute_source_mode(5)
 
 
+class FirmwareIrqStatusQemuTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        FirmwareQemuTests.setUpClass()
+
+    def test_actual_callback_releases_before_status_ack(self):
+        for status in (0, 1, 8, 0x100, 0x1ff, 0xffffffff):
+            with self.subTest(status=status):
+                actual = execute_irq_status(status, route=1)
+                self.assertEqual(actual["pages"], actual["expected"])
+                self.assertEqual(actual["trace"][0], ("release",))
+                self.assertEqual([step[2] for step in actual["trace"] if step[0] == "ack"],
+                                 ([0x100] if status & 0x100 else []) + [0xc3])
+                self.assertEqual(struct.unpack_from("<4I", actual["pages"][0x401000], 0x100),
+                                 (2, 3, PICTURE_TOKEN, 0xa5a5a5a5))
+                self.assertEqual(len([call for call in actual["calls"] if call[1] == 0xd5a4]), 1)
+
+    def test_actual_slot_guards_not_status_bits_control_return(self):
+        for options in ({"active": 0}, {"started": 0}, {"started": 2}, {"route": 0}):
+            for status in (0, 0x100):
+                with self.subTest(options=options, status=status):
+                    actual = execute_irq_status(status, **options)
+                    self.assertEqual(actual["pages"], actual["expected"])
+                    self.assertFalse(any(step[0] == "release" for step in actual["trace"]))
+                    self.assertEqual(actual["trace"][-1], ("ack", 0x10541208, 0xc3, 2))
+        first = execute_irq_status(0, route=1)
+        second = execute_irq_status(0, previous=first["snapshot"])
+        self.assertEqual(second["trace"], [("release",), ("ack", 0x10541208, 0xc3, 4)])
+        self.assertEqual(struct.unpack_from("<4I", second["pages"][0x401000], 0x100),
+                         (2, 4, PICTURE_TOKEN, PICTURE_TOKEN))
+        # Repeating a token here is not an owner/generation or one-shot proof.
+
+    def test_irq_status_admission_budget_and_ack_store_guards(self):
+        for status in (True, -1, 1 << 32, 0.0, None):
+            with self.subTest(status=status), mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaisesRegex(ValueError, "invalid synthetic IRQ status"):
+                    execute_irq_status(status)
+                spawn.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "instruction budget exceeded"):
+            execute_irq_status(budget=1)
+        original = RSP.registers
+        for field in (0, 4):
+            def outside(rsp):
+                regs = original(rsp)
+                if regs[15] == 0x88f8:
+                    regs[field] ^= 1
+                return regs
+            with self.subTest(field=field), mock.patch.object(RSP, "registers", outside):
+                with self.assertRaisesRegex(ValueError, "outside ordered IRQ ACK"):
+                    execute_irq_status()
+
+
 if __name__ == "__main__":
     unittest.main(defaultTest=("FirmwareQemuTests", "FirmwarePictureQemuTests",
                                "FirmwareMfdSourceQemuTests", "FirmwareSourceProducerQemuTests",
-                               "FirmwareSourceModeQemuTests", "ProtocolTests"))
+                               "FirmwareSourceModeQemuTests", "FirmwareIrqStatusQemuTests", "ProtocolTests"))
