@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "kind": "native-source-surface-causality",
+  "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+  "input_sha256": "1363a87c8f59fab6187cd13653a3ba8a41fd994066d30c24be1c2b09d675666e",
+  "loaded_module_srcversion": "2F5E9544584D226FBD2F678",
+  "loaded_module_has_dram_and_gisb_locks": true,
+  "layout": {
+    "width": 256, "height": 96, "format": "YUV420",
+    "normalized_dword_lanes": "MSB-first",
+    "stripe_bytes": 64, "stripe_rows": 96,
+    "y_bytes": 24576, "chroma_base_offset": 24576,
+    "chroma_rows": 48, "chroma_order": "interleaved-CbCr",
+    "stride_bytes": 49152, "valid_bytes": 36864,
+    "padding_bytes_ignored": 12288
+  },
+  "source_observation": {
+    "complete_source_words": 24576,
+    "known_source_bytes_matched": 73728,
+    "whole_stdout_sha256": "a26ccd4fcce92a8807266d339e89c15a46917fc8906c30d4bbe6cd0c73f56e0c",
+    "planes_sha256": [
+      ["fd4f555bb071a299fdb0ce216b8dd4c760ed213b63249348e976961b3a5cea02",
+       "dd724e084da8eadec8738cb85e578d4d7856a9864879215680aa789a00770596",
+       "a40661a84547c1c82d22a041014ef9dc40c25b07377abaec2c9ebc4c68d9a462"],
+      ["789dd85908872316bdce52aafa3c957216c1ff4ca514118ad323762db7c2a7c9",
+       "61f5dd2eb874ae56da690f03c4b46970b545dcd781ada9ce7ff9c281e8dbae6c",
+       "37ef571511150cf33a1ffcfd4be912270f29a1051a270f53cf63e2a90c794510"]
+    ]
+  },
+  "causal_trial": {
+    "trials": 1, "retries": 0,
+    "captured_frames_before_probe": 1, "submitted_packets_before_probe": 60,
+    "native_owner": true, "source_content_checks": 2,
+    "register_reads": 20, "target_register_writes": 0,
+    "memory_reads": 4, "memory_writes": 1, "memory_bytes": 98316,
+    "core_control": "none", "all_api_status_zero": true,
+    "source_word_address": "00a34000",
+    "fresh_preimage": "10223446", "written_word": "11223446",
+    "readback_word": "11223446",
+    "source_change": {"plane": "Y", "x": 0, "y": 0, "before": 16, "after": 17},
+    "future_prediction_frozen_before_trial": true,
+    "future_exact": [[62, 9], [66, 153], [72, 1], [76, 17], [80, 9], [84, 153]],
+    "future_changed_y_bytes": 342,
+    "early_frozen_envelope": "original or original+1 only at the predicted source mask",
+    "early_observed": [[54, 1], [58, 17]],
+    "total_changed_y_bytes": 360,
+    "all_other_capture_bytes_unchanged": 8847000,
+    "capture_bytes": 8847360,
+    "capture_sha256": "b1a350c900ceb3f8ece195a40c305dd11c8ee732401f53e520cbb0f863007cee",
+    "whole_stdout_sha256": "fe4bf5f2ff0571758f294e315ed92fd2336454d8b9606bd9e09c27c5ea5a5000",
+    "eos_and_cleanup": true, "eof_custom_io": 0,
+    "mandatory_module_reload_completed": true
+  },
+  "baseline_and_recovery": {
+    "fresh_default_off_controls": 2,
+    "post_reload_control": 1,
+    "frames_each": 180, "bytes_each": 8847360,
+    "capture_sha256": "1ba4af890ad878a5472777c873f1f86f070264ebfc33994ba719b22ea5df9068",
+    "whole_stdout_sha256": [
+      "68a6632c3ee39266cf3128649d62978e50141c6ac6eb189f5cc0225ee3d42ade",
+      "52d312632616172ddeaba3c2a0948ceed50f4b46899a25e1074e6baf53eb7849",
+      "3a35d7dd24d158a712d7acfddd98540ec1534c287342fe356ea2c9371cf22036"
+    ],
+    "all_full_bytes_eos_cleanup_and_scoped_kernel_checks_passed": true,
+    "installed_files_unchanged": true
+  },
+  "scope": {
+    "finite_native_source_word_output_causality": true,
+    "generic_dimensions": false,
+    "physical_source_acquire_hold_release": false,
+    "generation_safe_source_api": false,
+    "standalone_mfd_scaler_csc_dnr": false,
+    "non_native_backend": false
+  }
+}

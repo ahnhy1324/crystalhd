@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 460" role="img" aria-labelledby="title desc">
+  <title id="title">Measured native source-word to later output causality</title>
+  <desc id="desc">One source Y sample at zero zero changed from 16 to 17. Six unsubmitted frames changed exactly the predicted 342 Y bytes: frame62 nine,66 one hundred fifty-three,72 one,76 seventeen,80 nine,84 one hundred fifty-three. Early frames54 and58 added one and seventeen within the frozen timing envelope. All other 8847000 captured bytes were unchanged. Native180-frame EOS, cleanup and post-reload baseline passed. This is not a physical surface lease or standalone processor API.</desc>
+  <rect width="880" height="460" fill="#f5f7fb"/>
+  <g font-family="sans-serif" fill="#182437">
+    <text x="28" y="35" font-size="22">One source sample → predicted later pixels</text>
+    <text x="28" y="63" font-size="14">Native H.264 · 256×96 · one bounded MEM_WR · no core-control writes</text>
+    <rect x="28" y="83" width="320" height="65" rx="7" fill="#e1ebf7"/>
+    <text x="43" y="107" font-size="15">Source A0: Y(0,0) 16 → 17</text>
+    <text x="43" y="130" font-family="monospace" font-size="14">10223446 → 11223446; readback exact</text>
+    <path d="M360 116 H430 m-12-8 12 8-12 8" fill="none" stroke="#304c72" stroke-width="3"/>
+    <text x="450" y="105" font-size="16">Later native reference prediction</text>
+    <text x="450" y="130" font-size="14">Expected and measured change counts agree</text>
+    <text x="28" y="181" font-size="14">Frame</text><text x="130" y="181" font-size="14">Changed Y bytes (+1 only)</text>
+    <g fill="#207763">
+      <rect x="130" y="194" width="18" height="18"/><rect x="130" y="223" width="306" height="18"/>
+      <rect x="130" y="252" width="2" height="18"/><rect x="130" y="281" width="34" height="18"/>
+      <rect x="130" y="310" width="18" height="18"/><rect x="130" y="339" width="306" height="18"/>
+    </g>
+    <g font-size="14">
+      <text x="40" y="208">62</text><text x="158" y="208">9 / 9</text>
+      <text x="40" y="237">66</text><text x="446" y="237">153 / 153</text>
+      <text x="40" y="266">72</text><text x="142" y="266">1 / 1</text>
+      <text x="40" y="295">76</text><text x="174" y="295">17 / 17</text>
+      <text x="40" y="324">80</text><text x="158" y="324">9 / 9</text>
+      <text x="40" y="353">84</text><text x="446" y="353">153 / 153</text>
+      <text x="552" y="211">342 future Y bytes, exactly predicted</text>
+      <text x="552" y="242">Early envelope: f54 +1, f58 +17</text>
+      <text x="552" y="273">360 changed bytes total</text>
+      <text x="552" y="304">8,847,000 other bytes unchanged</text>
+      <text x="552" y="335">180/180 · EOS · cleanup · recovery PASS</text>
+    </g>
+    <text x="28" y="403" font-size="14">Measured 64-byte stripes, 96 rows, MSB-first lanes; interleaved CbCr uses 48 rows.</text>
+    <text x="28" y="431" font-size="14">Finite native reuse, not a physical-source lease or standalone MFD/scaler/CSC/DNR result.</text>
+  </g>
+</svg>

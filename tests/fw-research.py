@@ -14813,5 +14813,129 @@ class FirmwarePpbLedgerDecodeTests(unittest.TestCase):
             self.assertEqual(raised.exception.code, 2)
 
 
+class NativeSourceSurfaceLayoutTests(unittest.TestCase):
+    def test_native_fixture_layout_causal_counts_and_scope(self):
+        capture = json.loads((ROOT / "tests/fixtures/issue92/native-source-causality.json").read_text())
+        self.assertEqual((capture["schema_version"], capture["kind"]),
+                         (1, "native-source-surface-causality"))
+        self.assertEqual(capture["firmware_sha256"], MAP.BUNDLED_SHA256)
+        self.assertEqual(capture["layout"], {
+            "width": 256, "height": 96, "format": "YUV420",
+            "normalized_dword_lanes": "MSB-first", "stripe_bytes": 64,
+            "stripe_rows": 96, "y_bytes": 24576, "chroma_base_offset": 24576,
+            "chroma_rows": 48, "chroma_order": "interleaved-CbCr",
+            "stride_bytes": 49152, "valid_bytes": 36864, "padding_bytes_ignored": 12288})
+        observation = capture["source_observation"]
+        self.assertEqual((observation["complete_source_words"], observation["known_source_bytes_matched"]),
+                         (24576, 73728))
+        for generation, digests in enumerate(observation["planes_sha256"]):
+            y = bytes(16+(17*x+29*row+11*generation+(x^(row+7*generation))) % 220
+                      for row in range(96) for x in range(256))
+            cb = bytes(16+(19*x+31*row+23*generation+(x^(row+3*generation))) % 225
+                       for row in range(48) for x in range(128))
+            cr = bytes(16+(47*x+13*row+19*generation+((3*x)^(5*row+generation))) % 225
+                       for row in range(48) for x in range(128))
+            self.assertEqual([hashlib.sha256(plane).hexdigest() for plane in (y, cb, cr)], digests)
+        self.assertEqual(len(observation["planes_sha256"]), 2)
+        shifts = ((0,0), (16,0), (-16,0), (0,8), (0,-8), (16,8), (-16,-8), (16,-8), (-16,8))
+        expected = []
+        for frame in range(60, 90, 2):
+            dx, dy = shifts[(frame//2) % 9]
+            count = sum(max(0, min(255, x+dx)) == 0 and max(0, min(95, row+dy)) == 0
+                        for row in range(96) for x in range(256))
+            if count:
+                expected.append([frame, count])
+        causal = capture["causal_trial"]
+        self.assertEqual(causal["future_exact"], expected)
+        self.assertEqual(sum(count for frame, count in expected), causal["future_changed_y_bytes"])
+        self.assertEqual(causal["early_observed"], [[54,1], [58,17]])
+        self.assertEqual(sum(count for frame,count in causal["early_observed"])+342,
+                         causal["total_changed_y_bytes"])
+        self.assertEqual(causal["all_other_capture_bytes_unchanged"]+360, 49152*180)
+        self.assertEqual((causal["register_reads"], causal["memory_reads"], causal["memory_writes"],
+                          causal["memory_bytes"], causal["trials"], causal["retries"]),
+                         (20, 4, 1, 2*49152+3*4, 1, 0))
+        self.assertEqual((causal["fresh_preimage"], causal["written_word"], causal["readback_word"]),
+                         ("10223446", "11223446", "11223446"))
+        self.assertTrue(causal["future_prediction_frozen_before_trial"])
+        self.assertTrue(causal["mandatory_module_reload_completed"])
+        self.assertEqual((causal["core_control"], causal["target_register_writes"], causal["eof_custom_io"]),
+                         ("none", 0, 0))
+        self.assertEqual(capture["scope"], {
+            "finite_native_source_word_output_causality": True, "generic_dimensions": False,
+            "physical_source_acquire_hold_release": False, "generation_safe_source_api": False,
+            "standalone_mfd_scaler_csc_dnr": False, "non_native_backend": False})
+
+    def test_native_svg_matches_measured_counts_and_does_not_claim_a_lease(self):
+        import xml.etree.ElementTree as ET
+        svg = ET.fromstring((ROOT / "tests/fixtures/issue92/native-source-causality.svg").read_bytes())
+        ns = "{http://www.w3.org/2000/svg}"
+        self.assertEqual(svg.attrib["viewBox"], "0 0 880 460")
+        self.assertIn("Measured native source-word", svg.find(ns+"title").text)
+        desc = svg.find(ns+"desc").text
+        self.assertIn("342 Y bytes", desc)
+        self.assertIn("8847000", desc)
+        self.assertIn("not a physical surface lease", desc)
+        bars = next(group for group in svg.iter(ns+"g") if group.attrib.get("fill") == "#207763")
+        self.assertEqual([int(bar.attrib["width"])//2 for bar in bars], [9,153,1,17,9,153])
+
+    def test_all_samples_and_padding_are_independent_of_contents(self):
+        # Build raster planes first, then scatter each stripe as whole rows.
+        # No implementation index expression or hardware access is reused.
+        planes = (bytes((17*x + 29*y + (x ^ y)) & 255
+                        for y in range(96) for x in range(256)),
+                  bytes((19*x + 31*y + (x ^ (3*y))) & 255
+                        for y in range(48) for x in range(128)),
+                  bytes((47*x + 13*y + ((3*x) ^ (5*y))) & 255
+                        for y in range(48) for x in range(128)))
+        for pad in (0, 255, 91):
+            raw = bytearray([pad]) * 49152
+            for stripe in range(4):
+                for row in range(96):
+                    at = stripe*6144 + row*64
+                    raster = row*256 + stripe*64
+                    raw[at:at+64] = planes[0][raster:raster+64]
+                for row in range(48):
+                    at = 24576 + stripe*6144 + row*64
+                    raster = row*128 + stripe*32
+                    raw[at:at+64:2] = planes[1][raster:raster+32]
+                    raw[at+1:at+64:2] = planes[2][raster:raster+32]
+            words = list(struct.unpack(">12288I", raw))
+            before = words.copy()
+            self.assertEqual(MAP.decode_source_surface_256x96(words), planes)
+            self.assertEqual(words, before)
+            self.assertEqual(MAP.decode_source_surface_256x96(tuple(words)), planes)
+        # Every padding DWORD can change at once without changing the result.
+        for stripe in range(4):
+            for index in range(768):
+                words[6144 + stripe*1536 + 768 + index] ^= 0xa5f03c69 ^ index
+        self.assertEqual(MAP.decode_source_surface_256x96(words), planes)
+
+    def test_full_zero_and_full_unsigned_max_are_samples_not_sentinels(self):
+        for value in (0, 0xffffffff):
+            result = MAP.decode_source_surface_256x96([value]*12288)
+            sample = value & 255
+            self.assertEqual(result, tuple(bytes([sample])*n for n in (24576, 6144, 6144)))
+
+    def test_bad_input_is_refused_without_mutation(self):
+        class ForgedLength(list):
+            def __len__(self):
+                return 12288
+        class TupleSubclass(tuple):
+            pass
+        for words in (None, {}, "0", b"\0"*49152, iter([0]*12288), [], [0]*12287, [0]*12289,
+                      ForgedLength(), TupleSubclass([0]*12288)):
+            with self.assertRaises(MAP.FormatError):
+                MAP.decode_source_surface_256x96(words)
+        for index in (0, 6143, 6144, 6912, 12287):
+            for value in (-1, 0x100000000, True, False, 0.0, "0", None, {}):
+                words = [0]*12288
+                words[index] = value
+                before = words.copy()
+                with self.assertRaises(MAP.FormatError):
+                    MAP.decode_source_surface_256x96(words)
+                self.assertEqual(words, before)
+
+
 if __name__ == "__main__":
     unittest.main()
