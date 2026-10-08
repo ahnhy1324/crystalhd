@@ -5342,6 +5342,13 @@ class FirmwarePpbBankContractTests(unittest.TestCase):
                          {"base": 56, "mask": 60, "stride": 64, "geometry": 68})
         self.assertFalse(contract["bank_layout"]["geometry_pack_masks_inputs"])
         self.assertTrue(contract["bank_layout"]["final_free_preserves_base"])
+        self.assertEqual((contract["bank_layout"]["bank_count_bytes"],
+                          contract["bank_layout"]["bank_bytes_bytes"]), (1, 4))
+        self.assertEqual((contract["bank_layout"]["bank_count_load_elf_virtual_address"],
+                          contract["bank_layout"]["bank_bytes_load_elf_virtual_address"]), (0xae64, 0xaf78))
+        bank_delta = self.elf_base + self.sections[4][4] - self.sections[4][3]
+        self.assertEqual(struct.unpack_from("<I", self.payload, 0xae64 + bank_delta)[0], 0x08a684cc)
+        self.assertEqual(struct.unpack_from("<I", self.payload, 0xaf78 + bank_delta)[0], 0x080680c8)
         self.assertEqual(contract["descriptor_layout"]["release_native_index_range"], [0, 33])
         self.assertFalse(contract["descriptor_layout"]["getter_native_index_guard"])
         self.assertFalse(contract["descriptor_layout"]["generation_field_validated"])
@@ -14697,6 +14704,113 @@ class FirmwareArcMp4ControlWordTests(unittest.TestCase):
                 self.assertEqual(args[1], before_registers)
                 if type(args[2]) is list:
                     self.assertEqual(args[2], [])
+
+
+class FirmwarePpbLedgerDecodeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.data = MAP.read_firmware(BLOB)
+        cls.payload = cls.data[:-MAP.TRAILER_SIZE]
+        cls.capture = json.loads((ROOT / "tests/fixtures/issue92/native-arc-bank-ledger.json").read_text())
+
+    def test_native_words_payload_pins_and_finite_lifecycle_contrast(self):
+        self.assertEqual(self.capture["firmware_sha256"], hashlib.sha256(self.data).hexdigest())
+        decoded = []
+        for stage in self.capture["stages"]:
+            words = [int(word, 16) for word in stage["ledger_words"]]
+            self.assertEqual(len(words), 55)
+            payload = struct.pack("<87I", *([0x12345678] * 32 + words))
+            self.assertEqual(hashlib.sha256(payload).hexdigest(), stage["payload_348_sha256"])
+            before = words.copy()
+            ledger = MAP._ppb_bank_decode_ledger(self.payload, words)
+            self.assertEqual(words, before)
+            self.assertEqual((ledger["bank_count"], ledger["bank_count_word"],
+                              ledger["bank_count_upper24_opaque"], ledger["bank_bytes"]),
+                             (6, 0xa06, 10, 0x618000))
+            self.assertEqual([bank["base"] for bank in ledger["banks"]],
+                             [0xa34000, 0x104c000, 0x1664000, 0x1c7c000, 0x2294000, 0x28ac000, 0, 0, 0])
+            self.assertEqual(ledger["validation_scope"], {
+                "pinned_selected_layout": True, "captured_fields_only": True,
+                "runtime_context_identity": False, "coherent_capture": False,
+                "physical_source_lease": False, "generation_safe_reuse": False})
+            decoded.append(ledger)
+        live, eos = decoded
+        self.assertEqual(live["flags"],
+                         [0xc800, 0xc810, 0xb820, *[0xf800 | (i << 4) for i in range(3, 15)],
+                          *[0xe800 | (i << 4) for i in range(15, 19)], *([0] * 15)])
+        self.assertEqual(live["banks"][0], {"base": 0xa34000, "mask": 0x7ffff,
+                                            "stride": 0xc000, "geometry": 0x08030100})
+        geometry = live["banks"][0]["geometry"]
+        self.assertEqual((geometry & 2047, (geometry >> 11) & 2047, geometry >> 22), (256, 96, 32))
+        self.assertEqual([entry["video_address_u32"] for entry in live["entries"]],
+                         [0xa34000 + 0xc000 * i for i in range(19)] + [0] * 15)
+        self.assertTrue(all(entry["bank_declared"] and entry["bitmap_present"] and
+                            not entry["address_wrapped"] for entry in live["entries"][:19]))
+        self.assertEqual(eos["flags"], [0] * 34)
+        self.assertTrue(all(bank["mask"] == bank["stride"] == bank["geometry"] == 0
+                            for bank in eos["banks"]))
+        self.assertTrue(all(entry["video_address_u32"] == 0 for entry in eos["entries"]))
+
+    def test_count_byte_opaque_neighbors_bank_bounds_and_u32_address_wrap(self):
+        words = [0] * 55
+        for count in range(10):
+            for upper in (0, 1, 10, 0x800000, 0xffffff):
+                words[54] = (upper << 8) | count
+                report = MAP._ppb_bank_decode_ledger(self.payload, tuple(words))
+                self.assertEqual((report["bank_count"], report["bank_count_upper24_opaque"]), (count, upper))
+        words[54] = 0
+        words[0] = 0x2018  # Getter's ANY E000 gate does not require live8000 or declared bank8.
+        words[17 + 8 * 4:21 + 8 * 4] = [0xfffffff0, 2, 0x20, 0]
+        entry = MAP._ppb_bank_decode_ledger(self.payload, words)["entries"][0]
+        self.assertEqual((entry["bank"], entry["subslot"], entry["bank_declared"],
+                          entry["video_candidate"], entry["bitmap_present"],
+                          entry["video_address_u32"], entry["address_wrapped"]),
+                         (8, 1, False, True, True, 0x10, True))
+        words[0] = 0xe01f  # Native indexes beyond the nine captured rows are left unknown.
+        entry = MAP._ppb_bank_decode_ledger(self.payload, words)["entries"][0]
+        self.assertIsNone(entry["video_address_u32"])
+        self.assertIsNone(entry["bitmap_present"])
+        words[0] = 0x001f  # Getter returns0 before touching an uncaptured bank.
+        self.assertEqual(MAP._ppb_bank_decode_ledger(self.payload, words)["entries"][0]["video_address_u32"], 0)
+        words[0] = 0xe018
+        words[18 + 8 * 4] = 0
+        self.assertEqual(MAP._ppb_bank_decode_ledger(self.payload, words)["entries"][0]["video_address_u32"], 0)
+
+    def test_malformed_words_changed_firmware_and_no_implicit_output(self):
+        for bad in (None, {}, [], [0] * 54, [0] * 56):
+            with self.assertRaises(MAP.FormatError):
+                MAP._ppb_bank_decode_ledger(self.payload, bad)
+        for value in (True, -1, 1 << 32, "0", None, []):
+            for index in (0, 16, 17, 52, 53, 54):
+                words = [0] * 55
+                words[index] = value
+                with self.assertRaises(MAP.FormatError):
+                    MAP._ppb_bank_decode_ledger(self.payload, words)
+        for count in (10, 255):
+            with self.assertRaises(MAP.FormatError):
+                MAP._ppb_bank_decode_ledger(self.payload, [0] * 54 + [count])
+        changed = bytearray(self.payload)
+        changed[0xae64 + 0x2aea4] ^= 1  # Original section4 blob-file minus ELF-VMA delta.
+        with self.assertRaises(MAP.FormatError):
+            MAP._ppb_bank_decode_ledger(changed, [0] * 55)
+        self.assertNotIn("ppb_bank_ledger", MAP.analyze(self.data))
+        other = fixture()
+        with self.assertRaisesRegex(MAP.FormatError, "exact bundled"):
+            MAP.analyze(other, expected_sha256=hashlib.sha256(other).hexdigest(), ppb_bank_ledger=[0] * 55)
+
+    def test_programmatic_and_cli_offline_outputs_agree(self):
+        words = [int(word, 16) for word in self.capture["stages"][0]["ledger_words"]]
+        expected = MAP.analyze(self.data, ppb_bank_ledger=words)
+        output, errors = io.StringIO(), io.StringIO()
+        with mock.patch("sys.stdout", output), mock.patch("sys.stderr", errors):
+            self.assertEqual(MAP.main([str(BLOB), "--ppb-bank-ledger", *[hex(word) for word in words]]), 0)
+        self.assertEqual(json.loads(output.getvalue()), expected)
+        self.assertEqual(errors.getvalue(), "")
+        for argument in (["0"] * 54, ["0"] * 54 + ["-1"], ["0"] * 54 + ["0x100000000"]):
+            with mock.patch.object(MAP, "read_firmware", side_effect=AssertionError("unexpected file read")), \
+                    mock.patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit) as raised:
+                MAP.main(["offline.bin", "--ppb-bank-ledger", *argument])
+            self.assertEqual(raised.exception.code, 2)
 
 
 if __name__ == "__main__":

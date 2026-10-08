@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="510" viewBox="0 0 960 510" role="img" aria-labelledby="title description">
+  <title id="title">BCM70015 measured PPB ledger: first output versus EOS</title>
+  <desc id="description">One same-handle 180-frame H.264 session. After the first output was released and copied, with sixty packets accepted and no flush, nineteen descriptor flags and nineteen bank-zero bitmap bits were set. At delivered EOS all descriptor flags, bitmaps, strides and geometry words were zero. Six bank base values persisted. All native pixels and cleanup passed. This is not a raw-surface lease.</desc>
+  <rect width="960" height="510" fill="#0f172a"/>
+  <g font-family="sans-serif" fill="#e2e8f0">
+    <text x="30" y="38" font-size="23" font-weight="600">PPB ledger: live allocation → delivered EOS</text>
+    <text x="30" y="63" font-size="14" fill="#94a3b8">BCM70015 · one same-HANDLE session · 256×96 H.264 · two qualified outer-core snapshots</text>
+    <rect x="248" y="86" width="320" height="259" rx="8" fill="#164e63"/>
+    <rect x="592" y="86" width="337" height="259" rx="8" fill="#1e293b"/>
+    <text x="269" y="116" font-size="18" font-weight="600">First delivered output</text>
+    <text x="269" y="140" font-size="13">1 frame · 60 packets · no host flush</text>
+    <text x="612" y="116" font-size="18" font-weight="600">Delivery EOS, before STOP</text>
+    <text x="612" y="140" font-size="13">180 frames · pending0 · ready0</text>
+    <g font-size="15">
+      <text x="30" y="187">Descriptor flags</text>
+      <text x="269" y="187">19 of 34 nonzero</text>
+      <text x="612" y="187">All 34 zero</text>
+      <text x="30" y="227">Bank0 bitmap</text>
+      <text x="269" y="227" font-family="monospace">0007ffff (slots0…18)</text>
+      <text x="612" y="227" font-family="monospace">00000000</text>
+      <text x="30" y="267">Bank0 stride</text>
+      <text x="269" y="267" font-family="monospace">0000c000 (49,152 bytes)</text>
+      <text x="612" y="267" font-family="monospace">00000000</text>
+      <text x="30" y="307">Bank0 geometry</text>
+      <text x="269" y="307" font-family="monospace">08030100</text>
+      <text x="612" y="307" font-family="monospace">00000000</text>
+      <text x="269" y="329" font-size="12">Raw fields: width256, height96, capacity32</text>
+    </g>
+    <text x="30" y="375" font-size="15">Unchanged at both snapshots</text>
+    <text x="30" y="401" font-family="monospace" font-size="14">Bases: 00a34000 0104c000 01664000 01c7c000 02294000 028ac000</text>
+    <text x="30" y="425" font-family="monospace" font-size="14">Bank bytes: 00618000 · count DWORD: 00000a06 → byte count6; upper24 opaque</text>
+    <text x="30" y="462" font-size="14" fill="#86efac">180/180 frames · all 8,847,360 bytes equal reference · EOS and cleanup PASS</text>
+    <text x="30" y="490" font-size="13" fill="#fbbf24">Finite source-state contrast, not frame identity, a physical-source lease or standalone raw feed.</text>
+  </g>
+</svg>
