@@ -6208,6 +6208,31 @@ def _ppb_bank_decode_ledger(payload, words):
                                  "physical_source_lease": False, "generation_safe_reuse": False}}
 
 
+def decode_source_surface_256x96(words):
+    """Unpack one measured, finite MEM_RD layout into Y/Cb/Cr bytes.
+
+    Input is exactly 12,288 normalized numeric DWORDs, not serialized bytes
+    or an address. The observed profile is 8-bit 256x96 YUV420: 64-byte
+    stripes with 96 rows, MSB-first DWORD lanes, and adjacent Cb/Cr samples.
+    Chroma uses only 48 rows of each 96-row stripe. Its 12,288 padding bytes
+    are ignored; no content pattern or padding value is required.
+
+    This is an offline layout decoder, not device I/O, a generic geometry
+    rule, source identity, retention, completion, or an allocation API.
+    """
+    if type(words) not in (tuple, list) or len(words) != 12288:
+        raise FormatError("source layout requires exactly 12288 normalized DWORDs")
+    raw = b"".join(_ppb_bank_u32(word, "surface word").to_bytes(4, "big")
+                   for word in words)
+    y = bytes(raw[(x // 64) * 6144 + row * 64 + x % 64]
+              for row in range(96) for x in range(256))
+    cb = bytes(raw[24576 + (x // 32) * 6144 + row * 64 + 2 * (x % 32)]
+               for row in range(48) for x in range(128))
+    cr = bytes(raw[24576 + (x // 32) * 6144 + row * 64 + 2 * (x % 32) + 1]
+               for row in range(48) for x in range(128))
+    return y, cb, cr
+
+
 def _ppb_bank_step(contract, state, operation, **args):
     """Finite conditional raw transitions; input state is never modified.
 
