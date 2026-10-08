@@ -270,7 +270,12 @@ static void Sps(const Bytes &bytes)
     Require(r.U(1) == 1 && r.U(3) == 5 && r.U(1) == 0 && r.U(1) == 0 && r.U(1) == 0,
             "fixed limited-range colour metadata");
     Require(r.U(1) == 1 && r.U(32) == 1 && r.U(32) == 60 && r.U(1) == 1, "VUI30fps timing");
-    Require(r.U(1) == 0 && r.U(1) == 0 && r.U(1) == 0 && r.U(1) == 0, "no HRD or extra restrictions");
+    Require(r.U(1) == 0 && r.U(1) == 0 && r.U(1) == 0 && r.U(1) == 1,
+            "no HRD/pic-struct, explicit bitstream restrictions");
+    Require(r.U(1) == 1 && r.UE() == 0 && r.UE() == 0,
+            "edge extension allowed, no byte or macroblock-bit restriction");
+    Require(r.UE() == 4 && r.UE() == 4 && r.UE() == 0 && r.UE() == 3,
+            "bounded motion, no reorder, three-picture decoded buffer");
     r.End();
 }
 

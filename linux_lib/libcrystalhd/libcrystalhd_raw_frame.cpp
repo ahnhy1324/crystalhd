@@ -190,7 +190,10 @@ void sps(AnnexB &output)
     b.u(1, 1); b.u(1, 8); b.u(0, 1);
     b.u(1, 1); b.u(5, 3); b.u(0, 1); b.u(0, 1); b.u(0, 1);
     b.u(1, 1); b.u(1, 32); b.u(2 * BC_RAW_FRAME_FPS, 32); b.u(1, 1);
-    b.u(0, 1); b.u(0, 1); b.u(0, 1); b.u(0, 1);
+    b.u(0, 1); b.u(0, 1); b.u(0, 1); b.u(1, 1);
+    // POC2 outputs are ordered. Keep two long-term sources plus one reference
+    // picture without falling back to the level's larger default DPB delay.
+    b.u(1, 1); b.ue(0); b.ue(0); b.ue(4); b.ue(4); b.ue(0); b.ue(3);
     b.finish();
     output.nal(0x67, b);
 }
