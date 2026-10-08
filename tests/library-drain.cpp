@@ -1925,19 +1925,20 @@ public:
 struct AvdDmemSampleObserver;
 static thread_local AvdDmemSampleObserver *active_dmem_sample = nullptr;
 enum class AvdDmemSampleFailure { None, Argument, Mode, Owner, Order, Barrier, Budget, Api, Revision, Gisb, Reentrant };
-static uint32_t AvdDmemSampleAddress(unsigned field)
+static uint32_t AvdDmemSampleAddress(unsigned field, bool midpoints = false)
 {
     if (field == 0U || field == 259U) return BCHP_MFD_REVISION_ID;
     if (field == 1U || field == 258U) return BCHP_SUN_GISB_ARB_ERR_CAP_STATUS;
     if (field < 2U || field >= 258U) return 0;
     const unsigned word = field - 2U, block_word = word % 128U;
     const uint32_t base = word < 128U ? BCHP_DECODE_CPUDMEM_0_CPUDMEM_REG : BCHP_DECODE_CPUDMEM2_0_CPUDMEM_REG;
-    return base + (block_word / 16U) * 4096U + (block_word % 16U) * 4U;
+    return base + (block_word / 16U) * 4096U + (midpoints ? 0x800U : 0U) + (block_word % 16U) * 4U;
 }
 // Fixed sparse host-register inventory, not a translation from ARC LOCAL.
 // Headers declare the blocks, not interior read-side-effect freedom or a lease.
 struct AvdDmemSampleObserver {
     typedef AvdCpuMapObserver::Reader Reader;
+    explicit AvdDmemSampleObserver(bool midpoints = false) : midpoint_addresses(midpoints) {}
     bool enabled = false, conflicting_mode = false, failed = false;
     unsigned reads = 0, bytes = 0, next_stage = 0;
     uint32_t raw[3][2][260] = {};
@@ -1946,6 +1947,7 @@ struct AvdDmemSampleObserver {
     BC_STATUS api_status = BC_STS_SUCCESS;
     AvdDmemSampleFailure failure = AvdDmemSampleFailure::None;
 private:
+    const bool midpoint_addresses;
     HANDLE owner = nullptr;
     const HANDLE *owner_current = nullptr;
     bool sealed = false, sticky = false;
@@ -1985,11 +1987,12 @@ public:
             std::printf("AVD DMEM samples raw: stage=%s pass=%u", stages[stage], pass);
             if (published_complete[stage][pass]) {
                 for (unsigned field = 0; field < 260; ++field)
-                    std::printf(" %08x=%08x", AvdDmemSampleAddress(field), published[stage][pass][field]);
+                    std::printf(" %08x=%08x", AvdDmemSampleAddress(field, midpoint_addresses), published[stage][pass][field]);
             } else std::printf(" INCOMPLETE measured=%u/260", actual_measured[stage][pass]);
             std::printf("\n");
         }
         if (rejected_raw_valid) std::printf("AVD DMEM samples rejected guard: address=%08x raw=%08x\n", rejected_address, rejected_raw);
+        if (midpoint_addresses) std::printf("AVD DMEM samples profile: fixed-page-midpoint-offset=00000800 LOCAL-translation=unqualified\n");
         std::printf("AVD DMEM samples scope: two-fixed-RDB-windows sparse1/64 coverage; reserved-END-excluded; target-writes=0 error-clear-writes=0 pointer-follow=0 "
             "post-cleanup-reads=0 atomic/read-side-effects/LOCAL-alias/source-lease/completion-certified=no\n");
         std::fflush(stdout);
@@ -2022,13 +2025,13 @@ public:
                 if (actual_reads != ordinal || actual_reads >= 1560U) { ok = Reject(AvdDmemSampleFailure::Budget); break; }
                 uint32_t value = 0;
                 ++actual_reads; reads = actual_reads; bytes = actual_reads * 4U;
-                const BC_STATUS status = reader(owner, AvdDmemSampleAddress(field), &value);
+                const BC_STATUS status = reader(owner, AvdDmemSampleAddress(field, midpoint_addresses), &value);
                 api_status = status;
                 if (status != BC_STS_SUCCESS) { ok = Reject(AvdDmemSampleFailure::Api); break; }
                 if (!Ready(current)) { ok = false; break; }
                 ++actual_measured[stage][pass]; measured[stage][pass] = actual_measured[stage][pass];
                 if ((field == 0 || field == 259) ? value != 0x50U : (field == 1 || field == 258) && value != 0) {
-                    rejected_address = AvdDmemSampleAddress(field); rejected_raw = value; rejected_raw_valid = true;
+                    rejected_address = AvdDmemSampleAddress(field, midpoint_addresses); rejected_raw = value; rejected_raw_valid = true;
                     ok = Reject(field == 0 || field == 259 ? AvdDmemSampleFailure::Revision : AvdDmemSampleFailure::Gisb);
                 }
                 pending[field] = value;
@@ -3105,6 +3108,7 @@ struct Options {
     bool observe_avd_platform_code = false;
     bool observe_avd_cache_count = false;
     bool observe_avd_dmem_samples = false;
+    bool observe_avd_dmem_midpoints = false;
     unsigned inject_mfd_colour = 0;
     unsigned scl_status_test = 0;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
@@ -3193,8 +3197,10 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         options->observe_arm_metadata = !options->observe_arm_source_shape && !options->observe_ppb_context;
         arguments.pop_back();
     }
-    if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-avd-dmem-samples")) {
+    if (arguments.size() >= 2 && (!std::strcmp(arguments.back(), "--observe-avd-dmem-samples") ||
+                                !std::strcmp(arguments.back(), "--observe-avd-dmem-midpoints"))) {
         options->observe_avd_dmem_samples = true;
+        options->observe_avd_dmem_midpoints = !std::strcmp(arguments.back(), "--observe-avd-dmem-midpoints");
         arguments.pop_back();
     }
     if (arguments.size() >= 2 && !std::strcmp(arguments.back(), "--observe-avd-cache-count")) {
@@ -6003,24 +6009,25 @@ struct AvdDmemSampleFixture {
     BC_STATUS status = BC_STS_ERROR;
     uint32_t values[1560] = {};
     AvdDmemSampleObserver *subject = nullptr;
-    AvdDmemSampleFixture() {
+    const bool midpoint_addresses;
+    explicit AvdDmemSampleFixture(bool midpoints = false) : midpoint_addresses(midpoints) {
         for (unsigned at = 0; at < 1560; ++at) {
             const unsigned field = at % 260U;
             values[at] = field == 0 || field == 259 ? 0x50U :
                 field == 1 || field == 258 ? 0U : at * 0x1020301U;
         }
     }
-    static uint32_t Address(unsigned field) {
+    static uint32_t Address(unsigned field, bool midpoints = false) {
         if (field == 0 || field == 259) return 0x540000;
         if (field == 1 || field == 258) return 0x4000d4;
         if (field < 2 || field >= 258) return 0;
         const unsigned block = (field - 2) / 128, within = (field - 2) % 128;
-        return (block ? 0x858000U : 0x848000U) + (within / 16) * 0x1000U + (within % 16) * 4U;
+        return (block ? 0x858000U : 0x848000U) + (within / 16) * 0x1000U + (midpoints ? 0x800U : 0U) + (within % 16) * 4U;
     }
     static BC_STATUS Read(HANDLE handle, uint32_t address, uint32_t *value) {
         auto *f = static_cast<AvdDmemSampleFixture *>(handle);
         const unsigned at = f->calls++;
-        f->valid &= at < 1560 && value && address == Address(at % 260U);
+        f->valid &= at < 1560 && value && address == Address(at % 260U, f->midpoint_addresses);
         if (!f->valid) return BC_STS_ERROR;
         *value = at == f->fail_at ? 0xdeadbeefU : f->values[at];
         if (at == f->lose_at) f->current = f->replacement;
@@ -6194,6 +6201,119 @@ template<class Check> static void AvdDmemSampleSelfTest(const Check &check)
         check(!AvdDmemSampleInputAdmitted(o, in) && AvdDmemSampleInputAdmitted(Options{}, in),
             "DMEM malformed/unpinned input rejects before capture/device; default admission unaffected");
     }
+}
+
+template<class Check> static void AvdDmemMidpointSelfTest(const Check &check)
+{
+    for (unsigned field = 0; field < 260; ++field) {
+        const uint32_t address = AvdDmemSampleAddress(field, true);
+        check(address == AvdDmemSampleFixture::Address(field, true) &&
+            (field < 2 || field >= 258 ? address == AvdDmemSampleAddress(field) :
+                address == AvdDmemSampleAddress(field) + 0x800U),
+            "DMEM midpoint profile is a fixed RDB grid, not a LOCAL translation or returned-value target");
+    }
+    check(!AvdDmemSampleAddress(260, true) && !AvdDmemSampleAddress(UINT_MAX, true) &&
+        AvdDmemSampleAddress(129, true) == 0x84f83c && AvdDmemSampleAddress(257, true) == 0x85f83c,
+        "DMEM midpoint targets exclude both reserved END words");
+    AvdDmemSampleObserver disabled(true);
+    check(disabled.Observe(nullptr, 99, true, nullptr, false) && disabled.Finish(true, false) &&
+        !disabled.Finish(false, false) && !disabled.reads,
+        "DMEM midpoint default-disabled profile performs no I/O or native-result override");
+    for (unsigned pattern = 0; pattern < 4; ++pattern) {
+        AvdDmemSampleFixture f(true); AvdDmemSampleObserver o(true);
+        for (unsigned at = 0; at < 1560; ++at) if (at % 260 >= 2 && at % 260 < 258) {
+            if (pattern == 0) f.values[at] = 0;
+            if (pattern == 1) f.values[at] = UINT_MAX;
+            if (pattern == 2) f.values[at] = 0x12345678;
+        }
+        check(f.Exercise(&o) && f.valid && f.calls == 1560 && o.reads == 1560 && o.bytes == 6240 &&
+            o.next_stage == 3 && !active_dmem_sample && !o.Finish(false, false),
+            "DMEM midpoint zero/ones/canary/changing raw values do not certify a mapped RAM or execution");
+        for (unsigned stage = 0; stage < 3; ++stage) for (unsigned pass = 0; pass < 2; ++pass)
+            check(o.complete[stage][pass] && o.measured[stage][pass] == 260 &&
+                !std::memcmp(o.raw[stage][pass], f.values + stage * 520 + pass * 260, 1040),
+                "DMEM midpoint profile publishes only fully bracketed detached complete tuples");
+    }
+    for (unsigned at = 0; at < 1560; ++at) {
+        AvdDmemSampleFixture f(true); f.fail_at = at; AvdDmemSampleObserver o(true);
+        check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && o.failure == AvdDmemSampleFailure::Api &&
+            !o.complete[at / 520][at % 520 / 260] && !o.Finish(true, false) && !active_dmem_sample,
+            "DMEM midpoint every callback API error stops before further I/O or partial publication");
+        o.failed = false; o.enabled = false;
+        check(!o.Observe(&f.current, at / 520, at / 520 != 0, AvdDmemSampleFixture::Read, false) && f.calls == at + 1,
+            "DMEM midpoint private failure remains sticky after public flags are cleared");
+    }
+    for (unsigned at : {0U,1U,2U,129U,130U,257U,258U,259U,260U,519U,520U,1039U,1040U,1559U}) {
+        for (unsigned mutation = 0; mutation < 10; ++mutation) {
+            AvdDmemSampleFixture f(true); f.mutate_at = at; f.mutation = mutation; AvdDmemSampleObserver o(true);
+            check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && o.failed && !o.Finish(true, false) && !active_dmem_sample,
+                "DMEM midpoint boundary mode/order/counter/publication/router/reentrant tampering stops");
+        }
+        for (bool replace : {false, true}) {
+            AvdDmemSampleFixture f(true), other(true); f.lose_at = at; f.replacement = replace ? &other : nullptr;
+            AvdDmemSampleObserver o(true);
+            check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && !other.calls &&
+                o.failure == AvdDmemSampleFailure::Owner && !o.Finish(true, false),
+                "DMEM midpoint boundary owner loss/replacement cannot follow a new owner's values");
+        }
+        for (int status = -1; status <= BC_STS_PWR_MGMT; ++status) if (status != BC_STS_SUCCESS) {
+            AvdDmemSampleFixture f(true); f.fail_at = at; f.status = static_cast<BC_STATUS>(status);
+            AvdDmemSampleObserver o(true);
+            check(!f.Exercise(&o) && f.valid && f.calls == at + 1 && o.api_status == status &&
+                o.failure == AvdDmemSampleFailure::Api && !o.Finish(true, false),
+                "DMEM midpoint selected boundaries reject every non-success status");
+        }
+    }
+    AvdDmemSampleFixture stable(true); AvdDmemSampleObserver complete(true);
+    check(stable.Exercise(&complete), "DMEM midpoint saved-only reporting setup");
+    FILE *log = std::tmpfile(); const int saved = log ? dup(STDOUT_FILENO) : -1;
+    const bool redirected = saved >= 0 && dup2(fileno(log), STDOUT_FILENO) >= 0;
+    if (redirected) { complete.Report(2); complete.Finish(true); }
+    std::fflush(stdout);
+    if (saved >= 0) { (void)dup2(saved, STDOUT_FILENO); close(saved); }
+    char text[16000] = {}; size_t length = 0;
+    if (log) { std::rewind(log); length = std::fread(text, 1, sizeof(text)-1, log); std::fclose(log); }
+    check(redirected && length && stable.calls == 1560 && std::strstr(text, "00848800=") &&
+        std::strstr(text, "0085f83c=") && !std::strstr(text, "00848000=") &&
+        std::strstr(text, "fixed-page-midpoint-offset=00000800 LOCAL-translation=unqualified") &&
+        std::strstr(text, "observation-result=PASS stages=3/3 reads=1560/1560 bytes=6240/6240"),
+        "DMEM midpoint detached report preserves immutable profile and never reads device state");
+    const std::vector<const char *> valid = {"probe", "--hardware", "fixture", "180", "30", "1", "--scaler-test", "0",
+        "--observe-avd-dmem-midpoints", "--capture-yuy2", "new"};
+    Options admitted;
+    check(ParseArguments(valid, &admitted) && admitted.observe_avd_dmem_midpoints && admitted.observe_avd_dmem_samples &&
+        !AvdDmemSampleConflicts(admitted) && NeedsRawIo(admitted), "DMEM midpoint exclusive constructor-selected alias requires CAP");
+    const std::vector<std::vector<const char *>> forbidden = {{"--observe-avd-dmem-midpoints"}, {"--observe-avd-dmem-samples"},
+        {"--observe-avd-platform-code"}, {"--observe-avd-cache-count"}, {"--observe-avd-code-prefix"},
+        {"--observe-avd-code-arena"}, {"--observe-avd-cpu-map"}, {"--observe-avd-memory"}, {"--observe-video-staging"},
+        {"--observe-video-prefix"}, {"--observe-video-graph"}, {"--observe-ppb-context"}, {"--observe-ppb-stop"},
+        {"--observe-ppb-metadata"}, {"--observe-ppb-return"}, {"--observe-arm-metadata"}, {"--observe-arm-source-shape"},
+        {"--observe-runtime-inventory"}, {"--observe-mfd-config"}, {"--observe-mfd-address"}, {"--observe-mfd-framing"},
+        {"--observe-chroma"}, {"--observe-scl-config"}, {"--observe-scl-filter-map"}, {"--observe-scl-view", "2"},
+        {"--scl-status-test", "observe"}, {"--inject-mfd-colour", "a"}, {"--open-only"}, {"--mpeg1-via-mpeg2"},
+        {"--h263-via-divx"}, {"--scaler-test", "0"}, {"--capture-yuy2", "other"}};
+    for (const auto &extra : forbidden) for (unsigned order = 0; order < 2; ++order) {
+        auto args = valid; args.insert(order ? args.end()-2 : args.begin()+8, extra.begin(), extra.end()); Options o;
+        check(!ParseArguments(args, &o), "DMEM midpoint mixed or duplicate alias/observers reject in both parser orders");
+    }
+    for (unsigned fault = 0; fault < 10; ++fault) {
+        auto args = valid;
+        if (fault == 0) args[1] = "--preflight";
+        if (fault == 1) args[1] = "--self-test";
+        if (fault == 2) args[3] = "179";
+        if (fault == 3) args[5] = "2";
+        if (fault == 4) args[7] = "128";
+        if (fault == 5) args[8] = "--observe-avd-dmem-midpoints=0";
+        if (fault == 6) args[9] = "--capture-uyvy";
+        if (fault == 7) args[10] = "-";
+        if (fault == 8) args[10] = "";
+        if (fault == 9) args.resize(9);
+        Options o; check(!ParseArguments(args, &o), "DMEM midpoint hardware/unscaled/180/one/fresh-capture grammar");
+    }
+    Input in; in.codec = AV_CODEC_ID_H264; in.subtype = BC_MSUBTYPE_H264; in.progressive = true;
+    in.width = 256; in.height = 96; in.packets.resize(180);
+    check(!AvdDmemSampleInputAdmitted(admitted, in) && AvdDmemSampleInputAdmitted(Options{}, in),
+        "DMEM midpoint shape alone cannot bypass fixed submitted-byte digest; default path unaffected");
 }
 
 struct AvdCodeArenaFixture {
@@ -7575,6 +7695,7 @@ static bool SelfTest()
     AvdCpuMapSelfTest(check);
     AvdCacheCountSelfTest(check);
     AvdDmemSampleSelfTest(check);
+    AvdDmemMidpointSelfTest(check);
     AvdCodeArenaSelfTest(check);
     AvdCodePrefixSelfTest(check);
     AvdPlatformCodeSelfTest(check);
@@ -9408,7 +9529,8 @@ struct OutputLease {
 };
 
 struct Audit {
-    explicit Audit(bool platform_code = false) : avd_code_prefix(platform_code) {}
+    explicit Audit(bool platform_code = false, bool dmem_midpoints = false) :
+        avd_dmem_samples(dmem_midpoints), avd_code_prefix(platform_code) {}
     unsigned frames = 0;
     bool marker = false, eos = false, packing_format_observed = false;
     uint32_t ready = 0;
@@ -9609,7 +9731,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
 {
     Deadline deadline(seconds);
     Device device;
-    Audit audit(options.observe_avd_platform_code);
+    Audit audit(options.observe_avd_platform_code, options.observe_avd_dmem_midpoints);
     audit.iteration = iteration;
     audit.progress = progress;
     audit.output_width = input.width;
@@ -9827,13 +9949,15 @@ int main(int argc, char **argv)
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
             "[--scaler-test WIDTH_OR_0] [--mpeg1-via-mpeg2 | --h263-via-divx] "
-            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --observe-ppb-metadata | --observe-ppb-return | --observe-video-prefix | --observe-video-graph | --observe-video-staging | --observe-avd-memory | --observe-avd-cpu-map | --observe-avd-code-arena | --observe-avd-code-prefix | --observe-avd-platform-code | --observe-avd-cache-count | --observe-avd-dmem-samples | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
+            "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --observe-ppb-metadata | --observe-ppb-return | --observe-video-prefix | --observe-video-graph | --observe-video-staging | --observe-avd-memory | --observe-avd-cpu-map | --observe-avd-code-arena | --observe-avd-code-prefix | --observe-avd-platform-code | --observe-avd-cache-count | --observe-avd-dmem-samples | --observe-avd-dmem-midpoints | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
     if (NeedsRawIo(options) && !CanReadChromaConfiguration()) {
-        if (options.observe_avd_dmem_samples)
+        if (options.observe_avd_dmem_midpoints)
+            std::fprintf(stderr, "--observe-avd-dmem-midpoints requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
+        else if (options.observe_avd_dmem_samples)
             std::fprintf(stderr, "--observe-avd-dmem-samples requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
         else if (options.observe_avd_cache_count)
             std::fprintf(stderr, "--observe-avd-cache-count requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
