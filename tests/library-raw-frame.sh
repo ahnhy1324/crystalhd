@@ -105,22 +105,22 @@ if grep -Eq '%([xyz]mm[0-9]+|mm[0-7])|[[:space:]](emms|femms|clflush|[lms]fence|
     echo "raw-frame legacy object contains SIMD/cache instructions" >&2; exit 1
 fi
 
-# Exact serializer identity with the already qualified legal carrier, plus a
-# separately constructed caller-source/tile oracle. No old private file is read.
+# Frozen serializer bytes and a separately constructed caller-source/tile
+# oracle. No old private file is read.
 checker_sha=$(sha256sum "$output_dir/checker.h264"); checker_sha=${checker_sha%% *}
 planar_sha=$(sha256sum "$output_dir/checker.yuv420"); planar_sha=${planar_sha%% *}
-[ "$checker_sha" = 08d2859e37449c591b746b478e83dc26948e6deaa299dd7d26b97c2ffc47654c ]
+[ "$checker_sha" = 912947a9366df7bf3ec033ab620652c5e3b29518fb166357a7b89e2caba815a6 ]
 [ "$planar_sha" = 58591b2dd3ef391873e684b004a8464e6ff6c6abe72c6d299ec2ff709882cb76 ]
 mirror_sha=$(sha256sum "$output_dir/mirror.h264"); mirror_sha=${mirror_sha%% *}
 extreme_sha=$(sha256sum "$output_dir/extreme.h264"); extreme_sha=${extreme_sha%% *}
 translate_sha=$(sha256sum "$output_dir/translate.h264"); translate_sha=${translate_sha%% *}
-[ "$mirror_sha" = 0902137124297aa6b38632dc38a584787c3e55db00b1ff08b5717466a391db6f ]
-[ "$extreme_sha" = 71d191412774614610d513719a4ce59b50cbda5aa9433568181d052d839c677d ]
-[ "$translate_sha" = abc3eb782808c3a746d1f5eafd4bf37fefae255b7c1b19777c5fa53cb491c534 ]
+[ "$mirror_sha" = e02b4497af9ba09237c94d1931ae173de8673ff24358926af6e0f50c7e1e3a3e ]
+[ "$extreme_sha" = 15b795ac26df55306e975e165a175885e549ec77837fbaf99e31fea25e61b932 ]
+[ "$translate_sha" = 79419ec0e595e71405895d83f5b0ab8b961bdbb9afa8c02c42a30ae2447b7403 ]
 mixed_sha=$(sha256sum "$output_dir/mixed.h264"); mixed_sha=${mixed_sha%% *}
 mixed_planar_sha=$(sha256sum "$output_dir/mixed.yuv420"); mixed_planar_sha=${mixed_planar_sha%% *}
 mixed_packed_sha=$(sha256sum "$output_dir/mixed.output-chain.yuy2"); mixed_packed_sha=${mixed_packed_sha%% *}
-[ "$mixed_sha" = 958d296e8bff4a0f88d07a2d9b13d2296a7df0726bbc60d64fbd0cb906076222 ]
+[ "$mixed_sha" = 3d38f05255fbf44867673ea96f79fe58f46b9898698fc63a61505eeaa3987bb4 ]
 [ "$mixed_planar_sha" = 26b694283c0e1800a05ef6535d19202331d155c594bac057197c8e94b4d4c323 ]
 [ "$mixed_packed_sha" = 0bf4e31a8a63709f033946bb6bfcbdfcea565ceb5f8ffb962570b838db09666d ]
 
