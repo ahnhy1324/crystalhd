@@ -6074,7 +6074,9 @@ def _ppb_bank_contract(payload):
                               "metadata_extra_saved_context_byte_offset": 0x82,
                               "metadata_extra_open_request_byte_offset": 52}},
         "bank_layout": {"arc_local_base": 0x3fffd170, "bank_count_address": 0x3fffd23c,
-                        "bank_bytes_address": 0x3fffd238, "entry_bytes": 16,
+                        "bank_count_bytes": 1, "bank_count_load_elf_virtual_address": 0xae64,
+                        "bank_bytes_address": 0x3fffd238, "bank_bytes_bytes": 4,
+                        "bank_bytes_load_elf_virtual_address": 0xaf78, "entry_bytes": 16,
                         "entry_offsets_from_local_base": {"base": 56, "mask": 60, "stride": 64, "geometry": 68},
                         "encoding_bank_bits": 4, "encoding_subslot_bits": 5,
                         "geometry_fields": {"width": [0, 11], "height": [11, 11], "capacity": [22, 6]},
@@ -6161,6 +6163,49 @@ def _ppb_bank_contract(payload):
                              "completion_or_cache_coherence": False, "generation_safe_reuse": False,
                              "minimum_inner_ABI": False, "standalone_raw_feed": False,
                              "silicon_incapability": False}}
+
+
+def _ppb_bank_decode_ledger(payload, words):
+    """Decode only the captured flag/bank projection; never acquire a surface.
+
+    Input is 17 flag DWORDs, nine four-DWORD rows, bank bytes and the DWORD
+    containing the byte-sized bank count, in original little-endian order.
+    The caller supplies capture coherence/identity evidence separately. No
+    missing context, queue, completion or generation fields are synthesized.
+    """
+    contract = _ppb_bank_contract(payload)
+    if not isinstance(words, (tuple, list)) or len(words) != 55:
+        raise FormatError("PPB ledger requires exactly 55 captured DWORDs")
+    raw = [_ppb_bank_u32(word, "ledger word") for word in words]
+    count_word = raw[54]
+    bank_count = count_word & 255
+    if bank_count > contract["context_initialization"]["open_bank_count_maximum"]:
+        raise FormatError("PPB ledger bank count exceeds the selected stock OPEN domain")
+    flags = [part for word in raw[:17] for part in (word & 65535, word >> 16)]
+    banks = [dict(zip(("base", "mask", "stride", "geometry"), raw[17 + 4 * i:21 + 4 * i]))
+             for i in range(9)]
+    entries = []
+    for index, flag in enumerate(flags):
+        bank, slot = flag & 15, (flag >> 4) & 31
+        candidate = bool(flag & contract["operations"]["video_address"]["any_flag_mask"])
+        bitmap_present = bool(banks[bank]["mask"] & (1 << slot)) if bank < 9 else None
+        address, wrapped = (0, False) if not candidate else (None, None)
+        if candidate and bank < 9:
+            # The native getter does not check the declared bank count. Keep
+            # that fact separate instead of inventing a firmware bounds guard.
+            full = banks[bank]["base"] + banks[bank]["stride"] * slot
+            address = full & 0xffffffff if bitmap_present else 0
+            wrapped = full > 0xffffffff if bitmap_present else False
+        entries.append({"index": index, "flag": flag, "bank": bank, "subslot": slot,
+                        "bank_declared": bank < bank_count, "bitmap_present": bitmap_present,
+                        "video_candidate": candidate, "video_address_u32": address,
+                        "address_wrapped": wrapped})
+    return {"flags": flags, "banks": banks, "entries": entries,
+            "bank_bytes": raw[53], "bank_count": bank_count,
+            "bank_count_word": count_word, "bank_count_upper24_opaque": count_word >> 8,
+            "validation_scope": {"pinned_selected_layout": True, "captured_fields_only": True,
+                                 "runtime_context_identity": False, "coherent_capture": False,
+                                 "physical_source_lease": False, "generation_safe_reuse": False}}
 
 
 def _ppb_bank_step(contract, state, operation, **args):
@@ -7428,7 +7473,7 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
             references=False, all_symbols=False, bootstrap=False, picture_output=False,
             arc_metadata=False, csc_command=False, command_buffer_bridge=False, inner_descriptor=False,
             scaler_fir=False, ppb_handoff=False, ppb_source=False, ppb_saved_context=False, ppb_stop_context=False,
-            ppb_fixed_metadata=False, ppb_return_header=False):
+            ppb_fixed_metadata=False, ppb_return_header=False, ppb_bank_ledger=None):
     if len(data) < 24 or len(data) > MAX_FIRMWARE_SIZE or len(data) % 4:
         raise FormatError("invalid BCM70015 firmware size")
     sha256 = hashlib.sha256(data).hexdigest()
@@ -7460,6 +7505,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         raise FormatError("--ppb-fixed-metadata requires the exact bundled firmware SHA-256 and size")
     if ppb_return_header and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
         raise FormatError("--ppb-return-header requires the exact bundled firmware SHA-256 and size")
+    if ppb_bank_ledger is not None and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
+        raise FormatError("--ppb-bank-ledger requires the exact bundled firmware SHA-256 and size")
     payload = data[:-TRAILER_SIZE]
     length_slot = struct.unpack_from("<I", data, len(payload))[0]
     if length_slot != 16:
@@ -7554,6 +7601,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         result["ppb_fixed_metadata_bridge"] = _ppb_fixed_metadata_bridge(payload)
     if ppb_return_header:
         result["ppb_return_header_bridge"] = _ppb_return_header_bridge(payload)
+    if ppb_bank_ledger is not None:
+        result["ppb_bank_ledger"] = _ppb_bank_decode_ledger(payload, ppb_bank_ledger)
     return result
 
 
@@ -7599,6 +7648,9 @@ def main(argv=None):
         "validate fixed per-picture metadata publications and ring headers; not source ownership or a lease"))
     parser.add_argument("--ppb-return-header", action="store_true", help=(
         "validate bounded handle-route and sequential return-header observations; not routing or completion proof"))
+    parser.add_argument("--ppb-bank-ledger", nargs=55, metavar="DWORD",
+                        type=lambda word: _ppb_bank_u32(int(word, 0), "ledger word"), help=(
+        "decode 55 previously captured flag/bank DWORDs; hexadecimal or decimal, offline only, not a lease"))
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-fA-F]{64}", args.expect_sha256):
         parser.error("--expect-sha256 must be 64 hexadecimal digits")
@@ -7607,7 +7659,8 @@ def main(argv=None):
                          args.expect_sha256.lower(), args.references, args.all_symbols, args.bootstrap,
                          args.picture_output, args.arc_metadata, args.csc_command, args.command_buffer_bridge,
                          args.inner_descriptor, args.scaler_fir, args.ppb_handoff, args.ppb_source,
-                         args.ppb_saved_context, args.ppb_stop_context, args.ppb_fixed_metadata, args.ppb_return_header)
+                         args.ppb_saved_context, args.ppb_stop_context, args.ppb_fixed_metadata, args.ppb_return_header,
+                         args.ppb_bank_ledger)
     except (OSError, FormatError) as error:
         print(f"flea_fw_map: {error}", file=sys.stderr)
         return 1

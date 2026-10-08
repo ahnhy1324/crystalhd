@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "firmware_sha256": "8bf3a68f5c64686358a52274e40911a88c7f8c67ecbf6cf1557a49b4d7bc67c9",
+  "input_sha256": "1363a87c8f59fab6187cd13653a3ba8a41fd994066d30c24be1c2b09d675666e",
+  "capture_sha256": "1ba4af890ad878a5472777c873f1f86f070264ebfc33994ba719b22ea5df9068",
+  "whole_stdout_sha256": "966dd706b13ab5196d6653cc2117569495b66c24155f8bd4fd78037c2b938240",
+  "transport": {
+    "same_handle": true,
+    "trace_records": 3464,
+    "reads": 3456,
+    "writes": 8,
+    "all_api_status_zero": true,
+    "all_device_api_called": true,
+    "memory_writes": 0,
+    "pointer_following": false,
+    "single_step": false,
+    "route_pulse": false
+  },
+  "stages": [
+    {
+      "stage": "first-delivered-output-before-flush",
+      "delivered_frames": 1,
+      "accepted_packets": 60,
+      "pending_tokens": 59,
+      "ready_sample": 1,
+      "host_output_released": true,
+      "owned_copy_written": true,
+      "flush_attempted": false,
+      "prior_eos_sample": false,
+      "status": {
+        "initial": "a4005399", "initial_debug": "80000000",
+        "held": "06003587", "held_debug": "00000000",
+        "resume_request": "04003587", "resumed": "84001fa0"
+      },
+      "canary_words": 32,
+      "canary_value": "12345678",
+      "payload_348_sha256": "c1996f8cd965da1cc57012c8647ce9e90273177a78ae684d307efcb067a84c4c",
+      "ledger_words": [
+        "c810c800", "f830b820", "f850f840", "f870f860", "f890f880",
+        "f8b0f8a0", "f8d0f8c0", "e8f0f8e0", "e910e900", "0000e920",
+        "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000",
+        "00a34000", "0007ffff", "0000c000", "08030100",
+        "0104c000", "00000000", "00000000", "00000000",
+        "01664000", "00000000", "00000000", "00000000",
+        "01c7c000", "00000000", "00000000", "00000000",
+        "02294000", "00000000", "00000000", "00000000",
+        "028ac000", "00000000", "00000000", "00000000",
+        "00000000", "00000000", "00000000", "00000000",
+        "00000000", "00000000", "00000000", "00000000",
+        "00000000", "00000000", "00000000", "00000000",
+        "00618000", "00000a06"
+      ]
+    },
+    {
+      "stage": "delivery-eos-before-stop",
+      "delivered_frames": 180,
+      "accepted_packets": 180,
+      "pending_tokens": 0,
+      "ready_sample": 0,
+      "firmware_eos": true,
+      "status": {
+        "initial": "84001392", "initial_debug": "80000000",
+        "held": "8600138e", "held_debug": "00000000",
+        "resume_request": "8400138e", "resumed": "640015e2"
+      },
+      "canary_words": 32,
+      "canary_value": "12345678",
+      "payload_348_sha256": "72d54c7f46cf912e1203e89e3ac54b7c93aae1aa5f3072078b4d9ec8dddbe0b0",
+      "ledger_words": [
+        "00000000", "00000000", "00000000", "00000000", "00000000",
+        "00000000", "00000000", "00000000", "00000000", "00000000",
+        "00000000", "00000000", "00000000", "00000000", "00000000", "00000000", "00000000",
+        "00a34000", "00000000", "00000000", "00000000",
+        "0104c000", "00000000", "00000000", "00000000",
+        "01664000", "00000000", "00000000", "00000000",
+        "01c7c000", "00000000", "00000000", "00000000",
+        "02294000", "00000000", "00000000", "00000000",
+        "028ac000", "00000000", "00000000", "00000000",
+        "00000000", "00000000", "00000000", "00000000",
+        "00000000", "00000000", "00000000", "00000000",
+        "00000000", "00000000", "00000000", "00000000",
+        "00618000", "00000a06"
+      ]
+    }
+  ],
+  "native_controls": {
+    "sessions": 4,
+    "frames": 720,
+    "whole_bytes_equal": 35389440,
+    "metadata_records": 720,
+    "packing_samples": 32,
+    "eos_and_cleanup_pass": true,
+    "new_kernel_rows": 12,
+    "kernel_rows_normal": true
+  },
+  "scope": {
+    "finite_live_to_eos_contrast": true,
+    "full_local_memory_map": false,
+    "physical_source_lease": false,
+    "generation_safe_reuse": false,
+    "standalone_raw_feed": false
+  }
+}
