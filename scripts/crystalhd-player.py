@@ -254,6 +254,10 @@ class Player:
             self.stop(self.health.finish())
         elif message.type == Gst.MessageType.ASYNC_DONE:
             self.seek_completed()
+        elif message.type == Gst.MessageType.STATE_CHANGED and message.src == self.pipeline:
+            # ASYNC_DONE can precede the final PAUSED -> PLAYING transition.
+            # Recheck readiness there so queued controls cannot remain stuck.
+            self.seek_completed()
         elif message.type == Gst.MessageType.CLOCK_LOST and not self.health.paused:
             self.pipeline.set_state(Gst.State.PAUSED)
             self.pipeline.set_state(Gst.State.PLAYING)

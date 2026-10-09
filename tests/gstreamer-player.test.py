@@ -134,7 +134,9 @@ class PolicyAndControlTests(unittest.TestCase):
             SeekFlags=SimpleNamespace(FLUSH=1, ACCURATE=2),
             SeekType=SimpleNamespace(SET=1, NONE=0),
             State=SimpleNamespace(PAUSED=1, PLAYING=2),
-            StateChangeReturn=SimpleNamespace(FAILURE=0, SUCCESS=1, ASYNC=2))
+            StateChangeReturn=SimpleNamespace(FAILURE=0, SUCCESS=1, ASYNC=2),
+            MessageType=SimpleNamespace(APPLICATION=1, ERROR=2, EOS=3,
+                ASYNC_DONE=4, CLOCK_LOST=5, LATENCY=6, STATE_CHANGED=7))
         control.pipeline = mock.Mock()
         control.pipeline.query_position.return_value = (True, 12000)
         control.pipeline.query_duration.return_value = (True, 60000)
@@ -146,6 +148,7 @@ class PolicyAndControlTests(unittest.TestCase):
         control.queued_seek = None
         control.health = player.PlaybackHealth("software", 0)
         control.stop = mock.Mock()
+        control.done = False
         return control
 
     def test_seek_and_rate_use_explicit_flushing_time_seek(self):
@@ -227,6 +230,22 @@ class PolicyAndControlTests(unittest.TestCase):
         self.assertEqual(control.pipeline.seek.call_count, 1)
         self.assertIn("preroll", control.health.error)
         control.stop.assert_called_with(1)
+
+    def test_final_pipeline_state_completes_deferred_seek(self):
+        control = self.controller()
+        with contextlib.redirect_stdout(io.StringIO()):
+            control.control("forward")
+            control.control("rate-half")
+            control.pipeline.get_state.return_value = (2, 1, 2)
+            control.message(None, SimpleNamespace(type=4, src=control.pipeline))
+            self.assertEqual(control.pipeline.seek.call_count, 1)
+            control.pipeline.get_state.return_value = (1, 2, 0)
+            control.message(None, SimpleNamespace(type=7, src=object()))
+            self.assertEqual(control.pipeline.seek.call_count, 1)
+            control.message(None, SimpleNamespace(type=7, src=control.pipeline))
+            self.assertEqual(control.pipeline.seek.call_count, 2)
+            self.assertEqual(control.rate, 0.5)
+            self.assertIsNone(control.queued_seek)
 
     def test_pause_resume_and_zero_output_quit(self):
         control = self.controller()
