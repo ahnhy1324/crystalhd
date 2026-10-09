@@ -1503,6 +1503,62 @@ static void CompletedWaitNeverAcceptsDifferentOrDestroyedPicture() {
           "retirement cannot revive a destroyed surface");
 }
 
+static void ZeroTimeoutNeverPumpsBusyDecodeSurface() {
+  TeardownFixture fixture(1);
+  Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+                  VA_STATUS_SUCCESS &&
+              fixture.io.inputs.size() == 1,
+          "submit the zero-timeout picture before synchronization");
+  fixture.io.outputs.push_back(kTimestampStep);
+  const size_t events = fixture.io.events.size();
+  const uint64_t progress = fixture.decoder->transport_progress;
+  const auto pixels = fixture.held[0]->storage;
+  VASurfaceStatus surface_status = VASurfaceReady;
+  Require(QuerySurfaceStatus(&fixture.context, 1, &surface_status) ==
+                  VA_STATUS_SUCCESS &&
+              surface_status == VASurfaceRendering,
+          "pending decode reports Rendering before zero-timeout sync");
+
+  Require(SyncSurface2(&fixture.context, 1, 0) == VA_STATUS_ERROR_TIMEDOUT &&
+              fixture.io.events.size() == events &&
+              fixture.io.outputs.size() == 1 &&
+              fixture.decoder->transport_progress == progress &&
+              !fixture.held[0]->ready && !fixture.held[0]->failed &&
+              fixture.held[0]->storage == pixels,
+          "zero timeout returns immediately without polling, copying or pumping input");
+
+  Require(SyncSurface(&fixture.context, 1) == VA_STATUS_SUCCESS &&
+              fixture.io.outputs.empty() && fixture.held[0]->ready &&
+              !fixture.io.invalid,
+          "a later ordinary sync completes the untouched exact picture");
+}
+
+static void ExactReadySurfaceDoesNotWaitForBatchEos() {
+  TeardownFixture fixture(2);
+  Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+                  VA_STATUS_SUCCESS &&
+              fixture.io.inputs.size() == 2 && fixture.decoder->replay.Seal(),
+          "submit and seal two exact pictures for per-surface synchronization");
+  fixture.io.outputs.push_back(kTimestampStep);
+
+  constexpr uint64_t timeout_ns = 5ULL * 1000 * 1000;
+  Require(SyncSurface2(&fixture.context, 1, timeout_ns) == VA_STATUS_SUCCESS &&
+              fixture.held[0]->ready && !fixture.held[0]->failed &&
+              fixture.held[0]->frame_timestamp == kTimestampStep &&
+              !fixture.held[1]->ready && fixture.decoder->ReplaySealed() &&
+              fixture.decoder->replay.outstanding() == 1 &&
+              fixture.io.outputs.empty(),
+          "an exact ready target succeeds without waiting for another surface or EOS");
+
+  fixture.io.outputs.push_back(2 * kTimestampStep);
+  fixture.io.outputs.push_back(0);
+  Require(SyncSurface(&fixture.context, 2) == VA_STATUS_SUCCESS &&
+              fixture.held[1]->ready && !fixture.decoder->ReplaySealed() &&
+              fixture.decoder->replay.outstanding() == 0 &&
+              fixture.io.outputs.empty() && !fixture.io.invalid,
+          "later synchronization still drains the remaining picture and EOS");
+}
+
 int main() {
   try {
     SealedBatchQueuesAndReplays();
@@ -1536,6 +1592,8 @@ int main() {
     WaitingVppCancellationStillWins();
     ContextDrainFailureDoesNotInventTail();
     CompletedWaitNeverAcceptsDifferentOrDestroyedPicture();
+    ZeroTimeoutNeverPumpsBusyDecodeSurface();
+    ExactReadySurfaceDoesNotWaitForBatchEos();
     std::puts("VA-API sealed-batch replay, immutable-output and teardown tests passed");
     return 0;
   } catch (const std::exception &error) {
