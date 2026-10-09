@@ -2651,7 +2651,6 @@ static VAStatus SyncDecodeSurface(
   const VAStatus initial_state = DecodeSurfaceState(surface.get());
   if (initial_state != VA_STATUS_ERROR_HW_BUSY)
     return initial_state;
-
   std::shared_ptr<DecodeContext> decode;
   for (auto &entry : driver->contexts) {
     if (!entry.second->decoder_started)
@@ -2677,6 +2676,11 @@ static VAStatus SyncDecodeSurface(
   }
   if (!decode)
     return VA_STATUS_ERROR_INVALID_CONTEXT;
+  // A zero-timeout query must not turn into output polling, frame conversion
+  // or input submission. The caller asked only whether this exact surface is
+  // already complete in the surface state published so far.
+  if (timeout_ns == 0)
+    return VA_STATUS_ERROR_TIMEDOUT;
   const uint64_t generation = decode->generation;
   const uint64_t expected_timestamp = surface->expected_timestamp;
 
@@ -2686,7 +2690,7 @@ static VAStatus SyncDecodeSurface(
   const auto start = std::chrono::steady_clock::now();
   auto last_progress = start;
   uint64_t progress = decode->transport_progress;
-  while ((!surface->ready || decode->ReplaySealed()) && !surface->failed) {
+  while (!surface->ready && !surface->failed) {
     const VAStatus state = DecodeWaitState(*decode, surface.get(), generation,
                                            expected_timestamp, canceled);
     if (state != VA_STATUS_ERROR_HW_BUSY &&
@@ -2696,14 +2700,13 @@ static VAStatus SyncDecodeSurface(
     if (driver->stopping)
       return VA_STATUS_ERROR_OPERATION_FAILED;
     VAStatus status = ReceiveAvailable(driver, decode.get());
-    if (status == VA_STATUS_SUCCESS && surface->ready &&
-        !decode->ReplaySealed())
+    if (status == VA_STATUS_SUCCESS && surface->ready)
       break;
     if (status == VA_STATUS_SUCCESS)
       status = PumpDecodeInput(driver, decode.get());
     if (status != VA_STATUS_SUCCESS)
       return status;
-    if ((surface->ready && !decode->ReplaySealed()) || surface->failed)
+    if (surface->ready || surface->failed)
       break;
     const auto now = std::chrono::steady_clock::now();
     if (decode->transport_progress != progress) {
