@@ -41,8 +41,17 @@ struct _BC_DTS_PROC_OUT;
 #define CRYPTO_SHARF_STATUS_ADDRESS 0x000f4004U
 #define CRYPTO_BOP_GR_BRIDGE_REVISION_ADDRESS 0x00511000U
 #define CRYPTO_BOP_AES_STATUS_ADDRESS 0x0051000cU
+#define CRYPTO_GISB_ERROR_CAPTURE_ADDRESS 0x004000ccU
 #define CRYPTO_GISB_ERROR_STATUS_ADDRESS 0x004000d4U
+#define CRYPTO_GISB_ERROR_CAPTURE_MASTER 0x004000d8U
 #define CRYPTO_GISB_ERROR_MASK 0x00001801U
+
+static const uint32_t crypto_target_addresses[] = {
+	CRYPTO_SHARF_REVISION_ADDRESS,
+	CRYPTO_SHARF_STATUS_ADDRESS,
+	CRYPTO_BOP_GR_BRIDGE_REVISION_ADDRESS,
+	CRYPTO_BOP_AES_STATUS_ADDRESS,
+};
 
 enum action {
 	ACTION_NONE, ACTION_INFO, ACTION_VERSION, ACTION_H264,
@@ -126,9 +135,11 @@ static void usage(FILE *stream)
 	      "UART-state reads three fixed configuration registers after verified\n"
 	      "INIT and OPEN, without status/FIFO reads or UART writes. Raw values\n"
 	      "do not prove board pads, voltage, measured baud or console availability.\n"
-	      "Crypto-state reads four fixed raw state registers after verified INIT\n"
-	      "and OPEN, bracketed by GISB error-status reads. It never reads keys,\n"
-	      "contexts, IVs or nonces and does not establish algorithm support.\n"
+	      "Crypto-state interleaves four fixed raw state-register reads after\n"
+	      "verified INIT and OPEN with five GISB error-status reads. On the\n"
+	      "first checked error it may also read raw capture address and master;\n"
+	      "it never clears the capture or reads keys, contexts, IVs or nonces.\n"
+	      "These observations do not establish cause or algorithm support.\n"
 	      "Use --info first;\n"
 	      "it reports metadata only, including the bound device generation.\n"
 	      "The separate research device requires CAP_SYS_RAWIO and an opt-in\n"
@@ -668,19 +679,45 @@ static bool crypto_result_valid(
 		return false;
 	for (i = 0; i < sizeof(samples) / sizeof(samples[0]); i++) {
 		const struct crystalhd_fw_research_crypto_sample *sample = samples[i];
-		bool active = sample->attempted || sample->status || sample->read_complete;
+		bool active = sample->attempted || sample->status || sample->read_complete ||
+			sample->target_reads_attempted || sample->guard_reads_complete ||
+			sample->gisb_before || sample->gisb_last ||
+			sample->error_capture_complete || sample->error_capture_address ||
+			sample->error_capture_master;
+		bool guard_error = sample->guard_reads_complete &&
+			(sample->gisb_last & CRYPTO_GISB_ERROR_MASK);
 
-		if (sample->attempted > 1 || sample->read_complete > 1 || sample->reserved ||
+		if (sample->attempted > 1 || sample->read_complete > 1 ||
+		    sample->error_capture_complete > 1 ||
 		    sample->status > 0 || sample->status < -4095 ||
+		    sample->target_reads_attempted > 4 || sample->guard_reads_complete > 5 ||
+		    !!sample->attempted != !!sample->target_reads_attempted ||
+		    sample->guard_reads_complete < sample->target_reads_attempted ||
+		    sample->guard_reads_complete > sample->target_reads_attempted + 1 ||
+		    (!sample->guard_reads_complete && (sample->gisb_before || sample->gisb_last)) ||
+		    (sample->guard_reads_complete == 1 &&
+		     sample->gisb_before != sample->gisb_last) ||
+		    (sample->guard_reads_complete > 1 &&
+		     (sample->gisb_before & CRYPTO_GISB_ERROR_MASK)) ||
+		    (guard_error &&
+		     (sample->guard_reads_complete != sample->target_reads_attempted + 1 ||
+		      sample->status != -EIO)) ||
+		    (sample->error_capture_complete && !guard_error) ||
+		    (!sample->error_capture_complete &&
+		     (sample->error_capture_address || sample->error_capture_master)) ||
 		    active != state_sample_succeeded(prerequisites[i]))
 			return false;
 		if (sample->read_complete) {
 			/* Every raw state bit pattern is admissible. */
-			if (!sample->attempted || sample->status)
+			if (!sample->attempted || sample->status ||
+			    sample->target_reads_attempted != 4 ||
+			    sample->guard_reads_complete != 5 || guard_error)
 				return false;
 		} else if (sample->sharf_revision || sample->sharf_status ||
 			   sample->bop_gr_bridge_revision || sample->bop_aes_status ||
-			   (sample->attempted && !sample->status)) {
+			   (sample->target_reads_attempted == 4 &&
+			    sample->guard_reads_complete == 5 && !guard_error) ||
+			   (active && !sample->status)) {
 			return false;
 		}
 		if (active && (!state_sample_succeeded(&state->calibration) ||
@@ -1160,10 +1197,37 @@ static void print_uart_result(const struct crystalhd_fw_research_uart_result *re
 static void print_crypto_sample(
 	const struct crystalhd_fw_research_crypto_sample *sample)
 {
+	bool after_target = sample->guard_reads_complete > 1 &&
+		(sample->gisb_last & CRYPTO_GISB_ERROR_MASK);
+	uint32_t target_index = after_target ? sample->guard_reads_complete - 2 : 0;
+
 	printf("{\"attempted\":%s,\"status\":%" PRId32 ",\"read_complete\":%s,"
-	       "\"sharf_revision\":",
+	       "\"target_reads_attempted\":%" PRIu32
+	       ",\"guard_reads_complete\":%" PRIu32 ",\"gisb_before\":",
 	       sample->attempted ? "true" : "false", (int32_t)sample->status,
-	       sample->read_complete ? "true" : "false");
+	       sample->read_complete ? "true" : "false",
+	       (uint32_t)sample->target_reads_attempted,
+	       (uint32_t)sample->guard_reads_complete);
+	if (sample->guard_reads_complete)
+		printf("%" PRIu32 ",\"gisb_last\":%" PRIu32,
+		       (uint32_t)sample->gisb_before, (uint32_t)sample->gisb_last);
+	else
+		fputs("null,\"gisb_last\":null", stdout);
+	printf(",\"error_capture_complete\":%s,\"error_capture_address\":",
+	       sample->error_capture_complete ? "true" : "false");
+	if (sample->error_capture_complete)
+		printf("%" PRIu32 ",\"error_capture_master\":%" PRIu32,
+		       (uint32_t)sample->error_capture_address,
+		       (uint32_t)sample->error_capture_master);
+	else
+		fputs("null,\"error_capture_master\":null", stdout);
+	fputs(",\"guard_failure_observed_after_target_index\":", stdout);
+	if (after_target)
+		printf("%" PRIu32 ",\"guard_failure_observed_after_target_address\":%" PRIu32,
+		       target_index, crypto_target_addresses[target_index]);
+	else
+		fputs("null,\"guard_failure_observed_after_target_address\":null", stdout);
+	fputs(",\"sharf_revision\":", stdout);
 	if (sample->read_complete)
 		printf("%" PRIu32 ",\"sharf_status\":%" PRIu32
 		       ",\"bop_gr_bridge_revision\":%" PRIu32
@@ -1196,22 +1260,34 @@ static void print_crypto_result(
 	printf("},\"scope\":{\"register_addresses\":[%" PRIu32 ",%" PRIu32
 	       ",%" PRIu32 ",%" PRIu32 "],\"gisb_error_guard_address\":%" PRIu32
 	       ",\"gisb_error_mask\":%" PRIu32
-	       ",\"target_register_reads_per_sample\":4,\"guard_reads_per_sample\":2,"
-	       "\"reads_per_sample\":6,\"maximum_register_reads\":12,"
+	       ",\"gisb_error_capture_address_register\":%" PRIu32
+	       ",\"gisb_error_capture_master_register\":%" PRIu32
+	       ",\"target_register_reads_per_sample\":4,\"guard_reads_per_sample\":5,"
+	       "\"successful_sample_register_reads\":9,"
+	       "\"conditional_error_capture_reads_maximum\":2,"
+	       "\"maximum_register_reads_per_sample\":11,"
+	       "\"successful_run_register_reads\":18,\"maximum_register_reads\":20,"
 	       "\"raw_values_only\":true,\"target_register_writes\":false,"
-	       "\"error_clear_writes\":false,\"retries\":false,"
-	       "\"indirect_gisb_selector_write\":true,\"passive\":false,"
+	       "\"error_capture_clear_writes\":false,\"retries\":false,"
+	       "\"indirect_gisb_selector_write\":true,"
+	       "\"successful_sample_indirect_gisb_selector_writes\":9,"
+	       "\"maximum_indirect_gisb_selector_writes_per_sample\":11,"
+	       "\"successful_run_indirect_gisb_selector_writes\":18,"
+	       "\"maximum_indirect_gisb_selector_writes\":20,\"passive\":false,"
 	       "\"bop_aes_revision_register_present\":false,"
 	       "\"bop_gr_bridge_revision_is_aes_core_revision\":false,"
 	       "\"sha_cmac_context_reads\":false,"
 	       "\"key_iv_nonce_otp_scrub_reads\":false,"
 	       "\"engine_enable_or_start_writes\":false,"
 	       "\"algorithm_support_established\":false,"
+	       "\"guard_failure_attribution_causal\":false,"
 	       "\"independent_fetch_errors_certified\":false,"
 	       "\"atomic_coherence_established\":false}}\n",
 	       CRYPTO_SHARF_REVISION_ADDRESS, CRYPTO_SHARF_STATUS_ADDRESS,
 	       CRYPTO_BOP_GR_BRIDGE_REVISION_ADDRESS, CRYPTO_BOP_AES_STATUS_ADDRESS,
-	       CRYPTO_GISB_ERROR_STATUS_ADDRESS, CRYPTO_GISB_ERROR_MASK);
+	       CRYPTO_GISB_ERROR_STATUS_ADDRESS, CRYPTO_GISB_ERROR_MASK,
+	       CRYPTO_GISB_ERROR_CAPTURE_ADDRESS,
+	       CRYPTO_GISB_ERROR_CAPTURE_MASTER);
 }
 
 static void print_controller_sample(

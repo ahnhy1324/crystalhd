@@ -163,7 +163,9 @@ static unsigned clock_reads, clock_mutate_at, clock_mutation;
 static unsigned clock_guard_count, clock_guard_mutate_at, clock_guard_mutation;
 static bool clock_only, uart_mode, crypto_mode;
 static u32 clock_values[2][3];
-static u32 crypto_values[2][4], crypto_gisb_values[2][2];
+static u32 crypto_values[2][4], crypto_gisb_values[2][5];
+static u32 crypto_capture_values[2][2];
+static unsigned crypto_slots[2], crypto_capture_phase[2];
 static u32 clock_read_mock(struct crystalhd_adp *adapter, u32 address);
 
 static void down_read(struct rwsem *lock)
@@ -468,6 +470,8 @@ static void reset(void)
     clock_reads = clock_mutate_at = clock_mutation = 0;
     clock_only = uart_mode = crypto_mode = false;
     clock_guard_count = clock_guard_mutate_at = clock_guard_mutation = 0;
+    memset(crypto_slots, 0, sizeof(crypto_slots));
+    memset(crypto_capture_phase, 0, sizeof(crypto_capture_phase));
     for (i = 0; i < 2; i++) {
         clock_values[i][0] = 0x01234567U + i;
         clock_values[i][1] = 0x89abcdefU + i;
@@ -476,7 +480,10 @@ static void reset(void)
         crypto_values[i][1] = 0x50607080U + i;
         crypto_values[i][2] = 0x90a0b0c0U + i;
         crypto_values[i][3] = 0xd0e0f000U + i;
-        crypto_gisb_values[i][0] = crypto_gisb_values[i][1] = 0;
+        crypto_capture_values[i][0] = 0x13570000U + i;
+        crypto_capture_values[i][1] = 0x24680000U + i;
+        for (unsigned int guard = 0; guard < 5; guard++)
+            crypto_gisb_values[i][guard] = 0x20U + i * 0x200U + guard * 0x40U;
     }
     controller_reads = controller_only = false;
     controller_roots[0] = controller_roots[1] = 0xd6000;
@@ -1200,22 +1207,33 @@ static u32 clock_read_mock(struct crystalhd_adp *adapter, u32 address)
     static const u32 uart_addresses[] = {0xf3004, 0x404100, 0x40421c};
     static const u32 crypto_addresses[] = {0xf4000, 0xf4004, 0x511000, 0x51000c};
     unsigned index = clock_reads++;
-    unsigned width = crypto_mode ? 6U : 3U;
-    unsigned stage = clock_only ? 0 : index / width;
-    unsigned slot = index % width;
+    unsigned width = crypto_mode ? 9U : 3U;
+    unsigned stage = clock_only ? 0 : command_count == 3U;
+    unsigned slot = crypto_mode ? crypto_slots[stage] : index % width;
     u32 value;
     barrier(); CHECK(adapter == &adp && hardware.lock.held == 1 && hardware.fwcmd_trans_mutex.held == 1);
-    CHECK(index < (clock_only ? width : 2U * width));
-    if (crypto_mode)
-        CHECK(address == ((slot == 0 || slot == 5) ? 0x4000d4 : crypto_addresses[slot - 1]));
-    else
+    CHECK(index < (clock_only ? (crypto_mode ? 11U : width) : crypto_mode ? 20U : 2U * width));
+    if (crypto_mode) {
+        if (!crypto_capture_phase[stage]) {
+            CHECK(slot < 9);
+            CHECK(address == (!(slot & 1) ? 0x4000d4 : crypto_addresses[slot / 2]));
+            value = !(slot & 1) ? crypto_gisb_values[stage][slot / 2] :
+                crypto_values[stage][slot / 2];
+            crypto_slots[stage]++;
+            if (!(slot & 1) && (value & 0x1801U)) crypto_capture_phase[stage] = 1;
+        } else {
+            CHECK(crypto_capture_phase[stage] <= 2);
+            CHECK(address == (crypto_capture_phase[stage] == 1 ? 0x4000ccU : 0x4000d8U));
+            value = crypto_capture_values[stage][crypto_capture_phase[stage] - 1];
+            crypto_capture_phase[stage]++;
+        }
+    } else {
         CHECK(address == (uart_mode ? uart_addresses : addresses)[slot]);
+        value = clock_values[stage][slot];
+    }
     CHECK(adp.cmds.session_owner == &crystalhd_fw_research_owner && adp.cmds.session_module_pinned);
     CHECK(hardware.dev_started && !release_count && command_count == (stage ? 3U : 2U));
     CHECK(read_count == (clock_only ? 0U : stage ? 7U : 4U));
-    value = crypto_mode ? ((slot == 0 || slot == 5) ?
-            crypto_gisb_values[stage][slot == 5] : crypto_values[stage][slot - 1]) :
-            clock_values[stage][slot];
     if (clock_reads == clock_mutate_at) state_mutate(clock_mutation);
     return value;
 }
@@ -2957,22 +2975,52 @@ static struct crystalhd_fw_research_crypto_result crypto_run(void)
     crystalhd_fw_research_run_internal(42, &req, &result.state.control, &result.state,
                                       NULL, NULL, NULL, NULL, NULL, NULL, &result);
     unlocked(); CHECK(!live_allocations);
-    CHECK(result.state.control.request.size == 1488 && result.state.request.size == 1664);
+    CHECK(result.state.control.request.size == 1488 && result.state.request.size == 1712);
     return result;
 }
 
-static void crypto_empty(const struct crystalhd_fw_research_crypto_sample *sample,
-                         bool attempted, int status)
+static void crypto_partial(const struct crystalhd_fw_research_crypto_sample *sample,
+                           unsigned stage, unsigned targets, unsigned guards, int status)
 {
     struct crystalhd_fw_research_crypto_sample expected = {0};
-    expected.attempted = attempted; expected.status = status;
+    expected.attempted = targets != 0; expected.status = status;
+    expected.target_reads_attempted = targets;
+    expected.guard_reads_complete = guards;
+    if (guards) {
+        expected.gisb_before = crypto_gisb_values[stage][0];
+        expected.gisb_last = crypto_gisb_values[stage][guards - 1];
+    }
     CHECK(!memcmp(sample, &expected, sizeof(expected)));
 }
+
+static void crypto_capture_complete(
+    const struct crystalhd_fw_research_crypto_sample *sample, unsigned stage,
+    unsigned targets, unsigned guards, int status)
+{
+    struct crystalhd_fw_research_crypto_sample expected = {0};
+    expected.attempted = targets != 0; expected.status = status;
+    expected.error_capture_complete = 1;
+    expected.target_reads_attempted = targets;
+    expected.guard_reads_complete = guards;
+    expected.gisb_before = crypto_gisb_values[stage][0];
+    expected.gisb_last = crypto_gisb_values[stage][guards - 1];
+    expected.error_capture_address = crypto_capture_values[stage][0];
+    expected.error_capture_master = crypto_capture_values[stage][1];
+    CHECK(!memcmp(sample, &expected, sizeof(expected)));
+}
+
+static void crypto_empty(const struct crystalhd_fw_research_crypto_sample *sample, int status)
+{ crypto_partial(sample, 0, 0, 0, status); }
 
 static void crypto_complete(const struct crystalhd_fw_research_crypto_sample *sample,
                             unsigned stage)
 {
-    CHECK(sample->attempted == 1 && sample->read_complete == 1 && !sample->status && !sample->reserved);
+    CHECK(sample->attempted == 1 && sample->read_complete == 1 && !sample->status &&
+          !sample->error_capture_complete && !sample->error_capture_address &&
+          !sample->error_capture_master);
+    CHECK(sample->target_reads_attempted == 4 && sample->guard_reads_complete == 5);
+    CHECK(sample->gisb_before == crypto_gisb_values[stage][0]);
+    CHECK(sample->gisb_last == crypto_gisb_values[stage][4]);
     CHECK(sample->sharf_revision == crypto_values[stage][0]);
     CHECK(sample->sharf_status == crypto_values[stage][1]);
     CHECK(sample->bop_gr_bridge_revision == crypto_values[stage][2]);
@@ -2988,10 +3036,10 @@ static void test_crypto_whitelist_and_guards(void)
         -EBUSY, -EBUSY, -EAGAIN, -EACCES, -ERANGE, -ENODEV,
         -EAGAIN, -ENODEV, -EACCES, -EBUSY, -EOPNOTSUPP, -ERANGE,
         -ENODEV, -ENODEV, -ENODEV, -ENODEV};
-    static const u32 error_bits[] = {1, 0x800, 0x1000, 0x1801};
+    static const u32 error_bits[] = {1, 0x800, 0x1000, 0x1801, UINT32_MAX};
     struct crystalhd_fw_research_crypto_sample sample;
     struct crystalhd_fw_research_crypto_result result;
-    unsigned value, stage, read, mutation, bit;
+    unsigned value, stage, read, mutation, bit, guard, boundary, targets, guards;
 
     for (value = 0; value < 3; value++) {
         state_reset();
@@ -3000,51 +3048,108 @@ static void test_crypto_whitelist_and_guards(void)
                 crypto_values[stage][read] = value == 0 ? 0 : value == 1 ? UINT32_MAX :
                     0x12345678U + stage * 4 + read;
         result = crypto_run();
-        CHECK(!result.state.control.status && command_count == 5 && read_count == 7 && clock_reads == 12);
+        CHECK(!result.state.control.status && command_count == 5 && read_count == 7 && clock_reads == 18);
         CHECK(release_count == 1 && firmware_release_count == 1 && !result.state.control.retained);
         crypto_complete(&result.after_init, 0); crypto_complete(&result.after_open, 1);
     }
     /* Only valid/TEA/timeout are error gates; unrelated raw status bits do not
      * become an invented fetch-error ABI.
      */
-    state_reset(); crypto_gisb_values[0][0] = crypto_gisb_values[0][1] = 0x7fe;
-    crypto_gisb_values[1][0] = crypto_gisb_values[1][1] = 0x7fe;
-    result = crypto_run(); CHECK(!result.state.control.status && clock_reads == 12);
-    for (bit = 0; bit < ARRAY_SIZE(error_bits); bit++) for (stage = 0; stage < 2; stage++) {
-        state_reset(); crypto_gisb_values[stage][0] = error_bits[bit]; result = crypto_run();
-        CHECK(result.state.control.status == -EIO && clock_reads == (stage ? 7U : 1U));
-        CHECK(command_count == (stage ? 3U : 2U) && release_count == 1);
-        if (stage) crypto_complete(&result.after_init, 0);
-        crypto_empty(stage ? &result.after_open : &result.after_init, false, -EIO);
-        if (!stage) crypto_empty(&result.after_open, false, 0);
-        state_reset(); crypto_gisb_values[stage][1] = error_bits[bit]; result = crypto_run();
-        CHECK(result.state.control.status == -EIO && clock_reads == (stage ? 12U : 6U));
-        CHECK(command_count == (stage ? 3U : 2U) && release_count == 1);
-        if (stage) crypto_complete(&result.after_init, 0);
-        crypto_empty(stage ? &result.after_open : &result.after_init, true, -EIO);
-        if (!stage) crypto_empty(&result.after_open, false, 0);
-    }
-    /* The exact six-read order per sample rejects any extra/sensitive target.
-     * Every read is followed by a guarded publication fence.
+    state_reset();
+    for (stage = 0; stage < 2; stage++) for (guard = 0; guard < 5; guard++)
+        crypto_gisb_values[stage][guard] = 0x7fe;
+    result = crypto_run(); CHECK(!result.state.control.status && clock_reads == 18);
+    for (bit = 0; bit < ARRAY_SIZE(error_bits); bit++)
+        for (stage = 0; stage < 2; stage++) for (guard = 0; guard < 5; guard++) {
+            state_reset(); crypto_gisb_values[stage][guard] = error_bits[bit]; result = crypto_run();
+            CHECK(result.state.control.status == -EIO &&
+                  clock_reads == (stage ? 12U + guard * 2U : 3U + guard * 2U));
+            CHECK(command_count == (stage ? 3U : 2U) && release_count == 1);
+            if (stage) crypto_complete(&result.after_init, 0);
+            crypto_capture_complete(stage ? &result.after_open : &result.after_init,
+                                    stage, guard, guard + 1, -EIO);
+            if (!stage) crypto_empty(&result.after_open, 0);
+        }
+    /* Captured address/master are unclassified raw words. Zero and all ones
+     * are published only as a complete pair and never gate the guard error.
      */
-    for (read = 1; read <= 6; read++) for (mutation = 1; mutation < ARRAY_SIZE(errors); mutation++) {
+    for (value = 0; value < 2; value++) {
+        state_reset(); crypto_gisb_values[0][4] = 1;
+        crypto_capture_values[0][0] = crypto_capture_values[0][1] =
+            value ? UINT32_MAX : 0;
+        result = crypto_run();
+        CHECK(result.state.control.status == -EIO && clock_reads == 11 && release_count == 1);
+        crypto_capture_complete(&result.after_init, 0, 4, 5, -EIO);
+        crypto_empty(&result.after_open, 0);
+    }
+    /* The exact G0,T0,...,G4 order rejects any extra/sensitive target. Test
+     * all eighteen readiness boundaries and all nine accessor-return fences.
+     */
+    for (boundary = 1; boundary <= 18; boundary++)
+        for (mutation = 1; mutation < ARRAY_SIZE(errors); mutation++) {
+            crypto_guard_setup(); clock_guard_mutate_at = boundary; clock_guard_mutation = mutation;
+            CHECK(crystalhd_fw_research_crypto_sample(&adp.cmds, 42, &sample) == errors[mutation]);
+            read = boundary / 2;
+            if (boundary & 1) {
+                unsigned accessor = (boundary - 1) / 2;
+                targets = accessor / 2;
+                guards = (accessor + 1) / 2;
+            } else {
+                unsigned accessor = boundary / 2 - 1;
+                targets = guards = (accessor + 1) / 2;
+            }
+            CHECK(clock_reads == read && !read_count);
+            crypto_partial(&sample, 0, targets, guards, errors[mutation]);
+            controller_guard_exit();
+        }
+    for (read = 1; read <= 9; read++) for (mutation = 1; mutation < ARRAY_SIZE(errors); mutation++) {
         crypto_guard_setup(); clock_mutate_at = read; clock_mutation = mutation;
         CHECK(crystalhd_fw_research_crypto_sample(&adp.cmds, 42, &sample) == errors[mutation]);
         CHECK(clock_reads == read && !read_count);
-        crypto_empty(&sample, read != 1, errors[mutation]); controller_guard_exit();
+        crypto_partial(&sample, 0, read / 2, read / 2, errors[mutation]);
+        controller_guard_exit();
     }
-    crypto_guard_setup(); crypto_gisb_values[0][0] = 0x1801;
-    CHECK(crystalhd_fw_research_crypto_sample(&adp.cmds, 42, &sample) == -EIO);
-    crypto_empty(&sample, false, -EIO); CHECK(clock_reads == 1); controller_guard_exit();
-    crypto_guard_setup(); crypto_gisb_values[0][1] = 0x1801;
-    CHECK(crystalhd_fw_research_crypto_sample(&adp.cmds, 42, &sample) == -EIO);
-    crypto_empty(&sample, true, -EIO); CHECK(clock_reads == 6); controller_guard_exit();
+    /* A readiness failure after a dirty guard takes precedence: that guard is
+     * neither counted nor published; earlier checked guards remain visible.
+     */
+    for (guard = 0; guard < 5; guard++) {
+        crypto_guard_setup(); crypto_gisb_values[0][guard] = UINT32_MAX;
+        clock_guard_mutate_at = guard * 4 + 2; clock_guard_mutation = 1;
+        CHECK(crystalhd_fw_research_crypto_sample(&adp.cmds, 42, &sample) == -ENODEV);
+        CHECK(clock_reads == guard * 2 + 1 && !read_count);
+        crypto_partial(&sample, 0, guard, guard, -ENODEV); controller_guard_exit();
+    }
+    /* Once a dirty guard is checked, its -EIO remains authoritative. Each
+     * capture accessor still has independent pre/post readiness fences, and
+     * neither capture word is published on any incomplete pair.
+     */
+    for (guard = 0; guard < 5; guard++) for (boundary = 0; boundary < 4; boundary++)
+        for (mutation = 1; mutation < ARRAY_SIZE(errors); mutation++) {
+            crypto_guard_setup(); crypto_gisb_values[0][guard] = 1;
+            clock_guard_mutate_at = guard * 4 + 3 + boundary;
+            clock_guard_mutation = mutation;
+            CHECK(crystalhd_fw_research_crypto_sample(&adp.cmds, 42, &sample) == -EIO);
+            CHECK(clock_reads == guard * 2 + 1 + (boundary ? 1U : 0U) +
+                  (boundary == 3 ? 1U : 0U));
+            crypto_partial(&sample, 0, guard, guard + 1, -EIO);
+            controller_guard_exit();
+        }
+    for (guard = 0; guard < 5; guard++) for (read = 0; read < 2; read++)
+        for (mutation = 1; mutation < ARRAY_SIZE(errors); mutation++) {
+            crypto_guard_setup(); crypto_gisb_values[0][guard] = 1;
+            clock_mutate_at = guard * 2 + 2 + read;
+            clock_mutation = mutation;
+            CHECK(crystalhd_fw_research_crypto_sample(&adp.cmds, 42, &sample) == -EIO);
+            CHECK(clock_reads == guard * 2 + 2 + read);
+            crypto_partial(&sample, 0, guard, guard + 1, -EIO);
+            controller_guard_exit();
+        }
     crypto_guard_setup(); transaction_error = -EINTR;
     CHECK(crystalhd_fw_research_crypto_sample(&adp.cmds, 42, &sample) == -ERESTARTSYS);
-    crypto_empty(&sample, false, -ERESTARTSYS); CHECK(!clock_reads); controller_guard_exit();
+    crypto_empty(&sample, -ERESTARTSYS); CHECK(!clock_reads); controller_guard_exit();
     crypto_guard_setup(); adp.cmds.hw_ctx = NULL;
     CHECK(crystalhd_fw_research_crypto_sample(&adp.cmds, 42, &sample) == -ENODEV);
-    crypto_empty(&sample, false, -ENODEV); CHECK(!clock_reads); controller_guard_exit();
+    crypto_empty(&sample, -ENODEV); CHECK(!clock_reads); controller_guard_exit();
 }
 
 static void test_crypto_progression_and_cleanup(void)
@@ -3054,10 +3159,10 @@ static void test_crypto_progression_and_cleanup(void)
     for (read = 1; read <= 7; read++) {
         state_reset(); read_fail_at = read; read_status = BC_STS_TIMEOUT; result = crypto_run();
         CHECK(result.state.control.status == -ETIMEDOUT && read_count == read);
-        CHECK(clock_reads == (read <= 4 ? 0U : 6U) && release_count == 1);
-        if (read <= 4) crypto_empty(&result.after_init, false, 0);
+        CHECK(clock_reads == (read <= 4 ? 0U : 9U) && release_count == 1);
+        if (read <= 4) crypto_empty(&result.after_init, 0);
         else crypto_complete(&result.after_init, 0);
-        crypto_empty(&result.after_open, false, 0);
+        crypto_empty(&result.after_open, 0);
     }
     for (phase = 0; phase < 5; phase++) for (mutation = 0; mutation < 4; mutation++) {
         state_reset();
@@ -3067,33 +3172,54 @@ static void test_crypto_progression_and_cleanup(void)
         else { if (phase != 2) continue; wrong_channel = 3; }
         result = crypto_run();
         CHECK(result.state.control.status == (!mutation ? -ETIMEDOUT : -EPROTO));
-        CHECK(command_count == phase + 1 && clock_reads == (phase < 2 ? 0U : phase == 2 ? 6U : 12U));
+        CHECK(command_count == phase + 1 && clock_reads == (phase < 2 ? 0U : phase == 2 ? 9U : 18U));
         CHECK(release_count == 1 && !result.state.control.retained);
     }
-    for (read = 1; read <= 12; read++) {
-        bool attempted = (read - 1) % 6 != 0;
+    for (read = 1; read <= 18; read++) {
+        unsigned stage = read > 9;
+        unsigned stage_read = (read - 1) % 9 + 1;
+        unsigned completed = stage_read / 2;
         state_reset(); clock_mutate_at = read; clock_mutation = 4; result = crypto_run();
         CHECK(result.state.control.status == -EIO && clock_reads == read && release_count == 1);
-        CHECK(command_count == (read <= 6 ? 2U : 3U) && read_count == (read <= 6 ? 4U : 7U));
-        crypto_empty(read <= 6 ? &result.after_init : &result.after_open, attempted, -EIO);
-        if (read <= 6) crypto_empty(&result.after_open, false, 0);
+        CHECK(command_count == (stage ? 3U : 2U) && read_count == (stage ? 7U : 4U));
+        crypto_partial(stage ? &result.after_open : &result.after_init,
+                       stage, completed, completed, -EIO);
+        if (!stage) crypto_empty(&result.after_open, 0);
         else crypto_complete(&result.after_init, 0);
         state_reset(); clock_mutate_at = read; clock_mutation = 1; result = crypto_run();
         CHECK(result.state.control.status == -ENODEV && clock_reads == read && !release_count);
         CHECK(result.state.control.retained && !result.state.control.cleanup_attempted);
-        crypto_empty(read <= 6 ? &result.after_init : &result.after_open, attempted, -ENODEV);
+        crypto_partial(stage ? &result.after_open : &result.after_init,
+                       stage, completed, completed, -ENODEV);
+    }
+    /* Removal after either capture accessor cannot replace the established
+     * guard error or leak a half-captured pair. It does prevent cleanup from
+     * being claimed complete, just like removal after an ordinary accessor.
+     */
+    for (phase = 0; phase < 2; phase++) for (read = 0; read < 2; read++) {
+        unsigned capture_read = (phase ? 9U : 0U) + 10U + read;
+        state_reset(); crypto_gisb_values[phase][4] = 1;
+        clock_mutate_at = capture_read; clock_mutation = 1;
+        result = crypto_run();
+        CHECK(result.state.control.status == -EIO && clock_reads == capture_read);
+        CHECK(command_count == (phase ? 3U : 2U) && !release_count);
+        CHECK(result.state.control.retained && !result.state.control.cleanup_attempted);
+        crypto_partial(phase ? &result.after_open : &result.after_init,
+                       phase, 4, 5, -EIO);
+        if (phase) crypto_complete(&result.after_init, 0);
+        else crypto_empty(&result.after_open, 0);
     }
     for (phase = 1; phase <= 5; phase++) {
         state_reset(); transaction_error = -EINTR; transaction_error_at = phase; result = crypto_run();
         CHECK(result.state.control.status == -ERESTARTSYS && release_count == 1);
-        CHECK(clock_reads == (phase <= 3 ? 0U : 6U));
+        CHECK(clock_reads == (phase <= 3 ? 0U : 9U));
     }
     state_reset(); bad_digest = true; result = crypto_run();
     CHECK(result.state.control.status == -EKEYREJECTED && !clock_reads &&
           !acquire_count && !download_count && !command_count && !read_count);
-    crypto_empty(&result.after_init, false, 0); crypto_empty(&result.after_open, false, 0);
+    crypto_empty(&result.after_init, 0); crypto_empty(&result.after_open, 0);
     state_reset(); release_status = BC_STS_IO_ERROR; release_retains = true; result = crypto_run();
-    CHECK(result.state.control.status == -EIO && result.state.control.retained && clock_reads == 12);
+    CHECK(result.state.control.status == -EIO && result.state.control.retained && clock_reads == 18);
     crypto_complete(&result.after_init, 0); crypto_complete(&result.after_open, 1);
     state_reset(); command_status[0] = BC_STS_TIMEOUT;
     release_status = BC_STS_IO_ERROR; release_retains = true; result = crypto_run();
@@ -3110,18 +3236,24 @@ static void test_crypto_ioctl_and_compat(void)
         _IOW('R', 0x9a, struct crystalhd_fw_research_crypto_result),
         _IOWR('R', 0x9a, struct crystalhd_fw_research_state_result),
         _IOWR('R', 0x9a, struct crystalhd_fw_research_state_request),
-        _IOWR('S', 0x9a, struct crystalhd_fw_research_crypto_result)};
+        _IOWR('S', 0x9a, struct crystalhd_fw_research_crypto_result),
+        0xc680529aU, 0xc6a0529aU}; /* Unmerged pre-amendment encodings are not ABI. */
+    /* IMAGE has the same 1712-byte request size; its distinct ioctl number is
+     * already covered by the crypto dispatch/encoding assertions below.
+     */
     const unsigned old[] = {CRYSTALHD_FW_RESEARCH_RUN_STATE, CRYSTALHD_FW_RESEARCH_RUN_CONTROLLER,
-        CRYSTALHD_FW_RESEARCH_RUN_IMAGE, CRYSTALHD_FW_RESEARCH_RUN_PACKET,
+        CRYSTALHD_FW_RESEARCH_RUN_PACKET,
         CRYSTALHD_FW_RESEARCH_RUN_HEAP_PACKET, CRYSTALHD_FW_RESEARCH_RUN_CLOCK,
         CRYSTALHD_FW_RESEARCH_RUN_UART};
-    const u32 sizes[] = {0, 1488, 1600, 1632, 1656, 1663, 1665, 1712, 1816, 1952, UINT32_MAX};
+    const u32 sizes[] = {0, 1488, 1600, 1632, 1656, 1664, 1695, 1696, 1697, 1711, 1713, 1816, 1952, UINT32_MAX};
     unsigned field, compat;
     state_reset(); crypto_mode = true; result.state.request = crypto_request();
     CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_CRYPTO, arg) == -ENODEV);
     CHECK(!crystalhd_fw_research_open(&inode, &file));
-    for (field = 0; field < ARRAY_SIZE(malformed); field++)
+    for (field = 0; field < ARRAY_SIZE(malformed); field++) {
         CHECK(crystalhd_fw_research_ioctl(&file, malformed[field], arg) == -ENOTTY);
+        CHECK(crystalhd_fw_research_compat_ioctl(&file, malformed[field], arg) == -ENOTTY);
+    }
     for (field = 0; field < ARRAY_SIZE(old); field++)
         CHECK(crystalhd_fw_research_ioctl(&file, old[field], arg) == -EINVAL);
     for (field = 0; field < ARRAY_SIZE(sizes) + 3; field++) {
@@ -3144,7 +3276,7 @@ static void test_crypto_ioctl_and_compat(void)
         CHECK(!crystalhd_fw_research_open(&inode, &file)); result.state.request = crypto_request();
         CHECK(!(compat ? crystalhd_fw_research_compat_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_CRYPTO, arg) :
                          crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_CRYPTO, arg)));
-        CHECK(!result.state.control.status && command_count == 5 && read_count == 7 && clock_reads == 12);
+        CHECK(!result.state.control.status && command_count == 5 && read_count == 7 && clock_reads == 18);
         CHECK(copy_in_count == 1 && copy_out_count == 1 && release_count == 1 && !result.state.control.retained);
         crypto_complete(&result.after_init, 0); crypto_complete(&result.after_open, 1);
         CHECK(!crystalhd_fw_research_release(&inode, &file) && !live_allocations);
@@ -3153,14 +3285,14 @@ static void test_crypto_ioctl_and_compat(void)
     CHECK(!crystalhd_fw_research_open(&inode, &file)); result.state.request = crypto_request();
     copy_out_error = true;
     CHECK(crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_CRYPTO, arg) == -EFAULT);
-    CHECK(release_count == 1 && clock_reads == 12 && !adp.cmds.session_owner);
+    CHECK(release_count == 1 && clock_reads == 18 && !adp.cmds.session_owner);
     CHECK(!crystalhd_fw_research_release(&inode, &file));
     state_reset(); crypto_mode = true;
     CHECK(!crystalhd_fw_research_open(&inode, &file)); result.state.request = crypto_request();
     chd_device_generation++;
     CHECK(!crystalhd_fw_research_ioctl(&file, CRYSTALHD_FW_RESEARCH_RUN_CRYPTO, arg));
     CHECK(result.state.control.status == -ENODEV); no_hardware(); CHECK(!clock_reads);
-    crypto_empty(&result.after_init, false, 0); crypto_empty(&result.after_open, false, 0);
+    crypto_empty(&result.after_init, 0); crypto_empty(&result.after_open, 0);
     CHECK(!crystalhd_fw_research_release(&inode, &file) && !live_allocations);
 }
 
@@ -3237,20 +3369,26 @@ int main(void)
     _Static_assert(offsetof(struct crystalhd_fw_research_uart_result, after_init) == 1600, "UART init ABI");
     _Static_assert(offsetof(struct crystalhd_fw_research_uart_result, after_open) == 1628, "UART open ABI");
     _Static_assert(CRYSTALHD_FW_RESEARCH_RUN_UART == 0xc6785299U, "UART ioctl ABI");
-    _Static_assert(sizeof(struct crystalhd_fw_research_crypto_sample) == 32, "crypto sample ABI");
+    _Static_assert(sizeof(struct crystalhd_fw_research_crypto_sample) == 56, "crypto sample ABI");
     _Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, attempted) == 0, "crypto attempt ABI");
     _Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, status) == 4, "crypto status ABI");
     _Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, read_complete) == 8, "crypto completion ABI");
-    _Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, reserved) == 12, "crypto padding ABI");
-    _Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, sharf_revision) == 16, "SHARF revision ABI");
-    _Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, sharf_status) == 20, "SHARF status ABI");
-    _Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, bop_gr_bridge_revision) == 24, "BOP bridge ABI");
-    _Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, bop_aes_status) == 28, "BOP AES status ABI");
-    _Static_assert(sizeof(struct crystalhd_fw_research_crypto_result) == 1664, "crypto result ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, error_capture_complete) == 12, "crypto capture completion ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, target_reads_attempted) == 16, "crypto target count ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, guard_reads_complete) == 20, "crypto guard count ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, gisb_before) == 24, "crypto first guard ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, gisb_last) == 28, "crypto last guard ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, sharf_revision) == 32, "SHARF revision ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, sharf_status) == 36, "SHARF status ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, bop_gr_bridge_revision) == 40, "BOP bridge ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, bop_aes_status) == 44, "BOP AES status ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, error_capture_address) == 48, "crypto capture address ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, error_capture_master) == 52, "crypto capture master ABI");
+    _Static_assert(sizeof(struct crystalhd_fw_research_crypto_result) == 1712, "crypto result ABI");
     _Static_assert(offsetof(struct crystalhd_fw_research_crypto_result, state) == 0, "crypto state ABI");
     _Static_assert(offsetof(struct crystalhd_fw_research_crypto_result, after_init) == 1600, "crypto init ABI");
-    _Static_assert(offsetof(struct crystalhd_fw_research_crypto_result, after_open) == 1632, "crypto open ABI");
-    _Static_assert(CRYSTALHD_FW_RESEARCH_RUN_CRYPTO == 0xc680529aU, "crypto ioctl ABI");
+    _Static_assert(offsetof(struct crystalhd_fw_research_crypto_result, after_open) == 1656, "crypto open ABI");
+    _Static_assert(CRYSTALHD_FW_RESEARCH_RUN_CRYPTO == 0xc6b0529aU, "crypto ioctl ABI");
     _Static_assert(CRYSTALHD_FW_RESEARCH_HEAP_IMAGE_MIN == 0x117000U &&
                    CRYSTALHD_FW_RESEARCH_HEAP_IMAGE_BYTES == 0x100000U &&
                    CRYSTALHD_FW_RESEARCH_HEAP_END == 0x3ffc000U, "heap admission bounds");

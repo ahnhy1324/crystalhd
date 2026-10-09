@@ -969,6 +969,7 @@ static int crystalhd_fw_research_crypto_sample(struct crystalhd_cmd *ctx,
 	};
 	struct crystalhd_hw *hw = ctx->hw_ctx;
 	u32 values[ARRAY_SIZE(registers)];
+	u32 capture_address, capture_master;
 	u32 guard;
 	unsigned long flags;
 	unsigned int i;
@@ -986,52 +987,72 @@ static int crystalhd_fw_research_crypto_sample(struct crystalhd_cmd *ctx,
 			rc = -ENODEV;
 		goto done;
 	}
-	/* These four target registers are fixed read-only observations. The Flea
-	 * accessor nevertheless programs its indirect GISB selector before each
-	 * target read, so this is not a passive or write-free device operation.
-	 * Do not read control, error, context, key, IV, nonce, OTP or scrub state.
+	/* Interleave G0,T0,G1,T1,G2,T2,G3,T3,G4. Every Flea accessor
+	 * programs its indirect GISB selector, so this is not a passive or
+	 * write-free device operation. Guard values are retained only after their
+	 * post-access readiness check; target values remain local until all nine
+	 * reads succeed. Never clear an error, retry, or read control, context,
+	 * key, IV, nonce, OTP or scrub state.
 	 */
 	spin_lock_irqsave(&hw->lock, flags);
-	rc = crystalhd_fw_research_register_ready(ctx, generation, hw);
-	if (rc)
-		goto unlock;
-	rc = crystalhd_fw_research_register_ready(ctx, generation, hw);
-	if (rc)
-		goto unlock;
-	guard = hw->pfnReadDevRegister(ctx->adp,
-				       BCHP_SUN_GISB_ARB_ERR_CAP_STATUS);
-	rc = crystalhd_fw_research_register_ready(ctx, generation, hw);
-	if (rc)
-		goto unlock;
-	if (guard & error_mask) {
-		rc = -EIO;
-		goto unlock;
-	}
-	for (i = 0; i < ARRAY_SIZE(registers); i++) {
+	for (i = 0; i <= ARRAY_SIZE(registers); i++) {
+		rc = crystalhd_fw_research_register_ready(ctx, generation, hw);
+		if (rc)
+			goto unlock;
+		guard = hw->pfnReadDevRegister(ctx->adp,
+					       BCHP_SUN_GISB_ARB_ERR_CAP_STATUS);
+		rc = crystalhd_fw_research_register_ready(ctx, generation, hw);
+		if (rc)
+			goto unlock;
+		if (!sample->guard_reads_complete)
+			sample->gisb_before = guard;
+		sample->gisb_last = guard;
+		sample->guard_reads_complete++;
+		if (guard & error_mask) {
+			/* The guard failure is already established. Best-effort raw
+			 * capture reads may describe the recorded address/master, but
+			 * cannot replace that failure or attribute it causally to the
+			 * preceding target. Publish neither word unless both accessors
+			 * and all four readiness fences complete.
+			 */
+			rc = -EIO;
+			if (crystalhd_fw_research_register_ready(ctx, generation, hw))
+				goto unlock;
+			capture_address = hw->pfnReadDevRegister(ctx->adp,
+				BCHP_SUN_GISB_ARB_ERR_CAP_ADDR);
+			if (crystalhd_fw_research_register_ready(ctx, generation, hw))
+				goto unlock;
+			if (crystalhd_fw_research_register_ready(ctx, generation, hw))
+				goto unlock;
+			capture_master = hw->pfnReadDevRegister(ctx->adp,
+				BCHP_SUN_GISB_ARB_ERR_CAP_MASTER);
+			if (crystalhd_fw_research_register_ready(ctx, generation, hw))
+				goto unlock;
+			sample->error_capture_address = capture_address;
+			sample->error_capture_master = capture_master;
+			sample->error_capture_complete = 1;
+			goto unlock;
+		}
+		if (i == ARRAY_SIZE(registers)) {
+			/* All target bit patterns are raw observations, including
+			 * zero/all ones. Guard values are diagnostics, not causality.
+			 */
+			sample->sharf_revision = values[0];
+			sample->sharf_status = values[1];
+			sample->bop_gr_bridge_revision = values[2];
+			sample->bop_aes_status = values[3];
+			sample->read_complete = 1;
+			break;
+		}
 		rc = crystalhd_fw_research_register_ready(ctx, generation, hw);
 		if (rc)
 			goto unlock;
 		sample->attempted = 1;
+		sample->target_reads_attempted++;
 		values[i] = hw->pfnReadDevRegister(ctx->adp, registers[i]);
 		rc = crystalhd_fw_research_register_ready(ctx, generation, hw);
 		if (rc)
 			goto unlock;
-	}
-	rc = crystalhd_fw_research_register_ready(ctx, generation, hw);
-	if (rc)
-		goto unlock;
-	guard = hw->pfnReadDevRegister(ctx->adp,
-				       BCHP_SUN_GISB_ARB_ERR_CAP_STATUS);
-	rc = crystalhd_fw_research_register_ready(ctx, generation, hw);
-	if (!rc && (guard & error_mask))
-		rc = -EIO;
-	if (!rc) {
-		/* All bit patterns are raw observations, including zero/all ones. */
-		sample->sharf_revision = values[0];
-		sample->sharf_status = values[1];
-		sample->bop_gr_bridge_revision = values[2];
-		sample->bop_aes_status = values[3];
-		sample->read_complete = 1;
 	}
 unlock:
 	spin_unlock_irqrestore(&hw->lock, flags);

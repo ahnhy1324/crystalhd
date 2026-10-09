@@ -142,7 +142,9 @@ for name, header, cli_name, value in (
         ('BCHP_SHARF_TOP_STATUS', 'bchp_sharf_top.h', 'CRYPTO_SHARF_STATUS_ADDRESS', 0xf4004),
         ('BCHP_BOP_GR_BRIDGE_REVISION', 'bchp_bop_gr_bridge.h', 'CRYPTO_BOP_GR_BRIDGE_REVISION_ADDRESS', 0x511000),
         ('BCHP_BOP_AES_STATUS', 'bchp_bop_aes.h', 'CRYPTO_BOP_AES_STATUS_ADDRESS', 0x51000c),
-        ('BCHP_SUN_GISB_ARB_ERR_CAP_STATUS', 'bchp_sun_gisb_arb.h', 'CRYPTO_GISB_ERROR_STATUS_ADDRESS', 0x4000d4)):
+        ('BCHP_SUN_GISB_ARB_ERR_CAP_ADDR', 'bchp_sun_gisb_arb.h', 'CRYPTO_GISB_ERROR_CAPTURE_ADDRESS', 0x4000cc),
+        ('BCHP_SUN_GISB_ARB_ERR_CAP_STATUS', 'bchp_sun_gisb_arb.h', 'CRYPTO_GISB_ERROR_STATUS_ADDRESS', 0x4000d4),
+        ('BCHP_SUN_GISB_ARB_ERR_CAP_MASTER', 'bchp_sun_gisb_arb.h', 'CRYPTO_GISB_ERROR_CAPTURE_MASTER', 0x4000d8)):
     declared = re.search(r'#define\s+' + name + r'\s+(0x[0-9a-fA-F]+)\b', (rdb / header).read_text())
     printed = re.search(r'#define\s+' + cli_name + r'\s+(0x[0-9a-fA-F]+)U', cli)
     assert declared and printed and int(declared.group(1), 16) == int(printed.group(1), 16) == value
@@ -154,8 +156,16 @@ for field in ('valid', 'tea', 'timeout'):
     mask |= int(declared.group(1), 16)
 printed_mask = re.search(r'#define\s+CRYPTO_GISB_ERROR_MASK\s+(0x[0-9a-fA-F]+)U', cli)
 assert printed_mask and mask == int(printed_mask.group(1), 16) == 0x1801
-assert crypto_sampler.count('pfnReadDevRegister(ctx->adp,') == 3
-assert crypto_sampler.count('BCHP_SUN_GISB_ARB_ERR_CAP_STATUS)') == 2
+assert crypto_sampler.count('pfnReadDevRegister(ctx->adp,') == 4
+assert crypto_sampler.count('BCHP_SUN_GISB_ARB_ERR_CAP_STATUS)') == 1
+assert crypto_sampler.count('BCHP_SUN_GISB_ARB_ERR_CAP_ADDR)') == 1
+assert crypto_sampler.count('BCHP_SUN_GISB_ARB_ERR_CAP_MASTER)') == 1
+assert 'BCHP_SUN_GISB_ARB_ERR_CAP_CLR' not in crypto_sampler
+assert re.search(r'for \(i = 0; i <= ARRAY_SIZE\(registers\); i\+\+\)', crypto_sampler)
+assert crypto_sampler.index('BCHP_SUN_GISB_ARB_ERR_CAP_STATUS)') < \
+       crypto_sampler.index('pfnReadDevRegister(ctx->adp, registers[i])')
+assert 'sample->target_reads_attempted++' in crypto_sampler
+assert 'sample->guard_reads_complete++' in crypto_sampler
 assert not re.search(r'pfn(?:WriteDevRegister|DevDRAMRead|DevDRAMWrite)\s*\(', crypto_sampler)
 for forbidden in ('BCHP_SHARF_TOP_ERR_STATUS', 'BCHP_BOP_AES_CTRL',
                   'BCHP_BOP_AES_SCRAMBLE_SETUP', 'BCHP_BOP_AES_ENCRYPTION_SETUP',
@@ -299,18 +309,24 @@ _Static_assert(offsetof(struct crystalhd_fw_research_uart_result, after_init) ==
 _Static_assert(offsetof(struct crystalhd_fw_research_uart_result, after_open) == 1628, "uart open");
 _Static_assert(_IOC_SIZE(CRYSTALHD_FW_RESEARCH_RUN_UART) == 1656, "uart encoding");
 _Static_assert(CRYSTALHD_FW_RESEARCH_RUN_UART == 0xc6785299U, "uart ioctl");
-_Static_assert(sizeof(struct crystalhd_fw_research_crypto_sample) == 32, "crypto sample");
-_Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, reserved) == 12, "crypto padding");
-_Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, sharf_revision) == 16, "SHARF revision");
-_Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, sharf_status) == 20, "SHARF status");
-_Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, bop_gr_bridge_revision) == 24, "BOP bridge revision");
-_Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, bop_aes_status) == 28, "BOP AES status");
-_Static_assert(sizeof(struct crystalhd_fw_research_crypto_result) == 1664, "crypto result");
+_Static_assert(sizeof(struct crystalhd_fw_research_crypto_sample) == 56, "crypto sample");
+_Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, error_capture_complete) == 12, "crypto capture completion");
+_Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, target_reads_attempted) == 16, "crypto target count");
+_Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, guard_reads_complete) == 20, "crypto guard count");
+_Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, gisb_before) == 24, "crypto first guard");
+_Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, gisb_last) == 28, "crypto last guard");
+_Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, sharf_revision) == 32, "SHARF revision");
+_Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, sharf_status) == 36, "SHARF status");
+_Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, bop_gr_bridge_revision) == 40, "BOP bridge revision");
+_Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, bop_aes_status) == 44, "BOP AES status");
+_Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, error_capture_address) == 48, "crypto capture address");
+_Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, error_capture_master) == 52, "crypto capture master");
+_Static_assert(sizeof(struct crystalhd_fw_research_crypto_result) == 1712, "crypto result");
 _Static_assert(offsetof(struct crystalhd_fw_research_crypto_result, state) == 0, "crypto state");
 _Static_assert(offsetof(struct crystalhd_fw_research_crypto_result, after_init) == 1600, "crypto init");
-_Static_assert(offsetof(struct crystalhd_fw_research_crypto_result, after_open) == 1632, "crypto open");
-_Static_assert(_IOC_SIZE(CRYSTALHD_FW_RESEARCH_RUN_CRYPTO) == 1664, "crypto encoding");
-_Static_assert(CRYSTALHD_FW_RESEARCH_RUN_CRYPTO == 0xc680529aU, "crypto ioctl");
+_Static_assert(offsetof(struct crystalhd_fw_research_crypto_result, after_open) == 1656, "crypto open");
+_Static_assert(_IOC_SIZE(CRYSTALHD_FW_RESEARCH_RUN_CRYPTO) == 1712, "crypto encoding");
+_Static_assert(CRYSTALHD_FW_RESEARCH_RUN_CRYPTO == 0xc6b0529aU, "crypto ioctl");
 _Static_assert(CRYSTALHD_FW_RESEARCH_VERSION_ONLY == 1U, "existing version selector");
 _Static_assert(CRYSTALHD_FW_RESEARCH_H264_CONTROL == 2U, "existing H264 selector");
 _Static_assert(CRYSTALHD_FW_RESEARCH_H261_CONTROL == 3U, "H261 selector");
@@ -415,7 +431,7 @@ assert len(examples) == 542
 assert len(heaps) == 60
 assert len(clocks) == 31
 assert len(uarts) == 31
-assert len(cryptos) == 31
+assert len(cryptos) == 83
 legacy_bytes = "".join(lines[:542]).encode("utf-8")
 assert len(legacy_bytes) == 1020137
 assert hashlib.sha256(legacy_bytes).hexdigest() == "7bd6c6e9034849298fa08a6711e0f9faad5aba1b3ac22ad100b04efe30e834b7"
@@ -1073,16 +1089,27 @@ crypto_raw_names = ("sharf_revision", "sharf_status", "bop_gr_bridge_revision", 
 crypto_scope = {
     "register_addresses": [0xf4000, 0xf4004, 0x511000, 0x51000c],
     "gisb_error_guard_address": 0x4000d4, "gisb_error_mask": 0x1801,
-    "target_register_reads_per_sample": 4, "guard_reads_per_sample": 2,
-    "reads_per_sample": 6, "maximum_register_reads": 12,
+    "gisb_error_capture_address_register": 0x4000cc,
+    "gisb_error_capture_master_register": 0x4000d8,
+    "target_register_reads_per_sample": 4, "guard_reads_per_sample": 5,
+    "successful_sample_register_reads": 9,
+    "conditional_error_capture_reads_maximum": 2,
+    "maximum_register_reads_per_sample": 11,
+    "successful_run_register_reads": 18, "maximum_register_reads": 20,
     "raw_values_only": True, "target_register_writes": False,
-    "error_clear_writes": False, "retries": False,
-    "indirect_gisb_selector_write": True, "passive": False,
+    "error_capture_clear_writes": False, "retries": False,
+    "indirect_gisb_selector_write": True,
+    "successful_sample_indirect_gisb_selector_writes": 9,
+    "maximum_indirect_gisb_selector_writes_per_sample": 11,
+    "successful_run_indirect_gisb_selector_writes": 18,
+    "maximum_indirect_gisb_selector_writes": 20, "passive": False,
     "bop_aes_revision_register_present": False,
     "bop_gr_bridge_revision_is_aes_core_revision": False,
     "sha_cmac_context_reads": False, "key_iv_nonce_otp_scrub_reads": False,
     "engine_enable_or_start_writes": False, "algorithm_support_established": False,
-    "independent_fetch_errors_certified": False, "atomic_coherence_established": False}
+    "independent_fetch_errors_certified": False,
+    "guard_failure_attribution_causal": False,
+    "atomic_coherence_established": False}
 for result in cryptos:
     assert set(result) == {"version", "crypto_state", "control", "fixed_state_samples", "crypto_samples", "scope"}
     assert result["version"] == 1 and result["crypto_state"] is True
@@ -1093,7 +1120,9 @@ for result in cryptos:
     for field, value in crypto_scope.items():
         if isinstance(value, bool):
             assert type(result["scope"][field]) is bool
-    for field in ("gisb_error_guard_address", "gisb_error_mask"):
+    for field in ("gisb_error_guard_address", "gisb_error_mask",
+                  "gisb_error_capture_address_register",
+                  "gisb_error_capture_master_register"):
         u32(result["scope"][field])
     fixed = result["fixed_state_samples"]
     assert set(fixed) == set(names)
@@ -1101,9 +1130,42 @@ for result in cryptos:
     assert set(samples) == set(crypto_names)
     for index, name in enumerate(crypto_names):
         sample = samples[name]
-        assert set(sample) == {"attempted", "status", "read_complete", *crypto_raw_names}
+        assert set(sample) == {
+            "attempted", "status", "read_complete", "target_reads_attempted",
+            "guard_reads_complete", "gisb_before", "gisb_last",
+            "error_capture_complete", "error_capture_address", "error_capture_master",
+            "guard_failure_observed_after_target_index",
+            "guard_failure_observed_after_target_address", *crypto_raw_names}
         assert type(sample["attempted"]) is bool and type(sample["read_complete"]) is bool
         assert type(sample["status"]) is int and -4095 <= sample["status"] <= 0
+        targets = sample["target_reads_attempted"]
+        guards = sample["guard_reads_complete"]
+        assert type(targets) is int and 0 <= targets <= 4
+        assert type(guards) is int and 0 <= guards <= 5
+        assert targets <= guards <= targets + 1
+        assert sample["attempted"] == (targets != 0)
+        if guards:
+            u32(sample["gisb_before"]); u32(sample["gisb_last"])
+            if guards == 1:
+                assert sample["gisb_before"] == sample["gisb_last"]
+            else:
+                assert sample["gisb_before"] & 0x1801 == 0
+        else:
+            assert sample["gisb_before"] is None and sample["gisb_last"] is None
+        guard_dirty = guards != 0 and sample["gisb_last"] & 0x1801 != 0
+        if guard_dirty:
+            assert sample["status"] == -5 and guards == targets + 1
+        assert type(sample["error_capture_complete"]) is bool
+        if sample["error_capture_complete"]:
+            assert guard_dirty
+            u32(sample["error_capture_address"]); u32(sample["error_capture_master"])
+        else:
+            assert sample["error_capture_address"] is None
+            assert sample["error_capture_master"] is None
+        observed_index = guards - 2 if guard_dirty and guards > 1 else None
+        observed_address = crypto_scope["register_addresses"][observed_index] if observed_index is not None else None
+        assert sample["guard_failure_observed_after_target_index"] == observed_index
+        assert sample["guard_failure_observed_after_target_address"] == observed_address
         active = sample["attempted"] or sample["status"] != 0 or sample["read_complete"]
         assert active == succeeded(fixed[name])
         if active:
@@ -1111,11 +1173,13 @@ for result in cryptos:
             assert not index or succeeded(samples["after_init"])
         if sample["read_complete"]:
             assert sample["attempted"] and sample["status"] == 0
+            assert targets == 4 and guards == 5 and not guard_dirty
             for raw_name in crypto_raw_names:
                 u32(sample[raw_name])
         else:
             assert all(sample[raw_name] is None for raw_name in crypto_raw_names)
             assert not sample["attempted"] or sample["status"] < 0
+            assert not (targets == 4 and guards == 5 and not guard_dirty)
         if sample["status"]:
             assert control["status"] == sample["status"] and control["command_count"] == index + 2
     if control["command_count"] > 2:
@@ -1129,7 +1193,34 @@ for pattern, result in enumerate(cryptos[:3]):
 assert all(result["control"]["status"] == 0 for result in cryptos[:3])
 assert all(result["control"]["status"] < 0 for result in cryptos[3:30])
 assert cryptos[30]["control"]["status"] == 0
+assert all(result["control"]["status"] < 0 for result in cryptos[31:])
+for stage in range(2):
+    for guard in range(5):
+        for error_index, guard_error in enumerate((1, 0x800, 0x1000, 0x1801, 0xffffffff)):
+            result = cryptos[31 + stage * 25 + guard * 5 + error_index]
+            sample = result["crypto_samples"][crypto_names[stage]]
+            assert sample["target_reads_attempted"] == guard
+            assert sample["guard_reads_complete"] == guard + 1
+            assert sample["gisb_last"] == guard_error
+            assert sample["gisb_before"] == (guard_error if guard == 0 else 0x20 + stage * 0x200)
+            assert sample["error_capture_complete"]
+            assert sample["error_capture_address"] == 0x13570000 + stage
+            assert sample["error_capture_master"] == 0x24680000 + stage
+            assert sample["guard_failure_observed_after_target_index"] == (guard - 1 if guard else None)
+            assert sample["guard_failure_observed_after_target_address"] == (
+                crypto_scope["register_addresses"][guard - 1] if guard else None)
+            if stage:
+                assert result["crypto_samples"]["after_init"]["read_complete"]
+            else:
+                skipped = result["crypto_samples"]["after_open"]
+                assert skipped["target_reads_attempted"] == 0 and skipped["guard_reads_complete"] == 0
+for stage in range(2):
+    result = cryptos[81 + stage]
+    sample = result["crypto_samples"][crypto_names[stage]]
+    assert sample["target_reads_attempted"] == 4 and sample["guard_reads_complete"] == 5
+    assert sample["gisb_last"] == 1 and not sample["error_capture_complete"]
+    assert sample["error_capture_address"] is None and sample["error_capture_master"] is None
 assert all("bop_aes_revision" not in sample for result in cryptos for sample in result["crypto_samples"].values())
-print("Firmware probe CLI: 31 bounded crypto-state strict JSON examples verified")
+print("Firmware probe CLI: 83 bounded crypto-state strict JSON examples verified")
 '
 done

@@ -44,6 +44,11 @@ static unsigned uart_fault_at, uart_fault_kind, uart_mutation, uart_stage, uart_
 static uint32_t uart_values[2][3];
 static unsigned crypto_fault_at, crypto_fault_kind, crypto_mutation, crypto_stage, crypto_word;
 static uint32_t crypto_values[2][4];
+static uint32_t crypto_gisb_values[2][5];
+static uint32_t crypto_capture_values[2][2];
+static bool crypto_guard_dirty, crypto_capture_suppressed;
+static unsigned crypto_guard_slot;
+static uint32_t crypto_guard_value;
 static const uint32_t commands[] = {eCMD_C011_INIT, eCMD_C011_GET_VERSION,
     eCMD_C011_DEC_CHAN_OPEN, eCMD_C011_DEC_CHAN_STATUS, eCMD_C011_DEC_CHAN_CLOSE};
 static const uint32_t raw_commands[] = {eCMD_C011_DEC_CHAN_SCALING_FILTERS,
@@ -826,6 +831,8 @@ static void make_crypto_result(struct crystalhd_fw_research_crypto_result *resul
     struct crystalhd_fw_research_crypto_sample *samples[] = {&result->after_init, &result->after_open};
     struct crystalhd_fw_research_state_sample *prerequisites[] = {&result->state.after_init, &result->state.after_open};
     struct crystalhd_fw_research_crypto_sample *changed;
+    static const unsigned fault_targets[] = {1, 0, 0, 2, 2, 4};
+    static const unsigned fault_guards[] = {1, 0, 1, 2, 3, 4};
     unsigned i, count;
     memset(result, 0, sizeof(*result)); make_state_result(&result->state);
     CHECK(crypto_stage < 2 && crypto_word < 4);
@@ -837,19 +844,46 @@ static void make_crypto_result(struct crystalhd_fw_research_crypto_result *resul
     for (i = 0; i < 2; i++) {
         if (!prerequisites[i]->attempted || !prerequisites[i]->read_complete || prerequisites[i]->status) break;
         samples[i]->attempted = samples[i]->read_complete = 1;
+        samples[i]->target_reads_attempted = 4;
+        samples[i]->guard_reads_complete = 5;
+        samples[i]->gisb_before = crypto_gisb_values[i][0];
+        samples[i]->gisb_last = crypto_gisb_values[i][4];
         samples[i]->sharf_revision = crypto_values[i][0];
         samples[i]->sharf_status = crypto_values[i][1];
         samples[i]->bop_gr_bridge_revision = crypto_values[i][2];
         samples[i]->bop_aes_status = crypto_values[i][3];
     }
     if (crypto_fault_at) {
-        CHECK(crypto_fault_at <= 2 && crypto_fault_kind >= 1 && crypto_fault_kind <= 6);
+        CHECK(crypto_fault_at <= 2 && crypto_fault_kind >= 1 && crypto_fault_kind <= 6 &&
+              (!crypto_guard_dirty || (crypto_guard_slot < 5 && crypto_guard_value)));
         changed = samples[crypto_fault_at - 1]; count = crypto_fault_at + 1;
         memset(changed, 0, sizeof(*changed));
-        changed->attempted = crypto_fault_kind != 2 && crypto_fault_kind < 5;
-        changed->status = crypto_fault_kind == 2 ? -ENODEV : crypto_fault_kind == 3 ? -ETIMEDOUT :
-            crypto_fault_kind == 4 ? -4095 : crypto_fault_kind == 5 ? -EAGAIN :
-            crypto_fault_kind == 6 ? -512 : -EIO;
+        if (crypto_guard_dirty) {
+            changed->target_reads_attempted = crypto_guard_slot;
+            changed->guard_reads_complete = crypto_guard_slot + 1;
+            changed->attempted = crypto_guard_slot != 0;
+            changed->status = -EIO;
+            changed->gisb_before = crypto_guard_slot ?
+                crypto_gisb_values[crypto_fault_at - 1][0] : crypto_guard_value;
+            changed->gisb_last = crypto_guard_value;
+            if (!crypto_capture_suppressed) {
+                changed->error_capture_complete = 1;
+                changed->error_capture_address = crypto_capture_values[crypto_fault_at - 1][0];
+                changed->error_capture_master = crypto_capture_values[crypto_fault_at - 1][1];
+            }
+        } else {
+            changed->target_reads_attempted = fault_targets[crypto_fault_kind - 1];
+            changed->guard_reads_complete = fault_guards[crypto_fault_kind - 1];
+            changed->attempted = changed->target_reads_attempted != 0;
+            changed->status = crypto_fault_kind == 2 ? -ENODEV : crypto_fault_kind == 3 ? -ETIMEDOUT :
+                crypto_fault_kind == 4 ? -4095 : crypto_fault_kind == 5 ? -EAGAIN :
+                crypto_fault_kind == 6 ? -512 : -EIO;
+            if (changed->guard_reads_complete) {
+                changed->gisb_before = crypto_gisb_values[crypto_fault_at - 1][0];
+                changed->gisb_last = crypto_gisb_values[crypto_fault_at - 1]
+                    [changed->guard_reads_complete - 1];
+            }
+        }
         result->state.control.status = changed->status; result->state.control.command_count = count;
         memset(result->state.control.replies + count, 0,
                (CRYSTALHD_FW_RESEARCH_MAX_COMMANDS - count) * sizeof(result->state.control.replies[0]));
@@ -865,7 +899,7 @@ static void make_crypto_result(struct crystalhd_fw_research_crypto_result *resul
     case 2: changed->read_complete = 2; break;
     case 3: changed->status = 1; break;
     case 4: changed->status = -4096; break;
-    case 5: changed->reserved = 1; break;
+    case 5: changed->error_capture_complete = 2; break;
     case 6: changed->attempted = 0; break;
     case 7: changed->read_complete = 0; break;
     case 8: memset(changed, 0, sizeof(*changed)); break;
@@ -890,6 +924,39 @@ static void make_crypto_result(struct crystalhd_fw_research_crypto_result *resul
     case 22: result->state.control.replies[2].response[3] = 1; break;
     case 23: result->state.control.command_count = 0; break;
     case 24: memset(&result->after_init, 0, sizeof(result->after_init) + sizeof(result->after_open)); break;
+    case 25: changed->target_reads_attempted = 5; break;
+    case 26: changed->guard_reads_complete = 6; break;
+    case 27: changed->target_reads_attempted = 0; break;
+    case 28: changed->guard_reads_complete = 0; break;
+    case 29: changed->target_reads_attempted = 1; changed->guard_reads_complete = 3; break;
+    case 30: changed->guard_reads_complete = 1; changed->gisb_last ^= 2; break;
+    case 31: changed->guard_reads_complete = 2; changed->gisb_before |= 1; break;
+    case 32: changed->gisb_last |= 1; break;
+    case 33:
+        memset(changed, 0, sizeof(*changed)); changed->attempted = 1; changed->status = -EIO;
+        changed->target_reads_attempted = 4; changed->guard_reads_complete = 5;
+        changed->gisb_before = crypto_gisb_values[crypto_stage][0];
+        changed->gisb_last = crypto_gisb_values[crypto_stage][4]; break;
+    case 34:
+        memset(changed, 0, sizeof(*changed)); changed->guard_reads_complete = 1;
+        changed->gisb_before = changed->gisb_last = crypto_gisb_values[crypto_stage][0]; break;
+    case 35:
+        memset(changed, 0, sizeof(*changed)); changed->status = -ETIMEDOUT;
+        changed->guard_reads_complete = 1; changed->gisb_before = changed->gisb_last = 1;
+        result->state.control.status = -ETIMEDOUT; break;
+    case 36: changed->attempted = 0; changed->target_reads_attempted = 1; break;
+    case 37:
+        memset(changed, 0, sizeof(*changed)); changed->status = -EIO; changed->gisb_last = 2; break;
+    case 38: changed->sharf_revision = 1; break;
+    case 39: changed->error_capture_address = 1; break;
+    case 40: changed->error_capture_master = 1; break;
+    case 41: changed->error_capture_complete = 1; break;
+    case 42:
+        changed->error_capture_complete = 0;
+        changed->error_capture_address = 1; break;
+    case 43:
+        changed->error_capture_complete = 0;
+        changed->error_capture_master = 1; break;
     default: CHECK(false);
     }
 }
@@ -1014,7 +1081,7 @@ int probe_ioctl(int fd, unsigned long command, ...)
         struct crystalhd_fw_research_crypto_result *result = argument;
         const unsigned char *bytes = argument;
         unsigned i;
-        CHECK(command == 0xc680529aUL);
+        CHECK(command == 0xc6b0529aUL);
         CHECK(infos == 1 && !runs++ && !crypto_runs++ && !state_runs && !controller_runs &&
               !image_runs && !packet_runs && !heap_runs && !clock_runs && !uart_runs);
         state_submitted = result->state.request;
@@ -1089,6 +1156,15 @@ static void reset(void)
     memset(uart_values, 0, sizeof(uart_values));
     crypto_fault_at = crypto_fault_kind = crypto_mutation = crypto_stage = crypto_word = 0;
     memset(crypto_values, 0, sizeof(crypto_values));
+    crypto_guard_dirty = crypto_capture_suppressed = false;
+    crypto_guard_slot = crypto_guard_value = 0;
+    for (unsigned stage = 0; stage < 2; stage++)
+        for (unsigned guard = 0; guard < 5; guard++)
+            crypto_gisb_values[stage][guard] = 0x20U + stage * 0x200U + guard * 0x40U;
+    for (unsigned stage = 0; stage < 2; stage++) {
+        crypto_capture_values[stage][0] = 0x13570000U + stage;
+        crypto_capture_values[stage][1] = 0x24680000U + stage;
+    }
     output[0] = errors[0] = 0;
     memset(&metadata, 0, sizeof(metadata));
     metadata.version = 1; metadata.size = sizeof(metadata); metadata.generation = 42;
@@ -2474,7 +2550,9 @@ static void test_crypto_state(void)
     };
     static const unsigned forged_control[] = {1, 2, 3, 4, 14, 15, 16, 17, 18, 19, 20,
         37, 38, 39, 40, 44, 45, 47, 54, 56, 57};
-    unsigned i, stage, kind, phase, word, bit;
+    static const uint32_t guard_errors[] = {1, 0x800, 0x1000, 0x1801, UINT32_MAX};
+    static const uint32_t target_addresses[] = {0xf4000, 0xf4004, 0x511000, 0x51000c};
+    unsigned i, stage, kind, phase, word, bit, guard;
     for (i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
         reset(); CHECK(invoke(invalid[i]) == 1 && !opens && !output[0]);
     }
@@ -2492,13 +2570,24 @@ static void test_crypto_state(void)
         CHECK(strstr(output, "\"crypto_state\":true") &&
               strstr(output, "\"register_addresses\":[999424,999428,5312512,5308428]"));
         CHECK(strstr(output, "\"gisb_error_guard_address\":4194516") &&
-              strstr(output, "\"gisb_error_mask\":6145"));
+              strstr(output, "\"gisb_error_mask\":6145") &&
+              strstr(output, "\"gisb_error_capture_address_register\":4194508") &&
+              strstr(output, "\"gisb_error_capture_master_register\":4194520"));
         CHECK(strstr(output, "\"target_register_reads_per_sample\":4") &&
-              strstr(output, "\"guard_reads_per_sample\":2") &&
-              strstr(output, "\"maximum_register_reads\":12"));
+              strstr(output, "\"guard_reads_per_sample\":5") &&
+              strstr(output, "\"successful_sample_register_reads\":9") &&
+              strstr(output, "\"conditional_error_capture_reads_maximum\":2") &&
+              strstr(output, "\"maximum_register_reads_per_sample\":11") &&
+              strstr(output, "\"successful_run_register_reads\":18") &&
+              strstr(output, "\"maximum_register_reads\":20"));
         CHECK(strstr(output, "\"target_register_writes\":false") &&
-              strstr(output, "\"error_clear_writes\":false") && strstr(output, "\"retries\":false"));
+              strstr(output, "\"error_capture_clear_writes\":false") &&
+              strstr(output, "\"retries\":false"));
         CHECK(strstr(output, "\"indirect_gisb_selector_write\":true") &&
+              strstr(output, "\"successful_sample_indirect_gisb_selector_writes\":9") &&
+              strstr(output, "\"maximum_indirect_gisb_selector_writes_per_sample\":11") &&
+              strstr(output, "\"successful_run_indirect_gisb_selector_writes\":18") &&
+              strstr(output, "\"maximum_indirect_gisb_selector_writes\":20") &&
               strstr(output, "\"passive\":false"));
         CHECK(strstr(output, "\"bop_aes_revision_register_present\":false") &&
               strstr(output, "\"bop_gr_bridge_revision_is_aes_core_revision\":false"));
@@ -2506,6 +2595,11 @@ static void test_crypto_state(void)
               strstr(output, "\"sharf_revision\":4294967295") ||
               strstr(output, "\"sharf_revision\":305419896"));
         CHECK(!strstr(output, "\"bop_aes_revision\":"));
+        CHECK(strstr(output, "\"target_reads_attempted\":4,\"guard_reads_complete\":5") &&
+              strstr(output, "\"error_capture_complete\":false,"
+                             "\"error_capture_address\":null,\"error_capture_master\":null") &&
+              strstr(output, "\"guard_failure_observed_after_target_index\":null") &&
+              strstr(output, "\"guard_failure_attribution_causal\":false"));
     }
     for (stage = 0; stage < 2; stage++) for (word = 0; word < 4; word++) for (bit = 0; bit < 32; bit++) {
         reset(); crypto_values[stage][word] = UINT32_C(1) << bit;
@@ -2519,6 +2613,8 @@ static void test_crypto_state(void)
         for (kind = 1; kind <= 6; kind++) {
             reset(); crypto_fault_at = stage + 1; crypto_fault_kind = kind;
             CHECK(invoke(crypto_args) == 1 && output[0] && !strstr(errors, "Invalid crypto-state result"));
+            CHECK(strstr(output, "\"error_capture_complete\":false,"
+                                 "\"error_capture_address\":null,\"error_capture_master\":null"));
             CHECK(strstr(output, "\"sharf_revision\":null,\"sharf_status\":null,"
                          "\"bop_gr_bridge_revision\":null,\"bop_aes_status\":null"));
         }
@@ -2533,8 +2629,52 @@ static void test_crypto_state(void)
         reset(); crypto_stage = stage; sample_fault_at = stage + 2; sample_fault_kind = 1;
         crypto_mutation = 12; CHECK(invoke(crypto_args) == 1 && !output[0]);
     }
+    for (stage = 0; stage < 2; stage++) {
+        reset(); crypto_fault_at = stage + 1; crypto_fault_kind = 1;
+        crypto_guard_dirty = crypto_capture_suppressed = true;
+        crypto_guard_slot = 4; crypto_guard_value = 1;
+        CHECK(invoke(crypto_args) == 1 && output[0] &&
+              !strstr(errors, "Invalid crypto-state result"));
+        CHECK(strstr(output, "\"error_capture_complete\":false,"
+                             "\"error_capture_address\":null,\"error_capture_master\":null"));
+    }
+    for (stage = 0; stage < 2; stage++) for (guard = 0; guard < 5; guard++)
+        for (i = 0; i < sizeof(guard_errors) / sizeof(guard_errors[0]); i++) {
+            reset(); crypto_fault_at = stage + 1; crypto_fault_kind = 1;
+            crypto_guard_dirty = true; crypto_guard_slot = guard; crypto_guard_value = guard_errors[i];
+            CHECK(invoke(crypto_args) == 1 && output[0] && !strstr(errors, "Invalid crypto-state result"));
+            CHECK(strstr(output, "\"error_capture_complete\":true") &&
+                  strstr(output, "\"error_capture_address\":") &&
+                  strstr(output, "\"error_capture_master\":"));
+            if (!guard) {
+                CHECK(strstr(output, "\"target_reads_attempted\":0,\"guard_reads_complete\":1"));
+                CHECK(strstr(output, "\"guard_failure_observed_after_target_index\":null"));
+                CHECK(strstr(output, "\"guard_failure_observed_after_target_address\":null"));
+            } else {
+                char needle[192];
+                snprintf(needle, sizeof(needle),
+                    "\"guard_failure_observed_after_target_index\":%u,"
+                    "\"guard_failure_observed_after_target_address\":%u",
+                    guard - 1, target_addresses[guard - 1]);
+                CHECK(strstr(output, needle));
+            }
+        }
     for (i = 16; i <= 24; i++) {
         reset(); crypto_mutation = i; CHECK(invoke(crypto_args) == 1 && !output[0]);
+    }
+    for (i = 25; i <= 38; i++) {
+        reset(); crypto_stage = i & 1; crypto_fault_at = crypto_stage + 1; crypto_fault_kind = 1;
+        crypto_mutation = i; CHECK(invoke(crypto_args) == 1 && !output[0]);
+    }
+    for (i = 39; i <= 41; i++) {
+        reset(); crypto_mutation = i;
+        CHECK(invoke(crypto_args) == 1 && !output[0]);
+    }
+    for (i = 42; i <= 43; i++) {
+        reset(); crypto_stage = i & 1; crypto_fault_at = crypto_stage + 1;
+        crypto_fault_kind = 1; crypto_guard_dirty = true;
+        crypto_guard_slot = 2; crypto_guard_value = 1; crypto_mutation = i;
+        CHECK(invoke(crypto_args) == 1 && !output[0]);
     }
     for (i = 0; i < sizeof(forged_control) / sizeof(forged_control[0]); i++) {
         reset(); mutation = forged_control[i]; CHECK(invoke(crypto_args) == 1 && !output[0]);
@@ -2573,7 +2713,8 @@ static void test_crypto_state(void)
 
 static void crypto_json_examples(void)
 {
-    unsigned value, stage, kind, phase, word;
+    static const uint32_t guard_errors[] = {1, 0x800, 0x1000, 0x1801, UINT32_MAX};
+    unsigned value, stage, kind, phase, word, guard;
     for (value = 0; value < 3; value++) {
         reset();
         for (stage = 0; stage < 2; stage++) for (word = 0; word < 4; word++)
@@ -2600,6 +2741,19 @@ static void crypto_json_examples(void)
         CHECK(invoke(crypto_args) == 1 && output[0]); fputs(output, stdout);
     }
     reset(); close_error = EINTR; CHECK(invoke(crypto_args) == 1 && output[0]); fputs(output, stdout);
+    for (stage = 1; stage <= 2; stage++) for (guard = 0; guard < 5; guard++)
+        for (value = 0; value < sizeof(guard_errors) / sizeof(guard_errors[0]); value++) {
+            reset(); crypto_fault_at = stage; crypto_fault_kind = 1;
+            crypto_guard_dirty = true; crypto_guard_slot = guard;
+            crypto_guard_value = guard_errors[value];
+            CHECK(invoke(crypto_args) == 1 && output[0]); fputs(output, stdout);
+        }
+    for (stage = 1; stage <= 2; stage++) {
+        reset(); crypto_fault_at = stage; crypto_fault_kind = 1;
+        crypto_guard_dirty = crypto_capture_suppressed = true;
+        crypto_guard_slot = 4; crypto_guard_value = 1;
+        CHECK(invoke(crypto_args) == 1 && output[0]); fputs(output, stdout);
+    }
 }
 
 static void uart_json_examples(void)

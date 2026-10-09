@@ -250,11 +250,17 @@ struct crystalhd_fw_research_crypto_sample {
 	__s32 status;
 	/* Fixed raw state reads only; the indirect GISB selector is programmed. */
 	__u32 read_complete;
-	__u32 reserved;
+	__u32 error_capture_complete;
+	__u32 target_reads_attempted;
+	__u32 guard_reads_complete;
+	__u32 gisb_before;
+	__u32 gisb_last;
 	__u32 sharf_revision;
 	__u32 sharf_status;
 	__u32 bop_gr_bridge_revision;
 	__u32 bop_aes_status;
+	__u32 error_capture_address;
+	__u32 error_capture_master;
 };
 
 struct crystalhd_fw_research_crypto_result {
