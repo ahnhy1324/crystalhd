@@ -37,6 +37,12 @@ struct _BC_DTS_PROC_OUT;
 #define UART_ARM_CTL_ADDRESS 0x000f3004U
 #define UART_PIN_MUX_ADDRESS 0x00404100U
 #define UART_ROUTER_ADDRESS 0x0040421cU
+#define CRYPTO_SHARF_REVISION_ADDRESS 0x000f4000U
+#define CRYPTO_SHARF_STATUS_ADDRESS 0x000f4004U
+#define CRYPTO_BOP_GR_BRIDGE_REVISION_ADDRESS 0x00511000U
+#define CRYPTO_BOP_AES_STATUS_ADDRESS 0x0051000cU
+#define CRYPTO_GISB_ERROR_STATUS_ADDRESS 0x004000d4U
+#define CRYPTO_GISB_ERROR_MASK 0x00001801U
 
 enum action {
 	ACTION_NONE, ACTION_INFO, ACTION_VERSION, ACTION_H264,
@@ -48,6 +54,7 @@ enum action {
 	ACTION_HEAP_PACKET,
 	ACTION_CLOCK_STATE,
 	ACTION_UART_STATE,
+	ACTION_CRYPTO_STATE,
 };
 
 struct options {
@@ -90,6 +97,8 @@ static void usage(FILE *stream)
 	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
 	      "       flea-fw-probe --uart-state\n"
 	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
+	      "       flea-fw-probe --crypto-state\n"
+	      "         --acknowledge-card-reset --expected-generation DECIMAL\n"
 	      "       flea-fw-probe --help\n"
 	      "\n"
 	      "The live selectors reload firmware and reset an idle card. They do\n"
@@ -117,6 +126,9 @@ static void usage(FILE *stream)
 	      "UART-state reads three fixed configuration registers after verified\n"
 	      "INIT and OPEN, without status/FIFO reads or UART writes. Raw values\n"
 	      "do not prove board pads, voltage, measured baud or console availability.\n"
+	      "Crypto-state reads four fixed raw state registers after verified INIT\n"
+	      "and OPEN, bracketed by GISB error-status reads. It never reads keys,\n"
+	      "contexts, IVs or nonces and does not establish algorithm support.\n"
 	      "Use --info first;\n"
 	      "it reports metadata only, including the bound device generation.\n"
 	      "The separate research device requires CAP_SYS_RAWIO and an opt-in\n"
@@ -193,6 +205,8 @@ static bool parse_options(int argc, char **argv, struct options *options)
 			action = ACTION_CLOCK_STATE;
 		else if (!strcmp(argv[i], "--uart-state"))
 			action = ACTION_UART_STATE;
+		else if (!strcmp(argv[i], "--crypto-state"))
+			action = ACTION_CRYPTO_STATE;
 		else if (!strcmp(argv[i], "--acknowledge-card-reset")) {
 			if (options->acknowledge)
 				return false;
@@ -607,6 +621,79 @@ static bool uart_result_valid(const struct crystalhd_fw_research_uart_result *re
 	    (control->command_count > 3 && !uart_sample_succeeded(samples[1])) ||
 	    (!control->status && (!uart_sample_succeeded(samples[0]) ||
 				 !uart_sample_succeeded(samples[1]))))
+		return false;
+	return true;
+}
+
+static bool crypto_sample_succeeded(
+	const struct crystalhd_fw_research_crypto_sample *sample)
+{
+	return sample->attempted && sample->read_complete && !sample->status;
+}
+
+static bool crypto_result_valid(
+	const struct crystalhd_fw_research_crypto_result *result,
+	const struct crystalhd_fw_research_state_request *request, uint64_t generation)
+{
+	const struct crystalhd_fw_research_state_result *state = &result->state;
+	const struct crystalhd_fw_research_result *control = &state->control;
+	const struct crystalhd_fw_research_crypto_sample *samples[] = {
+		&result->after_init, &result->after_open,
+	};
+	const struct crystalhd_fw_research_state_sample *prerequisites[] = {
+		&state->after_init, &state->after_open,
+	};
+	unsigned int i;
+
+	if (!state_result_valid(state, request, generation) ||
+	    (!control->download_attempted && control->download_status != BC_STS_SUCCESS) ||
+	    (control->command_count && control->download_status != BC_STS_SUCCESS) ||
+	    (control->cleanup_attempted &&
+	     (!control->download_attempted || !control->firmware_hash_valid ||
+	      !digest_matches(control->firmware_sha256))) ||
+	    (!control->cleanup_attempted &&
+	     (control->cleanup_status != BC_STS_SUCCESS &&
+	      control->cleanup_status != BC_STS_CMD_CANCELLED)) ||
+	    (!control->cleanup_attempted && control->download_attempted &&
+	     control->cleanup_status != BC_STS_CMD_CANCELLED))
+		return false;
+	for (i = control->command_count; i < CRYSTALHD_FW_RESEARCH_MAX_COMMANDS; i++) {
+		const struct crystalhd_fw_research_reply zero = { 0 };
+
+		if (memcmp(&control->replies[i], &zero, sizeof(zero)))
+			return false;
+	}
+	if (state_sample_succeeded(&state->calibration) &&
+	    !state->after_init.attempted && !state->after_init.status)
+		return false;
+	for (i = 0; i < sizeof(samples) / sizeof(samples[0]); i++) {
+		const struct crystalhd_fw_research_crypto_sample *sample = samples[i];
+		bool active = sample->attempted || sample->status || sample->read_complete;
+
+		if (sample->attempted > 1 || sample->read_complete > 1 || sample->reserved ||
+		    sample->status > 0 || sample->status < -4095 ||
+		    active != state_sample_succeeded(prerequisites[i]))
+			return false;
+		if (sample->read_complete) {
+			/* Every raw state bit pattern is admissible. */
+			if (!sample->attempted || sample->status)
+				return false;
+		} else if (sample->sharf_revision || sample->sharf_status ||
+			   sample->bop_gr_bridge_revision || sample->bop_aes_status ||
+			   (sample->attempted && !sample->status)) {
+			return false;
+		}
+		if (active && (!state_sample_succeeded(&state->calibration) ||
+			       (i && !crypto_sample_succeeded(samples[0]))))
+			return false;
+		if (sample->status &&
+		    (control->status != sample->status || control->command_count != (i ? 3U : 2U)))
+			return false;
+	}
+	if ((control->command_count > 2 && !crypto_sample_succeeded(samples[0])) ||
+	    (control->command_count > 3 && !crypto_sample_succeeded(samples[1])) ||
+	    (!control->status && (!crypto_sample_succeeded(samples[0]) ||
+				 !crypto_sample_succeeded(samples[1]))))
 		return false;
 	return true;
 }
@@ -1070,6 +1157,63 @@ static void print_uart_result(const struct crystalhd_fw_research_uart_result *re
 	       UART_ARM_CTL_ADDRESS, UART_PIN_MUX_ADDRESS, UART_ROUTER_ADDRESS);
 }
 
+static void print_crypto_sample(
+	const struct crystalhd_fw_research_crypto_sample *sample)
+{
+	printf("{\"attempted\":%s,\"status\":%" PRId32 ",\"read_complete\":%s,"
+	       "\"sharf_revision\":",
+	       sample->attempted ? "true" : "false", (int32_t)sample->status,
+	       sample->read_complete ? "true" : "false");
+	if (sample->read_complete)
+		printf("%" PRIu32 ",\"sharf_status\":%" PRIu32
+		       ",\"bop_gr_bridge_revision\":%" PRIu32
+		       ",\"bop_aes_status\":%" PRIu32,
+		       (uint32_t)sample->sharf_revision, (uint32_t)sample->sharf_status,
+		       (uint32_t)sample->bop_gr_bridge_revision,
+		       (uint32_t)sample->bop_aes_status);
+	else
+		fputs("null,\"sharf_status\":null,\"bop_gr_bridge_revision\":null,"
+		      "\"bop_aes_status\":null", stdout);
+	putchar('}');
+}
+
+static void print_crypto_result(
+	const struct crystalhd_fw_research_crypto_result *result)
+{
+	printf("{\"version\":%" PRIu32 ",\"crypto_state\":true,\"control\":",
+	       (uint32_t)result->state.request.version);
+	print_result_object(&result->state.control);
+	fputs(",\"fixed_state_samples\":{\"calibration\":", stdout);
+	print_state_sample(&result->state.calibration);
+	fputs(",\"after_init\":", stdout);
+	print_state_sample(&result->state.after_init);
+	fputs(",\"after_open\":", stdout);
+	print_state_sample(&result->state.after_open);
+	fputs("},\"crypto_samples\":{\"after_init\":", stdout);
+	print_crypto_sample(&result->after_init);
+	fputs(",\"after_open\":", stdout);
+	print_crypto_sample(&result->after_open);
+	printf("},\"scope\":{\"register_addresses\":[%" PRIu32 ",%" PRIu32
+	       ",%" PRIu32 ",%" PRIu32 "],\"gisb_error_guard_address\":%" PRIu32
+	       ",\"gisb_error_mask\":%" PRIu32
+	       ",\"target_register_reads_per_sample\":4,\"guard_reads_per_sample\":2,"
+	       "\"reads_per_sample\":6,\"maximum_register_reads\":12,"
+	       "\"raw_values_only\":true,\"target_register_writes\":false,"
+	       "\"error_clear_writes\":false,\"retries\":false,"
+	       "\"indirect_gisb_selector_write\":true,\"passive\":false,"
+	       "\"bop_aes_revision_register_present\":false,"
+	       "\"bop_gr_bridge_revision_is_aes_core_revision\":false,"
+	       "\"sha_cmac_context_reads\":false,"
+	       "\"key_iv_nonce_otp_scrub_reads\":false,"
+	       "\"engine_enable_or_start_writes\":false,"
+	       "\"algorithm_support_established\":false,"
+	       "\"independent_fetch_errors_certified\":false,"
+	       "\"atomic_coherence_established\":false}}\n",
+	       CRYPTO_SHARF_REVISION_ADDRESS, CRYPTO_SHARF_STATUS_ADDRESS,
+	       CRYPTO_BOP_GR_BRIDGE_REVISION_ADDRESS, CRYPTO_BOP_AES_STATUS_ADDRESS,
+	       CRYPTO_GISB_ERROR_STATUS_ADDRESS, CRYPTO_GISB_ERROR_MASK);
+}
+
 static void print_controller_sample(
 	const struct crystalhd_fw_research_controller_sample *sample)
 {
@@ -1285,6 +1429,7 @@ int main(int argc, char **argv)
 	struct crystalhd_fw_research_heap_packet_result heap_packet_result = { 0 };
 	struct crystalhd_fw_research_clock_result clock_result = { 0 };
 	struct crystalhd_fw_research_uart_result uart_result = { 0 };
+	struct crystalhd_fw_research_crypto_result crypto_result = { 0 };
 	struct options options;
 	struct stat statbuf;
 	bool have_info = false, have_result = false, have_state = false, have_controller = false;
@@ -1292,6 +1437,7 @@ int main(int argc, char **argv)
 	bool have_heap_packet = false;
 	bool have_clock = false;
 	bool have_uart = false;
+	bool have_crypto = false;
 	int fd = -1, rc = 1;
 
 	if (argc == 2 && !strcmp(argv[1], "--help")) {
@@ -1346,6 +1492,7 @@ int main(int argc, char **argv)
 	case ACTION_HEAP_PACKET:
 	case ACTION_CLOCK_STATE:
 	case ACTION_UART_STATE:
+	case ACTION_CRYPTO_STATE:
 		request.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
 		break;
 	case ACTION_H261:
@@ -1381,6 +1528,28 @@ int main(int argc, char **argv)
 	}
 	if (!(info.selector_mask & (1U << (request.selector - 1)))) {
 		fputs("Research selector unavailable; no live command attempted.\n", stderr);
+		goto out;
+	}
+	if (options.action == ACTION_CRYPTO_STATE) {
+		const struct crystalhd_fw_research_result *control = &crypto_result.state.control;
+
+		state_request.version = CRYSTALHD_FW_RESEARCH_VERSION;
+		state_request.size = sizeof(crypto_result);
+		crypto_result.state.request = state_request;
+		if (ioctl(fd, CRYSTALHD_FW_RESEARCH_RUN_CRYPTO, &crypto_result) < 0) {
+			perror("run crypto-state readback");
+			fputs("Device state may have changed; no retry was attempted.\n", stderr);
+			goto out;
+		}
+		if (control->retained)
+			fputs("Research resources remain retained. Do not force unload the driver.\n", stderr);
+		if (!crypto_result_valid(&crypto_result, &state_request, info.generation)) {
+			fputs("Invalid crypto-state result; no further command attempted.\n", stderr);
+			goto out;
+		}
+		have_crypto = true;
+		rc = control->status || control->retained ||
+			(control->cleanup_attempted && control->cleanup_status != BC_STS_SUCCESS) ? 1 : 0;
 		goto out;
 	}
 	if (options.action == ACTION_UART_STATE) {
@@ -1574,6 +1743,8 @@ out:
 		print_clock_result(&clock_result);
 	if (have_uart)
 		print_uart_result(&uart_result);
+	if (have_crypto)
+		print_crypto_result(&crypto_result);
 	if (output_finish())
 		rc = 1;
 	return rc;

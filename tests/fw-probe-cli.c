@@ -17,7 +17,7 @@ struct _BC_DTS_PROC_OUT;
 #include "crystalhd_fw_research.h"
 
 int crystalhd_probe_main(int argc, char **argv);
-static unsigned checks, opens, stats, infos, runs, state_runs, controller_runs, image_runs, packet_runs, heap_runs, clock_runs, uart_runs, closes;
+static unsigned checks, opens, stats, infos, runs, state_runs, controller_runs, image_runs, packet_runs, heap_runs, clock_runs, uart_runs, crypto_runs, closes;
 static int open_error, stat_error, info_error, run_error, close_error;
 static bool character, output_error, flush_error;
 static struct crystalhd_fw_research_info metadata;
@@ -42,6 +42,8 @@ static unsigned clock_fault_at, clock_fault_kind, clock_mutation, clock_stage, c
 static uint32_t clock_values[2][3];
 static unsigned uart_fault_at, uart_fault_kind, uart_mutation, uart_stage, uart_word;
 static uint32_t uart_values[2][3];
+static unsigned crypto_fault_at, crypto_fault_kind, crypto_mutation, crypto_stage, crypto_word;
+static uint32_t crypto_values[2][4];
 static const uint32_t commands[] = {eCMD_C011_INIT, eCMD_C011_GET_VERSION,
     eCMD_C011_DEC_CHAN_OPEN, eCMD_C011_DEC_CHAN_STATUS, eCMD_C011_DEC_CHAN_CLOSE};
 static const uint32_t raw_commands[] = {eCMD_C011_DEC_CHAN_SCALING_FILTERS,
@@ -819,6 +821,79 @@ static void make_uart_result(struct crystalhd_fw_research_uart_result *result)
     }
 }
 
+static void make_crypto_result(struct crystalhd_fw_research_crypto_result *result)
+{
+    struct crystalhd_fw_research_crypto_sample *samples[] = {&result->after_init, &result->after_open};
+    struct crystalhd_fw_research_state_sample *prerequisites[] = {&result->state.after_init, &result->state.after_open};
+    struct crystalhd_fw_research_crypto_sample *changed;
+    unsigned i, count;
+    memset(result, 0, sizeof(*result)); make_state_result(&result->state);
+    CHECK(crypto_stage < 2 && crypto_word < 4);
+    if (result->state.control.command_count <= CRYSTALHD_FW_RESEARCH_MAX_COMMANDS)
+        memset(result->state.control.replies + result->state.control.command_count, 0,
+               (CRYSTALHD_FW_RESEARCH_MAX_COMMANDS - result->state.control.command_count) *
+               sizeof(result->state.control.replies[0]));
+    if (mutation == 35) result->state.control.cleanup_status = BC_STS_CMD_CANCELLED;
+    for (i = 0; i < 2; i++) {
+        if (!prerequisites[i]->attempted || !prerequisites[i]->read_complete || prerequisites[i]->status) break;
+        samples[i]->attempted = samples[i]->read_complete = 1;
+        samples[i]->sharf_revision = crypto_values[i][0];
+        samples[i]->sharf_status = crypto_values[i][1];
+        samples[i]->bop_gr_bridge_revision = crypto_values[i][2];
+        samples[i]->bop_aes_status = crypto_values[i][3];
+    }
+    if (crypto_fault_at) {
+        CHECK(crypto_fault_at <= 2 && crypto_fault_kind >= 1 && crypto_fault_kind <= 6);
+        changed = samples[crypto_fault_at - 1]; count = crypto_fault_at + 1;
+        memset(changed, 0, sizeof(*changed));
+        changed->attempted = crypto_fault_kind != 2 && crypto_fault_kind < 5;
+        changed->status = crypto_fault_kind == 2 ? -ENODEV : crypto_fault_kind == 3 ? -ETIMEDOUT :
+            crypto_fault_kind == 4 ? -4095 : crypto_fault_kind == 5 ? -EAGAIN :
+            crypto_fault_kind == 6 ? -512 : -EIO;
+        result->state.control.status = changed->status; result->state.control.command_count = count;
+        memset(result->state.control.replies + count, 0,
+               (CRYSTALHD_FW_RESEARCH_MAX_COMMANDS - count) * sizeof(result->state.control.replies[0]));
+        if (crypto_fault_at == 1) {
+            memset(&result->state.after_open, 0, sizeof(result->state.after_open));
+            memset(samples[1], 0, sizeof(*samples[1]));
+        }
+    }
+    changed = samples[crypto_stage];
+    switch (crypto_mutation) {
+    case 0: break;
+    case 1: changed->attempted = 2; break;
+    case 2: changed->read_complete = 2; break;
+    case 3: changed->status = 1; break;
+    case 4: changed->status = -4096; break;
+    case 5: changed->reserved = 1; break;
+    case 6: changed->attempted = 0; break;
+    case 7: changed->read_complete = 0; break;
+    case 8: memset(changed, 0, sizeof(*changed)); break;
+    case 9: changed->status = -EIO; break;
+    case 10: changed->status = 0; break;
+    case 11:
+        if (!crypto_word) changed->sharf_revision = 1;
+        else if (crypto_word == 1) changed->sharf_status = 1;
+        else if (crypto_word == 2) changed->bop_gr_bridge_revision = 1;
+        else changed->bop_aes_status = 1;
+        break;
+    case 12: changed->read_complete = 1; break;
+    case 13: result->state.control.replies[4].response[63] = 1; break;
+    case 14: result->state.control.status = 0; break;
+    case 15: result->state.control.command_count++; break;
+    case 16: result->state.control.cleanup_attempted = 0; break;
+    case 17: result->state.control.download_attempted = 0; break;
+    case 18: result->state.control.download_status = BC_STS_IO_ERROR; break;
+    case 19: result->state.control.request.size = sizeof(*result); break;
+    case 20: result->state.control.replies[0].response[0]++; break;
+    case 21: result->state.control.replies[1].response[1]++; break;
+    case 22: result->state.control.replies[2].response[3] = 1; break;
+    case 23: result->state.control.command_count = 0; break;
+    case 24: memset(&result->after_init, 0, sizeof(result->after_init) + sizeof(result->after_open)); break;
+    default: CHECK(false);
+    }
+}
+
 int probe_ioctl(int fd, unsigned long command, ...)
 {
     void *argument; va_list args;
@@ -935,6 +1010,23 @@ int probe_ioctl(int fd, unsigned long command, ...)
         if (run_error) { errno = run_error; return -1; }
         make_uart_result(result); return 0;
     }
+    if (command == CRYSTALHD_FW_RESEARCH_RUN_CRYPTO) {
+        struct crystalhd_fw_research_crypto_result *result = argument;
+        const unsigned char *bytes = argument;
+        unsigned i;
+        CHECK(command == 0xc680529aUL);
+        CHECK(infos == 1 && !runs++ && !crypto_runs++ && !state_runs && !controller_runs &&
+              !image_runs && !packet_runs && !heap_runs && !clock_runs && !uart_runs);
+        state_submitted = result->state.request;
+        CHECK(state_submitted.version == 1 && state_submitted.size == sizeof(*result));
+        CHECK(!state_submitted.flags && !state_submitted.reserved);
+        for (i = sizeof(result->state.request); i < sizeof(*result); i++) CHECK(!bytes[i]);
+        memset(&submitted, 0, sizeof(submitted));
+        submitted.version = 1; submitted.size = sizeof(result->state.control);
+        submitted.selector = CRYSTALHD_FW_RESEARCH_H264_CONTROL;
+        if (run_error) { errno = run_error; return -1; }
+        make_crypto_result(result); return 0;
+    }
     CHECK(command == CRYSTALHD_FW_RESEARCH_RUN && infos == 1 && !runs++);
     submitted = ((struct crystalhd_fw_research_result *)argument)->request;
     CHECK(submitted.version == 1 && submitted.size == sizeof(struct crystalhd_fw_research_result));
@@ -972,7 +1064,7 @@ int __wrap_ioctl(int fd, unsigned long command, ...)
 
 static void reset(void)
 {
-    opens = stats = infos = runs = state_runs = controller_runs = image_runs = packet_runs = heap_runs = clock_runs = uart_runs = closes = 0;
+    opens = stats = infos = runs = state_runs = controller_runs = image_runs = packet_runs = heap_runs = clock_runs = uart_runs = crypto_runs = closes = 0;
     open_error = stat_error = info_error = run_error = close_error = 0;
     character = true; output_error = flush_error = false;
     mutation = fault_at = fault_kind = response_pattern = 0;
@@ -995,6 +1087,8 @@ static void reset(void)
     memset(clock_values, 0, sizeof(clock_values));
     uart_fault_at = uart_fault_kind = uart_mutation = uart_stage = uart_word = 0;
     memset(uart_values, 0, sizeof(uart_values));
+    crypto_fault_at = crypto_fault_kind = crypto_mutation = crypto_stage = crypto_word = 0;
+    memset(crypto_values, 0, sizeof(crypto_values));
     output[0] = errors[0] = 0;
     memset(&metadata, 0, sizeof(metadata));
     metadata.version = 1; metadata.size = sizeof(metadata); metadata.generation = 42;
@@ -1018,6 +1112,7 @@ static char *packet_args[] = {"probe", "--controller-packet", "--acknowledge-car
 static char *heap_args[] = {"probe", "--heap-packet", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *clock_args[] = {"probe", "--clock-state", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *uart_args[] = {"probe", "--uart-state", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
+static char *crypto_args[] = {"probe", "--crypto-state", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *h261_args[] = {"probe", "--h261-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *h263_args[] = {"probe", "--h263-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
 static char *mpeg1_args[] = {"probe", "--mpeg1-control", "--acknowledge-card-reset", "--expected-generation", "42", NULL};
@@ -2366,6 +2461,147 @@ static void test_uart_state(void)
     }
 }
 
+static void test_crypto_state(void)
+{
+    char *invalid[][10] = {
+        {"probe", "--crypto-state", NULL},
+        {"probe", "--crypto-state", "--acknowledge-card-reset", NULL},
+        {"probe", "--crypto-state", "--expected-generation", "42", NULL},
+        {"probe", "--crypto-state", "--crypto-state", "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+        {"probe", "--crypto-state", "--acknowledge-card-reset", "--expected-generation", "42", "--address", "0", NULL},
+        {"probe", "--crypto-state", "--acknowledge-card-reset", "--expected-generation", "42", "--write", "0", NULL},
+        {"probe", "--crypto-state=1", "--acknowledge-card-reset", "--expected-generation", "42", NULL},
+    };
+    static const unsigned forged_control[] = {1, 2, 3, 4, 14, 15, 16, 17, 18, 19, 20,
+        37, 38, 39, 40, 44, 45, 47, 54, 56, 57};
+    unsigned i, stage, kind, phase, word, bit;
+    for (i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        reset(); CHECK(invoke(invalid[i]) == 1 && !opens && !output[0]);
+    }
+    {
+        char *conflict[] = {"probe", "--crypto-state", "--uart-state",
+            "--acknowledge-card-reset", "--expected-generation", "42", NULL};
+        reset(); CHECK(invoke(conflict) == 1 && !opens && !output[0]);
+    }
+    for (i = 0; i < 3; i++) {
+        reset();
+        for (stage = 0; stage < 2; stage++) for (word = 0; word < 4; word++)
+            crypto_values[stage][word] = i == 1 ? UINT32_MAX : i == 2 ? 0x12345678U + stage * 4 + word : 0;
+        CHECK(!invoke(crypto_args) && crypto_runs == 1 && !state_runs && !controller_runs &&
+              !image_runs && !packet_runs && !heap_runs && !clock_runs && !uart_runs);
+        CHECK(strstr(output, "\"crypto_state\":true") &&
+              strstr(output, "\"register_addresses\":[999424,999428,5312512,5308428]"));
+        CHECK(strstr(output, "\"gisb_error_guard_address\":4194516") &&
+              strstr(output, "\"gisb_error_mask\":6145"));
+        CHECK(strstr(output, "\"target_register_reads_per_sample\":4") &&
+              strstr(output, "\"guard_reads_per_sample\":2") &&
+              strstr(output, "\"maximum_register_reads\":12"));
+        CHECK(strstr(output, "\"target_register_writes\":false") &&
+              strstr(output, "\"error_clear_writes\":false") && strstr(output, "\"retries\":false"));
+        CHECK(strstr(output, "\"indirect_gisb_selector_write\":true") &&
+              strstr(output, "\"passive\":false"));
+        CHECK(strstr(output, "\"bop_aes_revision_register_present\":false") &&
+              strstr(output, "\"bop_gr_bridge_revision_is_aes_core_revision\":false"));
+        CHECK(strstr(output, "\"sharf_revision\":0") ||
+              strstr(output, "\"sharf_revision\":4294967295") ||
+              strstr(output, "\"sharf_revision\":305419896"));
+        CHECK(!strstr(output, "\"bop_aes_revision\":"));
+    }
+    for (stage = 0; stage < 2; stage++) for (word = 0; word < 4; word++) for (bit = 0; bit < 32; bit++) {
+        reset(); crypto_values[stage][word] = UINT32_C(1) << bit;
+        CHECK(!invoke(crypto_args) && crypto_runs == 1);
+    }
+    for (stage = 0; stage < 2; stage++) {
+        for (i = 1; i <= 9; i++) {
+            reset(); crypto_stage = stage; crypto_mutation = i;
+            CHECK(invoke(crypto_args) == 1 && !output[0]);
+        }
+        for (kind = 1; kind <= 6; kind++) {
+            reset(); crypto_fault_at = stage + 1; crypto_fault_kind = kind;
+            CHECK(invoke(crypto_args) == 1 && output[0] && !strstr(errors, "Invalid crypto-state result"));
+            CHECK(strstr(output, "\"sharf_revision\":null,\"sharf_status\":null,"
+                         "\"bop_gr_bridge_revision\":null,\"bop_aes_status\":null"));
+        }
+        for (i = 10; i <= 15; i++) {
+            unsigned words = i == 11 ? 4 : 1;
+            for (word = 0; word < words; word++) {
+                reset(); crypto_stage = stage; crypto_fault_at = stage + 1; crypto_fault_kind = 1;
+                crypto_mutation = i; crypto_word = word;
+                CHECK(invoke(crypto_args) == 1 && !output[0]);
+            }
+        }
+        reset(); crypto_stage = stage; sample_fault_at = stage + 2; sample_fault_kind = 1;
+        crypto_mutation = 12; CHECK(invoke(crypto_args) == 1 && !output[0]);
+    }
+    for (i = 16; i <= 24; i++) {
+        reset(); crypto_mutation = i; CHECK(invoke(crypto_args) == 1 && !output[0]);
+    }
+    for (i = 0; i < sizeof(forged_control) / sizeof(forged_control[0]); i++) {
+        reset(); mutation = forged_control[i]; CHECK(invoke(crypto_args) == 1 && !output[0]);
+    }
+    for (i = 1; i <= 40; i++) {
+        if (i == 39 || i == 40) continue;
+        reset(); state_mutation = i;
+        if (i == 30 || i == 31) { sample_fault_at = 2; sample_fault_kind = 1; }
+        CHECK(invoke(crypto_args) == 1 && !output[0]);
+    }
+    for (phase = 1; phase <= 5; phase++) for (kind = 1; kind <= 7; kind++) {
+        if (kind == 6 && phase != 3) continue;
+        reset(); fault_at = phase; fault_kind = kind;
+        CHECK(invoke(crypto_args) == 1 && output[0] && !strstr(errors, "Invalid crypto-state result"));
+    }
+    for (i = 0; i < 12; i++) {
+        reset();
+        if (i == 0) metadata.selector_mask = 1;
+        if (i == 1) metadata.generation++;
+        if (i == 2) open_error = ENOENT;
+        if (i == 3) stat_error = EIO;
+        if (i == 4) info_error = ENOTTY;
+        if (i == 5) character = false;
+        if (i == 6) run_error = ENOTTY;
+        if (i == 7) run_error = EINTR;
+        if (i == 8) close_error = EINTR;
+        if (i == 9) output_error = true;
+        if (i == 10) flush_error = true;
+        if (i == 11) metadata.reserved[0] = 1;
+        CHECK(invoke(crypto_args) == 1);
+        if (i < 6 || i == 11) CHECK(!runs && !output[0]);
+        if (i == 6 || i == 7) CHECK(crypto_runs == 1 && !output[0] && strstr(errors, "no retry"));
+        if (i >= 8 && i <= 10) CHECK(crypto_runs == 1 && output[0]);
+    }
+}
+
+static void crypto_json_examples(void)
+{
+    unsigned value, stage, kind, phase, word;
+    for (value = 0; value < 3; value++) {
+        reset();
+        for (stage = 0; stage < 2; stage++) for (word = 0; word < 4; word++)
+            crypto_values[stage][word] = value == 1 ? UINT32_MAX : value == 2 ? 0x12345678U + stage * 4 + word : 0;
+        CHECK(!invoke(crypto_args)); fputs(output, stdout);
+    }
+    for (stage = 1; stage <= 2; stage++) for (kind = 1; kind <= 6; kind++) {
+        reset(); crypto_fault_at = stage; crypto_fault_kind = kind;
+        CHECK(invoke(crypto_args) == 1 && output[0]); fputs(output, stdout);
+    }
+    for (stage = 1; stage <= 3; stage++) for (kind = 1; kind <= 9; kind += 8) {
+        reset(); sample_fault_at = stage; sample_fault_kind = kind;
+        CHECK(invoke(crypto_args) == 1 && output[0]); fputs(output, stdout);
+    }
+    for (phase = 1; phase <= 5; phase++) {
+        reset(); fault_at = phase; fault_kind = 2;
+        CHECK(invoke(crypto_args) == 1 && output[0]); fputs(output, stdout);
+    }
+    for (value = 51; value <= 52; value++) {
+        reset(); mutation = value; CHECK(invoke(crypto_args) == 1 && output[0]); fputs(output, stdout);
+    }
+    for (stage = 1; stage <= 2; stage++) {
+        reset(); crypto_fault_at = stage; crypto_fault_kind = 1; mutation = 52;
+        CHECK(invoke(crypto_args) == 1 && output[0]); fputs(output, stdout);
+    }
+    reset(); close_error = EINTR; CHECK(invoke(crypto_args) == 1 && output[0]); fputs(output, stdout);
+}
+
 static void uart_json_examples(void)
 {
     unsigned value, stage, kind, phase, word;
@@ -2471,6 +2707,9 @@ static void heap_packet_json_examples(void)
 
 int main(int argc, char **argv)
 {
+    if (argc == 2 && !strcmp(argv[1], "--crypto-json-examples")) {
+        crypto_json_examples(); return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--uart-json-examples")) {
         uart_json_examples(); return 0;
     }
@@ -2554,7 +2793,7 @@ int main(int argc, char **argv)
         return 0;
     }
     CHECK(argc == 1);
-    test_arguments(); test_metadata(); test_errors(); test_results(); test_named_controls(); test_decoding(); test_raw_commands(); test_fixed_state(); test_controller_root(); test_controller_image(); test_controller_packet(); test_heap_packet(); test_clock_state(); test_uart_state();
+    test_arguments(); test_metadata(); test_errors(); test_results(); test_named_controls(); test_decoding(); test_raw_commands(); test_fixed_state(); test_controller_root(); test_controller_image(); test_controller_packet(); test_heap_packet(); test_clock_state(); test_uart_state(); test_crypto_state();
     printf("Firmware probe CLI: %u checks passed\n", checks);
     return 0;
 }

@@ -132,6 +132,37 @@ assert 'pfnReadDevRegister(ctx->adp, registers[i])' in uart_sampler
 assert not re.search(r'pfn(?:WriteDevRegister|DevDRAMRead|DevDRAMWrite)\s*\(', uart_sampler)
 assert 'pfnReadDevRegister(ctx->adp, registers[i])' in clock_sampler
 assert not re.search(r'pfn(?:WriteDevRegister|DevDRAMRead|DevDRAMWrite)\s*\(', clock_sampler)
+crypto_sampler = re.search(r'static int crystalhd_fw_research_crypto_sample\(.*?\n}', source, re.S).group(0)
+crypto_registers = re.search(r'registers\[\]\s*=\s*\{(.*?)\}', crypto_sampler, re.S).group(1)
+assert re.findall(r'BCHP_\w+', crypto_registers) == [
+    'BCHP_SHARF_TOP_REVISION', 'BCHP_SHARF_TOP_STATUS',
+    'BCHP_BOP_GR_BRIDGE_REVISION', 'BCHP_BOP_AES_STATUS']
+for name, header, cli_name, value in (
+        ('BCHP_SHARF_TOP_REVISION', 'bchp_sharf_top.h', 'CRYPTO_SHARF_REVISION_ADDRESS', 0xf4000),
+        ('BCHP_SHARF_TOP_STATUS', 'bchp_sharf_top.h', 'CRYPTO_SHARF_STATUS_ADDRESS', 0xf4004),
+        ('BCHP_BOP_GR_BRIDGE_REVISION', 'bchp_bop_gr_bridge.h', 'CRYPTO_BOP_GR_BRIDGE_REVISION_ADDRESS', 0x511000),
+        ('BCHP_BOP_AES_STATUS', 'bchp_bop_aes.h', 'CRYPTO_BOP_AES_STATUS_ADDRESS', 0x51000c),
+        ('BCHP_SUN_GISB_ARB_ERR_CAP_STATUS', 'bchp_sun_gisb_arb.h', 'CRYPTO_GISB_ERROR_STATUS_ADDRESS', 0x4000d4)):
+    declared = re.search(r'#define\s+' + name + r'\s+(0x[0-9a-fA-F]+)\b', (rdb / header).read_text())
+    printed = re.search(r'#define\s+' + cli_name + r'\s+(0x[0-9a-fA-F]+)U', cli)
+    assert declared and printed and int(declared.group(1), 16) == int(printed.group(1), 16) == value
+gisb = (rdb / 'bchp_sun_gisb_arb.h').read_text()
+mask = 0
+for field in ('valid', 'tea', 'timeout'):
+    declared = re.search(r'#define\s+BCHP_SUN_GISB_ARB_ERR_CAP_STATUS_' + field + r'_MASK\s+(0x[0-9a-fA-F]+)', gisb)
+    assert declared
+    mask |= int(declared.group(1), 16)
+printed_mask = re.search(r'#define\s+CRYPTO_GISB_ERROR_MASK\s+(0x[0-9a-fA-F]+)U', cli)
+assert printed_mask and mask == int(printed_mask.group(1), 16) == 0x1801
+assert crypto_sampler.count('pfnReadDevRegister(ctx->adp,') == 3
+assert crypto_sampler.count('BCHP_SUN_GISB_ARB_ERR_CAP_STATUS)') == 2
+assert not re.search(r'pfn(?:WriteDevRegister|DevDRAMRead|DevDRAMWrite)\s*\(', crypto_sampler)
+for forbidden in ('BCHP_SHARF_TOP_ERR_STATUS', 'BCHP_BOP_AES_CTRL',
+                  'BCHP_BOP_AES_SCRAMBLE_SETUP', 'BCHP_BOP_AES_ENCRYPTION_SETUP',
+                  'BCHP_BOP_AES_SCRAMBLE_NONCE', 'BCHP_BOP_AES_INITIAL_VECTOR',
+                  'BCHP_BOP_AES_INITIAL_COUNTER'):
+    assert forbidden not in crypto_sampler
+assert not re.search(r'BCHP_BOP_AES_\w*REVISION', source)
 for name, value in (('H261', 2), ('H263', 3), ('MPEG1', 5)):
     wire = re.search(r'\bCRYSTALHD_FW_RESEARCH_ALGORITHM_' + name + r'\s+(\d+)U\b', source)
     declared = re.search(r'\beC011_VIDEO_ALG_' + name + r'\s*=\s*(0x[0-9a-fA-F]+)\b', legacy)
@@ -268,6 +299,18 @@ _Static_assert(offsetof(struct crystalhd_fw_research_uart_result, after_init) ==
 _Static_assert(offsetof(struct crystalhd_fw_research_uart_result, after_open) == 1628, "uart open");
 _Static_assert(_IOC_SIZE(CRYSTALHD_FW_RESEARCH_RUN_UART) == 1656, "uart encoding");
 _Static_assert(CRYSTALHD_FW_RESEARCH_RUN_UART == 0xc6785299U, "uart ioctl");
+_Static_assert(sizeof(struct crystalhd_fw_research_crypto_sample) == 32, "crypto sample");
+_Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, reserved) == 12, "crypto padding");
+_Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, sharf_revision) == 16, "SHARF revision");
+_Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, sharf_status) == 20, "SHARF status");
+_Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, bop_gr_bridge_revision) == 24, "BOP bridge revision");
+_Static_assert(offsetof(struct crystalhd_fw_research_crypto_sample, bop_aes_status) == 28, "BOP AES status");
+_Static_assert(sizeof(struct crystalhd_fw_research_crypto_result) == 1664, "crypto result");
+_Static_assert(offsetof(struct crystalhd_fw_research_crypto_result, state) == 0, "crypto state");
+_Static_assert(offsetof(struct crystalhd_fw_research_crypto_result, after_init) == 1600, "crypto init");
+_Static_assert(offsetof(struct crystalhd_fw_research_crypto_result, after_open) == 1632, "crypto open");
+_Static_assert(_IOC_SIZE(CRYSTALHD_FW_RESEARCH_RUN_CRYPTO) == 1664, "crypto encoding");
+_Static_assert(CRYSTALHD_FW_RESEARCH_RUN_CRYPTO == 0xc680529aU, "crypto ioctl");
 _Static_assert(CRYSTALHD_FW_RESEARCH_VERSION_ONLY == 1U, "existing version selector");
 _Static_assert(CRYSTALHD_FW_RESEARCH_H264_CONTROL == 2U, "existing H264 selector");
 _Static_assert(CRYSTALHD_FW_RESEARCH_H261_CONTROL == 3U, "H261 selector");
@@ -354,6 +397,7 @@ for probe_sanitize in no yes; do
         "$probe_test_dir/cli-check" --heap-packet-json-examples
         "$probe_test_dir/cli-check" --clock-json-examples
         "$probe_test_dir/cli-check" --uart-json-examples
+        "$probe_test_dir/cli-check" --crypto-json-examples
     } | "${PYTHON3:-python3}" -B -c '
 import hashlib, json, sys
 def unique_object(pairs):
@@ -366,10 +410,12 @@ def invalid_constant(value):
     raise AssertionError("non-JSON constant: " + value)
 lines = list(sys.stdin)
 examples = [json.loads(line, object_pairs_hook=unique_object, parse_constant=invalid_constant) for line in lines]
-uarts, clocks, heaps, examples = examples[633:], examples[602:633], examples[542:602], examples[:542]
+cryptos, uarts, clocks, heaps, examples = examples[664:], examples[633:664], examples[602:633], examples[542:602], examples[:542]
 assert len(examples) == 542
 assert len(heaps) == 60
 assert len(clocks) == 31
+assert len(uarts) == 31
+assert len(cryptos) == 31
 legacy_bytes = "".join(lines[:542]).encode("utf-8")
 assert len(legacy_bytes) == 1020137
 assert hashlib.sha256(legacy_bytes).hexdigest() == "7bd6c6e9034849298fa08a6711e0f9faad5aba1b3ac22ad100b04efe30e834b7"
@@ -1022,5 +1068,68 @@ assert all(result["control"]["status"] == 0 for result in uarts[:3])
 assert all(result["control"]["status"] < 0 for result in uarts[3:30])
 assert uarts[30]["control"]["status"] == 0
 print("Firmware probe CLI: 31 initialized UART configuration strict JSON examples verified")
+crypto_names = ("after_init", "after_open")
+crypto_raw_names = ("sharf_revision", "sharf_status", "bop_gr_bridge_revision", "bop_aes_status")
+crypto_scope = {
+    "register_addresses": [0xf4000, 0xf4004, 0x511000, 0x51000c],
+    "gisb_error_guard_address": 0x4000d4, "gisb_error_mask": 0x1801,
+    "target_register_reads_per_sample": 4, "guard_reads_per_sample": 2,
+    "reads_per_sample": 6, "maximum_register_reads": 12,
+    "raw_values_only": True, "target_register_writes": False,
+    "error_clear_writes": False, "retries": False,
+    "indirect_gisb_selector_write": True, "passive": False,
+    "bop_aes_revision_register_present": False,
+    "bop_gr_bridge_revision_is_aes_core_revision": False,
+    "sha_cmac_context_reads": False, "key_iv_nonce_otp_scrub_reads": False,
+    "engine_enable_or_start_writes": False, "algorithm_support_established": False,
+    "independent_fetch_errors_certified": False, "atomic_coherence_established": False}
+for result in cryptos:
+    assert set(result) == {"version", "crypto_state", "control", "fixed_state_samples", "crypto_samples", "scope"}
+    assert result["version"] == 1 and result["crypto_state"] is True
+    control = result["control"]
+    check_result(control)
+    assert control["selector"] == 2
+    assert result["scope"] == crypto_scope
+    for field, value in crypto_scope.items():
+        if isinstance(value, bool):
+            assert type(result["scope"][field]) is bool
+    for field in ("gisb_error_guard_address", "gisb_error_mask"):
+        u32(result["scope"][field])
+    fixed = result["fixed_state_samples"]
+    assert set(fixed) == set(names)
+    samples = result["crypto_samples"]
+    assert set(samples) == set(crypto_names)
+    for index, name in enumerate(crypto_names):
+        sample = samples[name]
+        assert set(sample) == {"attempted", "status", "read_complete", *crypto_raw_names}
+        assert type(sample["attempted"]) is bool and type(sample["read_complete"]) is bool
+        assert type(sample["status"]) is int and -4095 <= sample["status"] <= 0
+        active = sample["attempted"] or sample["status"] != 0 or sample["read_complete"]
+        assert active == succeeded(fixed[name])
+        if active:
+            assert succeeded(fixed["calibration"])
+            assert not index or succeeded(samples["after_init"])
+        if sample["read_complete"]:
+            assert sample["attempted"] and sample["status"] == 0
+            for raw_name in crypto_raw_names:
+                u32(sample[raw_name])
+        else:
+            assert all(sample[raw_name] is None for raw_name in crypto_raw_names)
+            assert not sample["attempted"] or sample["status"] < 0
+        if sample["status"]:
+            assert control["status"] == sample["status"] and control["command_count"] == index + 2
+    if control["command_count"] > 2:
+        assert succeeded(samples["after_init"])
+    if control["command_count"] > 3 or control["status"] == 0:
+        assert succeeded(samples["after_open"])
+for pattern, result in enumerate(cryptos[:3]):
+    for stage, name in enumerate(crypto_names):
+        expected = [0] * 4 if pattern == 0 else [4294967295] * 4 if pattern == 1 else [0x12345678 + stage * 4 + word for word in range(4)]
+        assert [result["crypto_samples"][name][raw_name] for raw_name in crypto_raw_names] == expected
+assert all(result["control"]["status"] == 0 for result in cryptos[:3])
+assert all(result["control"]["status"] < 0 for result in cryptos[3:30])
+assert cryptos[30]["control"]["status"] == 0
+assert all("bop_aes_revision" not in sample for result in cryptos for sample in result["crypto_samples"].values())
+print("Firmware probe CLI: 31 bounded crypto-state strict JSON examples verified")
 '
 done
