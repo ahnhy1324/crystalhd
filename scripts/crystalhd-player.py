@@ -158,6 +158,8 @@ class Player:
         self.rate = 1.0
         self.decoders = {}
         self.next_decoder = 0
+        self.seek_target = None
+        self.queued_seek = None
         self.keys = ControlKeys()
         self.terminal_state = None
         self.sources = []
@@ -250,6 +252,12 @@ class Player:
             self.fail(f"{message.src.get_name()}: {error.message}")
         elif message.type == Gst.MessageType.EOS:
             self.stop(self.health.finish())
+        elif message.type == Gst.MessageType.ASYNC_DONE:
+            self.seek_completed()
+        elif message.type == Gst.MessageType.STATE_CHANGED and message.src == self.pipeline:
+            # ASYNC_DONE can precede the final PAUSED -> PLAYING transition.
+            # Recheck readiness there so queued controls cannot remain stuck.
+            self.seek_completed()
         elif message.type == Gst.MessageType.CLOCK_LOST and not self.health.paused:
             self.pipeline.set_state(Gst.State.PAUSED)
             self.pipeline.set_state(Gst.State.PLAYING)
@@ -258,15 +266,29 @@ class Player:
 
     def seek(self, offset=0.0, rate=None):
         Gst = self.Gst
-        ok, position = self.pipeline.query_position(Gst.Format.TIME)
-        if not ok:
-            print("Cannot seek: playback position is unavailable.", file=sys.stderr)
-            return
-        wanted = self.rate if rate is None else rate
+        if self.seek_target is not None:
+            position, current_rate = self.queued_seek or self.seek_target
+        else:
+            ok, position = self.pipeline.query_position(Gst.Format.TIME)
+            if not ok:
+                print("Cannot seek: playback position is unavailable.", file=sys.stderr)
+                return
+            current_rate = self.rate
+        wanted = current_rate if rate is None else rate
         position = max(0, position + int(offset * Gst.SECOND))
         ok, duration = self.pipeline.query_duration(Gst.Format.TIME)
         if ok and duration > 0:
             position = min(position, max(0, duration - 1))
+        # A flushing seek temporarily makes position queries unavailable.
+        # Coalesce controls against the requested destination until preroll
+        # finishes instead of issuing overlapping flushes or losing keys.
+        if self.seek_target is not None:
+            self.queued_seek = (position, wanted)
+            return
+        self.submit_seek(position, wanted)
+
+    def submit_seek(self, position, wanted):
+        Gst = self.Gst
         accepted = self.pipeline.seek(wanted, Gst.Format.TIME,
                                       Gst.SeekFlags.FLUSH | Gst.SeekFlags.ACCURATE,
                                       Gst.SeekType.SET, position, Gst.SeekType.NONE, -1)
@@ -274,8 +296,25 @@ class Player:
             print("Seek/rate change was rejected; playback settings are unchanged.", file=sys.stderr)
             return
         self.rate = wanted
+        self.seek_target = (position, wanted)
         self.health.seeking(time.monotonic())
         print(f"Requested position {position / Gst.SECOND:.1f}s, rate {wanted:g}x", flush=True)
+
+    def seek_completed(self):
+        if self.seek_target is None:
+            return
+        # An older startup/pause completion can still be queued on the bus.
+        # It must not complete a newer seek whose preroll is still pending.
+        state, _current, _pending = self.pipeline.get_state(0)
+        if state == self.Gst.StateChangeReturn.ASYNC:
+            return
+        if state == self.Gst.StateChangeReturn.FAILURE:
+            self.fail("seek preroll state change failed")
+            return
+        self.seek_target = None
+        queued, self.queued_seek = self.queued_seek, None
+        if queued is not None:
+            self.submit_seek(*queued)
 
     def control(self, action):
         if action == "quit":

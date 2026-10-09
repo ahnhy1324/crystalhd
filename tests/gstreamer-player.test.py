@@ -134,15 +134,21 @@ class PolicyAndControlTests(unittest.TestCase):
             SeekFlags=SimpleNamespace(FLUSH=1, ACCURATE=2),
             SeekType=SimpleNamespace(SET=1, NONE=0),
             State=SimpleNamespace(PAUSED=1, PLAYING=2),
-            StateChangeReturn=SimpleNamespace(FAILURE=0))
+            StateChangeReturn=SimpleNamespace(FAILURE=0, SUCCESS=1, ASYNC=2),
+            MessageType=SimpleNamespace(APPLICATION=1, ERROR=2, EOS=3,
+                ASYNC_DONE=4, CLOCK_LOST=5, LATENCY=6, STATE_CHANGED=7))
         control.pipeline = mock.Mock()
         control.pipeline.query_position.return_value = (True, 12000)
         control.pipeline.query_duration.return_value = (True, 60000)
         control.pipeline.seek.return_value = True
         control.pipeline.set_state.return_value = 1
+        control.pipeline.get_state.return_value = (1, 2, 0)
         control.rate = 1.0
+        control.seek_target = None
+        control.queued_seek = None
         control.health = player.PlaybackHealth("software", 0)
         control.stop = mock.Mock()
+        control.done = False
         return control
 
     def test_seek_and_rate_use_explicit_flushing_time_seek(self):
@@ -150,6 +156,7 @@ class PolicyAndControlTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             control.control("back")
             self.assertEqual(control.pipeline.seek.call_args.args, (1.0, 0, 3, 1, 2000, 0, -1))
+            control.seek_completed()
             control.control("rate-double")
         self.assertEqual(control.rate, 2.0)
         self.assertEqual(control.pipeline.seek.call_args.args[0], 2.0)
@@ -161,6 +168,84 @@ class PolicyAndControlTests(unittest.TestCase):
             control.control("rate-half")
         self.assertEqual(control.rate, 1.0)
         self.assertEqual(control.health.anchor, 0)
+
+    def test_controls_during_flush_are_coalesced_without_position_query(self):
+        control = self.controller()
+        with contextlib.redirect_stdout(io.StringIO()):
+            control.control("forward")
+            control.pipeline.query_position.return_value = (False, -1)
+            control.control("forward")
+            control.control("back")
+            control.control("rate-half")
+            self.assertEqual(control.pipeline.seek.call_count, 1)
+            self.assertEqual(control.pipeline.query_position.call_count, 1)
+            self.assertEqual(control.queued_seek, (22000, 0.5))
+            self.assertEqual(control.rate, 1.0)
+            control.seek_completed()
+            self.assertEqual(control.pipeline.seek.call_count, 2)
+            self.assertEqual(control.pipeline.seek.call_args.args,
+                             (0.5, 0, 3, 1, 22000, 0, -1))
+            self.assertEqual(control.rate, 0.5)
+            control.seek_completed()
+            self.assertIsNone(control.seek_target)
+
+    def test_rejected_queued_seek_keeps_accepted_settings(self):
+        control = self.controller()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            control.control("forward")
+            control.control("rate-half")
+            control.pipeline.seek.return_value = False
+            control.seek_completed()
+        self.assertEqual(control.rate, 1.0)
+        self.assertIsNone(control.seek_target)
+        self.assertIsNone(control.queued_seek)
+
+    def test_startup_async_done_does_not_issue_seek(self):
+        control = self.controller()
+        control.seek_completed()
+        control.pipeline.seek.assert_not_called()
+
+    def test_old_async_done_does_not_complete_pending_preroll(self):
+        control = self.controller()
+        with contextlib.redirect_stdout(io.StringIO()):
+            control.control("forward")
+            control.control("rate-half")
+            control.pipeline.get_state.return_value = (2, 1, 2)
+            control.seek_completed()
+            self.assertEqual(control.pipeline.seek.call_count, 1)
+            self.assertEqual(control.seek_target, (22000, 1.0))
+            self.assertEqual(control.queued_seek, (22000, 0.5))
+            control.pipeline.get_state.return_value = (1, 2, 0)
+            control.seek_completed()
+            self.assertEqual(control.pipeline.seek.call_count, 2)
+            self.assertEqual(control.rate, 0.5)
+
+    def test_failed_preroll_does_not_submit_queued_control(self):
+        control = self.controller()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            control.control("forward")
+            control.control("rate-half")
+            control.pipeline.get_state.return_value = (0, 1, 2)
+            control.seek_completed()
+        self.assertEqual(control.pipeline.seek.call_count, 1)
+        self.assertIn("preroll", control.health.error)
+        control.stop.assert_called_with(1)
+
+    def test_final_pipeline_state_completes_deferred_seek(self):
+        control = self.controller()
+        with contextlib.redirect_stdout(io.StringIO()):
+            control.control("forward")
+            control.control("rate-half")
+            control.pipeline.get_state.return_value = (2, 1, 2)
+            control.message(None, SimpleNamespace(type=4, src=control.pipeline))
+            self.assertEqual(control.pipeline.seek.call_count, 1)
+            control.pipeline.get_state.return_value = (1, 2, 0)
+            control.message(None, SimpleNamespace(type=7, src=object()))
+            self.assertEqual(control.pipeline.seek.call_count, 1)
+            control.message(None, SimpleNamespace(type=7, src=control.pipeline))
+            self.assertEqual(control.pipeline.seek.call_count, 2)
+            self.assertEqual(control.rate, 0.5)
+            self.assertIsNone(control.queued_seek)
 
     def test_pause_resume_and_zero_output_quit(self):
         control = self.controller()
