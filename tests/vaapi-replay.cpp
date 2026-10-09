@@ -45,13 +45,18 @@ struct DecodeIoMock {
   bool invalid = false;
   uint32_t tx_free_size = 1024 * 1024;
   unsigned int open_attempts = 0;
+  unsigned int output_polls = 0;
+  std::thread::id output_thread;
   HANDLE handle() { return static_cast<HANDLE>(this); }
   static uint8_t Luma(uint64_t timestamp) {
     return static_cast<uint8_t>(40 + timestamp / kTimestampStep * 10);
   }
 };
 
-static thread_local DecodeIoMock *decode_io_mock = nullptr;
+// Worker tests publish this pointer before starting the decode thread and
+// clear it only after Driver has joined that thread. Production Dts calls are
+// serialized by Driver::mutex, so the shared mock observes the same ordering.
+static DecodeIoMock *decode_io_mock = nullptr;
 struct MockDecodeScope {
   explicit MockDecodeScope(DecodeIoMock &mock) { decode_io_mock = &mock; }
   ~MockDecodeScope() { decode_io_mock = nullptr; }
@@ -84,6 +89,8 @@ extern "C" BC_STATUS __wrap_DtsGetDriverStatus(HANDLE device, BC_DTS_STATUS *sta
   if (decode_io_mock == nullptr)
     return __real_DtsGetDriverStatus(device, status);
   decode_io_mock->invalid |= device != decode_io_mock->handle();
+  ++decode_io_mock->output_polls;
+  decode_io_mock->output_thread = std::this_thread::get_id();
   *status = {};
   status->ReadyListCount = decode_io_mock->outputs.size();
   return decode_io_mock->fail_poll ? BC_STS_ERROR : BC_STS_SUCCESS;
@@ -1559,6 +1566,139 @@ static void ExactReadySurfaceDoesNotWaitForBatchEos() {
           "later synchronization still drains the remaining picture and EOS");
 }
 
+static void QueryOnlyObservesAutonomousDecodeProgress() {
+  TeardownFixture fixture(1);
+  const std::thread::id caller = std::this_thread::get_id();
+  fixture.driver.StartDecodeWorker();
+
+  const auto input_deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  for (;;) {
+    {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      if (fixture.io.inputs.size() == 1 && fixture.io.output_polls >= 3)
+        break;
+    }
+    Require(std::chrono::steady_clock::now() < input_deadline,
+            "decode worker submits input and periodically polls output");
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  {
+    std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+    Require(std::find(fixture.io.events.begin(), fixture.io.events.end(),
+                      "seal") == fixture.io.events.end() &&
+                !fixture.decoder->ReplaySealed(),
+            "autonomous progress never infers EOS from an input gap");
+    // Hardware completion has no frontend condition-variable notification.
+    // The worker must discover it through bounded periodic polling.
+    fixture.io.outputs.push_back(kTimestampStep);
+  }
+
+  VASurfaceStatus status = VASurfaceRendering;
+  const auto output_deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  do {
+    Require(QuerySurfaceStatus(&fixture.context, 1, &status) ==
+                VA_STATUS_SUCCESS,
+            "query-only frontend can inspect autonomous decode progress");
+    if (status == VASurfaceReady)
+      break;
+    Require(std::chrono::steady_clock::now() < output_deadline,
+            "decode worker publishes output without a sync call");
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  } while (true);
+
+  std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+  Require(fixture.held[0]->ready && !fixture.held[0]->failed &&
+              fixture.held[0]->frame_timestamp == kTimestampStep &&
+              fixture.decoder->pending.empty() &&
+              fixture.decoder->replay.outstanding() == 0 &&
+              fixture.io.outputs.empty() &&
+              fixture.io.output_thread != caller && !fixture.io.invalid,
+          "worker publishes the exact picture and releases its output once");
+  Require(std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                     "picture") == 1 &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "release") == 1 &&
+              std::find(fixture.io.events.begin(), fixture.io.events.end(),
+                        "seal") == fixture.io.events.end(),
+          "query-only progress neither duplicates output nor seals the stream");
+}
+
+static void AutonomousWorkerFinishesOnlyAnExistingSealedBatch() {
+  TeardownFixture fixture(2);
+  Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+                  VA_STATUS_SUCCESS &&
+              fixture.io.inputs.size() == 2 && fixture.decoder->replay.Seal(),
+          "prepare an already-sealed batch for autonomous draining");
+  fixture.io.outputs.push_back(kTimestampStep);
+  fixture.io.outputs.push_back(2 * kTimestampStep);
+  fixture.io.outputs.push_back(0);
+  fixture.driver.StartDecodeWorker();
+
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  for (;;) {
+    {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      if (fixture.held[0]->ready && fixture.held[1]->ready &&
+          !fixture.decoder->ReplaySealed())
+        break;
+    }
+    Require(std::chrono::steady_clock::now() < deadline,
+            "decode worker drains exact pictures and an existing EOS marker");
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+  Require(fixture.decoder->pending.empty() &&
+              fixture.decoder->replay.outstanding() == 0 &&
+              fixture.io.outputs.empty() &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "picture") == 2 &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "eos") == 1 &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "release") == 3 &&
+              std::find(fixture.io.events.begin(), fixture.io.events.end(),
+                        "seal") == fixture.io.events.end() &&
+              !fixture.io.invalid,
+          "worker can finish a sealed batch but never creates its EOS fence");
+}
+
+static void AutonomousWorkerStopsAfterTransportFailure() {
+  TeardownFixture fixture(1);
+  fixture.io.fail_poll = true;
+  fixture.driver.StartDecodeWorker();
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  unsigned int failed_polls = 0;
+  for (;;) {
+    {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      if (fixture.held[0]->failed) {
+        failed_polls = fixture.io.output_polls;
+        break;
+      }
+    }
+    Require(std::chrono::steady_clock::now() < deadline,
+            "worker publishes a terminal transport failure");
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  {
+    std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+    Require(fixture.decoder->ReplayFailed() && failed_polls == 1 &&
+                fixture.io.output_polls == failed_polls &&
+                fixture.io.inputs.empty() && !fixture.io.invalid,
+            "terminal failure stops autonomous polling and input submission");
+  }
+  VASurfaceStatus status = VASurfaceRendering;
+  Require(QuerySurfaceStatus(&fixture.context, 1, &status) ==
+              VA_STATUS_ERROR_DECODING_ERROR,
+          "query-only frontend observes the terminal worker failure");
+}
+
 int main() {
   try {
     SealedBatchQueuesAndReplays();
@@ -1594,6 +1734,9 @@ int main() {
     CompletedWaitNeverAcceptsDifferentOrDestroyedPicture();
     ZeroTimeoutNeverPumpsBusyDecodeSurface();
     ExactReadySurfaceDoesNotWaitForBatchEos();
+    QueryOnlyObservesAutonomousDecodeProgress();
+    AutonomousWorkerFinishesOnlyAnExistingSealedBatch();
+    AutonomousWorkerStopsAfterTransportFailure();
     std::puts("VA-API sealed-batch replay, immutable-output and teardown tests passed");
     return 0;
   } catch (const std::exception &error) {
