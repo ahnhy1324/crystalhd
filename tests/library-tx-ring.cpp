@@ -1,13 +1,17 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 /* Link the real libcrystalhd_priv.cpp/libcrystalhd_if.cpp with function-section
  * garbage collection and --wrap=pthread_mutex_lock for lock-order observation.
- * Only ring allocation/copy/reset functions are reachable: no device, firmware,
- * shared-memory setup, or TX worker is started by this executable.
+ * Only ring allocation/copy/reset and private wake functions are reachable: no
+ * device, firmware, shared-memory setup, or production TX worker is started.
  */
+#include <atomic>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <pthread.h>
+#include <sched.h>
+#include <time.h>
+#include <unistd.h>
 #include "7411d.h"
 #include "libcrystalhd_if.h"
 #include "libcrystalhd_int_if.h"
@@ -189,14 +193,130 @@ static void test_free_size_snapshot()
     check(txBufFree(&context.circBuf) == BC_STS_SUCCESS, "free getter ring");
 }
 
+struct WakeWaiter {
+    TXBUFFER *ring;
+    std::atomic<bool> entered;
+    bool result;
+};
+
+static void *wait_for_ring_wake(void *opaque)
+{
+    WakeWaiter *waiter = static_cast<WakeWaiter *>(opaque);
+    waiter->entered.store(true, std::memory_order_release);
+    waiter->result = txBufWaitForWake(waiter->ring, 2000);
+    return NULL;
+}
+
+static void test_push_wakes_idle_waiter()
+{
+    TXBUFFER ring = {};
+    unsigned char input[8] = {};
+    unsigned char oversized[129] = {};
+    pthread_t thread = {};
+    WakeWaiter waiter = {};
+    struct timespec before = {};
+    struct timespec after = {};
+    waiter.ring = &ring;
+    waiter.entered.store(false, std::memory_order_relaxed);
+    if (txBufInit(&ring, 128) != BC_STS_SUCCESS) {
+        check(false, "initialize wake test ring");
+        return;
+    }
+
+    check(txBufPush(&ring, oversized, sizeof(oversized)) == BC_STS_INSUFF_RES,
+          "rejected push still reports a full ring");
+    pthread_mutex_lock(&ring.wakeLock);
+    check(!ring.wakePending, "rejected push must not arm the TX wake latch");
+    pthread_mutex_unlock(&ring.wakeLock);
+
+    const int create_result = pthread_create(&thread, NULL,
+                                              wait_for_ring_wake, &waiter);
+    check(create_result == 0, "start idle ring waiter");
+    if (create_result != 0) {
+        txBufFree(&ring);
+        return;
+    }
+    while (!waiter.entered.load(std::memory_order_acquire))
+        sched_yield();
+    usleep(10 * 1000);
+    clock_gettime(CLOCK_MONOTONIC, &before);
+    check(txBufPush(&ring, input, sizeof(input)) == BC_STS_SUCCESS,
+          "successful push queues bytes before waking TX");
+    check(pthread_join(thread, NULL) == 0, "join woken ring waiter");
+    clock_gettime(CLOCK_MONOTONIC, &after);
+    const long elapsed_ms = (after.tv_sec - before.tv_sec) * 1000L +
+        (after.tv_nsec - before.tv_nsec) / 1000000L;
+    check(waiter.result, "successful push wakes the idle waiter without shutdown");
+    check(elapsed_ms < 1000,
+          "successful push wakes before the idle-wait timeout");
+    pthread_mutex_lock(&ring.wakeLock);
+    check(!ring.wakePending, "idle waiter consumes the pending wake latch");
+    pthread_mutex_unlock(&ring.wakeLock);
+    check(txBufFree(&ring) == BC_STS_SUCCESS, "free wake test ring");
+}
+
+struct JoinWaiter {
+    DTS_LIB_CONTEXT *context;
+    bool result;
+};
+
+static void *wait_for_join_shutdown(void *opaque)
+{
+    JoinWaiter *waiter = static_cast<JoinWaiter *>(opaque);
+    waiter->result = txBufWaitForWake(&waiter->context->circBuf, 5000);
+    return NULL;
+}
+
+static void test_join_wakes_idle_waiter()
+{
+    DTS_LIB_CONTEXT context = {};
+    JoinWaiter waiter = {&context, true};
+    struct timespec before = {};
+    struct timespec after = {};
+
+    if (pthread_mutex_init(&context.thLock, NULL) != 0) {
+        check(false, "initialize context lock");
+        return;
+    }
+    if (txBufInit(&context.circBuf, 128) != BC_STS_SUCCESS) {
+        check(false, "initialize join wake test ring");
+        pthread_mutex_destroy(&context.thLock);
+        return;
+    }
+    const int create_result = pthread_create(&context.htxThread, NULL,
+                                              wait_for_join_shutdown, &waiter);
+    check(create_result == 0, "start join wake waiter");
+    if (create_result != 0) {
+        txBufFree(&context.circBuf);
+        pthread_mutex_destroy(&context.thLock);
+        return;
+    }
+    usleep(10 * 1000);
+    clock_gettime(CLOCK_MONOTONIC, &before);
+    DtsJoinTxThread(&context);
+    clock_gettime(CLOCK_MONOTONIC, &after);
+    const long elapsed_ms = (after.tv_sec - before.tv_sec) * 1000L +
+        (after.tv_nsec - before.tv_nsec) / 1000000L;
+    check(!waiter.result, "join shutdown is distinct from a data wake");
+    check(context.txThreadExit && context.htxThread == 0,
+          "join records exit and clears the worker handle");
+    check(elapsed_ms < 1000,
+          "join wakes an idle worker instead of waiting for its timeout");
+    check(txBufFree(&context.circBuf) == BC_STS_SUCCESS,
+          "free join wake test ring");
+    pthread_mutex_destroy(&context.thLock);
+}
+
 int main()
 {
     test_invalid_pop_preserves_ring();
     test_flush_invalidates_pending_pop_size();
     test_wrapped_copy();
     test_free_size_snapshot();
+    test_push_wakes_idle_waiter();
+    test_join_wakes_idle_waiter();
     if (failures != 0)
         return 1;
-    std::puts("PASS: actual TX ring invalid-pop, flush, wrap, and getter tests");
+    std::puts("PASS: actual TX ring accounting, wake, and join tests");
     return 0;
 }

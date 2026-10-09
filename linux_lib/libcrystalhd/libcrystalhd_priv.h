@@ -198,6 +198,10 @@ typedef struct _TXBUFFER{
 	uint8_t		*buffer;
 	pthread_mutex_t flushLock; // LOCK used only for flushing
 	pthread_mutex_t pushpopLock; // LOCK for push and pop operations
+	pthread_mutex_t wakeLock; // LOCK for TX-worker wake state only
+	pthread_cond_t wakeCond;
+	bool wakePending;
+	bool wakeShutdown;
 }TXBUFFER, *pTXBUFFER;
 
 BC_STATUS txBufPush(pTXBUFFER txBuf, uint8_t* bufToPush, uint32_t sizeToPush);
@@ -205,6 +209,8 @@ BC_STATUS txBufPop(pTXBUFFER txBuf, uint8_t* bufToPop, uint32_t sizeToPop);
 BC_STATUS txBufFlush(pTXBUFFER txBuf);
 BC_STATUS txBufInit(pTXBUFFER txBuf, uint32_t sizeInit);
 BC_STATUS txBufFree(pTXBUFFER txBuf);
+bool txBufWaitForWake(pTXBUFFER txBuf, uint32_t timeoutMs);
+void txBufShutdown(pTXBUFFER txBuf);
 
 // TX Thread function
 void * txThreadProc(void *ctx);

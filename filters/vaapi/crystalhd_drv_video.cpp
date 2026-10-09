@@ -531,7 +531,18 @@ struct Surface {
   uint64_t expected_timestamp = 0;
   uint64_t frame_timestamp = 0;
   uint64_t latest_vpp_sequence = 0;
+  uint64_t decode_identity = 0;
   SurfaceLayout layout;
+  bool direct_decode_eligible = false;
+
+  // Live H.264 pictures may initially use the public target's pixels while
+  // keeping independent readiness/identity. Capture or backing reuse promotes
+  // them to private storage; their own planes remain unset until promotion.
+  // The reverse link is weak to avoid a lifetime cycle.
+  std::shared_ptr<Surface> direct_backing;
+  std::weak_ptr<Surface> decode_target;
+  std::weak_ptr<Surface> decode_picture;
+  bool direct_picture = false;
 
   std::vector<uint8_t> storage;
   gbm_bo *bo = nullptr;
@@ -1476,6 +1487,7 @@ struct Driver {
   uint32_t next_buffer = 1;
   uint32_t next_image = 1;
   uint64_t next_vpp_sequence = 1;
+  uint64_t next_decode_identity = 1;
   std::unordered_map<VAConfigID, Config> configs;
   std::unordered_map<VASurfaceID, std::shared_ptr<Surface>> surfaces;
   std::unordered_map<VAContextID, std::shared_ptr<DecodeContext>> contexts;
@@ -1522,6 +1534,20 @@ struct Driver {
       gbm_device_destroy(gbm);
   }
 };
+
+static uint64_t NextDecodeIdentity(Driver *driver) {
+  uint64_t identity = driver->next_decode_identity++;
+  if (identity == 0)
+    identity = driver->next_decode_identity++;
+  return identity;
+}
+
+static void RevokeDecodeOwner(Driver *driver, Surface *surface) {
+  if (surface == nullptr)
+    return;
+  surface->decode_picture.reset();
+  surface->decode_identity = NextDecodeIdentity(driver);
+}
 
 static Surface *BackingOwner(Driver *driver, Surface *surface) {
   if (surface == nullptr || surface->backing_owner == VA_INVALID_SURFACE)
@@ -1872,6 +1898,26 @@ static bool CopyNv12Surface(const Surface &source, Surface *destination) {
   return true;
 }
 
+static bool PromoteDecodedPicture(const std::shared_ptr<Surface> &picture) {
+  if (!picture || !picture->direct_backing)
+    return true;
+  const auto backing = picture->direct_backing;
+  if (!picture->AllocateInternal(nullptr, -1, picture->width, picture->height,
+                                  VA_FOURCC_NV12))
+    return false;
+  if (picture->ready && !picture->failed &&
+      (backing->destroyed || backing->decode_picture.lock() != picture ||
+       backing->frame_timestamp != picture->frame_timestamp ||
+       !CopyNv12Surface(*backing, picture.get()))) {
+    picture->ready = false;
+    picture->failed = true;
+    picture->direct_backing.reset();
+    return false;
+  }
+  picture->direct_backing.reset();
+  return true;
+}
+
 static void MarkPendingPicturesFailed(Driver *driver, DecodeContext *decode) {
   for (const auto &pending : decode->pending) {
     auto picture = decode->decoded_frames.find(pending.first);
@@ -1879,7 +1925,12 @@ static void MarkPendingPicturesFailed(Driver *driver, DecodeContext *decode) {
       picture->second->failed = true;
     auto surface = driver->surfaces.find(pending.second);
     if (surface != driver->surfaces.end() &&
-        surface->second->expected_timestamp == pending.first)
+        surface->second->expected_timestamp == pending.first &&
+        ((picture != decode->decoded_frames.end() &&
+          surface->second->decode_identity == picture->second->decode_identity) ||
+         (picture == decode->decoded_frames.end() &&
+          surface->second->decode_identity == 0 &&
+          surface->second->decode_picture.expired())))
       surface->second->failed = true;
   }
 }
@@ -1971,9 +2022,23 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
       static_cast<uint64_t>(padded_width) * 2 * output_height;
   auto decoded = decode->decoded_frames.find(output.PicInfo.timeStamp);
   auto surface = driver->surfaces.find(surface_id);
+  const auto owner_picture = surface != driver->surfaces.end()
+      ? surface->second->decode_picture.lock() : nullptr;
+  const bool exact_owner = surface != driver->surfaces.end() &&
+      ((decoded != decode->decoded_frames.end() &&
+        surface->second->decode_identity == decoded->second->decode_identity) ||
+       (decoded == decode->decoded_frames.end() &&
+        surface->second->decode_identity == 0 && !owner_picture));
   const bool current_picture =
       surface != driver->surfaces.end() &&
-      surface->second->expected_timestamp == output.PicInfo.timeStamp;
+      surface->second->expected_timestamp == output.PicInfo.timeStamp &&
+      exact_owner &&
+      (!owner_picture || owner_picture == decoded->second) &&
+      (decoded == decode->decoded_frames.end() ||
+       !decoded->second->direct_picture ||
+       (decoded->second->decode_target.lock() == surface->second &&
+        surface->second->decode_picture.lock() == decoded->second &&
+        surface->second->vpp_writers == 0));
   const auto fits = [&](const Surface &target) {
     return target.width >= output_width && target.height >= output_height;
   };
@@ -1987,14 +2052,26 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
       static_cast<uint64_t>(output.YBuffDoneSz) * 4 >= required_bytes &&
       (output.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) == 0;
   bool complete = valid_frame;
+  const bool direct = current_picture &&
+      decoded != decode->decoded_frames.end() &&
+      decoded->second->direct_backing == surface->second;
   if (decoded != decode->decoded_frames.end()) {
-    if (complete)
-      complete = CopyYuy2ToSurface(decoded->second.get(), output, decode->is_70012);
+    if (complete) {
+      if (direct) {
+        complete = CopyYuy2ToSurface(surface->second.get(), output,
+                                     decode->is_70012);
+        decoded->second->ready = complete;
+        decoded->second->frame_timestamp = complete ? output.PicInfo.timeStamp : 0;
+      } else {
+        complete = PromoteDecodedPicture(decoded->second) &&
+            CopyYuy2ToSurface(decoded->second.get(), output, decode->is_70012);
+      }
+    }
     if (!complete)
       decoded->second->failed = true;
   }
   if (current_picture) {
-    if (complete) {
+    if (complete && !direct) {
       complete = decoded != decode->decoded_frames.end()
           ? CopyNv12Surface(*decoded->second, surface->second.get())
           : CopyYuy2ToSurface(surface->second.get(), output, decode->is_70012);
@@ -2500,7 +2577,14 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
   }
 
   auto decoded_frame = std::make_shared<Surface>();
-  if (!decoded_frame->AllocateInternal(nullptr, -1, target_surface->width,
+  const bool direct_picture = decode->live_h264 && IsH264Profile(profile) &&
+                              target_surface->direct_decode_eligible;
+  if (direct_picture) {
+    decoded_frame->width = target_surface->width;
+    decoded_frame->height = target_surface->height;
+    decoded_frame->direct_picture = true;
+    decoded_frame->decode_target = target_surface;
+  } else if (!decoded_frame->AllocateInternal(nullptr, -1, target_surface->width,
                                        target_surface->height,
                                        VA_FOURCC_NV12))
     return VA_STATUS_ERROR_ALLOCATION_FAILED;
@@ -2579,6 +2663,16 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
         (previous->second->ready || previous->second->failed))
       decode->decoded_frames.erase(previous);
   }
+  // Completed uncaptured records expired above, requiring no extra copy.
+  // Pending output and records retained by another context need their own
+  // storage before this backing changes identity, even for equal timestamps.
+  if (!PromoteDecodedPicture(target_surface->decode_picture.lock()))
+    return FailDecode(driver, decode, "could not preserve reused decode picture");
+  decoded_frame->decode_identity = NextDecodeIdentity(driver);
+  target_surface->decode_identity = decoded_frame->decode_identity;
+  if (direct_picture)
+    decoded_frame->direct_backing = target_surface;
+  target_surface->decode_picture = decoded_frame;
   decode->decoded_frames[timestamp] = decoded_frame;
   decode->surface_timestamps[target_surface.get()] = timestamp;
   decode->pending[timestamp] = target_id;
@@ -2665,7 +2759,16 @@ static VAStatus SyncDecodeSurface(
     for (const auto &pending : entry.second->pending) {
       auto candidate = driver->surfaces.find(pending.second);
       if (candidate != driver->surfaces.end() &&
-          candidate->second == surface) {
+          candidate->second == surface &&
+          pending.first == surface->expected_timestamp) {
+        const auto picture = entry.second->decoded_frames.find(pending.first);
+        if ((surface->decode_identity != 0 &&
+             (picture == entry.second->decoded_frames.end() ||
+              surface->decode_identity != picture->second->decode_identity)) ||
+            (!surface->decode_picture.expired() &&
+             (picture == entry.second->decoded_frames.end() ||
+              surface->decode_picture.lock() != picture->second)))
+          continue;
         decode = entry.second;
         break;
       }
@@ -3142,6 +3245,7 @@ static VAStatus CreateSurfaces2(VADriverContextP context, unsigned int format,
   }
   std::vector<VASurfaceID> created;
   std::vector<BackingIdentity> registered;
+  std::unordered_set<VASurfaceID> write_exposed_owners;
   const auto rollback = [&](VAStatus status) {
     for (const BackingIdentity &identity : registered)
       driver->backing_owners.erase(identity);
@@ -3186,6 +3290,8 @@ static VAStatus CreateSurfaces2(VADriverContextP context, unsigned int format,
         surface->frame_timestamp = owner->second->frame_timestamp;
       }
     }
+    if (surface->backing_owner != VA_INVALID_SURFACE)
+      write_exposed_owners.insert(surface->backing_owner);
     bool ok = false;
     if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_VA) {
       ok = surface->AllocateInternal(driver->gbm, driver->drm_fd, width, height,
@@ -3203,6 +3309,8 @@ static VAStatus CreateSurfaces2(VADriverContextP context, unsigned int format,
     }
     if (!ok)
       return rollback(VA_STATUS_ERROR_ALLOCATION_FAILED);
+    surface->direct_decode_eligible =
+        memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_VA;
     surface->layout = layout;
     if (surface->backing_owner == VA_INVALID_SURFACE)
       surface->ready = true;
@@ -3216,6 +3324,17 @@ static VAStatus CreateSurfaces2(VADriverContextP context, unsigned int format,
     driver->surfaces[id] = std::move(surface);
     surface_ids[i] = id;
     created.push_back(id);
+  }
+  // Importing an exported backing introduces another VA object that can be
+  // used as a writer. Keep future decode output private on its canonical
+  // owner even if the original export was declared read-only.
+  for (VASurfaceID owner_id : write_exposed_owners) {
+    const auto owner = driver->surfaces.find(owner_id);
+    if (owner != driver->surfaces.end()) {
+      if (!PromoteDecodedPicture(owner->second->decode_picture.lock()))
+        return rollback(VA_STATUS_ERROR_OPERATION_FAILED);
+      owner->second->direct_decode_eligible = false;
+    }
   }
   return VA_STATUS_SUCCESS;
 }
@@ -3604,6 +3723,9 @@ static VAStatus BeginPicture(VADriverContextP context, VAContextID context_id,
     Surface *target_owner = BackingOwner(driver, target_surface->second.get());
     if (target_owner->vpp_writers != 0 || target_owner->export_waiters != 0)
       return VA_STATUS_ERROR_HW_BUSY;
+    if (!PromoteDecodedPicture(target_owner->decode_picture.lock()))
+      return VA_STATUS_ERROR_OPERATION_FAILED;
+    RevokeDecodeOwner(driver, target_owner);
     decode->second->target = target;
     // Chromium renders into an imported alias of an exported ARGB surface.
     // Track readiness on both aliases until VPP commits the exact frame.
@@ -3959,6 +4081,11 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
         continue;
       auto decoded = candidate.second->decoded_frames.find(timestamp);
       if (decoded != candidate.second->decoded_frames.end()) {
+        const auto owner_picture = source_owner->decode_picture.lock();
+        if (source_owner->decode_identity != decoded->second->decode_identity ||
+            (owner_picture && owner_picture != decoded->second) ||
+            (decoded->second->direct_picture && !owner_picture))
+          continue;
         source_decoder = candidate.second;
         frame = decoded->second;
         break;
@@ -3973,6 +4100,8 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
         return VA_STATUS_ERROR_INVALID_SURFACE;
       frame = source_owner;
     }
+    if (!PromoteDecodedPicture(frame))
+      return VA_STATUS_ERROR_OPERATION_FAILED;
     decode->second->vpp_source = parameters->surface;
     decode->second->vpp_frame = std::move(frame);
     decode->second->vpp_decoder = source_decoder;
@@ -4093,6 +4222,11 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
     // signaling its fence with unrelated fallback pixels breaks identity.
     if (target_owner->vpp_writers != 0 || target_owner->export_waiters != 0)
       return finish_vpp(VA_STATUS_ERROR_HW_BUSY);
+    // A decode can take this target between VPP BeginPicture and EndPicture.
+    // Recheck its picture immediately before acquiring write ownership.
+    if (!PromoteDecodedPicture(target_owner->decode_picture.lock()))
+      return finish_vpp(VA_STATUS_ERROR_OPERATION_FAILED);
+    RevokeDecodeOwner(driver, target_owner.get());
 
     const uint64_t sequence = driver->next_vpp_sequence++;
     target_owner->latest_vpp_sequence = sequence;
@@ -4750,6 +4884,19 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
     return VA_STATUS_ERROR_INVALID_SURFACE;
   if (surface->second->bo == nullptr && surface->second->object_fds.empty())
     return VA_STATUS_ERROR_UNIMPLEMENTED;
+  Surface *owner = BackingOwner(driver, surface->second.get());
+  const uint32_t access = flags & VA_EXPORT_SURFACE_READ_WRITE;
+  const bool explicit_read_only = access == VA_EXPORT_SURFACE_READ_ONLY;
+  // A read-only consumer retains the VA frame until it is finished reading,
+  // so the next decode submission is the reuse boundary just as it is for an
+  // unexported surface. Writable or unspecified access has no such immutable
+  // contract: preserve the current picture and permanently keep later output
+  // private before exposing the backing.
+  if (!explicit_read_only) {
+    if (!PromoteDecodedPicture(owner->decode_picture.lock()))
+      return VA_STATUS_ERROR_OPERATION_FAILED;
+    owner->direct_decode_eligible = false;
+  }
 
   auto *prime = static_cast<VADRMPRIMESurfaceDescriptor *>(descriptor);
   memset(prime, 0, sizeof(*prime));

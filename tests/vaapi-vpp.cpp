@@ -269,6 +269,67 @@ void RepeatedVppRetainsPicture() {
   fixture.Complete(kTimestampStep, 40);
 }
 
+void DirectCaptureKeepsQueuedVppPrivate() {
+  for (bool cancel : {false, true}) {
+    FenceIoMock mock;
+    MockFenceScope scope(mock);
+    Fixture fixture;
+    // Drive the queued lifecycle deterministically on the mocking thread.
+    // The real worker would race these manual completion/cancellation steps.
+    {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      fixture.driver.stopping = true;
+    }
+    fixture.driver.condition.notify_all();
+    fixture.driver.vpp_worker.join();
+    auto picture = std::make_shared<Surface>();
+    picture->width = picture->height = 16;
+    picture->expected_timestamp = kTimestampStep;
+    picture->direct_picture = true;
+    picture->decode_target = fixture.source;
+    picture->direct_backing = fixture.source;
+    fixture.source->decode_picture = picture;
+    fixture.source->ready = false;
+    fixture.decoder->decoded_frames[kTimestampStep] = picture;
+    fixture.SubmitParameters();
+    fixture.target->object_fds = {101};
+    Require(EndPicture(&fixture.context, 2) == VA_STATUS_SUCCESS &&
+                fixture.driver.pending_vpp.size() == 1 &&
+                picture->vpp_readers == 1 && !picture->direct_backing,
+            "pending direct capture queues private source with a real write fence");
+    // Reuse the public backing and release the decode map while the queued
+    // operation alone retains the captured picture.
+    fixture.source->expected_timestamp = 2 * kTimestampStep;
+    fixture.source->planes[0][0] = 80;
+    fixture.decoder->decoded_frames.clear();
+    const auto pending = fixture.driver.pending_vpp.front();
+    if (cancel) {
+      fixture.decoder->Reset();
+      Require(PendingVppCanceled(pending), "decoder retirement cancels direct capture epoch");
+      ReleasePendingVpp(&fixture.driver, pending.sequence,
+                         VA_STATUS_ERROR_OPERATION_FAILED, false);
+      Require(fixture.target->failed && fixture.target->planes[0][0] == 99 &&
+                  mock.fence_status < 0,
+              "canceled capture preserves destination and publishes error fence");
+    } else {
+      const auto completed = Picture(kTimestampStep, 40);
+      Require(CopyNv12Surface(*completed, picture.get()), "complete retained private output");
+      Require(ProcessVpp(&fixture.driver.vpp_scaler, &fixture.driver.vpp_argb_staging,
+                          picture.get(), fixture.target.get(), pending.source_region,
+                          pending.output_region, true) == VA_STATUS_SUCCESS,
+              "convert queued exact private picture");
+      ReleasePendingVpp(&fixture.driver, pending.sequence, VA_STATUS_SUCCESS, true);
+      Require(fixture.target->ready && fixture.target->planes[0][0] == 40 &&
+                  fixture.target->frame_timestamp == kTimestampStep &&
+                  mock.fence_status == 1,
+              "queued capture signals only committed original pixels");
+    }
+    Require(picture->vpp_readers == 0 && fixture.target->vpp_writers == 0 &&
+                !mock.invalid && !mock.self_wait,
+            "direct capture releases ownership without waiting on its own fence");
+  }
+}
+
 void ReuseBetweenRenderAndEndKeepsCapturedPicture() {
   Fixture fixture;
   fixture.SubmitParameters();
@@ -1338,6 +1399,7 @@ int main(int argc, char **argv) {
     }
     AbortPathsPublishErrorFences();
     RepeatedVppRetainsPicture();
+    DirectCaptureKeepsQueuedVppPrivate();
     ReuseBetweenRenderAndEndKeepsCapturedPicture();
     ResetRejectsCapturedOldEpoch();
     MissingPictureIsNotSuccessfulFallback();
@@ -1371,6 +1433,6 @@ int main(int argc, char **argv) {
     fprintf(stderr, "VA-API VPP regression failed: %s\n", error.what());
     return 1;
   }
-  puts("VA-API VPP identity/lifecycle/fences/images: 31 hardware-free regressions passed");
+  puts("VA-API VPP identity/lifecycle/fences/images: 32 hardware-free regressions passed");
   return 0;
 }

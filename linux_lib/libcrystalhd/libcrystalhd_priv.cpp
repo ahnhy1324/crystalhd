@@ -1903,6 +1903,7 @@ void DtsJoinTxThread(DTS_LIB_CONTEXT *Ctx)
 	DtsLock(Ctx);
 	Ctx->txThreadExit = true;
 	DtsUnLock(Ctx);
+	txBufShutdown(&Ctx->circBuf);
 	if (Ctx->htxThread)
 		pthread_join(Ctx->htxThread, NULL);
 	Ctx->htxThread = 0;
@@ -2671,26 +2672,107 @@ void DtsUpdateOutStats(DTS_LIB_CONTEXT	*Ctx, BC_DTS_PROC_OUT *pOut)
 // Init the circular buffer to be on 128 byte boundary
 BC_STATUS txBufInit(pTXBUFFER txBuf, uint32_t sizeInit)
 {
-	BC_STATUS sts = BC_STS_SUCCESS;
 	int ret = 0;
+	pthread_condattr_t wakeAttr;
 	if(txBuf->buffer != NULL)
 		return BC_STS_INV_ARG;
 	ret = posix_memalign((void**)&txBuf->buffer, 128, sizeInit);
 	if(ret)
 		return BC_STS_INSUFF_RES;
-	if(txBuf->buffer != NULL)
-	{
-		txBuf->basePointer = txBuf->buffer;
-		txBuf->endPointer = txBuf->basePointer + sizeInit - 1;
-		txBuf->readPointer = txBuf->writePointer = 0;
-		txBuf->freeSize = txBuf->totalSize = sizeInit;
-		txBuf->busySize = 0;
-		pthread_mutex_init(&txBuf->flushLock, NULL);
-		pthread_mutex_init(&txBuf->pushpopLock, NULL);
+	if(txBuf->buffer == NULL)
+		return BC_STS_INSUFF_RES;
+
+	txBuf->basePointer = txBuf->buffer;
+	txBuf->endPointer = txBuf->basePointer + sizeInit - 1;
+	txBuf->readPointer = txBuf->writePointer = 0;
+	txBuf->freeSize = txBuf->totalSize = sizeInit;
+	txBuf->busySize = 0;
+	txBuf->wakePending = false;
+	txBuf->wakeShutdown = false;
+
+	ret = pthread_mutex_init(&txBuf->flushLock, NULL);
+	if(ret)
+		goto free_buffer;
+	ret = pthread_mutex_init(&txBuf->pushpopLock, NULL);
+	if(ret)
+		goto destroy_flush_lock;
+	ret = pthread_mutex_init(&txBuf->wakeLock, NULL);
+	if(ret)
+		goto destroy_pushpop_lock;
+	ret = pthread_condattr_init(&wakeAttr);
+	if(ret)
+		goto destroy_wake_lock;
+	ret = pthread_condattr_setclock(&wakeAttr, CLOCK_MONOTONIC);
+	if(!ret)
+		ret = pthread_cond_init(&txBuf->wakeCond, &wakeAttr);
+	pthread_condattr_destroy(&wakeAttr);
+	if(ret)
+		goto destroy_wake_lock;
+
+	return BC_STS_SUCCESS;
+
+destroy_wake_lock:
+	pthread_mutex_destroy(&txBuf->wakeLock);
+destroy_pushpop_lock:
+	pthread_mutex_destroy(&txBuf->pushpopLock);
+destroy_flush_lock:
+	pthread_mutex_destroy(&txBuf->flushLock);
+free_buffer:
+	free(txBuf->buffer);
+	txBuf->buffer = NULL;
+	txBuf->basePointer = NULL;
+	txBuf->endPointer = NULL;
+	txBuf->freeSize = txBuf->totalSize = txBuf->busySize = 0;
+	return BC_STS_INSUFF_RES;
+}
+
+static void txBufWake(pTXBUFFER txBuf)
+{
+	if(txBuf == NULL || txBuf->buffer == NULL)
+		return;
+	pthread_mutex_lock(&txBuf->wakeLock);
+	txBuf->wakePending = true;
+	pthread_cond_signal(&txBuf->wakeCond);
+	pthread_mutex_unlock(&txBuf->wakeLock);
+}
+
+bool txBufWaitForWake(pTXBUFFER txBuf, uint32_t timeoutMs)
+{
+	struct timespec deadline;
+	int ret;
+
+	if(txBuf == NULL || txBuf->buffer == NULL)
+		return false;
+	if(clock_gettime(CLOCK_MONOTONIC, &deadline) != 0)
+		return true;
+	deadline.tv_sec += timeoutMs / 1000;
+	deadline.tv_nsec += (long)(timeoutMs % 1000) * 1000000L;
+	if(deadline.tv_nsec >= 1000000000L) {
+		deadline.tv_sec++;
+		deadline.tv_nsec -= 1000000000L;
 	}
-	else
-		sts = BC_STS_INSUFF_RES;
-	return sts;
+
+	pthread_mutex_lock(&txBuf->wakeLock);
+	while(!txBuf->wakePending && !txBuf->wakeShutdown) {
+		ret = pthread_cond_timedwait(&txBuf->wakeCond, &txBuf->wakeLock,
+			&deadline);
+		if(ret != 0)
+			break;
+	}
+	txBuf->wakePending = false;
+	const bool running = !txBuf->wakeShutdown;
+	pthread_mutex_unlock(&txBuf->wakeLock);
+	return running;
+}
+
+void txBufShutdown(pTXBUFFER txBuf)
+{
+	if(txBuf == NULL || txBuf->buffer == NULL)
+		return;
+	pthread_mutex_lock(&txBuf->wakeLock);
+	txBuf->wakeShutdown = true;
+	pthread_cond_broadcast(&txBuf->wakeCond);
+	pthread_mutex_unlock(&txBuf->wakeLock);
 }
 
 // Push the number of bytes specified on to the circular buffer
@@ -2741,6 +2823,7 @@ BC_STATUS txBufPush(pTXBUFFER txBuf, uint8_t* bufToPush, uint32_t sizeToPush)
 		pthread_mutex_unlock(&txBuf->pushpopLock);
 	}
 
+	txBufWake(txBuf);
 	return BC_STS_SUCCESS;
 }
 
@@ -2815,12 +2898,15 @@ BC_STATUS txBufFree(pTXBUFFER txBuf)
 {
 	if(txBuf->buffer == NULL)
 		return BC_STS_INV_ARG;
+	pthread_cond_destroy(&txBuf->wakeCond);
+	pthread_mutex_destroy(&txBuf->wakeLock);
 	txBuf->basePointer = NULL;
 	txBuf->endPointer = NULL;
 	txBuf->readPointer = txBuf->writePointer = 0;
 	txBuf->freeSize = 0;
 	txBuf->busySize = 0;
 	free(txBuf->buffer);
+	txBuf->buffer = NULL;
 	pthread_mutex_destroy(&txBuf->flushLock);
 	pthread_mutex_destroy(&txBuf->pushpopLock);
 	return BC_STS_SUCCESS;
@@ -3129,8 +3215,8 @@ void * txThreadProc(void *ctx)
 			}
 			Ctx->txPending = false;
 			DtsUnLock(Ctx);
-		} else
-			usleep(5 * 1000);
+		} else if(!txBufWaitForWake(&Ctx->circBuf, 5))
+			break;
 	}
 
 	free(localBuffer);
