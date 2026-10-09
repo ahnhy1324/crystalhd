@@ -825,6 +825,16 @@ _DEBUG_MECHANISM_REGIONS = (
 )
 MAX_DEBUG_MECHANISM_REGIONS = 9
 MAX_DEBUG_MECHANISM_BYTES = 1024
+_RX_DESCRIPTOR_ADMISSION_REGIONS = (
+    ("body", 0x77e0, 184,
+     "7cd183a9c2450240eb1595af092f546cad349438c8b30adc05a34e9cec768105"),
+    ("caller", 0x8818, 12,
+     "99e4349b34fecb1edd15dbeada9d680bae714f57c2861c3669d3faa3dbc0e128"),
+    ("mmio_literal", 0x79b0, 4,
+     "43e026367524e8c8b0a3342b522c0c77ad5b1966dc917ece2a3120540861febe"),
+)
+MAX_RX_DESCRIPTOR_ADMISSION_REGIONS = 3
+MAX_RX_DESCRIPTOR_ADMISSION_BYTES = 256
 _MFD_SOURCE_REGIONS = (
     ("source_address", 0x1918,
      "f0402de914d04de20070a0e10140a0e1f8219fe55c10d4e5810081e00031b2e7050092e90c008de510208de508308de5"
@@ -5324,6 +5334,137 @@ def _debug_mechanism_map(payload, images):
     }
 
 
+def _rx_descriptor_admission_map(payload):
+    """Pinned Y-RX descriptor publication, not DMA completion."""
+    if len(payload) != BUNDLED_SIZE - TRAILER_SIZE:
+        raise FormatError("RX descriptor-admission payload size does not match the bundled baseline")
+    regions = _RX_DESCRIPTOR_ADMISSION_REGIONS
+    total = sum(size for _, _, size, _ in regions)
+    if (len(regions) > MAX_RX_DESCRIPTOR_ADMISSION_REGIONS or
+            total > MAX_RX_DESCRIPTOR_ADMISSION_BYTES):
+        raise FormatError("RX descriptor-admission validation budget exceeded")
+    validated = []
+    # Pin the complete selected body, its caller and its MMIO literal before
+    # decoding any instruction or assigning register semantics.
+    for role, offset, size, expected in regions:
+        data = bounded(payload, offset, size, "RX descriptor-admission region")
+        if hashlib.sha256(data).hexdigest() != expected:
+            raise FormatError(f"RX descriptor-admission region {role} does not match the baseline")
+        validated.append({"role": role, "blob_file_offset": offset,
+                          "size": size, "sha256": expected})
+
+    words = {
+        offset: _bootstrap_word(payload, offset) for offset in (
+            0x77e0, 0x77f0, 0x77f8, 0x7800, 0x780c, 0x7810, 0x7814,
+            0x7818, 0x7828, 0x782c, 0x7830, 0x784c, 0x7858, 0x785c,
+            0x7860, 0x7864, 0x7874, 0x7878, 0x787c, 0x8818, 0x8820)
+    }
+    expected_words = {
+        0x77e0: 0xe92d4070, 0x77f0: 0xe5940000, 0x77f8: 0xe3500000,
+        0x7800: 0xe9940006, 0x780c: 0xe5940008, 0x7810: 0xe585004c,
+        0x7814: 0xe5940004, 0x7818: 0xe3500000, 0x7828: 0xe5940004,
+        0x782c: 0xe3800001, 0x7830: 0xe5850048, 0x784c: 0xe9940006,
+        0x7858: 0xe5940008, 0x785c: 0xe5850044, 0x7860: 0xe5940004,
+        0x7864: 0xe3500000, 0x7874: 0xe5940004, 0x7878: 0xe3800001,
+        0x787c: 0xe5850040, 0x8818: 0xe2840f62, 0x8820: 0xe5c471a8,
+    }
+    if words != expected_words:
+        raise FormatError("RX descriptor-admission instruction does not match the baseline")
+
+    literal = _a32_literal(payload, 0x77f4)
+    if (literal["literal_blob_file_offset"], literal["literal_value"],
+            literal["destination_register"]) != (0x79b0, 0x10502000, 5):
+        raise FormatError("RX descriptor-admission MMIO literal does not match the baseline")
+    branches = {}
+    for name, site, target, link, condition in (
+            ("caller", 0x881c, 0x77e0, True, 14),
+            ("selector_zero", 0x77fc, 0x784c, False, 0),
+            ("list1_low_zero", 0x781c, 0x7838, False, 0),
+            ("list0_low_zero", 0x7868, 0x7884, False, 0),
+            ("list0_join", 0x7880, 0x7834, False, 14),
+            ("list1_zero_tail", 0x7848, 0x203c4, False, 14),
+            ("list0_zero_tail", 0x7894, 0x203c4, False, 14)):
+        branch = _a32_branch(payload, site, link=link, condition=condition)
+        if branch["target_blob_file_offset"] != target:
+            raise FormatError("RX descriptor-admission branch target does not match the baseline")
+        branches[name] = branch
+    calls = []
+    for role, site, target in (
+            ("uart_character_output", 0x77ec, 0xaf18),
+            ("log", 0x7808, 0x203c4),
+            ("uart_character_output", 0x7824, 0xaf18),
+            ("uart_character_output", 0x783c, 0xaf18),
+            ("log", 0x7854, 0x203c4),
+            ("uart_character_output", 0x7870, 0xaf18),
+            ("uart_character_output", 0x7888, 0xaf18)):
+        branch = _a32_branch(payload, site, link=True)
+        if branch["target_blob_file_offset"] != target:
+            raise FormatError("RX descriptor-admission call target does not match the baseline")
+        calls.append({"role": role, **branch})
+    tail_calls = [
+        {"role": "log", "tail_call": True, **branches[name]}
+        for name in ("list1_zero_tail", "list0_zero_tail")
+    ]
+
+    return {
+        "schema_version": 1, "kind": "stock-y-rx-descriptor-admission",
+        "isa": "A32", "endianness": "little", "device_observed": False,
+        "validation": {"region_count": len(validated), "bytes": total,
+                       "regions": validated},
+        "caller": {
+            "record_expression": "channel + 0x188",
+            "record_address_instruction_blob_file_offset": 0x8818,
+            "call": branches["caller"],
+            "pending_byte_offset": 0x1a8,
+            "pending_store_instruction_blob_file_offset": 0x8820,
+            "pending_store_source_register": 7,
+            "pending_store_value_established_by_caller_triplet": False,
+            "runtime_channel_identity_established": False,
+        },
+        "input_record": {
+            "source": "include/flea/DriverFwShare.h:22",
+            "byte_count_available": 32, "byte_count_read_by_selected_body": 12,
+            "selector_word_offset": 0, "y_low_word_offset": 4,
+            "y_high_word_offset": 8, "remaining_words_read": False,
+            "record_stability_during_repeated_low_reads_assumed": True,
+        },
+        "selector": {
+            "zero_selects": 0, "every_nonzero_selects": 1,
+            "accepted_domain_validated": False,
+            "zero_branch": branches["selector_zero"],
+        },
+        "publication": {
+            "firmware_mmio_base": literal["literal_value"],
+            "rdb_base": 0x00502000,
+            "rdb_source": "include/flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_misc1.h",
+            "list0": {"high_address": 0x10502044, "high_store": 0x785c,
+                      "low_address": 0x10502040, "low_valid_store": 0x787c},
+            "list1": {"high_address": 0x1050204c, "high_store": 0x7810,
+                      "low_address": 0x10502048, "low_valid_store": 0x7830},
+            "valid_mask": 1,
+            "low_transform": "u32(low | 1); no alignment normalization",
+            "direct_program_order": ["selected high DWORD", "selected low DWORD OR VALID"],
+            "low_zero_direct_effect": "Selected high DWORD is written; selected low/VALID register is unchanged.",
+            "unselected_list_unchanged_by_selected_body": True,
+        },
+        "opaque_calls": calls,
+        "opaque_tail_calls": tail_calls,
+        "scope": {
+            "complete_selected_body_pin": True, "complete_caller_triplet_pin": True,
+            "direct_descriptor_admission": True, "descriptor_contents_validated": False,
+            "device_visibility_ordering": False, "host_rx_dma_completion": False,
+            "host_buffer_lifetime": False, "mfd_feed_completion": False,
+            "scaler_capture_completion": False, "picture_source_ownership": False,
+            "opaque_callee_semantics": False,
+        },
+        "assumptions": [
+            "The 32-byte record remains readable and stable while the selected body rereads its low word.",
+            "UART-character/log callees return and preserve the A32 callee-saved ABI; their internal effects are not modeled.",
+            "Direct CPU store order is not a device-visibility, DMA-completion or host-notification receipt.",
+        ],
+    }
+
+
 _PPB_BANK_RELEASE_EDGES = (
     ("returned", "Core_Run", 2, 0x51a4, 0x51a8, 0x3000),
     ("latest", "Core_OrderPIF_ReleaseOnLatest", 4, 0x9280, 0x9284, 0x4000),
@@ -7776,7 +7917,7 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
             arc_metadata=False, csc_command=False, command_buffer_bridge=False, inner_descriptor=False,
             scaler_fir=False, ppb_handoff=False, ppb_source=False, ppb_saved_context=False, ppb_stop_context=False,
             ppb_fixed_metadata=False, ppb_return_header=False, ppb_bank_ledger=None,
-            debug_mechanisms=False):
+            debug_mechanisms=False, rx_descriptor_admission=False):
     if len(data) < 24 or len(data) > MAX_FIRMWARE_SIZE or len(data) % 4:
         raise FormatError("invalid BCM70015 firmware size")
     sha256 = hashlib.sha256(data).hexdigest()
@@ -7812,6 +7953,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         raise FormatError("--ppb-bank-ledger requires the exact bundled firmware SHA-256 and size")
     if debug_mechanisms and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
         raise FormatError("--debug-mechanisms requires the exact bundled firmware SHA-256 and size")
+    if rx_descriptor_admission and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
+        raise FormatError("--rx-descriptor-admission requires the exact bundled firmware SHA-256 and size")
     payload = data[:-TRAILER_SIZE]
     length_slot = struct.unpack_from("<I", data, len(payload))[0]
     if length_slot != 16:
@@ -7912,6 +8055,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         result["ppb_bank_ledger"] = _ppb_bank_decode_ledger(payload, ppb_bank_ledger)
     if debug_mechanisms:
         result["debug_mechanisms"] = _debug_mechanism_map(payload, images)
+    if rx_descriptor_admission:
+        result["rx_descriptor_admission"] = _rx_descriptor_admission_map(payload)
     return result
 
 
@@ -7963,6 +8108,8 @@ def main(argv=None):
     parser.add_argument("--debug-mechanisms", action="store_true", help=(
         "separate fixed C011 DEBUG_SETUP, ARM/ARC UART and ARC DRAM-log evidence; "
         "bundled firmware only, not runtime accessibility"))
+    parser.add_argument("--rx-descriptor-admission", action="store_true", help=(
+        "validate fixed Y-RX descriptor publication; bundled firmware only, not DMA completion"))
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-fA-F]{64}", args.expect_sha256):
         parser.error("--expect-sha256 must be 64 hexadecimal digits")
@@ -7972,7 +8119,7 @@ def main(argv=None):
                          args.picture_output, args.arc_metadata, args.csc_command, args.command_buffer_bridge,
                          args.inner_descriptor, args.scaler_fir, args.ppb_handoff, args.ppb_source,
                          args.ppb_saved_context, args.ppb_stop_context, args.ppb_fixed_metadata, args.ppb_return_header,
-                         args.ppb_bank_ledger, args.debug_mechanisms)
+                         args.ppb_bank_ledger, args.debug_mechanisms, args.rx_descriptor_admission)
     except (OSError, FormatError) as error:
         print(f"flea_fw_map: {error}", file=sys.stderr)
         return 1
