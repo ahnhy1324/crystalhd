@@ -844,6 +844,10 @@ _CHANNEL_FIELD_REGIONS = (
      "90235ef9116585e3b06f150c19cc273c8b4098db381d46cf3454ab59501e3688"),
     ("host_stop_start", 0x4288, 0x7d8,
      "edf522cfd3afba69e0acc27824886bfcbe46cccd4f1f33773f726c9985412c3f"),
+    ("helper_15d8_direct_caller", 0x4a60, 0xe4,
+     "631e5d0ba861cd4d2c1f4ad78d00ed8a340684154456a66684607273fca83827"),
+    ("helper_12e4_direct_caller", 0x4c7c, 0x1f0,
+     "c3e568b63604cc40b146f14675d764c321a0dc287792d76c7049bac51cc69b48"),
     ("host_close_open", 0x4f88, 0xa80,
      "e9ecbcee4ea0fc4b5a91aa9b8ec6b72c6238c04036242dd0614d59370e290cc1"),
     ("device_start_handoff", 0x5ce8, 0x68,
@@ -883,10 +887,12 @@ _CHANNEL_FIELD_REGIONS = (
     ("clear_thumb_fill", 0x2c73c, 0x8e,
      "40142c13e3b9e4840b17fb10874e1f87ec3fd9dc712b7e678c257e12ac553f8e"),
 )
-MAX_CHANNEL_FIELD_REGIONS = 24
-MAX_CHANNEL_FIELD_BYTES = 20 * 1024
+MAX_CHANNEL_FIELD_REGIONS = 25
+MAX_CHANNEL_FIELD_BYTES = 21 * 1024
 MAX_CHANNEL_FIELD_AGGREGATE_REGIONS = 32
 MAX_CHANNEL_FIELD_AGGREGATE_BYTES = 24 * 1024
+MAX_CHANNEL_FIELD_CALLER_SCAN_REGIONS = 2
+MAX_CHANNEL_FIELD_CALLER_SCAN_BYTES = 1024
 _MFD_SOURCE_REGIONS = (
     ("source_address", 0x1918,
      "f0402de914d04de20070a0e10140a0e1f8219fe55c10d4e5810081e00031b2e7050092e90c008de510208de508308de5"
@@ -3774,6 +3780,37 @@ def _a32_branch(payload, offset, link=False, condition=14):
             "target_blob_file_offset": target}
 
 
+def _a32_branch_candidates_in_regions(payload, regions):
+    """Decode A32 B/BL bit patterns only inside caller regions already pinned by hash."""
+    total = sum(size for _, _, size in regions)
+    if (len(regions) > MAX_CHANNEL_FIELD_CALLER_SCAN_REGIONS or
+            total > MAX_CHANNEL_FIELD_CALLER_SCAN_BYTES):
+        raise FormatError("channel-field caller scan budget exceeded")
+    candidates = []
+    for role, start, size in regions:
+        if start % 4 or size <= 0 or size % 4:
+            raise FormatError("channel-field caller scan region is not aligned")
+        data = bounded(payload, start, size, "channel-field caller scan region")
+        for relative in range(0, size, 4):
+            word = struct.unpack_from("<I", data, relative)[0]
+            condition = word >> 28
+            # cond=0xf uses the unconditional/BLX space, not this A32 B/BL form.
+            if condition == 15 or word & 0x0e000000 != 0x0a000000:
+                continue
+            displacement = word & 0xffffff
+            if displacement & 0x800000:
+                displacement -= 1 << 24
+            offset = start + relative
+            target = offset + 8 + displacement * 4
+            candidates.append({
+                "region_role": role, "blob_file_offset": offset, "word": word,
+                "operation": "BL" if word & 0x01000000 else "B",
+                "condition": condition, "target_blob_file_offset": target,
+                "target_inside_payload": 0 <= target <= len(payload) - 4,
+            })
+    return candidates
+
+
 def _a32_literal(payload, offset):
     """Decode AL LDR word [PC, +/-imm12], with no writeback or register offset."""
     word = _bootstrap_word(payload, offset)
@@ -5525,6 +5562,11 @@ def _channel_field_map(payload):
     total = sum(size for _, _, size, _ in regions)
     dependency_regions = _RX_DESCRIPTOR_ADMISSION_REGIONS
     dependency_total = sum(size for _, _, size, _ in dependency_regions)
+    caller_scan_roles = ("helper_15d8_direct_caller", "helper_12e4_direct_caller")
+    caller_scan_regions = tuple((role, offset, size) for role, offset, size, _ in regions
+                                if role in caller_scan_roles)
+    if tuple(role for role, _, _ in caller_scan_regions) != caller_scan_roles:
+        raise FormatError("channel-field caller scan regions do not match the baseline")
     if len(regions) > MAX_CHANNEL_FIELD_REGIONS or total > MAX_CHANNEL_FIELD_BYTES:
         raise FormatError("channel-field validation budget exceeded")
     if (len(regions) + len(dependency_regions) > MAX_CHANNEL_FIELD_AGGREGATE_REGIONS or
@@ -5541,6 +5583,19 @@ def _channel_field_map(payload):
                           "size": size, "sha256": expected})
 
     admission = _rx_descriptor_admission_map(payload)
+    branch_candidates = _a32_branch_candidates_in_regions(payload, caller_scan_regions)
+    link_candidates = [record for record in branch_candidates if record["operation"] == "BL"]
+    expected_links = (
+        (0x4a78, 0x898), (0x4acc, 0x203c4), (0x4b00, 0x15d8),
+        (0x4ca0, 0x898), (0x4cfc, 0x203c4), (0x4d1c, 0xaf18),
+        (0x4d7c, 0xaf18), (0x4dbc, 0x70f0), (0x4dd4, 0x710c),
+        (0x4ddc, 0xaf18), (0x4dec, 0x12e4), (0x4dfc, 0xaf5c),
+        (0x4e54, 0x203c4),
+    )
+    if (len(branch_candidates) != 38 or
+            tuple((record["blob_file_offset"], record["target_blob_file_offset"])
+                  for record in link_candidates) != expected_links):
+        raise FormatError("channel-field caller branch candidates do not match the baseline")
 
     def checked_sites(entries, access, expression):
         result = []
@@ -5631,14 +5686,91 @@ def _channel_field_map(payload):
          "r0 = &C+0xd4"),
         ("pvr_open_output_recovered", 0xc02c, 0xe59d0034,
          "r0 = caller output pointer"),
+        ("helper_15d8_caller_entry", 0x4a60, 0xe92d41f0,
+         "complete selected caller entry"),
+        ("helper_15d8_root_save", 0x4a7c, 0xe1a02000,
+         "r2 = fixed-root getter result"),
+        ("helper_15d8_slot_argument", 0x4a90, 0xe5940008,
+         "r0 = selected channel slot"),
+        ("helper_15d8_second_argument", 0x4afc, 0xe594100c,
+         "r1 = selected caller value"),
+        ("helper_12e4_caller_entry", 0x4c7c, 0xe92d5ff0,
+         "complete selected caller entry; r6 is saved"),
+        ("helper_12e4_root_save", 0x4ca4, 0xe1a06000,
+         "r6 = fixed-root getter result"),
+        ("helper_12e4_slot_argument", 0x4de0, 0xe5940008,
+         "r0 = selected channel slot"),
+        ("helper_12e4_root_argument", 0x4de4, 0xe1a01006,
+         "r1 = saved fixed root"),
+        ("helper_12e4_third_argument", 0x4de8, 0xe594200c,
+         "r2 = selected caller value"),
     ))
 
+    anchor_by_role = {record["role"]: record for record in anchors}
+    caller_edges = {}
+    for role, site, target in (
+            ("helper_15d8_root_getter", 0x4a78, 0x898),
+            ("helper_15d8_call", 0x4b00, 0x15d8),
+            ("helper_12e4_root_getter", 0x4ca0, 0x898),
+            ("helper_12e4_call", 0x4dec, 0x12e4)):
+        branch = _a32_branch(payload, site, link=True)
+        if branch["target_blob_file_offset"] != target:
+            raise FormatError(f"channel-field caller edge {role} does not match the baseline")
+        caller_edges[role] = {"role": role, **branch}
+
+    selected_fixed_root_paths = (
+        {
+            "helper_function_entry": 0x15d8,
+            "incoming_root_register": "r2",
+            "caller_function_entry": 0x4a60,
+            "caller_region_role": "helper_15d8_direct_caller",
+            "root_value": 0xd3a00,
+            "root_getter_call": caller_edges["helper_15d8_root_getter"],
+            "root_save": anchor_by_role["helper_15d8_root_save"],
+            "helper_call": caller_edges["helper_15d8_call"],
+            "helper_root_argument": anchor_by_role["helper_15d8_root_save"],
+            "possible_intervening_link_candidate_sites": [],
+            "fixed_root_on_this_selected_path": True,
+            "callee_saved_register_premise": False,
+            "runtime_path_observed": False,
+            "all_direct_callers_established": False,
+            "indirect_or_computed_callers_excluded": False,
+        },
+        {
+            "helper_function_entry": 0x12e4,
+            "incoming_root_register": "r1",
+            "caller_function_entry": 0x4c7c,
+            "caller_region_role": "helper_12e4_direct_caller",
+            "root_value": 0xd3a00,
+            "root_getter_call": caller_edges["helper_12e4_root_getter"],
+            "root_save": anchor_by_role["helper_12e4_root_save"],
+            "helper_call": caller_edges["helper_12e4_call"],
+            "helper_root_argument": anchor_by_role["helper_12e4_root_argument"],
+            "possible_intervening_link_candidate_sites": [
+                0x4d1c, 0x4d7c, 0x4dbc, 0x4dd4, 0x4ddc,
+            ],
+            "fixed_root_on_this_selected_path": True,
+            "callee_saved_register_premise": True,
+            "runtime_path_observed": False,
+            "all_direct_callers_established": False,
+            "indirect_or_computed_callers_excluded": False,
+        },
+    )
+    fixed_path_by_helper = {
+        record["helper_function_entry"]: record for record in selected_fixed_root_paths
+    }
+
+    # Schema v1 compatibility: retain the legacy selected-caller boolean while
+    # the new fields distinguish selected evidence from complete provenance.
     argument_conditional_aliases = (
         {
             "function_entry": 0x12e4,
             "incoming_root_register": "r1",
             "premise": "incoming r1 == channel root 0xd3a00",
-            "fixed_root_caller_provenance_pinned": False,
+            "fixed_root_caller_provenance_pinned": True,
+            "selected_fixed_root_caller_provenance_pinned": True,
+            "selected_fixed_root_call_paths": [fixed_path_by_helper[0x12e4]],
+            "all_caller_provenance_pinned": False,
             "derivation_sites": checked_anchors((
                 ("helper_12e4_stride_words", 0x12e8, 0xe3a03073,
                  "r3 = 0x73 words"),
@@ -5653,7 +5785,10 @@ def _channel_field_map(payload):
             "function_entry": 0x15d8,
             "incoming_root_register": "r2",
             "premise": "incoming r2 == channel root 0xd3a00",
-            "fixed_root_caller_provenance_pinned": False,
+            "fixed_root_caller_provenance_pinned": True,
+            "selected_fixed_root_caller_provenance_pinned": True,
+            "selected_fixed_root_call_paths": [fixed_path_by_helper[0x15d8]],
+            "all_caller_provenance_pinned": False,
             "derivation_sites": checked_anchors((
                 ("helper_15d8_stride_words", 0x15dc, 0xe3a03073,
                  "r3 = 0x73 words"),
@@ -5669,6 +5804,9 @@ def _channel_field_map(payload):
             "incoming_root_register": "r1",
             "premise": "incoming r1 == channel root 0xd3a00",
             "fixed_root_caller_provenance_pinned": False,
+            "selected_fixed_root_caller_provenance_pinned": False,
+            "selected_fixed_root_call_paths": [],
+            "all_caller_provenance_pinned": False,
             "derivation_sites": checked_anchors((
                 ("helper_1610_stride_words", 0x1618, 0xe3a02073,
                  "r2 = 0x73 words"),
@@ -5947,6 +6085,10 @@ def _channel_field_map(payload):
                   "producer_source_proven": False,
                   "admission": admission},
     }
+    tracked_helper_candidates = [
+        record for record in link_candidates
+        if record["target_blob_file_offset"] in (0x12e4, 0x15d8, 0x1610)
+    ]
     return {
         "schema_version": 1, "kind": "stock-arm-channel-field-inventory",
         "isa": "A32", "endianness": "little",
@@ -5958,6 +6100,8 @@ def _channel_field_map(payload):
                        "aggregate_region_count": len(validated) + len(dependency_regions),
                        "aggregate_bytes_charged": total + dependency_total,
                        "aggregate_overlap_deduplicated": False,
+                       "caller_scan_region_count": len(caller_scan_regions),
+                       "caller_scan_bytes": sum(size for _, _, size in caller_scan_regions),
                        "rx_descriptor_admission": admission["validation"]},
         "channel": {
             "root": root, "init_root": init_root, "reinitialize_root": reinit_root,
@@ -6003,6 +6147,35 @@ def _channel_field_map(payload):
                 "cache_value_currentness_established": False,
             },
         },
+        "caller_provenance": {
+            "kind": "selected fixed-root paths in two hash-pinned A32 caller bodies",
+            "selected_fixed_root_paths": list(selected_fixed_root_paths),
+            "branch_candidate_scan": {
+                "isa_encoding": "A32 conditional-space B/BL immediate bit patterns",
+                "region_count": len(caller_scan_regions),
+                "bytes": sum(size for _, _, size in caller_scan_regions),
+                "regions": [
+                    {"role": role, "blob_file_offset": offset, "size": size}
+                    for role, offset, size in caller_scan_regions
+                ],
+                "alignment_bytes": 4,
+                "branch_immediate_candidate_count": len(branch_candidates),
+                "link_candidate_count": len(link_candidates),
+                "link_candidates": link_candidates,
+                "tracked_helper_entries": [0x12e4, 0x15d8, 0x1610],
+                "tracked_helper_link_candidates": tracked_helper_candidates,
+                "complete_for_pinned_region_encoding_candidates": True,
+                "whole_image_scan": False,
+                "all_direct_callers_established": False,
+                "indirect_or_computed_callers_excluded": False,
+            },
+            "limitations": [
+                "The scan covers only the two named pinned caller bodies; other direct callers are not excluded.",
+                "No direct candidate for 0x1610 in those bodies does not exclude a caller elsewhere or an indirect/computed call.",
+                "The 0x12e4 path relies on A32 callee-saved r6 preservation across its possible intervening calls.",
+                "Static selected paths do not establish runtime execution, valid slot range, object identity or lifetime.",
+            ],
+        },
         "argument_conditional_aliases": list(argument_conditional_aliases),
         "control_flow": control_flow,
         "excluded_lookalikes": [
@@ -6015,6 +6188,9 @@ def _channel_field_map(payload):
             "all_decoded_instruction_and_literal_offsets_inside_pinned_regions": True,
             "all_reported_branch_targets_inside_pinned_regions": False,
             "fixed_root_derived_aliases_are_pinned": True,
+            "selected_fixed_root_caller_paths_are_pinned": True,
+            "direct_caller_inventory_complete": False,
+            "indirect_or_computed_caller_inventory_complete": False,
             "all_listed_accesses_have_fixed_root_provenance": False,
             "argument_rooted_aliases_are_conditional": True,
             "per_field_access_inventory_complete": False,
@@ -6033,7 +6209,8 @@ def _channel_field_map(payload):
         },
         "assumptions": [
             "A32 calls use the pinned calling convention and output pointers remain unaliased for each serialized call.",
-            "Three argument-rooted helpers are conditional on their stated incoming C-root premise; their fixed-root callers are not pinned.",
+            "Two selected direct caller paths establish the stated C-root premise; other direct or indirect callers remain unclassified.",
+            "The third argument-rooted helper at 0x1610 remains conditional on its incoming C-root premise.",
             "Selected scalar access lists exclude unpinned aliases and are not whole-image access inventories; the three pinned bulk clear paths are listed separately.",
             "Reported branch targets are decoded from pinned call instructions; target bodies are not thereby claimed as pinned.",
             "The generic clear and copy helpers operate on the exact argument ranges shown by their pinned wrappers and bodies.",

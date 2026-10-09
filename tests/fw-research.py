@@ -5293,16 +5293,19 @@ class FirmwareChannelFieldTests(unittest.TestCase):
                          (1, "stock-arm-channel-field-inventory",
                           "A32", "little", False))
         validation = report["validation"]
-        self.assertEqual((validation["region_count"], validation["bytes"]), (23, 19886))
+        self.assertEqual((validation["region_count"], validation["bytes"]), (25, 20610))
         self.assertEqual((validation["dependency_region_count"], validation["dependency_bytes"],
                           validation["aggregate_region_count"],
                           validation["aggregate_bytes_charged"],
                           validation["aggregate_overlap_deduplicated"]),
-                         (3, 200, 26, 20086, False))
+                         (3, 200, 28, 20810, False))
+        self.assertEqual((validation["caller_scan_region_count"],
+                          validation["caller_scan_bytes"]), (2, 724))
         self.assertEqual(validation["rx_descriptor_admission"], self.admission["validation"])
         self.assertEqual([region["role"] for region in validation["regions"]], [
             "init_context", "channel_api_lifecycle", "host_start_root_literal",
-            "host_stop_start", "host_close_open", "device_start_handoff",
+            "host_stop_start", "helper_15d8_direct_caller",
+            "helper_12e4_direct_caller", "host_close_open", "device_start_handoff",
             "device_start_output_literal",
             "stream_handler", "descriptor_delivery", "picture_handler", "irq19_handler",
             "reinitialize", "reinitialize_root_literal", "xpt_lifecycle", "decoder_lifecycle",
@@ -5339,6 +5342,14 @@ class FirmwareChannelFieldTests(unittest.TestCase):
             "pvr_open_output_argument", "pvr_open_output_recovered",
         )], [0xa308, 0xf7f0, 0x93a8, 0x1bc44, 0x1bc90,
              0x1bc94, 0x1bc98, 0x1bc9c, 0x5960, 0xc02c])
+        self.assertEqual([roles[name]["blob_file_offset"] for name in (
+            "helper_15d8_caller_entry", "helper_15d8_root_save",
+            "helper_15d8_slot_argument", "helper_15d8_second_argument",
+            "helper_12e4_caller_entry", "helper_12e4_root_save",
+            "helper_12e4_slot_argument", "helper_12e4_root_argument",
+            "helper_12e4_third_argument",
+        )], [0x4a60, 0x4a7c, 0x4a90, 0x4afc, 0x4c7c,
+             0x4ca4, 0x4de0, 0x4de4, 0x4de8])
 
     def test_all_three_clear_paths_and_helpers_are_explicit(self):
         initialization = self.report["initialization"]
@@ -5421,6 +5432,67 @@ class FirmwareChannelFieldTests(unittest.TestCase):
             0x1664: (0x1610, "incoming r1 == channel root 0xd3a00"),
         })
 
+    def test_selected_fixed_root_caller_paths_and_scan_are_bounded(self):
+        provenance = self.report["caller_provenance"]
+        scan = provenance["branch_candidate_scan"]
+        self.assertEqual(scan["regions"], [
+            {"role": "helper_15d8_direct_caller", "blob_file_offset": 0x4a60,
+             "size": 0xe4},
+            {"role": "helper_12e4_direct_caller", "blob_file_offset": 0x4c7c,
+             "size": 0x1f0},
+        ])
+        self.assertEqual((scan["region_count"], scan["bytes"], scan["alignment_bytes"],
+                          scan["branch_immediate_candidate_count"],
+                          scan["link_candidate_count"]), (2, 724, 4, 38, 13))
+        self.assertEqual([(record["blob_file_offset"],
+                           record["target_blob_file_offset"])
+                          for record in scan["link_candidates"]], [
+            (0x4a78, 0x898), (0x4acc, 0x203c4), (0x4b00, 0x15d8),
+            (0x4ca0, 0x898), (0x4cfc, 0x203c4), (0x4d1c, 0xaf18),
+            (0x4d7c, 0xaf18), (0x4dbc, 0x70f0), (0x4dd4, 0x710c),
+            (0x4ddc, 0xaf18), (0x4dec, 0x12e4), (0x4dfc, 0xaf5c),
+            (0x4e54, 0x203c4),
+        ])
+        self.assertEqual([(record["blob_file_offset"],
+                           record["target_blob_file_offset"])
+                          for record in scan["tracked_helper_link_candidates"]],
+                         [(0x4b00, 0x15d8), (0x4dec, 0x12e4)])
+        self.assertEqual(scan["tracked_helper_entries"], [0x12e4, 0x15d8, 0x1610])
+        self.assertTrue(scan["complete_for_pinned_region_encoding_candidates"])
+        for name in ("whole_image_scan", "all_direct_callers_established",
+                     "indirect_or_computed_callers_excluded"):
+            self.assertFalse(scan[name])
+
+        paths = {path["helper_function_entry"]: path
+                 for path in provenance["selected_fixed_root_paths"]}
+        self.assertEqual(set(paths), {0x12e4, 0x15d8})
+        self.assertEqual((paths[0x15d8]["incoming_root_register"],
+                          paths[0x15d8]["caller_function_entry"],
+                          paths[0x15d8]["root_getter_call"]["blob_file_offset"],
+                          paths[0x15d8]["root_save"]["blob_file_offset"],
+                          paths[0x15d8]["helper_call"]["blob_file_offset"],
+                          paths[0x15d8]["possible_intervening_link_candidate_sites"]),
+                         ("r2", 0x4a60, 0x4a78, 0x4a7c, 0x4b00, []))
+        self.assertEqual((paths[0x12e4]["incoming_root_register"],
+                          paths[0x12e4]["caller_function_entry"],
+                          paths[0x12e4]["root_getter_call"]["blob_file_offset"],
+                          paths[0x12e4]["root_save"]["blob_file_offset"],
+                          paths[0x12e4]["helper_root_argument"]["blob_file_offset"],
+                          paths[0x12e4]["helper_call"]["blob_file_offset"]),
+                         ("r1", 0x4c7c, 0x4ca0, 0x4ca4, 0x4de4, 0x4dec))
+        self.assertEqual(paths[0x12e4]["possible_intervening_link_candidate_sites"],
+                         [0x4d1c, 0x4d7c, 0x4dbc, 0x4dd4, 0x4ddc])
+        self.assertTrue(paths[0x12e4]["callee_saved_register_premise"])
+        self.assertFalse(paths[0x15d8]["callee_saved_register_premise"])
+        for path in paths.values():
+            self.assertEqual(path["root_value"], 0xd3a00)
+            self.assertTrue(path["fixed_root_on_this_selected_path"])
+            self.assertFalse(path["runtime_path_observed"])
+            self.assertFalse(path["all_direct_callers_established"])
+            self.assertFalse(path["indirect_or_computed_callers_excluded"])
+        self.assertTrue(any("0x1610" in limitation and "does not exclude" in limitation
+                            for limitation in provenance["limitations"]))
+
     def test_cached_metadata_projection_flags_and_descriptor_are_bounded(self):
         fields = self.report["fields"]
         projection = self.report["projections"]["cached_metadata_words"]
@@ -5502,6 +5574,9 @@ class FirmwareChannelFieldTests(unittest.TestCase):
             "all_decoded_instruction_and_literal_offsets_inside_pinned_regions"])
         self.assertFalse(scope["all_reported_branch_targets_inside_pinned_regions"])
         self.assertTrue(scope["fixed_root_derived_aliases_are_pinned"])
+        self.assertTrue(scope["selected_fixed_root_caller_paths_are_pinned"])
+        self.assertFalse(scope["direct_caller_inventory_complete"])
+        self.assertFalse(scope["indirect_or_computed_caller_inventory_complete"])
         self.assertFalse(scope["all_listed_accesses_have_fixed_root_provenance"])
         self.assertTrue(scope["argument_rooted_aliases_are_conditional"])
         self.assertFalse(scope["per_field_access_inventory_complete"])
@@ -5523,8 +5598,14 @@ class FirmwareChannelFieldTests(unittest.TestCase):
             (0x1610, "r1", "incoming r1 == channel root 0xd3a00",
              [0x1628, 0x1664]),
         ])
-        self.assertTrue(all(not entry["fixed_root_caller_provenance_pinned"]
+        self.assertEqual([entry["selected_fixed_root_caller_provenance_pinned"]
+                          for entry in conditional], [True, True, False])
+        self.assertEqual([entry["fixed_root_caller_provenance_pinned"]
+                          for entry in conditional], [True, True, False])
+        self.assertTrue(all(not entry["all_caller_provenance_pinned"]
                             for entry in conditional))
+        self.assertEqual([len(entry["selected_fixed_root_call_paths"])
+                          for entry in conditional], [1, 1, 0])
         self.assertEqual([[site["blob_file_offset"] for site in entry["derivation_sites"]]
                           for entry in conditional], [
             [0x12e8, 0x12ec, 0x12f0],
@@ -5574,6 +5655,8 @@ class FirmwareChannelFieldTests(unittest.TestCase):
                                           side_effect=AssertionError("literal decoded before pin gate")), \
                         mock.patch.object(MAP, "_a32_branch",
                                           side_effect=AssertionError("branch decoded before pin gate")), \
+                        mock.patch.object(MAP, "_a32_branch_candidates_in_regions",
+                                          side_effect=AssertionError("caller scan before pin gate")), \
                         self.assertRaises(MAP.FormatError):
                     MAP._channel_field_map(changed)
 
@@ -5581,17 +5664,23 @@ class FirmwareChannelFieldTests(unittest.TestCase):
         for payload in (b"", self.payload[:-1], self.payload + b"\0"):
             with self.subTest(size=len(payload)), self.assertRaisesRegex(MAP.FormatError, "payload size"):
                 MAP._channel_field_map(payload)
-        with mock.patch.object(MAP, "MAX_CHANNEL_FIELD_REGIONS", 22), \
+        with mock.patch.object(MAP, "MAX_CHANNEL_FIELD_REGIONS", 24), \
                 self.assertRaisesRegex(MAP.FormatError, "budget"):
             MAP._channel_field_map(self.payload)
-        with mock.patch.object(MAP, "MAX_CHANNEL_FIELD_BYTES", 19885), \
+        with mock.patch.object(MAP, "MAX_CHANNEL_FIELD_BYTES", 20609), \
                 self.assertRaisesRegex(MAP.FormatError, "budget"):
             MAP._channel_field_map(self.payload)
-        with mock.patch.object(MAP, "MAX_CHANNEL_FIELD_AGGREGATE_REGIONS", 25), \
+        with mock.patch.object(MAP, "MAX_CHANNEL_FIELD_AGGREGATE_REGIONS", 27), \
                 self.assertRaisesRegex(MAP.FormatError, "aggregate"):
             MAP._channel_field_map(self.payload)
-        with mock.patch.object(MAP, "MAX_CHANNEL_FIELD_AGGREGATE_BYTES", 20085), \
+        with mock.patch.object(MAP, "MAX_CHANNEL_FIELD_AGGREGATE_BYTES", 20809), \
                 self.assertRaisesRegex(MAP.FormatError, "aggregate"):
+            MAP._channel_field_map(self.payload)
+        with mock.patch.object(MAP, "MAX_CHANNEL_FIELD_CALLER_SCAN_REGIONS", 1), \
+                self.assertRaisesRegex(MAP.FormatError, "caller scan budget"):
+            MAP._channel_field_map(self.payload)
+        with mock.patch.object(MAP, "MAX_CHANNEL_FIELD_CALLER_SCAN_BYTES", 723), \
+                self.assertRaisesRegex(MAP.FormatError, "caller scan budget"):
             MAP._channel_field_map(self.payload)
 
     def test_opt_in_is_offline_additive_and_exact_baseline_gated(self):
