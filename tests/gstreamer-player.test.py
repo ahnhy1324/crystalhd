@@ -141,6 +141,8 @@ class PolicyAndControlTests(unittest.TestCase):
         control.pipeline.seek.return_value = True
         control.pipeline.set_state.return_value = 1
         control.rate = 1.0
+        control.seek_target = None
+        control.queued_seek = None
         control.health = player.PlaybackHealth("software", 0)
         control.stop = mock.Mock()
         return control
@@ -150,6 +152,7 @@ class PolicyAndControlTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             control.control("back")
             self.assertEqual(control.pipeline.seek.call_args.args, (1.0, 0, 3, 1, 2000, 0, -1))
+            control.seek_completed()
             control.control("rate-double")
         self.assertEqual(control.rate, 2.0)
         self.assertEqual(control.pipeline.seek.call_args.args[0], 2.0)
@@ -161,6 +164,42 @@ class PolicyAndControlTests(unittest.TestCase):
             control.control("rate-half")
         self.assertEqual(control.rate, 1.0)
         self.assertEqual(control.health.anchor, 0)
+
+    def test_controls_during_flush_are_coalesced_without_position_query(self):
+        control = self.controller()
+        with contextlib.redirect_stdout(io.StringIO()):
+            control.control("forward")
+            control.pipeline.query_position.return_value = (False, -1)
+            control.control("forward")
+            control.control("back")
+            control.control("rate-half")
+            self.assertEqual(control.pipeline.seek.call_count, 1)
+            self.assertEqual(control.pipeline.query_position.call_count, 1)
+            self.assertEqual(control.queued_seek, (22000, 0.5))
+            self.assertEqual(control.rate, 1.0)
+            control.seek_completed()
+            self.assertEqual(control.pipeline.seek.call_count, 2)
+            self.assertEqual(control.pipeline.seek.call_args.args,
+                             (0.5, 0, 3, 1, 22000, 0, -1))
+            self.assertEqual(control.rate, 0.5)
+            control.seek_completed()
+            self.assertIsNone(control.seek_target)
+
+    def test_rejected_queued_seek_keeps_accepted_settings(self):
+        control = self.controller()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            control.control("forward")
+            control.control("rate-half")
+            control.pipeline.seek.return_value = False
+            control.seek_completed()
+        self.assertEqual(control.rate, 1.0)
+        self.assertIsNone(control.seek_target)
+        self.assertIsNone(control.queued_seek)
+
+    def test_startup_async_done_does_not_issue_seek(self):
+        control = self.controller()
+        control.seek_completed()
+        control.pipeline.seek.assert_not_called()
 
     def test_pause_resume_and_zero_output_quit(self):
         control = self.controller()
