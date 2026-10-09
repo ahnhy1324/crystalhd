@@ -77,6 +77,7 @@ copy && /^};/ { copy = 0 }
 
 awk '
 /^void crystalhd_flea_stop_rx_dma_engine\(/ { copy = 1 }
+/^BC_STATUS crystalhd_flea_stop_tx_dma_engine\(/ { copy = 1 }
 /^void crystalhd_hw_dma_fatal_stop\(/ { copy = 1; fatal_found++ }
 /^bool crystalhd_hw_ack_fault_interrupt\(/ { copy = 1; ack_found++ }
 /^static bool crystalhd_hw_dma_inventory_empty\(/ { copy = 1; inventory_found++ }

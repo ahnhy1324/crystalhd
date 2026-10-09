@@ -2147,7 +2147,10 @@ void crystalhd_flea_stop_rx_dma_engine(struct crystalhd_hw *hw)
 		else
 			failedL1 = false;
 
-		msleep_interruptible(10);
+		/* File release can run with SIGTERM/SIGKILL pending. Interruptible
+		 * sleep would consume the poll budget without waiting for DMA.
+		 */
+		msleep(10);
 
 		if(pollCnt >= MAX_VALID_POLL_CNT)
 			break;
@@ -2385,7 +2388,8 @@ BC_STATUS crystalhd_flea_stop_tx_dma_engine(struct crystalhd_hw *hw)
 			l2 &= BCHP_MISC1_TX_SW_DESC_LIST_CTRL_STS_TX_DMA_RUN_STOP_MASK;
 		}
 
-		msleep_interruptible(100);
+		/* Stop must still drain DMA when the closing task has a signal. */
+		msleep(100);
 
 		cnt--;
 	}

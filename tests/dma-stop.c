@@ -8,7 +8,7 @@
 
 typedef enum {
 	BC_STS_SUCCESS, BC_STS_INV_ARG, BC_STS_ERR_USAGE,
-	BC_STS_IO_ERROR, BC_STS_NO_DATA, BC_STS_IO_USER_ABORT
+	BC_STS_IO_ERROR, BC_STS_NO_DATA, BC_STS_IO_USER_ABORT, BC_STS_ERROR
 } BC_STATUS;
 #define MAX_VALID_POLL_CNT 2
 #define BCHP_INTR_INTR_STATUS 0
@@ -27,6 +27,11 @@ typedef enum {
 #define BC_LINK_FMT_CHG 4
 #define BC_RX_LIST_CNT 16
 #define BC_TX_LIST_CNT 2
+#define BCHP_MISC1_TX_SW_DESC_LIST_CTRL_STS 7
+#define BCHP_MISC1_TX_FIRST_DESC_L_ADDR_LIST0 8
+#define BCHP_MISC1_TX_FIRST_DESC_L_ADDR_LIST1 9
+#define BCHP_MISC1_TX_SW_DESC_LIST_CTRL_STS_TX_DMA_RUN_STOP_MASK 1
+#define ListStsFree 0
 #define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
 #define READ_ONCE(value) (value)
 #define WRITE_ONCE(value, update) ((value) = (update))
@@ -68,6 +73,7 @@ struct crystalhd_dioq {
 struct crystalhd_hw {
 	struct crystalhd_adp *adp;
 	unsigned int RxCaptureState, RxSeqNum, rx_list_post_index;
+	unsigned int TxList0Sts, TxList1Sts, tx_list_post_index;
 	uint64_t rx_cancel_epoch;
 	enum list_sts rx_list_sts[2];
 	int rx_lock, fetch_sem;
@@ -90,6 +96,9 @@ typedef struct {
 } crystalhd_ioctl_data;
 
 static unsigned int irq_depth, reads, clears, releases, detaches;
+static unsigned int stop_elapsed_ms, completion_after_ms;
+static bool checking_tx_stop;
+static uint32_t tx_control;
 static unsigned int attached_owners, stops, notifications, starts;
 static uint32_t interrupt_bits;
 static BC_STATUS start_result;
@@ -124,7 +133,7 @@ static int down_interruptible(int *sem)
 static void up(int *sem) { assert(*sem == 1); *sem = 0; }
 static void disable_irq(int irq) { (void)irq; irq_depth++; }
 static void enable_irq(int irq) { (void)irq; assert(irq_depth); irq_depth--; }
-static void msleep_interruptible(unsigned int delay) { (void)delay; }
+static void msleep(unsigned int delay) { stop_elapsed_ms += delay; }
 static uint32_t read_register(struct crystalhd_adp *adp, uint32_t reg)
 {
 	assert(current_hw && adp == current_hw->adp);
@@ -134,10 +143,18 @@ static uint32_t read_register(struct crystalhd_adp *adp, uint32_t reg)
 		assert(reg == BCHP_INTR_INTR_STATUS || reg == Stream2Host_Intr_Sts);
 		return reg == BCHP_INTR_INTR_STATUS ? ack_dma_status : ack_decoder_status;
 	}
-	return interrupt_bits;
+	return stop_elapsed_ms >= completion_after_ms ? interrupt_bits : 0;
 }
 static uint32_t read_fpga(struct crystalhd_adp *adp, uint32_t reg)
 {
+	if (checking_tx_stop) {
+		assert(current_hw && adp == current_hw->adp);
+		if (reg == BCHP_MISC1_TX_SW_DESC_LIST_CTRL_STS)
+			return tx_control;
+		assert(reg == BCHP_MISC1_TX_FIRST_DESC_L_ADDR_LIST0 ||
+		       reg == BCHP_MISC1_TX_FIRST_DESC_L_ADDR_LIST1);
+		return stop_elapsed_ms < completion_after_ms ? 1 : 0;
+	}
 	assert(checking_ack && current_hw && adp == current_hw->adp && irq_depth);
 	assert(reg == INTR_INTR_STATUS);
 	reads++;
@@ -155,12 +172,26 @@ static void write_ack(struct crystalhd_adp *adp, uint32_t reg, uint32_t value, b
 static void write_register(struct crystalhd_adp *adp, uint32_t reg, uint32_t value)
 { write_ack(adp, reg, value, false); }
 static void write_fpga(struct crystalhd_adp *adp, uint32_t reg, uint32_t value)
-{ write_ack(adp, reg, value, true); }
+{
+	if (checking_tx_stop) {
+		assert(current_hw && adp == current_hw->adp);
+		assert(reg == BCHP_MISC1_TX_SW_DESC_LIST_CTRL_STS);
+		tx_control = value;
+		return;
+	}
+	write_ack(adp, reg, value, true);
+}
 static void crystalhd_flea_disable_interrupts(struct crystalhd_hw *hw)
 {
 	assert(hw == current_hw && hw->adp->pdev->device == BC_PCI_DEVID_FLEA);
+	if (checking_tx_stop)
+		return;
 	assert(hw->dma_fault && !hw->adp->present && hw->adp->cmds.cin_wait_exit);
 	flea_masks++;
+}
+static void crystalhd_flea_enable_interrupts(struct crystalhd_hw *hw)
+{
+	assert(checking_tx_stop && hw == current_hw);
 }
 static void crystalhd_link_disable_interrupts(struct crystalhd_hw *hw)
 {
@@ -699,6 +730,26 @@ int main(void)
 	union FLEA_INTR_BITS_COMMON done = { .WholeReg = 0 };
 	current_hw = &hw;
 	local_pending = master_enabled = true;
+	/* A pending signal cannot collapse TX's hardware drain interval. */
+	checking_tx_stop = true;
+	tx_control = 1;
+	completion_after_ms = 200;
+	hw.pfnReadFPGARegister = read_fpga;
+	hw.pfnWriteFPGARegister = write_fpga;
+	hw.TxList0Sts = hw.TxList1Sts = hw.tx_list_post_index = 1;
+	assert(crystalhd_flea_stop_tx_dma_engine(&hw) == BC_STS_SUCCESS);
+	assert(stop_elapsed_ms == 300 && !tx_control);
+	assert(!hw.TxList0Sts && !hw.TxList1Sts && !hw.tx_list_post_index);
+	/* A genuinely unfinished list must still time out without freeing it. */
+	stop_elapsed_ms = 0;
+	completion_after_ms = 4000;
+	tx_control = 1;
+	hw.TxList0Sts = hw.TxList1Sts = 1;
+	assert(crystalhd_flea_stop_tx_dma_engine(&hw) == BC_STS_ERROR);
+	assert(stop_elapsed_ms == 3000 && hw.TxList0Sts && hw.TxList1Sts);
+	hw.TxList0Sts = hw.TxList1Sts = 0;
+	checking_tx_stop = false;
+	stop_elapsed_ms = completion_after_ms = 0;
 
 	/* A monitor-only close must not touch nonexistent DMA queues/IRQs. */
 	assert(crystalhd_hw_stop_capture(&hw, true) == BC_STS_SUCCESS);
@@ -717,6 +768,17 @@ int main(void)
 	crystalhd_flea_stop_rx_dma_engine(&hw);
 	assert(!hw.rx_list_sts[0] && !hw.rx_list_sts[1]);
 	assert(!hw.rx_list_post_index && !hw.dma_fault && clears == 1);
+	/* Completion needs elapsed time even when release has a pending signal.
+	 * The sleep shim advances only the uninterruptible stop delay.
+	 */
+	stop_elapsed_ms = 0;
+	completion_after_ms = 20;
+	hw.rx_list_sts[0] = rx_sts_waiting;
+	hw.rx_list_sts[1] = rx_waiting_y_intr;
+	crystalhd_flea_stop_rx_dma_engine(&hw);
+	assert(!hw.dma_fault && !hw.rx_list_sts[0] && !hw.rx_list_sts[1]);
+	assert(stop_elapsed_ms == 30);
+	completion_after_ms = 0;
 	/* A missing UV completion must fail without advertising a free list. */
 	hw.rx_list_sts[0] = rx_sts_waiting;
 	done.L0UVRxDMADone = 0;
