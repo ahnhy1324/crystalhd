@@ -100,6 +100,13 @@ one-picture decoder probe remains eligible for inactivity-based EOS.
 The default remains strict replay. This opt-in is not a real-time streaming
 support claim and does not affect other codecs or the library ABI.
 
+On BCM70015, additionally setting `CRYSTALHD_VAAPI_LOW_LATENCY_H264=1`
+enables experimental H.264 input prefeeding. It requires
+`CRYSTALHD_VAAPI_LIVE_H264=1` and reduced decode latency by one input cadence
+in a low-delay 720p30 hardware test. VA-API frame-rate signaling remains fixed
+at 30 fps; this option does not establish real-time playback or A/V
+synchronization support.
+
 Destroying a decoder context stops new submissions and drains accepted live
 pictures before closing the device. The drain has a ten-second polling budget,
 but individual firmware calls and cleanup can extend wall time. An infinite

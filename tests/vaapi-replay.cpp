@@ -35,7 +35,13 @@ static void Require(bool value, const char *message) {
 // deterministic output, without a device or firmware. A sleep callback models
 // another API call while the production wait has released the driver mutex.
 struct DecodeIoMock {
+  struct InputCall {
+    uint64_t timestamp = 0;
+    std::vector<uint8_t> bytes;
+    bool accepted = false;
+  };
   std::vector<uint64_t> inputs;
+  std::vector<InputCall> input_calls;
   std::deque<uint64_t> outputs;
   std::vector<uint8_t> pixels;
   std::vector<std::string> events;
@@ -44,7 +50,10 @@ struct DecodeIoMock {
   bool zero_timestamp_picture = false;
   bool fail_poll = false;
   bool input_busy = false;
+  bool prefeed_busy_once = false;
+  bool remainder_busy_once = false;
   bool invalid = false;
+  uint64_t prefed_timestamp = 0;
   uint32_t tx_free_size = 1024 * 1024;
   unsigned int open_attempts = 0;
   unsigned int output_polls = 0;
@@ -78,6 +87,7 @@ extern "C" BC_STATUS __wrap_DtsDeviceOpen(HANDLE *device, uint32_t mode) {
     if (decode_io_mock == nullptr) \
       return __real_##name(device); \
     decode_io_mock->invalid |= device != decode_io_mock->handle(); \
+    decode_io_mock->prefed_timestamp = 0; \
     decode_io_mock->events.push_back(event); \
     return BC_STS_SUCCESS; \
   }
@@ -114,9 +124,34 @@ extern "C" BC_STATUS __wrap_DtsProcInput(HANDLE device, uint8_t *data,
     return __real_DtsProcInput(device, data, size, timestamp, encrypted);
   decode_io_mock->invalid |= device != decode_io_mock->handle() ||
                              data == nullptr || size == 0 || encrypted;
-  if (decode_io_mock->input_busy)
+  DecodeIoMock::InputCall call;
+  call.timestamp = timestamp;
+  if (data != nullptr && size != 0)
+    call.bytes.assign(data, data + size);
+  decode_io_mock->input_calls.push_back(std::move(call));
+  auto &record = decode_io_mock->input_calls.back();
+  const auto &prefeed = H264LowLatencyPrefeed();
+  const bool synthetic = data != nullptr && size == prefeed.size() &&
+      std::equal(prefeed.begin(), prefeed.end(), data);
+  if (decode_io_mock->input_busy ||
+      (synthetic && decode_io_mock->prefeed_busy_once) ||
+      (timestamp == 0 && decode_io_mock->prefed_timestamp != 0 &&
+       decode_io_mock->remainder_busy_once)) {
+    decode_io_mock->prefeed_busy_once = false;
+    decode_io_mock->remainder_busy_once = false;
     return BC_STS_BUSY;
-  decode_io_mock->inputs.push_back(timestamp);
+  }
+  record.accepted = true;
+  if (synthetic) {
+    decode_io_mock->invalid |= timestamp == 0 ||
+                               decode_io_mock->prefed_timestamp != 0;
+    decode_io_mock->prefed_timestamp = timestamp;
+  } else if (timestamp == 0 && decode_io_mock->prefed_timestamp != 0) {
+    decode_io_mock->inputs.push_back(decode_io_mock->prefed_timestamp);
+    decode_io_mock->prefed_timestamp = 0;
+  } else {
+    decode_io_mock->inputs.push_back(timestamp);
+  }
   decode_io_mock->events.push_back("input");
   return BC_STS_SUCCESS;
 }
@@ -127,6 +162,7 @@ extern "C" BC_STATUS __wrap_DtsFlushInput(HANDLE device, uint32_t mode) {
     return __real_DtsFlushInput(device, mode);
   decode_io_mock->invalid |= device != decode_io_mock->handle() || mode != 0;
   decode_io_mock->events.push_back("seal");
+  decode_io_mock->prefed_timestamp = 0;
   if (!decode_io_mock->early_eos)
     for (uint64_t timestamp : decode_io_mock->inputs)
       decode_io_mock->outputs.push_back(timestamp);
@@ -1177,6 +1213,262 @@ static void DecoderResetPreservesItsExplicitLivePolicy() {
               "reset preserves both strict limit failures and live opt-in behavior");
     }
   }
+
+  DecodeContext low_latency;
+  low_latency.live_h264 = true;
+  low_latency.low_latency_h264 = true;
+  low_latency.prefed_timestamp = 17 * kTimestampStep;
+  Require(low_latency.Close() == BC_STS_SUCCESS &&
+              low_latency.live_h264 && low_latency.low_latency_h264 &&
+              low_latency.prefed_timestamp == 0,
+          "close preserves low-latency policy but discards its runtime prefix");
+  low_latency.prefed_timestamp = 19 * kTimestampStep;
+  low_latency.Reset();
+  Require(low_latency.live_h264 && low_latency.low_latency_h264 &&
+              low_latency.prefed_timestamp == 0,
+          "reset preserves low-latency policy but discards its runtime prefix");
+}
+
+static std::vector<uint8_t> TestH264AccessUnit(bool idr, uint8_t payload) {
+  return {0x00, 0x00, 0x00, 0x01, 0x09, 0xf0,
+          0x00, 0x00, 0x00, 0x01,
+          static_cast<uint8_t>(idr ? 0x65 : 0x41), payload, 0x80};
+}
+
+static std::vector<uint8_t> ExpectedH264LowLatencyPrefeed() {
+  std::vector<uint8_t> bytes(170, 0xff);
+  const uint8_t prefix[] = {0x00, 0x00, 0x00, 0x01, 0x09, 0xf0,
+                            0x00, 0x00, 0x00, 0x01, 0x0c};
+  std::copy(std::begin(prefix), std::end(prefix), bytes.begin());
+  bytes.back() = 0x80;
+  return bytes;
+}
+
+static void LiveH264SpeculativePrefeedSequence() {
+  TeardownFixture fixture(3);
+  fixture.decoder->live_h264 = true;
+  fixture.decoder->low_latency_h264 = true;
+  fixture.decoder->is_70012 = false;
+  fixture.decoder->replay = CrystalHDDecodeReplay(true);
+  fixture.decoder->next_timestamp = kTimestampStep;
+  std::vector<std::vector<uint8_t>> units;
+  for (unsigned int picture = 1; picture <= 3; ++picture) {
+    const uint64_t timestamp = picture * kTimestampStep;
+    units.push_back(TestH264AccessUnit(picture == 1,
+                                       static_cast<uint8_t>(picture)));
+    Require(fixture.decoder->replay.Append(timestamp, picture == 1,
+                                            units.back()),
+            "append one live H.264 access unit");
+    fixture.decoder->next_timestamp = (picture + 1) * kTimestampStep;
+    Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+                VA_STATUS_SUCCESS,
+            "submit one live AU and arm its successor prefix");
+  }
+
+  const auto expected_prefeed = ExpectedH264LowLatencyPrefeed();
+  Require(H264LowLatencyPrefeed() == expected_prefeed &&
+              fixture.io.input_calls.size() == 6 &&
+              fixture.io.inputs ==
+                  std::vector<uint64_t>({kTimestampStep, 2 * kTimestampStep,
+                                         3 * kTimestampStep}),
+          "the measured raw170 prefix is exact and is not a logical picture");
+  for (size_t picture = 0; picture < units.size(); ++picture) {
+    const auto &actual = fixture.io.input_calls[picture * 2];
+    const auto &future = fixture.io.input_calls[picture * 2 + 1];
+    Require(actual.accepted && actual.bytes == units[picture] &&
+                actual.timestamp == (picture == 0
+                    ? kTimestampStep : 0) &&
+                future.accepted && future.bytes == expected_prefeed &&
+                future.timestamp == (picture + 2) * kTimestampStep,
+            "each full AU consumes one future tag before the next prefix");
+  }
+  Require(fixture.decoder->prefed_timestamp == 4 * kTimestampStep &&
+              fixture.io.prefed_timestamp == 4 * kTimestampStep &&
+              fixture.decoder->replay.outstanding() == 3,
+          "the final orphan prefix is not an outstanding public picture");
+  Require(SealDecodeBatch(&fixture.driver, fixture.decoder.get()) ==
+              VA_STATUS_SUCCESS &&
+              fixture.decoder->prefed_timestamp == 4 * kTimestampStep &&
+              fixture.io.prefed_timestamp == 0,
+          "flush discards the unbound bytes while retaining their guard token");
+  Require(ReceiveAvailable(&fixture.driver, fixture.decoder.get()) ==
+              VA_STATUS_SUCCESS && fixture.decoder->replay.outstanding() == 0 &&
+              fixture.decoder->prefed_timestamp == 0 &&
+              !fixture.decoder->replay.failed() && !fixture.io.invalid,
+          "only actual access units complete and EOS retires the guard token");
+}
+
+static void LiveH264PrefeedBusyFallback() {
+  {
+    TeardownFixture fixture(2);
+    fixture.decoder->live_h264 = true;
+    fixture.decoder->low_latency_h264 = true;
+    fixture.decoder->replay = CrystalHDDecodeReplay(true);
+    fixture.io.prefeed_busy_once = true;
+    const auto first = TestH264AccessUnit(true, 1);
+    const auto second = TestH264AccessUnit(false, 2);
+    Require(fixture.decoder->replay.Append(kTimestampStep, true, first),
+            "append first busy-fallback AU");
+    fixture.decoder->next_timestamp = 2 * kTimestampStep;
+    Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+                VA_STATUS_SUCCESS && fixture.decoder->prefed_timestamp == 0 &&
+                fixture.io.input_calls.size() == 2 &&
+                fixture.io.input_calls[0].accepted &&
+                fixture.io.input_calls[1].timestamp == 2 * kTimestampStep &&
+                fixture.io.input_calls[1].bytes ==
+                    ExpectedH264LowLatencyPrefeed() &&
+                !fixture.io.input_calls[1].accepted,
+            "a rejected speculative call was attempted and leaves no prefix");
+    Require(fixture.decoder->replay.Append(2 * kTimestampStep, false, second),
+            "append fallback AU");
+    fixture.decoder->next_timestamp = 3 * kTimestampStep;
+    Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+                VA_STATUS_SUCCESS && fixture.io.inputs.size() == 2 &&
+                fixture.io.input_calls[2].timestamp == 2 * kTimestampStep &&
+                fixture.io.input_calls[2].bytes == second,
+            "after prefeed busy the next full AU keeps its own timestamp");
+  }
+
+  {
+    TeardownFixture fixture(2);
+    fixture.decoder->live_h264 = true;
+    fixture.decoder->low_latency_h264 = true;
+    fixture.decoder->replay = CrystalHDDecodeReplay(true);
+    const auto first = TestH264AccessUnit(true, 1);
+    const auto second = TestH264AccessUnit(false, 2);
+    Require(fixture.decoder->replay.Append(kTimestampStep, true, first),
+            "append first remainder-retry AU");
+    fixture.decoder->next_timestamp = 2 * kTimestampStep;
+    Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+                VA_STATUS_SUCCESS &&
+                fixture.decoder->prefed_timestamp == 2 * kTimestampStep,
+            "arm a prefix before testing its busy remainder");
+    Require(fixture.decoder->replay.Append(2 * kTimestampStep, false, second),
+            "append prefed remainder AU");
+    fixture.decoder->next_timestamp = 3 * kTimestampStep;
+    fixture.io.remainder_busy_once = true;
+    Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+                VA_STATUS_SUCCESS &&
+                fixture.decoder->prefed_timestamp == 2 * kTimestampStep &&
+                fixture.decoder->replay.NextInput() != nullptr &&
+                fixture.io.input_calls.back().timestamp == 0 &&
+                fixture.io.input_calls.back().bytes == second &&
+                !fixture.io.input_calls.back().accepted,
+            "busy full AU preserves both prefix ownership and replay cursor");
+    Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+                VA_STATUS_SUCCESS && fixture.io.inputs.size() == 2 &&
+                fixture.decoder->prefed_timestamp == 3 * kTimestampStep &&
+                fixture.io.input_calls[fixture.io.input_calls.size() - 2].timestamp == 0 &&
+                fixture.io.input_calls[fixture.io.input_calls.size() - 2].bytes == second &&
+                fixture.io.input_calls[fixture.io.input_calls.size() - 2].accepted,
+            "retry sends the complete AU, consumes its prefix and arms one successor");
+    size_t accepted_second_prefixes = 0;
+    for (const auto &call : fixture.io.input_calls)
+      if (call.accepted && call.timestamp == 2 * kTimestampStep &&
+          call.bytes == H264LowLatencyPrefeed())
+        ++accepted_second_prefixes;
+    Require(accepted_second_prefixes == 1 && !fixture.io.invalid,
+            "remainder retry never duplicates the accepted prefix");
+  }
+}
+
+static void LiveH264PrefeedEligibilityAndGhostGuard() {
+  {
+    TeardownFixture fixture(2);
+    fixture.decoder->live_h264 = true;
+    fixture.decoder->low_latency_h264 = true;
+    fixture.decoder->replay = CrystalHDDecodeReplay(true);
+    const auto first = TestH264AccessUnit(true, 1);
+    const auto second = TestH264AccessUnit(false, 2);
+    Require(fixture.decoder->replay.Append(kTimestampStep, true, first) &&
+                fixture.decoder->replay.Append(2 * kTimestampStep, false,
+                                                second),
+            "queue two live AUs before one transport pump");
+    fixture.decoder->next_timestamp = 3 * kTimestampStep;
+    Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+                VA_STATUS_SUCCESS && fixture.io.input_calls.size() == 3 &&
+                fixture.io.input_calls[0].timestamp == kTimestampStep &&
+                fixture.io.input_calls[0].bytes == first &&
+                fixture.io.input_calls[1].timestamp == 2 * kTimestampStep &&
+                fixture.io.input_calls[1].bytes == second &&
+                fixture.io.input_calls[2].timestamp == 3 * kTimestampStep &&
+                fixture.io.input_calls[2].bytes ==
+                    ExpectedH264LowLatencyPrefeed(),
+            "queued AUs keep their timestamps and only the drained tail prefeds");
+  }
+
+  {
+    TeardownFixture fixture(2);
+    fixture.decoder->live_h264 = true;
+    fixture.decoder->low_latency_h264 = true;
+    fixture.decoder->replay = CrystalHDDecodeReplay(true);
+    fixture.io.tx_free_size = 1193;
+    Require(fixture.decoder->replay.Append(
+                kTimestampStep, true, TestH264AccessUnit(true, 1)),
+            "append AU below prefeed free-space boundary");
+    fixture.decoder->next_timestamp = 2 * kTimestampStep;
+    Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+                VA_STATUS_SUCCESS && fixture.io.input_calls.size() == 1 &&
+                fixture.decoder->prefed_timestamp == 0,
+            "1193 free bytes admit the tiny AU but not raw170 plus reserve");
+    fixture.io.tx_free_size = 1194;
+    Require(fixture.decoder->replay.Append(
+                2 * kTimestampStep, false, TestH264AccessUnit(false, 2)),
+            "append AU at prefeed free-space boundary");
+    fixture.decoder->next_timestamp = 3 * kTimestampStep;
+    Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+                VA_STATUS_SUCCESS && fixture.io.input_calls.size() == 3 &&
+                fixture.io.input_calls.back().timestamp ==
+                    3 * kTimestampStep &&
+                fixture.io.input_calls.back().bytes ==
+                    ExpectedH264LowLatencyPrefeed(),
+            "1194 free bytes admit raw170 plus the conservative reserve");
+  }
+
+  for (const bool opt_in : {false, true}) {
+    TeardownFixture fixture(1);
+    fixture.decoder->live_h264 = true;
+    fixture.decoder->low_latency_h264 = opt_in;
+    fixture.decoder->is_70012 = opt_in;
+    fixture.decoder->replay = CrystalHDDecodeReplay(true);
+    const auto unit = TestH264AccessUnit(true, 1);
+    Require(fixture.decoder->replay.Append(kTimestampStep, true, unit),
+            "append compatibility-path H.264 AU");
+    fixture.decoder->next_timestamp = 2 * kTimestampStep;
+    Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+                VA_STATUS_SUCCESS && fixture.io.input_calls.size() == 1 &&
+                fixture.io.input_calls.front().timestamp == kTimestampStep &&
+                fixture.io.input_calls.front().bytes == unit &&
+                fixture.decoder->prefed_timestamp == 0,
+            "opt-out and BCM70012 keep the original byte-exact input path");
+  }
+
+  {
+    TeardownFixture fixture(1);
+    fixture.decoder->live_h264 = true;
+    fixture.decoder->low_latency_h264 = true;
+    fixture.decoder->replay = CrystalHDDecodeReplay(true);
+    Require(fixture.decoder->replay.Append(
+                kTimestampStep, true, TestH264AccessUnit(true, 1)),
+            "append AU for orphan output guard");
+    fixture.decoder->next_timestamp = 2 * kTimestampStep;
+    Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+                VA_STATUS_SUCCESS &&
+                fixture.decoder->prefed_timestamp == 2 * kTimestampStep &&
+                SealDecodeBatch(&fixture.driver, fixture.decoder.get()) ==
+                    VA_STATUS_SUCCESS,
+            "seal while retaining the orphan prefix guard");
+    fixture.io.outputs.insert(fixture.io.outputs.end() - 1,
+                              2 * kTimestampStep);
+    Require(ReceiveAvailable(&fixture.driver, fixture.decoder.get()) ==
+                VA_STATUS_ERROR_DECODING_ERROR &&
+                fixture.decoder->replay.failed() &&
+                fixture.decoder->prefed_timestamp == 2 * kTimestampStep &&
+                !fixture.io.events.empty() &&
+                fixture.io.events.back() == "release" &&
+                !fixture.io.invalid,
+            "an orphan prefix picture before EOS is a released terminal error");
+  }
 }
 
 
@@ -1899,6 +2191,9 @@ int main() {
     ExactBoundaryConversionByteEquivalence();
     CompletedLiveTailPrecedesUnreconstructibleContinuation();
     DecoderResetPreservesItsExplicitLivePolicy();
+    LiveH264SpeculativePrefeedSequence();
+    LiveH264PrefeedBusyFallback();
+    LiveH264PrefeedEligibilityAndGhostGuard();
     TransportProgressRequiresActualHardwareIo();
     ProgressingSyncDoesNotSealAnActiveStream();
     EarlyLiveGapPreservesIntactReplayHistory();
