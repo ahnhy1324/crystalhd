@@ -107,6 +107,22 @@ in a low-delay 720p30 hardware test. VA-API frame-rate signaling remains fixed
 at 30 fps; this option does not establish real-time playback or A/V
 synchronization support.
 
+### Measured reference-host limits
+
+With both H.264 options enabled and the documented host-specific L0s workaround
+already active, low-delay decode plus NV12 download reached about 83 fps at
+1280x720, 57 fps at 1600x900 and 42 fps at 1920x1080 on the BCM70015 reference
+host. The observed 60 fps boundary lay between 1536x864 and 1568x882. Input
+rates from 5 to 20 Mbit/s did not materially change the 720p result.
+
+Unmodified Moonlight produced CrystalHD output at about 59 fps for 720p60 and
+30 fps for 1080p30, but its indirect presentation path rendered only about 34
+and 15 fps respectively. A 1080p60 stream accumulated an unbounded decoder
+backlog. These are capacity and bottleneck measurements, not 50/60 fps support
+certification: the backend still signals 30 fps and visible presentation has
+not met those rates. Methods, resource use and measurement boundaries are in
+the [hardware report](../../HARDWARE-2026-09-13.md#va-api-decode-and-game-stream-baseline-2026-10-10).
+
 Destroying a decoder context stops new submissions and drains accepted live
 pictures before closing the device. The drain has a ten-second polling budget,
 but individual firmware calls and cleanup can extend wall time. An infinite
