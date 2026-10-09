@@ -7,6 +7,7 @@
 
 static int mock_sync_fd = -1;
 static uint64_t mock_failed_sync_flags = 0;
+static std::vector<uint64_t> mock_sync_calls;
 extern "C" int __real_ioctl(int fd, unsigned long request, ...);
 extern "C" int __wrap_ioctl(int fd, unsigned long request, ...) {
   va_list arguments;
@@ -15,6 +16,7 @@ extern "C" int __wrap_ioctl(int fd, unsigned long request, ...) {
   va_end(arguments);
   if (fd == mock_sync_fd && request == DMA_BUF_IOCTL_SYNC) {
     const auto *sync = static_cast<dma_buf_sync *>(argument);
+    mock_sync_calls.push_back(sync->flags);
     if (sync->flags == mock_failed_sync_flags) {
       errno = EIO;
       return -1;
@@ -655,7 +657,187 @@ struct OutputFixture {
   }
 
   VAStatus Process() { return ProcessDecodedOutput(&driver, &decoder, output); }
+
+  void Direct() {
+    private_frame = std::make_shared<Surface>();
+    private_frame->width = public_frame->width;
+    private_frame->height = public_frame->height;
+    private_frame->expected_timestamp = 1;
+    private_frame->direct_picture = true;
+    private_frame->decode_target = public_frame;
+    private_frame->direct_backing = public_frame;
+    public_frame->direct_decode_eligible = true;
+    public_frame->decode_picture = private_frame;
+    decoder.decoded_frames[1] = private_frame;
+  }
 };
+
+static void DirectOutputOwnershipAndExport() {
+  {
+    OutputFixture fixture;
+    fixture.Direct();
+    fixture.public_frame->vpp_writers = 1;
+    Require(fixture.Process() == VA_STATUS_SUCCESS &&
+                fixture.private_frame->ready && !fixture.private_frame->direct_backing &&
+                fixture.public_frame->planes[0][0] == 99 && !fixture.public_frame->ready,
+            "late output cannot write a direct target acquired by fenced VPP");
+  }
+  for (uint64_t failure : {UINT64_MAX, uint64_t(DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE),
+                           uint64_t(DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE)}) {
+    OutputFixture fixture(32, 32);
+    fixture.Direct();
+    mock_sync_fd = memfd_create("crystalhd-direct-cpu-test", MFD_CLOEXEC);
+    Require(mock_sync_fd >= 0, "allocate mock direct DMA ownership fd");
+    fixture.public_frame->object_fds.push_back(mock_sync_fd);
+    mock_failed_sync_flags = failure;
+    mock_sync_calls.clear();
+    const VAStatus result = fixture.Process();
+    Require(result == (failure == UINT64_MAX ? VA_STATUS_SUCCESS :
+                                             VA_STATUS_ERROR_DECODING_ERROR),
+            "direct output propagates CPU ownership failures");
+    Require(fixture.private_frame->storage.empty(),
+            "direct output never allocates or copies private pixels");
+    if (failure == UINT64_MAX) {
+      Require(mock_sync_calls == std::vector<uint64_t>{DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE,
+                                                       DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE},
+              "direct completion performs exactly one public CPU write transaction");
+      Require(fixture.public_frame->planes[0][0] == 40 &&
+                  fixture.public_frame->planes[0][16] == 16 &&
+                  fixture.public_frame->planes[1][16] == 128,
+              "direct conversion initializes larger allocation padding");
+      mock_failed_sync_flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
+      Require(!PromoteDecodedPicture(fixture.private_frame) &&
+                  fixture.private_frame->failed && !fixture.private_frame->ready,
+              "failed snapshot CPU read cannot publish a captured picture");
+    } else {
+      Require(fixture.private_frame->failed && fixture.public_frame->failed &&
+                  !fixture.private_frame->ready && !fixture.public_frame->ready,
+              "failed direct output poisons both picture identities");
+    }
+    mock_sync_fd = -1;
+  }
+
+  {
+    OutputFixture fixture;
+    fixture.Direct();
+    mock_sync_fd = memfd_create("crystalhd-direct-export-test", MFD_CLOEXEC);
+    Require(mock_sync_fd >= 0, "allocate read-only export mock fd");
+    mock_failed_sync_flags = UINT64_MAX;
+    fixture.public_frame->object_fds.push_back(mock_sync_fd);
+    fixture.public_frame->object_sizes.push_back(fixture.public_frame->storage.size());
+    Require(fixture.Process() == VA_STATUS_SUCCESS, "complete before read-only export");
+    VADriverContext context = {};
+    context.pDriverData = &fixture.driver;
+    for (unsigned attempt = 0; attempt < 2; ++attempt) {
+      VADRMPRIMESurfaceDescriptor descriptor = {};
+      Require(ExportSurfaceHandle(&context, 1,
+                                  VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                                  VA_EXPORT_SURFACE_READ_ONLY, &descriptor) ==
+                  VA_STATUS_SUCCESS,
+              "repeat explicit read-only export of direct backing");
+      Require(fixture.private_frame->direct_backing == fixture.public_frame &&
+                  fixture.private_frame->storage.empty() &&
+                  fixture.public_frame->layout.valid &&
+                  fixture.public_frame->direct_decode_eligible,
+              "read-only export keeps direct decode ownership eligible");
+      for (unsigned i = 0; i < descriptor.num_objects; ++i)
+        close(descriptor.objects[i].fd);
+    }
+    mock_sync_fd = -1;
+  }
+
+  {
+    OutputFixture fixture;
+    fixture.Direct();
+    fixture.driver.next_surface = 2;
+    mock_sync_fd = memfd_create("crystalhd-imported-alias-test", MFD_CLOEXEC);
+    Require(mock_sync_fd >= 0, "allocate imported-alias mock fd");
+    mock_failed_sync_flags = UINT64_MAX;
+    fixture.public_frame->object_fds.push_back(mock_sync_fd);
+    fixture.public_frame->object_sizes.push_back(fixture.public_frame->storage.size());
+    Require(ftruncate(mock_sync_fd, fixture.public_frame->storage.size()) == 0 &&
+                fixture.Process() == VA_STATUS_SUCCESS,
+            "complete direct picture before read-only alias export");
+    VADriverContext context = {};
+    context.pDriverData = &fixture.driver;
+    VADRMPRIMESurfaceDescriptor descriptor = {};
+    Require(ExportSurfaceHandle(&context, 1,
+                                VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                                VA_EXPORT_SURFACE_READ_ONLY, &descriptor) ==
+                VA_STATUS_SUCCESS,
+            "export direct picture read-only before alias import");
+    VASurfaceAttrib attributes[3] = {};
+    attributes[0].type = VASurfaceAttribMemoryType;
+    attributes[0].value.type = VAGenericValueTypeInteger;
+    attributes[0].value.value.i = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2;
+    attributes[1].type = VASurfaceAttribPixelFormat;
+    attributes[1].value.type = VAGenericValueTypeInteger;
+    attributes[1].value.value.i = VA_FOURCC_NV12;
+    attributes[2].type = VASurfaceAttribExternalBufferDescriptor;
+    attributes[2].value.type = VAGenericValueTypePointer;
+    attributes[2].value.value.p = &descriptor;
+    VASurfaceID alias = VA_INVALID_SURFACE;
+    Require(CreateSurfaces2(&context, VA_RT_FORMAT_YUV420,
+                            fixture.public_frame->width,
+                            fixture.public_frame->height, &alias, 1,
+                            attributes, 3) == VA_STATUS_SUCCESS && alias == 2,
+            "import read-only export as a write-capable VA alias");
+    Require(!fixture.private_frame->direct_backing &&
+                !fixture.private_frame->storage.empty() &&
+                !fixture.public_frame->direct_decode_eligible &&
+                fixture.driver.surfaces.at(alias)->backing_owner == 1 &&
+                !fixture.driver.surfaces.at(alias)->direct_decode_eligible,
+            "alias import snapshots current picture and disables direct reuse");
+    fixture.public_frame->planes[0][0] = 90;
+    Require(fixture.private_frame->planes[0][0] == 40,
+            "imported alias cannot mutate the retained direct picture");
+    for (unsigned i = 0; i < descriptor.num_objects; ++i)
+      close(descriptor.objects[i].fd);
+    mock_sync_fd = -1;
+  }
+
+  struct ExportCase {
+    uint32_t flags;
+    bool pending;
+  };
+  for (const ExportCase test : {
+           ExportCase{VA_EXPORT_SURFACE_WRITE_ONLY, true},
+           ExportCase{VA_EXPORT_SURFACE_WRITE_ONLY, false},
+           ExportCase{VA_EXPORT_SURFACE_READ_WRITE, false},
+           ExportCase{0, false}}) {
+    OutputFixture fixture;
+    fixture.Direct();
+    mock_sync_fd = memfd_create("crystalhd-writable-export-test", MFD_CLOEXEC);
+    Require(mock_sync_fd >= 0, "allocate writable export mock fd");
+    mock_failed_sync_flags = UINT64_MAX;
+    fixture.public_frame->object_fds.push_back(mock_sync_fd);
+    fixture.public_frame->object_sizes.push_back(fixture.public_frame->storage.size());
+    if (!test.pending)
+      Require(fixture.Process() == VA_STATUS_SUCCESS,
+              "complete before writable export");
+    VADriverContext context = {};
+    context.pDriverData = &fixture.driver;
+    VADRMPRIMESurfaceDescriptor descriptor = {};
+    Require(ExportSurfaceHandle(&context, 1,
+                                VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                                test.flags, &descriptor) == VA_STATUS_SUCCESS,
+            "writable or unspecified export preserves private snapshot");
+    Require(!fixture.private_frame->direct_backing &&
+                !fixture.private_frame->storage.empty() &&
+                !fixture.public_frame->direct_decode_eligible &&
+                fixture.public_frame->layout.valid,
+            "write exposure permanently disables direct borrowing");
+    if (test.pending)
+      Require(fixture.Process() == VA_STATUS_SUCCESS,
+              "finish privately preserved pending picture");
+    fixture.public_frame->planes[0][0] = 90;
+    Require(fixture.private_frame->planes[0][0] == 40,
+            "external write cannot mutate retained decode snapshot");
+    for (unsigned i = 0; i < descriptor.num_objects; ++i)
+      close(descriptor.objects[i].fd);
+    mock_sync_fd = -1;
+  }
+}
 
 static void RejectIncompleteGeometryAndInitializeAllocationPadding() {
   for (const auto &size : {std::pair<unsigned int, unsigned int>{32, 16},
@@ -1710,6 +1892,7 @@ int main() {
     LiveStreamMarkerSurvivesReplayAndPruning();
     UnknownOutputNeverGuessesAndInvalidOutputFails();
     DuplicateOutputCannotMutateOrRetirePixels();
+    DirectOutputOwnershipAndExport();
     RejectIncompleteGeometryAndInitializeAllocationPadding();
     FailedCpuOwnershipNeverCompletesDecode();
     PaddingOnlyCopyByteEquivalence();

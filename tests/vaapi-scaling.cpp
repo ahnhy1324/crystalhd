@@ -352,6 +352,191 @@ void OriginalReplayRetainsMatrices() {
             "replay carries exact original PPS bytes and timestamp, not latest context IQ");
   CheckMatrices(f.mock.inputs[4].bytes, Flat());
 }
+
+void Live(Fixture *fixture) {
+  fixture->decode->live_h264 = true;
+  fixture->decode->replay = CrystalHDDecodeReplay(true);
+  fixture->driver.surfaces.at(1)->direct_decode_eligible = true;
+}
+
+void Output(Fixture *fixture, uint64_t timestamp, uint8_t luma) {
+  std::vector<uint8_t> pixels(16 * 16 * 2, 128);
+  for (size_t i = 0; i < pixels.size(); i += 2) pixels[i] = luma;
+  BC_DTS_PROC_OUT output = {};
+  output.Ybuff = pixels.data();
+  output.YBuffDoneSz = pixels.size() / 4;
+  output.PoutFlags = BC_POUT_FLAGS_PIB_VALID;
+  output.PicInfo.timeStamp = timestamp;
+  output.PicInfo.width = output.PicInfo.height = 16;
+  Require(ProcessDecodedOutput(&fixture->driver, fixture->decode.get(), output) ==
+              VA_STATUS_SUCCESS, "process exact live hardware picture");
+}
+
+VABufferID Vpp(Fixture *fixture) {
+  auto processor = std::make_shared<DecodeContext>();
+  processor->video_process = true;
+  fixture->driver.contexts[2] = processor;
+  auto target = std::make_shared<Surface>();
+  Require(target->AllocateInternal(nullptr, -1, 16, 16, VA_FOURCC_NV12),
+          "allocate CPU VPP destination");
+  fixture->driver.surfaces[2] = target;
+  VAProcPipelineParameterBuffer pipeline = {};
+  pipeline.surface = 1;
+  return fixture->Buffer(VAProcPipelineParameterBufferType, &pipeline,
+                          sizeof(pipeline));
+}
+
+void DirectLiveOutputAndReuse() {
+  for (bool live : {false, true}) {
+    Fixture f;
+    if (live) Live(&f);
+    f.Begin(); f.Parameters(); f.End();
+    std::weak_ptr<Surface> previous = f.decode->decoded_frames.at(kTimestampStep);
+    Require(f.decode->decoded_frames.at(kTimestampStep)->storage.empty() == live,
+            "only explicit live H264 elides private frame allocation");
+    Output(&f, kTimestampStep, 40);
+    Require(f.driver.surfaces.at(1)->ready &&
+                f.driver.surfaces.at(1)->planes[0][0] == 40 &&
+                f.decode->decoded_frames.at(kTimestampStep)->storage.empty() == live,
+            "direct completion publishes actual pixels without a private copy");
+    Output(&f, kTimestampStep, 90);
+    Require(f.driver.surfaces.at(1)->planes[0][0] == 40,
+            "duplicate cannot replace direct pixels");
+    if (live)
+      f.driver.surfaces.at(1)->layout.valid = true;
+    f.Begin(); f.Parameters(false); f.End();
+    Require(f.decode->decoded_frames.at(2 * kTimestampStep)->storage.empty() == live,
+            "read-only export layout does not disable direct decode reuse");
+    Require(previous.expired(), "completed uncaptured reuse releases old backing without promotion");
+    Output(&f, 2 * kTimestampStep, 80);
+    Require(f.driver.surfaces.at(1)->planes[0][0] == 80,
+            "reused target receives only its new picture");
+  }
+}
+
+void DirectVppCaptureAndPendingReuse() {
+  for (bool complete_before_capture : {false, true}) {
+    Fixture f;
+    Live(&f);
+    auto parameters = Vpp(&f);
+    f.Begin(); f.Parameters(); f.End();
+    if (complete_before_capture) Output(&f, kTimestampStep, 40);
+    Require(BeginPicture(&f.context, 2, 2) == VA_STATUS_SUCCESS &&
+                RenderPicture(&f.context, 2, &parameters, 1) ==
+                    VA_STATUS_SUCCESS, "capture pending or completed direct picture");
+    const auto captured = f.driver.contexts.at(2)->vpp_frame;
+    Require(!captured->storage.empty() && !captured->direct_backing,
+            "capture owns private pixels before releasing driver lock");
+    f.Begin(); f.Parameters(false); f.End();
+    if (!complete_before_capture) Output(&f, kTimestampStep, 40);
+    Output(&f, 2 * kTimestampStep, 80);
+    Require(EndPicture(&f.context, 2) == VA_STATUS_SUCCESS &&
+                f.driver.surfaces.at(2)->planes[0][0] == 40 &&
+                f.driver.surfaces.at(2)->frame_timestamp == kTimestampStep &&
+                f.driver.surfaces.at(1)->planes[0][0] == 80,
+            "VPP Render/End captures exact old picture across decode reuse");
+  }
+  Fixture f;
+  Live(&f);
+  f.Begin(); f.Parameters(); f.End();
+  auto old = f.decode->decoded_frames.at(kTimestampStep);
+  f.Begin(); f.Parameters(false); f.End();
+  Require(!old->direct_backing && !old->storage.empty(),
+          "reuse detaches pending output before changing public identity");
+  Output(&f, kTimestampStep, 40);
+  Require(!f.driver.surfaces.at(1)->ready && old->planes[0][0] == 40,
+          "late old output only fills detached picture");
+  Output(&f, 2 * kTimestampStep, 80);
+}
+
+void DirectContextOwnershipAndSharedFallback() {
+  for (bool old_live : {false, true}) {
+    for (bool fail_old : {false, true}) {
+      for (bool expire_new_owner : {false, true}) {
+        Fixture f;
+        if (old_live)
+          Live(&f);
+        auto parameters = Vpp(&f);
+        f.Begin(); f.Parameters(); f.End();
+        auto original = f.decode;
+        f.decode = std::make_shared<DecodeContext>();
+        f.decode->config = 1;
+        f.decode->width = f.decode->height = 16;
+        f.decode->device = &f.mock;
+        f.decode->decoder_open = f.decode->decoder_started = true;
+        Live(&f);
+        f.driver.contexts[3] = original;
+        f.driver.contexts[1] = f.decode;
+        f.Begin(); f.Parameters(); f.End();
+        Output(&f, kTimestampStep, 80);
+        Require(BeginPicture(&f.context, 2, 2) == VA_STATUS_SUCCESS &&
+                    RenderPicture(&f.context, 2, &parameters, 1) ==
+                        VA_STATUS_SUCCESS &&
+                    EndPicture(&f.context, 2) == VA_STATUS_SUCCESS &&
+                    f.driver.surfaces.at(2)->planes[0][0] == 80,
+                "VPP chooses exact decoder ownership despite equal timestamps");
+        if (expire_new_owner) {
+          f.decode->decoded_frames.clear();
+          Require(BeginPicture(&f.context, 2, 2) == VA_STATUS_SUCCESS &&
+                      RenderPicture(&f.context, 2, &parameters, 1) ==
+                          VA_STATUS_ERROR_DECODING_ERROR &&
+                      EndPicture(&f.context, 2) ==
+                          VA_STATUS_ERROR_INVALID_PARAMETER,
+                  "VPP cannot resurrect an older equal-timestamp picture after "
+                  "the current weak owner expires");
+        }
+        std::swap(f.decode, original);
+        if (fail_old)
+          Require(FailDecode(&f.driver, f.decode.get(), "old decoder failure") ==
+                      VA_STATUS_ERROR_DECODING_ERROR,
+                  "fail superseded decoder");
+        else
+          Output(&f, kTimestampStep, 40);
+        Require(f.driver.surfaces.at(1)->planes[0][0] == 80 &&
+                    !f.driver.surfaces.at(1)->failed,
+                "old output or failure cannot claim a newer context even after "
+                "its weak owner expires");
+        std::swap(f.decode, original);
+        f.driver.surfaces.at(1)->direct_decode_eligible = false;
+        f.Begin(); f.Parameters(false); f.End();
+        Require(!f.decode->decoded_frames.at(2 * kTimestampStep)->storage.empty(),
+                "imported or write-exposed targets retain private output");
+      }
+    }
+  }
+}
+
+void DirectBackingReassignedBetweenVppBeginAndEnd() {
+  Fixture f;
+  Live(&f);
+  Vpp(&f);
+  auto source = f.driver.surfaces.at(2);
+  source->ready = true;
+  source->expected_timestamp = source->frame_timestamp = kTimestampStep;
+  source->decode_identity = NextDecodeIdentity(&f.driver);
+  source->decode_picture = source;
+  memset(source->storage.data(), 99, source->storage.size());
+  auto source_decoder = std::make_shared<DecodeContext>();
+  source_decoder->decoded_frames[kTimestampStep] = source;
+  source_decoder->surface_timestamps[source.get()] = kTimestampStep;
+  f.driver.contexts[3] = source_decoder;
+  VAProcPipelineParameterBuffer pipeline = {};
+  pipeline.surface = 2;
+  auto parameters = f.Buffer(VAProcPipelineParameterBufferType, &pipeline, sizeof(pipeline));
+  Require(BeginPicture(&f.context, 2, 1) == VA_STATUS_SUCCESS, "begin VPP into decode backing");
+  f.Begin(); f.Parameters(); f.End();
+  auto picture = f.decode->decoded_frames.at(kTimestampStep);
+  Require(RenderPicture(&f.context, 2, &parameters, 1) == VA_STATUS_SUCCESS &&
+              EndPicture(&f.context, 2) == VA_STATUS_SUCCESS,
+          "complete VPP after intervening decode acquired the target");
+  Require(!picture->direct_backing && !picture->ready &&
+              f.driver.surfaces.at(1)->planes[0][0] == 99,
+          "VPP End preserves and revokes a pending decode owner");
+  Output(&f, kTimestampStep, 40);
+  Require(picture->planes[0][0] == 40 &&
+              f.driver.surfaces.at(1)->planes[0][0] == 99,
+          "late equal-timestamp decode output cannot overwrite VPP result");
+}
 }
 
 int main() {
@@ -364,6 +549,10 @@ int main() {
     {"legacy profile rejection", LegacyProfilesRejectCustom},
     {"valid replacement and mixed flat", ValidReplacementAndMixedFlat},
     {"original and replay matrix ownership", OriginalReplayRetainsMatrices},
+    {"direct live output and reuse", DirectLiveOutputAndReuse},
+    {"direct VPP capture and pending reuse", DirectVppCaptureAndPendingReuse},
+    {"direct context ownership and shared fallback", DirectContextOwnershipAndSharedFallback},
+    {"direct backing reassigned during VPP", DirectBackingReassignedBetweenVppBeginAndEnd},
   };
   for (const auto &group : groups) {
     try { group.second(); std::printf("PASS %s\n", group.first); }
