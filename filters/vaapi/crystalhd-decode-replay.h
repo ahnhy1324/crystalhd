@@ -49,6 +49,7 @@ class CrystalHDDecodeReplay {
       return Fail("compressed IDR replay cache limit exceeded");
     cache_bytes_ += bytes.size();
     units_.push_back({timestamp, idr, std::move(bytes), false});
+    multiple_inputs_ = multiple_inputs_ || last_timestamp_ != 0;
     last_timestamp_ = timestamp;
     return true;
   }
@@ -152,6 +153,7 @@ class CrystalHDDecodeReplay {
   size_t cached_pictures() const { return units_.size(); }
   size_t outstanding() const { return outstanding_.size(); }
   bool replayable() const { return replayable_; }
+  bool live_stream_started() const { return live_ && multiple_inputs_; }
 
  private:
   enum class Phase { Running, Sealed, Ended, Failed };
@@ -218,6 +220,7 @@ class CrystalHDDecodeReplay {
   uint64_t last_timestamp_ = 0;
   uint64_t lost_history_timestamp_ = 0;
   bool live_ = false;
+  bool multiple_inputs_ = false;
   bool replayable_ = true;
   Phase phase_ = Phase::Running;
   const char *failure_ = "decoder replay failed";
