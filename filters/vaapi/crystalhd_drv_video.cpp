@@ -2726,11 +2726,12 @@ static VAStatus SyncDecodeSurface(
     const uint64_t idle =
         std::chrono::duration_cast<std::chrono::nanoseconds>(now - last_progress)
             .count();
-    // Once live history retires, the running hardware owns the only intact
-    // references. A delivery gap is not permission to destroy them with EOS;
-    // explicit context drain still seals the final accepted pictures.
+    // A second accepted live picture distinguishes streaming from a one-frame
+    // decoder probe. An input gap is not EOF, even while history is replayable:
+    // sealing would needlessly reopen the device when input resumes. Explicit
+    // context drain still seals the final accepted pictures.
     const bool retain_live_references =
-        decode->live_h264 && !decode->replay.replayable();
+        decode->live_h264 && decode->replay.live_stream_started();
     if (!surface->ready && !decode->ReplaySealed() &&
         !retain_live_references &&
         DecodeBatchGraceExpired(idle)) {
