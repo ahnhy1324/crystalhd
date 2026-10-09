@@ -24,7 +24,7 @@ MAX_OWNER_LOOKUP_STEPS = 1000000  # Bounds overlapping/aliased function interval
 MAX_METADATA_OUTPUT_BYTES = 16 * 1024 * 1024  # Retained symbols and section names.
 MAX_REFERENCE_OUTPUT_BYTES = 32 * 1024 * 1024  # Conservative JSON size accounting.
 MAX_BOOTSTRAP_ANCHORS = 256  # Fixed, audited ARM instructions; never a general scan.
-MAX_PICTURE_OUTPUT_ANCHORS = 192  # Separate fixed picture-path inventory, not a scan.
+MAX_PICTURE_OUTPUT_ANCHORS = 204  # Separate fixed picture-path inventory, not a scan.
 MAX_SCALER_FIR_REGIONS = 12
 MAX_SCALER_FIR_BYTES = 2048
 # Selected stock A32 bodies, literals and coefficient tables, not a device map.
@@ -7003,8 +7003,13 @@ def _picture_output_map(payload, images):
         "picture_handler": (
             (0x834c, 0xe92d43f0), (0x8350, 0xe24dd0ac), (0x8394, 0xe5d400d2),
             (0x8398, 0xe3500001), (0x839c, 0x0a000005), (0x8354, 0xe1a09000),
+            (0x8654, 0xe5d400c5), (0x8660, 0x0a000017), (0x866c, 0xe3100c01),
+            (0x8670, 0x0a000033),
             (0x8698, 0xe1a01009), (0x869c, 0xe3a00001), (0x86a0, 0xebfffc7c),
             (0x8714, 0xe1a01009), (0x8718, 0xe3a00001), (0x871c, 0xebfffc5d),
+            (0x8768, 0xebfffd19),
+            (0x876c, 0xe51f0dc4), (0x8770, 0xe5901100), (0x8774, 0xe3811002),
+            (0x8778, 0xe5801100),
             (0x87a8, 0xe1a01009), (0x87ac, 0xe3a00000), (0x87b0, 0xebfffc38),
             (0x8820, 0xe5c471a8), (0x8358, 0xe3a07000), (0x83b4, 0xe8bd83f0),
         ),
@@ -7022,6 +7027,11 @@ def _picture_output_map(payload, images):
             (0x82e8, 0x9a000000), (0x82ec, 0xe3a03801), (0x82f0, 0xe5823408),
             (0x82f4, 0xe7df159f), (0x82f8, 0xe1810800), (0x82fc, 0xe582040c),
             (0x8348, 0xe8bd8010), (0x8610, 0xe1cd03d4), (0x8614, 0xebffff2d),
+        ),
+        "metadata_dma": (
+            (0x82ac, 0xe51f0904), (0x82b0, 0xe580a114), (0x82b4, 0xe59d1014),
+            (0x82b8, 0xe5801118), (0x82bc, 0xe5901100), (0x82c0, 0xe3811010),
+            (0x82c4, 0xe5801100),
         ),
         "mfd": (
             (0x1bfc, 0xe92d41f0), (0x1c00, 0xe1a06000), (0x1c08, 0xe1a04003),
@@ -7063,6 +7073,7 @@ def _picture_output_map(payload, images):
         0x7730: (0x76b0, 0x100e0000, 4), 0x898: (0x6fc, 0xd3a00, 0),
         0x7898: (0x7a28, 0x10510000, 3), 0x78b0: (0x7698, 0xd2210, 0),
         0x78c4: (0x7a2c, 0x10540000, 1), 0x82d8: (0x7a2c, 0x10540000, 2),
+        0x82ac: (0x79b0, 0x10502000, 0), 0x876c: (0x79b0, 0x10502000, 0),
         0x1ca0: (0x1f04, 0x00540014, 1), 0x1d0c: (0x1f38, 0x00540804, 1),
         0x1d3c: (0x1f44, 0x00540810, 1), 0x1d6c: (0x1f50, 0x0054081c, 1),
         0x1e50: (0x1f88, 0x00540854, 1), 0x3f10: (0x4114, 0x2cf84, 0),
@@ -7119,6 +7130,9 @@ def _picture_output_map(payload, images):
     operations = [
         ("BOP_AES_CTRL", 0x10510000, 0x00510000, [0x78ac, 0x78c0], 1,
          "START_ENCRYPTION_SCRAMBLE: set when r0==0, clear otherwise", "bchp_bop_aes.h:97"),
+        ("MISC2_GLOBAL_CTRL", 0x10502100, 0x00502100, [0x82c4, 0x8778], 0x12,
+         "META_DMA_ENABLE set at 0x82bc..0x82c4; BVN_YUY2_MODE set at 0x8770..0x8778",
+         "bchp_misc2.h:80"),
         ("MFD_PIC_FEED_CMD", 0x10540030, 0x00540030, [0x78cc], 1,
          "START_FEED written as 1", "bchp_mfd.h:323"),
         ("MFD_DISP_HSIZE", None, 0x00540014, [0x1ca8], 0x1fff,
@@ -7160,6 +7174,43 @@ def _picture_output_map(payload, images):
             "callers": [{"blob_file_offset": offset, "r0": value, "r1": "slot"}
                         for offset, value in ((0x86a0, 1), (0x871c, 1), (0x87b0, 0))],
             "scope": "Picture-feed trigger and output encryption/scramble control, not generic AES or input decryption."},
+        "packing_override": {
+            "picture_handler_entry_blob_file_offset": 0x834c,
+            "base_load_blob_file_offset": 0x876c,
+            "base_literal_blob_file_offset": 0x79b0,
+            "arm_base_address": 0x10502000,
+            "register_byte_offset": 0x100,
+            "arm_physical_address": 0x10502100,
+            "rdb_address": 0x00502100,
+            "read_blob_file_offset": 0x8770,
+            "set_blob_file_offset": 0x8774,
+            "write_blob_file_offset": 0x8778,
+            "set_mask": 0x2,
+            "field": "BVN_YUY2_MODE",
+            "preceding_metadata_setup": {
+                "entry_blob_file_offset": 0x7bd4,
+                "caller_blob_file_offset": 0x8768,
+                "base_load_blob_file_offset": 0x82ac,
+                "metadata_base_write_blob_file_offset": 0x82b0,
+                "metadata_length_write_blob_file_offset": 0x82b8,
+                "read_blob_file_offset": 0x82bc,
+                "set_blob_file_offset": 0x82c0,
+                "write_blob_file_offset": 0x82c4,
+                "set_mask": 0x10,
+                "field": "META_DMA_ENABLE"},
+            "combined_firmware_set_mask": 0x12,
+            "selected_path_predicates": {
+                "slot_state_byte_offset": 0xc5,
+                "slot_state_required": "nonzero",
+                "slot_state_branch_blob_file_offset": 0x8660,
+                "picture_word_mask": 0x100,
+                "picture_word_required": "clear",
+                "picture_word_branch_blob_file_offset": 0x8670},
+            "selected_path": "slot state byte 0xc5 nonzero and picture word bit 0x100 clear before the picture-feed call at 0x87b0",
+            "overwrite_path_established": True,
+            "exclusive_register_writer_proved": False,
+            "persistent_hardware_uyvy_across_picture_delivery": False,
+            "scope": "Stock firmware repeats a MISC2_GLOBAL_CTRL read-modify-write that forces its YUY2 packing bit; generic indirect writers and the origin of preserved bits are outside this proof."},
         "register_operations": [
             {"name": name, "arm_physical_address": physical, "rdb_address": address,
              "instruction_blob_file_offsets": sites, "field_mask": mask,
