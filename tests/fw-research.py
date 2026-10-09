@@ -5274,6 +5274,354 @@ class FirmwareRxDescriptorAdmissionTests(unittest.TestCase):
         self.assertEqual(result["rx_descriptor_admission"], self.report)
 
 
+class FirmwareChannelFieldTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.data = MAP.read_firmware(BLOB)
+        cls.payload = cls.data[:-MAP.TRAILER_SIZE]
+        cls.report = MAP._channel_field_map(cls.payload)
+        cls.admission = MAP._rx_descriptor_admission_map(cls.payload)
+
+    @staticmethod
+    def offsets(records):
+        return [record["blob_file_offset"] for record in records]
+
+    def test_schema_validation_root_and_aliases_are_exact(self):
+        report = self.report
+        self.assertEqual((report["schema_version"], report["kind"], report["isa"],
+                          report["endianness"], report["device_observed"]),
+                         (1, "stock-arm-channel-field-inventory",
+                          "A32", "little", False))
+        validation = report["validation"]
+        self.assertEqual((validation["region_count"], validation["bytes"]), (23, 19886))
+        self.assertEqual((validation["dependency_region_count"], validation["dependency_bytes"],
+                          validation["aggregate_region_count"],
+                          validation["aggregate_bytes_charged"],
+                          validation["aggregate_overlap_deduplicated"]),
+                         (3, 200, 26, 20086, False))
+        self.assertEqual(validation["rx_descriptor_admission"], self.admission["validation"])
+        self.assertEqual([region["role"] for region in validation["regions"]], [
+            "init_context", "channel_api_lifecycle", "host_start_root_literal",
+            "host_stop_start", "host_close_open", "device_start_handoff",
+            "device_start_output_literal",
+            "stream_handler", "descriptor_delivery", "picture_handler", "irq19_handler",
+            "reinitialize", "reinitialize_root_literal", "xpt_lifecycle", "decoder_lifecycle",
+            "pvr_play_open", "source_record_producer", "bxvd_channel_open",
+            "xpt_playback_open", "clear_copy_wrappers", "memcpy_a32",
+            "clear_thumb_value", "clear_thumb_fill"])
+        channel = report["channel"]
+        self.assertEqual((channel["root"]["literal_blob_file_offset"],
+                          channel["root"]["literal_value"], channel["slot_count"],
+                          channel["slot_stride_words"], channel["slot_stride_bytes"]),
+                         (0x6fc, 0xd3a00, 4, 0x73, 0x1cc))
+        self.assertEqual((channel["reinitialize_root"]["literal_blob_file_offset"],
+                          channel["reinitialize_root"]["literal_value"]), (0x8c24, 0xd3a00))
+        handoff = channel["host_interface_handoff"]
+        self.assertEqual((handoff["scope"], handoff["global_address"],
+                          handoff["context_output_address"],
+                          handoff["host_start_global"]["literal_blob_file_offset"],
+                          handoff["device_start_global"]["literal_blob_file_offset"],
+                          handoff["device_start_output"]["literal_blob_file_offset"]),
+                         ("on successful init", 0xd1ff4, 0xd1ff8, 0x3de8, 0x5128, 0x5ed4))
+        self.assertEqual(channel["aliases"], {
+            "W": "C + 0x18", "X": "C + 0xac", "K": "C + 0xec",
+            "D": "C + 0x188", "P": "sp + 0x20"})
+        roles = {site["role"]: site for site in channel["derivation_sites"]}
+        self.assertEqual((roles["slot_base"]["blob_file_offset"],
+                          roles["picture_slot_base"]["blob_file_offset"]), (0x918, 0x8384))
+        self.assertEqual([roles[name]["blob_file_offset"] for name in
+                          ("X_open", "X_config", "X_close")], [0x970, 0xacc, 0xc18])
+        self.assertEqual([roles[name]["blob_file_offset"] for name in (
+            "decoder_open_output_argument", "decoder_open_output_saved",
+            "xpt_playback_output_argument", "xpt_playback_output_saved",
+            "xpt_slot_channel_scale", "xpt_slot_offset",
+            "xpt_slot_controller_base", "xpt_slot_channel_address",
+            "pvr_open_output_argument", "pvr_open_output_recovered",
+        )], [0xa308, 0xf7f0, 0x93a8, 0x1bc44, 0x1bc90,
+             0x1bc94, 0x1bc98, 0x1bc9c, 0x5960, 0xc02c])
+
+    def test_all_three_clear_paths_and_helpers_are_explicit(self):
+        initialization = self.report["initialization"]
+        self.assertEqual((initialization["root_clear"]["destination"],
+                          initialization["root_clear"]["bytes"]), (0xd3a00, 0x74c))
+        self.assertEqual((initialization["root_clear"]["four_slot_bytes"],
+                          initialization["root_clear"]["tail_bytes"]), (0x730, 0x1c))
+        self.assertEqual(self.offsets(initialization["root_clear"]["sites"]),
+                         [0x55c, 0x560, 0x564, 0x568])
+        self.assertEqual((initialization["reinitialize_clear"]["destination"],
+                          initialization["reinitialize_clear"]["bytes"]), (0xd3a00, 0x74c))
+        self.assertEqual(self.offsets(initialization["reinitialize_clear"]["sites"]),
+                         [0x89d4, 0x89d8, 0x89dc, 0x89e0])
+        self.assertEqual((initialization["open_clear"]["destination_expression"],
+                          initialization["open_clear"]["bytes"]), ("C + 0x10", 0x1cc))
+        self.assertEqual((initialization["open_clear"]["range_end_expression"],
+                          initialization["open_clear"]["crosses_nominal_slot_end_by_bytes"]),
+                         ("C + 0x1dc", 0x10))
+        self.assertEqual(self.offsets(initialization["open_clear"]["sites"]),
+                         [0x5270, 0x5274, 0x5278, 0x527c, 0x5280, 0x5284, 0x5288])
+        self.assertEqual(initialization["fill_helper"], {
+            "a32_wrapper": 0x206e4, "helper_isa": "Thumb", "thumb_value_entry": 0x2c688,
+            "thumb_fill_entry": 0x2c73c, "fill_byte": 0})
+
+    def test_selected_handle_and_object_access_sets_are_exact(self):
+        fields = self.report["fields"]
+        self.assertEqual(set(fields), {"0x20", "0xbc", "0xd4", "0x120", "0x124",
+                                       "0x178", "0x180", "0x188"})
+        self.assertEqual(fields["0x20"]["classification"], "BXVD decoder channel handle")
+        self.assertEqual(self.report["access_inventory"], {
+            "kind": "selected pinned CPU access sites plus explicit bulk clear paths",
+            "bulk_range_write_paths": ["root_clear", "reinitialize_clear", "open_clear"],
+            "per_field_access_inventory_complete": False,
+        })
+        for field in fields.values():
+            self.assertEqual(field["bulk_range_write_paths"],
+                             ["root_clear", "reinitialize_clear", "open_clear"])
+            self.assertFalse(field["selected_accesses_complete"])
+        self.assertEqual(self.offsets(fields["0x20"]["selected_scalar_reads"]), [
+            0xb7c, 0xfe4, 0xff0, 0x10ac, 0x10e8, 0x1288, 0x1344, 0x13f4,
+            0x1478, 0x15ec, 0x1628, 0x1664, 0x1704, 0x171c, 0x1780, 0x1790,
+            0x8454, 0x8474, 0x85f4, 0x8938, 0xa394, 0xa4c8, 0xa56c, 0xa5a0,
+            0xa5e8, 0xa600, 0xa668, 0xa680, 0xfbc4])
+        self.assertEqual(self.offsets(fields["0x20"]["selected_scalar_writes"]),
+                         [0xf83c, 0xfbb0])
+        self.assertEqual(fields["0xbc"]["classification"],
+                         "XPT playback channel slot handle")
+        self.assertEqual(self.offsets(fields["0xbc"]["selected_scalar_reads"]), [
+            0x48cc, 0x48e0, 0x5964, 0x6d40, 0x941c, 0x9438,
+            0x945c, 0x95d0, 0x9618, 0x99bc, 0x9a34, 0xa164])
+        self.assertEqual(self.offsets(fields["0xbc"]["selected_scalar_writes"]),
+                         [0xa180, 0x1bd7c])
+        self.assertEqual(fields["0xbc"]["selected_scalar_writes"][1]["value"],
+                         "controller + 0x828 + channel * 0x28")
+        self.assertEqual(fields["0xbc"]["slot_expression"],
+                         "controller + 0x828 + channel * 0x28")
+        self.assertFalse(fields["0xbc"]["separate_allocation_established"])
+        self.assertFalse(fields["0xbc"]["active_RAVE_context_identity_established"])
+        self.assertEqual(fields["0xd4"]["classification"], "PVR play object")
+        self.assertEqual(self.offsets(fields["0xd4"]["selected_scalar_reads"]), [
+            0x12fc, 0x45b0, 0x45ec, 0x4888, 0x504c, 0x59ac,
+            0x6b9c, 0x6c40, 0x6ca8, 0x6d18, 0x6d8c])
+        self.assertEqual(self.offsets(fields["0xd4"]["selected_scalar_writes"]),
+                         [0x5064, 0xc030])
+        self.assertFalse(fields["0xd4"]["BXVD_decoder_handle"])
+        conditional = {
+            record["blob_file_offset"]: record
+            for field in ("0x20", "0xd4")
+            for record in fields[field]["selected_scalar_reads"]
+            if record.get("alias_provenance") == "conditional"
+        }
+        self.assertEqual({offset: (record["function_entry"], record["premise"])
+                          for offset, record in conditional.items()}, {
+            0x12fc: (0x12e4, "incoming r1 == channel root 0xd3a00"),
+            0x1344: (0x12e4, "incoming r1 == channel root 0xd3a00"),
+            0x13f4: (0x12e4, "incoming r1 == channel root 0xd3a00"),
+            0x1478: (0x12e4, "incoming r1 == channel root 0xd3a00"),
+            0x15ec: (0x15d8, "incoming r2 == channel root 0xd3a00"),
+            0x1628: (0x1610, "incoming r1 == channel root 0xd3a00"),
+            0x1664: (0x1610, "incoming r1 == channel root 0xd3a00"),
+        })
+
+    def test_cached_metadata_projection_flags_and_descriptor_are_bounded(self):
+        fields = self.report["fields"]
+        projection = self.report["projections"]["cached_metadata_words"]
+        self.assertEqual((fields["0x120"]["selected_direct_scalar_accesses"],
+                          fields["0x124"]["selected_direct_scalar_accesses"]), ([], []))
+        self.assertEqual((fields["0x120"]["classification"],
+                          fields["0x124"]["classification"]),
+                         ("cached record word at K+0x34 (P+0x34 transfer position)",
+                          "cached record word at K+0x38 (P+0x38 transfer position)"))
+        self.assertEqual(projection["cache_address_projection"],
+                         ["C+0x120 == K+0x34", "C+0x124 == K+0x38"])
+        self.assertEqual(projection["nonnull_fresh_path_writes"],
+                         ["P+0x34 <- metadata+4", "P+0x38 <- metadata+8"])
+        self.assertEqual(projection["null_path_writes"],
+                         ["P+0x34 <- 0", "P+0x38 <- 0"])
+        self.assertEqual(projection["reuse_path"],
+                         "existing [C+0xec,C+0x178) is copied to P")
+        self.assertFalse(projection["intervening_callee_preservation_verified"])
+        self.assertFalse(projection["published_value_equivalence_established"])
+        self.assertFalse(projection["cache_value_currentness_established"])
+        self.assertEqual(self.offsets(projection["producer_nonnull"]),
+                         [0xe19c, 0xe1a0, 0xe1a4, 0xe1a8])
+        self.assertEqual(self.offsets(projection["producer_null"]), [0xe210, 0xe214])
+        self.assertEqual([(entry["direction"], entry["bytes"], self.offsets(entry["sites"]))
+                          for entry in projection["transfers"]], [
+            ("channel_to_stack", 140, [0x8418, 0x841c, 0x8420, 0x8424]),
+            ("channel_to_stack", 140, [0x84bc, 0x84c0, 0x84c4, 0x84c8]),
+            ("stack_to_channel", 140, [0x86cc, 0x86d0, 0x86d4, 0x86d8]),
+            ("stack_to_channel", 140, [0x8744, 0x8748, 0x874c, 0x8750])])
+        self.assertTrue(projection["range_end_excludes_flag_0x178"])
+        self.assertEqual(self.offsets(fields["0x178"]["selected_scalar_reads"]), [0x84a0])
+        self.assertEqual(self.offsets(fields["0x178"]["selected_scalar_writes"]),
+                         [0x86ac, 0x873c, 0x8814])
+        self.assertEqual(self.offsets(fields["0x180"]["selected_scalar_reads"]),
+                         [0x83bc, 0x88d4, 0xa5bc, 0xa634])
+        self.assertEqual(self.offsets(fields["0x180"]["selected_scalar_writes"]),
+                         [0x1354, 0x86a8, 0x8738, 0x87e4, 0x87fc, 0x8808, 0x8810])
+        conditional_flag = fields["0x180"]["selected_scalar_writes"][0]
+        self.assertEqual((conditional_flag["alias_provenance"],
+                          conditional_flag["function_entry"], conditional_flag["premise"]),
+                         ("conditional", 0x12e4,
+                          "incoming r1 == channel root 0xd3a00"))
+        self.assertFalse(fields["0x178"]["ownership_flag_established"])
+        self.assertFalse(fields["0x180"]["ownership_flag_established"])
+        descriptor = fields["0x188"]
+        self.assertEqual((descriptor["width_bytes"], descriptor["bytes_read_by_admission"]), (32, 12))
+        self.assertFalse(descriptor["producer_source_proven"])
+        self.assertEqual(self.offsets(descriptor["selected_range_writes"]), [0x777c])
+        self.assertEqual(self.offsets(descriptor["selected_scalar_reads"]),
+                         [0x77f0, 0x7800, 0x780c, 0x7814, 0x784c, 0x7858, 0x7860, 0x7874])
+        self.assertEqual(descriptor["admission"], self.admission)
+
+    def test_control_flow_and_negative_scope_are_explicit(self):
+        edges = [(edge["role"], edge["blob_file_offset"], edge["target_blob_file_offset"])
+                 for edge in self.report["control_flow"]]
+        self.assertEqual(edges, [
+            ("global_clear", 0x568, 0x206e4),
+            ("reinitialize_clear", 0x89e0, 0x206e4),
+            ("open_clear", 0x5288, 0x206e4),
+            ("host_interface_init", 0x5d4c, 0x54c),
+            ("decoder_wrapper_open", 0xb18, 0xa2a4),
+            ("decoder_object_open", 0xa318, 0xf7e4),
+            ("xpt_context_open", 0x980, 0x9300),
+            ("xpt_context_configure", 0xad8, 0x973c),
+            ("xpt_context_close", 0xc1c, 0xa158),
+            ("pvr_play_open", 0x596c, 0xbddc),
+            ("xpt_playback_open", 0x93b0, 0x1bc3c),
+            ("cached_record_producer_null", 0x8480, 0xe110),
+            ("cached_record_producer_selected", 0x85f8, 0xe110),
+            ("cache_reuse_bit100", 0x8424, 0x20708),
+            ("cache_reuse_normal", 0x84c8, 0x20708),
+            ("cache_publish_bit100", 0x86d8, 0x20708),
+            ("cache_publish_normal", 0x8750, 0x20708),
+            ("descriptor_delivery_copy", 0x777c, 0x2c59c),
+            ("descriptor_consumer", 0x881c, 0x77e0),
+            ("copy_wrapper", 0x20724, 0x2c59c)])
+        scope = self.report["scope"]
+        self.assertTrue(scope[
+            "all_decoded_instruction_and_literal_offsets_inside_pinned_regions"])
+        self.assertFalse(scope["all_reported_branch_targets_inside_pinned_regions"])
+        self.assertTrue(scope["fixed_root_derived_aliases_are_pinned"])
+        self.assertFalse(scope["all_listed_accesses_have_fixed_root_provenance"])
+        self.assertTrue(scope["argument_rooted_aliases_are_conditional"])
+        self.assertFalse(scope["per_field_access_inventory_complete"])
+        for field in ("complete_function_envelopes", "whole_image_instruction_scan",
+                      "complete_firmware_alias_recovery",
+                      "opaque_callee_aliases_complete", "arc_or_dma_writers_complete",
+                      "runtime_object_identity", "source_address_units", "source_allocation_extent",
+                      "source_plane_lease", "flags_form_ownership_contract",
+                      "descriptor_producer_source_proven", "descriptor_dma_completion"):
+            self.assertFalse(scope[field], field)
+        self.assertIn("allocated BXVD object", self.report["excluded_lookalikes"][0]["reason"])
+        conditional = self.report["argument_conditional_aliases"]
+        self.assertEqual([(entry["function_entry"], entry["incoming_root_register"],
+                           entry["premise"], entry["access_sites"])
+                          for entry in conditional], [
+            (0x12e4, "r1", "incoming r1 == channel root 0xd3a00",
+             [0x12fc, 0x1344, 0x1354, 0x13f4, 0x1478]),
+            (0x15d8, "r2", "incoming r2 == channel root 0xd3a00", [0x15ec]),
+            (0x1610, "r1", "incoming r1 == channel root 0xd3a00",
+             [0x1628, 0x1664]),
+        ])
+        self.assertTrue(all(not entry["fixed_root_caller_provenance_pinned"]
+                            for entry in conditional))
+        self.assertEqual([[site["blob_file_offset"] for site in entry["derivation_sites"]]
+                          for entry in conditional], [
+            [0x12e8, 0x12ec, 0x12f0],
+            [0x15dc, 0x15e4, 0x15e8],
+            [0x1618, 0x161c, 0x1620],
+        ])
+
+    def test_every_decoded_instruction_and_literal_is_inside_a_pin(self):
+        ranges = [(region["blob_file_offset"], region["size"])
+                  for region in self.report["validation"]["regions"]]
+        ranges += [(region["blob_file_offset"], region["size"])
+                   for region in self.report["validation"]
+                   ["rx_descriptor_admission"]["regions"]]
+        reported = []
+
+        def collect(value):
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    if (key in ("blob_file_offset", "literal_blob_file_offset") or
+                            key.endswith("_instruction_blob_file_offset")):
+                        reported.append(child)
+                    elif key == "blob_file_offsets":
+                        reported.extend(child)
+                    collect(child)
+            elif isinstance(value, (list, tuple)):
+                for child in value:
+                    collect(child)
+
+        collect(self.report)
+        self.assertGreater(len(reported), 200)
+        for offset in reported:
+            with self.subTest(offset=hex(offset)):
+                self.assertTrue(any(start <= offset and offset + 4 <= start + size
+                                    for start, size in ranges))
+
+    def test_every_pinned_byte_rejects_before_decode_or_dependency(self):
+        for role, offset, size, _ in MAP._CHANNEL_FIELD_REGIONS:
+            for delta in range(size):
+                changed = bytearray(self.payload)
+                changed[offset + delta] ^= 1
+                with self.subTest(role=role, delta=delta), \
+                        mock.patch.object(MAP, "_rx_descriptor_admission_map",
+                                          side_effect=AssertionError("dependency ran before pin gate")), \
+                        mock.patch.object(MAP, "_bootstrap_word",
+                                          side_effect=AssertionError("decoded before pin gate")), \
+                        mock.patch.object(MAP, "_a32_literal",
+                                          side_effect=AssertionError("literal decoded before pin gate")), \
+                        mock.patch.object(MAP, "_a32_branch",
+                                          side_effect=AssertionError("branch decoded before pin gate")), \
+                        self.assertRaises(MAP.FormatError):
+                    MAP._channel_field_map(changed)
+
+    def test_bounds_and_budget_refusals(self):
+        for payload in (b"", self.payload[:-1], self.payload + b"\0"):
+            with self.subTest(size=len(payload)), self.assertRaisesRegex(MAP.FormatError, "payload size"):
+                MAP._channel_field_map(payload)
+        with mock.patch.object(MAP, "MAX_CHANNEL_FIELD_REGIONS", 22), \
+                self.assertRaisesRegex(MAP.FormatError, "budget"):
+            MAP._channel_field_map(self.payload)
+        with mock.patch.object(MAP, "MAX_CHANNEL_FIELD_BYTES", 19885), \
+                self.assertRaisesRegex(MAP.FormatError, "budget"):
+            MAP._channel_field_map(self.payload)
+        with mock.patch.object(MAP, "MAX_CHANNEL_FIELD_AGGREGATE_REGIONS", 25), \
+                self.assertRaisesRegex(MAP.FormatError, "aggregate"):
+            MAP._channel_field_map(self.payload)
+        with mock.patch.object(MAP, "MAX_CHANNEL_FIELD_AGGREGATE_BYTES", 20085), \
+                self.assertRaisesRegex(MAP.FormatError, "aggregate"):
+            MAP._channel_field_map(self.payload)
+
+    def test_opt_in_is_offline_additive_and_exact_baseline_gated(self):
+        before = bytes(self.payload)
+        with mock.patch("builtins.open", side_effect=AssertionError("unexpected file read")), \
+                mock.patch.object(MAP.os, "open", side_effect=AssertionError("unexpected device open")), \
+                mock.patch.object(subprocess, "run", side_effect=AssertionError("unexpected command")), \
+                mock.patch.object(subprocess, "Popen", side_effect=AssertionError("unexpected process")):
+            self.assertEqual(MAP._channel_field_map(self.payload), self.report)
+        self.assertEqual(bytes(self.payload), before)
+        with mock.patch.object(MAP, "_channel_field_map", side_effect=AssertionError("not opted in")):
+            plain = MAP.analyze(self.data)
+        self.assertNotIn("channel_fields", plain)
+        for flags in ({}, {"rx_descriptor_admission": True}, {"debug_mechanisms": True}):
+            with self.subTest(flags=flags):
+                original = MAP.analyze(self.data, **flags)
+                enriched = MAP.analyze(self.data, channel_fields=True, **flags)
+                self.assertEqual(enriched.pop("channel_fields"), self.report)
+                self.assertEqual(enriched, original)
+        with self.assertRaises(MAP.FormatError):
+            analyze_fixture(fixture(), channel_fields=True)
+
+    def test_cli_emits_the_opt_in_report(self):
+        with mock.patch.object(sys, "stdout", new_callable=io.StringIO) as output, \
+                mock.patch.object(sys, "stderr", new_callable=io.StringIO):
+            self.assertEqual(MAP.main([str(BLOB), "--channel-fields"]), 0)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["channel_fields"], self.report)
+
+
 class FirmwarePpbBankContractTests(unittest.TestCase):
     # Independently checked against the outer ELF symbol/section tables and
     # GNU 2.23.2 disassembly. Addresses are ARC ELF VMAs, never ARM offsets.
