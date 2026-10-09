@@ -12,6 +12,8 @@
 // Transport state only: a sealed batch is a real finite H.264 sequence. New
 // input is retained until EOS completes, then its original IDR prefix rebuilds
 // hardware reference pictures. Public pictures are completed exactly once.
+// Optional live transport may retire completed history, but never recreates
+// missing references after EOS or discards queued or outstanding pictures.
 class CrystalHDDecodeReplay {
  public:
   struct Limits {
@@ -29,20 +31,25 @@ class CrystalHDDecodeReplay {
   enum class Output { New, Duplicate, Unknown, Invalid };
 
   CrystalHDDecodeReplay() = default;
-  explicit CrystalHDDecodeReplay(Limits limits) : limits_(limits) {}
+  explicit CrystalHDDecodeReplay(bool live) : live_(live) {}
+  explicit CrystalHDDecodeReplay(Limits limits, bool live = false)
+      : limits_(limits), live_(live) {}
 
   bool Append(uint64_t timestamp, bool idr, std::vector<uint8_t> bytes) {
     Prune();
     if (failed() || timestamp == 0 || bytes.empty() ||
-        (units_.empty() && !idr) ||
-        (!units_.empty() && timestamp <= units_.back().timestamp))
+        (last_timestamp_ == 0 && !idr) || timestamp <= last_timestamp_)
       return Fail("input must begin at an actual IDR with unique timestamps");
     if (bytes.size() > limits_.picture_bytes ||
-        bytes.size() > limits_.cache_bytes - cache_bytes_ ||
-        units_.size() >= limits_.pictures)
+        bytes.size() > limits_.cache_bytes)
+      return Fail("compressed IDR replay cache limit exceeded");
+    if (live_)
+      MakeRoom(bytes.size());
+    if (!HasRoom(bytes.size()))
       return Fail("compressed IDR replay cache limit exceeded");
     cache_bytes_ += bytes.size();
     units_.push_back({timestamp, idr, std::move(bytes), false});
+    last_timestamp_ = timestamp;
     return true;
   }
 
@@ -88,7 +95,22 @@ class CrystalHDDecodeReplay {
     return phase_ == Phase::Ended && units_.size() > sealed_count_;
   }
   bool Restarted() {
-    if (!NeedsRestart() || units_.empty() || !units_.front().idr)
+    if (!NeedsRestart())
+      return Fail("no retained IDR prefix for decoder restart");
+    if (live_ && !replayable_) {
+      // Old tail pictures are complete before this call. A retained newer
+      // actual IDR can restore replay; otherwise only the first accepted
+      // continuation may establish a fresh stream. Never skip queued P input.
+      Prune();
+      if (!replayable_) {
+        if (!units_[sealed_count_].idr)
+          return Fail("live continuation after EOS requires an actual IDR");
+        RemovePrefix(sealed_count_);
+        replayable_ = true;
+        replay_work_ = 0;
+      }
+    }
+    if (units_.empty() || !units_.front().idr)
       return Fail("no retained IDR prefix for decoder restart");
     phase_ = Phase::Running;
     // A batch may finish every picture only after it was sealed, when pruning
@@ -129,27 +151,60 @@ class CrystalHDDecodeReplay {
   const char *failure() const { return failure_; }
   size_t cached_pictures() const { return units_.size(); }
   size_t outstanding() const { return outstanding_.size(); }
+  bool replayable() const { return replayable_; }
 
  private:
   enum class Phase { Running, Sealed, Ended, Failed };
-  void Prune() {
-    if (phase_ != Phase::Running)
-      return;
-    size_t prefix = 0;
-    bool complete = true;
-    for (size_t i = 0; i < cursor_; ++i) {
-      if (i != 0 && units_[i].idr && complete)
-        prefix = i;
-      complete = complete && units_[i].completed &&
-                 outstanding_.count(units_[i].timestamp) == 0;
+  bool HasRoom(size_t bytes) const {
+    return bytes <= limits_.cache_bytes - cache_bytes_ &&
+           units_.size() < limits_.pictures;
+  }
+  void MakeRoom(size_t bytes) {
+    // Completion of another picture is not permission to drop its pending
+    // neighbour. Retire only sent, genuinely completed, non-replayed input.
+    for (size_t i = 0; !HasRoom(bytes) && i < cursor_;) {
+      const auto &unit = units_[i];
+      if (!unit.completed || outstanding_.count(unit.timestamp) != 0) {
+        ++i;
+        continue;
+      }
+      if (unit.timestamp > lost_history_timestamp_)
+        lost_history_timestamp_ = unit.timestamp;
+      cache_bytes_ -= unit.bytes.size();
+      units_.erase(units_.begin() + i);
+      --cursor_;
+      if (i < sealed_count_)
+        --sealed_count_;
+      replayable_ = false;
     }
-    if (prefix == 0)
-      return;
+  }
+  void RemovePrefix(size_t prefix) {
     cursor_ -= prefix;
+    sealed_count_ = sealed_count_ > prefix ? sealed_count_ - prefix : 0;
     while (prefix-- != 0) {
       cache_bytes_ -= units_.front().bytes.size();
       units_.pop_front();
     }
+  }
+  void Prune() {
+    if (phase_ != Phase::Running && !(live_ && phase_ == Phase::Ended))
+      return;
+    size_t prefix = 0;
+    bool have_prefix = false;
+    bool complete = true;
+    for (size_t i = 0; i < cursor_; ++i) {
+      if (units_[i].idr && complete &&
+          (replayable_ || units_[i].timestamp > lost_history_timestamp_)) {
+        prefix = i;
+        have_prefix = true;
+      }
+      complete = complete && units_[i].completed &&
+                 outstanding_.count(units_[i].timestamp) == 0;
+    }
+    if (!have_prefix || (prefix == 0 && replayable_))
+      return;
+    RemovePrefix(prefix);
+    replayable_ = true;
     replay_work_ = 0;
   }
 
@@ -160,6 +215,10 @@ class CrystalHDDecodeReplay {
   size_t sealed_count_ = 0;
   size_t cache_bytes_ = 0;
   size_t replay_work_ = 0;
+  uint64_t last_timestamp_ = 0;
+  uint64_t lost_history_timestamp_ = 0;
+  bool live_ = false;
+  bool replayable_ = true;
   Phase phase_ = Phase::Running;
   const char *failure_ = "decoder replay failed";
 };

@@ -1317,9 +1317,11 @@ struct DecodeContext {
   bool decoder_started = false;
   bool is_70012 = false;
   bool sent_parameter_sets = false;
+  bool live_h264 = false;
   bool closing = false;
   bool retired = false;
   uint64_t generation = 1;
+  uint64_t transport_progress = 0;
   uint64_t next_timestamp = kTimestampStep;
   std::unordered_map<uint64_t, VASurfaceID> pending;
   std::unordered_map<uint64_t, std::shared_ptr<Surface>> decoded_frames;
@@ -1421,7 +1423,7 @@ struct DecodeContext {
     pending.clear();
     decoded_frames.clear();
     surface_timestamps.clear();
-    replay = CrystalHDDecodeReplay();
+    replay = CrystalHDDecodeReplay(live_h264);
     mpeg2_replay = CrystalHDMpeg2Replay();
     mpeg2_picture = Mpeg2Picture();
     mpeg2_matrices = crystalhd_mpeg2::DefaultQuantMatrices();
@@ -2060,10 +2062,15 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
     return FailDecode(driver, decode, "hardware output failed");
 
   *activity = true;
+  const size_t outstanding = decode->WithReplay(
+      [](auto &replay) { return replay.outstanding(); });
   const VAStatus result = ProcessDecodedOutput(driver, decode, output);
   status = DtsReleaseOutputBuffs(decode->device, nullptr, FALSE);
   if (status != BC_STS_SUCCESS)
     return FailDecode(driver, decode, "hardware output release failed");
+  if (result == VA_STATUS_SUCCESS && decode->WithReplay(
+          [](auto &replay) { return replay.outstanding(); }) < outstanding)
+    ++decode->transport_progress;
   return result;
 }
 
@@ -2163,6 +2170,7 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode) {
         break;
       if (status != BC_STS_SUCCESS || !replay.InputSent())
         return FailDecode(driver, decode, "compressed input submission failed");
+      ++decode->transport_progress;
     }
     if (replay.failed())
       return FailDecode(driver, decode, replay.failure());
@@ -2676,6 +2684,8 @@ static VAStatus SyncDecodeSurface(
         surface->failed, static_cast<unsigned long long>(timeout_ns));
 
   const auto start = std::chrono::steady_clock::now();
+  auto last_progress = start;
+  uint64_t progress = decode->transport_progress;
   while ((!surface->ready || decode->ReplaySealed()) && !surface->failed) {
     const VAStatus state = DecodeWaitState(*decode, surface.get(), generation,
                                            expected_timestamp, canceled);
@@ -2686,15 +2696,22 @@ static VAStatus SyncDecodeSurface(
     if (driver->stopping)
       return VA_STATUS_ERROR_OPERATION_FAILED;
     VAStatus status = ReceiveAvailable(driver, decode.get());
+    if (status == VA_STATUS_SUCCESS && surface->ready &&
+        !decode->ReplaySealed())
+      break;
     if (status == VA_STATUS_SUCCESS)
       status = PumpDecodeInput(driver, decode.get());
     if (status != VA_STATUS_SUCCESS)
       return status;
     if ((surface->ready && !decode->ReplaySealed()) || surface->failed)
       break;
-    uint64_t elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                           std::chrono::steady_clock::now() - start)
-                           .count();
+    const auto now = std::chrono::steady_clock::now();
+    if (decode->transport_progress != progress) {
+      progress = decode->transport_progress;
+      last_progress = now;
+    }
+    const uint64_t elapsed =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now - start).count();
     const VAStatus wait_status = DecodeWaitStatus(timeout_ns, elapsed);
     if (wait_status == VA_STATUS_ERROR_DECODING_ERROR) {
       Debug("firmware did not complete timestamp=%llu within 10 seconds",
@@ -2703,10 +2720,19 @@ static VAStatus SyncDecodeSurface(
     }
     if (wait_status != VA_STATUS_SUCCESS)
       return wait_status;
-    // This is batching grace, not an EOF detector: after it expires we seal a
-    // finite sequence and preserve future references through codec-aware replay.
-    // Ordinary output can satisfy the sync meanwhile, avoiding needless resets.
-    if (!surface->ready && DecodeBatchGraceExpired(elapsed)) {
+    // Seal only after transport inactivity, not while a live stream or retained
+    // prefix replay still makes real input/output progress. Keep the absolute
+    // sync deadline above: unrelated progress cannot hide a missing picture.
+    const uint64_t idle =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now - last_progress)
+            .count();
+    if (!surface->ready && !decode->ReplaySealed() &&
+        DecodeBatchGraceExpired(idle)) {
+      Debug("sync batch inactivity: elapsed=%llu idle=%llu progress=%llu timestamp=%llu",
+            static_cast<unsigned long long>(elapsed),
+            static_cast<unsigned long long>(idle),
+            static_cast<unsigned long long>(progress),
+            static_cast<unsigned long long>(expected_timestamp));
       status = SealDecodeBatch(driver, decode.get());
       if (status != VA_STATUS_SUCCESS)
         return status;
@@ -3347,6 +3373,11 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
   decode->width = std::max(width, 0);
   decode->height = std::max(height, 0);
   decode->video_process = video_process;
+  const char *live_h264 = getenv("CRYSTALHD_VAAPI_LIVE_H264");
+  decode->live_h264 = !video_process && IsH264Profile(decode->profile) &&
+      live_h264 != nullptr && strcmp(live_h264, "1") == 0;
+  if (decode->live_h264)
+    decode->replay = CrystalHDDecodeReplay(true);
   *context_id = driver->next_context++;
   driver->contexts[*context_id] = std::move(decode);
   return VA_STATUS_SUCCESS;

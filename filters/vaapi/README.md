@@ -62,8 +62,9 @@ pictures.
 ## Replay and end of stream
 
 BCM70015 firmware can retain output until later compressed pictures or a real
-end-of-sequence marker arrive. After 100 ms of synchronization grace, the
-backend may seal the exact submitted batch with EOS. New input waits until all
+end-of-sequence marker arrive. After 100 ms without real input/output progress
+during synchronization, the backend may seal the exact submitted batch with
+EOS. New input waits until all
 real output timestamps retire and drain completes through the firmware EOS
 marker or, for MPEG-4, the library EOS state; continued input then reopens the
 device and replays retained original access units.
@@ -85,6 +86,14 @@ non-outstanding ordinary B pictures may be omitted from MPEG-2 and VC-1 replay;
 stateful BI and reference history required by an open GOP remain. Synchronous
 one-picture-at-a-time clients can be slow because they may trigger frequent
 reopen and replay. BCM70012 does not use this sealed-batch path.
+
+For experimental long-running H.264 input, `CRYSTALHD_VAAPI_LIVE_H264=1`
+allows completed transport history to retire within the same memory limits.
+Queued input and outstanding pictures are never discarded. If the original
+IDR prefix is no longer retained, continuation after EOS requires an actual
+IDR; dependent input is rejected rather than decoded with missing references.
+The default remains strict replay. This opt-in is not a real-time streaming
+support claim and does not affect other codecs or the library ABI.
 
 Destroying a decoder context stops new submissions and drains accepted live
 pictures before closing the device. The drain has a ten-second polling budget,
