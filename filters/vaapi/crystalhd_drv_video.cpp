@@ -2049,6 +2049,11 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
   const uint64_t required_bytes =
       static_cast<uint64_t>(padded_width) * 2 * output_height;
   auto decoded = decode->decoded_frames.find(output.PicInfo.timeStamp);
+  // The map can be the last owner after a frontend reuses/drops its public
+  // surface. Check before locking the public weak link below; captured and
+  // queued VPP work retains a strong reference and must still receive pixels.
+  const bool map_only_picture = decoded != decode->decoded_frames.end() &&
+      decoded->second->vpp_readers == 0 && decoded->second.use_count() == 1;
   auto surface = driver->surfaces.find(surface_id);
   const auto owner_picture = surface != driver->surfaces.end()
       ? surface->second->decode_picture.lock() : nullptr;
@@ -2080,11 +2085,15 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
       static_cast<uint64_t>(output.YBuffDoneSz) * 4 >= required_bytes &&
       (output.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) == 0;
   bool complete = valid_frame;
+  const bool discard_pixels = complete && !current_picture && map_only_picture;
+  if (discard_pixels)
+    Debug("discard unreferenced stale pixels timestamp=%llu",
+          static_cast<unsigned long long>(output.PicInfo.timeStamp));
   const bool direct = current_picture &&
       decoded != decode->decoded_frames.end() &&
       decoded->second->direct_backing == surface->second;
   if (decoded != decode->decoded_frames.end()) {
-    if (complete) {
+    if (complete && !discard_pixels) {
       if (direct) {
         complete = CopyYuy2ToSurface(surface->second.get(), output,
                                      decode->is_70012);
