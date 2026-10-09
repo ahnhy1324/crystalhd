@@ -134,12 +134,13 @@ class PolicyAndControlTests(unittest.TestCase):
             SeekFlags=SimpleNamespace(FLUSH=1, ACCURATE=2),
             SeekType=SimpleNamespace(SET=1, NONE=0),
             State=SimpleNamespace(PAUSED=1, PLAYING=2),
-            StateChangeReturn=SimpleNamespace(FAILURE=0))
+            StateChangeReturn=SimpleNamespace(FAILURE=0, SUCCESS=1, ASYNC=2))
         control.pipeline = mock.Mock()
         control.pipeline.query_position.return_value = (True, 12000)
         control.pipeline.query_duration.return_value = (True, 60000)
         control.pipeline.seek.return_value = True
         control.pipeline.set_state.return_value = 1
+        control.pipeline.get_state.return_value = (1, 2, 0)
         control.rate = 1.0
         control.seek_target = None
         control.queued_seek = None
@@ -200,6 +201,32 @@ class PolicyAndControlTests(unittest.TestCase):
         control = self.controller()
         control.seek_completed()
         control.pipeline.seek.assert_not_called()
+
+    def test_old_async_done_does_not_complete_pending_preroll(self):
+        control = self.controller()
+        with contextlib.redirect_stdout(io.StringIO()):
+            control.control("forward")
+            control.control("rate-half")
+            control.pipeline.get_state.return_value = (2, 1, 2)
+            control.seek_completed()
+            self.assertEqual(control.pipeline.seek.call_count, 1)
+            self.assertEqual(control.seek_target, (22000, 1.0))
+            self.assertEqual(control.queued_seek, (22000, 0.5))
+            control.pipeline.get_state.return_value = (1, 2, 0)
+            control.seek_completed()
+            self.assertEqual(control.pipeline.seek.call_count, 2)
+            self.assertEqual(control.rate, 0.5)
+
+    def test_failed_preroll_does_not_submit_queued_control(self):
+        control = self.controller()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            control.control("forward")
+            control.control("rate-half")
+            control.pipeline.get_state.return_value = (0, 1, 2)
+            control.seek_completed()
+        self.assertEqual(control.pipeline.seek.call_count, 1)
+        self.assertIn("preroll", control.health.error)
+        control.stop.assert_called_with(1)
 
     def test_pause_resume_and_zero_output_quit(self):
         control = self.controller()

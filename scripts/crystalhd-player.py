@@ -299,6 +299,14 @@ class Player:
     def seek_completed(self):
         if self.seek_target is None:
             return
+        # An older startup/pause completion can still be queued on the bus.
+        # It must not complete a newer seek whose preroll is still pending.
+        state, _current, _pending = self.pipeline.get_state(0)
+        if state == self.Gst.StateChangeReturn.ASYNC:
+            return
+        if state == self.Gst.StateChangeReturn.FAILURE:
+            self.fail("seek preroll state change failed")
+            return
         self.seek_target = None
         queued, self.queued_seek = self.queued_seek, None
         if queued is not None:
