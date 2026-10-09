@@ -1917,13 +1917,13 @@ class FirmwarePictureOutputTests(unittest.TestCase):
                          (1, "A32", "little"))
         self.assertFalse(result["device_observed"])
         anchors = result["instruction_anchors"]
-        self.assertEqual(len(anchors), 187)
-        self.assertEqual(len({a["blob_file_offset"] for a in anchors}), 187)
-        self.assertEqual(MAP.MAX_PICTURE_OUTPUT_ANCHORS, 192)
+        self.assertEqual(len(anchors), 203)
+        self.assertEqual(len({a["blob_file_offset"] for a in anchors}), 203)
+        self.assertEqual(MAP.MAX_PICTURE_OUTPUT_ANCHORS, 204)
         groups = {anchor["group"] for anchor in anchors}
         self.assertEqual({group: sum(a["group"] == group for a in anchors) for group in groups},
-                         {"delivery": 27, "pending_main": 28, "picture_handler": 18,
-                          "bop": 16, "dnr": 15, "mfd": 18, "scl": 27,
+                         {"delivery": 27, "pending_main": 28, "picture_handler": 27,
+                          "bop": 16, "dnr": 15, "metadata_dma": 7, "mfd": 18, "scl": 27,
                           "key_stubs": 36, "key_callers": 2})
         for anchor in anchors:
             offset = anchor["blob_file_offset"]
@@ -1988,9 +1988,9 @@ class FirmwarePictureOutputTests(unittest.TestCase):
                 self.mapping(images=images)
 
     def test_picture_output_exact_anchor_budget(self):
-        with mock.patch.object(MAP, "MAX_PICTURE_OUTPUT_ANCHORS", 187):
-            self.assertEqual(len(self.mapping()["instruction_anchors"]), 187)
-        with mock.patch.object(MAP, "MAX_PICTURE_OUTPUT_ANCHORS", 186):
+        with mock.patch.object(MAP, "MAX_PICTURE_OUTPUT_ANCHORS", 203):
+            self.assertEqual(len(self.mapping()["instruction_anchors"]), 203)
+        with mock.patch.object(MAP, "MAX_PICTURE_OUTPUT_ANCHORS", 202):
             with self.assertRaisesRegex(MAP.FormatError, "anchor budget"):
                 self.mapping()
 
@@ -2094,10 +2094,77 @@ class FirmwarePictureOutputTests(unittest.TestCase):
         self.assertEqual(anchors[0x78bc]["word"], 0xe3c20001)  # clear bit zero
         self.assertEqual(anchors[0x78cc]["word"], 0xe5810030)
 
+    def test_picture_delivery_firmware_forces_yuy2_packing(self):
+        result = self.mapping()
+        override = result["packing_override"]
+        anchors = {a["blob_file_offset"]: a for a in result["instruction_anchors"]}
+        expected = {
+            "picture_handler_entry_blob_file_offset": 0x834c,
+            "base_load_blob_file_offset": 0x876c,
+            "base_literal_blob_file_offset": 0x79b0,
+            "arm_base_address": 0x10502000,
+            "register_byte_offset": 0x100,
+            "arm_physical_address": 0x10502100,
+            "rdb_address": 0x00502100,
+            "read_blob_file_offset": 0x8770,
+            "set_blob_file_offset": 0x8774,
+            "write_blob_file_offset": 0x8778,
+            "set_mask": 0x2,
+            "field": "BVN_YUY2_MODE",
+            "combined_firmware_set_mask": 0x12,
+            "overwrite_path_established": True,
+            "exclusive_register_writer_proved": False,
+            "persistent_hardware_uyvy_across_picture_delivery": False,
+        }
+        self.assertEqual({key: override[key] for key in expected}, expected)
+        self.assertEqual(anchors[0x876c]["operation"], "LDR literal")
+        self.assertEqual(anchors[0x876c]["literal_blob_file_offset"], 0x79b0)
+        self.assertEqual(anchors[0x876c]["literal_value"], override["arm_base_address"])
+        self.assertEqual(anchors[0x876c]["destination_register"], 0)
+        self.assertEqual(anchors[0x8770]["word"], 0xe5901100)
+        self.assertEqual(anchors[0x8774]["word"], 0xe3811002)
+        self.assertEqual(anchors[0x8778]["word"], 0xe5801100)
+        self.assertEqual(override["arm_base_address"] + override["register_byte_offset"],
+                         override["arm_physical_address"])
+        self.assertEqual(override["selected_path_predicates"], {
+            "slot_state_byte_offset": 0xc5,
+            "slot_state_required": "nonzero",
+            "slot_state_branch_blob_file_offset": 0x8660,
+            "picture_word_mask": 0x100,
+            "picture_word_required": "clear",
+            "picture_word_branch_blob_file_offset": 0x8670})
+        self.assertIn("picture word bit 0x100 clear", override["selected_path"])
+        self.assertIn("origin of preserved bits", override["scope"])
+        metadata = override["preceding_metadata_setup"]
+        self.assertEqual(metadata, {
+            "entry_blob_file_offset": 0x7bd4,
+            "caller_blob_file_offset": 0x8768,
+            "base_load_blob_file_offset": 0x82ac,
+            "metadata_base_write_blob_file_offset": 0x82b0,
+            "metadata_length_write_blob_file_offset": 0x82b8,
+            "read_blob_file_offset": 0x82bc,
+            "set_blob_file_offset": 0x82c0,
+            "write_blob_file_offset": 0x82c4,
+            "set_mask": 0x10,
+            "field": "META_DMA_ENABLE"})
+        self.assertEqual(anchors[0x8768]["target_blob_file_offset"], metadata["entry_blob_file_offset"])
+        self.assertEqual(anchors[0x82ac]["literal_value"], override["arm_base_address"])
+        self.assertEqual(anchors[0x82b0]["word"], 0xe580a114)
+        self.assertEqual(anchors[0x82b8]["word"], 0xe5801118)
+        self.assertEqual(anchors[0x82bc]["word"], 0xe5901100)
+        self.assertEqual(anchors[0x82c0]["word"], 0xe3811010)
+        self.assertEqual(anchors[0x82c4]["word"], 0xe5801100)
+        self.assertEqual(anchors[0x8654]["word"], 0xe5d400c5)
+        self.assertEqual(anchors[0x8660]["target_blob_file_offset"], 0x86c4)
+        self.assertEqual(anchors[0x866c]["word"], 0xe3100c01)
+        self.assertEqual(anchors[0x8670]["target_blob_file_offset"], 0x8744)
+
     def test_register_operations_match_rdb_fields_without_inferred_physical_base(self):
         operations = self.mapping()["register_operations"]
         expected = (
             ("BOP_AES_CTRL", 0x10510000, 0x510000, [0x78ac, 0x78c0], ["START_ENCRYPTION_SCRAMBLE"]),
+            ("MISC2_GLOBAL_CTRL", 0x10502100, 0x502100, [0x82c4, 0x8778],
+             ["META_DMA_ENABLE", "BVN_YUY2_MODE"]),
             ("MFD_PIC_FEED_CMD", 0x10540030, 0x540030, [0x78cc], ["START_FEED"]),
             ("MFD_DISP_HSIZE", None, 0x540014, [0x1ca8], ["VALUE"]),
             ("DNR_DNR_TOP_CTRL", 0x10540404, 0x540404, [0x82e0], ["DNR_ENABLE"]),
@@ -2550,14 +2617,14 @@ class FirmwareArcMetadataTests(unittest.TestCase):
             "6ed302c739450fd7302bb65a388a74dc934e914bfbb3c67f26304647a2bca012",
             "3af44df1c156f3bf1a37143fe90add3522fefe38c00f3e66c10856a3068cde8f",
             "030f9251375a2be0f8acba2345b8798c8d4bb2014fda249e834d724cc07c5507",
-            "e3a46f099d799f90cd010c0d98ce761f7ac9fb6a4c285d2aaefa3a3fd110fdd1",
-            "29da36be673244c286519803acf895317fac610d594111755ce73bb9c58ea3b5",
-            "b1a940039d6d7ec5248bfe24ea2d7718ddc9e2f9a39346f905402ff2a78d9b1e",
-            "4120185dd8f00e260053a965687ef3bc96857e732905dd03e547e50c92b002a3",
-            "8b517ca02532863fbb3f2101c29d843f5461ea13bbc599d1ca33f6a089454ccd",
-            "fa125e40aaa34385144d8182a2538d3074d90de20b4a5ec0d8d2403c55b52c7f",
-            "282160051e615124ae3469447740840444ab90b0e31bb5017d6dcab6d765ccc1",
-            "c5d5d1824dfabae06acc8d886a638a0fa08c26c48c07f6caae38fcbaf0297707")
+            "7fb69850502060c3700df3093079ee176424dbde7c1f60c7b4604ed1674e3439",
+            "d8c1bbccf0e5bae983f18e2ffee55e8bd66ef5a04a94372711fe0200e9b72b8d",
+            "c7fe999ba046716fc15c618d6cf8ddeb777cfd92dda87a997f560cef408619bf",
+            "34d3e83bb1af5e96bc77d2f3f6a402068b6039beeb008d94b4819cfde6892069",
+            "e7cb93bd11b7bacff92deb75e1659040d604a8a77b14cb510ac956dcbc88258a",
+            "9807cd8216d95b67feba7201e998a2b3403fb405b98d524c2b1e949dd15e2683",
+            "1bdfd81c158d5ff60f1ad8e36d042cb66f4f180d7e8f0a07898efbb8b55fc1c6",
+            "0ed230b2a95f37b419fff3933aa5c200ecd83f88a2c756fff1dc9a20c77d26ba")
         for mask in range(16):
             flags = []
             if mask & 1:
@@ -2745,14 +2812,14 @@ class FirmwareCscCommandTests(unittest.TestCase):
             "6ed302c739450fd7302bb65a388a74dc934e914bfbb3c67f26304647a2bca012",
             "3af44df1c156f3bf1a37143fe90add3522fefe38c00f3e66c10856a3068cde8f",
             "030f9251375a2be0f8acba2345b8798c8d4bb2014fda249e834d724cc07c5507",
-            "e3a46f099d799f90cd010c0d98ce761f7ac9fb6a4c285d2aaefa3a3fd110fdd1",
-            "29da36be673244c286519803acf895317fac610d594111755ce73bb9c58ea3b5",
-            "b1a940039d6d7ec5248bfe24ea2d7718ddc9e2f9a39346f905402ff2a78d9b1e",
-            "4120185dd8f00e260053a965687ef3bc96857e732905dd03e547e50c92b002a3",
-            "8b517ca02532863fbb3f2101c29d843f5461ea13bbc599d1ca33f6a089454ccd",
-            "fa125e40aaa34385144d8182a2538d3074d90de20b4a5ec0d8d2403c55b52c7f",
-            "282160051e615124ae3469447740840444ab90b0e31bb5017d6dcab6d765ccc1",
-            "c5d5d1824dfabae06acc8d886a638a0fa08c26c48c07f6caae38fcbaf0297707",
+            "7fb69850502060c3700df3093079ee176424dbde7c1f60c7b4604ed1674e3439",
+            "d8c1bbccf0e5bae983f18e2ffee55e8bd66ef5a04a94372711fe0200e9b72b8d",
+            "c7fe999ba046716fc15c618d6cf8ddeb777cfd92dda87a997f560cef408619bf",
+            "34d3e83bb1af5e96bc77d2f3f6a402068b6039beeb008d94b4819cfde6892069",
+            "e7cb93bd11b7bacff92deb75e1659040d604a8a77b14cb510ac956dcbc88258a",
+            "9807cd8216d95b67feba7201e998a2b3403fb405b98d524c2b1e949dd15e2683",
+            "1bdfd81c158d5ff60f1ad8e36d042cb66f4f180d7e8f0a07898efbb8b55fc1c6",
+            "0ed230b2a95f37b419fff3933aa5c200ecd83f88a2c756fff1dc9a20c77d26ba",
             "3553b947d6948d11fc48b2994ca29599caa8a70ff7b79d7ffc2639901c9aedfe",
             "6da05d4dca3424ef76e9359ed7ab3228d5c2622dcd1573b62bc88d2b0c3f2e7b",
             "6946e167d1dfbb01632025d014ebd76284aafcf58f79099881552c6fc80a4964",
@@ -2761,14 +2828,14 @@ class FirmwareCscCommandTests(unittest.TestCase):
             "eddf4aa514e9482a498eb30e0b17971f3bea17237be49fed9fa944b9285143c0",
             "6f47641210af11c430a49efb3902a8ccc2aed02c1a42949597983bdd91140290",
             "b3e03713ff8755b3af019f5e6e15d77e8e1321f9afc888d6c6d83d4ee483eb6e",
-            "364c6ef9941888f688e41bd9a5183f9da3983c9790c77ab890ab80cceb5939ba",
-            "b3f0ef6dffee5ae2aa6bdf26b0cc65adb6361c4974e6218c9a467786823eba77",
-            "70a85da6ec14d6da170f43d05ebc1157cf8df8481a88b1c57ca798f749474e77",
-            "b1d0a05a83ea675acc44763ceecccfdfeed8330e5a781e925a295a553d6133df",
-            "58275e64de4fb470b04ff0c213c97bb7e8a465c9d786551816cdbdbb3d5f843e",
-            "55a12601d03051d002dc7057e1c8d74537c17253235be6fcaad09d4f41a37235",
-            "51b4c084a2aff04d8efe6ebb9045a3bac91d27a8c7622a107646a3d669181a08",
-            "ee0d3c8d38b912c2e8806b085c9dd8761aa5f70894971aba7e4b63cb9aef2280")
+            "d058286d718ca6d27e80cffcaf028aa44847dc103e8c567f98718ab9a26b55de",
+            "f7a3af90e6f2fc3de1fd2c48a1c32235e844f9873b59a41cd42cc08137ce5658",
+            "3a6683222214b3a2cad6031a036becfe1ae121f6e26041b30bdf0fee738327e2",
+            "b197c528b0061e1ef3b2d98c624c65265426e140511f6c2ff022175e070d96dd",
+            "02b93216341ec26e79edd6887b4aac4dc9a0c5eead702571dd29702d5c3c096b",
+            "65eb9a8dc62a5ae91cb9fb0877c11bbb1657968dc9948d2b12b47c8d1e802ba5",
+            "bd4c16d9a9a7b9a553f60373734483f9cb7d27cfbe45f9b1cd64dfb784896e2f",
+            "e63010ae37bb492b5029f346e5c16d24e9ea753473edbaf5f988977fc1279a93")
         for mask in range(32):
             flags = []
             if mask & 1:
@@ -3009,7 +3076,7 @@ class FirmwareCommandBufferBridgeTests(unittest.TestCase):
             with self.subTest(mask=mask):
                 self.assertEqual(enriched.pop("command_buffer_bridge"), mapping)
                 self.assertEqual(enriched, plain)
-        self.assertEqual(aggregate.hexdigest(), "cc146f7fe9d3120a786986e7bfa0d6a0c72ee87354ec0ed9b390c72879736d15")
+        self.assertEqual(aggregate.hexdigest(), "905202fd8e52ff3b773d4d5ae3d465bef4e8314244ddb7b07e24b805ca87da78")
         self.assertEqual(hashlib.sha256(BLOB.read_bytes()).hexdigest(), MAP.BUNDLED_SHA256)
 
     def test_bridge_cli_flag_combinations_and_repeated_stdout(self):
@@ -3739,7 +3806,7 @@ class FirmwareInnerDescriptorTests(unittest.TestCase):
                 self.assertEqual(enriched, plain)
         # Snapshot includes the opt-in MFD source field; its legacy projection
         # is independently pinned across all 256 combinations below.
-        self.assertEqual(aggregate.hexdigest(), "be533551365efd90642f2ff3b2c6ef407fc15bf382933304d9e75556552ed72d")
+        self.assertEqual(aggregate.hexdigest(), "14013a9876169ffca8292f35a5b79f1526f0c67182d1c906a195456f1b766e7d")
 
     def test_inner_descriptor_cli_stdout_determinism_and_combinations(self):
         combinations = [[], ["--references", "--symbol", "ReadLine"],
@@ -4026,7 +4093,7 @@ class FirmwareMfdSourceTests(unittest.TestCase):
             aggregate.update(hashlib.sha256(stdout).digest())
         # MFD-free output projection with validated current driver-source anchors.
         self.assertEqual(aggregate.hexdigest(),
-                         "077e5779497ce4ef730585a42bb17585a7bddd90d9d608ad43ca32809bc3da45")
+                         "b3353e6c24230534ddd90df79f433541f76e373cc315613027ee01d2b9fe8e92")
 
     def test_new_map_is_default_off_and_public_pin_precedes_parsing(self):
         with mock.patch.object(MAP, "_mfd_source_map", side_effect=AssertionError("unexpected source map")):
@@ -4888,7 +4955,7 @@ class FirmwareStockHostCommandTests(unittest.TestCase):
                 aggregate.update(hashlib.sha256(stdout).digest())
         # Public-output snapshot excludes private helpers.
         self.assertEqual(aggregate.hexdigest(),
-                         "33f775ebb6fc935321506ac22faeb48857f2e40b1ba85f114f1d77570b4348b6")
+                         "8654de8eecb4a6cbe2b2408a41f47e75141a33304aac50734f8d545fbd32672e")
 
 
 class FirmwarePpbBankContractTests(unittest.TestCase):
@@ -6038,7 +6105,7 @@ class FirmwarePpbBankContractTests(unittest.TestCase):
                 aggregate.update(hashlib.sha256(stdout).digest())
         # Shared public-output snapshot for private-helper isolation.
         self.assertEqual(aggregate.hexdigest(),
-                         "33f775ebb6fc935321506ac22faeb48857f2e40b1ba85f114f1d77570b4348b6")
+                         "8654de8eecb4a6cbe2b2408a41f47e75141a33304aac50734f8d545fbd32672e")
 
 
 class FirmwareFreshInitCausalTests(unittest.TestCase):
@@ -7014,7 +7081,7 @@ class FirmwareFreshInitCausalTests(unittest.TestCase):
                 aggregate.update(bytes([mask]))
                 aggregate.update(hashlib.sha256(stdout).digest())
         self.assertEqual(aggregate.hexdigest(),
-                         "33f775ebb6fc935321506ac22faeb48857f2e40b1ba85f114f1d77570b4348b6")
+                         "8654de8eecb4a6cbe2b2408a41f47e75141a33304aac50734f8d545fbd32672e")
         with mock.patch.object(sys, "stdout", new_callable=io.StringIO) as output, \
                 mock.patch.object(sys, "stderr", new_callable=io.StringIO), \
                 self.assertRaises(SystemExit) as error:
