@@ -4958,6 +4958,169 @@ class FirmwareStockHostCommandTests(unittest.TestCase):
                          "8654de8eecb4a6cbe2b2408a41f47e75141a33304aac50734f8d545fbd32672e")
 
 
+class FirmwareDebugMechanismTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.data = MAP.read_firmware(BLOB)
+        cls.payload = cls.data[:-MAP.TRAILER_SIZE]
+        cls.base = MAP.analyze(cls.data, MAP._DEBUG_MECHANISM_SYMBOLS)
+        cls.images = cls.base["images"]
+        cls.report = MAP._debug_mechanism_map(cls.payload, cls.images)
+
+    def test_public_debug_setup_is_ack_log_not_transport_configuration(self):
+        public = self.report["public_c011_debug_setup"]
+        self.assertEqual((public["command"], public["case_blob_file_offset"],
+                          public["handler_blob_file_offset"], public["classification"]),
+                         (0x73763006, 0x62ac, 0x5a08, "ack_only"))
+        self.assertEqual(public["request_reads"], [{"byte_offset": 4, "width": 4}])
+        self.assertEqual(public["reply_writes"], [
+            {"byte_offset": 4, "width": 4, "word_index": 1},
+            {"byte_offset": 8, "width": 4, "word_index": 2}])
+        self.assertEqual(public["message"],
+                         "[fw] SMP_CmdIf_DebugSetup(): NOT Implemented\n")
+        self.assertFalse(public["direct_uart_configuration"])
+        self.assertTrue(public["logging_calls_arm_uart_formatter"])
+        self.assertFalse(public["uart_bytes_emitted_unconditionally"])
+        separation = self.report["separation"]
+        self.assertFalse(separation["public_command_is_uart_configuration"])
+        self.assertTrue(separation["public_command_logging_reaches_arm_uart_formatter"])
+        self.assertTrue(separation["public_command_uart_output_is_conditional"])
+
+    def test_arm_uart_bootstrap_mmio_and_router_are_a_distinct_pinned_path(self):
+        arm = self.report["arm_uart"]
+        self.assertEqual(arm["architecture"], "A32")
+        self.assertEqual(arm["bootstrap_call"]["target_blob_file_offset"], 0xac1c)
+        self.assertEqual(arm["uart_setup_call"]["target_blob_file_offset"], 0xadf0)
+        self.assertEqual((arm["firmware_mmio_base"], arm["register_offsets"]),
+                         (0x100f3000, {"data": 0, "control": 4, "status": 8}))
+        self.assertEqual((arm["bootstrap_input_clock_hz"], arm["bootstrap_baud_rate"]),
+                         (108000000, 115200))
+        self.assertEqual((arm["pin_mux_base"], arm["pin_mux_offset"], arm["pin_mux_value"]),
+                         (0x10404000, 0x100, 0x00111111))
+        self.assertEqual((arm["router_offset"], arm["router_value"]), (0x21c, 0x321))
+        self.assertEqual(arm["router_ports"], [
+            {"port": 0, "source": "ARM", "selector": 1},
+            {"port": 1, "source": "AVD0_OL", "selector": 2},
+            {"port": 2, "source": "AVD0_IL", "selector": 3}])
+        self.assertEqual(arm["debug_setup_log_call"]["target_blob_file_offset"], 0x203c4)
+        self.assertEqual(arm["log_formatter_call"]["target_blob_file_offset"], 0xafa0)
+        self.assertEqual(arm["formatter_disabled_skip"]["target_blob_file_offset"], 0xafdc)
+        self.assertEqual(arm["formatter_output_call"]["target_blob_file_offset"], 0xaf5c)
+        self.assertEqual(arm["formatter_enable_byte_address"], 0xd2210)
+        self.assertTrue(arm["formatter_output_is_enable_gated"])
+
+    def test_outer_inner_uart_and_outer_dram_log_symbols_remain_separate(self):
+        arc = self.report["arc_uart"]
+        self.assertEqual((arc["outer_image_index"], arc["inner_image_index"]), (0, 1))
+        outer = {symbol["name"]: symbol for symbol in arc["outer_symbols"]}
+        inner = {symbol["name"]: symbol for symbol in arc["inner_symbols"]}
+        self.assertEqual(set(outer), {"Arc_UartInit", "Arc_UartPoll", "ArcGetc", "ArcPutc",
+                                     "ReadLine", "MatchKeyword", "CmdPeek", "ArcCommandBuffer"})
+        self.assertEqual(set(inner), {"Arc_UartInit", "Arc_UartPoll", "ArcGetc", "ArcPutc",
+                                     "ReadLine", "MatchKeyword", "CmdPeek"})
+        self.assertEqual((outer["Arc_UartInit"]["elf_virtual_address"],
+                          outer["Arc_UartInit"]["blob_file_offset"]), (0x23e84, 0x46a18))
+        self.assertEqual((inner["Arc_UartInit"]["elf_virtual_address"],
+                          inner["Arc_UartInit"]["blob_file_offset"]), (0x41104, 0xb8905))
+        self.assertFalse(arc["symbol_identity_proves_runtime_accessibility"])
+        self.assertFalse(arc["symbol_identity_proves_accepted_command_syntax"])
+
+        dram = self.report["dram_log_debug_commands"]
+        self.assertEqual(dram["owner_image_index"], 0)
+        self.assertEqual([(symbol["name"], symbol["blob_file_offset"], symbol["size"])
+                          for symbol in dram["symbols"]], [
+            ("CmdChannelDramLogControl", 0x48138, 344),
+            ("CmdChannelDramLogCmd", 0x48290, 168),
+            ("WritetoDramLogBuffer", 0x32e30, 116)])
+        self.assertFalse(dram["same_entry_as_public_c011_handler"])
+        self.assertFalse(dram["reachability_from_public_debug_setup_established"])
+        self.assertFalse(dram["activation_or_return_buffer_path_established"])
+
+    def test_scope_refuses_runtime_and_call_graph_claims(self):
+        scope = self.report["scope"]
+        self.assertTrue(scope["exact_bundled_regions"])
+        self.assertTrue(scope["complete_public_selector_domain"])
+        self.assertTrue(scope["direct_debug_setup_footprint"])
+        self.assertTrue(scope["retained_symbol_identity"])
+        for field in ("complete_arm_call_graph", "complete_arc_call_graph",
+                      "runtime_uart_accessibility", "live_uart_output",
+                      "accepted_arc_command_syntax", "dram_log_runtime_activation"):
+            self.assertFalse(scope[field], field)
+        joined = " ".join(self.report["assumptions"])
+        self.assertIn("symbols identify stored image objects only", joined)
+        self.assertIn("not a live routing observation", joined)
+
+    def test_every_region_pin_rejects_before_any_interpretation(self):
+        for role, offset, _, _ in MAP._DEBUG_MECHANISM_REGIONS:
+            changed = bytearray(self.payload)
+            changed[offset] ^= 1
+            with self.subTest(role=role), \
+                    mock.patch.object(MAP, "_a32_branch",
+                                      side_effect=AssertionError("decoded before complete pin gate")), \
+                    mock.patch.object(MAP, "_stock_host_command_closure",
+                                      side_effect=AssertionError("stock model ran before complete pin gate")), \
+                    self.assertRaises(MAP.FormatError):
+                MAP._debug_mechanism_map(changed, self.images)
+
+    def test_stock_debug_handler_pin_rejects_before_branch_interpretation(self):
+        changed = bytearray(self.payload)
+        changed[0x5a20] ^= 1
+        with mock.patch.object(MAP, "_stock_host_dispatch_domains",
+                               side_effect=AssertionError("stock selector decoded before pin gate")), \
+                mock.patch.object(MAP, "_stock_host_handler_footprints",
+                                  side_effect=AssertionError("stock handler decoded before pin gate")), \
+                mock.patch.object(MAP, "_a32_branch",
+                                  side_effect=AssertionError("DEBUG_SETUP branch decoded before pin gate")), \
+                self.assertRaises(MAP.FormatError):
+            MAP._debug_mechanism_map(changed, self.images)
+
+    def test_elf_identity_missing_duplicate_and_changed_symbols_reject(self):
+        cases = []
+        changed = json.loads(json.dumps(self.images))
+        changed[0]["entry_virtual_address"] ^= 4
+        cases.append(("identity", changed))
+        changed = json.loads(json.dumps(self.images))
+        changed[0]["symbols"] = [symbol for symbol in changed[0]["symbols"]
+                                 if symbol["name"] != "Arc_UartInit"]
+        cases.append(("missing", changed))
+        changed = json.loads(json.dumps(self.images))
+        changed[0]["symbols"].append(dict(next(symbol for symbol in changed[0]["symbols"]
+                                                if symbol["name"] == "Arc_UartInit")))
+        cases.append(("duplicate", changed))
+        changed = json.loads(json.dumps(self.images))
+        next(symbol for symbol in changed[0]["symbols"]
+             if symbol["name"] == "CmdChannelDramLogCmd")["size"] += 4
+        cases.append(("changed", changed))
+        for name, images in cases:
+            with self.subTest(name=name), self.assertRaises(MAP.FormatError):
+                MAP._debug_mechanism_map(self.payload, images)
+
+    def test_opt_in_report_is_offline_additive_and_baseline_gated(self):
+        before = bytes(self.payload), json.dumps(self.images, sort_keys=True)
+        with mock.patch("builtins.open", side_effect=AssertionError("unexpected file read")), \
+                mock.patch.object(MAP.os, "open", side_effect=AssertionError("unexpected device open")), \
+                mock.patch.object(subprocess, "run", side_effect=AssertionError("unexpected command")), \
+                mock.patch.object(subprocess, "Popen", side_effect=AssertionError("unexpected process")):
+            self.assertEqual(MAP._debug_mechanism_map(self.payload, self.images), self.report)
+        self.assertEqual(before, (bytes(self.payload), json.dumps(self.images, sort_keys=True)))
+        with mock.patch.object(MAP, "_debug_mechanism_map",
+                               side_effect=AssertionError("not opted in")):
+            plain = MAP.analyze(self.data)
+        self.assertNotIn("debug_mechanisms", plain)
+        enriched = MAP.analyze(self.data, ("Missing",), debug_mechanisms=True)
+        self.assertEqual(enriched["debug_mechanisms"], self.report)
+        self.assertIn("Missing", enriched["images"][0]["missing_symbols"])
+        with self.assertRaises(MAP.FormatError):
+            analyze_fixture(fixture(), debug_mechanisms=True)
+
+    def test_cli_emits_the_opt_in_report(self):
+        with mock.patch.object(sys, "stdout", new_callable=io.StringIO) as output, \
+                mock.patch.object(sys, "stderr", new_callable=io.StringIO):
+            self.assertEqual(MAP.main([str(BLOB), "--debug-mechanisms"]), 0)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["debug_mechanisms"], self.report)
+
+
 class FirmwarePpbBankContractTests(unittest.TestCase):
     # Independently checked against the outer ELF symbol/section tables and
     # GNU 2.23.2 disassembly. Addresses are ARC ELF VMAs, never ARM offsets.

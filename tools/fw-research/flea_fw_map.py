@@ -800,6 +800,31 @@ _STOCK_HOST_COMMAND_REGIONS = (
     ("start_stack_output_prefix", 0x1bf04, 40, "3a16b7e9650678acffc3ddd927eeb2129bb621aceb9614109c1ef467c6dff4db"),
     ("start_stack_output_literal", 0x1bbd4, 4, "e0a38388779be070015cf72408ffbb625cb9f356f4ce0f9a215b7dd3287edc0d"),
 )
+_DEBUG_MECHANISM_SYMBOLS = (
+    "Arc_UartInit", "Arc_UartPoll", "ArcGetc", "ArcPutc", "ArcCommandBuffer",
+    "ReadLine", "MatchKeyword", "CmdPeek", "CmdChannelDramLogControl",
+    "CmdChannelDramLogCmd", "WritetoDramLogBuffer",
+)
+_DEBUG_MECHANISM_REGIONS = (
+    ("bootstrap_uart_call", 0x2cbf0, 4,
+     "69792597d0c7167e77ec8d6899e17d9bb9022b3de7600f8fadf13200cd816080"),
+    ("arm_router_setup", 0xac1c, 96,
+     "b76a1fecbf1c0a6125cc93096c013f74fe99c5968cc0a7e139795cf85e55b3ab"),
+    ("arm_uart_setup", 0xadf0, 84,
+     "51caea5ff8b3f1f4385c3133cdee1a4a6d29958f6e0de0a68e15a730c1087d61"),
+    ("arm_uart_io", 0xaed0, 208,
+     "301368f7891299acca340c89cc262ecbb7d284eb15434092f49dfd107c945d01"),
+    ("arm_uart_formatter", 0xafa0, 68,
+     "d3593a0a631af7cfa37b6a3e0ae522c3723a78d0e55c3ee091bb2d9954736b5e"),
+    ("arm_uart_literals", 0xb034, 16,
+     "bee7654d7dea609c50f097f68a13c9738da2610de08a898b59a6aa7b123e5a95"),
+    ("debug_setup_message", 0x5b34, 46,
+     "5c733c81aac249ef34cf1361163e392ffe4a105c418ab8054b9a9591202e1867"),
+    ("arm_log_bridge", 0x203c4, 20,
+     "6d05751328b98f93b9248337840bdf8481fdcd5593f9506d3bffa908fcb815eb"),
+)
+MAX_DEBUG_MECHANISM_REGIONS = 9
+MAX_DEBUG_MECHANISM_BYTES = 1024
 _MFD_SOURCE_REGIONS = (
     ("source_address", 0x1918,
      "f0402de914d04de20070a0e10140a0e1f8219fe55c10d4e5810081e00031b2e7050092e90c008de510208de508308de5"
@@ -5098,6 +5123,207 @@ def _stock_host_command_closure(payload):
                        "scope": "No explicit bounded caller raw-source-plane lease in this stock dispatch contract; source-plane lifecycle and runtime ownership are not proven. Not silicon incapability, arbitrary host-buffer absence, whole-firmware ownership, or standalone execution."}}
 
 
+def _debug_mechanism_map(payload, images):
+    """Separate pinned stock debug mechanisms without claiming live access."""
+    if len(payload) != BUNDLED_SIZE - TRAILER_SIZE:
+        raise FormatError("debug-mechanism payload size does not match the bundled baseline")
+    identities = [(0x2ea60, 0x79dd8, 32, "little", 45, 2, 0, 0x3a678),
+                  (0x79dd8, 0xcfbb0, 32, "little", 45, 2, 0, 0x49f68)]
+    fields = ("blob_file_offset", "blob_file_end", "class", "endianness",
+              "machine", "elf_type", "flags", "entry_virtual_address")
+    if [tuple(image.get(field) for field in fields) for image in images] != identities:
+        raise FormatError("debug-mechanism ELF identities do not match the bundled baseline")
+
+    regions = _DEBUG_MECHANISM_REGIONS
+    total = sum(size for _, _, size, _ in regions)
+    if len(regions) > MAX_DEBUG_MECHANISM_REGIONS or total > MAX_DEBUG_MECHANISM_BYTES:
+        raise FormatError("debug-mechanism validation budget exceeded")
+    validated = []
+    # Validate every selected byte before interpreting branches, literals,
+    # messages, register writes or retained symbol identities.
+    for role, offset, size, expected in regions:
+        actual = bounded(payload, offset, size, "debug-mechanism region")
+        if hashlib.sha256(actual).hexdigest() != expected:
+            raise FormatError(f"debug-mechanism region {role} does not match the baseline")
+        validated.append({"role": role, "blob_file_offset": offset, "size": size,
+                          "sha256": expected})
+
+    # This validates the complete stock-command pin set before the DEBUG_SETUP
+    # branch below is decoded. Its own helper has the same validate-then-model
+    # ordering for the selector and handler footprint.
+    stock = _stock_host_command_closure(payload)
+
+    expected_symbols = (
+        {
+            "Arc_UartInit": (0x23e84, 0x46a18, 156, 2, ".text"),
+            "Arc_UartPoll": (0x23f20, 0x46ab4, 28, 2, ".text"),
+            "ArcGetc": (0x23f9c, 0x46b30, 40, 2, ".text"),
+            "ArcPutc": (0x8000, 0x32ea4, 144, 2, ".core_critical_code_picture"),
+            "ArcCommandBuffer": (0x23e48, 0x469dc, 12, 2, ".text"),
+            "ReadLine": (0x27ae4, 0x4a678, 292, 2, ".text"),
+            "MatchKeyword": (0x27c08, 0x4a79c, 108, 2, ".text"),
+            "CmdPeek": (0x28e84, 0x4ba18, 232, 2, ".text"),
+            "CmdChannelDramLogControl": (0x255a4, 0x48138, 344, 2, ".text"),
+            "CmdChannelDramLogCmd": (0x256fc, 0x48290, 168, 2, ".text"),
+            "WritetoDramLogBuffer": (0x7f8c, 0x32e30, 116, 2,
+                                     ".core_critical_code_picture"),
+        },
+        {
+            "Arc_UartInit": (0x41104, 0xb8905, 156, 2, ".text"),
+            "Arc_UartPoll": (0x411a0, 0xb89a1, 28, 2, ".text"),
+            "ArcGetc": (0x41234, 0xb8a35, 40, 2, ".text"),
+            "ArcPutc": (0x411bc, 0xb89bd, 32, 2, ".text"),
+            "ReadLine": (0x4254c, 0xb9d4d, 292, 2, ".text"),
+            "MatchKeyword": (0x42670, 0xb9e71, 108, 2, ".text"),
+            "CmdPeek": (0x42c7c, 0xba47d, 232, 2, ".text"),
+        },
+    )
+    inventories = []
+    names = set(_DEBUG_MECHANISM_SYMBOLS)
+    for image, expected in zip(images, expected_symbols):
+        selected = [symbol for symbol in image["symbols"] if symbol["name"] in names]
+        if len({symbol["name"] for symbol in selected}) != len(selected):
+            raise FormatError("debug-mechanism symbol name is duplicated")
+        actual = {symbol["name"]: (symbol["elf_virtual_address"], symbol["blob_file_offset"],
+                                    symbol["size"], symbol["type"], symbol["section"])
+                  for symbol in selected}
+        if actual != expected:
+            raise FormatError("debug-mechanism symbols do not match the bundled baseline")
+        inventories.append({name: {"elf_virtual_address": values[0],
+                                   "blob_file_offset": values[1], "size": values[2],
+                                   "type": values[3], "section": values[4]}
+                            for name, values in expected.items()})
+
+    branches = {
+        "bootstrap_to_router": _a32_branch(payload, 0x2cbf0, link=True),
+        "router_to_uart_setup": _a32_branch(payload, 0xac54, link=True),
+        "debug_setup_to_log": _a32_branch(payload, 0x5a20, link=True),
+        "log_to_arm_uart_formatter": _a32_branch(payload, 0x203d0, link=True),
+        "formatter_disabled_skip": _a32_branch(payload, 0xafb8, condition=0),
+        "formatter_to_uart_puts": _a32_branch(payload, 0xafd4, link=True),
+    }
+    expected_targets = {"bootstrap_to_router": 0xac1c, "router_to_uart_setup": 0xadf0,
+                        "debug_setup_to_log": 0x203c4,
+                        "log_to_arm_uart_formatter": 0xafa0,
+                        "formatter_disabled_skip": 0xafdc,
+                        "formatter_to_uart_puts": 0xaf5c}
+    if any(branches[name]["target_blob_file_offset"] != target
+           for name, target in expected_targets.items()):
+        raise FormatError("debug-mechanism branch target does not match the baseline")
+    literals = {offset: _bootstrap_word(payload, offset)
+                for offset in (0xac6c, 0xac70, 0xac74, 0xac78,
+                               0xb034, 0xb038, 0xb03c, 0xb040)}
+    if literals != {0xac6c: 0x00111111, 0xac70: 0x10404000,
+                    0xac74: 115200, 0xac78: 108000000,
+                    0xb034: 0x100f3000, 0xb038: 0xd2250,
+                    0xb03c: 0x10404000, 0xb040: 0xd2210}:
+        raise FormatError("debug-mechanism literal does not match the baseline")
+
+    routes = [route for route in stock["dispatch"]["routes"]
+              if route["command"] == 0x73763006]
+    handlers = [handler for handler in stock["handlers"]
+                if handler["entry_blob_file_offset"] == 0x5a08]
+    if len(routes) != 1 or len(handlers) != 1:
+        raise FormatError("DEBUG_SETUP route is missing or ambiguous")
+    route, handler = routes[0], handlers[0]
+    if ((route["case_blob_file_offset"], route["handler_blob_file_offset"],
+         route["classification"]) != (0x62ac, 0x5a08, "ack_only") or
+            handler["callee_targets"] != [0x203c4] or
+            handler["request_reads"] != [{"byte_offset": 4, "width": 4}] or
+            handler["reply_writes"] != [{"byte_offset": 4, "width": 4, "word_index": 1},
+                                         {"byte_offset": 8, "width": 4, "word_index": 2}] or
+            not handler["direct_request_reply_only"]):
+        raise FormatError("DEBUG_SETUP direct footprint does not match the baseline")
+    message = bounded(payload, 0x5b34, 46, "DEBUG_SETUP message")
+    if not message.endswith(b"\0"):
+        raise FormatError("DEBUG_SETUP message is not terminated")
+
+    def records(inventory, selected_names):
+        return [{"name": name, **inventory[name]} for name in selected_names]
+
+    uart_names = ("Arc_UartInit", "Arc_UartPoll", "ArcGetc", "ArcPutc")
+    parser_names = ("ReadLine", "MatchKeyword", "CmdPeek")
+    dram_names = ("CmdChannelDramLogControl", "CmdChannelDramLogCmd",
+                  "WritetoDramLogBuffer")
+    return {
+        "schema_version": 1,
+        "kind": "stock-debug-mechanism-separation",
+        "validation": {"region_count": len(validated), "bytes": total,
+                       "regions": validated, "elf_images": len(images)},
+        "public_c011_debug_setup": {
+            "command": 0x73763006, "case_blob_file_offset": 0x62ac,
+            "handler_blob_file_offset": 0x5a08, "classification": "ack_only",
+            "request_reads": handler["request_reads"],
+            "reply_writes": handler["reply_writes"],
+            "message_blob_file_offset": 0x5b34,
+            "message": message[:-1].decode("ascii"),
+            "logging_bridge_blob_file_offset": 0x203c4,
+            "direct_uart_configuration": False,
+            "logging_calls_arm_uart_formatter": True,
+            "uart_bytes_emitted_unconditionally": False,
+        },
+        "arm_uart": {
+            "architecture": "A32", "bootstrap_call": branches["bootstrap_to_router"],
+            "router_setup_entry_blob_file_offset": 0xac1c,
+            "uart_setup_call": branches["router_to_uart_setup"],
+            "uart_setup_entry_blob_file_offset": 0xadf0,
+            "firmware_mmio_base": 0x100f3000,
+            "register_offsets": {"data": 0, "control": 4, "status": 8},
+            "bootstrap_input_clock_hz": 108000000,
+            "bootstrap_baud_rate": 115200,
+            "pin_mux_base": 0x10404000, "pin_mux_offset": 0x100,
+            "pin_mux_value": 0x00111111,
+            "router_offset": 0x21c, "router_value": 0x321,
+            "router_ports": [{"port": 0, "source": "ARM", "selector": 1},
+                             {"port": 1, "source": "AVD0_OL", "selector": 2},
+                             {"port": 2, "source": "AVD0_IL", "selector": 3}],
+            "debug_setup_log_call": branches["debug_setup_to_log"],
+            "log_formatter_call": branches["log_to_arm_uart_formatter"],
+            "formatter_output_call": branches["formatter_to_uart_puts"],
+            "formatter_disabled_skip": branches["formatter_disabled_skip"],
+            "formatter_enable_byte_address": 0xd2210,
+            "formatter_output_is_enable_gated": True,
+            "rdb_headers": ["bchp_arm_uart.h", "bchp_sun_top_ctrl.h"],
+        },
+        "arc_uart": {
+            "architecture": "ARC", "outer_image_index": 0, "inner_image_index": 1,
+            "outer_symbols": records(inventories[0], uart_names + parser_names +
+                                     ("ArcCommandBuffer",)),
+            "inner_symbols": records(inventories[1], uart_names + parser_names),
+            "routed_ports": {"outer": 1, "inner": 2},
+            "symbol_identity_proves_runtime_accessibility": False,
+            "symbol_identity_proves_accepted_command_syntax": False,
+        },
+        "dram_log_debug_commands": {
+            "architecture": "ARC", "owner_image_index": 0,
+            "symbols": records(inventories[0], dram_names),
+            "same_entry_as_public_c011_handler": False,
+            "reachability_from_public_debug_setup_established": False,
+            "activation_or_return_buffer_path_established": False,
+        },
+        "separation": {
+            "public_command_is_uart_configuration": False,
+            "public_command_logging_reaches_arm_uart_formatter": True,
+            "public_command_uart_output_is_conditional": True,
+            "arm_and_arc_uart_implementations_are_distinct": True,
+            "outer_and_inner_arc_uart_images_are_distinct": True,
+            "dram_log_commands_are_outer_arc_symbols": True,
+        },
+        "scope": {
+            "exact_bundled_regions": True, "complete_public_selector_domain": True,
+            "direct_debug_setup_footprint": True, "retained_symbol_identity": True,
+            "complete_arm_call_graph": False, "complete_arc_call_graph": False,
+            "runtime_uart_accessibility": False, "live_uart_output": False,
+            "accepted_arc_command_syntax": False, "dram_log_runtime_activation": False,
+        },
+        "assumptions": [
+            "The public command classification inherits the stock closure's valid-packet, calling-convention and no-undisclosed-alias assumptions.",
+            "Retained ARC function symbols identify stored image objects only; they do not prove execution, UART RX availability or command reachability.",
+            "Firmware register addresses and RDB selector names are static provenance, not a live routing observation.",
+        ],
+    }
+
+
 _PPB_BANK_RELEASE_EDGES = (
     ("returned", "Core_Run", 2, 0x51a4, 0x51a8, 0x3000),
     ("latest", "Core_OrderPIF_ReleaseOnLatest", 4, 0x9280, 0x9284, 0x4000),
@@ -7549,7 +7775,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
             references=False, all_symbols=False, bootstrap=False, picture_output=False,
             arc_metadata=False, csc_command=False, command_buffer_bridge=False, inner_descriptor=False,
             scaler_fir=False, ppb_handoff=False, ppb_source=False, ppb_saved_context=False, ppb_stop_context=False,
-            ppb_fixed_metadata=False, ppb_return_header=False, ppb_bank_ledger=None):
+            ppb_fixed_metadata=False, ppb_return_header=False, ppb_bank_ledger=None,
+            debug_mechanisms=False):
     if len(data) < 24 or len(data) > MAX_FIRMWARE_SIZE or len(data) % 4:
         raise FormatError("invalid BCM70015 firmware size")
     sha256 = hashlib.sha256(data).hexdigest()
@@ -7583,6 +7810,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         raise FormatError("--ppb-return-header requires the exact bundled firmware SHA-256 and size")
     if ppb_bank_ledger is not None and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
         raise FormatError("--ppb-bank-ledger requires the exact bundled firmware SHA-256 and size")
+    if debug_mechanisms and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
+        raise FormatError("--debug-mechanisms requires the exact bundled firmware SHA-256 and size")
     payload = data[:-TRAILER_SIZE]
     length_slot = struct.unpack_from("<I", data, len(payload))[0]
     if length_slot != 16:
@@ -7596,6 +7825,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
     output_budget = MAX_REFERENCE_OUTPUT_BYTES
     metadata_budget = MAX_METADATA_OUTPUT_BYTES
     wanted = set(wanted)
+    if debug_mechanisms:
+        wanted.update(_DEBUG_MECHANISM_SYMBOLS)
     offset = payload.find(b"\x7fELF")
     while offset >= 0:
         if len(images) == 16:
@@ -7679,6 +7910,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         result["ppb_return_header_bridge"] = _ppb_return_header_bridge(payload)
     if ppb_bank_ledger is not None:
         result["ppb_bank_ledger"] = _ppb_bank_decode_ledger(payload, ppb_bank_ledger)
+    if debug_mechanisms:
+        result["debug_mechanisms"] = _debug_mechanism_map(payload, images)
     return result
 
 
@@ -7727,6 +7960,9 @@ def main(argv=None):
     parser.add_argument("--ppb-bank-ledger", nargs=55, metavar="DWORD",
                         type=lambda word: _ppb_bank_u32(int(word, 0), "ledger word"), help=(
         "decode 55 previously captured flag/bank DWORDs; hexadecimal or decimal, offline only, not a lease"))
+    parser.add_argument("--debug-mechanisms", action="store_true", help=(
+        "separate fixed C011 DEBUG_SETUP, ARM/ARC UART and ARC DRAM-log evidence; "
+        "bundled firmware only, not runtime accessibility"))
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-fA-F]{64}", args.expect_sha256):
         parser.error("--expect-sha256 must be 64 hexadecimal digits")
@@ -7736,7 +7972,7 @@ def main(argv=None):
                          args.picture_output, args.arc_metadata, args.csc_command, args.command_buffer_bridge,
                          args.inner_descriptor, args.scaler_fir, args.ppb_handoff, args.ppb_source,
                          args.ppb_saved_context, args.ppb_stop_context, args.ppb_fixed_metadata, args.ppb_return_header,
-                         args.ppb_bank_ledger)
+                         args.ppb_bank_ledger, args.debug_mechanisms)
     except (OSError, FormatError) as error:
         print(f"flea_fw_map: {error}", file=sys.stderr)
         return 1
