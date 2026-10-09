@@ -1049,8 +1049,156 @@ static void ProgressingSyncDoesNotSealAnActiveStream() {
           "active stream sync preserves hardware session ownership");
 }
 
-static void InactiveSyncStillSealsItsExactFinalPicture() {
+static void PrepareLiveTailWithoutReplayHistory(TeardownFixture &fixture) {
+  CrystalHDDecodeReplay::Limits limits;
+  limits.cache_bytes = 8;
+  limits.pictures = 2;
+  fixture.decoder->live_h264 = true;
+  fixture.decoder->replay = CrystalHDDecodeReplay(limits, true);
+  for (uint64_t picture = 1; picture <= 3; ++picture) {
+    const uint64_t timestamp = picture * kTimestampStep;
+    Require(fixture.decoder->replay.Append(timestamp, picture == 1, {1}) &&
+                PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+                    VA_STATUS_SUCCESS,
+            "submit live idle-gap fixture with bounded replay history");
+    if (picture < 3) {
+      fixture.io.outputs.push_back(timestamp);
+      Require(ReceiveAvailable(&fixture.driver, fixture.decoder.get()) ==
+                  VA_STATUS_SUCCESS,
+              "complete old live history before retiring its compressed bytes");
+    }
+  }
+  Require(!fixture.decoder->replay.replayable() &&
+              fixture.decoder->replay.outstanding() == 1 &&
+              !fixture.held[2]->ready && !fixture.held[2]->failed,
+          "live gap starts with lost history and one exact pending tail");
+}
+
+static void InactiveLiveSyncPreservesReferencesUntilActualInputResumes() {
+  TeardownFixture fixture(4);
+  PrepareLiveTailWithoutReplayHistory(fixture);
+  const uint64_t progress = fixture.decoder->transport_progress;
+  const uint64_t generation = fixture.decoder->generation;
+  unsigned int callbacks = 0;
+  fixture.io.on_sleep = [&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(140));
+    ++callbacks;
+    Require(fixture.decoder->transport_progress == progress,
+            "first gap callback returns without any hardware input or output");
+    // The production loop must observe the expired idle grace between these
+    // callbacks; adding input in this first callback would hide the regression.
+    fixture.io.on_sleep = [&] {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      ++callbacks;
+      Require(std::find(fixture.io.events.begin(), fixture.io.events.end(), "seal") ==
+                  fixture.io.events.end() && !fixture.decoder->replay.sealed() &&
+                  fixture.decoder->transport_progress == progress,
+              "an observed input gap must not destroy sole live references");
+      Require(fixture.decoder->replay.Append(4 * kTimestampStep, false, {4}) &&
+                  PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+                      VA_STATUS_SUCCESS,
+              "later input resumes the original live hardware session");
+      fixture.io.outputs.push_back(4 * kTimestampStep);
+      fixture.io.outputs.push_back(3 * kTimestampStep);
+    };
+  };
+  const auto start = std::chrono::steady_clock::now();
+  Require(SyncSurface(&fixture.context, 3) == VA_STATUS_SUCCESS,
+          "requested live tail completes after an actually observed delivery gap");
+  Require(callbacks == 2 && std::chrono::steady_clock::now() - start >=
+                              std::chrono::nanoseconds(kDecodeBatchGraceNs) &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(), "seal") == 0 &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(), "eos") == 0 &&
+              fixture.io.inputs.size() == 4 && fixture.io.open_attempts == 0 &&
+              fixture.decoder->generation == generation && !fixture.io.invalid,
+          "live inactivity neither emits EOS nor reopens or resets the decoder");
+  fixture.CheckPicture(2);
+  fixture.CheckPicture(3);
+}
+
+static void InactiveLiveSyncHonorsFiniteDeadlineWithoutPoisoningPixels() {
+  TeardownFixture fixture;
+  PrepareLiveTailWithoutReplayHistory(fixture);
+  const auto pixels = fixture.held[2]->storage;
+  const uint64_t progress = fixture.decoder->transport_progress;
+  const uint64_t generation = fixture.decoder->generation;
+  unsigned int callbacks = 0;
+  fixture.io.on_sleep = [&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(140));
+    ++callbacks;
+    fixture.io.on_sleep = [&] {
+      ++callbacks;
+      Require(fixture.decoder->transport_progress == progress &&
+                  std::find(fixture.io.events.begin(), fixture.io.events.end(), "seal") ==
+                      fixture.io.events.end(),
+              "finite wait also observes the inactive grace without sealing");
+      std::this_thread::sleep_for(std::chrono::milliseconds(230));
+    };
+  };
+  constexpr uint64_t timeout_ns = 350ULL * 1000 * 1000;
+  const auto start = std::chrono::steady_clock::now();
+  Require(SyncSurface2(&fixture.context, 3, timeout_ns) == VA_STATUS_ERROR_TIMEDOUT,
+          "missing live output still honors the absolute finite caller deadline");
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  Require(callbacks >= 1 && callbacks <= 2 &&
+              elapsed >= std::chrono::nanoseconds(timeout_ns) &&
+              elapsed < std::chrono::seconds(2) &&
+              !fixture.held[2]->ready && !fixture.held[2]->failed &&
+              fixture.held[2]->storage == pixels && !fixture.decoder->replay.failed() &&
+              !fixture.decoder->replay.sealed() &&
+              fixture.decoder->generation == generation && fixture.io.open_attempts == 0 &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(), "eos") == 0,
+          "finite timeout preserves live references and the incomplete pixel identity");
+  fixture.io.on_sleep = {};
+  fixture.io.outputs.push_back(3 * kTimestampStep);
+  Require(SyncSurface(&fixture.context, 3) == VA_STATUS_SUCCESS && !fixture.io.invalid,
+          "actual output can complete on the same session after a finite timeout");
+  fixture.CheckPicture(2);
+}
+
+static void ExplicitLiveContextCloseStillDrainsItsExactTail() {
+  TeardownFixture fixture;
+  PrepareLiveTailWithoutReplayHistory(fixture);
+  Require(DestroyContext(&fixture.context, 1) == VA_STATUS_SUCCESS,
+          "explicit live close still emits EOS after replay history retires");
+  const auto eos = std::find(fixture.io.events.begin(), fixture.io.events.end(), "eos");
+  const auto stop = std::find(fixture.io.events.begin(), fixture.io.events.end(), "stop");
+  Require(std::count(fixture.io.events.begin(), fixture.io.events.end(), "seal") == 1 &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(), "eos") == 1 &&
+              eos < stop && fixture.decoder->retired && fixture.decoder->pending.empty() &&
+              fixture.driver.contexts.count(1) == 0 && fixture.io.open_attempts == 0 &&
+              !fixture.io.invalid,
+          "explicit EOS and actual tail output precede releasing the hardware session");
+  fixture.CheckPicture(2);
+}
+
+static void ActualIdrRestoresAutomaticLiveTailDrain() {
+  TeardownFixture fixture(4);
+  PrepareLiveTailWithoutReplayHistory(fixture);
+  Require(fixture.decoder->replay.Append(4 * kTimestampStep, true, {0, 0, 1, 0x65}) &&
+              PumpDecodeInput(&fixture.driver, fixture.decoder.get()) == VA_STATUS_SUCCESS,
+          "submit an actual fresh IDR while preserving the old pending tail");
+  fixture.io.outputs.push_back(3 * kTimestampStep);
+  Require(ReceiveAvailable(&fixture.driver, fixture.decoder.get()) == VA_STATUS_SUCCESS &&
+              fixture.decoder->replay.replayable(),
+          "old tail completion restores intact replay from the actual new IDR");
+  Require(SyncSurface(&fixture.context, 4) == VA_STATUS_SUCCESS &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(), "seal") == 1 &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(), "eos") == 1 &&
+              fixture.io.open_attempts == 0 && !fixture.io.invalid,
+          "live mode may seal again once actual retained IDR history is safe");
+  fixture.CheckPicture(2);
+  fixture.CheckPicture(3);
+}
+
+static void InactiveSyncStillSealsItsExactFinalPicture(bool live = false) {
   TeardownFixture fixture(1);
+  if (live) {
+    fixture.decoder->live_h264 = true;
+    fixture.decoder->replay = CrystalHDDecodeReplay(true);
+    Require(fixture.decoder->replay.Append(kTimestampStep, true, {0, 0, 1, 0x65}),
+            "live initial decoder probe retains its complete actual IDR history");
+  }
   const auto start = std::chrono::steady_clock::now();
   Require(SyncSurface(&fixture.context, 1) == VA_STATUS_SUCCESS,
           "finite input tail still completes through a real sealed batch");
@@ -1261,7 +1409,12 @@ int main() {
     DecoderResetPreservesItsExplicitLivePolicy();
     TransportProgressRequiresActualHardwareIo();
     ProgressingSyncDoesNotSealAnActiveStream();
+    InactiveLiveSyncPreservesReferencesUntilActualInputResumes();
+    InactiveLiveSyncHonorsFiniteDeadlineWithoutPoisoningPixels();
+    ExplicitLiveContextCloseStillDrainsItsExactTail();
+    ActualIdrRestoresAutomaticLiveTailDrain();
     InactiveSyncStillSealsItsExactFinalPicture();
+    InactiveSyncStillSealsItsExactFinalPicture(true);
     ProgressDoesNotExtendFiniteSyncDeadline();
     ContextTeardownDrainsAcceptedTailBeforeClose();
     ContextDrainRejectsMutationAndSurvivesSurfaceRelease();

@@ -92,6 +92,9 @@ allows completed transport history to retire within the same memory limits.
 Queued input and outstanding pictures are never discarded. If the original
 IDR prefix is no longer retained, continuation after EOS requires an actual
 IDR; dependent input is rejected rather than decoded with missing references.
+In that state synchronization does not infer EOS from an input-delivery gap:
+the final picture may require subsequent input or explicit context draining.
+The existing absolute synchronization deadline still applies.
 The default remains strict replay. This opt-in is not a real-time streaming
 support claim and does not affect other codecs or the library ABI.
 

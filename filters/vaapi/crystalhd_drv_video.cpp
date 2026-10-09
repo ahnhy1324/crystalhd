@@ -2726,7 +2726,13 @@ static VAStatus SyncDecodeSurface(
     const uint64_t idle =
         std::chrono::duration_cast<std::chrono::nanoseconds>(now - last_progress)
             .count();
+    // Once live history retires, the running hardware owns the only intact
+    // references. A delivery gap is not permission to destroy them with EOS;
+    // explicit context drain still seals the final accepted pictures.
+    const bool retain_live_references =
+        decode->live_h264 && !decode->replay.replayable();
     if (!surface->ready && !decode->ReplaySealed() &&
+        !retain_live_references &&
         DecodeBatchGraceExpired(idle)) {
       Debug("sync batch inactivity: elapsed=%llu idle=%llu progress=%llu timestamp=%llu",
             static_cast<unsigned long long>(elapsed),
