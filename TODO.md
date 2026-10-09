@@ -6,6 +6,9 @@
 - [ ] [#92: BCM70015 capability research](https://github.com/ahnhy1324/crystalhd/issues/92)
   — pinned firmware mapping and live OPEN/scaling evidence; standalone
   processing and backend reuse remain unvalidated.
+- [ ] [#204: BCM70015 picture ownership and engine lifecycle](https://github.com/ahnhy1324/crystalhd/issues/204)
+  — #92 follow-up for runtime picture identity, PPB lifetime, and MFD/BVN
+  completion.
 
 Acceptance checklists live in those issues. Current usage and support are in
 [README.md](README.md); the frozen hardware reference is in
