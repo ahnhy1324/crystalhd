@@ -1464,6 +1464,7 @@ struct PendingVpp {
 };
 
 struct Driver;
+static void RunDecodeWorker(Driver *driver);
 static void RunVppWorker(Driver *driver);
 
 struct Driver {
@@ -1486,6 +1487,7 @@ struct Driver {
   SwsContext *vpp_scaler = nullptr;
   std::vector<uint8_t> vpp_argb_staging;
   bool stopping = false;
+  std::thread decode_worker;
   std::thread vpp_worker;
   gbm_device *gbm = nullptr;
   int drm_fd = -1;
@@ -1495,12 +1497,15 @@ struct Driver {
       gbm = gbm_create_device(requested_drm_fd);
     vpp_worker = std::thread(RunVppWorker, this);
   }
+  void StartDecodeWorker();
   ~Driver() {
     {
       std::lock_guard<std::mutex> lock(mutex);
       stopping = true;
     }
     condition.notify_all();
+    if (decode_worker.joinable())
+      decode_worker.join();
     if (vpp_worker.joinable())
       vpp_worker.join();
     for (const PendingVpp &pending : pending_vpp)
@@ -2094,10 +2099,11 @@ static VAStatus CompleteMpeg4EndOfStream(Driver *driver,
   return VA_STATUS_SUCCESS;
 }
 
-static VAStatus ReceiveAvailable(Driver *driver, DecodeContext *decode) {
+static VAStatus ReceiveAvailable(Driver *driver, DecodeContext *decode,
+                                 unsigned int max_attempts = 64) {
   if (decode->ReplayFailed())
     return VA_STATUS_ERROR_DECODING_ERROR;
-  for (unsigned int attempt = 0; attempt < 64; ++attempt) {
+  for (unsigned int attempt = 0; attempt < max_attempts; ++attempt) {
     BC_DTS_STATUS decoder_status = {};
     BC_STATUS status = DtsGetDriverStatus(decode->device, &decoder_status);
     if (status != BC_STS_SUCCESS || decoder_status.ReadyListCount != 0)
@@ -2131,7 +2137,8 @@ static VAStatus AdvanceMpeg4Epoch(Driver *driver, DecodeContext *decode) {
   return VA_STATUS_SUCCESS;
 }
 
-static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode) {
+static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
+                                unsigned int max_attempts = 32) {
   VAStatus advance = AdvanceMpeg4Epoch(driver, decode);
   if (advance != VA_STATUS_SUCCESS)
     return advance;
@@ -2155,7 +2162,7 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode) {
     // Do not wait while holding the VA driver mutex. The library TX ring is
     // 1 MiB; each accepted AU is limited to 512 KiB. Reserve conservative PES
     // header/marker overhead before calling its otherwise-blocking input API.
-    for (unsigned int attempt = 0; attempt < 32; ++attempt) {
+    for (unsigned int attempt = 0; attempt < max_attempts; ++attempt) {
       const auto *unit = replay.NextInput();
       if (unit == nullptr)
         break;
@@ -2813,6 +2820,66 @@ static void ReleasePendingVpp(Driver *driver, uint64_t sequence,
         static_cast<void *>(operation.target.get()), status);
   driver->pending_vpp.erase(found);
   driver->condition.notify_all();
+}
+
+static bool HasAutonomousDecodeWork(
+    const std::shared_ptr<DecodeContext> &decode) {
+  return !decode->video_process && !decode->closing && !decode->retired &&
+         decode->decoder_started && !decode->ReplayFailed() &&
+         (!decode->pending.empty() || decode->ReplaySealed());
+}
+
+// Some conforming frontends submit pictures and then wait in their presentation
+// path without making another VA call that can harvest decoder output. Keep
+// QuerySurfaceStatus passive and make that hardware progress independently.
+// All Dts calls remain serialized with EndPicture, SyncSurface and teardown by
+// the existing driver mutex. Idle-gap EOS sealing remains demand-driven.
+static void RunDecodeWorker(Driver *driver) {
+  std::unique_lock<std::mutex> lock(driver->mutex);
+  for (;;) {
+    driver->condition.wait(lock, [&] {
+      if (driver->stopping)
+        return true;
+      return std::any_of(driver->contexts.begin(), driver->contexts.end(),
+                         [](const auto &entry) {
+                           return HasAutonomousDecodeWork(entry.second);
+                         });
+    });
+    if (driver->stopping)
+      return;
+
+    // Bound each context's turn so a ready backlog cannot hold the global VA
+    // mutex long enough to starve frontend or VPP calls. Visit every active
+    // context once before the polling delay.
+    for (const auto &entry : driver->contexts) {
+      const std::shared_ptr<DecodeContext> &decode = entry.second;
+      if (!HasAutonomousDecodeWork(decode))
+        continue;
+      VAStatus status = ReceiveAvailable(driver, decode.get(), 1);
+      if (status == VA_STATUS_SUCCESS)
+        status = PumpDecodeInput(driver, decode.get(), 4);
+      // A queued MPEG-4 timing discontinuity is an explicit finite epoch,
+      // not an idle-gap EOS inference. EndPicture attempts this seal too, but
+      // TX backpressure can make it temporarily impossible; retry once the
+      // worker has submitted the old epoch, including each queued successor.
+      if (status == VA_STATUS_SUCCESS && decode->IsMpeg4() &&
+          !decode->mpeg4_draining_epochs.empty())
+        status = SealDecodeBatch(driver, decode.get());
+      if (status != VA_STATUS_SUCCESS && !decode->ReplayFailed())
+        FailDecode(driver, decode.get(), "autonomous decoder progress failed");
+    }
+
+    // Hardware completion does not signal this condition variable. Poll only
+    // while submitted output is pending, and sleep indefinitely when idle.
+    if (!driver->stopping)
+      driver->condition.wait_for(lock, std::chrono::milliseconds(1));
+  }
+}
+
+void Driver::StartDecodeWorker() {
+  std::lock_guard<std::mutex> lock(mutex);
+  if (!decode_worker.joinable())
+    decode_worker = std::thread(RunDecodeWorker, this);
 }
 
 static void RunVppWorker(Driver *driver) {
@@ -4101,6 +4168,8 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
   decode_context->mpeg2_picture = DecodeContext::Mpeg2Picture();
   decode_context->mpeg4_picture = DecodeContext::Mpeg4Picture();
   decode_context->vc1_picture = DecodeContext::Vc1Picture();
+  if (status == VA_STATUS_SUCCESS)
+    driver->condition.notify_all();
   return status;
 }
 
@@ -4873,6 +4942,7 @@ static VAStatus InitializeDriver(VADriverContextP context,
   std::unique_ptr<Driver> driver(new (std::nothrow) Driver(drm_fd));
   if (!driver)
     return VA_STATUS_ERROR_ALLOCATION_FAILED;
+  driver->StartDecodeWorker();
 
   context->version_major = VA_MAJOR_VERSION;
   context->version_minor = api_minor_version;

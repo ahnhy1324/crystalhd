@@ -7,7 +7,7 @@
 #include <string>
 
 namespace {
-unsigned checks = 0;
+std::atomic<unsigned> checks{0};
 void Require(bool value, const char *message) {
   ++checks;
   if (!value) throw std::runtime_error(message);
@@ -1330,6 +1330,59 @@ void BackToBackTimingDiscontinuities() {
           "each queued timing epoch drains and reopens exactly once");
 }
 
+void AutonomousWorkerDrainsBackpressuredDiscontinuities() {
+  Fixture fixture;
+  fixture.mock.capacity = false;
+  fixture.mock.echo_inputs = true;
+  fixture.mock.eos_on_flush = true;
+  fixture.I(1);
+  fixture.I(2);
+  fixture.I(3);
+  Require(fixture.decode->mpeg4_draining_epochs.size() == 2 &&
+              fixture.mock.inputs.empty() && fixture.mock.flushes == 0,
+          "worker regression starts with three backpressured timing epochs");
+
+  fixture.mock.capacity = true;
+  fixture.driver.StartDecodeWorker();
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  bool queries_valid = true;
+  bool timed_out = false;
+  for (;;) {
+    bool ready = true;
+    for (VASurfaceID surface : {1U, 2U, 3U}) {
+      VASurfaceStatus status = VASurfaceRendering;
+      if (QuerySurfaceStatus(&fixture.context, surface, &status) !=
+          VA_STATUS_SUCCESS) {
+        queries_valid = false;
+        break;
+      }
+      ready &= status == VASurfaceReady;
+    }
+    if (!queries_valid || ready)
+      break;
+    if (std::chrono::steady_clock::now() >= deadline) {
+      timed_out = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  Require(queries_valid, "query-only MPEG-4 progress remains valid");
+  Require(!timed_out,
+          "worker advances every explicit MPEG-4 timing epoch");
+
+  std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+  Require(fixture.mock.inputs.size() == 3 &&
+              fixture.mock.inputs[0].timestamp == kTimestampStep &&
+              fixture.mock.inputs[1].timestamp == 2 * kTimestampStep &&
+              fixture.mock.inputs[2].timestamp == 3 * kTimestampStep &&
+              fixture.mock.opens == 3 && fixture.mock.closes == 2 &&
+              fixture.mock.flushes == 2 && fixture.mock.releases == 5 &&
+              fixture.decode->mpeg4_draining_epochs.empty() &&
+              fixture.decode->pending.empty(),
+          "worker retries only explicit epoch seals and preserves order");
+}
+
 void QueuedMissingMarkerEpochFence() {
   Fixture fixture;
   fixture.I(1);
@@ -1496,6 +1549,8 @@ int main() {
        CompletedSurfaceSurvivesTargetTeardown},
       {"back-to-back timing discontinuities",
        BackToBackTimingDiscontinuities},
+      {"worker drains backpressured timing discontinuities",
+       AutonomousWorkerDrainsBackpressuredDiscontinuities},
       {"queued missing-marker epoch fence", QueuedMissingMarkerEpochFence},
       {"combined timing-epoch cache bound", CombinedEpochCacheBound},
       {"early EOS marker before final picture",
@@ -1514,6 +1569,6 @@ int main() {
     }
   }
   std::printf("%zu groups, %u checks, %u failures\n",
-              sizeof(tests) / sizeof(tests[0]), checks, failed);
+              sizeof(tests) / sizeof(tests[0]), checks.load(), failed);
   return failed ? 1 : 0;
 }
