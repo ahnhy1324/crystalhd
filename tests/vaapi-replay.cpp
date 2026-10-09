@@ -919,6 +919,140 @@ static void FailedCpuOwnershipNeverCompletesDecode() {
   }
 }
 
+static void StaleUnretainedOutputSkipsOnlyPixelMaterialization() {
+  {
+    OutputFixture fixture;
+    mock_sync_fd = memfd_create("crystalhd-current-map-only-test", MFD_CLOEXEC);
+    Require(mock_sync_fd >= 0, "allocate current map-only ownership fd");
+    fixture.private_frame->object_fds.push_back(mock_sync_fd);
+    std::weak_ptr<Surface> picture = fixture.private_frame;
+    fixture.private_frame.reset();
+    mock_failed_sync_flags = UINT64_MAX;
+    mock_sync_calls.clear();
+    Require(fixture.Process() == VA_STATUS_SUCCESS &&
+                mock_sync_calls ==
+                    std::vector<uint64_t>{DMA_BUF_SYNC_START |
+                                              DMA_BUF_SYNC_WRITE,
+                                          DMA_BUF_SYNC_END |
+                                              DMA_BUF_SYNC_WRITE,
+                                          DMA_BUF_SYNC_START |
+                                              DMA_BUF_SYNC_READ,
+                                          DMA_BUF_SYNC_END |
+                                              DMA_BUF_SYNC_READ} &&
+                !picture.expired() && picture.lock()->ready &&
+                picture.lock()->planes[0][0] == 40 &&
+                fixture.public_frame->ready &&
+                fixture.public_frame->planes[0][0] == 40,
+            "the current public identity converts even when its map is sole owner");
+    mock_sync_fd = -1;
+  }
+
+  {
+    OutputFixture fixture;
+    fixture.public_frame->expected_timestamp = 2;
+    fixture.public_frame->decode_picture = fixture.private_frame;
+    mock_sync_fd =
+        memfd_create("crystalhd-stale-weak-owner-test", MFD_CLOEXEC);
+    Require(mock_sync_fd >= 0, "allocate stale weak-owner fd");
+    fixture.private_frame->object_fds.push_back(mock_sync_fd);
+    std::weak_ptr<Surface> picture = fixture.private_frame;
+    fixture.private_frame.reset();
+    mock_failed_sync_flags = UINT64_MAX;
+    mock_sync_calls.clear();
+    Require(fixture.Process() == VA_STATUS_SUCCESS &&
+                fixture.decoder.pending.empty() &&
+                fixture.decoder.replay.outstanding() == 0 &&
+                fixture.decoder.decoded_frames.empty() && picture.expired() &&
+                mock_sync_calls.empty() &&
+                fixture.public_frame->planes[0][0] == 99 &&
+                !fixture.public_frame->ready && !fixture.public_frame->failed,
+            "a stale weak public owner cannot defeat the map-only discard");
+    mock_sync_fd = -1;
+  }
+
+  {
+    OutputFixture fixture;
+    fixture.public_frame->expected_timestamp = 2;
+    mock_sync_fd = memfd_create("crystalhd-captured-vpp-test", MFD_CLOEXEC);
+    Require(mock_sync_fd >= 0, "allocate captured VPP ownership fd");
+    fixture.private_frame->object_fds.push_back(mock_sync_fd);
+    auto vpp = std::make_shared<DecodeContext>();
+    vpp->video_process = true;
+    vpp->vpp_frame = fixture.private_frame;
+    Require(vpp->vpp_frame->vpp_readers == 0,
+            "captured VPP picture precedes reader accounting");
+    fixture.private_frame.reset();
+    mock_failed_sync_flags = UINT64_MAX;
+    mock_sync_calls.clear();
+    Require(fixture.Process() == VA_STATUS_SUCCESS && vpp->vpp_frame->ready &&
+                vpp->vpp_frame->frame_timestamp == 1 &&
+                vpp->vpp_frame->planes[0][0] == 40 &&
+                mock_sync_calls ==
+                    std::vector<uint64_t>{DMA_BUF_SYNC_START |
+                                              DMA_BUF_SYNC_WRITE,
+                                          DMA_BUF_SYNC_END |
+                                              DMA_BUF_SYNC_WRITE} &&
+                fixture.decoder.pending.empty() &&
+                fixture.decoder.replay.outstanding() == 0 &&
+                fixture.decoder.decoded_frames.empty() &&
+                fixture.public_frame->planes[0][0] == 99 &&
+                !fixture.public_frame->ready && !fixture.public_frame->failed,
+            "a captured pre-queue VPP picture still receives stale output pixels");
+    mock_sync_fd = -1;
+  }
+
+  {
+    OutputFixture fixture;
+    fixture.public_frame->expected_timestamp = 2;
+    mock_sync_fd = memfd_create("crystalhd-queued-vpp-test", MFD_CLOEXEC);
+    Require(mock_sync_fd >= 0, "allocate queued VPP ownership fd");
+    fixture.private_frame->object_fds.push_back(mock_sync_fd);
+    PendingVpp queued;
+    queued.source = fixture.private_frame;
+    queued.source->vpp_readers = 1;
+    fixture.private_frame.reset();
+    mock_failed_sync_flags = UINT64_MAX;
+    mock_sync_calls.clear();
+    Require(fixture.Process() == VA_STATUS_SUCCESS && queued.source->ready &&
+                queued.source->frame_timestamp == 1 &&
+                queued.source->planes[0][0] == 40 &&
+                mock_sync_calls ==
+                    std::vector<uint64_t>{DMA_BUF_SYNC_START |
+                                              DMA_BUF_SYNC_WRITE,
+                                          DMA_BUF_SYNC_END |
+                                              DMA_BUF_SYNC_WRITE} &&
+                fixture.decoder.pending.empty() &&
+                fixture.decoder.replay.outstanding() == 0 &&
+                fixture.decoder.decoded_frames.empty() &&
+                fixture.public_frame->planes[0][0] == 99 &&
+                !fixture.public_frame->ready && !fixture.public_frame->failed,
+            "a queued VPP picture still receives stale output pixels");
+    mock_sync_fd = -1;
+  }
+
+  {
+    OutputFixture fixture;
+    fixture.public_frame->expected_timestamp = 2;
+    mock_sync_fd = memfd_create("crystalhd-invalid-stale-test", MFD_CLOEXEC);
+    Require(mock_sync_fd >= 0, "allocate invalid stale ownership fd");
+    fixture.private_frame->object_fds.push_back(mock_sync_fd);
+    std::weak_ptr<Surface> picture = fixture.private_frame;
+    fixture.private_frame.reset();
+    fixture.output.YBuffDoneSz = 0;
+    mock_failed_sync_flags = UINT64_MAX;
+    mock_sync_calls.clear();
+    Require(fixture.Process() == VA_STATUS_ERROR_DECODING_ERROR &&
+                fixture.decoder.replay.failed() &&
+                fixture.decoder.pending.empty() &&
+                fixture.decoder.decoded_frames.empty() && picture.expired() &&
+                mock_sync_calls.empty() &&
+                fixture.public_frame->planes[0][0] == 99 &&
+                !fixture.public_frame->ready && !fixture.public_frame->failed,
+            "invalid stale output fails instead of becoming a silent discard");
+    mock_sync_fd = -1;
+  }
+}
+
 static void InitializeCopyTestSurface(Surface *surface, unsigned int width,
                                       unsigned int height, unsigned int offset) {
   surface->width = width;
@@ -1135,6 +1269,90 @@ struct TeardownFixture {
             "held picture remains downloadable without its decoder context");
   }
 };
+
+static void StaleUnretainedOutputPreservesTransportAndEos() {
+  TeardownFixture fixture(2);
+  Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+                  VA_STATUS_SUCCESS &&
+              fixture.decoder->replay.Seal(),
+          "submit and seal stale-output transport fixture");
+  const uint64_t progress_before_outputs = fixture.decoder->transport_progress;
+  fixture.decoder->decoded_frames.at(kTimestampStep)->decode_identity = 1;
+  fixture.decoder->decoded_frames.at(2 * kTimestampStep)->decode_identity = 2;
+  fixture.held[0]->expected_timestamp = 2 * kTimestampStep;
+  fixture.held[0]->decode_identity = 2;
+  fixture.held[0]->decode_picture =
+      fixture.decoder->decoded_frames.at(2 * kTimestampStep);
+  fixture.decoder->pending[2 * kTimestampStep] = 1;
+  fixture.decoder->surface_timestamps[fixture.held[0].get()] =
+      2 * kTimestampStep;
+  mock_sync_fd = memfd_create("crystalhd-stale-output-test", MFD_CLOEXEC);
+  Require(mock_sync_fd >= 0, "allocate stale-output CPU ownership fd");
+  std::weak_ptr<Surface> stale_picture =
+      fixture.decoder->decoded_frames.at(kTimestampStep);
+  fixture.decoder->decoded_frames.at(kTimestampStep)->object_fds.push_back(
+      mock_sync_fd);
+  mock_failed_sync_flags = UINT64_MAX;
+  mock_sync_calls.clear();
+  fixture.io.outputs.push_back(kTimestampStep);
+  fixture.io.outputs.push_back(2 * kTimestampStep);
+  fixture.io.outputs.push_back(0);
+  Require(ReceiveAvailable(&fixture.driver, fixture.decoder.get(), 1) ==
+                  VA_STATUS_SUCCESS &&
+              fixture.decoder->pending.count(kTimestampStep) == 0 &&
+              fixture.decoder->pending.at(2 * kTimestampStep) == 1 &&
+              fixture.decoder->decoded_frames.count(kTimestampStep) == 0 &&
+              fixture.decoder->replay.outstanding() == 1 &&
+              fixture.decoder->ReplaySealed() &&
+              fixture.decoder->transport_progress ==
+                  progress_before_outputs + 1 &&
+              fixture.io.outputs.size() == 2 && mock_sync_calls.empty() &&
+              stale_picture.expired() &&
+              fixture.held[0]->planes[0][0] == 99 &&
+              !fixture.held[0]->ready && !fixture.held[0]->failed &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "picture") == 1 &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "release") == 1 &&
+              !fixture.io.invalid,
+          "stale pixels are skipped after exact transport retirement and release");
+  mock_sync_fd = -1;
+  mock_sync_fd = memfd_create("crystalhd-reused-current-test", MFD_CLOEXEC);
+  Require(mock_sync_fd >= 0, "allocate reused-current CPU ownership fd");
+  fixture.decoder->decoded_frames.at(2 * kTimestampStep)->object_fds.push_back(
+      mock_sync_fd);
+  mock_sync_calls.clear();
+  Require(ReceiveAvailable(&fixture.driver, fixture.decoder.get()) ==
+                  VA_STATUS_SUCCESS &&
+              fixture.decoder->pending.empty() &&
+              fixture.decoder->replay.outstanding() == 0 &&
+              !fixture.decoder->ReplaySealed() &&
+              fixture.decoder->transport_progress ==
+                  progress_before_outputs + 2 &&
+              fixture.io.outputs.empty() &&
+              mock_sync_calls ==
+                  std::vector<uint64_t>{DMA_BUF_SYNC_START |
+                                            DMA_BUF_SYNC_WRITE,
+                                        DMA_BUF_SYNC_END |
+                                            DMA_BUF_SYNC_WRITE,
+                                        DMA_BUF_SYNC_START |
+                                            DMA_BUF_SYNC_READ,
+                                        DMA_BUF_SYNC_END |
+                                            DMA_BUF_SYNC_READ} &&
+              fixture.held[0]->ready && !fixture.held[0]->failed &&
+              fixture.held[0]->frame_timestamp == 2 * kTimestampStep &&
+              fixture.held[0]->planes[0][0] ==
+                  DecodeIoMock::Luma(2 * kTimestampStep) &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "picture") == 2 &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "release") == 3 &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "eos") == 1 &&
+              !fixture.io.invalid,
+          "the reused current picture still converts before the sealed EOS");
+  mock_sync_fd = -1;
+}
 
 static void CompletedLiveTailPrecedesUnreconstructibleContinuation() {
   TeardownFixture fixture(4);
@@ -2187,6 +2405,8 @@ int main() {
     DirectOutputOwnershipAndExport();
     RejectIncompleteGeometryAndInitializeAllocationPadding();
     FailedCpuOwnershipNeverCompletesDecode();
+    StaleUnretainedOutputSkipsOnlyPixelMaterialization();
+    StaleUnretainedOutputPreservesTransportAndEos();
     PaddingOnlyCopyByteEquivalence();
     ExactBoundaryConversionByteEquivalence();
     CompletedLiveTailPrecedesUnreconstructibleContinuation();
