@@ -42,8 +42,9 @@ CI compilation does not load the PCI device or replace hardware testing.
 The userspace integrations in this update are experimental. See
 [README.md](README.md) and the component guides before deployment.
 
-- Set Linux 6.1 as the minimum supported kernel and added CI compilation
-  against current 6.1, 6.6, 6.12, and 6.18 LTS releases, stable, and mainline.
+- Set Linux 6.1 as the then-current minimum supported kernel and added CI
+  compilation against 6.1, 6.6, 6.12, and 6.18 LTS releases, stable, and
+  mainline. Linux 5.15 support followed in September 2026.
 - Added a GStreamer 1.x decoder and an experimental VA-API backend, including
   the buffer and video-processing operations needed by the documented clients.
 - Added DKMS support and optional browser integration tooling.
