@@ -835,6 +835,58 @@ _RX_DESCRIPTOR_ADMISSION_REGIONS = (
 )
 MAX_RX_DESCRIPTOR_ADMISSION_REGIONS = 3
 MAX_RX_DESCRIPTOR_ADMISSION_BYTES = 256
+_CHANNEL_FIELD_REGIONS = (
+    ("init_context", 0x54c, 0x354,
+     "766ebdef10b26af75d180b82e886deaa7a35746c8b13748c4705fea13e803b4f"),
+    ("channel_api_lifecycle", 0x8a0, 0xf00,
+     "531ad25633877503cff370620cdb0f59bd12c52e8435fa224b40c5185a9080d1"),
+    ("host_start_root_literal", 0x3de8, 0x4,
+     "90235ef9116585e3b06f150c19cc273c8b4098db381d46cf3454ab59501e3688"),
+    ("host_stop_start", 0x4288, 0x7d8,
+     "edf522cfd3afba69e0acc27824886bfcbe46cccd4f1f33773f726c9985412c3f"),
+    ("host_close_open", 0x4f88, 0xa80,
+     "e9ecbcee4ea0fc4b5a91aa9b8ec6b72c6238c04036242dd0614d59370e290cc1"),
+    ("device_start_handoff", 0x5ce8, 0x68,
+     "000341a8499a9a1aa9d11f09a163b91782d0aacd2d7446688017bbd5f0bdad1b"),
+    ("device_start_output_literal", 0x5ed4, 0x4,
+     "b2a40293bd039708aa71125019a5d5a0840248bbd2fb97ed01ca0750eaea3f5a"),
+    ("stream_handler", 0x6acc, 0x360,
+     "356694900955092be492cd38c3e87852622d3cc4ce6b81f4355542ec35b4c6dc"),
+    ("descriptor_delivery", 0x7708, 0x84,
+     "a6a638674a3af17ddd321a9fcecf67febf788c1a6a74073081c66bed2bc13fea"),
+    ("picture_handler", 0x834c, 0x4ec,
+     "e2e7a336ede34b0f3f170cc26476debb81ad4cd0eb3862dd1ab3968db7ee07a3"),
+    ("irq19_handler", 0x888c, 0xbc,
+     "110a0aa7e8d7845c6ba5854114808d7cc9e067dd2bcac1a746e4a159d15d6ba5"),
+    ("reinitialize", 0x89a4, 0x158,
+     "4ceb06650fb19599e3f1df548775aba445410ece204a90aea32da520838ac1d6"),
+    ("reinitialize_root_literal", 0x8c24, 0x4,
+     "5d41a43f0a6983f407fc72552a64a4ea2e7bd6565d4df18496b2c7c102017755"),
+    ("xpt_lifecycle", 0x9300, 0xea8,
+     "f299c874e032c2e7c7daaa09fcc1fc03eca5a397a56d71aa2481eafd675f09ce"),
+    ("decoder_lifecycle", 0xa2a4, 0x428,
+     "bc6f8aea8feaaf6c771968f5add329da1b93867f72760a65d5accaa6509fa06e"),
+    ("pvr_play_open", 0xbddc, 0x278,
+     "d82441ceff63fbf3a90352f54ac2c2f676774e7d64df085cc0b947a181357b97"),
+    ("source_record_producer", 0xe110, 0x138,
+     "7d82037ed0f6b4d0ab23aace8b9247f7073ff243e6ad8cde6ee53326895e93d2"),
+    ("bxvd_channel_open", 0xf7e4, 0x408,
+     "723911a2a94585093da0b4caebd2ba2a20b2c8bc87c4e91dd42646ae95a3a092"),
+    ("xpt_playback_open", 0x1bc3c, 0x150,
+     "5c90f328dde0e471b220a8703fe24a655a4d868707b50f73650f1388562f3e1c"),
+    ("clear_copy_wrappers", 0x206e4, 0x48,
+     "8fa52c68f1d567cc997032cab51cbed731ea8a8ccf16998883974273a8f56fde"),
+    ("memcpy_a32", 0x2c59c, 0xec,
+     "1e4214d8199c49b92e61acd6fe6347f3564a79300aa71eb21fce02f269921401"),
+    ("clear_thumb_value", 0x2c688, 0x10,
+     "ecef68fb180095ac4ba52e4d21271f040e6516c3f613feea4c3067855882561a"),
+    ("clear_thumb_fill", 0x2c73c, 0x8e,
+     "40142c13e3b9e4840b17fb10874e1f87ec3fd9dc712b7e678c257e12ac553f8e"),
+)
+MAX_CHANNEL_FIELD_REGIONS = 24
+MAX_CHANNEL_FIELD_BYTES = 20 * 1024
+MAX_CHANNEL_FIELD_AGGREGATE_REGIONS = 32
+MAX_CHANNEL_FIELD_AGGREGATE_BYTES = 24 * 1024
 _MFD_SOURCE_REGIONS = (
     ("source_address", 0x1918,
      "f0402de914d04de20070a0e10140a0e1f8219fe55c10d4e5810081e00031b2e7050092e90c008de510208de508308de5"
@@ -5465,6 +5517,532 @@ def _rx_descriptor_admission_map(payload):
     }
 
 
+def _channel_field_map(payload):
+    """Pinned stock A32 channel-field sites, not whole-image alias recovery."""
+    if len(payload) != BUNDLED_SIZE - TRAILER_SIZE:
+        raise FormatError("channel-field payload size does not match the bundled baseline")
+    regions = _CHANNEL_FIELD_REGIONS
+    total = sum(size for _, _, size, _ in regions)
+    dependency_regions = _RX_DESCRIPTOR_ADMISSION_REGIONS
+    dependency_total = sum(size for _, _, size, _ in dependency_regions)
+    if len(regions) > MAX_CHANNEL_FIELD_REGIONS or total > MAX_CHANNEL_FIELD_BYTES:
+        raise FormatError("channel-field validation budget exceeded")
+    if (len(regions) + len(dependency_regions) > MAX_CHANNEL_FIELD_AGGREGATE_REGIONS or
+            total + dependency_total > MAX_CHANNEL_FIELD_AGGREGATE_BYTES):
+        raise FormatError("channel-field aggregate validation budget exceeded")
+    validated = []
+    # Gate every enclosing envelope before decoding an instruction or invoking
+    # the separately pinned RX-admission proof.
+    for role, offset, size, expected in regions:
+        data = bounded(payload, offset, size, "channel-field region")
+        if hashlib.sha256(data).hexdigest() != expected:
+            raise FormatError(f"channel-field region {role} does not match the baseline")
+        validated.append({"role": role, "blob_file_offset": offset,
+                          "size": size, "sha256": expected})
+
+    admission = _rx_descriptor_admission_map(payload)
+
+    def checked_sites(entries, access, expression):
+        result = []
+        for entry in entries:
+            offset, expected = entry[:2]
+            word = _bootstrap_word(payload, offset)
+            if word != expected:
+                raise FormatError(f"channel-field word at {offset:#x} does not match the baseline")
+            record = {"blob_file_offset": offset, "word": word,
+                      "access": access, "address_expression": expression}
+            if len(entry) == 3:
+                record.update(entry[2])
+            result.append(record)
+        return result
+
+    def checked_anchors(entries):
+        result = []
+        for role, offset, expected, expression in entries:
+            word = _bootstrap_word(payload, offset)
+            if word != expected:
+                raise FormatError(f"channel-field anchor at {offset:#x} does not match the baseline")
+            result.append({"role": role, "blob_file_offset": offset,
+                           "word": word, "expression": expression})
+        return result
+
+    root = _a32_literal(payload, 0x898)
+    init_root = _a32_literal(payload, 0x56c)
+    reinit_root = _a32_literal(payload, 0x89d4)
+    host_start_global = _a32_literal(payload, 0x465c)
+    device_start_global = _a32_literal(payload, 0x5ce8)
+    device_start_output = _a32_literal(payload, 0x5d44)
+    if ((root["literal_blob_file_offset"], root["literal_value"],
+         root["destination_register"]) != (0x6fc, 0xd3a00, 0) or
+            (init_root["literal_blob_file_offset"], init_root["literal_value"],
+             init_root["destination_register"]) != (0x6fc, 0xd3a00, 4) or
+            (reinit_root["literal_blob_file_offset"], reinit_root["literal_value"],
+             reinit_root["destination_register"]) != (0x8c24, 0xd3a00, 0) or
+            (host_start_global["literal_blob_file_offset"], host_start_global["literal_value"],
+             host_start_global["destination_register"]) != (0x3de8, 0xd1ff4, 10) or
+            (device_start_global["literal_blob_file_offset"], device_start_global["literal_value"],
+             device_start_global["destination_register"]) != (0x5128, 0xd1ff4, 7) or
+            (device_start_output["literal_blob_file_offset"], device_start_output["literal_value"],
+             device_start_output["destination_register"]) != (0x5ed4, 0xd1ff8, 1)):
+        raise FormatError("channel-field root literal does not match the baseline")
+
+    anchors = checked_anchors((
+        ("root_return", 0x89c, 0xe12fff1e, "return 0xd3a00"),
+        ("slot_stride_words", 0x908, 0xe3a00073, "0x73 words"),
+        ("slot_stride_multiply", 0x914, 0xe0000097, "slot * 0x73"),
+        ("slot_base", 0x918, 0xe0865100, "C = root + slot * 0x1cc"),
+        ("picture_slot_stride_words", 0x837c, 0xe3a00073, "0x73 words"),
+        ("picture_slot_stride_multiply", 0x8380, 0xe0000099, "slot * 0x73"),
+        ("picture_slot_base", 0x8384, 0xe0884100, "C = root + slot * 0x1cc"),
+        ("W_open", 0xb0c, 0xe2851018, "W = C + 0x18"),
+        ("W_picture", 0x83b8, 0xe2845018, "W = C + 0x18"),
+        ("W_close", 0xa4c4, 0xe2804018, "W = C + 0x18"),
+        ("W_scan_first", 0xa5e0, 0xe2805018, "W = C + 0x18"),
+        ("W_scan_second", 0xa660, 0xe2805018, "W = C + 0x18"),
+        ("X_open", 0x970, 0xe28520ac, "X = C + 0xac"),
+        ("X_config", 0xacc, 0xe28530ac, "X = C + 0xac"),
+        ("X_close", 0xc18, 0xe28610ac, "X = C + 0xac"),
+        ("K_reuse_bit100", 0x841c, 0xe28410ec, "K = C + 0xec"),
+        ("K_reuse_normal", 0x84c0, 0xe28410ec, "K = C + 0xec"),
+        ("K_publish_bit100", 0x86cc, 0xe28400ec, "K = C + 0xec"),
+        ("K_publish_normal", 0x8744, 0xe28400ec, "K = C + 0xec"),
+        ("D_delivery", 0x7778, 0xe2840f62, "D = C + 0x188"),
+        ("D_consumer", 0x8818, 0xe2840f62, "D = C + 0x188"),
+        ("init_save_output_pointer", 0x558, 0xe1a07001, "r7 = init output pointer"),
+        ("init_publish_context", 0x880, 0xe5874000, "*0xd1ff8 = 0xd3a00"),
+        ("host_start_context_load", 0x466c, 0xe59a0004, "C root = *(0xd1ff4 + 4)"),
+        ("decoder_open_output_argument", 0xa308, 0xe2841008,
+         "r1 = &W[2] == &C+0x20"),
+        ("decoder_open_output_saved", 0xf7f0, 0xe1a0a001,
+         "r10 = decoder output pointer"),
+        ("xpt_playback_output_argument", 0x93a8, 0xe2841010,
+         "r1 = &X[4] == &C+0xbc"),
+        ("xpt_playback_output_saved", 0x1bc44, 0xe1a09001,
+         "r9 = playback output pointer"),
+        ("xpt_slot_channel_scale", 0x1bc90, 0xe0860106,
+         "r0 = channel * 5"),
+        ("xpt_slot_offset", 0x1bc94, 0xe3001828,
+         "r1 = 0x828"),
+        ("xpt_slot_controller_base", 0x1bc98, 0xe0811005,
+         "r1 = controller + 0x828"),
+        ("xpt_slot_channel_address", 0x1bc9c, 0xe0814180,
+         "r4 = controller + 0x828 + channel * 0x28"),
+        ("pvr_open_output_argument", 0x5960, 0xe28700d4,
+         "r0 = &C+0xd4"),
+        ("pvr_open_output_recovered", 0xc02c, 0xe59d0034,
+         "r0 = caller output pointer"),
+    ))
+
+    argument_conditional_aliases = (
+        {
+            "function_entry": 0x12e4,
+            "incoming_root_register": "r1",
+            "premise": "incoming r1 == channel root 0xd3a00",
+            "fixed_root_caller_provenance_pinned": False,
+            "derivation_sites": checked_anchors((
+                ("helper_12e4_stride_words", 0x12e8, 0xe3a03073,
+                 "r3 = 0x73 words"),
+                ("helper_12e4_stride_multiply", 0x12ec, 0xe0000390,
+                 "r0 = slot * 0x73"),
+                ("helper_12e4_channel_base", 0x12f0, 0xe0814100,
+                 "r4 = incoming r1 + slot * 0x1cc"),
+            )),
+            "access_sites": [0x12fc, 0x1344, 0x1354, 0x13f4, 0x1478],
+        },
+        {
+            "function_entry": 0x15d8,
+            "incoming_root_register": "r2",
+            "premise": "incoming r2 == channel root 0xd3a00",
+            "fixed_root_caller_provenance_pinned": False,
+            "derivation_sites": checked_anchors((
+                ("helper_15d8_stride_words", 0x15dc, 0xe3a03073,
+                 "r3 = 0x73 words"),
+                ("helper_15d8_stride_multiply", 0x15e4, 0xe0000390,
+                 "r0 = slot * 0x73"),
+                ("helper_15d8_channel_base", 0x15e8, 0xe0820100,
+                 "r0 = incoming r2 + slot * 0x1cc"),
+            )),
+            "access_sites": [0x15ec],
+        },
+        {
+            "function_entry": 0x1610,
+            "incoming_root_register": "r1",
+            "premise": "incoming r1 == channel root 0xd3a00",
+            "fixed_root_caller_provenance_pinned": False,
+            "derivation_sites": checked_anchors((
+                ("helper_1610_stride_words", 0x1618, 0xe3a02073,
+                 "r2 = 0x73 words"),
+                ("helper_1610_stride_multiply", 0x161c, 0xe0000290,
+                 "r0 = slot * 0x73"),
+                ("helper_1610_channel_base", 0x1620, 0xe0814100,
+                 "r4 = incoming r1 + slot * 0x1cc"),
+            )),
+            "access_sites": [0x1628, 0x1664],
+        },
+    )
+
+    branch_specs = (
+        ("global_clear", 0x568, 0x206e4),
+        ("reinitialize_clear", 0x89e0, 0x206e4),
+        ("open_clear", 0x5288, 0x206e4),
+        ("host_interface_init", 0x5d4c, 0x54c),
+        ("decoder_wrapper_open", 0xb18, 0xa2a4),
+        ("decoder_object_open", 0xa318, 0xf7e4),
+        ("xpt_context_open", 0x980, 0x9300),
+        ("xpt_context_configure", 0xad8, 0x973c),
+        ("xpt_context_close", 0xc1c, 0xa158),
+        ("pvr_play_open", 0x596c, 0xbddc),
+        ("xpt_playback_open", 0x93b0, 0x1bc3c),
+        ("cached_record_producer_null", 0x8480, 0xe110),
+        ("cached_record_producer_selected", 0x85f8, 0xe110),
+        ("cache_reuse_bit100", 0x8424, 0x20708),
+        ("cache_reuse_normal", 0x84c8, 0x20708),
+        ("cache_publish_bit100", 0x86d8, 0x20708),
+        ("cache_publish_normal", 0x8750, 0x20708),
+        ("descriptor_delivery_copy", 0x777c, 0x2c59c),
+        ("descriptor_consumer", 0x881c, 0x77e0),
+        ("copy_wrapper", 0x20724, 0x2c59c),
+    )
+    control_flow = []
+    for role, site, target in branch_specs:
+        branch = _a32_branch(payload, site, link=True)
+        if branch["target_blob_file_offset"] != target:
+            raise FormatError(f"channel-field branch {role} does not match the baseline")
+        control_flow.append({"role": role, **branch})
+
+    decoder_reads = checked_sites((
+        (0xb7c, 0xe893000e, {"operation": "LDM includes W+0x8"}),
+        (0xfe4, 0xe5941008), (0xff0, 0xe5940008),
+        (0x10ac, 0xe5940008), (0x10e8, 0xe5940008),
+        (0x1288, 0xe5940008),
+        (0x1344, 0xe5960008,
+         {"alias_provenance": "conditional",
+          "premise": "incoming r1 == channel root 0xd3a00",
+          "function_entry": 0x12e4}),
+        (0x13f4, 0xe5960008,
+         {"alias_provenance": "conditional",
+          "premise": "incoming r1 == channel root 0xd3a00",
+          "function_entry": 0x12e4}),
+        (0x1478, 0xe5960008,
+         {"alias_provenance": "conditional",
+          "premise": "incoming r1 == channel root 0xd3a00",
+          "function_entry": 0x12e4}),
+        (0x8454, 0xe5950008), (0x8474, 0xe5950008),
+        (0x85f4, 0xe5950008), (0x8938, 0xe5950008),
+        (0xa394, 0xe5941008), (0xa4c8, 0xe5940008),
+        (0xa5e8, 0xe5950008), (0xa600, 0xe5950008),
+        (0xa668, 0xe5950008), (0xa680, 0xe5950008),
+    ), "read", "W + 0x8 == C + 0x20")
+    decoder_reads += checked_sites((
+        (0x15ec, 0xe5900020,
+         {"alias_provenance": "conditional",
+          "premise": "incoming r2 == channel root 0xd3a00",
+          "function_entry": 0x15d8}),
+        (0x1628, 0xe5940020,
+         {"alias_provenance": "conditional",
+          "premise": "incoming r1 == channel root 0xd3a00",
+          "function_entry": 0x1610}),
+        (0x1664, 0xe5940020,
+         {"alias_provenance": "conditional",
+          "premise": "incoming r1 == channel root 0xd3a00",
+          "function_entry": 0x1610}),
+        (0x1704, 0xe5940020),
+        (0x171c, 0xe5940020), (0x1780, 0xe5940020),
+        (0x1790, 0xe5940020), (0xa56c, 0xe5940020),
+        (0xa5a0, 0xe5940020),
+    ), "read", "C + 0x20")
+    decoder_reads += checked_sites(((0xfbc4, 0xe59a0000),), "read", "*out == C + 0x20")
+    decoder_reads.sort(key=lambda record: record["blob_file_offset"])
+    decoder_writes = checked_sites((
+        (0xf83c, 0xe58a0000, {"value": 0}),
+        (0xfbb0, 0xe58a4000, {"value": "allocated BXVD channel object"}),
+    ), "write", "*out == C + 0x20")
+
+    playback_reads = checked_sites((
+        (0x48cc, 0xe59000bc), (0x48e0, 0xe59000bc),
+        (0x5964, 0xe59720bc), (0x6d40, 0xe59000bc),
+    ), "read", "C + 0xbc")
+    playback_reads += checked_sites((
+        (0x941c, 0xe5941010), (0x9438, 0xe5940010),
+        (0x945c, 0xe5940010), (0x95d0, 0xe5940010),
+        (0x9618, 0xe5940010), (0x99bc, 0xe5970010),
+        (0x9a34, 0xe5970010), (0xa164, 0xe5940010),
+    ), "read", "X + 0x10 == C + 0xbc")
+    playback_reads.sort(key=lambda record: record["blob_file_offset"])
+    playback_writes = checked_sites((
+        (0xa180, 0xe5846010, {"value": 0}),
+        (0x1bd7c, 0xe5894000,
+         {"value": "controller + 0x828 + channel * 0x28"}),
+    ), "write", "X + 0x10 == C + 0xbc")
+
+    pvr_reads = checked_sites((
+        (0x12fc, 0xe59480d4,
+         {"alias_provenance": "conditional",
+          "premise": "incoming r1 == channel root 0xd3a00",
+          "function_entry": 0x12e4}),
+        (0x45b0, 0xe59500d4),
+        (0x45ec, 0xe59500d4), (0x4888, 0xe59000d4),
+        (0x504c, 0xe59000d4), (0x59ac, 0xe59000d4),
+        (0x6b9c, 0xe59000d4), (0x6c40, 0xe59000d4),
+        (0x6ca8, 0xe59000d4), (0x6d18, 0xe59000d4),
+        (0x6d8c, 0xe59000d4),
+    ), "read", "C + 0xd4")
+    pvr_writes = checked_sites((
+        (0x5064, 0xe58090d4, {"value": 0}),
+        (0xc030, 0xe5804000, {"value": "PVR play object or zero on failure"}),
+    ), "write", "C + 0xd4")
+
+    producer_nonnull = checked_sites((
+        (0xe19c, 0xe5950004), (0xe1a0, 0xe5840034),
+        (0xe1a4, 0xe5950008), (0xe1a8, 0xe5840038),
+    ), "read/write projection", "metadata + 4/+8 -> P + 0x34/+0x38")
+    producer_null = checked_sites((
+        (0xe210, 0xe5840034, {"value": 0}),
+        (0xe214, 0xe5840038, {"value": 0}),
+    ), "write", "P + 0x34/+0x38")
+    cache_transfers = []
+    for direction, sites, source, destination in (
+            ("channel_to_stack", ((0x8418, 0xe3a0208c), (0x841c, 0xe28410ec),
+                                  (0x8420, 0xe28d0020), (0x8424, 0xeb0060b7)),
+             "[C+0xec,C+0x178)", "[P,P+0x8c)"),
+            ("channel_to_stack", ((0x84bc, 0xe3a0208c), (0x84c0, 0xe28410ec),
+                                  (0x84c4, 0xe28d0020), (0x84c8, 0xeb00608e)),
+             "[C+0xec,C+0x178)", "[P,P+0x8c)"),
+            ("stack_to_channel", ((0x86cc, 0xe28400ec), (0x86d0, 0xe3a0208c),
+                                  (0x86d4, 0xe28d1020), (0x86d8, 0xeb00600a)),
+             "[P,P+0x8c)", "[C+0xec,C+0x178)"),
+            ("stack_to_channel", ((0x8744, 0xe28400ec), (0x8748, 0xe3a0208c),
+                                  (0x874c, 0xe28d1020), (0x8750, 0xeb005fec)),
+             "[P,P+0x8c)", "[C+0xec,C+0x178)")):
+        cache_transfers.append({
+            "direction": direction, "source": source, "destination": destination,
+            "bytes": 140,
+            "sites": checked_sites(sites, "copy setup/call", source + " -> " + destination),
+        })
+
+    flag178_reads = checked_sites(((0x84a0, 0xe5d40178),), "read", "C + 0x178")
+    flag178_writes = checked_sites((
+        (0x86ac, 0xe5c45178, {"value": 1}),
+        (0x873c, 0xe5c47178, {"value": 0}),
+        (0x8814, 0xe5c45178, {"value": 1}),
+    ), "write", "C + 0x178")
+    flag180_reads = checked_sites((
+        (0x83bc, 0xe5d40180), (0x88d4, 0xe5d40180),
+        (0xa5bc, 0xe5d40180), (0xa634, 0xe5d40180),
+    ), "read", "C + 0x180")
+    flag180_writes = checked_sites((
+        (0x1354, 0xe5c40180,
+         {"value": 1, "alias_provenance": "conditional",
+          "premise": "incoming r1 == channel root 0xd3a00",
+          "function_entry": 0x12e4}),
+        (0x86a8, 0xe5c45180, {"value": 1}),
+        (0x8738, 0xe5c47180, {"value": 0}),
+        (0x87e4, 0xe5c45180, {"value": 1}),
+        (0x87fc, 0xe5c45180, {"value": 1}),
+        (0x8808, 0xe5c47180, {"value": 0}),
+        (0x8810, 0xe5c45180, {"value": 1}),
+    ), "write", "C + 0x180")
+
+    descriptor_reads = []
+    for expression, entries in (
+            ("D + 0", ((0x77f0, 0xe5940000),)),
+            ("D + 4 and D + 8", ((0x7800, 0xe9940006), (0x784c, 0xe9940006))),
+            ("D + 4", ((0x7814, 0xe5940004), (0x7860, 0xe5940004),
+                       (0x7874, 0xe5940004))),
+            ("D + 8", ((0x780c, 0xe5940008), (0x7858, 0xe5940008)))):
+        descriptor_reads += checked_sites(entries, "read", expression)
+    descriptor_reads.sort(key=lambda record: record["blob_file_offset"])
+    descriptor_write = checked_sites((
+        (0x777c, 0xeb009386, {"bytes": 32, "operation": "BL memcpy"}),
+    ), "range write", "[D,D+0x20)")
+
+    initialization = {
+        "root_clear": {
+            "destination": 0xd3a00, "bytes": 0x74c,
+            "four_slot_bytes": 4 * 0x1cc, "tail_bytes": 0x1c,
+            "sites": checked_sites(((0x55c, 0xe59f0198), (0x560, 0xe300274c),
+                                    (0x564, 0xe3a01000), (0x568, 0xeb00805d)),
+                                   "range write", "[0xd3a00,0xd414c)"),
+        },
+        "reinitialize_clear": {
+            "destination": 0xd3a00, "bytes": 0x74c,
+            "four_slot_bytes": 4 * 0x1cc, "tail_bytes": 0x1c,
+            "sites": checked_sites(((0x89d4, 0xe59f0248), (0x89d8, 0xe300274c),
+                                    (0x89dc, 0xe3a01000), (0x89e0, 0xeb005f3f)),
+                                   "range write", "[0xd3a00,0xd414c)"),
+        },
+        "open_clear": {
+            "destination_expression": "C + 0x10", "bytes": 0x1cc,
+            "nominal_slot_end_expression": "C + 0x1cc",
+            "range_end_expression": "C + 0x1dc",
+            "crosses_nominal_slot_end_by_bytes": 0x10,
+            "sites": checked_sites(((0x5270, 0xe30021cc), (0x5274, 0xe3a01000),
+                                    (0x5278, 0xe0050097), (0x527c, 0xe59b0004),
+                                    (0x5280, 0xe0800105), (0x5284, 0xe2800010),
+                                    (0x5288, 0xeb006d15)),
+                                   "range write", "[C+0x10,C+0x1dc)"),
+        },
+        "fill_helper": {"a32_wrapper": 0x206e4, "helper_isa": "Thumb",
+                        "thumb_value_entry": 0x2c688,
+                        "thumb_fill_entry": 0x2c73c, "fill_byte": 0},
+    }
+
+    bulk_write_paths = ["root_clear", "reinitialize_clear", "open_clear"]
+    fields = {
+        "0x20": {"offset": 0x20, "width_bytes": 4,
+                 "classification": "BXVD decoder channel handle",
+                 "selected_scalar_reads": decoder_reads,
+                 "selected_scalar_writes": decoder_writes,
+                 "bulk_range_write_paths": list(bulk_write_paths),
+                 "selected_accesses_complete": False},
+        "0xbc": {"offset": 0xbc, "width_bytes": 4,
+                 "classification": "XPT playback channel slot handle",
+                 "selected_scalar_reads": playback_reads,
+                 "selected_scalar_writes": playback_writes,
+                 "bulk_range_write_paths": list(bulk_write_paths),
+                 "selected_accesses_complete": False,
+                 "slot_expression": "controller + 0x828 + channel * 0x28",
+                 "separate_allocation_established": False,
+                 "active_RAVE_context_identity_established": False},
+        "0xd4": {"offset": 0xd4, "width_bytes": 4,
+                 "classification": "PVR play object",
+                 "selected_scalar_reads": pvr_reads,
+                 "selected_scalar_writes": pvr_writes,
+                 "bulk_range_write_paths": list(bulk_write_paths),
+                 "selected_accesses_complete": False,
+                 "BXVD_decoder_handle": False},
+        "0x120": {"offset": 0x120, "width_bytes": 4,
+                  "classification": "cached record word at K+0x34 (P+0x34 transfer position)",
+                  "selected_direct_scalar_accesses": [],
+                  "bulk_range_write_paths": list(bulk_write_paths),
+                  "selected_accesses_complete": False,
+                  "projection": "cached_metadata_words"},
+        "0x124": {"offset": 0x124, "width_bytes": 4,
+                  "classification": "cached record word at K+0x38 (P+0x38 transfer position)",
+                  "selected_direct_scalar_accesses": [],
+                  "bulk_range_write_paths": list(bulk_write_paths),
+                  "selected_accesses_complete": False,
+                  "projection": "cached_metadata_words"},
+        "0x178": {"offset": 0x178, "width_bytes": 1,
+                  "classification": "picture-cache fresh/reuse gate",
+                  "selected_scalar_reads": flag178_reads,
+                  "selected_scalar_writes": flag178_writes,
+                  "bulk_range_write_paths": list(bulk_write_paths),
+                  "selected_accesses_complete": False,
+                  "ownership_flag_established": False},
+        "0x180": {"offset": 0x180, "width_bytes": 1,
+                  "classification": "picture refresh/return-path gate",
+                  "selected_scalar_reads": flag180_reads,
+                  "selected_scalar_writes": flag180_writes,
+                  "bulk_range_write_paths": list(bulk_write_paths),
+                  "selected_accesses_complete": False,
+                  "ownership_flag_established": False},
+        "0x188": {"offset": 0x188, "width_bytes": 32,
+                  "classification": "host Y-RX descriptor record",
+                  "selected_range_writes": descriptor_write,
+                  "selected_scalar_reads": descriptor_reads,
+                  "bulk_range_write_paths": list(bulk_write_paths),
+                  "selected_accesses_complete": False,
+                  "bytes_read_by_admission": 12, "remaining_bytes_read_by_admission": False,
+                  "producer_source_proven": False,
+                  "admission": admission},
+    }
+    return {
+        "schema_version": 1, "kind": "stock-arm-channel-field-inventory",
+        "isa": "A32", "endianness": "little",
+        "device_observed": False,
+        "validation": {"region_count": len(validated), "bytes": total,
+                       "regions": validated,
+                       "dependency_region_count": len(dependency_regions),
+                       "dependency_bytes": dependency_total,
+                       "aggregate_region_count": len(validated) + len(dependency_regions),
+                       "aggregate_bytes_charged": total + dependency_total,
+                       "aggregate_overlap_deduplicated": False,
+                       "rx_descriptor_admission": admission["validation"]},
+        "channel": {
+            "root": root, "init_root": init_root, "reinitialize_root": reinit_root,
+            "slot_count": 4, "slot_stride_words": 0x73,
+            "slot_stride_bytes": 0x1cc,
+            "channel_expression": "C = 0xd3a00 + slot * 0x1cc",
+            "derivation_sites": anchors,
+            "aliases": {"W": "C + 0x18", "X": "C + 0xac",
+                        "K": "C + 0xec", "D": "C + 0x188", "P": "sp + 0x20"},
+            "host_interface_handoff": {
+                "scope": "on successful init",
+                "global_address": 0xd1ff4, "context_output_address": 0xd1ff8,
+                "host_start_global": host_start_global,
+                "device_start_global": device_start_global,
+                "device_start_output": device_start_output,
+            },
+        },
+        "initialization": initialization,
+        "access_inventory": {
+            "kind": "selected pinned CPU access sites plus explicit bulk clear paths",
+            "bulk_range_write_paths": list(bulk_write_paths),
+            "per_field_access_inventory_complete": False,
+        },
+        "fields": fields,
+        "projections": {
+            "cached_metadata_words": {
+                "producer_nonnull": producer_nonnull, "producer_null": producer_null,
+                "cache_range": "[C+0xec,C+0x178)", "cache_bytes": 140,
+                "cache_address_projection": [
+                    "C+0x120 == K+0x34",
+                    "C+0x124 == K+0x38",
+                ],
+                "nonnull_fresh_path_writes": [
+                    "P+0x34 <- metadata+4",
+                    "P+0x38 <- metadata+8",
+                ],
+                "null_path_writes": ["P+0x34 <- 0", "P+0x38 <- 0"],
+                "reuse_path": "existing [C+0xec,C+0x178) is copied to P",
+                "transfers": cache_transfers,
+                "range_end_excludes_flag_0x178": True,
+                "intervening_callee_preservation_verified": False,
+                "published_value_equivalence_established": False,
+                "cache_value_currentness_established": False,
+            },
+        },
+        "argument_conditional_aliases": list(argument_conditional_aliases),
+        "control_flow": control_flow,
+        "excluded_lookalikes": [
+            {"blob_file_offsets": [0xf96c, 0xf97c], "encoded_offset": 0xd4,
+             "reason": "base is the allocated BXVD object, not C"},
+            {"encoded_offset": 0x120,
+             "reason": "other base registers with the same immediate are outside the proved C aliases"},
+        ],
+        "scope": {
+            "all_decoded_instruction_and_literal_offsets_inside_pinned_regions": True,
+            "all_reported_branch_targets_inside_pinned_regions": False,
+            "fixed_root_derived_aliases_are_pinned": True,
+            "all_listed_accesses_have_fixed_root_provenance": False,
+            "argument_rooted_aliases_are_conditional": True,
+            "per_field_access_inventory_complete": False,
+            "complete_function_envelopes": False,
+            "whole_image_instruction_scan": False,
+            "complete_firmware_alias_recovery": False,
+            "opaque_callee_aliases_complete": False,
+            "arc_or_dma_writers_complete": False,
+            "runtime_object_identity": False,
+            "source_address_units": False,
+            "source_allocation_extent": False,
+            "source_plane_lease": False,
+            "flags_form_ownership_contract": False,
+            "descriptor_producer_source_proven": False,
+            "descriptor_dma_completion": False,
+        },
+        "assumptions": [
+            "A32 calls use the pinned calling convention and output pointers remain unaliased for each serialized call.",
+            "Three argument-rooted helpers are conditional on their stated incoming C-root premise; their fixed-root callers are not pinned.",
+            "Selected scalar access lists exclude unpinned aliases and are not whole-image access inventories; the three pinned bulk clear paths are listed separately.",
+            "Reported branch targets are decoded from pinned call instructions; target bodies are not thereby claimed as pinned.",
+            "The generic clear and copy helpers operate on the exact argument ranges shown by their pinned wrappers and bodies.",
+            "After successful init, host interface +4 retains its 0xd3a00 output while serialized START reads it.",
+            "Static handle and field roles do not establish live runtime ownership, address units, allocation extent or completion.",
+        ],
+    }
+
+
 _PPB_BANK_RELEASE_EDGES = (
     ("returned", "Core_Run", 2, 0x51a4, 0x51a8, 0x3000),
     ("latest", "Core_OrderPIF_ReleaseOnLatest", 4, 0x9280, 0x9284, 0x4000),
@@ -7917,7 +8495,7 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
             arc_metadata=False, csc_command=False, command_buffer_bridge=False, inner_descriptor=False,
             scaler_fir=False, ppb_handoff=False, ppb_source=False, ppb_saved_context=False, ppb_stop_context=False,
             ppb_fixed_metadata=False, ppb_return_header=False, ppb_bank_ledger=None,
-            debug_mechanisms=False, rx_descriptor_admission=False):
+            debug_mechanisms=False, rx_descriptor_admission=False, channel_fields=False):
     if len(data) < 24 or len(data) > MAX_FIRMWARE_SIZE or len(data) % 4:
         raise FormatError("invalid BCM70015 firmware size")
     sha256 = hashlib.sha256(data).hexdigest()
@@ -7955,6 +8533,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         raise FormatError("--debug-mechanisms requires the exact bundled firmware SHA-256 and size")
     if rx_descriptor_admission and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
         raise FormatError("--rx-descriptor-admission requires the exact bundled firmware SHA-256 and size")
+    if channel_fields and (sha256 != BUNDLED_SHA256 or len(data) != BUNDLED_SIZE):
+        raise FormatError("--channel-fields requires the exact bundled firmware SHA-256 and size")
     payload = data[:-TRAILER_SIZE]
     length_slot = struct.unpack_from("<I", data, len(payload))[0]
     if length_slot != 16:
@@ -8057,6 +8637,8 @@ def analyze(data, wanted=DEFAULT_SYMBOLS, expected_sha256=BUNDLED_SHA256,
         result["debug_mechanisms"] = _debug_mechanism_map(payload, images)
     if rx_descriptor_admission:
         result["rx_descriptor_admission"] = _rx_descriptor_admission_map(payload)
+    if channel_fields:
+        result["channel_fields"] = _channel_field_map(payload)
     return result
 
 
@@ -8110,6 +8692,8 @@ def main(argv=None):
         "bundled firmware only, not runtime accessibility"))
     parser.add_argument("--rx-descriptor-admission", action="store_true", help=(
         "validate fixed Y-RX descriptor publication; bundled firmware only, not DMA completion"))
+    parser.add_argument("--channel-fields", action="store_true", help=(
+        "inventory selected fixed A32 channel-field accesses; not whole-image alias recovery"))
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-fA-F]{64}", args.expect_sha256):
         parser.error("--expect-sha256 must be 64 hexadecimal digits")
@@ -8119,7 +8703,8 @@ def main(argv=None):
                          args.picture_output, args.arc_metadata, args.csc_command, args.command_buffer_bridge,
                          args.inner_descriptor, args.scaler_fir, args.ppb_handoff, args.ppb_source,
                          args.ppb_saved_context, args.ppb_stop_context, args.ppb_fixed_metadata, args.ppb_return_header,
-                         args.ppb_bank_ledger, args.debug_mechanisms, args.rx_descriptor_admission)
+                         args.ppb_bank_ledger, args.debug_mechanisms, args.rx_descriptor_admission,
+                         args.channel_fields)
     except (OSError, FormatError) as error:
         print(f"flea_fw_map: {error}", file=sys.stderr)
         return 1
