@@ -117,7 +117,7 @@ rates from 5 to 20 Mbit/s did not materially change the 720p result.
 
 Unmodified Moonlight produced CrystalHD output at about 59 fps for 720p60 and
 30 fps for 1080p30, but its indirect presentation path rendered only about 34
-and 15 fps respectively. A 1080p60 stream accumulated an unbounded decoder
+and 15 fps respectively. A 1080p60 stream accumulated a multi-second decoder
 backlog. These are capacity and bottleneck measurements, not 50/60 fps support
 certification: the backend still signals 30 fps and visible presentation has
 not met those rates. Methods, resource use and measurement boundaries are in
