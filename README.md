@@ -109,7 +109,10 @@ ffmpeg -hwaccel vaapi -hwaccel_device "$drm_node" \
 `vainfo` proves that libva found and initialized the installed driver; it does
 not submit a compressed stream or prove hardware decode. The VA backend is
 experimental and can be slow for synchronous one-picture-at-a-time clients.
-See its [supported profiles and replay limits](filters/vaapi/README.md).
+See its [supported profiles and replay limits](filters/vaapi/README.md). The
+[reference-host performance baseline](HARDWARE-2026-09-13.md#va-api-decode-and-game-stream-baseline-2026-10-10)
+separates card output capacity from client presentation; it is not a general
+real-time playback claim.
 
 ## 32-bit and legacy CPUs
 
