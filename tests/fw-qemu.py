@@ -56,10 +56,27 @@ METADATA_CALLS = {
 META_DEL, META_REL, META_RECORD = 0x400100, 0x401100, 0x500100
 META_MAP, META_HEAD, META_SP = 0x600100, 0x600400, 0x300800
 META_PAGES = (Model.H, 0x300000, 0x400000, 0x401000, 0x500000, 0x600000)
+RX_ADMISSION_BODY = (
+    "rx-admission", 0x77e0, 0x7898,
+    "7cd183a9c2450240eb1595af092f546cad349438c8b30adc05a34e9cec768105",
+)
+RX_ADMISSION_CALLER = (
+    0x8818, 0x8824,
+    "99e4349b34fecb1edd15dbeada9d680bae714f57c2861c3669d3faa3dbc0e128",
+)
+RX_ADMISSION_LITERAL = (0x79b0, struct.pack("<I", 0x10502000))
+RX_ADMISSION_CALLS = {
+    0x77ec: 0xaf18, 0x7808: 0x203c4, 0x7824: 0xaf18,
+    0x783c: 0xaf18, 0x7854: 0x203c4, 0x7870: 0xaf18, 0x7888: 0xaf18,
+}
+RX_ADMISSION_TAILS = {0x7848: 0x203c4, 0x7894: 0x203c4}
+RX_RECORD, RX_STACK = 0x400100, 0x300800
+RX_PAGES = (0x300000, 0x400000, 0x10502000)
 PICTURE_BODIES = (
     ("picture", 0x834c, 0x8838, "e2e7a336ede34b0f3f170cc26476debb81ad4cd0eb3862dd1ab3968db7ee07a3"),
     ("format", 0x78dc, 0x79a8, "2b48db9af14d92ab297a738cae94fbb693c6af39b6a2929a47097b7ac079fa91"),
     ("irq", 0x888c, 0x8948, "110a0aa7e8d7845c6ba5854114808d7cc9e067dd2bcac1a746e4a159d15d6ba5"),
+    RX_ADMISSION_BODY,
 )
 # Complete source guards are pinned but never executed as privileged guest code.
 PICTURE_GUARDS = (
@@ -89,6 +106,7 @@ PICTURE_WORDS = {
     0x88d4: 0xe5d40180, 0x8938: 0xe5950008, 0x893c: 0xe28410e0,
 }
 PICTURE_CALLS = dict(METADATA_CALLS)
+PICTURE_CALLS.update(RX_ADMISSION_CALLS)
 PICTURE_CALLS.update({
     0x8368: 0x70f0, 0x836c: 0x898, 0x83a4: 0x710c, 0x83ac: 0xaf18,
     0x83d8: 0x203c4, 0x83e8: 0x20708, 0x8424: 0x20708, 0x8434: 0x203c4,
@@ -104,7 +122,7 @@ PICTURE_CALLS.update({
     0x88a4: 0x898, 0x88b4: 0x203c4, 0x88e4: 0xaf18, 0x890c: 0x203c4,
     0x892c: 0x203c4, 0x8934: 0xaf18, 0x8940: 0xd5a4,
 })
-PICTURE_TAILS = {0x7970: 0x203c4, 0x79a4: 0x203c4}
+PICTURE_TAILS = {0x7970: 0x203c4, 0x79a4: 0x203c4, **RX_ADMISSION_TAILS}
 PICTURE_ROOT, PICTURE_TOKEN = 0xd3a00, 0x710100
 PICTURE_PAGES = META_PAGES + (0xd3000, 0xd2000, 0x10502000, 0x10540000, 0x10541000)
 MFD_SOURCE_BODIES = (
@@ -363,10 +381,15 @@ def emulate(image, pages, registers, slices, callees, callee, budget,
             expected_signal=None, clobber_flags=0, real_callees=(), call_edges=None,
             tail_edges=None, instruction=None):
     """Single-step only admitted stock slices; synthetic callees never execute."""
+    tail_owners = {(0x7970, 0x203c4): 0x78dc, (0x79a4, 0x203c4): 0x78dc,
+                   (0x7848, 0x203c4): 0x77e0, (0x7894, 0x203c4): 0x77e0}
+    entry_pc = registers[15] if len(registers) > 15 else None
     if tail_edges is not None and (type(tail_edges) is not dict or
             any(type(site) is not int or type(target) is not int or
-                (site, target) not in ((0x7970, 0x203c4), (0x79a4, 0x203c4)) or target not in callees
-                for site, target in tail_edges.items()) or 0x78dc not in real_callees):
+                (site, target) not in tail_owners or target not in callees or
+                (tail_owners[(site, target)] != entry_pc and
+                 tail_owners[(site, target)] not in real_callees)
+                for site, target in tail_edges.items())):
         raise ValueError("invalid pinned tail edges")
     qemu = shutil.which(os.environ.get("QEMU_ARM", "qemu-arm"))
     if not qemu:
@@ -450,9 +473,13 @@ def emulate(image, pages, registers, slices, callees, callee, budget,
                                     stub_status=stub_status, real_status=real_status)
                     if pc in callees or pc in real_callees:
                         tail = tail_edges is not None and tail_edges.get(last_pc) == pc
-                        if tail and (not real_returns or real_returns[-1][1] != 0x78dc or
-                                     registers[14] != real_returns[-1][0]):
-                            raise ValueError("unexpected pinned tail LR")
+                        if tail:
+                            owner = tail_owners[(last_pc, pc)]
+                            if ((real_returns and (real_returns[-1][1] != owner or
+                                                   registers[14] != real_returns[-1][0])) or
+                                    (not real_returns and
+                                     (owner != entry_pc or registers[14] != RETURN))):
+                                raise ValueError("unexpected pinned tail LR")
                         if last_pc is None or (not tail and registers[14] != last_pc + 4):
                             raise ValueError("unexpected pinned call ABI")
                         if call_edges is not None and not tail and call_edges.get(last_pc) != pc:
@@ -670,6 +697,112 @@ def execute_metadata(kind, read=None, write=None, null_ring=False, null_output=F
     return actual
 
 
+def execute_rx_admission(selector=0, low=0x20, high=0x12345678,
+                         logger_status=0, budget=64, payload=None):
+    """Execute the pinned stock Y-RX descriptor-admission body in bounded RAM.
+
+    UART and log callees are synthetic contracts. Fixed MMIO-numbered memory is
+    ordinary guest RAM, so observed stores prove CPU program order only; they do
+    not model device visibility, descriptor validity or DMA completion.
+    """
+    values = (selector, low, high, logger_status)
+    if any(type(value) is not int or not 0 <= value <= 0xffffffff for value in values):
+        raise ValueError("invalid synthetic RX admission arguments")
+    if type(budget) is not int or not 1 <= budget <= 64:
+        raise ValueError("invalid RX admission instruction budget")
+    payload = Model.payload if payload is None else payload
+    if type(payload) not in (bytes, bytearray):
+        raise ValueError("invalid RX admission payload")
+    name, start, end, digest = RX_ADMISSION_BODY
+    if hashlib.sha256(payload[start:end]).hexdigest() != digest:
+        raise ValueError("stock RX admission body changed")
+    caller_start, caller_end, caller_digest = RX_ADMISSION_CALLER
+    if hashlib.sha256(payload[caller_start:caller_end]).hexdigest() != caller_digest:
+        raise ValueError("stock RX admission caller changed")
+    literal_address, literal = RX_ADMISSION_LITERAL
+    if payload[literal_address:literal_address + len(literal)] != literal:
+        raise ValueError("stock RX admission literal changed")
+
+    code_base = 0x7000
+    code = bytearray(struct.pack("<I", 0xe7f000f0) * 1024)
+    code[start - code_base:end - code_base] = payload[start:end]
+    code[literal_address - code_base:literal_address - code_base + 4] = literal
+    for site, target in {**RX_ADMISSION_CALLS, **RX_ADMISSION_TAILS}.items():
+        word = struct.unpack_from("<I", payload, site)[0]
+        displacement = (word & 0xffffff) << 2
+        if displacement & 0x2000000:
+            displacement -= 0x4000000
+        expected_opcode = 0xea000000 if site in RX_ADMISSION_TAILS else 0xeb000000
+        if word & 0xff000000 != expected_opcode or \
+                (site + 8 + displacement) & 0xffffffff != target:
+            raise ValueError("stock RX admission call target changed")
+
+    pages = {base: bytearray(b"\xa5" * 4096) for base in RX_PAGES}
+    record = struct.pack("<8I", selector, low, high, 0xd3d30003, 0xd4d40004,
+                         0xd5d50005, 0xd6d60006, 0xd7d70007)
+    pages[RX_RECORD & ~4095][RX_RECORD & 4095:(RX_RECORD & 4095) + len(record)] = record
+    sentinels = {0x10502040: 0xa0a00000, 0x10502044: 0xa0a00004,
+                 0x10502048: 0xb1b10001, 0x1050204c: 0xb1b10005}
+    for address, value in sentinels.items():
+        struct.pack_into("<I", pages[address & ~4095], address & 4095, value)
+    initial = {base: bytes(page) for base, page in pages.items()}
+    expected = {base: bytearray(page) for base, page in pages.items()}
+    registers = [0xabc00000 + index for index in range(16)]
+    registers[0], registers[13:16] = RX_RECORD, [RX_STACK, RETURN, start]
+    image = segment_elf([(code_base, bytes(code), 5)] +
+                        [(base, bytes(page), 6) for base, page in pages.items()], start)
+    writes, opaque = [], []
+
+    def put_word(address, value):
+        struct.pack_into("<I", expected[address & ~4095], address & 4095,
+                         value & 0xffffffff)
+
+    def instruction(rsp, pc, regs):
+        if pc == start:
+            put_word(RX_STACK - 16, regs[4])
+            put_word(RX_STACK - 12, regs[5])
+            put_word(RX_STACK - 8, regs[6])
+            put_word(RX_STACK - 4, regs[14])
+        stores = {0x7810: 0x1050204c, 0x7830: 0x10502048,
+                  0x785c: 0x10502044, 0x787c: 0x10502040}
+        if pc in stores:
+            address = stores[pc]
+            if regs[5] != 0x10502000:
+                raise ValueError("unexpected RX admission MMIO base")
+            writes.append((pc, address, regs[0]))
+            put_word(address, regs[0])
+
+    def contract(rsp, pc, args, stack):
+        if pc == 0xaf18:
+            if stack != RX_STACK - 16:
+                raise ValueError("unexpected RX admission UART stack")
+            if args[0] not in (ord("Y"), ord("0"), ord("1"), ord("e")):
+                raise ValueError("unexpected RX admission UART character")
+            opaque.append((pc, args[0]))
+            return 0
+        if pc == 0x203c4:
+            if stack not in (RX_STACK - 16, RX_STACK) or \
+                    (stack == RX_STACK and args[0] != 0x79e0):
+                raise ValueError("unexpected RX admission log stack")
+            opaque.append((pc, args[0]))
+            return logger_status
+        raise ValueError("unexpected RX admission opaque helper")
+
+    actual = emulate(image, pages, registers, ((start, end),), (0xaf18, 0x203c4),
+                     contract, budget, clobber_flags=0xf0000000,
+                     call_edges=RX_ADMISSION_CALLS, tail_edges=RX_ADMISSION_TAILS,
+                     instruction=instruction)
+    expected_bytes = {base: bytes(page) for base, page in expected.items()}
+    if actual["pages"] != expected_bytes or \
+            actual["pages"][RX_RECORD & ~4095][RX_RECORD & 4095:
+                                                   (RX_RECORD & 4095) + len(record)] != record:
+        raise ValueError("RX admission full-page oracle changed")
+    actual.update(selector=selector, low=low, high=high, logger_status=logger_status,
+                  initial=initial, expected=expected_bytes, writes=writes, opaque=opaque,
+                  record=record, completion_observed=False)
+    return actual
+
+
 class PictureRAM(tuple):
     """Detached synthetic slot-0 RAM, not native ownership or a generation."""
     def __new__(cls, pages, picture):
@@ -718,8 +851,9 @@ def execute_picture(kind="picture", mode=2, single_field=False, active=1, starte
                     previous=None, budget=512, payload=None):
     """Actual slot-0 instructions with bounded, explicitly opaque CPU contracts.
 
-    E110 supplies a synthetic 140-byte picture; MFD setup/build/kick and RX-list
-    publication are contracts, not engines. CPSID/CPSIE are separately pinned:
+    E110 supplies a synthetic 140-byte picture; MFD setup/build/kick are
+    contracts, while the pinned RX-list publication body executes directly.
+    Its UART/log helpers remain opaque. CPSID/CPSIE are separately pinned:
     enter/leave events do not emulate IRQ/FIQ exclusion or barrier visibility.
     IRQ is invoked only after a scheduler return, never asynchronously. Fixed
     MMIO-numbered pages are ordinary guest RAM. No plane scalar is dereferenced.
@@ -778,6 +912,10 @@ def execute_picture(kind="picture", mode=2, single_field=False, active=1, starte
     put(PICTURE_ROOT + 0xe0, struct.pack("<3I", META_RECORD,
                                       PICTURE_TOKEN if cached_physical else 0, 0xdec0adde))
     put(PICTURE_ROOT + 0xec, picture)
+    rx_descriptor = struct.pack("<8I", 0, 0x00940020, 1, 0xd3d30003,
+                                0xd4d40004, 0xd5d50005, 0xd6d60006, 0xd7d70007)
+    put(PICTURE_ROOT + 0x188, rx_descriptor)
+    put(PICTURE_ROOT + 0x1a8, b"\x01")
     if format_change:
         word(PICTURE_ROOT + 0x100, 128)
     if previous is not None:
@@ -795,6 +933,8 @@ def execute_picture(kind="picture", mode=2, single_field=False, active=1, starte
             load(META_RECORD) not in (0, 0x100) or \
             load(PICTURE_ROOT + 0xe0) != META_RECORD or \
             load(PICTURE_ROOT + 0xe4) not in (0, PICTURE_TOKEN) or \
+            get(PICTURE_ROOT + 0x188, 32) != rx_descriptor or \
+            get(PICTURE_ROOT + 0x1a8, 1)[0] not in (0, 1) or \
             any(get(PICTURE_ROOT + offset, 1)[0] not in (0, 1)
                 for offset in (0xc5, 0x178, 0x180, 0x181, 0x1cd)) or \
             picture[8] not in (0, 1, 2) or len(picture) != 140 or picture[0x1d] != 1 or \
@@ -808,14 +948,36 @@ def execute_picture(kind="picture", mode=2, single_field=False, active=1, starte
     registers[:2] = [0, 0x100]
     registers[13:16] = [META_SP, RETURN, start]
     frame = META_SP - 200
-    events, publication, depth = [], [], 0
+    events, publication, rx_order, rx_writes, depth = [], [], [], [], 0
     pushes = {0x834c: (4, 5, 6, 7, 8, 9, 14), 0x78dc: (4, 5, 6, 14),
+              0x77e0: (4, 5, 6, 14),
               0xd624: (4, 5, 6, 7, 8, 14), 0x1fdac: (4, 5, 14),
               0x888c: (4, 5, 6, 14), 0xd5a4: (4, 5, 6, 7, 8, 9, 10, 14)}
     def instruction(rsp, pc, regs):
         if pc in pushes:
             values = [regs[index] for index in pushes[pc]]
             put(regs[13] - len(values) * 4, struct.pack("<" + "I" * len(values), *values), expected)
+        if pc == 0x77e0:
+            if regs[0] != PICTURE_ROOT + 0x188 or depth != 1:
+                raise ValueError("unexpected picture RX publication")
+            events.append(("rx-publish",))
+            rx_order.append(("admission-enter",))
+        rx_stores = {0x7810: (0x1050204c, "high"),
+                     0x7830: (0x10502048, "low-valid"),
+                     0x785c: (0x10502044, "high"),
+                     0x787c: (0x10502040, "low-valid")}
+        if pc in rx_stores:
+            address, role = rx_stores[pc]
+            descriptor = struct.unpack("<3I", get(PICTURE_ROOT + 0x188, 12, expected))
+            wanted = descriptor[2] if role == "high" else descriptor[1] | 1
+            if regs[5] != 0x10502000 or regs[0] != wanted:
+                raise ValueError("unexpected picture RX register publication")
+            rx_writes.append((pc, address, regs[0]))
+            rx_order.append((role, address, regs[0]))
+        if pc == 0x8820:
+            if regs[7] != 0:
+                raise ValueError("unexpected picture pending-store value")
+            rx_order.append(("pending-store", PICTURE_ROOT + 0x1a8, regs[7]))
         if pc in (0x835c, 0x8360):
             word(frame + (0x10 if pc == 0x835c else 0x0c), 0, expected)
         if pc in (0x850c, 0x8628):
@@ -900,10 +1062,7 @@ def execute_picture(kind="picture", mode=2, single_field=False, active=1, starte
                 raise ValueError("kick outside synthetic critical region")
             events.append(("kick", args[0], rsp.memory(PICTURE_ROOT + 0xe0, size=12),
                            rsp.memory(PICTURE_ROOT + 0x180, size=2)))
-        elif pc == 0x77e0:
-            if args[0] != PICTURE_ROOT + 0x188 or depth != 1:
-                raise ValueError("unexpected picture RX publication")
-            events.append(("rx-publish",))
+            rx_order.append(("kick-contract", args[0]))
         elif pc == 0x203c4:
             if args[0] == 0xd7f8:
                 write = load(META_REL + 4)
@@ -951,17 +1110,23 @@ def execute_picture(kind="picture", mode=2, single_field=False, active=1, starte
                 put(PICTURE_ROOT + 0x180, bytes([1 if p[8] == 2 or single_field or phase else 0]), expected)
                 if p[8] != 2:
                     put(PICTURE_ROOT + 0x181, bytes([0 if single_field or phase else 1]), expected)
+        selector, rx_low, rx_high = struct.unpack("<3I", get(PICTURE_ROOT + 0x188, 12))
+        selected = 1 if selector else 0
+        word(0x10502044 + selected * 8, rx_high, expected)
+        if rx_low:
+            word(0x10502040 + selected * 8, rx_low | 1, expected)
         put(PICTURE_ROOT + 0x1a8, b"\0", expected)
     if kind == "irq":
         word(0x10541208, 0xc3, expected)
         word(0xd2214, 0, expected)
     actual = emulate(image, pages, registers,
-                     ((0x834c, 0x8520), (0x85dc, 0x8838), (0x78dc, 0x79a8), (0x888c, 0x8948)) +
+                     ((0x834c, 0x8520), (0x85dc, 0x8838), (0x77e0, 0x7898),
+                      (0x78dc, 0x79a8), (0x888c, 0x8948)) +
                      tuple((low, high) for _, low, high, _ in METADATA_BODIES),
                      (0x70f0, 0x710c, 0x898, 0x203c4, 0x20708, 0x206e4, 0xe110,
-                      0x1bfc, 0x82d0, 0x1f8c, 0x7bd4, 0x7898, 0x77e0, 0xaf18),
+                      0x1bfc, 0x82d0, 0x1f8c, 0x7bd4, 0x7898, 0xaf18),
                      contract, budget, clobber_flags=0xf0000000,
-                     real_callees=(0x78dc, 0xd624, 0xd5a4, 0x1fdac),
+                     real_callees=(0x78dc, 0x77e0, 0xd624, 0xd5a4, 0x1fdac),
                      call_edges=PICTURE_CALLS, tail_edges=PICTURE_TAILS, instruction=instruction)
     if depth != 0 or actual["pages"] != {base: bytes(page) for base, page in expected.items()}:
         differences = [hex(base + offset) for base, page in expected.items()
@@ -969,6 +1134,7 @@ def execute_picture(kind="picture", mode=2, single_field=False, active=1, starte
                        if wanted != got][:8]
         raise ValueError("picture full-page/critical oracle changed: " + ",".join(differences))
     actual.update(kind=kind, events=events, publication=publication,
+                  rx_order=rx_order, rx_writes=rx_writes,
                   expected={base: bytes(page) for base, page in expected.items()},
                   snapshot=PictureRAM(actual["pages"], picture))
     return actual
@@ -1687,6 +1853,97 @@ class FirmwareQemuTests(unittest.TestCase):
                 execute_metadata("acquire")
 
 
+class FirmwareRxDescriptorQemuTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        FirmwareQemuTests.setUpClass()
+
+    def test_selector_low_high_cross_product_and_full_page_oracle(self):
+        for selector in (0, 1, 2, 0xffffffff):
+            for low in (0, 1, 0x20, 0x22, 0xffffffff):
+                for high in (0, 0x12345678, 0xffffffff):
+                    with self.subTest(selector=selector, low=low, high=high):
+                        logger_status = 0xc0dec0de
+                        actual = execute_rx_admission(selector, low, high, logger_status)
+                        selected = 1 if selector else 0
+                        high_address = 0x10502044 + selected * 8
+                        low_address = 0x10502040 + selected * 8
+                        expected_writes = [(0x7810 if selected else 0x785c,
+                                            high_address, high)]
+                        if low:
+                            expected_writes.append((0x7830 if selected else 0x787c,
+                                                    low_address, low | 1))
+                        self.assertEqual(actual["writes"], expected_writes)
+                        mmio = actual["pages"][0x10502000]
+                        initial = actual["initial"][0x10502000]
+                        self.assertEqual(struct.unpack_from("<I", mmio, high_address & 4095)[0], high)
+                        self.assertEqual(struct.unpack_from("<I", mmio, low_address & 4095)[0],
+                                         low | 1 if low else
+                                         struct.unpack_from("<I", initial, low_address & 4095)[0])
+                        other = 0 if selected else 1
+                        for address in (0x10502040 + other * 8, 0x10502044 + other * 8):
+                            self.assertEqual(mmio[address & 4095:(address & 4095) + 4],
+                                             initial[address & 4095:(address & 4095) + 4])
+                        record_offset = RX_RECORD & 4095
+                        self.assertEqual(actual["pages"][0x400000]
+                                         [record_offset:record_offset + len(actual["record"])],
+                                         actual["record"])
+                        self.assertEqual(actual["status"], low | 1 if low else logger_status)
+                        self.assertFalse(actual["completion_observed"])
+                        self.assertEqual(actual["pages"], actual["expected"])
+                        uart = [value for target, value in actual["opaque"] if target == 0xaf18]
+                        self.assertEqual(uart, [ord("Y"), ord("1" if selected else "0")] if low
+                                         else [ord("Y"), ord("e")])
+
+    def test_complete_body_caller_literal_pins_refuse_before_spawn(self):
+        regions = ((RX_ADMISSION_BODY[1], RX_ADMISSION_BODY[2]),
+                   (RX_ADMISSION_CALLER[0], RX_ADMISSION_CALLER[1]),
+                   (RX_ADMISSION_LITERAL[0], RX_ADMISSION_LITERAL[0] + 4))
+        for start, end in regions:
+            for offset in range(start, end):
+                changed = bytearray(Model.payload)
+                changed[offset] ^= 1
+                with self.subTest(offset=offset), mock.patch.object(subprocess, "Popen") as spawn:
+                    with self.assertRaisesRegex(ValueError, "stock RX admission"):
+                        execute_rx_admission(payload=changed)
+                    spawn.assert_not_called()
+
+    def test_input_budget_call_edge_and_root_tail_guards(self):
+        invalid = (dict(selector=True), dict(selector=-1), dict(selector=1 << 32),
+                   dict(low=True), dict(low=-1), dict(low=1 << 32),
+                   dict(high=True), dict(high=-1), dict(high=1 << 32),
+                   dict(logger_status=True), dict(logger_status=-1),
+                   dict(logger_status=1 << 32), dict(budget=True), dict(budget=0),
+                   dict(budget=65), dict(payload=[]))
+        for options in invalid:
+            with self.subTest(options=options), mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaisesRegex(ValueError, "invalid"):
+                    execute_rx_admission(**options)
+                spawn.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "instruction budget exceeded"):
+            execute_rx_admission(budget=1)
+        with mock.patch.dict(RX_ADMISSION_CALLS, {0x77ec: 0x203c4}, clear=True), \
+                mock.patch.object(subprocess, "Popen") as spawn, \
+                self.assertRaisesRegex(ValueError, "call target changed"):
+            execute_rx_admission()
+        spawn.assert_not_called()
+        with mock.patch.dict(RX_ADMISSION_TAILS, {0x7970: 0x203c4}, clear=True), \
+                mock.patch.object(subprocess, "Popen") as spawn, \
+                self.assertRaisesRegex(ValueError, "pinned tail edges"):
+            execute_rx_admission()
+        spawn.assert_not_called()
+
+        original = RSP.registers
+        def corrupt_tail_lr(rsp):
+            registers = original(rsp)
+            if registers[15] == 0x203c4 and registers[13] == RX_STACK:
+                registers[14] ^= 4
+            return registers
+        with mock.patch.object(RSP, "registers", corrupt_tail_lr), \
+                self.assertRaisesRegex(ValueError, "pinned tail LR"):
+            execute_rx_admission(low=0)
+
+
 class FirmwarePictureQemuTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -1709,7 +1966,7 @@ class FirmwarePictureQemuTests(unittest.TestCase):
         cached = self.check(execute_picture(previous=idle_irq["snapshot"]))
         returned = self.check(execute_picture("irq", previous=cached["snapshot"]))
         self.assertEqual([first["steps"], idle_irq["steps"], cached["steps"], returned["steps"]],
-                         [223, 39, 121, 70])
+                         [246, 39, 144, 70])
         self.assertEqual(self.state(first), (1, 0, 0, 0))
         self.assertEqual(self.state(cached), (1, 1, 1, 0))
         self.assertEqual([(site, target) for site, target, _ in first["calls"]], [
@@ -1718,17 +1975,25 @@ class FirmwarePictureQemuTests(unittest.TestCase):
             (0x85f8, 0xe110), (0x8608, 0x203c4), (0x84dc, 0x1bfc), (0x8614, 0x82d0),
             (0x8634, 0x1f8c), (0x8650, 0x78dc), (0x7970, 0x203c4), (0x86c8, 0xaf18),
             (0x86d8, 0x20708), (0x8710, 0x7bd4), (0x871c, 0x7898), (0x8734, 0x20708),
-            (0x881c, 0x77e0), (0x8830, 0x710c)])
+            (0x881c, 0x77e0), (0x77ec, 0xaf18), (0x7854, 0x203c4),
+            (0x7870, 0xaf18), (0x8830, 0x710c)])
         self.assertEqual([(site, target) for site, target, _ in cached["calls"]], [
             (0x8368, 0x70f0), (0x836c, 0x898), (0x83d8, 0x203c4), (0x83e8, 0x20708),
             (0x84c8, 0x20708), (0x84dc, 0x1bfc), (0x8614, 0x82d0), (0x8634, 0x1f8c),
             (0x8750, 0x20708), (0x8768, 0x7bd4), (0x87b0, 0x7898), (0x87c4, 0x20708),
-            (0x881c, 0x77e0), (0x8830, 0x710c)])
+            (0x881c, 0x77e0), (0x77ec, 0xaf18), (0x7854, 0x203c4),
+            (0x7870, 0xaf18), (0x8830, 0x710c)])
         for actual, kick_mode in ((first, 1), (cached, 0)):
             self.assertEqual([event[0] for event in actual["events"]],
                              ["enter", "build", "kick", "rx-publish", "leave"])
             self.assertEqual(actual["events"][2][1], kick_mode)
             self.assertEqual(actual["events"][1][3][:8], struct.pack("<2I", META_RECORD, PICTURE_TOKEN))
+            self.assertEqual(actual["rx_writes"], [
+                (0x785c, 0x10502044, 1), (0x787c, 0x10502040, 0x00940021)])
+            self.assertEqual(actual["rx_order"], [
+                ("kick-contract", kick_mode), ("admission-enter",),
+                ("high", 0x10502044, 1), ("low-valid", 0x10502040, 0x00940021),
+                ("pending-store", PICTURE_ROOT + 0x1a8, 0)])
         # The real first kick precedes cache publication. Delivery of this
         # synthetic IRQ is deferred until leave, not simulated during the kick.
         self.assertEqual(first["events"][2][2][-4:], struct.pack("<I", 0xdec0adde))
@@ -1740,7 +2005,8 @@ class FirmwarePictureQemuTests(unittest.TestCase):
         self.assertEqual(struct.unpack_from("<3I", returned["pages"][0x401000], 0x100),
                          (2, 3, PICTURE_TOKEN))
         self.assertEqual(struct.unpack_from("<2I", returned["pages"][0x400000], 0x100), (3, 3))
-        self.assertEqual(first["real_status"], [(0x1fdac, 0), (0xd624, 0), (0x78dc, 0)])
+        self.assertEqual(first["real_status"], [
+            (0x1fdac, 0), (0xd624, 0), (0x78dc, 0), (0x77e0, 0x00940021)])
 
     def test_field_modes_phase_and_single_field_routes(self):
         for mode in (0, 1):
@@ -3592,7 +3858,8 @@ class FirmwareStopResultQemuTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(defaultTest=("FirmwareQemuTests", "FirmwarePictureQemuTests", "FirmwareArmArcReturnQemuTests", "FirmwareCpuMapQemuTests", "FirmwareArcJumpFixupQemuTests", "FirmwareArcAbsoluteFixupQemuTests", "FirmwareArcStartupRelocationQemuTests",
+    unittest.main(defaultTest=("FirmwareQemuTests", "FirmwareRxDescriptorQemuTests",
+                               "FirmwarePictureQemuTests", "FirmwareArmArcReturnQemuTests", "FirmwareCpuMapQemuTests", "FirmwareArcJumpFixupQemuTests", "FirmwareArcAbsoluteFixupQemuTests", "FirmwareArcStartupRelocationQemuTests",
                                "FirmwareMfdSourceQemuTests", "FirmwareSourceProducerQemuTests",
                                "FirmwareSourceModeQemuTests", "FirmwareIrqStatusQemuTests",
                                "FirmwareLogCommandQemuTests", "FirmwareChannelGuardQemuTests",

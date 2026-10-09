@@ -5121,6 +5121,159 @@ class FirmwareDebugMechanismTests(unittest.TestCase):
         self.assertEqual(result["debug_mechanisms"], self.report)
 
 
+class FirmwareRxDescriptorAdmissionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.data = MAP.read_firmware(BLOB)
+        cls.payload = cls.data[:-MAP.TRAILER_SIZE]
+        cls.report = MAP._rx_descriptor_admission_map(cls.payload)
+
+    def test_schema_caller_and_exact_input_footprint(self):
+        report = self.report
+        self.assertEqual((report["schema_version"], report["kind"], report["isa"],
+                          report["endianness"]),
+                         (1, "stock-y-rx-descriptor-admission", "A32", "little"))
+        self.assertFalse(report["device_observed"])
+        self.assertEqual(report["validation"]["region_count"], 3)
+        self.assertEqual(report["validation"]["bytes"], 200)
+        caller = report["caller"]
+        self.assertEqual((caller["record_expression"],
+                          caller["record_address_instruction_blob_file_offset"],
+                          caller["call"]["target_blob_file_offset"],
+                          caller["pending_byte_offset"],
+                          caller["pending_store_instruction_blob_file_offset"],
+                          caller["pending_store_source_register"],
+                          caller["pending_store_value_established_by_caller_triplet"]),
+                         ("channel + 0x188", 0x8818, 0x77e0, 0x1a8, 0x8820, 7, False))
+        self.assertFalse(caller["runtime_channel_identity_established"])
+        record = report["input_record"]
+        self.assertEqual((record["byte_count_available"], record["byte_count_read_by_selected_body"]),
+                         (32, 12))
+        self.assertEqual((record["selector_word_offset"], record["y_low_word_offset"],
+                          record["y_high_word_offset"]), (0, 4, 8))
+        self.assertFalse(record["remaining_words_read"])
+        self.assertTrue(record["record_stability_during_repeated_low_reads_assumed"])
+
+    def test_selector_registers_and_store_order_are_exact(self):
+        report = self.report
+        self.assertEqual(report["selector"]["zero_selects"], 0)
+        self.assertEqual(report["selector"]["every_nonzero_selects"], 1)
+        self.assertFalse(report["selector"]["accepted_domain_validated"])
+        self.assertEqual(report["selector"]["zero_branch"]["target_blob_file_offset"], 0x784c)
+        publication = report["publication"]
+        self.assertEqual((publication["firmware_mmio_base"], publication["rdb_base"]),
+                         (0x10502000, 0x00502000))
+        self.assertEqual(publication["list0"], {
+            "high_address": 0x10502044, "high_store": 0x785c,
+            "low_address": 0x10502040, "low_valid_store": 0x787c})
+        self.assertEqual(publication["list1"], {
+            "high_address": 0x1050204c, "high_store": 0x7810,
+            "low_address": 0x10502048, "low_valid_store": 0x7830})
+        self.assertEqual(publication["valid_mask"], 1)
+        self.assertEqual(publication["direct_program_order"],
+                         ["selected high DWORD", "selected low DWORD OR VALID"])
+        self.assertIn("unchanged", publication["low_zero_direct_effect"])
+        self.assertIn("no alignment normalization", publication["low_transform"])
+        self.assertTrue(publication["unselected_list_unchanged_by_selected_body"])
+
+    def test_opaque_calls_and_negative_completion_scope_are_explicit(self):
+        calls = [(call["role"], call["blob_file_offset"], call["target_blob_file_offset"])
+                 for call in self.report["opaque_calls"]]
+        self.assertEqual(calls, [
+            ("uart_character_output", 0x77ec, 0xaf18), ("log", 0x7808, 0x203c4),
+            ("uart_character_output", 0x7824, 0xaf18),
+            ("uart_character_output", 0x783c, 0xaf18),
+            ("log", 0x7854, 0x203c4),
+            ("uart_character_output", 0x7870, 0xaf18),
+            ("uart_character_output", 0x7888, 0xaf18)])
+        tails = [(call["role"], call["tail_call"], call["blob_file_offset"],
+                  call["target_blob_file_offset"])
+                 for call in self.report["opaque_tail_calls"]]
+        self.assertEqual(tails, [
+            ("log", True, 0x7848, 0x203c4),
+            ("log", True, 0x7894, 0x203c4)])
+        scope = self.report["scope"]
+        self.assertTrue(scope["complete_selected_body_pin"])
+        self.assertTrue(scope["complete_caller_triplet_pin"])
+        self.assertTrue(scope["direct_descriptor_admission"])
+        for field in ("descriptor_contents_validated", "device_visibility_ordering",
+                      "host_rx_dma_completion", "host_buffer_lifetime",
+                      "mfd_feed_completion", "scaler_capture_completion",
+                      "picture_source_ownership", "opaque_callee_semantics"):
+            self.assertFalse(scope[field], field)
+        assumptions = " ".join(self.report["assumptions"])
+        self.assertIn("stable", assumptions)
+        self.assertIn("not a device-visibility", assumptions)
+
+    def test_public_headers_match_record_and_rdb_provenance(self):
+        record = (ROOT / self.report["input_record"]["source"].rsplit(":", 1)[0]).read_text()
+        body = record.split("_PIC_DELIVERY_HOST_INFO_", 1)[1].split("}PIC_DELIVERY_HOST_INFO", 1)[0]
+        fields = re.findall(r"unsigned int\s+(\w+)(?:\[(\d+)\])?\s*;", body)
+        self.assertEqual([name for name, _ in fields[:3]],
+                         ["ListIndex", "HostDescMemLowAddr_Y", "HostDescMemHighAddr_Y"])
+        self.assertEqual(sum(int(count or 1) for _, count in fields) * 4, 32)
+        rdb = (ROOT / self.report["publication"]["rdb_source"]).read_text()
+        for name, address in (("Y_RX_FIRST_DESC_L_ADDR_LIST0", 0x00502040),
+                              ("Y_RX_FIRST_DESC_U_ADDR_LIST0", 0x00502044),
+                              ("Y_RX_FIRST_DESC_L_ADDR_LIST1", 0x00502048),
+                              ("Y_RX_FIRST_DESC_U_ADDR_LIST1", 0x0050204c)):
+            self.assertRegex(rdb, rf"#define\s+BCHP_MISC1_{name}\s+0x{address:08x}\b")
+        self.assertRegex(rdb, r"RX_DESC_LIST0_VALID_MASK\s+0x00000001\b")
+        self.assertRegex(rdb, r"RX_DESC_LIST1_VALID_MASK\s+0x00000001\b")
+
+    def test_every_pinned_byte_rejects_before_instruction_decode(self):
+        for role, offset, size, _ in MAP._RX_DESCRIPTOR_ADMISSION_REGIONS:
+            for delta in range(size):
+                changed = bytearray(self.payload)
+                changed[offset + delta] ^= 1
+                with self.subTest(role=role, delta=delta), \
+                        mock.patch.object(MAP, "_bootstrap_word",
+                                          side_effect=AssertionError("decoded before pin gate")), \
+                        mock.patch.object(MAP, "_a32_branch",
+                                          side_effect=AssertionError("branch decoded before pin gate")), \
+                        self.assertRaises(MAP.FormatError):
+                    MAP._rx_descriptor_admission_map(changed)
+
+    def test_bounds_and_budget_refusals(self):
+        for payload in (b"", self.payload[:-1], self.payload + b"\0"):
+            with self.subTest(size=len(payload)), self.assertRaisesRegex(MAP.FormatError, "payload size"):
+                MAP._rx_descriptor_admission_map(payload)
+        with mock.patch.object(MAP, "MAX_RX_DESCRIPTOR_ADMISSION_REGIONS", 2), \
+                self.assertRaisesRegex(MAP.FormatError, "budget"):
+            MAP._rx_descriptor_admission_map(self.payload)
+        with mock.patch.object(MAP, "MAX_RX_DESCRIPTOR_ADMISSION_BYTES", 199), \
+                self.assertRaisesRegex(MAP.FormatError, "budget"):
+            MAP._rx_descriptor_admission_map(self.payload)
+
+    def test_opt_in_is_offline_additive_and_exact_baseline_gated(self):
+        before = bytes(self.payload)
+        with mock.patch("builtins.open", side_effect=AssertionError("unexpected file read")), \
+                mock.patch.object(MAP.os, "open", side_effect=AssertionError("unexpected device open")), \
+                mock.patch.object(subprocess, "run", side_effect=AssertionError("unexpected command")), \
+                mock.patch.object(subprocess, "Popen", side_effect=AssertionError("unexpected process")):
+            self.assertEqual(MAP._rx_descriptor_admission_map(self.payload), self.report)
+        self.assertEqual(bytes(self.payload), before)
+        with mock.patch.object(MAP, "_rx_descriptor_admission_map",
+                               side_effect=AssertionError("not opted in")):
+            plain = MAP.analyze(self.data)
+        self.assertNotIn("rx_descriptor_admission", plain)
+        for flags in ({}, {"picture_output": True}, {"debug_mechanisms": True}):
+            with self.subTest(flags=flags):
+                original = MAP.analyze(self.data, **flags)
+                enriched = MAP.analyze(self.data, rx_descriptor_admission=True, **flags)
+                self.assertEqual(enriched.pop("rx_descriptor_admission"), self.report)
+                self.assertEqual(enriched, original)
+        with self.assertRaises(MAP.FormatError):
+            analyze_fixture(fixture(), rx_descriptor_admission=True)
+
+    def test_cli_emits_the_opt_in_report(self):
+        with mock.patch.object(sys, "stdout", new_callable=io.StringIO) as output, \
+                mock.patch.object(sys, "stderr", new_callable=io.StringIO):
+            self.assertEqual(MAP.main([str(BLOB), "--rx-descriptor-admission"]), 0)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["rx_descriptor_admission"], self.report)
+
+
 class FirmwarePpbBankContractTests(unittest.TestCase):
     # Independently checked against the outer ELF symbol/section tables and
     # GNU 2.23.2 disassembly. Addresses are ARC ELF VMAs, never ARM offsets.
