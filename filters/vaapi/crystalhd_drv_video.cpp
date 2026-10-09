@@ -188,12 +188,31 @@ static void AppendNal(std::vector<uint8_t> *output, uint8_t type,
 
 static void BeginAccessUnit(std::vector<uint8_t> *output) {
   // H.264 7.4.1.2.3 puts AUD first in its access unit. Keep that boundary in
-  // the same timestamped input packet as its picture: a trailing AUD starts
-  // the NEXT picture inside the previous packet and misassociates firmware
-  // PTS. A subsequent AU or explicit sealed-batch EOS delimits the last slice.
+  // the same logical input as its picture. A prefed timestamp is consumed by
+  // submitting this complete AU (including its own AUD) with timestamp zero;
+  // a trailing AUD in the previous AU would instead start the next picture and
+  // misassociate firmware PTS. A subsequent AU or explicit sealed-batch EOS
+  // delimits the last slice.
   // primary_pic_type=7 permits all slice types, followed by rbsp_stop_one_bit.
   AppendNal(output, 9, 0, {0xf0});
 }
+
+#ifndef CRYSTALHD_H264_TEST_BUILD
+static const std::vector<uint8_t> &H264LowLatencyPrefeed() {
+  // A timestamped 170-byte ES payload becomes one 184-byte PES transfer on
+  // BCM70015.  Hardware measurements show that an AUD at this boundary can
+  // advance the following access unit by one input cadence; filler_data keeps
+  // the prefix syntactically complete without predicting any slice bytes.
+  static const std::vector<uint8_t> bytes = [] {
+    std::vector<uint8_t> result = {0x00, 0x00, 0x00, 0x01, 0x09, 0xf0,
+                                   0x00, 0x00, 0x00, 0x01, 0x0c};
+    result.insert(result.end(), 170 - result.size() - 1, 0xff);
+    result.push_back(0x80);
+    return result;
+  }();
+  return bytes;
+}
+#endif
 
 static bool BuildSps(const VAPictureParameterBufferH264 &picture,
                      VAProfile profile, std::vector<uint8_t> *output) {
@@ -1329,6 +1348,8 @@ struct DecodeContext {
   bool is_70012 = false;
   bool sent_parameter_sets = false;
   bool live_h264 = false;
+  bool low_latency_h264 = false;
+  uint64_t prefed_timestamp = 0;
   bool closing = false;
   bool retired = false;
   uint64_t generation = 1;
@@ -1408,6 +1429,7 @@ struct DecodeContext {
 
   BC_STATUS CloseHardware() {
     BC_STATUS result = BC_STS_SUCCESS;
+    prefed_timestamp = 0;
     mpeg4_simple_picture_number = 0;
     have_mpeg4_simple_picture_number = false;
     if (decoder_started) {
@@ -1662,6 +1684,8 @@ static VAStatus OpenDecoder(DecodeContext *decode, unsigned int width = 0,
   if (status != BC_STS_SUCCESS)
     goto fail;
   decode->is_70012 = version.device == 0;
+  if (decode->is_70012)
+    decode->low_latency_h264 = false;
   // These finite-batch paths have only been validated on BCM70015.
   if ((decode->IsMpeg2() || decode->IsMpeg4() || decode->IsVc1()) &&
       decode->is_70012)
@@ -1955,6 +1979,10 @@ static VAStatus FailDecode(Driver *driver, DecodeContext *decode,
 static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
                                       const BC_DTS_PROC_OUT &reported) {
   BC_DTS_PROC_OUT output = reported;
+  if (decode->low_latency_h264 && decode->prefed_timestamp != 0 &&
+      output.PicInfo.timeStamp == decode->prefed_timestamp)
+    return FailDecode(driver, decode,
+                      "speculative H.264 prefix produced a picture");
   const bool ordered_mpeg4_simple =
       decode->profile == VAProfileMPEG4Simple &&
       (output.PoutFlags & BC_POUT_FLAGS_PIB_VALID) != 0 &&
@@ -2130,6 +2158,10 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
       return VA_STATUS_SUCCESS;
     if (!decode->WithReplay([](auto &replay) { return replay.EndOfSequence(); }))
       return FailDecode(driver, decode, decode->ReplayFailure());
+    // DtsFlushInput discards an unbound speculative prefix, but retain its
+    // identity until the actual firmware EOS marker proves no picture escaped
+    // from it. CloseHardware also clears this state on every abort/restart.
+    decode->prefed_timestamp = 0;
     Debug("sealed batch EOS: every submitted timestamp completed");
     return VA_STATUS_SUCCESS;
   }
@@ -2243,18 +2275,52 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
       const auto *unit = replay.NextInput();
       if (unit == nullptr)
         break;
+      const bool consume_prefeed =
+          decode->low_latency_h264 && decode->prefed_timestamp != 0 &&
+          decode->prefed_timestamp == unit->timestamp;
+      if (decode->low_latency_h264 && decode->prefed_timestamp != 0 &&
+          !consume_prefeed)
+        return FailDecode(driver, decode,
+                          "speculative H.264 timestamp lost alignment");
       const size_t reserve = unit->bytes.size() +
                              (unit->bytes.size() / 60000 + 1) * 32 + 1024;
       if (DtsTxFreeSize(decode->device) < reserve)
         break;
       const BC_STATUS status = DtsProcInput(
           decode->device, const_cast<uint8_t *>(unit->bytes.data()),
-          static_cast<uint32_t>(unit->bytes.size()), unit->timestamp, FALSE);
+          static_cast<uint32_t>(unit->bytes.size()),
+          consume_prefeed ? 0 : unit->timestamp, FALSE);
       if (status == BC_STS_BUSY)
         break;
       if (status != BC_STS_SUCCESS || !replay.InputSent())
         return FailDecode(driver, decode, "compressed input submission failed");
+      if (consume_prefeed)
+        decode->prefed_timestamp = 0;
       ++decode->transport_progress;
+
+      if (decode->low_latency_h264 && !decode->is_70012 &&
+          decode->prefed_timestamp == 0 && replay.NextInput() == nullptr) {
+        const uint64_t next_timestamp = decode->next_timestamp;
+        const auto &prefeed = H264LowLatencyPrefeed();
+        if (next_timestamp == 0)
+          return FailDecode(driver, decode,
+                            "speculative H.264 timestamp wrapped to zero");
+        if (DtsTxFreeSize(decode->device) >= prefeed.size() + 1024) {
+          const BC_STATUS prefeed_status = DtsProcInput(
+              decode->device, const_cast<uint8_t *>(prefeed.data()),
+              static_cast<uint32_t>(prefeed.size()), next_timestamp, FALSE);
+          if (prefeed_status == BC_STS_SUCCESS) {
+            decode->prefed_timestamp = next_timestamp;
+            ++decode->transport_progress;
+            Debug("prefeed H.264 timestamp=%llu bytes=%zu",
+                  static_cast<unsigned long long>(next_timestamp),
+                  prefeed.size());
+          } else if (prefeed_status != BC_STS_BUSY) {
+            return FailDecode(driver, decode,
+                              "speculative H.264 prefix submission failed");
+          }
+        }
+      }
     }
     if (replay.failed())
       return FailDecode(driver, decode, replay.failure());
@@ -2272,7 +2338,9 @@ static VAStatus SealDecodeBatch(Driver *driver, DecodeContext *decode) {
       return VA_STATUS_SUCCESS;
     Debug("seal batch on sync demand: %zu hardware timestamps outstanding",
           replay.outstanding());
-    if (!replay.Seal() || DtsFlushInput(decode->device, 0) != BC_STS_SUCCESS)
+    if (!replay.Seal())
+      return FailDecode(driver, decode, "could not seal decoder batch");
+    if (DtsFlushInput(decode->device, 0) != BC_STS_SUCCESS)
       return FailDecode(driver, decode, "could not seal decoder batch");
     return VA_STATUS_SUCCESS;
   });
@@ -3572,6 +3640,10 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
   const char *live_h264 = getenv("CRYSTALHD_VAAPI_LIVE_H264");
   decode->live_h264 = !video_process && IsH264Profile(decode->profile) &&
       live_h264 != nullptr && strcmp(live_h264, "1") == 0;
+  const char *low_latency_h264 =
+      getenv("CRYSTALHD_VAAPI_LOW_LATENCY_H264");
+  decode->low_latency_h264 = decode->live_h264 &&
+      low_latency_h264 != nullptr && strcmp(low_latency_h264, "1") == 0;
   if (decode->live_h264)
     decode->replay = CrystalHDDecodeReplay(true);
   *context_id = driver->next_context++;
