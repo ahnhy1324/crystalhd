@@ -245,4 +245,32 @@ struct crystalhd_fw_research_uart_result {
 #define CRYSTALHD_FW_RESEARCH_RUN_UART \
 	_IOWR('R', 0x99, struct crystalhd_fw_research_uart_result)
 
+struct crystalhd_fw_research_crypto_sample {
+	__u32 attempted;
+	__s32 status;
+	/* Fixed raw state reads only; the indirect GISB selector is programmed. */
+	__u32 read_complete;
+	__u32 error_capture_complete;
+	__u32 target_reads_attempted;
+	__u32 guard_reads_complete;
+	__u32 gisb_before;
+	__u32 gisb_last;
+	__u32 sharf_revision;
+	__u32 sharf_status;
+	__u32 bop_gr_bridge_revision;
+	__u32 bop_aes_status;
+	__u32 error_capture_address;
+	__u32 error_capture_master;
+};
+
+struct crystalhd_fw_research_crypto_result {
+	struct crystalhd_fw_research_state_result state;
+	struct crystalhd_fw_research_crypto_sample after_init;
+	struct crystalhd_fw_research_crypto_sample after_open;
+};
+
+/* No crypto control, context, key, IV, nonce, OTP or scrub-register access. */
+#define CRYSTALHD_FW_RESEARCH_RUN_CRYPTO \
+	_IOWR('R', 0x9a, struct crystalhd_fw_research_crypto_result)
+
 #endif
