@@ -66,7 +66,7 @@ library-check:
 				test_wrap="$$test_wrap -Wl,--wrap=DtsStartDecoder,--wrap=DtsStartCapture"; \
 				test_wrap="$$test_wrap -Wl,--wrap=DtsReleaseInterface,--wrap=pthread_join,--wrap=_Z9WORD_SWAPt"; \
 				test_extra=linux_lib/libcrystalhd/libcrystalhd_parser.cpp ;; \
-			eos) test_wrap=-Wl,--wrap=ioctl,--wrap=txBufPush,--wrap=usleep,--wrap=clock_gettime; \
+			eos) test_wrap=-Wl,--wrap=ioctl,--wrap=txBufPush,--wrap=usleep,--wrap=clock_gettime,--wrap=pthread_cond_timedwait; \
 				test_wrap="$$test_wrap -Wl,--wrap=DtsSetupHardware,--wrap=DtsOpenDecoder"; \
 				test_wrap="$$test_wrap -Wl,--wrap=DtsStartDecoder,--wrap=DtsStartCapture"; \
 				test_extra=linux_lib/libcrystalhd/libcrystalhd_parser.cpp ;; \

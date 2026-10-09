@@ -6,6 +6,7 @@
  * No device, firmware, shared-memory setup or OS worker thread is started.
  */
 #include <algorithm>
+#include <cerrno>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -103,10 +104,20 @@ extern "C" int __wrap_clock_gettime(clockid_t clock_id, struct timespec *value)
 {
     if (!detection.run_tx || clock_id != CLOCK_MONOTONIC || !value)
         std::abort();
-    detection.clock_ms += detection.clock_step_ms;
     value->tv_sec = detection.clock_ms / 1000;
     value->tv_nsec = (detection.clock_ms % 1000) * 1000000;
     return 0;
+}
+
+extern "C" int __wrap_pthread_cond_timedwait(pthread_cond_t *, pthread_mutex_t *,
+                                               const struct timespec *)
+{
+    if (!detection.run_tx)
+        std::abort();
+    /* Model the idle wait as elapsed time. Merely constructing its monotonic
+     * deadline must not make the synthetic hardware clock advance. */
+    detection.clock_ms += detection.clock_step_ms;
+    return ETIMEDOUT;
 }
 
 BC_STATUS DtsGetDrvStat(HANDLE device, BC_DTS_STATS *status)

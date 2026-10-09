@@ -185,7 +185,7 @@ for bits in $build_bits; do
                 set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_if.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_priv.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_parser.cpp"
-                section_wrap=-Wl,--wrap=ioctl,--wrap=txBufPush,--wrap=usleep,--wrap=clock_gettime
+                section_wrap=-Wl,--wrap=ioctl,--wrap=txBufPush,--wrap=usleep,--wrap=clock_gettime,--wrap=pthread_cond_timedwait
                 section_wrap="$section_wrap -Wl,--wrap=DtsSetupHardware,--wrap=DtsOpenDecoder"
                 section_wrap="$section_wrap -Wl,--wrap=DtsStartDecoder,--wrap=DtsStartCapture" ;;
         esac
