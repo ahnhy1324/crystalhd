@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 CXX ?= g++
+PYTHON3 ?= python3
 PKG_CONFIG ?= pkg-config
 PREFIX ?= /usr
 DESTDIR ?=
@@ -23,6 +24,7 @@ WMV3_TEST := vaapi-wmv3-test
 VC1_REPLAY_TEST := vaapi-vc1-replay-test
 VC1_SUBMIT_TEST := vaapi-vc1-submit-test
 SEEK_TEST := vaapi-seek-test
+TRACE_TEST := vaapi-trace-test
 VA_LIBDIR := $(shell $(PKG_CONFIG) --variable=libdir libva)
 DRIVERDIR ?= $(if $(strip $(VA_LIBDIR)),$(VA_LIBDIR)/dri)
 VAAPI_DRM_DEVICE ?= /dev/dri/renderD128
@@ -44,7 +46,7 @@ all: $(DRIVER)
 
 BACKEND_HEADERS := crystalhd-decode-replay.h crystalhd-mpeg2.h crystalhd-mpeg2-replay.h \
 	crystalhd-mpeg4.h \
-	crystalhd-vc1.h crystalhd-wmv3.h crystalhd-vc1-replay.h
+	crystalhd-trace.h crystalhd-vc1.h crystalhd-wmv3.h crystalhd-vc1-replay.h
 
 $(DRIVER): crystalhd_drv_video.cpp $(BACKEND_HEADERS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS) $(CRYSTALHD_CPU_FLAGS)
@@ -127,6 +129,9 @@ $(VC1_SUBMIT_TEST): $(ROOTDIR)/tests/vaapi-vc1-submit.cpp crystalhd_drv_video.cp
 		-ffunction-sections -fdata-sections $< -o $@ \
 		-Wl,--gc-sections -pthread $(CRYSTALHD_CPU_FLAGS)
 
+$(TRACE_TEST): $(ROOTDIR)/tests/vaapi-trace.cpp crystalhd-trace.h
+	$(CXX) -std=c++17 -Wall -Wextra -Werror $< -o $@ -pthread
+
 # Optional hardware lifecycle probe; keep FFmpeg development dependencies out
 # of the normal driver build.
 seek-test: $(SEEK_TEST)
@@ -136,7 +141,7 @@ $(SEEK_TEST): $(ROOTDIR)/tests/vaapi-seek.cpp
 		$(shell $(PKG_CONFIG) --cflags libavcodec libavformat libavutil libva) $< -o $@ \
 		$(shell $(PKG_CONFIG) --libs libavcodec libavformat libavutil libva) $(CRYSTALHD_CPU_FLAGS)
 
-check: $(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST) $(CACHE_TEST) $(SCALING_TEST) $(MPEG2_TEST) $(MPEG2_REPLAY_TEST) $(MPEG2_SUBMIT_TEST) $(MPEG4_TEST) $(MPEG4_SUBMIT_TEST) $(VC1_TEST) $(WMV3_TEST) $(VC1_REPLAY_TEST) $(VC1_SUBMIT_TEST)
+check: $(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST) $(CACHE_TEST) $(SCALING_TEST) $(MPEG2_TEST) $(MPEG2_REPLAY_TEST) $(MPEG2_SUBMIT_TEST) $(MPEG4_TEST) $(MPEG4_SUBMIT_TEST) $(VC1_TEST) $(WMV3_TEST) $(VC1_REPLAY_TEST) $(VC1_SUBMIT_TEST) $(TRACE_TEST)
 	readelf -Ws $(DRIVER) | grep -q '__vaDriverInit_'
 	readelf -Ws $(DRIVER) | grep -q '__vaDriverInit_1_20'
 	./$(H264_TEST)
@@ -149,6 +154,7 @@ check: $(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER
 	./$(WMV3_TEST)
 	./$(VC1_REPLAY_TEST)
 	./$(VC1_SUBMIT_TEST)
+	./$(TRACE_TEST) | $(PYTHON3) $(ROOTDIR)/tests/vaapi-trace.test.py
 	./$(CACHE_TEST)
 	./$(SCALING_TEST)
 	LD_LIBRARY_PATH=$(abspath $(ROOTDIR)/linux_lib/libcrystalhd):$(LD_LIBRARY_PATH) ./$(VPP_TEST)
@@ -175,8 +181,8 @@ uninstall:
 	rm -f -- "$(DESTDIR)$(DRIVERDIR)/$(DRIVER)"
 
 clean:
-	rm -f $(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(SEEK_TEST) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST) $(CACHE_TEST) $(SCALING_TEST) $(MPEG2_TEST) $(MPEG2_REPLAY_TEST) $(MPEG2_SUBMIT_TEST) $(MPEG4_TEST) $(MPEG4_SUBMIT_TEST) $(VC1_TEST) $(WMV3_TEST) $(VC1_REPLAY_TEST) $(VC1_SUBMIT_TEST) $(CRYSTALHD_CPU_STAMP) $(CRYSTALHD_CPU_STAMP).tmp
+	rm -f $(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(SEEK_TEST) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST) $(CACHE_TEST) $(SCALING_TEST) $(MPEG2_TEST) $(MPEG2_REPLAY_TEST) $(MPEG2_SUBMIT_TEST) $(MPEG4_TEST) $(MPEG4_SUBMIT_TEST) $(VC1_TEST) $(WMV3_TEST) $(VC1_REPLAY_TEST) $(VC1_SUBMIT_TEST) $(TRACE_TEST) $(CRYSTALHD_CPU_STAMP) $(CRYSTALHD_CPU_STAMP).tmp
 
 include $(ROOTDIR)/cpu.mk
-$(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(SEEK_TEST) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST) $(CACHE_TEST) $(SCALING_TEST) $(MPEG2_TEST) $(MPEG2_REPLAY_TEST) $(MPEG2_SUBMIT_TEST) $(MPEG4_TEST) $(MPEG4_SUBMIT_TEST) $(VC1_TEST) $(WMV3_TEST) $(VC1_REPLAY_TEST) $(VC1_SUBMIT_TEST): $(CRYSTALHD_BUILD_DEPS)
+$(DRIVER) $(IMPORT_TEST) $(H264_TEST) $(SEEK_TEST) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST) $(CACHE_TEST) $(SCALING_TEST) $(MPEG2_TEST) $(MPEG2_REPLAY_TEST) $(MPEG2_SUBMIT_TEST) $(MPEG4_TEST) $(MPEG4_SUBMIT_TEST) $(VC1_TEST) $(WMV3_TEST) $(VC1_REPLAY_TEST) $(VC1_SUBMIT_TEST) $(TRACE_TEST): $(CRYSTALHD_BUILD_DEPS)
 $(DRIVER) $(VPP_TEST) $(REPLAY_TEST) $(BUFFER_TEST): $(ROOTDIR)/linux_lib/libcrystalhd/libcrystalhd.so
