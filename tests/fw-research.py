@@ -5286,6 +5286,49 @@ class FirmwareChannelFieldTests(unittest.TestCase):
     def offsets(records):
         return [record["blob_file_offset"] for record in records]
 
+    def execute_fiq_thunk(self, callback, link_register=0x13579bdf):
+        # Test-only execution of the six pinned A32 words at 0xaca8. It stops
+        # at BX and follows neither the synthetic callback nor its return.
+        registers = [0] * 16
+        registers[1] = 0xa5a5a5a5  # Poison: no channel-root premise is supplied.
+        registers[14] = link_register
+        memory = {0xd224c: callback}
+        pc, zero, trace = 0xaca8, False, []
+        for _ in range(6):
+            self.assertTrue(0xaca8 <= pc < 0xacc0, hex(pc))
+            word, = struct.unpack_from("<I", self.payload, pc)
+            trace.append(pc)
+            next_pc = pc + 4
+            condition = word >> 28
+            self.assertIn(condition, (0, 14))
+            if condition == 0 and not zero:
+                pc = next_pc
+                continue
+            if word & 0x0ffffff0 == 0x012fff10:
+                return {"destination": registers[word & 15],
+                        "link_register": registers[14],
+                        "r1": registers[1], "trace": trace}
+            if pc == 0xaca8:
+                self.assertEqual(word, 0xe59f0118)
+                literal = pc + 8 + (word & 0xfff)
+                registers[0], = struct.unpack_from("<I", self.payload, literal)
+            elif pc == 0xacac:
+                self.assertEqual(word, 0xe5900004)
+                registers[0] = memory[registers[0] + 4]
+            elif pc == 0xacb0:
+                self.assertEqual(word, 0xe3500000)
+                zero = registers[0] == 0
+            elif pc == 0xacb4:
+                self.assertEqual(word, 0x0a000000)
+                displacement = word & 0xffffff
+                if displacement & 0x800000:
+                    displacement -= 1 << 24
+                next_pc = pc + 8 + displacement * 4
+            else:
+                self.fail(f"unsupported FIQ thunk word {word:#x} at {pc:#x}")
+            pc = next_pc
+        self.fail("selected FIQ thunk exceeded its six-word budget")
+
     def test_schema_validation_root_and_aliases_are_exact(self):
         report = self.report
         self.assertEqual((report["schema_version"], report["kind"], report["isa"],
@@ -5398,6 +5441,46 @@ class FirmwareChannelFieldTests(unittest.TestCase):
             "helper_12e4_third_argument",
         )], [0x4a60, 0x4a7c, 0x4a90, 0x4afc, 0x4c7c,
              0x4ca4, 0x4de0, 0x4de4, 0x4de8])
+
+    def test_bx_register_validation_envelopes_are_exact(self):
+        validation = self.report["validation"]
+        whole = validation["whole_arm_bx_register_scan"]
+        self.assertEqual(whole, {
+            "role": "arm_bootstrap_before_embedded_arc_images",
+            "blob_file_offset": 0,
+            "size": 0x2ea60,
+            "sha256": "f109a8e616b7c744770631c76cdb910db5295f54d7e78c80abed6bffbbf95679",
+            "charged_to_selected_region_budget": False,
+            "shares_hash_gate_with": "whole_arm_direct_b_bl_scan",
+        })
+        expected = (
+            ("fiq_vector_root_and_literal", 0x0001c, 0x020,
+             "f0ad07f3ee36d5423e2211f23d7d171f252812f41ad326f5bebb14f5c9d5fa5e"),
+            ("fiq_entry", 0x00104, 0x01c,
+             "5d019ec8f9e599f872c10f658398b61156c8c85ab4faf026469843f430a1a570"),
+            ("main_irq_registration_call", 0x0705c, 0x00c,
+             "2608ba59ab5731dfe046b22594712f048f51112781c51f90cf1cff5578a11313"),
+            ("interrupt_pointer_clear", 0x0ac20, 0x014,
+             "038823284c7c6136fec5c9bba3e26319a1d8bb19aa3c0ade2673f9b260d8d5d7"),
+            ("interrupt_pointer_clear_literals", 0x0ac64, 0x008,
+             "60eed3ce168871a7dcbbe377507ffed144fa9c51b7ddd53177a6cb7557c18786"),
+            ("fiq_computed_transfer_thunk", 0x0aca8, 0x018,
+             "33d7831d5e75d2f71c0d2a606324a3c671d9b92f411f88ef37f7f1f998d20cd3"),
+            ("interrupt_pointer_registration", 0x0acc0, 0x034,
+             "ed00d52610e5f39c9326dd13d1979bd4c26ee12d33efcd1d551535e03be9af1f"),
+            ("interrupt_pointer_base_literal", 0x0adc8, 0x004,
+             "e6e0846d863d72a4ecdf1de9f0a613721ff036585fb00ab7d2dc8ce35170be65"),
+        )
+        evidence = validation["bx_register_evidence"]
+        self.assertEqual((evidence["region_count"], evidence["bytes"],
+                          evidence["charged_to_selected_region_budget"],
+                          evidence["overlap_deduplicated"]),
+                         (8, 180, False, False))
+        self.assertEqual([
+            (region["role"], region["blob_file_offset"], region["size"],
+             region["sha256"])
+            for region in evidence["regions"]], list(expected))
+        self.assertEqual(MAP._CHANNEL_FIELD_BX_EVIDENCE_REGIONS, expected)
 
     def test_all_three_clear_paths_and_helpers_are_explicit(self):
         initialization = self.report["initialization"]
@@ -5763,6 +5846,258 @@ class FirmwareChannelFieldTests(unittest.TestCase):
                         MAP.FormatError,
                         "helper 0x1610 " + message):
                 MAP._channel_field_map(changed)
+
+    def test_bx_register_inventory_and_fiq_thunk_are_exact(self):
+        scan = self.report["caller_provenance"]["whole_arm_bx_register_scan"]
+        self.assertEqual(scan["region"], self.report["caller_provenance"]
+                         ["whole_arm_direct_b_bl_scan"]["region"])
+        self.assertEqual((scan["isa_encoding"], scan["kind"],
+                          scan["alignment_bytes"], scan["encoding_candidate_count"],
+                          scan["condition_counts"], scan["operand_register_counts"]), (
+            "A32 BX-register encoding patterns with condition 0..14",
+            "aligned raw encoding-pattern inventory, not a code/data partition",
+            4, 203, {"0": 1, "14": 202}, {"r0": 1, "r14": 202}))
+        candidates = scan["encoding_candidates"]
+        self.assertEqual(len(candidates), 203)
+        self.assertTrue(all(record["operation"] == "BX register"
+                            for record in candidates))
+        self.assertEqual(sum(record["condition"] == 14 for record in candidates), 202)
+        self.assertEqual(sum(record["condition"] == 0 for record in candidates), 1)
+        self.assertEqual(sum(record["operand_register"] == 14
+                             for record in candidates), 202)
+        self.assertEqual(sum(record["operand_register"] == 0
+                             for record in candidates), 1)
+        self.assertEqual([
+            (record["blob_file_offset"], record["word"],
+             record["condition"], record["operand_register"])
+            for record in scan["non_lr_candidates"]],
+            [(0xacb8, 0xe12fff10, 14, 0)])
+        self.assertEqual([
+            (record["blob_file_offset"], record["word"],
+             record["condition"], record["operand_register"])
+            for record in scan["conditional_candidates"]],
+            [(0x2c66c, 0x012fff1e, 0, 14)])
+        rooted = [record for record in candidates
+                  if record["code_status"] == "rooted_a32_instruction"]
+        self.assertEqual([
+            (record["blob_file_offset"], record["operand_register"],
+             record["code_region_role"])
+            for record in rooted], [
+                (0xacb8, 0, "fiq_computed_transfer_thunk"),
+                (0xacbc, 14, "fiq_computed_transfer_thunk"),
+            ])
+        self.assertEqual((scan["rooted_code_candidate_count"],
+                          scan["rooted_code_candidate_offsets"]),
+                         (2, [0xacb8, 0xacbc]))
+        self.assertTrue(scan["complete_for_hash_pinned_region_encoding_candidates"])
+        self.assertTrue(scan["scan_is_not_a_code_data_partition"])
+        for field in ("all_candidate_code_boundaries_classified",
+                      "all_callback_pointer_writers_complete",
+                      "live_fiq_callback_pointer_established",
+                      "indirect_or_computed_registration_calls_excluded",
+                      "runtime_path_observed"):
+            self.assertFalse(scan[field], field)
+
+        selected = scan["selected_fiq_computed_transfer"]
+        self.assertEqual(selected["kind"],
+                         "selected-static-fiq-computed-transfer-thunk")
+        root = selected["root_chain"]
+        vector = root["vector_entry"]
+        self.assertEqual((vector["blob_file_offset"], vector["word"],
+                          vector["destination_register"],
+                          vector["literal_blob_file_offset"],
+                          vector["literal_value"],
+                          root["fiq_entry_blob_file_offset"],
+                          root["thunk_call"]["blob_file_offset"],
+                          root["thunk_call"]["target_blob_file_offset"]),
+                         (0x1c, 0xe59ff014, 15, 0x38, 0x104,
+                          0x104, 0x110, 0xaca8))
+        self.assertEqual({record["blob_file_offset"]: record["word"]
+                          for record in root["fiq_entry_word_receipts"]}, {
+            0x104: 0xe59fd018, 0x108: 0xe92d00ff,
+            0x10c: 0xe52de004, 0x110: 0xeb002ae4,
+            0x114: 0xe49de004, 0x118: 0xe8bd00ff,
+            0x11c: 0xe25ef004,
+        })
+        self.assertFalse(root["runtime_observed"])
+
+        pair = selected["callback_pointer_pair"]
+        self.assertEqual((pair["base_address"],
+                          pair["main_irq_callback_pointer_address"],
+                          pair["fiq_callback_pointer_address"]),
+                         (0xd2248, 0xd2248, 0xd224c))
+        self.assertEqual((pair["thunk_base_literal"]["blob_file_offset"],
+                          pair["thunk_base_literal"]["literal_blob_file_offset"],
+                          pair["thunk_base_literal"]["literal_value"]),
+                         (0xaca8, 0xadc8, 0xd2248))
+        self.assertEqual((pair["registration_base_literal"]["blob_file_offset"],
+                          pair["registration_base_literal"]
+                          ["literal_blob_file_offset"],
+                          pair["registration_base_literal"]["literal_value"]),
+                         (0xacc8, 0xadc8, 0xd2248))
+        self.assertEqual(pair["fiq_callback_load"], {
+            "blob_file_offset": 0xacac, "word": 0xe5900004,
+            "destination_register": 0, "base_register": 0,
+            "byte_offset": 4, "effective_address": 0xd224c,
+        })
+        self.assertFalse(pair["runtime_contents_observed"])
+        self.assertFalse(pair["live_fiq_callback_pointer_established"])
+
+        thunk = selected["thunk"]
+        self.assertEqual({record["blob_file_offset"]: record["word"]
+                          for record in thunk["word_receipts"]}, {
+            0xaca8: 0xe59f0118, 0xacac: 0xe5900004,
+            0xacb0: 0xe3500000, 0xacb4: 0x0a000000,
+            0xacb8: 0xe12fff10, 0xacbc: 0xe12fff1e,
+        })
+        self.assertEqual((thunk["null_test_blob_file_offset"],
+                          thunk["null_branch"]["blob_file_offset"],
+                          thunk["null_branch"]["target_blob_file_offset"],
+                          thunk["zero_callback_transfer"]["blob_file_offset"],
+                          thunk["zero_callback_transfer"]["operand_register"],
+                          thunk["nonzero_callback_transfer"]["blob_file_offset"],
+                          thunk["nonzero_callback_transfer"]["operand_register"]),
+                         (0xacb0, 0xacb4, 0xacbc, 0xacbc, 14, 0xacb8, 0))
+        self.assertTrue(thunk["link_register_preserved_by_selected_bx"])
+        self.assertFalse(thunk["link_register_modified_by_selected_bx"])
+        self.assertFalse(thunk["callback_body_or_return_behavior_classified"])
+
+        link_register = 0xcafebabe
+        zero = self.execute_fiq_thunk(0, link_register)
+        nonzero = self.execute_fiq_thunk(0x2468ace0, link_register)
+        self.assertEqual((zero["destination"], zero["link_register"], zero["r1"],
+                          zero["trace"]),
+                         (link_register, link_register, 0xa5a5a5a5,
+                          [0xaca8, 0xacac, 0xacb0, 0xacb4, 0xacbc]))
+        self.assertEqual((nonzero["destination"], nonzero["link_register"],
+                          nonzero["r1"], nonzero["trace"]),
+                         (0x2468ace0, link_register, 0xa5a5a5a5,
+                          [0xaca8, 0xacac, 0xacb0, 0xacb4, 0xacb8]))
+
+    def test_fiq_pointer_clear_registration_and_selector_distinctions_are_exact(self):
+        selected = self.report["caller_provenance"]["whole_arm_bx_register_scan"] \
+            ["selected_fiq_computed_transfer"]
+        initialization = selected["initialization"]
+        self.assertEqual(initialization["entry_blob_file_offset"], 0xac1c)
+        self.assertEqual({record["blob_file_offset"]: record["word"]
+                          for record in initialization["clear_word_receipts"]}, {
+            0xac20: 0xe59f103c, 0xac24: 0xe3a00000,
+            0xac28: 0xe5810000, 0xac2c: 0xe59f1034,
+            0xac30: 0xe5810000,
+        })
+        self.assertEqual([
+            (record["blob_file_offset"], record["literal_blob_file_offset"],
+             record["literal_value"])
+            for record in initialization["pointer_literals"]], [
+                (0xac20, 0xac64, 0xd2248),
+                (0xac2c, 0xac68, 0xd224c),
+            ])
+        self.assertEqual(initialization["clears"], [
+            {"pointer_role": "main_irq_callback", "address": 0xd2248,
+             "store_blob_file_offset": 0xac28, "value": 0},
+            {"pointer_role": "fiq_callback", "address": 0xd224c,
+             "store_blob_file_offset": 0xac30, "value": 0},
+        ])
+        self.assertTrue(initialization["both_selected_pointers_cleared"])
+        self.assertFalse(initialization["runtime_observed"])
+
+        registration = selected["registration"]
+        self.assertEqual((registration["entry_blob_file_offset"],
+                          registration["selector_register"],
+                          registration["incoming_callback_register"],
+                          registration["saved_callback_register"],
+                          registration["save_callback_blob_file_offset"]),
+                         (0xacc0, "r0", "r1", "r4", 0xacc4))
+        self.assertEqual({record["blob_file_offset"]: record["word"]
+                          for record in registration["word_receipts"]}, {
+            0xacc0: 0xe92d4070, 0xacc4: 0xe1a04001,
+            0xacc8: 0xe59f50f8, 0xaccc: 0xe3500001,
+            0xacd0: 0x0a000003, 0xacd4: 0xe3500002,
+            0xacd8: 0x1a000000, 0xacdc: 0xe5854004,
+            0xace0: 0xe8bd8070, 0xace4: 0xe28f00e0,
+            0xace8: 0xeb0000ac, 0xacec: 0xe5854000,
+            0xacf0: 0xeafffffa,
+        })
+        self.assertEqual((registration["selector_2"]["selector_value"],
+                          registration["selector_2"]["compare_blob_file_offset"],
+                          registration["selector_2"]["other_selector_branch"]
+                          ["target_blob_file_offset"],
+                          registration["selector_2"]["store_blob_file_offset"],
+                          registration["selector_2"]["pointer_role"],
+                          registration["selector_2"]["pointer_address"]),
+                         (2, 0xacd4, 0xace0, 0xacdc,
+                          "fiq_callback", 0xd224c))
+        self.assertEqual((registration["selector_1"]["selector_value"],
+                          registration["selector_1"]["compare_blob_file_offset"],
+                          registration["selector_1"]["select_branch"]
+                          ["target_blob_file_offset"],
+                          registration["selector_1"]["intervening_log_call"]
+                          ["target_blob_file_offset"],
+                          registration["selector_1"]["store_blob_file_offset"],
+                          registration["selector_1"]["join_branch"]
+                          ["target_blob_file_offset"],
+                          registration["selector_1"]["pointer_role"],
+                          registration["selector_1"]["pointer_address"]),
+                         (1, 0xaccc, 0xace4, 0xafa0, 0xacec, 0xace0,
+                          "main_irq_callback", 0xd2248))
+        self.assertTrue(registration["selector_1"]
+                        ["callee_saved_r4_preservation_assumed"])
+        self.assertTrue(registration["selector_1"]
+                        ["callee_saved_r5_preservation_assumed"])
+        self.assertFalse(registration["other_selectors_store_callback"])
+        direct = registration["direct_call_scan"]
+        self.assertEqual((direct["alignment_bytes"],
+                          direct["target_blob_file_offset"]), (4, 0xacc0))
+        self.assertEqual([
+            (record["blob_file_offset"], record["word"], record["operation"],
+             record["condition"], record["target_blob_file_offset"])
+            for record in direct["target_candidates"]], [
+                (0x7064, 0xeb000f15, "BL", 14, 0xacc0),
+            ])
+        self.assertTrue(direct[
+            "complete_for_hash_pinned_region_direct_b_bl_encoding_candidates"])
+        self.assertFalse(direct["all_registration_callers_complete"])
+        self.assertFalse(direct[
+            "indirect_or_computed_registration_calls_excluded"])
+        self.assertFalse(registration["all_registration_writers_complete"])
+        self.assertFalse(registration[
+            "indirect_or_computed_registration_calls_excluded"])
+        self.assertFalse(registration[
+            "intervening_callee_pointer_side_effects_excluded"])
+
+        real = selected["selected_real_registration"]
+        materialization = real["callback_materialization"]
+        self.assertEqual(materialization, {
+            "blob_file_offset": 0x705c, "word": 0xe24f1f5d,
+            "architectural_pc": 0x7064, "subtracted_immediate": 0x174,
+            "destination_register": "r1", "result_callback_address": 0x6ef0,
+        })
+        self.assertEqual((real["selector_materialization_blob_file_offset"],
+                          real["selector_value"], real["call"]["blob_file_offset"],
+                          real["call"]["target_blob_file_offset"],
+                          real["selected_pointer_role"],
+                          real["selected_pointer_address"],
+                          real["fiq_callback_pointer_address"]),
+                         (0x7060, 1, 0x7064, 0xacc0,
+                          "main_irq_callback", 0xd2248, 0xd224c))
+        self.assertFalse(real[
+            "direct_selected_store_populates_fiq_callback_pointer"])
+        self.assertFalse(real[
+            "intervening_callee_pointer_side_effects_excluded"])
+        self.assertFalse(real["registration_persistence_established"])
+        self.assertFalse(real["runtime_observed"])
+        for field in ("all_bx_register_code_boundaries_classified",
+                      "all_callback_pointer_writers_complete",
+                      "live_fiq_callback_pointer_established",
+                      "indirect_or_computed_registration_calls_excluded",
+                      "intervening_callee_pointer_side_effects_excluded",
+                      "callback_body_or_return_behavior_classified",
+                      "runtime_execution_observed"):
+            self.assertFalse(selected["scope"][field], field)
+        helper = self.report["caller_provenance"] \
+            ["helper_1610_direct_target_provenance"]["fixed_root_requirement"]
+        self.assertFalse(helper["fixed_root_provenance_established"])
+        self.assertFalse(helper["access_sites_promoted_to_fixed_root"])
 
     def test_blx_register_inventory_roots_only_irq_dispatch_sites(self):
         scan = self.report["caller_provenance"]["whole_arm_blx_register_scan"]
@@ -6161,6 +6496,39 @@ class FirmwareChannelFieldTests(unittest.TestCase):
         self.assertIn("distinct values", limitations)
         self.assertIn("neither required nor established", limitations)
 
+    def test_bx_register_scanner_is_raw_aligned_and_excludes_near_matches(self):
+        payload = bytearray(32)
+        words = (
+            0xe12fff1e,  # AL BX LR.
+            0x012fff10,  # EQ BX r0.
+            0x112fff1f,  # NE BX PC; retained as a raw pattern.
+            0xf12fff1e,  # cond=0xf: excluded.
+            0xe12fff3e,  # BLX LR: excluded.
+            0xe12ffe1e,  # One-bit BX near-match.
+            0xe12fff0e, 0xffffffff,
+        )
+        struct.pack_into("<8I", payload, 0, *words)
+        records = MAP._a32_bx_register_candidates_in_region(
+            payload, ("synthetic", 0, len(payload)))
+        self.assertEqual([(record["blob_file_offset"], record["word"],
+                           record["condition"], record["operand_register"])
+                          for record in records], [
+            (0, 0xe12fff1e, 14, 14),
+            (4, 0x012fff10, 0, 0),
+            (8, 0x112fff1f, 1, 15),
+        ])
+        self.assertTrue(all(record["operation"] == "BX register"
+                            for record in records))
+        for region in (("synthetic", 2, 4), ("synthetic", 0, 2),
+                       ("synthetic", 0, 0)):
+            with self.subTest(region=region), \
+                    self.assertRaisesRegex(MAP.FormatError, "word aligned"):
+                MAP._a32_bx_register_candidates_in_region(payload, region)
+        for region in (("synthetic", 0, len(payload) + 4),
+                       ("synthetic", len(payload), 4)):
+            with self.subTest(region=region), self.assertRaises(MAP.FormatError):
+                MAP._a32_bx_register_candidates_in_region(payload, region)
+
     def test_blx_register_scanner_is_raw_aligned_and_excludes_near_matches(self):
         payload = bytearray(36)
         words = (
@@ -6476,6 +6844,14 @@ class FirmwareChannelFieldTests(unittest.TestCase):
         self.assertTrue(scope["whole_arm_blx_register_encoding_scan"])
         self.assertTrue(scope["rooted_blx_register_instruction_sites"])
         self.assertFalse(scope["all_blx_register_code_boundaries_classified"])
+        self.assertTrue(scope["whole_arm_bx_register_encoding_scan"])
+        self.assertTrue(scope["rooted_fiq_bx_register_instruction_sites"])
+        self.assertTrue(scope["selected_fiq_computed_transfer_thunk_classified"])
+        for field in ("all_bx_register_code_boundaries_classified",
+                      "all_fiq_callback_pointer_writers_complete",
+                      "live_fiq_callback_pointer_established",
+                      "indirect_or_computed_registration_calls_excluded"):
+            self.assertFalse(scope[field], field)
         self.assertTrue(scope["selected_slot4_callback_body_classified"])
         self.assertTrue(scope["selected_slot4_delivery_path_statically_connected"])
         self.assertFalse(scope["all_callback_registration_writers_complete"])
@@ -6538,6 +6914,9 @@ class FirmwareChannelFieldTests(unittest.TestCase):
         ranges += [(region["blob_file_offset"], region["size"])
                    for region in self.report["validation"]
                    ["blx_register_evidence"]["regions"]]
+        ranges += [(region["blob_file_offset"], region["size"])
+                   for region in self.report["validation"]
+                   ["bx_register_evidence"]["regions"]]
         whole = self.report["validation"]["whole_arm_direct_b_bl_scan"]
         ranges.append((whole["blob_file_offset"], whole["size"]))
         reported = []
@@ -6586,6 +6965,9 @@ class FirmwareChannelFieldTests(unittest.TestCase):
                         mock.patch.object(MAP, "_a32_blx_register_candidates_in_region",
                                           side_effect=AssertionError(
                                               "BLX-register scan before pin gate")), \
+                        mock.patch.object(MAP, "_a32_bx_register_candidates_in_region",
+                                          side_effect=AssertionError(
+                                              "BX-register scan before pin gate")), \
                         self.assertRaises(MAP.FormatError):
                     MAP._channel_field_map(changed)
 
@@ -6624,8 +7006,66 @@ class FirmwareChannelFieldTests(unittest.TestCase):
                         mock.patch.object(MAP, "_a32_blx_register_candidates_in_region",
                                           side_effect=AssertionError(
                                               "BLX-register scan before evidence gate")), \
+                        mock.patch.object(MAP, "_a32_bx_register_candidates_in_region",
+                                          side_effect=AssertionError(
+                                              "BX-register scan before evidence gate")), \
                         self.assertRaisesRegex(MAP.FormatError,
                                               "BLX-register evidence region"):
+                    MAP._channel_field_map(changed)
+
+    def test_every_bx_evidence_byte_rejects_before_decode_or_dependency(self):
+        role, start, size, _ = MAP._CHANNEL_FIELD_WHOLE_ARM_REGION
+        for evidence_role, offset, evidence_size, _ in \
+                MAP._CHANNEL_FIELD_BX_EVIDENCE_REGIONS:
+            for delta in range(evidence_size):
+                changed = bytearray(self.payload)
+                changed[offset + delta] ^= 1
+                repinned_whole = (
+                    role, start, size,
+                    hashlib.sha256(changed[start:start + size]).hexdigest())
+                # The vector and 0x705c envelopes overlap older BLX evidence.
+                # Repin that earlier gate so this test reaches the BX gate.
+                repinned_blx = tuple(
+                    (blx_role, blx_offset, blx_size,
+                     hashlib.sha256(
+                         changed[blx_offset:blx_offset + blx_size]).hexdigest())
+                    for blx_role, blx_offset, blx_size, _ in
+                    MAP._CHANNEL_FIELD_BLX_EVIDENCE_REGIONS
+                )
+                with self.subTest(role=evidence_role, delta=delta), \
+                        mock.patch.object(MAP, "_CHANNEL_FIELD_WHOLE_ARM_REGION",
+                                          repinned_whole), \
+                        mock.patch.object(MAP, "_CHANNEL_FIELD_BLX_EVIDENCE_REGIONS",
+                                          repinned_blx), \
+                        mock.patch.object(MAP, "_rx_descriptor_admission_map",
+                                          side_effect=AssertionError(
+                                              "dependency ran before BX evidence gate")), \
+                        mock.patch.object(MAP, "_bootstrap_word",
+                                          side_effect=AssertionError(
+                                              "decoded before BX evidence gate")), \
+                        mock.patch.object(MAP, "_a32_literal",
+                                          side_effect=AssertionError(
+                                              "literal decoded before BX evidence gate")), \
+                        mock.patch.object(MAP, "_a32_branch",
+                                          side_effect=AssertionError(
+                                              "branch decoded before BX evidence gate")), \
+                        mock.patch.object(MAP, "_a32_branch_candidates_in_regions",
+                                          side_effect=AssertionError(
+                                              "caller scan before BX evidence gate")), \
+                        mock.patch.object(MAP, "_a32_target_branches_in_region",
+                                          side_effect=AssertionError(
+                                              "target scan before BX evidence gate")), \
+                        mock.patch.object(MAP, "_direct_interworking_immediates_in_region",
+                                          side_effect=AssertionError(
+                                              "interworking scan before BX evidence gate")), \
+                        mock.patch.object(MAP, "_a32_blx_register_candidates_in_region",
+                                          side_effect=AssertionError(
+                                              "BLX-register scan before BX evidence gate")), \
+                        mock.patch.object(MAP, "_a32_bx_register_candidates_in_region",
+                                          side_effect=AssertionError(
+                                              "BX-register scan before evidence gate")), \
+                        self.assertRaisesRegex(MAP.FormatError,
+                                              "BX-register evidence region"):
                     MAP._channel_field_map(changed)
 
     def test_whole_arm_scan_hash_gate_rejects_before_decode_or_dependencies(self):
@@ -6647,6 +7087,9 @@ class FirmwareChannelFieldTests(unittest.TestCase):
                     mock.patch.object(MAP, "_a32_blx_register_candidates_in_region",
                                       side_effect=AssertionError(
                                           "BLX-register scan before scan pin")), \
+                    mock.patch.object(MAP, "_a32_bx_register_candidates_in_region",
+                                      side_effect=AssertionError(
+                                          "BX-register scan before scan pin")), \
                     self.assertRaisesRegex(MAP.FormatError, "whole-ARM scan region"):
                 MAP._channel_field_map(changed)
 
@@ -6686,6 +7129,18 @@ class FirmwareChannelFieldTests(unittest.TestCase):
                     mock.patch.object(MAP, name, one_below), \
                     self.assertRaisesRegex(MAP.FormatError,
                                           "BLX-register evidence budget"):
+                MAP._channel_field_map(self.payload)
+        for name, exact, one_below in (
+                ("MAX_CHANNEL_FIELD_BX_EVIDENCE_REGIONS", 8, 7),
+                ("MAX_CHANNEL_FIELD_BX_EVIDENCE_BYTES", 180, 179)):
+            with self.subTest(exact=name), mock.patch.object(MAP, name, exact):
+                self.assertEqual(MAP._channel_field_map(self.payload)
+                                 ["validation"]["bx_register_evidence"]
+                                 ["region_count"], 8)
+            with self.subTest(one_below=name), \
+                    mock.patch.object(MAP, name, one_below), \
+                    self.assertRaisesRegex(MAP.FormatError,
+                                          "BX-register evidence budget"):
                 MAP._channel_field_map(self.payload)
 
     def test_opt_in_is_offline_additive_and_exact_baseline_gated(self):

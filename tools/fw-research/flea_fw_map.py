@@ -922,6 +922,26 @@ _CHANNEL_FIELD_BLX_EVIDENCE_REGIONS = (
 )
 MAX_CHANNEL_FIELD_BLX_EVIDENCE_REGIONS = 10
 MAX_CHANNEL_FIELD_BLX_EVIDENCE_BYTES = 1024
+_CHANNEL_FIELD_BX_EVIDENCE_REGIONS = (
+    ("fiq_vector_root_and_literal", 0x0001c, 0x020,
+     "f0ad07f3ee36d5423e2211f23d7d171f252812f41ad326f5bebb14f5c9d5fa5e"),
+    ("fiq_entry", 0x00104, 0x01c,
+     "5d019ec8f9e599f872c10f658398b61156c8c85ab4faf026469843f430a1a570"),
+    ("main_irq_registration_call", 0x0705c, 0x00c,
+     "2608ba59ab5731dfe046b22594712f048f51112781c51f90cf1cff5578a11313"),
+    ("interrupt_pointer_clear", 0x0ac20, 0x014,
+     "038823284c7c6136fec5c9bba3e26319a1d8bb19aa3c0ade2673f9b260d8d5d7"),
+    ("interrupt_pointer_clear_literals", 0x0ac64, 0x008,
+     "60eed3ce168871a7dcbbe377507ffed144fa9c51b7ddd53177a6cb7557c18786"),
+    ("fiq_computed_transfer_thunk", 0x0aca8, 0x018,
+     "33d7831d5e75d2f71c0d2a606324a3c671d9b92f411f88ef37f7f1f998d20cd3"),
+    ("interrupt_pointer_registration", 0x0acc0, 0x034,
+     "ed00d52610e5f39c9326dd13d1979bd4c26ee12d33efcd1d551535e03be9af1f"),
+    ("interrupt_pointer_base_literal", 0x0adc8, 0x004,
+     "e6e0846d863d72a4ecdf1de9f0a613721ff036585fb00ab7d2dc8ce35170be65"),
+)
+MAX_CHANNEL_FIELD_BX_EVIDENCE_REGIONS = 8
+MAX_CHANNEL_FIELD_BX_EVIDENCE_BYTES = 256
 _MFD_SOURCE_REGIONS = (
     ("source_address", 0x1918,
      "f0402de914d04de20070a0e10140a0e1f8219fe55c10d4e5810081e00031b2e7050092e90c008de510208de508308de5"
@@ -3894,6 +3914,30 @@ def _a32_blx_register_candidates_in_region(payload, region):
     return candidates
 
 
+def _a32_bx_register_candidates_in_region(payload, region):
+    """Inventory aligned A32 BX-register patterns without classifying code."""
+    role, start, size = region
+    if start % 4 or size <= 0 or size % 4:
+        raise FormatError("A32 BX-register scan region is not word aligned")
+    data = bounded(payload, start, size, "A32 BX-register scan region")
+    candidates = []
+    for relative in range(0, size, 4):
+        word = struct.unpack_from("<I", data, relative)[0]
+        condition = word >> 28
+        # cond=0xf is the unconditional encoding space, not A32 BX Rm.
+        if condition == 15 or word & 0x0ffffff0 != 0x012fff10:
+            continue
+        candidates.append({
+            "region_role": role,
+            "blob_file_offset": start + relative,
+            "word": word,
+            "operation": "BX register",
+            "condition": condition,
+            "operand_register": word & 15,
+        })
+    return candidates
+
+
 def _a32_blx_immediate(payload, offset):
     """Decode one aligned A32 BLX-immediate encoding without classifying code."""
     if offset % 4:
@@ -5803,6 +5847,8 @@ def _channel_field_map(payload):
         _CHANNEL_FIELD_WHOLE_ARM_REGION
     blx_evidence_regions = _CHANNEL_FIELD_BLX_EVIDENCE_REGIONS
     blx_evidence_bytes = sum(size for _, _, size, _ in blx_evidence_regions)
+    bx_evidence_regions = _CHANNEL_FIELD_BX_EVIDENCE_REGIONS
+    bx_evidence_bytes = sum(size for _, _, size, _ in bx_evidence_regions)
     if tuple(role for role, _, _ in caller_scan_regions) != caller_scan_roles:
         raise FormatError("channel-field caller scan regions do not match the baseline")
     if len(regions) > MAX_CHANNEL_FIELD_REGIONS or total > MAX_CHANNEL_FIELD_BYTES:
@@ -5840,6 +5886,21 @@ def _channel_field_map(payload):
             raise FormatError(
                 f"channel-field BLX-register evidence region {role} does not match the baseline")
         validated_blx_evidence.append({
+            "role": role, "blob_file_offset": offset,
+            "size": size, "sha256": expected,
+        })
+
+    if (len(bx_evidence_regions) > MAX_CHANNEL_FIELD_BX_EVIDENCE_REGIONS or
+            bx_evidence_bytes > MAX_CHANNEL_FIELD_BX_EVIDENCE_BYTES):
+        raise FormatError("channel-field BX-register evidence budget exceeded")
+    validated_bx_evidence = []
+    for role, offset, size, expected in bx_evidence_regions:
+        data = bounded(payload, offset, size,
+                       "channel-field BX-register evidence region")
+        if hashlib.sha256(data).hexdigest() != expected:
+            raise FormatError(
+                f"channel-field BX-register evidence region {role} does not match the baseline")
+        validated_bx_evidence.append({
             "role": role, "blob_file_offset": offset,
             "size": size, "sha256": expected,
         })
@@ -5996,6 +6057,58 @@ def _channel_field_map(payload):
                           code_region_role="irq_dispatch")
         else:
             record["code_status"] = "encoding_candidate_only"
+
+    bx_register_candidates = _a32_bx_register_candidates_in_region(
+        payload, (whole_arm_role, whole_arm_start, whole_arm_size))
+    bx_condition_counts = {
+        condition: sum(record["condition"] == condition
+                       for record in bx_register_candidates)
+        for condition in range(15)
+        if any(record["condition"] == condition
+               for record in bx_register_candidates)
+    }
+    bx_operand_register_counts = {
+        register: sum(record["operand_register"] == register
+                      for record in bx_register_candidates)
+        for register in range(16)
+        if any(record["operand_register"] == register
+               for record in bx_register_candidates)
+    }
+    non_lr_bx_candidates = [
+        record for record in bx_register_candidates
+        if record["operand_register"] != 14
+    ]
+    conditional_bx_candidates = [
+        record for record in bx_register_candidates
+        if record["condition"] != 14
+    ]
+    if (len(bx_register_candidates) != 203 or
+            bx_condition_counts != {0: 1, 14: 202} or
+            bx_operand_register_counts != {0: 1, 14: 202} or
+            [(record["blob_file_offset"], record["word"],
+              record["condition"], record["operand_register"])
+             for record in non_lr_bx_candidates] !=
+            [(0xacb8, 0xe12fff10, 14, 0)] or
+            [(record["blob_file_offset"], record["word"],
+              record["condition"], record["operand_register"])
+             for record in conditional_bx_candidates] !=
+            [(0x2c66c, 0x012fff1e, 0, 14)]):
+        raise FormatError("channel-field A32 BX-register candidates do not match the baseline")
+    selected_bx_offsets = (0xacb8, 0xacbc)
+    for record in bx_register_candidates:
+        if record["blob_file_offset"] in selected_bx_offsets:
+            record.update(code_status="rooted_a32_instruction",
+                          code_region_role="fiq_computed_transfer_thunk")
+        else:
+            record["code_status"] = "encoding_candidate_only"
+    interrupt_pointer_registration_calls = _a32_target_branches_in_region(
+        payload, (whole_arm_role, whole_arm_start, whole_arm_size), (0xacc0,))
+    if [(record["blob_file_offset"], record["word"], record["operation"],
+         record["condition"], record["target_blob_file_offset"])
+        for record in interrupt_pointer_registration_calls] != [
+            (0x7064, 0xeb000f15, "BL", 14, 0xacc0)]:
+        raise FormatError(
+            "channel-field direct interrupt-pointer registrations do not match the baseline")
 
     irq_vector = _a32_literal(payload, 0x18)
     irq_dispatch_call = _a32_branch(payload, 0xf0, link=True)
@@ -6250,6 +6363,242 @@ def _channel_field_map(payload):
             (device_start_output["literal_blob_file_offset"], device_start_output["literal_value"],
              device_start_output["destination_register"]) != (0x5ed4, 0xd1ff8, 1)):
         raise FormatError("channel-field root literal does not match the baseline")
+
+    fiq_vector = _a32_literal(payload, 0x1c)
+    fiq_thunk_call = _a32_branch(payload, 0x110, link=True)
+    fiq_pointer_base = _a32_literal(payload, 0xaca8)
+    registration_pointer_base = _a32_literal(payload, 0xacc8)
+    clear_main_pointer = _a32_literal(payload, 0xac20)
+    clear_fiq_pointer = _a32_literal(payload, 0xac2c)
+    if ((fiq_vector["destination_register"],
+         fiq_vector["literal_blob_file_offset"], fiq_vector["literal_value"]) !=
+            (15, 0x38, 0x104) or
+            fiq_thunk_call["target_blob_file_offset"] != 0xaca8 or
+            (fiq_pointer_base["destination_register"],
+             fiq_pointer_base["literal_blob_file_offset"],
+             fiq_pointer_base["literal_value"]) != (0, 0xadc8, 0xd2248) or
+            (registration_pointer_base["destination_register"],
+             registration_pointer_base["literal_blob_file_offset"],
+             registration_pointer_base["literal_value"]) != (5, 0xadc8, 0xd2248) or
+            (clear_main_pointer["destination_register"],
+             clear_main_pointer["literal_blob_file_offset"],
+             clear_main_pointer["literal_value"]) != (1, 0xac64, 0xd2248) or
+            (clear_fiq_pointer["destination_register"],
+             clear_fiq_pointer["literal_blob_file_offset"],
+             clear_fiq_pointer["literal_value"]) != (1, 0xac68, 0xd224c)):
+        raise FormatError("channel-field FIQ roots and pointer literals do not match the baseline")
+
+    fiq_entry_words = {
+        0x104: 0xe59fd018, 0x108: 0xe92d00ff,
+        0x10c: 0xe52de004, 0x110: 0xeb002ae4,
+        0x114: 0xe49de004, 0x118: 0xe8bd00ff,
+        0x11c: 0xe25ef004,
+    }
+    fiq_thunk_words = {
+        0xaca8: 0xe59f0118, 0xacac: 0xe5900004,
+        0xacb0: 0xe3500000, 0xacb4: 0x0a000000,
+        0xacb8: 0xe12fff10, 0xacbc: 0xe12fff1e,
+    }
+    interrupt_pointer_clear_words = {
+        0xac20: 0xe59f103c, 0xac24: 0xe3a00000,
+        0xac28: 0xe5810000, 0xac2c: 0xe59f1034,
+        0xac30: 0xe5810000,
+    }
+    interrupt_pointer_registration_words = {
+        0xacc0: 0xe92d4070, 0xacc4: 0xe1a04001,
+        0xacc8: 0xe59f50f8, 0xaccc: 0xe3500001,
+        0xacd0: 0x0a000003, 0xacd4: 0xe3500002,
+        0xacd8: 0x1a000000, 0xacdc: 0xe5854004,
+        0xace0: 0xe8bd8070, 0xace4: 0xe28f00e0,
+        0xace8: 0xeb0000ac, 0xacec: 0xe5854000,
+        0xacf0: 0xeafffffa,
+    }
+    main_irq_registration_words = {
+        0x705c: 0xe24f1f5d, 0x7060: 0xe3a00001,
+        0x7064: 0xeb000f15,
+    }
+    for label, words in (
+            ("FIQ entry", fiq_entry_words),
+            ("FIQ computed-transfer thunk", fiq_thunk_words),
+            ("interrupt-pointer clear", interrupt_pointer_clear_words),
+            ("interrupt-pointer registration", interrupt_pointer_registration_words),
+            ("main-IRQ registration call", main_irq_registration_words)):
+        for offset, expected in words.items():
+            if _bootstrap_word(payload, offset) != expected:
+                raise FormatError(
+                    f"channel-field {label} word at {offset:#x} does not match the baseline")
+
+    fiq_null_branch = _a32_branch(payload, 0xacb4, condition=0)
+    selector_1_branch = _a32_branch(payload, 0xacd0, condition=0)
+    other_selector_branch = _a32_branch(payload, 0xacd8, condition=1)
+    selector_1_log_call = _a32_branch(payload, 0xace8, link=True)
+    selector_1_join = _a32_branch(payload, 0xacf0)
+    main_irq_registration_call = _a32_branch(payload, 0x7064, link=True)
+    if ((fiq_null_branch["target_blob_file_offset"],
+         selector_1_branch["target_blob_file_offset"],
+         other_selector_branch["target_blob_file_offset"],
+         selector_1_log_call["target_blob_file_offset"],
+         selector_1_join["target_blob_file_offset"],
+         main_irq_registration_call["target_blob_file_offset"]) !=
+            (0xacbc, 0xace4, 0xace0, 0xafa0, 0xace0, 0xacc0)):
+        raise FormatError("channel-field FIQ branch edges do not match the baseline")
+
+    bx_candidate_by_offset = {
+        record["blob_file_offset"]: record for record in bx_register_candidates
+    }
+    fiq_transfer = bx_candidate_by_offset.get(0xacb8)
+    fiq_null_return = bx_candidate_by_offset.get(0xacbc)
+    if fiq_transfer is None or fiq_null_return is None:
+        raise FormatError("channel-field FIQ BX-register sites are absent from the scan")
+    main_irq_callback = 0x7064 - 0x174
+    if main_irq_callback != 0x6ef0:
+        raise FormatError("channel-field main-IRQ callback materialization is incoherent")
+
+    fiq_computed_transfer = {
+        "kind": "selected-static-fiq-computed-transfer-thunk",
+        "root_chain": {
+            "vector_entry": fiq_vector,
+            "fiq_entry_blob_file_offset": 0x104,
+            "fiq_entry_word_receipts": [
+                {"blob_file_offset": offset, "word": word}
+                for offset, word in sorted(fiq_entry_words.items())
+            ],
+            "thunk_call": fiq_thunk_call,
+            "runtime_observed": False,
+        },
+        "callback_pointer_pair": {
+            "base_address": 0xd2248,
+            "main_irq_callback_pointer_address": 0xd2248,
+            "fiq_callback_pointer_address": 0xd224c,
+            "thunk_base_literal": fiq_pointer_base,
+            "registration_base_literal": registration_pointer_base,
+            "fiq_callback_load": {
+                "blob_file_offset": 0xacac,
+                "word": fiq_thunk_words[0xacac],
+                "destination_register": 0,
+                "base_register": 0,
+                "byte_offset": 4,
+                "effective_address": 0xd224c,
+            },
+            "runtime_contents_observed": False,
+            "live_fiq_callback_pointer_established": False,
+        },
+        "initialization": {
+            "entry_blob_file_offset": 0xac1c,
+            "clear_word_receipts": [
+                {"blob_file_offset": offset, "word": word}
+                for offset, word in sorted(interrupt_pointer_clear_words.items())
+            ],
+            "pointer_literals": [clear_main_pointer, clear_fiq_pointer],
+            "clears": [
+                {"pointer_role": "main_irq_callback", "address": 0xd2248,
+                 "store_blob_file_offset": 0xac28, "value": 0},
+                {"pointer_role": "fiq_callback", "address": 0xd224c,
+                 "store_blob_file_offset": 0xac30, "value": 0},
+            ],
+            "both_selected_pointers_cleared": True,
+            "runtime_observed": False,
+        },
+        "thunk": {
+            "entry_blob_file_offset": 0xaca8,
+            "word_receipts": [
+                {"blob_file_offset": offset, "word": word}
+                for offset, word in sorted(fiq_thunk_words.items())
+            ],
+            "null_test_blob_file_offset": 0xacb0,
+            "null_branch": fiq_null_branch,
+            "zero_callback_action": "BX LR at 0xacbc",
+            "zero_callback_transfer": fiq_null_return,
+            "nonzero_callback_action": "BX r0 at 0xacb8",
+            "nonzero_callback_transfer": fiq_transfer,
+            "nonzero_destination_register": "r0",
+            "link_register_modified_by_selected_bx": False,
+            "link_register_preserved_by_selected_bx": True,
+            "callback_body_or_return_behavior_classified": False,
+        },
+        "registration": {
+            "entry_blob_file_offset": 0xacc0,
+            "selector_register": "r0",
+            "incoming_callback_register": "r1",
+            "saved_callback_register": "r4",
+            "save_callback_blob_file_offset": 0xacc4,
+            "word_receipts": [
+                {"blob_file_offset": offset, "word": word}
+                for offset, word in sorted(interrupt_pointer_registration_words.items())
+            ],
+            "selector_2": {
+                "selector_value": 2,
+                "compare_blob_file_offset": 0xacd4,
+                "other_selector_branch": other_selector_branch,
+                "store_blob_file_offset": 0xacdc,
+                "pointer_role": "fiq_callback",
+                "pointer_address": 0xd224c,
+                "stored_value": "incoming r1 preserved in r4",
+            },
+            "selector_1": {
+                "selector_value": 1,
+                "compare_blob_file_offset": 0xaccc,
+                "select_branch": selector_1_branch,
+                "intervening_log_call": selector_1_log_call,
+                "callee_saved_r4_preservation_assumed": True,
+                "callee_saved_r5_preservation_assumed": True,
+                "store_blob_file_offset": 0xacec,
+                "join_branch": selector_1_join,
+                "pointer_role": "main_irq_callback",
+                "pointer_address": 0xd2248,
+                "stored_value": "incoming r1 preserved in r4",
+            },
+            "other_selectors_store_callback": False,
+            "direct_call_scan": {
+                "region": {
+                    "role": whole_arm_role,
+                    "blob_file_offset": whole_arm_start,
+                    "size": whole_arm_size,
+                    "sha256": whole_arm_sha256,
+                },
+                "alignment_bytes": 4,
+                "target_blob_file_offset": 0xacc0,
+                "target_candidates": interrupt_pointer_registration_calls,
+                "complete_for_hash_pinned_region_direct_b_bl_encoding_candidates": True,
+                "all_registration_callers_complete": False,
+                "indirect_or_computed_registration_calls_excluded": False,
+            },
+            "all_registration_writers_complete": False,
+            "indirect_or_computed_registration_calls_excluded": False,
+            "intervening_callee_pointer_side_effects_excluded": False,
+        },
+        "selected_real_registration": {
+            "callback_materialization": {
+                "blob_file_offset": 0x705c,
+                "word": main_irq_registration_words[0x705c],
+                "architectural_pc": 0x7064,
+                "subtracted_immediate": 0x174,
+                "destination_register": "r1",
+                "result_callback_address": main_irq_callback,
+            },
+            "selector_materialization_blob_file_offset": 0x7060,
+            "selector_value": 1,
+            "call": main_irq_registration_call,
+            "selected_pointer_role": "main_irq_callback",
+            "selected_pointer_address": 0xd2248,
+            "fiq_callback_pointer_address": 0xd224c,
+            "direct_selected_store_populates_fiq_callback_pointer": False,
+            "intervening_callee_pointer_side_effects_excluded": False,
+            "registration_persistence_established": False,
+            "runtime_observed": False,
+        },
+        "scope": {
+            "selected_root_chain_pinned": True,
+            "selected_null_and_nonzero_transfers_classified": True,
+            "all_bx_register_code_boundaries_classified": False,
+            "all_callback_pointer_writers_complete": False,
+            "live_fiq_callback_pointer_established": False,
+            "indirect_or_computed_registration_calls_excluded": False,
+            "intervening_callee_pointer_side_effects_excluded": False,
+            "callback_body_or_return_behavior_classified": False,
+            "runtime_execution_observed": False,
+        },
+    }
 
     delivery_region = next(record for record in validated
                            if record["role"] == "descriptor_delivery")
@@ -7046,10 +7395,25 @@ def _channel_field_map(payload):
                            "charged_to_selected_region_budget": False,
                            "shares_hash_gate_with": "whole_arm_direct_b_bl_scan",
                        },
+                       "whole_arm_bx_register_scan": {
+                           "role": whole_arm_role,
+                           "blob_file_offset": whole_arm_start,
+                           "size": whole_arm_size,
+                           "sha256": whole_arm_sha256,
+                           "charged_to_selected_region_budget": False,
+                           "shares_hash_gate_with": "whole_arm_direct_b_bl_scan",
+                       },
                        "blx_register_evidence": {
                            "region_count": len(validated_blx_evidence),
                            "bytes": blx_evidence_bytes,
                            "regions": validated_blx_evidence,
+                           "charged_to_selected_region_budget": False,
+                           "overlap_deduplicated": False,
+                       },
+                       "bx_register_evidence": {
+                           "region_count": len(validated_bx_evidence),
+                           "bytes": bx_evidence_bytes,
+                           "regions": validated_bx_evidence,
                            "charged_to_selected_region_budget": False,
                            "overlap_deduplicated": False,
                        },
@@ -7227,14 +7591,51 @@ def _channel_field_map(payload):
                 "runtime_table_contents_observed": False,
                 "runtime_path_observed": False,
             },
+            "whole_arm_bx_register_scan": {
+                "isa_encoding": "A32 BX-register encoding patterns with condition 0..14",
+                "kind": "aligned raw encoding-pattern inventory, not a code/data partition",
+                "region": {
+                    "role": whole_arm_role,
+                    "blob_file_offset": whole_arm_start,
+                    "size": whole_arm_size,
+                    "sha256": whole_arm_sha256,
+                },
+                "alignment_bytes": 4,
+                "encoding_candidate_count": len(bx_register_candidates),
+                "condition_counts": {
+                    str(condition): count
+                    for condition, count in sorted(bx_condition_counts.items())
+                },
+                "operand_register_counts": {
+                    f"r{register}": count
+                    for register, count in sorted(bx_operand_register_counts.items())
+                },
+                "encoding_candidates": bx_register_candidates,
+                "non_lr_candidates": non_lr_bx_candidates,
+                "conditional_candidates": conditional_bx_candidates,
+                "rooted_code_candidate_count": len(selected_bx_offsets),
+                "rooted_code_candidate_offsets": list(selected_bx_offsets),
+                "selected_fiq_computed_transfer": fiq_computed_transfer,
+                "complete_for_hash_pinned_region_encoding_candidates": True,
+                "scan_is_not_a_code_data_partition": True,
+                "all_candidate_code_boundaries_classified": False,
+                "all_callback_pointer_writers_complete": False,
+                "live_fiq_callback_pointer_established": False,
+                "indirect_or_computed_registration_calls_excluded": False,
+                "runtime_path_observed": False,
+            },
             "limitations": [
-                "The whole-prefix scans classify aligned raw A32 B/BL, A32 BLX-immediate and T32 BL/BLX-immediate patterns; they do not classify the mixed prefix into code and data.",
+                "The whole-prefix scans classify aligned raw A32 B/BL, A32 BLX-immediate, T32 BL/BLX-immediate, A32 BLX-register and A32 BX-register patterns; they do not classify the mixed prefix into code and data.",
                 "The A32 BLX-register scan roots only the two IRQ-dispatch sites at 0x6fb0 and 0x6fe0 as code; the other 70 matches remain encoding candidates only.",
+                "The A32 BX-register scan roots only the selected FIQ thunk sites at 0xacb8 and 0xacbc; the other 201 raw matches remain encoding candidates only.",
+                "The selected FIQ vector and thunk prove a null return or non-linking computed transfer through the value loaded from 0xd224c, not a live callback value, callback return behavior, execution, or all pointer writers.",
+                "The selected 0x7064 registration uses selector 1, so its own direct callback store targets the distinct main-IRQ pointer 0xd2248 rather than the FIQ pointer at 0xd224c; pointer side effects of its intervening opaque call remain unclassified.",
                 "The selected slot-4 registration and callback body establish a conditional static delivery path, not registration persistence, live table contents, execution, channel-index validity, or end-to-end ownership.",
                 "The IRQ callback slot 4 and the delivery handler's mailbox-selected channel index are distinct values; their equality is neither required nor established.",
                 "The selected IRQ callback table and three direct registration calls do not establish every writer or the identities of the other callback bodies.",
                 "Within the hash-pinned ARM prefix, the supported direct-immediate scans find only six internal branches in [0x1610,0x168c) and one BL to the separate 0x168c entry; they find no external target into the helper body and therefore do not derive incoming r1 as 0xd3a00.",
                 "That bounded absence does not establish global dead code and does not exclude BLX-register, other indirect/computed transfers, literal/ADR address materialization, relocation-derived references, or sources outside the pinned prefix.",
+                "The selected FIQ pointer machinery neither identifies helper 0x1610 as a callback nor establishes that helper's incoming r1 premise.",
                 "The 0x12e4 path relies on A32 callee-saved r6 preservation across its possible intervening calls.",
                 "Static selected paths do not establish runtime execution, valid slot range, object identity or lifetime.",
             ],
@@ -7262,6 +7663,13 @@ def _channel_field_map(payload):
             "whole_arm_blx_register_encoding_scan": True,
             "rooted_blx_register_instruction_sites": True,
             "all_blx_register_code_boundaries_classified": False,
+            "whole_arm_bx_register_encoding_scan": True,
+            "rooted_fiq_bx_register_instruction_sites": True,
+            "selected_fiq_computed_transfer_thunk_classified": True,
+            "all_bx_register_code_boundaries_classified": False,
+            "all_fiq_callback_pointer_writers_complete": False,
+            "live_fiq_callback_pointer_established": False,
+            "indirect_or_computed_registration_calls_excluded": False,
             "selected_slot4_callback_body_classified": True,
             "selected_slot4_delivery_path_statically_connected": True,
             "all_callback_registration_writers_complete": False,
@@ -7290,6 +7698,8 @@ def _channel_field_map(payload):
             "A32 calls use the pinned calling convention and output pointers remain unaliased for each serialized call.",
             "The whole-prefix target-filtered scans classify aligned raw direct-immediate encoding patterns, not source ISA boundaries, executable code, or every possible control-transfer mechanism.",
             "The two A32 BL target candidates establish the selected fixed-root paths; zero A32 BLX-immediate and T32 BL/BLX-immediate matches add no path, while BLX-register targets and other indirect/computed transfers remain unresolved.",
+            "The raw A32 BX-register inventory classifies only the two selected FIQ-thunk sites as instructions; the remaining bit patterns are not promoted from data to code.",
+            "The selector-1 pointer store relies on its intervening logging call returning under the A32 ABI with callee-saved r4 and r5 preserved.",
             "The IRQ vector-to-entry-to-dispatch chain and selected slot-4 registration conditionally connect status bit 0x200 to descriptor delivery, but do not prove registration persistence, live table contents, callback execution, or overall provenance.",
             "The third argument-rooted helper at 0x1610 has no supported direct-immediate external target into its pinned body; its 0x1628 and 0x1664 loads remain conditional on the incoming r1 == 0xd3a00 premise.",
             "Selected scalar access lists exclude unpinned aliases and are not whole-image access inventories; the three pinned bulk clear paths are listed separately.",
