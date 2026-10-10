@@ -5326,6 +5326,8 @@ class FirmwareChannelFieldTests(unittest.TestCase):
              "9e6b69c108f5f1af4178bd069f394176b9675f22e5720791fe13c24e126e6a8f"),
             ("irq_dispatch", 0x06ef0, 0x100,
              "fd586631b4c4ff1f065091fc0f186c347b8ec40153b707fb222b0b08abc69bd8"),
+            ("irq_slot4_delivery_callback", 0x06ff4, 0x048,
+             "a024a89cab19eb48c9b6a1ffab548acb447d0b5640b7dbb3ab178b544634b9fc"),
             ("irq_registration_setup", 0x0703c, 0x0a8,
              "dea84781aa0e00184e96726f8cdc0a49537ca4c0672651a8556a11b03c10b1a9"),
             ("irq_table_base_literal", 0x07128, 0x004,
@@ -5340,7 +5342,7 @@ class FirmwareChannelFieldTests(unittest.TestCase):
         self.assertEqual((blx_evidence["region_count"], blx_evidence["bytes"],
                           blx_evidence["charged_to_selected_region_budget"],
                           blx_evidence["overlap_deduplicated"]),
-                         (9, 760, False, False))
+                         (10, 832, False, False))
         self.assertEqual([
             (region["role"], region["blob_file_offset"], region["size"],
              region["sha256"])
@@ -5683,12 +5685,22 @@ class FirmwareChannelFieldTests(unittest.TestCase):
             0x7128: 0x000d2000,
         }
         dispatch_words = {
-            0x6f20: 0xe59f9200, 0x6f94: 0xe0848084,
+            0x6f1c: 0xe3170010, 0x6f20: 0xe59f9200,
+            0x6f28: 0xe59f0204, 0x6f2c: 0xe5905000,
+            0x6f30: 0xe5895038, 0x6f84: 0xe3a04000,
+            0x6f88: 0xe3a0a001, 0x6f8c: 0xe117041a,
+            0x6f94: 0xe0848084,
             0x6f98: 0xe0896108, 0x6f9c: 0xe5961008,
             0x6fa0: 0xe3510000, 0x6fa4: 0x0a000007,
             0x6fa8: 0xe7992108, 0x6fac: 0xe5960004,
-            0x6fb0: 0xe12fff32, 0x6fd8: 0xe7992108,
+            0x6fb0: 0xe12fff32, 0x6fb4: 0xe2840001,
+            0x6fb8: 0xe20040ff, 0x6fbc: 0xe3540020,
+            0x6fc0: 0x3afffff1, 0x6fc8: 0xe3a0002a,
+            0x6fcc: 0xeb000fd1, 0x6fd0: 0xe5865008,
+            0x6fd4: 0xe1a01005, 0x6fd8: 0xe7992108,
             0x6fdc: 0xe5960004, 0x6fe0: 0xe12fff32,
+            0x6fe4: 0xe3a00000, 0x6fe8: 0xe5860008,
+            0x6fec: 0xeafffff0,
         }
         self.assertEqual({record["blob_file_offset"]: record["word"]
                           for record in table["registration_word_receipts"]},
@@ -5732,12 +5744,258 @@ class FirmwareChannelFieldTests(unittest.TestCase):
                           registrations[2]["callback_literal"]["literal_blob_file_offset"],
                           registrations[2]["callback_literal"]["literal_value"]),
                          (0x7144, 0x888c, "PC(0x7094) - 0xa8", 0x28694, 0x2c16c))
-        self.assertTrue(all(not record["callback_target_body_classified"] and
+        self.assertEqual([record["callback_target_body_classified"]
+                          for record in registrations], [False, True, False])
+        self.assertTrue(all(not record["registration_persistence_established"] and
                             not record["runtime_observed"] for record in registrations))
         self.assertTrue(direct[
             "complete_for_hash_pinned_region_direct_b_bl_encoding_candidates"])
         self.assertFalse(direct["all_registration_writers_complete"])
         self.assertFalse(direct["indirect_or_computed_registration_calls_excluded"])
+
+    def test_slot4_registration_materialization_and_dispatch_addresses_are_exact(self):
+        scan = self.report["caller_provenance"]["whole_arm_blx_register_scan"]
+        path = scan["selected_slot4_delivery_path"]
+        self.assertEqual(path["kind"],
+                         "conditional-static-irq-slot4-descriptor-delivery")
+        self.assertTrue(path["conditional_static_path_connected"])
+        irq = path["irq_dispatch"]
+        self.assertEqual((irq["vector_entry"]["blob_file_offset"],
+                          irq["irq_entry_blob_file_offset"],
+                          irq["dispatch_call"]["blob_file_offset"],
+                          irq["dispatch_call"]["target_blob_file_offset"]),
+                         (0x18, 0xdc, 0xf0, 0x6ef0))
+        self.assertEqual((irq["selected_callback_slot"],
+                          irq["selected_slot_event_mask"],
+                          irq["selected_slot_event_test_blob_file_offset"],
+                          irq["selected_status_source_physical_address"],
+                          irq["selected_status_load_blob_file_offset"],
+                          irq["selected_status_preload_store_blob_file_offset"]),
+                         (4, 0x10, 0x6f1c, 0x100f2000, 0x6f2c, 0x6f30))
+        self.assertEqual((irq["callback_table_base"],
+                          irq["callback_table_stride_bytes"],
+                          irq["selected_table_entry_address"],
+                          irq["selected_callback_word_address"],
+                          irq["selected_argument_word_address"],
+                          irq["selected_status_word_address"]),
+                         (0xd2000, 12, 0xd2030, 0xd2030, 0xd2034, 0xd2038))
+        self.assertEqual(irq["loop_selected_slot_mask_expression"],
+                         "1 << callback_slot")
+        receipts = {record["blob_file_offset"]: record["word"]
+                    for record in irq["selected_word_receipts"]}
+        self.assertEqual(receipts, {
+            0x6f1c: 0xe3170010, 0x6f20: 0xe59f9200,
+            0x6f28: 0xe59f0204, 0x6f2c: 0xe5905000,
+            0x6f30: 0xe5895038, 0x6f84: 0xe3a04000,
+            0x6f88: 0xe3a0a001, 0x6f8c: 0xe117041a,
+            0x6f94: 0xe0848084, 0x6f98: 0xe0896108,
+            0x6f9c: 0xe5961008, 0x6fa0: 0xe3510000,
+            0x6fa4: 0x0a000007, 0x6fa8: 0xe7992108,
+            0x6fac: 0xe5960004, 0x6fb0: 0xe12fff32,
+            0x6fb4: 0xe2840001, 0x6fb8: 0xe20040ff,
+            0x6fbc: 0xe3540020, 0x6fc0: 0x3afffff1,
+            0x6fc8: 0xe3a0002a, 0x6fcc: 0xeb000fd1,
+            0x6fd0: 0xe5865008, 0x6fd4: 0xe1a01005,
+            0x6fd8: 0xe7992108, 0x6fdc: 0xe5960004,
+            0x6fe0: 0xe12fff32, 0x6fe4: 0xe3a00000,
+            0x6fe8: 0xe5860008, 0x6fec: 0xeafffff0,
+        })
+        loop = irq["slot_loop"]
+        self.assertEqual((loop["initial_slot"],
+                          loop["slot_increment_blob_file_offset"],
+                          loop["slot_byte_normalization_blob_file_offset"],
+                          loop["exclusive_slot_limit"],
+                          loop["slot_limit_test_blob_file_offset"],
+                          loop["loop_branch"]["blob_file_offset"],
+                          loop["loop_branch"]["target_blob_file_offset"],
+                          loop["slot_not_pending_branch"]["blob_file_offset"],
+                          loop["slot_not_pending_branch"]["target_blob_file_offset"]),
+                         (0, 0x6fb4, 0x6fb8, 32, 0x6fbc,
+                          0x6fc0, 0x6f8c, 0x6f90, 0x6fb4))
+        flow = irq["selected_status_flow"]
+        self.assertEqual((flow["preload_address"],
+                          flow["callback_status_argument_register"],
+                          flow["status_zero_branch"]["blob_file_offset"],
+                          flow["status_zero_branch"]["target_blob_file_offset"],
+                          flow["status_zero_table_store_blob_file_offset"],
+                          flow["status_zero_argument_move_blob_file_offset"],
+                          flow["status_zero_cleanup_store_blob_file_offset"],
+                          flow["join_branch"]["blob_file_offset"],
+                          flow["join_branch"]["target_blob_file_offset"]),
+                         (0xd2038, "r1", 0x6fa4, 0x6fc8,
+                          0x6fd0, 0x6fd4, 0x6fe8, 0x6fec, 0x6fb4))
+        self.assertEqual([(call["blob_file_offset"], call["operation"],
+                           call["condition"], call["operand_register"])
+                          for call in flow["callback_invocations"]],
+                         [(0x6fb0, "BLX register", 14, 2),
+                          (0x6fe0, "BLX register", 14, 2)])
+
+        registration = path["registration"]
+        selected = registration["selected"]
+        self.assertEqual((selected["slot"], selected["callback_address"],
+                          selected["argument"], selected["state"],
+                          selected["call"]["blob_file_offset"],
+                          selected["call"]["target_blob_file_offset"]),
+                         (4, 0x6ff4, {"kind": "immediate", "value": 0},
+                          0, 0x70a0, 0x6ea0))
+        self.assertEqual(selected["materialization_blob_file_offsets"],
+                         [0x7090, 0x7094, 0x7098, 0x709c])
+        materialization = registration["callback_materialization"]
+        self.assertEqual(materialization, {
+            "instruction_blob_file_offset": 0x7094,
+            "instruction_word": 0xe24f10a8,
+            "pc_bias_bytes": 8, "pc_value": 0x709c,
+            "subtracted_immediate": 0xa8,
+            "result_callback_address": 0x6ff4,
+        })
+        self.assertEqual(registration["table_entry_address"], 0xd2030)
+        self.assertTrue(selected["callback_target_body_classified"])
+        for field in ("registration_persistence_established",
+                      "all_registration_writers_complete",
+                      "runtime_table_contents_observed"):
+            self.assertFalse(registration[field], field)
+
+    def test_slot4_callback_body_masks_and_branches_are_exact(self):
+        path = self.report["caller_provenance"]["whole_arm_blx_register_scan"] \
+            ["selected_slot4_delivery_path"]
+        callback = path["callback"]
+        self.assertEqual(callback["body"], {
+            "role": "irq_slot4_delivery_callback",
+            "blob_file_offset": 0x6ff4, "size": 72,
+            "sha256": "a024a89cab19eb48c9b6a1ffab548acb447d0b5640b7dbb3ab178b544634b9fc",
+        })
+        self.assertEqual((callback["entry_blob_file_offset"],
+                          callback["status_argument_register"],
+                          callback["saved_status_register"]),
+                         (0x6ff4, "r1", "r4"))
+        self.assertEqual((callback["status_source_literal"]["blob_file_offset"],
+                          callback["status_source_literal"]["literal_blob_file_offset"],
+                          callback["status_source_literal"]["literal_value"]),
+                         (0x6ffc, 0x7134, 0x100f2000))
+        masks = callback["status_masks"]
+        self.assertEqual({key: record["mask"] for key, record in masks.items()},
+                         {"0x100": 0x100, "0x200": 0x200, "0x400": 0x400})
+        self.assertEqual((masks["0x200"]["test_blob_file_offset"],
+                          masks["0x200"]["skip_branch"]["blob_file_offset"],
+                          masks["0x200"]["skip_branch"]["target_blob_file_offset"],
+                          masks["0x200"]["delivery_call"]["blob_file_offset"],
+                          masks["0x200"]["delivery_call"]["target_blob_file_offset"],
+                          masks["0x200"]["ack_value_materialization_blob_file_offset"],
+                          masks["0x200"]["ack_store_blob_file_offset"],
+                          masks["0x200"]["ack_physical_address"]),
+                         (0x7014, 0x7018, 0x7028, 0x701c, 0x7708,
+                          0x7020, 0x7024, 0x100f2008))
+        branches = [
+            ("skip_status_0x100", 0x7004, "B", 0, 0x7014),
+            ("status_0x100_handler", 0x7008, "BL", 14, 0x8d48),
+            ("skip_status_0x200", 0x7018, "B", 0, 0x7028),
+            ("descriptor_delivery", 0x701c, "BL", 14, 0x7708),
+            ("skip_status_0x400", 0x702c, "B", 0, 0x7038),
+            ("status_0x400_tail", 0x7034, "B", 14, 0x6ff0),
+        ]
+        actual = []
+        for mask in masks.values():
+            for key in ("skip_branch", "handler_branch", "delivery_call",
+                        "handler_tail_branch"):
+                if key in mask:
+                    branch = mask[key]
+                    actual.append((branch["role"], branch["blob_file_offset"],
+                                   branch["operation"], branch["condition"],
+                                   branch["target_blob_file_offset"]))
+        self.assertEqual(actual, branches)
+        self.assertTrue(callback["all_body_bytes_hash_pinned"])
+
+    def test_slot4_delivery_uses_fixed_root_copy_then_pending_publication(self):
+        path = self.report["caller_provenance"]["whole_arm_blx_register_scan"] \
+            ["selected_slot4_delivery_path"]
+        delivery = path["delivery"]
+        self.assertEqual(delivery["body"], {
+            "role": "descriptor_delivery", "blob_file_offset": 0x7708,
+            "size": 0x84,
+            "sha256": "a6a638674a3af17ddd321a9fcecf67febf788c1a6a74073081c66bed2bc13fea",
+        })
+        self.assertEqual((delivery["entry_blob_file_offset"],
+                          delivery["fixed_root_getter_call"]["blob_file_offset"],
+                          delivery["fixed_root_getter_call"]["target_blob_file_offset"],
+                          delivery["fixed_root_getter"]["entry_blob_file_offset"],
+                          delivery["fixed_root_getter"]["literal"]["literal_value"],
+                          delivery["fixed_root_getter"]["return_instruction_blob_file_offset"]),
+                         (0x7708, 0x7714, 0x898, 0x898, 0xd3a00, 0x89c))
+        channel = delivery["delivery_channel_index"]
+        self.assertEqual((channel["source_physical_address"],
+                          channel["load_blob_file_offset"]),
+                         (0x100e0024, 0x7734))
+        self.assertFalse(channel["range_validated"])
+        self.assertFalse(channel["equal_to_irq_callback_slot_established"])
+        base = delivery["selected_channel_base"]
+        self.assertEqual((base["name"], base["expression"],
+                          base["slot_stride_words"], base["slot_stride_bytes"],
+                          base["multiply_blob_file_offset"],
+                          base["add_blob_file_offset"]),
+                         ("H", "H = 0xd3a00 + delivery_channel_index * 0x1cc",
+                          0x73, 0x1cc, 0x776c, 0x7770))
+        self.assertFalse(base["runtime_identity_established"])
+        copy = delivery["copy"]
+        self.assertEqual((copy["source_expression"],
+                          copy["destination_expression"], copy["destination_range"],
+                          copy["byte_count"],
+                          copy["destination_materialization_blob_file_offset"],
+                          copy["byte_count_materialization_blob_file_offset"],
+                          copy["call"]["blob_file_offset"],
+                          copy["call"]["target_blob_file_offset"]),
+                         ("word(0x100f6000 + 4) + 0x401",
+                          "H + 0x188", "[H+0x188,H+0x1a8)", 32,
+                          0x7778, 0x7774, 0x777c, 0x2c59c))
+        self.assertEqual((copy["helper_body"]["role"],
+                          copy["helper_body"]["blob_file_offset"],
+                          copy["helper_body"]["size"],
+                          copy["helper_body"]["sha256"]),
+                         ("memcpy_a32", 0x2c59c, 0xec,
+                          "1e4214d8199c49b92e61acd6fe6347f3564a79300aa71eb21fce02f269921401"))
+        self.assertTrue(copy["helper_body_validated"])
+        self.assertFalse(copy["source_extent_and_stability_established"])
+        publication = delivery["publication"]
+        self.assertEqual((publication["address_expression"], publication["width_bytes"],
+                          publication["value"],
+                          publication["value_materialization_blob_file_offset"],
+                          publication["store_blob_file_offset"],
+                          publication["program_order_after_returning_copy"]),
+                         ("H + 0x1a8", 1, 1, 0x7780, 0x7784, True))
+        self.assertFalse(publication[
+            "visibility_or_consumer_completion_established"])
+        self.assertEqual([
+            (branch["role"], branch["blob_file_offset"], branch["operation"],
+             branch["condition"], branch["target_blob_file_offset"])
+            for branch in delivery["conditional_pre_copy_branches"]], [
+                ("duplicate_gate_clear", 0x7744, "B", 0, 0x7768),
+                ("duplicate_value_changed", 0x7754, "B", 1, 0x7764),
+                ("duplicate_value_log_exit", 0x7760, "B", 14, 0x203c4),
+            ])
+
+    def test_slot4_delivery_scope_remains_conditional_and_negative(self):
+        scan = self.report["caller_provenance"]["whole_arm_blx_register_scan"]
+        path = scan["selected_slot4_delivery_path"]
+        self.assertTrue(scan["selected_slot4_callback_body_classified"])
+        self.assertFalse(scan["all_callback_target_bodies_classified"])
+        self.assertFalse(scan["registration_persistence_established"])
+        scope = path["scope"]
+        for field in (
+                "registration_persistence_established",
+                "runtime_table_contents_observed", "runtime_dispatch_observed",
+                "runtime_callback_observed", "runtime_delivery_observed",
+                "all_registration_writers_complete",
+                "delivery_channel_index_range_validated",
+                "delivery_channel_identity_or_lifetime_established",
+                "copy_source_ownership_or_stability_established",
+                "publication_visibility_or_consumer_completion_established",
+                "overall_provenance_complete"):
+            self.assertFalse(scope[field], field)
+        self.assertIn("independently contains bit 0x200", " ".join(path["conditions"]))
+        self.assertIn("equal-value branch exits before copying",
+                      " ".join(path["conditions"]))
+        limitations = " ".join(self.report["caller_provenance"]["limitations"])
+        self.assertIn("distinct values", limitations)
+        self.assertIn("neither required nor established", limitations)
 
     def test_blx_register_scanner_is_raw_aligned_and_excludes_near_matches(self):
         payload = bytearray(36)
@@ -6051,7 +6309,10 @@ class FirmwareChannelFieldTests(unittest.TestCase):
         self.assertTrue(scope["whole_arm_blx_register_encoding_scan"])
         self.assertTrue(scope["rooted_blx_register_instruction_sites"])
         self.assertFalse(scope["all_blx_register_code_boundaries_classified"])
+        self.assertTrue(scope["selected_slot4_callback_body_classified"])
+        self.assertTrue(scope["selected_slot4_delivery_path_statically_connected"])
         self.assertFalse(scope["all_callback_registration_writers_complete"])
+        self.assertFalse(scope["callback_registration_persistence_established"])
         self.assertFalse(scope["runtime_callback_targets_resolved"])
         self.assertFalse(scope["whole_arm_source_code_boundaries_classified"])
         self.assertFalse(scope["direct_caller_inventory_complete"])
@@ -6248,12 +6509,12 @@ class FirmwareChannelFieldTests(unittest.TestCase):
                 self.assertRaisesRegex(MAP.FormatError, "whole-ARM scan budget"):
             MAP._channel_field_map(self.payload)
         for name, exact, one_below in (
-                ("MAX_CHANNEL_FIELD_BLX_EVIDENCE_REGIONS", 9, 8),
-                ("MAX_CHANNEL_FIELD_BLX_EVIDENCE_BYTES", 760, 759)):
+                ("MAX_CHANNEL_FIELD_BLX_EVIDENCE_REGIONS", 10, 9),
+                ("MAX_CHANNEL_FIELD_BLX_EVIDENCE_BYTES", 832, 831)):
             with self.subTest(exact=name), mock.patch.object(MAP, name, exact):
                 self.assertEqual(MAP._channel_field_map(self.payload)
                                  ["validation"]["blx_register_evidence"]
-                                 ["region_count"], 9)
+                                 ["region_count"], 10)
             with self.subTest(one_below=name), \
                     mock.patch.object(MAP, name, one_below), \
                     self.assertRaisesRegex(MAP.FormatError,
