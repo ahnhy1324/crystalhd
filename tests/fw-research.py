@@ -5770,6 +5770,7 @@ class FirmwareChannelFieldTests(unittest.TestCase):
         absence = provenance["bounded_absence"]
         for name in ("supported_direct_external_targets_into_body_absent",
                      "supported_direct_interworking_targets_into_body_or_adjacent_entry_absent",
+                     "supported_aligned_raw_patterns_materializing_helper_body_in_hash_pinned_prefix_absent",
                      "preceding_selected_linear_path_returns"):
             self.assertTrue(absence[name], name)
         for name in ("global_unreferenced_or_dead_code_established",
@@ -5797,6 +5798,203 @@ class FirmwareChannelFieldTests(unittest.TestCase):
                               record["function_entry"]),
                              ("conditional",
                               "incoming r1 == channel root 0xd3a00", 0x1610))
+
+    def test_helper_1610_address_materialization_scan_is_exact(self):
+        scan = self.report["caller_provenance"] \
+            ["helper_1610_address_materialization_scan"]
+        direct_region = self.report["caller_provenance"] \
+            ["whole_arm_direct_b_bl_scan"]["region"]
+        self.assertEqual(scan["region"], direct_region)
+        self.assertEqual(scan["region_role"], direct_region["role"])
+        self.assertEqual(scan["shares_hash_gate_with"],
+                         "whole_arm_direct_b_bl_scan")
+        self.assertEqual(scan["kind"],
+                         "aligned raw single-value pattern inventory, not a code/data partition")
+        self.assertEqual(scan["target_interval"], {
+            "start_value_inclusive": 0x1610,
+            "end_value_exclusive": 0x168c,
+        })
+        expected = {
+            "aligned_u32": ("4-byte-aligned little-endian u32 words", 47768),
+            "a32_adr_immediate": (
+                "A32 ADD/SUB immediate from PC, S=0, Rd!=PC, cond!=0xf", 752),
+            "a32_movw": ("A32 MOVW, Rd!=PC, cond!=0xf", 365),
+            "a32_mov_mvn_immediate": (
+                "canonical A32 MOV/MVN immediate, S=0, Rd!=PC, cond!=0xf", 3299),
+        }
+        self.assertEqual(set(scan["forms"]), set(expected))
+        for name, (description, count) in expected.items():
+            with self.subTest(form=name):
+                form = scan["forms"][name]
+                self.assertEqual((form["description"],
+                                  form["source_alignment_bytes"],
+                                  form["raw_pattern_count"],
+                                  form["target_candidate_count"],
+                                  form["target_candidates"]),
+                                 (description, 4, count, 0, []))
+                self.assertTrue(
+                    form["complete_for_aligned_raw_patterns_in_region"])
+        self.assertEqual((scan["target_candidate_count"],
+                          scan["target_candidates"]), (0, []))
+        self.assertTrue(
+            scan["complete_for_supported_aligned_raw_patterns_in_region"])
+        self.assertFalse(scan["source_code_boundaries_classified"])
+        self.assertFalse(scan["all_direct_callers_established"])
+        self.assertFalse(scan["indirect_or_computed_callers_excluded"])
+
+        controls = scan["decoder_controls"]
+        self.assertEqual(controls["purpose"],
+                         "positive decoder controls only, not helper interval matches")
+        self.assertFalse(controls["controls_count_as_target_candidates"])
+        self.assertEqual([
+            (record["blob_file_offset"], record["word"],
+             record["expanded_immediate"], record["materialized_value"])
+            for record in controls["a32_adr_immediate"]], [
+                (0x705c, 0xe24f1f5d, 0x174, 0x6ef0),
+                (0x7094, 0xe24f10a8, 0x0a8, 0x6ff4),
+            ])
+        self.assertEqual([
+            (record["blob_file_offset"], record["word"],
+             record["literal_blob_file_offset"], record["literal_value"])
+            for record in controls["a32_ldr_literal"]], [
+                (0x706c, 0xe59f10d0, 0x7144, 0x888c),
+                (0x2820c, 0xe59f1480, 0x28694, 0x2c16c),
+            ])
+
+        absence = scan["bounded_absence"]
+        self.assertTrue(absence[
+            "supported_aligned_raw_patterns_materializing_helper_body_in_hash_pinned_prefix_absent"])
+        for name in (
+                "arithmetic_synthesis_excluded", "other_instruction_forms_excluded",
+                "thumb_materialization_excluded",
+                "relocation_or_rebase_effects_excluded", "external_writers_excluded",
+                "overwritten_return_addresses_excluded",
+                "runtime_indirect_calls_excluded",
+                "global_unreferenced_or_dead_code_established",
+                "incoming_r1_fixed_root_premise_established"):
+            self.assertFalse(absence[name], name)
+        limitation = " ".join(scan["limitations"])
+        for phrase in ("arithmetic synthesis", "other forms", "Thumb", "rebase",
+                       "external writers", "overwritten return addresses",
+                       "runtime indirect calls", "dead code", "incoming r1 premise"):
+            self.assertIn(phrase, limitation)
+
+    def test_single_value_materialization_synthetic_forms_and_exclusions(self):
+        words = (
+            0xe28f1004,  # ADD r1, pc, #4 -> 0x0c.
+            0xe24f1004,  # SUB r1, pc, #4 -> 0x08 at this site.
+            0xf28f1004,  # cond=0xf.
+            0xe29f1004,  # S=1.
+            0xe2801004,  # Rn=r0, not PC.
+            0xe28ff004,  # Rd=PC.
+            0xe3011610,  # MOVW r1, #0x1610.
+            0xf3011610,  # cond=0xf MOVW.
+            0xe301f610,  # Rd=PC MOVW.
+            0xe3a02d5a,  # MOV r2, #0x1680 using ROR #26.
+            0xe3e034ff,  # MVN r3, ROR(0xff, 8) -> 0x00ffffff.
+            0xf3a02001,  # cond=0xf MOV.
+            0xe3b02001,  # S=1 MOVS.
+            0xe3a0f001,  # Rd=PC MOV.
+            0xe3a12001,  # noncanonical MOV with Rn bits nonzero.
+        )
+        payload = struct.pack("<%dI" % len(words), *words)
+        scan = MAP._a32_single_value_materializations_in_region(
+            payload, ("synthetic", 0, len(payload)), (0, 1 << 32))
+        forms = scan["forms"]
+        self.assertEqual({name: form["raw_pattern_count"]
+                          for name, form in forms.items()}, {
+            "aligned_u32": len(words),
+            "a32_adr_immediate": 2,
+            "a32_movw": 1,
+            "a32_mov_mvn_immediate": 2,
+        })
+        self.assertEqual([
+            (record["blob_file_offset"], record["operation"],
+             record["materialized_value"])
+            for record in forms["a32_adr_immediate"]["target_candidates"]], [
+                (0, "ADD immediate from PC", 0x0c),
+                (4, "SUB immediate from PC", 0x08),
+            ])
+        self.assertEqual([
+            (record["blob_file_offset"], record["destination_register"],
+             record["materialized_value"])
+            for record in forms["a32_movw"]["target_candidates"]], [
+                (24, 1, 0x1610),
+            ])
+        self.assertEqual([
+            (record["blob_file_offset"], record["operation"],
+             record["expanded_immediate"], record["materialized_value"])
+            for record in forms["a32_mov_mvn_immediate"]["target_candidates"]], [
+                (36, "MOV immediate", 0x1680, 0x1680),
+                (40, "MVN immediate", 0xff000000, 0x00ffffff),
+            ])
+
+        rotated = MAP._a32_single_value_immediate(0xe24f1f5d, 0x705c)
+        self.assertEqual((rotated["encoded_immediate"],
+                          rotated["expanded_immediate"],
+                          rotated["materialized_value"]),
+                         (0xf5d, 0x174, 0x6ef0))
+        subtract_wrap = MAP._a32_single_value_immediate(0xe24f1010, 0)
+        add_wrap = MAP._a32_single_value_immediate(0xe28f1004, 0xfffffff8)
+        self.assertEqual(subtract_wrap["materialized_value"], 0xfffffff8)
+        self.assertEqual(add_wrap["materialized_value"], 4)
+
+    def test_single_value_materialization_interval_edges_and_inserted_match(self):
+        payload = struct.pack("<7I", 0x1610, 0x1611, 0x1688, 0x168c,
+                              0xe3011610, 0xe3012688, 0xe301368c)
+        scan = MAP._a32_single_value_materializations_in_region(
+            payload, ("synthetic", 0, len(payload)), (0x1610, 0x168c))
+        self.assertEqual([
+            (record["blob_file_offset"], record["materialized_value"],
+             record["materialized_value_a32_aligned"])
+            for record in scan["forms"]["aligned_u32"]["target_candidates"]], [
+                (0, 0x1610, True), (4, 0x1611, False), (8, 0x1688, True),
+            ])
+        self.assertEqual([
+            (record["blob_file_offset"], record["materialized_value"])
+            for record in scan["forms"]["a32_movw"]["target_candidates"]], [
+                (16, 0x1610), (20, 0x1688),
+            ])
+        self.assertNotIn(0x168c,
+                         [record["materialized_value"]
+                          for record in scan["target_candidates"]])
+
+        role, start, size, _ = MAP._CHANNEL_FIELD_WHOLE_ARM_REGION
+        changed = bytearray(self.payload)
+        inserted_offset = 0x2ea00
+        struct.pack_into("<I", changed, inserted_offset, 0x1610)
+        inserted = MAP._a32_single_value_materializations_in_region(
+            changed, (role, start, size), (0x1610, 0x168c))
+        self.assertEqual([
+            (record["form"], record["blob_file_offset"],
+             record["materialized_value"])
+            for record in inserted["target_candidates"]], [
+                ("aligned_u32", inserted_offset, 0x1610),
+            ])
+        with mock.patch.object(
+                MAP, "_a32_single_value_materializations_in_region",
+                side_effect=AssertionError("decoded before whole-prefix hash gate")), \
+                self.assertRaisesRegex(MAP.FormatError, "whole-ARM scan region"):
+            MAP._channel_field_map(changed)
+
+    def test_single_value_materialization_scan_rejects_invalid_bounds(self):
+        payload = bytes(16)
+        for region in (("synthetic", 2, 4), ("synthetic", 0, 2),
+                       ("synthetic", 0, 0)):
+            with self.subTest(region=region), \
+                    self.assertRaisesRegex(MAP.FormatError, "word aligned"):
+                MAP._a32_single_value_materializations_in_region(
+                    payload, region, (0x1610, 0x168c))
+        for interval in ((0x168c, 0x1610), (-1, 0x168c),
+                         (0, (1 << 32) + 1)):
+            with self.subTest(interval=interval), \
+                    self.assertRaisesRegex(MAP.FormatError, "interval"):
+                MAP._a32_single_value_materializations_in_region(
+                    payload, ("synthetic", 0, len(payload)), interval)
+        with self.assertRaises(MAP.FormatError):
+            MAP._a32_single_value_materializations_in_region(
+                payload, ("synthetic", 0, len(payload) + 4),
+                (0x1610, 0x168c))
 
     def test_helper_1610_range_inventory_fails_closed_on_reference_mutation(self):
         role, start, size, _ = MAP._CHANNEL_FIELD_WHOLE_ARM_REGION
@@ -6839,6 +7037,8 @@ class FirmwareChannelFieldTests(unittest.TestCase):
         self.assertTrue(scope["whole_arm_direct_interworking_encoding_scan"])
         self.assertTrue(scope["direct_interworking_target_encoding_patterns_complete"])
         self.assertTrue(scope["helper_1610_body_direct_target_paths_classified"])
+        self.assertTrue(scope[
+            "helper_1610_supported_aligned_raw_materialization_patterns_classified"])
         self.assertFalse(scope["helper_1610_fixed_root_provenance_established"])
         self.assertFalse(scope["helper_1610_global_dead_code_established"])
         self.assertTrue(scope["whole_arm_blx_register_encoding_scan"])

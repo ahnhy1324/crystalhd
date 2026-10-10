@@ -3890,6 +3890,157 @@ def _a32_target_branches_in_region(payload, region, targets):
     return candidates
 
 
+def _a32_rotated_immediate(word):
+    """Expand the A32 data-processing imm12 rotate encoding to one u32."""
+    value = word & 0xff
+    shift = ((word >> 8) & 15) * 2
+    return ((value >> shift) | (value << ((32 - shift) % 32))) & 0xffffffff
+
+
+def _a32_single_value_immediate(word, offset):
+    """Decode one supported A32 immediate materialization bit pattern.
+
+    This deliberately recognizes only ADR-style ADD/SUB from PC, MOVW and
+    canonical MOV/MVN immediate.  A matching word is still only an encoding
+    pattern until a caller independently establishes that its source is code.
+    """
+    condition = word >> 28
+    destination = (word >> 12) & 15
+    if condition == 15 or destination == 15:
+        return None
+    record = {
+        "blob_file_offset": offset,
+        "word": word,
+        "condition": condition,
+        "destination_register": destination,
+    }
+    operation = word & 0x0fff0000
+    if operation in (0x024f0000, 0x028f0000):
+        immediate = _a32_rotated_immediate(word)
+        add = operation == 0x028f0000
+        pc_base = (offset + 8) & 0xffffffff
+        value = (pc_base + immediate if add else pc_base - immediate) & 0xffffffff
+        record.update({
+            "form": "a32_adr_immediate",
+            "operation": "ADD immediate from PC" if add else "SUB immediate from PC",
+            "pc_base_blob_file_offset": offset + 8,
+            "encoded_immediate": word & 0xfff,
+            "expanded_immediate": immediate,
+            "materialized_value": value,
+        })
+        return record
+    if word & 0x0ff00000 == 0x03000000:
+        immediate = ((word >> 4) & 0xf000) | (word & 0xfff)
+        record.update({
+            "form": "a32_movw",
+            "operation": "MOVW",
+            "encoded_immediate": ((word >> 16) & 15) << 12 | (word & 0xfff),
+            "materialized_value": immediate,
+        })
+        return record
+    if operation in (0x03a00000, 0x03e00000):
+        immediate = _a32_rotated_immediate(word)
+        invert = operation == 0x03e00000
+        record.update({
+            "form": "a32_mov_mvn_immediate",
+            "operation": "MVN immediate" if invert else "MOV immediate",
+            "encoded_immediate": word & 0xfff,
+            "expanded_immediate": immediate,
+            "materialized_value": (~immediate if invert else immediate) & 0xffffffff,
+        })
+        return record
+    return None
+
+
+def _a32_single_value_materializations_in_region(payload, region, target_interval):
+    """Inventory bounded raw values and supported A32 one-instruction forms.
+
+    The enclosing caller must independently pin the region identity.  Counts
+    cover aligned raw patterns, not instructions or a code/data partition;
+    only values in the requested half-open interval are retained.
+    """
+    role, start, size = region
+    target_start, target_end = target_interval
+    if start % 4 or size <= 0 or size % 4:
+        raise FormatError("A32 single-value materialization region is not word aligned")
+    if not (0 <= target_start < target_end <= 1 << 32):
+        raise FormatError("A32 single-value materialization target interval is invalid")
+    data = bounded(payload, start, size,
+                   "A32 single-value materialization scan region")
+    forms = {
+        "aligned_u32": {
+            "description": "4-byte-aligned little-endian u32 words",
+            "source_alignment_bytes": 4,
+            "raw_pattern_count": 0,
+            "target_candidates": [],
+        },
+        "a32_adr_immediate": {
+            "description": "A32 ADD/SUB immediate from PC, S=0, Rd!=PC, cond!=0xf",
+            "source_alignment_bytes": 4,
+            "raw_pattern_count": 0,
+            "target_candidates": [],
+        },
+        "a32_movw": {
+            "description": "A32 MOVW, Rd!=PC, cond!=0xf",
+            "source_alignment_bytes": 4,
+            "raw_pattern_count": 0,
+            "target_candidates": [],
+        },
+        "a32_mov_mvn_immediate": {
+            "description": "canonical A32 MOV/MVN immediate, S=0, Rd!=PC, cond!=0xf",
+            "source_alignment_bytes": 4,
+            "raw_pattern_count": 0,
+            "target_candidates": [],
+        },
+    }
+    candidates = []
+    for relative in range(0, size, 4):
+        offset = start + relative
+        word = struct.unpack_from("<I", data, relative)[0]
+        literal = forms["aligned_u32"]
+        literal["raw_pattern_count"] += 1
+        if target_start <= word < target_end:
+            record = {
+                "form": "aligned_u32",
+                "region_role": role,
+                "blob_file_offset": offset,
+                "word": word,
+                "operation": "aligned little-endian u32",
+                "materialized_value": word,
+                "materialized_value_a32_aligned": word % 4 == 0,
+            }
+            literal["target_candidates"].append(record)
+            candidates.append(record)
+        decoded = _a32_single_value_immediate(word, offset)
+        if decoded is None:
+            continue
+        form = forms[decoded["form"]]
+        form["raw_pattern_count"] += 1
+        if target_start <= decoded["materialized_value"] < target_end:
+            decoded["region_role"] = role
+            decoded["materialized_value_a32_aligned"] = \
+                decoded["materialized_value"] % 4 == 0
+            form["target_candidates"].append(decoded)
+            candidates.append(decoded)
+    for form in forms.values():
+        form["target_candidate_count"] = len(form["target_candidates"])
+        form["complete_for_aligned_raw_patterns_in_region"] = True
+    candidates.sort(key=lambda record: (record["blob_file_offset"], record["form"]))
+    return {
+        "kind": "aligned raw single-value pattern inventory, not a code/data partition",
+        "region_role": role,
+        "target_interval": {
+            "start_value_inclusive": target_start,
+            "end_value_exclusive": target_end,
+        },
+        "forms": forms,
+        "target_candidate_count": len(candidates),
+        "target_candidates": candidates,
+        "complete_for_supported_aligned_raw_patterns_in_region": True,
+        "source_code_boundaries_classified": False,
+    }
+
+
 def _a32_blx_register_candidates_in_region(payload, region):
     """Inventory aligned A32 BLX-register patterns without classifying code."""
     role, start, size = region
@@ -5833,7 +5984,7 @@ def _rx_descriptor_admission_map(payload):
 
 
 def _channel_field_map(payload):
-    """Pinned stock A32 sites plus direct-target scan, not whole-image alias recovery."""
+    """Pinned A32 sites, target scans and bounded materialization inventory."""
     if len(payload) != BUNDLED_SIZE - TRAILER_SIZE:
         raise FormatError("channel-field payload size does not match the bundled baseline")
     regions = _CHANNEL_FIELD_REGIONS
@@ -5965,6 +6116,22 @@ def _channel_field_map(payload):
     helper_1610_start = 0x1610
     helper_1610_end_exclusive = 0x168c
     helper_1610_adjacent_entry = helper_1610_end_exclusive
+    helper_1610_address_materializations = \
+        _a32_single_value_materializations_in_region(
+            payload, (whole_arm_role, whole_arm_start, whole_arm_size),
+            (helper_1610_start, helper_1610_end_exclusive))
+    expected_materialization_counts = {
+        "aligned_u32": 47768,
+        "a32_adr_immediate": 752,
+        "a32_movw": 365,
+        "a32_mov_mvn_immediate": 3299,
+    }
+    if ({name: form["raw_pattern_count"]
+         for name, form in helper_1610_address_materializations["forms"].items()} !=
+            expected_materialization_counts or
+            helper_1610_address_materializations["target_candidates"]):
+        raise FormatError(
+            "channel-field helper 0x1610 address materializations do not match the baseline")
     helper_1610_targets = tuple(range(
         helper_1610_start, helper_1610_adjacent_entry + 4, 4))
     helper_1610_interworking_targets = tuple(range(
@@ -6179,6 +6346,56 @@ def _channel_field_map(payload):
          response_callback["literal_value"]) !=
             (0x7144, 0x888c, 0x28694, 0x2c16c)):
         raise FormatError("channel-field IRQ callback literals do not match the baseline")
+    adr_materialization_controls = []
+    for offset, expected_word, expected_immediate, expected_value in (
+            (0x705c, 0xe24f1f5d, 0x174, 0x6ef0),
+            (0x7094, 0xe24f10a8, 0x0a8, 0x6ff4)):
+        word = _bootstrap_word(payload, offset)
+        record = _a32_single_value_immediate(word, offset)
+        if (word != expected_word or record is None or
+                record["form"] != "a32_adr_immediate" or
+                record["expanded_immediate"] != expected_immediate or
+                record["materialized_value"] != expected_value):
+            raise FormatError(
+                "channel-field address-materialization control does not match the baseline")
+        adr_materialization_controls.append(record)
+    helper_1610_address_materializations.update({
+        "region": {
+            "role": whole_arm_role,
+            "blob_file_offset": whole_arm_start,
+            "size": whole_arm_size,
+            "sha256": whole_arm_sha256,
+        },
+        "shares_hash_gate_with": "whole_arm_direct_b_bl_scan",
+        "decoder_controls": {
+            "purpose": "positive decoder controls only, not helper interval matches",
+            "a32_adr_immediate": adr_materialization_controls,
+            "a32_ldr_literal": [irq19_callback, response_callback],
+            "controls_count_as_target_candidates": False,
+        },
+        "bounded_absence": {
+            "supported_aligned_raw_patterns_materializing_helper_body_in_hash_pinned_prefix_absent": True,
+            "arithmetic_synthesis_excluded": False,
+            "other_instruction_forms_excluded": False,
+            "thumb_materialization_excluded": False,
+            "relocation_or_rebase_effects_excluded": False,
+            "external_writers_excluded": False,
+            "overwritten_return_addresses_excluded": False,
+            "runtime_indirect_calls_excluded": False,
+            "global_unreferenced_or_dead_code_established": False,
+            "incoming_r1_fixed_root_premise_established": False,
+        },
+        "all_direct_callers_established": False,
+        "indirect_or_computed_callers_excluded": False,
+        "limitations": [
+            "This excludes only aligned literal words and the supported A32 "
+            "single-instruction materializations in the hash-pinned prefix; it "
+            "does not exclude arithmetic synthesis, other forms, Thumb, "
+            "relocation or rebase effects, external writers, overwritten return "
+            "addresses, runtime indirect calls, or establish dead code or the "
+            "incoming r1 premise."
+        ],
+    })
 
     registrations = []
     registration_specs = (
@@ -7009,6 +7226,7 @@ def _channel_field_map(payload):
         "bounded_absence": {
             "supported_direct_external_targets_into_body_absent": True,
             "supported_direct_interworking_targets_into_body_or_adjacent_entry_absent": True,
+            "supported_aligned_raw_patterns_materializing_helper_body_in_hash_pinned_prefix_absent": True,
             "preceding_selected_linear_path_returns": True,
             "global_unreferenced_or_dead_code_established": False,
             "blx_register_or_other_indirect_targets_excluded": False,
@@ -7467,6 +7685,8 @@ def _channel_field_map(payload):
             "selected_fixed_root_paths": list(selected_fixed_root_paths),
             "helper_1610_direct_target_provenance":
                 helper_1610_direct_target_provenance,
+            "helper_1610_address_materialization_scan":
+                helper_1610_address_materializations,
             "branch_candidate_scan": {
                 "isa_encoding": "A32 conditional-space B/BL immediate bit patterns",
                 "region_count": len(caller_scan_regions),
@@ -7634,7 +7854,8 @@ def _channel_field_map(payload):
                 "The IRQ callback slot 4 and the delivery handler's mailbox-selected channel index are distinct values; their equality is neither required nor established.",
                 "The selected IRQ callback table and three direct registration calls do not establish every writer or the identities of the other callback bodies.",
                 "Within the hash-pinned ARM prefix, the supported direct-immediate scans find only six internal branches in [0x1610,0x168c) and one BL to the separate 0x168c entry; they find no external target into the helper body and therefore do not derive incoming r1 as 0xd3a00.",
-                "That bounded absence does not establish global dead code and does not exclude BLX-register, other indirect/computed transfers, literal/ADR address materialization, relocation-derived references, or sources outside the pinned prefix.",
+                "That direct-target scan alone does not establish global dead code and does not exclude BLX-register, other indirect/computed transfers, literal/ADR address materialization, relocation-derived references, or sources outside the pinned prefix.",
+                "Separately, the aligned-word, A32 ADR, MOVW and canonical MOV/MVN scans exclude only literal or supported single-instruction materialization of values in [0x1610,0x168c) inside the pinned prefix; they do not exclude arithmetic synthesis, other forms, Thumb, relocation or rebase effects, external writers, overwritten return addresses, runtime indirect calls, dead-code status, or the incoming r1 premise.",
                 "The selected FIQ pointer machinery neither identifies helper 0x1610 as a callback nor establishes that helper's incoming r1 premise.",
                 "The 0x12e4 path relies on A32 callee-saved r6 preservation across its possible intervening calls.",
                 "Static selected paths do not establish runtime execution, valid slot range, object identity or lifetime.",
@@ -7658,6 +7879,7 @@ def _channel_field_map(payload):
             "whole_arm_direct_interworking_encoding_scan": True,
             "direct_interworking_target_encoding_patterns_complete": True,
             "helper_1610_body_direct_target_paths_classified": True,
+            "helper_1610_supported_aligned_raw_materialization_patterns_classified": True,
             "helper_1610_fixed_root_provenance_established": False,
             "helper_1610_global_dead_code_established": False,
             "whole_arm_blx_register_encoding_scan": True,
@@ -7702,6 +7924,7 @@ def _channel_field_map(payload):
             "The selector-1 pointer store relies on its intervening logging call returning under the A32 ABI with callee-saved r4 and r5 preserved.",
             "The IRQ vector-to-entry-to-dispatch chain and selected slot-4 registration conditionally connect status bit 0x200 to descriptor delivery, but do not prove registration persistence, live table contents, callback execution, or overall provenance.",
             "The third argument-rooted helper at 0x1610 has no supported direct-immediate external target into its pinned body; its 0x1628 and 0x1664 loads remain conditional on the incoming r1 == 0xd3a00 premise.",
+            "No aligned literal word or supported A32 ADR, MOVW or canonical MOV/MVN immediate in the pinned prefix materializes a value inside the helper body.",
             "Selected scalar access lists exclude unpinned aliases and are not whole-image access inventories; the three pinned bulk clear paths are listed separately.",
             "Reported branch targets are decoded from pinned call instructions; target bodies are not thereby claimed as pinned.",
             "The generic clear and copy helpers operate on the exact argument ranges shown by their pinned wrappers and bodies.",
@@ -10361,8 +10584,8 @@ def main(argv=None):
     parser.add_argument("--rx-descriptor-admission", action="store_true", help=(
         "validate fixed Y-RX descriptor publication; bundled firmware only, not DMA completion"))
     parser.add_argument("--channel-fields", action="store_true", help=(
-        "inventory selected A32 channel-field accesses and ARM-prefix direct A32 B/BL targets; "
-        "not indirect/computed or whole-image alias recovery"))
+        "inventory selected A32 channel-field accesses, ARM-prefix direct targets and bounded "
+        "helper-address materializations; not indirect/computed or whole-image alias recovery"))
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-fA-F]{64}", args.expect_sha256):
         parser.error("--expect-sha256 must be 64 hexadecimal digits")
