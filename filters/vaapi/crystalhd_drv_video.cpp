@@ -74,6 +74,10 @@ constexpr uint64_t kDecodeTimeoutNs = 10ULL * 1000 * 1000 * 1000;
 constexpr uint64_t kDecodeBatchGraceNs = 100ULL * 1000 * 1000;
 constexpr size_t kMpeg4ReplayCacheBytes = 32U * 1024U * 1024U;
 constexpr size_t kMpeg4ReplayPictures = 512;
+constexpr size_t kExperimentalPresentationReadyLimit = 3;
+constexpr size_t kExperimentalPresentationActiveLimit = 2;
+constexpr uint64_t kExperimentalPresentationMaxAgeNs =
+    2ULL * 1000 * 1000 * 1000 / 30;
 
 static bool DecodeBatchGraceExpired(uint64_t elapsed_ns) {
   return elapsed_ns >= kDecodeBatchGraceNs;
@@ -557,8 +561,25 @@ struct Surface {
   uint64_t trace_context = 0;
   uint64_t trace_generation = 0;
   uint64_t trace_submission_ordinal = 0;
+  // The public VA binding remains identified by expected_timestamp and the
+  // trace identity above. Experimental presentation may copy a different,
+  // completed private picture into that binding; keep its identity separate
+  // rather than relabeling the requested decode as complete.
+  bool experimental_presentation = false;
+  bool experimental_write_lease = false;
+  uint64_t experimental_write_context = 0;
+  uint64_t experimental_write_generation = 0;
+  uint64_t experimental_write_submission_ordinal = 0;
+  bool experimental_incompatible = false;
+  bool experimental_ready_queued = false;
+  uint64_t experimental_ready_at_ns = 0;
+  uint64_t presentation_payload_token = 0;
+  uint64_t presentation_payload_decode_identity = 0;
+  uint64_t presentation_payload_submission_ordinal = 0;
   bool trace_read_export_armed = false;
   crystalhd_vaapi_trace::Fields trace_read_export;
+  bool experimental_read_export_armed = false;
+  crystalhd_vaapi_trace::Fields experimental_read_export;
   SurfaceLayout layout;
   bool direct_decode_eligible = false;
   unsigned int h264_crop_unit_y = 0;
@@ -1380,6 +1401,7 @@ struct DecodeContext {
   bool sent_parameter_sets = false;
   bool live_h264 = false;
   bool low_latency_h264 = false;
+  bool experimental_ready_remap = false;
   uint64_t prefed_timestamp = 0;
   bool closing = false;
   bool retired = false;
@@ -1389,6 +1411,7 @@ struct DecodeContext {
   uint64_t next_timestamp = kTimestampStep;
   std::unordered_map<uint64_t, VASurfaceID> pending;
   std::unordered_map<uint64_t, std::shared_ptr<Surface>> decoded_frames;
+  std::deque<std::shared_ptr<Surface>> experimental_ready;
   std::unordered_map<Surface *, uint64_t> surface_timestamps;
   CrystalHDDecodeReplay replay;
   CrystalHDMpeg2Replay mpeg2_replay;
@@ -1486,6 +1509,9 @@ struct DecodeContext {
   BC_STATUS Close() {
     const BC_STATUS status = CloseHardware();
     pending.clear();
+    for (const auto &picture : experimental_ready)
+      picture->experimental_ready_queued = false;
+    experimental_ready.clear();
     decoded_frames.clear();
     surface_timestamps.clear();
     replay = CrystalHDDecodeReplay(live_h264);
@@ -1623,6 +1649,17 @@ static crystalhd_vaapi_trace::Fields TraceFields(
     fields.decode_identity = surface->trace_decode_identity;
     fields.owner = TraceOwner(surface);
     fields.submission_ordinal = surface->trace_submission_ordinal;
+    if (surface->experimental_presentation) {
+      fields.payload_token = surface->presentation_payload_token;
+      fields.payload_decode_identity =
+          surface->presentation_payload_decode_identity;
+      fields.payload_submission_ordinal =
+          surface->presentation_payload_submission_ordinal;
+      if (fields.submission_ordinal >= fields.payload_submission_ordinal)
+        fields.submission_drift = static_cast<int64_t>(
+            fields.submission_ordinal -
+            fields.payload_submission_ordinal);
+    }
   } else {
     fields.token = token;
   }
@@ -1669,24 +1706,66 @@ static crystalhd_vaapi_trace::Fields TraceRequestedOwnerFields(
   return fields;
 }
 
-static void ClearTraceReadExport(Surface *surface) {
-  if (surface == nullptr || !surface->trace_read_export_armed)
+static bool SameTraceBinding(const crystalhd_vaapi_trace::Fields &left,
+                             const crystalhd_vaapi_trace::Fields &right) {
+  return left.context == right.context &&
+      left.generation == right.generation &&
+      left.surface == right.surface && left.token == right.token &&
+      left.decode_identity == right.decode_identity &&
+      left.owner == right.owner &&
+      left.submission_ordinal == right.submission_ordinal;
+}
+
+static void ClearExperimentalReadExport(Surface *surface) {
+  if (surface == nullptr)
+    return;
+  surface->experimental_read_export_armed = false;
+  surface->experimental_read_export = {};
+}
+
+static void ClearDiagnosticTraceReadExport(Surface *surface) {
+  if (surface == nullptr)
     return;
   surface->trace_read_export_armed = false;
   surface->trace_read_export = {};
 }
 
+static void ClearTraceReadExport(Surface *surface) {
+  if (surface == nullptr)
+    return;
+  ClearDiagnosticTraceReadExport(surface);
+  ClearExperimentalReadExport(surface);
+}
+
+static void ClearExperimentalPresentation(Surface *surface);
+
 static void ClearTraceReadExportsForContext(Driver *driver,
                                             uint64_t context,
                                             uint64_t generation) {
-  if (!driver->trace.enabled())
-    return;
   for (const auto &entry : driver->surfaces) {
     Surface *surface = entry.second.get();
-    if (surface->trace_read_export_armed &&
+    const bool traced = surface->trace_read_export_armed &&
         surface->trace_read_export.context == context &&
-        surface->trace_read_export.generation == generation)
-      ClearTraceReadExport(surface);
+        surface->trace_read_export.generation == generation;
+    const bool experimental = surface->experimental_read_export_armed &&
+        surface->experimental_read_export.context == context &&
+        surface->experimental_read_export.generation == generation;
+    if (traced) {
+      surface->trace_read_export_armed = false;
+      surface->trace_read_export = {};
+    }
+    const bool presentation = surface->experimental_presentation &&
+        surface->trace_context == context &&
+        surface->trace_generation == generation;
+    const bool reservation = surface->experimental_write_lease &&
+        surface->experimental_write_context == context &&
+        surface->experimental_write_generation == generation;
+    // Context retirement is not an external GPU-reader completion signal.
+    // Keep an exported binding and its presentation frozen until the VA
+    // surface itself is destroyed. An unexported presentation and a
+    // Begin-to-submit reservation have no external reader and can be canceled.
+    if ((presentation && !experimental) || reservation)
+      ClearExperimentalPresentation(surface);
   }
 }
 
@@ -1701,12 +1780,69 @@ static void ClearTraceIdentity(Surface *surface) {
 }
 
 static void EndTraceBinding(Driver *driver, Surface *surface) {
-  if (!driver->trace.enabled() || surface == nullptr)
+  if (surface == nullptr)
     return;
-  if (surface->trace_submission_ordinal != 0)
+  if (driver->trace.enabled() && surface->trace_submission_ordinal != 0)
     driver->trace.Emit(crystalhd_vaapi_trace::Event::BindingEnd,
                        TraceFields(nullptr, surface));
   ClearTraceIdentity(surface);
+}
+
+static void ClearExperimentalPresentation(Surface *surface) {
+  if (surface == nullptr)
+    return;
+  surface->experimental_presentation = false;
+  surface->experimental_write_lease = false;
+  surface->experimental_write_context = 0;
+  surface->experimental_write_generation = 0;
+  surface->experimental_write_submission_ordinal = 0;
+  surface->presentation_payload_token = 0;
+  surface->presentation_payload_decode_identity = 0;
+  surface->presentation_payload_submission_ordinal = 0;
+}
+
+static bool ExperimentalWriteReservationPending(const Surface *surface) {
+  return surface != nullptr && surface->experimental_write_lease &&
+      surface->experimental_write_submission_ordinal != 0 &&
+      (surface->experimental_write_context != surface->trace_context ||
+       surface->experimental_write_generation != surface->trace_generation ||
+       surface->experimental_write_submission_ordinal !=
+           surface->trace_submission_ordinal);
+}
+
+static void RetireFailedExperimentalState(Surface *surface) {
+  if (surface == nullptr)
+    return;
+  surface->trace_read_export_armed = false;
+  surface->trace_read_export = {};
+  // A decode failure does not prove that an already exported GPU reader has
+  // finished. Preserve that immutable backing and its guard; without an
+  // exported reader the experimental state can be canceled immediately.
+  if (!surface->experimental_read_export_armed) {
+    ClearExperimentalReadExport(surface);
+    ClearExperimentalPresentation(surface);
+  }
+}
+
+static bool ExperimentalPresentationReadable(const Driver *driver,
+                                             const Surface *surface) {
+  if (driver == nullptr || surface == nullptr ||
+      !surface->experimental_presentation || surface->trace_context == 0)
+    return false;
+  const auto found = driver->contexts.find(
+      static_cast<VAContextID>(surface->trace_context));
+  return found != driver->contexts.end() &&
+      found->second->experimental_ready_remap &&
+      !found->second->closing && !found->second->retired &&
+      found->second->generation == surface->trace_generation &&
+      !surface->destroyed && !surface->failed &&
+      surface->expected_timestamp != 0 &&
+      surface->presentation_payload_token != 0 &&
+      surface->trace_decode_identity != 0 &&
+      surface->presentation_payload_decode_identity != 0 &&
+      surface->trace_submission_ordinal != 0 &&
+      surface->presentation_payload_submission_ordinal + 1 ==
+          surface->trace_submission_ordinal;
 }
 
 static uint64_t NextTraceCall(Driver *driver) {
@@ -1716,30 +1852,69 @@ static uint64_t NextTraceCall(Driver *driver) {
   return call;
 }
 
+static bool ExperimentalPresentationBinding(Driver *driver,
+                                            const Surface *surface) {
+  if (surface == nullptr || surface->trace_context == 0)
+    return false;
+  const auto found = driver->contexts.find(
+      static_cast<VAContextID>(surface->trace_context));
+  return found != driver->contexts.end() &&
+      found->second->experimental_ready_remap &&
+      found->second->generation == surface->trace_generation;
+}
+
 static void ArmTraceReadExport(Driver *driver, Surface *requested,
                                Surface *owner, uint64_t export_operation) {
-  if (!driver->trace.enabled() || requested == nullptr || owner == nullptr ||
-      requested != owner)
+  if (requested == nullptr || owner == nullptr || requested != owner)
     return;
-  ClearTraceReadExport(owner);
+  const bool trace = driver->trace.enabled();
+  const bool experimental = ExperimentalPresentationBinding(driver, owner);
+  if (!trace && !experimental)
+    return;
+  // Refresh each arm only when this export owns that arm.  A trace-only
+  // re-export after context retirement must not revoke the independent
+  // external-reader guard retained by the experimental lifetime protocol.
+  if (trace)
+    ClearDiagnosticTraceReadExport(owner);
+  if (experimental)
+    ClearExperimentalReadExport(owner);
   if (owner->destroyed || owner->failed ||
       owner->backing_owner != VA_INVALID_SURFACE ||
       owner->trace_context == 0 || owner->trace_generation == 0 ||
       owner->trace_submission_ordinal == 0 ||
       owner->trace_decode_identity == 0)
     return;
-  owner->trace_read_export = TraceFields(nullptr, owner);
-  owner->trace_read_export.operation = export_operation;
-  owner->trace_read_export_armed = true;
+  const crystalhd_vaapi_trace::Fields binding = TraceFields(nullptr, owner);
+  if (trace) {
+    owner->trace_read_export = binding;
+    owner->trace_read_export.operation = export_operation;
+    owner->trace_read_export_armed = true;
+  }
+  if (experimental) {
+    owner->experimental_read_export = binding;
+    owner->experimental_read_export.operation = export_operation;
+    owner->experimental_read_export_armed = true;
+  }
 }
 
-static void ProbeTraceReadExportReuse(Driver *driver, DecodeContext *decode,
-                                      Surface *requested, Surface *owner) {
-  if (!driver->trace.enabled() || owner == nullptr ||
-      !owner->trace_read_export_armed)
-    return;
+struct ReadExportReuseProbe {
+  bool experimental_armed = false;
+  int64_t outcome = 0;
+};
 
-  const crystalhd_vaapi_trace::Fields armed = owner->trace_read_export;
+static ReadExportReuseProbe ProbeTraceReadExportReuse(
+    Driver *driver, DecodeContext *decode, Surface *requested,
+    Surface *owner) {
+  ReadExportReuseProbe result;
+  if (owner == nullptr)
+    return result;
+  const bool trace_armed = owner->trace_read_export_armed;
+  result.experimental_armed = owner->experimental_read_export_armed;
+  if (!trace_armed && !result.experimental_armed)
+    return result;
+
+  const crystalhd_vaapi_trace::Fields armed = result.experimental_armed
+      ? owner->experimental_read_export : owner->trace_read_export;
   const crystalhd_vaapi_trace::Fields current = TraceFields(nullptr, owner);
   const bool same_binding = requested == owner && !owner->destroyed &&
       !owner->failed && decode != nullptr &&
@@ -1752,9 +1927,19 @@ static void ProbeTraceReadExportReuse(Driver *driver, DecodeContext *decode,
       armed.token == current.token &&
       armed.decode_identity == current.decode_identity &&
       armed.submission_ordinal == current.submission_ordinal;
-  ClearTraceReadExport(owner);
-  if (!same_binding)
-    return;
+  // The diagnostic record is one-shot.  The experimental ownership arm is
+  // different: retain it across busy/error retries and release it only after
+  // every exported backing is observed writable.  Otherwise a second
+  // vaBeginPicture could skip the failed probe and overwrite a live reader.
+  if (trace_armed) {
+    owner->trace_read_export_armed = false;
+    owner->trace_read_export = {};
+  }
+  if (!same_binding) {
+    if (result.experimental_armed)
+      result.outcome = -ESTALE;
+    return result;
+  }
 
   crystalhd_vaapi_trace::Fields fields = armed;
   const auto start = std::chrono::steady_clock::now();
@@ -1773,7 +1958,7 @@ static void ProbeTraceReadExportReuse(Driver *driver, DecodeContext *decode,
     if (!objects.insert(identity).second)
       return;
     ++fields.identified_exported_object_count;
-    // This trace-only call runs while the driver mutex is held. Timeout zero
+    // This diagnostic/safety call runs while the driver mutex is held. Timeout zero
     // does not wait for fence signaling, but poll may sleep while acquiring a
     // contended dma_resv lock; duration_ns captures that perturbation. POLLOUT
     // describes only this client-reuse instant, not reader completion.
@@ -1838,8 +2023,14 @@ static void ProbeTraceReadExportReuse(Driver *driver, DecodeContext *decode,
     fields.outcome = 0;
   else
     fields.outcome = -EIO;
-  driver->trace.Emit(
-      crystalhd_vaapi_trace::Event::ReadExportReuseImplicitFenceProbe, fields);
+  result.outcome = fields.outcome;
+  if (result.experimental_armed && result.outcome == 0)
+    ClearExperimentalReadExport(owner);
+  if (trace_armed && driver->trace.enabled())
+    driver->trace.Emit(
+        crystalhd_vaapi_trace::Event::ReadExportReuseImplicitFenceProbe,
+        fields);
+  return result;
 }
 
 static void InheritTraceIdentity(Surface *destination,
@@ -1911,13 +2102,13 @@ static void SetSurfaceState(Driver *driver, Surface *surface, bool ready,
   if (surface == nullptr)
     return;
   if (failed)
-    ClearTraceReadExport(surface);
+    RetireFailedExperimentalState(surface);
   surface->ready = ready;
   surface->failed = failed;
   Surface *owner = BackingOwner(driver, surface);
   if (owner != surface) {
     if (failed)
-      ClearTraceReadExport(owner);
+      RetireFailedExperimentalState(owner);
     owner->ready = ready;
     owner->failed = failed;
     if (surface->expected_timestamp != 0 || surface->frame_timestamp != 0) {
@@ -1985,8 +2176,10 @@ static VAStatus OpenDecoder(DecodeContext *decode, unsigned int width = 0,
   if (status != BC_STS_SUCCESS)
     goto fail;
   decode->is_70012 = version.device == 0;
-  if (decode->is_70012)
+  if (decode->is_70012) {
     decode->low_latency_h264 = false;
+    decode->experimental_ready_remap = false;
+  }
   // These finite-batch paths have only been validated on BCM70015.
   if ((decode->IsMpeg2() || decode->IsMpeg4() || decode->IsVc1()) &&
       decode->is_70012)
@@ -2033,11 +2226,30 @@ static VAStatus OpenDecoder(DecodeContext *decode, unsigned int width = 0,
   status = DtsStartCapture(decode->device);
   if (status != BC_STS_SUCCESS)
     goto fail;
+  for (const auto &picture : decode->experimental_ready)
+    picture->experimental_ready_queued = false;
+  decode->experimental_ready.clear();
   return VA_STATUS_SUCCESS;
 
 fail:
   decode->CloseHardware();
   return VA_STATUS_ERROR_OPERATION_FAILED;
+}
+
+static VAStatus OpenDecoderForSubmit(
+    DecodeContext *decode, Surface *target, unsigned int width,
+    unsigned int height,
+    const std::array<uint8_t, 4> *wmv3_metadata = nullptr) {
+  const bool experimental_before_open = decode->experimental_ready_remap;
+  const VAStatus status =
+      OpenDecoder(decode, width, height, wmv3_metadata);
+  // Device discovery can turn the experiment off before a later setup step
+  // fails.  Drop the BeginPicture reservation on that transition even when
+  // OpenDecoder itself fails, or this surface would remain permanently busy
+  // after falling back to the ordinary BCM70012 path.
+  if (experimental_before_open && !decode->experimental_ready_remap)
+    ClearExperimentalPresentation(target);
+  return status;
 }
 
 static bool CopyYuy2ToSurface(Surface *surface, const BC_DTS_PROC_OUT &output,
@@ -2172,7 +2384,7 @@ static bool CopyYuy2ToSurface(Surface *surface, const BC_DTS_PROC_OUT &output,
   return true;
 }
 
-static bool CopyNv12Surface(const Surface &source, Surface *destination) {
+static bool CopyNv12Pixels(const Surface &source, Surface *destination) {
   if (destination == nullptr || source.fourcc != VA_FOURCC_NV12 ||
       destination->fourcc != VA_FOURCC_NV12)
     return false;
@@ -2217,6 +2429,12 @@ static bool CopyNv12Surface(const Surface &source, Surface *destination) {
   const bool released = source.EndCpuRead();
   if (!committed || !released)
     return false;
+  return true;
+}
+
+static bool CopyNv12Surface(const Surface &source, Surface *destination) {
+  if (!CopyNv12Pixels(source, destination))
+    return false;
   destination->ready = true;
   destination->failed = false;
   destination->frame_timestamp = source.frame_timestamp;
@@ -2243,6 +2461,180 @@ static bool PromoteDecodedPicture(const std::shared_ptr<Surface> &picture) {
   return true;
 }
 
+static uint64_t MonotonicNowNs() {
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+static bool ExperimentalWriteLeaseMatches(const DecodeContext &decode,
+                                          const Surface &surface) {
+  return surface.experimental_write_lease &&
+      surface.experimental_write_context ==
+          TraceId(decode.id, VA_INVALID_ID) &&
+      surface.experimental_write_generation == decode.generation &&
+      surface.experimental_write_submission_ordinal != 0 &&
+      surface.experimental_write_submission_ordinal ==
+          surface.trace_submission_ordinal;
+}
+
+static void RemoveExperimentalReady(
+    DecodeContext *decode, const std::shared_ptr<Surface> &picture) {
+  if (decode == nullptr || !picture)
+    return;
+  decode->experimental_ready.erase(
+      std::remove(decode->experimental_ready.begin(),
+                  decode->experimental_ready.end(), picture),
+      decode->experimental_ready.end());
+  picture->experimental_ready_queued = false;
+  const auto found = decode->decoded_frames.find(picture->expected_timestamp);
+  if (found != decode->decoded_frames.end() && found->second == picture)
+    decode->decoded_frames.erase(found);
+}
+
+static void QueueExperimentalReady(
+    Driver *driver, DecodeContext *decode,
+    const std::shared_ptr<Surface> &picture) {
+  if (driver == nullptr || decode == nullptr || !picture ||
+      !decode->experimental_ready_remap || picture->destroyed ||
+      picture->failed || !picture->ready ||
+      picture->frame_timestamp != picture->expected_timestamp ||
+      picture->experimental_ready_queued)
+    return;
+  picture->experimental_ready_at_ns = MonotonicNowNs();
+  picture->experimental_ready_queued = true;
+  decode->experimental_ready.push_back(picture);
+  crystalhd_vaapi_trace::Fields fields = TraceFields(decode, picture.get());
+  fields.payload_token = picture->frame_timestamp;
+  fields.payload_decode_identity = picture->trace_decode_identity;
+  fields.payload_submission_ordinal = picture->trace_submission_ordinal;
+  driver->trace.Emit(crystalhd_vaapi_trace::Event::PresentationReady, fields);
+
+  while (decode->experimental_ready.size() >
+         kExperimentalPresentationReadyLimit) {
+    const std::shared_ptr<Surface> dropped =
+        decode->experimental_ready.front();
+    decode->experimental_ready.pop_front();
+    dropped->experimental_ready_queued = false;
+    crystalhd_vaapi_trace::Fields dropped_fields =
+        TraceFields(decode, dropped.get());
+    dropped_fields.payload_token = dropped->frame_timestamp;
+    dropped_fields.payload_decode_identity = dropped->trace_decode_identity;
+    dropped_fields.payload_submission_ordinal =
+        dropped->trace_submission_ordinal;
+    dropped_fields.outcome = -ENOBUFS;
+    driver->trace.Emit(crystalhd_vaapi_trace::Event::PresentationDrop,
+                       dropped_fields);
+    const auto decoded =
+        decode->decoded_frames.find(dropped->expected_timestamp);
+    if (decoded != decode->decoded_frames.end() &&
+        decoded->second == dropped)
+      decode->decoded_frames.erase(decoded);
+  }
+}
+
+static std::shared_ptr<Surface> SelectExperimentalReady(
+    const DecodeContext &decode, const Surface &requested, uint64_t now_ns) {
+  if (!decode.experimental_ready_remap || decode.closing || decode.retired ||
+      decode.ReplaySealed() || requested.ready ||
+      requested.failed || !ExperimentalWriteLeaseMatches(decode, requested) ||
+      requested.trace_generation != decode.generation ||
+      requested.trace_submission_ordinal == 0)
+    return {};
+  for (auto it = decode.experimental_ready.rbegin();
+       it != decode.experimental_ready.rend(); ++it) {
+    const std::shared_ptr<Surface> &candidate = *it;
+    if (!candidate || !candidate->experimental_ready_queued ||
+        candidate->destroyed || candidate->failed || !candidate->ready ||
+        candidate->frame_timestamp != candidate->expected_timestamp ||
+        candidate->trace_context != requested.trace_context ||
+        candidate->trace_generation != requested.trace_generation ||
+        candidate->trace_submission_ordinal + 1 !=
+            requested.trace_submission_ordinal ||
+        candidate->width != requested.width ||
+        candidate->height != requested.height ||
+        candidate->fourcc != VA_FOURCC_NV12 ||
+        requested.fourcc != VA_FOURCC_NV12 ||
+        candidate->experimental_ready_at_ns == 0 ||
+        candidate->experimental_ready_at_ns > now_ns ||
+        now_ns - candidate->experimental_ready_at_ns >
+            kExperimentalPresentationMaxAgeNs)
+      continue;
+    return candidate;
+  }
+  return {};
+}
+
+static VAStatus TryExperimentalPresentation(
+    Driver *driver, const std::shared_ptr<Surface> &requested,
+    bool *committed) {
+  *committed = false;
+  if (!requested || requested->trace_context == 0)
+    return VA_STATUS_SUCCESS;
+  const auto found = driver->contexts.find(
+      static_cast<VAContextID>(requested->trace_context));
+  if (found == driver->contexts.end() ||
+      !found->second->experimental_ready_remap ||
+      found->second->generation != requested->trace_generation)
+    return VA_STATUS_SUCCESS;
+  DecodeContext *decode = found->second.get();
+  const size_t active_presentations = static_cast<size_t>(std::count_if(
+      driver->surfaces.begin(), driver->surfaces.end(),
+      [&](const auto &entry) {
+        const Surface *surface = entry.second.get();
+        return surface->backing_owner == VA_INVALID_SURFACE &&
+            surface->trace_context == requested->trace_context &&
+            surface->trace_generation == requested->trace_generation &&
+            surface->experimental_presentation;
+      }));
+  if (active_presentations >= kExperimentalPresentationActiveLimit)
+    return VA_STATUS_SUCCESS;
+  const std::shared_ptr<Surface> payload =
+      SelectExperimentalReady(*decode, *requested, MonotonicNowNs());
+  if (!payload)
+    return VA_STATUS_SUCCESS;
+  if (!CopyNv12Pixels(*payload, requested.get()))
+    return VA_STATUS_ERROR_OPERATION_FAILED;
+
+  requested->experimental_presentation = true;
+  requested->experimental_write_lease = false;
+  requested->experimental_write_context = 0;
+  requested->experimental_write_generation = 0;
+  requested->experimental_write_submission_ordinal = 0;
+  requested->presentation_payload_token = payload->frame_timestamp;
+  requested->presentation_payload_decode_identity =
+      payload->trace_decode_identity;
+  requested->presentation_payload_submission_ordinal =
+      payload->trace_submission_ordinal;
+  crystalhd_vaapi_trace::Fields fields =
+      TraceFields(decode, requested.get(), requested->expected_timestamp);
+  driver->trace.Emit(crystalhd_vaapi_trace::Event::PresentationCommit,
+                     fields);
+  RemoveExperimentalReady(decode, payload);
+  *committed = true;
+  driver->condition.notify_all();
+  return VA_STATUS_SUCCESS;
+}
+
+static void ConsumeExperimentalExact(
+    Driver *driver, const std::shared_ptr<Surface> &surface) {
+  if (!surface || surface->experimental_presentation || !surface->ready ||
+      surface->frame_timestamp != surface->expected_timestamp ||
+      surface->trace_context == 0)
+    return;
+  const auto found = driver->contexts.find(
+      static_cast<VAContextID>(surface->trace_context));
+  if (found == driver->contexts.end() ||
+      !found->second->experimental_ready_remap ||
+      found->second->generation != surface->trace_generation)
+    return;
+  const auto picture =
+      found->second->decoded_frames.find(surface->expected_timestamp);
+  if (picture != found->second->decoded_frames.end() &&
+      picture->second->trace_decode_identity == surface->trace_decode_identity)
+    RemoveExperimentalReady(found->second.get(), picture->second);
+}
+
 static void MarkPendingPicturesFailed(Driver *driver, DecodeContext *decode) {
   for (const auto &pending : decode->pending) {
     auto picture = decode->decoded_frames.find(pending.first);
@@ -2258,7 +2650,7 @@ static void MarkPendingPicturesFailed(Driver *driver, DecodeContext *decode) {
           surface->second->decode_picture.expired())))
       surface->second->failed = true;
     if (surface != driver->surfaces.end() && surface->second->failed)
-      ClearTraceReadExport(surface->second.get());
+      RetireFailedExperimentalState(surface->second.get());
   }
 }
 
@@ -2400,7 +2792,9 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
       (output.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) == 0;
   bool complete = valid_frame;
   bool wrote_pixels = false;
-  const bool discard_pixels = complete && !current_picture && map_only_picture;
+  bool public_materialized = false;
+  const bool discard_pixels = complete && !current_picture &&
+      map_only_picture && !decode->experimental_ready_remap;
   if (discard_pixels)
     Debug("discard unreferenced stale pixels timestamp=%llu",
           static_cast<unsigned long long>(output.PicInfo.timeStamp));
@@ -2426,26 +2820,54 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
   }
   if (current_picture) {
     if (complete && !direct) {
-      complete = decoded != decode->decoded_frames.end()
-          ? CopyNv12Surface(*decoded->second, surface->second.get())
-          : CopyYuy2ToSurface(surface->second.get(), output, decode->is_70012);
-      wrote_pixels = complete;
+      if (decode->experimental_ready_remap &&
+          surface->second->experimental_presentation) {
+        // The public backing is frozen with a previously selected READY
+        // payload until the client relinquishes this surface at BeginPicture.
+        // The newly completed requested picture remains private.
+      } else {
+        if (decode->experimental_ready_remap &&
+            !ExperimentalWriteLeaseMatches(*decode, *surface->second)) {
+          // BeginPicture can reserve this backing for the next submission
+          // while an older output is still in flight. Preserve that older
+          // output only in its private READY picture; it must not consume the
+          // next submission's lease or mutate the public backing.
+        } else {
+          complete = decoded != decode->decoded_frames.end()
+              ? CopyNv12Surface(*decoded->second, surface->second.get())
+              : CopyYuy2ToSurface(surface->second.get(), output,
+                                  decode->is_70012);
+          wrote_pixels = complete;
+          public_materialized = complete;
+          if (decode->experimental_ready_remap && complete) {
+            surface->second->experimental_write_lease = false;
+            surface->second->experimental_write_context = 0;
+            surface->second->experimental_write_generation = 0;
+            surface->second->experimental_write_submission_ordinal = 0;
+          }
+        }
+      }
     }
     if (!complete) {
       surface->second->failed = true;
-      ClearTraceReadExport(surface->second.get());
+      RetireFailedExperimentalState(surface->second.get());
     }
   }
+  if (complete && decoded != decode->decoded_frames.end() &&
+      decode->experimental_ready_remap)
+    QueueExperimentalReady(driver, decode, decoded->second);
   // A public surface can be reused before old hardware output arrives. Once
   // that old output is complete, only captured/queued VPP references need to
   // retain it; otherwise dropped frames would accumulate for the whole stream.
-  if (driver->trace.enabled() && complete && wrote_pixels && current_picture) {
+  if (driver->trace.enabled() && complete && wrote_pixels && current_picture &&
+      (!decode->experimental_ready_remap || public_materialized)) {
     Surface *materialized = surface->second.get();
     driver->trace.Emit(crystalhd_vaapi_trace::Event::Materialized,
                        TraceFields(decode, materialized,
                                    output.PicInfo.timeStamp));
   }
-  if (!current_picture && decoded != decode->decoded_frames.end())
+  if (!current_picture && decoded != decode->decoded_frames.end() &&
+      !decoded->second->experimental_ready_queued)
     decode->decoded_frames.erase(decoded);
   driver->condition.notify_all();
   return complete ? VA_STATUS_SUCCESS
@@ -2767,6 +3189,12 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
       !decode->iq_matrix_valid ||
       !ValidateH264IqMatrix(decode->picture, profile, decode->iq_matrix)))
     return VA_STATUS_ERROR_INVALID_PARAMETER;
+  if (decode->experimental_ready_remap &&
+      std::any_of(decode->slices.begin(), decode->slices.end(),
+                  [](const VASliceParameterBufferH264 &slice) {
+                    return slice.slice_type % 5 == 1;
+                  }))
+    return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
 
   const VASurfaceID target_id = decode->target;
   auto surface = driver->surfaces.find(target_id);
@@ -2778,6 +3206,26 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
   if (target_surface->vpp_writers != 0 || target_surface->vpp_readers != 0 ||
       target_surface->export_waiters != 0)
     return VA_STATUS_ERROR_HW_BUSY;
+  // BeginPicture and EndPicture are separate public calls.  Another context
+  // may acquire this backing between them, so an ordinary submission must
+  // revalidate that no experimental reservation, presentation, or external
+  // reader now owns it before changing trace/decode identity.
+  if (!decode->experimental_ready_remap &&
+      (ExperimentalPresentationBinding(driver, target_surface.get()) ||
+       target_surface->experimental_write_lease ||
+       target_surface->experimental_read_export_armed ||
+       target_surface->experimental_presentation))
+    return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
+  if (decode->experimental_ready_remap &&
+      (!target_surface->direct_decode_eligible ||
+       target_surface->experimental_incompatible ||
+       !target_surface->experimental_write_lease ||
+       target_surface->experimental_write_context !=
+           TraceId(decode->id, VA_INVALID_ID) ||
+       target_surface->experimental_write_generation != decode->generation ||
+       target_surface->experimental_write_submission_ordinal !=
+           decode->next_submission_ordinal))
+    return VA_STATUS_ERROR_SURFACE_BUSY;
   std::vector<uint8_t> bitstream;
   bool idr = false;
   bool mpeg4_discontinuity = false;
@@ -3002,6 +3450,7 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
   auto decoded_frame = std::make_shared<Surface>();
   decoded_frame->id = target_id;
   const bool direct_picture = decode->live_h264 && IsH264Profile(profile) &&
+                              !decode->experimental_ready_remap &&
                               target_surface->direct_decode_eligible;
   if (direct_picture) {
     decoded_frame->width = target_surface->width;
@@ -3020,8 +3469,9 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
            kMpeg4ReplayCacheBytes - decode->Mpeg4CachedBytes()))
     return VA_STATUS_ERROR_HW_BUSY;
   if (!decode->decoder_started) {
-    VAStatus status = OpenDecoder(decode, stream_width, stream_height,
-                                   decode->IsVc1() ? &next_wmv3_metadata : nullptr);
+    VAStatus status = OpenDecoderForSubmit(
+        decode, target_surface.get(), stream_width, stream_height,
+        decode->IsVc1() ? &next_wmv3_metadata : nullptr);
     if (status != VA_STATUS_SUCCESS)
       return status;
   }
@@ -3158,7 +3608,7 @@ static VAStatus DecodeSurfaceState(Surface *surface) {
           static_cast<unsigned long long>(surface->expected_timestamp),
           static_cast<unsigned long long>(surface->frame_timestamp));
     surface->failed = true;
-    ClearTraceReadExport(surface);
+    RetireFailedExperimentalState(surface);
     return VA_STATUS_ERROR_DECODING_ERROR;
   }
   return VA_STATUS_SUCCESS;
@@ -3234,6 +3684,42 @@ static VAStatus SyncDecodeSurface(
     return VA_STATUS_ERROR_TIMEDOUT;
   const uint64_t generation = decode->generation;
   const uint64_t expected_timestamp = surface->expected_timestamp;
+  const uint64_t expected_context = surface->trace_context;
+  const uint64_t expected_trace_generation = surface->trace_generation;
+  const uint64_t expected_decode_identity = surface->trace_decode_identity;
+  const uint64_t expected_submission_ordinal =
+      surface->trace_submission_ordinal;
+  const auto same_wait_binding = [&]() {
+    return !surface->destroyed &&
+        surface->expected_timestamp == expected_timestamp &&
+        surface->trace_context == expected_context &&
+        surface->trace_generation == expected_trace_generation &&
+        surface->trace_decode_identity == expected_decode_identity &&
+        surface->trace_submission_ordinal == expected_submission_ordinal;
+  };
+  const auto presentation_ready = [&]() {
+    return same_wait_binding() &&
+        ExperimentalPresentationReadable(driver, surface.get());
+  };
+  const auto try_presentation = [&]() -> VAStatus {
+    // This call may have released Driver::mutex while another API user
+    // destroyed or rebound the public surface.  A timestamp alone is not an
+    // ownership identity: another context can legitimately reuse the same
+    // synthetic token.  Never let an obsolete waiter mutate the new binding.
+    if (!same_wait_binding())
+      return VA_STATUS_ERROR_INVALID_SURFACE;
+    if (decode->retired || decode->generation != generation)
+      return VA_STATUS_ERROR_INVALID_CONTEXT;
+    if (!decode->experimental_ready_remap || presentation_ready())
+      return VA_STATUS_SUCCESS;
+    bool committed = false;
+    const VAStatus status =
+        TryExperimentalPresentation(driver, surface, &committed);
+    if (status != VA_STATUS_SUCCESS)
+      return status;
+    return committed && !presentation_ready()
+               ? VA_STATUS_ERROR_OPERATION_FAILED : VA_STATUS_SUCCESS;
+  };
 
   Debug("sync surface ready=%d failed=%d timeout=%llu", surface->ready,
         surface->failed, static_cast<unsigned long long>(timeout_ns));
@@ -3241,7 +3727,7 @@ static VAStatus SyncDecodeSurface(
   const auto start = std::chrono::steady_clock::now();
   auto last_progress = start;
   uint64_t progress = decode->transport_progress;
-  while (!surface->ready && !surface->failed) {
+  while (!surface->ready && !surface->failed && !presentation_ready()) {
     const VAStatus state = DecodeWaitState(*decode, surface.get(), generation,
                                            expected_timestamp, canceled);
     if (state != VA_STATUS_ERROR_HW_BUSY &&
@@ -3251,13 +3737,22 @@ static VAStatus SyncDecodeSurface(
     if (driver->stopping)
       return VA_STATUS_ERROR_OPERATION_FAILED;
     VAStatus status = ReceiveAvailable(driver, decode.get());
-    if (status == VA_STATUS_SUCCESS && surface->ready)
+    if (status == VA_STATUS_SUCCESS &&
+        (surface->ready || presentation_ready()))
+      break;
+    // The immediately preceding picture commonly becomes READY while this
+    // call is already waiting for the exact requested picture.  Reconsider
+    // the bounded candidate after harvesting output; checking only once in
+    // SyncSurface2 misses the normal stock-Moonlight timing window.
+    if (status == VA_STATUS_SUCCESS)
+      status = try_presentation();
+    if (status == VA_STATUS_SUCCESS && presentation_ready())
       break;
     if (status == VA_STATUS_SUCCESS)
       status = PumpDecodeInput(driver, decode.get());
     if (status != VA_STATUS_SUCCESS)
       return status;
-    if (surface->ready || surface->failed)
+    if (surface->ready || surface->failed || presentation_ready())
       break;
     const auto now = std::chrono::steady_clock::now();
     if (decode->transport_progress != progress) {
@@ -3303,14 +3798,24 @@ static VAStatus SyncDecodeSurface(
     driver_lock->unlock();
     usleep(1000);
     driver_lock->lock();
+    if (presentation_ready())
+      return VA_STATUS_SUCCESS;
     const VAStatus resumed = DecodeWaitState(*decode, surface.get(), generation,
                                              expected_timestamp, canceled);
     if (resumed != VA_STATUS_ERROR_HW_BUSY &&
         (resumed != VA_STATUS_SUCCESS || decode->retired ||
          decode->generation != generation))
       return resumed;
+    if (resumed == VA_STATUS_ERROR_HW_BUSY) {
+      const VAStatus presentation = try_presentation();
+      if (presentation != VA_STATUS_SUCCESS)
+        return presentation;
+      if (presentation_ready())
+        return VA_STATUS_SUCCESS;
+    }
   }
-  return DecodeSurfaceState(surface.get());
+  return presentation_ready() ? VA_STATUS_SUCCESS
+                              : DecodeSurfaceState(surface.get());
 }
 
 static bool PendingVppCanceled(const PendingVpp &operation) {
@@ -3731,6 +4236,11 @@ static VAStatus CreateSurfaces2(VADriverContextP context, unsigned int format,
         const auto owner = driver->surfaces.find(known->second);
         if (owner == driver->surfaces.end() || !HasLiveBackingOwner(driver, owner->second.get()))
           return rollback(VA_STATUS_ERROR_INVALID_SURFACE);
+        if (ExperimentalPresentationBinding(driver, owner->second.get()) ||
+            owner->second->experimental_write_lease ||
+            owner->second->experimental_read_export_armed ||
+            owner->second->experimental_presentation)
+          return rollback(VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT);
         // Same backing does not necessarily mean the same pixels. Refuse
         // nonidentical views before mapping instead of selecting another
         // surface's immutable decoded picture for different plane geometry.
@@ -4048,6 +4558,11 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
       getenv("CRYSTALHD_VAAPI_LOW_LATENCY_H264");
   decode->low_latency_h264 = decode->live_h264 &&
       low_latency_h264 != nullptr && strcmp(low_latency_h264, "1") == 0;
+  const char *experimental_ready_remap =
+      getenv("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP");
+  decode->experimental_ready_remap = decode->low_latency_h264 &&
+      experimental_ready_remap != nullptr &&
+      strcmp(experimental_ready_remap, "1") == 0;
   if (decode->live_h264)
     decode->replay = CrystalHDDecodeReplay(true);
   *context_id = driver->next_context++;
@@ -4205,6 +4720,14 @@ static VAStatus BeginPicture(VADriverContextP context, VAContextID context_id,
     Surface *target_owner = BackingOwner(driver, target_surface->second.get());
     if (target_owner->vpp_writers != 0 || target_owner->export_waiters != 0)
       return VA_STATUS_ERROR_HW_BUSY;
+    // The experimental decode path deliberately excludes VPP and writable
+    // aliases.  A VPP writer cannot take a backing whose prior read-only
+    // export is still armed or whose pixels are frozen as an older payload.
+    if (ExperimentalPresentationBinding(driver, target_owner) ||
+        target_owner->experimental_write_lease ||
+        target_owner->experimental_read_export_armed ||
+        target_owner->experimental_presentation)
+      return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
     if (!PromoteDecodedPicture(target_owner->decode_picture.lock()))
       return VA_STATUS_ERROR_OPERATION_FAILED;
     ProbeTraceReadExportReuse(driver, decode->second.get(),
@@ -4235,9 +4758,33 @@ static VAStatus BeginPicture(VADriverContextP context, VAContextID context_id,
       target_surface->second->vpp_readers != 0 ||
       target_surface->second->export_waiters != 0)
     return VA_STATUS_ERROR_HW_BUSY;
-  ProbeTraceReadExportReuse(driver, decode->second.get(),
-                            target_surface->second.get(),
-                            target_surface->second.get());
+  if (!decode->second->experimental_ready_remap &&
+      (ExperimentalPresentationBinding(driver, target_surface->second.get()) ||
+       target_surface->second->experimental_write_lease ||
+       target_surface->second->experimental_read_export_armed ||
+       target_surface->second->experimental_presentation))
+    return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
+  if (decode->second->experimental_ready_remap &&
+      (!target_surface->second->direct_decode_eligible ||
+       target_surface->second->experimental_incompatible))
+    return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
+  const ReadExportReuseProbe reuse = ProbeTraceReadExportReuse(
+      driver, decode->second.get(), target_surface->second.get(),
+      target_surface->second.get());
+  if (reuse.experimental_armed &&
+      (!decode->second->experimental_ready_remap || reuse.outcome != 0))
+    return reuse.outcome == -EAGAIN ? VA_STATUS_ERROR_HW_BUSY
+                                   : VA_STATUS_ERROR_OPERATION_FAILED;
+  if (decode->second->experimental_ready_remap) {
+    ClearExperimentalPresentation(target_surface->second.get());
+    target_surface->second->experimental_write_lease = true;
+    target_surface->second->experimental_write_context =
+        TraceId(decode->second->id, VA_INVALID_ID);
+    target_surface->second->experimental_write_generation =
+        decode->second->generation;
+    target_surface->second->experimental_write_submission_ordinal =
+        decode->second->next_submission_ordinal;
+  }
   decode->second->target = target;
   decode->second->have_picture = false;
   decode->second->mpeg2_picture = DecodeContext::Mpeg2Picture();
@@ -4558,6 +5105,11 @@ static VAStatus RenderPicture(VADriverContextP context, VAContextID context_id,
       if (owner != driver->surfaces.end())
         source_owner = owner->second;
     }
+    if (ExperimentalPresentationBinding(driver, source_owner.get()) ||
+        source_owner->experimental_write_lease ||
+        source_owner->experimental_read_export_armed ||
+        source_owner->experimental_presentation)
+      return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
     std::shared_ptr<Surface> frame;
     std::shared_ptr<DecodeContext> source_decoder;
     const uint64_t timestamp = source_owner->expected_timestamp;
@@ -4674,10 +5226,18 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
     auto finish_vpp = [&](VAStatus status) {
       if (status != VA_STATUS_SUCCESS) {
         auto destination = driver->surfaces.find(decode_context->target);
-        if (destination != driver->surfaces.end() &&
-            BackingOwner(driver, destination->second.get())->vpp_writers == 0 &&
-            BackingOwner(driver, destination->second.get())->export_waiters == 0)
-          SetSurfaceState(driver, destination->second.get(), false, true);
+        if (destination != driver->surfaces.end()) {
+          Surface *owner = BackingOwner(driver, destination->second.get());
+          // Any failure after VPP Begin belongs to that stale transaction.
+          // If a newer experimental decode has acquired the backing, do not
+          // poison or otherwise mutate its reservation/presentation.
+          if (owner->vpp_writers == 0 && owner->export_waiters == 0 &&
+              !ExperimentalPresentationBinding(driver, owner) &&
+              !owner->experimental_write_lease &&
+              !owner->experimental_read_export_armed &&
+              !owner->experimental_presentation)
+            SetSurfaceState(driver, destination->second.get(), false, true);
+        }
       }
       decode_context->target = VA_INVALID_SURFACE;
       decode_context->vpp_source = VA_INVALID_SURFACE;
@@ -4715,6 +5275,15 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
     // signaling its fence with unrelated fallback pixels breaks identity.
     if (target_owner->vpp_writers != 0 || target_owner->export_waiters != 0)
       return finish_vpp(VA_STATUS_ERROR_HW_BUSY);
+    // VPP releases the driver mutex between BeginPicture and EndPicture.
+    // An experimental decoder may have reserved, committed, or exported this
+    // backing in that interval.  Cancel only the stale VPP transaction: the
+    // newer decode presentation and its external-reader guard stay intact.
+    if (ExperimentalPresentationBinding(driver, target_owner.get()) ||
+        target_owner->experimental_write_lease ||
+        target_owner->experimental_read_export_armed ||
+        target_owner->experimental_presentation)
+      return finish_vpp(VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT);
     // A decode can take this target between VPP BeginPicture and EndPicture.
     // Recheck its picture immediately before acquiring write ownership.
     if (!PromoteDecodedPicture(target_owner->decode_picture.lock()))
@@ -4821,9 +5390,13 @@ static VAStatus SyncSurface2(VADriverContextP context, VASurfaceID surface_id,
   if (surface == driver->surfaces.end() ||
       !HasLiveBackingOwner(driver, surface->second.get()))
     return VA_STATUS_ERROR_INVALID_SURFACE;
-  std::shared_ptr<Surface> synchronized_surface = surface->second;
-  if (surface->second->backing_owner != VA_INVALID_SURFACE) {
-    auto owner = driver->surfaces.find(surface->second->backing_owner);
+  // SyncDecodeSurface and the VPP wait loop may release the driver mutex.
+  // Retain both objects instead of carrying an unordered_map iterator across
+  // that interval; another thread may destroy and erase the VA surface.
+  const std::shared_ptr<Surface> requested_surface = surface->second;
+  std::shared_ptr<Surface> synchronized_surface = requested_surface;
+  if (requested_surface->backing_owner != VA_INVALID_SURFACE) {
+    auto owner = driver->surfaces.find(requested_surface->backing_owner);
     if (owner != driver->surfaces.end())
       synchronized_surface = owner->second;
   }
@@ -4831,7 +5404,7 @@ static VAStatus SyncSurface2(VADriverContextP context, VASurfaceID surface_id,
   crystalhd_vaapi_trace::Fields trace_fields;
   std::chrono::steady_clock::time_point trace_start;
   if (trace_enabled) {
-    trace_fields = TraceRequestedOwnerFields(surface->second.get(),
+    trace_fields = TraceRequestedOwnerFields(requested_surface.get(),
                                              synchronized_surface.get());
     trace_fields.operation = NextTraceCall(driver);
     trace_start = std::chrono::steady_clock::now();
@@ -4839,6 +5412,18 @@ static VAStatus SyncSurface2(VADriverContextP context, VASurfaceID surface_id,
   }
   const auto finish = [&](VAStatus status) {
     if (trace_enabled) {
+      const crystalhd_vaapi_trace::Fields current =
+          TraceRequestedOwnerFields(requested_surface.get(),
+                                    synchronized_surface.get());
+      if (status == VA_STATUS_SUCCESS &&
+          SameTraceBinding(trace_fields, current)) {
+        trace_fields.payload_token = current.payload_token;
+        trace_fields.payload_decode_identity =
+            current.payload_decode_identity;
+        trace_fields.payload_submission_ordinal =
+            current.payload_submission_ordinal;
+        trace_fields.submission_drift = current.submission_drift;
+      }
       trace_fields.duration_ns = static_cast<uint64_t>(
           std::chrono::duration_cast<std::chrono::nanoseconds>(
               std::chrono::steady_clock::now() - trace_start).count());
@@ -4847,6 +5432,9 @@ static VAStatus SyncSurface2(VADriverContextP context, VASurfaceID surface_id,
     }
     return status;
   };
+
+  if (ExperimentalWriteReservationPending(synchronized_surface.get()))
+    return finish(VA_STATUS_ERROR_SURFACE_BUSY);
 
   auto targets_surface = [&](const PendingVpp &pending) {
     Surface *requested_owner = BackingOwner(driver, synchronized_surface.get());
@@ -4900,8 +5488,23 @@ static VAStatus SyncSurface2(VADriverContextP context, VASurfaceID surface_id,
                                  std::chrono::nanoseconds(timeout_ns - elapsed));
     }
   }
-  return finish(
-      SyncDecodeSurface(driver, synchronized_surface, &lock, timeout_ns));
+  if (ExperimentalPresentationReadable(driver, synchronized_surface.get()))
+    return finish(VA_STATUS_SUCCESS);
+  if (timeout_ns != 0 &&
+      synchronized_surface->backing_owner == VA_INVALID_SURFACE) {
+    bool committed = false;
+    const VAStatus presentation =
+        TryExperimentalPresentation(driver, synchronized_surface, &committed);
+    if (presentation != VA_STATUS_SUCCESS)
+      return finish(presentation);
+    if (committed)
+      return finish(VA_STATUS_SUCCESS);
+  }
+  const VAStatus status =
+      SyncDecodeSurface(driver, synchronized_surface, &lock, timeout_ns);
+  if (status == VA_STATUS_SUCCESS)
+    ConsumeExperimentalExact(driver, synchronized_surface);
+  return finish(status);
 }
 
 static VAStatus SyncSurface(VADriverContextP context, VASurfaceID surface_id) {
@@ -4927,7 +5530,8 @@ static VAStatus SynchronizeExportRead(
           ? surface : driver->surfaces.at(surface->backing_owner);
   if (owner->failed)
     return VA_STATUS_ERROR_DECODING_ERROR;
-  if (owner->ready && owner->vpp_writers == 0)
+  if ((owner->ready || ExperimentalPresentationReadable(driver, owner.get())) &&
+      owner->vpp_writers == 0)
     return VA_STATUS_SUCCESS;
   if (owner->export_waiters == UINT_MAX)
     return VA_STATUS_ERROR_SURFACE_BUSY;
@@ -4954,7 +5558,8 @@ static VAStatus SynchronizeExportRead(
     return status;
   if (owner->failed)
     return VA_STATUS_ERROR_DECODING_ERROR;
-  return owner->ready && owner->vpp_writers == 0
+  return (owner->ready || ExperimentalPresentationReadable(driver, owner.get())) &&
+             owner->vpp_writers == 0
              ? VA_STATUS_SUCCESS : VA_STATUS_ERROR_SURFACE_BUSY;
 }
 
@@ -4972,7 +5577,12 @@ static VAStatus QuerySurfaceStatus(VADriverContextP context,
   Surface *owner = BackingOwner(driver, surface->second.get());
   if (owner->failed)
     return VA_STATUS_ERROR_DECODING_ERROR;
-  *status = owner->ready ? VASurfaceReady : VASurfaceRendering;
+  if (ExperimentalWriteReservationPending(owner)) {
+    *status = VASurfaceRendering;
+    return VA_STATUS_SUCCESS;
+  }
+  *status = owner->ready || ExperimentalPresentationReadable(driver, owner)
+                ? VASurfaceReady : VASurfaceRendering;
   return VA_STATUS_SUCCESS;
 }
 
@@ -5124,6 +5734,17 @@ static VAStatus DeriveImage(VADriverContextP context, VASurfaceID surface_id,
     return VA_STATUS_ERROR_INVALID_PARAMETER;
   Driver *driver = GetDriver(context);
   std::unique_lock<std::mutex> lock(driver->mutex);
+  const auto initial_surface = driver->surfaces.find(surface_id);
+  if (initial_surface == driver->surfaces.end() ||
+      !HasLiveBackingOwner(driver, initial_surface->second.get()))
+    return VA_STATUS_ERROR_INVALID_SURFACE;
+  Surface *initial_owner =
+      BackingOwner(driver, initial_surface->second.get());
+  if (ExperimentalPresentationBinding(driver, initial_owner) ||
+      initial_owner->experimental_write_lease ||
+      initial_owner->experimental_read_export_armed ||
+      initial_owner->experimental_presentation)
+    return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
   const VAStatus synchronized = SynchronizeExportRead(context, surface_id, &lock);
   if (synchronized != VA_STATUS_SUCCESS)
     return synchronized;
@@ -5165,6 +5786,12 @@ static VAStatus GetImage(VADriverContextP context, VASurfaceID surface_id,
     return VA_STATUS_ERROR_INVALID_SURFACE;
   if (image == driver->images.end())
     return VA_STATUS_ERROR_INVALID_IMAGE;
+  Surface *owner = BackingOwner(driver, surface->second.get());
+  if (ExperimentalPresentationBinding(driver, owner) ||
+      owner->experimental_write_lease ||
+      owner->experimental_read_export_armed ||
+      owner->experimental_presentation)
+    return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
   return CopySurfaceToImage(driver, surface->second.get(), &image->second,
                             width, height);
 }
@@ -5188,6 +5815,12 @@ static VAStatus PutImage(VADriverContextP context, VASurfaceID surface_id,
     return VA_STATUS_ERROR_INVALID_SURFACE;
   if (image == driver->images.end())
     return VA_STATUS_ERROR_INVALID_IMAGE;
+  Surface *owner = BackingOwner(driver, surface->second.get());
+  if (ExperimentalPresentationBinding(driver, owner) ||
+      owner->experimental_write_lease ||
+      owner->experimental_read_export_armed ||
+      owner->experimental_presentation)
+    return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
   if (surface->second->fourcc != VA_FOURCC_NV12)
     return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
   auto buffer = driver->buffers.find(image->second.va.buf);
@@ -5200,7 +5833,6 @@ static VAStatus PutImage(VADriverContextP context, VASurfaceID surface_id,
     return VA_STATUS_ERROR_INVALID_PARAMETER;
   if (!ImageBufferFits(image->second, buffer->second))
     return VA_STATUS_ERROR_INVALID_BUFFER;
-  Surface *owner = BackingOwner(driver, surface->second.get());
   if (owner->vpp_writers != 0 || owner->vpp_readers != 0 ||
       owner->export_waiters != 0 ||
       (!owner->ready && !owner->failed))
@@ -5406,6 +6038,8 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
     return VA_STATUS_ERROR_INVALID_PARAMETER;
   Driver *driver = GetDriver(context);
   std::unique_lock<std::mutex> lock(driver->mutex);
+  const uint32_t access = flags & VA_EXPORT_SURFACE_READ_WRITE;
+  const bool explicit_read_only = access == VA_EXPORT_SURFACE_READ_ONLY;
   const bool trace_enabled = driver->trace.enabled();
   crystalhd_vaapi_trace::Fields trace_fields;
   std::chrono::steady_clock::time_point trace_start;
@@ -5423,6 +6057,23 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
   }
   const auto finish = [&](VAStatus status) {
     if (trace_enabled) {
+      const auto current_surface = driver->surfaces.find(surface_id);
+      if (current_surface != driver->surfaces.end() &&
+          HasLiveBackingOwner(driver, current_surface->second.get())) {
+        const crystalhd_vaapi_trace::Fields current =
+            TraceRequestedOwnerFields(
+                current_surface->second.get(),
+                BackingOwner(driver, current_surface->second.get()));
+        if (status == VA_STATUS_SUCCESS &&
+            SameTraceBinding(trace_fields, current)) {
+          trace_fields.payload_token = current.payload_token;
+          trace_fields.payload_decode_identity =
+              current.payload_decode_identity;
+          trace_fields.payload_submission_ordinal =
+              current.payload_submission_ordinal;
+          trace_fields.submission_drift = current.submission_drift;
+        }
+      }
       trace_fields.duration_ns = static_cast<uint64_t>(
           std::chrono::duration_cast<std::chrono::nanoseconds>(
               std::chrono::steady_clock::now() - trace_start).count());
@@ -5432,6 +6083,19 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
     }
     return status;
   };
+  const auto initial_surface = driver->surfaces.find(surface_id);
+  if (initial_surface != driver->surfaces.end() &&
+      HasLiveBackingOwner(driver, initial_surface->second.get())) {
+    Surface *initial_owner =
+        BackingOwner(driver, initial_surface->second.get());
+    if (ExperimentalWriteReservationPending(initial_owner))
+      return finish(VA_STATUS_ERROR_SURFACE_BUSY);
+    if (!explicit_read_only &&
+        (ExperimentalPresentationBinding(driver, initial_owner) ||
+         initial_owner->experimental_read_export_armed ||
+         initial_owner->experimental_presentation))
+      return finish(VA_STATUS_ERROR_INVALID_PARAMETER);
+  }
   if ((flags & VA_EXPORT_SURFACE_READ_WRITE) != VA_EXPORT_SURFACE_WRITE_ONLY) {
     const VAStatus status = SynchronizeExportRead(context, surface_id, &lock);
     if (status != VA_STATUS_SUCCESS)
@@ -5444,8 +6108,16 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
   if (surface->second->bo == nullptr && surface->second->object_fds.empty())
     return finish(VA_STATUS_ERROR_UNIMPLEMENTED);
   Surface *owner = BackingOwner(driver, surface->second.get());
-  const uint32_t access = flags & VA_EXPORT_SURFACE_READ_WRITE;
-  const bool explicit_read_only = access == VA_EXPORT_SURFACE_READ_ONLY;
+  // SynchronizeExportRead may release the mutex while waiting and may commit
+  // an experimental payload.  Revalidate the access contract afterward.
+  if (ExperimentalWriteReservationPending(owner))
+    return finish(VA_STATUS_ERROR_SURFACE_BUSY);
+  if (!explicit_read_only &&
+      (ExperimentalPresentationBinding(driver, owner) ||
+       owner->experimental_read_export_armed ||
+       owner->experimental_presentation))
+    return finish(VA_STATUS_ERROR_INVALID_PARAMETER);
+  ConsumeExperimentalExact(driver, surface->second);
   // A read-only consumer retains the VA frame until it is finished reading,
   // so the next decode submission is the reuse boundary just as it is for an
   // unexported surface. Writable or unspecified access has no such immutable
@@ -5455,6 +6127,11 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
     if (!PromoteDecodedPicture(owner->decode_picture.lock()))
       return finish(VA_STATUS_ERROR_OPERATION_FAILED);
     owner->direct_decode_eligible = false;
+    if (ExperimentalPresentationBinding(driver, owner)) {
+      owner->experimental_incompatible = true;
+      ClearExperimentalPresentation(owner);
+      ClearExperimentalReadExport(owner);
+    }
   }
 
   auto *prime = static_cast<VADRMPRIMESurfaceDescriptor *>(descriptor);

@@ -87,6 +87,15 @@ int main() {
   identity.not_pollout_count = 0;
   identity.probe_error_count = 0;
   identity.probe_errno = 0;
+  identity.payload_token = 300000;
+  identity.payload_decode_identity = 18;
+  identity.payload_submission_ordinal = 3;
+  identity.submission_drift = 1;
+  trace.Emit(Event::PresentationReady, identity);
+  trace.Emit(Event::PresentationCommit, identity);
+  identity.outcome = -ENOBUFS;
+  trace.Emit(Event::PresentationDrop, identity);
+  identity.outcome = 0;
   trace.Emit(Event::VppCapture, identity);
   trace.Emit(Event::VppCommit, identity);
   trace.Emit(Event::ContextDestroy, identity);
