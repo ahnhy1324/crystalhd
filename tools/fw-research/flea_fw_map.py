@@ -5895,6 +5895,74 @@ def _channel_field_map(payload):
         for helper in tracked_helper_entries
     }
 
+    # 0x1610 is an argument-rooted helper whose selected field loads were
+    # historically conditional on r1 already being the fixed channel root.
+    # Search the complete supported A32 prefix for every direct-immediate
+    # target in its body, plus the adjacent 0x168c entry, so an internal branch
+    # or a call to the following function cannot be mistaken for a caller that
+    # establishes r1 at 0x1610.
+    helper_1610_start = 0x1610
+    helper_1610_end_exclusive = 0x168c
+    helper_1610_adjacent_entry = helper_1610_end_exclusive
+    helper_1610_targets = tuple(range(
+        helper_1610_start, helper_1610_adjacent_entry + 4, 4))
+    helper_1610_interworking_targets = tuple(range(
+        helper_1610_start, helper_1610_adjacent_entry + 2, 2))
+    helper_1610_a32_targets = _a32_target_branches_in_region(
+        payload, (whole_arm_role, whole_arm_start, whole_arm_size),
+        helper_1610_targets)
+    expected_helper_1610_a32_targets = (
+        (0x1634, "B", 0, 0x1644),
+        (0x1640, "B", 14, 0x1664),
+        (0x164c, "B", 0, 0x1664),
+        (0x1670, "B", 0, 0x1684),
+        (0x1680, "B", 14, 0x165c),
+        (0x1688, "B", 14, 0x165c),
+        (0x424c, "BL", 14, 0x168c),
+    )
+    if tuple((record["blob_file_offset"], record["operation"],
+              record["condition"], record["target_blob_file_offset"])
+             for record in helper_1610_a32_targets) != \
+            expected_helper_1610_a32_targets:
+        raise FormatError(
+            "channel-field helper 0x1610 target inventory does not match the baseline")
+
+    helper_1610_interworking = _direct_interworking_immediates_in_region(
+        payload, (whole_arm_role, whole_arm_start, whole_arm_size),
+        helper_1610_interworking_targets)
+    helper_1610_interworking_candidates = [
+        record
+        for value in helper_1610_interworking["encodings"].values()
+        for record in value["target_candidates"]
+    ]
+    if helper_1610_interworking_candidates:
+        raise FormatError(
+            "channel-field helper 0x1610 interworking target inventory does not match the baseline")
+
+    helper_1610_internal_targets = [
+        record for record in helper_1610_a32_targets
+        if (helper_1610_start <= record["blob_file_offset"] <
+                helper_1610_end_exclusive and
+            helper_1610_start <= record["target_blob_file_offset"] <
+                helper_1610_end_exclusive)
+    ]
+    helper_1610_external_body_targets = [
+        record for record in helper_1610_a32_targets
+        if not (helper_1610_start <= record["blob_file_offset"] <
+                helper_1610_end_exclusive) and
+        helper_1610_start <= record["target_blob_file_offset"] <
+            helper_1610_end_exclusive
+    ]
+    helper_1610_adjacent_targets = [
+        record for record in helper_1610_a32_targets
+        if record["target_blob_file_offset"] == helper_1610_adjacent_entry
+    ]
+    if (len(helper_1610_internal_targets) != 6 or
+            helper_1610_external_body_targets or
+            len(helper_1610_adjacent_targets) != 1):
+        raise FormatError(
+            "channel-field helper 0x1610 target classification does not match the baseline")
+
     blx_register_candidates = _a32_blx_register_candidates_in_region(
         payload, (whole_arm_role, whole_arm_start, whole_arm_size))
     expected_blx_registers = (
@@ -6464,6 +6532,22 @@ def _channel_field_map(payload):
     ))
 
     anchor_by_role = {record["role"]: record for record in anchors}
+    helper_1610_boundary_anchors = checked_anchors((
+        ("preceding_return", 0x160c, 0xe8bd8010,
+         "the preceding helper returns through pc; no selected fall-through"),
+        ("entry", 0x1610, 0xe92d4010,
+         "argument-rooted helper entry; incoming r0=slot and r1=root premise"),
+        ("frame_allocation", 0x1614, 0xe24dd040,
+         "allocate 64-byte local frame"),
+        ("common_epilogue", 0x165c, 0xe28dd040,
+         "release 64-byte local frame"),
+        ("return", 0x1660, 0xe8bd8010,
+         "return through pc"),
+        ("success_tail", 0x1688, 0xeafffff3,
+         "branch to helper common epilogue at 0x165c"),
+        ("adjacent_entry", 0x168c, 0xe1a02000,
+         "separately targeted following A32 entry"),
+    ))
     caller_edges = {}
     for role, site, target in (
             ("helper_15d8_root_getter", 0x4a78, 0x898),
@@ -6519,6 +6603,70 @@ def _channel_field_map(payload):
     )
     fixed_path_by_helper = {
         record["helper_function_entry"]: record for record in selected_fixed_root_paths
+    }
+
+    helper_1610_direct_target_provenance = {
+        "kind": "bounded-whole-prefix-direct-target-classification",
+        "body": {
+            "isa": "A32",
+            "start_blob_file_offset": helper_1610_start,
+            "end_blob_file_offset_exclusive": helper_1610_end_exclusive,
+            "byte_count": helper_1610_end_exclusive - helper_1610_start,
+            "entry_blob_file_offset": helper_1610_start,
+            "adjacent_entry_blob_file_offset": helper_1610_adjacent_entry,
+            "boundary_anchors": helper_1610_boundary_anchors,
+        },
+        "a32_b_bl_immediate": {
+            "target_domain": {
+                "start_blob_file_offset": helper_1610_start,
+                "end_blob_file_offset_inclusive": helper_1610_adjacent_entry,
+                "alignment_bytes": 4,
+            },
+            "target_candidates": helper_1610_a32_targets,
+            "internal_body_control_flow": helper_1610_internal_targets,
+            "external_body_target_candidates": helper_1610_external_body_targets,
+            "adjacent_entry_target_candidates": helper_1610_adjacent_targets,
+            "entry_0x1610_target_candidate_count": sum(
+                record["target_blob_file_offset"] == helper_1610_start
+                for record in helper_1610_a32_targets),
+            "complete_for_hash_pinned_region_encoding_candidates": True,
+            "source_code_boundaries_classified_only_for_pinned_helper_body": True,
+        },
+        "direct_interworking_immediate": {
+            "target_domain": {
+                "start_blob_file_offset": helper_1610_start,
+                "end_blob_file_offset_inclusive": helper_1610_adjacent_entry,
+                "alignment_bytes": 2,
+            },
+            "target_candidate_count": len(helper_1610_interworking_candidates),
+            "target_candidates": helper_1610_interworking_candidates,
+            "encoding_raw_pattern_counts": {
+                name: value["raw_pattern_count"]
+                for name, value in helper_1610_interworking["encodings"].items()
+            },
+            "complete_for_aligned_raw_patterns_in_hash_pinned_region": True,
+            "source_code_boundaries_classified": False,
+        },
+        "fixed_root_requirement": {
+            "incoming_register": "r1",
+            "required_value": 0xd3a00,
+            "external_supported_direct_body_target_candidate_count":
+                len(helper_1610_external_body_targets),
+            "supported_direct_entry_path_derives_required_value": False,
+            "fixed_root_provenance_established": False,
+            "access_sites_promoted_to_fixed_root": False,
+            "conditional_access_sites": [0x1628, 0x1664],
+        },
+        "bounded_absence": {
+            "supported_direct_external_targets_into_body_absent": True,
+            "supported_direct_interworking_targets_into_body_or_adjacent_entry_absent": True,
+            "preceding_selected_linear_path_returns": True,
+            "global_unreferenced_or_dead_code_established": False,
+            "blx_register_or_other_indirect_targets_excluded": False,
+            "literal_or_adr_address_references_excluded": False,
+            "sources_outside_hash_pinned_prefix_excluded": False,
+            "runtime_execution_observed": False,
+        },
     }
 
     # Schema v1 compatibility: retain the legacy selected-caller boolean while
@@ -6586,6 +6734,8 @@ def _channel_field_map(payload):
                 interworking_candidates_by_helper[0x1610],
             "all_direct_b_bl_target_candidates_classified": True,
             "all_supported_direct_immediate_target_patterns_classified": True,
+            "bounded_whole_prefix_target_classification_available": True,
+            "fixed_root_derivation_within_supported_paths_established": False,
             "derivation_sites": checked_anchors((
                 ("helper_1610_stride_words", 0x1618, 0xe3a02073,
                  "r2 = 0x73 words"),
@@ -6951,6 +7101,8 @@ def _channel_field_map(payload):
         "caller_provenance": {
             "kind": "selected fixed-root paths plus whole-prefix direct-immediate target inventories",
             "selected_fixed_root_paths": list(selected_fixed_root_paths),
+            "helper_1610_direct_target_provenance":
+                helper_1610_direct_target_provenance,
             "branch_candidate_scan": {
                 "isa_encoding": "A32 conditional-space B/BL immediate bit patterns",
                 "region_count": len(caller_scan_regions),
@@ -7081,7 +7233,8 @@ def _channel_field_map(payload):
                 "The selected slot-4 registration and callback body establish a conditional static delivery path, not registration persistence, live table contents, execution, channel-index validity, or end-to-end ownership.",
                 "The IRQ callback slot 4 and the delivery handler's mailbox-selected channel index are distinct values; their equality is neither required nor established.",
                 "The selected IRQ callback table and three direct registration calls do not establish every writer or the identities of the other callback bodies.",
-                "No supported direct-immediate target candidate for 0x1610 exists in the hash-pinned ARM prefix; that does not exclude other transfer mechanisms or sources outside the pinned prefix.",
+                "Within the hash-pinned ARM prefix, the supported direct-immediate scans find only six internal branches in [0x1610,0x168c) and one BL to the separate 0x168c entry; they find no external target into the helper body and therefore do not derive incoming r1 as 0xd3a00.",
+                "That bounded absence does not establish global dead code and does not exclude BLX-register, other indirect/computed transfers, literal/ADR address materialization, relocation-derived references, or sources outside the pinned prefix.",
                 "The 0x12e4 path relies on A32 callee-saved r6 preservation across its possible intervening calls.",
                 "Static selected paths do not establish runtime execution, valid slot range, object identity or lifetime.",
             ],
@@ -7103,6 +7256,9 @@ def _channel_field_map(payload):
             "direct_b_bl_target_candidates_complete": True,
             "whole_arm_direct_interworking_encoding_scan": True,
             "direct_interworking_target_encoding_patterns_complete": True,
+            "helper_1610_body_direct_target_paths_classified": True,
+            "helper_1610_fixed_root_provenance_established": False,
+            "helper_1610_global_dead_code_established": False,
             "whole_arm_blx_register_encoding_scan": True,
             "rooted_blx_register_instruction_sites": True,
             "all_blx_register_code_boundaries_classified": False,
@@ -7135,7 +7291,7 @@ def _channel_field_map(payload):
             "The whole-prefix target-filtered scans classify aligned raw direct-immediate encoding patterns, not source ISA boundaries, executable code, or every possible control-transfer mechanism.",
             "The two A32 BL target candidates establish the selected fixed-root paths; zero A32 BLX-immediate and T32 BL/BLX-immediate matches add no path, while BLX-register targets and other indirect/computed transfers remain unresolved.",
             "The IRQ vector-to-entry-to-dispatch chain and selected slot-4 registration conditionally connect status bit 0x200 to descriptor delivery, but do not prove registration persistence, live table contents, callback execution, or overall provenance.",
-            "The third argument-rooted helper at 0x1610 has no supported direct-immediate target candidate and remains conditional on its incoming C-root premise.",
+            "The third argument-rooted helper at 0x1610 has no supported direct-immediate external target into its pinned body; its 0x1628 and 0x1664 loads remain conditional on the incoming r1 == 0xd3a00 premise.",
             "Selected scalar access lists exclude unpinned aliases and are not whole-image access inventories; the three pinned bulk clear paths are listed separately.",
             "Reported branch targets are decoded from pinned call instructions; target bodies are not thereby claimed as pinned.",
             "The generic clear and copy helpers operate on the exact argument ranges shown by their pinned wrappers and bodies.",
