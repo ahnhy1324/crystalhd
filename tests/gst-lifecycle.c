@@ -37,6 +37,7 @@ typedef struct {
   guint64 timestamp;
   guint8 pixel;
   guint flags;
+  guint32 pulldown;
   guint32 picture_number;
   guint width;
   guint height;
@@ -351,6 +352,7 @@ BC_STATUS DtsProcOutputNoCopy(HANDLE device, uint32_t timeout,
   output->PicInfo.timeStamp = picture->timestamp;
   output->PicInfo.picture_number = picture->picture_number;
   output->PicInfo.flags = picture->flags;
+  output->PicInfo.pulldown = picture->pulldown;
   output->Ybuff = mock.pixels;
   output->YBuffDoneSz = sizeof(mock.pixels) / 4;
   g_free(picture);
@@ -409,7 +411,7 @@ BC_STATUS DtsIsEndOfStream(HANDLE device, uint8_t *eos)
 }
 
 static GstHarness *
-new_decoder(void)
+new_decoder_with_caps(const gchar *caps)
 {
   GstElement *element;
   GstHarness *harness;
@@ -426,11 +428,25 @@ new_decoder(void)
   element = g_object_new(GST_TYPE_CRYSTALHD_DEC, NULL);
   harness = gst_harness_new_with_element(element, "sink", "src");
   gst_object_unref(element); /* the harness takes its own reference */
-  gst_harness_set_src_caps_str(harness,
-      "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
-      "width=16,height=16,framerate=25/1");
+  gst_harness_set_src_caps_str(harness, caps);
   iteration_decoder = GST_CRYSTALHD_DEC(harness->element);
   return harness;
+}
+
+static GstHarness *
+new_decoder(void)
+{
+  return new_decoder_with_caps(
+      "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+      "width=16,height=16,framerate=25/1");
+}
+
+static GstHarness *
+new_mpeg2_decoder(void)
+{
+  return new_decoder_with_caps(
+      "video/mpeg,mpegversion=2,systemstream=false,parsed=true,"
+      "width=16,height=16,framerate=24000/1001");
 }
 
 /* Most regressions deliberately schedule the real worker iteration themselves,
@@ -1591,9 +1607,14 @@ test_field_pair_policy(void)
 static void
 test_field_presentation_order(void)
 {
+  static const guint32 measured_pulldown[] = {
+    vdecTopBottom, vdecBottomTop,
+    vdecTopBottomTop, vdecBottomTopBottom,
+  };
   guint capture_bottom;
   for (capture_bottom = 0; capture_bottom < 2; ++capture_bottom) {
     GstHarness *harness = new_decoder();
+    GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
     guint phase;
     mock.auto_output = FALSE;
     for (phase = 0; phase < 3; ++phase) {
@@ -1615,6 +1636,13 @@ test_field_presentation_order(void)
       gst_video_codec_frame_unref(frame);
       queue_field(mock.accepted[phase], capture_bottom ? 0x22 : 0x11, capture_bottom);
       queue_field(mock.accepted[phase], capture_bottom ? 0x11 : 0x22, !capture_bottom);
+      /* Pulldown metadata is meaningful here only as part of the existing
+       * separate-field path. Even recognized progressive values must not
+       * synthesize RFF or override field-pair presentation order. */
+      ((MockPicture *)g_queue_peek_head(&mock.pictures))->pulldown =
+          measured_pulldown[(phase * 2) % G_N_ELEMENTS(measured_pulldown)];
+      ((MockPicture *)g_queue_peek_tail(&mock.pictures))->pulldown =
+          measured_pulldown[(phase * 2 + 1) % G_N_ELEMENTS(measured_pulldown)];
       if (present_bottom) {
         ((MockPicture *)g_queue_peek_head(&mock.pictures))->flags |= VDEC_FLAG_BOTTOM_FIRST;
         ((MockPicture *)g_queue_peek_tail(&mock.pictures))->flags |= VDEC_FLAG_BOTTOM_FIRST;
@@ -1631,6 +1659,7 @@ test_field_presentation_order(void)
                       ==, !present_bottom);
       g_assert_false(GST_BUFFER_FLAG_IS_SET(output, GST_VIDEO_BUFFER_FLAG_ONEFIELD));
       g_assert_false(GST_BUFFER_FLAG_IS_SET(output, GST_VIDEO_BUFFER_FLAG_RFF));
+      g_assert_false(self->progressive_field_sequence);
       g_assert_cmpuint(gst_buffer_extract(output, 0, pixels, sizeof(pixels)),
                        ==, sizeof(pixels));
       for (byte = 0; byte < sizeof(pixels); ++byte)
@@ -1704,6 +1733,312 @@ test_output_interlace_mode_changes(void)
     gst_caps_unref(caps);
   }
   GST_VIDEO_DECODER_STREAM_UNLOCK(self);
+  gst_harness_teardown(harness);
+}
+
+static void
+queue_pulldown_picture(guint64 timestamp, guint8 pixel, guint32 pulldown)
+{
+  MockPicture *picture;
+  queue_picture(timestamp, pixel);
+  picture = g_queue_peek_tail(&mock.pictures);
+  picture->pulldown = pulldown;
+}
+
+static void
+seed_stale_video_flags(GstVideoDecoder *decoder, guint32 frame_number)
+{
+  GstVideoCodecFrame *frame = gst_video_decoder_get_frame(decoder, frame_number);
+  g_assert_nonnull(frame);
+  g_assert_null(frame->output_buffer);
+  frame->output_buffer = gst_buffer_new_allocate(NULL, sizeof(mock.pixels), NULL);
+  g_assert_nonnull(frame->output_buffer);
+  GST_BUFFER_FLAG_SET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_INTERLACED);
+  GST_BUFFER_FLAG_SET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_TFF);
+  GST_BUFFER_FLAG_SET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_ONEFIELD);
+  GST_BUFFER_FLAG_SET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_RFF);
+  gst_video_codec_frame_unref(frame);
+}
+
+static void
+assert_output_interlace_mode(GstCrystalHdDec *self,
+                             GstVideoInterlaceMode expected)
+{
+  GstCaps *caps = gst_pad_get_current_caps(GST_VIDEO_DECODER_SRC_PAD(self));
+  GstVideoInfo info;
+  g_assert_nonnull(caps);
+  g_assert_true(gst_video_info_from_caps(&info, caps));
+  g_assert_cmpint(GST_VIDEO_INFO_INTERLACE_MODE(&info), ==, expected);
+  g_assert_cmpint(GST_VIDEO_INFO_INTERLACE_MODE(&self->output_info), ==,
+                  expected);
+  gst_caps_unref(caps);
+}
+
+static void
+assert_progressive_flags(GstBuffer *buffer, gboolean top_first,
+                         gboolean repeat_first)
+{
+  g_assert_false(GST_BUFFER_FLAG_IS_SET(buffer,
+                                        GST_VIDEO_BUFFER_FLAG_INTERLACED));
+  g_assert_cmpint(GST_BUFFER_FLAG_IS_SET(buffer, GST_VIDEO_BUFFER_FLAG_TFF),
+                  ==, top_first);
+  g_assert_false(GST_BUFFER_FLAG_IS_SET(buffer,
+                                        GST_VIDEO_BUFFER_FLAG_ONEFIELD));
+  g_assert_cmpint(GST_BUFFER_FLAG_IS_SET(buffer, GST_VIDEO_BUFFER_FLAG_RFF),
+                  ==, repeat_first);
+}
+
+typedef struct {
+  guint buffers;
+  guint flagged_buffers;
+  guint buffers_before_mixed_caps;
+  gboolean saw_progressive_caps;
+  gboolean saw_mixed_caps;
+  gboolean first_flagged_buffer_after_mixed_caps;
+} ProgressiveOutputOrder;
+
+static GstPadProbeReturn
+record_progressive_output_order(GstPad *pad, GstPadProbeInfo *info,
+                                gpointer user_data)
+{
+  ProgressiveOutputOrder *order = user_data;
+  (void)pad;
+
+  if ((GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM) !=
+      0) {
+    GstEvent *event = GST_PAD_PROBE_INFO_EVENT(info);
+    if (GST_EVENT_TYPE(event) == GST_EVENT_CAPS) {
+      GstCaps *caps;
+      GstVideoInfo video_info;
+      gst_event_parse_caps(event, &caps);
+      if (gst_video_info_from_caps(&video_info, caps)) {
+        GstVideoInterlaceMode mode =
+            GST_VIDEO_INFO_INTERLACE_MODE(&video_info);
+        if (mode == GST_VIDEO_INTERLACE_MODE_PROGRESSIVE)
+          order->saw_progressive_caps = TRUE;
+        if (mode == GST_VIDEO_INTERLACE_MODE_MIXED) {
+          order->saw_mixed_caps = TRUE;
+          order->buffers_before_mixed_caps = order->buffers;
+        }
+      }
+    }
+  } else if ((GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER) != 0) {
+    GstBuffer *buffer = GST_PAD_PROBE_INFO_BUFFER(info);
+    gboolean flagged =
+        GST_BUFFER_FLAG_IS_SET(buffer, GST_VIDEO_BUFFER_FLAG_TFF) ||
+        GST_BUFFER_FLAG_IS_SET(buffer, GST_VIDEO_BUFFER_FLAG_RFF);
+    if (flagged && order->flagged_buffers++ == 0)
+      order->first_flagged_buffer_after_mixed_caps = order->saw_mixed_caps;
+    order->buffers++;
+  }
+  return GST_PAD_PROBE_OK;
+}
+
+static void
+test_progressive_soft_rff_cadence(void)
+{
+  static const struct {
+    guint32 pulldown;
+    gboolean top_first;
+    gboolean repeat_first;
+  } cadence[] = {
+    { vdecTopBottomTop, TRUE, TRUE },
+    { vdecBottomTop, FALSE, FALSE },
+    { vdecBottomTopBottom, FALSE, TRUE },
+    { vdecTopBottom, TRUE, FALSE },
+  };
+  /* The fake-library boundary supplies the exact progressive MPEG-2
+   * PicInfo cadence measured on BCM70015; compressed parsing is not under
+   * test here. */
+  GstHarness *harness = new_mpeg2_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  ProgressiveOutputOrder order = { 0 };
+  gulong output_probe;
+  guint phase;
+
+  output_probe = gst_pad_add_probe(
+      GST_VIDEO_DECODER_SRC_PAD(self),
+      GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM | GST_PAD_PROBE_TYPE_BUFFER,
+      record_progressive_output_order, &order, NULL);
+  g_assert_cmpuint(output_probe, !=, 0);
+  mock.auto_output = FALSE;
+
+  /* Establish ordinary progressive output first. The first measured soft-RFF
+   * picture must then publish MIXED caps before its flagged buffer. */
+  {
+    GstBuffer *output;
+    guint64 timestamp;
+    g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+    timestamp = mock.accepted[mock.accepted_count - 1];
+    seed_stale_video_flags(GST_VIDEO_DECODER(self), 0);
+    queue_pulldown_picture(timestamp, 1, vdecNoPulldownInfo);
+    g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_OK);
+    output = gst_harness_try_pull(harness);
+    g_assert_nonnull(output);
+    g_assert_cmpuint(GST_BUFFER_PTS(output), ==, 0);
+    g_assert_cmpuint(GST_BUFFER_DURATION(output), ==, 40 * GST_MSECOND);
+    assert_progressive_flags(output, FALSE, FALSE);
+    g_assert_false(self->progressive_field_sequence);
+    assert_output_interlace_mode(self, GST_VIDEO_INTERLACE_MODE_PROGRESSIVE);
+    g_assert_true(order.saw_progressive_caps);
+    g_assert_false(order.saw_mixed_caps);
+    g_assert_cmpuint(order.buffers, ==, 1);
+    g_assert_cmpuint(order.flagged_buffers, ==, 0);
+    gst_buffer_unref(output);
+  }
+
+  for (phase = 0; phase < G_N_ELEMENTS(cadence); ++phase) {
+    GstClockTime pts = (phase + 1) * 40 * GST_MSECOND;
+    GstBuffer *output;
+    guint64 timestamp;
+
+    g_assert_cmpint(gst_harness_push(harness, new_input(pts)), ==, GST_FLOW_OK);
+    timestamp = mock.accepted[mock.accepted_count - 1];
+    seed_stale_video_flags(GST_VIDEO_DECODER(self), phase + 1);
+    queue_pulldown_picture(timestamp, phase + 2, cadence[phase].pulldown);
+    g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_OK);
+    output = gst_harness_try_pull(harness);
+    g_assert_nonnull(output);
+    g_assert_cmpuint(GST_BUFFER_PTS(output), ==, pts);
+    g_assert_cmpuint(GST_BUFFER_DURATION(output), ==, 40 * GST_MSECOND);
+    assert_progressive_flags(output, cadence[phase].top_first,
+                             cadence[phase].repeat_first);
+    g_assert_true(self->progressive_field_sequence);
+    assert_output_interlace_mode(self, GST_VIDEO_INTERLACE_MODE_MIXED);
+    if (phase == 0) {
+      g_assert_true(order.saw_mixed_caps);
+      g_assert_cmpuint(order.buffers_before_mixed_caps, ==, 1);
+      g_assert_cmpuint(order.flagged_buffers, ==, 1);
+      g_assert_true(order.first_flagged_buffer_after_mixed_caps);
+    }
+    gst_buffer_unref(output);
+  }
+
+  /* Missing metadata after the measured 5,4,6,3 cadence has no per-buffer
+   * flags, while the negotiated MIXED mode remains stable for the session. */
+  {
+    GstBuffer *output;
+    guint64 timestamp;
+    g_assert_cmpint(gst_harness_push(harness, new_input(200 * GST_MSECOND)),
+                    ==, GST_FLOW_OK);
+    timestamp = mock.accepted[mock.accepted_count - 1];
+    seed_stale_video_flags(GST_VIDEO_DECODER(self), 5);
+    queue_pulldown_picture(timestamp, 6, vdecNoPulldownInfo);
+    g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_OK);
+    output = gst_harness_try_pull(harness);
+    g_assert_nonnull(output);
+    g_assert_cmpuint(GST_BUFFER_PTS(output), ==, 200 * GST_MSECOND);
+    g_assert_cmpuint(GST_BUFFER_DURATION(output), ==, 40 * GST_MSECOND);
+    assert_progressive_flags(output, FALSE, FALSE);
+    g_assert_true(self->progressive_field_sequence);
+    assert_output_interlace_mode(self, GST_VIDEO_INTERLACE_MODE_MIXED);
+    gst_buffer_unref(output);
+  }
+
+  /* A flushing seek starts a new field-sequence observation period. */
+  flush_decoder(harness);
+  g_assert_false(self->progressive_field_sequence);
+  {
+    GstBuffer *output;
+    GstSegment segment;
+    guint64 timestamp;
+    gst_segment_init(&segment, GST_FORMAT_TIME);
+    segment.start = GST_SECOND;
+    segment.position = GST_SECOND;
+    g_assert_true(gst_harness_push_event(harness,
+                                         gst_event_new_segment(&segment)));
+    g_assert_cmpint(gst_harness_push(harness, new_input(GST_SECOND)), ==,
+                    GST_FLOW_OK);
+    timestamp = mock.accepted[mock.accepted_count - 1];
+    queue_pulldown_picture(timestamp, 7, vdecNoPulldownInfo);
+    g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_OK);
+    output = gst_harness_try_pull(harness);
+    g_assert_nonnull(output);
+    g_assert_cmpuint(GST_BUFFER_PTS(output), ==, GST_SECOND);
+    g_assert_cmpuint(GST_BUFFER_DURATION(output), ==, 40 * GST_MSECOND);
+    assert_progressive_flags(output, FALSE, FALSE);
+    g_assert_false(self->progressive_field_sequence);
+    assert_output_interlace_mode(self, GST_VIDEO_INTERLACE_MODE_PROGRESSIVE);
+    gst_buffer_unref(output);
+  }
+  gst_pad_remove_probe(GST_VIDEO_DECODER_SRC_PAD(self), output_probe);
+  gst_harness_teardown(harness);
+}
+
+static void
+test_progressive_pulldown_unsupported(void)
+{
+  static const guint32 unsupported[] = {
+    vdecNoPulldownInfo, vdecTop, vdecBottom, vdecFrame_X2,
+    vdecFrame_X3, vdecFrame_X1, vdecFrame_X4, 11,
+  };
+  GstHarness *harness = new_mpeg2_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  guint phase;
+
+  mock.auto_output = FALSE;
+  for (phase = 0; phase < G_N_ELEMENTS(unsupported); ++phase) {
+    GstBuffer *output;
+    guint64 timestamp;
+    GstClockTime pts = phase * 40 * GST_MSECOND;
+    g_assert_cmpint(gst_harness_push(harness, new_input(pts)), ==, GST_FLOW_OK);
+    timestamp = mock.accepted[mock.accepted_count - 1];
+    seed_stale_video_flags(GST_VIDEO_DECODER(self), phase);
+    queue_pulldown_picture(timestamp, phase + 1, unsupported[phase]);
+    g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_OK);
+    output = gst_harness_try_pull(harness);
+    g_assert_nonnull(output);
+    g_assert_cmpuint(GST_BUFFER_PTS(output), ==, pts);
+    g_assert_cmpuint(GST_BUFFER_DURATION(output), ==, 40 * GST_MSECOND);
+    assert_progressive_flags(output, FALSE, FALSE);
+    g_assert_false(self->progressive_field_sequence);
+    assert_output_interlace_mode(self, GST_VIDEO_INTERLACE_MODE_PROGRESSIVE);
+    gst_buffer_unref(output);
+  }
+  gst_harness_teardown(harness);
+}
+
+static void
+test_progressive_pulldown_format_reopen(void)
+{
+  GstHarness *harness = new_mpeg2_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  GstBuffer *output;
+  guint64 timestamp;
+  guint opens;
+
+  mock.auto_output = FALSE;
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  timestamp = mock.accepted[mock.accepted_count - 1];
+  queue_pulldown_picture(timestamp, 1, vdecTopBottomTop);
+  g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_OK);
+  output = gst_harness_try_pull(harness);
+  g_assert_nonnull(output);
+  assert_progressive_flags(output, TRUE, TRUE);
+  gst_buffer_unref(output);
+  g_assert_true(self->progressive_field_sequence);
+  assert_output_interlace_mode(self, GST_VIDEO_INTERLACE_MODE_MIXED);
+
+  /* A natural caps change closes the old device session and must not carry
+   * its observed pulldown mode into the new H.264 session. */
+  opens = mock.successful_opens;
+  g_assert_true(change_h264_caps(harness));
+  g_assert_cmpuint(mock.successful_opens, ==, opens + 1);
+  g_assert_false(self->progressive_field_sequence);
+  g_assert_false(self->output_configured);
+
+  g_assert_cmpint(gst_harness_push(harness, new_input(40 * GST_MSECOND)), ==,
+                  GST_FLOW_OK);
+  timestamp = mock.accepted[mock.accepted_count - 1];
+  queue_pulldown_picture(timestamp, 2, vdecNoPulldownInfo);
+  g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_OK);
+  output = gst_harness_try_pull(harness);
+  g_assert_nonnull(output);
+  g_assert_cmpuint(GST_BUFFER_PTS(output), ==, 40 * GST_MSECOND);
+  assert_progressive_flags(output, FALSE, FALSE);
+  g_assert_false(self->progressive_field_sequence);
+  assert_output_interlace_mode(self, GST_VIDEO_INTERLACE_MODE_PROGRESSIVE);
+  gst_buffer_unref(output);
   gst_harness_teardown(harness);
 }
 
@@ -2232,6 +2567,12 @@ main(int argc, char **argv)
   g_test_add_func("/crystalhd/lifecycle/field-pair-policy", test_field_pair_policy);
   g_test_add_func("/crystalhd/lifecycle/field-presentation-order", test_field_presentation_order);
   g_test_add_func("/crystalhd/lifecycle/output-interlace-mode-changes", test_output_interlace_mode_changes);
+  g_test_add_func("/crystalhd/lifecycle/progressive-soft-rff-cadence",
+                  test_progressive_soft_rff_cadence);
+  g_test_add_func("/crystalhd/lifecycle/progressive-pulldown-unsupported",
+                  test_progressive_pulldown_unsupported);
+  g_test_add_func("/crystalhd/lifecycle/progressive-pulldown-format-reopen",
+                  test_progressive_pulldown_format_reopen);
   g_test_add_func("/crystalhd/lifecycle/interlaced-picture-types", test_interlaced_picture_types);
   g_test_add_func("/crystalhd/lifecycle/input-admission", test_input_admission);
   g_test_add_func("/crystalhd/lifecycle/mpeg4-simple-missing-timestamp",
