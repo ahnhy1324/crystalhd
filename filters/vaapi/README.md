@@ -115,12 +115,17 @@ already active, low-delay decode plus NV12 download reached about 83 fps at
 host. The observed 60 fps boundary lay between 1536x864 and 1568x882. Input
 rates from 5 to 20 Mbit/s did not materially change the 720p result.
 
-Unmodified Moonlight produced CrystalHD output at about 59 fps for 720p60 and
-30 fps for 1080p30, but its indirect presentation path rendered only about 34
-and 15 fps respectively. A 1080p60 stream accumulated a multi-second decoder
-backlog. These are capacity and bottleneck measurements, not 50/60 fps support
-certification: the backend still signals 30 fps and visible presentation has
-not met those rates. Methods, resource use and measurement boundaries are in
+In three matched unmodified-Moonlight 720p60 runs per mode, software submitted
+41.06–41.43 frames/s, CrystalHD live-only submitted 18.94–19.15, and
+live+prefeed submitted 32.05–35.49. A separate paired steady trace measured
+about 60.02 and 60.00 CrystalHD outputs/s respectively while prefeed reduced
+real access-unit-to-matching-output p50/p95 from 36.05/45.12 ms to
+21.25/25.13 ms. Render rate is submission rate, not physical scanout, and
+Moonlight's component sum is not measured input-to-photon latency. An earlier
+1080p60 run accumulated a multi-second decoder backlog. These are bounded
+capacity and bottleneck measurements, not a 50/60 fps support claim; render
+submissions have not met those rates, and physical scanout was not measured.
+Methods, resource use and measurement boundaries are in
 the [hardware report](../../HARDWARE-2026-09-13.md#va-api-decode-and-game-stream-baseline-2026-10-10).
 
 Destroying a decoder context stops new submissions and drains accepted live
