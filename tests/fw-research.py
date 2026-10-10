@@ -5301,6 +5301,13 @@ class FirmwareChannelFieldTests(unittest.TestCase):
                          (3, 200, 28, 20810, False))
         self.assertEqual((validation["caller_scan_region_count"],
                           validation["caller_scan_bytes"]), (2, 724))
+        self.assertEqual(validation["whole_arm_direct_b_bl_scan"], {
+            "role": "arm_bootstrap_before_embedded_arc_images",
+            "blob_file_offset": 0,
+            "size": 0x2ea60,
+            "sha256": "f109a8e616b7c744770631c76cdb910db5295f54d7e78c80abed6bffbbf95679",
+            "charged_to_selected_region_budget": False,
+        })
         self.assertEqual(validation["rx_descriptor_admission"], self.admission["validation"])
         self.assertEqual([region["role"] for region in validation["regions"]], [
             "init_context", "channel_api_lifecycle", "host_start_root_literal",
@@ -5463,6 +5470,30 @@ class FirmwareChannelFieldTests(unittest.TestCase):
                      "indirect_or_computed_callers_excluded"):
             self.assertFalse(scan[name])
 
+        whole = provenance["whole_arm_direct_b_bl_scan"]
+        self.assertEqual(whole["region"], {
+            "role": "arm_bootstrap_before_embedded_arc_images",
+            "blob_file_offset": 0,
+            "size": 0x2ea60,
+            "sha256": "f109a8e616b7c744770631c76cdb910db5295f54d7e78c80abed6bffbbf95679",
+        })
+        self.assertEqual((whole["isa_encoding"], whole["alignment_bytes"]),
+                         ("A32 conditional-space B/BL immediate bit patterns", 4))
+        self.assertEqual(whole["tracked_helper_entries"], [0x12e4, 0x15d8, 0x1610])
+        self.assertEqual([(record["blob_file_offset"], record["operation"],
+                           record["condition"], record["target_blob_file_offset"])
+                          for record in whole["target_candidates"]], [
+            (0x4b00, "BL", 14, 0x15d8),
+            (0x4dec, "BL", 14, 0x12e4),
+        ])
+        self.assertEqual(whole["target_candidate_counts"], {
+            "0x12e4": 1, "0x15d8": 1, "0x1610": 0})
+        self.assertTrue(whole["complete_for_hash_pinned_region_encoding_candidates"])
+        self.assertTrue(whole["all_target_candidates_classified"])
+        for name in ("a32_blx_immediate_scanned", "thumb_direct_transfers_scanned",
+                     "indirect_or_computed_callers_excluded"):
+            self.assertFalse(whole[name])
+
         paths = {path["helper_function_entry"]: path
                  for path in provenance["selected_fixed_root_paths"]}
         self.assertEqual(set(paths), {0x12e4, 0x15d8})
@@ -5488,10 +5519,50 @@ class FirmwareChannelFieldTests(unittest.TestCase):
             self.assertEqual(path["root_value"], 0xd3a00)
             self.assertTrue(path["fixed_root_on_this_selected_path"])
             self.assertFalse(path["runtime_path_observed"])
+            self.assertTrue(path["all_direct_b_bl_target_candidates_classified"])
             self.assertFalse(path["all_direct_callers_established"])
             self.assertFalse(path["indirect_or_computed_callers_excluded"])
         self.assertTrue(any("0x1610" in limitation and "does not exclude" in limitation
                             for limitation in provenance["limitations"]))
+
+    def test_target_filtered_a32_scan_decodes_b_bl_and_excludes_blx_space(self):
+        payload = bytearray(64)
+
+        def branch(site, target, link, condition):
+            displacement = (target - site - 8) // 4
+            return ((condition << 28) | 0x0a000000 | (int(link) << 24) |
+                    (displacement & 0xffffff))
+
+        struct.pack_into("<I", payload, 0x00, branch(0x00, 0x20, False, 0))
+        struct.pack_into("<I", payload, 0x04, branch(0x04, 0x24, True, 14))
+        # cond=0xf occupies the BLX/unconditional space. Its immediate would
+        # reach 0x30 under the ordinary B/BL formula, so it is a useful guard.
+        struct.pack_into("<I", payload, 0x08, 0xfb000008)
+        struct.pack_into("<I", payload, 0x20, branch(0x20, 0x00, False, 1))
+        records = MAP._a32_target_branches_in_region(
+            payload, ("synthetic", 0, len(payload)), (0x00, 0x20, 0x24, 0x30))
+        self.assertEqual([(record["blob_file_offset"], record["operation"],
+                           record["condition"], record["target_blob_file_offset"])
+                          for record in records], [
+            (0x00, "B", 0, 0x20),
+            (0x04, "BL", 14, 0x24),
+            (0x20, "B", 1, 0x00),
+        ])
+        for word, target in ((0x0a7fffff, 0x2000004),
+                             (0x0a800000, -0x1fffff8)):
+            extreme = struct.pack("<I", word)
+            with self.subTest(word=hex(word)):
+                self.assertEqual(
+                    MAP._a32_target_branches_in_region(
+                        extreme, ("synthetic", 0, 4), (target,))[0]
+                    ["target_blob_file_offset"], target)
+        for region in (("synthetic", 2, 4), ("synthetic", 0, 2)):
+            with self.subTest(region=region), \
+                    self.assertRaisesRegex(MAP.FormatError, "not aligned"):
+                MAP._a32_target_branches_in_region(payload, region, (0x20,))
+        with self.assertRaises(MAP.FormatError):
+            MAP._a32_target_branches_in_region(
+                payload, ("synthetic", 0, len(payload) + 4), (0x20,))
 
     def test_cached_metadata_projection_flags_and_descriptor_are_bounded(self):
         fields = self.report["fields"]
@@ -5575,6 +5646,8 @@ class FirmwareChannelFieldTests(unittest.TestCase):
         self.assertFalse(scope["all_reported_branch_targets_inside_pinned_regions"])
         self.assertTrue(scope["fixed_root_derived_aliases_are_pinned"])
         self.assertTrue(scope["selected_fixed_root_caller_paths_are_pinned"])
+        self.assertTrue(scope["whole_arm_direct_b_bl_encoding_scan"])
+        self.assertTrue(scope["direct_b_bl_target_candidates_complete"])
         self.assertFalse(scope["direct_caller_inventory_complete"])
         self.assertFalse(scope["indirect_or_computed_caller_inventory_complete"])
         self.assertFalse(scope["all_listed_accesses_have_fixed_root_provenance"])
@@ -5604,6 +5677,11 @@ class FirmwareChannelFieldTests(unittest.TestCase):
                           for entry in conditional], [True, True, False])
         self.assertTrue(all(not entry["all_caller_provenance_pinned"]
                             for entry in conditional))
+        self.assertTrue(all(entry["all_direct_b_bl_target_candidates_classified"]
+                            for entry in conditional))
+        self.assertEqual([[site["blob_file_offset"]
+                           for site in entry["whole_arm_direct_b_bl_target_candidates"]]
+                          for entry in conditional], [[0x4dec], [0x4b00], []])
         self.assertEqual([len(entry["selected_fixed_root_call_paths"])
                           for entry in conditional], [1, 1, 0])
         self.assertEqual([[site["blob_file_offset"] for site in entry["derivation_sites"]]
@@ -5619,6 +5697,8 @@ class FirmwareChannelFieldTests(unittest.TestCase):
         ranges += [(region["blob_file_offset"], region["size"])
                    for region in self.report["validation"]
                    ["rx_descriptor_admission"]["regions"]]
+        whole = self.report["validation"]["whole_arm_direct_b_bl_scan"]
+        ranges.append((whole["blob_file_offset"], whole["size"]))
         reported = []
 
         def collect(value):
@@ -5657,8 +5737,26 @@ class FirmwareChannelFieldTests(unittest.TestCase):
                                           side_effect=AssertionError("branch decoded before pin gate")), \
                         mock.patch.object(MAP, "_a32_branch_candidates_in_regions",
                                           side_effect=AssertionError("caller scan before pin gate")), \
+                        mock.patch.object(MAP, "_a32_target_branches_in_region",
+                                          side_effect=AssertionError("whole scan before pin gate")), \
                         self.assertRaises(MAP.FormatError):
                     MAP._channel_field_map(changed)
+
+    def test_whole_arm_scan_hash_gate_rejects_before_decode_or_dependencies(self):
+        for offset in (0, 0x20000, 0x2ea5f):
+            changed = bytearray(self.payload)
+            changed[offset] ^= 1
+            with self.subTest(offset=hex(offset)), \
+                    mock.patch.object(MAP, "_rx_descriptor_admission_map",
+                                      side_effect=AssertionError("dependency ran before scan pin")), \
+                    mock.patch.object(MAP, "_bootstrap_word",
+                                      side_effect=AssertionError("decoded before scan pin")), \
+                    mock.patch.object(MAP, "_a32_branch_candidates_in_regions",
+                                      side_effect=AssertionError("caller scan before scan pin")), \
+                    mock.patch.object(MAP, "_a32_target_branches_in_region",
+                                      side_effect=AssertionError("whole scan before scan pin")), \
+                    self.assertRaisesRegex(MAP.FormatError, "whole-ARM scan region"):
+                MAP._channel_field_map(changed)
 
     def test_bounds_and_budget_refusals(self):
         for payload in (b"", self.payload[:-1], self.payload + b"\0"):
@@ -5681,6 +5779,9 @@ class FirmwareChannelFieldTests(unittest.TestCase):
             MAP._channel_field_map(self.payload)
         with mock.patch.object(MAP, "MAX_CHANNEL_FIELD_CALLER_SCAN_BYTES", 723), \
                 self.assertRaisesRegex(MAP.FormatError, "caller scan budget"):
+            MAP._channel_field_map(self.payload)
+        with mock.patch.object(MAP, "MAX_CHANNEL_FIELD_WHOLE_ARM_BYTES", 0x2ea5f), \
+                self.assertRaisesRegex(MAP.FormatError, "whole-ARM scan budget"):
             MAP._channel_field_map(self.payload)
 
     def test_opt_in_is_offline_additive_and_exact_baseline_gated(self):

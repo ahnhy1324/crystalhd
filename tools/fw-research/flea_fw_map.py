@@ -893,6 +893,11 @@ MAX_CHANNEL_FIELD_AGGREGATE_REGIONS = 32
 MAX_CHANNEL_FIELD_AGGREGATE_BYTES = 24 * 1024
 MAX_CHANNEL_FIELD_CALLER_SCAN_REGIONS = 2
 MAX_CHANNEL_FIELD_CALLER_SCAN_BYTES = 1024
+_CHANNEL_FIELD_WHOLE_ARM_REGION = (
+    "arm_bootstrap_before_embedded_arc_images", 0, 0x2ea60,
+    "f109a8e616b7c744770631c76cdb910db5295f54d7e78c80abed6bffbbf95679",
+)
+MAX_CHANNEL_FIELD_WHOLE_ARM_BYTES = 192 * 1024
 _MFD_SOURCE_REGIONS = (
     ("source_address", 0x1918,
      "f0402de914d04de20070a0e10140a0e1f8219fe55c10d4e5810081e00031b2e7050092e90c008de510208de508308de5"
@@ -3811,6 +3816,36 @@ def _a32_branch_candidates_in_regions(payload, regions):
     return candidates
 
 
+def _a32_target_branches_in_region(payload, region, targets):
+    """Find target-filtered A32 B/BL encodings in one separately hash-pinned region."""
+    role, start, size = region
+    if start % 4 or size <= 0 or size % 4:
+        raise FormatError("channel-field whole-ARM scan region is not aligned")
+    data = bounded(payload, start, size, "channel-field whole-ARM scan region")
+    targets = frozenset(targets)
+    candidates = []
+    for relative in range(0, size, 4):
+        word = struct.unpack_from("<I", data, relative)[0]
+        condition = word >> 28
+        # cond=0xf uses the unconditional/BLX space. This inventory is
+        # deliberately limited to ordinary A32 B/BL immediate encodings.
+        if condition == 15 or word & 0x0e000000 != 0x0a000000:
+            continue
+        displacement = word & 0xffffff
+        if displacement & 0x800000:
+            displacement -= 1 << 24
+        offset = start + relative
+        target = offset + 8 + displacement * 4
+        if target not in targets:
+            continue
+        candidates.append({
+            "region_role": role, "blob_file_offset": offset, "word": word,
+            "operation": "BL" if word & 0x01000000 else "B",
+            "condition": condition, "target_blob_file_offset": target,
+        })
+    return candidates
+
+
 def _a32_literal(payload, offset):
     """Decode AL LDR word [PC, +/-imm12], with no writeback or register offset."""
     word = _bootstrap_word(payload, offset)
@@ -5555,7 +5590,7 @@ def _rx_descriptor_admission_map(payload):
 
 
 def _channel_field_map(payload):
-    """Pinned stock A32 channel-field sites, not whole-image alias recovery."""
+    """Pinned stock A32 sites plus direct-target scan, not whole-image alias recovery."""
     if len(payload) != BUNDLED_SIZE - TRAILER_SIZE:
         raise FormatError("channel-field payload size does not match the bundled baseline")
     regions = _CHANNEL_FIELD_REGIONS
@@ -5565,6 +5600,8 @@ def _channel_field_map(payload):
     caller_scan_roles = ("helper_15d8_direct_caller", "helper_12e4_direct_caller")
     caller_scan_regions = tuple((role, offset, size) for role, offset, size, _ in regions
                                 if role in caller_scan_roles)
+    whole_arm_role, whole_arm_start, whole_arm_size, whole_arm_sha256 = \
+        _CHANNEL_FIELD_WHOLE_ARM_REGION
     if tuple(role for role, _, _ in caller_scan_regions) != caller_scan_roles:
         raise FormatError("channel-field caller scan regions do not match the baseline")
     if len(regions) > MAX_CHANNEL_FIELD_REGIONS or total > MAX_CHANNEL_FIELD_BYTES:
@@ -5582,6 +5619,15 @@ def _channel_field_map(payload):
         validated.append({"role": role, "blob_file_offset": offset,
                           "size": size, "sha256": expected})
 
+    if whole_arm_size > MAX_CHANNEL_FIELD_WHOLE_ARM_BYTES:
+        raise FormatError("channel-field whole-ARM scan budget exceeded")
+    if whole_arm_start % 4 or whole_arm_size <= 0 or whole_arm_size % 4:
+        raise FormatError("channel-field whole-ARM scan region is not aligned")
+    whole_arm = bounded(payload, whole_arm_start, whole_arm_size,
+                        "channel-field whole-ARM scan region")
+    if hashlib.sha256(whole_arm).hexdigest() != whole_arm_sha256:
+        raise FormatError("channel-field whole-ARM scan region does not match the baseline")
+
     admission = _rx_descriptor_admission_map(payload)
     branch_candidates = _a32_branch_candidates_in_regions(payload, caller_scan_regions)
     link_candidates = [record for record in branch_candidates if record["operation"] == "BL"]
@@ -5596,6 +5642,24 @@ def _channel_field_map(payload):
             tuple((record["blob_file_offset"], record["target_blob_file_offset"])
                   for record in link_candidates) != expected_links):
         raise FormatError("channel-field caller branch candidates do not match the baseline")
+
+    tracked_helper_entries = (0x12e4, 0x15d8, 0x1610)
+    whole_arm_target_candidates = _a32_target_branches_in_region(
+        payload, (whole_arm_role, whole_arm_start, whole_arm_size),
+        tracked_helper_entries)
+    expected_whole_arm_targets = (
+        (0x4b00, "BL", 0x15d8),
+        (0x4dec, "BL", 0x12e4),
+    )
+    if tuple((record["blob_file_offset"], record["operation"],
+              record["target_blob_file_offset"])
+             for record in whole_arm_target_candidates) != expected_whole_arm_targets:
+        raise FormatError("channel-field whole-ARM direct targets do not match the baseline")
+    whole_arm_candidates_by_helper = {
+        helper: [record for record in whole_arm_target_candidates
+                 if record["target_blob_file_offset"] == helper]
+        for helper in tracked_helper_entries
+    }
 
     def checked_sites(entries, access, expression):
         result = []
@@ -5733,6 +5797,7 @@ def _channel_field_map(payload):
             "fixed_root_on_this_selected_path": True,
             "callee_saved_register_premise": False,
             "runtime_path_observed": False,
+            "all_direct_b_bl_target_candidates_classified": True,
             "all_direct_callers_established": False,
             "indirect_or_computed_callers_excluded": False,
         },
@@ -5752,6 +5817,7 @@ def _channel_field_map(payload):
             "fixed_root_on_this_selected_path": True,
             "callee_saved_register_premise": True,
             "runtime_path_observed": False,
+            "all_direct_b_bl_target_candidates_classified": True,
             "all_direct_callers_established": False,
             "indirect_or_computed_callers_excluded": False,
         },
@@ -5771,6 +5837,9 @@ def _channel_field_map(payload):
             "selected_fixed_root_caller_provenance_pinned": True,
             "selected_fixed_root_call_paths": [fixed_path_by_helper[0x12e4]],
             "all_caller_provenance_pinned": False,
+            "whole_arm_direct_b_bl_target_candidates":
+                whole_arm_candidates_by_helper[0x12e4],
+            "all_direct_b_bl_target_candidates_classified": True,
             "derivation_sites": checked_anchors((
                 ("helper_12e4_stride_words", 0x12e8, 0xe3a03073,
                  "r3 = 0x73 words"),
@@ -5789,6 +5858,9 @@ def _channel_field_map(payload):
             "selected_fixed_root_caller_provenance_pinned": True,
             "selected_fixed_root_call_paths": [fixed_path_by_helper[0x15d8]],
             "all_caller_provenance_pinned": False,
+            "whole_arm_direct_b_bl_target_candidates":
+                whole_arm_candidates_by_helper[0x15d8],
+            "all_direct_b_bl_target_candidates_classified": True,
             "derivation_sites": checked_anchors((
                 ("helper_15d8_stride_words", 0x15dc, 0xe3a03073,
                  "r3 = 0x73 words"),
@@ -5807,6 +5879,9 @@ def _channel_field_map(payload):
             "selected_fixed_root_caller_provenance_pinned": False,
             "selected_fixed_root_call_paths": [],
             "all_caller_provenance_pinned": False,
+            "whole_arm_direct_b_bl_target_candidates":
+                whole_arm_candidates_by_helper[0x1610],
+            "all_direct_b_bl_target_candidates_classified": True,
             "derivation_sites": checked_anchors((
                 ("helper_1610_stride_words", 0x1618, 0xe3a02073,
                  "r2 = 0x73 words"),
@@ -6087,7 +6162,7 @@ def _channel_field_map(payload):
     }
     tracked_helper_candidates = [
         record for record in link_candidates
-        if record["target_blob_file_offset"] in (0x12e4, 0x15d8, 0x1610)
+        if record["target_blob_file_offset"] in tracked_helper_entries
     ]
     return {
         "schema_version": 1, "kind": "stock-arm-channel-field-inventory",
@@ -6102,6 +6177,13 @@ def _channel_field_map(payload):
                        "aggregate_overlap_deduplicated": False,
                        "caller_scan_region_count": len(caller_scan_regions),
                        "caller_scan_bytes": sum(size for _, _, size in caller_scan_regions),
+                       "whole_arm_direct_b_bl_scan": {
+                           "role": whole_arm_role,
+                           "blob_file_offset": whole_arm_start,
+                           "size": whole_arm_size,
+                           "sha256": whole_arm_sha256,
+                           "charged_to_selected_region_budget": False,
+                       },
                        "rx_descriptor_admission": admission["validation"]},
         "channel": {
             "root": root, "init_root": init_root, "reinitialize_root": reinit_root,
@@ -6148,7 +6230,7 @@ def _channel_field_map(payload):
             },
         },
         "caller_provenance": {
-            "kind": "selected fixed-root paths in two hash-pinned A32 caller bodies",
+            "kind": "selected fixed-root paths plus whole-ARM direct A32 B/BL target inventory",
             "selected_fixed_root_paths": list(selected_fixed_root_paths),
             "branch_candidate_scan": {
                 "isa_encoding": "A32 conditional-space B/BL immediate bit patterns",
@@ -6169,9 +6251,30 @@ def _channel_field_map(payload):
                 "all_direct_callers_established": False,
                 "indirect_or_computed_callers_excluded": False,
             },
+            "whole_arm_direct_b_bl_scan": {
+                "isa_encoding": "A32 conditional-space B/BL immediate bit patterns",
+                "region": {
+                    "role": whole_arm_role,
+                    "blob_file_offset": whole_arm_start,
+                    "size": whole_arm_size,
+                    "sha256": whole_arm_sha256,
+                },
+                "alignment_bytes": 4,
+                "tracked_helper_entries": list(tracked_helper_entries),
+                "target_candidates": whole_arm_target_candidates,
+                "target_candidate_counts": {
+                    f"{helper:#x}": len(whole_arm_candidates_by_helper[helper])
+                    for helper in tracked_helper_entries
+                },
+                "complete_for_hash_pinned_region_encoding_candidates": True,
+                "all_target_candidates_classified": True,
+                "a32_blx_immediate_scanned": False,
+                "thumb_direct_transfers_scanned": False,
+                "indirect_or_computed_callers_excluded": False,
+            },
             "limitations": [
-                "The scan covers only the two named pinned caller bodies; other direct callers are not excluded.",
-                "No direct candidate for 0x1610 in those bodies does not exclude a caller elsewhere or an indirect/computed call.",
+                "The whole-ARM scan classifies aligned ordinary A32 B/BL target encodings only; BLX, Thumb and indirect/computed transfers remain outside its scope.",
+                "No A32 B/BL target candidate for 0x1610 exists in the hash-pinned ARM prefix; that does not exclude a caller through an out-of-scope transfer.",
                 "The 0x12e4 path relies on A32 callee-saved r6 preservation across its possible intervening calls.",
                 "Static selected paths do not establish runtime execution, valid slot range, object identity or lifetime.",
             ],
@@ -6189,6 +6292,8 @@ def _channel_field_map(payload):
             "all_reported_branch_targets_inside_pinned_regions": False,
             "fixed_root_derived_aliases_are_pinned": True,
             "selected_fixed_root_caller_paths_are_pinned": True,
+            "whole_arm_direct_b_bl_encoding_scan": True,
+            "direct_b_bl_target_candidates_complete": True,
             "direct_caller_inventory_complete": False,
             "indirect_or_computed_caller_inventory_complete": False,
             "all_listed_accesses_have_fixed_root_provenance": False,
@@ -6209,8 +6314,9 @@ def _channel_field_map(payload):
         },
         "assumptions": [
             "A32 calls use the pinned calling convention and output pointers remain unaliased for each serialized call.",
-            "Two selected direct caller paths establish the stated C-root premise; other direct or indirect callers remain unclassified.",
-            "The third argument-rooted helper at 0x1610 remains conditional on its incoming C-root premise.",
+            "The whole-ARM target-filtered scan classifies ordinary aligned A32 B/BL encodings, not every possible control-transfer mechanism.",
+            "The two A32 BL target candidates establish the selected fixed-root paths; indirect/computed, A32 BLX and Thumb transfers remain unclassified.",
+            "The third argument-rooted helper at 0x1610 has no A32 B/BL target candidate and remains conditional on its incoming C-root premise.",
             "Selected scalar access lists exclude unpinned aliases and are not whole-image access inventories; the three pinned bulk clear paths are listed separately.",
             "Reported branch targets are decoded from pinned call instructions; target bodies are not thereby claimed as pinned.",
             "The generic clear and copy helpers operate on the exact argument ranges shown by their pinned wrappers and bodies.",
@@ -8870,7 +8976,8 @@ def main(argv=None):
     parser.add_argument("--rx-descriptor-admission", action="store_true", help=(
         "validate fixed Y-RX descriptor publication; bundled firmware only, not DMA completion"))
     parser.add_argument("--channel-fields", action="store_true", help=(
-        "inventory selected fixed A32 channel-field accesses; not whole-image alias recovery"))
+        "inventory selected A32 channel-field accesses and ARM-prefix direct A32 B/BL targets; "
+        "not indirect/computed or whole-image alias recovery"))
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-fA-F]{64}", args.expect_sha256):
         parser.error("--expect-sha256 must be 64 hexadecimal digits")
