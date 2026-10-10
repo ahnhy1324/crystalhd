@@ -17,6 +17,9 @@ typedef struct {
   gboolean invalid_output;
   GstClockTime previous_pts;
   gboolean require_timestamps;
+  gboolean ts_30fps;
+  gboolean have_ts_base_pts;
+  GstClockTime ts_base_pts;
   GChecksum *checksum;
   GChecksum *metadata_checksum;
   gboolean have_last_good;
@@ -26,8 +29,65 @@ typedef struct {
   Phase1Progress progress;
   const GeometryEpoch *epochs;
   guint epoch_count, epoch_index, epoch_frames;
+  GChecksum *epoch_checksums[MAX_EPOCHS];
   gboolean soft_rff;
 } PlaybackAudit;
+
+static gboolean
+sha256_string_valid(const gchar *text)
+{
+  if (text == NULL || strlen(text) != 64)
+    return FALSE;
+  for (guint index = 0; index < 64; ++index) {
+    if (!g_ascii_isxdigit(text[index]))
+      return FALSE;
+  }
+  return TRUE;
+}
+
+static gboolean
+parse_epoch_hashes(const gchar *text, guint epoch_count, gchar ***hashes)
+{
+  gchar **parts = g_strsplit(text, ",", MAX_EPOCHS + 1);
+  const guint length = g_strv_length(parts);
+  gboolean valid = length == epoch_count;
+
+  for (guint index = 0; valid && index < length; ++index) {
+    valid = sha256_string_valid(parts[index]);
+    if (valid) {
+      gchar *lower = g_ascii_strdown(parts[index], -1);
+      g_free(parts[index]);
+      parts[index] = lower;
+    }
+  }
+  if (!valid) {
+    g_strfreev(parts);
+    return FALSE;
+  }
+  *hashes = parts;
+  return TRUE;
+}
+
+static gboolean
+epoch_hashes_match(GChecksum *const *checksums, guint count,
+                   const gchar *const *expected, gboolean report)
+{
+  gboolean match = TRUE;
+
+  if (expected == NULL)
+    return TRUE;
+  for (guint index = 0; index < count; ++index) {
+    const gchar *actual = g_checksum_get_string(checksums[index]);
+
+    if (g_strcmp0(actual, expected[index]) != 0) {
+      if (report)
+        g_printerr("Epoch %u YUY2 SHA-256 mismatch: expected %s, got %s\n",
+                   index, expected[index], actual);
+      match = FALSE;
+    }
+  }
+  return match;
+}
 
 static guint32
 canonical_field_flags(GstBufferFlags flags)
@@ -179,6 +239,31 @@ soft_rff_frame_matches(guint pass, guint frame_index,
            : GST_CLOCK_TIME_IS_VALID(previous_pts) && pts >= previous_pts);
 }
 
+static gboolean
+ts_timestamp_matches(PlaybackAudit *audit, const GstVideoInfo *info,
+                     GstClockTime pts)
+{
+  GstClockTime delta;
+  GstClockTime floor_delta;
+  GstClockTime ceil_delta;
+
+  if (!audit->ts_30fps)
+    return !audit->require_timestamps || GST_CLOCK_TIME_IS_VALID(pts);
+  if (!GST_CLOCK_TIME_IS_VALID(pts) || GST_VIDEO_INFO_FPS_N(info) != 30 ||
+      GST_VIDEO_INFO_FPS_D(info) != 1)
+    return FALSE;
+  if (!audit->have_ts_base_pts) {
+    audit->have_ts_base_pts = TRUE;
+    audit->ts_base_pts = pts;
+  }
+  if (pts < audit->ts_base_pts)
+    return FALSE;
+  delta = pts - audit->ts_base_pts;
+  floor_delta = gst_util_uint64_scale(audit->frames, GST_SECOND, 30);
+  ceil_delta = gst_util_uint64_scale_ceil(audit->frames, GST_SECOND, 30);
+  return delta == floor_delta || delta == ceil_delta;
+}
+
 static void
 observe_geometry(PlaybackAudit *audit, guint width, guint height)
 {
@@ -203,6 +288,27 @@ geometry_complete(const PlaybackAudit *audit)
       audit->epoch_frames == 0;
 }
 
+static gboolean
+record_geometry_frame(PlaybackAudit *audit, guint width, guint height,
+                      const guint8 *plane, gint stride,
+                      gboolean pixels_valid)
+{
+  const guint frame_epoch = audit->epoch_index;
+  const gsize row_bytes = (gsize)width * 2;
+
+  observe_geometry(audit, width, height);
+  if (!pixels_valid || audit->invalid_output)
+    return FALSE;
+  for (guint row = 0; row < height; ++row) {
+    g_checksum_update(audit->checksum, plane + (gsize)row * stride,
+                      row_bytes);
+    if (frame_epoch < audit->epoch_count)
+      g_checksum_update(audit->epoch_checksums[frame_epoch],
+                        plane + (gsize)row * stride, row_bytes);
+  }
+  return TRUE;
+}
+
 static void
 count_frame(GstElement *sink, GstBuffer *buffer, GstPad *pad, gpointer data)
 {
@@ -213,6 +319,7 @@ count_frame(GstElement *sink, GstBuffer *buffer, GstPad *pad, gpointer data)
   GstVideoFrame frame;
   gboolean caps_valid;
   gboolean frame_valid;
+  gboolean timestamp_valid;
 
   (void)sink;
   caps_valid = caps != NULL && gst_video_info_from_caps(&info, caps);
@@ -220,12 +327,14 @@ count_frame(GstElement *sink, GstBuffer *buffer, GstPad *pad, gpointer data)
     checksum_frame_metadata(audit->metadata_checksum, pts,
                             GST_BUFFER_DURATION(buffer), &info,
                             GST_BUFFER_FLAGS(buffer));
+  timestamp_valid = caps_valid && ts_timestamp_matches(audit, &info, pts);
   frame_valid = caps_valid &&
       GST_VIDEO_INFO_FORMAT(&info) == GST_VIDEO_FORMAT_YUY2 &&
       gst_buffer_get_size(buffer) >= info.size &&
-      (!audit->require_timestamps || GST_CLOCK_TIME_IS_VALID(pts)) &&
+      timestamp_valid &&
       (!GST_CLOCK_TIME_IS_VALID(pts) ||
-       !GST_CLOCK_TIME_IS_VALID(audit->previous_pts) || pts >= audit->previous_pts);
+       !GST_CLOCK_TIME_IS_VALID(audit->previous_pts) ||
+       pts >= audit->previous_pts);
   if (frame_valid && audit->soft_rff &&
       !soft_rff_frame_matches(audit->pass, audit->frames, &info,
                               GST_BUFFER_FLAGS(buffer), pts,
@@ -247,7 +356,6 @@ count_frame(GstElement *sink, GstBuffer *buffer, GstPad *pad, gpointer data)
     frame_valid = FALSE;
     audit->invalid_output = TRUE;
   } else {
-    guint row;
     const guint width = GST_VIDEO_INFO_WIDTH(&info);
     const guint height = GST_VIDEO_INFO_HEIGHT(&info);
     const gsize row_bytes = (gsize)width * 2;
@@ -275,14 +383,9 @@ count_frame(GstElement *sink, GstBuffer *buffer, GstPad *pad, gpointer data)
       audit->invalid_output = TRUE;
       frame_valid = FALSE;
     }
-    observe_geometry(audit, width, height);
-    if (audit->invalid_output)
+    if (!record_geometry_frame(audit, width, height, plane, stride,
+                               frame_valid))
       frame_valid = FALSE;
-    if (frame_valid) {
-      for (row = 0; row < height; row++)
-        g_checksum_update(audit->checksum, plane + (gsize)row * stride,
-            row_bytes);
-    }
     if (frame_valid) {
       audit->have_last_good = TRUE;
       audit->last_good_frame = audit->frames;
@@ -308,7 +411,7 @@ static gboolean
 run_pipeline(const gchar *description, const gchar *filename, guint expected,
              GstClockTime timeout, gboolean seek_replay, gboolean report,
              const GeometryEpoch *epochs, guint epoch_count,
-             gboolean soft_rff)
+             gboolean soft_rff, const gchar *const *expected_epoch_hashes)
 {
   GError *error = NULL;
   PlaybackAudit audit = {0};
@@ -322,6 +425,7 @@ run_pipeline(const gchar *description, const gchar *filename, guint expected,
   gchar *reference_metadata_hash = NULL;
   gchar *reference_seek_metadata_hash = NULL;
   guint pass;
+  const gboolean ts_input = strstr(description, "tsdemux") != NULL;
   /* mpegvideoparse learns the elementary stream frame duration while
    * handling the first picture. That initial RFF picture keeps the base
    * duration, while a flushing seek retains the learned rate and gives the
@@ -343,7 +447,9 @@ run_pipeline(const gchar *description, const gchar *filename, guint expected,
     return FALSE;
   }
   audit.require_timestamps = soft_rff || filename == NULL ||
-      strstr(description, "qtdemux") != NULL;
+      strstr(description, "qtdemux") != NULL ||
+      ts_input;
+  audit.ts_30fps = ts_input;
   audit.epochs = epochs;
   audit.epoch_count = epoch_count;
   audit.soft_rff = soft_rff;
@@ -369,6 +475,8 @@ run_pipeline(const gchar *description, const gchar *filename, guint expected,
 
   audit.checksum = g_checksum_new(G_CHECKSUM_SHA256);
   audit.metadata_checksum = g_checksum_new(G_CHECKSUM_SHA256);
+  for (guint index = 0; index < epoch_count; ++index)
+    audit.epoch_checksums[index] = g_checksum_new(G_CHECKSUM_SHA256);
   bus = gst_element_get_bus(pipeline);
   for (pass = 0; pass < pass_count; pass++) {
     gboolean eos = FALSE;
@@ -389,12 +497,16 @@ run_pipeline(const gchar *description, const gchar *filename, guint expected,
       audit.frames = 0;
       audit.invalid_output = FALSE;
       audit.previous_pts = GST_CLOCK_TIME_NONE;
+      audit.have_ts_base_pts = FALSE;
+      audit.ts_base_pts = GST_CLOCK_TIME_NONE;
       audit.have_last_good = FALSE;
       audit.last_good_frame = 0;
       audit.last_good_pts = GST_CLOCK_TIME_NONE;
       audit.epoch_index = audit.epoch_frames = 0;
       g_checksum_reset(audit.checksum);
       g_checksum_reset(audit.metadata_checksum);
+      for (guint index = 0; index < epoch_count; ++index)
+        g_checksum_reset(audit.epoch_checksums[index]);
       if (!gst_element_seek_simple(pipeline, GST_FORMAT_TIME,
                                     GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE, 0)) {
         g_printerr("Pipeline rejected flushing seek to zero\n");
@@ -442,11 +554,21 @@ run_pipeline(const gchar *description, const gchar *filename, guint expected,
                eos ? "yes" : "no", metadata_hash, hash);
       report_last_good(&audit);
       if (audit.invalid_output)
-        g_printerr("Output contained invalid YUY2 buffers, regressing timestamps or unexpected geometry/field order\n");
+        g_printerr("Output contained invalid YUY2 buffers, invalid timestamps or unexpected geometry/field order\n");
       if (epoch_count != 0)
         g_print("Geometry epochs: %u/%u complete\n", audit.epoch_index, epoch_count);
+      if (ts_input) {
+        for (guint index = 0; index < epoch_count; ++index)
+          g_print("Epoch[%u]=%ux%u:%u; YUY2SHA256=%s\n", index,
+                  epochs[index].width, epochs[index].height,
+                  epochs[index].frames,
+                  g_checksum_get_string(audit.epoch_checksums[index]));
+      }
     }
     success = eos && audit.frames == expected && geometry_complete(&audit);
+    if (!epoch_hashes_match(audit.epoch_checksums, epoch_count,
+                            expected_epoch_hashes, report))
+      success = FALSE;
     if (soft_rff &&
         (!audit.have_last_good ||
          audit.last_good_pts != G_GUINT64_CONSTANT(4954949901))) {
@@ -491,6 +613,8 @@ run_pipeline(const gchar *description, const gchar *filename, guint expected,
   gst_object_unref(pipeline);
   g_checksum_free(audit.checksum);
   g_checksum_free(audit.metadata_checksum);
+  for (guint index = 0; index < epoch_count; ++index)
+    g_checksum_free(audit.epoch_checksums[index]);
   g_free(reference_hash);
   g_free(reference_metadata_hash);
   g_free(reference_seek_metadata_hash);
@@ -562,6 +686,34 @@ soft_rff_epochs_valid(const GeometryEpoch *epochs, guint count)
 }
 
 static gboolean
+ts_epochs_valid(guint expected, const GeometryEpoch *epochs, guint count,
+                gboolean have_expected_hashes)
+{
+  static const struct {
+    guint width, height;
+  } transition[] = {
+    {640, 360}, {1280, 720}, {640, 360},
+  };
+
+  if (expected == 30 && count == 1 && !have_expected_hashes)
+    return epochs[0].frames == 30 &&
+        epochs[0].field_order == FIELD_PROGRESSIVE &&
+        ((epochs[0].width == 640 && epochs[0].height == 360) ||
+         (epochs[0].width == 1280 && epochs[0].height == 720));
+  if (expected != 90 || count != G_N_ELEMENTS(transition) ||
+      !have_expected_hashes)
+    return FALSE;
+  for (guint index = 0; index < count; ++index) {
+    if (epochs[index].width != transition[index].width ||
+        epochs[index].height != transition[index].height ||
+        epochs[index].frames != 30 ||
+        epochs[index].field_order != FIELD_PROGRESSIVE)
+      return FALSE;
+  }
+  return TRUE;
+}
+
+static gboolean
 geometry_self_test(void)
 {
   GeometryEpoch epochs[MAX_EPOCHS];
@@ -597,6 +749,213 @@ geometry_self_test(void)
   observe_geometry(&audit, 320, 240);
   observe_geometry(&audit, 640, 360);
   return audit.invalid_output; /* New caps cannot hide a missing old tail. */
+}
+
+static gboolean
+ts_epoch_self_test(void)
+{
+  static const GeometryEpoch hash_epochs[] = {
+    {2, 1, 2, FIELD_PROGRESSIVE},
+    {4, 1, 2, FIELD_PROGRESSIVE},
+  };
+  static const guint8 small_pixels[][4] = {
+    {1, 2, 3, 4}, {5, 6, 7, 8},
+  };
+  static const guint8 large_pixels[][8] = {
+    {9, 10, 11, 12, 13, 14, 15, 16},
+    {17, 18, 19, 20, 21, 22, 23, 24},
+  };
+  GeometryEpoch epochs[MAX_EPOCHS];
+  guint count = 0;
+  PlaybackAudit audit = {0};
+  GChecksum *reference[2] = {NULL, NULL};
+  GChecksum *overall_reference = NULL;
+  gchar *expected[2] = {NULL, NULL};
+  gchar **parsed = NULL;
+  gchar **unexpected = NULL;
+  gchar *hash_text = NULL;
+  gboolean success = FALSE;
+
+  if (!parse_epochs("640x360:30:p,1280x720:30:p,640x360:30:p", 90,
+                    epochs, &count) ||
+      !ts_epochs_valid(90, epochs, count, TRUE) ||
+      ts_epochs_valid(90, epochs, count, FALSE) ||
+      !parse_epochs("640x360:30:p", 30, epochs, &count) ||
+      !ts_epochs_valid(30, epochs, count, FALSE) ||
+      ts_epochs_valid(30, epochs, count, TRUE) ||
+      !parse_epochs("1280x720:30:p", 30, epochs, &count) ||
+      !ts_epochs_valid(30, epochs, count, FALSE) ||
+      !parse_epochs("640x360:30:p,1280x720:30:p,640x360:30:p", 90,
+                    epochs, &count))
+    goto done;
+
+  audit.epochs = epochs;
+  audit.epoch_count = count;
+  for (guint frame = 0; frame < 29; ++frame)
+    observe_geometry(&audit, 640, 360);
+  observe_geometry(&audit, 1280, 720);
+  if (!audit.invalid_output)
+    goto done; /* The new geometry cannot hide one missing old-tail frame. */
+
+  audit = (PlaybackAudit){0};
+  audit.epochs = epochs;
+  audit.epoch_count = count;
+  for (guint epoch = 0; epoch < count; ++epoch) {
+    for (guint frame = 0; frame < 30; ++frame)
+      observe_geometry(&audit, epochs[epoch].width, epochs[epoch].height);
+  }
+  if (!geometry_complete(&audit))
+    goto done;
+  observe_geometry(&audit, 640, 360);
+  if (!audit.invalid_output)
+    goto done; /* A 91st picture must not be accepted. */
+
+  audit = (PlaybackAudit){0};
+  audit.epochs = hash_epochs;
+  audit.epoch_count = G_N_ELEMENTS(hash_epochs);
+  audit.checksum = g_checksum_new(G_CHECKSUM_SHA256);
+  overall_reference = g_checksum_new(G_CHECKSUM_SHA256);
+  for (guint index = 0; index < G_N_ELEMENTS(hash_epochs); ++index) {
+    reference[index] = g_checksum_new(G_CHECKSUM_SHA256);
+    audit.epoch_checksums[index] = g_checksum_new(G_CHECKSUM_SHA256);
+  }
+  for (guint frame = 0; frame < G_N_ELEMENTS(small_pixels); ++frame) {
+    if (!record_geometry_frame(&audit, 2, 1, small_pixels[frame],
+                               sizeof(small_pixels[frame]), TRUE))
+      goto done;
+    g_checksum_update(reference[0], small_pixels[frame],
+                      sizeof(small_pixels[frame]));
+    g_checksum_update(overall_reference, small_pixels[frame],
+                      sizeof(small_pixels[frame]));
+  }
+  for (guint frame = 0; frame < G_N_ELEMENTS(large_pixels); ++frame) {
+    if (!record_geometry_frame(&audit, 4, 1, large_pixels[frame],
+                               sizeof(large_pixels[frame]), TRUE))
+      goto done;
+    g_checksum_update(reference[1], large_pixels[frame],
+                      sizeof(large_pixels[frame]));
+    g_checksum_update(overall_reference, large_pixels[frame],
+                      sizeof(large_pixels[frame]));
+  }
+  for (guint index = 0; index < G_N_ELEMENTS(reference); ++index)
+    expected[index] = g_strdup(g_checksum_get_string(reference[index]));
+  if (!geometry_complete(&audit) ||
+      g_strcmp0(g_checksum_get_string(audit.checksum),
+                g_checksum_get_string(overall_reference)) != 0 ||
+      !epoch_hashes_match(audit.epoch_checksums,
+                          G_N_ELEMENTS(hash_epochs),
+                          (const gchar *const *)expected, FALSE))
+    goto done;
+  {
+    const gchar *const swapped[] = {expected[1], expected[0]};
+
+    if (epoch_hashes_match(audit.epoch_checksums,
+                           G_N_ELEMENTS(hash_epochs), swapped, FALSE))
+      goto done; /* Epoch hashes must not cross the geometry boundary. */
+  }
+
+  hash_text = g_strjoin(",", expected[0], expected[1], expected[0], NULL);
+  if (!parse_epoch_hashes(hash_text, 3, &parsed) ||
+      parse_epoch_hashes(hash_text, 2, &unexpected))
+    goto done;
+  hash_text[0] = 'z';
+  if (parse_epoch_hashes(hash_text, 3, &unexpected))
+    goto done;
+  success = TRUE;
+
+done:
+  g_strfreev(parsed);
+  g_strfreev(unexpected);
+  g_free(hash_text);
+  if (audit.checksum != NULL)
+    g_checksum_free(audit.checksum);
+  if (overall_reference != NULL)
+    g_checksum_free(overall_reference);
+  for (guint index = 0; index < G_N_ELEMENTS(reference); ++index) {
+    if (reference[index] != NULL)
+      g_checksum_free(reference[index]);
+    if (audit.epoch_checksums[index] != NULL)
+      g_checksum_free(audit.epoch_checksums[index]);
+    g_free(expected[index]);
+  }
+  return success;
+}
+
+static gboolean
+ts_timestamp_self_test(void)
+{
+  const GstClockTime arbitrary_base = G_GUINT64_CONSTANT(66666629);
+  GstVideoInfo info;
+  PlaybackAudit audit = {0};
+
+  gst_video_info_init(&info);
+  if (!gst_video_info_set_format(&info, GST_VIDEO_FORMAT_YUY2, 640, 360))
+    return FALSE;
+  GST_VIDEO_INFO_FPS_N(&info) = 30;
+  GST_VIDEO_INFO_FPS_D(&info) = 1;
+  for (guint start_second = 0; start_second < 3; ++start_second) {
+    audit = (PlaybackAudit){0};
+    audit.require_timestamps = TRUE;
+    audit.ts_30fps = TRUE;
+    for (guint frame = 0; frame < 4; ++frame) {
+      audit.frames = frame;
+      if (!ts_timestamp_matches(
+              &audit, &info,
+              gst_util_uint64_scale(
+                  (guint64)start_second * 90000 + (guint64)frame * 3000,
+                  GST_SECOND, 90000)))
+        return FALSE;
+    }
+  }
+
+  /* tsdemux can add a segment offset which is not itself a canonical 90 kHz
+   * conversion. Depending on the hidden tick phase, a cumulative 30 fps
+   * delta is exactly the floor or ceil of n/30 seconds. */
+  for (guint use_ceil = 0; use_ceil < 2; ++use_ceil) {
+    audit = (PlaybackAudit){0};
+    audit.require_timestamps = TRUE;
+    audit.ts_30fps = TRUE;
+    for (guint frame = 0; frame < 6; ++frame) {
+      const GstClockTime delta = use_ceil
+          ? gst_util_uint64_scale_ceil(frame, GST_SECOND, 30)
+          : gst_util_uint64_scale(frame, GST_SECOND, 30);
+
+      audit.frames = frame;
+      if (!ts_timestamp_matches(&audit, &info, arbitrary_base + delta))
+        return FALSE;
+    }
+  }
+
+  audit = (PlaybackAudit){0};
+  audit.require_timestamps = TRUE;
+  audit.ts_30fps = TRUE;
+  if (!ts_timestamp_matches(&audit, &info, arbitrary_base))
+    return FALSE;
+  audit.frames = 1;
+  if (ts_timestamp_matches(&audit, &info,
+                           arbitrary_base +
+                           gst_util_uint64_scale(1, GST_SECOND, 30) + 2))
+    return FALSE; /* More than the one-nanosecond phase must fail. */
+  if (ts_timestamp_matches(&audit, &info, arbitrary_base - 1))
+    return FALSE; /* A PTS before the data-derived base must not underflow. */
+  audit = (PlaybackAudit){0};
+  audit.require_timestamps = TRUE;
+  audit.ts_30fps = TRUE;
+  if (!ts_timestamp_matches(&audit, &info, GST_CLOCK_TIME_NONE - 10))
+    return FALSE;
+  audit.frames = 1;
+  if (ts_timestamp_matches(&audit, &info, 5))
+    return FALSE; /* A caller-side timestamp wrap is below the base. */
+  audit = (PlaybackAudit){0};
+  audit.require_timestamps = TRUE;
+  audit.ts_30fps = TRUE;
+  GST_VIDEO_INFO_FPS_N(&info) = 30000;
+  GST_VIDEO_INFO_FPS_D(&info) = 1001;
+  if (ts_timestamp_matches(&audit, &info, 0))
+    return FALSE;
+  GST_VIDEO_INFO_FPS_N(&info) = 30;
+  GST_VIDEO_INFO_FPS_D(&info) = 1;
+  return !ts_timestamp_matches(&audit, &info, GST_CLOCK_TIME_NONE);
 }
 
 static gboolean
@@ -814,6 +1173,11 @@ main(int argc, char **argv)
       "filesrc name=source ! qtdemux name=demux "
       "demux.video_0 ! queue ! mpeg4videoparse ! "
       "crystalhddec ! fakesink name=sink";
+  const gchar *ts_pipeline =
+      "filesrc name=source ! tsdemux name=demux "
+      "demux. ! queue ! h264parse ! "
+      "video/x-h264,stream-format=byte-stream,alignment=au ! "
+      "crystalhddec ! fakesink name=sink";
   const gchar *test_pipeline =
       "videotestsrc num-buffers=12 ! video/x-raw,format=YUY2,width=320,height=240 ! "
       "fakesink name=sink";
@@ -823,40 +1187,60 @@ main(int argc, char **argv)
   guint epoch_count = 0;
   gboolean seek_replay = FALSE;
   gboolean soft_rff = FALSE;
+  const gchar *epoch_hash_text = NULL;
+  gchar **epoch_hashes = NULL;
   guint expected;
   guint timeout = 120;
+  gint result;
 
   gst_init(&argc, &argv);
   if (argc == 2 && g_str_equal(argv[1], "--self-test")) {
+    static const gchar zero_hash[] =
+        "0000000000000000000000000000000000000000000000000000000000000000";
     const GeometryEpoch correct = {320, 240, 12, FIELD_PROGRESSIVE};
     const GeometryEpoch wrong = {640, 360, 12, FIELD_ANY};
     const GeometryEpoch wrong_fields = {320, 240, 12, FIELD_TFF};
-    if (!geometry_self_test() || !field_self_test() || !metadata_self_test() ||
+    const gchar *const bad_epoch_hash[] = {zero_hash};
+    if (!geometry_self_test() || !ts_epoch_self_test() ||
+        !ts_timestamp_self_test() ||
+        !field_self_test() || !metadata_self_test() ||
         !soft_rff_self_test() ||
-        !run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, TRUE, NULL, 0, FALSE) ||
-        !run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, TRUE, &correct, 1, FALSE) ||
-        run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, FALSE, &wrong, 1, FALSE) ||
-        run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, FALSE, &wrong_fields, 1, FALSE) ||
-        run_pipeline(test_pipeline, NULL, 13, 5 * GST_SECOND, FALSE, FALSE, NULL, 0, FALSE) ||
+        !run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, TRUE,
+                      NULL, 0, FALSE, NULL) ||
+        !run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, TRUE,
+                      &correct, 1, FALSE, NULL) ||
+        run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, FALSE,
+                     &correct, 1, FALSE, bad_epoch_hash) ||
+        run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, FALSE,
+                     &wrong, 1, FALSE, NULL) ||
+        run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, FALSE,
+                     &wrong_fields, 1, FALSE, NULL) ||
+        run_pipeline(test_pipeline, NULL, 13, 5 * GST_SECOND, FALSE, FALSE,
+                     NULL, 0, FALSE, NULL) ||
         run_pipeline("fakesrc num-buffers=1 ! "
                      "identity sleep-time=100000 ! fakesink name=sink",
-                     NULL, 1, GST_MSECOND, FALSE, FALSE, NULL, 0, FALSE)) {
+                     NULL, 1, GST_MSECOND, FALSE, FALSE, NULL, 0, FALSE,
+                     NULL)) {
       g_printerr("GStreamer frame-count/EOS self-test failed\n");
       return 1;
     }
     g_print("GStreamer frame-count/EOS self-test passed\n");
     return 0;
   }
-  if ((argc < 4 || argc > 9) || !positive_number(argv[2], &expected) ||
+  if ((argc < 4 || argc > 11) || !positive_number(argv[2], &expected) ||
       (argc >= 5 && !positive_number(argv[4], &timeout)) ||
       (!g_str_equal(argv[3], "mp4") && !g_str_equal(argv[3], "h264") &&
-       !g_str_equal(argv[3], "mpeg2") && !g_str_equal(argv[3], "mpeg4")))
+       !g_str_equal(argv[3], "mpeg2") && !g_str_equal(argv[3], "mpeg4") &&
+       !g_str_equal(argv[3], "ts")))
     goto usage;
   for (gint arg = 5; arg < argc; ++arg) {
     if (g_str_equal(argv[arg], "--seek") && !seek_replay)
       seek_replay = TRUE;
     else if (g_str_equal(argv[arg], "--soft-rff") && !soft_rff)
       soft_rff = TRUE;
+    else if (g_str_equal(argv[arg], "--epoch-sha256") &&
+             epoch_hash_text == NULL && arg + 1 < argc)
+      epoch_hash_text = argv[++arg];
     else if (g_str_equal(argv[arg], "--epochs") && epoch_count == 0 && arg + 1 < argc) {
       if (!parse_epochs(argv[++arg], expected, epochs, &epoch_count))
         goto usage;
@@ -869,14 +1253,30 @@ main(int argc, char **argv)
     goto usage;
   if (soft_rff)
     seek_replay = TRUE;
-  return run_pipeline(g_str_equal(argv[3], "mp4") ? mp4_pipeline :
-                       g_str_equal(argv[3], "h264") ? annex_b_pipeline :
-                       g_str_equal(argv[3], "mpeg4") ? mpeg4_pipeline : mpeg2_pipeline,
-                       argv[1], expected, (GstClockTime)timeout * GST_SECOND,
-                       seek_replay, TRUE, epochs, epoch_count, soft_rff) ? 0 : 1;
+  if (epoch_hash_text != NULL &&
+      (!g_str_equal(argv[3], "ts") ||
+       !parse_epoch_hashes(epoch_hash_text, epoch_count, &epoch_hashes)))
+    goto usage;
+  if (g_str_equal(argv[3], "ts") &&
+      (seek_replay || soft_rff ||
+       !ts_epochs_valid(expected, epochs, epoch_count,
+                        epoch_hashes != NULL)))
+    goto usage;
+  result = run_pipeline(g_str_equal(argv[3], "mp4") ? mp4_pipeline :
+                        g_str_equal(argv[3], "h264") ? annex_b_pipeline :
+                        g_str_equal(argv[3], "mpeg4") ? mpeg4_pipeline :
+                        g_str_equal(argv[3], "ts") ? ts_pipeline : mpeg2_pipeline,
+                        argv[1], expected,
+                        (GstClockTime)timeout * GST_SECOND,
+                        seek_replay, TRUE, epochs, epoch_count, soft_rff,
+                        (const gchar *const *)epoch_hashes) ? 0 : 1;
+  g_strfreev(epoch_hashes);
+  return result;
 usage:
-  g_printerr("usage: %s VIDEO EXPECTED_FRAMES mp4|h264|mpeg2|mpeg4 "
+  g_strfreev(epoch_hashes);
+  g_printerr("usage: %s VIDEO EXPECTED_FRAMES mp4|h264|mpeg2|mpeg4|ts "
              "[TIMEOUT_SECONDS [--seek] [--soft-rff] "
-             "[--epochs WIDTHxHEIGHT:FRAMES[:p|tff|bff],...]]\n", argv[0]);
+             "[--epochs WIDTHxHEIGHT:FRAMES[:p|tff|bff],...] "
+             "[--epoch-sha256 HASH,...]]\n", argv[0]);
   return 2;
 }
