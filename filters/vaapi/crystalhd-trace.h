@@ -27,6 +27,9 @@ enum class Event {
   ExportEnter,
   ExportExit,
   ReadExportReuseImplicitFenceProbe,
+  PresentationReady,
+  PresentationCommit,
+  PresentationDrop,
   VppCapture,
   VppCommit,
   VppCancel,
@@ -59,6 +62,15 @@ struct Fields {
   uint64_t not_pollout_count = 0;
   uint64_t probe_error_count = 0;
   int64_t probe_errno = 0;
+  // Experimental presentation records keep the caller-requested binding in
+  // token/decode_identity/submission_ordinal and name the copied payload
+  // independently. Real client PTS is intentionally not invented here; the
+  // read-only frontend handoff trace can join both synthetic identities to
+  // their observed PTS after the run.
+  uint64_t payload_token = 0;
+  uint64_t payload_decode_identity = 0;
+  uint64_t payload_submission_ordinal = 0;
+  int64_t submission_drift = 0;
 };
 
 // Opt-in diagnostic output only. With CRYSTALHD_VAAPI_TRACE unset (or not
@@ -88,10 +100,10 @@ class Trace {
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch())
             .count());
-    char line[768];
+    char line[1024];
     const int length = std::snprintf(
         line, sizeof(line),
-        "{\"schema\":\"crystalhd-vaapi-trace-v2\","
+        "{\"schema\":\"crystalhd-vaapi-trace-v3\","
         "\"ts_monotonic_ns\":%llu,\"session\":%llu,"
         "\"driver_instance\":%llu,\"pid\":%lld,\"seq\":%llu,"
         "\"event\":\"%s\",\"context\":%llu,\"generation\":%llu,"
@@ -100,7 +112,10 @@ class Trace {
         "\"operation\":%llu,\"duration_ns\":%llu,"
         "\"outcome\":%lld,\"identified_exported_object_count\":%llu,"
         "\"pollout_count\":%llu,\"not_pollout_count\":%llu,"
-        "\"probe_error_count\":%llu,\"probe_errno\":%lld}\n",
+        "\"probe_error_count\":%llu,\"probe_errno\":%lld,"
+        "\"payload_token\":%llu,\"payload_decode_identity\":%llu,"
+        "\"payload_submission_ordinal\":%llu,"
+        "\"submission_drift\":%lld}\n",
         static_cast<unsigned long long>(timestamp_ns),
         static_cast<unsigned long long>(session_),
         static_cast<unsigned long long>(session_),
@@ -121,7 +136,11 @@ class Trace {
         static_cast<unsigned long long>(fields.pollout_count),
         static_cast<unsigned long long>(fields.not_pollout_count),
         static_cast<unsigned long long>(fields.probe_error_count),
-        static_cast<long long>(fields.probe_errno));
+        static_cast<long long>(fields.probe_errno),
+        static_cast<unsigned long long>(fields.payload_token),
+        static_cast<unsigned long long>(fields.payload_decode_identity),
+        static_cast<unsigned long long>(fields.payload_submission_ordinal),
+        static_cast<long long>(fields.submission_drift));
     if (length <= 0 || static_cast<size_t>(length) >= sizeof(line))
       return;
     size_t written = 0;
@@ -171,6 +190,9 @@ class Trace {
       case Event::ExportExit: return "export_exit";
       case Event::ReadExportReuseImplicitFenceProbe:
         return "read_export_reuse_implicit_fence_probe";
+      case Event::PresentationReady: return "presentation_ready";
+      case Event::PresentationCommit: return "presentation_commit";
+      case Event::PresentationDrop: return "presentation_drop";
       case Event::VppCapture: return "vpp_capture";
       case Event::VppCommit: return "vpp_commit";
       case Event::VppCancel: return "vpp_cancel";

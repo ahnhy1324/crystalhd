@@ -100,6 +100,24 @@ struct TraceEnvironment {
   }
 };
 
+struct SavedEnvironment {
+  std::string name;
+  bool had_value = false;
+  std::string value;
+  explicit SavedEnvironment(const char *variable) : name(variable) {
+    const char *previous = getenv(variable);
+    had_value = previous != nullptr;
+    if (previous != nullptr)
+      value = previous;
+  }
+  ~SavedEnvironment() {
+    if (had_value)
+      setenv(name.c_str(), value.c_str(), 1);
+    else
+      unsetenv(name.c_str());
+  }
+};
+
 static std::string ReadTraceFd(int fd) {
   struct stat info = {};
   Require(fstat(fd, &info) == 0 && info.st_size >= 0, "inspect trace fixture");
@@ -185,6 +203,9 @@ struct DecodeIoMock {
   bool input_busy = false;
   bool prefeed_busy_once = false;
   bool remainder_busy_once = false;
+  bool allow_device_open = false;
+  bool report_bcm70012 = false;
+  bool fail_set_input_format = false;
   bool invalid = false;
   uint64_t prefed_timestamp = 0;
   uint32_t tx_free_size = 1024 * 1024;
@@ -211,7 +232,36 @@ extern "C" BC_STATUS __wrap_DtsDeviceOpen(HANDLE *device, uint32_t mode) {
   if (decode_io_mock == nullptr)
     return __real_DtsDeviceOpen(device, mode);
   ++decode_io_mock->open_attempts;
+  if (decode_io_mock->allow_device_open) {
+    *device = decode_io_mock->handle();
+    return BC_STS_SUCCESS;
+  }
   return BC_STS_ERROR;  // An unexpected reopen must never touch real hardware.
+}
+
+extern "C" BC_STATUS __real_DtsCrystalHDVersion(HANDLE, PBC_INFO_CRYSTAL);
+extern "C" BC_STATUS __wrap_DtsCrystalHDVersion(
+    HANDLE device, PBC_INFO_CRYSTAL version) {
+  if (decode_io_mock == nullptr)
+    return __real_DtsCrystalHDVersion(device, version);
+  decode_io_mock->invalid |= device != decode_io_mock->handle() ||
+                             version == nullptr;
+  if (version == nullptr)
+    return BC_STS_INV_ARG;
+  *version = {};
+  version->device = decode_io_mock->report_bcm70012 ? 0 : 1;
+  return BC_STS_SUCCESS;
+}
+
+extern "C" BC_STATUS __real_DtsSetInputFormat(HANDLE, BC_INPUT_FORMAT *);
+extern "C" BC_STATUS __wrap_DtsSetInputFormat(
+    HANDLE device, BC_INPUT_FORMAT *format) {
+  if (decode_io_mock == nullptr)
+    return __real_DtsSetInputFormat(device, format);
+  decode_io_mock->invalid |= device != decode_io_mock->handle() ||
+                             format == nullptr;
+  return decode_io_mock->fail_set_input_format ? BC_STS_ERROR
+                                                : BC_STS_SUCCESS;
 }
 
 #define MOCK_CLOSE_OPERATION(name, event) \
@@ -1337,6 +1387,809 @@ static void TraceReadExportReuseBoundary() {
   }
 }
 
+static void ExperimentalReadyRemapStateMachine() {
+  TraceEnvironment environment;
+  const int trace_fd = memfd_create("crystalhd-remap-trace", MFD_CLOEXEC);
+  Require(trace_fd >= 0, "allocate experimental remap trace sink");
+  {
+    Driver driver{-1, trace_fd};
+    auto decode = std::make_shared<DecodeContext>();
+    decode->id = 7;
+    decode->generation = 3;
+    decode->profile = VAProfileH264Main;
+    decode->width = decode->height = 16;
+    decode->live_h264 = true;
+    decode->low_latency_h264 = true;
+    decode->experimental_ready_remap = true;
+    driver.contexts[7] = decode;
+
+    auto payload = std::make_shared<Surface>();
+    auto requested_picture = std::make_shared<Surface>();
+    auto requested = std::make_shared<Surface>();
+    for (const auto &surface : {payload, requested_picture, requested})
+      Require(surface->AllocateInternal(nullptr, -1, 16, 16,
+                                        VA_FOURCC_NV12),
+              "allocate experimental remap pixels");
+    payload->id = 1;
+    payload->expected_timestamp = payload->frame_timestamp = 100000;
+    payload->ready = true;
+    payload->decode_identity = payload->trace_decode_identity = 41;
+    payload->trace_context = 7;
+    payload->trace_generation = 3;
+    payload->trace_submission_ordinal = 1;
+    payload->experimental_ready_at_ns = MonotonicNowNs();
+    payload->experimental_ready_queued = true;
+    memset(payload->planes[0], 40, payload->storage.size());
+
+    requested_picture->id = 2;
+    requested_picture->expected_timestamp = 200000;
+    requested_picture->decode_identity =
+        requested_picture->trace_decode_identity = 42;
+    requested_picture->trace_context = 7;
+    requested_picture->trace_generation = 3;
+    requested_picture->trace_submission_ordinal = 2;
+
+    requested->id = 2;
+    requested->rt_format = VA_RT_FORMAT_YUV420;
+    requested->direct_decode_eligible = true;
+    requested->expected_timestamp = 200000;
+    requested->decode_identity = requested->trace_decode_identity = 42;
+    requested->trace_context = 7;
+    requested->trace_generation = 3;
+    requested->trace_submission_ordinal = 2;
+    requested->experimental_write_lease = true;
+    requested->experimental_write_context = 7;
+    requested->experimental_write_generation = 3;
+    requested->experimental_write_submission_ordinal = 2;
+    requested->decode_picture = requested_picture;
+    memset(requested->planes[0], 99, requested->storage.size());
+
+    decode->experimental_ready.push_back(payload);
+    decode->decoded_frames[payload->expected_timestamp] = payload;
+    decode->decoded_frames[requested->expected_timestamp] = requested_picture;
+    decode->surface_timestamps[requested.get()] =
+        requested->expected_timestamp;
+    driver.surfaces[2] = requested;
+
+    bool committed = false;
+    Require(TryExperimentalPresentation(&driver, requested, &committed) ==
+                    VA_STATUS_SUCCESS &&
+                committed &&
+                ExperimentalPresentationReadable(&driver, requested.get()) &&
+                !requested->ready && requested->frame_timestamp == 0 &&
+                requested->planes[0][0] == 40 &&
+                requested->presentation_payload_token == 100000 &&
+                requested->presentation_payload_decode_identity == 41 &&
+                requested->presentation_payload_submission_ordinal == 1 &&
+                decode->experimental_ready.empty() &&
+                decode->decoded_frames.count(100000) == 0 &&
+                decode->decoded_frames.count(200000) == 1,
+            "remap commits copied payload without relabeling exact decode");
+
+    auto ordinary = std::make_shared<DecodeContext>();
+    ordinary->id = 10;
+    driver.contexts[10] = ordinary;
+    VADriverContext context = {};
+    context.pDriverData = &driver;
+    Require(BeginPicture(&context, 10, 2) ==
+                VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT,
+            "ordinary decode cannot seize an experimental presentation backing");
+
+    auto vpp = std::make_shared<DecodeContext>();
+    vpp->id = 8;
+    vpp->video_process = true;
+    driver.contexts[8] = vpp;
+    Require(BeginPicture(&context, 8, 2) ==
+                VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT,
+            "VPP cannot use an experimental presentation as its write target");
+    auto vpp_target = std::make_shared<Surface>();
+    Require(vpp_target->AllocateInternal(nullptr, -1, 16, 16,
+                                         VA_FOURCC_NV12),
+            "allocate excluded VPP target");
+    vpp_target->id = 6;
+    vpp_target->ready = true;
+    vpp_target->direct_decode_eligible = true;
+    driver.surfaces[6] = vpp_target;
+    Require(BeginPicture(&context, 8, 6) == VA_STATUS_SUCCESS,
+            "begin clean VPP target before testing excluded source");
+    VAProcPipelineParameterBuffer pipeline = {};
+    pipeline.surface = 2;
+    pipeline.rotation_state = VA_ROTATION_NONE;
+    Buffer pipeline_buffer;
+    pipeline_buffer.context = 8;
+    pipeline_buffer.type = VAProcPipelineParameterBufferType;
+    pipeline_buffer.element_size = sizeof(pipeline);
+    pipeline_buffer.elements = 1;
+    pipeline_buffer.data.resize(sizeof(pipeline));
+    memcpy(pipeline_buffer.data.data(), &pipeline, sizeof(pipeline));
+    driver.buffers[1] = std::move(pipeline_buffer);
+    VABufferID pipeline_id = 1;
+    Require(RenderPicture(&context, 8, &pipeline_id, 1) ==
+                VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT,
+            "VPP cannot substitute the exact decode behind remapped pixels");
+
+    decode->pending[200000] = 2;
+    Require(decode->replay.Append(200000, true, {1}),
+            "append late exact experimental output");
+    SendNext(&decode->replay, 200000);
+    std::vector<uint8_t> yuy2(16 * 16 * 2, 128);
+    for (size_t byte = 0; byte < yuy2.size(); byte += 2)
+      yuy2[byte] = 90;
+    BC_DTS_PROC_OUT output = {};
+    output.PoutFlags = BC_POUT_FLAGS_PIB_VALID;
+    output.PicInfo.timeStamp = 200000;
+    output.PicInfo.width = output.PicInfo.height = 16;
+    output.Ybuff = yuy2.data();
+    output.YBuffDoneSz = yuy2.size() / 4;
+    Require(ProcessDecodedOutput(&driver, decode.get(), output) ==
+                    VA_STATUS_SUCCESS &&
+                requested->planes[0][0] == 40 && !requested->ready &&
+                ExperimentalPresentationReadable(&driver, requested.get()) &&
+                requested_picture->ready &&
+                requested_picture->planes[0][0] == 90 &&
+                requested_picture->experimental_ready_queued,
+            "late exact output stays private and cannot overwrite presentation");
+
+    VASurfaceStatus surface_status = VASurfaceRendering;
+    Require(SyncSurface2(&context, 2, 0) == VA_STATUS_SUCCESS &&
+                QuerySurfaceStatus(&context, 2, &surface_status) ==
+                    VA_STATUS_SUCCESS &&
+                surface_status == VASurfaceReady &&
+                requested->planes[0][0] == 40,
+            "repeated passive sync observes the latched payload without recopy");
+
+    const int backing = TraceBackingFd("crystalhd-remap-backing",
+                                       requested->storage.size());
+    requested->object_fds.push_back(backing);
+    requested->object_sizes.push_back(requested->storage.size());
+    for (unsigned int attempt = 0; attempt < 2; ++attempt) {
+      VADRMPRIMESurfaceDescriptor descriptor = {};
+      Require(ExportSurfaceHandle(&context, 2,
+                                  VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                                  VA_EXPORT_SURFACE_READ_ONLY, &descriptor) ==
+                      VA_STATUS_SUCCESS &&
+                  requested->experimental_read_export_armed &&
+                  ExperimentalPresentationReadable(&driver, requested.get()),
+              "read-only export keeps one immutable remapped payload");
+      ClosePrimeDescriptor(&descriptor);
+    }
+    VADRMPRIMESurfaceDescriptor rejected = {};
+    Require(ExportSurfaceHandle(&context, 2,
+                                VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                                VA_EXPORT_SURFACE_WRITE_ONLY, &rejected) ==
+                VA_STATUS_ERROR_INVALID_PARAMETER,
+            "writable export cannot expose an active remapped payload");
+
+    probe_poll_calls = 0;
+    probe_poll_results = {{1, POLLOUT, 0}};
+    decode->next_submission_ordinal = 3;
+    Require(BeginPicture(&context, 7, 2) == VA_STATUS_SUCCESS &&
+                probe_poll_results.empty() && probe_poll_calls == 1 &&
+                !ExperimentalPresentationReadable(&driver, requested.get()) &&
+                requested->experimental_write_lease &&
+                ExperimentalWriteReservationPending(requested.get()) &&
+                requested->planes[0][0] == 40,
+            "all-ready reuse fence releases the frozen public slot once");
+    VADRMPRIMESurfaceDescriptor pending_export = {};
+    Require(ExportSurfaceHandle(&context, 2,
+                                VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                                VA_EXPORT_SURFACE_READ_ONLY,
+                                &pending_export) ==
+                VA_STATUS_ERROR_SURFACE_BUSY,
+            "Begin-to-submit reservation rejects a concurrent read export");
+  }
+  {
+    Driver driver{-1, trace_fd};
+    auto decode = std::make_shared<DecodeContext>();
+    decode->id = 12;
+    decode->generation = 2;
+    decode->profile = VAProfileH264Main;
+    decode->width = decode->height = 16;
+    decode->experimental_ready_remap = true;
+    decode->next_submission_ordinal = 2;
+    driver.contexts[12] = decode;
+    auto picture = std::make_shared<Surface>();
+    auto surface = std::make_shared<Surface>();
+    for (const auto &frame : {picture, surface}) {
+      Require(frame->AllocateInternal(nullptr, -1, 16, 16,
+                                      VA_FOURCC_NV12),
+              "allocate Begin-to-submit late-output fixture");
+      memset(frame->planes[0], 99, frame->storage.size());
+    }
+    picture->id = surface->id = 5;
+    picture->expected_timestamp = surface->expected_timestamp = 100000;
+    picture->decode_identity = surface->decode_identity = 70;
+    picture->trace_decode_identity = surface->trace_decode_identity = 70;
+    picture->trace_context = surface->trace_context = 12;
+    picture->trace_generation = surface->trace_generation = 2;
+    picture->trace_submission_ordinal =
+        surface->trace_submission_ordinal = 1;
+    surface->rt_format = VA_RT_FORMAT_YUV420;
+    surface->direct_decode_eligible = true;
+    surface->decode_picture = picture;
+    decode->decoded_frames[100000] = picture;
+    decode->surface_timestamps[surface.get()] = 100000;
+    decode->pending[100000] = 5;
+    driver.surfaces[5] = surface;
+    Require(decode->replay.Append(100000, true, {1}),
+            "append Begin-to-submit late output");
+    SendNext(&decode->replay, 100000);
+    VADriverContext context = {};
+    context.pDriverData = &driver;
+    Require(BeginPicture(&context, 12, 5) == VA_STATUS_SUCCESS &&
+                ExperimentalWriteReservationPending(surface.get()),
+            "next submission reserves but does not yet rebind the public backing");
+    std::vector<uint8_t> yuy2(16 * 16 * 2, 128);
+    for (size_t byte = 0; byte < yuy2.size(); byte += 2)
+      yuy2[byte] = 90;
+    BC_DTS_PROC_OUT output = {};
+    output.PoutFlags = BC_POUT_FLAGS_PIB_VALID;
+    output.PicInfo.timeStamp = 100000;
+    output.PicInfo.width = output.PicInfo.height = 16;
+    output.Ybuff = yuy2.data();
+    output.YBuffDoneSz = yuy2.size() / 4;
+    Require(ProcessDecodedOutput(&driver, decode.get(), output) ==
+                    VA_STATUS_SUCCESS &&
+                surface->planes[0][0] == 99 && !surface->ready &&
+                !surface->failed && picture->ready &&
+                picture->planes[0][0] == 90 &&
+                picture->experimental_ready_queued &&
+                ExperimentalWriteReservationPending(surface.get()),
+            "old output arriving after Begin stays private and preserves the next lease");
+    surface->expected_timestamp = 200000;
+    surface->trace_decode_identity = surface->decode_identity = 71;
+    surface->trace_submission_ordinal = 2;
+    Require(ExperimentalWriteLeaseMatches(*decode, *surface),
+            "accepted next identity activates only its own reserved write lease");
+  }
+  {
+    Driver driver{-1, trace_fd};
+    auto decode = std::make_shared<DecodeContext>();
+    decode->id = 9;
+    decode->generation = 4;
+    decode->experimental_ready_remap = true;
+    decode->next_submission_ordinal = 4;
+    driver.contexts[9] = decode;
+    auto surface = std::make_shared<Surface>();
+    Require(surface->AllocateInternal(nullptr, -1, 16, 16,
+                                      VA_FOURCC_NV12),
+            "allocate busy-reader remap surface");
+    surface->id = 3;
+    surface->direct_decode_eligible = true;
+    surface->expected_timestamp = 300000;
+    surface->decode_identity = surface->trace_decode_identity = 50;
+    surface->trace_context = 9;
+    surface->trace_generation = 4;
+    surface->trace_submission_ordinal = 3;
+    surface->experimental_presentation = true;
+    surface->presentation_payload_token = 200000;
+    surface->presentation_payload_decode_identity = 49;
+    surface->presentation_payload_submission_ordinal = 2;
+    surface->object_fds.push_back(
+        TraceBackingFd("crystalhd-remap-busy", surface->storage.size()));
+    surface->object_sizes.push_back(surface->storage.size());
+    surface->experimental_read_export = TraceFields(nullptr, surface.get());
+    surface->experimental_read_export.operation = 1;
+    surface->experimental_read_export_armed = true;
+    driver.surfaces[3] = surface;
+    VADriverContext context = {};
+    context.pDriverData = &driver;
+    probe_poll_calls = 0;
+    probe_poll_results = {{-1, 0, EIO}, {0, 0, 0}, {0, 0, 0},
+                          {1, POLLOUT, 0}};
+    Require(BeginPicture(&context, 9, 3) ==
+                    VA_STATUS_ERROR_OPERATION_FAILED &&
+                probe_poll_results.size() == 3 && probe_poll_calls == 1 &&
+                ExperimentalPresentationReadable(&driver, surface.get()) &&
+                surface->experimental_read_export_armed &&
+                !surface->experimental_write_lease,
+            "reuse probe error retains the frozen ownership arm");
+    Require(BeginPicture(&context, 9, 3) == VA_STATUS_ERROR_HW_BUSY &&
+                probe_poll_results.size() == 2 && probe_poll_calls == 2 &&
+                ExperimentalPresentationReadable(&driver, surface.get()) &&
+                surface->experimental_read_export_armed &&
+                !surface->experimental_write_lease,
+            "busy exported reader keeps the presentation frozen and fails closed");
+    Require(BeginPicture(&context, 9, 3) == VA_STATUS_ERROR_HW_BUSY &&
+                probe_poll_results.size() == 1 && probe_poll_calls == 3 &&
+                ExperimentalPresentationReadable(&driver, surface.get()) &&
+                surface->experimental_read_export_armed &&
+                !surface->experimental_write_lease,
+            "busy reader retries cannot bypass the experimental reuse probe");
+    Require(BeginPicture(&context, 9, 3) == VA_STATUS_SUCCESS &&
+                probe_poll_results.empty() && probe_poll_calls == 4 &&
+                !ExperimentalPresentationReadable(&driver, surface.get()) &&
+                !surface->experimental_read_export_armed &&
+                surface->experimental_write_lease,
+            "writable reader retry releases the frozen presentation exactly once");
+  }
+  {
+    Driver driver{-1, trace_fd};
+    auto decode = std::make_shared<DecodeContext>();
+    decode->id = 11;
+    decode->generation = 5;
+    decode->experimental_ready_remap = true;
+    driver.contexts[11] = decode;
+    auto surface = std::make_shared<Surface>();
+    surface->expected_timestamp = 400000;
+    surface->trace_context = 11;
+    surface->trace_generation = 5;
+    surface->trace_decode_identity = 61;
+    surface->trace_submission_ordinal = 4;
+    surface->experimental_presentation = true;
+    surface->presentation_payload_token = 300000;
+    surface->presentation_payload_decode_identity = 60;
+    surface->presentation_payload_submission_ordinal = 3;
+    surface->experimental_read_export = TraceFields(nullptr, surface.get());
+    surface->experimental_read_export_armed = true;
+    driver.surfaces[4] = surface;
+    Require(ExperimentalPresentationReadable(&driver, surface.get()),
+            "current experimental generation exposes its latched payload");
+    decode->closing = true;
+    ClearTraceReadExportsForContext(&driver, 11, 5);
+    Require(!ExperimentalPresentationReadable(&driver, surface.get()) &&
+                surface->experimental_presentation &&
+                surface->experimental_read_export_armed,
+            "context retirement keeps an exported presentation frozen");
+    auto reserved = std::make_shared<Surface>();
+    reserved->experimental_write_lease = true;
+    reserved->experimental_write_context = 11;
+    reserved->experimental_write_generation = 5;
+    reserved->experimental_write_submission_ordinal = 5;
+    driver.surfaces[5] = reserved;
+    ClearTraceReadExportsForContext(&driver, 11, 5);
+    Require(!reserved->experimental_write_lease,
+            "context retirement cancels a pre-submit write reservation");
+    driver.contexts.erase(11);
+    Require(!ExperimentalPresentationReadable(&driver, surface.get()) &&
+                surface->experimental_presentation &&
+                surface->experimental_read_export_armed,
+            "destroyed context cannot expose or overwrite a frozen old payload");
+  }
+  const std::string trace = ReadTraceFd(trace_fd);
+  close(trace_fd);
+  const std::string commit = FindTraceEvent(trace, "presentation_commit");
+  Require(TraceFieldIs(commit, "context", 7) &&
+              TraceFieldIs(commit, "generation", 3) &&
+              TraceFieldIs(commit, "surface", 2) &&
+              TraceFieldIs(commit, "token", 200000) &&
+              TraceFieldIs(commit, "decode_identity", 42) &&
+              TraceFieldIs(commit, "submission_ordinal", 2) &&
+              TraceFieldIs(commit, "payload_token", 100000) &&
+              TraceFieldIs(commit, "payload_decode_identity", 41) &&
+              TraceFieldIs(commit, "payload_submission_ordinal", 1) &&
+              TraceSignedFieldIs(commit, "submission_drift", 1),
+          "remap trace keeps requested and payload identities separate");
+}
+
+static void ExperimentalReadyRemapGate() {
+  SavedEnvironment live("CRYSTALHD_VAAPI_LIVE_H264");
+  SavedEnvironment low_latency("CRYSTALHD_VAAPI_LOW_LATENCY_H264");
+  SavedEnvironment remap("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP");
+  const auto create = [](const char *live_value, const char *low_value,
+                         const char *remap_value, VAProfile profile) {
+    const auto assign = [](const char *name, const char *value) {
+      if (value != nullptr)
+        setenv(name, value, 1);
+      else
+        unsetenv(name);
+    };
+    assign("CRYSTALHD_VAAPI_LIVE_H264", live_value);
+    assign("CRYSTALHD_VAAPI_LOW_LATENCY_H264", low_value);
+    assign("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP", remap_value);
+    Driver driver{-1};
+    driver.configs[1] = {profile, VAEntrypointVLD};
+    VADriverContext context = {};
+    context.pDriverData = &driver;
+    VAContextID context_id = VA_INVALID_ID;
+    Require(CreateContext(&context, 1, 16, 16, 0, nullptr, 0,
+                          &context_id) == VA_STATUS_SUCCESS,
+            "create environment-gated remap context");
+    return driver.contexts.at(context_id)->experimental_ready_remap;
+  };
+
+  Require(!create(nullptr, nullptr, nullptr, VAProfileH264Main) &&
+              !create(nullptr, nullptr, "1", VAProfileH264Main) &&
+              !create("1", "1", "0", VAProfileH264Main) &&
+              !create("1", "1", "yes", VAProfileH264Main) &&
+              create("1", "1", "1", VAProfileH264Main) &&
+              !create("1", "1", "1", VAProfileMPEG2Main),
+          "remap is exact opt-in and restricted to live low-latency H.264");
+
+  Driver driver{-1};
+  DecodeContext decode;
+  decode.experimental_ready_remap = true;
+  decode.have_picture = true;
+  decode.target = 1;
+  decode.slices.resize(1);
+  decode.slices.front().slice_type = 1;
+  decode.slice_data.push_back({1});
+  Require(SubmitPicture(&driver, &decode, VAProfileH264Main) ==
+              VA_STATUS_ERROR_UNSUPPORTED_PROFILE,
+          "experimental remap fails closed before accepting a B slice");
+}
+
+static void ExperimentalReadyRemapFailClosedRaces() {
+  {
+    Driver driver{-1};
+    auto decode = std::make_shared<DecodeContext>();
+    decode->id = 4;
+    decode->generation = 2;
+    decode->experimental_ready_remap = true;
+    driver.contexts[4] = decode;
+    auto payload = std::make_shared<Surface>();
+    auto requested = std::make_shared<Surface>();
+    for (const auto &surface : {payload, requested})
+      Require(surface->AllocateInternal(nullptr, -1, 16, 16,
+                                        VA_FOURCC_NV12),
+              "allocate SyncSurface presentation-path pixels");
+    payload->expected_timestamp = payload->frame_timestamp = 100000;
+    payload->ready = true;
+    payload->decode_identity = payload->trace_decode_identity = 21;
+    payload->trace_context = 4;
+    payload->trace_generation = 2;
+    payload->trace_submission_ordinal = 1;
+    memset(payload->planes[0], 33, payload->storage.size());
+    requested->id = 2;
+    requested->direct_decode_eligible = true;
+    requested->expected_timestamp = 200000;
+    requested->decode_identity = requested->trace_decode_identity = 22;
+    requested->trace_context = 4;
+    requested->trace_generation = 2;
+    requested->trace_submission_ordinal = 2;
+    requested->experimental_write_lease = true;
+    requested->experimental_write_context = 4;
+    requested->experimental_write_generation = 2;
+    requested->experimental_write_submission_ordinal = 2;
+    decode->decoded_frames[payload->expected_timestamp] = payload;
+    driver.surfaces[2] = requested;
+    QueueExperimentalReady(&driver, decode.get(), payload);
+    VADriverContext context = {};
+    context.pDriverData = &driver;
+    Require(SyncSurface2(&context, 2, 1000000) == VA_STATUS_SUCCESS &&
+                ExperimentalPresentationReadable(&driver, requested.get()) &&
+                requested->planes[0][0] == 33 &&
+                requested->presentation_payload_token == 100000 &&
+                !requested->ready && !requested->experimental_write_lease &&
+                decode->experimental_ready.empty() &&
+                decode->decoded_frames.count(100000) == 0,
+            "SyncSurface production path selects, copies, and commits one queued READY payload");
+  }
+
+  {
+    Driver driver{-1};
+    auto experiment = std::make_shared<DecodeContext>();
+    experiment->id = 7;
+    experiment->generation = 1;
+    experiment->experimental_ready_remap = true;
+    driver.contexts[7] = experiment;
+    auto vpp = std::make_shared<DecodeContext>();
+    vpp->id = 8;
+    vpp->video_process = true;
+    driver.contexts[8] = vpp;
+
+    auto source = std::make_shared<Surface>();
+    auto target = std::make_shared<Surface>();
+    for (const auto &surface : {source, target})
+      Require(surface->AllocateInternal(nullptr, -1, 16, 16,
+                                        VA_FOURCC_NV12),
+              "allocate VPP ownership-race surfaces");
+    source->id = 1;
+    source->ready = true;
+    source->expected_timestamp = source->frame_timestamp = 100000;
+    target->id = 2;
+    target->ready = true;
+    target->planes[0][0] = 47;
+    driver.surfaces[1] = source;
+    driver.surfaces[2] = target;
+    VADriverContext context = {};
+    context.pDriverData = &driver;
+    Require(BeginPicture(&context, 8, 2) == VA_STATUS_SUCCESS,
+            "VPP begins before an experimental decoder takes the target");
+
+    vpp->vpp_source = 1;
+    vpp->vpp_frame = source;
+    vpp->have_vpp_parameters = true;
+    target->trace_context = 7;
+    target->trace_generation = 1;
+    target->trace_submission_ordinal = 2;
+    target->trace_decode_identity = target->decode_identity = 12;
+    target->expected_timestamp = 200000;
+    target->experimental_presentation = true;
+    target->presentation_payload_token = 100000;
+    target->presentation_payload_decode_identity = 11;
+    target->presentation_payload_submission_ordinal = 1;
+    target->experimental_read_export = TraceFields(nullptr, target.get());
+    target->experimental_read_export_armed = true;
+    const uint64_t identity = target->decode_identity;
+    Require(EndPicture(&context, 8) ==
+                    VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT &&
+                vpp->target == VA_INVALID_SURFACE &&
+                vpp->vpp_source == VA_INVALID_SURFACE &&
+                !vpp->vpp_frame && !vpp->have_vpp_parameters &&
+                target->experimental_presentation &&
+                target->experimental_read_export_armed &&
+                target->decode_identity == identity && !target->failed &&
+                target->planes[0][0] == 47,
+            "stale VPP End cancels without poisoning or overwriting a newer exported presentation");
+
+    auto early_vpp = std::make_shared<DecodeContext>();
+    early_vpp->id = 10;
+    early_vpp->video_process = true;
+    driver.contexts[10] = early_vpp;
+    auto early_target = std::make_shared<Surface>();
+    Require(early_target->AllocateInternal(nullptr, -1, 16, 16,
+                                           VA_FOURCC_NV12),
+            "allocate early VPP-failure race target");
+    early_target->id = 3;
+    early_target->ready = true;
+    early_target->planes[0][0] = 53;
+    driver.surfaces[3] = early_target;
+    Require(BeginPicture(&context, 10, 3) == VA_STATUS_SUCCESS,
+            "VPP begins before an early-failure experimental takeover");
+    early_target->trace_context = 7;
+    early_target->trace_generation = 1;
+    early_target->trace_submission_ordinal = 3;
+    early_target->trace_decode_identity = early_target->decode_identity = 13;
+    early_target->expected_timestamp = 300000;
+    early_target->experimental_presentation = true;
+    early_target->presentation_payload_token = 200000;
+    early_target->presentation_payload_decode_identity = 12;
+    early_target->presentation_payload_submission_ordinal = 2;
+    early_target->experimental_read_export_armed = true;
+    Require(EndPicture(&context, 10) == VA_STATUS_ERROR_INVALID_PARAMETER &&
+                early_vpp->target == VA_INVALID_SURFACE &&
+                !early_target->failed &&
+                early_target->experimental_presentation &&
+                early_target->experimental_read_export_armed &&
+                early_target->decode_identity == 13 &&
+                early_target->planes[0][0] == 53,
+            "early stale VPP failure cannot poison a newer experimental owner");
+  }
+
+  {
+    DecodeIoMock io;
+    io.allow_device_open = true;
+    io.report_bcm70012 = true;
+    io.fail_set_input_format = true;
+    MockDecodeScope scope(io);
+    DecodeContext decode;
+    decode.profile = VAProfileH264Main;
+    decode.width = decode.height = 16;
+    decode.live_h264 = true;
+    decode.low_latency_h264 = true;
+    decode.experimental_ready_remap = true;
+    Surface target;
+    target.experimental_write_lease = true;
+    target.experimental_write_context = 7;
+    target.experimental_write_generation = 1;
+    target.experimental_write_submission_ordinal = 1;
+    Require(OpenDecoderForSubmit(&decode, &target, 16, 16) ==
+                    VA_STATUS_ERROR_OPERATION_FAILED &&
+                decode.is_70012 && !decode.low_latency_h264 &&
+                !decode.experimental_ready_remap &&
+                !target.experimental_write_lease &&
+                io.open_attempts == 1 && !io.invalid &&
+                std::count(io.events.begin(), io.events.end(),
+                           "close-device") == 1,
+            "BCM70012 discovery releases an experimental reservation even when later decoder setup fails");
+  }
+
+  {
+    Surface exported;
+    exported.trace_read_export_armed = true;
+    exported.experimental_read_export_armed = true;
+    exported.experimental_presentation = true;
+    RetireFailedExperimentalState(&exported);
+    Require(!exported.trace_read_export_armed &&
+                exported.experimental_read_export_armed &&
+                exported.experimental_presentation,
+            "decode failure preserves an already exported immutable presentation");
+    Surface unexported;
+    unexported.experimental_write_lease = true;
+    unexported.experimental_presentation = true;
+    RetireFailedExperimentalState(&unexported);
+    Require(!unexported.experimental_write_lease &&
+                !unexported.experimental_presentation,
+            "decode failure retires unexported experimental state immediately");
+  }
+
+  {
+    TraceEnvironment environment;
+    const int trace_fd =
+        memfd_create("crystalhd-retired-reexport-trace", MFD_CLOEXEC);
+    Require(trace_fd >= 0, "allocate retired re-export trace sink");
+    {
+      Driver driver{-1, trace_fd};
+      auto surface = std::make_shared<Surface>();
+      Require(surface->AllocateInternal(nullptr, -1, 16, 16,
+                                        VA_FOURCC_NV12),
+              "allocate retired exact export surface");
+      surface->id = 3;
+      surface->ready = true;
+      surface->expected_timestamp = surface->frame_timestamp = 200000;
+      surface->trace_context = 7;
+      surface->trace_generation = 1;
+      surface->trace_submission_ordinal = 2;
+      surface->decode_identity = surface->trace_decode_identity = 22;
+      surface->object_fds.push_back(
+          TraceBackingFd("crystalhd-retired-reexport", surface->storage.size()));
+      surface->object_sizes.push_back(surface->storage.size());
+      surface->experimental_read_export = TraceFields(nullptr, surface.get());
+      surface->experimental_read_export_armed = true;
+      driver.surfaces[3] = surface;
+      VADriverContext context = {};
+      context.pDriverData = &driver;
+      VADRMPRIMESurfaceDescriptor descriptor = {};
+      Require(ExportSurfaceHandle(
+                  &context, 3, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                  VA_EXPORT_SURFACE_READ_ONLY |
+                      VA_EXPORT_SURFACE_COMPOSED_LAYERS,
+                  &descriptor) == VA_STATUS_SUCCESS &&
+                  surface->trace_read_export_armed &&
+                  surface->experimental_read_export_armed,
+              "trace-only re-export cannot revoke a retired external-reader guard");
+      for (unsigned int object = 0; object < descriptor.num_objects; ++object)
+        close(descriptor.objects[object].fd);
+      auto ordinary = std::make_shared<DecodeContext>();
+      ordinary->id = 9;
+      driver.contexts[9] = ordinary;
+      Require(BeginPicture(&context, 9, 3) ==
+                      VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT &&
+                  surface->experimental_read_export_armed,
+              "ordinary reuse remains fail-closed after retired re-export");
+      ordinary->profile = VAProfileMPEG2Main;
+      ordinary->target = 3;
+      Require(SubmitPicture(&driver, ordinary.get(), VAProfileMPEG2Main) ==
+                      VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT &&
+                  surface->experimental_read_export_armed &&
+                  surface->trace_decode_identity == 22,
+              "ordinary End revalidates experimental ownership acquired after Begin");
+    }
+    close(trace_fd);
+  }
+}
+
+static void ExperimentalReadyRemapBounds() {
+  Driver driver{-1};
+  auto decode = std::make_shared<DecodeContext>();
+  decode->id = 5;
+  decode->generation = 6;
+  decode->experimental_ready_remap = true;
+  driver.contexts[5] = decode;
+  std::vector<std::shared_ptr<Surface>> pictures;
+  for (uint64_t ordinal = 1; ordinal <= 4; ++ordinal) {
+    auto picture = std::make_shared<Surface>();
+    Require(picture->AllocateInternal(nullptr, -1, 16, 16,
+                                      VA_FOURCC_NV12),
+            "allocate bounded remap picture");
+    picture->id = static_cast<VASurfaceID>(ordinal);
+    picture->expected_timestamp = picture->frame_timestamp = ordinal * 100000;
+    picture->ready = true;
+    picture->decode_identity = picture->trace_decode_identity = 100 + ordinal;
+    picture->trace_context = 5;
+    picture->trace_generation = 6;
+    picture->trace_submission_ordinal = ordinal;
+    decode->decoded_frames[picture->expected_timestamp] = picture;
+    QueueExperimentalReady(&driver, decode.get(), picture);
+    pictures.push_back(picture);
+  }
+  Require(decode->experimental_ready.size() ==
+                  kExperimentalPresentationReadyLimit &&
+              decode->decoded_frames.size() ==
+                  kExperimentalPresentationReadyLimit &&
+              !pictures.front()->experimental_ready_queued &&
+              decode->decoded_frames.count(100000) == 0,
+          "READY storage evicts exactly the oldest completed private picture");
+
+  auto requested = std::make_shared<Surface>();
+  Require(requested->AllocateInternal(nullptr, -1, 16, 16,
+                                      VA_FOURCC_NV12),
+          "allocate bounded remap request");
+  requested->expected_timestamp = 500000;
+  requested->trace_context = 5;
+  requested->trace_generation = 6;
+  requested->trace_submission_ordinal = 5;
+  requested->experimental_write_lease = true;
+  requested->experimental_write_context = 5;
+  requested->experimental_write_generation = 6;
+  requested->experimental_write_submission_ordinal = 5;
+  const uint64_t now = MonotonicNowNs();
+  Require(SelectExperimentalReady(*decode, *requested, now) == pictures[3],
+          "selection accepts only the immediately preceding READY ordinal");
+  pictures[3]->experimental_ready_at_ns =
+      now - kExperimentalPresentationMaxAgeNs - 1;
+  Require(!SelectExperimentalReady(*decode, *requested, now),
+          "selection rejects a candidate beyond the monotonic age bound");
+  pictures[3]->experimental_ready_at_ns = now;
+  requested->trace_generation = 7;
+  Require(!SelectExperimentalReady(*decode, *requested, now),
+          "selection rejects a cross-generation READY picture");
+  requested->trace_generation = 6;
+  requested->trace_submission_ordinal = 6;
+  Require(!SelectExperimentalReady(*decode, *requested, now),
+          "selection rejects drift greater than one submission");
+
+  requested->id = 9;
+  requested->trace_submission_ordinal = 5;
+  requested->trace_decode_identity = requested->decode_identity = 209;
+  driver.surfaces[9] = requested;
+  for (VASurfaceID id : {7U}) {
+    auto active = std::make_shared<Surface>();
+    active->id = id;
+    active->expected_timestamp = static_cast<uint64_t>(id) * 100000;
+    active->decode_identity = active->trace_decode_identity = 300 + id;
+    active->trace_context = 5;
+    active->trace_generation = 6;
+    active->trace_submission_ordinal = id;
+    active->experimental_presentation = true;
+    active->presentation_payload_token = (id - 1) * 100000;
+    active->presentation_payload_decode_identity = 299 + id;
+    active->presentation_payload_submission_ordinal = id - 1;
+    if (id == 7) {
+      // A failed presentation can remain frozen for an already exported GPU
+      // reader. It is unreadable, but must still consume one bounded slot.
+      active->failed = true;
+      active->experimental_read_export_armed = true;
+    }
+    driver.surfaces[id] = active;
+  }
+  bool committed = false;
+  Require(TryExperimentalPresentation(&driver, requested, &committed) ==
+                  VA_STATUS_SUCCESS &&
+              committed && requested->experimental_presentation &&
+              !requested->experimental_write_lease &&
+              requested->presentation_payload_token == 400000 &&
+              !pictures[3]->experimental_ready_queued &&
+              decode->decoded_frames.count(400000) == 0,
+          "one active public presentation slot permits a second bounded slot");
+
+  auto next_candidate = std::make_shared<Surface>();
+  Require(next_candidate->AllocateInternal(nullptr, -1, 16, 16,
+                                            VA_FOURCC_NV12),
+          "allocate candidate behind the third active slot");
+  next_candidate->expected_timestamp = next_candidate->frame_timestamp =
+      500000;
+  next_candidate->ready = true;
+  next_candidate->decode_identity =
+      next_candidate->trace_decode_identity = 105;
+  next_candidate->trace_context = 5;
+  next_candidate->trace_generation = 6;
+  next_candidate->trace_submission_ordinal = 5;
+  decode->decoded_frames[500000] = next_candidate;
+  QueueExperimentalReady(&driver, decode.get(), next_candidate);
+
+  auto next_requested = std::make_shared<Surface>();
+  Require(next_requested->AllocateInternal(nullptr, -1, 16, 16,
+                                            VA_FOURCC_NV12),
+          "allocate request behind the third active slot");
+  next_requested->id = 10;
+  next_requested->expected_timestamp = 600000;
+  next_requested->trace_context = 5;
+  next_requested->trace_generation = 6;
+  next_requested->trace_submission_ordinal = 6;
+  next_requested->trace_decode_identity =
+      next_requested->decode_identity = 210;
+  next_requested->experimental_write_lease = true;
+  next_requested->experimental_write_context = 5;
+  next_requested->experimental_write_generation = 6;
+  next_requested->experimental_write_submission_ordinal = 6;
+  driver.surfaces[10] = next_requested;
+  committed = true;
+  const auto unchanged_pixels = next_requested->storage;
+  Require(TryExperimentalPresentation(&driver, next_requested, &committed) ==
+                  VA_STATUS_SUCCESS &&
+              !committed && !next_requested->experimental_presentation &&
+              next_requested->experimental_write_lease &&
+              next_requested->storage == unchanged_pixels &&
+              next_candidate->experimental_ready_queued &&
+              decode->decoded_frames.at(500000) == next_candidate &&
+              std::find(decode->experimental_ready.begin(),
+                        decode->experimental_ready.end(), next_candidate) !=
+                  decode->experimental_ready.end(),
+          "two active public presentation slots force exact fallback");
+}
+
 static void DirectOutputOwnershipAndExport() {
   {
     OutputFixture fixture;
@@ -1901,6 +2754,198 @@ struct TeardownFixture {
             "held picture remains downloadable without its decoder context");
   }
 };
+
+static void ConcurrentSyncObservesExperimentalPresentation() {
+  for (bool callback_commits : {false, true}) {
+    TeardownFixture fixture(2);
+    fixture.decoder->id = 1;
+    fixture.decoder->generation = 1;
+    fixture.decoder->experimental_ready_remap = true;
+    fixture.decoder->live_h264 = true;
+    fixture.decoder->low_latency_h264 = true;
+
+    const auto candidate =
+        fixture.decoder->decoded_frames.at(kTimestampStep);
+    const auto requested_picture =
+        fixture.decoder->decoded_frames.at(2 * kTimestampStep);
+    const auto requested = fixture.held[1];
+    candidate->ready = true;
+    candidate->frame_timestamp = candidate->expected_timestamp;
+    candidate->decode_identity = candidate->trace_decode_identity = 81;
+    candidate->trace_context = 1;
+    candidate->trace_generation = 1;
+    candidate->trace_submission_ordinal = 1;
+    memset(candidate->planes[0], 42, candidate->storage.size());
+    requested_picture->decode_identity =
+        requested_picture->trace_decode_identity = 82;
+    requested_picture->trace_context = 1;
+    requested_picture->trace_generation = 1;
+    requested_picture->trace_submission_ordinal = 2;
+    requested->id = 2;
+    requested->decode_identity = requested->trace_decode_identity = 82;
+    requested->trace_context = 1;
+    requested->trace_generation = 1;
+    requested->trace_submission_ordinal = 2;
+    requested->decode_picture = requested_picture;
+    requested->experimental_write_lease = true;
+    requested->experimental_write_context = 1;
+    requested->experimental_write_generation = 1;
+    requested->experimental_write_submission_ordinal = 2;
+    fixture.decoder->pending.erase(kTimestampStep);
+    fixture.decoder->surface_timestamps.erase(fixture.held[0].get());
+
+    bool callback_committed = false;
+    fixture.io.on_sleep = [&] {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      QueueExperimentalReady(&fixture.driver, fixture.decoder.get(), candidate);
+      if (callback_commits)
+        Require(TryExperimentalPresentation(&fixture.driver, requested,
+                                            &callback_committed) ==
+                        VA_STATUS_SUCCESS &&
+                    callback_committed,
+                "concurrent sync commits one matching older READY payload");
+    };
+    Require(SyncSurface(&fixture.context, 2) == VA_STATUS_SUCCESS &&
+                callback_committed == callback_commits &&
+                ExperimentalPresentationReadable(&fixture.driver,
+                                                  requested.get()) &&
+                !requested->ready && requested->planes[0][0] == 42 &&
+                !requested_picture->ready && !requested->failed,
+            callback_commits
+                ? "exact waiter observes another sync's same-binding presentation commit"
+                : "waiting sync commits a READY payload queued after its initial selection");
+  }
+
+  {
+    TeardownFixture fixture(2);
+    fixture.decoder->id = 1;
+    fixture.decoder->generation = 1;
+    fixture.decoder->experimental_ready_remap = true;
+    fixture.decoder->live_h264 = true;
+    fixture.decoder->low_latency_h264 = true;
+
+    const auto candidate =
+        fixture.decoder->decoded_frames.at(kTimestampStep);
+    const auto requested_picture =
+        fixture.decoder->decoded_frames.at(2 * kTimestampStep);
+    const auto requested = fixture.held[1];
+    candidate->decode_identity = candidate->trace_decode_identity = 81;
+    candidate->trace_context = 1;
+    candidate->trace_generation = 1;
+    candidate->trace_submission_ordinal = 1;
+    requested_picture->decode_identity =
+        requested_picture->trace_decode_identity = 82;
+    requested_picture->trace_context = 1;
+    requested_picture->trace_generation = 1;
+    requested_picture->trace_submission_ordinal = 2;
+    requested->id = 2;
+    requested->decode_identity = requested->trace_decode_identity = 82;
+    requested->trace_context = 1;
+    requested->trace_generation = 1;
+    requested->trace_submission_ordinal = 2;
+    requested->decode_picture = requested_picture;
+    requested->experimental_write_lease = true;
+    requested->experimental_write_context = 1;
+    requested->experimental_write_generation = 1;
+    requested->experimental_write_submission_ordinal = 2;
+
+    Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+                    VA_STATUS_SUCCESS &&
+                fixture.io.inputs.size() == 2,
+            "submit pictures for same-call READY harvest");
+    // The I/O mock records each split input synchronously but has no firmware
+    // parser that consumes the speculative prefix. Model the state after the
+    // matching remainder has made the first picture eligible for output.
+    fixture.decoder->prefed_timestamp = 0;
+    fixture.io.outputs.push_back(kTimestampStep);
+    Require(SyncSurface(&fixture.context, 2) == VA_STATUS_SUCCESS &&
+                fixture.io.outputs.empty() && candidate->ready &&
+                ExperimentalPresentationReadable(&fixture.driver,
+                                                  requested.get()) &&
+                !requested->ready &&
+                requested->planes[0][0] ==
+                    DecodeIoMock::Luma(kTimestampStep) &&
+                !requested_picture->ready && !requested->failed,
+            "same sync selects an older picture harvested by ReceiveAvailable");
+  }
+
+  // Rebinding a public surface while an older SyncSurface call has released
+  // Driver::mutex must not let that obsolete waiter present into the new
+  // context merely because both contexts use the same synthetic token.
+  TeardownFixture fixture(2);
+  fixture.decoder->id = 1;
+  fixture.decoder->generation = 1;
+  fixture.decoder->experimental_ready_remap = true;
+  fixture.decoder->live_h264 = true;
+  fixture.decoder->low_latency_h264 = true;
+
+  const auto old_picture =
+      fixture.decoder->decoded_frames.at(2 * kTimestampStep);
+  const auto requested = fixture.held[1];
+  old_picture->decode_identity = old_picture->trace_decode_identity = 82;
+  old_picture->trace_context = 1;
+  old_picture->trace_generation = 1;
+  old_picture->trace_submission_ordinal = 2;
+  requested->id = 2;
+  requested->decode_identity = requested->trace_decode_identity = 82;
+  requested->trace_context = 1;
+  requested->trace_generation = 1;
+  requested->trace_submission_ordinal = 2;
+  requested->decode_picture = old_picture;
+  requested->experimental_write_lease = true;
+  requested->experimental_write_context = 1;
+  requested->experimental_write_generation = 1;
+  requested->experimental_write_submission_ordinal = 2;
+
+  auto replacement = std::make_shared<DecodeContext>();
+  replacement->id = 2;
+  replacement->generation = 1;
+  replacement->width = replacement->height = 16;
+  replacement->device = fixture.io.handle();
+  replacement->decoder_open = replacement->decoder_started = true;
+  replacement->experimental_ready_remap = true;
+  replacement->live_h264 = true;
+  replacement->low_latency_h264 = true;
+  fixture.driver.contexts[2] = replacement;
+
+  auto candidate = std::make_shared<Surface>();
+  Require(candidate->AllocateInternal(nullptr, -1, 16, 16, VA_FOURCC_NV12),
+          "allocate equal-token replacement candidate");
+  candidate->expected_timestamp = candidate->frame_timestamp = kTimestampStep;
+  candidate->ready = true;
+  candidate->decode_identity = candidate->trace_decode_identity = 91;
+  candidate->trace_context = 2;
+  candidate->trace_generation = 1;
+  candidate->trace_submission_ordinal = 1;
+  memset(candidate->planes[0], 55, candidate->storage.size());
+  replacement->decoded_frames[kTimestampStep] = candidate;
+
+  fixture.io.on_sleep = [&] {
+    std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+    requested->decode_identity = requested->trace_decode_identity = 92;
+    requested->trace_context = 2;
+    requested->trace_generation = 1;
+    requested->trace_submission_ordinal = 2;
+    requested->decode_picture.reset();
+    requested->experimental_write_lease = true;
+    requested->experimental_write_context = 2;
+    requested->experimental_write_generation = 1;
+    requested->experimental_write_submission_ordinal = 2;
+    QueueExperimentalReady(&fixture.driver, replacement.get(), candidate);
+  };
+
+  Require(SyncSurface(&fixture.context, 2) ==
+                  VA_STATUS_ERROR_INVALID_SURFACE &&
+              requested->trace_context == 2 &&
+              requested->trace_decode_identity == 92 &&
+              requested->experimental_write_lease &&
+              !requested->experimental_presentation &&
+              requested->planes[0][0] == 99 &&
+              candidate->experimental_ready_queued &&
+              replacement->experimental_ready.size() == 1 &&
+              replacement->experimental_ready.front() == candidate,
+          "obsolete waiter cannot mutate an equal-token replacement binding");
+}
 
 static void StaleUnretainedOutputPreservesTransportAndEos() {
   TeardownFixture fixture(2);
@@ -3472,6 +4517,11 @@ int main() {
     DuplicateOutputCannotMutateOrRetirePixels();
     TraceIdentityUsesImmutableTokenAndLiveAliasOwner();
     TraceReadExportReuseBoundary();
+    ExperimentalReadyRemapGate();
+    ExperimentalReadyRemapFailClosedRaces();
+    ExperimentalReadyRemapBounds();
+    ExperimentalReadyRemapStateMachine();
+    ConcurrentSyncObservesExperimentalPresentation();
     DirectOutputOwnershipAndExport();
     RejectIncompleteGeometryAndInitializeAllocationPadding();
     FailedCpuOwnershipNeverCompletesDecode();
