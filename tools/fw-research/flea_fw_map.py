@@ -898,6 +898,28 @@ _CHANNEL_FIELD_WHOLE_ARM_REGION = (
     "f109a8e616b7c744770631c76cdb910db5295f54d7e78c80abed6bffbbf95679",
 )
 MAX_CHANNEL_FIELD_WHOLE_ARM_BYTES = 192 * 1024
+_CHANNEL_FIELD_BLX_EVIDENCE_REGIONS = (
+    ("irq_vector_root", 0x00000, 0x03c,
+     "de8b9454a35d359a236ce99751fa0914d415392a41e1b32d7cb903168d5155e0"),
+    ("irq_entry", 0x000dc, 0x01c,
+     "2deff474b41a300c7da7ebe19e02683f29533be104ae9a8cfc9ad0861d2008c3"),
+    ("irq_slot_registration", 0x06ea0, 0x034,
+     "9e6b69c108f5f1af4178bd069f394176b9675f22e5720791fe13c24e126e6a8f"),
+    ("irq_dispatch", 0x06ef0, 0x100,
+     "fd586631b4c4ff1f065091fc0f186c347b8ec40153b707fb222b0b08abc69bd8"),
+    ("irq_registration_setup", 0x0703c, 0x0a8,
+     "dea84781aa0e00184e96726f8cdc0a49537ca4c0672651a8556a11b03c10b1a9"),
+    ("irq_table_base_literal", 0x07128, 0x004,
+     "9ebc15efcb62fd7356192e919ef87cb9b909666c4ef4ed58594aa6f54954d969"),
+    ("irq19_callback_literal", 0x07144, 0x004,
+     "e6f59c39eacdd850cb67840feb8eb5099478dcc2cb442bcec267761db2341bff"),
+    ("response_registration", 0x28194, 0x0b8,
+     "32b6a70c0765cbb0dd64f0aed34f791046acc9c7593ff81dd6d83e9bfe7b59c0"),
+    ("response_callback_literal", 0x28694, 0x004,
+     "f5758d7822a58d44de1c8433c1c2105204baefdd0c58c2827fadb8a02ca50d9c"),
+)
+MAX_CHANNEL_FIELD_BLX_EVIDENCE_REGIONS = 9
+MAX_CHANNEL_FIELD_BLX_EVIDENCE_BYTES = 1024
 _MFD_SOURCE_REGIONS = (
     ("source_address", 0x1918,
      "f0402de914d04de20070a0e10140a0e1f8219fe55c10d4e5810081e00031b2e7050092e90c008de510208de508308de5"
@@ -3846,6 +3868,30 @@ def _a32_target_branches_in_region(payload, region, targets):
     return candidates
 
 
+def _a32_blx_register_candidates_in_region(payload, region):
+    """Inventory aligned A32 BLX-register patterns without classifying code."""
+    role, start, size = region
+    if start % 4 or size <= 0 or size % 4:
+        raise FormatError("A32 BLX-register scan region is not word aligned")
+    data = bounded(payload, start, size, "A32 BLX-register scan region")
+    candidates = []
+    for relative in range(0, size, 4):
+        word = struct.unpack_from("<I", data, relative)[0]
+        condition = word >> 28
+        # cond=0xf is the unconditional encoding space, not A32 BLX Rm.
+        if condition == 15 or word & 0x0ffffff0 != 0x012fff30:
+            continue
+        candidates.append({
+            "region_role": role,
+            "blob_file_offset": start + relative,
+            "word": word,
+            "operation": "BLX register",
+            "condition": condition,
+            "operand_register": word & 15,
+        })
+    return candidates
+
+
 def _a32_blx_immediate(payload, offset):
     """Decode one aligned A32 BLX-immediate encoding without classifying code."""
     if offset % 4:
@@ -5753,6 +5799,8 @@ def _channel_field_map(payload):
                                 if role in caller_scan_roles)
     whole_arm_role, whole_arm_start, whole_arm_size, whole_arm_sha256 = \
         _CHANNEL_FIELD_WHOLE_ARM_REGION
+    blx_evidence_regions = _CHANNEL_FIELD_BLX_EVIDENCE_REGIONS
+    blx_evidence_bytes = sum(size for _, _, size, _ in blx_evidence_regions)
     if tuple(role for role, _, _ in caller_scan_regions) != caller_scan_roles:
         raise FormatError("channel-field caller scan regions do not match the baseline")
     if len(regions) > MAX_CHANNEL_FIELD_REGIONS or total > MAX_CHANNEL_FIELD_BYTES:
@@ -5778,6 +5826,21 @@ def _channel_field_map(payload):
                         "channel-field whole-ARM scan region")
     if hashlib.sha256(whole_arm).hexdigest() != whole_arm_sha256:
         raise FormatError("channel-field whole-ARM scan region does not match the baseline")
+
+    if (len(blx_evidence_regions) > MAX_CHANNEL_FIELD_BLX_EVIDENCE_REGIONS or
+            blx_evidence_bytes > MAX_CHANNEL_FIELD_BLX_EVIDENCE_BYTES):
+        raise FormatError("channel-field BLX-register evidence budget exceeded")
+    validated_blx_evidence = []
+    for role, offset, size, expected in blx_evidence_regions:
+        data = bounded(payload, offset, size,
+                       "channel-field BLX-register evidence region")
+        if hashlib.sha256(data).hexdigest() != expected:
+            raise FormatError(
+                f"channel-field BLX-register evidence region {role} does not match the baseline")
+        validated_blx_evidence.append({
+            "role": role, "blob_file_offset": offset,
+            "size": size, "sha256": expected,
+        })
 
     admission = _rx_descriptor_admission_map(payload)
     branch_candidates = _a32_branch_candidates_in_regions(payload, caller_scan_regions)
@@ -5829,6 +5892,124 @@ def _channel_field_map(payload):
                  if record["target_blob_file_offset"] == helper]
         for helper in tracked_helper_entries
     }
+
+    blx_register_candidates = _a32_blx_register_candidates_in_region(
+        payload, (whole_arm_role, whole_arm_start, whole_arm_size))
+    expected_blx_registers = (
+        (0x06fb0, 2), (0x06fe0, 2), (0x0c7c4, 3), (0x1db58, 2),
+        (0x1ead4, 1), (0x1eb6c, 2), (0x1eb88, 2), (0x1ecc8, 2),
+        (0x1ece4, 2), (0x1ed14, 2), (0x1ed60, 2), (0x1edf8, 2),
+        (0x1ee44, 2), (0x1ef70, 2), (0x1ef8c, 2), (0x1f094, 2),
+        (0x1f16c, 2), (0x1f188, 2), (0x1f744, 2), (0x1f888, 2),
+        (0x1f910, 2), (0x1f968, 2), (0x1f9f0, 12), (0x1fa78, 2),
+        (0x1fb60, 2), (0x1fb78, 2), (0x1fb88, 2), (0x1fbdc, 2),
+        (0x2003c, 2), (0x20070, 2), (0x209f4, 3), (0x20acc, 3),
+        (0x2109c, 2), (0x210f8, 2), (0x2110c, 2), (0x21150, 3),
+        (0x211a0, 2), (0x21214, 3), (0x2144c, 3), (0x216c0, 3),
+        (0x21734, 3), (0x217ac, 3), (0x23eac, 6), (0x23edc, 6),
+        (0x23f24, 1), (0x23f58, 3), (0x23f98, 3), (0x24784, 1),
+        (0x24a00, 1), (0x27b4c, 12), (0x27c24, 3), (0x27c50, 12),
+        (0x27c68, 1), (0x27cb0, 1), (0x27d1c, 1), (0x27d44, 1),
+        (0x27e28, 3), (0x27e68, 12), (0x27e80, 1), (0x27eb4, 1),
+        (0x27ee0, 1), (0x27f04, 1), (0x27f68, 1), (0x27fb4, 1),
+        (0x27ff0, 1), (0x28004, 1), (0x28970, 2), (0x297c0, 2),
+        (0x297e0, 2), (0x29918, 2), (0x2c21c, 3), (0x2c254, 3),
+    )
+    if (tuple((record["blob_file_offset"], record["operand_register"])
+              for record in blx_register_candidates) != expected_blx_registers or
+            {record["condition"] for record in blx_register_candidates} != {14}):
+        raise FormatError("channel-field A32 BLX-register candidates do not match the baseline")
+    rooted_blx_offsets = (0x6fb0, 0x6fe0)
+    for record in blx_register_candidates:
+        if record["blob_file_offset"] in rooted_blx_offsets:
+            record.update(code_status="rooted_a32_instruction",
+                          code_region_role="irq_dispatch")
+        else:
+            record["code_status"] = "encoding_candidate_only"
+
+    irq_vector = _a32_literal(payload, 0x18)
+    irq_dispatch_call = _a32_branch(payload, 0xf0, link=True)
+    if ((irq_vector["destination_register"],
+         irq_vector["literal_blob_file_offset"], irq_vector["literal_value"]) !=
+            (15, 0x34, 0xdc) or
+            irq_dispatch_call["target_blob_file_offset"] != 0x6ef0):
+        raise FormatError("channel-field IRQ dispatch root does not match the baseline")
+
+    required_blx_words = {
+        0x6ea4: 0xe3500020, 0x6ea8: 0x3a000001,
+        0x6eb4: 0xe59f426c, 0x6eb8: 0xe0800080,
+        0x6ebc: 0xe7841100, 0x6ec0: 0xe0840100,
+        0x6ec4: 0xe5802004, 0x6ec8: 0xe5803008,
+        0x6f20: 0xe59f9200, 0x6f94: 0xe0848084,
+        0x6f98: 0xe0896108, 0x6f9c: 0xe5961008,
+        0x6fa0: 0xe3510000, 0x6fa4: 0x0a000007,
+        0x6fa8: 0xe7992108, 0x6fac: 0xe5960004,
+        0x6fb0: 0xe12fff32, 0x6fd8: 0xe7992108,
+        0x6fdc: 0xe5960004, 0x6fe0: 0xe12fff32,
+        0x7128: 0x000d2000,
+    }
+    for offset, expected in required_blx_words.items():
+        if _bootstrap_word(payload, offset) != expected:
+            raise FormatError(
+                f"channel-field BLX-register word at {offset:#x} does not match the baseline")
+
+    direct_registration_calls = _a32_target_branches_in_region(
+        payload, (whole_arm_role, whole_arm_start, whole_arm_size), (0x6ea0,))
+    expected_registration_calls = (
+        (0x7078, 0xebffff88, "BL", 14, 0x6ea0),
+        (0x70a0, 0xebffff7e, "BL", 14, 0x6ea0),
+        (0x28214, 0xebff7b21, "BL", 14, 0x6ea0),
+    )
+    if tuple((record["blob_file_offset"], record["word"], record["operation"],
+              record["condition"], record["target_blob_file_offset"])
+             for record in direct_registration_calls) != expected_registration_calls:
+        raise FormatError("channel-field direct IRQ registrations do not match the baseline")
+
+    registration_words = {
+        0x7068: 0xe3a03000, 0x706c: 0xe59f10d0,
+        0x7070: 0xe1a02003, 0x7074: 0xe3a00013,
+        0x7090: 0xe3a03000, 0x7094: 0xe24f10a8,
+        0x7098: 0xe1a02003, 0x709c: 0xe3a00004,
+        0x7144: 0x0000888c,
+        0x28204: 0xe3a03009, 0x28208: 0xe2842068,
+        0x2820c: 0xe59f1480, 0x28210: 0xe1a00003,
+        0x28694: 0x0002c16c,
+    }
+    for offset, expected in registration_words.items():
+        if _bootstrap_word(payload, offset) != expected:
+            raise FormatError(
+                f"channel-field IRQ registration word at {offset:#x} does not match the baseline")
+    irq19_callback = _a32_literal(payload, 0x706c)
+    response_callback = _a32_literal(payload, 0x2820c)
+    if ((irq19_callback["literal_blob_file_offset"], irq19_callback["literal_value"],
+         response_callback["literal_blob_file_offset"],
+         response_callback["literal_value"]) !=
+            (0x7144, 0x888c, 0x28694, 0x2c16c)):
+        raise FormatError("channel-field IRQ callback literals do not match the baseline")
+
+    registrations = []
+    registration_specs = (
+        (19, 0x888c, {"kind": "immediate", "value": 0}, 0,
+         [0x7068, 0x706c, 0x7070, 0x7074], irq19_callback),
+        (4, 0x6ff4, {"kind": "immediate", "value": 0}, 0,
+         [0x7090, 0x7094, 0x7098, 0x709c], None),
+        (9, 0x2c16c, {"kind": "context_relative", "expression": "r4 + 0x68"}, 9,
+         [0x28204, 0x28208, 0x2820c, 0x28210], response_callback),
+    )
+    for call, spec in zip(direct_registration_calls, registration_specs):
+        slot, callback, argument, state, sites, literal = spec
+        record = {
+            "call": call, "slot": slot, "callback_address": callback,
+            "argument": argument, "state": state,
+            "materialization_blob_file_offsets": sites,
+            "callback_target_body_classified": False,
+            "runtime_observed": False,
+        }
+        if literal is not None:
+            record["callback_literal"] = literal
+        else:
+            record["callback_address_expression"] = "PC(0x7094) - 0xa8"
+        registrations.append(record)
 
     def checked_sites(entries, access, expression):
         result = []
@@ -6372,6 +6553,13 @@ def _channel_field_map(payload):
                            "charged_to_selected_region_budget": False,
                            "shares_hash_gate_with": "whole_arm_direct_b_bl_scan",
                        },
+                       "blx_register_evidence": {
+                           "region_count": len(validated_blx_evidence),
+                           "bytes": blx_evidence_bytes,
+                           "regions": validated_blx_evidence,
+                           "charged_to_selected_region_budget": False,
+                           "overlap_deduplicated": False,
+                       },
                        "rx_descriptor_admission": admission["validation"]},
         "channel": {
             "root": root, "init_root": init_root, "reinitialize_root": reinit_root,
@@ -6469,8 +6657,81 @@ def _channel_field_map(payload):
                 },
                 **interworking_immediates,
             },
+            "whole_arm_blx_register_scan": {
+                "isa_encoding": "A32 BLX-register encoding patterns with condition 0..14",
+                "region": {
+                    "role": whole_arm_role,
+                    "blob_file_offset": whole_arm_start,
+                    "size": whole_arm_size,
+                    "sha256": whole_arm_sha256,
+                },
+                "alignment_bytes": 4,
+                "encoding_candidate_count": len(blx_register_candidates),
+                "conditions_present": sorted({record["condition"]
+                                               for record in blx_register_candidates}),
+                "encoding_candidates": blx_register_candidates,
+                "rooted_code_candidate_count": len(rooted_blx_offsets),
+                "rooted_code_candidate_offsets": list(rooted_blx_offsets),
+                "root_chain": {
+                    "vector_entry": irq_vector,
+                    "irq_entry_blob_file_offset": 0xdc,
+                    "dispatch_call": irq_dispatch_call,
+                    "dispatch_region": {
+                        "role": "irq_dispatch",
+                        "blob_file_offset": 0x6ef0,
+                        "size": 0x100,
+                    },
+                    "runtime_observed": False,
+                },
+                "callback_table": {
+                    "registration_entry_blob_file_offset": 0x6ea0,
+                    "table_address": 0xd2000,
+                    "slot_count": 32,
+                    "slot_stride_bytes": 12,
+                    "slot_address_expression": "0xd2000 + slot * 12",
+                    "callback_word_offset": 0,
+                    "argument_word_offset": 4,
+                    "state_word_offset": 8,
+                    "registration_word_receipts": [
+                        {"blob_file_offset": offset, "word": word}
+                        for offset, word in sorted(required_blx_words.items())
+                        if 0x6ea0 <= offset < 0x6ed4 or offset == 0x7128
+                    ],
+                    "dispatch_word_receipts": [
+                        {"blob_file_offset": offset, "word": word}
+                        for offset, word in sorted(required_blx_words.items())
+                        if 0x6ef0 <= offset < 0x6ff0
+                    ],
+                    "dispatch_callback_load_blob_file_offsets": [0x6fa8, 0x6fd8],
+                    "dispatch_argument_load_blob_file_offsets": [0x6fac, 0x6fdc],
+                    "dispatch_blx_blob_file_offsets": list(rooted_blx_offsets),
+                    "runtime_table_contents_observed": False,
+                },
+                "direct_registration_call_scan": {
+                    "region": {
+                        "role": whole_arm_role,
+                        "blob_file_offset": whole_arm_start,
+                        "size": whole_arm_size,
+                        "sha256": whole_arm_sha256,
+                    },
+                    "alignment_bytes": 4,
+                    "target_blob_file_offset": 0x6ea0,
+                    "target_candidates": direct_registration_calls,
+                    "selected_registrations": registrations,
+                    "complete_for_hash_pinned_region_direct_b_bl_encoding_candidates": True,
+                    "all_registration_writers_complete": False,
+                    "indirect_or_computed_registration_calls_excluded": False,
+                },
+                "complete_for_hash_pinned_region_encoding_candidates": True,
+                "all_candidate_code_boundaries_classified": False,
+                "callback_target_bodies_classified": False,
+                "runtime_table_contents_observed": False,
+                "runtime_path_observed": False,
+            },
             "limitations": [
                 "The whole-prefix scans classify aligned raw A32 B/BL, A32 BLX-immediate and T32 BL/BLX-immediate patterns; they do not classify the mixed prefix into code and data.",
+                "The A32 BLX-register scan roots only the two IRQ-dispatch sites at 0x6fb0 and 0x6fe0 as code; the other 70 matches remain encoding candidates only.",
+                "The selected IRQ callback table and three direct registration calls do not establish every writer, runtime table contents, callback identity, or callback-target execution.",
                 "No supported direct-immediate target candidate for 0x1610 exists in the hash-pinned ARM prefix; that does not exclude other transfer mechanisms or sources outside the pinned prefix.",
                 "The 0x12e4 path relies on A32 callee-saved r6 preservation across its possible intervening calls.",
                 "Static selected paths do not establish runtime execution, valid slot range, object identity or lifetime.",
@@ -6493,6 +6754,11 @@ def _channel_field_map(payload):
             "direct_b_bl_target_candidates_complete": True,
             "whole_arm_direct_interworking_encoding_scan": True,
             "direct_interworking_target_encoding_patterns_complete": True,
+            "whole_arm_blx_register_encoding_scan": True,
+            "rooted_blx_register_instruction_sites": True,
+            "all_blx_register_code_boundaries_classified": False,
+            "all_callback_registration_writers_complete": False,
+            "runtime_callback_targets_resolved": False,
             "whole_arm_source_code_boundaries_classified": False,
             "direct_caller_inventory_complete": False,
             "indirect_or_computed_caller_inventory_complete": False,
@@ -6515,7 +6781,8 @@ def _channel_field_map(payload):
         "assumptions": [
             "A32 calls use the pinned calling convention and output pointers remain unaliased for each serialized call.",
             "The whole-prefix target-filtered scans classify aligned raw direct-immediate encoding patterns, not source ISA boundaries, executable code, or every possible control-transfer mechanism.",
-            "The two A32 BL target candidates establish the selected fixed-root paths; zero A32 BLX-immediate and T32 BL/BLX-immediate matches add no path, while indirect/computed transfers remain unclassified.",
+            "The two A32 BL target candidates establish the selected fixed-root paths; zero A32 BLX-immediate and T32 BL/BLX-immediate matches add no path, while BLX-register targets and other indirect/computed transfers remain unresolved.",
+            "The IRQ vector-to-entry-to-dispatch chain roots two BLX-register instructions, but static callback-table registration does not prove live table contents, writer closure, callback execution, or runtime helper targets.",
             "The third argument-rooted helper at 0x1610 has no supported direct-immediate target candidate and remains conditional on its incoming C-root premise.",
             "Selected scalar access lists exclude unpinned aliases and are not whole-image access inventories; the three pinned bulk clear paths are listed separately.",
             "Reported branch targets are decoded from pinned call instructions; target bodies are not thereby claimed as pinned.",
