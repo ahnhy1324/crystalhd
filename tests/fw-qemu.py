@@ -125,6 +125,28 @@ PICTURE_CALLS.update({
 PICTURE_TAILS = {0x7970: 0x203c4, 0x79a4: 0x203c4, **RX_ADMISSION_TAILS}
 PICTURE_ROOT, PICTURE_TOKEN = 0xd3a00, 0x710100
 PICTURE_PAGES = META_PAGES + (0xd3000, 0xd2000, 0x10502000, 0x10540000, 0x10541000)
+SLOT4_BODIES = (
+    ("registration", 0x6ea0, 0x6ed4,
+     "9e6b69c108f5f1af4178bd069f394176b9675f22e5720791fe13c24e126e6a8f"),
+    ("dispatch", 0x6ef0, 0x6ff4,
+     "88630456c1e409dc7d1da042464990f9474f11fac9b621eba34a9287134545f1"),
+    ("slot4-callback", 0x6ff4, 0x703c,
+     "a024a89cab19eb48c9b6a1ffab548acb447d0b5640b7dbb3ab178b544634b9fc"),
+    ("descriptor-delivery", 0x7708, 0x778c,
+     "a6a638674a3af17ddd321a9fcecf67febf788c1a6a74073081c66bed2bc13fea"),
+    ("memcpy", 0x2c59c, 0x2c688,
+     "1e4214d8199c49b92e61acd6fe6347f3564a79300aa71eb21fce02f269921401"),
+)
+SLOT4_WORDS = {
+    0x7128: 0x000d2000, 0x7134: 0x100f2000,
+    0x7698: 0x000d2210, 0x76b0: 0x100e0000, 0x76f4: 0x100f6000,
+}
+SLOT4_IRQ_ALIAS = 0x11000000
+SLOT4_EXTRA_PAGES = (0x100e0000, 0x100f2000, 0x100f6000, SLOT4_IRQ_ALIAS)
+SLOT4_CALLS = {
+    0x6fb0: 0x6ff4, 0x6fcc: 0xaf18, 0x6fe0: 0x6ff4, 0x701c: 0x7708,
+    0x7710: 0xaf18, 0x7714: 0x898, 0x777c: 0x2c59c,
+}
 MFD_SOURCE_BODIES = (
     (0x1918, 0x1ad8, "78f4221d3656a86e50dce4fcd833856b9b941db1054b75778e760c18affe328f"),
     (0x1e8e8, 0x1e8f4, "127fb56c30f3496c824443348ca74b9236add85c1381d8d0fae5bf61c0a9d927"),
@@ -1138,6 +1160,169 @@ def execute_picture(kind="picture", mode=2, single_field=False, active=1, starte
                   expected={base: bytes(page) for base, page in expected.items()},
                   snapshot=PictureRAM(actual["pages"], picture))
     return actual
+
+
+def execute_slot4_delivery(previous, budget=512, payload=None):
+    """Execute the bounded slot-4 registration and descriptor-delivery path.
+
+    IRQ status, the delivery channel and the source descriptor live in
+    synthetic guest RAM. The stock 0xfffff000 event load is redirected to one
+    mapped guest page immediately before that instruction because QEMU user
+    mode reserves the top page. Registration, dispatch, callback, delivery and
+    memcpy bodies execute; UART and the fixed-root getter are contracts.
+    This is CPU program-order evidence only, not native IRQ routing, ownership,
+    visibility, a physical source lease or consumer completion.
+    """
+    if type(previous) is not PictureRAM:
+        raise ValueError("invalid synthetic slot-4 picture state")
+    if type(budget) is not int or not 1 <= budget <= 512:
+        raise ValueError("invalid slot-4 instruction budget")
+    payload = Model.payload if payload is None else payload
+    if type(payload) not in (bytes, bytearray):
+        raise ValueError("invalid slot-4 payload")
+
+    code = {0x6000: bytearray(struct.pack("<I", 0xe7f000f0) * (0x2000 // 4)),
+            0x2c000: bytearray(struct.pack("<I", 0xe7f000f0) * (0x1000 // 4))}
+    for name, low, high, digest in SLOT4_BODIES:
+        body = payload[low:high]
+        if hashlib.sha256(body).hexdigest() != digest:
+            raise ValueError(f"stock slot-4 {name} body changed")
+        base = 0x6000 if low < 0x8000 else 0x2c000
+        code[base][low - base:high - base] = body
+    for address, value in SLOT4_WORDS.items():
+        encoded = struct.pack("<I", value)
+        if payload[address:address + 4] != encoded:
+            raise ValueError("stock slot-4 literal changed")
+        base = 0x6000 if address < 0x8000 else 0x2c000
+        code[base][address - base:address - base + 4] = encoded
+    pages = {base: bytearray(page) for base, page in previous[0]}
+    pages.update({base: bytearray(b"\xa5" * 4096) for base in SLOT4_EXTRA_PAGES})
+    def make_image(memory, start):
+        return segment_elf([(base, bytes(page), 5) for base, page in code.items()] +
+                           [(base, bytes(page), 6) for base, page in memory.items()],
+                           start)
+    def put(address, data, destination):
+        base, offset = address & ~4095, address & 4095
+        if base not in destination or offset + len(data) > 4096:
+            raise ValueError("outside synthetic slot-4 RAM")
+        destination[base][offset:offset + len(data)] = data
+    def word(address, value, destination):
+        put(address, struct.pack("<I", value & 0xffffffff), destination)
+    def get(address, size, source):
+        base, offset = address & ~4095, address & 4095
+        if base not in source or offset + size > 4096:
+            raise ValueError("outside synthetic slot-4 RAM")
+        return bytes(source[base][offset:offset + size])
+
+    source_address = 0x500401
+    source = struct.pack("<8I", 0, 0x00940020, 1, 0xd3d30003,
+                         0xd4d40004, 0xd5d50005, 0xd6d60006, 0xd7d70007)
+    if get(PICTURE_ROOT + 0x1a8, 1, pages) != b"\0":
+        raise ValueError("synthetic slot-4 descriptor is already pending")
+    put(source_address, source, pages)
+    word(SLOT4_IRQ_ALIAS, 0x10, pages)
+    word(0x100f2000, 0x200, pages)
+    word(0x100e0024, 0, pages)
+    word(0x100f6004, 0x500000, pages)
+    word(0xd221c, 0, pages)
+    initial = {base: bytes(page) for base, page in pages.items()}
+
+    registration_expected = {base: bytearray(page) for base, page in pages.items()}
+    word(0xd2030, 0x6ff4, registration_expected)
+    word(0xd2034, 0, registration_expected)
+    word(0xd2038, 0, registration_expected)
+    registration_registers = [0xabc00000 + index for index in range(16)]
+    registration_registers[:4] = [4, 0x6ff4, 0, 0]
+    registration_registers[13:16] = [META_SP, RETURN, 0x6ea0]
+    def registration_instruction(rsp, pc, regs):
+        if pc == 0x6ea0:
+            put(regs[13] - 8, struct.pack("<2I", regs[4], regs[14]),
+                registration_expected)
+    registered = emulate(make_image(pages, 0x6ea0), pages, registration_registers,
+                         ((0x6ea0, 0x6ed4),), (), lambda *unused: 0,
+                         64, instruction=registration_instruction)
+    registration_oracle = {base: bytes(page)
+                           for base, page in registration_expected.items()}
+    if registered["status"] != 0x6ff4 or registered["calls"] or \
+            registered["pages"] != registration_oracle:
+        raise ValueError("slot-4 registration full-page oracle changed")
+
+    dispatch_pages = {base: bytearray(page) for base, page in registered["pages"].items()}
+    expected = {base: bytearray(page) for base, page in dispatch_pages.items()}
+    put(PICTURE_ROOT + 0x188, source, expected)
+    put(PICTURE_ROOT + 0x1a8, b"\x01", expected)
+    word(0x100f2008, 0x200, expected)
+    word(0xd2038, 0x200, expected)
+    dispatch_registers = [0xabc00000 + index for index in range(16)]
+    dispatch_registers[13:16] = [META_SP, RETURN, 0x6ef0]
+    pushes = {0x6ef0: (4, 5, 6, 7, 8, 9, 10, 14),
+              0x6ff4: (4, 5, 6, 14), 0x7708: (4, 5, 6, 14)}
+    stores = []
+    def dispatch_instruction(rsp, pc, regs):
+        if pc == 0x6efc:
+            if regs[0] != 0xfffff000:
+                raise ValueError("unexpected slot-4 IRQ source address")
+            rsp.register(0, SLOT4_IRQ_ALIAS)
+        if pc in pushes:
+            values = [regs[index] for index in pushes[pc]]
+            put(regs[13] - len(values) * 4,
+                struct.pack("<" + "I" * len(values), *values), expected)
+        if pc == 0x6f30:
+            stores.append((pc, 0xd2038, regs[5]))
+        elif pc == 0x6fe8:
+            stores.append((pc, 0xd2038, regs[0]))
+        elif pc == 0x7024:
+            stores.append((pc, regs[5] + 8, regs[0]))
+        elif pc == 0x7784:
+            stores.append((pc, regs[4] + 0x1a8, regs[0]))
+    opaque = []
+    def contract(rsp, pc, args, stack):
+        if pc == 0xaf18:
+            wanted = {0x2a: META_SP - 32, 0x52: META_SP - 64}
+            if args[0] not in wanted or stack != wanted[args[0]]:
+                raise ValueError("unexpected slot-4 UART contract")
+            opaque.append((pc, args[0]))
+            return 0
+        if pc == 0x898:
+            if stack != META_SP - 64:
+                raise ValueError("unexpected slot-4 root contract")
+            opaque.append((pc, PICTURE_ROOT))
+            return PICTURE_ROOT
+        raise ValueError("unexpected slot-4 opaque helper")
+    delivered = emulate(
+        make_image(dispatch_pages, 0x6ef0), dispatch_pages, dispatch_registers,
+        ((0x6ef0, 0x6ff4), (0x6ff4, 0x703c), (0x7708, 0x778c),
+         (0x2c59c, 0x2c688)),
+        (0xaf18, 0x898), contract, budget, clobber_flags=0xf0000000,
+        real_callees=(0x6ff4, 0x7708, 0x2c59c), call_edges=SLOT4_CALLS,
+        instruction=dispatch_instruction)
+    final = {base: bytes(page) for base, page in expected.items()}
+    expected_calls = [(0x6fb0, 0x6ff4), (0x701c, 0x7708), (0x7710, 0xaf18),
+                      (0x7714, 0x898), (0x777c, 0x2c59c)]
+    if delivered["pages"] != final or delivered["status"] != 32 or \
+            [(site, target) for site, target, unused in delivered["calls"]] != expected_calls or \
+            get(source_address, len(source), delivered["pages"]) != source or \
+            get(PICTURE_ROOT + 0x188, len(source), delivered["pages"]) != source or \
+            get(PICTURE_ROOT + 0x1a8, 1, delivered["pages"]) != b"\x01":
+        differences = [hex(base + offset) for base, page in final.items()
+                       for offset, (wanted, got) in
+                       enumerate(zip(page, delivered["pages"][base])) if wanted != got][:8]
+        observed_calls = [(site, target) for site, target, unused in delivered["calls"]]
+        raise ValueError("slot-4 delivery full-page oracle changed: " +
+                         f"status={delivered['status']:#x} differences={','.join(differences)} " +
+                         f"calls={observed_calls}")
+    delivered.update(initial=initial, registration=registered,
+                     registration_expected=registration_oracle,
+                     expected=final, source_address=source_address, source=source,
+                     opaque=opaque, stores=stores,
+                     snapshot=PictureRAM(
+                         {base: delivered["pages"][base] for base in PICTURE_PAGES},
+                         previous[1]), native_execution=False,
+                     irq_routing_certified=False, irq_source_address_certified=False,
+                     physical_lease_certified=False,
+                     consumer_completion_certified=False,
+                     return_status_role="incidental-slot-loop-limit")
+    return delivered
 
 
 def execute_mfd_source(record, budget=256, payload=None):
@@ -2155,6 +2340,87 @@ class FirmwarePictureQemuTests(unittest.TestCase):
         repeated = self.check(execute_picture("irq", previous=returned["snapshot"]))
         self.assertEqual(struct.unpack_from("<4I", repeated["pages"][0x401000], 0x100),
                          (2, 4, PICTURE_TOKEN, PICTURE_TOKEN))
+
+
+class FirmwareSlot4DeliveryQemuTests(unittest.TestCase):
+    """Bounded synthetic execution, never a native slot/owner certificate."""
+    @classmethod
+    def setUpClass(cls):
+        FirmwareQemuTests.setUpClass()
+
+    def prepared(self):
+        base = execute_picture()
+        pages = {address: bytearray(page) for address, page in base["pages"].items()}
+        offset = PICTURE_ROOT & 4095
+        pages[PICTURE_ROOT & ~4095][offset + 0x188:offset + 0x1a8] = b"\x5a" * 32
+        self.assertEqual(pages[PICTURE_ROOT & ~4095][offset + 0x1a8], 0)
+        return PictureRAM(pages, base["snapshot"][1])
+
+    def test_registration_dispatch_copy_publish_then_existing_consumer(self):
+        prepared = self.prepared()
+        first = execute_slot4_delivery(prepared)
+        repeated = execute_slot4_delivery(prepared)
+        self.assertEqual(first["pages"], first["expected"])
+        self.assertEqual(first["pages"], repeated["pages"])
+        self.assertEqual(first["calls"], repeated["calls"])
+        self.assertEqual(first["stores"], [
+            (0x6f30, 0xd2038, 0x200),
+            (0x7784, PICTURE_ROOT + 0x1a8, 1),
+            (0x7024, 0x100f2008, 0x200),
+        ])
+        self.assertEqual(first["opaque"],
+                         [(0xaf18, 0x52), (0x898, PICTURE_ROOT)])
+        table = first["pages"][0xd2000]
+        self.assertEqual(struct.unpack_from("<3I", table, 0x30), (0x6ff4, 0, 0x200))
+        self.assertEqual(struct.unpack_from("<I", first["pages"][0x100f2000], 8)[0],
+                         0x200)
+        root = first["pages"][PICTURE_ROOT & ~4095]
+        offset = PICTURE_ROOT & 4095
+        self.assertEqual(root[offset + 0x188:offset + 0x1a8], first["source"])
+        self.assertEqual(root[offset + 0x1a8], 1)
+        self.assertEqual(first["pages"][0x500000][0x401:0x421], first["source"])
+        self.assertFalse(first["native_execution"])
+        self.assertFalse(first["irq_routing_certified"])
+        self.assertFalse(first["physical_lease_certified"])
+        self.assertFalse(first["consumer_completion_certified"])
+
+        consumed = execute_picture(previous=first["snapshot"])
+        self.assertEqual(consumed["pages"], consumed["expected"])
+        consumed_root = consumed["pages"][PICTURE_ROOT & ~4095]
+        self.assertEqual(consumed_root[offset + 0x1a8], 0)
+        self.assertEqual(consumed_root[offset + 0x188:offset + 0x1a8], first["source"])
+
+    def test_body_literal_input_budget_and_call_edge_guards(self):
+        prepared = self.prepared()
+        for unused, start, end, unused_digest in SLOT4_BODIES:
+            for offset in (start, start + (end - start) // 2, end - 1):
+                changed = bytearray(Model.payload)
+                changed[offset] ^= 1
+                with self.subTest(offset=offset), mock.patch.object(subprocess, "Popen") as spawn:
+                    with self.assertRaisesRegex(ValueError, "stock slot-4 .* body changed"):
+                        execute_slot4_delivery(prepared, payload=changed)
+                    spawn.assert_not_called()
+        for address in SLOT4_WORDS:
+            changed = bytearray(Model.payload)
+            changed[address] ^= 1
+            with self.subTest(address=address), mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaisesRegex(ValueError, "stock slot-4 literal changed"):
+                    execute_slot4_delivery(prepared, payload=changed)
+                spawn.assert_not_called()
+        for options in (dict(previous=None), dict(previous=tuple(prepared)),
+                        dict(previous=prepared, budget=True),
+                        dict(previous=prepared, budget=0),
+                        dict(previous=prepared, budget=513),
+                        dict(previous=prepared, payload=[])):
+            with self.subTest(options=options), mock.patch.object(subprocess, "Popen") as spawn:
+                with self.assertRaisesRegex(ValueError, "invalid"):
+                    execute_slot4_delivery(**options)
+                spawn.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "instruction budget exceeded"):
+            execute_slot4_delivery(prepared, budget=1)
+        with mock.patch.dict(SLOT4_CALLS, {0x6fb0: 0xaf18}):
+            with self.assertRaisesRegex(ValueError, "call-target allowlist"):
+                execute_slot4_delivery(prepared)
 
 
 class FirmwareArmArcReturnQemuTests(unittest.TestCase):
@@ -3859,7 +4125,9 @@ class FirmwareStopResultQemuTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(defaultTest=("FirmwareQemuTests", "FirmwareRxDescriptorQemuTests",
-                               "FirmwarePictureQemuTests", "FirmwareArmArcReturnQemuTests", "FirmwareCpuMapQemuTests", "FirmwareArcJumpFixupQemuTests", "FirmwareArcAbsoluteFixupQemuTests", "FirmwareArcStartupRelocationQemuTests",
+                               "FirmwarePictureQemuTests", "FirmwareSlot4DeliveryQemuTests",
+                               "FirmwareArmArcReturnQemuTests", "FirmwareCpuMapQemuTests",
+                               "FirmwareArcJumpFixupQemuTests", "FirmwareArcAbsoluteFixupQemuTests", "FirmwareArcStartupRelocationQemuTests",
                                "FirmwareMfdSourceQemuTests", "FirmwareSourceProducerQemuTests",
                                "FirmwareSourceModeQemuTests", "FirmwareIrqStatusQemuTests",
                                "FirmwareLogCommandQemuTests", "FirmwareChannelGuardQemuTests",
