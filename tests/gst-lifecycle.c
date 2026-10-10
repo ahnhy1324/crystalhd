@@ -821,6 +821,9 @@ test_flush_codec_state(void)
     self->next_hardware_timestamp = 123450000;
     self->need_second_field = TRUE;
     self->have_simple_picture_number = TRUE;
+    self->wmv3_reordered_output = TRUE;
+    self->wmv3_timing_valid = FALSE;
+    self->wmv3_last_duration = 33 * GST_MSECOND;
     opens = mock.open_calls;
     g_assert_true(gst_crystalhd_flush(GST_VIDEO_DECODER(self)));
     g_assert_cmpuint(mock.open_calls, ==, opens + 1);
@@ -828,6 +831,9 @@ test_flush_codec_state(void)
     g_assert_cmpuint(self->next_hardware_timestamp, ==, 123450000);
     g_assert_false(self->need_second_field);
     g_assert_false(self->have_simple_picture_number);
+    g_assert_false(self->wmv3_reordered_output);
+    g_assert_true(self->wmv3_timing_valid);
+    g_assert_cmpuint(self->wmv3_last_duration, ==, GST_CLOCK_TIME_NONE);
     g_assert_cmpint(self->codec.subtype, ==, cases[i].subtype);
     g_assert_cmpint(self->codec.frame_layer, ==, cases[i].frame_layer);
     g_assert_cmpint(gst_video_decoder_get_packetized(GST_VIDEO_DECODER(self)),
@@ -920,6 +926,192 @@ test_reordered_duplicate_output(void)
   g_assert_cmpuint(gst_harness_buffers_in_queue(harness), ==, 0);
   g_assert_cmpuint(mock.destroyed_inputs, ==, 3);
   g_assert_cmpuint(mock.release_calls, ==, 4);
+  gst_harness_teardown(harness);
+}
+
+static void
+test_wmv3_display_order_pts(void)
+{
+  GstHarness *harness = new_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  GstBuffer *output;
+
+  self->codec.subtype = BC_MSUBTYPE_WMV3;
+  mock.auto_output = FALSE;
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  g_assert_cmpint(gst_harness_push(harness, new_input(40 * GST_MSECOND)),
+                  ==, GST_FLOW_OK);
+  g_assert_cmpint(gst_harness_push(harness, new_input(80 * GST_MSECOND)),
+                  ==, GST_FLOW_OK);
+
+  /* WMV3 pixels are already returned in display order. The associated input
+   * tokens can still arrive in decode order and must not reorder them again. */
+  queue_picture(mock.accepted[0], 1);
+  queue_picture(mock.accepted[2], 3);
+  queue_picture(mock.accepted[1], 2);
+  g_assert_true(gst_harness_push_event(harness, gst_event_new_eos()));
+
+  output = gst_harness_try_pull(harness);
+  check_output(output, 0, 1);
+  gst_buffer_unref(output);
+  output = gst_harness_try_pull(harness);
+  check_output(output, 40 * GST_MSECOND, 3);
+  gst_buffer_unref(output);
+  output = gst_harness_try_pull(harness);
+  check_output(output, 80 * GST_MSECOND, 2);
+  gst_buffer_unref(output);
+  g_assert_true(self->wmv3_reordered_output);
+  g_assert_cmpuint(gst_harness_buffers_in_queue(harness), ==, 0);
+  g_assert_cmpuint(mock.destroyed_inputs, ==, 3);
+  gst_harness_teardown(harness);
+}
+
+static void
+run_wmv3_seek_clip(GstClockTime target, gboolean missing_duration)
+{
+  static const GstClockTime pts[] = {
+    0, 33 * GST_MSECOND, 66 * GST_MSECOND, 100 * GST_MSECOND
+  };
+  static const guint8 pixels[] = { 1, 3, 2, 4 };
+  GstHarness *harness = new_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  GstSegment segment;
+  GstBuffer *input;
+  GstBuffer *output;
+  guint first;
+  guint i;
+
+  self->codec.subtype = BC_MSUBTYPE_WMV3;
+  mock.auto_output = FALSE;
+  gst_segment_init(&segment, GST_FORMAT_TIME);
+  segment.start = target;
+  segment.position = segment.start;
+  g_assert_true(gst_harness_push_event(harness, gst_event_new_segment(&segment)));
+  for (i = 0; i < G_N_ELEMENTS(pts); ++i) {
+    input = new_input(pts[i]);
+    if (missing_duration)
+      GST_BUFFER_DURATION(input) = GST_CLOCK_TIME_NONE;
+    g_assert_cmpint(gst_harness_push(harness, input), ==, GST_FLOW_OK);
+  }
+
+  queue_picture(mock.accepted[0], 1);
+  queue_picture(mock.accepted[2], 3);
+  queue_picture(mock.accepted[1], 2);
+  queue_picture(mock.accepted[3], 4);
+  g_assert_true(gst_harness_push_event(harness, gst_event_new_eos()));
+
+  first = target == 33 * GST_MSECOND ? 1 : 3;
+  for (i = first; i < G_N_ELEMENTS(pts); ++i) {
+    output = gst_harness_try_pull(harness);
+    check_output(output, pts[i], pixels[i]);
+    gst_buffer_unref(output);
+  }
+  g_assert_null(gst_harness_try_pull(harness));
+  g_assert_true(self->wmv3_reordered_output);
+  g_assert_cmpuint(gst_harness_buffers_in_queue(harness), ==, 0);
+  g_assert_cmpuint(mock.destroyed_inputs, ==, 4);
+  gst_harness_teardown(harness);
+}
+
+static void
+test_wmv3_seek_clip_uses_pts_cadence(void)
+{
+  /* A stale 40 ms duration from 25 fps caps must not extend the preceding
+   * 30 fps picture onto either an early target before token reordering is
+   * observed or a later target after it. Exercise absent and explicit stale
+   * per-buffer durations. */
+  run_wmv3_seek_clip(33 * GST_MSECOND, TRUE);
+  run_wmv3_seek_clip(33 * GST_MSECOND, FALSE);
+  run_wmv3_seek_clip(100 * GST_MSECOND, TRUE);
+  run_wmv3_seek_clip(100 * GST_MSECOND, FALSE);
+}
+
+static void
+test_wmv3_variable_pts_duration(void)
+{
+  static const GstClockTime pts[] = {
+    0, 33 * GST_MSECOND, 75 * GST_MSECOND, 100 * GST_MSECOND
+  };
+  static const GstClockTime durations[] = {
+    33 * GST_MSECOND, 42 * GST_MSECOND, 25 * GST_MSECOND,
+    25 * GST_MSECOND
+  };
+  static const guint8 pixels[] = { 1, 3, 2, 4 };
+  guint pass;
+  guint i;
+
+  /* First infer VFR durations from PTS cadence, then repeat with distinct
+   * declared durations to prove each duration follows its PTS tuple across
+   * the 0,2,1 hardware-token order. */
+  for (pass = 0; pass < 2; ++pass) {
+    GstHarness *harness = new_decoder();
+    GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+    GstBuffer *input;
+    GstBuffer *output;
+
+    self->codec.subtype = BC_MSUBTYPE_WMV3;
+    mock.auto_output = FALSE;
+    for (i = 0; i < G_N_ELEMENTS(pts); ++i) {
+      input = new_input(pts[i]);
+      GST_BUFFER_DURATION(input) = pass == 0 ? GST_CLOCK_TIME_NONE : durations[i];
+      g_assert_cmpint(gst_harness_push(harness, input), ==, GST_FLOW_OK);
+    }
+    queue_picture(mock.accepted[0], 1);
+    queue_picture(mock.accepted[2], 3);
+    queue_picture(mock.accepted[1], 2);
+    queue_picture(mock.accepted[3], 4);
+    g_assert_true(gst_harness_push_event(harness, gst_event_new_eos()));
+
+    for (i = 0; i < G_N_ELEMENTS(pts); ++i) {
+      output = gst_harness_try_pull(harness);
+      check_output(output, pts[i], pixels[i]);
+      g_assert_cmpuint(GST_BUFFER_DURATION(output), ==, durations[i]);
+      gst_buffer_unref(output);
+    }
+    g_assert_null(gst_harness_try_pull(harness));
+    g_assert_true(self->wmv3_reordered_output);
+    g_assert_cmpuint(self->wmv3_last_duration, ==, 25 * GST_MSECOND);
+    g_assert_cmpuint(mock.destroyed_inputs, ==, 4);
+    gst_harness_teardown(harness);
+  }
+}
+
+static void
+test_wmv3_sparse_pts_disables_timing(void)
+{
+  GstHarness *harness = new_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  CrystalHdTimestamp *pending;
+  GstBuffer *output;
+
+  self->codec.subtype = BC_MSUBTYPE_WMV3;
+  mock.auto_output = FALSE;
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  g_assert_cmpint(gst_harness_push(harness, new_input(GST_CLOCK_TIME_NONE)),
+                  ==, GST_FLOW_OK);
+  g_assert_cmpint(gst_harness_push(harness, new_input(80 * GST_MSECOND)),
+                  ==, GST_FLOW_OK);
+
+  /* A non-head token plus a sparse pending PTS cannot establish complete
+   * presentation order. Publish the token-owned timing and keep the repair
+   * disabled until flush rather than resuming from divergent base state. */
+  queue_picture(mock.accepted[2], 3);
+  g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_OK);
+  output = gst_harness_try_pull(harness);
+  check_output(output, 80 * GST_MSECOND, 3);
+  gst_buffer_unref(output);
+  g_assert_false(self->wmv3_timing_valid);
+  g_assert_true(self->wmv3_reordered_output);
+  g_assert_cmpuint(self->timestamps.length, ==, 2);
+  pending = self->timestamps.head->data;
+  g_assert_cmpuint(pending->pts, ==, 0);
+
+  flush_decoder(harness);
+  g_assert_true(self->wmv3_timing_valid);
+  g_assert_false(self->wmv3_reordered_output);
+  g_assert_cmpuint(self->wmv3_last_duration, ==, GST_CLOCK_TIME_NONE);
+  g_assert_true(g_queue_is_empty(&self->timestamps));
+  g_assert_cmpuint(mock.destroyed_inputs, ==, 3);
   gst_harness_teardown(harness);
 }
 
@@ -2555,6 +2747,14 @@ main(int argc, char **argv)
   g_test_add_func("/crystalhd/lifecycle/flush-codec-state", test_flush_codec_state);
   g_test_add_func("/crystalhd/lifecycle/mpeg4-device-gate", test_mpeg4_device_gate);
   g_test_add_func("/crystalhd/lifecycle/reordered-duplicate-output", test_reordered_duplicate_output);
+  g_test_add_func("/crystalhd/lifecycle/wmv3-display-order-pts",
+                  test_wmv3_display_order_pts);
+  g_test_add_func("/crystalhd/lifecycle/wmv3-seek-clip-uses-pts-cadence",
+                  test_wmv3_seek_clip_uses_pts_cadence);
+  g_test_add_func("/crystalhd/lifecycle/wmv3-variable-pts-duration",
+                  test_wmv3_variable_pts_duration);
+  g_test_add_func("/crystalhd/lifecycle/wmv3-sparse-pts-disables-timing",
+                  test_wmv3_sparse_pts_disables_timing);
   g_test_add_func("/crystalhd/lifecycle/input-errors", test_input_errors);
   g_test_add_func("/crystalhd/lifecycle/repeated-empty-flush", test_repeated_empty_flush);
   g_test_add_func("/crystalhd/lifecycle/incomplete-drain", test_incomplete_drain);
