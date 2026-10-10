@@ -31,6 +31,65 @@ static void Require(bool value, const char *message) {
     throw std::runtime_error(message);
 }
 
+struct TraceEnvironment {
+  bool had_value = false;
+  std::string value;
+  TraceEnvironment() {
+    const char *previous = getenv("CRYSTALHD_VAAPI_TRACE");
+    had_value = previous != nullptr;
+    if (previous != nullptr)
+      value = previous;
+    setenv("CRYSTALHD_VAAPI_TRACE", "1", 1);
+  }
+  ~TraceEnvironment() {
+    if (had_value)
+      setenv("CRYSTALHD_VAAPI_TRACE", value.c_str(), 1);
+    else
+      unsetenv("CRYSTALHD_VAAPI_TRACE");
+  }
+};
+
+static std::string ReadTraceFd(int fd) {
+  struct stat info = {};
+  Require(fstat(fd, &info) == 0 && info.st_size >= 0, "inspect trace fixture");
+  std::string result(static_cast<size_t>(info.st_size), '\0');
+  size_t offset = 0;
+  while (offset < result.size()) {
+    const ssize_t bytes = pread(fd, result.data() + offset,
+                                result.size() - offset, offset);
+    Require(bytes > 0, "read trace fixture");
+    offset += static_cast<size_t>(bytes);
+  }
+  return result;
+}
+
+static std::string FindTraceEvent(const std::string &trace,
+                                  const char *event) {
+  const std::string marker = std::string("\"event\":\"") + event + "\"";
+  const size_t event_at = trace.find(marker);
+  Require(event_at != std::string::npos, "find production trace event");
+  const size_t line_start = trace.rfind('\n', event_at);
+  const size_t line_end = trace.find('\n', event_at);
+  Require(line_end != std::string::npos, "trace event is newline terminated");
+  return trace.substr(line_start == std::string::npos ? 0 : line_start + 1,
+                      line_end - (line_start == std::string::npos
+                                      ? 0 : line_start + 1));
+}
+
+static bool TraceFieldIs(const std::string &line, const char *key,
+                         uint64_t value) {
+  const std::string prefix = std::string("\"") + key + "\":";
+  const size_t field = line.find(prefix);
+  if (field == std::string::npos)
+    return false;
+  const size_t number = field + prefix.size();
+  const std::string encoded = std::to_string(value);
+  const size_t delimiter = number + encoded.size();
+  return line.compare(number, encoded.size(), encoded) == 0 &&
+         delimiter < line.size() &&
+         (line[delimiter] == ',' || line[delimiter] == '}');
+}
+
 // These wrappers drive the real submission/drain/teardown state machine with
 // deterministic output, without a device or firmware. A sleep callback models
 // another API call while the production wait has released the driver mutex.
@@ -707,6 +766,124 @@ struct OutputFixture {
     decoder.decoded_frames[1] = private_frame;
   }
 };
+
+static void TraceIdentityUsesImmutableTokenAndLiveAliasOwner() {
+  TraceEnvironment environment;
+  const int trace_fd = memfd_create("crystalhd-vaapi-trace-test", MFD_CLOEXEC);
+  Require(trace_fd >= 0, "allocate production trace fixture");
+  {
+    Driver driver{-1, trace_fd};
+    DecodeContext decoder;
+    decoder.id = 7;
+    decoder.generation = 3;
+    decoder.width = decoder.height = 16;
+
+    const uint64_t old_token = kTimestampStep;
+    const uint64_t new_token = 2 * kTimestampStep;
+    auto old_picture = std::make_shared<Surface>();
+    auto new_picture = std::make_shared<Surface>();
+    auto reused_public = std::make_shared<Surface>();
+    for (const auto &surface : {old_picture, new_picture, reused_public})
+      Require(surface->AllocateInternal(nullptr, -1, 16, 16,
+                                        VA_FOURCC_NV12),
+              "allocate trace identity surface");
+
+    old_picture->id = 5;
+    old_picture->expected_timestamp = old_token;
+    old_picture->decode_identity = old_picture->trace_decode_identity = 41;
+    old_picture->trace_context = 7;
+    old_picture->trace_generation = 3;
+    old_picture->trace_submission_ordinal = 1;
+    new_picture->id = 5;
+    new_picture->expected_timestamp = new_token;
+    new_picture->decode_identity = new_picture->trace_decode_identity = 42;
+    new_picture->trace_context = 7;
+    new_picture->trace_generation = 3;
+    new_picture->trace_submission_ordinal = 2;
+    reused_public->id = 5;
+    reused_public->expected_timestamp = new_token;
+    reused_public->decode_identity = reused_public->trace_decode_identity = 42;
+    reused_public->trace_context = 7;
+    reused_public->trace_generation = 3;
+    reused_public->trace_submission_ordinal = 2;
+    reused_public->decode_picture = new_picture;
+    driver.surfaces[5] = reused_public;
+    decoder.decoded_frames[old_token] = old_picture;
+    decoder.decoded_frames[new_token] = new_picture;
+    decoder.pending[old_token] = 5;
+    decoder.pending[new_token] = 5;
+    decoder.surface_timestamps[reused_public.get()] = new_token;
+    Require(decoder.replay.Append(old_token, true, {1}),
+            "append old trace token before public reuse");
+    SendNext(&decoder.replay, old_token);
+
+    std::vector<uint8_t> pixels(16 * 16 * 2, 128);
+    BC_DTS_PROC_OUT output = {};
+    output.PoutFlags = BC_POUT_FLAGS_PIB_VALID;
+    output.PicInfo.timeStamp = old_token;
+    output.PicInfo.width = output.PicInfo.height = 16;
+    output.Ybuff = pixels.data();
+    output.YBuffDoneSz = pixels.size() / 4;
+    Require(ProcessDecodedOutput(&driver, &decoder, output) ==
+                VA_STATUS_SUCCESS,
+            "process old output after its public surface was rebound");
+
+    auto owner = std::make_shared<Surface>();
+    auto alias = std::make_shared<Surface>();
+    owner->id = 1;
+    owner->ready = true;
+    owner->expected_timestamp = owner->frame_timestamp = 300000;
+    owner->trace_context = 9;
+    owner->trace_generation = 5;
+    owner->trace_submission_ordinal = 3;
+    owner->trace_decode_identity = 44;
+    alias->id = 2;
+    alias->backing_owner = 1;
+    alias->ready = true;
+    alias->expected_timestamp = alias->frame_timestamp = 100000;
+    alias->trace_context = 2;
+    alias->trace_generation = 1;
+    alias->trace_submission_ordinal = 1;
+    alias->trace_decode_identity = 12;
+    driver.surfaces[1] = owner;
+    driver.surfaces[2] = alias;
+    VADriverContext va_context = {};
+    va_context.pDriverData = &driver;
+    Require(SyncSurface2(&va_context, 2, 0) == VA_STATUS_SUCCESS,
+            "synchronize ready alias through its current owner");
+    VADRMPRIMESurfaceDescriptor descriptor = {};
+    Require(ExportSurfaceHandle(
+                &va_context, 2, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                VA_EXPORT_SURFACE_READ_ONLY, &descriptor) ==
+                VA_STATUS_ERROR_UNIMPLEMENTED,
+            "trace an alias export before its backing-type rejection");
+  }
+
+  const std::string trace = ReadTraceFd(trace_fd);
+  close(trace_fd);
+  const std::string output = FindTraceEvent(trace, "output_dequeued");
+  Require(TraceFieldIs(output, "context", 7) &&
+              TraceFieldIs(output, "generation", 3) &&
+              TraceFieldIs(output, "surface", 5) &&
+              TraceFieldIs(output, "token", kTimestampStep) &&
+              TraceFieldIs(output, "decode_identity", 41) &&
+              TraceFieldIs(output, "owner", 5) &&
+              TraceFieldIs(output, "submission_ordinal", 1) &&
+              !TraceFieldIs(output, "decode_identity", 42),
+          "old output trace keeps its immutable pre-reuse identity");
+  for (const char *event : {"sync_enter", "export_enter"}) {
+    const std::string line = FindTraceEvent(trace, event);
+    Require(TraceFieldIs(line, "context", 9) &&
+                TraceFieldIs(line, "generation", 5) &&
+                TraceFieldIs(line, "surface", 2) &&
+                TraceFieldIs(line, "token", 300000) &&
+                TraceFieldIs(line, "decode_identity", 44) &&
+                TraceFieldIs(line, "owner", 1) &&
+                TraceFieldIs(line, "submission_ordinal", 3) &&
+                !TraceFieldIs(line, "decode_identity", 12),
+            "alias trace takes identity from its current canonical owner");
+  }
+}
 
 static void DirectOutputOwnershipAndExport() {
   {
@@ -2841,6 +3018,7 @@ int main() {
     LiveStreamMarkerSurvivesReplayAndPruning();
     UnknownOutputNeverGuessesAndInvalidOutputFails();
     DuplicateOutputCannotMutateOrRetirePixels();
+    TraceIdentityUsesImmutableTokenAndLiveAliasOwner();
     DirectOutputOwnershipAndExport();
     RejectIncompleteGeometryAndInitializeAllocationPadding();
     FailedCpuOwnershipNeverCompletesDecode();
