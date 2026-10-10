@@ -211,6 +211,7 @@ struct DecodeIoMock {
   uint32_t tx_free_size = 1024 * 1024;
   unsigned int open_attempts = 0;
   unsigned int output_polls = 0;
+  std::vector<uint32_t> status_requests;
   std::thread::id output_thread;
   HANDLE handle() { return static_cast<HANDLE>(this); }
   static uint8_t Luma(uint64_t timestamp) {
@@ -286,6 +287,9 @@ extern "C" BC_STATUS __wrap_DtsGetDriverStatus(HANDLE device, BC_DTS_STATUS *sta
   decode_io_mock->invalid |= device != decode_io_mock->handle();
   ++decode_io_mock->output_polls;
   decode_io_mock->output_thread = std::this_thread::get_id();
+  decode_io_mock->status_requests.push_back(status->cpbEmptySize);
+  decode_io_mock->invalid |= status->cpbEmptySize != 0 &&
+                             status->cpbEmptySize != kStatusSkipReadyHeadPeek;
   *status = {};
   status->ReadyListCount = decode_io_mock->outputs.size();
   return decode_io_mock->fail_poll ? BC_STS_ERROR : BC_STS_SUCCESS;
@@ -2755,6 +2759,71 @@ struct TeardownFixture {
   }
 };
 
+static void ReadyStatusProbeSkipsReadyHeadPeek() {
+  {
+    TeardownFixture fixture(1);
+    Require(ReceiveAvailable(&fixture.driver, fixture.decoder.get()) ==
+                    VA_STATUS_SUCCESS &&
+                fixture.io.status_requests ==
+                    std::vector<uint32_t>{kStatusSkipReadyHeadPeek} &&
+                fixture.decoder->pending.size() == 1 &&
+                !fixture.held[0]->ready && fixture.io.events.empty() &&
+                !fixture.io.invalid,
+            "empty READY probe skips the DMA peek without changing decode state");
+  }
+
+  {
+    TeardownFixture fixture(1);
+    Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+                    VA_STATUS_SUCCESS &&
+                fixture.decoder->replay.Seal(),
+            "prepare one sealed picture for no-peek READY/EOS polling");
+    fixture.io.outputs.push_back(kTimestampStep);
+    fixture.io.outputs.push_back(0);
+    Require(ReceiveAvailable(&fixture.driver, fixture.decoder.get()) ==
+                    VA_STATUS_SUCCESS &&
+                fixture.io.status_requests == std::vector<uint32_t>(
+                    3, kStatusSkipReadyHeadPeek) &&
+                fixture.io.outputs.empty() && fixture.held[0]->ready &&
+                fixture.decoder->pending.empty() &&
+                fixture.decoder->replay.outstanding() == 0 &&
+                !fixture.decoder->ReplaySealed() &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                           "picture") == 1 &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                           "eos") == 1 &&
+                std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                           "release") == 2 &&
+                !fixture.io.invalid,
+            "no-peek READY counts still drain the exact picture and EOS marker");
+  }
+
+  {
+    TeardownFixture fixture(1);
+    fixture.io.fail_poll = true;
+    Require(ReceiveAvailable(&fixture.driver, fixture.decoder.get()) ==
+                    VA_STATUS_ERROR_DECODING_ERROR &&
+                fixture.io.status_requests ==
+                    std::vector<uint32_t>{kStatusSkipReadyHeadPeek} &&
+                fixture.decoder->pending.size() == 1 &&
+                !fixture.held[0]->ready && !fixture.held[0]->failed &&
+                fixture.io.events.empty() && !fixture.io.invalid,
+            "no-peek status request preserves the poll failure path");
+  }
+
+  {
+    TeardownFixture fixture(1);
+    fixture.decoder->is_70012 = true;
+    Require(ReceiveAvailable(&fixture.driver, fixture.decoder.get()) ==
+                    VA_STATUS_SUCCESS &&
+                fixture.io.status_requests == std::vector<uint32_t>{0} &&
+                fixture.decoder->pending.size() == 1 &&
+                !fixture.held[0]->ready && fixture.io.events.empty() &&
+                !fixture.io.invalid,
+            "BCM70012 READY probe preserves the legacy filtering peek");
+  }
+}
+
 static void ConcurrentSyncObservesExperimentalPresentation() {
   for (bool callback_commits : {false, true}) {
     TeardownFixture fixture(2);
@@ -4550,6 +4619,7 @@ int main() {
     WaitingVppCancellationStillWins();
     ContextDrainFailureDoesNotInventTail();
     CompletedWaitNeverAcceptsDifferentOrDestroyedPicture();
+    ReadyStatusProbeSkipsReadyHeadPeek();
     ZeroTimeoutNeverPumpsBusyDecodeSurface();
     ExactReadySurfaceDoesNotWaitForBatchEos();
     ReadyInventoryConditionalOpportunityReplay();

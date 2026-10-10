@@ -27,6 +27,9 @@ G_STATIC_ASSERT(GST_CRYSTALHD_MPEG4_MAX_INPUT_SIZE ==
   (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_CRYSTALHD_DEC, GstCrystalHdDec))
 
 #define CRYSTALHD_TIMESTAMP_STEP 100000ULL
+/* Legacy libcrystalhd input flag: retain queue/TX counters but do not peek
+ * and synchronize the READY-head DMA buffer just to read its timestamp. */
+#define CRYSTALHD_STATUS_SKIP_READY_HEAD_PEEK (1U << 30)
 
 typedef struct {
   guint64 hardware_timestamp;
@@ -809,6 +812,11 @@ gst_crystalhd_output_iteration(GstCrystalHdDec *self)
   g_mutex_unlock(&self->output_lock);
 
   memset(&decoder_status, 0, sizeof(decoder_status));
+  /* BCM70012's READY-head peek also retires repeated/garbage pictures before
+   * advertising availability to legacy single-threaded callers.  Only Flea's
+   * queue poll is metadata-free and safe to request without that peek. */
+  if (!self->is_70012)
+    decoder_status.cpbEmptySize = CRYSTALHD_STATUS_SKIP_READY_HEAD_PEEK;
   status = DtsGetDriverStatus(self->device, &decoder_status);
   if (status != BC_STS_SUCCESS) {
     GST_ERROR_OBJECT(self, "DtsGetDriverStatus failed: %d", status);
