@@ -5565,8 +5565,10 @@ class FirmwareChannelFieldTests(unittest.TestCase):
                 path["all_supported_direct_immediate_target_patterns_classified"])
             self.assertFalse(path["all_direct_callers_established"])
             self.assertFalse(path["indirect_or_computed_callers_excluded"])
-        self.assertTrue(any("0x1610" in limitation and "does not exclude" in limitation
-                            for limitation in provenance["limitations"]))
+        limitations = " ".join(provenance["limitations"])
+        self.assertIn("no external target into the helper body", limitations)
+        self.assertIn("does not establish global dead code", limitations)
+        self.assertIn("does not exclude BLX-register", limitations)
 
         interworking = provenance["whole_arm_direct_interworking_scan"]
         self.assertEqual(interworking["region"], whole["region"])
@@ -5599,6 +5601,168 @@ class FirmwareChannelFieldTests(unittest.TestCase):
         self.assertFalse(interworking["source_code_boundaries_classified"])
         self.assertFalse(interworking["all_direct_immediate_callers_established"])
         self.assertFalse(interworking["indirect_or_computed_callers_excluded"])
+
+    def test_helper_1610_range_has_only_internal_flow_and_adjacent_entry_call(self):
+        provenance = self.report["caller_provenance"] \
+            ["helper_1610_direct_target_provenance"]
+        self.assertEqual(provenance["kind"],
+                         "bounded-whole-prefix-direct-target-classification")
+        body = provenance["body"]
+        self.assertEqual((body["isa"], body["start_blob_file_offset"],
+                          body["end_blob_file_offset_exclusive"],
+                          body["byte_count"], body["entry_blob_file_offset"],
+                          body["adjacent_entry_blob_file_offset"]),
+                         ("A32", 0x1610, 0x168c, 0x7c, 0x1610, 0x168c))
+        self.assertEqual([
+            (anchor["role"], anchor["blob_file_offset"], anchor["word"])
+            for anchor in body["boundary_anchors"]], [
+                ("preceding_return", 0x160c, 0xe8bd8010),
+                ("entry", 0x1610, 0xe92d4010),
+                ("frame_allocation", 0x1614, 0xe24dd040),
+                ("common_epilogue", 0x165c, 0xe28dd040),
+                ("return", 0x1660, 0xe8bd8010),
+                ("success_tail", 0x1688, 0xeafffff3),
+                ("adjacent_entry", 0x168c, 0xe1a02000),
+            ])
+
+        a32 = provenance["a32_b_bl_immediate"]
+        self.assertEqual(a32["target_domain"], {
+            "start_blob_file_offset": 0x1610,
+            "end_blob_file_offset_inclusive": 0x168c,
+            "alignment_bytes": 4,
+        })
+        expected = [
+            (0x1634, "B", 0, 0x1644),
+            (0x1640, "B", 14, 0x1664),
+            (0x164c, "B", 0, 0x1664),
+            (0x1670, "B", 0, 0x1684),
+            (0x1680, "B", 14, 0x165c),
+            (0x1688, "B", 14, 0x165c),
+            (0x424c, "BL", 14, 0x168c),
+        ]
+        records = lambda name: [
+            (record["blob_file_offset"], record["operation"],
+             record["condition"], record["target_blob_file_offset"])
+            for record in a32[name]
+        ]
+        self.assertEqual(records("target_candidates"), expected)
+        self.assertEqual(records("internal_body_control_flow"), expected[:6])
+        self.assertEqual(records("external_body_target_candidates"), [])
+        self.assertEqual(records("adjacent_entry_target_candidates"), expected[6:])
+        self.assertEqual(a32["entry_0x1610_target_candidate_count"], 0)
+        self.assertTrue(a32[
+            "complete_for_hash_pinned_region_encoding_candidates"])
+        self.assertTrue(a32[
+            "source_code_boundaries_classified_only_for_pinned_helper_body"])
+
+        interworking = provenance["direct_interworking_immediate"]
+        self.assertEqual(interworking["target_domain"], {
+            "start_blob_file_offset": 0x1610,
+            "end_blob_file_offset_inclusive": 0x168c,
+            "alignment_bytes": 2,
+        })
+        self.assertEqual(interworking["target_candidate_count"], 0)
+        self.assertEqual(interworking["target_candidates"], [])
+        self.assertEqual(interworking["encoding_raw_pattern_counts"], {
+            "a32_blx_immediate": 41,
+            "t32_bl_immediate": 153,
+            "t32_blx_immediate": 1523,
+        })
+        self.assertTrue(interworking[
+            "complete_for_aligned_raw_patterns_in_hash_pinned_region"])
+        self.assertFalse(interworking["source_code_boundaries_classified"])
+
+        requirement = provenance["fixed_root_requirement"]
+        self.assertEqual((requirement["incoming_register"],
+                          requirement["required_value"],
+                          requirement["conditional_access_sites"]),
+                         ("r1", 0xd3a00, [0x1628, 0x1664]))
+        self.assertEqual(requirement[
+            "external_supported_direct_body_target_candidate_count"], 0)
+        for name in ("supported_direct_entry_path_derives_required_value",
+                     "fixed_root_provenance_established",
+                     "access_sites_promoted_to_fixed_root"):
+            self.assertFalse(requirement[name], name)
+
+        absence = provenance["bounded_absence"]
+        for name in ("supported_direct_external_targets_into_body_absent",
+                     "supported_direct_interworking_targets_into_body_or_adjacent_entry_absent",
+                     "preceding_selected_linear_path_returns"):
+            self.assertTrue(absence[name], name)
+        for name in ("global_unreferenced_or_dead_code_established",
+                     "blx_register_or_other_indirect_targets_excluded",
+                     "literal_or_adr_address_references_excluded",
+                     "sources_outside_hash_pinned_prefix_excluded",
+                     "runtime_execution_observed"):
+            self.assertFalse(absence[name], name)
+
+        helper_alias = next(
+            entry for entry in self.report["argument_conditional_aliases"]
+            if entry["function_entry"] == 0x1610)
+        self.assertTrue(helper_alias[
+            "bounded_whole_prefix_target_classification_available"])
+        self.assertFalse(helper_alias[
+            "fixed_root_derivation_within_supported_paths_established"])
+        accesses = {
+            record["blob_file_offset"]: record
+            for record in self.report["fields"]["0x20"]["selected_scalar_reads"]
+            if record["blob_file_offset"] in (0x1628, 0x1664)
+        }
+        self.assertEqual(set(accesses), {0x1628, 0x1664})
+        for record in accesses.values():
+            self.assertEqual((record["alias_provenance"], record["premise"],
+                              record["function_entry"]),
+                             ("conditional",
+                              "incoming r1 == channel root 0xd3a00", 0x1610))
+
+    def test_helper_1610_range_inventory_fails_closed_on_reference_mutation(self):
+        role, start, size, _ = MAP._CHANNEL_FIELD_WHOLE_ARM_REGION
+
+        def patched_gate(payload):
+            return (role, start, size,
+                    hashlib.sha256(payload[start:start + size]).hexdigest())
+
+        mutations = []
+        removed_adjacent_call = bytearray(self.payload)
+        struct.pack_into("<I", removed_adjacent_call, 0x424c, 0xe1a00000)
+        mutations.append(("remove_adjacent_call", removed_adjacent_call,
+                          "target inventory does not match"))
+
+        added_body_target = bytearray(self.payload)
+        site, target = 0x2ea00, 0x1628
+        displacement = (target - site - 8) // 4
+        struct.pack_into("<I", added_body_target, site,
+                         0xeb000000 | (displacement & 0xffffff))
+        mutations.append(("add_external_body_target", added_body_target,
+                          "target inventory does not match"))
+
+        added_interworking_target = bytearray(self.payload)
+        # Replace one existing raw T32-BLX pattern outside every selected
+        # region so the whole-prefix pattern count stays constant.  This makes
+        # the target-range oracle, rather than the aggregate-count oracle,
+        # responsible for rejecting the new path.
+        site, target = 0x20100, 0x1628
+        pc_base = (site + 4) & ~3
+        displacement = (target - pc_base) & ((1 << 25) - 1)
+        sign = displacement >> 24 & 1
+        i1, i2 = displacement >> 23 & 1, displacement >> 22 & 1
+        j1, j2 = 1 ^ (i1 ^ sign), 1 ^ (i2 ^ sign)
+        first = (0xf000 | (sign << 10) |
+                 ((displacement >> 12) & 0x3ff))
+        second = (0xc000 | (j1 << 13) | (j2 << 11) |
+                  ((displacement >> 1) & 0x7fe))
+        struct.pack_into("<HH", added_interworking_target, site, first, second)
+        mutations.append(("add_t32_blx_body_target", added_interworking_target,
+                          "interworking target inventory does not match"))
+
+        for name, changed, message in mutations:
+            with self.subTest(name=name), \
+                    mock.patch.object(MAP, "_CHANNEL_FIELD_WHOLE_ARM_REGION",
+                                      patched_gate(changed)), \
+                    self.assertRaisesRegex(
+                        MAP.FormatError,
+                        "helper 0x1610 " + message):
+                MAP._channel_field_map(changed)
 
     def test_blx_register_inventory_roots_only_irq_dispatch_sites(self):
         scan = self.report["caller_provenance"]["whole_arm_blx_register_scan"]
@@ -6306,6 +6470,9 @@ class FirmwareChannelFieldTests(unittest.TestCase):
         self.assertTrue(scope["direct_b_bl_target_candidates_complete"])
         self.assertTrue(scope["whole_arm_direct_interworking_encoding_scan"])
         self.assertTrue(scope["direct_interworking_target_encoding_patterns_complete"])
+        self.assertTrue(scope["helper_1610_body_direct_target_paths_classified"])
+        self.assertFalse(scope["helper_1610_fixed_root_provenance_established"])
+        self.assertFalse(scope["helper_1610_global_dead_code_established"])
         self.assertTrue(scope["whole_arm_blx_register_encoding_scan"])
         self.assertTrue(scope["rooted_blx_register_instruction_sites"])
         self.assertFalse(scope["all_blx_register_code_boundaries_classified"])
