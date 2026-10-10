@@ -884,11 +884,14 @@ static void RejectIncompleteGeometryAndInitializeAllocationPadding() {
                 fixture.public_frame->planes[0][0] == 99,
             "mismatched coded output cannot copy or complete a surface");
   }
-  for (const auto &size : {std::pair<unsigned int, unsigned int>{8, 16}, {16, 8}}) {
-    OutputFixture fixture(size.first, size.second);
+  for (const auto &coded : {
+           std::pair<unsigned int, unsigned int>{32, 16}, {16, 32}}) {
+    OutputFixture fixture(16, 16, coded.first, coded.second);
+    fixture.decoder.width = coded.first;
+    fixture.decoder.height = coded.second;
     Require(fixture.Process() == VA_STATUS_ERROR_DECODING_ERROR &&
                 !fixture.public_frame->ready,
-            "undersized destination cannot claim a complete picture");
+            "destination missing a full macroblock cannot claim a complete picture");
   }
   OutputFixture larger(32, 32);
   Require(larger.Process() == VA_STATUS_SUCCESS && larger.public_frame->ready &&
