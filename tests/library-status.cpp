@@ -121,14 +121,17 @@ static void InternalRequests()
 
 static void PublicRequests()
 {
+    const uint32_t controls[] = { 0, 1U << 30, 3U << 30 };
     for (bool vc1 : {false, true}) {
-        for (bool tx_only : {false, true}) {
+        for (uint32_t control : controls) {
             Fixture fixture;
+            const bool tx_only = (control & (1U << 30)) != 0;
+            const bool real_hw_size = (control & (1U << 31)) != 0;
             fixture.context.SingleThreadedAppMode = true;
             if (vc1) fixture.context.VidParams.VideoAlgo = BC_VID_ALGO_VC1MP;
+            response.eosDetected = 1;
             BC_DTS_STATUS status = {};
-            /* This is the exact request used on every real TX-worker poll. */
-            status.cpbEmptySize = tx_only ? (3U << 30) : 0;
+            status.cpbEmptySize = control;
             Check(DtsGetDriverStatus(&fixture.context, &status) == BC_STS_SUCCESS,
                   "public status succeeds through real internal marshalling");
             const uint32_t expected = tx_only ? 1U << 30 : 0;
@@ -136,7 +139,7 @@ static void PublicRequests()
                   "public API forwards TX-only bit30 without changing VC1 selection or bit31");
             Check(rx_peeks == (tx_only ? 0U : 1U),
                   "TX-only request suppresses RX peek; ordinary status still peeks");
-            Check(status.cpbEmptySize == (tx_only ? 8192U : 123456U),
+            Check(status.cpbEmptySize == (real_hw_size ? 8192U : 123456U),
                   "bit31 retains its public-only hardware-versus-software free-size meaning");
             Check(status.ReadyListCount == 2 && status.FreeListCount == 14 &&
                       status.FramesCaptured == 17 && status.InputCount == 23 &&
@@ -144,6 +147,9 @@ static void PublicRequests()
                   "TX-only still returns existing queue counts and library counters");
             Check(status.NextTimeStamp == (tx_only ? 0U : 540000U),
                   "ordinary metadata scaling and TX-only timestamp suppression are unchanged");
+            uint8_t eos = 0;
+            Check(DtsIsEndOfStream(&fixture.context, &eos) == BC_STS_SUCCESS && eos,
+                  "TX-only status preserves the driver EOS observation");
         }
     }
 }

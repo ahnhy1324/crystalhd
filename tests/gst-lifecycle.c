@@ -62,6 +62,10 @@ static struct {
   gboolean early_eos;
   gboolean publish_after_eos;
   guint input_calls;
+  guint status_calls;
+  guint status_no_ready_peek_calls;
+  guint status_unflagged_calls;
+  guint status_invalid_requests;
   guint flush_calls;
   guint drain_calls;
   guint release_calls;
@@ -313,7 +317,16 @@ BC_STATUS DtsProcInput(HANDLE device, uint8_t *data, uint32_t size,
 
 BC_STATUS DtsGetDriverStatus(HANDLE device, BC_DTS_STATUS *status)
 {
+  guint32 request;
   (void)device;
+  request = status->cpbEmptySize;
+  mock.status_calls++;
+  if (request == CRYSTALHD_STATUS_SKIP_READY_HEAD_PEEK)
+    mock.status_no_ready_peek_calls++;
+  else if (request == 0)
+    mock.status_unflagged_calls++;
+  else
+    mock.status_invalid_requests++;
   if (mock.fail_status)
     return BC_STS_ERROR;
   memset(status, 0, sizeof(*status));
@@ -411,7 +424,7 @@ BC_STATUS DtsIsEndOfStream(HANDLE device, uint8_t *eos)
 }
 
 static GstHarness *
-new_decoder_with_caps(const gchar *caps)
+new_decoder_with_caps_and_device(const gchar *caps, guint device_version)
 {
   GstElement *element;
   GstHarness *harness;
@@ -424,13 +437,19 @@ new_decoder_with_caps(const gchar *caps)
   g_queue_init(&mock.pictures);
   mock.auto_output = TRUE;
   mock.free_bytes = 1024 * 1024;
-  mock.device_version = 1;
+  mock.device_version = device_version;
   element = g_object_new(GST_TYPE_CRYSTALHD_DEC, NULL);
   harness = gst_harness_new_with_element(element, "sink", "src");
   gst_object_unref(element); /* the harness takes its own reference */
   gst_harness_set_src_caps_str(harness, caps);
   iteration_decoder = GST_CRYSTALHD_DEC(harness->element);
   return harness;
+}
+
+static GstHarness *
+new_decoder_with_caps(const gchar *caps)
+{
+  return new_decoder_with_caps_and_device(caps, 1);
 }
 
 static GstHarness *
@@ -1165,6 +1184,57 @@ test_repeated_empty_flush(void)
   g_assert_cmpuint(mock.drain_calls, ==, 0);
   gst_harness_teardown(harness);
   g_assert_cmpuint(mock.close_calls, ==, 3);
+}
+
+static void
+test_status_probe_no_ready_peek(void)
+{
+  GstHarness *harness = new_decoder();
+  GstBuffer *output;
+
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  output = gst_harness_try_pull(harness);
+  check_output(output, 0, 1);
+  gst_buffer_unref(output);
+  g_assert_cmpuint(mock.status_calls, ==, 1);
+  g_assert_cmpuint(mock.status_no_ready_peek_calls, ==, 1);
+  g_assert_cmpuint(mock.status_unflagged_calls, ==, 0);
+  g_assert_cmpuint(mock.status_invalid_requests, ==, 0);
+
+  mock.early_eos = TRUE;
+  g_assert_true(gst_harness_push_event(harness, gst_event_new_eos()));
+  g_assert_cmpuint(mock.status_calls, ==, 3);
+  g_assert_cmpuint(mock.status_no_ready_peek_calls, ==, 2);
+  /* The one-shot final statistics report consumes counters, not RLL alone,
+   * and deliberately retains the ordinary status request. */
+  g_assert_cmpuint(mock.status_unflagged_calls, ==, 1);
+  g_assert_cmpuint(mock.status_invalid_requests, ==, 0);
+  g_assert_true(GST_CRYSTALHD_DEC(harness->element)->output_eos);
+  g_assert_true(GST_CRYSTALHD_DEC(harness->element)->drain_idle);
+  gst_harness_teardown(harness);
+
+  harness = new_decoder();
+  mock.fail_status = TRUE;
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_ERROR);
+  g_assert_cmpuint(mock.status_calls, ==, 1);
+  g_assert_cmpuint(mock.status_no_ready_peek_calls, ==, 1);
+  g_assert_cmpuint(mock.status_unflagged_calls, ==, 0);
+  g_assert_cmpuint(mock.status_invalid_requests, ==, 0);
+  g_assert_cmpuint(mock.release_calls, ==, 0);
+  gst_harness_teardown(harness);
+
+  harness = new_decoder_with_caps_and_device(
+      "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+      "width=16,height=16,framerate=25/1", 0);
+  g_assert_true(GST_CRYSTALHD_DEC(harness->element)->is_70012);
+  mock.auto_output = FALSE;
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  g_assert_null(gst_harness_try_pull(harness));
+  g_assert_cmpuint(mock.status_calls, ==, 1);
+  g_assert_cmpuint(mock.status_no_ready_peek_calls, ==, 0);
+  g_assert_cmpuint(mock.status_unflagged_calls, ==, 1);
+  g_assert_cmpuint(mock.status_invalid_requests, ==, 0);
+  gst_harness_teardown(harness);
 }
 
 static void
@@ -2757,6 +2827,8 @@ main(int argc, char **argv)
                   test_wmv3_sparse_pts_disables_timing);
   g_test_add_func("/crystalhd/lifecycle/input-errors", test_input_errors);
   g_test_add_func("/crystalhd/lifecycle/repeated-empty-flush", test_repeated_empty_flush);
+  g_test_add_func("/crystalhd/lifecycle/status-probe-no-ready-peek",
+                  test_status_probe_no_ready_peek);
   g_test_add_func("/crystalhd/lifecycle/incomplete-drain", test_incomplete_drain);
   g_test_add_func("/crystalhd/lifecycle/eos-with-ready-output", test_eos_with_ready_output);
   g_test_add_func("/crystalhd/lifecycle/eos-before-late-output",

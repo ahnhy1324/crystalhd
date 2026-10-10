@@ -78,6 +78,9 @@ constexpr size_t kExperimentalPresentationReadyLimit = 3;
 constexpr size_t kExperimentalPresentationActiveLimit = 2;
 constexpr uint64_t kExperimentalPresentationMaxAgeNs =
     2ULL * 1000 * 1000 * 1000 / 30;
+// Legacy libcrystalhd treats this input bit as a request to return queue/TX
+// counters without peeking and synchronizing the READY-head DMA buffer.
+constexpr uint32_t kStatusSkipReadyHeadPeek = 1U << 30;
 
 static bool DecodeBatchGraceExpired(uint64_t elapsed_ns) {
   return elapsed_ns >= kDecodeBatchGraceNs;
@@ -2971,6 +2974,11 @@ static VAStatus ReceiveAvailable(Driver *driver, DecodeContext *decode,
     return VA_STATUS_ERROR_DECODING_ERROR;
   for (unsigned int attempt = 0; attempt < max_attempts; ++attempt) {
     BC_DTS_STATUS decoder_status = {};
+    // BCM70012's peek filters repeated/garbage READY entries before reporting
+    // them.  BCM70015 needs only the queue count here, so avoid synchronizing
+    // its READY-head DMA buffer until the actual dequeue.
+    if (!decode->is_70012)
+      decoder_status.cpbEmptySize = kStatusSkipReadyHeadPeek;
     BC_STATUS status = DtsGetDriverStatus(decode->device, &decoder_status);
     if (status != BC_STS_SUCCESS || decoder_status.ReadyListCount != 0)
       Debug("DtsGetDriverStatus: status=%d ready=%u", status,
