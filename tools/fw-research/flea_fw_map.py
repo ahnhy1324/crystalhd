@@ -3846,6 +3846,157 @@ def _a32_target_branches_in_region(payload, region, targets):
     return candidates
 
 
+def _a32_blx_immediate(payload, offset):
+    """Decode one aligned A32 BLX-immediate encoding without classifying code."""
+    if offset % 4:
+        raise FormatError("A32 BLX immediate is not word aligned")
+    word = struct.unpack("<I", bounded(payload, offset, 4,
+                                      "A32 BLX immediate"))[0]
+    if word & 0xfe000000 != 0xfa000000:
+        raise FormatError("instruction is not an A32 BLX immediate")
+    h_bit = (word >> 24) & 1
+    displacement = ((word & 0xffffff) << 2) | (h_bit << 1)
+    if displacement & (1 << 25):
+        displacement -= 1 << 26
+    return {
+        "blob_file_offset": offset,
+        "word": word,
+        "operation": "BLX immediate",
+        "source_isa": "A32",
+        "target_isa": "T32",
+        "h_bit": h_bit,
+        "pc_base_blob_file_offset": offset + 8,
+        "target_blob_file_offset": offset + 8 + displacement,
+    }
+
+
+def _t32_branch_immediate(payload, offset, operation):
+    """Decode one T32 BL or BLX-immediate encoding without classifying code."""
+    if offset % 2:
+        raise FormatError("T32 branch immediate is not halfword aligned")
+    first, second = struct.unpack(
+        "<HH", bounded(payload, offset, 4, "T32 branch immediate"))
+    if first & 0xf800 != 0xf000:
+        raise FormatError("instruction is not a T32 direct branch immediate")
+    if operation == "BL":
+        if second & 0xd000 != 0xd000:
+            raise FormatError("instruction is not a T32 BL immediate")
+        low = (second & 0x7ff) << 1
+        target_isa = "T32"
+        pc_base = offset + 4
+    elif operation == "BLX":
+        if second & 0xd001 != 0xc000:
+            raise FormatError("instruction is not a T32 BLX immediate")
+        low = (second & 0x7fe) << 1
+        target_isa = "A32"
+        pc_base = (offset + 4) & ~3
+    else:
+        raise FormatError("unsupported T32 direct branch operation")
+    sign = (first >> 10) & 1
+    j1 = (second >> 13) & 1
+    j2 = (second >> 11) & 1
+    i1 = 1 ^ (j1 ^ sign)
+    i2 = 1 ^ (j2 ^ sign)
+    displacement = (sign << 24) | (i1 << 23) | (i2 << 22) | \
+        ((first & 0x3ff) << 12) | low
+    if displacement & (1 << 24):
+        displacement -= 1 << 25
+    return {
+        "blob_file_offset": offset,
+        "first_halfword": first,
+        "second_halfword": second,
+        "operation": operation,
+        "source_isa": "T32",
+        "target_isa": target_isa,
+        "pc_base_blob_file_offset": pc_base,
+        "target_blob_file_offset": pc_base + displacement,
+    }
+
+
+def _direct_interworking_immediates_in_region(payload, region, targets):
+    """Count raw direct interworking patterns and retain tracked-target matches.
+
+    The enclosing caller must independently pin the region identity.  Scanning
+    aligned bit patterns does not establish which bytes are executable code.
+    """
+    role, start, size = region
+    if start % 4 or size <= 0 or size % 4:
+        raise FormatError("direct interworking scan region is not word aligned")
+    data = bounded(payload, start, size, "direct interworking scan region")
+    targets = tuple(sorted(frozenset(targets)))
+    encodings = {
+        "a32_blx_immediate": {
+            "operation": "A32 BLX immediate",
+            "source_isa": "A32", "target_isa": "T32",
+            "source_alignment_bytes": 4,
+            "isa_legal_for_tracked_a32_entries": False,
+            "isa_legality": "BLX immediate enters T32, but the tracked entries are A32",
+            "raw_pattern_count": 0, "target_candidates": [],
+        },
+        "t32_bl_immediate": {
+            "operation": "T32 BL immediate",
+            "source_isa": "T32", "target_isa": "T32",
+            "source_alignment_bytes": 2,
+            "isa_legal_for_tracked_a32_entries": False,
+            "isa_legality": "T32 BL remains in T32, but the tracked entries are A32",
+            "raw_pattern_count": 0, "target_candidates": [],
+        },
+        "t32_blx_immediate": {
+            "operation": "T32 BLX immediate",
+            "source_isa": "T32", "target_isa": "A32",
+            "source_alignment_bytes": 2,
+            "isa_legal_for_tracked_a32_entries": True,
+            "isa_legality": "T32 BLX enters A32 and can encode an A32 entry",
+            "raw_pattern_count": 0, "target_candidates": [],
+        },
+    }
+    for relative in range(0, size, 4):
+        word = struct.unpack_from("<I", data, relative)[0]
+        if word & 0xfe000000 != 0xfa000000:
+            continue
+        record = _a32_blx_immediate(payload, start + relative)
+        result = encodings["a32_blx_immediate"]
+        result["raw_pattern_count"] += 1
+        if record["target_blob_file_offset"] in targets:
+            record["tracked_entry_isa_compatible"] = False
+            result["target_candidates"].append(record)
+    for relative in range(0, size - 2, 2):
+        first, second = struct.unpack_from("<HH", data, relative)
+        if first & 0xf800 != 0xf000:
+            continue
+        if second & 0xd000 == 0xd000:
+            key, operation = "t32_bl_immediate", "BL"
+        elif second & 0xd001 == 0xc000:
+            key, operation = "t32_blx_immediate", "BLX"
+        else:
+            continue
+        record = _t32_branch_immediate(payload, start + relative, operation)
+        result = encodings[key]
+        result["raw_pattern_count"] += 1
+        if record["target_blob_file_offset"] in targets:
+            record["tracked_entry_isa_compatible"] = operation == "BLX"
+            result["target_candidates"].append(record)
+    for result in encodings.values():
+        result["target_candidate_counts"] = {
+            f"{target:#x}": sum(record["target_blob_file_offset"] == target
+                                for record in result["target_candidates"])
+            for target in targets
+        }
+        result["complete_for_aligned_raw_patterns_in_pinned_region"] = True
+        result["source_code_boundaries_classified"] = False
+    return {
+        "kind": "aligned raw encoding-pattern inventory, not a code/data partition",
+        "region_role": role,
+        "tracked_helper_entries": list(targets),
+        "tracked_helper_isa": "A32",
+        "encodings": encodings,
+        "all_tracked_raw_target_patterns_classified": True,
+        "source_code_boundaries_classified": False,
+        "all_direct_immediate_callers_established": False,
+        "indirect_or_computed_callers_excluded": False,
+    }
+
+
 def _a32_literal(payload, offset):
     """Decode AL LDR word [PC, +/-imm12], with no writeback or register offset."""
     word = _bootstrap_word(payload, offset)
@@ -5660,6 +5811,24 @@ def _channel_field_map(payload):
                  if record["target_blob_file_offset"] == helper]
         for helper in tracked_helper_entries
     }
+    interworking_immediates = _direct_interworking_immediates_in_region(
+        payload, (whole_arm_role, whole_arm_start, whole_arm_size),
+        tracked_helper_entries)
+    interworking_encodings = interworking_immediates["encodings"]
+    if ({key: value["raw_pattern_count"]
+         for key, value in interworking_encodings.items()} != {
+             "a32_blx_immediate": 41,
+             "t32_bl_immediate": 153,
+             "t32_blx_immediate": 1523,
+         } or any(value["target_candidates"]
+                  for value in interworking_encodings.values())):
+        raise FormatError("channel-field direct interworking patterns do not match the baseline")
+    interworking_candidates_by_helper = {
+        helper: [record for value in interworking_encodings.values()
+                 for record in value["target_candidates"]
+                 if record["target_blob_file_offset"] == helper]
+        for helper in tracked_helper_entries
+    }
 
     def checked_sites(entries, access, expression):
         result = []
@@ -5798,6 +5967,7 @@ def _channel_field_map(payload):
             "callee_saved_register_premise": False,
             "runtime_path_observed": False,
             "all_direct_b_bl_target_candidates_classified": True,
+            "all_supported_direct_immediate_target_patterns_classified": True,
             "all_direct_callers_established": False,
             "indirect_or_computed_callers_excluded": False,
         },
@@ -5818,6 +5988,7 @@ def _channel_field_map(payload):
             "callee_saved_register_premise": True,
             "runtime_path_observed": False,
             "all_direct_b_bl_target_candidates_classified": True,
+            "all_supported_direct_immediate_target_patterns_classified": True,
             "all_direct_callers_established": False,
             "indirect_or_computed_callers_excluded": False,
         },
@@ -5839,7 +6010,10 @@ def _channel_field_map(payload):
             "all_caller_provenance_pinned": False,
             "whole_arm_direct_b_bl_target_candidates":
                 whole_arm_candidates_by_helper[0x12e4],
+            "whole_arm_direct_interworking_target_candidates":
+                interworking_candidates_by_helper[0x12e4],
             "all_direct_b_bl_target_candidates_classified": True,
+            "all_supported_direct_immediate_target_patterns_classified": True,
             "derivation_sites": checked_anchors((
                 ("helper_12e4_stride_words", 0x12e8, 0xe3a03073,
                  "r3 = 0x73 words"),
@@ -5860,7 +6034,10 @@ def _channel_field_map(payload):
             "all_caller_provenance_pinned": False,
             "whole_arm_direct_b_bl_target_candidates":
                 whole_arm_candidates_by_helper[0x15d8],
+            "whole_arm_direct_interworking_target_candidates":
+                interworking_candidates_by_helper[0x15d8],
             "all_direct_b_bl_target_candidates_classified": True,
+            "all_supported_direct_immediate_target_patterns_classified": True,
             "derivation_sites": checked_anchors((
                 ("helper_15d8_stride_words", 0x15dc, 0xe3a03073,
                  "r3 = 0x73 words"),
@@ -5881,7 +6058,10 @@ def _channel_field_map(payload):
             "all_caller_provenance_pinned": False,
             "whole_arm_direct_b_bl_target_candidates":
                 whole_arm_candidates_by_helper[0x1610],
+            "whole_arm_direct_interworking_target_candidates":
+                interworking_candidates_by_helper[0x1610],
             "all_direct_b_bl_target_candidates_classified": True,
+            "all_supported_direct_immediate_target_patterns_classified": True,
             "derivation_sites": checked_anchors((
                 ("helper_1610_stride_words", 0x1618, 0xe3a02073,
                  "r2 = 0x73 words"),
@@ -6184,6 +6364,14 @@ def _channel_field_map(payload):
                            "sha256": whole_arm_sha256,
                            "charged_to_selected_region_budget": False,
                        },
+                       "whole_arm_direct_interworking_scan": {
+                           "role": whole_arm_role,
+                           "blob_file_offset": whole_arm_start,
+                           "size": whole_arm_size,
+                           "sha256": whole_arm_sha256,
+                           "charged_to_selected_region_budget": False,
+                           "shares_hash_gate_with": "whole_arm_direct_b_bl_scan",
+                       },
                        "rx_descriptor_admission": admission["validation"]},
         "channel": {
             "root": root, "init_root": init_root, "reinitialize_root": reinit_root,
@@ -6230,7 +6418,7 @@ def _channel_field_map(payload):
             },
         },
         "caller_provenance": {
-            "kind": "selected fixed-root paths plus whole-ARM direct A32 B/BL target inventory",
+            "kind": "selected fixed-root paths plus whole-prefix direct-immediate target inventories",
             "selected_fixed_root_paths": list(selected_fixed_root_paths),
             "branch_candidate_scan": {
                 "isa_encoding": "A32 conditional-space B/BL immediate bit patterns",
@@ -6272,9 +6460,18 @@ def _channel_field_map(payload):
                 "thumb_direct_transfers_scanned": False,
                 "indirect_or_computed_callers_excluded": False,
             },
+            "whole_arm_direct_interworking_scan": {
+                "region": {
+                    "role": whole_arm_role,
+                    "blob_file_offset": whole_arm_start,
+                    "size": whole_arm_size,
+                    "sha256": whole_arm_sha256,
+                },
+                **interworking_immediates,
+            },
             "limitations": [
-                "The whole-ARM scan classifies aligned ordinary A32 B/BL target encodings only; BLX, Thumb and indirect/computed transfers remain outside its scope.",
-                "No A32 B/BL target candidate for 0x1610 exists in the hash-pinned ARM prefix; that does not exclude a caller through an out-of-scope transfer.",
+                "The whole-prefix scans classify aligned raw A32 B/BL, A32 BLX-immediate and T32 BL/BLX-immediate patterns; they do not classify the mixed prefix into code and data.",
+                "No supported direct-immediate target candidate for 0x1610 exists in the hash-pinned ARM prefix; that does not exclude other transfer mechanisms or sources outside the pinned prefix.",
                 "The 0x12e4 path relies on A32 callee-saved r6 preservation across its possible intervening calls.",
                 "Static selected paths do not establish runtime execution, valid slot range, object identity or lifetime.",
             ],
@@ -6294,6 +6491,9 @@ def _channel_field_map(payload):
             "selected_fixed_root_caller_paths_are_pinned": True,
             "whole_arm_direct_b_bl_encoding_scan": True,
             "direct_b_bl_target_candidates_complete": True,
+            "whole_arm_direct_interworking_encoding_scan": True,
+            "direct_interworking_target_encoding_patterns_complete": True,
+            "whole_arm_source_code_boundaries_classified": False,
             "direct_caller_inventory_complete": False,
             "indirect_or_computed_caller_inventory_complete": False,
             "all_listed_accesses_have_fixed_root_provenance": False,
@@ -6314,9 +6514,9 @@ def _channel_field_map(payload):
         },
         "assumptions": [
             "A32 calls use the pinned calling convention and output pointers remain unaliased for each serialized call.",
-            "The whole-ARM target-filtered scan classifies ordinary aligned A32 B/BL encodings, not every possible control-transfer mechanism.",
-            "The two A32 BL target candidates establish the selected fixed-root paths; indirect/computed, A32 BLX and Thumb transfers remain unclassified.",
-            "The third argument-rooted helper at 0x1610 has no A32 B/BL target candidate and remains conditional on its incoming C-root premise.",
+            "The whole-prefix target-filtered scans classify aligned raw direct-immediate encoding patterns, not source ISA boundaries, executable code, or every possible control-transfer mechanism.",
+            "The two A32 BL target candidates establish the selected fixed-root paths; zero A32 BLX-immediate and T32 BL/BLX-immediate matches add no path, while indirect/computed transfers remain unclassified.",
+            "The third argument-rooted helper at 0x1610 has no supported direct-immediate target candidate and remains conditional on its incoming C-root premise.",
             "Selected scalar access lists exclude unpinned aliases and are not whole-image access inventories; the three pinned bulk clear paths are listed separately.",
             "Reported branch targets are decoded from pinned call instructions; target bodies are not thereby claimed as pinned.",
             "The generic clear and copy helpers operate on the exact argument ranges shown by their pinned wrappers and bodies.",

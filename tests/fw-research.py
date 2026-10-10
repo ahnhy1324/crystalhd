@@ -5308,6 +5308,14 @@ class FirmwareChannelFieldTests(unittest.TestCase):
             "sha256": "f109a8e616b7c744770631c76cdb910db5295f54d7e78c80abed6bffbbf95679",
             "charged_to_selected_region_budget": False,
         })
+        self.assertEqual(validation["whole_arm_direct_interworking_scan"], {
+            "role": "arm_bootstrap_before_embedded_arc_images",
+            "blob_file_offset": 0,
+            "size": 0x2ea60,
+            "sha256": "f109a8e616b7c744770631c76cdb910db5295f54d7e78c80abed6bffbbf95679",
+            "charged_to_selected_region_budget": False,
+            "shares_hash_gate_with": "whole_arm_direct_b_bl_scan",
+        })
         self.assertEqual(validation["rx_descriptor_admission"], self.admission["validation"])
         self.assertEqual([region["role"] for region in validation["regions"]], [
             "init_context", "channel_api_lifecycle", "host_start_root_literal",
@@ -5520,10 +5528,44 @@ class FirmwareChannelFieldTests(unittest.TestCase):
             self.assertTrue(path["fixed_root_on_this_selected_path"])
             self.assertFalse(path["runtime_path_observed"])
             self.assertTrue(path["all_direct_b_bl_target_candidates_classified"])
+            self.assertTrue(
+                path["all_supported_direct_immediate_target_patterns_classified"])
             self.assertFalse(path["all_direct_callers_established"])
             self.assertFalse(path["indirect_or_computed_callers_excluded"])
         self.assertTrue(any("0x1610" in limitation and "does not exclude" in limitation
                             for limitation in provenance["limitations"]))
+
+        interworking = provenance["whole_arm_direct_interworking_scan"]
+        self.assertEqual(interworking["region"], whole["region"])
+        self.assertEqual(interworking["region_role"],
+                         "arm_bootstrap_before_embedded_arc_images")
+        self.assertEqual((interworking["kind"], interworking["tracked_helper_entries"],
+                          interworking["tracked_helper_isa"]), (
+            "aligned raw encoding-pattern inventory, not a code/data partition",
+            [0x12e4, 0x15d8, 0x1610], "A32"))
+        expected = {
+            "a32_blx_immediate": ("A32", "T32", 4, 41, False),
+            "t32_bl_immediate": ("T32", "T32", 2, 153, False),
+            "t32_blx_immediate": ("T32", "A32", 2, 1523, True),
+        }
+        self.assertEqual(set(interworking["encodings"]), set(expected))
+        for name, (source, target, alignment, count, legal) in expected.items():
+            encoding = interworking["encodings"][name]
+            self.assertEqual((encoding["source_isa"], encoding["target_isa"],
+                              encoding["source_alignment_bytes"],
+                              encoding["raw_pattern_count"],
+                              encoding["isa_legal_for_tracked_a32_entries"]),
+                             (source, target, alignment, count, legal))
+            self.assertEqual(encoding["target_candidates"], [])
+            self.assertEqual(encoding["target_candidate_counts"], {
+                "0x12e4": 0, "0x15d8": 0, "0x1610": 0})
+            self.assertTrue(
+                encoding["complete_for_aligned_raw_patterns_in_pinned_region"])
+            self.assertFalse(encoding["source_code_boundaries_classified"])
+        self.assertTrue(interworking["all_tracked_raw_target_patterns_classified"])
+        self.assertFalse(interworking["source_code_boundaries_classified"])
+        self.assertFalse(interworking["all_direct_immediate_callers_established"])
+        self.assertFalse(interworking["indirect_or_computed_callers_excluded"])
 
     def test_target_filtered_a32_scan_decodes_b_bl_and_excludes_blx_space(self):
         payload = bytearray(64)
@@ -5563,6 +5605,157 @@ class FirmwareChannelFieldTests(unittest.TestCase):
         with self.assertRaises(MAP.FormatError):
             MAP._a32_target_branches_in_region(
                 payload, ("synthetic", 0, len(payload) + 4), (0x20,))
+
+    def test_direct_interworking_decoders_cover_real_vectors_and_pc_rules(self):
+        # GNU as -march=armv7-a encodes the first two A32 vectors as BLX to a
+        # Thumb target at +0xc (H=0) and +0xa (H=1); the third pins negative
+        # sign extension at the architectural range boundary.
+        for word, h_bit, target in ((0xfa000001, 0, 0x0c),
+                                    (0xfb000000, 1, 0x0a),
+                                    (0xfa800000, 0, -0x1fffff8)):
+            with self.subTest(word=hex(word)):
+                record = MAP._a32_blx_immediate(struct.pack("<I", word), 0)
+                self.assertEqual((record["operation"], record["source_isa"],
+                                  record["target_isa"], record["h_bit"],
+                                  record["pc_base_blob_file_offset"],
+                                  record["target_blob_file_offset"]),
+                                 ("BLX immediate", "A32", "T32", h_bit, 8, target))
+
+        # These are real stock words in the hash-pinned outer ARM prefix, not
+        # synthetic encodings.  They cover both H values and known Thumb
+        # destinations independently of the tracked A32 helper entries.
+        for site, word, h_bit, target in (
+                (0x20700, 0xfa002fe0, 0, 0x2c688),
+                (0x20e44, 0xfb002f76, 1, 0x2cc26)):
+            with self.subTest(stock_site=hex(site)):
+                self.assertEqual(struct.unpack_from("<I", self.payload, site)[0], word)
+                record = MAP._a32_blx_immediate(self.payload, site)
+                self.assertEqual((record["word"], record["h_bit"],
+                                  record["target_blob_file_offset"]),
+                                 (word, h_bit, target))
+
+        forward = bytearray(32)
+        # Real GNU-as encodings exercise T32 PC=site+4 for BL and
+        # Align(site+4,4) for BLX at both site mod 4 values.
+        for site, halfwords, operation, pc_base, target in (
+                (0x00, (0xf000, 0xf808), "BL", 0x04, 0x14),
+                (0x06, (0xf000, 0xf806), "BL", 0x0a, 0x16),
+                (0x0a, (0xf000, 0xe806), "BLX", 0x0c, 0x18),
+                (0x10, (0xf000, 0xe804), "BLX", 0x14, 0x1c)):
+            struct.pack_into("<HH", forward, site, *halfwords)
+            with self.subTest(site=hex(site), operation=operation):
+                record = MAP._t32_branch_immediate(forward, site, operation)
+                self.assertEqual((record["operation"], record["source_isa"],
+                                  record["target_isa"],
+                                  record["pc_base_blob_file_offset"],
+                                  record["target_blob_file_offset"]),
+                                 (operation, "T32", "T32" if operation == "BL" else "A32",
+                                  pc_base, target))
+
+        backward = bytearray(32)
+        for site, halfwords, operation, pc_base, target in (
+                (0x0a, (0xf7ff, 0xfff9), "BL", 0x0e, 0x00),
+                (0x16, (0xf7ff, 0xeffc), "BLX", 0x18, 0x10)):
+            struct.pack_into("<HH", backward, site, *halfwords)
+            with self.subTest(site=hex(site), operation=operation):
+                record = MAP._t32_branch_immediate(backward, site, operation)
+                self.assertEqual((record["pc_base_blob_file_offset"],
+                                  record["target_blob_file_offset"]),
+                                 (pc_base, target))
+
+        # Exercise J1 and J2 independently, then the signed 25-bit lower
+        # boundary, for both T32 transfer forms.
+        for operation, vectors in (
+                ("BL", ((0xf000, 0xf000, 0x400004),
+                        (0xf000, 0xd800, 0x800004),
+                        (0xf400, 0xd000, -0xfffffc))),
+                ("BLX", ((0xf000, 0xe000, 0x400004),
+                         (0xf000, 0xc800, 0x800004),
+                         (0xf400, 0xc000, -0xfffffc)))):
+            for first, second, target in vectors:
+                with self.subTest(operation=operation, first=hex(first),
+                                  second=hex(second)):
+                    record = MAP._t32_branch_immediate(
+                        struct.pack("<HH", first, second), 0, operation)
+                    self.assertEqual(record["target_blob_file_offset"], target)
+
+    def test_direct_interworking_scan_filters_targets_without_code_claim(self):
+        a32 = bytearray(16)
+        struct.pack_into("<I", a32, 0, 0xfa000001)
+        struct.pack_into("<I", a32, 4, 0xfb000000)
+        report = MAP._direct_interworking_immediates_in_region(
+            a32, ("synthetic", 0, len(a32)), (0x0c, 0x0e))
+        encoding = report["encodings"]["a32_blx_immediate"]
+        self.assertEqual(encoding["raw_pattern_count"], 2)
+        self.assertEqual([(r["blob_file_offset"], r["target_blob_file_offset"],
+                           r["h_bit"], r["tracked_entry_isa_compatible"])
+                          for r in encoding["target_candidates"]], [
+            (0x00, 0x0c, 0, False), (0x04, 0x0e, 1, False)])
+
+        thumb = bytearray(32)
+        for site, halfwords in ((0x00, (0xf000, 0xf808)),
+                                (0x06, (0xf000, 0xf806)),
+                                (0x0a, (0xf000, 0xe806)),
+                                (0x10, (0xf000, 0xe804))):
+            struct.pack_into("<HH", thumb, site, *halfwords)
+        report = MAP._direct_interworking_immediates_in_region(
+            thumb, ("synthetic", 0, len(thumb)), (0x14, 0x16, 0x18, 0x1c))
+        bl = report["encodings"]["t32_bl_immediate"]
+        blx = report["encodings"]["t32_blx_immediate"]
+        self.assertEqual((bl["raw_pattern_count"], blx["raw_pattern_count"]), (2, 2))
+        self.assertEqual([(r["blob_file_offset"], r["target_blob_file_offset"],
+                           r["tracked_entry_isa_compatible"])
+                          for r in bl["target_candidates"]], [
+            (0x00, 0x14, False), (0x06, 0x16, False)])
+        self.assertEqual([(r["blob_file_offset"], r["target_blob_file_offset"],
+                           r["tracked_entry_isa_compatible"])
+                          for r in blx["target_candidates"]], [
+            (0x0a, 0x18, True), (0x10, 0x1c, True)])
+        self.assertFalse(report["source_code_boundaries_classified"])
+        self.assertFalse(report["all_direct_immediate_callers_established"])
+
+    def test_direct_interworking_decoders_reject_malformed_and_truncated_inputs(self):
+        with self.assertRaisesRegex(MAP.FormatError, "word aligned"):
+            MAP._a32_blx_immediate(bytes(8), 2)
+        with self.assertRaisesRegex(MAP.FormatError, "not an A32 BLX"):
+            MAP._a32_blx_immediate(bytes(4), 0)
+        with self.assertRaises(MAP.FormatError):
+            MAP._a32_blx_immediate(bytes(3), 0)
+        with self.assertRaisesRegex(MAP.FormatError, "halfword aligned"):
+            MAP._t32_branch_immediate(bytes(8), 1, "BL")
+        with self.assertRaises(MAP.FormatError):
+            MAP._t32_branch_immediate(bytes(3), 0, "BL")
+        for halfwords, operation, message in (
+                ((0xe000, 0xf800), "BL", "not a T32 direct"),
+                ((0xf000, 0xe800), "BL", "not a T32 BL"),
+                ((0xf000, 0xf800), "BLX", "not a T32 BLX"),
+                ((0xf000, 0xe801), "BLX", "not a T32 BLX")):
+            with self.subTest(halfwords=halfwords, operation=operation), \
+                    self.assertRaisesRegex(MAP.FormatError, message):
+                MAP._t32_branch_immediate(struct.pack("<HH", *halfwords), 0, operation)
+        with self.assertRaisesRegex(MAP.FormatError, "unsupported"):
+            MAP._t32_branch_immediate(struct.pack("<HH", 0xf000, 0xf800), 0, "B")
+        for region in (("synthetic", 2, 4), ("synthetic", 0, 2),
+                       ("synthetic", 0, 0)):
+            with self.subTest(region=region), \
+                    self.assertRaisesRegex(MAP.FormatError, "not word aligned"):
+                MAP._direct_interworking_immediates_in_region(bytes(8), region, ())
+        with self.assertRaises(MAP.FormatError):
+            MAP._direct_interworking_immediates_in_region(
+                bytes(8), ("synthetic", 0, 12), ())
+
+        boundary = bytearray(8)
+        struct.pack_into("<HH", boundary, 4, 0xf000, 0xf800)
+        report = MAP._direct_interworking_immediates_in_region(
+            boundary, ("synthetic", 0, 8), ())
+        self.assertEqual(report["encodings"]["t32_bl_immediate"]
+                         ["raw_pattern_count"], 1)
+        straddling = bytearray(8)
+        struct.pack_into("<HH", straddling, 2, 0xf000, 0xf800)
+        report = MAP._direct_interworking_immediates_in_region(
+            straddling, ("synthetic", 0, 4), ())
+        self.assertEqual(report["encodings"]["t32_bl_immediate"]
+                         ["raw_pattern_count"], 0)
 
     def test_cached_metadata_projection_flags_and_descriptor_are_bounded(self):
         fields = self.report["fields"]
@@ -5648,6 +5841,9 @@ class FirmwareChannelFieldTests(unittest.TestCase):
         self.assertTrue(scope["selected_fixed_root_caller_paths_are_pinned"])
         self.assertTrue(scope["whole_arm_direct_b_bl_encoding_scan"])
         self.assertTrue(scope["direct_b_bl_target_candidates_complete"])
+        self.assertTrue(scope["whole_arm_direct_interworking_encoding_scan"])
+        self.assertTrue(scope["direct_interworking_target_encoding_patterns_complete"])
+        self.assertFalse(scope["whole_arm_source_code_boundaries_classified"])
         self.assertFalse(scope["direct_caller_inventory_complete"])
         self.assertFalse(scope["indirect_or_computed_caller_inventory_complete"])
         self.assertFalse(scope["all_listed_accesses_have_fixed_root_provenance"])
@@ -5679,9 +5875,13 @@ class FirmwareChannelFieldTests(unittest.TestCase):
                             for entry in conditional))
         self.assertTrue(all(entry["all_direct_b_bl_target_candidates_classified"]
                             for entry in conditional))
+        self.assertTrue(all(entry["all_supported_direct_immediate_target_patterns_classified"]
+                            for entry in conditional))
         self.assertEqual([[site["blob_file_offset"]
                            for site in entry["whole_arm_direct_b_bl_target_candidates"]]
                           for entry in conditional], [[0x4dec], [0x4b00], []])
+        self.assertEqual([entry["whole_arm_direct_interworking_target_candidates"]
+                          for entry in conditional], [[], [], []])
         self.assertEqual([len(entry["selected_fixed_root_call_paths"])
                           for entry in conditional], [1, 1, 0])
         self.assertEqual([[site["blob_file_offset"] for site in entry["derivation_sites"]]
@@ -5739,6 +5939,9 @@ class FirmwareChannelFieldTests(unittest.TestCase):
                                           side_effect=AssertionError("caller scan before pin gate")), \
                         mock.patch.object(MAP, "_a32_target_branches_in_region",
                                           side_effect=AssertionError("whole scan before pin gate")), \
+                        mock.patch.object(MAP, "_direct_interworking_immediates_in_region",
+                                          side_effect=AssertionError(
+                                              "interworking scan before pin gate")), \
                         self.assertRaises(MAP.FormatError):
                     MAP._channel_field_map(changed)
 
@@ -5755,6 +5958,9 @@ class FirmwareChannelFieldTests(unittest.TestCase):
                                       side_effect=AssertionError("caller scan before scan pin")), \
                     mock.patch.object(MAP, "_a32_target_branches_in_region",
                                       side_effect=AssertionError("whole scan before scan pin")), \
+                    mock.patch.object(MAP, "_direct_interworking_immediates_in_region",
+                                      side_effect=AssertionError(
+                                          "interworking scan before scan pin")), \
                     self.assertRaisesRegex(MAP.FormatError, "whole-ARM scan region"):
                 MAP._channel_field_map(changed)
 
