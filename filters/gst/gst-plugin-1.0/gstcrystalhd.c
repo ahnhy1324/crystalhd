@@ -31,6 +31,8 @@ G_STATIC_ASSERT(GST_CRYSTALHD_MPEG4_MAX_INPUT_SIZE ==
 typedef struct {
   guint64 hardware_timestamp;
   guint32 frame_number;
+  GstClockTime pts;
+  GstClockTime duration;
 } CrystalHdTimestamp;
 
 typedef struct _GstCrystalHdDec {
@@ -56,6 +58,9 @@ typedef struct _GstCrystalHdDec {
   guint64 next_hardware_timestamp;
   guint32 simple_picture_number;
   gboolean have_simple_picture_number;
+  gboolean wmv3_reordered_output;
+  gboolean wmv3_timing_valid;
+  GstClockTime wmv3_last_duration;
   GQueue timestamps;
   GstVideoCodecState *input_state;
   GstAdapter *parse_adapter;
@@ -227,6 +232,9 @@ gst_crystalhd_clear_timestamps(GstCrystalHdDec *self)
 {
   g_queue_clear_full(&self->timestamps, g_free);
   self->have_simple_picture_number = FALSE;
+  self->wmv3_reordered_output = FALSE;
+  self->wmv3_timing_valid = TRUE;
+  self->wmv3_last_duration = GST_CLOCK_TIME_NONE;
 }
 
 static BC_STATUS
@@ -283,6 +291,82 @@ gst_crystalhd_find_timestamp(GstCrystalHdDec *self, guint64 timestamp,
   if (link_out != NULL)
     *link_out = NULL;
   return NULL;
+}
+
+static gboolean
+gst_crystalhd_take_wmv3_timing(GstCrystalHdDec *self,
+                               CrystalHdTimestamp *decoded,
+                               GstClockTime *pts,
+                               GstClockTime *duration)
+{
+  CrystalHdTimestamp *oldest = NULL;
+  GstClockTime remaining_pts = GST_CLOCK_TIME_NONE;
+  GstClockTime selected_duration;
+  GstClockTime selected_pts;
+  GList *link;
+
+  if (!self->wmv3_timing_valid)
+    return FALSE;
+
+  /* Mirror GstVideoDecoder's pending-PTS ordering with the associated
+   * duration. The hardware token identifies storage, while the lowest pending
+   * PTS identifies the next already-display-ordered WMV3 picture. */
+  for (link = self->timestamps.head; link != NULL; link = link->next) {
+    CrystalHdTimestamp *candidate = link->data;
+
+    if (!GST_CLOCK_TIME_IS_VALID(candidate->pts)) {
+      /* A sparse timestamp prevents both the base class and this mirror from
+       * proving a complete presentation order. Stay disabled for this
+       * generation instead of resuming from potentially divergent swaps. */
+      self->wmv3_timing_valid = FALSE;
+      return FALSE;
+    }
+    if (oldest == NULL || candidate->pts < oldest->pts)
+      oldest = candidate;
+  }
+  if (oldest == NULL)
+    return FALSE;
+
+  selected_pts = oldest->pts;
+  selected_duration = oldest->duration;
+  /* GstVideoDecoder preserves the decoded token's timing in the entry whose
+   * earliest PTS is being consumed. Mirror that replacement so later output
+   * retains the full PTS/duration tuple instead of only the PTS. */
+  if (oldest != decoded) {
+    oldest->pts = decoded->pts;
+    oldest->duration = decoded->duration;
+  }
+
+  /* Find the next presentation PTS after the decoded token is logically
+   * removed. This includes the replacement above and deliberately preserves
+   * equal PTS as a reason not to infer a positive cadence. */
+  for (link = self->timestamps.head; link != NULL; link = link->next) {
+    CrystalHdTimestamp *candidate = link->data;
+
+    if (candidate == decoded)
+      continue;
+    if (!GST_CLOCK_TIME_IS_VALID(remaining_pts) ||
+        candidate->pts < remaining_pts)
+      remaining_pts = candidate->pts;
+  }
+
+  *pts = selected_pts;
+  *duration = selected_duration;
+  if (GST_CLOCK_TIME_IS_VALID(remaining_pts) && remaining_pts > *pts) {
+    GstClockTime cadence = remaining_pts - *pts;
+
+    if (!GST_CLOCK_TIME_IS_VALID(*duration) || *duration > cadence)
+      *duration = cadence;
+  } else if (!GST_CLOCK_TIME_IS_VALID(remaining_pts)) {
+    /* With no successor, the most recent positive presentation interval is
+     * the only stream-local estimate. Do not use segment stop here: drain()
+     * also runs at non-EOS boundaries where that would stretch a frame. */
+    if (!GST_CLOCK_TIME_IS_VALID(*duration))
+      *duration = self->wmv3_last_duration;
+  }
+  if (GST_CLOCK_TIME_IS_VALID(*duration) && *duration != 0)
+    self->wmv3_last_duration = *duration;
+  return TRUE;
 }
 
 static gboolean
@@ -378,6 +462,9 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
   gboolean progressive_repeat_first = FALSE;
   gboolean progressive_field_sequence;
   gboolean ordered_mpeg4_simple;
+  GstClockTime wmv3_pts = GST_CLOCK_TIME_NONE;
+  GstClockTime wmv3_duration = GST_CLOCK_TIME_NONE;
+  gboolean have_wmv3_timing = FALSE;
 
   *completed = NULL;
 
@@ -450,6 +537,16 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
                        (guint64)output->PicInfo.timeStamp,
                        head->hardware_timestamp, output->PicInfo.picture_number));
     return GST_FLOW_ERROR;
+  }
+  if (self->codec.subtype == BC_MSUBTYPE_WMV3 && !interlaced &&
+      timestamp_link != self->timestamps.head) {
+    if (!self->wmv3_reordered_output)
+      GST_DEBUG_OBJECT(self,
+          "WMV3 display-order output carries reordered input tokens");
+    /* Keep this one-shot diagnostic separate from the timing repair, which
+     * starts at the first progressive picture so seek clipping is correct
+     * even before a non-head B-picture token is observed. */
+    self->wmv3_reordered_output = TRUE;
   }
   frame_number = entry->frame_number;
   if (self->need_second_field &&
@@ -577,6 +674,9 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
       GST_BUFFER_FLAG_SET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_RFF);
   }
   self->need_second_field = FALSE;
+  if (self->codec.subtype == BC_MSUBTYPE_WMV3 && !interlaced)
+    have_wmv3_timing = gst_crystalhd_take_wmv3_timing(
+        self, entry, &wmv3_pts, &wmv3_duration);
   if (timestamp_link != NULL) {
     g_free(timestamp_link->data);
     g_queue_delete_link(&self->timestamps, timestamp_link);
@@ -593,6 +693,11 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
 
   GST_LOG_OBJECT(self, "decoded frame %u (%ux%u), picture %u", frame_number,
                  width, height, output->PicInfo.picture_number);
+  if (have_wmv3_timing && self->codec.subtype == BC_MSUBTYPE_WMV3 &&
+      !interlaced) {
+    frame->pts = wmv3_pts;
+    frame->duration = wmv3_duration;
+  }
   *completed = frame;
   return GST_FLOW_OK;
 }
@@ -1343,6 +1448,8 @@ gst_crystalhd_handle_frame(GstVideoDecoder *decoder,
   entry = g_new0(CrystalHdTimestamp, 1);
   entry->hardware_timestamp = hardware_timestamp;
   entry->frame_number = frame->system_frame_number;
+  entry->pts = frame->pts;
+  entry->duration = frame->duration;
   g_queue_push_tail(&self->timestamps, entry);
   GST_LOG_OBJECT(self, "submitted token=%" G_GUINT64_FORMAT " pending=%u",
                  hardware_timestamp, self->timestamps.length);
@@ -1569,6 +1676,8 @@ static void
 gst_crystalhd_dec_init(GstCrystalHdDec *self)
 {
   g_queue_init(&self->timestamps);
+  self->wmv3_timing_valid = TRUE;
+  self->wmv3_last_duration = GST_CLOCK_TIME_NONE;
   g_mutex_init(&self->output_lock);
   g_cond_init(&self->output_cond);
   self->output_paused = TRUE;
