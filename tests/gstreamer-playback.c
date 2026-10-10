@@ -26,6 +26,7 @@ typedef struct {
   Phase1Progress progress;
   const GeometryEpoch *epochs;
   guint epoch_count, epoch_index, epoch_frames;
+  gboolean soft_rff;
 } PlaybackAudit;
 
 static guint32
@@ -137,6 +138,47 @@ field_order_matches(FieldOrder expected, GstVideoInterlaceMode mode, guint flags
   return interlaced && tff == (expected == FIELD_TFF);
 }
 
+static gboolean
+soft_rff_frame_matches(guint pass, guint frame_index,
+                       const GstVideoInfo *info, guint flags,
+                       GstClockTime pts, GstClockTime duration,
+                       GstClockTime previous_pts)
+{
+  static const struct {
+    gboolean top_first;
+    gboolean repeat_first;
+  } cadence[] = {
+    { TRUE, TRUE }, { FALSE, FALSE }, { FALSE, TRUE }, { TRUE, FALSE },
+  };
+  const guint phase = frame_index % G_N_ELEMENTS(cadence);
+  const GstClockTime base =
+      gst_util_uint64_scale(GST_SECOND, 1001, 30000);
+  const GstClockTime expected_duration =
+      cadence[phase].repeat_first && (pass != 0 || frame_index != 0)
+          ? base + base / 2
+          : base;
+  const gboolean interlaced =
+      (flags & GST_VIDEO_BUFFER_FLAG_INTERLACED) != 0;
+  const gboolean top_first =
+      (flags & GST_VIDEO_BUFFER_FLAG_TFF) != 0;
+  const gboolean repeat_first =
+      (flags & GST_VIDEO_BUFFER_FLAG_RFF) != 0;
+  const gboolean one_field =
+      (flags & GST_VIDEO_BUFFER_FLAG_ONEFIELD) != 0;
+
+  return GST_VIDEO_INFO_FORMAT(info) == GST_VIDEO_FORMAT_YUY2 &&
+      GST_VIDEO_INFO_INTERLACE_MODE(info) == GST_VIDEO_INTERLACE_MODE_MIXED &&
+      GST_VIDEO_INFO_FPS_N(info) == 30000 &&
+      GST_VIDEO_INFO_FPS_D(info) == 1001 &&
+      !interlaced && !one_field &&
+      top_first == cadence[phase].top_first &&
+      repeat_first == cadence[phase].repeat_first &&
+      GST_CLOCK_TIME_IS_VALID(pts) && duration == expected_duration &&
+      (frame_index == 0
+           ? pts == 0
+           : GST_CLOCK_TIME_IS_VALID(previous_pts) && pts >= previous_pts);
+}
+
 static void
 observe_geometry(PlaybackAudit *audit, guint width, guint height)
 {
@@ -184,6 +226,21 @@ count_frame(GstElement *sink, GstBuffer *buffer, GstPad *pad, gpointer data)
       (!audit->require_timestamps || GST_CLOCK_TIME_IS_VALID(pts)) &&
       (!GST_CLOCK_TIME_IS_VALID(pts) ||
        !GST_CLOCK_TIME_IS_VALID(audit->previous_pts) || pts >= audit->previous_pts);
+  if (frame_valid && audit->soft_rff &&
+      !soft_rff_frame_matches(audit->pass, audit->frames, &info,
+                              GST_BUFFER_FLAGS(buffer), pts,
+                              GST_BUFFER_DURATION(buffer),
+                              audit->previous_pts)) {
+    g_printerr("Soft-RFF mismatch at frame %u: caps %s %u/%u, flags 0x%x, "
+               "PTS=%" G_GUINT64_FORMAT ", duration=%" G_GUINT64_FORMAT "\n",
+               audit->frames,
+               gst_video_interlace_mode_to_string(
+                   GST_VIDEO_INFO_INTERLACE_MODE(&info)),
+               GST_VIDEO_INFO_FPS_N(&info), GST_VIDEO_INFO_FPS_D(&info),
+               GST_BUFFER_FLAGS(buffer), (guint64)pts,
+               (guint64)GST_BUFFER_DURATION(buffer));
+    frame_valid = FALSE;
+  }
   if (!frame_valid)
     audit->invalid_output = TRUE;
   else if (!gst_video_frame_map(&frame, &info, buffer, GST_MAP_READ)) {
@@ -205,7 +262,7 @@ count_frame(GstElement *sink, GstBuffer *buffer, GstPad *pad, gpointer data)
     }
     /* Check field metadata against the same epoch BEFORE its frame count
      * advances. Equal-size TFF/BFF transitions need no CAPS event. */
-    if (audit->epoch_index < audit->epoch_count &&
+    if (!audit->soft_rff && audit->epoch_index < audit->epoch_count &&
         !field_order_matches(audit->epochs[audit->epoch_index].field_order,
             GST_VIDEO_INFO_INTERLACE_MODE(&info), GST_BUFFER_FLAGS(buffer))) {
       if (!audit->invalid_output)
@@ -250,7 +307,8 @@ count_frame(GstElement *sink, GstBuffer *buffer, GstPad *pad, gpointer data)
 static gboolean
 run_pipeline(const gchar *description, const gchar *filename, guint expected,
              GstClockTime timeout, gboolean seek_replay, gboolean report,
-             const GeometryEpoch *epochs, guint epoch_count)
+             const GeometryEpoch *epochs, guint epoch_count,
+             gboolean soft_rff)
 {
   GError *error = NULL;
   PlaybackAudit audit = {0};
@@ -262,7 +320,18 @@ run_pipeline(const gchar *description, const gchar *filename, guint expected,
   gboolean success = TRUE;
   gchar *reference_hash = NULL;
   gchar *reference_metadata_hash = NULL;
+  gchar *reference_seek_metadata_hash = NULL;
   guint pass;
+  /* mpegvideoparse learns the elementary stream frame duration while
+   * handling the first picture. That initial RFF picture keeps the base
+   * duration, while a flushing seek retains the learned rate and gives the
+   * same picture its repeated-field duration. Freeze both software-oracle
+   * states and require two identical post-seek passes. */
+  const guint pass_count = soft_rff ? 3U : seek_replay ? 2U : 1U;
+  static const gchar *const soft_rff_metadata_hash[] = {
+    "6aa875916a487e66638898b0e3a862ebfb320906cf2d0face8d903f408f87521",
+    "5a5bb7c1e6a0517f60c8276202a121da49479a09109267a18fb325f896ffecfc",
+  };
 
   audit.previous_pts = GST_CLOCK_TIME_NONE;
   audit.last_good_pts = GST_CLOCK_TIME_NONE;
@@ -273,9 +342,11 @@ run_pipeline(const gchar *description, const gchar *filename, guint expected,
     g_clear_error(&error);
     return FALSE;
   }
-  audit.require_timestamps = filename == NULL || strstr(description, "qtdemux") != NULL;
+  audit.require_timestamps = soft_rff || filename == NULL ||
+      strstr(description, "qtdemux") != NULL;
   audit.epochs = epochs;
   audit.epoch_count = epoch_count;
+  audit.soft_rff = soft_rff;
   if (error != NULL || pipeline == NULL) {
     g_printerr("Cannot construct playback pipeline: %s\n",
                error != NULL ? error->message : "unknown error");
@@ -299,7 +370,7 @@ run_pipeline(const gchar *description, const gchar *filename, guint expected,
   audit.checksum = g_checksum_new(G_CHECKSUM_SHA256);
   audit.metadata_checksum = g_checksum_new(G_CHECKSUM_SHA256);
   bus = gst_element_get_bus(pipeline);
-  for (pass = 0; pass < (seek_replay ? 2U : 1U); pass++) {
+  for (pass = 0; pass < pass_count; pass++) {
     gboolean eos = FALSE;
     const gchar *hash;
     const gchar *metadata_hash;
@@ -376,6 +447,18 @@ run_pipeline(const gchar *description, const gchar *filename, guint expected,
         g_print("Geometry epochs: %u/%u complete\n", audit.epoch_index, epoch_count);
     }
     success = eos && audit.frames == expected && geometry_complete(&audit);
+    if (soft_rff &&
+        (!audit.have_last_good ||
+         audit.last_good_pts != G_GUINT64_CONSTANT(4954949901))) {
+      g_printerr("Soft-RFF final PTS changed from the software oracle\n");
+      success = FALSE;
+    }
+    if (soft_rff &&
+        g_strcmp0(metadata_hash, soft_rff_metadata_hash[pass == 0 ? 0 : 1]) != 0) {
+      g_printerr("Soft-RFF metadata changed from the %s software oracle\n",
+                 pass == 0 ? "initial" : "post-seek");
+      success = FALSE;
+    }
     if (pass == 0)
       reference_hash = g_strdup(hash);
     else if (g_strcmp0(hash, reference_hash) != 0) {
@@ -384,8 +467,16 @@ run_pipeline(const gchar *description, const gchar *filename, guint expected,
     }
     if (pass == 0)
       reference_metadata_hash = g_strdup(metadata_hash);
-    else if (g_strcmp0(metadata_hash, reference_metadata_hash) != 0) {
+    else if (!soft_rff &&
+             g_strcmp0(metadata_hash, reference_metadata_hash) != 0) {
       g_printerr("Frame metadata changed after the flushing seek\n");
+      success = FALSE;
+    }
+    if (soft_rff && pass == 1)
+      reference_seek_metadata_hash = g_strdup(metadata_hash);
+    else if (soft_rff && pass > 1 &&
+             g_strcmp0(metadata_hash, reference_seek_metadata_hash) != 0) {
+      g_printerr("Frame metadata changed between flushing seek replays\n");
       success = FALSE;
     }
     if (!success)
@@ -402,6 +493,7 @@ run_pipeline(const gchar *description, const gchar *filename, guint expected,
   g_checksum_free(audit.metadata_checksum);
   g_free(reference_hash);
   g_free(reference_metadata_hash);
+  g_free(reference_seek_metadata_hash);
   phase1_progress_close(&audit.progress);
   return success;
 }
@@ -455,6 +547,17 @@ parse_epochs(const gchar *text, guint expected, GeometryEpoch *epochs, guint *co
   if (!valid || total != expected)
     return FALSE;
   *count = length;
+  return TRUE;
+}
+
+static gboolean
+soft_rff_epochs_valid(const GeometryEpoch *epochs, guint count)
+{
+  for (guint index = 0; index < count; ++index) {
+    if (epochs[index].field_order != FIELD_ANY &&
+        epochs[index].field_order != FIELD_PROGRESSIVE)
+      return FALSE;
+  }
   return TRUE;
 }
 
@@ -526,6 +629,112 @@ field_self_test(void)
                            fields | GST_VIDEO_BUFFER_FLAG_ONEFIELD) &&
       !field_order_matches(FIELD_PROGRESSIVE, mixed, fields) &&
       !field_order_matches(FIELD_PROGRESSIVE, GST_VIDEO_INTERLACE_MODE_INTERLEAVED, 0);
+}
+
+static gboolean
+soft_rff_self_test(void)
+{
+  GstVideoInfo info;
+  GstVideoInfo wrong;
+  GeometryEpoch epochs[MAX_EPOCHS];
+  guint epoch_count = 0;
+  const guint tff = GST_VIDEO_BUFFER_FLAG_TFF;
+  const guint rff = GST_VIDEO_BUFFER_FLAG_RFF;
+  const GstClockTime base =
+      gst_util_uint64_scale(GST_SECOND, 1001, 30000);
+  const GstClockTime repeated = base + base / 2;
+  GstClockTime pts[] = { 0, base, base + repeated,
+                        base + repeated + base,
+                        base + repeated + base + repeated };
+  const GstClockTime durations[] = { base, base, repeated, base, repeated };
+  const guint flags[] = { tff | rff, 0, rff, tff, tff | rff };
+
+  gst_video_info_init(&info);
+  if (!gst_video_info_set_format(&info, GST_VIDEO_FORMAT_YUY2, 720, 480))
+    return FALSE;
+  GST_VIDEO_INFO_FPS_N(&info) = 30000;
+  GST_VIDEO_INFO_FPS_D(&info) = 1001;
+  GST_VIDEO_INFO_INTERLACE_MODE(&info) = GST_VIDEO_INTERLACE_MODE_MIXED;
+  for (guint frame = 0; frame < G_N_ELEMENTS(pts); ++frame) {
+    if (!soft_rff_frame_matches(0, frame, &info, flags[frame], pts[frame],
+                                durations[frame],
+                                frame == 0 ? GST_CLOCK_TIME_NONE
+                                           : pts[frame - 1]))
+      return FALSE;
+  }
+  {
+    GstClockTime current_pts = 0;
+    GstClockTime previous_pts = GST_CLOCK_TIME_NONE;
+    for (guint frame = 0; frame < 120; ++frame) {
+      const guint cadence_flags = flags[frame % 4];
+      const GstClockTime duration =
+          frame != 0 && (cadence_flags & rff) ? repeated : base;
+      if (frame != 0)
+        current_pts += duration;
+      if (!soft_rff_frame_matches(0, frame, &info, cadence_flags, current_pts,
+                                  duration, previous_pts))
+        return FALSE;
+      previous_pts = current_pts;
+    }
+    /* Frozen 120-picture software/hardware oracle endpoint. */
+    if (current_pts != G_GUINT64_CONSTANT(4954949901))
+      return FALSE;
+  }
+
+  if (!soft_rff_frame_matches(1, 0, &info, tff | rff, 0, repeated,
+                              GST_CLOCK_TIME_NONE) ||
+      soft_rff_frame_matches(1, 0, &info, tff | rff, 0, base,
+                             GST_CLOCK_TIME_NONE))
+    return FALSE;
+
+  if (!parse_epochs("720x480:60,720x480:60:p", 120, epochs,
+                    &epoch_count) ||
+      !soft_rff_epochs_valid(epochs, epoch_count) ||
+      !parse_epochs("720x480:120:tff", 120, epochs, &epoch_count) ||
+      soft_rff_epochs_valid(epochs, epoch_count) ||
+      !parse_epochs("720x480:60:p,720x480:60:bff", 120, epochs,
+                    &epoch_count) ||
+      soft_rff_epochs_valid(epochs, epoch_count))
+    return FALSE;
+
+  wrong = info;
+  GST_VIDEO_INFO_INTERLACE_MODE(&wrong) = GST_VIDEO_INTERLACE_MODE_PROGRESSIVE;
+  if (soft_rff_frame_matches(0, 0, &wrong, tff | rff, 0, base,
+                             GST_CLOCK_TIME_NONE))
+    return FALSE;
+  wrong = info;
+  GST_VIDEO_INFO_FPS_N(&wrong) = 24000;
+  if (soft_rff_frame_matches(0, 0, &wrong, tff | rff, 0, base,
+                             GST_CLOCK_TIME_NONE))
+    return FALSE;
+  gst_video_info_set_format(&wrong, GST_VIDEO_FORMAT_I420, 720, 480);
+  GST_VIDEO_INFO_FPS_N(&wrong) = 30000;
+  GST_VIDEO_INFO_FPS_D(&wrong) = 1001;
+  GST_VIDEO_INFO_INTERLACE_MODE(&wrong) = GST_VIDEO_INTERLACE_MODE_MIXED;
+  if (soft_rff_frame_matches(0, 0, &wrong, tff | rff, 0, base,
+                             GST_CLOCK_TIME_NONE))
+    return FALSE;
+  return !soft_rff_frame_matches(
+             0, 0, &info, tff | rff, 0, repeated, GST_CLOCK_TIME_NONE) &&
+      !soft_rff_frame_matches(0, 0, &info, tff | rff, 1, base,
+                              GST_CLOCK_TIME_NONE) &&
+      !soft_rff_frame_matches(0, 0, &info, tff | rff, GST_CLOCK_TIME_NONE,
+                              base, GST_CLOCK_TIME_NONE) &&
+      !soft_rff_frame_matches(0, 1, &info, 0, base - 1, base, base) &&
+      !soft_rff_frame_matches(0, 2, &info, rff, base + repeated, base,
+                              base) &&
+      !soft_rff_frame_matches(0, 3, &info,
+                              tff | GST_VIDEO_BUFFER_FLAG_INTERLACED,
+                              base + repeated + base, base,
+                              base + repeated) &&
+      !soft_rff_frame_matches(0, 3, &info,
+                              tff | GST_VIDEO_BUFFER_FLAG_ONEFIELD,
+                              base + repeated + base, base,
+                              base + repeated) &&
+      !soft_rff_frame_matches(0, 3, &info, 0,
+                              base + repeated + base, base,
+                              base + repeated) &&
+      !soft_rff_frame_matches(0, 4, &info, tff, pts[4], repeated, pts[3]);
 }
 
 static gboolean
@@ -613,6 +822,7 @@ main(int argc, char **argv)
   GeometryEpoch epochs[MAX_EPOCHS];
   guint epoch_count = 0;
   gboolean seek_replay = FALSE;
+  gboolean soft_rff = FALSE;
   guint expected;
   guint timeout = 120;
 
@@ -622,21 +832,22 @@ main(int argc, char **argv)
     const GeometryEpoch wrong = {640, 360, 12, FIELD_ANY};
     const GeometryEpoch wrong_fields = {320, 240, 12, FIELD_TFF};
     if (!geometry_self_test() || !field_self_test() || !metadata_self_test() ||
-        !run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, TRUE, NULL, 0) ||
-        !run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, TRUE, &correct, 1) ||
-        run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, FALSE, &wrong, 1) ||
-        run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, FALSE, &wrong_fields, 1) ||
-        run_pipeline(test_pipeline, NULL, 13, 5 * GST_SECOND, FALSE, FALSE, NULL, 0) ||
+        !soft_rff_self_test() ||
+        !run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, TRUE, NULL, 0, FALSE) ||
+        !run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, TRUE, &correct, 1, FALSE) ||
+        run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, FALSE, &wrong, 1, FALSE) ||
+        run_pipeline(test_pipeline, NULL, 12, 5 * GST_SECOND, FALSE, FALSE, &wrong_fields, 1, FALSE) ||
+        run_pipeline(test_pipeline, NULL, 13, 5 * GST_SECOND, FALSE, FALSE, NULL, 0, FALSE) ||
         run_pipeline("fakesrc num-buffers=1 ! "
                      "identity sleep-time=100000 ! fakesink name=sink",
-                     NULL, 1, GST_MSECOND, FALSE, FALSE, NULL, 0)) {
+                     NULL, 1, GST_MSECOND, FALSE, FALSE, NULL, 0, FALSE)) {
       g_printerr("GStreamer frame-count/EOS self-test failed\n");
       return 1;
     }
     g_print("GStreamer frame-count/EOS self-test passed\n");
     return 0;
   }
-  if ((argc < 4 || argc > 8) || !positive_number(argv[2], &expected) ||
+  if ((argc < 4 || argc > 9) || !positive_number(argv[2], &expected) ||
       (argc >= 5 && !positive_number(argv[4], &timeout)) ||
       (!g_str_equal(argv[3], "mp4") && !g_str_equal(argv[3], "h264") &&
        !g_str_equal(argv[3], "mpeg2") && !g_str_equal(argv[3], "mpeg4")))
@@ -644,19 +855,28 @@ main(int argc, char **argv)
   for (gint arg = 5; arg < argc; ++arg) {
     if (g_str_equal(argv[arg], "--seek") && !seek_replay)
       seek_replay = TRUE;
+    else if (g_str_equal(argv[arg], "--soft-rff") && !soft_rff)
+      soft_rff = TRUE;
     else if (g_str_equal(argv[arg], "--epochs") && epoch_count == 0 && arg + 1 < argc) {
       if (!parse_epochs(argv[++arg], expected, epochs, &epoch_count))
         goto usage;
     } else
       goto usage;
   }
+  if (soft_rff &&
+      (!g_str_equal(argv[3], "mpeg2") ||
+       !soft_rff_epochs_valid(epochs, epoch_count)))
+    goto usage;
+  if (soft_rff)
+    seek_replay = TRUE;
   return run_pipeline(g_str_equal(argv[3], "mp4") ? mp4_pipeline :
                        g_str_equal(argv[3], "h264") ? annex_b_pipeline :
                        g_str_equal(argv[3], "mpeg4") ? mpeg4_pipeline : mpeg2_pipeline,
                        argv[1], expected, (GstClockTime)timeout * GST_SECOND,
-                       seek_replay, TRUE, epochs, epoch_count) ? 0 : 1;
+                       seek_replay, TRUE, epochs, epoch_count, soft_rff) ? 0 : 1;
 usage:
   g_printerr("usage: %s VIDEO EXPECTED_FRAMES mp4|h264|mpeg2|mpeg4 "
-             "[TIMEOUT_SECONDS [--seek] [--epochs WIDTHxHEIGHT:FRAMES[:p|tff|bff],...]]\n", argv[0]);
+             "[TIMEOUT_SECONDS [--seek] [--soft-rff] "
+             "[--epochs WIDTHxHEIGHT:FRAMES[:p|tff|bff],...]]\n", argv[0]);
   return 2;
 }

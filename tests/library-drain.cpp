@@ -3590,7 +3590,7 @@ struct CapturedFrame {
     std::vector<uint8_t> pixels;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
     uint64_t token = 0;
-    uint32_t picture_number = 0, width = 0, height = 0, flags = 0;
+    uint32_t picture_number = 0, width = 0, height = 0, pulldown = 0, flags = 0;
     uint32_t chroma_format = 0, output_flags = 0, aspect_ratio = 0, colour_primaries = 0;
 };
 
@@ -3619,6 +3619,7 @@ static bool CopyCapturedPixels(const BC_DTS_PROC_OUT &output, unsigned width,
     frame->picture_number = output.PicInfo.picture_number;
     frame->width = width;
     frame->height = height;
+    frame->pulldown = output.PicInfo.pulldown;
     frame->flags = output.PicInfo.flags;
     frame->chroma_format = output.PicInfo.chroma_format;
     frame->output_flags = output.PoutFlags;
@@ -3671,10 +3672,10 @@ struct PixelCapture {
         written += bytes;
         if (bytes != frame.pixels.size()) return false;
         if (report) std::printf("Captured packed output: requested-format=%s frame-index=%u token=%llu picture-number=%u "
-                    "geometry=%ux%u flags=%x chroma-format=%x output-flags=%x "
+                    "geometry=%ux%u pulldown=%u flags=%x chroma-format=%x output-flags=%x "
                     "aspect-ratio=%u colour-primaries=%u\n", PackedName(output_format), frames,
                     static_cast<unsigned long long>(frame.token), frame.picture_number,
-                    frame.width, frame.height, frame.flags, frame.chroma_format,
+                    frame.width, frame.height, frame.pulldown, frame.flags, frame.chroma_format,
                     frame.output_flags, frame.aspect_ratio, frame.colour_primaries);
         ++frames;
         return true;
@@ -8197,18 +8198,22 @@ static bool SelfTest()
     picture.PicInfo.width = 2; picture.PicInfo.height = 2;
     picture.PicInfo.timeStamp = 12300000; picture.PicInfo.picture_number = 7;
     picture.PicInfo.chroma_format = 0x422;
+    picture.PicInfo.pulldown = vdecFrame_X3;
     picture.PicInfo.aspect_ratio = 1; picture.PicInfo.colour_primaries = 5;
     CapturedFrame frame;
     check(CopyCapturedPixels(picture, 2, 2, 8, &frame) && frame.pixels.size() == 8 &&
           frame.pixels == std::vector<uint8_t>(pixels, pixels + 8) &&
           frame.token == 12300000 && frame.picture_number == 7 &&
           frame.width == 2 && frame.height == 2 && frame.flags == 0 &&
-          frame.chroma_format == 0x422 && frame.output_flags == BC_POUT_FLAGS_PIB_VALID &&
+          frame.pulldown == vdecFrame_X3 && frame.chroma_format == 0x422 &&
+          frame.output_flags == BC_POUT_FLAGS_PIB_VALID &&
           frame.aspect_ratio == 1 && frame.colour_primaries == 5 &&
           frame.output_format == OUTPUT_MODE422_YUY2,
           "capture owns exactly active pixels and frozen value-only metadata");
-    pixels[0] = 99; picture.PicInfo.timeStamp = 0; picture.Ybuff = nullptr;
-    check(frame.pixels[0] == 0 && frame.token == 12300000,
+    pixels[0] = 99; picture.PicInfo.timeStamp = 0;
+    picture.PicInfo.pulldown = vdecNoPulldownInfo; picture.Ybuff = nullptr;
+    check(frame.pixels[0] == 0 && frame.token == 12300000 &&
+          frame.pulldown == vdecFrame_X3,
           "owned capture survives source mutation, pointer retirement and metadata reuse");
     pixels[0] = 0; picture.Ybuff = pixels;
     check(!CopyCapturedPixels(picture, 2, 2, 7, &frame) &&

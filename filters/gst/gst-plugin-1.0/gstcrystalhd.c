@@ -42,6 +42,7 @@ typedef struct _GstCrystalHdDec {
   gboolean input_flushed;
   gboolean is_70012;
   gboolean output_configured;
+  gboolean progressive_field_sequence;
   gboolean need_second_field;
   gboolean field_bottom;
   gboolean field_bottom_first;
@@ -256,6 +257,7 @@ gst_crystalhd_close_device(GstCrystalHdDec *self)
   }
 
   self->output_configured = FALSE;
+  self->progressive_field_sequence = FALSE;
   self->input_flushed = FALSE;
   self->input_metadata_size = 0;
   self->need_second_field = FALSE;
@@ -284,13 +286,43 @@ gst_crystalhd_find_timestamp(GstCrystalHdDec *self, guint64 timestamp,
 }
 
 static gboolean
+gst_crystalhd_progressive_field_flags(guint32 pulldown, gboolean *top_first,
+                                      gboolean *repeat_first)
+{
+  switch (pulldown) {
+    case vdecTopBottom:
+      *top_first = TRUE;
+      *repeat_first = FALSE;
+      return TRUE;
+    case vdecBottomTop:
+      *top_first = FALSE;
+      *repeat_first = FALSE;
+      return TRUE;
+    case vdecTopBottomTop:
+      *top_first = TRUE;
+      *repeat_first = TRUE;
+      return TRUE;
+    case vdecBottomTopBottom:
+      *top_first = FALSE;
+      *repeat_first = TRUE;
+      return TRUE;
+    default:
+      /* Single-field and whole-frame repeat values have not been measured
+       * against GstVideo buffer semantics. Do not infer flags for them. */
+      return FALSE;
+  }
+}
+
+static gboolean
 gst_crystalhd_configure_output(GstCrystalHdDec *self, guint width, guint height,
                                gboolean interlaced)
 {
   GstVideoDecoder *decoder = GST_VIDEO_DECODER(self);
   GstVideoCodecState *state;
-  GstVideoInterlaceMode mode = interlaced ? GST_VIDEO_INTERLACE_MODE_MIXED
-                                          : GST_VIDEO_INTERLACE_MODE_PROGRESSIVE;
+  GstVideoInterlaceMode mode =
+      interlaced || self->progressive_field_sequence
+          ? GST_VIDEO_INTERLACE_MODE_MIXED
+          : GST_VIDEO_INTERLACE_MODE_PROGRESSIVE;
 
   if (width == 0 || height == 0 || width > 1920 || height > 1088) {
     GST_ERROR_OBJECT(self, "invalid output dimensions %ux%u", width, height);
@@ -342,6 +374,9 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
   gboolean interlaced;
   gboolean bottom_field;
   gboolean bottom_first;
+  gboolean progressive_top_first = FALSE;
+  gboolean progressive_repeat_first = FALSE;
+  gboolean progressive_field_sequence;
   gboolean ordered_mpeg4_simple;
 
   *completed = NULL;
@@ -352,6 +387,10 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
   bottom_field = (output->PicInfo.flags & VDEC_FLAG_BOTTOMFIELD) ==
                  VDEC_FLAG_BOTTOMFIELD;
   bottom_first = (output->PicInfo.flags & VDEC_FLAG_BOTTOM_FIRST) != 0;
+  progressive_field_sequence =
+      !interlaced && gst_crystalhd_progressive_field_flags(
+                         output->PicInfo.pulldown, &progressive_top_first,
+                         &progressive_repeat_first);
   ordered_mpeg4_simple =
       self->codec.subtype == BC_MSUBTYPE_DIVX &&
       self->codec.mpeg4_object_type == CRYSTALHD_MPEG4_OBJECT_TYPE_SIMPLE &&
@@ -527,6 +566,15 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
     GST_BUFFER_FLAG_SET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_INTERLACED);
     if (!self->field_bottom_first)
       GST_BUFFER_FLAG_SET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_TFF);
+  } else if (progressive_field_sequence) {
+    /* Progressive soft telecine remains a progressive buffer. MIXED caps
+     * allow its per-picture field order/repeat flags, and stay negotiated for
+     * the rest of this session so no-info pictures cannot churn caps. */
+    self->progressive_field_sequence = TRUE;
+    if (progressive_top_first)
+      GST_BUFFER_FLAG_SET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_TFF);
+    if (progressive_repeat_first)
+      GST_BUFFER_FLAG_SET(frame->output_buffer, GST_VIDEO_BUFFER_FLAG_RFF);
   }
   self->need_second_field = FALSE;
   if (timestamp_link != NULL) {
@@ -1328,6 +1376,7 @@ gst_crystalhd_flush(GstVideoDecoder *decoder)
   self->draining = FALSE;
   self->output_eos = FALSE;
   self->last_delivery_us = 0;
+  self->progressive_field_sequence = FALSE;
   g_clear_object(&self->parse_adapter);
   self->parse_pending = FALSE;
   if (self->device != NULL && !self->input_flushed) {
