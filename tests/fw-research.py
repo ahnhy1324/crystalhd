@@ -5316,6 +5316,37 @@ class FirmwareChannelFieldTests(unittest.TestCase):
             "charged_to_selected_region_budget": False,
             "shares_hash_gate_with": "whole_arm_direct_b_bl_scan",
         })
+        blx_evidence = validation["blx_register_evidence"]
+        expected_blx_evidence = (
+            ("irq_vector_root", 0x00000, 0x03c,
+             "de8b9454a35d359a236ce99751fa0914d415392a41e1b32d7cb903168d5155e0"),
+            ("irq_entry", 0x000dc, 0x01c,
+             "2deff474b41a300c7da7ebe19e02683f29533be104ae9a8cfc9ad0861d2008c3"),
+            ("irq_slot_registration", 0x06ea0, 0x034,
+             "9e6b69c108f5f1af4178bd069f394176b9675f22e5720791fe13c24e126e6a8f"),
+            ("irq_dispatch", 0x06ef0, 0x100,
+             "fd586631b4c4ff1f065091fc0f186c347b8ec40153b707fb222b0b08abc69bd8"),
+            ("irq_registration_setup", 0x0703c, 0x0a8,
+             "dea84781aa0e00184e96726f8cdc0a49537ca4c0672651a8556a11b03c10b1a9"),
+            ("irq_table_base_literal", 0x07128, 0x004,
+             "9ebc15efcb62fd7356192e919ef87cb9b909666c4ef4ed58594aa6f54954d969"),
+            ("irq19_callback_literal", 0x07144, 0x004,
+             "e6f59c39eacdd850cb67840feb8eb5099478dcc2cb442bcec267761db2341bff"),
+            ("response_registration", 0x28194, 0x0b8,
+             "32b6a70c0765cbb0dd64f0aed34f791046acc9c7593ff81dd6d83e9bfe7b59c0"),
+            ("response_callback_literal", 0x28694, 0x004,
+             "f5758d7822a58d44de1c8433c1c2105204baefdd0c58c2827fadb8a02ca50d9c"),
+        )
+        self.assertEqual((blx_evidence["region_count"], blx_evidence["bytes"],
+                          blx_evidence["charged_to_selected_region_budget"],
+                          blx_evidence["overlap_deduplicated"]),
+                         (9, 760, False, False))
+        self.assertEqual([
+            (region["role"], region["blob_file_offset"], region["size"],
+             region["sha256"])
+            for region in blx_evidence["regions"]], list(expected_blx_evidence))
+        self.assertEqual(MAP._CHANNEL_FIELD_BLX_EVIDENCE_REGIONS,
+                         expected_blx_evidence)
         self.assertEqual(validation["rx_descriptor_admission"], self.admission["validation"])
         self.assertEqual([region["role"] for region in validation["regions"]], [
             "init_context", "channel_api_lifecycle", "host_start_root_literal",
@@ -5566,6 +5597,180 @@ class FirmwareChannelFieldTests(unittest.TestCase):
         self.assertFalse(interworking["source_code_boundaries_classified"])
         self.assertFalse(interworking["all_direct_immediate_callers_established"])
         self.assertFalse(interworking["indirect_or_computed_callers_excluded"])
+
+    def test_blx_register_inventory_roots_only_irq_dispatch_sites(self):
+        scan = self.report["caller_provenance"]["whole_arm_blx_register_scan"]
+        self.assertEqual(scan["region"], self.report["caller_provenance"]
+                         ["whole_arm_direct_b_bl_scan"]["region"])
+        self.assertEqual((scan["isa_encoding"], scan["alignment_bytes"],
+                          scan["encoding_candidate_count"], scan["conditions_present"]),
+                         ("A32 BLX-register encoding patterns with condition 0..14",
+                          4, 72, [14]))
+        expected = (
+            (0x06fb0, 2), (0x06fe0, 2), (0x0c7c4, 3), (0x1db58, 2),
+            (0x1ead4, 1), (0x1eb6c, 2), (0x1eb88, 2), (0x1ecc8, 2),
+            (0x1ece4, 2), (0x1ed14, 2), (0x1ed60, 2), (0x1edf8, 2),
+            (0x1ee44, 2), (0x1ef70, 2), (0x1ef8c, 2), (0x1f094, 2),
+            (0x1f16c, 2), (0x1f188, 2), (0x1f744, 2), (0x1f888, 2),
+            (0x1f910, 2), (0x1f968, 2), (0x1f9f0, 12), (0x1fa78, 2),
+            (0x1fb60, 2), (0x1fb78, 2), (0x1fb88, 2), (0x1fbdc, 2),
+            (0x2003c, 2), (0x20070, 2), (0x209f4, 3), (0x20acc, 3),
+            (0x2109c, 2), (0x210f8, 2), (0x2110c, 2), (0x21150, 3),
+            (0x211a0, 2), (0x21214, 3), (0x2144c, 3), (0x216c0, 3),
+            (0x21734, 3), (0x217ac, 3), (0x23eac, 6), (0x23edc, 6),
+            (0x23f24, 1), (0x23f58, 3), (0x23f98, 3), (0x24784, 1),
+            (0x24a00, 1), (0x27b4c, 12), (0x27c24, 3), (0x27c50, 12),
+            (0x27c68, 1), (0x27cb0, 1), (0x27d1c, 1), (0x27d44, 1),
+            (0x27e28, 3), (0x27e68, 12), (0x27e80, 1), (0x27eb4, 1),
+            (0x27ee0, 1), (0x27f04, 1), (0x27f68, 1), (0x27fb4, 1),
+            (0x27ff0, 1), (0x28004, 1), (0x28970, 2), (0x297c0, 2),
+            (0x297e0, 2), (0x29918, 2), (0x2c21c, 3), (0x2c254, 3),
+        )
+        candidates = scan["encoding_candidates"]
+        self.assertEqual([(record["blob_file_offset"], record["operand_register"])
+                          for record in candidates], list(expected))
+        self.assertTrue(all(record["operation"] == "BLX register" and
+                            record["condition"] == 14 for record in candidates))
+        rooted = [record for record in candidates
+                  if record["code_status"] == "rooted_a32_instruction"]
+        unrooted = [record for record in candidates
+                    if record["code_status"] == "encoding_candidate_only"]
+        self.assertEqual([(record["blob_file_offset"], record["code_region_role"])
+                          for record in rooted],
+                         [(0x6fb0, "irq_dispatch"), (0x6fe0, "irq_dispatch")])
+        self.assertEqual(len(unrooted), 70)
+        self.assertTrue(all("code_region_role" not in record for record in unrooted))
+        self.assertEqual((scan["rooted_code_candidate_count"],
+                          scan["rooted_code_candidate_offsets"]),
+                         (2, [0x6fb0, 0x6fe0]))
+        self.assertTrue(scan["complete_for_hash_pinned_region_encoding_candidates"])
+        for field in ("all_candidate_code_boundaries_classified",
+                      "callback_target_bodies_classified",
+                      "runtime_table_contents_observed", "runtime_path_observed"):
+            self.assertFalse(scan[field], field)
+
+        root = scan["root_chain"]
+        self.assertEqual((root["vector_entry"]["blob_file_offset"],
+                          root["vector_entry"]["literal_blob_file_offset"],
+                          root["vector_entry"]["literal_value"],
+                          root["irq_entry_blob_file_offset"],
+                          root["dispatch_call"]["blob_file_offset"],
+                          root["dispatch_call"]["target_blob_file_offset"]),
+                         (0x18, 0x34, 0xdc, 0xdc, 0xf0, 0x6ef0))
+        self.assertEqual(root["dispatch_region"], {
+            "role": "irq_dispatch", "blob_file_offset": 0x6ef0, "size": 0x100})
+        self.assertFalse(root["runtime_observed"])
+
+    def test_blx_register_callback_table_and_direct_registrations_are_exact(self):
+        scan = self.report["caller_provenance"]["whole_arm_blx_register_scan"]
+        table = scan["callback_table"]
+        self.assertEqual({key: table[key] for key in (
+            "registration_entry_blob_file_offset", "table_address", "slot_count",
+            "slot_stride_bytes", "slot_address_expression", "callback_word_offset",
+            "argument_word_offset", "state_word_offset")}, {
+                "registration_entry_blob_file_offset": 0x6ea0,
+                "table_address": 0xd2000, "slot_count": 32,
+                "slot_stride_bytes": 12,
+                "slot_address_expression": "0xd2000 + slot * 12",
+                "callback_word_offset": 0, "argument_word_offset": 4,
+                "state_word_offset": 8,
+            })
+        registration_words = {
+            0x6ea4: 0xe3500020, 0x6ea8: 0x3a000001,
+            0x6eb4: 0xe59f426c, 0x6eb8: 0xe0800080,
+            0x6ebc: 0xe7841100, 0x6ec0: 0xe0840100,
+            0x6ec4: 0xe5802004, 0x6ec8: 0xe5803008,
+            0x7128: 0x000d2000,
+        }
+        dispatch_words = {
+            0x6f20: 0xe59f9200, 0x6f94: 0xe0848084,
+            0x6f98: 0xe0896108, 0x6f9c: 0xe5961008,
+            0x6fa0: 0xe3510000, 0x6fa4: 0x0a000007,
+            0x6fa8: 0xe7992108, 0x6fac: 0xe5960004,
+            0x6fb0: 0xe12fff32, 0x6fd8: 0xe7992108,
+            0x6fdc: 0xe5960004, 0x6fe0: 0xe12fff32,
+        }
+        self.assertEqual({record["blob_file_offset"]: record["word"]
+                          for record in table["registration_word_receipts"]},
+                         registration_words)
+        self.assertEqual({record["blob_file_offset"]: record["word"]
+                          for record in table["dispatch_word_receipts"]},
+                         dispatch_words)
+        self.assertEqual((table["dispatch_callback_load_blob_file_offsets"],
+                          table["dispatch_argument_load_blob_file_offsets"],
+                          table["dispatch_blx_blob_file_offsets"]),
+                         ([0x6fa8, 0x6fd8], [0x6fac, 0x6fdc], [0x6fb0, 0x6fe0]))
+        self.assertFalse(table["runtime_table_contents_observed"])
+
+        direct = scan["direct_registration_call_scan"]
+        self.assertEqual((direct["alignment_bytes"], direct["target_blob_file_offset"]),
+                         (4, 0x6ea0))
+        self.assertEqual([(record["blob_file_offset"], record["word"],
+                           record["operation"], record["condition"],
+                           record["target_blob_file_offset"])
+                          for record in direct["target_candidates"]], [
+            (0x7078, 0xebffff88, "BL", 14, 0x6ea0),
+            (0x70a0, 0xebffff7e, "BL", 14, 0x6ea0),
+            (0x28214, 0xebff7b21, "BL", 14, 0x6ea0),
+        ])
+        registrations = direct["selected_registrations"]
+        self.assertEqual([(record["slot"], record["callback_address"],
+                           record["argument"], record["state"],
+                           record["materialization_blob_file_offsets"])
+                          for record in registrations], [
+            (19, 0x888c, {"kind": "immediate", "value": 0}, 0,
+             [0x7068, 0x706c, 0x7070, 0x7074]),
+            (4, 0x6ff4, {"kind": "immediate", "value": 0}, 0,
+             [0x7090, 0x7094, 0x7098, 0x709c]),
+            (9, 0x2c16c,
+             {"kind": "context_relative", "expression": "r4 + 0x68"}, 9,
+             [0x28204, 0x28208, 0x2820c, 0x28210]),
+        ])
+        self.assertEqual((registrations[0]["callback_literal"]["literal_blob_file_offset"],
+                          registrations[0]["callback_literal"]["literal_value"],
+                          registrations[1]["callback_address_expression"],
+                          registrations[2]["callback_literal"]["literal_blob_file_offset"],
+                          registrations[2]["callback_literal"]["literal_value"]),
+                         (0x7144, 0x888c, "PC(0x7094) - 0xa8", 0x28694, 0x2c16c))
+        self.assertTrue(all(not record["callback_target_body_classified"] and
+                            not record["runtime_observed"] for record in registrations))
+        self.assertTrue(direct[
+            "complete_for_hash_pinned_region_direct_b_bl_encoding_candidates"])
+        self.assertFalse(direct["all_registration_writers_complete"])
+        self.assertFalse(direct["indirect_or_computed_registration_calls_excluded"])
+
+    def test_blx_register_scanner_is_raw_aligned_and_excludes_near_matches(self):
+        payload = bytearray(36)
+        words = (
+            0x012fff30,  # EQ BLX r0
+            0x112fff31,  # NE BLX r1
+            0xe12fff3c,  # AL BLX r12
+            0xf12fff32,  # cond=0xf: excluded
+            0xe12fff12,  # BX r2: excluded
+            0xe12fff30 ^ 0x10,  # one-bit non-BLX near-match
+            0x00000000, 0xffffffff, 0xe12fff3f,
+        )
+        struct.pack_into("<9I", payload, 0, *words)
+        records = MAP._a32_blx_register_candidates_in_region(
+            payload, ("synthetic", 0, len(payload)))
+        self.assertEqual([(record["blob_file_offset"], record["word"],
+                           record["condition"], record["operand_register"])
+                          for record in records], [
+            (0, 0x012fff30, 0, 0),
+            (4, 0x112fff31, 1, 1),
+            (8, 0xe12fff3c, 14, 12),
+            (32, 0xe12fff3f, 14, 15),
+        ])
+        self.assertTrue(all(record["operation"] == "BLX register"
+                            for record in records))
+        for region in (("synthetic", 2, 4), ("synthetic", 0, 2),
+                       ("synthetic", 0, 0)):
+            with self.subTest(region=region), \
+                    self.assertRaisesRegex(MAP.FormatError, "word aligned"):
+                MAP._a32_blx_register_candidates_in_region(payload, region)
+        with self.assertRaises(MAP.FormatError):
+            MAP._a32_blx_register_candidates_in_region(
+                payload, ("synthetic", 0, len(payload) + 4))
 
     def test_target_filtered_a32_scan_decodes_b_bl_and_excludes_blx_space(self):
         payload = bytearray(64)
@@ -5843,6 +6048,11 @@ class FirmwareChannelFieldTests(unittest.TestCase):
         self.assertTrue(scope["direct_b_bl_target_candidates_complete"])
         self.assertTrue(scope["whole_arm_direct_interworking_encoding_scan"])
         self.assertTrue(scope["direct_interworking_target_encoding_patterns_complete"])
+        self.assertTrue(scope["whole_arm_blx_register_encoding_scan"])
+        self.assertTrue(scope["rooted_blx_register_instruction_sites"])
+        self.assertFalse(scope["all_blx_register_code_boundaries_classified"])
+        self.assertFalse(scope["all_callback_registration_writers_complete"])
+        self.assertFalse(scope["runtime_callback_targets_resolved"])
         self.assertFalse(scope["whole_arm_source_code_boundaries_classified"])
         self.assertFalse(scope["direct_caller_inventory_complete"])
         self.assertFalse(scope["indirect_or_computed_caller_inventory_complete"])
@@ -5897,6 +6107,9 @@ class FirmwareChannelFieldTests(unittest.TestCase):
         ranges += [(region["blob_file_offset"], region["size"])
                    for region in self.report["validation"]
                    ["rx_descriptor_admission"]["regions"]]
+        ranges += [(region["blob_file_offset"], region["size"])
+                   for region in self.report["validation"]
+                   ["blx_register_evidence"]["regions"]]
         whole = self.report["validation"]["whole_arm_direct_b_bl_scan"]
         ranges.append((whole["blob_file_offset"], whole["size"]))
         reported = []
@@ -5907,7 +6120,7 @@ class FirmwareChannelFieldTests(unittest.TestCase):
                     if (key in ("blob_file_offset", "literal_blob_file_offset") or
                             key.endswith("_instruction_blob_file_offset")):
                         reported.append(child)
-                    elif key == "blob_file_offsets":
+                    elif key == "blob_file_offsets" or key.endswith("_blob_file_offsets"):
                         reported.extend(child)
                     collect(child)
             elif isinstance(value, (list, tuple)):
@@ -5942,7 +6155,49 @@ class FirmwareChannelFieldTests(unittest.TestCase):
                         mock.patch.object(MAP, "_direct_interworking_immediates_in_region",
                                           side_effect=AssertionError(
                                               "interworking scan before pin gate")), \
+                        mock.patch.object(MAP, "_a32_blx_register_candidates_in_region",
+                                          side_effect=AssertionError(
+                                              "BLX-register scan before pin gate")), \
                         self.assertRaises(MAP.FormatError):
+                    MAP._channel_field_map(changed)
+
+    def test_every_blx_evidence_byte_rejects_before_decode_or_dependency(self):
+        role, start, size, digest = MAP._CHANNEL_FIELD_WHOLE_ARM_REGION
+        for evidence_role, offset, evidence_size, _ in \
+                MAP._CHANNEL_FIELD_BLX_EVIDENCE_REGIONS:
+            for delta in range(evidence_size):
+                changed = bytearray(self.payload)
+                changed[offset + delta] ^= 1
+                repinned = (role, start, size,
+                            hashlib.sha256(changed[start:start + size]).hexdigest())
+                with self.subTest(role=evidence_role, delta=delta), \
+                        mock.patch.object(MAP, "_CHANNEL_FIELD_WHOLE_ARM_REGION", repinned), \
+                        mock.patch.object(MAP, "_rx_descriptor_admission_map",
+                                          side_effect=AssertionError(
+                                              "dependency ran before BLX evidence gate")), \
+                        mock.patch.object(MAP, "_bootstrap_word",
+                                          side_effect=AssertionError(
+                                              "decoded before BLX evidence gate")), \
+                        mock.patch.object(MAP, "_a32_literal",
+                                          side_effect=AssertionError(
+                                              "literal decoded before BLX evidence gate")), \
+                        mock.patch.object(MAP, "_a32_branch",
+                                          side_effect=AssertionError(
+                                              "branch decoded before BLX evidence gate")), \
+                        mock.patch.object(MAP, "_a32_branch_candidates_in_regions",
+                                          side_effect=AssertionError(
+                                              "caller scan before BLX evidence gate")), \
+                        mock.patch.object(MAP, "_a32_target_branches_in_region",
+                                          side_effect=AssertionError(
+                                              "target scan before BLX evidence gate")), \
+                        mock.patch.object(MAP, "_direct_interworking_immediates_in_region",
+                                          side_effect=AssertionError(
+                                              "interworking scan before BLX evidence gate")), \
+                        mock.patch.object(MAP, "_a32_blx_register_candidates_in_region",
+                                          side_effect=AssertionError(
+                                              "BLX-register scan before evidence gate")), \
+                        self.assertRaisesRegex(MAP.FormatError,
+                                              "BLX-register evidence region"):
                     MAP._channel_field_map(changed)
 
     def test_whole_arm_scan_hash_gate_rejects_before_decode_or_dependencies(self):
@@ -5961,6 +6216,9 @@ class FirmwareChannelFieldTests(unittest.TestCase):
                     mock.patch.object(MAP, "_direct_interworking_immediates_in_region",
                                       side_effect=AssertionError(
                                           "interworking scan before scan pin")), \
+                    mock.patch.object(MAP, "_a32_blx_register_candidates_in_region",
+                                      side_effect=AssertionError(
+                                          "BLX-register scan before scan pin")), \
                     self.assertRaisesRegex(MAP.FormatError, "whole-ARM scan region"):
                 MAP._channel_field_map(changed)
 
@@ -5989,13 +6247,30 @@ class FirmwareChannelFieldTests(unittest.TestCase):
         with mock.patch.object(MAP, "MAX_CHANNEL_FIELD_WHOLE_ARM_BYTES", 0x2ea5f), \
                 self.assertRaisesRegex(MAP.FormatError, "whole-ARM scan budget"):
             MAP._channel_field_map(self.payload)
+        for name, exact, one_below in (
+                ("MAX_CHANNEL_FIELD_BLX_EVIDENCE_REGIONS", 9, 8),
+                ("MAX_CHANNEL_FIELD_BLX_EVIDENCE_BYTES", 760, 759)):
+            with self.subTest(exact=name), mock.patch.object(MAP, name, exact):
+                self.assertEqual(MAP._channel_field_map(self.payload)
+                                 ["validation"]["blx_register_evidence"]
+                                 ["region_count"], 9)
+            with self.subTest(one_below=name), \
+                    mock.patch.object(MAP, name, one_below), \
+                    self.assertRaisesRegex(MAP.FormatError,
+                                          "BLX-register evidence budget"):
+                MAP._channel_field_map(self.payload)
 
     def test_opt_in_is_offline_additive_and_exact_baseline_gated(self):
         before = bytes(self.payload)
         with mock.patch("builtins.open", side_effect=AssertionError("unexpected file read")), \
                 mock.patch.object(MAP.os, "open", side_effect=AssertionError("unexpected device open")), \
                 mock.patch.object(subprocess, "run", side_effect=AssertionError("unexpected command")), \
-                mock.patch.object(subprocess, "Popen", side_effect=AssertionError("unexpected process")):
+                mock.patch.object(subprocess, "Popen", side_effect=AssertionError("unexpected process")), \
+                mock.patch.object(MAP, "_fresh_init_causal_contract",
+                                  side_effect=AssertionError("fresh INIT contract used")), \
+                mock.patch.object(MAP, "_fresh_init_arm_operand",
+                                  side_effect=AssertionError("fresh INIT operand used")), \
+                mock.patch.object(MAP, "_FRESH_INIT_REGIONS", None):
             self.assertEqual(MAP._channel_field_map(self.payload), self.report)
         self.assertEqual(bytes(self.payload), before)
         with mock.patch.object(MAP, "_channel_field_map", side_effect=AssertionError("not opted in")):
