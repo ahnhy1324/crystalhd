@@ -16600,5 +16600,408 @@ class NativeSourceSurfaceLayoutTests(unittest.TestCase):
                 self.assertEqual(words, before)
 
 
+class NativeActiveContextBindingFixtureTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.path = ROOT / "tests/fixtures/issue204/native-active-context-binding.json"
+
+        def unique_object(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("duplicate JSON key: " + key)
+                result[key] = value
+            return result
+
+        cls.capture = json.loads(cls.path.read_text(), object_pairs_hook=unique_object)
+
+    def exact_keys(self, value, keys):
+        self.assertIs(type(value), dict)
+        self.assertEqual(set(value), set(keys))
+
+    def exact_type(self, mapping, keys, wanted):
+        for key in keys:
+            self.assertIs(type(mapping[key]), wanted, key)
+
+    def test_exact_schema_types_and_sanitized_hashes(self):
+        capture = self.capture
+        self.exact_keys(capture, {"schema_version", "kind", "purpose", "input",
+                                  "native_trial_method", "native_observation", "trials",
+                                  "device_free_preservation_model", "scope"})
+        self.assertIs(type(capture["schema_version"]), int)
+        self.assertEqual((capture["schema_version"], capture["kind"]),
+                         (1, "native-active-context-binding-preservation"))
+        self.assertEqual(capture["purpose"],
+                         "Preserve two completed native observations and the bounded invariants for a future opt-in dynamic probe; this fixture does not reproduce either native trial.")
+        self.exact_type(capture, ("kind", "purpose"), str)
+
+        source = capture["input"]
+        self.exact_keys(source, {"codec", "progressive", "width", "height", "packets",
+                                 "submitted_bytes", "submitted_sha256", "boundary_preparation"})
+        self.exact_type(source, ("codec", "submitted_sha256", "boundary_preparation"), str)
+        self.exact_type(source, ("width", "height", "packets", "submitted_bytes"), int)
+        self.exact_type(source, ("progressive",), bool)
+
+        method = capture["native_trial_method"]
+        self.exact_keys(method, {"probe_implementation", "dynamic_model_executed",
+                                 "snapshot_atomic", "normal_decode", "admission_gate",
+                                 "control_register_writes",
+                                 "source_metadata_ppb_ring_memory_writes", "firmware_sha256",
+                                 "module_srcversion", "pcie_l0s_state",
+                                 "kernel_clean_exact_recovery_claimed"})
+        self.exact_type(method, ("probe_implementation", "admission_gate", "firmware_sha256",
+                                 "module_srcversion", "pcie_l0s_state"), str)
+        self.exact_type(method, ("dynamic_model_executed", "snapshot_atomic", "normal_decode",
+                                 "kernel_clean_exact_recovery_claimed"), bool)
+        self.exact_type(method, ("control_register_writes",
+                                 "source_metadata_ppb_ring_memory_writes"), int)
+
+        observation = capture["native_observation"]
+        self.exact_keys(observation, {"provenance", "graph", "outer_aliases", "ppb0", "queues",
+                                     "record", "source"})
+        provenance = observation["provenance"]
+        self.exact_keys(provenance, {"prior_graph_fixture", "graph_fields",
+                                     "outer_aliases_ppb_queues_record_and_source",
+                                     "dynamic_validation"})
+        self.exact_type(provenance, ("prior_graph_fixture",
+                                     "outer_aliases_ppb_queues_record_and_source",
+                                     "dynamic_validation"), str)
+        self.exact_keys(provenance["graph_fields"], {"active_structure", "context", "holder",
+                                                     "submitted", "submitted_bytes", "allocation",
+                                                     "video_base", "video_bytes", "terminal",
+                                                     "delivery_ring", "return_ring", "record",
+                                                     "record_slot"})
+        self.exact_type(provenance["graph_fields"], provenance["graph_fields"], str)
+        graph = observation["graph"]
+        self.exact_keys(graph, {"active_structure", "context", "holder", "submitted",
+                                "submitted_bytes", "allocation", "video_base", "video_bytes",
+                                "terminal", "delivery_ring", "return_ring", "record",
+                                "record_slot"})
+        self.exact_type(graph, ("active_structure", "context", "holder", "submitted",
+                                "allocation", "video_base", "video_bytes", "terminal",
+                                "delivery_ring", "return_ring", "record"), str)
+        self.exact_type(graph, ("submitted_bytes", "record_slot"), int)
+        aliases = observation["outer_aliases"]
+        self.exact_keys(aliases, {"table", "record", "delivery_ring", "return_ring"})
+        self.exact_type(aliases, aliases, str)
+        ppb = observation["ppb0"]
+        self.exact_keys(ppb, {"flags", "bank0", "bitmap", "stride_bytes", "geometry",
+                              "bank_span", "bank_count"})
+        self.exact_type(ppb, ("flags", "bank0", "bitmap", "geometry", "bank_span"), str)
+        self.exact_type(ppb, ("stride_bytes", "bank_count"), int)
+        queues = observation["queues"]
+        self.exact_keys(queues, {"delivery_read", "delivery_write", "return_read",
+                                 "return_write"})
+        self.exact_type(queues, queues, int)
+        record = observation["record"]
+        self.exact_keys(record, {"y", "chroma", "width", "height", "raw_pts",
+                                 "raw_pts_semantics"})
+        self.exact_type(record, ("y", "chroma", "raw_pts_semantics"), str)
+        self.exact_type(record, ("width", "height", "raw_pts"), int)
+        allocation = observation["source"]
+        self.exact_keys(allocation, {"read_bytes", "content_verified_bytes",
+                                     "padding_bytes_ignored", "normalized_dword_lanes"})
+        self.exact_type(allocation, ("read_bytes", "content_verified_bytes",
+                                     "padding_bytes_ignored"), int)
+        self.exact_type(allocation, ("normalized_dword_lanes",), str)
+
+        trials = capture["trials"]
+        self.exact_keys(trials, {"current_held_source", "extended_code_witness"})
+        common = {"helper_header_sha256", "helper_translation_unit_sha256", "stdout_sha256",
+                  "register_calls", "register_reads", "register_writes", "memory_calls",
+                  "active_context_root_checked", "holder_context_backlink_checked",
+                  "video_envelope_checked_by_helper", "whole_record_bytes",
+                  "whole_record_equal_prior_held_snapshot",
+                  "whole_record_equal_after_source_read", "bridge_equal_after_source_read",
+                  "ledger_rechecked_after_source_read", "source_content_verified_bytes",
+                  "halt_verified", "resume_verified", "route_restored", "final_frames",
+                  "firmware_eos", "final_pending", "final_ready", "cleanup_pass",
+                  "packed_output_bytes", "packed_output_sha256"}
+        for name, trial in trials.items():
+            keys = common | ({"producer_phase_qualified"} if name == "extended_code_witness"
+                             else set())
+            self.exact_keys(trial, keys)
+            self.exact_type(trial, ("helper_header_sha256", "helper_translation_unit_sha256",
+                                    "stdout_sha256", "packed_output_sha256"), str)
+            self.exact_type(trial, ("register_calls", "register_reads", "register_writes",
+                                    "memory_calls", "final_frames", "final_pending", "final_ready",
+                                    "packed_output_bytes", "whole_record_bytes",
+                                    "source_content_verified_bytes"), int)
+            boolean_keys = ["halt_verified", "resume_verified", "route_restored", "firmware_eos",
+                            "cleanup_pass", "active_context_root_checked",
+                            "holder_context_backlink_checked", "video_envelope_checked_by_helper",
+                            "whole_record_equal_prior_held_snapshot",
+                            "whole_record_equal_after_source_read", "bridge_equal_after_source_read",
+                            "ledger_rechecked_after_source_read"]
+            if name == "extended_code_witness":
+                boolean_keys.append("producer_phase_qualified")
+            self.exact_type(trial, boolean_keys, bool)
+
+        model = capture["device_free_preservation_model"]
+        self.exact_keys(model, {"status", "native_trials_used_this_model",
+                                "runtime_cli_or_hardware_hook", "plan_source", "allocation_rule",
+                                "active_context_offset", "active_holder_offset",
+                                "holder_submitted_offset", "holder_context_offset",
+                                "holder_terminal_offset", "holder_rings_offset",
+                                "pool_bytes", "delivery_offset", "return_offset", "record_offset",
+                                "record_stride", "record_slots", "source_read_bytes",
+                                "source_content_verified_bytes", "source_padding_bytes_ignored",
+                                "failure_after_route_select_attempt"})
+        self.exact_type(model, ("status", "plan_source", "allocation_rule",
+                                "failure_after_route_select_attempt"), str)
+        self.exact_type(model, ("native_trials_used_this_model",
+                                "runtime_cli_or_hardware_hook"), bool)
+        self.exact_type(model, ("pool_bytes", "delivery_offset", "return_offset",
+                                "record_offset", "record_stride", "record_slots",
+                                "active_context_offset", "active_holder_offset",
+                                "holder_submitted_offset", "holder_context_offset",
+                                "holder_terminal_offset", "holder_rings_offset",
+                                "source_read_bytes", "source_content_verified_bytes",
+                                "source_padding_bytes_ignored"), int)
+
+        scope = capture["scope"]
+        self.exact_keys(scope, {"finite_same_halt_holder_allocation_alias_ppb_record_source_binding",
+                                "active_context_root_holder_backlink_extended_trial_only",
+                                "two_native_trials_completed_180_frames_eos_cleanup",
+                                "source_generation", "physical_source_lease",
+                                "current_producer_identity", "producer_phase_qualified",
+                                "last_consumer_completion", "release_cause", "global_halt",
+                                "standalone_mfd", "dynamic_model_reproduced_native_trial",
+                                "production_support"})
+        self.exact_type(scope, scope, bool)
+
+        hash_pattern = re.compile(r"[0-9a-f]{64}")
+        hashes = [source["submitted_sha256"]]
+        for trial in trials.values():
+            hashes.extend((trial["helper_header_sha256"], trial["helper_translation_unit_sha256"],
+                           trial["stdout_sha256"], trial["packed_output_sha256"]))
+        for digest in hashes:
+            self.assertIsNotNone(hash_pattern.fullmatch(digest))
+        address_pattern = re.compile(r"[0-9a-f]{8}")
+        for key in ("active_structure", "context", "holder", "submitted", "allocation",
+                    "video_base", "video_bytes", "terminal", "delivery_ring", "return_ring",
+                    "record"):
+            self.assertIsNotNone(address_pattern.fullmatch(graph[key]), key)
+        for key, value in aliases.items():
+            self.assertIsNotNone(address_pattern.fullmatch(value), key)
+        for key in ("bank0", "bitmap", "geometry", "bank_span"):
+            self.assertIsNotNone(address_pattern.fullmatch(ppb[key]), key)
+        self.assertIsNotNone(re.fullmatch(r"[0-9a-f]{4}", ppb["flags"]))
+        for key in ("y", "chroma"):
+            self.assertIsNotNone(address_pattern.fullmatch(record[key]), key)
+        pending = [capture]
+        while pending:
+            value = pending.pop()
+            if type(value) is dict:
+                pending.extend(value.values())
+            elif type(value) is list:
+                pending.extend(value)
+            elif type(value) is int:
+                self.assertGreaterEqual(value, 0)
+                self.assertLessEqual(value, 0xffffffff)
+        serialized = self.path.read_text()
+        for forbidden in ("/home/", "A.stdout", "172.30.", "mache"):
+            self.assertNotIn(forbidden, serialized)
+
+    def test_dynamic_relations_and_native_boundaries(self):
+        capture = self.capture
+        method = capture["native_trial_method"]
+        observed = capture["native_observation"]
+        graph, aliases = observed["graph"], observed["outer_aliases"]
+        ppb, queues, record, source = (observed[key] for key in
+                                        ("ppb0", "queues", "record", "source"))
+        model = capture["device_free_preservation_model"]
+        address = lambda value: int(value, 16)
+
+        self.assertEqual(capture["input"], {
+            "codec": "H264", "progressive": True, "width": 256, "height": 96,
+            "packets": 180, "submitted_bytes": 126823,
+            "submitted_sha256": "76680cf85767bbc78c89bf49a45aa5af7672dc956d7bcc4be3aa88abe17d1430",
+            "boundary_preparation": "split-existing-AUD-with-original-NAL-order-unchanged"})
+        self.assertEqual(method, {
+            "probe_implementation": "private-literal-address-helper",
+            "dynamic_model_executed": False,
+            "snapshot_atomic": False,
+            "normal_decode": True,
+            "admission_gate": "submitted-61-frames-60-pending-1-ready-0-no-EOS",
+            "control_register_writes": 4,
+            "source_metadata_ppb_ring_memory_writes": 0,
+            "firmware_sha256": "not_recorded_in_raw_trial_artifacts",
+            "module_srcversion": "not_recorded_in_raw_trial_artifacts",
+            "pcie_l0s_state": "not_recorded_in_raw_trial_artifacts",
+            "kernel_clean_exact_recovery_claimed": False})
+        self.assertEqual(observed["provenance"], {
+            "prior_graph_fixture": "tests/fixtures/issue92/native-fixed-metadata.json",
+            "graph_fields": {
+                "active_structure": "both-native-literal-helpers-fixed-root-address",
+                "context": "extended-code-witness-and-prior-issue92-graph",
+                "holder": "both-native-literal-helpers-and-prior-issue92-graph",
+                "submitted": "both-native-literal-helpers-and-prior-issue92-graph",
+                "submitted_bytes": "both-native-literal-helpers-and-prior-issue92-graph",
+                "allocation": "both-native-literal-helpers-and-prior-issue92-graph",
+                "video_base": "prior-issue92-graph-only",
+                "video_bytes": "prior-issue92-graph-only",
+                "terminal": "both-native-literal-helpers",
+                "delivery_ring": "both-native-literal-helpers",
+                "return_ring": "both-native-literal-helpers",
+                "record": "both-native-literal-helpers",
+                "record_slot": "derived-from-both-native-literal-helper-addresses"},
+            "outer_aliases_ppb_queues_record_and_source": "both-native-literal-helpers",
+            "dynamic_validation":
+                "post-hoc-PpbContextObserver-Graph-model-not-used-by-native-trials"})
+        prior = json.loads((ROOT / observed["provenance"]["prior_graph_fixture"]).read_text())
+        prior_graph = prior["snapshots"][0]["fields_hex"]
+        self.assertEqual((graph["context"], graph["holder"], graph["submitted"],
+                          graph["submitted_bytes"], graph["allocation"], graph["video_base"],
+                          graph["video_bytes"]),
+                         (prior_graph["C"], prior_graph["H"], prior_graph["P"],
+                          int(prior_graph["N"], 16), prior_graph["D"],
+                          prior_graph["video-base"], prior_graph["video-bytes"]))
+
+        submitted = address(graph["submitted"])
+        allocation = submitted + ((-submitted) & 3)
+        self.assertEqual(address(graph["allocation"]), allocation)
+        self.assertGreaterEqual(graph["submitted_bytes"], model["pool_bytes"])
+        self.assertLessEqual(allocation + model["pool_bytes"],
+                             submitted + graph["submitted_bytes"])
+        self.assertEqual(address(graph["delivery_ring"]), allocation + model["delivery_offset"])
+        self.assertEqual(address(graph["return_ring"]), allocation + model["return_offset"])
+        record_base = allocation + model["record_offset"]
+        self.assertGreaterEqual(graph["record_slot"], 0)
+        self.assertLess(graph["record_slot"], model["record_slots"])
+        self.assertEqual(address(graph["record"]),
+                         record_base + graph["record_slot"] * model["record_stride"])
+        self.assertEqual({key: address(value) for key, value in aliases.items()}, {
+            "table": allocation, "record": address(graph["record"]),
+            "delivery_ring": address(graph["delivery_ring"]),
+            "return_ring": address(graph["return_ring"])})
+        self.assertEqual((address(graph["active_structure"]), address(graph["terminal"])),
+                         (0x000d3a00, 0x00116004))
+        self.assertEqual(address(graph["context"]), 0x000d83a4)
+        self.assertLess(address(graph["video_base"]), allocation)
+        self.assertLessEqual(allocation + model["pool_bytes"],
+                             address(graph["video_base"]) + address(graph["video_bytes"]))
+        self.assertLessEqual(address(graph["video_base"]) + address(graph["video_bytes"]),
+                             0xffffffff)
+
+        self.assertEqual(address(ppb["bank0"]), address(record["y"]))
+        self.assertEqual(address(ppb["bank0"]), address(graph["video_base"]))
+        self.assertEqual(address(record["chroma"]), address(record["y"]) + 24576)
+        self.assertEqual((ppb["stride_bytes"], source["read_bytes"],
+                          model["source_read_bytes"]), (49152, 49152, 49152))
+        self.assertEqual(source["content_verified_bytes"] + source["padding_bytes_ignored"],
+                         source["read_bytes"])
+        self.assertEqual(source["content_verified_bytes"],
+                         record["width"] * record["height"] * 3 // 2)
+        self.assertEqual((source["content_verified_bytes"], source["padding_bytes_ignored"]),
+                         (model["source_content_verified_bytes"],
+                          model["source_padding_bytes_ignored"]))
+        self.assertEqual(tuple(queues[key] for key in
+                         ("delivery_read", "delivery_write", "return_read", "return_write")),
+                         (62, 62, 62, 62))
+        self.assertEqual((record["width"], record["height"], record["raw_pts"]), (256, 96, 5))
+        self.assertEqual(record["raw_pts_semantics"],
+                         "opaque-record-field-not-host-token-or-frame-identity")
+        self.assertEqual((address(ppb["bitmap"]), address(ppb["bank_span"]), ppb["bank_count"]),
+                         (7, 0x00618000, 6))
+        self.assertEqual((ppb["flags"], ppb["stride_bytes"], ppb["geometry"],
+                          source["normalized_dword_lanes"]),
+                         ("c800", 49152, "08030100", "MSB-first"))
+        self.assertEqual(method["admission_gate"],
+                         "submitted-61-frames-60-pending-1-ready-0-no-EOS")
+        self.assertEqual((method["control_register_writes"],
+                          method["source_metadata_ppb_ring_memory_writes"]), (4, 0))
+        self.assertFalse(method["dynamic_model_executed"])
+        self.assertFalse(method["snapshot_atomic"])
+        self.assertFalse(method["kernel_clean_exact_recovery_claimed"])
+        self.assertEqual({method[key] for key in
+                          ("firmware_sha256", "module_srcversion", "pcie_l0s_state")},
+                         {"not_recorded_in_raw_trial_artifacts"})
+        self.assertEqual(model, {
+            "status": "post-hoc-invariant-validator",
+            "native_trials_used_this_model": False,
+            "runtime_cli_or_hardware_hook": False,
+            "plan_source": "two-equal-bracketed-same-owner-PpbContextObserver-Graph-results",
+            "allocation_rule": "align4-submitted-pointer",
+            "active_context_offset": 8,
+            "active_holder_offset": 32,
+            "holder_submitted_offset": 8,
+            "holder_context_offset": 100,
+            "holder_terminal_offset": 548,
+            "holder_rings_offset": 592,
+            "pool_bytes": 96204,
+            "delivery_offset": 87672,
+            "return_offset": 87928,
+            "record_offset": 88184,
+            "record_stride": 228,
+            "record_slots": 34,
+            "source_read_bytes": 49152,
+            "source_content_verified_bytes": 36864,
+            "source_padding_bytes_ignored": 12288,
+            "failure_after_route_select_attempt":
+                "stop-custom-IO-and-require-normal-module-or-device-recovery-even-if-write-application-is-ambiguous"})
+
+    def test_trial_completion_and_narrow_scope(self):
+        trials = self.capture["trials"]
+        expected = {"current_held_source": (2372, 2368, 18),
+                    "extended_code_witness": (2816, 2812, 30)}
+        hashes = {
+            "current_held_source": (
+                "8f64b0309f9e9d43cf0897834e219ab098a6c724ad2c401938bd6e722ee9be28",
+                "2d70a6d2b927dd481d3361fd26108354a928d796a4593302b5e0b6b80a172d16",
+                "85d98770026dd3ab62dadcf4bee4cedfe38197d9b1140edb9d9b6a3ffacc9317"),
+            "extended_code_witness": (
+                "f8ad77dfa66cf634c07a191e072e9f9ce1a78457a70eef8b31da1a39b8c7e244",
+                "9a1420d7fbc7243849fb46418c55dae562feafaf08ef99278bb9890bfcf6f6e0",
+                "adce622eeb02728eca66649faab088d36bec54c0253264ee2b7c208524dcc7d6")}
+        for name, trial in trials.items():
+            self.assertEqual((trial["register_calls"], trial["register_reads"],
+                              trial["memory_calls"]), expected[name])
+            self.assertEqual(trial["register_calls"],
+                             trial["register_reads"] + trial["register_writes"])
+            self.assertEqual(trial["register_writes"], 4)
+            self.assertEqual((trial["helper_header_sha256"],
+                              trial["helper_translation_unit_sha256"],
+                              trial["stdout_sha256"]), hashes[name])
+            self.assertEqual(trial["packed_output_sha256"],
+                             "ac667578c6c18a30922ffa11c405af79895e82e88ae4244defbb3962c64745a7")
+            self.assertEqual((trial["whole_record_bytes"],
+                              trial["source_content_verified_bytes"]), (228, 36864))
+            self.assertTrue(trial["whole_record_equal_prior_held_snapshot"] and
+                            trial["whole_record_equal_after_source_read"] and
+                            trial["bridge_equal_after_source_read"] and
+                            trial["ledger_rechecked_after_source_read"])
+            self.assertFalse(trial["video_envelope_checked_by_helper"])
+            self.assertTrue(trial["halt_verified"] and trial["resume_verified"] and
+                            trial["route_restored"] and trial["firmware_eos"] and
+                            trial["cleanup_pass"])
+            self.assertEqual((trial["final_frames"], trial["final_pending"],
+                              trial["final_ready"], trial["packed_output_bytes"]),
+                             (180, 0, 0, 8847360))
+        self.assertFalse(trials["extended_code_witness"]["producer_phase_qualified"])
+        self.assertEqual((trials["current_held_source"]["active_context_root_checked"],
+                          trials["current_held_source"]["holder_context_backlink_checked"]),
+                         (False, False))
+        self.assertEqual((trials["extended_code_witness"]["active_context_root_checked"],
+                          trials["extended_code_witness"]["holder_context_backlink_checked"]),
+                         (True, True))
+        self.assertEqual(trials["current_held_source"]["packed_output_sha256"],
+                         trials["extended_code_witness"]["packed_output_sha256"])
+
+        model = self.capture["device_free_preservation_model"]
+        self.assertEqual(model["status"], "post-hoc-invariant-validator")
+        self.assertFalse(model["native_trials_used_this_model"])
+        self.assertFalse(model["runtime_cli_or_hardware_hook"])
+        scope = self.capture["scope"]
+        self.assertTrue(scope["finite_same_halt_holder_allocation_alias_ppb_record_source_binding"])
+        self.assertTrue(scope["active_context_root_holder_backlink_extended_trial_only"])
+        self.assertTrue(scope["two_native_trials_completed_180_frames_eos_cleanup"])
+        for key, value in scope.items():
+            if key not in ("finite_same_halt_holder_allocation_alias_ppb_record_source_binding",
+                            "active_context_root_holder_backlink_extended_trial_only",
+                            "two_native_trials_completed_180_frames_eos_cleanup"):
+                self.assertFalse(value, key)
+
+
 if __name__ == "__main__":
     unittest.main()

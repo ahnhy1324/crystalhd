@@ -34,6 +34,7 @@ extern "C" {
 #include <unistd.h>
 #include <utility>
 #include <vector>
+#include "issue204-active-context.h"
 #include "phase1-progress.h"
 
 // Optional probe-only ABI from libcrystalhd_int_if.h. Avoid pulling its
@@ -1574,6 +1575,356 @@ struct PpbContextFixture {
         return position == f->fail_at ? BC_STS_BUSY : BC_STS_SUCCESS;
     }
 };
+
+// Post-hoc preservation model for the successful native issue #204 snapshot.
+// The native trials did not execute this code.  It converts two already
+// bracketed Graph() results into a dynamic plan and exercises the extracted
+// halt/binding invariants with device-free I/O only.  No runtime selector is
+// exposed until the original exact61 admission boundary can be reproduced
+// without importing its private literal-address helpers.
+static bool ActiveContextPlanFromGraphs(const HANDLE *current, HANDLE owner,
+    const PpbContextGraph &before, const PpbContextGraph &after,
+    issue204_active_context::Plan *plan)
+{
+    if (!current || !*current || *current != owner || !plan ||
+        !PpbContextObserver::Equal(before, after) ||
+        !PpbContextObserver::PoolWindow(before) ||
+        !PpbContextObserver::PoolWindow(after) ||
+        before.words[16] != before.words[0] ||
+        before.words[18] != 0x00116004U) return false;
+    issue204_active_context::Plan candidate;
+    candidate.active_context = issue204_active_context::kActiveContext;
+    candidate.context = before.words[0];
+    candidate.holder = before.words[1];
+    candidate.submitted = before.words[14];
+    candidate.submitted_bytes = before.words[15];
+    candidate.video_base = before.words[22];
+    candidate.video_bytes = before.words[23];
+    if (!issue204_active_context::ValidatePlan(candidate)) return false;
+    *plan = candidate;
+    return true;
+}
+
+struct ActiveContextModelFixture {
+    issue204_active_context::Plan plan;
+    bool owner = true, valid = true;
+    unsigned mutation = 0, after_mutation = 0;
+    unsigned record_slot = 0;
+    unsigned register_reads = 0, register_writes = 0;
+    unsigned memory_reads = 0, pauses = 0;
+    unsigned root_reads = 0, holder_reads = 0, submitted_reads = 0;
+    unsigned context_reads = 0, terminal_reads = 0, ring_reads = 0;
+    unsigned queue_reads = 0;
+    unsigned table_alias_reads = 0, ledger_flags_reads = 0, record_reads = 0;
+    unsigned fail_register_read_at = 0, fail_register_write_at = 0;
+    unsigned apply_then_error_write_at = 0;
+    unsigned fail_memory_read_at = 0, lose_owner_memory_at = 0;
+    uint32_t route = 0;
+    uint32_t status = 0x440018c2U;
+    uint32_t debug = 0;
+    uint32_t bank0 = 0x00500000U;
+
+    static int Valid(void *opaque) {
+        const auto *fixture = static_cast<const ActiveContextModelFixture *>(opaque);
+        return fixture && fixture->owner && fixture->valid ? 1 : 0;
+    }
+    static int RegisterRead(void *opaque, uint32_t address, uint32_t *word) {
+        auto *fixture = static_cast<ActiveContextModelFixture *>(opaque);
+        uint32_t allocation = 0, delivery = 0, returned = 0, record = 0;
+        if (!word || !issue204_active_context::ValidatePlan(fixture->plan,
+                &allocation, &delivery, &returned, &record)) return -1;
+        ++fixture->register_reads;
+        if (fixture->register_reads == fixture->fail_register_read_at) return -1;
+        if (address == 0x00540000U) *word = 0x50U;
+        else if (address == 0x004000d4U) *word = 0;
+        else if (address == issue204_active_context::kRoute) *word = fixture->route;
+        else if (address == issue204_active_context::kStatus) *word = fixture->status;
+        else if (address == issue204_active_context::kIdentity) *word = 0x7b010108U;
+        else if (address == issue204_active_context::kDebug) *word = fixture->debug;
+        else if (address == issue204_active_context::kOuterTableAlias) {
+            ++fixture->table_alias_reads;
+            *word = fixture->mutation == 5 ||
+                (fixture->after_mutation == 5 && fixture->table_alias_reads > 1U) ?
+                allocation + 4U : allocation;
+        }
+        else if (address == issue204_active_context::kOuterRecordAlias)
+            *word = fixture->mutation == 6 ?
+                record + issue204_active_context::kRecordCount * issue204_active_context::kRecordStride :
+                fixture->mutation == 12 ? record + 4U :
+                record + fixture->record_slot * issue204_active_context::kRecordStride;
+        else if (address == issue204_active_context::kOuterDeliveryAlias)
+            *word = fixture->mutation == 7 ? delivery + 4U : delivery;
+        else if (address == issue204_active_context::kOuterReturnAlias) *word = returned;
+        else if (address == issue204_active_context::LedgerAddress(32U)) {
+            ++fixture->ledger_flags_reads;
+            *word = fixture->mutation == 8 ||
+                (fixture->after_mutation == 6 && fixture->ledger_flags_reads > 1U) ?
+                0U : 0xc800U;
+        }
+        else if (address == issue204_active_context::LedgerAddress(49U))
+            *word = fixture->mutation == 13 ? fixture->bank0 + 4U :
+                fixture->mutation == 16 ? fixture->plan.video_base + fixture->plan.video_bytes :
+                fixture->bank0;
+        else if (address == issue204_active_context::LedgerAddress(50U)) *word = 7U;
+        else if (address == issue204_active_context::LedgerAddress(51U)) *word = 0xc000U;
+        else if (address == issue204_active_context::LedgerAddress(52U)) *word = 0x08030100U;
+        else if (address == issue204_active_context::LedgerAddress(85U))
+            *word = fixture->mutation == 14 ? 0x00618004U : 0x00618000U;
+        else if (address == issue204_active_context::LedgerAddress(86U)) *word = 6U;
+        else return -1;
+        return 0;
+    }
+    static int RegisterWrite(void *opaque, uint32_t address, uint32_t word) {
+        auto *fixture = static_cast<ActiveContextModelFixture *>(opaque);
+        const unsigned call = fixture->register_writes++;
+        const bool fail = fixture->register_writes == fixture->fail_register_write_at ||
+            fixture->register_writes == fixture->apply_then_error_write_at;
+        const bool apply = fixture->register_writes != fixture->fail_register_write_at;
+        if (call == 0 && address == issue204_active_context::kRoute && word == 1U) {
+            if (apply) fixture->route = 1U;
+            return fail ? -1 : 0;
+        }
+        if (call == 1 && address == issue204_active_context::kDebug && word == 2U) {
+            if (apply) fixture->status |= issue204_active_context::kHalt;
+            return fail ? -1 : 0;
+        }
+        if (call == 2 && address == issue204_active_context::kStatus &&
+            !(word & issue204_active_context::kHalt)) {
+            if (apply) fixture->status = word;
+            return fail ? -1 : 0;
+        }
+        if (call == 3 && address == issue204_active_context::kRoute && word == 0U) {
+            if (apply) fixture->route = 0U;
+            return fail ? -1 : 0;
+        }
+        return -1;
+    }
+    static int MemoryRead(void *opaque, uint32_t address, uint32_t *words,
+                          uint32_t bytes) {
+        auto *fixture = static_cast<ActiveContextModelFixture *>(opaque);
+        uint32_t allocation = 0, delivery = 0, returned = 0, record = 0;
+        if (!words || !issue204_active_context::ValidatePlan(fixture->plan,
+                &allocation, &delivery, &returned, &record)) return -1;
+        ++fixture->memory_reads;
+        if (fixture->memory_reads == fixture->fail_memory_read_at) return -1;
+        if (address == fixture->plan.active_context + 8U && bytes == 4U) {
+            ++fixture->root_reads;
+            words[0] = fixture->after_mutation == 1 && fixture->root_reads > 1U ?
+                fixture->plan.context + 4U : fixture->plan.context;
+        } else if (address == fixture->plan.active_context + 0x20U && bytes == 4U) {
+            ++fixture->holder_reads;
+            words[0] = fixture->mutation == 1 ||
+                (fixture->after_mutation == 2 && fixture->holder_reads > 1U) ?
+                fixture->plan.holder + 4U : fixture->plan.holder;
+        } else if (address == fixture->plan.holder + 8U && bytes == 8U) {
+            ++fixture->submitted_reads;
+            words[0] = fixture->mutation == 2 ||
+                (fixture->after_mutation == 3 && fixture->submitted_reads > 1U) ?
+                fixture->plan.submitted + 4U : fixture->plan.submitted;
+            words[1] = fixture->plan.submitted_bytes;
+        } else if (address == fixture->plan.holder + 0x64U && bytes == 4U) {
+            ++fixture->context_reads;
+            words[0] = fixture->mutation == 3 ||
+                (fixture->after_mutation == 9 && fixture->context_reads > 1U) ?
+                fixture->plan.context + 4U : fixture->plan.context;
+        } else if (address == fixture->plan.holder + 0x224U && bytes == 4U) {
+            ++fixture->terminal_reads;
+            words[0] = fixture->after_mutation == 10 && fixture->terminal_reads > 1U ?
+                0x00116008U : 0x00116004U;
+        } else if (address == fixture->plan.holder + 0x250U && bytes == 8U) {
+            ++fixture->ring_reads;
+            words[0] = fixture->mutation == 4 ||
+                (fixture->after_mutation == 4 && fixture->ring_reads > 1U) ?
+                delivery + 4U : delivery;
+            words[1] = returned;
+        } else if ((address == delivery || address == returned) && bytes == 8U) {
+            ++fixture->queue_reads;
+            words[0] = fixture->mutation == 15 ? 61U : 62U;
+            words[1] = 62U;
+            if (fixture->after_mutation == 8 && fixture->queue_reads > 2U)
+                words[1] = 63U;
+        } else if (address == record + fixture->record_slot * issue204_active_context::kRecordStride &&
+                   bytes == issue204_active_context::kRecordBytes) {
+            ++fixture->record_reads;
+            std::memset(words, 0, bytes);
+            words[1] = fixture->bank0;
+            words[2] = fixture->bank0 + 24576U + (fixture->mutation == 9 ? 4U : 0U);
+            words[3] = 256U;
+            words[4] = 96U;
+            words[13] = fixture->mutation == 11 ? 6U : 5U;
+            if (fixture->after_mutation == 7 && fixture->record_reads > 1U)
+                words[31] = 1U;
+        } else if (address == fixture->bank0 &&
+                   bytes == issue204_active_context::kSourceReadBytes) {
+            for (unsigned index = 0; index < issue204_active_context::kSourceWords; ++index) {
+                uint32_t expected = 0;
+                const int known = issue204_active_context::KnownSourceWord(index, &expected);
+                words[index] = known > 0 ? expected : 0xa5a5a5a5U;
+            }
+            if (fixture->mutation == 10) words[0] ^= 0x01000000U;
+        } else return -1;
+        if (fixture->memory_reads == fixture->lose_owner_memory_at)
+            fixture->owner = false;
+        return 0;
+    }
+    static int Pause(void *opaque) {
+        ++static_cast<ActiveContextModelFixture *>(opaque)->pauses;
+        return 0;
+    }
+    issue204_active_context::Io Interface() {
+        issue204_active_context::Io io;
+        io.opaque = this;
+        io.valid = Valid;
+        io.read_register = RegisterRead;
+        io.write_register = RegisterWrite;
+        io.read_memory = MemoryRead;
+        io.pause = Pause;
+        return io;
+    }
+};
+
+template<class Check> static void ActiveContextBindingSelfTest(const Check &check)
+{
+    using namespace issue204_active_context;
+    PpbContextFixture graph_fixture;
+    graph_fixture.video_graph = true;
+    graph_fixture.calls = 62U; // Device-free stage-1 profile, never hardware.
+    PpbContextObserver graph_reader;
+    graph_reader.enabled = graph_reader.video_graph = graph_reader.owner_video_graph = true;
+    graph_reader.owner = graph_fixture.current;
+    PpbContextGraph before, after;
+    check(graph_reader.Graph(&graph_fixture.current, 1U, PpbContextFixture::Read,
+            &before, nullptr) &&
+          graph_reader.Graph(&graph_fixture.current, 1U, PpbContextFixture::Read,
+            &after, &before) && graph_fixture.valid,
+        "issue204 preservation model reuses bracketed stage-1 Graph reads without device I/O");
+    Plan plan;
+    check(ActiveContextPlanFromGraphs(&graph_fixture.current, graph_reader.owner,
+            before, after, &plan) && ValidatePlan(plan),
+        "issue204 bracketed same-owner Graph results produce a dynamic bounded plan");
+    HANDLE replacement = &before;
+    check(!ActiveContextPlanFromGraphs(&replacement, graph_reader.owner,
+            before, after, &plan),
+        "issue204 plan refuses owner changes before following graph pointers");
+    PpbContextGraph changed = after;
+    changed.words[14] += 4U;
+    check(!ActiveContextPlanFromGraphs(&graph_fixture.current, graph_reader.owner,
+            before, changed, &plan),
+        "issue204 plan refuses a changed allocation graph");
+
+    ActiveContextModelFixture fixture;
+    fixture.plan = plan;
+    std::vector<uint32_t> source(kSourceWords);
+    Result result;
+    check(Run(plan, fixture.Interface(), source.data(), source.size(), &result) &&
+          result.failure == Failure::None && result.halt_verified &&
+          result.resume_verified && result.route_restored &&
+          result.register_writes == 4U && fixture.register_writes == 4U &&
+          result.record_slot == 0U && result.source_valid_bytes == kSourceValidBytes &&
+          result.raw_pts == 5U && fixture.route == 0U &&
+          !(fixture.status & kHalt),
+        "issue204 synthetic model dynamically joins graph/outer/PPB0/record/source and clean resume");
+    check(result.bank0 == fixture.bank0 && result.chroma == fixture.bank0 + 24576U &&
+          result.allocation == plan.submitted + ((0U - plan.submitted) & 3U) &&
+          result.delivery_ring == result.allocation + kDeliveryOffset &&
+          result.return_ring == result.allocation + kReturnOffset &&
+          result.record == result.allocation + kRecordOffset,
+        "issue204 model derives all observed addresses instead of embedding native session values");
+
+    uint32_t known = 0;
+    check(KnownSourceWord(0U, &known) == 1 && known == 0x10223446U &&
+          KnownSourceWord(6144U, &known) == 1 &&
+          KnownSourceWord(kSourceWords - 1U, &known) == 0 &&
+          KnownSourceWord(kSourceWords, &known) < 0,
+        "issue204 source oracle validates only 36,864 active bytes and excludes stride padding");
+
+    for (unsigned mutation = 1; mutation <= 16; ++mutation) {
+        ActiveContextModelFixture rejected;
+        rejected.plan = plan;
+        rejected.mutation = mutation;
+        Result failed;
+        check(!Run(plan, rejected.Interface(), source.data(), source.size(), &failed) &&
+              failed.failure != Failure::None && !failed.resume_verified &&
+              !failed.route_restored && failed.module_recovery_required &&
+              rejected.register_writes == 2U,
+            "issue204 held model refuses representative H/P/C/ring/alias/ledger/record/source mismatches without false PASS");
+    }
+    ActiveContextModelFixture alternate_slot;
+    alternate_slot.plan = plan;
+    alternate_slot.record_slot = 3U;
+    Result alternate_result;
+    check(Run(plan, alternate_slot.Interface(), source.data(), source.size(),
+              &alternate_result) && alternate_result.record_slot == 3U &&
+          alternate_result.record == alternate_result.allocation + kRecordOffset +
+              3U * kRecordStride,
+        "issue204 model derives a bounded metadata slot from the outer record alias");
+    for (unsigned mutation = 1; mutation <= 10; ++mutation) {
+        ActiveContextModelFixture rejected;
+        rejected.plan = plan;
+        rejected.after_mutation = mutation;
+        Result failed;
+        check(!Run(plan, rejected.Interface(), source.data(), source.size(), &failed) &&
+              failed.failure != Failure::None && failed.module_recovery_required &&
+              !failed.resume_verified && !failed.route_restored &&
+              rejected.register_writes == 2U,
+            "issue204 after-only graph/alias/ledger/record changes are detected by the closing bracket");
+    }
+
+    for (unsigned fault = 0; fault < 9U; ++fault) {
+        ActiveContextModelFixture rejected;
+        rejected.plan = plan;
+        if (fault == 0) rejected.fail_register_read_at = 1U;
+        if (fault == 1) rejected.fail_memory_read_at = 1U;
+        if (fault == 2) rejected.lose_owner_memory_at = 1U;
+        if (fault == 3) rejected.fail_register_write_at = 1U;
+        if (fault == 4) rejected.apply_then_error_write_at = 1U;
+        if (fault == 5) rejected.fail_register_write_at = 2U;
+        if (fault == 6) rejected.apply_then_error_write_at = 2U;
+        if (fault == 7) rejected.fail_register_write_at = 3U;
+        if (fault == 8) rejected.fail_register_write_at = 4U;
+        Result failed;
+        check(!Run(plan, rejected.Interface(), source.data(), source.size(), &failed) &&
+              failed.failure != Failure::None &&
+              failed.resume_verified == (fault == 8U) && !failed.route_restored &&
+              (fault == 0 ? (!failed.module_recovery_required && !rejected.register_writes) :
+                            failed.module_recovery_required) &&
+              failed.route_select_attempted == (fault != 0U) &&
+              failed.halt_attempted == (fault == 1U || fault == 2U || fault >= 5U) &&
+              failed.resume_attempted == (fault == 7U || fault == 8U) &&
+              failed.route_restore_attempted == (fault == 8U),
+            "issue204 I/O/owner loss at pre-route, held, resume and restore stages cannot produce a false PASS");
+    }
+
+    for (unsigned invalid = 0; invalid < 12U; ++invalid) {
+        Plan bad = plan;
+        if (invalid == 0) bad.active_context += 4U;
+        if (invalid == 1) bad.holder |= 1U;
+        if (invalid == 2) bad.context = 0U;
+        if (invalid == 3) bad.submitted = 0xffffffffU;
+        if (invalid == 4) bad.submitted_bytes = kPoolBytes - 1U;
+        if (invalid == 5) bad.video_base = bad.submitted + 4U;
+        if (invalid == 6) bad.video_bytes = 0xffffffffU;
+        if (invalid == 7) bad.submitted_bytes = 0U;
+        if (invalid == 8) bad.context = bad.holder;
+        if (invalid == 9) bad.video_base += 4U;
+        if (invalid == 10) bad.video_bytes = 0x03ffc000U - bad.video_base + 4U;
+        if (invalid == 11) bad.video_bytes |= 2U;
+        ActiveContextModelFixture untouched;
+        untouched.plan = bad;
+        Result failed;
+        check(!ValidatePlan(bad) &&
+              !Run(bad, untouched.Interface(), source.data(), source.size(), &failed) &&
+              !untouched.register_reads && !untouched.register_writes &&
+              !untouched.memory_reads,
+            "issue204 plan rejects malformed/overflow/crossed envelopes before any I/O");
+    }
+    ActiveContextModelFixture malformed;
+    malformed.plan = plan;
+    Result failed;
+    check(!Run(plan, malformed.Interface(), source.data(), source.size() - 1U, &failed) &&
+          failed.failure == Failure::Argument && !malformed.register_reads,
+        "issue204 model requires the exact finite source-read scratch extent before any I/O");
+}
 
 // Native framing observations only: the revision pin is an observed board
 // profile, not a universal reset value. Sequential passes may differ; sync,
@@ -7692,6 +8043,7 @@ static bool SelfTest()
     VideoPrefixSelfTest(check);
     VideoGraphSelfTest(check);
     VideoStagingSelfTest(check);
+    ActiveContextBindingSelfTest(check);
     AvdMemorySelfTest(check);
     AvdCpuMapSelfTest(check);
     AvdCacheCountSelfTest(check);
