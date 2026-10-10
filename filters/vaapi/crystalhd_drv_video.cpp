@@ -557,6 +557,8 @@ struct Surface {
   uint64_t trace_context = 0;
   uint64_t trace_generation = 0;
   uint64_t trace_submission_ordinal = 0;
+  bool trace_read_export_armed = false;
+  crystalhd_vaapi_trace::Fields trace_read_export;
   SurfaceLayout layout;
   bool direct_decode_eligible = false;
   unsigned int h264_crop_unit_y = 0;
@@ -1667,9 +1669,31 @@ static crystalhd_vaapi_trace::Fields TraceRequestedOwnerFields(
   return fields;
 }
 
+static void ClearTraceReadExport(Surface *surface) {
+  if (surface == nullptr || !surface->trace_read_export_armed)
+    return;
+  surface->trace_read_export_armed = false;
+  surface->trace_read_export = {};
+}
+
+static void ClearTraceReadExportsForContext(Driver *driver,
+                                            uint64_t context,
+                                            uint64_t generation) {
+  if (!driver->trace.enabled())
+    return;
+  for (const auto &entry : driver->surfaces) {
+    Surface *surface = entry.second.get();
+    if (surface->trace_read_export_armed &&
+        surface->trace_read_export.context == context &&
+        surface->trace_read_export.generation == generation)
+      ClearTraceReadExport(surface);
+  }
+}
+
 static void ClearTraceIdentity(Surface *surface) {
   if (surface == nullptr)
     return;
+  ClearTraceReadExport(surface);
   surface->trace_context = 0;
   surface->trace_generation = 0;
   surface->trace_submission_ordinal = 0;
@@ -1677,11 +1701,11 @@ static void ClearTraceIdentity(Surface *surface) {
 }
 
 static void EndTraceBinding(Driver *driver, Surface *surface) {
-  if (!driver->trace.enabled() || surface == nullptr ||
-      surface->trace_submission_ordinal == 0)
+  if (!driver->trace.enabled() || surface == nullptr)
     return;
-  driver->trace.Emit(crystalhd_vaapi_trace::Event::BindingEnd,
-                     TraceFields(nullptr, surface));
+  if (surface->trace_submission_ordinal != 0)
+    driver->trace.Emit(crystalhd_vaapi_trace::Event::BindingEnd,
+                       TraceFields(nullptr, surface));
   ClearTraceIdentity(surface);
 }
 
@@ -1692,10 +1716,137 @@ static uint64_t NextTraceCall(Driver *driver) {
   return call;
 }
 
+static void ArmTraceReadExport(Driver *driver, Surface *requested,
+                               Surface *owner, uint64_t export_operation) {
+  if (!driver->trace.enabled() || requested == nullptr || owner == nullptr ||
+      requested != owner)
+    return;
+  ClearTraceReadExport(owner);
+  if (owner->destroyed || owner->failed ||
+      owner->backing_owner != VA_INVALID_SURFACE ||
+      owner->trace_context == 0 || owner->trace_generation == 0 ||
+      owner->trace_submission_ordinal == 0 ||
+      owner->trace_decode_identity == 0)
+    return;
+  owner->trace_read_export = TraceFields(nullptr, owner);
+  owner->trace_read_export.operation = export_operation;
+  owner->trace_read_export_armed = true;
+}
+
+static void ProbeTraceReadExportReuse(Driver *driver, DecodeContext *decode,
+                                      Surface *requested, Surface *owner) {
+  if (!driver->trace.enabled() || owner == nullptr ||
+      !owner->trace_read_export_armed)
+    return;
+
+  const crystalhd_vaapi_trace::Fields armed = owner->trace_read_export;
+  const crystalhd_vaapi_trace::Fields current = TraceFields(nullptr, owner);
+  const bool same_binding = requested == owner && !owner->destroyed &&
+      !owner->failed && decode != nullptr &&
+      armed.surface == TraceId(requested->id, VA_INVALID_SURFACE) &&
+      armed.owner == TraceOwner(owner) &&
+      armed.context == TraceId(decode->id, VA_INVALID_ID) &&
+      armed.context == current.context &&
+      armed.generation == decode->generation &&
+      armed.generation == current.generation &&
+      armed.token == current.token &&
+      armed.decode_identity == current.decode_identity &&
+      armed.submission_ordinal == current.submission_ordinal;
+  ClearTraceReadExport(owner);
+  if (!same_binding)
+    return;
+
+  crystalhd_vaapi_trace::Fields fields = armed;
+  const auto start = std::chrono::steady_clock::now();
+  std::unordered_set<BackingIdentity, BackingIdentityHash> objects;
+  const auto record_error = [&](int error) {
+    ++fields.probe_error_count;
+    if (fields.probe_errno == 0)
+      fields.probe_errno = error != 0 ? error : EIO;
+  };
+  const auto probe_fd = [&](int fd) {
+    BackingIdentity identity;
+    if (!GetBackingIdentity(fd, &identity)) {
+      record_error(errno);
+      return;
+    }
+    if (!objects.insert(identity).second)
+      return;
+    ++fields.identified_exported_object_count;
+    // This trace-only call runs while the driver mutex is held. Timeout zero
+    // does not wait for fence signaling, but poll may sleep while acquiring a
+    // contended dma_resv lock; duration_ns captures that perturbation. POLLOUT
+    // describes only this client-reuse instant, not reader completion.
+    pollfd descriptor = {fd, POLLOUT, 0};
+    errno = 0;
+    const int result = poll(&descriptor, 1, 0);
+    if (result < 0) {
+      record_error(errno);
+    } else if (result == 0) {
+      ++fields.not_pollout_count;
+    } else if ((descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+      record_error(EIO);
+    } else if ((descriptor.revents & POLLOUT) != 0) {
+      ++fields.pollout_count;
+    } else {
+      ++fields.not_pollout_count;
+    }
+  };
+
+  if (owner->bo != nullptr) {
+    const int exported_plane_count =
+        owner->fourcc == VA_FOURCC_ARGB ? 1 :
+        owner->fourcc == VA_FOURCC_NV12 ? 2 : 0;
+    errno = 0;
+    const int available_plane_count = gbm_bo_get_plane_count(owner->bo);
+    if (exported_plane_count == 0 ||
+        available_plane_count < exported_plane_count) {
+      record_error(errno);
+    } else {
+      // Mirror ExportSurfaceHandle exactly: ARGB exposes plane 0, while NV12
+      // exposes planes 0 and 1. Ignore any auxiliary GBM planes not exported
+      // to the client whose reuse boundary this record describes.
+      for (int plane = 0; plane < exported_plane_count; ++plane) {
+        errno = 0;
+        const int fd = gbm_bo_get_fd_for_plane(owner->bo, plane);
+        if (fd < 0) {
+          record_error(errno);
+          continue;
+        }
+        probe_fd(fd);
+        close(fd);
+      }
+    }
+  } else {
+    if (owner->object_fds.empty())
+      record_error(ENODEV);
+    else
+      // Non-GBM surface export currently exposes object_fds[0] only.
+      probe_fd(owner->object_fds.front());
+  }
+  fields.duration_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - start).count());
+  if (fields.probe_error_count != 0)
+    fields.outcome = -fields.probe_errno;
+  else if (fields.identified_exported_object_count == 0)
+    fields.outcome = -ENODEV;
+  else if (fields.not_pollout_count != 0)
+    fields.outcome = -EAGAIN;
+  else if (fields.pollout_count ==
+           fields.identified_exported_object_count)
+    fields.outcome = 0;
+  else
+    fields.outcome = -EIO;
+  driver->trace.Emit(
+      crystalhd_vaapi_trace::Event::ReadExportReuseImplicitFenceProbe, fields);
+}
+
 static void InheritTraceIdentity(Surface *destination,
                                  const Surface &source) {
   if (destination == nullptr)
     return;
+  ClearTraceReadExport(destination);
   destination->trace_context = source.trace_context;
   destination->trace_generation = source.trace_generation;
   destination->trace_submission_ordinal = source.trace_submission_ordinal;
@@ -1712,6 +1863,7 @@ static uint64_t NextDecodeIdentity(Driver *driver) {
 static void RevokeDecodeOwner(Driver *driver, Surface *surface) {
   if (surface == nullptr)
     return;
+  ClearTraceReadExport(surface);
   surface->decode_picture.reset();
   surface->decode_identity = NextDecodeIdentity(driver);
 }
@@ -1758,10 +1910,14 @@ static void SetSurfaceState(Driver *driver, Surface *surface, bool ready,
                             bool failed) {
   if (surface == nullptr)
     return;
+  if (failed)
+    ClearTraceReadExport(surface);
   surface->ready = ready;
   surface->failed = failed;
   Surface *owner = BackingOwner(driver, surface);
   if (owner != surface) {
+    if (failed)
+      ClearTraceReadExport(owner);
     owner->ready = ready;
     owner->failed = failed;
     if (surface->expected_timestamp != 0 || surface->frame_timestamp != 0) {
@@ -2101,6 +2257,8 @@ static void MarkPendingPicturesFailed(Driver *driver, DecodeContext *decode) {
           surface->second->decode_identity == 0 &&
           surface->second->decode_picture.expired())))
       surface->second->failed = true;
+    if (surface != driver->surfaces.end() && surface->second->failed)
+      ClearTraceReadExport(surface->second.get());
   }
 }
 
@@ -2273,8 +2431,10 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
           : CopyYuy2ToSurface(surface->second.get(), output, decode->is_70012);
       wrote_pixels = complete;
     }
-    if (!complete)
+    if (!complete) {
       surface->second->failed = true;
+      ClearTraceReadExport(surface->second.get());
+    }
   }
   // A public surface can be reused before old hardware output arrives. Once
   // that old output is complete, only captured/queued VPP references need to
@@ -2998,6 +3158,7 @@ static VAStatus DecodeSurfaceState(Surface *surface) {
           static_cast<unsigned long long>(surface->expected_timestamp),
           static_cast<unsigned long long>(surface->frame_timestamp));
     surface->failed = true;
+    ClearTraceReadExport(surface);
     return VA_STATUS_ERROR_DECODING_ERROR;
   }
   return VA_STATUS_SUCCESS;
@@ -3635,6 +3796,7 @@ static VAStatus CreateSurfaces2(VADriverContextP context, unsigned int format,
     if (owner != driver->surfaces.end()) {
       if (!PromoteDecodedPicture(owner->second->decode_picture.lock()))
         return rollback(VA_STATUS_ERROR_OPERATION_FAILED);
+      ClearTraceReadExport(owner->second.get());
       owner->second->direct_decode_eligible = false;
     }
   }
@@ -3702,6 +3864,8 @@ static VAStatus DestroySurfaces(VADriverContextP context,
     Debug("reset decoder generation=%llu after decode-surface teardown",
           static_cast<unsigned long long>(decode->generation));
     MarkPendingPicturesFailed(driver, decode);
+    ClearTraceReadExportsForContext(
+        driver, TraceId(decode->id, VA_INVALID_ID), decode->generation);
     decode->Reset();
     driver->trace.Emit(crystalhd_vaapi_trace::Event::ContextReset,
                        TraceFields(decode, nullptr));
@@ -3905,6 +4069,8 @@ static VAStatus DestroyContext(VADriverContextP context,
   if (!decode->video_process)
     status = DrainClosingContext(driver, decode, &lock);
   decode->retired = true;
+  ClearTraceReadExportsForContext(
+      driver, TraceId(decode->id, VA_INVALID_ID), decode->generation);
   const BC_STATUS closed = decode->Close();
   if (status == VA_STATUS_SUCCESS && closed != BC_STS_SUCCESS)
     status = VA_STATUS_ERROR_OPERATION_FAILED;
@@ -4041,6 +4207,8 @@ static VAStatus BeginPicture(VADriverContextP context, VAContextID context_id,
       return VA_STATUS_ERROR_HW_BUSY;
     if (!PromoteDecodedPicture(target_owner->decode_picture.lock()))
       return VA_STATUS_ERROR_OPERATION_FAILED;
+    ProbeTraceReadExportReuse(driver, decode->second.get(),
+                              target_surface->second.get(), target_owner);
     EndTraceBinding(driver, target_owner);
     if (target_surface->second.get() != target_owner)
       ClearTraceIdentity(target_surface->second.get());
@@ -4067,6 +4235,9 @@ static VAStatus BeginPicture(VADriverContextP context, VAContextID context_id,
       target_surface->second->vpp_readers != 0 ||
       target_surface->second->export_waiters != 0)
     return VA_STATUS_ERROR_HW_BUSY;
+  ProbeTraceReadExportReuse(driver, decode->second.get(),
+                            target_surface->second.get(),
+                            target_surface->second.get());
   decode->second->target = target;
   decode->second->have_picture = false;
   decode->second->mpeg2_picture = DecodeContext::Mpeg2Picture();
@@ -5324,6 +5495,11 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
       prime->num_objects = 0;
       return finish(VA_STATUS_ERROR_OPERATION_FAILED);
     }
+    if (surface->second.get() == owner) {
+      if (explicit_read_only)
+        ArmTraceReadExport(driver, surface->second.get(), owner,
+                           trace_fields.operation);
+    }
     return finish(VA_STATUS_SUCCESS);
   }
   if (surface->second->fourcc != VA_FOURCC_NV12)
@@ -5384,6 +5560,11 @@ static VAStatus ExportSurfaceHandle(VADriverContextP context,
       close(prime->objects[object].fd);
     prime->num_objects = 0;
     return finish(VA_STATUS_ERROR_OPERATION_FAILED);
+  }
+  if (surface->second.get() == owner) {
+    if (explicit_read_only)
+      ArmTraceReadExport(driver, surface->second.get(), owner,
+                         trace_fields.operation);
   }
   return finish(VA_STATUS_SUCCESS);
 }

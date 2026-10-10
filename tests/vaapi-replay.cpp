@@ -8,6 +8,16 @@
 static int mock_sync_fd = -1;
 static uint64_t mock_failed_sync_flags = 0;
 static std::vector<uint64_t> mock_sync_calls;
+struct ProbePollResult {
+  int result = 0;
+  short revents = 0;
+  int error = 0;
+};
+static std::deque<ProbePollResult> probe_poll_results;
+static unsigned int probe_poll_calls = 0;
+static gbm_bo *probe_gbm_bo = nullptr;
+static std::vector<int> probe_gbm_plane_fds;
+static std::vector<int> probe_gbm_temporary_fds;
 extern "C" int __real_ioctl(int fd, unsigned long request, ...);
 extern "C" int __wrap_ioctl(int fd, unsigned long request, ...) {
   va_list arguments;
@@ -29,6 +39,47 @@ extern "C" int __wrap_ioctl(int fd, unsigned long request, ...) {
 static void Require(bool value, const char *message) {
   if (!value)
     throw std::runtime_error(message);
+}
+
+extern "C" int __real_poll(struct pollfd *, nfds_t, int);
+extern "C" int __wrap_poll(struct pollfd *fds, nfds_t count, int timeout) {
+  if (probe_poll_results.empty())
+    return __real_poll(fds, count, timeout);
+  Require(count == 1 && timeout == 0 && fds != nullptr &&
+              fds[0].events == POLLOUT,
+          "reuse observation must issue one poll(POLLOUT, timeout=0)");
+  const ProbePollResult result = probe_poll_results.front();
+  probe_poll_results.pop_front();
+  ++probe_poll_calls;
+  fds[0].revents = result.revents;
+  errno = result.error;
+  return result.result;
+}
+
+extern "C" int __wrap___poll_chk(struct pollfd *fds, nfds_t count,
+                                  int timeout, size_t bytes) {
+  Require(fds != nullptr && count <= bytes / sizeof(*fds),
+          "fortified poll bounds");
+  return __wrap_poll(fds, count, timeout);
+}
+
+extern "C" int __real_gbm_bo_get_plane_count(gbm_bo *);
+extern "C" int __wrap_gbm_bo_get_plane_count(gbm_bo *bo) {
+  if (bo == probe_gbm_bo)
+    return static_cast<int>(probe_gbm_plane_fds.size());
+  return __real_gbm_bo_get_plane_count(bo);
+}
+
+extern "C" int __real_gbm_bo_get_fd_for_plane(gbm_bo *, int);
+extern "C" int __wrap_gbm_bo_get_fd_for_plane(gbm_bo *bo, int plane) {
+  if (bo != probe_gbm_bo)
+    return __real_gbm_bo_get_fd_for_plane(bo, plane);
+  Require(plane >= 0 && static_cast<size_t>(plane) < probe_gbm_plane_fds.size(),
+          "GBM reuse probe plane bounds");
+  const int fd = dup(probe_gbm_plane_fds[plane]);
+  if (fd >= 0)
+    probe_gbm_temporary_fds.push_back(fd);
+  return fd;
 }
 
 struct TraceEnvironment {
@@ -88,6 +139,29 @@ static bool TraceFieldIs(const std::string &line, const char *key,
   return line.compare(number, encoded.size(), encoded) == 0 &&
          delimiter < line.size() &&
          (line[delimiter] == ',' || line[delimiter] == '}');
+}
+
+static bool TraceSignedFieldIs(const std::string &line, const char *key,
+                               int64_t value) {
+  const std::string prefix = std::string("\"") + key + "\":";
+  const size_t field = line.find(prefix);
+  if (field == std::string::npos)
+    return false;
+  const size_t number = field + prefix.size();
+  const std::string encoded = std::to_string(value);
+  const size_t delimiter = number + encoded.size();
+  return line.compare(number, encoded.size(), encoded) == 0 &&
+         delimiter < line.size() &&
+         (line[delimiter] == ',' || line[delimiter] == '}');
+}
+
+static size_t CountTraceEvent(const std::string &trace, const char *event) {
+  const std::string marker = std::string("\"event\":\"") + event + "\"";
+  size_t count = 0;
+  for (size_t at = 0; (at = trace.find(marker, at)) != std::string::npos;
+       at += marker.size())
+    ++count;
+  return count;
 }
 
 // These wrappers drive the real submission/drain/teardown state machine with
@@ -882,6 +956,384 @@ static void TraceIdentityUsesImmutableTokenAndLiveAliasOwner() {
                 TraceFieldIs(line, "submission_ordinal", 3) &&
                 !TraceFieldIs(line, "decode_identity", 12),
             "alias trace takes identity from its current canonical owner");
+  }
+}
+
+static int TraceBackingFd(const char *name, size_t bytes) {
+  const int fd = memfd_create(name, MFD_CLOEXEC);
+  Require(fd >= 0 && ftruncate(fd, static_cast<off_t>(bytes)) == 0,
+          "allocate trace reuse backing");
+  return fd;
+}
+
+static std::shared_ptr<Surface> InstallTraceReuseSurface(
+    Driver *driver, const std::shared_ptr<DecodeContext> &decode,
+    const std::vector<int> &object_fds) {
+  auto surface = std::make_shared<Surface>();
+  Require(surface->AllocateInternal(nullptr, -1, 16, 16, VA_FOURCC_NV12),
+          "allocate trace reuse surface");
+  surface->id = 1;
+  surface->rt_format = VA_RT_FORMAT_YUV420;
+  surface->ready = true;
+  surface->expected_timestamp = surface->frame_timestamp = 400000;
+  surface->decode_identity = surface->trace_decode_identity = 19;
+  surface->trace_context = 7;
+  surface->trace_generation = 3;
+  surface->trace_submission_ordinal = 4;
+  surface->object_fds = object_fds;
+  surface->object_sizes.assign(object_fds.size(), surface->storage.size());
+  driver->surfaces[1] = surface;
+  decode->id = 7;
+  decode->generation = 3;
+  driver->contexts[7] = decode;
+  return surface;
+}
+
+static void ClosePrimeDescriptor(VADRMPRIMESurfaceDescriptor *descriptor) {
+  for (unsigned int object = 0; object < descriptor->num_objects; ++object)
+    close(descriptor->objects[object].fd);
+  descriptor->num_objects = 0;
+}
+
+static void TraceReadExportReuseBoundary() {
+  {
+    TraceEnvironment environment;
+    const int trace_fd = memfd_create("crystalhd-reuse-trace", MFD_CLOEXEC);
+    Require(trace_fd >= 0, "allocate read-export reuse trace sink");
+    {
+      Driver driver{-1, trace_fd};
+      auto decode = std::make_shared<DecodeContext>();
+      const size_t bytes = 16 * 16 * 3 / 2;
+      const int first = TraceBackingFd("crystalhd-reuse-first", bytes);
+      const int duplicate = dup(first);
+      const int second = TraceBackingFd("crystalhd-reuse-second", bytes);
+      Require(duplicate >= 0, "duplicate trace reuse object");
+      const auto surface = InstallTraceReuseSurface(
+          &driver, decode, {first, duplicate, second});
+      VADriverContext context = {};
+      context.pDriverData = &driver;
+      VADRMPRIMESurfaceDescriptor descriptor = {};
+      Require(ExportSurfaceHandle(&context, 1,
+                                  VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                                  VA_EXPORT_SURFACE_READ_ONLY, &descriptor) ==
+                  VA_STATUS_SUCCESS,
+              "successful explicit read-only export arms reuse observation");
+      ClosePrimeDescriptor(&descriptor);
+      Require(surface->trace_read_export_armed,
+              "read-only canonical export remembers the exact binding");
+      Require(surface->trace_read_export.operation == 1,
+              "first read-only export owns the first trace operation");
+      Require(CountTraceEvent(ReadTraceFd(trace_fd),
+                              "read_export_reuse_implicit_fence_probe") == 0,
+              "export return alone is not reader completion");
+      Require(ExportSurfaceHandle(&context, 1,
+                                  VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                                  VA_EXPORT_SURFACE_READ_ONLY, &descriptor) ==
+                  VA_STATUS_SUCCESS,
+              "repeat explicit read-only export of the same binding");
+      ClosePrimeDescriptor(&descriptor);
+      Require(surface->trace_read_export_armed &&
+                  surface->trace_read_export.operation == 2,
+              "latest read-only export replaces the correlation operation");
+      Require(ExportSurfaceHandle(&context, 1,
+                                  VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                                  VA_EXPORT_SURFACE_WRITE_ONLY, &descriptor) ==
+                  VA_STATUS_SUCCESS,
+              "later write-only export remains behaviorally valid");
+      ClosePrimeDescriptor(&descriptor);
+      Require(surface->trace_read_export_armed &&
+                  surface->trace_read_export.operation == 2,
+              "write-only export cannot hide the earlier external reader");
+
+      probe_poll_calls = 0;
+      probe_poll_results = {{0, 0, 0}};
+      Require(BeginPicture(&context, 7, 1) == VA_STATUS_SUCCESS,
+              "same-generation surface reuse remains behaviorally valid");
+      Require(probe_poll_results.empty() && probe_poll_calls == 1 &&
+                  !surface->trace_read_export_armed,
+              "reuse probes only the backing object actually exported");
+      Require(BeginPicture(&context, 7, 1) == VA_STATUS_SUCCESS &&
+                  probe_poll_calls == 1,
+              "one export binding produces only one reuse probe");
+    }
+    const std::string trace = ReadTraceFd(trace_fd);
+    close(trace_fd);
+    const std::string probe = FindTraceEvent(trace,
+        "read_export_reuse_implicit_fence_probe");
+    Require(TraceFieldIs(probe, "context", 7) &&
+                TraceFieldIs(probe, "generation", 3) &&
+                TraceFieldIs(probe, "surface", 1) &&
+                TraceFieldIs(probe, "token", 400000) &&
+                TraceFieldIs(probe, "decode_identity", 19) &&
+                TraceFieldIs(probe, "owner", 1) &&
+                TraceFieldIs(probe, "submission_ordinal", 4) &&
+                TraceFieldIs(probe, "operation", 2) &&
+                TraceFieldIs(probe,
+                             "identified_exported_object_count", 1) &&
+                TraceFieldIs(probe, "pollout_count", 0) &&
+                TraceFieldIs(probe, "not_pollout_count", 1) &&
+                TraceFieldIs(probe, "probe_error_count", 0) &&
+                TraceFieldIs(probe, "probe_errno", 0) &&
+                TraceSignedFieldIs(probe, "outcome", -EAGAIN),
+            "reuse trace preserves export identity and POLLOUT snapshot");
+    Require(CountTraceEvent(
+                trace, "read_export_reuse_implicit_fence_probe") == 1,
+            "same binding reuse trace is exact once");
+  }
+
+  {
+    TraceEnvironment environment;
+    const int trace_fd = memfd_create("crystalhd-reuse-ready", MFD_CLOEXEC);
+    Require(trace_fd >= 0, "allocate all-ready reuse trace sink");
+    {
+      Driver driver{-1, trace_fd};
+      auto decode = std::make_shared<DecodeContext>();
+      const int object = TraceBackingFd("crystalhd-reuse-ready-object",
+                                        16 * 16 * 3 / 2);
+      InstallTraceReuseSurface(&driver, decode, {object});
+      VADriverContext context = {};
+      context.pDriverData = &driver;
+      VADRMPRIMESurfaceDescriptor descriptor = {};
+      Require(ExportSurfaceHandle(&context, 1,
+                                  VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                                  VA_EXPORT_SURFACE_READ_ONLY, &descriptor) ==
+                  VA_STATUS_SUCCESS,
+              "arm all-ready reuse export");
+      ClosePrimeDescriptor(&descriptor);
+      probe_poll_calls = 0;
+      probe_poll_results = {{1, POLLOUT, 0}};
+      Require(BeginPicture(&context, 7, 1) == VA_STATUS_SUCCESS &&
+                  probe_poll_results.empty() && probe_poll_calls == 1,
+              "all-ready observation cannot alter surface reuse");
+    }
+    const std::string trace = ReadTraceFd(trace_fd);
+    close(trace_fd);
+    const std::string probe = FindTraceEvent(trace,
+        "read_export_reuse_implicit_fence_probe");
+    Require(TraceFieldIs(probe, "identified_exported_object_count", 1) &&
+                TraceFieldIs(probe, "pollout_count", 1) &&
+                TraceFieldIs(probe, "not_pollout_count", 0) &&
+                TraceFieldIs(probe, "probe_error_count", 0) &&
+                TraceFieldIs(probe, "probe_errno", 0) &&
+                TraceSignedFieldIs(probe, "outcome", 0),
+            "all-ready reuse is reported separately from busy and errors");
+  }
+
+  {
+    TraceEnvironment environment;
+    const int trace_fd = memfd_create("crystalhd-reuse-cancel", MFD_CLOEXEC);
+    Require(trace_fd >= 0, "allocate generation-cancel trace sink");
+    {
+      Driver driver{-1, trace_fd};
+      auto decode = std::make_shared<DecodeContext>();
+      const int object = TraceBackingFd("crystalhd-reuse-cancel-object",
+                                        16 * 16 * 3 / 2);
+      const auto surface = InstallTraceReuseSurface(&driver, decode, {object});
+      VADriverContext context = {};
+      context.pDriverData = &driver;
+      VADRMPRIMESurfaceDescriptor descriptor = {};
+      Require(ExportSurfaceHandle(&context, 1,
+                                  VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                                  VA_EXPORT_SURFACE_READ_ONLY, &descriptor) ==
+                  VA_STATUS_SUCCESS,
+              "arm generation-cancel export");
+      ClosePrimeDescriptor(&descriptor);
+      ++decode->generation;
+      probe_poll_calls = 0;
+      probe_poll_results.clear();
+      Require(BeginPicture(&context, 7, 1) == VA_STATUS_SUCCESS &&
+                  !surface->trace_read_export_armed && probe_poll_calls == 0,
+              "generation mismatch cancels without probing old identity");
+    }
+    const std::string trace = ReadTraceFd(trace_fd);
+    close(trace_fd);
+    Require(CountTraceEvent(
+                trace, "read_export_reuse_implicit_fence_probe") == 0,
+            "generation mismatch cannot emit a misattributed reuse result");
+  }
+
+  {
+    TraceEnvironment environment;
+    const int trace_fd = memfd_create("crystalhd-reuse-gbm", MFD_CLOEXEC);
+    Require(trace_fd >= 0, "allocate GBM-plane reuse trace sink");
+    {
+      Driver driver{-1, trace_fd};
+      auto decode = std::make_shared<DecodeContext>();
+      const size_t bytes = 16 * 16 * 3 / 2;
+      const int first = TraceBackingFd("crystalhd-reuse-gbm-first", bytes);
+      const int duplicate = dup(first);
+      Require(duplicate >= 0, "duplicate GBM-plane backing identity");
+      const auto surface = InstallTraceReuseSurface(
+          &driver, decode, {first, duplicate});
+      probe_gbm_bo = reinterpret_cast<gbm_bo *>(uintptr_t{0x12345});
+      probe_gbm_plane_fds = surface->object_fds;
+      probe_gbm_temporary_fds.clear();
+      surface->bo = probe_gbm_bo;
+      surface->trace_read_export = TraceFields(nullptr, surface.get());
+      surface->trace_read_export.operation = 77;
+      surface->trace_read_export_armed = true;
+      VADriverContext context = {};
+      context.pDriverData = &driver;
+      probe_poll_calls = 0;
+      probe_poll_results = {{1, POLLOUT, 0}};
+      const VAStatus status = BeginPicture(&context, 7, 1);
+      surface->bo = nullptr;
+      probe_gbm_bo = nullptr;
+      probe_gbm_plane_fds.clear();
+      bool all_temporary_fds_closed =
+          probe_gbm_temporary_fds.size() == 2;
+      for (int fd : probe_gbm_temporary_fds) {
+        errno = 0;
+        all_temporary_fds_closed &=
+            fcntl(fd, F_GETFD) == -1 && errno == EBADF;
+      }
+      probe_gbm_temporary_fds.clear();
+      Require(status == VA_STATUS_SUCCESS && probe_poll_results.empty() &&
+                  probe_poll_calls == 1 && all_temporary_fds_closed,
+              "GBM planes use closed temporary fds and dedupe shared objects");
+    }
+    const std::string trace = ReadTraceFd(trace_fd);
+    close(trace_fd);
+    const std::string probe = FindTraceEvent(trace,
+        "read_export_reuse_implicit_fence_probe");
+    Require(TraceFieldIs(probe, "operation", 77) &&
+                TraceFieldIs(probe,
+                             "identified_exported_object_count", 1) &&
+                TraceFieldIs(probe, "pollout_count", 1) &&
+                TraceFieldIs(probe, "not_pollout_count", 0) &&
+                TraceSignedFieldIs(probe, "outcome", 0),
+            "GBM shared-plane reuse reports one deduped backing object");
+  }
+
+  {
+    TraceEnvironment environment;
+    const int trace_fd = memfd_create("crystalhd-reuse-gbm-distinct",
+                                      MFD_CLOEXEC);
+    Require(trace_fd >= 0, "allocate distinct GBM-plane trace sink");
+    {
+      Driver driver{-1, trace_fd};
+      auto decode = std::make_shared<DecodeContext>();
+      const size_t bytes = 16 * 16 * 3 / 2;
+      const int first = TraceBackingFd("crystalhd-reuse-gbm-y", bytes);
+      const int second = TraceBackingFd("crystalhd-reuse-gbm-uv", bytes);
+      const int auxiliary = TraceBackingFd("crystalhd-reuse-gbm-aux", bytes);
+      const auto surface = InstallTraceReuseSurface(
+          &driver, decode, {first, second, auxiliary});
+      probe_gbm_bo = reinterpret_cast<gbm_bo *>(uintptr_t{0x12346});
+      probe_gbm_plane_fds = surface->object_fds;
+      probe_gbm_temporary_fds.clear();
+      surface->bo = probe_gbm_bo;
+      surface->trace_read_export = TraceFields(nullptr, surface.get());
+      surface->trace_read_export.operation = 78;
+      surface->trace_read_export_armed = true;
+      VADriverContext context = {};
+      context.pDriverData = &driver;
+      probe_poll_calls = 0;
+      probe_poll_results = {{1, POLLOUT, 0}, {1, POLLOUT, 0}};
+      const VAStatus status = BeginPicture(&context, 7, 1);
+      surface->bo = nullptr;
+      probe_gbm_bo = nullptr;
+      probe_gbm_plane_fds.clear();
+      bool all_temporary_fds_closed =
+          probe_gbm_temporary_fds.size() == 2;
+      for (int fd : probe_gbm_temporary_fds) {
+        errno = 0;
+        all_temporary_fds_closed &=
+            fcntl(fd, F_GETFD) == -1 && errno == EBADF;
+      }
+      probe_gbm_temporary_fds.clear();
+      Require(status == VA_STATUS_SUCCESS && probe_poll_results.empty() &&
+                  probe_poll_calls == 2 && all_temporary_fds_closed,
+              "exported GBM planes are probed and auxiliary plane is excluded");
+    }
+    const std::string trace = ReadTraceFd(trace_fd);
+    close(trace_fd);
+    const std::string probe = FindTraceEvent(
+        trace, "read_export_reuse_implicit_fence_probe");
+    Require(TraceFieldIs(probe, "operation", 78) &&
+                TraceFieldIs(probe,
+                             "identified_exported_object_count", 2) &&
+                TraceFieldIs(probe, "pollout_count", 2) &&
+                TraceFieldIs(probe, "not_pollout_count", 0) &&
+                TraceSignedFieldIs(probe, "outcome", 0),
+            "GBM export reports two objects and excludes auxiliary planes");
+  }
+
+  {
+    TraceEnvironment environment;
+    const int trace_fd = memfd_create("crystalhd-reuse-error", MFD_CLOEXEC);
+    Require(trace_fd >= 0, "allocate reuse error trace sink");
+    {
+      Driver driver{-1, trace_fd};
+      auto decode = std::make_shared<DecodeContext>();
+      const int object = TraceBackingFd("crystalhd-reuse-error-object",
+                                        16 * 16 * 3 / 2);
+      InstallTraceReuseSurface(&driver, decode, {object});
+      VADriverContext context = {};
+      context.pDriverData = &driver;
+      VADRMPRIMESurfaceDescriptor descriptor = {};
+      Require(ExportSurfaceHandle(&context, 1,
+                                  VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                                  VA_EXPORT_SURFACE_READ_ONLY, &descriptor) ==
+                  VA_STATUS_SUCCESS,
+              "arm poll-error export");
+      ClosePrimeDescriptor(&descriptor);
+      probe_poll_calls = 0;
+      probe_poll_results = {{-1, 0, EIO}};
+      Require(BeginPicture(&context, 7, 1) == VA_STATUS_SUCCESS &&
+                  probe_poll_results.empty() && probe_poll_calls == 1,
+              "observation error cannot change valid reuse result");
+    }
+    const std::string trace = ReadTraceFd(trace_fd);
+    close(trace_fd);
+    const std::string probe = FindTraceEvent(trace,
+        "read_export_reuse_implicit_fence_probe");
+    Require(TraceFieldIs(probe, "identified_exported_object_count", 1) &&
+                TraceFieldIs(probe, "pollout_count", 0) &&
+                TraceFieldIs(probe, "not_pollout_count", 0) &&
+                TraceFieldIs(probe, "probe_error_count", 1) &&
+                TraceFieldIs(probe, "probe_errno", EIO) &&
+                TraceSignedFieldIs(probe, "outcome", -EIO),
+            "reuse trace separates poll errors from ready and busy objects");
+  }
+
+  {
+    const char *previous = getenv("CRYSTALHD_VAAPI_TRACE");
+    const bool had_previous = previous != nullptr;
+    const std::string previous_value = previous == nullptr ? "" : previous;
+    unsetenv("CRYSTALHD_VAAPI_TRACE");
+    const int trace_fd = memfd_create("crystalhd-reuse-disabled", MFD_CLOEXEC);
+    Require(trace_fd >= 0, "allocate disabled reuse trace sink");
+    {
+      Driver driver{-1, trace_fd};
+      auto decode = std::make_shared<DecodeContext>();
+      const int object = TraceBackingFd("crystalhd-reuse-disabled-object",
+                                        16 * 16 * 3 / 2);
+      const auto surface = InstallTraceReuseSurface(&driver, decode, {object});
+      VADriverContext context = {};
+      context.pDriverData = &driver;
+      VADRMPRIMESurfaceDescriptor descriptor = {};
+      Require(ExportSurfaceHandle(&context, 1,
+                                  VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                                  VA_EXPORT_SURFACE_READ_ONLY, &descriptor) ==
+                  VA_STATUS_SUCCESS,
+              "trace-off read-only export behavior is unchanged");
+      ClosePrimeDescriptor(&descriptor);
+      probe_poll_calls = 0;
+      probe_poll_results = {{-1, 0, EIO}};
+      const VAStatus begin_status = BeginPicture(&context, 7, 1);
+      Require(!surface->trace_read_export_armed &&
+                  begin_status == VA_STATUS_SUCCESS &&
+                  probe_poll_calls == 0 && probe_poll_results.size() == 1,
+              "trace-off reuse performs no observation work");
+      probe_poll_results.clear();
+    }
+    Require(ReadTraceFd(trace_fd).empty(), "trace-off path stays silent");
+    close(trace_fd);
+    if (had_previous)
+      setenv("CRYSTALHD_VAAPI_TRACE", previous_value.c_str(), 1);
+    else
+      unsetenv("CRYSTALHD_VAAPI_TRACE");
   }
 }
 
@@ -3019,6 +3471,7 @@ int main() {
     UnknownOutputNeverGuessesAndInvalidOutputFails();
     DuplicateOutputCannotMutateOrRetirePixels();
     TraceIdentityUsesImmutableTokenAndLiveAliasOwner();
+    TraceReadExportReuseBoundary();
     DirectOutputOwnershipAndExport();
     RejectIncompleteGeometryAndInitializeAllocationPadding();
     FailedCpuOwnershipNeverCompletesDecode();
