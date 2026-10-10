@@ -28,17 +28,19 @@ static constexpr int kMaxPacketBytes = 16 * 1024 * 1024;
 static constexpr gint64 kTimeoutUs = 25 * G_USEC_PER_SEC;
 static constexpr unsigned int kMpeg4SeekFixtureFrames = 90;
 static constexpr unsigned int kWmv3SeekFixtureFrames = 180;
+static constexpr unsigned int kH264SeekFixtureFrames = 180;
 static constexpr unsigned int kSeekMinimumFrames = 12;
 static constexpr std::array<GstClockTime, 4> kSeekTargets = {
     2200 * GST_MSECOND, 700 * GST_MSECOND, 1500 * GST_MSECOND, 0};
 
 enum class ExpectedField { kAny, kProgressive, kTopFirst, kBottomFirst };
-enum class SeekFixture { kNone, kMpeg4Asp, kWmv3Main };
+enum class SeekFixture { kNone, kMpeg4Asp, kWmv3Main, kH264High };
 
 static SeekFixture ClassifySeekFixture(AVCodecID codec_id, int profile,
                                        int width, int height,
                                        unsigned int expected,
-                                       AVRational rate) {
+                                       AVRational rate,
+                                       AVFieldOrder field_order) {
   if (codec_id == AV_CODEC_ID_MPEG4 &&
       profile == FF_PROFILE_MPEG4_ADVANCED_SIMPLE &&
       expected == kMpeg4SeekFixtureFrames &&
@@ -49,6 +51,12 @@ static SeekFixture ClassifySeekFixture(AVCodecID codec_id, int profile,
       expected == kWmv3SeekFixtureFrames &&
       rate.num == 30 && rate.den == 1)
     return SeekFixture::kWmv3Main;
+  if (codec_id == AV_CODEC_ID_H264 && profile == FF_PROFILE_H264_HIGH &&
+      width == 640 && height == 360 &&
+      expected == kH264SeekFixtureFrames &&
+      rate.num == 30 && rate.den == 1 &&
+      field_order == AV_FIELD_PROGRESSIVE)
+    return SeekFixture::kH264High;
   return SeekFixture::kNone;
 }
 
@@ -58,6 +66,8 @@ static unsigned int SeekReferenceFrames(SeekFixture fixture) {
       return kMpeg4SeekFixtureFrames;
     case SeekFixture::kWmv3Main:
       return kWmv3SeekFixtureFrames;
+    case SeekFixture::kH264High:
+      return kH264SeekFixtureFrames;
     case SeekFixture::kNone:
     default:
       return 0;
@@ -666,8 +676,10 @@ static bool SeekAdmissionSelfTest() {
   static constexpr AVRational fps30{30, 1};
   static constexpr AVRational fps25{25, 1};
   const auto classify = [](AVCodecID codec_id, int profile, int width,
-                           int height, unsigned int frames, AVRational rate) {
-    return ClassifySeekFixture(codec_id, profile, width, height, frames, rate);
+                           int height, unsigned int frames, AVRational rate,
+                           AVFieldOrder field_order = AV_FIELD_UNKNOWN) {
+    return ClassifySeekFixture(codec_id, profile, width, height, frames, rate,
+                               field_order);
   };
   return
       classify(AV_CODEC_ID_MPEG4, FF_PROFILE_MPEG4_ADVANCED_SIMPLE,
@@ -707,10 +719,36 @@ static bool SeekAdmissionSelfTest() {
       classify(AV_CODEC_ID_VC1, FF_PROFILE_VC1_MAIN,
                320, 240, kWmv3SeekFixtureFrames, fps30) ==
           SeekFixture::kNone &&
+      classify(AV_CODEC_ID_H264, FF_PROFILE_H264_HIGH,
+               640, 360, kH264SeekFixtureFrames, fps30,
+               AV_FIELD_PROGRESSIVE) == SeekFixture::kH264High &&
+      classify(AV_CODEC_ID_H264, FF_PROFILE_H264_MAIN,
+               640, 360, kH264SeekFixtureFrames, fps30,
+               AV_FIELD_PROGRESSIVE) == SeekFixture::kNone &&
+      classify(AV_CODEC_ID_H264, FF_PROFILE_H264_HIGH,
+               641, 360, kH264SeekFixtureFrames, fps30,
+               AV_FIELD_PROGRESSIVE) == SeekFixture::kNone &&
+      classify(AV_CODEC_ID_H264, FF_PROFILE_H264_HIGH,
+               640, 361, kH264SeekFixtureFrames, fps30,
+               AV_FIELD_PROGRESSIVE) == SeekFixture::kNone &&
+      classify(AV_CODEC_ID_H264, FF_PROFILE_H264_HIGH,
+               640, 360, kH264SeekFixtureFrames - 1, fps30,
+               AV_FIELD_PROGRESSIVE) == SeekFixture::kNone &&
+      classify(AV_CODEC_ID_H264, FF_PROFILE_H264_HIGH,
+               640, 360, kH264SeekFixtureFrames, fps25,
+               AV_FIELD_PROGRESSIVE) == SeekFixture::kNone &&
+      classify(AV_CODEC_ID_H264, FF_PROFILE_H264_HIGH,
+               640, 360, kH264SeekFixtureFrames, fps30) ==
+          SeekFixture::kNone &&
+      classify(AV_CODEC_ID_H264, FF_PROFILE_H264_HIGH,
+               640, 360, kH264SeekFixtureFrames, fps30, AV_FIELD_TT) ==
+          SeekFixture::kNone &&
       SeekReferenceFrames(SeekFixture::kMpeg4Asp) ==
           kMpeg4SeekFixtureFrames &&
       SeekReferenceFrames(SeekFixture::kWmv3Main) ==
           kWmv3SeekFixtureFrames &&
+      SeekReferenceFrames(SeekFixture::kH264High) ==
+          kH264SeekFixtureFrames &&
       SeekReferenceFrames(SeekFixture::kNone) == 0;
 }
 
@@ -884,11 +922,13 @@ int main(int argc, char **argv) {
   }
   AVStream *stream = format->streams[index];
   const AVCodecParameters *parameters = stream->codecpar;
+  const bool h264 = parameters->codec_id == AV_CODEC_ID_H264;
   const bool vc1 = parameters->codec_id == AV_CODEC_ID_VC1;
+  const bool wmv3 = parameters->codec_id == AV_CODEC_ID_WMV3;
   const bool mpeg4 = parameters->codec_id == AV_CODEC_ID_MPEG4;
   const bool mpeg4_simple = parameters->profile == FF_PROFILE_MPEG4_SIMPLE;
   const bool mpeg4_asp = parameters->profile == FF_PROFILE_MPEG4_ADVANCED_SIMPLE;
-  if ((!vc1 && parameters->codec_id != AV_CODEC_ID_WMV3 && !mpeg4) ||
+  if ((!vc1 && !wmv3 && !mpeg4 && !(seek_mode && h264)) ||
       (mpeg4 && ((!mpeg4_simple && !mpeg4_asp) ||
                  (parameters->level != 3 && parameters->level != 5))) ||
       (mpeg4 && parameters->field_order != AV_FIELD_UNKNOWN &&
@@ -896,7 +936,10 @@ int main(int argc, char **argv) {
       parameters->extradata_size <= 0 || parameters->extradata_size > kMaxPacketBytes ||
       !parameters->extradata || parameters->width <= 0 || parameters->width > 1920 ||
       parameters->height <= 0 || parameters->height > 1088) {
-    std::fprintf(stderr, "Probe requires WMV3/VC-1 or MPEG-4 Simple/ASP level 3 or 5 with codec metadata and dimensions\n");
+    std::fprintf(stderr,
+                 "Probe requires WMV3/VC-1 or MPEG-4 Simple/ASP level 3 or 5 "
+                 "with codec metadata and dimensions; H.264 is accepted only "
+                 "by the strict --seek fixture\n");
     avformat_close_input(&format);
     return 2;
   }
@@ -904,13 +947,16 @@ int main(int argc, char **argv) {
   const SeekFixture seek_fixture = seek_mode
       ? ClassifySeekFixture(parameters->codec_id, parameters->profile,
                             parameters->width, parameters->height,
-                            static_cast<unsigned int>(expected), rate)
+                            static_cast<unsigned int>(expected), rate,
+                            parameters->field_order)
       : SeekFixture::kNone;
   const unsigned int seek_reference_frames = SeekReferenceFrames(seek_fixture);
   if (seek_mode && seek_fixture == SeekFixture::kNone) {
     std::fprintf(stderr,
                  "--seek requires the 90-picture, 30-fps MPEG-4 ASP fixture "
-                 "or the 180-picture, 320x240, 30-fps WMV3 Main fixture\n");
+                 "or the 180-picture, 320x240, 30-fps WMV3 Main fixture or "
+                 "the progressive 180-picture, 640x360, 30-fps H.264 High "
+                 "fixture\n");
     avformat_close_input(&format);
     return 2;
   }
@@ -921,10 +967,17 @@ int main(int argc, char **argv) {
             "demux.video_0 ! queue ! crystalhddec ! "
             "fakesink name=sink sync=true qos=false max-lateness=-1 "
             "enable-last-sample=false signal-handoffs=true"
-          : "filesrc name=source ! qtdemux ! mpeg4videoparse ! "
-            "crystalhddec ! fakesink name=sink sync=true qos=false "
-            "max-lateness=-1 enable-last-sample=false "
-            "signal-handoffs=true")
+          : seek_fixture == SeekFixture::kH264High
+              ? "filesrc name=source ! qtdemux name=demux "
+                "demux.video_0 ! queue ! h264parse ! "
+                "video/x-h264,stream-format=byte-stream,alignment=au ! "
+                "crystalhddec ! fakesink name=sink sync=true qos=false "
+                "max-lateness=-1 enable-last-sample=false "
+                "signal-handoffs=true"
+              : "filesrc name=source ! qtdemux ! mpeg4videoparse ! "
+                "crystalhddec ! fakesink name=sink sync=true qos=false "
+                "max-lateness=-1 enable-last-sample=false "
+                "signal-handoffs=true")
       : "appsrc name=source format=time is-live=false ! crystalhddec ! "
         "fakesink name=sink sync=false enable-last-sample=false "
         "signal-handoffs=true";
@@ -1088,18 +1141,20 @@ int main(int argc, char **argv) {
       ok = false;
     }
   }
+  const char *codec_name = h264 ? "H.264 High" :
+      (mpeg4 ? (mpeg4_simple ? "MPEG-4 Simple" : "MPEG-4 ASP") :
+       (vc1 ? "VC-1" : "WMV3"));
+  const char *seek_codec_name = h264 ? "H.264 High" :
+      (mpeg4 ? "MPEG-4 ASP" : "WMV3 Main");
   const bool seek_epochs_valid = !seek_mode ||
       ValidateSeekEpochs(seek_epochs, seek_reference_frames);
   if (!seek_epochs_valid) {
     std::fprintf(stderr,
                  "%s seek epochs contain stale, duplicate, mismatched or "
                  "incorrectly segmented output (expected %u-frame reference)\n",
-                 mpeg4 ? "MPEG-4 ASP" : "WMV3 Main",
-                 seek_reference_frames);
+                 seek_codec_name, seek_reference_frames);
     ok = false;
   }
-  const char *codec_name = mpeg4 ? (mpeg4_simple ? "MPEG-4 Simple" : "MPEG-4 ASP")
-                                  : (vc1 ? "VC-1" : "WMV3");
   if (seek_mode) {
     std::printf("%s: demux-owned seek; %u/%lu YUY2 frames; EOS=%s; "
                 "MetadataSHA256=%s; SHA256=%s\n",
