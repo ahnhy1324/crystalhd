@@ -2261,6 +2261,442 @@ static void ExactReadySurfaceDoesNotWaitForBatchEos() {
           "later synchronization still drains the remaining picture and EOS");
 }
 
+// Hardware-free Phase-B replay of facts represented by the current backend:
+// driver_token mirrors Surface::expected_timestamp (never original PTS),
+// generation mirrors DecodeContext::generation, and each fixture is scoped to
+// one VAContextID. The nonoverlapping owner intervals model the
+// decode_identity/decode_picture-protected VASurfaceID binding. Hardware
+// completion alone is not READY; pixels must also have been materialized while
+// that binding remains valid. This fixture never calls or changes production
+// surface selection/synchronization.
+class ReadyInventoryReplay {
+ public:
+  struct Identity {
+    uint64_t driver_token = 0;
+    uint64_t generation = 0;
+    bool operator==(const Identity &other) const {
+      return driver_token == other.driver_token &&
+             generation == other.generation;
+    }
+  };
+
+  struct PictureTrace {
+    Identity identity;
+    VASurfaceID owner = VA_INVALID_SURFACE;
+    uint64_t owned_at_ns = 0;
+    uint64_t hardware_complete_at_ns = 0;
+    uint64_t materialized_at_ns = 0;
+    uint64_t released_at_ns = 0;
+    uint64_t discarded_at_ns = 0;
+    // Trace order, rather than token magnitude, defines decoded submission
+    // order and the identity drift used by the simulated latest-ready policy.
+    size_t submission_ordinal = 0;
+  };
+
+  struct Request {
+    Identity identity;
+    VASurfaceID owner = VA_INVALID_SURFACE;
+    uint64_t entered_at_ns = 0;
+    uint64_t exact_return_at_ns = 0;
+  };
+
+  struct Policy {
+    uint64_t delay_ns = 0;
+    uint64_t maximum_owner_age_ns = UINT64_MAX;
+    size_t maximum_identity_drift = std::numeric_limits<size_t>::max();
+    size_t maximum_older_ready_alternatives_skipped =
+        std::numeric_limits<size_t>::max();
+  };
+
+  enum class Outcome {
+    ConditionalOpportunity,
+    NoReadyCandidate,
+    ExactRequestCompletedFirst,
+    OwnerAgeBoundExceeded,
+    IdentityDriftBoundExceeded,
+    ReadyAlternativeBoundExceeded,
+  };
+
+  struct Result {
+    Outcome outcome = Outcome::NoReadyCandidate;
+    VAContextID decode_context = VA_INVALID_ID;
+    Request request;
+    uint64_t decision_at_ns = 0;
+    PictureTrace candidate;
+    uint64_t owner_age_ns = 0;
+    size_t submission_drift = 0;
+    size_t older_ready_alternatives_skipped = 0;
+  };
+
+  ReadyInventoryReplay(VAContextID decode_context,
+                       std::initializer_list<PictureTrace> pictures)
+      : decode_context_(decode_context), pictures_(pictures) {
+    Require(decode_context != VA_INVALID_ID,
+            "READY replay is scoped to one valid decode context");
+    for (size_t index = 0; index < pictures_.size(); ++index) {
+      PictureTrace &picture = pictures_[index];
+      picture.submission_ordinal = index + 1;
+      Require(picture.identity.driver_token != 0 &&
+                  picture.identity.generation != 0 &&
+                  picture.owner != VA_INVALID_SURFACE &&
+                  picture.owned_at_ns != 0 &&
+                  (picture.hardware_complete_at_ns == 0 ||
+                   picture.hardware_complete_at_ns >= picture.owned_at_ns) &&
+                  (picture.materialized_at_ns == 0 ||
+                   (picture.hardware_complete_at_ns != 0 &&
+                    picture.materialized_at_ns >=
+                        picture.hardware_complete_at_ns)) &&
+                  (picture.released_at_ns == 0 ||
+                   picture.released_at_ns >= picture.owned_at_ns) &&
+                  (picture.discarded_at_ns == 0 ||
+                   (picture.hardware_complete_at_ns != 0 &&
+                    picture.materialized_at_ns == 0 &&
+                    picture.discarded_at_ns >=
+                        picture.hardware_complete_at_ns)),
+              "READY inventory has valid identity, ownership and completion times");
+      for (size_t previous = 0; previous < index; ++previous) {
+        Require(!(pictures_[previous].identity == picture.identity),
+                "READY inventory has unique driver identities per generation");
+        if (pictures_[previous].owner == picture.owner)
+          Require(pictures_[previous].released_at_ns != 0 &&
+                      pictures_[previous].released_at_ns <=
+                          picture.owned_at_ns,
+                  "READY inventory surface reuse ends the old owner binding");
+      }
+    }
+  }
+
+  Result Simulate(const Request &request) const {
+    return Simulate(request, Policy{});
+  }
+
+  Result Simulate(const Request &request, const Policy &policy) const {
+    const PictureTrace *requested = Find(request.identity);
+    Require(requested != nullptr && requested->owner == request.owner &&
+                request.entered_at_ns < request.exact_return_at_ns &&
+                IsOwned(*requested, request.entered_at_ns) &&
+                !IsReady(*requested, request.entered_at_ns) &&
+                IsOwned(*requested, request.exact_return_at_ns) &&
+                IsReady(*requested, request.exact_return_at_ns),
+            "READY replay uses an unresolved request and its original exact return");
+
+    Result result;
+    result.decode_context = decode_context_;
+    result.request = request;
+    const uint64_t remaining =
+        std::numeric_limits<uint64_t>::max() - request.entered_at_ns;
+    result.decision_at_ns =
+        policy.delay_ns > remaining
+            ? std::numeric_limits<uint64_t>::max()
+            : request.entered_at_ns + policy.delay_ns;
+    const uint64_t exact_ready_at_ns = ReadyAt(*requested);
+    const uint64_t exact_horizon_ns =
+        std::min(exact_ready_at_ns, request.exact_return_at_ns);
+    if (result.decision_at_ns >= exact_horizon_ns) {
+      result.decision_at_ns = exact_horizon_ns;
+      result.outcome = Outcome::ExactRequestCompletedFirst;
+      return result;
+    }
+
+    std::vector<const PictureTrace *> candidates;
+    bool rejected_for_age = false;
+    bool rejected_for_drift = false;
+    for (const PictureTrace &picture : pictures_) {
+      // Cross-generation exclusion is an experimental selection boundary. It
+      // does not claim that production revokes an already-ready old surface.
+      if (picture.identity == request.identity ||
+          picture.identity.generation != request.identity.generation ||
+          picture.submission_ordinal >= requested->submission_ordinal ||
+          !IsOwned(picture, result.decision_at_ns) ||
+          !IsReady(picture, result.decision_at_ns))
+        continue;
+      if (result.decision_at_ns - picture.owned_at_ns >
+          policy.maximum_owner_age_ns) {
+        rejected_for_age = true;
+        continue;
+      }
+      if (requested->submission_ordinal - picture.submission_ordinal >
+          policy.maximum_identity_drift) {
+        rejected_for_drift = true;
+        continue;
+      }
+      candidates.push_back(&picture);
+    }
+    if (candidates.empty()) {
+      result.outcome = rejected_for_age
+                           ? Outcome::OwnerAgeBoundExceeded
+                           : (rejected_for_drift
+                                  ? Outcome::IdentityDriftBoundExceeded
+                                  : Outcome::NoReadyCandidate);
+      return result;
+    }
+
+    const PictureTrace *latest = *std::max_element(
+        candidates.begin(), candidates.end(),
+        [](const PictureTrace *left, const PictureTrace *right) {
+          return left->submission_ordinal < right->submission_ordinal;
+        });
+    result.older_ready_alternatives_skipped = candidates.size() - 1;
+    if (result.older_ready_alternatives_skipped >
+        policy.maximum_older_ready_alternatives_skipped) {
+      result.outcome = Outcome::ReadyAlternativeBoundExceeded;
+      return result;
+    }
+    result.outcome = Outcome::ConditionalOpportunity;
+    result.candidate = *latest;
+    result.owner_age_ns = result.decision_at_ns - latest->owned_at_ns;
+    result.submission_drift =
+        requested->submission_ordinal - latest->submission_ordinal;
+    return result;
+  }
+
+  static std::string Describe(const Result &result) {
+    const char *outcome = "invalid";
+    switch (result.outcome) {
+      case Outcome::ConditionalOpportunity:
+        outcome = "conditional-opportunity";
+        break;
+      case Outcome::NoReadyCandidate:
+        outcome = "no-ready-candidate";
+        break;
+      case Outcome::ExactRequestCompletedFirst:
+        outcome = "exact-request-completed-first";
+        break;
+      case Outcome::OwnerAgeBoundExceeded:
+        outcome = "owner-age-bound-exceeded";
+        break;
+      case Outcome::IdentityDriftBoundExceeded:
+        outcome = "identity-drift-bound-exceeded";
+        break;
+      case Outcome::ReadyAlternativeBoundExceeded:
+        outcome = "ready-alternative-bound-exceeded";
+        break;
+    }
+    char description[768];
+    std::snprintf(
+        description, sizeof(description),
+        "READY inventory replay: scope=original-blocking-request-timeline "
+        "context=%u request_driver_token=%llu generation=%llu owner=%u "
+        "entry_ns=%llu exact_return_ns=%llu result=%s candidate_driver_token=%llu "
+        "generation=%llu owner=%u owned_ns=%llu materialized_ns=%llu "
+        "hardware_complete_ns=%llu owner_age_ns=%llu submission_drift=%zu "
+        "older_ready_alternatives_skipped=%zu actual_client_drops=not-modeled "
+        "predicted_fps=not-modeled physical_display=not-observed",
+        result.decode_context,
+        static_cast<unsigned long long>(result.request.identity.driver_token),
+        static_cast<unsigned long long>(result.request.identity.generation),
+        result.request.owner,
+        static_cast<unsigned long long>(result.request.entered_at_ns),
+        static_cast<unsigned long long>(result.request.exact_return_at_ns),
+        outcome,
+        static_cast<unsigned long long>(result.candidate.identity.driver_token),
+        static_cast<unsigned long long>(result.candidate.identity.generation),
+        result.candidate.owner,
+        static_cast<unsigned long long>(result.candidate.owned_at_ns),
+        static_cast<unsigned long long>(result.candidate.materialized_at_ns),
+        static_cast<unsigned long long>(
+            result.candidate.hardware_complete_at_ns),
+        static_cast<unsigned long long>(result.owner_age_ns),
+        result.submission_drift,
+        result.older_ready_alternatives_skipped);
+    return description;
+  }
+
+ private:
+  const PictureTrace *Find(Identity identity) const {
+    for (const PictureTrace &picture : pictures_)
+      if (picture.identity == identity)
+        return &picture;
+    return nullptr;
+  }
+
+  static uint64_t ReadyAt(const PictureTrace &picture) {
+    return std::max(picture.hardware_complete_at_ns,
+                    picture.materialized_at_ns);
+  }
+
+  static bool IsOwned(const PictureTrace &picture, uint64_t at_ns) {
+    return picture.owned_at_ns <= at_ns &&
+           (picture.released_at_ns == 0 || at_ns < picture.released_at_ns);
+  }
+
+  static bool IsReady(const PictureTrace &picture, uint64_t at_ns) {
+    return picture.hardware_complete_at_ns != 0 &&
+           picture.materialized_at_ns != 0 &&
+           picture.hardware_complete_at_ns <= at_ns &&
+           picture.materialized_at_ns <= at_ns &&
+           (picture.discarded_at_ns == 0 || at_ns < picture.discarded_at_ns);
+  }
+
+  VAContextID decode_context_ = VA_INVALID_ID;
+  std::vector<PictureTrace> pictures_;
+};
+
+static ReadyInventoryReplay::PictureTrace ReadyTrace(
+    uint64_t driver_token, uint64_t generation, VASurfaceID owner,
+    uint64_t owned_at_ns, uint64_t hardware_complete_at_ns,
+    uint64_t materialized_at_ns, uint64_t released_at_ns = 0,
+    uint64_t discarded_at_ns = 0) {
+  return {{driver_token, generation}, owner, owned_at_ns,
+          hardware_complete_at_ns, materialized_at_ns, released_at_ns,
+          discarded_at_ns, 0};
+}
+
+static void ReadyInventoryConditionalOpportunityReplay() {
+  using Replay = ReadyInventoryReplay;
+  using Identity = Replay::Identity;
+  constexpr VAContextID context = 9;
+  constexpr uint64_t generation = 7;
+
+  // Opaque synthetic driver tokens intentionally do not resemble media PTS.
+  {
+    // Deliberately make token magnitude disagree with submission order.
+    const Identity older{0x901, generation};
+    const Identity requested{0x205, generation};
+    Replay replay(context,
+                  {ReadyTrace(older.driver_token, generation, 11, 2, 8, 10),
+                   ReadyTrace(requested.driver_token, generation, 12, 15, 50,
+                              52)});
+    const auto result = replay.Simulate({requested, 12, 20, 52});
+    Require(result.outcome == Replay::Outcome::ConditionalOpportunity &&
+                result.candidate.identity == older &&
+                result.candidate.owner == 11 &&
+                result.candidate.owned_at_ns == 2 &&
+                result.candidate.hardware_complete_at_ns == 8 &&
+                result.candidate.materialized_at_ns == 10 &&
+                result.owner_age_ns == 18 &&
+                result.submission_drift == 1 &&
+                result.older_ready_alternatives_skipped == 0,
+            "older completed, materialized, owned picture is a conditional opportunity");
+    const std::string description = Replay::Describe(result);
+    Require(description.find("scope=original-blocking-request-timeline") !=
+                    std::string::npos &&
+                description.find("predicted_fps=not-modeled") !=
+                    std::string::npos &&
+                description.find("actual_client_drops=not-modeled") !=
+                    std::string::npos &&
+                description.find("physical_display=not-observed") !=
+                    std::string::npos,
+            "READY result cannot be read as predicted FPS or physical display");
+    std::puts(description.c_str());
+  }
+
+  {
+    const Identity requested{0x301, generation};
+    Replay replay(
+        context,
+        {ReadyTrace(requested.driver_token, generation, 21, 2, 30, 32)});
+    Require(replay.Simulate({requested, 21, 5, 32}).outcome ==
+                Replay::Outcome::NoReadyCandidate,
+            "an unresolved request alone provides no READY opportunity");
+  }
+
+  {
+    const Identity requested{0x311, generation};
+    Replay replay(context, {
+        ReadyTrace(requested.driver_token, generation, 22, 2, 30, 32),
+        ReadyTrace(0x011, generation, 23, 4, 6, 7),
+    });
+    Require(replay.Simulate({requested, 22, 10, 32}).outcome ==
+                Replay::Outcome::NoReadyCandidate,
+            "latest-ready cannot substitute a later-submitted identity");
+  }
+
+  {
+    const Identity requested{0x403, generation};
+    Replay replay(context, {
+        ReadyTrace(0x401, generation, 31, 1, 4, 0, 0, 5),
+        ReadyTrace(0x402, generation, 32, 2, 6, 0),
+        ReadyTrace(requested.driver_token, generation, 33, 8, 40, 42),
+    });
+    Require(replay.Simulate({requested, 33, 10, 42}).outcome ==
+                Replay::Outcome::NoReadyCandidate,
+            "completed discarded or unmaterialized output is never READY");
+  }
+
+  {
+    const Identity requested{0x503, generation};
+    Replay replay(context, {
+        ReadyTrace(0x501, generation, 41, 1, 3, 4, 6),
+        ReadyTrace(0x502, generation, 41, 6, 0, 0),
+        ReadyTrace(requested.driver_token, generation, 42, 8, 30, 32),
+    });
+    Require(replay.Simulate({requested, 42, 10, 32}).outcome ==
+                Replay::Outcome::NoReadyCandidate,
+            "surface reuse revokes the old completed owner binding");
+  }
+
+  {
+    const Identity requested{0x602, generation + 1};
+    Replay replay(context, {
+        ReadyTrace(0x601, generation, 51, 1, 3, 4),
+        ReadyTrace(requested.driver_token, requested.generation, 52, 8, 30, 32),
+    });
+    Require(replay.Simulate({requested, 52, 10, 32}).outcome ==
+                Replay::Outcome::NoReadyCandidate,
+            "experimental selection excludes an old-generation READY candidate");
+  }
+
+  {
+    const Identity delayed{0x701, generation};
+    const Identity requested{0x702, generation};
+    Replay replay(context, {
+        ReadyTrace(delayed.driver_token, generation, 61, 1, 12, 14),
+        ReadyTrace(requested.driver_token, generation, 62, 5, 40, 42),
+    });
+    const Replay::Request request{requested, 62, 10, 42};
+    Require(replay.Simulate(request).outcome ==
+                Replay::Outcome::NoReadyCandidate,
+            "latest-ready has no candidate at original request entry");
+    Replay::Policy policy;
+    policy.delay_ns = 8;
+    const auto delayed_result = replay.Simulate(request, policy);
+    Require(delayed_result.outcome ==
+                    Replay::Outcome::ConditionalOpportunity &&
+                delayed_result.candidate.identity == delayed &&
+                delayed_result.decision_at_ns == 18 &&
+                delayed_result.owner_age_ns == 17,
+            "bounded delay finds materialized output within the original wait");
+    policy.delay_ns = 40;
+    Require(replay.Simulate(request, policy).outcome ==
+                Replay::Outcome::ExactRequestCompletedFirst,
+            "bounded replay never extends past the original exact return");
+  }
+
+  {
+    const Identity requested{0x804, generation};
+    Replay replay(context, {
+        ReadyTrace(0x801, generation, 71, 1, 4, 5),
+        ReadyTrace(0x802, generation, 72, 2, 6, 7),
+        ReadyTrace(0x803, generation, 73, 3, 8, 9),
+        ReadyTrace(requested.driver_token, generation, 74, 50, 90, 92),
+    });
+    const Replay::Request request{requested, 74, 60, 92};
+    Replay::Policy policy;
+    policy.maximum_owner_age_ns = 40;
+    Require(replay.Simulate(request, policy).outcome ==
+                Replay::Outcome::OwnerAgeBoundExceeded,
+            "READY replay rejects candidates outside the owner-clock age bound");
+    policy.maximum_owner_age_ns = UINT64_MAX;
+    policy.maximum_identity_drift = 0;
+    Require(replay.Simulate(request, policy).outcome ==
+                Replay::Outcome::IdentityDriftBoundExceeded,
+            "READY replay bounds historical identity drift independently of age");
+    policy.maximum_identity_drift = std::numeric_limits<size_t>::max();
+    policy.maximum_older_ready_alternatives_skipped = 1;
+    Require(replay.Simulate(request, policy).outcome ==
+                Replay::Outcome::ReadyAlternativeBoundExceeded,
+            "READY replay bounds older alternatives without claiming client drops");
+    policy.maximum_older_ready_alternatives_skipped = 2;
+    const auto bounded = replay.Simulate(request, policy);
+    Require(bounded.outcome == Replay::Outcome::ConditionalOpportunity &&
+                bounded.candidate.identity.driver_token == 0x803 &&
+                bounded.older_ready_alternatives_skipped == 2 &&
+                bounded.submission_drift == 1,
+            "bounded latest-ready reports drift and skipped READY alternatives");
+  }
+}
+
 static void QueryOnlyObservesAutonomousDecodeProgress() {
   TeardownFixture fixture(1);
   const std::thread::id caller = std::this_thread::get_id();
@@ -2435,6 +2871,7 @@ int main() {
     CompletedWaitNeverAcceptsDifferentOrDestroyedPicture();
     ZeroTimeoutNeverPumpsBusyDecodeSurface();
     ExactReadySurfaceDoesNotWaitForBatchEos();
+    ReadyInventoryConditionalOpportunityReplay();
     QueryOnlyObservesAutonomousDecodeProgress();
     AutonomousWorkerFinishesOnlyAnExistingSealedBatch();
     AutonomousWorkerStopsAfterTransportFailure();
