@@ -209,6 +209,126 @@ struct Fixture {
   void End() { Require(EndPicture(&context, 1) == VA_STATUS_SUCCESS, "real EndPicture/SubmitPicture"); }
 };
 
+void SetGeometry(Fixture *fixture, unsigned coded_width,
+                 unsigned coded_height, unsigned surface_width,
+                 unsigned surface_height) {
+  Require((coded_width & 15U) == 0 && (coded_height & 15U) == 0,
+          "H.264 coded fixture uses complete macroblocks");
+  fixture->decode->width = coded_width;
+  fixture->decode->height = coded_height;
+  fixture->picture.picture_width_in_mbs_minus1 = coded_width / 16 - 1;
+  fixture->picture.picture_height_in_mbs_minus1 = coded_height / 16 - 1;
+  auto surface = std::make_shared<Surface>();
+  Require(surface->AllocateInternal(nullptr, -1, surface_width,
+                                    surface_height, VA_FOURCC_NV12),
+          "allocate H.264 geometry surface");
+  fixture->driver.surfaces[1] = std::move(surface);
+}
+
+void VisibleCropSurfaceGeometry() {
+  {
+    Fixture f;
+    SetGeometry(&f, 1280, 544, 1280, 534);
+    f.Begin();
+    f.Parameters();
+    f.End();
+    Require(f.mock.inputs.size() == 1 &&
+                f.decode->next_timestamp == 2 * kTimestampStep,
+            "1280x534 visible target accepts one 1280x544 coded picture");
+    const auto decoded = f.decode->decoded_frames.at(kTimestampStep);
+    Require(decoded->width == 1280 && decoded->height == 534,
+            "private picture retains the target's visible geometry");
+
+    std::vector<uint8_t> pixels(1280 * 544 * 2, 128);
+    for (size_t offset = 0; offset < pixels.size(); offset += 2)
+      pixels[offset] = 73;
+    BC_DTS_PROC_OUT output = {};
+    output.Ybuff = pixels.data();
+    output.YBuffDoneSz = pixels.size() / 4;
+    output.PoutFlags = BC_POUT_FLAGS_PIB_VALID;
+    output.PicInfo.timeStamp = kTimestampStep;
+    output.PicInfo.width = 1280;
+    output.PicInfo.height = 544;
+    Require(ProcessDecodedOutput(&f.driver, f.decode.get(), output) ==
+                VA_STATUS_SUCCESS,
+            "coded hardware output is clipped to the visible target");
+    const auto target = f.driver.surfaces.at(1);
+    Require(target->ready && !target->failed &&
+                target->width == 1280 && target->height == 534 &&
+                target->planes[0][static_cast<size_t>(533) * target->pitch[0]] ==
+                    73,
+            "last visible luma row is complete without exposing coded padding");
+  }
+
+  {
+    Fixture f;
+    SetGeometry(&f, 1296, 16, 1282, 16);
+    f.Begin();
+    f.Parameters();
+    f.End();
+    std::vector<uint8_t> pixels(1296 * 16 * 2, 128);
+    for (size_t offset = 0; offset < pixels.size(); offset += 2)
+      pixels[offset] = 61;
+    BC_DTS_PROC_OUT output = {};
+    output.Ybuff = pixels.data();
+    output.YBuffDoneSz = pixels.size() / 4;
+    output.PoutFlags = BC_POUT_FLAGS_PIB_VALID;
+    output.PicInfo.timeStamp = kTimestampStep;
+    output.PicInfo.width = 1296;
+    output.PicInfo.height = 16;
+    Require(ProcessDecodedOutput(&f.driver, f.decode.get(), output) ==
+                VA_STATUS_SUCCESS &&
+                f.driver.surfaces.at(1)->planes[0][1281] == 61,
+            "even visible width in the final coded macroblock is accepted and clipped");
+  }
+
+  for (unsigned surface_width : {1280U, 1281U}) {
+    Fixture f;
+    SetGeometry(&f, 1296, 16, surface_width, 16);
+    f.Begin();
+    f.Parameters();
+    Require(EndPicture(&f.context, 1) == VA_STATUS_ERROR_INVALID_SURFACE &&
+                f.mock.inputs.empty() && f.decode->decoded_frames.empty(),
+            "a full-macroblock width deficit or odd 4:2:0 crop remains invalid");
+  }
+
+  for (unsigned surface_height : {528U, 533U}) {
+    Fixture f;
+    SetGeometry(&f, 1280, 544, 1280, surface_height);
+    f.Begin();
+    f.Parameters();
+    Require(EndPicture(&f.context, 1) == VA_STATUS_ERROR_INVALID_SURFACE &&
+                f.mock.inputs.empty() && f.decode->decoded_frames.empty() &&
+                f.decode->next_timestamp == kTimestampStep,
+            "a full-macroblock deficit or odd 4:2:0 crop remains invalid");
+  }
+
+  {
+    Fixture f;
+    SetGeometry(&f, 1280, 544, 1280, 534);
+    f.picture.seq_fields.bits.frame_mbs_only_flag = 0;
+    f.Begin();
+    f.Parameters();
+    Require(EndPicture(&f.context, 1) == VA_STATUS_ERROR_INVALID_SURFACE &&
+                f.mock.inputs.empty(),
+            "interlaced 4:2:0 requires a four-row vertical crop unit");
+  }
+
+  {
+    Fixture f;
+    f.Begin();
+    f.Parameters();
+    auto owner = std::make_shared<Surface>();
+    Require(owner->AllocateInternal(nullptr, -1, 16, 16, VA_FOURCC_NV12),
+            "allocate canonical alias owner");
+    f.driver.surfaces[2] = std::move(owner);
+    f.driver.surfaces.at(1)->backing_owner = 2;
+    Require(EndPicture(&f.context, 1) == VA_STATUS_ERROR_INVALID_SURFACE &&
+                f.mock.inputs.empty(),
+            "cropped geometry support does not admit an alias decode target");
+  }
+}
+
 void BufferOrderAndSnapshot() {
   for (bool one_call : {false, true}) {
   std::array<unsigned, 4> order = {0, 1, 2, 3};
@@ -542,6 +662,7 @@ void DirectBackingReassignedBetweenVppBeginAndEnd() {
 int main() {
   unsigned failures = 0;
   const std::pair<const char *, void (*)()> groups[] = {
+    {"visible crop surface geometry", VisibleCropSurfaceGeometry},
     {"buffer ordering and owned snapshot", BufferOrderAndSnapshot},
     {"missing matrix resets flat", MissingResetsFlat},
     {"malformed size and recovery", MalformedSizeAndRecovery},

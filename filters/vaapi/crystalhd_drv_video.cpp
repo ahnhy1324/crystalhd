@@ -553,6 +553,7 @@ struct Surface {
   uint64_t decode_identity = 0;
   SurfaceLayout layout;
   bool direct_decode_eligible = false;
+  unsigned int h264_crop_unit_y = 0;
 
   // Live H.264 pictures may initially use the public target's pixels while
   // keeping independent readiness/identity. Capture or backing reuse promotes
@@ -913,6 +914,27 @@ struct Surface {
     return true;
   }
 };
+
+// vaCreateContext describes H.264 coded geometry, while a render target may
+// expose only the visible rectangle. Accept a smaller target only when the
+// omitted rows or columns are valid 4:2:0 crop units in the final 16x16
+// macroblock. Frame-coded vertical crop units are two rows; interlaced
+// sequences require four. Pixel copies remain bounded by the target's logical
+// dimensions.
+static bool FitsH264CodedGeometry(const Surface &surface,
+                                  unsigned int coded_width,
+                                  unsigned int coded_height,
+                                  unsigned int crop_unit_y) {
+  if (crop_unit_y == 0)
+    return false;
+  const auto fits_axis = [](unsigned int visible, unsigned int coded,
+                            unsigned int crop_unit) {
+    return visible >= coded ||
+           (visible % crop_unit == 0 && Align(visible, 16) == coded);
+  };
+  return fits_axis(surface.width, coded_width, 2) &&
+         fits_axis(surface.height, coded_height, crop_unit_y);
+}
 
 static bool EndFencedWrite(Surface *surface, int timeline,
                           const CpuCacheFlushOps &operations = CpuCacheFlush());
@@ -2073,7 +2095,13 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
         surface->second->decode_picture.lock() == decoded->second &&
         surface->second->vpp_writers == 0));
   const auto fits = [&](const Surface &target) {
-    return target.width >= output_width && target.height >= output_height;
+    if (!IsH264Profile(decode->profile))
+      return target.width >= output_width && target.height >= output_height;
+    const unsigned int crop_unit_y = target.h264_crop_unit_y != 0
+        ? target.h264_crop_unit_y
+        : (decode->picture.seq_fields.bits.frame_mbs_only_flag ? 2U : 4U);
+    return FitsH264CodedGeometry(target, output_width, output_height,
+                                 crop_unit_y);
   };
   const bool valid_frame =
       (output.PoutFlags & BC_POUT_FLAGS_PIB_VALID) != 0 &&
@@ -2453,6 +2481,7 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
   std::array<uint8_t, 4> next_wmv3_metadata = {};
   unsigned int stream_width = decode->width;
   unsigned int stream_height = decode->height;
+  unsigned int h264_crop_unit_y = 0;
   if (decode->IsMpeg2()) {
     const auto &pending = decode->mpeg2_picture;
     const auto &picture = pending.picture;
@@ -2607,16 +2636,26 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
       return VA_STATUS_ERROR_INVALID_PARAMETER;
     }
   } else {
-    // VA contexts and H.264 picture dimensions are coded sizes, not the visible
-    // crop. This backend emits an uncropped SPS and does not support in-context
-    // coded-geometry changes; later submissions must not change output policy
-    // for pictures already pending on the hardware.
+    // VA contexts and H.264 picture dimensions are coded sizes. A target may
+    // expose the smaller visible rectangle when only the final macroblock is
+    // cropped; the uncropped SPS keeps hardware output at coded geometry and
+    // the bounded copy clips it to that target. In-context coded-geometry
+    // changes remain unsupported.
     if ((decode->picture.picture_width_in_mbs_minus1 + 1U) * 16U != decode->width ||
         (decode->picture.picture_height_in_mbs_minus1 + 1U) * 16U != decode->height)
       return VA_STATUS_ERROR_INVALID_PARAMETER;
-    if (target_surface->width < decode->width ||
-        target_surface->height < decode->height)
+    h264_crop_unit_y =
+        decode->picture.seq_fields.bits.frame_mbs_only_flag ? 2U : 4U;
+    if (!FitsH264CodedGeometry(*target_surface, decode->width,
+                               decode->height, h264_crop_unit_y)) {
+      Debug("H.264 target outside coded grid id=%u surface=%ux%u "
+            "aligned=%ux%u coded=%ux%u crop_unit_y=%u",
+            target_id, target_surface->width, target_surface->height,
+            Align(target_surface->width, 16),
+            Align(target_surface->height, 16),
+            decode->width, decode->height, h264_crop_unit_y);
       return VA_STATUS_ERROR_INVALID_SURFACE;
+    }
 
     BeginAccessUnit(&bitstream);
     idr = !decode->slice_data.front().empty() &&
@@ -2665,6 +2704,7 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
                                        target_surface->height,
                                        VA_FOURCC_NV12))
     return VA_STATUS_ERROR_ALLOCATION_FAILED;
+  decoded_frame->h264_crop_unit_y = h264_crop_unit_y;
   if (decode->IsMpeg4() &&
       (decode->Mpeg4CachedPictures() >= kMpeg4ReplayPictures ||
        decode->Mpeg4CachedBytes() > kMpeg4ReplayCacheBytes ||
@@ -2747,6 +2787,7 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
     return FailDecode(driver, decode, "could not preserve reused decode picture");
   decoded_frame->decode_identity = NextDecodeIdentity(driver);
   target_surface->decode_identity = decoded_frame->decode_identity;
+  target_surface->h264_crop_unit_y = h264_crop_unit_y;
   if (direct_picture)
     decoded_frame->direct_backing = target_surface;
   target_surface->decode_picture = decoded_frame;
