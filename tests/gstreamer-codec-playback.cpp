@@ -26,12 +26,43 @@ extern "C" {
 static constexpr guint64 kQueueBytes = 4 * 1024 * 1024;
 static constexpr int kMaxPacketBytes = 16 * 1024 * 1024;
 static constexpr gint64 kTimeoutUs = 25 * G_USEC_PER_SEC;
-static constexpr unsigned int kSeekFixtureFrames = 90;
+static constexpr unsigned int kMpeg4SeekFixtureFrames = 90;
+static constexpr unsigned int kWmv3SeekFixtureFrames = 180;
 static constexpr unsigned int kSeekMinimumFrames = 12;
 static constexpr std::array<GstClockTime, 4> kSeekTargets = {
     2200 * GST_MSECOND, 700 * GST_MSECOND, 1500 * GST_MSECOND, 0};
 
 enum class ExpectedField { kAny, kProgressive, kTopFirst, kBottomFirst };
+enum class SeekFixture { kNone, kMpeg4Asp, kWmv3Main };
+
+static SeekFixture ClassifySeekFixture(AVCodecID codec_id, int profile,
+                                       int width, int height,
+                                       unsigned int expected,
+                                       AVRational rate) {
+  if (codec_id == AV_CODEC_ID_MPEG4 &&
+      profile == FF_PROFILE_MPEG4_ADVANCED_SIMPLE &&
+      expected == kMpeg4SeekFixtureFrames &&
+      rate.num == 30 && rate.den == 1)
+    return SeekFixture::kMpeg4Asp;
+  if (codec_id == AV_CODEC_ID_WMV3 && profile == FF_PROFILE_VC1_MAIN &&
+      width == 320 && height == 240 &&
+      expected == kWmv3SeekFixtureFrames &&
+      rate.num == 30 && rate.den == 1)
+    return SeekFixture::kWmv3Main;
+  return SeekFixture::kNone;
+}
+
+static unsigned int SeekReferenceFrames(SeekFixture fixture) {
+  switch (fixture) {
+    case SeekFixture::kMpeg4Asp:
+      return kMpeg4SeekFixtureFrames;
+    case SeekFixture::kWmv3Main:
+      return kWmv3SeekFixtureFrames;
+    case SeekFixture::kNone:
+    default:
+      return 0;
+  }
+}
 
 struct FrameRecord {
   GstClockTime pts = GST_CLOCK_TIME_NONE;
@@ -434,12 +465,14 @@ static bool StartNextEpoch(GstElement *pipeline, Audit *audit,
   return false;
 }
 
-static bool ValidateSeekEpochs(const std::vector<EpochResult> &epochs) {
-  if (epochs.size() != kSeekTargets.size() + 1)
+static bool ValidateSeekEpochs(const std::vector<EpochResult> &epochs,
+                               unsigned int expected_reference_frames) {
+  if (!expected_reference_frames ||
+      epochs.size() != kSeekTargets.size() + 1)
     return false;
   const EpochResult &reference = epochs.back();
   if (reference.target != 0 ||
-      reference.output.size() != kSeekFixtureFrames)
+      reference.output.size() != expected_reference_frames)
     return false;
   const GstClockTime reference_start = reference.output.front().pts;
   if (!GST_CLOCK_TIME_IS_VALID(reference_start))
@@ -495,31 +528,32 @@ static bool ValidateSeekEpochs(const std::vector<EpochResult> &epochs) {
   return true;
 }
 
-static bool RejectCorruptSeekEpochs(const std::vector<EpochResult> &epochs) {
+static bool RejectCorruptSeekEpochs(const std::vector<EpochResult> &epochs,
+                                    unsigned int expected_reference_frames) {
   if (epochs.size() != kSeekTargets.size() + 1 ||
       epochs[0].output.size() < 3 ||
       epochs[1].output.empty() || epochs[2].output.empty())
     return false;
   auto corrupt = epochs;
   corrupt[0].output[1] = corrupt[0].output[0];
-  if (ValidateSeekEpochs(corrupt))
+  if (ValidateSeekEpochs(corrupt, expected_reference_frames))
     return false;
   corrupt = epochs;
   corrupt[1].output[0].yuy2_sha256[0] =
       corrupt[1].output[0].yuy2_sha256[0] == '0' ? '1' : '0';
-  if (ValidateSeekEpochs(corrupt))
+  if (ValidateSeekEpochs(corrupt, expected_reference_frames))
     return false;
   corrupt = epochs;
   const guint32 mismatched_seqnum = gst_util_seqnum_next();
   for (FrameRecord &frame : corrupt[1].output)
     frame.segment_seqnum = mismatched_seqnum;
-  if (ValidateSeekEpochs(corrupt))
+  if (ValidateSeekEpochs(corrupt, expected_reference_frames))
     return false;
   corrupt = epochs;
   const guint32 repeated_seqnum = corrupt[0].output.front().segment_seqnum;
   for (FrameRecord &frame : corrupt[1].output)
     frame.segment_seqnum = repeated_seqnum;
-  if (ValidateSeekEpochs(corrupt))
+  if (ValidateSeekEpochs(corrupt, expected_reference_frames))
     return false;
   corrupt = epochs;
   const GstClockTime old_last = corrupt[1].output.back().pts;
@@ -537,7 +571,7 @@ static bool RejectCorruptSeekEpochs(const std::vector<EpochResult> &epochs) {
     frame.segment_seqnum = corrupt[1].seek_seqnum;
     frame.segment_start = late_start;
   }
-  return !ValidateSeekEpochs(corrupt);
+  return !ValidateSeekEpochs(corrupt, expected_reference_frames);
 }
 
 static bool WaitForQueue(GstElement *source, GstBus *bus, Deadline *deadline,
@@ -556,7 +590,7 @@ static bool WaitForQueue(GstElement *source, GstBus *bus, Deadline *deadline,
   } while (true);
 }
 
-static bool SeekSchedulerSelfTest() {
+static bool SeekSchedulerSelfTest(unsigned int expected_reference_frames) {
   std::vector<EpochResult> epochs;
   for (size_t index = 0; index <= kSeekTargets.size(); ++index) {
     EpochResult epoch;
@@ -584,13 +618,13 @@ static bool SeekSchedulerSelfTest() {
       if (!event_valid)
         return false;
     }
-    /* qtdemux moves this fixture's negative initial DTS onto a timeline one
-     * frame later. Model that offset so the test distinguishes requested seek
-     * targets from the first PTS in each resulting segment. */
+    /* The MPEG-4 fixture starts one frame after zero. Reuse that nonzero
+     * synthetic origin for both reference lengths so target times are never
+     * mistaken for absolute output PTS. */
     const unsigned int first = 1 + static_cast<unsigned int>(
         gst_util_uint64_scale(epoch.target, 30, GST_SECOND));
     const unsigned int count = index == kSeekTargets.size()
-        ? kSeekFixtureFrames : kSeekMinimumFrames;
+        ? expected_reference_frames : kSeekMinimumFrames;
     for (unsigned int frame = first; frame < first + count; ++frame)
       epoch.output.push_back(FrameRecord{
           gst_util_uint64_scale(frame, GST_SECOND, 30),
@@ -622,8 +656,62 @@ static bool SeekSchedulerSelfTest() {
       transition.pending_seek_seqnum == GST_SEQNUM_INVALID;
   g_checksum_free(transition.checksum);
   g_checksum_free(transition.metadata_checksum);
-  return transition_valid && ValidateSeekEpochs(epochs) &&
-      RejectCorruptSeekEpochs(epochs);
+  return transition_valid &&
+      ValidateSeekEpochs(epochs, expected_reference_frames) &&
+      !ValidateSeekEpochs(epochs, expected_reference_frames + 1) &&
+      RejectCorruptSeekEpochs(epochs, expected_reference_frames);
+}
+
+static bool SeekAdmissionSelfTest() {
+  static constexpr AVRational fps30{30, 1};
+  static constexpr AVRational fps25{25, 1};
+  const auto classify = [](AVCodecID codec_id, int profile, int width,
+                           int height, unsigned int frames, AVRational rate) {
+    return ClassifySeekFixture(codec_id, profile, width, height, frames, rate);
+  };
+  return
+      classify(AV_CODEC_ID_MPEG4, FF_PROFILE_MPEG4_ADVANCED_SIMPLE,
+               640, 360, kMpeg4SeekFixtureFrames, fps30) ==
+          SeekFixture::kMpeg4Asp &&
+      /* Preserve the reviewed MPEG-4 admission rule: profile/count/rate. */
+      classify(AV_CODEC_ID_MPEG4, FF_PROFILE_MPEG4_ADVANCED_SIMPLE,
+               320, 240, kMpeg4SeekFixtureFrames, fps30) ==
+          SeekFixture::kMpeg4Asp &&
+      classify(AV_CODEC_ID_MPEG4, FF_PROFILE_MPEG4_SIMPLE,
+               640, 360, kMpeg4SeekFixtureFrames, fps30) ==
+          SeekFixture::kNone &&
+      classify(AV_CODEC_ID_MPEG4, FF_PROFILE_MPEG4_ADVANCED_SIMPLE,
+               640, 360, kMpeg4SeekFixtureFrames + 1, fps30) ==
+          SeekFixture::kNone &&
+      classify(AV_CODEC_ID_MPEG4, FF_PROFILE_MPEG4_ADVANCED_SIMPLE,
+               640, 360, kMpeg4SeekFixtureFrames, fps25) ==
+          SeekFixture::kNone &&
+      classify(AV_CODEC_ID_WMV3, FF_PROFILE_VC1_MAIN,
+               320, 240, kWmv3SeekFixtureFrames, fps30) ==
+          SeekFixture::kWmv3Main &&
+      classify(AV_CODEC_ID_WMV3, FF_PROFILE_VC1_SIMPLE,
+               320, 240, kWmv3SeekFixtureFrames, fps30) ==
+          SeekFixture::kNone &&
+      classify(AV_CODEC_ID_WMV3, FF_PROFILE_VC1_MAIN,
+               640, 360, kWmv3SeekFixtureFrames, fps30) ==
+          SeekFixture::kNone &&
+      classify(AV_CODEC_ID_WMV3, FF_PROFILE_VC1_MAIN,
+               320, 241, kWmv3SeekFixtureFrames, fps30) ==
+          SeekFixture::kNone &&
+      classify(AV_CODEC_ID_WMV3, FF_PROFILE_VC1_MAIN,
+               320, 240, kWmv3SeekFixtureFrames - 1, fps30) ==
+          SeekFixture::kNone &&
+      classify(AV_CODEC_ID_WMV3, FF_PROFILE_VC1_MAIN,
+               320, 240, kWmv3SeekFixtureFrames, fps25) ==
+          SeekFixture::kNone &&
+      classify(AV_CODEC_ID_VC1, FF_PROFILE_VC1_MAIN,
+               320, 240, kWmv3SeekFixtureFrames, fps30) ==
+          SeekFixture::kNone &&
+      SeekReferenceFrames(SeekFixture::kMpeg4Asp) ==
+          kMpeg4SeekFixtureFrames &&
+      SeekReferenceFrames(SeekFixture::kWmv3Main) ==
+          kWmv3SeekFixtureFrames &&
+      SeekReferenceFrames(SeekFixture::kNone) == 0;
 }
 
 static int SelfTest() {
@@ -745,7 +833,9 @@ static int SelfTest() {
   ok = ok && DeadlineExpired(&expired) && Remaining(expired) == 0 &&
       ClockTime(AV_NOPTS_VALUE, AVRational{1, 25}) == GST_CLOCK_TIME_NONE &&
       ClockTime(1, AVRational{1, 25}) == GST_SECOND / 25 &&
-      SeekSchedulerSelfTest();
+      SeekAdmissionSelfTest() &&
+      SeekSchedulerSelfTest(kMpeg4SeekFixtureFrames) &&
+      SeekSchedulerSelfTest(kWmv3SeekFixtureFrames);
   std::printf("Codec probe hardware-free audit self-test: %s\n", ok ? "passed" : "failed");
   if (message)
     gst_message_unref(message);
@@ -811,19 +901,30 @@ int main(int argc, char **argv) {
     return 2;
   }
   AVRational rate = av_guess_frame_rate(format, stream, nullptr);
-  if (seek_mode &&
-      (!mpeg4_asp || expected != kSeekFixtureFrames ||
-       rate.num != 30 || rate.den != 1)) {
+  const SeekFixture seek_fixture = seek_mode
+      ? ClassifySeekFixture(parameters->codec_id, parameters->profile,
+                            parameters->width, parameters->height,
+                            static_cast<unsigned int>(expected), rate)
+      : SeekFixture::kNone;
+  const unsigned int seek_reference_frames = SeekReferenceFrames(seek_fixture);
+  if (seek_mode && seek_fixture == SeekFixture::kNone) {
     std::fprintf(stderr,
-                 "--seek requires the 90-picture, 30-fps MPEG-4 ASP fixture\n");
+                 "--seek requires the 90-picture, 30-fps MPEG-4 ASP fixture "
+                 "or the 180-picture, 320x240, 30-fps WMV3 Main fixture\n");
     avformat_close_input(&format);
     return 2;
   }
   GError *error = nullptr;
   const char *description = seek_mode
-      ? "filesrc name=source ! qtdemux ! mpeg4videoparse ! crystalhddec ! "
-        "fakesink name=sink sync=true qos=false max-lateness=-1 "
-        "enable-last-sample=false signal-handoffs=true"
+      ? (seek_fixture == SeekFixture::kWmv3Main
+          ? "filesrc name=source ! asfdemux name=demux "
+            "demux.video_0 ! queue ! crystalhddec ! "
+            "fakesink name=sink sync=true qos=false max-lateness=-1 "
+            "enable-last-sample=false signal-handoffs=true"
+          : "filesrc name=source ! qtdemux ! mpeg4videoparse ! "
+            "crystalhddec ! fakesink name=sink sync=true qos=false "
+            "max-lateness=-1 enable-last-sample=false "
+            "signal-handoffs=true")
       : "appsrc name=source format=time is-live=false ! crystalhddec ! "
         "fakesink name=sink sync=false enable-last-sample=false "
         "signal-handoffs=true";
@@ -987,10 +1088,14 @@ int main(int argc, char **argv) {
       ok = false;
     }
   }
-  const bool seek_epochs_valid = !seek_mode || ValidateSeekEpochs(seek_epochs);
+  const bool seek_epochs_valid = !seek_mode ||
+      ValidateSeekEpochs(seek_epochs, seek_reference_frames);
   if (!seek_epochs_valid) {
     std::fprintf(stderr,
-                 "MPEG-4 seek epochs contain stale, duplicate, mismatched or incorrectly segmented output\n");
+                 "%s seek epochs contain stale, duplicate, mismatched or "
+                 "incorrectly segmented output (expected %u-frame reference)\n",
+                 mpeg4 ? "MPEG-4 ASP" : "WMV3 Main",
+                 seek_reference_frames);
     ok = false;
   }
   const char *codec_name = mpeg4 ? (mpeg4_simple ? "MPEG-4 Simple" : "MPEG-4 ASP")
