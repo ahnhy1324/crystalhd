@@ -1445,6 +1445,7 @@ static void ExperimentalReadyRemapStateMachine() {
     requested->experimental_write_context = 7;
     requested->experimental_write_generation = 3;
     requested->experimental_write_submission_ordinal = 2;
+    requested->experimental_submitted_at_ns = MonotonicNowNs();
     requested->decode_picture = requested_picture;
     memset(requested->planes[0], 99, requested->storage.size());
 
@@ -1666,6 +1667,8 @@ static void ExperimentalReadyRemapStateMachine() {
     surface->trace_generation = 4;
     surface->trace_submission_ordinal = 3;
     surface->experimental_presentation = true;
+    surface->experimental_submitted_at_ns = 1;
+    surface->experimental_presentation_at_ns = 1;
     surface->presentation_payload_token = 200000;
     surface->presentation_payload_decode_identity = 49;
     surface->presentation_payload_submission_ordinal = 2;
@@ -1721,6 +1724,8 @@ static void ExperimentalReadyRemapStateMachine() {
     surface->trace_decode_identity = 61;
     surface->trace_submission_ordinal = 4;
     surface->experimental_presentation = true;
+    surface->experimental_submitted_at_ns = 1;
+    surface->experimental_presentation_at_ns = 1;
     surface->presentation_payload_token = 300000;
     surface->presentation_payload_decode_identity = 60;
     surface->presentation_payload_submission_ordinal = 3;
@@ -1770,8 +1775,16 @@ static void ExperimentalReadyRemapGate() {
   SavedEnvironment live("CRYSTALHD_VAAPI_LIVE_H264");
   SavedEnvironment low_latency("CRYSTALHD_VAAPI_LOW_LATENCY_H264");
   SavedEnvironment remap("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP");
+  SavedEnvironment delay("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_DELAY_US");
+  SavedEnvironment policy("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_POLICY");
+  struct GateState {
+    bool enabled;
+    bool latest;
+    uint64_t delay_ns;
+  };
   const auto create = [](const char *live_value, const char *low_value,
-                         const char *remap_value, VAProfile profile) {
+                         const char *remap_value, const char *delay_value,
+                         const char *policy_value, VAProfile profile) {
     const auto assign = [](const char *name, const char *value) {
       if (value != nullptr)
         setenv(name, value, 1);
@@ -1781,6 +1794,8 @@ static void ExperimentalReadyRemapGate() {
     assign("CRYSTALHD_VAAPI_LIVE_H264", live_value);
     assign("CRYSTALHD_VAAPI_LOW_LATENCY_H264", low_value);
     assign("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP", remap_value);
+    assign("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_DELAY_US", delay_value);
+    assign("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_POLICY", policy_value);
     Driver driver{-1};
     driver.configs[1] = {profile, VAEntrypointVLD};
     VADriverContext context = {};
@@ -1789,16 +1804,73 @@ static void ExperimentalReadyRemapGate() {
     Require(CreateContext(&context, 1, 16, 16, 0, nullptr, 0,
                           &context_id) == VA_STATUS_SUCCESS,
             "create environment-gated remap context");
-    return driver.contexts.at(context_id)->experimental_ready_remap;
+    const std::shared_ptr<DecodeContext> decode =
+        driver.contexts.at(context_id);
+    return GateState{decode->experimental_ready_remap,
+                     decode->experimental_ready_latest,
+                     decode->experimental_ready_delay_ns};
   };
 
-  Require(!create(nullptr, nullptr, nullptr, VAProfileH264Main) &&
-              !create(nullptr, nullptr, "1", VAProfileH264Main) &&
-              !create("1", "1", "0", VAProfileH264Main) &&
-              !create("1", "1", "yes", VAProfileH264Main) &&
-              create("1", "1", "1", VAProfileH264Main) &&
-              !create("1", "1", "1", VAProfileMPEG2Main),
+  Require(!create(nullptr, nullptr, nullptr, nullptr, nullptr,
+                  VAProfileH264Main).enabled &&
+              !create(nullptr, nullptr, "1", nullptr, nullptr,
+                      VAProfileH264Main).enabled &&
+              !create("1", "1", "0", nullptr, nullptr,
+                      VAProfileH264Main).enabled &&
+              !create("1", "1", "yes", nullptr, nullptr,
+                      VAProfileH264Main).enabled &&
+              create("1", "1", "1", nullptr, nullptr,
+                     VAProfileH264Main).enabled &&
+              !create("1", "1", "1", nullptr, nullptr,
+                      VAProfileMPEG2Main).enabled,
           "remap is exact opt-in and restricted to live low-latency H.264");
+
+  const GateState delayed = create("1", "1", "1", "16667", "previous",
+                                   VAProfileH264Main);
+  const GateState latest = create("1", "1", "1", "33333", "latest",
+                                  VAProfileH264Main);
+  const GateState immediate = create("1", "1", "1", "0", "previous",
+                                     VAProfileH264Main);
+  const GateState maximum = create("1", "1", "1", "50000", "latest",
+                                   VAProfileH264Main);
+  Require(immediate.enabled && !immediate.latest &&
+              immediate.delay_ns == 0 &&
+              delayed.enabled && !delayed.latest &&
+              delayed.delay_ns == kExperimentalDelay16Ns &&
+              latest.enabled && latest.latest &&
+              latest.delay_ns == kExperimentalDelay33Ns &&
+              maximum.enabled && maximum.latest &&
+              maximum.delay_ns == kExperimentalDelay50Ns &&
+              !create("1", "1", "1", "16.67", "previous",
+                      VAProfileH264Main).enabled &&
+              !create("1", "1", "1", "50001", "previous",
+                      VAProfileH264Main).enabled &&
+              !create("1", "1", "1", "50000", "newest",
+                      VAProfileH264Main).enabled,
+          "experimental delay and selection policy are bounded exact opt-ins");
+  for (const auto &configured :
+       {std::pair<const char *, uint64_t>{"0", 0},
+        {"16667", kExperimentalDelay16Ns},
+        {"33333", kExperimentalDelay33Ns},
+        {"50000", kExperimentalDelay50Ns}}) {
+    for (const char *configured_policy : {"previous", "latest"}) {
+      const GateState state = create("1", "1", "1", configured.first,
+                                     configured_policy, VAProfileH264Main);
+      Require(state.enabled &&
+                  state.latest ==
+                      (strcmp(configured_policy, "latest") == 0) &&
+                  state.delay_ns == configured.second,
+              "every policy and delay combination reaches its requested experimental state");
+    }
+  }
+
+  DecodeContext closing;
+  closing.experimental_last_delivered_ordinal = 9;
+  Require(closing.CloseHardware() == BC_STS_SUCCESS &&
+              closing.experimental_last_delivered_ordinal == 9 &&
+              closing.Close() == BC_STS_SUCCESS &&
+              closing.experimental_last_delivered_ordinal == 0,
+          "hardware reopen preserves and full close resets the experimental delivery watermark");
 
   Driver driver{-1};
   DecodeContext decode;
@@ -1811,6 +1883,202 @@ static void ExperimentalReadyRemapGate() {
   Require(SubmitPicture(&driver, &decode, VAProfileH264Main) ==
               VA_STATUS_ERROR_UNSUPPORTED_PROFILE,
           "experimental remap fails closed before accepting a B slice");
+}
+
+static void ExperimentalPolicyDelayMatrix() {
+  const std::array<std::pair<uint64_t, const char *>, 4> delays = {{
+      {0, "0"},
+      {kExperimentalDelay16Ns, "16667"},
+      {kExperimentalDelay33Ns, "33333"},
+      {kExperimentalDelay50Ns, "50000"},
+  }};
+  for (bool latest : {false, true}) {
+    for (const auto &configured : delays) {
+      Driver driver{-1};
+      auto decode = std::make_shared<DecodeContext>();
+      decode->id = 1;
+      decode->generation = 1;
+      decode->experimental_ready_remap = true;
+      decode->experimental_ready_latest = latest;
+      decode->experimental_ready_delay_ns = configured.first;
+      driver.contexts[1] = decode;
+
+      auto requested = std::make_shared<Surface>();
+      Require(requested->AllocateInternal(nullptr, -1, 16, 16,
+                                          VA_FOURCC_NV12),
+              "allocate policy-delay request surface");
+      requested->id = 1;
+      requested->expected_timestamp = 400000;
+      requested->decode_identity = requested->trace_decode_identity = 704;
+      requested->trace_context = 1;
+      requested->trace_generation = 1;
+      requested->trace_submission_ordinal = 4;
+      requested->experimental_write_lease = true;
+      requested->experimental_write_context = 1;
+      requested->experimental_write_generation = 1;
+      requested->experimental_write_submission_ordinal = 4;
+      requested->experimental_submitted_at_ns = MonotonicNowNs();
+      driver.surfaces[1] = requested;
+
+      auto candidate = [&](uint64_t ordinal) {
+        auto surface = std::make_shared<Surface>();
+        Require(surface->AllocateInternal(nullptr, -1, 16, 16,
+                                          VA_FOURCC_NV12),
+                "allocate policy-delay candidate surface");
+        surface->expected_timestamp = surface->frame_timestamp =
+            ordinal * 100000;
+        surface->ready = true;
+        surface->decode_identity = surface->trace_decode_identity =
+            700 + ordinal;
+        surface->trace_context = 1;
+        surface->trace_generation = 1;
+        surface->trace_submission_ordinal = ordinal;
+        memset(surface->planes[0], static_cast<int>(ordinal),
+               surface->storage.size());
+        decode->decoded_frames[surface->expected_timestamp] = surface;
+        QueueExperimentalReady(&driver, decode.get(), surface);
+        surface->experimental_ready_at_ns =
+            requested->experimental_submitted_at_ns;
+        return surface;
+      };
+      const auto second = candidate(2);
+      const auto first = candidate(1);
+
+      if (configured.first != 0)
+        Require(!SelectExperimentalReady(
+                    *decode, *requested,
+                    requested->experimental_submitted_at_ns +
+                        configured.first - 1),
+                "every nonzero delay rejects selection one nanosecond before its threshold");
+      const auto before_previous = SelectExperimentalReady(
+          *decode, *requested,
+          requested->experimental_submitted_at_ns + configured.first);
+      Require(latest ? before_previous == second : !before_previous,
+              "latest selects the highest shuffled older candidate while previous rejects N-2 when N-1 is absent");
+
+      const auto previous = candidate(3);
+      Require(SelectExperimentalReady(
+                  *decode, *requested,
+                  requested->experimental_submitted_at_ns +
+                      configured.first) == previous,
+              "every policy-delay combination selects N-1 at the threshold");
+
+      const uint64_t commit_start = MonotonicNowNs();
+      requested->experimental_submitted_at_ns =
+          commit_start - configured.first;
+      bool committed = false;
+      Require(TryExperimentalPresentation(&driver, requested, &committed) ==
+                      VA_STATUS_SUCCESS &&
+                  committed &&
+                  ExperimentalPresentationReadable(&driver,
+                                                    requested.get()) &&
+                  requested->presentation_payload_submission_ordinal ==
+                      3 &&
+                  requested->planes[0][0] == 3 &&
+                  requested->experimental_presentation_at_ns >=
+                      requested->experimental_submitted_at_ns +
+                          configured.first &&
+                  decode->experimental_ready.empty() &&
+                  decode->decoded_frames.empty() &&
+                  !first->experimental_ready_queued &&
+                  !second->experimental_ready_queued &&
+                  !previous->experimental_ready_queued,
+              "every policy-delay combination commits N-1 only after its threshold and retires older candidates");
+    }
+  }
+}
+
+static void ExperimentalRemapCpuOwnershipFailures() {
+  const std::array<uint64_t, 4> failures = {
+      DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ,
+      DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE,
+      DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE,
+      DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ,
+  };
+  for (uint64_t failure : failures) {
+    Driver driver{-1};
+    auto decode = std::make_shared<DecodeContext>();
+    decode->id = 1;
+    decode->generation = 1;
+    decode->experimental_ready_remap = true;
+    driver.contexts[1] = decode;
+
+    auto source = std::make_shared<Surface>();
+    auto requested = std::make_shared<Surface>();
+    for (const auto &surface : {source, requested})
+      Require(surface->AllocateInternal(nullptr, -1, 16, 16,
+                                        VA_FOURCC_NV12),
+              "allocate remap CPU-ownership failure surface");
+    source->expected_timestamp = source->frame_timestamp = 100000;
+    source->ready = true;
+    source->decode_identity = source->trace_decode_identity = 801;
+    source->trace_context = 1;
+    source->trace_generation = 1;
+    source->trace_submission_ordinal = 1;
+    memset(source->planes[0], 1, source->storage.size());
+    decode->decoded_frames[source->expected_timestamp] = source;
+    QueueExperimentalReady(&driver, decode.get(), source);
+
+    requested->id = 1;
+    requested->expected_timestamp = 200000;
+    requested->decode_identity = requested->trace_decode_identity = 802;
+    requested->trace_context = 1;
+    requested->trace_generation = 1;
+    requested->trace_submission_ordinal = 2;
+    requested->experimental_write_lease = true;
+    requested->experimental_write_context = 1;
+    requested->experimental_write_generation = 1;
+    requested->experimental_write_submission_ordinal = 2;
+    requested->experimental_submitted_at_ns = MonotonicNowNs();
+    driver.surfaces[1] = requested;
+
+    const int fd = memfd_create("crystalhd-remap-cpu-test", MFD_CLOEXEC);
+    Require(fd >= 0, "allocate remap CPU-ownership mock fd");
+    source->object_fds.push_back(fd);
+    requested->object_fds.push_back(fd);
+    mock_sync_fd = fd;
+    mock_failed_sync_flags = failure;
+    mock_sync_calls.clear();
+
+    bool committed = true;
+    const VAStatus result =
+        TryExperimentalPresentation(&driver, requested, &committed);
+    const std::vector<uint64_t> start_read = {
+        DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ};
+    const std::vector<uint64_t> start_write = {
+        DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ,
+        DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE,
+        DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ};
+    const std::vector<uint64_t> end_access = {
+        DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ,
+        DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE,
+        DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE,
+        DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ};
+    const auto &expected_calls =
+        failure == (DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ)
+            ? start_read
+            : failure == (DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE)
+                  ? start_write
+                  : end_access;
+    Require(result == VA_STATUS_ERROR_OPERATION_FAILED && !committed &&
+                !requested->experimental_presentation &&
+                requested->experimental_write_lease &&
+                decode->experimental_last_delivered_ordinal == 0 &&
+                decode->experimental_ready.size() == 1 &&
+                decode->experimental_ready.front() == source &&
+                source->experimental_ready_queued &&
+                decode->decoded_frames.size() == 1 &&
+                decode->decoded_frames.at(100000) == source &&
+                mock_sync_calls == expected_calls,
+            "remap CPU-ownership failure releases acquired access without committing or retiring READY state");
+
+    source->object_fds.clear();
+    requested->object_fds.clear();
+    close(fd);
+    mock_sync_fd = -1;
+    mock_failed_sync_flags = UINT64_MAX;
+    mock_sync_calls.clear();
+  }
 }
 
 static void ExperimentalReadyRemapFailClosedRaces() {
@@ -1845,6 +2113,7 @@ static void ExperimentalReadyRemapFailClosedRaces() {
     requested->experimental_write_context = 4;
     requested->experimental_write_generation = 2;
     requested->experimental_write_submission_ordinal = 2;
+    requested->experimental_submitted_at_ns = MonotonicNowNs();
     decode->decoded_frames[payload->expected_timestamp] = payload;
     driver.surfaces[2] = requested;
     QueueExperimentalReady(&driver, decode.get(), payload);
@@ -1963,6 +2232,9 @@ static void ExperimentalReadyRemapFailClosedRaces() {
     decode.live_h264 = true;
     decode.low_latency_h264 = true;
     decode.experimental_ready_remap = true;
+    decode.experimental_ready_latest = true;
+    decode.experimental_ready_delay_ns = kExperimentalDelay50Ns;
+    decode.experimental_last_delivered_ordinal = 7;
     Surface target;
     target.experimental_write_lease = true;
     target.experimental_write_context = 7;
@@ -1972,6 +2244,9 @@ static void ExperimentalReadyRemapFailClosedRaces() {
                     VA_STATUS_ERROR_OPERATION_FAILED &&
                 decode.is_70012 && !decode.low_latency_h264 &&
                 !decode.experimental_ready_remap &&
+                !decode.experimental_ready_latest &&
+                decode.experimental_ready_delay_ns == 0 &&
+                decode.experimental_last_delivered_ordinal == 0 &&
                 !target.experimental_write_lease &&
                 io.open_attempts == 1 && !io.invalid &&
                 std::count(io.events.begin(), io.events.end(),
@@ -2111,11 +2386,30 @@ static void ExperimentalReadyRemapBounds() {
           "selection rejects a cross-generation READY picture");
   requested->trace_generation = 6;
   requested->trace_submission_ordinal = 6;
+  requested->experimental_write_submission_ordinal = 6;
   Require(!SelectExperimentalReady(*decode, *requested, now),
           "selection rejects drift greater than one submission");
+  decode->experimental_ready_latest = true;
+  decode->experimental_ready_delay_ns = kExperimentalDelay16Ns;
+  requested->experimental_submitted_at_ns = now;
+  Require(!SelectExperimentalReady(*decode, *requested,
+                                   now + kExperimentalDelay16Ns - 1),
+          "latest-ready selection waits for the configured delay threshold");
+  Require(SelectExperimentalReady(*decode, *requested,
+                                  now + kExperimentalDelay16Ns) ==
+              pictures[3],
+          "latest-ready selects the newest eligible ordinal at the threshold");
+  decode->experimental_last_delivered_ordinal = 4;
+  Require(!SelectExperimentalReady(*decode, *requested,
+                                   now + kExperimentalDelay16Ns),
+          "latest-ready cannot move behind the last delivered identity");
+  decode->experimental_last_delivered_ordinal = 0;
+  decode->experimental_ready_latest = false;
+  decode->experimental_ready_delay_ns = 0;
 
   requested->id = 9;
   requested->trace_submission_ordinal = 5;
+  requested->experimental_write_submission_ordinal = 5;
   requested->trace_decode_identity = requested->decode_identity = 209;
   driver.surfaces[9] = requested;
   for (VASurfaceID id : {7U}) {
@@ -2192,6 +2486,193 @@ static void ExperimentalReadyRemapBounds() {
                         decode->experimental_ready.end(), next_candidate) !=
                   decode->experimental_ready.end(),
           "two active public presentation slots force exact fallback");
+}
+
+static void ExperimentalLatestReadyCommitOrder() {
+  TraceEnvironment environment;
+  const int trace_fd =
+      memfd_create("crystalhd-latest-ready-trace", MFD_CLOEXEC);
+  Require(trace_fd >= 0, "allocate latest-ready trace sink");
+  {
+    Driver driver{-1, trace_fd};
+    auto decode = std::make_shared<DecodeContext>();
+    decode->id = 5;
+    decode->generation = 2;
+    decode->experimental_ready_remap = true;
+    decode->experimental_ready_latest = true;
+    driver.contexts[5] = decode;
+    const auto candidate = [&](uint64_t ordinal) {
+      auto picture = std::make_shared<Surface>();
+      Require(picture->AllocateInternal(nullptr, -1, 16, 16,
+                                        VA_FOURCC_NV12),
+              "allocate latest-ready candidate");
+      picture->expected_timestamp = picture->frame_timestamp =
+          ordinal * 100000;
+      picture->ready = true;
+      picture->decode_identity = picture->trace_decode_identity =
+          100 + ordinal;
+      picture->trace_context = 5;
+      picture->trace_generation = 2;
+      picture->trace_submission_ordinal = ordinal;
+      memset(picture->planes[0], static_cast<int>(ordinal),
+             picture->storage.size());
+      decode->decoded_frames[picture->expected_timestamp] = picture;
+      QueueExperimentalReady(&driver, decode.get(), picture);
+      return picture;
+    };
+    const auto first = candidate(1);
+    const auto third = candidate(3);
+    const auto second = candidate(2);
+
+    auto requested = std::make_shared<Surface>();
+    Require(requested->AllocateInternal(nullptr, -1, 16, 16,
+                                        VA_FOURCC_NV12),
+            "allocate latest-ready request");
+    requested->id = 5;
+    requested->expected_timestamp = 500000;
+    requested->decode_identity = requested->trace_decode_identity = 205;
+    requested->trace_context = 5;
+    requested->trace_generation = 2;
+    requested->trace_submission_ordinal = 5;
+    requested->experimental_write_lease = true;
+    requested->experimental_write_context = 5;
+    requested->experimental_write_generation = 2;
+    requested->experimental_write_submission_ordinal = 5;
+    requested->experimental_submitted_at_ns = MonotonicNowNs();
+    driver.surfaces[5] = requested;
+
+    bool committed = false;
+    Require(TryExperimentalPresentation(&driver, requested, &committed) ==
+                    VA_STATUS_SUCCESS &&
+                committed &&
+                ExperimentalPresentationReadable(&driver, requested.get()) &&
+                requested->presentation_payload_submission_ordinal == 3 &&
+                requested->planes[0][0] == 3 &&
+                decode->experimental_last_delivered_ordinal == 3 &&
+                decode->experimental_ready.empty() &&
+                decode->decoded_frames.empty() &&
+                !first->experimental_ready_queued &&
+                !second->experimental_ready_queued &&
+                !third->experimental_ready_queued,
+            "latest-ready commits the newest ordinal and retires older READY state");
+
+    const auto fourth = candidate(4);
+    const auto sixth = candidate(6);
+    const auto fifth = candidate(5);
+    auto exact = std::make_shared<Surface>();
+    exact->expected_timestamp = exact->frame_timestamp = 700000;
+    exact->ready = true;
+    exact->decode_identity = exact->trace_decode_identity = 107;
+    exact->trace_context = 5;
+    exact->trace_generation = 2;
+    exact->trace_submission_ordinal = 7;
+    ConsumeExperimentalExact(&driver, exact);
+    Require(decode->experimental_last_delivered_ordinal == 7 &&
+                decode->experimental_ready.empty() &&
+                decode->decoded_frames.empty() &&
+                !fourth->experimental_ready_queued &&
+                !fifth->experimental_ready_queued &&
+                !sixth->experimental_ready_queued,
+            "exact delivery advances the watermark and retires every older READY candidate");
+
+    const auto late = candidate(2);
+    Require(!late->experimental_ready_queued &&
+                decode->experimental_ready.empty() &&
+                decode->decoded_frames.empty(),
+            "late output behind the delivered watermark cannot re-enter or leak READY state");
+
+    const auto eighth = candidate(8);
+    auto out_of_order_exact = std::make_shared<Surface>();
+    out_of_order_exact->expected_timestamp =
+        out_of_order_exact->frame_timestamp = 600000;
+    out_of_order_exact->ready = true;
+    out_of_order_exact->decode_identity =
+        out_of_order_exact->trace_decode_identity = 106;
+    out_of_order_exact->trace_context = 5;
+    out_of_order_exact->trace_generation = 2;
+    out_of_order_exact->trace_submission_ordinal = 6;
+    ConsumeExperimentalExact(&driver, out_of_order_exact);
+    Require(decode->experimental_last_delivered_ordinal == 7 &&
+                decode->experimental_ready.size() == 1 &&
+                decode->experimental_ready.front() == eighth &&
+                eighth->experimental_ready_queued &&
+                decode->decoded_frames.count(eighth->expected_timestamp) == 1,
+            "out-of-order exact sync cannot move the watermark backward or retire newer READY state");
+    auto ninth = std::make_shared<Surface>();
+    ninth->expected_timestamp = ninth->frame_timestamp = 900000;
+    ninth->ready = true;
+    ninth->decode_identity = ninth->trace_decode_identity = 109;
+    ninth->trace_context = 5;
+    ninth->trace_generation = 2;
+    ninth->trace_submission_ordinal = 9;
+    ConsumeExperimentalExact(&driver, ninth);
+    Require(decode->experimental_last_delivered_ordinal == 9 &&
+                decode->experimental_ready.empty() &&
+                decode->decoded_frames.empty() &&
+                !eighth->experimental_ready_queued,
+            "a later exact sync advances the watermark and retires intervening READY state");
+
+    auto delayed = std::make_shared<DecodeContext>();
+    delayed->id = 6;
+    delayed->generation = 1;
+    delayed->experimental_ready_remap = true;
+    delayed->experimental_ready_latest = true;
+    delayed->experimental_ready_delay_ns = kExperimentalDelay16Ns;
+    driver.contexts[6] = delayed;
+    auto delayed_payload = std::make_shared<Surface>();
+    auto delayed_request = std::make_shared<Surface>();
+    for (const auto &surface : {delayed_payload, delayed_request})
+      Require(surface->AllocateInternal(nullptr, -1, 16, 16,
+                                        VA_FOURCC_NV12),
+              "allocate delayed latest-ready state");
+    delayed_payload->expected_timestamp =
+        delayed_payload->frame_timestamp = 100000;
+    delayed_payload->ready = true;
+    delayed_payload->decode_identity =
+        delayed_payload->trace_decode_identity = 301;
+    delayed_payload->trace_context = 6;
+    delayed_payload->trace_generation = 1;
+    delayed_payload->trace_submission_ordinal = 1;
+    delayed->decoded_frames[100000] = delayed_payload;
+    QueueExperimentalReady(&driver, delayed.get(), delayed_payload);
+    delayed_request->id = 6;
+    delayed_request->expected_timestamp = 300000;
+    delayed_request->decode_identity =
+        delayed_request->trace_decode_identity = 303;
+    delayed_request->trace_context = 6;
+    delayed_request->trace_generation = 1;
+    delayed_request->trace_submission_ordinal = 3;
+    delayed_request->experimental_write_lease = true;
+    delayed_request->experimental_write_context = 6;
+    delayed_request->experimental_write_generation = 1;
+    delayed_request->experimental_write_submission_ordinal = 3;
+    delayed_request->experimental_submitted_at_ns =
+        MonotonicNowNs() + kExperimentalDelay16Ns;
+    driver.surfaces[6] = delayed_request;
+    committed = true;
+    Require(TryExperimentalPresentation(&driver, delayed_request,
+                                        &committed) == VA_STATUS_SUCCESS &&
+                !committed &&
+                !ExperimentalPresentationReadable(&driver,
+                                                  delayed_request.get()),
+            "real commit path rejects a request before its delay threshold");
+    delayed_request->experimental_submitted_at_ns =
+        MonotonicNowNs() - kExperimentalDelay16Ns;
+    Require(TryExperimentalPresentation(&driver, delayed_request,
+                                        &committed) == VA_STATUS_SUCCESS &&
+                committed &&
+                ExperimentalPresentationReadable(&driver,
+                                                  delayed_request.get()) &&
+                delayed_request->presentation_payload_submission_ordinal == 1,
+            "real commit path accepts latest-ready drift after the delay threshold");
+  }
+  const std::string trace = ReadTraceFd(trace_fd);
+  close(trace_fd);
+  const std::string commit = FindTraceEvent(trace, "presentation_commit");
+  Require(TraceFieldIs(commit, "submission_ordinal", 5) &&
+              TraceFieldIs(commit, "payload_submission_ordinal", 3) &&
+              TraceSignedFieldIs(commit, "submission_drift", 2),
+          "latest-ready trace records the requested-versus-payload drift");
 }
 
 static void DirectOutputOwnershipAndExport() {
@@ -2860,6 +3341,7 @@ static void ConcurrentSyncObservesExperimentalPresentation() {
     requested->experimental_write_context = 1;
     requested->experimental_write_generation = 1;
     requested->experimental_write_submission_ordinal = 2;
+    requested->experimental_submitted_at_ns = MonotonicNowNs();
     fixture.decoder->pending.erase(kTimestampStep);
     fixture.decoder->surface_timestamps.erase(fixture.held[0].get());
 
@@ -2917,6 +3399,7 @@ static void ConcurrentSyncObservesExperimentalPresentation() {
     requested->experimental_write_context = 1;
     requested->experimental_write_generation = 1;
     requested->experimental_write_submission_ordinal = 2;
+    requested->experimental_submitted_at_ns = MonotonicNowNs();
 
     Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
                     VA_STATUS_SUCCESS &&
@@ -2945,6 +3428,7 @@ static void ConcurrentSyncObservesExperimentalPresentation() {
   fixture.decoder->id = 1;
   fixture.decoder->generation = 1;
   fixture.decoder->experimental_ready_remap = true;
+  fixture.decoder->experimental_ready_delay_ns = kExperimentalDelay50Ns;
   fixture.decoder->live_h264 = true;
   fixture.decoder->low_latency_h264 = true;
 
@@ -2965,6 +3449,7 @@ static void ConcurrentSyncObservesExperimentalPresentation() {
   requested->experimental_write_context = 1;
   requested->experimental_write_generation = 1;
   requested->experimental_write_submission_ordinal = 2;
+  requested->experimental_submitted_at_ns = MonotonicNowNs();
 
   auto replacement = std::make_shared<DecodeContext>();
   replacement->id = 2;
@@ -2973,6 +3458,7 @@ static void ConcurrentSyncObservesExperimentalPresentation() {
   replacement->device = fixture.io.handle();
   replacement->decoder_open = replacement->decoder_started = true;
   replacement->experimental_ready_remap = true;
+  replacement->experimental_ready_delay_ns = kExperimentalDelay50Ns;
   replacement->live_h264 = true;
   replacement->low_latency_h264 = true;
   fixture.driver.contexts[2] = replacement;
@@ -3000,6 +3486,7 @@ static void ConcurrentSyncObservesExperimentalPresentation() {
     requested->experimental_write_context = 2;
     requested->experimental_write_generation = 1;
     requested->experimental_write_submission_ordinal = 2;
+    requested->experimental_submitted_at_ns = MonotonicNowNs();
     QueueExperimentalReady(&fixture.driver, replacement.get(), candidate);
   };
 
@@ -3014,6 +3501,196 @@ static void ConcurrentSyncObservesExperimentalPresentation() {
               replacement->experimental_ready.size() == 1 &&
               replacement->experimental_ready.front() == candidate,
           "obsolete waiter cannot mutate an equal-token replacement binding");
+}
+
+static void ExperimentalDelayedSyncThreshold() {
+  {
+    TeardownFixture fixture(3);
+    fixture.decoder->id = 1;
+    fixture.decoder->generation = 1;
+    fixture.decoder->experimental_ready_remap = true;
+    fixture.decoder->experimental_ready_latest = true;
+    fixture.decoder->experimental_ready_delay_ns = kExperimentalDelay16Ns;
+    fixture.decoder->live_h264 = true;
+    fixture.decoder->low_latency_h264 = true;
+
+    const auto payload =
+        fixture.decoder->decoded_frames.at(kTimestampStep);
+    const auto requested_picture =
+        fixture.decoder->decoded_frames.at(3 * kTimestampStep);
+    const auto requested = fixture.held[2];
+    payload->ready = true;
+    payload->frame_timestamp = payload->expected_timestamp;
+    payload->decode_identity = payload->trace_decode_identity = 401;
+    payload->trace_context = 1;
+    payload->trace_generation = 1;
+    payload->trace_submission_ordinal = 1;
+    memset(payload->planes[0], 61, payload->storage.size());
+    requested_picture->decode_identity =
+        requested_picture->trace_decode_identity = 403;
+    requested_picture->trace_context = 1;
+    requested_picture->trace_generation = 1;
+    requested_picture->trace_submission_ordinal = 3;
+    requested->id = 3;
+    requested->decode_identity = requested->trace_decode_identity = 403;
+    requested->trace_context = 1;
+    requested->trace_generation = 1;
+    requested->trace_submission_ordinal = 3;
+    requested->decode_picture = requested_picture;
+    requested->experimental_write_lease = true;
+    requested->experimental_write_context = 1;
+    requested->experimental_write_generation = 1;
+    requested->experimental_write_submission_ordinal = 3;
+    requested->experimental_submitted_at_ns = MonotonicNowNs();
+    fixture.decoder->pending.erase(kTimestampStep);
+    fixture.decoder->surface_timestamps.erase(fixture.held[0].get());
+    QueueExperimentalReady(&fixture.driver, fixture.decoder.get(), payload);
+
+    bool committed = true;
+    Require(TryExperimentalPresentation(&fixture.driver, requested,
+                                        &committed) == VA_STATUS_SUCCESS &&
+                !committed && !requested->experimental_presentation,
+            "public sync fixture cannot remap before the configured delay");
+    bool observed_before_threshold = false;
+    fixture.io.on_sleep = [&] {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      observed_before_threshold = !requested->experimental_presentation;
+      requested->experimental_submitted_at_ns =
+          MonotonicNowNs() - kExperimentalDelay16Ns;
+    };
+    Require(SyncSurface2(&fixture.context, 3, 100000000) ==
+                    VA_STATUS_SUCCESS &&
+                observed_before_threshold &&
+                ExperimentalPresentationReadable(&fixture.driver,
+                                                  requested.get()) &&
+                requested->presentation_payload_submission_ordinal == 1 &&
+                requested->planes[0][0] == 61,
+            "finite public sync rechecks and commits latest READY only after the delay threshold");
+  }
+
+  for (bool latest : {false, true}) {
+    TeardownFixture fixture(2);
+    fixture.decoder->id = 1;
+    fixture.decoder->generation = 1;
+    fixture.decoder->experimental_ready_remap = true;
+    fixture.decoder->experimental_ready_latest = latest;
+    fixture.decoder->experimental_ready_delay_ns = 0;
+
+    const auto payload =
+        fixture.decoder->decoded_frames.at(kTimestampStep);
+    const auto exact_picture =
+        fixture.decoder->decoded_frames.at(2 * kTimestampStep);
+    const auto exact = fixture.held[1];
+    payload->ready = true;
+    payload->frame_timestamp = payload->expected_timestamp;
+    payload->decode_identity = payload->trace_decode_identity = 501;
+    payload->trace_context = 1;
+    payload->trace_generation = 1;
+    payload->trace_submission_ordinal = 1;
+    QueueExperimentalReady(&fixture.driver, fixture.decoder.get(), payload);
+    exact_picture->decode_identity =
+        exact_picture->trace_decode_identity = 502;
+    exact_picture->trace_context = 1;
+    exact_picture->trace_generation = 1;
+    exact_picture->trace_submission_ordinal = 2;
+    exact->frame_timestamp = exact->expected_timestamp;
+    exact->decode_identity = exact->trace_decode_identity = 502;
+    exact->trace_context = 1;
+    exact->trace_generation = 1;
+    exact->trace_submission_ordinal = 2;
+    exact->experimental_write_lease = true;
+    exact->experimental_write_context = 1;
+    exact->experimental_write_generation = 1;
+    exact->experimental_write_submission_ordinal = 2;
+    exact->experimental_submitted_at_ns = MonotonicNowNs();
+
+    Require(SelectExperimentalReady(*fixture.decoder, *exact,
+                                    MonotonicNowNs()) == payload,
+            "zero-delay remap candidate is eligible before the exact frame completes");
+    exact->ready = true;
+
+    Require(SyncSurface2(&fixture.context, 2, 100000000) ==
+                    VA_STATUS_SUCCESS &&
+                !exact->experimental_presentation &&
+                fixture.decoder->experimental_last_delivered_ordinal == 2 &&
+                fixture.decoder->experimental_ready.empty() &&
+                fixture.decoder->decoded_frames.empty() &&
+                !payload->experimental_ready_queued &&
+                !exact_picture->experimental_ready_queued,
+            "an exact completed frame wins immediately over an eligible zero-delay remap candidate for both policies");
+  }
+
+  {
+    TeardownFixture fixture(1);
+    fixture.decoder->id = 1;
+    fixture.decoder->generation = 1;
+    fixture.decoder->experimental_ready_remap = true;
+    fixture.decoder->experimental_ready_latest = true;
+    fixture.decoder->experimental_last_delivered_ordinal = 2;
+    const auto picture =
+        fixture.decoder->decoded_frames.at(kTimestampStep);
+    const auto surface = fixture.held[0];
+    picture->decode_identity = picture->trace_decode_identity = 601;
+    picture->trace_context = 1;
+    picture->trace_generation = 1;
+    picture->trace_submission_ordinal = 1;
+    surface->decode_identity = surface->trace_decode_identity = 601;
+    surface->trace_context = 1;
+    surface->trace_generation = 1;
+    surface->trace_submission_ordinal = 1;
+    surface->decode_picture = picture;
+    surface->experimental_write_lease = true;
+    surface->experimental_write_context = 1;
+    surface->experimental_write_generation = 1;
+    surface->experimental_write_submission_ordinal = 1;
+    SendNext(&fixture.decoder->replay, kTimestampStep);
+    std::vector<uint8_t> pixels(16 * 16 * 2, 128);
+    BC_DTS_PROC_OUT output = {};
+    output.PoutFlags = BC_POUT_FLAGS_PIB_VALID;
+    output.PicInfo.timeStamp = kTimestampStep;
+    output.PicInfo.width = output.PicInfo.height = 16;
+    output.Ybuff = pixels.data();
+    output.YBuffDoneSz = pixels.size() / 4;
+    Require(ProcessDecodedOutput(&fixture.driver, fixture.decoder.get(),
+                                 output) == VA_STATUS_SUCCESS &&
+                surface->ready && picture->ready &&
+                !picture->experimental_ready_queued &&
+                fixture.decoder->experimental_ready.empty() &&
+                fixture.decoder->decoded_frames.empty() &&
+                fixture.decoder->experimental_last_delivered_ordinal == 2,
+            "late hardware completion behind the watermark stays exact-only and releases private READY state");
+  }
+
+  {
+    TeardownFixture fixture(1);
+    fixture.decoder->id = 1;
+    fixture.decoder->generation = 1;
+    fixture.decoder->experimental_ready_remap = true;
+    fixture.decoder->experimental_ready_latest = true;
+    fixture.decoder->experimental_last_delivered_ordinal = 2;
+    auto &map_only =
+        fixture.decoder->decoded_frames.at(kTimestampStep);
+    map_only->decode_identity = map_only->trace_decode_identity = 701;
+    map_only->trace_context = 1;
+    map_only->trace_generation = 1;
+    map_only->trace_submission_ordinal = 1;
+    fixture.driver.surfaces.erase(1);
+    SendNext(&fixture.decoder->replay, kTimestampStep);
+    std::vector<uint8_t> pixels(16 * 16 * 2, 128);
+    BC_DTS_PROC_OUT output = {};
+    output.PoutFlags = BC_POUT_FLAGS_PIB_VALID;
+    output.PicInfo.timeStamp = kTimestampStep;
+    output.PicInfo.width = output.PicInfo.height = 16;
+    output.Ybuff = pixels.data();
+    output.YBuffDoneSz = pixels.size() / 4;
+    Require(ProcessDecodedOutput(&fixture.driver, fixture.decoder.get(),
+                                 output) == VA_STATUS_SUCCESS &&
+                fixture.decoder->experimental_ready.empty() &&
+                fixture.decoder->decoded_frames.empty() &&
+                fixture.decoder->pending.empty() &&
+                fixture.decoder->experimental_last_delivered_ordinal == 2,
+            "map-only late hardware completion is retired without retaining an invalidated map iterator");
+  }
 }
 
 static void StaleUnretainedOutputPreservesTransportAndEos() {
@@ -4587,10 +5264,14 @@ int main() {
     TraceIdentityUsesImmutableTokenAndLiveAliasOwner();
     TraceReadExportReuseBoundary();
     ExperimentalReadyRemapGate();
+    ExperimentalPolicyDelayMatrix();
+    ExperimentalRemapCpuOwnershipFailures();
     ExperimentalReadyRemapFailClosedRaces();
     ExperimentalReadyRemapBounds();
+    ExperimentalLatestReadyCommitOrder();
     ExperimentalReadyRemapStateMachine();
     ConcurrentSyncObservesExperimentalPresentation();
+    ExperimentalDelayedSyncThreshold();
     DirectOutputOwnershipAndExport();
     RejectIncompleteGeometryAndInitializeAllocationPadding();
     FailedCpuOwnershipNeverCompletesDecode();

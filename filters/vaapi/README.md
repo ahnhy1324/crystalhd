@@ -107,6 +107,18 @@ in a low-delay 720p30 hardware test. VA-API frame-rate signaling remains fixed
 at 30 fps; this option does not establish real-time playback or A/V
 synchronization support.
 
+`CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP=1` enables a further BCM70015-only
+presentation experiment when both options above are active. Selection is
+`previous` by default; `CRYSTALHD_VAAPI_EXPERIMENTAL_READY_POLICY=latest`
+selects the newest eligible older picture. The optional
+`CRYSTALHD_VAAPI_EXPERIMENTAL_READY_DELAY_US` accepts exactly `0`, `16667`,
+`33333`, or `50000` (default `0`). Any other policy or delay value disables
+remapping. This path deliberately exports an older completed picture through
+the requested surface and timestamp, so it does not preserve standard VA
+surface identity and remains diagnostic opt-in. The default exact-identity
+path and BCM70012 behavior are unchanged; measured tradeoffs are in the
+hardware report.
+
 ### Measured reference-host limits
 
 With both H.264 options enabled and the documented host-specific L0s workaround

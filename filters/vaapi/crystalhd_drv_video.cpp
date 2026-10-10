@@ -78,9 +78,35 @@ constexpr size_t kExperimentalPresentationReadyLimit = 3;
 constexpr size_t kExperimentalPresentationActiveLimit = 2;
 constexpr uint64_t kExperimentalPresentationMaxAgeNs =
     2ULL * 1000 * 1000 * 1000 / 30;
+constexpr uint64_t kExperimentalDelay16Ns = 16667ULL * 1000;
+constexpr uint64_t kExperimentalDelay33Ns = 33333ULL * 1000;
+constexpr uint64_t kExperimentalDelay50Ns = 50000ULL * 1000;
 // Legacy libcrystalhd treats this input bit as a request to return queue/TX
 // counters without peeking and synchronizing the READY-head DMA buffer.
 constexpr uint32_t kStatusSkipReadyHeadPeek = 1U << 30;
+
+[[maybe_unused]] static bool ParseExperimentalReadyDelay(
+    const char *value, uint64_t *delay_ns) {
+  if (delay_ns == nullptr)
+    return false;
+  if (value == nullptr || strcmp(value, "0") == 0) {
+    *delay_ns = 0;
+    return true;
+  }
+  if (strcmp(value, "16667") == 0) {
+    *delay_ns = kExperimentalDelay16Ns;
+    return true;
+  }
+  if (strcmp(value, "33333") == 0) {
+    *delay_ns = kExperimentalDelay33Ns;
+    return true;
+  }
+  if (strcmp(value, "50000") == 0) {
+    *delay_ns = kExperimentalDelay50Ns;
+    return true;
+  }
+  return false;
+}
 
 static bool DecodeBatchGraceExpired(uint64_t elapsed_ns) {
   return elapsed_ns >= kDecodeBatchGraceNs;
@@ -575,7 +601,9 @@ struct Surface {
   uint64_t experimental_write_submission_ordinal = 0;
   bool experimental_incompatible = false;
   bool experimental_ready_queued = false;
+  uint64_t experimental_submitted_at_ns = 0;
   uint64_t experimental_ready_at_ns = 0;
+  uint64_t experimental_presentation_at_ns = 0;
   uint64_t presentation_payload_token = 0;
   uint64_t presentation_payload_decode_identity = 0;
   uint64_t presentation_payload_submission_ordinal = 0;
@@ -1405,6 +1433,12 @@ struct DecodeContext {
   bool live_h264 = false;
   bool low_latency_h264 = false;
   bool experimental_ready_remap = false;
+  bool experimental_ready_latest = false;
+  uint64_t experimental_ready_delay_ns = 0;
+  // Prevent later remap choices from repeating or moving behind a payload
+  // already delivered by exact sync/export or an experimental commit. This is
+  // not a global ordering promise for independently retained VA surfaces.
+  uint64_t experimental_last_delivered_ordinal = 0;
   uint64_t prefed_timestamp = 0;
   bool closing = false;
   bool retired = false;
@@ -1515,6 +1549,7 @@ struct DecodeContext {
     for (const auto &picture : experimental_ready)
       picture->experimental_ready_queued = false;
     experimental_ready.clear();
+    experimental_last_delivered_ordinal = 0;
     decoded_frames.clear();
     surface_timestamps.clear();
     replay = CrystalHDDecodeReplay(live_h264);
@@ -1780,6 +1815,7 @@ static void ClearTraceIdentity(Surface *surface) {
   surface->trace_generation = 0;
   surface->trace_submission_ordinal = 0;
   surface->trace_decode_identity = 0;
+  surface->experimental_submitted_at_ns = 0;
 }
 
 static void EndTraceBinding(Driver *driver, Surface *surface) {
@@ -1799,6 +1835,7 @@ static void ClearExperimentalPresentation(Surface *surface) {
   surface->experimental_write_context = 0;
   surface->experimental_write_generation = 0;
   surface->experimental_write_submission_ordinal = 0;
+  surface->experimental_presentation_at_ns = 0;
   surface->presentation_payload_token = 0;
   surface->presentation_payload_decode_identity = 0;
   surface->presentation_payload_submission_ordinal = 0;
@@ -1844,8 +1881,17 @@ static bool ExperimentalPresentationReadable(const Driver *driver,
       surface->trace_decode_identity != 0 &&
       surface->presentation_payload_decode_identity != 0 &&
       surface->trace_submission_ordinal != 0 &&
-      surface->presentation_payload_submission_ordinal + 1 ==
-          surface->trace_submission_ordinal;
+      surface->presentation_payload_submission_ordinal <
+          surface->trace_submission_ordinal &&
+      (found->second->experimental_ready_latest ||
+       surface->presentation_payload_submission_ordinal + 1 ==
+           surface->trace_submission_ordinal) &&
+      surface->experimental_submitted_at_ns != 0 &&
+      surface->experimental_presentation_at_ns >=
+          surface->experimental_submitted_at_ns &&
+      surface->experimental_presentation_at_ns -
+              surface->experimental_submitted_at_ns >=
+          found->second->experimental_ready_delay_ns;
 }
 
 static uint64_t NextTraceCall(Driver *driver) {
@@ -2045,6 +2091,8 @@ static void InheritTraceIdentity(Surface *destination,
   destination->trace_generation = source.trace_generation;
   destination->trace_submission_ordinal = source.trace_submission_ordinal;
   destination->trace_decode_identity = source.trace_decode_identity;
+  destination->experimental_submitted_at_ns =
+      source.experimental_submitted_at_ns;
 }
 
 static uint64_t NextDecodeIdentity(Driver *driver) {
@@ -2182,6 +2230,9 @@ static VAStatus OpenDecoder(DecodeContext *decode, unsigned int width = 0,
   if (decode->is_70012) {
     decode->low_latency_h264 = false;
     decode->experimental_ready_remap = false;
+    decode->experimental_ready_latest = false;
+    decode->experimental_ready_delay_ns = 0;
+    decode->experimental_last_delivered_ordinal = 0;
   }
   // These finite-batch paths have only been validated on BCM70015.
   if ((decode->IsMpeg2() || decode->IsMpeg4() || decode->IsVc1()) &&
@@ -2481,29 +2532,75 @@ static bool ExperimentalWriteLeaseMatches(const DecodeContext &decode,
           surface.trace_submission_ordinal;
 }
 
-static void RemoveExperimentalReady(
-    DecodeContext *decode, const std::shared_ptr<Surface> &picture) {
-  if (decode == nullptr || !picture)
+static void RetireExperimentalReadyThrough(
+    Driver *driver, DecodeContext *decode, uint64_t ordinal,
+    const std::shared_ptr<Surface> &consumed) {
+  if (driver == nullptr || decode == nullptr || ordinal == 0)
     return;
-  decode->experimental_ready.erase(
-      std::remove(decode->experimental_ready.begin(),
-                  decode->experimental_ready.end(), picture),
-      decode->experimental_ready.end());
-  picture->experimental_ready_queued = false;
-  const auto found = decode->decoded_frames.find(picture->expected_timestamp);
-  if (found != decode->decoded_frames.end() && found->second == picture)
-    decode->decoded_frames.erase(found);
+  for (auto it = decode->experimental_ready.begin();
+       it != decode->experimental_ready.end();) {
+    const std::shared_ptr<Surface> picture = *it;
+    if (!picture || picture->trace_submission_ordinal > ordinal) {
+      ++it;
+      continue;
+    }
+    it = decode->experimental_ready.erase(it);
+    picture->experimental_ready_queued = false;
+    const auto found =
+        decode->decoded_frames.find(picture->expected_timestamp);
+    if (found != decode->decoded_frames.end() && found->second == picture)
+      decode->decoded_frames.erase(found);
+    if (picture != consumed) {
+      crystalhd_vaapi_trace::Fields fields =
+          TraceFields(decode, picture.get());
+      fields.payload_token = picture->frame_timestamp;
+      fields.payload_decode_identity = picture->trace_decode_identity;
+      fields.payload_submission_ordinal =
+          picture->trace_submission_ordinal;
+      fields.outcome = -ESTALE;
+      driver->trace.Emit(crystalhd_vaapi_trace::Event::PresentationDrop,
+                         fields);
+    }
+  }
+  // An exact public surface may complete without ever entering the remap
+  // inventory (for example, a direct output). Retire its matching private
+  // picture as well; the queue walk above is intentionally not its lifetime
+  // authority.
+  if (consumed) {
+    consumed->experimental_ready_queued = false;
+    const auto found =
+        decode->decoded_frames.find(consumed->expected_timestamp);
+    if (found != decode->decoded_frames.end() && found->second == consumed)
+      decode->decoded_frames.erase(found);
+  }
 }
 
 static void QueueExperimentalReady(
     Driver *driver, DecodeContext *decode,
-    const std::shared_ptr<Surface> &picture) {
+    std::shared_ptr<Surface> picture) {
   if (driver == nullptr || decode == nullptr || !picture ||
       !decode->experimental_ready_remap || picture->destroyed ||
       picture->failed || !picture->ready ||
       picture->frame_timestamp != picture->expected_timestamp ||
+      picture->trace_submission_ordinal == 0 ||
       picture->experimental_ready_queued)
     return;
+  if (picture->trace_submission_ordinal <=
+      decode->experimental_last_delivered_ordinal) {
+    const auto found =
+        decode->decoded_frames.find(picture->expected_timestamp);
+    if (found != decode->decoded_frames.end() && found->second == picture)
+      decode->decoded_frames.erase(found);
+    crystalhd_vaapi_trace::Fields fields =
+        TraceFields(decode, picture.get());
+    fields.payload_token = picture->frame_timestamp;
+    fields.payload_decode_identity = picture->trace_decode_identity;
+    fields.payload_submission_ordinal = picture->trace_submission_ordinal;
+    fields.outcome = -ESTALE;
+    driver->trace.Emit(crystalhd_vaapi_trace::Event::PresentationDrop,
+                       fields);
+    return;
+  }
   picture->experimental_ready_at_ns = MonotonicNowNs();
   picture->experimental_ready_queued = true;
   decode->experimental_ready.push_back(picture);
@@ -2544,16 +2641,27 @@ static std::shared_ptr<Surface> SelectExperimentalReady(
       requested.trace_generation != decode.generation ||
       requested.trace_submission_ordinal == 0)
     return {};
-  for (auto it = decode.experimental_ready.rbegin();
-       it != decode.experimental_ready.rend(); ++it) {
-    const std::shared_ptr<Surface> &candidate = *it;
+  if (decode.experimental_ready_delay_ns != 0 &&
+      (requested.experimental_submitted_at_ns == 0 ||
+       requested.experimental_submitted_at_ns > now_ns ||
+       now_ns - requested.experimental_submitted_at_ns <
+           decode.experimental_ready_delay_ns))
+    return {};
+  std::shared_ptr<Surface> selected;
+  for (const std::shared_ptr<Surface> &candidate :
+       decode.experimental_ready) {
     if (!candidate || !candidate->experimental_ready_queued ||
         candidate->destroyed || candidate->failed || !candidate->ready ||
         candidate->frame_timestamp != candidate->expected_timestamp ||
         candidate->trace_context != requested.trace_context ||
         candidate->trace_generation != requested.trace_generation ||
-        candidate->trace_submission_ordinal + 1 !=
+        candidate->trace_submission_ordinal >=
             requested.trace_submission_ordinal ||
+        candidate->trace_submission_ordinal <=
+            decode.experimental_last_delivered_ordinal ||
+        (!decode.experimental_ready_latest &&
+         candidate->trace_submission_ordinal + 1 !=
+             requested.trace_submission_ordinal) ||
         candidate->width != requested.width ||
         candidate->height != requested.height ||
         candidate->fourcc != VA_FOURCC_NV12 ||
@@ -2563,9 +2671,11 @@ static std::shared_ptr<Surface> SelectExperimentalReady(
         now_ns - candidate->experimental_ready_at_ns >
             kExperimentalPresentationMaxAgeNs)
       continue;
-    return candidate;
+    if (!selected || candidate->trace_submission_ordinal >
+                         selected->trace_submission_ordinal)
+      selected = candidate;
   }
-  return {};
+  return selected;
 }
 
 static VAStatus TryExperimentalPresentation(
@@ -2592,18 +2702,21 @@ static VAStatus TryExperimentalPresentation(
       }));
   if (active_presentations >= kExperimentalPresentationActiveLimit)
     return VA_STATUS_SUCCESS;
+  const uint64_t selection_ns = MonotonicNowNs();
   const std::shared_ptr<Surface> payload =
-      SelectExperimentalReady(*decode, *requested, MonotonicNowNs());
+      SelectExperimentalReady(*decode, *requested, selection_ns);
   if (!payload)
     return VA_STATUS_SUCCESS;
   if (!CopyNv12Pixels(*payload, requested.get()))
     return VA_STATUS_ERROR_OPERATION_FAILED;
+  const uint64_t commit_ns = MonotonicNowNs();
 
   requested->experimental_presentation = true;
   requested->experimental_write_lease = false;
   requested->experimental_write_context = 0;
   requested->experimental_write_generation = 0;
   requested->experimental_write_submission_ordinal = 0;
+  requested->experimental_presentation_at_ns = commit_ns;
   requested->presentation_payload_token = payload->frame_timestamp;
   requested->presentation_payload_decode_identity =
       payload->trace_decode_identity;
@@ -2611,9 +2724,15 @@ static VAStatus TryExperimentalPresentation(
       payload->trace_submission_ordinal;
   crystalhd_vaapi_trace::Fields fields =
       TraceFields(decode, requested.get(), requested->expected_timestamp);
+  if (requested->experimental_submitted_at_ns != 0 &&
+      commit_ns >= requested->experimental_submitted_at_ns)
+    fields.duration_ns = commit_ns - requested->experimental_submitted_at_ns;
   driver->trace.Emit(crystalhd_vaapi_trace::Event::PresentationCommit,
                      fields);
-  RemoveExperimentalReady(decode, payload);
+  decode->experimental_last_delivered_ordinal =
+      payload->trace_submission_ordinal;
+  RetireExperimentalReadyThrough(driver, decode,
+                                 payload->trace_submission_ordinal, payload);
   *committed = true;
   driver->condition.notify_all();
   return VA_STATUS_SUCCESS;
@@ -2633,9 +2752,15 @@ static void ConsumeExperimentalExact(
     return;
   const auto picture =
       found->second->decoded_frames.find(surface->expected_timestamp);
+  std::shared_ptr<Surface> consumed;
   if (picture != found->second->decoded_frames.end() &&
       picture->second->trace_decode_identity == surface->trace_decode_identity)
-    RemoveExperimentalReady(found->second.get(), picture->second);
+    consumed = picture->second;
+  found->second->experimental_last_delivered_ordinal = std::max(
+      found->second->experimental_last_delivered_ordinal,
+      surface->trace_submission_ordinal);
+  RetireExperimentalReadyThrough(driver, found->second.get(),
+                                 surface->trace_submission_ordinal, consumed);
 }
 
 static void MarkPendingPicturesFailed(Driver *driver, DecodeContext *decode) {
@@ -2869,9 +2994,13 @@ static VAStatus ProcessDecodedOutput(Driver *driver, DecodeContext *decode,
                        TraceFields(decode, materialized,
                                    output.PicInfo.timeStamp));
   }
-  if (!current_picture && decoded != decode->decoded_frames.end() &&
-      !decoded->second->experimental_ready_queued)
-    decode->decoded_frames.erase(decoded);
+  if (!current_picture) {
+    const auto remaining =
+        decode->decoded_frames.find(output.PicInfo.timeStamp);
+    if (remaining != decode->decoded_frames.end() &&
+        !remaining->second->experimental_ready_queued)
+      decode->decoded_frames.erase(remaining);
+  }
   driver->condition.notify_all();
   return complete ? VA_STATUS_SUCCESS
                   : FailDecode(driver, decode, "invalid picture geometry/data or failed CPU write");
@@ -3574,6 +3703,10 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
   target_surface->failed = false;
   target_surface->expected_timestamp = timestamp;
   target_surface->frame_timestamp = 0;
+  // The experimental delay clock starts when the complete VA picture is
+  // accepted, not at hardware READY or at an inferred client PTS.
+  target_surface->experimental_submitted_at_ns =
+      decode->experimental_ready_remap ? MonotonicNowNs() : 0;
 
   if (driver->trace.enabled())
     driver->trace.Emit(crystalhd_vaapi_trace::Event::SubmitBind,
@@ -4568,9 +4701,28 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
       low_latency_h264 != nullptr && strcmp(low_latency_h264, "1") == 0;
   const char *experimental_ready_remap =
       getenv("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP");
+  const char *experimental_ready_delay =
+      getenv("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_DELAY_US");
+  uint64_t experimental_ready_delay_ns = 0;
+  const bool experimental_delay_valid = ParseExperimentalReadyDelay(
+      experimental_ready_delay, &experimental_ready_delay_ns);
+  const char *experimental_ready_policy =
+      getenv("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_POLICY");
+  const bool experimental_policy_latest =
+      experimental_ready_policy != nullptr &&
+      strcmp(experimental_ready_policy, "latest") == 0;
+  const bool experimental_policy_valid =
+      experimental_ready_policy == nullptr ||
+      strcmp(experimental_ready_policy, "previous") == 0 ||
+      experimental_policy_latest;
   decode->experimental_ready_remap = decode->low_latency_h264 &&
       experimental_ready_remap != nullptr &&
-      strcmp(experimental_ready_remap, "1") == 0;
+      strcmp(experimental_ready_remap, "1") == 0 &&
+      experimental_delay_valid && experimental_policy_valid;
+  if (decode->experimental_ready_remap) {
+    decode->experimental_ready_delay_ns = experimental_ready_delay_ns;
+    decode->experimental_ready_latest = experimental_policy_latest;
+  }
   if (decode->live_h264)
     decode->replay = CrystalHDDecodeReplay(true);
   *context_id = driver->next_context++;
