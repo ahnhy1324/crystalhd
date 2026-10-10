@@ -907,6 +907,8 @@ _CHANNEL_FIELD_BLX_EVIDENCE_REGIONS = (
      "9e6b69c108f5f1af4178bd069f394176b9675f22e5720791fe13c24e126e6a8f"),
     ("irq_dispatch", 0x06ef0, 0x100,
      "fd586631b4c4ff1f065091fc0f186c347b8ec40153b707fb222b0b08abc69bd8"),
+    ("irq_slot4_delivery_callback", 0x06ff4, 0x048,
+     "a024a89cab19eb48c9b6a1ffab548acb447d0b5640b7dbb3ab178b544634b9fc"),
     ("irq_registration_setup", 0x0703c, 0x0a8,
      "dea84781aa0e00184e96726f8cdc0a49537ca4c0672651a8556a11b03c10b1a9"),
     ("irq_table_base_literal", 0x07128, 0x004,
@@ -918,7 +920,7 @@ _CHANNEL_FIELD_BLX_EVIDENCE_REGIONS = (
     ("response_callback_literal", 0x28694, 0x004,
      "f5758d7822a58d44de1c8433c1c2105204baefdd0c58c2827fadb8a02ca50d9c"),
 )
-MAX_CHANNEL_FIELD_BLX_EVIDENCE_REGIONS = 9
+MAX_CHANNEL_FIELD_BLX_EVIDENCE_REGIONS = 10
 MAX_CHANNEL_FIELD_BLX_EVIDENCE_BYTES = 1024
 _MFD_SOURCE_REGIONS = (
     ("source_address", 0x1918,
@@ -5940,12 +5942,22 @@ def _channel_field_map(payload):
         0x6eb4: 0xe59f426c, 0x6eb8: 0xe0800080,
         0x6ebc: 0xe7841100, 0x6ec0: 0xe0840100,
         0x6ec4: 0xe5802004, 0x6ec8: 0xe5803008,
-        0x6f20: 0xe59f9200, 0x6f94: 0xe0848084,
+        0x6f1c: 0xe3170010, 0x6f20: 0xe59f9200,
+        0x6f28: 0xe59f0204, 0x6f2c: 0xe5905000,
+        0x6f30: 0xe5895038, 0x6f84: 0xe3a04000,
+        0x6f88: 0xe3a0a001, 0x6f8c: 0xe117041a,
+        0x6f94: 0xe0848084,
         0x6f98: 0xe0896108, 0x6f9c: 0xe5961008,
         0x6fa0: 0xe3510000, 0x6fa4: 0x0a000007,
         0x6fa8: 0xe7992108, 0x6fac: 0xe5960004,
-        0x6fb0: 0xe12fff32, 0x6fd8: 0xe7992108,
+        0x6fb0: 0xe12fff32, 0x6fb4: 0xe2840001,
+        0x6fb8: 0xe20040ff, 0x6fbc: 0xe3540020,
+        0x6fc0: 0x3afffff1, 0x6fc8: 0xe3a0002a,
+        0x6fcc: 0xeb000fd1, 0x6fd0: 0xe5865008,
+        0x6fd4: 0xe1a01005, 0x6fd8: 0xe7992108,
         0x6fdc: 0xe5960004, 0x6fe0: 0xe12fff32,
+        0x6fe4: 0xe3a00000, 0x6fe8: 0xe5860008,
+        0x6fec: 0xeafffff0,
         0x7128: 0x000d2000,
     }
     for offset, expected in required_blx_words.items():
@@ -6002,7 +6014,8 @@ def _channel_field_map(payload):
             "call": call, "slot": slot, "callback_address": callback,
             "argument": argument, "state": state,
             "materialization_blob_file_offsets": sites,
-            "callback_target_body_classified": False,
+            "callback_target_body_classified": slot == 4,
+            "registration_persistence_established": False,
             "runtime_observed": False,
         }
         if literal is not None:
@@ -6010,6 +6023,121 @@ def _channel_field_map(payload):
         else:
             record["callback_address_expression"] = "PC(0x7094) - 0xa8"
         registrations.append(record)
+
+    slot4_registration = next(record for record in registrations
+                              if record["slot"] == 4)
+    callback_region = next(record for record in validated_blx_evidence
+                           if record["role"] == "irq_slot4_delivery_callback")
+    callback_literal = _a32_literal(payload, 0x6ffc)
+    dispatch_status_literal = _a32_literal(payload, 0x6f28)
+    if ((callback_literal["literal_blob_file_offset"],
+         callback_literal["literal_value"],
+         callback_literal["destination_register"]) !=
+            (0x7134, 0x100f2000, 5) or
+            (dispatch_status_literal["literal_blob_file_offset"],
+             dispatch_status_literal["literal_value"],
+             dispatch_status_literal["destination_register"]) !=
+            (0x7134, 0x100f2000, 0)):
+        raise FormatError("channel-field slot-4 IRQ status literal does not match the baseline")
+
+    callback_words = {
+        0x6ff4: 0xe92d4070, 0x6ff8: 0xe1a04001,
+        0x7000: 0xe3140c01, 0x700c: 0xe3000100,
+        0x7010: 0xe5850008, 0x7014: 0xe3140c02,
+        0x7020: 0xe3000200, 0x7024: 0xe5850008,
+        0x7028: 0xe3140b01, 0x7030: 0xe8bd4070,
+        0x7038: 0xe8bd8070,
+    }
+    for offset, expected in callback_words.items():
+        if _bootstrap_word(payload, offset) != expected:
+            raise FormatError(
+                f"channel-field slot-4 callback word at {offset:#x} does not match the baseline")
+    callback_branches = []
+    for role, site, target, link, condition in (
+            ("skip_status_0x100", 0x7004, 0x7014, False, 0),
+            ("status_0x100_handler", 0x7008, 0x8d48, True, 14),
+            ("skip_status_0x200", 0x7018, 0x7028, False, 0),
+            ("descriptor_delivery", 0x701c, 0x7708, True, 14),
+            ("skip_status_0x400", 0x702c, 0x7038, False, 0),
+            ("status_0x400_tail", 0x7034, 0x6ff0, False, 14)):
+        branch = _a32_branch(payload, site, link=link, condition=condition)
+        if branch["target_blob_file_offset"] != target:
+            raise FormatError(
+                f"channel-field slot-4 callback branch {role} does not match the baseline")
+        callback_branches.append({"role": role, **branch})
+    callback_branch_by_role = {record["role"]: record
+                               for record in callback_branches}
+
+    callback_materialization = {
+        "instruction_blob_file_offset": 0x7094,
+        "instruction_word": registration_words[0x7094],
+        "pc_bias_bytes": 8,
+        "pc_value": 0x709c,
+        "subtracted_immediate": 0xa8,
+        "result_callback_address": 0x6ff4,
+    }
+    if (callback_materialization["pc_value"] -
+            callback_materialization["subtracted_immediate"] !=
+            slot4_registration["callback_address"]):
+        raise FormatError("channel-field slot-4 callback materialization is incoherent")
+
+    selected_dispatch_words = {
+        offset: required_blx_words[offset] for offset in (
+            0x6f1c, 0x6f20, 0x6f28, 0x6f2c, 0x6f30,
+            0x6f84, 0x6f88, 0x6f8c, 0x6f94, 0x6f98,
+            0x6f9c, 0x6fa0, 0x6fa4, 0x6fa8, 0x6fac,
+            0x6fb0, 0x6fb4, 0x6fb8, 0x6fbc, 0x6fc0,
+            0x6fc8, 0x6fcc, 0x6fd0, 0x6fd4, 0x6fd8,
+            0x6fdc, 0x6fe0, 0x6fe4, 0x6fe8, 0x6fec)
+    }
+    selected_dispatch_branches = []
+    for role, site, target, link, condition in (
+            ("slot_not_pending", 0x6f90, 0x6fb4, False, 0),
+            ("selected_status_zero", 0x6fa4, 0x6fc8, False, 0),
+            ("selected_callback_direct", 0x6fb0, None, None, 14),
+            ("callback_slot_loop", 0x6fc0, 0x6f8c, False, 3),
+            ("selected_status_zero_log", 0x6fcc, 0xaf18, True, 14),
+            ("selected_callback_after_status_load", 0x6fe0, None, None, 14),
+            ("selected_callback_join", 0x6fec, 0x6fb4, False, 14)):
+        if target is None:
+            word = _bootstrap_word(payload, site)
+            if word != required_blx_words[site]:
+                raise FormatError(
+                    f"channel-field selected dispatch BLX {role} does not match the baseline")
+            branch = {
+                "blob_file_offset": site, "word": word,
+                "operation": "BLX register", "condition": condition,
+                "operand_register": word & 15,
+            }
+        elif role == "callback_slot_loop":
+            word = _bootstrap_word(payload, site)
+            if word != required_blx_words[site]:
+                raise FormatError(
+                    "channel-field selected dispatch loop branch does not match the baseline")
+            displacement = word & 0xffffff
+            if displacement & 0x800000:
+                displacement -= 1 << 24
+            decoded_target = site + 8 + displacement * 4
+            if decoded_target != target:
+                raise FormatError(
+                    "channel-field selected dispatch loop target does not match the baseline")
+            branch = {
+                "blob_file_offset": site, "word": word,
+                "operation": "B", "condition": condition,
+                "target_blob_file_offset": decoded_target,
+            }
+        else:
+            branch = _a32_branch(payload, site, link=link, condition=condition)
+            if branch["target_blob_file_offset"] != target:
+                raise FormatError(
+                    f"channel-field selected dispatch branch {role} does not match the baseline")
+        selected_dispatch_branches.append({"role": role, **branch})
+    selected_dispatch_branch_by_role = {
+        record["role"]: record for record in selected_dispatch_branches
+    }
+    slot4_table_address = 0xd2000 + 4 * 12
+    if slot4_table_address + 8 != 0xd2038:
+        raise FormatError("channel-field slot-4 callback-table arithmetic is incoherent")
 
     def checked_sites(entries, access, expression):
         result = []
@@ -6054,6 +6182,221 @@ def _channel_field_map(payload):
             (device_start_output["literal_blob_file_offset"], device_start_output["literal_value"],
              device_start_output["destination_register"]) != (0x5ed4, 0xd1ff8, 1)):
         raise FormatError("channel-field root literal does not match the baseline")
+
+    delivery_region = next(record for record in validated
+                           if record["role"] == "descriptor_delivery")
+    copy_region = next(record for record in validated
+                       if record["role"] == "memcpy_a32")
+    delivery_words = {
+        0x7708: 0xe92d4070, 0x7718: 0xe3500000,
+        0x7724: 0xe5911004, 0x7728: 0xe3002401,
+        0x772c: 0xe0811002, 0x7734: 0xe5943024,
+        0x7768: 0xe3a02073, 0x776c: 0xe0020293,
+        0x7770: 0xe0804102, 0x7774: 0xe3a02020,
+        0x7778: 0xe2840f62, 0x7780: 0xe3a00001,
+        0x7784: 0xe5c401a8, 0x7788: 0xe8bd8070,
+    }
+    for offset, expected in delivery_words.items():
+        if _bootstrap_word(payload, offset) != expected:
+            raise FormatError(
+                f"channel-field slot-4 delivery word at {offset:#x} does not match the baseline")
+
+    delivery_literals = {
+        "source_base": _a32_literal(payload, 0x7720),
+        "slot_mailbox_base": _a32_literal(payload, 0x7730),
+        "duplicate_gate_base": _a32_literal(payload, 0x7738),
+    }
+    if ((delivery_literals["source_base"]["literal_blob_file_offset"],
+         delivery_literals["source_base"]["literal_value"],
+         delivery_literals["source_base"]["destination_register"]) !=
+            (0x76f4, 0x100f6000, 1) or
+            (delivery_literals["slot_mailbox_base"]["literal_blob_file_offset"],
+             delivery_literals["slot_mailbox_base"]["literal_value"],
+             delivery_literals["slot_mailbox_base"]["destination_register"]) !=
+            (0x76b0, 0x100e0000, 4) or
+            (delivery_literals["duplicate_gate_base"]["literal_blob_file_offset"],
+             delivery_literals["duplicate_gate_base"]["literal_value"],
+             delivery_literals["duplicate_gate_base"]["destination_register"]) !=
+            (0x7698, 0xd2210, 2)):
+        raise FormatError("channel-field slot-4 delivery literal does not match the baseline")
+
+    delivery_branches = []
+    for role, site, target, link, condition in (
+            ("fixed_root_getter", 0x7714, 0x898, True, 14),
+            ("null_root_exit", 0x771c, 0x7788, False, 0),
+            ("duplicate_gate_clear", 0x7744, 0x7768, False, 0),
+            ("duplicate_value_changed", 0x7754, 0x7764, False, 1),
+            ("duplicate_value_log_exit", 0x7760, 0x203c4, False, 14),
+            ("copy_32_bytes", 0x777c, 0x2c59c, True, 14)):
+        branch = _a32_branch(payload, site, link=link, condition=condition)
+        if branch["target_blob_file_offset"] != target:
+            raise FormatError(
+                f"channel-field slot-4 delivery branch {role} does not match the baseline")
+        delivery_branches.append({"role": role, **branch})
+    delivery_branch_by_role = {record["role"]: record
+                               for record in delivery_branches}
+
+    delivery_handler = {
+        "body": delivery_region,
+        "entry_blob_file_offset": 0x7708,
+        "fixed_root_getter_call": delivery_branch_by_role["fixed_root_getter"],
+        "fixed_root_getter": {
+            "entry_blob_file_offset": 0x898,
+            "literal": root,
+            "return_instruction_blob_file_offset": 0x89c,
+            "root_value": 0xd3a00,
+        },
+        "null_root_exit": delivery_branch_by_role["null_root_exit"],
+        "delivery_channel_index": {
+            "source_physical_address": 0x100e0024,
+            "load_blob_file_offset": 0x7734,
+            "range_validated": False,
+            "equal_to_irq_callback_slot_established": False,
+        },
+        "selected_channel_base": {
+            "name": "H",
+            "expression": "H = 0xd3a00 + delivery_channel_index * 0x1cc",
+            "slot_stride_words": 0x73,
+            "slot_stride_bytes": 0x1cc,
+            "multiply_blob_file_offset": 0x776c,
+            "add_blob_file_offset": 0x7770,
+            "runtime_identity_established": False,
+        },
+        "copy": {
+            "source_expression": "word(0x100f6000 + 4) + 0x401",
+            "destination_expression": "H + 0x188",
+            "destination_range": "[H+0x188,H+0x1a8)",
+            "byte_count": 32,
+            "destination_materialization_blob_file_offset": 0x7778,
+            "byte_count_materialization_blob_file_offset": 0x7774,
+            "call": delivery_branch_by_role["copy_32_bytes"],
+            "helper_body": copy_region,
+            "helper_body_validated": True,
+            "source_extent_and_stability_established": False,
+        },
+        "publication": {
+            "address_expression": "H + 0x1a8",
+            "width_bytes": 1,
+            "value": 1,
+            "value_materialization_blob_file_offset": 0x7780,
+            "store_blob_file_offset": 0x7784,
+            "program_order_after_returning_copy": True,
+            "visibility_or_consumer_completion_established": False,
+        },
+        "conditional_pre_copy_branches": [
+            delivery_branch_by_role[role] for role in (
+                "duplicate_gate_clear", "duplicate_value_changed",
+                "duplicate_value_log_exit")
+        ],
+    }
+
+    selected_slot4_delivery_path = {
+        "kind": "conditional-static-irq-slot4-descriptor-delivery",
+        "irq_dispatch": {
+            "vector_entry": irq_vector,
+            "irq_entry_blob_file_offset": 0xdc,
+            "dispatch_call": irq_dispatch_call,
+            "dispatch_entry_blob_file_offset": 0x6ef0,
+            "selected_callback_slot": 4,
+            "selected_slot_event_mask": 0x10,
+            "selected_slot_event_test_blob_file_offset": 0x6f1c,
+            "selected_status_source_physical_address": 0x100f2000,
+            "selected_status_load_blob_file_offset": 0x6f2c,
+            "selected_status_preload_store_blob_file_offset": 0x6f30,
+            "callback_table_base": 0xd2000,
+            "callback_table_stride_bytes": 12,
+            "selected_table_entry_address": slot4_table_address,
+            "selected_callback_word_address": slot4_table_address,
+            "selected_argument_word_address": slot4_table_address + 4,
+            "selected_status_word_address": slot4_table_address + 8,
+            "loop_selected_slot_mask_expression": "1 << callback_slot",
+            "slot_loop": {
+                "initial_slot": 0,
+                "slot_increment_blob_file_offset": 0x6fb4,
+                "slot_byte_normalization_blob_file_offset": 0x6fb8,
+                "exclusive_slot_limit": 32,
+                "slot_limit_test_blob_file_offset": 0x6fbc,
+                "loop_branch": selected_dispatch_branch_by_role["callback_slot_loop"],
+                "slot_not_pending_branch":
+                    selected_dispatch_branch_by_role["slot_not_pending"],
+            },
+            "selected_status_flow": {
+                "preload_address": slot4_table_address + 8,
+                "callback_status_argument_register": "r1",
+                "status_zero_branch":
+                    selected_dispatch_branch_by_role["selected_status_zero"],
+                "status_zero_table_store_blob_file_offset": 0x6fd0,
+                "status_zero_argument_move_blob_file_offset": 0x6fd4,
+                "callback_invocations": [
+                    selected_dispatch_branch_by_role["selected_callback_direct"],
+                    selected_dispatch_branch_by_role[
+                        "selected_callback_after_status_load"],
+                ],
+                "status_zero_cleanup_store_blob_file_offset": 0x6fe8,
+                "join_branch":
+                    selected_dispatch_branch_by_role["selected_callback_join"],
+            },
+            "selected_word_receipts": [
+                {"blob_file_offset": offset, "word": word}
+                for offset, word in sorted(selected_dispatch_words.items())
+            ],
+        },
+        "registration": {
+            "selected": slot4_registration,
+            "callback_materialization": callback_materialization,
+            "table_entry_address": slot4_table_address,
+            "registration_persistence_established": False,
+            "all_registration_writers_complete": False,
+            "runtime_table_contents_observed": False,
+        },
+        "callback": {
+            "body": callback_region,
+            "entry_blob_file_offset": 0x6ff4,
+            "status_argument_register": "r1",
+            "saved_status_register": "r4",
+            "status_source_literal": callback_literal,
+            "status_masks": {
+                "0x100": {"mask": 0x100,
+                           "test_blob_file_offset": 0x7000,
+                           "skip_branch": callback_branch_by_role["skip_status_0x100"],
+                           "handler_branch": callback_branch_by_role["status_0x100_handler"]},
+                "0x200": {"mask": 0x200,
+                           "test_blob_file_offset": 0x7014,
+                           "skip_branch": callback_branch_by_role["skip_status_0x200"],
+                           "delivery_call": callback_branch_by_role["descriptor_delivery"],
+                           "ack_value_materialization_blob_file_offset": 0x7020,
+                           "ack_store_blob_file_offset": 0x7024,
+                           "ack_physical_address": 0x100f2008},
+                "0x400": {"mask": 0x400,
+                           "test_blob_file_offset": 0x7028,
+                           "skip_branch": callback_branch_by_role["skip_status_0x400"],
+                           "handler_tail_branch": callback_branch_by_role["status_0x400_tail"]},
+            },
+            "all_body_bytes_hash_pinned": True,
+        },
+        "delivery": delivery_handler,
+        "conditional_static_path_connected": True,
+        "scope": {
+            "registration_persistence_established": False,
+            "runtime_table_contents_observed": False,
+            "runtime_dispatch_observed": False,
+            "runtime_callback_observed": False,
+            "runtime_delivery_observed": False,
+            "all_registration_writers_complete": False,
+            "delivery_channel_index_range_validated": False,
+            "delivery_channel_identity_or_lifetime_established": False,
+            "copy_source_ownership_or_stability_established": False,
+            "publication_visibility_or_consumer_completion_established": False,
+            "overall_provenance_complete": False,
+        },
+        "conditions": [
+            "The selected slot-4 registration remains present when the hash-pinned IRQ dispatcher reads its table entry.",
+            "IRQ event bit 0x10 selects callback-table slot 4; the callback status word independently contains bit 0x200.",
+            "The fixed-root getter returns 0xd3a00 and the unvalidated delivery channel index selects valid storage at that root.",
+            "Descriptor delivery reaches the copy when the duplicate gate is clear or its compared value has changed; the equal-value branch exits before copying.",
+            "The pinned copy helper returns after reading 32 stable source bytes, before the pending-byte publication executes.",
+        ],
+    }
 
     anchors = checked_anchors((
         ("root_return", 0x89c, 0xe12fff1e, "return 0xd3a00"),
@@ -6722,16 +7065,22 @@ def _channel_field_map(payload):
                     "all_registration_writers_complete": False,
                     "indirect_or_computed_registration_calls_excluded": False,
                 },
+                "selected_slot4_delivery_path": selected_slot4_delivery_path,
                 "complete_for_hash_pinned_region_encoding_candidates": True,
                 "all_candidate_code_boundaries_classified": False,
+                "selected_slot4_callback_body_classified": True,
+                "all_callback_target_bodies_classified": False,
                 "callback_target_bodies_classified": False,
+                "registration_persistence_established": False,
                 "runtime_table_contents_observed": False,
                 "runtime_path_observed": False,
             },
             "limitations": [
                 "The whole-prefix scans classify aligned raw A32 B/BL, A32 BLX-immediate and T32 BL/BLX-immediate patterns; they do not classify the mixed prefix into code and data.",
                 "The A32 BLX-register scan roots only the two IRQ-dispatch sites at 0x6fb0 and 0x6fe0 as code; the other 70 matches remain encoding candidates only.",
-                "The selected IRQ callback table and three direct registration calls do not establish every writer, runtime table contents, callback identity, or callback-target execution.",
+                "The selected slot-4 registration and callback body establish a conditional static delivery path, not registration persistence, live table contents, execution, channel-index validity, or end-to-end ownership.",
+                "The IRQ callback slot 4 and the delivery handler's mailbox-selected channel index are distinct values; their equality is neither required nor established.",
+                "The selected IRQ callback table and three direct registration calls do not establish every writer or the identities of the other callback bodies.",
                 "No supported direct-immediate target candidate for 0x1610 exists in the hash-pinned ARM prefix; that does not exclude other transfer mechanisms or sources outside the pinned prefix.",
                 "The 0x12e4 path relies on A32 callee-saved r6 preservation across its possible intervening calls.",
                 "Static selected paths do not establish runtime execution, valid slot range, object identity or lifetime.",
@@ -6757,7 +7106,10 @@ def _channel_field_map(payload):
             "whole_arm_blx_register_encoding_scan": True,
             "rooted_blx_register_instruction_sites": True,
             "all_blx_register_code_boundaries_classified": False,
+            "selected_slot4_callback_body_classified": True,
+            "selected_slot4_delivery_path_statically_connected": True,
             "all_callback_registration_writers_complete": False,
+            "callback_registration_persistence_established": False,
             "runtime_callback_targets_resolved": False,
             "whole_arm_source_code_boundaries_classified": False,
             "direct_caller_inventory_complete": False,
@@ -6782,7 +7134,7 @@ def _channel_field_map(payload):
             "A32 calls use the pinned calling convention and output pointers remain unaliased for each serialized call.",
             "The whole-prefix target-filtered scans classify aligned raw direct-immediate encoding patterns, not source ISA boundaries, executable code, or every possible control-transfer mechanism.",
             "The two A32 BL target candidates establish the selected fixed-root paths; zero A32 BLX-immediate and T32 BL/BLX-immediate matches add no path, while BLX-register targets and other indirect/computed transfers remain unresolved.",
-            "The IRQ vector-to-entry-to-dispatch chain roots two BLX-register instructions, but static callback-table registration does not prove live table contents, writer closure, callback execution, or runtime helper targets.",
+            "The IRQ vector-to-entry-to-dispatch chain and selected slot-4 registration conditionally connect status bit 0x200 to descriptor delivery, but do not prove registration persistence, live table contents, callback execution, or overall provenance.",
             "The third argument-rooted helper at 0x1610 has no supported direct-immediate target candidate and remains conditional on its incoming C-root premise.",
             "Selected scalar access lists exclude unpinned aliases and are not whole-image access inventories; the three pinned bulk clear paths are listed separately.",
             "Reported branch targets are decoded from pinned call instructions; target bodies are not thereby claimed as pinned.",
