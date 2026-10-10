@@ -26,6 +26,7 @@ enum class Event {
   SyncExit,
   ExportEnter,
   ExportExit,
+  ReadExportReuseImplicitFenceProbe,
   VppCapture,
   VppCommit,
   VppCancel,
@@ -46,6 +47,18 @@ struct Fields {
   uint64_t operation = 0;
   uint64_t duration_ns = 0;
   int64_t outcome = 0;
+  // ReadExportReuseImplicitFenceProbe calls poll(POLLOUT, timeout=0) at the
+  // next client reuse boundary. It does not wait for fence signaling, but the
+  // kernel may sleep while acquiring a contended dma_resv lock; duration_ns
+  // measures that diagnostic perturbation. It neither proves export-time
+  // reader completion nor covers explicit-sync or unfenced access. The
+  // operation is the latest successful explicit read-only export; repeated
+  // read exports observe aggregate implicit fences on the same backing.
+  uint64_t identified_exported_object_count = 0;
+  uint64_t pollout_count = 0;
+  uint64_t not_pollout_count = 0;
+  uint64_t probe_error_count = 0;
+  int64_t probe_errno = 0;
 };
 
 // Opt-in diagnostic output only. With CRYSTALHD_VAAPI_TRACE unset (or not
@@ -75,17 +88,19 @@ class Trace {
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch())
             .count());
-    char line[640];
+    char line[768];
     const int length = std::snprintf(
         line, sizeof(line),
-        "{\"schema\":\"crystalhd-vaapi-trace-v1\","
+        "{\"schema\":\"crystalhd-vaapi-trace-v2\","
         "\"ts_monotonic_ns\":%llu,\"session\":%llu,"
         "\"driver_instance\":%llu,\"pid\":%lld,\"seq\":%llu,"
         "\"event\":\"%s\",\"context\":%llu,\"generation\":%llu,"
         "\"surface\":%llu,\"token\":%llu,\"decode_identity\":%llu,"
         "\"owner\":%llu,\"submission_ordinal\":%llu,"
         "\"operation\":%llu,\"duration_ns\":%llu,"
-        "\"outcome\":%lld}\n",
+        "\"outcome\":%lld,\"identified_exported_object_count\":%llu,"
+        "\"pollout_count\":%llu,\"not_pollout_count\":%llu,"
+        "\"probe_error_count\":%llu,\"probe_errno\":%lld}\n",
         static_cast<unsigned long long>(timestamp_ns),
         static_cast<unsigned long long>(session_),
         static_cast<unsigned long long>(session_),
@@ -100,7 +115,13 @@ class Trace {
         static_cast<unsigned long long>(fields.submission_ordinal),
         static_cast<unsigned long long>(fields.operation),
         static_cast<unsigned long long>(fields.duration_ns),
-        static_cast<long long>(fields.outcome));
+        static_cast<long long>(fields.outcome),
+        static_cast<unsigned long long>(
+            fields.identified_exported_object_count),
+        static_cast<unsigned long long>(fields.pollout_count),
+        static_cast<unsigned long long>(fields.not_pollout_count),
+        static_cast<unsigned long long>(fields.probe_error_count),
+        static_cast<long long>(fields.probe_errno));
     if (length <= 0 || static_cast<size_t>(length) >= sizeof(line))
       return;
     size_t written = 0;
@@ -148,6 +169,8 @@ class Trace {
       case Event::SyncExit: return "sync_exit";
       case Event::ExportEnter: return "export_enter";
       case Event::ExportExit: return "export_exit";
+      case Event::ReadExportReuseImplicitFenceProbe:
+        return "read_export_reuse_implicit_fence_probe";
       case Event::VppCapture: return "vpp_capture";
       case Event::VppCommit: return "vpp_commit";
       case Event::VppCancel: return "vpp_cancel";
