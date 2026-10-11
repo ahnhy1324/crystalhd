@@ -6,24 +6,22 @@ decoded a live H.264 stream in hardware and displayed it through an indirect
 EGL/DRM PRIME path. This is real hardware integration, not a `vainfo` result or
 software fallback.
 
-It is not yet a daily-use or 60 fps support claim. Use 720p30 for the first
-hardware trial; 720p60 and 1080p30 remain performance experiments. Orderly
-close/reopen is confirmed. Physical A/V offset has no controlled measurement;
-the input-response proxy below measures the experimental one-submission-lag
-path and stops before panel scanout. Automatic recovery from a forced network
-or Sunshine interruption has not been tested. Use software decoding when
-dependable game streaming matters more than experimental offload.
+The reference system demonstrated exact-identity 720p30 playback and an
+opt-in one-submission-lag mode that averaged 58.63 renderer submissions/s at
+720p60 and 28.58 at 1080p30. The latter is a working cadence experiment, not a
+30-fps-only result. It remains experimental because it associates the previous
+completed picture with the current surface/PTS slot. Orderly close/reopen is
+confirmed; physical A/V offset and forced-interruption recovery are not.
 
 ## Current verdict
 
 | Target | What happened on the reference system | Recommendation |
 | --- | --- | --- |
-| 720p30 H.264 | Hardware decode and indirect display worked; bounded runs handed roughly 28-29 frames/s to Moonlight's renderer. | **Only recommended starting point for a hardware trial** |
-| 720p60 H.264 | The card decoded near 60 frames/s, but Moonlight handed only about 33 frames/s to its renderer. | Experimental; not smooth 60 fps |
-| 1080p30 H.264 | The card decoded about 30 frames/s, but Moonlight handed only about 15-16 frames/s to its renderer. | Experimental; not smooth 30 fps |
+| 720p30 H.264 | Hardware decode and indirect display worked; bounded exact-path runs handed roughly 28-29 frames/s to Moonlight's renderer. | **Recommended first hardware trial** |
+| 720p60 H.264 | Exact identity reached about 33 renderer submissions/s; opt-in `previous,0` averaged 58.63 with a deterministic one-submission payload lag. | Near-60 renderer handoff achieved in the experimental mode |
+| 1080p30 H.264 | Exact identity reached about 15-16 renderer submissions/s; opt-in `previous,0` averaged 28.58 with the same bounded lag. | Near-30 renderer handoff achieved in the experimental mode |
 | 1080p60 H.264 | Card output stayed below 60 frames/s and live input accumulated backlog. | Not practical |
 | Orderly session lifecycle | A five-minute hardware session exited normally; an immediate 40-second session reacquired the device, and later bounded sessions also released it cleanly. | Confirmed for graceful close/reopen; forced connection-loss recovery untested |
-| One-submission-lag READY experiment | With V-sync and pacing disabled, `previous,0` averaged 58.63 renderer submissions/s at 720p60 and 28.58 at 1080p30. | Render-submit-rate effect demonstrated; the caller's PTS-to-surface association is not preserved, so this is experimental only |
 
 “Handed to the renderer” is a Moonlight software event, not proof that the
 frame reached physical scanout.
@@ -134,16 +132,25 @@ second session should be able to acquire the device again.
 The live and low-latency controls are process-local and experimental. They do
 not change `libcrystalhd.so.3`, the kernel ioctl ABI or BCM70012 behavior.
 Reconstructed H.264 frame-rate signaling remains fixed at 30 fps, so these
-options are not a supported 60 fps mode.
+two controls alone are not the measured 60 fps mode. The near-60 result below
+also uses the separate READY experiment.
 
 ### One-submission-lag READY experiment
 
-Do not set these for ordinary streaming:
+Keep the READY variables unset for the exact-path first trial. After that path
+works, the measured `previous,0` configuration for experimental 720p60 or
+1080p30 is:
 
 ```sh
-CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP
-CRYSTALHD_VAAPI_EXPERIMENTAL_READY_POLICY
-CRYSTALHD_VAAPI_EXPERIMENTAL_READY_DELAY_US
+moonlight_app=/path/to/Moonlight.AppImage
+env LIBVA_DRIVER_NAME=crystalhd \
+  VAAPI_FORCE_INDIRECT=1 \
+  CRYSTALHD_VAAPI_LIVE_H264=1 \
+  CRYSTALHD_VAAPI_LOW_LATENCY_H264=1 \
+  CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP=1 \
+  CRYSTALHD_VAAPI_EXPERIMENTAL_READY_POLICY=previous \
+  CRYSTALHD_VAAPI_EXPERIMENTAL_READY_DELAY_US=0 \
+  "$moonlight_app"
 ```
 
 This experiment was designed to trade a deterministic payload lag for a more
@@ -159,8 +166,9 @@ preceding payload (`submission_drift=1`). `0` therefore means zero *additional
 time-based wait*, not zero payload lag. It reached 58.63 renderer submissions/s
 at 720p60 and 28.58 at 1080p30 on the reference system, demonstrating the
 intended render-submit-rate versus one-submission-lag tradeoff. These are
-average handoff rates; physical scanout timing and cadence variance were not
-measured.
+average handoff rates from three repeated 60-second runs. Identity traces found
+no duplicate, reversal or stale resurrection; physical scanout timing and
+cadence variance were not separately instrumented.
 
 The mode remains experimental because it copies that older picture into the
 newly requested surface, violating normal VA surface identity and the caller's

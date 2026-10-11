@@ -37,7 +37,8 @@ size is 1920x1088.
 | --- | --- |
 | 720p30 local files | Best-established ordinary playback target |
 | 1080p30 local files | Works on the reference host with a host-specific PCIe workaround; test the default first |
-| 720p60 | Decoder capacity has been demonstrated, but general 60 Hz presentation has not |
+| 720p60 Moonlight | The exact path was presentation-limited, but the opt-in one-submission-lag mode averaged 58.63 renderer submissions/s on the reference host |
+| 1080p30 Moonlight | The same opt-in mode averaged 28.58 renderer submissions/s on the reference host |
 | 1080p60 | Not practical on the current output path |
 
 Exact profiles, framing restrictions, fixtures and measurements are in the
@@ -51,7 +52,7 @@ Exact profiles, framing restrictions, fixtures and measurements are in the
 | `libcrystalhd.so.3` | **Compatibility API** | Existing Broadcom-API applications; the ABI and legacy ioctl behavior remain preserved |
 | FFmpeg through VA-API | **Experimental** | Selected decode/download paths work; libva discovery alone is not proof of decode or display |
 | VLC 3.0.21 | **Tested combination** | H.264 on the reference X11/i915 system only, not general VLC or codec certification |
-| [Moonlight Qt 6.2.0](MOONLIGHT.md) | **Experimental integration** | Real BCM70015 H.264 decode and indirect display worked, and orderly close/reopen passed; physical A/V offset has no controlled measurement, and forced connection-loss recovery remains untested |
+| [Moonlight Qt 6.2.0](MOONLIGHT.md) | **Working experimental integration** | Real BCM70015 H.264 decode and indirect display worked; the opt-in cadence mode reached near-target 720p60 and 1080p30 renderer rates, and orderly close/reopen passed |
 | Chromium / YouTube | **Hardware path unverified** | The launcher defaults to software; hardware mode disables the GPU sandbox and is not a daily-use path |
 
 ## Quick start
@@ -133,11 +134,12 @@ instead of applying global PCIe settings.
 
 ## Sunshine / Moonlight streaming
 
-720p30 is the first hardware-offload trial. The reference system performed
-real CrystalHD decoding and indirect display, and bounded exact-identity runs
-handed roughly 28-29 frames/s to Moonlight's renderer. Orderly close/reopen
-also passed. The exact-identity 720p60 path handed only about 33 frames/s to
-the renderer, so smooth 60 fps did not pass.
+The reference system demonstrated two useful levels of Moonlight integration.
+The exact-identity path handed roughly 28-29 frames/s to the renderer at
+720p30. For higher rates, the opt-in READY mode deliberately retained one
+completed picture and handed sequential pictures to the renderer at 58.63
+submissions/s for 720p60 and 28.58 for 1080p30. These are working experimental
+modes, not a result limited to 720p30.
 
 The opt-in READY experiment was built to stabilize streaming handoff by
 keeping a completed frame in reserve and accepting a predictable
@@ -167,8 +169,9 @@ env LIBVA_DRIVER_NAME=crystalhd \
   "$moonlight_app"
 ```
 
-Use H.264, 1280x720 and 30 fps for the first connection. The
-[Moonlight/Sunshine guide](MOONLIGHT.md) covers download, pairing, proof of
+Use H.264, 1280x720 and 30 fps for the first exact-path connection. After that
+works, the [Moonlight/Sunshine guide](MOONLIGHT.md) gives the measured
+`previous,0` command for experimental 720p60 or 1080p30, plus pairing, proof of
 hardware use, measured limits and rollback-safe troubleshooting.
 
 ## Other installation modes
