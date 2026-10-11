@@ -18,6 +18,16 @@ static unsigned int probe_poll_calls = 0;
 static gbm_bo *probe_gbm_bo = nullptr;
 static std::vector<int> probe_gbm_plane_fds;
 static std::vector<int> probe_gbm_temporary_fds;
+static int control_read_probe_fd = -1;
+static unsigned int control_read_probe_calls = 0;
+
+extern "C" ssize_t __real_read(int fd, void *buffer, size_t count);
+extern "C" ssize_t __wrap_read(int fd, void *buffer, size_t count) {
+  if (fd == control_read_probe_fd)
+    ++control_read_probe_calls;
+  return __real_read(fd, buffer, count);
+}
+
 extern "C" int __real_ioctl(int fd, unsigned long request, ...);
 extern "C" int __wrap_ioctl(int fd, unsigned long request, ...) {
   va_list arguments;
@@ -5273,6 +5283,79 @@ static void OutputEventReplacesPeriodicWorkerPolling() {
           "one readiness signal causes one bounded output harvest");
 }
 
+static void DecodeControlWakeUsesExactArmedOutputLease() {
+  DecodeContext decode;
+  const int first_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+  const int second_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+  Require(first_fd >= 0 && second_fd >= 0,
+          "allocate exact-lease control-wake fixtures");
+  const auto first = std::make_shared<OutputPollLease>(first_fd);
+  const auto second = std::make_shared<OutputPollLease>(second_fd);
+
+  decode.output_poll = first;
+  Require(NeedsDecodeControlWake(decode),
+          "an unarmed decoder still needs a control wake");
+  decode.armed_output_poll = first;
+  Require(!NeedsDecodeControlWake(decode),
+          "the exact armed output lease suppresses a redundant control wake");
+
+  decode.input_backpressured = true;
+  Require(NeedsDecodeControlWake(decode),
+          "TX backpressure retains its bounded control wake");
+  decode.input_backpressured = false;
+  decode.input_budget_exhausted = true;
+  Require(NeedsDecodeControlWake(decode),
+          "an exhausted input turn retains its control wake");
+  decode.input_budget_exhausted = false;
+
+  decode.output_poll = second;
+  Require(NeedsDecodeControlWake(decode),
+          "a reopened output descriptor cannot inherit a stale armed lease");
+  decode.armed_output_poll = second;
+  Require(!NeedsDecodeControlWake(decode),
+          "the replacement lease suppresses only after it is armed");
+
+  decode.profile = VAProfileMPEG4AdvancedSimple;
+  Require(decode.mpeg4_replay.Append(
+              kTimestampStep, CrystalHDMpeg4Replay::Kind::I, 0, 0,
+              {0, 0, 1, 0xb6}) &&
+              decode.mpeg4_replay.NextInput() != nullptr &&
+              decode.mpeg4_replay.InputSent() &&
+              decode.mpeg4_replay.Seal() &&
+              decode.mpeg4_replay.Observe(kTimestampStep) ==
+                  CrystalHDMpeg4Replay::Output::New &&
+              NeedsMpeg4EosProbe(decode) && NeedsDecodeControlWake(decode),
+          "state-only MPEG-4 EOS retains its bounded control wake");
+
+  Require(decode.CloseHardware() == BC_STS_SUCCESS &&
+              !decode.output_poll && decode.armed_output_poll.expired(),
+          "hardware close clears both current and armed output leases");
+}
+
+static void DecodeControlDrainConsumesOneEventfdRead() {
+  const int descriptor = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+  Require(descriptor >= 0, "allocate control-drain fixture");
+  const uint64_t one = 1;
+  Require(write(descriptor, &one, sizeof(one)) ==
+              static_cast<ssize_t>(sizeof(one)) &&
+              write(descriptor, &one, sizeof(one)) ==
+                  static_cast<ssize_t>(sizeof(one)),
+          "coalesce two pending control notifications");
+
+  control_read_probe_fd = descriptor;
+  control_read_probe_calls = 0;
+  DrainDecodeControlFd(descriptor);
+  control_read_probe_fd = -1;
+  Require(control_read_probe_calls == 1,
+          "one eventfd read drains the coalesced control counter");
+
+  uint64_t value = 0;
+  errno = 0;
+  Require(read(descriptor, &value, sizeof(value)) < 0 && errno == EAGAIN,
+          "the single successful read leaves no latched control event");
+  Require(close(descriptor) == 0, "close control-drain fixture");
+}
+
 static void BudgetedWorkerReleasesDriverMutex() {
   constexpr unsigned int kPictures = 24;
   TeardownFixture fixture(kPictures);
@@ -5516,6 +5599,8 @@ int main() {
     ReadyInventoryConditionalOpportunityReplay();
     QueryOnlyObservesAutonomousDecodeProgress();
     OutputEventReplacesPeriodicWorkerPolling();
+    DecodeControlWakeUsesExactArmedOutputLease();
+    DecodeControlDrainConsumesOneEventfdRead();
     BudgetedWorkerReleasesDriverMutex();
     Mpeg4StateOnlyEosStillWakesEventWorker();
     OutputPollHangupFailsWithoutSpinning();

@@ -1529,6 +1529,7 @@ struct DecodeContext {
 
   HANDLE device = nullptr;
   std::shared_ptr<OutputPollLease> output_poll;
+  std::weak_ptr<OutputPollLease> armed_output_poll;
   bool decoder_open = false;
   bool decoder_started = false;
   bool is_70012 = false;
@@ -1645,6 +1646,7 @@ struct DecodeContext {
         result = status;
       device = nullptr;
     }
+    armed_output_poll.reset();
     output_poll.reset();
     input_backpressured = false;
     input_budget_exhausted = false;
@@ -4206,18 +4208,21 @@ static bool NeedsMpeg4EosProbe(const DecodeContext &decode) {
   return replay.sealed() && !replay.ended() && replay.outstanding() == 0;
 }
 
+static bool NeedsDecodeControlWake(const DecodeContext &decode) {
+  if (!decode.output_poll || decode.input_backpressured ||
+      decode.input_budget_exhausted || NeedsMpeg4EosProbe(decode))
+    return true;
+  return decode.armed_output_poll.lock() != decode.output_poll;
+}
+
 static void DrainDecodeControlFd(int fd) {
   if (fd < 0)
     return;
   uint64_t value;
-  for (;;) {
-    const ssize_t result = read(fd, &value, sizeof(value));
-    if (result == static_cast<ssize_t>(sizeof(value)))
-      continue;
-    if (result < 0 && errno == EINTR)
-      continue;
-    break;
-  }
+  ssize_t result;
+  do {
+    result = read(fd, &value, sizeof(value));
+  } while (result < 0 && errno == EINTR);
 }
 
 // Some conforming frontends submit pictures and then wait in their presentation
@@ -4317,6 +4322,8 @@ static void RunDecodeWorker(Driver *driver) {
     const int timeout_ms = input_budget_exhausted ? 0 :
                            input_backpressured ? 2 :
                            needs_mpeg4_eos_probe ? 5 : -1;
+    for (size_t i = 0; i < output_poll_contexts.size(); ++i)
+      output_poll_contexts[i]->armed_output_poll = output_poll_leases[i];
     lock.unlock();
     int result;
     do {
@@ -4325,6 +4332,11 @@ static void RunDecodeWorker(Driver *driver) {
     if (result > 0 && (descriptors.front().revents & POLLIN) != 0)
       DrainDecodeControlFd(driver->decode_control_fd);
     lock.lock();
+    for (size_t i = 0; i < output_poll_contexts.size(); ++i) {
+      if (output_poll_contexts[i]->armed_output_poll.lock() ==
+          output_poll_leases[i])
+        output_poll_contexts[i]->armed_output_poll.reset();
+    }
     if (result < 0) {
       for (const auto &decode : output_poll_contexts) {
         if (HasAutonomousDecodeWork(decode))
@@ -5801,7 +5813,8 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
   decode_context->mpeg2_picture = DecodeContext::Mpeg2Picture();
   decode_context->mpeg4_picture = DecodeContext::Mpeg4Picture();
   decode_context->vc1_picture = DecodeContext::Vc1Picture();
-  if (status == VA_STATUS_SUCCESS)
+  if (status == VA_STATUS_SUCCESS &&
+      NeedsDecodeControlWake(*decode_context))
     driver->NotifyDecodeWorker();
   return status;
 }

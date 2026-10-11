@@ -2950,8 +2950,9 @@ static void RxPollQueueAccounting(void)
           crystalhd_dioq_add_actual(&pollq, &packet2, true, 0x72) ==
               BC_STS_SUCCESS &&
           adapter.rx_poll_ready.counter == 2 && pollq.count == 2 &&
-          output_poll_wakes == wakes + 2,
-          "RX-ready enqueue publishes the exact level before waking pollers");
+          output_poll_wakes == wakes + 1,
+          "RX-ready enqueue publishes the exact level and wakes only on the "
+          "empty-to-nonempty transition");
     Check(!crystalhd_dioq_find_and_fetch_actual(&pollq, 0x99) &&
           adapter.rx_poll_ready.counter == 2,
           "a missed tagged fetch leaves output readiness unchanged");
@@ -2962,6 +2963,14 @@ static void RxPollQueueAccounting(void)
           !crystalhd_dioq_fetch_actual(&pollq) &&
           !adapter.rx_poll_ready.counter && !pollq.count,
           "FIFO output fetch clears readiness without underflow");
+    Check(crystalhd_dioq_add_actual(&pollq, packet0, true, 0x73) ==
+              BC_STS_SUCCESS &&
+          adapter.rx_poll_ready.counter == 1 && pollq.count == 1 &&
+          output_poll_wakes == wakes + 2,
+          "RX-ready poll wake rearms after the queue drains");
+    Check(crystalhd_dioq_fetch_actual(&pollq) == packet0 &&
+          !adapter.rx_poll_ready.counter && !pollq.count,
+          "rearmed output fetch restores an empty readiness level");
     QueueInvariant(&pollq);
 }
 
