@@ -68,15 +68,13 @@ Exact profiles, framing restrictions, fixtures and measurements are in the
 
 ## Quick start
 
-Before choosing a direct install, check whether DKMS already owns CrystalHD:
+This default procedure installs CrystalHD directly for the currently running
+kernel. It does **not** require, install or register DKMS. If you already chose
+to manage CrystalHD through DKMS on this machine, use the separate
+[DKMS procedure](README.dkms) instead and do not mix the two installation
+methods.
 
-```sh
-dkms status 2>/dev/null | grep -i crystalhd || true
-```
-
-If that prints a CrystalHD registration, follow the [DKMS procedure](README.dkms)
-and do not run the direct `sudo make install` below. Otherwise, from a fresh
-checkout on Ubuntu:
+From a fresh checkout on Ubuntu:
 
 ```sh
 sudo apt install git
@@ -101,6 +99,11 @@ crystalhd-check
 The direct target installs the current-kernel module, firmware, udev rule,
 library, GStreamer plugin/player, VA-API driver and `crystalhd-check`. It does
 not register DKMS or install the optional browser launcher.
+
+Because this is a direct current-kernel installation, install the matching
+headers and repeat `make` plus `sudo make install` after booting a new kernel.
+Use the separate DKMS procedure only if automatic per-kernel module rebuilding
+is wanted.
 
 When updating an existing direct install, stop before playback if
 `crystalhd-check` reports that the loaded and installed modules differ. Follow
