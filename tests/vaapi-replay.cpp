@@ -1455,6 +1455,8 @@ static void ExperimentalReadyRemapStateMachine() {
     decode->profile = VAProfileH264Main;
     decode->width = decode->height = 16;
     decode->live_h264 = true;
+    decode->live_h264_gap_tolerant = true;
+    decode->live_h264_fast_path = true;
     decode->low_latency_h264 = true;
     decode->experimental_ready_remap = true;
     driver.contexts[7] = decode;
@@ -1830,6 +1832,10 @@ static void ExperimentalReadyRemapGate() {
   SavedEnvironment delay("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_DELAY_US");
   SavedEnvironment policy("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_POLICY");
   struct GateState {
+    bool transport;
+    bool gap_tolerant;
+    bool fast_path;
+    bool low_latency;
     bool enabled;
     bool latest;
     uint64_t delay_ns;
@@ -1858,15 +1864,49 @@ static void ExperimentalReadyRemapGate() {
             "create environment-gated remap context");
     const std::shared_ptr<DecodeContext> decode =
         driver.contexts.at(context_id);
-    return GateState{decode->experimental_ready_remap,
+    return GateState{decode->live_h264,
+                     decode->live_h264_gap_tolerant,
+                     decode->live_h264_fast_path,
+                     decode->low_latency_h264,
+                     decode->experimental_ready_remap,
                      decode->experimental_ready_latest,
                      decode->experimental_ready_delay_ns};
   };
 
-  Require(!create(nullptr, nullptr, nullptr, nullptr, nullptr,
+  const GateState default_h264 =
+      create(nullptr, nullptr, nullptr, nullptr, nullptr, VAProfileH264Main);
+  const GateState fast_h264 =
+      create("1", nullptr, nullptr, nullptr, nullptr, VAProfileH264Main);
+  const GateState low_h264 =
+      create("1", "1", nullptr, nullptr, nullptr, VAProfileH264Main);
+  const GateState strict_h264 =
+      create("0", "1", "1", nullptr, nullptr, VAProfileH264Main);
+  const GateState invalid_h264 =
+      create("yes", "1", "1", nullptr, nullptr, VAProfileH264Main);
+  const GateState default_mpeg2 =
+      create(nullptr, nullptr, nullptr, nullptr, nullptr, VAProfileMPEG2Main);
+  Require(default_h264.transport && !default_h264.gap_tolerant &&
+              !default_h264.fast_path &&
+              !default_h264.low_latency && !default_h264.enabled &&
+              fast_h264.transport && fast_h264.gap_tolerant &&
+              fast_h264.fast_path &&
+              !fast_h264.low_latency && !fast_h264.enabled &&
+              low_h264.transport && low_h264.gap_tolerant &&
+              low_h264.fast_path &&
+              low_h264.low_latency && !low_h264.enabled &&
+              !strict_h264.transport && !strict_h264.gap_tolerant &&
+              !strict_h264.fast_path &&
+              !strict_h264.low_latency && !strict_h264.enabled &&
+              !invalid_h264.transport && !invalid_h264.gap_tolerant &&
+              !invalid_h264.fast_path &&
+              !invalid_h264.low_latency && !invalid_h264.enabled &&
+              !default_mpeg2.transport && !default_mpeg2.gap_tolerant &&
+              !default_mpeg2.fast_path &&
+              !default_mpeg2.low_latency && !default_mpeg2.enabled,
+          "default H.264 transport is bounded while fast paths remain exact opt-ins");
+
+  Require(!create(nullptr, nullptr, "1", nullptr, nullptr,
                   VAProfileH264Main).enabled &&
-              !create(nullptr, nullptr, "1", nullptr, nullptr,
-                      VAProfileH264Main).enabled &&
               !create("1", "1", "0", nullptr, nullptr,
                       VAProfileH264Main).enabled &&
               !create("1", "1", "yes", nullptr, nullptr,
@@ -1935,6 +1975,56 @@ static void ExperimentalReadyRemapGate() {
   Require(SubmitPicture(&driver, &decode, VAProfileH264Main) ==
               VA_STATUS_ERROR_UNSUPPORTED_PROFILE,
           "experimental remap fails closed before accepting a B slice");
+}
+
+static void DefaultH264TransportIsBounded() {
+  SavedEnvironment live("CRYSTALHD_VAAPI_LIVE_H264");
+  unsetenv("CRYSTALHD_VAAPI_LIVE_H264");
+  Driver driver{-1};
+  driver.configs[1] = {VAProfileH264Main, VAEntrypointVLD};
+  VADriverContext context = {};
+  context.pDriverData = &driver;
+  VAContextID context_id = VA_INVALID_ID;
+  Require(CreateContext(&context, 1, 16, 16, 0, nullptr, 0,
+                        &context_id) == VA_STATUS_SUCCESS,
+          "create default bounded H.264 context");
+  const std::shared_ptr<DecodeContext> decode = driver.contexts.at(context_id);
+  Require(decode->live_h264 && !decode->live_h264_fast_path,
+          "default context separates bounded transport from fast paths");
+  for (uint64_t picture = 1; picture <= 900; ++picture) {
+    Require(decode->replay.Append(picture, picture == 1, {1}),
+            "default context accepts long-running H.264 input");
+    SendNext(&decode->replay, picture);
+    Require(decode->replay.Observe(picture) ==
+                CrystalHDDecodeReplay::Output::New &&
+                decode->replay.cached_pictures() <= 512 &&
+                decode->replay.outstanding() == 0,
+            "default context bounds completed H.264 history");
+  }
+
+  setenv("CRYSTALHD_VAAPI_LIVE_H264", "0", 1);
+  Driver strict_driver{-1};
+  strict_driver.configs[1] = {VAProfileH264Main, VAEntrypointVLD};
+  VADriverContext strict_context = {};
+  strict_context.pDriverData = &strict_driver;
+  context_id = VA_INVALID_ID;
+  Require(CreateContext(&strict_context, 1, 16, 16, 0, nullptr, 0,
+                        &context_id) == VA_STATUS_SUCCESS,
+          "create explicit strict H.264 context");
+  const std::shared_ptr<DecodeContext> strict =
+      strict_driver.contexts.at(context_id);
+  for (uint64_t picture = 1; picture <= 512; ++picture) {
+    Require(strict->replay.Append(picture, picture == 1, {1}),
+            "strict context accepts its bounded replay prefix");
+    SendNext(&strict->replay, picture);
+    Require(strict->replay.Observe(picture) ==
+                CrystalHDDecodeReplay::Output::New,
+            "strict context completes accepted input exactly");
+  }
+  Require(!strict->live_h264 && !strict->live_h264_fast_path &&
+              !strict->replay.Append(513, false, {1}) &&
+              strict->replay.failed(),
+          "explicit strict mode preserves the 512-picture replay guard");
 }
 
 static void ExperimentalPolicyDelayMatrix() {
@@ -2282,6 +2372,8 @@ static void ExperimentalReadyRemapFailClosedRaces() {
     decode.profile = VAProfileH264Main;
     decode.width = decode.height = 16;
     decode.live_h264 = true;
+    decode.live_h264_gap_tolerant = true;
+    decode.live_h264_fast_path = true;
     decode.low_latency_h264 = true;
     decode.experimental_ready_remap = true;
     decode.experimental_ready_latest = true;
@@ -3364,6 +3456,8 @@ static void ConcurrentSyncObservesExperimentalPresentation() {
     fixture.decoder->generation = 1;
     fixture.decoder->experimental_ready_remap = true;
     fixture.decoder->live_h264 = true;
+    fixture.decoder->live_h264_gap_tolerant = true;
+    fixture.decoder->live_h264_fast_path = true;
     fixture.decoder->low_latency_h264 = true;
 
     const auto candidate =
@@ -3425,6 +3519,8 @@ static void ConcurrentSyncObservesExperimentalPresentation() {
     fixture.decoder->generation = 1;
     fixture.decoder->experimental_ready_remap = true;
     fixture.decoder->live_h264 = true;
+    fixture.decoder->live_h264_gap_tolerant = true;
+    fixture.decoder->live_h264_fast_path = true;
     fixture.decoder->low_latency_h264 = true;
 
     const auto candidate =
@@ -3482,6 +3578,8 @@ static void ConcurrentSyncObservesExperimentalPresentation() {
   fixture.decoder->experimental_ready_remap = true;
   fixture.decoder->experimental_ready_delay_ns = kExperimentalDelay50Ns;
   fixture.decoder->live_h264 = true;
+  fixture.decoder->live_h264_gap_tolerant = true;
+  fixture.decoder->live_h264_fast_path = true;
   fixture.decoder->low_latency_h264 = true;
 
   const auto old_picture =
@@ -3512,6 +3610,8 @@ static void ConcurrentSyncObservesExperimentalPresentation() {
   replacement->experimental_ready_remap = true;
   replacement->experimental_ready_delay_ns = kExperimentalDelay50Ns;
   replacement->live_h264 = true;
+  replacement->live_h264_gap_tolerant = true;
+  replacement->live_h264_fast_path = true;
   replacement->low_latency_h264 = true;
   fixture.driver.contexts[2] = replacement;
 
@@ -3564,6 +3664,8 @@ static void ExperimentalDelayedSyncThreshold() {
     fixture.decoder->experimental_ready_latest = true;
     fixture.decoder->experimental_ready_delay_ns = kExperimentalDelay16Ns;
     fixture.decoder->live_h264 = true;
+    fixture.decoder->live_h264_gap_tolerant = true;
+    fixture.decoder->live_h264_fast_path = true;
     fixture.decoder->low_latency_h264 = true;
 
     const auto payload =
@@ -3834,6 +3936,8 @@ static void CompletedLiveTailPrecedesUnreconstructibleContinuation() {
   CrystalHDDecodeReplay::Limits limits;
   limits.cache_bytes = limits.pictures = 2;
   fixture.decoder->live_h264 = true;
+  fixture.decoder->live_h264_gap_tolerant = true;
+  fixture.decoder->live_h264_fast_path = true;
   fixture.decoder->replay = CrystalHDDecodeReplay(limits, true);
   for (uint64_t picture = 1; picture <= 3; ++picture) {
     const uint64_t timestamp = picture * kTimestampStep;
@@ -3892,7 +3996,7 @@ static void DecoderResetPreservesItsExplicitLivePolicy() {
         const uint64_t timestamp = (epoch + 1) * 1000 + picture;
         const bool accepted = decoder.replay.Append(timestamp, picture == 1, {1});
         Require(accepted == (live || picture <= 512),
-                "default stays strict and only explicit live mode retires history");
+                "strict state stays bounded and live state retires history");
         if (!accepted)
           break;
         Require(decoder.replay.live_stream_started() == (live && picture >= 2),
@@ -3909,15 +4013,21 @@ static void DecoderResetPreservesItsExplicitLivePolicy() {
 
   DecodeContext low_latency;
   low_latency.live_h264 = true;
+  low_latency.live_h264_gap_tolerant = true;
+  low_latency.live_h264_fast_path = true;
   low_latency.low_latency_h264 = true;
   low_latency.prefed_timestamp = 17 * kTimestampStep;
   Require(low_latency.Close() == BC_STS_SUCCESS &&
-              low_latency.live_h264 && low_latency.low_latency_h264 &&
+              low_latency.live_h264 && low_latency.live_h264_gap_tolerant &&
+              low_latency.live_h264_fast_path &&
+              low_latency.low_latency_h264 &&
               low_latency.prefed_timestamp == 0,
           "close preserves low-latency policy but discards its runtime prefix");
   low_latency.prefed_timestamp = 19 * kTimestampStep;
   low_latency.Reset();
-  Require(low_latency.live_h264 && low_latency.low_latency_h264 &&
+  Require(low_latency.live_h264 && low_latency.live_h264_gap_tolerant &&
+              low_latency.live_h264_fast_path &&
+              low_latency.low_latency_h264 &&
               low_latency.prefed_timestamp == 0,
           "reset preserves low-latency policy but discards its runtime prefix");
 }
@@ -3940,6 +4050,8 @@ static std::vector<uint8_t> ExpectedH264LowLatencyPrefeed() {
 static void LiveH264SpeculativePrefeedSequence() {
   TeardownFixture fixture(3);
   fixture.decoder->live_h264 = true;
+  fixture.decoder->live_h264_gap_tolerant = true;
+  fixture.decoder->live_h264_fast_path = true;
   fixture.decoder->low_latency_h264 = true;
   fixture.decoder->is_70012 = false;
   fixture.decoder->replay = CrystalHDDecodeReplay(true);
@@ -3995,6 +4107,8 @@ static void LiveH264PrefeedBusyFallback() {
   {
     TeardownFixture fixture(2);
     fixture.decoder->live_h264 = true;
+    fixture.decoder->live_h264_gap_tolerant = true;
+    fixture.decoder->live_h264_fast_path = true;
     fixture.decoder->low_latency_h264 = true;
     fixture.decoder->replay = CrystalHDDecodeReplay(true);
     fixture.io.prefeed_busy_once = true;
@@ -4025,6 +4139,8 @@ static void LiveH264PrefeedBusyFallback() {
   {
     TeardownFixture fixture(2);
     fixture.decoder->live_h264 = true;
+    fixture.decoder->live_h264_gap_tolerant = true;
+    fixture.decoder->live_h264_fast_path = true;
     fixture.decoder->low_latency_h264 = true;
     fixture.decoder->replay = CrystalHDDecodeReplay(true);
     const auto first = TestH264AccessUnit(true, 1);
@@ -4069,6 +4185,8 @@ static void LiveH264PrefeedEligibilityAndGhostGuard() {
   {
     TeardownFixture fixture(2);
     fixture.decoder->live_h264 = true;
+    fixture.decoder->live_h264_gap_tolerant = true;
+    fixture.decoder->live_h264_fast_path = true;
     fixture.decoder->low_latency_h264 = true;
     fixture.decoder->replay = CrystalHDDecodeReplay(true);
     const auto first = TestH264AccessUnit(true, 1);
@@ -4093,6 +4211,8 @@ static void LiveH264PrefeedEligibilityAndGhostGuard() {
   {
     TeardownFixture fixture(2);
     fixture.decoder->live_h264 = true;
+    fixture.decoder->live_h264_gap_tolerant = true;
+    fixture.decoder->live_h264_fast_path = true;
     fixture.decoder->low_latency_h264 = true;
     fixture.decoder->replay = CrystalHDDecodeReplay(true);
     fixture.io.tx_free_size = 1193;
@@ -4121,6 +4241,8 @@ static void LiveH264PrefeedEligibilityAndGhostGuard() {
   for (const bool opt_in : {false, true}) {
     TeardownFixture fixture(1);
     fixture.decoder->live_h264 = true;
+    fixture.decoder->live_h264_gap_tolerant = true;
+    fixture.decoder->live_h264_fast_path = true;
     fixture.decoder->low_latency_h264 = opt_in;
     fixture.decoder->is_70012 = opt_in;
     fixture.decoder->replay = CrystalHDDecodeReplay(true);
@@ -4139,6 +4261,8 @@ static void LiveH264PrefeedEligibilityAndGhostGuard() {
   {
     TeardownFixture fixture(1);
     fixture.decoder->live_h264 = true;
+    fixture.decoder->live_h264_gap_tolerant = true;
+    fixture.decoder->live_h264_fast_path = true;
     fixture.decoder->low_latency_h264 = true;
     fixture.decoder->replay = CrystalHDDecodeReplay(true);
     Require(fixture.decoder->replay.Append(
@@ -4269,9 +4393,39 @@ static void ProgressingSyncDoesNotSealAnActiveStream() {
           "active stream sync preserves hardware session ownership");
 }
 
+static void DefaultBoundedH264StillDrainsFiniteTail() {
+  TeardownFixture fixture(3);
+  fixture.decoder->live_h264 = true;
+  fixture.decoder->replay = CrystalHDDecodeReplay(true);
+  for (uint64_t picture = 1; picture <= 3; ++picture)
+    Require(fixture.decoder->replay.Append(
+                picture * kTimestampStep, picture == 1,
+                {0, 0, 1, static_cast<uint8_t>(picture == 1 ? 0x65 : 0x41)}),
+            "default bounded H.264 context retains a finite input tail");
+  Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+              VA_STATUS_SUCCESS &&
+              fixture.decoder->live_h264 &&
+              !fixture.decoder->live_h264_gap_tolerant &&
+              !fixture.decoder->live_h264_fast_path,
+          "default bounded H.264 submits without live gap or fast policy");
+  Require(SyncSurface(&fixture.context, 3) == VA_STATUS_SUCCESS &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "seal") == 1 &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "eos") == 1 &&
+              fixture.decoder->pending.empty() &&
+              fixture.decoder->replay.outstanding() == 0 &&
+              fixture.io.outputs.empty() && !fixture.io.invalid,
+          "default bounded H.264 inactivity drains every finite tail picture");
+  for (unsigned int picture = 0; picture < 3; ++picture)
+    fixture.CheckPicture(picture);
+}
+
 static void EarlyLiveGapPreservesIntactReplayHistory() {
   TeardownFixture fixture(3);
   fixture.decoder->live_h264 = true;
+  fixture.decoder->live_h264_gap_tolerant = true;
+  fixture.decoder->live_h264_fast_path = true;
   fixture.decoder->replay = CrystalHDDecodeReplay(true);
   for (uint64_t picture = 1; picture <= 2; ++picture)
     Require(fixture.decoder->replay.Append(picture * kTimestampStep,
@@ -4327,6 +4481,8 @@ static void PrepareLiveTailWithoutReplayHistory(TeardownFixture &fixture) {
   limits.cache_bytes = 8;
   limits.pictures = 2;
   fixture.decoder->live_h264 = true;
+  fixture.decoder->live_h264_gap_tolerant = true;
+  fixture.decoder->live_h264_fast_path = true;
   fixture.decoder->replay = CrystalHDDecodeReplay(limits, true);
   for (uint64_t picture = 1; picture <= 3; ++picture) {
     const uint64_t timestamp = picture * kTimestampStep;
@@ -4481,6 +4637,8 @@ static void InactiveSyncStillSealsItsExactFinalPicture(bool live = false) {
   TeardownFixture fixture(1);
   if (live) {
     fixture.decoder->live_h264 = true;
+    fixture.decoder->live_h264_gap_tolerant = true;
+    fixture.decoder->live_h264_fast_path = true;
     fixture.decoder->replay = CrystalHDDecodeReplay(true);
     Require(fixture.decoder->replay.Append(kTimestampStep, true, {0, 0, 1, 0x65}),
             "live initial decoder probe retains its complete actual IDR history");
@@ -5557,6 +5715,7 @@ int main() {
     TraceIdentityUsesImmutableTokenAndLiveAliasOwner();
     TraceReadExportReuseBoundary();
     ExperimentalReadyRemapGate();
+    DefaultH264TransportIsBounded();
     ExperimentalPolicyDelayMatrix();
     ExperimentalRemapCpuOwnershipFailures();
     ExperimentalReadyRemapFailClosedRaces();
@@ -5579,6 +5738,7 @@ int main() {
     LiveH264PrefeedEligibilityAndGhostGuard();
     TransportProgressRequiresActualHardwareIo();
     ProgressingSyncDoesNotSealAnActiveStream();
+    DefaultBoundedH264StillDrainsFiniteTail();
     EarlyLiveGapPreservesIntactReplayHistory();
     InactiveLiveSyncPreservesReferencesUntilActualInputResumes();
     InactiveLiveSyncHonorsFiniteDeadlineWithoutPoisoningPixels();

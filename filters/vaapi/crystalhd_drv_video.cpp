@@ -1534,7 +1534,11 @@ struct DecodeContext {
   bool decoder_started = false;
   bool is_70012 = false;
   bool sent_parameter_sets = false;
+  // Bounded history is safe for ordinary finite input. Gap tolerance and
+  // direct/speculative paths remain explicit live-stream policy.
   bool live_h264 = false;
+  bool live_h264_gap_tolerant = false;
+  bool live_h264_fast_path = false;
   bool low_latency_h264 = false;
   bool input_backpressured = false;
   bool input_budget_exhausted = false;
@@ -3747,7 +3751,8 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
 
   auto decoded_frame = std::make_shared<Surface>();
   decoded_frame->id = target_id;
-  const bool direct_picture = decode->live_h264 && IsH264Profile(profile) &&
+  const bool direct_picture = decode->live_h264_fast_path &&
+                              IsH264Profile(profile) &&
                               !decode->experimental_ready_remap &&
                               target_surface->direct_decode_eligible;
   if (direct_picture) {
@@ -4082,7 +4087,8 @@ static VAStatus SyncDecodeSurface(
     // sealing would needlessly reopen the device when input resumes. Explicit
     // context drain still seals the final accepted pictures.
     const bool retain_live_references =
-        decode->live_h264 && decode->replay.live_stream_started();
+        decode->live_h264_gap_tolerant &&
+        decode->replay.live_stream_started();
     if (!surface->ready && !decode->ReplaySealed() &&
         !retain_live_references &&
         DecodeBatchGraceExpired(idle)) {
@@ -4969,11 +4975,16 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
   decode->height = std::max(height, 0);
   decode->video_process = video_process;
   const char *live_h264 = getenv("CRYSTALHD_VAAPI_LIVE_H264");
-  decode->live_h264 = !video_process && IsH264Profile(decode->profile) &&
+  const bool h264 = !video_process && IsH264Profile(decode->profile);
+  const bool live_h264_fast_path =
       live_h264 != nullptr && strcmp(live_h264, "1") == 0;
+  decode->live_h264 = h264 &&
+      (live_h264 == nullptr || live_h264_fast_path);
+  decode->live_h264_gap_tolerant = h264 && live_h264_fast_path;
+  decode->live_h264_fast_path = h264 && live_h264_fast_path;
   const char *low_latency_h264 =
       getenv("CRYSTALHD_VAAPI_LOW_LATENCY_H264");
-  decode->low_latency_h264 = decode->live_h264 &&
+  decode->low_latency_h264 = decode->live_h264_fast_path &&
       low_latency_h264 != nullptr && strcmp(low_latency_h264, "1") == 0;
   const char *experimental_ready_remap =
       getenv("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP");
