@@ -75,6 +75,8 @@ case "$name" in
 		[ -z "${MOCK_INVALID_MODULE:-}" ] || [ "${3:-}" != "$MOCK_INVALID_MODULE" ] || exit 2
 		case "${2:-}" in
 			name) printf '%s\n' crystalhd ;;
+			version) printf '%s\n' "${MOCK_MODULE_PACKAGE:-3.10.1}" ;;
+			crystalhd_bundle) printf '%s\n' 1.0.0-rc.1 ;;
 			srcversion)
 				if [ -n "${MOCK_BAD_MODULE:-}" ] && [ "${3:-}" = "$MOCK_BAD_MODULE" ]; then
 					printf '%s\n' BAD000
@@ -169,7 +171,9 @@ make_root()
 	printf '%s\n' 0x1615 >"$pci/device"
 	ln -s "$root/sys/bus/pci/drivers/crystalhd" "$pci/driver"
 	printf '%s\n' GOOD000 >"$root/sys/module/crystalhd/srcversion"
+	printf '%s\n' 3.10.1 >"$root/sys/module/crystalhd/version"
 	printf '%s\n' N >"$root/sys/module/crystalhd/parameters/force_l0s_off"
+	printf '%s\n' N >"$root/sys/module/crystalhd/parameters/session_l0s_off"
 		: >"$root/lib/modules/6.6-test/updates/crystalhd.ko"
 		ln -s ../updates/crystalhd.ko \
 			"$root/lib/modules/6.6-test/weak-updates/crystalhd.ko"
@@ -192,6 +196,7 @@ run_check()
 		MOCK_ROOT=$check_root \
 		MOCK_LOG=$mock_log \
 		MOCK_BAD_MODULE=${MOCK_BAD_MODULE:-} \
+		MOCK_MODULE_PACKAGE=${MOCK_MODULE_PACKAGE:-3.10.1} \
 		MOCK_INVALID_MODULE=${MOCK_INVALID_MODULE:-} \
 		MOCK_DKMS_STATUS=${MOCK_DKMS_STATUS:-} \
 		MOCK_GST_PLUGIN=${MOCK_GST_PLUGIN:-} \
@@ -228,6 +233,8 @@ after=$(tree_snapshot "$root")
 assert_status 0
 assert_contains 'OK: PCI 0000:03:00.0: Broadcom BCM70015'
 assert_contains 'OK: Module identity: loaded and selected srcversions match'
+assert_contains 'INFO: Loaded module package: 3.10.1'
+assert_contains 'INFO: Selected module package: 3.10.1; bundle 1.0.0-rc.1'
 assert_contains 'OK: Library: staged ABI-compatible libcrystalhd.so.3 found'
 assert_contains 'OK: GStreamer: crystalhddec discovered'
 assert_contains 'OK: VA-API: libva initialized CrystalHD on /dev/dri/renderD128'
@@ -238,6 +245,34 @@ chmod -R u+w "$root"
 if grep -E '^(modprobe|insmod|rmmod|depmod|sysctl|tee) ' "$mock_log" >/dev/null; then
 	fail 'the checker invoked a mutating system command'
 fi
+
+# A runtime-only receipt does not assign its bundle to an older loaded module.
+make_root
+mkdir -p "$root/usr/share/crystalhd"
+printf '%s\n' 1.0.0-rc.1 >"$root/usr/share/crystalhd/VERSION"
+printf '%s\n' 3.10.0 >"$root/sys/module/crystalhd/version"
+MOCK_MODULE_PACKAGE=3.10.0
+run_check "$root"
+assert_status 0
+assert_contains 'INFO: Runtime install record: bundle 1.0.0-rc.1 (component identities checked separately)'
+assert_contains 'INFO: Loaded module package: 3.10.0'
+unset MOCK_MODULE_PACKAGE
+
+# Metadata changes can leave srcversion unchanged; compare package identity too.
+run_check "$root"
+assert_status 1
+assert_contains 'FAIL: Module package identity: loaded 3.10.0 differs from selected 3.10.1'
+
+# Session policy is visible, including force-policy precedence.
+make_root
+printf '%s\n' Y >"$root/sys/module/crystalhd/parameters/session_l0s_off"
+run_check "$root"
+assert_status 0
+assert_contains 'session_l0s_off is enabled; the qualified link workaround applies during decoder ownership'
+printf '%s\n' Y >"$root/sys/module/crystalhd/parameters/force_l0s_off"
+run_check "$root"
+assert_status 0
+assert_contains 'session_l0s_off is enabled, but force_l0s_off takes precedence'
 
 # Development overrides must be reported and excluded from installed discovery.
 make_root

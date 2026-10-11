@@ -3,6 +3,7 @@
 PREFIX ?= /usr
 DESTDIR ?=
 BINDIR ?= $(PREFIX)/bin
+DATADIR ?= $(PREFIX)/share
 KVER ?= $(shell uname -r)
 KDIR ?= /lib/modules/$(KVER)/build
 PYTHON3 ?= python3
@@ -197,11 +198,18 @@ check: uapi-check dma-check l0s-check architecture-check pib-check library-check
 	$(MAKE) phase1-check
 	sh -n scripts/crystalhd-check
 	./tests/crystalhd-check.sh
+	sh ./tests/install-preflight.sh
 	KVER=$(KVER) KDIR=$(KDIR) ./tests/staged-install.sh
 
-install: install-module install-runtime
+install: install-preflight
+	$(MAKE) install-module
+	$(MAKE) install-runtime
 
-install-module: driver
+.PHONY: install-preflight
+install-preflight:
+	$(MAKE) -C driver/linux -f Makefile.in $(DRIVER_ARGS) install-preflight
+
+install-module: install-preflight driver
 	$(MAKE) -C driver/linux -f Makefile.in $(DRIVER_ARGS) install-module
 
 install-runtime: library gstreamer vaapi
@@ -211,6 +219,7 @@ install-runtime: library gstreamer vaapi
 	$(MAKE) -C filters/gst/gst-plugin-1.0 $(USER_ARGS) install
 	$(MAKE) -C filters/vaapi $(USER_ARGS) install
 	$(MAKE) install-check
+	install -D -m 0644 VERSION "$(DESTDIR)$(DATADIR)/crystalhd/VERSION"
 
 install-browser: browser
 	$(MAKE) -C browser $(USER_ARGS) install
@@ -226,6 +235,7 @@ uninstall-module:
 	$(MAKE) -C driver/linux -f Makefile.in $(DRIVER_ARGS) uninstall-module
 
 uninstall-runtime:
+	rm -f -- "$(DESTDIR)$(DATADIR)/crystalhd/VERSION"
 	$(MAKE) uninstall-check
 	$(MAKE) -C filters/vaapi $(USER_ARGS) uninstall
 	$(MAKE) -C filters/gst/gst-plugin-1.0 $(USER_ARGS) uninstall

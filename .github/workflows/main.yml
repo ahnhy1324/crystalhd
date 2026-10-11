@@ -8,7 +8,8 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Keep the older supported GStreamer API in the userspace release gate.
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout

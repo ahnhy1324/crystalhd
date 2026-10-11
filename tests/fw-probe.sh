@@ -197,7 +197,7 @@ for selector_name, command_name, selector, offset in raw_commands:
     assert wire and int(wire.group(1), 16) == 0x73763000 + offset
 print('Firmware probe: six fixed command routes match both source enums and CLI wire values')
 for enabled in (None, '0', '1'):
-    script = f'include {root}/driver/linux/Kbuild\nprobe-check:\n\t@echo $(crystalhd-objs)\n\t@echo $(ccflags-y)\n'
+    script = f'src := {root}/driver/linux\ninclude {root}/driver/linux/Kbuild\nprobe-check:\n\t@echo $(crystalhd-objs)\n\t@echo $(ccflags-y)\n'
     args = ['make', '--no-print-directory', '-f', '-', 'probe-check', 'CONFIG_CRYPTO_HASH=y']
     if enabled is not None:
         args.append('CRYSTALHD_FW_RESEARCH=' + enabled)

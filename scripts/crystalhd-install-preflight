@@ -1,0 +1,35 @@
+#!/bin/sh
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Internal direct-install guard. The optional root is for device-free tests.
+set -eu
+
+kernel_release=${1:?kernel release is required}
+root_prefix=${2:-}
+
+refuse()
+{
+    printf '%s\n' "ERROR: $*" >&2
+    printf '%s\n' 'Use README.dkms and make install-runtime for a DKMS-managed installation.' >&2
+    exit 1
+}
+
+if command -v dkms >/dev/null 2>&1; then
+    if ! registrations=$(dkms status -m crystalhd 2>/dev/null); then
+        refuse 'Cannot establish CrystalHD DKMS ownership; inspect dkms status before direct installation.'
+    fi
+    [ -z "$registrations" ] || refuse 'CrystalHD is registered with DKMS; refusing a direct module installation.'
+fi
+
+# Retain conflict detection even if the dkms executable was removed or its
+# database is incomplete. Compression varies between supported distributions.
+for registration in "$root_prefix"/var/lib/dkms/crystalhd/*; do
+    if [ -e "$registration" ] || [ -L "$registration" ]; then
+        refuse 'CrystalHD DKMS state exists; inspect it before direct installation.'
+    fi
+done
+for suffix in '' .gz .xz .zst; do
+    module_path=$root_prefix/lib/modules/$kernel_release/updates/dkms/crystalhd.ko$suffix
+    if [ -e "$module_path" ] || [ -L "$module_path" ]; then
+        refuse "A DKMS module already exists at $module_path."
+    fi
+done

@@ -41,15 +41,21 @@ ccflags-y += -DCRYSTALHD_ENABLE_V4L2
 crystalhd-objs += crystalhd_v4l2.o
 endif
 
-.PHONY: all install install-module install-udev install-firmware uninstall uninstall-module uninstall-udev uninstall-firmware clean distclean
+.PHONY: all install install-preflight install-module install-udev install-firmware uninstall uninstall-module uninstall-udev uninstall-firmware clean distclean
 
 all:
 	$(MAKE) -C $(KDIR) M=$(PWD) CRYSTALHD_V4L2=$(CRYSTALHD_V4L2) \
 		CRYSTALHD_FW_RESEARCH=$(CRYSTALHD_FW_RESEARCH) modules
 
-install: install-module install-udev install-firmware
+install: install-preflight
+	$(MAKE) -f Makefile.in install-module install-udev install-firmware
 
-install-module: crystalhd.ko
+install-preflight:
+	@if [ -z "$(DESTDIR)" ]; then \
+		sh ../../scripts/crystalhd-install-preflight "$(KVER)"; \
+	fi
+
+install-module: install-preflight crystalhd.ko
 	install -D -m 0644 crystalhd.ko $(DESTDIR)$(MODULEDIR)/crystalhd.ko
 	@if [ -z "$(DESTDIR)" ] && command -v depmod >/dev/null 2>&1; then \
 		depmod -a $(KVER); \

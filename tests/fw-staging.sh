@@ -26,6 +26,7 @@ cleanup()
 		"$test_dir/tests/device-access.c" \
 		"$test_dir/tests/fw-probe.c" "$test_dir/tests/fw-probe.sh" \
 		"$test_dir/tests/fw-probe-cli.c" \
+		"$test_dir/VERSION" "$test_dir/dkms.conf" \
 		"$test_dir/include" "$test_dir/firmware" "$test_dir/tools"
 	rmdir "$test_dir/driver/linux" "$test_dir/driver" \
 		"$test_dir/tests" "$test_dir"
@@ -34,6 +35,7 @@ trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
 mkdir -p "$test_dir/driver/linux" "$test_dir/tests"
+cp "$repo_dir/VERSION" "$repo_dir/dkms.conf" "$test_dir/"
 for name in FleaDefs.h crystalhd_hw.h crystalhd_hw.c crystalhd_cmds.c \
 	crystalhd_cmds.h crystalhd_lnx.h \
 	crystalhd_fleafuncs.h crystalhd_fw_research.c crystalhd_fleafuncs.c \

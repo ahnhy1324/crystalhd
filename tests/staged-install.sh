@@ -27,6 +27,11 @@ make -C "$repo_dir" KVER="$KVER" KDIR="$KDIR" \
     DESTDIR="$stage_dir" install
 
 test -f "$stage_dir/lib/modules/$KVER/updates/crystalhd.ko"
+package_version=$(sed -n 's/^PACKAGE_VERSION="\([^"]*\)"$/\1/p' "$repo_dir/dkms.conf")
+bundle_version=$(cat "$repo_dir/VERSION")
+test "$(modinfo -F version "$stage_dir/lib/modules/$KVER/updates/crystalhd.ko")" = "$package_version"
+test "$(modinfo -F crystalhd_bundle "$stage_dir/lib/modules/$KVER/updates/crystalhd.ko")" = "$bundle_version"
+cmp "$repo_dir/VERSION" "$stage_dir/usr/share/crystalhd/VERSION"
 test -f "$stage_dir/lib/udev/rules.d/20-crystalhd.rules"
 test -f "$stage_dir/lib/firmware/bcm70012fw.bin"
 test -f "$stage_dir/lib/firmware/bcm70015fw.bin"
