@@ -8,26 +8,27 @@ firmware research has its own acceptance criteria in #92 and #204.
 
 The fork's **bundle version** follows [Semantic Versioning](https://semver.org/).
 It is separate from Broadcom API numbers, firmware versions and the library
-SONAME. `VERSION` is tracked and included in source archives. An RC version in
-that file identifies preparation sources; only a published tag and release
-make it an available release candidate.
+SONAME. `VERSION` is tracked and included in source archives. It identifies
+the source bundle; published tags and assets are listed in
+[Releases](https://github.com/ahnhy1324/crystalhd/releases). A version in a
+checkout alone does not announce a published release.
 
-| Identity | 1.0.0-rc.1 preparation | Purpose |
+| Identity | Current source | Purpose |
 | --- | --- | --- |
-| Bundle | `1.0.0-rc.1`; no tag published yet | Distribution identity from `VERSION` |
-| DKMS / module package | `3.10.1` | Maintained package revision; distinct from existing `3.10.0` installs |
+| Bundle | `1.0.0-rc.1` | Distribution identity from `VERSION` |
+| DKMS / module package | `3.10.2` | Maintained package revision; upgrades earlier `3.10.0` / `3.10.1` installs |
 | Driver ioctl version | `3.10.0` | Historical public API value, retained |
 | Library API / pkg-config | `3.22.0` | Historical library component identity, retained |
 | Library SONAME / file | `libcrystalhd.so.3` / `libcrystalhd.so.3.6` | Existing application linkage, retained |
 | GStreamer plugin / VA vendor string | `3.10.0` / `0.1` | Historical component labels; not the bundle identity |
 | Firmware | Existing BCM70012/BCM70015 images | Retain images, identities and license notices |
 
-Increase the numeric package revision for a changed published candidate
-payload; never replace an existing `/usr/src/crystalhd-VERSION` tree with a
+Increase the numeric package revision when changing an already registered or
+published candidate payload; never replace an existing `/usr/src/crystalhd-VERSION` tree with a
 different payload. DKMS compares module versions using its own ordering, so
 do not rely on SemVer prerelease suffix ordering for module upgrades.
-For example, a later candidate or final package can use `3.10.2` while the
-public ioctl remains `3.10.0`. Record the mapping here before qualification.
+The public ioctl remains `3.10.0` when the package revision changes.
+Record the mapping here before qualification.
 The runtime installation record identifies the last completed runtime install;
 component checks remain separate. Use the loaded and selected module metadata
 reported by `crystalhd-check` to identify the driver.

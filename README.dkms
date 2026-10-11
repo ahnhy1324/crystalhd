@@ -94,8 +94,9 @@ do not delete arbitrary candidates listed by the check.
 
 For a new DKMS revision, follow [prepare](#prepare-the-source) and [install](#install-a-new-revision)
 from the new source. Keep the old revision/source until the new playback test
-passes. The `1.0.0-rc.1` source uses module/DKMS revision `3.10.1`, upgrading the
-historical `3.10.0` registration without changing the `libcrystalhd.so.3` ABI.
+passes. The current preparation source uses module/DKMS revision `3.10.2`,
+upgrading earlier `3.10.0` or `3.10.1` registrations without changing the
+`libcrystalhd.so.3` ABI.
 Later bundle releases may use later package revisions; use `dkms.conf` from
 the chosen source.
 
