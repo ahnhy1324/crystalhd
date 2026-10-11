@@ -1528,6 +1528,27 @@ DtsSetVideoPID(
 	return BC_STS_NOT_IMPL;
 }
 
+static void DtsSetCaptureThresholds(DTS_LIB_CONTEXT *Ctx,
+				    BC_IOCTL_DATA *pIocData)
+{
+	uint32_t pool_count = Ctx->MpoolCnt ? Ctx->MpoolCnt :
+		BC_MAX_SW_VOUT_BUFFS;
+	uint32_t pause_limit = pool_count > 2 ? pool_count - 2 : 1;
+	uint32_t pause = Ctx->DevId == BC_PCI_DEVID_FLEA ?
+		pause_limit : PAUSE_DECODER_THRESHOLD;
+	uint32_t resume = Ctx->DevId == BC_PCI_DEVID_FLEA ?
+		FLEA_RT_PU_THRESHOLD : RESUME_DECODER_THRESHOLD;
+
+	if (pause > pause_limit)
+		pause = pause_limit;
+	if (resume >= pause)
+		resume = pause > 1 ? pause / 2 : 1;
+
+	pIocData->u.RxCap.StartDeliveryThsh = RX_START_DELIVERY_THRESHOLD;
+	pIocData->u.RxCap.PauseThsh = pause;
+	pIocData->u.RxCap.ResumeThsh = resume;
+}
+
 
 DRVIFLIB_API BC_STATUS
 DtsStartCaptureImmidiate(HANDLE		hDevice,
@@ -1567,16 +1588,7 @@ DtsStartCaptureImmidiate(HANDLE		hDevice,
 //	DebugLog_Trace(LDIL_DBG,"DbgOptions=%x\n", Ctx->RegCfg.DbgOptions);
 
 	pIocData->u.RxCap.Rsrd = ST_CAP_IMMIDIATE;
-	pIocData->u.RxCap.StartDeliveryThsh = RX_START_DELIVERY_THRESHOLD;
-	pIocData->u.RxCap.PauseThsh = PAUSE_DECODER_THRESHOLD;
-	pIocData->u.RxCap.ResumeThsh = 	RESUME_DECODER_THRESHOLD;
-
-	// NAREN for Flea change the values dynamically for pause and resume
-	if(Ctx->DevId == BC_PCI_DEVID_FLEA)
-	{
-		pIocData->u.RxCap.PauseThsh = Ctx->MpoolCnt - 2;
-		pIocData->u.RxCap.ResumeThsh = 	FLEA_RT_PU_THRESHOLD;
-	}
+	DtsSetCaptureThresholds(Ctx, pIocData);
 
 	if( (sts=DtsDrvCmd(Ctx,BCM_IOC_START_RX_CAP,0,pIocData,FALSE)) != BC_STS_SUCCESS){
 		DebugLog_Trace(LDIL_DBG,"DtsStartCapture: Failed: %d\n",sts);
@@ -1626,16 +1638,7 @@ DtsStartCapture(HANDLE  hDevice)
 //	DebugLog_Trace(LDIL_DBG,"DbgOptions=%x\n", Ctx->RegCfg.DbgOptions);
 
 	pIocData->u.RxCap.Rsrd = NO_PARAM;
-	pIocData->u.RxCap.StartDeliveryThsh = RX_START_DELIVERY_THRESHOLD;
-	pIocData->u.RxCap.PauseThsh = PAUSE_DECODER_THRESHOLD;
-	pIocData->u.RxCap.ResumeThsh = 	RESUME_DECODER_THRESHOLD;
-
-	// NAREN for Flea change the values dynamically for pause and resume
-	if(Ctx->DevId == BC_PCI_DEVID_FLEA)
-	{
-		pIocData->u.RxCap.PauseThsh = Ctx->MpoolCnt - 2;
-		pIocData->u.RxCap.ResumeThsh = 	FLEA_RT_PU_THRESHOLD;
-	}
+	DtsSetCaptureThresholds(Ctx, pIocData);
 
 	if( (sts=DtsDrvCmd(Ctx,BCM_IOC_START_RX_CAP,0,pIocData,FALSE)) != BC_STS_SUCCESS){
 		DebugLog_Trace(LDIL_DBG,"DtsStartCapture: Failed: %d\n",sts);

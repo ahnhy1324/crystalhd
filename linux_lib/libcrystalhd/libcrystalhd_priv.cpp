@@ -30,6 +30,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdlib.h>
+#include <string.h>
 #include <semaphore.h>
 #include <pthread.h>
 #include <sys/shm.h>
@@ -280,6 +281,21 @@ static void DtsGetMaxSize(DTS_LIB_CONTEXT *Ctx, uint32_t *Sz)
 {
 	*Sz = (1920*1090)*2;
 }
+
+static uint32_t DtsConfiguredRxPoolCount()
+{
+	const char *value = getenv("CRYSTALHD_EXPERIMENTAL_RX_POOL_COUNT");
+
+	if (!value || !strcmp(value, "16"))
+		return BC_MAX_SW_VOUT_BUFFS;
+	if (!strcmp(value, "8"))
+		return 8;
+
+	DebugLog_Trace(LDIL_DBG,
+		"Ignoring invalid CRYSTALHD_EXPERIMENTAL_RX_POOL_COUNT\n");
+	return BC_MAX_SW_VOUT_BUFFS;
+}
+
 static void DtsInitLock(DTS_LIB_CONTEXT	*Ctx)
 {
 	//Create mutex
@@ -1311,7 +1327,7 @@ BC_STATUS DtsAllocMemPools(DTS_LIB_CONTEXT *Ctx)
 	if(!(Ctx->CfgFlags & BC_MPOOL_INCL_YUV_BUFFS)){
 		return BC_STS_SUCCESS;
 	}
-	Ctx->MpoolCnt	= BC_MAX_SW_VOUT_BUFFS;
+	Ctx->MpoolCnt = DtsConfiguredRxPoolCount();
 
 	Ctx->Mpools = (DTS_MPOOL_TYPE*)malloc(Ctx->MpoolCnt * sizeof(DTS_MPOOL_TYPE));
 	if(!Ctx->Mpools){
@@ -1323,7 +1339,7 @@ BC_STATUS DtsAllocMemPools(DTS_LIB_CONTEXT *Ctx)
 
 	DtsGetMaxSize(Ctx,&Sz);
 
-	for(i=0; i<BC_MAX_SW_VOUT_BUFFS; i++){
+	for(i=0; i<Ctx->MpoolCnt; i++){
 		mp = &Ctx->Mpools[i];
 		mp->type = BC_MEM_DEC_YUVBUFF |BC_MEM_USER_MODE_ALLOC;
 		mp->sz = Sz;

@@ -16,6 +16,7 @@
 #include <initializer_list>
 #include <mutex>
 #include <pthread.h>
+#include <string>
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <thread>
@@ -452,8 +453,11 @@ struct Fixture {
 	DTS_MPOOL_TYPE pools[BC_RX_LIST_CNT];
 	uint8_t buffers[BC_RX_LIST_CNT][1];
 
-	explicit Fixture(uint32_t device)
+	explicit Fixture(uint32_t device,
+	                 uint32_t pool_count = BC_RX_LIST_CNT)
 	{
+		if (pool_count > BC_RX_LIST_CNT)
+			std::abort();
 		std::memset(&globals, 0, sizeof(globals));
 		std::memset(&context, 0, sizeof(context));
 		std::memset(ioctl_pool, 0, sizeof(ioctl_pool));
@@ -463,16 +467,16 @@ struct Fixture {
 		bc_dil_glob_ptr = &globals;
 		active_context = &context;
 		active_pools = pools;
-		active_pool_count = BC_RX_LIST_CNT;
+		active_pool_count = pool_count;
 		context.Sig = LIB_CTX_SIG;
 		context.DevHandle = 99;
 		context.DevId = device;
 		context.ProcessID = getpid();
 		context.State = BC_DEC_STATE_START;
 		context.CfgFlags = BC_MPOOL_INCL_YUV_BUFFS | BC_ADDBUFF_MOVE;
-		context.MpoolCnt = BC_RX_LIST_CNT;
+		context.MpoolCnt = pool_count;
 		context.Mpools = pools;
-		for (size_t index = 0; index < BC_RX_LIST_CNT; ++index) {
+		for (size_t index = 0; index < pool_count; ++index) {
 			pools[index].type = BC_MEM_DEC_YUVBUFF |
 			                    BC_MEM_USER_MODE_ALLOC;
 			pools[index].sz = sizeof(buffers[index]);
@@ -525,7 +529,7 @@ static unsigned CountCommand(unsigned long command)
 static bool AddsUseUniqueConfiguredBuffers(size_t first, size_t count)
 {
 	bool seen[BC_RX_LIST_CNT] = {};
-	if (count != BC_RX_LIST_CNT || first + count > event_count)
+	if (count != active_pool_count || first + count > event_count)
 		return false;
 	for (size_t offset = 0; offset < count; ++offset) {
 		const IoctlEvent &event = events[first + offset];
@@ -548,26 +552,37 @@ static bool PoolDepthIs(size_t first, size_t count, size_t expected)
 	return true;
 }
 
-static void CheckAddPayloads(size_t first, size_t count)
+static void CheckAddPayloads(size_t first, size_t count,
+			     uint32_t output_mode = OUTPUT_MODE420)
 {
 	const uint32_t y_size = 1920U * 1090U;
+	const bool packed = output_mode != OUTPUT_MODE420;
 	bool valid = first + count <= event_count;
 	for (size_t index = first; valid && index < first + count; ++index) {
 		valid = events[index].command == BCM_IOC_ADD_RXBUFFS &&
-		        events[index].buffer_mode == OUTPUT_MODE420 &&
-		        events[index].buffer_size == y_size + y_size / 2 &&
-		        events[index].buffer_offset == y_size;
+		        events[index].buffer_mode == output_mode &&
+		        events[index].buffer_size ==
+		            (packed ? y_size * 2 : y_size + y_size / 2) &&
+		        events[index].buffer_offset == (packed ? 0 : y_size);
 	}
-	Check(valid, "ADD payloads describe the complete NV12 output backing");
+	Check(valid, packed ?
+	      "ADD payloads describe the complete packed 4:2:2 output backing" :
+	      "ADD payloads describe the complete NV12 output backing");
 }
 
 static void CheckStartPayload(const IoctlEvent &event, uint32_t device,
-			      bool immediate)
+			      bool immediate,
+			      uint32_t pool_count = BC_RX_LIST_CNT)
 {
+	const uint32_t pause_limit = pool_count > 2 ? pool_count - 2 : 1;
 	const uint32_t pause = device == BC_PCI_DEVID_FLEA ?
-	                       BC_RX_LIST_CNT - 2 : PAUSE_DECODER_THRESHOLD;
-	const uint32_t resume = device == BC_PCI_DEVID_FLEA ?
-	                        FLEA_RT_PU_THRESHOLD : RESUME_DECODER_THRESHOLD;
+	                       pause_limit :
+	                       (pause_limit < PAUSE_DECODER_THRESHOLD ?
+	                        pause_limit : PAUSE_DECODER_THRESHOLD);
+	uint32_t resume = device == BC_PCI_DEVID_FLEA ?
+	                  FLEA_RT_PU_THRESHOLD : RESUME_DECODER_THRESHOLD;
+	if (resume >= pause)
+		resume = pause > 1 ? pause / 2 : 1;
 	Check(event.command == BCM_IOC_START_RX_CAP,
 	      "mapping is followed by exactly one START command");
 	Check(event.reserved == (immediate ? ST_CAP_IMMIDIATE : NO_PARAM),
@@ -575,6 +590,100 @@ static void CheckStartPayload(const IoctlEvent &event, uint32_t device,
 	Check(event.start_threshold == RX_START_DELIVERY_THRESHOLD &&
 	      event.pause_threshold == pause && event.resume_threshold == resume,
 	      "START carries device-specific delivery, pause and resume thresholds");
+}
+
+static void TestConfiguredPoolAllocation()
+{
+	static const char environment[] =
+		"CRYSTALHD_EXPERIMENTAL_RX_POOL_COUNT";
+	const char *previous = std::getenv(environment);
+	const bool was_set = previous != nullptr;
+	const std::string saved = previous ? previous : "";
+	struct PoolCase {
+		const char *value;
+		uint32_t expected;
+		const char *description;
+	};
+	const PoolCase cases[] = {
+		{nullptr, BC_RX_LIST_CNT, "unset defaults to sixteen"},
+		{"8", 8, "exact eight selects the reduced pool"},
+		{"16", BC_RX_LIST_CNT, "exact sixteen selects the default pool"},
+		{"8 ", BC_RX_LIST_CNT, "whitespace is rejected"},
+		{"7", BC_RX_LIST_CNT, "unsupported counts are rejected"},
+	};
+
+	for (const PoolCase &test : cases) {
+		case_name = test.description;
+		const int environment_status = test.value ?
+			setenv(environment, test.value, 1) : unsetenv(environment);
+		Check(environment_status == 0,
+		      "test configures the experimental pool environment");
+
+		DTS_LIB_CONTEXT context = {};
+		context.OpMode = DTS_PLAYBACK_MODE;
+		context.CfgFlags = BC_MPOOL_INCL_YUV_BUFFS;
+		context.b422Mode = OUTPUT_MODE420;
+		const BC_STATUS status = DtsAllocMemPools(&context);
+		Check(status == BC_STS_SUCCESS,
+		      "pool configuration allocates the library memory pools");
+		if (status != BC_STS_SUCCESS)
+			continue;
+		Check(context.MpoolCnt == test.expected,
+		      "pool configuration selects only an accepted count");
+		bool complete = context.Mpools != nullptr;
+		for (uint32_t index = 0; complete && index < context.MpoolCnt;
+		     ++index) {
+			complete = context.Mpools[index].buff != nullptr &&
+				(context.Mpools[index].type & BC_MEM_DEC_YUVBUFF) != 0;
+		}
+		Check(complete,
+		      "every selected output-pool entry has capture backing");
+		DtsReleaseMemPools(&context);
+	}
+
+	const int restore_status = was_set ?
+		setenv(environment, saved.c_str(), 1) : unsetenv(environment);
+	case_name = "pool environment restoration";
+	Check(restore_status == 0,
+	      "pool allocation test restores the inherited environment");
+}
+
+static void TestReducedPoolStarts()
+{
+	const uint32_t devices[] = {BC_PCI_DEVID_LINK, BC_PCI_DEVID_FLEA};
+	const BC_OUTPUT_FORMAT output_modes[] = {
+		OUTPUT_MODE420,
+		OUTPUT_MODE422_YUY2,
+	};
+	char label[96];
+
+	for (uint32_t device : devices) {
+		for (BC_OUTPUT_FORMAT output_mode : output_modes) {
+		 for (bool immediate : {false, true}) {
+			std::snprintf(label, sizeof(label), "eight-buffer %s %s %s START",
+			              device == BC_PCI_DEVID_FLEA ? "FLEA" : "LINK",
+			              output_mode == OUTPUT_MODE420 ? "NV12" : "YUY2",
+			              immediate ? "immediate" : "ordinary");
+			case_name = label;
+			Fixture fixture(device, 8);
+			fixture.context.b422Mode = output_mode;
+			Check(StartCapture(fixture, immediate) == BC_STS_SUCCESS,
+			      "reduced-pool capture start succeeds");
+			Check(event_count == 9 &&
+			      CountCommand(BCM_IOC_ADD_RXBUFFS) == 8 &&
+			      CountCommand(BCM_IOC_START_RX_CAP) == 1,
+			      "reduced start registers eight buffers then starts once");
+			Check(AddsUseUniqueConfiguredBuffers(0, 8) &&
+			      !duplicate_add && OwnedCount() == 8,
+			      "reduced start gives the driver eight unique addresses");
+			Check(fixture.context.bMapOutBufDone &&
+			      fixture.context.bMapOutBufDirty,
+			      "reduced start retains complete driver ownership");
+			CheckAddPayloads(0, 8, output_mode);
+			CheckStartPayload(events[8], device, immediate, 8);
+		}
+		}
+	}
 }
 
 static void TestDirectMapSuccess()
@@ -1326,6 +1435,8 @@ static void TestReleaseOrdering(bool device_close, BC_STATUS decoder_status)
 
 int main()
 {
+	TestConfiguredPoolAllocation();
+	TestReducedPoolStarts();
 	TestDirectMapSuccess();
 	TestAddFailureMatrix();
 	TestRollbackFailureAndRetry();
