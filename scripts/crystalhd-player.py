@@ -5,6 +5,7 @@
 import argparse
 import os
 from pathlib import Path
+import re
 import signal
 import sys
 import termios
@@ -24,6 +25,28 @@ def local_file(value):
         raise argparse.ArgumentTypeError(f"unreadable local file: {value}: {error}") from error
 
 
+def hardware_scale_width(value):
+    try:
+        width = int(value, 10)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be 0 or an even integer from 128 to 1918") from error
+    if width != 0 and (width < 128 or width > 1918 or width % 2):
+        raise argparse.ArgumentTypeError("must be 0 or an even integer from 128 to 1918")
+    return width
+
+
+def output_size(value):
+    match = re.fullmatch(r"([0-9]+)[xX]([0-9]+)", value)
+    if match is None:
+        raise argparse.ArgumentTypeError(
+            "must use WIDTHxHEIGHT with positive even dimensions no larger than 32767")
+    width, height = (int(part, 10) for part in match.groups())
+    if width <= 0 or height <= 0 or width > 32767 or height > 32767 or width % 2 or height % 2:
+        raise argparse.ArgumentTypeError(
+            "must use WIDTHxHEIGHT with positive even dimensions no larger than 32767")
+    return width, height
+
+
 def arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group()
@@ -32,9 +55,20 @@ def arguments(argv=None):
     modes.add_argument("--software", dest="mode", action="store_const", const="software",
                        help="disable hardware video decoders; no automatic fallback")
     parser.set_defaults(mode="hardware")
+    parser.add_argument("--scale-width", type=hardware_scale_width, default=0, metavar="PIXELS",
+                        help="request an even BCM70015 output width from 128 to 1918 (0: native)")
+    parser.add_argument("--software-upscale", type=output_size, metavar="WIDTHxHEIGHT",
+                        help="explicitly resize scaled CrystalHD output with GStreamer videoscale")
     parser.add_argument("--subtitles", type=local_file, metavar="FILE")
     parser.add_argument("file", type=local_file, metavar="FILE")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.mode != "hardware" and (args.scale_width or args.software_upscale):
+        parser.error("--scale-width and --software-upscale require --hardware")
+    if args.software_upscale and not args.scale_width:
+        parser.error("--software-upscale requires a nonzero --scale-width")
+    if args.software_upscale and args.software_upscale[0] <= args.scale_width:
+        parser.error("--software-upscale WIDTH must be greater than --scale-width")
+    return args
 
 
 def video_decoder(klass):
@@ -146,6 +180,35 @@ def configure_decoders(Gst, mode):
         raise RuntimeError("crystalhddec is unavailable; build/install the GStreamer plugin")
 
 
+def make_software_upscale_filter(Gst, size):
+    """Build an explicit raw-video scaling bin for playbin's video-filter."""
+    width, height = size
+    result = Gst.Bin.new("crystalhd-software-upscale")
+    scale = Gst.ElementFactory.make("videoscale", "crystalhd-upscale")
+    capsfilter = Gst.ElementFactory.make("capsfilter", "crystalhd-upscale-caps")
+    if result is None or scale is None or capsfilter is None:
+        raise RuntimeError("software upscale needs the GStreamer videoscale and capsfilter elements")
+    # Bilinear multi-tap is the explicit quality/performance compromise used by
+    # this opt-in path; native playback remains completely unchanged.
+    scale.set_property("method", 4)
+    if scale.find_property("n-threads") is not None:
+        scale.set_property("n-threads", 2)
+    capsfilter.set_property(
+        "caps", Gst.Caps.from_string(f"video/x-raw,format=YUY2,width={width},height={height}"))
+    result.add(scale)
+    result.add(capsfilter)
+    if not scale.link(capsfilter):
+        raise RuntimeError("could not link the software upscale elements")
+    sink_pad = scale.get_static_pad("sink")
+    source_pad = capsfilter.get_static_pad("src")
+    if sink_pad is None or source_pad is None:
+        raise RuntimeError("software upscale elements have no usable raw-video pads")
+    if not result.add_pad(Gst.GhostPad.new("sink", sink_pad)) or not result.add_pad(
+            Gst.GhostPad.new("src", source_pad)):
+        raise RuntimeError("could not expose the software upscale pads")
+    return result
+
+
 class Player:
     def __init__(self, args, Gst, GLib, sinks=None):
         self.args, self.Gst, self.GLib = args, Gst, GLib
@@ -173,6 +236,10 @@ class Player:
         if args.mode == "software":
             # GstPlayFlags::FORCE_SW_DECODERS, present since GStreamer 1.18.
             self.pipeline.set_property("flags", int(self.pipeline.get_property("flags")) | (1 << 12))
+        self.video_filter = None
+        if args.software_upscale:
+            self.video_filter = make_software_upscale_filter(Gst, args.software_upscale)
+            self.pipeline.set_property("video-filter", self.video_filter)
         for prop, sink in (sinks or {}).items():
             self.pipeline.set_property(prop, sink)
         self.pipeline.connect("element-setup", self.element_setup)
@@ -192,6 +259,15 @@ class Player:
         name, klass = factory.get_name(), factory.get_metadata("klass") or ""
         if not video_decoder(klass):
             return
+        if name == "crystalhddec" and self.args.scale_width:
+            if element.find_property("scale-width") is None:
+                self.fail("crystalhddec has no scale-width property; update the GStreamer plugin")
+                return
+            try:
+                element.set_property("scale-width", self.args.scale_width)
+            except (TypeError, ValueError) as error:
+                self.fail(f"could not set CrystalHD scale width {self.args.scale_width}: {error}")
+                return
         self.next_decoder += 1
         token = self.next_decoder
         self.decoders[element] = token

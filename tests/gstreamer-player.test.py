@@ -258,6 +258,54 @@ class PolicyAndControlTests(unittest.TestCase):
         control.stop.assert_called_with(1)
 
 
+class ScaleConfigurationTests(unittest.TestCase):
+    def controller(self, width=1280):
+        result = player.Player.__new__(player.Player)
+        result.args = SimpleNamespace(scale_width=width)
+        result.Gst = SimpleNamespace(PadProbeType=SimpleNamespace(BUFFER=1))
+        result.next_decoder = 0
+        result.decoders = {}
+        result.fail = mock.Mock()
+        return result
+
+    def decoder(self, name="crystalhddec", klass=HARDWARE, property_available=True):
+        result = mock.Mock()
+        result.get_factory.return_value = Factory(name, klass)
+        result.find_property.return_value = object() if property_available else None
+        result.get_static_pad.return_value = None
+        return result
+
+    def test_scale_width_is_set_only_on_crystalhd_decoder(self):
+        control = self.controller()
+        decoder = self.decoder()
+        control.element_setup(None, decoder)
+        decoder.set_property.assert_called_once_with("scale-width", 1280)
+        self.assertEqual(control.decoders, {decoder: 1})
+        control.fail.assert_not_called()
+
+        other = self.decoder("avdec_h264", SOFTWARE)
+        control.element_setup(None, other)
+        other.find_property.assert_not_called()
+        other.set_property.assert_not_called()
+
+    def test_old_plugin_fails_instead_of_silently_ignoring_scale(self):
+        control = self.controller()
+        decoder = self.decoder(property_available=False)
+        control.element_setup(None, decoder)
+        control.fail.assert_called_once()
+        self.assertIn("update", control.fail.call_args.args[0])
+        decoder.set_property.assert_not_called()
+        self.assertEqual(control.decoders, {})
+
+    def test_native_width_does_not_touch_decoder_property(self):
+        control = self.controller(0)
+        decoder = self.decoder()
+        control.element_setup(None, decoder)
+        decoder.find_property.assert_not_called()
+        decoder.set_property.assert_not_called()
+        self.assertEqual(control.decoders, {decoder: 1})
+
+
 class CleanupTests(unittest.TestCase):
     def test_teardown_failure_is_nonzero_and_cleanup_remains_idempotent(self):
         for failed, previous_code in ((False, 0), (True, 0), (True, 143)):
@@ -291,7 +339,42 @@ class ArgumentTests(unittest.TestCase):
             self.assertEqual(args.mode, "software")
             self.assertIn("video%20%23%3F.mp4", args.file.as_uri())
             self.assertEqual(args.file, args.subtitles)
-            self.assertEqual(player.arguments([str(path)]).mode, "hardware")
+            defaults = player.arguments([str(path)])
+            self.assertEqual(defaults.mode, "hardware")
+            self.assertEqual(defaults.scale_width, 0)
+            self.assertIsNone(defaults.software_upscale)
+
+    def test_explicit_hardware_scale_and_software_upscale(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "video.mp4"
+            path.touch()
+            args = player.arguments([
+                "--scale-width", "1280", "--software-upscale", "1920X1080", str(path)])
+            self.assertEqual(args.scale_width, 1280)
+            self.assertEqual(args.software_upscale, (1920, 1080))
+            self.assertEqual(player.arguments(["--scale-width", "0", str(path)]).scale_width, 0)
+
+    def test_scale_options_reject_unsafe_or_incoherent_combinations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "video.mp4"
+            path.touch()
+            invalid = (
+                ["--scale-width", "127", str(path)],
+                ["--scale-width", "129", str(path)],
+                ["--scale-width", "1920", str(path)],
+                ["--scale-width", "wide", str(path)],
+                ["--software-upscale", "1920x1080", str(path)],
+                ["--scale-width", "1280", "--software-upscale", "1280x1080", str(path)],
+                ["--scale-width", "1280", "--software-upscale", "1921x1080", str(path)],
+                ["--scale-width", "1280", "--software-upscale", "32768x1080", str(path)],
+                ["--scale-width", "1280", "--software-upscale", "1920-by-1080", str(path)],
+                ["--software", "--scale-width", "1280", str(path)],
+            )
+            for argv in invalid:
+                with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as error:
+                        player.arguments(argv)
+                    self.assertEqual(error.exception.code, 2)
 
     def test_cli_rejects_directories_uris_missing_files_and_conflicting_modes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -346,7 +429,8 @@ class GStreamerApiTests(unittest.TestCase):
 
     def make_player(self):
         args = SimpleNamespace(mode="software", file=Path(self.temp.name) / "unused.ogg",
-                               subtitles=Path(self.temp.name) / "sub titles.srt")
+                               subtitles=Path(self.temp.name) / "sub titles.srt",
+                               scale_width=0, software_upscale=None)
         result = player.Player(args, self.Gst, self.GLib, {
             "video-sink": self.Gst.ElementFactory.make("fakesink"),
             "audio-sink": self.Gst.ElementFactory.make("fakesink")})
@@ -373,6 +457,52 @@ class GStreamerApiTests(unittest.TestCase):
         self.assertTrue(int(result.pipeline.get_property("flags")) & (1 << 12))
         self.assertTrue(result.pipeline.get_property("suburi").endswith("sub%20titles.srt"))
         self.assertIsNotNone(result.pipeline.get_property("video-sink"))
+        self.assertIsNone(result.pipeline.get_property("video-filter"))
+
+    def test_explicit_upscale_filter_has_expected_caps_and_quality_settings(self):
+        for name in ("videoscale", "capsfilter"):
+            if self.Gst.ElementFactory.find(name) is None:
+                self.skipTest(f"optional upscale fixture needs {name}")
+        result = player.make_software_upscale_filter(self.Gst, (1920, 1080))
+        scale = result.get_by_name("crystalhd-upscale")
+        capsfilter = result.get_by_name("crystalhd-upscale-caps")
+        self.assertEqual(scale.get_property("method"), 4)
+        if scale.find_property("n-threads") is not None:
+            self.assertEqual(scale.get_property("n-threads"), 2)
+        caps = capsfilter.get_property("caps")
+        structure = caps.get_structure(0)
+        self.assertEqual(structure.get_name(), "video/x-raw")
+        self.assertEqual(structure.get_string("format"), "YUY2")
+        self.assertEqual(structure.get_value("width"), 1920)
+        self.assertEqual(structure.get_value("height"), 1080)
+        self.assertIsNotNone(result.get_static_pad("sink"))
+        self.assertIsNotNone(result.get_static_pad("src"))
+
+    def test_explicit_upscale_filter_processes_raw_video(self):
+        for name in ("videotestsrc", "videoscale", "capsfilter", "fakesink"):
+            if self.Gst.ElementFactory.find(name) is None:
+                self.skipTest(f"optional upscale fixture needs {name}")
+        pipeline = self.Gst.Pipeline.new("upscale-test")
+        source = self.Gst.ElementFactory.make("videotestsrc")
+        upscale = player.make_software_upscale_filter(self.Gst, (640, 360))
+        sink = self.Gst.ElementFactory.make("fakesink")
+        source.set_property("num-buffers", 3)
+        pipeline.add(source)
+        pipeline.add(upscale)
+        pipeline.add(sink)
+        self.assertTrue(source.link(upscale))
+        self.assertTrue(upscale.link(sink))
+        self.addCleanup(pipeline.set_state, self.Gst.State.NULL)
+        self.assertNotEqual(
+            pipeline.set_state(self.Gst.State.PLAYING), self.Gst.StateChangeReturn.FAILURE)
+        message = pipeline.get_bus().timed_pop_filtered(
+            5 * self.Gst.SECOND, self.Gst.MessageType.EOS | self.Gst.MessageType.ERROR)
+        self.assertIsNotNone(message)
+        if message.type == self.Gst.MessageType.ERROR:
+            error, debug = message.parse_error()
+            self.fail(f"upscale pipeline failed: {error.message}: {debug}")
+        caps = sink.get_static_pad("sink").get_current_caps().get_structure(0)
+        self.assertEqual((caps.get_value("width"), caps.get_value("height")), (640, 360))
 
     def test_actual_software_decoder_buffers_precede_eos(self):
         for name in ("videotestsrc", "theoraenc", "theoradec", "fakesink"):
