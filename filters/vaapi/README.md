@@ -17,6 +17,8 @@ seek/lifetime results; these are not general codec or client conformance claims.
 The [GStreamer path](../gst/gst-plugin-1.0/README.md) remains the primary
 playback baseline. DRM PRIME import/export and VPP smoke tests do not themselves
 exercise CrystalHD hardware, and no libva conformance suite is run.
+For the separately characterized live-stream integration, see the top-level
+[Moonlight/Sunshine guide](../../MOONLIGHT.md).
 
 ## Supported decode subset
 
@@ -230,6 +232,63 @@ timeline advances.
   than change permissions or substitute unrelated pixels. The
   `crystalhd-chromium` launcher therefore defaults to software decoding;
   `CRYSTALHD_CHROMIUM_EXPERIMENTAL_HW_DECODE=1` enables the experimental path.
+
+## Diagnostic controls
+
+These process-local controls are for debugging, not ordinary playback:
+
+| Variable | Effect |
+| --- | --- |
+| `CRYSTALHD_VAAPI_DEBUG` | Any presence, including `0`, enables verbose stderr and can dump the first 64 bytes of an access unit. Use `unset CRYSTALHD_VAAPI_DEBUG` to disable it. |
+| `CRYSTALHD_VAAPI_TRACE=1` | Emits JSONL identity and timing events to stderr. Other values leave tracing off. Trace probes can perturb timing. |
+
+Do not publish trace or debug output without checking it for media bytes,
+paths and application metadata.
+
+## Chromium launcher experiment
+
+Chromium hardware decoding is less mature than the documented Moonlight path.
+The launcher defaults to software video decoding and should remain that way for
+ordinary browsing. Hardware mode requires disabling the GPU sandbox, which is
+a material security reduction, and YouTube hardware decode/A/V synchronization
+has not been accepted.
+
+Install the launcher separately from the core runtime:
+
+```sh
+sudo make install-browser
+```
+
+For a temporary, trusted test only:
+
+```sh
+test_profile=$(mktemp -d /tmp/crystalhd-browser.XXXXXX)
+CRYSTALHD_CHROMIUM_EXPERIMENTAL_HW_DECODE=1 \
+CRYSTALHD_CHROMIUM_DISABLE_GPU_SANDBOX=1 \
+CRYSTALHD_DRM_DEVICE=/dev/dri/renderDXXX \
+CRYSTALHD_CHROMIUM_PROFILE_DIR="$test_profile" \
+  crystalhd-chromium
+rm -r -- "$test_profile"
+```
+
+Do not use the sandbox-disabled mode for ordinary or untrusted browsing.
+
+| Launcher variable | Meaning |
+| --- | --- |
+| `CRYSTALHD_CHROMIUM_EXPERIMENTAL_HW_DECODE=1` | Enables the experimental CrystalHD VA path; otherwise accelerated video decode is disabled |
+| `CRYSTALHD_CHROMIUM_DISABLE_GPU_SANDBOX=1` | Required acknowledgement for hardware mode; causes `--disable-gpu-sandbox` |
+| `CRYSTALHD_DRM_DEVICE=PATH` | Selects the display render node; default is `/dev/dri/renderD128`, which may be wrong on multi-GPU systems |
+| `CRYSTALHD_CHROMIUM_PROFILE_DIR=DIR` | Uses a separate browser profile |
+| `CRYSTALHD_CHROMIUM_NATIVE_GL=1` | Stops the launcher from forcing software GL |
+| `CRYSTALHD_CHROMIUM=PATH` | Selects a non-Snap Chrome/Chromium executable |
+| `CRYSTALHD_CHROMIUM_H264_POLICY=1` | Suppresses the Google Chrome policy warning only; it does not install or enforce a codec policy |
+| `CRYSTALHD_CHROMIUM_CONFIG=PATH` | Selects a trusted per-user shell configuration file; the file is sourced as shell code |
+
+Remove only the separately installed browser assets with:
+
+```sh
+sudo make uninstall-browser
+```
 
 ## Build and basic decode
 

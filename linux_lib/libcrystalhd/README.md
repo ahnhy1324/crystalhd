@@ -88,11 +88,11 @@ not part of `make check`. For hardware results, use the
 ## Raw YUY2 copy contract
 
 For 32-bit i686 CPUs without SSE/SSE2, build with `LEGACY_CPU=1` (see
-[32-bit and legacy CPUs](../../README.md#32-bit-and-legacy-cpus)). This keeps the
-library ABI but selects scalar conversions; it does not bypass the player's
-own CPU or dependency requirements. The dedicated legacy check runs both
-production sections and the built shared library under a verified no-SSE CPU
-model, without opening hardware.
+[other installation modes](../../README.md#other-installation-modes)). This
+keeps the library ABI but selects scalar conversions; it does not bypass the
+player's own CPU or dependency requirements. The dedicated legacy check runs
+both production sections and the built shared library under a verified no-SSE
+CPU model, without opening hardware.
 
 For the ordinary packed-YUY2 `DtsProcOutput` copy path (without
 `BC_POUT_FLAGS_MODE`), `YbuffSz` and `YBuffDoneSz` are counts of four-byte

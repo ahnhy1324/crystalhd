@@ -1,47 +1,76 @@
 # Broadcom Crystal HD for current Linux systems
 
 This fork maintains the BCM70012/BCM70015 kernel driver, firmware and legacy
-`libcrystalhd` API for Linux 5.15 and newer. On BCM70015, `crystalhd-play`
-(which uses the GStreamer `crystalhddec` plugin) is the recommended local-file
-entry point; explicit GStreamer pipelines are the integration path. BCM70012
-support is retained but has not been recently tested on hardware.
+`libcrystalhd.so.3` API for Linux 5.15 and newer. Its best-established use is
+hardware video decoding for local files on BCM70015. CrystalHD handles video;
+the normal Linux media stack handles audio, subtitles, synchronization and
+display.
 
-Measured capabilities and adoption limits are summarized below. Exact profiles,
-fixtures and remaining work are in the
-[hardware report](HARDWARE-2026-09-13.md) and [open work](TODO.md). Successful
-compilation or driver discovery is not proof that a particular stream decodes.
+## Compatibility at a glance
 
-## Current status
+“Tested” below means the named reference configuration and documented stream
+subset, not every card, host or file.
 
-BCM70015 local-file playback is the usable path today. Start with every tuning
-option unset. CrystalHD decodes video only, while the normal Linux audio,
-subtitle and display components handle the rest.
+### Hardware and platform
 
-| Target | Status | What is established |
+| Platform | Current status |
+| --- | --- |
+| BCM70015 | Primary maintained device. Playback, codec and lifecycle tests are recorded on Ubuntu 25.10 / Linux 6.17. |
+| BCM70012 | Legacy H.264 and `libcrystalhd.so.3` compatibility are retained, but no recent physical-card retest has been completed. |
+| Linux kernel | Driver API builds are maintained for Linux 5.15 and newer. Compile coverage is not hardware certification. |
+| Userspace | Native x86-64 and i686 paths are maintained. `LEGACY_CPU=1` builds scalar i686 userspace for CPUs without SSE2; physical no-SSE performance is unverified. |
+
+One CrystalHD hardware decode session can be active at a time. Maximum coded
+size is 1920x1088.
+
+### Video formats and rates
+
+| Media on BCM70015 | Tested scope |
+| --- | --- |
+| H.264/AVC | Selected Constrained Baseline, Main and High streams, including selected MBAFF streams |
+| MPEG-2 | Selected progressive Simple/Main and field-coded Main streams |
+| MPEG-4 Part 2 | Selected progressive Simple and Advanced Simple streams |
+| VC-1 / WMV3 | Selected progressive VC-1 Advanced and standard WMV3 Simple/Main streams |
+| HEVC, VP8, VP9, AV1 | Not supported |
+
+| Playback target | Practical status |
+| --- | --- |
+| 720p30 local files | Best-established ordinary playback target |
+| 1080p30 local files | Works on the reference host with a host-specific PCIe workaround; test the default first |
+| 720p60 | Decoder capacity has been demonstrated, but general 60 Hz presentation has not |
+| 1080p60 | Not practical on the current output path |
+
+Exact profiles, framing restrictions, fixtures and measurements are in the
+[usage guide](USAGE.md) and [hardware report](HARDWARE-2026-09-13.md).
+
+### Applications and APIs
+
+| Application or API | Status | Practical meaning |
 | --- | --- | --- |
-| BCM70015 720p30 local playback | **Validated** | An 8-hour clocked H.264 run and counted control, EOS and clean-reopen tests passed on the reference system. |
-| BCM70015 1080p30 local playback | **Conditionally validated** | With its host-specific PCIe L0s workaround, the reference system completed a 2-hour 1080p30 run; a separate throughput run reached 41.20 fps. Test the default first. |
-| 720p60 | **Experimental** | A synthetic no-B H.264 decode/download test exceeded 60 fps with the reference host's L0s workaround active, but a complete 60 Hz presentation path is not validated. |
-| 1080p60 | **Not practical** | Under the same synthetic capacity configuration, output remained about 42 fps and live input accumulated backlog. |
-| VA-API and VLC | **Experimental** | Selected FFmpeg and one VLC H.264/X11 path passed; this is not general client or codec certification. |
-| Chromium/YouTube and BCM70012 | **Unverified** | Browser hardware playback is not a supported daily-use path; BCM70012 has no recent hardware retest. |
+| `crystalhd-play` / GStreamer `crystalhddec` | **Recommended** | Local files with audio, subtitles and controls; explicit hardware selection and no silent software fallback |
+| `libcrystalhd.so.3` | **Compatibility API** | Existing Broadcom-API applications; the ABI and legacy ioctl behavior remain preserved |
+| FFmpeg through VA-API | **Experimental** | Selected decode/download paths work; libva discovery alone is not proof of decode or display |
+| VLC 3.0.21 | **Tested combination** | H.264 on the reference X11/i915 system only, not general VLC or codec certification |
+| [Moonlight Qt 6.2.0](MOONLIGHT.md) | **Experimental integration** | Stock Moonlight has performed real BCM70015 H.264 decode and indirect EGL/DRM PRIME display; presentation cadence and complete A/V/input/reconnect acceptance remain below support grade |
+| Chromium / YouTube | **Hardware path unverified** | The launcher defaults to software; hardware mode disables the GPU sandbox and is not a daily-use path |
 
-The validated BCM70015 subset includes H.264, MPEG-2, MPEG-4 Part 2, VC-1
-Advanced and WMV3 within the documented profile and framing limits. Maximum
-coded size is 1920x1088, only one hardware playback session may be active, and
-HEVC, VP8, VP9 and AV1 are not supported.
+## Quick start
 
-See [usage and runtime options](USAGE.md) for choosing a frontend, proving
-that hardware decoding is active, codec-specific examples and safe option
-rollback. Exact fixtures, measurements and qualifications remain in the
-[hardware report](HARDWARE-2026-09-13.md); current work is tracked in
-[TODO](TODO.md).
-
-## Quick install
-
-On Ubuntu, install the ordinary build and playback dependencies:
+Before choosing a direct install, check whether DKMS already owns CrystalHD:
 
 ```sh
+dkms status 2>/dev/null | grep -i crystalhd || true
+```
+
+If that prints a CrystalHD registration, follow the [DKMS procedure](README.dkms)
+and do not run the direct `sudo make install` below. Otherwise, from a fresh
+checkout on Ubuntu:
+
+```sh
+sudo apt install git
+git clone https://github.com/ahnhy1324/crystalhd.git
+cd crystalhd
+
 sudo apt install build-essential pkg-config linux-headers-$(uname -r) \
   libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
   gstreamer1.0-tools gstreamer1.0-plugins-base \
@@ -50,147 +79,102 @@ sudo apt install build-essential pkg-config linux-headers-$(uname -r) \
   python3-gi gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 \
   libva-dev libdrm-dev libgbm-dev libswscale-dev vainfo \
   pciutils psmisc
-```
 
-Build and install for the running kernel and native userspace:
-
-```sh
 make -j"$(nproc)"
 sudo make install
 sudo modprobe crystalhd
-```
-
-`make install` installs the current-kernel module, udev rule, firmware,
-`libcrystalhd`, headers, GStreamer plugin/player, VA-API driver and
-`crystalhd-check`. It does not configure a browser, enable the optional PCIe
-workaround, replace an already loaded module, or install a DKMS registration.
-Optional browser launcher assets use `sudo make install-browser`; hardware
-browser decoding remains experimental and opt-in.
-
-## Verify
-
-Run the read-only preflight first:
-
-```sh
 crystalhd-check
-gst-inspect-1.0 crystalhddec
+crystalhd-play --hardware video.mp4
 ```
 
-The preflight reports the PCI device, loaded and installed module identities,
-direct/DKMS conflicts, firmware, device access and owner, loader-selected
-library, GStreamer plugin, VA driver and DRM render nodes. It does not load or
-unload a module, open a decoder session, alter PCIe settings or require raw
-register access.
+When updating an existing direct install, stop before playback if
+`crystalhd-check` reports that the loaded and installed modules differ. Follow
+the [idle reload or reboot procedure](BRINGUP.md#device-access-and-module-identity)
+so the check and player use the same driver image.
 
-After rebuilding, compare the checkout as well:
+A successful hardware run reports
+`Decoder: crystalhddec (hardware; video output confirmed)` and a nonzero
+decoded-video-frame count. Unsupported input, a busy device or missing access
+fails visibly instead of falling back to software.
+
+## Common use
 
 ```sh
-crystalhd-check --source-tree "$PWD"
+# External subtitles
+crystalhd-play --subtitles subtitles.srt video.mkv
+
+# Deliberate software comparison; never an automatic fallback
+crystalhd-play --software video.mp4
+
+# Explicit installed GStreamer H.264 pipeline
+gst-launch-1.0 filesrc location=video.mp4 ! qtdemux ! h264parse ! \
+  crystalhddec ! videoconvert ! autovideosink
 ```
 
-The card permits one playback session at a time. The installed udev rule gives
-the active desktop user access and otherwise uses `root:video` mode `0660`. On
-a headless system, add the playback account to `video` and log in again. For
-module identity checks and safe reload instructions, see the
-[bring-up guide](BRINGUP.md#device-access-and-module-identity). Never
-force-unload an active device.
+Space pauses; Left/Right or `j`/`l` seek ten seconds; `1`, `2` and `3` select
+0.5x, 1x and 2x; `q` quits. See [everyday usage](USAGE.md) for all supported
+file examples, codec boundaries, VA/VLC commands, proof of hardware use and
+troubleshooting.
 
-## Play a local file
+Start with every tuning variable unset. The Full-HD PCIe workaround is only
+for a repeatable BCM70015 throughput shortfall on a suitable dedicated link;
+follow the [safe test and rollback procedure](USAGE.md#full-hd-pcie-workaround)
+instead of applying global PCIe settings.
 
-The installed controller selects CrystalHD explicitly and does not hide a
-decoder failure behind software fallback:
+## Sunshine / Moonlight streaming
+
+720p30 is the first hardware-offload trial. The reference system performed
+real CrystalHD decoding and indirect display, but smooth 60 fps presentation,
+measured end-to-end latency, physical A/V synchronization and reconnect have
+not passed a user-support gate. Use software decoding when dependable game
+streaming is the priority.
+
+After installing the stack, launch the Moonlight AppImage with the tested
+process-local controls:
 
 ```sh
-crystalhd-play video.mp4
+moonlight_app=/path/to/Moonlight.AppImage
+chmod +x "$moonlight_app"
+env LIBVA_DRIVER_NAME=crystalhd \
+  VAAPI_FORCE_INDIRECT=1 \
+  CRYSTALHD_VAAPI_LIVE_H264=1 \
+  CRYSTALHD_VAAPI_LOW_LATENCY_H264=1 \
+  "$moonlight_app"
 ```
 
-Unsupported codec features, a busy card or insufficient device access fail
-visibly. The [usage guide](USAGE.md#play-a-local-file) documents controls,
-subtitles, deliberate software comparison and codec-specific GStreamer
-pipelines.
+Use H.264, 1280x720 and 30 fps for the first connection. The
+[Moonlight/Sunshine guide](MOONLIGHT.md) covers download, pairing, proof of
+hardware use, measured limits and rollback-safe troubleshooting.
 
-## Optional VA-API
+## Other installation modes
 
-The optional VA-API backend is experimental and can be slow for synchronous
-one-picture-at-a-time clients. See the [installed FFmpeg/VLC recipes and
-option boundaries](USAGE.md#va-api-and-external-clients) and the component's
-[implemented subset](filters/vaapi/README.md). Driver discovery alone is not
-proof of compressed-video decoding.
+- DKMS owns only the kernel module; follow [README.dkms](README.dkms) and use
+  `sudo make install-runtime` for userspace.
+- Native 32-bit i686 needs a matching 32-bit compiler, dependencies and
+  installation path; a 32-bit library cannot load into a 64-bit player. On a
+  CPU without SSE2, additionally pass `LEGACY_CPU=1` to both the build and
+  install: `make LEGACY_CPU=1` then `sudo make LEGACY_CPU=1 install`.
+- `sudo make uninstall` removes the direct installation without force-unloading
+  a running module or deleting a DKMS registration.
 
-## 32-bit and legacy CPUs
+## Documentation
 
-On a native 32-bit i686 system with SSE2, use the ordinary build with matching
-32-bit dependencies. A multilib compiler, dependencies and installation path
-must all select the same ABI; a 32-bit library cannot load into a 64-bit player.
+| Need | Document |
+| --- | --- |
+| Local playback, controls, codec examples, VA/VLC and common troubleshooting | [USAGE.md](USAGE.md) |
+| Sunshine/Moonlight hardware streaming | [MOONLIGHT.md](MOONLIGHT.md) |
+| PCI binding, firmware startup, identity and staged diagnosis | [BRINGUP.md](BRINGUP.md) |
+| DKMS ownership and updates | [README.dkms](README.dkms) |
+| Exact hardware fixtures, benchmarks and evidence boundaries | [HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md) |
+| Current work | [TODO.md](TODO.md) |
+| GStreamer framing and counted tests | [GStreamer component guide](filters/gst/gst-plugin-1.0/README.md) |
+| VA-API subset, replay and experimental controls | [VA-API component guide](filters/vaapi/README.md) |
+| Legacy API and library options | [libcrystalhd guide](linux_lib/libcrystalhd/README.md) |
 
-`LEGACY_CPU=1` is for 32-bit i686 processors that lack SSE2. It also disables
-SSE and MMX, selects a scalar x87 build and requires matching 32-bit
-dependencies:
+## Developer checks
 
-```sh
-make LEGACY_CPU=1
-sudo make LEGACY_CPU=1 install
-```
-
-Normal builds keep the SSE2 baseline. `make userspace32-check` and
-`make legacy-cpu-check` exercise the two build modes, but do not configure a
-mixed-ABI installation or certify performance on a physical legacy processor.
-
-## DKMS
-
-DKMS owns only the kernel module. Register and install it with the procedure in
-[README.dkms](README.dkms), then install the separate runtime:
-
-```sh
-sudo apt install dkms linux-headers-$(uname -r)
-sudo make install-runtime
-```
-
-Do not run the direct `install-module` target over a DKMS-managed kernel. Use
-`crystalhd-check` after updates to detect direct/DKMS conflicts and stale loaded
-modules.
-
-## Troubleshooting
-
-Start with `crystalhd-check`; then follow the milestone-based
-[bring-up guide](BRINGUP.md). It separates PCI binding, firmware startup,
-decoder setup, input framing, output and frontend synchronization instead of
-inferring a driver failure from a late playback symptom.
-
-On the tested BCM70015/ICH8 link, disabling PCIe L0s removed a measured Full HD
-throughput bottleneck. This is an opt-in, host-specific diagnostic that can
-increase power use, not a default. Follow the [safe test and rollback
-procedure](USAGE.md#full-hd-pcie-workaround); never force-unload an active
-device or apply a global PCIe workaround.
-
-## Uninstall
-
-Remove only the files from the ordinary core installation:
-
-```sh
-sudo make uninstall
-```
-
-This removes the configured direct module file and runtime files, then updates
-the module and dynamic-loader caches. It never unloads the running module and
-does not touch a DKMS module. If CrystalHD is loaded, it remains in memory until
-a safe normal unload or reboot.
-
-Browser launcher assets are separately scoped:
-
-```sh
-sudo make uninstall-browser
-```
-
-That target removes only the installed launcher, extension assets and desktop
-file; it does not delete profiles, policies or defaults. Remove a DKMS
-registration separately with the procedure in [README.dkms](README.dkms).
-
-## Developer and source-tree testing
-
-Optional regression dependencies include `gcc-multilib`, `g++-multilib`,
-`qemu-user`, `ffmpeg`, its development libraries, `nodejs` and `node-ws`.
-Run the device-free suite with:
+The kernel and userspace builds use `-Werror`. Device-free checks do not prove
+hardware playback:
 
 ```sh
 make check
@@ -198,23 +182,11 @@ make userspace32-check
 make legacy-cpu-check
 ```
 
-The kernel and userspace builds use `-Werror`. CI also compiles the driver
-against maintained LTS, stable and mainline kernel APIs. Linux 5.15 coverage
-is an API compilation check, not BCM70012 or BCM70015 hardware certification;
-device-free tests do not establish hardware playback.
-
-The opt-in [raw-frame library API](linux_lib/libcrystalhd/libcrystalhd_raw_frame.h)
-uploads 256x96 YUV420P images, composes tiles from two retained references,
-and applies bounded quarter-pixel translation through native H.264. It requires
-a fresh, correctly configured decoder session and caller-managed stream rate;
-it is not standalone MFD processing or a raw device-surface API.
-Non-reference composition and translation leave both source slots unchanged;
-the fixed POC2 profile permits at most one non-reference AU between committed
-reference AUs.
-`make raw-frame-check` tests the host API.
+CI also compiles the driver against maintained LTS, stable and mainline kernel
+APIs. [HISTORY.md](HISTORY.md) records project lineage and completed
+maintenance milestones rather than the current task list.
 
 ## Licensing
 
-Existing file notices remain authoritative in this mixed-license codebase;
-see [LICENSES.md](LICENSES.md). [HISTORY.md](HISTORY.md) records project lineage
-and maintenance milestones, not the current task list.
+Existing file notices remain authoritative in this mixed-license codebase; see
+[LICENSES.md](LICENSES.md).
