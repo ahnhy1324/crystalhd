@@ -18,6 +18,7 @@
 extern "C" {
 #include <libavformat/avformat.h>
 }
+#include <algorithm>
 #include <cerrno>
 #include <climits>
 #include <csignal>
@@ -3430,6 +3431,7 @@ struct Options {
     unsigned seconds = 30;
     unsigned iterations = 1;
     bool scaler_test = false;
+    bool scaler_benchmark = false;
     unsigned scale_width = 0;
     bool mpeg1_via_mpeg2 = false;
     bool h263_via_divx = false;
@@ -3514,6 +3516,21 @@ static uint32_t ProbeDeviceMode(const Options &options)
     if (!options.scaler_test || options.scale_width)
         mode |= DTS_SINGLE_THREADED_MODE;
     return mode;
+}
+
+static bool ScalerBenchmarkConflicts(const Options &o)
+{
+    return o.scaler_test || o.capture_path || o.observe_chroma ||
+        o.observe_scl_config || o.observe_scl_filter_map || o.observe_scl_view ||
+        o.observe_mfd_config || o.observe_mfd_address || o.observe_mfd_framing ||
+        o.observe_runtime_inventory || o.observe_arm_metadata ||
+        o.observe_arm_source_shape || o.observe_ppb_context || o.observe_ppb_stop ||
+        o.observe_ppb_metadata || o.observe_ppb_return || o.observe_video_prefix ||
+        o.observe_video_graph || o.observe_video_staging || o.observe_avd_memory ||
+        o.observe_avd_cpu_map || o.observe_avd_code_arena ||
+        o.observe_avd_code_prefix || o.observe_avd_cache_count ||
+        o.observe_avd_dmem_samples || o.inject_mfd_colour || o.scl_status_test ||
+        o.mpeg1_via_mpeg2 || o.h263_via_divx || o.open_only;
 }
 
 static bool ParseArguments(std::vector<const char *> arguments, Options *options)
@@ -3634,7 +3651,10 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
     if ((options->mpeg1_via_mpeg2 && options->h263_via_divx) ||
         (options->open_only && !options->h263_via_divx)) return false;
     if (arguments.size() >= 4 &&
-        !std::strcmp(arguments[arguments.size() - 2], "--scaler-test")) {
+        (!std::strcmp(arguments[arguments.size() - 2], "--scaler-test") ||
+         !std::strcmp(arguments[arguments.size() - 2], "--scaler-benchmark"))) {
+        const bool benchmark = !std::strcmp(arguments[arguments.size() - 2],
+                                            "--scaler-benchmark");
         const char *width = arguments.back();
         if (std::strcmp(width, "0")) {
             for (const char *digit = width; *digit; ++digit)
@@ -3643,12 +3663,13 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
                 options->scale_width < 128 || (options->scale_width & 1))
                 return false;
         }
-        options->scaler_test = true;
+        options->scaler_test = !benchmark;
+        options->scaler_benchmark = benchmark;
         arguments.resize(arguments.size() - 2);
     }
     if (arguments.size() == 2 && !std::strcmp(arguments[1], "--self-test")) {
         if (options->observe_avd_dmem_samples || options->observe_avd_cache_count || options->observe_avd_code_prefix || options->observe_avd_code_arena || options->observe_avd_cpu_map || options->observe_avd_memory || options->capture_path || options->observe_arm_metadata || options->observe_arm_source_shape || options->observe_ppb_context || options->observe_runtime_inventory || options->observe_chroma || options->observe_scl_config || options->observe_scl_filter_map || options->observe_scl_view || options->observe_mfd_config || options->observe_mfd_address || options->observe_mfd_framing || options->inject_mfd_colour || options->scl_status_test || options->scaler_test || options->mpeg1_via_mpeg2 ||
-            options->h263_via_divx || options->open_only) return false;
+            options->scaler_benchmark || options->h263_via_divx || options->open_only) return false;
         options->mode = Mode::SelfTest;
         return true;
     }
@@ -3656,7 +3677,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
     const bool preflight = !std::strcmp(arguments[1], "--preflight");
     const bool hardware = !std::strcmp(arguments[1], "--hardware");
     if ((!preflight && !hardware) || (preflight && arguments.size() > 5) ||
-        (options->open_only && (!hardware || options->scaler_test)) ||
+        (options->open_only && (!hardware || options->scaler_test || options->scaler_benchmark)) ||
         !Number(arguments[3], kMaximumPackets, &options->expected) ||
         (arguments.size() >= 5 && !Number(arguments[4], 300, &options->seconds)) ||
         (arguments.size() == 6 &&
@@ -3664,6 +3685,8 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         return false;
     options->mode = preflight ? Mode::Preflight : Mode::Hardware;
     options->path = arguments[2];
+    if (options->scaler_benchmark &&
+        (options->expected < 62 || ScalerBenchmarkConflicts(*options))) return false;
     if (options->observe_avd_memory && (!hardware || !options->capture_path || !options->scaler_test ||
         options->scale_width || options->expected != 180 || options->iterations != 1 ||
         options->output_format != OUTPUT_MODE422_YUY2 || AvdMemoryConflicts(*options))) return false;
@@ -3925,6 +3948,162 @@ static bool HashActivePixels(GChecksum *checksum, const BC_DTS_PROC_OUT &output,
     g_checksum_update(checksum, output.Ybuff, static_cast<gssize>(bytes));
     return true;
 }
+
+struct ScalerBenchmarkMetrics {
+    bool frame_rate_available = false;
+    bool steady_rate_available = false;
+    double frame_rate = 0.0;
+    double steady_rate = 0.0;
+    double steady_payload_mb_s = 0.0;
+    double capture_to_first_ms = 0.0;
+    double capture_to_last_ms = 0.0;
+    uint64_t interval_p50_us = 0;
+    uint64_t interval_p95_us = 0;
+    uint64_t interval_max_us = 0;
+};
+
+// Timing-only decoder/scaler observation. It never reads the pixel payload,
+// captures a frame or touches a device register. Capacity is reserved before
+// START so the measured output path performs no vector allocation.
+struct ScalerBenchmark {
+    bool enabled = false;
+    unsigned limit = 0;
+    gint64 capture_start_us = 0;
+    unsigned observed_width = 0, observed_height = 0;
+    uint32_t ybuff_words_min = UINT_MAX, ybuff_words_max = 0;
+    uint32_t ready_max = 0;
+    unsigned ready_gt_one_samples = 0;
+    uint64_t ybuff_bytes_total = 0;
+    uint64_t steady_payload_bytes = 0;
+    std::vector<gint64> output_us;
+
+    bool Prepare(bool requested, unsigned expected) {
+        enabled = requested;
+        limit = expected;
+        if (!enabled) return true;
+        try {
+            output_us.reserve(expected);
+        } catch (...) {
+            return false;
+        }
+        return true;
+    }
+
+    void CaptureStarted(gint64 timestamp) {
+        if (enabled) capture_start_us = timestamp;
+    }
+
+    bool Record(gint64 timestamp, unsigned width, unsigned height,
+                uint32_t ybuff_words, uint32_t ready) {
+        if (!enabled) return true;
+        if (!capture_start_us || timestamp < capture_start_us || !width || !height ||
+            !ybuff_words || !ready || output_us.size() >= limit ||
+            (!output_us.empty() && timestamp < output_us.back()) ||
+            (observed_width && (width != observed_width || height != observed_height)))
+            return false;
+        if (!observed_width) {
+            observed_width = width;
+            observed_height = height;
+        }
+        output_us.push_back(timestamp);
+        if (ybuff_words < ybuff_words_min) ybuff_words_min = ybuff_words;
+        if (ybuff_words > ybuff_words_max) ybuff_words_max = ybuff_words;
+        if (ready > ready_max) ready_max = ready;
+        if (ready > 1) ++ready_gt_one_samples;
+        const uint64_t bytes = static_cast<uint64_t>(ybuff_words) * 4;
+        ybuff_bytes_total += bytes;
+        // The frame-61 timestamp starts the steady interval, so its payload is
+        // excluded just like the first frame in the corresponding FPS ratio.
+        if (output_us.size() > 61) steady_payload_bytes += bytes;
+        return true;
+    }
+
+    bool Measure(ScalerBenchmarkMetrics *metrics) const {
+        if (!enabled || !metrics || !capture_start_us || output_us.empty() ||
+            output_us.front() < capture_start_us || ybuff_words_min == UINT_MAX)
+            return false;
+        *metrics = ScalerBenchmarkMetrics{};
+        metrics->capture_to_first_ms =
+            static_cast<double>(output_us.front() - capture_start_us) / 1000.0;
+        metrics->capture_to_last_ms =
+            static_cast<double>(output_us.back() - capture_start_us) / 1000.0;
+        if (output_us.size() < 2) return true;
+
+        const gint64 total = output_us.back() - output_us.front();
+        if (total <= 0) return false;
+        metrics->frame_rate_available = true;
+        metrics->frame_rate = static_cast<double>(output_us.size() - 1) *
+            1000000.0 / static_cast<double>(total);
+        if (output_us.size() >= 62) {
+            const gint64 steady = output_us.back() - output_us[60];
+            if (steady <= 0) return false;
+            metrics->steady_rate_available = true;
+            metrics->steady_rate = static_cast<double>(output_us.size() - 61) *
+                1000000.0 / static_cast<double>(steady);
+            metrics->steady_payload_mb_s =
+                static_cast<double>(steady_payload_bytes) / static_cast<double>(steady);
+        }
+
+        std::vector<uint64_t> intervals;
+        try {
+            intervals.reserve(output_us.size() - 1);
+            for (size_t i = 1; i < output_us.size(); ++i)
+                intervals.push_back(static_cast<uint64_t>(output_us[i] - output_us[i - 1]));
+        } catch (...) {
+            return false;
+        }
+        std::sort(intervals.begin(), intervals.end());
+        const size_t count = intervals.size();
+        const size_t p50 = (count * 50 + 99) / 100 - 1;
+        const size_t p95 = (count * 95 + 99) / 100 - 1;
+        metrics->interval_p50_us = intervals[p50];
+        metrics->interval_p95_us = intervals[p95];
+        metrics->interval_max_us = intervals.back();
+        return true;
+    }
+
+    bool Report(unsigned iteration, unsigned iterations, unsigned requested_width,
+                unsigned expected_width, unsigned expected_height, bool complete) const {
+        if (!enabled) return complete;
+        ScalerBenchmarkMetrics metrics;
+        const bool measured = Measure(&metrics);
+        const bool passed = complete && measured && metrics.steady_rate_available &&
+            output_us.size() == limit;
+        const uint32_t minimum = ybuff_words_min == UINT_MAX ? 0 : ybuff_words_min;
+        std::printf("Scaler benchmark: iteration=%u/%u requested-width=%u "
+                    "expected-output=%ux%u observed-output=%ux%u frames=%zu/%u "
+                    "ybuff-done-sz-words-min=%u ybuff-done-sz-words-max=%u "
+                    "ybuff-done-bytes-min=%llu ybuff-done-bytes-max=%llu "
+                    "ybuff-done-bytes-total=%llu "
+                    "ready-max=%u ready-gt1-samples=%u "
+                    "capture-to-first-ms=%.3f capture-to-last-ms=%.3f "
+                    "frame1-last-available=%s frame1-last-fps=%.3f "
+                    "frame61-last-available=%s frame61-last-fps=%.3f "
+                    "frame61-last-payload-mb-s=%.3f "
+                    "interval-p50-us=%llu interval-p95-us=%llu interval-max-us=%llu "
+                    "pixel-validation=none result=%s\n",
+                    iteration, iterations, requested_width, expected_width,
+                    expected_height, observed_width, observed_height, output_us.size(),
+                    limit, minimum, ybuff_words_max,
+                    static_cast<unsigned long long>(minimum) * 4,
+                    static_cast<unsigned long long>(ybuff_words_max) * 4,
+                    static_cast<unsigned long long>(ybuff_bytes_total),
+                    ready_max, ready_gt_one_samples,
+                    measured ? metrics.capture_to_first_ms : 0.0,
+                    measured ? metrics.capture_to_last_ms : 0.0,
+                    measured && metrics.frame_rate_available ? "yes" : "no",
+                    measured ? metrics.frame_rate : 0.0,
+                    measured && metrics.steady_rate_available ? "yes" : "no",
+                    measured ? metrics.steady_rate : 0.0,
+                    measured ? metrics.steady_payload_mb_s : 0.0,
+                    static_cast<unsigned long long>(measured ? metrics.interval_p50_us : 0),
+                    static_cast<unsigned long long>(measured ? metrics.interval_p95_us : 0),
+                    static_cast<unsigned long long>(measured ? metrics.interval_max_us : 0),
+                    passed ? "PASS" : "FAIL");
+        std::fflush(stdout);
+        return passed;
+    }
+};
 
 static bool CaptureBudget(unsigned width, unsigned height, unsigned expected,
                           uint64_t *frame_bytes, uint64_t *total_bytes)
@@ -8074,6 +8253,13 @@ static bool SelfTest()
     native_mode.scale_width = 320;
     check(ProbeDeviceMode(native_mode) == legacy_mode,
           "explicit scaled control retains mode and width override");
+    Options benchmark_mode;
+    benchmark_mode.scaler_benchmark = true;
+    check(ProbeDeviceMode(benchmark_mode) == legacy_mode,
+          "unscaled benchmark retains the ordinary operating mode");
+    benchmark_mode.scale_width = 640;
+    check(ProbeDeviceMode(benchmark_mode) == legacy_mode,
+          "scaled and unscaled benchmarks use identical operating mode");
     check(ParseArguments({"probe", "--hardware", "fixture", "12"}, &options) &&
           options.mode == Mode::Hardware && options.expected == 12 &&
           options.seconds == 30 && options.iterations == 1 &&
@@ -8098,6 +8284,15 @@ static bool SelfTest()
               options.scaler_test && options.iterations == 2,
               "opt-in scaler arguments");
     }
+    for (const char *width : {"0", "128", "320", "640", "960", "1280", "1918"}) {
+        options = Options{};
+        check(ParseArguments({"probe", "--hardware", "fixture", "900", "60", "3",
+                              "--scaler-benchmark", width}, &options) &&
+              options.scaler_benchmark && !options.scaler_test &&
+              options.iterations == 3 && options.capture_path == nullptr &&
+              !NeedsRawIo(options),
+              "non-hashing scaler benchmark arguments");
+    }
     for (const char *width : {"", "127", "319", "1919", "1920", "1921", "-1",
                              "+128", " 128", "128x", "4294967296"}) {
         options = Options{};
@@ -8110,8 +8305,66 @@ static bool SelfTest()
                          &options) && options.mode == Mode::Preflight,
           "device-free scaler preflight");
     options = Options{};
+    check(ParseArguments({"probe", "--preflight", "fixture", "900", "60",
+                          "--scaler-benchmark", "960"}, &options) &&
+          options.mode == Mode::Preflight && options.scaler_benchmark &&
+          options.scale_width == 960,
+          "device-free scaler benchmark preflight");
+    options = Options{};
+    check(ParseArguments({"probe", "--hardware", "fixture", "62",
+                          "--scaler-benchmark", "0"}, &options) &&
+          options.expected == 62 && options.scaler_benchmark,
+          "benchmark admits the minimum frame-61 steady interval");
+    Options short_benchmark, short_preflight;
+    check(!ParseArguments({"probe", "--hardware", "fixture", "61",
+                           "--scaler-benchmark", "0"}, &short_benchmark) &&
+          !ParseArguments({"probe", "--preflight", "fixture", "1",
+                           "--scaler-benchmark", "320"}, &short_preflight),
+          "benchmark refuses counts without a frame-61 steady interval");
+    options = Options{};
     check(!ParseArguments({"probe", "--self-test", "--scaler-test", "320"}, &options),
           "self-test does not accept hardware options");
+    options = Options{};
+    check(!ParseArguments({"probe", "--self-test", "--scaler-benchmark", "320"}, &options),
+          "self-test does not accept benchmark hardware options");
+    for (const char *width : {"", "127", "319", "1919", "1920", "1921", "-1",
+                             "+128", " 128", "128x", "4294967296"}) {
+        options = Options{};
+        check(!ParseArguments({"probe", "--hardware", "fixture", "900",
+                               "--scaler-benchmark", width}, &options),
+              "invalid benchmark width rejected before hardware");
+    }
+    {
+        const std::vector<const char *> valid = {"probe", "--hardware", "fixture", "900",
+            "60", "3", "--scaler-benchmark", "640"};
+        const std::vector<std::vector<const char *>> conflicts = {
+            {"--scaler-test", "320"}, {"--scaler-benchmark", "320"},
+            {"--capture-yuy2", "owned.raw"}, {"--capture-uyvy", "owned.raw"},
+            {"--observe-chroma"}, {"--observe-scl-config"},
+            {"--observe-scl-filter-map"}, {"--observe-scl-view", "2"},
+            {"--observe-mfd-config"}, {"--observe-mfd-address"},
+            {"--observe-mfd-framing"}, {"--observe-runtime-inventory"},
+            {"--observe-arm-metadata"}, {"--observe-arm-source-shape"},
+            {"--observe-ppb-context"}, {"--observe-ppb-stop"},
+            {"--observe-ppb-metadata"}, {"--observe-ppb-return"},
+            {"--observe-video-prefix"}, {"--observe-video-graph"},
+            {"--observe-video-staging"}, {"--observe-avd-memory"},
+            {"--observe-avd-cpu-map"}, {"--observe-avd-code-arena"},
+            {"--observe-avd-code-prefix"}, {"--observe-avd-platform-code"},
+            {"--observe-avd-cache-count"}, {"--observe-avd-dmem-samples"},
+            {"--observe-avd-dmem-midpoints"}, {"--inject-mfd-colour", "a"},
+            {"--scl-status-test", "observe"}, {"--mpeg1-via-mpeg2"},
+            {"--h263-via-divx"}, {"--h263-via-divx", "--open-only"}
+        };
+        for (const auto &extra : conflicts) for (unsigned order = 0; order < 2; ++order) {
+            auto arguments = valid;
+            arguments.insert(order ? arguments.end() : arguments.begin() + 6,
+                             extra.begin(), extra.end());
+            Options rejected;
+            check(!ParseArguments(arguments, &rejected),
+                  "benchmark rejects capture, diagnostics, research and duplicate modes in either order");
+        }
+    }
     for (const char *capture : {"--capture-yuy2", "--capture-uyvy"}) {
         for (const char *width : {"0", "320", "640"}) {
             options = Options{};
@@ -8512,6 +8765,80 @@ static bool SelfTest()
           !ScalerGeometry(0, 360, 320, &width, &height) &&
           !ScalerGeometry(640, 361, 320, &width, &height),
           "ambiguous scaler geometry rejected");
+    {
+        ScalerBenchmark benchmark;
+        check(benchmark.Prepare(true, 62),
+              "benchmark timing storage is reserved before capture");
+        benchmark.CaptureStarted(1000);
+        bool recorded = true;
+        for (unsigned frame = 0; frame < 62; ++frame)
+            recorded = recorded && benchmark.Record(2000 + frame * 1000,
+                640, 360, 100 + frame % 2, frame % 3 + 1);
+        ScalerBenchmarkMetrics metrics;
+        check(recorded && benchmark.Measure(&metrics) &&
+              benchmark.output_us.size() == 62 &&
+              benchmark.observed_width == 640 && benchmark.observed_height == 360 &&
+              benchmark.ybuff_words_min == 100 && benchmark.ybuff_words_max == 101 &&
+              benchmark.ready_max == 3 && benchmark.ready_gt_one_samples == 41 &&
+              benchmark.ybuff_bytes_total == 24924 &&
+              benchmark.steady_payload_bytes == 404 &&
+              metrics.frame_rate_available && metrics.steady_rate_available &&
+              metrics.frame_rate > 999.999 && metrics.frame_rate < 1000.001 &&
+              metrics.steady_rate > 999.999 && metrics.steady_rate < 1000.001 &&
+              metrics.steady_payload_mb_s > 0.403999 &&
+              metrics.steady_payload_mb_s < 0.404001 &&
+              metrics.capture_to_first_ms == 1.0 && metrics.capture_to_last_ms == 62.0 &&
+              metrics.interval_p50_us == 1000 && metrics.interval_p95_us == 1000 &&
+              metrics.interval_max_us == 1000,
+              "benchmark derives full and frame-61 rates, dequeue intervals, size and ready-depth bounds");
+
+        ScalerBenchmark invalid;
+        check(invalid.Prepare(true, 3), "benchmark malformed-sample fixture reserve");
+        invalid.CaptureStarted(100);
+        check(invalid.Record(200, 1280, 720, 460800, 1) &&
+              invalid.Record(200, 1280, 720, 460800, 1) &&
+              !invalid.Record(199, 1280, 720, 460800, 1) &&
+              !invalid.Record(201, 1280, 722, 460800, 1) &&
+              !invalid.Record(201, 1280, 720, 0, 1) &&
+              !invalid.Record(201, 1280, 720, 460800, 0) &&
+              invalid.output_us.size() == 2,
+              "benchmark admits equal-time burst dequeues but rejects time reversal, geometry drift and empty output");
+        check(!invalid.Measure(nullptr), "benchmark refuses a null metric destination");
+
+        ScalerBenchmark short_window;
+        check(short_window.Prepare(true, 61), "short benchmark metric fixture reserve");
+        short_window.CaptureStarted(100);
+        for (unsigned frame = 0; frame < 61; ++frame)
+            check(short_window.Record(200 + frame * 10, 640, 360, 100, 1),
+                  "short benchmark sample accepted");
+        check(short_window.Measure(&metrics) && metrics.frame_rate_available &&
+              !metrics.steady_rate_available && metrics.steady_payload_mb_s == 0.0,
+              "sixty-one outputs cannot claim a frame-61 steady rate");
+
+        ScalerBenchmark zero_duration;
+        check(zero_duration.Prepare(true, 2), "zero-duration metric fixture reserve");
+        zero_duration.CaptureStarted(100);
+        check(zero_duration.Record(200, 640, 360, 100, 1) &&
+              zero_duration.Record(200, 640, 360, 100, 1) &&
+              !zero_duration.Measure(&metrics),
+              "all-equal dequeue timestamps cannot claim nonzero throughput");
+
+        ScalerBenchmark percentiles;
+        check(percentiles.Prepare(true, 21), "percentile metric fixture reserve");
+        percentiles.CaptureStarted(1);
+        gint64 timestamp = 100;
+        check(percentiles.Record(timestamp, 640, 360, 100, 1),
+              "percentile first sample accepted");
+        for (unsigned interval = 1; interval <= 20; ++interval) {
+            timestamp += interval;
+            check(percentiles.Record(timestamp, 640, 360, 100, 1),
+                  "percentile interval sample accepted");
+        }
+        check(percentiles.Measure(&metrics) && metrics.interval_p50_us == 10 &&
+              metrics.interval_p95_us == 19 && metrics.interval_max_us == 20 &&
+              !metrics.steady_rate_available,
+              "nearest-rank interval percentiles and short-window state are exact");
+    }
     uint8_t pixels[12] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
     BC_DTS_PROC_OUT picture = {};
     picture.Ybuff = pixels; picture.YBuffDoneSz = 3; picture.b422Mode = TRUE;
@@ -9897,7 +10224,9 @@ struct Audit {
     unsigned output_width = 0, output_height = 0;
     BC_OUTPUT_FORMAT output_format = OUTPUT_MODE422_YUY2;
     bool observe_chroma = false;
+    bool benchmark_scaled = false;
     unsigned expected = 0;
+    ScalerBenchmark benchmark;
     SclObserver scl;
     SclFilterMapObserver scl_filter_map;
     SclViewProbe scl_view;
@@ -9929,6 +10258,8 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
         if (!audit->ready) break;
         BC_DTS_PROC_OUT output = {};
         const BC_STATUS result = DtsProcOutputNoCopy(device->handle, 0, &output);
+        const gint64 fetched_us = result == BC_STS_SUCCESS && audit->benchmark.enabled
+            ? g_get_monotonic_time() : 0;
         const bool marker = result == BC_STS_SUCCESS &&
             (output.PicInfo.flags & VDEC_FLAG_EOS) != 0;
         if (result == BC_STS_SUCCESS) {
@@ -9938,11 +10269,16 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
             bool valid = true;
             if (!marker) {
                 const unsigned width = output.PicInfo.width, height = output.PicInfo.height;
+                const bool benchmark_coded_height = audit->benchmark.enabled &&
+                    !audit->benchmark_scaled && input.height == 1080 && height == 1088;
+                const bool ordinary_coded_height = !audit->benchmark.enabled &&
+                    !audit->pixels && input.height == 1080 && height == 1088;
                 valid = (output.PoutFlags & BC_POUT_FLAGS_PIB_VALID) && output.Ybuff &&
                     !(output.PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) &&
                     width == audit->output_width &&
-                    (height == audit->output_height ||
-                     (!audit->pixels && input.height == 1080 && height == 1088)) &&
+                    (height == audit->output_height || benchmark_coded_height ||
+                     ordinary_coded_height) &&
+                    (!audit->benchmark.enabled || output.b422Mode == OUTPUT_MODE422_YUY2) &&
                     static_cast<uint64_t>(output.YBuffDoneSz) * 4 >= static_cast<uint64_t>(width) * height * 2 &&
                     audit->pending.erase(output.PicInfo.timeStamp) == 1;
                 if (valid && audit->pixels)
@@ -9950,6 +10286,10 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
                 if (valid && audit->capture)
                     valid = CopyCapturedPixels(output, audit->output_width, audit->output_height,
                                                audit->capture->frame_bytes, &captured, audit->output_format);
+                if (valid && audit->benchmark.enabled)
+                    valid = audit->benchmark.Record(fetched_us, width, height,
+                                                    output.YBuffDoneSz,
+                                                    audit->ready);
                 if (valid) ++audit->frames;
             }
             // Every successful NoCopy fetch owns a lease, even invalid output.
@@ -10090,11 +10430,14 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     Device device;
     Audit audit(options.observe_avd_platform_code, options.observe_avd_dmem_midpoints);
     audit.iteration = iteration;
-    audit.progress = progress;
+    // Per-picture progress records are deliberately excluded from timed
+    // benchmarks; an unbuffered file write would become part of each interval.
+    audit.progress = options.scaler_benchmark ? nullptr : progress;
     audit.output_width = input.width;
     audit.output_height = input.height;
     audit.output_format = options.output_format;
     audit.observe_chroma = options.observe_chroma;
+    audit.benchmark_scaled = options.scaler_benchmark && options.scale_width != 0;
     audit.expected = expected;
     audit.scl.enabled = options.observe_scl_config;
     audit.scl_filter_map.enabled = options.observe_scl_filter_map;
@@ -10126,12 +10469,15 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.mfd_framing.enabled = options.observe_mfd_framing;
     audit.mfd_colour.stimulus = options.inject_mfd_colour;
     audit.scl_status.mode = options.scl_status_test;
-    if (options.scaler_test) {
+    if (options.scaler_test || options.scaler_benchmark) {
         if (!ScalerGeometry(input.width, input.height, options.scale_width,
                             &audit.output_width, &audit.output_height)) return false;
-        audit.pixels = g_checksum_new(G_CHECKSUM_SHA256);
-        if (!audit.pixels) return false;
+        if (options.scaler_test) {
+            audit.pixels = g_checksum_new(G_CHECKSUM_SHA256);
+            if (!audit.pixels) return false;
+        }
     }
+    if (!audit.benchmark.Prepare(options.scaler_benchmark, expected)) return false;
     PixelCapture capture;
     if (!capture.Open(options.capture_path, audit.output_width, audit.output_height, expected,
                       options.output_format))
@@ -10194,7 +10540,10 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     if (ok) ok = audit.mfd_colour.PreStart(device.handle);
     if (ok) device.started = ok = Status("DtsStartDecoder", DtsStartDecoder(device.handle));
     if (ok && options.capture_path) ok = PackingState(device.handle, "started", &audit.mfd_colour, &audit.scl_view);
-    if (ok) ok = Status("DtsStartCapture", DtsStartCapture(device.handle));
+    if (ok) {
+        ok = Status("DtsStartCapture", DtsStartCapture(device.handle));
+        if (ok) audit.benchmark.CaptureStarted(g_get_monotonic_time());
+    }
     if (ok && options.capture_path) ok = PackingState(device.handle, "capture-before-input", &audit.mfd_colour, &audit.scl_view);
     size_t packet_index = 0;
     for (Packet &packet : input.packets) {
@@ -10279,6 +10628,8 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     ok = audit.avd_code_arena.Finish(ok);
     ok = audit.avd_code_prefix.Finish(ok);
     ok = audit.runtime_inventory.Finish(ok, audit.mfd);
+    ok = audit.benchmark.Report(iteration, iterations, options.scale_width,
+                                audit.output_width, audit.output_height, ok);
     std::printf("Library drain: iteration=%u/%u frames=%u/%u pending=%zu "
         "%s-EOS=%s output-marker=%s ready=%u cleanup=%s result=%s\n",
         iteration, iterations, audit.frames, expected, audit.pending.size(),
@@ -10305,7 +10656,8 @@ int main(int argc, char **argv)
         std::fprintf(stderr, "usage: %s --self-test | --preflight LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS] | --hardware LOCAL_VIDEO "
             "EXPECTED_FRAMES [TIMEOUT_SECONDS [ITERATIONS]] "
-            "[--scaler-test WIDTH_OR_0] [--mpeg1-via-mpeg2 | --h263-via-divx] "
+            "[--scaler-test WIDTH_OR_0 | --scaler-benchmark WIDTH_OR_0] "
+            "[--mpeg1-via-mpeg2 | --h263-via-divx] "
             "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --observe-ppb-metadata | --observe-ppb-return | --observe-video-prefix | --observe-video-graph | --observe-video-staging | --observe-avd-memory | --observe-avd-cpu-map | --observe-avd-code-arena | --observe-avd-code-prefix | --observe-avd-platform-code | --observe-avd-cache-count | --observe-avd-dmem-samples | --observe-avd-dmem-midpoints | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n", argv[0]);
         return 2;
@@ -10442,14 +10794,15 @@ int main(int argc, char **argv)
                     "route=DIVX/PES metadata=empty picture-header=baseline "
                     "packet-bytes=unchanged open-only=%s\n",
                     avcodec_get_name(input.codec), options.open_only ? "yes" : "no");
-    if (options.scaler_test) {
+    if (options.scaler_test || options.scaler_benchmark) {
         unsigned width = 0, height = 0;
         if (!ScalerGeometry(input.width, input.height, options.scale_width, &width, &height)) {
             std::fprintf(stderr, "Require even progressive geometry and no upscaling\n");
             phase1_progress_close(&progress);
             return 2;
         }
-        std::printf("Scaler preflight: requested-width=%u expected=%ux%u\n",
+        std::printf("Scaler preflight: mode=%s requested-width=%u expected=%ux%u\n",
+                    options.scaler_benchmark ? "benchmark" : "pixel-test",
                     options.scale_width, width, height);
     }
     if (options.mode == Mode::Preflight) {
