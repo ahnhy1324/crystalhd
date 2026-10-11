@@ -1,4 +1,32 @@
-## History
+# History
+
+## 1.0.0 — in preparation
+
+First numbered bundle release of this maintained fork, following the immutable
+`phase1-baseline-2026-09-29`. Candidate qualification and publication are tracked
+in [#369](https://github.com/ahnhy1324/crystalhd/issues/369); this section does
+not announce a published release.
+
+- Local playback: accumulated DMA-stop, queued-seek, EOS and reopen fixes;
+  broader selected GStreamer/VA-API codec and interlace coverage, with visible
+  hardware selection in `crystalhd-play`.
+- Receive efficiency: negotiated event-driven output readiness with fallback
+  for older drivers/libraries, plus bounded default H.264 transport history.
+- Optional features: session-scoped BCM70015 L0s workaround, progressive
+  hardware output scaling and explicit software enlargement. Native-size
+  output remains the default.
+- Streaming: documented Moonlight frame-matching playback and opt-in
+  previous-frame mode for higher cadence, with measured timing/CPU tradeoffs.
+- Compatibility: retain `libcrystalhd.so.3`, legacy ioctl behavior, x86-64/i686
+  builds and old-GStreamer support; separate bundle and component versions.
+- Limits: BCM70015 local playback is the primary path. BCM70012, additional
+  hosts and browser hardware coverage remain unvalidated; standalone video
+  processing and V4L2 research are not advertised as working frontends.
+
+See [README.md](README.md) for first use and [RELEASING.md](RELEASING.md) for
+qualification and publication policy.
+
+## Project lineage
 
 There are various versions of the [Broadcom
 CrystalHD](https://en.wikipedia.org/wiki/Broadcom_Crystal_HD) (BCM70012 and

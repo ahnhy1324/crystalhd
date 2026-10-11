@@ -40,7 +40,8 @@ or context-switch change, so it remains an explicit opt-in. See the
 ## Direct-library drain validation
 
 This optional probe bypasses GStreamer and VA-API. It checks complete picture
-delivery and genuine firmware EOS, not pixel quality or displayed cadence.
+delivery and the codec's drain-completion contract, not pixel quality or
+displayed cadence.
 Install the FFmpeg `libavformat`, `libavcodec`, `libavutil` and GLib
 development packages. Use a progressive fixture with an independently known
 decoded-frame count:
@@ -49,12 +50,12 @@ decoded-frame count:
 make library-drain-test
 ffprobe -v error -select_streams v:0 -count_frames \
   -show_entries stream=codec_name,profile,width,height,field_order,nb_read_frames \
-  /path/to/video.h264
+  "/path/to/video.h264"
 LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
-  tests/library-drain-test --preflight /path/to/video.h264 30
+  tests/library-drain-test --preflight "/path/to/video.h264" 30
 LD_LIBRARY_PATH="$PWD/linux_lib/libcrystalhd" \
   timeout --kill-after=10s 60s \
-  tests/library-drain-test --hardware /path/to/video.h264 30 35
+  tests/library-drain-test --hardware "/path/to/video.h264" 30 35
 ```
 
 Replace `30` in both commands with the fixture's expected picture count.
@@ -64,19 +65,23 @@ It is not itself a software decode or proof of error-free media.
 `--hardware` requires an idle BCM70015 and a matching loaded module; see
 [device access and module identity](../../BRINGUP.md#device-access-and-module-identity).
 It verifies that EOS was clear immediately before `DtsFlushInput(0)`, then
-requires every expected timestamped picture, firmware-derived
-`DtsIsEndOfStream`, an empty ready queue and successful stop/close. The firmware
-timing marker need not be returned as a separate client-owned output buffer;
-input inactivity alone never counts as EOS.
-
-The probe does not accept MPEG-4. A library client draining MPEG-4 may complete
-`DtsIsEndOfStream` without a firmware marker only after the explicit drain TX
-retires and every output buffer and queue remains free and idle for one second.
-Input inactivity by itself still does not count as EOS.
+requires every expected timestamped picture, `DtsIsEndOfStream`, empty
+pending/ready queues and successful stop/close. For H.264, MPEG-2, VC-1 and
+WMV3, EOS derives from the firmware timing marker, which need not be returned
+as a separate client-owned output buffer. MPEG-4 Part 2 additionally permits
+the library's idle-fence completion: the explicit drain TX must retire, and
+all output buffers and queues must remain free and idle for one second. The
+probe labels this `library-EOS` rather than claiming a firmware marker.
+Input inactivity alone never counts as EOS.
 
 Supported input is raw Annex-B H.264, MPEG-2 elementary stream, raw VC-1
-Advanced, or WMV3 in ASF with four-byte sequence metadata (a fifth trailing byte
-is tolerated). MP4 H.264, RCV containers and known interlaced input are rejected.
+Advanced, WMV3 in ASF with four-byte sequence metadata (a fifth trailing byte
+is tolerated), or progressive MPEG-4 Part 2 Simple/Advanced Simple levels 3/5
+in MP4. MPEG-4 admission reuses the production GStreamer parser and requires
+unchanged global headers and one supported coded picture per packet; its
+[profile restrictions](../../filters/gst/gst-plugin-1.0/README.md#mpeg-4-part-2-input)
+also apply here. MP4 H.264, raw/AVI MPEG-4, RCV containers and known interlaced
+input are rejected.
 Fixtures are limited to 64 MiB, 10,000 pictures and 1920x1088; each packet plus
 framing must fit the transmit ring.
 The in-process timeout defaults to 30 seconds and accepts at most 300. Keep an

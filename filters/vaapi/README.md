@@ -126,9 +126,10 @@ selects the newest eligible older picture. The optional
 `33333`, or `50000` (default `0`). Any other policy or delay value disables
 remapping. This path deliberately exports an older completed picture through
 the requested surface and timestamp, so it does not preserve standard VA
-surface identity and remains diagnostic opt-in. The default exact-identity
-path and BCM70012 behavior are unchanged; measured tradeoffs are in the
-hardware report.
+surface identity. It is a working, default-off streaming experiment: see the
+[previous-frame setup and rollback](../../MOONLIGHT.md#experimental-previous-frame-mode)
+for matched GUI settings and timing tradeoffs. The default frame-matching
+path and BCM70012 behavior are unchanged.
 
 ### Measured reference-host limits
 
@@ -145,9 +146,10 @@ about 60.02 and 60.00 CrystalHD outputs/s respectively while prefeed reduced
 real access-unit-to-matching-output p50/p95 from 36.05/45.12 ms to
 21.25/25.13 ms. Render rate is submission rate, not physical scanout, and
 Moonlight's component sum is not measured input-to-photon latency. An earlier
-1080p60 run accumulated a multi-second decoder backlog. These are bounded
-capacity and bottleneck measurements, not a 50/60 fps support claim; render
-submissions have not met those rates, and physical scanout was not measured.
+native-output 1080p60 run accumulated a multi-second decoder backlog. These
+figures describe the default frame-matching/live-prefeed path. The separate
+previous-frame experiment reached near-60 renderer handoff at 720p60 under
+its documented conditions; neither series measured physical scanout.
 Methods, resource use and measurement boundaries are in
 the [hardware report](../../HARDWARE-2026-09-13.md#va-api-decode-and-game-stream-baseline-2026-10-10).
 
