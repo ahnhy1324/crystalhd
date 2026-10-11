@@ -23,6 +23,8 @@ typedef uint32_t u32;
 #define PCI_EXP_DEVSTA_TRPND 0x20
 #define PCIBIOS_SUCCESSFUL 0
 #define PCIE_LINK_STATE_L0S TEST_API_L0S
+#define EPOLLERR 0x008U
+#define EPOLLHUP 0x010U
 #define PCI_FUNC(devfn) ((devfn) & 7)
 #define MOCK_UNUSED __attribute__((unused))
 #ifdef CONFIG_PCIEASPM
@@ -572,6 +574,13 @@ typedef int crystalhd_ioctl_data;
 static void mock_log(const void *dev, ...) { (void)dev; }
 static struct crystalhd_adp irq_adapter;
 static struct crystalhd_adp *chd_dma_quarantine;
+static void crystalhd_rx_poll_wake(struct crystalhd_adp *adp,
+		unsigned int events)
+{
+	CHECK(adp == &irq_adapter);
+	CHECK(events == (EPOLLERR | EPOLLHUP));
+	CHECK(!adp->present && adp->cmds.cin_wait_exit);
+}
 static bool warn_on(bool value) { CHECK(!value); return value; }
 static unsigned int msi_requests, msi_disables, irq_requests, irq_frees;
 static int msi_result, irq_result;
