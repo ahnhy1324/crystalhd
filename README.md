@@ -84,13 +84,23 @@ make -j"$(nproc)"
 sudo make install
 sudo modprobe crystalhd
 crystalhd-check
-crystalhd-play --hardware video.mp4
 ```
+
+The direct target installs the current-kernel module, firmware, udev rule,
+library, GStreamer plugin/player, VA-API driver and `crystalhd-check`. It does
+not register DKMS or install the optional browser launcher.
 
 When updating an existing direct install, stop before playback if
 `crystalhd-check` reports that the loaded and installed modules differ. Follow
 the [idle reload or reboot procedure](BRINGUP.md#device-access-and-module-identity)
 so the check and player use the same driver image.
+
+After `crystalhd-check` passes without an identity or device-access error, play
+the first file explicitly through hardware:
+
+```sh
+crystalhd-play --hardware video.mp4
+```
 
 A successful hardware run reports
 `Decoder: crystalhddec (hardware; video output confirmed)` and a nonzero
@@ -173,11 +183,20 @@ hardware use, measured limits and rollback-safe troubleshooting.
 
 ## Developer checks
 
-The kernel and userspace builds use `-Werror`. Device-free checks do not prove
-hardware playback:
+The maintained driver, library, GStreamer and VA-API targets use `-Werror`;
+the historical example programs are outside that claim. The full Ubuntu
+regression suite needs these additional development packages beyond the quick
+start:
 
 ```sh
-make check
+sudo apt install autoconf gcc-multilib g++-multilib qemu-user \
+  libavcodec-dev libavformat-dev libavutil-dev nodejs node-ws
+```
+
+Device-free checks do not prove hardware playback:
+
+```sh
+NODE_PATH=/usr/share/nodejs make check
 make userspace32-check
 make legacy-cpu-check
 ```

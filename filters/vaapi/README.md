@@ -253,7 +253,8 @@ ordinary browsing. Hardware mode requires disabling the GPU sandbox, which is
 a material security reduction, and YouTube hardware decode/A/V synchronization
 has not been accepted.
 
-Install the launcher separately from the core runtime:
+From the repository root, install the launcher separately from the core
+runtime:
 
 ```sh
 sudo make install-browser
@@ -284,7 +285,8 @@ Do not use the sandbox-disabled mode for ordinary or untrusted browsing.
 | `CRYSTALHD_CHROMIUM_H264_POLICY=1` | Suppresses the Google Chrome policy warning only; it does not install or enforce a codec policy |
 | `CRYSTALHD_CHROMIUM_CONFIG=PATH` | Selects a trusted per-user shell configuration file; the file is sourced as shell code |
 
-Remove only the separately installed browser assets with:
+From the repository root, remove only the separately installed browser assets
+with:
 
 ```sh
 sudo make uninstall-browser

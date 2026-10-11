@@ -89,10 +89,11 @@ not part of `make check`. For hardware results, use the
 
 For 32-bit i686 CPUs without SSE/SSE2, build with `LEGACY_CPU=1` (see
 [other installation modes](../../README.md#other-installation-modes)). This
-keeps the library ABI but selects scalar conversions; it does not bypass the
-player's own CPU or dependency requirements. The dedicated legacy check runs
-both production sections and the built shared library under a verified no-SSE
-CPU model, without opening hardware.
+keeps the library ABI but selects the i686 scalar/x87 build with SSE, SSE2 and
+MMX disabled; it does not bypass the player's own CPU or dependency
+requirements. The dedicated legacy check runs both production sections and
+the built shared library under a verified no-SSE CPU model, without opening
+hardware.
 
 For the ordinary packed-YUY2 `DtsProcOutput` copy path (without
 `BC_POUT_FLAGS_MODE`), `YbuffSz` and `YBuffDoneSz` are counts of four-byte
@@ -132,3 +133,24 @@ The production input/PES/ring regression in `make library-check` verifies
 length widths 1/2/4, retained metadata injection, existing Annex-B compatibility
 and bounded detection, including i386 execution. See the
 [hardware report](../../HARDWARE-2026-09-13.md) for frontend results.
+
+## Experimental raw-frame producer
+
+The opt-in
+[`libcrystalhd_raw_frame.h`](libcrystalhd_raw_frame.h) API produces a fixed
+256x96, 30 fps, 8-bit YUV420P H.264 stream. It can upload two retained source
+frames, compose 16x16 tiles from them and apply bounded quarter-pixel
+translation. Non-reference composition and translation leave both source slots
+unchanged; the fixed POC type 2 profile permits at most one non-reference access
+unit between committed reference access units.
+
+This is a standard-H.264 producer, not standalone MFD/scaler processing, a raw
+device-surface API or an on-card surface lease. It requires a fresh,
+noninterleaved decoder session, and the caller still owns device setup, pacing,
+timestamps, output buffers, EOS, drain, stop and close. Hardware qualification
+covers sparse uploads plus composition, not sustained 30 fps full-plane
+uploads.
+
+Run `make raw-frame-check` for the device-free producer contract tests. The
+public header is authoritative for prepare/commit/abort semantics and argument
+limits.

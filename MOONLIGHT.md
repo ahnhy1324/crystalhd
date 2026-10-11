@@ -54,8 +54,10 @@ modification is included or installed by this repository.
 
 Start at 1280x720, 30 fps. Do not begin with a 60 fps or Full-HD target.
 
-1. Download the AppImage from the official
-   [Moonlight Qt releases](https://github.com/moonlight-stream/moonlight-qt/releases).
+1. For the reproduced setup, download
+   [`Moonlight-6.2.0-x86_64.AppImage`](https://github.com/moonlight-stream/moonlight-qt/releases/download/v6.2.0/Moonlight-6.2.0-x86_64.AppImage)
+   from the official Moonlight Qt 6.2.0 release. Newer versions may be tried,
+   but are not covered by the results below.
 2. Install and verify CrystalHD using the [README quick start](README.md#quick-start).
 3. Close every other CrystalHD client; `sudo fuser -v /dev/crystalhd` should
    report no owner.
