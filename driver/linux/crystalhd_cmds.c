@@ -211,11 +211,29 @@ static void crystalhd_session_unpin(struct crystalhd_cmd *ctx)
 	module_put(THIS_MODULE);
 }
 
+/* A failed acquisition can own DMA resources and a module pin before an
+ * owner is published.  Its link rollback is also the DMA fence: never free
+ * those resources through the ordinary last-handle path until it succeeds.
+ */
+static bool crystalhd_session_retire_unpublished(struct crystalhd_cmd *ctx)
+{
+	if (ctx->session_owner || !ctx->session_module_pinned)
+		return false;
+	if (crystalhd_session_l0s_end(ctx->adp))
+		return false;
+	if (!crystalhd_retire_hw_context(ctx, true))
+		return false;
+
+	crystalhd_session_unpin(ctx);
+	return true;
+}
+
 BC_STATUS crystalhd_session_acquire_locked(struct crystalhd_cmd *ctx,
 					   const void *owner)
 {
 	BC_STATUS sts;
 	bool opened_context;
+	int rc;
 
 	if (!ctx || !ctx->adp || !owner)
 		return BC_STS_INV_ARG;
@@ -247,6 +265,21 @@ BC_STATUS crystalhd_session_acquire_locked(struct crystalhd_cmd *ctx,
 		if (opened_context && !crystalhd_retire_hw_context(ctx, false))
 			return sts;
 		goto unpin;
+	}
+
+	/* Rings exist, but ownership is not yet published and no frontend can
+	 * submit work. This is the last safe point to quiesce bus mastering and
+	 * change the dedicated link policy for the complete session lifetime.
+	 */
+	rc = crystalhd_session_l0s_begin(ctx->adp);
+	if (rc) {
+		sts = BC_STS_IO_ERROR;
+		/* Retry any raw rollback through the platform wrapper. If link/DMA
+		 * ownership remains uncertain, retain resources and the module pin for
+		 * terminal fail-closed cleanup.
+		 */
+		crystalhd_session_retire_unpublished(ctx);
+		return sts;
 	}
 
 	/* Publish ownership only after the complete resource set exists. */
@@ -292,10 +325,21 @@ BC_STATUS crystalhd_session_release_locked(struct crystalhd_cmd *ctx,
 {
 	if (!ctx || !owner)
 		return BC_STS_INV_ARG;
-	if (ctx->session_owner != owner)
+	if (ctx->session_owner != owner) {
+		/* A reference-backed acquisition can fail after its lifetime owner is
+		 * adopted but before session_owner is published.  Its close worker is
+		 * the retry path for the same checked rollback used by legacy close.
+		 */
+		if (!ctx->session_owner && ctx->session_lifetime_owner == owner &&
+		    ctx->session_module_pinned)
+			return crystalhd_session_retire_unpublished(ctx) ?
+				BC_STS_SUCCESS : BC_STS_IO_ERROR;
 		return BC_STS_ERR_USAGE;
+	}
 
 	if (!crystalhd_retire_hw_context(ctx, true))
+		return BC_STS_IO_ERROR;
+	if (crystalhd_session_l0s_end(ctx->adp))
 		return BC_STS_IO_ERROR;
 	ctx->session_owner = NULL;
 	ctx->retain_rx_on_suspend = false;
@@ -2158,8 +2202,12 @@ void crystalhd_user_close(struct crystalhd_cmd *ctx, struct crystalhd_user *uc)
 	owns_session = ctx->session_owner == uc;
 	if (owns_session)
 		crystalhd_session_release_locked(ctx, uc);
-	else if (!ctx->session_owner && bc_get_userhandle_count(ctx) == 0)
-		crystalhd_retire_hw_context(ctx, true);
+	else if (!ctx->session_owner && bc_get_userhandle_count(ctx) == 0) {
+		if (ctx->session_module_pinned)
+			crystalhd_session_retire_unpublished(ctx);
+		else
+			crystalhd_retire_hw_context(ctx, true);
+	}
 
 	if (ctx->adp->cfg_users > 0)
 		ctx->adp->cfg_users--;

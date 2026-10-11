@@ -143,8 +143,10 @@ troubleshooting.
 
 Start with every tuning variable unset. The Full-HD PCIe workaround is only
 for a repeatable BCM70015 throughput shortfall on a suitable dedicated link;
-follow the [safe test and rollback procedure](USAGE.md#full-hd-pcie-workaround)
-instead of applying global PCIe settings.
+the session-scoped option restores the captured pre-session L0s policy between
+decoder sessions. Follow the
+[safe test and rollback procedure](USAGE.md#full-hd-pcie-workaround) instead
+of applying global PCIe settings.
 
 ## Sunshine / Moonlight streaming
 
