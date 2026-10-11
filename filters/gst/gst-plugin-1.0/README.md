@@ -54,6 +54,40 @@ The plugin requests access units in Annex-B/byte-stream format from
 `h264parse`, so MP4 AVC length prefixes are converted automatically during
 caps negotiation.
 
+## Optional BCM70015 output scaling
+
+`scale-width` selects the decoder-coupled hardware output width. Zero is the
+native-size default; an explicit value must be even, from 128 through 1918,
+and no wider than the coded input. It is supported only for progressive
+BCM70015 sessions. The property may be set in NULL or READY and is reapplied
+after a flush/reopen, but it cannot change while the decoder is PAUSED or
+PLAYING. The plugin checks the geometry returned by the card and preserves the
+source display aspect ratio in output caps, including widths whose derived
+height has to be rounded.
+
+For example, return 1280x720 from progressive 1920x1080 H.264:
+
+```sh
+gst-launch-1.0 filesrc location=video.mp4 ! qtdemux ! h264parse ! \
+  crystalhddec scale-width=1280 ! videoconvert ! autovideosink
+```
+
+To compare an explicit host-side resize back to a square-pixel Full-HD buffer:
+
+```sh
+gst-launch-1.0 filesrc location=video.mp4 ! qtdemux ! h264parse ! \
+  crystalhddec scale-width=1280 ! \
+  videoscale method=bilinear2 n-threads=2 add-borders=true ! \
+  'video/x-raw,format=YUY2,width=1920,height=1080,pixel-aspect-ratio=1/1' ! \
+  videoconvert ! autovideosink
+```
+
+The first scale occurs on CrystalHD and reduces returned YUY2 traffic. The
+second is ordinary GStreamer software processing and consumes host CPU; it
+does not recover source detail. Width 1280 is a measured example rather than a
+plugin default. See the [user guide](../../../USAGE.md#optional-bcm70015-output-scaling)
+and [hardware measurements](../../../HARDWARE-2026-09-13.md#full-hd-input-with-decoder-coupled-scaling-2026-10-11).
+
 ## MPEG-4 Part 2 input
 
 BCM70015 accepts parsed Simple and Advanced Simple levels 3/5. The validated
