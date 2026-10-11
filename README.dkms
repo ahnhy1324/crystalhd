@@ -135,22 +135,31 @@ previous_revision="3.10.0"
 previous_source="/path/to/retained-previous-source"
 ```
 
-Use a writable source tree or extract the previous source archive again. For a
-previous revision still registered with DKMS:
+Use a writable source tree or extract the previous source archive again. Check
+whether DKMS retained the old build for this kernel:
+
+```sh
+dkms status -m crystalhd -v "$previous_revision" -k "$kernel_release"
+```
+
+If it reports `built` or `installed`, reuse that cached module; rebuilding from
+a different source snapshot would not restore the original image. If no build
+remains, first verify that the retained source is the intended previous revision,
+register it if needed, and run `sudo dkms build -m crystalhd -v "$previous_revision"
+-k "$kernel_release"`. Complete that build before uninstalling the current module.
+Then restore the previous runtime and module:
 
 ```sh
 make -C "$previous_source" -j2 library gstreamer vaapi
 sudo dkms uninstall -m crystalhd -v "$dkms_version" -k "$kernel_release"
-sudo dkms build --force -m crystalhd -v "$previous_revision" -k "$kernel_release"
-sudo dkms install --force -m crystalhd -v "$previous_revision" -k "$kernel_release"
+sudo dkms install -m crystalhd -v "$previous_revision" -k "$kernel_release"
 sudo make uninstall-runtime
 sudo make -C "$previous_source" install-runtime
 ```
 
 Run this from the outgoing version's source root. Its `uninstall-runtime`
 removes release metadata/helpers that an older install might leave behind.
-Stop on failure. If the old revision was removed, register its retained source
-using this guide first. Restore saved module-option files before reload or
+Stop on failure. Restore saved module-option files before reload or
 reboot, removing options absent from the older module. Run `crystalhd-check`
 and use the old version's playback instructions; a Phase 1 rollback removes
 later optional features. After successful rollback, remove the rejected
