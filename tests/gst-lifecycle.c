@@ -543,6 +543,59 @@ test_scale_property_default(void)
   lifecycle_teardown(harness);
 }
 
+typedef struct {
+  GstElement *element;
+  GMutex lock;
+  GCond cond;
+  gboolean done;
+} ScalePropertyProbe;
+
+static gpointer
+scale_property_probe_thread(gpointer data)
+{
+  ScalePropertyProbe *probe = data;
+  guint scale_width;
+
+  g_object_get(probe->element, "scale-width", &scale_width, NULL);
+  g_mutex_lock(&probe->lock);
+  probe->done = TRUE;
+  g_cond_signal(&probe->cond);
+  g_mutex_unlock(&probe->lock);
+  return NULL;
+}
+
+static void
+test_scale_property_does_not_take_state_lock(void)
+{
+  GstHarness *harness = new_decoder_with_caps_device_scale(
+      "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+      "width=1920,height=1080,framerate=25/1", 1, 128);
+  ScalePropertyProbe probe = { .element = harness->element };
+  GThread *thread;
+  gboolean completed;
+  gint64 deadline;
+
+  g_mutex_init(&probe.lock);
+  g_cond_init(&probe.cond);
+  GST_STATE_LOCK(harness->element);
+  thread = g_thread_new("scale-property-probe", scale_property_probe_thread,
+                        &probe);
+  g_mutex_lock(&probe.lock);
+  deadline = g_get_monotonic_time() + G_TIME_SPAN_SECOND;
+  while (!probe.done &&
+         g_cond_wait_until(&probe.cond, &probe.lock, deadline))
+    ;
+  completed = probe.done;
+  g_mutex_unlock(&probe.lock);
+  GST_STATE_UNLOCK(harness->element);
+  g_thread_join(thread);
+
+  g_assert_true(completed);
+  g_cond_clear(&probe.cond);
+  g_mutex_clear(&probe.lock);
+  lifecycle_teardown(harness);
+}
+
 static void
 test_scale_valid_widths_and_order(void)
 {
@@ -811,6 +864,16 @@ test_scale_output_contract(void)
   self = GST_CRYSTALHD_DEC(harness->element);
   g_assert_false(gst_crystalhd_configure_output(self, 126, 72, FALSE));
   g_assert_false(self->output_configured);
+  gst_harness_teardown(harness);
+
+  harness = new_decoder_with_caps_device_scale(
+      "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+      "width=1920,height=1080,framerate=25/1,pixel-aspect-ratio=1/1",
+      1, 130);
+  self = GST_CRYSTALHD_DEC(harness->element);
+  g_assert_true(gst_crystalhd_configure_output(self, 130, 74, FALSE));
+  g_assert_cmpuint(GST_VIDEO_INFO_PAR_N(&self->output_info), ==, 592);
+  g_assert_cmpuint(GST_VIDEO_INFO_PAR_D(&self->output_info), ==, 585);
   gst_harness_teardown(harness);
 }
 
@@ -3084,6 +3147,8 @@ main(int argc, char **argv)
   GST_DEBUG_CATEGORY_INIT(gst_crystalhd_debug, "crystalhd", 0,
                           "CrystalHD lifecycle test");
   g_test_add_func("/crystalhd/scale/default", test_scale_property_default);
+  g_test_add_func("/crystalhd/scale/property-lock",
+                  test_scale_property_does_not_take_state_lock);
   g_test_add_func("/crystalhd/scale/valid-order",
                   test_scale_valid_widths_and_order);
   g_test_add_func("/crystalhd/scale/invalid", test_scale_invalid_requests);
