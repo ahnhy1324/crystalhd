@@ -51,7 +51,7 @@ Exact profiles, framing restrictions, fixtures and measurements are in the
 | `libcrystalhd.so.3` | **Compatibility API** | Existing Broadcom-API applications; the ABI and legacy ioctl behavior remain preserved |
 | FFmpeg through VA-API | **Experimental** | Selected decode/download paths work; libva discovery alone is not proof of decode or display |
 | VLC 3.0.21 | **Tested combination** | H.264 on the reference X11/i915 system only, not general VLC or codec certification |
-| [Moonlight Qt 6.2.0](MOONLIGHT.md) | **Experimental integration** | Stock Moonlight has performed real BCM70015 H.264 decode and indirect EGL/DRM PRIME display; presentation cadence and complete A/V/input/reconnect acceptance remain below support grade |
+| [Moonlight Qt 6.2.0](MOONLIGHT.md) | **Experimental integration** | Real BCM70015 H.264 decode and indirect display worked; one complete 720p30 user test covering smooth playback, A/V sync, input response and reconnect is still unfinished |
 | Chromium / YouTube | **Hardware path unverified** | The launcher defaults to software; hardware mode disables the GPU sandbox and is not a daily-use path |
 
 ## Quick start
@@ -134,10 +134,11 @@ instead of applying global PCIe settings.
 ## Sunshine / Moonlight streaming
 
 720p30 is the first hardware-offload trial. The reference system performed
-real CrystalHD decoding and indirect display, but smooth 60 fps presentation,
-measured end-to-end latency, physical A/V synchronization and reconnect have
-not passed a user-support gate. Use software decoding when dependable game
-streaming is the priority.
+real CrystalHD decoding and indirect display. Smooth 60 fps presentation has
+not been demonstrated, end-to-end latency has not been measured, and a
+complete 720p30 test covering physical A/V sync, input response and reconnect
+is unfinished. Use software decoding when dependable game streaming is the
+priority.
 
 After installing the stack, launch the Moonlight AppImage with the tested
 process-local controls:

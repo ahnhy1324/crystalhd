@@ -8,9 +8,9 @@ software fallback.
 
 It is not yet a daily-use or 60 fps support claim. Use 720p30 for the first
 hardware trial; 720p60 and 1080p30 remain performance experiments. Physical
-A/V sync, input-to-photon latency and reconnect acceptance have not reached a
-support-grade test boundary. Use software decoding when dependable game
-streaming matters more than experimental offload.
+A/V sync and input-to-photon latency have not been measured, and the complete
+720p30 input-response and reconnect test is unfinished. Use software decoding
+when dependable game streaming matters more than experimental offload.
 
 ## Current verdict
 
@@ -185,7 +185,8 @@ resident memory.
 The later event-driven receive implementation reduced paced VA task time and
 context switches. A 129-second Moonlight run also closed cleanly without a VA
 status error, but its source/network cadence was too low to establish
-presentation performance. This is stability evidence, not 60 fps acceptance.
+presentation performance. This is stability evidence; it does not demonstrate
+60 fps presentation.
 
 ## What is not established
 
@@ -196,9 +197,9 @@ presentation performance. This is stability evidence, not 60 fps acceptance.
   numerically for this path.
 - Some hardware matrix runs logged decode-unit queue overflow, and bounded
   runs encountered VA status 23. These cannot be reclassified as network loss.
-- Long-running input and clean close/reopen have bounded evidence, but the full
-  720p30 physical A/V, input-response and reconnect acceptance sequence is not
-  complete.
+- Bounded tests covered long-running input and clean close/reopen, but no
+  single 720p30 user test has yet covered physical A/V sync, input response and
+  reconnect from start to finish.
 - The results do not imply Steam Remote Play, browser streaming, BCM70012,
   Wayland or other-GPU compatibility.
 
