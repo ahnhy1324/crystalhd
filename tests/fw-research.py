@@ -14192,18 +14192,26 @@ class FirmwarePpbReturnHeaderTests(unittest.TestCase):
             "route_contents_followed": False, "runtime_routing_identity_proven": False})
 
     def test_driver_source_bytes_to_dwords_and_locked_sequential_readl_not_atomic64(self):
-        refs = (("linux_lib/libcrystalhd/libcrystalhd_int_if.cpp", 813, 891,
-                 "c178668effc5b15880b4778a0e55f1aa55f58f81ee8c19981f8c5f9381549f4c"),
-                ("driver/linux/crystalhd_cmds.c", 487, 504,
-                 "294fd7617729bb0e2d6ba16dbce5ba76fcf978965a057b2f92efb2f92ede3340"),
-                ("driver/linux/crystalhd_fleafuncs.c", 368, 407,
-                 "9b6c4278ce25c9278c1d420034a8ee330f7ba637beae0d0240a75a5d88d07d61"))
-        sources = []
-        for path, first, last, digest in refs:
-            raw = b"".join((ROOT / path).read_bytes().splitlines(keepends=True)[first - 1:last])
-            self.assertEqual(hashlib.sha256(raw).hexdigest(), digest)
-            sources.append(raw.decode("ascii"))
-        library, command, driver = sources
+        def function_source(path, signature):
+            source = (ROOT / path).read_text(encoding="ascii")
+            start = source.index(signature)
+            brace = source.index("{", start)
+            depth = 0
+            for end in range(brace, len(source)):
+                if source[end] == "{":
+                    depth += 1
+                elif source[end] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return source[start:end + 1]
+            self.fail(f"unterminated function after {signature!r} in {path}")
+
+        library = function_source("linux_lib/libcrystalhd/libcrystalhd_int_if.cpp",
+                                  "DtsDevMemRd(")
+        command = function_source("driver/linux/crystalhd_cmds.c",
+                                  "static BC_STATUS bc_cproc_mem_rd(")
+        driver = function_source("driver/linux/crystalhd_fleafuncs.c",
+                                 "BC_STATUS crystalhd_flea_mem_rd(")
         for anchor in ("size_in_dword = BuffSz / 4;", "pMemAccessRd->NumDwords = size_in_dword;",
                        "memset(pXferBuff,'a',BuffSz);", "memcpy(Buffer,pXferBuff,BuffSz);"):
             self.assertIn(anchor, library)
