@@ -4421,6 +4421,133 @@ static void DefaultBoundedH264StillDrainsFiniteTail() {
     fixture.CheckPicture(picture);
 }
 
+static void DefaultBoundedH264PreservesShortUnreplayableGap() {
+  Require(DecodeBatchGraceExpired(kDecodeBatchGraceNs) &&
+              !DecodeBatchGraceExpired(kDecodeBatchGraceNs, true) &&
+              !DecodeBatchGraceExpired(kBoundedH264InactivityGraceNs - 1,
+                                       true) &&
+              DecodeBatchGraceExpired(kBoundedH264InactivityGraceNs, true),
+          "bounded H.264 history loss selects only the longer finite grace");
+
+  TeardownFixture fixture(4);
+  CrystalHDDecodeReplay::Limits limits;
+  limits.cache_bytes = 8;
+  limits.pictures = 2;
+  fixture.decoder->live_h264 = true;
+  fixture.decoder->live_h264_gap_tolerant = false;
+  fixture.decoder->live_h264_fast_path = false;
+  fixture.decoder->replay = CrystalHDDecodeReplay(limits, true);
+  for (uint64_t picture = 1; picture <= 3; ++picture) {
+    const uint64_t timestamp = picture * kTimestampStep;
+    Require(fixture.decoder->replay.Append(timestamp, picture == 1, {1}) &&
+                PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+                    VA_STATUS_SUCCESS,
+            "submit default bounded-gap fixture");
+    if (picture < 3) {
+      fixture.io.outputs.push_back(timestamp);
+      Require(ReceiveAvailable(&fixture.driver, fixture.decoder.get()) ==
+                  VA_STATUS_SUCCESS,
+              "retire old default history before the delivery gap");
+    }
+  }
+  Require(!fixture.decoder->replay.replayable() &&
+              fixture.decoder->replay.outstanding() == 1,
+          "default gap begins after bounded history was retired");
+
+  unsigned int callbacks = 0;
+  fixture.io.on_sleep = [&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    ++callbacks;
+    fixture.io.on_sleep = [&] {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      ++callbacks;
+      Require(!fixture.decoder->replay.sealed() &&
+                  std::count(fixture.io.events.begin(),
+                             fixture.io.events.end(), "seal") == 0,
+              "short unreplayable gap is not mistaken for finite EOS");
+      Require(fixture.decoder->replay.Append(4 * kTimestampStep, false, {4}) &&
+                  PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+                      VA_STATUS_SUCCESS,
+              "non-IDR input resumes the original bounded hardware session");
+      fixture.io.outputs.push_back(4 * kTimestampStep);
+      fixture.io.outputs.push_back(3 * kTimestampStep);
+    };
+  };
+  Require(SyncSurface(&fixture.context, 3) == VA_STATUS_SUCCESS &&
+              callbacks == 2 && fixture.io.inputs.size() == 4 &&
+              fixture.io.open_attempts == 0 &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "seal") == 0 &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "eos") == 0 &&
+              !fixture.io.invalid,
+          "default bounded mode resumes exactly across a short live gap");
+  fixture.CheckPicture(2);
+  fixture.CheckPicture(3);
+}
+
+static void DefaultBoundedH264InactivitySurvivesFiniteSyncCalls() {
+  TeardownFixture fixture(3);
+  CrystalHDDecodeReplay::Limits limits;
+  limits.cache_bytes = 8;
+  limits.pictures = 2;
+  fixture.decoder->live_h264 = true;
+  fixture.decoder->replay = CrystalHDDecodeReplay(limits, true);
+  for (uint64_t picture = 1; picture <= 3; ++picture) {
+    const uint64_t timestamp = picture * kTimestampStep;
+    Require(fixture.decoder->replay.Append(timestamp, picture == 1, {1}) &&
+                PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+                    VA_STATUS_SUCCESS,
+            "submit repeated finite-sync fixture");
+    if (picture < 3) {
+      fixture.io.outputs.push_back(timestamp);
+      Require(ReceiveAvailable(&fixture.driver, fixture.decoder.get()) ==
+                  VA_STATUS_SUCCESS,
+              "retire repeated finite-sync history");
+    }
+  }
+  Require(!fixture.decoder->replay.replayable(),
+          "repeated finite-sync fixture has no replay prefix");
+
+  fixture.decoder->sync_inactivity_ns =
+      kBoundedH264InactivityGraceNs - 300ULL * 1000 * 1000;
+  const uint64_t inactivity_before_sync =
+      fixture.decoder->sync_inactivity_ns;
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  Require(fixture.decoder->sync_inactivity_ns ==
+              inactivity_before_sync &&
+              SyncSurface2(&fixture.context, 3, 10ULL * 1000 * 1000) ==
+                  VA_STATUS_ERROR_TIMEDOUT &&
+              fixture.decoder->sync_inactivity_ns > inactivity_before_sync &&
+              fixture.decoder->sync_inactivity_ns <
+                  kBoundedH264InactivityGraceNs &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "seal") == 0,
+          "player pause is excluded while finite sync wait is accumulated");
+  const uint64_t inactivity_after_first_sync =
+      fixture.decoder->sync_inactivity_ns;
+  Require(SyncSurface2(&fixture.context, 3, 10ULL * 1000 * 1000) ==
+                  VA_STATUS_ERROR_TIMEDOUT &&
+              fixture.decoder->sync_inactivity_ns >
+                  inactivity_after_first_sync &&
+              fixture.decoder->sync_inactivity_ns <
+                  kBoundedH264InactivityGraceNs &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "seal") == 0,
+          "sequential finite sync calls retain only their actual wait time");
+  Require(SyncSurface2(&fixture.context, 3, 500ULL * 1000 * 1000) ==
+                  VA_STATUS_SUCCESS &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "seal") == 1 &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "eos") == 1 &&
+              fixture.decoder->pending.empty() &&
+              fixture.decoder->replay.outstanding() == 0 &&
+              !fixture.io.invalid,
+          "finite sync crosses the accumulated inactivity threshold and drains tail");
+  fixture.CheckPicture(2);
+}
+
 static void EarlyLiveGapPreservesIntactReplayHistory() {
   TeardownFixture fixture(3);
   fixture.decoder->live_h264 = true;
@@ -5739,6 +5866,8 @@ int main() {
     TransportProgressRequiresActualHardwareIo();
     ProgressingSyncDoesNotSealAnActiveStream();
     DefaultBoundedH264StillDrainsFiniteTail();
+    DefaultBoundedH264PreservesShortUnreplayableGap();
+    DefaultBoundedH264InactivitySurvivesFiniteSyncCalls();
     EarlyLiveGapPreservesIntactReplayHistory();
     InactiveLiveSyncPreservesReferencesUntilActualInputResumes();
     InactiveLiveSyncHonorsFiniteDeadlineWithoutPoisoningPixels();

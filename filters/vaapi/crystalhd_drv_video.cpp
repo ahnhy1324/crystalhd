@@ -80,6 +80,8 @@ namespace {
 
 constexpr uint64_t kDecodeTimeoutNs = 10ULL * 1000 * 1000 * 1000;
 constexpr uint64_t kDecodeBatchGraceNs = 100ULL * 1000 * 1000;
+constexpr uint64_t kBoundedH264InactivityGraceNs =
+    1ULL * 1000 * 1000 * 1000;
 constexpr size_t kMpeg4ReplayCacheBytes = 32U * 1024U * 1024U;
 constexpr size_t kMpeg4ReplayPictures = 512;
 constexpr size_t kExperimentalPresentationReadyLimit = 3;
@@ -116,8 +118,11 @@ constexpr uint32_t kStatusSkipReadyHeadPeek = 1U << 30;
   return false;
 }
 
-static bool DecodeBatchGraceExpired(uint64_t elapsed_ns) {
-  return elapsed_ns >= kDecodeBatchGraceNs;
+static bool DecodeBatchGraceExpired(uint64_t elapsed_ns,
+                                    bool bounded_h264_history_lost = false) {
+  return elapsed_ns >= (bounded_h264_history_lost
+                            ? kBoundedH264InactivityGraceNs
+                            : kDecodeBatchGraceNs);
 }
 
 static VAStatus DecodeWaitStatus(uint64_t timeout_ns, uint64_t elapsed_ns) {
@@ -1555,6 +1560,9 @@ struct DecodeContext {
   uint64_t generation = 1;
   uint64_t next_submission_ordinal = 1;
   uint64_t transport_progress = 0;
+  // Aggregate only time actually spent waiting in VA sync calls. Wall-clock
+  // time between calls can be an intentional player pause and is not EOF.
+  uint64_t sync_inactivity_ns = 0;
   uint64_t next_timestamp = kTimestampStep;
   std::unordered_map<uint64_t, VASurfaceID> pending;
   std::unordered_map<uint64_t, std::shared_ptr<Surface>> decoded_frames;
@@ -1611,6 +1619,10 @@ struct DecodeContext {
       result += epoch.cached_bytes();
     return result;
   }
+  void RecordTransportProgress() {
+    ++transport_progress;
+    sync_inactivity_ns = 0;
+  }
   bool ReplaySealed() const {
     if (IsVc1()) return vc1_replay.sealed();
     if (IsMpeg4()) return Mpeg4TransportReplay().sealed();
@@ -1654,6 +1666,7 @@ struct DecodeContext {
     output_poll.reset();
     input_backpressured = false;
     input_budget_exhausted = false;
+    sync_inactivity_ns = 0;
     return result;
   }
 
@@ -3215,7 +3228,7 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
     return FailDecode(driver, decode, "hardware output release failed");
   if (result == VA_STATUS_SUCCESS && decode->WithReplay(
           [](auto &replay) { return replay.outstanding(); }) < outstanding)
-    ++decode->transport_progress;
+    decode->RecordTransportProgress();
   return result;
 }
 
@@ -3343,7 +3356,7 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
                                                   input_timestamp));
       if (consume_prefeed)
         decode->prefed_timestamp = 0;
-      ++decode->transport_progress;
+      decode->RecordTransportProgress();
       if (attempt + 1 == max_attempts)
         decode->input_budget_exhausted = true;
 
@@ -3360,7 +3373,7 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
               static_cast<uint32_t>(prefeed.size()), next_timestamp, FALSE);
           if (prefeed_status == BC_STS_SUCCESS) {
             decode->prefed_timestamp = next_timestamp;
-            ++decode->transport_progress;
+            decode->RecordTransportProgress();
             if (driver->trace.enabled())
               driver->trace.Emit(crystalhd_vaapi_trace::Event::PrefeedSent,
                                  TraceDecodeTokenFields(driver, decode,
@@ -4032,7 +4045,8 @@ static VAStatus SyncDecodeSurface(
         surface->failed, static_cast<unsigned long long>(timeout_ns));
 
   const auto start = std::chrono::steady_clock::now();
-  auto last_progress = start;
+  auto inactivity_start = start;
+  uint64_t bounded_inactivity_base = decode->sync_inactivity_ns;
   uint64_t progress = decode->transport_progress;
   while (!surface->ready && !surface->failed && !presentation_ready()) {
     const VAStatus state = DecodeWaitState(*decode, surface.get(), generation,
@@ -4064,7 +4078,33 @@ static VAStatus SyncDecodeSurface(
     const auto now = std::chrono::steady_clock::now();
     if (decode->transport_progress != progress) {
       progress = decode->transport_progress;
-      last_progress = now;
+      bounded_inactivity_base = 0;
+      inactivity_start = now;
+      decode->sync_inactivity_ns = 0;
+    }
+    const uint64_t local_idle =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            now - inactivity_start).count();
+    // Carry only time spent waiting in VA sync calls, and only after an unset
+    // H.264 policy has retired the prefix needed for a non-IDR restart. Time
+    // between calls can be an intentional player pause and is not inactivity.
+    const bool bounded_h264_history_lost =
+        !decode->is_70012 && decode->live_h264 &&
+        !decode->live_h264_gap_tolerant &&
+        decode->replay.live_stream_started() &&
+        !decode->replay.replayable();
+    uint64_t idle = local_idle;
+    if (bounded_h264_history_lost) {
+      const uint64_t accumulated = bounded_inactivity_base + local_idle;
+      decode->sync_inactivity_ns =
+          std::max(decode->sync_inactivity_ns, accumulated);
+      idle = decode->sync_inactivity_ns;
+    } else {
+      // Preserve the historical per-call inactivity rule for strict H.264 and
+      // every other codec. Only an unreplayable bounded BCM70015 H.264 stream
+      // needs to carry actual VA wait time across finite Sync calls.
+      bounded_inactivity_base = 0;
+      decode->sync_inactivity_ns = 0;
     }
     const uint64_t elapsed =
         std::chrono::duration_cast<std::chrono::nanoseconds>(now - start).count();
@@ -4079,9 +4119,6 @@ static VAStatus SyncDecodeSurface(
     // Seal only after transport inactivity, not while a live stream or retained
     // prefix replay still makes real input/output progress. Keep the absolute
     // sync deadline above: unrelated progress cannot hide a missing picture.
-    const uint64_t idle =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(now - last_progress)
-            .count();
     // A second accepted live picture distinguishes streaming from a one-frame
     // decoder probe. An input gap is not EOF, even while history is replayable:
     // sealing would needlessly reopen the device when input resumes. Explicit
@@ -4091,11 +4128,11 @@ static VAStatus SyncDecodeSurface(
         decode->replay.live_stream_started();
     if (!surface->ready && !decode->ReplaySealed() &&
         !retain_live_references &&
-        DecodeBatchGraceExpired(idle)) {
+        DecodeBatchGraceExpired(idle, bounded_h264_history_lost)) {
       Debug("sync batch inactivity: elapsed=%llu idle=%llu progress=%llu timestamp=%llu",
             static_cast<unsigned long long>(elapsed),
             static_cast<unsigned long long>(idle),
-            static_cast<unsigned long long>(progress),
+            static_cast<unsigned long long>(decode->transport_progress),
             static_cast<unsigned long long>(expected_timestamp));
       status = SealDecodeBatch(driver, decode.get());
       if (status != VA_STATUS_SUCCESS)
