@@ -139,11 +139,20 @@ handed roughly 28-29 frames/s to Moonlight's renderer. Orderly close/reopen
 also passed. The exact-identity 720p60 path handed only about 33 frames/s to
 the renderer, so smooth 60 fps did not pass.
 
-A local-key-to-X-Present input-response proxy was measured only for a
-nonstandard READY-remap diagnostic and software controls; it is not a normal
-playback or physical input-to-photon result. The streaming workload had no
-controlled A/V sync cue, and forced connection-loss recovery was not tested.
-Use software decoding when dependable game streaming is the priority.
+The opt-in READY experiment was built to stabilize streaming handoff by
+keeping a completed frame in reserve and accepting a predictable
+one-submission payload lag when remapping is needed. With V-sync and pacing
+disabled, its `previous,0` policy averaged 58.63 renderer submissions/s at
+720p60 and 28.58 at 1080p30 on the qualified reference setup. Here, `0` means
+no additional time-based wait; a remapped payload is still one submission
+behind. The mode is not enabled by default because it associates the older
+picture with the current VA surface and the caller's newer PTS.
+
+A local-key-to-X-Present response proxy was measured for that
+one-submission-lag mode and software controls, but it is not a physical
+input-to-photon result. The streaming workload had no controlled A/V sync cue,
+and forced connection-loss recovery was not tested. Use software decoding when
+dependable game streaming is the priority.
 
 After installing the stack, launch the Moonlight AppImage with the tested
 process-local controls:

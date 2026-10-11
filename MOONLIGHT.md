@@ -9,10 +9,10 @@ software fallback.
 It is not yet a daily-use or 60 fps support claim. Use 720p30 for the first
 hardware trial; 720p60 and 1080p30 remain performance experiments. Orderly
 close/reopen is confirmed. Physical A/V offset has no controlled measurement;
-the input-response proxy below uses a nonstandard path and stops before panel
-scanout. Automatic recovery from a forced network or Sunshine interruption has
-not been tested. Use software decoding when dependable game streaming matters
-more than experimental offload.
+the input-response proxy below measures the experimental one-submission-lag
+path and stops before panel scanout. Automatic recovery from a forced network
+or Sunshine interruption has not been tested. Use software decoding when
+dependable game streaming matters more than experimental offload.
 
 ## Current verdict
 
@@ -23,7 +23,7 @@ more than experimental offload.
 | 1080p30 H.264 | The card decoded about 30 frames/s, but Moonlight handed only about 15-16 frames/s to its renderer. | Experimental; not smooth 30 fps |
 | 1080p60 H.264 | Card output stayed below 60 frames/s and live input accumulated backlog. | Not practical |
 | Orderly session lifecycle | A five-minute hardware session exited normally; an immediate 40-second session reacquired the device, and later bounded sessions also released it cleanly. | Confirmed for graceful close/reopen; forced connection-loss recovery untested |
-| Nonstandard READY remap | Selected runs approached the requested handoff rate by substituting an older picture under a newer surface/timestamp. | Diagnostic only; invalid for normal VA playback |
+| One-submission-lag READY experiment | With V-sync and pacing disabled, `previous,0` averaged 58.63 renderer submissions/s at 720p60 and 28.58 at 1080p30. | Render-submit-rate effect demonstrated; the caller's PTS-to-surface association is not preserved, so this is experimental only |
 
 “Handed to the renderer” is a Moonlight software event, not proof that the
 frame reached physical scanout.
@@ -136,7 +136,7 @@ not change `libcrystalhd.so.3`, the kernel ioctl ABI or BCM70012 behavior.
 Reconstructed H.264 frame-rate signaling remains fixed at 30 fps, so these
 options are not a supported 60 fps mode.
 
-### READY remap is diagnostic only
+### One-submission-lag READY experiment
 
 Do not set these for ordinary streaming:
 
@@ -146,12 +146,28 @@ CRYSTALHD_VAAPI_EXPERIMENTAL_READY_POLICY
 CRYSTALHD_VAAPI_EXPERIMENTAL_READY_DELAY_US
 ```
 
-The retained `previous,0` diagnostic can copy an immediately older completed
-picture into the newly requested surface/timestamp. It improved selected
-submission rates, but deliberately violates standard VA surface identity.
-`latest` sometimes selected pictures 2-17 submissions old. Neither is a fix
-for exact pixels, PTS, A/V synchronization or physical latency, so neither is
-recommended to users or enabled by default.
+This experiment was designed to trade a deterministic payload lag for a more
+stable streaming handoff rate. A bounded READY pool keeps completed pictures
+available so presentation can use the preceding picture instead of waiting for
+the newest requested surface to finish decoding. If the exact requested
+surface finishes first, the exact picture still takes precedence.
+
+The sweep tested additional eligibility waits of 0, 16.67, 33.33 and 50 ms;
+the nonzero waits showed no consistent benefit. Under the retained
+`previous,0` policy, all 209 observed remap commits used the immediately
+preceding payload (`submission_drift=1`). `0` therefore means zero *additional
+time-based wait*, not zero payload lag. It reached 58.63 renderer submissions/s
+at 720p60 and 28.58 at 1080p30 on the reference system, demonstrating the
+intended render-submit-rate versus one-submission-lag tradeoff. These are
+average handoff rates; physical scanout timing and cadence variance were not
+measured.
+
+The mode remains experimental because it copies that older picture into the
+newly requested surface, violating normal VA surface identity and the caller's
+PTS-to-surface association. The alternative `latest` policy was less
+predictable and sometimes selected pictures 2-17 submissions old. Neither
+policy establishes physical A/V synchronization or input-to-photon latency, so
+neither is enabled by default or recommended for ordinary streaming.
 
 ## Measured limits
 
@@ -176,14 +192,21 @@ so this host also has a client/display presentation ceiling independent of
 CrystalHD. Prefeed materially improved the hardware path, but did not remove
 that presentation bottleneck.
 
-### Nonstandard diagnostic comparison
+### One-submission-lag cadence comparison
 
 With V-sync and pacing disabled, three repeated finalist runs measured 58.63
-render submissions/s at 720p60 and 28.58 at 1080p30 with `previous,0`. These
-figures are not a support target because the presented payload identity is one
-submission older. Hardware used less Moonlight process CPU than software in
-that comparison, but whole-system CPU was similar and hardware used more
-resident memory.
+render submissions/s at 720p60 and 28.58 at 1080p30 with `previous,0`. This is
+the measured outcome of intentionally keeping the presented payload one
+submission behind, not merely a READY-availability diagnostic. The figures are
+not a normal-path support target because the payload is associated with the
+newer requested surface and therefore with the caller's newer PTS. Hardware
+used less Moonlight process CPU than software in that comparison, but
+whole-system CPU was similar and hardware used more resident memory.
+
+The experiment did not improve every target: at 720p30 the exact path was
+already near 30 submissions/s and remapping added CPU without useful
+throughput, while 1080p60 `previous,0` produced only about 0.27 submissions/s
+in its bounded confirmation and remained unusable.
 
 The later event-driven receive implementation reduced paced VA task time and
 context switches. A 129-second Moonlight run also closed cleanly without a VA
@@ -200,26 +223,28 @@ increments:
 
 | Stream and path | p50 | p95 |
 | --- | ---: | ---: |
-| 720p60 nonstandard `previous,0` | 59.05 ms | 73.57 ms |
+| 720p60 one-submission-lag `previous,0` | 59.05 ms | 73.57 ms |
 | 720p60 software | 47.50 ms | 83.11 ms |
-| 1080p30 nonstandard `previous,0` | 72.60 ms | 100.76 ms |
+| 1080p30 one-submission-lag `previous,0` | 72.60 ms | 100.76 ms |
 | 1080p30 software | 51.77 ms | 67.56 ms |
 
 This proxy includes remote repaint, Sunshine capture/encode, network, decode,
 renderer and X11. It stops before physical panel scanout, and the hardware
-rows use READY remapping that deliberately violates normal VA surface
-identity. No equivalent exact-identity 720p30 input-response proxy was
-recorded, and no path was measured through physical panel scanout.
+rows measure the cadence-stabilizing READY experiment, which deliberately
+violates normal VA surface identity. No equivalent exact-identity hardware
+input-response control was recorded, and no path was measured through physical
+panel scanout.
 
 ## What is not established
 
 - Moonlight's reported decode/queue/render fields are component timings, not
   camera-measured input-to-photon latency.
 - Render submissions are not proof of physical scanout.
-- The exact path preserves requested surface/PTS identity and the live stream
-  carried audio, but the workload had no known simultaneous audio/video cue
-  and no speaker-versus-panel capture. Physical A/V offset therefore has no
-  numerical bound.
+- The exact path preserves the requested surface and the caller's
+  PTS-to-surface association, and the live stream carried audio, but the
+  workload had no known simultaneous audio/video cue and no
+  speaker-versus-panel capture. Physical A/V offset therefore has no numerical
+  bound.
 - Normal exits and later sessions passed. Automatic recovery after deliberately
   interrupting the network or Sunshine was not tested.
 - Power consumption was not measured.
