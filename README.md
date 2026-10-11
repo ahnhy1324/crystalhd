@@ -6,7 +6,26 @@ hardware video decoding for local files on BCM70015. CrystalHD handles video;
 the normal Linux media stack handles audio, subtitles, synchronization and
 display.
 
-## Compatibility at a glance
+## Current user status
+
+| What you want to do | State now |
+| --- | --- |
+| Play local files on BCM70015 | **Recommended path.** `crystalhd-play` and GStreamer provide explicit hardware decoding; 720p30 is the best-established target and 1080p30 is tested on the reference host with its qualified PCIe workaround. |
+| Stream Moonlight at 720p30 | **Working exact-identity path.** The reference system handed roughly 28-29 frames/s to the renderer. |
+| Stream Moonlight at 720p60 | **Working experimental path.** Opt-in `previous,0` averaged 58.63 sequential renderer submissions/s; the exact path reached only about 33. |
+| Stream Moonlight at 1080p30 | **Working experimental path.** Opt-in `previous,0` averaged 28.58 sequential renderer submissions/s; the exact path reached about 15-16. |
+| Decode or stream 1080p60 | **Not practical** on the current output path. |
+
+Here, “experimental” means that the faster Moonlight mode deliberately uses
+the preceding completed picture for the current presentation slot. It does
+not mean that 720p60 or 1080p30 failed. The mode is opt-in because that
+one-submission lag does not preserve the caller's normal PTS-to-surface
+association. See the [Moonlight command and measured limits](MOONLIGHT.md).
+Those streaming results cover BCM70015, H.264 8-bit 4:2:0 SDR and the named
+X11 reference system. Graceful close/reopen passed; physical A/V offset and
+forced-interruption recovery remain unverified.
+
+## Compatibility details
 
 “Tested” below means the named reference configuration and documented stream
 subset, not every card, host or file.
@@ -33,14 +52,6 @@ size is 1920x1088.
 | VC-1 / WMV3 | Selected progressive VC-1 Advanced and standard WMV3 Simple/Main streams |
 | HEVC, VP8, VP9, AV1 | Not supported |
 
-| Playback target | Practical status |
-| --- | --- |
-| 720p30 local files | Best-established ordinary playback target |
-| 1080p30 local files | Works on the reference host with a host-specific PCIe workaround; test the default first |
-| 720p60 Moonlight | The exact path was presentation-limited, but the opt-in one-submission-lag mode averaged 58.63 renderer submissions/s on the reference host |
-| 1080p30 Moonlight | The same opt-in mode averaged 28.58 renderer submissions/s on the reference host |
-| 1080p60 | Not practical on the current output path |
-
 Exact profiles, framing restrictions, fixtures and measurements are in the
 [usage guide](USAGE.md) and [hardware report](HARDWARE-2026-09-13.md).
 
@@ -52,7 +63,7 @@ Exact profiles, framing restrictions, fixtures and measurements are in the
 | `libcrystalhd.so.3` | **Compatibility API** | Existing Broadcom-API applications; the ABI and legacy ioctl behavior remain preserved |
 | FFmpeg through VA-API | **Experimental** | Selected decode/download paths work; libva discovery alone is not proof of decode or display |
 | VLC 3.0.21 | **Tested combination** | H.264 on the reference X11/i915 system only, not general VLC or codec certification |
-| [Moonlight Qt 6.2.0](MOONLIGHT.md) | **Working experimental integration** | Real BCM70015 H.264 decode and indirect display worked; the opt-in cadence mode reached near-target 720p60 and 1080p30 renderer rates, and orderly close/reopen passed |
+| [Moonlight Qt 6.2.0](MOONLIGHT.md) | **Working experimental integration** | Real BCM70015 H.264 decode and indirect display worked; see the current-status table above and the linked setup guide |
 | Chromium / YouTube | **Hardware path unverified** | The launcher defaults to software; hardware mode disables the GPU sandbox and is not a daily-use path |
 
 ## Quick start
@@ -143,12 +154,11 @@ modes, not a result limited to 720p30.
 
 The opt-in READY experiment was built to stabilize streaming handoff by
 keeping a completed frame in reserve and accepting a predictable
-one-submission payload lag when remapping is needed. With V-sync and pacing
-disabled, its `previous,0` policy averaged 58.63 renderer submissions/s at
-720p60 and 28.58 at 1080p30 on the qualified reference setup. Here, `0` means
-no additional time-based wait; a remapped payload is still one submission
-behind. The mode is not enabled by default because it associates the older
-picture with the current VA surface and the caller's newer PTS.
+one-submission payload lag when remapping is needed. The reported finalist
+runs disabled V-sync and pacing. In `previous,0`, `0` means no additional
+time-based wait; a remapped payload is still one submission behind. The mode
+is not enabled by default because it associates the older picture with the
+current VA surface and the caller's newer PTS.
 
 A local-key-to-X-Present response proxy was measured for that
 one-submission-lag mode and software controls, but it is not a physical
