@@ -610,6 +610,7 @@ static BC_STATUS DtsGetPictureInfo(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut)
 	uint32_t			PictureNumber = 0;
 	uint32_t			PicInfoLineNum;
 	bool				bInterlaced = false;
+	bool				bEos = false;
 
 	if (Ctx->DevId == BC_PCI_DEVID_FLEA)
 	{
@@ -639,14 +640,42 @@ static BC_STATUS DtsGetPictureInfo(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *pOut)
 
 	if (PicInfoLineNum == BC_EOS_DETECTED)  // EOS
 	{
-		memcpy((uint32_t*)&pOut->PicInfo,(uint32_t*)(pOut->Ybuff + 4), sizeof(BC_PIC_INFO_BLOCK));
-		if (pOut->PicInfo.flags & VDEC_FLAG_EOS)
+		const uint64_t markerBytes = sizeof(PicInfoLineNum) +
+			sizeof(BC_PIC_INFO_BLOCK);
+		const BC_DEC_YUV_BUFFS &source =
+			Ctx->pOutData->u.DecOutData.OutPutBuffs;
+		/* The sentinel is a control transfer, not a picture. Bound the PIB
+		 * copy by both the completed DMA extent and the registered buffer.
+		 */
+		if (!pOut->Ybuff || source.YuvBuff != pOut->Ybuff ||
+			(uint64_t)pOut->YBuffDoneSz * 4 < markerBytes ||
+			source.YuvBuffSz < markerBytes)
 		{
+			Ctx->pOutData->RetSts = BC_STS_IO_XFR_ERROR;
+			return BC_STS_IO_XFR_ERROR;
+		}
+		memcpy((uint32_t*)&pOut->PicInfo,(uint32_t*)(pOut->Ybuff + 4), sizeof(BC_PIC_INFO_BLOCK));
+		/* Some BCM70015 scaler widths return an EOS control transfer with an
+		 * alignment row. The driver still writes the sentinel at Y[0], while
+		 * this legacy Y+4 PIB lookup can then see empty alignment bytes instead
+		 * of VDEC_FLAG_EOS. The armed drain scopes that layout quirk; do not
+		 * reinterpret an unarmed sentinel or any LINK output.
+		 */
+		DtsLock(Ctx);
+		bEos = (pOut->PicInfo.flags & VDEC_FLAG_EOS) ||
+			(Ctx->DevId == BC_PCI_DEVID_FLEA && Ctx->bEOSCheck);
+		if (bEos)
 			Ctx->bEOS = true;
+		DtsUnLock(Ctx);
+		if (bEos)
+		{
+			pOut->PicInfo.flags |= VDEC_FLAG_EOS;
 			Ctx->pOutData->RetSts = BC_STS_NO_DATA;
 			DebugLog_Trace(LDIL_DBG, "Found EOS \n");
 			return BC_STS_NO_DATA;
 		}
+		Ctx->pOutData->RetSts = BC_STS_IO_XFR_ERROR;
+		return BC_STS_IO_XFR_ERROR;
 	}
 	/*
 	-- To take care of 16 byte alignment the firmware might put extra

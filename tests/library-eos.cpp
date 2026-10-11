@@ -38,7 +38,8 @@ static struct {
     uint64_t clock_ms;
     BC_STATUS fetch_status, dma_status;
     BC_DTS_STATS status;
-    uint32_t marker_data[1 + (sizeof(BC_PIC_INFO_BLOCK) + 3) / 4];
+    uint32_t marker_data[1024];
+    uint32_t marker_done_words, marker_allocation;
 } detection;
 
 static void check(bool condition, const char *message)
@@ -91,8 +92,8 @@ extern "C" int __wrap_ioctl(int fd, unsigned long code, ...)
             data->u.DecOutData.Flags = COMP_FLAG_DATA_VALID;
             BC_DEC_YUV_BUFFS &buffer = data->u.DecOutData.OutPutBuffs;
             buffer.YuvBuff = reinterpret_cast<uint8_t *>(detection.marker_data);
-            buffer.YuvBuffSz = sizeof(detection.marker_data);
-            buffer.YBuffDoneSz = sizeof(detection.marker_data) / 4;
+            buffer.YuvBuffSz = detection.marker_allocation;
+            buffer.YBuffDoneSz = detection.marker_done_words;
         }
         return 0;
     }
@@ -222,6 +223,8 @@ struct Fixture {
         std::memset(&detection, 0, sizeof(detection));
         detection.fetch_status = BC_STS_TIMEOUT;
         detection.dma_status = BC_STS_SUCCESS;
+        detection.marker_done_words = 1 + (sizeof(BC_PIC_INFO_BLOCK) + 3) / 4;
+        detection.marker_allocation = detection.marker_done_words * 4;
         detection.status.drvFLL = BC_RX_LIST_CNT;
         bc_dil_glob_ptr = &globals;
         observed_context = &context;
@@ -1003,6 +1006,102 @@ static void test_firmware_eos(uint32_t subtype = BC_MSUBTYPE_H264)
     }
 }
 
+static void test_firmware_eos_sentinel_boundaries()
+{
+    for (bool no_copy : {false, true}) {
+        for (uint32_t words : {992U, 996U}) {
+            for (bool armed : {false, true}) {
+                fail_at = stop_after = 0;
+                Fixture fixture(BC_PCI_DEVID_FLEA, BC_MSUBTYPE_H264);
+                fixture.context.bEOSCheck = armed;
+                detection.allow_output = detection.marker = true;
+                detection.marker_done_words = words;
+                detection.marker_allocation = sizeof(detection.marker_data);
+                detection.marker_data[0] = BC_EOS_DETECTED;
+                BC_DTS_PROC_OUT output = {};
+                const BC_STATUS result = no_copy
+                    ? DtsProcOutputNoCopy(&fixture.context, 0, &output)
+                    : DtsProcOutput(&fixture.context, 0, &output);
+                const bool accepted = armed;
+                check(result == (accepted ? BC_STS_NO_DATA : BC_STS_IO_XFR_ERROR),
+                      accepted
+                          ? "armed FLEA drain accepts a measured padded EOS sentinel whose Y+4 PIB flag is absent"
+                          : "unarmed padded FLEA sentinel without a Y+4 PIB flag remains rejected");
+                check(query_eos(fixture) == accepted &&
+                          ((output.PicInfo.flags & VDEC_FLAG_EOS) != 0) == accepted,
+                      accepted
+                          ? "armed FLEA sentinel publishes EOS through the existing public result"
+                          : "rejected sentinel neither completes nor publishes EOS");
+                check(fixture.context.ProcOutPending == 0 && detection.fetch_calls == 1,
+                      "sentinel boundary retires one fetch admission without retrying it");
+            }
+        }
+
+        for (bool armed : {false, true}) {
+            fail_at = stop_after = 0;
+            Fixture fixture(BC_PCI_DEVID_LINK, BC_MSUBTYPE_H264);
+            fixture.context.bEOSCheck = armed;
+            detection.allow_output = detection.marker = true;
+            detection.marker_data[0] = BC_EOS_DETECTED;
+            BC_DTS_PROC_OUT output = {};
+            const BC_STATUS result = no_copy
+                ? DtsProcOutputNoCopy(&fixture.context, 0, &output)
+                : DtsProcOutput(&fixture.context, 0, &output);
+            check(result == BC_STS_IO_XFR_ERROR && !query_eos(fixture) &&
+                      !(output.PicInfo.flags & VDEC_FLAG_EOS),
+                  "LINK sentinel without its PIB EOS flag remains rejected");
+            check(fixture.context.ProcOutPending == 0 && detection.fetch_calls == 1,
+                  "rejected LINK sentinel retires one fetch admission without retrying it");
+        }
+
+        for (bool short_done : {false, true}) {
+            fail_at = stop_after = 0;
+            Fixture fixture(BC_PCI_DEVID_FLEA, BC_MSUBTYPE_H264);
+            fixture.context.bEOSCheck = true;
+            detection.allow_output = detection.marker = true;
+            detection.marker_data[0] = BC_EOS_DETECTED;
+            BC_PIC_INFO_BLOCK picture = {};
+            picture.flags = VDEC_FLAG_EOS;
+            std::memcpy(detection.marker_data + 1, &picture, sizeof(picture));
+            if (short_done)
+                detection.marker_done_words--;
+            else
+                detection.marker_allocation--;
+            BC_DTS_PROC_OUT output = {};
+            const BC_STATUS result = no_copy
+                ? DtsProcOutputNoCopy(&fixture.context, 0, &output)
+                : DtsProcOutput(&fixture.context, 0, &output);
+            check(result == BC_STS_IO_XFR_ERROR && !query_eos(fixture) &&
+                      !(output.PicInfo.flags & VDEC_FLAG_EOS),
+                  short_done
+                      ? "short completed EOS transfer is rejected before reading its PIB"
+                      : "short registered EOS buffer is rejected before reading its PIB");
+            check(fixture.context.ProcOutPending == 0 && detection.fetch_calls == 1,
+                  "short EOS control transfer retires one fetch admission without retrying it");
+        }
+
+        for (bool armed : {false, true}) {
+            fail_at = stop_after = 0;
+            Fixture fixture(BC_PCI_DEVID_LINK, BC_MSUBTYPE_H264);
+            fixture.context.bEOSCheck = armed;
+            detection.allow_output = detection.marker = true;
+            BC_PIC_INFO_BLOCK picture = {};
+            picture.flags = VDEC_FLAG_EOS;
+            detection.marker_data[0] = BC_EOS_DETECTED;
+            std::memcpy(detection.marker_data + 1, &picture, sizeof(picture));
+            BC_DTS_PROC_OUT output = {};
+            const BC_STATUS result = no_copy
+                ? DtsProcOutputNoCopy(&fixture.context, 0, &output)
+                : DtsProcOutput(&fixture.context, 0, &output);
+            check(result == BC_STS_NO_DATA && query_eos(fixture) &&
+                      (output.PicInfo.flags & VDEC_FLAG_EOS),
+                  "flagged LINK firmware EOS retains its existing behavior");
+            check(fixture.context.ProcOutPending == 0 && detection.fetch_calls == 1,
+                  "flagged LINK firmware EOS consumes exactly one control output");
+        }
+    }
+}
+
 static void test_link_repeat_compatibility()
 {
     Fixture fixture(BC_PCI_DEVID_LINK, BC_MSUBTYPE_H264);
@@ -1053,6 +1152,7 @@ int main()
                 test_timeout_detection(device, no_copy, timeout);
     test_firmware_eos();
     test_firmware_eos(BC_MSUBTYPE_DIVX);
+    test_firmware_eos_sentinel_boundaries();
     test_link_repeat_compatibility();
     if (failures) {
         std::fprintf(stderr, "%u EOS checks failed\n", failures);
