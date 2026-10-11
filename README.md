@@ -51,7 +51,7 @@ Exact profiles, framing restrictions, fixtures and measurements are in the
 | `libcrystalhd.so.3` | **Compatibility API** | Existing Broadcom-API applications; the ABI and legacy ioctl behavior remain preserved |
 | FFmpeg through VA-API | **Experimental** | Selected decode/download paths work; libva discovery alone is not proof of decode or display |
 | VLC 3.0.21 | **Tested combination** | H.264 on the reference X11/i915 system only, not general VLC or codec certification |
-| [Moonlight Qt 6.2.0](MOONLIGHT.md) | **Experimental integration** | Real BCM70015 H.264 decode and indirect display worked; one complete 720p30 user test covering smooth playback, A/V sync, input response and reconnect is still unfinished |
+| [Moonlight Qt 6.2.0](MOONLIGHT.md) | **Experimental integration** | Real BCM70015 H.264 decode and indirect display worked, and orderly close/reopen passed; physical A/V offset has no controlled measurement, and forced connection-loss recovery remains untested |
 | Chromium / YouTube | **Hardware path unverified** | The launcher defaults to software; hardware mode disables the GPU sandbox and is not a daily-use path |
 
 ## Quick start
@@ -134,11 +134,16 @@ instead of applying global PCIe settings.
 ## Sunshine / Moonlight streaming
 
 720p30 is the first hardware-offload trial. The reference system performed
-real CrystalHD decoding and indirect display. Smooth 60 fps presentation has
-not been demonstrated, end-to-end latency has not been measured, and a
-complete 720p30 test covering physical A/V sync, input response and reconnect
-is unfinished. Use software decoding when dependable game streaming is the
-priority.
+real CrystalHD decoding and indirect display, and bounded exact-identity runs
+handed roughly 28-29 frames/s to Moonlight's renderer. Orderly close/reopen
+also passed. The exact-identity 720p60 path handed only about 33 frames/s to
+the renderer, so smooth 60 fps did not pass.
+
+A local-key-to-X-Present input-response proxy was measured only for a
+nonstandard READY-remap diagnostic and software controls; it is not a normal
+playback or physical input-to-photon result. The streaming workload had no
+controlled A/V sync cue, and forced connection-loss recovery was not tested.
+Use software decoding when dependable game streaming is the priority.
 
 After installing the stack, launch the Moonlight AppImage with the tested
 process-local controls:

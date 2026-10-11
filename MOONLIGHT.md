@@ -7,10 +7,12 @@ EGL/DRM PRIME path. This is real hardware integration, not a `vainfo` result or
 software fallback.
 
 It is not yet a daily-use or 60 fps support claim. Use 720p30 for the first
-hardware trial; 720p60 and 1080p30 remain performance experiments. Physical
-A/V sync and input-to-photon latency have not been measured, and the complete
-720p30 input-response and reconnect test is unfinished. Use software decoding
-when dependable game streaming matters more than experimental offload.
+hardware trial; 720p60 and 1080p30 remain performance experiments. Orderly
+close/reopen is confirmed. Physical A/V offset has no controlled measurement;
+the input-response proxy below uses a nonstandard path and stops before panel
+scanout. Automatic recovery from a forced network or Sunshine interruption has
+not been tested. Use software decoding when dependable game streaming matters
+more than experimental offload.
 
 ## Current verdict
 
@@ -20,6 +22,7 @@ when dependable game streaming matters more than experimental offload.
 | 720p60 H.264 | The card decoded near 60 frames/s, but Moonlight handed only about 33 frames/s to its renderer. | Experimental; not smooth 60 fps |
 | 1080p30 H.264 | The card decoded about 30 frames/s, but Moonlight handed only about 15-16 frames/s to its renderer. | Experimental; not smooth 30 fps |
 | 1080p60 H.264 | Card output stayed below 60 frames/s and live input accumulated backlog. | Not practical |
+| Orderly session lifecycle | A five-minute hardware session exited normally; an immediate 40-second session reacquired the device, and later bounded sessions also released it cleanly. | Confirmed for graceful close/reopen; forced connection-loss recovery untested |
 | Nonstandard READY remap | Selected runs approached the requested handoff rate by substituting an older picture under a newer surface/timestamp. | Diagnostic only; invalid for normal VA playback |
 
 “Handed to the renderer” is a Moonlight software event, not proof that the
@@ -188,18 +191,40 @@ status error, but its source/network cadence was too low to establish
 presentation performance. This is stability evidence; it does not demonstrate
 60 fps presentation.
 
+### Input-response proxy, not physical latency
+
+A separate test injected a local key, changed a marker in the remote desktop,
+and stopped timing when the returned frame reached the receiver's X Present
+notification. Each result is the median of three runs with 100 valid marker
+increments:
+
+| Stream and path | p50 | p95 |
+| --- | ---: | ---: |
+| 720p60 nonstandard `previous,0` | 59.05 ms | 73.57 ms |
+| 720p60 software | 47.50 ms | 83.11 ms |
+| 1080p30 nonstandard `previous,0` | 72.60 ms | 100.76 ms |
+| 1080p30 software | 51.77 ms | 67.56 ms |
+
+This proxy includes remote repaint, Sunshine capture/encode, network, decode,
+renderer and X11. It stops before physical panel scanout, and the hardware
+rows use READY remapping that deliberately violates normal VA surface
+identity. No equivalent exact-identity 720p30 input-response proxy was
+recorded, and no path was measured through physical panel scanout.
+
 ## What is not established
 
 - Moonlight's reported decode/queue/render fields are component timings, not
   camera-measured input-to-photon latency.
 - Render submissions are not proof of physical scanout.
-- Physical A/V synchronization and power consumption have not been measured
-  numerically for this path.
+- The exact path preserves requested surface/PTS identity and the live stream
+  carried audio, but the workload had no known simultaneous audio/video cue
+  and no speaker-versus-panel capture. Physical A/V offset therefore has no
+  numerical bound.
+- Normal exits and later sessions passed. Automatic recovery after deliberately
+  interrupting the network or Sunshine was not tested.
+- Power consumption was not measured.
 - Some hardware matrix runs logged decode-unit queue overflow, and bounded
   runs encountered VA status 23. These cannot be reclassified as network loss.
-- Bounded tests covered long-running input and clean close/reopen, but no
-  single 720p30 user test has yet covered physical A/V sync, input response and
-  reconnect from start to finish.
 - The results do not imply Steam Remote Play, browser streaming, BCM70012,
   Wayland or other-GPU compatibility.
 
