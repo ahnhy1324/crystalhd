@@ -119,7 +119,7 @@ $(SCALING_TEST): $(ROOTDIR)/tests/vaapi-scaling.cpp crystalhd_drv_video.cpp $(BA
 $(MPEG2_SUBMIT_TEST): $(ROOTDIR)/tests/vaapi-mpeg2-submit.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -fno-tree-slp-vectorize \
 		-ffunction-sections -fdata-sections $< -o $@ \
-		-Wl,--gc-sections $(shell $(PKG_CONFIG) --libs gbm) -pthread $(CRYSTALHD_CPU_FLAGS)
+		-Wl,--gc-sections $(shell $(PKG_CONFIG) --libs gbm libdrm) -pthread $(CRYSTALHD_CPU_FLAGS)
 
 $(MPEG4_TEST): $(ROOTDIR)/tests/vaapi-mpeg4.cpp crystalhd-mpeg4.h
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CRYSTALHD_CPU_FLAGS) $< -o $@
@@ -127,12 +127,12 @@ $(MPEG4_TEST): $(ROOTDIR)/tests/vaapi-mpeg4.cpp crystalhd-mpeg4.h
 $(MPEG4_SUBMIT_TEST): $(ROOTDIR)/tests/vaapi-mpeg4-submit.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -fno-tree-slp-vectorize \
 		-ffunction-sections -fdata-sections $< -o $@ \
-		-Wl,--gc-sections $(shell $(PKG_CONFIG) --libs gbm) -pthread $(CRYSTALHD_CPU_FLAGS)
+		-Wl,--gc-sections $(shell $(PKG_CONFIG) --libs gbm libdrm) -pthread $(CRYSTALHD_CPU_FLAGS)
 
 $(VC1_SUBMIT_TEST): $(ROOTDIR)/tests/vaapi-vc1-submit.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -fno-tree-slp-vectorize \
 		-ffunction-sections -fdata-sections $< -o $@ \
-		-Wl,--gc-sections $(shell $(PKG_CONFIG) --libs gbm) -pthread $(CRYSTALHD_CPU_FLAGS)
+		-Wl,--gc-sections $(shell $(PKG_CONFIG) --libs gbm libdrm) -pthread $(CRYSTALHD_CPU_FLAGS)
 
 $(TRACE_TEST): $(ROOTDIR)/tests/vaapi-trace.cpp crystalhd-trace.h
 	$(CXX) -std=c++17 -Wall -Wextra -Werror $< -o $@ -pthread
