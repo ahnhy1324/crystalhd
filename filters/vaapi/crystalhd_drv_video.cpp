@@ -36,6 +36,7 @@
 
 #include <fcntl.h>
 #include <gbm.h>
+#include <i915_drm.h>
 #include <libdrm/drm_fourcc.h>
 #include <libdrm/drm_mode.h>
 #include <linux/dma-buf.h>
@@ -496,6 +497,27 @@ static bool SyncDmaBuf(int fd, uint64_t flags) {
   return result == 0;
 }
 
+static bool ExperimentalI915WcRequested(const char *value) {
+  return value != nullptr && strcmp(value, "1") == 0;
+}
+
+static bool IsI915DriverName(const char *name, size_t length) {
+  constexpr char expected[] = "i915";
+  return name != nullptr && length == sizeof(expected) - 1 &&
+         memcmp(name, expected, sizeof(expected) - 1) == 0;
+}
+
+static bool IsI915DrmFd(int fd) {
+  if (fd < 0)
+    return false;
+  drmVersionPtr version = drmGetVersion(fd);
+  if (version == nullptr)
+    return false;
+  const bool is_i915 = IsI915DriverName(version->name, version->name_len);
+  drmFreeVersion(version);
+  return is_i915;
+}
+
 // CLFLUSH is independent of SSE2. Both it and MFENCE must be available before
 // an asynchronous writer installs a fence that DMA_BUF_SYNC END could wait on.
 // A legacy CPU build contains neither instruction; synchronous CPU access still
@@ -639,6 +661,8 @@ struct Surface {
   std::vector<int> object_fds;
   int dumb_drm_fd = -1;
   uint32_t dumb_handle = 0;
+  bool owned_i915_dumb = false;
+  bool experimental_i915_wc = false;
 
   ~Surface() {
     if (bo != nullptr) {
@@ -665,7 +689,8 @@ struct Surface {
   bool AllocateInternal(gbm_device *gbm, int drm_fd,
                         unsigned int requested_width,
                         unsigned int requested_height,
-                        uint32_t requested_fourcc) {
+                        uint32_t requested_fourcc,
+                        bool allow_experimental_i915_wc = false) {
     width = requested_width;
     height = requested_height;
     fourcc = requested_fourcc;
@@ -753,6 +778,13 @@ struct Surface {
             planes[0] = static_cast<uint8_t *>(mapping);
             planes[1] = planes[0] +
                         static_cast<size_t>(pitch[0]) * height;
+            if (allow_experimental_i915_wc) {
+              owned_i915_dumb = IsI915DrmFd(dumb_drm_fd);
+              experimental_i915_wc = owned_i915_dumb;
+              Debug(owned_i915_dumb
+                        ? "experimental i915 WC/GTT domains enabled"
+                        : "experimental i915 WC/GTT domains unavailable on non-i915 DRM");
+            }
             return true;
           }
           close(prime_fd);
@@ -943,6 +975,57 @@ struct Surface {
   bool EndCpuRead() const { return EndCpuAccess(DMA_BUF_SYNC_READ); }
   bool BeginCpuWrite() const { return BeginCpuAccess(DMA_BUF_SYNC_WRITE); }
   bool EndCpuWrite() const { return EndCpuAccess(DMA_BUF_SYNC_WRITE); }
+
+  bool SetI915Domain(uint32_t read_domains, uint32_t write_domain) const {
+    if (!owned_i915_dumb || dumb_drm_fd < 0 || dumb_handle == 0)
+      return false;
+    drm_i915_gem_set_domain domain = {};
+    domain.handle = dumb_handle;
+    domain.read_domains = read_domains;
+    domain.write_domain = write_domain;
+    int result;
+    do {
+      result = ioctl(dumb_drm_fd, DRM_IOCTL_I915_GEM_SET_DOMAIN, &domain);
+    } while (result != 0 && errno == EINTR);
+    return result == 0;
+  }
+
+  // The experiment is deliberately limited to the synchronous CrystalHD
+  // YUY2-to-NV12 copy. Generic CPU access remains on DMA_BUF_IOCTL_SYNC, so
+  // imported surfaces and VPP never inherit this i915-specific policy.
+  bool BeginDecodedCpuWrite(bool *used_i915_wc) {
+    if (used_i915_wc == nullptr)
+      return false;
+    *used_i915_wc = false;
+    if (experimental_i915_wc) {
+      if (SetI915Domain(I915_GEM_DOMAIN_WC, I915_GEM_DOMAIN_WC)) {
+        *used_i915_wc = true;
+        return true;
+      }
+      const int error = errno;
+      experimental_i915_wc = false;
+      Debug("experimental i915 WC domain failed; using DMA-BUF sync: %s",
+            strerror(error));
+    }
+    return BeginCpuWrite();
+  }
+
+  bool EndDecodedCpuWrite(bool used_i915_wc) {
+    if (!used_i915_wc)
+      return EndCpuWrite();
+    if (SetI915Domain(I915_GEM_DOMAIN_GTT, 0))
+      return true;
+
+    // DMA_BUF_SYNC START must precede CPU access, so a rejected post-copy
+    // domain transition cannot safely recover this frame by bracketing the
+    // pixels after they were written. Fail this frame and keep future writes
+    // on the established DMA-BUF path.
+    const int error = errno;
+    experimental_i915_wc = false;
+    Debug("experimental i915 GTT domain failed; disabling experiment: %s",
+          strerror(error));
+    return false;
+  }
 
   // The asynchronous path cannot call DMA_BUF_IOCTL_SYNC END while its own
   // unsignaled write fence is installed: i915 waits on that fence. Flush every
@@ -1649,10 +1732,13 @@ struct Driver {
   int decode_control_fd = -1;
   gbm_device *gbm = nullptr;
   int drm_fd = -1;
+  bool experimental_i915_wc = false;
 
   explicit Driver(int requested_drm_fd,
                   int trace_output_fd = STDERR_FILENO)
-      : trace(trace_output_fd), drm_fd(requested_drm_fd) {
+      : trace(trace_output_fd), drm_fd(requested_drm_fd),
+        experimental_i915_wc(ExperimentalI915WcRequested(
+            getenv("CRYSTALHD_VAAPI_EXPERIMENTAL_I915_WC"))) {
     decode_control_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
     if (requested_drm_fd >= 0)
       gbm = gbm_create_device(requested_drm_fd);
@@ -2370,7 +2456,8 @@ static bool CopyYuy2ToSurface(Surface *surface, const BC_DTS_PROC_OUT &output,
     source_pitch = padded_width * 2;
   }
 
-  if (!surface->BeginCpuWrite())
+  bool used_i915_wc = false;
+  if (!surface->BeginDecodedCpuWrite(&used_i915_wc))
     return false;
   if (surface->fourcc == VA_FOURCC_ARGB) {
     // The decoded rectangle is coded geometry. Larger client allocations are
@@ -2392,7 +2479,7 @@ static bool CopyYuy2ToSurface(Surface *surface, const BC_DTS_PROC_OUT &output,
                   source[x * 2 + 2], source[x * 2 + 1], source[x * 2 + 3]);
       }
     }
-    if (!surface->EndCpuWrite())
+    if (!surface->EndDecodedCpuWrite(used_i915_wc))
       return false;
     surface->ready = true;
     surface->frame_timestamp = output.PicInfo.timeStamp;
@@ -2480,7 +2567,7 @@ static bool CopyYuy2ToSurface(Surface *surface, const BC_DTS_PROC_OUT &output,
         bottom_luma[x] = bottom[x * 2];
     }
   }
-  if (!surface->EndCpuWrite())
+  if (!surface->EndDecodedCpuWrite(used_i915_wc))
     return false;
   surface->ready = true;
   surface->frame_timestamp = output.PicInfo.timeStamp;
@@ -4584,7 +4671,8 @@ static VAStatus CreateSurfaces2(VADriverContextP context, unsigned int format,
     bool ok = false;
     if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_VA) {
       ok = surface->AllocateInternal(driver->gbm, driver->drm_fd, width, height,
-                                     pixel_format);
+                                     pixel_format,
+                                     driver->experimental_i915_wc);
     } else if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 &&
                descriptor != nullptr) {
       const auto *descriptors =

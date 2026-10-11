@@ -26,6 +26,8 @@ void Require(bool value, const char *message) {
 struct Protocol {
   static constexpr int timeline = 701;
   static constexpr int fence = 702;
+  static constexpr int dumb_drm = 703;
+  static constexpr uint32_t dumb_handle = 704;
   std::vector<std::string> events;
   std::vector<uintptr_t> flushed;
   unsigned int owned = 0;
@@ -35,6 +37,8 @@ struct Protocol {
   int status = 0;
   int fail_import = -1;
   bool fail_signal = false;
+  bool fail_wc_domain = false;
+  bool fail_gtt_domain = false;
   bool require_barrier = true;
 };
 
@@ -51,11 +55,19 @@ struct Fixture {
     surface.object_maps = {pixels};
     surface.object_sizes = {sizeof(pixels)};
   }
+  void EnableExperimentalI915Wc() {
+    surface.dumb_drm_fd = Protocol::dumb_drm;
+    surface.dumb_handle = Protocol::dumb_handle;
+    surface.owned_i915_dumb = true;
+    surface.experimental_i915_wc = true;
+  }
   ~Fixture() {
     // These are borrowed CPU arrays and fake descriptors, not mapped objects.
     surface.object_fds.clear();
     surface.object_maps.clear();
     surface.object_sizes.clear();
+    surface.dumb_drm_fd = -1;
+    surface.dumb_handle = 0;
     protocol = nullptr;
   }
 };
@@ -89,6 +101,94 @@ void Capabilities() {
   for (unsigned int units : {0U, 3U, 5U, 255U})
     Require(CpuCacheLineBytes(units << 8, clflush | sse2) == 0,
             "zero or malformed CPUID line size must fail closed");
+}
+
+void ExperimentalI915WcEligibility() {
+  Require(!ExperimentalI915WcRequested(nullptr) &&
+              !ExperimentalI915WcRequested("") &&
+              !ExperimentalI915WcRequested("0") &&
+              !ExperimentalI915WcRequested("true") &&
+              ExperimentalI915WcRequested("1"),
+          "the experimental path is default-off and accepts only exact 1");
+  Require(IsI915DriverName("i915", 4) &&
+              !IsI915DriverName(nullptr, 4) &&
+              !IsI915DriverName("i915", 3) &&
+              !IsI915DriverName("i915x", 5) &&
+              !IsI915DriverName("xe", 2) &&
+              !IsI915DriverName("amdgpu", 6),
+          "only the i915 DRM driver is eligible");
+}
+
+void DecodedWriteDomains() {
+  {
+    Fixture fixture;
+    bool used_i915_wc = true;
+    Require(fixture.surface.BeginDecodedCpuWrite(&used_i915_wc) &&
+                !used_i915_wc &&
+                fixture.surface.EndDecodedCpuWrite(used_i915_wc),
+            "default decoded writes retain DMA-BUF synchronization");
+    Require(fixture.mock.events ==
+                std::vector<std::string>{"start", "start", "end", "end"},
+            "default decoded write uses only DMA-BUF START and END");
+  }
+  {
+    Fixture fixture;
+    fixture.EnableExperimentalI915Wc();
+    bool used_i915_wc = false;
+    Require(fixture.surface.BeginDecodedCpuWrite(&used_i915_wc) &&
+                used_i915_wc &&
+                fixture.surface.EndDecodedCpuWrite(used_i915_wc),
+            "eligible decoded writes use the experimental domains");
+    Require(fixture.mock.events ==
+                std::vector<std::string>{"domain-wc", "domain-gtt"} &&
+                fixture.mock.owned == 0,
+            "WC write ownership transitions directly to GTT read ownership");
+
+    fixture.mock.events.clear();
+    Require(fixture.surface.BeginCpuWrite() && fixture.surface.EndCpuWrite(),
+            "generic writes remain available on an experimental surface");
+    Require(fixture.mock.events ==
+                std::vector<std::string>{"start", "start", "end", "end"},
+            "VPP and other generic users retain DMA-BUF synchronization");
+  }
+  {
+    Fixture fixture;
+    fixture.EnableExperimentalI915Wc();
+    fixture.mock.fail_wc_domain = true;
+    bool used_i915_wc = true;
+    Require(fixture.surface.BeginDecodedCpuWrite(&used_i915_wc) &&
+                !used_i915_wc &&
+                !fixture.surface.experimental_i915_wc &&
+                fixture.surface.EndDecodedCpuWrite(used_i915_wc),
+            "a rejected WC domain falls back and disables the experiment");
+    Require(fixture.mock.events == std::vector<std::string>{
+                "domain-wc", "start", "start", "end", "end"},
+            "WC rejection falls back before touching decoded pixels");
+  }
+  {
+    Fixture fixture;
+    fixture.EnableExperimentalI915Wc();
+    fixture.mock.fail_gtt_domain = true;
+    bool used_i915_wc = false;
+    Require(fixture.surface.BeginDecodedCpuWrite(&used_i915_wc) &&
+                used_i915_wc &&
+                !fixture.surface.EndDecodedCpuWrite(used_i915_wc) &&
+                !fixture.surface.experimental_i915_wc,
+            "a rejected GTT domain fails the frame and disables the experiment");
+    Require(fixture.mock.events == std::vector<std::string>{
+                "domain-wc", "domain-gtt"},
+            "GTT rejection never fabricates a late DMA-BUF CPU transaction");
+
+    fixture.mock.events.clear();
+    used_i915_wc = true;
+    Require(fixture.surface.BeginDecodedCpuWrite(&used_i915_wc) &&
+                !used_i915_wc &&
+                fixture.surface.EndDecodedCpuWrite(used_i915_wc),
+            "future frames stay on the fallback after a GTT failure");
+    Require(fixture.mock.events ==
+                std::vector<std::string>{"start", "start", "end", "end"},
+            "a failed experimental surface does not retry every frame");
+  }
 }
 
 void LineCoverage() {
@@ -280,7 +380,30 @@ extern "C" int __wrap_ioctl(int fd, unsigned long request, ...) {
   va_start(arguments, request);
   void *argument = va_arg(arguments, void *);
   va_end(arguments);
-  if (request == DMA_BUF_IOCTL_SYNC) {
+  if (request == DRM_IOCTL_I915_GEM_SET_DOMAIN) {
+    Require(fd == Protocol::dumb_drm,
+            "domain transitions use only the owned i915 primary fd");
+    const auto *domain = static_cast<drm_i915_gem_set_domain *>(argument);
+    Require(domain->handle == Protocol::dumb_handle,
+            "domain transitions use only the owned dumb handle");
+    if (domain->read_domains == I915_GEM_DOMAIN_WC &&
+        domain->write_domain == I915_GEM_DOMAIN_WC) {
+      protocol->events.emplace_back("domain-wc");
+      if (protocol->fail_wc_domain) {
+        errno = EOPNOTSUPP;
+        return -1;
+      }
+    } else {
+      Require(domain->read_domains == I915_GEM_DOMAIN_GTT &&
+                  domain->write_domain == 0,
+              "completion transitions to a read-only GTT domain");
+      protocol->events.emplace_back("domain-gtt");
+      if (protocol->fail_gtt_domain) {
+        errno = EOPNOTSUPP;
+        return -1;
+      }
+    }
+  } else if (request == DMA_BUF_IOCTL_SYNC) {
     Require(fd == 101 || fd == 102, "sync only the known fake DMA objects");
     const auto flags = static_cast<dma_buf_sync *>(argument)->flags;
     if (flags == (DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE)) {
@@ -335,6 +458,8 @@ extern "C" int __wrap_ioctl(int fd, unsigned long request, ...) {
 int main() {
   try {
     Capabilities();
+    ExperimentalI915WcEligibility();
+    DecodedWriteDomains();
     LineCoverage();
     RejectedBeforeOwnership();
     CompletionOrder();
@@ -345,7 +470,7 @@ int main() {
     fprintf(stderr, "VA-API cache protocol failed: %s\n", error.what());
     return 1;
   }
-  printf("VA-API cache protocol: 7 groups, %u checks PASS (default async cache: %s)\n",
+  printf("VA-API cache protocol: 9 groups, %u checks PASS (default async cache: %s)\n",
          checks, CpuCacheFlush().Available() ? "enabled" : "unavailable");
   return 0;
 }
