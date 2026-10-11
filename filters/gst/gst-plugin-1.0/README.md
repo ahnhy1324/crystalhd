@@ -206,8 +206,8 @@ hash compares two hardware runs, not hardware against a software decoder.
 ## Local player and in-flight controls
 
 `scripts/crystalhd-play` provides explicit hardware/software local-file
-playback; see the [top-level usage](../../../README.md#play-a-local-file).
-Hardware mode never silently falls back to software.
+playback; see the [user guide](../../../USAGE.md#play-a-local-file). Hardware
+mode never silently falls back to software.
 
 The separate controls probe verifies barcode pixels and timestamps while
 pausing, resuming, seeking forward/backward and changing rate to 0.5x/2x/1x:
