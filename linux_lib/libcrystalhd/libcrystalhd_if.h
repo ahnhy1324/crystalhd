@@ -191,6 +191,40 @@ DtsDeviceClose(
 
 Function name:
 
+    DtsDupOutputPollFd
+
+Description:
+
+    Duplicate the decoder device descriptor for output-readiness polling.
+    The returned descriptor has close-on-exec set and becomes readable when
+    decoded output can be fetched. The caller owns the descriptor and must
+    close it when no longer needed. DtsDeviceClose invalidates readiness; a
+    waiter retaining the duplicate is woken with an error or hangup event.
+    This optional interface is negotiated with the driver and does not change
+    legacy output behavior.
+
+Parameters:
+
+    hDevice     Handle obtained from DtsDeviceOpen.
+    pollFd      Receives the duplicated descriptor, or -1 on failure.
+
+Return:
+
+    BC_STS_SUCCESS when a descriptor is returned, BC_STS_NOT_IMPL when the
+    loaded driver does not advertise output polling, or another status code
+    for invalid arguments and system errors.
+
+*****************************************************************************/
+DRVIFLIB_API BC_STATUS
+DtsDupOutputPollFd(
+    HANDLE hDevice,
+    int   *pollFd
+    );
+
+/*****************************************************************************
+
+Function name:
+
     DtsGetVersion
 
 Description:

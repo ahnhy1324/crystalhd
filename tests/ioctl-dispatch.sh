@@ -43,12 +43,13 @@ awk '
     /^crystalhd_cmd_proc crystalhd_get_cmd_proc\(/ ||
     /^static bool crystalhd_(legacy_color_command|rawio_command)\(/ ||
     /^static int chd_dec_api_cmd\(/ ||
+    /^static __poll_t chd_dec_poll\(/ ||
     /^static long chd_dec_(ioctl_common|ioctl|compat_ioctl)\(/ {
         copying = 1; found++
     }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 8 || copying) exit 1 }
+    END { if (found != 9 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" \
     "$repo_dir/driver/linux/crystalhd_lnx.c" > "$ioctl_test_dir/ioctl-functions.h"
 

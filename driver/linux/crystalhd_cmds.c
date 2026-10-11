@@ -398,6 +398,24 @@ static BC_STATUS bc_cproc_get_version(struct crystalhd_cmd *ctx,
 	return BC_STS_SUCCESS;
 }
 
+static BC_STATUS bc_cproc_query_caps(struct crystalhd_cmd *ctx,
+				    crystalhd_ioctl_data *idata)
+{
+	BC_DRIVER_CAPS *caps;
+
+	if (!ctx || !idata) {
+		dev_err(chddev(), "%s: Invalid Arg\n", __func__);
+		return BC_STS_INV_ARG;
+	}
+
+	BUILD_BUG_ON(sizeof(BC_DRIVER_CAPS) != 16);
+	caps = &idata->udata.u.DriverCaps;
+	memset(caps, 0, sizeof(*caps));
+	caps->abi_version = BC_DRIVER_CAPS_ABI_VERSION;
+	caps->flags = BC_DRIVER_CAP_RX_POLL;
+	return BC_STS_SUCCESS;
+}
+
 
 static BC_STATUS bc_cproc_get_hwtype(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *idata)
 {
@@ -2187,6 +2205,7 @@ static const struct crystalhd_cmd_tbl	g_crystalhd_cproc_tbl[] = {
 	{ BCM_IOC_RST_DRV_STAT,		bc_cproc_reset_stats,	0},
 	{ BCM_IOC_NOTIFY_MODE,		bc_cproc_notify_mode,	0},
 	{ BCM_IOC_RELEASE,			bc_cproc_release_user,  0},
+	{ BCM_IOC_QUERY_CAPS,		bc_cproc_query_caps,	0},
 	{ BCM_IOC_END,				NULL},
 };
 
@@ -2271,6 +2290,7 @@ BC_STATUS crystalhd_suspend(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *ida
 	ctx->decoder_phase = CRYSTALHD_DECODER_RECOVERY_REQUIRED;
 	ctx->decoder_codec = CRYSTALHD_DECODER_CODEC_INVALID;
 	ctx->decoder_channel_id = 0;
+	crystalhd_rx_poll_wake(ctx->adp, EPOLLERR);
 
 	sts = crystalhd_hw_suspend(ctx->hw_ctx);
 	if (sts != BC_STS_SUCCESS)
@@ -2498,7 +2518,8 @@ crystalhd_cmd_proc crystalhd_get_cmd_proc(struct crystalhd_cmd *ctx, uint32_t cm
 		return NULL;
 	}
 
-	if ((cmd != BCM_IOC_GET_DRV_STAT) && (ctx->state & BC_LINK_SUSPEND)) {
+	if (cmd != BCM_IOC_GET_DRV_STAT && cmd != BCM_IOC_QUERY_CAPS &&
+	    (ctx->state & BC_LINK_SUSPEND)) {
 		dev_err(dev, "Invalid State [suspend Set].. Cmd[%x]\n", cmd);
 		return NULL;
 	}

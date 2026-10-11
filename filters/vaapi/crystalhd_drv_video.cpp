@@ -36,11 +36,13 @@
 
 #include <fcntl.h>
 #include <gbm.h>
+#include <i915_drm.h>
 #include <libdrm/drm_fourcc.h>
 #include <libdrm/drm_mode.h>
 #include <linux/dma-buf.h>
 #include <poll.h>
 #include <sys/ioctl.h>
+#include <sys/eventfd.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -68,10 +70,18 @@ extern "C" {
 #include "crystalhd-vc1-replay.h"
 #include "crystalhd-wmv3.h"
 
+#if defined(__GNUC__)
+// Keep the plugin loadable with an older libcrystalhd.so.3. The optional
+// output-event API is negotiated only when the symbol is present.
+extern "C" BC_STATUS DtsDupOutputPollFd(HANDLE, int *) __attribute__((weak));
+#endif
+
 namespace {
 
 constexpr uint64_t kDecodeTimeoutNs = 10ULL * 1000 * 1000 * 1000;
 constexpr uint64_t kDecodeBatchGraceNs = 100ULL * 1000 * 1000;
+constexpr uint64_t kBoundedH264InactivityGraceNs =
+    1ULL * 1000 * 1000 * 1000;
 constexpr size_t kMpeg4ReplayCacheBytes = 32U * 1024U * 1024U;
 constexpr size_t kMpeg4ReplayPictures = 512;
 constexpr size_t kExperimentalPresentationReadyLimit = 3;
@@ -108,8 +118,11 @@ constexpr uint32_t kStatusSkipReadyHeadPeek = 1U << 30;
   return false;
 }
 
-static bool DecodeBatchGraceExpired(uint64_t elapsed_ns) {
-  return elapsed_ns >= kDecodeBatchGraceNs;
+static bool DecodeBatchGraceExpired(uint64_t elapsed_ns,
+                                    bool bounded_h264_history_lost = false) {
+  return elapsed_ns >= (bounded_h264_history_lost
+                            ? kBoundedH264InactivityGraceNs
+                            : kDecodeBatchGraceNs);
 }
 
 static VAStatus DecodeWaitStatus(uint64_t timeout_ns, uint64_t elapsed_ns) {
@@ -489,6 +502,27 @@ static bool SyncDmaBuf(int fd, uint64_t flags) {
   return result == 0;
 }
 
+static bool ExperimentalI915WcRequested(const char *value) {
+  return value != nullptr && strcmp(value, "1") == 0;
+}
+
+static bool IsI915DriverName(const char *name, size_t length) {
+  constexpr char expected[] = "i915";
+  return name != nullptr && length == sizeof(expected) - 1 &&
+         memcmp(name, expected, sizeof(expected) - 1) == 0;
+}
+
+static bool IsI915DrmFd(int fd) {
+  if (fd < 0)
+    return false;
+  drmVersionPtr version = drmGetVersion(fd);
+  if (version == nullptr)
+    return false;
+  const bool is_i915 = IsI915DriverName(version->name, version->name_len);
+  drmFreeVersion(version);
+  return is_i915;
+}
+
 // CLFLUSH is independent of SSE2. Both it and MFENCE must be available before
 // an asynchronous writer installs a fence that DMA_BUF_SYNC END could wait on.
 // A legacy CPU build contains neither instruction; synchronous CPU access still
@@ -632,6 +666,8 @@ struct Surface {
   std::vector<int> object_fds;
   int dumb_drm_fd = -1;
   uint32_t dumb_handle = 0;
+  bool owned_i915_dumb = false;
+  bool experimental_i915_wc = false;
 
   ~Surface() {
     if (bo != nullptr) {
@@ -658,7 +694,8 @@ struct Surface {
   bool AllocateInternal(gbm_device *gbm, int drm_fd,
                         unsigned int requested_width,
                         unsigned int requested_height,
-                        uint32_t requested_fourcc) {
+                        uint32_t requested_fourcc,
+                        bool allow_experimental_i915_wc = false) {
     width = requested_width;
     height = requested_height;
     fourcc = requested_fourcc;
@@ -746,6 +783,13 @@ struct Surface {
             planes[0] = static_cast<uint8_t *>(mapping);
             planes[1] = planes[0] +
                         static_cast<size_t>(pitch[0]) * height;
+            if (allow_experimental_i915_wc) {
+              owned_i915_dumb = IsI915DrmFd(dumb_drm_fd);
+              experimental_i915_wc = owned_i915_dumb;
+              Debug(owned_i915_dumb
+                        ? "experimental i915 WC/GTT domains enabled"
+                        : "experimental i915 WC/GTT domains unavailable on non-i915 DRM");
+            }
             return true;
           }
           close(prime_fd);
@@ -936,6 +980,57 @@ struct Surface {
   bool EndCpuRead() const { return EndCpuAccess(DMA_BUF_SYNC_READ); }
   bool BeginCpuWrite() const { return BeginCpuAccess(DMA_BUF_SYNC_WRITE); }
   bool EndCpuWrite() const { return EndCpuAccess(DMA_BUF_SYNC_WRITE); }
+
+  bool SetI915Domain(uint32_t read_domains, uint32_t write_domain) const {
+    if (!owned_i915_dumb || dumb_drm_fd < 0 || dumb_handle == 0)
+      return false;
+    drm_i915_gem_set_domain domain = {};
+    domain.handle = dumb_handle;
+    domain.read_domains = read_domains;
+    domain.write_domain = write_domain;
+    int result;
+    do {
+      result = ioctl(dumb_drm_fd, DRM_IOCTL_I915_GEM_SET_DOMAIN, &domain);
+    } while (result != 0 && errno == EINTR);
+    return result == 0;
+  }
+
+  // The experiment is deliberately limited to the synchronous CrystalHD
+  // YUY2-to-NV12 copy. Generic CPU access remains on DMA_BUF_IOCTL_SYNC, so
+  // imported surfaces and VPP never inherit this i915-specific policy.
+  bool BeginDecodedCpuWrite(bool *used_i915_wc) {
+    if (used_i915_wc == nullptr)
+      return false;
+    *used_i915_wc = false;
+    if (experimental_i915_wc) {
+      if (SetI915Domain(I915_GEM_DOMAIN_WC, I915_GEM_DOMAIN_WC)) {
+        *used_i915_wc = true;
+        return true;
+      }
+      const int error = errno;
+      experimental_i915_wc = false;
+      Debug("experimental i915 WC domain failed; using DMA-BUF sync: %s",
+            strerror(error));
+    }
+    return BeginCpuWrite();
+  }
+
+  bool EndDecodedCpuWrite(bool used_i915_wc) {
+    if (!used_i915_wc)
+      return EndCpuWrite();
+    if (SetI915Domain(I915_GEM_DOMAIN_GTT, 0))
+      return true;
+
+    // DMA_BUF_SYNC START must precede CPU access, so a rejected post-copy
+    // domain transition cannot safely recover this frame by bracketing the
+    // pixels after they were written. Fail this frame and keep future writes
+    // on the established DMA-BUF path.
+    const int error = errno;
+    experimental_i915_wc = false;
+    Debug("experimental i915 GTT domain failed; disabling experiment: %s",
+          strerror(error));
+    return false;
+  }
 
   // The asynchronous path cannot call DMA_BUF_IOCTL_SYNC END while its own
   // unsignaled write fence is installed: i915 waits on that fence. Flush every
@@ -1360,6 +1455,18 @@ struct Image {
 static bool CopyYuy2ToSurface(Surface *surface,
                               const BC_DTS_PROC_OUT &output, bool is_70012);
 
+struct OutputPollLease {
+  explicit OutputPollLease(int descriptor) : fd(descriptor) {}
+  ~OutputPollLease() {
+    if (fd >= 0)
+      close(fd);
+  }
+  OutputPollLease(const OutputPollLease &) = delete;
+  OutputPollLease &operator=(const OutputPollLease &) = delete;
+
+  int fd = -1;
+};
+
 struct DecodeContext {
   VAContextID id = VA_INVALID_ID;
   VAConfigID config = VA_INVALID_ID;
@@ -1426,12 +1533,20 @@ struct DecodeContext {
   std::array<uint8_t, 4> wmv3_metadata = {};
 
   HANDLE device = nullptr;
+  std::shared_ptr<OutputPollLease> output_poll;
+  std::weak_ptr<OutputPollLease> armed_output_poll;
   bool decoder_open = false;
   bool decoder_started = false;
   bool is_70012 = false;
   bool sent_parameter_sets = false;
+  // Bounded history is safe for ordinary finite input. Gap tolerance and
+  // direct/speculative paths remain explicit live-stream policy.
   bool live_h264 = false;
+  bool live_h264_gap_tolerant = false;
+  bool live_h264_fast_path = false;
   bool low_latency_h264 = false;
+  bool input_backpressured = false;
+  bool input_budget_exhausted = false;
   bool experimental_ready_remap = false;
   bool experimental_ready_latest = false;
   uint64_t experimental_ready_delay_ns = 0;
@@ -1445,6 +1560,9 @@ struct DecodeContext {
   uint64_t generation = 1;
   uint64_t next_submission_ordinal = 1;
   uint64_t transport_progress = 0;
+  // Aggregate only time actually spent waiting in VA sync calls. Wall-clock
+  // time between calls can be an intentional player pause and is not EOF.
+  uint64_t sync_inactivity_ns = 0;
   uint64_t next_timestamp = kTimestampStep;
   std::unordered_map<uint64_t, VASurfaceID> pending;
   std::unordered_map<uint64_t, std::shared_ptr<Surface>> decoded_frames;
@@ -1501,6 +1619,10 @@ struct DecodeContext {
       result += epoch.cached_bytes();
     return result;
   }
+  void RecordTransportProgress() {
+    ++transport_progress;
+    sync_inactivity_ns = 0;
+  }
   bool ReplaySealed() const {
     if (IsVc1()) return vc1_replay.sealed();
     if (IsMpeg4()) return Mpeg4TransportReplay().sealed();
@@ -1540,6 +1662,11 @@ struct DecodeContext {
         result = status;
       device = nullptr;
     }
+    armed_output_poll.reset();
+    output_poll.reset();
+    input_backpressured = false;
+    input_budget_exhausted = false;
+    sync_inactivity_ns = 0;
     return result;
   }
 
@@ -1621,12 +1748,17 @@ struct Driver {
   bool stopping = false;
   std::thread decode_worker;
   std::thread vpp_worker;
+  int decode_control_fd = -1;
   gbm_device *gbm = nullptr;
   int drm_fd = -1;
+  bool experimental_i915_wc = false;
 
   explicit Driver(int requested_drm_fd,
                   int trace_output_fd = STDERR_FILENO)
-      : trace(trace_output_fd), drm_fd(requested_drm_fd) {
+      : trace(trace_output_fd), drm_fd(requested_drm_fd),
+        experimental_i915_wc(ExperimentalI915WcRequested(
+            getenv("CRYSTALHD_VAAPI_EXPERIMENTAL_I915_WC"))) {
+    decode_control_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
     if (requested_drm_fd >= 0)
       gbm = gbm_create_device(requested_drm_fd);
     vpp_worker = std::thread(RunVppWorker, this);
@@ -1637,11 +1769,15 @@ struct Driver {
       std::lock_guard<std::mutex> lock(mutex);
       stopping = true;
     }
-    condition.notify_all();
+    NotifyDecodeWorker();
     if (decode_worker.joinable())
       decode_worker.join();
     if (vpp_worker.joinable())
       vpp_worker.join();
+    if (decode_control_fd >= 0) {
+      close(decode_control_fd);
+      decode_control_fd = -1;
+    }
     for (const PendingVpp &pending : pending_vpp)
       AbortFencedWrite(pending.target.get(), pending.write_timeline);
     if (vpp_scaler != nullptr)
@@ -1655,6 +1791,16 @@ struct Driver {
     if (gbm != nullptr)
       gbm_device_destroy(gbm);
     trace.Emit(crystalhd_vaapi_trace::Event::SessionDestroy);
+  }
+  void NotifyDecodeWorker() {
+    if (decode_control_fd >= 0) {
+      const uint64_t increment = 1;
+      ssize_t result;
+      do {
+        result = write(decode_control_fd, &increment, sizeof(increment));
+      } while (result < 0 && errno == EINTR);
+    }
+    condition.notify_all();
   }
 };
 
@@ -2223,6 +2369,14 @@ static VAStatus OpenDecoder(DecodeContext *decode, unsigned int width = 0,
     return VA_STATUS_ERROR_OPERATION_FAILED;
   }
 
+  int output_poll_fd = -1;
+  if (DtsDupOutputPollFd != nullptr &&
+      DtsDupOutputPollFd(decode->device, &output_poll_fd) == BC_STS_SUCCESS)
+    decode->output_poll =
+        std::make_shared<OutputPollLease>(output_poll_fd);
+  else
+    decode->output_poll.reset();
+
   status = DtsCrystalHDVersion(decode->device, &version);
   if (status != BC_STS_SUCCESS)
     goto fail;
@@ -2321,7 +2475,8 @@ static bool CopyYuy2ToSurface(Surface *surface, const BC_DTS_PROC_OUT &output,
     source_pitch = padded_width * 2;
   }
 
-  if (!surface->BeginCpuWrite())
+  bool used_i915_wc = false;
+  if (!surface->BeginDecodedCpuWrite(&used_i915_wc))
     return false;
   if (surface->fourcc == VA_FOURCC_ARGB) {
     // The decoded rectangle is coded geometry. Larger client allocations are
@@ -2343,7 +2498,7 @@ static bool CopyYuy2ToSurface(Surface *surface, const BC_DTS_PROC_OUT &output,
                   source[x * 2 + 2], source[x * 2 + 1], source[x * 2 + 3]);
       }
     }
-    if (!surface->EndCpuWrite())
+    if (!surface->EndDecodedCpuWrite(used_i915_wc))
       return false;
     surface->ready = true;
     surface->frame_timestamp = output.PicInfo.timeStamp;
@@ -2431,7 +2586,7 @@ static bool CopyYuy2ToSurface(Surface *surface, const BC_DTS_PROC_OUT &output,
         bottom_luma[x] = bottom[x * 2];
     }
   }
-  if (!surface->EndCpuWrite())
+  if (!surface->EndDecodedCpuWrite(used_i915_wc))
     return false;
   surface->ready = true;
   surface->frame_timestamp = output.PicInfo.timeStamp;
@@ -3073,7 +3228,7 @@ static VAStatus ReceiveOne(Driver *driver, DecodeContext *decode,
     return FailDecode(driver, decode, "hardware output release failed");
   if (result == VA_STATUS_SUCCESS && decode->WithReplay(
           [](auto &replay) { return replay.outstanding(); }) < outstanding)
-    ++decode->transport_progress;
+    decode->RecordTransportProgress();
   return result;
 }
 
@@ -3142,6 +3297,8 @@ static VAStatus AdvanceMpeg4Epoch(Driver *driver, DecodeContext *decode) {
 
 static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
                                 unsigned int max_attempts = 32) {
+  decode->input_backpressured = false;
+  decode->input_budget_exhausted = false;
   VAStatus advance = AdvanceMpeg4Epoch(driver, decode);
   if (advance != VA_STATUS_SUCCESS)
     return advance;
@@ -3179,14 +3336,18 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
                           "speculative H.264 timestamp lost alignment");
       const size_t reserve = unit->bytes.size() +
                              (unit->bytes.size() / 60000 + 1) * 32 + 1024;
-      if (DtsTxFreeSize(decode->device) < reserve)
+      if (DtsTxFreeSize(decode->device) < reserve) {
+        decode->input_backpressured = true;
         break;
+      }
       const BC_STATUS status = DtsProcInput(
           decode->device, const_cast<uint8_t *>(unit->bytes.data()),
           static_cast<uint32_t>(unit->bytes.size()),
           consume_prefeed ? 0 : unit->timestamp, FALSE);
-      if (status == BC_STS_BUSY)
+      if (status == BC_STS_BUSY) {
+        decode->input_backpressured = true;
         break;
+      }
       if (status != BC_STS_SUCCESS || !replay.InputSent())
         return FailDecode(driver, decode, "compressed input submission failed");
       if (driver->trace.enabled())
@@ -3195,7 +3356,9 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
                                                   input_timestamp));
       if (consume_prefeed)
         decode->prefed_timestamp = 0;
-      ++decode->transport_progress;
+      decode->RecordTransportProgress();
+      if (attempt + 1 == max_attempts)
+        decode->input_budget_exhausted = true;
 
       if (decode->low_latency_h264 && !decode->is_70012 &&
           decode->prefed_timestamp == 0 && replay.NextInput() == nullptr) {
@@ -3210,7 +3373,7 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
               static_cast<uint32_t>(prefeed.size()), next_timestamp, FALSE);
           if (prefeed_status == BC_STS_SUCCESS) {
             decode->prefed_timestamp = next_timestamp;
-            ++decode->transport_progress;
+            decode->RecordTransportProgress();
             if (driver->trace.enabled())
               driver->trace.Emit(crystalhd_vaapi_trace::Event::PrefeedSent,
                                  TraceDecodeTokenFields(driver, decode,
@@ -3293,8 +3456,23 @@ static VAStatus DrainClosingContext(
       return FailDecode(driver, decode.get(), "context drain failed");
     if (!HasLivePendingPictures(driver, *decode) && !decode->ReplaySealed())
       break;
+    const std::shared_ptr<OutputPollLease> output_poll = decode->output_poll;
     driver_lock->unlock();
-    usleep(1000);
+    if (output_poll) {
+      pollfd descriptor = {output_poll->fd, POLLIN, 0};
+      int result;
+      do {
+        result = poll(&descriptor, 1, 10);
+      } while (result < 0 && errno == EINTR);
+      if (result < 0 ||
+          (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+        driver_lock->lock();
+        return FailDecode(driver, decode.get(),
+                          "decoder output poll terminated during drain");
+      }
+    } else {
+      usleep(1000);
+    }
     driver_lock->lock();
   }
   return VA_STATUS_SUCCESS;
@@ -3586,7 +3764,8 @@ static VAStatus SubmitPicture(Driver *driver, DecodeContext *decode,
 
   auto decoded_frame = std::make_shared<Surface>();
   decoded_frame->id = target_id;
-  const bool direct_picture = decode->live_h264 && IsH264Profile(profile) &&
+  const bool direct_picture = decode->live_h264_fast_path &&
+                              IsH264Profile(profile) &&
                               !decode->experimental_ready_remap &&
                               target_surface->direct_decode_eligible;
   if (direct_picture) {
@@ -3866,7 +4045,8 @@ static VAStatus SyncDecodeSurface(
         surface->failed, static_cast<unsigned long long>(timeout_ns));
 
   const auto start = std::chrono::steady_clock::now();
-  auto last_progress = start;
+  auto inactivity_start = start;
+  uint64_t bounded_inactivity_base = decode->sync_inactivity_ns;
   uint64_t progress = decode->transport_progress;
   while (!surface->ready && !surface->failed && !presentation_ready()) {
     const VAStatus state = DecodeWaitState(*decode, surface.get(), generation,
@@ -3898,7 +4078,33 @@ static VAStatus SyncDecodeSurface(
     const auto now = std::chrono::steady_clock::now();
     if (decode->transport_progress != progress) {
       progress = decode->transport_progress;
-      last_progress = now;
+      bounded_inactivity_base = 0;
+      inactivity_start = now;
+      decode->sync_inactivity_ns = 0;
+    }
+    const uint64_t local_idle =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            now - inactivity_start).count();
+    // Carry only time spent waiting in VA sync calls, and only after an unset
+    // H.264 policy has retired the prefix needed for a non-IDR restart. Time
+    // between calls can be an intentional player pause and is not inactivity.
+    const bool bounded_h264_history_lost =
+        !decode->is_70012 && decode->live_h264 &&
+        !decode->live_h264_gap_tolerant &&
+        decode->replay.live_stream_started() &&
+        !decode->replay.replayable();
+    uint64_t idle = local_idle;
+    if (bounded_h264_history_lost) {
+      const uint64_t accumulated = bounded_inactivity_base + local_idle;
+      decode->sync_inactivity_ns =
+          std::max(decode->sync_inactivity_ns, accumulated);
+      idle = decode->sync_inactivity_ns;
+    } else {
+      // Preserve the historical per-call inactivity rule for strict H.264 and
+      // every other codec. Only an unreplayable bounded BCM70015 H.264 stream
+      // needs to carry actual VA wait time across finite Sync calls.
+      bounded_inactivity_base = 0;
+      decode->sync_inactivity_ns = 0;
     }
     const uint64_t elapsed =
         std::chrono::duration_cast<std::chrono::nanoseconds>(now - start).count();
@@ -3913,22 +4119,20 @@ static VAStatus SyncDecodeSurface(
     // Seal only after transport inactivity, not while a live stream or retained
     // prefix replay still makes real input/output progress. Keep the absolute
     // sync deadline above: unrelated progress cannot hide a missing picture.
-    const uint64_t idle =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(now - last_progress)
-            .count();
     // A second accepted live picture distinguishes streaming from a one-frame
     // decoder probe. An input gap is not EOF, even while history is replayable:
     // sealing would needlessly reopen the device when input resumes. Explicit
     // context drain still seals the final accepted pictures.
     const bool retain_live_references =
-        decode->live_h264 && decode->replay.live_stream_started();
+        decode->live_h264_gap_tolerant &&
+        decode->replay.live_stream_started();
     if (!surface->ready && !decode->ReplaySealed() &&
         !retain_live_references &&
-        DecodeBatchGraceExpired(idle)) {
+        DecodeBatchGraceExpired(idle, bounded_h264_history_lost)) {
       Debug("sync batch inactivity: elapsed=%llu idle=%llu progress=%llu timestamp=%llu",
             static_cast<unsigned long long>(elapsed),
             static_cast<unsigned long long>(idle),
-            static_cast<unsigned long long>(progress),
+            static_cast<unsigned long long>(decode->transport_progress),
             static_cast<unsigned long long>(expected_timestamp));
       status = SealDecodeBatch(driver, decode.get());
       if (status != VA_STATUS_SUCCESS)
@@ -3936,9 +4140,15 @@ static VAStatus SyncDecodeSurface(
     }
     // Let submission threads queue subsequent input while this finite batch
     // drains, and let destruction cancel this wait without touching new state.
-    driver_lock->unlock();
-    usleep(1000);
-    driver_lock->lock();
+    // With negotiated RX polling, the sole hardware waiter publishes output
+    // through this condition; retain the old 1 ms sleep for older stacks.
+    if (decode->output_poll && driver->decode_control_fd >= 0) {
+      driver->condition.wait_for(*driver_lock, std::chrono::milliseconds(10));
+    } else {
+      driver_lock->unlock();
+      usleep(1000);
+      driver_lock->lock();
+    }
     if (presentation_ready())
       return VA_STATUS_SUCCESS;
     const VAStatus resumed = DecodeWaitState(*decode, surface.get(), generation,
@@ -4034,6 +4244,30 @@ static bool HasAutonomousDecodeWork(
          (!decode->pending.empty() || decode->ReplaySealed());
 }
 
+static bool NeedsMpeg4EosProbe(const DecodeContext &decode) {
+  if (!decode.IsMpeg4())
+    return false;
+  const auto &replay = decode.Mpeg4TransportReplay();
+  return replay.sealed() && !replay.ended() && replay.outstanding() == 0;
+}
+
+static bool NeedsDecodeControlWake(const DecodeContext &decode) {
+  if (!decode.output_poll || decode.input_backpressured ||
+      decode.input_budget_exhausted || NeedsMpeg4EosProbe(decode))
+    return true;
+  return decode.armed_output_poll.lock() != decode.output_poll;
+}
+
+static void DrainDecodeControlFd(int fd) {
+  if (fd < 0)
+    return;
+  uint64_t value;
+  ssize_t result;
+  do {
+    result = read(fd, &value, sizeof(value));
+  } while (result < 0 && errno == EINTR);
+}
+
 // Some conforming frontends submit pictures and then wait in their presentation
 // path without making another VA call that can harvest decoder output. Keep
 // QuerySurfaceStatus passive and make that hardware progress independently.
@@ -4056,6 +4290,12 @@ static void RunDecodeWorker(Driver *driver) {
     // Bound each context's turn so a ready backlog cannot hold the global VA
     // mutex long enough to starve frontend or VPP calls. Visit every active
     // context once before the polling delay.
+    bool input_backpressured = false;
+    bool input_budget_exhausted = false;
+    bool needs_mpeg4_eos_probe = false;
+    std::vector<std::shared_ptr<DecodeContext>> output_poll_contexts;
+    std::vector<std::shared_ptr<OutputPollLease>> output_poll_leases;
+    bool needs_timer_fallback = driver->decode_control_fd < 0;
     for (const auto &entry : driver->contexts) {
       const std::shared_ptr<DecodeContext> &decode = entry.second;
       if (!HasAutonomousDecodeWork(decode))
@@ -4072,12 +4312,90 @@ static void RunDecodeWorker(Driver *driver) {
         status = SealDecodeBatch(driver, decode.get());
       if (status != VA_STATUS_SUCCESS && !decode->ReplayFailed())
         FailDecode(driver, decode.get(), "autonomous decoder progress failed");
+      if (!HasAutonomousDecodeWork(decode))
+        continue;
+      input_backpressured = input_backpressured || decode->input_backpressured;
+      input_budget_exhausted =
+          input_budget_exhausted || decode->input_budget_exhausted;
+      needs_mpeg4_eos_probe =
+          needs_mpeg4_eos_probe || NeedsMpeg4EosProbe(*decode);
+      if (decode->output_poll) {
+        output_poll_contexts.push_back(decode);
+        output_poll_leases.push_back(decode->output_poll);
+      } else {
+        needs_timer_fallback = true;
+      }
     }
 
-    // Hardware completion does not signal this condition variable. Poll only
-    // while submitted output is pending, and sleep indefinitely when idle.
-    if (!driver->stopping)
+    if (driver->stopping)
+      return;
+    if (input_budget_exhausted) {
+      // A ready control/output descriptor can make poll return immediately,
+      // and std::mutex does not promise a waiting frontend the next handoff.
+      // Release the mutex for one bounded turn before continuing the backlog.
+      driver->condition.wait_for(
+          lock, std::chrono::milliseconds(1),
+          [&] { return driver->stopping; });
+      if (driver->stopping)
+        return;
+      if (needs_timer_fallback)
+        continue;
+    }
+    if (needs_timer_fallback) {
+      // An older kernel/library pair has no negotiated output event. Preserve
+      // the established polling behavior exactly for that compatibility path.
+      // This wait also releases the global VA mutex between bounded input
+      // turns; a ready input backlog must not starve frontend or teardown calls.
       driver->condition.wait_for(lock, std::chrono::milliseconds(1));
+      continue;
+    }
+
+    std::vector<pollfd> descriptors;
+    descriptors.reserve(output_poll_leases.size() + 1);
+    descriptors.push_back({driver->decode_control_fd, POLLIN, 0});
+    for (const auto &lease : output_poll_leases)
+      descriptors.push_back({lease->fd, POLLIN, 0});
+
+    // A latched control event wakes new input and teardown. RX readiness is
+    // level-triggered by the kernel, so output that arrives before poll() is
+    // not lost. A full input turn already yielded above. TX-ring backpressure
+    // needs 2 ms.
+    // The MPEG-4 missing-marker fallback changes only library EOS state, so
+    // retain a bounded state probe for that exact sealed/zero-output window.
+    const int timeout_ms = input_budget_exhausted ? 0 :
+                           input_backpressured ? 2 :
+                           needs_mpeg4_eos_probe ? 5 : -1;
+    for (size_t i = 0; i < output_poll_contexts.size(); ++i)
+      output_poll_contexts[i]->armed_output_poll = output_poll_leases[i];
+    lock.unlock();
+    int result;
+    do {
+      result = poll(descriptors.data(), descriptors.size(), timeout_ms);
+    } while (result < 0 && errno == EINTR);
+    if (result > 0 && (descriptors.front().revents & POLLIN) != 0)
+      DrainDecodeControlFd(driver->decode_control_fd);
+    lock.lock();
+    for (size_t i = 0; i < output_poll_contexts.size(); ++i) {
+      if (output_poll_contexts[i]->armed_output_poll.lock() ==
+          output_poll_leases[i])
+        output_poll_contexts[i]->armed_output_poll.reset();
+    }
+    if (result < 0) {
+      for (const auto &decode : output_poll_contexts) {
+        if (HasAutonomousDecodeWork(decode))
+          FailDecode(driver, decode.get(), "decoder output poll failed");
+      }
+      continue;
+    }
+    for (size_t i = 0; i < output_poll_contexts.size(); ++i) {
+      const short terminal = POLLERR | POLLHUP | POLLNVAL;
+      if ((descriptors[i + 1].revents & terminal) == 0)
+        continue;
+      const std::shared_ptr<DecodeContext> &decode = output_poll_contexts[i];
+      if (decode->output_poll == output_poll_leases[i] &&
+          HasAutonomousDecodeWork(decode))
+        FailDecode(driver, decode.get(), "decoder output poll terminated");
+    }
   }
 }
 
@@ -4408,7 +4726,8 @@ static VAStatus CreateSurfaces2(VADriverContextP context, unsigned int format,
     bool ok = false;
     if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_VA) {
       ok = surface->AllocateInternal(driver->gbm, driver->drm_fd, width, height,
-                                     pixel_format);
+                                     pixel_format,
+                                     driver->experimental_i915_wc);
     } else if (memory_type == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 &&
                descriptor != nullptr) {
       const auto *descriptors =
@@ -4521,7 +4840,7 @@ static VAStatus DestroySurfaces(VADriverContextP context,
     driver->trace.Emit(crystalhd_vaapi_trace::Event::ContextReset,
                        TraceFields(decode, nullptr));
   }
-  driver->condition.notify_all();
+  driver->NotifyDecodeWorker();
   return VA_STATUS_SUCCESS;
 }
 
@@ -4693,11 +5012,16 @@ static VAStatus CreateContext(VADriverContextP context, VAConfigID config_id,
   decode->height = std::max(height, 0);
   decode->video_process = video_process;
   const char *live_h264 = getenv("CRYSTALHD_VAAPI_LIVE_H264");
-  decode->live_h264 = !video_process && IsH264Profile(decode->profile) &&
+  const bool h264 = !video_process && IsH264Profile(decode->profile);
+  const bool live_h264_fast_path =
       live_h264 != nullptr && strcmp(live_h264, "1") == 0;
+  decode->live_h264 = h264 &&
+      (live_h264 == nullptr || live_h264_fast_path);
+  decode->live_h264_gap_tolerant = h264 && live_h264_fast_path;
+  decode->live_h264_fast_path = h264 && live_h264_fast_path;
   const char *low_latency_h264 =
       getenv("CRYSTALHD_VAAPI_LOW_LATENCY_H264");
-  decode->low_latency_h264 = decode->live_h264 &&
+  decode->low_latency_h264 = decode->live_h264_fast_path &&
       low_latency_h264 != nullptr && strcmp(low_latency_h264, "1") == 0;
   const char *experimental_ready_remap =
       getenv("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP");
@@ -4755,7 +5079,7 @@ static VAStatus DestroyContext(VADriverContextP context,
   // The drain releases the lock. Another context insertion may rehash the
   // map, so never retain its iterator across that interval.
   driver->contexts.erase(context_id);
-  driver->condition.notify_all();
+  driver->NotifyDecodeWorker();
   return status;
 }
 
@@ -5537,8 +5861,9 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
   decode_context->mpeg2_picture = DecodeContext::Mpeg2Picture();
   decode_context->mpeg4_picture = DecodeContext::Mpeg4Picture();
   decode_context->vc1_picture = DecodeContext::Vc1Picture();
-  if (status == VA_STATUS_SUCCESS)
-    driver->condition.notify_all();
+  if (status == VA_STATUS_SUCCESS &&
+      NeedsDecodeControlWake(*decode_context))
+    driver->NotifyDecodeWorker();
   return status;
 }
 

@@ -432,6 +432,8 @@ void crystalhd_delete_dioq(struct crystalhd_adp *adp, struct crystalhd_dioq *dio
 		if (temp && dioq->data_rel_cb)
 			dioq->data_rel_cb(dioq->cb_context, temp);
 	} while (temp);
+	if (dioq->is_rx_ready)
+		atomic_set(&dioq->adp->rx_poll_ready, 0);
 	dioq->sig = 0;
 	kfree(dioq);
 }
@@ -475,6 +477,7 @@ void crystalhd_dioq_add_elem(struct crystalhd_dioq *ioq,
 			    struct crystalhd_elem *elem, bool wake, uint32_t tag)
 {
 	unsigned long flags = 0;
+	bool rx_poll_transition = false;
 
 	elem->tag = tag;
 	spin_lock_irqsave(&ioq->lock, flags);
@@ -482,11 +485,17 @@ void crystalhd_dioq_add_elem(struct crystalhd_dioq *ioq,
 	elem->blink = ioq->tail;
 	elem->flink->blink = elem;
 	elem->blink->flink = elem;
+	if (ioq->is_rx_ready)
+		rx_poll_transition = ioq->count == 0;
 	ioq->count++;
+	if (ioq->is_rx_ready)
+		atomic_set(&ioq->adp->rx_poll_ready, ioq->count);
 	spin_unlock_irqrestore(&ioq->lock, flags);
 
 	if (wake)
 		crystalhd_set_event(&ioq->event);
+	if (rx_poll_transition)
+		crystalhd_rx_poll_wake(ioq->adp, EPOLLIN | EPOLLRDNORM);
 }
 
 /**
@@ -520,6 +529,8 @@ struct crystalhd_elem *crystalhd_dioq_fetch_elem(struct crystalhd_dioq *ioq)
 		tmp->flink->blink = tmp->blink;
 		tmp->blink->flink = tmp->flink;
 		ioq->count--;
+		if (ioq->is_rx_ready)
+			atomic_set(&ioq->adp->rx_poll_ready, ioq->count);
 		ret->flink = NULL;
 		ret->blink = NULL;
 	}
@@ -570,6 +581,9 @@ void *crystalhd_dioq_find_and_fetch(struct crystalhd_dioq *ioq, uint32_t tag)
 			tmp->flink->blink = tmp->blink;
 			tmp->blink->flink = tmp->flink;
 			ioq->count--;
+			if (ioq->is_rx_ready)
+				atomic_set(&ioq->adp->rx_poll_ready,
+					   ioq->count);
 			break;
 		}
 		tmp = tmp->flink;

@@ -41,6 +41,10 @@ static bool refcount_dec_and_test(refcount_t *ref)
 #define KERN_ERR ""
 #define READ_ONCE(value) (value)
 #define WRITE_ONCE(value, next) ((value) = (next))
+#define EPOLLERR 0x008U
+#define EPOLLHUP 0x010U
+#define EPOLLIN 0x001U
+#define EPOLLRDNORM 0x040U
 #define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
 #define WARN_ON_ONCE(value) ((bool)(value))
 #define DMA_TO_DEVICE 1
@@ -78,6 +82,9 @@ typedef union {
     struct { uint32_t low_part, high_part; };
 } addr_64;
 typedef unsigned spinlock_t;
+typedef struct { int counter; } atomic_t;
+static void atomic_set(atomic_t *value, int next) { value->counter = next; }
+static unsigned output_poll_wakes;
 struct device { int unused; };
 struct pci_dev { struct device dev; int irq; uint32_t device; };
 struct crystalhd_adp {
@@ -86,7 +93,19 @@ struct crystalhd_adp {
     int user_lock;
     bool dma_terminal_quiesced;
     struct { uint32_t cin_wait_exit; } cmds;
+    atomic_t rx_poll_ready;
 };
+static void crystalhd_rx_poll_wake(struct crystalhd_adp *adp,
+                                   unsigned int events)
+{
+    (void)adp;
+    if (events == (EPOLLIN | EPOLLRDNORM)) {
+        output_poll_wakes++;
+        return;
+    }
+    if (events != (EPOLLERR | EPOLLHUP))
+        abort();
+}
 struct crystalhd_tx_buffer;
 struct page { unsigned index; };
 struct scatterlist {
@@ -198,7 +217,7 @@ static struct crystalhd_dio_req request;
 static struct crystalhd_dio_req request2;
 static struct tx_dma_pkt *const packet0 = &hardware.tx_pkt_pool[0];
 #define packet2 (hardware.tx_pkt_pool[1])
-static struct crystalhd_dioq freeq, activeq;
+static struct crystalhd_dioq freeq, activeq, pollq;
 static struct crystalhd_elem node_pool[8];
 static bool node_allocated[ARRAY_SIZE(node_pool)];
 static uint32_t input[16];
@@ -350,7 +369,8 @@ static void Complete(void)
 }
 static void Unlock(unsigned *lock)
 {
-    Check((lock == &hardware.lock || lock == &freeq.lock || lock == &activeq.lock) &&
+    Check((lock == &hardware.lock || lock == &freeq.lock ||
+          lock == &activeq.lock || lock == &pollq.lock) &&
           *lock == 1, "hardware or actual ownership queue releases its spinlock");
     *lock = 0;
     if (lock == &hardware.lock && run.immediate_completion && QueueHead(&activeq)) {
@@ -366,6 +386,10 @@ static void Unlock(unsigned *lock)
 #define crystalhd_create_event(event) (*(event) = (wait_queue_head_t){0})
 static void crystalhd_set_event(wait_queue_head_t *event)
 {
+    if (event == &pollq.event) {
+        event->wakeups++;
+        return;
+    }
     Check(event && QueueHead(&freeq) == packet0 && !QueueHead(&activeq) &&
           !packet0->buffer && !packet0->cb_context && !packet0->call_back &&
           !packet0->list_tag,
@@ -2909,6 +2933,47 @@ static void QueueApiCompatibility(void)
     QueueInvariant(&freeq);
 }
 
+static void RxPollQueueAccounting(void)
+{
+    unsigned wakes;
+
+    Reset();
+    Check(crystalhd_dioq_fetch_actual(&freeq) == packet0,
+          "poll accounting fixture releases the seeded TX node");
+    QueueInit(&pollq);
+    pollq.is_rx_ready = true;
+    atomic_set(&adapter.rx_poll_ready, 0);
+    wakes = output_poll_wakes;
+
+    Check(crystalhd_dioq_add_actual(&pollq, packet0, true, 0x71) ==
+              BC_STS_SUCCESS &&
+          crystalhd_dioq_add_actual(&pollq, &packet2, true, 0x72) ==
+              BC_STS_SUCCESS &&
+          adapter.rx_poll_ready.counter == 2 && pollq.count == 2 &&
+          output_poll_wakes == wakes + 1,
+          "RX-ready enqueue publishes the exact level and wakes only on the "
+          "empty-to-nonempty transition");
+    Check(!crystalhd_dioq_find_and_fetch_actual(&pollq, 0x99) &&
+          adapter.rx_poll_ready.counter == 2,
+          "a missed tagged fetch leaves output readiness unchanged");
+    Check(crystalhd_dioq_find_and_fetch_actual(&pollq, 0x72) == &packet2 &&
+          adapter.rx_poll_ready.counter == 1 && pollq.count == 1,
+          "tagged output fetch decrements persistent readiness");
+    Check(crystalhd_dioq_fetch_actual(&pollq) == packet0 &&
+          !crystalhd_dioq_fetch_actual(&pollq) &&
+          !adapter.rx_poll_ready.counter && !pollq.count,
+          "FIFO output fetch clears readiness without underflow");
+    Check(crystalhd_dioq_add_actual(&pollq, packet0, true, 0x73) ==
+              BC_STS_SUCCESS &&
+          adapter.rx_poll_ready.counter == 1 && pollq.count == 1 &&
+          output_poll_wakes == wakes + 2,
+          "RX-ready poll wake rearms after the queue drains");
+    Check(crystalhd_dioq_fetch_actual(&pollq) == packet0 &&
+          !adapter.rx_poll_ready.counter && !pollq.count,
+          "rearmed output fetch restores an empty readiness level");
+    QueueInvariant(&pollq);
+}
+
 static void LinkWithoutPreparation(void)
 {
     for (unsigned list = 0; list < 2; list++) {
@@ -2957,6 +3022,7 @@ int main(void)
     FleaPreparationRecoveryAndOwner();
     FleaPreparationFifoPolicy();
     QueueApiCompatibility();
+    RxPollQueueAccounting();
     LinkWithoutPreparation();
     FleaWakeAdmission();
     printf("TX admission: %u checks, %u failures\n", checks, failures);

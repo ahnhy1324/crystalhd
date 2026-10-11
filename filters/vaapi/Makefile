@@ -77,16 +77,18 @@ $(VC1_REPLAY_TEST): $(ROOTDIR)/tests/vaapi-vc1-replay.cpp $(BACKEND_HEADERS)
 $(VPP_TEST): $(ROOTDIR)/tests/vaapi-vpp.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o $@ \
 		-L$(ROOTDIR)/linux_lib/libcrystalhd $(LDLIBS) \
-		-Wl,--wrap=open,--wrap=ioctl,--wrap=close $(CRYSTALHD_CPU_FLAGS)
+		-Wl,--wrap=open,--wrap=ioctl,--wrap=close,--wrap=eventfd $(CRYSTALHD_CPU_FLAGS)
 
 $(REPLAY_TEST): $(ROOTDIR)/tests/vaapi-replay.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o $@ \
 		-L$(ROOTDIR)/linux_lib/libcrystalhd -Wl,--wrap=ioctl,--wrap=usleep \
-		-Wl,--wrap=poll,--wrap=__poll_chk \
+		-Wl,--wrap=poll,--wrap=__poll_chk,--wrap=read \
 		-Wl,--wrap=gbm_bo_get_plane_count,--wrap=gbm_bo_get_fd_for_plane \
-		-Wl,--wrap=DtsDeviceOpen,--wrap=DtsDeviceClose,--wrap=DtsStopDecoder \
+		-Wl,--wrap=DtsDeviceOpen,--wrap=DtsDupOutputPollFd \
+		-Wl,--wrap=DtsDeviceClose,--wrap=DtsStopDecoder \
 		-Wl,--wrap=DtsCloseDecoder,--wrap=DtsCrystalHDVersion,--wrap=DtsSetInputFormat \
 		-Wl,--wrap=DtsGetDriverStatus,--wrap=DtsTxFreeSize \
+		-Wl,--wrap=DtsIsEndOfStream \
 		-Wl,--wrap=DtsProcInput,--wrap=DtsFlushInput,--wrap=DtsProcOutputNoCopy \
 		-Wl,--wrap=DtsReleaseOutputBuffs $(LDLIBS) $(CRYSTALHD_CPU_FLAGS)
 
@@ -112,12 +114,12 @@ $(CACHE_TEST): $(ROOTDIR)/tests/vaapi-cache.cpp crystalhd_drv_video.cpp $(BACKEN
 $(SCALING_TEST): $(ROOTDIR)/tests/vaapi-scaling.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -fno-tree-slp-vectorize \
 		-ffunction-sections -fdata-sections $< -o $@ \
-		-Wl,--gc-sections $(shell $(PKG_CONFIG) --libs gbm) -pthread $(CRYSTALHD_CPU_FLAGS)
+		-Wl,--gc-sections $(shell $(PKG_CONFIG) --libs gbm libdrm) -pthread $(CRYSTALHD_CPU_FLAGS)
 
 $(MPEG2_SUBMIT_TEST): $(ROOTDIR)/tests/vaapi-mpeg2-submit.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -fno-tree-slp-vectorize \
 		-ffunction-sections -fdata-sections $< -o $@ \
-		-Wl,--gc-sections $(shell $(PKG_CONFIG) --libs gbm) -pthread $(CRYSTALHD_CPU_FLAGS)
+		-Wl,--gc-sections $(shell $(PKG_CONFIG) --libs gbm libdrm) -pthread $(CRYSTALHD_CPU_FLAGS)
 
 $(MPEG4_TEST): $(ROOTDIR)/tests/vaapi-mpeg4.cpp crystalhd-mpeg4.h
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CRYSTALHD_CPU_FLAGS) $< -o $@
@@ -125,12 +127,12 @@ $(MPEG4_TEST): $(ROOTDIR)/tests/vaapi-mpeg4.cpp crystalhd-mpeg4.h
 $(MPEG4_SUBMIT_TEST): $(ROOTDIR)/tests/vaapi-mpeg4-submit.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -fno-tree-slp-vectorize \
 		-ffunction-sections -fdata-sections $< -o $@ \
-		-Wl,--gc-sections $(shell $(PKG_CONFIG) --libs gbm) -pthread $(CRYSTALHD_CPU_FLAGS)
+		-Wl,--gc-sections $(shell $(PKG_CONFIG) --libs gbm libdrm) -pthread $(CRYSTALHD_CPU_FLAGS)
 
 $(VC1_SUBMIT_TEST): $(ROOTDIR)/tests/vaapi-vc1-submit.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -fno-tree-slp-vectorize \
 		-ffunction-sections -fdata-sections $< -o $@ \
-		-Wl,--gc-sections $(shell $(PKG_CONFIG) --libs gbm) -pthread $(CRYSTALHD_CPU_FLAGS)
+		-Wl,--gc-sections $(shell $(PKG_CONFIG) --libs gbm libdrm) -pthread $(CRYSTALHD_CPU_FLAGS)
 
 $(TRACE_TEST): $(ROOTDIR)/tests/vaapi-trace.cpp crystalhd-trace.h
 	$(CXX) -std=c++17 -Wall -Wextra -Werror $< -o $@ -pthread

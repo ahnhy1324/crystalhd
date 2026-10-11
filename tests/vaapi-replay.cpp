@@ -18,6 +18,16 @@ static unsigned int probe_poll_calls = 0;
 static gbm_bo *probe_gbm_bo = nullptr;
 static std::vector<int> probe_gbm_plane_fds;
 static std::vector<int> probe_gbm_temporary_fds;
+static int control_read_probe_fd = -1;
+static unsigned int control_read_probe_calls = 0;
+
+extern "C" ssize_t __real_read(int fd, void *buffer, size_t count);
+extern "C" ssize_t __wrap_read(int fd, void *buffer, size_t count) {
+  if (fd == control_read_probe_fd)
+    ++control_read_probe_calls;
+  return __real_read(fd, buffer, count);
+}
+
 extern "C" int __real_ioctl(int fd, unsigned long request, ...);
 extern "C" int __wrap_ioctl(int fd, unsigned long request, ...) {
   va_list arguments;
@@ -207,12 +217,17 @@ struct DecodeIoMock {
   bool report_bcm70012 = false;
   bool fail_set_input_format = false;
   bool invalid = false;
+  int readiness_event = -1;
   uint64_t prefed_timestamp = 0;
   uint32_t tx_free_size = 1024 * 1024;
   unsigned int open_attempts = 0;
   unsigned int output_polls = 0;
+  unsigned int eos_queries = 0;
+  unsigned int eos_after_queries = 0;
   std::vector<uint32_t> status_requests;
   std::thread::id output_thread;
+  std::atomic<unsigned int> accepted_inputs{0};
+  std::chrono::microseconds input_delay{0};
   HANDLE handle() { return static_cast<HANDLE>(this); }
   static uint8_t Luma(uint64_t timestamp) {
     return static_cast<uint8_t>(40 + timestamp / kTimestampStep * 10);
@@ -238,6 +253,17 @@ extern "C" BC_STATUS __wrap_DtsDeviceOpen(HANDLE *device, uint32_t mode) {
     return BC_STS_SUCCESS;
   }
   return BC_STS_ERROR;  // An unexpected reopen must never touch real hardware.
+}
+
+extern "C" BC_STATUS __real_DtsDupOutputPollFd(HANDLE, int *);
+extern "C" BC_STATUS __wrap_DtsDupOutputPollFd(HANDLE device, int *poll_fd) {
+  if (decode_io_mock == nullptr)
+    return __real_DtsDupOutputPollFd(device, poll_fd);
+  decode_io_mock->invalid |=
+      device != decode_io_mock->handle() || poll_fd == nullptr;
+  if (poll_fd != nullptr)
+    *poll_fd = -1;
+  return BC_STS_NOT_IMPL;
 }
 
 extern "C" BC_STATUS __real_DtsCrystalHDVersion(HANDLE, PBC_INFO_CRYSTAL);
@@ -292,6 +318,15 @@ extern "C" BC_STATUS __wrap_DtsGetDriverStatus(HANDLE device, BC_DTS_STATUS *sta
                              status->cpbEmptySize != kStatusSkipReadyHeadPeek;
   *status = {};
   status->ReadyListCount = decode_io_mock->outputs.size();
+  if (status->ReadyListCount != 0 && decode_io_mock->readiness_event >= 0) {
+    uint64_t value;
+    ssize_t result;
+    do {
+      result = read(decode_io_mock->readiness_event, &value, sizeof(value));
+    } while (result < 0 && errno == EINTR);
+    decode_io_mock->invalid |=
+        result != static_cast<ssize_t>(sizeof(value));
+  }
   return decode_io_mock->fail_poll ? BC_STS_ERROR : BC_STS_SUCCESS;
 }
 
@@ -301,6 +336,20 @@ extern "C" uint32_t __wrap_DtsTxFreeSize(HANDLE device) {
     return __real_DtsTxFreeSize(device);
   decode_io_mock->invalid |= device != decode_io_mock->handle();
   return decode_io_mock->tx_free_size;
+}
+
+extern "C" BC_STATUS __real_DtsIsEndOfStream(HANDLE, uint8_t *);
+extern "C" BC_STATUS __wrap_DtsIsEndOfStream(HANDLE device, uint8_t *eos) {
+  if (decode_io_mock == nullptr)
+    return __real_DtsIsEndOfStream(device, eos);
+  decode_io_mock->invalid |=
+      device != decode_io_mock->handle() || eos == nullptr;
+  if (eos == nullptr)
+    return BC_STS_INV_ARG;
+  ++decode_io_mock->eos_queries;
+  *eos = decode_io_mock->eos_after_queries != 0 &&
+         decode_io_mock->eos_queries >= decode_io_mock->eos_after_queries;
+  return BC_STS_SUCCESS;
 }
 
 extern "C" BC_STATUS __real_DtsProcInput(HANDLE, uint8_t *, uint32_t, uint64_t, BOOL);
@@ -340,6 +389,9 @@ extern "C" BC_STATUS __wrap_DtsProcInput(HANDLE device, uint8_t *data,
     decode_io_mock->inputs.push_back(timestamp);
   }
   decode_io_mock->events.push_back("input");
+  ++decode_io_mock->accepted_inputs;
+  if (decode_io_mock->input_delay.count() != 0)
+    std::this_thread::sleep_for(decode_io_mock->input_delay);
   return BC_STS_SUCCESS;
 }
 
@@ -1403,6 +1455,8 @@ static void ExperimentalReadyRemapStateMachine() {
     decode->profile = VAProfileH264Main;
     decode->width = decode->height = 16;
     decode->live_h264 = true;
+    decode->live_h264_gap_tolerant = true;
+    decode->live_h264_fast_path = true;
     decode->low_latency_h264 = true;
     decode->experimental_ready_remap = true;
     driver.contexts[7] = decode;
@@ -1778,6 +1832,10 @@ static void ExperimentalReadyRemapGate() {
   SavedEnvironment delay("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_DELAY_US");
   SavedEnvironment policy("CRYSTALHD_VAAPI_EXPERIMENTAL_READY_POLICY");
   struct GateState {
+    bool transport;
+    bool gap_tolerant;
+    bool fast_path;
+    bool low_latency;
     bool enabled;
     bool latest;
     uint64_t delay_ns;
@@ -1806,15 +1864,49 @@ static void ExperimentalReadyRemapGate() {
             "create environment-gated remap context");
     const std::shared_ptr<DecodeContext> decode =
         driver.contexts.at(context_id);
-    return GateState{decode->experimental_ready_remap,
+    return GateState{decode->live_h264,
+                     decode->live_h264_gap_tolerant,
+                     decode->live_h264_fast_path,
+                     decode->low_latency_h264,
+                     decode->experimental_ready_remap,
                      decode->experimental_ready_latest,
                      decode->experimental_ready_delay_ns};
   };
 
-  Require(!create(nullptr, nullptr, nullptr, nullptr, nullptr,
+  const GateState default_h264 =
+      create(nullptr, nullptr, nullptr, nullptr, nullptr, VAProfileH264Main);
+  const GateState fast_h264 =
+      create("1", nullptr, nullptr, nullptr, nullptr, VAProfileH264Main);
+  const GateState low_h264 =
+      create("1", "1", nullptr, nullptr, nullptr, VAProfileH264Main);
+  const GateState strict_h264 =
+      create("0", "1", "1", nullptr, nullptr, VAProfileH264Main);
+  const GateState invalid_h264 =
+      create("yes", "1", "1", nullptr, nullptr, VAProfileH264Main);
+  const GateState default_mpeg2 =
+      create(nullptr, nullptr, nullptr, nullptr, nullptr, VAProfileMPEG2Main);
+  Require(default_h264.transport && !default_h264.gap_tolerant &&
+              !default_h264.fast_path &&
+              !default_h264.low_latency && !default_h264.enabled &&
+              fast_h264.transport && fast_h264.gap_tolerant &&
+              fast_h264.fast_path &&
+              !fast_h264.low_latency && !fast_h264.enabled &&
+              low_h264.transport && low_h264.gap_tolerant &&
+              low_h264.fast_path &&
+              low_h264.low_latency && !low_h264.enabled &&
+              !strict_h264.transport && !strict_h264.gap_tolerant &&
+              !strict_h264.fast_path &&
+              !strict_h264.low_latency && !strict_h264.enabled &&
+              !invalid_h264.transport && !invalid_h264.gap_tolerant &&
+              !invalid_h264.fast_path &&
+              !invalid_h264.low_latency && !invalid_h264.enabled &&
+              !default_mpeg2.transport && !default_mpeg2.gap_tolerant &&
+              !default_mpeg2.fast_path &&
+              !default_mpeg2.low_latency && !default_mpeg2.enabled,
+          "default H.264 transport is bounded while fast paths remain exact opt-ins");
+
+  Require(!create(nullptr, nullptr, "1", nullptr, nullptr,
                   VAProfileH264Main).enabled &&
-              !create(nullptr, nullptr, "1", nullptr, nullptr,
-                      VAProfileH264Main).enabled &&
               !create("1", "1", "0", nullptr, nullptr,
                       VAProfileH264Main).enabled &&
               !create("1", "1", "yes", nullptr, nullptr,
@@ -1883,6 +1975,56 @@ static void ExperimentalReadyRemapGate() {
   Require(SubmitPicture(&driver, &decode, VAProfileH264Main) ==
               VA_STATUS_ERROR_UNSUPPORTED_PROFILE,
           "experimental remap fails closed before accepting a B slice");
+}
+
+static void DefaultH264TransportIsBounded() {
+  SavedEnvironment live("CRYSTALHD_VAAPI_LIVE_H264");
+  unsetenv("CRYSTALHD_VAAPI_LIVE_H264");
+  Driver driver{-1};
+  driver.configs[1] = {VAProfileH264Main, VAEntrypointVLD};
+  VADriverContext context = {};
+  context.pDriverData = &driver;
+  VAContextID context_id = VA_INVALID_ID;
+  Require(CreateContext(&context, 1, 16, 16, 0, nullptr, 0,
+                        &context_id) == VA_STATUS_SUCCESS,
+          "create default bounded H.264 context");
+  const std::shared_ptr<DecodeContext> decode = driver.contexts.at(context_id);
+  Require(decode->live_h264 && !decode->live_h264_fast_path,
+          "default context separates bounded transport from fast paths");
+  for (uint64_t picture = 1; picture <= 900; ++picture) {
+    Require(decode->replay.Append(picture, picture == 1, {1}),
+            "default context accepts long-running H.264 input");
+    SendNext(&decode->replay, picture);
+    Require(decode->replay.Observe(picture) ==
+                CrystalHDDecodeReplay::Output::New &&
+                decode->replay.cached_pictures() <= 512 &&
+                decode->replay.outstanding() == 0,
+            "default context bounds completed H.264 history");
+  }
+
+  setenv("CRYSTALHD_VAAPI_LIVE_H264", "0", 1);
+  Driver strict_driver{-1};
+  strict_driver.configs[1] = {VAProfileH264Main, VAEntrypointVLD};
+  VADriverContext strict_context = {};
+  strict_context.pDriverData = &strict_driver;
+  context_id = VA_INVALID_ID;
+  Require(CreateContext(&strict_context, 1, 16, 16, 0, nullptr, 0,
+                        &context_id) == VA_STATUS_SUCCESS,
+          "create explicit strict H.264 context");
+  const std::shared_ptr<DecodeContext> strict =
+      strict_driver.contexts.at(context_id);
+  for (uint64_t picture = 1; picture <= 512; ++picture) {
+    Require(strict->replay.Append(picture, picture == 1, {1}),
+            "strict context accepts its bounded replay prefix");
+    SendNext(&strict->replay, picture);
+    Require(strict->replay.Observe(picture) ==
+                CrystalHDDecodeReplay::Output::New,
+            "strict context completes accepted input exactly");
+  }
+  Require(!strict->live_h264 && !strict->live_h264_fast_path &&
+              !strict->replay.Append(513, false, {1}) &&
+              strict->replay.failed(),
+          "explicit strict mode preserves the 512-picture replay guard");
 }
 
 static void ExperimentalPolicyDelayMatrix() {
@@ -2230,6 +2372,8 @@ static void ExperimentalReadyRemapFailClosedRaces() {
     decode.profile = VAProfileH264Main;
     decode.width = decode.height = 16;
     decode.live_h264 = true;
+    decode.live_h264_gap_tolerant = true;
+    decode.live_h264_fast_path = true;
     decode.low_latency_h264 = true;
     decode.experimental_ready_remap = true;
     decode.experimental_ready_latest = true;
@@ -3312,6 +3456,8 @@ static void ConcurrentSyncObservesExperimentalPresentation() {
     fixture.decoder->generation = 1;
     fixture.decoder->experimental_ready_remap = true;
     fixture.decoder->live_h264 = true;
+    fixture.decoder->live_h264_gap_tolerant = true;
+    fixture.decoder->live_h264_fast_path = true;
     fixture.decoder->low_latency_h264 = true;
 
     const auto candidate =
@@ -3373,6 +3519,8 @@ static void ConcurrentSyncObservesExperimentalPresentation() {
     fixture.decoder->generation = 1;
     fixture.decoder->experimental_ready_remap = true;
     fixture.decoder->live_h264 = true;
+    fixture.decoder->live_h264_gap_tolerant = true;
+    fixture.decoder->live_h264_fast_path = true;
     fixture.decoder->low_latency_h264 = true;
 
     const auto candidate =
@@ -3430,6 +3578,8 @@ static void ConcurrentSyncObservesExperimentalPresentation() {
   fixture.decoder->experimental_ready_remap = true;
   fixture.decoder->experimental_ready_delay_ns = kExperimentalDelay50Ns;
   fixture.decoder->live_h264 = true;
+  fixture.decoder->live_h264_gap_tolerant = true;
+  fixture.decoder->live_h264_fast_path = true;
   fixture.decoder->low_latency_h264 = true;
 
   const auto old_picture =
@@ -3460,6 +3610,8 @@ static void ConcurrentSyncObservesExperimentalPresentation() {
   replacement->experimental_ready_remap = true;
   replacement->experimental_ready_delay_ns = kExperimentalDelay50Ns;
   replacement->live_h264 = true;
+  replacement->live_h264_gap_tolerant = true;
+  replacement->live_h264_fast_path = true;
   replacement->low_latency_h264 = true;
   fixture.driver.contexts[2] = replacement;
 
@@ -3512,6 +3664,8 @@ static void ExperimentalDelayedSyncThreshold() {
     fixture.decoder->experimental_ready_latest = true;
     fixture.decoder->experimental_ready_delay_ns = kExperimentalDelay16Ns;
     fixture.decoder->live_h264 = true;
+    fixture.decoder->live_h264_gap_tolerant = true;
+    fixture.decoder->live_h264_fast_path = true;
     fixture.decoder->low_latency_h264 = true;
 
     const auto payload =
@@ -3782,6 +3936,8 @@ static void CompletedLiveTailPrecedesUnreconstructibleContinuation() {
   CrystalHDDecodeReplay::Limits limits;
   limits.cache_bytes = limits.pictures = 2;
   fixture.decoder->live_h264 = true;
+  fixture.decoder->live_h264_gap_tolerant = true;
+  fixture.decoder->live_h264_fast_path = true;
   fixture.decoder->replay = CrystalHDDecodeReplay(limits, true);
   for (uint64_t picture = 1; picture <= 3; ++picture) {
     const uint64_t timestamp = picture * kTimestampStep;
@@ -3840,7 +3996,7 @@ static void DecoderResetPreservesItsExplicitLivePolicy() {
         const uint64_t timestamp = (epoch + 1) * 1000 + picture;
         const bool accepted = decoder.replay.Append(timestamp, picture == 1, {1});
         Require(accepted == (live || picture <= 512),
-                "default stays strict and only explicit live mode retires history");
+                "strict state stays bounded and live state retires history");
         if (!accepted)
           break;
         Require(decoder.replay.live_stream_started() == (live && picture >= 2),
@@ -3857,15 +4013,21 @@ static void DecoderResetPreservesItsExplicitLivePolicy() {
 
   DecodeContext low_latency;
   low_latency.live_h264 = true;
+  low_latency.live_h264_gap_tolerant = true;
+  low_latency.live_h264_fast_path = true;
   low_latency.low_latency_h264 = true;
   low_latency.prefed_timestamp = 17 * kTimestampStep;
   Require(low_latency.Close() == BC_STS_SUCCESS &&
-              low_latency.live_h264 && low_latency.low_latency_h264 &&
+              low_latency.live_h264 && low_latency.live_h264_gap_tolerant &&
+              low_latency.live_h264_fast_path &&
+              low_latency.low_latency_h264 &&
               low_latency.prefed_timestamp == 0,
           "close preserves low-latency policy but discards its runtime prefix");
   low_latency.prefed_timestamp = 19 * kTimestampStep;
   low_latency.Reset();
-  Require(low_latency.live_h264 && low_latency.low_latency_h264 &&
+  Require(low_latency.live_h264 && low_latency.live_h264_gap_tolerant &&
+              low_latency.live_h264_fast_path &&
+              low_latency.low_latency_h264 &&
               low_latency.prefed_timestamp == 0,
           "reset preserves low-latency policy but discards its runtime prefix");
 }
@@ -3888,6 +4050,8 @@ static std::vector<uint8_t> ExpectedH264LowLatencyPrefeed() {
 static void LiveH264SpeculativePrefeedSequence() {
   TeardownFixture fixture(3);
   fixture.decoder->live_h264 = true;
+  fixture.decoder->live_h264_gap_tolerant = true;
+  fixture.decoder->live_h264_fast_path = true;
   fixture.decoder->low_latency_h264 = true;
   fixture.decoder->is_70012 = false;
   fixture.decoder->replay = CrystalHDDecodeReplay(true);
@@ -3943,6 +4107,8 @@ static void LiveH264PrefeedBusyFallback() {
   {
     TeardownFixture fixture(2);
     fixture.decoder->live_h264 = true;
+    fixture.decoder->live_h264_gap_tolerant = true;
+    fixture.decoder->live_h264_fast_path = true;
     fixture.decoder->low_latency_h264 = true;
     fixture.decoder->replay = CrystalHDDecodeReplay(true);
     fixture.io.prefeed_busy_once = true;
@@ -3973,6 +4139,8 @@ static void LiveH264PrefeedBusyFallback() {
   {
     TeardownFixture fixture(2);
     fixture.decoder->live_h264 = true;
+    fixture.decoder->live_h264_gap_tolerant = true;
+    fixture.decoder->live_h264_fast_path = true;
     fixture.decoder->low_latency_h264 = true;
     fixture.decoder->replay = CrystalHDDecodeReplay(true);
     const auto first = TestH264AccessUnit(true, 1);
@@ -4017,6 +4185,8 @@ static void LiveH264PrefeedEligibilityAndGhostGuard() {
   {
     TeardownFixture fixture(2);
     fixture.decoder->live_h264 = true;
+    fixture.decoder->live_h264_gap_tolerant = true;
+    fixture.decoder->live_h264_fast_path = true;
     fixture.decoder->low_latency_h264 = true;
     fixture.decoder->replay = CrystalHDDecodeReplay(true);
     const auto first = TestH264AccessUnit(true, 1);
@@ -4041,6 +4211,8 @@ static void LiveH264PrefeedEligibilityAndGhostGuard() {
   {
     TeardownFixture fixture(2);
     fixture.decoder->live_h264 = true;
+    fixture.decoder->live_h264_gap_tolerant = true;
+    fixture.decoder->live_h264_fast_path = true;
     fixture.decoder->low_latency_h264 = true;
     fixture.decoder->replay = CrystalHDDecodeReplay(true);
     fixture.io.tx_free_size = 1193;
@@ -4069,6 +4241,8 @@ static void LiveH264PrefeedEligibilityAndGhostGuard() {
   for (const bool opt_in : {false, true}) {
     TeardownFixture fixture(1);
     fixture.decoder->live_h264 = true;
+    fixture.decoder->live_h264_gap_tolerant = true;
+    fixture.decoder->live_h264_fast_path = true;
     fixture.decoder->low_latency_h264 = opt_in;
     fixture.decoder->is_70012 = opt_in;
     fixture.decoder->replay = CrystalHDDecodeReplay(true);
@@ -4087,6 +4261,8 @@ static void LiveH264PrefeedEligibilityAndGhostGuard() {
   {
     TeardownFixture fixture(1);
     fixture.decoder->live_h264 = true;
+    fixture.decoder->live_h264_gap_tolerant = true;
+    fixture.decoder->live_h264_fast_path = true;
     fixture.decoder->low_latency_h264 = true;
     fixture.decoder->replay = CrystalHDDecodeReplay(true);
     Require(fixture.decoder->replay.Append(
@@ -4217,9 +4393,166 @@ static void ProgressingSyncDoesNotSealAnActiveStream() {
           "active stream sync preserves hardware session ownership");
 }
 
+static void DefaultBoundedH264StillDrainsFiniteTail() {
+  TeardownFixture fixture(3);
+  fixture.decoder->live_h264 = true;
+  fixture.decoder->replay = CrystalHDDecodeReplay(true);
+  for (uint64_t picture = 1; picture <= 3; ++picture)
+    Require(fixture.decoder->replay.Append(
+                picture * kTimestampStep, picture == 1,
+                {0, 0, 1, static_cast<uint8_t>(picture == 1 ? 0x65 : 0x41)}),
+            "default bounded H.264 context retains a finite input tail");
+  Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+              VA_STATUS_SUCCESS &&
+              fixture.decoder->live_h264 &&
+              !fixture.decoder->live_h264_gap_tolerant &&
+              !fixture.decoder->live_h264_fast_path,
+          "default bounded H.264 submits without live gap or fast policy");
+  Require(SyncSurface(&fixture.context, 3) == VA_STATUS_SUCCESS &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "seal") == 1 &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "eos") == 1 &&
+              fixture.decoder->pending.empty() &&
+              fixture.decoder->replay.outstanding() == 0 &&
+              fixture.io.outputs.empty() && !fixture.io.invalid,
+          "default bounded H.264 inactivity drains every finite tail picture");
+  for (unsigned int picture = 0; picture < 3; ++picture)
+    fixture.CheckPicture(picture);
+}
+
+static void DefaultBoundedH264PreservesShortUnreplayableGap() {
+  Require(DecodeBatchGraceExpired(kDecodeBatchGraceNs) &&
+              !DecodeBatchGraceExpired(kDecodeBatchGraceNs, true) &&
+              !DecodeBatchGraceExpired(kBoundedH264InactivityGraceNs - 1,
+                                       true) &&
+              DecodeBatchGraceExpired(kBoundedH264InactivityGraceNs, true),
+          "bounded H.264 history loss selects only the longer finite grace");
+
+  TeardownFixture fixture(4);
+  CrystalHDDecodeReplay::Limits limits;
+  limits.cache_bytes = 8;
+  limits.pictures = 2;
+  fixture.decoder->live_h264 = true;
+  fixture.decoder->live_h264_gap_tolerant = false;
+  fixture.decoder->live_h264_fast_path = false;
+  fixture.decoder->replay = CrystalHDDecodeReplay(limits, true);
+  for (uint64_t picture = 1; picture <= 3; ++picture) {
+    const uint64_t timestamp = picture * kTimestampStep;
+    Require(fixture.decoder->replay.Append(timestamp, picture == 1, {1}) &&
+                PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+                    VA_STATUS_SUCCESS,
+            "submit default bounded-gap fixture");
+    if (picture < 3) {
+      fixture.io.outputs.push_back(timestamp);
+      Require(ReceiveAvailable(&fixture.driver, fixture.decoder.get()) ==
+                  VA_STATUS_SUCCESS,
+              "retire old default history before the delivery gap");
+    }
+  }
+  Require(!fixture.decoder->replay.replayable() &&
+              fixture.decoder->replay.outstanding() == 1,
+          "default gap begins after bounded history was retired");
+
+  unsigned int callbacks = 0;
+  fixture.io.on_sleep = [&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    ++callbacks;
+    fixture.io.on_sleep = [&] {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      ++callbacks;
+      Require(!fixture.decoder->replay.sealed() &&
+                  std::count(fixture.io.events.begin(),
+                             fixture.io.events.end(), "seal") == 0,
+              "short unreplayable gap is not mistaken for finite EOS");
+      Require(fixture.decoder->replay.Append(4 * kTimestampStep, false, {4}) &&
+                  PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+                      VA_STATUS_SUCCESS,
+              "non-IDR input resumes the original bounded hardware session");
+      fixture.io.outputs.push_back(4 * kTimestampStep);
+      fixture.io.outputs.push_back(3 * kTimestampStep);
+    };
+  };
+  Require(SyncSurface(&fixture.context, 3) == VA_STATUS_SUCCESS &&
+              callbacks == 2 && fixture.io.inputs.size() == 4 &&
+              fixture.io.open_attempts == 0 &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "seal") == 0 &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "eos") == 0 &&
+              !fixture.io.invalid,
+          "default bounded mode resumes exactly across a short live gap");
+  fixture.CheckPicture(2);
+  fixture.CheckPicture(3);
+}
+
+static void DefaultBoundedH264InactivitySurvivesFiniteSyncCalls() {
+  TeardownFixture fixture(3);
+  CrystalHDDecodeReplay::Limits limits;
+  limits.cache_bytes = 8;
+  limits.pictures = 2;
+  fixture.decoder->live_h264 = true;
+  fixture.decoder->replay = CrystalHDDecodeReplay(limits, true);
+  for (uint64_t picture = 1; picture <= 3; ++picture) {
+    const uint64_t timestamp = picture * kTimestampStep;
+    Require(fixture.decoder->replay.Append(timestamp, picture == 1, {1}) &&
+                PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+                    VA_STATUS_SUCCESS,
+            "submit repeated finite-sync fixture");
+    if (picture < 3) {
+      fixture.io.outputs.push_back(timestamp);
+      Require(ReceiveAvailable(&fixture.driver, fixture.decoder.get()) ==
+                  VA_STATUS_SUCCESS,
+              "retire repeated finite-sync history");
+    }
+  }
+  Require(!fixture.decoder->replay.replayable(),
+          "repeated finite-sync fixture has no replay prefix");
+
+  fixture.decoder->sync_inactivity_ns =
+      kBoundedH264InactivityGraceNs - 300ULL * 1000 * 1000;
+  const uint64_t inactivity_before_sync =
+      fixture.decoder->sync_inactivity_ns;
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  Require(fixture.decoder->sync_inactivity_ns ==
+              inactivity_before_sync &&
+              SyncSurface2(&fixture.context, 3, 10ULL * 1000 * 1000) ==
+                  VA_STATUS_ERROR_TIMEDOUT &&
+              fixture.decoder->sync_inactivity_ns > inactivity_before_sync &&
+              fixture.decoder->sync_inactivity_ns <
+                  kBoundedH264InactivityGraceNs &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "seal") == 0,
+          "player pause is excluded while finite sync wait is accumulated");
+  const uint64_t inactivity_after_first_sync =
+      fixture.decoder->sync_inactivity_ns;
+  Require(SyncSurface2(&fixture.context, 3, 10ULL * 1000 * 1000) ==
+                  VA_STATUS_ERROR_TIMEDOUT &&
+              fixture.decoder->sync_inactivity_ns >
+                  inactivity_after_first_sync &&
+              fixture.decoder->sync_inactivity_ns <
+                  kBoundedH264InactivityGraceNs &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "seal") == 0,
+          "sequential finite sync calls retain only their actual wait time");
+  Require(SyncSurface2(&fixture.context, 3, 500ULL * 1000 * 1000) ==
+                  VA_STATUS_SUCCESS &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "seal") == 1 &&
+              std::count(fixture.io.events.begin(), fixture.io.events.end(),
+                         "eos") == 1 &&
+              fixture.decoder->pending.empty() &&
+              fixture.decoder->replay.outstanding() == 0 &&
+              !fixture.io.invalid,
+          "finite sync crosses the accumulated inactivity threshold and drains tail");
+  fixture.CheckPicture(2);
+}
+
 static void EarlyLiveGapPreservesIntactReplayHistory() {
   TeardownFixture fixture(3);
   fixture.decoder->live_h264 = true;
+  fixture.decoder->live_h264_gap_tolerant = true;
+  fixture.decoder->live_h264_fast_path = true;
   fixture.decoder->replay = CrystalHDDecodeReplay(true);
   for (uint64_t picture = 1; picture <= 2; ++picture)
     Require(fixture.decoder->replay.Append(picture * kTimestampStep,
@@ -4275,6 +4608,8 @@ static void PrepareLiveTailWithoutReplayHistory(TeardownFixture &fixture) {
   limits.cache_bytes = 8;
   limits.pictures = 2;
   fixture.decoder->live_h264 = true;
+  fixture.decoder->live_h264_gap_tolerant = true;
+  fixture.decoder->live_h264_fast_path = true;
   fixture.decoder->replay = CrystalHDDecodeReplay(limits, true);
   for (uint64_t picture = 1; picture <= 3; ++picture) {
     const uint64_t timestamp = picture * kTimestampStep;
@@ -4429,6 +4764,8 @@ static void InactiveSyncStillSealsItsExactFinalPicture(bool live = false) {
   TeardownFixture fixture(1);
   if (live) {
     fixture.decoder->live_h264 = true;
+    fixture.decoder->live_h264_gap_tolerant = true;
+    fixture.decoder->live_h264_fast_path = true;
     fixture.decoder->replay = CrystalHDDecodeReplay(true);
     Require(fixture.decoder->replay.Append(kTimestampStep, true, {0, 0, 1, 0x65}),
             "live initial decoder probe retains its complete actual IDR history");
@@ -5176,6 +5513,247 @@ static void QueryOnlyObservesAutonomousDecodeProgress() {
           "query-only progress neither duplicates output nor seals the stream");
 }
 
+static void OutputEventReplacesPeriodicWorkerPolling() {
+  TeardownFixture fixture(1);
+  const int readiness = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+  Require(readiness >= 0, "allocate mocked decoder readiness event");
+  fixture.io.readiness_event = readiness;
+  fixture.decoder->output_poll =
+      std::make_shared<OutputPollLease>(readiness);
+  fixture.driver.StartDecodeWorker();
+
+  const auto input_deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  unsigned int idle_polls = 0;
+  for (;;) {
+    {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      if (fixture.io.inputs.size() == 1 && fixture.io.output_polls != 0) {
+        idle_polls = fixture.io.output_polls;
+        break;
+      }
+    }
+    Require(std::chrono::steady_clock::now() < input_deadline,
+            "event worker submits initial compressed input");
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  {
+    std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+    Require(fixture.io.output_polls == idle_polls && !fixture.held[0]->ready,
+            "event worker performs no timer-driven READY probes while idle");
+    fixture.io.outputs.push_back(kTimestampStep);
+  }
+  const uint64_t one = 1;
+  Require(write(readiness, &one, sizeof(one)) ==
+              static_cast<ssize_t>(sizeof(one)),
+          "signal mocked decoder readiness");
+
+  const auto output_deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  for (;;) {
+    {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      if (fixture.held[0]->ready)
+        break;
+    }
+    Require(std::chrono::steady_clock::now() < output_deadline,
+            "event worker publishes signaled output");
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+  Require(fixture.io.output_polls == idle_polls + 1 &&
+              fixture.decoder->pending.empty() &&
+              fixture.io.outputs.empty() && !fixture.io.invalid,
+          "one readiness signal causes one bounded output harvest");
+}
+
+static void DecodeControlWakeUsesExactArmedOutputLease() {
+  DecodeContext decode;
+  const int first_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+  const int second_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+  Require(first_fd >= 0 && second_fd >= 0,
+          "allocate exact-lease control-wake fixtures");
+  const auto first = std::make_shared<OutputPollLease>(first_fd);
+  const auto second = std::make_shared<OutputPollLease>(second_fd);
+
+  decode.output_poll = first;
+  Require(NeedsDecodeControlWake(decode),
+          "an unarmed decoder still needs a control wake");
+  decode.armed_output_poll = first;
+  Require(!NeedsDecodeControlWake(decode),
+          "the exact armed output lease suppresses a redundant control wake");
+
+  decode.input_backpressured = true;
+  Require(NeedsDecodeControlWake(decode),
+          "TX backpressure retains its bounded control wake");
+  decode.input_backpressured = false;
+  decode.input_budget_exhausted = true;
+  Require(NeedsDecodeControlWake(decode),
+          "an exhausted input turn retains its control wake");
+  decode.input_budget_exhausted = false;
+
+  decode.output_poll = second;
+  Require(NeedsDecodeControlWake(decode),
+          "a reopened output descriptor cannot inherit a stale armed lease");
+  decode.armed_output_poll = second;
+  Require(!NeedsDecodeControlWake(decode),
+          "the replacement lease suppresses only after it is armed");
+
+  decode.profile = VAProfileMPEG4AdvancedSimple;
+  Require(decode.mpeg4_replay.Append(
+              kTimestampStep, CrystalHDMpeg4Replay::Kind::I, 0, 0,
+              {0, 0, 1, 0xb6}) &&
+              decode.mpeg4_replay.NextInput() != nullptr &&
+              decode.mpeg4_replay.InputSent() &&
+              decode.mpeg4_replay.Seal() &&
+              decode.mpeg4_replay.Observe(kTimestampStep) ==
+                  CrystalHDMpeg4Replay::Output::New &&
+              NeedsMpeg4EosProbe(decode) && NeedsDecodeControlWake(decode),
+          "state-only MPEG-4 EOS retains its bounded control wake");
+
+  Require(decode.CloseHardware() == BC_STS_SUCCESS &&
+              !decode.output_poll && decode.armed_output_poll.expired(),
+          "hardware close clears both current and armed output leases");
+}
+
+static void DecodeControlDrainConsumesOneEventfdRead() {
+  const int descriptor = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+  Require(descriptor >= 0, "allocate control-drain fixture");
+  const uint64_t one = 1;
+  Require(write(descriptor, &one, sizeof(one)) ==
+              static_cast<ssize_t>(sizeof(one)) &&
+              write(descriptor, &one, sizeof(one)) ==
+                  static_cast<ssize_t>(sizeof(one)),
+          "coalesce two pending control notifications");
+
+  control_read_probe_fd = descriptor;
+  control_read_probe_calls = 0;
+  DrainDecodeControlFd(descriptor);
+  control_read_probe_fd = -1;
+  Require(control_read_probe_calls == 1,
+          "one eventfd read drains the coalesced control counter");
+
+  uint64_t value = 0;
+  errno = 0;
+  Require(read(descriptor, &value, sizeof(value)) < 0 && errno == EAGAIN,
+          "the single successful read leaves no latched control event");
+  Require(close(descriptor) == 0, "close control-drain fixture");
+}
+
+static void BudgetedWorkerReleasesDriverMutex() {
+  constexpr unsigned int kPictures = 24;
+  TeardownFixture fixture(kPictures);
+  fixture.io.input_delay = std::chrono::milliseconds(1);
+  const int readiness = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+  Require(readiness >= 0, "allocate budget-yield readiness event");
+  fixture.io.readiness_event = readiness;
+  fixture.decoder->output_poll =
+      std::make_shared<OutputPollLease>(readiness);
+
+  unsigned int inputs_seen_with_mutex = kPictures;
+  std::thread frontend([&] {
+    while (fixture.io.accepted_inputs.load(std::memory_order_acquire) < 4)
+      std::this_thread::yield();
+    std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+    inputs_seen_with_mutex =
+        fixture.io.accepted_inputs.load(std::memory_order_relaxed);
+  });
+  fixture.driver.StartDecodeWorker();
+  frontend.join();
+
+  Require(inputs_seen_with_mutex < kPictures,
+          "bounded input backlog yields the VA mutex before draining every picture");
+}
+
+static void Mpeg4StateOnlyEosStillWakesEventWorker() {
+  TeardownFixture fixture(1);
+  fixture.decoder->profile = VAProfileMPEG4AdvancedSimple;
+  fixture.decoder->stream_width = fixture.decoder->stream_height = 16;
+  Require(fixture.decoder->mpeg4_replay.Append(
+              kTimestampStep, CrystalHDMpeg4Replay::Kind::I, 0, 0,
+              {0, 0, 1, 0xb6}),
+          "retain one MPEG-4 epoch for state-only EOS");
+  Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+                  VA_STATUS_SUCCESS &&
+              fixture.decoder->mpeg4_replay.Seal(),
+          "submit and seal the MPEG-4 state-only EOS fixture");
+  fixture.io.outputs.push_back(kTimestampStep);
+  fixture.io.eos_after_queries = 2;
+  const int readiness = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+  Require(readiness >= 0, "allocate MPEG-4 EOS readiness event");
+  fixture.io.readiness_event = readiness;
+  fixture.decoder->output_poll =
+      std::make_shared<OutputPollLease>(readiness);
+  const uint64_t one = 1;
+  Require(write(readiness, &one, sizeof(one)) ==
+              static_cast<ssize_t>(sizeof(one)),
+          "signal final MPEG-4 picture readiness");
+  fixture.driver.StartDecodeWorker();
+
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  for (;;) {
+    {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      if (fixture.decoder->mpeg4_replay.ended()) {
+        Require(fixture.held[0]->ready && fixture.io.eos_queries >= 2 &&
+                    !fixture.io.invalid,
+                "state-only MPEG-4 EOS completes after a bounded event-path probe");
+        break;
+      }
+    }
+    Require(std::chrono::steady_clock::now() < deadline,
+            "event worker cannot stall on state-only MPEG-4 EOS");
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+}
+
+static void OutputPollHangupFailsWithoutSpinning() {
+  TeardownFixture fixture(1);
+  int descriptors[2] = {-1, -1};
+  Require(pipe(descriptors) == 0, "allocate mocked decoder hangup pipe");
+  fixture.decoder->output_poll =
+      std::make_shared<OutputPollLease>(descriptors[0]);
+  fixture.driver.StartDecodeWorker();
+
+  const auto input_deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  for (;;) {
+    {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      if (fixture.io.inputs.size() == 1 && fixture.io.output_polls != 0)
+        break;
+    }
+    Require(std::chrono::steady_clock::now() < input_deadline,
+            "hangup worker submits initial compressed input");
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  Require(close(descriptors[1]) == 0, "signal mocked decoder poll hangup");
+
+  const auto failure_deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  unsigned int failed_polls = 0;
+  for (;;) {
+    {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      if (fixture.decoder->ReplayFailed()) {
+        failed_polls = fixture.io.output_polls;
+        Require(fixture.held[0]->failed,
+                "poll hangup fails its pending presentation surface");
+        break;
+      }
+    }
+    Require(std::chrono::steady_clock::now() < failure_deadline,
+            "poll hangup becomes a bounded decode failure");
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+  Require(fixture.io.output_polls == failed_polls,
+          "terminal output poll cannot leave a hot-spinning worker");
+}
+
 static void AutonomousWorkerFinishesOnlyAnExistingSealedBatch() {
   TeardownFixture fixture(2);
   Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
@@ -5264,6 +5842,7 @@ int main() {
     TraceIdentityUsesImmutableTokenAndLiveAliasOwner();
     TraceReadExportReuseBoundary();
     ExperimentalReadyRemapGate();
+    DefaultH264TransportIsBounded();
     ExperimentalPolicyDelayMatrix();
     ExperimentalRemapCpuOwnershipFailures();
     ExperimentalReadyRemapFailClosedRaces();
@@ -5286,6 +5865,9 @@ int main() {
     LiveH264PrefeedEligibilityAndGhostGuard();
     TransportProgressRequiresActualHardwareIo();
     ProgressingSyncDoesNotSealAnActiveStream();
+    DefaultBoundedH264StillDrainsFiniteTail();
+    DefaultBoundedH264PreservesShortUnreplayableGap();
+    DefaultBoundedH264InactivitySurvivesFiniteSyncCalls();
     EarlyLiveGapPreservesIntactReplayHistory();
     InactiveLiveSyncPreservesReferencesUntilActualInputResumes();
     InactiveLiveSyncHonorsFiniteDeadlineWithoutPoisoningPixels();
@@ -5305,6 +5887,12 @@ int main() {
     ExactReadySurfaceDoesNotWaitForBatchEos();
     ReadyInventoryConditionalOpportunityReplay();
     QueryOnlyObservesAutonomousDecodeProgress();
+    OutputEventReplacesPeriodicWorkerPolling();
+    DecodeControlWakeUsesExactArmedOutputLease();
+    DecodeControlDrainConsumesOneEventfdRead();
+    BudgetedWorkerReleasesDriverMutex();
+    Mpeg4StateOnlyEosStillWakesEventWorker();
+    OutputPollHangupFailsWithoutSpinning();
     AutonomousWorkerFinishesOnlyAnExistingSealedBatch();
     AutonomousWorkerStopsAfterTransportFailure();
     std::puts("VA-API sealed-batch replay, immutable-output and teardown tests passed");

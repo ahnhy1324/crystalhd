@@ -22,6 +22,8 @@ typedef int BC_STATUS;
 #define BC_STS_IO_ERROR 3
 #define BC_LINK_INVALID 0
 #define BC_HW_RUNNING 0
+#define EPOLLERR 0x008U
+#define EPOLLHUP 0x010U
 #define DTS_MODE_INV UINT32_MAX
 #define DTS_DIAG_MODE 1
 #define DTS_PLAYBACK_MODE 2
@@ -146,6 +148,12 @@ static int command_error, status_error;
 static u16 command_output, status_output;
 static unsigned int command_reads, status_reads;
 static bool chd_dec_session_dma_absent(struct crystalhd_adp *adp);
+
+static void crystalhd_rx_poll_wake(struct crystalhd_adp *adp,
+				   unsigned int events)
+{
+	assert(adp != NULL && events == (EPOLLERR | EPOLLHUP));
+}
 
 static void *allocate(size_t size, enum allocation_kind kind)
 {

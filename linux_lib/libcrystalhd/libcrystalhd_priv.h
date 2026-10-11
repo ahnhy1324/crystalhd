@@ -210,6 +210,7 @@ BC_STATUS txBufFlush(pTXBUFFER txBuf);
 BC_STATUS txBufInit(pTXBUFFER txBuf, uint32_t sizeInit);
 BC_STATUS txBufFree(pTXBUFFER txBuf);
 bool txBufWaitForWake(pTXBUFFER txBuf, uint32_t timeoutMs);
+void txBufWake(pTXBUFFER txBuf);
 void txBufShutdown(pTXBUFFER txBuf);
 
 // TX Thread function

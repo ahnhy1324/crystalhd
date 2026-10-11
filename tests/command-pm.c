@@ -27,6 +27,8 @@ struct _BC_DTS_PROC_OUT;
 #define GFP_KERNEL 0
 #define READ_ONCE(value) (value)
 #define WRITE_ONCE(value, update) ((value) = (update))
+#define EPOLLERR 0x008U
+#define EPOLLHUP 0x010U
 #define BUILD_BUG_ON(condition) _Static_assert(!(condition), "BUILD_BUG_ON")
 #define printk(...) ((void)0)
 #define dev_err(dev, ...) ((void)(dev))
@@ -113,6 +115,13 @@ struct crystalhd_adp {
     int user_lock, dram_lock;
     struct crystalhd_cmd cmds;
 };
+static void crystalhd_rx_poll_wake(struct crystalhd_adp *adp,
+                                   unsigned int events)
+{
+    (void)adp;
+    if (events != EPOLLERR && events != (EPOLLERR | EPOLLHUP))
+        abort();
+}
 struct crystalhd_file { struct crystalhd_user *user; uint64_t generation; };
 struct file { void *private_data; };
 struct inode { int unused; };

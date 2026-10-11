@@ -27,6 +27,10 @@ struct MockScope {
 }
 
 extern "C" BC_STATUS DtsDeviceOpen(HANDLE *, uint32_t) { abort(); }
+extern "C" BC_STATUS DtsDupOutputPollFd(HANDLE, int *fd) {
+  if (fd) *fd = -1;
+  return BC_STS_NOT_IMPL;
+}
 extern "C" BC_STATUS DtsCrystalHDVersion(HANDLE, PBC_INFO_CRYSTAL) { abort(); }
 extern "C" BC_STATUS DtsSetInputFormat(HANDLE, BC_INPUT_FORMAT *) { abort(); }
 extern "C" BC_STATUS DtsOpenDecoder(HANDLE, uint32_t) { abort(); }
@@ -475,6 +479,8 @@ void OriginalReplayRetainsMatrices() {
 
 void Live(Fixture *fixture) {
   fixture->decode->live_h264 = true;
+  fixture->decode->live_h264_gap_tolerant = true;
+  fixture->decode->live_h264_fast_path = true;
   fixture->decode->replay = CrystalHDDecodeReplay(true);
   fixture->driver.surfaces.at(1)->direct_decode_eligible = true;
 }
@@ -507,25 +513,31 @@ VABufferID Vpp(Fixture *fixture) {
 }
 
 void DirectLiveOutputAndReuse() {
-  for (bool live : {false, true}) {
+  for (unsigned int mode = 0; mode < 3; ++mode) {
     Fixture f;
-    if (live) Live(&f);
+    if (mode == 1) {
+      f.decode->live_h264 = true;
+      f.decode->replay = CrystalHDDecodeReplay(true);
+    } else if (mode == 2) {
+      Live(&f);
+    }
+    const bool direct = mode == 2;
     f.Begin(); f.Parameters(); f.End();
     std::weak_ptr<Surface> previous = f.decode->decoded_frames.at(kTimestampStep);
-    Require(f.decode->decoded_frames.at(kTimestampStep)->storage.empty() == live,
-            "only explicit live H264 elides private frame allocation");
+    Require(f.decode->decoded_frames.at(kTimestampStep)->storage.empty() == direct,
+            "only the explicit H.264 fast path elides private frame allocation");
     Output(&f, kTimestampStep, 40);
     Require(f.driver.surfaces.at(1)->ready &&
                 f.driver.surfaces.at(1)->planes[0][0] == 40 &&
-                f.decode->decoded_frames.at(kTimestampStep)->storage.empty() == live,
+                f.decode->decoded_frames.at(kTimestampStep)->storage.empty() == direct,
             "direct completion publishes actual pixels without a private copy");
     Output(&f, kTimestampStep, 90);
     Require(f.driver.surfaces.at(1)->planes[0][0] == 40,
             "duplicate cannot replace direct pixels");
-    if (live)
+    if (direct)
       f.driver.surfaces.at(1)->layout.valid = true;
     f.Begin(); f.Parameters(false); f.End();
-    Require(f.decode->decoded_frames.at(2 * kTimestampStep)->storage.empty() == live,
+    Require(f.decode->decoded_frames.at(2 * kTimestampStep)->storage.empty() == direct,
             "read-only export layout does not disable direct decode reuse");
     Require(previous.expired(), "completed uncaptured reuse releases old backing without promotion");
     Output(&f, 2 * kTimestampStep, 80);

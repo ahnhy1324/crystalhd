@@ -24,7 +24,7 @@
 extern bc_dil_glob_s *bc_dil_glob_ptr;
 /* Existing exported packetizer helper; not declared in the public API. */
 BC_STATUS DtsAlignSendData(HANDLE, uint8_t *, uint32_t, uint64_t, BOOL);
-static unsigned checks, failures, fail_at, calls;
+static unsigned checks, failures, fail_at, calls, consume_wake_at;
 static unsigned stop_after, generation_after;
 static DTS_LIB_CONTEXT *observed_context;
 static BC_STATUS injected_error = BC_STS_IO_ERROR;
@@ -57,6 +57,13 @@ extern "C" BC_STATUS __wrap_txBufPush(pTXBUFFER ring, uint8_t *bytes, uint32_t s
     if (++calls == fail_at)
         return injected_error;
     const BC_STATUS status = __real_txBufPush(ring, bytes, size);
+    if (status == BC_STS_SUCCESS && calls == consume_wake_at) {
+        /* Model the worker consuming the enqueue wake before DtsSendEOS
+         * publishes bEOSCheck. The completed drain must publish a new wake. */
+        pthread_mutex_lock(&ring->wakeLock);
+        ring->wakePending = false;
+        pthread_mutex_unlock(&ring->wakeLock);
+    }
     /* Deterministic stop between accepted fragments, not a failed enqueue.
      * Models the next packet observing cancellation after prior progress.
      */
@@ -238,6 +245,7 @@ struct Fixture {
             txBufInit(&context.circBuf, CIRC_TX_BUF_SIZE) != BC_STS_SUCCESS)
             std::abort();
         calls = 0;
+        consume_wake_at = 0;
         generation_after = 0;
         packets.clear();
     }
@@ -343,13 +351,23 @@ static void test_packets(uint32_t device, uint32_t subtype, unsigned mode)
 {
     fail_at = 0;
     Fixture fixture(device, subtype);
+    const unsigned expected_calls =
+        device == BC_PCI_DEVID_FLEA && mode == 0 ? 4 : 1;
+    consume_wake_at = mode == 0 ? expected_calls : 0;
     check(send(fixture, mode, false) == BC_STS_SUCCESS,
           "successful EOS returns success");
-    const unsigned expected_calls = device == BC_PCI_DEVID_FLEA && mode == 0 ? 4 : 1;
     check(calls == expected_calls, "preserve codec/chip EOS packet count");
     check(fixture.context.bEOSCheck == (mode == 0),
           "only completed mode0 EOS arms completion checking");
     check(!fixture.context.bEOS, "submission alone does not claim completed EOS");
+    if (mode == 0) {
+        pthread_mutex_lock(&fixture.context.circBuf.wakeLock);
+        const bool post_publish_wake = fixture.context.circBuf.wakePending;
+        pthread_mutex_unlock(&fixture.context.circBuf.wakeLock);
+        check(post_publish_wake,
+              "mode0 EOS re-wakes TX after publishing completion checking");
+    }
+    consume_wake_at = 0;
     check(clean_metadata(fixture.context), "successful EOS clears temporary PES metadata");
 
     size_t total = 0;

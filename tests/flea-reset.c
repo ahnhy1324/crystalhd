@@ -15,6 +15,8 @@
 #define printk(...) ((void)0)
 #define READ_ONCE(value) (value)
 #define WRITE_ONCE(value, update) ((value) = (update))
+#define EPOLLERR 0x008U
+#define EPOLLHUP 0x010U
 
 struct device { int unused; };
 struct pci_dev { struct device dev; unsigned irq, device; };
@@ -23,6 +25,12 @@ struct crystalhd_adp {
     bool present, dma_terminal_quiesced;
     struct { unsigned cin_wait_exit; } cmds;
 };
+static void crystalhd_rx_poll_wake(struct crystalhd_adp *adp,
+                                   unsigned int events)
+{
+    (void)adp;
+    assert(events == (EPOLLERR | EPOLLHUP));
+}
 struct crystalhd_hw {
     struct crystalhd_adp *adp;
     uint32_t rx_list_post_index, RxCaptureState;

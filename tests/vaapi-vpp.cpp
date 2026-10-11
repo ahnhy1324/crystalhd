@@ -9,6 +9,7 @@
 #include <string>
 
 extern "C" int __real_close(int fd);
+extern "C" int __real_eventfd(unsigned int initial_value, int flags);
 
 namespace {
 
@@ -190,6 +191,13 @@ extern "C" int __wrap_ioctl(int fd, unsigned long request, ...) {
 extern "C" int __wrap_close(int fd) {
   return fence_io_mock != nullptr ? fence_io_mock->Close(fd)
                                   : __real_close(fd);
+}
+
+extern "C" int __wrap_eventfd(unsigned int initial_value, int flags) {
+  const int fd = __real_eventfd(initial_value, flags);
+  if (fd >= 0 && fence_io_mock != nullptr)
+    fence_io_mock->real_files.insert(fd);
+  return fd;
 }
 
 namespace {

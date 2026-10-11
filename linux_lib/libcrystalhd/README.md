@@ -20,6 +20,23 @@ make -C linux_lib/libcrystalhd DESTDIR=/tmp/crystalhd-library install
 The install target provides the shared library, public headers, and
 `libcrystalhd.pc` for `pkg-config`.
 
+## Optional output readiness and RX pool
+
+`DtsDupOutputPollFd()` is an additive API that returns a caller-owned,
+close-on-exec duplicate descriptor when the loaded driver advertises RX
+polling. `POLLIN` is level-triggered while the active decoder owner has queued
+output; close, removal and session-lifetime changes wake a waiter with
+`POLLERR` or `POLLHUP`. Older drivers return `BC_STS_NOT_IMPL`. The VA backend
+weak-links this symbol and retains its one-millisecond fallback with an older
+library or driver. The `libcrystalhd.so.3` ABI and legacy ioctl behavior are
+unchanged.
+
+`CRYSTALHD_EXPERIMENTAL_RX_POOL_COUNT` accepts exactly `8` or `16`; unset or
+invalid values use the default of 16. Eight buffers reduced average peak RSS
+by 11.7% in the paced BCM70015 720p60 screening without a repeatable task-time
+or context-switch change, so it remains an explicit opt-in. See the
+[hardware report](../../HARDWARE-2026-09-13.md) for the bounded comparison.
+
 ## Direct-library drain validation
 
 This optional probe bypasses GStreamer and VA-API. It checks complete picture

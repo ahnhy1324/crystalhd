@@ -1605,7 +1605,7 @@ diff --git a/tests/device-lifetime.c b/tests/device-lifetime.c
 index e2393f9..91287bb 100644
 --- a/tests/device-lifetime.c
 +++ b/tests/device-lifetime.c
-@@ -20,8 +20,12 @@ typedef int BC_STATUS;
+@@ -20,10 +20,14 @@ typedef int BC_STATUS;
  #define BC_STS_INV_ARG 1
  #define BC_STS_ERR_USAGE 2
  #define BC_STS_IO_ERROR 3
@@ -1615,6 +1615,8 @@ index e2393f9..91287bb 100644
 +#define BC_LINK_CAP_EN 0x02
  #define BC_HW_RUNNING 0
 +#define BC_HW_SUSPEND 1
+ #define EPOLLERR 0x008U
+ #define EPOLLHUP 0x010U
  #define DTS_MODE_INV UINT32_MAX
  #define DTS_DIAG_MODE 1
  #define DTS_PLAYBACK_MODE 2
@@ -1648,7 +1650,7 @@ index e2393f9..91287bb 100644
  };
  #include "lifetime-binding.h"
  
-@@ -145,6 +158,9 @@ static bool ignore_master_clear, express;
+@@ -147,4 +160,7 @@ static bool ignore_master_clear, express;
  static int command_error, status_error;
  static u16 command_output, status_output;
  static unsigned int command_reads, status_reads;
@@ -1656,8 +1658,6 @@ index e2393f9..91287bb 100644
 +static bool pm_callback;
 +#endif
  static bool chd_dec_session_dma_absent(struct crystalhd_adp *adp);
- 
- static void *allocate(size_t size, enum allocation_kind kind)
 @@ -173,6 +189,10 @@ static void assert_excluded(void)
  static void assert_quiesced(void)
  {

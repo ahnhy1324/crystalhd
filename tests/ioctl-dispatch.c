@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/epoll.h>
 #include <sys/ioctl.h>
 #include "bc_dts_defs.h"
 #include "7411d.h"
@@ -22,6 +23,10 @@ typedef uint32_t u32;
 typedef uint32_t compat_uptr_t;
 typedef uint8_t u8;
 typedef int32_t s32;
+typedef unsigned int __poll_t;
+typedef struct { int counter; } atomic_t;
+typedef struct { int unused; } wait_queue_head_t;
+typedef struct poll_table_struct { int unused; } poll_table;
 #define __packed __attribute__((packed))
 #define static_assert _Static_assert
 #include "ioctl-compat.h"
@@ -42,8 +47,11 @@ struct crystalhd_cmd {
 struct crystalhd_adp {
     struct pci_dev *pdev;
     bool present;
+    bool hw_accessible;
+    uint64_t generation;
     struct crystalhd_cmd cmds;
     struct test_lock user_lock, tx_lock;
+    atomic_t rx_poll_ready;
 };
 struct crystalhd_file { struct crystalhd_user *user; uint64_t generation; };
 struct file { void *private_data; };
@@ -62,8 +70,11 @@ static struct test_lock chd_device_lock;
 static uint64_t chd_device_generation;
 static crystalhd_ioctl_data pooled;
 static BC_IOCTL_DATA caller_data;
+static wait_queue_head_t chd_rx_poll_wait;
 static unsigned checks, handler_calls, color_calls, allocations, frees, copies;
 static unsigned device_locks, user_reads, user_writes, tx_locks, extra_frees;
+static unsigned poll_wakes;
+static unsigned poll_registrations;
 static unsigned expected_cmd;
 static unsigned long expected_address;
 static bool expected_compat, privileged, pool_live, pool_empty;
@@ -78,6 +89,22 @@ static void Check(bool okay, const char *message)
     if (!okay) { fprintf(stderr, "FAIL: %s\n", message); exit(1); }
 }
 static struct device *chddev(void) { return &pci.dev; }
+static void crystalhd_rx_poll_wake(struct crystalhd_adp *adp, unsigned events)
+{
+    Check(adp == &adapter && events == (EPOLLERR | EPOLLHUP),
+          "release wakes output pollers with a terminal event");
+    poll_wakes++;
+}
+static int atomic_read(const atomic_t *value) { return value->counter; }
+static void poll_wait(struct file *fd, wait_queue_head_t *wait,
+                      poll_table *table)
+{
+    Check(fd == &file && wait == &chd_rx_poll_wait && table,
+          "poll registers on the module-lifetime waitqueue");
+    Check(chd_device_lock.readers == 1,
+          "poll registration retains the removal barrier");
+    poll_registrations++;
+}
 static struct crystalhd_adp *chd_get_adp(void)
 {
     Check(chd_device_lock.readers == 1, "device lookup holds the removal barrier");
@@ -210,6 +237,7 @@ HANDLER(bc_cproc_get_stats, BCM_IOC_GET_DRV_STAT)
 HANDLER(bc_cproc_reset_stats, BCM_IOC_RST_DRV_STAT)
 HANDLER(bc_cproc_notify_mode, BCM_IOC_NOTIFY_MODE)
 HANDLER(bc_cproc_release_user, BCM_IOC_RELEASE)
+HANDLER(bc_cproc_query_caps, BCM_IOC_QUERY_CAPS)
 static BC_STATUS crystalhd_legacy_color_access(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *io)
 {
     Check(io->udata.u.regAcc.Offset == CRYSTALHD_FLEA_COLOR_REGISTER,
@@ -226,7 +254,10 @@ static void Reset(void)
           !adapter.user_lock.writers && !adapter.tx_lock.writers,
           "previous operation released all admission and temporary ownership");
     pci = (struct pci_dev){ .device = BC_PCI_DEVID_FLEA };
-    adapter = (struct crystalhd_adp){ .pdev = &pci, .present = true };
+    adapter = (struct crystalhd_adp){
+        .pdev = &pci, .present = true, .hw_accessible = true,
+        .generation = 3,
+    };
     adapter.cmds.user[1] = (struct crystalhd_user){ .uid = 1, .in_use = 1, .mode = DTS_PLAYBACK_MODE };
     adapter.cmds.session_owner = &adapter.cmds.user[1];
     current_adapter = &adapter;
@@ -235,6 +266,8 @@ static void Reset(void)
     file.private_data = &binding;
     caller_data = (BC_IOCTL_DATA){0};
     handler_calls = color_calls = allocations = frees = copies = extra_frees = 0;
+    poll_wakes = 0;
+    poll_registrations = 0;
     device_locks = user_reads = user_writes = tx_locks = 0;
     privileged = true;
     pool_empty = fail_user_admission = fail_tx_admission = interrupt_tx = false;
@@ -260,6 +293,43 @@ static bool SessionRequired(unsigned number)
         number == DRV_ISSUE_FW_CMD || number == DRV_CMD_PROC_INPUT ||
         number == DRV_CMD_ADD_RXBUFFS || number == DRV_CMD_FETCH_RXBUFF ||
         number == DRV_CMD_START_RX_CAP || number == DRV_CMD_FLUSH_RX_CAP;
+}
+static void PollReadiness(void)
+{
+    poll_table table = {0};
+
+    Reset();
+    Check(chd_dec_poll(&file, &table) == 0 && poll_registrations == 1,
+          "an empty active owner poll blocks after registering its waitqueue");
+    adapter.rx_poll_ready.counter = 2;
+    Check(chd_dec_poll(&file, &table) == (EPOLLIN | EPOLLRDNORM),
+          "a persistent ready count is level-readable for the session owner");
+    adapter.cmds.session_owner = &adapter.cmds.user[0];
+    Check(chd_dec_poll(&file, &table) == 0,
+          "a monitor or foreign handle cannot consume owner output");
+    adapter.cmds.session_owner = binding.user;
+    adapter.cmds.state = BC_LINK_SUSPEND;
+    Check(chd_dec_poll(&file, &table) == EPOLLERR,
+          "suspend wakes a live binding as temporarily unavailable");
+    adapter.cmds.state = 0;
+    adapter.hw_accessible = false;
+    Check(chd_dec_poll(&file, &table) == EPOLLERR,
+          "inaccessible hardware reports an output poll error");
+    adapter.hw_accessible = true;
+    binding.user->in_use = 0;
+    Check(chd_dec_poll(&file, &table) == (EPOLLERR | EPOLLHUP),
+          "a released user is terminal for its poll binding");
+
+    Reset();
+    binding.generation--;
+    Check(chd_dec_poll(&file, &table) == (EPOLLERR | EPOLLHUP) &&
+          !poll_registrations,
+          "a stale generation is rejected before waitqueue registration");
+    Reset();
+    current_adapter = NULL;
+    Check(chd_dec_poll(&file, &table) == (EPOLLERR | EPOLLHUP) &&
+          !poll_registrations,
+          "an absent adapter is terminal without touching a dead waitqueue");
 }
 static void Routing(void)
 {
@@ -291,9 +361,12 @@ static void Routing(void)
             Reset();
             adapter.cmds.state = BC_LINK_SUSPEND;
             Check(Call(command, compat) == 0, "suspended legacy calls return status through the ioctl envelope");
-            Check(caller_data.RetSts == (command == BCM_IOC_GET_DRV_STAT ? BC_STS_SUCCESS : BC_STS_PWR_MGMT),
-                  "only statistics dispatches while suspended");
-            Check(handler_calls == (command == BCM_IOC_GET_DRV_STAT ? 1U : 0U), "suspended commands avoid leaf handlers");
+            bool allowed = command == BCM_IOC_GET_DRV_STAT ||
+                command == BCM_IOC_QUERY_CAPS;
+            Check(caller_data.RetSts == (allowed ? BC_STS_SUCCESS : BC_STS_PWR_MGMT),
+                  "only statistics and capability discovery dispatch while suspended");
+            Check(handler_calls == (allowed ? 1U : 0U),
+                  "suspended commands avoid hardware-facing leaf handlers");
         }
     }
 }
@@ -371,8 +444,9 @@ static void Admission(void)
     Check(Call(BCM_IOC_PROC_INPUT, false) == -ERESTARTSYS && !allocations && tx_locks == 1,
           "interrupted TX lock does not allocate or unlock an unowned mutex");
     Reset(); release_user = true;
-    Check(Call(BCM_IOC_RELEASE, false) == 0 && !binding.user && user_writes == 1,
-          "successful release invalidates this file binding");
+    Check(Call(BCM_IOC_RELEASE, false) == 0 && !binding.user && user_writes == 1 &&
+          poll_wakes == 1,
+          "successful release invalidates this file binding and wakes pollers");
     Reset(); handler_status = BC_STS_IO_ERROR;
     Check(Call(BCM_IOC_RELEASE, false) == 0 && binding.user && caller_data.RetSts == BC_STS_IO_ERROR,
           "failed release preserves a still-owned binding");
@@ -428,6 +502,7 @@ static void Permissions(void)
 }
 int main(void)
 {
+    PollReadiness();
     Routing();
     SessionOwnership();
     Admission();

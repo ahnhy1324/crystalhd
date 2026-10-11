@@ -90,6 +90,12 @@ _Static_assert(offsetof(BC_DTS_STATS, res1) == 104U,
 	       "BC_DTS_STATS trailing fields changed");
 _Static_assert(sizeof(BC_FW_CMD) == 520U, "BC_FW_CMD ABI changed");
 _Static_assert(sizeof(BC_PCI_CFG) == 264U, "BC_PCI_CFG ABI changed");
+_Static_assert(sizeof(BC_DRIVER_CAPS) == 16U,
+	       "BC_DRIVER_CAPS wire layout changed");
+_Static_assert(DRV_CMD_QUERY_CAPS == DRV_CMD_RELEASE + 1,
+	       "capability query must not renumber legacy commands");
+_Static_assert(BC_DRIVER_CAP_RX_POLL == 1U,
+	       "RX poll capability bit changed");
 _Static_assert(_IOC_TYPE(BCM_IOC_GET_VERSION) == BC_IOC_BASE,
 	       "CrystalHD ioctl magic changed");
 _Static_assert(_IOC_NR(BCM_IOC_GET_VERSION) == DRV_CMD_VERSION,
@@ -102,6 +108,8 @@ _Static_assert(BCM_IOC_FW_DOWNLOAD == EXPECT_IOCTL_BASE + DRV_CMD_FW_DOWNLOAD,
 	       "CrystalHD FW_DOWNLOAD ioctl number changed");
 _Static_assert(BCM_IOC_RELEASE == EXPECT_IOCTL_BASE + DRV_CMD_RELEASE,
 	       "CrystalHD RELEASE ioctl number changed");
+_Static_assert(BCM_IOC_QUERY_CAPS == EXPECT_IOCTL_BASE + DRV_CMD_QUERY_CAPS,
+	       "CrystalHD QUERY_CAPS ioctl number changed");
 
 int main(void)
 {

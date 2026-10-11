@@ -32,6 +32,8 @@
 #include <stdlib.h>
 #include <pthread.h>
 #include <sys/ioctl.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include "7411d.h"
 #include "libcrystalhd_version.h"
@@ -761,6 +763,49 @@ DtsDeviceClose(
 }
 
 DRVIFLIB_API BC_STATUS
+DtsDupOutputPollFd(
+    HANDLE hDevice,
+    int   *pollFd
+    )
+{
+	DTS_LIB_CONTEXT *Ctx;
+	BC_IOCTL_DATA query;
+	int fd;
+
+	if (!pollFd)
+		return BC_STS_INV_ARG;
+	*pollFd = -1;
+
+	Ctx = DtsGetContext(hDevice);
+	if (!Ctx || Ctx->DevHandle < 0)
+		return BC_STS_INV_ARG;
+
+	memset(&query, 0, sizeof(query));
+	query.IoctlDataSz = sizeof(query);
+	if (ioctl(Ctx->DevHandle, BCM_IOC_QUERY_CAPS, &query) < 0) {
+		if (errno == ENOTTY)
+			return BC_STS_NOT_IMPL;
+		return BC_STS_IO_ERROR;
+	}
+	if (query.RetSts == BC_STS_NOT_IMPL)
+		return BC_STS_NOT_IMPL;
+	if (query.RetSts != BC_STS_SUCCESS)
+		return query.RetSts;
+	if (query.u.DriverCaps.abi_version < BC_DRIVER_CAPS_ABI_VERSION ||
+	    !(query.u.DriverCaps.flags & BC_DRIVER_CAP_RX_POLL))
+		return BC_STS_NOT_IMPL;
+
+	do {
+		fd = fcntl(Ctx->DevHandle, F_DUPFD_CLOEXEC, 0);
+	} while (fd < 0 && errno == EINTR);
+	if (fd < 0)
+		return BC_STS_IO_ERROR;
+
+	*pollFd = fd;
+	return BC_STS_SUCCESS;
+}
+
+DRVIFLIB_API BC_STATUS
 DtsGetVersion(
     HANDLE  hDevice,
     uint32_t     *DrVer,
@@ -1483,6 +1528,27 @@ DtsSetVideoPID(
 	return BC_STS_NOT_IMPL;
 }
 
+static void DtsSetCaptureThresholds(DTS_LIB_CONTEXT *Ctx,
+				    BC_IOCTL_DATA *pIocData)
+{
+	uint32_t pool_count = Ctx->MpoolCnt ? Ctx->MpoolCnt :
+		BC_MAX_SW_VOUT_BUFFS;
+	uint32_t pause_limit = pool_count > 2 ? pool_count - 2 : 1;
+	uint32_t pause = Ctx->DevId == BC_PCI_DEVID_FLEA ?
+		pause_limit : PAUSE_DECODER_THRESHOLD;
+	uint32_t resume = Ctx->DevId == BC_PCI_DEVID_FLEA ?
+		FLEA_RT_PU_THRESHOLD : RESUME_DECODER_THRESHOLD;
+
+	if (pause > pause_limit)
+		pause = pause_limit;
+	if (resume >= pause)
+		resume = pause > 1 ? pause / 2 : 1;
+
+	pIocData->u.RxCap.StartDeliveryThsh = RX_START_DELIVERY_THRESHOLD;
+	pIocData->u.RxCap.PauseThsh = pause;
+	pIocData->u.RxCap.ResumeThsh = resume;
+}
+
 
 DRVIFLIB_API BC_STATUS
 DtsStartCaptureImmidiate(HANDLE		hDevice,
@@ -1522,16 +1588,7 @@ DtsStartCaptureImmidiate(HANDLE		hDevice,
 //	DebugLog_Trace(LDIL_DBG,"DbgOptions=%x\n", Ctx->RegCfg.DbgOptions);
 
 	pIocData->u.RxCap.Rsrd = ST_CAP_IMMIDIATE;
-	pIocData->u.RxCap.StartDeliveryThsh = RX_START_DELIVERY_THRESHOLD;
-	pIocData->u.RxCap.PauseThsh = PAUSE_DECODER_THRESHOLD;
-	pIocData->u.RxCap.ResumeThsh = 	RESUME_DECODER_THRESHOLD;
-
-	// NAREN for Flea change the values dynamically for pause and resume
-	if(Ctx->DevId == BC_PCI_DEVID_FLEA)
-	{
-		pIocData->u.RxCap.PauseThsh = Ctx->MpoolCnt - 2;
-		pIocData->u.RxCap.ResumeThsh = 	FLEA_RT_PU_THRESHOLD;
-	}
+	DtsSetCaptureThresholds(Ctx, pIocData);
 
 	if( (sts=DtsDrvCmd(Ctx,BCM_IOC_START_RX_CAP,0,pIocData,FALSE)) != BC_STS_SUCCESS){
 		DebugLog_Trace(LDIL_DBG,"DtsStartCapture: Failed: %d\n",sts);
@@ -1581,16 +1638,7 @@ DtsStartCapture(HANDLE  hDevice)
 //	DebugLog_Trace(LDIL_DBG,"DbgOptions=%x\n", Ctx->RegCfg.DbgOptions);
 
 	pIocData->u.RxCap.Rsrd = NO_PARAM;
-	pIocData->u.RxCap.StartDeliveryThsh = RX_START_DELIVERY_THRESHOLD;
-	pIocData->u.RxCap.PauseThsh = PAUSE_DECODER_THRESHOLD;
-	pIocData->u.RxCap.ResumeThsh = 	RESUME_DECODER_THRESHOLD;
-
-	// NAREN for Flea change the values dynamically for pause and resume
-	if(Ctx->DevId == BC_PCI_DEVID_FLEA)
-	{
-		pIocData->u.RxCap.PauseThsh = Ctx->MpoolCnt - 2;
-		pIocData->u.RxCap.ResumeThsh = 	FLEA_RT_PU_THRESHOLD;
-	}
+	DtsSetCaptureThresholds(Ctx, pIocData);
 
 	if( (sts=DtsDrvCmd(Ctx,BCM_IOC_START_RX_CAP,0,pIocData,FALSE)) != BC_STS_SUCCESS){
 		DebugLog_Trace(LDIL_DBG,"DtsStartCapture: Failed: %d\n",sts);
@@ -2476,6 +2524,7 @@ DtsSendEOS( HANDLE  hDevice, uint32_t Op
 	uint32_t nEOSLen;
 	uint32_t	nTag;
 	uint64_t drainGeneration = 0;
+	bool wakeTxWorker = false;
 	const bool softRave = Ctx->PESConvParams.m_bSoftRave;
 	const bool divxTailBoundary = softRave && Ctx->DevId == BC_PCI_DEVID_FLEA &&
 		Ctx->VidParams.MediaSubType == BC_MSUBTYPE_DIVX;
@@ -2610,12 +2659,19 @@ DtsSendEOS( HANDLE  hDevice, uint32_t Op
 			goto eos_cleanup;
 		}
 		Ctx->eosTxFence = Ctx->txBytesEnqueued;
-		if (Op == 0)
+		if (Op == 0) {
 			Ctx->bEOSCheck = true;
+			wakeTxWorker = true;
+		}
 		Ctx->eosTxComplete = Ctx->bEOSCheck && !Ctx->txDmaFault &&
 			Ctx->eosTxFence > Ctx->eosTxStart &&
 			Ctx->txBytesRetired >= Ctx->eosTxFence;
 		DtsUnLock(Ctx);
+		/* The worker may have consumed the final drain bytes before EOS mode
+		 * was published. Wake its latched idle wait so the 5 ms EOS cadence
+		 * takes effect immediately instead of inheriting the normal idle wait. */
+		if (wakeTxWorker)
+			txBufWake(&Ctx->circBuf);
 	}
 
 eos_cleanup:
