@@ -98,11 +98,12 @@ seals an unreplayable stream, continuation requires an actual IDR; dependent
 input is rejected rather than decoded with missing references.
 
 For experimental long-running H.264 input,
-`CRYSTALHD_VAAPI_LIVE_H264=1` also enables the direct input path and, after a
-second original picture is accepted, does not infer EOS from an input-delivery
-gap. Final pictures then require subsequent input or explicit context drain;
-the absolute ten-second synchronization deadline still applies. Setting the
-variable to `0`, or to any value other than exactly `1`, selects strict replay.
+`CRYSTALHD_VAAPI_LIVE_H264=1` also enables the direct decode-output path and,
+after a second original picture is accepted, does not infer EOS from an
+input-delivery gap. Final pictures then require subsequent input or explicit
+context drain; the absolute ten-second synchronization deadline still applies.
+Setting the variable to `0`, or to any value other than exactly `1`, selects
+strict replay.
 An initial one-picture decoder probe remains eligible for inactivity-based
 EOS. These policies do not affect other codecs, BCM70012's existing path or
 the library ABI, and the explicit live mode is not a general real-time
