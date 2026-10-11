@@ -199,9 +199,12 @@ Exact fixtures, rates, resource use and A/V qualifications remain in the
 ## Full-HD PCIe workaround
 
 `force_l0s_off=1` is an opt-in, host-specific BCM70015 workaround. The default
-is off. Try it only when measured 1080p30 decoding is below real time on a
-direct, dedicated root-port link. It can increase power use, and an unsupported
-PCIe topology causes probe to fail rather than changing a shared link.
+is off. Try it only when measured 1080p30 decoding is below real time, or when
+a measured 720p60 decode lacks sufficient headroom, on a direct, dedicated
+root-port link. The post-event/DMA cross-check still measured 27.33 versus
+43.04 fps at 1080p30 and 57.5 versus 87.0 fps in an unpaced 720p60 control with
+L0s enabled versus disabled. It can increase power use, and an unsupported PCIe
+topology causes probe to fail rather than changing a shared link.
 
 Close every client first, then perform a temporary test:
 
