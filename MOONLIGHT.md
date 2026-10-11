@@ -1,30 +1,29 @@
 # Moonlight / Sunshine with CrystalHD
 
-Moonlight is a first-class experimental integration in this project. Stock
-Moonlight Qt 6.2.0 has opened BCM70015 through the CrystalHD VA-API driver,
-decoded a live H.264 stream in hardware and displayed it through an indirect
-EGL/DRM PRIME path. This is real hardware integration, not a `vainfo` result or
-software fallback.
+Use unmodified Moonlight Qt 6.2.0 with BCM70015 to receive H.264 video from
+Sunshine through CrystalHD hardware decoding. This integration is experimental;
+the tested receiver and display route are listed below.
 
-The reference system demonstrated exact-identity 720p30 playback and an
-opt-in one-submission-lag mode that averaged 58.63 renderer submissions/s at
-720p60 and 28.58 at 1080p30. The latter is a working cadence experiment, not a
-30-fps-only result. It remains experimental because it associates the previous
-completed picture with the current surface/PTS slot. Orderly close/reopen is
-confirmed; physical A/V offset and forced-interruption recovery are not.
+Start with the **default frame-matching mode** at 720p30: each requested frame
+keeps its own pixels and timestamp. An optional **experimental previous-frame
+mode** improves the handoff rate at 720p60 and 1080p30 by allowing an earlier
+completed frame to fill the current request. Graceful close/reopen is confirmed;
+physical audio/video offset and forced connection-loss recovery remain unverified.
 
 ## Current verdict
 
 | Target | What happened on the reference system | Recommendation |
 | --- | --- | --- |
 | 720p30 H.264 | Hardware decode and indirect display worked; bounded exact-path runs handed roughly 28-29 frames/s to Moonlight's renderer. | **Recommended first hardware trial** |
-| 720p60 H.264 | Exact identity reached about 33 renderer submissions/s; opt-in `previous,0` averaged 58.63 with a deterministic one-submission payload lag. | Near-60 renderer handoff achieved in the experimental mode |
-| 1080p30 H.264 | Exact identity reached about 15-16 renderer submissions/s; opt-in `previous,0` averaged 28.58 with the same bounded lag. | Near-30 renderer handoff achieved in the experimental mode |
-| 1080p60 H.264 | Card output stayed below 60 frames/s and live input accumulated backlog. | Not practical |
+| 720p60 H.264 | Default frame matching reached about 33 renderer submissions/s; optional previous-frame mode reached about 59. | Try the optional mode after 720p30 works; it changes frame/timestamp matching |
+| 1080p30 H.264 | Default frame matching reached about 15-16 renderer submissions/s; optional previous-frame mode reached about 29. | Same optional mode and timing tradeoff |
+| 1080p60 H.264, native card output | Card output stayed below 60 frames/s and live input accumulated backlog. | Not practical on this Moonlight path |
 | Orderly session lifecycle | A five-minute hardware session exited normally; an immediate 40-second session reacquired the device, and later bounded sessions also released it cleanly. | Confirmed for graceful close/reopen; forced connection-loss recovery untested |
 
 “Handed to the renderer” is a Moonlight software event, not proof that the
-frame reached physical scanout.
+frame reached physical scanout. Local GStreamer playback has a separate
+[Full-HD-input/reduced-output option](USAGE.md#optional-bcm70015-output-scaling);
+that result does not establish 1080p60 Moonlight streaming.
 
 ## Tested route and compatibility
 
@@ -39,7 +38,7 @@ Sunshine H.264 -> Moonlight FFmpeg VA-API -> CrystalHD BCM70015
 | --- | --- |
 | Receiver | ThinkPad X61, Core 2 Duo T8100, BCM70015, GMA X3100/i915 |
 | OS | Ubuntu 25.10, Linux 6.17, X11 at 60 Hz |
-| Client | Unmodified Moonlight Qt 6.2.0 AppImage with bundled FFmpeg |
+| Client | Unmodified Moonlight Qt 6.2.0 x86-64 AppImage with bundled FFmpeg |
 | Stream | H.264, 8-bit 4:2:0 SDR; 720p/1080p and 30/60 fps test matrix |
 | Presentation | Indirect VA-API, composed DRM PRIME layers and EGLImage |
 
@@ -51,14 +50,22 @@ restricted to H.264 8-bit 4:2:0 SDR. BCM70012, Wayland, other GPUs, other
 Moonlight versions and Steam Remote Play are unverified. No Moonlight source
 modification is included or installed by this repository.
 
+The linked AppImage requires x86-64 userspace; it cannot run on a 32-bit i686
+installation. CrystalHD's i686/scalar-library support does not certify a
+compatible Moonlight binary or its dependencies. The Core 2 Duo results,
+including the software comparison, are not an Atom performance certification.
+
 ## Safe first trial
 
-Start at 1280x720, 30 fps. Do not begin with a 60 fps or Full-HD target.
+Start with default frame matching at 1280x720, 30 fps. The technical name
+used in the evidence is *exact identity*.
 
 1. For the reproduced setup, download
    [`Moonlight-6.2.0-x86_64.AppImage`](https://github.com/moonlight-stream/moonlight-qt/releases/download/v6.2.0/Moonlight-6.2.0-x86_64.AppImage)
-   from the official Moonlight Qt 6.2.0 release. Newer versions may be tried,
-   but are not covered by the results below.
+   from the official Moonlight Qt 6.2.0 release on an x86-64 installation
+   (`uname -m` reports `x86_64`, `getconf LONG_BIT` reports `64`). Other
+   architectures need a suitable client build and are outside this tested
+   recipe. Newer versions may be tried, but are not covered by the results below.
 2. Install and verify CrystalHD using the [README quick start](README.md#quick-start).
 3. Close every other CrystalHD client; `sudo fuser -v /dev/crystalhd` should
    report no owner.
@@ -67,9 +74,12 @@ Start at 1280x720, 30 fps. Do not begin with a 60 fps or Full-HD target.
 5. Launch the installed stack through the indirect path:
 
 ```sh
-moonlight_app=/path/to/Moonlight.AppImage
+moonlight_app="/path/to/Moonlight.AppImage"
 chmod +x "$moonlight_app"
-env LIBVA_DRIVER_NAME=crystalhd \
+env -u CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP \
+  -u CRYSTALHD_VAAPI_EXPERIMENTAL_READY_POLICY \
+  -u CRYSTALHD_VAAPI_EXPERIMENTAL_READY_DELAY_US \
+  LIBVA_DRIVER_NAME=crystalhd \
   VAAPI_FORCE_INDIRECT=1 \
   CRYSTALHD_VAAPI_LIVE_H264=1 \
   CRYSTALHD_VAAPI_LOW_LATENCY_H264=1 \
@@ -77,11 +87,13 @@ env LIBVA_DRIVER_NAME=crystalhd \
 ```
 
 6. In Moonlight Settings, select hardware decoding, H.264, 1280x720 and
-   30 fps.
+   30 fps. Note your V-sync and frame-pacing choices before any later comparison.
 7. Choose **Add PC**, enter the Sunshine host name or IP address, and enter
    Moonlight's displayed PIN in Sunshine's web UI.
 8. After pairing completes, select the Sunshine **Desktop** application.
 
+Replace the AppImage path before running the command. It clears previous-frame
+options for this invocation, so it is also the way back after that experiment.
 For an installed stack, do not add checkout-specific `LIBVA_DRIVERS_PATH` or
 `LD_LIBRARY_PATH`; those can mix stale source and installed components.
 
@@ -135,14 +147,33 @@ Reconstructed H.264 frame-rate signaling remains fixed at 30 fps, so these
 two controls alone are not the measured 60 fps mode. The near-60 result below
 also uses the separate READY experiment.
 
-### One-submission-lag READY experiment
+### Experimental previous-frame mode
 
-Keep the READY variables unset for the exact-path first trial. After that path
-works, the measured `previous,0` configuration for experimental 720p60 or
-1080p30 is:
+After the 720p30 first trial works, this mode can improve the handoff rate at
+720p60 or 1080p30. It trades normal frame/timestamp matching for the earlier
+completed picture, so audio/video timing must be judged on the actual setup.
+The measured candidate is `previous,0`; `0` means no additional timed wait.
+
+Close Moonlight before changing modes. Use the following launch command and
+these Moonlight GUI settings together:
+
+| Setting | Matched finalist configuration |
+| --- | --- |
+| Video decoder / codec | Hardware / H.264, 8-bit SDR |
+| Stream size and rate | 1280x720 at 60 fps, or 1920x1080 at 30 fps |
+| V-sync | Off |
+| Frame pacing | Off |
+| Presentation | Indirect VA-API, selected by the launch command |
+
+Those runs used the reference X61, a 1024x768 X11 desktop at 60 Hz and an
+already-active `force_l0s_off=Y` host workaround. These conditions qualify the
+recorded rates; the environment variables alone do not reproduce them. Use the
+[session-scoped L0s procedure](USAGE.md#full-hd-pcie-workaround) only after a
+qualifying throughput comparison. Disabling V-sync can expose tearing, and
+changing GUI settings changes the comparison.
 
 ```sh
-moonlight_app=/path/to/Moonlight.AppImage
+moonlight_app="/path/to/Moonlight.AppImage"
 env LIBVA_DRIVER_NAME=crystalhd \
   VAAPI_FORCE_INDIRECT=1 \
   CRYSTALHD_VAAPI_LIVE_H264=1 \
@@ -153,10 +184,21 @@ env LIBVA_DRIVER_NAME=crystalhd \
   "$moonlight_app"
 ```
 
-This experiment was designed to trade a deterministic payload lag for a more
-stable streaming handoff rate. A bounded READY pool keeps completed pictures
-available so presentation can use the preceding picture instead of waiting for
-the newest requested surface to finish decoding. If the exact requested
+Confirm VA-API selection and card ownership as above, then check continuing
+motion and Moonlight's statistics at the selected rate. Successful decoding
+alone does not prove the recorded cadence on a different setup. Stop if there
+is a persistent black picture, a sync error or accumulating delay; use the
+[troubleshooting table](#troubleshooting).
+
+To return to default frame matching, exit Moonlight and run the
+[first-trial command](#safe-first-trial) again, select 720p30 and restore your
+previous V-sync/frame-pacing choices. The command clears all three READY
+variables even if they were exported in the shell. Do not put experimental
+variables into a login profile.
+
+A bounded READY pool keeps completed pictures available so presentation can
+use the preceding picture instead of waiting for the newest requested surface
+to finish decoding. If the exact requested
 surface finishes first, the exact picture still takes precedence.
 
 The sweep tested additional eligibility waits of 0, 16.67, 33.33 and 50 ms;
@@ -164,18 +206,19 @@ the nonzero waits showed no consistent benefit. Under the retained
 `previous,0` policy, all 209 observed remap commits used the immediately
 preceding payload (`submission_drift=1`). `0` therefore means zero *additional
 time-based wait*, not zero payload lag. It reached 58.63 renderer submissions/s
-at 720p60 and 28.58 at 1080p30 on the reference system, demonstrating the
-intended render-submit-rate versus one-submission-lag tradeoff. These are
+at 720p60 and 28.58 at 1080p30 on the reference system. These are
 average handoff rates from three repeated 60-second runs. Identity traces found
 no duplicate, reversal or stale resurrection; physical scanout timing and
-cadence variance were not separately instrumented.
+cadence variance were not separately instrumented. One submission of observed
+drift is not a worst-case millisecond bound when input or decoding stalls.
 
 The mode remains experimental because it copies that older picture into the
 newly requested surface, violating normal VA surface identity and the caller's
 PTS-to-surface association. The alternative `latest` policy was less
 predictable and sometimes selected pictures 2-17 submissions old. Neither
-policy establishes physical A/V synchronization or input-to-photon latency, so
-neither is enabled by default or recommended for ordinary streaming.
+policy establishes physical A/V synchronization or input-to-photon latency.
+Both remain optional experiments, with default frame matching available through
+the rollback above.
 
 ## Measured limits
 
@@ -185,7 +228,7 @@ retained the host-specific `force_l0s_off=Y` setting and used an X11 desktop at
 1024x768 and 60 Hz. Those conditions qualify the results; test the default PCIe
 link first rather than enabling the workaround from these figures.
 
-### Exact-identity paths
+### Default frame-matching measurements
 
 | Reference condition | Decoder result | Moonlight presentation result |
 | --- | --- | --- |
@@ -193,7 +236,7 @@ link first rather than enabling the workaround from these figures.
 | 720p60 live-only | 58.86 decoded fps | 19.14 render submissions/s |
 | 720p60 live+prefeed | 59.13 decoded fps; matched AU-to-output p50/p95 21.25/25.13 ms | 33.42 render submissions/s (three-run median) |
 | 1080p30 exact identity | About 30 hardware outputs/s | About 15-16 render submissions/s in repeated baselines |
-| 1080p60 | Below requested hardware cadence with backlog | Not usable |
+| 1080p60, native card output | Below requested hardware cadence with backlog | Not usable on this streaming path |
 
 The paired 720p60 software control decoded 59.66 fps and submitted 41.33 fps,
 so this host also has a client/display presentation ceiling independent of

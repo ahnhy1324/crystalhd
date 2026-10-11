@@ -49,6 +49,7 @@ initialized=no
 finished=no
 reload_in_progress=no
 reload_force_value=0
+reload_session_value=unavailable
 started_at=
 revision=
 registry=
@@ -485,6 +486,7 @@ capture_snapshot()
         printf 'pin_net=%s\n' "$(pin_net)"
         printf 'loaded_srcversion=%s\n' "$(cat /sys/module/crystalhd/srcversion 2>/dev/null || printf unavailable)"
         printf 'force_l0s_off=%s\n' "$(cat /sys/module/crystalhd/parameters/force_l0s_off 2>/dev/null || printf unavailable)"
+        printf 'session_l0s_off=%s\n' "$(cat /sys/module/crystalhd/parameters/session_l0s_off 2>/dev/null || printf unavailable)"
         printf 'device=%s\n' "$DEVICE"
         ls -l -- "$DEVICE" 2>&1 || true
         "$FUSER" -v "$DEVICE" 2>&1 || true
@@ -988,6 +990,50 @@ normalized_force_l0s()
     esac
 }
 
+read_reload_options()
+{
+    reload_parameter_dir=${1:-/sys/module/crystalhd/parameters}
+    current_force=$(cat "$reload_parameter_dir/force_l0s_off" 2>/dev/null) || return 1
+    current_force=$(normalized_force_l0s "$current_force") || return 1
+    current_session=unavailable
+    if [ -e "$reload_parameter_dir/session_l0s_off" ]; then
+        current_session=$(cat "$reload_parameter_dir/session_l0s_off" 2>/dev/null) || return 1
+        current_session=$(normalized_force_l0s "$current_session") || return 1
+    fi
+}
+
+save_reload_options()
+{
+    read_reload_options "${1:-/sys/module/crystalhd/parameters}" || return 1
+    reload_force_value=$current_force
+    reload_session_value=$current_session
+}
+
+verify_reload_options()
+{
+    read_reload_options "${1:-/sys/module/crystalhd/parameters}" || return 1
+    [ "$current_force" = "$reload_force_value" ] && \
+        [ "$current_session" = "$reload_session_value" ]
+}
+
+load_preserved_module()
+{
+    set -- crystalhd force_l0s_off="$reload_force_value"
+    if [ "$reload_session_value" != unavailable ]; then
+        set -- "$@" session_l0s_off="$reload_session_value"
+    fi
+    root_exec "$TIMEOUT" --foreground --kill-after=5 30 modprobe "$@"
+}
+
+reload_preserved_module()
+{
+    root_exec "$TIMEOUT" --foreground --kill-after=5 30 \
+        modprobe -r crystalhd || return 1
+    [ ! -d "${1:-/sys/module/crystalhd}" ] || return 1
+    load_preserved_module || return 1
+    udevadm settle --timeout=10
+}
+
 attest_release_reload()
 {
     if [ "$(id -u)" -ne 0 ]; then
@@ -1006,16 +1052,11 @@ attest_release_reload()
     reload_note_hash=$(sha256_file "$reload_note") || return 1
     reload_firmware_hash=$(sha256_file /lib/firmware/bcm70015fw.bin) || return 1
     force_before=$(cat /sys/module/crystalhd/parameters/force_l0s_off 2>/dev/null) || return 1
-    reload_force_value=$(normalized_force_l0s "$force_before") || return 1
+    session_before=$(cat /sys/module/crystalhd/parameters/session_l0s_off 2>/dev/null || printf unavailable)
+    save_reload_options || return 1
 
     reload_in_progress=yes
-    {
-        root_exec "$TIMEOUT" --foreground --kill-after=5 30 modprobe -r crystalhd
-        [ ! -d /sys/module/crystalhd ]
-        root_exec "$TIMEOUT" --foreground --kill-after=5 30 \
-            modprobe crystalhd force_l0s_off="$reload_force_value"
-        udevadm settle --timeout=10
-    } > "$results/module-reload.log" 2>&1 || {
+    reload_preserved_module > "$results/module-reload.log" 2>&1 || {
         sed -n '1,240p' "$results/module-reload.log" >&2
         die "controlled release module reload failed"
     }
@@ -1032,12 +1073,13 @@ attest_release_reload()
     loaded_note_hash_after=$(sha256_file \
         /sys/module/crystalhd/notes/.note.gnu.build-id) || return 1
     force_after=$(cat /sys/module/crystalhd/parameters/force_l0s_off 2>/dev/null) || return 1
+    session_after=$(cat /sys/module/crystalhd/parameters/session_l0s_off 2>/dev/null || printf unavailable)
     [ "$reload_selected_after" = "$reload_selected" ] && \
         [ "$reload_selected_hash_after" = "$reload_selected_hash" ] && \
         [ "$reload_firmware_hash_after" = "$reload_firmware_hash" ] && \
         [ "$loaded_srcversion_after" = "$reload_selected_srcversion" ] && \
         [ "$loaded_note_hash_after" = "$reload_note_hash" ] && \
-        [ "$(normalized_force_l0s "$force_after")" = "$reload_force_value" ] || return 1
+        verify_reload_options || return 1
 
     {
         printf 'result\tPASS\n'
@@ -1050,6 +1092,8 @@ attest_release_reload()
         printf 'firmware\t%s\t%s\n' /lib/firmware/bcm70015fw.bin "$reload_firmware_hash"
         printf 'force_l0s_off_before\t%s\n' "$force_before"
         printf 'force_l0s_off_after\t%s\n' "$force_after"
+        printf 'session_l0s_off_before\t%s\n' "$session_before"
+        printf 'session_l0s_off_after\t%s\n' "$session_after"
         printf 'pci\t14e4:1615\n'
     } > "$results/module-reload.tsv"
 }
@@ -1057,10 +1101,15 @@ attest_release_reload()
 recover_reload()
 {
     [ "$reload_in_progress" = yes ] || return 0
+    if [ -d "${1:-/sys/module/crystalhd}" ]; then
+        printf '%s\n' 'module is still loaded; not loading another image during recovery' \
+            >> "$results/reload-recovery.log"
+        reload_in_progress=no
+        return 0
+    fi
     printf '%s\n' 'attempting crystalhd module recovery after an interrupted reload' \
         >> "$results/reload-recovery.log"
-    root_exec "$TIMEOUT" --foreground --kill-after=5 30 \
-        modprobe crystalhd force_l0s_off="$reload_force_value" \
+    load_preserved_module \
         >> "$results/reload-recovery.log" 2>&1 || true
     reload_in_progress=no
 }
@@ -1243,6 +1292,11 @@ finish_run()
     printf '%s\n' "$before_force" | grep -Eq '^[YN]$' && \
         [ "$before_force" = "$after_force" ] || \
         die "force_l0s_off is unavailable or changed: $before_force -> $after_force"
+    before_session=$(sed -n 's/^session_l0s_off=//p' "$results/system-before.txt")
+    after_session=$(sed -n 's/^session_l0s_off=//p' "$results/system-after.txt")
+    case $before_session in Y|N|unavailable) ;; *) die "invalid session_l0s_off snapshot" ;; esac
+    [ "$before_session" = "$after_session" ] || \
+        die "session_l0s_off changed: $before_session -> $after_session"
     diff -u "$results/aer-before.txt" "$results/aer-after.txt" > "$results/aer.diff" || \
         die "CrystalHD AER counters changed during the gate"
     diff -u "$results/runtime-fingerprint.before.tsv" \
@@ -1577,22 +1631,16 @@ run_reload_sanity()
     run_timed reload-before "$((timeout_seconds + 30))" "$script_dir/library-drain-test" \
         --hardware "$fixture" "$frames" "$timeout_seconds" 1 || exit 1
     device_idle || exit 1
-    reload_force_value=$(normalized_force_l0s \
-        "$(cat /sys/module/crystalhd/parameters/force_l0s_off 2>/dev/null)") || \
-        die "cannot preserve force_l0s_off across reload-sanity"
+    save_reload_options || die "cannot preserve L0s options across reload-sanity"
     reload_in_progress=yes
-    {
-        root_exec "$TIMEOUT" --foreground --kill-after=5 30 modprobe -r crystalhd
-        root_exec "$TIMEOUT" --foreground --kill-after=5 30 \
-            modprobe crystalhd force_l0s_off="$reload_force_value"
-        udevadm settle --timeout=10
-    } > "$results/reload.log" 2>&1 || {
+    reload_preserved_module > "$results/reload.log" 2>&1 || {
         sed -n '1,240p' "$results/reload.log" >&2
         die "normal crystalhd unload/reload failed"
     }
     reload_in_progress=no
     [ -r "$DEVICE" ] && [ -w "$DEVICE" ] || die "$DEVICE did not return after reload"
     device_idle || exit 1
+    verify_reload_options || die "L0s options changed across reload-sanity"
     run_timed reload-after "$((timeout_seconds + 30))" "$script_dir/library-drain-test" \
         --hardware "$fixture" "$frames" "$timeout_seconds" 1 || exit 1
 }
@@ -2250,6 +2298,7 @@ validate_release_reload_evidence()
     reload_file=$1
     reload_fingerprint=$2
     reload_force=$3
+    reload_session=${4:-}
     [ -f "$reload_file" ] || return 1
     reload_result=$(tab_value result "$reload_file") || return 1
     reload_path=$(tab_value selected_module "$reload_file") || return 1
@@ -2268,7 +2317,18 @@ validate_release_reload_evidence()
         END { if (count != 1 || bad) exit 1; print value }
     ' "$reload_file") || return 1
     reload_line_count=$(wc -l < "$reload_file") || return 1
-    [ "$reload_line_count" -eq 11 ] && [ "$reload_result" = PASS ] && \
+    if [ -n "$reload_session" ]; then
+        case $reload_session in Y|N|unavailable) ;; *) return 1 ;; esac
+        reload_session_before=$(tab_value session_l0s_off_before "$reload_file") || return 1
+        reload_session_after=$(tab_value session_l0s_off_after "$reload_file") || return 1
+        [ "$reload_line_count" -eq 13 ] && \
+            [ "$reload_session_before" = "$reload_session" ] && \
+            [ "$reload_session_after" = "$reload_session" ] || return 1
+    else
+        # Historical runs predate the session parameter and its receipt fields.
+        [ "$reload_line_count" -eq 11 ] || return 1
+    fi
+    [ "$reload_result" = PASS ] && \
         [ "$reload_pci" = 14e4:1615 ] && [ "$reload_force_before" = "$reload_force" ] && \
         [ "$reload_force_after" = "$reload_force" ] && [ -n "$reload_vermagic" ] && \
         is_sha256 "$reload_hash" && is_sha256 "$reload_selected_note" && \
@@ -2475,6 +2535,8 @@ check_evidence_set()
         after_src=$(evidence_value loaded_srcversion "$system_after" 2>/dev/null || true)
         before_force=$(evidence_value force_l0s_off "$system_before" 2>/dev/null || true)
         after_force=$(evidence_value force_l0s_off "$system_after" 2>/dev/null || true)
+        before_session=$(evidence_value session_l0s_off "$system_before" 2>/dev/null || true)
+        after_session=$(evidence_value session_l0s_off "$system_after" 2>/dev/null || true)
         [ "$before_ref" = 0 ] && [ "$after_ref" = 0 ] && \
             printf '%s\n' "$before_pin" | grep -Eq '^[0-9]+$' && \
             [ "$before_pin" = "$after_pin" ] && \
@@ -2486,10 +2548,18 @@ check_evidence_set()
             return 1
         }
         force_summary="$force_summary $evidence_name=$before_force"
+        case $before_session in ''|Y|N|unavailable) ;; *)
+            error "invalid session_l0s_off state in $evidence_name"
+            return 1 ;;
+        esac
+        [ "$before_session" = "$after_session" ] || {
+            error "session_l0s_off changed in $evidence_name"
+            return 1
+        }
 
         [ -f "$evidence_dir/module-reload.log" ] && \
             validate_release_reload_evidence "$evidence_dir/module-reload.tsv" \
-                "$fingerprint_before" "$before_force" || {
+                "$fingerprint_before" "$before_force" "$before_session" || {
             error "missing or inconsistent controlled reload evidence in $evidence_name"
             return 1
         }
@@ -2573,6 +2643,105 @@ EOF
     chmod +x "$mock_ffprobe"
     FFPROBE=$mock_ffprobe
     tests=0
+
+    # Exercise the actual reload/recovery helpers with a fake sysfs directory.
+    # The command stub never invokes modprobe, udevadm or any hardware operation.
+    (
+        mock_module=$tmp/l0s-module
+        mock_parameters=$mock_module/parameters
+        results=$tmp/l0s-results
+        mkdir "$results"
+        mock_commands=$results/commands
+        mock_reload_mode=normal
+        root_exec()
+        {
+            printf '%s\n' "$*" >> "$mock_commands"
+            case "$*" in
+                *' modprobe -r crystalhd')
+                    [ "$mock_reload_mode" != fail-unload ] || return 1
+                    [ "$mock_reload_mode" != still-loaded ] || return 0
+                    rm -f -- "$mock_parameters/force_l0s_off" \
+                        "$mock_parameters/session_l0s_off"
+                    rmdir "$mock_parameters" "$mock_module"
+                    ;;
+                *' modprobe crystalhd '*)
+                    [ "$mock_reload_mode" != fail-load ] || return 1
+                    mkdir -p "$mock_parameters"
+                    for mock_arg in "$@"; do
+                        case $mock_arg in
+                            force_l0s_off=0) printf 'N\n' > "$mock_parameters/force_l0s_off" ;;
+                            force_l0s_off=1) printf 'Y\n' > "$mock_parameters/force_l0s_off" ;;
+                            session_l0s_off=0) printf 'N\n' > "$mock_parameters/session_l0s_off" ;;
+                            session_l0s_off=1) printf 'Y\n' > "$mock_parameters/session_l0s_off" ;;
+                        esac
+                    done
+                    ;;
+                *) return 2 ;;
+            esac
+        }
+        udevadm()
+        {
+            printf 'udevadm %s\n' "$*" >> "$mock_commands"
+        }
+        for mock_policy in N:Y Y:Y N:N Y:N N:unavailable; do
+            mkdir -p "$mock_parameters"
+            printf '%s\n' "${mock_policy%:*}" > "$mock_parameters/force_l0s_off"
+            case ${mock_policy#*:} in
+                unavailable) rm -f -- "$mock_parameters/session_l0s_off" ;;
+                *) printf '%s\n' "${mock_policy#*:}" > "$mock_parameters/session_l0s_off" ;;
+            esac
+            case $mock_policy in
+                N:Y) expected_options='force_l0s_off=0 session_l0s_off=1' ;;
+                Y:Y) expected_options='force_l0s_off=1 session_l0s_off=1' ;;
+                N:N) expected_options='force_l0s_off=0 session_l0s_off=0' ;;
+                Y:N) expected_options='force_l0s_off=1 session_l0s_off=0' ;;
+                N:unavailable) expected_options='force_l0s_off=0' ;;
+            esac
+            : > "$mock_commands"
+            save_reload_options "$mock_parameters" || exit 1
+            reload_preserved_module "$mock_module" || exit 1
+            verify_reload_options "$mock_parameters" || exit 1
+            expected_load="$TIMEOUT --foreground --kill-after=5 30 modprobe crystalhd $expected_options"
+            [ "$(sed -n '/ modprobe crystalhd /p' "$mock_commands")" = "$expected_load" ] || exit 1
+            [ "$(wc -l < "$mock_commands")" -eq 3 ] || exit 1
+        done
+
+        printf 'Y\n' > "$mock_parameters/session_l0s_off"
+        save_reload_options "$mock_parameters" || exit 1
+        printf 'N\n' > "$mock_parameters/session_l0s_off"
+        if verify_reload_options "$mock_parameters"; then exit 1; fi
+        printf 'invalid\n' > "$mock_parameters/session_l0s_off"
+        if save_reload_options "$mock_parameters"; then exit 1; fi
+        printf 'Y\n' > "$mock_parameters/session_l0s_off"
+        save_reload_options "$mock_parameters" || exit 1
+        for mock_reload_mode in fail-unload still-loaded; do
+            : > "$mock_commands"
+            if reload_preserved_module "$mock_module"; then exit 1; fi
+            reload_in_progress=yes
+            recover_reload "$mock_module"
+            [ "$reload_in_progress" = no ] || exit 1
+            [ "$(wc -l < "$mock_commands")" -eq 1 ] || exit 1
+            verify_reload_options "$mock_parameters" || exit 1
+        done
+
+        mock_reload_mode=fail-load
+        : > "$mock_commands"
+        if reload_preserved_module "$mock_module"; then exit 1; fi
+        [ ! -d "$mock_module" ] || exit 1
+        [ "$(wc -l < "$mock_commands")" -eq 2 ] || exit 1
+        mock_reload_mode=normal
+        reload_in_progress=yes
+        recover_reload "$mock_module"
+        verify_reload_options "$mock_parameters" || exit 1
+        [ "$reload_in_progress" = no ] || exit 1
+        [ "$(wc -l < "$mock_commands")" -eq 3 ] || exit 1
+        expected_load="$TIMEOUT --foreground --kill-after=5 30 modprobe crystalhd force_l0s_off=0 session_l0s_off=1"
+        [ "$(tail -n 1 "$mock_commands")" = "$expected_load" ] || exit 1
+    ) || {
+        error "self-test failed L0s reload policy preservation or failure recovery"
+        return 1
+    }
+    tests=$((tests + 10))
 
     saved_proc_root=$PROC_ROOT
     PROC_ROOT=$tmp/proc
@@ -3179,6 +3348,47 @@ EOF
     repo_dir=$evidence_repo
     check_evidence_set "$evidence_root" >/dev/null
     tests=$((tests + 1))
+
+    session_evidence=$evidence_root/oracle
+    session_receipt=$session_evidence/module-reload.tsv
+    session_fingerprint=$session_evidence/runtime-fingerprint.before.tsv
+    cp "$session_receipt" "$tmp/legacy-reload-receipt"
+    cp "$session_evidence/system-before.txt" "$tmp/legacy-session-before"
+    cp "$session_evidence/system-after.txt" "$tmp/legacy-session-after"
+    for receipt_session in N Y unavailable; do
+        cp "$tmp/legacy-reload-receipt" "$session_receipt"
+        printf 'session_l0s_off_before\t%s\nsession_l0s_off_after\t%s\n' \
+            "$receipt_session" "$receipt_session" >> "$session_receipt"
+        validate_release_reload_evidence "$session_receipt" \
+            "$session_fingerprint" N "$receipt_session" || {
+            error "self-test rejected a matching session L0s reload receipt"
+            return 1
+        }
+    done
+    if validate_release_reload_evidence "$session_receipt" \
+        "$session_fingerprint" N Y >/dev/null 2>&1; then
+        error "self-test accepted a mismatched session L0s reload receipt"
+        return 1
+    fi
+    cp "$tmp/legacy-session-before" "$session_evidence/system-before.txt"
+    cp "$tmp/legacy-session-after" "$session_evidence/system-after.txt"
+    printf 'session_l0s_off=unavailable\n' >> "$session_evidence/system-before.txt"
+    printf 'session_l0s_off=unavailable\n' >> "$session_evidence/system-after.txt"
+    check_evidence_set "$evidence_root" >/dev/null
+    cp "$tmp/legacy-session-after" "$session_evidence/system-after.txt"
+    printf 'session_l0s_off=Y\n' >> "$session_evidence/system-after.txt"
+    if check_evidence_set "$evidence_root" >/dev/null 2>&1; then
+        error "self-test accepted a changed session L0s policy"
+        return 1
+    fi
+    cp "$tmp/legacy-session-before" "$session_evidence/system-before.txt"
+    cp "$tmp/legacy-session-after" "$session_evidence/system-after.txt"
+    if check_evidence_set "$evidence_root" >/dev/null 2>&1; then
+        error "self-test accepted new reload fields without session snapshots"
+        return 1
+    fi
+    cp "$tmp/legacy-reload-receipt" "$session_receipt"
+    tests=$((tests + 7))
 
     sed 's#/usr/bin/x86_64-linux-gnu-objcopy#/usr/bin/objcopy-wrapper#' \
         "$evidence_fingerprint" > "$tmp/bad-objcopy-fingerprint"

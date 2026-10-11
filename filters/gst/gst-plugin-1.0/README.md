@@ -4,8 +4,8 @@
 pipelines. It accepts parsed H.264, MPEG-2 and MPEG-4 Part 2, plus the
 VC-1/WMV3 framing described below, and outputs YUY2 video frames.
 
-This plugin is experimental. The validated BCM70015 subset and known failures
-are recorded in the [hardware report](../../../HARDWARE-2026-09-13.md).
+This is the primary local-playback integration. Its validated BCM70015 subset
+and known limits are recorded in the [hardware report](../../../HARDWARE-2026-09-13.md).
 Device-free CI checks discovery, framing/lifecycle helpers, synthetic YUY2
 playback and software audio/video controls; it does not decode through
 CrystalHD or establish BCM70012 behavior.
@@ -68,14 +68,18 @@ height has to be rounded.
 For example, return 1280x720 from progressive 1920x1080 H.264:
 
 ```sh
-gst-launch-1.0 filesrc location=video.mp4 ! qtdemux ! h264parse ! \
+gst-launch-1.0 -v filesrc location="/path/to/video.mp4" ! qtdemux ! h264parse ! \
   crystalhddec scale-width=1280 ! videoconvert ! autovideosink
 ```
+
+For this input, the verbose output should show `crystalhddec` source caps with
+`width=(int)1280`, `height=(int)720` and `pixel-aspect-ratio=(fraction)1/1`,
+followed by continuing playback and EOS. Replace the path with your file.
 
 To compare an explicit host-side resize back to a square-pixel Full-HD buffer:
 
 ```sh
-gst-launch-1.0 filesrc location=video.mp4 ! qtdemux ! h264parse ! \
+gst-launch-1.0 -v filesrc location="/path/to/video.mp4" ! qtdemux ! h264parse ! \
   crystalhddec scale-width=1280 ! \
   videoscale method=bilinear2 n-threads=2 add-borders=true ! \
   'video/x-raw,format=YUY2,width=1920,height=1080,pixel-aspect-ratio=1/1' ! \
@@ -85,7 +89,9 @@ gst-launch-1.0 filesrc location=video.mp4 ! qtdemux ! h264parse ! \
 The first scale occurs on CrystalHD and reduces returned YUY2 traffic. The
 second is ordinary GStreamer software processing and consumes host CPU; it
 does not recover source detail. Width 1280 is a measured example rather than a
-plugin default. See the [user guide](../../../USAGE.md#optional-bcm70015-output-scaling)
+plugin default. Remove `scale-width` and the explicit `videoscale`/caps stage
+in a new pipeline to return to native output. See the
+[user guide](../../../USAGE.md#optional-bcm70015-output-scaling)
 and [hardware measurements](../../../HARDWARE-2026-09-13.md#full-hd-input-with-decoder-coupled-scaling-2026-10-11).
 
 ## MPEG-4 Part 2 input

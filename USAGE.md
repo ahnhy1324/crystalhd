@@ -1,7 +1,7 @@
 # Everyday CrystalHD usage
 
 This guide covers installed local playback and common application paths. Start
-with every tuning option unset. Check the [README compatibility tables](README.md#compatibility-at-a-glance)
+with every tuning option unset. Check [README compatibility](README.md#compatibility)
 before choosing the card for a workload; Sunshine/Moonlight has a separate
 [integration guide](MOONLIGHT.md).
 
@@ -53,12 +53,14 @@ For targeted read-only checks:
 
 ## Play a local file
 
-Hardware mode is the default:
+For a first run, choose a progressive H.264 8-bit 4:2:0 MP4 at 720p30 or
+smaller. The `.mp4` extension alone does not identify the codec. Replace the
+example paths with your own files; hardware mode is the default:
 
 ```sh
-crystalhd-play video.mp4
-crystalhd-play --hardware video.mp4
-crystalhd-play --subtitles subtitles.srt video.mkv
+crystalhd-play "/path/to/video.mp4"
+crystalhd-play --hardware "/path/to/video.mp4"
+crystalhd-play --subtitles "/path/to/subtitles.srt" "/path/to/video.mkv"
 ```
 
 A successful hardware run reports
@@ -67,8 +69,11 @@ decoded-video-frame count. Software mode is an intentional comparison, not a
 fallback:
 
 ```sh
-crystalhd-play --software video.mp4
+crystalhd-play --software "/path/to/video.mp4"
 ```
+
+If hardware mode fails, start with the
+[symptom table](#troubleshooting-and-proof-of-hardware-use).
 
 | Key | Action |
 | --- | --- |
@@ -79,22 +84,45 @@ crystalhd-play --software video.mp4
 | `q` | Quit |
 
 The controls exercise the whole player; they do not imply that every
-resolution can be decoded at every playback rate. In particular, 1080p60 and
-1080p30 at 2x are beyond the measured output limit.
+resolution can be decoded at every playback rate. Native Full-HD output at
+60 fps, including 1080p30 at 2x, is beyond the measured output limit.
+[Smaller card output](#optional-bcm70015-output-scaling) can improve throughput
+for Full-HD input at the cost of detail.
 
 ## Optional BCM70015 output scaling
 
-Native-size output remains the default. For progressive BCM70015 input, an
-explicit width can instead be applied by the decoder-coupled hardware scaler:
+Use this option when Full-HD output is bandwidth-limited and a smaller image
+is acceptable. On BCM70015, the card can decode a progressive Full-HD input
+and return fewer pixels over PCIe. Detail is lost during that reduction;
+enlarging the image afterward does not recover it. Native-size output remains
+the default.
+
+These examples keep the input at 1920x1080, reduce the card output to
+1280x720, and optionally resize it in software to a 1920x1080 display buffer:
 
 ```sh
 # Return 1280-wide YUY2 from a progressive Full-HD input.
-crystalhd-play --hardware --scale-width 1280 video-1080p.mp4
+crystalhd-play --hardware --scale-width 1280 "/path/to/video-1080p.mp4"
 
 # Then use GStreamer videoscale to produce an exact 1920x1080 display buffer.
 crystalhd-play --hardware --scale-width 1280 \
-  --software-output-size 1920x1080 video-1080p.mp4
+  --software-output-size 1920x1080 "/path/to/video-1080p.mp4"
 ```
+
+Expect `Decoder: crystalhddec (hardware; video output confirmed)`, a nonzero
+decoded-video-frame count and playback through the end of the file. Compare
+motion and detail with the native run. For negotiated dimensions, use the
+verbose [GStreamer scaling example](filters/gst/gst-plugin-1.0/README.md#optional-bcm70015-output-scaling).
+To return to native output, close the player and launch it without either
+scaling option; the choices are not saved between invocations.
+
+The reference H.264 High stream rose from about 46 to 65 unpaced frames/s
+with 1280-wide card output. Software enlargement back to Full HD retained
+about 64 frames/s and used about 84% of one CPU core. This is useful headroom
+for the measured input, not native 1080p60 detail or a displayed-frame-rate
+guarantee. Other codecs and hosts have different limits; exact throughput and
+quality results are in the
+[hardware report](HARDWARE-2026-09-13.md#full-hd-input-with-decoder-coupled-scaling-2026-10-11).
 
 `--scale-width` accepts `0` for native output or any even width from 128 through
 1918 that does not exceed the coded width. The card derives an even output
@@ -112,14 +140,6 @@ down; resizing up does not restore detail discarded by the card. Omitting it
 lets the normal video sink fit the smaller decoded image to its window or
 display.
 
-On the reference host, 1280-wide card output from one 1920x1080 H.264 High
-stream sustained about 64.7 unpaced frames/s, compared with about 45.6 at
-native output. Resizing 1280x720 back to 1920x1080 with the selected software
-filter retained about 64.3 frames/s but used substantially more host CPU. This
-is an opt-in bandwidth/quality/CPU tradeoff, not a claim that every codec,
-stream or host reaches that rate. Exact codec and quality measurements are in
-the [hardware report](HARDWARE-2026-09-13.md#full-hd-input-with-decoder-coupled-scaling-2026-10-11).
-
 ## GStreamer pipelines
 
 These installed-system examples explicitly name `crystalhddec`, so GStreamer
@@ -129,35 +149,35 @@ use `crystalhd-play` for ordinary container audio and subtitles.
 H.264 in MP4:
 
 ```sh
-gst-launch-1.0 filesrc location=video.mp4 ! qtdemux ! h264parse ! \
+gst-launch-1.0 filesrc location="/path/to/video.mp4" ! qtdemux ! h264parse ! \
   crystalhddec ! videoconvert ! autovideosink
 ```
 
 MPEG-2 elementary video:
 
 ```sh
-gst-launch-1.0 filesrc location=video.m2v ! mpegvideoparse ! \
+gst-launch-1.0 filesrc location="/path/to/video.m2v" ! mpegvideoparse ! \
   crystalhddec ! videoconvert ! autovideosink
 ```
 
 MPEG-4 Part 2 in MP4:
 
 ```sh
-gst-launch-1.0 filesrc location=video.mp4 ! qtdemux ! mpeg4videoparse ! \
+gst-launch-1.0 filesrc location="/path/to/video.mp4" ! qtdemux ! mpeg4videoparse ! \
   crystalhddec ! videoconvert ! autovideosink
 ```
 
 WMV3 in ASF/WMV:
 
 ```sh
-gst-launch-1.0 filesrc location=video.wmv ! asfdemux ! \
+gst-launch-1.0 filesrc location="/path/to/video.wmv" ! asfdemux ! \
   crystalhddec ! videoconvert ! autovideosink
 ```
 
 Raw VC-1 Advanced requires caps matching the stream:
 
 ```sh
-gst-launch-1.0 filesrc location=video.vc1 ! \
+gst-launch-1.0 filesrc location="/path/to/video.vc1" ! \
   'video/x-wmv,wmvversion=3,format=WVC1,stream-format=bdu,header-format=none,width=176,height=144,framerate=25/1' ! \
   crystalhddec ! videoconvert ! autovideosink
 ```
@@ -197,7 +217,7 @@ LIBVA_DRIVER_NAME=crystalhd \
 
 LIBVA_DRIVER_NAME=crystalhd \
 ffmpeg -hide_banner -hwaccel vaapi -hwaccel_device "$drm_node" \
-  -hwaccel_output_format vaapi -i video.mp4 \
+  -hwaccel_output_format vaapi -i "/path/to/video.mp4" \
   -vf hwdownload,format=nv12 -an -sn -f null -
 ```
 
@@ -210,7 +230,7 @@ One VLC 3.0.21 H.264 path was validated on the reference X11/i915 system:
 ```sh
 LIBVA_DRIVER_NAME=crystalhd \
 vlc --avcodec-hw=vaapi --vout=gl --gl=egl_x11 \
-  --glconv=glconv_vaapi_drm video.mp4
+  --glconv=glconv_vaapi_drm "/path/to/video.mp4"
 ```
 
 VLC can choose another decoder, so this command alone is not proof of
@@ -226,7 +246,9 @@ or GPUs.
   documented PCIe L0s workaround was enabled.
 - Synthetic 720p decode/download exceeded 60 fps with that host workaround,
   but this is not a general 60 Hz display claim.
-- 1080p60 and 1080p30 at 2x are not practical on the current output path.
+- Native Full-HD output at 60 fps, including 1080p30 at 2x, is not practical
+  on the current path. The optional reduced-output mode above exceeded
+  60 frames/s on selected Full-HD H.264 input, with reduced detail.
 - CrystalHD reduced decoder-process CPU in the reference comparison, while
   software completed unpaced work faster and used less memory. Whole-system
   power was not measured.
@@ -236,51 +258,69 @@ Exact fixtures, rates, resource use and A/V qualifications remain in the
 
 ## Full-HD PCIe workaround
 
-The driver has two opt-in, host-specific BCM70015 workarounds. Both default to
-off and require a direct, dedicated root-port link; an unsupported topology
-causes probe to fail rather than changing a shared link.
+Consider this only for a repeatable native 1080p30 throughput shortfall or
+insufficient 720p60 decode headroom. Disabling PCIe L0s saved enough transfer
+time to restore real-time Full-HD playback on the reference host. It may
+increase power use during playback; whole-system wattage was not measured.
+The [hardware report](HARDWARE-2026-09-13.md#pcie-l0s-isolation-2026-09-27)
+retains the comparisons.
 
-- `session_l0s_off=1` disables L0s with raw PCI configuration writes only while
-  a decoder session owns the card. A clean close restores the endpoint and
-  root-port L0s bits captured at that session's start. Monitor-only opens do
-  not change the link. Suspend restores that baseline; resume takes a fresh
-  post-resume snapshot before reapplying the session override. This is the
-  preferred first test because idle platform policy is restored and no
-  persistent PCI-core disable is requested.
+Both driver options default to off and require BCM70015 on a direct,
+dedicated root-port link. The driver rejects unsupported topology rather than
+changing a shared link.
+
+- `session_l0s_off=1` is the preferred first test. It disables L0s while a
+  decoder session owns the card and restores both link ends to their captured
+  idle values after clean close. Monitor-only opens do not change the link.
+  Suspend restores that baseline; resume captures the new baseline before
+  reapplying the session override. Existing internal card low-power handling
+  remains active.
 - `force_l0s_off=1` keeps the existing module-lifetime behavior. Depending on
   PCI-core ownership, its disable policy may remain after module removal. If
   both options are supplied, `force_l0s_off=1` takes precedence.
 
-Try either only when measured 1080p30 decoding is below real time, or when a
-measured 720p60 decode lacks sufficient headroom. The post-event/DMA
-cross-check measured 27.33 versus 43.04 fps at 1080p30 and 57.5 versus 87.0 fps
-in an unpaced 720p60 control with L0s enabled versus disabled. The
-session-scoped mode restores the prior L0s policy while idle and leaves the
-card's existing internal low-power handling intact, but whole-system wattage
-was not measured. Disabling L0s may increase power use while a decoder session
-is active.
-
-Close every client first, then perform a temporary test:
+Close every client, then inspect the loaded and saved options:
 
 ```sh
 sudo fuser -v /dev/crystalhd
 cat /sys/module/crystalhd/refcnt
-sudo modprobe -r crystalhd
-sudo modprobe crystalhd session_l0s_off=1
 cat /sys/module/crystalhd/parameters/session_l0s_off
-crystalhd-check
+cat /sys/module/crystalhd/parameters/force_l0s_off
+modprobe --showconfig | grep -E '^options[[:space:]]+crystalhd[[:space:]]'
+cat /proc/cmdline
 ```
 
-Continue only if `fuser` reports no owner and the reference count is zero;
-never force-unload the module. The parameter should report `Y`. While a real
-decoder session runs, both link ends should have L0s disabled; after clean
-close they should return to their captured idle values. Do not change ASPM
-policy concurrently through another tool or service. To stop requesting the
-workaround, close clients and safely reload without it:
+Continue only if `fuser` reports no owner and the reference count is zero.
+Never force-unload the module. If `session_l0s_off` is missing, resolve the
+[loaded/installed module mismatch](BRINGUP.md#device-access-and-module-identity)
+before trying the option. Saved `options crystalhd` lines and
+`crystalhd.*` kernel-command-line settings can reapply options on future
+loads. If force mode was already enabled, first remove its saved setting and
+reboot as described below to obtain a clean baseline.
+
+For a temporary session-mode test, explicitly disable the force option:
 
 ```sh
 sudo modprobe -r crystalhd
-sudo modprobe crystalhd
+sudo modprobe crystalhd force_l0s_off=0 session_l0s_off=1
+cat /sys/module/crystalhd/parameters/session_l0s_off
+cat /sys/module/crystalhd/parameters/force_l0s_off
+crystalhd-check
+```
+
+The parameters should report `Y` then `N`. Repeat the same complete file and
+compare playback/throughput; after close, confirm no owner and refcount zero.
+For an exact link check, compare endpoint and root-port `LnkCtl` in
+`lspci -vv`: L0s is disabled during decode and returns to its saved idle state
+after close. Do not change ASPM policy through another tool or service during
+the comparison.
+
+To undo the temporary request, close clients and repeat the idle checks above
+before reloading with both options off:
+
+```sh
+sudo modprobe -r crystalhd
+sudo modprobe crystalhd force_l0s_off=0 session_l0s_off=0
 ```
 
 The session-scoped path uses no PCI-core ASPM-disable call and takes a fresh
@@ -289,15 +329,18 @@ saved L0s bits during a normal unload, but a PCI-core-owned disable is
 intentionally sticky and may remain after module removal. Therefore
 `force_l0s_off=N` alone does not prove that the link returned to its prior
 state. Reboot without the force option to return to the machine's boot-time
-PCIe policy; compare endpoint and root-port `LnkCtl` values with `lspci -vv`
-when an exact before/after check matters.
+PCIe policy.
 
 Make the request persistent only after a repeatable benefit is established, by
 placing `options crystalhd session_l0s_off=1` in
 `/etc/modprobe.d/crystalhd.conf`. Keep `force_l0s_off=1` only when its
-module-lifetime policy is deliberately required. Remove the entry and reboot
-to undo a force-mode PCI-core policy. Do not use global `pcie_aspm=force`,
-link-speed changes or payload-size tweaks.
+module-lifetime policy is deliberately required. To undo a persistent choice,
+remove only the relevant option from its modprobe configuration or bootloader
+configuration, preserving unrelated settings. On Ubuntu, refresh the initramfs
+with `sudo update-initramfs -u` after changing saved module options; update the
+bootloader if its command line was changed, then reboot. A reload with explicit
+zeros affects only that load and does not remove saved options. Do not use
+global `pcie_aspm=force`, link-speed changes or payload-size tweaks.
 
 ## Advanced option index
 
@@ -309,7 +352,7 @@ documents the exact behavior and limitations.
 | Reduce library RX-buffer memory | `CRYSTALHD_EXPERIMENTAL_RX_POOL_COUNT=8` | [libcrystalhd optional RX pool](linux_lib/libcrystalhd/README.md#optional-output-readiness-and-rx-pool) |
 | Long-running live H.264 input | `CRYSTALHD_VAAPI_LIVE_H264=1` | [Moonlight guide](MOONLIGHT.md) and [VA replay contract](filters/vaapi/README.md#replay-and-end-of-stream) |
 | Reduce decode latency by about one frame interval in a tested 720p30 stream | `CRYSTALHD_VAAPI_LOW_LATENCY_H264=1` with live mode | [Moonlight guide](MOONLIGHT.md) |
-| Test nonstandard older-ready-frame remapping | `CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP=1` plus policy/delay controls | Diagnostic only; [VA guide](filters/vaapi/README.md#replay-and-end-of-stream) |
+| Try Moonlight's experimental previous-frame mode | `CRYSTALHD_VAAPI_EXPERIMENTAL_READY_REMAP=1` plus policy/delay controls | [Moonlight setup and rollback](MOONLIGHT.md#experimental-previous-frame-mode) |
 | Test reference-host i915 write combining | `CRYSTALHD_VAAPI_EXPERIMENTAL_I915_WC=1` | [VA surface contract](filters/vaapi/README.md#surface-and-export-contracts) |
 | Collect VA debug or JSONL trace output | `CRYSTALHD_VAAPI_DEBUG`, `CRYSTALHD_VAAPI_TRACE=1` | [VA diagnostic controls](filters/vaapi/README.md#diagnostic-controls) |
 | Exercise the Chromium launcher | `CRYSTALHD_CHROMIUM_*` | [Chromium experiment](filters/vaapi/README.md#chromium-launcher-experiment) |
@@ -320,20 +363,19 @@ tuning switch.
 
 ## Troubleshooting and proof of hardware use
 
-Use this order instead of changing several options at once:
+Start with `crystalhd-check`, then follow the matching symptom. Change one
+setting at a time.
 
-1. Run `crystalhd-check` and resolve direct/DKMS, loaded/installed identity or
-   device-permission warnings.
-2. Run `sudo fuser -v /dev/crystalhd`. Close the existing owner; one card
-   supports one hardware session.
-3. Check the filename printed by `gst-inspect-1.0 crystalhddec` and remove stale
-   source-tree `GST_PLUGIN_PATH` or `LD_LIBRARY_PATH` overrides.
-4. Use `crystalhd-play --hardware FILE` for the clearest no-fallback result.
-5. Confirm that the input fits the codec/profile/framing table above.
-6. Only for a repeatable Full-HD throughput shortfall, test
-   `force_l0s_off=1` by itself.
-7. Inspect current-boot kernel messages for CrystalHD faults or firmware
-   timeouts, then follow the [bring-up guide](BRINGUP.md).
+| Symptom | First check and next action |
+| --- | --- |
+| No card or `/dev/crystalhd` | Check device/module/firmware results in `crystalhd-check`; follow [device recovery](BRINGUP.md#device-access-and-module-identity). |
+| Permission denied | Check the access result in `crystalhd-check`; use the documented `video` group/udev setup and sign in again after group changes. See [device access](BRINGUP.md#device-access-and-module-identity). |
+| Device busy | Run `sudo fuser -v /dev/crystalhd` and close the existing owner normally; one card supports one hardware session. Follow [bring-up recovery](BRINGUP.md) if ownership remains after exit. |
+| Loaded and installed versions differ | Follow the [idle reload or reboot procedure](BRINGUP.md#reload-an-idle-device) for the installation method that owns your module. |
+| Plugin missing or from an old checkout | Check `Filename` in `gst-inspect-1.0 crystalhddec`; remove stale `GST_PLUGIN_PATH`/`LD_LIBRARY_PATH` overrides and follow [installation verification](#verify-the-installed-stack). |
+| Unsupported input | Compare the stream's actual codec/profile with [codec boundaries](#codec-boundaries); try the known supported H.264 first-test file or explicit software playback. |
+| Slow native Full-HD output | Choose [smaller card output](#optional-bcm70015-output-scaling) if loss of detail is acceptable, or evaluate the [session-scoped L0s procedure](#full-hd-pcie-workaround) for a repeatable qualifying shortfall. |
+| Black output or a firmware timeout | Stop playback, inspect current-boot kernel messages, and follow [bring-up recovery](BRINGUP.md). For Moonlight, use its [troubleshooting guide](MOONLIGHT.md#troubleshooting). |
 
 After closing a player, `sudo fuser -v /dev/crystalhd` should report no owner
 and `cat /sys/module/crystalhd/refcnt` should report zero. Discovery alone is

@@ -1,22 +1,163 @@
 # CrystalHD bring-up and troubleshooting
 
-This document records the shortest known-good path from PCI detection to a
-decoded frame. It is intended to keep kernel, firmware, library, and frontend
-failures separate during hardware bring-up.
-
-Start with the installed, read-only preflight:
+Start here when installation or playback fails. For a first installation, use
+the [Quick start](README.md#quick-start), or [DKMS](README.dkms) if you want
+automatic module rebuilds after kernel updates. Run this read-only check first:
 
 ```sh
 crystalhd-check
 ```
 
-It checks the common PCI, module identity, DKMS conflict, firmware, device,
-library and frontend failures without raw-register access. The detailed
-[hardware report](HARDWARE-2026-09-13.md) records tested kernels, fixtures and
-limits. CI kernel compilation is not a substitute for a hardware test, and
-BCM70012 has not been recently hardware-tested.
+If it is not installed yet, run `./scripts/crystalhd-check` from the source
+directory. Resolve any identity or access failure before starting playback.
+Discovery checks do not decode a video; follow [first playback](USAGE.md) once
+they pass.
 
-## Bring-up order
+## First checks
+
+| Symptom | First check | Action |
+| --- | --- | --- |
+| No card found | `lspci -nn -d 14e4:` should show `14e4:1612` or `14e4:1615` | Check that the card is fitted and enabled in the BIOS. Reinstalling the library cannot repair missing PCI discovery. |
+| Card found, no `/dev/crystalhd` | `modinfo crystalhd`; `sudo journalctl -k -b --no-pager` | Install the module for `uname -r` using your chosen route. If loading reports a signature/key error, resolve your distribution's module-signing policy. |
+| Permission denied | `ls -l /dev/crystalhd`; `id` | Follow [device access](#device-access-and-module-identity); log in again after a group change. |
+| Device busy | `sudo fuser -v /dev/crystalhd` | Close the listed player normally. The card supports one decoding session at a time. |
+| Loaded/installed modules differ | `crystalhd-check` | Follow [idle reload](#reload-an-idle-device), or reboot after installing the intended module. |
+| Multiple module candidates / DKMS conflict | `crystalhd-check`; `dkms status -m crystalhd` if DKMS is installed | Choose one module owner. Follow the [DKMS migration instructions](README.dkms#switch-from-a-direct-install) instead of installing another copy over it. |
+| Unsupported input | Check codec/profile, not just the file extension | Choose an input from [supported formats](USAGE.md); hardware mode reports failure instead of silently selecting software. |
+| Slow, black or stalled output | Check the player's error and recent kernel messages | Use [playback troubleshooting](USAGE.md#troubleshooting-and-proof-of-hardware-use). The scaling and L0s choices there have separate prerequisites and costs. |
+
+## Direct install, update and rollback
+
+Direct installation builds for the selected kernel. Use [README.dkms](README.dkms)
+instead if DKMS already manages CrystalHD. Install the [Quick start
+dependencies](README.md#quick-start) and work from the root of the chosen source
+tree. A downloaded source archive works without `.git`.
+
+For an update, keep the previous source directory/archive and note its release
+or commit before replacing anything. Also keep any local
+`/etc/modprobe.d/` CrystalHD option files; these settings survive reinstallation.
+Check ownership and options before changing installed files:
+
+```sh
+./scripts/crystalhd-check
+modprobe -c | grep -E '^options[[:space:]]+crystalhd([[:space:]]|$)'
+```
+
+No matching option line is normal. If the check reports a DKMS registration,
+stop this route and follow the DKMS guide. For a fresh install, missing module
+or runtime files are expected. For an update, close all players and meet the
+[idle preconditions](#reload-an-idle-device) before installation.
+
+Build and install from this directory:
+
+```sh
+make -j2 driver library gstreamer vaapi
+sudo make install
+```
+
+Use `make -j1 driver library gstreamer vaapi` if parallel builds exhaust memory.
+These targets build the playback stack; the separate development tests need
+additional dependencies. The installer adds the module, firmware, permissions,
+library and frontends, but does not replace a module already in memory. Load a
+first install with `sudo modprobe crystalhd`; use the idle reload procedure for
+an update. Then run `crystalhd-check` and the [hardware playback command](USAGE.md).
+
+After booting a different kernel, install its matching headers and repeat the
+build/install steps. To roll back, close players and meet the idle preconditions.
+From the outgoing version's source root, replace the quoted placeholder with
+your retained older source directory:
+
+```sh
+previous_source="/path/to/retained-previous-source"
+make -C "$previous_source" -j2 driver library gstreamer vaapi
+sudo make uninstall-runtime
+sudo make -C "$previous_source" install
+```
+
+Stop if a command fails. Removing the outgoing runtime first also removes
+release metadata or helpers absent from an older version. Restore any option
+files changed with the update before reloading or rebooting; remove options
+the older module does not support. Run `crystalhd-check` afterward. A Phase 1
+rollback also reverts newer optional features; use its own playback instructions.
+
+To uninstall this direct installation, close players and satisfy the idle
+preconditions first. From the source directory used to install it:
+
+```sh
+sudo modprobe -r crystalhd
+sudo make uninstall KVER="$(uname -r)"
+```
+
+If the module is already absent, skip its unload. Stop if unloading fails;
+use a normal reboot and retry before playback.
+Uninstall removes the configured direct module and shared runtime files, not
+DKMS registrations, browser profiles or your own `/etc/modprobe.d/` files.
+If you installed the optional browser launcher, its separate removal command
+is `sudo make uninstall-browser`. For modules installed for other kernels,
+repeat `sudo make uninstall-module KVER="the-installed-kernel-release"`, replacing the
+quoted value with an actual installed kernel release. Do not remove runtime
+files while another CrystalHD installation still needs them.
+
+## Device access and module identity
+
+The installed udev rule creates `/dev/crystalhd` as `root:video` with mode
+`0660` and asks systemd-logind to grant the active desktop user an ACL. On a
+headless system, add the playback account to `video` and log in again:
+
+```sh
+sudo usermod -aG video "$USER"
+```
+
+`modinfo crystalhd` describes the installed file; it can differ from the module
+currently in memory. `modprobe crystalhd` leaves an already-loaded module in
+place. Use `crystalhd-check` to compare them, or add `--source-tree "$PWD"`
+from a built source directory to compare the intended build as well.
+
+## Reload an idle device
+
+Close all players and diagnostic programs. Inspect first:
+
+```sh
+modinfo -F filename crystalhd
+modinfo -F srcversion crystalhd
+sudo fuser -v /dev/crystalhd
+cat /sys/module/crystalhd/refcnt
+modprobe -c | grep -E '^options[[:space:]]+crystalhd([[:space:]]|$)'
+```
+
+Continue only when `fuser` lists no owner and the loaded module's reference
+count is `0`. If the module is absent, the sysfs file will also be absent and
+there is nothing to unload. Keep the intended saved module options: a plain
+`modprobe` reads configuration files again, while options supplied only on an
+earlier command line are not remembered.
+
+With the intended module installed and those checks satisfied:
+
+```sh
+sudo modprobe -r crystalhd
+sudo modprobe crystalhd
+crystalhd-check
+```
+
+Stop if either module command fails. Never use forced module unloading. If
+normal unload reports a busy device after clients have closed, reboot rather
+than forcing it. For an option experiment or rollback, restore the saved option
+configuration first and use the explicit values documented in [USAGE](USAGE.md).
+
+## Report a remaining problem
+
+Include the release/tag or source commit, `crystalhd-check` output, card model,
+`uname -r`, player command, codec/profile, resolution/frame rate, and the symptom.
+Add relevant new `sudo journalctl -k -b --no-pager` messages and whether the
+previous version or default options work. Remove private paths and unrelated
+log entries; private media and pairing details are not needed.
+
+The [hardware report](HARDWARE-2026-09-13.md) records tested hosts and limits.
+BCM70012 has not been recently hardware-tested. The material below is for
+programmers and hardware diagnosis; ordinary playback recovery does not require
+these tools.
+
+## Advanced: decoder bring-up
 
 Establish one invariant at a time:
 
@@ -31,42 +172,9 @@ Establish one invariant at a time:
 | Continued output | Multiple frames drain without stalling | Released output buffers, single-session ownership, drain loop |
 | Correct display | Frames stay ordered through seek and flush | Timestamps, reorder state, surface lifetime, frontend synchronization |
 
-Do not infer a lower-layer failure from a later missing milestone. For
-example, a live firmware heartbeat does not prove that the input stream is
-valid, and accepted input does not prove that the requested output format is
-supported.
-
-## Device access and module identity
-
-The installed udev rule creates `/dev/crystalhd` as `root:video` with mode
-`0660` and asks systemd-logind to grant the active desktop user an ACL. On a
-headless system, add the playback account to `video` and log in again:
-
-```sh
-sudo usermod -aG video "$USER"
-```
-
-`crystalhd-check --source-tree "$PWD"` compares the installed components with
-a built checkout and reports obvious device owners. For a deeper manual module
-check, run from the repository root:
-
-```sh
-modinfo -F filename crystalhd
-modinfo -F srcversion crystalhd
-modinfo -F srcversion ./driver/linux/crystalhd.ko
-cat /sys/module/crystalhd/srcversion
-sudo fuser -v /dev/crystalhd
-```
-
-The sysfs file exists only while the module is loaded. Matching source versions
-are a useful consistency check, not proof of hardware correctness; record the
-source commit and build as well. `modinfo crystalhd` describes the installed
-file, not necessarily the running module. `modprobe crystalhd` does not replace
-an already-loaded module. If versions differ, close all players, confirm the
-device is idle and unload normally before explicitly loading the intended
-build. Never force-unload a module with active users or DMA; reboot if a normal
-unload reports that it is busy. Hardware harnesses reject an already-loaded
-module whose source version differs from their build.
+A firmware heartbeat does not prove valid input, and accepted input does not
+prove supported output. Hardware harnesses reject a loaded module whose source
+version differs from their build; compilation alone does not test hardware.
 
 With the intended module loaded and idle, `sh tests/ioctl-smoke.sh` checks
 native/compat ioctl validation. `sh tests/userspace32.sh --hardware` builds
@@ -100,7 +208,7 @@ effect when the device is recreated. Removing that local file restores the
 default policy on the next rule reload and device creation. It does not grant
 the capability required by raw diagnostic ioctls.
 
-## Known-good BCM70015 userspace sequence
+### Known-good BCM70015 userspace sequence
 
 The maintained GStreamer and VA-API frontends use this initialization order:
 
@@ -124,7 +232,7 @@ must be rejected without disturbing the first; this checks safe rejection,
 not concurrent decode support. Close the first client before testing another
 complete decode.
 
-## BCM70015 output-format trap
+### BCM70015 output-format trap
 
 BCM70015 is called FLEA in the source. `DtsGetCapabilities()` advertises only
 `OUTPUT_MODE422_YUY2` for this device, while the legacy library context starts
@@ -147,7 +255,7 @@ The current frontends and diagnostics make the selection explicitly:
 BCM70012 has different advertised output capabilities. Do not copy the FLEA
 assumption to that device without querying its capabilities.
 
-## Minimum useful test report
+### Additional detail for decoder test reports
 
 Record the following when reporting a new card or failure:
 

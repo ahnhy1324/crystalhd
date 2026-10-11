@@ -1,5 +1,8 @@
 # Open work
 
+- [ ] [#369: CrystalHD 1.0.0 release preparation](https://github.com/ahnhy1324/crystalhd/issues/369)
+  — user-facing documentation, installation/version identity and candidate
+  qualification; publication requires maintainer approval.
 - [ ] [#91: Deferred hardware and application acceptance](https://github.com/ahnhy1324/crystalhd/issues/91)
   — alternate hardware/LTS, power management, broader streams, and physical
   presentation/A/V synchronization.

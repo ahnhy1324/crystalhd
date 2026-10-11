@@ -9,6 +9,19 @@ INCLUDES += -I$(src)/../../include/flea
 ccflags-y := -D__KERNEL__ -DMODULE $(INCLUDES) $(INC)
 ccflags-y += -Wall -Wstrict-prototypes -Wno-trigraphs -Werror -O2
 
+# Distribution identity is independent of the legacy numeric ioctl version.
+# Both inputs are included in source archives; building does not require Git.
+crystalhd_bundle_version := $(shell cat $(src)/../../VERSION)
+crystalhd_package_version := $(shell sed -n 's/^PACKAGE_VERSION="\([^"]*\)"$$/\1/p' $(src)/../../dkms.conf)
+ifeq ($(strip $(crystalhd_bundle_version)),)
+$(error Missing CrystalHD VERSION)
+endif
+ifeq ($(strip $(crystalhd_package_version)),)
+$(error Missing CrystalHD PACKAGE_VERSION)
+endif
+ccflags-y += -DCRYSTALHD_BUNDLE_VERSION=\"$(crystalhd_bundle_version)\"
+ccflags-y += -DCRYSTALHD_PACKAGE_VERSION=\"$(crystalhd_package_version)\"
+
 obj-m := crystalhd.o
 crystalhd-objs := crystalhd_lnx.o \
 	crystalhd_misc.o \

@@ -124,6 +124,20 @@ case "$kernel_arch:$userspace_bits" in
 esac
 emit INFO "Architecture: $abi_description; kernel $kernel_release"
 
+# A runtime-only update is valid with DKMS. Report its receipt separately from
+# actual module identity rather than assigning one release to the whole host.
+runtime_version_file=$root_prefix/usr/share/crystalhd/VERSION
+if [ -r "$runtime_version_file" ]; then
+    runtime_version=$(sed -n '1p' "$runtime_version_file")
+    emit INFO "Runtime install record: bundle $runtime_version (component identities checked separately)"
+else
+    emit INFO "Runtime install record: unavailable (older or partial installation)"
+fi
+if [ -n "$source_tree" ] && [ -r "$source_tree/VERSION" ]; then
+    source_bundle=$(sed -n '1p' "$source_tree/VERSION")
+    emit INFO "Source bundle: $source_bundle"
+fi
+
 pci_root=$root_prefix/sys/bus/pci/devices
 have_70012=0
 have_70015=0
@@ -163,7 +177,12 @@ fi
 
 module_sys=$root_prefix/sys/module/crystalhd
 loaded_srcversion=
+loaded_package_version=
 if [ -d "$module_sys" ]; then
+    if [ -r "$module_sys/version" ]; then
+        loaded_package_version=$(cat "$module_sys/version" 2>/dev/null || true)
+        emit INFO "Loaded module package: $loaded_package_version"
+    fi
     if [ -r "$module_sys/srcversion" ]; then
         loaded_srcversion=$(cat "$module_sys/srcversion" 2>/dev/null || true)
     fi
@@ -218,6 +237,7 @@ IFS=$old_ifs
 installed_module=
 installed_srcversion=
 installed_module_name=
+installed_package_version=
 if [ -n "$selected_module" ]; then
     installed_module=$selected_module
 elif [ -z "$root_prefix" ] && command -v modinfo >/dev/null 2>&1; then
@@ -228,9 +248,18 @@ fi
 if [ -n "$installed_module" ] && command -v modinfo >/dev/null 2>&1; then
     installed_module_name=$(modinfo -F name "$installed_module" 2>/dev/null || true)
     installed_srcversion=$(modinfo -F srcversion "$installed_module" 2>/dev/null || true)
+    installed_package_version=$(modinfo -F version "$installed_module" 2>/dev/null || true)
+    installed_bundle=$(modinfo -F crystalhd_bundle "$installed_module" 2>/dev/null || true)
 fi
 if [ -n "$installed_module" ]; then
     emit INFO "Module selected for the next load: $installed_module${installed_srcversion:+; srcversion $installed_srcversion}"
+    if [ -n "$installed_package_version" ]; then
+        emit INFO "Selected module package: $installed_package_version${installed_bundle:+; bundle $installed_bundle}"
+        if [ -n "$loaded_package_version" ] &&
+            [ "$loaded_package_version" != "$installed_package_version" ]; then
+            emit FAIL "Module package identity: loaded $loaded_package_version differs from selected $installed_package_version"
+        fi
+    fi
     if [ "$selected_module_explicit" -eq 1 ]; then
         if ! command -v modinfo >/dev/null 2>&1; then
             emit FAIL "Selected module: modinfo is unavailable, so $installed_module cannot be validated"
@@ -591,6 +620,7 @@ if [ -n "$drm_device" ]; then
 fi
 
 if [ "$have_70015" -eq 1 ]; then
+    l0s_value=
     l0s_parameter=$module_sys/parameters/force_l0s_off
     if [ -r "$l0s_parameter" ]; then
         l0s_value=$(cat "$l0s_parameter" 2>/dev/null || true)
@@ -599,7 +629,22 @@ if [ "$have_70015" -eq 1 ]; then
             *) emit INFO "BCM70015 force_l0s_off is disabled (default)" ;;
         esac
     fi
-    emit INFO "force_l0s_off=1 is an opt-in diagnostic only for the documented BCM70015 Full HD throughput case"
+    session_l0s_parameter=$module_sys/parameters/session_l0s_off
+    if [ -r "$session_l0s_parameter" ]; then
+        session_l0s_value=$(cat "$session_l0s_parameter" 2>/dev/null || true)
+        case "$session_l0s_value" in
+            Y|1)
+                case "$l0s_value" in
+                    Y|1) emit INFO "BCM70015 session_l0s_off is enabled, but force_l0s_off takes precedence" ;;
+                    *) emit INFO "BCM70015 session_l0s_off is enabled; the qualified link workaround applies during decoder ownership" ;;
+                esac
+                ;;
+            *) emit INFO "BCM70015 session_l0s_off is disabled (default)" ;;
+        esac
+    else
+        emit INFO "BCM70015 session_l0s_off is unavailable in the loaded module"
+    fi
+    emit INFO "L0s options are explicit workarounds for the topology-qualified Full HD throughput case; see USAGE.md"
 fi
 
 printf 'SUMMARY: %d OK, %d WARN, %d FAIL, %d INFO\n' \
