@@ -11,6 +11,7 @@ display.
 | What you want to do | State now |
 | --- | --- |
 | Play local files on BCM70015 | **Recommended path.** `crystalhd-play` and GStreamer provide explicit hardware decoding; 720p30 is the best-established target and 1080p30 is tested on the reference host with its qualified PCIe workaround. |
+| Reduce progressive Full-HD output traffic | **Optional BCM70015 path.** A runtime-selected hardware output width can reduce card-to-host traffic; native size remains the default. The result may be displayed directly or explicitly resized in software. |
 | Stream Moonlight at 720p30 | **Working exact-identity path.** The reference system handed roughly 28-29 frames/s to the renderer. |
 | Stream Moonlight at 720p60 | **Working experimental path.** Opt-in `previous,0` averaged 58.63 sequential renderer submissions/s; the exact path reached only about 33. |
 | Stream Moonlight at 1080p30 | **Working experimental path.** Opt-in `previous,0` averaged 28.58 sequential renderer submissions/s; the exact path reached about 15-16. |
@@ -131,6 +132,13 @@ crystalhd-play --subtitles subtitles.srt video.mkv
 # Deliberate software comparison; never an automatic fallback
 crystalhd-play --software video.mp4
 
+# Optional: ask BCM70015 to return 1280-wide output from a progressive file
+crystalhd-play --hardware --scale-width 1280 video-1080p.mp4
+
+# Optional: resize that card-scaled output to an exact Full-HD display buffer
+crystalhd-play --hardware --scale-width 1280 \
+  --software-output-size 1920x1080 video-1080p.mp4
+
 # Explicit installed GStreamer H.264 pipeline
 gst-launch-1.0 filesrc location=video.mp4 ! qtdemux ! h264parse ! \
   crystalhddec ! videoconvert ! autovideosink
@@ -138,8 +146,9 @@ gst-launch-1.0 filesrc location=video.mp4 ! qtdemux ! h264parse ! \
 
 Space pauses; Left/Right or `j`/`l` seek ten seconds; `1`, `2` and `3` select
 0.5x, 1x and 2x; `q` quits. See [everyday usage](USAGE.md) for all supported
-file examples, codec boundaries, VA/VLC commands, proof of hardware use and
-troubleshooting.
+file examples, the selectable scaling range and tradeoffs, codec boundaries,
+VA/VLC commands, proof of hardware use and troubleshooting. The example width
+is a measured reference-host choice, not a hardcoded or automatic default.
 
 Start with every tuning variable unset. The Full-HD PCIe workaround is only
 for a repeatable BCM70015 throughput shortfall on a suitable dedicated link;

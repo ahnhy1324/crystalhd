@@ -14,6 +14,10 @@
 #include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_decode_cpudmem2_0.h"
 #include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_decode_cpuregs_0.h"
 #include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_decode_cpuregs2_0.h"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+#include "../filters/gst/gst-plugin-1.0/gstcrystalhd-codecs.h"
+#pragma GCC diagnostic pop
 #include "../filters/gst/gst-plugin-1.0/gstcrystalhd-input.h"
 extern "C" {
 #include <libavformat/avformat.h>
@@ -3405,11 +3409,22 @@ struct Packet {
 struct Input {
     AVCodecID codec = AV_CODEC_ID_NONE;
     BC_MEDIA_SUBTYPE subtype = BC_MSUBTYPE_INVALID;
+    int profile = AV_PROFILE_UNKNOWN, level = AV_LEVEL_UNKNOWN;
     unsigned width = 0, height = 0;
     bool progressive = false;
     std::vector<uint8_t> metadata;
     std::vector<Packet> packets;
 };
+
+static uint32_t InputStartCodeSize(const Input &input)
+{
+    return input.codec == AV_CODEC_ID_H264 || input.codec == AV_CODEC_ID_MPEG4 ? 4 : 0;
+}
+
+static bool ExactPictureCount(size_t actual, unsigned expected)
+{
+    return actual == expected;
+}
 
 static bool Number(const char *text, unsigned maximum, unsigned *value)
 {
@@ -3857,6 +3872,198 @@ static bool AvdDmemSampleInputAdmitted(const Options &options, const Input &inpu
         SubmittedPacketDigestMatches(input, 124832, "1363a87c8f59fab6187cd13653a3ba8a41fd994066d30c24be1c2b09d675666e"));
 }
 
+static bool Mpeg4Mp4Demuxer(const char *demuxer)
+{
+    return demuxer && !std::strcmp(demuxer, "mov,mp4,m4a,3gp,3g2,mj2");
+}
+
+struct Mpeg4Description {
+    AVCodecID codec = AV_CODEC_ID_NONE;
+    const char *demuxer = nullptr;
+    int profile = AV_PROFILE_UNKNOWN;
+    int level = AV_LEVEL_UNKNOWN;
+    AVFieldOrder field_order = AV_FIELD_UNKNOWN;
+    unsigned width = 0, height = 0;
+    const uint8_t *metadata = nullptr;
+    size_t metadata_size = 0;
+};
+
+// Reuse the production GStreamer MPEG-4 parser so this direct probe cannot
+// benchmark a stream that the supported frontend would reject. The MP4 global
+// headers are validated in place and must remain byte-for-byte unchanged.
+static bool ConfigureMpeg4(const Mpeg4Description &description,
+                           CrystalHdCodec *configured)
+{
+    if (!configured || description.codec != AV_CODEC_ID_MPEG4 ||
+        !Mpeg4Mp4Demuxer(description.demuxer) ||
+        (description.profile != AV_PROFILE_MPEG4_SIMPLE &&
+         description.profile != AV_PROFILE_MPEG4_ADVANCED_SIMPLE) ||
+        (description.level != 3 && description.level != 5) ||
+        (description.field_order != AV_FIELD_UNKNOWN &&
+         description.field_order != AV_FIELD_PROGRESSIVE) ||
+        !description.width || description.width > 1920 ||
+        !description.height || description.height > 1088 ||
+        !description.metadata || !description.metadata_size)
+        return false;
+
+    CrystalHdCodec candidate = {};
+    candidate.subtype = BC_MSUBTYPE_DIVX;
+    candidate.mpeg4_object_type =
+        description.profile == AV_PROFILE_MPEG4_SIMPLE
+            ? CRYSTALHD_MPEG4_OBJECT_TYPE_SIMPLE
+            : CRYSTALHD_MPEG4_OBJECT_TYPE_ADVANCED_SIMPLE;
+    candidate.mpeg4_profile_level = static_cast<guint8>(
+        (candidate.mpeg4_object_type == CRYSTALHD_MPEG4_OBJECT_TYPE_ADVANCED_SIMPLE
+             ? 0xf0 : 0) | description.level);
+    candidate.mpeg4_width = description.width;
+    candidate.mpeg4_height = description.height;
+
+    const guint8 *metadata = description.metadata;
+    gsize metadata_size = description.metadata_size;
+    if (!gst_crystalhd_codec_metadata(&candidate, &metadata, &metadata_size) ||
+        metadata != description.metadata ||
+        metadata_size != description.metadata_size)
+        return false;
+    *configured = candidate;
+    return true;
+}
+
+static bool Mpeg4PacketSupported(const CrystalHdCodec &codec,
+                                 const uint8_t *data, size_t size)
+{
+    const guint8 *payload = data;
+    gsize payload_size = size;
+    return data && size &&
+        gst_crystalhd_codec_payload(&codec, &payload, &payload_size) ==
+            CRYSTALHD_PAYLOAD_CODED &&
+        payload == data && payload_size == size;
+}
+
+template<class Check> static void Mpeg4DirectSelfTest(const Check &check)
+{
+    static const uint8_t simple[] = {
+        0,0,1,0xb0,3,0,0,1,0xb5,0x89,0x13,0,0,1,0,
+        0,0,1,0x20,0,0xc4,0x8d,0x88,0,0xf5,0x14,4,0x2d,0x14,0x63,
+        0,0,1,0xb2,'L','a','v','c','6','1','.','1','9','.','1','0','1'
+    };
+    static const uint8_t advanced[] = {
+        0,0,1,0xb0,0xf3,0,0,1,0xb5,0xa9,0x13,0,0,1,0,
+        0,0,1,0x20,0x08,0xd4,0x8d,0x08,0,0xf5,0x14,4,0x2d,0x14,0x18,0x3f,
+        0,0,1,0xb2,'L','a','v','c','6','1','.','1','9','.','1','0','1'
+    };
+    static const uint8_t picture[] = {
+        0,0,1,0xb3,0x12,0,0,1,0xb6,0x10,0x60,0x3c,0,0,1,0xb1
+    };
+    static const uint8_t duplicate_picture[] = {
+        0,0,1,0xb6,0x10,0x60,0,0,1,0xb6,0x50,0x60
+    };
+    static const uint8_t not_coded[] = {0,0,1,0xb6,0x10,0x40};
+
+    Mpeg4Description description;
+    description.codec = AV_CODEC_ID_MPEG4;
+    description.demuxer = "mov,mp4,m4a,3gp,3g2,mj2";
+    description.profile = AV_PROFILE_MPEG4_SIMPLE;
+    description.level = 3;
+    description.width = 640;
+    description.height = 360;
+    description.metadata = simple;
+    description.metadata_size = sizeof(simple);
+    CrystalHdCodec codec = {};
+    check(ConfigureMpeg4(description, &codec) &&
+          codec.subtype == BC_MSUBTYPE_DIVX &&
+          codec.mpeg4_object_type == CRYSTALHD_MPEG4_OBJECT_TYPE_SIMPLE &&
+          codec.mpeg4_profile_level == 3 &&
+          codec.mpeg4_width == 640 && codec.mpeg4_height == 360 &&
+          codec.mpeg4_time_increment_resolution == 30 &&
+          codec.mpeg4_time_increment_bits == 5,
+          "direct MPEG-4 Simple level-3 metadata uses production admission");
+    check(Mpeg4PacketSupported(codec, picture, sizeof(picture)) &&
+          !Mpeg4PacketSupported(codec, duplicate_picture, sizeof(duplicate_picture)) &&
+          !Mpeg4PacketSupported(codec, not_coded, sizeof(not_coded)),
+          "direct MPEG-4 requires one supported coded VOP per packet");
+
+    Mpeg4Description valid = description;
+    valid.profile = AV_PROFILE_MPEG4_ADVANCED_SIMPLE;
+    valid.metadata = advanced;
+    valid.metadata_size = sizeof(advanced);
+    CrystalHdCodec advanced_codec = {};
+    check(ConfigureMpeg4(valid, &advanced_codec) &&
+          advanced_codec.mpeg4_object_type ==
+              CRYSTALHD_MPEG4_OBJECT_TYPE_ADVANCED_SIMPLE &&
+          advanced_codec.mpeg4_profile_level == 0xf3,
+          "direct MPEG-4 Advanced Simple level-3 metadata is admitted");
+
+    std::vector<uint8_t> level5(simple, simple + sizeof(simple));
+    level5[4] = 5;
+    valid = description;
+    valid.level = 5;
+    valid.metadata = level5.data();
+    valid.metadata_size = level5.size();
+    check(ConfigureMpeg4(valid, &codec) && codec.mpeg4_profile_level == 5,
+          "direct MPEG-4 level 5 is admitted without rewriting MP4 extradata");
+
+    for (int profile : {AV_PROFILE_UNKNOWN, AV_PROFILE_MPEG4_MAIN}) {
+        Mpeg4Description rejected = description;
+        rejected.profile = profile;
+        check(!ConfigureMpeg4(rejected, &codec),
+              "unsupported MPEG-4 profile rejected before hardware");
+    }
+    for (int level : {AV_LEVEL_UNKNOWN, 2, 4, 6}) {
+        Mpeg4Description rejected = description;
+        rejected.level = level;
+        check(!ConfigureMpeg4(rejected, &codec),
+              "unsupported MPEG-4 level rejected before hardware");
+    }
+    for (const char *demuxer : {static_cast<const char *>(nullptr), "avi",
+                                "matroska,webm", "mpeg4"}) {
+        Mpeg4Description rejected = description;
+        rejected.demuxer = demuxer;
+        check(!ConfigureMpeg4(rejected, &codec),
+              "non-MP4 MPEG-4 demuxer rejected before hardware");
+    }
+    for (AVFieldOrder order : {AV_FIELD_TT, AV_FIELD_BB, AV_FIELD_TB,
+                               AV_FIELD_BT}) {
+        Mpeg4Description rejected = description;
+        rejected.field_order = order;
+        check(!ConfigureMpeg4(rejected, &codec),
+              "interlaced MPEG-4 metadata rejected before hardware");
+    }
+    Mpeg4Description progressive = description;
+    progressive.field_order = AV_FIELD_PROGRESSIVE;
+    check(ConfigureMpeg4(progressive, &codec),
+          "explicit progressive MPEG-4 metadata is admitted");
+
+    std::vector<uint8_t> malformed(simple, simple + sizeof(simple));
+    malformed[4] = 5;
+    Mpeg4Description rejected = description;
+    rejected.metadata = malformed.data();
+    rejected.metadata_size = malformed.size();
+    check(!ConfigureMpeg4(rejected, &codec),
+          "MPEG-4 caps/profile-level mismatch rejected before hardware");
+    rejected = description;
+    rejected.metadata_size = 4;
+    check(!ConfigureMpeg4(rejected, &codec),
+          "truncated MPEG-4 metadata rejected before hardware");
+    rejected = description;
+    rejected.metadata = advanced;
+    rejected.metadata_size = sizeof(advanced);
+    check(!ConfigureMpeg4(rejected, &codec),
+          "MPEG-4 object type mismatch rejected before hardware");
+    rejected = description;
+    rejected.codec = AV_CODEC_ID_H264;
+    check(!ConfigureMpeg4(rejected, &codec),
+          "non-MPEG-4 codec cannot enter DIVX benchmark path");
+
+    check(ExactPictureCount(90, 90) && !ExactPictureCount(89, 90) &&
+          !ExactPictureCount(91, 90),
+          "direct MPEG-4 requires exact input and output picture counts");
+    Input input;
+    input.codec = AV_CODEC_ID_MPEG4;
+    input.subtype = BC_MSUBTYPE_DIVX;
+    check(InputStartCodeSize(input) == 4,
+          "direct MPEG-4 configures DIVX with four-byte start codes");
+}
+
 // Test-only MPEG-1 admission through the existing algorithm-1 channel. Do not
 // use BC_MSUBTYPE_MPEG1VIDEO: the format setter has no MPEG-1 algorithm branch.
 static BC_MEDIA_SUBTYPE InputSubtype(AVCodecID codec, const char *demuxer,
@@ -3880,6 +4087,9 @@ static BC_MEDIA_SUBTYPE InputSubtype(AVCodecID codec, const char *demuxer,
         return BC_MSUBTYPE_VC1;
     if (codec == AV_CODEC_ID_WMV3 && !std::strcmp(demuxer, "asf"))
         return BC_MSUBTYPE_WMV3;
+    if (codec == AV_CODEC_ID_MPEG4 && Mpeg4Mp4Demuxer(demuxer) &&
+        extradata_size > 0)
+        return BC_MSUBTYPE_DIVX;
     return BC_MSUBTYPE_INVALID;
 }
 
@@ -8234,6 +8444,7 @@ static bool SelfTest()
     PpbStopLifecycleSelfTest(check);
     MfdFramingSelfTest(check);
     RuntimeInventorySelfTest(check);
+    Mpeg4DirectSelfTest(check);
 
     unsigned number = 0;
     check(Number("1", 1, &number) && number == 1, "minimum number");
@@ -8631,6 +8842,13 @@ static bool SelfTest()
           InputSubtype(AV_CODEC_ID_HEVC, "hevc", true) == BC_MSUBTYPE_INVALID &&
           InputSubtype(AV_CODEC_ID_HEVC, "hevc", false) == BC_MSUBTYPE_INVALID,
           "research option does not admit another decoder protocol");
+    check(InputSubtype(AV_CODEC_ID_MPEG4, "mov,mp4,m4a,3gp,3g2,mj2", false,
+                       false, 47) == BC_MSUBTYPE_DIVX &&
+          InputSubtype(AV_CODEC_ID_MPEG4, "mov,mp4,m4a,3gp,3g2,mj2", false,
+                       false, 0) == BC_MSUBTYPE_INVALID &&
+          InputSubtype(AV_CODEC_ID_MPEG4, "avi", false, false, 47) ==
+              BC_MSUBTYPE_INVALID,
+          "ordinary MPEG-4 admission is MP4 with preserved global headers only");
     for (const std::vector<const char *> &valid : {
              std::vector<const char *>{"probe", "--preflight", "fixture", "30", "--h263-via-divx"},
              {"probe", "--hardware", "fixture", "30", "--h263-via-divx"},
@@ -10045,10 +10263,13 @@ static bool Load(const char *path, unsigned expected, Deadline *deadline, Input 
     bool ok = avformat_find_stream_info(format, nullptr) >= 0;
     const int index = ok ? av_find_best_stream(format, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0) : -1;
     ok = index >= 0;
+    CrystalHdCodec mpeg4_codec = {};
     if (ok) {
         const AVCodecParameters *parameters = format->streams[index]->codecpar;
         const char *demuxer = format->iformat->name;
         input->codec = parameters->codec_id;
+        input->profile = parameters->profile;
+        input->level = parameters->level;
         input->subtype = InputSubtype(input->codec, demuxer, mpeg1_via_mpeg2,
                                      h263_via_divx, parameters->extradata_size);
         ok = input->subtype != BC_MSUBTYPE_INVALID && parameters->width > 0 &&
@@ -10057,7 +10278,23 @@ static bool Load(const char *path, unsigned expected, Deadline *deadline, Input 
         input->width = parameters->width;
         input->height = parameters->height;
         input->progressive = parameters->field_order == AV_FIELD_PROGRESSIVE;
-        if (ok && input->subtype == BC_MSUBTYPE_WMV3) {
+        if (ok && input->codec == AV_CODEC_ID_MPEG4) {
+            Mpeg4Description description;
+            description.codec = input->codec;
+            description.demuxer = demuxer;
+            description.profile = parameters->profile;
+            description.level = parameters->level;
+            description.field_order = parameters->field_order;
+            description.width = input->width;
+            description.height = input->height;
+            description.metadata = parameters->extradata;
+            description.metadata_size = parameters->extradata_size > 0
+                ? static_cast<size_t>(parameters->extradata_size) : 0;
+            ok = ConfigureMpeg4(description, &mpeg4_codec);
+            if (ok)
+                input->metadata.assign(parameters->extradata,
+                                       parameters->extradata + parameters->extradata_size);
+        } else if (ok && input->subtype == BC_MSUBTYPE_WMV3) {
             // Same normalization as gstcrystalhd-codecs.h: four STRUCT_C bytes.
             ok = parameters->extradata &&
                  (parameters->extradata_size == 4 || parameters->extradata_size == 5);
@@ -10072,12 +10309,17 @@ static bool Load(const char *path, unsigned expected, Deadline *deadline, Input 
         if (packet->stream_index == index) {
             Packet next;
             next.size = packet->size > 0 ? static_cast<size_t>(packet->size) : 0;
+            const bool framing = input->codec == AV_CODEC_ID_MPEG4
+                ? Mpeg4PacketSupported(mpeg4_codec, packet->data, next.size)
+                : h263_via_divx
+                    ? BaselineH263Picture(packet->data, next.size,
+                                          input->width, input->height)
+                    : input->subtype == BC_MSUBTYPE_WMV3 ||
+                      StartCode(packet->data, next.size);
             ok = packet->data && !(packet->flags & AV_PKT_FLAG_CORRUPT) &&
                  gst_crystalhd_input_reservation(input->subtype, next.size,
                      input->metadata.size(), &next.reservation) &&
-                 (h263_via_divx ? BaselineH263Picture(packet->data, next.size,
-                                                     input->width, input->height) :
-                  (input->subtype == BC_MSUBTYPE_WMV3 || StartCode(packet->data, next.size))) &&
+                 framing &&
                  input->packets.size() < expected && total + next.size <= 64 * 1024 * 1024;
             if (ok) {
                 // The library may inspect a full startcode even for short ASF input.
@@ -10089,7 +10331,8 @@ static bool Load(const char *path, unsigned expected, Deadline *deadline, Input 
         }
         av_packet_unref(packet);
     }
-    ok = ok && !deadline->expired() && result == AVERROR_EOF && input->packets.size() == expected;
+    ok = ok && !deadline->expired() && result == AVERROR_EOF &&
+         ExactPictureCount(input->packets.size(), expected);
     av_packet_free(&packet);
     avformat_close_input(&format);
     if (!ok) std::fprintf(stderr, "Unsupported/corrupt framing, deadline, or packet count (got %zu, expected %u)\n",
@@ -10499,7 +10742,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     format.mSubtype = input.subtype;
     format.width = input.width;
     format.height = input.height;
-    format.startCodeSz = input.subtype == BC_MSUBTYPE_H264 ? 4 : 0;
+    format.startCodeSz = InputStartCodeSize(input);
     format.pMetaData = input.metadata.empty() ? nullptr : input.metadata.data();
     format.metaDataSz = input.metadata.size();
     if (ok) ok = Status("DtsSetInputFormat", DtsSetInputFormat(device.handle, &format));
@@ -10583,7 +10826,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     // fallback: its EOS state alone does not prove firmware-marker consumption.
     // In either case require complete frame delivery and token retirement.
     ok = ok && !deadline.expired() && audit.eos && audit.ready == 0 &&
-         audit.frames == expected && audit.pending.empty();
+         ExactPictureCount(audit.frames, expected) && audit.pending.empty();
     // Delivery EOS barrier only, sampled before ordinary STOP/CLOSE.
     if (ok) ok = audit.arm_metadata.Observe(&device.handle, 2, true);
     if (ok) ok = audit.ppb_context.Observe(&device.handle, 2, true);
@@ -10633,7 +10876,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     std::printf("Library drain: iteration=%u/%u frames=%u/%u pending=%zu "
         "%s-EOS=%s output-marker=%s ready=%u cleanup=%s result=%s\n",
         iteration, iterations, audit.frames, expected, audit.pending.size(),
-        options.h263_via_divx ? "library" : "firmware",
+        input.subtype == BC_MSUBTYPE_DIVX ? "library" : "firmware",
         audit.eos ? "yes" : "no", audit.marker ? "yes" : "no", audit.ready,
         closed ? "PASS" : "FAIL", ok ? "PASS" : "FAIL");
     std::fflush(stdout);
@@ -10794,6 +11037,11 @@ int main(int argc, char **argv)
                     "route=DIVX/PES metadata=empty picture-header=baseline "
                     "packet-bytes=unchanged open-only=%s\n",
                     avcodec_get_name(input.codec), options.open_only ? "yes" : "no");
+    if (input.codec == AV_CODEC_ID_MPEG4)
+        std::printf("MPEG-4 direct: profile=%d level=%d subtype=DIVX "
+                    "start-code-size=%u metadata-preserved=%zu\n",
+                    input.profile, input.level, InputStartCodeSize(input),
+                    input.metadata.size());
     if (options.scaler_test || options.scaler_benchmark) {
         unsigned width = 0, height = 0;
         if (!ScalerGeometry(input.width, input.height, options.scale_width, &width, &height)) {

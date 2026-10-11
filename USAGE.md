@@ -82,6 +82,44 @@ The controls exercise the whole player; they do not imply that every
 resolution can be decoded at every playback rate. In particular, 1080p60 and
 1080p30 at 2x are beyond the measured output limit.
 
+## Optional BCM70015 output scaling
+
+Native-size output remains the default. For progressive BCM70015 input, an
+explicit width can instead be applied by the decoder-coupled hardware scaler:
+
+```sh
+# Return 1280-wide YUY2 from a progressive Full-HD input.
+crystalhd-play --hardware --scale-width 1280 video-1080p.mp4
+
+# Then use GStreamer videoscale to produce an exact 1920x1080 display buffer.
+crystalhd-play --hardware --scale-width 1280 \
+  --software-output-size 1920x1080 video-1080p.mp4
+```
+
+`--scale-width` accepts `0` for native output or any even width from 128 through
+1918 that does not exceed the coded width. The card derives an even output
+height from the source geometry; the plugin reports the actual geometry and a
+pixel aspect ratio that preserves the source display aspect ratio. The width is
+selected for each playback session and survives flush/reopen. It is not fixed
+at 1280, and it cannot be changed while a pipeline is playing.
+
+The hardware option is rejected for BCM70012 and interlaced input. The optional
+`--software-output-size WIDTHxHEIGHT` stage requires a nonzero hardware scale
+width and performs an explicit bounded GStreamer resize with aspect-preserving
+borders. Both dimensions must be positive and even, neither may exceed 4096,
+and their product may not exceed 4096x2160 pixels. It can resize either up or
+down; resizing up does not restore detail discarded by the card. Omitting it
+lets the normal video sink fit the smaller decoded image to its window or
+display.
+
+On the reference host, 1280-wide card output from one 1920x1080 H.264 High
+stream sustained about 64.7 unpaced frames/s, compared with about 45.6 at
+native output. Resizing 1280x720 back to 1920x1080 with the selected software
+filter retained about 64.3 frames/s but used substantially more host CPU. This
+is an opt-in bandwidth/quality/CPU tradeoff, not a claim that every codec,
+stream or host reaches that rate. Exact codec and quality measurements are in
+the [hardware report](HARDWARE-2026-09-13.md#full-hd-input-with-decoder-coupled-scaling-2026-10-11).
+
 ## GStreamer pipelines
 
 These installed-system examples explicitly name `crystalhddec`, so GStreamer

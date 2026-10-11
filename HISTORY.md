@@ -60,5 +60,11 @@ quarter-pixel translator using native H.264, including bounded non-reference
 composition and translation. Existing library ABI and default decode paths
 are preserved; this does not expose standalone MFD processing.
 
+## October 2026 playback scaling
+
+Added opt-in progressive BCM70015 decoder-output width selection to GStreamer
+and `crystalhd-play`, plus an explicit bounded software output-size stage.
+Native output remains the default and the legacy library ABI is unchanged.
+
 See [README.md](README.md) for current build, installation, playback, and test
 instructions. This file is only the project history.

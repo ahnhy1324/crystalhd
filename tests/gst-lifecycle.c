@@ -32,6 +32,8 @@ static guint8 fake_thread;
 G_LOCK_DEFINE_STATIC(mock_queue);
 static GstBuffer *new_input(GstClockTime pts);
 static gboolean change_h264_caps(GstHarness *harness);
+static void lifecycle_teardown(GstHarness *harness);
+static gboolean lifecycle_flush(GstVideoDecoder *decoder);
 
 typedef struct {
   guint64 timestamp;
@@ -44,9 +46,9 @@ typedef struct {
 } MockPicture;
 
 typedef enum {
-  MOCK_DEVICE_OPEN = 1, MOCK_VERSION, MOCK_FORMAT, MOCK_DECODER_OPEN,
-  MOCK_COLOR, MOCK_START, MOCK_CAPTURE, MOCK_STOP, MOCK_DECODER_CLOSE,
-  MOCK_DEVICE_CLOSE
+  MOCK_DEVICE_OPEN = 1, MOCK_VERSION, MOCK_FORMAT, MOCK_SCALE,
+  MOCK_DECODER_OPEN, MOCK_COLOR, MOCK_START, MOCK_CAPTURE, MOCK_STOP,
+  MOCK_DECODER_CLOSE, MOCK_DEVICE_CLOSE
 } MockOperation;
 
 static struct {
@@ -81,15 +83,22 @@ static struct {
   guint start_calls;
   guint stop_calls;
   guint format_calls;
+  guint scale_calls;
   guint device_version;
   guint fail_operations;
+  guint operation_serial;
+  guint format_serial;
+  guint scale_serial;
+  guint decoder_open_serial;
   BC_INPUT_FORMAT last_format;
+  BC_SCALING_PARAMS last_scale;
   guint8 last_metadata[64];
   gboolean release_makes_room;
   gboolean publish_on_wait;
   guint64 accepted[16];
   guint accepted_count;
   guint8 pixels[16 * 16 * 2];
+  guint8 scaled_pixels[128 * 72 * 2];
 } mock;
 
 static BC_STATUS
@@ -168,18 +177,27 @@ lifecycle_thread_join(GThread *thread)
 }
 
 static void
-queue_numbered_picture(guint64 timestamp, guint8 pixel,
-                       guint32 picture_number)
+queue_picture_geometry(guint64 timestamp, guint8 pixel,
+                       guint32 picture_number, guint width, guint height,
+                       guint flags)
 {
   MockPicture *picture = g_new0(MockPicture, 1);
   picture->timestamp = timestamp;
   picture->pixel = pixel;
   picture->picture_number = picture_number;
-  picture->width = 16;
-  picture->height = 16;
+  picture->width = width;
+  picture->height = height;
+  picture->flags = flags;
   G_LOCK(mock_queue);
   g_queue_push_tail(&mock.pictures, picture);
   G_UNLOCK(mock_queue);
+}
+
+static void
+queue_numbered_picture(guint64 timestamp, guint8 pixel,
+                       guint32 picture_number)
+{
+  queue_picture_geometry(timestamp, pixel, picture_number, 16, 16, 0);
 }
 
 static void
@@ -225,6 +243,7 @@ BC_STATUS DtsSetInputFormat(HANDLE device, BC_INPUT_FORMAT *format)
 {
   (void)device;
   mock.format_calls++;
+  mock.format_serial = ++mock.operation_serial;
   mock.last_format = *format;
   g_assert_cmpuint(format->metaDataSz, <=, sizeof(mock.last_metadata));
   if (format->metaDataSz != 0)
@@ -233,11 +252,21 @@ BC_STATUS DtsSetInputFormat(HANDLE device, BC_INPUT_FORMAT *format)
   return operation_status(MOCK_FORMAT);
 }
 
+BC_STATUS DtsSetScaleParams(HANDLE device, BC_SCALING_PARAMS *scale)
+{
+  (void)device;
+  mock.scale_calls++;
+  mock.scale_serial = ++mock.operation_serial;
+  mock.last_scale = *scale;
+  return operation_status(MOCK_SCALE);
+}
+
 BC_STATUS DtsOpenDecoder(HANDLE device, uint32_t stream_type)
 {
   (void)device;
   (void)stream_type;
   mock.decoder_open_calls++;
+  mock.decoder_open_serial = ++mock.operation_serial;
   if (operation_status(MOCK_DECODER_OPEN) != BC_STS_SUCCESS)
     return BC_STS_ERROR;
   mock.opened = TRUE;
@@ -350,6 +379,8 @@ BC_STATUS DtsProcOutputNoCopy(HANDLE device, uint32_t timeout,
                              BC_DTS_PROC_OUT *output)
 {
   MockPicture *picture;
+  guint8 *pixels;
+  gsize pixel_size;
   G_LOCK(mock_queue);
   picture = g_queue_pop_head(&mock.pictures);
   G_UNLOCK(mock_queue);
@@ -357,7 +388,15 @@ BC_STATUS DtsProcOutputNoCopy(HANDLE device, uint32_t timeout,
   (void)timeout;
   if (picture == NULL)
     return BC_STS_NO_DATA;
-  memset(mock.pixels, picture->pixel, sizeof(mock.pixels));
+  pixel_size = (gsize)picture->width * picture->height * 2;
+  if (pixel_size <= sizeof(mock.pixels)) {
+    pixels = mock.pixels;
+    pixel_size = sizeof(mock.pixels);
+  } else {
+    pixels = mock.scaled_pixels;
+    pixel_size = MIN(pixel_size, sizeof(mock.scaled_pixels));
+  }
+  memset(pixels, picture->pixel, pixel_size);
   memset(output, 0, sizeof(*output));
   output->PoutFlags = BC_POUT_FLAGS_PIB_VALID;
   output->PicInfo.width = picture->width;
@@ -366,8 +405,8 @@ BC_STATUS DtsProcOutputNoCopy(HANDLE device, uint32_t timeout,
   output->PicInfo.picture_number = picture->picture_number;
   output->PicInfo.flags = picture->flags;
   output->PicInfo.pulldown = picture->pulldown;
-  output->Ybuff = mock.pixels;
-  output->YBuffDoneSz = sizeof(mock.pixels) / 4;
+  output->Ybuff = pixels;
+  output->YBuffDoneSz = pixel_size / 4;
   g_free(picture);
   return BC_STS_SUCCESS;
 }
@@ -381,6 +420,7 @@ BC_STATUS DtsReleaseOutputBuffs(HANDLE device, void *reserved, BOOL change)
   if (mock.release_makes_room)
     mock.free_bytes = 1024 * 1024;
   memset(mock.pixels, 0xcc, sizeof(mock.pixels));
+  memset(mock.scaled_pixels, 0xcc, sizeof(mock.scaled_pixels));
   return BC_STS_SUCCESS;
 }
 
@@ -424,7 +464,8 @@ BC_STATUS DtsIsEndOfStream(HANDLE device, uint8_t *eos)
 }
 
 static GstHarness *
-new_decoder_with_caps_and_device(const gchar *caps, guint device_version)
+new_decoder_with_caps_device_scale(const gchar *caps, guint device_version,
+                                   guint scale_width)
 {
   GstElement *element;
   GstHarness *harness;
@@ -438,12 +479,19 @@ new_decoder_with_caps_and_device(const gchar *caps, guint device_version)
   mock.auto_output = TRUE;
   mock.free_bytes = 1024 * 1024;
   mock.device_version = device_version;
-  element = g_object_new(GST_TYPE_CRYSTALHD_DEC, NULL);
+  element = g_object_new(GST_TYPE_CRYSTALHD_DEC,
+                         "scale-width", scale_width, NULL);
   harness = gst_harness_new_with_element(element, "sink", "src");
   gst_object_unref(element); /* the harness takes its own reference */
   gst_harness_set_src_caps_str(harness, caps);
   iteration_decoder = GST_CRYSTALHD_DEC(harness->element);
   return harness;
+}
+
+static GstHarness *
+new_decoder_with_caps_and_device(const gchar *caps, guint device_version)
+{
+  return new_decoder_with_caps_device_scale(caps, device_version, 0);
 }
 
 static GstHarness *
@@ -466,6 +514,224 @@ new_mpeg2_decoder(void)
   return new_decoder_with_caps(
       "video/mpeg,mpegversion=2,systemstream=false,parsed=true,"
       "width=16,height=16,framerate=24000/1001");
+}
+
+static void
+test_scale_property_default(void)
+{
+  const gchar *caps =
+      "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+      "width=1920,height=1080,framerate=25/1";
+  GstHarness *harness = new_decoder_with_caps_device_scale(caps, 1, 0);
+  GParamSpec *spec = g_object_class_find_property(
+      G_OBJECT_GET_CLASS(harness->element), "scale-width");
+  guint scale_width = G_MAXUINT;
+
+  g_assert_nonnull(spec);
+  g_assert_true((spec->flags & GST_PARAM_MUTABLE_READY) != 0);
+  g_assert_cmpuint(G_PARAM_SPEC_UINT(spec)->default_value, ==, 0);
+  g_object_get(harness->element, "scale-width", &scale_width, NULL);
+  g_assert_cmpuint(scale_width, ==, 0);
+  g_assert_cmpuint(mock.format_calls, ==, 1);
+  g_assert_cmpuint(mock.scale_calls, ==, 0);
+  g_assert_cmpuint(mock.decoder_open_calls, ==, 1);
+  g_assert_cmpuint(mock.format_serial, <, mock.decoder_open_serial);
+  g_assert_cmpint(GST_STATE(harness->element), >, GST_STATE_READY);
+  g_object_set(harness->element, "scale-width", 128U, NULL);
+  g_object_get(harness->element, "scale-width", &scale_width, NULL);
+  g_assert_cmpuint(scale_width, ==, 0);
+  lifecycle_teardown(harness);
+}
+
+typedef struct {
+  GstElement *element;
+  GMutex lock;
+  GCond cond;
+  gboolean done;
+} ScalePropertyProbe;
+
+static gpointer
+scale_property_probe_thread(gpointer data)
+{
+  ScalePropertyProbe *probe = data;
+  guint scale_width;
+
+  g_object_get(probe->element, "scale-width", &scale_width, NULL);
+  g_mutex_lock(&probe->lock);
+  probe->done = TRUE;
+  g_cond_signal(&probe->cond);
+  g_mutex_unlock(&probe->lock);
+  return NULL;
+}
+
+static void
+test_scale_property_does_not_take_state_lock(void)
+{
+  GstHarness *harness = new_decoder_with_caps_device_scale(
+      "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+      "width=1920,height=1080,framerate=25/1", 1, 128);
+  ScalePropertyProbe probe = { .element = harness->element };
+  GThread *thread;
+  gboolean completed;
+  gint64 deadline;
+
+  g_mutex_init(&probe.lock);
+  g_cond_init(&probe.cond);
+  GST_STATE_LOCK(harness->element);
+  thread = g_thread_new("scale-property-probe", scale_property_probe_thread,
+                        &probe);
+  g_mutex_lock(&probe.lock);
+  deadline = g_get_monotonic_time() + G_TIME_SPAN_SECOND;
+  while (!probe.done &&
+         g_cond_wait_until(&probe.cond, &probe.lock, deadline))
+    ;
+  completed = probe.done;
+  g_mutex_unlock(&probe.lock);
+  GST_STATE_UNLOCK(harness->element);
+  g_thread_join(thread);
+
+  g_assert_true(completed);
+  g_cond_clear(&probe.cond);
+  g_mutex_clear(&probe.lock);
+  lifecycle_teardown(harness);
+}
+
+static void
+test_scale_valid_widths_and_order(void)
+{
+  static const guint widths[] = { 128, 854, 1366, 1918 };
+  guint i;
+
+  for (i = 0; i < G_N_ELEMENTS(widths); ++i) {
+    const gchar *caps = i == 0
+        ? "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+          "width=1920,height=1080,framerate=25/1"
+        : "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+          "width=1920,height=1080,framerate=25/1,interlace-mode=progressive";
+    GstHarness *harness =
+        new_decoder_with_caps_device_scale(caps, 1, widths[i]);
+    guint configured = 0;
+
+    g_object_get(harness->element, "scale-width", &configured, NULL);
+    g_assert_cmpuint(configured, ==, widths[i]);
+    g_assert_cmpuint(mock.format_calls, ==, 1);
+    g_assert_cmpuint(mock.scale_calls, ==, 1);
+    g_assert_cmpuint(mock.last_scale.sWidth, ==, widths[i]);
+    g_assert_cmpuint(mock.last_scale.sHeight, ==, 0);
+    g_assert_cmpuint(mock.last_scale.DNR, ==, 0);
+    g_assert_cmpuint(mock.format_serial, <, mock.scale_serial);
+    g_assert_cmpuint(mock.scale_serial, <, mock.decoder_open_serial);
+    lifecycle_teardown(harness);
+  }
+}
+
+static void
+test_scale_invalid_requests(void)
+{
+  static const guint invalid_widths[] = {
+    1, 127, 129, 1919, 1920, G_MAXUINT
+  };
+  const gchar *fhd_caps =
+      "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+      "width=1920,height=1080,framerate=25/1";
+  guint i;
+
+  for (i = 0; i < G_N_ELEMENTS(invalid_widths); ++i) {
+    GstHarness *harness = new_decoder_with_caps_device_scale(
+        fhd_caps, 1, invalid_widths[i]);
+    g_assert_cmpuint(mock.open_calls, ==, 0);
+    g_assert_cmpuint(mock.format_calls, ==, 0);
+    g_assert_cmpuint(mock.scale_calls, ==, 0);
+    g_assert_cmpuint(mock.decoder_open_calls, ==, 0);
+    lifecycle_teardown(harness);
+  }
+
+  {
+    GstHarness *harness = new_decoder_with_caps_device_scale(
+        "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+        "width=640,height=360,framerate=25/1", 1, 854);
+    g_assert_cmpuint(mock.open_calls, ==, 0);
+    g_assert_cmpuint(mock.scale_calls, ==, 0);
+    lifecycle_teardown(harness);
+  }
+  {
+    GstHarness *harness = new_decoder_with_caps_device_scale(
+        "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+        "width=1920,height=1080,framerate=25/1,interlace-mode=interleaved",
+        1, 960);
+    g_assert_cmpuint(mock.open_calls, ==, 0);
+    g_assert_cmpuint(mock.scale_calls, ==, 0);
+    lifecycle_teardown(harness);
+  }
+  {
+    GstHarness *harness = new_decoder_with_caps_device_scale(
+        fhd_caps, 0, 960);
+    g_assert_cmpuint(mock.open_calls, >, 0);
+    g_assert_cmpuint(mock.close_calls, ==, mock.open_calls);
+    g_assert_cmpuint(mock.format_calls, ==, 0);
+    g_assert_cmpuint(mock.scale_calls, ==, 0);
+    g_assert_cmpuint(mock.decoder_open_calls, ==, 0);
+    lifecycle_teardown(harness);
+  }
+}
+
+static void
+test_scale_reapplied_on_reopen(void)
+{
+  GstHarness *harness = new_decoder_with_caps_device_scale(
+      "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+      "width=1920,height=1080,framerate=25/1,pixel-aspect-ratio=4/3",
+      1, 960);
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  GstCaps *caps;
+
+  g_assert_cmpuint(mock.scale_calls, ==, 1);
+  g_assert_true(gst_crystalhd_configure_output(self, 960, 540, FALSE));
+  g_assert_cmpuint(GST_VIDEO_INFO_WIDTH(&self->output_info), ==, 960);
+  g_assert_cmpuint(GST_VIDEO_INFO_HEIGHT(&self->output_info), ==, 540);
+  g_assert_cmpuint(GST_VIDEO_INFO_PAR_N(&self->output_info), ==, 4);
+  g_assert_cmpuint(GST_VIDEO_INFO_PAR_D(&self->output_info), ==, 3);
+
+  g_assert_true(lifecycle_flush(GST_VIDEO_DECODER(self)));
+  g_assert_cmpuint(mock.format_calls, ==, 2);
+  g_assert_cmpuint(mock.scale_calls, ==, 2);
+  g_assert_cmpuint(mock.decoder_open_calls, ==, 2);
+  g_assert_cmpuint(mock.format_serial, <, mock.scale_serial);
+  g_assert_cmpuint(mock.scale_serial, <, mock.decoder_open_serial);
+
+  caps = gst_caps_from_string(
+      "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+      "width=1280,height=720,framerate=30/1,pixel-aspect-ratio=4/3");
+  g_assert_true(gst_harness_push_event(harness, gst_event_new_caps(caps)));
+  gst_caps_unref(caps);
+  g_assert_cmpuint(mock.format_calls, ==, 3);
+  g_assert_cmpuint(mock.scale_calls, ==, 3);
+  g_assert_cmpuint(mock.last_scale.sWidth, ==, 960);
+  g_assert_cmpuint(mock.decoder_open_calls, ==, 3);
+  g_assert_cmpuint(mock.format_serial, <, mock.scale_serial);
+  g_assert_cmpuint(mock.scale_serial, <, mock.decoder_open_serial);
+  lifecycle_teardown(harness);
+}
+
+static void
+test_scale_library_failure(void)
+{
+  GstHarness *harness = new_decoder_with_caps_device_scale(
+      "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+      "width=1920,height=1080,framerate=25/1", 1, 960);
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+
+  mock.fail_operations = 1U << MOCK_SCALE;
+  g_assert_false(lifecycle_flush(GST_VIDEO_DECODER(self)));
+  g_assert_cmpuint(mock.scale_calls, ==, 2);
+  g_assert_cmpuint(mock.decoder_open_calls, ==, 1);
+  g_assert_null(self->device);
+  g_assert_false(self->decoder_open);
+  g_assert_false(self->decoder_started);
+  g_assert_false(mock.device_active);
+  g_assert_cmpuint(mock.successful_opens, ==, mock.close_calls);
+  mock.fail_operations = 0;
+  lifecycle_teardown(harness);
 }
 
 /* Most regressions deliberately schedule the real worker iteration themselves,
@@ -535,6 +801,81 @@ lifecycle_receive_available(GstCrystalHdDec *self)
 #define gst_crystalhd_set_format lifecycle_set_format
 #define gst_crystalhd_drain lifecycle_drain
 #define gst_crystalhd_receive_available lifecycle_receive_available
+
+static GstHarness *
+new_scaled_output_decoder(void)
+{
+  return new_decoder_with_caps_device_scale(
+      "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+      "width=1920,height=1080,framerate=25/1,pixel-aspect-ratio=4/3",
+      1, 128);
+}
+
+static void
+test_scale_output_contract(void)
+{
+  GstHarness *harness = new_scaled_output_decoder();
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  GstBuffer *output;
+  guint8 edge[2];
+
+  mock.auto_output = FALSE;
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  queue_picture_geometry(mock.accepted[0], 0x5a, 0, 128, 72, 0);
+  g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_OK);
+  output = gst_harness_try_pull(harness);
+  g_assert_nonnull(output);
+  g_assert_cmpuint(gst_buffer_get_size(output), ==, 128 * 72 * 2);
+  g_assert_cmpuint(gst_buffer_extract(output, 0, edge, 1), ==, 1);
+  g_assert_cmpuint(gst_buffer_extract(output, 128 * 72 * 2 - 1,
+                                      edge + 1, 1), ==, 1);
+  g_assert_cmpuint(edge[0], ==, 0x5a);
+  g_assert_cmpuint(edge[1], ==, 0x5a);
+  g_assert_cmpuint(GST_VIDEO_INFO_WIDTH(&self->output_info), ==, 128);
+  g_assert_cmpuint(GST_VIDEO_INFO_HEIGHT(&self->output_info), ==, 72);
+  g_assert_cmpuint(GST_VIDEO_INFO_PAR_N(&self->output_info), ==, 4);
+  g_assert_cmpuint(GST_VIDEO_INFO_PAR_D(&self->output_info), ==, 3);
+  g_assert_cmpuint(mock.release_calls, ==, 1);
+  gst_buffer_unref(output);
+  gst_harness_teardown(harness);
+
+  harness = new_scaled_output_decoder();
+  self = GST_CRYSTALHD_DEC(harness->element);
+  mock.auto_output = FALSE;
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  queue_picture_geometry(mock.accepted[0], 0x5b, 0, 126, 72, 0);
+  g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_ERROR);
+  g_assert_null(gst_harness_try_pull(harness));
+  g_assert_cmpuint(mock.release_calls, ==, 1);
+  gst_harness_teardown(harness);
+
+  harness = new_scaled_output_decoder();
+  self = GST_CRYSTALHD_DEC(harness->element);
+  mock.auto_output = FALSE;
+  g_assert_cmpint(gst_harness_push(harness, new_input(0)), ==, GST_FLOW_OK);
+  queue_picture_geometry(mock.accepted[0], 0x5c, 0, 128, 72,
+                         VDEC_FLAG_INTERLACED_SRC | VDEC_FLAG_TOPFIELD);
+  g_assert_cmpint(gst_crystalhd_receive_available(self), ==, GST_FLOW_ERROR);
+  g_assert_null(gst_harness_try_pull(harness));
+  g_assert_cmpuint(mock.release_calls, ==, 1);
+  gst_harness_teardown(harness);
+
+  harness = new_scaled_output_decoder();
+  self = GST_CRYSTALHD_DEC(harness->element);
+  g_assert_false(gst_crystalhd_configure_output(self, 126, 72, FALSE));
+  g_assert_false(self->output_configured);
+  gst_harness_teardown(harness);
+
+  harness = new_decoder_with_caps_device_scale(
+      "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+      "width=1920,height=1080,framerate=25/1,pixel-aspect-ratio=1/1",
+      1, 130);
+  self = GST_CRYSTALHD_DEC(harness->element);
+  g_assert_true(gst_crystalhd_configure_output(self, 130, 74, FALSE));
+  g_assert_cmpuint(GST_VIDEO_INFO_PAR_N(&self->output_info), ==, 592);
+  g_assert_cmpuint(GST_VIDEO_INFO_PAR_D(&self->output_info), ==, 585);
+  gst_harness_teardown(harness);
+}
 
 static void
 input_destroyed(gpointer bytes)
@@ -2805,6 +3146,17 @@ main(int argc, char **argv)
   g_test_init(&argc, &argv, NULL);
   GST_DEBUG_CATEGORY_INIT(gst_crystalhd_debug, "crystalhd", 0,
                           "CrystalHD lifecycle test");
+  g_test_add_func("/crystalhd/scale/default", test_scale_property_default);
+  g_test_add_func("/crystalhd/scale/property-lock",
+                  test_scale_property_does_not_take_state_lock);
+  g_test_add_func("/crystalhd/scale/valid-order",
+                  test_scale_valid_widths_and_order);
+  g_test_add_func("/crystalhd/scale/invalid", test_scale_invalid_requests);
+  g_test_add_func("/crystalhd/scale/reopen", test_scale_reapplied_on_reopen);
+  g_test_add_func("/crystalhd/scale/library-failure",
+                  test_scale_library_failure);
+  g_test_add_func("/crystalhd/scale/output-contract",
+                  test_scale_output_contract);
   g_test_add_func("/crystalhd/lifecycle/frame-references", test_frame_references);
   g_test_add_func("/crystalhd/lifecycle/natural-caps-tail", test_natural_caps_tail);
   g_test_add_func("/crystalhd/lifecycle/natural-caps-errors", test_natural_caps_errors);

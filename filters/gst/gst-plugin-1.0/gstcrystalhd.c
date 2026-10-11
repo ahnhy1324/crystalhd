@@ -30,6 +30,13 @@ G_STATIC_ASSERT(GST_CRYSTALHD_MPEG4_MAX_INPUT_SIZE ==
 /* Legacy libcrystalhd input flag: retain queue/TX counters but do not peek
  * and synchronize the READY-head DMA buffer just to read its timestamp. */
 #define CRYSTALHD_STATUS_SKIP_READY_HEAD_PEEK (1U << 30)
+#define CRYSTALHD_SCALE_MIN_WIDTH 128U
+#define CRYSTALHD_SCALE_MAX_WIDTH 1918U
+
+enum {
+  PROP_0,
+  PROP_SCALE_WIDTH
+};
 
 typedef struct {
   guint64 hardware_timestamp;
@@ -58,6 +65,10 @@ typedef struct _GstCrystalHdDec {
   guint field_height;
   guint width;
   guint height;
+  /* scale_width is the READY-mutable property.  active_scale_width is the
+   * immutable snapshot used by one PAUSED/PLAYING decoder session. */
+  guint scale_width;
+  guint active_scale_width;
   guint64 next_hardware_timestamp;
   guint32 simple_picture_number;
   gboolean have_simple_picture_number;
@@ -231,6 +242,103 @@ gst_crystalhd_status_hint(BC_STATUS status)
 }
 
 static void
+gst_crystalhd_set_property(GObject *object, guint property_id,
+                           const GValue *value, GParamSpec *spec)
+{
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(object);
+
+  switch (property_id) {
+    case PROP_SCALE_WIDTH: {
+      gboolean mutable;
+
+      /* GstElement state fields are protected by the object lock.  Taking the
+       * state-change lock here can deadlock a downstream callback against
+       * PAUSED -> READY teardown while stop() joins the output worker. */
+      GST_OBJECT_LOCK(self);
+      mutable = GST_STATE(self) <= GST_STATE_READY &&
+                GST_STATE_PENDING(self) == GST_STATE_VOID_PENDING;
+      if (mutable)
+        self->scale_width = g_value_get_uint(value);
+      GST_OBJECT_UNLOCK(self);
+      if (!mutable)
+        GST_WARNING_OBJECT(self,
+                           "scale-width can only change in NULL or READY");
+      break;
+    }
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, spec);
+      break;
+  }
+}
+
+static void
+gst_crystalhd_get_property(GObject *object, guint property_id,
+                           GValue *value, GParamSpec *spec)
+{
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(object);
+
+  switch (property_id) {
+    case PROP_SCALE_WIDTH:
+      GST_OBJECT_LOCK(self);
+      g_value_set_uint(value, self->scale_width);
+      GST_OBJECT_UNLOCK(self);
+      break;
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, spec);
+      break;
+  }
+}
+
+static gboolean
+gst_crystalhd_validate_scale_request(GstCrystalHdDec *self,
+                                     GstVideoCodecState *state)
+{
+  const GstStructure *structure;
+  const gchar *interlace_mode;
+  guint coded_width;
+
+  if (self->active_scale_width == 0)
+    return TRUE;
+
+  coded_width = GST_VIDEO_INFO_WIDTH(&state->info);
+  if (self->active_scale_width < CRYSTALHD_SCALE_MIN_WIDTH ||
+      self->active_scale_width > CRYSTALHD_SCALE_MAX_WIDTH ||
+      (self->active_scale_width & 1) != 0) {
+    GST_ELEMENT_ERROR(self, STREAM, FORMAT,
+                      ("Invalid CrystalHD hardware scale width %u",
+                       self->active_scale_width),
+                      ("Use 0 for native output or an even width from %u "
+                       "through %u", CRYSTALHD_SCALE_MIN_WIDTH,
+                       CRYSTALHD_SCALE_MAX_WIDTH));
+    return FALSE;
+  }
+  if (coded_width == 0 || self->active_scale_width > coded_width) {
+    GST_ELEMENT_ERROR(self, STREAM, FORMAT,
+                      ("CrystalHD hardware upscaling is not supported"),
+                      ("Requested width %u; coded width %u",
+                       self->active_scale_width, coded_width));
+    return FALSE;
+  }
+
+  structure = gst_caps_get_structure(state->caps, 0);
+  if (gst_structure_has_field(structure, "interlace-mode")) {
+    interlace_mode = gst_structure_get_string(structure, "interlace-mode");
+    if (interlace_mode == NULL ||
+        g_strcmp0(interlace_mode, "progressive") != 0) {
+      GST_ELEMENT_ERROR(self, STREAM, FORMAT,
+                        ("CrystalHD hardware scaling requires progressive "
+                         "input"),
+                        ("Input interlace-mode is %s",
+                         interlace_mode != NULL ? interlace_mode :
+                                                  "not a fixed string"));
+      return FALSE;
+    }
+  }
+
+  return TRUE;
+}
+
+static void
 gst_crystalhd_clear_timestamps(GstCrystalHdDec *self)
 {
   g_queue_clear_full(&self->timestamps, g_free);
@@ -401,6 +509,29 @@ gst_crystalhd_progressive_field_flags(guint32 pulldown, gboolean *top_first,
 }
 
 static gboolean
+gst_crystalhd_validate_scaled_output(GstCrystalHdDec *self, guint width,
+                                     gboolean interlaced)
+{
+  if (self->active_scale_width == 0)
+    return TRUE;
+
+  if (width != self->active_scale_width) {
+    GST_ELEMENT_ERROR(self, STREAM, DECODE,
+                      ("CrystalHD hardware scaling was not applied"),
+                      ("Requested width %u; hardware returned width %u",
+                       self->active_scale_width, width));
+    return FALSE;
+  }
+  if (interlaced) {
+    GST_ELEMENT_ERROR(self, STREAM, DECODE,
+                      ("CrystalHD hardware scaling returned interlaced output"),
+                      ("Scaled interlaced output has not been validated"));
+    return FALSE;
+  }
+  return TRUE;
+}
+
+static gboolean
 gst_crystalhd_configure_output(GstCrystalHdDec *self, guint width, guint height,
                                gboolean interlaced)
 {
@@ -410,15 +541,53 @@ gst_crystalhd_configure_output(GstCrystalHdDec *self, guint width, guint height,
       interlaced || self->progressive_field_sequence
           ? GST_VIDEO_INTERLACE_MODE_MIXED
           : GST_VIDEO_INTERLACE_MODE_PROGRESSIVE;
+  gint output_par_n;
+  gint output_par_d;
+  gint64 scaled_par_n;
+  gint64 scaled_par_d;
 
+  if (!gst_crystalhd_validate_scaled_output(self, width, interlaced))
+    return FALSE;
   if (width == 0 || height == 0 || width > 1920 || height > 1088) {
     GST_ERROR_OBJECT(self, "invalid output dimensions %ux%u", width, height);
     return FALSE;
   }
 
+  output_par_n = GST_VIDEO_INFO_PAR_N(&self->input_state->info);
+  output_par_d = GST_VIDEO_INFO_PAR_D(&self->input_state->info);
+  if (output_par_n <= 0 || output_par_d <= 0) {
+    output_par_n = 1;
+    output_par_d = 1;
+  }
+  if (self->active_scale_width != 0) {
+    gint64 geometry_n =
+        (gint64)GST_VIDEO_INFO_WIDTH(&self->input_state->info) * height;
+    gint64 geometry_d =
+        (gint64)GST_VIDEO_INFO_HEIGHT(&self->input_state->info) * width;
+
+    if (geometry_n <= 0 || geometry_d <= 0 ||
+        !gst_util_fraction_multiply_int64(output_par_n, output_par_d,
+                                          geometry_n, geometry_d,
+                                          &scaled_par_n, &scaled_par_d) ||
+        scaled_par_n <= 0 || scaled_par_d <= 0 ||
+        scaled_par_n > G_MAXINT || scaled_par_d > G_MAXINT) {
+      GST_ELEMENT_ERROR(self, STREAM, FORMAT,
+                        ("Could not represent scaled pixel aspect ratio"),
+                        ("Input %ux%u PAR %d/%d; output %ux%u",
+                         GST_VIDEO_INFO_WIDTH(&self->input_state->info),
+                         GST_VIDEO_INFO_HEIGHT(&self->input_state->info),
+                         output_par_n, output_par_d, width, height));
+      return FALSE;
+    }
+    output_par_n = (gint)scaled_par_n;
+    output_par_d = (gint)scaled_par_d;
+  }
+
   if (self->output_configured && self->width == width &&
       self->height == height &&
-      GST_VIDEO_INFO_INTERLACE_MODE(&self->output_info) == mode)
+      GST_VIDEO_INFO_INTERLACE_MODE(&self->output_info) == mode &&
+      GST_VIDEO_INFO_PAR_N(&self->output_info) == output_par_n &&
+      GST_VIDEO_INFO_PAR_D(&self->output_info) == output_par_d)
     return TRUE;
 
   state = gst_video_decoder_set_output_state(
@@ -427,6 +596,8 @@ gst_crystalhd_configure_output(GstCrystalHdDec *self, guint width, guint height,
     return FALSE;
 
   state->info.interlace_mode = mode;
+  state->info.par_n = output_par_n;
+  state->info.par_d = output_par_d;
   self->output_info = state->info;
   gst_video_codec_state_unref(state);
 
@@ -472,6 +643,8 @@ gst_crystalhd_copy_output(GstCrystalHdDec *self, BC_DTS_PROC_OUT *output,
   *completed = NULL;
 
   interlaced = (output->PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) != 0;
+  if (!gst_crystalhd_validate_scaled_output(self, width, interlaced))
+    return GST_FLOW_ERROR;
   /* These are values in a two-bit picture-type field, not independent bits:
    * TOPFIELD=0x10 shares a bit with BOTTOMFIELD=0x18; FIELDPAIR is 0x08. */
   bottom_field = (output->PicInfo.flags & VDEC_FLAG_BOTTOMFIELD) ==
@@ -1016,6 +1189,9 @@ gst_crystalhd_start(GstVideoDecoder *decoder)
   GstCrystalHdDec *self = GST_CRYSTALHD_DEC(decoder);
 
   g_return_val_if_fail(self->output_thread == NULL, FALSE);
+  GST_OBJECT_LOCK(self);
+  self->active_scale_width = self->scale_width;
+  GST_OBJECT_UNLOCK(self);
   gst_crystalhd_close_device(self);
   self->next_hardware_timestamp = CRYSTALHD_TIMESTAMP_STEP;
   self->output_flow = GST_FLOW_OK;
@@ -1120,6 +1296,8 @@ gst_crystalhd_reopen_format(GstVideoDecoder *decoder, GstVideoCodecState *state,
   input_format.mSubtype = subtype;
   input_format.width = GST_VIDEO_INFO_WIDTH(&state->info);
   input_format.height = GST_VIDEO_INFO_HEIGHT(&state->info);
+  if (!gst_crystalhd_validate_scale_request(self, state))
+    goto fail;
   if (subtype == BC_MSUBTYPE_DIVX) {
     if (input_format.width == 0 || input_format.width > 1920 ||
         input_format.height == 0 || input_format.height > 1088 ||
@@ -1203,11 +1381,28 @@ gst_crystalhd_reopen_format(GstVideoDecoder *decoder, GstVideoCodecState *state,
                       ("BCM70012 does not expose the validated DIVX decoder"));
     goto fail;
   }
+  if (self->active_scale_width != 0 && self->is_70012) {
+    GST_ELEMENT_ERROR(self, STREAM, FORMAT,
+                      ("CrystalHD hardware scaling requires BCM70015"),
+                      ("BCM70012 does not implement DtsSetScaleParams"));
+    goto fail;
+  }
 
   operation = "DtsSetInputFormat";
   status = DtsSetInputFormat(self->device, &input_format);
   if (status != BC_STS_SUCCESS)
     goto fail_status;
+
+  if (self->active_scale_width != 0) {
+    BC_SCALING_PARAMS scale_params;
+
+    memset(&scale_params, 0, sizeof(scale_params));
+    scale_params.sWidth = self->active_scale_width;
+    operation = "DtsSetScaleParams";
+    status = DtsSetScaleParams(self->device, &scale_params);
+    if (status != BC_STS_SUCCESS)
+      goto fail_status;
+  }
 
   operation = "DtsOpenDecoder";
   status = DtsOpenDecoder(self->device, BC_STREAM_TYPE_ES);
@@ -1658,8 +1853,20 @@ gst_crystalhd_dec_class_init(GstCrystalHdDecClass *klass)
 {
   GstElementClass *element_class = GST_ELEMENT_CLASS(klass);
   GstVideoDecoderClass *decoder_class = GST_VIDEO_DECODER_CLASS(klass);
+  GObjectClass *object_class = G_OBJECT_CLASS(klass);
 
-  G_OBJECT_CLASS(klass)->finalize = gst_crystalhd_finalize;
+  object_class->set_property = gst_crystalhd_set_property;
+  object_class->get_property = gst_crystalhd_get_property;
+  object_class->finalize = gst_crystalhd_finalize;
+
+  g_object_class_install_property(
+      object_class, PROP_SCALE_WIDTH,
+      g_param_spec_uint(
+          "scale-width", "Hardware scale width",
+          "BCM70015 output width (0 = native; otherwise an even width from "
+          "128 through 1918 not exceeding the coded width)",
+          0, G_MAXUINT, 0,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY));
 
   gst_element_class_set_static_metadata(
       element_class, "CrystalHD hardware decoder", "Codec/Decoder/Video/Hardware",
