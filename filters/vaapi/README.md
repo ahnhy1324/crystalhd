@@ -62,12 +62,12 @@ pictures.
 ## Replay and end of stream
 
 BCM70015 firmware can retain output until later compressed pictures or a real
-end-of-sequence marker arrive. After 100 ms without real input/output progress
-during synchronization, the backend may seal the exact submitted batch with
-EOS. New input waits until all
-real output timestamps retire and drain completes through the firmware EOS
-marker or, for MPEG-4, the library EOS state; continued input then reopens the
-device and replays retained original access units.
+end-of-sequence marker arrive. For strict H.264 and the other codecs, the
+backend may seal the exact submitted batch after 100 ms without real
+input/output progress during synchronization. New input waits until all real
+output timestamps retire and drain completes through the firmware EOS marker
+or, for MPEG-4, the library EOS state; continued input then reopens the device
+and replays retained original access units.
 
 H.264 replay starts at the last retained actual IDR. MPEG-2 retains the causal
 I-picture history needed by the last two I/P anchors and pending or outstanding
@@ -87,18 +87,26 @@ stateful BI and reference history required by an open GOP remain. Synchronous
 one-picture-at-a-time clients can be slow because they may trigger frequent
 reopen and replay. BCM70012 does not use this sealed-batch path.
 
-For experimental long-running H.264 input, `CRYSTALHD_VAAPI_LIVE_H264=1`
-allows completed transport history to retire within the same memory limits.
-Queued input and outstanding pictures are never discarded. If the original
-IDR prefix is no longer retained, continuation after EOS requires an actual
-IDR; dependent input is rejected rather than decoded with missing references.
-After a second original picture is accepted, synchronization does not infer
-EOS from an input-delivery gap, even while replay history remains intact.
-The final picture may require subsequent input or explicit context draining;
-the existing absolute synchronization deadline still applies. An initial
-one-picture decoder probe remains eligible for inactivity-based EOS.
-The default remains strict replay. This opt-in is not a real-time streaming
-support claim and does not affect other codecs or the library ABI.
+With `CRYSTALHD_VAAPI_LIVE_H264` unset, H.264 uses bounded transport history:
+completed history may retire within the limits above, while queued input and
+outstanding pictures are never discarded. While the retained prefix remains
+replayable the ordinary 100 ms rule applies. After that prefix has retired on
+BCM70015, only time actually spent waiting without progress inside VA sync
+calls is accumulated, and EOS is deferred to one second. Time between calls,
+including a player pause, is not counted. If this bounded grace eventually
+seals an unreplayable stream, continuation requires an actual IDR; dependent
+input is rejected rather than decoded with missing references.
+
+For experimental long-running H.264 input,
+`CRYSTALHD_VAAPI_LIVE_H264=1` also enables the direct input path and, after a
+second original picture is accepted, does not infer EOS from an input-delivery
+gap. Final pictures then require subsequent input or explicit context drain;
+the absolute ten-second synchronization deadline still applies. Setting the
+variable to `0`, or to any value other than exactly `1`, selects strict replay.
+An initial one-picture decoder probe remains eligible for inactivity-based
+EOS. These policies do not affect other codecs, BCM70012's existing path or
+the library ABI, and the explicit live mode is not a general real-time
+streaming support claim.
 
 On BCM70015, additionally setting `CRYSTALHD_VAAPI_LOW_LATENCY_H264=1`
 enables experimental H.264 input prefeeding. It requires
@@ -152,6 +160,13 @@ surfaces and canceled VPP epochs report errors.
 Decode targets may be VA-allocated NV12 surfaces or imported linear or
 GBM-mappable DRM PRIME NV12 surfaces. CrystalHD YUY2 output is converted into
 immutable, timestamped NV12 storage for the requested picture.
+
+`CRYSTALHD_VAAPI_EXPERIMENTAL_I915_WC=1` is an optional reference-host
+optimization for CPU writes into VA-allocated i915 dumb surfaces. It uses the
+i915 WC/GTT ownership transitions only for the synchronous YUY2-to-NV12 copy;
+imported surfaces, VPP and other DRM drivers retain the normal DMA-BUF sync
+path. The default is off. It improved CPU time only when pixels were read back
+in the measured test and is not a general display-latency setting.
 
 NV12 image buffers support `vaAcquireBufferHandle` and
 `vaReleaseBufferHandle` with DRM PRIME DMA-BUF, also when no memory-type hint
