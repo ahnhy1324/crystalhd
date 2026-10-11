@@ -23,6 +23,11 @@
 #include <linux/overflow.h>
 
 static struct class *crystalhd_class;
+/* The driver admits one adapter.  Keep poll waiters on module-lifetime
+ * storage: a blocking poll(2) waiter can retain its waitqueue entry until
+ * after PCI removal has completed, even after its wakeup was delivered.
+ */
+static DECLARE_WAIT_QUEUE_HEAD(chd_rx_poll_wait);
 
 static struct crystalhd_adp *g_adp_info;
 
@@ -44,6 +49,12 @@ struct crystalhd_file {
 	struct crystalhd_user *user;
 	u64 generation;
 };
+
+void crystalhd_rx_poll_wake(struct crystalhd_adp *adp, __poll_t events)
+{
+	if (adp)
+		wake_up_interruptible_poll(&chd_rx_poll_wait, events);
+}
 
 static int crystalhd_device_reserve_generation(u64 *generation)
 {
@@ -770,8 +781,10 @@ static long chd_dec_ioctl_common(struct file *fd, unsigned int cmd,
 	}
 
 	rc = chd_dec_api_cmd(adp, ua, uc->uid, cmd, cproc, compat);
-	if (cmd == BCM_IOC_RELEASE && !uc->in_use)
+	if (cmd == BCM_IOC_RELEASE && !uc->in_use) {
 		binding->user = NULL;
+		crystalhd_rx_poll_wake(adp, EPOLLERR | EPOLLHUP);
+	}
 
 unlock:
 	if (tx_locked)
@@ -908,6 +921,7 @@ static int chd_dec_close_locked(struct inode *in, struct file *fd)
 	}
 
 	crystalhd_user_close(ctx, uc);
+	crystalhd_rx_poll_wake(adp, EPOLLERR | EPOLLHUP);
 
 unlock:
 	up_write(&adp->user_lock);
@@ -926,6 +940,48 @@ static int chd_dec_close(struct inode *in, struct file *fd)
 	return rc;
 }
 
+static __poll_t chd_dec_poll(struct file *fd, poll_table *wait)
+{
+	struct crystalhd_file *binding = fd->private_data;
+	struct crystalhd_adp *adp;
+	__poll_t mask = 0;
+
+	down_read(&chd_device_lock);
+	adp = chd_get_adp();
+	if (!adp || !binding || binding->generation != chd_device_generation ||
+	    binding->generation != READ_ONCE(adp->generation)) {
+		mask = EPOLLERR | EPOLLHUP;
+		goto unlock_device;
+	}
+
+	/* Register before sampling state/queue contents so an IRQ completion or
+	 * lifecycle transition cannot be lost between the two operations.
+	 */
+	poll_wait(fd, &chd_rx_poll_wait, wait);
+	down_read(&adp->user_lock);
+	if (!READ_ONCE(adp->present) || !binding->user ||
+	    !READ_ONCE(binding->user->in_use)) {
+		mask = EPOLLERR | EPOLLHUP;
+		goto unlock_user;
+	}
+	if (!READ_ONCE(adp->hw_accessible) ||
+	    (READ_ONCE(adp->cmds.state) & BC_LINK_SUSPEND)) {
+		mask = EPOLLERR;
+		goto unlock_user;
+	}
+
+	/* RX frames belong to the active decoder owner, not monitor handles. */
+	if (adp->cmds.session_owner == binding->user &&
+	    atomic_read(&adp->rx_poll_ready) > 0)
+		mask = EPOLLIN | EPOLLRDNORM;
+
+unlock_user:
+	up_read(&adp->user_lock);
+unlock_device:
+	up_read(&chd_device_lock);
+	return mask;
+}
+
 static const struct file_operations chd_dec_fops = {
 	.owner		= THIS_MODULE,
 	.unlocked_ioctl	= chd_dec_ioctl,
@@ -934,6 +990,7 @@ static const struct file_operations chd_dec_fops = {
 #endif
 	.open		= chd_dec_open,
 	.release	= chd_dec_close,
+	.poll		= chd_dec_poll,
 	.llseek		= noop_llseek,
 };
 
@@ -1222,6 +1279,7 @@ static bool chd_dec_fail_closed(struct crystalhd_adp *adp, int error)
 	 */
 	WRITE_ONCE(adp->present, 0);
 	WRITE_ONCE(adp->cmds.cin_wait_exit, 1);
+	crystalhd_rx_poll_wake(adp, EPOLLERR | EPOLLHUP);
 	down_write(&chd_device_lock);
 	safe = chd_dec_quiesce_terminal_dma(adp) ||
 		chd_dec_session_dma_absent(adp);
@@ -1252,6 +1310,7 @@ static void chd_dec_pci_remove(struct pci_dev *pdev)
 	if (pinfo) {
 		WRITE_ONCE(pinfo->present, 0);
 		WRITE_ONCE(pinfo->cmds.cin_wait_exit, 1);
+		crystalhd_rx_poll_wake(pinfo, EPOLLERR | EPOLLHUP);
 	}
 	down_write(&chd_device_lock);
 	if (!pinfo) {
@@ -1362,6 +1421,7 @@ static int chd_dec_pci_probe(struct pci_dev *pdev,
 	spin_lock_init(&pinfo->dram_lock);
 	init_rwsem(&pinfo->user_lock);
 	mutex_init(&pinfo->tx_lock);
+	atomic_set(&pinfo->rx_poll_ready, 0);
 
 	/* setup api stuff.. */
 	rc = chd_dec_init_chdev(pinfo);

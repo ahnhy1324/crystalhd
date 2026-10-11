@@ -72,6 +72,10 @@ extern "C" BC_STATUS DtsDeviceOpen(HANDLE *device, uint32_t) {
   *device = active;
   return BC_STS_SUCCESS;
 }
+extern "C" BC_STATUS DtsDupOutputPollFd(HANDLE, int *fd) {
+  if (fd) *fd = -1;
+  return BC_STS_NOT_IMPL;
+}
 extern "C" BC_STATUS DtsCrystalHDVersion(HANDLE device,
                                            PBC_INFO_CRYSTAL version) {
   CheckDevice(device);

@@ -77,16 +77,18 @@ $(VC1_REPLAY_TEST): $(ROOTDIR)/tests/vaapi-vc1-replay.cpp $(BACKEND_HEADERS)
 $(VPP_TEST): $(ROOTDIR)/tests/vaapi-vpp.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o $@ \
 		-L$(ROOTDIR)/linux_lib/libcrystalhd $(LDLIBS) \
-		-Wl,--wrap=open,--wrap=ioctl,--wrap=close $(CRYSTALHD_CPU_FLAGS)
+		-Wl,--wrap=open,--wrap=ioctl,--wrap=close,--wrap=eventfd $(CRYSTALHD_CPU_FLAGS)
 
 $(REPLAY_TEST): $(ROOTDIR)/tests/vaapi-replay.cpp crystalhd_drv_video.cpp $(BACKEND_HEADERS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o $@ \
 		-L$(ROOTDIR)/linux_lib/libcrystalhd -Wl,--wrap=ioctl,--wrap=usleep \
 		-Wl,--wrap=poll,--wrap=__poll_chk \
 		-Wl,--wrap=gbm_bo_get_plane_count,--wrap=gbm_bo_get_fd_for_plane \
-		-Wl,--wrap=DtsDeviceOpen,--wrap=DtsDeviceClose,--wrap=DtsStopDecoder \
+		-Wl,--wrap=DtsDeviceOpen,--wrap=DtsDupOutputPollFd \
+		-Wl,--wrap=DtsDeviceClose,--wrap=DtsStopDecoder \
 		-Wl,--wrap=DtsCloseDecoder,--wrap=DtsCrystalHDVersion,--wrap=DtsSetInputFormat \
 		-Wl,--wrap=DtsGetDriverStatus,--wrap=DtsTxFreeSize \
+		-Wl,--wrap=DtsIsEndOfStream \
 		-Wl,--wrap=DtsProcInput,--wrap=DtsFlushInput,--wrap=DtsProcOutputNoCopy \
 		-Wl,--wrap=DtsReleaseOutputBuffs $(LDLIBS) $(CRYSTALHD_CPU_FLAGS)
 

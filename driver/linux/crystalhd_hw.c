@@ -589,6 +589,7 @@ do {								\
 BC_STATUS crystalhd_hw_create_ioqs(struct crystalhd_hw *hw)
 {
 	BC_STATUS   sts = BC_STS_SUCCESS;
+	unsigned long flags;
 
 	if (!hw) {
 		printk(KERN_ERR "%s: Invalid Arg!!\n", __func__);
@@ -604,6 +605,10 @@ BC_STATUS crystalhd_hw_create_ioqs(struct crystalhd_hw *hw)
 			      crystalhd_rx_pkt_rel_call_back);
 	crystalhd_hw_create_ioq(sts, hw, hw->rx_rdyq,
 			      crystalhd_rx_pkt_rel_call_back);
+	spin_lock_irqsave(&hw->rx_rdyq->lock, flags);
+	hw->rx_rdyq->is_rx_ready = true;
+	atomic_set(&hw->adp->rx_poll_ready, hw->rx_rdyq->count);
+	spin_unlock_irqrestore(&hw->rx_rdyq->lock, flags);
 	crystalhd_hw_create_ioq(sts, hw, hw->rx_actq,
 			      crystalhd_rx_pkt_rel_call_back);
 
@@ -1611,6 +1616,7 @@ void crystalhd_hw_dma_fatal_stop(struct crystalhd_hw *hw)
 	WRITE_ONCE(hw->dma_fault, true);
 	WRITE_ONCE(hw->adp->present, 0);
 	WRITE_ONCE(hw->adp->cmds.cin_wait_exit, 1);
+	crystalhd_rx_poll_wake(hw->adp, EPOLLERR | EPOLLHUP);
 	if (hw->adp->pdev->device == BC_PCI_DEVID_FLEA)
 		crystalhd_flea_disable_interrupts(hw);
 	else if (hw->adp->pdev->device == BC_PCI_DEVID_LINK)

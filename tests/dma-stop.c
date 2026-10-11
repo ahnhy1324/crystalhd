@@ -35,6 +35,8 @@ typedef enum {
 #define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
 #define READ_ONCE(value) (value)
 #define WRITE_ONCE(value, update) ((value) = (update))
+#define EPOLLERR 0x008U
+#define EPOLLHUP 0x010U
 #define spin_lock_irqsave(lock, flags) ((void)(lock), (flags) = 0)
 #define spin_unlock_irqrestore(lock, flags) ((void)(lock), (void)(flags))
 #define dev_err(dev, ...) ((void)(dev))
@@ -50,6 +52,12 @@ struct crystalhd_adp {
 	bool dma_terminal_quiesced;
 	struct { unsigned int cin_wait_exit; } cmds;
 };
+static void crystalhd_rx_poll_wake(struct crystalhd_adp *adp,
+				   unsigned int events)
+{
+	(void)adp;
+	assert(events == (EPOLLERR | EPOLLHUP));
+}
 struct crystalhd_rx_buffer {
 	unsigned int id;
 	bool released;

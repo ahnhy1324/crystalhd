@@ -207,12 +207,17 @@ struct DecodeIoMock {
   bool report_bcm70012 = false;
   bool fail_set_input_format = false;
   bool invalid = false;
+  int readiness_event = -1;
   uint64_t prefed_timestamp = 0;
   uint32_t tx_free_size = 1024 * 1024;
   unsigned int open_attempts = 0;
   unsigned int output_polls = 0;
+  unsigned int eos_queries = 0;
+  unsigned int eos_after_queries = 0;
   std::vector<uint32_t> status_requests;
   std::thread::id output_thread;
+  std::atomic<unsigned int> accepted_inputs{0};
+  std::chrono::microseconds input_delay{0};
   HANDLE handle() { return static_cast<HANDLE>(this); }
   static uint8_t Luma(uint64_t timestamp) {
     return static_cast<uint8_t>(40 + timestamp / kTimestampStep * 10);
@@ -238,6 +243,17 @@ extern "C" BC_STATUS __wrap_DtsDeviceOpen(HANDLE *device, uint32_t mode) {
     return BC_STS_SUCCESS;
   }
   return BC_STS_ERROR;  // An unexpected reopen must never touch real hardware.
+}
+
+extern "C" BC_STATUS __real_DtsDupOutputPollFd(HANDLE, int *);
+extern "C" BC_STATUS __wrap_DtsDupOutputPollFd(HANDLE device, int *poll_fd) {
+  if (decode_io_mock == nullptr)
+    return __real_DtsDupOutputPollFd(device, poll_fd);
+  decode_io_mock->invalid |=
+      device != decode_io_mock->handle() || poll_fd == nullptr;
+  if (poll_fd != nullptr)
+    *poll_fd = -1;
+  return BC_STS_NOT_IMPL;
 }
 
 extern "C" BC_STATUS __real_DtsCrystalHDVersion(HANDLE, PBC_INFO_CRYSTAL);
@@ -292,6 +308,15 @@ extern "C" BC_STATUS __wrap_DtsGetDriverStatus(HANDLE device, BC_DTS_STATUS *sta
                              status->cpbEmptySize != kStatusSkipReadyHeadPeek;
   *status = {};
   status->ReadyListCount = decode_io_mock->outputs.size();
+  if (status->ReadyListCount != 0 && decode_io_mock->readiness_event >= 0) {
+    uint64_t value;
+    ssize_t result;
+    do {
+      result = read(decode_io_mock->readiness_event, &value, sizeof(value));
+    } while (result < 0 && errno == EINTR);
+    decode_io_mock->invalid |=
+        result != static_cast<ssize_t>(sizeof(value));
+  }
   return decode_io_mock->fail_poll ? BC_STS_ERROR : BC_STS_SUCCESS;
 }
 
@@ -301,6 +326,20 @@ extern "C" uint32_t __wrap_DtsTxFreeSize(HANDLE device) {
     return __real_DtsTxFreeSize(device);
   decode_io_mock->invalid |= device != decode_io_mock->handle();
   return decode_io_mock->tx_free_size;
+}
+
+extern "C" BC_STATUS __real_DtsIsEndOfStream(HANDLE, uint8_t *);
+extern "C" BC_STATUS __wrap_DtsIsEndOfStream(HANDLE device, uint8_t *eos) {
+  if (decode_io_mock == nullptr)
+    return __real_DtsIsEndOfStream(device, eos);
+  decode_io_mock->invalid |=
+      device != decode_io_mock->handle() || eos == nullptr;
+  if (eos == nullptr)
+    return BC_STS_INV_ARG;
+  ++decode_io_mock->eos_queries;
+  *eos = decode_io_mock->eos_after_queries != 0 &&
+         decode_io_mock->eos_queries >= decode_io_mock->eos_after_queries;
+  return BC_STS_SUCCESS;
 }
 
 extern "C" BC_STATUS __real_DtsProcInput(HANDLE, uint8_t *, uint32_t, uint64_t, BOOL);
@@ -340,6 +379,9 @@ extern "C" BC_STATUS __wrap_DtsProcInput(HANDLE device, uint8_t *data,
     decode_io_mock->inputs.push_back(timestamp);
   }
   decode_io_mock->events.push_back("input");
+  ++decode_io_mock->accepted_inputs;
+  if (decode_io_mock->input_delay.count() != 0)
+    std::this_thread::sleep_for(decode_io_mock->input_delay);
   return BC_STS_SUCCESS;
 }
 
@@ -5176,6 +5218,174 @@ static void QueryOnlyObservesAutonomousDecodeProgress() {
           "query-only progress neither duplicates output nor seals the stream");
 }
 
+static void OutputEventReplacesPeriodicWorkerPolling() {
+  TeardownFixture fixture(1);
+  const int readiness = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+  Require(readiness >= 0, "allocate mocked decoder readiness event");
+  fixture.io.readiness_event = readiness;
+  fixture.decoder->output_poll =
+      std::make_shared<OutputPollLease>(readiness);
+  fixture.driver.StartDecodeWorker();
+
+  const auto input_deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  unsigned int idle_polls = 0;
+  for (;;) {
+    {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      if (fixture.io.inputs.size() == 1 && fixture.io.output_polls != 0) {
+        idle_polls = fixture.io.output_polls;
+        break;
+      }
+    }
+    Require(std::chrono::steady_clock::now() < input_deadline,
+            "event worker submits initial compressed input");
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  {
+    std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+    Require(fixture.io.output_polls == idle_polls && !fixture.held[0]->ready,
+            "event worker performs no timer-driven READY probes while idle");
+    fixture.io.outputs.push_back(kTimestampStep);
+  }
+  const uint64_t one = 1;
+  Require(write(readiness, &one, sizeof(one)) ==
+              static_cast<ssize_t>(sizeof(one)),
+          "signal mocked decoder readiness");
+
+  const auto output_deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  for (;;) {
+    {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      if (fixture.held[0]->ready)
+        break;
+    }
+    Require(std::chrono::steady_clock::now() < output_deadline,
+            "event worker publishes signaled output");
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+  Require(fixture.io.output_polls == idle_polls + 1 &&
+              fixture.decoder->pending.empty() &&
+              fixture.io.outputs.empty() && !fixture.io.invalid,
+          "one readiness signal causes one bounded output harvest");
+}
+
+static void BudgetedWorkerReleasesDriverMutex() {
+  constexpr unsigned int kPictures = 24;
+  TeardownFixture fixture(kPictures);
+  fixture.io.input_delay = std::chrono::milliseconds(1);
+  const int readiness = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+  Require(readiness >= 0, "allocate budget-yield readiness event");
+  fixture.io.readiness_event = readiness;
+  fixture.decoder->output_poll =
+      std::make_shared<OutputPollLease>(readiness);
+
+  unsigned int inputs_seen_with_mutex = kPictures;
+  std::thread frontend([&] {
+    while (fixture.io.accepted_inputs.load(std::memory_order_acquire) < 4)
+      std::this_thread::yield();
+    std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+    inputs_seen_with_mutex =
+        fixture.io.accepted_inputs.load(std::memory_order_relaxed);
+  });
+  fixture.driver.StartDecodeWorker();
+  frontend.join();
+
+  Require(inputs_seen_with_mutex < kPictures,
+          "bounded input backlog yields the VA mutex before draining every picture");
+}
+
+static void Mpeg4StateOnlyEosStillWakesEventWorker() {
+  TeardownFixture fixture(1);
+  fixture.decoder->profile = VAProfileMPEG4AdvancedSimple;
+  fixture.decoder->stream_width = fixture.decoder->stream_height = 16;
+  Require(fixture.decoder->mpeg4_replay.Append(
+              kTimestampStep, CrystalHDMpeg4Replay::Kind::I, 0, 0,
+              {0, 0, 1, 0xb6}),
+          "retain one MPEG-4 epoch for state-only EOS");
+  Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
+                  VA_STATUS_SUCCESS &&
+              fixture.decoder->mpeg4_replay.Seal(),
+          "submit and seal the MPEG-4 state-only EOS fixture");
+  fixture.io.outputs.push_back(kTimestampStep);
+  fixture.io.eos_after_queries = 2;
+  const int readiness = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+  Require(readiness >= 0, "allocate MPEG-4 EOS readiness event");
+  fixture.io.readiness_event = readiness;
+  fixture.decoder->output_poll =
+      std::make_shared<OutputPollLease>(readiness);
+  const uint64_t one = 1;
+  Require(write(readiness, &one, sizeof(one)) ==
+              static_cast<ssize_t>(sizeof(one)),
+          "signal final MPEG-4 picture readiness");
+  fixture.driver.StartDecodeWorker();
+
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  for (;;) {
+    {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      if (fixture.decoder->mpeg4_replay.ended()) {
+        Require(fixture.held[0]->ready && fixture.io.eos_queries >= 2 &&
+                    !fixture.io.invalid,
+                "state-only MPEG-4 EOS completes after a bounded event-path probe");
+        break;
+      }
+    }
+    Require(std::chrono::steady_clock::now() < deadline,
+            "event worker cannot stall on state-only MPEG-4 EOS");
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+}
+
+static void OutputPollHangupFailsWithoutSpinning() {
+  TeardownFixture fixture(1);
+  int descriptors[2] = {-1, -1};
+  Require(pipe(descriptors) == 0, "allocate mocked decoder hangup pipe");
+  fixture.decoder->output_poll =
+      std::make_shared<OutputPollLease>(descriptors[0]);
+  fixture.driver.StartDecodeWorker();
+
+  const auto input_deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  for (;;) {
+    {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      if (fixture.io.inputs.size() == 1 && fixture.io.output_polls != 0)
+        break;
+    }
+    Require(std::chrono::steady_clock::now() < input_deadline,
+            "hangup worker submits initial compressed input");
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  Require(close(descriptors[1]) == 0, "signal mocked decoder poll hangup");
+
+  const auto failure_deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  unsigned int failed_polls = 0;
+  for (;;) {
+    {
+      std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+      if (fixture.decoder->ReplayFailed()) {
+        failed_polls = fixture.io.output_polls;
+        Require(fixture.held[0]->failed,
+                "poll hangup fails its pending presentation surface");
+        break;
+      }
+    }
+    Require(std::chrono::steady_clock::now() < failure_deadline,
+            "poll hangup becomes a bounded decode failure");
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  std::lock_guard<std::mutex> lock(fixture.driver.mutex);
+  Require(fixture.io.output_polls == failed_polls,
+          "terminal output poll cannot leave a hot-spinning worker");
+}
+
 static void AutonomousWorkerFinishesOnlyAnExistingSealedBatch() {
   TeardownFixture fixture(2);
   Require(PumpDecodeInput(&fixture.driver, fixture.decoder.get()) ==
@@ -5305,6 +5515,10 @@ int main() {
     ExactReadySurfaceDoesNotWaitForBatchEos();
     ReadyInventoryConditionalOpportunityReplay();
     QueryOnlyObservesAutonomousDecodeProgress();
+    OutputEventReplacesPeriodicWorkerPolling();
+    BudgetedWorkerReleasesDriverMutex();
+    Mpeg4StateOnlyEosStillWakesEventWorker();
+    OutputPollHangupFailsWithoutSpinning();
     AutonomousWorkerFinishesOnlyAnExistingSealedBatch();
     AutonomousWorkerStopsAfterTransportFailure();
     std::puts("VA-API sealed-batch replay, immutable-output and teardown tests passed");

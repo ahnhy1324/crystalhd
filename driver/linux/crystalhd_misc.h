@@ -169,6 +169,7 @@ struct crystalhd_dioq {
 	uint32_t		count;
 	spinlock_t		lock;
 	wait_queue_head_t	event;
+	bool			is_rx_ready;
 	crystalhd_data_free_cb	data_rel_cb;
 	void			*cb_context;
 };

@@ -33,6 +33,10 @@ static void discard_log(const char *format, ...) { (void)format; }
 #define dev_info(dev, ...) ((void)(dev))
 #define READ_ONCE(value) (value)
 #define WRITE_ONCE(value, update) ((value) = (update))
+#define EPOLLERR 0x008U
+#define EPOLLHUP 0x010U
+#define EPOLLIN 0x001U
+#define EPOLLRDNORM 0x040U
 #define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
 #define spin_lock_irqsave(lock, flags) \
     (assert(*(lock) == 0), *(lock) = 1, (flags) = 0)
@@ -85,6 +89,14 @@ struct crystalhd_adp {
     unsigned present;
     struct crystalhd_cmd cmds;
 };
+static void crystalhd_rx_poll_wake(struct crystalhd_adp *adp,
+                                   unsigned int events)
+{
+    (void)adp;
+    if (events != (EPOLLERR | EPOLLHUP) &&
+        events != (EPOLLIN | EPOLLRDNORM))
+        abort();
+}
 
 static struct pci_dev endpoint = { .irq = 17 };
 static struct crystalhd_adp adapter = { .pdev = &endpoint };

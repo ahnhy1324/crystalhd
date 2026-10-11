@@ -41,6 +41,7 @@
 #include <linux/dma-buf.h>
 #include <poll.h>
 #include <sys/ioctl.h>
+#include <sys/eventfd.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -67,6 +68,12 @@ extern "C" {
 #include "crystalhd-vc1.h"
 #include "crystalhd-vc1-replay.h"
 #include "crystalhd-wmv3.h"
+
+#if defined(__GNUC__)
+// Keep the plugin loadable with an older libcrystalhd.so.3. The optional
+// output-event API is negotiated only when the symbol is present.
+extern "C" BC_STATUS DtsDupOutputPollFd(HANDLE, int *) __attribute__((weak));
+#endif
 
 namespace {
 
@@ -1360,6 +1367,18 @@ struct Image {
 static bool CopyYuy2ToSurface(Surface *surface,
                               const BC_DTS_PROC_OUT &output, bool is_70012);
 
+struct OutputPollLease {
+  explicit OutputPollLease(int descriptor) : fd(descriptor) {}
+  ~OutputPollLease() {
+    if (fd >= 0)
+      close(fd);
+  }
+  OutputPollLease(const OutputPollLease &) = delete;
+  OutputPollLease &operator=(const OutputPollLease &) = delete;
+
+  int fd = -1;
+};
+
 struct DecodeContext {
   VAContextID id = VA_INVALID_ID;
   VAConfigID config = VA_INVALID_ID;
@@ -1426,12 +1445,15 @@ struct DecodeContext {
   std::array<uint8_t, 4> wmv3_metadata = {};
 
   HANDLE device = nullptr;
+  std::shared_ptr<OutputPollLease> output_poll;
   bool decoder_open = false;
   bool decoder_started = false;
   bool is_70012 = false;
   bool sent_parameter_sets = false;
   bool live_h264 = false;
   bool low_latency_h264 = false;
+  bool input_backpressured = false;
+  bool input_budget_exhausted = false;
   bool experimental_ready_remap = false;
   bool experimental_ready_latest = false;
   uint64_t experimental_ready_delay_ns = 0;
@@ -1540,6 +1562,9 @@ struct DecodeContext {
         result = status;
       device = nullptr;
     }
+    output_poll.reset();
+    input_backpressured = false;
+    input_budget_exhausted = false;
     return result;
   }
 
@@ -1621,12 +1646,14 @@ struct Driver {
   bool stopping = false;
   std::thread decode_worker;
   std::thread vpp_worker;
+  int decode_control_fd = -1;
   gbm_device *gbm = nullptr;
   int drm_fd = -1;
 
   explicit Driver(int requested_drm_fd,
                   int trace_output_fd = STDERR_FILENO)
       : trace(trace_output_fd), drm_fd(requested_drm_fd) {
+    decode_control_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
     if (requested_drm_fd >= 0)
       gbm = gbm_create_device(requested_drm_fd);
     vpp_worker = std::thread(RunVppWorker, this);
@@ -1637,11 +1664,15 @@ struct Driver {
       std::lock_guard<std::mutex> lock(mutex);
       stopping = true;
     }
-    condition.notify_all();
+    NotifyDecodeWorker();
     if (decode_worker.joinable())
       decode_worker.join();
     if (vpp_worker.joinable())
       vpp_worker.join();
+    if (decode_control_fd >= 0) {
+      close(decode_control_fd);
+      decode_control_fd = -1;
+    }
     for (const PendingVpp &pending : pending_vpp)
       AbortFencedWrite(pending.target.get(), pending.write_timeline);
     if (vpp_scaler != nullptr)
@@ -1655,6 +1686,16 @@ struct Driver {
     if (gbm != nullptr)
       gbm_device_destroy(gbm);
     trace.Emit(crystalhd_vaapi_trace::Event::SessionDestroy);
+  }
+  void NotifyDecodeWorker() {
+    if (decode_control_fd >= 0) {
+      const uint64_t increment = 1;
+      ssize_t result;
+      do {
+        result = write(decode_control_fd, &increment, sizeof(increment));
+      } while (result < 0 && errno == EINTR);
+    }
+    condition.notify_all();
   }
 };
 
@@ -2222,6 +2263,14 @@ static VAStatus OpenDecoder(DecodeContext *decode, unsigned int width = 0,
       return VA_STATUS_ERROR_HW_BUSY;
     return VA_STATUS_ERROR_OPERATION_FAILED;
   }
+
+  int output_poll_fd = -1;
+  if (DtsDupOutputPollFd != nullptr &&
+      DtsDupOutputPollFd(decode->device, &output_poll_fd) == BC_STS_SUCCESS)
+    decode->output_poll =
+        std::make_shared<OutputPollLease>(output_poll_fd);
+  else
+    decode->output_poll.reset();
 
   status = DtsCrystalHDVersion(decode->device, &version);
   if (status != BC_STS_SUCCESS)
@@ -3142,6 +3191,8 @@ static VAStatus AdvanceMpeg4Epoch(Driver *driver, DecodeContext *decode) {
 
 static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
                                 unsigned int max_attempts = 32) {
+  decode->input_backpressured = false;
+  decode->input_budget_exhausted = false;
   VAStatus advance = AdvanceMpeg4Epoch(driver, decode);
   if (advance != VA_STATUS_SUCCESS)
     return advance;
@@ -3179,14 +3230,18 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
                           "speculative H.264 timestamp lost alignment");
       const size_t reserve = unit->bytes.size() +
                              (unit->bytes.size() / 60000 + 1) * 32 + 1024;
-      if (DtsTxFreeSize(decode->device) < reserve)
+      if (DtsTxFreeSize(decode->device) < reserve) {
+        decode->input_backpressured = true;
         break;
+      }
       const BC_STATUS status = DtsProcInput(
           decode->device, const_cast<uint8_t *>(unit->bytes.data()),
           static_cast<uint32_t>(unit->bytes.size()),
           consume_prefeed ? 0 : unit->timestamp, FALSE);
-      if (status == BC_STS_BUSY)
+      if (status == BC_STS_BUSY) {
+        decode->input_backpressured = true;
         break;
+      }
       if (status != BC_STS_SUCCESS || !replay.InputSent())
         return FailDecode(driver, decode, "compressed input submission failed");
       if (driver->trace.enabled())
@@ -3196,6 +3251,8 @@ static VAStatus PumpDecodeInput(Driver *driver, DecodeContext *decode,
       if (consume_prefeed)
         decode->prefed_timestamp = 0;
       ++decode->transport_progress;
+      if (attempt + 1 == max_attempts)
+        decode->input_budget_exhausted = true;
 
       if (decode->low_latency_h264 && !decode->is_70012 &&
           decode->prefed_timestamp == 0 && replay.NextInput() == nullptr) {
@@ -3293,8 +3350,23 @@ static VAStatus DrainClosingContext(
       return FailDecode(driver, decode.get(), "context drain failed");
     if (!HasLivePendingPictures(driver, *decode) && !decode->ReplaySealed())
       break;
+    const std::shared_ptr<OutputPollLease> output_poll = decode->output_poll;
     driver_lock->unlock();
-    usleep(1000);
+    if (output_poll) {
+      pollfd descriptor = {output_poll->fd, POLLIN, 0};
+      int result;
+      do {
+        result = poll(&descriptor, 1, 10);
+      } while (result < 0 && errno == EINTR);
+      if (result < 0 ||
+          (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+        driver_lock->lock();
+        return FailDecode(driver, decode.get(),
+                          "decoder output poll terminated during drain");
+      }
+    } else {
+      usleep(1000);
+    }
     driver_lock->lock();
   }
   return VA_STATUS_SUCCESS;
@@ -3936,9 +4008,15 @@ static VAStatus SyncDecodeSurface(
     }
     // Let submission threads queue subsequent input while this finite batch
     // drains, and let destruction cancel this wait without touching new state.
-    driver_lock->unlock();
-    usleep(1000);
-    driver_lock->lock();
+    // With negotiated RX polling, the sole hardware waiter publishes output
+    // through this condition; retain the old 1 ms sleep for older stacks.
+    if (decode->output_poll && driver->decode_control_fd >= 0) {
+      driver->condition.wait_for(*driver_lock, std::chrono::milliseconds(10));
+    } else {
+      driver_lock->unlock();
+      usleep(1000);
+      driver_lock->lock();
+    }
     if (presentation_ready())
       return VA_STATUS_SUCCESS;
     const VAStatus resumed = DecodeWaitState(*decode, surface.get(), generation,
@@ -4034,6 +4112,27 @@ static bool HasAutonomousDecodeWork(
          (!decode->pending.empty() || decode->ReplaySealed());
 }
 
+static bool NeedsMpeg4EosProbe(const DecodeContext &decode) {
+  if (!decode.IsMpeg4())
+    return false;
+  const auto &replay = decode.Mpeg4TransportReplay();
+  return replay.sealed() && !replay.ended() && replay.outstanding() == 0;
+}
+
+static void DrainDecodeControlFd(int fd) {
+  if (fd < 0)
+    return;
+  uint64_t value;
+  for (;;) {
+    const ssize_t result = read(fd, &value, sizeof(value));
+    if (result == static_cast<ssize_t>(sizeof(value)))
+      continue;
+    if (result < 0 && errno == EINTR)
+      continue;
+    break;
+  }
+}
+
 // Some conforming frontends submit pictures and then wait in their presentation
 // path without making another VA call that can harvest decoder output. Keep
 // QuerySurfaceStatus passive and make that hardware progress independently.
@@ -4056,6 +4155,12 @@ static void RunDecodeWorker(Driver *driver) {
     // Bound each context's turn so a ready backlog cannot hold the global VA
     // mutex long enough to starve frontend or VPP calls. Visit every active
     // context once before the polling delay.
+    bool input_backpressured = false;
+    bool input_budget_exhausted = false;
+    bool needs_mpeg4_eos_probe = false;
+    std::vector<std::shared_ptr<DecodeContext>> output_poll_contexts;
+    std::vector<std::shared_ptr<OutputPollLease>> output_poll_leases;
+    bool needs_timer_fallback = driver->decode_control_fd < 0;
     for (const auto &entry : driver->contexts) {
       const std::shared_ptr<DecodeContext> &decode = entry.second;
       if (!HasAutonomousDecodeWork(decode))
@@ -4072,12 +4177,83 @@ static void RunDecodeWorker(Driver *driver) {
         status = SealDecodeBatch(driver, decode.get());
       if (status != VA_STATUS_SUCCESS && !decode->ReplayFailed())
         FailDecode(driver, decode.get(), "autonomous decoder progress failed");
+      if (!HasAutonomousDecodeWork(decode))
+        continue;
+      input_backpressured = input_backpressured || decode->input_backpressured;
+      input_budget_exhausted =
+          input_budget_exhausted || decode->input_budget_exhausted;
+      needs_mpeg4_eos_probe =
+          needs_mpeg4_eos_probe || NeedsMpeg4EosProbe(*decode);
+      if (decode->output_poll) {
+        output_poll_contexts.push_back(decode);
+        output_poll_leases.push_back(decode->output_poll);
+      } else {
+        needs_timer_fallback = true;
+      }
     }
 
-    // Hardware completion does not signal this condition variable. Poll only
-    // while submitted output is pending, and sleep indefinitely when idle.
-    if (!driver->stopping)
+    if (driver->stopping)
+      return;
+    if (input_budget_exhausted) {
+      // A ready control/output descriptor can make poll return immediately,
+      // and std::mutex does not promise a waiting frontend the next handoff.
+      // Release the mutex for one bounded turn before continuing the backlog.
+      driver->condition.wait_for(
+          lock, std::chrono::milliseconds(1),
+          [&] { return driver->stopping; });
+      if (driver->stopping)
+        return;
+      if (needs_timer_fallback)
+        continue;
+    }
+    if (needs_timer_fallback) {
+      // An older kernel/library pair has no negotiated output event. Preserve
+      // the established polling behavior exactly for that compatibility path.
+      // This wait also releases the global VA mutex between bounded input
+      // turns; a ready input backlog must not starve frontend or teardown calls.
       driver->condition.wait_for(lock, std::chrono::milliseconds(1));
+      continue;
+    }
+
+    std::vector<pollfd> descriptors;
+    descriptors.reserve(output_poll_leases.size() + 1);
+    descriptors.push_back({driver->decode_control_fd, POLLIN, 0});
+    for (const auto &lease : output_poll_leases)
+      descriptors.push_back({lease->fd, POLLIN, 0});
+
+    // A latched control event wakes new input and teardown. RX readiness is
+    // level-triggered by the kernel, so output that arrives before poll() is
+    // not lost. A full input turn already yielded above. TX-ring backpressure
+    // needs 2 ms.
+    // The MPEG-4 missing-marker fallback changes only library EOS state, so
+    // retain a bounded state probe for that exact sealed/zero-output window.
+    const int timeout_ms = input_budget_exhausted ? 0 :
+                           input_backpressured ? 2 :
+                           needs_mpeg4_eos_probe ? 5 : -1;
+    lock.unlock();
+    int result;
+    do {
+      result = poll(descriptors.data(), descriptors.size(), timeout_ms);
+    } while (result < 0 && errno == EINTR);
+    if (result > 0 && (descriptors.front().revents & POLLIN) != 0)
+      DrainDecodeControlFd(driver->decode_control_fd);
+    lock.lock();
+    if (result < 0) {
+      for (const auto &decode : output_poll_contexts) {
+        if (HasAutonomousDecodeWork(decode))
+          FailDecode(driver, decode.get(), "decoder output poll failed");
+      }
+      continue;
+    }
+    for (size_t i = 0; i < output_poll_contexts.size(); ++i) {
+      const short terminal = POLLERR | POLLHUP | POLLNVAL;
+      if ((descriptors[i + 1].revents & terminal) == 0)
+        continue;
+      const std::shared_ptr<DecodeContext> &decode = output_poll_contexts[i];
+      if (decode->output_poll == output_poll_leases[i] &&
+          HasAutonomousDecodeWork(decode))
+        FailDecode(driver, decode.get(), "decoder output poll terminated");
+    }
   }
 }
 
@@ -4521,7 +4697,7 @@ static VAStatus DestroySurfaces(VADriverContextP context,
     driver->trace.Emit(crystalhd_vaapi_trace::Event::ContextReset,
                        TraceFields(decode, nullptr));
   }
-  driver->condition.notify_all();
+  driver->NotifyDecodeWorker();
   return VA_STATUS_SUCCESS;
 }
 
@@ -4755,7 +4931,7 @@ static VAStatus DestroyContext(VADriverContextP context,
   // The drain releases the lock. Another context insertion may rehash the
   // map, so never retain its iterator across that interval.
   driver->contexts.erase(context_id);
-  driver->condition.notify_all();
+  driver->NotifyDecodeWorker();
   return status;
 }
 
@@ -5538,7 +5714,7 @@ static VAStatus EndPicture(VADriverContextP context, VAContextID context_id) {
   decode_context->mpeg4_picture = DecodeContext::Mpeg4Picture();
   decode_context->vc1_picture = DecodeContext::Vc1Picture();
   if (status == VA_STATUS_SUCCESS)
-    driver->condition.notify_all();
+    driver->NotifyDecodeWorker();
   return status;
 }
 

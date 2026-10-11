@@ -27,6 +27,10 @@ struct MockScope {
 }
 
 extern "C" BC_STATUS DtsDeviceOpen(HANDLE *, uint32_t) { abort(); }
+extern "C" BC_STATUS DtsDupOutputPollFd(HANDLE, int *fd) {
+  if (fd) *fd = -1;
+  return BC_STS_NOT_IMPL;
+}
 extern "C" BC_STATUS DtsCrystalHDVersion(HANDLE, PBC_INFO_CRYSTAL) { abort(); }
 extern "C" BC_STATUS DtsSetInputFormat(HANDLE, BC_INPUT_FORMAT *) { abort(); }
 extern "C" BC_STATUS DtsOpenDecoder(HANDLE, uint32_t) { abort(); }

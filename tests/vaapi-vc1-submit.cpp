@@ -45,6 +45,10 @@ extern "C" BC_STATUS DtsDeviceOpen(HANDLE *device, uint32_t) {
   Require(active && !active->opened && device, "mock open has no live predecessor");
   active->opened = true; ++active->opens; *device = active; return BC_STS_SUCCESS;
 }
+extern "C" BC_STATUS DtsDupOutputPollFd(HANDLE, int *fd) {
+  if (fd) *fd = -1;
+  return BC_STS_NOT_IMPL;
+}
 extern "C" BC_STATUS DtsCrystalHDVersion(HANDLE device, PBC_INFO_CRYSTAL version) {
   CheckDevice(device); *version = {}; version->device = 1; return BC_STS_SUCCESS;
 }

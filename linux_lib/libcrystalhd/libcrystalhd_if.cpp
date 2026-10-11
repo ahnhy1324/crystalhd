@@ -32,6 +32,8 @@
 #include <stdlib.h>
 #include <pthread.h>
 #include <sys/ioctl.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include "7411d.h"
 #include "libcrystalhd_version.h"
@@ -758,6 +760,49 @@ DtsDeviceClose(
 	const BC_STATUS release_sts = DtsReleaseInterface(Ctx);
 	return sts == BC_STS_SUCCESS ? release_sts : sts;
 
+}
+
+DRVIFLIB_API BC_STATUS
+DtsDupOutputPollFd(
+    HANDLE hDevice,
+    int   *pollFd
+    )
+{
+	DTS_LIB_CONTEXT *Ctx;
+	BC_IOCTL_DATA query;
+	int fd;
+
+	if (!pollFd)
+		return BC_STS_INV_ARG;
+	*pollFd = -1;
+
+	Ctx = DtsGetContext(hDevice);
+	if (!Ctx || Ctx->DevHandle < 0)
+		return BC_STS_INV_ARG;
+
+	memset(&query, 0, sizeof(query));
+	query.IoctlDataSz = sizeof(query);
+	if (ioctl(Ctx->DevHandle, BCM_IOC_QUERY_CAPS, &query) < 0) {
+		if (errno == ENOTTY)
+			return BC_STS_NOT_IMPL;
+		return BC_STS_IO_ERROR;
+	}
+	if (query.RetSts == BC_STS_NOT_IMPL)
+		return BC_STS_NOT_IMPL;
+	if (query.RetSts != BC_STS_SUCCESS)
+		return query.RetSts;
+	if (query.u.DriverCaps.abi_version < BC_DRIVER_CAPS_ABI_VERSION ||
+	    !(query.u.DriverCaps.flags & BC_DRIVER_CAP_RX_POLL))
+		return BC_STS_NOT_IMPL;
+
+	do {
+		fd = fcntl(Ctx->DevHandle, F_DUPFD_CLOEXEC, 0);
+	} while (fd < 0 && errno == EINTR);
+	if (fd < 0)
+		return BC_STS_IO_ERROR;
+
+	*pollFd = fd;
+	return BC_STS_SUCCESS;
 }
 
 DRVIFLIB_API BC_STATUS
@@ -2476,6 +2521,7 @@ DtsSendEOS( HANDLE  hDevice, uint32_t Op
 	uint32_t nEOSLen;
 	uint32_t	nTag;
 	uint64_t drainGeneration = 0;
+	bool wakeTxWorker = false;
 	const bool softRave = Ctx->PESConvParams.m_bSoftRave;
 	const bool divxTailBoundary = softRave && Ctx->DevId == BC_PCI_DEVID_FLEA &&
 		Ctx->VidParams.MediaSubType == BC_MSUBTYPE_DIVX;
@@ -2610,12 +2656,19 @@ DtsSendEOS( HANDLE  hDevice, uint32_t Op
 			goto eos_cleanup;
 		}
 		Ctx->eosTxFence = Ctx->txBytesEnqueued;
-		if (Op == 0)
+		if (Op == 0) {
 			Ctx->bEOSCheck = true;
+			wakeTxWorker = true;
+		}
 		Ctx->eosTxComplete = Ctx->bEOSCheck && !Ctx->txDmaFault &&
 			Ctx->eosTxFence > Ctx->eosTxStart &&
 			Ctx->txBytesRetired >= Ctx->eosTxFence;
 		DtsUnLock(Ctx);
+		/* The worker may have consumed the final drain bytes before EOS mode
+		 * was published. Wake its latched idle wait so the 5 ms EOS cadence
+		 * takes effect immediately instead of inheriting the normal idle wait. */
+		if (wakeTxWorker)
+			txBufWake(&Ctx->circBuf);
 	}
 
 eos_cleanup:

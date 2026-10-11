@@ -42,6 +42,7 @@
 #include <linux/rwsem.h>
 #include <linux/mutex.h>
 #include <linux/pagemap.h>
+#include <linux/poll.h>
 #include <linux/vmalloc.h>
 
 #include <linux/io.h>
@@ -92,6 +93,8 @@ struct crystalhd_adp {
 	spinlock_t		dram_lock;
 	struct rw_semaphore	user_lock;
 	struct mutex		tx_lock;
+	/* Mirrored from the transient RX-ready queue under its queue lock. */
+	atomic_t		rx_poll_ready;
 
 	/* API Related */
 	int			chd_dec_major;
@@ -124,5 +127,6 @@ void crystalhd_device_exit(struct crystalhd_device_access *access);
 
 struct crystalhd_adp *chd_get_adp(void);
 struct device *chddev(void);
+void crystalhd_rx_poll_wake(struct crystalhd_adp *adp, __poll_t events);
 
 #endif

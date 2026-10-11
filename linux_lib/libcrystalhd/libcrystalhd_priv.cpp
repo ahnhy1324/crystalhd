@@ -2726,7 +2726,7 @@ free_buffer:
 	return BC_STS_INSUFF_RES;
 }
 
-static void txBufWake(pTXBUFFER txBuf)
+void txBufWake(pTXBUFFER txBuf)
 {
 	if(txBuf == NULL || txBuf->buffer == NULL)
 		return;
@@ -2983,6 +2983,9 @@ void * txThreadProc(void *ctx)
 	uint64_t fleaIdleGeneration = 0;
 	uint64_t fleaIdleProgress = 0;
 	bool fleaIdleTiming = false;
+	/* Input push is a latched condition wake, so normal idle status checks do
+	 * not set submission latency. Keep EOS observation on its legacy cadence. */
+	const uint32_t idleWaitMs = 50;
 
 	ret = posix_memalign((void**)&localBuffer, 128, CIRC_TX_BUF_SIZE);
 	if(ret)
@@ -3020,13 +3023,21 @@ void * txThreadProc(void *ctx)
 		}
 
 		/* Retain BCM70012's legacy no-progress fallback. */
-		if(Ctx->DevId == BC_PCI_DEVID_LINK && Ctx->bEOSCheck)
+		DtsLock(Ctx);
+		const bool linkEosCheck = Ctx->DevId == BC_PCI_DEVID_LINK &&
+			Ctx->bEOSCheck;
+		DtsUnLock(Ctx);
+		if(linkEosCheck)
 		{
 			if(numPicCaptured == pStat.FramesCaptured)
 				waitForPictCount++;
 
-			if(waitForPictCount >= BC_EOS_PIC_COUNT)
-				Ctx->bEOS = true;
+			if(waitForPictCount >= BC_EOS_PIC_COUNT) {
+				DtsLock(Ctx);
+				if (Ctx->bEOSCheck)
+					Ctx->bEOS = true;
+				DtsUnLock(Ctx);
+			}
 
 			usleep(30 * 1000);
 		}
@@ -3144,13 +3155,16 @@ void * txThreadProc(void *ctx)
 			Ctx->LastSessNum = -1;
 			Ctx->EOSCnt = 0;
 			Ctx->DrvStatusEOSCnt = 0;
+			DtsLock(Ctx);
 			Ctx->bEOS = FALSE;
+			const bool resendEos = Ctx->bEOSCheck;
+			DtsUnLock(Ctx);
 			Ctx->PESConvParams.m_lStartCodeDataSize = 0;
 
 			Ctx->PESConvParams.m_bAddSpsPps = true;
 			// But in case we were already in the mode to be hunting for EOS
 			// and did not send it to HW, resend it so the playback can end gracefully
-			if(Ctx->bEOSCheck)
+			if(resendEos)
 				DtsSendEOS(hDevice, 0);
 			DebugLog_Trace(LDIL_ERR,"Resume from S3/S5 Done\n");
 		}
@@ -3215,8 +3229,14 @@ void * txThreadProc(void *ctx)
 			}
 			Ctx->txPending = false;
 			DtsUnLock(Ctx);
-		} else if(!txBufWaitForWake(&Ctx->circBuf, 5))
-			break;
+		} else {
+			DtsLock(Ctx);
+			const bool eosCheck = Ctx->bEOSCheck;
+			DtsUnLock(Ctx);
+			if(!txBufWaitForWake(&Ctx->circBuf,
+				eosCheck ? 5 : idleWaitMs))
+				break;
+		}
 	}
 
 	free(localBuffer);
