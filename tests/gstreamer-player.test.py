@@ -342,16 +342,16 @@ class ArgumentTests(unittest.TestCase):
             defaults = player.arguments([str(path)])
             self.assertEqual(defaults.mode, "hardware")
             self.assertEqual(defaults.scale_width, 0)
-            self.assertIsNone(defaults.software_upscale)
+            self.assertIsNone(defaults.software_output_size)
 
-    def test_explicit_hardware_scale_and_software_upscale(self):
+    def test_explicit_hardware_scale_and_software_output_size(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "video.mp4"
             path.touch()
             args = player.arguments([
-                "--scale-width", "1280", "--software-upscale", "1920X1080", str(path)])
+                "--scale-width", "1280", "--software-output-size", "1920X1080", str(path)])
             self.assertEqual(args.scale_width, 1280)
-            self.assertEqual(args.software_upscale, (1920, 1080))
+            self.assertEqual(args.software_output_size, (1920, 1080))
             self.assertEqual(player.arguments(["--scale-width", "0", str(path)]).scale_width, 0)
 
     def test_scale_options_reject_unsafe_or_incoherent_combinations(self):
@@ -363,11 +363,11 @@ class ArgumentTests(unittest.TestCase):
                 ["--scale-width", "129", str(path)],
                 ["--scale-width", "1920", str(path)],
                 ["--scale-width", "wide", str(path)],
-                ["--software-upscale", "1920x1080", str(path)],
-                ["--scale-width", "1280", "--software-upscale", "1280x1080", str(path)],
-                ["--scale-width", "1280", "--software-upscale", "1921x1080", str(path)],
-                ["--scale-width", "1280", "--software-upscale", "32768x1080", str(path)],
-                ["--scale-width", "1280", "--software-upscale", "1920-by-1080", str(path)],
+                ["--software-output-size", "1920x1080", str(path)],
+                ["--scale-width", "1280", "--software-output-size", "1921x1080", str(path)],
+                ["--scale-width", "1280", "--software-output-size", "4096x4096", str(path)],
+                ["--scale-width", "1280", "--software-output-size", "4098x1080", str(path)],
+                ["--scale-width", "1280", "--software-output-size", "1920-by-1080", str(path)],
                 ["--software", "--scale-width", "1280", str(path)],
             )
             for argv in invalid:
@@ -430,7 +430,7 @@ class GStreamerApiTests(unittest.TestCase):
     def make_player(self):
         args = SimpleNamespace(mode="software", file=Path(self.temp.name) / "unused.ogg",
                                subtitles=Path(self.temp.name) / "sub titles.srt",
-                               scale_width=0, software_upscale=None)
+                               scale_width=0, software_output_size=None)
         result = player.Player(args, self.Gst, self.GLib, {
             "video-sink": self.Gst.ElementFactory.make("fakesink"),
             "audio-sink": self.Gst.ElementFactory.make("fakesink")})
@@ -463,10 +463,12 @@ class GStreamerApiTests(unittest.TestCase):
         for name in ("videoscale", "capsfilter"):
             if self.Gst.ElementFactory.find(name) is None:
                 self.skipTest(f"optional upscale fixture needs {name}")
-        result = player.make_software_upscale_filter(self.Gst, (1920, 1080))
+        result = player.make_software_output_filter(self.Gst, (1920, 1080))
         scale = result.get_by_name("crystalhd-upscale")
         capsfilter = result.get_by_name("crystalhd-upscale-caps")
         self.assertEqual(scale.get_property("method"), 4)
+        if scale.find_property("add-borders") is not None:
+            self.assertTrue(scale.get_property("add-borders"))
         if scale.find_property("n-threads") is not None:
             self.assertEqual(scale.get_property("n-threads"), 2)
         caps = capsfilter.get_property("caps")
@@ -475,6 +477,8 @@ class GStreamerApiTests(unittest.TestCase):
         self.assertEqual(structure.get_string("format"), "YUY2")
         self.assertEqual(structure.get_value("width"), 1920)
         self.assertEqual(structure.get_value("height"), 1080)
+        self.assertEqual(structure.get_fraction("pixel-aspect-ratio"),
+                         (True, 1, 1))
         self.assertIsNotNone(result.get_static_pad("sink"))
         self.assertIsNotNone(result.get_static_pad("src"))
 
@@ -484,13 +488,19 @@ class GStreamerApiTests(unittest.TestCase):
                 self.skipTest(f"optional upscale fixture needs {name}")
         pipeline = self.Gst.Pipeline.new("upscale-test")
         source = self.Gst.ElementFactory.make("videotestsrc")
-        upscale = player.make_software_upscale_filter(self.Gst, (640, 360))
+        source_caps = self.Gst.ElementFactory.make("capsfilter")
+        source_caps.set_property(
+            "caps", self.Gst.Caps.from_string(
+                "video/x-raw,width=320,height=240,pixel-aspect-ratio=1/1"))
+        upscale = player.make_software_output_filter(self.Gst, (640, 360))
         sink = self.Gst.ElementFactory.make("fakesink")
         source.set_property("num-buffers", 3)
         pipeline.add(source)
+        pipeline.add(source_caps)
         pipeline.add(upscale)
         pipeline.add(sink)
-        self.assertTrue(source.link(upscale))
+        self.assertTrue(source.link(source_caps))
+        self.assertTrue(source_caps.link(upscale))
         self.assertTrue(upscale.link(sink))
         self.addCleanup(pipeline.set_state, self.Gst.State.NULL)
         self.assertNotEqual(
@@ -503,6 +513,7 @@ class GStreamerApiTests(unittest.TestCase):
             self.fail(f"upscale pipeline failed: {error.message}: {debug}")
         caps = sink.get_static_pad("sink").get_current_caps().get_structure(0)
         self.assertEqual((caps.get_value("width"), caps.get_value("height")), (640, 360))
+        self.assertEqual(caps.get_fraction("pixel-aspect-ratio"), (True, 1, 1))
 
     def test_actual_software_decoder_buffers_precede_eos(self):
         for name in ("videotestsrc", "theoraenc", "theoradec", "fakesink"):
