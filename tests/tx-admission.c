@@ -1183,6 +1183,38 @@ static void BalancedTwo(void)
           !packet2.call_back && !packet2.list_tag,
           "two-list completion leaves both packets and mappings with one owner");
 }
+static void CancelWithoutQueues(void)
+{
+    for (unsigned fault = 0; fault < 3; fault++) {
+        Reset();
+        hardware.tx_actq = hardware.tx_freeq = NULL;
+        run.stop_status = fault == 1 ? BC_STS_IO_ERROR : BC_STS_SUCCESS;
+        hardware.dma_fault = fault == 2;
+
+        Check(crystalhd_hw_cancel_all_tx(&hardware) ==
+                  (fault ? BC_STS_IO_ERROR : BC_STS_SUCCESS),
+              "monitor cancellation without TX queues preserves stop and prior fault results");
+        Check(run.stops == (fault == 2 ? 0U : 1U) &&
+              run.irq_disables == 1 && run.irq_enables == 1 && run.syncs == 1 &&
+              !run.irq_depth && !run.queue_fetches && !run.queue_adds &&
+              !run.callback_calls && !hardware.tx_actq && !hardware.tx_freeq,
+              "queue-free cancellation retains the stop and IRQ fence without fetching nonexistent owners");
+        Check(hardware.dma_fault == (fault != 0) &&
+              adapter.present == (fault != 1) &&
+              run.bus_clears == (fault == 1) && run.bus_drains == (fault == 1) &&
+              run.masks == (fault == 1) && adapter.cmds.cin_wait_exit == (fault == 1),
+              "a failed queue-free stop still enters the existing fatal DMA fence");
+    }
+
+    Reset();
+    hardware.tx_freeq = NULL;
+    Check(crystalhd_hw_cancel_all_tx(&hardware) == BC_STS_SUCCESS &&
+          run.stops == 1 && run.irq_disables == 1 && run.irq_enables == 1 &&
+          run.syncs == 1 && !run.irq_depth && run.queue_fetches == 1 &&
+          !run.queue_adds && !run.callback_calls && hardware.tx_actq == &activeq &&
+          !hardware.tx_freeq,
+          "an existing empty active queue is still inspected when only the free queue is absent");
+}
 static void CancelAllOwners(void)
 {
     Reset();
@@ -3010,7 +3042,7 @@ static void LinkWithoutPreparation(void)
 
 int main(void)
 {
-    Admission(); OpaqueCookie(); CancelAllOwners(); Completion(); Rollback(); TransferArguments(); BusyErrors(); BusyAndFlush(); Cancellation();
+    Admission(); OpaqueCookie(); CancelWithoutQueues(); CancelAllOwners(); Completion(); Rollback(); TransferArguments(); BusyErrors(); BusyAndFlush(); Cancellation();
     BoundedTransfer(); BorrowedTransfer(); RetainedLeaseProtocol();
     ActualMappingLifetime();
     FleaNotificationGuard();

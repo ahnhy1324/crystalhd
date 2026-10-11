@@ -8,26 +8,27 @@ firmware research has its own acceptance criteria in #92 and #204.
 
 The fork's **bundle version** follows [Semantic Versioning](https://semver.org/).
 It is separate from Broadcom API numbers, firmware versions and the library
-SONAME. `VERSION` is tracked and included in source archives. An RC version in
-that file identifies preparation sources; only a published tag and release
-make it an available release candidate.
+SONAME. `VERSION` is tracked and included in source archives. It identifies
+the source bundle; published tags and assets are listed in
+[Releases](https://github.com/ahnhy1324/crystalhd/releases). A version in a
+checkout alone does not announce a published release.
 
-| Identity | 1.0.0-rc.1 preparation | Purpose |
+| Identity | Current source | Purpose |
 | --- | --- | --- |
-| Bundle | `1.0.0-rc.1`; no tag published yet | Distribution identity from `VERSION` |
-| DKMS / module package | `3.10.1` | Maintained package revision; distinct from existing `3.10.0` installs |
+| Bundle | `1.0.0-rc.1` | Distribution identity from `VERSION` |
+| DKMS / module package | `3.10.2` | Maintained package revision; upgrades earlier `3.10.0` / `3.10.1` installs |
 | Driver ioctl version | `3.10.0` | Historical public API value, retained |
 | Library API / pkg-config | `3.22.0` | Historical library component identity, retained |
 | Library SONAME / file | `libcrystalhd.so.3` / `libcrystalhd.so.3.6` | Existing application linkage, retained |
 | GStreamer plugin / VA vendor string | `3.10.0` / `0.1` | Historical component labels; not the bundle identity |
 | Firmware | Existing BCM70012/BCM70015 images | Retain images, identities and license notices |
 
-Increase the numeric package revision for a changed published candidate
-payload; never replace an existing `/usr/src/crystalhd-VERSION` tree with a
+Increase the numeric package revision when changing an already registered or
+published candidate payload; never replace an existing `/usr/src/crystalhd-VERSION` tree with a
 different payload. DKMS compares module versions using its own ordering, so
 do not rely on SemVer prerelease suffix ordering for module upgrades.
-For example, a later candidate or final package can use `3.10.2` while the
-public ioctl remains `3.10.0`. Record the mapping here before qualification.
+The public ioctl remains `3.10.0` when the package revision changes.
+Record the mapping here before qualification.
 The runtime installation record identifies the last completed runtime install;
 component checks remain separate. Use the loaded and selected module metadata
 reported by `crystalhd-check` to identify the driver.
@@ -79,8 +80,12 @@ a fix or explicit withdrawal from the candidate.
 
 ## Qualify the candidate
 
-Use [tests/phase1-release-gate.sh](tests/phase1-release-gate.sh) and the frozen
-[codec oracle](tests/phase1-oracle.tsv). Keep their thresholds and fixtures.
+Use [tests/phase1-release-gate.sh](tests/phase1-release-gate.sh) with the tracked
+[maintenance codec oracle](tests/maintenance-oracle.tsv) as `--manifest`.
+Its 11 fixtures retain exact matching; only the WMV3 HD missing-duration metadata
+reflects the intentional [#341 correction](https://github.com/ahnhy1324/crystalhd/pull/341).
+The [Phase 1 oracle](tests/phase1-oracle.tsv) stays frozen as historical evidence.
+Keep the harness thresholds and fixtures unchanged.
 Run hardware tests from a clean Git checkout of the candidate, serially on the
 qualified BCM70015 host. The existing hardware gate records Git identity and
 requires its tracked oracle even with `--runtime installed`; the archive
@@ -89,16 +94,26 @@ record candidate commit/tag, loaded/selected module and userspace identities,
 host versions, options, fixture IDs, commands and result location once per
 run set. Keep logs and private media out of the source tree.
 
+For 1.0.0, the following bounded checks remain mandatory. Omit `--rc` for the
+bounded playback/lifecycle runs and report their actual durations and counts;
+they are not full Phase 1 RC-gate passes. Reuse matching completed checks.
+
 | Gate | Declared run and acceptance |
 | --- | --- |
-| Frozen behavior | All 11 oracle entries; exact counts, metadata and pixels where defined, EOS and clean reopen. |
-| Sustained playback | Existing `--rc` High/AAC 720p30 soak: 8 hours; qualified 1080p30 soak: 2 hours. Exact counts/EOS, existing resource/error limits. Older soaks remain historical. |
-| Lifecycle | Existing `--rc` 1,000-session churn, 100 five-codec round-robin cycles, ten 720p control cycles and reload sanity. No retained owner, leaked resources or new kernel faults. |
+| Codec correctness | All 11 maintenance-oracle entries first; exact counts, metadata and pixels where defined, EOS and clean reopen. |
+| Paced playback | H.264 High/AAC 720p30 and qualified native 1080p30: 120 seconds each. Exact counts/EOS and existing resource/error limits. |
+| Lifecycle | 20 complete sessions, 10 five-codec round-robin cycles and one idle reload/reopen. No retained owner, leaked resources or new kernel faults. |
+| Playback controls | Two control cycles each at 720p and 1080p: pause/resume, forward/backward seek and replay. Exclude 2x at native 1080p. |
 | Event readiness | Existing mock coverage for wait/wake/close, cancellation and mixed-version fallback; native H.264 B-frame tail/seek/reopen. Identify which results are mock versus hardware. |
 | Scaling | Existing FHD fixture at native, 1280 and non-round 130 widths: exact count/EOS, actual geometry/PAR and pixel check; flushing seek and separate native reopen. Explicit SW enlargement is measured separately. |
 | L0s lifecycle | Existing mock tests plus bounded native opt-out, session opt-in, force precedence and repeated close/error restoration checks. Record the qualified link policy; no live register sweeps. |
 | Integrations | Documented VLC combination and three bounded 60-second Moonlight runs: exact 720p30, `previous,0` 720p60/1080p30, each followed by graceful reopen. These do not measure physical streaming A/V or forced-loss recovery. |
 | User journeys | Follow the #369 fresh-user, upgrade, slow-FHD, Moonlight and failed-first-run walkthroughs. Verify links, quoted placeholders, action preconditions and useful success/error messages. |
+
+The new 8-hour 720p / 2-hour 1080p soaks, 1,000-session churn, 100 codec cycles
+and other extended coverage are **DEFERRED to [#371](https://github.com/ahnhy1324/crystalhd/issues/371)**,
+after release, verified private backup and LTS migration. This is not a pass
+or a reduction of the full `--rc` thresholds. Older long runs remain historical.
 
 In the hardware report, add one dated candidate qualification table using
 **PASS / FAIL / NOT RUN / DEFERRED**, with evidence links and affected scope.
@@ -129,6 +144,13 @@ archives first; retain required notices. If optional binary assets are added,
 publish their checksums. Smoke-test the public archive and its installation
 commands, then link the result in #369. External announcements need separate
 approval. Keep #91/#92/#204 open for their own remaining objectives.
+
+Then follow #371: verify an independently stored private system image and its
+restore procedure before any OS change, migrate to LTS, establish the same
+released-source baseline, and run the full campaign on a fixed candidate.
+Keep images and private inventories off GitHub. Compatible fixes inform
+1.0.1; added compatible features inform 1.1.0. Evidence alone need not trigger
+a new release.
 
 Use an issue for a distinct unresolved objective or reproduced defect; use a
 PR directly for a small self-contained fix. Name short-lived branches

@@ -1,8 +1,12 @@
 # Open work
 
 - [ ] [#369: CrystalHD 1.0.0 release preparation](https://github.com/ahnhy1324/crystalhd/issues/369)
-  — user-facing documentation, installation/version identity and candidate
-  qualification; publication requires maintainer approval.
+  — user-facing documentation, installation/version identity and bounded
+  candidate qualification; publication requires approval of the final commit
+  and release text.
+- [ ] [#371: Post-1.0 backup, LTS migration and long-duration qualification](https://github.com/ahnhy1324/crystalhd/issues/371)
+  — release first, then verified private recovery image, LTS and same-source
+  baseline, followed by the deferred full soak/lifecycle campaign and fixes.
 - [ ] [#91: Deferred hardware and application acceptance](https://github.com/ahnhy1324/crystalhd/issues/91)
   — alternate hardware/LTS, power management, broader streams, and physical
   presentation/A/V synchronization.

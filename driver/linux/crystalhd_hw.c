@@ -1510,6 +1510,10 @@ BC_STATUS crystalhd_hw_cancel_all_tx(struct crystalhd_hw *hw)
 	if (READ_ONCE(hw->dma_fault))
 		goto out;
 
+	/* Monitor and unconfigured handles never allocate TX queues. */
+	if (!hw->tx_actq && !hw->tx_freeq)
+		goto out;
+
 	for (count = 0; count < DMA_ENGINE_CNT; count++) {
 		tx_req = (struct tx_dma_pkt *)crystalhd_dioq_fetch(hw->tx_actq);
 		if (!tx_req)

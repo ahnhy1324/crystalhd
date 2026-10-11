@@ -181,7 +181,7 @@ userspace32-check:
 legacy-cpu-check:
 	CXX="$(CXX)" sh ./tests/userspace32.sh --legacy
 
-phase1-check: library-drain-test tests/phase1-oracle.tsv
+phase1-check: library-drain-test tests/phase1-oracle.tsv tests/maintenance-oracle.tsv
 	sh -n tests/kernel-log-check.sh tests/phase1-release-gate.sh
 	$(CC) -std=c11 -Wall -Wextra -Werror -Itests -include phase1-progress.h \
 		-fsyntax-only -x c /dev/null
@@ -190,6 +190,7 @@ phase1-check: library-drain-test tests/phase1-oracle.tsv
 		./tests/library-drain-test --self-test
 	sh tests/phase1-release-gate.sh --self-test
 	sh tests/phase1-release-gate.sh manifest-check tests/phase1-oracle.tsv
+	sh tests/phase1-release-gate.sh manifest-check tests/maintenance-oracle.tsv
 
 check: uapi-check dma-check l0s-check architecture-check pib-check library-check raw-frame-check h264-reference-check fw-research-check all
 	$(MAKE) -C filters/gst/gst-plugin-1.0 check

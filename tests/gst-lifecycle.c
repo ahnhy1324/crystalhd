@@ -95,7 +95,7 @@ static struct {
   guint8 last_metadata[64];
   gboolean release_makes_room;
   gboolean publish_on_wait;
-  guint64 accepted[16];
+  guint64 accepted[64];
   guint accepted_count;
   guint8 pixels[16 * 16 * 2];
   guint8 scaled_pixels[128 * 72 * 2];
@@ -1434,6 +1434,58 @@ test_wmv3_variable_pts_duration(void)
     g_assert_cmpuint(mock.destroyed_inputs, ==, 4);
     gst_harness_teardown(harness);
   }
+}
+
+static void
+test_wmv3_millisecond_duration(void)
+{
+  GstHarness *harness = new_decoder_with_caps(
+      "video/x-wmv,wmvversion=3,format=WMV3,stream-format=asf,"
+      "header-format=asf,codec_data=(buffer)0ff18a01,"
+      "width=16,height=16,framerate=24/1");
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(harness->element);
+  guint i;
+
+  /* Robotica_1080-first60.wmv uses floor(i * 1000 / 24) millisecond PTS.
+   * The first 41 packets lack duration; the last 19 declare 41 ms. Replay
+   * that timing with small mock pictures: #341 must infer the missing
+   * 41/42 ms cadence, not the old caps-derived 41,666,666 ns duration. */
+  mock.auto_output = FALSE;
+  g_assert_cmpint(self->codec.subtype, ==, BC_MSUBTYPE_WMV3);
+  for (i = 0; i < 60; ++i) {
+    GstBuffer *input = new_input((i * 1000 / 24) * GST_MSECOND);
+
+    GST_BUFFER_DURATION(input) = i < 41
+        ? GST_CLOCK_TIME_NONE : 41 * GST_MSECOND;
+    g_assert_cmpint(gst_harness_push(harness, input), ==, GST_FLOW_OK);
+  }
+  for (i = 0; i < 60; ++i)
+    queue_picture(mock.accepted[i], i + 1);
+  g_assert_true(gst_harness_push_event(harness, gst_event_new_eos()));
+
+  for (i = 0; i < 60; ++i) {
+    GstBuffer *output = gst_harness_try_pull(harness);
+    GstClockTime pts = (i * 1000 / 24) * GST_MSECOND;
+    GstClockTime duration = i < 41
+        ? (((i + 1) * 1000 / 24) - (i * 1000 / 24)) * GST_MSECOND
+        : 41 * GST_MSECOND;
+
+    check_output(output, pts, i + 1);
+    g_assert_cmpuint(GST_BUFFER_DURATION(output), ==, duration);
+    g_assert_false(GST_BUFFER_FLAG_IS_SET(output, GST_VIDEO_BUFFER_FLAG_RFF));
+    g_assert_false(GST_BUFFER_FLAG_IS_SET(output, GST_VIDEO_BUFFER_FLAG_ONEFIELD));
+    gst_buffer_unref(output);
+  }
+  g_assert_null(gst_harness_try_pull(harness));
+  g_assert_cmpuint(GST_VIDEO_INFO_FPS_N(&self->output_info), ==, 24);
+  g_assert_cmpuint(GST_VIDEO_INFO_FPS_D(&self->output_info), ==, 1);
+  /* In particular, the last picture retains its declared duration even
+   * though no successor is available for cadence inference. */
+  g_assert_cmpuint(self->wmv3_last_duration, ==, 41 * GST_MSECOND);
+  g_assert_cmpuint(self->timestamps.length, ==, 0);
+  g_assert_cmpuint(mock.destroyed_inputs, ==, 60);
+  g_assert_cmpuint(mock.release_calls, ==, 60);
+  gst_harness_teardown(harness);
 }
 
 static void
@@ -3175,6 +3227,8 @@ main(int argc, char **argv)
                   test_wmv3_seek_clip_uses_pts_cadence);
   g_test_add_func("/crystalhd/lifecycle/wmv3-variable-pts-duration",
                   test_wmv3_variable_pts_duration);
+  g_test_add_func("/crystalhd/lifecycle/wmv3-millisecond-duration",
+                  test_wmv3_millisecond_duration);
   g_test_add_func("/crystalhd/lifecycle/wmv3-sparse-pts-disables-timing",
                   test_wmv3_sparse_pts_disables_timing);
   g_test_add_func("/crystalhd/lifecycle/input-errors", test_input_errors);
