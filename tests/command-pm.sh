@@ -123,6 +123,7 @@ awk '
     /^static void crystalhd_decoder_tracking_reset\(/ ||
     /^static void crystalhd_session_unpin\(/ ||
     /^static void crystalhd_session_retire_owner\(/ ||
+	/^static bool crystalhd_session_retire_unpublished\(/ ||
     /^static BC_STATUS crystalhd_ensure_hw_context\(/ ||
     /^static BC_STATUS crystalhd_session_setup\(/ ||
     /^static bool crystalhd_retire_hw_context\(/ ||
@@ -151,7 +152,7 @@ awk '
     /^bool crystalhd_cmd_interrupt\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 42 || copying) exit 1 }
+    END { if (found != 43 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.c" > "$pm_test_dir/command-pm-functions.h"
 
 awk '

@@ -128,5 +128,7 @@ void crystalhd_device_exit(struct crystalhd_device_access *access);
 struct crystalhd_adp *chd_get_adp(void);
 struct device *chddev(void);
 void crystalhd_rx_poll_wake(struct crystalhd_adp *adp, __poll_t events);
+int crystalhd_session_l0s_begin(struct crystalhd_adp *adp);
+int crystalhd_session_l0s_end(struct crystalhd_adp *adp);
 
 #endif

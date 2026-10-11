@@ -583,6 +583,11 @@ static void crystalhd_stream_release(struct crystalhd_cmd *cmd)
 	stream_live = false;
 	stream_releases++;
 }
+static int crystalhd_session_l0s_end(struct crystalhd_adp *adp)
+{
+	assert(adp == g_adp_info);
+	return 0;
+}
 #include "lifetime-command.h"
 #include "lifetime-functions.h"
 

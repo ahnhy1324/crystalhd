@@ -793,7 +793,7 @@ index 5db8e76..2aec530 100644
  	}
  	crystalhd_v4l2_unregister(pinfo);
  
-@@ -1474,6 +1498,12 @@ int chd_dec_pci_suspend(struct pci_dev *pdev, pm_message_t state)
+@@ -1596,4 +1620,10 @@ int chd_dec_pci_suspend(struct pci_dev *pdev, pm_message_t state)
  	}
  
  	chd_dec_free_iodata(adp, temp, false);
@@ -804,8 +804,6 @@ index 5db8e76..2aec530 100644
 +	}
 +#endif
  	adp->hw_accessible = false;
- 	/* Do not save an opt-in raw override as the platform's original state.
- 	 * The decoder has stopped before restoring the dedicated link.
 diff --git a/tests/fw-download.c b/tests/fw-download.c
 index b83c395..04d9ddd 100644
 --- a/tests/fw-download.c

@@ -37,6 +37,12 @@ MODULE_PARM_DESC(force_l0s_off,
 	"Opt in to disabling L0s on a dedicated BCM70015 PCIe link; "
 	"PCI-core policy may persist after unload, raw fallback is restored");
 
+static bool session_l0s_off;
+module_param(session_l0s_off, bool, 0444);
+MODULE_PARM_DESC(session_l0s_off,
+	"Opt in to raw L0s disable only while a decoder session is owned; "
+	"the dedicated BCM70015 link is restored between sessions");
+
 /* Keep adapter lookup and use atomic with respect to PCI removal. */
 static DECLARE_RWSEM(chd_device_lock);
 static u64 chd_device_generation;
@@ -1154,7 +1160,9 @@ static void chd_pci_release_mem(struct crystalhd_adp *pinfo)
 
 static int chd_restore_l0s(struct crystalhd_adp *adp)
 {
-	int rc = crystalhd_l0s_restore(adp->pdev, &adp->l0s);
+	int rc = adp->l0s.session_mode ?
+		crystalhd_l0s_session_suspend(adp->pdev, &adp->l0s) :
+		crystalhd_l0s_restore(adp->pdev, &adp->l0s);
 
 	if (rc)
 		dev_err(&adp->pdev->dev,
@@ -1191,6 +1199,88 @@ static bool chd_dec_clear_master_and_drain(struct pci_dev *pdev)
 	 */
 	return pcie_capability_read_word(pdev, PCI_EXP_DEVSTA, &status) ==
 		PCIBIOS_SUCCESSFUL && !(status & PCI_EXP_DEVSTA_TRPND);
+}
+
+static int chd_dec_set_master_checked(struct pci_dev *pdev)
+{
+	u16 command;
+
+	pci_set_master(pdev);
+	if (pci_read_config_word(pdev, PCI_COMMAND, &command) ||
+	    command == 0xffff || !(command & PCI_COMMAND_MASTER))
+		return -EIO;
+	return 0;
+}
+
+int crystalhd_session_l0s_begin(struct crystalhd_adp *adp)
+{
+	int rc, rollback;
+
+	if (!session_l0s_off || force_l0s_off)
+		return 0;
+	lockdep_assert_held_write(&adp->user_lock);
+	if (!adp->l0s.session_mode)
+		return -EOPNOTSUPP;
+	if (!chd_dec_clear_master_and_drain(adp->pdev)) {
+		dev_err(&adp->pdev->dev,
+			"session L0s guard could not prove DMA quiescence\n");
+		return -EIO;
+	}
+	rc = crystalhd_l0s_session_start(adp->pdev, &adp->l0s);
+	if (rc) {
+		dev_err(&adp->pdev->dev,
+			"session L0s guard activation failed: %d\n", rc);
+		return rc;
+	}
+	rc = chd_dec_set_master_checked(adp->pdev);
+	if (!rc) {
+		dev_dbg(&adp->pdev->dev, "session L0s guard active\n");
+		return 0;
+	}
+
+	/* No frontend owns the prepared rings yet. Keep mastering disabled and
+	 * restore the link only after a checked drain; otherwise retain raw state
+	 * so terminal cleanup cannot mistake an uncertain transition for idle.
+	 */
+	if (!chd_dec_clear_master_and_drain(adp->pdev))
+		return -EIO;
+	rollback = crystalhd_l0s_session_stop(adp->pdev, &adp->l0s);
+	if (rollback)
+		return rollback;
+	return rc;
+}
+
+int crystalhd_session_l0s_end(struct crystalhd_adp *adp)
+{
+	int rc;
+
+	if (!session_l0s_off || force_l0s_off)
+		return 0;
+	lockdep_assert_held_write(&adp->user_lock);
+	if (!adp->l0s.session_mode)
+		return 0;
+	if (!chd_dec_clear_master_and_drain(adp->pdev)) {
+		dev_err(&adp->pdev->dev,
+			"session L0s teardown could not prove DMA quiescence\n");
+		return -EIO;
+	}
+	/* Acquisition calls this path after any failed begin. Even if no raw
+	 * override became active, only this second checked fence permits its
+	 * unpublished rings/context to be retired and the module pin released.
+	 */
+	if (!adp->l0s.session_active)
+		return 0;
+	rc = crystalhd_l0s_session_stop(adp->pdev, &adp->l0s);
+	if (rc) {
+		dev_err(&adp->pdev->dev,
+			"session L0s restoration failed: %d\n", rc);
+		return rc;
+	}
+	/* The retired session has no hardware context. Leave bus mastering off;
+	 * the next hardware-open path enables it when a new context is ready.
+	 */
+	dev_dbg(&adp->pdev->dev, "session L0s guard restored\n");
+	return 0;
 }
 
 static bool chd_dec_quiesce_terminal_dma(struct crystalhd_adp *adp)
@@ -1461,9 +1551,13 @@ static int chd_dec_pci_probe(struct pci_dev *pdev,
 	 */
 	if (force_l0s_off)
 		pci_clear_master(pdev);
-	rc = crystalhd_l0s_init(pdev, &pinfo->l0s, force_l0s_off);
+	if (force_l0s_off)
+		rc = crystalhd_l0s_init(pdev, &pinfo->l0s, true);
+	else
+		rc = crystalhd_l0s_session_init(pdev, &pinfo->l0s,
+						 session_l0s_off);
 	if (rc) {
-		dev_err(dev, "requested L0s workaround failed: %d%s\n", rc,
+		dev_err(dev, "requested L0s policy failed: %d%s\n", rc,
 			pinfo->l0s.core_owned ? "; PCI-core disable policy remains" : "");
 		goto cleanup_l0s;
 	}
@@ -1471,6 +1565,8 @@ static int chd_dec_pci_probe(struct pci_dev *pdev,
 		dev_info(dev, "L0s disabled by PCI core; policy may persist after driver removal\n");
 	else if (pinfo->l0s.raw_active)
 		dev_warn(dev, "opt-in L0s override bypasses unavailable PCI-core ASPM control; original bits saved for restoration\n");
+	else if (pinfo->l0s.session_mode)
+		dev_info(dev, "session-scoped raw L0s guard ready on dedicated link\n");
 
 	pci_set_master(pdev);
 
@@ -1535,14 +1631,6 @@ int chd_dec_pci_suspend(struct pci_dev *pdev, pm_message_t state)
 
 	chd_dec_free_iodata(adp, temp, false);
 	adp->hw_accessible = false;
-	/* Do not save an opt-in raw override as the platform's original state.
-	 * The decoder has stopped before restoring the dedicated link.
-	 */
-	rc = chd_restore_l0s(adp);
-	if (rc) {
-		dev_err(dev, "suspend aborted with decoder quiesced after L0s restore failure\n");
-		goto fail_closed;
-	}
 	chd_dec_disable_int(adp);
 	/* Even an early-success command suspend must establish the DMA barrier
 	 * before frontend callbacks can return capture backing to its owner.
@@ -1550,6 +1638,14 @@ int chd_dec_pci_suspend(struct pci_dev *pdev, pm_message_t state)
 	if (!chd_dec_clear_master_and_drain(pdev)) {
 		dev_err(dev, "PCI DMA quiescence unproven during suspend\n");
 		rc = -EIO;
+		goto fail_closed;
+	}
+	/* Do not save an opt-in raw override as the platform's original state.
+	 * The decoder and DMA are stopped before restoring the dedicated link.
+	 */
+	rc = chd_restore_l0s(adp);
+	if (rc) {
+		dev_err(dev, "suspend aborted with decoder quiesced after L0s restore failure\n");
 		goto fail_closed;
 	}
 	crystalhd_rx_retire_quiesced(&adp->cmds, true);
@@ -1620,8 +1716,13 @@ int chd_dec_pci_resume(struct pci_dev *pdev)
 		dev_err(dev, "_enable_int err:%d\n", rc);
 		goto disable_device;
 	}
-	if (!adp->cmds.hw_ctx || !READ_ONCE(adp->cmds.hw_ctx->dma_fault))
-		pci_set_master(pdev);
+	if (adp->cmds.hw_ctx && !READ_ONCE(adp->cmds.hw_ctx->dma_fault)) {
+		rc = chd_dec_set_master_checked(pdev);
+		if (rc) {
+			dev_err(dev, "PCI bus mastering could not be restored: %d\n", rc);
+			goto disable_device;
+		}
+	}
 
 	sts = crystalhd_resume(&adp->cmds);
 	if (sts != BC_STS_SUCCESS) {
@@ -1683,6 +1784,10 @@ static int __init chd_dec_module_init(void)
 
 	printk(KERN_DEBUG "Loading crystalhd v%d.%d.%d\n",
 	       crystalhd_kmod_major, crystalhd_kmod_minor, crystalhd_kmod_rev);
+	if (force_l0s_off && session_l0s_off) {
+		pr_warn("crystalhd: force_l0s_off takes precedence; session_l0s_off ignored\n");
+		session_l0s_off = false;
+	}
 
 	rc = crystalhd_v4l2_init();
 	if (rc)

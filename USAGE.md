@@ -198,13 +198,29 @@ Exact fixtures, rates, resource use and A/V qualifications remain in the
 
 ## Full-HD PCIe workaround
 
-`force_l0s_off=1` is an opt-in, host-specific BCM70015 workaround. The default
-is off. Try it only when measured 1080p30 decoding is below real time, or when
-a measured 720p60 decode lacks sufficient headroom, on a direct, dedicated
-root-port link. The post-event/DMA cross-check still measured 27.33 versus
-43.04 fps at 1080p30 and 57.5 versus 87.0 fps in an unpaced 720p60 control with
-L0s enabled versus disabled. It can increase power use, and an unsupported PCIe
-topology causes probe to fail rather than changing a shared link.
+The driver has two opt-in, host-specific BCM70015 workarounds. Both default to
+off and require a direct, dedicated root-port link; an unsupported topology
+causes probe to fail rather than changing a shared link.
+
+- `session_l0s_off=1` disables L0s with raw PCI configuration writes only while
+  a decoder session owns the card. A clean close restores the endpoint and
+  root-port L0s bits captured at that session's start. Monitor-only opens do
+  not change the link. Suspend restores that baseline; resume takes a fresh
+  post-resume snapshot before reapplying the session override. This is the
+  preferred first test because idle platform policy is restored and no
+  persistent PCI-core disable is requested.
+- `force_l0s_off=1` keeps the existing module-lifetime behavior. Depending on
+  PCI-core ownership, its disable policy may remain after module removal. If
+  both options are supplied, `force_l0s_off=1` takes precedence.
+
+Try either only when measured 1080p30 decoding is below real time, or when a
+measured 720p60 decode lacks sufficient headroom. The post-event/DMA
+cross-check measured 27.33 versus 43.04 fps at 1080p30 and 57.5 versus 87.0 fps
+in an unpaced 720p60 control with L0s enabled versus disabled. The
+session-scoped mode restores the prior L0s policy while idle and leaves the
+card's existing internal low-power handling intact, but whole-system wattage
+was not measured. Disabling L0s may increase power use while a decoder session
+is active.
 
 Close every client first, then perform a temporary test:
 
@@ -212,31 +228,38 @@ Close every client first, then perform a temporary test:
 sudo fuser -v /dev/crystalhd
 cat /sys/module/crystalhd/refcnt
 sudo modprobe -r crystalhd
-sudo modprobe crystalhd force_l0s_off=1
-cat /sys/module/crystalhd/parameters/force_l0s_off
+sudo modprobe crystalhd session_l0s_off=1
+cat /sys/module/crystalhd/parameters/session_l0s_off
 crystalhd-check
 ```
 
 Continue only if `fuser` reports no owner and the reference count is zero;
-never force-unload the module. The parameter should report `Y`. To stop
-requesting the workaround, close clients and safely reload without it:
+never force-unload the module. The parameter should report `Y`. While a real
+decoder session runs, both link ends should have L0s disabled; after clean
+close they should return to their captured idle values. Do not change ASPM
+policy concurrently through another tool or service. To stop requesting the
+workaround, close clients and safely reload without it:
 
 ```sh
 sudo modprobe -r crystalhd
 sudo modprobe crystalhd
 ```
 
-The reference host's raw-fallback path restores saved L0s bits during a normal
-unload. A PCI-core-owned disable is intentionally sticky and may remain after
-module removal, so `force_l0s_off=N` does not prove the link returned to its
-prior state. Reboot without the option to return to the machine's boot-time
+The session-scoped path uses no PCI-core ASPM-disable call and takes a fresh
+snapshot for each decoder session. The force mode's raw-fallback path restores
+saved L0s bits during a normal unload, but a PCI-core-owned disable is
+intentionally sticky and may remain after module removal. Therefore
+`force_l0s_off=N` alone does not prove that the link returned to its prior
+state. Reboot without the force option to return to the machine's boot-time
 PCIe policy; compare endpoint and root-port `LnkCtl` values with `lspci -vv`
 when an exact before/after check matters.
 
 Make the request persistent only after a repeatable benefit is established, by
-placing `options crystalhd force_l0s_off=1` in
-`/etc/modprobe.d/crystalhd.conf`. Remove the entry and reboot to undo it. Do not
-use global `pcie_aspm=force`, link-speed changes or payload-size tweaks.
+placing `options crystalhd session_l0s_off=1` in
+`/etc/modprobe.d/crystalhd.conf`. Keep `force_l0s_off=1` only when its
+module-lifetime policy is deliberately required. Remove the entry and reboot
+to undo a force-mode PCI-core policy. Do not use global `pcie_aspm=force`,
+link-speed changes or payload-size tweaks.
 
 ## Advanced option index
 

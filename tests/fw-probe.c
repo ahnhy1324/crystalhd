@@ -48,7 +48,10 @@ enum { MODULE_STATE_LIVE, MODULE_STATE_COMING, MODULE_STATE_GOING };
 #define KERN_DEBUG ""
 #define KERN_ERR ""
 #define printk(...) ((void)0)
+#define pr_warn(...) ((void)0)
 #define MISC_DYNAMIC_MINOR 255
+
+static bool force_l0s_off, session_l0s_off;
 
 static unsigned checks;
 #define CHECK(value) do { checks++; if (!(value)) { \

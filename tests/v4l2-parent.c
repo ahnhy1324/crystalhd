@@ -83,10 +83,12 @@ int main(void)
 #define __init
 #define __exit
 #define printk(...) ((void)0)
+#define pr_warn(...) ((void)0)
 #define WARN_ON_ONCE(condition) ((condition) ? (abort(), 1) : 0)
 #define WQ_UNBOUND 1
 #define WQ_MEM_RECLAIM 2
 typedef unsigned spinlock_t;
+static bool force_l0s_off, session_l0s_off;
 struct mutex { unsigned held; };
 struct kref { unsigned refs; };
 struct list_head { struct list_head *next, *prev; };

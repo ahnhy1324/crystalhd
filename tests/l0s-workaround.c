@@ -364,6 +364,89 @@ static void test_core_ownership(void)
 #endif
 }
 
+static void test_session_raw_lifecycle(void)
+{
+	struct crystalhd_l0s_state state;
+	unsigned int child_bit, parent_bit;
+
+	for (child_bit = 0; child_bit < 2; child_bit++) {
+		for (parent_bit = 0; parent_bit < 2; parent_bit++) {
+			u16 child = 0x442 | child_bit;
+			u16 port = 0x842 | parent_bit;
+
+			reset_model("session raw policy recaptures each idle baseline",
+				    child, port);
+			state = (struct crystalhd_l0s_state){0};
+			api_result = 0;
+			api_applies = true;
+			CHECK(crystalhd_l0s_session_init(&endpoint, &state, true) == 0);
+			CHECK(state.session_mode && !state.session_active &&
+			      parent.refs == 1);
+			CHECK(!reads && !writes && !api_calls);
+			CHECK(crystalhd_l0s_apply(&endpoint, &state) == 0);
+			CHECK(!reads && !writes && !api_calls);
+
+			CHECK(crystalhd_l0s_session_start(&endpoint, &state) == 0);
+			CHECK(state.session_active && state.raw_active && state.saved &&
+			      !state.core_owned && !api_calls);
+			check_original(child & ~1U, port & ~1U);
+			CHECK(crystalhd_l0s_session_stop(&endpoint, &state) == 0);
+			CHECK(!state.session_active && !state.raw_active && !state.saved &&
+			      !state.endpoint_l0s && !state.parent_l0s);
+			check_original(child, port);
+
+			/* A later platform policy is a new session's own baseline. */
+			child ^= 0x101;
+			port ^= 0x201;
+			endpoint.lnkctl = child;
+			parent.lnkctl = port;
+			CHECK(crystalhd_l0s_session_start(&endpoint, &state) == 0);
+			CHECK(!api_calls && state.endpoint_l0s == (child & 1U) &&
+			      state.parent_l0s == (port & 1U));
+			check_original(child & ~1U, port & ~1U);
+			CHECK(crystalhd_l0s_session_stop(&endpoint, &state) == 0);
+			check_original(child, port);
+			CHECK(crystalhd_l0s_release(&endpoint, &state) == 0);
+			CHECK(!state.session_mode && !state.session_active);
+			check_released(&state);
+		}
+	}
+
+	reset_model("active session suspend recaptures post-resume policy", 0x43, 0x43);
+	state = (struct crystalhd_l0s_state){0};
+	api_result = 0;
+	api_applies = true;
+	CHECK(crystalhd_l0s_session_init(&endpoint, &state, true) == 0);
+	CHECK(crystalhd_l0s_session_start(&endpoint, &state) == 0);
+	CHECK(crystalhd_l0s_session_suspend(&endpoint, &state) == 0);
+	CHECK(state.session_active && !state.raw_active && !state.saved);
+	check_original(0x43, 0x43);
+	endpoint.lnkctl = 0x142;
+	parent.lnkctl = 0x243;
+	CHECK(crystalhd_l0s_apply(&endpoint, &state) == 0);
+	CHECK(state.session_active && state.raw_active && state.saved &&
+	      !state.endpoint_l0s && state.parent_l0s && !api_calls);
+	check_original(0x142, 0x242);
+	CHECK(crystalhd_l0s_session_stop(&endpoint, &state) == 0);
+	check_original(0x142, 0x243);
+	CHECK(crystalhd_l0s_release(&endpoint, &state) == 0);
+	check_released(&state);
+
+	reset_model("session apply rollback clears reusable state", 0x43, 0x43);
+	state = (struct crystalhd_l0s_state){0};
+	CHECK(crystalhd_l0s_session_init(&endpoint, &state, true) == 0);
+	ignored_write = 1;
+	CHECK(crystalhd_l0s_session_start(&endpoint, &state) == -EIO);
+	CHECK(!state.session_active && !state.raw_active && !state.saved &&
+	      !api_calls);
+	check_original(0x43, 0x43);
+	ignored_write = 0;
+	CHECK(crystalhd_l0s_session_start(&endpoint, &state) == 0);
+	CHECK(crystalhd_l0s_session_stop(&endpoint, &state) == 0);
+	CHECK(crystalhd_l0s_release(&endpoint, &state) == 0);
+	check_released(&state);
+}
+
 static void test_apply_faults(void)
 {
 	struct crystalhd_l0s_state state;
@@ -560,12 +643,19 @@ struct crystalhd_adp {
 #define printk(...) ((void)0)
 #define dev_err(...) mock_log(__VA_ARGS__)
 #define dev_warn(...) mock_log(__VA_ARGS__)
+#define dev_dbg(...) mock_log(__VA_ARGS__)
 #define READ_ONCE(value) (value)
 #define WRITE_ONCE(value, update) ((value) = (update))
 #define BC_STS_SUCCESS 0
 #define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
-#define lockdep_assert_held_write(lock) \
-	CHECK((lock) == &chd_device_lock && pm_lock_depth == 1)
+#define lockdep_assert_held_write(lock) do { \
+	if ((lock) == &chd_device_lock) \
+		CHECK(pm_lock_depth == 1); \
+	else { \
+		CHECK((lock) == &irq_adapter.user_lock); \
+		CHECK(pm_user_lock_depth == 1); \
+	} \
+} while (0)
 #define WARN_ON_ONCE(value) warn_on(value)
 #define PCI_D0 0
 typedef int BC_STATUS;
@@ -586,6 +676,7 @@ static unsigned int msi_requests, msi_disables, irq_requests, irq_frees;
 static int msi_result, irq_result;
 static bool msi_active, irq_active;
 static bool pm_tracking, pm_master, pm_bound, pm_alloc_fail;
+static bool pm_session_transition, force_l0s_off, session_l0s_off;
 static bool pm_dma_drained;
 static bool pm_resume_success_pending;
 static bool pm_resume_ready_called;
@@ -665,7 +756,9 @@ static int request_irq(unsigned int irq, int (*handler)(int, void *),
 		CHECK(pm_user_lock_depth == 1);
 		CHECK(!irq_adapter.hw_accessible);
 		CHECK(!pm_master);
-		CHECK(!(endpoint.lnkctl & 1) && !(parent.lnkctl & 1));
+		if (!(irq_adapter.l0s.session_mode &&
+		      !irq_adapter.l0s.session_active))
+			CHECK(!(endpoint.lnkctl & 1) && !(parent.lnkctl & 1));
 		pm_event('Q');
 	}
 	if (!irq_result) irq_active = true;
@@ -739,8 +832,11 @@ static int pci_wait_for_pending_transaction(struct pci_dev *dev)
 {
 	CHECK(dev == &endpoint && !pm_master);
 	CHECK(pm_lock_depth + pm_user_lock_depth == 1);
-	if (pm_user_lock_depth)
+	if (pm_user_lock_depth && !pm_session_transition)
 		CHECK(!irq_active && !msi_active && !irq_adapter.hw_accessible);
+	if (pm_session_transition)
+		CHECK(pm_user_lock_depth == 1 && irq_active &&
+		      irq_adapter.hw_accessible);
 	pm_waits++;
 	pm_event('W');
 	return pm_pending && pm_waits != pm_fail_wait;
@@ -804,7 +900,7 @@ static BC_STATUS crystalhd_resume(struct crystalhd_cmd *cmd)
 	CHECK(pm_user_lock_depth == 1);
 	CHECK(!irq_adapter.hw_accessible);
 	CHECK(cmd->hw_ctx == NULL || cmd->hw_ctx == &pm_hw);
-	CHECK(pm_master == (!cmd->hw_ctx || !cmd->hw_ctx->dma_fault));
+	CHECK(pm_master == (cmd->hw_ctx && !cmd->hw_ctx->dma_fault));
 	pm_resumes++;
 	pm_event('H');
 	pm_resume_success_pending = !pm_resume_error;
@@ -1105,12 +1201,13 @@ static void test_pm_lifecycle(void)
 		CHECK(pm_frontend_live);
 		pm_event_count = 0; pm_events[0] = '\0';
 		CHECK(chd_dec_pci_resume(&endpoint) == 0);
-		CHECK(strcmp(pm_events, "PRCEQMH") == 0);
+		CHECK(strcmp(pm_events, which ? "PRCEQMH" : "PRCEQH") == 0);
 		CHECK(irq_adapter.l0s.raw_active && irq_adapter.present);
 		CHECK(irq_adapter.hw_accessible);
 		CHECK(pm_frontend_live);
 		CHECK(irq_adapter.cmds.hw_ctx == (which ? &pm_hw : NULL));
-		CHECK(pm_master && irq_active && msi_active && pm_resumes == 1);
+		CHECK(pm_master == (which != 0) && irq_active && msi_active &&
+		      pm_resumes == 1);
 		finish_pm_model();
 	}
 
@@ -1161,18 +1258,18 @@ static void test_pm_lifecycle(void)
 		fail_write = writes + 1;
 		pm_pending = which; /* pending-transaction timeout must not skip IRQ cleanup */
 		CHECK(chd_dec_pci_suspend(&endpoint, 3) == -EIO);
-		CHECK(strcmp(pm_events, which ? "DLCWFZU" : "DLCWFU") == 0);
+		CHECK(strcmp(pm_events, which ? "DFCWLCWZU" : "DFCWLCWU") == 0);
 		CHECK(pm_deletes == which && pm_module_puts == which && pm_module_refs == !which);
 		CHECK(!pm_saves && !pm_disables && pm_allocs == pm_frees);
 		CHECK(!irq_adapter.hw_accessible);
-		check_pm_closed(1);
+		check_pm_closed(2);
 		CHECK(chd_dec_disable_int(&irq_adapter) == 0);
 		CHECK(irq_frees == 1 && msi_disables == 1);
 		finish_pm_model();
 	}
 
-	for (which = 0; which < 5; which++) {
-		int expected = which == 3 || which == 4 ? -ENODEV : -EIO;
+	for (which = 0; which < 6; which++) {
+		int expected = which >= 4 ? -ENODEV : -EIO;
 		reset_pm_model("each resumed resource failure fails closed and rolls back raw L0s");
 		CHECK(chd_dec_pci_suspend(&endpoint, 3) == 0);
 		CHECK(!irq_adapter.hw_accessible);
@@ -1180,14 +1277,15 @@ static void test_pm_lifecycle(void)
 		if (which == 0) pm_enable_error = -EIO;
 		else if (which == 1) fail_write = writes + 2;
 		else if (which == 2) irq_result = -EIO;
+		else if (which == 3) pm_command_output = 0xfffb;
 		else {
 			pm_resume_error = 1;
-			pm_hw.dma_fault = which == 4;
+			pm_hw.dma_fault = which == 5;
 		}
 		CHECK(chd_dec_pci_resume(&endpoint) == expected);
 		CHECK(strncmp(pm_events, "PRCE", 4) == 0);
 		CHECK(strstr(pm_events, "LCW") != NULL);
-		CHECK(pm_resumes == (which >= 3 ? 1U : 0U));
+		CHECK(pm_resumes == (which >= 4 ? 1U : 0U));
 		CHECK(!irq_adapter.hw_accessible);
 		check_pm_closed(2);
 		check_original(0x43, 0x43);
@@ -1367,14 +1465,16 @@ static void test_pm_fence_faults(void)
 
 	for (fault = 0; fault < FENCE_FAULT_COUNT; fault++) {
 		unsigned int disabled;
+		int expected = fault >= COMMAND_ERROR_ZERO &&
+			fault <= COMMAND_ALL_ONES ? -EIO : -ENODEV;
 
 		reset_pm_model("unsafe resume fence retains backing and suppresses final hardware tail");
 		CHECK(chd_dec_pci_suspend(&endpoint, 3) == 0);
 		disabled = pm_disables;
 		set_pm_fence_fault(fault);
 		pm_resume_error = 1;
-		CHECK(chd_dec_pci_resume(&endpoint) == -ENODEV);
-		CHECK(pm_command_reads == 2 && pm_clears == 3);
+		CHECK(chd_dec_pci_resume(&endpoint) == expected);
+		CHECK(pm_command_reads == 3 && pm_clears == 3);
 		CHECK(pm_waits == 1U + (fault >= WAIT_TIMEOUT));
 		CHECK(pm_status_reads == 1U + (fault > WAIT_TIMEOUT));
 		check_fence_quarantine(fault);
@@ -1385,6 +1485,9 @@ static void test_pm_fence_faults(void)
 	}
 
 	for (fault = 0; fault < FENCE_FAULT_COUNT; fault++) {
+		int expected = fault >= COMMAND_ERROR_ZERO &&
+			fault <= COMMAND_ALL_ONES ? -EIO : -ENODEV;
+
 		reset_pm_model("empty unpinned resume context is safe independently of failed DMA fence");
 		irq_adapter.cmds.session_module_pinned = false;
 		irq_adapter.cmds.session_owner = irq_adapter.cmds.stream = NULL;
@@ -1394,7 +1497,7 @@ static void test_pm_fence_faults(void)
 		CHECK(chd_dec_pci_suspend(&endpoint, 3) == 0);
 		set_pm_fence_fault(fault);
 		pm_resume_error = 1;
-		CHECK(chd_dec_pci_resume(&endpoint) == -ENODEV);
+		CHECK(chd_dec_pci_resume(&endpoint) == expected);
 		CHECK(!irq_adapter.dma_terminal_quiesced && !pm_dma_drained && !chd_dma_quarantine);
 		CHECK(pm_master == (fault == CLEAR_IGNORED));
 		CHECK(pm_deletes == 1 && !pm_module_refs && !pm_module_puts && !endpoint_gets);
@@ -1415,11 +1518,233 @@ static void test_pm_fence_faults(void)
 	finish_pm_model();
 }
 
+static void reset_session_wrapper_model(const char *name)
+{
+	reset_irq_model(name);
+	pm_master = pm_bound = true;
+	pm_dma_drained = false;
+	pm_session_transition = true;
+	pm_pending = 1;
+	pm_lock_depth = pm_user_lock_depth = 0;
+	pm_user_locks = pm_user_unlocks = 0;
+	pm_clears = pm_waits = pm_command_reads = pm_status_reads = 0;
+	pm_fail_wait = 0;
+	pm_ignore_master_clear = false;
+	pm_command_error = pm_status_error = 0;
+	pm_command_output = pm_status_output = 0;
+	pm_event_count = 0;
+	pm_events[0] = '\0';
+	irq_adapter.present = 1;
+	irq_adapter.hw_accessible = true;
+	irq_adapter.cmds.adp = &irq_adapter;
+	force_l0s_off = false;
+	session_l0s_off = true;
+	CHECK(chd_dec_enable_int(&irq_adapter) == 0);
+	CHECK(crystalhd_l0s_session_init(&endpoint, &irq_adapter.l0s, true) == 0);
+	down_write(&irq_adapter.user_lock);
+	pm_tracking = true;
+}
+
+static void finish_session_wrapper_model(void)
+{
+	pm_ignore_master_clear = false;
+	pm_command_error = pm_status_error = 0;
+	pm_command_output = pm_status_output = 0;
+	pm_pending = 1;
+	pm_fail_wait = 0;
+	fail_read = fail_write = ignored_write = mismatch_read = 0;
+	if (irq_adapter.l0s.session_active)
+		CHECK(crystalhd_session_l0s_end(&irq_adapter) == 0);
+	CHECK(!irq_adapter.l0s.session_active && !irq_adapter.l0s.raw_active);
+	up_write(&irq_adapter.user_lock);
+	pm_tracking = false;
+	pm_session_transition = false;
+	CHECK(chd_dec_disable_int(&irq_adapter) == 0);
+	CHECK(crystalhd_l0s_release(&endpoint, &irq_adapter.l0s) == 0);
+	check_original(0x43, 0x43);
+	check_released(&irq_adapter.l0s);
+	force_l0s_off = session_l0s_off = false;
+}
+
+static void test_session_wrappers(void)
+{
+	reset_session_wrapper_model("session wrapper toggles only inside a checked DMA fence");
+	CHECK(crystalhd_session_l0s_begin(&irq_adapter) == 0);
+	CHECK(!strcmp(pm_events, "CWM"));
+	CHECK(pm_master && pm_dma_drained == false);
+	CHECK(irq_adapter.l0s.session_active && irq_adapter.l0s.raw_active);
+	check_original(0x42, 0x42);
+	pm_event_count = 0;
+	pm_events[0] = '\0';
+	CHECK(crystalhd_session_l0s_end(&irq_adapter) == 0);
+	CHECK(!strcmp(pm_events, "CW"));
+	CHECK(!pm_master && pm_dma_drained);
+	CHECK(!irq_adapter.l0s.session_active && !irq_adapter.l0s.raw_active);
+	check_original(0x43, 0x43);
+	finish_session_wrapper_model();
+
+	reset_session_wrapper_model("session wrapper rejects an unproven initial DMA fence");
+	pm_ignore_master_clear = true;
+	CHECK(crystalhd_session_l0s_begin(&irq_adapter) == -EIO);
+	CHECK(!strcmp(pm_events, "C"));
+	CHECK(pm_master && !irq_adapter.l0s.session_active &&
+	      !irq_adapter.l0s.raw_active);
+	CHECK(!writes);
+	check_original(0x43, 0x43);
+	CHECK(crystalhd_session_l0s_end(&irq_adapter) == -EIO);
+	CHECK(pm_master && !irq_adapter.l0s.session_active);
+	pm_ignore_master_clear = false;
+	CHECK(crystalhd_session_l0s_end(&irq_adapter) == 0);
+	CHECK(!pm_master && pm_dma_drained);
+	finish_session_wrapper_model();
+
+	reset_session_wrapper_model("all-ones MASTER readback rolls back the raw session override");
+	/* The first checked read sees MASTER clear; pci_set_master() turns the
+	 * same value into 0xffff for the second checked read.
+	 */
+	pm_command_output = 0xfffb;
+	CHECK(crystalhd_session_l0s_begin(&irq_adapter) == -EIO);
+	CHECK(!strcmp(pm_events, "CWMCW"));
+	CHECK(!pm_master && pm_dma_drained);
+	CHECK(!irq_adapter.l0s.session_active && !irq_adapter.l0s.raw_active);
+	check_original(0x43, 0x43);
+	CHECK(crystalhd_session_l0s_end(&irq_adapter) == 0);
+	CHECK(!pm_master && pm_dma_drained);
+	finish_session_wrapper_model();
+
+	reset_session_wrapper_model("failed activation rollback drain retains the raw override for retry");
+	pm_command_output = 0xfffb;
+	pm_fail_wait = 2;
+	CHECK(crystalhd_session_l0s_begin(&irq_adapter) == -EIO);
+	CHECK(!pm_master && irq_adapter.l0s.session_active &&
+	      irq_adapter.l0s.raw_active);
+	check_original(0x42, 0x42);
+	pm_command_output = 0;
+	pm_fail_wait = 0;
+	CHECK(crystalhd_session_l0s_end(&irq_adapter) == 0);
+	CHECK(!irq_adapter.l0s.session_active && !irq_adapter.l0s.raw_active);
+	check_original(0x43, 0x43);
+	finish_session_wrapper_model();
+
+	reset_session_wrapper_model("failed session restore remains owned and succeeds on retry");
+	CHECK(crystalhd_session_l0s_begin(&irq_adapter) == 0);
+	fail_write = writes + 1;
+	CHECK(crystalhd_session_l0s_end(&irq_adapter) == -EIO);
+	CHECK(!pm_master && irq_adapter.l0s.session_active &&
+	      irq_adapter.l0s.raw_active);
+	fail_write = 0;
+	CHECK(crystalhd_session_l0s_end(&irq_adapter) == 0);
+	check_original(0x43, 0x43);
+	finish_session_wrapper_model();
+
+	reset_session_wrapper_model("persistent force policy takes precedence over session wrappers");
+	force_l0s_off = true;
+	CHECK(crystalhd_session_l0s_begin(&irq_adapter) == 0);
+	CHECK(crystalhd_session_l0s_end(&irq_adapter) == 0);
+	CHECK(!pm_event_count && pm_master && !irq_adapter.l0s.session_active &&
+	      !irq_adapter.l0s.raw_active);
+	check_original(0x43, 0x43);
+	finish_session_wrapper_model();
+}
+
+static void convert_pm_model_to_session(bool active)
+{
+	pm_tracking = false;
+	CHECK(crystalhd_l0s_release(&endpoint, &irq_adapter.l0s) == 0);
+	irq_adapter.l0s = (struct crystalhd_l0s_state){0};
+	CHECK(crystalhd_l0s_session_init(&endpoint, &irq_adapter.l0s, true) == 0);
+	force_l0s_off = false;
+	session_l0s_off = true;
+	pm_session_transition = true;
+	if (active) {
+		down_write(&irq_adapter.user_lock);
+		CHECK(crystalhd_session_l0s_begin(&irq_adapter) == 0);
+		up_write(&irq_adapter.user_lock);
+	} else {
+		irq_adapter.cmds.hw_ctx = NULL;
+		pm_hw.rx_registered = false;
+		irq_adapter.cmds.session_module_pinned = false;
+		irq_adapter.cmds.session_owner = irq_adapter.cmds.stream = NULL;
+		irq_adapter.fill_byte_pool = irq_adapter.elem_pool_head = NULL;
+		pm_module_refs = 0;
+		pm_master = false;
+		pm_dma_drained = true;
+	}
+	reads = writes = 0;
+	pm_clears = pm_waits = pm_command_reads = pm_status_reads = 0;
+	pm_event_count = 0;
+	pm_events[0] = '\0';
+	pm_tracking = true;
+	pm_session_transition = false;
+}
+
+static void finish_pm_session_model(void)
+{
+	pm_session_transition = false;
+	force_l0s_off = session_l0s_off = false;
+	finish_pm_model();
+}
+
+static void test_session_pm_lifecycle(void)
+{
+	unsigned int link_reads, link_writes;
+
+	reset_pm_model("idle session policy survives suspend/resume without link I/O or MASTER");
+	convert_pm_model_to_session(false);
+	link_reads = reads;
+	link_writes = writes;
+	CHECK(chd_dec_pci_suspend(&endpoint, 3) == 0);
+	CHECK(!strcmp(pm_events, "DFCWSXP"));
+	CHECK(!irq_adapter.l0s.session_active && !irq_adapter.l0s.raw_active);
+	CHECK(!pm_master && endpoint.lnkctl == 0x43 && parent.lnkctl == 0x43);
+	pm_event_count = 0;
+	pm_events[0] = '\0';
+	CHECK(chd_dec_pci_resume(&endpoint) == 0);
+	CHECK(!strcmp(pm_events, "PRCEQH"));
+	CHECK(!pm_master && !irq_adapter.l0s.session_active &&
+	      !irq_adapter.l0s.raw_active);
+	CHECK(reads == link_reads && writes == link_writes);
+	finish_pm_session_model();
+
+	reset_pm_model("active session PM restores then recaptures post-resume baseline");
+	convert_pm_model_to_session(true);
+	CHECK(irq_adapter.l0s.session_active && irq_adapter.l0s.raw_active);
+	check_original(0x42, 0x42);
+	CHECK(chd_dec_pci_suspend(&endpoint, 3) == 0);
+	CHECK(!strcmp(pm_events, "DFCWSXP"));
+	CHECK(irq_adapter.l0s.session_active && !irq_adapter.l0s.raw_active &&
+	      !irq_adapter.l0s.saved);
+	check_original(0x43, 0x43);
+	/* Model platform policy changing while suspended. Resume must capture this
+	 * new asymmetric baseline before applying the raw session override.
+	 */
+	endpoint.lnkctl = 0x42;
+	parent.lnkctl = 0x43;
+	pm_event_count = 0;
+	pm_events[0] = '\0';
+	CHECK(chd_dec_pci_resume(&endpoint) == 0);
+	CHECK(!strcmp(pm_events, "PRCEQMH"));
+	CHECK(pm_master && irq_adapter.l0s.session_active &&
+	      irq_adapter.l0s.raw_active && irq_adapter.l0s.saved);
+	CHECK(!irq_adapter.l0s.endpoint_l0s && irq_adapter.l0s.parent_l0s);
+	check_original(0x42, 0x42);
+	pm_session_transition = true;
+	down_write(&irq_adapter.user_lock);
+	CHECK(crystalhd_session_l0s_end(&irq_adapter) == 0);
+	up_write(&irq_adapter.user_lock);
+	pm_session_transition = false;
+	CHECK(!pm_master && !irq_adapter.l0s.session_active &&
+	      !irq_adapter.l0s.raw_active);
+	check_original(0x42, 0x43);
+	finish_pm_session_model();
+}
+
 int main(void)
 {
 	test_eligibility();
 	test_raw_lifecycle();
 	test_core_ownership();
+	test_session_raw_lifecycle();
 	test_apply_faults();
 	test_restore_faults();
 	test_fault_edges();
@@ -1428,6 +1753,8 @@ int main(void)
 	test_terminal_pm_quarantine();
 	test_terminal_saved_state();
 	test_pm_fence_faults();
+	test_session_wrappers();
+	test_session_pm_lifecycle();
 	printf("L0s production-helper tests: %u groups, %u checks, %u failures\n",
 		groups, checks, failures);
 	return failures ? 1 : 0;

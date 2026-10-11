@@ -24,6 +24,8 @@ awk '
 awk '
     /^static int chd_dec_(enable|disable)_int\(/ ||
     /^static int chd_restore_l0s\(/ ||
+    /^static int chd_dec_set_master_checked\(/ ||
+    /^int crystalhd_session_l0s_(begin|end)\(/ ||
     /^static bool chd_dec_(clear_master_and_drain|quiesce_terminal_dma|session_dma_absent|fail_closed)\(/ ||
     /^static void chd_dec_quarantine_dma\(/ ||
     (/^int chd_dec_pci_(suspend|resume)\(/ && !/;[[:space:]]*$/) {
@@ -31,7 +33,7 @@ awk '
     }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 10 || copying) exit 1 }
+    END { if (found != 13 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_lnx.c" > "$l0s_test_dir/l0s-irq-functions.h"
 
 # The test includes the production helper and IRQ lifecycle, with PCI operations

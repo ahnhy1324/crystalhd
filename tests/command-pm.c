@@ -154,6 +154,8 @@ static bool fatal_pending;
 static unsigned normal_interrupts, fault_interrupts;
 static bool interrupt_handled;
 static unsigned module_refs, module_get_attempts, module_gets, module_puts;
+static unsigned session_l0s_begins, session_l0s_ends;
+static int session_l0s_begin_error, session_l0s_end_error;
 static unsigned module_callbacks, module_identity;
 static bool module_get_allowed, checking_module_callbacks;
 static bool module_expect_no_hardware_on_put;
@@ -902,6 +904,18 @@ static void crystalhd_stream_release(struct crystalhd_cmd *ctx)
     ctx->stream = NULL;
     stream_releases++;
 }
+static int crystalhd_session_l0s_begin(struct crystalhd_adp *adp)
+{
+	Check(adp == &adapter, "session L0s begin receives the owning adapter");
+	session_l0s_begins++;
+	return session_l0s_begin_error;
+}
+static int crystalhd_session_l0s_end(struct crystalhd_adp *adp)
+{
+	Check(adp == &adapter, "session L0s end receives the owning adapter");
+	session_l0s_ends++;
+	return session_l0s_end_error;
+}
 /* Keep close accounting while executing its complete production body. */
 #define crystalhd_hw_close crystalhd_hw_close_actual
 #include "command-pm-hardware.h"
@@ -939,6 +953,8 @@ static void Reset(uint32_t state, bool with_hardware)
     normal_interrupts = fault_interrupts = 0;
     interrupt_handled = false;
     module_refs = module_get_attempts = module_gets = module_puts = 0;
+	session_l0s_begins = session_l0s_ends = 0;
+	session_l0s_begin_error = session_l0s_end_error = 0;
     module_callbacks = 0;
     module_get_allowed = true;
     checking_module_callbacks = module_expect_no_hardware_on_put = false;
@@ -4038,14 +4054,14 @@ static void ReferencedOwnerSetupRollback(void)
               owner->gets == 1 && owner->refs == 2 && !owner->retired && !owner->puts,
               "uncertain setup rollback adopts one frontend reference despite an unpublished session owner");
         owner->refs--; /* The unsuccessful caller releases only its own reference. */
-        Check(crystalhd_session_release_locked(&context, owner) == BC_STS_ERR_USAGE &&
+        Check(crystalhd_session_release_locked(&context, owner) == BC_STS_IO_ERROR &&
               crystalhd_session_acquire_ref_locked(&context, &frontend_owners[1],
                                                    &frontend_ops) == BC_STS_BUSY &&
               owner->refs == 1 && owner->gets == 1 && !owner->retired && !owner->puts &&
               !frontend_owners[1].gets && module_gets == 1 && !module_puts &&
               context.hw_ctx == &hardware && hardware_allocated && hardware.dma_fault &&
               !adapter.present && !adapter.dma_terminal_quiesced && !hardware_frees,
-              "failed caller departure leaves unpublished fatal ownership referenced without a retry or fake proof");
+              "failed caller departure retries cleanup but preserves unpublished fatal ownership without fake proof");
     }
 }
 
@@ -5447,6 +5463,137 @@ static void SuspendErrors(void)
         Check(context.pwr_state_change == BC_HW_SUSPEND, "active failure retains existing cancellation notification");
     }
 }
+static void SessionL0sLifecycle(void)
+{
+    crystalhd_ioctl_data data = {0};
+    struct frontend_owner *frontend;
+    struct crystalhd_user *user;
+    struct file file;
+    int owner;
+
+    Reset(BC_LINK_INVALID, false);
+    Check(crystalhd_session_acquire_locked(&context, &owner) == BC_STS_SUCCESS &&
+          session_l0s_begins == 1 && !session_l0s_ends &&
+          context.session_owner == &owner,
+          "session ownership is published only after one link-guard begin");
+    Check(crystalhd_session_release_locked(&context, &owner) == BC_STS_SUCCESS &&
+          session_l0s_ends == 1 && !context.session_owner &&
+          !context.session_module_pinned,
+          "successful hardware retirement restores the link before unpinning");
+
+    Reset(BC_LINK_INVALID, false);
+    context.user[0].in_use = 1;
+    Check(crystalhd_user_set_mode(&context, &context.user[0], DTS_MONITOR_MODE) ==
+              BC_STS_SUCCESS && !session_l0s_begins && !session_l0s_ends,
+          "monitor-only admission never changes the session link policy");
+
+    Reset(BC_LINK_INVALID, false);
+    ring_status = BC_STS_INSUFF_RES;
+    Check(crystalhd_session_acquire_locked(&context, &owner) == BC_STS_INSUFF_RES &&
+          !session_l0s_begins && !session_l0s_ends,
+          "resource setup failure occurs before any session link change");
+
+    Reset(BC_LINK_INVALID, false);
+    session_l0s_begin_error = -EIO;
+    Check(crystalhd_session_acquire_locked(&context, &owner) == BC_STS_IO_ERROR &&
+          session_l0s_begins == 1 && session_l0s_ends == 1 &&
+          !context.session_owner && !context.session_module_pinned &&
+          !context.hw_ctx && !rings_live,
+          "recoverable link activation failure restores and retires unpublished resources");
+
+    Reset(BC_LINK_INVALID, false);
+    Check(crystalhd_session_acquire_locked(&context, &owner) == BC_STS_SUCCESS,
+          "prepare a session for link-restore retry");
+    session_l0s_end_error = -EIO;
+    Check(crystalhd_session_release_locked(&context, &owner) == BC_STS_IO_ERROR &&
+          session_l0s_ends == 1 && context.session_owner == &owner &&
+          context.session_module_pinned && !context.hw_ctx && !rings_live,
+          "failed link restoration retains owner and pin after hardware retirement");
+    session_l0s_end_error = 0;
+    Check(crystalhd_session_release_locked(&context, &owner) == BC_STS_SUCCESS &&
+          session_l0s_ends == 2 && !context.session_owner &&
+          !context.session_module_pinned && !module_refs,
+          "a later release retries link restoration before final unpin");
+
+    Reset(BC_LINK_INVALID, false);
+    session_l0s_begin_error = -EIO;
+    session_l0s_end_error = -EIO;
+    Check(crystalhd_session_acquire_locked(&context, &owner) == BC_STS_IO_ERROR &&
+          session_l0s_begins == 1 && session_l0s_ends == 1 &&
+          !context.session_owner && context.session_module_pinned &&
+          context.hw_ctx && rings_live,
+          "unrecoverable activation rollback retains unpublished resources fail-closed");
+
+    Reset(BC_LINK_INVALID, false);
+    file = OpenFile(DTS_MODE_INV);
+    user = ((struct crystalhd_file *)file.private_data)->user;
+    data.u_id = user->uid;
+    data.udata.u.NotifyMode.Mode = DTS_PLAYBACK_MODE;
+    session_l0s_begin_error = -EIO;
+    session_l0s_end_error = -EIO;
+    Check(bc_cproc_notify_mode(&context, &data) == BC_STS_IO_ERROR &&
+          !context.session_owner && context.session_module_pinned &&
+          context.hw_ctx && rings_live && module_refs == 1,
+          "failed legacy admission retains unpublished DMA ownership and its module pin");
+    session_l0s_end_error = 0;
+    CloseFile(&file);
+    Check(session_l0s_ends == 2 && hardware_closes == 1 && ring_frees == 1 &&
+          dio_destroys == 1 && elem_deletes == 1 && module_puts == 1,
+          "actual file close fences an unpublished session before retiring its resources");
+    CheckNoSession();
+
+    Reset(BC_LINK_INVALID, false);
+    file = OpenFile(DTS_MODE_INV);
+    user = ((struct crystalhd_file *)file.private_data)->user;
+    data.u_id = user->uid;
+    data.udata.u.NotifyMode.Mode = DTS_PLAYBACK_MODE;
+    session_l0s_begin_error = -EIO;
+    session_l0s_end_error = -EIO;
+    Check(bc_cproc_notify_mode(&context, &data) == BC_STS_IO_ERROR,
+          "prepare persistent unpublished rollback failure");
+    CloseFile(&file);
+    Check(session_l0s_ends == 2 && !adapter.cfg_users &&
+          !bc_get_userhandle_count(&context) && !context.session_owner &&
+          context.session_module_pinned && context.hw_ctx && rings_live &&
+          module_refs == 1 && !module_puts && !hardware_closes &&
+          !ring_frees && !dio_destroys && !elem_deletes,
+          "persistent close-time fence failure drops only file accounting and keeps DMA fail-closed");
+
+    Reset(BC_LINK_INVALID, false);
+    adapter.user_lock = 1;
+    frontend = &frontend_owners[0];
+    session_l0s_begin_error = -EIO;
+    session_l0s_end_error = -EIO;
+    Check(crystalhd_session_acquire_ref_locked(&context, frontend,
+                                                &frontend_ops) == BC_STS_IO_ERROR &&
+          !context.session_owner && context.session_lifetime_owner == frontend &&
+          context.session_module_pinned && context.hw_ctx && rings_live &&
+          frontend->refs == 2 && frontend->gets == 1,
+          "failed reference-backed admission adopts lifetime before returning retained resources");
+    session_l0s_end_error = 0;
+    Check(crystalhd_session_release_locked(&context, frontend) == BC_STS_SUCCESS &&
+          session_l0s_ends == 2 && !context.session_owner &&
+          !context.session_lifetime_owner && !context.session_module_pinned &&
+          !context.hw_ctx && !rings_live && !module_refs &&
+          frontend->retired == 1 && frontend->puts == 1 && frontend->refs == 1,
+          "reference close retries unpublished rollback before retire, callback, and unpin");
+
+    Reset(BC_LINK_INVALID, false);
+    adapter.user_lock = 1;
+    frontend = &frontend_owners[0];
+    session_l0s_begin_error = -EIO;
+    session_l0s_end_error = -EIO;
+    Check(crystalhd_session_acquire_ref_locked(&context, frontend,
+                                                &frontend_ops) == BC_STS_IO_ERROR,
+          "prepare persistent reference-backed rollback failure");
+    Check(crystalhd_session_release_locked(&context, frontend) == BC_STS_IO_ERROR &&
+          session_l0s_ends == 2 && !context.session_owner &&
+          context.session_lifetime_owner == frontend &&
+          context.session_module_pinned && context.hw_ctx && rings_live &&
+          module_refs == 1 && !module_puts && frontend->retired == 0 &&
+          frontend->puts == 0 && frontend->refs == 2,
+          "persistent reference close failure preserves DMA, pin, and lifetime callbacks");
+}
 int main(void)
 {
     const struct rlimit no_core = {0, 0};
@@ -5527,7 +5674,8 @@ int main(void)
         {"NULL resume argument", NullResume}, {"invalid suspend arguments", InvalidSuspend},
         {"inconsistent non-idle NULL hardware", MissingHardware},
         {"active playback/diagnostic suspend and resume", Active},
-        {"hardware resume errors", ResumeErrors}, {"existing suspend errors", SuspendErrors}
+        {"hardware resume errors", ResumeErrors}, {"existing suspend errors", SuspendErrors},
+        {"decoder-session L0s guard lifecycle", SessionL0sLifecycle}
     };
     unsigned n, failed_groups = 0;
     if (setrlimit(RLIMIT_CORE, &no_core)) return 2;
