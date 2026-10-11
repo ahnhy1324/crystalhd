@@ -543,8 +543,8 @@ gst_crystalhd_configure_output(GstCrystalHdDec *self, guint width, guint height,
           : GST_VIDEO_INTERLACE_MODE_PROGRESSIVE;
   gint output_par_n;
   gint output_par_d;
-  gint64 scaled_par_n;
-  gint64 scaled_par_d;
+  gint scaled_par_n;
+  gint scaled_par_d;
 
   if (!gst_crystalhd_validate_scaled_output(self, width, interlaced))
     return FALSE;
@@ -566,11 +566,11 @@ gst_crystalhd_configure_output(GstCrystalHdDec *self, guint width, guint height,
         (gint64)GST_VIDEO_INFO_HEIGHT(&self->input_state->info) * width;
 
     if (geometry_n <= 0 || geometry_d <= 0 ||
-        !gst_util_fraction_multiply_int64(output_par_n, output_par_d,
-                                          geometry_n, geometry_d,
-                                          &scaled_par_n, &scaled_par_d) ||
-        scaled_par_n <= 0 || scaled_par_d <= 0 ||
-        scaled_par_n > G_MAXINT || scaled_par_d > G_MAXINT) {
+        geometry_n > G_MAXINT || geometry_d > G_MAXINT ||
+        !gst_util_fraction_multiply(output_par_n, output_par_d,
+                                    (gint)geometry_n, (gint)geometry_d,
+                                    &scaled_par_n, &scaled_par_d) ||
+        scaled_par_n <= 0 || scaled_par_d <= 0) {
       GST_ELEMENT_ERROR(self, STREAM, FORMAT,
                         ("Could not represent scaled pixel aspect ratio"),
                         ("Input %ux%u PAR %d/%d; output %ux%u",
@@ -579,8 +579,8 @@ gst_crystalhd_configure_output(GstCrystalHdDec *self, guint width, guint height,
                          output_par_n, output_par_d, width, height));
       return FALSE;
     }
-    output_par_n = (gint)scaled_par_n;
-    output_par_d = (gint)scaled_par_d;
+    output_par_n = scaled_par_n;
+    output_par_d = scaled_par_d;
   }
 
   if (self->output_configured && self->width == width &&
