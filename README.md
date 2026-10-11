@@ -6,7 +6,8 @@ hardware video decoding for local files on BCM70015. CrystalHD handles video;
 the normal Linux media stack handles audio, subtitles, synchronization and
 display.
 
-**1.0.0 is in preparation; no numbered release is published yet.** The existing
+**1.0.0 is in preparation.** See [Releases](https://github.com/ahnhy1324/crystalhd/releases)
+for published candidates and stable versions. The existing
 [Phase 1 baseline](https://github.com/ahnhy1324/crystalhd/releases/tag/phase1-baseline-2026-09-29)
 remains available. The instructions below use development `master`, including
 subsequent playback fixes, event-driven receive and optional output scaling.
