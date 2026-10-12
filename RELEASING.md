@@ -4,6 +4,17 @@ The launch tracker is [#369](https://github.com/ahnhy1324/crystalhd/issues/369).
 This procedure prepares the maintained legacy stack for users; optional
 firmware research has its own acceptance criteria in #92 and #204.
 
+**Policy clarification — 2026-10-12:** stable 1.0.0 requires
+**published RC → verified independent recovery image → same-RC LTS admission
+→ full fixed-candidate qualification → final artifact checks → maintainer GO
+→ stable release**. This supersedes the 2026-10-11 stable-first/soak-after
+sequence. [#371](https://github.com/ahnhy1324/crystalhd/issues/371) owns execution
+and evidence; #369 owns the final decision and publication.
+The published `v1.0.0-rc.1` at
+`79c7cc963f69a6cbe22852c7fa30cee71a0c1737` and its bounded results remain
+unchanged. They do not establish the new LTS/full-duration passes, and stable
+`v1.0.0` is not yet approved or published.
+
 ## Versions and compatibility
 
 The fork's **bundle version** follows [Semantic Versioning](https://semver.org/).
@@ -37,9 +48,10 @@ The public compatibility boundary covers `libcrystalhd.so.3`, legacy ioctl
 layouts, documented buffer ownership/completion, and the documented
 non-experimental player/plugin behavior. Native output remains default,
 explicit hardware playback must fail visibly if unavailable, and one decoder
-owns the device at a time. Additive, compatible fixes use `1.0.x`; compatible
-features use `1.x.0`. A development phase or internal rewrite alone does not
-require a new major version.
+owns the device at a time. Pre-stable fixes use further `1.0.0` RCs and require
+affected requalification. After stable publication, compatible fixes use
+`1.0.x`; compatible features use `1.x.0`. A development phase or internal
+rewrite alone does not require a new major version.
 
 The following remain explicitly experimental: the VA-API frontend, its live
 H.264 and low-latency controls, `CRYSTALHD_VAAPI_EXPERIMENTAL_READY_*`,
@@ -73,10 +85,10 @@ a fix or explicit withdrawal from the candidate.
    a source archive without `.git`, staged install/uninstall, plugin discovery,
    and the documented direct and DKMS upgrade/rollback paths. A staged layout
    check does not establish a live module installation or hardware pass.
-4. Record the exact commit, release text and pre-RC results in #369. Obtain
-   the maintainer's go/no-go before publishing `v1.0.0-rc.1` as a prerelease.
-   Later candidates use a new RC number; never move published tags, including
-   `phase1-baseline-2026-09-29`.
+4. RC.1 is already published. Record any corrected candidate's exact commit,
+   diff, release text and results in #369 and obtain the maintainer's approval
+   before publishing a new RC number. Never move published tags, including
+   `v1.0.0-rc.1` and `phase1-baseline-2026-09-29`.
 
 ## Qualify the candidate
 
@@ -85,7 +97,10 @@ Use [tests/phase1-release-gate.sh](tests/phase1-release-gate.sh) with the tracke
 Its 11 fixtures retain exact matching; only the WMV3 HD missing-duration metadata
 reflects the intentional [#341 correction](https://github.com/ahnhy1324/crystalhd/pull/341).
 The [Phase 1 oracle](tests/phase1-oracle.tsv) stays frozen as historical evidence.
-Keep the harness thresholds and fixtures unchanged.
+Keep the full `--rc` thresholds and fixtures unchanged. Aggregate evidence
+validation must explicitly select and exactly verify the maintenance manifest;
+individual runs do not establish an aggregate pass. Preserve historical
+Phase 1 evidence validation as a separate path.
 Run hardware tests from a clean Git checkout of the candidate, serially on the
 qualified BCM70015 host. The existing hardware gate records Git identity and
 requires its tracked oracle even with `--runtime installed`; the archive
@@ -94,36 +109,50 @@ record candidate commit/tag, loaded/selected module and userspace identities,
 host versions, options, fixture IDs, commands and result location once per
 run set. Keep logs and private media out of the source tree.
 
-For 1.0.0, the following bounded checks remain mandatory. Omit `--rc` for the
-bounded playback/lifecycle runs and report their actual durations and counts;
-they are not full Phase 1 RC-gate passes. Reuse matching completed checks.
+G0–G6 must all PASS for the final qualifying candidate, with an explicit
+experimental disposition and maintainer approval. Missing, stale, failed or
+inconclusive mandatory evidence means **HOLD**. Follow the detailed #371
+procedure and #369 acceptance criteria; these are the finite stable gates:
 
 | Gate | Declared run and acceptance |
 | --- | --- |
-| Codec correctness | All 11 maintenance-oracle entries first; exact counts, metadata and pixels where defined, EOS and clean reopen. |
-| Paced playback | H.264 High/AAC 720p30 and qualified native 1080p30: 120 seconds each. Exact counts/EOS and existing resource/error limits. |
-| Lifecycle | 20 complete sessions, 10 five-codec round-robin cycles and one idle reload/reopen. No retained owner, leaked resources or new kernel faults. |
-| Playback controls | Two control cycles each at 720p and 1080p: pause/resume, forward/backward seek and replay. Exclude 2x at native 1080p. |
-| Event readiness | Existing mock coverage for wait/wake/close, cancellation and mixed-version fallback; native H.264 B-frame tail/seek/reopen. Identify which results are mock versus hardware. |
-| Scaling | Existing FHD fixture at native, 1280 and non-round 130 widths: exact count/EOS, actual geometry/PAR and pixel check; flushing seek and separate native reopen. Explicit SW enlargement is measured separately. |
-| L0s lifecycle | Existing mock tests plus bounded native opt-out, session opt-in, force precedence and repeated close/error restoration checks. Record the qualified link policy; no live register sweeps. |
-| Integrations | Documented VLC combination and three bounded 60-second Moonlight runs: exact 720p30, `previous,0` 720p60/1080p30, each followed by graceful reopen. These do not measure physical streaming A/V or forced-loss recovery. |
-| User journeys | Follow the #369 fresh-user, upgrade, slow-FHD, Moonlight and failed-first-run walkthroughs. Verify links, quoted placeholders, action preconditions and useful success/error messages. |
+| G0 — Recoverable reference | Before OS changes: offline whole-system image on independent storage, verified integrity and rescue-media access, preserved configuration/source/fixtures and a concrete restore procedure. Prefer spare-disk restore-and-boot; without a spare, record `restore boot NOT TESTED` and obtain explicit operator acceptance before migration. Integrity and recovery-media checks remain mandatory. |
+| G1 — LTS admission | Actual X61/BCM70015 on the selected supported Ubuntu LTS; record exact OS/kernel/userspace/graphics. Rebuild the preserved RC first, verify loaded/installed identities and real native/scaled/VA decode, then freeze any necessary corrected candidate. Preserve comparable LXQt/X11 settings and record differences. |
+| G2 — Correctness and compatibility | All 11 maintenance-oracle entries: defined counts, geometry/fields, PTS and pixels, valid EOS/drain and clean reopen. Candidate CI, native/i686/no-SSE and older supported kernel/GStreamer builds pass. Cover event wait/close/cancellation, mixed-version fallback, B-frame tail/replay, L0s restoration/force precedence and monitor-only close; distinguish mock from physical evidence. |
+| G3 — Core endurance and lifecycle | Clocked H.264+AAC 720p30: **8 h / 864,000 pictures**; qualified native H.264 High 1080p30: **2 h / 216,000 pictures**; **1,000** complete sessions; **100** complete admitted-codec cycles; **10** control cycles and final idle reload/reopen. Retain full timing/resource limits, pause/resume, seek, flush/replay and reopen; exclude unsupported native FHD 2x. No recovery retries/reloads may mask failures. |
+| G4 — Retained new paths | Progressive Full-HD input → 1280-wide output: **2 h**, correct geometry/PAR, count/EOS, pixel checks and seek/native-reopen controls. Actual admitted VA event-RX worker: **at least 2 h**, with output progress, bounded resources and no lost wake/stuck retirement. GStreamer-only soak cannot establish VA-worker coverage. |
+| G5 — Installation and rollback | Final archive without `.git`, first install, RC/previous-package update, removal and rollback on direct/DKMS routes without mixed ownership. Fail before removal if prerequisites/builds fail; use idle-only unload and verify `crystalhd-check`, known decode/EOS and reopen. Distinguish staging from live installation. |
+| G6 — Documentation and final artifact | Follow #369's fresh-user, update, slow-FHD, Moonlight and failed-run journeys. Check links, quoted placeholders, prerequisites, success/errors, experimental scope, component identity and notices. Stable-tag instructions become available only after publication. Final metadata/payload changes need CI/build/archive/install checks and affected runtime rechecks. |
 
-The new 8-hour 720p / 2-hour 1080p soaks, 1,000-session churn, 100 codec cycles
-and other extended coverage are **DEFERRED to [#371](https://github.com/ahnhy1324/crystalhd/issues/371)**,
-after release, verified private backup and LTS migration. This is not a pass
-or a reduction of the full `--rc` thresholds. Older long runs remain historical.
+A live copy on the SSD being upgraded does not meet G0. If the OS was already
+changed without the required independent offline image, retain that gap as
+HOLD in #369/#371; a later LTS image cannot establish a pre-migration recovery
+pass. Only lack of a spare-disk restore rehearsal has the explicit acceptance
+route above; no other G0–G6 gate is waived.
+
+Complete the planned experimental assessment: **60 minutes** exact 720p30
+Moonlight and **60 minutes each** `previous,0` 720p60/1080p30, followed by
+graceful disconnect/reopen, plus the documented VLC check. Record hardware use,
+source/receive/output rates, refresh/settings, payload progression/age where
+observable, resources and beginning/end A/V-cue observations. Give each retained
+mode an explicit tested experimental PASS, limited/unverified LTS disposition,
+or actual withdrawal of a defective path with affected rechecks. Intentional
+previous-frame behavior is assessed under its documented contract; no universal
+60 fps or physical A/V certification is implied. Unsafe shared DMA/session
+behavior blocks release even when an experimental mode triggers it.
 
 In the hardware report, add one dated candidate qualification table using
-**PASS / FAIL / NOT RUN / DEFERRED**, with evidence links and affected scope.
+**PASS / FAIL / NOT RUN**, with source/OS identities, actual duration/count,
+evidence links and affected scope. Only optional work may be **DEFERRED**.
 Do not copy historical runs into the candidate's PASS column. Require no
 unexpected DMA/PCIe/AER errors, stuck teardown or unexplained resource growth.
 Record perceptual display/speaker feedback separately from headless results;
 do not call a walkthrough novice-tested without an unfamiliar reader.
 
 If a change affects runtime, ownership, packaging or defaults, rerun the
-affected gates on the new candidate. Text-only corrections require document
+affected gates on the new fixed candidate; affected endurance tests restart
+from zero. Explain reuse of unaffected results with the diff/impact rationale.
+Text-only corrections require document
 checks, not every hardware experiment. Core regressions, install/build
 failures and misleading support claims block release. Additional hardware,
 standalone processing and physical Moonlight A/V certification remain tracked
@@ -131,26 +160,28 @@ in #91/#92/#204 without becoming prerequisites for this declared scope.
 
 ## Publish and maintain
 
-After qualification, present the exact final commit, release text and remaining
-limits for maintainer approval. Update final version metadata before the final
-archive/install checks; rerun any affected gates. Create an annotated
+After #371 hands off G0–G4 evidence and experimental dispositions, freeze final
+version metadata and the module-package mapping. Account for bundle VERSION
+data compiled into the module; verify the actual final CI/build/archive/install,
+upgrade/rollback payload and rerun affected runtime gates. Present the exact
+final commit, G0–G6 results, release text, remaining limits and GO/HOLD row for
+maintainer approval. #371 can finish its handoff before the stable tag exists.
+Create an annotated
 `v1.0.0` tag and a normal GitHub release only after approval. Follow
 [GitHub's release procedure](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository).
 
-The release body should contain highlights, installation/upgrade links,
-validated scope, experimental options, known limits/rollback, evidence and
-acknowledgements. Use `HISTORY.md` as the starting summary. Offer source tag
+The release body should contain highlights, install/update/rollback,
+LTS validated scope, experimental options, known limits, evidence and
+acknowledgements, in that order. Use `HISTORY.md` as the starting summary. Offer source tag
 archives first; retain required notices. If optional binary assets are added,
 publish their checksums. Smoke-test the public archive and its installation
 commands, then link the result in #369. External announcements need separate
 approval. Keep #91/#92/#204 open for their own remaining objectives.
 
-Then follow #371: verify an independently stored private system image and its
-restore procedure before any OS change, migrate to LTS, establish the same
-released-source baseline, and run the full campaign on a fixed candidate.
-Keep images and private inventories off GitHub. Compatible fixes inform
-1.0.1; added compatible features inform 1.1.0. Evidence alone need not trigger
-a new release.
+Retain the pre-LTS recovery evidence and a separately verified LTS known-good
+image. Keep images and private inventories off GitHub. After stable publication,
+compatible fixes inform 1.0.1; added compatible features inform 1.1.0. Evidence
+alone need not trigger a new release.
 
 Use an issue for a distinct unresolved objective or reproduced defect; use a
 PR directly for a small self-contained fix. Name short-lived branches

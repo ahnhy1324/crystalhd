@@ -48,11 +48,15 @@ stop this route and follow the DKMS guide. For a fresh install, missing module
 or runtime files are expected. For an update, close all players and meet the
 [idle preconditions](#reload-an-idle-device) before installation.
 
-Build and install from this directory:
+Build and install from this directory. Paste the complete parenthesized block;
+it stops on failure without closing your terminal:
 
 ```sh
-make -j2 driver library gstreamer vaapi
-sudo make install
+(
+    set -eu
+    make -j2 driver library gstreamer vaapi
+    sudo make install
+)
 ```
 
 Use `make -j1 driver library gstreamer vaapi` if parallel builds exhaust memory.
@@ -65,17 +69,28 @@ an update. Then run `crystalhd-check` and the [hardware playback command](USAGE.
 After booting a different kernel, install its matching headers and repeat the
 build/install steps. To roll back, close players and meet the idle preconditions.
 From the outgoing version's source root, replace the quoted placeholder with
-your retained older source directory:
+your retained older source directory. Verify its release/commit before running
+the complete block:
 
 ```sh
-previous_source="/path/to/retained-previous-source"
-make -C "$previous_source" -j2 driver library gstreamer vaapi
-sudo make uninstall-runtime
-sudo make -C "$previous_source" install
+(
+    set -eu
+    previous_source="/path/to/retained-previous-source"
+    test -f "$previous_source/Makefile" || {
+        printf '%s\n' 'STOP: select the retained previous source directory.' >&2
+        exit 1
+    }
+    kernel_release=$(uname -r)
+    sudo make install-preflight KVER="$kernel_release"
+    make -C "$previous_source" -j2 driver library gstreamer vaapi KVER="$kernel_release"
+    sudo make uninstall-runtime
+    sudo make -C "$previous_source" install KVER="$kernel_release"
+)
 ```
 
-Stop if a command fails. Removing the outgoing runtime first also removes
-release metadata or helpers absent from an older version. Restore any option
+A failed prerequisite or build stops before removing the current runtime.
+Removing the outgoing runtime first also removes release metadata or helpers
+absent from an older version. Restore any option
 files changed with the update before reloading or rebooting; remove options
 the older module does not support. Run `crystalhd-check` afterward. A Phase 1
 rollback also reverts newer optional features; use its own playback instructions.
@@ -84,8 +99,14 @@ To uninstall this direct installation, close players and satisfy the idle
 preconditions first. From the source directory used to install it:
 
 ```sh
-sudo modprobe -r crystalhd
-sudo make uninstall KVER="$(uname -r)"
+(
+    set -eu
+    if test -d /sys/module/crystalhd; then
+        test "$(cat /sys/module/crystalhd/refcnt)" = 0
+        sudo modprobe -r crystalhd
+    fi
+    sudo make uninstall KVER="$(uname -r)"
+)
 ```
 
 If the module is already absent, skip its unload. Stop if unloading fails;
@@ -134,14 +155,21 @@ earlier command line are not remembered.
 With the intended module installed and those checks satisfied:
 
 ```sh
-sudo modprobe -r crystalhd
-sudo modprobe crystalhd
-crystalhd-check
+(
+    set -eu
+    if test -d /sys/module/crystalhd; then
+        test "$(cat /sys/module/crystalhd/refcnt)" = 0
+        sudo modprobe -r crystalhd
+    fi
+    sudo modprobe crystalhd
+    crystalhd-check
+)
 ```
 
 Stop if either module command fails. Never use forced module unloading. If
 normal unload reports a busy device after clients have closed, reboot rather
-than forcing it. For an option experiment or rollback, restore the saved option
+than forcing it; do not kill a stuck owner to force recovery. For an option
+experiment or rollback, restore the saved option
 configuration first and use the explicit values documented in [USAGE](USAGE.md).
 
 ## Report a remaining problem

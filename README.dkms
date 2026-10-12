@@ -16,8 +16,10 @@ sudo apt install dkms "linux-headers-$(uname -r)"
 
 Work from the root of the source version you want to install. A source archive
 works without `.git`. Keep the previous version's source/archive and any local
-CrystalHD `/etc/modprobe.d/` option files for rollback. Read the DKMS revision
-from this source rather than substituting the fork's bundle version `1.0.0`:
+CrystalHD `/etc/modprobe.d/` option files for rollback. Retain the previous
+revision's cached DKMS build for the running kernel as well. Read the DKMS
+revision from this source; the current bundle `1.0.0-rc.1` uses module/DKMS
+revision `3.10.2`:
 
 ```sh
 kernel_release=$(uname -r)
@@ -39,15 +41,41 @@ finds a direct module, follow [switch from a direct install](#switch-from-a-dire
 Continue only when the revision's source path is absent and all playback
 clients are closed; check the [idle preconditions](BRINGUP.md#reload-an-idle-device)
 before installing files. Keep a separate source copy so later edits to your
-working checkout cannot change future DKMS rebuilds:
+working checkout cannot change future DKMS rebuilds. Paste complete
+parenthesized blocks: they stop at a failed command without closing your
+terminal. Build userspace before changing the installed module:
 
 ```sh
-sudo cp -a -- "$PWD" "$dkms_source"
-sudo dkms add -m crystalhd -v "$dkms_version"
-sudo dkms build -m crystalhd -v "$dkms_version" -k "$kernel_release"
-sudo dkms install -m crystalhd -v "$dkms_version" -k "$kernel_release"
-make -j2 library gstreamer vaapi
-sudo make install-runtime
+(
+    set -eu
+    kernel_release=$(uname -r)
+    dkms_version=$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' dkms.conf)
+    test -n "$dkms_version"
+    dkms_source="/usr/src/crystalhd-$dkms_version"
+    if test -e "$dkms_source" || test -L "$dkms_source"; then
+        printf '%s\n' 'STOP: this revision already has a source path; use the update instructions.' >&2
+        exit 1
+    fi
+    make -j2 library gstreamer vaapi
+    sudo cp -a -- "$PWD" "$dkms_source"
+    sudo dkms add -m crystalhd -v "$dkms_version"
+    sudo dkms build -m crystalhd -v "$dkms_version" -k "$kernel_release"
+)
+```
+
+Only after that block succeeds, install the built module and matching runtime.
+If switching from a direct module, complete the removal step in
+[switch from a direct install](#switch-from-a-direct-install) first:
+
+```sh
+(
+    set -eu
+    kernel_release=$(uname -r)
+    dkms_version=$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' dkms.conf)
+    test -n "$dkms_version"
+    sudo dkms install -m crystalhd -v "$dkms_version" -k "$kernel_release"
+    sudo make install-runtime
+)
 ```
 
 Stop at any failed command. Keep `/usr/src/crystalhd-$dkms_version` available
@@ -75,17 +103,20 @@ authorize a module to load.
 Inspect `crystalhd-check` and `modinfo -F filename crystalhd` before removal.
 Only if they identify this project's direct file
 `/lib/modules/$kernel_release/updates/crystalhd.ko`, close playback clients and
-meet the idle preconditions. From the source root, remove that file before
-registering/installing the DKMS revision:
+meet the idle preconditions. Complete source preparation and the first
+[new-revision block](#install-a-new-revision) through the successful userspace
+and DKMS builds before removing anything. Keep the old direct source for
+rollback. From the source root, remove the direct file:
 
 ```sh
 sudo make uninstall-module KVER="$kernel_release"
 ```
 
 This removes only the configured direct module, preserves runtime files and
-`updates/dkms/crystalhd.ko*`, and does not unload a running module. Retain the
-old direct source for rollback. Continue with [install a new revision](#install-a-new-revision),
-then reload or reboot. If installation fails, reinstall the previous direct
+`updates/dkms/crystalhd.ko*`, and does not unload a running module. Stop if
+removal fails. Continue with the second new-revision block to install the
+already-built DKMS module and runtime, then reload or reboot. If installation
+fails, remove the new DKMS registration and reinstall the previous direct
 module from its retained source before rebooting. Other paths, compressed
 direct modules or distribution-owned packages need their own removal method;
 do not delete arbitrary candidates listed by the check.
@@ -114,10 +145,15 @@ use a distinct revision when packaged code changes. With clients closed and
 the device idle, rebuild the selected kernel explicitly:
 
 ```sh
-sudo dkms build --force -m crystalhd -v "$dkms_version" -k "$kernel_release"
-sudo dkms install --force -m crystalhd -v "$dkms_version" -k "$kernel_release"
-make -j2 library gstreamer vaapi
-sudo make install-runtime
+(
+    set -eu
+    : "${dkms_version:?Complete source preparation first}"
+    : "${kernel_release:?Complete source preparation first}"
+    make -j2 library gstreamer vaapi
+    sudo dkms build --force -m crystalhd -v "$dkms_version" -k "$kernel_release"
+    sudo dkms install --force -m crystalhd -v "$dkms_version" -k "$kernel_release"
+    sudo make install-runtime
+)
 ```
 
 Run the runtime commands from the matching user-owned source tree. `dkms --force`
@@ -127,46 +163,58 @@ file. Do not use `rmmod -f` or a force-unload option.
 
 ## Roll back
 
-Close players and satisfy the idle preconditions. Inspect `dkms status` and
-select the previous revision/source you retained. Set the two values below to
-real entries; `3.10.0` is the historical revision and the path is a placeholder:
+Close players and satisfy the [idle preconditions](BRINGUP.md#reload-an-idle-device).
+Inspect `dkms status` and select the previous revision you retained. Confirm its
+cached module belongs to the known working installation and its writable
+source/archive is the matching snapshot for userspace. A formerly mutable
+`/usr/src` symlink or a matching version label alone does not prove identity.
+
+Run the following from the outgoing version's source root. Replace both
+previous-version values with real entries; `3.10.0` is a historical example.
+The block requires the cached old module for this kernel/architecture and
+finishes the userspace build before uninstalling anything:
 
 ```sh
-previous_revision="3.10.0"
-previous_source="/path/to/retained-previous-source"
+(
+    set -eu
+    previous_revision="3.10.0"
+    previous_source="/path/to/retained-previous-source"
+    kernel_release=$(uname -r)
+    kernel_arch=$(uname -m)
+    dkms_version=$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' dkms.conf)
+    test -n "$dkms_version"
+    test "$previous_revision" != "$dkms_version"
+    test -f "$previous_source/Makefile" || {
+        printf '%s\n' 'STOP: select the matching retained previous source.' >&2
+        exit 1
+    }
+    test "$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' "$previous_source/dkms.conf")" = "$previous_revision"
+    previous_status=$(dkms status -m crystalhd -v "$previous_revision" -k "$kernel_release" -a "$kernel_arch")
+    case "$previous_status" in
+        *": built"|*": installed"*) ;;
+        *) printf '%s\n' 'STOP: no retained DKMS build; preserve the current installation.' >&2; exit 1 ;;
+    esac
+    make -C "$previous_source" -j2 library gstreamer vaapi
+    sudo dkms uninstall -m crystalhd -v "$dkms_version" -k "$kernel_release" -a "$kernel_arch"
+    sudo dkms install -m crystalhd -v "$previous_revision" -k "$kernel_release" -a "$kernel_arch"
+    sudo make uninstall-runtime
+    sudo make -C "$previous_source" install-runtime
+)
 ```
 
-Use a writable source tree or extract the previous source archive again. Check
-whether DKMS retained the old build for this kernel:
-
-```sh
-dkms status -m crystalhd -v "$previous_revision" -k "$kernel_release"
-```
-
-If it reports `built` or `installed`, reuse that cached module; rebuilding from
-a different source snapshot would not restore the original image. If no build
-remains, first verify that the retained source is the intended previous revision,
-register it if needed, and run `sudo dkms build -m crystalhd -v "$previous_revision"
--k "$kernel_release"`. Complete that build before uninstalling the current module.
-Then restore the previous runtime and module:
-
-```sh
-make -C "$previous_source" -j2 library gstreamer vaapi
-sudo dkms uninstall -m crystalhd -v "$dkms_version" -k "$kernel_release"
-sudo dkms install -m crystalhd -v "$previous_revision" -k "$kernel_release"
-sudo make uninstall-runtime
-sudo make -C "$previous_source" install-runtime
-```
-
-Run this from the outgoing version's source root. Its `uninstall-runtime`
+If the cached build is missing, stop and recover a verified saved DKMS build
+before using this rollback route. Do not rebuild the old module from a mutable
+source path or use `dkms build --force`: that would replace the saved binary.
+The outgoing source's `uninstall-runtime`
 removes release metadata/helpers that an older install might leave behind.
 Stop on failure. Restore saved module-option files before reload or
 reboot, removing options absent from the older module. Run `crystalhd-check`
 and use the old version's playback instructions; a Phase 1 rollback removes
-later optional features. After successful rollback, remove the rejected
-revision's registration with `sudo dkms remove -m crystalhd -v "$dkms_version" --all`
-so it cannot be selected for future kernels. Keep its source until the problem
-has been diagnosed.
+later optional features. After successful rollback, use `dkms status` to
+identify the rejected revision and remove its registration with
+`sudo dkms remove -m crystalhd -v "REJECTED_REVISION" --all`, replacing the
+quoted placeholder, so it cannot be selected for future kernels. Keep its
+source until the problem has been diagnosed.
 
 ## Uninstall
 
@@ -175,8 +223,15 @@ remove. Close players and satisfy the idle preconditions first. From that
 revision's source root, use the `dkms_version` read in [prepare](#prepare-the-source):
 
 ```sh
-sudo modprobe -r crystalhd
-sudo dkms remove -m crystalhd -v "$dkms_version" --all
+(
+    set -eu
+    : "${dkms_version:?Complete source preparation first}"
+    if test -d /sys/module/crystalhd; then
+        test "$(cat /sys/module/crystalhd/refcnt)" = 0
+        sudo modprobe -r crystalhd
+    fi
+    sudo dkms remove -m crystalhd -v "$dkms_version" --all
+)
 ```
 
 If the module is already absent, skip its unload. Stop if normal unloading
