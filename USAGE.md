@@ -116,8 +116,9 @@ verbose [GStreamer scaling example](filters/gst/gst-plugin-1.0/README.md#optiona
 To return to native output, close the player and launch it without either
 scaling option; the choices are not saved between invocations.
 
-The reference H.264 High stream rose from about 46 to 65 unpaced frames/s
-with 1280-wide card output. Software enlargement back to Full HD retained
+With the reference host's qualified L0s workaround active, the H.264 High
+stream rose from about 46 to 65 unpaced frames/s with 1280-wide card output.
+Software enlargement back to Full HD retained
 about 64 frames/s and used about 84% of one CPU core. This is useful headroom
 for the measured input, not native 1080p60 detail or a displayed-frame-rate
 guarantee. Other codecs and hosts have different limits; exact throughput and
@@ -249,8 +250,9 @@ or GPUs.
 - Native Full-HD output at 60 fps, including 1080p30 at 2x, is not practical
   on the current path. The optional reduced-output mode above exceeded
   60 frames/s on selected Full-HD H.264 input, with reduced detail.
-- CrystalHD reduced decoder-process CPU in the reference comparison, while
-  software completed unpaced work faster and used less memory. Whole-system
+- CrystalHD had lower average decoder-process CPU utilization in the reference
+  unpaced comparison, while software decoded faster and used less memory.
+  Different output rates do not establish a per-frame CPU saving; whole-system
   power was not measured.
 
 Exact fixtures, rates, resource use and A/V qualifications remain in the

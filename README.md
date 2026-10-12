@@ -18,8 +18,8 @@ subsequent playback fixes, event-driven receive and optional output scaling.
 | --- | --- |
 | BCM70015 local files | Recommended: `crystalhd-play` / GStreamer with audio, subtitles and controls. 720p30 is well tested; native 1080p30 works on the reference host with its qualified PCIe workaround. |
 | H.264, MPEG-2, MPEG-4 Part 2, VC-1 / WMV3 | Selected profiles work; see the [codec boundaries](USAGE.md#codec-boundaries). HEVC, VP8, VP9 and AV1 are unsupported. |
-| Full-HD input with reduced card output | Optional hardware scaling reduces transfer traffic. Selected H.264 input reached about 65 pictures/s; software enlargement costs CPU and cannot recover detail. This is not native 1080p60 or a displayed-rate guarantee. |
-| Sunshine / Moonlight | Default frame-matching mode works at 720p30; an experimental previous-frame mode achieved about 59 renderer submissions/s at 720p60 and 29 at 1080p30. Physical streaming A/V offset and forced-loss recovery remain unverified. |
+| Full-HD input with reduced card output | Optional hardware scaling reduces transfer traffic. Selected H.264 input reached about 65 pictures/s with the qualified L0s workaround active; software enlargement costs CPU and cannot recover detail. This is not native 1080p60 or a displayed-rate guarantee. |
+| Sunshine / Moonlight | Default frame-matching mode works at 720p30; with V-sync/pacing off, an experimental previous-frame mode achieved about 59 renderer submissions/s at 720p60 and 29 at 1080p30. These are measured rates, not a matched speedup over default matching. Physical streaming A/V offset and forced-loss recovery remain unverified. |
 | BCM70012 / older CPUs | Legacy BCM70012 compatibility and x86-64/i686 builds are retained. Recent BCM70012 and physical no-SSE hardware tests remain outstanding. |
 | VA-API, VLC, browsers | VA-API is experimental. VLC 3.0.21 H.264 worked on the reference X11/i915 system. Chromium/YouTube hardware support is unverified. |
 
@@ -120,7 +120,7 @@ It is an optional choice for suitable BCM70015 links.
 ## Sunshine / Moonlight streaming
 
 The [Moonlight guide](MOONLIGHT.md) walks through the tested x86-64 client,
-pairing, H.264 720p30 playback, and the optional higher-cadence `previous,0`
+pairing, H.264 720p30 playback, and the optional `previous,0`
 mode. It keeps a completed picture in reserve and uses the previous frame
 when needed; that changes frame-to-timestamp matching and adds delay.
 All tested GUI settings, commands, measured limits and the way back to

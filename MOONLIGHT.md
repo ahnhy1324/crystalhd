@@ -6,8 +6,9 @@ the tested receiver and display route are listed below.
 
 Start with the **default frame-matching mode** at 720p30: each requested frame
 keeps its own pixels and timestamp. An optional **experimental previous-frame
-mode** improves the handoff rate at 720p60 and 1080p30 by allowing an earlier
-completed frame to fill the current request. Graceful close/reopen is confirmed;
+mode** reached about 59 renderer submissions/s at 720p60 and 29 at 1080p30
+with V-sync and frame pacing off, by allowing an earlier completed frame to
+fill the current request. Graceful close/reopen is confirmed;
 physical audio/video offset and forced connection-loss recovery remain unverified.
 
 ## Current verdict
@@ -15,8 +16,8 @@ physical audio/video offset and forced connection-loss recovery remain unverifie
 | Target | What happened on the reference system | Recommendation |
 | --- | --- | --- |
 | 720p30 H.264 | Hardware decode and indirect display worked; bounded exact-path runs handed roughly 28-29 frames/s to Moonlight's renderer. | **Recommended first hardware trial** |
-| 720p60 H.264 | Default frame matching reached about 33 renderer submissions/s; optional previous-frame mode reached about 59. | Try the optional mode after 720p30 works; it changes frame/timestamp matching |
-| 1080p30 H.264 | Default frame matching reached about 15-16 renderer submissions/s; optional previous-frame mode reached about 29. | Same optional mode and timing tradeoff |
+| 720p60 H.264 | Optional `previous,0` reached 58.63 renderer submissions/s with V-sync/pacing off. | Try the optional mode after 720p30 works; it changes frame/timestamp matching |
+| 1080p30 H.264 | Optional `previous,0` reached 28.58 renderer submissions/s with V-sync/pacing off. | Same optional mode and timing tradeoff |
 | 1080p60 H.264, native card output | Card output stayed below 60 frames/s and live input accumulated backlog. | Not practical on this Moonlight path |
 | Orderly session lifecycle | A five-minute hardware session exited normally; an immediate 40-second session reacquired the device, and later bounded sessions also released it cleanly. | Confirmed for graceful close/reopen; forced connection-loss recovery untested |
 
@@ -24,6 +25,10 @@ physical audio/video offset and forced connection-loss recovery remain unverifie
 frame reached physical scanout. Local GStreamer playback has a separate
 [Full-HD-input/reduced-output option](USAGE.md#optional-bcm70015-output-scaling);
 that result does not establish 1080p60 Moonlight streaming.
+The figures above do not establish a speedup over default frame matching:
+the three-run OFF/OFF finalist series did not include an exact-identity
+hardware control. The older ON/ON results are separate historical measurements,
+not performance limits for the OFF/OFF recipe.
 
 ## Tested route and compatibility
 
@@ -143,9 +148,9 @@ second session should be able to acquire the device again.
 
 The live and low-latency controls are process-local and experimental. They do
 not change `libcrystalhd.so.3`, the kernel ioctl ABI or BCM70012 behavior.
-Reconstructed H.264 frame-rate signaling remains fixed at 30 fps, so these
-two controls alone are not the measured 60 fps mode. The near-60 result below
-also uses the separate READY experiment.
+The live+prefeed path has produced about 60 decoded frames/s; decoder output
+and Moonlight renderer submissions are different measurements. The near-60
+renderer-submission result below also uses the separate READY experiment.
 
 ### Experimental previous-frame mode
 
@@ -228,26 +233,46 @@ retained the host-specific `force_l0s_off=Y` setting and used an X11 desktop at
 1024x768 and 60 Hz. Those conditions qualify the results; test the default PCIe
 link first rather than enabling the workaround from these figures.
 
-### Default frame-matching measurements
+<a id="default-frame-matching-measurements"></a>
 
-| Reference condition | Decoder result | Moonlight presentation result |
+### Historical default matching: V-sync ON / pacing ON
+
+These 720p60 results are from the earlier three-run ON/ON series, not the
+OFF/OFF launch configuration above. They are not a matched control for the
+previous-frame finalist results and do not establish the default path's
+maximum rate. Resource sampling used a 10-second warmup and 60-second window;
+Moonlight's FPS counters covered the full approximately 75-second sessions.
+
+| Historical 720p60 path, V-sync ON / pacing ON | Decoder result | Renderer submissions/s, median (range) |
 | --- | --- | --- |
-| 720p30 live+prefeed | Hardware output held the requested cadence | Bounded runs reached roughly 28-29 render submissions/s |
-| 720p60 live-only | 58.86 decoded fps | 19.14 render submissions/s |
-| 720p60 live+prefeed | 59.13 decoded fps; matched AU-to-output p50/p95 21.25/25.13 ms | 33.42 render submissions/s (three-run median) |
-| 1080p30 exact identity | About 30 hardware outputs/s | About 15-16 render submissions/s in repeated baselines |
-| 1080p60, native card output | Below requested hardware cadence with backlog | Not usable on this streaming path |
+| Software | 59.66 decoded fps | 41.33 (41.06-41.43) |
+| CrystalHD live-only | 58.86 decoded fps | 19.14 (18.94-19.15) |
+| CrystalHD live+prefeed | 59.13 decoded fps | 33.42 (32.05-35.49) |
 
-The paired 720p60 software control decoded 59.66 fps and submitted 41.33 fps,
-so this host also has a client/display presentation ceiling independent of
-CrystalHD. Prefeed materially improved the hardware path, but did not remove
-that presentation bottleneck.
+Software also lost renderer submissions in this ON/ON series. That observation
+does not establish a settings-independent client/display ceiling: the later
+OFF/OFF software finalist reached 59.81 submissions/s. Prefeed improved the
+ON/ON hardware result; this is not a comparison against the OFF/OFF remap mode.
+The separate AU-to-output trace and older 720p30/1080p30 baselines remain in
+the [hardware report](HARDWARE-2026-09-13.md#repeated-60-hz-presentation-follow-up).
 
-### One-submission-lag cadence comparison
+<a id="one-submission-lag-cadence-comparison"></a>
 
-With V-sync and pacing disabled, three repeated finalist runs measured 58.63
-render submissions/s at 720p60 and 28.58 at 1080p30 with `previous,0`. This is
-the measured outcome of intentionally keeping the presented payload one
+### Previous-frame finalists: V-sync OFF / pacing OFF
+
+Three repeated 60-second finalist runs used V-sync and pacing disabled:
+
+| Stream | `previous,0` renderer submissions/s | Software renderer submissions/s |
+| --- | ---: | ---: |
+| 720p60 | 58.63 | 59.81 |
+| 1080p30 | 28.58 | 29.71 |
+
+These are means, not the medians reported for the older ON/ON series.
+The repeated finalists were `previous,0`, `latest,0` and software, not
+exact-identity hardware. The earlier screening matrix included remap-off
+controls, but its 20-second samples are not the three-run finalist control.
+Do not use 33.42 or the earlier 15-16 submissions/s as the OFF/OFF baseline.
+This is the measured outcome of intentionally keeping the presented payload one
 submission behind, not merely a READY-availability diagnostic. The figures are
 not a normal-path support target because the payload is associated with the
 newer requested surface and therefore with the caller's newer PTS. Hardware
