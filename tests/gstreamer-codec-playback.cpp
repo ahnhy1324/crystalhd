@@ -6,7 +6,7 @@
 #include <gst/app/gstappsrc.h>
 #include <gst/video/video.h>
 extern "C" {
-#include <libavcodec/avcodec.h>
+#include "ffmpeg-profile-compat.h"
 #include <libavformat/avformat.h>
 }
 #include <algorithm>
@@ -42,16 +42,16 @@ static SeekFixture ClassifySeekFixture(AVCodecID codec_id, int profile,
                                        AVRational rate,
                                        AVFieldOrder field_order) {
   if (codec_id == AV_CODEC_ID_MPEG4 &&
-      profile == FF_PROFILE_MPEG4_ADVANCED_SIMPLE &&
+      profile == AV_PROFILE_MPEG4_ADVANCED_SIMPLE &&
       expected == kMpeg4SeekFixtureFrames &&
       rate.num == 30 && rate.den == 1)
     return SeekFixture::kMpeg4Asp;
-  if (codec_id == AV_CODEC_ID_WMV3 && profile == FF_PROFILE_VC1_MAIN &&
+  if (codec_id == AV_CODEC_ID_WMV3 && profile == AV_PROFILE_VC1_MAIN &&
       width == 320 && height == 240 &&
       expected == kWmv3SeekFixtureFrames &&
       rate.num == 30 && rate.den == 1)
     return SeekFixture::kWmv3Main;
-  if (codec_id == AV_CODEC_ID_H264 && profile == FF_PROFILE_H264_HIGH &&
+  if (codec_id == AV_CODEC_ID_H264 && profile == AV_PROFILE_H264_HIGH &&
       width == 640 && height == 360 &&
       expected == kH264SeekFixtureFrames &&
       rate.num == 30 && rate.den == 1 &&
@@ -682,65 +682,65 @@ static bool SeekAdmissionSelfTest() {
                                field_order);
   };
   return
-      classify(AV_CODEC_ID_MPEG4, FF_PROFILE_MPEG4_ADVANCED_SIMPLE,
+      classify(AV_CODEC_ID_MPEG4, AV_PROFILE_MPEG4_ADVANCED_SIMPLE,
                640, 360, kMpeg4SeekFixtureFrames, fps30) ==
           SeekFixture::kMpeg4Asp &&
       /* Preserve the reviewed MPEG-4 admission rule: profile/count/rate. */
-      classify(AV_CODEC_ID_MPEG4, FF_PROFILE_MPEG4_ADVANCED_SIMPLE,
+      classify(AV_CODEC_ID_MPEG4, AV_PROFILE_MPEG4_ADVANCED_SIMPLE,
                320, 240, kMpeg4SeekFixtureFrames, fps30) ==
           SeekFixture::kMpeg4Asp &&
-      classify(AV_CODEC_ID_MPEG4, FF_PROFILE_MPEG4_SIMPLE,
+      classify(AV_CODEC_ID_MPEG4, AV_PROFILE_MPEG4_SIMPLE,
                640, 360, kMpeg4SeekFixtureFrames, fps30) ==
           SeekFixture::kNone &&
-      classify(AV_CODEC_ID_MPEG4, FF_PROFILE_MPEG4_ADVANCED_SIMPLE,
+      classify(AV_CODEC_ID_MPEG4, AV_PROFILE_MPEG4_ADVANCED_SIMPLE,
                640, 360, kMpeg4SeekFixtureFrames + 1, fps30) ==
           SeekFixture::kNone &&
-      classify(AV_CODEC_ID_MPEG4, FF_PROFILE_MPEG4_ADVANCED_SIMPLE,
+      classify(AV_CODEC_ID_MPEG4, AV_PROFILE_MPEG4_ADVANCED_SIMPLE,
                640, 360, kMpeg4SeekFixtureFrames, fps25) ==
           SeekFixture::kNone &&
-      classify(AV_CODEC_ID_WMV3, FF_PROFILE_VC1_MAIN,
+      classify(AV_CODEC_ID_WMV3, AV_PROFILE_VC1_MAIN,
                320, 240, kWmv3SeekFixtureFrames, fps30) ==
           SeekFixture::kWmv3Main &&
-      classify(AV_CODEC_ID_WMV3, FF_PROFILE_VC1_SIMPLE,
+      classify(AV_CODEC_ID_WMV3, AV_PROFILE_VC1_SIMPLE,
                320, 240, kWmv3SeekFixtureFrames, fps30) ==
           SeekFixture::kNone &&
-      classify(AV_CODEC_ID_WMV3, FF_PROFILE_VC1_MAIN,
+      classify(AV_CODEC_ID_WMV3, AV_PROFILE_VC1_MAIN,
                640, 360, kWmv3SeekFixtureFrames, fps30) ==
           SeekFixture::kNone &&
-      classify(AV_CODEC_ID_WMV3, FF_PROFILE_VC1_MAIN,
+      classify(AV_CODEC_ID_WMV3, AV_PROFILE_VC1_MAIN,
                320, 241, kWmv3SeekFixtureFrames, fps30) ==
           SeekFixture::kNone &&
-      classify(AV_CODEC_ID_WMV3, FF_PROFILE_VC1_MAIN,
+      classify(AV_CODEC_ID_WMV3, AV_PROFILE_VC1_MAIN,
                320, 240, kWmv3SeekFixtureFrames - 1, fps30) ==
           SeekFixture::kNone &&
-      classify(AV_CODEC_ID_WMV3, FF_PROFILE_VC1_MAIN,
+      classify(AV_CODEC_ID_WMV3, AV_PROFILE_VC1_MAIN,
                320, 240, kWmv3SeekFixtureFrames, fps25) ==
           SeekFixture::kNone &&
-      classify(AV_CODEC_ID_VC1, FF_PROFILE_VC1_MAIN,
+      classify(AV_CODEC_ID_VC1, AV_PROFILE_VC1_MAIN,
                320, 240, kWmv3SeekFixtureFrames, fps30) ==
           SeekFixture::kNone &&
-      classify(AV_CODEC_ID_H264, FF_PROFILE_H264_HIGH,
+      classify(AV_CODEC_ID_H264, AV_PROFILE_H264_HIGH,
                640, 360, kH264SeekFixtureFrames, fps30,
                AV_FIELD_PROGRESSIVE) == SeekFixture::kH264High &&
-      classify(AV_CODEC_ID_H264, FF_PROFILE_H264_MAIN,
+      classify(AV_CODEC_ID_H264, AV_PROFILE_H264_MAIN,
                640, 360, kH264SeekFixtureFrames, fps30,
                AV_FIELD_PROGRESSIVE) == SeekFixture::kNone &&
-      classify(AV_CODEC_ID_H264, FF_PROFILE_H264_HIGH,
+      classify(AV_CODEC_ID_H264, AV_PROFILE_H264_HIGH,
                641, 360, kH264SeekFixtureFrames, fps30,
                AV_FIELD_PROGRESSIVE) == SeekFixture::kNone &&
-      classify(AV_CODEC_ID_H264, FF_PROFILE_H264_HIGH,
+      classify(AV_CODEC_ID_H264, AV_PROFILE_H264_HIGH,
                640, 361, kH264SeekFixtureFrames, fps30,
                AV_FIELD_PROGRESSIVE) == SeekFixture::kNone &&
-      classify(AV_CODEC_ID_H264, FF_PROFILE_H264_HIGH,
+      classify(AV_CODEC_ID_H264, AV_PROFILE_H264_HIGH,
                640, 360, kH264SeekFixtureFrames - 1, fps30,
                AV_FIELD_PROGRESSIVE) == SeekFixture::kNone &&
-      classify(AV_CODEC_ID_H264, FF_PROFILE_H264_HIGH,
+      classify(AV_CODEC_ID_H264, AV_PROFILE_H264_HIGH,
                640, 360, kH264SeekFixtureFrames, fps25,
                AV_FIELD_PROGRESSIVE) == SeekFixture::kNone &&
-      classify(AV_CODEC_ID_H264, FF_PROFILE_H264_HIGH,
+      classify(AV_CODEC_ID_H264, AV_PROFILE_H264_HIGH,
                640, 360, kH264SeekFixtureFrames, fps30) ==
           SeekFixture::kNone &&
-      classify(AV_CODEC_ID_H264, FF_PROFILE_H264_HIGH,
+      classify(AV_CODEC_ID_H264, AV_PROFILE_H264_HIGH,
                640, 360, kH264SeekFixtureFrames, fps30, AV_FIELD_TT) ==
           SeekFixture::kNone &&
       SeekReferenceFrames(SeekFixture::kMpeg4Asp) ==
@@ -926,8 +926,8 @@ int main(int argc, char **argv) {
   const bool vc1 = parameters->codec_id == AV_CODEC_ID_VC1;
   const bool wmv3 = parameters->codec_id == AV_CODEC_ID_WMV3;
   const bool mpeg4 = parameters->codec_id == AV_CODEC_ID_MPEG4;
-  const bool mpeg4_simple = parameters->profile == FF_PROFILE_MPEG4_SIMPLE;
-  const bool mpeg4_asp = parameters->profile == FF_PROFILE_MPEG4_ADVANCED_SIMPLE;
+  const bool mpeg4_simple = parameters->profile == AV_PROFILE_MPEG4_SIMPLE;
+  const bool mpeg4_asp = parameters->profile == AV_PROFILE_MPEG4_ADVANCED_SIMPLE;
   if ((!vc1 && !wmv3 && !mpeg4 && !(seek_mode && h264)) ||
       (mpeg4 && ((!mpeg4_simple && !mpeg4_asp) ||
                  (parameters->level != 3 && parameters->level != 5))) ||

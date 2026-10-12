@@ -35,7 +35,7 @@ all: $(PLUGIN)
 codec-playback-test: gstreamer-codec-playback-test
 
 gstreamer-codec-playback-test: $(ROOTDIR)/tests/gstreamer-codec-playback.cpp \
-		$(ROOTDIR)/tests/phase1-progress.h
+		$(ROOTDIR)/tests/phase1-progress.h $(ROOTDIR)/tests/ffmpeg-profile-compat.h
 	$(CXX) -std=c++17 -O2 -Wall -Wextra -Werror $< -o $@ \
 		$(shell $(PKG_CONFIG) --cflags --libs $(CODEC_PLAYBACK_PACKAGES)) $(CRYSTALHD_CPU_FLAGS)
 

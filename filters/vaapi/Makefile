@@ -141,7 +141,7 @@ $(TRACE_TEST): $(ROOTDIR)/tests/vaapi-trace.cpp crystalhd-trace.h
 # of the normal driver build.
 seek-test: $(SEEK_TEST)
 
-$(SEEK_TEST): $(ROOTDIR)/tests/vaapi-seek.cpp
+$(SEEK_TEST): $(ROOTDIR)/tests/vaapi-seek.cpp $(ROOTDIR)/tests/ffmpeg-profile-compat.h
 	$(CXX) -std=c++17 -O2 -Wall -Wextra -Werror \
 		$(shell $(PKG_CONFIG) --cflags libavcodec libavformat libavutil libva) $< -o $@ \
 		$(shell $(PKG_CONFIG) --libs libavcodec libavformat libavutil libva) $(CRYSTALHD_CPU_FLAGS)

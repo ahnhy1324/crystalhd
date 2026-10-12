@@ -2,7 +2,7 @@
 // Compare actual downloaded pixels after avcodec_flush_buffers()/seek with
 // the same decoder's uninterrupted output. Timestamps alone miss stale frames.
 extern "C" {
-#include <libavcodec/avcodec.h>
+#include "ffmpeg-profile-compat.h"
 #include <libavformat/avformat.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/hwcontext_vaapi.h>
@@ -210,16 +210,16 @@ struct Probe {
       throw std::runtime_error("this probe requires a seekable H.264, MPEG-2, MPEG-4 Part 2, VC-1 or WMV3 container");
     if (codec->id == AV_CODEC_ID_MPEG2VIDEO) {
       const AVCodecParameters *parameters = input->streams[stream]->codecpar;
-      if (parameters->profile != FF_PROFILE_MPEG2_SIMPLE &&
-          parameters->profile != FF_PROFILE_MPEG2_MAIN)
+      if (parameters->profile != AV_PROFILE_MPEG2_SIMPLE &&
+          parameters->profile != AV_PROFILE_MPEG2_MAIN)
         throw std::runtime_error("MPEG-2 validation requires Simple or Main profile");
       if (parameters->field_order != AV_FIELD_PROGRESSIVE)
         throw std::runtime_error("MPEG-2 validation requires a declared progressive stream");
     }
     if (codec->id == AV_CODEC_ID_MPEG4) {
       const AVCodecParameters *parameters = input->streams[stream]->codecpar;
-      if (parameters->profile != FF_PROFILE_MPEG4_SIMPLE &&
-          parameters->profile != FF_PROFILE_MPEG4_ADVANCED_SIMPLE)
+      if (parameters->profile != AV_PROFILE_MPEG4_SIMPLE &&
+          parameters->profile != AV_PROFILE_MPEG4_ADVANCED_SIMPLE)
         throw std::runtime_error("MPEG-4 validation requires Simple or Advanced Simple profile");
       if (parameters->level != 3 && parameters->level != 5)
         throw std::runtime_error("MPEG-4 validation requires level 3 or 5");
@@ -229,9 +229,9 @@ struct Probe {
     }
     if (codec->id == AV_CODEC_ID_VC1 || codec->id == AV_CODEC_ID_WMV3) {
       const AVCodecParameters *parameters = input->streams[stream]->codecpar;
-      if (parameters->profile != FF_PROFILE_VC1_SIMPLE &&
-          parameters->profile != FF_PROFILE_VC1_MAIN &&
-          parameters->profile != FF_PROFILE_VC1_ADVANCED)
+      if (parameters->profile != AV_PROFILE_VC1_SIMPLE &&
+          parameters->profile != AV_PROFILE_VC1_MAIN &&
+          parameters->profile != AV_PROFILE_VC1_ADVANCED)
         throw std::runtime_error("VC-1 validation requires Simple, Main or Advanced profile");
       if (parameters->field_order != AV_FIELD_PROGRESSIVE &&
           parameters->field_order != AV_FIELD_UNKNOWN)
@@ -430,7 +430,7 @@ struct Probe {
     std::advance(position, index);
     if (codec->id != AV_CODEC_ID_MPEG4 ||
         input->streams[stream]->codecpar->profile !=
-            FF_PROFILE_MPEG4_ADVANCED_SIMPLE ||
+            AV_PROFILE_MPEG4_ADVANCED_SIMPLE ||
         reference_types.at(position->first) != AV_PICTURE_TYPE_B)
       return position;
 
