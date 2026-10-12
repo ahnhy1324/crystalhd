@@ -104,7 +104,7 @@ usage:
   $0 --self-test
   $0 manifest-template
   $0 manifest-check FILE
-  $0 evidence-check EVIDENCE_ROOT
+  $0 evidence-check EVIDENCE_ROOT [--manifest FILE]
   $0 soak [--rc] --runtime source|installed --results DIR --fixture FILE \\
      --input-sha256 HEX --codec h264 --profile PROFILE --geometry WIDTHxHEIGHT \\
      --field FIELD --frames N --seconds N [--timeout N] [--video-only]
@@ -126,6 +126,9 @@ Every hardware invocation requires a new absolute results directory outside
 the source tree.  churn and reload-sanity require a direct-library-compatible
 elementary stream (WMV3 may use ASF).  --rc enforces the Phase 1 acceptance
 duration/count for that mode; shorter configurable runs are development runs.
+evidence-check defaults to the candidate's historical tests/phase1-oracle.tsv.
+Use --manifest with an absolute tracked candidate manifest to select maintenance
+evidence; its working copy and both captured oracles must match that revision.
 EOF
     exit 2
 }
@@ -2349,6 +2352,28 @@ validate_release_reload_evidence()
 check_evidence_set()
 {
     evidence_root=$1
+    selected_manifest=${2:-}
+    selected_manifest_relative=tests/phase1-oracle.tsv
+    if [ -n "$selected_manifest" ]; then
+        case $selected_manifest in /*) ;; *)
+            error "manifest path must be absolute"
+            return 1
+        esac
+        selected_manifest=$(realpath -- "$selected_manifest") || {
+            error "could not resolve selected oracle manifest"
+            return 1
+        }
+        case $selected_manifest in
+            "$repo_dir"/*) selected_manifest_relative=${selected_manifest#"$repo_dir"/} ;;
+            *) error "selected oracle must be a tracked file in the source revision"; return 1 ;;
+        esac
+        [ -f "$selected_manifest" ] && [ -r "$selected_manifest" ] && \
+            git -C "$repo_dir" ls-files --error-unmatch -- "$selected_manifest_relative" \
+                >/dev/null 2>&1 || {
+            error "selected oracle is not a readable tracked file: $selected_manifest_relative"
+            return 1
+        }
+    fi
     case $evidence_root in /*) ;; *) error "evidence root must be absolute"; return 1 ;; esac
     evidence_root=$(realpath "$evidence_root") || {
         error "could not resolve evidence root"
@@ -2499,11 +2524,16 @@ check_evidence_set()
                 return 1
             }
             git -C "$repo_dir" show \
-                "$evidence_revision:tests/phase1-oracle.tsv" | \
+                "$evidence_revision:$selected_manifest_relative" | \
                 cmp -s - "$evidence_manifest" || {
-                error "$evidence_name oracle is not the one committed in the candidate revision"
+                error "$evidence_name oracle does not match $evidence_revision:$selected_manifest_relative"
                 return 1
             }
+            if [ -n "$selected_manifest" ] && \
+                ! cmp -s -- "$selected_manifest" "$evidence_manifest"; then
+                error "selected oracle working copy does not match the candidate revision"
+                return 1
+            fi
             if [ -z "$canonical_manifest" ]; then
                 canonical_manifest=$evidence_manifest
             elif ! cmp -s -- "$canonical_manifest" "$evidence_manifest"; then
@@ -2612,7 +2642,12 @@ check_evidence_set()
             return 1
         }
     done
+    evidence_manifest_hash=$(sha256_file "$canonical_manifest") || {
+        error "could not hash verified oracle manifest"
+        return 1
+    }
     say "Phase 1 evidence set passed: revision=$reference_revision runtime=$reference_runtime"
+    say "oracle_manifest=$selected_manifest_relative oracle_sha256=$evidence_manifest_hash"
     say "force_l0s_off:$force_summary"
 }
 
@@ -3059,9 +3094,16 @@ EOF
     evidence_repo=$tmp/evidence-repo
     mkdir -p "$evidence_root" "$evidence_repo/tests"
     cp "$manifest" "$evidence_repo/tests/phase1-oracle.tsv"
+    maintenance_manifest=$evidence_repo/tests/maintenance-oracle.tsv
+    metadata_maintenance=$(printf '%064d' 17)
+    awk -F '\t' -v metadata="$metadata_maintenance" 'BEGIN { OFS="\t" }
+        $2 == "h264-extra" { $10=metadata }
+        { print }
+    ' "$manifest" > "$maintenance_manifest"
     printf '%s\n' '#!/bin/sh' 'exit 0' > "$evidence_repo/tests/phase1-release-gate.sh"
     git -C "$evidence_repo" init -q
-    git -C "$evidence_repo" add tests/phase1-oracle.tsv tests/phase1-release-gate.sh
+    git -C "$evidence_repo" add tests/phase1-oracle.tsv tests/maintenance-oracle.tsv \
+        tests/phase1-release-gate.sh
     git -C "$evidence_repo" -c user.name='Phase 1 self-test' \
         -c user.email='phase1-self-test@example.invalid' commit -q -m evidence
     evidence_revision=$(git -C "$evidence_repo" rev-parse HEAD)
@@ -3346,8 +3388,96 @@ EOF
     done
     saved_repo_dir=$repo_dir
     repo_dir=$evidence_repo
-    check_evidence_set "$evidence_root" >/dev/null
+    check_evidence_set "$evidence_root" > "$tmp/evidence-check.log"
+    expected_manifest_hash=$(sha256_file "$manifest")
+    grep -Fx "oracle_manifest=tests/phase1-oracle.tsv oracle_sha256=$expected_manifest_hash" \
+        "$tmp/evidence-check.log" >/dev/null || {
+        error "self-test did not audit the default historical manifest"
+        return 1
+    }
     tests=$((tests + 1))
+
+    check_evidence_set "$evidence_root" "$evidence_repo/tests/phase1-oracle.tsv" \
+        >/dev/null
+    tests=$((tests + 1))
+
+    for rejected_manifest in "$manifest" tests/maintenance-oracle.tsv \
+        "$evidence_repo/tests/untracked-oracle.tsv" \
+        "$evidence_repo/tests/uncommitted-oracle.tsv" "$maintenance_manifest"; do
+        cp "$manifest" "$evidence_repo/tests/untracked-oracle.tsv"
+        cp "$manifest" "$evidence_repo/tests/uncommitted-oracle.tsv"
+        git -C "$evidence_repo" add tests/uncommitted-oracle.tsv
+        if check_evidence_set "$evidence_root" "$rejected_manifest" >/dev/null 2>&1; then
+            error "self-test accepted an external, relative, untracked, uncommitted or mismatched oracle: $rejected_manifest"
+            return 1
+        fi
+        tests=$((tests + 1))
+    done
+
+    maintenance_log=$evidence_root/oracle/stages/0006-oracle-h264-extra.log
+    cp "$maintenance_log" "$tmp/historical-conformance.log"
+    cp "$maintenance_manifest" "$evidence_root/oracle/oracle.tsv"
+    cp "$maintenance_manifest" "$evidence_root/round-robin/oracle.tsv"
+    sed "s/$metadata_h264/$metadata_maintenance/g" "$tmp/historical-conformance.log" \
+        > "$maintenance_log"
+    check_evidence_set "$evidence_root" "$maintenance_manifest" \
+        > "$tmp/evidence-check.log"
+    expected_manifest_hash=$(sha256_file "$maintenance_manifest")
+    grep -Fx "oracle_manifest=tests/maintenance-oracle.tsv oracle_sha256=$expected_manifest_hash" \
+        "$tmp/evidence-check.log" >/dev/null || {
+        error "self-test did not audit the selected maintenance manifest"
+        return 1
+    }
+    tests=$((tests + 1))
+
+    if check_evidence_set "$evidence_root" >/dev/null 2>&1 || \
+        check_evidence_set "$evidence_root" "$evidence_repo/tests/phase1-oracle.tsv" \
+            >/dev/null 2>&1; then
+        error "self-test accepted maintenance evidence against the historical manifest"
+        return 1
+    fi
+    tests=$((tests + 2))
+
+    cp "$manifest" "$evidence_root/round-robin/oracle.tsv"
+    if check_evidence_set "$evidence_root" "$maintenance_manifest" >/dev/null 2>&1; then
+        error "self-test accepted mixed historical and maintenance oracle evidence"
+        return 1
+    fi
+    cp "$maintenance_manifest" "$evidence_root/round-robin/oracle.tsv"
+    tests=$((tests + 1))
+
+    printf '%s\n' '# uncommitted change' >> "$maintenance_manifest"
+    if check_evidence_set "$evidence_root" "$maintenance_manifest" >/dev/null 2>&1; then
+        error "self-test accepted a changed maintenance working copy"
+        return 1
+    fi
+    cp "$evidence_root/oracle/oracle.tsv" "$maintenance_manifest"
+    tests=$((tests + 1))
+
+    printf '%s\n' '# evidence corruption' >> "$evidence_root/oracle/oracle.tsv"
+    if check_evidence_set "$evidence_root" "$maintenance_manifest" >/dev/null 2>&1; then
+        error "self-test accepted changed maintenance evidence"
+        return 1
+    fi
+    cp "$maintenance_manifest" "$evidence_root/oracle/oracle.tsv"
+    tests=$((tests + 1))
+
+    cp "$maintenance_log" "$tmp/maintenance-conformance.log"
+    cp "$tmp/historical-conformance.log" "$maintenance_log"
+    if check_evidence_set "$evidence_root" "$maintenance_manifest" >/dev/null 2>&1; then
+        error "self-test accepted historical metadata with the maintenance manifest"
+        return 1
+    fi
+    sed "s/$output_h264/$output_mpeg2/g" "$tmp/maintenance-conformance.log" \
+        > "$maintenance_log"
+    if check_evidence_set "$evidence_root" "$maintenance_manifest" >/dev/null 2>&1; then
+        error "self-test accepted changed pixels with the maintenance manifest"
+        return 1
+    fi
+    tests=$((tests + 2))
+    cp "$tmp/historical-conformance.log" "$maintenance_log"
+    cp "$manifest" "$evidence_root/oracle/oracle.tsv"
+    cp "$manifest" "$evidence_root/round-robin/oracle.tsv"
 
     session_evidence=$evidence_root/oracle
     session_receipt=$session_evidence/module-reload.tsv
@@ -3610,9 +3740,15 @@ if [ "$#" -eq 2 ] && [ "$1" = manifest-check ]; then
     validate_manifest "$2"
     exit
 fi
-if [ "$#" -eq 2 ] && [ "$1" = evidence-check ]; then
+if [ "$#" -gt 0 ] && [ "$1" = evidence-check ]; then
+    case $# in
+        2) evidence_manifest_option= ;;
+        4) [ "$3" = --manifest ] && [ -n "$4" ] || usage
+           evidence_manifest_option=$4 ;;
+        *) usage ;;
+    esac
     freeze_release_environment
-    check_evidence_set "$2"
+    check_evidence_set "$2" "$evidence_manifest_option"
     exit
 fi
 [ "$#" -gt 0 ] || usage
