@@ -59,6 +59,7 @@ active_watchdog=
 active_monitor=
 rc=no
 acceptance=development
+scale_width=
 
 say()
 {
@@ -107,7 +108,7 @@ usage:
   $0 evidence-check EVIDENCE_ROOT [--manifest FILE]
   $0 soak [--rc] --runtime source|installed --results DIR --fixture FILE \\
      --input-sha256 HEX --codec h264 --profile PROFILE --geometry WIDTHxHEIGHT \\
-     --field FIELD --frames N --seconds N [--timeout N] [--video-only]
+     --field FIELD --frames N --seconds N [--timeout N] [--video-only] [--scale-width 1280]
   $0 churn [--rc] --runtime source|installed --results DIR --fixture FILE \\
      --input-sha256 HEX --codec CODEC --profile PROFILE --geometry WIDTHxHEIGHT \\
      --field FIELD --frames N [--iterations N] [--timeout N]
@@ -129,6 +130,10 @@ duration/count for that mode; shorter configurable runs are development runs.
 evidence-check defaults to the candidate's historical tests/phase1-oracle.tsv.
 Use --manifest with an absolute tracked candidate manifest to select maintenance
 evidence; its working copy and both captured oracles must match that revision.
+A manifest's optional gstreamer-version declaration must match the recorded
+GStreamer version exactly; it never selects or relaxes an oracle automatically.
+Only soak accepts --scale-width 1280, with progressive 1920x1080 input; its
+1280x720 output receives a separate scaled-soak label, never native-soak credit.
 EOF
     exit 2
 }
@@ -195,6 +200,14 @@ valid_rc_controls()
 {
     [ "$1" = 1280x720 ] && [ "$2" = High ] && [ "$3" = yes ] && \
         [ "$4" = no ] && [ "$5" -eq 10 ]
+}
+
+valid_scale_selection()
+{
+    [ -z "$4" ] || {
+        [ "$1" = soak ] && [ "$2" = 1920x1080 ] && \
+            [ "$3" = progressive ] && [ "$4" = 1280 ]
+    }
 }
 
 codec_name()
@@ -321,6 +334,10 @@ validate_manifest()
           else header=1
           next
         }
+        /^# gstreamer-version=/ {
+          if (++versions != 1 || $0 !~ /^# gstreamer-version=[0-9]+\.[0-9]+\.[0-9]+$/) bad=1
+          next
+        }
         /^#/ || /^$/ { next }
         {
           row++
@@ -344,6 +361,16 @@ validate_manifest()
         END { exit !(header && row >= 5 && round == 5 && !bad) }
     ' "$manifest_file" || {
         error "oracle must contain 11 valid TSV fields and exactly five round rows in h264, mpeg2, vc1, wmv3, mpeg4 order"
+        return 1
+    }
+}
+
+validate_manifest_gstreamer()
+{
+    oracle_gstreamer=$(sed -n 's/^# gstreamer-version=//p' "$1") || return 1
+    [ -z "$oracle_gstreamer" ] || \
+        [ "$2" = "gst-inspect-1.0 version $oracle_gstreamer" ] || {
+        error "oracle requires GStreamer $oracle_gstreamer; recorded runtime is $2"
         return 1
     }
 }
@@ -652,6 +679,10 @@ write_identity()
         printf 'runtime=%s\n' "$runtime"
         printf 'rc=%s\n' "$rc"
         printf 'acceptance=%s\n' "$acceptance"
+        if [ -n "$scale_width" ]; then
+            printf 'scale_width=%s\ninput_geometry=%s\noutput_geometry=1280x720\n' \
+                "$scale_width" "$geometry"
+        fi
         printf 'kernel=%s\n' "$(uname -srvmo)"
         printf 'os_release_sha256=%s\n' "$identity_os_hash"
         sed -n 's/^ID=/os_id=/p; s/^VERSION_ID=/os_version_id=/p; s/^VERSION_CODENAME=/os_version_codename=/p; s/^PRETTY_NAME=/os_pretty_name=/p' \
@@ -1373,10 +1404,14 @@ set_acceptance_label()
     elif [ "$rc" = yes ]; then
         case $mode in
             soak)
-                case $geometry in
-                    1280x720) acceptance=soak-720p30-28800 ;;
-                    1920x1080) acceptance=soak-1080p30-$seconds ;;
-                esac
+                if [ -n "$scale_width" ]; then
+                    acceptance=soak-scaled-1080p30-to-1280x720-$seconds
+                else
+                    case $geometry in
+                        1280x720) acceptance=soak-720p30-28800 ;;
+                        1920x1080) acceptance=soak-1080p30-$seconds ;;
+                    esac
+                fi
                 ;;
             churn) acceptance=churn-1000 ;;
             round-robin) acceptance=round-robin-100 ;;
@@ -1407,6 +1442,9 @@ prepare_oracle()
     fi
     cp -- "$manifest" "$results/oracle.tsv"
     validate_manifest "$results/oracle.tsv" || exit 1
+    oracle_gstreamer_recorded=$(evidence_value gstreamer "$results/identity.txt") || \
+        die "could not read recorded GStreamer identity"
+    validate_manifest_gstreamer "$results/oracle.tsv" "$oracle_gstreamer_recorded" || exit 1
     if [ "$rc" = yes ] || [ "$mode" = oracle ]; then
         git -C "$repo_dir" show "$revision:$manifest_relative" | \
             cmp -s - "$results/oracle.tsv" || \
@@ -1438,6 +1476,8 @@ prepare_oracle()
 
 run_soak()
 {
+    valid_scale_selection "$mode" "$geometry" "$field" "$scale_width" || \
+        die "--scale-width requires soak with progressive 1920x1080 input and width 1280"
     [ "$codec" = h264 ] || die "soak requires H.264"
     [ "$field" = progressive ] || die "soak requires progressive H.264"
     is_uint "$seconds" 28800 || die "--seconds must be 1..28800"
@@ -1459,8 +1499,11 @@ run_soak()
     [ -n "$timeout_seconds" ] || timeout_seconds=$((seconds + 60))
     is_uint "$timeout_seconds" 32400 || die "invalid --timeout"
     [ "$timeout_seconds" -ge "$seconds" ] || die "soak timeout cannot be shorter than duration"
-    set -- "$plugin_dir/gstreamer-controls-test" "$fixture" --expect-geometry "$geometry" \
+    soak_output_geometry=$geometry
+    [ -z "$scale_width" ] || soak_output_geometry=1280x720
+    set -- "$plugin_dir/gstreamer-controls-test" "$fixture" --expect-geometry "$soak_output_geometry" \
         --sustain "$seconds" --timeout "$timeout_seconds"
+    [ -z "$scale_width" ] || set -- "$@" --input-geometry "$geometry" --scale-width "$scale_width"
     [ "$audio" = no ] || set -- "$@" --audio
     run_timed soak "$((timeout_seconds + 30))" "$@" || exit 1
 }
@@ -2534,6 +2577,8 @@ check_evidence_set()
                 error "selected oracle working copy does not match the candidate revision"
                 return 1
             fi
+            validate_manifest_gstreamer "$evidence_manifest" "$identity_gstreamer" || \
+                return 1
             if [ -z "$canonical_manifest" ]; then
                 canonical_manifest=$evidence_manifest
             elif ! cmp -s -- "$canonical_manifest" "$evidence_manifest"; then
@@ -2935,6 +2980,53 @@ EOF
         ! valid_rc_controls 1280x720 High yes no 1
     tests=$((tests + 1))
 
+    valid_scale_selection soak 1920x1080 progressive 1280 && \
+        valid_scale_selection soak 1280x720 progressive '' && \
+        ! valid_scale_selection controls 1920x1080 progressive 1280 && \
+        ! valid_scale_selection soak 1280x720 progressive 1280 && \
+        ! valid_scale_selection soak 1920x1080 tt 1280 && \
+        ! valid_scale_selection soak 1920x1080 progressive 720
+    tests=$((tests + 1))
+
+    # Exercise soak argument forwarding without launching a probe or touching
+    # the card. Both paths must retain the RC duration, frame count and audio.
+    if ! (
+        run_timed() { printf '%s\n' "$@" > "$tmp/soak-command"; }
+        audio_probe_value() { printf '%s\n' aac; }
+        mode=soak
+        rc=yes
+        codec=h264
+        profile=High
+        geometry=1920x1080
+        field=progressive
+        frames=216000
+        seconds=7200
+        audio=yes
+        timeout_seconds=
+        scale_width=
+        set_acceptance_label
+        [ "$acceptance" = soak-1080p30-7200 ] || exit 1
+        run_soak
+        [ "$(cat "$tmp/soak-command")" = "$(printf '%s\n' soak 7290 \
+            "$plugin_dir/gstreamer-controls-test" "$fixture" \
+            --expect-geometry 1920x1080 --sustain 7200 --timeout 7260 --audio)" ] || exit 1
+        scale_width=1280
+        set_acceptance_label
+        [ "$acceptance" = soak-scaled-1080p30-to-1280x720-7200 ] || exit 1
+        run_soak
+        [ "$(cat "$tmp/soak-command")" = "$(printf '%s\n' soak 7290 \
+            "$plugin_dir/gstreamer-controls-test" "$fixture" \
+            --expect-geometry 1280x720 --sustain 7200 --timeout 7260 \
+            --input-geometry 1920x1080 --scale-width 1280 --audio)" ] || exit 1
+        if (seconds=7188; frames=215640; run_soak) >/dev/null 2>&1; then exit 1; fi
+        if (frames=215999; run_soak) >/dev/null 2>&1; then exit 1; fi
+        if (audio=no; run_soak) >/dev/null 2>&1; then exit 1; fi
+    ); then
+        error "self-test failed native/scaled soak forwarding, labels or unchanged RC limits"
+        return 1
+    fi
+    tests=$((tests + 5))
+
     validate_fixture "$fixture" "$sha" h264 High 1280x720 progressive 360 >/dev/null
     tests=$((tests + 1))
     if validate_fixture "$fixture" "$(printf '%064d' 0)" h264 High 1280x720 progressive 360 >/dev/null 2>&1; then
@@ -3094,15 +3186,40 @@ EOF
     evidence_repo=$tmp/evidence-repo
     mkdir -p "$evidence_root" "$evidence_repo/tests"
     cp "$manifest" "$evidence_repo/tests/phase1-oracle.tsv"
-    maintenance_manifest=$evidence_repo/tests/maintenance-oracle.tsv
+    maintenance_manifest=$evidence_repo/tests/maintenance-oracle-gst-1.28.2.tsv
     metadata_maintenance=$(printf '%064d' 17)
     awk -F '\t' -v metadata="$metadata_maintenance" 'BEGIN { OFS="\t" }
+        NR == 1 { print; print "# gstreamer-version=1.28.2"; next }
         $2 == "h264-extra" { $10=metadata }
         { print }
     ' "$manifest" > "$maintenance_manifest"
+    validate_manifest "$maintenance_manifest"
+    validate_manifest_gstreamer "$maintenance_manifest" 'gst-inspect-1.0 version 1.28.2'
+    for wrong_gstreamer in 'gst-inspect-1.0 version 1.26.6' \
+        'gst-inspect-1.0 version 1.28.1' 'gst-inspect-1.0 version 1.28.20' ''; do
+        if validate_manifest_gstreamer "$maintenance_manifest" "$wrong_gstreamer" \
+            >/dev/null 2>&1; then
+            error "self-test accepted a mismatched or missing platform GStreamer version"
+            return 1
+        fi
+        tests=$((tests + 1))
+    done
+    sed 's/^# gstreamer-version=.*/# gstreamer-version=1.28/' \
+        "$maintenance_manifest" > "$tmp/bad-manifest-version.tsv"
+    if validate_manifest "$tmp/bad-manifest-version.tsv" >/dev/null 2>&1; then
+        error "self-test accepted an incomplete platform GStreamer version"
+        return 1
+    fi
+    cp "$maintenance_manifest" "$tmp/bad-manifest-version.tsv"
+    printf '%s\n' '# gstreamer-version=1.28.2' >> "$tmp/bad-manifest-version.tsv"
+    if validate_manifest "$tmp/bad-manifest-version.tsv" >/dev/null 2>&1; then
+        error "self-test accepted duplicate platform GStreamer versions"
+        return 1
+    fi
+    tests=$((tests + 3))
     printf '%s\n' '#!/bin/sh' 'exit 0' > "$evidence_repo/tests/phase1-release-gate.sh"
     git -C "$evidence_repo" init -q
-    git -C "$evidence_repo" add tests/phase1-oracle.tsv tests/maintenance-oracle.tsv \
+    git -C "$evidence_repo" add tests/phase1-oracle.tsv tests/maintenance-oracle-gst-1.28.2.tsv \
         tests/phase1-release-gate.sh
     git -C "$evidence_repo" -c user.name='Phase 1 self-test' \
         -c user.email='phase1-self-test@example.invalid' commit -q -m evidence
@@ -3397,6 +3514,20 @@ EOF
     }
     tests=$((tests + 1))
 
+    for scaled_evidence_file in result.txt identity.txt; do
+        cp "$evidence_root/soak-1080p/$scaled_evidence_file" "$tmp/native-$scaled_evidence_file"
+        sed 's/^acceptance=soak-1080p30-7200$/acceptance=soak-scaled-1080p30-to-1280x720-7200/' \
+            "$tmp/native-$scaled_evidence_file" > "$evidence_root/soak-1080p/$scaled_evidence_file"
+    done
+    if check_evidence_set "$evidence_root" >/dev/null 2>&1; then
+        error "self-test accepted a scaled soak in place of mandatory native 1080p evidence"
+        return 1
+    fi
+    for scaled_evidence_file in result.txt identity.txt; do
+        cp "$tmp/native-$scaled_evidence_file" "$evidence_root/soak-1080p/$scaled_evidence_file"
+    done
+    tests=$((tests + 1))
+
     check_evidence_set "$evidence_root" "$evidence_repo/tests/phase1-oracle.tsv" \
         >/dev/null
     tests=$((tests + 1))
@@ -3420,14 +3551,29 @@ EOF
     cp "$maintenance_manifest" "$evidence_root/round-robin/oracle.tsv"
     sed "s/$metadata_h264/$metadata_maintenance/g" "$tmp/historical-conformance.log" \
         > "$maintenance_log"
+    for platform_gate in oracle soak-720p soak-1080p churn round-robin controls reload-sanity; do
+        cp "$evidence_root/$platform_gate/identity.txt" "$tmp/$platform_gate-pre-platform-identity"
+        sed 's/^gstreamer=.*/gstreamer=gst-inspect-1.0 version 1.28.2/' \
+            "$tmp/$platform_gate-pre-platform-identity" > "$evidence_root/$platform_gate/identity.txt"
+    done
     check_evidence_set "$evidence_root" "$maintenance_manifest" \
         > "$tmp/evidence-check.log"
     expected_manifest_hash=$(sha256_file "$maintenance_manifest")
-    grep -Fx "oracle_manifest=tests/maintenance-oracle.tsv oracle_sha256=$expected_manifest_hash" \
+    grep -Fx "oracle_manifest=tests/maintenance-oracle-gst-1.28.2.tsv oracle_sha256=$expected_manifest_hash" \
         "$tmp/evidence-check.log" >/dev/null || {
         error "self-test did not audit the selected maintenance manifest"
         return 1
     }
+    tests=$((tests + 1))
+
+    cp "$evidence_root/oracle/identity.txt" "$tmp/platform-identity"
+    sed 's/^gstreamer=.*/gstreamer=gst-inspect-1.0 version 1.26.6/' \
+        "$tmp/platform-identity" > "$evidence_root/oracle/identity.txt"
+    if check_evidence_set "$evidence_root" "$maintenance_manifest" >/dev/null 2>&1; then
+        error "self-test accepted platform oracle evidence from the wrong GStreamer version"
+        return 1
+    fi
+    cp "$tmp/platform-identity" "$evidence_root/oracle/identity.txt"
     tests=$((tests + 1))
 
     if check_evidence_set "$evidence_root" >/dev/null 2>&1 || \
@@ -3474,10 +3620,18 @@ EOF
         error "self-test accepted changed pixels with the maintenance manifest"
         return 1
     fi
-    tests=$((tests + 2))
+    sed 's/360\/360/359\/360/g' "$tmp/maintenance-conformance.log" > "$maintenance_log"
+    if check_evidence_set "$evidence_root" "$maintenance_manifest" >/dev/null 2>&1; then
+        error "self-test accepted changed counts with the platform maintenance manifest"
+        return 1
+    fi
+    tests=$((tests + 3))
     cp "$tmp/historical-conformance.log" "$maintenance_log"
     cp "$manifest" "$evidence_root/oracle/oracle.tsv"
     cp "$manifest" "$evidence_root/round-robin/oracle.tsv"
+    for platform_gate in oracle soak-720p soak-1080p churn round-robin controls reload-sanity; do
+        cp "$tmp/$platform_gate-pre-platform-identity" "$evidence_root/$platform_gate/identity.txt"
+    done
 
     session_evidence=$evidence_root/oracle
     session_receipt=$session_evidence/module-reload.tsv
@@ -3777,7 +3931,7 @@ while [ "$#" -gt 0 ]; do
     option=$1
     shift
     case $option in
-        --runtime|--results|--fixture|--fixture-root|--input-sha256|--codec|--profile|--geometry|--field|--frames|--seconds|--timeout|--iterations|--cycles|--manifest)
+        --runtime|--results|--fixture|--fixture-root|--input-sha256|--codec|--profile|--geometry|--field|--frames|--seconds|--timeout|--iterations|--cycles|--manifest|--scale-width)
             [ "$#" -gt 0 ] || usage
             value=$1
             shift
@@ -3797,6 +3951,7 @@ while [ "$#" -gt 0 ]; do
                 --iterations) iterations=$value ;;
                 --cycles) cycles=$value ;;
                 --manifest) manifest=$value ;;
+                --scale-width) scale_width=$value ;;
             esac
             ;;
         --video-only) audio=no; audio_explicit=yes ;;
@@ -3806,6 +3961,9 @@ while [ "$#" -gt 0 ]; do
         *) usage ;;
     esac
 done
+
+valid_scale_selection "$mode" "$geometry" "$field" "$scale_width" || \
+    die "--scale-width requires soak with progressive 1920x1080 input and width 1280"
 
 case $mode in
     round-robin)
