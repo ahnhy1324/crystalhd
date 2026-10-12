@@ -12,7 +12,7 @@ stable-first/soak-after plan; historical RC results are unchanged.
 - [ ] [#371: Pre-1.0 recovery, LTS admission and full qualification](https://github.com/ahnhy1324/crystalhd/issues/371)
   — independent offline recovery image, same-RC LTS baseline, full-duration
   soak/lifecycle/new-path gates and experimental assessment before stable.
-  Missing recovery evidence remains HOLD even if migration already occurred.
+  G0 is accepted by explicit maintainer exception; preserve the existing backup.
   Pre-stable fixes use further RCs and affected requalification; handoff to
   #369 does not require an existing final tag.
 - [ ] [#91: Deferred hardware and application acceptance](https://github.com/ahnhy1324/crystalhd/issues/91)

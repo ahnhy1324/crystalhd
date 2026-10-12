@@ -15,6 +15,11 @@ The published `v1.0.0-rc.1` at
 unchanged. They do not establish the new LTS/full-duration passes, and stable
 `v1.0.0` is not yet approved or published.
 
+For this campaign, the maintainer subsequently accepted **G0 by exception**
+and authorized narrowly reviewed G1/G2 compatibility dispositions; see the
+dated decision in #369/#371. This does not claim unperformed recovery tests
+passed or waive the remaining endurance and final-package gates.
+
 ## Versions and compatibility
 
 The fork's **bundle version** follows [Semantic Versioning](https://semver.org/).
@@ -127,8 +132,8 @@ procedure and #369 acceptance criteria; these are the finite stable gates:
 A live copy on the SSD being upgraded does not meet G0. If the OS was already
 changed without the required independent offline image, retain that gap as
 HOLD in #369/#371; a later LTS image cannot establish a pre-migration recovery
-pass. Only lack of a spare-disk restore rehearsal has the explicit acceptance
-route above; no other G0–G6 gate is waived.
+pass. Any exception requires an explicit maintainer decision recorded in the
+release issues; the current G0 decision is identified above.
 
 Complete the planned experimental assessment: **60 minutes** exact 720p30
 Moonlight and **60 minutes each** `previous,0` 720p60/1080p30, followed by
