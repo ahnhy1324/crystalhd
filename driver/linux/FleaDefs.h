@@ -43,8 +43,8 @@
 
 /*
 -- Firmware Command Interface Definitions.
--- We use BCHP_ARMCR4_BRIDGE_REG_MBOX_PCI1 as host to FW mailbox.
--- We use BCHP_ARMCR4_BRIDGE_REG_MBOX_ARM1 as FW to Host mailbox.
+-- We use BCHP_ARMCR4_BRIDGE_REG_MBOX_ARM1 as host to FW mailbox.
+-- We use BCHP_ARMCR4_BRIDGE_REG_MBOX_PCI1 as FW to Host mailbox.
 */
 
 /* Address where the command parameters are written. */
