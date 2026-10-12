@@ -517,6 +517,126 @@ new_mpeg2_decoder(void)
 }
 
 static void
+test_scale_caps_query(void)
+{
+  GstElement *element = g_object_new(GST_TYPE_CRYSTALHD_DEC, NULL);
+  GstElement *filter = gst_element_factory_make("capsfilter", NULL);
+  GstPad *sink = gst_element_get_static_pad(element, "sink");
+  GstPad *src = gst_element_get_static_pad(element, "src");
+  GstPad *peer = gst_element_get_static_pad(filter, "sink");
+  GstCaps *fhd = gst_caps_from_string(
+      "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+      "width=1920,height=1080,framerate=30/1,pixel-aspect-ratio=1/1");
+  GstCaps *hd = gst_caps_from_string(
+      "video/x-h264,stream-format=byte-stream,alignment=au,parsed=true,"
+      "width=1280,height=720,framerate=30/1,pixel-aspect-ratio=1/1");
+  GstCaps *output = gst_caps_from_string(
+      "video/x-raw,format=YUY2,width=1280,height=720,"
+      "framerate=30/1,pixel-aspect-ratio=1/1");
+  GstCaps *caps;
+  guint opens = mock.open_calls;
+  static const gchar *rejected[] = {
+    "video/x-raw,format=NV12,width=1280,height=720",
+    "video/x-raw,format=YUY2,width=960,height=540",
+    "video/x-raw,format=YUY2,width=1280,height=2000",
+    "video/x-raw,format=YUY2,width=1280,height=720,interlace-mode=interleaved"
+  };
+
+  /* Only queries in NULL: no caps event, firmware open or fake decode. Link
+   * without a caps check so incompatible peers can be queried as well. */
+  g_object_set(filter, "caps", output, NULL);
+  g_assert_cmpint(gst_pad_link_full(src, peer, GST_PAD_LINK_CHECK_NOTHING),
+                  ==, GST_PAD_LINK_OK);
+  caps = gst_pad_query_caps(sink, fhd);
+  g_assert_true(gst_caps_is_empty(caps));
+  gst_caps_unref(caps);
+  caps = gst_pad_query_caps(sink, hd);
+  g_assert_true(gst_caps_is_equal(caps, hd));
+  gst_caps_unref(caps);
+
+  g_object_set(element, "scale-width", 1280U, NULL);
+  caps = gst_pad_query_caps(sink, fhd);
+  g_assert_true(gst_caps_is_equal(caps, fhd));
+  gst_caps_unref(caps);
+  caps = gst_pad_query_caps(sink, NULL);
+  g_assert_true(gst_caps_can_intersect(caps, fhd));
+  gst_caps_unref(caps);
+  /* Scaling preserves rate, and never permits a coded width below output. */
+  gst_caps_set_simple(hd, "framerate", GST_TYPE_FRACTION, 25, 1, NULL);
+  caps = gst_pad_query_caps(sink, hd);
+  g_assert_true(gst_caps_is_empty(caps));
+  gst_caps_unref(caps);
+  gst_caps_set_simple(hd, "width", G_TYPE_INT, 640, "height", G_TYPE_INT, 360,
+                       "framerate", GST_TYPE_FRACTION, 30, 1, NULL);
+  caps = gst_pad_query_caps(sink, hd);
+  g_assert_true(gst_caps_is_empty(caps));
+  gst_caps_unref(caps);
+  for (guint i = 0; i < G_N_ELEMENTS(rejected); ++i) {
+    GstCaps *unsupported = gst_caps_from_string(rejected[i]);
+    g_object_set(filter, "caps", unsupported, NULL);
+    gst_caps_unref(unsupported);
+    caps = gst_pad_query_caps(sink, fhd);
+    g_assert_true(gst_caps_is_empty(caps));
+    gst_caps_unref(caps);
+  }
+
+  /* Do not inherit framerate/color constraints from a downstream alternative
+   * that cannot accept the requested scaled width, format or scan mode. */
+  {
+    GstCaps *alternatives = gst_caps_from_string(
+        "video/x-raw,format=YUY2,width=1280,height=720,framerate=30/1;"
+        "video/x-raw,format=YUY2,width=960,height=540,framerate=25/1;"
+        "video/x-raw,format=NV12,width=1280,height=720,framerate=24/1;"
+        "video/x-raw,format=YUY2,width=1280,height=720,framerate=20/1,"
+        "interlace-mode=interleaved");
+    const gint invalid_rates[] = { 25, 24, 20 };
+
+    g_object_set(filter, "caps", alternatives, NULL);
+    gst_caps_unref(alternatives);
+    caps = gst_pad_query_caps(sink, fhd);
+    g_assert_true(gst_caps_is_equal(caps, fhd));
+    gst_caps_unref(caps);
+    for (guint i = 0; i < G_N_ELEMENTS(invalid_rates); ++i) {
+      gst_caps_set_simple(fhd, "framerate", GST_TYPE_FRACTION,
+                           invalid_rates[i], 1, NULL);
+      caps = gst_pad_query_caps(sink, fhd);
+      g_assert_true(gst_caps_is_empty(caps));
+      gst_caps_unref(caps);
+    }
+    gst_caps_set_simple(fhd, "framerate", GST_TYPE_FRACTION, 30, 1, NULL);
+  }
+
+  /* Rounded scaled height changes output PAR; that PAR must not leak back
+   * into the square-pixel compressed-input query. */
+  gst_caps_set_simple(output, "width", G_TYPE_INT, 130, "height", G_TYPE_INT, 74,
+                       "pixel-aspect-ratio", GST_TYPE_FRACTION, 592, 585, NULL);
+  g_object_set(filter, "caps", output, NULL);
+  g_object_set(element, "scale-width", 130U, NULL);
+  caps = gst_pad_query_caps(sink, fhd);
+  g_assert_true(gst_caps_is_equal(caps, fhd));
+  gst_caps_unref(caps);
+  g_object_set(element, "scale-width", 129U, NULL);
+  caps = gst_pad_query_caps(sink, fhd);
+  g_assert_true(gst_caps_is_empty(caps));
+  gst_caps_unref(caps);
+  g_object_set(element, "scale-width", 0U, NULL);
+  caps = gst_pad_query_caps(sink, fhd);
+  g_assert_true(gst_caps_is_empty(caps));
+  gst_caps_unref(caps);
+  g_assert_cmpuint(mock.open_calls, ==, opens);
+
+  gst_pad_unlink(src, peer);
+  gst_caps_unref(output);
+  gst_caps_unref(hd);
+  gst_caps_unref(fhd);
+  gst_object_unref(peer);
+  gst_object_unref(src);
+  gst_object_unref(sink);
+  gst_object_unref(filter);
+  gst_object_unref(element);
+}
+
+static void
 test_scale_property_default(void)
 {
   const gchar *caps =
@@ -637,13 +757,22 @@ test_scale_invalid_requests(void)
   guint i;
 
   for (i = 0; i < G_N_ELEMENTS(invalid_widths); ++i) {
-    GstHarness *harness = new_decoder_with_caps_device_scale(
-        fhd_caps, 1, invalid_widths[i]);
-    g_assert_cmpuint(mock.open_calls, ==, 0);
-    g_assert_cmpuint(mock.format_calls, ==, 0);
-    g_assert_cmpuint(mock.scale_calls, ==, 0);
-    g_assert_cmpuint(mock.decoder_open_calls, ==, 0);
-    lifecycle_teardown(harness);
+    GstElement *element = g_object_new(GST_TYPE_CRYSTALHD_DEC,
+        "scale-width", invalid_widths[i], NULL);
+    GstPad *sink = gst_element_get_static_pad(element, "sink");
+    GstCaps *input = gst_caps_from_string(fhd_caps);
+    guint opens = mock.open_calls;
+    GstCaps *allowed = gst_pad_query_caps(sink, input);
+
+    /* Invalid widths now fail discovery, before a harness can link or send
+     * set_format. Keep the no-device-open assertion at that earlier boundary. */
+    g_assert_true(gst_caps_is_empty(allowed));
+    g_assert_false(gst_pad_query_accept_caps(sink, input));
+    g_assert_cmpuint(mock.open_calls, ==, opens);
+    gst_caps_unref(allowed);
+    gst_caps_unref(input);
+    gst_object_unref(sink);
+    gst_object_unref(element);
   }
 
   {
@@ -3198,6 +3327,7 @@ main(int argc, char **argv)
   g_test_init(&argc, &argv, NULL);
   GST_DEBUG_CATEGORY_INIT(gst_crystalhd_debug, "crystalhd", 0,
                           "CrystalHD lifecycle test");
+  g_test_add_func("/crystalhd/scale/caps-query", test_scale_caps_query);
   g_test_add_func("/crystalhd/scale/default", test_scale_property_default);
   g_test_add_func("/crystalhd/scale/property-lock",
                   test_scale_property_does_not_take_state_lock);
