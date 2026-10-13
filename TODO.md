@@ -1,18 +1,21 @@
 # Open work
 
-Release order revised **2026-10-12**: published RC → verified independent
-recovery image → same-RC LTS admission → mandatory full qualification → final
-artifact checks → maintainer GO → stable 1.0.0. This supersedes the earlier
-stable-first/soak-after plan; historical RC results are unchanged.
+Release status **2026-10-13**: G0 is accepted by maintainer exception; G1–G4
+have completed fresh LTS qualification with their recorded limitations.
+Remaining order: final artifact/install/rollback checks (G5) → final CI,
+documentation and release review (G6) → maintainer GO → stable 1.0.0.
+Historical RC results and the existing recovery copy remain unchanged.
 
 - [ ] [#369: CrystalHD 1.0.0 final gates and release](https://github.com/ahnhy1324/crystalhd/issues/369)
   — G0–G6 must PASS, experimental modes need explicit dispositions, and final
   artifact/installation/documentation checks precede approval of the exact
   commit and release text. Stable 1.0.0 is not yet approved or published.
 - [ ] [#371: Pre-1.0 recovery, LTS admission and full qualification](https://github.com/ahnhy1324/crystalhd/issues/371)
-  — independent offline recovery image, same-RC LTS baseline, full-duration
-  soak/lifecycle/new-path gates and experimental assessment before stable.
-  G0 is accepted by explicit maintainer exception; preserve the existing backup.
+  — G0–G4 complete: same-RC LTS admission, core endurance/lifecycle, scaled
+  output and VA event-worker endurance. Moonlight's three one-hour targets
+  and corrected reopen pass hardware/lifecycle/resources; physical A/V and
+  payload-age behavior retain an explicit limited/unverified disposition.
+  G5/G6 remain; preserve the existing backup under the G0 exception.
   Pre-stable fixes use further RCs and affected requalification; handoff to
   #369 does not require an existing final tag.
 - [ ] [#91: Deferred hardware and application acceptance](https://github.com/ahnhy1324/crystalhd/issues/91)
