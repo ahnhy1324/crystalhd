@@ -70,6 +70,7 @@ struct crystalhd_hw {
     struct mutex fwcmd_trans_mutex;
     struct spinlock lock;
     bool dma_fault, fwcmd_pending, fwcmd_poisoned, dev_started;
+    bool fwcmd_trans_active;
     unsigned FleaPowerState;
     BC_STATUS (*pfnDevDRAMRead)(struct crystalhd_hw *, u32, u32, u32 *);
     u32 (*pfnReadDevRegister)(struct crystalhd_adp *, u32);
@@ -383,6 +384,12 @@ static int pci_register_driver(void *driver)
 { CHECK(driver == &bc_chd_driver); lifecycle_event(3); return pci_error; }
 static void pci_unregister_driver(void *driver)
 { CHECK(driver == &bc_chd_driver); lifecycle_event(5); }
+
+static void crystalhd_flea_fw_transaction_done(struct crystalhd_hw *hw)
+{
+    CHECK(hw == &hardware && hw->fwcmd_trans_mutex.held == 1);
+    CHECK(!hw->lock.held && !hw->fwcmd_trans_active);
+}
 
 #include "device-functions.h"
 #include "status-functions.h"

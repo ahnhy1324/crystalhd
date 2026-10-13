@@ -28,6 +28,7 @@ struct crystalhd_rx_dma_pkt { unsigned unused; };
 struct crystalhd_hw {
     uint32_t FleaEnablePWM;
     enum FLEA_POWER_STATES FleaPowerState;
+    bool FleaPowerTransition;
     enum LIST_STATUS TxList0Sts, TxList1Sts;
     uint32_t EmptyCnt, SingleThreadAppFIFOEmpty, FwCmdCnt;
     enum list_sts rx_list_sts[2];
@@ -40,8 +41,9 @@ struct crystalhd_hw {
     uint32_t OLWatchDogTimer, ILWatchDogTimer;
     uint64_t TickStartInPD;
     bool PwrDwnPiQIntr, PwrDwnTxIntr;
+    bool dma_fault, dev_started;
     unsigned lock;
-    bool fwcmd_active, fwcmd_poisoned;
+    bool fwcmd_active, fwcmd_poisoned, fwcmd_trans_active;
 };
 
 enum { RX_CASES = 16 + 32 };
@@ -64,25 +66,51 @@ static bool record_power_request(struct crystalhd_hw *hw,
 #include "flea-power-functions.h"
 #undef crystalhd_flea_set_power_state
 
+enum nested_point { NEST_NONE, NEST_UNLOCK, NEST_PICTURE, NEST_FETCH,
+                    NEST_REPOST, NEST_TX };
+
+struct mock_pci_device { unsigned device; };
+
 struct mock_device {
+    struct mock_pci_device *pdev;
+    bool present;
     bool idle, fail_self_refresh, fail_fll_write;
     bool require_lock, lock_held;
     unsigned reads, writes, dram_writes, delays, power_ups, fetches;
     unsigned status_reads, poll_delays, power_writes;
     unsigned picture_irqs, tx_irqs;
     struct crystalhd_hw *command_on_lock;
+    struct crystalhd_hw *health_on_lock;
+    unsigned health_lock_countdown, health_failure;
+    struct crystalhd_hw *nested_hw;
+    enum nested_point nested_point;
+    enum FLEA_POWER_STATES nested_state;
+    unsigned nested_calls, reposts;
+    bool return_packet, relatch_irqs;
     uint32_t last_fll;
     struct { uint32_t addr, value; } registers[32];
     unsigned register_count;
 };
 
 static struct mock_device device;
+static struct crystalhd_rx_dma_pkt packet;
+
+static bool crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
+                                           enum FLEA_POWER_STATES state);
+static void nested_transition(enum nested_point point);
 
 static void check(bool condition, const char *what)
 {
     if (condition) return;
     fprintf(stderr, "Flea transition: %s\n", what);
     exit(EXIT_FAILURE);
+}
+
+static void mark_unhealthy(struct crystalhd_hw *hw, unsigned failure)
+{
+    if (failure == 0) hw->adp->present = false;
+    else if (failure == 1) hw->dma_fault = true;
+    else hw->dev_started = false;
 }
 
 static void lock_hw(unsigned *lock)
@@ -94,6 +122,10 @@ static void lock_hw(unsigned *lock)
         device.command_on_lock->fwcmd_active = true;
         device.command_on_lock = NULL;
     }
+    if (device.health_on_lock && --device.health_lock_countdown == 0) {
+        mark_unhealthy(device.health_on_lock, device.health_failure);
+        device.health_on_lock = NULL;
+    }
 }
 
 static void unlock_hw(unsigned *lock)
@@ -101,6 +133,8 @@ static void unlock_hw(unsigned *lock)
     check(*lock && device.lock_held, "unbalanced hardware unlock");
     *lock = 0;
     device.lock_held = false;
+    if (device.nested_hw && device.nested_hw->FleaPowerTransition)
+        nested_transition(NEST_UNLOCK);
 }
 
 #define spin_lock_irqsave(lock, flags) do { (flags) = 0; lock_hw(lock); } while (0)
@@ -163,38 +197,52 @@ static BC_STATUS write_fll(struct crystalhd_hw *hw, uint32_t addr,
 
 static uint32_t crystalhd_hw_count_free_rx_pkts(struct crystalhd_hw *hw)
 {
-    (void)hw;
+    /* The production helper locks hw->lock for its retained-buffer count. */
+    lock_hw(&hw->lock);
+    unlock_hw(&hw->lock);
     return 4;
 }
 
 static struct crystalhd_rx_dma_pkt *crystalhd_hw_fetch_free_rx_pkt(struct crystalhd_hw *hw)
 {
+    check(!hw->lock, "RX fetch under hardware lock");
     hw->adp->fetches++;
-    return NULL;
+    nested_transition(NEST_FETCH);
+    return hw->adp->return_packet ? &packet : NULL;
 }
 
 static BC_STATUS crystalhd_hw_repost_cap_buffer(struct crystalhd_hw *hw,
                                                 struct crystalhd_rx_dma_pkt *pkt)
 {
-    (void)hw;
-    (void)pkt;
-    check(false, "unexpected repost without a fetched packet");
-    return BC_STS_ERROR;
+    check(!hw->lock, "RX repost under hardware lock");
+    check(pkt == &packet && hw->adp->return_packet,
+          "unexpected repost without a fetched packet");
+    hw->adp->reposts++;
+    nested_transition(NEST_REPOST);
+    return BC_STS_SUCCESS;
 }
 
 static void crystalhd_flea_runtime_power_up(struct crystalhd_hw *hw)
 {
+    check(hw->lock && hw->FleaPowerTransition,
+          "physical wake outside locked transition reservation");
     hw->adp->power_ups++;
 }
 
 static void crystalhd_flea_handle_PicQSts_intr(struct crystalhd_hw *hw)
 {
+    check(!hw->lock, "picture replay under hardware lock");
     hw->adp->picture_irqs++;
+    nested_transition(NEST_PICTURE);
+    if (hw->adp->relatch_irqs) hw->PwrDwnPiQIntr = true;
 }
 
 static void crystalhd_flea_update_tx_buff_info(struct crystalhd_hw *hw)
 {
+    check(!hw->lock, "TX replay under hardware lock");
     hw->adp->tx_irqs++;
+    nested_transition(NEST_TX);
+    if (hw->adp->relatch_irqs) hw->PwrDwnTxIntr = true;
 }
 
 static void udelay(unsigned usec)
@@ -211,10 +259,36 @@ static uint64_t rdtsc_ordered(void)
 
 #include "flea-power-transitions.h"
 
+/* Deterministic unlocked wake interleavings, not scheduler/hardware proof. */
+static void nested_transition(enum nested_point point)
+{
+    struct crystalhd_hw *hw = device.nested_hw;
+    if (!hw || device.nested_point != point) return;
+    const enum FLEA_POWER_STATES state = hw->FleaPowerState;
+    const unsigned reads = device.reads, writes = device.writes;
+    const unsigned dram_writes = device.dram_writes, power_ups = device.power_ups;
+    const unsigned picture_irqs = device.picture_irqs, tx_irqs = device.tx_irqs;
+    const unsigned fetches = device.fetches, reposts = device.reposts;
+    device.nested_point = NEST_NONE;
+    check(!hw->lock && hw->FleaPowerTransition,
+          "wake replay does not own an unlocked transition reservation");
+    check(!crystalhd_flea_set_power_state(hw, device.nested_state),
+          "nested setter entered an unfinished wake transaction");
+    check(hw->FleaPowerState == state && hw->FleaPowerTransition &&
+          !hw->lock && !device.lock_held && device.reads == reads &&
+          device.writes == writes && device.dram_writes == dram_writes &&
+          device.power_ups == power_ups && device.picture_irqs == picture_irqs &&
+          device.tx_irqs == tx_irqs && device.fetches == fetches &&
+          device.reposts == reposts,
+          "rejected nested setter changed state, reservation or hardware");
+    device.nested_calls++;
+}
+
 static struct crystalhd_hw transition_setup(enum FLEA_POWER_STATES state)
 {
     memset(&device, 0, sizeof(device));
     device.idle = true;
+    device.present = true;
     write_register(&device, BCHP_DECODE_CPUREGS_0_REG_WATCHDOG_TMR, 7);
     write_register(&device, BCHP_DECODE_CPUREGS2_0_REG_WATCHDOG_TMR, 11);
     write_register(&device, BCHP_DDR23_CTL_REGS_0_PARAMS2, UINT32_C(0x02400000));
@@ -224,6 +298,7 @@ static struct crystalhd_hw transition_setup(enum FLEA_POWER_STATES state)
     device.require_lock = true;
     return (struct crystalhd_hw){
         .FleaEnablePWM = true, .FleaPowerState = state, .adp = &device,
+        .dev_started = true,
         .pfnReadDevRegister = read_register, .pfnWriteDevRegister = write_register,
         .pfnDevDRAMWrite = write_fll, .FleaFLLUpdateAddr = UINT32_C(0x1000),
         .TickStartInPD = UINT64_C(99)
@@ -249,6 +324,7 @@ static void transition_failures(void)
                   hw.TickStartInPD == UINT64_C(99),
                   "power-down continued after failed zero-FLL publication");
             check(!hw.lock && !device.lock_held, "FLL failure leaked hardware lock");
+            check(!hw.FleaPowerTransition, "FLL failure leaked transition reservation");
             transition_cases++;
         }
 
@@ -278,18 +354,19 @@ static void transition_failures(void)
                   hw.TickStartInPD == UINT64_C(99),
                   "timeout continued into clock gating or recorded power-down");
             check(!hw.lock && !device.lock_held, "timeout leaked hardware lock");
+            check(!hw.FleaPowerTransition, "timeout leaked transition reservation");
             transition_cases++;
         }
 
     for (unsigned complete = 0; complete < 2; complete++) {
         struct crystalhd_hw hw = transition_setup(complete ? FLEA_PS_LP_COMPLETE :
                                                              FLEA_PS_LP_PENDING);
-        device.require_lock = false;
         device.fail_fll_write = true;
         hw.PwrDwnPiQIntr = hw.PwrDwnTxIntr = true;
         hw.PicQSts = 1;
         check(!crystalhd_flea_set_power_state(&hw, FLEA_PS_ACTIVE),
               "failed nonzero-FLL wake reported success");
+        check(!hw.FleaPowerTransition, "failed wake leaked transition reservation");
         check(hw.FleaPowerState == FLEA_PS_LP_PENDING && device.power_ups == complete,
               "failed wake did not preserve physically-awake pending state");
         check(device.dram_writes == 1 && device.last_fll == 4 && device.fetches == 0 &&
@@ -301,6 +378,7 @@ static void transition_failures(void)
         device.fail_fll_write = false;
         check(crystalhd_flea_set_power_state(&hw, FLEA_PS_ACTIVE),
               "wake retry after restored FLL publication failed");
+        check(!hw.FleaPowerTransition, "wake retry leaked transition reservation");
         check(hw.FleaPowerState == FLEA_PS_ACTIVE && device.power_ups == complete &&
               device.dram_writes == 2 && device.last_fll == 4 && device.fetches == 1 &&
               device.picture_irqs == 1 && device.tx_irqs == 1 &&
@@ -310,7 +388,7 @@ static void transition_failures(void)
     }
 
     for (unsigned pending = 0; pending < 2; pending++)
-        for (unsigned owner = 0; owner < 9; owner++) {
+        for (unsigned owner = 0; owner < 10; owner++) {
             enum FLEA_POWER_STATES state = pending ? FLEA_PS_LP_PENDING : FLEA_PS_ACTIVE;
             struct crystalhd_hw hw = transition_setup(state);
             hw.fwcmd_active = owner == 0;
@@ -322,12 +400,14 @@ static void transition_failures(void)
             hw.rx_list_sts[1] = owner == 6 ? rx_uv_error : sts_free;
             hw.EmptyCnt = owner == 7;
             hw.SingleThreadAppFIFOEmpty = owner == 8;
+            hw.fwcmd_trans_active = owner == 9;
             check(!crystalhd_flea_set_power_state(&hw, FLEA_PS_LP_COMPLETE),
                   "power-down accepted busy owner/poisoned channel");
             check(hw.FleaPowerState == state && device.dram_writes == 0 &&
                   device.reads == 0 && device.writes == 0,
                   "power-down touched hardware despite outstanding owner");
             check(!hw.lock && !device.lock_held, "busy owner leaked hardware lock");
+            check(!hw.FleaPowerTransition, "busy owner leaked transition reservation");
             transition_cases++;
         }
 
@@ -348,6 +428,69 @@ static void transition_failures(void)
     }
 }
 
+static void wake_interleavings(void)
+{
+    const enum FLEA_POWER_STATES targets[] = {
+        FLEA_PS_ACTIVE, FLEA_PS_LP_PENDING, FLEA_PS_LP_COMPLETE
+    };
+    for (unsigned complete = 0; complete < 2; complete++)
+        for (unsigned target = 0; target < 3; target++)
+            for (enum nested_point point = NEST_UNLOCK; point <= NEST_TX; point++) {
+                struct crystalhd_hw hw = transition_setup(complete ?
+                    FLEA_PS_LP_COMPLETE : FLEA_PS_LP_PENDING);
+                device.nested_hw = &hw;
+                device.nested_point = point;
+                device.nested_state = targets[target];
+                device.return_packet = true;
+                device.relatch_irqs = true;
+                hw.PwrDwnPiQIntr = hw.PwrDwnTxIntr = true;
+                hw.PicQSts = 1;
+                check(crystalhd_flea_set_power_state(&hw, FLEA_PS_ACTIVE),
+                      "outer wake failed during blocked nested setter");
+                check(device.nested_calls == 1 && hw.FleaPowerState == FLEA_PS_ACTIVE &&
+                      !hw.FleaPowerTransition && !hw.lock && !device.lock_held,
+                      "wake interleaving missed hook or leaked transition reservation");
+                check(device.power_ups == complete && device.dram_writes == 1 &&
+                      device.last_fll == 4 && device.fetches == 1 &&
+                      device.reposts == 1 && device.picture_irqs == 1 && device.tx_irqs == 1,
+                      "wake interleaving lost or duplicated hardware/callback work");
+                check(hw.PwrDwnPiQIntr && hw.PwrDwnTxIntr,
+                      "wake replay erased a newly latched notification");
+                transition_cases++;
+            }
+
+    for (unsigned from = 0; from < 3; from++)
+        for (unsigned to = 0; to < 3; to++) {
+            struct crystalhd_hw hw = transition_setup(targets[from]);
+            hw.FleaPowerTransition = true;
+            check(!crystalhd_flea_set_power_state(&hw, targets[to]),
+                  "setter ignored an existing transition reservation");
+            check(hw.FleaPowerTransition && hw.FleaPowerState == targets[from] &&
+                  !hw.lock && !device.lock_held && device.reads == 0 &&
+                  device.writes == 0 && device.dram_writes == 0 && device.power_ups == 0,
+                  "busy setter changed state or hardware");
+            transition_cases++;
+        }
+
+    /* Low-level reply copy has ended; outer command rollback/postprocessing
+     * still owns the device, even though the IRQ and mailbox counters are idle.
+     */
+    for (unsigned pending = 0; pending < 2; pending++) {
+        struct crystalhd_hw hw = transition_setup(pending ? FLEA_PS_LP_PENDING :
+                                                          FLEA_PS_ACTIVE);
+        hw.fwcmd_trans_active = true;
+        check(!crystalhd_flea_set_power_state(&hw, FLEA_PS_LP_COMPLETE),
+              "retired low-level owner hid a live outer command transaction");
+        check(device.dram_writes == 0 && device.power_writes == 0 &&
+              !hw.FleaPowerTransition, "outer owner did not inhibit hardware down");
+        hw.fwcmd_trans_active = false;
+        check(crystalhd_flea_set_power_state(&hw, FLEA_PS_LP_COMPLETE) &&
+              hw.FleaPowerState == FLEA_PS_LP_COMPLETE && !hw.FleaPowerTransition,
+              "retired outer owner permanently inhibited an otherwise idle transition");
+        transition_cases++;
+    }
+}
+
 static void transition_success(void)
 {
     struct crystalhd_hw hw = transition_setup(FLEA_PS_ACTIVE);
@@ -358,7 +501,6 @@ static void transition_success(void)
           "pending transition did not stop before physical power-down");
     transition_cases++;
 
-    device.require_lock = false;
     check(crystalhd_flea_set_power_state(&hw, FLEA_PS_ACTIVE),
           "pending-to-active FLL restoration rejected");
     check(hw.FleaPowerState == FLEA_PS_ACTIVE && device.dram_writes == 2 &&
@@ -443,6 +585,8 @@ static void step(struct crystalhd_hw *hw, enum FLEA_STATE_CH_EVENT event,
             hw->FwCmdCnt == before.FwCmdCnt &&
             hw->fwcmd_active == before.fwcmd_active &&
             hw->fwcmd_poisoned == before.fwcmd_poisoned &&
+            hw->fwcmd_trans_active == before.fwcmd_trans_active &&
+            hw->FleaPowerTransition == before.FleaPowerTransition &&
             hw->rx_list_sts[0] == before.rx_list_sts[0] &&
             hw->rx_list_sts[1] == before.rx_list_sts[1],
             "selector changed ownership or PWM", &before, event);
@@ -485,9 +629,11 @@ static void retired_owners(void)
 static void disabled_pwm(void)
 {
     struct crystalhd_hw hw = setup(FLEA_PS_LP_COMPLETE, 15, 16, 31);
+    hw.FleaPowerTransition = true;
     const struct crystalhd_hw before = hw;
     crystalhd_flea_init_power_state(&hw);
-    require(hw.FleaEnablePWM == false && hw.FleaPowerState == FLEA_PS_NONE,
+    require(hw.FleaEnablePWM == false && hw.FleaPowerState == FLEA_PS_NONE &&
+            hw.FleaPowerTransition == false,
             "PWM unexpectedly enabled at init", &before, FLEA_EVT_NONE);
     require(hw.TxList0Sts == before.TxList0Sts &&
             hw.TxList1Sts == before.TxList1Sts &&
@@ -533,17 +679,116 @@ static void events(void)
 static void command_owners(void)
 {
     for (unsigned pending = 0; pending < 2; pending++)
-        for (unsigned active = 0; active < 2; active++)
-            for (unsigned poisoned = 0; poisoned < 2; poisoned++) {
-                struct crystalhd_hw hw = setup(pending ? FLEA_PS_LP_PENDING :
-                                                        FLEA_PS_ACTIVE, 0, 0, 0);
-                hw.fwcmd_active = !!active;
-                hw.fwcmd_poisoned = !!poisoned;
-                enum FLEA_POWER_STATES to = active || poisoned ? FLEA_PS_LP_PENDING :
-                                                                FLEA_PS_LP_COMPLETE;
-                step(&hw, pending ? FLEA_EVT_CMD_COMP : FLEA_EVT_FLL_CHANGE,
-                     to, to != hw.FleaPowerState);
-            }
+        for (unsigned owners = 0; owners < 8; owners++) {
+            struct crystalhd_hw hw = setup(pending ? FLEA_PS_LP_PENDING :
+                                                    FLEA_PS_ACTIVE, 0, 0, 0);
+            hw.fwcmd_active = !!(owners & 1);
+            hw.fwcmd_poisoned = !!(owners & 2);
+            hw.fwcmd_trans_active = !!(owners & 4);
+            enum FLEA_POWER_STATES to = owners ? FLEA_PS_LP_PENDING : FLEA_PS_LP_COMPLETE;
+            step(&hw, pending ? FLEA_EVT_CMD_COMP : FLEA_EVT_FLL_CHANGE,
+                 to, to != hw.FleaPowerState);
+        }
+}
+
+static void reserved_selector(void)
+{
+    const enum FLEA_STATE_CH_EVENT events[] = {
+        FLEA_EVT_FW_CMD_POST, FLEA_EVT_FLL_CHANGE, FLEA_EVT_CMD_COMP
+    };
+    for (unsigned state = FLEA_PS_ACTIVE; state <= FLEA_PS_LP_COMPLETE; state++)
+        for (unsigned event = 0; event < sizeof(events) / sizeof(events[0]); event++) {
+            struct crystalhd_hw hw = setup(state, 0, 0, 0);
+            hw.FleaPowerTransition = true;
+            step(&hw, events[event], state, 0);
+        }
+    /* Reservation only inhibits advisory runtime transitions. It does not
+     * redefine the existing lifecycle events or default PWM-off behavior.
+     */
+    for (unsigned pwm = 0; pwm < 2; pwm++)
+        for (unsigned stop = 0; stop < 2; stop++) {
+            struct crystalhd_hw hw = setup(FLEA_PS_LP_PENDING, 0, 0, 0);
+            hw.FleaEnablePWM = pwm;
+            hw.FleaPowerTransition = true;
+            step(&hw, stop ? FLEA_EVT_STOP_DEVICE : FLEA_EVT_START_DEVICE,
+                 pwm && stop ? FLEA_PS_STOPPED : FLEA_PS_ACTIVE, 0);
+        }
+    for (unsigned event = 0; event < sizeof(events) / sizeof(events[0]); event++) {
+        struct crystalhd_hw hw = setup(FLEA_PS_LP_PENDING, 0, 0, 0);
+        hw.FleaEnablePWM = false;
+        hw.FleaPowerTransition = true;
+        step(&hw, events[event], FLEA_PS_ACTIVE, 0);
+    }
+}
+
+static void transaction_done(void)
+{
+    for (unsigned flea = 0; flea < 2; flea++)
+        for (unsigned pwm = 0; pwm < 2; pwm++)
+            for (unsigned state = FLEA_PS_ACTIVE; state <= FLEA_PS_LP_COMPLETE; state++)
+                for (unsigned outer = 0; outer < 2; outer++) {
+                    struct mock_pci_device pci = {
+                        .device = flea ? BC_PCI_DEVID_FLEA : BC_PCI_DEVID_LINK
+                    };
+                    struct crystalhd_hw hw = transition_setup(state);
+                    hw.FleaEnablePWM = pwm;
+                    hw.fwcmd_trans_active = !!outer;
+                    device.pdev = &pci;
+                    transitions = 0;
+                    crystalhd_flea_fw_transaction_done(&hw);
+                    const bool down = flea && pwm && state == FLEA_PS_LP_PENDING && !outer;
+                    check(hw.FleaPowerState == (down ? FLEA_PS_LP_COMPLETE : state) &&
+                          transitions == (unsigned)down && hw.fwcmd_trans_active == !!outer,
+                          "transaction-done reevaluation ignored chip/PWM/state/owner gate");
+                    cases++;
+                }
+    for (unsigned inhibitor = 0; inhibitor < 4; inhibitor++) {
+        struct mock_pci_device pci = {.device = BC_PCI_DEVID_FLEA};
+        struct crystalhd_hw hw = transition_setup(FLEA_PS_LP_PENDING);
+        device.pdev = &pci;
+        hw.FleaPowerTransition = inhibitor == 0;
+        hw.fwcmd_poisoned = inhibitor == 1;
+        hw.fwcmd_active = inhibitor == 2;
+        hw.FwCmdCnt = inhibitor == 3;
+        transitions = 0;
+        crystalhd_flea_fw_transaction_done(&hw);
+        check(hw.FleaPowerState == FLEA_PS_LP_PENDING && transitions == 0,
+              "transaction-done ignored a pending transition/mailbox inhibitor");
+        cases++;
+    }
+}
+
+static void unhealthy_down(void)
+{
+    for (unsigned failure = 0; failure < 3; failure++) {
+        struct mock_pci_device pci = {.device = BC_PCI_DEVID_FLEA};
+        struct crystalhd_hw hw = transition_setup(FLEA_PS_LP_PENDING);
+        device.pdev = &pci;
+        mark_unhealthy(&hw, failure);
+        transitions = 0;
+        crystalhd_flea_fw_transaction_done(&hw);
+        check(hw.FleaPowerState == FLEA_PS_LP_PENDING && transitions == 0,
+              "transaction-done requested down on absent/faulted/stopped device");
+        cases++;
+        check(!crystalhd_flea_set_power_state(&hw, FLEA_PS_LP_COMPLETE) &&
+              device.reads == 0 && device.writes == 0 && device.dram_writes == 0 &&
+              hw.FleaPowerState == FLEA_PS_LP_PENDING && !hw.lock &&
+              !hw.FleaPowerTransition,
+              "direct down touched absent/faulted/stopped device");
+        transition_cases++;
+
+        hw = transition_setup(FLEA_PS_LP_PENDING);
+        device.health_on_lock = &hw;
+        /* First lock is the free-list count, second is final admission. */
+        device.health_lock_countdown = 2;
+        device.health_failure = failure;
+        check(!crystalhd_flea_set_power_state(&hw, FLEA_PS_LP_COMPLETE) &&
+              !device.health_on_lock && device.reads == 0 && device.writes == 0 &&
+              device.dram_writes == 0 && hw.FleaPowerState == FLEA_PS_LP_PENDING &&
+              !hw.lock && !hw.FleaPowerTransition,
+              "final locked admission missed new absent/faulted/stopped state");
+        transition_cases++;
+    }
 }
 
 int main(void)
@@ -553,8 +798,12 @@ int main(void)
     disabled_pwm();
     events();
     command_owners();
+    reserved_selector();
+    transaction_done();
+    unhealthy_down();
     transition_failures();
     transition_success();
+    wake_interleavings();
     printf("PASS: %u Flea power selector cases; %u mocked-MMIO transition cases; "
            "no device access\n", cases, transition_cases);
     return 0;

@@ -54,6 +54,8 @@ BC_STATUS crystalhd_hw_fw_cmd_enter(struct crystalhd_hw *hw)
 		sts = BC_STS_IO_ERROR;
 	else if (hw->fwcmd_poisoned || hw->fwcmd_pending)
 		sts = BC_STS_BUSY;
+	else
+		hw->fwcmd_trans_active = true;
 	spin_unlock_irqrestore(&hw->lock, flags);
 	if (sts != BC_STS_SUCCESS)
 		mutex_unlock(&hw->fwcmd_trans_mutex);
@@ -77,6 +79,8 @@ BC_STATUS crystalhd_hw_fw_cmd_recovery_enter(struct crystalhd_hw *hw)
 		sts = BC_STS_IO_ERROR;
 	else if (hw->fwcmd_pending)
 		sts = BC_STS_BUSY;
+	else
+		hw->fwcmd_trans_active = true;
 	spin_unlock_irqrestore(&hw->lock, flags);
 	if (sts != BC_STS_SUCCESS)
 		mutex_unlock(&hw->fwcmd_trans_mutex);
@@ -85,8 +89,18 @@ BC_STATUS crystalhd_hw_fw_cmd_recovery_enter(struct crystalhd_hw *hw)
 
 void crystalhd_hw_fw_cmd_leave(struct crystalhd_hw *hw)
 {
-	if (hw)
-		mutex_unlock(&hw->fwcmd_trans_mutex);
+	unsigned long flags;
+
+	if (!hw)
+		return;
+	/* The low-level mailbox owner has already left, but command-layer
+	 * capture rollback/postprocessing remains protected until this point.
+	 */
+	spin_lock_irqsave(&hw->lock, flags);
+	hw->fwcmd_trans_active = false;
+	spin_unlock_irqrestore(&hw->lock, flags);
+	crystalhd_flea_fw_transaction_done(hw);
+	mutex_unlock(&hw->fwcmd_trans_mutex);
 }
 
 BC_STATUS crystalhd_hw_fw_cmd_begin(struct crystalhd_hw *hw)
@@ -225,6 +239,7 @@ void crystalhd_hw_fw_cmd_reset_locked(struct crystalhd_hw *hw)
 		return;
 	mutex_lock(&hw->fwcmd_mutex);
 	spin_lock_irqsave(&hw->lock, flags);
+	/* A recovery transaction still owns its outer guard after reset. */
 	hw->fwcmd_pending = false;
 	hw->fwcmd_active = false;
 	hw->fwcmd_poisoned = false;
@@ -316,6 +331,7 @@ BC_STATUS crystalhd_hw_open(struct crystalhd_hw *hw, struct crystalhd_adp *adp)
 	sema_init(&hw->fetch_sem, 1);
 	mutex_init(&hw->fwcmd_trans_mutex);
 	mutex_init(&hw->fwcmd_mutex);
+	hw->fwcmd_trans_active = false;
 	crystalhd_create_event(&hw->fwcmd_event);
 	crystalhd_hw_fw_cmd_reset(hw);
 

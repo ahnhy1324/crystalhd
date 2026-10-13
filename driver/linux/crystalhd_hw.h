@@ -419,7 +419,9 @@ struct crystalhd_hw {
 	struct mutex		fwcmd_mutex;
 	wait_queue_head_t	fwcmd_event;
 	bool			fwcmd_pending;
-	/* Host reply/postprocess ownership outlives the mailbox interrupt. */
+	/* Command-layer pre/postprocessing ownership, protected by hw->lock. */
+	bool			fwcmd_trans_active;
+	/* Low-level reply/postprocess ownership outlives the mailbox interrupt. */
 	bool			fwcmd_active;
 	bool			fwcmd_poisoned;
 	int			fwcmd_evt_sts;
@@ -486,6 +488,8 @@ struct crystalhd_hw {
 	uint32_t			FleaEnablePWM;
 	uint32_t			FleaWaitFirstPlaybackNotify;
 	enum FLEA_POWER_STATES	FleaPowerState;
+	/* Held through unlocked RX callbacks in a runtime power transition. */
+	bool			FleaPowerTransition;
 	uint32_t			EmptyCnt;
 	bool				SingleThreadAppFIFOEmpty;
 	bool				PwrDwnTxIntr; /* Got an TX FIFO status interrupt when in power down state */
