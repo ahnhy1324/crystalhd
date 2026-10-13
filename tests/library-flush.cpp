@@ -41,6 +41,7 @@ static bool cancel_after_fetch;
 static thread_local unsigned delayed_output_lock;
 static BC_STATUS mock_flush_status = BC_STS_SUCCESS;
 static BC_STATUS mock_stop_status = BC_STS_SUCCESS;
+static bool probe_stop_owner;
 static BC_STATUS mock_close_status = BC_STS_SUCCESS;
 static unsigned close_calls;
 /* Held-owner cases keep a successful NoCopy borrow across the real retry
@@ -257,9 +258,19 @@ BC_STATUS DtsFWCloseChannel(HANDLE, uint32_t)
     ++close_calls;
     return mock_close_status;
 }
-BC_STATUS DtsFWStopVideo(HANDLE, uint32_t, bool)
+BC_STATUS DtsFWStopVideo(HANDLE device, uint32_t, bool force)
 {
     ++stop_calls;
+    if (probe_stop_owner) {
+        probe_stop_owner = false;
+        check(DtsStartDecoder(device) == BC_STS_BUSY &&
+              DtsStopDecoder(device) == BC_STS_BUSY &&
+              DtsCloseDecoder(device) == BC_STS_BUSY &&
+              DtsDeviceClose(device) == BC_STS_BUSY,
+              "in-flight STOP owns control lifetime against restart and handle retirement");
+        check(interface_calls == 0 && close_calls == 0 && stop_calls == 1,
+              "competing lifecycle calls cannot consume the active STOP context");
+    }
     pending_at_stop = DtsIsPend(observed);
     if (admission_probe && resume_at_stop) {
         std::unique_lock<std::mutex> lock(gate);
@@ -268,6 +279,16 @@ BC_STATUS DtsFWStopVideo(HANDLE, uint32_t, bool)
         if (!changed.wait_for(lock, std::chrono::seconds(2), [] { return admission_done; }))
             std::abort();
     }
+    DTS_LIB_CONTEXT *context = static_cast<DTS_LIB_CONTEXT *>(device);
+    DtsLock(context);
+    if (!force && context->stopInProgress) {
+        context->stopOutcome = mock_stop_status == BC_STS_SUCCESS ?
+            DTS_STOP_CONFIRMED : DTS_STOP_UNCERTAIN;
+        context->stopStatus = mock_stop_status;
+    }
+    if (mock_stop_status == BC_STS_SUCCESS)
+        context->State = BC_DEC_STATE_STOP;
+    DtsUnLock(context);
     return mock_stop_status;
 }
 void DumpInputSampleToFile(uint8_t *, uint32_t) {}
@@ -814,13 +835,47 @@ static void test_cleanup_errors(unsigned mode, unsigned errors)
     check(stop_calls == 1 && close_calls == (mode == 0 ? 0U : 1U),
           "failure does not skip the existing stop/close cleanup sequence");
     const bool close_confirmed = mode != 0 && mock_close_status == BC_STS_SUCCESS;
-    check(fixture.context.State ==
-              (close_confirmed ? BC_DEC_STATE_CLOSE : BC_DEC_STATE_STOP),
+    check(fixture.context.State == (close_confirmed ? BC_DEC_STATE_CLOSE :
+              mock_stop_status == BC_STS_SUCCESS ? BC_DEC_STATE_STOP : BC_DEC_STATE_FLUSH),
           "only a confirmed channel close publishes CLOSED state");
     check(fixture.globals.g_bDecOpened == !close_confirmed &&
               fixture.globals.g_nProcID ==
                   (close_confirmed ? 0 : fixture.context.ProcessID),
           "shared decoder ownership follows confirmed channel close");
+}
+
+static void test_stop_control_owner()
+{
+    OutputContext fixture;
+    interface_calls = 0;
+    probe_stop_owner = true;
+    check(DtsStopDecoder(&fixture.context) == BC_STS_SUCCESS &&
+          !probe_stop_owner && !fixture.context.stopInProgress && stop_calls == 1,
+          "STOP retires its control owner after firmware and host cleanup");
+    check(DtsCloseDecoder(&fixture.context) == BC_STS_SUCCESS && close_calls == 1,
+          "a later CLOSE remains reachable after the control owner returns");
+}
+
+static void test_stop_obligation_survives_stale_state()
+{
+    OutputContext fixture;
+    fixture.context.stopOutcome = DTS_STOP_UNCERTAIN;
+    fixture.context.stopStatus = BC_STS_TIMEOUT;
+    fixture.context.stopHostCleanupDone = true;
+    fixture.context.State = BC_DEC_STATE_START;
+    fixture.context.txQuiescing = false;
+    check(DtsStartDecoder(&fixture.context) == BC_STS_BUSY &&
+          DtsPauseDecoder(&fixture.context) == BC_STS_BUSY &&
+          DtsResumeDecoder(&fixture.context) == BC_STS_BUSY &&
+          DtsFlushInput(&fixture.context, 3) == BC_STS_BUSY,
+          "stale START state cannot erase an unresolved firmware STOP");
+    check(DtsBeginOutputCall(&fixture.context) == BC_STS_BUSY &&
+          DtsStartCapture(&fixture.context) == BC_STS_BUSY &&
+          DtsStartCaptureImmidiate(&fixture.context, 0) == BC_STS_BUSY,
+          "persistent STOP obligation blocks fresh output and capture admission");
+    check(!fetch_calls && !add_calls && !activate_calls && !start_calls &&
+          !fixture.context.ProcOutPending && fixture.context.outputPhase == DTS_OUTPUT_IDLE,
+          "rejected admission acquires no new output or firmware ownership");
 }
 
 
@@ -1192,7 +1247,9 @@ static void test_unmap_failure_retains_orphan(bool syscall_failure, bool allocat
                                syscall_failure ? BC_STS_ERROR : BC_STS_IO_ERROR;
     check(stopped == expected && fixture.context.outputPhase == DTS_OUTPUT_RETIRE_ONLY &&
           fixture.context.ProcOutPending && fixture.context.bMapOutBufDirty &&
-          fixture.context.txQuiescing && fixture.context.State == BC_DEC_STATE_FLUSH &&
+          fixture.context.txQuiescing && fixture.context.State == BC_DEC_STATE_STOP &&
+          fixture.context.stopOutcome == DTS_STOP_CONFIRMED &&
+          !fixture.context.stopHostCleanupDone &&
           unmap_calls == (allocation_failure ? 0U : 1U),
           "failed or unavailable unmap ACK retains residual, registration and teardown barrier");
     check(DtsStartDecoder(&fixture.context) == BC_STS_BUSY &&
@@ -1564,7 +1621,7 @@ static void test_transient_unmap_ack_on_builtin_retry()
     held_owner_case = true;
     unmap_fail_once_at = 1;
     const BC_STATUS closed = DtsDeviceClose(&fixture.context);
-    check(closed == BC_STS_IO_ERROR && stop_calls == 2 && unmap_calls == 2 &&
+    check(closed == BC_STS_IO_ERROR && stop_calls == 1 && unmap_calls == 2 &&
           close_calls == 1 && interface_calls == 1 && !pending_at_interface &&
           fixture.context.outputPhase == DTS_OUTPUT_IDLE && !fixture.context.ProcOutPending &&
           !fixture.context.bMapOutBufDirty && !fixture.globals.g_bDecOpened &&
@@ -1696,6 +1753,8 @@ int main()
     for (unsigned mode : {0U, 1U, 2U, 4U})
         for (unsigned errors = 0; errors < 8; ++errors)
             test_cleanup_errors(mode, errors);
+    test_stop_control_owner();
+    test_stop_obligation_survives_stale_state();
     std::printf("original-flush-regression failures=%u\n", failures);
     test_returned_nocopy_held(0, true);
     for (unsigned operation = 0; operation < 4; ++operation)

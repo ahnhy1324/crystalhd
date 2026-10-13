@@ -339,6 +339,8 @@ static BC_STATUS DtsAcquireOutput(DTS_LIB_CONTEXT *Ctx)
 		sts = BC_STS_DEC_NOT_STARTED;
 	else if (Ctx->CancelWaiting)
 		sts = BC_STS_IO_USER_ABORT;
+	else if (DtsStopIsUnresolved(Ctx))
+		sts = BC_STS_BUSY;
 	else if (Ctx->outputPhase != DTS_OUTPUT_ACTIVE)
 		sts = BC_STS_BUSY;
 	else if (Ctx->ProcOutPending)
@@ -372,6 +374,8 @@ BC_STATUS DtsBeginOutputCall(DTS_LIB_CONTEXT *Ctx)
 		status = BC_STS_DEC_NOT_STARTED;
 	else if (Ctx->CancelWaiting)
 		status = BC_STS_IO_USER_ABORT;
+	else if (DtsStopIsUnresolved(Ctx))
+		status = BC_STS_BUSY;
 	else if (Ctx->outputPhase != DTS_OUTPUT_IDLE || Ctx->ProcOutPending)
 		status = BC_STS_BUSY;
 	else
@@ -3228,7 +3232,7 @@ void * txThreadProc(void *ctx)
 			 * without it, so pooled ioctl/output completion remains live.
 			 */
 			DtsLock(Ctx);
-			const bool admitted = !Ctx->txQuiescing &&
+			const bool admitted = !Ctx->txQuiescing && !DtsStopIsUnresolved(Ctx) &&
 				(Ctx->State == BC_DEC_STATE_START || Ctx->State == BC_DEC_STATE_PAUSE);
 			if (admitted)
 				Ctx->txPending = true;

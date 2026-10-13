@@ -415,7 +415,7 @@ BC_STATUS DtsFWPauseVideo(HANDLE, uint32_t)
 	return BC_STS_SUCCESS;
 }
 
-BC_STATUS DtsFWStopVideo(HANDLE, uint32_t, bool)
+BC_STATUS DtsFWStopVideo(HANDLE device, uint32_t, bool force)
 {
 	++firmware_stop_calls;
 	if (pause_firmware_stop) {
@@ -426,6 +426,14 @@ BC_STATUS DtsFWStopVideo(HANDLE, uint32_t, bool)
 		                                [] { return release_firmware_stop; }))
 			std::abort();
 	}
+	DTS_LIB_CONTEXT *context = static_cast<DTS_LIB_CONTEXT *>(device);
+	DtsLock(context);
+	if (!force && context->stopInProgress) {
+		context->stopOutcome = DTS_STOP_CONFIRMED;
+		context->stopStatus = BC_STS_SUCCESS;
+	}
+	context->State = BC_DEC_STATE_STOP;
+	DtsUnLock(context);
 	return BC_STS_SUCCESS;
 }
 

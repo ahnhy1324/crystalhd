@@ -1,11 +1,11 @@
 # History
 
-## 1.0.0 — in preparation
+## 1.0.0 — October 13, 2026
 
 First numbered bundle release of this maintained fork, following the immutable
-`phase1-baseline-2026-09-29`. Candidate qualification and publication are tracked
-in [#369](https://github.com/ahnhy1324/crystalhd/issues/369); this section does
-not announce a published release.
+`phase1-baseline-2026-09-29`. [Published release](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.0.0);
+qualification and publication are recorded in
+[#369](https://github.com/ahnhy1324/crystalhd/issues/369).
 
 - Local playback: accumulated DMA-stop, queued-seek, EOS and reopen fixes;
   broader selected GStreamer/VA-API codec and interlace coverage, with visible
