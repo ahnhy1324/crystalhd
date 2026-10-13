@@ -6,11 +6,11 @@ hardware video decoding for local files on BCM70015. CrystalHD handles video;
 the normal Linux media stack handles audio, subtitles, synchronization and
 display.
 
-**1.0.0 is in preparation.** See [Releases](https://github.com/ahnhy1324/crystalhd/releases)
-for published candidates and stable versions. The existing
+**[CrystalHD 1.0.0 is available](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.0.0).**
+The instructions below install that stable release, including playback fixes,
+event-driven receive and optional output scaling. The existing
 [Phase 1 baseline](https://github.com/ahnhy1324/crystalhd/releases/tag/phase1-baseline-2026-09-29)
-remains available. The instructions below use development `master`, including
-subsequent playback fixes, event-driven receive and optional output scaling.
+remains available and unchanged.
 
 ## Compatibility
 
@@ -39,11 +39,11 @@ a kernel update. [DKMS](README.dkms) handles those later module rebuilds
 automatically. Choose one route; if DKMS already manages CrystalHD, follow its
 guide instead of this direct-install procedure.
 
-For a fresh development checkout on Ubuntu:
+For a fresh stable-release checkout on Ubuntu:
 
 ```sh
 sudo apt install git
-git clone --branch master https://github.com/ahnhy1324/crystalhd.git
+git clone --branch v1.0.0 https://github.com/ahnhy1324/crystalhd.git
 cd crystalhd
 
 sudo apt install build-essential pkg-config linux-headers-$(uname -r) \
@@ -65,8 +65,7 @@ Use `make -j1` if a parallel build runs out of memory. For a published source
 archive, extract it and enter its directory in place of the `git clone` and
 `cd` steps; building and installing do not require `.git`. To try the older
 fixed baseline, clone with `--branch phase1-baseline-2026-09-29` and use the
-guide shipped with that version. The future `v1.0.0` tag will be linked here
-after publication.
+guide shipped with that version.
 
 The direct target installs the current-kernel module, firmware, udev rule,
 library, GStreamer plugin/player, VA-API driver and `crystalhd-check`.

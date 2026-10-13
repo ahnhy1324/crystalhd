@@ -12,13 +12,16 @@ sequence. [#371](https://github.com/ahnhy1324/crystalhd/issues/371) owns executi
 and evidence; #369 owns the final decision and publication.
 The published `v1.0.0-rc.1` at
 `79c7cc963f69a6cbe22852c7fa30cee71a0c1737` and its bounded results remain
-unchanged. They do not establish the new LTS/full-duration passes, and stable
-`v1.0.0` is not yet approved or published.
+unchanged. They do not establish the new LTS/full-duration passes.
+After qualification and explicit maintainer GO,
+[stable `v1.0.0`](https://github.com/ahnhy1324/crystalhd/releases/tag/v1.0.0)
+was published on 2026-10-13 from approved commit
+`2e91a4a612efe236e566362022bf986c1d81c67b`. Its tag is immutable.
 
 For this campaign, the maintainer subsequently accepted **G0 by exception**
 and authorized narrowly reviewed G1/G2 compatibility dispositions; see the
 dated decision in #369/#371. This does not claim unperformed recovery tests
-passed or waive the remaining endurance and final-package gates.
+passed and did not waive the endurance and final-package gates.
 
 ## Versions and compatibility
 
@@ -31,7 +34,7 @@ checkout alone does not announce a published release.
 
 | Identity | Current source | Purpose |
 | --- | --- | --- |
-| Bundle | `1.0.0` | Unpublished final qualification candidate from `VERSION` |
+| Bundle | `1.0.0` | Published stable release identity from `VERSION` |
 | DKMS / module package | `3.10.3` | Maintained package revision; upgrades earlier `3.10.0` / `3.10.1` / `3.10.2` installs |
 | Driver ioctl version | `3.10.0` | Historical public API value, retained |
 | Library API / pkg-config | `3.22.0` | Historical library component identity, retained |
@@ -40,8 +43,8 @@ checkout alone does not announce a published release.
 | Firmware | Existing BCM70012/BCM70015 images | Retain images, identities and license notices |
 
 The published `v1.0.0-rc.1` retains bundle `1.0.0-rc.1` and package `3.10.2`.
-The current source prepares the final payload for qualification; it does not
-publish or approve stable `v1.0.0`.
+Stable `v1.0.0` uses the qualified final payload and approved documentation;
+publication does not change the recorded scope or experimental limitations.
 
 Increase the numeric package revision when changing an already registered or
 published candidate payload; never replace an existing `/usr/src/crystalhd-VERSION` tree with a
