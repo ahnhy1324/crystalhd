@@ -89,7 +89,7 @@ raw-frame-check:
 
 # Optional direct-library hardware probe. Building never opens the device;
 # running requires explicit --hardware (or device-free --preflight).
-library-drain-test: library tests/phase1-progress.h tests/issue204-active-context.h
+library-drain-test: library tests/phase1-progress.h tests/issue204-active-context.h tests/flea-power-observer.h
 	$(CXX) -std=c++11 -O2 -g -Wall -Wextra -Werror -D__LINUX_USER__ \
 		-Iinclude -Ilinux_lib/libcrystalhd tests/library-drain.cpp \
 		$$(pkg-config --cflags --libs libavformat libavcodec libavutil glib-2.0 gstreamer-1.0) \
