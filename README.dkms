@@ -18,8 +18,10 @@ Work from the root of the source version you want to install. A source archive
 works without `.git`. Keep the previous version's source/archive and any local
 CrystalHD `/etc/modprobe.d/` option files for rollback. Retain the previous
 revision's cached DKMS build for the running kernel as well. Read the DKMS
-revision from this source; the current bundle `1.0.0-rc.1` uses module/DKMS
-revision `3.10.2`:
+revision from this source; the unpublished final qualification candidate
+`1.0.0` uses module/DKMS revision `3.10.3`. The published `v1.0.0-rc.1`
+retains revision `3.10.2`; neither its source nor an existing registered
+source tree should be overwritten:
 
 ```sh
 kernel_release=$(uname -r)
@@ -125,8 +127,8 @@ do not delete arbitrary candidates listed by the check.
 
 For a new DKMS revision, follow [prepare](#prepare-the-source) and [install](#install-a-new-revision)
 from the new source. Keep the old revision/source until the new playback test
-passes. The current preparation source uses module/DKMS revision `3.10.2`,
-upgrading earlier `3.10.0` or `3.10.1` registrations without changing the
+passes. The current preparation source uses module/DKMS revision `3.10.3`,
+upgrading earlier `3.10.0`, `3.10.1` or `3.10.2` registrations without changing the
 `libcrystalhd.so.3` ABI.
 Later bundle releases may use later package revisions; use `dkms.conf` from
 the chosen source.

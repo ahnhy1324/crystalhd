@@ -31,13 +31,17 @@ checkout alone does not announce a published release.
 
 | Identity | Current source | Purpose |
 | --- | --- | --- |
-| Bundle | `1.0.0-rc.1` | Distribution identity from `VERSION` |
-| DKMS / module package | `3.10.2` | Maintained package revision; upgrades earlier `3.10.0` / `3.10.1` installs |
+| Bundle | `1.0.0` | Unpublished final qualification candidate from `VERSION` |
+| DKMS / module package | `3.10.3` | Maintained package revision; upgrades earlier `3.10.0` / `3.10.1` / `3.10.2` installs |
 | Driver ioctl version | `3.10.0` | Historical public API value, retained |
 | Library API / pkg-config | `3.22.0` | Historical library component identity, retained |
 | Library SONAME / file | `libcrystalhd.so.3` / `libcrystalhd.so.3.6` | Existing application linkage, retained |
 | GStreamer plugin / VA vendor string | `3.10.0` / `0.1` | Historical component labels; not the bundle identity |
 | Firmware | Existing BCM70012/BCM70015 images | Retain images, identities and license notices |
+
+The published `v1.0.0-rc.1` retains bundle `1.0.0-rc.1` and package `3.10.2`.
+The current source prepares the final payload for qualification; it does not
+publish or approve stable `v1.0.0`.
 
 Increase the numeric package revision when changing an already registered or
 published candidate payload; never replace an existing `/usr/src/crystalhd-VERSION` tree with a
