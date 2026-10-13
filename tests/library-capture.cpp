@@ -872,51 +872,61 @@ static void TestSuccessfulStarts()
 
 static void TestConcurrentStarts()
 {
-	case_name = "concurrent starts";
-	Fixture fixture(BC_PCI_DEVID_FLEA);
-	pthread_barrier_t barrier;
-	Check(pthread_barrier_init(&barrier, nullptr, 3) == 0,
-	      "concurrent fixture creates its start barrier");
-	BC_STATUS ordinary_status = BC_STS_ERROR;
-	BC_STATUS immediate_status = BC_STS_ERROR;
-	std::thread ordinary([&] {
-		pthread_barrier_wait(&barrier);
-		ordinary_status = DtsStartCapture(&fixture.context);
-	});
-	std::thread immediate([&] {
-		pthread_barrier_wait(&barrier);
-		immediate_status = DtsStartCaptureImmidiate(&fixture.context, 0);
-	});
-	pthread_barrier_wait(&barrier);
-	ordinary.join();
-	immediate.join();
-	pthread_barrier_destroy(&barrier);
+	for (const bool winner_immediate : {false, true}) {
+		case_name = winner_immediate ?
+			"immediate start owns lifecycle" :
+			"ordinary start owns lifecycle";
+		Fixture fixture(BC_PCI_DEVID_FLEA);
+		ResetLifecycleGate();
+		BC_STATUS winner_status = BC_STS_ERROR;
+		std::thread winner([&] {
+			/* Stop after lifecycle admission but before the public body takes
+			 * thLock. This proves the competing call observes the lease rather
+			 * than depending on scheduler timing at a start barrier. */
+			delay_context_lock = 2;
+			winner_status = StartCapture(fixture, winner_immediate);
+		});
+		WaitForDelayedLock();
 
-	Check(ordinary_status == BC_STS_SUCCESS &&
-	      immediate_status == BC_STS_SUCCESS,
-	      "both concurrent start variants succeed");
-	Check(CountCommand(BCM_IOC_ADD_RXBUFFS) == BC_RX_LIST_CNT &&
-	      CountCommand(BCM_IOC_START_RX_CAP) == 2 &&
-	      CountCommand(BCM_IOC_FLUSH_RX_CAP) == 0,
-	      "concurrent starts create one registration set and two starts");
-	Check(event_count == BC_RX_LIST_CNT + 2 &&
-	      AddsUseUniqueConfiguredBuffers(0, BC_RX_LIST_CNT),
-	      "concurrent registration contains sixteen unique buffers");
-	Check(events[BC_RX_LIST_CNT].command == BCM_IOC_START_RX_CAP &&
-	      events[BC_RX_LIST_CNT + 1].command == BCM_IOC_START_RX_CAP &&
-	      events[BC_RX_LIST_CNT].reserved !=
-	          events[BC_RX_LIST_CNT + 1].reserved &&
-	      (events[BC_RX_LIST_CNT].reserved == NO_PARAM ||
-	       events[BC_RX_LIST_CNT + 1].reserved == NO_PARAM) &&
-	      (events[BC_RX_LIST_CNT].reserved == ST_CAP_IMMIDIATE ||
-	       events[BC_RX_LIST_CNT + 1].reserved == ST_CAP_IMMIDIATE),
-	      "concurrent calls retain their distinct START modes");
-	Check(!duplicate_add && OwnedCount() == BC_RX_LIST_CNT &&
-	      fixture.context.bMapOutBufDone && fixture.context.bMapOutBufDirty,
-	      "concurrent starts leave one complete driver-owned map");
-	Check(PoolDepthIs(0, event_count, BC_IOCTL_DATA_POOL_SIZE - 1) &&
-	      PoolSize(fixture.context) == BC_IOCTL_DATA_POOL_SIZE,
-	      "concurrent starts preserve the complete ioctl pool");
+		const BC_STATUS competing_status =
+			StartCapture(fixture, !winner_immediate);
+		Check(competing_status == BC_STS_BUSY && event_count == 0,
+		      "overlapping capture start is rejected before driver mutation");
+		ReleaseDelayedLock();
+		winner.join();
+
+		Check(winner_status == BC_STS_SUCCESS,
+		      "lifecycle owner completes its capture start");
+		Check(CountCommand(BCM_IOC_ADD_RXBUFFS) == BC_RX_LIST_CNT &&
+		      CountCommand(BCM_IOC_START_RX_CAP) == 1 &&
+		      CountCommand(BCM_IOC_FLUSH_RX_CAP) == 0,
+		      "winning start creates one registration set and one START");
+		Check(event_count == BC_RX_LIST_CNT + 1 &&
+		      AddsUseUniqueConfiguredBuffers(0, BC_RX_LIST_CNT),
+		      "winning start registers sixteen unique buffers");
+
+		Check(StartCapture(fixture, !winner_immediate) == BC_STS_SUCCESS,
+		      "competing start succeeds when retried after lease retirement");
+		Check(event_count == BC_RX_LIST_CNT + 2 &&
+		      CountCommand(BCM_IOC_ADD_RXBUFFS) == BC_RX_LIST_CNT &&
+		      CountCommand(BCM_IOC_START_RX_CAP) == 2,
+		      "retry reuses one registration set and issues the second START");
+		Check(events[BC_RX_LIST_CNT].command == BCM_IOC_START_RX_CAP &&
+		      events[BC_RX_LIST_CNT + 1].command == BCM_IOC_START_RX_CAP &&
+		      events[BC_RX_LIST_CNT].reserved !=
+		          events[BC_RX_LIST_CNT + 1].reserved &&
+		      (events[BC_RX_LIST_CNT].reserved == NO_PARAM ||
+		       events[BC_RX_LIST_CNT + 1].reserved == NO_PARAM) &&
+		      (events[BC_RX_LIST_CNT].reserved == ST_CAP_IMMIDIATE ||
+		       events[BC_RX_LIST_CNT + 1].reserved == ST_CAP_IMMIDIATE),
+		      "owner and retry retain their distinct START modes");
+		Check(!duplicate_add && OwnedCount() == BC_RX_LIST_CNT &&
+		      fixture.context.bMapOutBufDone && fixture.context.bMapOutBufDirty,
+		      "overlap and retry leave one complete driver-owned map");
+		Check(PoolDepthIs(0, event_count, BC_IOCTL_DATA_POOL_SIZE - 1) &&
+		      PoolSize(fixture.context) == BC_IOCTL_DATA_POOL_SIZE,
+		      "overlap and retry preserve the complete ioctl pool");
+	}
 }
 
 static void TestCaptureLifecycleStates()
