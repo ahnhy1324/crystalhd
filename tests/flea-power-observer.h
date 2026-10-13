@@ -43,8 +43,8 @@ struct FleaPowerObserver {
             failed = true;
             return false;
         }
-        const char *const names[] = {"pre-START", "first-released", "paused",
-            "resumed", "last-released", "EOS"};
+        const char *const names[] = {"pre-START", "first-released", "pause-API-return",
+            "resume-API-return", "last-released", "EOS"};
         uint32_t raw[4] = {};
         unsigned measured = 0;
         BC_STATUS status = BC_STS_SUCCESS;
@@ -79,6 +79,8 @@ struct FleaPowerObserver {
             failed = true;
             return false;
         }
+        // On BCM70015 these public APIs change library state only; they do
+        // not send the firmware PAUSE command or establish decoder idle.
         const BC_STATUS paused = pause(handle);
         if (paused != BC_STS_SUCCESS) {
             if (report)
@@ -90,7 +92,8 @@ struct FleaPowerObserver {
         // Restore the ordinary decoder state even if the observation failed.
         const BC_STATUS resumed = resume(handle);
         if (report)
-            std::printf("Power observation commands: pause=%d resume=%d\n", paused, resumed);
+            std::printf("Power observation commands: pause=%d resume=%d firmware-pause=no\n",
+                        paused, resumed);
         if (!observed || resumed != BC_STS_SUCCESS) { failed = true; return false; }
         return Observe(handle, 3, reader, report);
     }
