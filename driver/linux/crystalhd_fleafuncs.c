@@ -899,7 +899,7 @@ void crystalhd_flea_notify_fll_change(struct crystalhd_hw *hw, bool bCleanupCont
 static
 void crystalhd_flea_init_power_state(struct crystalhd_hw *hw)
 {
-	hw->FleaEnablePWM = false;	/* enable by default */
+	hw->FleaEnablePWM = false;	/* Runtime power-down remains disabled. */
 	hw->FleaPowerState = FLEA_PS_NONE;
 }
 
@@ -1065,8 +1065,8 @@ void crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
 					(hw->TxList1Sts == ListStsFree) &&
 					(!hw->EmptyCnt) && /*We have Not Indicated Any Empty Fifo to Application*/
 					(!hw->SingleThreadAppFIFOEmpty) && /*for single threaded apps*/
-					(!(hw->rx_list_sts[0] && rx_waiting_y_intr)) &&
-					(!(hw->rx_list_sts[1] && rx_waiting_y_intr)) &&
+					(hw->rx_list_sts[0] == sts_free) &&
+					(hw->rx_list_sts[1] == sts_free) &&
 					(!READ_ONCE(hw->FwCmdCnt)))
 				{
 					NextPS = FLEA_PS_LP_COMPLETE;
@@ -1099,8 +1099,8 @@ void crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
 					(hw->TxList1Sts == ListStsFree) &&
 					(!hw->EmptyCnt) &&	/*We have Not Indicated Any Empty Fifo to Application*/
 					(!hw->SingleThreadAppFIFOEmpty) && /*for single threaded apps*/
-					(!(hw->rx_list_sts[0] && rx_waiting_y_intr)) &&
-					(!(hw->rx_list_sts[1] && rx_waiting_y_intr)) &&
+					(hw->rx_list_sts[0] == sts_free) &&
+					(hw->rx_list_sts[1] == sts_free) &&
 					(!READ_ONCE(hw->FwCmdCnt)))
 				{
 					NextPS = FLEA_PS_LP_COMPLETE;

@@ -11,7 +11,7 @@ PYTHON3 ?= python3
 DRIVER_ARGS := KVER=$(KVER) KDIR=$(KDIR) DESTDIR=$(DESTDIR)
 USER_ARGS := PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 
-.PHONY: all driver library library-check raw-frame-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check l0s-check command-pm-check fw-command-check fw-download-check fw-research-check fw-qemu-check fw-probe-check fw-probe-tool tx-admission-check h264-stream-check rx-ownership-check flea-rx-metadata-check flea-dram-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check architecture-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check clean
+.PHONY: all driver library library-check raw-frame-check library-drain-test gstreamer vaapi examples browser uapi-check dma-check l0s-check command-pm-check fw-command-check fw-download-check fw-research-check fw-qemu-check fw-probe-check fw-probe-tool tx-admission-check h264-stream-check rx-ownership-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check architecture-check pib-check userspace32-check legacy-cpu-check phase1-check check install install-module install-runtime install-browser install-check uninstall uninstall-module uninstall-runtime uninstall-browser uninstall-check clean
 
 all: driver library gstreamer vaapi examples
 
@@ -160,6 +160,9 @@ flea-rx-metadata-check:
 flea-dram-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/flea-dram.sh
 
+flea-power-check:
+	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/flea-power.sh
+
 device-lifetime-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/device-lifetime.sh
 
@@ -169,7 +172,7 @@ v4l2-parent-check:
 ioctl-dispatch-check:
 	CC="$(CC)" CFLAGS="$(CFLAGS)" sh ./tests/ioctl-dispatch.sh
 
-architecture-check: command-pm-check fw-command-check fw-download-check fw-staging-check fw-probe-check tx-admission-check h264-stream-check rx-ownership-check flea-rx-metadata-check flea-dram-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check
+architecture-check: command-pm-check fw-command-check fw-download-check fw-staging-check fw-probe-check tx-admission-check h264-stream-check rx-ownership-check flea-rx-metadata-check flea-dram-check flea-power-check device-lifetime-check v4l2-parent-check ioctl-dispatch-check
 
 pib-check:
 	CC="$(CC)" sh ./tests/flea-pib.sh
