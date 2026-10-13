@@ -1,9 +1,9 @@
 # Open work
 
-Release status **2026-10-13**: G0 is accepted by maintainer exception; G1–G4
-have completed fresh LTS qualification with their recorded limitations.
-Remaining order: final artifact/install/rollback checks (G5) → final CI,
-documentation and release review (G6) → maintainer GO → stable 1.0.0.
+Release status **2026-10-13**: G0 is accepted by maintainer exception; G1–G6
+qualification and the release handoff are complete with recorded limitations.
+Remaining order: maintainer GO → stable 1.0.0 publication and public-archive
+verification. Publication is not yet approved.
 Historical RC results and the existing recovery copy remain unchanged.
 
 - [ ] [#369: CrystalHD 1.0.0 final gates and release](https://github.com/ahnhy1324/crystalhd/issues/369)
@@ -15,7 +15,9 @@ Historical RC results and the existing recovery copy remain unchanged.
   output and VA event-worker endurance. Moonlight's three one-hour targets
   and corrected reopen pass hardware/lifecycle/resources; physical A/V and
   payload-age behavior retain an explicit limited/unverified disposition.
-  G5/G6 remain; preserve the existing backup under the G0 exception.
+  Final package `f41ca40` passes direct/DKMS installation, RC rollback and
+  installed-path checks; G6 documentation/decision handoff is complete.
+  Preserve the existing backup under the G0 exception.
   Pre-stable fixes use further RCs and affected requalification; handoff to
   #369 does not require an existing final tag.
 - [ ] [#91: Deferred hardware and application acceptance](https://github.com/ahnhy1324/crystalhd/issues/91)
