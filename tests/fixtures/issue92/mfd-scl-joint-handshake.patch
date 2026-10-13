@@ -565,9 +565,7 @@ index 7a759d0..eb5ee29 100644
  	    (regVal & BCHP_DDR23_CTL_REGS_0_CTL_STATUS_clke_MASK))
  		return false;
  #endif
-@@ -4267,6 +4579,9 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
- 
- 	crystalhd_flea_set_next_power_state(hw, FLEA_EVT_STOP_DEVICE);
+@@ -4269,4 +4581,7 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
  #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
 +	if (crystalhd_hw_research_joint_pending(hw) &&
 +	    (!hw->research_joint_reset_corroborated || !crystalhd_flea_joint_current(hw)))
