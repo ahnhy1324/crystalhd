@@ -30,6 +30,7 @@
 #include <linux/sched/signal.h>
 #include <asm/tsc.h>
 #include <asm/msr.h>
+#include "70015/magnum/basemodules/chp/70015/rdb/a0/bchp_ddr23_ctl_regs_0.h"
 #include "70015/magnum/basemodules/chp/70015/rdb/a0/bchp_misc3.h"
 #include "crystalhd_hw.h"
 #include "crystalhd_fleafuncs.h"
@@ -616,6 +617,13 @@ bool crystalhd_flea_runtime_power_dn(struct crystalhd_hw *hw)
 	uint32_t regVal;
 	uint32_t pollCnt;
 	uint32_t saved_params, saved_refresh;
+	const uint32_t memc_idle_mask =
+		BCHP_DDR23_CTL_REGS_0_CTL_STATUS_idle_MASK |
+		BCHP_DDR23_CTL_REGS_0_CTL_STATUS_rd_fifo1_empty_MASK |
+		BCHP_DDR23_CTL_REGS_0_CTL_STATUS_rd_fifo2_empty_MASK |
+		BCHP_DDR23_CTL_REGS_0_CTL_STATUS_rd_fifo3_empty_MASK;
+	const uint32_t memc_known_mask = memc_idle_mask |
+		BCHP_DDR23_CTL_REGS_0_CTL_STATUS_clke_MASK;
 
 	/*printk("RT PD \n"); */
 
@@ -652,13 +660,19 @@ bool crystalhd_flea_runtime_power_dn(struct crystalhd_hw *hw)
 	/* delay at least 15us for memory transactions to complete */
 	/* udelay(15); */
 
-	/* Do not gate clocks until outstanding memory traffic has drained. */
+	/* Refuse power-down unless the controller is idle and all named read
+	 * FIFOs are empty. This does not establish firmware/source quiescence.
+	 */
 	pollCnt=0;
 	while (pollCnt++ <= 400) /*200 */
 	{
 		regVal = hw->pfnReadDevRegister(hw->adp, BCHP_DDR23_CTL_REGS_0_CTL_STATUS);
 
-		if(regVal & BCHP_DDR23_CTL_REGS_0_CTL_STATUS_idle_MASK)
+		if (regVal & ~memc_known_mask) {
+			printk("RT PD: invalid memory controller status %#x\n", regVal);
+			goto abort;
+		}
+		if ((regVal & memc_idle_mask) == memc_idle_mask)
 		{
 			/* udelay(10); */
 			break;
@@ -667,9 +681,9 @@ bool crystalhd_flea_runtime_power_dn(struct crystalhd_hw *hw)
 	}
 
 	/*If we failed Start the arbiter and return*/
-	if(!(regVal & BCHP_DDR23_CTL_REGS_0_CTL_STATUS_idle_MASK))
+	if ((regVal & memc_idle_mask) != memc_idle_mask)
 	{
-		printk("RT PD : failed Start the arbiter and return.\n");
+		printk("RT PD: memory controller or read FIFOs did not become idle\n");
 		goto abort;
 	}
 
