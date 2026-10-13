@@ -4,6 +4,9 @@
 
 #include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_clk.h"
 #include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_ddr23_ctl_regs_0.h"
+#include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_ddr23_phy_control_regs.h"
+#include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_ddr23_phy_byte_lane_0.h"
+#include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_ddr23_phy_byte_lane_1.h"
 #include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_pri_arb_control_regs.h"
 
 // Fixed target-register reads during ordinary decode. The legacy accessor may
@@ -15,6 +18,7 @@ struct FleaPowerObserver {
     using Command = BC_STATUS (*)(HANDLE);
     using FirmwareCommand = BC_STATUS (*)(HANDLE, uint32_t);
     FirmwareCommand firmware_command = nullptr;
+    bool configuration = false;
     bool enabled = false, failed = false;
     unsigned next = 0, reads = 0;
     static uint32_t Address(unsigned field) {
@@ -41,6 +45,12 @@ struct FleaPowerObserver {
     bool Observe(HANDLE handle, unsigned stage, Reader reader = DtsDevRegisterRead,
                  bool report = true) {
         if (!enabled) return true;
+        if (configuration) {
+            if (stage == 0) return ObserveConfiguration(handle, reader, report);
+            if (!failed && next == 1 && stage < 6) return true;
+            failed = true;
+            return false;
+        }
         if (failed || !handle || !reader || stage != next || stage >= 6) {
             failed = true;
             return false;
@@ -75,10 +85,69 @@ struct FleaPowerObserver {
         }
         return !failed;
     }
+    static uint32_t ConfigurationAddress(unsigned field) {
+        const uint32_t addresses[] = {BCHP_CLK_PM_CTRL,
+            BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL,
+            BCHP_DDR23_PHY_CONTROL_REGS_PLL_CONFIG,
+            BCHP_DDR23_PHY_CONTROL_REGS_CLOCK_REG_CONTROL,
+            BCHP_DDR23_PHY_BYTE_LANE_0_CLOCK_REG_CONTROL,
+            BCHP_DDR23_PHY_BYTE_LANE_1_CLOCK_REG_CONTROL,
+            BCHP_DDR23_PHY_CONTROL_REGS_IDLE_PAD_CONTROL,
+            BCHP_DDR23_PHY_BYTE_LANE_0_IDLE_PAD_CONTROL,
+            BCHP_DDR23_PHY_BYTE_LANE_1_IDLE_PAD_CONTROL,
+            BCHP_DDR23_CTL_REGS_0_PARAMS2,
+            BCHP_PRI_ARB_CONTROL_REGS_REFRESH_CTL_0,
+            BCHP_PRI_ARB_CONTROL_REGS_MASTER_CTL,
+            BCHP_DDR23_PHY_CONTROL_REGS_PLL_STATUS,
+            BCHP_DDR23_CTL_REGS_0_CTL_STATUS, BCHP_CLK_PM_CTRL};
+        return addresses[field];
+    }
+    bool ObserveConfiguration(HANDLE handle, Reader reader, bool report) {
+        if (!enabled || !configuration) return true;
+        if (failed || next || !handle || !reader) { failed = true; return false; }
+        uint32_t raw[15] = {};
+        unsigned measured = 0;
+        BC_STATUS status = BC_STS_SUCCESS;
+        const gint64 before = g_get_monotonic_time();
+        for (unsigned i = 0; i < 15; ++i) {
+            ++reads;
+            status = reader(handle, ConfigurationAddress(i), &raw[i]);
+            if (status != BC_STS_SUCCESS) { failed = true; break; }
+            ++measured;
+            // Avoid later DDR reads if the observed clocks/pads are disabled.
+            const bool valid = raw[i] != UINT32_MAX &&
+                ((i != 0 && i != 14) || Valid(0, raw[i])) &&
+                (!(i >= 1 && i <= 5) || !(raw[i] & 1U)) &&
+                (!(i >= 6 && i <= 8) || !(raw[i] & 0x80000000U)) &&
+                (i != 11 || Valid(1, raw[i])) &&
+                (i != 12 || !(raw[i] & BCHP_DDR23_PHY_CONTROL_REGS_PLL_STATUS_reserved0_MASK)) &&
+                (i != 13 || Valid(2, raw[i]));
+            if (!valid) { failed = true; break; }
+        }
+        if (measured == 15 && raw[0] != raw[14]) failed = true;
+        if (!failed) ++next;
+        if (report) {
+            std::printf("Power configuration: stage=pre-START monotonic-us=%lld duration-us=%lld "
+                "reads=%u measured=%u api-status=%d result=%s",
+                static_cast<long long>(before),
+                static_cast<long long>(g_get_monotonic_time() - before),
+                reads, measured, status, failed ? "FAIL" : "PASS");
+            for (unsigned i = 0; i < measured; ++i)
+                std::printf(" reg%u@%08x=%08x", i, ConfigurationAddress(i), raw[i]);
+            std::printf(" atomic=no power-gating-tested=no\n");
+            std::fflush(stdout);
+        }
+        return !failed;
+    }
     bool PauseAndResume(HANDLE handle, Reader reader = DtsDevRegisterRead,
                         Command pause = DtsPauseDecoder, Command resume = DtsResumeDecoder,
                         bool report = true) {
         if (!enabled) return true;
+        if (configuration) {
+            if (!failed && next == 1) return true;
+            failed = true;
+            return false;
+        }
         if (firmware_command) return FirmwarePauseAndResume(handle, reader, report);
         if (failed || next != 2 || !handle || !reader || !pause || !resume) {
             failed = true;
@@ -127,7 +196,8 @@ struct FleaPowerObserver {
         return Observe(handle, 3, reader, report);
     }
     bool Finish(bool native_ok) const {
-        return native_ok && (!enabled || (!failed && next == 6 && reads == 24));
+        return native_ok && (!enabled || (!failed &&
+            next == (configuration ? 1U : 6U) && reads == (configuration ? 15U : 24U)));
     }
 };
 
@@ -307,6 +377,71 @@ template<class Check> static void FleaPowerObserverSelfTest(const Check &check)
                   invalid == 1 ? nullptr : Fixture::Read, nullptr, nullptr, false) &&
               !f.calls && !f.pauses && !f.resumes && o.failed,
               "invalid stock firmware observation arguments cannot invoke a command");
+    }
+    struct ConfigurationFixture {
+        unsigned calls = 0;
+        bool valid = true;
+        BC_STATUS status[15] = {};
+        uint32_t raw[15] = {};
+        ConfigurationFixture() { raw[0] = raw[14] = 0x03000000; raw[12] = 1; raw[13] = 0x73; }
+        static BC_STATUS Read(HANDLE handle, uint32_t address, uint32_t *value) {
+            auto *f = static_cast<ConfigurationFixture *>(handle);
+            const uint32_t addresses[] = {0x00070004, 0x01801004, 0x01801014,
+                0x01801044, 0x0180124c, 0x0180114c, 0x01801038, 0x0180123c,
+                0x0180113c, 0x01800014, 0x0040cb00, 0x0040cb30,
+                0x01801010, 0x01800004, 0x00070004};
+            const unsigned i = f->calls++;
+            if (i >= 15) { f->valid = false; return BC_STS_ERROR; }
+            f->valid &= address == addresses[i];
+            *value = f->raw[i];
+            return f->status[i];
+        }
+    };
+    for (unsigned locked : {0U, 1U}) {
+        ConfigurationFixture f; f.raw[12] = locked;
+        FleaPowerObserver o; o.enabled = o.configuration = true;
+        check(o.Observe(&f, 0, ConfigurationFixture::Read, false) && f.calls == 15 && f.valid &&
+              o.Observe(&f, 1, nullptr, false) &&
+              o.PauseAndResume(nullptr, nullptr, nullptr, nullptr, false) &&
+              o.Observe(&f, 5, nullptr, false) && o.Finish(true) && !o.Finish(false) &&
+              f.calls == 15 && o.reads == 15,
+              "configuration collects fifteen ordered reads once and reports LOCK without inferring readiness");
+    }
+    for (unsigned bad = 0; bad < 15; ++bad) {
+        for (unsigned api = 0; api < 2; ++api) {
+            ConfigurationFixture f;
+            if (api) f.status[bad] = BC_STS_IO_ERROR;
+            else f.raw[bad] = UINT32_MAX;
+            FleaPowerObserver o; o.enabled = o.configuration = true;
+            check(!o.Observe(&f, 0, ConfigurationFixture::Read, false) && f.valid &&
+                  o.failed && !o.Finish(true) && f.calls == bad + 1 && o.reads == bad + 1 &&
+                  !o.Observe(&f, 0, ConfigurationFixture::Read, false) && f.calls == bad + 1,
+                  "configuration stops at first invalid/API read and never retries or reads later fields");
+        }
+    }
+    for (unsigned field : {0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 11U, 12U, 13U, 14U}) {
+        ConfigurationFixture f;
+        f.raw[field] |= field == 0 || field == 14 ? 4U : field >= 6 && field <= 8
+            ? 0x80000000U : field >= 12 ? 4U : 1U;
+        FleaPowerObserver o; o.enabled = o.configuration = true;
+        check(!o.Observe(&f, 0, ConfigurationFixture::Read, false) && f.calls == field + 1 && f.valid,
+              "configuration refuses gated clock/pad or reserved status before later target reads");
+    }
+    ConfigurationFixture mismatch; mismatch.raw[14] = 0;
+    FleaPowerObserver mismatched; mismatched.enabled = mismatched.configuration = true;
+    check(!mismatched.Observe(&mismatch, 0, ConfigurationFixture::Read, false) && mismatch.calls == 15,
+          "configuration refuses inconsistent clock brackets without an atomic snapshot claim");
+    ConfigurationFixture unused; FleaPowerObserver disabled; disabled.configuration = true;
+    check(disabled.ObserveConfiguration(&unused, ConfigurationFixture::Read, false) && !unused.calls,
+          "disabled configuration performs no reads");
+    for (unsigned invalid = 0; invalid < 4; ++invalid) {
+        ConfigurationFixture f; FleaPowerObserver o; o.enabled = o.configuration = true;
+        const bool result = invalid == 0 ? o.Observe(nullptr, 0, ConfigurationFixture::Read, false) :
+            invalid == 1 ? o.Observe(&f, 0, nullptr, false) :
+            invalid == 2 ? o.Observe(&f, 1, ConfigurationFixture::Read, false) :
+            o.PauseAndResume(&f, ConfigurationFixture::Read, nullptr, nullptr, false);
+        check(!result && !f.calls && o.failed && !o.Finish(true),
+              "configuration rejects missing arguments or skipped initial snapshot without I/O");
     }
     for (unsigned bad = 0; bad < 5; ++bad) {
         Fixture f; FleaPowerObserver o; o.enabled = true; o.firmware_command = Fixture::Firmware;
