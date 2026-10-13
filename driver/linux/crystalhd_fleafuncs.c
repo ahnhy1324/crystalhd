@@ -869,6 +869,7 @@ static BC_STATUS crystalhd_flea_runtime_power_up(struct crystalhd_hw *hw)
 	return BC_STS_IO_ERROR;
 }
 
+#if 0 /* Previous immutable arbiter-only helper retained as research evidence. */
 /* Arbiter-only readiness measurement: never request any low-power state. */
 static enum FLEA_POWER_DOWN_RESULT
 crystalhd_flea_arbiter_readiness(struct crystalhd_hw *hw,
@@ -949,11 +950,13 @@ done:
 	report->end_ns = ktime_get_mono_fast_ns();
 	return report->down_result;
 }
+#endif
+#include "crystalhd_pm_retention_ops.h"
 
 static enum FLEA_POWER_DOWN_RESULT
 crystalhd_flea_runtime_power_dn(struct crystalhd_hw *hw)
 {
-	struct chd_pm_arbiter_report report;
+	struct chd_pm_retention_report report;
 	enum FLEA_POWER_DOWN_RESULT result = FLEA_PD_REFUSED;
 
 	/* Recheck the caller's host admission before even the one-shot claim. */
@@ -967,8 +970,8 @@ crystalhd_flea_runtime_power_dn(struct crystalhd_hw *hw)
 		goto refuse;
 	if (!crystalhd_pm_arbiter_claim())
 		goto refuse;
-	result = crystalhd_flea_arbiter_readiness(hw, &report);
-	crystalhd_pm_arbiter_record(hw, &report);
+	result = crystalhd_flea_retention_cycle(hw, &report);
+	crystalhd_pm_retention_record(hw, &report);
 	if (result == FLEA_PD_FAULT) {
 		hw->FleaPowerState = FLEA_PS_FAULT;
 		crystalhd_hw_publish_fault(hw);

@@ -41,6 +41,20 @@ void crystalhd_pm_arbiter_record(struct crystalhd_hw *hw,
 				 report->down_result, CHD_PM_SHADOW_UNKNOWN);
 }
 
+void crystalhd_pm_retention_record(struct crystalhd_hw *hw,
+			          const struct chd_pm_retention_report *report)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&shadow_lock, flags);
+	shadow_ring.retention = *report;
+	shadow_ring.retention_valid = 1;
+	spin_unlock_irqrestore(&shadow_lock, flags);
+	crystalhd_pm_shadow_trace(hw, CHD_PM_RETENTION, FLEA_EVT_NONE,
+				 hw->FleaPowerState, hw->FleaPowerState,
+				 report->down_result, CHD_PM_SHADOW_UNKNOWN);
+}
+
 void crystalhd_pm_shadow_session(struct crystalhd_hw *hw)
 {
 	unsigned long flags;
@@ -107,6 +121,7 @@ void crystalhd_pm_shadow_trace(struct crystalhd_hw *hw, u32 stage,
 		record.new_state == FLEA_PS_FAULT || stage == CHD_PM_INIT || stage == CHD_PM_RETIRE ||
 		stage == CHD_PM_DOWN_REFUSED || stage == CHD_PM_UP_ENTRY ||
 		stage == CHD_PM_ARBITER ||
+		stage == CHD_PM_RETENTION ||
 		stage == CHD_PM_FLL_RESTORE_BEGIN || stage == CHD_PM_FLL_RESTORE ||
 		record.old_state != record.new_state ||
 		(stage == CHD_PM_SELECT && record.old_state != record.selected_state) ||
@@ -152,8 +167,8 @@ static int shadow_show(struct seq_file *seq, void *unused)
 			snapshot->count) % CHD_PM_SHADOW_RECORDS;
 	(void)unused;
 
-	seq_printf(seq, "artifact=3.10.3-pm-arbiter physical_runtime=compiled-out "
-		   "arbiter_only=one-shot "
+	seq_printf(seq, "artifact=3.10.3-pm-retention clock_gating=compiled-out "
+		   "self_refresh_only=one-shot "
 		   "normal_stop_device_shutdown=unchanged "
 		   "capacity=%u total=%llu overwritten=%llu down_refused=%llu "
 		   "up_entry=%llu lp_complete=%llu violations=%llu "
@@ -174,6 +189,32 @@ static int shadow_show(struct seq_file *seq, void *unused)
 			   a->result, a->restore, a->down_result, a->touched, a->baseline,
 			   a->disable_readback, a->restore_live, a->restore_readback,
 			   a->memc_first, a->memc_last, a->polls, a->delay_us);
+	}
+	if (snapshot->retention_valid) {
+		const struct chd_pm_retention_report *r = &snapshot->retention;
+		const struct chd_pm_retention_poll *p[] = {&r->readiness, &r->entry, &r->wake};
+		const u32 phase[] = {CHD_RET_READINESS, CHD_RET_CKE_LOW, CHD_RET_CKE_HIGH};
+
+		seq_printf(seq, "retention session=%llu begin_ns=%llu end_ns=%llu "
+			   "phase=%u failure=%u rollback_failure=%u result=%u down_result=%u "
+			   "arbiter_touched=%u ddr_requested=%u settle_us=%u "
+			   "master_baseline=%u params_baseline=%u refresh_baseline=%u "
+			   "memc_baseline=%u disable_readback=%u master_restore_live=%u "
+			   "master_restore_readback=%u params_entry_live=%u params_entry_readback=%u "
+			   "refresh_entry_live=%u refresh_entry_readback=%u refresh_restore_live=%u "
+			   "refresh_restore_readback=%u params_restore_live=%u params_restore_readback=%u\n",
+			   r->session, r->begin_ns, r->end_ns, r->phase, r->failure,
+			   r->rollback_failure, r->result, r->down_result,
+			   r->arbiter_touched, r->ddr_requested, r->settle_us,
+			   r->master_baseline, r->params_baseline, r->refresh_baseline,
+			   r->memc_baseline, r->disable_readback, r->master_restore_live,
+			   r->master_restore_readback, r->params_entry_live, r->params_entry_readback,
+			   r->refresh_entry_live, r->refresh_entry_readback, r->refresh_restore_live,
+			   r->refresh_restore_readback, r->params_restore_live, r->params_restore_readback);
+		for (i = 0; i < 3; i++)
+			seq_printf(seq, "retention-poll phase=%u first=%u last=%u polls=%u "
+				   "delay_us=%u result=%u\n", phase[i], p[i]->first,
+				   p[i]->last, p[i]->polls, p[i]->delay_us, p[i]->result);
 	}
 	seq_puts(seq, "kind sequence time_ns session stage request old selected new "
 		 "reserved status fll violations dma_fault tx irq raw fw_transaction "

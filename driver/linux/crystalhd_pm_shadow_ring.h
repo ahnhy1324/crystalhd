@@ -34,6 +34,7 @@ enum chd_pm_shadow_stage {
 	CHD_PM_RETIRE,
 	CHD_PM_FAULT,
 	CHD_PM_ARBITER,
+	CHD_PM_RETENTION,
 	CHD_PM_STAGE_COUNT,
 };
 
@@ -65,6 +66,8 @@ struct chd_pm_shadow_ring {
 	struct chd_pm_shadow_record retire, first_fault;
 	u32 arbiter_valid;
 	struct chd_pm_arbiter_report arbiter;
+	u32 retention_valid;
+	struct chd_pm_retention_report retention;
 };
 
 static inline void chd_pm_shadow_increment(u64 *value)

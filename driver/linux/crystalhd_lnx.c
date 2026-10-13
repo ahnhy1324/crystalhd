@@ -1808,7 +1808,7 @@ static int __init chd_dec_module_init(void)
 
 	printk(KERN_DEBUG "Loading crystalhd v%d.%d.%d\n",
 	       crystalhd_kmod_major, crystalhd_kmod_minor, crystalhd_kmod_rev);
-	pr_info("crystalhd: 3.10.3-pm-arbiter one-shot arbiter probe; runtime gating compiled out, normal stop_device shutdown unchanged\n");
+	pr_info("crystalhd: 3.10.3-pm-retention one-shot DDR retention probe; clock gating compiled out, normal stop_device shutdown unchanged\n");
 	if (force_l0s_off && session_l0s_off) {
 		pr_warn("crystalhd: force_l0s_off takes precedence; session_l0s_off ignored\n");
 		session_l0s_off = false;

@@ -22,6 +22,7 @@ typedef unsigned int BC_STATUS;
 
 #include "pwm-shadow-types.h"
 #include "crystalhd_pm_arbiter.h"
+#include "crystalhd_pm_retention.h"
 #include "crystalhd_pm_shadow_ring.h"
 
 struct mock_adp { u32 present; };
@@ -127,18 +128,18 @@ static void crystalhd_hw_publish_fault(struct crystalhd_hw *hw)
 #include "pwm-shadow-functions.h"
 
 /* This suite exercises no-attempt/refusal and copied trace lifetime only.
- * pwm-arbiter.c separately executes the actual MMIO protocol and one-shot.
+ * pwm-retention.c separately executes the actual MMIO protocol and one-shot.
  */
 static bool crystalhd_pm_arbiter_claim(void) { return false; }
-static enum FLEA_POWER_DOWN_RESULT crystalhd_flea_arbiter_readiness(
-	struct crystalhd_hw *hw, struct chd_pm_arbiter_report *report)
+static enum FLEA_POWER_DOWN_RESULT crystalhd_flea_retention_cycle(
+	struct crystalhd_hw *hw, struct chd_pm_retention_report *report)
 {
 	(void)hw; (void)report;
 	assert(false);
 	return FLEA_PD_FAULT;
 }
-static void crystalhd_pm_arbiter_record(struct crystalhd_hw *hw,
-	const struct chd_pm_arbiter_report *report)
+static void crystalhd_pm_retention_record(struct crystalhd_hw *hw,
+	const struct chd_pm_retention_report *report)
 {
 	(void)hw; (void)report;
 	assert(false);
@@ -234,8 +235,18 @@ int main(void)
 	CHECK(strstr(output, "total=23 overwritten=0 down_refused=15 up_entry=1") != NULL);
 	CHECK(shadow_release(&inode, &file) == 0 && allocations == 0);
 	output_size = 0;
+	shadow_ring.retention_valid = 1;
+	shadow_ring.retention = (struct chd_pm_retention_report) {
+		.session = 4, .phase = CHD_RET_FINISHED,
+		.result = CHD_RET_COMPLETED_CYCLE, .master_restore_readback = 0,
+		.entry = {.first = 0x71, .last = 0x71, .polls = 1, .result = CHD_RET_POLL_REACHED},
+		.wake = {.first = 0x73, .last = 0x73, .polls = 1, .result = CHD_RET_POLL_REACHED},
+	};
 	CHECK(shadow_open(&inode, &file) == 0);
 	CHECK(shadow_show(file.private_data, NULL) == 0);
+	CHECK(strstr(output,"retention session=4 ") &&
+	      strstr(output,"retention-poll phase=7 first=113 last=113 polls=1") &&
+	      strstr(output,"retention-poll phase=11 first=115 last=115 polls=1"));
 	snapshot = ((struct seq_file *)file.private_data)->private;
 	CHECK(snapshot->receipt_count == 23 && snapshot->receipt[0].sequence == 1 &&
 	      snapshot->receipt[1].sequence == 2 && snapshot->retire.sequence == 23 &&
