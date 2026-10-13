@@ -1,14 +1,28 @@
 # Open work
 
-- [ ] [#369: CrystalHD 1.0.0 release preparation](https://github.com/ahnhy1324/crystalhd/issues/369)
-  — user-facing documentation, installation/version identity and bounded
-  candidate qualification; publication requires approval of the final commit
-  and release text.
-- [ ] [#371: Post-1.0 backup, LTS migration and long-duration qualification](https://github.com/ahnhy1324/crystalhd/issues/371)
-  — release first, then verified private recovery image, LTS and same-source
-  baseline, followed by the deferred full soak/lifecycle campaign and fixes.
+Release status **2026-10-13**: G0 is accepted by maintainer exception; G1–G6
+qualification and the release handoff are complete with recorded limitations.
+Remaining order: maintainer GO → stable 1.0.0 publication and public-archive
+verification. Publication is not yet approved.
+Historical RC results and the existing recovery copy remain unchanged.
+
+- [ ] [#369: CrystalHD 1.0.0 final gates and release](https://github.com/ahnhy1324/crystalhd/issues/369)
+  — G0–G6 must PASS, experimental modes need explicit dispositions, and final
+  artifact/installation/documentation checks precede approval of the exact
+  commit and release text. Stable 1.0.0 is not yet approved or published.
+- [ ] [#371: Pre-1.0 recovery, LTS admission and full qualification](https://github.com/ahnhy1324/crystalhd/issues/371)
+  — G0–G4 complete: same-RC LTS admission, core endurance/lifecycle, scaled
+  output and VA event-worker endurance. Moonlight's three one-hour targets
+  and corrected reopen pass hardware/lifecycle/resources; physical A/V and
+  payload-age behavior retain an explicit limited/unverified disposition.
+  Final package `f41ca40` passes direct/DKMS installation, RC rollback and
+  installed-path checks; G6 documentation/decision handoff is complete.
+  Preserve the existing backup under the G0 exception.
+  Pre-stable fixes use further RCs and affected requalification; handoff to
+  #369 does not require an existing final tag.
 - [ ] [#91: Deferred hardware and application acceptance](https://github.com/ahnhy1324/crystalhd/issues/91)
-  — alternate hardware/LTS, power management, broader streams, and physical
+  — alternate hardware, the LTS item executed through #371, power management,
+  broader streams, and physical
   presentation/A/V synchronization.
 - [ ] [#92: BCM70015 capability research](https://github.com/ahnhy1324/crystalhd/issues/92)
   — pinned firmware mapping and live OPEN/scaling evidence; standalone
@@ -19,5 +33,7 @@
 
 Acceptance checklists live in those issues. Current usage and support are in
 [README.md](README.md); the frozen hardware reference is in
-[HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md). Deferred tests remain
-unvalidated, not passed.
+[HARDWARE-2026-09-13.md](HARDWARE-2026-09-13.md). The published baseline remains
+bundle `1.0.0-rc.1`, module/DKMS `3.10.2`. Mandatory missing tests remain
+NOT RUN/HOLD; only optional work may be deferred. Historical Phase 1 and
+bounded RC evidence do not establish new LTS/full-duration passes.

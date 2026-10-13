@@ -57,6 +57,8 @@ typedef struct {
   gboolean require_double_speed;
   guint sustain_seconds;
   guint expected_width, expected_height;
+  guint scale_width, input_width, input_height;
+  gboolean input_caps_verified;
   gboolean failed;
   gchar reason[256];
   Stream video, audio;
@@ -334,23 +336,36 @@ static GstClockTime running_clock(Audit *audit) {
   return now >= base ? now - base : GST_CLOCK_TIME_NONE;
 }
 
-static gboolean barcode_buffer(GstBuffer *buffer, const GstVideoInfo *info, guint *identity) {
+static guint barcode_coordinate(guint position, guint output, guint input) {
+  return (guint)((guint64)position * output / input);
+}
+
+static gboolean barcode_buffer(GstBuffer *buffer, const GstVideoInfo *info,
+                               const Audit *audit, guint *identity) {
   GstVideoFrame frame;
+  const guint width = GST_VIDEO_INFO_WIDTH(info), height = GST_VIDEO_INFO_HEIGHT(info);
+  const gboolean scaled = audit != NULL && audit->scale_width != 0;
+  const guint input_width = scaled ? audit->input_width : width;
+  const guint input_height = scaled ? audit->input_height : height;
   *identity = 0;
   if (buffer == NULL || GST_VIDEO_INFO_FORMAT(info) != GST_VIDEO_FORMAT_YUY2 ||
-      GST_VIDEO_INFO_WIDTH(info) < 288 || GST_VIDEO_INFO_HEIGHT(info) < 32 ||
+      width < 288 || height < 32 || input_width < 288 || input_height < 32 ||
       !gst_video_frame_map(&frame, info, buffer, GST_MAP_READ)) return FALSE;
   const gint stride = GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 0);
   gboolean valid = stride >= GST_VIDEO_INFO_WIDTH(info) * 2;
   if (valid) {
     const guint8 *base = GST_VIDEO_FRAME_PLANE_DATA(&frame, 0);
-    const guint8 *row = base + 16 * stride;
+    const guint8 *row = base + barcode_coordinate(16, height, input_height) * stride;
     for (guint bit = 0; bit < 9; ++bit)
-      if (row[(16 + 24 * bit) * 2] > 128) *identity |= 1U << bit;
-    valid = row[248 * 2] >= 200 && row[272 * 2] <= 50;
+      if (row[barcode_coordinate(16 + 24 * bit, width, input_width) * 2] > 128)
+        *identity |= 1U << bit;
+    valid = row[barcode_coordinate(248, width, input_width) * 2] >= 200 &&
+        row[barcode_coordinate(272, width, input_width) * 2] <= 50;
     for (guint y = 0; valid && y < 8; ++y) {
       guint luma = 0;
-      for (guint x = 244; x < 252; ++x) luma += base[y * stride + x * 2];
+      const guint output_y = barcode_coordinate(y, height, input_height);
+      for (guint x = 244; x < 252; ++x)
+        luma += base[output_y * stride + barcode_coordinate(x, width, input_width) * 2];
       valid = luma >= 8 * 180;
     }
   }
@@ -366,28 +381,86 @@ static gboolean expected_geometry(const Audit *audit, const GstVideoInfo *info) 
       width >= 288 && height >= 32;
 }
 
+static gboolean expected_output_aspect(const Audit *audit, const GstVideoInfo *info) {
+  if (audit->scale_width == 0) return TRUE;
+  const gint par_n = GST_VIDEO_INFO_PAR_N(info), par_d = GST_VIDEO_INFO_PAR_D(info);
+  /* The generated source fixture has square pixels. Rounded output heights
+   * must retain its display aspect, not silently force output PAR to 1:1. */
+  return par_n > 0 && par_d > 0 &&
+      GST_VIDEO_INFO_INTERLACE_MODE(info) == GST_VIDEO_INTERLACE_MODE_PROGRESSIVE &&
+      (gint64)par_n * GST_VIDEO_INFO_WIDTH(info) * audit->input_height ==
+          (gint64)par_d * GST_VIDEO_INFO_HEIGHT(info) * audit->input_width;
+}
+
+static gboolean expected_input_caps(const Audit *audit, const GstCaps *caps) {
+  if (caps == NULL || !gst_caps_is_fixed(caps)) return FALSE;
+  const GstStructure *structure = gst_caps_get_structure(caps, 0);
+  gint width, height, fps_n, fps_d, par_n = 1, par_d = 1;
+  const gchar *interlace = gst_structure_get_string(structure, "interlace-mode");
+  const gchar *coded_structure = gst_structure_get_string(structure, "coded-picture-structure");
+  gboolean parsed = FALSE;
+  gst_structure_get_boolean(structure, "parsed", &parsed);
+  /* h264parse 1.28 maps SPS frame_mbs_only_flag=1 to "frame" rather than
+   * necessarily publishing interlace-mode. Do not infer progressive from
+   * missing caps alone or ignore a contradictory explicit field mode. */
+  const gboolean progressive = interlace != NULL ? g_str_equal(interlace, "progressive") :
+      !gst_structure_has_field(structure, "interlace-mode") && parsed &&
+      coded_structure != NULL && g_str_equal(coded_structure, "frame");
+  return gst_structure_has_name(structure, "video/x-h264") &&
+      gst_structure_get_int(structure, "width", &width) && width == (gint)audit->input_width &&
+      gst_structure_get_int(structure, "height", &height) && height == (gint)audit->input_height &&
+      gst_structure_get_fraction(structure, "framerate", &fps_n, &fps_d) &&
+      fps_n == 30 && fps_d == 1 && progressive &&
+      (!gst_structure_has_field(structure, "coded-picture-structure") ||
+       (coded_structure != NULL && g_str_equal(coded_structure, "frame"))) &&
+      (!gst_structure_has_field(structure, "pixel-aspect-ratio") ||
+       gst_structure_get_fraction(structure, "pixel-aspect-ratio", &par_n, &par_d)) &&
+      par_n > 0 && par_n == par_d;
+}
+
+static GstPadProbeReturn input_caps_event(GstPad *pad, GstPadProbeInfo *info, gpointer data) {
+  Audit *audit = data;
+  GstEvent *event = GST_PAD_PROBE_INFO_EVENT(info);
+  (void)pad;
+  if (GST_EVENT_TYPE(event) == GST_EVENT_CAPS) {
+    GstCaps *caps;
+    gst_event_parse_caps(event, &caps);
+    g_mutex_lock(&audit->mutex);
+    audit->input_caps_verified = expected_input_caps(audit, caps);
+    if (!audit->input_caps_verified)
+      fail(audit, "Scaled input must match the declared progressive 30fps square-pixel geometry");
+    g_mutex_unlock(&audit->mutex);
+  }
+  return GST_PAD_PROBE_OK;
+}
+
 static void video_handoff(GstElement *sink, GstBuffer *buffer, GstPad *pad, gpointer data) {
   Audit *audit = ((StreamData *)data)->audit;
   GstCaps *caps = gst_pad_get_current_caps(pad);
   GstVideoInfo info;
   const gboolean have_info = caps != NULL && gst_video_info_from_caps(&info, caps);
   const gboolean geometry_valid = have_info && expected_geometry(audit, &info);
+  const gboolean aspect_valid = have_info && expected_output_aspect(audit, &info);
   gboolean valid = have_info &&
       GST_VIDEO_INFO_FORMAT(&info) == GST_VIDEO_FORMAT_YUY2 &&
-      geometry_valid &&
+      geometry_valid && aspect_valid &&
       GST_VIDEO_INFO_FPS_N(&info) == 30 && GST_VIDEO_INFO_FPS_D(&info) == 1;
   guint identity = 0;
   (void)sink;
   const GstClockTime clock = running_clock(audit);
-  if (valid) valid = barcode_buffer(buffer, &info, &identity);
+  if (valid) valid = barcode_buffer(buffer, &info, audit, &identity);
   if (caps != NULL) gst_caps_unref(caps);
   g_mutex_lock(&audit->mutex);
-  if (!valid && have_info && audit->expected_width != 0 && !geometry_valid) {
+  if (audit->scale_width != 0 && !audit->input_caps_verified) {
+    fail(audit, "Scaled output arrived without verified input geometry");
+  } else if (!valid && have_info && audit->expected_width != 0 && !geometry_valid) {
     gchar reason[256];
     g_snprintf(reason, sizeof(reason), "Unexpected decoded geometry: got=%ux%u expected=%ux%u",
         GST_VIDEO_INFO_WIDTH(&info), GST_VIDEO_INFO_HEIGHT(&info),
         audit->expected_width, audit->expected_height);
     fail(audit, reason);
+  } else if (have_info && !aspect_valid) {
+    fail(audit, "Scaled output must be progressive and preserve the source display aspect ratio");
   } else if (!valid) fail(audit, "Invalid YUY2 geometry or barcode reference pixels");
   else {
     GstClockTime pts = GST_BUFFER_PTS(buffer);
@@ -512,9 +585,22 @@ static gboolean valid_run_limits(guint sustain_seconds, guint timeout_seconds) {
       timeout_seconds <= MAX_SUSTAIN_TIMEOUT;
 }
 
+static gboolean valid_scaling_options(gboolean software, guint scale_width,
+                                      guint input_width, guint input_height,
+                                      guint expected_width, guint expected_height) {
+  if (scale_width == 0) return input_width == 0 && input_height == 0;
+  return !software && scale_width >= 288 && scale_width <= 1918 &&
+      scale_width % 2 == 0 && input_width >= scale_width && input_width <= 1920 &&
+      input_height >= 32 && input_height <= 1088 &&
+      input_width % 2 == 0 && input_height % 2 == 0 &&
+      expected_width == scale_width && expected_height >= 32 &&
+      expected_height <= input_height && expected_height % 2 == 0;
+}
+
 static int run(const gchar *filename, const gchar *decoder, const gchar *audio_decoder,
                guint timeout_seconds, guint sustain_seconds, guint expected_width,
-               guint expected_height, gboolean skip_double_speed) {
+               guint expected_height, gboolean skip_double_speed, guint scale_width,
+               guint input_width, guint input_height) {
   Audit audit;
   init_audit(&audit, audio_decoder != NULL);
   if (!phase1_progress_open(&audit.progress)) {
@@ -525,6 +611,9 @@ static int run(const gchar *filename, const gchar *decoder, const gchar *audio_d
   audit.sustain_seconds = sustain_seconds;
   audit.expected_width = expected_width;
   audit.expected_height = expected_height;
+  audit.scale_width = scale_width;
+  audit.input_width = input_width;
+  audit.input_height = input_height;
   audit.require_double_speed = !skip_double_speed;
   GError *error = NULL;
   gchar *description = g_strdup_printf(
@@ -557,6 +646,29 @@ static int run(const gchar *filename, const gchar *decoder, const gchar *audio_d
   GstElement *source = gst_bin_get_by_name(GST_BIN(audit.pipeline), "source");
   g_object_set(source, "location", filename, NULL);
   gst_object_unref(source);
+  GstPad *input_pad = NULL;
+  if (scale_width != 0) {
+    GstElement *decode = gst_bin_get_by_name(GST_BIN(audit.pipeline), "decoder");
+    GParamSpec *property = g_object_class_find_property(G_OBJECT_GET_CLASS(decode), "scale-width");
+    guint actual_width = 0;
+    if (property != NULL && G_PARAM_SPEC_VALUE_TYPE(property) == G_TYPE_UINT &&
+        (property->flags & G_PARAM_READWRITE) == G_PARAM_READWRITE) {
+      g_object_set(decode, "scale-width", scale_width, NULL);
+      g_object_get(decode, "scale-width", &actual_width, NULL);
+      input_pad = gst_element_get_static_pad(decode, "sink");
+    }
+    gst_object_unref(decode);
+    if (actual_width != scale_width || input_pad == NULL) {
+      g_printerr("Decoder does not expose the requested hardware scale-width\n");
+      if (input_pad != NULL) gst_object_unref(input_pad);
+      gst_object_unref(audit.pipeline);
+      phase1_progress_close(&audit.progress);
+      g_mutex_clear(&audit.mutex);
+      return 1;
+    }
+    gst_pad_add_probe(input_pad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM,
+                      input_caps_event, &audit, NULL);
+  }
   GstElement *video = gst_bin_get_by_name(GST_BIN(audit.pipeline), "video");
   GstElement *audio = audio_decoder != NULL ? gst_bin_get_by_name(GST_BIN(audit.pipeline), "audio") : NULL;
   StreamData video_data = {&audit, FALSE}, audio_data = {&audit, TRUE};
@@ -629,7 +741,7 @@ static int run(const gchar *filename, const gchar *decoder, const gchar *audio_d
     }
     if (phase == PAUSED && now - paused_at >= G_USEC_PER_SEC) {
       guint retained_identity = 0;
-      if (!barcode_buffer(paused_buffer, &paused_info, &retained_identity) ||
+      if (!barcode_buffer(paused_buffer, &paused_info, &audit, &retained_identity) ||
           retained_identity != paused_identity) {
         g_printerr("Retained paused picture changed its barcode pixels\n");
         success = FALSE;
@@ -724,6 +836,7 @@ static int run(const gchar *filename, const gchar *decoder, const gchar *audio_d
             audit.last_good_identity);
   g_mutex_unlock(&audit.mutex);
   gst_object_unref(video_pad);
+  if (input_pad != NULL) gst_object_unref(input_pad);
   if (audio_pad != NULL) gst_object_unref(audio_pad);
   gst_object_unref(video);
   if (audio != NULL) gst_object_unref(audio);
@@ -1102,22 +1215,22 @@ static int self_test(void) {
       map.data[y * info.stride[0] + x * 2] = 235;
   gst_buffer_unmap(buffer, &map);
   guint identity = 0;
-  REQUIRE(barcode_buffer(buffer, &info, &identity) && identity == 1);
+  REQUIRE(barcode_buffer(buffer, &info, NULL, &identity) && identity == 1);
   REQUIRE(gst_buffer_map(buffer, &map, GST_MAP_WRITE));
   for (guint x = 244; x < 252; ++x) map.data[3 * info.stride[0] + x * 2] = 16;
   gst_buffer_unmap(buffer, &map);
-  REQUIRE(!barcode_buffer(buffer, &info, &identity));
+  REQUIRE(!barcode_buffer(buffer, &info, NULL, &identity));
   REQUIRE(gst_buffer_map(buffer, &map, GST_MAP_WRITE));
   for (guint x = 244; x < 252; ++x) map.data[3 * info.stride[0] + x * 2] = 235;
   gst_buffer_unmap(buffer, &map);
   REQUIRE(gst_buffer_map(buffer, &map, GST_MAP_WRITE));
   map.data[row + 16 * 2] = 16;
   gst_buffer_unmap(buffer, &map);
-  REQUIRE(barcode_buffer(buffer, &info, &identity) && identity != 1);
+  REQUIRE(barcode_buffer(buffer, &info, NULL, &identity) && identity != 1);
   REQUIRE(gst_buffer_map(buffer, &map, GST_MAP_WRITE));
   map.data[row + 248 * 2] = 16;
   gst_buffer_unmap(buffer, &map);
-  REQUIRE(!barcode_buffer(buffer, &info, &identity));
+  REQUIRE(!barcode_buffer(buffer, &info, NULL, &identity));
   gst_buffer_unref(buffer);
   init_audit(&audit, FALSE);
   REQUIRE(next_control_phase(&audit, HALF_SPEED) == DOUBLE_SPEED);
@@ -1137,28 +1250,166 @@ static int self_test(void) {
 #undef REQUIRE
 }
 
+static int scaling_self_test(void) {
+  guint tests = 0;
+#define REQUIRE(condition) do { ++tests; if (!(condition)) { \
+  g_printerr("Scaled controls self-test failed at line %d\n", __LINE__); return 1; } } while (0)
+  Audit audit;
+  init_audit(&audit, FALSE);
+  audit.scale_width = audit.expected_width = 1280;
+  audit.expected_height = 720;
+  audit.input_width = 1920;
+  audit.input_height = 1080;
+  REQUIRE(valid_scaling_options(FALSE, 0, 0, 0, 0, 0));
+  REQUIRE(valid_scaling_options(FALSE, 1280, 1920, 1080, 1280, 720));
+  REQUIRE(!valid_scaling_options(TRUE, 1280, 1920, 1080, 1280, 720));
+  REQUIRE(!valid_scaling_options(FALSE, 0, 1920, 1080, 1280, 720));
+  REQUIRE(!valid_scaling_options(FALSE, 1280, 0, 0, 1280, 720));
+  REQUIRE(!valid_scaling_options(FALSE, 1281, 1920, 1080, 1281, 720));
+  REQUIRE(!valid_scaling_options(FALSE, 1920, 1920, 1080, 1920, 1080));
+  REQUIRE(!valid_scaling_options(FALSE, 1280, 640, 360, 1280, 720));
+  REQUIRE(!valid_scaling_options(FALSE, 1280, 1920, 1080, 1920, 1080));
+  REQUIRE(!valid_scaling_options(FALSE, 1280, 1920, 1080, 1280, 721));
+  REQUIRE(!valid_scaling_options(FALSE, 1280, 1920, 1080, 1280, 1082));
+  REQUIRE(!valid_scaling_options(FALSE, 1280, 1920, 1080, 0, 0));
+  GstCaps *caps = gst_caps_new_simple("video/x-h264",
+      "width", G_TYPE_INT, 1920, "height", G_TYPE_INT, 1080,
+      "framerate", GST_TYPE_FRACTION, 30, 1,
+      "pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1,
+      "interlace-mode", G_TYPE_STRING, "progressive", NULL);
+  REQUIRE(expected_input_caps(&audit, caps));
+  gst_caps_set_simple(caps, "width", G_TYPE_INT, 1280, NULL);
+  REQUIRE(!expected_input_caps(&audit, caps));
+  gst_caps_set_simple(caps, "width", G_TYPE_INT, 1920,
+      "pixel-aspect-ratio", GST_TYPE_FRACTION, 2, 1, NULL);
+  REQUIRE(!expected_input_caps(&audit, caps));
+  gst_caps_set_simple(caps, "pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1,
+      "interlace-mode", G_TYPE_STRING, "interleaved", NULL);
+  REQUIRE(!expected_input_caps(&audit, caps));
+  gst_caps_set_simple(caps, "interlace-mode", G_TYPE_STRING, "progressive",
+      "framerate", GST_TYPE_FRACTION, 60, 1, NULL);
+  REQUIRE(!expected_input_caps(&audit, caps));
+  gst_caps_set_simple(caps, "framerate", GST_TYPE_FRACTION, 30, 1,
+      "coded-picture-structure", G_TYPE_STRING, "frame", "parsed", G_TYPE_BOOLEAN, TRUE, NULL);
+  REQUIRE(expected_input_caps(&audit, caps));
+  gst_structure_remove_field(gst_caps_get_structure(caps, 0), "interlace-mode");
+  REQUIRE(expected_input_caps(&audit, caps)); /* Actual 1.28 h264parse caps. */
+  gst_caps_set_simple(caps, "coded-picture-structure", G_TYPE_STRING, "field", NULL);
+  REQUIRE(!expected_input_caps(&audit, caps));
+  gst_caps_set_simple(caps, "coded-picture-structure", G_TYPE_STRING, "mbaff", NULL);
+  REQUIRE(!expected_input_caps(&audit, caps));
+  gst_caps_set_simple(caps, "coded-picture-structure", G_TYPE_STRING, "frame",
+      "interlace-mode", G_TYPE_STRING, "interleaved", NULL);
+  REQUIRE(!expected_input_caps(&audit, caps));
+  gst_caps_set_simple(caps, "coded-picture-structure", G_TYPE_STRING, "field",
+      "interlace-mode", G_TYPE_STRING, "progressive", NULL);
+  REQUIRE(!expected_input_caps(&audit, caps));
+  gst_structure_remove_field(gst_caps_get_structure(caps, 0), "interlace-mode");
+  gst_caps_set_simple(caps, "coded-picture-structure", G_TYPE_STRING, "frame",
+      "parsed", G_TYPE_BOOLEAN, FALSE, NULL);
+  REQUIRE(!expected_input_caps(&audit, caps));
+  gst_structure_remove_field(gst_caps_get_structure(caps, 0), "coded-picture-structure");
+  REQUIRE(!expected_input_caps(&audit, caps));
+  gst_caps_unref(caps);
+  REQUIRE(!expected_input_caps(&audit, NULL));
+
+  GstVideoInfo info;
+  gst_video_info_set_format(&info, GST_VIDEO_FORMAT_YUY2, 1280, 720);
+  REQUIRE(expected_geometry(&audit, &info) && expected_output_aspect(&audit, &info));
+  info.par_n = 2;
+  REQUIRE(!expected_output_aspect(&audit, &info));
+  info.par_n = 1;
+  info.interlace_mode = GST_VIDEO_INTERLACE_MODE_INTERLEAVED;
+  REQUIRE(!expected_output_aspect(&audit, &info));
+  gst_video_info_set_format(&info, GST_VIDEO_FORMAT_YUY2, 1280, 722);
+  REQUIRE(!expected_geometry(&audit, &info) && !expected_output_aspect(&audit, &info));
+  info.par_n = 361;
+  info.par_d = 360;
+  REQUIRE(expected_output_aspect(&audit, &info));
+  gst_video_info_set_format(&info, GST_VIDEO_FORMAT_YUY2, 1920, 1080);
+  REQUIRE(!expected_geometry(&audit, &info));
+  gst_video_info_set_format(&info, GST_VIDEO_FORMAT_YUY2, 1280, 720);
+  GstBuffer *buffer = gst_buffer_new_allocate(NULL, info.size, NULL);
+  GstMapInfo map;
+  const guint identities[] = {0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 359};
+  for (guint entry = 0; entry < G_N_ELEMENTS(identities); ++entry) {
+    REQUIRE(gst_buffer_map(buffer, &map, GST_MAP_WRITE));
+    memset(map.data, 16, map.size);
+    /* Inverse nearest-centre sampling of the generator's actual rectangles,
+     * independent of the forward coordinate helper used by the checker. */
+    for (guint y = 0; y < 22; ++y) {
+      const guint source_y = (2 * y + 1) * 1080 / (2 * 720);
+      for (guint x = 0; x < 192; ++x) {
+        const guint source_x = (2 * x + 1) * 1920 / (2 * 1280);
+        gboolean white = source_x >= 240 && source_x < 256 && source_y < 32;
+        for (guint bit = 0; bit < 9; ++bit)
+          if ((identities[entry] & (1U << bit)) != 0 &&
+              source_x >= 8 + 24 * bit && source_x < 24 + 24 * bit &&
+              source_y >= 8 && source_y < 24) white = TRUE;
+        if (white) map.data[y * info.stride[0] + x * 2] = 235;
+      }
+    }
+    gst_buffer_unmap(buffer, &map);
+    guint identity;
+    REQUIRE(barcode_buffer(buffer, &info, &audit, &identity) && identity == identities[entry]);
+  }
+  guint identity;
+  REQUIRE(!barcode_buffer(buffer, &info, NULL, &identity));
+  REQUIRE(gst_buffer_map(buffer, &map, GST_MAP_WRITE));
+  memset(map.data, 16, info.stride[0]); /* A missing first output line is not hidden by scaling. */
+  gst_buffer_unmap(buffer, &map);
+  REQUIRE(!barcode_buffer(buffer, &info, &audit, &identity));
+  gst_buffer_unref(buffer);
+  buffer = gst_buffer_new_allocate(NULL, 16, NULL);
+  REQUIRE(!barcode_buffer(buffer, &info, &audit, &identity));
+  gst_buffer_unref(buffer);
+  audit.input_width = 0;
+  REQUIRE(!barcode_buffer(NULL, &info, &audit, &identity));
+  g_mutex_clear(&audit.mutex);
+  g_print("GStreamer scaled controls hardware-free self-test: %u checks passed\n", tests);
+  return 0;
+#undef REQUIRE
+}
+
 int main(int argc, char **argv) {
   gst_init(&argc, &argv);
-  if (argc == 2 && g_str_equal(argv[1], "--self-test")) return self_test();
+  if (argc == 2 && g_str_equal(argv[1], "--self-test"))
+    return self_test() != 0 ? 1 : scaling_self_test();
   gboolean software = FALSE, audio = FALSE, skip_double_speed = FALSE;
-  gboolean have_timeout = FALSE;
+  gboolean have_timeout = FALSE, have_scale = FALSE;
   const gchar *decoder = NULL;
   guint timeout = 90, sustain_seconds = 0, expected_width = 0, expected_height = 0;
+  guint scale_width = 0, input_width = 0, input_height = 0;
   if (argc < 2 || argv[1][0] == '-') goto usage;
   for (gint arg = 2; arg < argc; ++arg) {
     if (g_str_equal(argv[arg], "--software") && !software) software = TRUE;
     else if (g_str_equal(argv[arg], "--audio") && !audio) audio = TRUE;
     else if (g_str_equal(argv[arg], "--skip-2x") && !skip_double_speed)
       skip_double_speed = TRUE;
-    else if (g_str_equal(argv[arg], "--expect-geometry") && expected_width == 0 && arg + 1 < argc) {
+    else if ((g_str_equal(argv[arg], "--expect-geometry") && expected_width == 0 && arg + 1 < argc) ||
+             (g_str_equal(argv[arg], "--input-geometry") && input_width == 0 && arg + 1 < argc)) {
+      const gboolean input_geometry = g_str_equal(argv[arg], "--input-geometry");
       gchar *separator, *end;
       guint64 width = g_ascii_strtoull(argv[++arg], &separator, 10);
       if (*argv[arg] == '\0' || separator == argv[arg] || *separator != 'x') goto usage;
       guint64 height = g_ascii_strtoull(separator + 1, &end, 10);
       if (end == separator + 1 || *end != '\0' || width < 288 || width > G_MAXINT ||
           height < 32 || height > G_MAXINT) goto usage;
-      expected_width = (guint)width;
-      expected_height = (guint)height;
+      if (input_geometry) {
+        input_width = (guint)width;
+        input_height = (guint)height;
+      } else {
+        expected_width = (guint)width;
+        expected_height = (guint)height;
+      }
+    }
+    else if (g_str_equal(argv[arg], "--scale-width") && !have_scale && arg + 1 < argc) {
+      gchar *end;
+      const guint64 width = g_ascii_strtoull(argv[++arg], &end, 10);
+      if (*argv[arg] == '\0' || *argv[arg] == '-' || *end != '\0' || width > G_MAXUINT)
+        goto usage;
+      scale_width = (guint)width;
+      have_scale = TRUE;
     }
     else if (g_str_equal(argv[arg], "--decoder") && decoder == NULL && arg + 1 < argc)
       decoder = argv[++arg];
@@ -1178,6 +1429,8 @@ int main(int argc, char **argv) {
     } else goto usage;
   }
   if (sustain_seconds != 0 && skip_double_speed) goto usage;
+  if (!valid_scaling_options(software, scale_width, input_width, input_height,
+                            expected_width, expected_height)) goto usage;
   if (sustain_seconds != 0 && !have_timeout) timeout = sustain_seconds + 60;
   if (!valid_run_limits(sustain_seconds, timeout)) goto usage;
   if (decoder != NULL && (!software ||
@@ -1192,12 +1445,20 @@ int main(int argc, char **argv) {
   g_print("Testing clocked sinks only: no visible display or audible-output claim\n");
   if (expected_width != 0)
     g_print("Requiring exact decoded geometry: %ux%u\n", expected_width, expected_height);
+  if (scale_width != 0)
+    g_print("Hardware scale-width=%u: source=%ux%u progressive 30fps PAR 1:1; "
+        "verify scaled barcode pixels and preserved display aspect\n",
+        scale_width, input_width, input_height);
   return run(argv[1], decoder, audio_decoder, timeout, sustain_seconds,
-             expected_width, expected_height, skip_double_speed);
+             expected_width, expected_height, skip_double_speed, scale_width,
+             input_width, input_height);
 usage:
   g_printerr("usage: %s BARCODE.mp4 [--software [--decoder avdec_h264|openh264dec]] [--audio] "
-      "[--expect-geometry WIDTHxHEIGHT] [--skip-2x] [--sustain SECONDS] [--timeout SECONDS]\n"
+      "[--expect-geometry WIDTHxHEIGHT] [--scale-width WIDTH --input-geometry WIDTHxHEIGHT] "
+      "[--skip-2x] [--sustain SECONDS] [--timeout SECONDS]\n"
       "  --expect-geometry: require this exact decoded width and height\n"
+      "  --scale-width: hardware only, zero/native or even288..1918; scaled runs require\n"
+      "    --input-geometry (progressive 30fps square-pixel source) and --expect-geometry\n"
       "  --skip-2x: certify the other controls without running the 2x phase\n"
       "  --sustain: continuous 12-second barcode repetitions, multiple of12 within12..28800; no controls\n"
       "  --timeout: controls10..600 (default90), sustain duration..duration+3600 "

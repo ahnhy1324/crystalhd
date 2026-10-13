@@ -19,6 +19,8 @@ not announce a published release.
   previous-frame mode for higher cadence, with measured timing/CPU tradeoffs.
 - Compatibility: retain `libcrystalhd.so.3`, legacy ioctl behavior, x86-64/i686
   builds and old-GStreamer support; separate bundle and component versions.
+- Installation: keep public module/runtime paths and module indexes readable
+  when the invoking shell uses a restrictive file-creation mask.
 - Limits: BCM70015 local playback is the primary path. BCM70012, additional
   hosts and browser hardware coverage remain unvalidated; standalone video
   processing and V4L2 research are not advertised as working frontends.

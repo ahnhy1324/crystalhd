@@ -56,23 +56,23 @@ install-preflight:
 	fi
 
 install-module: install-preflight crystalhd.ko
-	install -D -m 0644 crystalhd.ko $(DESTDIR)$(MODULEDIR)/crystalhd.ko
+	@umask 022; install -d -m 0755 "$(DESTDIR)$(MODULEDIR)" && \
+		install -m 0644 crystalhd.ko "$(DESTDIR)$(MODULEDIR)/crystalhd.ko"
 	@if [ -z "$(DESTDIR)" ] && command -v depmod >/dev/null 2>&1; then \
-		depmod -a $(KVER); \
+		umask 022; depmod -a $(KVER); \
 	fi
 
 install-udev:
-	install -D -m 0644 20-crystalhd.rules $(DESTDIR)$(UDEVDIR)/20-crystalhd.rules
+	@umask 022; install -d -m 0755 "$(DESTDIR)$(UDEVDIR)" && \
+		install -m 0644 20-crystalhd.rules "$(DESTDIR)$(UDEVDIR)/20-crystalhd.rules"
 	@if [ -z "$(DESTDIR)" ] && command -v udevadm >/dev/null 2>&1; then \
 		udevadm control --reload-rules || \
 			echo "WARN: udev rules installed, but the daemon did not reload them" >&2; \
 	fi
 
 install-firmware:
-	install -D -m 0644 ../../firmware/fwbin/70015/bcm70015fw.bin \
-		$(DESTDIR)$(FIRMWAREDIR)/bcm70015fw.bin
-	install -D -m 0644 ../../firmware/fwbin/70012/bcm70012fw.bin \
-		$(DESTDIR)$(FIRMWAREDIR)/bcm70012fw.bin
+	@umask 022; install -d -m 0755 "$(DESTDIR)$(FIRMWAREDIR)" && \
+		install -m 0644 $(FIRMWARE) "$(DESTDIR)$(FIRMWAREDIR)/"
 
 uninstall: uninstall-module uninstall-udev uninstall-firmware
 
@@ -83,7 +83,7 @@ uninstall-module:
 	fi
 	rm -f -- "$(DESTDIR)$(MODULEDIR)/crystalhd.ko"
 	@if [ -z "$(DESTDIR)" ] && command -v depmod >/dev/null 2>&1; then \
-		depmod -a $(KVER); \
+		umask 022; depmod -a $(KVER); \
 	fi
 
 uninstall-udev:

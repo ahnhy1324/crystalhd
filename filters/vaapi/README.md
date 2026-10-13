@@ -139,7 +139,8 @@ already active, low-delay decode plus NV12 download reached about 83 fps at
 host. The observed 60 fps boundary lay between 1536x864 and 1568x882. Input
 rates from 5 to 20 Mbit/s did not materially change the 720p result.
 
-In three matched unmodified-Moonlight 720p60 runs per mode, software submitted
+In the historical three-run unmodified-Moonlight 720p60 series with **V-sync
+and frame pacing both on**, software submitted
 41.06–41.43 frames/s, CrystalHD live-only submitted 18.94–19.15, and
 live+prefeed submitted 32.05–35.49. A separate paired steady trace measured
 about 60.02 and 60.00 CrystalHD outputs/s respectively while prefeed reduced
@@ -148,8 +149,11 @@ real access-unit-to-matching-output p50/p95 from 36.05/45.12 ms to
 Moonlight's component sum is not measured input-to-photon latency. An earlier
 native-output 1080p60 run accumulated a multi-second decoder backlog. These
 figures describe the default frame-matching/live-prefeed path. The separate
-previous-frame experiment reached near-60 renderer handoff at 720p60 under
-its documented conditions; neither series measured physical scanout.
+previous-frame experiment reached near-60 renderer handoff at 720p60 with
+**V-sync and pacing both off**. Its repeated finalists did not include an
+exact-identity hardware control: these two series are not a matched A/B and
+do not establish a settings-independent default-mode ceiling. Neither series
+measured physical scanout.
 Methods, resource use and measurement boundaries are in
 the [hardware report](../../HARDWARE-2026-09-13.md#va-api-decode-and-game-stream-baseline-2026-10-10).
 

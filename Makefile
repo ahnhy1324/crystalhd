@@ -214,13 +214,14 @@ install-module: install-preflight driver
 	$(MAKE) -C driver/linux -f Makefile.in $(DRIVER_ARGS) install-module
 
 install-runtime: library gstreamer vaapi
-	$(MAKE) -C driver/linux -f Makefile.in $(DRIVER_ARGS) install-udev
-	$(MAKE) -C firmware DESTDIR=$(DESTDIR) install
-	$(MAKE) -C linux_lib/libcrystalhd $(USER_ARGS) install
-	$(MAKE) -C filters/gst/gst-plugin-1.0 $(USER_ARGS) install
-	$(MAKE) -C filters/vaapi $(USER_ARGS) install
-	$(MAKE) install-check
-	install -D -m 0644 VERSION "$(DESTDIR)$(DATADIR)/crystalhd/VERSION"
+	+@set -e; umask 022; \
+		$(MAKE) -C driver/linux -f Makefile.in $(DRIVER_ARGS) install-udev; \
+		$(MAKE) -C firmware DESTDIR=$(DESTDIR) install; \
+		$(MAKE) -C linux_lib/libcrystalhd $(USER_ARGS) install; \
+		$(MAKE) -C filters/gst/gst-plugin-1.0 $(USER_ARGS) install; \
+		$(MAKE) -C filters/vaapi $(USER_ARGS) install; \
+		$(MAKE) install-check
+	@umask 022; install -D -m 0644 VERSION "$(DESTDIR)$(DATADIR)/crystalhd/VERSION"
 
 install-browser: browser
 	$(MAKE) -C browser $(USER_ARGS) install

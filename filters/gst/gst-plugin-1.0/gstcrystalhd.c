@@ -134,6 +134,83 @@ static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE(
                     "framerate=(fraction)[0/1,MAX]"));
 
 static gboolean
+gst_crystalhd_scale_width_valid(guint width)
+{
+  return width >= CRYSTALHD_SCALE_MIN_WIDTH &&
+      width <= CRYSTALHD_SCALE_MAX_WIDTH && (width & 1) == 0;
+}
+
+static GstCaps *
+gst_crystalhd_getcaps(GstVideoDecoder *decoder, GstCaps *filter)
+{
+  GstCrystalHdDec *self = GST_CRYSTALHD_DEC(decoder);
+  GstCaps *output, *peer, *allowed, *caps, *input, *result;
+  guint scale_width, i, j, k;
+  static const gchar *invariant_fields[] = {
+    "framerate", "colorimetry", "chroma-site"
+  };
+
+  GST_OBJECT_LOCK(self);
+  scale_width = self->scale_width;
+  GST_OBJECT_UNLOCK(self);
+  if (scale_width == 0)
+    return gst_video_decoder_proxy_getcaps(decoder, NULL, filter);
+  if (!gst_crystalhd_scale_width_valid(scale_width))
+    return gst_caps_new_empty();
+
+  /* Scaling changes output geometry and PAR, not the encoded geometry.
+   * Prune incompatible output alternatives before projecting the remaining
+   * constraints upstream, so their framerates cannot leak into valid branches. */
+  output = gst_pad_get_pad_template_caps(GST_VIDEO_DECODER_SRC_PAD(decoder));
+  output = gst_caps_make_writable(output);
+  gst_caps_set_simple(output, "width", G_TYPE_INT, (gint)scale_width,
+                       "interlace-mode", G_TYPE_STRING, "progressive", NULL);
+  peer = gst_pad_peer_query_caps(GST_VIDEO_DECODER_SRC_PAD(decoder), output);
+  if (peer == NULL) {
+    gst_caps_unref(output);
+    return gst_caps_new_empty();
+  }
+  allowed = gst_caps_intersect_full(peer, output, GST_CAPS_INTERSECT_FIRST);
+  gst_caps_unref(peer);
+  gst_caps_unref(output);
+  if (gst_caps_is_empty(allowed))
+    return allowed;
+
+  /* Preserve the base proxy's non-geometric video fields and every encoded
+   * template restriction. Width/height/PAR describe different surfaces here.
+   * Exact output height/PAR are still negotiated from the hardware result. */
+  input = gst_pad_get_pad_template_caps(GST_VIDEO_DECODER_SINK_PAD(decoder));
+  input = gst_caps_make_writable(input);
+  gst_caps_set_simple(input, "width", GST_TYPE_INT_RANGE, (gint)scale_width, 1920,
+                       "height", GST_TYPE_INT_RANGE, 1, 1088, NULL);
+  result = gst_caps_new_empty();
+  for (i = 0; i < gst_caps_get_size(input); ++i) {
+    for (j = 0; j < gst_caps_get_size(allowed); ++j) {
+      const GstStructure *downstream = gst_caps_get_structure(allowed, j);
+      GstStructure *upstream = gst_structure_copy(
+          gst_caps_get_structure(input, i));
+
+      for (k = 0; k < G_N_ELEMENTS(invariant_fields); ++k) {
+        const GValue *value = gst_structure_get_value(downstream,
+            invariant_fields[k]);
+        if (value != NULL)
+          gst_structure_set_value(upstream, invariant_fields[k], value);
+      }
+      gst_caps_append_structure_full(result, upstream,
+          gst_caps_features_copy(gst_caps_get_features(input, i)));
+    }
+  }
+  gst_caps_unref(allowed);
+  gst_caps_unref(input);
+  if (filter != NULL) {
+    caps = gst_caps_intersect_full(filter, result, GST_CAPS_INTERSECT_FIRST);
+    gst_caps_unref(result);
+    result = caps;
+  }
+  return result;
+}
+
+static gboolean
 gst_crystalhd_caps_have_mpeg4_metadata(GstCaps *caps,
                                        const CrystalHdCodec *codec)
 {
@@ -1878,6 +1955,7 @@ gst_crystalhd_dec_class_init(GstCrystalHdDecClass *klass)
   decoder_class->start = gst_crystalhd_start;
   decoder_class->stop = gst_crystalhd_stop;
   decoder_class->set_format = gst_crystalhd_set_format;
+  decoder_class->getcaps = gst_crystalhd_getcaps;
   decoder_class->parse = gst_crystalhd_parse;
   decoder_class->sink_query = gst_crystalhd_sink_query;
   decoder_class->sink_event = gst_crystalhd_sink_event;
