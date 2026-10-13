@@ -156,7 +156,12 @@ for bits in $build_bits; do
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_fwcmds.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_priv.cpp"
                 section_wrap=-Wl,--wrap=ioctl,--wrap=usleep,--wrap=DtsAllocIoctlData ;;
-            input|mpeg4-input)
+            input)
+                set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_if.cpp" \
+                    "$build_dir/linux_lib/libcrystalhd/libcrystalhd_priv.cpp" \
+                    "$build_dir/linux_lib/libcrystalhd/libcrystalhd_parser.cpp"
+                section_wrap=-Wl,--wrap=ioctl,--wrap=txBufPush,--wrap=usleep,--wrap=posix_memalign ;;
+            mpeg4-input)
                 set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_if.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_priv.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_parser.cpp"

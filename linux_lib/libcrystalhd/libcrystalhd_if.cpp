@@ -569,7 +569,16 @@ static BC_STATUS DtsRecoverableDecOpen(HANDLE  hDevice,uint32_t StreamType)
 	if (!DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
 
-	if (Ctx->DevId == BC_PCI_DEVID_FLEA)
+	DtsLock(Ctx);
+	const bool recoveryOpen = Ctx->controlOwner == DTS_CONTROL_RECOVERY &&
+		Ctx->controlDepth && pthread_equal(Ctx->controlThread, pthread_self());
+	DtsUnLock(Ctx);
+
+	/* Recovery has already performed the one permitted full hardware reset.
+	 * Do not enter Link's ordinary open repair loop here: a rejected replacement
+	 * channel must remain the exact terminal recovery error, not trigger a blind
+	 * STOP/CLOSE, another setup, or get overwritten by cleanup success. */
+	if (Ctx->DevId == BC_PCI_DEVID_FLEA || recoveryOpen)
 	{
 		sts = DtsFWOpenChannel(hDevice, StreamType, 0);
 		if(sts == BC_STS_SUCCESS)
@@ -2927,6 +2936,8 @@ DtsProcInput( HANDLE  hDevice ,
 
 	uint32_t Offset = 0;
 	bool clearRecoveryConfigAfterInput = false;
+	const uint8_t *const cacheInput = pUserData;
+	const uint32_t cacheInputSize = ulSizeInBytes;
 
 	DTS_GET_CTX(hDevice,Ctx);
 
@@ -2983,8 +2994,6 @@ DtsProcInput( HANDLE  hDevice ,
 
 	if((Ctx->VidParams.MediaSubType == BC_MSUBTYPE_WVC1) || (Ctx->VidParams.MediaSubType == BC_MSUBTYPE_WMV3) || (Ctx->VidParams.MediaSubType == BC_MSUBTYPE_WMVA))
 		DtsCheckKeyFrame(hDevice, pUserData);
-	if (Ctx->VidParams.MediaSubType == BC_MSUBTYPE_H264)
-		(void)DtsCacheSpsPps(hDevice, pUserData, ulSizeInBytes);
 
 	DtsLock(Ctx);
 	const bool recoveryInjectSpsPps = Ctx->recoveryInjectSpsPps;
@@ -2998,7 +3007,8 @@ DtsProcInput( HANDLE  hDevice ,
 			//Unnecessary SpsPps input will cause no timestamp output.
 			bool inputHasConfig = false;
 			if (!Ctx->SingleThreadedAppMode || recoveryInjectSpsPps)
-				inputHasConfig = recoveryInjectSpsPps ?
+				inputHasConfig = (recoveryInjectSpsPps ||
+					Ctx->VidParams.MediaSubType == BC_MSUBTYPE_H264) ?
 					DtsCheckRecoverySpsPps(hDevice, pUserData, ulSizeInBytes) :
 					DtsCheckSpsPps(hDevice, pUserData, ulSizeInBytes);
 			if ((!Ctx->SingleThreadedAppMode || recoveryInjectSpsPps) &&
@@ -3020,9 +3030,12 @@ DtsProcInput( HANDLE  hDevice ,
 			else if (recoveryInjectSpsPps && inputHasConfig)
 				clearRecoveryConfigAfterInput = true;
 		}
-		Ctx->PESConvParams.m_bAddSpsPps = false;
+		/* If in-band configuration suppresses recovery replay, retain both
+		 * latches until that AU is actually accepted so a failed enqueue can
+		 * be retried without stranding recoveryInjectSpsPps. */
+		if (!clearRecoveryConfigAfterInput)
+			Ctx->PESConvParams.m_bAddSpsPps = false;
 	}
-
 	//Use 0xFFFFFFFD for SoftRave context instead of zero
 	// For pre-roll samples for softRAVE context we send the timestamp as 0 to the softRAVE to handle.
 	// The FW is responsible to add the timestamp back.
@@ -3076,9 +3089,15 @@ DtsProcInput( HANDLE  hDevice ,
 				sts = BC_STS_SUCCESS;
 		}
 	}
+	/* Commit H.264 recovery state only after this AU was accepted.  Until then
+	 * the previous complete cache must survive a transport failure or a late
+	 * suspend that flushes bytes queued earlier in this call. */
+	if (sts == BC_STS_SUCCESS && Ctx->VidParams.MediaSubType == BC_MSUBTYPE_H264)
+		(void)DtsCacheSpsPps(hDevice, cacheInput, cacheInputSize);
 	if (sts == BC_STS_SUCCESS && clearRecoveryConfigAfterInput) {
 		DtsLock(Ctx);
 		Ctx->recoveryInjectSpsPps = false;
+		Ctx->PESConvParams.m_bAddSpsPps = false;
 		DtsUnLock(Ctx);
 	}
 	return sts;

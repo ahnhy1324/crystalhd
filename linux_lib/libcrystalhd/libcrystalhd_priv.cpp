@@ -3640,6 +3640,12 @@ void * txThreadProc(void *ctx)
 					continue;
 				}
 				DebugLog_Trace(LDIL_ERR,"Resume from S3/S5 Done\n");
+				/* The replacement channel has no relationship to the old
+				 * firmware picture counter or EOS idle interval.  Establish a
+				 * fresh baseline before observing the replayed drain. */
+				waitForPictCount = 0;
+				numPicCaptured = UINT32_MAX;
+				fleaIdleTiming = false;
 				/* The status sample predates reset/reopen; reacquire it before
 				 * making any TX or EOS decision against the restored channel.
 				 */

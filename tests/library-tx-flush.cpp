@@ -88,6 +88,9 @@ static struct {
     uint8_t ready_count;
     int fail_stage;
     BC_STATUS failure;
+    BC_STATUS open_status;
+    uint32_t open_channel_id;
+    unsigned open_calls;
     RecoveryStage current;
     std::vector<RecoveryStage> order;
     std::vector<uint8_t> power_states;
@@ -464,7 +467,16 @@ static BC_STATUS control_call()
 BC_STATUS DtsFWActivateDecoder(HANDLE) { return control_call(); }
 BC_STATUS DtsFWStartVideo(HANDLE, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t)
 { return control_call(); }
-BC_STATUS DtsFWOpenChannel(HANDLE, uint32_t, uint32_t) { return control_call(); }
+BC_STATUS DtsFWOpenChannel(HANDLE device, uint32_t, uint32_t)
+{
+    const BC_STATUS status = control_call();
+    ++recovery.open_calls;
+    if (status != BC_STS_SUCCESS || recovery.open_status != BC_STS_SUCCESS)
+        return status != BC_STS_SUCCESS ? status : recovery.open_status;
+    static_cast<DTS_LIB_CONTEXT *>(device)->OpenRsp.channelId =
+        recovery.open_channel_id;
+    return BC_STS_SUCCESS;
+}
 BC_STATUS DtsFWSetVideoInput(HANDLE) { return control_call(); }
 BC_STATUS DtsFWSetHostTrickMode(HANDLE, uint32_t) { std::abort(); }
 BC_STATUS DtsFWSetSkipPictureMode(HANDLE, uint32_t) { std::abort(); }
@@ -906,8 +918,9 @@ static void test_flush_rearms_config_after_old_input_retires()
         await(lock, [] { return flush_waiting_for_input; });
         DtsLock(&context);
         check(context.inputCalls == 1 && context.txQuiescing &&
-              context.controlOwner == DTS_CONTROL_LIFECYCLE,
-              "destructive Op3 flush closes admission and waits for the old input owner");
+              context.controlOwner == DTS_CONTROL_LIFECYCLE &&
+              context.circBuf.busySize != 0,
+              "destructive Op3 flush waits for the owner of an already accepted input");
         check(!context.PESConvParams.m_bAddSpsPps,
               "flush does not publish the next-session config rearm before old input retires");
         DtsUnLock(&context);
@@ -918,9 +931,9 @@ static void test_flush_rearms_config_after_old_input_retires()
     flush_thread.join();
 
     DtsLock(&context);
-    check(input_status == BC_STS_IO_USER_ABORT &&
+    check(input_status == BC_STS_SUCCESS &&
           flush_status == BC_STS_SUCCESS && context.inputCalls == 0,
-          "old admitted input aborts once and destructive Op3 flush completes after retirement");
+          "accepted old input retires before destructive Op3 flush completes");
     check(context.PESConvParams.m_bAddSpsPps &&
           context.State == BC_DEC_STATE_FLUSH && !context.txQuiescing &&
           context.controlOwner == DTS_CONTROL_NONE,
@@ -1353,6 +1366,41 @@ static void test_recovery_stage_pm_failure_is_one_shot()
           "a PM-failed recovery remains terminally consumable");
 }
 
+static void test_link_recovery_open_is_one_shot()
+{
+	for (const BC_STATUS failure : {BC_STS_PWR_MGMT, BC_STS_IO_XFR_ERROR}) {
+		RecoveryFixture fixture(BC_PCI_DEVID_LINK);
+		recovery.open_status = failure;
+		std::thread worker([&] {
+			worker_thread = true;
+			txThreadProc(&fixture.context);
+			worker_thread = false;
+		});
+		worker.join();
+		check(recovery.order.size() == 3 &&
+		      recovery.order.back() == RecoveryStage::Open &&
+		      recovery.open_calls == 1 &&
+		      fixture.context.recoveryStatus == failure,
+		      "Link replacement Open returns its exact first firmware error once");
+		check(run.stop_calls == 0 && run.close_calls == 0,
+		      "Link recovery Open failure issues no blind STOP/CLOSE repair");
+	}
+	{
+		RecoveryFixture fixture(BC_PCI_DEVID_LINK);
+		recovery.open_channel_id = 7;
+		std::thread worker([&] {
+			worker_thread = true;
+			txThreadProc(&fixture.context);
+			worker_thread = false;
+		});
+		worker.join();
+		check(recovery.order.size() == 3 && recovery.open_calls == 1 &&
+		      fixture.context.recoveryStatus == BC_STS_FW_CMD_ERR &&
+		      run.stop_calls == 0 && run.close_calls == 0,
+		      "Link recovery quarantines a nonzero replacement channel without retry cleanup");
+	}
+}
+
 static void test_workerless_pending_epoch_quarantines_for_teardown()
 {
     RecoveryFixture fixture(BC_PCI_DEVID_FLEA);
@@ -1618,6 +1666,30 @@ static void test_pm_latch_blocks_link_auto_pause()
           "PM admission latch suppresses LINK auto-pause firmware mutation");
 }
 
+static void test_link_recovery_resets_eos_idle_count()
+{
+	RecoveryFixture fixture(BC_PCI_DEVID_LINK);
+	fixture.context.bEOSCheck = true;
+	fixture.context.bEOS = false;
+	for (unsigned count = 0; count < BC_EOS_PIC_COUNT - 1; ++count)
+		recovery.power_states.push_back(BC_HW_RUNNING);
+	recovery.power_states.push_back(BC_HW_SUSPEND);
+	recovery.power_states.push_back(BC_HW_RESUME);
+	recovery.power_states.push_back(BC_HW_RUNNING);
+	std::thread worker([&] {
+		worker_thread = true;
+		txThreadProc(&fixture.context);
+		worker_thread = false;
+	});
+	worker.join();
+	check(recovery.order == expected_recovery_stages(BC_PCI_DEVID_LINK) &&
+	      fixture.context.recoveryStatus == BC_STS_SUCCESS,
+	      "Link EOS idle-count fixture completes channel reconstruction");
+	check(!fixture.context.bEOS && fixture.context.bEOSCheck &&
+	      fixture.context.txBytesEnqueued != 0 && run.dma_calls == 0,
+	      "first restored Link poll cannot complete EOS before its replayed drain reaches DMA");
+}
+
 static void test_recovery_retires_failed_output_release()
 {
     {
@@ -1673,13 +1745,15 @@ static void test_recovery_transaction()
 	test_recovery_open_failure_retires_shared_decoder_owner();
 	test_paused_recovery_resends_eos_before_restoring_pause();
     test_suspend_latches_admission_before_resume();
-	test_persistent_suspend_allows_terminal_close();
+    test_persistent_suspend_allows_terminal_close();
     test_pm_latch_blocks_link_auto_pause();
+    test_link_recovery_resets_eos_idle_count();
     test_recovery_retires_failed_output_release();
     run_successful_recovery(BC_PCI_DEVID_FLEA);
     run_successful_recovery(BC_PCI_DEVID_LINK);
     test_recovery_failures();
     test_recovery_stage_pm_failure_is_one_shot();
+    test_link_recovery_open_is_one_shot();
     test_workerless_pending_epoch_quarantines_for_teardown();
 }
 

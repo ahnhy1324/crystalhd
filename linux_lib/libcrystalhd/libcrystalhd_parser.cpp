@@ -358,6 +358,75 @@ static bool DtsHasCompleteAnnexBAvcConfig(const uint8_t *headers, uint32_t size)
 	return haveSps && havePps;
 }
 
+static bool DtsAnnexBConfigContainsAll(const uint8_t *known, uint32_t knownSize,
+	const uint8_t *headers, uint32_t size)
+{
+	for (uint32_t position = 0; position < size;) {
+		if (size - position < 5 || headers[position] || headers[position + 1] ||
+		    headers[position + 2] || headers[position + 3] != 1)
+			return false;
+		uint32_t end = position + 5;
+		while (end < size && !(size - end >= 4 && headers[end] == 0 &&
+		       headers[end + 1] == 0 && headers[end + 2] == 0 &&
+		       headers[end + 3] == 1))
+			++end;
+		const uint32_t length = end - position;
+		bool found = false;
+		for (uint32_t candidate = 0; candidate < knownSize;) {
+			if (knownSize - candidate < 5 || known[candidate] ||
+			    known[candidate + 1] || known[candidate + 2] ||
+			    known[candidate + 3] != 1)
+				return false;
+			uint32_t candidateEnd = candidate + 5;
+			while (candidateEnd < knownSize &&
+			       !(knownSize - candidateEnd >= 4 && known[candidateEnd] == 0 &&
+			         known[candidateEnd + 1] == 0 && known[candidateEnd + 2] == 0 &&
+			         known[candidateEnd + 3] == 1))
+				++candidateEnd;
+			if (candidateEnd - candidate == length &&
+			    !memcmp(known + candidate, headers + position, length))
+				found = true;
+			candidate = candidateEnd;
+		}
+		if (!found)
+			return false;
+		position = end;
+	}
+	return true;
+}
+
+static void DtsReplaceSpsPpsCache(DTS_LIB_CONTEXT *Ctx, uint8_t *headers,
+	uint32_t size)
+{
+	DtsLock(Ctx);
+	uint8_t *oldHeaders = Ctx->PESConvParams.m_pSpsPpsBuf;
+	Ctx->PESConvParams.m_pSpsPpsBuf = headers;
+	Ctx->PESConvParams.m_iSpsPpsLen = size;
+	if (!size)
+		Ctx->recoveryInjectSpsPps = false;
+	DtsUnLock(Ctx);
+	free(oldHeaders);
+}
+
+static bool DtsKeepOrInvalidatePartialSpsPps(DTS_LIB_CONTEXT *Ctx,
+	const uint8_t *headers, uint32_t size)
+{
+	DtsLock(Ctx);
+	const bool unchanged = Ctx->PESConvParams.m_pSpsPpsBuf &&
+		DtsAnnexBConfigContainsAll(Ctx->PESConvParams.m_pSpsPpsBuf,
+			Ctx->PESConvParams.m_iSpsPpsLen, headers, size);
+	uint8_t *oldHeaders = NULL;
+	if (!unchanged) {
+		oldHeaders = Ctx->PESConvParams.m_pSpsPpsBuf;
+		Ctx->PESConvParams.m_pSpsPpsBuf = NULL;
+		Ctx->PESConvParams.m_iSpsPpsLen = 0;
+		Ctx->recoveryInjectSpsPps = false;
+	}
+	DtsUnLock(Ctx);
+	free(oldHeaders);
+	return unchanged;
+}
+
 BC_STATUS DtsCacheSpsPps(HANDLE hDevice, const uint8_t *pBuffer, uint32_t ulSize)
 {
 	DTS_LIB_CONTEXT *Ctx = NULL;
@@ -371,26 +440,27 @@ BC_STATUS DtsCacheSpsPps(HANDLE hDevice, const uint8_t *pBuffer, uint32_t ulSize
 	if (status != BC_STS_SUCCESS || !size)
 		return BC_STS_SUCCESS; /* Opportunistic cache; never reject an AU. */
 	uint8_t *headers = NULL;
-	if (posix_memalign((void **)&headers, 8, size))
+	if (posix_memalign((void **)&headers, 8, size)) {
+		/* Input remains legacy-compatible, but an accepted parameter-set
+		 * update must never leave obsolete recovery bytes advertised. */
+		DtsReplaceSpsPpsCache(Ctx, NULL, 0);
 		return BC_STS_INSUFF_RES;
+	}
 	uint32_t copied = 0;
 	status = DtsConvertSequenceHeaders(pBuffer, ulSize, false,
 		headers, size, &copied);
 	if (status != BC_STS_SUCCESS || copied != size) {
 		free(headers);
+		DtsReplaceSpsPpsCache(Ctx, NULL, 0);
 		return status != BC_STS_SUCCESS ? status : BC_STS_INV_ARG;
 	}
 	if (!DtsHasCompleteAnnexBAvcConfig(headers, size)) {
+		(void)DtsKeepOrInvalidatePartialSpsPps(Ctx, headers, size);
 		free(headers);
 		return BC_STS_SUCCESS;
 	}
 
-	DtsLock(Ctx);
-	uint8_t *oldHeaders = Ctx->PESConvParams.m_pSpsPpsBuf;
-	Ctx->PESConvParams.m_pSpsPpsBuf = headers;
-	Ctx->PESConvParams.m_iSpsPpsLen = size;
-	DtsUnLock(Ctx);
-	free(oldHeaders);
+	DtsReplaceSpsPpsCache(Ctx, headers, size);
 	return BC_STS_SUCCESS;
 }
 
