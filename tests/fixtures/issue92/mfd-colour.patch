@@ -18,9 +18,7 @@ diff --git a/driver/linux/crystalhd_fleafuncs.h b/driver/linux/crystalhd_fleafun
 index 36b1fce..7de56e6 100644
 --- a/driver/linux/crystalhd_fleafuncs.h
 +++ b/driver/linux/crystalhd_fleafuncs.h
-@@ -42,6 +42,9 @@ BC_STATUS crystalhd_flea_mem_rd(struct crystalhd_hw *hw, uint32_t start_off, uin
- BC_STATUS crystalhd_flea_mem_wr(struct crystalhd_hw *hw, uint32_t start_off, uint32_t dw_cnt, const uint32_t *wr_buff);		/* Done */
- BC_STATUS crystalhd_flea_do_fw_cmd(struct crystalhd_hw *hw, BC_FW_CMD *fw_cmd);
+@@ -44,4 +44,7 @@ BC_STATUS crystalhd_flea_do_fw_cmd(struct crystalhd_hw *hw, BC_FW_CMD *fw_cmd);
  BC_STATUS crystalhd_flea_download_fw(struct crystalhd_hw* hw, const uint8_t* buffer, uint32_t sz);
 +#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
 +BC_STATUS crystalhd_flea_research_pci_guard(struct crystalhd_hw *hw);
