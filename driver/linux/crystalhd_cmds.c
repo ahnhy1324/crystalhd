@@ -32,6 +32,7 @@
 #include "crystalhd_lnx.h"
 #include "crystalhd_hw.h"
 #include "crystalhd_stream.h"
+#include "crystalhd_pm_shadow.h"
 int bc_get_userhandle_count(struct crystalhd_cmd *ctx);
 BC_STATUS bc_cproc_release_user(struct crystalhd_cmd *ctx, crystalhd_ioctl_data *idata);
 static struct crystalhd_user *bc_cproc_get_uid(struct crystalhd_cmd *ctx)
@@ -171,6 +172,7 @@ static bool crystalhd_retire_hw_context(struct crystalhd_cmd *ctx,
 		crystalhd_delete_elem_pool(ctx->adp);
 	}
 	ctx->state = BC_LINK_INVALID;
+	crystalhd_pm_shadow_retire(ctx->hw_ctx);
 	kfree(ctx->hw_ctx);
 	ctx->hw_ctx = NULL;
 	enable_irq(ctx->adp->pdev->irq);
@@ -2498,6 +2500,7 @@ BC_STATUS crystalhd_setup_cmd_context(struct crystalhd_cmd *ctx,
 	sts = crystalhd_hw_open(ctx->hw_ctx, ctx->adp);
 	if (sts == BC_STS_SUCCESS)
 		sts = crystalhd_hw_close(ctx->hw_ctx);
+	crystalhd_pm_shadow_retire(ctx->hw_ctx);
 	kfree(ctx->hw_ctx);
 	ctx->hw_ctx = NULL;
 	enable_irq(ctx->adp->pdev->irq);
@@ -2527,6 +2530,7 @@ BC_STATUS crystalhd_delete_cmd_context(struct crystalhd_cmd *ctx)
 		sts = crystalhd_hw_free_dma_rings(ctx->hw_ctx);
 		if (sts != BC_STS_SUCCESS)
 			return sts;
+		crystalhd_pm_shadow_retire(ctx->hw_ctx);
 		kfree(ctx->hw_ctx);
 		ctx->hw_ctx = NULL;
 	}

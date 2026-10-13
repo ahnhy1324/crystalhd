@@ -18,6 +18,7 @@
 #include "crystalhd_lnx.h"
 #include "crystalhd_compat_ioctl.h"
 #include "crystalhd_fw_research.h"
+#include "crystalhd_pm_shadow.h"
 
 #include <linux/capability.h>
 #include <linux/overflow.h>
@@ -1807,19 +1808,23 @@ static int __init chd_dec_module_init(void)
 
 	printk(KERN_DEBUG "Loading crystalhd v%d.%d.%d\n",
 	       crystalhd_kmod_major, crystalhd_kmod_minor, crystalhd_kmod_rev);
+	pr_info("crystalhd: 3.10.3-pm-shadow host PM; runtime gating compiled out, normal stop_device shutdown unchanged\n");
 	if (force_l0s_off && session_l0s_off) {
 		pr_warn("crystalhd: force_l0s_off takes precedence; session_l0s_off ignored\n");
 		session_l0s_off = false;
 	}
 
-	rc = crystalhd_v4l2_init();
+	rc = crystalhd_pm_shadow_init();
 	if (rc)
 		return rc;
+	rc = crystalhd_v4l2_init();
+	if (rc)
+		goto shadow_cleanup;
 #ifdef CRYSTALHD_ENABLE_FW_RESEARCH
 	rc = crystalhd_fw_research_init();
 	if (rc) {
 		crystalhd_v4l2_cleanup();
-		return rc;
+		goto shadow_cleanup;
 	}
 #endif
 	rc = pci_register_driver(&bc_chd_driver);
@@ -1831,8 +1836,12 @@ static int __init chd_dec_module_init(void)
 		crystalhd_fw_research_cleanup();
 #endif
 		crystalhd_v4l2_cleanup();
+		crystalhd_pm_shadow_cleanup();
 	}
 
+	return rc;
+shadow_cleanup:
+	crystalhd_pm_shadow_cleanup();
 	return rc;
 }
 module_init(chd_dec_module_init);
@@ -1847,6 +1856,7 @@ static void __exit chd_dec_module_cleanup(void)
 #endif
 	pci_unregister_driver(&bc_chd_driver);
 	crystalhd_v4l2_cleanup();
+	crystalhd_pm_shadow_cleanup();
 }
 module_exit(chd_dec_module_cleanup);
 

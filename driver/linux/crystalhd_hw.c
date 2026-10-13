@@ -32,6 +32,7 @@
 #include "crystalhd_lnx.h"
 #include "crystalhd_linkfuncs.h"
 #include "crystalhd_fleafuncs.h"
+#include "crystalhd_pm_shadow.h"
 
 #define OFFSETOF(_s_, _m_) ((size_t)(unsigned long)&(((_s_ *)0)->_m_))
 
@@ -56,6 +57,10 @@ BC_STATUS crystalhd_hw_fw_cmd_enter(struct crystalhd_hw *hw)
 		sts = BC_STS_BUSY;
 	else
 		hw->fwcmd_trans_active = true;
+	if (READ_ONCE(hw->FleaEnablePWM))
+		crystalhd_pm_shadow_trace(hw, CHD_PM_FW_TRANSACTION_ENTER,
+			FLEA_EVT_FW_CMD_POST, hw->FleaPowerState,
+			hw->FleaPowerState, sts, CHD_PM_SHADOW_UNKNOWN);
 	spin_unlock_irqrestore(&hw->lock, flags);
 	if (sts != BC_STS_SUCCESS)
 		mutex_unlock(&hw->fwcmd_trans_mutex);
@@ -81,6 +86,10 @@ BC_STATUS crystalhd_hw_fw_cmd_recovery_enter(struct crystalhd_hw *hw)
 		sts = BC_STS_BUSY;
 	else
 		hw->fwcmd_trans_active = true;
+	if (READ_ONCE(hw->FleaEnablePWM))
+		crystalhd_pm_shadow_trace(hw, CHD_PM_FW_TRANSACTION_ENTER,
+			FLEA_EVT_FW_CMD_POST, hw->FleaPowerState,
+			hw->FleaPowerState, sts, CHD_PM_SHADOW_UNKNOWN);
 	spin_unlock_irqrestore(&hw->lock, flags);
 	if (sts != BC_STS_SUCCESS)
 		mutex_unlock(&hw->fwcmd_trans_mutex);
@@ -98,6 +107,10 @@ void crystalhd_hw_fw_cmd_leave(struct crystalhd_hw *hw)
 	 */
 	spin_lock_irqsave(&hw->lock, flags);
 	hw->fwcmd_trans_active = false;
+	if (READ_ONCE(hw->FleaEnablePWM))
+		crystalhd_pm_shadow_trace(hw, CHD_PM_FW_TRANSACTION_LEAVE,
+			FLEA_EVT_CMD_COMP, hw->FleaPowerState,
+			hw->FleaPowerState, BC_STS_SUCCESS, CHD_PM_SHADOW_UNKNOWN);
 	spin_unlock_irqrestore(&hw->lock, flags);
 	crystalhd_flea_fw_transaction_done(hw);
 	mutex_unlock(&hw->fwcmd_trans_mutex);
@@ -122,6 +135,10 @@ BC_STATUS crystalhd_hw_fw_cmd_begin(struct crystalhd_hw *hw)
 		hw->fwcmd_active = true;
 		hw->FwCmdCnt++;
 	}
+	if (READ_ONCE(hw->FleaEnablePWM))
+		crystalhd_pm_shadow_trace(hw, CHD_PM_FW_ENTER,
+			FLEA_EVT_FW_CMD_POST, hw->FleaPowerState,
+			hw->FleaPowerState, sts, CHD_PM_SHADOW_UNKNOWN);
 	spin_unlock_irqrestore(&hw->lock, flags);
 
 	if (sts != BC_STS_SUCCESS)
@@ -194,6 +211,10 @@ void crystalhd_hw_fw_cmd_end(struct crystalhd_hw *hw)
 	 */
 	spin_lock_irqsave(&hw->lock, flags);
 	hw->fwcmd_active = false;
+	if (READ_ONCE(hw->FleaEnablePWM))
+		crystalhd_pm_shadow_trace(hw, CHD_PM_FW_LEAVE,
+			FLEA_EVT_CMD_COMP, hw->FleaPowerState,
+			hw->FleaPowerState, BC_STS_SUCCESS, CHD_PM_SHADOW_UNKNOWN);
 	spin_unlock_irqrestore(&hw->lock, flags);
 	mutex_unlock(&hw->fwcmd_mutex);
 }
@@ -225,6 +246,10 @@ void crystalhd_hw_fw_cmd_complete(struct crystalhd_hw *hw)
 			wake = true;
 		}
 	}
+	if (READ_ONCE(hw->FleaEnablePWM))
+		crystalhd_pm_shadow_trace(hw, CHD_PM_FW_RETIRE,
+			FLEA_EVT_CMD_COMP, hw->FleaPowerState,
+			hw->FleaPowerState, BC_STS_SUCCESS, CHD_PM_SHADOW_UNKNOWN);
 	spin_unlock_irqrestore(&hw->lock, flags);
 
 	if (wake)
@@ -245,6 +270,10 @@ void crystalhd_hw_fw_cmd_reset_locked(struct crystalhd_hw *hw)
 	hw->fwcmd_poisoned = false;
 	hw->fwcmd_evt_sts = 0;
 	hw->FwCmdCnt = 0;
+	if (READ_ONCE(hw->FleaEnablePWM))
+		crystalhd_pm_shadow_trace(hw, CHD_PM_FW_RESET,
+			FLEA_EVT_NONE, hw->FleaPowerState,
+			hw->FleaPowerState, BC_STS_SUCCESS, CHD_PM_SHADOW_UNKNOWN);
 	spin_unlock_irqrestore(&hw->lock, flags);
 	mutex_unlock(&hw->fwcmd_mutex);
 }
@@ -1678,6 +1707,10 @@ void crystalhd_hw_publish_fault(struct crystalhd_hw *hw)
 	 * the global writer can prove that DMA backing may be released.
 	 */
 	WRITE_ONCE(hw->dma_fault, true);
+	if (READ_ONCE(hw->FleaEnablePWM))
+		crystalhd_pm_shadow_trace(hw, CHD_PM_FAULT, FLEA_EVT_NONE,
+			READ_ONCE(hw->FleaPowerState), READ_ONCE(hw->FleaPowerState),
+			BC_STS_IO_ERROR, CHD_PM_SHADOW_UNKNOWN);
 	WRITE_ONCE(hw->adp->present, 0);
 	WRITE_ONCE(hw->adp->cmds.cin_wait_exit, 1);
 	crystalhd_rx_poll_wake(hw->adp, EPOLLERR | EPOLLHUP);
