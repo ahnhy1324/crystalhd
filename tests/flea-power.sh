@@ -9,7 +9,7 @@ cleanup()
     rm -f "$test_dir/check" "$test_dir/flea-power-functions.h" \
         "$test_dir/flea-power-types.h" "$test_dir/flea-power-transitions.h" \
         "$test_dir/flea-power-pause.h" "$test_dir/flea-power-done.h" \
-        "$test_dir/flea-power-fll.h"
+        "$test_dir/flea-power-fll.h" "$test_dir/flea-power-up.h"
     rmdir "$test_dir"
 }
 trap cleanup EXIT
@@ -39,6 +39,17 @@ awk '
     { previous = $0 }
     END { if (found != 2 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$test_dir/flea-power-transitions.h"
+awk '
+    /^void crystalhd_flea_runtime_power_up\(/ {
+        if (previous != "static") exit 1
+        print previous
+        copying = 1; found++
+    }
+    copying { print }
+    copying && /^}/ { copying = 0 }
+    { previous = $0 }
+    END { if (found != 1 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$test_dir/flea-power-up.h"
 awk '
     /^void crystalhd_flea_fw_transaction_done\(/ { copying = 1; found++ }
     copying { print }
