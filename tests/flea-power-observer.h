@@ -15,11 +15,15 @@
 // write its indirect address portal; no target control register is changed.
 // These observations do not disable the arbiter, request self-refresh or enable
 // runtime power management, and successful reads do not certify fetch errors.
+// The separate host-only exercise makes no observer raw accesses and records
+// only ordinary lifecycle stages and stock firmware PAUSE ON/OFF receipts.
 struct FleaPowerObserver {
     using Reader = BC_STATUS (*)(HANDLE, uint32_t, uint32_t *);
     using Command = BC_STATUS (*)(HANDLE);
     using FirmwareCommand = BC_STATUS (*)(HANDLE, uint32_t);
     FirmwareCommand firmware_command = nullptr;
+    bool host_only = false;
+    unsigned host_command_attempts = 0;
     bool configuration = false;
     bool firmware_dma = false;
     bool enabled = false, failed = false;
@@ -79,6 +83,7 @@ struct FleaPowerObserver {
     bool Observe(HANDLE handle, unsigned stage, Reader reader = DtsDevRegisterRead,
                  bool report = true) {
         if (!enabled) return true;
+        if (host_only) return HostStage(handle, stage, report);
         if (firmware_dma && (!firmware_command || configuration)) {
             failed = true;
             return false;
@@ -140,6 +145,31 @@ struct FleaPowerObserver {
         }
         return !failed;
     }
+    bool HostModeValid() const {
+        return firmware_command && !configuration && !firmware_dma;
+    }
+    void ReportHostStage(unsigned stage, BC_STATUS status, gint64 before, bool report) const {
+        if (!report) return;
+        const char *const names[] = {"pre-START", "first-released", "firmware-pause-return",
+            "firmware-resume-return", "last-released", "EOS"};
+        std::printf("Power host exercise: stage=%s monotonic-us=%lld duration-us=%lld "
+            "api-status=%d result=%s reads=0 observer-target-control-writes=0 "
+            "physical-quiescence=unproven power-gating=unproven\n", names[stage],
+            static_cast<long long>(before),
+            static_cast<long long>(g_get_monotonic_time() - before), status,
+            status == BC_STS_SUCCESS ? "PASS" : "FAIL");
+        std::fflush(stdout);
+    }
+    bool HostStage(HANDLE handle, unsigned stage, bool report) {
+        if (failed || !HostModeValid() || !handle || stage != next || stage >= 6 ||
+            stage == 2 || stage == 3 || (stage >= 4 && host_command_attempts != 2)) {
+            failed = true;
+            return false;
+        }
+        ++next;
+        ReportHostStage(stage, BC_STS_SUCCESS, g_get_monotonic_time(), report);
+        return true;
+    }
     static uint32_t ConfigurationAddress(unsigned field) {
         const uint32_t addresses[] = {BCHP_CLK_PM_CTRL,
             BCHP_DDR23_PHY_CONTROL_REGS_CLK_PM_CTRL,
@@ -198,6 +228,7 @@ struct FleaPowerObserver {
                         Command pause = DtsPauseDecoder, Command resume = DtsResumeDecoder,
                         bool report = true) {
         if (!enabled) return true;
+        if (host_only) return HostPauseAndResume(handle, report);
         if (firmware_dma && (!firmware_command || configuration)) {
             failed = true;
             return false;
@@ -230,6 +261,29 @@ struct FleaPowerObserver {
         if (!observed || resumed != BC_STS_SUCCESS) { failed = true; return false; }
         return Observe(handle, 3, reader, report);
     }
+    bool HostPauseAndResume(HANDLE handle, bool report) {
+        if (failed || !HostModeValid() || next != 2 || !handle || host_command_attempts) {
+            failed = true;
+            return false;
+        }
+        // Host-only receipt: no raw register or memory access, including after
+        // a command error. OFF is attempted once even if ON may have committed.
+        const gint64 before = g_get_monotonic_time();
+        ++host_command_attempts;
+        const BC_STATUS paused = firmware_command(handle, 1);
+        failed = failed || paused != BC_STS_SUCCESS;
+        ++next;
+        ReportHostStage(2, paused, before, report);
+        const gint64 resume_before = g_get_monotonic_time();
+        ++host_command_attempts;
+        const BC_STATUS resumed = firmware_command(handle, 0);
+        failed = failed || resumed != BC_STS_SUCCESS;
+        ++next;
+        ReportHostStage(3, resumed, resume_before, report);
+        // Timings include the host mailbox wait. Successful API returns alone
+        // do not prove physical quiescence or an actual clock-gating cycle.
+        return !failed;
+    }
     bool FirmwarePauseAndResume(HANDLE handle, Reader reader, bool report) {
         if (failed || next != 2 || !handle || !reader || !firmware_command) {
             failed = true;
@@ -255,6 +309,9 @@ struct FleaPowerObserver {
         return Observe(handle, 3, reader, report);
     }
     bool Finish(bool native_ok) const {
+        if (enabled && host_only)
+            return native_ok && !failed && HostModeValid() && next == 6 &&
+                reads == 0 && host_command_attempts == 2;
         return native_ok && (!enabled || (!failed &&
             !(firmware_dma && (!firmware_command || configuration)) &&
             next == (configuration ? 1U : 6U) &&
@@ -438,6 +495,72 @@ template<class Check> static void FleaPowerObserverSelfTest(const Check &check)
                   invalid == 1 ? nullptr : Fixture::Read, nullptr, nullptr, false) &&
               !f.calls && !f.pauses && !f.resumes && o.failed,
               "invalid stock firmware observation arguments cannot invoke a command");
+    }
+    for (BC_STATUS pause_status : {BC_STS_SUCCESS, BC_STS_IO_ERROR, BC_STS_BUSY, BC_STS_TIMEOUT}) {
+        for (BC_STATUS resume_status : {BC_STS_SUCCESS, BC_STS_IO_ERROR, BC_STS_BUSY, BC_STS_TIMEOUT}) {
+            Fixture f; f.pause_status = pause_status; f.resume_status = resume_status;
+            FleaPowerObserver o; o.enabled = o.host_only = true;
+            o.firmware_command = Fixture::Firmware;
+            check(o.Observe(&f, 0, Fixture::Read, false) &&
+                  o.Observe(&f, 1, Fixture::Read, false) && !f.calls && !o.reads,
+                  "host-only stages add no raw reads before the first released picture");
+            const bool commands_ok = pause_status == BC_STS_SUCCESS && resume_status == BC_STS_SUCCESS;
+            check(o.PauseAndResume(&f, Fixture::Read, Fixture::Pause, Fixture::Resume, false) == commands_ok &&
+                  !f.calls && !o.reads && f.pauses == 1 && f.resumes == 1 &&
+                  f.addresses_valid && o.host_command_attempts == 2 && o.next == 4,
+                  "host-only ON/OFF are attempted exactly once without raw reads, including both-error cleanup");
+            if (commands_ok) {
+                check(o.Observe(&f, 4, nullptr, false) && o.Observe(&f, 5, nullptr, false) &&
+                      o.Finish(true) && !o.Finish(false) && !f.calls && !o.reads,
+                      "host-only success requires all six stages and actual native delivery/EOS/cleanup");
+            } else {
+                check(o.failed && !o.Observe(&f, 4, Fixture::Read, false) &&
+                      !o.PauseAndResume(&f, Fixture::Read, Fixture::Pause, Fixture::Resume, false) &&
+                      !o.Finish(true) && !f.calls && f.pauses == 1 && f.resumes == 1,
+                      "host-only first command failure stays failed after OFF and never retries commands or raw reads");
+            }
+        }
+    }
+    for (unsigned next : {0U, 1U, 3U, 4U, 5U, 6U}) {
+        Fixture f; FleaPowerObserver o; o.enabled = o.host_only = true;
+        o.firmware_command = Fixture::Firmware; o.next = next;
+        check(!o.PauseAndResume(&f, Fixture::Read, Fixture::Pause, Fixture::Resume, false) &&
+              o.failed && !f.calls && !f.pauses && !f.resumes,
+              "host-only commands require the first released-picture stage and cannot be replayed");
+    }
+    for (unsigned invalid = 0; invalid < 6; ++invalid) {
+        Fixture f; FleaPowerObserver o; o.enabled = o.host_only = true;
+        o.firmware_command = Fixture::Firmware; o.next = 2;
+        if (invalid == 1) o.firmware_command = nullptr;
+        if (invalid == 2) o.configuration = true;
+        if (invalid == 3) o.firmware_dma = true;
+        if (invalid == 4) o.failed = true;
+        if (invalid == 5) o.host_command_attempts = 2;
+        check(!o.PauseAndResume(invalid ? &f : nullptr, Fixture::Read, Fixture::Pause, Fixture::Resume, false) &&
+              !f.calls && !f.pauses && !f.resumes && o.failed && !o.Finish(true),
+              "invalid or mixed host-only command state fails before command or raw access");
+    }
+    for (unsigned stage : {1U, 2U, 3U, 4U, 5U, 6U}) {
+        Fixture f; FleaPowerObserver o; o.enabled = o.host_only = true;
+        o.firmware_command = Fixture::Firmware;
+        check(!o.Observe(&f, stage, Fixture::Read, false) && o.failed &&
+              !f.calls && !f.pauses && !f.resumes && !o.Finish(true),
+              "out-of-order host-only stage cannot manufacture a successful receipt");
+    }
+    {
+        Fixture f; FleaPowerObserver o; o.enabled = o.host_only = true;
+        o.firmware_command = Fixture::Firmware;
+        check(o.Observe(&f, 0, nullptr, false) &&
+              !o.Observe(&f, 0, Fixture::Read, false) && o.failed && !f.calls,
+              "host-only permits an absent raw reader but a duplicate marker stays failed");
+    }
+    {
+        Fixture f; FleaPowerObserver off; off.host_only = true;
+        off.firmware_command = Fixture::Firmware;
+        check(off.Observe(&f, 0, Fixture::Read, false) &&
+              off.PauseAndResume(&f, Fixture::Read, Fixture::Pause, Fixture::Resume, false) &&
+              off.Finish(true) && !f.calls && !f.pauses && !f.resumes,
+              "disabled host-only mode does not add reads or commands to ordinary playback");
     }
     struct DmaFixture {
         unsigned calls = 0, pauses = 0, resumes = 0;

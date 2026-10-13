@@ -3461,6 +3461,7 @@ struct Options {
     bool observe_power_fw_pause = false;
     bool observe_power_fw_dma = false;
     bool observe_power_config = false;
+    bool exercise_power_host = false;
     bool observe_scl_config = false;
     bool observe_scl_filter_map = false;
     unsigned observe_scl_view = 0;
@@ -3558,13 +3559,26 @@ static bool ScalerBenchmarkConflicts(const Options &o)
 
 static bool ParseArguments(std::vector<const char *> arguments, Options *options)
 {
+    // The host-only exercise may save owned pixels for an independent packing
+    // comparison, but capture adds no raw packing-register observations.
+    if (arguments.size() == 7 && !std::strcmp(arguments[4], "--exercise-power-host") &&
+        !std::strcmp(arguments[5], "--capture-yuy2")) {
+        const char *path = arguments[6];
+        if (!*path || !std::strcmp(path, "-")) return false;
+        arguments.resize(5);
+        if (!ParseArguments(arguments, options)) return false;
+        options->capture_path = path;
+        return true;
+    }
     // A separate bounded mode: no other experimental options or repetitions.
     if (arguments.size() == 5 && (!std::strcmp(arguments.back(), "--observe-power") ||
                                 !std::strcmp(arguments.back(), "--observe-power-fw-pause") ||
                                 !std::strcmp(arguments.back(), "--observe-power-fw-dma") ||
-                                !std::strcmp(arguments.back(), "--observe-power-config"))) {
+                                !std::strcmp(arguments.back(), "--observe-power-config") ||
+                                !std::strcmp(arguments.back(), "--exercise-power-host"))) {
         const bool dma = !std::strcmp(arguments.back(), "--observe-power-fw-dma");
-        const bool firmware = dma || !std::strcmp(arguments.back(), "--observe-power-fw-pause");
+        const bool host = !std::strcmp(arguments.back(), "--exercise-power-host");
+        const bool firmware = host || dma || !std::strcmp(arguments.back(), "--observe-power-fw-pause");
         const bool configuration = !std::strcmp(arguments.back(), "--observe-power-config");
         arguments.pop_back();
         if (!ParseArguments(arguments, options) || options->mode != Mode::Hardware ||
@@ -3573,6 +3587,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
         options->observe_power_fw_pause = firmware;
         options->observe_power_fw_dma = dma;
         options->observe_power_config = configuration;
+        options->exercise_power_host = host;
         return true;
     }
     if (arguments.size() >= 3 &&
@@ -8474,20 +8489,24 @@ static bool SelfTest()
     FleaPowerObserverSelfTest(check);
 
     for (const char *power_mode : {"--observe-power", "--observe-power-fw-pause",
-                                   "--observe-power-fw-dma", "--observe-power-config"}) {
+                                   "--observe-power-fw-dma", "--observe-power-config",
+                                   "--exercise-power-host"}) {
     const std::vector<const char *> power_arguments = {
         "probe", "--hardware", "fixture", "180", power_mode};
     Options power_options;
     check(ParseArguments(power_arguments, &power_options) && power_options.observe_power &&
           power_options.observe_power_fw_pause == (!std::strcmp(power_mode, "--observe-power-fw-pause") ||
-                                                   !std::strcmp(power_mode, "--observe-power-fw-dma")) &&
+                                                   !std::strcmp(power_mode, "--observe-power-fw-dma") ||
+                                                   !std::strcmp(power_mode, "--exercise-power-host")) &&
           power_options.observe_power_fw_dma == !std::strcmp(power_mode, "--observe-power-fw-dma") &&
           power_options.observe_power_config == !std::strcmp(power_mode, "--observe-power-config") &&
+          power_options.exercise_power_host == !std::strcmp(power_mode, "--exercise-power-host") &&
           NeedsRawIo(power_options) && power_options.iterations == 1 && power_options.seconds == 30,
           "power observation admits only the bounded hardware profile with raw-I/O capability");
     for (const auto &extras : std::vector<std::vector<const char *>>{
             {"--observe-power"}, {"--observe-power-fw-pause"}, {"--observe-power-fw-dma"},
             {"--observe-power-config"}, {"--observe-chroma"}, {"--observe-runtime-inventory"},
+            {"--exercise-power-host"},
             {"--observe-scl-view", "2"}, {"--inject-mfd-colour", "a"},
             {"--scl-status-test", "clear"}, {"--scaler-test", "0"},
             {"--scaler-benchmark", "320"}, {"--capture-yuy2", "new"},
@@ -8496,9 +8515,22 @@ static bool SelfTest()
         for (unsigned where : {4U, 5U}) {
             auto mixed = power_arguments; mixed.insert(mixed.begin() + where, extras.begin(), extras.end());
             Options rejected;
-            check(!ParseArguments(mixed, &rejected),
+            const bool allowed_capture = power_options.exercise_power_host && where == 5 &&
+                extras.size() == 2 && !std::strcmp(extras[0], "--capture-yuy2");
+            const bool accepted = ParseArguments(mixed, &rejected);
+            check(accepted == allowed_capture && (!accepted ||
+                  (rejected.exercise_power_host && rejected.capture_path &&
+                   !std::strcmp(rejected.capture_path, "new") &&
+                   rejected.expected == 180 && rejected.seconds == 30 && rejected.iterations == 1 &&
+                   rejected.output_format == OUTPUT_MODE422_YUY2 && !rejected.scaler_test)),
                   "power observation rejects duplicate, expanded and mixed experimental profiles before action");
         }
+    }
+    for (const char *bad_capture : {"", "-"}) {
+        Options rejected;
+        check(!ParseArguments({"probe", "--hardware", "fixture", "180", "--exercise-power-host",
+                  "--capture-yuy2", bad_capture}, &rejected),
+              "host-only capture requires an explicit new output path");
     }
     for (unsigned field = 0; field < 3; ++field) {
         auto invalid = power_arguments;
@@ -8524,6 +8556,41 @@ static bool SelfTest()
         check(!SclInputAdmitted(power_options, changed) && SclInputAdmitted(Options{}, changed),
               "power observation fixture restriction does not alter ordinary decode admission");
     }
+    }
+
+    const std::vector<const char *> host_capture_arguments = {"probe", "--hardware", "fixture", "180",
+        "--exercise-power-host", "--capture-yuy2", "new"};
+    Options host_capture_options;
+    check(ParseArguments(host_capture_arguments, &host_capture_options) &&
+          host_capture_options.exercise_power_host && host_capture_options.observe_power_fw_pause &&
+          host_capture_options.capture_path && !std::strcmp(host_capture_options.capture_path, "new") &&
+          host_capture_options.expected == 180 && host_capture_options.seconds == 30 &&
+          host_capture_options.iterations == 1 && !host_capture_options.scaler_test &&
+          host_capture_options.output_format == OUTPUT_MODE422_YUY2,
+          "host-only owned capture does not expand mode, geometry, repetition or deadline");
+    for (const auto &extras : std::vector<std::vector<const char *>>{
+            {"30"}, {"30", "1"}, {"--exercise-power-host"}, {"--observe-power"},
+            {"--observe-power-fw-pause"}, {"--observe-power-fw-dma"}, {"--observe-power-config"},
+            {"--capture-yuy2", "other"}, {"--capture-uyvy", "other"}, {"--observe-chroma"},
+            {"--scaler-test", "0"}, {"--scaler-benchmark", "320"}, {"--open-only"},
+            {"--scl-status-test", "clear"}}) {
+        for (unsigned where : {4U, 5U, 7U}) {
+            auto mixed = host_capture_arguments;
+            mixed.insert(mixed.begin() + where, extras.begin(), extras.end());
+            Options rejected;
+            check(!ParseArguments(mixed, &rejected),
+                  "host-only capture rejects extra controls, repetitions, deadlines and duplicate capture paths");
+        }
+    }
+    for (unsigned field : {1U, 3U, 4U, 5U}) {
+        auto invalid = host_capture_arguments;
+        if (field == 1) invalid[field] = "--preflight";
+        if (field == 3) invalid[field] = "179";
+        if (field == 4) invalid[field] = "--observe-power-fw-pause";
+        if (field == 5) invalid[field] = "--capture-uyvy";
+        Options rejected;
+        check(!ParseArguments(invalid, &rejected),
+              "host-only capture whitelist cannot be reused by alternate power modes or formats");
     }
 
     unsigned number = 0;
@@ -10670,7 +10737,7 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
             if (!marker && valid && released)
                 valid = audit->scl_status.AfterDelivered(device->handle, audit->frames,
                                                         released, audit->capture != nullptr);
-            if (!marker && valid && released && audit->capture && audit->frames == 1)
+            if (!marker && valid && released && audit->capture && !audit->power.host_only && audit->frames == 1)
                 valid = PackingState(device->handle, "first-output", &audit->mfd_colour, &audit->scl_view);
             if (!marker && valid && released && audit->observe_chroma && audit->frames == 1)
                 valid = ChromaState(device->handle, "first-output-after-release");
@@ -10724,7 +10791,8 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
             audit->packing_format_observed = true;
             // FMT_CHANGE is an API notification, not a lease/retirement proof.
             if (!audit->scl.Observe(device->handle, SclStage::FormatChange)) return false;
-            if (!PackingState(device->handle, "first-format-change", &audit->mfd_colour, &audit->scl_view)) return false;
+            if (!audit->power.host_only &&
+                !PackingState(device->handle, "first-format-change", &audit->mfd_colour, &audit->scl_view)) return false;
             if (audit->observe_chroma && !ChromaState(device->handle, "first-format-change")) return false;
         } else if (result != BC_STS_FMT_CHANGE && result != BC_STS_NO_DATA &&
                    result != BC_STS_BUSY && result != BC_STS_TIMEOUT) {
@@ -10771,6 +10839,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.scl.enabled = options.observe_scl_config;
     audit.power.enabled = options.observe_power;
     audit.power.configuration = options.observe_power_config;
+    audit.power.host_only = options.exercise_power_host;
     audit.power.firmware_dma = options.observe_power_fw_dma;
     audit.power.firmware_command = options.observe_power_fw_pause ? DtsFWPauseVideo : nullptr;
     audit.scl_filter_map.enabled = options.observe_scl_filter_map;
@@ -10854,8 +10923,12 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
         std::fflush(stdout);
         return ok;
     }
-    if (ok) ok = Status("DtsSetColorSpace", DtsSetColorSpace(device.handle, options.output_format));
-    if (ok && options.capture_path) ok = PackingState(device.handle, "selected-before-start", &audit.mfd_colour, &audit.scl_view);
+    // Host-only PM probes retain the library's Flea YUY2 cache, but this does
+    // not prove device packing. Compare owned pixels with an explicit-YUY2
+    // reference; the raw-writing colour setter is forbidden in enabled PM.
+    if (ok && !options.exercise_power_host)
+        ok = Status("DtsSetColorSpace", DtsSetColorSpace(device.handle, options.output_format));
+    if (ok && options.capture_path && !options.exercise_power_host) ok = PackingState(device.handle, "selected-before-start", &audit.mfd_colour, &audit.scl_view);
     if (ok) ok = audit.scl.Observe(device.handle, SclStage::PreStart);
     if (ok) ok = audit.power.Observe(device.handle, 0);
     if (ok) ok = audit.scl_view.Begin(device.handle);
@@ -10873,12 +10946,12 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     if (ok) ok = audit.avd_code_prefix.Observe(&device.handle);
     if (ok) ok = audit.mfd_colour.PreStart(device.handle);
     if (ok) device.started = ok = Status("DtsStartDecoder", DtsStartDecoder(device.handle));
-    if (ok && options.capture_path) ok = PackingState(device.handle, "started", &audit.mfd_colour, &audit.scl_view);
+    if (ok && options.capture_path && !options.exercise_power_host) ok = PackingState(device.handle, "started", &audit.mfd_colour, &audit.scl_view);
     if (ok) {
         ok = Status("DtsStartCapture", DtsStartCapture(device.handle));
         if (ok) audit.benchmark.CaptureStarted(g_get_monotonic_time());
     }
-    if (ok && options.capture_path) ok = PackingState(device.handle, "capture-before-input", &audit.mfd_colour, &audit.scl_view);
+    if (ok && options.capture_path && !options.exercise_power_host) ok = PackingState(device.handle, "capture-before-input", &audit.mfd_colour, &audit.scl_view);
     size_t packet_index = 0;
     for (Packet &packet : input.packets) {
         if (!ok) break;
@@ -10888,10 +10961,10 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
                     packet.size, token, FALSE));
         if (ok) audit.pending.insert(token);
         ++packet_index;
-        if (ok && options.capture_path && packet_index == 1)
+        if (ok && options.capture_path && !options.exercise_power_host && packet_index == 1)
             ok = PackingState(device.handle, "first-input-accepted", &audit.mfd_colour, &audit.scl_view);
     }
-    if (ok && options.capture_path) ok = PackingState(device.handle, "all-input-accepted", &audit.mfd_colour, &audit.scl_view);
+    if (ok && options.capture_path && !options.exercise_power_host) ok = PackingState(device.handle, "all-input-accepted", &audit.mfd_colour, &audit.scl_view);
     if (ok) {
         ok = WaitInput(&device, input, &audit, GST_CRYSTALHD_EOS_RESERVATION,
                        deadline);
@@ -10902,7 +10975,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
         }
         if (ok)
             ok = Status("DtsFlushInput(0)", DtsFlushInput(device.handle, 0));
-        if (ok && options.capture_path) ok = PackingState(device.handle, "flush-input-returned", &audit.mfd_colour, &audit.scl_view);
+        if (ok && options.capture_path && !options.exercise_power_host) ok = PackingState(device.handle, "flush-input-returned", &audit.mfd_colour, &audit.scl_view);
     }
     // A complete frame count is deliberately NOT the termination condition.
     while (ok && !deadline.expired()) {
@@ -10997,7 +11070,9 @@ int main(int argc, char **argv)
             "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --observe-ppb-metadata | --observe-ppb-return | --observe-video-prefix | --observe-video-graph | --observe-video-staging | --observe-avd-memory | --observe-avd-cpu-map | --observe-avd-code-arena | --observe-avd-code-prefix | --observe-avd-platform-code | --observe-avd-cache-count | --observe-avd-dmem-samples | --observe-avd-dmem-midpoints | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
             "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n"
             "Power observation: --hardware MPEG2_640x360_180_FRAMES 180 "
-            "[--observe-power | --observe-power-fw-pause | --observe-power-fw-dma | --observe-power-config]\n", argv[0]);
+            "[--observe-power | --observe-power-fw-pause | --observe-power-fw-dma | --observe-power-config]\n"
+            "Host-only power exercise: --hardware MPEG2_640x360_180_FRAMES 180 "
+            "--exercise-power-host [--capture-yuy2 NEW_PATH]\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
@@ -11080,8 +11155,9 @@ int main(int argc, char **argv)
         return 2;
     }
     if (!SclInputAdmitted(options, input)) {
-        std::fprintf(stderr, "Raw observation requires native progressive MPEG2 "
-                             "640x360 with 180 packets/expected frames; no device was opened\n");
+        std::fprintf(stderr, "%s requires native progressive MPEG2 "
+                             "640x360 with 180 packets/expected frames; no device was opened\n",
+                             options.exercise_power_host ? "Host-only power exercise" : "Raw observation");
         phase1_progress_close(&progress);
         return 2;
     }
