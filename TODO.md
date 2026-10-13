@@ -20,9 +20,9 @@ Historical RC results and the existing recovery copy remain unchanged.
   Preserve the existing backup under the G0 exception.
   The release and public-archive verification are complete in #369.
 - [ ] [#91: Deferred hardware and application acceptance](https://github.com/ahnhy1324/crystalhd/issues/91)
-  — alternate hardware, the LTS item executed through #371, power management,
-  broader streams, and physical
-  presentation/A/V synchronization.
+  — alternate hardware, the LTS item executed through #371, bounded BCM70015
+  deep-S3 coverage completed through #395/#397, remaining fault/removal work,
+  broader streams, and physical presentation/A/V synchronization.
 - [ ] [#92: BCM70015 capability research](https://github.com/ahnhy1324/crystalhd/issues/92)
   — pinned firmware mapping and live OPEN/scaling evidence; standalone
   processing and backend reuse remain unvalidated.
