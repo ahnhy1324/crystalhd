@@ -4,6 +4,9 @@
 // kernel ioctl or device close. --preflight never opens the CrystalHD device.
 #include <bc_dts_types.h>
 #include <libcrystalhd_if.h>
+// Optional internal C++ entry point, never used by the ordinary probe path.
+// Keep older libraries loadable and reject the explicit probe if unavailable.
+extern BC_STATUS DtsFWPauseVideo(HANDLE, uint32_t) __attribute__((weak));
 #include "crystalhd_ioctl_limits.h"
 #include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_mfd.h"
 #include "flea/70015/magnum/basemodules/chp/70015/rdb/a0/bchp_scl_hd.h"
@@ -47,6 +50,7 @@ extern "C" {
 extern "C" BC_STATUS DtsDevRegisterRead(HANDLE handle, uint32_t offset, uint32_t *value);
 extern "C" BC_STATUS DtsDevRegisterWr(HANDLE handle, uint32_t offset, uint32_t value);
 extern "C" BC_STATUS DtsDevMemRd(HANDLE handle, uint32_t *buffer, uint32_t bytes, uint32_t offset);
+#include "flea-power-observer.h"
 
 struct ChromaConfiguration {
     uint32_t lac = 0, sampling = 0;
@@ -3453,6 +3457,8 @@ struct Options {
     bool open_only = false;
     const char *capture_path = nullptr;
     bool observe_chroma = false;
+    bool observe_power = false;
+    bool observe_power_fw_pause = false;
     bool observe_scl_config = false;
     bool observe_scl_filter_map = false;
     unsigned observe_scl_view = 0;
@@ -3550,6 +3556,17 @@ static bool ScalerBenchmarkConflicts(const Options &o)
 
 static bool ParseArguments(std::vector<const char *> arguments, Options *options)
 {
+    // A separate bounded mode: no other experimental options or repetitions.
+    if (arguments.size() == 5 && (!std::strcmp(arguments.back(), "--observe-power") ||
+                                !std::strcmp(arguments.back(), "--observe-power-fw-pause"))) {
+        const bool firmware = !std::strcmp(arguments.back(), "--observe-power-fw-pause");
+        arguments.pop_back();
+        if (!ParseArguments(arguments, options) || options->mode != Mode::Hardware ||
+            options->expected != 180) return false;
+        options->observe_power = true;
+        options->observe_power_fw_pause = firmware;
+        return true;
+    }
     if (arguments.size() >= 3 &&
         (!std::strcmp(arguments[arguments.size() - 2], "--capture-yuy2") ||
          !std::strcmp(arguments[arguments.size() - 2], "--capture-uyvy"))) {
@@ -3794,7 +3811,7 @@ static bool ParseArguments(std::vector<const char *> arguments, Options *options
 
 static bool SclInputAdmitted(const Options &options, const Input &input)
 {
-    return (!options.observe_runtime_inventory && !options.observe_scl_config && !options.observe_scl_filter_map && !options.observe_scl_view && !options.observe_mfd_config && !options.observe_mfd_address && !options.observe_mfd_framing && !options.inject_mfd_colour && !options.scl_status_test) ||
+    return (!options.observe_power && !options.observe_runtime_inventory && !options.observe_scl_config && !options.observe_scl_filter_map && !options.observe_scl_view && !options.observe_mfd_config && !options.observe_mfd_address && !options.observe_mfd_framing && !options.inject_mfd_colour && !options.scl_status_test) ||
         (options.expected == 180 && input.codec == AV_CODEC_ID_MPEG2VIDEO &&
          input.subtype == BC_MSUBTYPE_MPEG2VIDEO && input.progressive &&
          input.width == 640 && input.height == 360 && input.packets.size() == 180);
@@ -3802,6 +3819,7 @@ static bool SclInputAdmitted(const Options &options, const Input &input)
 
 static bool NeedsRawIo(const Options &options)
 {
+    if (options.observe_power) return true;
     return options.observe_avd_dmem_samples || options.observe_avd_cache_count || options.observe_avd_code_prefix || options.observe_avd_code_arena || options.observe_avd_cpu_map || options.observe_avd_memory || options.observe_arm_metadata || options.observe_arm_source_shape || options.observe_ppb_context || options.observe_runtime_inventory || options.observe_chroma || options.observe_scl_config || options.observe_scl_filter_map ||
         options.observe_scl_view || options.observe_mfd_config || options.observe_mfd_address || options.observe_mfd_framing || options.inject_mfd_colour || options.scl_status_test;
 }
@@ -8445,6 +8463,55 @@ static bool SelfTest()
     MfdFramingSelfTest(check);
     RuntimeInventorySelfTest(check);
     Mpeg4DirectSelfTest(check);
+    FleaPowerObserverSelfTest(check);
+
+    for (const char *power_mode : {"--observe-power", "--observe-power-fw-pause"}) {
+    const std::vector<const char *> power_arguments = {
+        "probe", "--hardware", "fixture", "180", power_mode};
+    Options power_options;
+    check(ParseArguments(power_arguments, &power_options) && power_options.observe_power &&
+          power_options.observe_power_fw_pause == !std::strcmp(power_mode, "--observe-power-fw-pause") &&
+          NeedsRawIo(power_options) && power_options.iterations == 1 && power_options.seconds == 30,
+          "power observation admits only the bounded hardware profile with raw-I/O capability");
+    for (const auto &extras : std::vector<std::vector<const char *>>{
+            {"--observe-power"}, {"--observe-power-fw-pause"}, {"--observe-chroma"}, {"--observe-runtime-inventory"},
+            {"--observe-scl-view", "2"}, {"--inject-mfd-colour", "a"},
+            {"--scl-status-test", "clear"}, {"--scaler-test", "0"},
+            {"--scaler-benchmark", "320"}, {"--capture-yuy2", "new"},
+            {"--capture-uyvy", "new"}, {"--mpeg1-via-mpeg2"}, {"--open-only"},
+            {"--h263-via-divx"}, {"30"}, {"30", "1"}}) {
+        for (unsigned where : {4U, 5U}) {
+            auto mixed = power_arguments; mixed.insert(mixed.begin() + where, extras.begin(), extras.end());
+            Options rejected;
+            check(!ParseArguments(mixed, &rejected),
+                  "power observation rejects duplicate, expanded and mixed experimental profiles before action");
+        }
+    }
+    for (unsigned field = 0; field < 3; ++field) {
+        auto invalid = power_arguments;
+        if (field == 0) invalid[1] = "--preflight";
+        if (field == 1) invalid[1] = "--self-test";
+        if (field == 2) invalid[3] = "179";
+        Options rejected;
+        check(!ParseArguments(invalid, &rejected), "power observation rejects alternate mode and frame count");
+    }
+    Input power_input; power_input.codec = AV_CODEC_ID_MPEG2VIDEO;
+    power_input.subtype = BC_MSUBTYPE_MPEG2VIDEO; power_input.progressive = true;
+    power_input.width = 640; power_input.height = 360; power_input.packets.resize(180);
+    check(SclInputAdmitted(power_options, power_input), "power observation accepts its existing MPEG2 fixture shape");
+    for (unsigned field = 0; field < 7; ++field) {
+        Input changed = power_input;
+        if (field == 0) changed.codec = AV_CODEC_ID_H264;
+        if (field == 1) changed.subtype = BC_MSUBTYPE_H264;
+        if (field == 2) changed.progressive = false;
+        if (field == 3) changed.width = 638;
+        if (field == 4) changed.height = 358;
+        if (field == 5) changed.packets.pop_back();
+        if (field == 6) changed.packets.emplace_back();
+        check(!SclInputAdmitted(power_options, changed) && SclInputAdmitted(Options{}, changed),
+              "power observation fixture restriction does not alter ordinary decode admission");
+    }
+    }
 
     unsigned number = 0;
     check(Number("1", 1, &number) && number == 1, "minimum number");
@@ -10470,6 +10537,7 @@ struct Audit {
     bool benchmark_scaled = false;
     unsigned expected = 0;
     ScalerBenchmark benchmark;
+    FleaPowerObserver power;
     SclObserver scl;
     SclFilterMapObserver scl_filter_map;
     SclViewProbe scl_view;
@@ -10537,6 +10605,11 @@ static bool Receive(Device *device, const Input &input, Audit *audit)
             }
             // Every successful NoCopy fetch owns a lease, even invalid output.
             const bool released = lease.Release();
+            if (!marker && valid && released && audit->frames == 1)
+                valid = audit->power.Observe(device->handle, 1) &&
+                    audit->power.PauseAndResume(device->handle);
+            if (!marker && valid && released && audit->frames == audit->expected)
+                valid = audit->power.Observe(device->handle, 4);
             bool owned_written = false;
             // File I/O uses only the owned copy, after the lease was released.
             if (!marker && valid && released && audit->capture) {
@@ -10683,6 +10756,8 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     audit.benchmark_scaled = options.scaler_benchmark && options.scale_width != 0;
     audit.expected = expected;
     audit.scl.enabled = options.observe_scl_config;
+    audit.power.enabled = options.observe_power;
+    audit.power.firmware_command = options.observe_power_fw_pause ? DtsFWPauseVideo : nullptr;
     audit.scl_filter_map.enabled = options.observe_scl_filter_map;
     audit.scl_view.selector = options.observe_scl_view;
     audit.mfd.enabled = options.observe_mfd_config || options.observe_runtime_inventory;
@@ -10767,6 +10842,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     if (ok) ok = Status("DtsSetColorSpace", DtsSetColorSpace(device.handle, options.output_format));
     if (ok && options.capture_path) ok = PackingState(device.handle, "selected-before-start", &audit.mfd_colour, &audit.scl_view);
     if (ok) ok = audit.scl.Observe(device.handle, SclStage::PreStart);
+    if (ok) ok = audit.power.Observe(device.handle, 0);
     if (ok) ok = audit.scl_view.Begin(device.handle);
     if (ok) ok = audit.runtime_inventory.Observe(&device.handle);
     if (ok) ok = audit.mfd.Observe(device.handle, 0);
@@ -10835,6 +10911,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     if (ok) ok = audit.avd_cache_count.Observe(&device.handle, 2, true);
     if (ok) ok = audit.avd_dmem_samples.Observe(&device.handle, 2, true);
     if (ok) ok = audit.scl.Observe(device.handle, SclStage::EosBarrier);
+    if (ok) ok = audit.power.Observe(device.handle, 5);
     // Only an actual native delivery barrier admits the last status sample.
     // Its diagnostic result cannot retroactively erase delivered native data.
     if (ok) (void)audit.scl_status.Eos(device.handle, true);
@@ -10856,6 +10933,7 @@ static bool Run(Input &input, unsigned expected, unsigned seconds,
     }
     const bool closed = device.Close();
     ok = ok && closed;
+    ok = audit.power.Finish(ok);
     const bool captured = capture.Finish(ok);
     ok = ok && captured;
     ok = audit.scl_filter_map.Finish(ok);
@@ -10902,12 +10980,20 @@ int main(int argc, char **argv)
             "[--scaler-test WIDTH_OR_0 | --scaler-benchmark WIDTH_OR_0] "
             "[--mpeg1-via-mpeg2 | --h263-via-divx] "
             "[--open-only] [--observe-chroma | --observe-scl-config | --observe-scl-filter-map | --observe-scl-view 2_OR_3 | --observe-mfd-config | --observe-mfd-address | --observe-mfd-framing | --observe-runtime-inventory | --observe-arm-metadata | --observe-arm-source-shape | --observe-ppb-context | --observe-ppb-stop | --observe-ppb-metadata | --observe-ppb-return | --observe-video-prefix | --observe-video-graph | --observe-video-staging | --observe-avd-memory | --observe-avd-cpu-map | --observe-avd-code-arena | --observe-avd-code-prefix | --observe-avd-platform-code | --observe-avd-cache-count | --observe-avd-dmem-samples | --observe-avd-dmem-midpoints | --inject-mfd-colour a_OR_b | --scl-status-test observe_OR_clear] "
-            "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n", argv[0]);
+            "[--capture-yuy2 NEW_PATH | --capture-uyvy NEW_PATH]\n"
+            "Power observation: --hardware MPEG2_640x360_180_FRAMES 180 "
+            "--observe-power_OR_--observe-power-fw-pause\n", argv[0]);
         return 2;
     }
     if (options.mode == Mode::SelfTest) return SelfTest() ? 0 : 1;
+    if (options.observe_power_fw_pause && !DtsFWPauseVideo) {
+        std::fprintf(stderr, "Stock firmware pause entry point unavailable; no device was opened\n");
+        return 2;
+    }
     if (NeedsRawIo(options) && !CanReadChromaConfiguration()) {
-        if (options.observe_avd_dmem_midpoints)
+        if (options.observe_power)
+            std::fprintf(stderr, "Power observation requires CAP_SYS_RAWIO; no device was opened\n");
+        else if (options.observe_avd_dmem_midpoints)
             std::fprintf(stderr, "--observe-avd-dmem-midpoints requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
         else if (options.observe_avd_dmem_samples)
             std::fprintf(stderr, "--observe-avd-dmem-samples requires CAP_SYS_RAWIO; no fixture/progress/capture/device was opened\n");
