@@ -859,10 +859,11 @@ index b83c395..04d9ddd 100644
  	uint32_t research_mfd_packed_pattern;
  	bool research_mfd_scl_probe;
  	bool research_scl_port_probe;
-@@ -116,6 +129,8 @@ struct crystalhd_hw {
+@@ -116,6 +129,9 @@ struct crystalhd_hw {
  	const void *research_mfd_owner;
  	bool dma_fault;
  	bool dev_started, fwcmd_pending, fwcmd_poisoned;
++	enum FLEA_POWER_STATES FleaPowerState;
 +	int fwcmd_trans_mutex;
 +	bool (*pfnStopDevice)(struct crystalhd_hw *);
  	uint32_t RxCaptureState, FwCmdCnt, tx_list_post_index, rx_list_post_index;

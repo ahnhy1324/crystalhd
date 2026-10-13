@@ -794,9 +794,7 @@ index 04d9ddd..652682d 100644
  	bool research_scl_config_dirty;
  	bool research_scl_reset_corroborated;
  	u64 research_scl_duty_generation;
-@@ -130,6 +136,8 @@ struct crystalhd_hw {
- 	bool dma_fault;
- 	bool dev_started, fwcmd_pending, fwcmd_poisoned;
+@@ -132,4 +138,6 @@ struct crystalhd_hw {
  	int fwcmd_trans_mutex;
 +	int fetch_sem;
 +	uint64_t rx_cancel_epoch;
