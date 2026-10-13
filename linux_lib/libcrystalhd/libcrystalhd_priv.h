@@ -29,6 +29,7 @@
 #ifndef _BCM_DRV_IF_PRIV_
 #define _BCM_DRV_IF_PRIV_
 
+#include <pthread.h>
 #include <semaphore.h>
 #include "bc_dts_glob_lnx.h"
 #include "libcrystalhd_parser.h"
@@ -219,6 +220,7 @@ void * txThreadProc(void *ctx);
 typedef enum _DTS_OUTPUT_PHASE {
     DTS_OUTPUT_IDLE = 0,
     DTS_OUTPUT_ACTIVE,
+    DTS_OUTPUT_DELIVERING,
     DTS_OUTPUT_RETURNED,
     DTS_OUTPUT_RETIRE_ONLY
 } DTS_OUTPUT_PHASE;
@@ -231,6 +233,13 @@ typedef enum _DTS_STOP_OUTCOME {
 	DTS_STOP_UNCERTAIN,
 	DTS_STOP_CONFIRMED
 } DTS_STOP_OUTCOME;
+
+typedef enum _DTS_CONTROL_OWNER {
+	DTS_CONTROL_NONE = 0,
+	DTS_CONTROL_LIFECYCLE,
+	DTS_CONTROL_RECOVERY,
+	DTS_CONTROL_TEARDOWN
+} DTS_CONTROL_OWNER;
 
 typedef struct _DTS_LIB_CONTEXT{
 	uint32_t				Sig;			/* Mazic number */
@@ -343,6 +352,31 @@ typedef struct _DTS_LIB_CONTEXT{
 	 * so their suffixes cannot overwrite a concurrent STOP outcome.
 	 */
 	bool stopInProgress;
+	/* Lifecycle calls and S3 recovery share one re-entrant control lease.
+	 * The lease is protected by thLock, but thLock is never retained across
+	 * firmware or driver waits. Recovery keeps the outer lease while its
+	 * same-thread private lifecycle calls enter and leave recursively.
+	 */
+	DTS_CONTROL_OWNER controlOwner;
+	pthread_t controlThread;
+	uint32_t controlDepth;
+	uint32_t inputCalls;
+	pthread_t inputThread;
+	bool recoveryPending;
+	bool recoverySuspendSeen;
+	bool recoveryResumeSeen;
+	BC_STATUS recoveryStatus;
+	uint64_t recoveryGeneration;
+	uint64_t recoveryCancelGeneration;
+	uint64_t outputRecoveryGeneration;
+	/* An S3 reset invalidates the pre-epoch firmware channel before the
+	 * replacement Open can update State.  Preserve that logical shared owner
+	 * until the whole recovery succeeds or terminal teardown retires it. */
+	bool recoveryRetireDecoderOwner;
+	/* A successful firmware reset loses decoder-side codec configuration.
+	 * Single-threaded clients normally suppress the library's cached-header
+	 * injection, so recovery explicitly arms one replacement injection. */
+	bool recoveryInjectSpsPps;
 	/* TX byte serials make the FLEA EOS fallback wait for the DMA that
 	 * contains the complete drain sequence, not merely an empty SW ring.
 	 * All fields below are protected by thLock.
@@ -411,8 +445,11 @@ BC_STATUS DtsBeginOutputRelease(DTS_LIB_CONTEXT *Ctx);
 void DtsFinishOutputCall(DTS_LIB_CONTEXT *Ctx);
 BC_STATUS DtsPublishOutput(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *output, BC_STATUS status);
 BC_STATUS DtsFetchOutInCall(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *output, uint32_t timeout);
+BC_STATUS DtsCommitFetchedOutput(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *output);
+BC_STATUS DtsContinueOutputCall(DTS_LIB_CONTEXT *Ctx);
 BC_STATUS DtsPrepareOutputPacking(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *output,
 	uint32_t allocationBytes);
+BC_STATUS DtsPrepareFetchedOutput(DTS_LIB_CONTEXT *Ctx, BC_DTS_PROC_OUT *output);
 BC_STATUS DtsCancelFetchOutInt(DTS_LIB_CONTEXT *Ctx);
 BC_STATUS DtsUnmapYUVBuffs(DTS_LIB_CONTEXT *Ctx);
 BC_STATUS DtsMapYUVBuffs(DTS_LIB_CONTEXT *Ctx);
@@ -484,6 +521,33 @@ bool DtsChkPID(pid_t nCurPID);
 
 void DtsLock(DTS_LIB_CONTEXT	*Ctx);
 void DtsUnLock(DTS_LIB_CONTEXT	*Ctx);
+BC_STATUS DtsAcquireControl(DTS_LIB_CONTEXT *Ctx, DTS_CONTROL_OWNER owner);
+void DtsReleaseControl(DTS_LIB_CONTEXT *Ctx);
+BC_STATUS DtsBeginInputCall(DTS_LIB_CONTEXT *Ctx);
+void DtsFinishInputCall(DTS_LIB_CONTEXT *Ctx);
+BC_STATUS DtsWaitForInputCalls(DTS_LIB_CONTEXT *Ctx);
+BC_STATUS DtsRecoveryFlushInputRing(DTS_LIB_CONTEXT *Ctx);
+BC_STATUS DtsRecoveryRestoreInputState(DTS_LIB_CONTEXT *Ctx);
+BC_STATUS DtsPublishCopiedOutput(DTS_LIB_CONTEXT *Ctx, BC_STATUS status);
+
+/* Caller holds thLock. */
+static inline BC_STATUS DtsRecoveryAdmissionStatus(const DTS_LIB_CONTEXT *Ctx)
+{
+	if (Ctx->recoveryStatus != BC_STS_SUCCESS)
+		return Ctx->recoveryStatus;
+	return (Ctx->recoveryPending ||
+		(Ctx->controlOwner == DTS_CONTROL_RECOVERY &&
+		 (!Ctx->controlDepth || !pthread_equal(Ctx->controlThread, pthread_self())))) ?
+		BC_STS_BUSY : BC_STS_SUCCESS;
+}
+
+/* Caller holds thLock. */
+static inline bool DtsRecoveryBlocksCaller(const DTS_LIB_CONTEXT *Ctx)
+{
+	return DtsRecoveryAdmissionStatus(Ctx) != BC_STS_SUCCESS;
+}
+
+void DtsObservePowerState(DTS_LIB_CONTEXT *Ctx, uint8_t powerState);
 
 /*====================== Debug Routines ========================================*/
 void DtsTestMdata(DTS_LIB_CONTEXT	*gCtx);

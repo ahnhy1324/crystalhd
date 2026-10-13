@@ -189,13 +189,21 @@ static void RegisterFailures(uint32_t device)
                           "every failed transaction retains both source and software intent");
                     fixture.PoolReturned();
                     fixture.Prepare();
-                    Check(DtsSetColorSpace(&fixture.context, mode) == BC_STS_SUCCESS &&
-                              fixture.context.b422Mode == (device == BC_PCI_DEVID_FLEA
-                                  ? OUTPUT_MODE422_YUY2 : mode) &&
-                              fixture.context.softwareUyvy == (device == BC_PCI_DEVID_FLEA
-                                  ? mode == OUTPUT_MODE422_UYVY : requested_before) &&
-                              written_value == ExpectedRegister(device, mode),
-                          "retry commits only after a successful pooled register transaction");
+                    if (status == BC_STS_PWR_MGMT) {
+                        Check(DtsSetColorSpace(&fixture.context, mode) == BC_STS_BUSY &&
+                                  calls == 0 && fixture.context.recoveryPending &&
+                                  fixture.context.b422Mode == previous_mode &&
+                                  fixture.context.softwareUyvy == requested_before,
+                              "a PM register failure latches recovery and blocks a blind retry");
+                    } else {
+                        Check(DtsSetColorSpace(&fixture.context, mode) == BC_STS_SUCCESS &&
+                                  fixture.context.b422Mode == (device == BC_PCI_DEVID_FLEA
+                                      ? OUTPUT_MODE422_YUY2 : mode) &&
+                                  fixture.context.softwareUyvy == (device == BC_PCI_DEVID_FLEA
+                                      ? mode == OUTPUT_MODE422_UYVY : requested_before) &&
+                                  written_value == ExpectedRegister(device, mode),
+                              "retry commits only after a successful pooled register transaction");
+                    }
                 }
             }
         }

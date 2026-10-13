@@ -61,6 +61,115 @@ public:
 	}
 };
 
+class DtsLifecycleCall {
+	DTS_LIB_CONTEXT *context;
+	BC_STATUS status;
+	bool active;
+public:
+	explicit DtsLifecycleCall(DTS_LIB_CONTEXT *ctx,
+		DTS_CONTROL_OWNER owner = DTS_CONTROL_LIFECYCLE) : context(ctx),
+		status(DtsAcquireControl(ctx, owner)),
+		active(status == BC_STS_SUCCESS) {}
+	~DtsLifecycleCall() { Release(); }
+	BC_STATUS Status() const { return status; }
+	void Consume() { active = false; }
+	void Release() {
+		if (active) {
+			DtsReleaseControl(context);
+			active = false;
+		}
+	}
+};
+
+class DtsInputCall {
+	DTS_LIB_CONTEXT *context;
+	BC_STATUS status;
+	bool active;
+public:
+	explicit DtsInputCall(DTS_LIB_CONTEXT *ctx) : context(ctx),
+		status(DtsBeginInputCall(ctx)), active(status == BC_STS_SUCCESS) {}
+	~DtsInputCall() {
+		if (active)
+			DtsFinishInputCall(context);
+	}
+	BC_STATUS Status() const { return status; }
+};
+
+/* Consume a channel that is already in recovery quarantine.  No legacy
+ * firmware STOP/CLOSE command is safe after a partial reset; only retire
+ * host waiters and the driver/interface allocation. */
+static BC_STATUS DtsRetireFailedRecoveryDevice(DTS_LIB_CONTEXT *Ctx,
+	DtsLifecycleCall &control)
+{
+	const BC_STATUS output_sts = DtsCancelFetchOutInt(Ctx);
+	if (output_sts != BC_STS_SUCCESS) {
+		DtsLock(Ctx);
+		Ctx->stopInProgress = false;
+		DtsUnLock(Ctx);
+		return BC_STS_BUSY;
+	}
+	DtsLock(Ctx);
+	const bool output_retained =
+		Ctx->outputPhase == DTS_OUTPUT_ACTIVE ||
+		Ctx->outputPhase == DTS_OUTPUT_DELIVERING ||
+		Ctx->outputPhase == DTS_OUTPUT_RETURNED ||
+		(Ctx->ProcOutPending && Ctx->outputPhase != DTS_OUTPUT_RETIRE_ONLY);
+	DtsUnLock(Ctx);
+	if (output_retained) {
+		DtsLock(Ctx);
+		Ctx->stopInProgress = false;
+		DtsUnLock(Ctx);
+		return BC_STS_BUSY;
+	}
+
+	uint32_t globMode = DtsGetOPMode();
+	if (Ctx->OpMode == DTS_PLAYBACK_MODE)
+		globMode &= (~0x1);
+	else if (Ctx->OpMode == DTS_DIAG_MODE)
+		globMode &= (~0x2);
+	else if (Ctx->OpMode == DTS_MONITOR_MODE)
+		globMode &= (~0x4);
+	else if (Ctx->OpMode == DTS_HWINIT_MODE)
+		globMode &= (~0x8);
+	else
+		globMode = 0;
+	DtsSetOPMode(globMode);
+	if (Ctx->OpMode == DTS_PLAYBACK_MODE &&
+	    Ctx->State != BC_DEC_STATE_CLOSE && Ctx->ProcessID != 0)
+		DumpInputSampleToFile(NULL, 0);
+	control.Consume();
+	const BC_STATUS release_sts = DtsReleaseInterface(Ctx);
+	/* BUSY is reserved for a live, non-consumed same-process handle. */
+	return release_sts == BC_STS_BUSY ? BC_STS_ERROR : release_sts;
+}
+
+BC_STATUS DtsRecoveryFlushInputRing(DTS_LIB_CONTEXT *Ctx)
+{
+	return txBufFlush(&Ctx->circBuf);
+}
+
+BC_STATUS DtsRecoveryRestoreInputState(DTS_LIB_CONTEXT *Ctx)
+{
+	BC_STATUS status = DtsClrPendMdataList(Ctx);
+	if (status != BC_STS_SUCCESS)
+		return status;
+	DtsLock(Ctx);
+	Ctx->LastPicNum = -1;
+	Ctx->LastSessNum = -1;
+	Ctx->EOSCnt = 0;
+	Ctx->DrvStatusEOSCnt = 0;
+	Ctx->bEOS = false;
+	Ctx->PESConvParams.m_lStartCodeDataSize = 0;
+	Ctx->PESConvParams.m_bAddSpsPps = true;
+	Ctx->recoveryInjectSpsPps =
+		Ctx->PESConvParams.m_pSpsPpsBuf != NULL &&
+		Ctx->PESConvParams.m_iSpsPpsLen != 0 &&
+		(Ctx->VidParams.MediaSubType == BC_MSUBTYPE_AVC1 ||
+		 Ctx->VidParams.MediaSubType == BC_MSUBTYPE_H264);
+	DtsUnLock(Ctx);
+	return BC_STS_SUCCESS;
+}
+
 static bool DtsBeginTxQuiesce(DTS_LIB_CONTEXT *Ctx)
 {
 	DtsLock(Ctx);
@@ -134,6 +243,11 @@ public:
 	BC_STATUS Status() const { return status; }
 	BC_STATUS Publish(BC_DTS_PROC_OUT *output, BC_STATUS result) {
 		result = DtsPublishOutput(context, output, result);
+		active = false;
+		return result;
+	}
+	BC_STATUS PublishCopy(BC_STATUS result) {
+		result = DtsPublishCopiedOutput(context, result);
 		active = false;
 		return result;
 	}
@@ -381,6 +495,15 @@ BC_STATUS DtsSetupHardware(HANDLE hDevice, BOOL IgnClkChk)
 	DTS_LIB_CONTEXT *Ctx;
 
 	DTS_GET_CTX(hDevice,Ctx);
+	DtsLifecycleCall control(Ctx);
+	if (control.Status() != BC_STS_SUCCESS)
+		return control.Status();
+	DtsLock(Ctx);
+	const bool input_busy = Ctx->inputCalls &&
+		!pthread_equal(Ctx->inputThread, pthread_self());
+	DtsUnLock(Ctx);
+	if (input_busy)
+		return BC_STS_BUSY;
 
 	if( !IgnClkChk){
 		if(Ctx->DevId == BC_PCI_DEVID_LINK || Ctx->DevId == BC_PCI_DEVID_FLEA){
@@ -446,7 +569,16 @@ static BC_STATUS DtsRecoverableDecOpen(HANDLE  hDevice,uint32_t StreamType)
 	if (!DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
 
-	if (Ctx->DevId == BC_PCI_DEVID_FLEA)
+	DtsLock(Ctx);
+	const bool recoveryOpen = Ctx->controlOwner == DTS_CONTROL_RECOVERY &&
+		Ctx->controlDepth && pthread_equal(Ctx->controlThread, pthread_self());
+	DtsUnLock(Ctx);
+
+	/* Recovery has already performed the one permitted full hardware reset.
+	 * Do not enter Link's ordinary open repair loop here: a rejected replacement
+	 * channel must remain the exact terminal recovery error, not trigger a blind
+	 * STOP/CLOSE, another setup, or get overwritten by cleanup success. */
+	if (Ctx->DevId == BC_PCI_DEVID_FLEA || recoveryOpen)
 	{
 		sts = DtsFWOpenChannel(hDevice, StreamType, 0);
 		if(sts == BC_STS_SUCCESS)
@@ -720,17 +852,49 @@ DtsDeviceClose(
 
 	if (!DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
+	/* If the sole TX/recovery worker has already retired, a pending PM epoch
+	 * can never make progress. Convert it atomically to terminal quarantine
+	 * before TEARDOWN admission so close cannot return BUSY forever. */
 	DtsLock(Ctx);
+	if (Ctx->recoveryPending && Ctx->htxThread == 0) {
+		Ctx->recoveryPending = false;
+		if (Ctx->recoveryStatus == BC_STS_SUCCESS)
+			Ctx->recoveryStatus = BC_STS_PWR_MGMT;
+	}
+	DtsUnLock(Ctx);
+	DtsLifecycleCall control(Ctx, DTS_CONTROL_TEARDOWN);
+	if (control.Status() != BC_STS_SUCCESS)
+		return control.Status();
+	DtsLock(Ctx);
+	const bool recovery_failed = Ctx->recoveryStatus != BC_STS_SUCCESS;
+	const bool input_retained = Ctx->inputCalls != 0;
 	const bool control_owned = Ctx->stopInProgress;
 	DtsUnLock(Ctx);
 	if (control_owned)
 		return BC_STS_BUSY;
+	if (input_retained)
+		return BC_STS_BUSY;
+	if (recovery_failed)
+		return DtsRetireFailedRecoveryDevice(Ctx, control);
 
 	if(Ctx->State != BC_DEC_STATE_CLOSE){
 		sts = DtsCloseDecoder(hDevice);
 		DtsLock(Ctx);
+		const bool recovery_pending = Ctx->recoveryPending;
+		const bool recovery_worker_gone = Ctx->htxThread == 0;
+		if (recovery_pending && recovery_worker_gone) {
+			Ctx->recoveryPending = false;
+			if (Ctx->recoveryStatus == BC_STS_SUCCESS)
+				Ctx->recoveryStatus = BC_STS_PWR_MGMT;
+		}
 		if (Ctx->stopInProgress) {
 			DtsUnLock(Ctx);
+			return BC_STS_BUSY;
+		}
+		if (recovery_pending) {
+			DtsUnLock(Ctx);
+			if (recovery_worker_gone)
+				return DtsRetireFailedRecoveryDevice(Ctx, control);
 			return BC_STS_BUSY;
 		}
 		const bool join_needed = Ctx->txQuiescing || DtsStopIsUnresolved(Ctx);
@@ -748,7 +912,21 @@ DtsDeviceClose(
 			DtsJoinTxThread(Ctx);
 			DtsLock(Ctx);
 			Ctx->stopInProgress = false;
+			const bool late_recovery = Ctx->recoveryPending;
+			const bool worker_gone = Ctx->htxThread == 0;
+			if (late_recovery && worker_gone) {
+				Ctx->recoveryPending = false;
+				if (Ctx->recoveryStatus == BC_STS_SUCCESS)
+					Ctx->recoveryStatus = BC_STS_PWR_MGMT;
+			}
 			DtsUnLock(Ctx);
+			/* A PM response from the joined worker cannot be recovered now. Do
+			 * not issue another CLOSE or reject a RETIRE_ONLY output forever. */
+			if (late_recovery) {
+				if (!worker_gone)
+					return BC_STS_BUSY;
+				return DtsRetireFailedRecoveryDevice(Ctx, control);
+			}
 			DtsCloseDecoder(hDevice);
 		}
 	}
@@ -757,6 +935,21 @@ DtsDeviceClose(
 	 * teardown claims this interval, no new lifecycle call may enter.
 	 */
 	DtsLock(Ctx);
+	const bool pre_cancel_recovery = Ctx->recoveryPending;
+	const bool pre_cancel_worker_gone = Ctx->htxThread == 0;
+	if (pre_cancel_recovery && pre_cancel_worker_gone) {
+		Ctx->recoveryPending = false;
+		if (Ctx->recoveryStatus == BC_STS_SUCCESS)
+			Ctx->recoveryStatus = BC_STS_PWR_MGMT;
+	}
+	if (pre_cancel_recovery && !pre_cancel_worker_gone) {
+		DtsUnLock(Ctx);
+		return BC_STS_BUSY;
+	}
+	if (pre_cancel_recovery) {
+		DtsUnLock(Ctx);
+		return DtsRetireFailedRecoveryDevice(Ctx, control);
+	}
 	if (Ctx->stopInProgress) {
 		DtsUnLock(Ctx);
 		return BC_STS_BUSY;
@@ -768,7 +961,23 @@ DtsDeviceClose(
 		DtsLock(Ctx);
 		Ctx->stopInProgress = false;
 		DtsUnLock(Ctx);
-		return output_sts;
+		return BC_STS_BUSY;
+	}
+	DtsLock(Ctx);
+	const bool cancel_recovery = Ctx->recoveryPending;
+	const bool cancel_worker_gone = Ctx->htxThread == 0;
+	if (cancel_recovery && cancel_worker_gone) {
+		Ctx->recoveryPending = false;
+		if (Ctx->recoveryStatus == BC_STS_SUCCESS)
+			Ctx->recoveryStatus = BC_STS_PWR_MGMT;
+	}
+	if (cancel_recovery && !cancel_worker_gone)
+		Ctx->stopInProgress = false;
+	DtsUnLock(Ctx);
+	if (cancel_recovery) {
+		if (!cancel_worker_gone)
+			return BC_STS_BUSY;
+		return DtsRetireFailedRecoveryDevice(Ctx, control);
 	}
 	DtsLock(Ctx);
 	const bool output_retained = Ctx->ProcOutPending || Ctx->outputPhase != DTS_OUTPUT_IDLE;
@@ -785,6 +994,25 @@ DtsDeviceClose(
 	{
 		DtsFlushRxCapture(hDevice,false); // Make sure that all buffers and DMA engines are freed up
 	}
+	DtsLock(Ctx);
+	const bool late_recovery = Ctx->recoveryPending;
+	const bool worker_gone = Ctx->htxThread == 0;
+	if (late_recovery && worker_gone) {
+		/* A status command can publish the PM transition while DeviceClose is
+		 * joining the sole recovery worker.  With no worker left, BUSY would be
+		 * permanent: quarantine this partial channel and finish terminal host
+		 * retirement without replaying firmware lifecycle commands. */
+		Ctx->recoveryPending = false;
+		if (Ctx->recoveryStatus == BC_STS_SUCCESS)
+			Ctx->recoveryStatus = BC_STS_PWR_MGMT;
+	}
+	if (late_recovery && !worker_gone)
+		Ctx->stopInProgress = false;
+	DtsUnLock(Ctx);
+	if (late_recovery && !worker_gone)
+		return BC_STS_BUSY;
+	if (late_recovery)
+		return DtsRetireFailedRecoveryDevice(Ctx, control);
 
 	if(Ctx->OpMode == DTS_PLAYBACK_MODE){
 		globMode &= (~0x1);
@@ -801,8 +1029,10 @@ DtsDeviceClose(
 	if (Ctx->OpMode == DTS_PLAYBACK_MODE &&
 	    Ctx->State != BC_DEC_STATE_CLOSE && Ctx->ProcessID != 0)
 		DumpInputSampleToFile(NULL, 0);
+	control.Consume();
 	const BC_STATUS release_sts = DtsReleaseInterface(Ctx);
-	return sts == BC_STS_SUCCESS ? release_sts : sts;
+	const BC_STATUS result = sts == BC_STS_SUCCESS ? release_sts : sts;
+	return result == BC_STS_BUSY ? BC_STS_ERROR : result;
 
 }
 
@@ -993,6 +1223,11 @@ DtsGetFWVersion(
 	BC_STATUS sts;
 	if(flag) //get runtime version by issuing a FWcmd
 	{
+		DTS_LIB_CONTEXT *Ctx = NULL;
+		DTS_GET_CTX(hDevice, Ctx);
+		DtsLifecycleCall control(Ctx);
+		if (control.Status() != BC_STS_SUCCESS)
+			return control.Status();
 		sts = DtsFWVersion(hDevice,StreamVer,DecVer,HwVer);
 			if(sts == BC_STS_SUCCESS)
 			{
@@ -1039,6 +1274,9 @@ DtsOpenDecoder(
 	DTS_LIB_CONTEXT	*Ctx = NULL;
 
 	DTS_GET_CTX(hDevice,Ctx);
+	DtsLifecycleCall control(Ctx);
+	if (control.Status() != BC_STS_SUCCESS)
+		return control.Status();
 
 	if(Ctx->State != BC_DEC_STATE_CLOSE)
 	{
@@ -1115,6 +1353,9 @@ DtsStartDecoder(
 
 	if (!DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
+	DtsLifecycleCall control(Ctx);
+	if (control.Status() != BC_STS_SUCCESS)
+		return control.Status();
 	DtsLock(Ctx);
 	const bool output_blocked = Ctx->txThreadExit || Ctx->txQuiescing || DtsStopIsUnresolved(Ctx) ||
 		Ctx->ProcOutPending || Ctx->CancelWaiting || Ctx->outputPhase != DTS_OUTPUT_IDLE;
@@ -1202,6 +1443,9 @@ DtsCloseDecoder(
 
 	if (!DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
+	DtsLifecycleCall control(Ctx);
+	if (control.Status() != BC_STS_SUCCESS)
+		return control.Status();
 	DtsLock(Ctx);
 	const bool control_owned = Ctx->stopInProgress;
 	DtsUnLock(Ctx);
@@ -1279,20 +1523,14 @@ DtsCloseDecoder(
 	return sts;
 }
 
-DRVIFLIB_API BC_STATUS
-DtsSetVideoParams(
-    HANDLE  hDevice,
+static BC_STATUS DtsSetVideoParamsInternal(
+	DTS_LIB_CONTEXT *Ctx,
 	uint32_t		videoAlg,
 	BOOL	FGTEnable,
 	BOOL	MetaDataEnable,
 	BOOL	Progressive,
-    uint32_t     OptFlags
-	)
+    uint32_t     OptFlags)
 {
-	DTS_LIB_CONTEXT		*Ctx = NULL;
-
-	DTS_GET_CTX(hDevice,Ctx);
-
 	Ctx->VidParams.VideoAlgo = videoAlg;
 	Ctx->VidParams.FGTEnable = FGTEnable;
 	Ctx->VidParams.MetaDataEnable = MetaDataEnable;
@@ -1316,6 +1554,31 @@ DtsSetVideoParams(
 }
 
 DRVIFLIB_API BC_STATUS
+DtsSetVideoParams(
+    HANDLE  hDevice,
+	uint32_t		videoAlg,
+	BOOL	FGTEnable,
+	BOOL	MetaDataEnable,
+	BOOL	Progressive,
+    uint32_t     OptFlags
+	)
+{
+	DTS_LIB_CONTEXT *Ctx = NULL;
+	DTS_GET_CTX(hDevice,Ctx);
+	DtsLifecycleCall control(Ctx);
+	if (control.Status() != BC_STS_SUCCESS)
+		return control.Status();
+	DtsLock(Ctx);
+	const bool input_busy = Ctx->inputCalls &&
+		!pthread_equal(Ctx->inputThread, pthread_self());
+	DtsUnLock(Ctx);
+	if (input_busy)
+		return BC_STS_BUSY;
+	return DtsSetVideoParamsInternal(Ctx, videoAlg, FGTEnable,
+		MetaDataEnable, Progressive, OptFlags);
+}
+
+DRVIFLIB_API BC_STATUS
 DtsSetInputFormat(
     HANDLE hDevice,
     BC_INPUT_FORMAT *pInputFormat
@@ -1329,6 +1592,15 @@ DtsSetInputFormat(
 	if (!pInputFormat || (pInputFormat->metaDataSz && !pInputFormat->pMetaData) ||
 		(pInputFormat->mSubtype == BC_MSUBTYPE_WMV3 && pInputFormat->metaDataSz < 4))
 		return BC_STS_INV_ARG;
+	DtsLifecycleCall control(Ctx);
+	if (control.Status() != BC_STS_SUCCESS)
+		return control.Status();
+	DtsLock(Ctx);
+	const bool input_busy = Ctx->inputCalls &&
+		!pthread_equal(Ctx->inputThread, pthread_self());
+	DtsUnLock(Ctx);
+	if (input_busy)
+		return BC_STS_BUSY;
 
 	/* Prepare only format/converter state on a private handle. Do not copy the
 	 * live context's mutex, rings, pending input or device ownership. Failure
@@ -1375,7 +1647,7 @@ DtsSetInputFormat(
 		videoAlgo = BC_VID_ALGO_VC1MP;	// Main Profile
 	}
 
-	BC_STATUS status = DtsSetVideoParams(&candidate, videoAlgo, input.FGTEnable,
+	BC_STATUS status = DtsSetVideoParamsInternal(&candidate, videoAlgo, input.FGTEnable,
 		input.MetaDataEnable, input.Progressive, input.OptFlags);
 	if (status == BC_STS_SUCCESS)
 		status = DtsSetPESConverter(&candidate);
@@ -1409,13 +1681,24 @@ DtsSetInputFormat(
 		candidate.bEnable720pDropHalf = 0;
 	}
 
-	DtsReleasePESConverter(hDevice);
-	free(Ctx->VidParams.pMetaData);
+	/* Publish the complete converter/cache tuple in the same critical section
+	 * used by DtsGetRecoveryStatus. The getter must never pair a new subtype or
+	 * replay latch with freed/old header storage. Detach first, then release old
+	 * allocations after unlocking so malloc internals are never under thLock. */
+	DtsLock(Ctx);
+	uint8_t *oldMetadata = Ctx->VidParams.pMetaData;
+	uint8_t *oldHeaders = Ctx->PESConvParams.m_pSpsPpsBuf;
+	uint8_t *oldPending = Ctx->PESConvParams.pStartcodePendBuff;
 	Ctx->VidParams = candidate.VidParams;
 	Ctx->PESConvParams = candidate.PESConvParams;
+	Ctx->recoveryInjectSpsPps = false;
 	Ctx->SingleThreadedAppMode = candidate.SingleThreadedAppMode;
 	Ctx->EnableScaling = candidate.EnableScaling;
 	Ctx->bEnable720pDropHalf = candidate.bEnable720pDropHalf;
+	DtsUnLock(Ctx);
+	free(oldHeaders);
+	free(oldPending);
+	free(oldMetadata);
 	/* Preserve the historical single-thread scaling result, only on success. */
 	pInputFormat->bEnableScaling = input.bEnableScaling;
 	pInputFormat->ScalingParams.sWidth = input.ScalingParams.sWidth;
@@ -1471,6 +1754,9 @@ static BC_STATUS DtsStopDecoderInternal(HANDLE hDevice, bool retryUnsubmitted,
 
 	if (!DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
+	DtsLifecycleCall control(Ctx);
+	if (control.Status() != BC_STS_SUCCESS)
+		return control.Status();
 
 	DtsLock(Ctx);
 	if (Ctx->stopInProgress) {
@@ -1509,6 +1795,9 @@ static BC_STATUS DtsStopDecoderInternal(HANDLE hDevice, bool retryUnsubmitted,
 	DtsUnLock(Ctx);
 	DtsStopAttempt attempt(Ctx);
 	const bool pending_tx = DtsBeginTxQuiesce(Ctx);
+	BC_STATUS cleanup_sts = DtsWaitForInputCalls(Ctx);
+	if (cleanup_sts != BC_STS_SUCCESS)
+		return sts == BC_STS_SUCCESS ? cleanup_sts : sts;
 
 	// On LINK if the decoder is paused due to the RLL being full, un pause it before flush
 	if(Ctx->DevId == BC_PCI_DEVID_LINK && Ctx->hw_paused) {
@@ -1525,7 +1814,7 @@ static BC_STATUS DtsStopDecoderInternal(HANDLE hDevice, bool retryUnsubmitted,
 		if (sts == BC_STS_SUCCESS)
 			sts = cancel_sts;
 	}
-	BC_STATUS cleanup_sts = DtsWaitForTx(Ctx);
+	cleanup_sts = DtsWaitForTx(Ctx);
 	if (cleanup_sts != BC_STS_SUCCESS)
 		return sts == BC_STS_SUCCESS ? cleanup_sts : sts;
 	/* Stop drops pending input as well as pictures. Otherwise a later
@@ -1583,6 +1872,9 @@ DRVIFLIB_API BC_STATUS
 
 	if (!DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
+	DtsLifecycleCall control(Ctx);
+	if (control.Status() != BC_STS_SUCCESS)
+		return control.Status();
 	DtsLock(Ctx);
 	if (Ctx->txQuiescing || DtsStopIsUnresolved(Ctx)) {
 		DtsUnLock(Ctx);
@@ -1636,6 +1928,9 @@ DRVIFLIB_API BC_STATUS
 
 	if (!DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
+	DtsLifecycleCall control(Ctx);
+	if (control.Status() != BC_STS_SUCCESS)
+		return control.Status();
 	DtsLock(Ctx);
 	if (Ctx->txQuiescing || DtsStopIsUnresolved(Ctx)) {
 		DtsUnLock(Ctx);
@@ -1708,6 +2003,21 @@ static void DtsSetCaptureThresholds(DTS_LIB_CONTEXT *Ctx,
 	pIocData->u.RxCap.ResumeThsh = resume;
 }
 
+static BC_STATUS DtsCaptureControlStatus(DTS_LIB_CONTEXT *Ctx, BC_STATUS sts)
+{
+	if (sts != BC_STS_BUSY)
+		return sts;
+	DtsLock(Ctx);
+	/* Preserve the legacy state result when an ordinary Stop/Close already
+	 * crossed its FLUSH barrier. Recovery and teardown contention must remain
+	 * BUSY so no public capture call can hide an active reset/retirement. */
+	const bool stopped = Ctx->controlOwner == DTS_CONTROL_LIFECYCLE &&
+		DtsRecoveryAdmissionStatus(Ctx) == BC_STS_SUCCESS &&
+		Ctx->State != BC_DEC_STATE_START;
+	DtsUnLock(Ctx);
+	return stopped ? BC_STS_DEC_NOT_STARTED : sts;
+}
+
 
 DRVIFLIB_API BC_STATUS
 DtsStartCaptureImmidiate(HANDLE		hDevice,
@@ -1722,6 +2032,9 @@ DtsStartCaptureImmidiate(HANDLE		hDevice,
 
 	if (Ctx->ProcessID != getpid() || !DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
+	DtsLifecycleCall control(Ctx);
+	if (control.Status() != BC_STS_SUCCESS)
+		return DtsCaptureControlStatus(Ctx, control.Status());
 
 	DtsLock(Ctx);
 	if(Ctx->State != BC_DEC_STATE_START)
@@ -1776,6 +2089,9 @@ DtsStartCapture(HANDLE  hDevice)
 
 	if (Ctx->ProcessID != getpid() || !DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
+	DtsLifecycleCall control(Ctx);
+	if (control.Status() != BC_STS_SUCCESS)
+		return DtsCaptureControlStatus(Ctx, control.Status());
 
 	DtsLock(Ctx);
 	if (Ctx->State != BC_DEC_STATE_START)
@@ -1835,6 +2151,9 @@ DtsFlushRxCapture(
 	if ((Ctx->ProcessID && Ctx->ProcessID != getpid()) ||
 	    !DtsChkPID(Ctx->ProcessID))
 		return Ctx->bMapOutBufDirty ? BC_STS_ERROR : BC_STS_SUCCESS;
+	DtsLifecycleCall control(Ctx);
+	if (control.Status() != BC_STS_SUCCESS)
+		return control.Status();
 
 	DtsLock(Ctx);
 	if (!bDiscardOnly && (Ctx->outputPhase != DTS_OUTPUT_IDLE ||
@@ -1918,7 +2237,6 @@ DtsProcOutput(
 	}
 
 	savFlags = pOut->PoutFlags;
-	pOut->discCnt = 0;
 
 	for (;;)
 	{
@@ -1962,7 +2280,16 @@ DtsProcOutput(
 			 */
 			return sts;
 		}
+		sts = DtsCommitFetchedOutput(Ctx, &OutBuffs);
+		if (sts != BC_STS_SUCCESS)
+			return sts;
+		sts = DtsPrepareFetchedOutput(Ctx, &OutBuffs);
+		if (sts != BC_STS_SUCCESS) {
+			stRel = DtsRelRxBuff(Ctx,&Ctx->pOutData->u.RxBuffs,FALSE);
+			return output_call.PublishCopy(stRel == BC_STS_SUCCESS ? sts : stRel);
+		}
 
+		pOut->discCnt = 0;
 		Ctx->bEOS = FALSE;
 		pOut->PoutFlags |= OutBuffs.PoutFlags;
 		if (!(pOut->PoutFlags & BC_POUT_FLAGS_MODE))
@@ -1982,7 +2309,7 @@ DtsProcOutput(
 
 			DtsRelRxBuff(Ctx,&Ctx->pOutData->u.RxBuffs,true);
 
-			return BC_STS_FMT_CHANGE;
+			return output_call.PublishCopy(BC_STS_FMT_CHANGE);
 		}
 
 		if (Ctx->DevId == BC_PCI_DEVID_FLEA)
@@ -2029,8 +2356,11 @@ DtsProcOutput(
 				pOut->PicInfo.picture_number = OutBuffs.PicInfo.picture_number;
 				if(OutBuffs.PicInfo.flags & VDEC_FLAG_EOS)
 					pOut->PicInfo.flags |= (VDEC_FLAG_EOS|VDEC_FLAG_LAST_PICTURE);
-				return BC_STS_SUCCESS;
+				return output_call.PublishCopy(BC_STS_SUCCESS);
 			}
+			sts = DtsContinueOutputCall(Ctx);
+			if (sts != BC_STS_SUCCESS)
+				return sts;
 			continue;
 		}
 		break;
@@ -2075,10 +2405,10 @@ DtsProcOutput(
 
 	if(sts != BC_STS_SUCCESS){
 		DebugLog_Trace(LDIL_DBG,"DtsProcOutput: Failed to copy out buffs.. %x\n", sts);
-		return sts;
+		return output_call.PublishCopy(sts);
 	}
 
-	return stRel;
+	return output_call.PublishCopy(stRel);
 }
 
 #ifdef _ENABLE_CODE_INSTRUMENTATION_
@@ -2116,19 +2446,19 @@ DtsProcOutputNoCopy(
 	DtsOutputCall output_call(Ctx, false, pOut);
 	if (output_call.Status() != BC_STS_SUCCESS)
 		return output_call.Status();
-	/* Init device params */
-	if(Ctx->DevId == BC_PCI_DEVID_LINK){
-		pOut->bPibEnc = TRUE;
-	}else{
-		pOut->bPibEnc = FALSE;
-	}
-	pOut->b422Mode = Ctx->b422Mode;
-
 	for (;;) {
-		pOut->Ybuff = pOut->UVbuff = NULL;
+		BC_DTS_PROC_OUT fetched = *pOut;
+		fetched.Ybuff = fetched.UVbuff = NULL;
+		fetched.bPibEnc = Ctx->DevId == BC_PCI_DEVID_LINK;
+		fetched.b422Mode = Ctx->b422Mode;
 
-		if( (sts = DtsFetchOutInCall(Ctx,pOut,milliSecWait)) != BC_STS_SUCCESS){
+		if( (sts = DtsFetchOutInCall(Ctx,&fetched,milliSecWait)) != BC_STS_SUCCESS){
 			DebugLog_Trace(LDIL_DBG,"DtsProcOutput: No Active Channels\n");
+			/* Embedded EOS is a control output: FETCH owns no buffer after
+			 * DtsSetupProcOutInfo changes the status to NO_DATA, but its PIB is
+			 * still part of the legacy NoCopy result.  Publish that parsed
+			 * metadata while keeping the borrowed pointers cleared. */
+			*pOut = fetched;
 				/* In case of a peek..*/
 			if((sts == BC_STS_TIMEOUT) && !(milliSecWait) ){
 				sts = BC_STS_NO_DATA;
@@ -2138,42 +2468,61 @@ DtsProcOutputNoCopy(
 			 */
 			return sts;
 		}
-
 		/*
 		 * If the PIB is not encrypted then we can direclty go
 		 * to the PIB and get the information weather the Picture
 		 * is encrypted or not.
 		 */
 
-		/* Update Counters.. */
-		DtsUpdateOutStats(Ctx,pOut);
-
-		if( (sts == BC_STS_SUCCESS) && (pOut->PoutFlags & BC_POUT_FLAGS_FMT_CHANGE) ){
-			DtsRelRxBuff(Ctx,&Ctx->pOutData->u.RxBuffs,TRUE);
-			pOut->Ybuff = pOut->UVbuff = NULL;
-			sts = BC_STS_FMT_CHANGE;
-			break;
+		if(fetched.PoutFlags & BC_POUT_FLAGS_FMT_CHANGE){
+			sts = output_call.Publish(&fetched, BC_STS_FMT_CHANGE);
+			if (sts == BC_STS_FMT_CHANGE)
+				*pOut = fetched;
+			else
+				pOut->Ybuff = pOut->UVbuff = NULL;
+			return sts;
 		}
 
-		if(pOut->DropFrames){
+		if(fetched.DropFrames){
+			sts = DtsCommitFetchedOutput(Ctx, &fetched);
+			if (sts != BC_STS_SUCCESS)
+				return sts;
+			sts = DtsPrepareFetchedOutput(Ctx, &fetched);
+			if (sts != BC_STS_SUCCESS) {
+				const BC_STATUS released =
+					DtsRelRxBuff(Ctx,&Ctx->pOutData->u.RxBuffs,FALSE);
+				sts = output_call.Publish(&fetched,
+					released == BC_STS_SUCCESS ? sts : released);
+				pOut->Ybuff = pOut->UVbuff = NULL;
+				return sts;
+			}
+			DtsUpdateOutStats(Ctx,&fetched);
 			/* We need to release the buffers even if we fail to copy..*/
 			sts = DtsRelRxBuff(Ctx,&Ctx->pOutData->u.RxBuffs,FALSE);
-			pOut->Ybuff = pOut->UVbuff = NULL;
+			fetched.Ybuff = fetched.UVbuff = NULL;
 
 			if(sts != BC_STS_SUCCESS)
 			{
 				DebugLog_Trace(LDIL_DBG,"DtsProcOutput: Failed to release buffs.. %x\n", sts);
+				sts = output_call.Publish(&fetched, sts);
+				pOut->Ybuff = pOut->UVbuff = NULL;
 				return sts;
 			}
 			pOut->DropFrames--;
+			sts = DtsContinueOutputCall(Ctx);
+			if (sts != BC_STS_SUCCESS)
+				return sts;
 		}
-		else
-			break;
+		else {
+			sts = output_call.Publish(&fetched, BC_STS_SUCCESS);
+			if (sts == BC_STS_SUCCESS)
+				*pOut = fetched;
+			else
+				pOut->Ybuff = pOut->UVbuff = NULL;
+			return sts;
+		}
 
 	}
-
-
-	return output_call.Publish(pOut, sts);
 }
 
 DRVIFLIB_API BC_STATUS
@@ -2214,6 +2563,11 @@ DtsSendData( HANDLE  hDevice ,
 		 * no wait or DMA ioctl runs while thLock is held.
 		 */
 		DtsLock(Ctx);
+		const BC_STATUS recoverySts = DtsRecoveryAdmissionStatus(Ctx);
+		if (recoverySts != BC_STS_SUCCESS) {
+			DtsUnLock(Ctx);
+			return recoverySts;
+		}
 		if (Ctx->txQuiescing || DtsStopIsUnresolved(Ctx) ||
 		    (Ctx->State != BC_DEC_STATE_START && Ctx->State != BC_DEC_STATE_PAUSE)) {
 			DtsUnLock(Ctx);
@@ -2269,6 +2623,9 @@ DtsSendSPESPkt(HANDLE  hDevice ,
 	uint8_t	i = 0;
 
 	DTS_GET_CTX(hDevice,Ctx);
+	DtsInputCall input_call(Ctx);
+	if (input_call.Status() != BC_STS_SUCCESS)
+		return input_call.Status();
 
 	if (Ctx->State == BC_DEC_STATE_CLOSE)
 	{
@@ -2340,6 +2697,9 @@ DtsAlignSendData( HANDLE  hDevice ,
 	uint8_t* alignBuf;
 
 	DTS_GET_CTX(hDevice,Ctx);
+	DtsInputCall input_call(Ctx);
+	if (input_call.Status() != BC_STS_SUCCESS)
+		return input_call.Status();
 
 	alignBuf = Ctx->alignBuf;
 
@@ -2374,15 +2734,30 @@ DtsAlignSendData( HANDLE  hDevice ,
 	{
 		bAddPTS = 0;
 	}
-	while ((Ctx->State == BC_DEC_STATE_START || Ctx->State == BC_DEC_STATE_PAUSE) && ulRestBytes )
+	while (ulRestBytes)
 	{
+		DtsLock(Ctx);
+		const BC_STATUS recoverySts = DtsRecoveryAdmissionStatus(Ctx);
+		if (recoverySts != BC_STS_SUCCESS) {
+			DtsUnLock(Ctx);
+			return recoverySts;
+		}
+		const bool inputAdmitted = !Ctx->txQuiescing && !DtsStopIsUnresolved(Ctx) &&
+			(Ctx->State == BC_DEC_STATE_START || Ctx->State == BC_DEC_STATE_PAUSE);
+		const bool paused = Ctx->State == BC_DEC_STATE_PAUSE;
+		DtsUnLock(Ctx);
+		if (!inputAdmitted)
+			break;
 		sts = BC_STS_SUCCESS;
 
 		pDeliverBuf = pRestDataPt;
 
-		if (Ctx->State == BC_DEC_STATE_PAUSE)
+		if (paused)
 		{
-			sleep(5);
+			/* A five-second uninterruptible pause held an admitted input call
+			 * until the recovery drain timeout boundary. Poll admission so a PM
+			 * epoch retires the call promptly without holding thLock. */
+			usleep(10 * 1000);
 			continue;
 		}
 
@@ -2503,7 +2878,11 @@ DtsAlignSendData( HANDLE  hDevice ,
 
 			if(sts == BC_STS_BUSY )
 			{
-				if (Ctx->State == BC_DEC_STATE_STOP)
+				DtsLock(Ctx);
+				const bool recoveryBlocked = DtsRecoveryBlocksCaller(Ctx);
+				const bool stopped = Ctx->State == BC_DEC_STATE_STOP;
+				DtsUnLock(Ctx);
+				if (recoveryBlocked || stopped)
 				{
 					break;
 				}
@@ -2535,8 +2914,12 @@ DtsAlignSendData( HANDLE  hDevice ,
 	/* A concurrent stop/flush can end the loop before all bytes are queued,
 	 * including before its first iteration. Do not report that as accepted.
 	 */
-	if (sts == BC_STS_SUCCESS && ulRestBytes != 0)
-		sts = BC_STS_IO_USER_ABORT;
+	if (sts == BC_STS_SUCCESS && ulRestBytes != 0) {
+		DtsLock(Ctx);
+		const BC_STATUS recoverySts = DtsRecoveryAdmissionStatus(Ctx);
+		sts = recoverySts != BC_STS_SUCCESS ? recoverySts : BC_STS_IO_USER_ABORT;
+		DtsUnLock(Ctx);
+	}
 	return sts;
 }
 
@@ -2552,16 +2935,23 @@ DtsProcInput( HANDLE  hDevice ,
 	DTS_LIB_CONTEXT		*Ctx = NULL;
 
 	uint32_t Offset = 0;
+	bool clearRecoveryConfigAfterInput = false;
+	const uint8_t *const cacheInput = pUserData;
+	const uint32_t cacheInputSize = ulSizeInBytes;
 
 	DTS_GET_CTX(hDevice,Ctx);
 
 	if (!DtsChkPID(Ctx->ProcessID))
 		return BC_STS_ERROR;
+	DtsInputCall input_call(Ctx);
+	if (input_call.Status() != BC_STS_SUCCESS)
+		return input_call.Status();
 
 	DtsLock(Ctx);
-	if (Ctx->txQuiescing || DtsStopIsUnresolved(Ctx)) {
+	const BC_STATUS recoverySts = DtsRecoveryAdmissionStatus(Ctx);
+	if (recoverySts != BC_STS_SUCCESS || Ctx->txQuiescing || DtsStopIsUnresolved(Ctx)) {
 		DtsUnLock(Ctx);
-		return BC_STS_BUSY;
+		return recoverySts != BC_STS_SUCCESS ? recoverySts : BC_STS_BUSY;
 	}
 	if (Ctx->State == BC_DEC_STATE_FLUSH)
 		Ctx->State = BC_DEC_STATE_START;
@@ -2605,6 +2995,9 @@ DtsProcInput( HANDLE  hDevice ,
 	if((Ctx->VidParams.MediaSubType == BC_MSUBTYPE_WVC1) || (Ctx->VidParams.MediaSubType == BC_MSUBTYPE_WMV3) || (Ctx->VidParams.MediaSubType == BC_MSUBTYPE_WMVA))
 		DtsCheckKeyFrame(hDevice, pUserData);
 
+	DtsLock(Ctx);
+	const bool recoveryInjectSpsPps = Ctx->recoveryInjectSpsPps;
+	DtsUnLock(Ctx);
 	if (Ctx->PESConvParams.m_bAddSpsPps)
 	{
 
@@ -2612,7 +3005,14 @@ DtsProcInput( HANDLE  hDevice ,
 		{
 			//Check if SequenceHeader is already delivered within input data.
 			//Unnecessary SpsPps input will cause no timestamp output.
-			if (!Ctx->SingleThreadedAppMode && !DtsCheckSpsPps(hDevice, pUserData, ulSizeInBytes))
+			bool inputHasConfig = false;
+			if (!Ctx->SingleThreadedAppMode || recoveryInjectSpsPps)
+				inputHasConfig = (recoveryInjectSpsPps ||
+					Ctx->VidParams.MediaSubType == BC_MSUBTYPE_H264) ?
+					DtsCheckRecoverySpsPps(hDevice, pUserData, ulSizeInBytes) :
+					DtsCheckSpsPps(hDevice, pUserData, ulSizeInBytes);
+			if ((!Ctx->SingleThreadedAppMode || recoveryInjectSpsPps) &&
+				!inputHasConfig)
 			{
 				// Used to flag softRAVE special handling of Sequence level information as well as preroll samples
 				if (Ctx->PESConvParams.m_bSoftRave)
@@ -2621,11 +3021,21 @@ DtsProcInput( HANDLE  hDevice ,
 					sts = DtsAlignSendData(hDevice, Ctx->PESConvParams.m_pSpsPpsBuf, Ctx->PESConvParams.m_iSpsPpsLen, 0, 0);
 				if (sts != BC_STS_SUCCESS)
 					return sts;
+				if (recoveryInjectSpsPps) {
+					DtsLock(Ctx);
+					Ctx->recoveryInjectSpsPps = false;
+					DtsUnLock(Ctx);
+				}
 			}
+			else if (recoveryInjectSpsPps && inputHasConfig)
+				clearRecoveryConfigAfterInput = true;
 		}
-		Ctx->PESConvParams.m_bAddSpsPps = false;
+		/* If in-band configuration suppresses recovery replay, retain both
+		 * latches until that AU is actually accepted so a failed enqueue can
+		 * be retried without stranding recoveryInjectSpsPps. */
+		if (!clearRecoveryConfigAfterInput)
+			Ctx->PESConvParams.m_bAddSpsPps = false;
 	}
-
 	//Use 0xFFFFFFFD for SoftRave context instead of zero
 	// For pre-roll samples for softRAVE context we send the timestamp as 0 to the softRAVE to handle.
 	// The FW is responsible to add the timestamp back.
@@ -2643,9 +3053,19 @@ DtsProcInput( HANDLE  hDevice ,
 		return BC_STS_ERROR;
 	}
 
+	/* Parsing may run concurrently with the status worker. Re-check the
+	 * recovery lease at the last common point before any packet path can
+	 * enqueue bytes, so a late S3 transition is reported as retryable BUSY.
+	 */
+	DtsLock(Ctx);
+	const BC_STATUS finalRecoverySts = DtsRecoveryAdmissionStatus(Ctx);
+	DtsUnLock(Ctx);
+	if (finalRecoverySts != BC_STS_SUCCESS)
+		return finalRecoverySts;
+
 	if (Ctx->VidParams.StreamType == BC_STREAM_TYPE_PES || timeStamp == 0)
 	{
-		return DtsAlignSendData(hDevice, pUserData, ulSizeInBytes, timeStamp, encrypted);
+		sts = DtsAlignSendData(hDevice, pUserData, ulSizeInBytes, timeStamp, encrypted);
 	}
 	else
 	{
@@ -2656,7 +3076,7 @@ DtsProcInput( HANDLE  hDevice ,
 		}
 		if(Offset == 0)
 		{
-			return DtsAlignSendData(hDevice, pUserData, ulSizeInBytes, timeStamp, encrypted);
+			sts = DtsAlignSendData(hDevice, pUserData, ulSizeInBytes, timeStamp, encrypted);
 		}
 		else
 		{
@@ -2664,10 +3084,23 @@ DtsProcInput( HANDLE  hDevice ,
 				return sts;
 
 			if(ulSizeInBytes > Offset)
-				return DtsAlignSendData(hDevice, pUserData+Offset, ulSizeInBytes-Offset, timeStamp, encrypted);
+				sts = DtsAlignSendData(hDevice, pUserData+Offset, ulSizeInBytes-Offset, timeStamp, encrypted);
+			else
+				sts = BC_STS_SUCCESS;
 		}
 	}
-	return BC_STS_ERROR;
+	/* Commit H.264 recovery state only after this AU was accepted.  Until then
+	 * the previous complete cache must survive a transport failure or a late
+	 * suspend that flushes bytes queued earlier in this call. */
+	if (sts == BC_STS_SUCCESS && Ctx->VidParams.MediaSubType == BC_MSUBTYPE_H264)
+		(void)DtsCacheSpsPps(hDevice, cacheInput, cacheInputSize);
+	if (sts == BC_STS_SUCCESS && clearRecoveryConfigAfterInput) {
+		DtsLock(Ctx);
+		Ctx->recoveryInjectSpsPps = false;
+		Ctx->PESConvParams.m_bAddSpsPps = false;
+		DtsUnLock(Ctx);
+	}
+	return sts;
 }
 
 DRVIFLIB_API BC_STATUS
@@ -2686,6 +3119,9 @@ DtsSendEOS( HANDLE  hDevice, uint32_t Op
 	DTS_LIB_CONTEXT		*Ctx = NULL;
 
 	DTS_GET_CTX(hDevice,Ctx);
+	DtsInputCall input_call(Ctx);
+	if (input_call.Status() != BC_STS_SUCCESS)
+		return input_call.Status();
 
 	uint8_t	*pEOS;
 	uint32_t nEOSLen;
@@ -2865,27 +3301,46 @@ DtsFlushInput( HANDLE  hDevice ,
 	DTS_GET_CTX(hDevice,Ctx);
 	DebugLog_Trace(LDIL_DBG, "Flush called with opcode %u\n", Op);
 
+	if (!DtsChkPID(Ctx->ProcessID))
+		return BC_STS_ERROR;
+	if (Op == 0 || Op == 5) {
+		DtsLock(Ctx);
+		const BC_STATUS admission = DtsRecoveryAdmissionStatus(Ctx);
+		const bool closed = Ctx->State == BC_DEC_STATE_CLOSE;
+		DtsUnLock(Ctx);
+		if (admission != BC_STS_SUCCESS)
+			return admission;
+		if (closed)
+			return BC_STS_DEC_NOT_OPEN;
+		return DtsSendEOS(hDevice, Op);
+	}
+	DtsLifecycleCall control(Ctx);
+	if (control.Status() != BC_STS_SUCCESS)
+		return control.Status();
+
 	if (Ctx->State == BC_DEC_STATE_CLOSE)
 	{
 		return BC_STS_DEC_NOT_OPEN;
 	}
-
-	if (!DtsChkPID(Ctx->ProcessID))
-		return BC_STS_ERROR;
 	DtsLock(Ctx);
 	const bool stop_pending = DtsStopIsUnresolved(Ctx);
 	DtsUnLock(Ctx);
 	if (stop_pending)
 		return BC_STS_BUSY;
 
-	if(Op == 0 || Op == 5) // DRAIN
+	if(Op != 0 && Op != 5)
 	{
-		return DtsSendEOS(hDevice, Op);
-	}
-	else
-	{
-		Ctx->PESConvParams.m_bAddSpsPps = true;
 		const bool pending_tx = DtsBeginTxQuiesce(Ctx);
+		const BC_STATUS input_sts = DtsWaitForInputCalls(Ctx);
+		if (input_sts != BC_STS_SUCCESS)
+			return input_sts;
+		/* An input admitted before quiesce may still pass through its legacy
+		 * one-shot metadata cleanup while we wait. Rearm only after that owner
+		 * has retired, under the same lock used by input/recovery publication.
+		 * Op 3 returns early below, so it must share this placement. */
+		DtsLock(Ctx);
+		Ctx->PESConvParams.m_bAddSpsPps = true;
+		DtsUnLock(Ctx);
 		if (Op != 3 && pending_tx) {
 			if(Ctx->DevId == BC_PCI_DEVID_LINK && Ctx->hw_paused) {
 				sts = DtsFWPauseVideo(hDevice,eC011_PAUSE_MODE_OFF);
@@ -2968,6 +3423,9 @@ DtsSetRateChange(HANDLE  hDevice ,
 	DTS_LIB_CONTEXT		*Ctx = NULL;
 
 	DTS_GET_CTX(hDevice,Ctx);
+	DtsLifecycleCall control(Ctx);
+	if (control.Status() != BC_STS_SUCCESS)
+		return control.Status();
 
 	//For Rate Change
 	uint32_t mode = 0;
@@ -3118,6 +3576,9 @@ DtsSetFFRate(HANDLE  hDevice ,
 	DTS_LIB_CONTEXT		*Ctx = NULL;
 
 	DTS_GET_CTX(hDevice,Ctx);
+	DtsLifecycleCall control(Ctx);
+	if (control.Status() != BC_STS_SUCCESS)
+		return control.Status();
 
 	//For Rate Change
 	uint32_t mode = 0;
@@ -3218,6 +3679,9 @@ DtsSetSkipPictureMode( HANDLE  hDevice ,
 	DTS_LIB_CONTEXT		*Ctx = NULL;
 
 	DTS_GET_CTX(hDevice,Ctx);
+	DtsLifecycleCall control(Ctx);
+	if (control.Status() != BC_STS_SUCCESS)
+		return control.Status();
 
 	sts = DtsFWSetSkipPictureMode(hDevice,SkipMode);
 
@@ -3239,6 +3703,9 @@ DRVIFLIB_API BC_STATUS
 	DTS_LIB_CONTEXT		*Ctx = NULL;
 
 	DTS_GET_CTX(hDevice,Ctx);
+	DtsLifecycleCall control(Ctx);
+	if (control.Status() != BC_STS_SUCCESS)
+		return control.Status();
 
 	sts = DtsFWSetHostTrickMode(hDevice,1);
 	if(sts != BC_STS_SUCCESS)
@@ -3266,6 +3733,9 @@ DRVIFLIB_API BC_STATUS
 
 	DTS_LIB_CONTEXT		*Ctx = NULL;
 	DTS_GET_CTX(hDevice,Ctx);
+	DtsLifecycleCall control(Ctx);
+	if (control.Status() != BC_STS_SUCCESS)
+		return control.Status();
 
 	if( Ctx->State != BC_DEC_STATE_PAUSE ) {
 		DebugLog_Trace(LDIL_DBG,"DtsStepDecoder: Failed because Decoder is Not Paused\n");
@@ -3335,8 +3805,15 @@ DtsIsEndOfStream(
 	BC_STATUS	sts = BC_STS_SUCCESS;
 	DTS_LIB_CONTEXT		*Ctx = NULL;
 	DTS_GET_CTX(hDevice,Ctx);
+	if (!bEOS)
+		return BC_STS_INV_ARG;
 
-	*bEOS = Ctx->bEOS;
+	DtsLock(Ctx);
+	*bEOS = FALSE;
+	sts = DtsRecoveryAdmissionStatus(Ctx);
+	if (sts == BC_STS_SUCCESS)
+		*bEOS = Ctx->bEOS;
+	DtsUnLock(Ctx);
 
 	return sts;
 }
@@ -3388,6 +3865,9 @@ DtsDropPictures( HANDLE  hDevice ,
 	DTS_LIB_CONTEXT		*Ctx = NULL;
 
 	DTS_GET_CTX(hDevice,Ctx);
+	DtsLifecycleCall control(Ctx);
+	if (control.Status() != BC_STS_SUCCESS)
+		return control.Status();
 	if (Ctx->State == BC_DEC_STATE_CLOSE)
 	{
 		return BC_STS_DEC_NOT_OPEN;
@@ -3417,6 +3897,8 @@ DtsGetDriverStatus( HANDLE  hDevice,
 	BC_STATUS ret;
 	BOOL realHWCPBSize = false; // Always report DIL buffer size unless explicitly asked to report HW size
 	BOOL readTXinfoOnly = false; // Report only TX information
+	uint64_t statusGeneration;
+	bool statusObserveAllowed;
 
 	uint64_t NextTimeStamp = 0;
 
@@ -3443,6 +3925,14 @@ DtsGetDriverStatus( HANDLE  hDevice,
 	if(Ctx->VidParams.VideoAlgo == BC_VID_ALGO_VC1MP)
 		temp.DrvcpbEmptySize |= (1U << 29);
 
+	/* The status ioctl can straddle the first PM observation.  Keep the
+	 * returned counters useful to the caller, but never publish its stale EOS
+	 * suffix into a newly-reset recovery epoch. */
+	DtsLock(Ctx);
+	statusGeneration = Ctx->recoveryGeneration;
+	statusObserveAllowed = !Ctx->recoveryPending &&
+		Ctx->controlOwner != DTS_CONTROL_RECOVERY;
+	DtsUnLock(Ctx);
 	ret = DtsGetDrvStat(hDevice, &temp);
 
 	if (ret != BC_STS_SUCCESS)
@@ -3462,35 +3952,65 @@ DtsGetDriverStatus( HANDLE  hDevice,
 	pStatus->cpbEmptySize		= temp.DrvcpbEmptySize;
 	pStatus->picNumFlags		= temp.picNumFlags;
 	pStatus->PowerStateChange	= temp.pwr_state_change;
-
-	if(temp.eosDetected)
-	{
-		Ctx->bEOS = true;
-	}
-
-	if (Ctx->bEOSCheck == true && Ctx->bEOS == true)
-	{
-		if (pStatus->ReadyListCount == 0)
+	DtsLock(Ctx);
+	const bool observeCurrent = statusObserveAllowed &&
+		statusGeneration == Ctx->recoveryGeneration &&
+		!Ctx->recoveryPending && Ctx->controlOwner != DTS_CONTROL_RECOVERY;
+	if (observeCurrent)
+		DtsObservePowerState(Ctx, pStatus->PowerStateChange);
+	bool statusCurrent = observeCurrent &&
+		statusGeneration == Ctx->recoveryGeneration &&
+		!Ctx->recoveryPending && Ctx->controlOwner != DTS_CONTROL_RECOVERY;
+	if (statusCurrent) {
+		if(temp.eosDetected)
 		{
-			Ctx->DrvStatusEOSCnt ++;
-
-			if(Ctx->DrvStatusEOSCnt >= BC_EOS_PIC_COUNT)
-			{
-				/* Mark this picture as end of stream..*/
-				Ctx->bEOS = TRUE;
-			}
+			Ctx->bEOS = true;
 		}
-		else
-			Ctx->DrvStatusEOSCnt = 0;
+
+		if (Ctx->bEOSCheck == true && Ctx->bEOS == true)
+		{
+			if (pStatus->ReadyListCount == 0)
+			{
+				Ctx->DrvStatusEOSCnt ++;
+
+				if(Ctx->DrvStatusEOSCnt >= BC_EOS_PIC_COUNT)
+				{
+					/* Mark this picture as end of stream..*/
+					Ctx->bEOS = TRUE;
+				}
+			}
+			else
+				Ctx->DrvStatusEOSCnt = 0;
+		}
+	}
+	DtsUnLock(Ctx);
+	if (!statusCurrent) {
+		/* Queue/timestamp fields belong to the pre-reset driver sample. */
+		pStatus->ReadyListCount = 0;
+		pStatus->NextTimeStamp = 0;
+		pStatus->picNumFlags = 0;
 	}
 
 	if(!realHWCPBSize)
 		pStatus->cpbEmptySize = Ctx->circBuf.freeSize;
 
-	if(!readTXinfoOnly)
+	if(!readTXinfoOnly && statusCurrent)
 	{
+		DtsLock(Ctx);
+		const bool timestampCurrent = statusGeneration == Ctx->recoveryGeneration &&
+			!Ctx->recoveryPending && Ctx->controlOwner != DTS_CONTROL_RECOVERY;
+		if (!timestampCurrent) {
+			/* Recovery can begin after the first suffix check.  Suppress the
+			 * stale ready/timestamp tuple in the same locked revalidation that
+			 * protects metadata lookup, and skip Link flow-control below. */
+			pStatus->ReadyListCount = 0;
+			pStatus->NextTimeStamp = 0;
+			pStatus->picNumFlags = 0;
+			statusCurrent = false;
+		}
 		/* return the timestamp of the next picture to be returned by ProcOutput */
-		if((pStatus->ReadyListCount > 0) && Ctx->SingleThreadedAppMode) {
+		if(timestampCurrent && (pStatus->ReadyListCount > 0) &&
+		   Ctx->SingleThreadedAppMode) {
 			if(Ctx->DevId == BC_PCI_DEVID_FLEA)
 			{
 				if(temp.DrvNextMDataPLD == 0xFFFFFFFF){
@@ -3506,21 +4026,66 @@ DtsGetDriverStatus( HANDLE  hDevice,
 				pStatus->NextTimeStamp = NextTimeStamp;
 			}
 		}
+		DtsUnLock(Ctx);
 	}
 	// For LINK Pause HW if the RLL is too full. Prevent overflows
 	// Hard coded values for now
-	if(Ctx->DevId == BC_PCI_DEVID_LINK && Ctx->SingleThreadedAppMode) {
+	if(statusCurrent && Ctx->DevId == BC_PCI_DEVID_LINK &&
+	   Ctx->SingleThreadedAppMode) {
+		DtsLifecycleCall control(Ctx);
+		if (control.Status() != BC_STS_SUCCESS)
+			return ret;
+		DtsLock(Ctx);
+		const bool flowControlCurrent =
+			statusGeneration == Ctx->recoveryGeneration &&
+			!Ctx->recoveryPending && Ctx->recoveryStatus == BC_STS_SUCCESS;
+		DtsUnLock(Ctx);
+		if (!flowControlCurrent) {
+			pStatus->ReadyListCount = 0;
+			pStatus->NextTimeStamp = 0;
+			pStatus->picNumFlags = 0;
+			return ret;
+		}
 		if(pStatus->ReadyListCount > 10 && !Ctx->hw_paused && !Ctx->fw_cmd_issued) {
-			DtsFWPauseVideo(hDevice,eC011_PAUSE_MODE_ON);
-			Ctx->hw_paused = true;
+			if (DtsFWPauseVideo(hDevice,eC011_PAUSE_MODE_ON) == BC_STS_SUCCESS)
+				Ctx->hw_paused = true;
 		}
 		else if (pStatus->ReadyListCount  < 6 && Ctx->hw_paused && !Ctx->fw_cmd_issued) {
-			DtsFWPauseVideo(hDevice,eC011_PAUSE_MODE_OFF);
-			Ctx->hw_paused = false;
+			if (DtsFWPauseVideo(hDevice,eC011_PAUSE_MODE_OFF) == BC_STS_SUCCESS)
+				Ctx->hw_paused = false;
 		}
 	}
 
 	return ret;
+}
+
+DRVIFLIB_API BC_STATUS
+DtsGetRecoveryStatus(HANDLE hDevice, uint64_t *pGeneration,
+	BC_STATUS *pRecoveryStatus, uint8_t *pInProgress,
+	uint32_t *pReplayBytes)
+{
+	DTS_LIB_CONTEXT *Ctx = NULL;
+	DTS_GET_CTX(hDevice, Ctx);
+	if (!pGeneration || !pRecoveryStatus || !pInProgress || !pReplayBytes)
+		return BC_STS_INV_ARG;
+
+	DtsLock(Ctx);
+	if (Ctx->recoveryPending && Ctx->htxThread == 0) {
+		/* A joined/failed TX worker cannot settle a pending epoch. Publish a
+		 * terminal outcome so the caller can proceed to the consuming
+		 * DeviceClose path instead of waiting forever. */
+		Ctx->recoveryPending = false;
+		if (Ctx->recoveryStatus == BC_STS_SUCCESS)
+			Ctx->recoveryStatus = BC_STS_PWR_MGMT;
+	}
+	*pGeneration = Ctx->recoveryGeneration;
+	*pRecoveryStatus = Ctx->recoveryStatus;
+	*pInProgress = Ctx->recoveryPending ||
+		Ctx->controlOwner == DTS_CONTROL_RECOVERY;
+	*pReplayBytes = Ctx->VidParams.MediaSubType == BC_MSUBTYPE_H264 ?
+		Ctx->PESConvParams.m_iSpsPpsLen : 0;
+	DtsUnLock(Ctx);
+	return BC_STS_SUCCESS;
 }
 
 DRVIFLIB_API BC_STATUS DtsGetCapabilities (HANDLE  hDevice, PBC_HW_CAPS	pCapsBuffer)
@@ -3594,6 +4159,9 @@ DRVIFLIB_API BC_STATUS DtsSetScaleParams(HANDLE hDevice, PBC_SCALING_PARAMS pSca
 	DTS_GET_CTX(hDevice, Ctx);
 	if (!pScaleParams)
 		return BC_STS_INV_ARG;
+	DtsLifecycleCall control(Ctx);
+	if (control.Status() != BC_STS_SUCCESS)
+		return control.Status();
 	uint32_t ScaledWidth = 0;
 
 	if (Ctx->DevId == BC_PCI_DEVID_FLEA) {

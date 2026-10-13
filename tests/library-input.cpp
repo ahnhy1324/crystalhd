@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Actual DtsProcInput/PES/parser/ring regression; no decoder/device is opened.
+#include <cerrno>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
+#include <thread>
 #include <vector>
 #include <unistd.h>
 #include "7411d.h"
@@ -14,6 +18,7 @@
 extern bc_dil_glob_s *bc_dil_glob_ptr;
 static unsigned failures;
 static std::vector<std::vector<uint8_t> > packets;
+static bool fail_cache_allocation;
 // Explicit CPU-only fault injection. Off by default for all legacy framing
 // cases; no ioctl/worker/device is reachable. Attempts are not acceptance.
 static struct {
@@ -21,7 +26,9 @@ static struct {
     bool consume_after_push = false;
     bool allow_metadata_retry = false;
     unsigned waits = 0, metadata_retries = 0, cancel_after_push = 0;
+    unsigned failure_attempt = 0;
     BC_STATUS first_marker_status = BC_STS_SUCCESS;
+    BC_STATUS failure_status = BC_STS_SUCCESS;
     std::vector<uint32_t> attempts;
     std::vector<std::vector<uint8_t> > accepted;
     std::vector<uint8_t> consumed;
@@ -31,6 +38,15 @@ static void check(bool value, const char *message)
     if (!value) { std::fprintf(stderr, "FAIL: %s\n", message); ++failures; }
 }
 extern "C" BC_STATUS __real_txBufPush(pTXBUFFER, uint8_t *, uint32_t);
+extern "C" int __real_posix_memalign(void **, size_t, size_t);
+extern "C" int __wrap_posix_memalign(void **memory, size_t alignment, size_t size)
+{
+    if (fail_cache_allocation) {
+        fail_cache_allocation = false;
+        return ENOMEM;
+    }
+    return __real_posix_memalign(memory, alignment, size);
+}
 static void consume_ring(pTXBUFFER ring)
 {
     const uint32_t size = ring->busySize;
@@ -46,6 +62,9 @@ extern "C" BC_STATUS __wrap_txBufPush(pTXBUFFER ring, uint8_t *bytes, uint32_t s
         transport.attempts.push_back(size);
         if (transport.attempts.size() == 1 && transport.first_marker_status != BC_STS_SUCCESS)
             return transport.first_marker_status; // Rejected marker: NO ring push.
+        if (transport.attempts.size() == transport.failure_attempt &&
+            transport.failure_status != BC_STS_SUCCESS)
+            return transport.failure_status;
         const BC_STATUS status = __real_txBufPush(ring, bytes, size);
         if (status == BC_STS_SUCCESS) {
             transport.accepted.emplace_back(bytes, bytes + size);
@@ -115,29 +134,49 @@ static Bytes access_unit(unsigned length_size, bool headers)
 struct Fixture {
     bc_dil_glob_s globals = {};
     DTS_LIB_CONTEXT context = {};
-    Fixture(unsigned length_size, const Bytes *wmv_metadata = nullptr)
+    DTS_INPUT_MDATA metadata_pool[8] = {};
+    Fixture(unsigned length_size, const Bytes *wmv_metadata = nullptr,
+            BC_MEDIA_SUBTYPE subtype = BC_MSUBTYPE_AVC1,
+            bool include_metadata = true)
     {
         bc_dil_glob_ptr = &globals;
         context.Sig = LIB_CTX_SIG;
         context.ProcessID = getpid();
         context.DevId = BC_PCI_DEVID_FLEA;
         context.State = BC_DEC_STATE_START;
+        context.MdataPoolPtr = metadata_pool;
+        context.MDPendHead = context.MDPendTail =
+            DTS_MDATA_PEND_LINK((&context));
+        for (DTS_INPUT_MDATA &entry : metadata_pool) {
+            entry.flink = context.MDFreeHead;
+            context.MDFreeHead = &entry;
+        }
         context.alignBuf = static_cast<uint8_t *>(std::malloc(ALIGN_BUF_SIZE));
         if (!context.alignBuf || txBufInit(&context.circBuf, CIRC_TX_BUF_SIZE) != BC_STS_SUCCESS)
             std::abort();
         Bytes metadata;
         if (wmv_metadata) metadata = *wmv_metadata;
-        else { append(metadata, sps, 0); append(metadata, pps, 0); }
+        else if (include_metadata) {
+            append(metadata, sps, 0); append(metadata, pps, 0);
+        }
         BC_INPUT_FORMAT format = {};
-        format.mSubtype = wmv_metadata ? BC_MSUBTYPE_WMV3 : BC_MSUBTYPE_AVC1;
+        format.mSubtype = wmv_metadata ? BC_MSUBTYPE_WMV3 : subtype;
         format.width = 640; format.height = 360; format.Progressive = true;
         format.startCodeSz = length_size;
         format.OptFlags = 0x80000001; // Legacy client flags, without the single-thread flag.
         format.pMetaData = metadata.data(); format.metaDataSz = metadata.size();
         check(DtsSetInputFormat(&context, &format) == BC_STS_SUCCESS, "configure actual input converter");
-        check(context.PESConvParams.m_bAddSpsPps && context.PESConvParams.m_bIsAdd_SCode_CodeIn &&
-              !context.SingleThreadedAppMode && context.VidParams.StreamType == BC_STREAM_TYPE_PES,
-              "fixture exercises pending metadata before AVC1 conversion in PES mode");
+        if ((include_metadata || wmv_metadata) &&
+            (wmv_metadata || subtype == BC_MSUBTYPE_AVC1))
+            check(context.PESConvParams.m_bAddSpsPps &&
+                  context.PESConvParams.m_bIsAdd_SCode_CodeIn &&
+                  !context.SingleThreadedAppMode &&
+                  context.VidParams.StreamType == BC_STREAM_TYPE_PES,
+                  "fixture exercises pending metadata before conversion in PES mode");
+        else if (!include_metadata)
+            check(!context.PESConvParams.m_pSpsPpsBuf &&
+                  context.PESConvParams.m_iSpsPpsLen == 0,
+                  "metadata-empty H.264 starts without a recovery cache");
         packets.clear();
     }
     ~Fixture()
@@ -155,6 +194,28 @@ struct Fixture {
         return DtsProcInput(&context, input.data(), size, 666671, false);
     }
 };
+
+static uint32_t recovery_replay_bytes(Fixture &fixture)
+{
+    uint64_t generation = 0;
+    BC_STATUS recovery_status = BC_STS_ERROR;
+    uint8_t active = 0;
+    uint32_t bytes = UINT32_MAX;
+    check(DtsGetRecoveryStatus(&fixture.context, &generation,
+                               &recovery_status, &active, &bytes) ==
+              BC_STS_SUCCESS && recovery_status == BC_STS_SUCCESS && !active,
+          "atomic recovery snapshot succeeds for an idle input fixture");
+    return bytes;
+}
+
+static Bytes parameter_sets(const Bytes &one_sps = sps,
+                            const Bytes &one_pps = pps)
+{
+    Bytes bytes;
+    append(bytes, one_sps, 0);
+    append(bytes, one_pps, 0);
+    return bytes;
+}
 
 static uint64_t pts(const Bytes &packet)
 {
@@ -204,6 +265,444 @@ static void Framing()
               payload(packets.front()) == access_unit(0, true), "Annex-B input keeps one timestamped AU");
         check(!f.context.PESConvParams.m_bIsAdd_SCode_CodeIn, "existing Annex-B converter autodetection remains intact");
     }
+}
+
+static void RecoverySingleThreadConfig()
+{
+	{
+		Fixture f(2, nullptr, BC_MSUBTYPE_H264, false);
+		check(f.send(access_unit(2, true)) == BC_STS_SUCCESS &&
+		      f.context.PESConvParams.m_iSpsPpsLen == parameter_sets().size() &&
+		      !std::memcmp(f.context.PESConvParams.m_pSpsPpsBuf,
+		                   parameter_sets().data(), parameter_sets().size()),
+		      "accepted length-prefixed H.264 caches its original complete AU");
+	}
+	{
+		static const Bytes newer_sps = {0x67, 0x42, 0x80, 0x2a, 0x01};
+		static const Bytes newer_pps = {0x68, 0xce, 0x06, 0xe2};
+		for (const bool update_sps : {false, true}) {
+			Fixture f(0, nullptr, BC_MSUBTYPE_H264);
+			Bytes changed;
+			append(changed, update_sps ? newer_sps : newer_pps, 0);
+			append(changed, idr, 0);
+			check(f.send(changed) == BC_STS_SUCCESS && packets.size() == 2 &&
+			      payload(packets[0]) == parameter_sets() &&
+			      payload(packets[1]) == changed,
+			      "ordinary parameter-set delta receives its preceding complete format state");
+			check(!f.context.PESConvParams.m_pSpsPpsBuf &&
+			      recovery_replay_bytes(f) == 0,
+			      "accepted ordinary partial update invalidates obsolete format metadata");
+		}
+	}
+	{
+		static const Bytes newer_sps = {0x67, 0x42, 0x80, 0x2a, 0x01};
+		static const Bytes newer_pps = {0x68, 0xce, 0x06, 0xe2};
+		Fixture f(0, nullptr, BC_MSUBTYPE_H264);
+		Bytes changed = parameter_sets(newer_sps, newer_pps);
+		append(changed, idr, 0);
+		check(f.send(changed) == BC_STS_SUCCESS && packets.size() == 1 &&
+		      payload(packets[0]) == changed,
+		      "ordinary complete update suppresses obsolete format metadata");
+		const Bytes expected = parameter_sets(newer_sps, newer_pps);
+		check(f.context.PESConvParams.m_iSpsPpsLen == expected.size() &&
+		      !std::memcmp(f.context.PESConvParams.m_pSpsPpsBuf,
+		                   expected.data(), expected.size()),
+		      "ordinary complete update replaces the persistent format cache");
+	}
+    {
+        Fixture f(0, nullptr, BC_MSUBTYPE_H264);
+        f.context.SingleThreadedAppMode = 1;
+        f.context.PESConvParams.m_bAddSpsPps = false;
+        check(recovery_replay_bytes(f) == parameter_sets().size(),
+              "atomic snapshot reports the complete H.264 cache before recovery");
+        check(DtsRecoveryRestoreInputState(&f.context) == BC_STS_SUCCESS &&
+              f.context.recoveryInjectSpsPps,
+              "recovery arms cached AVC configuration for single-thread mode");
+        check(recovery_replay_bytes(f) == parameter_sets().size(),
+              "atomic snapshot reports exact armed H.264 replay bytes");
+        packets.clear();
+        check(f.send(access_unit(0, false)) == BC_STS_SUCCESS,
+              "single-thread post-recovery IDR-only AU is accepted");
+        check(packets.size() == 2,
+              "recovery injects cached AVC configuration before IDR-only AU");
+        if (packets.size() == 2) {
+            Bytes metadata; append(metadata, sps, 0); append(metadata, pps, 0);
+            check(pts(packets[0]) == UINT64_MAX && payload(packets[0]) == metadata &&
+                  pts(packets[1]) == 66 &&
+                  payload(packets[1]) == access_unit(0, false),
+                  "recovery sends exact cached SPS/PPS before timestamped AU");
+        }
+        check(!f.context.recoveryInjectSpsPps,
+              "successful cached configuration enqueue consumes recovery latch once");
+        check(recovery_replay_bytes(f) == parameter_sets().size(),
+              "successful one-shot replay preserves the reported cache capability");
+    }
+    {
+        Fixture f(0, nullptr, BC_MSUBTYPE_H264);
+        f.context.SingleThreadedAppMode = 1;
+        f.context.PESConvParams.m_bAddSpsPps = false;
+        check(DtsRecoveryRestoreInputState(&f.context) == BC_STS_SUCCESS,
+              "second recovery state reset succeeds");
+        packets.clear();
+        check(f.send(access_unit(0, true)) == BC_STS_SUCCESS &&
+              packets.size() == 1 &&
+              payload(packets[0]) == access_unit(0, true),
+              "in-band SPS/PPS suppresses duplicate recovery injection");
+        check(!f.context.recoveryInjectSpsPps,
+              "successful in-band configuration consumes recovery latch");
+    }
+    {
+        Fixture f(0, nullptr, BC_MSUBTYPE_H264);
+        f.context.SingleThreadedAppMode = 1;
+        f.context.PESConvParams.m_bAddSpsPps = false;
+        check(DtsRecoveryRestoreInputState(&f.context) == BC_STS_SUCCESS,
+              "fault-injected recovery state reset succeeds");
+        transport.context = &f.context;
+        transport.consume_after_push = false;
+        transport.allow_metadata_retry = false;
+        transport.first_marker_status = BC_STS_IO_ERROR;
+        transport.attempts.clear();
+        transport.accepted.clear();
+        Bytes input = access_unit(0, false);
+        const BC_STATUS failed_injection = f.send(input);
+        check(failed_injection == BC_STS_IO_ERROR &&
+              transport.attempts.size() == 1 &&
+              transport.accepted.empty(),
+              "failed cached configuration enqueue stops before picture AU");
+        check(f.context.recoveryInjectSpsPps &&
+              f.context.PESConvParams.m_bAddSpsPps,
+              "failed cached configuration enqueue retains recovery latch");
+        check(recovery_replay_bytes(f) == parameter_sets().size(),
+              "failed injection keeps exact replay reservation armed");
+        transport.context = nullptr;
+        transport.first_marker_status = BC_STS_SUCCESS;
+    }
+    {
+        Fixture f(0, nullptr, BC_MSUBTYPE_H264, false);
+        f.context.SingleThreadedAppMode = 1;
+        Bytes padded_au = {0};
+        const Bytes complete_au = access_unit(0, true);
+        padded_au.insert(padded_au.end(), complete_au.begin(), complete_au.end());
+        check(f.send(padded_au) == BC_STS_SUCCESS &&
+              f.context.PESConvParams.m_iSpsPpsLen == parameter_sets().size() &&
+              !std::memcmp(f.context.PESConvParams.m_pSpsPpsBuf,
+                           parameter_sets().data(), parameter_sets().size()),
+              "metadata-empty byte-stream accepts leading_zero_8bits and caches the first complete in-band SPS/PPS pair");
+        check(recovery_replay_bytes(f) == parameter_sets().size(),
+              "ordinary in-band headers publish the persistent cache capability");
+        check(DtsRecoveryRestoreInputState(&f.context) == BC_STS_SUCCESS &&
+              recovery_replay_bytes(f) == parameter_sets().size(),
+              "recovery arms the exact canonical in-band cache size");
+        packets.clear();
+        check(f.send(access_unit(0, false)) == BC_STS_SUCCESS &&
+              packets.size() == 2 && payload(packets[0]) == parameter_sets() &&
+              payload(packets[1]) == access_unit(0, false),
+              "metadata-empty H.264 replays cached in-band headers before an IDR-only AU");
+        check(!f.context.recoveryInjectSpsPps &&
+              recovery_replay_bytes(f) == parameter_sets().size(),
+              "one-shot in-band replay is consumed while cache availability remains visible");
+    }
+    {
+        for (const bool repeat_sps : {false, true}) {
+            Fixture f(0, nullptr, BC_MSUBTYPE_H264, false);
+            f.context.SingleThreadedAppMode = 1;
+            check(f.send(access_unit(0, true)) == BC_STS_SUCCESS,
+                  "partial-repeat fixture first builds a complete cache");
+            check(DtsRecoveryRestoreInputState(&f.context) == BC_STS_SUCCESS,
+                  "partial-repeat fixture arms cached replay");
+            Bytes partial;
+            append(partial, repeat_sps ? sps : pps, 0);
+            append(partial, idr, 0);
+            packets.clear();
+            check(f.send(partial) == BC_STS_SUCCESS && packets.size() == 2 &&
+                  payload(packets[0]) == parameter_sets() &&
+                  payload(packets[1]) == partial,
+                  "partial SPS/PPS repeat cannot suppress complete recovery replay");
+            check(recovery_replay_bytes(f) == parameter_sets().size(),
+                  "identical partial SPS/PPS repeat preserves complete recovery cache");
+        }
+    }
+    {
+        static const Bytes newer_sps = {0x67, 0x42, 0x80, 0x2a, 0x01};
+        static const Bytes newer_pps = {0x68, 0xce, 0x06, 0xe2};
+        for (const bool update_sps : {false, true}) {
+            for (const bool fail_allocation : {false, true}) {
+                Fixture f(0, nullptr, BC_MSUBTYPE_H264, false);
+                f.context.SingleThreadedAppMode = 1;
+                check(f.send(access_unit(0, true)) == BC_STS_SUCCESS &&
+                      DtsRecoveryRestoreInputState(&f.context) == BC_STS_SUCCESS,
+                      "post-recovery partial-update fixture arms a complete cache");
+                Bytes changed;
+                append(changed, update_sps ? newer_sps : newer_pps, 0);
+                append(changed, idr, 0);
+                packets.clear();
+                fail_cache_allocation = fail_allocation;
+                check(f.send(changed) == BC_STS_SUCCESS && packets.size() == 2 &&
+                      payload(packets[0]) == parameter_sets() &&
+                      payload(packets[1]) == changed,
+                      "post-recovery partial update receives complete old state before its delta");
+                check(!f.context.recoveryInjectSpsPps &&
+                      !f.context.PESConvParams.m_pSpsPpsBuf &&
+                      recovery_replay_bytes(f) == 0,
+                      "post-recovery partial update cannot advertise stale bytes afterward");
+            }
+        }
+    }
+    {
+        static const Bytes newer_pps = {0x68, 0xce, 0x06, 0xe2};
+        Fixture f(0, nullptr, BC_MSUBTYPE_H264, false);
+        f.context.SingleThreadedAppMode = 1;
+        check(f.send(access_unit(0, true)) == BC_STS_SUCCESS &&
+              DtsRecoveryRestoreInputState(&f.context) == BC_STS_SUCCESS,
+              "failed partial replay fixture arms a complete cache");
+        Bytes changed;
+        append(changed, newer_pps, 0);
+        append(changed, idr, 0);
+        transport.context = &f.context;
+        transport.first_marker_status = BC_STS_IO_ERROR;
+        transport.attempts.clear();
+        transport.accepted.clear();
+        check(f.send(changed) == BC_STS_IO_ERROR &&
+              transport.attempts.size() == 1 && transport.accepted.empty(),
+              "failed old-cache enqueue stops before the changed partial AU");
+        check(f.context.recoveryInjectSpsPps &&
+              f.context.PESConvParams.m_bAddSpsPps &&
+              recovery_replay_bytes(f) == parameter_sets().size(),
+              "failed old-cache enqueue preserves complete recovery state");
+        transport.context = nullptr;
+        transport.first_marker_status = BC_STS_SUCCESS;
+        packets.clear();
+        check(f.send(changed) == BC_STS_SUCCESS && packets.size() == 2 &&
+              payload(packets[0]) == parameter_sets() &&
+              payload(packets[1]) == changed,
+              "partial retry preserves old complete configuration before its delta");
+        check(!f.context.recoveryInjectSpsPps &&
+              !f.context.PESConvParams.m_bAddSpsPps &&
+              recovery_replay_bytes(f) == 0,
+              "successful partial retry consumes the latch and invalidates old cache");
+    }
+    {
+        static const Bytes newer_pps = {0x68, 0xce, 0x06, 0xe2};
+        Fixture f(0, nullptr, BC_MSUBTYPE_H264, false);
+        f.context.SingleThreadedAppMode = 1;
+        check(f.send(access_unit(0, true)) == BC_STS_SUCCESS &&
+              DtsRecoveryRestoreInputState(&f.context) == BC_STS_SUCCESS,
+              "second-enqueue failure fixture arms a complete cache");
+        Bytes changed;
+        append(changed, newer_pps, 0);
+        append(changed, idr, 0);
+        transport.context = &f.context;
+        transport.first_marker_status = BC_STS_SUCCESS;
+        transport.failure_attempt = 2;
+        transport.failure_status = BC_STS_IO_ERROR;
+        transport.attempts.clear();
+        transport.accepted.clear();
+        check(f.send(changed) == BC_STS_IO_ERROR &&
+              transport.attempts.size() == 2 &&
+              transport.accepted.size() == 1,
+              "changed partial failure occurs after old recovery state was queued");
+        check(!f.context.recoveryInjectSpsPps &&
+              !f.context.PESConvParams.m_bAddSpsPps &&
+              recovery_replay_bytes(f) == parameter_sets().size(),
+              "failed changed AU retains the old cache for a later recovery");
+        transport.context = nullptr;
+        transport.failure_attempt = 0;
+        transport.failure_status = BC_STS_SUCCESS;
+        check(DtsRecoveryFlushInputRing(&f.context) == BC_STS_SUCCESS &&
+              DtsRecoveryRestoreInputState(&f.context) == BC_STS_SUCCESS &&
+              f.context.recoveryInjectSpsPps &&
+              f.context.PESConvParams.m_bAddSpsPps,
+              "ring loss after the failed AU re-arms the retained complete cache");
+        packets.clear();
+        check(f.send(changed) == BC_STS_SUCCESS && packets.size() == 2 &&
+              payload(packets[0]) == parameter_sets() &&
+              payload(packets[1]) == changed,
+              "recovered changed partial retry preserves complete-before-delta order");
+        check(recovery_replay_bytes(f) == 0,
+              "accepted changed partial invalidates the old cache exactly once");
+    }
+    {
+        static const Bytes newer_sps = {0x67, 0x42, 0x80, 0x2a, 0x01};
+        static const Bytes newer_pps = {0x68, 0xce, 0x06, 0xe2};
+        Fixture f(0, nullptr, BC_MSUBTYPE_H264, false);
+        f.context.SingleThreadedAppMode = 1;
+        check(f.send(access_unit(0, true)) == BC_STS_SUCCESS &&
+              DtsRecoveryRestoreInputState(&f.context) == BC_STS_SUCCESS,
+              "failed complete replay fixture arms a complete cache");
+        Bytes changed = parameter_sets(newer_sps, newer_pps);
+        append(changed, idr, 0);
+        transport.context = &f.context;
+        transport.first_marker_status = BC_STS_IO_ERROR;
+        transport.attempts.clear();
+        transport.accepted.clear();
+        check(f.send(changed) == BC_STS_IO_ERROR &&
+              transport.attempts.size() == 1 && transport.accepted.empty(),
+              "failed in-band complete AU reports its enqueue error");
+        check(f.context.recoveryInjectSpsPps &&
+              f.context.PESConvParams.m_bAddSpsPps,
+              "failed complete AU retains both recovery retry latches");
+        transport.context = nullptr;
+        transport.first_marker_status = BC_STS_SUCCESS;
+        packets.clear();
+        check(f.send(changed) == BC_STS_SUCCESS && packets.size() == 1 &&
+              payload(packets[0]) == changed,
+              "complete AU retry suppresses obsolete recovery metadata");
+        const Bytes expected = parameter_sets(newer_sps, newer_pps);
+        check(!f.context.recoveryInjectSpsPps &&
+              !f.context.PESConvParams.m_bAddSpsPps &&
+              f.context.PESConvParams.m_iSpsPpsLen == expected.size() &&
+              !std::memcmp(f.context.PESConvParams.m_pSpsPpsBuf,
+                           expected.data(), expected.size()),
+              "successful complete AU retry consumes latches and keeps its cache");
+    }
+    {
+        static const Bytes newer_sps = {0x67, 0x42, 0x80, 0x2a, 0x01};
+        static const Bytes newer_pps = {0x68, 0xce, 0x06, 0xe2};
+        for (const bool update_sps : {false, true}) {
+            Fixture f(0, nullptr, BC_MSUBTYPE_H264, false);
+            f.context.SingleThreadedAppMode = 1;
+            check(f.send(access_unit(0, true)) == BC_STS_SUCCESS,
+                  "partial-update fixture first builds a complete cache");
+            Bytes changed;
+            append(changed, update_sps ? newer_sps : newer_pps, 0);
+            append(changed, idr, 0);
+            packets.clear();
+            check(f.send(changed) == BC_STS_SUCCESS && packets.size() == 1,
+                  "a changed partial parameter-set AU remains accepted without stale injection");
+            check(!f.context.PESConvParams.m_pSpsPpsBuf &&
+                  recovery_replay_bytes(f) == 0,
+                  "changed SPS-only and PPS-only updates invalidate obsolete recovery bytes");
+            check(DtsRecoveryRestoreInputState(&f.context) == BC_STS_SUCCESS &&
+                  !f.context.recoveryInjectSpsPps,
+                  "recovery cannot arm an invalidated partial-update cache");
+            packets.clear();
+            check(f.send(access_unit(0, false)) == BC_STS_SUCCESS &&
+                  packets.size() == 1,
+                  "a direct client never receives stale headers after partial-update recovery");
+        }
+
+        Fixture allocation(0, nullptr, BC_MSUBTYPE_H264, false);
+        allocation.context.SingleThreadedAppMode = 1;
+        check(allocation.send(access_unit(0, true)) == BC_STS_SUCCESS,
+              "allocation-failure fixture first builds a complete cache");
+        Bytes changed_complete = parameter_sets(newer_sps, newer_pps);
+        append(changed_complete, idr, 0);
+        fail_cache_allocation = true;
+        check(allocation.send(changed_complete) == BC_STS_SUCCESS &&
+              recovery_replay_bytes(allocation) == 0,
+              "a failed changed-header allocation cannot advertise the obsolete cache");
+    }
+    {
+        static const Bytes newer_sps = {0x67, 0x42, 0x80, 0x2a, 0x01};
+        static const Bytes newer_pps = {0x68, 0xce, 0x06, 0xe2};
+        Fixture f(0, nullptr, BC_MSUBTYPE_H264, false);
+        f.context.SingleThreadedAppMode = 1;
+        check(f.send(access_unit(0, true)) == BC_STS_SUCCESS,
+              "replacement fixture caches its first parameter sets");
+        Bytes newer_au = parameter_sets(newer_sps, newer_pps);
+        append(newer_au, idr, 0);
+        check(f.send(newer_au) == BC_STS_SUCCESS,
+              "a later AU with a complete changed pair is accepted");
+        const Bytes newer_headers = parameter_sets(newer_sps, newer_pps);
+        check(f.context.PESConvParams.m_iSpsPpsLen == newer_headers.size() &&
+              !std::memcmp(f.context.PESConvParams.m_pSpsPpsBuf,
+                           newer_headers.data(), newer_headers.size()),
+              "later complete in-band SPS/PPS transactionally replaces the cache");
+        check(DtsRecoveryRestoreInputState(&f.context) == BC_STS_SUCCESS &&
+              recovery_replay_bytes(f) == newer_headers.size(),
+              "changed cache publishes its exact new recovery reservation");
+        packets.clear();
+        check(f.send(access_unit(0, false)) == BC_STS_SUCCESS &&
+              packets.size() == 2 && payload(packets[0]) == newer_headers,
+              "recovery replays the latest complete SPS/PPS pair");
+    }
+    {
+        Fixture f(0, nullptr, BC_MSUBTYPE_H264, false);
+        BC_INPUT_FORMAT format = {};
+        Bytes junk = {0x12, 0x34, 0x56, 0x78};
+        format.mSubtype = BC_MSUBTYPE_H264;
+        format.width = 640;
+        format.height = 360;
+        format.Progressive = true;
+        format.OptFlags = 0x80000001;
+        format.pMetaData = junk.data();
+        format.metaDataSz = junk.size();
+        check(DtsSetInputFormat(&f.context, &format) == BC_STS_SUCCESS &&
+              !f.context.PESConvParams.m_pSpsPpsBuf &&
+              f.context.PESConvParams.m_iSpsPpsLen == 0,
+              "arbitrary H.264 metadata remains legacy-compatible and is not cached");
+        Bytes only_sps;
+        append(only_sps, sps, 0);
+        format.pMetaData = only_sps.data();
+        format.metaDataSz = only_sps.size();
+        check(DtsSetInputFormat(&f.context, &format) == BC_STS_SUCCESS &&
+              !f.context.PESConvParams.m_pSpsPpsBuf &&
+              f.context.PESConvParams.m_iSpsPpsLen == 0,
+              "partial H.264 metadata stays accepted but cannot prove a replay cache");
+        f.context.SingleThreadedAppMode = 1;
+        check(f.send(access_unit(0, true)) == BC_STS_SUCCESS &&
+              f.context.PESConvParams.m_iSpsPpsLen == parameter_sets().size(),
+              "later complete in-band headers fill a partial-metadata cache");
+        check(DtsRecoveryRestoreInputState(&f.context) == BC_STS_SUCCESS &&
+              f.context.recoveryInjectSpsPps,
+              "complete in-band cache arms before an in-place format change");
+        format.pMetaData = junk.data();
+        format.metaDataSz = junk.size();
+        check(DtsSetInputFormat(&f.context, &format) == BC_STS_SUCCESS &&
+              !f.context.recoveryInjectSpsPps &&
+              recovery_replay_bytes(f) == 0,
+              "successful format replacement clears the prior converter replay latch");
+    }
+}
+
+static void NestedInputAcrossLifecycleOwner()
+{
+    Fixture f(0, nullptr, BC_MSUBTYPE_H264, false);
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool owned = false, release = false;
+    BC_STATUS owner_status = BC_STS_ERROR;
+    check(DtsBeginInputCall(&f.context) == BC_STS_SUCCESS,
+          "outer input call owns its reentrant admission before lifecycle overlap");
+    std::thread owner([&] {
+        owner_status = DtsAcquireControl(&f.context, DTS_CONTROL_LIFECYCLE);
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            owned = true;
+            condition.notify_all();
+        }
+        std::unique_lock<std::mutex> lock(mutex);
+        condition.wait(lock, [&] { return release; });
+        if (owner_status == BC_STS_SUCCESS)
+            DtsReleaseControl(&f.context);
+    });
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        condition.wait(lock, [&] { return owned; });
+    }
+    const Bytes bytes = {0x41, 0x42, 0x43, 0x44};
+    packets.clear();
+    check(owner_status == BC_STS_SUCCESS &&
+          DtsAlignSendData(&f.context, const_cast<uint8_t *>(bytes.data()),
+                           bytes.size(), 0, false) == BC_STS_SUCCESS &&
+          packets.size() == 1 && payload(packets[0]) == bytes,
+          "same-thread nested input completes exactly once across a foreign ordinary lifecycle lease");
+    f.context.txQuiescing = true;
+    const size_t accepted = packets.size();
+    check(DtsAlignSendData(&f.context, const_cast<uint8_t *>(bytes.data()),
+                           bytes.size(), 0, false) == BC_STS_IO_USER_ABORT &&
+          packets.size() == accepted,
+          "destructive TX admission barrier still aborts nested input without a partial retry");
+    f.context.txQuiescing = false;
+    DtsFinishInputCall(&f.context);
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        release = true;
+        condition.notify_all();
+    }
+    owner.join();
+    check(f.context.inputCalls == 0 && f.context.controlOwner == DTS_CONTROL_NONE,
+          "nested input and foreign lifecycle owners each retire exactly once");
 }
 
 static void DetectorBounds()
@@ -259,6 +758,7 @@ static void AnnexBScannerBounds()
     DTS_INPUT_MDATA metadata[32] = {};
     f.context.MdataPoolPtr = metadata;
     f.context.MDPendHead = f.context.MDPendTail = DTS_MDATA_PEND_LINK((&f.context));
+    f.context.MDFreeHead = nullptr;
     for (DTS_INPUT_MDATA &entry : metadata) {
         entry.flink = f.context.MDFreeHead;
         f.context.MDFreeHead = &entry;
@@ -433,6 +933,7 @@ struct TransportFixture : Fixture {
         context.PESConvParams.m_bIsAdd_SCode_CodeIn = false;
         context.MdataPoolPtr = metadata;
         context.MDPendHead = context.MDPendTail = DTS_MDATA_PEND_LINK((&context));
+        context.MDFreeHead = nullptr;
         for (DTS_INPUT_MDATA &entry : metadata) {
             entry.flink = context.MDFreeHead; context.MDFreeHead = &entry;
         }
@@ -641,6 +1142,8 @@ int main(int argc, char **argv)
         return 0;
     }
     Framing();
+    RecoverySingleThreadConfig();
+    NestedInputAcrossLifecycleOwner();
     WmvBFrameMetadata();
     AnnexBScannerBounds();
     // --framing omits the separate SPS detector regression.

@@ -50,6 +50,9 @@ static bool runtime_borrowed;
 static unsigned runtime_allocation_calls;
 static unsigned runtime_release_calls;
 static unsigned runtime_driver_calls;
+static unsigned runtime_control_acquires;
+static unsigned runtime_control_releases;
+static BC_STATUS runtime_control_status;
 static BC_STATUS runtime_driver_status;
 static uint32_t runtime_response_status;
 static uint32_t runtime_versions[3];
@@ -224,6 +227,22 @@ extern "C" DTS_LIB_CONTEXT *DtsGetContext(HANDLE handle)
 	if (handle != &context || context.Sig != LIB_CTX_SIG)
 		return nullptr;
 	return &context;
+}
+
+BC_STATUS DtsAcquireControl(DTS_LIB_CONTEXT *ctx, DTS_CONTROL_OWNER owner)
+{
+	Check(runtime_call && ctx == &context && owner == DTS_CONTROL_LIFECYCLE,
+	      "runtime version query acquires lifecycle control");
+	++runtime_control_acquires;
+	return runtime_control_status;
+}
+
+void DtsReleaseControl(DTS_LIB_CONTEXT *ctx)
+{
+	Check(runtime_call && ctx == &context &&
+	      runtime_control_status == BC_STS_SUCCESS,
+	      "runtime version query releases only acquired lifecycle control");
+	++runtime_control_releases;
 }
 
 extern "C" BC_STATUS DtsGetFirmwareFiles(DTS_LIB_CONTEXT *)
@@ -554,6 +573,8 @@ static void ResetRuntime(uint32_t sequence = 40U)
 	runtime_allocation_fails = false;
 	runtime_borrowed = false;
 	runtime_allocation_calls = runtime_release_calls = runtime_driver_calls = 0;
+	runtime_control_acquires = runtime_control_releases = 0;
+	runtime_control_status = BC_STS_SUCCESS;
 	runtime_driver_status = BC_STS_SUCCESS;
 	runtime_response_status = 0;
 	runtime_versions[0] = 0x010203U;
@@ -684,6 +705,21 @@ static void CheckRuntimeArguments()
 	}
 }
 
+static void CheckRuntimeControlGuard()
+{
+	ResetRuntime();
+	runtime_control_status = BC_STS_BUSY;
+	RuntimeOutputs outputs = RuntimeSentinels();
+	const RuntimeOutputs before = outputs;
+	Check(RuntimeQuery(&outputs) == BC_STS_BUSY &&
+	      !std::memcmp(&outputs, &before, sizeof(outputs)),
+	      "runtime firmware version is BUSY while recovery owns control");
+	Check(runtime_control_acquires == 1 && runtime_control_releases == 0 &&
+	      runtime_allocation_calls == 0 && runtime_driver_calls == 0 &&
+	      runtime_release_calls == 0,
+	      "recovery rejection occurs before any firmware command ownership");
+}
+
 int main()
 {
 	CheckInvalidArguments();
@@ -697,6 +733,7 @@ int main()
 	CheckRuntimeSuccess();
 	CheckRuntimeFailures();
 	CheckRuntimeArguments();
+	CheckRuntimeControlGuard();
 	std::printf("Library firmware version: %u checks, %u failures\n",
 		    checks, failures);
 	return failures ? 1 : 0;

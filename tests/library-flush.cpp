@@ -38,7 +38,18 @@ static unsigned fetch_calls, add_calls;
 static BC_STATUS mock_fetch_status = BC_STS_NO_DATA;
 static BC_STATUS mock_add_status = BC_STS_SUCCESS;
 static bool cancel_after_fetch;
+static bool cancel_after_add;
+enum RecoveryCancelMode { RECOVERY_CANCEL_NONE, RECOVERY_CANCEL_MATCHED,
+                          RECOVERY_CANCEL_GENERATION_ONLY };
+static RecoveryCancelMode recovery_cancel_after_fetch;
+enum RecoveryLatchMode { RECOVERY_LATCH_NONE, RECOVERY_LATCH_MATCHED,
+                         RECOVERY_LATCH_GENERATION_ONLY };
+static RecoveryLatchMode recovery_latch_after_fetch;
 static thread_local unsigned delayed_output_lock;
+static thread_local bool power_add_inflight;
+static bool terminal_lock_after_power_add;
+static thread_local bool audit_publish_locks;
+static unsigned publish_lock_count;
 static BC_STATUS mock_flush_status = BC_STS_SUCCESS;
 static BC_STATUS mock_stop_status = BC_STS_SUCCESS;
 static bool probe_stop_owner;
@@ -53,7 +64,8 @@ static BC_STATUS mock_pause_status = BC_STS_SUCCESS;
 static bool pending_at_unmap, pending_at_interface;
 static BC_STATUS mock_unmap_status = BC_STS_SUCCESS;
 static bool mock_unmap_syscall_failure;
-enum PhaseWindow { WINDOW_NONE, WINDOW_EMPTY_CTX_LOCK, WINDOW_FINALIZER, WINDOW_PUBLISH };
+enum PhaseWindow { WINDOW_NONE, WINDOW_EMPTY_CTX_LOCK, WINDOW_FINALIZER,
+                   WINDOW_PUBLISH, WINDOW_COMMIT, WINDOW_COPY_PUBLISH };
 static thread_local PhaseWindow phase_window;
 static bool phase_window_reached, resume_phase_window, phase_actor_done;
 static bool cancel_releases_publish;
@@ -84,6 +96,22 @@ extern "C" BC_STATUS __wrap_DtsPublishOutput(DTS_LIB_CONTEXT *context,
     if (phase_window == WINDOW_PUBLISH)
         wait_phase_window();
     return __real_DtsPublishOutput(context, output, status);
+}
+extern "C" BC_STATUS __real_DtsCommitFetchedOutput(DTS_LIB_CONTEXT *, BC_DTS_PROC_OUT *);
+extern "C" BC_STATUS __wrap_DtsCommitFetchedOutput(DTS_LIB_CONTEXT *context,
+                                                     BC_DTS_PROC_OUT *output)
+{
+    if (phase_window == WINDOW_COMMIT)
+        wait_phase_window();
+    return __real_DtsCommitFetchedOutput(context, output);
+}
+extern "C" BC_STATUS __real_DtsPublishCopiedOutput(DTS_LIB_CONTEXT *, BC_STATUS);
+extern "C" BC_STATUS __wrap_DtsPublishCopiedOutput(DTS_LIB_CONTEXT *context,
+                                                     BC_STATUS status)
+{
+    if (phase_window == WINDOW_COPY_PUBLISH)
+        wait_phase_window();
+    return __real_DtsPublishCopiedOutput(context, status);
 }
 
 extern "C" BC_STATUS __wrap_DtsReleaseInterface(DTS_LIB_CONTEXT *context)
@@ -117,6 +145,12 @@ static uint8_t frame_storage[8][32];
 extern "C" int __real_pthread_mutex_lock(pthread_mutex_t *mutex);
 extern "C" int __wrap_pthread_mutex_lock(pthread_mutex_t *mutex)
 {
+    if (audit_publish_locks && observed && mutex == &observed->thLock)
+        ++publish_lock_count;
+    if (power_add_inflight && observed && mutex == &observed->thLock &&
+        (observed->outputPhase == DTS_OUTPUT_IDLE ||
+         observed->outputPhase == DTS_OUTPUT_RETIRE_ONLY))
+        terminal_lock_after_power_add = true;
     if (phase_window == WINDOW_EMPTY_CTX_LOCK && observed &&
         mutex == &observed->thLock && fetch_calls &&
         observed->outputPhase == DTS_OUTPUT_ACTIVE && !observed->ProcOutPending)
@@ -221,6 +255,22 @@ extern "C" int __wrap_ioctl(int, unsigned long code, ...)
                 observed->CancelWaiting = 1;
                 DtsUnLock(observed);
             }
+            if (recovery_cancel_after_fetch != RECOVERY_CANCEL_NONE) {
+                DtsLock(observed);
+                observed->recoveryGeneration++;
+                if (recovery_cancel_after_fetch == RECOVERY_CANCEL_MATCHED)
+                    observed->recoveryCancelGeneration = observed->recoveryGeneration;
+                observed->CancelWaiting = 1;
+                DtsUnLock(observed);
+            }
+            if (recovery_latch_after_fetch == RECOVERY_LATCH_MATCHED) {
+                DtsObservePowerState(observed, BC_HW_SUSPEND);
+            } else if (recovery_latch_after_fetch ==
+                       RECOVERY_LATCH_GENERATION_ONLY) {
+                DtsLock(observed);
+                observed->recoveryGeneration++;
+                DtsUnLock(observed);
+            }
         } else {
             const unsigned call = add_calls++;
             reposted_buffers.push_back(data->u.RxBuffs.YuvBuff);
@@ -232,6 +282,14 @@ extern "C" int __wrap_ioctl(int, unsigned long code, ...)
                 }
             } else {
                 data->RetSts = mock_add_status;
+            }
+            if (data->RetSts == BC_STS_PWR_MGMT)
+                power_add_inflight = true;
+            if (cancel_after_add && data->RetSts == BC_STS_SUCCESS) {
+                cancel_after_add = false;
+                DtsLock(observed);
+                observed->CancelWaiting = 1;
+                DtsUnLock(observed);
             }
         }
         return 0;
@@ -334,6 +392,11 @@ static void reset_output_mocks()
     mock_unmap_syscall_failure = false;
     unmap_fail_once_at = 0;
     cancel_releases_publish = false;
+    cancel_after_add = false;
+    power_add_inflight = false;
+    terminal_lock_after_power_add = false;
+    audit_publish_locks = false;
+    publish_lock_count = 0;
     allow_copy = false;
 }
 
@@ -440,6 +503,8 @@ struct OutputContext {
         mock_fetch_status = BC_STS_NO_DATA;
         mock_add_status = BC_STS_SUCCESS;
         cancel_after_fetch = false;
+        recovery_cancel_after_fetch = RECOVERY_CANCEL_NONE;
+        recovery_latch_after_fetch = RECOVERY_LATCH_NONE;
         fetch_calls = add_calls = cancellation_sleeps = stop_calls = 0;
         close_calls = 0;
         mock_flush_status = mock_stop_status = mock_close_status = BC_STS_SUCCESS;
@@ -567,7 +632,8 @@ static void test_late_output(unsigned mode, bool no_copy, bool during_stop)
                 fixture.context.ProcOutPending);
     check(flushed == BC_STS_SUCCESS, "flush with a not-yet-admitted caller succeeds");
     check(output_status == BC_STS_DEC_NOT_STARTED || output_status == BC_STS_DEC_NOT_OPEN ||
-          output_status == BC_STS_IO_USER_ABORT, "late caller observes flush/closed state");
+          output_status == BC_STS_IO_USER_ABORT || output_status == BC_STS_BUSY,
+          "late caller observes flush/closed state");
     check(fetch_calls == 0 && add_calls == 0, "late output never reaches driver after flush barrier");
     check(fixture.context.ProcOutPending == 0, "rejected late output owns no pending reference");
 }
@@ -667,6 +733,233 @@ static void test_canceled_fetch(bool no_copy, bool repost_fails)
               fetch_calls == old_fetch_calls && add_calls == 1,
               "failed repost keeps new fetches out until lifecycle teardown");
     }
+}
+
+static void test_recovery_canceled_fetch(bool no_copy, bool matched_generation)
+{
+    OutputContext fixture;
+    mock_fetch_status = BC_STS_SUCCESS;
+    recovery_cancel_after_fetch = matched_generation ?
+        RECOVERY_CANCEL_MATCHED : RECOVERY_CANCEL_GENERATION_ONLY;
+    BC_DTS_PROC_OUT out = {};
+    out.Ybuff = out.UVbuff = frame_storage[7];
+    const BC_STATUS status = no_copy ?
+        DtsProcOutputNoCopy(&fixture.context, 0, &out) :
+        DtsProcOutput(&fixture.context, 0, &out);
+    check(status == (matched_generation ? BC_STS_BUSY : BC_STS_IO_USER_ABORT),
+          "only the matching recovery cancellation converts output abort to BUSY");
+    check(fetch_calls == 1 && add_calls == 1 &&
+          (no_copy ? (out.Ybuff == NULL && out.UVbuff == NULL) :
+                     (out.Ybuff == frame_storage[7] &&
+                      out.UVbuff == frame_storage[7])) &&
+          fixture.context.outputRecoveryGeneration == 0 &&
+          fixture.context.recoveryGeneration == 1,
+          "pre-latch output retires without exposing a buffer after recovery cancellation");
+    fixture.context.CancelWaiting = 0;
+}
+
+static void test_power_management_fetch_latches_recovery(bool no_copy)
+{
+    OutputContext fixture;
+    mock_fetch_status = BC_STS_PWR_MGMT;
+    BC_DTS_PROC_OUT out = {};
+    out.Ybuff = out.UVbuff = frame_storage[7];
+    const BC_STATUS status = no_copy ?
+        DtsProcOutputNoCopy(&fixture.context, 0, &out) :
+        DtsProcOutput(&fixture.context, 0, &out);
+    check(status == BC_STS_BUSY && fetch_calls == 1 && add_calls == 0 &&
+          fixture.context.recoveryPending &&
+          fixture.context.recoveryGeneration == 1 &&
+          fixture.context.recoveryCancelGeneration == 1,
+          "a pre-status PWR_MGMT fetch atomically latches and normalizes the recovery epoch");
+    check(no_copy ? (out.Ybuff == NULL && out.UVbuff == NULL) :
+                    (out.Ybuff == frame_storage[7] &&
+                     out.UVbuff == frame_storage[7]),
+          "PWR_MGMT cancellation preserves copy-mode caller destinations only");
+}
+
+static void set_output_sentinels(BC_DTS_PROC_OUT &output)
+{
+    output.Ybuff = output.UVbuff = frame_storage[7];
+    output.discCnt = 91;
+    output.PicInfo.picture_number = 0x12345678;
+    output.PicInfo.width = 321;
+}
+
+static bool output_metadata_is_sentinel(const BC_DTS_PROC_OUT &output)
+{
+    return output.discCnt == 91 && output.PicInfo.picture_number == 0x12345678 &&
+        output.PicInfo.width == 321;
+}
+
+static void test_recovery_latch_after_fetch(bool no_copy,
+                                            RecoveryLatchMode latch,
+                                            AddOutcome outcome,
+                                            bool format_change = false)
+{
+    OutputContext fixture;
+    prepare_scripted_output(fixture, BC_PCI_DEVID_FLEA);
+    FetchReply reply = make_frame(0, 7, 1);
+    if (format_change)
+        reply.output.Flags = COMP_FLAG_PIB_VALID | COMP_FLAG_FMT_CHANGE;
+    fetch_replies.push_back(reply);
+    add_replies.push_back(make_add_reply(outcome));
+    recovery_latch_after_fetch = latch;
+    BC_DTS_PROC_OUT output = make_public_output(fixture, 0);
+    set_output_sentinels(output);
+    const BC_STATUS status = no_copy ?
+        DtsProcOutputNoCopy(&fixture.context, 0, &output) :
+        DtsProcOutput(&fixture.context, 0, &output);
+
+    if (latch == RECOVERY_LATCH_MATCHED) {
+        check(status == BC_STS_BUSY && fetch_calls == 1 && add_calls == 1 &&
+              copy_calls == 0 && callback_calls == 0 &&
+              fixture.context.recoveryPending && !fixture.context.CancelWaiting &&
+              fixture.context.outputProgress == 0 &&
+              fixture.context.outputPhase ==
+                  (outcome == ADD_SUCCEEDS ? DTS_OUTPUT_IDLE : DTS_OUTPUT_RETIRE_ONLY),
+              "matched PM epoch after FETCH cancels before callback/copy and reposts exactly once");
+        check(no_copy ? (output.Ybuff == NULL && output.UVbuff == NULL &&
+                         output_metadata_is_sentinel(output)) :
+                        (output.Ybuff == frame_storage[7] &&
+                         output.UVbuff == frame_storage[7] &&
+                         output_metadata_is_sentinel(output)),
+              "stale fetched output changes neither copy destinations nor caller metadata");
+    } else {
+        check(latch == RECOVERY_LATCH_GENERATION_ONLY &&
+              status == (format_change ? BC_STS_FMT_CHANGE : BC_STS_SUCCESS) &&
+              fetch_calls == 1 && !fixture.context.recoveryPending &&
+              fixture.context.recoveryGeneration == 1 &&
+              fixture.context.recoveryCancelGeneration == 0,
+              "generation-only mismatch does not cancel a valid fetched output");
+        if (no_copy && status == BC_STS_SUCCESS)
+            check(DtsReleaseOutputBuffs(&fixture.context, NULL, FALSE) == BC_STS_SUCCESS,
+                  "unmatched-generation NoCopy result retains one releasable borrow");
+        check(no_copy || (copy_calls == (format_change ? 0U : 1U) &&
+                          callback_calls == (format_change ? 0U : 1U) &&
+                          output.Ybuff == frame_storage[7] &&
+                          output.UVbuff == frame_storage[7]),
+              "unmatched-generation copy follows the ordinary callback/copy path");
+    }
+}
+
+static void test_nocopy_format_change()
+{
+    OutputContext fixture;
+    prepare_scripted_output(fixture, BC_PCI_DEVID_FLEA);
+    FetchReply reply = make_frame(0, 7, 1);
+    reply.output.Flags = COMP_FLAG_PIB_VALID | COMP_FLAG_FMT_CHANGE;
+    fetch_replies.push_back(reply);
+    BC_DTS_PROC_OUT output = make_public_output(fixture, 0);
+    set_output_sentinels(output);
+
+    const BC_STATUS status = DtsProcOutputNoCopy(&fixture.context, 0, &output);
+    check(status == BC_STS_FMT_CHANGE && fetch_calls == 1 && add_calls == 0 &&
+          !fixture.context.ProcOutPending &&
+          fixture.context.outputPhase == DTS_OUTPUT_IDLE,
+          "NoCopy format change preserves its status and retires the control output exactly once");
+    check((output.PoutFlags & (BC_POUT_FLAGS_FMT_CHANGE | BC_POUT_FLAGS_PIB_VALID)) ==
+              (BC_POUT_FLAGS_FMT_CHANGE | BC_POUT_FLAGS_PIB_VALID) &&
+          output.PicInfo.picture_number == 7 && output.PicInfo.width == 16 &&
+          output.Ybuff == NULL && output.UVbuff == NULL,
+          "NoCopy format change publishes PIB metadata without returning a pixel borrow");
+    check(DtsReleaseOutputBuffs(&fixture.context, NULL, FALSE) == BC_STS_BUSY &&
+          add_calls == 0,
+          "NoCopy format-change control output requires no caller buffer release");
+}
+
+static void test_recovery_latch_before_consumer(bool no_copy, AddOutcome outcome)
+{
+    OutputContext fixture;
+    prepare_scripted_output(fixture, BC_PCI_DEVID_FLEA);
+    fetch_replies.push_back(make_frame(0, 7, 1));
+    add_replies.push_back(make_add_reply(outcome));
+    phase_window_reached = resume_phase_window = phase_actor_done = false;
+    BC_STATUS produced = BC_STS_ERROR;
+    BC_DTS_PROC_OUT output = make_public_output(fixture, 0);
+    set_output_sentinels(output);
+    std::thread actor([&] {
+        phase_window = no_copy ? WINDOW_PUBLISH : WINDOW_COMMIT;
+        produced = no_copy ? DtsProcOutputNoCopy(&fixture.context, 0, &output) :
+                             DtsProcOutput(&fixture.context, 0, &output);
+        std::lock_guard<std::mutex> lock(gate);
+        phase_actor_done = true;
+        changed.notify_all();
+    });
+    {
+        std::unique_lock<std::mutex> lock(gate);
+        if (!changed.wait_for(lock, std::chrono::seconds(2), [] { return phase_window_reached; }))
+            std::abort();
+    }
+    check(fixture.context.outputPhase == DTS_OUTPUT_ACTIVE &&
+          fixture.context.ProcOutPending && copy_calls == 0 && callback_calls == 0 &&
+          add_calls == 0,
+          "pre-consumer barrier retains an unexposed ACTIVE driver borrow");
+    DtsObservePowerState(&fixture.context, BC_HW_SUSPEND);
+    check(!fixture.context.CancelWaiting,
+          "PM epoch cancellation does not depend on legacy CancelWaiting");
+    {
+        std::lock_guard<std::mutex> lock(gate);
+        resume_phase_window = true;
+        changed.notify_all();
+    }
+    actor.join();
+    check(produced == BC_STS_BUSY && add_calls == 1 &&
+          copy_calls == 0 && callback_calls == 0 && fixture.context.outputProgress == 0 &&
+          fixture.context.outputPhase ==
+              (outcome == ADD_SUCCEEDS ? DTS_OUTPUT_IDLE : DTS_OUTPUT_RETIRE_ONLY),
+          "epoch landing before consumption reposts once and returns BUSY");
+    check(no_copy ? (output.Ybuff == NULL && output.UVbuff == NULL &&
+                     output_metadata_is_sentinel(output)) :
+                    (output.Ybuff == frame_storage[7] &&
+                     output.UVbuff == frame_storage[7] &&
+                     output_metadata_is_sentinel(output)),
+          "pre-consumer epoch leaves caller pixels and metadata untouched");
+}
+
+static void test_recovery_latch_after_copy_commit(bool format_change)
+{
+    OutputContext fixture;
+    prepare_scripted_output(fixture, BC_PCI_DEVID_FLEA);
+    FetchReply reply = make_frame(0, 7, 1);
+    if (format_change)
+        reply.output.Flags = COMP_FLAG_PIB_VALID | COMP_FLAG_FMT_CHANGE;
+    fetch_replies.push_back(reply);
+    if (!format_change)
+        add_replies.push_back(make_add_reply(ADD_SUCCEEDS));
+    phase_window_reached = resume_phase_window = phase_actor_done = false;
+    BC_STATUS produced = BC_STS_ERROR;
+    BC_DTS_PROC_OUT output = make_public_output(fixture, 0);
+    set_output_sentinels(output);
+    std::thread actor([&] {
+        phase_window = WINDOW_COPY_PUBLISH;
+        produced = DtsProcOutput(&fixture.context, 0, &output);
+        std::lock_guard<std::mutex> lock(gate);
+        phase_actor_done = true;
+        changed.notify_all();
+    });
+    {
+        std::unique_lock<std::mutex> lock(gate);
+        if (!changed.wait_for(lock, std::chrono::seconds(2), [] { return phase_window_reached; }))
+            std::abort();
+    }
+    check(fixture.context.outputPhase == DTS_OUTPUT_DELIVERING &&
+          !fixture.context.ProcOutPending &&
+          copy_calls == (format_change ? 0U : 1U) &&
+          callback_calls == (format_change ? 0U : 1U),
+          "copy delivery commit remains owned through its final publication suffix");
+    DtsObservePowerState(&fixture.context, BC_HW_SUSPEND);
+    {
+        std::lock_guard<std::mutex> lock(gate);
+        resume_phase_window = true;
+        changed.notify_all();
+    }
+    actor.join();
+    check(produced == (format_change ? BC_STS_FMT_CHANGE : BC_STS_SUCCESS) &&
+          fixture.context.recoveryPending &&
+          fixture.context.outputPhase == DTS_OUTPUT_IDLE &&
+          output.Ybuff == frame_storage[7] && output.UVbuff == frame_storage[7],
+          "PM after irreversible copy commit waits and cannot retroactively return BUSY");
 }
 
 static void test_repeated_picture_repost(AddOutcome outcome)
@@ -962,7 +1255,8 @@ static void test_returned_nocopy_held(unsigned operation, bool release_first)
         check(after_pending && output.Ybuff == borrowed,
               "held lease survives until explicit caller release, not a fetch thread completion");
         if (operation != 3)
-            check(stopped == BC_STS_TIMEOUT && stop_polls == (operation == 2 ? 63U : 21U),
+            check(stopped == (operation == 2 ? BC_STS_BUSY : BC_STS_TIMEOUT) &&
+                  stop_polls == (operation == 2 ? 63U : 21U),
                   "unreleased actual output reaches the bounded production cancellation timeout");
         else
             check(stopped != BC_STS_SUCCESS,
@@ -1313,7 +1607,7 @@ static void test_active_context_window(PhaseWindow window, bool no_copy)
           "whole call remains ACTIVE after early DecPend0 and through outer last-context finalizer");
     held_owner_case = true;
     const BC_STATUS closed = DtsDeviceClose(&fixture.context);
-    check(closed == BC_STS_TIMEOUT && cancellation_sleeps == 63 &&
+    check(closed == BC_STS_BUSY && cancellation_sleeps == 63 &&
           stop_calls == 0 && close_calls == 0 && unmap_calls == 0 &&
           interface_calls == 0 && fixture.context.outputPhase == DTS_OUTPUT_ACTIVE &&
           fixture.context.bMapOutBufDirty && fixture.globals.g_bDecOpened &&
@@ -1393,6 +1687,107 @@ static void test_drop_refetch_exclusion(bool no_copy)
           "two internal frames have exactly one acknowledged repost each");
     std::printf("drop-refetch no_copy=%d output=%d fetch=%u add=%u phase=%u\n",
                 no_copy, produced, fetch_calls, add_calls, fixture.context.outputPhase);
+}
+
+static void test_drop_cancel_before_finalizer(bool no_copy)
+{
+    OutputContext fixture;
+    BC_IOCTL_DATA control = {};
+    initialize_phase_capture(fixture, control);
+    fetch_replies.push_back(make_frame(0, 7, 1));
+    add_replies.push_back(make_add_reply(ADD_SUCCEEDS));
+    cancel_after_add = true;
+    phase_window_reached = resume_phase_window = phase_actor_done = false;
+    BC_STATUS produced = BC_STS_ERROR;
+    BC_DTS_PROC_OUT output = make_public_output(fixture, 1);
+    std::thread actor([&] {
+        phase_window = WINDOW_FINALIZER;
+        produced = no_copy ? DtsProcOutputNoCopy(&fixture.context, 0, &output) :
+                             DtsProcOutput(&fixture.context, 0, &output);
+        std::lock_guard<std::mutex> lock(gate);
+        phase_actor_done = true;
+        changed.notify_all();
+    });
+    {
+        std::unique_lock<std::mutex> lock(gate);
+        if (!changed.wait_for(lock, std::chrono::seconds(2), [] { return phase_window_reached; }))
+            std::abort();
+    }
+    check(fixture.context.outputPhase == DTS_OUTPUT_DELIVERING &&
+          !fixture.context.ProcOutPending && fetch_calls == 1 && add_calls == 1 &&
+          output.DropFrames == 0,
+          "drop cancellation retains DELIVERING until the outer finalizer's last access");
+    DtsLock(&fixture.context);
+    fixture.context.CancelWaiting = 0;
+    DtsUnLock(&fixture.context);
+    held_owner_case = true;
+    const BC_STATUS closed = DtsDeviceClose(&fixture.context);
+    check(closed == BC_STS_BUSY && interface_calls == 0 && unmap_calls == 0 &&
+          close_calls == 0 && fixture.context.outputPhase == DTS_OUTPUT_DELIVERING,
+          "DeviceClose cannot consume a drop caller paused before its finalizer");
+    {
+        std::lock_guard<std::mutex> lock(gate);
+        resume_phase_window = true;
+        changed.notify_all();
+    }
+    actor.join();
+    check(produced == BC_STS_IO_USER_ABORT && output.Ybuff == NULL &&
+          output.UVbuff == NULL && fixture.context.outputPhase == DTS_OUTPUT_IDLE &&
+          !fixture.context.ProcOutPending,
+          "drop cancellation publishes IDLE only from the outer finalizer");
+    check(DtsDeviceClose(&fixture.context) == BC_STS_SUCCESS &&
+          interface_calls == 1 && unmap_calls == 1 && close_calls == 1,
+          "DeviceClose retry consumes the context only after drop finalization");
+    std::printf("drop-finalizer no_copy=%d output=%d close=%d polls=%u interface=%u\n",
+                no_copy, produced, closed, cancellation_sleeps, interface_calls);
+    held_owner_case = false;
+}
+
+static void test_publish_normalizes_before_terminal_phase()
+{
+    OutputContext fixture;
+    BC_IOCTL_DATA control = {};
+    initialize_phase_capture(fixture, control);
+    fixture.context.softwareUyvy = true;
+    fixture.context.b422Mode = OUTPUT_MODE422_YUY2;
+    fetch_replies.push_back(make_frame(0, 7, 1));
+    add_replies.push_back(AddReply{BC_STS_PWR_MGMT, false});
+    BC_DTS_PROC_OUT output = make_public_output(fixture, 0);
+    output.Ybuff = output.UVbuff = frame_storage[7];
+
+    const BC_STATUS produced = DtsProcOutputNoCopy(&fixture.context, 0, &output);
+    const bool terminal_reentry = terminal_lock_after_power_add;
+    power_add_inflight = false;
+    check(produced == BC_STS_BUSY && output.Ybuff == NULL && output.UVbuff == NULL &&
+          fixture.context.recoveryPending && fixture.context.ProcOutPending &&
+          fixture.context.outputPhase == DTS_OUTPUT_RETIRE_ONLY && add_calls == 1,
+          "packing-repost PM failure normalizes to BUSY and retains only teardown ownership");
+    check(!terminal_reentry,
+          "recovery normalization completes before terminal output phase publication");
+    std::printf("publish-normalize output=%d pending=%d phase=%u reentered=%d\n",
+                produced, fixture.context.ProcOutPending,
+                fixture.context.outputPhase, terminal_reentry);
+}
+
+static void test_active_failure_normalizes_with_terminal_publish()
+{
+    OutputContext fixture;
+    BC_DTS_PROC_OUT output = make_public_output(fixture, 0);
+    output.Ybuff = output.UVbuff = frame_storage[7];
+    check(DtsBeginOutputCall(&fixture.context) == BC_STS_SUCCESS,
+          "active-failure ordering test admits one output call");
+    DtsObservePowerState(&fixture.context, BC_HW_SUSPEND);
+    publish_lock_count = 0;
+    audit_publish_locks = true;
+    const BC_STATUS produced = DtsPublishOutput(&fixture.context, &output,
+                                                BC_STS_PWR_MGMT);
+    audit_publish_locks = false;
+    check(produced == BC_STS_BUSY && output.Ybuff == NULL && output.UVbuff == NULL &&
+          fixture.context.outputPhase == DTS_OUTPUT_IDLE &&
+          !fixture.context.ProcOutPending,
+          "ACTIVE PM failure normalizes before publishing terminal IDLE");
+    check(publish_lock_count == 2,
+          "ACTIVE failure uses one inspection and one atomic normalize/finalize lock");
 }
 
 static void test_cancel_wins_publication(AddOutcome outcome)
@@ -1475,7 +1870,7 @@ static void test_release_active_last_access(BC_STATUS status, bool syscall_failu
           "a rejected competing Release cannot surrender or retire the active owner's call");
     held_owner_case = true;
     const BC_STATUS closed = DtsDeviceClose(&fixture.context);
-    check(closed == BC_STS_TIMEOUT && unmap_calls == 0 && interface_calls == 0 &&
+    check(closed == BC_STS_BUSY && unmap_calls == 0 && interface_calls == 0 &&
           stop_calls == 0 && close_calls == 0 &&
           fixture.context.outputPhase == DTS_OUTPUT_ACTIVE,
           "DeviceClose cannot unmap/free while admitted Release still has context work");
@@ -1582,7 +1977,7 @@ static void test_device_close_returned_error_dominance()
     pause_calls = unmap_calls = interface_calls = 0;
     held_owner_case = true;
     const BC_STATUS closed = DtsDeviceClose(&fixture.context);
-    check(closed == BC_STS_TIMEOUT && pause_calls == 1 && cancellation_sleeps == 63 &&
+    check(closed == BC_STS_BUSY && pause_calls == 1 && cancellation_sleeps == 63 &&
           stop_calls == 0 && close_calls == 0 && unmap_calls == 0 && interface_calls == 0,
           "final returned-owner cancellation timeout dominates an earlier pause error");
     check(fixture.context.Sig == LIB_CTX_SIG && fixture.context.DevHandle == 99 &&
@@ -1730,6 +2125,25 @@ int main()
     test_canceled_fetch(true, false);
     test_canceled_fetch(false, true);
     test_canceled_fetch(true, true);
+    for (bool no_copy : {false, true}) {
+        test_recovery_canceled_fetch(no_copy, true);
+        test_recovery_canceled_fetch(no_copy, false);
+        test_power_management_fetch_latches_recovery(no_copy);
+        test_recovery_latch_after_fetch(no_copy, RECOVERY_LATCH_MATCHED,
+                                        ADD_SUCCEEDS);
+        test_recovery_latch_after_fetch(no_copy, RECOVERY_LATCH_MATCHED,
+                                        ADD_STATUS_FAILURE);
+        test_recovery_latch_after_fetch(no_copy,
+                                        RECOVERY_LATCH_GENERATION_ONLY,
+                                        ADD_SUCCEEDS);
+        test_recovery_latch_before_consumer(no_copy, ADD_SUCCEEDS);
+        test_recovery_latch_before_consumer(no_copy, ADD_STATUS_FAILURE);
+    }
+    test_recovery_latch_after_fetch(false, RECOVERY_LATCH_MATCHED,
+                                    ADD_STATUS_FAILURE, true);
+    test_nocopy_format_change();
+    test_recovery_latch_after_copy_commit(false);
+    test_recovery_latch_after_copy_commit(true);
     for (AddOutcome outcome : {ADD_SUCCEEDS, ADD_STATUS_FAILURE, ADD_SYSCALL_FAILURE})
         test_repeated_picture_repost(outcome);
     test_flea_repeat_seed_control();
@@ -1776,7 +2190,10 @@ int main()
         test_active_context_window(WINDOW_EMPTY_CTX_LOCK, no_copy);
         test_active_context_window(WINDOW_FINALIZER, no_copy);
         test_drop_refetch_exclusion(no_copy);
+        test_drop_cancel_before_finalizer(no_copy);
     }
+    test_publish_normalizes_before_terminal_phase();
+    test_active_failure_normalizes_with_terminal_publish();
     for (AddOutcome outcome : {ADD_SUCCEEDS, ADD_STATUS_FAILURE, ADD_SYSCALL_FAILURE})
         test_cancel_wins_publication(outcome);
     test_failed_nocopy_pointer_outputs(true, ADD_SUCCEEDS);

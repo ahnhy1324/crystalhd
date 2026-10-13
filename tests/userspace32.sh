@@ -156,7 +156,12 @@ for bits in $build_bits; do
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_fwcmds.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_priv.cpp"
                 section_wrap=-Wl,--wrap=ioctl,--wrap=usleep,--wrap=DtsAllocIoctlData ;;
-            input|mpeg4-input)
+            input)
+                set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_if.cpp" \
+                    "$build_dir/linux_lib/libcrystalhd/libcrystalhd_priv.cpp" \
+                    "$build_dir/linux_lib/libcrystalhd/libcrystalhd_parser.cpp"
+                section_wrap=-Wl,--wrap=ioctl,--wrap=txBufPush,--wrap=usleep,--wrap=posix_memalign ;;
+            mpeg4-input)
                 set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_if.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_priv.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_parser.cpp"
@@ -173,14 +178,20 @@ for bits in $build_bits; do
                 if [ "$section" = flush ]; then
                     section_wrap="$section_wrap -Wl,--wrap=ioctl,--wrap=usleep"
                     section_wrap="$section_wrap -Wl,--wrap=DtsReleaseInterface,--wrap=DtsFinishOutputCall,--wrap=DtsPublishOutput"
+                    section_wrap="$section_wrap -Wl,--wrap=DtsCommitFetchedOutput,--wrap=DtsPublishCopiedOutput"
                 fi ;;
             tx-flush)
                 set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_if.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_priv.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_parser.cpp"
                 section_wrap=-Wl,--wrap=ioctl,--wrap=usleep,--wrap=pthread_mutex_unlock,--wrap=pthread_join
+                section_wrap="$section_wrap -Wl,--wrap=_Z14DtsCacheSpsPpsPvPKhj"
                 section_wrap="$section_wrap -Wl,--wrap=DtsSetupHardware,--wrap=DtsOpenDecoder"
-                section_wrap="$section_wrap -Wl,--wrap=DtsStartDecoder,--wrap=DtsStartCapture,--wrap=DtsReleaseInterface,--wrap=_Z9WORD_SWAPt" ;;
+                section_wrap="$section_wrap -Wl,--wrap=DtsFlushRxCapture"
+                section_wrap="$section_wrap -Wl,--wrap=DtsStartDecoder,--wrap=DtsStartCapture"
+                section_wrap="$section_wrap -Wl,--wrap=DtsRecoveryFlushInputRing,--wrap=DtsRecoveryRestoreInputState"
+                section_wrap="$section_wrap -Wl,--wrap=DtsSetFleaIn422Mode,--wrap=DtsSetLinkIn422Mode"
+                section_wrap="$section_wrap -Wl,--wrap=DtsReleaseInterface,--wrap=_Z9WORD_SWAPt" ;;
             eos)
                 set -- "$build_dir/linux_lib/libcrystalhd/libcrystalhd_if.cpp" \
                     "$build_dir/linux_lib/libcrystalhd/libcrystalhd_priv.cpp" \
