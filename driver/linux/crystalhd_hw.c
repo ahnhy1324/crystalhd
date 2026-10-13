@@ -105,6 +105,7 @@ BC_STATUS crystalhd_hw_fw_cmd_begin(struct crystalhd_hw *hw)
 	} else {
 		hw->fwcmd_evt_sts = 0;
 		hw->fwcmd_pending = true;
+		hw->fwcmd_active = true;
 		hw->FwCmdCnt++;
 	}
 	spin_unlock_irqrestore(&hw->lock, flags);
@@ -170,8 +171,17 @@ void crystalhd_hw_fw_cmd_abort_unposted_locked(struct crystalhd_hw *hw)
 
 void crystalhd_hw_fw_cmd_end(struct crystalhd_hw *hw)
 {
-	if (hw)
-		mutex_unlock(&hw->fwcmd_mutex);
+	unsigned long flags;
+
+	if (!hw)
+		return;
+	/* The IRQ retires firmware work, not the caller's reply copy or host
+	 * postprocessing. Only this owner may release the latter power guard.
+	 */
+	spin_lock_irqsave(&hw->lock, flags);
+	hw->fwcmd_active = false;
+	spin_unlock_irqrestore(&hw->lock, flags);
+	mutex_unlock(&hw->fwcmd_mutex);
 }
 
 void crystalhd_hw_fw_cmd_complete(struct crystalhd_hw *hw)
@@ -216,6 +226,7 @@ void crystalhd_hw_fw_cmd_reset_locked(struct crystalhd_hw *hw)
 	mutex_lock(&hw->fwcmd_mutex);
 	spin_lock_irqsave(&hw->lock, flags);
 	hw->fwcmd_pending = false;
+	hw->fwcmd_active = false;
 	hw->fwcmd_poisoned = false;
 	hw->fwcmd_evt_sts = 0;
 	hw->FwCmdCnt = 0;

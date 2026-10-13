@@ -42,6 +42,7 @@ struct crystalhd_hw {
     struct mutex fwcmd_mutex;
     wait_queue_head_t fwcmd_event;
     bool fwcmd_pending;
+    bool fwcmd_active;
     bool fwcmd_poisoned;
     int fwcmd_evt_sts;
     uint32_t FwCmdCnt;
@@ -55,6 +56,7 @@ struct crystalhd_hw {
     uint32_t channelNum, TxBuffInfoAddr, pib_del_Q_addr, pib_rel_Q_addr;
     TX_INPUT_BUFFER_INFO TxFwInputBuffInfo;
     enum FLEA_POWER_STATES FleaPowerState;
+    uint32_t FleaEnablePWM;
     bool PwrDwnTxIntr, PwrDwnPiQIntr, SingleThreadAppFIFOEmpty;
     uint32_t EmptyCnt;
 };
@@ -84,6 +86,7 @@ static void crystalhd_hw_fw_cmd_complete(struct crystalhd_hw *hw);
 static void TestSpinLock(spinlock_t *lock);
 static void AssertSpinHeld(spinlock_t *lock);
 static void AssertMutexHeld(struct mutex *mutex);
+static void TestDebug(struct device *dev, const char *function);
 
 static int TestMutexLock(struct mutex *mutex)
 {
@@ -153,7 +156,7 @@ static int TestWait(wait_queue_head_t *event)
 } while (0)
 #define KERN_ERR ""
 #define printk(...) ((void)0)
-#define dev_dbg(dev, ...) ((void)(dev))
+#define dev_dbg(dev, ...) TestDebug(dev, __func__)
 #define dev_err(dev, ...) ((void)(dev))
 #define dev_info(dev, ...) ((void)(dev))
 #define msleep_interruptible(milliseconds) TestSleep(milliseconds)
@@ -325,13 +328,19 @@ static void NormalAndLateCompletion(void)
           "a fresh firmware command is admitted");
     Check(hardware.fwcmd_pending && hardware.FwCmdCnt == 1,
           "admission publishes exactly one pending command");
+    Check(hardware.fwcmd_active,
+          "admission acquires host reply ownership before any hardware access");
     crystalhd_hw_fw_cmd_complete(&hardware);
     Check(last_woken == &hardware.fwcmd_event && hardware.fwcmd_evt_sts == 1 &&
           !hardware.fwcmd_pending && !hardware.FwCmdCnt,
           "the ISR wakes the persistent per-hardware waitqueue and balances the count");
+    Check(hardware.fwcmd_active,
+          "response IRQ cannot release reply-copy/postprocess ownership");
     Check(crystalhd_hw_fw_cmd_wait(&hardware) == BC_STS_SUCCESS,
           "the completed command observes its response");
     crystalhd_hw_fw_cmd_end(&hardware);
+    Check(!hardware.fwcmd_active,
+          "only caller end releases completed host reply ownership");
 
     wakes = hardware.fwcmd_event.wakeups;
     crystalhd_hw_fw_cmd_complete(&hardware);
@@ -349,22 +358,25 @@ static void TimeoutLateIrqAndRetry(void)
     Check(crystalhd_hw_fw_cmd_wait(&hardware) == BC_STS_TIMEOUT,
           "a bounded wait reports timeout");
     Check(!hardware.fwcmd_pending && hardware.fwcmd_poisoned &&
-          hardware.FwCmdCnt == 1,
+          hardware.FwCmdCnt == 1 && hardware.fwcmd_active,
           "timeout quarantines and keeps the outstanding command counted");
     crystalhd_hw_fw_cmd_end(&hardware);
+    Check(!hardware.fwcmd_active && hardware.FwCmdCnt == 1,
+          "timeout return releases host ownership, not outstanding firmware work");
     Check(crystalhd_hw_fw_cmd_begin(&hardware) == BC_STS_BUSY,
           "a retry cannot overtake the timed-out response");
 
     crystalhd_hw_fw_cmd_complete(&hardware);
     Check(hardware.fwcmd_poisoned && !hardware.fwcmd_pending &&
-          !hardware.FwCmdCnt && last_woken == &hardware.fwcmd_event,
+          !hardware.FwCmdCnt && !hardware.fwcmd_active &&
+          last_woken == &hardware.fwcmd_event,
           "the late IRQ retires the power count but preserves quarantine");
     Check(crystalhd_hw_fw_cmd_begin(&hardware) == BC_STS_BUSY,
           "a late response cannot make an unreconciled mailbox reusable");
 
     crystalhd_hw_fw_cmd_reset(&hardware);
     Check(!hardware.fwcmd_poisoned && !hardware.fwcmd_pending &&
-          !hardware.FwCmdCnt,
+          !hardware.FwCmdCnt && !hardware.fwcmd_active,
           "a verified reset clears the timed-out command quarantine");
 
     wait_mode = WAIT_BLOCK;
@@ -389,7 +401,7 @@ static void TimeoutBoundaryAndReset(void)
     Check(crystalhd_hw_fw_cmd_wait(&hardware) == BC_STS_SUCCESS,
           "an IRQ racing the timeout boundary wins when completion is recorded");
     Check(!hardware.fwcmd_pending && !hardware.fwcmd_poisoned &&
-          !hardware.FwCmdCnt,
+          !hardware.FwCmdCnt && hardware.fwcmd_active,
           "the timeout/IRQ race decrements the count exactly once");
     crystalhd_hw_fw_cmd_end(&hardware);
 
@@ -402,7 +414,7 @@ static void TimeoutBoundaryAndReset(void)
           "reset recovery starts with one quarantined outstanding command");
     crystalhd_hw_fw_cmd_reset(&hardware);
     Check(!hardware.fwcmd_pending && !hardware.fwcmd_poisoned &&
-          !hardware.fwcmd_evt_sts && !hardware.FwCmdCnt,
+          !hardware.fwcmd_evt_sts && !hardware.FwCmdCnt && !hardware.fwcmd_active,
           "a quiesced hardware reset clears stale command state");
     DestroyHardware();
 }
@@ -481,6 +493,19 @@ static bool partial_command;
 static uint32_t written_command[FW_CMD_BUFF_SZ];
 static unsigned transfer_reads, transfer_writes, mailbox_reads, mailbox_posts;
 static unsigned sleeps, firmware_config_calls, power_wakes;
+static unsigned power_reevaluations, reply_owner_checks, postprocess_owner_checks;
+static bool power_wake_fails, pending_during_reply;
+
+static void TestDebug(struct device *dev, const char *function)
+{
+    (void)dev;
+    if (strstr(function, "fw_cmd_post_proc")) {
+        Check(hardware.fwcmd_active && !hardware.FwCmdCnt &&
+              !hardware.fwcmd_pending,
+              "postprocessing retains host ownership after response IRQ retirement");
+        postprocess_owner_checks++;
+    }
+}
 
 static bool WordsZero(const uint32_t *words, unsigned count)
 {
@@ -524,6 +549,8 @@ static int TestSleep(unsigned milliseconds)
 static bool crystalhd_link_load_firmware_config(struct crystalhd_hw *hw)
 {
     Check(hw == &hardware, "Link INIT postprocessing uses the active hardware");
+    Check(hw->fwcmd_active && !hw->FwCmdCnt,
+          "Link INIT retains host ownership throughout configuration postprocessing");
     firmware_config_calls++;
     return true;
 }
@@ -531,15 +558,28 @@ static bool crystalhd_link_load_firmware_config(struct crystalhd_hw *hw)
 static void crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
                                                enum FLEA_STATE_CH_EVENT event)
 {
-    Check(hw == &hardware && event == FLEA_EVT_FW_CMD_POST,
-          "Flea power wake uses only the firmware-post event");
-    power_wakes++;
+    Check(hw == &hardware, "Flea power event uses the active hardware");
+    if (event == FLEA_EVT_FW_CMD_POST) {
+        Check(hw->fwcmd_active,
+              "firmware wake retains host ownership until caller end");
+        power_wakes++;
+        if (!power_wake_fails)
+            hw->FleaPowerState = FLEA_PS_ACTIVE;
+    } else {
+        Check(event == FLEA_EVT_CMD_COMP && !hw->fwcmd_active,
+              "pending power recheck follows host end and uses completion, not FLL wake");
+        CheckUnlocked(&hardware.lock, "power recheck runs outside the hardware lock");
+        CheckUnlocked(&hardware.fwcmd_mutex.native,
+                      "power recheck follows mailbox serialization release");
+        power_reevaluations++;
+    }
 }
 
 static BC_STATUS WriteCommand(struct crystalhd_hw *hw, uint32_t address,
                               uint32_t count, const uint32_t *words)
 {
     CheckHardwareLocked();
+    Check(hw->fwcmd_active, "command write retains host ownership");
     Check(hw == &hardware && address == hw->fwcmdPostAddr &&
           count == FW_CMD_BUFF_SZ && words == transfer_command->cmd,
           "production sends the unchanged complete command buffer");
@@ -555,6 +595,7 @@ static BC_STATUS ReadTransfer(struct crystalhd_hw *hw, uint32_t address,
 {
     CheckHardwareLocked();
     Check(hw == &hardware, "DRAM reads use the active hardware");
+    Check(hw->fwcmd_active, "command flush and reply copy retain host ownership");
     transfer_reads++;
     if (count == 1) {
         Check(address == hw->fwcmdPostAddr && transfer_reads == 1,
@@ -566,6 +607,11 @@ static BC_STATUS ReadTransfer(struct crystalhd_hw *hw, uint32_t address,
           words == transfer_command->rsp && transfer_reads == 2,
           "production reads the complete reply from the response mailbox address");
     Check(WordsZero(words, count), "caller-supplied response data is cleared before reading");
+    Check(!hw->FwCmdCnt && !hw->fwcmd_pending && hw->fwcmd_active,
+          "reply copy remains guarded when the IRQ has retired firmware work");
+    reply_owner_checks++;
+    if (pending_during_reply)
+        hw->FleaPowerState = FLEA_PS_LP_PENDING;
     if (!crystalhd_valid_dram_range(address, count))
         return BC_STS_INV_ARG;
     if (response_read_status == BC_STS_SUCCESS || partial_response)
@@ -621,6 +667,8 @@ static void InitTransfer(BC_FW_CMD *command, uint32_t id, bool stale)
     memset(written_command, 0, sizeof(written_command));
     transfer_reads = transfer_writes = mailbox_reads = mailbox_posts = 0;
     sleeps = firmware_config_calls = power_wakes = 0;
+    power_reevaluations = reply_owner_checks = postprocess_owner_checks = 0;
+    power_wake_fails = pending_during_reply = false;
     hardware.pfnDevDRAMWrite = WriteCommand;
     hardware.pfnDevDRAMRead = ReadTransfer;
     hardware.pfnReadDevRegister = ReadMailbox;
@@ -687,7 +735,8 @@ static void ReplyReadFailure(void)
                           !firmware_config_calls,
                           "unreadable replies cannot publish channels, queues, power or INIT config state");
                     Check(hardware.fwcmd_poisoned && !hardware.fwcmd_pending &&
-                          !hardware.FwCmdCnt && hardware.fwcmd_evt_sts == 1,
+                          !hardware.FwCmdCnt && !hardware.fwcmd_active &&
+                          hardware.fwcmd_evt_sts == 1,
                           "completed reply-read failure quarantines without inventing outstanding work");
                     Check(transfer_reads == 2 && transfer_writes == 1 &&
                           mailbox_posts == 1 && mailbox_reads == 1 && sleeps == 1 && !power_wakes,
@@ -752,7 +801,8 @@ static void ReplyRangeAndFirmwareStatus(void)
             Check(execute[generation](&hardware, &command) == expected,
                   "last valid DRAM reply and firmware status retain existing semantics");
             Check(!memcmp(command.rsp, response_words, sizeof(command.rsp)) &&
-                  !hardware.fwcmd_poisoned && !hardware.fwcmd_pending && !hardware.FwCmdCnt,
+                  !hardware.fwcmd_poisoned && !hardware.fwcmd_pending &&
+                  !hardware.FwCmdCnt && !hardware.fwcmd_active,
                   "valid success and rejection preserve the complete reply and clean mailbox");
             Check(hardware.pib_del_Q_addr == (status ? 0xccddU : response_words[5]) &&
                   hardware.pib_rel_Q_addr == (status ? 0xddeeU : response_words[6]),
@@ -781,6 +831,7 @@ static void ReplyAdmissionAndWaitFailure(void)
             if (fault < 2) {
                 hardware.fwcmd_poisoned = !fault;
                 hardware.fwcmd_pending = !!fault;
+                hardware.fwcmd_active = true;
                 hardware.FwCmdCnt = 1;
                 Check(execute[generation](&hardware, &command) == BC_STS_BUSY,
                       "poisoned and already-pending attempts retain admission result");
@@ -788,7 +839,8 @@ static void ReplyAdmissionAndWaitFailure(void)
                       !mailbox_posts && !sleeps && !power_wakes,
                       "denied admission never reaches any hardware callback");
                 Check(hardware.fwcmd_poisoned == !fault &&
-                      hardware.fwcmd_pending == !!fault && hardware.FwCmdCnt == 1,
+                      hardware.fwcmd_pending == !!fault && hardware.FwCmdCnt == 1 &&
+                      hardware.fwcmd_active,
                       "denied admission preserves the earlier command lifetime");
             } else if (fault == 2) {
                 interrupt_mailbox_begin = true;
@@ -798,7 +850,7 @@ static void ReplyAdmissionAndWaitFailure(void)
                       !mailbox_posts && !sleeps && !power_wakes,
                       "interrupted begin never reaches any hardware callback");
                 Check(!hardware.fwcmd_poisoned && !hardware.fwcmd_pending &&
-                      !hardware.FwCmdCnt,
+                      !hardware.FwCmdCnt && !hardware.fwcmd_active,
                       "interrupted begin creates neither a command lifetime nor quarantine");
             } else {
                 wait_mode = waits[fault - 3];
@@ -808,7 +860,7 @@ static void ReplyAdmissionAndWaitFailure(void)
                       !mailbox_reads && mailbox_posts == 1 && sleeps == 1,
                       "wait failure cannot read or postprocess a reply");
                 Check(hardware.fwcmd_poisoned && !hardware.fwcmd_pending &&
-                      hardware.FwCmdCnt == 1,
+                      hardware.FwCmdCnt == 1 && !hardware.fwcmd_active,
                       "wait failure retains the outstanding count until its late completion");
                 crystalhd_hw_fw_cmd_complete(&hardware);
                 Check(hardware.fwcmd_poisoned && !hardware.FwCmdCnt,
@@ -966,7 +1018,8 @@ static void CommandPublicationFailure(void)
                           command.flags == original.flags && command.add_data == original.add_data,
                           "unposted failure invalidates reply without changing command ABI fields");
                     Check(hardware.fwcmd_poisoned && !hardware.fwcmd_pending &&
-                          !hardware.FwCmdCnt && !hardware.fwcmd_evt_sts,
+                          !hardware.FwCmdCnt && !hardware.fwcmd_evt_sts &&
+                          !hardware.fwcmd_active,
                           "unposted abort retires exactly once and clears a spurious completion");
                     Check(hardware.fwcmd_event.wakeups == interrupt &&
                           !complete_before_publication,
@@ -1043,6 +1096,76 @@ static void UnpostedCountState(void)
     }
 }
 
+static void ReplyOwnerPowerEvents(void)
+{
+    unsigned pwm, outcome;
+
+    for (pwm = 0; pwm < 2; pwm++) {
+        for (outcome = 0; outcome < 3; outcome++) {
+            BC_FW_CMD command;
+            BC_STATUS expected = outcome == 2 ? BC_STS_IO_ERROR :
+                                 outcome == 1 ? BC_STS_FW_CMD_ERR : BC_STS_SUCCESS;
+
+            InitTransfer(&command, eCMD_C011_DEC_CHAN_OPEN, true);
+            hardware.FleaEnablePWM = pwm;
+            pending_during_reply = true;
+            if (outcome == 1) response_words[2] = 1;
+            if (outcome == 2) response_read_status = BC_STS_IO_ERROR;
+            Check(crystalhd_flea_do_fw_cmd(&hardware, &command) == expected,
+                  "pending power reevaluation preserves reply and firmware-status results");
+            Check(reply_owner_checks == 1 &&
+                  (outcome || postprocess_owner_checks > 0),
+                  "source reply and successful postprocessing observe retained host ownership");
+            Check(!hardware.fwcmd_active && !hardware.FwCmdCnt &&
+                  hardware.fwcmd_poisoned == (outcome == 2),
+                  "end releases only host ownership and preserves failed-reply quarantine");
+            Check(power_reevaluations == pwm && !power_wakes,
+                  "only enabled pending PWM receives the post-end completion event");
+            DestroyHardware();
+        }
+    }
+}
+
+static void FirmwareWakeFailure(void)
+{
+    unsigned state, failed;
+
+    for (state = FLEA_PS_LP_PENDING; state <= FLEA_PS_LP_COMPLETE; state++) {
+        for (failed = 0; failed < 2; failed++) {
+            BC_FW_CMD command;
+
+            InitTransfer(&command, eCMD_C011_DEC_CHAN_OPEN, true);
+            hardware.FleaPowerState = state;
+            hardware.FleaEnablePWM = true;
+            power_wake_fails = !!failed;
+            Check(crystalhd_flea_do_fw_cmd(&hardware, &command) ==
+                  (failed ? BC_STS_IO_ERROR : BC_STS_SUCCESS),
+                  "failed power wake fails closed without changing successful command results");
+            Check(power_wakes == 1 && !hardware.fwcmd_active &&
+                  !hardware.FwCmdCnt && !hardware.fwcmd_pending &&
+                  hardware.fwcmd_poisoned == !!failed,
+                  "wake path releases host ownership, balances unposted work and retains quarantine");
+            if (failed) {
+                Check(!transfer_writes && !transfer_reads && !mailbox_posts &&
+                      !mailbox_reads && !sleeps && !wait_calls &&
+                      WordsZero(command.rsp, FW_CMD_BUFF_SZ),
+                      "failed wake never publishes a command or reads a reply");
+                Check(hardware.channelNum == 0xaabb && hardware.TxBuffInfoAddr == 0xbbcc,
+                      "failed wake cannot publish reply-derived host state");
+                crystalhd_hw_fw_cmd_complete(&hardware);
+                Check(!hardware.fwcmd_active && !hardware.FwCmdCnt &&
+                      hardware.fwcmd_poisoned,
+                      "late IRQ after failed wake cannot clear quarantine or underflow count");
+            } else {
+                Check(transfer_writes == 1 && transfer_reads == 2 && mailbox_posts == 1 &&
+                      mailbox_reads == 1 && sleeps == 1 && wait_calls == 1,
+                      "successful wake preserves the complete existing mailbox transaction");
+            }
+            DestroyHardware();
+        }
+    }
+}
+
 int main(void)
 {
     AdmissionBeforePreprocess();
@@ -1058,6 +1181,8 @@ int main(void)
     SingletonChannelRouting();
     CommandPublicationFailure();
     UnpostedCountState();
+    ReplyOwnerPowerEvents();
+    FirmwareWakeFailure();
     printf("Firmware command recovery: %u checks, %u failures (no hardware)\n",
            checks, failures);
     return failures ? 1 : 0;

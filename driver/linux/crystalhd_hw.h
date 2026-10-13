@@ -419,6 +419,8 @@ struct crystalhd_hw {
 	struct mutex		fwcmd_mutex;
 	wait_queue_head_t	fwcmd_event;
 	bool			fwcmd_pending;
+	/* Host reply/postprocess ownership outlives the mailbox interrupt. */
+	bool			fwcmd_active;
 	bool			fwcmd_poisoned;
 	int			fwcmd_evt_sts;
 

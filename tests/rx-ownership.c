@@ -124,6 +124,7 @@ static unsigned quiesced_releases, quiesced_downs;
 static uint64_t quiesced_epoch;
 static unsigned dram_write_calls, firmware_alive_checks;
 static unsigned wake_transition_calls;
+static bool fail_wake_transition;
 static uint32_t dram_write_address, dram_write_dwords, dram_write_value;
 static BC_STATUS dram_write_status;
 static unsigned interrupt_after;
@@ -625,7 +626,8 @@ static void crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
     assert(hw == &hardware && event == FLEA_EVT_FLL_CHANGE);
     assert(hw->FleaPowerState != FLEA_PS_ACTIVE && !dram_write_calls);
     wake_transition_calls++;
-    hw->FleaPowerState = FLEA_PS_ACTIVE;
+    if (!fail_wake_transition)
+        hw->FleaPowerState = FLEA_PS_ACTIVE;
 }
 static BC_STATUS record_dram_write(struct crystalhd_hw *hw, uint32_t address,
                                    uint32_t dwords, const uint32_t *value)
@@ -839,6 +841,7 @@ static void reset(uint32_t device)
     quiesced_epoch = 0;
     dram_write_calls = firmware_alive_checks = 0;
     wake_transition_calls = 0;
+    fail_wake_transition = false;
     dram_write_status = BC_STS_SUCCESS;
     dram_write_address = dram_write_dwords = dram_write_value = 0;
     map_status = translate_status = post_status = queue_status = BC_STS_SUCCESS;
@@ -2163,6 +2166,22 @@ static void fll_publication_cases(void)
     check(crystalhd_flea_wake_up_hw(&hardware) && wake_transition_calls == 1 &&
           dram_write_calls == 2 && hardware.WakeUpDecodeDone,
           "state-transition boundary is not repeated once ACTIVE on explicit publication retry");
+
+    for (unsigned complete = 0; complete < 2; complete++) {
+        for (unsigned initially_done = 0; initially_done < 2; initially_done++) {
+            reset(BC_PCI_DEVID_FLEA);
+            hardware.FleaPowerState = complete ? FLEA_PS_LP_COMPLETE : FLEA_PS_LP_PENDING;
+            hardware.WakeUpDecodeDone = initially_done;
+            fail_wake_transition = true;
+            check(!crystalhd_flea_wake_up_hw(&hardware) && !hardware.WakeUpDecodeDone &&
+                  wake_transition_calls == 1 && !dram_write_calls && !hardware.lock,
+                  "failed power wake cannot be masked by a later FLL publication");
+            fail_wake_transition = false;
+            check(crystalhd_flea_wake_up_hw(&hardware) && hardware.WakeUpDecodeDone &&
+                  wake_transition_calls == 2 && dram_write_calls == 1 && !hardware.lock,
+                  "explicit retry must complete wake before publishing capture readiness");
+        }
+    }
 }
 static void fll_capture_and_owner_cases(void)
 {
