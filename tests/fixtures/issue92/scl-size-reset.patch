@@ -555,7 +555,7 @@ index a62e8a4..441ea9e 100644
  
  	regVal |= BCHP_CLK_PM_CTRL_DIS_SUN_27_LOW_PWR_MASK |
  			  BCHP_CLK_PM_CTRL_DIS_SUN_108_LOW_PWR_MASK |
-@@ -3526,9 +3819,15 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
+@@ -3526,9 +3819,17 @@ bool crystalhd_flea_stop_device(struct crystalhd_hw *hw)
  			  BCHP_CLK_PM_CTRL_DIS_MISC_216_CLK_MASK |
  			  BCHP_CLK_PM_CTRL_DIS_SUN_216_CLK_MASK;
  
@@ -563,13 +563,17 @@ index a62e8a4..441ea9e 100644
 +	if (!crystalhd_flea_stop_write(hw, BCHP_CLK_PM_CTRL, regVal))
 +		return false;
  
- 	crystalhd_flea_set_next_power_state(hw, FLEA_EVT_STOP_DEVICE);
+-	return crystalhd_flea_set_next_power_state(hw, FLEA_EVT_STOP_DEVICE) ==
+-		BC_STS_SUCCESS;
++	if (crystalhd_flea_set_next_power_state(hw, FLEA_EVT_STOP_DEVICE) !=
++	    BC_STS_SUCCESS)
++		return false;
 +#ifdef CRYSTALHD_ENABLE_FW_RESEARCH
 +	if (hw->research_scl_config_dirty &&
 +	    (!hw->research_scl_reset_corroborated || !crystalhd_flea_scl_size_current(hw)))
 +		return false;
 +#endif
- 	return true;
++	return true;
  }
  
 diff --git a/driver/linux/crystalhd_fw_research.c b/driver/linux/crystalhd_fw_research.c
@@ -1051,8 +1055,8 @@ index b83c395..04d9ddd 100644
 +{check(hw==&hardware,"opaque stock interrupt-clear contract");size_batch();}
 +static void crystalhd_flea_disable_interrupts(struct crystalhd_hw *hw)
 +{check(hw==&hardware,"opaque stock IRQ-disable contract");size_batch();}
-+static void crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,unsigned event)
-+{check(hw==&hardware&&event==FLEA_EVT_STOP_DEVICE,"opaque stock final-power-state contract");size_batch();}
++static BC_STATUS crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,unsigned event)
++{check(hw==&hardware&&event==FLEA_EVT_STOP_DEVICE,"opaque stock final-power-state contract");size_batch();return BC_STS_SUCCESS;}
 +#include "size-stop_device.h"
 +static void mutex_lock(int *lock){check(!*lock,"stock suspend mutex is acquired once");*lock=1;}
 +static void mutex_unlock(int *lock){check(*lock==1,"stock suspend mutex is balanced");*lock=0;}

@@ -7,7 +7,8 @@ test_dir=$(mktemp -d "${TMPDIR:-/tmp}/crystalhd-flea-power.XXXXXX")
 cleanup()
 {
     rm -f "$test_dir/check" "$test_dir/flea-power-functions.h" \
-        "$test_dir/flea-power-types.h" "$test_dir/flea-power-transitions.h"
+        "$test_dir/flea-power-types.h" "$test_dir/flea-power-transitions.h" \
+        "$test_dir/flea-power-pause.h" "$test_dir/flea-power-done.h"
     rmdir "$test_dir"
 }
 trap cleanup EXIT
@@ -16,7 +17,7 @@ trap 'exit 1' HUP INT TERM
 # Compile the actual initializer and selector, not a second predicate model.
 # Split static signatures and column-zero closing braces are extraction fuses.
 awk '
-    /^void crystalhd_flea_(init_power_state|set_next_power_state)\(/ {
+    /^(void|BC_STATUS) crystalhd_flea_(init_power_state|set_next_power_state)\(/ {
         if (previous != "static") exit 1
         print previous
         copying = 1; found++
@@ -27,17 +28,28 @@ awk '
     END { if (found != 2 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$test_dir/flea-power-functions.h"
 awk '
-    /^bool crystalhd_flea_(runtime_power_dn|set_power_state)\(/ {
+    /^(bool|BC_STATUS) crystalhd_flea_(runtime_power_dn|set_power_state)\(/ {
         if (previous != "static") exit 1
         print previous
         copying = 1; found++
     }
-    /^void crystalhd_flea_fw_transaction_done\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
     { previous = $0 }
-    END { if (found != 3 || copying) exit 1 }
+    END { if (found != 2 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$test_dir/flea-power-transitions.h"
+awk '
+    /^void crystalhd_flea_fw_transaction_done\(/ { copying = 1; found++ }
+    copying { print }
+    copying && /^}/ { copying = 0 }
+    END { if (found != 1 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$test_dir/flea-power-done.h"
+awk '
+    /^BC_STATUS crystalhd_flea_hw_pause\(/ { copying = 1; found++ }
+    copying { print }
+    copying && /^}/ { copying = 0 }
+    END { if (found != 1 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$test_dir/flea-power-pause.h"
 awk '
     /^enum (FLEA_POWER_STATES|FLEA_STATE_CH_EVENT|LIST_STATUS|list_sts|_BC_PCI_DEV_IDS)[[:space:]]*\{/ {
         copying = 1; found++

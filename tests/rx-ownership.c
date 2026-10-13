@@ -114,6 +114,8 @@ static bool mapped[BC_RX_LIST_CNT];
 static unsigned unmaps[BC_RX_LIST_CNT];
 static unsigned checks, failures, groups, maps, post_calls, stop_calls, irq_depth;
 static unsigned irq_disables, irq_enables, notify_calls, pause_calls;
+static BC_STATUS pause_status;
+static bool last_pause_direction;
 static unsigned sem_attempts, hardware_notifications, map_attempts, translate_calls;
 static unsigned fetch_wait_calls;
 static unsigned fetch_try_calls, try_mutation_at;
@@ -620,14 +622,16 @@ static bool crystalhd_flea_detect_fw_alive(struct crystalhd_hw *hw)
     return firmware_alive;
 }
 /* Stub only the existing state-transition boundary, not hardware readiness. */
-static void crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
-                                               enum FLEA_STATE_CH_EVENT event)
+static BC_STATUS crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
+                                                    enum FLEA_STATE_CH_EVENT event)
 {
-    assert(hw == &hardware && event == FLEA_EVT_FLL_CHANGE);
+    assert(hw == &hardware && event == FLEA_EVT_RESUME);
     assert(hw->FleaPowerState != FLEA_PS_ACTIVE && !dram_write_calls);
     wake_transition_calls++;
-    if (!fail_wake_transition)
-        hw->FleaPowerState = FLEA_PS_ACTIVE;
+    if (fail_wake_transition)
+        return BC_STS_IO_ERROR;
+    hw->FleaPowerState = FLEA_PS_ACTIVE;
+    return BC_STS_SUCCESS;
 }
 static BC_STATUS record_dram_write(struct crystalhd_hw *hw, uint32_t address,
                                    uint32_t dwords, const uint32_t *value)
@@ -642,9 +646,9 @@ static BC_STATUS record_dram_write(struct crystalhd_hw *hw, uint32_t address,
 static BC_STATUS pause_capture(struct crystalhd_hw *hw, bool pause)
 {
     assert(hw == &hardware);
-    (void)pause;
+    last_pause_direction = pause;
     pause_calls++;
-    return BC_STS_SUCCESS;
+    return pause_status;
 }
 static void done_size(struct crystalhd_hw *hw, uint32_t index, uint32_t *y, uint32_t *uv)
 {
@@ -832,6 +836,8 @@ static void reset(uint32_t device)
     }
     maps = post_calls = stop_calls = irq_depth = irq_disables = irq_enables = 0;
     notify_calls = pause_calls = fail_post_call = 0;
+    pause_status = BC_STS_SUCCESS;
+    last_pause_direction = false;
     sem_attempts = hardware_notifications = map_attempts = translate_calls = 0;
     fetch_wait_calls = interrupt_after = 0;
     fetch_try_calls = try_mutation_at = try_sem_mutation = try_fetch_mutation = 0;
@@ -3592,6 +3598,83 @@ static void try_dequeue_cancellation_cases(uint32_t device)
     }
 }
 
+static void flea_pause_result_cases(void)
+{
+    const BC_STATUS statuses[] = { BC_STS_SUCCESS, BC_STS_BUSY, BC_STS_IO_ERROR };
+
+    for (unsigned s = 0; s < ARRAY_SIZE(statuses); s++) {
+        struct crystalhd_rx_buffer *buffer;
+
+        reset(BC_PCI_DEVID_FLEA);
+        buffer = map_private(false);
+        check(submit(&context, buffer) == BC_STS_SUCCESS,
+              "prepare a frame before the pause threshold");
+        hardware.PauseThreshold = 1;
+        pause_status = statuses[s];
+        check(crystalhd_rx_pkt_done(&hardware, 0, BC_STS_SUCCESS) == BC_STS_SUCCESS,
+              "pause rejection does not replace the successful frame completion result");
+        check(pause_calls == 1 && last_pause_direction &&
+              hardware.hw_pause_issued == (statuses[s] == BC_STS_SUCCESS) &&
+              ready.count == 1 && ready.packets[0]->buffer == buffer &&
+              ready.packets[0]->cookie == &cookies[0] &&
+              ready.packets[0]->flags == COMP_FLAG_DATA_VALID &&
+              ready.packets[0]->y_done_sz == 128 &&
+              ready.packets[0]->uv_done_sz == 64 && !unmaps[0],
+              "pause status updates only the accepted pause flag and preserves ready ownership");
+        inventory(0, 1, 0);
+        drain();
+    }
+
+    for (unsigned power = 0; power < 2; power++) {
+        for (unsigned nonblocking = 0; nonblocking < 2; nonblocking++) {
+            for (unsigned has_packet = 0; has_packet < 2; has_packet++) {
+                for (unsigned s = 0; s < ARRAY_SIZE(statuses); s++) {
+                    struct crystalhd_rx_completion result;
+                    struct crystalhd_rx_buffer *buffer = NULL;
+                    BC_STATUS expected = has_packet ? BC_STS_SUCCESS :
+                        nonblocking ? BC_STS_NO_DATA : BC_STS_TIMEOUT;
+                    BC_STATUS status;
+
+                    reset(BC_PCI_DEVID_FLEA);
+                    if (has_packet) {
+                        buffer = map_private(false);
+                        check(submit(&context, buffer) == BC_STS_SUCCESS,
+                              "prepare a frame before the resume threshold");
+                        complete(0);
+                    }
+                    hardware.FleaPowerState = power ? FLEA_PS_LP_PENDING :
+                        FLEA_PS_LP_COMPLETE;
+                    hardware.hw_pause_issued = true;
+                    pause_status = statuses[s];
+                    memset(&result, 0xa5, sizeof(result));
+                    status = nonblocking ? crystalhd_rx_try_dequeue(&context, &result) :
+                        crystalhd_rx_dequeue(&context, &result);
+                    check(status == expected && pause_calls == 1 &&
+                          !last_pause_direction && hardware.fetch_sem == 1 &&
+                          hardware.hw_pause_issued == (statuses[s] != BC_STS_SUCCESS),
+                          "resume rejection retains the pause flag without replacing the dequeue result");
+                    if (has_packet) {
+                        check(result.buffer == buffer && result.cookie == &cookies[0] &&
+                              result.flags == COMP_FLAG_DATA_VALID &&
+                              result.y_done_sz == 128 && result.uv_done_sz == 64 &&
+                              !unmaps[0],
+                              "resume rejection preserves the exact returned frame and caller ownership");
+                        inventory_with_private(0, 0, 0, result.buffer);
+                        crystalhd_rx_buffer_release(&adapter, result.buffer);
+                        check(unmaps[0] == 1,
+                              "returned frame remains releasable exactly once after resume rejection");
+                    } else {
+                        check(memory_is_zero(&result, sizeof(result)),
+                              "empty dequeue remains empty after resume rejection");
+                    }
+                    inventory(0, 0, 0);
+                    drain();
+                }
+            }
+        }
+    }
+}
+
 static void try_dequeue_epoch_wake_cases(uint32_t device)
 {
     struct crystalhd_rx_completion result;
@@ -3681,6 +3764,7 @@ int main(void)
     }
     fll_publication_cases();
     fll_capture_and_owner_cases();
+    flea_pause_result_cases();
     printf("RX ownership: %u scenarios, %u checks, %u failures\n", groups, checks, failures);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

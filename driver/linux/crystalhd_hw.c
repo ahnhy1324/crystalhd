@@ -1297,8 +1297,9 @@ BC_STATUS crystalhd_rx_pkt_complete(struct crystalhd_hw *hw,
 			{
 				if(crystalhd_dioq_count(hw->rx_rdyq) >= hw->PauseThreshold)
 				{
-					hw->pfnIssuePause(hw, true);
-					hw->hw_pause_issued = true;
+					/* The ready queue already owns the completed frame. */
+					if (hw->pfnIssuePause(hw, true) == BC_STS_SUCCESS)
+						hw->hw_pause_issued = true;
 				}
 				/* NAREN check if the PD ratio is less than 50. If so, try to reduce the PauseThreshold to improve the ratio */
 				/* never go lower than 6 pictures */
@@ -1750,8 +1751,8 @@ static BC_STATUS crystalhd_hw_complete_rx_locked(struct crystalhd_hw *hw,
 			(hw->FleaPowerState == FLEA_PS_LP_COMPLETE))
 		{
 			if (crystalhd_dioq_count(hw->rx_rdyq)  <= hw->ResumeThreshold) {
-				hw->pfnIssuePause(hw, false);	/*Need this Notification For Flea*/
-				hw->hw_pause_issued = false;
+				if (hw->pfnIssuePause(hw, false) == BC_STS_SUCCESS)
+					hw->hw_pause_issued = false;
 			}
 		}
 	}

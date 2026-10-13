@@ -52,6 +52,7 @@ static unsigned sleeps, sleep_ms, callbacks, cases;
 static uint32_t unrelated_bits;
 static bool reset_complete;
 static bool require_reset, detected_ddr3;
+static BC_STATUS power_event_status;
 
 enum event_kind { READ, WRITE, SLEEP, CALL };
 enum callback_id { CLEAR, DISABLE, ENABLE, DETECT_DDR, CONTROLLER, ARBITER,
@@ -219,11 +220,15 @@ static void crystalhd_flea_init_temperature_measure(struct crystalhd_hw *hw, boo
 {
     callback(hw, on ? TEMPERATURE_ON : TEMPERATURE_OFF);
 }
-static void crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw, enum FLEA_STATE_CH_EVENT event)
+static BC_STATUS crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
+                                                    enum FLEA_STATE_CH_EVENT event)
 {
     assert(event == FLEA_EVT_START_DEVICE || event == FLEA_EVT_STOP_DEVICE);
     callback(hw, event == FLEA_EVT_START_DEVICE ? START : STOP);
+    if (power_event_status != BC_STS_SUCCESS)
+        return power_event_status;
     hw->FleaPowerState = event == FLEA_EVT_START_DEVICE ? FLEA_PS_ACTIVE : FLEA_PS_STOPPED;
+    return BC_STS_SUCCESS;
 }
 
 #include "flea-reset-functions.h"
@@ -291,6 +296,7 @@ static void setup(void)
     require_reset = false;
     reset_complete = true;
     detected_ddr3 = false;
+    power_event_status = BC_STS_SUCCESS;
     pll = (struct status_script){1, 1, 0, 0, 0};
     lane[0] = lane[1] = (struct status_script){1, 3, 0, 0x2a0, 0x2a3};
     zq = (struct status_script){1, BCHP_DDR23_PHY_CONTROL_REGS_ZQ_PVT_COMP_CTL_sample_done_MASK, 0, 0, 0};
@@ -857,6 +863,33 @@ static void ddr_cases(void)
         bypass_trace(zq_at[i]);
 }
 
+static void rejected_lifecycle_events(void)
+{
+    const BC_STATUS failures[] = {BC_STS_BUSY, BC_STS_IO_ERROR};
+    for (unsigned failure = 0; failure < sizeof(failures) / sizeof(failures[0]); failure++)
+        for (unsigned stop = 0; stop < 2; stop++) {
+            setup();
+            struct crystalhd_hw hw = hardware();
+            hw.FleaPowerState = FLEA_PS_ACTIVE;
+            power_event_status = failures[failure];
+            require_reset = true;
+            reset_complete = false;
+            assert(!(stop ? crystalhd_flea_stop_device(&hw) :
+                            crystalhd_flea_start_device(&hw)));
+            assert(callback_count[stop ? STOP : START] == 1);
+            assert(!callback_count[ENABLE]);
+            assert(callback_count[CLEAR] == 1);
+            assert(hw.rx_list_post_index == 17 && hw.RxCaptureState == 23);
+            assert(hw.FleaPowerState == (stop ? FLEA_PS_ACTIVE : FLEA_PS_NONE));
+            /* The failed publication must be the final action: no subsequent
+             * interrupt enable, capture initialization or success delay.
+             */
+            assert(event_count && events[event_count - 1].kind == CALL &&
+                   events[event_count - 1].address == (stop ? STOP : START));
+            cases++;
+        }
+}
+
 int main(void)
 {
     const unsigned releases[] = {0, 1, 2, MAX_VALID_POLL_CNT, MAX_VALID_POLL_CNT + 1U};
@@ -870,6 +903,7 @@ int main(void)
                 run_case(operation, releases[i], other[j]);
     ddr_cases();
     stop_cases();
+    rejected_lifecycle_events();
     printf("Flea reset/DDR: %u production reset/poll/init/start/stop scenarios passed\n", cases);
     return 0;
 }
