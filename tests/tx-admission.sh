@@ -70,14 +70,14 @@ awk '
     END { if (found != 7 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_misc.c" > "$tx_test_dir/tx-admission-buffer.h"
 awk '
-    /^enum (_crystalhd_state|_BC_DTS_GLOBALS|_BC_PCI_DEV_IDS|LIST_STATUS|FLEA_POWER_STATES)[[:space:]{]/ {
+    /^enum (_crystalhd_state|_BC_DTS_GLOBALS|_BC_PCI_DEV_IDS|LIST_STATUS|FLEA_POWER_STATES|FLEA_STATE_CH_EVENT)[[:space:]{]/ {
         copying = 1; found++
     }
     copying { print }
     copying && /^};/ { copying = 0 }
     /^#define[[:space:]]+DMA_ENGINE_CNT[[:space:]]/ { print }
     /^#define[[:space:]]+TX_WRAP_THRESHOLD[[:space:]]/ { print; thresholds++ }
-    END { if (found != 5 || thresholds != 1 || copying) exit 1 }
+    END { if (found != 6 || thresholds != 1 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_cmds.h" "$repo_dir/include/bc_dts_glob_lnx.h" \
     "$repo_dir/driver/linux/crystalhd_hw.h" "$repo_dir/driver/linux/FleaDefs.h" \
     > "$tx_test_dir/tx-admission-types.h"
@@ -95,9 +95,9 @@ awk '
     END { if (found != 6) exit 1 }
 ' "$repo_dir/include/flea/bcm_70015_regs.h" >> "$tx_test_dir/tx-admission-flea-types.h"
 
-# Keep the full notification and FIFO bodies, skipping their declarations.
+# Keep notification, FIFO, TX power-owner and DMA bodies, skipping declarations.
 awk '
-    /^(void crystalhd_flea_update_tx_buff_info|bool crystalhd_flea_check_input_full|BC_STATUS crystalhd_flea_prepare_tx_dma|void crystalhd_flea_start_tx_dma_engine)\(/ {
+    /^(void crystalhd_flea_update_tx_buff_info|bool crystalhd_flea_check_input_full|BC_STATUS crystalhd_flea_prepare_tx_dma|void crystalhd_flea_start_tx_dma_engine|BC_STATUS crystalhd_flea_tx_begin|void crystalhd_flea_tx_end)\(/ {
         candidate = 1; header = ""
         fifo = $0 ~ /^bool crystalhd_flea_check_input_full\(/
     }
@@ -121,7 +121,7 @@ awk '
         copying = 0
         if (fifo) { print "#pragma GCC diagnostic pop"; fifo = 0 }
     }
-    END { if (found != 4 || copying || candidate) exit 1 }
+    END { if (found != 6 || copying || candidate) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$tx_test_dir/tx-admission-flea.h"
 awk '
     /^static BC_STATUS crystalhd_hw_tx_req_retire\(/ ||

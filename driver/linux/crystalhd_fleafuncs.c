@@ -887,23 +887,78 @@ invalidate:
 	hw->TxFwInputBuffInfo.DramBuffSzInBytes = 0;
 }
 
+static BC_STATUS crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
+					      enum FLEA_STATE_CH_EVENT PowerEvt);
+
 static BC_STATUS crystalhd_flea_publish_fll(struct crystalhd_hw *hw,
 					  bool bCleanupContext)
 {
 	unsigned long flags = 0;
 	uint32_t freeListLen = 0;
-	BC_STATUS sts;
+	BC_STATUS sts = BC_STS_SUCCESS;
+	bool reserved = false, recheck = false;
+
+	/* The cleanup heartbeat can sleep. Reserve an active device before
+	 * probing it, without holding the spinlock across that wait.
+	 */
+	if (bCleanupContext && READ_ONCE(hw->FleaEnablePWM)) {
+		spin_lock_irqsave(&hw->lock, flags);
+		if (!READ_ONCE(hw->adp->present) || READ_ONCE(hw->dma_fault) ||
+		    !READ_ONCE(hw->dev_started))
+			sts = BC_STS_IO_ERROR;
+		else if (hw->FleaPowerState != FLEA_PS_ACTIVE ||
+			 hw->FleaPowerTransition)
+			sts = BC_STS_BUSY;
+		else {
+			hw->FleaPowerTransition = true;
+			reserved = true;
+		}
+		spin_unlock_irqrestore(&hw->lock, flags);
+		if (sts != BC_STS_SUCCESS)
+			return sts;
+	}
 	/*
 	* When we are doing the cleanup we should update DRAM only if the
 	* firmware is running. So Detect the heart beat.
 	*/
-	if(bCleanupContext && (!crystalhd_flea_detect_fw_alive(hw)))
-		return BC_STS_SUCCESS;
+	if (bCleanupContext && !crystalhd_flea_detect_fw_alive(hw)) {
+		if (!reserved)
+			return BC_STS_SUCCESS;
+		/* Keep failed cleanup write-free, including deferred PM work. */
+		sts = BC_STS_IO_ERROR;
+		spin_lock_irqsave(&hw->lock, flags);
+		goto unlock;
+	}
 
 	freeListLen = crystalhd_hw_count_free_rx_pkts(hw);
 	spin_lock_irqsave(&hw->lock, flags);
+	if (READ_ONCE(hw->FleaEnablePWM)) {
+		if (!READ_ONCE(hw->adp->present) || READ_ONCE(hw->dma_fault) ||
+		    !READ_ONCE(hw->dev_started)) {
+			sts = BC_STS_IO_ERROR;
+			goto unlock;
+		}
+		/* Queue changes must not overwrite a zero-FLL pause or publish
+		 * work while another caller is bringing the device back up.
+		 */
+		if (hw->FleaPowerState != FLEA_PS_ACTIVE ||
+		    (hw->FleaPowerTransition && !reserved)) {
+			sts = BC_STS_BUSY;
+			goto unlock;
+		}
+	}
 	sts = hw->pfnDevDRAMWrite(hw, hw->FleaFLLUpdateAddr, 1, &freeListLen);
+unlock:
+	if (reserved) {
+		hw->FleaPowerTransition = false;
+		if (sts == BC_STS_SUCCESS) {
+			recheck = hw->FleaPowerRecheck;
+			hw->FleaPowerRecheck = false;
+		}
+	}
 	spin_unlock_irqrestore(&hw->lock, flags);
+	if (recheck)
+		crystalhd_flea_set_next_power_state(hw, FLEA_EVT_CMD_COMP);
 
 	return sts;
 }
@@ -921,6 +976,9 @@ void crystalhd_flea_init_power_state(struct crystalhd_hw *hw)
 	hw->FleaEnablePWM = false;	/* Runtime power-down remains disabled. */
 	hw->FleaPowerState = FLEA_PS_NONE;
 	hw->FleaPowerTransition = false;
+	hw->FleaPowerRecheck = false;
+	hw->FleaTxActive = 0;
+	hw->FleaIrqActive = 0;
 }
 
 /* Only the selector's transition reservation owner may call this helper. */
@@ -931,7 +989,6 @@ BC_STATUS crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
 	BC_STATUS sts = BC_STS_SUCCESS;
 	uint32_t tempFLL = 0;
 	uint32_t freeListLen;
-	struct crystalhd_rx_dma_pkt *rx_pkt;
 	unsigned long flags;
 	bool replay_pic = false, replay_tx = false;
 
@@ -970,15 +1027,11 @@ BC_STATUS crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
 		hw->PwrDwnTxIntr = false;
 		spin_unlock_irqrestore(&hw->lock, flags);
 
-		/* The selector retains its reservation through unlocked RX replay. */
+		/* Replay firmware notifications while the selector still owns
+		 * the transition; RX doorbell admission happens after release.
+		 */
 		if (replay_pic)
 			crystalhd_flea_handle_PicQSts_intr(hw);
-		if (hw->PicQSts != 0) {
-			rx_pkt = crystalhd_hw_fetch_free_rx_pkt(hw);
-			if (rx_pkt && crystalhd_hw_repost_cap_buffer(hw, rx_pkt) !=
-				      BC_STS_SUCCESS)
-				dev_err(chddev(), "failed to repost RX buffer\n");
-		}
 		if (replay_tx)
 			crystalhd_flea_update_tx_buff_info(hw);
 		return BC_STS_SUCCESS;
@@ -1004,7 +1057,8 @@ BC_STATUS crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
 		 * defers optional power-down, but the pause request was accepted.
 		 * These host checks do not prove physical source quiescence.
 		 */
-		if (hw->fwcmd_trans_active || hw->fwcmd_active || hw->FwCmdCnt ||
+		if (hw->FleaTxActive || hw->FleaIrqActive ||
+		    hw->fwcmd_trans_active || hw->fwcmd_active || hw->FwCmdCnt ||
 		    hw->fwcmd_poisoned ||
 		    hw->TxList0Sts != ListStsFree || hw->TxList1Sts != ListStsFree ||
 		    hw->rx_list_sts[0] != sts_free || hw->rx_list_sts[1] != sts_free ||
@@ -1029,8 +1083,11 @@ BC_STATUS crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
 					      enum FLEA_STATE_CH_EVENT PowerEvt)
 {
 	enum FLEA_POWER_STATES next;
+	struct crystalhd_rx_dma_pkt *rx_pkt;
 	BC_STATUS sts = BC_STS_SUCCESS;
+	BC_STATUS request_sts = BC_STS_SUCCESS;
 	unsigned long flags;
+	bool repost, recheck, followup = false;
 
 	if (!READ_ONCE(hw->FleaEnablePWM)) {
 		/* Preserve the supported, runtime-PWM-disabled path. */
@@ -1038,8 +1095,19 @@ BC_STATUS crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
 		return BC_STS_SUCCESS;
 	}
 
+retry:
+	repost = false;
+	recheck = false;
+	sts = BC_STS_SUCCESS;
 	spin_lock_irqsave(&hw->lock, flags);
 	if (hw->FleaPowerTransition) {
+		/* The last completion may retire between the setter's final
+		 * owner check and this selector's reservation release.
+		 */
+		if (PowerEvt == FLEA_EVT_CMD_COMP &&
+		    (hw->FleaPowerState == FLEA_PS_LP_PENDING ||
+		     hw->hw_pause_issued))
+			hw->FleaPowerRecheck = true;
 		sts = BC_STS_BUSY;
 		goto unlock;
 	}
@@ -1066,19 +1134,34 @@ BC_STATUS crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
 	next = hw->FleaPowerState;
 	switch (PowerEvt) {
 	case FLEA_EVT_RESUME:
+	case FLEA_EVT_RX_RESUME:
 	case FLEA_EVT_FW_CMD_POST:
 		next = FLEA_PS_ACTIVE;
 		break;
 	case FLEA_EVT_PAUSE:
+	case FLEA_EVT_RX_PAUSE:
 	case FLEA_EVT_CMD_COMP:
 		if (hw->FleaPowerState == FLEA_PS_LP_COMPLETE ||
 		    (PowerEvt == FLEA_EVT_CMD_COMP &&
-		     hw->FleaPowerState != FLEA_PS_LP_PENDING))
+		     hw->FleaPowerState != FLEA_PS_LP_PENDING &&
+		     !hw->hw_pause_issued))
 			break;
+		/* Do not revoke a temporary wake before its command or TX
+		 * producer reaches the doorbell. That owner retries on release.
+		 */
+		if (PowerEvt == FLEA_EVT_CMD_COMP &&
+		    hw->FleaPowerState == FLEA_PS_ACTIVE &&
+		    (hw->fwcmd_trans_active || hw->fwcmd_active || hw->FwCmdCnt ||
+		     hw->FleaTxActive))
+			break;
+		/* A firmware command may have woken an RX-paused device.
+		 * Recheck current intent here, not a caller's stale observation.
+		 */
 		next = FLEA_PS_LP_PENDING;
 		if (hw->TxList0Sts == ListStsFree && hw->TxList1Sts == ListStsFree &&
 		    !hw->EmptyCnt && !hw->SingleThreadAppFIFOEmpty &&
 		    hw->rx_list_sts[0] == sts_free && hw->rx_list_sts[1] == sts_free &&
+		    !hw->FleaTxActive && !hw->FleaIrqActive &&
 		    !hw->FwCmdCnt && !hw->fwcmd_active && !hw->fwcmd_trans_active &&
 		    !hw->fwcmd_poisoned)
 			next = FLEA_PS_LP_COMPLETE;
@@ -1087,18 +1170,57 @@ BC_STATUS crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
 		/* FLL_CHANGE no longer carries an ambiguous pause/resume request. */
 		break;
 	}
-	if (next == hw->FleaPowerState)
+	if (next == hw->FleaPowerState) {
+		if (PowerEvt == FLEA_EVT_RX_PAUSE || PowerEvt == FLEA_EVT_RX_RESUME)
+			hw->hw_pause_issued = PowerEvt == FLEA_EVT_RX_PAUSE;
 		goto unlock;
+	}
 	hw->FleaPowerTransition = true;
 	spin_unlock_irqrestore(&hw->lock, flags);
 
 	sts = crystalhd_flea_set_power_state(hw, next);
 
 	spin_lock_irqsave(&hw->lock, flags);
+	if (sts == BC_STS_SUCCESS &&
+	    (PowerEvt == FLEA_EVT_RX_PAUSE || PowerEvt == FLEA_EVT_RX_RESUME))
+		hw->hw_pause_issued = PowerEvt == FLEA_EVT_RX_PAUSE;
 	hw->FleaPowerTransition = false;
+	/* An owner may also have retired while the selected PENDING state
+	 * was not yet published, when its completion had nothing to retry.
+	 */
+	if (sts == BC_STS_SUCCESS) {
+		recheck = (hw->FleaPowerState == FLEA_PS_LP_PENDING ||
+			   (hw->FleaPowerState == FLEA_PS_ACTIVE && hw->hw_pause_issued)) &&
+			(hw->FleaPowerRecheck || next == FLEA_PS_LP_PENDING);
+		hw->FleaPowerRecheck = false;
+	}
+	repost = sts == BC_STS_SUCCESS && next == FLEA_PS_ACTIVE;
 unlock:
 	spin_unlock_irqrestore(&hw->lock, flags);
-	return sts;
+	if (!followup)
+		request_sts = sts;
+	/* Reposting takes rx_lock before hw->lock. A competing transition
+	 * after release is checked again at the actual RX doorbell; BUSY
+	 * retains the packet on the free queue for a later wake.
+	 */
+	if (repost && READ_ONCE(hw->PicQSts)) {
+		rx_pkt = crystalhd_hw_fetch_free_rx_pkt(hw);
+		if (rx_pkt) {
+			BC_STATUS rx_sts = crystalhd_hw_repost_cap_buffer(hw, rx_pkt);
+
+			if (rx_sts != BC_STS_SUCCESS && rx_sts != BC_STS_BUSY)
+				dev_err(chddev(), "failed to repost RX buffer\n");
+		}
+	}
+	if (recheck) {
+		/* Completion replay is advisory; it cannot revoke an accepted
+		 * pause/resume request. A still-busy owner yields a no-op.
+		 */
+		followup = true;
+		PowerEvt = FLEA_EVT_CMD_COMP;
+		goto retry;
+	}
+	return request_sts;
 }
 
 /* Called with the outer transaction mutex held, after its last state update. */
@@ -1108,7 +1230,8 @@ void crystalhd_flea_fw_transaction_done(struct crystalhd_hw *hw)
 	    !READ_ONCE(hw->FleaEnablePWM) || !READ_ONCE(hw->adp->present) ||
 	    READ_ONCE(hw->dma_fault) || !READ_ONCE(hw->dev_started))
 		return;
-	if (READ_ONCE(hw->FleaPowerState) == FLEA_PS_LP_PENDING)
+	if (READ_ONCE(hw->FleaPowerState) == FLEA_PS_LP_PENDING ||
+	    READ_ONCE(hw->hw_pause_issued))
 		crystalhd_flea_set_next_power_state(hw, FLEA_EVT_CMD_COMP);
 }
 
@@ -1706,6 +1829,66 @@ crystalhd_flea_wake_up_hw(struct crystalhd_hw *hw)
 	return true;
 }
 
+/* Enabled-PWM TX callers own this count until failure or DMA-list admission.
+ * Passive FIFO queries never acquire it, including the VC-1 flags variant.
+ */
+BC_STATUS crystalhd_flea_tx_begin(struct crystalhd_hw *hw)
+{
+	unsigned long flags;
+	BC_STATUS sts = BC_STS_SUCCESS;
+	bool wake;
+
+	spin_lock_irqsave(&hw->lock, flags);
+	if (!READ_ONCE(hw->adp->present) || READ_ONCE(hw->dma_fault) ||
+	    !READ_ONCE(hw->dev_started)) {
+		sts = BC_STS_IO_ERROR;
+		goto unlock;
+	}
+	if (hw->FleaPowerTransition) {
+		sts = BC_STS_BUSY;
+		goto unlock;
+	}
+	wake = !hw->WakeUpDecodeDone ||
+		(hw->FleaPowerState != FLEA_PS_ACTIVE &&
+		 hw->SingleThreadAppFIFOEmpty);
+	/* Normal TX retries must not undo RX ready-queue backpressure. */
+	if (!wake && hw->FleaPowerState != FLEA_PS_ACTIVE) {
+		sts = BC_STS_BUSY;
+		goto unlock;
+	}
+	hw->FleaTxActive++;
+	spin_unlock_irqrestore(&hw->lock, flags);
+
+	if (wake) {
+		sts = crystalhd_flea_set_next_power_state(hw, FLEA_EVT_RESUME);
+		if (sts == BC_STS_SUCCESS)
+			sts = crystalhd_flea_publish_fll(hw, false);
+		if (sts != BC_STS_SUCCESS) {
+			crystalhd_flea_tx_end(hw);
+			return sts;
+		}
+		WRITE_ONCE(hw->WakeUpDecodeDone, true);
+	}
+	return BC_STS_SUCCESS;
+unlock:
+	spin_unlock_irqrestore(&hw->lock, flags);
+	return sts;
+}
+
+void crystalhd_flea_tx_end(struct crystalhd_hw *hw)
+{
+	unsigned long flags;
+	bool recheck;
+
+	spin_lock_irqsave(&hw->lock, flags);
+	hw->FleaTxActive--;
+	recheck = hw->FleaPowerState == FLEA_PS_LP_PENDING ||
+		  hw->hw_pause_issued;
+	spin_unlock_irqrestore(&hw->lock, flags);
+	if (recheck)
+		crystalhd_flea_set_next_power_state(hw, FLEA_EVT_CMD_COMP);
+}
+
 bool crystalhd_flea_check_input_full(struct crystalhd_hw *hw, uint32_t needed_sz, uint32_t *empty_sz, bool b_188_byte_pkts, uint8_t *flags)
 {
 	uint32_t				regVal=0;
@@ -1713,6 +1896,16 @@ bool crystalhd_flea_check_input_full(struct crystalhd_hw *hw, uint32_t needed_sz
 	uint32_t				FlagsAddr=0;
 
 	*empty_sz = 0;
+	/* Both enabled-PWM callers hold hw->lock. Actual TX wakes before
+	 * entering this callback; a stats query must never recurse into it.
+	 */
+	if (READ_ONCE(hw->FleaEnablePWM) &&
+	    (!READ_ONCE(hw->adp->present) || READ_ONCE(hw->dma_fault) ||
+	     !READ_ONCE(hw->dev_started) || hw->FleaPowerTransition ||
+	     hw->FleaPowerState != FLEA_PS_ACTIVE)) {
+		*flags = 0;
+		return true;
+	}
 /*	*DramAddrOut=0; */
 
 
@@ -1724,6 +1917,8 @@ bool crystalhd_flea_check_input_full(struct crystalhd_hw *hw, uint32_t needed_sz
 		/* Only wake up the HW if we are either being called from a single threaded app - like FP */
 		/* or if we are not checking for the input buffer size as just a test */
 		if(*flags == 0) {
+			if (READ_ONCE(hw->FleaEnablePWM))
+				return true;
 			if (!crystalhd_flea_wake_up_hw(hw)) {
 				*flags = 0;
 				return true; /* Publication failed: do not admit TX. */
@@ -1815,7 +2010,7 @@ bool crystalhd_flea_check_input_full(struct crystalhd_hw *hw, uint32_t needed_sz
 		else
 			hw->SingleThreadAppFIFOEmpty = true;
 	}
-	else if((*flags & 0x04) != 0x04)
+	else if (!READ_ONCE(hw->FleaEnablePWM) && (*flags & 0x04) != 0x04)
 		hw->EmptyCnt++;		/*OS_INTERLOCK_INCREMENT(&pHWExt->EmptyCnt); */
 
 	/* Different from our Windows implementation */
@@ -2020,6 +2215,13 @@ BC_STATUS crystalhd_flea_hw_pause(struct crystalhd_hw *hw, bool state)
 	/* SUCCESS accepts the request; LP_PENDING is not physical quiescence. */
 	return crystalhd_flea_set_next_power_state(hw,
 		state ? FLEA_EVT_PAUSE : FLEA_EVT_RESUME);
+}
+
+/* RX flow-control intent is distinct from firmware-command wakeups. */
+BC_STATUS crystalhd_flea_rx_pause(struct crystalhd_hw *hw, bool state)
+{
+	return crystalhd_flea_set_next_power_state(hw,
+		state ? FLEA_EVT_RX_PAUSE : FLEA_EVT_RX_RESUME);
 }
 
 bool crystalhd_flea_peek_next_decoded_frame(struct crystalhd_hw *hw, uint64_t *meta_payload, uint32_t *picNumFlags, uint32_t PicWidth)
@@ -2241,6 +2443,17 @@ BC_STATUS crystalhd_flea_hw_fire_rxdma(struct crystalhd_hw *hw,
 		sts = BC_STS_IO_ERROR;
 		goto unlock;
 	}
+	if (READ_ONCE(hw->FleaEnablePWM)) {
+		if (!READ_ONCE(hw->adp->present) || !READ_ONCE(hw->dev_started)) {
+			sts = BC_STS_IO_ERROR;
+			goto unlock;
+		}
+		if (hw->FleaPowerState != FLEA_PS_ACTIVE ||
+		    hw->FleaPowerTransition) {
+			sts = BC_STS_BUSY;
+			goto unlock;
+		}
+	}
 	sts = hw->pfnDevDRAMWrite(hw, hw->FleaRxPicDelAddr, BuffSzInDwords,
 				(uint32_t *)&PicDeliInfo);
 	if (sts != BC_STS_SUCCESS)
@@ -2307,7 +2520,8 @@ void crystalhd_flea_start_tx_dma_engine(struct crystalhd_hw *hw, uint8_t list_id
 	uint32_t dma_cntrl;
 	uint32_t first_desc_u_addr, first_desc_l_addr;
 
-	hw->EmptyCnt--;
+	if (!READ_ONCE(hw->FleaEnablePWM))
+		hw->EmptyCnt--;
 	hw->SingleThreadAppFIFOEmpty = false;
 
 	if (list_id == 0) {
@@ -2763,6 +2977,7 @@ bool crystalhd_flea_hw_interrupt_handle(struct crystalhd_adp *adp, struct crysta
 	bool				bSomeCmdDone	= false;
 	struct crystalhd_rx_dma_pkt *rx_pkt;
 	unsigned long power_flags;
+	bool irq_power_owner = false;
 
 	bool	rc = false;
 
@@ -2793,6 +3008,9 @@ bool crystalhd_flea_hw_interrupt_handle(struct crystalhd_adp *adp, struct crysta
 	{
 		spin_lock_irqsave(&hw->lock, power_flags);
 		if (hw->FleaPowerState != FLEA_PS_LP_COMPLETE) {
+			/* List retirement precedes later firmware notifications. */
+			hw->FleaIrqActive++;
+			irq_power_owner = true;
 			spin_unlock_irqrestore(&hw->lock, power_flags);
 			goto awake;
 		}
@@ -2891,7 +3109,14 @@ awake:
 			crystalhd_hw_repost_cap_buffer(hw, rx_pkt);
 	}
 
-	if( (hw->FleaPowerState == FLEA_PS_LP_PENDING) && (bSomeCmdDone))
+	if (irq_power_owner) {
+		spin_lock_irqsave(&hw->lock, power_flags);
+		hw->FleaIrqActive--;
+		spin_unlock_irqrestore(&hw->lock, power_flags);
+	}
+	if ((READ_ONCE(hw->FleaPowerState) == FLEA_PS_LP_PENDING ||
+	     (irq_power_owner && READ_ONCE(hw->hw_pause_issued))) &&
+	    (bSomeCmdDone || irq_power_owner))
 	{
 		/*printk("interrupt_handle: current PS:%d, bSomeCmdDone%d\n", hw->FleaPowerState,bSomeCmdDone); */
 		crystalhd_flea_set_next_power_state(hw, FLEA_EVT_CMD_COMP);

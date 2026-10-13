@@ -488,8 +488,13 @@ struct crystalhd_hw {
 	uint32_t			FleaEnablePWM;
 	uint32_t			FleaWaitFirstPlaybackNotify;
 	enum FLEA_POWER_STATES	FleaPowerState;
-	/* Held through unlocked RX callbacks in a runtime power transition. */
+	/* Serializes runtime transitions and cleanup heartbeat access. */
 	bool			FleaPowerTransition;
+	bool			FleaPowerRecheck;
+	/* Actual TX preparation owners, distinct from passive FIFO queries. */
+	uint32_t		FleaTxActive;
+	/* Awake IRQ work owns firmware notifications after list retirement. */
+	uint32_t		FleaIrqActive;
 	uint32_t			EmptyCnt;
 	bool				SingleThreadAppFIFOEmpty;
 	bool				PwrDwnTxIntr; /* Got an TX FIFO status interrupt when in power down state */

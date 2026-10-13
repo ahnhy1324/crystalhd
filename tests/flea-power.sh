@@ -8,7 +8,8 @@ cleanup()
 {
     rm -f "$test_dir/check" "$test_dir/flea-power-functions.h" \
         "$test_dir/flea-power-types.h" "$test_dir/flea-power-transitions.h" \
-        "$test_dir/flea-power-pause.h" "$test_dir/flea-power-done.h"
+        "$test_dir/flea-power-pause.h" "$test_dir/flea-power-done.h" \
+        "$test_dir/flea-power-fll.h"
     rmdir "$test_dir"
 }
 trap cleanup EXIT
@@ -45,11 +46,17 @@ awk '
     END { if (found != 1 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$test_dir/flea-power-done.h"
 awk '
-    /^BC_STATUS crystalhd_flea_hw_pause\(/ { copying = 1; found++ }
+    /^BC_STATUS crystalhd_flea_(hw|rx)_pause\(/ { copying = 1; found++ }
+    copying { print }
+    copying && /^}/ { copying = 0 }
+    END { if (found != 2 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$test_dir/flea-power-pause.h"
+awk '
+    /^static BC_STATUS crystalhd_flea_publish_fll\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
     END { if (found != 1 || copying) exit 1 }
-' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$test_dir/flea-power-pause.h"
+' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$test_dir/flea-power-fll.h"
 awk '
     /^enum (FLEA_POWER_STATES|FLEA_STATE_CH_EVENT|LIST_STATUS|list_sts|_BC_PCI_DEV_IDS)[[:space:]]*\{/ {
         copying = 1; found++

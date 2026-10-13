@@ -1293,12 +1293,14 @@ BC_STATUS crystalhd_rx_pkt_complete(struct crystalhd_hw *hw,
 		{
 			/*printk("pre-PD state %x RLL %x Ptsh %x ratio %d currentPS %d\n", */
 			/*	hw->FleaPowerState, crystalhd_dioq_count(hw->rx_rdyq) , hw->PauseThreshold, hw->PDRatio, hw->FleaPowerState); */
-			if(hw->FleaPowerState == FLEA_PS_ACTIVE)
+			if (READ_ONCE(hw->FleaEnablePWM) || hw->FleaPowerState == FLEA_PS_ACTIVE)
 			{
 				if(crystalhd_dioq_count(hw->rx_rdyq) >= hw->PauseThreshold)
 				{
 					/* The ready queue already owns the completed frame. */
-					if (hw->pfnIssuePause(hw, true) == BC_STS_SUCCESS)
+					if (READ_ONCE(hw->FleaEnablePWM))
+						crystalhd_flea_rx_pause(hw, true);
+					else if (hw->pfnIssuePause(hw, true) == BC_STS_SUCCESS)
 						hw->hw_pause_issued = true;
 				}
 				/* NAREN check if the PD ratio is less than 50. If so, try to reduce the PauseThreshold to improve the ratio */
@@ -1394,6 +1396,7 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw,
 	uint8_t list_posted;
 	uint8_t local_flags = data_flags;
 	bool rc;
+	bool power_owned = false;
 	uint32_t destDRAMaddr = 0;
 
 	if (!hw || !buffer || !call_back || !cb_context || !list_id) {
@@ -1422,16 +1425,26 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw,
 	if (READ_ONCE(hw->dma_fault))
 		return BC_STS_IO_ERROR;
 
+	if (hw->adp->pdev->device == BC_PCI_DEVID_FLEA &&
+	    READ_ONCE(hw->FleaEnablePWM)) {
+		sts = crystalhd_flea_tx_begin(hw);
+		if (sts != BC_STS_SUCCESS)
+			return sts;
+		power_owned = true;
+		spin_lock_irqsave(&hw->lock, flags);
+	}
 	rc = hw->pfnCheckInputFIFO(hw, buffer->bytes,
 					   &dummy_index, false, &local_flags);
+	if (!rc && (local_flags & BC_BIT(7)))
+		destDRAMaddr = hw->TxFwInputBuffInfo.DramBuffAdd;
+	if (power_owned)
+		spin_unlock_irqrestore(&hw->lock, flags);
 
 	if (rc) {
 		hw->stats.cin_busy++;
-		return BC_STS_BUSY;
+		sts = BC_STS_BUSY;
+		goto release_power;
 	}
-
-	if(local_flags & BC_BIT(7))
-		destDRAMaddr = hw->TxFwInputBuffInfo.DramBuffAdd;
 
 	/* Keep the free node reserved until preparation and active admission. */
 	tx_elem = crystalhd_dioq_fetch_elem(hw->tx_freeq);
@@ -1441,7 +1454,8 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw,
 		if (tx_elem)
 			crystalhd_dioq_add_elem(hw->tx_freeq, tx_elem, false, 0);
 		dev_err(dev, "No empty elements..\n");
-		return BC_STS_INSUFF_RES;
+		sts = BC_STS_INSUFF_RES;
+		goto release_power;
 	}
 
 	sts = crystalhd_xlat_tx_buffer_to_dma_desc(buffer,
@@ -1457,6 +1471,17 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw,
 	if (READ_ONCE(hw->dma_fault)) {
 		sts = BC_STS_IO_ERROR;
 		goto unlock_requeue;
+	}
+	if (power_owned) {
+		if (!READ_ONCE(hw->adp->present) || !READ_ONCE(hw->dev_started)) {
+			sts = BC_STS_IO_ERROR;
+			goto unlock_requeue;
+		}
+		if (hw->FleaPowerState != FLEA_PS_ACTIVE ||
+		    hw->FleaPowerTransition) {
+			sts = BC_STS_BUSY;
+			goto unlock_requeue;
+		}
 	}
 	if (hw->pfnPrepareTxDMA) {
 		sts = hw->pfnPrepareTxDMA(hw, buffer->bytes);
@@ -1499,7 +1524,8 @@ BC_STATUS crystalhd_hw_post_tx(struct crystalhd_hw *hw,
 
 	spin_unlock_irqrestore(&hw->lock, flags);
 
-	return BC_STS_SUCCESS;
+	sts = BC_STS_SUCCESS;
+	goto release_power;
 
 unlock_requeue:
 	spin_unlock_irqrestore(&hw->lock, flags);
@@ -1508,6 +1534,9 @@ requeue:
 	tx_dma_packet->cb_context = NULL;
 	tx_dma_packet->call_back = NULL;
 	crystalhd_dioq_add_elem(hw->tx_freeq, tx_elem, false, 0);
+release_power:
+	if (power_owned)
+		crystalhd_flea_tx_end(hw);
 	return sts;
 }
 
@@ -1747,11 +1776,14 @@ static BC_STATUS crystalhd_hw_complete_rx_locked(struct crystalhd_hw *hw,
 	{
 		/*printk("pre-PU state %x RLL %x Rtsh %x, currentPS %d,\n", */
 		/*	hw->FleaPowerState, crystalhd_dioq_count(hw->rx_rdyq) , hw->ResumeThreshold, hw->FleaPowerState); */
-		if( (hw->FleaPowerState == FLEA_PS_LP_PENDING) ||
+		if ((READ_ONCE(hw->FleaEnablePWM) && READ_ONCE(hw->hw_pause_issued)) ||
+			(hw->FleaPowerState == FLEA_PS_LP_PENDING) ||
 			(hw->FleaPowerState == FLEA_PS_LP_COMPLETE))
 		{
 			if (crystalhd_dioq_count(hw->rx_rdyq)  <= hw->ResumeThreshold) {
-				if (hw->pfnIssuePause(hw, false) == BC_STS_SUCCESS)
+				if (READ_ONCE(hw->FleaEnablePWM))
+					crystalhd_flea_rx_pause(hw, false);
+				else if (hw->pfnIssuePause(hw, false) == BC_STS_SUCCESS)
 					hw->hw_pause_issued = false;
 			}
 		}
