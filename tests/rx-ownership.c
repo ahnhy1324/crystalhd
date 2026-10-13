@@ -38,8 +38,9 @@ static void discard_log(const char *format, ...) { (void)format; }
 #define EPOLLIN 0x001U
 #define EPOLLRDNORM 0x040U
 #define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
+static void test_rx_lock(int *lock);
 #define spin_lock_irqsave(lock, flags) \
-    (assert(*(lock) == 0), *(lock) = 1, (flags) = 0)
+    (test_rx_lock(lock), (flags) = 0)
 #define spin_unlock_irqrestore(lock, flags) \
     (assert(*(lock) == 1), *(lock) = 0, (void)(flags))
 
@@ -63,6 +64,7 @@ struct crystalhd_hw {
     uint64_t rx_cancel_epoch;
     int lock, rx_lock, fetch_sem;
     bool hw_pause_issued, dma_fault, WakeUpDecodeDone;
+    bool FleaEnablePWM, FleaPowerTransition, dev_started;
     uint32_t rx_pkt_tag_seed, rx_list_post_index, DrvTotalFrmCaptured;
     uint32_t FleaFLLUpdateAddr;
     uint32_t rx_list_sts[DMA_ENGINE_CNT];
@@ -101,6 +103,18 @@ static void crystalhd_rx_poll_wake(struct crystalhd_adp *adp,
 static struct pci_dev endpoint = { .irq = 17 };
 static struct crystalhd_adp adapter = { .pdev = &endpoint };
 static struct crystalhd_hw hardware;
+static unsigned fll_lock_countdown, fll_lock_mutation;
+static void test_rx_lock(int *lock)
+{
+    assert(!*lock);
+    *lock = 1;
+    if (lock == &hardware.lock && fll_lock_countdown && !--fll_lock_countdown) {
+        if (fll_lock_mutation == 0) hardware.FleaPowerState = FLEA_PS_LP_PENDING;
+        else if (fll_lock_mutation == 1) hardware.FleaPowerTransition = true;
+        else if (fll_lock_mutation == 2) hardware.adp->present = false;
+        else hardware.dev_started = false;
+    }
+}
 #define context adapter.cmds
 static struct crystalhd_dioq active, ready, available;
 static struct crystalhd_rx_dma_pkt packets[BC_RX_LIST_CNT];
@@ -114,6 +128,7 @@ static bool mapped[BC_RX_LIST_CNT];
 static unsigned unmaps[BC_RX_LIST_CNT];
 static unsigned checks, failures, groups, maps, post_calls, stop_calls, irq_depth;
 static unsigned irq_disables, irq_enables, notify_calls, pause_calls;
+static unsigned rx_pause_calls;
 static BC_STATUS pause_status;
 static bool last_pause_direction;
 static unsigned sem_attempts, hardware_notifications, map_attempts, translate_calls;
@@ -618,6 +633,7 @@ static void notify_free(struct crystalhd_hw *hw, bool change)
 static bool crystalhd_flea_detect_fw_alive(struct crystalhd_hw *hw)
 {
     assert(hw == &hardware);
+    assert(!hw->lock && (!hw->FleaEnablePWM || hw->FleaPowerTransition));
     firmware_alive_checks++;
     return firmware_alive;
 }
@@ -649,6 +665,17 @@ static BC_STATUS pause_capture(struct crystalhd_hw *hw, bool pause)
     last_pause_direction = pause;
     pause_calls++;
     return pause_status;
+}
+/* The source-extracted selector/intent transaction is covered by flea-power;
+ * this boundary checks that enabled RX callers choose that transaction.
+ */
+static BC_STATUS crystalhd_flea_rx_pause(struct crystalhd_hw *hw, bool pause)
+{
+    assert(hw->FleaEnablePWM);
+    rx_pause_calls++;
+    BC_STATUS status = pause_capture(hw, pause);
+    if (status == BC_STS_SUCCESS) hw->hw_pause_issued = pause;
+    return status;
 }
 static void done_size(struct crystalhd_hw *hw, uint32_t index, uint32_t *y, uint32_t *uv)
 {
@@ -817,6 +844,7 @@ static void reset(uint32_t device)
     adapter.pdev = &endpoint;
     adapter.present = 1;
     hardware = (struct crystalhd_hw){ .adp = &adapter, .fetch_sem = 1,
+        .dev_started = true,
         .rx_actq = &active, .rx_rdyq = &ready, .rx_freeq = &available,
         .rx_pkt_tag_seed = 0x70029070, .PauseThreshold = 12, .ResumeThreshold = 4,
         .FleaFLLUpdateAddr = 0x5f110000,
@@ -836,6 +864,7 @@ static void reset(uint32_t device)
     }
     maps = post_calls = stop_calls = irq_depth = irq_disables = irq_enables = 0;
     notify_calls = pause_calls = fail_post_call = 0;
+    rx_pause_calls = 0;
     pause_status = BC_STS_SUCCESS;
     last_pause_direction = false;
     sem_attempts = hardware_notifications = map_attempts = translate_calls = 0;
@@ -846,6 +875,7 @@ static void reset(uint32_t device)
     quiesced_releases = quiesced_downs = 0;
     quiesced_epoch = 0;
     dram_write_calls = firmware_alive_checks = 0;
+    fll_lock_countdown = fll_lock_mutation = 0;
     wake_transition_calls = 0;
     fail_wake_transition = false;
     dram_write_status = BC_STS_SUCCESS;
@@ -2187,6 +2217,71 @@ static void fll_publication_cases(void)
                   wake_transition_calls == 2 && dram_write_calls == 1 && !hardware.lock,
                   "explicit retry must complete wake before publishing capture readiness");
         }
+    }
+}
+static void fll_power_admission_cases(void)
+{
+    for (unsigned pwm = 0; pwm < 2; pwm++)
+        for (unsigned state = FLEA_PS_NONE; state <= FLEA_PS_LP_COMPLETE; state++)
+            for (unsigned reserved = 0; reserved < 2; reserved++)
+                for (unsigned cleanup = 0; cleanup < 2; cleanup++) {
+                    reset(BC_PCI_DEVID_FLEA);
+                    hardware.FleaEnablePWM = pwm;
+                    hardware.FleaPowerState = state;
+                    hardware.FleaPowerTransition = reserved;
+                    bool blocked = pwm && (state != FLEA_PS_ACTIVE || reserved);
+                    check(crystalhd_flea_publish_fll(&hardware, cleanup) ==
+                          (blocked ? BC_STS_BUSY : BC_STS_SUCCESS),
+                          "FLL publication respects runtime power admission");
+                    check(dram_write_calls == !blocked &&
+                          firmware_alive_checks == (cleanup && !blocked) &&
+                          hardware.FleaPowerTransition == !!reserved && !hardware.lock,
+                          "blocked FLL does not probe firmware or overwrite zero FLL");
+                    inventory(0, 0, 0);
+                }
+    for (unsigned cleanup = 0; cleanup < 2; cleanup++)
+        for (unsigned failure = 0; failure < 3; failure++) {
+            reset(BC_PCI_DEVID_FLEA);
+            hardware.FleaEnablePWM = true;
+            if (failure == 0) adapter.present = false;
+            else if (failure == 1) hardware.dev_started = false;
+            else hardware.dma_fault = true;
+            check(crystalhd_flea_publish_fll(&hardware, cleanup) == BC_STS_IO_ERROR &&
+                  !dram_write_calls && !firmware_alive_checks &&
+                  !hardware.FleaPowerTransition && !hardware.lock,
+                  "unhealthy FLL publisher must not touch firmware");
+        }
+    for (unsigned mutation = 0; mutation < 4; mutation++) {
+        reset(BC_PCI_DEVID_FLEA);
+        hardware.FleaEnablePWM = true;
+        fll_lock_mutation = mutation;
+        fll_lock_countdown = 2; /* free-list count, final FLL admission */
+        check(crystalhd_flea_publish_fll(&hardware, false) ==
+              (mutation < 2 ? BC_STS_BUSY : BC_STS_IO_ERROR) &&
+              !fll_lock_countdown && !dram_write_calls && !hardware.lock,
+              "late power or health change must be rechecked at FLL publication");
+    }
+    for (unsigned alive = 0; alive < 2; alive++)
+        for (unsigned error = 0; error < 2; error++) {
+            reset(BC_PCI_DEVID_FLEA);
+            hardware.FleaEnablePWM = true;
+            firmware_alive = alive;
+            dram_write_status = error ? BC_STS_IO_ERROR : BC_STS_SUCCESS;
+            check(crystalhd_flea_publish_fll(&hardware, true) ==
+                  (alive ? dram_write_status : BC_STS_SUCCESS) &&
+                  firmware_alive_checks == 1 && dram_write_calls == alive &&
+                  !hardware.FleaPowerTransition && !hardware.lock,
+                  "cleanup must release only its own reservation on every outcome");
+        }
+    for (unsigned mutation = 2; mutation < 4; mutation++) {
+        reset(BC_PCI_DEVID_FLEA);
+        hardware.FleaEnablePWM = true;
+        fll_lock_mutation = mutation;
+        fll_lock_countdown = 3; /* reserve, free-list count, final publication */
+        check(crystalhd_flea_publish_fll(&hardware, true) == BC_STS_IO_ERROR &&
+              !fll_lock_countdown && firmware_alive_checks == 1 && !dram_write_calls &&
+              !hardware.FleaPowerTransition && !hardware.lock,
+              "cleanup must recheck health and release reservation after heartbeat");
     }
 }
 static void fll_capture_and_owner_cases(void)
@@ -3598,7 +3693,7 @@ static void try_dequeue_cancellation_cases(uint32_t device)
     }
 }
 
-static void flea_pause_result_cases(void)
+static void flea_pause_result_cases(bool pwm)
 {
     const BC_STATUS statuses[] = { BC_STS_SUCCESS, BC_STS_BUSY, BC_STS_IO_ERROR };
 
@@ -3606,14 +3701,16 @@ static void flea_pause_result_cases(void)
         struct crystalhd_rx_buffer *buffer;
 
         reset(BC_PCI_DEVID_FLEA);
+        hardware.FleaEnablePWM = pwm;
         buffer = map_private(false);
         check(submit(&context, buffer) == BC_STS_SUCCESS,
               "prepare a frame before the pause threshold");
         hardware.PauseThreshold = 1;
+        if (pwm) hardware.FleaPowerState = FLEA_PS_LP_PENDING;
         pause_status = statuses[s];
         check(crystalhd_rx_pkt_done(&hardware, 0, BC_STS_SUCCESS) == BC_STS_SUCCESS,
               "pause rejection does not replace the successful frame completion result");
-        check(pause_calls == 1 && last_pause_direction &&
+        check(pause_calls == 1 && rx_pause_calls == (unsigned)pwm && last_pause_direction &&
               hardware.hw_pause_issued == (statuses[s] == BC_STS_SUCCESS) &&
               ready.count == 1 && ready.packets[0]->buffer == buffer &&
               ready.packets[0]->cookie == &cookies[0] &&
@@ -3625,7 +3722,7 @@ static void flea_pause_result_cases(void)
         drain();
     }
 
-    for (unsigned power = 0; power < 2; power++) {
+    for (unsigned power = 0; power < (pwm ? 3U : 2U); power++) {
         for (unsigned nonblocking = 0; nonblocking < 2; nonblocking++) {
             for (unsigned has_packet = 0; has_packet < 2; has_packet++) {
                 for (unsigned s = 0; s < ARRAY_SIZE(statuses); s++) {
@@ -3636,20 +3733,22 @@ static void flea_pause_result_cases(void)
                     BC_STATUS status;
 
                     reset(BC_PCI_DEVID_FLEA);
+                    hardware.FleaEnablePWM = pwm;
                     if (has_packet) {
                         buffer = map_private(false);
                         check(submit(&context, buffer) == BC_STS_SUCCESS,
                               "prepare a frame before the resume threshold");
                         complete(0);
                     }
-                    hardware.FleaPowerState = power ? FLEA_PS_LP_PENDING :
-                        FLEA_PS_LP_COMPLETE;
+                    hardware.FleaPowerState = power == 2 ? FLEA_PS_ACTIVE :
+                        power ? FLEA_PS_LP_PENDING : FLEA_PS_LP_COMPLETE;
                     hardware.hw_pause_issued = true;
                     pause_status = statuses[s];
                     memset(&result, 0xa5, sizeof(result));
                     status = nonblocking ? crystalhd_rx_try_dequeue(&context, &result) :
                         crystalhd_rx_dequeue(&context, &result);
                     check(status == expected && pause_calls == 1 &&
+                          rx_pause_calls == (unsigned)pwm &&
                           !last_pause_direction && hardware.fetch_sem == 1 &&
                           hardware.hw_pause_issued == (statuses[s] != BC_STS_SUCCESS),
                           "resume rejection retains the pause flag without replacing the dequeue result");
@@ -3763,8 +3862,10 @@ int main(void)
         invalid_capture_start_arguments(devices[i]);
     }
     fll_publication_cases();
+    fll_power_admission_cases();
     fll_capture_and_owner_cases();
-    flea_pause_result_cases();
+    flea_pause_result_cases(false);
+    flea_pause_result_cases(true);
     printf("RX ownership: %u scenarios, %u checks, %u failures\n", groups, checks, failures);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

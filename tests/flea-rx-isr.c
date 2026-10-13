@@ -14,21 +14,27 @@ struct _BC_DTS_PROC_OUT;
 #include "bc_dts_defs.h"
 #include "bcm_70012_regs.h"
 #include "FleaDefs.h"
+#include "70015/magnum/basemodules/chp/70015/rdb/a0/bchp_intr.h"
 #include "rx-isr-types.h"
 
 #define KERN_ERR ""
 #define printk(...) ((void)0)
 #define dev_info(dev, ...) ((void)(dev))
 #define MAYBE_UNUSED __attribute__((unused))
+#define READ_ONCE(value) (value)
 
 struct device { int unused; };
 struct pci_dev { struct device dev; };
 struct crystalhd_adp { struct pci_dev *pdev; };
 struct crystalhd_rx_dma_pkt { unsigned id; };
-struct crystalhd_hw_stats { uint32_t rx_success, rx_errors; };
+struct crystalhd_hw_stats { uint32_t rx_success, rx_errors, num_interrupts; };
 struct crystalhd_hw {
     struct crystalhd_adp *adp;
-    int rx_lock;
+    int rx_lock, lock;
+    bool dev_started, FleaEnablePWM, FleaPowerTransition;
+    bool PwrDwnPiQIntr, PwrDwnTxIntr;
+    uint32_t FleaIrqActive;
+    enum FLEA_POWER_STATES FleaPowerState;
     enum list_sts rx_list_sts[DMA_ENGINE_CNT];
     struct crystalhd_hw_stats stats;
     uint32_t (*pfnReadDevRegister)(struct crystalhd_adp *, uint32_t);
@@ -52,6 +58,10 @@ static unsigned fresh_posts, start_calls, list0_calls, list1_calls;
 static unsigned duplicate_active_tags;
 static bool inject_fresh_post;
 static bool success_scenario, success_done_under_lock, done_size_under_lock;
+static bool full_handler;
+static union FLEA_INTR_BITS_COMMON full_status;
+static unsigned full_initial_owners, full_phases, full_ack_writes, full_rechecks;
+static unsigned full_pause_phase;
 
 static void check(bool condition, const char *message)
 {
@@ -109,6 +119,10 @@ static void post_fresh_at_unlock(void)
 static uint32_t read_register(struct crystalhd_adp *adp, uint32_t reg)
 {
     assert(adp == &adapter);
+    if (reg == BCHP_INTR_INTR_STATUS) {
+        assert(full_handler);
+        return full_status.WholeReg;
+    }
     if (reg == BCHP_MISC1_Y_RX_ERROR_STATUS)
         return success_scenario ? 0 :
             MISC1_Y_RX_ERROR_STATUS_RX_L0_OVERRUN_ERROR_MASK;
@@ -124,6 +138,14 @@ static void write_register(struct crystalhd_adp *adp, uint32_t reg,
     (void)reg;
     (void)value;
     assert(adp == &adapter);
+    if (full_handler) {
+        check(reg == BCHP_INTR_INTR_CLR_REG || reg == BCHP_INTR_EOI_CTRL,
+              "full handler acknowledges only interrupt status and EOI");
+        check(hardware.FleaIrqActive == full_initial_owners +
+                  (hardware.FleaEnablePWM && hardware.FleaPowerState != FLEA_PS_LP_COMPLETE),
+              "acknowledgement retains the awake IRQ owner");
+        full_ack_writes++;
+    }
 }
 
 static void get_done_size(struct crystalhd_hw *hw, uint32_t index,
@@ -240,6 +262,79 @@ static BC_STATUS crystalhd_hw_start_capture(struct crystalhd_hw *hw)
 
 #include "rx-flea-isr.h"
 
+/* The real full handler is extracted separately. These boundaries assert its
+ * lifetime protection; the real selector's IRQ guard is in flea-power.c.
+ */
+static void full_phase(struct crystalhd_hw *hw)
+{
+    assert(full_handler && hw == &hardware);
+    check(!hw->lock && !hw->rx_lock,
+          "full IRQ callbacks run without the hardware or RX lock held");
+    check(hw->FleaIrqActive == full_initial_owners + hw->FleaEnablePWM,
+          "IRQ ownership spans every awake callback and firmware notification");
+    full_phases++;
+    if (full_pause_phase == full_phases)
+        hw->FleaPowerState = FLEA_PS_LP_PENDING;
+}
+
+static void full_rx_isr(struct crystalhd_hw *hw, union FLEA_INTR_BITS_COMMON status)
+{
+    (void)status;
+    full_phase(hw);
+}
+static void crystalhd_flea_tx_isr(struct crystalhd_hw *hw,
+                                 union FLEA_INTR_BITS_COMMON status)
+{
+    (void)status;
+    full_phase(hw);
+}
+static void crystalhd_flea_update_tx_done_to_fw(struct crystalhd_hw *hw)
+{
+    full_phase(hw);
+}
+static void crystalhd_flea_update_temperature(struct crystalhd_hw *hw)
+{
+    full_phase(hw);
+}
+static void crystalhd_flea_handle_PicQSts_intr(struct crystalhd_hw *hw)
+{
+    full_phase(hw);
+}
+static void crystalhd_flea_update_tx_buff_info(struct crystalhd_hw *hw)
+{
+    full_phase(hw);
+}
+static void crystalhd_hw_fw_cmd_complete(struct crystalhd_hw *hw)
+{
+    check(full_ack_writes == 2, "mailbox completion follows interrupt acknowledgement");
+    full_phase(hw);
+}
+static struct crystalhd_rx_dma_pkt *crystalhd_hw_fetch_free_rx_pkt(struct crystalhd_hw *hw)
+{
+    full_phase(hw);
+    return &fresh_packet;
+}
+static BC_STATUS crystalhd_hw_repost_cap_buffer(struct crystalhd_hw *hw,
+                                                struct crystalhd_rx_dma_pkt *packet)
+{
+    check(packet == &fresh_packet, "full IRQ repost keeps the fetched owner");
+    full_phase(hw);
+    return BC_STS_SUCCESS;
+}
+static BC_STATUS crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
+                                                    enum FLEA_STATE_CH_EVENT event)
+{
+    check(hw == &hardware && event == FLEA_EVT_CMD_COMP && !hw->lock &&
+          hw->FleaIrqActive == full_initial_owners && full_ack_writes == 2,
+          "power reevaluation follows the last IRQ callback and owner release");
+    full_rechecks++;
+    return hw->FleaPowerTransition ? BC_STS_BUSY : BC_STS_SUCCESS;
+}
+
+#define crystalhd_flea_rx_isr full_rx_isr
+#include "rx-flea-interrupt.h"
+#undef crystalhd_flea_rx_isr
+
 static void reset_scenario(bool success)
 {
     memset(&hardware, 0, sizeof(hardware));
@@ -256,6 +351,7 @@ static void reset_scenario(bool success)
     inject_fresh_post = !success;
     success_scenario = success;
     success_done_under_lock = done_size_under_lock = false;
+    full_handler = false;
 }
 
 static void run_error_scenario(void)
@@ -327,11 +423,74 @@ static void run_missing_owner_scenario(void)
           "a missing owner leaves queues untouched and the lock balanced");
 }
 
+static void full_reset(bool pwm, unsigned owners)
+{
+    reset_scenario(true);
+    full_handler = true;
+    full_status.WholeReg = 0;
+    full_initial_owners = hardware.FleaIrqActive = owners;
+    full_phases = full_ack_writes = full_rechecks = full_pause_phase = 0;
+    hardware.dev_started = true;
+    hardware.FleaEnablePWM = pwm;
+    hardware.FleaPowerState = FLEA_PS_ACTIVE;
+}
+
+static void run_irq_lifetime_cases(void)
+{
+    for (unsigned pwm = 0; pwm < 2; pwm++) {
+        for (unsigned phase = 1; phase <= 10; phase++) {
+            full_reset(pwm, 0);
+            full_status.ArmMbox0Int = full_status.ArmMbox1Int = full_status.ArmMbox2Int = 1;
+            full_status.L0TxDMADone = 1;
+            full_pause_phase = phase;
+            check(crystalhd_flea_hw_interrupt_handle(&adapter, &hardware),
+                  "full handler accepts combined mailbox and TX completion");
+            check(full_phases == 10 && full_ack_writes == 2 && full_rechecks == 1 &&
+                  !hardware.FleaIrqActive && !hardware.lock && !hardware.rx_lock &&
+                  hardware.FleaPowerState == FLEA_PS_LP_PENDING,
+                  "each late-pause interleaving retires exactly one IRQ owner and reevaluates");
+        }
+        for (unsigned busy = 0; busy < 2; busy++) {
+            full_reset(pwm, 2);
+            full_status.ArmMbox2Int = 1;
+            full_pause_phase = 4;
+            hardware.FleaPowerTransition = busy;
+            check(crystalhd_flea_hw_interrupt_handle(&adapter, &hardware) &&
+                  full_phases == 4 && full_ack_writes == 2 &&
+                  full_rechecks == pwm && hardware.FleaIrqActive == 2 &&
+                  hardware.FleaPowerTransition == !!busy && !hardware.lock,
+                  "notification-only IRQ retires its owner and retries pending sleep without consuming peer owners");
+        }
+        for (unsigned early = 0; early < 6; early++) {
+            full_reset(pwm, 2);
+            full_status.ArmMbox0Int = 1;
+            if (early == 1) hardware.dev_started = false;
+            if (early == 2) full_status.WholeReg = 0;
+            if (early == 3) full_status.HaltIntr = 1;
+            if (early == 4) full_status.PcieTgtCaAttn = 1;
+            if (early == 5) full_status.PcieTgtUrAttn = 1;
+            check(!crystalhd_flea_hw_interrupt_handle(early ? &adapter : NULL, &hardware) &&
+                  !full_phases && !full_ack_writes && !full_rechecks &&
+                  hardware.FleaIrqActive == 2 && !hardware.lock,
+                  "early IRQ rejection does not acquire or leak a power owner");
+        }
+    }
+    full_reset(true, 0);
+    hardware.FleaPowerState = FLEA_PS_LP_COMPLETE;
+    full_status.ArmMbox1Int = full_status.ArmMbox2Int = 1;
+    check(crystalhd_flea_hw_interrupt_handle(&adapter, &hardware) &&
+          !full_phases && full_ack_writes == 2 && !full_rechecks &&
+          hardware.PwrDwnPiQIntr && hardware.PwrDwnTxIntr &&
+          !hardware.FleaIrqActive && !hardware.lock,
+          "sleeping IRQ latches notifications without entering the awake lifetime");
+}
+
 int main(void)
 {
     run_error_scenario();
     run_success_scenario();
     run_missing_owner_scenario();
+    run_irq_lifetime_cases();
 
     printf("Flea RX ISR lock: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;

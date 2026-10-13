@@ -28,7 +28,8 @@ struct crystalhd_rx_dma_pkt { unsigned unused; };
 struct crystalhd_hw {
     uint32_t FleaEnablePWM;
     enum FLEA_POWER_STATES FleaPowerState;
-    bool FleaPowerTransition;
+    bool FleaPowerTransition, FleaPowerRecheck, hw_pause_issued;
+    unsigned FleaIrqActive, FleaTxActive;
     enum LIST_STATUS TxList0Sts, TxList1Sts;
     uint32_t EmptyCnt, SingleThreadAppFIFOEmpty, FwCmdCnt;
     enum list_sts rx_list_sts[2];
@@ -89,6 +90,12 @@ struct mock_device {
     bool nested_explicit_event;
     unsigned nested_calls, reposts;
     bool return_packet, relatch_irqs;
+    BC_STATUS repost_status;
+    struct crystalhd_hw *completion_hw;
+    unsigned completion_unlock_countdown, completion_calls;
+    bool fail_completion_replay;
+    struct crystalhd_hw *intent_hw;
+    bool expected_intent, intent_observed;
     uint32_t last_fll;
     struct { uint32_t addr, value; } registers[32];
     unsigned register_count;
@@ -138,6 +145,26 @@ static void unlock_hw(unsigned *lock)
     check(*lock && device.lock_held, "unbalanced hardware unlock");
     *lock = 0;
     device.lock_held = false;
+    if (device.completion_hw && device.completion_unlock_countdown &&
+        !--device.completion_unlock_countdown) {
+        struct crystalhd_hw *hw = device.completion_hw;
+        device.completion_hw = NULL;
+        hw->FleaTxActive = 0;
+        check(hw->FleaPowerTransition, "completion hook missed reserved window");
+        if (hw->FleaPowerState == FLEA_PS_LP_PENDING)
+            for (unsigned repeat = 0; repeat < 2; repeat++)
+                check(real_set_next_power_state(hw, FLEA_EVT_CMD_COMP) == BC_STS_BUSY &&
+                      hw->FleaPowerRecheck,
+                      "completion under reservation did not latch deferred recheck");
+        device.completion_calls++;
+        if (device.fail_completion_replay) device.fail_fll_write = true;
+    }
+    if (device.intent_hw && !device.intent_hw->FleaPowerTransition) {
+        check(device.intent_hw->hw_pause_issued == device.expected_intent,
+              "RX intent was not committed before reservation release");
+        device.intent_observed = true;
+        device.intent_hw = NULL;
+    }
     if (device.nested_hw && device.nested_hw->FleaPowerTransition)
         nested_transition(NEST_UNLOCK);
 }
@@ -210,7 +237,8 @@ static uint32_t crystalhd_hw_count_free_rx_pkts(struct crystalhd_hw *hw)
 
 static struct crystalhd_rx_dma_pkt *crystalhd_hw_fetch_free_rx_pkt(struct crystalhd_hw *hw)
 {
-    check(!hw->lock, "RX fetch under hardware lock");
+    check(!hw->lock && !hw->FleaPowerTransition,
+          "RX fetch before wake reservation release");
     hw->adp->fetches++;
     nested_transition(NEST_FETCH);
     return hw->adp->return_packet ? &packet : NULL;
@@ -219,12 +247,13 @@ static struct crystalhd_rx_dma_pkt *crystalhd_hw_fetch_free_rx_pkt(struct crysta
 static BC_STATUS crystalhd_hw_repost_cap_buffer(struct crystalhd_hw *hw,
                                                 struct crystalhd_rx_dma_pkt *pkt)
 {
-    check(!hw->lock, "RX repost under hardware lock");
+    check(!hw->lock && !hw->FleaPowerTransition,
+          "RX repost before wake reservation release");
     check(pkt == &packet && hw->adp->return_packet,
           "unexpected repost without a fetched packet");
     hw->adp->reposts++;
     nested_transition(NEST_REPOST);
-    return BC_STS_SUCCESS;
+    return hw->adp->repost_status;
 }
 
 static void crystalhd_flea_runtime_power_up(struct crystalhd_hw *hw)
@@ -292,6 +321,8 @@ static uint64_t rdtsc_ordered(void)
 static bool crystalhd_flea_set_power_state(struct crystalhd_hw *hw,
                                           enum FLEA_POWER_STATES state)
 {
+    if (state == FLEA_PS_ACTIVE)
+        return real_set_next_power_state(hw, FLEA_EVT_RESUME) == BC_STS_SUCCESS;
     if (hw->FleaPowerTransition) return false;
     hw->FleaPowerTransition = true;
     BC_STATUS status = private_set_power_state(hw, state);
@@ -310,6 +341,16 @@ static void nested_transition(enum nested_point point)
     const unsigned picture_irqs = device.picture_irqs, tx_irqs = device.tx_irqs;
     const unsigned fetches = device.fetches, reposts = device.reposts;
     device.nested_point = NEST_NONE;
+    if (point == NEST_FETCH || point == NEST_REPOST) {
+        check(!hw->lock && !hw->FleaPowerTransition,
+              "RX callback still owns the wake reservation");
+        check(real_set_next_power_state(hw, device.nested_explicit_event ?
+              device.nested_event : FLEA_EVT_PAUSE) == BC_STS_SUCCESS &&
+              hw->FleaPowerState == FLEA_PS_LP_COMPLETE && !hw->FleaPowerTransition,
+              "competing pause after wake release did not complete");
+        device.nested_calls++;
+        return;
+    }
     check(!hw->lock && hw->FleaPowerTransition,
           "wake replay does not own an unlocked transition reservation");
     enum FLEA_STATE_CH_EVENT event = device.nested_explicit_event ?
@@ -431,7 +472,7 @@ static void transition_failures(void)
     }
 
     for (unsigned pending = 0; pending < 2; pending++)
-        for (unsigned owner = 0; owner < 10; owner++) {
+        for (unsigned owner = 0; owner < 12; owner++) {
             enum FLEA_POWER_STATES state = pending ? FLEA_PS_LP_PENDING : FLEA_PS_ACTIVE;
             struct crystalhd_hw hw = transition_setup(state);
             hw.fwcmd_active = owner == 0;
@@ -444,6 +485,8 @@ static void transition_failures(void)
             hw.EmptyCnt = owner == 7;
             hw.SingleThreadAppFIFOEmpty = owner == 8;
             hw.fwcmd_trans_active = owner == 9;
+            hw.FleaIrqActive = owner == 10;
+            hw.FleaTxActive = owner == 11;
             check(crystalhd_flea_set_power_state(&hw, FLEA_PS_LP_COMPLETE),
                   "busy owner lost accepted zero-FLL pause");
             check(hw.FleaPowerState == FLEA_PS_LP_PENDING && device.dram_writes == 1 &&
@@ -481,6 +524,7 @@ static void wake_interleavings(void)
     for (unsigned complete = 0; complete < 2; complete++)
         for (unsigned target = 0; target < 3; target++)
             for (enum nested_point point = NEST_UNLOCK; point <= NEST_TX; point++) {
+                if (point == NEST_FETCH || point == NEST_REPOST) continue;
                 struct crystalhd_hw hw = transition_setup(complete ?
                     FLEA_PS_LP_COMPLETE : FLEA_PS_LP_PENDING);
                 device.nested_hw = &hw;
@@ -635,6 +679,8 @@ static void step(struct crystalhd_hw *hw, enum FLEA_STATE_CH_EVENT event,
             hw->fwcmd_active == before.fwcmd_active &&
             hw->fwcmd_poisoned == before.fwcmd_poisoned &&
             hw->fwcmd_trans_active == before.fwcmd_trans_active &&
+            hw->FleaIrqActive == before.FleaIrqActive &&
+            hw->FleaTxActive == before.FleaTxActive &&
             hw->FleaPowerTransition == before.FleaPowerTransition &&
             hw->rx_list_sts[0] == before.rx_list_sts[0] &&
             hw->rx_list_sts[1] == before.rx_list_sts[1],
@@ -679,11 +725,17 @@ static void disabled_pwm(void)
 {
     struct crystalhd_hw hw = setup(FLEA_PS_LP_COMPLETE, 15, 16, 31);
     hw.FleaPowerTransition = true;
+    hw.FleaIrqActive = 17;
+    hw.FleaTxActive = 23;
+    hw.FleaPowerRecheck = true;
     const struct crystalhd_hw before = hw;
     crystalhd_flea_init_power_state(&hw);
     require(hw.FleaEnablePWM == false && hw.FleaPowerState == FLEA_PS_NONE &&
             hw.FleaPowerTransition == false,
             "PWM unexpectedly enabled at init", &before, FLEA_EVT_NONE);
+    require(!hw.FleaIrqActive, "initializer retained IRQ owner", &before, FLEA_EVT_NONE);
+    require(!hw.FleaTxActive, "initializer retained TX owner", &before, FLEA_EVT_NONE);
+    require(!hw.FleaPowerRecheck, "initializer retained deferred power check", &before, FLEA_EVT_NONE);
     require(hw.TxList0Sts == before.TxList0Sts &&
             hw.TxList1Sts == before.TxList1Sts &&
             hw.EmptyCnt == before.EmptyCnt &&
@@ -727,12 +779,14 @@ static void events(void)
 static void command_owners(void)
 {
     for (unsigned pending = 0; pending < 2; pending++)
-        for (unsigned owners = 0; owners < 8; owners++) {
+        for (unsigned owners = 0; owners < 32; owners++) {
             struct crystalhd_hw hw = setup(pending ? FLEA_PS_LP_PENDING :
                                                     FLEA_PS_ACTIVE, 0, 0, 0);
             hw.fwcmd_active = !!(owners & 1);
             hw.fwcmd_poisoned = !!(owners & 2);
             hw.fwcmd_trans_active = !!(owners & 4);
+            hw.FleaIrqActive = !!(owners & 8);
+            hw.FleaTxActive = !!(owners & 16);
             enum FLEA_POWER_STATES to = owners ? FLEA_PS_LP_PENDING : FLEA_PS_LP_COMPLETE;
             step(&hw, pending ? FLEA_EVT_CMD_COMP : FLEA_EVT_PAUSE,
                  to, to != hw.FleaPowerState);
@@ -996,6 +1050,138 @@ static void direction_sequences(void)
               "pause wrapper hid transition contention");
         sequence_cases++;
     }
+    for (enum nested_point point = NEST_FETCH; point <= NEST_REPOST; point++) {
+        hw = transition_setup(FLEA_PS_LP_COMPLETE);
+        hw.PicQSts = 1;
+        device.return_packet = true;
+        device.repost_status = BC_STS_BUSY;
+        device.nested_hw = &hw;
+        device.nested_point = point;
+        check(crystalhd_flea_hw_pause(&hw, false) == BC_STS_SUCCESS &&
+              device.nested_calls == 1 && device.fetches == 1 && device.reposts == 1 &&
+              hw.FleaPowerState == FLEA_PS_LP_COMPLETE && !hw.FleaPowerTransition &&
+              !hw.lock && !device.lock_held,
+              "post-release competing pause did not defer exactly one RX repost");
+        sequence_cases++;
+    }
+    const unsigned active_owners[] = {1, 2, UINT32_MAX};
+    for (unsigned tx = 0; tx < 2; tx++) {
+        for (unsigned pending = 0; pending < 2; pending++) {
+            for (unsigned owner = 0; owner < sizeof(active_owners) / sizeof(active_owners[0]); owner++) {
+                hw = transition_setup(pending ? FLEA_PS_LP_PENDING : FLEA_PS_ACTIVE);
+                unsigned *counter = tx ? &hw.FleaTxActive : &hw.FleaIrqActive;
+                *counter = active_owners[owner];
+                check(crystalhd_flea_hw_pause(&hw, true) == BC_STS_SUCCESS &&
+                      hw.FleaPowerState == FLEA_PS_LP_PENDING && !device.power_writes &&
+                      *counter == active_owners[owner],
+                      "pause gated hardware before full IRQ/TX processing retired");
+                *counter = 0;
+                check(real_set_next_power_state(&hw, FLEA_EVT_CMD_COMP) == BC_STS_SUCCESS &&
+                      hw.FleaPowerState == FLEA_PS_LP_COMPLETE && hw.DrvPauseCnt == 1,
+                      "completed IRQ/TX owner left accepted pause stuck");
+                sequence_cases++;
+            }
+        }
+    }
+}
+
+static void deferred_completion_sequences(void)
+{
+    for (unsigned window = 1; window <= 3; window++)
+        for (unsigned variant = 0; variant < 5; variant++) {
+            struct crystalhd_hw hw = transition_setup(variant == 4 ?
+                FLEA_PS_LP_PENDING : FLEA_PS_ACTIVE);
+            hw.FleaTxActive = 1;
+            hw.FleaIrqActive = variant == 1;
+            device.idle = variant != 2;
+            device.fail_fll_write = variant == 3;
+            device.completion_hw = &hw;
+            device.completion_unlock_countdown = window;
+            const BC_STATUS status = crystalhd_flea_hw_pause(&hw, variant != 4);
+            check(status == (variant == 3 ? BC_STS_IO_ERROR : BC_STS_SUCCESS) &&
+                  device.completion_calls == 1 && !device.completion_unlock_countdown &&
+                  !hw.FleaPowerTransition && !hw.FleaPowerRecheck && !hw.lock,
+                  "deferred completion lost request result, event or reservation");
+            check(hw.FleaPowerState == (variant == 0 ? FLEA_PS_LP_COMPLETE :
+                  variant < 3 ? FLEA_PS_LP_PENDING : FLEA_PS_ACTIVE),
+                  "last-owner completion stranded accepted pause or changed failed wake");
+            check(device.dram_writes == (variant == 0 || variant == 2 ? 2U : 1U) &&
+                  hw.DrvPauseCnt == (variant == 0),
+                  "completion replay repeated idle failure or failed to stop at busy owner");
+            sequence_cases++;
+        }
+    struct crystalhd_hw hw = transition_setup(FLEA_PS_ACTIVE);
+    hw.FleaTxActive = 1;
+    device.completion_hw = &hw;
+    device.completion_unlock_countdown = 3;
+    device.fail_completion_replay = true;
+    check(crystalhd_flea_hw_pause(&hw, true) == BC_STS_SUCCESS &&
+          hw.FleaPowerState == FLEA_PS_LP_PENDING && device.dram_writes == 2 &&
+          device.completion_calls == 1 && !hw.FleaPowerTransition && !hw.FleaPowerRecheck,
+          "failed advisory recheck revoked an already accepted pause");
+    sequence_cases++;
+}
+
+static void rx_intent_sequences(void)
+{
+    for (unsigned state = FLEA_PS_ACTIVE; state <= FLEA_PS_LP_COMPLETE; state++)
+        for (unsigned pause = 0; pause < 2; pause++)
+            for (unsigned prior = 0; prior < 2; prior++) {
+                struct crystalhd_hw hw = transition_setup(state);
+                hw.hw_pause_issued = prior;
+                hw.FleaTxActive = pause && state == FLEA_PS_LP_PENDING;
+                device.intent_hw = &hw;
+                device.expected_intent = pause;
+                check(crystalhd_flea_rx_pause(&hw, pause) == BC_STS_SUCCESS &&
+                      hw.hw_pause_issued == !!pause && device.intent_observed &&
+                      !hw.FleaPowerTransition,
+                      "RX pause/resume did not commit accepted or idempotent intent");
+                sequence_cases++;
+            }
+    for (unsigned pause = 0; pause < 2; pause++)
+        for (unsigned prior = 0; prior < 2; prior++)
+            for (unsigned failure = 0; failure < 3; failure++) {
+                struct crystalhd_hw hw = transition_setup(pause ?
+                    FLEA_PS_ACTIVE : FLEA_PS_LP_PENDING);
+                hw.hw_pause_issued = prior;
+                hw.FleaPowerTransition = failure == 0;
+                device.fail_fll_write = failure == 1;
+                device.present = failure != 2;
+                check(crystalhd_flea_rx_pause(&hw, pause) ==
+                      (failure == 0 ? BC_STS_BUSY : BC_STS_IO_ERROR) &&
+                      hw.hw_pause_issued == !!prior,
+                      "rejected RX request changed previously accepted intent");
+                sequence_cases++;
+            }
+    const enum FLEA_STATE_CH_EVENT firmware_events[] = {
+        FLEA_EVT_PAUSE, FLEA_EVT_RESUME, FLEA_EVT_FW_CMD_POST
+    };
+    for (unsigned event = 0; event < sizeof(firmware_events) / sizeof(firmware_events[0]); event++)
+        for (unsigned state = FLEA_PS_ACTIVE; state <= FLEA_PS_LP_COMPLETE; state++)
+            for (unsigned prior = 0; prior < 2; prior++) {
+                struct crystalhd_hw hw = transition_setup(state);
+                hw.hw_pause_issued = prior;
+                check(real_set_next_power_state(&hw, firmware_events[event]) == BC_STS_SUCCESS &&
+                      hw.hw_pause_issued == !!prior,
+                      "firmware wake/pause overwrote independent RX threshold intent");
+                sequence_cases++;
+            }
+    for (enum nested_point point = NEST_FETCH; point <= NEST_REPOST; point++) {
+        struct crystalhd_hw hw = transition_setup(FLEA_PS_LP_COMPLETE);
+        hw.hw_pause_issued = true;
+        hw.PicQSts = 1;
+        device.return_packet = true;
+        device.repost_status = BC_STS_BUSY;
+        device.nested_hw = &hw;
+        device.nested_point = point;
+        device.nested_explicit_event = true;
+        device.nested_event = FLEA_EVT_RX_PAUSE;
+        check(crystalhd_flea_rx_pause(&hw, false) == BC_STS_SUCCESS &&
+              device.nested_calls == 1 && hw.hw_pause_issued &&
+              hw.FleaPowerState == FLEA_PS_LP_COMPLETE && !hw.FleaPowerTransition,
+              "completed resume overwrote newer RX pause intent during repost");
+        sequence_cases++;
+    }
 }
 
 int main(void)
@@ -1012,6 +1198,8 @@ int main(void)
     transition_success();
     wake_interleavings();
     direction_sequences();
+    deferred_completion_sequences();
+    rx_intent_sequences();
     printf("PASS: %u Flea power selector cases; %u mocked-MMIO transition cases; "
            "%u integrated event sequences; no device access\n",
            cases, transition_cases, sequence_cases);

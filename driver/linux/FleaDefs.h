@@ -176,7 +176,9 @@ enum FLEA_STATE_CH_EVENT {
 	FLEA_EVT_FW_CMD_POST,
 	FLEA_EVT_CMD_COMP,
 	FLEA_EVT_PAUSE,
-	FLEA_EVT_RESUME
+	FLEA_EVT_RESUME,
+	FLEA_EVT_RX_PAUSE,
+	FLEA_EVT_RX_RESUME
 };
 
 #define TEST_BIT(_value_,_bit_number_)	(_value_ & (0x00000001 << _bit_number_))

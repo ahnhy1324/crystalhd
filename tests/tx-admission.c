@@ -166,13 +166,15 @@ typedef struct { uint32_t cmd[64]; } BC_FW_CMD;
 struct crystalhd_user { uint32_t uid, in_use, mode; };
 struct crystalhd_hw {
     struct crystalhd_adp *adp;
-    bool dma_fault;
+    bool dma_fault, dev_started;
     unsigned lock;
     struct crystalhd_dioq *tx_freeq, *tx_actq;
     struct { unsigned cin_busy; } stats;
     TX_INPUT_BUFFER_INFO TxFwInputBuffInfo;
     uint32_t TxBuffInfoAddr, EmptyCnt;
     bool WakeUpDecodeDone, SingleThreadAppFIFOEmpty;
+    bool FleaEnablePWM, FleaPowerTransition;
+    uint32_t FleaTxActive;
     enum FLEA_POWER_STATES FleaPowerState;
     uint32_t tx_list_post_index, tx_ioq_tag_seed;
     enum LIST_STATUS TxList0Sts, TxList1Sts;
@@ -271,6 +273,11 @@ static struct {
         unsigned copied_words, reads, writes, wakes;
         bool wake_allowed, wake_success;
     } flea;
+    struct {
+        BC_STATUS resume_status, publish_status;
+        unsigned resumes, publications, completions, after_descriptor;
+        bool callback_owned;
+    } power;
     struct {
         bool enabled;
         BC_STATUS status;
@@ -624,6 +631,19 @@ static BC_STATUS crystalhd_xlat_tx_buffer_to_dma_desc(
           index && dev == &endpoint.dev,
           "TX descriptor construction uses its request and reserved packet");
     run.descriptors++; run.seen_destination = destination;
+    if (hardware.FleaEnablePWM && endpoint.device == BC_PCI_DEVID_FLEA) {
+        Check(hardware.FleaTxActive && !hardware.lock,
+              "descriptor construction retains a TX power owner outside the publication lock");
+        switch (run.power.after_descriptor) {
+        case 0: break;
+        case 1: adapter.present = false; break;
+        case 2: hardware.dev_started = false; break;
+        case 3: hardware.dma_fault = true; break;
+        case 4: hardware.FleaPowerState = FLEA_PS_LP_PENDING; break;
+        case 5: hardware.FleaPowerTransition = true; break;
+        default: abort();
+        }
+    }
     if (run.fault_after_descriptor) {
         disable_irq(endpoint.irq);
         crystalhd_hw_dma_fatal_stop(&hardware);
@@ -883,6 +903,32 @@ static bool crystalhd_flea_wake_up_hw(struct crystalhd_hw *hw)
     return run.flea.wake_success;
 }
 
+void crystalhd_flea_tx_end(struct crystalhd_hw *hw);
+static BC_STATUS crystalhd_flea_set_next_power_state(struct crystalhd_hw *hw,
+                                                     enum FLEA_STATE_CH_EVENT event)
+{
+    Check(hw == &hardware && hardware.FleaEnablePWM && !hardware.lock,
+          "TX power notification occurs outside its publication spinlock");
+    if (event == FLEA_EVT_RESUME) {
+        Check(hardware.FleaTxActive > 0, "TX acquires a power owner before requesting wake");
+        run.power.resumes++;
+        if (run.power.resume_status == BC_STS_SUCCESS)
+            hardware.FleaPowerState = FLEA_PS_ACTIVE;
+        return run.power.resume_status;
+    }
+    Check(event == FLEA_EVT_CMD_COMP && hardware.FleaPowerState == FLEA_PS_LP_PENDING,
+          "TX owner release retries only a pending idle request");
+    run.power.completions++;
+    return BC_STS_SUCCESS;
+}
+static BC_STATUS crystalhd_flea_publish_fll(struct crystalhd_hw *hw, bool cleanup)
+{
+    Check(hw == &hardware && !cleanup && !hardware.lock && hardware.FleaTxActive,
+          "FLL publication is a fallible boundary inside the TX power lifetime");
+    run.power.publications++;
+    return run.power.publish_status;
+}
+
 #include "tx-admission-flea.h"
 #include "tx-admission-buffer.h"
 #include "tx-admission-hardware.h"
@@ -901,6 +947,9 @@ static bool Fifo(struct crystalhd_hw *hw, uint32_t size, uint32_t *index,
     Check(hw == &hardware && size == run.transfer_size && index && !update &&
           *flags == run.transfer_flags,
           "pre-submit FIFO admission receives the whole mapped input");
+    if (hardware.FleaEnablePWM && endpoint.device == BC_PCI_DEVID_FLEA)
+        Check(hardware.lock && hardware.FleaTxActive,
+              "enabled FIFO admission is serialized while the TX power owner is live");
     run.fifo_calls++; run.seen_flags = *flags;
     jiffies += run.post_delay_ms;
     if (run.busy) {
@@ -971,7 +1020,7 @@ static void Reset(void)
     memset(multi_cookie, 0, sizeof(multi_cookie));
     adapter = (struct crystalhd_adp){
         .pdev = &endpoint, .present = true, .user_lock = 1 };
-    hardware = (struct crystalhd_hw){ .adp = &adapter,
+    hardware = (struct crystalhd_hw){ .adp = &adapter, .dev_started = true,
         .tx_freeq = &freeq, .tx_actq = &activeq, .tx_ioq_tag_seed = 0x100,
         .pfnCheckInputFIFO = Fifo, .pfnStartTxDMA = Start, .pfnStopTxDMA = Stop,
         .pfnDoFirmwareCmd = Firmware, .pfnIssuePause = Pause, .fetch_sem = 1,
@@ -2481,6 +2530,8 @@ static void FleaNotificationWithActiveOwner(void)
 static void PrepareUnpublished(void)
 {
     struct tx_dma_pkt *owned = run.prep.candidate;
+    if (hardware.FleaEnablePWM)
+        Check(hardware.FleaTxActive, "firmware preparation cannot outlive its TX power owner");
     Check(run.prep.enabled && hardware.lock && run.prep.caller_tag &&
           *run.prep.caller_tag == run.prep.original_tag &&
           hardware.tx_list_post_index == run.prep.index &&
@@ -2531,6 +2582,8 @@ static BC_STATUS FleaPrepare(struct crystalhd_hw *hw, uint32_t bytes)
 static void PreparedPublished(void)
 {
     struct tx_dma_pkt *owned = run.prep.candidate;
+    if (hardware.FleaEnablePWM)
+        Check(hardware.FleaTxActive, "DMA register publication retains its TX power owner");
     Check(hardware.lock && run.prep.writes == 1 &&
           run.prep.status == BC_STS_SUCCESS &&
           activeq.tail == run.prep.reserved && run.prep.reserved->data == owned &&
@@ -2549,7 +2602,7 @@ static uint32_t FleaRegisterRead(struct crystalhd_adp *adp, uint32_t address)
     PreparedPublished();
     Check(adp == &adapter && address == BCHP_MISC1_TX_SW_DESC_LIST_CTRL_STS &&
           !run.prep.reg_reads && !run.prep.reg_writes &&
-          hardware.EmptyCnt == run.prep.empty - 1U &&
+          hardware.EmptyCnt == run.prep.empty - !hardware.FleaEnablePWM &&
           !hardware.SingleThreadAppFIFOEmpty,
           "actual register-only start preserves its existing counter decrement and reads control before writing descriptors");
     run.prep.reg_reads++;
@@ -2569,6 +2622,9 @@ static void FleaRegisterWrite(struct crystalhd_adp *adp, uint32_t address, uint3
 static void PreparedComplete(void *cookie, BC_STATUS status)
 {
     struct tx_dma_pkt *owned = cookie;
+    if (run.power.callback_owned)
+        Check(hardware.FleaTxActive == 1,
+              "immediate completion retains TX power ownership through the callback");
     Check((owned == packet0 || owned == &packet2) &&
           QueueContains(&freeq, owned) && !QueueContains(&activeq, owned) &&
           !owned->buffer && !owned->cb_context && !owned->call_back && !owned->list_tag,
@@ -3040,6 +3096,178 @@ static void LinkWithoutPreparation(void)
     }
 }
 
+static bool FleaPowerFifo(struct crystalhd_hw *hw, uint32_t size,
+                           uint32_t *empty, bool update, uint8_t *flags)
+{
+    Check(hw == &hardware && hardware.lock && hardware.FleaTxActive,
+          "actual enabled Flea FIFO executes under lock with an admitted TX owner");
+    run.fifo_calls++;
+    return crystalhd_flea_check_input_full(hw, size, empty, update, flags);
+}
+
+static void FleaPowerReset(uint32_t *tag)
+{
+    FleaPrepareReset(tag);
+    hardware.FleaEnablePWM = true;
+    hardware.EmptyCnt = 0;
+    hardware.SingleThreadAppFIFOEmpty = false;
+    hardware.pfnCheckInputFIFO = FleaPowerFifo;
+    PrepareSnapshot(tag, packet0);
+}
+
+static BC_STATUS FleaPowerPost(uint32_t *tag)
+{
+    return crystalhd_hw_post_tx(&hardware, &request.tx_buffer,
+                                PreparedComplete, packet0, tag, 0);
+}
+
+static void FleaPowerLifetime(void)
+{
+    for (unsigned list = 0; list < 2; list++) {
+        for (unsigned wake = 0; wake < 3; wake++) {
+            for (unsigned immediate = 0; immediate < 2; immediate++) {
+                uint32_t tag = 0xfeedbabe;
+                FleaPowerReset(&tag);
+                hardware.tx_list_post_index = list;
+                hardware.WakeUpDecodeDone = wake != 1;
+                hardware.SingleThreadAppFIFOEmpty = wake == 2;
+                hardware.FleaPowerState = wake ? FLEA_PS_LP_PENDING : FLEA_PS_ACTIVE;
+                run.immediate_completion = immediate;
+                run.power.callback_owned = immediate;
+                PrepareSnapshot(&tag, packet0);
+                Check(FleaPowerPost(&tag) == BC_STS_SUCCESS &&
+                      tag == hardware.tx_ioq_tag_seed + list && run.starts == 1 &&
+                      run.fifo_calls == 1 && run.prep.writes == 1 &&
+                      !hardware.FleaTxActive && !hardware.EmptyCnt &&
+                      !hardware.SingleThreadAppFIFOEmpty && hardware.WakeUpDecodeDone &&
+                      run.power.resumes == !!wake && run.power.publications == !!wake &&
+                      !run.flea.wakes && !run.power.completions && !hardware.lock,
+                      "enabled TX balances its owner after metadata and doorbell without legacy counter debt");
+                if (!immediate) {
+                    Check(QueueHead(&activeq) == packet0 &&
+                          ((list ? hardware.TxList1Sts : hardware.TxList0Sts) & TxListWaitingForIntr),
+                          "published DMA list ownership bridges the end of the temporary TX power owner");
+                    Complete();
+                }
+                Check(run.callback_calls == 1 && !hardware.FleaTxActive &&
+                      !QueueHead(&activeq) && QueueHead(&freeq) == packet0,
+                      "both immediate and later completion retire the request once with balanced power ownership");
+                Balanced();
+            }
+        }
+    }
+}
+
+static void FleaPowerRejections(void)
+{
+    for (unsigned fault = 0; fault < 8; fault++) {
+        uint32_t tag = 0xfeedbabe;
+        FleaPowerReset(&tag);
+        if (fault == 0) adapter.present = false;
+        else if (fault == 1) hardware.dev_started = false;
+        else if (fault == 2) hardware.dma_fault = true;
+        else if (fault == 3) hardware.FleaPowerTransition = true;
+        else hardware.FleaPowerState = (enum FLEA_POWER_STATES[]){
+            FLEA_PS_NONE, FLEA_PS_STOPPED, FLEA_PS_LP_PENDING, FLEA_PS_LP_COMPLETE,
+        }[fault - 4];
+        Check(FleaPowerPost(&tag) == (fault < 3 ? BC_STS_IO_ERROR : BC_STS_BUSY) &&
+              tag == 0xfeedbabe && !hardware.FleaTxActive && !hardware.EmptyCnt &&
+              !run.fifo_calls && !run.descriptors && !run.queue_fetches &&
+              !run.prep.writes && !run.starts && !run.power.resumes &&
+              !run.power.publications && !run.power.completions && !hardware.lock,
+              "health, transition and ordinary idle-backpressure rejection precede all TX ownership and hardware publication");
+    }
+    const BC_STATUS errors[] = { BC_STS_BUSY, BC_STS_IO_ERROR };
+    for (unsigned stage = 0; stage < 2; stage++) {
+        for (unsigned error = 0; error < ARRAY_SIZE(errors); error++) {
+            uint32_t tag = 0xfeedbabe;
+            FleaPowerReset(&tag);
+            hardware.WakeUpDecodeDone = false;
+            if (stage) run.power.publish_status = errors[error];
+            else run.power.resume_status = errors[error];
+            Check(FleaPowerPost(&tag) == errors[error] &&
+                  !hardware.FleaTxActive && !hardware.WakeUpDecodeDone &&
+                  tag == 0xfeedbabe && run.power.resumes == 1 &&
+                  run.power.publications == stage && !run.fifo_calls &&
+                  !run.queue_fetches && !run.prep.writes && !run.starts &&
+                  !run.callback_calls && !hardware.lock,
+                  "wake or FLL failure returns the original status and drops the prepublication TX power owner");
+        }
+    }
+}
+
+static void FleaPowerRollback(void)
+{
+    for (unsigned fault = 0; fault < 10; fault++) {
+        uint32_t tag = 0xfeedbabe;
+        FleaPowerReset(&tag);
+        hardware.SingleThreadAppFIFOEmpty = true;
+        BC_STATUS expected = BC_STS_BUSY;
+        if (fault == 0) hardware.TxFwInputBuffInfo.DramBuffSzInBytes = 0;
+        else if (fault == 1) {
+            QueueInit(&freeq);
+            expected = BC_STS_INSUFF_RES;
+        } else if (fault == 2) {
+            run.descriptor_status = expected = BC_STS_NOT_IMPL;
+        } else if (fault < 5) {
+            run.prep.status = expected = fault == 3 ? BC_STS_BUSY : BC_STS_IO_ERROR;
+        } else {
+            run.power.after_descriptor = fault - 4;
+            expected = fault < 8 ? BC_STS_IO_ERROR : BC_STS_BUSY;
+        }
+        PrepareSnapshot(&tag, packet0);
+        Check(FleaPowerPost(&tag) == expected && tag == 0xfeedbabe &&
+              !hardware.FleaTxActive && !hardware.EmptyCnt &&
+              hardware.SingleThreadAppFIFOEmpty && !hardware.lock &&
+              !run.starts && !run.callback_calls && !QueueHead(&activeq) &&
+              !packet0->buffer && !packet0->call_back && !packet0->cb_context &&
+              !packet0->list_tag && !hardware.tx_list_post_index &&
+              hardware.TxList0Sts == ListStsFree && hardware.TxList1Sts == ListStsFree &&
+              run.prep.writes == (fault == 3 || fault == 4) &&
+              run.power.completions == (fault == 8),
+              "every enabled TX failure balances its power owner and preserves caller tag, request ownership and single-thread promise");
+        Check(fault == 1 ? !QueueHead(&freeq) : QueueHead(&freeq) == packet0,
+              "TX rollback restores the same reserved packet, including final-lock races");
+        QueueInvariant(&freeq);
+        QueueInvariant(&activeq);
+    }
+}
+
+static void FleaPowerNestedAndBypass(void)
+{
+    uint32_t tag = 0xfeedbabe;
+    FleaPowerReset(&tag);
+    Check(crystalhd_flea_tx_begin(&hardware) == BC_STS_SUCCESS &&
+          crystalhd_flea_tx_begin(&hardware) == BC_STS_SUCCESS && hardware.FleaTxActive == 2,
+          "each admitted caller acquires a distinct counted TX power lifetime");
+    hardware.FleaPowerState = FLEA_PS_LP_PENDING;
+    crystalhd_flea_tx_end(&hardware);
+    Check(hardware.FleaTxActive == 1 && run.power.completions == 1,
+          "first owner release notifies pending idle without erasing the second owner");
+    crystalhd_flea_tx_end(&hardware);
+    Check(!hardware.FleaTxActive && run.power.completions == 2 && !hardware.lock,
+          "last owner release balances the counter and retries pending idle outside the lock");
+
+    for (unsigned link = 0; link < 2; link++) {
+        Reset();
+        endpoint.device = link ? BC_PCI_DEVID_LINK : BC_PCI_DEVID_FLEA;
+        hardware.FleaEnablePWM = link;
+        hardware.dev_started = false;
+        hardware.FleaPowerTransition = true;
+        hardware.FleaPowerState = FLEA_PS_STOPPED;
+        request.tx_buffer = (struct crystalhd_tx_buffer){
+            .bytes = run.transfer_size, .cookie = &request,
+        };
+        Check(crystalhd_hw_post_tx(&hardware, &request.tx_buffer,
+                  OpaqueComplete, &opaque_cookie, &tag, run.transfer_flags) == BC_STS_SUCCESS &&
+              !hardware.FleaTxActive && !run.power.resumes && !run.power.publications &&
+              !run.power.completions && run.starts == 1,
+              "disabled Flea and Link paths do not gain runtime-PWM admission constraints");
+        Complete();
+        Balanced();
+    }
+}
+
 int main(void)
 {
     Admission(); OpaqueCookie(); CancelWithoutQueues(); CancelAllOwners(); Completion(); Rollback(); TransferArguments(); BusyErrors(); BusyAndFlush(); Cancellation();
@@ -3057,6 +3285,10 @@ int main(void)
     RxPollQueueAccounting();
     LinkWithoutPreparation();
     FleaWakeAdmission();
+    FleaPowerLifetime();
+    FleaPowerRejections();
+    FleaPowerRollback();
+    FleaPowerNestedAndBypass();
     printf("TX admission: %u checks, %u failures\n", checks, failures);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

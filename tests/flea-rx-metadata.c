@@ -44,7 +44,7 @@ _Static_assert(offsetof(PIC_DELIVERY_HOST_INFO, Reserved) == 28,
 
 struct device { int unused; };
 struct pci_dev { struct device dev; };
-struct crystalhd_adp { struct pci_dev *pdev; };
+struct crystalhd_adp { struct pci_dev *pdev; bool present; };
 struct crystalhd_rx_buffer { int unused; };
 struct crystalhd_dioq {
     void *packets[DMA_ENGINE_CNT + 1];
@@ -64,6 +64,8 @@ struct crystalhd_hw {
     uint32_t rx_list_post_index, RxSeqNum, channelNum, PicQSts;
     uint32_t rx_pkt_tag_seed, FleaRxPicDelAddr, RxCaptureState;
     bool dma_fault;
+    bool FleaEnablePWM, FleaPowerTransition, dev_started;
+    enum FLEA_POWER_STATES FleaPowerState;
     struct crystalhd_dioq *rx_actq, *rx_freeq;
     BC_STATUS (*pfnDevDRAMWrite)(struct crystalhd_hw *, uint32_t, uint32_t,
                                const uint32_t *);
@@ -92,6 +94,8 @@ static uint32_t other_tag;
 static uint32_t initial_list_states[DMA_ENGINE_CNT];
 static bool irq_enabled, initial_irq_enabled, inject_dma_fault;
 static bool inject_list_change;
+static bool inject_power_change;
+static unsigned power_mutation;
 static uint32_t injected_list;
 static unsigned lock_depth;
 static int *lock_stack[2];
@@ -133,6 +137,13 @@ static void test_lock(int *lock, unsigned long *flags)
     if (lock == &hardware.lock && inject_dma_fault) {
         hardware.dma_fault = true;
         inject_dma_fault = false;
+    }
+    if (lock == &hardware.lock && inject_power_change) {
+        inject_power_change = false;
+        if (power_mutation == 0) hardware.FleaPowerState = FLEA_PS_LP_PENDING;
+        else if (power_mutation == 1) hardware.FleaPowerTransition = true;
+        else if (power_mutation == 2) adapter.present = false;
+        else hardware.dev_started = false;
     }
 }
 
@@ -278,17 +289,20 @@ static void prepare_attempt(void)
     queue_status = free_queue_status = write_status = BC_STS_SUCCESS;
     partial_write_words = 0;
     inject_dma_fault = inject_list_change = false;
+    inject_power_change = false;
 }
 
 static void reset(uint32_t list, uint32_t channel, uint64_t y, uint64_t uv,
                   uint32_t sequence)
 {
     groups++;
+    adapter.present = true;
     hardware = (struct crystalhd_hw){
         .adp = &adapter, .rx_list_post_index = list, .RxSeqNum = sequence,
         .channelNum = channel, .PicQSts = (UINT32_C(1) << channel) | 0x100U,
         .rx_pkt_tag_seed = 0x70029070U, .FleaRxPicDelAddr = 0x00d30400U,
         .RxCaptureState = 1, .rx_actq = &active, .rx_freeq = &free_queue,
+        .dev_started = true, .FleaPowerState = FLEA_PS_ACTIVE,
         .pfnDevDRAMWrite = write_dram, .pfnWriteDevRegister = write_register,
         .pfnNotifyFLLChange = notify_fll,
     };
@@ -601,6 +615,55 @@ static void test_wrapper(void)
           "successful wrapper notification is outside the transaction with IRQs still disabled");
 }
 
+static void test_power_admission(void)
+{
+    for (unsigned pwm = 0; pwm < 2; pwm++)
+        for (unsigned state = FLEA_PS_NONE; state <= FLEA_PS_LP_COMPLETE; state++)
+            for (unsigned reserved = 0; reserved < 2; reserved++) {
+                reset(0, 2, UINT64_C(0x123456789abcdef0), 0, 17);
+                hardware.FleaEnablePWM = pwm;
+                hardware.FleaPowerState = state;
+                hardware.FleaPowerTransition = reserved;
+                if (pwm && (state != FLEA_PS_ACTIVE || reserved)) {
+                    rejected(BC_STS_BUSY, &hardware, &packet, 2);
+                } else {
+                    check(crystalhd_flea_hw_fire_rxdma(&hardware, &packet) == BC_STS_SUCCESS,
+                          "PWM-off or active-unreserved post retains normal publication");
+                    check_success();
+                }
+            }
+    for (unsigned failure = 0; failure < 3; failure++) {
+        reset(0, 2, UINT64_C(0x123456789abcdef0), 0, 17);
+        hardware.FleaEnablePWM = true;
+        if (failure == 0) adapter.present = false;
+        else if (failure == 1) hardware.dev_started = false;
+        else hardware.dma_fault = true;
+        rejected(BC_STS_IO_ERROR, &hardware, &packet, failure == 2 ? 0 : 2);
+    }
+    for (unsigned mutation = 0; mutation < 4; mutation++) {
+        reset(0, 2, UINT64_C(0x123456789abcdef0), 0, 17);
+        hardware.FleaEnablePWM = true;
+        inject_power_change = true;
+        power_mutation = mutation;
+        rejected(mutation < 2 ? BC_STS_BUSY : BC_STS_IO_ERROR, &hardware, &packet, 2);
+        check(!inject_power_change, "late power-admission hook was reached");
+    }
+    for (unsigned pending = 0; pending < 2; pending++) {
+        reset(0, 2, UINT64_C(0x123456789abcdef0), 0, 17);
+        hardware.FleaEnablePWM = true;
+        hardware.FleaPowerState = pending ? FLEA_PS_LP_PENDING : FLEA_PS_ACTIVE;
+        hardware.FleaPowerTransition = !pending;
+        check(crystalhd_flea_hw_post_cap_buff(&hardware, &packet) == BC_STS_BUSY,
+              "paused or newly reserved wake repost is deferred");
+        check_uncommitted_state();
+        check_no_metadata_write();
+        check(packet_owner == FREE_QUEUE_OWNER && free_queue.count == 1 &&
+              free_queue.packets[0] == &packet && free_queue_calls == 1 &&
+              notify_calls == 1 && !write_calls && !queue_calls,
+              "deferred repost preserves exactly one free owner without doorbell");
+    }
+}
+
 int main(void)
 {
     test_preconditions();
@@ -608,6 +671,7 @@ int main(void)
     test_queue_failure();
     test_queue_retry();
     test_wrapper();
+    test_power_admission();
     for (uint32_t list = 0; list < DMA_ENGINE_CNT; list++) {
         for (uint32_t channel = 0; channel < 4; channel++) {
             test_success(list, channel, UINT64_C(0xfedcba9876543210), 0, 17, true);

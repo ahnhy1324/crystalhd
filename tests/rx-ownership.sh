@@ -9,6 +9,7 @@ cleanup()
 	rm -f "$rx_test_dir/check" "$rx_test_dir/wait-check" \
 		"$rx_test_dir/flea-isr-check" "$rx_test_dir/link-isr-check" \
 		"$rx_test_dir/rx-flea-isr.h" "$rx_test_dir/rx-link-isr.h" \
+		"$rx_test_dir/rx-flea-interrupt.h" \
 		"$rx_test_dir/rx-flea-fll.h" \
 		"$rx_test_dir/rx-isr-types.h" \
         "$rx_test_dir/rx-types.h" "$rx_test_dir/rx-fetch-wait-function.h" \
@@ -56,6 +57,13 @@ awk '
     END { if (found != 1 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > \
     "$rx_test_dir/rx-flea-isr.h"
+awk '
+    /^bool crystalhd_flea_hw_interrupt_handle\(/ { copying = 1; found++ }
+    copying { print }
+    copying && /^}/ { copying = 0 }
+    END { if (found != 1 || copying) exit 1 }
+' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > \
+    "$rx_test_dir/rx-flea-interrupt.h"
 awk '
     /^void crystalhd_link_rx_isr\(/ { copying = 1; found++ }
     copying { print }

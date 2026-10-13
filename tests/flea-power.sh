@@ -45,10 +45,10 @@ awk '
     END { if (found != 1 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$test_dir/flea-power-done.h"
 awk '
-    /^BC_STATUS crystalhd_flea_hw_pause\(/ { copying = 1; found++ }
+    /^BC_STATUS crystalhd_flea_(hw|rx)_pause\(/ { copying = 1; found++ }
     copying { print }
     copying && /^}/ { copying = 0 }
-    END { if (found != 1 || copying) exit 1 }
+    END { if (found != 2 || copying) exit 1 }
 ' "$repo_dir/driver/linux/crystalhd_fleafuncs.c" > "$test_dir/flea-power-pause.h"
 awk '
     /^enum (FLEA_POWER_STATES|FLEA_STATE_CH_EVENT|LIST_STATUS|list_sts|_BC_PCI_DEV_IDS)[[:space:]]*\{/ {
